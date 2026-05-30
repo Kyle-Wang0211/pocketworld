@@ -1,0 +1,132 @@
+{
+  "@@locale": "zh",
+  "appBrand": "方寸间",
+  "splashSubtitle": "三维捕捉 · 极简工作台",
+  "splashStartingEngine": "正在启动 3D 引擎…",
+  "splashRestoringSession": "正在恢复会话…",
+  "splashPreparingSignIn": "准备登录界面…",
+  "splashWaking3DEngine": "正在唤醒 3D 引擎…",
+  "splashRendererUnavailable": "渲染器不可用，即将进入重试",
+  "communityEmptyTitle": "社区还没有作品",
+  "communitySearchHint": "搜索作品",
+  "communityTabHot": "热门",
+  "communityTabNearby": "附近",
+  "communityTabDiscover": "发现",
+  "communityNearbyComingSoon": "附近功能即将上线，敬请期待。",
+  "meMyWorksEmpty": "还没有作品 —— 点右下角的相机开始第一次扫描。",
+  "scanLifecycleCompleted": "已完成",
+  "createOptionCapture": "拍摄",
+  "createOptionUpload": "上传",
+  "createImportingGlb": "正在导入 GLB 模型…",
+  "createImportPickerFailed": "打开文件选择器失败：{error}",
+  "@createImportPickerFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "createImportFileUnreadable": "无法读取所选文件",
+  "meTapHintInProgress": "正在生成 3D 模型，完成后会自动打开",
+  "meActionRename": "改名",
+  "meActionDelete": "删除",
+  "meActionCancel": "取消",
+  "meActionSave": "保存",
+  "meRenameDialogTitle": "改名",
+  "meDeleteDialogTitle": "删除这次扫描?",
+  "meDeleteDialogContent": "\"{name}\" 将从你的作品里移除。已发布到社区的内容不受影响。",
+  "@meDeleteDialogContent": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "defaultUntitledScan": "未命名",
+  "captureWarmupHint": "正在初始化 AR…",
+  "captureReadyHint": "点击下方按钮进入瞄准",
+  "captureAimHint": "将准星对准主体，再点 ✓ 锁定并开始",
+  "captureMaterialTooSparseHint": "请继续拍摄一会儿再停止",
+  "captureLockFailedHint": "未检测到平面或跟踪未就绪 — 请对准物体所在表面后再试",
+  "captureInitFailed": "初始化失败：{error}",
+  "@captureInitFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "captureRecordingStartFailed": "开始录制失败：{error}",
+  "@captureRecordingStartFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "relativeJustNow": "刚刚",
+  "relativeMinutesAgo": "{n} 分钟前",
+  "relativeHoursAgo": "{n} 小时前",
+  "relativeDaysAgo": "{n} 天前",
+  "relativeWeeksAgo": "{n} 周前",
+  "relativeMonthsAgo": "{n} 个月前",
+  "meSettingsTitle": "设置",
+  "meNotifications": "通知",
+  "meNotificationsOn": "开启",
+  "mePrivacy": "隐私",
+  "meNotificationsOff": "已关闭",
+  "mePrivacyPublic": "公开",
+  "mePrivacyPrivate": "仅自己可见",
+  "meSettingNotConfigured": "未配置",
+  "meLanguage": "语言",
+  "meLanguageZh": "简体中文",
+  "meLanguageEn": "English",
+  "meAbout": "关于",
+  "meSignOut": "退出登录",
+  "meDetailRunningProcessing": "处理中",
+  "meDetailRecordNotFound": "找不到这条作品",
+  "authWelcomeBack": "欢迎回来",
+  "authCreateAccount": "创建你的账号",
+  "authSignIn": "登录",
+  "authSignUp": "注册",
+  "authEmailHint": "邮箱",
+  "authPasswordHint": "密码",
+  "authPasswordHintMin": "设置密码（至少 8 位）",
+  "authForgotPassword": "忘记密码？",
+  "authTermsAcceptance": "注册即表示你同意方寸间的服务条款与隐私政策。",
+  "authErrorDialogTitle": "出错了",
+  "otpVerifyTitle": "验证邮箱",
+  "otpVerifySubtitle": "我们已向 {email} 发送 6 位验证码，请在下方输入完成注册。",
+  "otpResend": "重新发送",
+  "otpResendCooldown": "{seconds} 秒后可重发",
+  "otpResendSent": "已重新发送",
+  "otpUseAnotherEmail": "换一个邮箱",
+  "resetTitle": "重置密码",
+  "resetSubtitleEnterCode": "我们已向 {email} 发送 6 位验证码，请连同新密码一起输入",
+  "resetSendCode": "发送验证码",
+  "resetNewPasswordHint": "新密码（至少 8 位）",
+  "resetConfirm": "重置密码",
+  "captureModeLocal": "本地方案",
+  "captureModeRemoteLegacy": "远程方案",
+  "captureModeNewRemote": "新远程方案",
+  "languageDialogTitle": "语言",
+  "languageDialogChinese": "简体中文",
+  "languageDialogEnglish": "English",
+  "commonCancel": "取消",
+  "commonOk": "确定",
+  "meTabProjects": "项目",
+  "meTabDrafts": "草稿",
+  "defaultImportedScan": "导入的模型",
+  "meDisplayName": "用户名",
+  "meDisplayNameDialogTitle": "修改用户名",
+  "meDisplayNameDialogHint": "新用户名(1-40 字)",
+  "meDisplayNameUpdated": "用户名已更新",
+  "meDisplayNameUpdateFailed": "更新失败:{error}",
+  "@meDisplayNameUpdateFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  }
+}

@@ -1,0 +1,191 @@
+{
+  "@@locale": "en",
+  "appBrand": "PocketWorld",
+  "@appBrand": {
+    "description": "Brand wordmark — English"
+  },
+  "splashSubtitle": "3D capture · minimalist workbench",
+  "splashStartingEngine": "Starting 3D engine…",
+  "splashRestoringSession": "Restoring session…",
+  "splashPreparingSignIn": "Preparing sign-in…",
+  "splashWaking3DEngine": "Waking 3D engine…",
+  "splashRendererUnavailable": "Renderer unavailable, retrying…",
+  "communityEmptyTitle": "No works yet",
+  "communitySearchHint": "Search works",
+  "communityTabHot": "Hot",
+  "communityTabNearby": "Nearby",
+  "communityTabDiscover": "Discover",
+  "communityNearbyComingSoon": "Nearby is coming soon — stay tuned.",
+  "meMyWorksEmpty": "No works yet — tap the camera to start your first capture.",
+  "scanLifecycleCompleted": "Completed",
+  "createOptionCapture": "Capture",
+  "createOptionUpload": "Upload",
+  "createImportingGlb": "Importing GLB model…",
+  "createImportPickerFailed": "Couldn't open file picker: {error}",
+  "@createImportPickerFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "createImportFileUnreadable": "Couldn't read the selected file",
+  "meTapHintInProgress": "Generating 3D model — opens when ready",
+  "meActionRename": "Rename",
+  "meActionDelete": "Delete",
+  "meActionCancel": "Cancel",
+  "meActionSave": "Save",
+  "meRenameDialogTitle": "Rename",
+  "meDeleteDialogTitle": "Delete this scan?",
+  "meDeleteDialogContent": "\"{name}\" will be removed from your works. Items already published to the community are unaffected.",
+  "@meDeleteDialogContent": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "defaultUntitledScan": "Untitled",
+  "captureWarmupHint": "Initializing AR…",
+  "captureReadyHint": "Tap the center button to aim",
+  "captureAimHint": "Align the guide, then tap ✓ to lock and start",
+  "captureMaterialTooSparseHint": "Keep scanning a moment longer before stopping",
+  "captureLockFailedHint": "Surface not detected or tracking not ready — point at the object's surface and try again",
+  "captureInitFailed": "Initialization failed: {error}",
+  "@captureInitFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "captureRecordingStartFailed": "Couldn't start recording: {error}",
+  "@captureRecordingStartFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "relativeJustNow": "just now",
+  "relativeMinutesAgo": "{n} min ago",
+  "@relativeMinutesAgo": {
+    "placeholders": {
+      "n": {
+        "type": "int"
+      }
+    }
+  },
+  "relativeHoursAgo": "{n} h ago",
+  "@relativeHoursAgo": {
+    "placeholders": {
+      "n": {
+        "type": "int"
+      }
+    }
+  },
+  "relativeDaysAgo": "{n} d ago",
+  "@relativeDaysAgo": {
+    "placeholders": {
+      "n": {
+        "type": "int"
+      }
+    }
+  },
+  "relativeWeeksAgo": "{n} w ago",
+  "@relativeWeeksAgo": {
+    "placeholders": {
+      "n": {
+        "type": "int"
+      }
+    }
+  },
+  "relativeMonthsAgo": "{n} mo ago",
+  "@relativeMonthsAgo": {
+    "placeholders": {
+      "n": {
+        "type": "int"
+      }
+    }
+  },
+  "meSettingsTitle": "Settings",
+  "meNotifications": "Notifications",
+  "meNotificationsOn": "On",
+  "mePrivacy": "Privacy",
+  "meNotificationsOff": "Off",
+  "mePrivacyPublic": "Public",
+  "mePrivacyPrivate": "Private",
+  "meSettingNotConfigured": "Not configured",
+  "meLanguage": "Language",
+  "meLanguageZh": "简体中文",
+  "meLanguageEn": "English",
+  "meAbout": "About",
+  "meSignOut": "Sign out",
+  "meDetailRunningProcessing": "Processing",
+  "meDetailRecordNotFound": "Record not found",
+  "authWelcomeBack": "Welcome back",
+  "authCreateAccount": "Create your account",
+  "authSignIn": "Sign in",
+  "authSignUp": "Sign up",
+  "authEmailHint": "Email",
+  "authPasswordHint": "Password",
+  "authPasswordHintMin": "Set password (min 8 chars)",
+  "authForgotPassword": "Forgot password?",
+  "authTermsAcceptance": "By signing up you agree to PocketWorld's Terms of Service and Privacy Policy.",
+  "authErrorDialogTitle": "Something went wrong",
+  "otpVerifyTitle": "Verify your email",
+  "otpVerifySubtitle": "We sent a 6-digit code to {email}. Enter it below to finish signing up.",
+  "@otpVerifySubtitle": {
+    "placeholders": {
+      "email": {
+        "type": "String"
+      }
+    }
+  },
+  "otpResend": "Resend code",
+  "otpResendCooldown": "Resend in {seconds}s",
+  "@otpResendCooldown": {
+    "placeholders": {
+      "seconds": {
+        "type": "int"
+      }
+    }
+  },
+  "otpResendSent": "Code re-sent",
+  "otpUseAnotherEmail": "Use a different email",
+  "resetTitle": "Reset password",
+  "resetSubtitleEnterCode": "We sent a 6-digit code to {email}. Enter it together with your new password.",
+  "@resetSubtitleEnterCode": {
+    "placeholders": {
+      "email": {
+        "type": "String"
+      }
+    }
+  },
+  "resetSendCode": "Send code",
+  "resetNewPasswordHint": "New password (min 8 chars)",
+  "resetConfirm": "Reset password",
+  "captureModeLocal": "Local",
+  "captureModeRemoteLegacy": "Remote",
+  "captureModeNewRemote": "New Remote",
+  "languageDialogTitle": "Language",
+  "languageDialogChinese": "简体中文 (Chinese)",
+  "languageDialogEnglish": "English",
+  "commonCancel": "Cancel",
+  "commonOk": "OK",
+  "meTabProjects": "Projects",
+  "meTabDrafts": "Drafts",
+  "defaultImportedScan": "Imported model",
+  "meDisplayName": "Display name",
+  "meDisplayNameDialogTitle": "Edit display name",
+  "meDisplayNameDialogHint": "New display name (1-40 chars)",
+  "meDisplayNameUpdated": "Display name updated",
+  "meDisplayNameUpdateFailed": "Update failed: {error}",
+  "@meDisplayNameUpdateFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  }
+}

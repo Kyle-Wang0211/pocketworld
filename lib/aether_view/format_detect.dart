@@ -1,0 +1,156 @@
+// Format detection for the viewer pipeline.
+//
+// Decides whether a downloaded byte blob should go through the GLB
+// mesh path (aether_scene_renderer_load_glb) or the splat path
+// (aether_splat_load_ply / aether_splat_load_spz).
+//
+// G5 lands the actual byte sniffing. The detection routine returns
+// within microseconds without allocating — it just looks at a few
+// header bytes. Per-format references:
+//
+//   GLB    : KhronosGroup/glTF spec, §4.4 Binary glTF Layout. Magic
+//            `glTF` (0x46546C67) at byte 0 little-endian.
+//   PLY    : Stanford PLY spec, header line 0 is "ply\n" (ASCII)
+//            followed by "format ascii|binary_little_endian|...". The
+//            element vertex line lists per-vertex properties — we
+//            sniff for the gsplat convention (`f_dc_0`, `scale_0`,
+//            `rot_0`, `opacity`) which the dominant 3DGS exporters
+//            (Inria SIBR, supersplat, polycam) all emit.
+//   SPZ    : Niantic Lightship splat container, magic `SPZ\0`
+//            (0x53 0x50 0x5A 0x00) at byte 0. Spec at
+//            https://github.com/nianticlabs/spz.
+//   SPLAT  : antimatter15/splat-store fixed-stride binary, no magic
+//            number. Content is N×32 bytes (xyz f32, scale f32×3,
+//            color rgba u8, rot u8×4) — we treat anything ending in
+//            .splat that we couldn't otherwise classify as splat.
+
+import 'dart:typed_data';
+
+enum ViewerFormat {
+  /// glTF binary container — magic `glTF` (0x46546C67) at byte 0.
+  /// Routes to `aether_scene_renderer_load_glb`.
+  glb,
+
+  /// PLY ASCII / binary header WITHOUT 3DGS-specific properties.
+  /// Plain triangulated mesh. NOT supported in v1 — return error
+  /// (the scene renderer only takes GLB; converting plain PLY → mesh
+  /// is out of scope until a use case appears).
+  plyMesh,
+
+  /// PLY with the gsplat property convention: `f_dc_0..2`, `scale_*`,
+  /// `rot_*`, `opacity` per vertex. The de-facto 3D Gaussian Splat
+  /// distribution format. Routes to `aether_splat_load_ply`.
+  plyGsplat,
+
+  /// Niantic compressed Gaussian Splat. Magic `SPZ\0` at byte 0.
+  /// Routes to `aether_splat_load_spz`.
+  spz,
+
+  /// Three.js / antimatter "splat" format (binary, fixed-stride).
+  /// Routes to the splat engine via raw-Gaussian load — currently
+  /// no aether_cpp loader exists; G6 follow-up.
+  splat,
+
+  /// Couldn't classify. Caller treats as load failure.
+  unknown,
+}
+
+abstract class FormatDetector {
+  /// How many header bytes [detect] needs in the worst case to make a
+  /// decision. PLY headers can be much longer than this (hundreds of
+  /// lines of comments are legal), but every gsplat-style PLY emitter
+  /// in the wild puts the diagnostic property declarations within the
+  /// first ~2KB. Callers can pass less; [detect] degrades gracefully.
+  static const int kHeaderProbeBytes = 2048;
+
+  /// Sniff [bytes] for a known viewer format. Header-based detection;
+  /// typical cost: <1µs. The caller is expected to have at least
+  /// [kHeaderProbeBytes] bytes available (or the full file, whichever
+  /// is smaller) — short buffers fall through to extension-based
+  /// hinting via [hintFromUrl].
+  static ViewerFormat detect(Uint8List bytes) {
+    if (bytes.length < 4) return ViewerFormat.unknown;
+
+    // GLB: 4-byte magic 'glTF'. Most common case, check first.
+    if (bytes[0] == 0x67 &&
+        bytes[1] == 0x6C &&
+        bytes[2] == 0x54 &&
+        bytes[3] == 0x46) {
+      return ViewerFormat.glb;
+    }
+
+    // SPZ: 4-byte magic 'SPZ\0' (Niantic Lightship spec).
+    if (bytes[0] == 0x53 &&
+        bytes[1] == 0x50 &&
+        bytes[2] == 0x5A &&
+        bytes[3] == 0x00) {
+      return ViewerFormat.spz;
+    }
+
+    // PLY: header line "ply\n" or "ply\r\n" (3 ASCII bytes + newline).
+    if (bytes.length >= 4 &&
+        bytes[0] == 0x70 && // 'p'
+        bytes[1] == 0x6C && // 'l'
+        bytes[2] == 0x79 && // 'y'
+        (bytes[3] == 0x0A || bytes[3] == 0x0D)) {
+      return _classifyPly(bytes);
+    }
+
+    return ViewerFormat.unknown;
+  }
+
+  /// PLY header is ASCII regardless of whether the body is binary —
+  /// we can scan the prefix as ASCII looking for the gsplat property
+  /// declarations. Stanford PLY ends the header with "end_header\n"
+  /// (or CRLF). We bail at end_header OR after kHeaderProbeBytes,
+  /// whichever comes first.
+  static ViewerFormat _classifyPly(Uint8List bytes) {
+    final end = bytes.length < kHeaderProbeBytes
+        ? bytes.length
+        : kHeaderProbeBytes;
+    final ascii = String.fromCharCodes(bytes, 0, end);
+    final headerEnd = ascii.indexOf('end_header');
+    final scanEnd = headerEnd >= 0 ? headerEnd : ascii.length;
+    final header = ascii.substring(0, scanEnd);
+    // gsplat convention: f_dc_0 (RGB DC term), scale_0, rot_0,
+    // opacity. Any one of these is a strong signal — supersplat /
+    // SIBR / polycam all emit at least f_dc_0. Anchor each to a
+    // newline-prefix to avoid matching e.g. "comment generated by
+    // f_dc_0_baker" inside a comment.
+    if (header.contains('property float f_dc_0') ||
+        header.contains('property float scale_0') ||
+        header.contains('property float rot_0') ||
+        header.contains('property float opacity')) {
+      return ViewerFormat.plyGsplat;
+    }
+    return ViewerFormat.plyMesh;
+  }
+
+  /// Hint based on URL extension only — useful for routing the load
+  /// before the bytes are fetched (e.g. choosing which engine to
+  /// pre-warm). Less reliable than [detect]; the caller should
+  /// validate against the byte sniff once download starts.
+  static ViewerFormat hintFromUrl(String url) {
+    final lower = url.toLowerCase();
+    // Strip query string + fragment (Supabase signed URLs put a long
+    // ?token=... after the extension).
+    final qIdx = lower.indexOf('?');
+    final hashIdx = lower.indexOf('#');
+    final cut = [qIdx, hashIdx]
+        .where((i) => i >= 0)
+        .fold<int>(lower.length, (a, b) => a < b ? a : b);
+    final path = lower.substring(0, cut);
+    if (path.endsWith('.glb') || path.endsWith('.gltf')) {
+      return ViewerFormat.glb;
+    }
+    if (path.endsWith('.ply')) {
+      // Conservative: PLY without sniff defaults to gsplat (since
+      // gsplat PLY is the dominant PLY shape on this app's feed).
+      // Caller should override with [detect] once bytes are in hand.
+      return ViewerFormat.plyGsplat;
+    }
+    if (path.endsWith('.spz')) return ViewerFormat.spz;
+    if (path.endsWith('.splat')) return ViewerFormat.splat;
+    return ViewerFormat.unknown;
+  }
+}

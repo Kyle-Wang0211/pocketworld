@@ -1,0 +1,15 @@
+{
+  "status": "written",
+  "ply": "device_captures/pulled_cap_1779777762841797_latest/diagnostics/debug_da3_streaming_pointcloud_window_colored.ply",
+  "point_count": 10318,
+  "used_frame_count": 23,
+  "used_frames_by_window": {
+    "window_002": 4,
+    "window_001": 4,
+    "window_000": 9,
+    "window_004": 2,
+    "window_003": 4
+  },
+  "warning": "diagnostic only; production pointcloud stage is still a contract stub",
+  "basis": "uses depth_index frames with valid nonzero predExtrinsics, applies frame windowToRootSim3, colors by DA3 window"
+}

@@ -1,0 +1,181 @@
+{
+  "schema_version": "aether_visual_loop_retrieval_report_v1",
+  "status": "not_configured",
+  "executor": "VisualLoopRetrievalExecutor",
+  "policy": {
+    "descriptorBackend": "pluggable",
+    "productionLicenseRule": "Apache-2.0/MIT/BSD or owned code only",
+    "blockedBundledBackends": [
+      "GPL-3.0 SALAD reference implementation"
+    ],
+    "researchOnlyBackends": [
+      "SALAD/DINOv2-SALAD on Mac benchmark path"
+    ],
+    "acceptanceRule": "visual retrieval may propose loop candidates, but dense Sim3 must verify every accepted loop edge"
+  },
+  "candidates": [
+    {
+      "sourceWindowID": "window_001",
+      "targetWindowID": "window_005",
+      "status": "waiting_for_descriptor_backend",
+      "poseGraphCrossScore": 0.9396838777566764,
+      "sharedFrameIDs": [
+        "cap-100",
+        "cap-104",
+        "cap-11",
+        "cap-110",
+        "cap-114",
+        "cap-148",
+        "cap-150",
+        "cap-152",
+        "cap-158",
+        "cap-163",
+        "cap-165",
+        "cap-167",
+        "cap-171",
+        "cap-5",
+        "cap-89",
+        "cap-92",
+        "cap-94",
+        "cap-96",
+        "cap-98"
+      ],
+      "reason": "VisualLoopRetrievalExecutor is intentionally abstract; production must use a commercial-safe descriptor backend"
+    },
+    {
+      "sourceWindowID": "window_000",
+      "targetWindowID": "window_003",
+      "status": "waiting_for_descriptor_backend",
+      "poseGraphCrossScore": 0.9363910255742324,
+      "sharedFrameIDs": [
+        "cap-11",
+        "cap-3",
+        "cap-5",
+        "cap-9"
+      ],
+      "reason": "VisualLoopRetrievalExecutor is intentionally abstract; production must use a commercial-safe descriptor backend"
+    },
+    {
+      "sourceWindowID": "window_001",
+      "targetWindowID": "window_003",
+      "status": "waiting_for_descriptor_backend",
+      "poseGraphCrossScore": 0.9212299538075304,
+      "sharedFrameIDs": [
+        "cap-11",
+        "cap-171",
+        "cap-231",
+        "cap-233",
+        "cap-235",
+        "cap-237",
+        "cap-292",
+        "cap-3",
+        "cap-5",
+        "cap-9"
+      ],
+      "reason": "VisualLoopRetrievalExecutor is intentionally abstract; production must use a commercial-safe descriptor backend"
+    },
+    {
+      "sourceWindowID": "window_002",
+      "targetWindowID": "window_005",
+      "status": "waiting_for_descriptor_backend",
+      "poseGraphCrossScore": 0.919123148238151,
+      "sharedFrameIDs": [
+        "cap-11",
+        "cap-167",
+        "cap-171",
+        "cap-5",
+        "cap-89"
+      ],
+      "reason": "VisualLoopRetrievalExecutor is intentionally abstract; production must use a commercial-safe descriptor backend"
+    },
+    {
+      "sourceWindowID": "window_000",
+      "targetWindowID": "window_002",
+      "status": "waiting_for_descriptor_backend",
+      "poseGraphCrossScore": 0.9171682757496032,
+      "sharedFrameIDs": [
+        "cap-11",
+        "cap-28",
+        "cap-3",
+        "cap-5",
+        "cap-89",
+        "cap-9"
+      ],
+      "reason": "VisualLoopRetrievalExecutor is intentionally abstract; production must use a commercial-safe descriptor backend"
+    },
+    {
+      "sourceWindowID": "window_003",
+      "targetWindowID": "window_005",
+      "status": "waiting_for_descriptor_backend",
+      "poseGraphCrossScore": 0.9135523542393436,
+      "sharedFrameIDs": [
+        "cap-11",
+        "cap-171",
+        "cap-5"
+      ],
+      "reason": "VisualLoopRetrievalExecutor is intentionally abstract; production must use a commercial-safe descriptor backend"
+    },
+    {
+      "sourceWindowID": "window_002",
+      "targetWindowID": "window_004",
+      "status": "waiting_for_descriptor_backend",
+      "poseGraphCrossScore": 0.9054222548955863,
+      "sharedFrameIDs": [
+        "cap-171",
+        "cap-179",
+        "cap-231",
+        "cap-233",
+        "cap-235",
+        "cap-237",
+        "cap-287",
+        "cap-292",
+        "cap-302",
+        "cap-322",
+        "cap-324",
+        "cap-70",
+        "cap-72"
+      ],
+      "reason": "VisualLoopRetrievalExecutor is intentionally abstract; production must use a commercial-safe descriptor backend"
+    },
+    {
+      "sourceWindowID": "window_001",
+      "targetWindowID": "window_004",
+      "status": "waiting_for_descriptor_backend",
+      "poseGraphCrossScore": 0.9040139312488268,
+      "sharedFrameIDs": [
+        "cap-171",
+        "cap-173",
+        "cap-231",
+        "cap-233",
+        "cap-235",
+        "cap-237",
+        "cap-287",
+        "cap-292",
+        "cap-70",
+        "cap-72"
+      ],
+      "reason": "VisualLoopRetrievalExecutor is intentionally abstract; production must use a commercial-safe descriptor backend"
+    },
+    {
+      "sourceWindowID": "window_000",
+      "targetWindowID": "window_004",
+      "status": "waiting_for_descriptor_backend",
+      "poseGraphCrossScore": 0.869532432913973,
+      "sharedFrameIDs": [
+        "cap-37"
+      ],
+      "reason": "VisualLoopRetrievalExecutor is intentionally abstract; production must use a commercial-safe descriptor backend"
+    },
+    {
+      "sourceWindowID": "window_004",
+      "targetWindowID": "window_005",
+      "status": "waiting_for_descriptor_backend",
+      "poseGraphCrossScore": 0.8538799386159421,
+      "sharedFrameIDs": [
+        "cap-171"
+      ],
+      "reason": "VisualLoopRetrievalExecutor is intentionally abstract; production must use a commercial-safe descriptor backend"
+    }
+  ],
+  "candidate_count": 10
+}

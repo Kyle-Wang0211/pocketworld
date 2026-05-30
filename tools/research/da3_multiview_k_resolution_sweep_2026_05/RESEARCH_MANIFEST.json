@@ -1,0 +1,128 @@
+{
+  "schema_version": "aether_da3_research_package_manifest_v1",
+  "created_at": "2026-05-27",
+  "package_id": "da3_multiview_k_resolution_sweep_2026_05",
+  "scope": [
+    "DA3-BASE K/resolution rectangular and square quality sweep",
+    "historical DA3-Large/DA3Metric-Large notes retained as non-production research evidence",
+    "iPhone 6-window Stage 1 DA3-BASE thermal/runtime pass evidence",
+    "dense Sim3 cross-window geometry consistency report"
+  ],
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 2398,
+      "sha256": "6559ecb28a84244213c2fbe443b25697049b267fda63d0a07642759fb6acb93e"
+    },
+    {
+      "path": "algorithm/da3_depth_dry_run_test.dart",
+      "bytes": 6686,
+      "sha256": "8fbb72c73110dc6d49d030dd6b3daf730dfafd6e6def7623e59b869bddd847f6"
+    },
+    {
+      "path": "algorithm/da3_depth_real_benchmark_test.dart",
+      "bytes": 9018,
+      "sha256": "d4b09aa5acf09410b3287ccf1e5565716db4de7951454f6ebb786429770909c3"
+    },
+    {
+      "path": "algorithm/dense_sim3_geometry_verification.dart",
+      "bytes": 39395,
+      "sha256": "1fd4c4e60fa6383659858c33cae7cc55890a27d7c52812a1a9709a92b3528cf0"
+    },
+    {
+      "path": "algorithm/local_pipeline_runner_stage1_snapshot.dart",
+      "bytes": 106887,
+      "sha256": "1a534bf85510e7d9c78db18cd5ba72d17aa295b04f14c02c546f8c47491759be"
+    },
+    {
+      "path": "algorithm/metric_depth_alignment.dart",
+      "bytes": 26760,
+      "sha256": "ef0e5b7a211fd85ebf87127629842f3b9acf8e24556a4bf80e1de30a7b34d5cb"
+    },
+    {
+      "path": "algorithm/photo_bundle_pipeline_policy_service.dart",
+      "bytes": 31685,
+      "sha256": "0e8450afd5305dd231294275f0d763ec2ee0b705339ad8218116a77dc10fef6b"
+    },
+    {
+      "path": "data/phone_6window/arkit_vio_anchor_coverage_audit.json",
+      "bytes": 1101,
+      "sha256": "35ac83b761f32af94c214ca653391da06af339b48c73c3b6ac59606b5477738f"
+    },
+    {
+      "path": "data/phone_6window/da3_dart_channel_log.jsonl",
+      "bytes": 8510,
+      "sha256": "766e29e0fb5e97902c73d03b3aceb5145b956ffa35e2bc47f1cca7aaf8da2557"
+    },
+    {
+      "path": "data/phone_6window/da3_native_run_log.jsonl",
+      "bytes": 21610,
+      "sha256": "26ba3bca455cf9cebe270dcb2cc90e7f262cd9e12b94dfe91d1c0fd5faf8942e"
+    },
+    {
+      "path": "data/phone_6window/da3_real_device_audit.json",
+      "bytes": 23375,
+      "sha256": "e35b49652e0adf0e30d1a907b9c1b15fe4ebfd8d34440f2efabb3727464af4d2"
+    },
+    {
+      "path": "data/phone_6window/debug_da3_streaming_pointcloud_window_colored.ply",
+      "bytes": 398456,
+      "sha256": "113d3910a0a9457e531718185d0bb3ce08c9a51c1ab6fa50ab1ee689b262c38d"
+    },
+    {
+      "path": "data/phone_6window/debug_pointcloud_notes.json",
+      "bytes": 550,
+      "sha256": "e6bf9e1d04115d598eae12b5b5c17445010bb73b515ffe4d166f7e25959bb001"
+    },
+    {
+      "path": "data/phone_6window/dense_sim3_verification_report.json",
+      "bytes": 27987,
+      "sha256": "ac65d33f04a7db521ec1ff928f5029c3e2e88155898646ec1639b9237f7a8942"
+    },
+    {
+      "path": "data/phone_6window/depth_index.json",
+      "bytes": 237832,
+      "sha256": "2a0c269e9c093e0880b0c3b3dd6ff26831c9dcb4c24efed1afcf96c028a7f6cc"
+    },
+    {
+      "path": "data/phone_6window/depth_runner_report.json",
+      "bytes": 247574,
+      "sha256": "4a9c4295baf39291122ba3dc9beb799b59db6a7b1726e780aa9a0bfe8752a576"
+    },
+    {
+      "path": "data/phone_6window/local_da3_run_log.jsonl",
+      "bytes": 7576,
+      "sha256": "96863080e31f4014f9954d680071ee486cf70dfbde80fb0cca9c08b7903779cf"
+    },
+    {
+      "path": "data/phone_6window/visual_loop_retrieval_report.json",
+      "bytes": 5450,
+      "sha256": "bafa61885c24f9afdd799fdb8dc6db3015a551dd1e3cf8ee05b63faf6b36b186"
+    },
+    {
+      "path": "data/quality_sweep/da3_k30_504_mac_agent_prompt_2026-05-24.md",
+      "bytes": 7659,
+      "sha256": "061df9241dffbb007e1921883e3217df96c53116d125a96fbf9d153d8f5440cf"
+    },
+    {
+      "path": "data/quality_sweep/da3_multiview_benchmark_rank_2026-05-24.md",
+      "bytes": 23324,
+      "sha256": "e643379bf312cebdd61e80d48005e9e431123e055a96d29ab372dc8a86c9c0a6"
+    },
+    {
+      "path": "data/quality_sweep/da3_multiview_compact_metrics.csv",
+      "bytes": 4229,
+      "sha256": "a834d4c1f09d4dcfc9d4a2ae20ac91ccd38485dcc749b9857ce642d2295df579"
+    },
+    {
+      "path": "official_reference/DA3_OFFICIAL_BENCHMARK.md",
+      "bytes": 15621,
+      "sha256": "6c372ddb0dc292183003065b371b97e67d3bdbbcd8b26d902ea0fe6f6be41907"
+    },
+    {
+      "path": "official_reference/da3_streaming.py",
+      "bytes": 35237,
+      "sha256": "12ab85f3a5c08952b81866778c3488bc742c97a22ceb3a2d9447b486f5c735f0"
+    }
+  ]
+}
