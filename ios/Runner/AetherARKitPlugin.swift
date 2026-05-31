@@ -213,6 +213,8 @@ class AetherARKitPlugin: NSObject {
     let intrinsicsFxFyCxCy: [Float]
     let imageW: Int
     let imageH: Int
+    let trackingStateName: String
+    let isTracking: Bool
     let anchorsWorld: [[Float]]
     let anchorIds: [UInt64]
     let scaleAlignPremetrics: ScaleAlignPremetrics
@@ -371,11 +373,20 @@ class AetherARKitPlugin: NSObject {
         return
       }
       let quality = (args["quality"] as? NSNumber)?.floatValue ?? 0.92
+      let metadataPath = args["metadataPath"] as? String
+      let targetTimestamp = (args["triggerTimestamp"] as? NSNumber)?.doubleValue
+      let maxTimestampDelta = (args["maxTimestampDelta"] as? NSNumber)?.doubleValue
+        ?? Self.defaultSaveMaxTimestampDelta
+      let metadataSchemaVersion = (args["metadataSchemaVersion"] as? NSNumber)?.intValue ?? 1
       let dartSaveContract = args["dartSaveContract"] as? [String: Any]
       captureHighResolutionStill(
         highresPath: highresPath,
         previewPath: previewPath,
         quality: quality,
+        metadataPath: metadataPath,
+        targetTimestamp: targetTimestamp,
+        maxTimestampDelta: maxTimestampDelta,
+        metadataSchemaVersion: metadataSchemaVersion,
         dartSaveContract: dartSaveContract
       ) { payload, error in
         if let error = error {
@@ -856,6 +867,9 @@ class AetherARKitPlugin: NSObject {
           "image_h": snap.imageH,
           "extrinsic": snap.extrinsic,
           "intrinsics_fxfycxcy": snap.intrinsicsFxFyCxCy,
+          "trackingStateName": snap.trackingStateName,
+          "tracking_state": snap.trackingStateName,
+          "is_tracking": snap.isTracking,
           "anchors_world": snap.anchorsWorld,
           "anchor_ids": snap.anchorIds.map { NSNumber(value: $0) },
           "scale_align_premetrics": [
@@ -888,6 +902,10 @@ class AetherARKitPlugin: NSObject {
     highresPath: String,
     previewPath: String,
     quality: Float,
+    metadataPath: String? = nil,
+    targetTimestamp: TimeInterval? = nil,
+    maxTimestampDelta: TimeInterval = Self.defaultSaveMaxTimestampDelta,
+    metadataSchemaVersion: Int = 1,
     dartSaveContract: [String: Any]? = nil,
     completion: @escaping ([String: Any]?, Error?) -> Void
   ) {
@@ -917,10 +935,31 @@ class AetherARKitPlugin: NSObject {
 
         let pixelBuffer = frame.capturedImage
         let timestamp = frame.timestamp
+        if let targetTimestamp {
+          let delta = abs(timestamp - targetTimestamp)
+          guard delta <= maxTimestampDelta else {
+            completion(nil, NSError(
+              domain: "AetherARKit", code: 212,
+              userInfo: [NSLocalizedDescriptionKey: String(
+                format: "captureHighResolutionStill: captured frame is %.3fs from target %.6f, over max %.3fs",
+                delta,
+                targetTimestamp,
+                maxTimestampDelta
+              )]
+            ))
+            return
+          }
+        }
         let imageWidth = CVPixelBufferGetWidth(pixelBuffer)
         let imageHeight = CVPixelBufferGetHeight(pixelBuffer)
         let transform = frame.camera.transform
         let intrinsics = frame.camera.intrinsics
+        let trackingStateName = Self.trackingStateString(frame.camera.trackingState)
+        let isTracking: Bool
+        switch frame.camera.trackingState {
+        case .normal: isTracking = true
+        default: isTracking = false
+        }
         let cameraTransform: [Float] = [
           transform.columns.0.x, transform.columns.0.y,
           transform.columns.0.z, transform.columns.0.w,
@@ -937,6 +976,22 @@ class AetherARKitPlugin: NSObject {
           intrinsics[2, 0],
           intrinsics[2, 1],
         ]
+        var anchorsWorld: [[Float]] = []
+        var anchorIds: [UInt64] = []
+        if let raw = frame.rawFeaturePoints {
+          let n = raw.points.count
+          anchorsWorld.reserveCapacity(n)
+          anchorIds.reserveCapacity(n)
+          for i in 0..<n {
+            let p = raw.points[i]
+            anchorsWorld.append([p.x, p.y, p.z])
+            anchorIds.append(raw.identifiers[i])
+          }
+        }
+        let scaleAlignPremetrics = Self.computeScaleAlignPremetrics(
+          cameraTransform: transform,
+          anchorsWorld: anchorsWorld
+        )
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
         let ciContext = self.ciContext
 
@@ -955,6 +1010,12 @@ class AetherARKitPlugin: NSObject {
               atPath: (previewPath as NSString).deletingLastPathComponent,
               withIntermediateDirectories: true
             )
+            if let metadataPath {
+              try FileManager.default.createDirectory(
+                atPath: (metadataPath as NSString).deletingLastPathComponent,
+                withIntermediateDirectories: true
+              )
+            }
             try Self.encodeCVPixelBufferAsJpeg(
               pixelBuffer,
               to: URL(fileURLWithPath: highresPath),
@@ -968,6 +1029,43 @@ class AetherARKitPlugin: NSObject {
               ciContext: ciContext
             )
 
+            if let metadataPath {
+              var metadata: [String: Any] = [
+                "version": metadataSchemaVersion,
+                "native_role": "thin_arkit_high_res_still_executor",
+                "t": timestamp,
+                "image_w": imageWidth,
+                "image_h": imageHeight,
+                "extrinsic": cameraTransform,
+                "intrinsics_fxfycxcy": intrinsicFxFyCxCy,
+                "trackingStateName": trackingStateName,
+                "tracking_state": trackingStateName,
+                "is_tracking": isTracking,
+                "anchors_world": anchorsWorld,
+                "anchor_ids": anchorIds.map { NSNumber(value: $0) },
+                "scale_align_premetrics": [
+                  "anchor_depth_count": scaleAlignPremetrics.anchorDepthCount,
+                  "anchor_depth_min_m": scaleAlignPremetrics.anchorDepthMinM,
+                  "anchor_depth_max_m": scaleAlignPremetrics.anchorDepthMaxM,
+                  "anchor_depth_span_m": scaleAlignPremetrics.anchorDepthSpanM,
+                  "reliability_prior": scaleAlignPremetrics.reliabilityPrior,
+                ],
+              ]
+              if let dartSaveContract {
+                metadata["dart_save_contract"] = dartSaveContract
+              }
+              if let targetTimestamp {
+                metadata["save_target_t"] = targetTimestamp
+                metadata["save_dt"] = abs(timestamp - targetTimestamp)
+              } else {
+                metadata["save_dt"] = 0.0
+              }
+              let json = try JSONSerialization.data(
+                withJSONObject: metadata, options: []
+              )
+              try json.write(to: URL(fileURLWithPath: metadataPath))
+            }
+
             var payload: [String: Any] = [
               "highresPath": highresPath,
               "previewPath": previewPath,
@@ -976,6 +1074,11 @@ class AetherARKitPlugin: NSObject {
               "imageHeight": imageHeight,
               "cameraTransform": cameraTransform,
               "intrinsics": intrinsicFxFyCxCy,
+              "trackingStateName": trackingStateName,
+              "isTracking": isTracking,
+              "scaleAlignAnchorCount": scaleAlignPremetrics.anchorDepthCount,
+              "scaleAlignDepthSpanM": scaleAlignPremetrics.anchorDepthSpanM,
+              "scaleAlignReliabilityPrior": scaleAlignPremetrics.reliabilityPrior,
               "captureKind": "arkit_high_res_still",
               "poseSyncQuality": "ar_session_high_res_frame",
               "nativeRole": "thin_arkit_high_res_still_executor",
@@ -1196,6 +1299,12 @@ class AetherARKitPlugin: NSObject {
       cameraIntrinsics.columns.2.x, // cx
       cameraIntrinsics.columns.2.y, // cy
     ]
+    let trackingStateName = Self.trackingStateString(frame.camera.trackingState)
+    let isTracking: Bool
+    switch frame.camera.trackingState {
+    case .normal: isTracking = true
+    default: isTracking = false
+    }
     let pixelBuf = frame.capturedImage
     let imgW = CVPixelBufferGetWidth(pixelBuf)
     let imgH = CVPixelBufferGetHeight(pixelBuf)
@@ -1222,6 +1331,8 @@ class AetherARKitPlugin: NSObject {
       intrinsicsFxFyCxCy: intrinsicArr,
       imageW: imgW,
       imageH: imgH,
+      trackingStateName: trackingStateName,
+      isTracking: isTracking,
       anchorsWorld: anchorsW,
       anchorIds: anchorIds,
       scaleAlignPremetrics: scaleAlignPremetrics
@@ -1274,13 +1385,6 @@ class AetherARKitPlugin: NSObject {
 
     // Quaternion (x, y, z, w) from rotation submatrix.
     let q = simd_quaternion(cameraTransform)
-
-    let isTracking: Bool
-    switch frame.camera.trackingState {
-    case .normal: isTracking = true
-    default: isTracking = false
-    }
-    let trackingStateName = Self.trackingStateString(frame.camera.trackingState)
 
     var payload: [String: Any] = [
       "tx": cameraTransform.columns.3.x,

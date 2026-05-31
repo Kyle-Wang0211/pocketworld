@@ -267,6 +267,8 @@ class PlatformARPoseProvider implements ARPoseProvider {
       if (saveSpec != null) {
         args['dartSaveContract'] = saveSpec.toJson();
         args['metadataSchemaVersion'] = saveSpec.metadataSchemaVersion;
+        args['metadataPath'] = saveSpec.metadataPath;
+        args['maxTimestampDelta'] = saveSpec.maxTimestampDelta;
       }
       final result = await _method.invokeMapMethod<String, dynamic>(
         'captureHighResolutionStill',
@@ -302,6 +304,7 @@ class PlatformARPoseProvider implements ARPoseProvider {
         poseSyncQuality:
             (result['poseSyncQuality'] as String?) ??
             'ar_session_high_res_frame',
+        trackingStateName: result['trackingStateName'] as String?,
       );
     } on PlatformException catch (e) {
       // ignore: avoid_print

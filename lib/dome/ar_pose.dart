@@ -297,6 +297,7 @@ class HighResolutionStillCapture {
     this.gray1024,
     this.captureKind = 'arkit_high_res_still',
     this.poseSyncQuality = 'ar_session_high_res_frame',
+    this.trackingStateName,
   });
 
   final String highresPath;
@@ -310,6 +311,7 @@ class HighResolutionStillCapture {
   final Uint8List? gray1024;
   final String captureKind;
   final String poseSyncQuality;
+  final String? trackingStateName;
 }
 
 class ARFrameSaveSpec {
@@ -372,6 +374,8 @@ class ARFrameSaveSpec {
         'camera pixel buffer read',
         'JPEG encoding',
         'intrinsics/extrinsics read',
+        'tracking state read',
+        'rawFeaturePoints / sparse VIO anchor read',
       ],
       'executorMustNotOwn': [
         'coverage acceptance',

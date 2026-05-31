@@ -267,6 +267,7 @@ class CaptureSession {
   double _lastHighResStillTriggerSec = double.negativeInfinity;
   static const int _maxPendingPhotoSaves = 2;
   static const Duration _minHighResStillInterval = Duration(milliseconds: 250);
+  static const int _minScaleAlignAnchorsForPersistedFrame = 8;
   double _photoSaveHealthWindowStartSec = 0;
   int _photoSaveStarted = 0;
   int _photoSaveCompleted = 0;
@@ -357,7 +358,7 @@ class CaptureSession {
           radiusShellID: '${curatedFrame.radiusShellId}',
           poseSource: sample.poseSource,
           focusStable: sample.focusStable,
-          trackingState: sample.trackingStateName,
+          trackingState: still?.trackingStateName ?? sample.trackingStateName,
           cellID: '${curatedFrame.azBin}:${curatedFrame.elBin}',
         ),
       );
@@ -1040,6 +1041,27 @@ class CaptureSession {
         _lastPoseSource == 'arkit' && pose.intrinsicFxFyCxCy.isNotEmpty
         ? pose.intrinsicFxFyCxCy
         : null;
+    final arMetadataReady =
+        _lastPoseSource == 'arkit' &&
+        pose.trackingStateName == 'normal' &&
+        extrinsic != null &&
+        extrinsic.length == 16 &&
+        intrinsic != null &&
+        intrinsic.length >= 4 &&
+        pose.scaleAlignAnchorCount >= _minScaleAlignAnchorsForPersistedFrame;
+    if (!arMetadataReady) {
+      if (_frameSeq == 1 || _frameSeq % 6 == 0) {
+        // ignore: avoid_print
+        print(
+          '[CaptureSession] skip persist: incomplete AR metric metadata '
+          'src=$_lastPoseSource tracking=${pose.trackingStateName ?? 'null'} '
+          'extrinsic=${extrinsic?.length ?? 0} '
+          'intrinsics=${intrinsic?.length ?? 0} '
+          'anchors=${pose.scaleAlignAnchorCount}',
+        );
+      }
+      return;
+    }
     final cameraRadiusM = pose.position.distanceTo(pose.worldOrigin);
     final exposureScore = _computeExposureScore(
       meanBrightness: report.meanBrightness,
@@ -1145,7 +1167,40 @@ class CaptureSession {
             if (still != null) {
               final quality = _evaluateReturnedStill(still, sample);
               if (quality.accepted) {
-                _stillByPath[jpegPath] = still;
+                var effectiveStill = still;
+                if (!await _hasCompleteArFrameSidecar(metadataPath)) {
+                  // High-res is the preferred path, but it is not allowed
+                  // to promote a JPEG unless the sibling AR/VIO sidecar is
+                  // complete. Fall back to the timestamp-matched ARFrame
+                  // writer, which writes the same sealed sidecar contract.
+                  // ignore: avoid_print
+                  print(
+                    '[CaptureSession] high-res still missing complete '
+                    'AR sidecar; retry fallback frame save: $jpegPath',
+                  );
+                  final saveResult = await poseProvider.saveCurrentFrame(
+                    saveSpec,
+                  );
+                  if (!saveResult.saved ||
+                      !await _hasCompleteArFrameSidecar(metadataPath)) {
+                    // ignore: avoid_print
+                    print(
+                      '[CaptureSession] photo not promoted: '
+                      'complete AR sidecar unavailable after retry '
+                      '${saveResult.status} ${saveResult.message ?? ''}',
+                    );
+                    return;
+                  }
+                  final fallbackStill = await _fallbackStillFromMetadata(
+                    metadataPath: metadataPath,
+                    highresPath: jpegPath,
+                    previewPath: previewPath,
+                    sample: sample,
+                  );
+                  if (fallbackStill == null) return;
+                  effectiveStill = fallbackStill;
+                }
+                _stillByPath[jpegPath] = effectiveStill;
                 _qualityByPath[jpegPath] = quality;
                 targetPoints.stampJpegPath(
                   cellIdx: admit.cellIdx,
@@ -1162,7 +1217,8 @@ class CaptureSession {
               return;
             }
             final saveResult = await poseProvider.saveCurrentFrame(saveSpec);
-            if (saveResult.saved) {
+            if (saveResult.saved &&
+                await _hasCompleteArFrameSidecar(metadataPath)) {
               final fallbackStill = await _fallbackStillFromMetadata(
                 metadataPath: metadataPath,
                 highresPath: jpegPath,
@@ -1181,7 +1237,7 @@ class CaptureSession {
             } else {
               // ignore: avoid_print
               print(
-                '[CaptureSession] photo save ${saveResult.status}: '
+                '[CaptureSession] photo not promoted ${saveResult.status}: '
                 '$jpegPath ${saveResult.message ?? ''}',
               );
             }
@@ -1206,6 +1262,39 @@ class CaptureSession {
       _pendingPhotoSaves.add(saveFuture);
       unawaited(saveFuture);
     }
+  }
+
+  Future<bool> _hasCompleteArFrameSidecar(String metadataPath) async {
+    try {
+      final metadataFile = File(metadataPath);
+      if (!await metadataFile.exists()) return false;
+      final decoded = jsonDecode(await metadataFile.readAsString());
+      if (decoded is! Map) return false;
+      return _isCompleteArFrameSidecar(decoded);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static bool _isCompleteArFrameSidecar(Map<dynamic, dynamic> decoded) {
+    final trackingState = _jsonString(
+      decoded['trackingStateName'] ?? decoded['tracking_state'],
+    );
+    final premetrics = decoded['scale_align_premetrics'];
+    final anchorDepthCount = premetrics is Map
+        ? _jsonInt(premetrics['anchor_depth_count'])
+        : 0;
+    final anchors = decoded['anchors_world'];
+    return _jsonDouble(decoded['t'], double.nan).isFinite &&
+        _jsonInt(decoded['image_w']) > 0 &&
+        _jsonInt(decoded['image_h']) > 0 &&
+        _jsonDoubleList(decoded['extrinsic']).length == 16 &&
+        _jsonDoubleList(decoded['intrinsics_fxfycxcy']).length >= 4 &&
+        trackingState == 'normal' &&
+        decoded['is_tracking'] == true &&
+        anchors is List &&
+        anchors.isNotEmpty &&
+        anchorDepthCount >= _minScaleAlignAnchorsForPersistedFrame;
   }
 
   Future<HighResolutionStillCapture?> _fallbackStillFromMetadata({
@@ -1233,6 +1322,9 @@ class CaptureSession {
         intrinsics: _jsonDoubleList(decoded['intrinsics_fxfycxcy']),
         captureKind: 'arkit_frame_fallback_jpeg',
         poseSyncQuality: 'nearest_ar_frame_snapshot',
+        trackingStateName: _jsonString(
+          decoded['trackingStateName'] ?? decoded['tracking_state'],
+        ),
       );
     } catch (e) {
       // ignore: avoid_print
@@ -1261,6 +1353,11 @@ class CaptureSession {
   static double _jsonDouble(Object? value, double fallback) {
     if (value is num) return value.toDouble();
     return fallback;
+  }
+
+  static String? _jsonString(Object? value) {
+    if (value is String && value.isNotEmpty) return value;
+    return null;
   }
 
   static List<double> _jsonDoubleList(Object? value) {
