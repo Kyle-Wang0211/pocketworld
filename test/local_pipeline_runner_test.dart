@@ -270,6 +270,27 @@ void main() {
           ).existsSync(),
           isTrue,
         );
+        expect(
+          File(
+            '${cap.path}/stages/capture_audit/arkit_sparse_anchors_world.ply',
+          ).existsSync(),
+          isTrue,
+        );
+        expect(
+          File(
+            '${cap.path}/stages/capture_audit/arkit_camera_path_world.ply',
+          ).existsSync(),
+          isTrue,
+        );
+        final arkitSparseAudit =
+            jsonDecode(
+                  File(
+                    '${cap.path}/stages/capture_audit/arkit_sparse_pointcloud_audit.json',
+                  ).readAsStringSync(),
+                )
+                as Map<String, dynamic>;
+        expect(arkitSparseAudit['completeSidecarFrameCount'], 2);
+        expect(arkitSparseAudit['exportedAnchorCount'], 6);
         final da3Input =
             jsonDecode(
                   File(
@@ -482,7 +503,7 @@ void main() {
         );
         expect(
           depthIndex['visual_loop_retrieval'],
-          containsPair('status', 'not_configured'),
+          containsPair('status', 'awaiting_thin_executor'),
         );
         expect(
           depthIndex['dense_sim3_verification'],
@@ -681,6 +702,9 @@ Future<void> _writePhotoBundleFixture(Directory cap) async {
   for (final id in ['a', 'b']) {
     final jpeg = _jpegFixture(id == 'a' ? 24 : 48);
     await File('${highres.path}/$id.jpg').writeAsBytes(jpeg);
+    await File(
+      '${highres.path}/$id.json',
+    ).writeAsString(jsonEncode(_arkitSidecar(id == 'a' ? 0.0 : 0.12)));
     await File('${previews.path}/$id.jpg').writeAsBytes(jpeg);
   }
   await File('${cap.path}/photo_bundle.json').writeAsString(
@@ -734,6 +758,52 @@ Map<String, Object?> _photoBundleFrame(
       1.0,
     ],
     'intrinsics': [2200.0, 2200.0, 2016.0, 1512.0],
+  };
+}
+
+Map<String, Object?> _arkitSidecar(double xOffset) {
+  return {
+    'version': 1,
+    'native_role': 'thin_arkit_frame_executor',
+    't': 1167754.045757208 + xOffset,
+    'image_w': 4032,
+    'image_h': 3024,
+    'extrinsic': [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      xOffset,
+      0.0,
+      0.0,
+      1.0,
+    ],
+    'intrinsics_fxfycxcy': [2200.0, 2200.0, 2016.0, 1512.0],
+    'trackingStateName': 'normal',
+    'tracking_state': 'normal',
+    'is_tracking': true,
+    'anchors_world': [
+      [xOffset + 0.0, 0.0, -0.3],
+      [xOffset + 0.1, 0.0, -0.4],
+      [xOffset + 0.0, 0.1, -0.5],
+    ],
+    'anchor_ids': [1, 2, 3],
+    'scale_align_premetrics': {
+      'anchor_depth_count': 3,
+      'anchor_depth_min_m': 0.3,
+      'anchor_depth_max_m': 0.5,
+      'anchor_depth_span_m': 0.2,
+      'reliability_prior': 0.8,
+    },
+    'save_dt': 0.012,
   };
 }
 

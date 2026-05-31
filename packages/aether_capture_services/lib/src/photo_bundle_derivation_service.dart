@@ -102,6 +102,12 @@ final class PhotoBundleDerivationService {
     ).writeAsString(const JsonEncoder.withIndent('  ').convert(validation));
     written.add('bundle_validation.json');
 
+    final sparseAudit = await _deriveArkitSparsePointCloudAudit(
+      bundleDirectory: bundleDirectory,
+      manifest: manifest,
+    );
+    written.addAll(sparseAudit);
+
     final tier = _asString(manifest['processingTier'], fallback: 'high');
     final model = policyService.modelPolicy.resolveDa3Model(tier: tier);
     final modelPolicy = policyService.modelPolicy.buildLicenseReport(
@@ -474,6 +480,184 @@ Future<Map<String, Object?>> _deriveDa3InputImages({
   };
 }
 
+Future<List<String>> _deriveArkitSparsePointCloudAudit({
+  required Directory bundleDirectory,
+  required Map<String, Object?> manifest,
+}) async {
+  const auditDirRelative = 'stages/capture_audit';
+  const anchorsPlyRelative = '$auditDirRelative/arkit_sparse_anchors_world.ply';
+  const cameraPlyRelative = '$auditDirRelative/arkit_camera_path_world.ply';
+  const reportRelative = '$auditDirRelative/arkit_sparse_pointcloud_audit.json';
+  final auditDir = Directory(_join(bundleDirectory.path, auditDirRelative));
+  auditDir.createSync(recursive: true);
+
+  final photosHighresDir = _asString(
+    manifest['photosHighresDir'],
+    fallback: 'photos_highres',
+  );
+  final frames = _frames(manifest);
+  final anchorVertices = <_PlyVertex>[];
+  final cameraVertices = <_PlyVertex>[];
+  final frameReports = <Map<String, Object?>>[];
+  final trackingCounts = <String, int>{};
+  final saveDts = <double>[];
+  final anchorCounts = <int>[];
+  final bounds = _Bounds3();
+  var completeSidecarCount = 0;
+  var missingSidecarCount = 0;
+  var incompleteSidecarCount = 0;
+  var totalAnchorsAvailable = 0;
+  var exportedAnchorCount = 0;
+
+  for (var i = 0; i < frames.length; i += 1) {
+    final frame = frames[i];
+    final id = _asString(
+      frame['id'],
+      fallback: 'frame_${i.toString().padLeft(4, '0')}',
+    );
+    final highresFilename = _asString(
+      frame['highresFilename'],
+      fallback: '$id.jpg',
+    );
+    final sidecarRelativePath =
+        '$photosHighresDir/${_stripExtension(highresFilename)}.json';
+    final sidecarFile = File(_join(bundleDirectory.path, sidecarRelativePath));
+    if (!sidecarFile.existsSync()) {
+      missingSidecarCount += 1;
+      frameReports.add({
+        'id': id,
+        'status': 'missing_sidecar',
+        'sidecarRelativePath': sidecarRelativePath,
+      });
+      continue;
+    }
+    final sidecar = await _readSidecarMetadata(sidecarFile);
+    final trackingState = _asString(
+      sidecar['trackingStateName'] ?? sidecar['tracking_state'],
+      fallback: 'unknown',
+    );
+    trackingCounts[trackingState] = (trackingCounts[trackingState] ?? 0) + 1;
+    final anchors = _worldAnchors(sidecar['anchors_world']);
+    final transform = _asDoubleList(sidecar['extrinsic']);
+    final intrinsics = _asDoubleList(sidecar['intrinsics_fxfycxcy']);
+    final saveDt = _asDouble(sidecar['save_dt'], fallback: double.nan);
+    if (saveDt.isFinite) saveDts.add(saveDt);
+    final premetrics = sidecar['scale_align_premetrics'];
+    final anchorDepthCount = premetrics is Map
+        ? _asInt(premetrics['anchor_depth_count'])
+        : anchors.length;
+    final complete = _asDouble(sidecar['t'], fallback: double.nan).isFinite &&
+        _asInt(sidecar['image_w']) > 0 &&
+        _asInt(sidecar['image_h']) > 0 &&
+        transform.length == 16 &&
+        intrinsics.length >= 4 &&
+        trackingState == 'normal' &&
+        sidecar['is_tracking'] == true &&
+        anchors.isNotEmpty &&
+        anchorDepthCount > 0;
+    if (!complete) {
+      incompleteSidecarCount += 1;
+      frameReports.add({
+        'id': id,
+        'status': 'incomplete_sidecar',
+        'sidecarRelativePath': sidecarRelativePath,
+        'trackingState': trackingState,
+        'isTracking': sidecar['is_tracking'],
+        'anchorCount': anchors.length,
+        'anchorDepthCount': anchorDepthCount,
+        'extrinsicLength': transform.length,
+        'intrinsicsLength': intrinsics.length,
+        'saveDt': saveDt.isFinite ? saveDt : null,
+      });
+      continue;
+    }
+
+    completeSidecarCount += 1;
+    totalAnchorsAvailable += anchors.length;
+    anchorCounts.add(anchors.length);
+    final color = _frameColor(i, frames.length);
+    var exportedForFrame = 0;
+    for (final p in anchors) {
+      final vertex = _PlyVertex(p[0], p[1], p[2], color.$1, color.$2, color.$3);
+      anchorVertices.add(vertex);
+      bounds.include(vertex.x, vertex.y, vertex.z);
+      exportedForFrame += 1;
+    }
+    exportedAnchorCount += exportedForFrame;
+    final camera = _cameraCenter(transform);
+    if (camera != null) {
+      final vertex = _PlyVertex(camera[0], camera[1], camera[2], 255, 32, 32);
+      cameraVertices.add(vertex);
+      bounds.include(vertex.x, vertex.y, vertex.z);
+    }
+    frameReports.add({
+      'id': id,
+      'status': 'complete',
+      'sidecarRelativePath': sidecarRelativePath,
+      'trackingState': trackingState,
+      'anchorCount': anchors.length,
+      'exportedAnchorCount': exportedForFrame,
+      'anchorExportPolicy': 'all anchors from complete sidecar',
+      'anchorDepthCount': anchorDepthCount,
+      'saveDt': saveDt.isFinite ? saveDt : null,
+    });
+  }
+
+  await File(_join(bundleDirectory.path, anchorsPlyRelative)).writeAsString(
+    _plyText(
+      anchorVertices,
+      comment:
+          'ARKit/VIO rawFeaturePoints from per-photo sidecars, world coordinates in meters. Diagnostic visual audit only.',
+    ),
+    flush: true,
+  );
+  await File(_join(bundleDirectory.path, cameraPlyRelative)).writeAsString(
+    _plyText(
+      cameraVertices,
+      comment:
+          'ARKit camera centers from per-photo sidecars, world coordinates in meters. Diagnostic visual audit only.',
+    ),
+    flush: true,
+  );
+
+  final completeRatio =
+      frames.isEmpty ? 0.0 : completeSidecarCount / frames.length;
+  final report = {
+    'schemaVersion': 'aether_arkit_sparse_pointcloud_audit_v1',
+    'createdAt': DateTime.now().toUtc().toIso8601String(),
+    'sourceManifest': 'photo_bundle.json',
+    'purpose':
+        'visual audit of ARKit/VIO metric sparse anchors before DA3 metric alignment',
+    'interpretation':
+        'PLY is not ground truth; it lets humans quickly inspect ARKit scale, drift, camera path, and gross geometry collapse.',
+    'outputs': {
+      'anchorsPly': anchorsPlyRelative,
+      'cameraPathPly': cameraPlyRelative,
+    },
+    'frameCount': frames.length,
+    'completeSidecarFrameCount': completeSidecarCount,
+    'completeSidecarRatio': completeRatio,
+    'missingSidecarFrameCount': missingSidecarCount,
+    'incompleteSidecarFrameCount': incompleteSidecarCount,
+    'totalAnchorsAvailable': totalAnchorsAvailable,
+    'exportedAnchorCount': exportedAnchorCount,
+    'anchorExportPolicy': 'all anchors from complete sidecars, no sampling',
+    'cameraPoseCount': cameraVertices.length,
+    'trackingStateCounts': trackingCounts,
+    'anchorCountStats': _intStats(anchorCounts),
+    'saveDtStatsSec': _doubleStats(saveDts),
+    'boundsWorldMeters': bounds.toJson(),
+    'hardGateExpectation':
+        'In new captures, completeSidecarFrameCount should equal frameCount; otherwise a frame was promoted without full AR/VIO metadata.',
+    'frames': frameReports,
+  };
+  await File(_join(bundleDirectory.path, reportRelative)).writeAsString(
+    const JsonEncoder.withIndent('  ').convert(report),
+    flush: true,
+  );
+  return [anchorsPlyRelative, cameraPlyRelative, reportRelative];
+}
+
 List<Map<String, Object?>> _frames(Map<String, Object?> manifest) {
   final frames = manifest['frames'];
   if (frames is! List) return const <Map<String, Object?>>[];
@@ -515,6 +699,180 @@ List<double> _asDoubleList(Object? value) {
     for (final item in value)
       if (item is num) item.toDouble()
   ];
+}
+
+List<List<double>> _worldAnchors(Object? value) {
+  if (value is! List) return const <List<double>>[];
+  final anchors = <List<double>>[];
+  for (final item in value) {
+    if (item is! List || item.length < 3) continue;
+    final x = item[0];
+    final y = item[1];
+    final z = item[2];
+    if (x is! num || y is! num || z is! num) continue;
+    final px = x.toDouble();
+    final py = y.toDouble();
+    final pz = z.toDouble();
+    if (px.isFinite && py.isFinite && pz.isFinite) {
+      anchors.add([px, py, pz]);
+    }
+  }
+  return anchors;
+}
+
+List<double>? _cameraCenter(List<double> transform) {
+  if (transform.length != 16) return null;
+  final x = transform[12];
+  final y = transform[13];
+  final z = transform[14];
+  if (!x.isFinite || !y.isFinite || !z.isFinite) return null;
+  return [x, y, z];
+}
+
+(int, int, int) _frameColor(int index, int count) {
+  final t = count <= 1 ? 0.0 : index / (count - 1);
+  final r = (40 + 180 * t).round().clamp(0, 255);
+  final g = (190 - 120 * t).round().clamp(0, 255);
+  final b = (255 - 160 * t).round().clamp(0, 255);
+  return (r, g, b);
+}
+
+Map<String, Object?> _intStats(List<int> values) {
+  if (values.isEmpty) {
+    return const {
+      'count': 0,
+      'min': null,
+      'p10': null,
+      'p50': null,
+      'p90': null,
+      'max': null,
+      'mean': null,
+    };
+  }
+  final sorted = [...values]..sort();
+  final sum = values.fold<int>(0, (acc, value) => acc + value);
+  return {
+    'count': values.length,
+    'min': sorted.first,
+    'p10': _percentileInt(sorted, 0.10),
+    'p50': _percentileInt(sorted, 0.50),
+    'p90': _percentileInt(sorted, 0.90),
+    'max': sorted.last,
+    'mean': sum / values.length,
+  };
+}
+
+Map<String, Object?> _doubleStats(List<double> values) {
+  final finite = values.where((value) => value.isFinite).toList()..sort();
+  if (finite.isEmpty) {
+    return const {
+      'count': 0,
+      'min': null,
+      'p50': null,
+      'p90': null,
+      'max': null,
+      'mean': null,
+    };
+  }
+  final sum = finite.fold<double>(0, (acc, value) => acc + value);
+  return {
+    'count': finite.length,
+    'min': finite.first,
+    'p50': _percentileDouble(finite, 0.50),
+    'p90': _percentileDouble(finite, 0.90),
+    'max': finite.last,
+    'mean': sum / finite.length,
+  };
+}
+
+int _percentileInt(List<int> sorted, double p) {
+  final index = ((sorted.length - 1) * p).round().clamp(0, sorted.length - 1);
+  return sorted[index];
+}
+
+double _percentileDouble(List<double> sorted, double p) {
+  final index = ((sorted.length - 1) * p).round().clamp(0, sorted.length - 1);
+  return sorted[index];
+}
+
+String _plyText(List<_PlyVertex> vertices, {required String comment}) {
+  final buffer = StringBuffer()
+    ..writeln('ply')
+    ..writeln('format ascii 1.0')
+    ..writeln('comment $comment')
+    ..writeln('element vertex ${vertices.length}')
+    ..writeln('property float x')
+    ..writeln('property float y')
+    ..writeln('property float z')
+    ..writeln('property uchar red')
+    ..writeln('property uchar green')
+    ..writeln('property uchar blue')
+    ..writeln('end_header');
+  for (final vertex in vertices) {
+    buffer
+      ..write(_formatPlyNumber(vertex.x))
+      ..write(' ')
+      ..write(_formatPlyNumber(vertex.y))
+      ..write(' ')
+      ..write(_formatPlyNumber(vertex.z))
+      ..write(' ')
+      ..write(vertex.r)
+      ..write(' ')
+      ..write(vertex.g)
+      ..write(' ')
+      ..writeln(vertex.b);
+  }
+  return buffer.toString();
+}
+
+String _formatPlyNumber(double value) {
+  if (!value.isFinite) return '0';
+  return value.toStringAsFixed(6);
+}
+
+final class _PlyVertex {
+  const _PlyVertex(this.x, this.y, this.z, this.r, this.g, this.b);
+
+  final double x;
+  final double y;
+  final double z;
+  final int r;
+  final int g;
+  final int b;
+}
+
+final class _Bounds3 {
+  double minX = double.infinity;
+  double minY = double.infinity;
+  double minZ = double.infinity;
+  double maxX = double.negativeInfinity;
+  double maxY = double.negativeInfinity;
+  double maxZ = double.negativeInfinity;
+
+  void include(double x, double y, double z) {
+    if (!x.isFinite || !y.isFinite || !z.isFinite) return;
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (z < minZ) minZ = z;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+    if (z > maxZ) maxZ = z;
+  }
+
+  Map<String, Object?> toJson() {
+    if (!minX.isFinite) {
+      return const {
+        'min': null,
+        'max': null,
+        'size': null,
+      };
+    }
+    return {
+      'min': [minX, minY, minZ],
+      'max': [maxX, maxY, maxZ],
+      'size': [maxX - minX, maxY - minY, maxZ - minZ],
+    };
+  }
 }
 
 String _asString(Object? value, {String fallback = ''}) {
