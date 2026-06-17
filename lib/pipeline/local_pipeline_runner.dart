@@ -40,9 +40,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:aether_capture_services/aether_capture_services.dart';
 import 'package:flutter/services.dart';
+import 'package:image/image.dart' as image;
 
 import '../capture/depth_meta.dart';
 import 'geometry_verification.dart';
@@ -60,8 +63,8 @@ enum PipelineStage {
   /// bins plus a single `depth_index.json` enumerating geometry outputs.
   depth,
 
-  /// Depth + intrinsics + per-photo extrinsics → world-space points →
-  /// voxel-dedup → `pointcloud.ply`.
+  /// Official DA3-Streaming core-frame depth/conf/pose → global confidence
+  /// filter + reservoir sample → `pointcloud.ply`.
   pointcloud,
 
   /// PoissonRecon V18.76 → `mesh.ply` (water-tight surface).
@@ -700,6 +703,8 @@ class Da3DepthFrameResult {
     this.depthHeight,
     this.inferenceMs,
     this.confStats,
+    this.confidenceMode,
+    this.confidenceOffsetApplied,
     this.message,
   });
 
@@ -715,6 +720,8 @@ class Da3DepthFrameResult {
   final int? depthHeight;
   final double? inferenceMs;
   final DepthConfStats? confStats;
+  final String? confidenceMode;
+  final double? confidenceOffsetApplied;
   final String? message;
 
   bool get isCompleted => status == 'completed';
@@ -741,6 +748,9 @@ class Da3DepthFrameResult {
       'confMin': confStats!.min,
       'confMax': confStats!.max,
     },
+    if (confidenceMode != null) 'confidenceMode': confidenceMode,
+    if (confidenceOffsetApplied != null)
+      'confidenceOffsetApplied': confidenceOffsetApplied,
     if (message != null) 'message': message,
   };
 
@@ -803,6 +813,12 @@ class Da3DepthFrameResult {
           _nullableDouble(json['inferenceMs']) ??
           _nullableDouble(json['inference_ms']),
       confStats: stats,
+      confidenceMode:
+          _nullableString(json['confidenceMode']) ??
+          _nullableString(json['confidence_mode']),
+      confidenceOffsetApplied:
+          _nullableDouble(json['confidenceOffsetApplied']) ??
+          _nullableDouble(json['confidence_offset_applied']),
       message: _nullableString(json['message']),
     );
   }
@@ -1211,6 +1227,8 @@ class DepthStage extends PipelineStageRunner {
             'bridgeRule': _nullableString(window['bridgeRule']),
             'bridgeFrameIDs': _strings(window['bridgeFrameIDs']),
             'coreFrameIDs': _strings(window['coreFrameIDs']),
+            'officialCoreFrameIDs': _strings(window['officialCoreFrameIDs']),
+            'officialSaveSlotIndices': window['officialSaveSlotIndices'],
             'uniqueFrameIDs': _strings(window['uniqueFrameIDs']),
             'bridgeValidation': _mapValue(window['bridgeValidation']),
             'telemetry': result.telemetry,
@@ -1595,10 +1613,10 @@ class DepthStage extends PipelineStageRunner {
 }
 
 class PointCloudStage extends PipelineStageRunner {
-  // TODO(W2 D3-D5 in flight): replace stub with native FFI that reads
-  // depth_index.json + the cell JSONs (extrinsics) under photos/, lifts
-  // each depth map to world points, voxel-dedups at ~3 mm leaf, writes
-  // `pointcloud.ply`.
+  static const double officialSampleRatio = 0.015;
+  static const double officialConfidenceThresholdCoef = 0.5;
+  static const int officialReservoirSeed = 42;
+
   final Duration stubDelay;
   const PointCloudStage({this.stubDelay = const Duration(seconds: 2)});
 
@@ -1614,23 +1632,843 @@ class PointCloudStage extends PipelineStageRunner {
     required Directory outputDir,
     required StreamSink<StageProgress> progressSink,
   }) async {
+    progressSink.add(const StageProgress(0.05, 'pointcloud official baseline'));
     final spec = _stageKernelSpec(stage);
+    final export = await _exportOfficialBaseline(
+      depthOutputDir: inputDir,
+      outputDir: outputDir,
+    );
     await _writeStageKernelContract(
       outputDir: outputDir,
       spec: spec,
-      status: 'stub_contract_only',
-      outputs: const {'pointcloud_path': 'pointcloud.ply', 'point_count': 0},
+      status: export.status,
+      outputs: {
+        'pointcloud_path': 'pointcloud.ply',
+        'point_count': export.pointCount,
+        'report_path': 'official_pointcloud_report.json',
+        'camera_poses_path': 'camera_poses.txt',
+        'camera_poses_ply_path': 'camera_poses.ply',
+        'intrinsics_path': 'intrinsic.txt',
+        'camera_pose_depth_scales_path': 'camera_pose_depth_scales.json',
+      },
     );
 
-    // Empty .ply stub so MeshStage's input check passes.
-    final ply = File('${outputDir.path}/pointcloud.ply');
-    await ply.writeAsString('', flush: true);
-
-    await _emitStubProgress(progressSink, stubDelay, 'pointcloud');
+    if (stubDelay > Duration.zero) {
+      await _emitStubProgress(progressSink, stubDelay, 'pointcloud');
+    }
 
     await writeDoneMarker(
       outputDir,
-      extra: {'point_count': 0, 'spec_path': 'stage_spec.json'},
+      extra: {
+        'point_count': export.pointCount,
+        'status': export.status,
+        'spec_path': 'stage_spec.json',
+        'report_path': 'official_pointcloud_report.json',
+        'camera_poses_path': 'camera_poses.txt',
+        'camera_poses_ply_path': 'camera_poses.ply',
+        'intrinsics_path': 'intrinsic.txt',
+      },
+    );
+  }
+
+  Future<_OfficialPointCloudExportResult> _exportOfficialBaseline({
+    required Directory depthOutputDir,
+    required Directory outputDir,
+  }) async {
+    final plyFile = File('${outputDir.path}/pointcloud.ply');
+    final reportFile = File(
+      '${outputDir.path}/official_pointcloud_report.json',
+    );
+    final cameraPosesFile = File('${outputDir.path}/camera_poses.txt');
+    final cameraPosesPlyFile = File('${outputDir.path}/camera_poses.ply');
+    final intrinsicsFile = File('${outputDir.path}/intrinsic.txt');
+    final depthScalesFile = File(
+      '${outputDir.path}/camera_pose_depth_scales.json',
+    );
+    final depthIndexFile = File('${depthOutputDir.path}/depth_index.json');
+    final captureDir = depthOutputDir.parent.parent;
+    final kWindowsFile = File('${captureDir.path}/da3_k_windows.json');
+    final skippedFrames = <Map<String, Object?>>[];
+    final duplicateFrameIDs = <String>[];
+    final candidates = <_OfficialPointCandidate>[];
+    final confValues = <double>[];
+    final cameraPoseRows = <List<double>>[];
+    final intrinsicRows = <List<double>>[];
+    final poseDepthScales = <Map<String, Object?>>[];
+    final confidenceModes = <String>{};
+    final confidenceOffsets = <double>{};
+    var rgbColorFrameCount = 0;
+    var colorFallbackFrameCount = 0;
+    var validPointCountBeforeSampling = 0;
+    final random = math.Random(officialReservoirSeed);
+
+    if (!depthIndexFile.existsSync() || !kWindowsFile.existsSync()) {
+      await _writeBinaryPly(plyFile, const <_OfficialPlyPoint>[]);
+      await cameraPosesFile.writeAsString('', flush: true);
+      await _writeCameraPosePly(cameraPosesPlyFile, const <List<double>>[]);
+      await intrinsicsFile.writeAsString('', flush: true);
+      await depthScalesFile.writeAsString('[]', flush: true);
+      final report = {
+        'schema_version': 'aether_official_pointcloud_baseline_report_v1',
+        'status': 'missing_inputs',
+        'pointcloud_path': 'pointcloud.ply',
+        ..._officialPointCloudPathSemantics(),
+        'camera_poses_path': 'camera_poses.txt',
+        'camera_poses_ply_path': 'camera_poses.ply',
+        'intrinsics_path': 'intrinsic.txt',
+        'camera_pose_depth_scales_path': 'camera_pose_depth_scales.json',
+        'point_count': 0,
+        'missing': [
+          if (!depthIndexFile.existsSync()) 'stages/depth/depth_index.json',
+          if (!kWindowsFile.existsSync()) 'da3_k_windows.json',
+        ],
+      };
+      await reportFile.writeAsString(
+        const JsonEncoder.withIndent('  ').convert(report),
+        flush: true,
+      );
+      return const _OfficialPointCloudExportResult(
+        status: 'missing_inputs',
+        pointCount: 0,
+      );
+    }
+
+    final depthIndex = await _readJsonMap(depthIndexFile);
+    final kWindows = await _readJsonMap(kWindowsFile);
+    final alignmentBlocker = _officialAlignmentBlocker(depthIndex);
+    if (alignmentBlocker != null) {
+      await _writeBinaryPly(plyFile, const <_OfficialPlyPoint>[]);
+      await cameraPosesFile.writeAsString('', flush: true);
+      await _writeCameraPosePly(cameraPosesPlyFile, const <List<double>>[]);
+      await intrinsicsFile.writeAsString('', flush: true);
+      await depthScalesFile.writeAsString('[]', flush: true);
+      final report = {
+        'schema_version': 'aether_official_pointcloud_baseline_report_v1',
+        'status': 'blocked_by_dense_sim3_alignment',
+        'officialBasis':
+            'Depth-Anything-3 DA3-Streaming applies adjacent chunk Sim3 before downstream point cloud export',
+        'localAdaptation':
+            'Dart pointcloud export refuses to mix DA3 windows when dense Sim3 / streaming alignment is incomplete; this avoids silently falling back to identity window transforms.',
+        'pointcloud_path': 'pointcloud.ply',
+        'ply_format': 'binary_little_endian_1.0',
+        ..._officialPointCloudPathSemantics(),
+        'camera_poses_path': 'camera_poses.txt',
+        'camera_poses_ply_path': 'camera_poses.ply',
+        'intrinsics_path': 'intrinsic.txt',
+        'camera_pose_depth_scales_path': 'camera_pose_depth_scales.json',
+        'point_count': 0,
+        'selected_frame_count': 0,
+        'selected_duplicate_frame_count': 0,
+        'valid_point_count_before_sampling': 0,
+        'blocker': alignmentBlocker,
+      };
+      await reportFile.writeAsString(
+        const JsonEncoder.withIndent('  ').convert(report),
+        flush: true,
+      );
+      return const _OfficialPointCloudExportResult(
+        status: 'blocked_by_dense_sim3_alignment',
+        pointCount: 0,
+      );
+    }
+    final frameByID = <String, Map<String, Object?>>{
+      for (final frame in _maps(depthIndex['frames']))
+        _asString(frame['frameID']): frame,
+    }..remove('');
+    final windows = _maps(kWindows['windows']);
+    final selectedFrameIDs = <String>[];
+    final consumedFrameIDs = <String>{};
+
+    for (final window in windows) {
+      final frameIDs = _strings(window['frameIDs']);
+      final officialCore = _strings(window['officialCoreFrameIDs']);
+      final saveSlots = _intList(window['officialSaveSlotIndices']);
+      final ids = officialCore.isNotEmpty
+          ? officialCore
+          : [
+              for (final slot in saveSlots)
+                if (slot >= 0 && slot < frameIDs.length) frameIDs[slot],
+            ];
+      for (final id in ids) {
+        if (id.isEmpty) continue;
+        if (!consumedFrameIDs.add(id)) {
+          duplicateFrameIDs.add(id);
+          continue;
+        }
+        selectedFrameIDs.add(id);
+        final frame = frameByID[id];
+        if (frame == null) {
+          skippedFrames.add({'frameID': id, 'reason': 'missing_depth_index'});
+          continue;
+        }
+        final framePoints = await _pointsFromFrame(
+          frame: frame,
+          depthOutputDir: depthOutputDir,
+          captureDir: captureDir,
+        );
+        if (framePoints == null) {
+          skippedFrames.add({
+            'frameID': id,
+            'reason': 'missing_or_incomplete_tensor_data',
+          });
+          continue;
+        }
+        candidates.addAll(framePoints.candidates);
+        confValues.addAll(framePoints.confValues);
+        final confidenceMode = _nullableString(frame['confidenceMode']);
+        final confidenceOffset = _nullableDouble(
+          frame['confidenceOffsetApplied'],
+        );
+        if (confidenceMode != null) confidenceModes.add(confidenceMode);
+        if (confidenceOffset != null) confidenceOffsets.add(confidenceOffset);
+        cameraPoseRows.add(framePoints.cameraPoseRow);
+        intrinsicRows.add(framePoints.intrinsicsLine);
+        poseDepthScales.add({
+          'frameID': id,
+          'windowID': _nullableString(frame['windowID']),
+          'depthScale': framePoints.officialDepthScale,
+        });
+        if (framePoints.colorSource == _OfficialColorSource.sourceRgbNearest) {
+          rgbColorFrameCount += 1;
+        } else {
+          colorFallbackFrameCount += 1;
+        }
+      }
+    }
+
+    final threshold = _meanFinite(confValues) * officialConfidenceThresholdCoef;
+    final valid = [
+      for (final candidate in candidates)
+        if (candidate.confidence.isFinite &&
+            candidate.confidence >= threshold &&
+            candidate.confidence > 1e-5)
+          candidate.point,
+    ];
+    validPointCountBeforeSampling = valid.length;
+    final points = _officialReservoirSample(valid, random);
+
+    await _writeBinaryPly(plyFile, points);
+    await _writeMatrixRows(cameraPosesFile, cameraPoseRows);
+    await _writeCameraPosePly(cameraPosesPlyFile, cameraPoseRows);
+    await _writeMatrixRows(intrinsicsFile, intrinsicRows);
+    await depthScalesFile.writeAsString(
+      const JsonEncoder.withIndent('  ').convert(poseDepthScales),
+      flush: true,
+    );
+    final status = points.isEmpty
+        ? (skippedFrames.isEmpty ? 'completed_empty' : 'missing_tensor_data')
+        : 'completed';
+    final report = {
+      'schema_version': 'aether_official_pointcloud_baseline_report_v1',
+      'status': status,
+      'officialBasis':
+          'Depth-Anything-3 DA3-Streaming save_depth_conf_result/save_camera_poses + save_confident_pointcloud_batch semantics',
+      'localAdaptation':
+          'Dart baseline consumes only windows[].officialCoreFrameIDs, converts frames[].windowToRootSim3 into official saved C2W camera poses and scaled relative depth before reprojection, colors points from source RGB when available, confidence-filters, and uses the official reservoir replacement rule with a product-fixed RNG seed',
+      'pointcloud_path': 'pointcloud.ply',
+      'ply_format': 'binary_little_endian_1.0',
+      ..._officialPointCloudPathSemantics(),
+      'camera_poses_path': 'camera_poses.txt',
+      'camera_poses_ply_path': 'camera_poses.ply',
+      'intrinsics_path': 'intrinsic.txt',
+      'camera_pose_depth_scales_path': 'camera_pose_depth_scales.json',
+      'camera_pose_count': cameraPoseRows.length,
+      'intrinsic_count': intrinsicRows.length,
+      'camera_pose_mode':
+          'official_save_camera_poses_c2w_normalized_sim3_left_multiply',
+      'camera_pose_ply_format':
+          'ascii_1.0_official_camera_center_visualization',
+      'official_pose_depth_scale_note':
+          'official DA3-Streaming normalizes transformed C2W rotation and scales saved depth by the cumulative Sim3 scale; this Dart pointcloud follows npz_output_process semantics by reprojecting scaled depth through the official C2W camera pose and records per-frame depthScale',
+      'point_count': points.length,
+      'selected_frame_count': selectedFrameIDs.length,
+      'selected_unique_frame_count': consumedFrameIDs.length,
+      'selected_duplicate_frame_count': duplicateFrameIDs.length,
+      'duplicate_frame_ids': duplicateFrameIDs,
+      'skipped_frame_count': skippedFrames.length,
+      'skipped_frames': skippedFrames,
+      'confidence_mode': 'streaming_subtract_one_expected_from_depth_stage',
+      'confidence_input_modes': confidenceModes.toList(growable: false)..sort(),
+      'confidence_offset_applied_values': confidenceOffsets.toList(
+        growable: false,
+      )..sort(),
+      'confidence_scope': 'global_selected_official_core_frames',
+      'confidence_threshold': threshold,
+      'conf_threshold_coef': officialConfidenceThresholdCoef,
+      'conf_threshold_coef_source':
+          'npz_output_process.py CLI default; DA3-Streaming Pointcloud_Save uses 0.75 on the full-chunk pcd path',
+      'color_mode': rgbColorFrameCount > 0
+          ? 'source_rgb_nearest_with_confidence_grayscale_fallback'
+          : 'confidence_grayscale_fallback',
+      'source_rgb_frame_count': rgbColorFrameCount,
+      'color_fallback_frame_count': colorFallbackFrameCount,
+      'sample_ratio': officialSampleRatio,
+      'valid_point_count_before_sampling': validPointCountBeforeSampling,
+      'sampling': 'official_reservoir_sampling_seeded_product_reproducible',
+      'sampling_scope': 'global_selected_official_core_frames',
+      'sampling_seed': officialReservoirSeed,
+      'official_rng_note':
+          'official DA3-Streaming calls np.random in save_confident_pointcloud_batch without an explicit pointcloud seed',
+    };
+    await reportFile.writeAsString(
+      const JsonEncoder.withIndent('  ').convert(report),
+      flush: true,
+    );
+    return _OfficialPointCloudExportResult(
+      status: status,
+      pointCount: points.length,
+    );
+  }
+
+  static Map<String, Object?> _officialPointCloudPathSemantics() => {
+    'official_output_path_mode':
+        'results_output_npz_process_core_frames_downstream',
+    'official_depth_input_mode': 'relativeDepthPath_only',
+    'metric_depth_path_policy':
+        'ignored by the official baseline exporter; metricDepthPath belongs to the product metric-alignment layer',
+    'official_core_frame_source':
+        'da3_streaming.save_depth_conf_result + save_camera_poses',
+    'official_downstream_reference': 'npz_output_process.py:create_point_cloud',
+    'official_downstream_conf_threshold_coef_source':
+        'npz_output_process.py default --conf_threshold_coef=0.5',
+    'official_downstream_projection_mode':
+        'scaled_relative_depth_reprojected_with_saved_c2w_camera_pose',
+    'official_downstream_overlap_policy':
+        'consume only saved non-overlap/core frame_*.npz files, then apply one global confidence threshold and sample',
+    'official_cli_combined_pcd_path': 'pcd/combined_pcd.ply',
+    'official_cli_combined_pcd_overlap_policy':
+        'da3_streaming.py writes each aligned full chunk to pcd/*_pcd.ply and merge_ply_files concatenates vertex payloads; overlap slots are not removed on that CLI PLY path',
+    'app_replication_choice':
+        'core-frame downstream path chosen as the official path that reduces duplicate overlap frames before product-specific fusion',
+  };
+
+  Future<_OfficialFramePointData?> _pointsFromFrame({
+    required Map<String, Object?> frame,
+    required Directory depthOutputDir,
+    required Directory captureDir,
+  }) async {
+    final width = _nullableInt(frame['depthWidth']) ?? 0;
+    final height = _nullableInt(frame['depthHeight']) ?? 0;
+    final pixelCount = width * height;
+    if (width <= 0 || height <= 0 || pixelCount <= 0) return null;
+
+    final depthPath = _nullableString(frame['relativeDepthPath']);
+    final confPath = _nullableString(frame['confidencePath']);
+    final extrinsicsPath = _nullableString(frame['predExtrinsicsPath']);
+    final intrinsicsPath = _nullableString(frame['predIntrinsicsPath']);
+    if (depthPath == null ||
+        confPath == null ||
+        extrinsicsPath == null ||
+        intrinsicsPath == null) {
+      return null;
+    }
+
+    final depth = await _readFloat32File(
+      _resolveStageFile(depthOutputDir, depthPath),
+      minCount: pixelCount,
+    );
+    final conf = await _readFloat32File(
+      _resolveStageFile(depthOutputDir, confPath),
+      minCount: pixelCount,
+    );
+    final extrinsics = await _readFloat32File(
+      _resolveStageFile(depthOutputDir, extrinsicsPath),
+      minCount: 12,
+    );
+    final intrinsics = await _readFloat32File(
+      _resolveStageFile(depthOutputDir, intrinsicsPath),
+      minCount: 9,
+    );
+    if (depth == null ||
+        conf == null ||
+        extrinsics == null ||
+        intrinsics == null) {
+      return null;
+    }
+
+    final sim3 = _OfficialSim3.fromJson(frame['windowToRootSim3']);
+    final cameraPoseRow = _officialCameraPoseRow(extrinsics, sim3);
+    final depthScale = sim3.scale;
+    final fx = intrinsics[0];
+    final fy = intrinsics[4];
+    final cx = intrinsics[2];
+    final cy = intrinsics[5];
+    if (fx == 0 || fy == 0) return null;
+
+    final colorSampler = await _OfficialColorSampler.fromFrame(
+      frame: frame,
+      captureDir: captureDir,
+      targetWidth: width,
+      targetHeight: height,
+    );
+    final out = <_OfficialPointCandidate>[];
+    final confValues = <double>[];
+    for (var index = 0; index < pixelCount; index += 1) {
+      final z = depth[index];
+      final c = conf[index];
+      if (c.isFinite) confValues.add(c);
+      if (!z.isFinite || z <= 0 || !c.isFinite) {
+        continue;
+      }
+      final xPixel = index % width;
+      final yPixel = index ~/ width;
+      final scaledZ = z * depthScale;
+      final cameraX = (xPixel - cx) / fx * scaledZ;
+      final cameraY = (yPixel - cy) / fy * scaledZ;
+      final aligned = _cameraToWorldFromC2WRow(
+        cameraX,
+        cameraY,
+        scaledZ,
+        cameraPoseRow,
+      );
+      final color = colorSampler.colorAt(xPixel, yPixel, confidence: c);
+      out.add(
+        _OfficialPointCandidate(
+          point: _OfficialPlyPoint(
+            aligned.$1,
+            aligned.$2,
+            aligned.$3,
+            color.r,
+            color.g,
+            color.b,
+          ),
+          confidence: c,
+        ),
+      );
+    }
+    return _OfficialFramePointData(
+      candidates: out,
+      confValues: confValues,
+      colorSource: colorSampler.source,
+      cameraPoseRow: cameraPoseRow,
+      intrinsicsLine: [fx, fy, cx, cy],
+      officialDepthScale: depthScale,
+    );
+  }
+
+  static Map<String, Object?>? _officialAlignmentBlocker(
+    Map<String, Object?> depthIndex,
+  ) {
+    final explicitBlock = depthIndex['geometry_gate_blocks_downstream'] == true;
+    final geometryGateStatus = _asString(depthIndex['geometry_gate_status']);
+    final streamingAlignment = _mapValue(depthIndex['streaming_alignment']);
+    final streamingAlignmentStatus = _asString(streamingAlignment['status']);
+    final gateNotPassed =
+        geometryGateStatus.isNotEmpty && geometryGateStatus != 'passed';
+    final streamingNotReady =
+        streamingAlignmentStatus.isNotEmpty &&
+        streamingAlignmentStatus != 'ready_for_downstream_application';
+    if (!explicitBlock && !gateNotPassed && !streamingNotReady) {
+      return null;
+    }
+    return {
+      'reason': 'dense_sim3_streaming_alignment_not_ready',
+      'geometry_gate_status': geometryGateStatus.isEmpty
+          ? null
+          : geometryGateStatus,
+      'geometry_gate_blocks_downstream': explicitBlock,
+      'streaming_alignment_status': streamingAlignmentStatus.isEmpty
+          ? null
+          : streamingAlignmentStatus,
+      'unaligned_window_ids': _strings(
+        streamingAlignment['unalignedWindowIDs'],
+      ),
+      'required_before_pointcloud':
+          'dense_sim3_verification.status == passed and streaming_alignment.status == ready_for_downstream_application',
+    }..removeWhere((_, value) => value == null);
+  }
+
+  static (double, double, double) _cameraToWorld(
+    double x,
+    double y,
+    double z,
+    List<double> w2c,
+  ) {
+    final tx = w2c[3];
+    final ty = w2c[7];
+    final tz = w2c[11];
+    final dx = x - tx;
+    final dy = y - ty;
+    final dz = z - tz;
+    return (
+      w2c[0] * dx + w2c[4] * dy + w2c[8] * dz,
+      w2c[1] * dx + w2c[5] * dy + w2c[9] * dz,
+      w2c[2] * dx + w2c[6] * dy + w2c[10] * dz,
+    );
+  }
+
+  static (double, double, double) _cameraToWorldFromC2WRow(
+    double x,
+    double y,
+    double z,
+    List<double> c2w,
+  ) {
+    return (
+      c2w[0] * x + c2w[1] * y + c2w[2] * z + c2w[3],
+      c2w[4] * x + c2w[5] * y + c2w[6] * z + c2w[7],
+      c2w[8] * x + c2w[9] * y + c2w[10] * z + c2w[11],
+    );
+  }
+
+  static double _meanFinite(Iterable<double> values) {
+    var sum = 0.0;
+    var count = 0;
+    for (final value in values) {
+      if (value.isFinite) {
+        sum += value;
+        count += 1;
+      }
+    }
+    return count == 0 ? 0 : sum / count;
+  }
+
+  static List<_OfficialPlyPoint> _officialReservoirSample(
+    List<_OfficialPlyPoint> valid,
+    math.Random random,
+  ) {
+    final sampleCount = (valid.length * officialSampleRatio).toInt();
+    if (sampleCount <= 0) return const <_OfficialPlyPoint>[];
+    if (officialSampleRatio >= 1.0) return valid.toList(growable: false);
+
+    final reservoir = valid.take(sampleCount).toList(growable: false);
+    var currentCount = sampleCount;
+    for (var i = sampleCount; i < valid.length; i += 1) {
+      currentCount += 1;
+      final replacement = random.nextInt(currentCount);
+      if (replacement < sampleCount) {
+        reservoir[replacement] = valid[i];
+      }
+    }
+    return reservoir;
+  }
+
+  static Future<List<double>?> _readFloat32File(
+    File file, {
+    required int minCount,
+  }) async {
+    if (!file.existsSync()) return null;
+    final bytes = await file.readAsBytes();
+    if (bytes.lengthInBytes < minCount * 4) return null;
+    final data = ByteData.sublistView(bytes);
+    return [
+      for (var offset = 0; offset + 4 <= bytes.lengthInBytes; offset += 4)
+        data.getFloat32(offset, Endian.little),
+    ];
+  }
+
+  static File _resolveStageFile(Directory base, String relativePath) {
+    if (relativePath.startsWith('/')) return File(relativePath);
+    return File('${base.path}/${relativePath.replaceAll(RegExp(r'^/+'), '')}');
+  }
+
+  static Future<void> _writeMatrixRows(
+    File file,
+    List<List<double>> rows,
+  ) async {
+    final buffer = StringBuffer();
+    for (final row in rows) {
+      buffer.writeln(row.map((value) => value.toString()).join(' '));
+    }
+    await file.writeAsString(buffer.toString(), flush: true);
+  }
+
+  static Future<void> _writeCameraPosePly(
+    File file,
+    List<List<double>> cameraPoseRows,
+  ) async {
+    final buffer = StringBuffer()
+      ..writeln('ply')
+      ..writeln('format ascii 1.0')
+      ..writeln('element vertex ${cameraPoseRows.length}')
+      ..writeln('property float x')
+      ..writeln('property float y')
+      ..writeln('property float z')
+      ..writeln('property uchar red')
+      ..writeln('property uchar green')
+      ..writeln('property uchar blue')
+      ..writeln('end_header');
+    for (final row in cameraPoseRows) {
+      final x = row.length > 3 ? row[3] : 0.0;
+      final y = row.length > 7 ? row[7] : 0.0;
+      final z = row.length > 11 ? row[11] : 0.0;
+      buffer.writeln('$x $y $z 255 0 0');
+    }
+    await file.writeAsString(buffer.toString(), flush: true);
+  }
+
+  static List<double> _officialCameraPoseRow(
+    List<double> w2c,
+    _OfficialSim3 sim3,
+  ) {
+    final c2wRotation = [
+      w2c[0],
+      w2c[4],
+      w2c[8],
+      w2c[1],
+      w2c[5],
+      w2c[9],
+      w2c[2],
+      w2c[6],
+      w2c[10],
+    ];
+    final c2wTranslation = _cameraToWorld(0, 0, 0, w2c);
+    final rotation = _matMul3(sim3.rotation, c2wRotation);
+    final translation = sim3.apply(
+      c2wTranslation.$1,
+      c2wTranslation.$2,
+      c2wTranslation.$3,
+    );
+    return [
+      rotation[0],
+      rotation[1],
+      rotation[2],
+      translation.$1,
+      rotation[3],
+      rotation[4],
+      rotation[5],
+      translation.$2,
+      rotation[6],
+      rotation[7],
+      rotation[8],
+      translation.$3,
+      0,
+      0,
+      0,
+      1,
+    ];
+  }
+
+  static List<double> _matMul3(List<double> a, List<double> b) {
+    return [
+      a[0] * b[0] + a[1] * b[3] + a[2] * b[6],
+      a[0] * b[1] + a[1] * b[4] + a[2] * b[7],
+      a[0] * b[2] + a[1] * b[5] + a[2] * b[8],
+      a[3] * b[0] + a[4] * b[3] + a[5] * b[6],
+      a[3] * b[1] + a[4] * b[4] + a[5] * b[7],
+      a[3] * b[2] + a[4] * b[5] + a[5] * b[8],
+      a[6] * b[0] + a[7] * b[3] + a[8] * b[6],
+      a[6] * b[1] + a[7] * b[4] + a[8] * b[7],
+      a[6] * b[2] + a[7] * b[5] + a[8] * b[8],
+    ];
+  }
+
+  static Future<void> _writeBinaryPly(
+    File file,
+    List<_OfficialPlyPoint> points,
+  ) async {
+    final sink = file.openWrite();
+    sink.add(
+      ascii.encode(
+        [
+          'ply',
+          'format binary_little_endian 1.0',
+          'element vertex ${points.length}',
+          'property float x',
+          'property float y',
+          'property float z',
+          'property uchar red',
+          'property uchar green',
+          'property uchar blue',
+          'end_header',
+          '',
+        ].join('\n'),
+      ),
+    );
+    for (final point in points) {
+      final bytes = ByteData(15);
+      bytes.setFloat32(0, point.x, Endian.little);
+      bytes.setFloat32(4, point.y, Endian.little);
+      bytes.setFloat32(8, point.z, Endian.little);
+      bytes.setUint8(12, point.r.clamp(0, 255));
+      bytes.setUint8(13, point.g.clamp(0, 255));
+      bytes.setUint8(14, point.b.clamp(0, 255));
+      sink.add(bytes.buffer.asUint8List());
+    }
+    await sink.close();
+  }
+}
+
+class _OfficialPointCloudExportResult {
+  const _OfficialPointCloudExportResult({
+    required this.status,
+    required this.pointCount,
+  });
+
+  final String status;
+  final int pointCount;
+}
+
+class _OfficialFramePointData {
+  const _OfficialFramePointData({
+    required this.candidates,
+    required this.confValues,
+    required this.colorSource,
+    required this.cameraPoseRow,
+    required this.intrinsicsLine,
+    required this.officialDepthScale,
+  });
+
+  final List<_OfficialPointCandidate> candidates;
+  final List<double> confValues;
+  final _OfficialColorSource colorSource;
+  final List<double> cameraPoseRow;
+  final List<double> intrinsicsLine;
+  final double officialDepthScale;
+}
+
+class _OfficialPointCandidate {
+  const _OfficialPointCandidate({
+    required this.point,
+    required this.confidence,
+  });
+
+  final _OfficialPlyPoint point;
+  final double confidence;
+}
+
+class _OfficialPlyPoint {
+  const _OfficialPlyPoint(this.x, this.y, this.z, this.r, this.g, this.b);
+
+  final double x;
+  final double y;
+  final double z;
+  final int r;
+  final int g;
+  final int b;
+}
+
+enum _OfficialColorSource { sourceRgbNearest, confidenceGrayscaleFallback }
+
+class _OfficialRgb {
+  const _OfficialRgb(this.r, this.g, this.b);
+
+  final int r;
+  final int g;
+  final int b;
+}
+
+class _OfficialColorSampler {
+  const _OfficialColorSampler._({
+    required this.source,
+    this.imageData,
+    required this.targetWidth,
+    required this.targetHeight,
+  });
+
+  final _OfficialColorSource source;
+  final image.Image? imageData;
+  final int targetWidth;
+  final int targetHeight;
+
+  static Future<_OfficialColorSampler> fromFrame({
+    required Map<String, Object?> frame,
+    required Directory captureDir,
+    required int targetWidth,
+    required int targetHeight,
+  }) async {
+    final relativePath =
+        _nullableString(frame['imageRelativePath']) ??
+        _nullableString(frame['sourceImageRelativePath']);
+    if (relativePath == null || relativePath.isEmpty) {
+      return _fallback(targetWidth: targetWidth, targetHeight: targetHeight);
+    }
+    final file = File(
+      '${captureDir.path}/${relativePath.replaceAll(RegExp(r'^/+'), '')}',
+    );
+    if (!file.existsSync()) {
+      return _fallback(targetWidth: targetWidth, targetHeight: targetHeight);
+    }
+    final decoded = image.decodeImage(await file.readAsBytes());
+    if (decoded == null || decoded.width <= 0 || decoded.height <= 0) {
+      return _fallback(targetWidth: targetWidth, targetHeight: targetHeight);
+    }
+    return _OfficialColorSampler._(
+      source: _OfficialColorSource.sourceRgbNearest,
+      imageData: decoded,
+      targetWidth: targetWidth,
+      targetHeight: targetHeight,
+    );
+  }
+
+  static _OfficialColorSampler _fallback({
+    required int targetWidth,
+    required int targetHeight,
+  }) {
+    return _OfficialColorSampler._(
+      source: _OfficialColorSource.confidenceGrayscaleFallback,
+      targetWidth: targetWidth,
+      targetHeight: targetHeight,
+    );
+  }
+
+  _OfficialRgb colorAt(int x, int y, {required double confidence}) {
+    final img = imageData;
+    if (img == null || targetWidth <= 0 || targetHeight <= 0) {
+      final shade = _confidenceShade(confidence);
+      return _OfficialRgb(shade, shade, shade);
+    }
+    final sourceX = ((x + 0.5) * img.width / targetWidth).floor().clamp(
+      0,
+      img.width - 1,
+    );
+    final sourceY = ((y + 0.5) * img.height / targetHeight).floor().clamp(
+      0,
+      img.height - 1,
+    );
+    final pixel = img.getPixel(sourceX, sourceY);
+    return _OfficialRgb(pixel.r.toInt(), pixel.g.toInt(), pixel.b.toInt());
+  }
+
+  static int _confidenceShade(double confidence) {
+    return (80 + (confidence.clamp(0.0, 4.0) / 4.0) * 155).round();
+  }
+}
+
+class _OfficialSim3 {
+  const _OfficialSim3({
+    required this.scale,
+    required this.rotation,
+    required this.translation,
+  });
+
+  static const identity = _OfficialSim3(
+    scale: 1,
+    rotation: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+    translation: [0, 0, 0],
+  );
+
+  final double scale;
+  final List<double> rotation;
+  final List<double> translation;
+
+  factory _OfficialSim3.fromJson(Object? value) {
+    final map = _mapValue(value);
+    final scale = _nullableDouble(map['scale']);
+    final rotation = _doubleList(map['rotationRowMajor3x3']);
+    final translation = _doubleList(map['translation']);
+    if (scale == null ||
+        rotation.length != 9 ||
+        translation.length != 3 ||
+        !scale.isFinite ||
+        rotation.any((value) => !value.isFinite) ||
+        translation.any((value) => !value.isFinite)) {
+      return identity;
+    }
+    return _OfficialSim3(
+      scale: scale,
+      rotation: rotation,
+      translation: translation,
+    );
+  }
+
+  (double, double, double) apply(double x, double y, double z) {
+    return (
+      scale * (rotation[0] * x + rotation[1] * y + rotation[2] * z) +
+          translation[0],
+      scale * (rotation[3] * x + rotation[4] * y + rotation[5] * z) +
+          translation[1],
+      scale * (rotation[6] * x + rotation[7] * y + rotation[8] * z) +
+          translation[2],
     );
   }
 }
@@ -1774,35 +2612,38 @@ Map<String, Object?> _stageKernelSpec(PipelineStage stage) {
         inputs: const [
           'stages/depth/depth_index.json',
           'frames[].relativeDepthPath',
-          'frames[].metricDepthPath',
+          'frames[].metricDepthPath (ignored by official baseline)',
           'frames[].confidencePath',
           'frames[].predExtrinsicsPath',
           'frames[].predIntrinsicsPath',
           'frames[].windowToRootSim3',
+          'frames[].imageRelativePath',
+          'frames[].sourceImageRelativePath',
+          'da3_k_windows.json windows[].officialSaveSlotIndices',
+          'da3_k_windows.json windows[].officialCoreFrameIDs',
         ],
         dartOwns: const [
-          'voxel_size_m',
-          'frame_skip policy',
+          'official core-frame selection policy',
           'windowToRootSim3 application rule',
-          'metric-depth required before world-space unprojection',
+          'relativeDepthPath-only official baseline depth input',
+          'metricDepthPath ignored until product metric-alignment layer',
           'confidence filter',
+          'official core-frame camera_poses.txt / intrinsic.txt output',
+          'official binary_little_endian PLY format',
           'normal estimation policy',
           'minimum point count quality gate',
         ],
         executorOwns: const [
           'depth pixel projection kernels',
-          'voxel dedup kernels',
-          'normal computation kernels',
           'PLY byte writes',
         ],
         parameters: const {
-          'voxel_size_m': 0.003,
           'frame_skip': 1,
           'confidence_min_policy': 'consume depth_index confidence stats',
-          'depth_units': 'meters_from_metricDepthPath',
+          'depth_units': 'official_DA3_relative_depth_scaled_by_window_sim3',
           'apply_window_to_root_sim3': true,
-          'normal_policy': 'estimate_after_voxel_dedup',
-          'quality_gate_min_points': 10000,
+          'normal_policy': 'not_estimated_in_official_baseline',
+          'quality_gate_min_points': 0,
         },
       );
     case PipelineStage.mesh:
@@ -2530,6 +3371,11 @@ Map<String, Object?> _buildDa3RealDeviceAudit({
   final windows = _maps(kWindowsPlan['windows']);
   final windowingPolicy = _mapValue(kWindowsPlan['windowingPolicy']);
   final bridgeGraph = _maps(kWindowsPlan['bridgeGraph']);
+  final officialSavedFrameIDs = [
+    for (final window in windows) ..._strings(window['officialCoreFrameIDs']),
+  ];
+  final officialSavedDuplicateCount =
+      officialSavedFrameIDs.length - officialSavedFrameIDs.toSet().length;
   final denseCounts = _mapValue(denseSim3Verification['counts']);
   final densePerformance = _mapValue(denseSim3Verification['performance']);
   final denseStatus = _asString(denseSim3Verification['status']);
@@ -2624,6 +3470,26 @@ Map<String, Object?> _buildDa3RealDeviceAudit({
       observed: {
         'targetBridgeOverlap': windowingPolicy['targetBridgeOverlap'],
         'stepEquivalent': windowingPolicy['stepEquivalent'],
+      },
+    ),
+    _auditCheck(
+      id: 'official_sequential_windowing_save_slots_present',
+      passed:
+          _asString(windowingPolicy['kind']) ==
+              'official_streaming_strict_sequential_v1' &&
+          windows.every(
+            (window) =>
+                (window as Map).containsKey('officialSaveSlotIndices') &&
+                _strings(window['officialCoreFrameIDs']).isNotEmpty,
+          ) &&
+          officialSavedDuplicateCount == 0,
+      expected:
+          'strict temporal DA3-Streaming windows with explicit non-overlap official save slots and no duplicate saved frame IDs',
+      observed: {
+        'kind': windowingPolicy['kind'],
+        'savedFrameCount': officialSavedFrameIDs.length,
+        'savedDuplicateFrameCount': officialSavedDuplicateCount,
+        'windowCount': windows.length,
       },
     ),
     _auditCheck(
@@ -3089,6 +3955,14 @@ List<String> _strings(Object? value) {
   return [
     for (final item in value)
       if (item != null) item.toString(),
+  ];
+}
+
+List<int> _intList(Object? value) {
+  if (value is! List) return const <int>[];
+  return [
+    for (final item in value)
+      if (_nullableInt(item) != null) _nullableInt(item)!,
   ];
 }
 

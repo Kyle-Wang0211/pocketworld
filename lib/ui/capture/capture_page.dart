@@ -25,10 +25,12 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
+import 'package:vector_math/vector_math_64.dart' show Quaternion, Vector3;
 
 import '../../capture/capture_session.dart';
 import '../../capture/dome/dome_target_points.dart';
 import '../../capture/model_loader.dart';
+import '../../capture/realtime_capture_preview.dart';
 import '../../capture/ui/model_download_consent_dialog.dart';
 import '../../capture/ui/model_download_dialog.dart';
 import '../../dome/ar_pose.dart';
@@ -37,7 +39,6 @@ import '../../me/scan_record_store.dart';
 import '../../pipeline/local_pipeline_runner.dart';
 import '../../quality/guidance_engine.dart' show GuidanceSnapshot;
 import '../scan_record.dart';
-import 'dome_view.dart';
 
 class CapturePage extends StatefulWidget {
   const CapturePage({super.key});
@@ -76,6 +77,8 @@ Uint8List? _buildCaptureCardThumbnailBytes(String sourcePath) {
 
 class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
   final DomeTargetPoints _targetPoints = DomeTargetPoints();
+  final RealtimeCapturePreviewModel _previewModel =
+      RealtimeCapturePreviewModel();
   CaptureSession? _session;
   StreamSubscription<ARPose>? _poseSub;
 
@@ -86,11 +89,6 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
   // position-based azimuth / elevation. Pre-lock both stay 0; once
   // the user taps to lock the world origin (Phase 5) the AR pose
   // populates them.
-  double _yaw = 0;
-  double _pitch = 0;
-  bool _isTracking = true;
-  bool _hasLockedOrigin = false;
-
   bool _recording = false;
   bool _lockInProgress = false;
   bool _finalizingRecording = false;
@@ -285,16 +283,10 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
           _diagPoseClock.reset();
           _diagPoseClock.start();
         }
-        setState(() {
-          // `- π/2` offset matches ObjectModeV2ARDomeCoordinator line 721:
-          //   uiView.updateRotation(targetYaw: snap.currentAzimuth - .pi/2, …)
-          // Keeps the user's current cell pinned to the dome's +Z (screen
-          // center) under iOS's vertex convention.
-          _yaw = p.azimuth - math.pi / 2;
-          _pitch = p.elevation;
-          _isTracking = p.isTracking;
-          _hasLockedOrigin = p.hasOrigin;
-        });
+        _previewModel.updateFromPose(
+          p,
+          photoCount: _targetPoints.retainedJpegPaths.length,
+        );
         _checkArWarmup(p);
       });
       await session.attach();
@@ -440,6 +432,7 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
       _isAiming = false;
       _lockInProgress = false;
     });
+    _previewModel.reset();
     Navigator.of(context).pop(false);
   }
 
@@ -484,6 +477,7 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
       try {
         await session.start(autoLock: false);
         if (!mounted) return;
+        _previewModel.reset();
         setState(() {
           _isAiming = false;
           _recording = true;
@@ -553,6 +547,9 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
             ),
           );
         }
+        if (navigateToDrafts && mounted) {
+          Navigator.of(context).pop(true);
+        }
         return;
       }
       await session.retainOnlyCuratedPhotos(curated);
@@ -563,7 +560,7 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
       // Pop with `true` as a signal to AetherAppShell that it should
       // switch the active tab to Me Drafts (the user just created a
       // scan and expects to see it sitting in their drafts list).
-      if (navigateToDrafts && mounted && Navigator.of(context).canPop()) {
+      if (navigateToDrafts && mounted) {
         Navigator.of(context).pop(true);
       }
     } finally {
@@ -667,6 +664,153 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
     return highresPath;
   }
 
+  List<String> _retainedPhotoPaths() {
+    final paths = _targetPoints.retainedJpegPaths
+        .where((p) => File(p).existsSync())
+        .toList(growable: false);
+    paths.sort();
+    return paths;
+  }
+
+  Future<void> _deleteRetainedPhoto(String path) async {
+    final keep = _targetPoints.retainedJpegPaths.toSet()..remove(path);
+    _targetPoints.retainOnlyJpegPaths(keep);
+    final previewPath = path.replaceFirst('/photos_highres/', '/previews/');
+    final sidecarPath = path.endsWith('.jpg')
+        ? '${path.substring(0, path.length - 4)}.json'
+        : '$path.json';
+    for (final candidate in <String>{path, previewPath, sidecarPath}) {
+      try {
+        final file = File(candidate);
+        if (await file.exists()) {
+          await file.delete();
+        }
+      } on FileSystemException {
+        // Best-effort UI deletion. The final retainOnlyCuratedPhotos call
+        // also prunes unselected files before writing the manifest.
+      }
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _openPhotoTray() async {
+    if (!_recording) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: const Color(0xFF111113),
+      barrierColor: Colors.black.withValues(alpha: 0.38),
+      isScrollControlled: true,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setSheetState) {
+            final paths = _retainedPhotoPaths();
+            return SafeArea(
+              top: false,
+              child: SizedBox(
+                height: MediaQuery.of(ctx).size.height * 0.68,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 14, 12, 10),
+                      child: Row(
+                        children: [
+                          Text(
+                            '已收集 ${paths.length} 张',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const Spacer(),
+                          IconButton(
+                            onPressed: () => Navigator.of(ctx).pop(),
+                            icon: const Icon(
+                              Icons.close_rounded,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: paths.isEmpty
+                          ? const Center(
+                              child: Text(
+                                '继续拍摄以收集照片',
+                                style: TextStyle(
+                                  color: Colors.white60,
+                                  fontSize: 14,
+                                ),
+                              ),
+                            )
+                          : GridView.builder(
+                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+                              gridDelegate:
+                                  const SliverGridDelegateWithFixedCrossAxisCount(
+                                    crossAxisCount: 3,
+                                    crossAxisSpacing: 10,
+                                    mainAxisSpacing: 10,
+                                  ),
+                              itemCount: paths.length,
+                              itemBuilder: (ctx, index) {
+                                final path = paths[index];
+                                return _PhotoGridTile(
+                                  index: index,
+                                  path: path,
+                                  onOpen: () => _openSinglePhoto(path),
+                                  onDelete: () async {
+                                    await _deleteRetainedPhoto(path);
+                                    setSheetState(() {});
+                                  },
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _openSinglePhoto(String path) async {
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.88),
+      builder: (ctx) => Dialog.fullscreen(
+        backgroundColor: Colors.black,
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: InteractiveViewer(
+                minScale: 0.8,
+                maxScale: 4,
+                child: Center(
+                  child: Image.file(File(path), fit: BoxFit.contain),
+                ),
+              ),
+            ),
+            Positioned(
+              top: 0,
+              right: 0,
+              child: SafeArea(
+                child: IconButton(
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  icon: const Icon(Icons.close_rounded, color: Colors.white),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<bool> _writeCardThumbnail({
     required String sourcePath,
     required File destination,
@@ -744,6 +888,7 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
     _warmupFallbackTimer?.cancel();
     _poseSub?.cancel();
     _session?.dispose();
+    _previewModel.dispose();
     _targetPoints.dispose();
     super.dispose();
   }
@@ -764,7 +909,7 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
           // it sat right under iOS's Dynamic Island (visually colliding
           // with the system camera-in-use indicator) and the abstract
           // green/red/white color carried no clear meaning to the user.
-          // The IdleHintPill + DomeView + bottom button cover the same
+          // The IdleHintPill + preview minimap + bottom button cover the same
           // information already, so this dot was pure noise. Removed.
           Positioned(
             top: 0,
@@ -814,6 +959,16 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
               ),
             ),
 
+          if (_recording)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: _PhotoPositionOverlay(
+                  model: _previewModel,
+                  targetPoints: _targetPoints,
+                ),
+              ),
+            ),
+
           if (_recording && _session != null)
             Positioned(
               top: 0,
@@ -853,43 +1008,56 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
               ),
             ),
 
-          // ─── Bottom HUD: just the 140×140 dome/shutter, dead-centered.
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: SafeArea(
-              top: false,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(18, 0, 18, 18),
-                child: Center(
-                  child: _CaptureButtonOrDome(
-                    recording: _recording,
-                    aiming: _isAiming,
-                    lockInProgress: _lockInProgress,
-                    // Disabled in idle until ARKit has settled (see
-                    // [_arWarmupComplete] doc). aim/recording stages
-                    // bypass the warmup gate — once we're past idle, the
-                    // session is already live and we don't want a
-                    // mid-take tracking blip to disable the stop button.
-                    enabled:
-                        _session != null &&
-                        (_recording || _isAiming || _arWarmupComplete),
-                    targetPoints: _targetPoints,
-                    targetYaw: _yaw,
-                    targetPitch: _pitch,
-                    isTracking: _isTracking,
-                    hasLockedOrigin: _hasLockedOrigin,
-                    onTap:
-                        _session == null ||
-                            (!_recording && !_isAiming && !_arWarmupComplete)
-                        ? null
-                        : _onCenterTap,
+          if (_recording)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: SafeArea(
+                top: false,
+                child: _RecordingBottomPanel(
+                  model: _previewModel,
+                  targetPoints: _targetPoints,
+                  onOpenPhotos: _openPhotoTray,
+                  onFinish: _finalizingRecording
+                      ? null
+                      : () => _finalizeRecording(
+                          navigateToDrafts: true,
+                          showSparseHint: true,
+                        ),
+                ),
+              ),
+            ),
+
+          if (!_recording)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 0, 18, 18),
+                  child: Center(
+                    child: _CaptureButtonOrDome(
+                      aiming: _isAiming,
+                      lockInProgress: _lockInProgress,
+                      // Disabled in idle until ARKit has settled (see
+                      // [_arWarmupComplete] doc). aim stage bypasses the
+                      // warmup gate — once we're past idle, the session is
+                      // already live and we don't want a mid-take tracking
+                      // blip to disable the lock button.
+                      enabled:
+                          _session != null && (_isAiming || _arWarmupComplete),
+                      onTap:
+                          _session == null || (!_isAiming && !_arWarmupComplete)
+                          ? null
+                          : _onCenterTap,
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
         ],
       ),
     );
@@ -1106,6 +1274,545 @@ class _MotionSpeedToastState extends State<_MotionSpeedToast> {
   }
 }
 
+class _PhotoPositionOverlay extends StatelessWidget {
+  final RealtimeCapturePreviewModel model;
+  final DomeTargetPoints targetPoints;
+
+  const _PhotoPositionOverlay({
+    required this.model,
+    required this.targetPoints,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: model,
+      builder: (_, _) {
+        final pose = model.lastPose;
+        if (pose == null || model.cameraSamples.isEmpty) {
+          return const SizedBox.expand();
+        }
+        final photoPaths =
+            targetPoints.retainedJpegPaths
+                .where((p) => File(p).existsSync())
+                .toList(growable: false)
+              ..sort();
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final size = constraints.biggest;
+            final visibleCards = <_ProjectedPhotoCard>[];
+            for (final sample in model.cameraSamples.reversed.take(90)) {
+              final projected = _projectCameraSampleToScreen(
+                sample.position,
+                pose: pose,
+                size: size,
+              );
+              if (projected == null) continue;
+              final pathIndex = sample.photoCount - 1;
+              visibleCards.add(
+                _ProjectedPhotoCard(
+                  sample: sample,
+                  offset: projected.offset,
+                  depth: projected.depth,
+                  path: pathIndex >= 0 && pathIndex < photoPaths.length
+                      ? photoPaths[pathIndex]
+                      : null,
+                ),
+              );
+            }
+            visibleCards.sort((a, b) => b.depth.compareTo(a.depth));
+            return Stack(
+              children: [
+                for (final card in visibleCards)
+                  Positioned(
+                    left: card.offset.dx - card.width / 2,
+                    top: card.offset.dy - card.height / 2,
+                    child: _PhotoPositionCard(
+                      path: card.path,
+                      width: card.width,
+                      height: card.height,
+                      opacity: card.opacity,
+                      rotation: _cameraYawFromOrientation(
+                        card.sample.orientation,
+                      ),
+                    ),
+                  ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+class _ProjectedPhotoCard {
+  final CapturePreviewCameraSample sample;
+  final Offset offset;
+  final double depth;
+  final String? path;
+
+  const _ProjectedPhotoCard({
+    required this.sample,
+    required this.offset,
+    required this.depth,
+    required this.path,
+  });
+
+  double get width => (34 - depth * 2.1).clamp(18.0, 32.0).toDouble();
+  double get height => width * 1.34;
+  double get opacity => (0.92 - depth * 0.045).clamp(0.46, 0.88).toDouble();
+}
+
+class _ScreenProjection {
+  final Offset offset;
+  final double depth;
+
+  const _ScreenProjection({required this.offset, required this.depth});
+}
+
+_ScreenProjection? _projectCameraSampleToScreen(
+  Vector3 worldPosition, {
+  required ARPose pose,
+  required Size size,
+}) {
+  final invOrientation = pose.orientation.conjugated();
+  final rel = worldPosition - pose.position;
+  final cam = invOrientation.rotated(rel);
+  final depth = -cam.z;
+  if (depth <= 0.12 || depth > 12.0) return null;
+  final focal = size.shortestSide * 0.72;
+  final sx = size.width / 2 + (cam.x / depth) * focal;
+  final sy = size.height / 2 - (cam.y / depth) * focal;
+  if (sx < -60 || sx > size.width + 60 || sy < -80 || sy > size.height + 80) {
+    return null;
+  }
+  return _ScreenProjection(offset: Offset(sx, sy), depth: depth);
+}
+
+double _cameraYawFromOrientation(Quaternion orientation) {
+  final forward = orientation.rotated(Vector3(0, 0, -1));
+  return math.atan2(forward.x, forward.z);
+}
+
+class _PhotoPositionCard extends StatelessWidget {
+  final String? path;
+  final double width;
+  final double height;
+  final double opacity;
+  final double rotation;
+
+  const _PhotoPositionCard({
+    required this.path,
+    required this.width,
+    required this.height,
+    required this.opacity,
+    required this.rotation,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final imagePath = path;
+    return Opacity(
+      opacity: opacity,
+      child: Transform.rotate(
+        angle: rotation * 0.18,
+        child: Container(
+          width: width,
+          height: height,
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.20),
+            border: Border.all(color: Colors.white, width: 1.4),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.32),
+                blurRadius: 8,
+                offset: const Offset(0, 3),
+              ),
+            ],
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: imagePath == null
+              ? Icon(
+                  Icons.photo_outlined,
+                  size: width * 0.48,
+                  color: Colors.white.withValues(alpha: 0.75),
+                )
+              : Image.file(File(imagePath), fit: BoxFit.cover),
+        ),
+      ),
+    );
+  }
+}
+
+class _RecordingBottomPanel extends StatelessWidget {
+  final RealtimeCapturePreviewModel model;
+  final DomeTargetPoints targetPoints;
+  final VoidCallback onOpenPhotos;
+  final VoidCallback? onFinish;
+
+  const _RecordingBottomPanel({
+    required this.model,
+    required this.targetPoints,
+    required this.onOpenPhotos,
+    required this.onFinish,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final media = MediaQuery.of(context);
+    final panelHeight = (media.size.height * 0.20)
+        .clamp(136.0, 184.0)
+        .toDouble();
+    return Container(
+      height: panelHeight,
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.82),
+        border: Border(
+          top: BorderSide(color: Colors.white.withValues(alpha: 0.10)),
+        ),
+      ),
+      child: AnimatedBuilder(
+        animation: model,
+        builder: (_, _) {
+          final photoCount = targetPoints.retainedJpegPaths.length;
+          return Row(
+            children: [
+              _PhotoTrayButton(photoCount: photoCount, onTap: onOpenPhotos),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(18),
+                  child: _DraftPointCloudMiniMap(model: model),
+                ),
+              ),
+              const SizedBox(width: 12),
+              _FinishCaptureButton(onTap: onFinish),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _DraftPointCloudMiniMap extends StatelessWidget {
+  final RealtimeCapturePreviewModel model;
+
+  const _DraftPointCloudMiniMap({required this.model});
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      painter: _DraftPointCloudMiniMapPainter(
+        voxels: model.voxels,
+        cameras: model.cameraSamples,
+        pose: model.lastPose,
+        phase: model.phase,
+      ),
+      child: const SizedBox.expand(),
+    );
+  }
+}
+
+class _DraftPointCloudMiniMapPainter extends CustomPainter {
+  final List<CapturePreviewVoxel> voxels;
+  final List<CapturePreviewCameraSample> cameras;
+  final ARPose? pose;
+  final CapturePreviewPhase phase;
+
+  _DraftPointCloudMiniMapPainter({
+    required this.voxels,
+    required this.cameras,
+    required this.pose,
+    required this.phase,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    final bg = Paint()
+      ..shader = const LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [Color(0xFF171A20), Color(0xFF07080A)],
+      ).createShader(rect);
+    canvas.drawRect(rect, bg);
+
+    final camera = pose;
+    if (camera == null) {
+      _paintMiniMapLabel(canvas, size, '建立空间');
+      return;
+    }
+
+    final origin = camera.position;
+    final yaw = _cameraYaw(camera);
+    final metersRadius = _rectMiniMapMetersRadius(origin);
+    final scale =
+        math.min(size.width, size.height) *
+        0.46 /
+        metersRadius.clamp(1.4, 10.0).toDouble();
+    final center = Offset(size.width / 2, size.height / 2);
+    final pointPaint = Paint()..style = PaintingStyle.fill;
+
+    var painted = 0;
+    for (final voxel in voxels) {
+      if (painted >= 2200) break;
+      final p = _projectTopDown(
+        voxel.position,
+        origin: origin,
+        yaw: yaw,
+        center: center,
+        scale: scale,
+      );
+      if (!rect.inflate(-6).contains(p)) continue;
+      pointPaint.color = Color.fromARGB(255, voxel.r, voxel.g, voxel.b)
+          .withValues(
+            alpha: (0.26 + voxel.confidence * 0.46)
+                .clamp(0.24, 0.74)
+                .toDouble(),
+          );
+      canvas.drawCircle(p, 1.7, pointPaint);
+      painted += 1;
+    }
+
+    final photoPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2
+      ..color = Colors.white.withValues(alpha: 0.76);
+    for (final sample in cameras.reversed.take(120)) {
+      final p = _projectTopDown(
+        sample.position,
+        origin: origin,
+        yaw: yaw,
+        center: center,
+        scale: scale,
+      );
+      if (!rect.inflate(-6).contains(p)) continue;
+      canvas.save();
+      canvas.translate(p.dx, p.dy);
+      canvas.rotate(
+        (_cameraYawFromOrientation(sample.orientation) - yaw) * 0.38,
+      );
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromCenter(center: Offset.zero, width: 7, height: 10),
+          const Radius.circular(1.2),
+        ),
+        photoPaint,
+      );
+      canvas.restore();
+    }
+
+    final arrowPaint = Paint()
+      ..style = PaintingStyle.fill
+      ..color = Colors.white.withValues(alpha: 0.92);
+    final arrow = Path()
+      ..moveTo(center.dx, center.dy - 12)
+      ..lineTo(center.dx - 8, center.dy + 8)
+      ..lineTo(center.dx + 8, center.dy + 8)
+      ..close();
+    canvas.drawPath(arrow, arrowPaint);
+    _paintMiniMapLabel(canvas, size, phase.shortLabel);
+  }
+
+  double _rectMiniMapMetersRadius(Vector3 origin) {
+    var maxDistance = 1.8;
+    for (final voxel in voxels.take(2200)) {
+      final dx = voxel.position.x - origin.x;
+      final dz = voxel.position.z - origin.z;
+      maxDistance = math.max(maxDistance, math.sqrt(dx * dx + dz * dz));
+    }
+    return maxDistance.clamp(1.8, 10.0);
+  }
+
+  void _paintMiniMapLabel(Canvas canvas, Size size, String text) {
+    final labelPainter = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(
+          color: Colors.white.withValues(alpha: 0.62),
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout(maxWidth: size.width - 24);
+    labelPainter.paint(canvas, Offset(12, 9));
+  }
+
+  @override
+  bool shouldRepaint(covariant _DraftPointCloudMiniMapPainter oldDelegate) {
+    return oldDelegate.voxels != voxels ||
+        oldDelegate.cameras != cameras ||
+        oldDelegate.pose != pose ||
+        oldDelegate.phase != phase;
+  }
+}
+
+class _FinishCaptureButton extends StatelessWidget {
+  final VoidCallback? onTap;
+
+  const _FinishCaptureButton({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Opacity(
+        opacity: onTap == null ? 0.55 : 1,
+        child: Container(
+          width: 64,
+          height: 62,
+          decoration: BoxDecoration(
+            color: const Color(0xFF2CB8F0),
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF2CB8F0).withValues(alpha: 0.28),
+                blurRadius: 18,
+                offset: const Offset(0, 8),
+              ),
+            ],
+          ),
+          child: const Icon(
+            Icons.arrow_forward_rounded,
+            color: Colors.black,
+            size: 36,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PhotoTrayButton extends StatelessWidget {
+  final int photoCount;
+  final VoidCallback onTap;
+
+  const _PhotoTrayButton({required this.photoCount, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        width: 76,
+        height: 62,
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.44),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(
+              Icons.photo_library_outlined,
+              color: Colors.white,
+              size: 21,
+            ),
+            const SizedBox(height: 2),
+            Text(
+              '$photoCount',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 17,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PhotoGridTile extends StatelessWidget {
+  final int index;
+  final String path;
+  final VoidCallback onOpen;
+  final VoidCallback onDelete;
+
+  const _PhotoGridTile({
+    required this.index,
+    required this.path,
+    required this.onOpen,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        GestureDetector(
+          onTap: onOpen,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: Image.file(File(path), fit: BoxFit.cover),
+          ),
+        ),
+        Positioned(
+          left: 6,
+          top: 6,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.55),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              '${index + 1}',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ),
+        Positioned(
+          right: 2,
+          top: 2,
+          child: IconButton(
+            onPressed: onDelete,
+            icon: const Icon(Icons.delete_outline_rounded, color: Colors.white),
+            style: IconButton.styleFrom(
+              backgroundColor: Colors.black.withValues(alpha: 0.42),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+double _cameraYaw(ARPose? pose) {
+  if (pose == null) return 0;
+  final forward = pose.orientation.rotated(Vector3(0, 0, -1));
+  return math.atan2(forward.x, forward.z);
+}
+
+Offset _projectTopDown(
+  Vector3 position, {
+  required Vector3 origin,
+  required double yaw,
+  required Offset center,
+  required double scale,
+}) {
+  final dx = position.x - origin.x;
+  final dz = position.z - origin.z;
+  final cosYaw = math.cos(-yaw);
+  final sinYaw = math.sin(-yaw);
+  final rx = dx * cosYaw - dz * sinYaw;
+  final rz = dx * sinYaw + dz * cosYaw;
+  return Offset(center.dx + rx * scale, center.dy + rz * scale);
+}
+
 class _CloseButton extends StatelessWidget {
   final VoidCallback onTap;
   const _CloseButton({required this.onTap});
@@ -1254,31 +1961,18 @@ class _IdleHintPill extends StatelessWidget {
 // ─── Bottom HUD: 140×140 captureButtonOrDome ──────────────────────────
 
 class _CaptureButtonOrDome extends StatelessWidget {
-  final bool recording;
-
   /// True between user's first tap (entering aim mode) and the lock
   /// success that promotes to recording. Renders a checkmark instead
   /// of the white-dot shutter.
   final bool aiming;
   final bool lockInProgress;
   final bool enabled;
-  final DomeTargetPoints targetPoints;
-  final double targetYaw;
-  final double targetPitch;
-  final bool isTracking;
-  final bool hasLockedOrigin;
   final VoidCallback? onTap;
 
   const _CaptureButtonOrDome({
-    required this.recording,
     required this.aiming,
     required this.lockInProgress,
     required this.enabled,
-    required this.targetPoints,
-    required this.targetYaw,
-    required this.targetPitch,
-    required this.isTracking,
-    required this.hasLockedOrigin,
     required this.onTap,
   });
 
@@ -1289,43 +1983,6 @@ class _CaptureButtonOrDome extends StatelessWidget {
       height: 140,
       child: CustomPaint(painter: _WhiteRingPainter()),
     );
-
-    if (recording) {
-      // Aether3D pattern: dome layer + ring layer + transparent tap layer
-      // (avoids hit-test fights between the SCNView and the button).
-      return SizedBox(
-        width: 140,
-        height: 140,
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            // Dome itself doesn't take pointers — the transparent tap
-            // overlay above it does.
-            IgnorePointer(
-              child: ClipOval(
-                child: SizedBox(
-                  width: 140,
-                  height: 140,
-                  child: DomeView(
-                    targetPoints: targetPoints,
-                    targetYaw: targetYaw,
-                    targetPitch: targetPitch,
-                    trackingFrozen: !isTracking,
-                    snapKey: hasLockedOrigin,
-                  ),
-                ),
-              ),
-            ),
-            IgnorePointer(child: ring),
-            GestureDetector(
-              onTap: onTap,
-              behavior: HitTestBehavior.opaque,
-              child: const SizedBox(width: 140, height: 140),
-            ),
-          ],
-        ),
-      );
-    }
 
     // Idle and aim share the same pre-capture chrome (white ring +
     // 119×119 black fill); only the central indicator differs:

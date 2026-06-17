@@ -131,6 +131,14 @@ class AetherARKitPlugin: NSObject {
   private var lastQualityComputeTime: TimeInterval = 0
   private static let qualityInterval: TimeInterval = 1.0 / 6.0
 
+  /// RealityScan-style capture preview feed. This is intentionally
+  /// throttled and decimated: native only reads ARKit's official
+  /// rawFeaturePoints and samples camera color; Dart owns voxel hashing,
+  /// minimap, quality coloring, and all product policy.
+  private var lastPreviewPointPayloadTime: TimeInterval = 0
+  private static let previewPointInterval: TimeInterval = 1.0 / 8.0
+  private static let previewPointMaxCount: Int = 220
+
   /// Serial background queue for the Laplacian / signature compute.
   /// Why: ARSession delivers delegate callbacks on the main thread.
   /// Quality compute on a 1920×1440 pixel buffer was running 5-15 ms
@@ -904,7 +912,8 @@ class AetherARKitPlugin: NSObject {
     quality: Float,
     metadataPath: String? = nil,
     targetTimestamp: TimeInterval? = nil,
-    maxTimestampDelta: TimeInterval = Self.defaultSaveMaxTimestampDelta,
+    maxTimestampDelta: TimeInterval =
+      AetherARKitPlugin.defaultSaveMaxTimestampDelta,
     metadataSchemaVersion: Int = 1,
     dartSaveContract: [String: Any]? = nil,
     completion: @escaping ([String: Any]?, Error?) -> Void
@@ -1405,6 +1414,16 @@ class AetherARKitPlugin: NSObject {
       "scaleAlignDepthSpanM": scaleAlignPremetrics.anchorDepthSpanM,
       "scaleAlignReliabilityPrior": scaleAlignPremetrics.reliabilityPrior,
     ]
+    if frame.timestamp - lastPreviewPointPayloadTime >= Self.previewPointInterval {
+      let previewPayload = Self.makePreviewPointPayload(
+        frame: frame,
+        maxPoints: Self.previewPointMaxCount
+      )
+      if !previewPayload.isEmpty {
+        payload.merge(previewPayload) { _, new in new }
+      }
+      lastPreviewPointPayloadTime = frame.timestamp
+    }
     payload.merge(Self.cameraControlPayload()) { _, new in new }
 
     // Throttled (6 Hz) frame-quality compute on the AR camera buffer.
@@ -1685,6 +1704,120 @@ extension AetherARKitPlugin {
       }
     }
     return data
+  }
+
+  /// Build a small, color-sampled preview point payload from ARKit's
+  /// official VIO feature cloud. This mirrors the RealityScan/Polycam
+  /// capture-time idea at the executor boundary: native only exposes
+  /// raw world-space points + sampled RGB; Dart performs multi-scale
+  /// voxel hashing and UI policy.
+  static func makePreviewPointPayload(
+    frame: ARFrame,
+    maxPoints: Int
+  ) -> [String: Any] {
+    guard maxPoints > 0, let raw = frame.rawFeaturePoints else {
+      return [:]
+    }
+    let rawCount = raw.points.count
+    guard rawCount > 0 else { return [:] }
+
+    let pixelBuffer = frame.capturedImage
+    let width = CVPixelBufferGetWidth(pixelBuffer)
+    let height = CVPixelBufferGetHeight(pixelBuffer)
+    guard width > 0, height > 0 else { return [:] }
+
+    let step = max(1, rawCount / maxPoints)
+    let viewport = CGSize(width: width, height: height)
+    var xyz: [Float] = []
+    var rgb: [Int] = []
+    var confidence: [Float] = []
+    xyz.reserveCapacity(min(maxPoints, rawCount) * 3)
+    rgb.reserveCapacity(min(maxPoints, rawCount) * 3)
+    confidence.reserveCapacity(min(maxPoints, rawCount))
+
+    CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+
+    for i in Swift.stride(from: 0, to: rawCount, by: step) {
+      if confidence.count >= maxPoints { break }
+      let p = raw.points[i]
+      let projected = frame.camera.projectPoint(
+        p,
+        orientation: .landscapeRight,
+        viewportSize: viewport
+      )
+      let x = Int(projected.x.rounded())
+      let y = Int(projected.y.rounded())
+      guard x >= 0, y >= 0, x < width, y < height else { continue }
+      guard let color = sampleYuvRgbLocked(pixelBuffer, x: x, y: y) else {
+        continue
+      }
+      xyz.append(p.x)
+      xyz.append(p.y)
+      xyz.append(p.z)
+      rgb.append(Int(color.r))
+      rgb.append(Int(color.g))
+      rgb.append(Int(color.b))
+      confidence.append(1.0)
+    }
+
+    if confidence.isEmpty { return [:] }
+    return [
+      "previewPointXYZ": xyz,
+      "previewPointRGB": rgb,
+      "previewPointConfidence": confidence,
+      "previewPointSource": "arkit_rawFeaturePoints_voxel_preview",
+    ]
+  }
+
+  private static func sampleYuvRgbLocked(
+    _ pixelBuffer: CVPixelBuffer,
+    x: Int,
+    y: Int
+  ) -> (r: UInt8, g: UInt8, b: UInt8)? {
+    let format = CVPixelBufferGetPixelFormatType(pixelBuffer)
+    let isYUV =
+      format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange ||
+      format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+    guard isYUV else { return nil }
+
+    let yWidth = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
+    let yHeight = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
+    let uvWidth = CVPixelBufferGetWidthOfPlane(pixelBuffer, 1)
+    let uvHeight = CVPixelBufferGetHeightOfPlane(pixelBuffer, 1)
+    guard x >= 0, y >= 0, x < yWidth, y < yHeight else { return nil }
+
+    guard
+      let yBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0),
+      let uvBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1)
+    else {
+      return nil
+    }
+
+    let yStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
+    let uvStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1)
+    let yPtr = yBase.assumingMemoryBound(to: UInt8.self)
+    let uvPtr = uvBase.assumingMemoryBound(to: UInt8.self)
+
+    let uvX = min(max(x / 2, 0), max(uvWidth - 1, 0))
+    let uvY = min(max(y / 2, 0), max(uvHeight - 1, 0))
+    let yValue = Float(yPtr[y * yStride + x])
+    let uvIndex = uvY * uvStride + uvX * 2
+    let cb = Float(uvPtr[uvIndex]) - 128.0
+    let cr = Float(uvPtr[uvIndex + 1]) - 128.0
+
+    let r = yValue + 1.402 * cr
+    let g = yValue - 0.344136 * cb - 0.714136 * cr
+    let b = yValue + 1.772 * cb
+    return (
+      r: clampRgb(r),
+      g: clampRgb(g),
+      b: clampRgb(b)
+    )
+  }
+
+  private static func clampRgb(_ value: Float) -> UInt8 {
+    return UInt8(max(0, min(255, Int(value.rounded()))))
   }
 
 

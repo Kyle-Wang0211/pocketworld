@@ -104,6 +104,7 @@ class PlatformARPoseProvider implements ARPoseProvider {
 
     final extrinsic = _decodeFloatList(map['extrinsic']);
     final intrinsic = _decodeFloatList(map['intrinsicFxFyCxCy']);
+    final previewPoints = _decodePreviewPoints(map);
 
     // Optional quality block. Native ships a 128×128 grayscale Y-plane
     // thumbnail on the throttled (6 Hz) frames; we derive sharpness +
@@ -162,6 +163,7 @@ class PlatformARPoseProvider implements ARPoseProvider {
       exposureTargetOffset:
           (map['exposureTargetOffset'] as num?)?.toDouble() ?? 0.0,
       quality: quality,
+      previewPoints: previewPoints,
       // ARKit reason string (iOS only). Null for any other backend
       // (ARCore plugin not yet registered on Android, HarmonyOS XR
       // Engine, WebXR) — PoseDriftTracker treats null as "normal" so
@@ -178,6 +180,44 @@ class PlatformARPoseProvider implements ARPoseProvider {
       return raw.map((v) => (v as num).toDouble()).toList(growable: false);
     }
     return const <double>[];
+  }
+
+  static List<ARPreviewPoint> _decodePreviewPoints(Map<String, Object?> map) {
+    final xyz = map['previewPointXYZ'];
+    if (xyz is! List || xyz.length < 3) return const <ARPreviewPoint>[];
+    final rgb = map['previewPointRGB'];
+    final conf = map['previewPointConfidence'];
+    final count = xyz.length ~/ 3;
+    final out = <ARPreviewPoint>[];
+    for (var i = 0; i < count; i++) {
+      final base = i * 3;
+      final r = rgb is List && rgb.length > base
+          ? (rgb[base] as num).toInt().clamp(0, 255)
+          : 190;
+      final g = rgb is List && rgb.length > base + 1
+          ? (rgb[base + 1] as num).toInt().clamp(0, 255)
+          : 190;
+      final b = rgb is List && rgb.length > base + 2
+          ? (rgb[base + 2] as num).toInt().clamp(0, 255)
+          : 190;
+      final confidence = conf is List && conf.length > i
+          ? (conf[i] as num).toDouble().clamp(0.0, 1.0)
+          : 1.0;
+      out.add(
+        ARPreviewPoint(
+          position: Vector3(
+            (xyz[base] as num).toDouble(),
+            (xyz[base + 1] as num).toDouble(),
+            (xyz[base + 2] as num).toDouble(),
+          ),
+          r: r,
+          g: g,
+          b: b,
+          confidence: confidence,
+        ),
+      );
+    }
+    return List.unmodifiable(out);
   }
 
   void _switchToFallback() {

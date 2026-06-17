@@ -11,6 +11,29 @@ import 'dart:typed_data';
 
 import 'package:vector_math/vector_math_64.dart';
 
+/// Thin cross-platform preview point emitted by native AR executors.
+///
+/// This is capture-time guidance data only. The point position comes
+/// from platform VIO feature points (ARKit rawFeaturePoints / ARCore
+/// PointCloud equivalents), optionally color-sampled from the current
+/// camera frame. It is not DA3 geometry truth and must not be consumed
+/// by the reconstruction pipeline as metric depth.
+class ARPreviewPoint {
+  final Vector3 position;
+  final int r;
+  final int g;
+  final int b;
+  final double confidence;
+
+  const ARPreviewPoint({
+    required this.position,
+    required this.r,
+    required this.g,
+    required this.b,
+    required this.confidence,
+  });
+}
+
 /// Camera pose at one AR frame. All values in world space with the
 /// scene's origin at the captured object's approximate center (set by
 /// `lockOrigin` once the user has framed the subject).
@@ -116,6 +139,11 @@ class ARPose {
   /// synthetic mock.
   final FrameQualityReport? quality;
 
+  /// Throttled raw AR preview points for the RealityScan-style capture
+  /// UI. Native owns only the platform read + optional pixel sampling;
+  /// Dart owns all voxel hashing, quality coloring, minimap, and policy.
+  final List<ARPreviewPoint> previewPoints;
+
   const ARPose({
     required this.position,
     required this.orientation,
@@ -139,6 +167,7 @@ class ARPose {
     this.exposureTargetOffset = 0.0,
     this.quality,
     this.trackingStateName,
+    this.previewPoints = const <ARPreviewPoint>[],
   });
 
   /// Override a subset of fields. Used by [CaptureSession] to build a
@@ -171,6 +200,7 @@ class ARPose {
       lensPosition: lensPosition,
       exposureTargetOffset: exposureTargetOffset,
       quality: quality,
+      previewPoints: previewPoints,
       // Note: deliberately NOT remapping `trackingStateName` from the
       // hybrid `isTracking` boolean. The string is the raw native AR
       // signal from the provider; CaptureSession's IMU-substituted

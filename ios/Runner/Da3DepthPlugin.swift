@@ -23,6 +23,8 @@ import os
   private static let supportedResourceNames: Set<String> = [
     "DA3BASE_476x742_N35_pose",
   ]
+  private static let officialConfidenceMode = "official_da3_streaming_conf_minus_one"
+  private static let officialConfidenceOffset: Float = -1.0
 
   private let queue = DispatchQueue(
     label: "pocketworld.da3_depth.coreml",
@@ -260,7 +262,8 @@ import os
 
     Self.appendNativeLog(outputURL: outputURL, windowID: windowID, phase: "output_extract_begin")
     let depth = try Self.multiArrayToFloatBuffer(depthArray)
-    let conf = try Self.multiArrayToFloatBuffer(confArray)
+    let confRaw = try Self.multiArrayToFloatBuffer(confArray)
+    let conf = confRaw.map { $0 + Self.officialConfidenceOffset }
     let predExtrinsics = prediction.featureValue(for: "pred_extrinsics")?.multiArrayValue
     let predIntrinsics = prediction.featureValue(for: "pred_intrinsics")?.multiArrayValue
     let predExtrinsicsValues = predExtrinsics == nil ? [] : try Self.multiArrayToFloatBuffer(predExtrinsics!)
@@ -274,6 +277,16 @@ import os
         "confValueCount": conf.count,
         "predExtrinsicsValueCount": predExtrinsicsValues.count,
         "predIntrinsicsValueCount": predIntrinsicsValues.count,
+        "confidenceMode": Self.officialConfidenceMode,
+        "confidenceOffsetApplied": Double(Self.officialConfidenceOffset),
+        "depthShape": Self.shapeDescription(depthArray),
+        "depthStrides": Self.strideDescription(depthArray),
+        "confShape": Self.shapeDescription(confArray),
+        "confStrides": Self.strideDescription(confArray),
+        "predExtrinsicsShape": predExtrinsics.map { Self.shapeDescription($0) } as Any,
+        "predExtrinsicsStrides": predExtrinsics.map { Self.strideDescription($0) } as Any,
+        "predIntrinsicsShape": predIntrinsics.map { Self.shapeDescription($0) } as Any,
+        "predIntrinsicsStrides": predIntrinsics.map { Self.strideDescription($0) } as Any,
       ]
     )
 
@@ -357,6 +370,8 @@ import os
         "confMean": Double(stats.mean),
         "confMin": Double(stats.min),
         "confMax": Double(stats.max),
+        "confidenceMode": Self.officialConfidenceMode,
+        "confidenceOffsetApplied": Double(Self.officialConfidenceOffset),
       ])
     }
     Self.appendNativeLog(
@@ -747,37 +762,106 @@ import os
 
   private static func multiArrayToFloatBuffer(_ array: MLMultiArray) throws -> [Float] {
     let count = array.count
-    var out = [Float](repeating: 0, count: count)
+    let shape = array.shape.map { max(0, $0.intValue) }
+    let strides = array.strides.map { $0.intValue }
+    let storageCount = Self.multiArrayStorageCount(shape: shape, strides: strides)
+
+    guard count > 0 else { return [] }
+
+    let isPacked = Self.isPackedRowMajor(shape: shape, strides: strides)
+    var storage = [Float](repeating: 0, count: isPacked ? count : storageCount)
+
     switch array.dataType.rawValue {
     case 0x10020:
-      let ptr = array.dataPointer.bindMemory(to: Float32.self, capacity: count)
-      for i in 0..<count { out[i] = ptr[i] }
+      let ptr = array.dataPointer.bindMemory(to: Float32.self, capacity: storage.count)
+      for i in 0..<storage.count { storage[i] = ptr[i] }
     case 0x10010:
       guard #available(iOS 14.0, *) else {
         throw validationError("float16 MLMultiArray conversion requires iOS 14+")
       }
+      let storageElementCount = storage.count
       var src = vImage_Buffer(
         data: array.dataPointer,
         height: 1,
-        width: UInt(count),
-        rowBytes: count * 2
+        width: UInt(storageElementCount),
+        rowBytes: storageElementCount * 2
       )
-      out.withUnsafeMutableBufferPointer { dst in
+      storage.withUnsafeMutableBufferPointer { dst in
         var dest = vImage_Buffer(
           data: UnsafeMutableRawPointer(dst.baseAddress!),
           height: 1,
-          width: UInt(count),
-          rowBytes: count * 4
+          width: UInt(storageElementCount),
+          rowBytes: storageElementCount * 4
         )
         _ = vImageConvert_Planar16FtoPlanarF(&src, &dest, 0)
       }
     case 0x10040:
-      let ptr = array.dataPointer.bindMemory(to: Double.self, capacity: count)
-      for i in 0..<count { out[i] = Float(ptr[i]) }
+      let ptr = array.dataPointer.bindMemory(to: Double.self, capacity: storage.count)
+      for i in 0..<storage.count { storage[i] = Float(ptr[i]) }
     default:
       throw validationError("unsupported MLMultiArray dtype raw=\(array.dataType.rawValue)")
     }
+
+    if isPacked {
+      return storage
+    }
+
+    var out = [Float](repeating: 0, count: count)
+    for linearIndex in 0..<count {
+      let storageIndex = Self.multiArrayStorageIndex(
+        linearIndex: linearIndex,
+        shape: shape,
+        strides: strides
+      )
+      if storageIndex >= 0 && storageIndex < storage.count {
+        out[linearIndex] = storage[storageIndex]
+      }
+    }
     return out
+  }
+
+  private static func shapeDescription(_ array: MLMultiArray) -> [Int] {
+    array.shape.map { $0.intValue }
+  }
+
+  private static func strideDescription(_ array: MLMultiArray) -> [Int] {
+    array.strides.map { $0.intValue }
+  }
+
+  private static func isPackedRowMajor(shape: [Int], strides: [Int]) -> Bool {
+    guard shape.count == strides.count else { return false }
+    var expected = 1
+    for index in stride(from: shape.count - 1, through: 0, by: -1) {
+      if strides[index] != expected { return false }
+      expected *= max(1, shape[index])
+    }
+    return true
+  }
+
+  private static func multiArrayStorageCount(shape: [Int], strides: [Int]) -> Int {
+    guard shape.count == strides.count else { return 0 }
+    var maxOffset = 0
+    for index in 0..<shape.count {
+      maxOffset += max(0, shape[index] - 1) * strides[index]
+    }
+    return max(1, maxOffset + 1)
+  }
+
+  private static func multiArrayStorageIndex(
+    linearIndex: Int,
+    shape: [Int],
+    strides: [Int]
+  ) -> Int {
+    guard shape.count == strides.count else { return linearIndex }
+    var remainder = linearIndex
+    var offset = 0
+    for index in stride(from: shape.count - 1, through: 0, by: -1) {
+      let dim = max(1, shape[index])
+      let coordinate = remainder % dim
+      remainder /= dim
+      offset += coordinate * strides[index]
+    }
+    return offset
   }
 
   private static func writeFloats(_ values: [Float], to url: URL) throws {

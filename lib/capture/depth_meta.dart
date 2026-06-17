@@ -9,14 +9,14 @@
 //      it appends one [DepthMetaEntry] per frame to a paired sidecar
 //      `<photosDir>/depth_meta.jsonl` (or sibling `<jpeg>.depth.json`).
 //   3. W3's pointcloud + 3DGS stages call [DepthMetaSidecar.isFrameSkipped]
-//      to skip frames the model flagged as untrusted (conf median at
-//      DA3's "I don't know" floor, ~1.0). Cross-platform Dart so
+//      to skip frames the model flagged as untrusted (low post-DA3-streaming
+//      confidence after the official `conf -= 1.0` normalization). Cross-platform Dart so
 //      iOS / Android / HarmonyOS / Web depth runtimes share one policy.
 //
 // Format (JSON Lines, one object per line):
 //
 //   { "frame": 12,              // .mov frame index (curated, post-P2)
-//     "conf_median": 1.000,     // float, ≥1.0 from DA3
+//     "conf_median": 1.000,     // float, official DA3-Streaming confidence
 //     "conf_mean":   1.043,     // float
 //     "conf_min":    1.000,     // float
 //     "conf_max":    1.821,     // float
@@ -39,13 +39,14 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-/// Plan G W2 P4 untrusted-conf floor. DA3 conf heads bottom out near 1.0
-/// when the model has zero per-pixel confidence. 1.05 leaves a small margin
-/// for fp16 CoreML noise until the DA3-BASE benchmark locks a tighter value.
+/// Plan G W2 P4 weak-frame confidence gate. DA3-Streaming subtracts 1.0 from
+/// the raw confidence head before downstream filtering; this threshold is a
+/// conservative product gate for frames whose median remains very low after
+/// that official normalization.
 ///
 /// Lives in Dart — the iOS / Android / HarmonyOS / Web depth runtimes
-/// just ship the raw conf buffer back; the threshold + skip decision is
-/// shared Dart code.
+/// ship the official DA3-Streaming confidence buffer back; the threshold +
+/// skip decision is shared Dart code.
 const double kDepthSkipConfThreshold = 1.05;
 
 /// Current JSONL payload version. Version 1 was confidence-only; version 2
@@ -56,13 +57,12 @@ const String kDepthAlignModeSessionChunkAdaptive = 'session_chunk_adaptive';
 const String kDepthAlignModeFramePriorFallback = 'frame_prior_fallback';
 const String kSparsePriorModeResidualField = 'sparse_residual_field';
 
-/// Per-frame depth_conf summary. Computed from the raw fp32 conf buffer
+/// Per-frame depth_conf summary. Computed from the official fp32 confidence buffer
 /// returned by whichever platform's depth runtime ran (CoreML on iOS,
 /// TFLite/ONNX on Android, HMS ML on HarmonyOS, ONNX Runtime Web on Web).
 ///
 /// Median is the canonical "skip vs keep" signal — robust against
-/// single-pixel outliers, pegged to the DA3 floor (1.0) when the model
-/// can't reconstruct depth at all. Mean / min / max are diagnostic.
+/// single-pixel outliers. Mean / min / max are diagnostic.
 class DepthConfStats {
   final double median;
   final double mean;
