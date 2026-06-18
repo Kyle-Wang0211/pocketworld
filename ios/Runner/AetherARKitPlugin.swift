@@ -84,6 +84,22 @@ class AetherARKitPlugin: NSObject {
     registrar.register(factory, withId: "aether_arkit_preview")
   }
 
+  // MARK: Photo cards (RealityScan-style anchored capture thumbnails)
+
+  /// Per-card render spec, keyed by anchor name, read by
+  /// AetherARKitPreviewView.renderer(_:didAdd:) when SceneKit hands us the
+  /// anchor's node. Static so the preview view (owns the ARSCNView delegate)
+  /// and the plugin (adds the anchors) share one source of truth. Anchored at
+  /// the capture pose => glued to the world by ARKit, no drift. `height` (meters)
+  /// is the card's physical size, sized from the intrinsics to fill the viewport.
+  struct PhotoCardSpec {
+    let path: String
+    let localCorners: [SCNVector3]  // 4 quad corners [TL,TR,BR,BL] in anchor-local space
+  }
+  static var photoCardSpecs: [String: PhotoCardSpec] = [:]
+  private static var photoCardAnchors: [ARAnchor] = []
+  private static var photoCardCounter = 0
+
   // MARK: Channels
 
   private let methodChannel: FlutterMethodChannel
@@ -298,7 +314,9 @@ class AetherARKitPlugin: NSObject {
       result(ARWorldTrackingConfiguration.isSupported)
     case "startSession":
       do {
-        try startSession()
+        let resume =
+          (call.arguments as? [String: Any])?["resume"] as? Bool ?? false
+        try startSession(resetWorld: !resume)
         result(nil)
       } catch {
         result(FlutterError(
@@ -459,6 +477,83 @@ class AetherARKitPlugin: NSObject {
         "physicalMemoryBytes": NSNumber(value: physMemBytes),
         "physicalMemoryGB": physMemGB,
       ])
+    case "addPhotoCard":
+      // Anchor a RealityScan-style photo thumbnail at the CURRENT camera pose
+      // (called immediately after a manual capture, so it == the capture pose).
+      // The ARAnchor keeps the card glued to the world — no projection, no drift.
+      guard let args = call.arguments as? [String: Any],
+            let jpegPath = args["jpegPath"] as? String else {
+        result(FlutterError(
+          code: "bad_args", message: "addPhotoCard requires jpegPath",
+          details: nil))
+        return
+      }
+      guard let session = arSession,
+            let frame = session.currentFrame else {
+        result(FlutterError(
+          code: "ar_no_frame", message: "addPhotoCard: no current ARFrame",
+          details: nil))
+        return
+      }
+      let camera = frame.camera
+      // SCREEN-ALIGNED quad, ZERO tuning, FULLY DETERMINISTIC. We build the 4
+      // viewport-corner world points from ARKit's PORTRAIT view + projection
+      // matrices. The `.portrait` orientation makes ARKit handle the sensor→screen
+      // 90° rotation internally, so the quad comes out screen-portrait (not the
+      // sensor-landscape shape). At depth z the viewport edges (NDC ±1) sit at
+      // ±halfX / ±halfY in view space, where half = z / projectionScale; the quad
+      // therefore EXACTLY fills the viewport at capture and, world-anchored, peels
+      // off the lens as the camera moves. (Replaces unprojectPoint(ontoPlane:),
+      // which failed 2-4/4 corners — the plane went edge-on to the corner rays —
+      // and dropped to a sensor-landscape fallback that rotated the card 90°.)
+      let viewportSize = UIScreen.main.bounds.size
+      let z: Float = 0.4
+      let proj = camera.projectionMatrix(for: .portrait,
+                                         viewportSize: viewportSize,
+                                         zNear: 0.001, zFar: 1000)
+      let invView = camera.viewMatrix(for: .portrait).inverse
+      // View space: +X right, +Y up, -Z forward.
+      let halfX = z / proj.columns.0.x
+      let halfY = z / proj.columns.1.y
+      NSLog("[PHOTOCARD] addPhotoCard viewport=%.0fx%.0f z=%.2f halfX=%.3f halfY=%.3f",
+            viewportSize.width, viewportSize.height, z, halfX, halfY)
+      // Screen order TL, TR, BR, BL (matches texUVs in the renderer).
+      let viewCornersV: [simd_float4] = [
+        simd_float4(-halfX,  halfY, -z, 1),   // TL
+        simd_float4( halfX,  halfY, -z, 1),   // TR
+        simd_float4( halfX, -halfY, -z, 1),   // BR
+        simd_float4(-halfX, -halfY, -z, 1),   // BL
+      ]
+      let worldCorners: [simd_float3] = viewCornersV.map {
+        simd_make_float3(invView * $0)
+      }
+      let centroid = (worldCorners[0] + worldCorners[1]
+                      + worldCorners[2] + worldCorners[3]) / 4
+      let localCorners = worldCorners.map {
+        SCNVector3($0.x - centroid.x, $0.y - centroid.y, $0.z - centroid.z)
+      }
+      // Texture orientation + aspect-fill UVs are computed deterministically in
+      // the renderer (uprightPortrait + screen-aspect crop); the spec only needs
+      // the world-aligned quad corners.
+      let cardName = "photo_card_\(AetherARKitPlugin.photoCardCounter)"
+      AetherARKitPlugin.photoCardCounter += 1
+      AetherARKitPlugin.photoCardSpecs[cardName] =
+        PhotoCardSpec(path: jpegPath, localCorners: localCorners)
+      var anchorT = matrix_identity_float4x4
+      anchorT.columns.3 = simd_float4(centroid, 1)
+      let cardAnchor = ARAnchor(name: cardName, transform: anchorT)
+      AetherARKitPlugin.photoCardAnchors.append(cardAnchor)
+      session.add(anchor: cardAnchor)
+      result(nil)
+    case "clearPhotoCards":
+      if let session = arSession {
+        for a in AetherARKitPlugin.photoCardAnchors {
+          session.remove(anchor: a)
+        }
+      }
+      AetherARKitPlugin.photoCardAnchors.removeAll()
+      AetherARKitPlugin.photoCardSpecs.removeAll()
+      result(nil)
     default:
       result(FlutterMethodNotImplemented)
     }
@@ -466,8 +561,8 @@ class AetherARKitPlugin: NSObject {
 
   // MARK: Session lifecycle
 
-  private func startSession() throws {
-    NSLog("[AetherARKit] startSession() — isSupported=\(ARWorldTrackingConfiguration.isSupported)")
+  private func startSession(resetWorld: Bool = true) throws {
+    NSLog("[AetherARKit] startSession(resetWorld=\(resetWorld)) — isSupported=\(ARWorldTrackingConfiguration.isSupported)")
     guard ARWorldTrackingConfiguration.isSupported else {
       throw NSError(
         domain: "AetherARKit",
@@ -540,18 +635,26 @@ class AetherARKitPlugin: NSObject {
 
     let session = arSession ?? ARSession()
     session.delegate = sessionDelegate
-    // .resetTracking gives the user a clean reference frame each
-    // start (previous lock origin invalidated). .removeExistingAnchors
-    // is moot since we don't add any.
-    session.run(configuration, options: [.resetTracking, .removeExistingAnchors])
+    if resetWorld {
+      // Fresh start: clean reference frame, drop all anchors + the locked origin.
+      session.run(configuration,
+                  options: [.resetTracking, .removeExistingAnchors])
+    } else {
+      // RESUME after a transient background: keep the world map + existing
+      // photo-card anchors so the AR cards survive (no reset, no anchor removal).
+      session.run(configuration)
+    }
     arSession = session
     if #available(iOS 16.0, *) {
-      restoreContinuousExposureFocus(reason: "session start")
+      restoreContinuousExposureFocus(
+        reason: resetWorld ? "session start" : "session resume")
     }
-    worldOrigin = nil
-    worldYaw = 0
-    worldSubjectAnchor = nil
-    lockTimeOrigin = nil
+    if resetWorld {
+      worldOrigin = nil
+      worldYaw = 0
+      worldSubjectAnchor = nil
+      lockTimeOrigin = nil
+    }
     lastDriftLogTime = 0
     lastFrameSnapshot = nil
     recentFrameSnapshots.removeAll()
@@ -1145,8 +1248,15 @@ class AetherARKitPlugin: NSObject {
           "encodeCVPixelBufferAsJpeg: CGImageDestinationCreateWithURL failed"]
       )
     }
+    // Pixels are left in the camera's native LANDSCAPE orientation so they
+    // stay consistent with the landscape intrinsics written to the metadata
+    // sidecar (DA3/SfM read raw pixels and ignore EXIF). We only TAG the EXIF
+    // orientation so viewers that honor it (Flutter Image.file, the album,
+    // the AR photo cards, Photos.app) display a portrait capture upright.
+    // .right (6) = 90° CW, the portrait-from-landscapeRight sensor mapping.
     let opts: [CFString: Any] = [
       kCGImageDestinationLossyCompressionQuality: quality,
+      kCGImagePropertyOrientation: CGImagePropertyOrientation.right.rawValue,
     ]
     CGImageDestinationAddImage(dest, cgImage, opts as CFDictionary)
     if !CGImageDestinationFinalize(dest) {
@@ -2133,19 +2243,86 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
   /// subject anchor (filtered by name to ignore plane anchors that
   /// `planeDetection = [.horizontal]` adds automatically).
   func renderer(_ renderer: SCNSceneRenderer, didAdd node: SCNNode, for anchor: ARAnchor) {
-    guard anchor.name == Self.subjectAnchorName else { return }
-    let sphere = SCNSphere(radius: Self.subjectMarkerRadius)
-    let material = SCNMaterial()
-    material.diffuse.contents = UIColor.white
-    material.lightingModel = .constant
-    material.writesToDepthBuffer = false
-    material.readsFromDepthBuffer = false
-    material.isDoubleSided = true
-    sphere.materials = [material]
-    let markerNode = SCNNode(geometry: sphere)
-    markerNode.renderingOrder = 100
-    node.addChildNode(markerNode)
-    NSLog("[AetherARKitPreview] subject marker attached as child of anchor node")
+    // Subject-origin anchor: no visible marker.
+    // Photo-card anchors: build a CUSTOM QUAD whose 4 corners are the unprojected
+    // viewport corners (so it pixel-aligns with the live view at capture). The
+    // texture is normalized to upright portrait (uprightPortrait) then aspect-
+    // filled with top-left-origin UVs. World-anchored, it "peels off the lens"
+    // as the camera moves. No orientation/size tuning.
+    guard let name = anchor.name, name.hasPrefix("photo_card_") else { return }
+    NSLog("[PHOTOCARD] renderer didAdd %@", name)
+    guard let spec = AetherARKitPlugin.photoCardSpecs[name],
+          let raw = UIImage(contentsOfFile: spec.path) else {
+      NSLog("[PHOTOCARD] renderer: spec or image MISSING for %@", name)
+      return
+    }
+    NSLog("[PHOTOCARD] renderer building quad for %@ (%d corners)", name,
+          spec.localCorners.count)
+
+    // Orientation, DETERMINISTICALLY (no displayTransform convention guessing):
+    // rotate the texture to upright PORTRAIT by pixel dimensions, then aspect-
+    // FILL it onto the screen-aligned quad with computed UVs (crop, no stretch).
+    let image = Self.uprightPortrait(raw)
+    let c = spec.localCorners
+    let quadW = CGFloat(simd_length(simd_float3(
+      c[1].x - c[0].x, c[1].y - c[0].y, c[1].z - c[0].z)))   // TL->TR
+    let quadH = CGFloat(simd_length(simd_float3(
+      c[3].x - c[0].x, c[3].y - c[0].y, c[3].z - c[0].z)))   // TL->BL
+    let texAspect = image.size.height > 0
+      ? image.size.width / image.size.height : 0.75
+    let quadAspect = quadH > 0 ? quadW / quadH : 0.46
+    var u0: CGFloat = 0, u1: CGFloat = 1, v0: CGFloat = 0, v1: CGFloat = 1
+    if texAspect > quadAspect {            // texture relatively wider → crop width
+      let f = quadAspect / texAspect; u0 = (1 - f) / 2; u1 = 1 - u0
+    } else {                               // texture relatively taller → crop height
+      let f = texAspect / quadAspect; v0 = (1 - f) / 2; v1 = 1 - v0
+    }
+    let texUVs = [CGPoint(x: u0, y: v0), CGPoint(x: u1, y: v0),
+                  CGPoint(x: u1, y: v1), CGPoint(x: u0, y: v1)]   // TL,TR,BR,BL
+    NSLog("[PHOTOCARD] tex raw=%.0fx%.0f upright=%.0fx%.0f cgUp=%dx%d texAsp=%.3f quadAsp=%.3f (EXPECT upright h>w, texAsp<1~0.75, quadAsp~0.46)",
+          raw.size.width, raw.size.height, image.size.width, image.size.height,
+          image.cgImage?.width ?? -1, image.cgImage?.height ?? -1,
+          texAspect, quadAspect)
+
+    let positionSource = SCNGeometrySource(vertices: spec.localCorners)
+    let texSource = SCNGeometrySource(textureCoordinates: texUVs)
+    let element = SCNGeometryElement(indices: [Int32]([0, 1, 2, 0, 2, 3]),
+                                     primitiveType: .triangles)
+    let geometry = SCNGeometry(sources: [positionSource, texSource],
+                               elements: [element])
+    let mat = SCNMaterial()
+    mat.diffuse.contents = image
+    mat.isDoubleSided = true
+    mat.lightingModel = .constant       // unlit — show the photo as captured
+    mat.transparency = 0.6              // RS-style translucent
+    mat.writesToDepthBuffer = false
+    mat.diffuse.wrapS = .clamp
+    mat.diffuse.wrapT = .clamp
+    geometry.materials = [mat]
+    node.addChildNode(SCNNode(geometry: geometry))
+  }
+
+  /// Returns a UIImage whose BACKING PIXELS are physically upright PORTRAIT
+  /// (identity .up orientation, height > width), with the EXIF/imageOrientation
+  /// baked into the pixels. Canonical UIKit "normalize orientation" recipe:
+  /// `UIImage(contentsOfFile:)` keeps RAW landscape pixels with only
+  /// `.imageOrientation == .right` metadata, which SceneKit/CIImage ignore when
+  /// reading `.cgImage` (→ sideways texture). `img.draw(in:)` HONORS
+  /// imageOrientation, so redrawing into a renderer sized by `img.size` (already
+  /// orientation-corrected → portrait) bakes upright portrait pixels. Self-
+  /// describing: reads imageOrientation at runtime, so it can't drift.
+  private static func uprightPortrait(_ img: UIImage) -> UIImage {
+    // Fast path: already upright .up AND already portrait pixels — use as-is.
+    if img.imageOrientation == .up,
+       let cg = img.cgImage, cg.height >= cg.width {
+      return img
+    }
+    let fmt = UIGraphicsImageRendererFormat.default()
+    fmt.scale = 1   // 1:1 pixels — don't let @2x/@3x inflate the texture
+    let renderer = UIGraphicsImageRenderer(size: img.size, format: fmt)
+    return renderer.image { _ in
+      img.draw(in: CGRect(origin: .zero, size: img.size))
+    }
   }
 
   /// Fires when ARKit removes our anchor (re-lock or stopSession).

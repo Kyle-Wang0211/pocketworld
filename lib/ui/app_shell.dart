@@ -17,7 +17,7 @@ import 'package:flutter/material.dart';
 
 import '../l10n/app_localizations.dart';
 import '../me/import_glb_coordinator.dart';
-import 'capture/capture_page.dart';
+import 'capture/ar_capture_page.dart';
 import 'design_system.dart';
 import 'me_page.dart';
 import 'vault_page.dart';
@@ -145,7 +145,7 @@ class _AetherAppShellState extends State<AetherAppShell> {
     // Me so the freshly-created scan card is visible right away.
     final shouldShowMe = await Navigator.of(
       context,
-    ).push<bool>(MaterialPageRoute<bool>(builder: (_) => const CapturePage()));
+    ).push<bool>(MaterialPageRoute<bool>(builder: (_) => const ARCapturePage()));
     if (!mounted) return;
     if (shouldShowMe == true) {
       if (_tab != AetherRootTab.me) {

@@ -703,6 +703,62 @@ class DomeTargetPoints extends ChangeNotifier {
     return (cellIdx: bestIdx, slotIdx: slotIdx);
   }
 
+  /// Force-admit a single manually-captured frame, BYPASSING the hard-reject
+  /// quality gates that [ingest] applies. Routes to the nearest target point
+  /// on the unit sphere (identical routing to [ingest]) and appends it to that
+  /// point's ring buffer. Returns the (cellIdx, slotIdx) to stamp the saved
+  /// JPEG onto, or null if the ring buffer declined the frame.
+  ///
+  /// Used by the RealityScan-style manual capture flow (one shutter tap = one
+  /// photo): the user, not a motion/quality gate, decides when to shoot.
+  ({int cellIdx, int slotIdx})? forceAdmit(CapturedFrameSample sample) {
+    if (_disposed) return null;
+    if (sample.cameraRadiusM.isFinite && sample.cameraRadiusM > 0.05) {
+      _acceptedRadiiM.add(sample.cameraRadiusM);
+      if (_acceptedRadiiM.length > 128) _acceptedRadiiM.removeAt(0);
+    }
+    // Find nearest point: max dot product on unit sphere (same as ingest()).
+    final ux = math.cos(sample.elevation) * math.cos(sample.azimuth);
+    final uy = math.sin(sample.elevation);
+    final uz = math.cos(sample.elevation) * math.sin(sample.azimuth);
+    var bestIdx = 0;
+    var bestCos = -2.0;
+    for (var i = 0; i < _points.length; i++) {
+      final p = _points[i];
+      final c = ux * p.unitXyz.x + uy * p.unitXyz.y + uz * p.unitXyz.z;
+      if (c > bestCos) {
+        bestCos = c;
+        bestIdx = i;
+      }
+    }
+
+    final buffer = _buffers[bestIdx];
+    final prevState = _states[bestIdx];
+    final slotIdx = buffer.append(sample);
+    if (slotIdx == null) return null; // buffer declined; nothing to save
+    _validFrameCount++;
+    final raw = buffer.computeRawState(thresholds);
+    buffer.bumpHighWater(raw);
+    final newState = buffer.state(thresholds);
+    _states[bestIdx] = newState;
+    _currentPointIndex = bestIdx;
+
+    if (newState != prevState) {
+      onPointStateChanged?.call((pointIndex: bestIdx, state: newState));
+      if (prevState.rank < DomeCellState.ok.rank &&
+          newState.rank >= DomeCellState.ok.rank) {
+        _points[bestIdx].visited = true;
+        _points[bestIdx].visitedAt = DateTime.now();
+        _pointVisitedCtrl.add(bestIdx);
+      }
+    }
+    onAggregateChanged?.call(aggregateCounts);
+    // Manual capture is low-frequency, so notify on every shot: the album +
+    // live count + AR cards all observe this notifier and must refresh.
+    notifyListeners();
+    return (cellIdx: bestIdx, slotIdx: slotIdx);
+  }
+
   // ─── Upload curation (verbatim port from old DomeCoverageMap, but
   // iterating points instead of cells) ─────────────────────────────
 

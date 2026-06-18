@@ -68,10 +68,18 @@ class CapturePreviewCameraSample {
   final Quaternion orientation;
   final int photoCount;
 
+  /// Whether the backend SfM pass has confirmed/aligned this photo.
+  ///
+  /// Drives the AR photo-card border color: false → black (just captured,
+  /// not yet reconstructed), true → white (SfM-confirmed). Always false for
+  /// now — the SfM hookup is deferred, this is only the state hook.
+  final bool sfmConfirmed;
+
   const CapturePreviewCameraSample({
     required this.position,
     required this.orientation,
     required this.photoCount,
+    this.sfmConfirmed = false,
   });
 }
 

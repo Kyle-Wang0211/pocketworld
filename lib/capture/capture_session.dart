@@ -187,6 +187,11 @@ class CaptureSession {
   /// CapturedFrameSample so the curator can split the manifest into
   /// arkit-pose vs imu-pose buckets.
   String _lastPoseSource = 'arkit';
+
+  /// When true (RealityScan-style manual capture), [_onPoseTick] skips the
+  /// motion/dome auto-ingest + auto-save path; photos are taken only via
+  /// [captureSinglePhoto]. Set per-session by [start].
+  bool _manualCaptureMode = false;
   // Diagnostics
   int _diagArkitPoses = 0;
   int _diagImuPoses = 0;
@@ -655,7 +660,7 @@ class CaptureSession {
   ///     invoking [lockOrigin] explicitly (typically when the user
   ///     taps a "lock" button after aiming the crosshair). Without
   ///     this, target points never see any frame with `hasOrigin`.
-  Future<void> start({bool autoLock = true}) async {
+  Future<void> start({bool autoLock = true, bool manualCapture = false}) async {
     if (_disposed) {
       throw StateError('CaptureSession used after dispose');
     }
@@ -666,6 +671,7 @@ class CaptureSession {
     guidance.beginRecording();
     _driftTracker.reset();
     _frameSeq = 0;
+    _manualCaptureMode = manualCapture;
     _pendingPhotoSaves.clear();
     _pendingPhotoSaveCount = 0;
     _lastHighResStillTriggerSec = double.negativeInfinity;
@@ -1022,6 +1028,11 @@ class CaptureSession {
         'accepted=$wasAccepted',
       );
     }
+    // Manual (RealityScan-style) capture: the shutter — not a motion/dome
+    // gate — decides when to shoot. Skip the auto-ingest + auto-save path
+    // entirely; the live preview points + guidance toasts above still run.
+    if (_manualCaptureMode) return;
+
     // motionScore: when ARKit is reporting we use the legacy default
     // (no IMU read on the ARKit path of iOS Aether3D either); when we're
     // dead-reckoning from IMU, the OrientationTracker has the gyro RMS
@@ -1261,6 +1272,132 @@ class CaptureSession {
           });
       _pendingPhotoSaves.add(saveFuture);
       unawaited(saveFuture);
+    }
+  }
+
+  /// Manually capture exactly ONE high-resolution still at the current
+  /// frame/pose — the RealityScan-style per-tap shutter. Bypasses the
+  /// motion/dome auto-admit gates via [DomeTargetPoints.forceAdmit] so the
+  /// user, not a gate, decides when to shoot. Returns the saved JPEG path on
+  /// success, or null (no usable pose / incomplete AR metadata / save failed).
+  ///
+  /// Only meaningful when the session was started with `manualCapture: true`.
+  Future<String?> captureSinglePhoto() async {
+    if (!_started || _disposed) return null;
+    final pose = _lastPose;
+    final photosDir = _photosDir;
+    if (pose == null || photosDir == null) return null;
+    // MANUAL capture is a deliberate user action: NEVER silently drop a tap.
+    // We still record the best ARKit extrinsic/intrinsic WHEN AVAILABLE (for the
+    // pipeline), but if the origin isn't locked yet or tracking has degraded to
+    // IMU dead-reckoning, we proceed anyway and save the JPEG to the album with
+    // best-effort (possibly null) pose. Downstream filters on pose quality later.
+    final extrinsic = _lastPoseSource == 'arkit' &&
+            pose.extrinsic4x4.isNotEmpty &&
+            pose.extrinsic4x4.length == 16
+        ? pose.extrinsic4x4
+        : null;
+    final intrinsic = _lastPoseSource == 'arkit' &&
+            pose.intrinsicFxFyCxCy.isNotEmpty &&
+            pose.intrinsicFxFyCxCy.length >= 4
+        ? pose.intrinsicFxFyCxCy
+        : null;
+
+    _frameSeq++;
+    final t = _clock.elapsedMicroseconds / 1e6;
+    var cameraRadiusM = pose.position.distanceTo(pose.worldOrigin);
+    if (!cameraRadiusM.isFinite || cameraRadiusM <= 0) cameraRadiusM = 1.0;
+    final sample = CapturedFrameSample(
+      timestamp: t,
+      azimuth: pose.azimuth,
+      elevation: pose.elevation,
+      // Force-admit path bypasses the sharpness gate, but a high nominal
+      // value keeps the ring buffer's high-water state sane.
+      sharpness: 9999.0,
+      motionScore: 0.0,
+      exposureScore: 1.0,
+      frameId: 'tap-$_frameSeq',
+      cameraRadiusM: cameraRadiusM,
+      cameraExtrinsic4x4: extrinsic,
+      cameraIntrinsicFxFyCxCy: intrinsic,
+      scaleAlignAnchorCount: pose.scaleAlignAnchorCount,
+      scaleAlignDepthSpanM: pose.scaleAlignDepthSpanM,
+      scaleAlignReliabilityPrior: pose.scaleAlignReliabilityPrior,
+      poseSource: _lastPoseSource,
+      trackingStateName: pose.trackingStateName,
+    );
+
+    final admit = targetPoints.forceAdmit(sample);
+    if (admit == null) return null;
+
+    final jpegPath =
+        '$photosDir/cell_${admit.cellIdx}_slot_${admit.slotIdx}.jpg';
+    final previewPath =
+        '${_previewsDir ?? photosDir}/cell_${admit.cellIdx}_slot_${admit.slotIdx}.jpg';
+    final metadataPath =
+        '$photosDir/cell_${admit.cellIdx}_slot_${admit.slotIdx}.json';
+    final saveSpec = ARFrameSaveSpec(
+      frameID: sample.frameId,
+      cellIndex: admit.cellIdx,
+      slotIndex: admit.slotIdx,
+      jpegPath: jpegPath,
+      metadataPath: metadataPath,
+      targetTimestamp: pose.timestamp,
+      quality: 0.92,
+    );
+
+    _pendingPhotoSaveCount += 1;
+    try {
+      final still = await poseProvider.captureHighResolutionStill(
+        highresPath: jpegPath,
+        previewPath: previewPath,
+        triggerTimestamp: pose.timestamp,
+        saveSpec: saveSpec,
+      );
+      if (still != null && await _hasCompleteArFrameSidecar(metadataPath)) {
+        targetPoints.stampJpegPath(
+          cellIdx: admit.cellIdx,
+          slotIdx: admit.slotIdx,
+          jpegPath: jpegPath,
+        );
+        return jpegPath;
+      }
+      // Fallback: timestamp-matched ARFrame writer (same sealed sidecar).
+      final saveResult = await poseProvider.saveCurrentFrame(saveSpec);
+      if (saveResult.saved && await _hasCompleteArFrameSidecar(metadataPath)) {
+        targetPoints.stampJpegPath(
+          cellIdx: admit.cellIdx,
+          slotIdx: admit.slotIdx,
+          jpegPath: jpegPath,
+        );
+        return jpegPath;
+      }
+      // Manual capture is USER-FACING: as long as the JPEG was actually written,
+      // RETAIN it so the album + AR card never silently drop a tap — even when
+      // the AR sidecar is incomplete (degraded tracking / IMU dead-reckoning).
+      // Downstream pose-quality filtering is a separate concern; losing the
+      // user's photo here is not acceptable.
+      if ((still != null || saveResult.saved) &&
+          await File(jpegPath).exists()) {
+        // ignore: avoid_print
+        print('[CaptureSession] manual photo retained (sidecar incomplete): '
+            '$jpegPath');
+        targetPoints.stampJpegPath(
+          cellIdx: admit.cellIdx,
+          slotIdx: admit.slotIdx,
+          jpegPath: jpegPath,
+        );
+        return jpegPath;
+      }
+      // ignore: avoid_print
+      print('[CaptureSession] manual photo NOT saved (no JPEG): $jpegPath');
+      return null;
+    } catch (e, st) {
+      // ignore: avoid_print
+      print('[CaptureSession] captureSinglePhoto failed: $e\n$st');
+      return null;
+    } finally {
+      _pendingPhotoSaveCount = math.max(0, _pendingPhotoSaveCount - 1);
     }
   }
 
