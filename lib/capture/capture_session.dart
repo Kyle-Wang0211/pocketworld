@@ -1332,8 +1332,6 @@ class CaptureSession {
 
     final jpegPath =
         '$photosDir/cell_${admit.cellIdx}_slot_${admit.slotIdx}.jpg';
-    final previewPath =
-        '${_previewsDir ?? photosDir}/cell_${admit.cellIdx}_slot_${admit.slotIdx}.jpg';
     final metadataPath =
         '$photosDir/cell_${admit.cellIdx}_slot_${admit.slotIdx}.json';
     final saveSpec = ARFrameSaveSpec(
@@ -1348,21 +1346,14 @@ class CaptureSession {
 
     _pendingPhotoSaveCount += 1;
     try {
-      final still = await poseProvider.captureHighResolutionStill(
-        highresPath: jpegPath,
-        previewPath: previewPath,
-        triggerTimestamp: pose.timestamp,
-        saveSpec: saveSpec,
-      );
-      if (still != null && await _hasCompleteArFrameSidecar(metadataPath)) {
-        targetPoints.stampJpegPath(
-          cellIdx: admit.cellIdx,
-          slotIdx: admit.slotIdx,
-          jpegPath: jpegPath,
-        );
-        return jpegPath;
-      }
-      // Fallback: timestamp-matched ARFrame writer (same sealed sidecar).
+      // INSTANT capture: encode the in-hand continuous ARFrame (4K, ~8.3 MP),
+      // NOT captureHighResolutionFrame. The high-res API momentarily RECONFIGURES
+      // the camera on every tap, which (a) stalls the shutter ~1-2 s ("loading"),
+      // (b) jolts world tracking → the AR card jumps, (c) heats the device. The
+      // continuous frame is already buffered; saveCurrentFrame just encodes the
+      // timestamp-matched snapshot. DA3/SfM downsample to ~2 K, so 4 K vs the
+      // 10 MP out-of-band still is immaterial for the pipeline. (Native
+      // captureHighResolutionStill is retained but no longer on the hot path.)
       final saveResult = await poseProvider.saveCurrentFrame(saveSpec);
       if (saveResult.saved && await _hasCompleteArFrameSidecar(metadataPath)) {
         targetPoints.stampJpegPath(
@@ -1377,8 +1368,7 @@ class CaptureSession {
       // the AR sidecar is incomplete (degraded tracking / IMU dead-reckoning).
       // Downstream pose-quality filtering is a separate concern; losing the
       // user's photo here is not acceptable.
-      if ((still != null || saveResult.saved) &&
-          await File(jpegPath).exists()) {
+      if (saveResult.saved && await File(jpegPath).exists()) {
         // ignore: avoid_print
         print('[CaptureSession] manual photo retained (sidecar incomplete): '
             '$jpegPath');

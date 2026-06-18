@@ -608,15 +608,23 @@ class AetherARKitPlugin: NSObject {
     // This same threshold gates Task 3 Phase B (MobileSAM on-device
     // inference, +180 MB peak) — 4 GB devices stay SAM-disabled.
     //
-    // iOS 16+ exposes `recommendedVideoFormatFor4KResolution` on
-    // ARWorldTrackingConfiguration; nil-fallback to system default
-    // is kept as a safety net even on 6 GB devices.
+    // 4K capture when the device supports it AND has enough RAM headroom.
     //
-    // Must be set BEFORE `session.run` — videoFormat changes after a
-    // session is already running don't take effect. AVAssetWriter setup
-    // below reads `configuration.videoFormat.imageResolution`, so picking
-    // the format here automatically propagates the right pixel buffer
-    // dimensions to the recording path.
+    // NOTE (Path B reverted, 2026-06-19): we TRIED
+    // `recommendedVideoFormatForHighResolutionFrameCapturing` to unlock the full
+    // 12 MP still. On this device / iOS 26 it makes ARWorldTracking NEVER reach
+    // .normal — tracking stays notAvailable for 20s+, the continuous frame stream
+    // stalls, and the live ARSCNView passthrough FREEZES (out-of-band
+    // captureHighResolutionFrame still works, which is why capture looked fine).
+    // Empirical negative result: on this hardware "12 MP in-session" and "working
+    // world tracking" are mutually exclusive. Stay on the 4K format → ~10 MP 16:9
+    // out-of-band stills + a live, trackable session. (48 MP/8K needs leaving
+    // ARKit entirely — declined to keep the photo-card flow.)
+    //
+    // Device-tier gating: 4 GB phones stay on system-default 1920×1440 (4K +
+    // H.264 + ARSCNView pushes them to jetsam); 6 GB+ get 4K. Must be set BEFORE
+    // session.run; the AVAssetWriter recording path reads
+    // configuration.videoFormat.imageResolution.
     let physMemBytes = ProcessInfo.processInfo.physicalMemory
     let physMemGB = Double(physMemBytes) / (1024.0 * 1024.0 * 1024.0)
     let kFourKMemThresholdBytes: UInt64 = 5_000_000_000  // 5.0 GB
@@ -2294,12 +2302,36 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
     mat.diffuse.contents = image
     mat.isDoubleSided = true
     mat.lightingModel = .constant       // unlit — show the photo as captured
-    mat.transparency = 0.6              // RS-style translucent
+    mat.transparency = 0.75             // RS-style translucent (more see-through)
     mat.writesToDepthBuffer = false
     mat.diffuse.wrapS = .clamp
     mat.diffuse.wrapT = .clamp
     geometry.materials = [mat]
-    node.addChildNode(SCNNode(geometry: geometry))
+
+    // RS-style FRAME: a black border RING around the photo. Placeholder colour —
+    // will flip to WHITE once this frame's SfM registration succeeds (flag wired
+    // later). Built as a hollow ring (inner edge == photo edge, outer == +3%) so
+    // it never overlaps the photo (no z-fight, no darkening of the image).
+    let inner = spec.localCorners
+    let outer = inner.map { SCNVector3($0.x * 1.03, $0.y * 1.03, $0.z * 1.03) }
+    let frameVerts = inner + outer                       // 0-3 inner, 4-7 outer
+    let frameIdx: [Int32] = [4, 5, 1, 4, 1, 0,           // top edge
+                             5, 6, 2, 5, 2, 1,           // right edge
+                             6, 7, 3, 6, 3, 2,           // bottom edge
+                             7, 4, 0, 7, 0, 3]           // left edge
+    let frameGeo = SCNGeometry(
+      sources: [SCNGeometrySource(vertices: frameVerts)],
+      elements: [SCNGeometryElement(indices: frameIdx, primitiveType: .triangles)])
+    let frameMat = SCNMaterial()
+    frameMat.diffuse.contents = UIColor.black
+    frameMat.isDoubleSided = true
+    frameMat.lightingModel = .constant
+    frameMat.transparency = 0.95
+    frameMat.writesToDepthBuffer = false
+    frameGeo.materials = [frameMat]
+
+    node.addChildNode(SCNNode(geometry: frameGeo))       // border behind/around
+    node.addChildNode(SCNNode(geometry: geometry))       // photo on top
   }
 
   /// Returns a UIImage whose BACKING PIXELS are physically upright PORTRAIT
