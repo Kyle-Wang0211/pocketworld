@@ -102,6 +102,11 @@ class AetherARKitPlugin: NSObject {
   static var photoCardSpecs: [String: PhotoCardSpec] = [:]
   private static var photoCardAnchors: [ARAnchor] = []
   private static var photoCardCounter = 0
+  /// RS-style CLOSE anchor depth: the card is placed this many metres in front of
+  /// the capture lens (NOT on the subject surface), so it fills the viewport at
+  /// capture and shrinks FAST as you pull back (perspective falloff is steep up
+  /// close). Smaller = appears closer + shrinks faster. Tunable.
+  static let photoCardCloseZ: Float = 0.05
   /// AR photo-card texture is downscaled to this max pixel edge (RS-style: the
   /// floating card is a low-res thumbnail to save GPU memory; the album/pipeline
   /// keep the full-res 4K JPEG). ~96 px → ~0.03 MB/card vs ~33 MB for the full 4K
@@ -504,26 +509,19 @@ class AetherARKitPlugin: NSObject {
         return
       }
       let camera = frame.camera
-      // ANCHOR ON A REAL SURFACE, not mid-air. A free anchor at a fixed 0.4 m has
-      // NO feature points to constrain it, so ARKit's world-frame refinements slide
-      // it laterally as the camera moves → the card "drifts in the camera's
-      // direction" (textbook free-mid-air-anchor drift; verified root cause). We
-      // raycast the capture-centre ray to the subject surface and anchor THERE,
-      // among dense features (same approach lockOrigin uses) — the drift collapses.
-      // Mid-air 0.4 m is only the fallback when nothing is hit (sky / featureless).
+      // RS MODEL (verified by user against RealityScan): the card appears CLOSE in
+      // front of the lens (~photoCardCloseZ, not on the subject surface), filling
+      // the viewport at capture, then shrinks FAST as you pull back — because a
+      // CLOSE anchor's apparent size falls off steeply with distance (back off 15 cm
+      // from 5 cm away → ~4× smaller from perspective alone, ×the (d0/d)^n scale →
+      // tiny almost immediately). Close + fast-shrink is ALSO what makes it read as
+      // stable: the card becomes a small chip before any VIO drift grows visible.
+      // (Replaces the surface raycast, which placed the card far → big & slow to
+      // shrink → drift very visible. RS does NOT anchor on the surface.)
       let camT = camera.transform
       let camPos = simd_make_float3(camT.columns.3)
-      let forward = -simd_normalize(simd_make_float3(camT.columns.2))
-      var z: Float = 0.4   // mid-air fallback
-      let rayQuery = ARRaycastQuery(origin: camPos, direction: forward,
-                                    allowing: .estimatedPlane, alignment: .any)
-      if let hit = session.raycast(rayQuery).first {
-        let d = simd_distance(camPos, simd_make_float3(hit.worldTransform.columns.3))
-        if d > 0.1 && d <= 2.5 { z = d }   // clamp to lockOrigin's range
-        NSLog("[PHOTOCARD] raycast hit d=%.2f -> anchor depth z=%.2f", d, z)
-      } else {
-        NSLog("[PHOTOCARD] raycast MISS -> mid-air fallback z=%.2f", z)
-      }
+      let z: Float = Self.photoCardCloseZ
+      NSLog("[PHOTOCARD] addPhotoCard close-anchor z=%.3f", z)
       // SCREEN-ALIGNED quad built at depth z (the surface distance): the 4 viewport
       // corners via ARKit's PORTRAIT view+projection matrices. The `.portrait`
       // orientation handles the sensor→screen 90° rotation internally; at depth z
@@ -2227,13 +2225,13 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
   // not (verified — a tiny anchored dot is rock-stable, a full card is not).
   // photoCardNodes holds the per-card CONTAINER node we scale.
   private var photoCardNodes: [String: SCNNode] = [:]
-  private static let photoCardMinScale: Float = 0.03        // shrink floor (stays a visible chip far away)
+  private static let photoCardMinScale: Float = 0.15        // shrink floor — keep distant cards a VISIBLE chip (0.03 vanished)
   /// Per-frame DISTANCE shrink: the card is FULL viewport size at its capture
   /// distance d0 (where parallax is zero), then scale = (d0/d)^exponent as the
   /// camera pulls away. The flat card's parallax grows with distance, but it
   /// shrinks faster, so the on-screen slip stays tiny and it settles into a small,
   /// rock-stable RS-style marker. Closer than d0 → clamped to 1.0 (won't overgrow).
-  private static let photoCardShrinkExponent: Float = 3.0
+  private static let photoCardShrinkExponent: Float = 1.0   // close anchor already shrinks fast via perspective; 1.0 keeps it visible-but-quick
 
   init(frame: CGRect, getSession: @escaping () -> ARSession?) {
     self.arscnView = ARSCNView(frame: frame)
@@ -2353,13 +2351,29 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
                                elements: [element])
     let mat = SCNMaterial()
     mat.diffuse.contents = image
-    mat.isDoubleSided = true
+    mat.isDoubleSided = false            // photo on the CAPTURE-FACING side only
+    mat.cullMode = .front                // = the exact face the double-sided card
+                                         // showed toward the camera (unchanged view)
     mat.lightingModel = .constant       // unlit — show the photo as captured
     mat.transparency = 0.7              // RS-style translucent (more see-through)
     mat.writesToDepthBuffer = false
     mat.diffuse.wrapS = .clamp
     mat.diffuse.wrapT = .clamp
     geometry.materials = [mat]
+
+    // OPAQUE BLACK BACK: same quad, rendered only from the AWAY side (cullMode
+    // .back = the face opposite the photo), so orbiting behind the card shows a
+    // solid black panel instead of the see-through/mirrored photo. (→ white after
+    // SfM, same rule as the border.) ONLY addition vs the committed version.
+    let backGeo = SCNGeometry(sources: [positionSource], elements: [element])
+    let backMat = SCNMaterial()
+    backMat.diffuse.contents = UIColor.black
+    backMat.isDoubleSided = false
+    backMat.cullMode = .back             // the face opposite the photo (away side)
+    backMat.lightingModel = .constant
+    backMat.transparency = 1.0           // opaque
+    backMat.writesToDepthBuffer = false
+    backGeo.materials = [backMat]
 
     // RS-style FRAME: a black border RING around the photo. Placeholder colour —
     // will flip to WHITE once this frame's SfM registration succeeds (flag wired
@@ -2388,7 +2402,8 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
     // scaling shrinks the card toward its own centre without moving it.
     let container = SCNNode()
     container.addChildNode(SCNNode(geometry: frameGeo))   // border behind/around
-    container.addChildNode(SCNNode(geometry: geometry))   // photo on top
+    container.addChildNode(SCNNode(geometry: backGeo))    // opaque black back panel
+    container.addChildNode(SCNNode(geometry: geometry))   // photo on the front
     node.addChildNode(container)
     photoCardNodes[name] = container
   }
@@ -2416,7 +2431,15 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
   /// SceneKit auto-removes child nodes when the parent goes — drop our
   /// per-card scaling reference too so the dict doesn't leak.
   func renderer(_ renderer: SCNSceneRenderer, didRemove node: SCNNode, for anchor: ARAnchor) {
-    if let name = anchor.name { photoCardNodes.removeValue(forKey: name) }
+    if let name = anchor.name {
+      if name.hasPrefix("photo_card_") {
+        // DIAGNOSTIC: ARKit removed a photo-card anchor (tracking loss / world-map
+        // re-optimization after walking away+back). This is the "card disappeared
+        // when I came back" symptom — confirms removal vs mere shrink.
+        NSLog("[PHOTOCARD] *** ANCHOR REMOVED by ARKit: %@ (card gone) ***", name)
+      }
+      photoCardNodes.removeValue(forKey: name)
+    }
     guard anchor.name == Self.subjectAnchorName else { return }
     NSLog("[AetherARKitPreview] subject anchor removed; marker went with it")
   }
