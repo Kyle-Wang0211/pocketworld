@@ -95,10 +95,18 @@ class AetherARKitPlugin: NSObject {
   struct PhotoCardSpec {
     let path: String
     let localCorners: [SCNVector3]  // 4 quad corners [TL,TR,BR,BL] in anchor-local space
+    let captureDistance: Float      // camera→card distance at capture
+    let worldCentroid: simd_float3  // anchor world position AT PLACEMENT (drift baseline)
+    let captureCamPos: simd_float3  // camera world position AT CAPTURE (shrink reference)
   }
   static var photoCardSpecs: [String: PhotoCardSpec] = [:]
   private static var photoCardAnchors: [ARAnchor] = []
   private static var photoCardCounter = 0
+  /// AR photo-card texture is downscaled to this max pixel edge (RS-style: the
+  /// floating card is a low-res thumbnail to save GPU memory; the album/pipeline
+  /// keep the full-res 4K JPEG). ~96 px → ~0.03 MB/card vs ~33 MB for the full 4K
+  /// (deliberately VERY low-res / blurry AR card, RS-style).
+  static let photoCardThumbMaxPx = 96
 
   // MARK: Channels
 
@@ -496,18 +504,33 @@ class AetherARKitPlugin: NSObject {
         return
       }
       let camera = frame.camera
-      // SCREEN-ALIGNED quad, ZERO tuning, FULLY DETERMINISTIC. We build the 4
-      // viewport-corner world points from ARKit's PORTRAIT view + projection
-      // matrices. The `.portrait` orientation makes ARKit handle the sensor→screen
-      // 90° rotation internally, so the quad comes out screen-portrait (not the
-      // sensor-landscape shape). At depth z the viewport edges (NDC ±1) sit at
-      // ±halfX / ±halfY in view space, where half = z / projectionScale; the quad
-      // therefore EXACTLY fills the viewport at capture and, world-anchored, peels
-      // off the lens as the camera moves. (Replaces unprojectPoint(ontoPlane:),
-      // which failed 2-4/4 corners — the plane went edge-on to the corner rays —
-      // and dropped to a sensor-landscape fallback that rotated the card 90°.)
+      // ANCHOR ON A REAL SURFACE, not mid-air. A free anchor at a fixed 0.4 m has
+      // NO feature points to constrain it, so ARKit's world-frame refinements slide
+      // it laterally as the camera moves → the card "drifts in the camera's
+      // direction" (textbook free-mid-air-anchor drift; verified root cause). We
+      // raycast the capture-centre ray to the subject surface and anchor THERE,
+      // among dense features (same approach lockOrigin uses) — the drift collapses.
+      // Mid-air 0.4 m is only the fallback when nothing is hit (sky / featureless).
+      let camT = camera.transform
+      let camPos = simd_make_float3(camT.columns.3)
+      let forward = -simd_normalize(simd_make_float3(camT.columns.2))
+      var z: Float = 0.4   // mid-air fallback
+      let rayQuery = ARRaycastQuery(origin: camPos, direction: forward,
+                                    allowing: .estimatedPlane, alignment: .any)
+      if let hit = session.raycast(rayQuery).first {
+        let d = simd_distance(camPos, simd_make_float3(hit.worldTransform.columns.3))
+        if d > 0.1 && d <= 2.5 { z = d }   // clamp to lockOrigin's range
+        NSLog("[PHOTOCARD] raycast hit d=%.2f -> anchor depth z=%.2f", d, z)
+      } else {
+        NSLog("[PHOTOCARD] raycast MISS -> mid-air fallback z=%.2f", z)
+      }
+      // SCREEN-ALIGNED quad built at depth z (the surface distance): the 4 viewport
+      // corners via ARKit's PORTRAIT view+projection matrices. The `.portrait`
+      // orientation handles the sensor→screen 90° rotation internally; at depth z
+      // the viewport edges (NDC ±1) sit at ±halfX/±halfY in view space (half =
+      // z/projectionScale), so the quad EXACTLY fills the viewport at capture
+      // regardless of z, and world-anchored on the surface it peels off the lens.
       let viewportSize = UIScreen.main.bounds.size
-      let z: Float = 0.4
       let proj = camera.projectionMatrix(for: .portrait,
                                          viewportSize: viewportSize,
                                          zNear: 0.001, zFar: 1000)
@@ -538,7 +561,8 @@ class AetherARKitPlugin: NSObject {
       let cardName = "photo_card_\(AetherARKitPlugin.photoCardCounter)"
       AetherARKitPlugin.photoCardCounter += 1
       AetherARKitPlugin.photoCardSpecs[cardName] =
-        PhotoCardSpec(path: jpegPath, localCorners: localCorners)
+        PhotoCardSpec(path: jpegPath, localCorners: localCorners,
+                      captureDistance: z, worldCentroid: centroid, captureCamPos: camPos)
       var anchorT = matrix_identity_float4x4
       anchorT.columns.3 = simd_float4(centroid, 1)
       let cardAnchor = ARAnchor(name: cardName, transform: anchorT)
@@ -2193,6 +2217,25 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
   private static let subjectMarkerRadius: CGFloat = 0.03 // 3 cm
   private static let subjectAnchorName = "pocketworld_subject_origin"
 
+  // ── RealityScan-style move-away shrink (also kills card parallax) ──
+  // A photo card fills the screen ONLY at the capture viewpoint (where the flat
+  // card aligns perfectly with the scene). As the camera LEAVES that spot — in
+  // ANY direction, including orbiting — we shrink the card toward a small chip by
+  // how far it has moved (halves every photoCardShrinkHalfLife metres). This both
+  // matches RS's "shrinks as you walk away" look AND fixes the real instability:
+  // a big flat card visibly parallaxes against the 3D scene, but a small chip does
+  // not (verified — a tiny anchored dot is rock-stable, a full card is not).
+  // photoCardNodes holds the per-card CONTAINER node we scale.
+  private var photoCardNodes: [String: SCNNode] = [:]
+  private static let photoCardMinScale: Float = 0.03        // floor so far chips stay visible
+  private static let photoCardShrinkHalfLife: Float = 0.18  // (unused now) move-away shrink half-life
+  /// Card scale = small RS-style position marker (fraction of viewport-fill).
+  /// SMALL is the ONLY thing that makes a flat photo read as rock-stable under
+  /// orbit — parallax slip ∝ card angular size, so a small chip's residual slip is
+  /// below notice (a big flat card CANNOT be stable; that's geometry, not a bug).
+  /// World-oriented + static (no distance coupling → never "follows"/"recedes").
+  private static let photoCardFixedScale: Float = 0.15
+
   init(frame: CGRect, getSession: @escaping () -> ARSession?) {
     self.arscnView = ARSCNView(frame: frame)
     self.getSession = getSession
@@ -2259,18 +2302,31 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
     // as the camera moves. No orientation/size tuning.
     guard let name = anchor.name, name.hasPrefix("photo_card_") else { return }
     NSLog("[PHOTOCARD] renderer didAdd %@", name)
-    guard let spec = AetherARKitPlugin.photoCardSpecs[name],
-          let raw = UIImage(contentsOfFile: spec.path) else {
-      NSLog("[PHOTOCARD] renderer: spec or image MISSING for %@", name)
+    guard let spec = AetherARKitPlugin.photoCardSpecs[name] else {
+      NSLog("[PHOTOCARD] renderer: spec MISSING for %@", name)
       return
     }
-    NSLog("[PHOTOCARD] renderer building quad for %@ (%d corners)", name,
-          spec.localCorners.count)
-
-    // Orientation, DETERMINISTICALLY (no displayTransform convention guessing):
-    // rotate the texture to upright PORTRAIT by pixel dimensions, then aspect-
-    // FILL it onto the screen-aligned quad with computed UVs (crop, no stretch).
-    let image = Self.uprightPortrait(raw)
+    // LOW-RES AR texture (RS-style memory saver). Decode a small thumbnail
+    // DIRECTLY from the 4K JPEG via ImageIO — it never decodes the full frame,
+    // so each floating card holds a ~1 MB texture instead of ~33 MB and hundreds
+    // of cards won't OOM. The album + DA3/SfM still read the full-res 4K JPEG on
+    // disk; only the AR card is downscaled. kCGImageSource…WithTransform bakes the
+    // EXIF orientation → upright portrait (replaces the manual uprightPortrait).
+    let thumbOpts: [CFString: Any] = [
+      kCGImageSourceCreateThumbnailFromImageAlways: true,
+      kCGImageSourceCreateThumbnailWithTransform: true,
+      kCGImageSourceThumbnailMaxPixelSize: AetherARKitPlugin.photoCardThumbMaxPx,
+    ]
+    guard let imgSrc = CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: spec.path) as CFURL, nil),
+          let thumbCG = CGImageSourceCreateThumbnailAtIndex(
+            imgSrc, 0, thumbOpts as CFDictionary) else {
+      NSLog("[PHOTOCARD] renderer: thumbnail decode FAILED for %@", name)
+      return
+    }
+    let image = UIImage(cgImage: thumbCG)   // upright portrait, ~thumb px long edge
+    NSLog("[PHOTOCARD] renderer building quad for %@ (%d corners) thumb=%dx%d",
+          name, spec.localCorners.count, thumbCG.width, thumbCG.height)
     let c = spec.localCorners
     let quadW = CGFloat(simd_length(simd_float3(
       c[1].x - c[0].x, c[1].y - c[0].y, c[1].z - c[0].z)))   // TL->TR
@@ -2287,10 +2343,8 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
     }
     let texUVs = [CGPoint(x: u0, y: v0), CGPoint(x: u1, y: v0),
                   CGPoint(x: u1, y: v1), CGPoint(x: u0, y: v1)]   // TL,TR,BR,BL
-    NSLog("[PHOTOCARD] tex raw=%.0fx%.0f upright=%.0fx%.0f cgUp=%dx%d texAsp=%.3f quadAsp=%.3f (EXPECT upright h>w, texAsp<1~0.75, quadAsp~0.46)",
-          raw.size.width, raw.size.height, image.size.width, image.size.height,
-          image.cgImage?.width ?? -1, image.cgImage?.height ?? -1,
-          texAspect, quadAspect)
+    NSLog("[PHOTOCARD] tex thumb=%.0fx%.0f texAsp=%.3f quadAsp=%.3f",
+          image.size.width, image.size.height, texAspect, quadAspect)
 
     let positionSource = SCNGeometrySource(vertices: spec.localCorners)
     let texSource = SCNGeometrySource(textureCoordinates: texUVs)
@@ -2302,7 +2356,7 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
     mat.diffuse.contents = image
     mat.isDoubleSided = true
     mat.lightingModel = .constant       // unlit — show the photo as captured
-    mat.transparency = 0.75             // RS-style translucent (more see-through)
+    mat.transparency = 0.7              // RS-style translucent (more see-through)
     mat.writesToDepthBuffer = false
     mat.diffuse.wrapS = .clamp
     mat.diffuse.wrapT = .clamp
@@ -2313,7 +2367,7 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
     // later). Built as a hollow ring (inner edge == photo edge, outer == +3%) so
     // it never overlaps the photo (no z-fight, no darkening of the image).
     let inner = spec.localCorners
-    let outer = inner.map { SCNVector3($0.x * 1.03, $0.y * 1.03, $0.z * 1.03) }
+    let outer = inner.map { SCNVector3($0.x * 1.06, $0.y * 1.06, $0.z * 1.06) }  // 2× thicker
     let frameVerts = inner + outer                       // 0-3 inner, 4-7 outer
     let frameIdx: [Int32] = [4, 5, 1, 4, 1, 0,           // top edge
                              5, 6, 2, 5, 2, 1,           // right edge
@@ -2330,37 +2384,33 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
     frameMat.writesToDepthBuffer = false
     frameGeo.materials = [frameMat]
 
-    node.addChildNode(SCNNode(geometry: frameGeo))       // border behind/around
-    node.addChildNode(SCNNode(geometry: geometry))       // photo on top
+    // Wrap border + photo in a CONTAINER we scale per-frame (renderer:updateAtTime)
+    // for the deliberate distance shrink. Container origin == anchor centroid, so
+    // scaling shrinks the card toward its own centre without moving it.
+    let container = SCNNode()
+    container.addChildNode(SCNNode(geometry: frameGeo))   // border behind/around
+    container.addChildNode(SCNNode(geometry: geometry))   // photo on top
+    node.addChildNode(container)
+    photoCardNodes[name] = container
   }
 
-  /// Returns a UIImage whose BACKING PIXELS are physically upright PORTRAIT
-  /// (identity .up orientation, height > width), with the EXIF/imageOrientation
-  /// baked into the pixels. Canonical UIKit "normalize orientation" recipe:
-  /// `UIImage(contentsOfFile:)` keeps RAW landscape pixels with only
-  /// `.imageOrientation == .right` metadata, which SceneKit/CIImage ignore when
-  /// reading `.cgImage` (→ sideways texture). `img.draw(in:)` HONORS
-  /// imageOrientation, so redrawing into a renderer sized by `img.size` (already
-  /// orientation-corrected → portrait) bakes upright portrait pixels. Self-
-  /// describing: reads imageOrientation at runtime, so it can't drift.
-  private static func uprightPortrait(_ img: UIImage) -> UIImage {
-    // Fast path: already upright .up AND already portrait pixels — use as-is.
-    if img.imageOrientation == .up,
-       let cg = img.cgImage, cg.height >= cg.width {
-      return img
-    }
-    let fmt = UIGraphicsImageRendererFormat.default()
-    fmt.scale = 1   // 1:1 pixels — don't let @2x/@3x inflate the texture
-    let renderer = UIGraphicsImageRenderer(size: img.size, format: fmt)
-    return renderer.image { _ in
-      img.draw(in: CGRect(origin: .zero, size: img.size))
+  /// Per-frame: DELIBERATE distance shrink for the floating photo cards (RS-style).
+  /// Plain perspective only shrinks a full-screen card to ~30 % when you back away
+  /// 1 m; scaling the card node by d0/d on top of that gives a (d0/d)^2 on-screen
+  /// falloff → a few-cm chip, which is the look the user asked for. Cheap: one
+  /// distance + scale per card per frame, all on the SceneKit render thread.
+  func renderer(_ renderer: SCNSceneRenderer, updateAtTime time: TimeInterval) {
+    guard !photoCardNodes.isEmpty else { return }
+    for (_, card) in photoCardNodes {
+      card.simdScale = simd_float3(repeating: Self.photoCardFixedScale)
     }
   }
 
   /// Fires when ARKit removes our anchor (re-lock or stopSession).
-  /// SceneKit auto-removes child nodes when the parent goes — nothing
-  /// to do, but log for visibility.
+  /// SceneKit auto-removes child nodes when the parent goes — drop our
+  /// per-card scaling reference too so the dict doesn't leak.
   func renderer(_ renderer: SCNSceneRenderer, didRemove node: SCNNode, for anchor: ARAnchor) {
+    if let name = anchor.name { photoCardNodes.removeValue(forKey: name) }
     guard anchor.name == Self.subjectAnchorName else { return }
     NSLog("[AetherARKitPreview] subject anchor removed; marker went with it")
   }
