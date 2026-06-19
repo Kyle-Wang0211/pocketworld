@@ -2227,14 +2227,13 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
   // not (verified — a tiny anchored dot is rock-stable, a full card is not).
   // photoCardNodes holds the per-card CONTAINER node we scale.
   private var photoCardNodes: [String: SCNNode] = [:]
-  private static let photoCardMinScale: Float = 0.03        // floor so far chips stay visible
-  private static let photoCardShrinkHalfLife: Float = 0.18  // (unused now) move-away shrink half-life
-  /// Card scale = small RS-style position marker (fraction of viewport-fill).
-  /// SMALL is the ONLY thing that makes a flat photo read as rock-stable under
-  /// orbit — parallax slip ∝ card angular size, so a small chip's residual slip is
-  /// below notice (a big flat card CANNOT be stable; that's geometry, not a bug).
-  /// World-oriented + static (no distance coupling → never "follows"/"recedes").
-  private static let photoCardFixedScale: Float = 0.15
+  private static let photoCardMinScale: Float = 0.03        // shrink floor (stays a visible chip far away)
+  /// Per-frame DISTANCE shrink: the card is FULL viewport size at its capture
+  /// distance d0 (where parallax is zero), then scale = (d0/d)^exponent as the
+  /// camera pulls away. The flat card's parallax grows with distance, but it
+  /// shrinks faster, so the on-screen slip stays tiny and it settles into a small,
+  /// rock-stable RS-style marker. Closer than d0 → clamped to 1.0 (won't overgrow).
+  private static let photoCardShrinkExponent: Float = 3.0
 
   init(frame: CGRect, getSession: @escaping () -> ARSession?) {
     self.arscnView = ARSCNView(frame: frame)
@@ -2400,9 +2399,16 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
   /// falloff → a few-cm chip, which is the look the user asked for. Cheap: one
   /// distance + scale per card per frame, all on the SceneKit render thread.
   func renderer(_ renderer: SCNSceneRenderer, updateAtTime time: TimeInterval) {
-    guard !photoCardNodes.isEmpty else { return }
-    for (_, card) in photoCardNodes {
-      card.simdScale = simd_float3(repeating: Self.photoCardFixedScale)
+    guard !photoCardNodes.isEmpty, let cam = renderer.pointOfView else { return }
+    let camPos = cam.simdWorldPosition
+    for (name, card) in photoCardNodes {
+      // Full size at the capture distance d0; shrink as the camera pulls away.
+      let d0 = AetherARKitPlugin.photoCardSpecs[name]?.captureDistance ?? 0.4
+      let d = simd_distance(camPos, card.simdWorldPosition)
+      let ratio = d > 0.001 ? d0 / d : 1.0
+      let s = max(Self.photoCardMinScale,
+                  min(1.0, powf(ratio, Self.photoCardShrinkExponent)))
+      card.simdScale = simd_float3(repeating: s)
     }
   }
 
