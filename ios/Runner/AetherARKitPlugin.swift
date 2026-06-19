@@ -568,13 +568,7 @@ class AetherARKitPlugin: NSObject {
       session.add(anchor: cardAnchor)
       result(nil)
     case "clearPhotoCards":
-      if let session = arSession {
-        for a in AetherARKitPlugin.photoCardAnchors {
-          session.remove(anchor: a)
-        }
-      }
-      AetherARKitPlugin.photoCardAnchors.removeAll()
-      AetherARKitPlugin.photoCardSpecs.removeAll()
+      AetherARKitPlugin.clearPhotoCards(in: arSession)
       result(nil)
     default:
       result(FlutterMethodNotImplemented)
@@ -582,6 +576,19 @@ class AetherARKitPlugin: NSObject {
   }
 
   // MARK: Session lifecycle
+
+  /// Remove all AR photo-card anchors + specs (the SceneKit nodes go via ARKit's
+  /// didRemove). The album JPEGs + pose sidecars on disk are NOT touched — only the
+  /// in-AR markers. Used on resume (RS behaviour: a resume relocalization shifts the
+  /// world frame, so the old cards are unreliable — clear them; the user keeps
+  /// capturing and the album keeps every shot).
+  static func clearPhotoCards(in session: ARSession?) {
+    if let session = session {
+      for a in photoCardAnchors { session.remove(anchor: a) }
+    }
+    photoCardAnchors.removeAll()
+    photoCardSpecs.removeAll()
+  }
 
   private func startSession(resetWorld: Bool = true) throws {
     NSLog("[AetherARKit] startSession(resetWorld=\(resetWorld)) — isSupported=\(ARWorldTrackingConfiguration.isSupported)")
@@ -670,9 +677,13 @@ class AetherARKitPlugin: NSObject {
       session.run(configuration,
                   options: [.resetTracking, .removeExistingAnchors])
     } else {
-      // RESUME after a transient background: keep the world map + existing
-      // photo-card anchors so the AR cards survive (no reset, no anchor removal).
+      // RESUME after a transient background: keep the world map (no reset), BUT
+      // clear the AR photo cards. ARKit relocalizes on resume and re-aligns the
+      // world frame, which shifts all anchors together ("4 cards moved as one").
+      // RS handles this by dropping the in-AR markers on resume while KEEPING the
+      // album JPEGs + pose sidecars on disk — user just keeps capturing. Match it.
       session.run(configuration)
+      AetherARKitPlugin.clearPhotoCards(in: session)
     }
     arSession = session
     if #available(iOS 16.0, *) {
