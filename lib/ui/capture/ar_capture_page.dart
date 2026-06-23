@@ -558,6 +558,12 @@ class _ARCapturePageState extends State<ARCapturePage>
       try {
         await _arKitChannel.invokeMethod<void>('clearPhotoCards');
       } catch (_) {}
+      // T6: turn on the live sparse coverage cloud for this take (RS-style —
+      // ARKit feature points, world-anchored, coloured by coverage).
+      try {
+        await _arKitChannel.invokeMethod<void>(
+          'setFeaturePointsVisible', <String, dynamic>{'visible': true});
+      } catch (_) {}
       _previewModel.reset();
       setState(() {
         _recording = true;
@@ -625,6 +631,11 @@ class _ARCapturePageState extends State<ARCapturePage>
       // under `<captureDir>/photos_highres/`; stop freezes curation and
       // writes the shared photo_bundle contract.
       await session.stop();
+      // T6: tear down the live sparse cloud when the take ends.
+      try {
+        await _arKitChannel.invokeMethod<void>(
+          'setFeaturePointsVisible', <String, dynamic>{'visible': false});
+      } catch (_) {}
       if (mounted) {
         setState(() {
           _recording = false;

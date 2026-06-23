@@ -134,7 +134,7 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/video_thumbnail/ios"
 
 SPEC CHECKSUMS:
-  aether3d_ffi: 15f06e8902a449d8072829b5409c7586185b9ccb
+  aether3d_ffi: fba14a0f9e8df9a808d00bd084d09f00f194fa6e
   app_links: a754cbec3c255bd4bbb4d236ecc06f28cd9a7ce8
   background_downloader: 50e91d979067b82081aba359d7d916b3ba5fadad
   camera_avfoundation: 968a9a5323c79a99c166ad9d7866bfd2047b5a9b

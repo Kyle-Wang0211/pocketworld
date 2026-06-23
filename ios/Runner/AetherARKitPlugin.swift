@@ -102,6 +102,12 @@ class AetherARKitPlugin: NSObject {
   static var photoCardSpecs: [String: PhotoCardSpec] = [:]
   private static var photoCardAnchors: [ARAnchor] = []
   private static var photoCardCounter = 0
+
+  /// T6 — live sparse feature-point overlay toggle. Read by the render loop in
+  /// AetherARKitPreviewView (the separate class that owns the ARSCNView), set via
+  /// the `setFeaturePointsVisible` method channel command. Static so the preview
+  /// view can read it, mirroring the photoCardSpecs sharing pattern.
+  static var featurePointsVisible: Bool = false
   /// RS-style CLOSE anchor depth: the card is placed this many metres in front of
   /// the capture lens (NOT on the subject surface), so it fills the viewport at
   /// capture and shrinks FAST as you pull back (perspective falloff is steep up
@@ -569,6 +575,13 @@ class AetherARKitPlugin: NSObject {
       result(nil)
     case "clearPhotoCards":
       AetherARKitPlugin.clearPhotoCards(in: arSession)
+      result(nil)
+    case "setFeaturePointsVisible":
+      let visible =
+        ((call.arguments as? [String: Any])?["visible"] as? NSNumber)?.boolValue
+          ?? false
+      AetherARKitPlugin.featurePointsVisible = visible
+      NSLog("[AetherARKit] setFeaturePointsVisible=\(visible)")
       result(nil)
     default:
       result(FlutterMethodNotImplemented)
@@ -2244,6 +2257,99 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
   /// rock-stable RS-style marker. Closer than d0 → clamped to 1.0 (won't overgrow).
   private static let photoCardShrinkExponent: Float = 1.0   // close anchor already shrinks fast via perspective; 1.0 keeps it visible-but-quick
 
+  // ── T6: live sparse feature-point overlay (RS-style coverage cloud) ──────
+  // ARKit's rawFeaturePoints are already WORLD-space + carry stable per-point
+  // identifiers, so we accumulate them across frames (the cloud GROWS as you
+  // capture) and colour each by how many frames it has persisted — new/uncertain
+  // points are red, well-observed points go green (the RS coverage signal). The
+  // cloud is one native SceneKit `.point` geometry attached to the world root
+  // (depth-correct, no 2D-projection parallax — same reason the photo cards are
+  // native). Rebuilt every few frames, not per-frame, and capped, to stay cheap.
+  private var featurePoints: [UInt64: (pos: simd_float3, count: Int)] = [:]
+  private var pointCloudNode: SCNNode?
+  private var pointFrameCounter = 0
+  private static let maxFeaturePoints = 4000
+  private static let pointRebuildInterval = 8       // rebuild geometry every N frames
+  private static let pointCountSaturation: Float = 12  // observations for full "green"
+
+  /// Per-frame: accumulate ARKit feature points + periodically rebuild the cloud.
+  /// Toggled off → tear the node down and forget the accumulation.
+  private func updateFeaturePointOverlay() {
+    if !AetherARKitPlugin.featurePointsVisible {
+      if pointCloudNode != nil {
+        pointCloudNode?.removeFromParentNode()
+        pointCloudNode = nil
+        featurePoints.removeAll()
+        pointFrameCounter = 0
+      }
+      return
+    }
+    guard let frame = arscnView.session.currentFrame,
+          let raw = frame.rawFeaturePoints else { return }
+    let pts = raw.points
+    let ids = raw.identifiers
+    let n = min(pts.count, ids.count)
+    for i in 0..<n {
+      let id = ids[i]
+      if var existing = featurePoints[id] {
+        existing.pos = pts[i]
+        existing.count = min(existing.count + 1, 60)
+        featurePoints[id] = existing
+      } else {
+        featurePoints[id] = (pos: pts[i], count: 1)
+      }
+    }
+    if featurePoints.count > Self.maxFeaturePoints {       // bound memory: keep best-seen
+      let keep = featurePoints.sorted { $0.value.count > $1.value.count }
+        .prefix(Self.maxFeaturePoints)
+      featurePoints = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
+    }
+    pointFrameCounter += 1
+    if pointFrameCounter % Self.pointRebuildInterval == 0 { rebuildPointCloud() }
+  }
+
+  private func rebuildPointCloud() {
+    guard !featurePoints.isEmpty else { return }
+    var verts: [SCNVector3] = []
+    var colors: [SIMD4<Float>] = []
+    verts.reserveCapacity(featurePoints.count)
+    colors.reserveCapacity(featurePoints.count)
+    for (_, v) in featurePoints {
+      verts.append(SCNVector3(v.pos))
+      let t = min(Float(v.count) / Self.pointCountSaturation, 1.0)   // 0 new → 1 well-seen
+      let r: Float = t < 0.5 ? 1.0 : (1.0 - (t - 0.5) * 2.0)         // red→yellow→green
+      let g: Float = t < 0.5 ? (t * 2.0) : 1.0
+      colors.append(SIMD4<Float>(r, g, 0.08, 1.0))
+    }
+    let vSource = SCNGeometrySource(vertices: verts)
+    let cData = colors.withUnsafeBytes { Data($0) }
+    let cSource = SCNGeometrySource(
+      data: cData, semantic: .color, vectorCount: colors.count,
+      usesFloatComponents: true, componentsPerVector: 4,
+      bytesPerComponent: MemoryLayout<Float>.size, dataOffset: 0,
+      dataStride: MemoryLayout<SIMD4<Float>>.stride)
+    let element = SCNGeometryElement(
+      indices: (0..<verts.count).map { Int32($0) }, primitiveType: .point)
+    element.pointSize = 6
+    element.minimumPointScreenSpaceRadius = 2
+    element.maximumPointScreenSpaceRadius = 6
+    let geo = SCNGeometry(sources: [vSource, cSource], elements: [element])
+    let mat = SCNMaterial()
+    mat.lightingModel = .constant
+    mat.diffuse.contents = UIColor.white      // × per-vertex colour
+    mat.writesToDepthBuffer = false
+    mat.readsFromDepthBuffer = false
+    geo.materials = [mat]
+    if let node = pointCloudNode {
+      node.geometry = geo
+    } else {
+      let node = SCNNode(geometry: geo)
+      node.renderingOrder = -10               // render under the photo cards
+      arscnView.scene.rootNode.addChildNode(node)
+      pointCloudNode = node
+    }
+  }
+
   init(frame: CGRect, getSession: @escaping () -> ARSession?) {
     self.arscnView = ARSCNView(frame: frame)
     self.getSession = getSession
@@ -2425,6 +2531,7 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
   /// falloff → a few-cm chip, which is the look the user asked for. Cheap: one
   /// distance + scale per card per frame, all on the SceneKit render thread.
   func renderer(_ renderer: SCNSceneRenderer, updateAtTime time: TimeInterval) {
+    updateFeaturePointOverlay()    // T6: live sparse coverage cloud (independent of cards)
     guard !photoCardNodes.isEmpty, let cam = renderer.pointOfView else { return }
     let camPos = cam.simdWorldPosition
     for (name, card) in photoCardNodes {
