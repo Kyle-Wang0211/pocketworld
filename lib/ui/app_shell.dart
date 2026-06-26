@@ -278,13 +278,14 @@ class _BottomTabBar extends StatelessWidget {
       ),
       child: SafeArea(
         top: false,
-        bottom: false,
+        bottom: true,
         child: SizedBox(
-          // Polycam-height bar (compact, no half-floating FAB). Keep the
-          // icon row itself 56 px tall and do not add iOS home-indicator
-          // padding; otherwise the icons float too high with a large blank
-          // band underneath.
-          height: 56,
+          // Taller bar (2026-06-24): icon row 56→72 + bottom safe-area inset.
+          // The old 56px compact bar sat flush against the home indicator and
+          // was too thin — easy to miss the tab icons and mis-tap the feed
+          // content above. Bigger tap targets + proper iOS home-indicator
+          // padding.
+          height: 72,
           child: Row(
             children: [
               Expanded(

@@ -56,6 +56,23 @@ class _AetherSplashOverlayState extends State<AetherSplashOverlay>
       duration: const Duration(milliseconds: 420),
       value: widget.visible ? 1.0 : 0.0,
     );
+    _fadeCtrl.addStatusListener(_onFadeStatus);
+    // Don't spin/pulse behind an invisible overlay — that continuous
+    // repaint is what made the sign-in page janky (especially in debug).
+    if (!widget.visible) {
+      _spinCtrl.stop();
+      _pulseCtrl.stop();
+    }
+  }
+
+  void _onFadeStatus(AnimationStatus status) {
+    if (status == AnimationStatus.dismissed) {
+      // Fully faded out → kill the loops and rebuild as an empty widget so
+      // nothing repaints behind the sign-in page.
+      _spinCtrl.stop();
+      _pulseCtrl.stop();
+      if (mounted) setState(() {});
+    }
   }
 
   @override
@@ -63,6 +80,8 @@ class _AetherSplashOverlayState extends State<AetherSplashOverlay>
     super.didUpdateWidget(old);
     if (widget.visible != old.visible) {
       if (widget.visible) {
+        if (!_spinCtrl.isAnimating) _spinCtrl.repeat();
+        if (!_pulseCtrl.isAnimating) _pulseCtrl.repeat(reverse: true);
         _fadeCtrl.forward();
       } else {
         _fadeCtrl.reverse();
@@ -80,6 +99,12 @@ class _AetherSplashOverlayState extends State<AetherSplashOverlay>
 
   @override
   Widget build(BuildContext context) {
+    // Fully hidden → render nothing. Otherwise the looping spin/pulse +
+    // indeterminate progress bar keep repainting every frame behind the
+    // (invisible) sign-in page and make it janky in debug.
+    if (!widget.visible && _fadeCtrl.isDismissed) {
+      return const SizedBox.shrink();
+    }
     return IgnorePointer(
       ignoring: !widget.visible,
       child: FadeTransition(
