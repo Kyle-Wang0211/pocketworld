@@ -32,7 +32,7 @@ import 'l10n/app_localizations.dart';
 import 'lifecycle_observer.dart';
 import 'object_transform.dart';
 import 'orbit_controls.dart';
-import 'ui/app_shell.dart';
+import 'ui/me_root_page.dart';
 import 'ui/auth/auth_root_view.dart';
 import 'ui/design_system.dart';
 import 'ui/splash_overlay.dart';
@@ -608,7 +608,10 @@ class _HomeScreenState extends State<HomeScreen> {
     // ported capture flow will reattach to.
     return Stack(
       children: [
-        const AetherAppShell(),
+        // V1 (工具阶段): personal page + capture FAB only. The two-tab shell
+        // (AetherAppShell, with the community feed) is kept for V2 but not
+        // routed to here.
+        const MeRootPage(),
         Positioned.fill(
           child: AetherSplashOverlay(
             visible: _splashVisible,
