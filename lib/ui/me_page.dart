@@ -375,8 +375,6 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
         record.cloudRawDeletedAt == null &&
         record.cloudUploadStatus != ScanCloudUploadStatus.queued &&
         record.cloudUploadStatus != ScanCloudUploadStatus.processing;
-    final canRunLocalDa3 =
-        record.captureDir != null && record.captureDir!.trim().isNotEmpty;
     final action = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: AetherColors.bgCanvas,
@@ -392,12 +390,6 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
                 leading: const Icon(Icons.play_arrow_rounded),
                 title: Text(copy.startTraining),
                 onTap: () => Navigator.of(ctx).pop('train'),
-              ),
-            if (canRunLocalDa3)
-              ListTile(
-                leading: const Icon(Icons.memory_rounded),
-                title: Text(copy.runLocalDa3),
-                onTap: () => Navigator.of(ctx).pop('local_da3'),
               ),
             ListTile(
               leading: const Icon(Icons.edit_outlined),
@@ -429,8 +421,6 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
     if (!mounted) return;
     if (action == 'train') {
       await _startTraining(record);
-    } else if (action == 'local_da3') {
-      await _runLocalDa3(record);
     } else if (action == 'rename') {
       await _renameRecord(record);
     } else if (action == 'delete_cloud_raw') {
