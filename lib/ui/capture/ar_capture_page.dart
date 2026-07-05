@@ -33,10 +33,12 @@ import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 import 'package:vector_math/vector_math_64.dart' show Quaternion, Vector3;
 
+import '../../capture/capture_coverage_cloud.dart';
 import '../../capture/capture_session.dart';
 import '../../capture/dome/dome_target_points.dart';
 import '../../capture/model_loader.dart';
 import '../../capture/realtime_capture_preview.dart';
+import '../../capture/sfm_live_recon.dart';
 import '../../capture/ui/model_download_consent_dialog.dart';
 import '../../capture/ui/model_download_dialog.dart';
 import '../../dome/ar_pose.dart';
@@ -44,8 +46,10 @@ import '../../l10n/app_localizations.dart';
 import '../../me/scan_record_store.dart';
 import '../../pipeline/local_pipeline_runner.dart';
 import '../../quality/guidance_engine.dart' show GuidanceSnapshot;
+import '../../util/device_log.dart';
 import '../scan_record.dart';
 import 'ar_album_page.dart';
+import 'sfm_preview_overlay.dart';
 
 class ARCapturePage extends StatefulWidget {
   const ARCapturePage({super.key});
@@ -103,6 +107,33 @@ class _ARCapturePageState extends State<ARCapturePage>
 
   /// True while a single manual still is being saved (shutter disabled).
   bool _capturing = false;
+
+  // ─── Capture-time streaming SfM (live sparse reconstruction) ──────
+  // Worker handle + event plumbing. All heavy calls live in the worker
+  // isolate (see sfm_live_recon.dart); this page only routes keyframe
+  // feeds in and snapshots out. Null on the simulator (feature hidden).
+  SfmLiveRecon? _sfmRecon;
+  StreamSubscription<SfmFrameFeed>? _sfmFeedSub;
+  StreamSubscription<SfmLiveEvent>? _sfmEventSub;
+
+  /// Non-null while the post-capture preview overlay is showing.
+  SfmPreviewPhase? _sfmPhase;
+  SfmLiveSnapshot? _sfmSnapshot;
+  String? _sfmErrorText;
+  int _sfmFed = 0;
+  int _sfmDropped = 0;
+
+  /// The finish flow wants to pop to Drafts, but the preview overlay owns
+  /// the exit while it's up — set, then honoured by [_onSfmPreviewDone].
+  bool _sfmPendingPop = false;
+
+  // ─── RS-style capture-coverage cloud (Dart-owned policy) ──────────
+  // Empty until the first committed shutter; every photo frustum-marks the
+  // VIO voxel cloud and the covered points render red→yellow→green by how
+  // many photos saw them. Policy lives in capture_coverage_cloud.dart
+  // (cross-platform); native only displays what we push.
+  final CaptureCoverageCloud _coverageCloud = CaptureCoverageCloud();
+  StreamSubscription<SfmFrameFeed>? _coverageFeedSub;
 
   /// 3-state UX: idle → aim → recording.
   /// idle:      user has not started anything; tap → enter aim.
@@ -298,6 +329,9 @@ class _ARCapturePageState extends State<ARCapturePage>
           p,
           photoCount: _targetPoints.retainedJpegPaths.length,
         );
+        // Coverage-cloud position upkeep — never lights points up by itself
+        // (only markCapture at each shutter does).
+        _coverageCloud.ingestPose(p);
         _checkArWarmup(p);
       });
       await session.attach();
@@ -565,14 +599,130 @@ class _ARCapturePageState extends State<ARCapturePage>
           'setFeaturePointsVisible', <String, dynamic>{'visible': true});
       } catch (_) {}
       _previewModel.reset();
+      // Fresh take → empty coverage cloud (0 photos ⇒ 0 dots on screen).
+      _coverageCloud.reset();
+      unawaited(_pushCoverageCloud());
+      _coverageFeedSub ??=
+          session.sfmFrameStream.listen(_onCoverageKeyframe);
       setState(() {
         _recording = true;
         _isAiming = false;
         _lockInProgress = false;
       });
+      // Capture-time streaming SfM: spawn the worker and route keyframe
+      // feeds to it. Fully off the critical path — a failed start just
+      // means no live preview (the JPEG bundle is unaffected).
+      unawaited(_startSfmLiveRecon(session));
     } catch (e) {
       // ignore: avoid_print
       print('[ARCapturePage] manual capture start failed: $e');
+    }
+  }
+
+  /// Per committed shutter: frustum-mark the coverage cloud with the
+  /// frame-exact pose+intrinsics (the same SfmFrameFeed that drives
+  /// streaming SfM — but fully independent of the SfM worker, so the
+  /// coverage UX works even where on-device SfM is unavailable).
+  void _onCoverageKeyframe(SfmFrameFeed feed) {
+    _coverageCloud.markCapture(feed);
+    unawaited(_pushCoverageCloud());
+  }
+
+  /// Ships the current coverage state to the native dumb renderer.
+  Future<void> _pushCoverageCloud() async {
+    final packed = _coverageCloud.packed();
+    try {
+      await _arKitChannel.invokeMethod<void>(
+        'setCoveragePointCloud',
+        <String, dynamic>{'xyz': packed.xyz, 'rgb': packed.rgb},
+      );
+    } catch (_) {
+      // Display-only channel — never let it disturb capture.
+    }
+  }
+
+  /// Spawns the streaming-SfM worker for this take and wires the keyframe
+  /// feed. No-op on the simulator ([SfmLiveRecon.isSupported] == false) so
+  /// the whole live-preview feature is hidden there. Never throws into the
+  /// zone — a failed start only costs the live preview, never the capture.
+  Future<void> _startSfmLiveRecon(CaptureSession session) async {
+    try {
+      if (_sfmRecon != null) return;
+      if (!SfmLiveRecon.isSupported) {
+        DeviceLog.log('ARCapturePage', 'sfm: unsupported — preview hidden');
+        return;
+      }
+      final captureDir = session.captureDir;
+      if (captureDir == null) {
+        DeviceLog.log('ARCapturePage', 'sfm: no captureDir — not started');
+        return;
+      }
+      final recon =
+          await SfmLiveRecon.start(dbPath: '$captureDir/sfm_live.db');
+      if (recon == null) return; // reason already file-logged by start()
+      if (!mounted || !_recording) {
+        DeviceLog.log('ARCapturePage', 'sfm: page gone before worker up');
+        unawaited(recon.dispose());
+        return;
+      }
+      _sfmRecon = recon;
+      _sfmFeedSub = session.sfmFrameStream.listen(recon.offerFrame);
+      _sfmEventSub = recon.events.listen(_onSfmEvent);
+      if (mounted) setState(() {}); // surface the feed chip immediately
+      DeviceLog.log('ARCapturePage', 'sfm: live recon wired');
+    } catch (e, st) {
+      DeviceLog.log('ARCapturePage', 'sfm: start FAILED: $e\n$st');
+    }
+  }
+
+  void _onSfmEvent(SfmLiveEvent event) {
+    if (!mounted) return;
+    setState(() {
+      switch (event) {
+        case SfmLiveFrameFed():
+          _sfmFed = _sfmRecon?.fedCount ?? _sfmFed;
+        case SfmLiveFrameDropped():
+          _sfmDropped = _sfmRecon?.droppedCount ?? _sfmDropped;
+        case SfmLiveLocalReady(:final snapshot):
+          _sfmSnapshot = snapshot;
+          if (_sfmPhase == SfmPreviewPhase.generating) {
+            _sfmPhase = SfmPreviewPhase.localReady;
+          }
+        case SfmLiveRefined(:final snapshot):
+          // Silent swap-in: same overlay, new points, small "精修完成" badge.
+          _sfmSnapshot = snapshot;
+          if (_sfmPhase == SfmPreviewPhase.localReady ||
+              _sfmPhase == SfmPreviewPhase.generating) {
+            _sfmPhase = SfmPreviewPhase.refined;
+          }
+        case SfmLiveFailed(:final stage, :final message):
+          // During capture (overlay hidden) a per-frame failure is log-only;
+          // once the preview is up, a finalize/refine failure surfaces the
+          // non-blocking "已保留素材" state. A REFINE failure after
+          // LOCAL_READY keeps the perfectly usable local preview instead.
+          if (_sfmPhase == SfmPreviewPhase.generating) {
+            _sfmPhase = SfmPreviewPhase.error;
+            _sfmErrorText = '$stage: $message';
+          }
+      }
+    });
+  }
+
+  /// "完成" on the preview overlay: tear the worker down (frees the native
+  /// session + sqlite db) and run the exit the finish flow deferred.
+  void _onSfmPreviewDone() {
+    final recon = _sfmRecon;
+    _sfmRecon = null;
+    _sfmFeedSub?.cancel();
+    _sfmFeedSub = null;
+    _sfmEventSub?.cancel();
+    _sfmEventSub = null;
+    if (recon != null) unawaited(recon.dispose());
+    if (!mounted) return;
+    setState(() => _sfmPhase = null);
+    if (_sfmPendingPop) {
+      _sfmPendingPop = false;
+      Navigator.of(context).pop(true);
     }
   }
 
@@ -644,6 +794,28 @@ class _ARCapturePageState extends State<ARCapturePage>
         });
       }
       await session.waitForPendingPhotoSaves();
+      // Streaming SfM: every keyframe feed has been offered by now (the
+      // pending-saves barrier guarantees it), so kick the two-phase
+      // finalize. Phase 1 runs in the worker WHILE we do the curation +
+      // draft disk work below; the preview overlay appears immediately
+      // with its "正在生成预览…" state. Fewer than 2 fed frames can't
+      // reconstruct — tear down silently and keep the classic exit.
+      final recon = _sfmRecon;
+      final sfmPreviewing = recon != null && recon.fedCount >= 2;
+      DeviceLog.log(
+          'ARCapturePage',
+          'finish: sfm fed=${recon?.fedCount ?? -1} '
+          'dropped=${recon?.droppedCount ?? -1} preview=$sfmPreviewing');
+      if (sfmPreviewing) {
+        await _sfmFeedSub?.cancel();
+        _sfmFeedSub = null;
+        recon.finalize();
+        if (mounted) {
+          setState(() => _sfmPhase = SfmPreviewPhase.generating);
+        }
+      } else if (recon != null) {
+        _onSfmPreviewDone(); // silent teardown, no overlay
+      }
       final curated = _targetPoints.curateForUpload(framesPerPoint: 5);
       if (curated.isEmpty) {
         if (mounted && showSparseHint) {
@@ -655,7 +827,7 @@ class _ARCapturePageState extends State<ARCapturePage>
           );
         }
         if (navigateToDrafts && mounted) {
-          Navigator.of(context).pop(true);
+          _exitToDrafts();
         }
         return;
       }
@@ -668,11 +840,22 @@ class _ARCapturePageState extends State<ARCapturePage>
       // switch the active tab to Me Drafts (the user just created a
       // scan and expects to see it sitting in their drafts list).
       if (navigateToDrafts && mounted) {
-        Navigator.of(context).pop(true);
+        _exitToDrafts();
       }
     } finally {
       _finalizingRecording = false;
     }
+  }
+
+  /// Exit to Drafts — unless the live-reconstruction preview overlay is up,
+  /// in which case the user leaves via its "完成" button and the pop is
+  /// deferred to [_onSfmPreviewDone].
+  void _exitToDrafts() {
+    if (_sfmPhase != null) {
+      _sfmPendingPop = true;
+      return;
+    }
+    Navigator.of(context).pop(true);
   }
 
   Future<void> _persistDraft({
@@ -868,6 +1051,15 @@ class _ARCapturePageState extends State<ARCapturePage>
     WidgetsBinding.instance.removeObserver(this);
     _warmupFallbackTimer?.cancel();
     _poseSub?.cancel();
+    // Streaming-SfM teardown: frees the native session (joins the background
+    // BA thread, drops the sqlite db) off this isolate — page dispose never
+    // blocks. Re-entering capture creates a fresh session + worker.
+    _coverageFeedSub?.cancel();
+    _sfmFeedSub?.cancel();
+    _sfmEventSub?.cancel();
+    final sfmRecon = _sfmRecon;
+    _sfmRecon = null;
+    if (sfmRecon != null) unawaited(sfmRecon.dispose());
     _session?.dispose();
     _previewModel.dispose();
     _targetPoints.dispose();
@@ -884,6 +1076,22 @@ class _ARCapturePageState extends State<ARCapturePage>
         children: [
           // Camera preview / init / error placeholder.
           Positioned.fill(child: _buildPreviewLayer()),
+
+          // ─── Live-SfM feed counter (top-left, recording only): fed vs
+          // backpressure-dropped keyframes. Dropped frames simply skip the
+          // live reconstruction — never an error, so the chip stays quiet
+          // gray. Hidden entirely when the worker isn't running (simulator).
+          if (_recording && _sfmRecon != null)
+            Positioned(
+              top: 0,
+              left: 0,
+              child: SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 20, 0, 0),
+                  child: _SfmFeedChip(fed: _sfmFed, dropped: _sfmDropped),
+                ),
+              ),
+            ),
 
           // ─── Top bar: just the X close button (right).
           // Tracking dot was previously rendered dead-center here, but
@@ -985,6 +1193,19 @@ class _ARCapturePageState extends State<ARCapturePage>
                         ),
                 ),
               ),
+            ),
+
+          // ─── Capture-time reconstruction preview (topmost). Appears the
+          // moment finish kicks finalize ("正在生成预览…"), turns interactive
+          // at LOCAL_READY, silently swaps the refined cloud in at REFINED,
+          // and NEVER blocks the user: its 完成 button runs the deferred
+          // exit-to-drafts; ERROR keeps素材 and exits the same way.
+          if (_sfmPhase != null)
+            SfmPreviewOverlay(
+              phase: _sfmPhase!,
+              snapshot: _sfmSnapshot,
+              errorText: _sfmErrorText,
+              onDone: _onSfmPreviewDone,
             ),
         ],
       ),
@@ -1613,6 +1834,37 @@ class _FinishArrowButton extends StatelessWidget {
                 color: Colors.white,
                 size: 28,
               ),
+      ),
+    );
+  }
+}
+
+/// Tiny top-left chip while recording: keyframes fed to the live SfM vs
+/// dropped by backpressure. Informational only — capture never waits.
+class _SfmFeedChip extends StatelessWidget {
+  const _SfmFeedChip({required this.fed, required this.dropped});
+
+  final int fed;
+  final int dropped;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: const Color(0x8C1C1C1E),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.grain_rounded, color: Colors.white54, size: 13),
+          const SizedBox(width: 5),
+          Text(
+            dropped > 0 ? '$fed 帧 · 丢 $dropped' : '$fed 帧',
+            style: const TextStyle(color: Colors.white70, fontSize: 11.5),
+          ),
+        ],
       ),
     );
   }

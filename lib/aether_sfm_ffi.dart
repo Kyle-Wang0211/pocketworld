@@ -15,6 +15,7 @@
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io' show Platform;
+import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 
 import 'aether_ffi.dart' show AetherFfi, FfiResolutionError;
@@ -29,6 +30,21 @@ enum AetherSfmResult {
   errNotRegistered,
   errInternal,
   errUnsupported,
+}
+
+/// `aether_sfm_finalize_status_t` from aether_sfm_c.h (kept in lock-step).
+enum AetherSfmFinalizeStatus {
+  idle, // 0 — finalize_async not started
+  localReady, // 1 — local recon live; global BA refining in background
+  refined, // 2 — global BA done; refined recon atomically swapped in
+  error, // 3 — background refinement failed
+}
+
+AetherSfmFinalizeStatus aetherSfmFinalizeStatusFromCode(int code) {
+  if (code < 0 || code >= AetherSfmFinalizeStatus.values.length) {
+    return AetherSfmFinalizeStatus.error;
+  }
+  return AetherSfmFinalizeStatus.values[code];
 }
 
 AetherSfmResult _resultFromCode(int code) {
@@ -78,6 +94,12 @@ final class _SfmOptions extends Struct {
   external int useGpuMatch;
   @Int32()
   external int kNeighbors;
+  // MUST mirror aether_sfm_c.h field-for-field: the C struct has a 7th
+  // field `use_gpu_extract`. Omitting it made malloc<_SfmOptions>() 4 bytes
+  // short, so aether_sfm_options_default() wrote past the allocation
+  // (latent heap overflow on the batch path — fixed alongside streaming).
+  @Int32()
+  external int useGpuExtract;
 }
 
 final class _SfmPose extends Struct {
@@ -135,6 +157,45 @@ typedef _PointsFreeDart = void Function(Pointer<_SfmPoint>);
 
 typedef _SessionFreeC = Void Function(Pointer<Void>);
 typedef _SessionFreeDart = void Function(Pointer<Void>);
+
+// ─── streaming surface (aether_sfm_create / add_frame / finalize_async) ───
+typedef _CreateC = Int32 Function(Pointer<Utf8> dbPath,
+    Pointer<_SfmOptions> options, Pointer<Pointer<Void>> outSession);
+typedef _CreateDart = int Function(Pointer<Utf8> dbPath,
+    Pointer<_SfmOptions> options, Pointer<Pointer<Void>> outSession);
+
+typedef _AddFrameC = Int32 Function(
+    Pointer<Void> session,
+    Pointer<Uint8> gray,
+    Int32 width,
+    Int32 height,
+    Float fx,
+    Float fy,
+    Float cx,
+    Float cy,
+    Pointer<Double> poseQwxyz, // may be nullptr
+    Pointer<Double> poseT, // may be nullptr
+    Pointer<Int32> outFrameId);
+typedef _AddFrameDart = int Function(
+    Pointer<Void> session,
+    Pointer<Uint8> gray,
+    int width,
+    int height,
+    double fx,
+    double fy,
+    double cx,
+    double cy,
+    Pointer<Double> poseQwxyz,
+    Pointer<Double> poseT,
+    Pointer<Int32> outFrameId);
+
+typedef _FinalizeAsyncC = Int32 Function(
+    Pointer<Void> session, Pointer<Utf8> outJson, Int32 outCap);
+typedef _FinalizeAsyncDart = int Function(
+    Pointer<Void> session, Pointer<Utf8> outJson, int outCap);
+
+typedef _FinalizeStatusC = Int32 Function(Pointer<Void> session);
+typedef _FinalizeStatusDart = int Function(Pointer<Void> session);
 
 /// Outcome of an on-device SfM solve, carrying the live native session so the
 /// caller can read poses/points then must call [dispose].
@@ -241,20 +302,39 @@ class AetherSfm {
 
   static DynamicLibrary get _lib => AetherFfi.resolveLibraryForBindings();
 
+  // Symbol names: pwsfm_* — the vendored COLMAP-4.0.4 archive compiles the
+  // ABI with -fvisibility=hidden, so the raw aether_sfm_* symbols are
+  // localized in the Runner link and invisible to dlsym. The pod's export
+  // shim (vendor/aether_ffi/src/pwsfm_export_shim.c) re-exports 1:1
+  // forwarders with default visibility under the pwsfm_ prefix; signatures
+  // are identical to aether_sfm_c.h.
   static final _OptionsDefaultDart _optionsDefault =
       _lib.lookupFunction<_OptionsDefaultC, _OptionsDefaultDart>(
-          'aether_sfm_options_default');
+          'pwsfm_options_default');
   static final _RunDart _run =
-      _lib.lookupFunction<_RunC, _RunDart>('aether_sfm_run');
+      _lib.lookupFunction<_RunC, _RunDart>('pwsfm_run');
   static final _GetPosesDart _getPoses =
-      _lib.lookupFunction<_GetPosesC, _GetPosesDart>('aether_sfm_get_poses');
+      _lib.lookupFunction<_GetPosesC, _GetPosesDart>('pwsfm_get_poses');
   static final _GetPointsDart _getPoints =
-      _lib.lookupFunction<_GetPointsC, _GetPointsDart>('aether_sfm_get_points');
+      _lib.lookupFunction<_GetPointsC, _GetPointsDart>('pwsfm_get_points');
   static final _PointsFreeDart _pointsFree =
-      _lib.lookupFunction<_PointsFreeC, _PointsFreeDart>(
-          'aether_sfm_points_free');
+      _lib.lookupFunction<_PointsFreeC, _PointsFreeDart>('pwsfm_points_free');
   static final _SessionFreeDart _sessionFree =
-      _lib.lookupFunction<_SessionFreeC, _SessionFreeDart>('aether_sfm_free');
+      _lib.lookupFunction<_SessionFreeC, _SessionFreeDart>('pwsfm_free');
+
+  // Streaming surface. Bound lazily like the batch fns; the shim exists on
+  // device AND simulator (sim guards finalize_async/status to UNSUPPORTED),
+  // so lookup never throws asymmetrically.
+  static final _CreateDart _create =
+      _lib.lookupFunction<_CreateC, _CreateDart>('pwsfm_create');
+  static final _AddFrameDart _addFrame =
+      _lib.lookupFunction<_AddFrameC, _AddFrameDart>('pwsfm_add_frame');
+  static final _FinalizeAsyncDart _finalizeAsync =
+      _lib.lookupFunction<_FinalizeAsyncC, _FinalizeAsyncDart>(
+          'pwsfm_finalize_async');
+  static final _FinalizeStatusDart _finalizeStatus =
+      _lib.lookupFunction<_FinalizeStatusC, _FinalizeStatusDart>(
+          'pwsfm_finalize_status');
 
   /// Runs the validated incremental SfM pipeline over a prebuilt COLMAP sqlite
   /// db + image dir. Returns an [AetherSfmSolve] whose [AetherSfmSolve.dispose]
@@ -307,6 +387,258 @@ class AetherSfm {
       malloc.free(optPtr);
       malloc.free(sessPtr);
       malloc.free(jsonPtr);
+    }
+  }
+}
+
+/// Outcome of one [AetherSfmStreamSession.addFrame] call.
+class AetherSfmAddFrameResult {
+  final AetherSfmResult result;
+  final int frameId; // -1 unless result == ok
+  const AetherSfmAddFrameResult(this.result, this.frameId);
+}
+
+/// Sparse cloud packed for cheap isolate transfer / rendering:
+/// [xyz] is 3 floats per point, [rgb] 3 bytes per point (may be all zeros —
+/// on-device extract_colors is off; render with a uniform tint then).
+class AetherSfmPointsPacked {
+  final Float32List xyz;
+  final Uint8List rgb;
+  const AetherSfmPointsPacked(this.xyz, this.rgb);
+  int get count => xyz.length ~/ 3;
+}
+
+/// Streaming on-device SfM session (aether_sfm_create → add_frame* →
+/// finalize_async → poll finalize_status → getters → free).
+///
+/// EVERY method here performs a BLOCKING native call — `addFrame` is
+/// ~0.5-0.7 s on an A16 and `finalizeAsync`'s synchronous phase (incremental
+/// register + local BA) is minutes-scale. This class must therefore only be
+/// used from a dedicated background isolate (see SfmLiveRecon), NEVER from
+/// the UI isolate. It is deliberately free of any isolate/queue logic so the
+/// contract stays 1:1 with aether_sfm_c.h.
+class AetherSfmStreamSession {
+  final Pointer<Void> _session;
+  bool _disposed = false;
+
+  AetherSfmStreamSession._(this._session);
+
+  /// Opens a session backed by a private sqlite db at [dbPath] (temp dir —
+  /// `aether_sfm_free` drops the file). [imageWidth]/[imageHeight] MUST equal
+  /// the dimensions of every gray buffer later passed to [addFrame]; the
+  /// per-frame intrinsics reference the same size.
+  ///
+  /// Options follow the validated config: max_features=2048, k_neighbors=6,
+  /// match_max_ratio=0.7 (native defaults, set explicitly here so a future
+  /// default change upstream can't silently shift the shipped behaviour),
+  /// with the GPU extract + match paths enabled (in-ABI CPU fallback).
+  static AetherSfmStreamSession create(
+    String dbPath, {
+    required int imageWidth,
+    required int imageHeight,
+  }) {
+    if (!AetherSfm.isSupported) {
+      throw UnsupportedError(
+          'On-device SfM is unavailable on the iOS simulator (arm64 device '
+          'only). Run on a physical device.');
+    }
+    final dbPtr = dbPath.toNativeUtf8();
+    final optPtr = malloc<_SfmOptions>();
+    final sessPtr = malloc<Pointer<Void>>();
+    try {
+      AetherSfm._optionsDefault(optPtr);
+      optPtr.ref
+        ..maxFeatures = 2048
+        ..imageWidth = imageWidth
+        ..imageHeight = imageHeight
+        ..matchMaxRatio = 0.7
+        ..kNeighbors = 6
+        ..useGpuMatch = 1
+        ..useGpuExtract = 1;
+      sessPtr.value = nullptr;
+      final rc = AetherSfm._create(dbPtr, optPtr, sessPtr);
+      final result = _resultFromCode(rc);
+      if (result != AetherSfmResult.ok || sessPtr.value == nullptr) {
+        throw StateError('aether_sfm_create failed: ${result.name} (rc=$rc)');
+      }
+      return AetherSfmStreamSession._(sessPtr.value);
+    } finally {
+      malloc.free(dbPtr);
+      malloc.free(optPtr);
+      malloc.free(sessPtr);
+    }
+  }
+
+  /// Feeds one keyframe. [gray] is row-major top-down 8-bit grayscale of
+  /// exactly the session's imageWidth x imageHeight; [fx]/[fy]/[cx]/[cy] are
+  /// intrinsics at that SAME size. [quatWxyz] + [translation] are the
+  /// optional CamFromWorld (world→camera) ARKit pose prior — stored, unused
+  /// by the v1 solver, but forward the values whenever available.
+  ///
+  /// The gray buffer is consumed synchronously inside the call (native copies
+  /// what it needs); the malloc'd copy is freed before returning.
+  AetherSfmAddFrameResult addFrame(
+    Uint8List gray,
+    int width,
+    int height, {
+    required double fx,
+    required double fy,
+    required double cx,
+    required double cy,
+    List<double>? quatWxyz,
+    List<double>? translation,
+  }) {
+    _checkLive();
+    final n = width * height;
+    final grayPtr = malloc<Uint8>(n);
+    final idPtr = malloc<Int32>();
+    Pointer<Double> qPtr = nullptr;
+    Pointer<Double> tPtr = nullptr;
+    try {
+      grayPtr.asTypedList(n).setRange(0, n, gray);
+      if (quatWxyz != null && quatWxyz.length == 4) {
+        qPtr = malloc<Double>(4);
+        qPtr.asTypedList(4).setAll(0, quatWxyz);
+      }
+      if (translation != null && translation.length == 3) {
+        tPtr = malloc<Double>(3);
+        tPtr.asTypedList(3).setAll(0, translation);
+      }
+      idPtr.value = -1;
+      final rc = AetherSfm._addFrame(_session, grayPtr, width, height, fx, fy,
+          cx, cy, qPtr, tPtr, idPtr);
+      final result = _resultFromCode(rc);
+      return AetherSfmAddFrameResult(
+          result, result == AetherSfmResult.ok ? idPtr.value : -1);
+    } finally {
+      malloc.free(grayPtr);
+      malloc.free(idPtr);
+      if (qPtr != nullptr) malloc.free(qPtr);
+      if (tPtr != nullptr) malloc.free(tPtr);
+    }
+  }
+
+  /// Two-phase finalize. BLOCKS through phase 1 (incremental register +
+  /// local BA — minutes-scale, frame-count dependent); on OK the LOCAL
+  /// reconstruction is immediately readable via [posesPacked]/[pointsPacked]
+  /// and the background global-BA thread is running (poll [finalizeStatus]
+  /// for refined/error). Returns the LOCAL summary
+  /// {solve_ms, n_registered, n_points3d, reproj_px} plus rc/result.
+  Map<String, dynamic> finalizeAsync() {
+    _checkLive();
+    const cap = 4096;
+    final jsonPtr = malloc.allocate<Uint8>(cap).cast<Utf8>();
+    try {
+      final rc = AetherSfm._finalizeAsync(_session, jsonPtr, cap);
+      final json = jsonPtr.toDartString();
+      Map<String, dynamic> summary;
+      try {
+        summary = jsonDecode(json) as Map<String, dynamic>;
+      } catch (_) {
+        summary = {'raw': json};
+      }
+      summary['rc'] = rc;
+      summary['result'] = _resultFromCode(rc).name;
+      return summary;
+    } finally {
+      malloc.free(jsonPtr);
+    }
+  }
+
+  /// Lock-free status poll of the background refinement.
+  AetherSfmFinalizeStatus finalizeStatus() {
+    _checkLive();
+    return aetherSfmFinalizeStatusFromCode(
+        AetherSfm._finalizeStatus(_session));
+  }
+
+  /// Camera poses packed 9 doubles per frame:
+  /// [frameId, registered(0/1), qw, qx, qy, qz, tx, ty, tz] — CamFromWorld.
+  Float64List posesPacked() {
+    _checkLive();
+    final countPtr = malloc<Int32>();
+    try {
+      AetherSfm._getPoses(_session, nullptr, 0, countPtr);
+      final n = countPtr.value;
+      if (n <= 0) return Float64List(0);
+      final buf = malloc<_SfmPose>(n);
+      try {
+        final rc = AetherSfm._getPoses(_session, buf, n, countPtr);
+        if (_resultFromCode(rc) != AetherSfmResult.ok) return Float64List(0);
+        final written = countPtr.value < n ? countPtr.value : n;
+        final out = Float64List(written * 9);
+        for (var i = 0; i < written; i++) {
+          final p = buf[i];
+          final o = i * 9;
+          out[o] = p.frameId.toDouble();
+          out[o + 1] = p.registered != 0 ? 1 : 0;
+          out[o + 2] = p.qwxyz[0];
+          out[o + 3] = p.qwxyz[1];
+          out[o + 4] = p.qwxyz[2];
+          out[o + 5] = p.qwxyz[3];
+          out[o + 6] = p.t[0];
+          out[o + 7] = p.t[1];
+          out[o + 8] = p.t[2];
+        }
+        return out;
+      } finally {
+        malloc.free(buf);
+      }
+    } finally {
+      malloc.free(countPtr);
+    }
+  }
+
+  /// FULL sparse cloud (never downsampled here — any thinning is a
+  /// render-time concern; export/delivery paths must keep every point).
+  AetherSfmPointsPacked pointsPacked() {
+    _checkLive();
+    final countPtr = malloc<Int32>();
+    final outPtr = malloc<Pointer<_SfmPoint>>();
+    try {
+      final rc = AetherSfm._getPoints(_session, outPtr, countPtr);
+      if (_resultFromCode(rc) != AetherSfmResult.ok) {
+        return AetherSfmPointsPacked(Float32List(0), Uint8List(0));
+      }
+      final n = countPtr.value;
+      final arr = outPtr.value;
+      if (n <= 0 || arr == nullptr) {
+        return AetherSfmPointsPacked(Float32List(0), Uint8List(0));
+      }
+      try {
+        final xyz = Float32List(n * 3);
+        final rgb = Uint8List(n * 3);
+        for (var i = 0; i < n; i++) {
+          final p = arr[i];
+          final o = i * 3;
+          xyz[o] = p.x;
+          xyz[o + 1] = p.y;
+          xyz[o + 2] = p.z;
+          rgb[o] = p.r;
+          rgb[o + 1] = p.g;
+          rgb[o + 2] = p.b;
+        }
+        return AetherSfmPointsPacked(xyz, rgb);
+      } finally {
+        AetherSfm._pointsFree(arr); // lib-malloc'd; ONLY the lib may free
+      }
+    } finally {
+      malloc.free(countPtr);
+      malloc.free(outPtr);
+    }
+  }
+
+  /// Frees the native session: drops the sqlite db and JOINS the background
+  /// global-BA thread (may block if refinement is still running).
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    if (_session != nullptr) AetherSfm._sessionFree(_session);
+  }
+
+  void _checkLive() {
+    if (_disposed) {
+      throw StateError('AetherSfmStreamSession already disposed');
     }
   }
 }

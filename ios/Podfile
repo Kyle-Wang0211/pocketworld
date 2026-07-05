@@ -62,7 +62,14 @@ target 'Runner' do
   # the black-screen was missing UIApplicationSceneManifest + SceneDelegate
   # (see ios/Runner/SceneDelegate.swift). Re-enabling Dawn-backed scene
   # renderer.
-  pod 'aether3d_ffi', :path => '../../aether_cpp'
+  #
+  # 2026-07-05: switched to the pocketworld-LOCAL fork of the podspec.
+  # Same shared dist for everything EXCEPT libglomap_core.a, vendored at
+  # vendor/aether_ffi/ at the Jun-29 COLMAP-4.0.4 revision that carries the
+  # streaming-SfM finalize_async/status symbols (the shared sfm archives
+  # predate them → on-device dlsym "symbol not found" at finalize). See
+  # vendor/aether_ffi/aether3d_ffi.podspec header for the exact link deltas.
+  pod 'aether3d_ffi', :path => '../vendor/aether_ffi'
 end
 
 post_install do |installer|

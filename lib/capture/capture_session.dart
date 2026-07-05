@@ -101,12 +101,21 @@ class CaptureSession {
   /// behind or ARKit reports excessive motion.
   Stream<CaptureMotionSnapshot> get motionStream => _motionCtrl.stream;
 
+  /// Frame-exact streaming-SfM feeds, one per successfully saved manual
+  /// keyframe (gray + intrinsics + extrinsic of the SAME ARFrame the JPEG
+  /// came from). The capture page forwards these to SfmLiveRecon; nobody
+  /// listening simply means no live reconstruction — the JPEG bundle is
+  /// untouched either way.
+  Stream<SfmFrameFeed> get sfmFrameStream => _sfmFrameCtrl.stream;
+
   final StreamController<ARPose> _poseCtrl =
       StreamController<ARPose>.broadcast();
   final StreamController<GuidanceSnapshot> _guidanceCtrl =
       StreamController<GuidanceSnapshot>.broadcast();
   final StreamController<CaptureMotionSnapshot> _motionCtrl =
       StreamController<CaptureMotionSnapshot>.broadcast();
+  final StreamController<SfmFrameFeed> _sfmFrameCtrl =
+      StreamController<SfmFrameFeed>.broadcast();
   StreamSubscription<ARPose>? _poseSub;
 
   ARPose? _lastPose;
@@ -923,6 +932,7 @@ class CaptureSession {
     if (!_poseCtrl.isClosed) await _poseCtrl.close();
     if (!_guidanceCtrl.isClosed) await _guidanceCtrl.close();
     if (!_motionCtrl.isClosed) await _motionCtrl.close();
+    if (!_sfmFrameCtrl.isClosed) await _sfmFrameCtrl.close();
   }
 
   // ─── Per-pose ingest ────────────────────────────────────────────────
@@ -1355,6 +1365,13 @@ class CaptureSession {
       // 10 MP out-of-band still is immaterial for the pipeline. (Native
       // captureHighResolutionStill is retained but no longer on the hot path.)
       final saveResult = await poseProvider.saveCurrentFrame(saveSpec);
+      // Live-SfM feed: hand the frame-exact gray+intrinsics to whoever is
+      // running the capture-time reconstruction. Fire-and-forget — the SfM
+      // queue applies its own backpressure and NEVER gates the shutter.
+      final sfmFeed = saveResult.sfmFrame;
+      if (saveResult.saved && sfmFeed != null && !_sfmFrameCtrl.isClosed) {
+        _sfmFrameCtrl.add(sfmFeed);
+      }
       if (saveResult.saved && await _hasCompleteArFrameSidecar(metadataPath)) {
         targetPoints.stampJpegPath(
           cellIdx: admit.cellIdx,

@@ -12,6 +12,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../aether_prefs.dart';
+import '../util/device_log.dart';
 import 'auth_error.dart';
 import 'auth_models.dart';
 import 'auth_service.dart';
@@ -58,6 +59,10 @@ class CurrentUser extends ChangeNotifier {
   /// (bootstrap / signOut / deleteAccount). Keep cheap in release —
   /// debugPrint is a no-op outside debug.
   void _logSignedOut(String reason) {
+    // File-log the reason too: release builds swallow debugPrint, and a
+    // silent SignedOut flip (AuthGate pops every route → login page) was
+    // undiagnosable in the field without this.
+    DeviceLog.log('CurrentUser', '→ SignedOut ($reason)');
     debugPrint('[CurrentUser] → SignedOut ($reason)\n'
         '${StackTrace.current}');
   }
@@ -67,6 +72,8 @@ class CurrentUser extends ChangeNotifier {
   /// Firebase.initializeApp) and upgrade to the Firebase-backed
   /// service once initialization settles.
   void swapService(AuthService newService) {
+    DeviceLog.log('CurrentUser',
+        'swapService → ${newService.runtimeType} (state=${_state.runtimeType})');
     _service = newService;
   }
 

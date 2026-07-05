@@ -36,6 +36,7 @@ import 'ui/me_root_page.dart';
 import 'ui/auth/auth_root_view.dart';
 import 'ui/design_system.dart';
 import 'ui/splash_overlay.dart';
+import 'util/device_log.dart';
 
 /// Global ScaffoldMessenger key. Wired onto [MaterialApp.scaffoldMessengerKey]
 /// so any code path can show a snackbar that survives:
@@ -79,6 +80,9 @@ Future<void> main() async {
     // ignore: avoid_print
     print('[AET-SMOKE] inside runZonedGuarded');
     WidgetsFlutterBinding.ensureInitialized();
+    // Release-visible container-file log (Documents/pw_device_log.txt) —
+    // print/debugPrint are invisible in release builds on device.
+    unawaited(DeviceLog.init());
     // ignore: avoid_print
     print('[AET-SMOKE] ensureInitialized done, about to runApp');
 

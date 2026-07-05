@@ -258,11 +258,15 @@ class PlatformARPoseProvider implements ARPoseProvider {
       return _fallback.saveCurrentFrame(spec);
     }
     try {
-      await _method.invokeMethod<void>(
+      final reply = await _method.invokeMethod<dynamic>(
         'saveCurrentFrameAsJpeg',
         spec.toMethodArgs(),
       );
-      return ARFrameSaveResult(spec: spec, status: 'saved');
+      return ARFrameSaveResult(
+        spec: spec,
+        status: 'saved',
+        sfmFrame: _sfmFrameFromSaveReply(reply),
+      );
     } on PlatformException catch (e) {
       // ignore: avoid_print
       print(
@@ -276,6 +280,48 @@ class PlatformARPoseProvider implements ARPoseProvider {
     } on MissingPluginException {
       return ARFrameSaveResult(spec: spec, status: 'unsupported');
     }
+  }
+
+  /// Parses the optional streaming-SfM feed off the `saveCurrentFrameAsJpeg`
+  /// reply. Best-effort: any missing/malformed field → null (JPEG save is
+  /// authoritative; SfM feeding is an enhancement, never a failure source).
+  static SfmFrameFeed? _sfmFrameFromSaveReply(dynamic reply) {
+    if (reply is! Map) return null;
+    final grayRaw = reply['sfm_gray'];
+    final Uint8List? gray = grayRaw is Uint8List
+        ? grayRaw
+        : (grayRaw is List ? Uint8List.fromList(grayRaw.cast<int>()) : null);
+    final grayW = (reply['sfm_gray_w'] as num?)?.toInt() ?? 0;
+    final grayH = (reply['sfm_gray_h'] as num?)?.toInt() ?? 0;
+    final imageW = (reply['image_w'] as num?)?.toInt() ?? 0;
+    final imageH = (reply['image_h'] as num?)?.toInt() ?? 0;
+    final intrinsicsRaw = reply['intrinsics_fxfycxcy'];
+    final intrinsics = intrinsicsRaw is List
+        ? intrinsicsRaw.map((e) => (e as num).toDouble()).toList()
+        : const <double>[];
+    final extrinsicRaw = reply['extrinsic'];
+    final extrinsic = extrinsicRaw is List
+        ? extrinsicRaw.map((e) => (e as num).toDouble()).toList()
+        : const <double>[];
+    if (gray == null ||
+        grayW <= 0 ||
+        grayH <= 0 ||
+        gray.length < grayW * grayH ||
+        imageW <= 0 ||
+        imageH <= 0 ||
+        intrinsics.length < 4) {
+      return null;
+    }
+    return SfmFrameFeed(
+      gray: gray,
+      grayW: grayW,
+      grayH: grayH,
+      imageW: imageW,
+      imageH: imageH,
+      intrinsicFxFyCxCy: intrinsics,
+      extrinsic4x4: extrinsic.length == 16 ? extrinsic : const <double>[],
+      timestamp: (reply['t'] as num?)?.toDouble() ?? 0.0,
+    );
   }
 
   @override

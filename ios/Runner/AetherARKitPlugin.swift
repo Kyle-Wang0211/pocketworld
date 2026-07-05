@@ -108,6 +108,38 @@ class AetherARKitPlugin: NSObject {
   /// the `setFeaturePointsVisible` method channel command. Static so the preview
   /// view can read it, mirroring the photoCardSpecs sharing pattern.
   static var featurePointsVisible: Bool = false
+
+  /// T6 v2 — capture-coverage cloud DISPLAY buffer. Per the algorithm-
+  /// executor boundary (see ARFrameSaveSpec.dartOwns), ALL coverage policy —
+  /// which points exist, how many photos covered each, the red→yellow→green
+  /// ramp — lives in Dart (lib/capture/capture_coverage_cloud.dart, shared
+  /// across platforms). Native is a dumb display executor: Dart pushes
+  /// packed xyz+rgb via the `setCoveragePointCloud` method call whenever
+  /// coverage changes (i.e. per shutter), and the preview view's render
+  /// loop world-anchors exactly what it was given. Empty buffer ⇒ nothing
+  /// rendered (so 0 photos ⇒ 0 dots by construction).
+  static let coverageCloudLock = NSLock()
+  static var coverageCloudXyz: [Float] = []
+  static var coverageCloudRgb: [UInt8] = []
+  static var coverageCloudDirty = false
+
+  static func setCoverageCloud(xyz: [Float], rgb: [UInt8]) {
+    coverageCloudLock.lock()
+    coverageCloudXyz = xyz
+    coverageCloudRgb = rgb
+    coverageCloudDirty = true
+    coverageCloudLock.unlock()
+  }
+
+  /// Render-thread side: returns the latest buffers iff they changed since
+  /// the last take (nil otherwise, so the render loop skips rebuild work).
+  static func takeCoverageCloudIfDirty() -> (xyz: [Float], rgb: [UInt8])? {
+    coverageCloudLock.lock()
+    defer { coverageCloudLock.unlock() }
+    if !coverageCloudDirty { return nil }
+    coverageCloudDirty = false
+    return (coverageCloudXyz, coverageCloudRgb)
+  }
   /// RS-style CLOSE anchor depth: the card is placed this many metres in front of
   /// the capture lens (NOT on the subject surface), so it fills the viewport at
   /// capture and shrinks FAST as you pull back (perspective falloff is steep up
@@ -395,7 +427,7 @@ class AetherARKitPlugin: NSObject {
         quality: quality,
         metadataSchemaVersion: metadataSchemaVersion,
         dartSaveContract: dartSaveContract
-      ) { error in
+      ) { payload, error in
         if let error = error {
           result(FlutterError(
             code: "ar_save_jpeg_failed",
@@ -403,7 +435,9 @@ class AetherARKitPlugin: NSObject {
             details: nil
           ))
         } else {
-          result(nil)
+          // Reply now carries the frame-exact SfM feed (gray + intrinsics +
+          // extrinsic). Dart treats it as optional — absence just skips SfM.
+          result(payload)
         }
       }
     case "captureHighResolutionStill":
@@ -575,6 +609,26 @@ class AetherARKitPlugin: NSObject {
       result(nil)
     case "clearPhotoCards":
       AetherARKitPlugin.clearPhotoCards(in: arSession)
+      result(nil)
+    case "setCoveragePointCloud":
+      // Dart-owned coverage policy pushes its rendered state here (packed
+      // Float32 xyz triplets + Uint8 rgb triplets). Empty arrays clear.
+      guard let args = call.arguments as? [String: Any] else {
+        result(FlutterError(
+          code: "coverage_cloud_bad_args",
+          message: "setCoveragePointCloud requires {xyz: Float32List, rgb: Uint8List}",
+          details: nil))
+        return
+      }
+      var xyz: [Float] = []
+      if let t = args["xyz"] as? FlutterStandardTypedData {
+        xyz = t.data.withUnsafeBytes { Array($0.bindMemory(to: Float32.self)) }
+      }
+      var rgb: [UInt8] = []
+      if let t = args["rgb"] as? FlutterStandardTypedData {
+        rgb = [UInt8](t.data)
+      }
+      AetherARKitPlugin.setCoverageCloud(xyz: xyz, rgb: rgb)
       result(nil)
     case "setFeaturePointsVisible":
       let visible =
@@ -994,14 +1048,14 @@ class AetherARKitPlugin: NSObject {
     quality: Float,
     metadataSchemaVersion: Int = 1,
     dartSaveContract: [String: Any]? = nil,
-    completion: @escaping (Error?) -> Void
+    completion: @escaping ([String: Any]?, Error?) -> Void
   ) {
     let selection = selectFrameSnapshot(
       targetTimestamp: targetTimestamp,
       maxTimestampDelta: maxTimestampDelta
     )
     guard let snap = selection.snapshot else {
-      completion(NSError(
+      completion(nil, NSError(
         domain: "AetherARKit", code: 200,
         userInfo: [NSLocalizedDescriptionKey:
           selection.errorMessage ?? "saveCurrentFrameAsJpeg: no ARFrame yet — call after lockOrigin"]
@@ -1056,9 +1110,28 @@ class AetherARKitPlugin: NSObject {
           withJSONObject: metadata, options: []
         )
         try json.write(to: URL(fileURLWithPath: metadataPath))
-        DispatchQueue.main.async { completion(nil) }
+        // Streaming-SfM feed: attach an aspect-preserving grayscale of the
+        // SAME snapshot (so intrinsics/extrinsic below are frame-exact) for
+        // `aether_sfm_add_frame`. Best-effort — a nil gray just means the
+        // Dart side skips feeding this frame; the JPEG save already
+        // succeeded and is authoritative.
+        var payload: [String: Any] = [
+          "t": snap.timestamp,
+          "image_w": snap.imageW,
+          "image_h": snap.imageH,
+          "intrinsics_fxfycxcy": snap.intrinsicsFxFyCxCy,
+          "extrinsic": snap.extrinsic,
+        ]
+        if let g = Self.extractGrayAspect(
+          snap.pixelBuffer, maxSide: Self.sfmFeedMaxSide
+        ) {
+          payload["sfm_gray"] = FlutterStandardTypedData(bytes: g.data)
+          payload["sfm_gray_w"] = g.width
+          payload["sfm_gray_h"] = g.height
+        }
+        DispatchQueue.main.async { completion(payload, nil) }
       } catch {
-        DispatchQueue.main.async { completion(error) }
+        DispatchQueue.main.async { completion(nil, error) }
       }
     }
   }
@@ -1689,6 +1762,15 @@ extension AetherARKitPlugin {
   static let downsampleSide = 128
   static let highResQualityDownsampleSide = 1024
 
+  /// Long-edge target for the streaming-SfM grayscale feed attached to the
+  /// `saveCurrentFrameAsJpeg` reply. Aspect-preserving (unlike the square
+  /// `extractGray`), because the on-device SfM self-calibrates a single
+  /// shared SIMPLE_PINHOLE camera — a non-uniform squash would break the
+  /// single-focal-length premise. 1280 keeps `aether_sfm_add_frame` well
+  /// under its ~0.6 s/frame budget while leaving plenty of texture for
+  /// 2048 DSP-SIFT features.
+  static let sfmFeedMaxSide = 1280
+
   /// Stringified `ARCamera.TrackingState` for the pose stream's
   /// `trackingStateName` field. Mirrors the enum 1:1 so the Dart side
   /// (PoseDriftTracker) can attribute degraded windows to a root cause
@@ -1868,6 +1950,58 @@ extension AetherARKitPlugin {
       }
     }
     return data
+  }
+
+  /// Aspect-preserving variant of `extractGray` for the streaming-SfM feed:
+  /// scales the Y plane uniformly so the LONG edge equals `maxSide` (never
+  /// upscales). Uniform scale keeps fx/fy shrinking by the same factor, which
+  /// the SfM's single-focal SIMPLE_PINHOLE self-calibration requires — the
+  /// square `extractGray` squash must NOT be used for SfM input.
+  /// Output is row-major top-down 8-bit gray (CGImage convention), exactly
+  /// what `aether_sfm_add_frame` consumes.
+  static func extractGrayAspect(
+    _ pixelBuffer: CVPixelBuffer,
+    maxSide: Int
+  ) -> (data: Data, width: Int, height: Int)? {
+    let format = CVPixelBufferGetPixelFormatType(pixelBuffer)
+    let isYUV =
+      format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange ||
+      format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+    guard isYUV, maxSide > 0 else { return nil }
+
+    CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+
+    let width = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
+    let height = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
+    guard width > 0, height > 0 else { return nil }
+    let rowStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
+    guard let baseAddr = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0)
+    else { return nil }
+    let src = baseAddr.assumingMemoryBound(to: UInt8.self)
+
+    let longEdge = max(width, height)
+    // Never upscale: uniform factor <= 1.
+    let scaleNum = min(maxSide, longEdge)
+    let tw = max(1, width * scaleNum / longEdge)
+    let th = max(1, height * scaleNum / longEdge)
+    var data = Data(count: tw * th)
+    data.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) in
+      let dst = raw.bindMemory(to: UInt8.self).baseAddress!
+      // Same fixed-point step-and-pick sampling as `extractGray`.
+      let sxFixed = (width << 16) / tw
+      let syFixed = (height << 16) / th
+      for dy in 0..<th {
+        let srcY = min((dy * syFixed) >> 16, height - 1)
+        let srcRowOffset = srcY * rowStride
+        let dstRowOffset = dy * tw
+        for dx in 0..<tw {
+          let srcX = min((dx * sxFixed) >> 16, width - 1)
+          dst[dstRowOffset + dx] = src[srcRowOffset + srcX]
+        }
+      }
+    }
+    return (data, tw, th)
   }
 
   /// Build a small, color-sampled preview point payload from ARKit's
@@ -2257,69 +2391,51 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
   /// rock-stable RS-style marker. Closer than d0 → clamped to 1.0 (won't overgrow).
   private static let photoCardShrinkExponent: Float = 1.0   // close anchor already shrinks fast via perspective; 1.0 keeps it visible-but-quick
 
-  // ── T6: live sparse feature-point overlay (RS-style coverage cloud) ──────
-  // ARKit's rawFeaturePoints are already WORLD-space + carry stable per-point
-  // identifiers, so we accumulate them across frames (the cloud GROWS as you
-  // capture) and colour each by how many frames it has persisted — new/uncertain
-  // points are red, well-observed points go green (the RS coverage signal). The
-  // cloud is one native SceneKit `.point` geometry attached to the world root
-  // (depth-correct, no 2D-projection parallax — same reason the photo cards are
-  // native). Rebuilt every few frames, not per-frame, and capped, to stay cheap.
-  private var featurePoints: [UInt64: (pos: simd_float3, count: Int)] = [:]
+  // ── T6 v2: capture-coverage cloud — DUMB DISPLAY EXECUTOR ────────────────
+  // All coverage policy (point selection, per-photo frustum counting, the
+  // red→yellow→green ramp, 0-photos-⇒-0-dots gating) lives in DART — see
+  // lib/capture/capture_coverage_cloud.dart and the algorithm-executor
+  // boundary in ARFrameSaveSpec. Native's only job: world-anchor the packed
+  // xyz+rgb Dart pushed via `setCoveragePointCloud`, as one SceneKit
+  // `.point` geometry on the world root (depth-correct, no 2D-projection
+  // parallax — same reason the photo cards are native).
   private var pointCloudNode: SCNNode?
-  private var pointFrameCounter = 0
-  private static let maxFeaturePoints = 4000
-  private static let pointRebuildInterval = 8       // rebuild geometry every N frames
-  private static let pointCountSaturation: Float = 12  // observations for full "green"
 
-  /// Per-frame: accumulate ARKit feature points + periodically rebuild the cloud.
-  /// Toggled off → tear the node down and forget the accumulation.
+  /// Render-loop tick: apply the latest Dart-pushed cloud when it changed.
+  /// Toggled off → tear the node down.
   private func updateFeaturePointOverlay() {
     if !AetherARKitPlugin.featurePointsVisible {
       if pointCloudNode != nil {
         pointCloudNode?.removeFromParentNode()
         pointCloudNode = nil
-        featurePoints.removeAll()
-        pointFrameCounter = 0
       }
+      _ = AetherARKitPlugin.takeCoverageCloudIfDirty() // drop stale pushes
       return
     }
-    guard let frame = arscnView.session.currentFrame,
-          let raw = frame.rawFeaturePoints else { return }
-    let pts = raw.points
-    let ids = raw.identifiers
-    let n = min(pts.count, ids.count)
-    for i in 0..<n {
-      let id = ids[i]
-      if var existing = featurePoints[id] {
-        existing.pos = pts[i]
-        existing.count = min(existing.count + 1, 60)
-        featurePoints[id] = existing
-      } else {
-        featurePoints[id] = (pos: pts[i], count: 1)
-      }
+    guard let cloud = AetherARKitPlugin.takeCoverageCloudIfDirty() else {
+      return
     }
-    if featurePoints.count > Self.maxFeaturePoints {       // bound memory: keep best-seen
-      let keep = featurePoints.sorted { $0.value.count > $1.value.count }
-        .prefix(Self.maxFeaturePoints)
-      featurePoints = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
-    }
-    pointFrameCounter += 1
-    if pointFrameCounter % Self.pointRebuildInterval == 0 { rebuildPointCloud() }
+    rebuildPointCloud(xyz: cloud.xyz, rgb: cloud.rgb)
   }
 
-  private func rebuildPointCloud() {
-    guard !featurePoints.isEmpty else { return }
+  private func rebuildPointCloud(xyz: [Float], rgb: [UInt8]) {
+    let n = xyz.count / 3
+    guard n > 0, rgb.count >= n * 3 else {
+      pointCloudNode?.removeFromParentNode()
+      pointCloudNode = nil
+      return
+    }
     var verts: [SCNVector3] = []
     var colors: [SIMD4<Float>] = []
-    verts.reserveCapacity(featurePoints.count)
-    colors.reserveCapacity(featurePoints.count)
-    for (_, v) in featurePoints {
-      verts.append(SCNVector3(v.pos))
-      let t = min(Float(v.count) / Self.pointCountSaturation, 1.0)   // 0 new → 1 well-seen
-      let r: Float = t < 0.5 ? 1.0 : (1.0 - (t - 0.5) * 2.0)         // red→yellow→green
-      let g: Float = t < 0.5 ? (t * 2.0) : 1.0
-      colors.append(SIMD4<Float>(r, g, 0.08, 1.0))
+    verts.reserveCapacity(n)
+    colors.reserveCapacity(n)
+    for i in 0..<n {
+      verts.append(SCNVector3(xyz[i * 3], xyz[i * 3 + 1], xyz[i * 3 + 2]))
+      colors.append(SIMD4<Float>(
+        Float(rgb[i * 3]) / 255.0,
+        Float(rgb[i * 3 + 1]) / 255.0,
+        Float(rgb[i * 3 + 2]) / 255.0,
+        1.0))
     }
     let vSource = SCNGeometrySource(vertices: verts)
     let cData = colors.withUnsafeBytes { Data($0) }

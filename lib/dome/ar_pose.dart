@@ -427,16 +427,60 @@ class ARFrameSaveSpec {
   };
 }
 
+/// Frame-exact streaming-SfM feed extracted natively alongside the JPEG save:
+/// an aspect-preserving grayscale of the SAME ARFrame snapshot plus that
+/// frame's intrinsics/extrinsic. This is the input contract for
+/// `aether_sfm_add_frame` (row-major top-down 8-bit gray, CGImage
+/// convention). Intrinsics are in FULL-resolution pixels ([imageW]x[imageH]);
+/// scale them by `grayW / imageW` (uniform — the native extract preserves
+/// aspect) before feeding SfM.
+class SfmFrameFeed {
+  const SfmFrameFeed({
+    required this.gray,
+    required this.grayW,
+    required this.grayH,
+    required this.imageW,
+    required this.imageH,
+    required this.intrinsicFxFyCxCy,
+    required this.extrinsic4x4,
+    required this.timestamp,
+  });
+
+  /// Row-major top-down 8-bit grayscale, [grayW] x [grayH].
+  final Uint8List gray;
+  final int grayW;
+  final int grayH;
+
+  /// Full camera-image dimensions the intrinsics reference.
+  final int imageW;
+  final int imageH;
+
+  /// ARKit [fx, fy, cx, cy] at full resolution.
+  final List<double> intrinsicFxFyCxCy;
+
+  /// Column-major 16-float camera-to-world transform (may be empty when
+  /// tracking was degraded at capture time).
+  final List<double> extrinsic4x4;
+
+  /// ARFrame timestamp (CACurrentMediaTime seconds).
+  final double timestamp;
+}
+
 class ARFrameSaveResult {
   const ARFrameSaveResult({
     required this.spec,
     required this.status,
     this.message,
+    this.sfmFrame,
   });
 
   final ARFrameSaveSpec spec;
   final String status;
   final String? message;
+
+  /// Streaming-SfM feed for this exact saved frame; null when the platform
+  /// reply carried no grayscale (mock provider, degraded save, non-iOS).
+  final SfmFrameFeed? sfmFrame;
 
   bool get saved => status == 'saved';
 
