@@ -1370,7 +1370,9 @@ class CaptureSession {
       // queue applies its own backpressure and NEVER gates the shutter.
       final sfmFeed = saveResult.sfmFrame;
       if (saveResult.saved && sfmFeed != null && !_sfmFrameCtrl.isClosed) {
-        _sfmFrameCtrl.add(sfmFeed);
+        // Attach the JPEG path so the preview can colorize reconstructed
+        // points by sampling the actual photo.
+        _sfmFrameCtrl.add(sfmFeed.withJpegPath(jpegPath));
       }
       if (saveResult.saved && await _hasCompleteArFrameSidecar(metadataPath)) {
         targetPoints.stampJpegPath(

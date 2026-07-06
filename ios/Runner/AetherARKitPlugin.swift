@@ -1766,10 +1766,16 @@ extension AetherARKitPlugin {
   /// `saveCurrentFrameAsJpeg` reply. Aspect-preserving (unlike the square
   /// `extractGray`), because the on-device SfM self-calibrates a single
   /// shared SIMPLE_PINHOLE camera — a non-uniform squash would break the
-  /// single-focal-length premise. 1280 keeps `aether_sfm_add_frame` well
-  /// under its ~0.6 s/frame budget while leaving plenty of texture for
-  /// 2048 DSP-SIFT features.
-  static let sfmFeedMaxSide = 1280
+  /// single-focal-length premise.
+  ///
+  /// RESEARCH TIER (2026-07-05, user-directed): full resolution — 4224
+  /// covers the 4K (3840×2160) and 1920×1440 capture tiers without any
+  /// downscale, matching the desktop K=12 research runs. Costs ~8.3 MB per
+  /// keyframe over the channel and pushes CPU extraction well past the old
+  /// ~0.6 s/frame target — acceptable: the GPU tiled-GEMM matcher absorbs
+  /// the matching side, and dropped keyframes only skip the live preview.
+  /// Previous live tier: 1280.
+  static let sfmFeedMaxSide = 4224
 
   /// Stringified `ARCamera.TrackingState` for the pose stream's
   /// `trackingStateName` field. Mirrors the enum 1:1 so the Dart side
@@ -1999,6 +2005,37 @@ extension AetherARKitPlugin {
           let srcX = min((dx * sxFixed) >> 16, width - 1)
           dst[dstRowOffset + dx] = src[srcRowOffset + srcX]
         }
+      }
+
+      // Photogrammetry preflight (2026-07-05, "微暗是常态"): percentile
+      // contrast stretch so DIM indoor captures — the normal case — feed
+      // the SIFT DoG detector at full contrast instead of starving it.
+      // 2%..98% of the histogram maps to 0..255; bright scenes are near
+      // identity (p2≈0, p98≈255), gain is capped at 8× so near-black
+      // noise is never amplified into fake texture. One extra pass over
+      // the buffer (~5 ms at 4K) — same normalization every frame, so the
+      // shared-camera / consistent-appearance premise holds.
+      let n = tw * th
+      var hist = [Int](repeating: 0, count: 256)
+      for i in 0..<n { hist[Int(dst[i])] += 1 }
+      let lowCount = n / 50        // 2%
+      let highCount = n - n / 50   // 98%
+      var acc = 0
+      var p2 = 0
+      var p98 = 255
+      for v in 0..<256 {
+        acc += hist[v]
+        if acc <= lowCount { p2 = v }
+        if acc < highCount { p98 = v }
+      }
+      let span = max(32, p98 - p2)  // cap gain at ~8×
+      if p2 > 0 || span < 250 {
+        var lut = [UInt8](repeating: 0, count: 256)
+        for v in 0..<256 {
+          let stretched = (v - p2) * 255 / span
+          lut[v] = UInt8(min(255, max(0, stretched)))
+        }
+        for i in 0..<n { dst[i] = lut[Int(dst[i])] }
       }
     }
     return (data, tw, th)

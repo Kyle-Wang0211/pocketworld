@@ -25,6 +25,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:vector_math/vector_math_64.dart' as vm;
@@ -32,6 +33,7 @@ import 'package:vector_math/vector_math_64.dart' as vm;
 import '../aether_sfm_ffi.dart';
 import '../dome/ar_pose.dart' show SfmFrameFeed;
 import '../util/device_log.dart';
+import 'pw_telemetry.dart';
 
 /// One reconstruction snapshot (LOCAL_READY or REFINED). Always the FULL
 /// point set — render-side thinning is allowed, data-side never.
@@ -42,6 +44,9 @@ class SfmLiveSnapshot {
     required this.posesPacked,
     required this.summary,
     required this.refined,
+    required this.obsOffsets,
+    required this.obsFrameIds,
+    required this.obsXY,
   });
 
   /// 3 floats per point.
@@ -51,6 +56,17 @@ class SfmLiveSnapshot {
   /// renderers must fall back to a uniform tint / height ramp, NOT treat
   /// black as failure.
   final Uint8List rgb;
+
+  /// Per-point track observations (COLMAP-faithful colorizer input): point
+  /// i's observations are obsFrameIds/obsXY[j] for
+  /// obsOffsets[i] <= j < obsOffsets[i+1]; obsXY holds 2 floats per obs in
+  /// fed-frame pixel coords. Track membership is a visibility proof — the
+  /// colorizer samples each point's OWN detection frames at these keypoint
+  /// coords (reprojecting into globally-picked frames sampled occluder
+  /// colors: the striped/washed-color bug).
+  final Int32List obsOffsets;
+  final Int32List obsFrameIds;
+  final Float32List obsXY;
 
   /// 9 doubles per frame: [frameId, registered, qw,qx,qy,qz, tx,ty,tz]
   /// (CamFromWorld — invert before drawing a camera trajectory).
@@ -92,10 +108,13 @@ class SfmLiveFrameFed extends SfmLiveEvent {
   final String result;
 }
 
-/// A keyframe was dropped by backpressure (queue depth > 1). Not an error.
-class SfmLiveFrameDropped extends SfmLiveEvent {
-  const SfmLiveFrameDropped(this.seq);
+/// A keyframe was spooled to disk because the worker is busy — it WILL be
+/// fed as soon as the worker frees up (research tier: nothing is ever
+/// dropped; the queue is disk-backed so memory stays flat).
+class SfmLiveFrameQueued extends SfmLiveEvent {
+  const SfmLiveFrameQueued(this.seq, this.queueDepth);
   final int seq;
+  final int queueDepth;
 }
 
 /// Phase 1 of finalize done — local reconstruction is live.
@@ -120,6 +139,71 @@ class SfmLiveFailed extends SfmLiveEvent {
   final String message;
 }
 
+/// What the facade remembers about each successfully-fed keyframe — enough
+/// for the preview to project reconstructed points back into the saved JPEG
+/// and sample real colors. Intrinsics here are at the FED gray resolution
+/// (the same values the solver was given).
+class SfmFedFrameMeta {
+  const SfmFedFrameMeta({
+    required this.jpegPath,
+    required this.imageW,
+    required this.imageH,
+    required this.grayW,
+    required this.grayH,
+    required this.fx,
+    required this.fy,
+    required this.cx,
+    required this.cy,
+    this.arkitQuatWxyz,
+  });
+  final String jpegPath;
+  final int imageW;
+  final int imageH;
+  final int grayW;
+  final int grayH;
+  final double fx;
+  final double fy;
+  final double cx;
+  final double cy;
+
+  /// ARKit CamFromWorld rotation [w,x,y,z] for this frame — ARKit ran with
+  /// worldAlignment=.gravity, so its world Y axis is gravity-up. Pairing it
+  /// with the solved COLMAP CamFromWorld lets the facade recover the rotation
+  /// that stands the (gauge-arbitrary) reconstruction upright. Null when the
+  /// frame's extrinsic was degraded at capture.
+  final List<double>? arkitQuatWxyz;
+}
+
+/// One keyframe parked on disk while the worker is busy. The gray bytes
+/// live in the file (memory stays flat no matter how deep the queue gets);
+/// [written] completes when the spill finished flushing.
+class _SpooledFrame {
+  _SpooledFrame({
+    required this.seq,
+    required this.path,
+    required this.written,
+    required this.w,
+    required this.h,
+    required this.fx,
+    required this.fy,
+    required this.cx,
+    required this.cy,
+    required this.quatWxyz,
+    required this.trans,
+  });
+  final int seq;
+  final String path;
+  final Future<void> written;
+  final int w;
+  final int h;
+  final double fx;
+  final double fy;
+  final double cx;
+  final double cy;
+  final Float64List? quatWxyz;
+  final Float64List? trans;
+}
+
 /// Main-isolate handle to the streaming-SfM worker. Create per capture take
 /// via [start]; feed via [offerFrame]; end via [finalize]; ALWAYS [dispose]
 /// (joins the native background thread + drops the session sqlite db).
@@ -127,12 +211,14 @@ class SfmLiveRecon {
   // A ReceivePort is single-subscription and CLOSES on cancel, so the ONE
   // subscription opened in [start] (which also handled the handshake) is
   // handed over here — never listen twice on the same port.
-  SfmLiveRecon._(this._toWorker, this._fromWorker, this._isolate, this._sub);
+  SfmLiveRecon._(
+      this._toWorker, this._fromWorker, this._isolate, this._sub, this._dbPath);
 
   final SendPort _toWorker;
   final ReceivePort _fromWorker;
   final Isolate _isolate;
   final StreamSubscription<dynamic> _sub;
+  final String _dbPath;
 
   final _events = StreamController<SfmLiveEvent>.broadcast();
   Stream<SfmLiveEvent> get events => _events.stream;
@@ -140,18 +226,36 @@ class SfmLiveRecon {
   int _seq = 0;
   int _inFlight = 0; // frames sent to the worker but not yet acked
   int _fedOk = 0;
-  int _dropped = 0;
-  bool _finalizeSent = false;
+  bool _finalizeRequested = false; // finish tapped — no new frames accepted
+  bool _finalizeSent = false; // finalize cmd actually dispatched to worker
+  bool _pumping = false;
   bool _disposed = false;
   Completer<void>? _disposeAck;
+
+  // Disk-backed keyframe queue (research tier: NOTHING is dropped — photos
+  // and poses are all on disk anyway, so a busy worker just means the frame
+  // waits its turn; finalize is deferred until the queue drains).
+  final List<_SpooledFrame> _spool = <_SpooledFrame>[];
+
+  // seq → meta while in flight; frameId → meta once the worker acks the
+  // add_frame (frame ids come back with frame_done).
+  final Map<int, SfmFedFrameMeta> _pendingMeta = <int, SfmFedFrameMeta>{};
+  final Map<int, SfmFedFrameMeta> _fedMeta = <int, SfmFedFrameMeta>{};
+
+  /// Per-registered-frame sampling metadata, keyed by the solver's frameId
+  /// (== SfmLiveSnapshot.posesPacked frame ids).
+  Map<int, SfmFedFrameMeta> get fedFrameMeta => _fedMeta;
 
   /// Keyframes successfully added to the live reconstruction.
   int get fedCount => _fedOk;
 
-  /// Keyframes dropped by backpressure.
-  int get droppedCount => _dropped;
+  /// Keyframes parked on disk awaiting the worker.
+  int get queuedCount => _spool.length;
 
-  bool get finalizeStarted => _finalizeSent;
+  /// Every keyframe offered this take (fed + in-flight + queued).
+  int get offeredCount => _seq;
+
+  bool get finalizeStarted => _finalizeRequested;
 
   /// True when streaming SfM can run at all (physical iOS device with the
   /// native slice linked). On the simulator this returns false and callers
@@ -207,29 +311,22 @@ class SfmLiveRecon {
       isolate.kill(priority: Isolate.immediate);
       return null;
     }
-    recon = SfmLiveRecon._(port, fromWorker, isolate, sub);
+    recon = SfmLiveRecon._(port, fromWorker, isolate, sub, dbPath);
     DeviceLog.log('SfmLive', 'worker up (db=$dbPath)');
     return recon;
   }
 
-  /// Offers one keyframe to the live reconstruction. Returns false when the
-  /// frame was dropped (backpressure: >1 frame already queued behind the
-  /// one executing) or the feed lacks what add_frame needs. NEVER blocks.
+  /// Offers one keyframe to the live reconstruction. NEVER blocks and NEVER
+  /// drops: when the worker is busy the gray plane is spilled to disk and
+  /// fed as soon as a slot frees (finalize waits for the queue to drain, so
+  /// every offered frame reaches the reconstruction). Returns false only
+  /// when the feed lacks what add_frame needs.
   bool offerFrame(SfmFrameFeed feed) {
-    if (_disposed || _finalizeSent) return false;
-    final seq = ++_seq;
-    // Backpressure rule from the integration contract: with add_frame at
-    // ~0.6 s/frame, allow 1 executing + 1 queued; anything beyond drops.
-    if (_inFlight >= 2) {
-      _dropped++;
-      _events.add(SfmLiveFrameDropped(seq));
-      DeviceLog.log('SfmLive',
-          'frame#$seq DROPPED (inFlight=$_inFlight, dropped=$_dropped)');
-      return false;
-    }
+    if (_disposed || _finalizeRequested) return false;
     if (feed.intrinsicFxFyCxCy.length < 4 || feed.imageW <= 0) {
       return false;
     }
+    final seq = ++_seq;
     // Uniform intrinsics rescale full-res → gray resolution (the native
     // extract preserves aspect, so one factor serves fx/fy/cx/cy).
     final s = feed.grayW / feed.imageW;
@@ -252,30 +349,126 @@ class SfmLiveRecon {
       trans = Float64List.fromList([tW2c.x, tW2c.y, tW2c.z]);
     }
 
+    final jpegPath = feed.jpegPath;
+    if (jpegPath != null) {
+      _pendingMeta[seq] = SfmFedFrameMeta(
+        jpegPath: jpegPath,
+        imageW: feed.imageW,
+        imageH: feed.imageH,
+        grayW: feed.grayW,
+        grayH: feed.grayH,
+        fx: fx,
+        fy: fy,
+        cx: cx,
+        cy: cy,
+        arkitQuatWxyz: quatWxyz?.toList(), // ARKit CamFromWorld (gravity frame)
+      );
+    }
+
+    if (_inFlight < 2 && _spool.isEmpty) {
+      // Worker has room — feed directly, zero disk traffic.
+      _sendFrameCmd(seq, feed.gray, feed.grayW, feed.grayH, fx, fy, cx, cy,
+          quatWxyz, trans);
+    } else {
+      // Worker busy — park the gray plane on disk (full-res 4K ≈ 8.3 MB;
+      // parking N frames costs disk, not RAM) and let the pump feed it in
+      // arrival order. Entry is appended SYNCHRONOUSLY so ordering is
+      // preserved even while the write is still flushing.
+      final path = '$_dbPath.spool.$seq.gray';
+      final written = File(path).writeAsBytes(feed.gray, flush: false);
+      _spool.add(_SpooledFrame(
+        seq: seq,
+        path: path,
+        written: written,
+        w: feed.grayW,
+        h: feed.grayH,
+        fx: fx,
+        fy: fy,
+        cx: cx,
+        cy: cy,
+        quatWxyz: quatWxyz,
+        trans: trans,
+      ));
+      _events.add(SfmLiveFrameQueued(seq, _spool.length));
+      DeviceLog.log('SfmLive',
+          'frame#$seq queued (inFlight=$_inFlight, depth=${_spool.length})');
+    }
+    return true;
+  }
+
+  void _sendFrameCmd(int seq, Uint8List gray, int w, int h, double fx,
+      double fy, double cx, double cy, Float64List? q, Float64List? t) {
     _inFlight++;
     _toWorker.send(<String, Object?>{
       'cmd': 'frame',
       'seq': seq,
-      'gray': feed.gray,
-      'w': feed.grayW,
-      'h': feed.grayH,
+      'gray': gray,
+      'w': w,
+      'h': h,
       'fx': fx,
       'fy': fy,
       'cx': cx,
       'cy': cy,
-      'q': quatWxyz,
-      't': trans,
+      'q': q,
+      't': t,
     });
-    return true;
   }
 
-  /// Ends the capture: after the already-queued frames are consumed the
-  /// worker runs finalize_async (phase 1 blocks in-worker; LOCAL_READY and
-  /// REFINED/ERROR arrive via [events]).
-  void finalize() {
-    if (_disposed || _finalizeSent) return;
+  /// Feeds spooled frames whenever the worker has room; sends the deferred
+  /// finalize once everything drained. Single-flight (re-entry guarded).
+  Future<void> _pump() async {
+    if (_pumping || _disposed) return;
+    _pumping = true;
+    try {
+      while (!_disposed && _inFlight < 2 && _spool.isNotEmpty) {
+        final entry = _spool.first;
+        try {
+          await entry.written; // ensure the spill finished flushing
+          final gray = await File(entry.path).readAsBytes();
+          _spool.removeAt(0);
+          unawaited(File(entry.path).delete().then<void>((_) {},
+              onError: (Object _) {}));
+          _sendFrameCmd(entry.seq, gray, entry.w, entry.h, entry.fx, entry.fy,
+              entry.cx, entry.cy, entry.quatWxyz, entry.trans);
+        } catch (e) {
+          // Unreadable spill — skip this frame rather than stall the queue.
+          _spool.removeAt(0);
+          _pendingMeta.remove(entry.seq);
+          DeviceLog.log('SfmLive', 'spool #${entry.seq} unreadable: $e');
+        }
+      }
+    } finally {
+      _pumping = false;
+    }
+    _maybeSendFinalize();
+  }
+
+  void _maybeSendFinalize() {
+    if (_disposed ||
+        !_finalizeRequested ||
+        _finalizeSent ||
+        _spool.isNotEmpty ||
+        _inFlight > 0) {
+      return;
+    }
     _finalizeSent = true;
+    DeviceLog.log('SfmLive', 'queue drained → finalize dispatched');
     _toWorker.send(const <String, Object?>{'cmd': 'finalize'});
+  }
+
+  /// Ends the capture. New frames are refused from this moment; the worker
+  /// finishes the disk queue first, then runs finalize_async (phase 1
+  /// blocks in-worker; LOCAL_READY and REFINED/ERROR arrive via [events]).
+  void finalize() {
+    if (_disposed || _finalizeRequested) return;
+    _finalizeRequested = true;
+    if (_spool.isNotEmpty || _inFlight > 0) {
+      DeviceLog.log('SfmLive',
+          'finalize deferred: inFlight=$_inFlight queued=${_spool.length}');
+      unawaited(_pump());
+      return;
+    }
+    _maybeSendFinalize();
   }
 
   /// Frees the native session (joins the background BA thread, drops the
@@ -283,6 +476,13 @@ class SfmLiveRecon {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    // Drop any undelivered spool files (page is going away).
+    for (final entry in _spool) {
+      unawaited(File(entry.path)
+          .delete()
+          .then<void>((_) {}, onError: (Object _) {}));
+    }
+    _spool.clear();
     final ack = _disposeAck = Completer<void>();
     try {
       _toWorker.send(const <String, Object?>{'cmd': 'dispose'});
@@ -310,20 +510,52 @@ class SfmLiveRecon {
         _inFlight = _inFlight > 0 ? _inFlight - 1 : 0;
         final ok = msg['result'] == 'ok';
         if (ok) _fedOk++;
+        final seq = msg['seq'] as int;
+        final frameId = msg['frameId'] as int;
+        final meta = _pendingMeta.remove(seq);
+        if (ok && meta != null && frameId >= 0) {
+          _fedMeta[frameId] = meta;
+        }
+        // Consolidated per-frame telemetry: timing (worker) + queue state
+        // (facade owns the disk spool) + memory/thermal (worker peak sample).
+        // One grep-able line — `[TELEM]` — for the whole capture profile.
+        final ms = msg['ms'] as int;
+        final memMb = msg['memMb'] as double?;
+        final peakMb = msg['peakMb'] as double?;
+        final thermal = msg['thermal'] as int?;
+        final thermalName = switch (thermal) {
+          0 => 'nominal',
+          1 => 'fair',
+          2 => 'serious',
+          3 => 'critical',
+          _ => '?',
+        };
+        DeviceLog.log(
+          'TELEM',
+          'frame#$seq fid=$frameId ${ok ? 'ok' : msg['result']} '
+              'proc=${ms}ms | queue=${_spool.length} inflight=$_inFlight '
+              'offered=$_seq fed=$_fedOk | '
+              'mem=${memMb?.toStringAsFixed(0) ?? '?'}MB '
+              'peak=${peakMb?.toStringAsFixed(0) ?? '?'}MB '
+              'thermal=$thermalName',
+        );
         _events.add(SfmLiveFrameFed(
-          seq: msg['seq'] as int,
-          frameId: msg['frameId'] as int,
-          elapsedMs: msg['ms'] as int,
+          seq: seq,
+          frameId: frameId,
+          elapsedMs: ms,
           result: msg['result'] as String,
         ));
+        // Worker slot freed — feed the next spooled frame (and dispatch the
+        // deferred finalize once everything drained).
+        unawaited(_pump());
       case 'local_ready':
         _events.add(SfmLiveLocalReady(
-          _snapshotFromMsg(msg, refined: false),
+          _gravityAlign(_snapshotFromMsg(msg, refined: false)),
           msg['ms'] as int,
         ));
       case 'refined':
         _events.add(SfmLiveRefined(
-          _snapshotFromMsg(msg, refined: true),
+          _gravityAlign(_snapshotFromMsg(msg, refined: true)),
           msg['ms'] as int,
         ));
       case 'error':
@@ -336,6 +568,98 @@ class SfmLiveRecon {
     }
   }
 
+  /// Rotates the reconstruction upright using the ARKit gravity frame.
+  ///
+  /// COLMAP's world gauge is arbitrary — the cloud comes out tilted at a
+  /// random orientation. ARKit ran with worldAlignment=.gravity (world Y =
+  /// up), and we fed its CamFromWorld per frame. For each registered frame,
+  ///   R_w = R_ark^T · R_col
+  /// is the rotation that carries COLMAP world → ARKit (gravity) world; the
+  /// per-frame estimates cluster tightly (same rigid alignment), so a naive
+  /// sign-aligned quaternion mean is robust. We rotate every point by the
+  /// mean R_w so the floor is horizontal and +Y is up — the viewer then needs
+  /// no arbitrary default tilt. Points only (poses left as COLMAP; nothing
+  /// downstream pairs them with the aligned points). Falls back to the
+  /// original cloud when fewer than 3 registered frames carry an ARKit quat.
+  SfmLiveSnapshot _gravityAlign(SfmLiveSnapshot snap) {
+    final poses = snap.posesPacked;
+    if (snap.xyz.isEmpty || poses.isEmpty) return snap;
+
+    // Hamilton product a*b (w,x,y,z).
+    List<double> qmul(List<double> a, List<double> b) => [
+          a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3],
+          a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2],
+          a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1],
+          a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0],
+        ];
+
+    var aw = 0.0, ax = 0.0, ay = 0.0, az = 0.0;
+    List<double>? ref;
+    var cnt = 0;
+    for (var i = 0; i < poses.length; i += 9) {
+      if (poses[i + 1] == 0) continue; // unregistered
+      final meta = _fedMeta[poses[i].toInt()];
+      final aq = meta?.arkitQuatWxyz;
+      if (aq == null || aq.length != 4) continue;
+      final qCol = [poses[i + 2], poses[i + 3], poses[i + 4], poses[i + 5]];
+      final qArkConj = [aq[0], -aq[1], -aq[2], -aq[3]]; // R_ark^T
+      // C = diag(1,-1,-1): ARKit camera looks along -Z with +Y up; COLMAP
+      // looks along +Z with +Y down. Without this fixed camera-convention
+      // flip the per-frame R_w estimates scatter ~33° (validated on real
+      // capture data); with it they cluster to <2°. C = 180° about X = qC.
+      const qC = [0.0, 1.0, 0.0, 0.0];
+      var qw = qmul(qArkConj, qmul(qC, qCol)); // R_w = R_ark^T · C · R_col
+      final norm =
+          math.sqrt(qw[0] * qw[0] + qw[1] * qw[1] + qw[2] * qw[2] + qw[3] * qw[3]);
+      if (norm < 1e-9) continue;
+      qw = [qw[0] / norm, qw[1] / norm, qw[2] / norm, qw[3] / norm];
+      ref ??= qw;
+      // Sign-align to the reference hemisphere before summing.
+      final dot =
+          qw[0] * ref[0] + qw[1] * ref[1] + qw[2] * ref[2] + qw[3] * ref[3];
+      final s = dot < 0 ? -1.0 : 1.0;
+      aw += s * qw[0];
+      ax += s * qw[1];
+      ay += s * qw[2];
+      az += s * qw[3];
+      cnt++;
+    }
+    if (cnt < 3) return snap; // not enough evidence — don't risk a bad tilt
+
+    final an = math.sqrt(aw * aw + ax * ax + ay * ay + az * az);
+    if (an < 1e-9) return snap;
+    final w = aw / an, x = ax / an, y = ay / an, z = az / an;
+    // Rotation matrix rows for the mean R_w.
+    final r00 = 1 - 2 * (y * y + z * z),
+        r01 = 2 * (x * y - z * w),
+        r02 = 2 * (x * z + y * w);
+    final r10 = 2 * (x * y + z * w),
+        r11 = 1 - 2 * (x * x + z * z),
+        r12 = 2 * (y * z - x * w);
+    final r20 = 2 * (x * z - y * w),
+        r21 = 2 * (y * z + x * w),
+        r22 = 1 - 2 * (x * x + y * y);
+
+    final src = snap.xyz;
+    final out = Float32List(src.length);
+    for (var i = 0; i < src.length; i += 3) {
+      final px = src[i], py = src[i + 1], pz = src[i + 2];
+      out[i] = r00 * px + r01 * py + r02 * pz;
+      out[i + 1] = r10 * px + r11 * py + r12 * pz;
+      out[i + 2] = r20 * px + r21 * py + r22 * pz;
+    }
+    return SfmLiveSnapshot(
+      xyz: out,
+      rgb: snap.rgb,
+      posesPacked: snap.posesPacked,
+      summary: snap.summary,
+      refined: snap.refined,
+      obsOffsets: snap.obsOffsets,
+      obsFrameIds: snap.obsFrameIds,
+      obsXY: snap.obsXY,
+    );
+  }
+
   static SfmLiveSnapshot _snapshotFromMsg(Map msg, {required bool refined}) {
     return SfmLiveSnapshot(
       xyz: msg['xyz'] as Float32List? ?? Float32List(0),
@@ -344,6 +668,9 @@ class SfmLiveRecon {
       summary: (msg['summary'] as Map?)?.cast<String, dynamic>() ??
           const <String, dynamic>{},
       refined: refined,
+      obsOffsets: msg['obsOffsets'] as Int32List? ?? Int32List(1),
+      obsFrameIds: msg['obsFrameIds'] as Int32List? ?? Int32List(0),
+      obsXY: msg['obsXY'] as Float32List? ?? Float32List(0),
     );
   }
 }
@@ -364,6 +691,10 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
   Timer? pollTimer;
   var refineStart = 0;
   var disposed = false;
+  // True session high-water footprint — the public TASK_VM_INFO layout has no
+  // historical peak field, so we take a running max of the instantaneous
+  // sample taken right after each heavy native call.
+  var peakMb = 0.0;
 
   void wlog(String line) {
     boot.reply.send(<String, Object?>{'evt': 'log', 'line': line});
@@ -372,15 +703,18 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
   void sendSnapshot(String evt, Map<String, dynamic> summary, int ms) {
     final s = session;
     if (s == null) return;
-    final points = s.pointsPacked();
+    final points = s.pointsTracked();
     final poses = s.posesPacked();
-    wlog('$evt: points=${points.count} poses=${poses.length ~/ 9} '
-        'ms=$ms summary=$summary');
+    wlog('$evt: points=${points.count} obs=${points.obsCount} '
+        'poses=${poses.length ~/ 9} ms=$ms summary=$summary');
     boot.reply.send(<String, Object?>{
       'evt': evt,
       'xyz': points.xyz,
       'rgb': points.rgb,
       'poses': poses,
+      'obsOffsets': points.obsOffsets,
+      'obsFrameIds': points.obsFrameIds,
+      'obsXY': points.obsXY,
       'summary': summary,
       'ms': ms,
     });
@@ -441,14 +775,27 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
             translation: (msg['t'] as Float64List?)?.toList(),
           );
           sw.stop();
+          // Sample telemetry HERE — right after add_frame, at the per-frame
+          // memory peak (extract + match + triangulate all just ran). Pure
+          // FFI, safe from this worker isolate.
+          final tel = PwTelemetry.sample();
+          if (tel != null && tel.physFootprintMb > peakMb) {
+            peakMb = tel.physFootprintMb;
+          }
           wlog('add_frame seq=${msg['seq']} frameId=${r.frameId} '
-              'rc=${r.result.name} ms=${sw.elapsedMilliseconds} (${w}x$h)');
+              'rc=${r.result.name} ms=${sw.elapsedMilliseconds} (${w}x$h)'
+              '${tel != null ? ' | mem=${tel.physFootprintMb.toStringAsFixed(0)}MB '
+                  'peak=${peakMb.toStringAsFixed(0)}MB '
+                  'thermal=${tel.thermalName}' : ''}');
           boot.reply.send(<String, Object?>{
             'evt': 'frame_done',
             'seq': msg['seq'],
             'frameId': r.frameId,
             'ms': sw.elapsedMilliseconds,
             'result': r.result.name,
+            'memMb': tel?.physFootprintMb,
+            'peakMb': tel != null ? peakMb : null,
+            'thermal': tel?.thermalState,
           });
         } catch (e) {
           sw.stop();
@@ -471,9 +818,22 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
         try {
           // Phase 1 (blocking here, minutes-scale): incremental register +
           // local BA. On OK the LOCAL model is immediately readable.
-          wlog('finalize_async phase-1 starting…');
+          final telBefore = PwTelemetry.sample();
+          if (telBefore != null && telBefore.physFootprintMb > peakMb) {
+            peakMb = telBefore.physFootprintMb;
+          }
+          wlog('finalize_async phase-1 starting…'
+              '${telBefore != null ? ' | $telBefore' : ''}');
           final summary = s.finalizeAsync();
           sw.stop();
+          final telAfter = PwTelemetry.sample();
+          if (telAfter != null && telAfter.physFootprintMb > peakMb) {
+            peakMb = telAfter.physFootprintMb;
+          }
+          wlog('finalize_async phase-1 done in ${sw.elapsedMilliseconds}ms'
+              '${telAfter != null ? ' | ${telAfter.physFootprintMb.toStringAsFixed(0)}MB '
+                  'peak=${peakMb.toStringAsFixed(0)}MB '
+                  'thermal=${telAfter.thermalName}' : ''}');
           if (summary['result'] != 'ok') {
             // DIAGNOSTIC TAP: preserve the accumulated sqlite db before the
             // session drops it, so keypoint/match/two-view-geometry counts

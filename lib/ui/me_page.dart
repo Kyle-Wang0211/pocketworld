@@ -33,6 +33,7 @@ import '../l10n/app_localizations.dart';
 import '../me/scan_record_store.dart';
 import '../pipeline/local_pipeline_runner.dart';
 import '../privacy/research_consent_service.dart';
+import 'capture/sparse_cloud_viewer_page.dart';
 import 'design_system.dart';
 import 'home_view_model.dart';
 import 'me/my_work_detail_page.dart';
@@ -335,24 +336,41 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
   }
 
   void _onTap(ScanRecord record) {
-    // Plan G W2 全本地 (2026-05-16): the detail page only renders when
-    // there's a viewable artifact (artifactPath != null). Without
-    // jobStatus we can't distinguish "in-progress" from "no GLB yet"
-    // — both cases show the same hint and skip the detail push.
-    if (record.artifactPath == null) {
-      final l = AppL10n.of(context);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(l.meTapHintInProgress),
-          behavior: SnackBarBehavior.floating,
-          duration: const Duration(seconds: 2),
+    // Finished works (GLB artifact) open the detail page as before.
+    if (record.artifactPath != null) {
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => MyWorkDetailPage(recordId: record.id),
         ),
       );
       return;
     }
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => MyWorkDetailPage(recordId: record.id),
+    // Drafts: tapping the card goes STRAIGHT to the capture-time sparse
+    // cloud when one was persisted (每次拍摄的进度即点云) — the primary
+    // interaction per 2026-07-05 product feedback. Long-press keeps
+    // rename/delete/train.
+    final captureDir = record.captureDir;
+    final sparsePlyPath =
+        captureDir == null ? null : '$captureDir/sfm_sparse.ply';
+    if (sparsePlyPath != null && File(sparsePlyPath).existsSync()) {
+      Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => SparseCloudViewerPage(
+            plyPath: sparsePlyPath,
+            title: record.name.isEmpty ? '稀疏点云' : record.name,
+          ),
+        ),
+      );
+      return;
+    }
+    // No cloud yet (pre-persistence take / reconstruction failed) — keep
+    // the in-progress hint.
+    final l = AppL10n.of(context);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(l.meTapHintInProgress),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
       ),
     );
   }
@@ -375,6 +393,12 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
         record.cloudRawDeletedAt == null &&
         record.cloudUploadStatus != ScanCloudUploadStatus.queued &&
         record.cloudUploadStatus != ScanCloudUploadStatus.processing;
+    // 拍摄期落盘的稀疏点云(sfm_sparse.ply)存在时,提供 in-app 查看入口。
+    final captureDir = record.captureDir;
+    final sparsePlyPath =
+        captureDir == null ? null : '$captureDir/sfm_sparse.ply';
+    final canViewSparse =
+        sparsePlyPath != null && File(sparsePlyPath).existsSync();
     final action = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: AetherColors.bgCanvas,
@@ -390,6 +414,12 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
                 leading: const Icon(Icons.play_arrow_rounded),
                 title: Text(copy.startTraining),
                 onTap: () => Navigator.of(ctx).pop('train'),
+              ),
+            if (canViewSparse)
+              ListTile(
+                leading: const Icon(Icons.grain_rounded),
+                title: const Text('查看点云'),
+                onTap: () => Navigator.of(ctx).pop('view_sparse'),
               ),
             ListTile(
               leading: const Icon(Icons.edit_outlined),
@@ -419,7 +449,16 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
       ),
     );
     if (!mounted) return;
-    if (action == 'train') {
+    if (action == 'view_sparse' && sparsePlyPath != null) {
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => SparseCloudViewerPage(
+            plyPath: sparsePlyPath,
+            title: record.name.isEmpty ? '稀疏点云' : record.name,
+          ),
+        ),
+      );
+    } else if (action == 'train') {
       await _startTraining(record);
     } else if (action == 'rename') {
       await _renameRecord(record);

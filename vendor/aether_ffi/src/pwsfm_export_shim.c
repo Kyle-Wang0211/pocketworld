@@ -98,6 +98,35 @@ PWSFM_EXPORT void pwsfm_points_free(aether_sfm_point_t* points) {
   aether_sfm_points_free(points);
 }
 
+PWSFM_EXPORT aether_sfm_result_t pwsfm_get_points_tracked(
+    aether_sfm_session_t* s, aether_sfm_point_t** out_points, int* out_count,
+    int32_t** out_obs_offsets, aether_sfm_track_obs_t** out_obs,
+    int64_t* out_obs_count) {
+#if TARGET_OS_SIMULATOR
+  (void)s;
+  (void)out_points;
+  (void)out_count;
+  (void)out_obs_offsets;
+  (void)out_obs;
+  (void)out_obs_count;
+  return AETHER_SFM_ERR_UNSUPPORTED;
+#else
+  return aether_sfm_get_points_tracked(s, out_points, out_count,
+                                       out_obs_offsets, out_obs,
+                                       out_obs_count);
+#endif
+}
+
+PWSFM_EXPORT void pwsfm_track_obs_free(int32_t* offsets,
+                                       aether_sfm_track_obs_t* obs) {
+#if TARGET_OS_SIMULATOR
+  (void)offsets;
+  (void)obs;
+#else
+  aether_sfm_track_obs_free(offsets, obs);
+#endif
+}
+
 PWSFM_EXPORT void pwsfm_free(aether_sfm_session_t* s) {
   aether_sfm_free(s);
 }

@@ -25,6 +25,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data' show Int32List, Float64List;
 
 import 'package:flutter/foundation.dart'
     show compute, defaultTargetPlatform, TargetPlatform;
@@ -35,6 +36,7 @@ import 'package:vector_math/vector_math_64.dart' show Quaternion, Vector3;
 
 import '../../capture/capture_coverage_cloud.dart';
 import '../../capture/capture_session.dart';
+import '../../capture/sparse_ply.dart';
 import '../../capture/dome/dome_target_points.dart';
 import '../../capture/model_loader.dart';
 import '../../capture/realtime_capture_preview.dart';
@@ -62,6 +64,44 @@ class ARCapturePage extends StatefulWidget {
 /// Native ARKit keeps continuous autofocus/exposure in charge during capture;
 /// subject locking is an AR anchor operation, not a hardware lens lock.
 const MethodChannel _arKitChannel = MethodChannel('aether_arkit');
+
+/// FULL-RESOLUTION RGB pixels of a saved keyframe JPEG, in RAW SENSOR
+/// (landscape) orientation — deliberately NO bakeOrientation, because the
+/// SfM solver's keypoints/intrinsics live in sensor pixel coords and the
+/// colorizer samples straight into them.
+///
+/// Full-res (not downscaled) to match COLMAP ExtractColorsForAllImages: it
+/// reads the native image and bilinear-samples at the exact keypoint. A
+/// downscale box-averages across the sharp color edges keypoints sit on
+/// (red-blanket-vs-white-sheet boundary → muddy pink), which the native
+/// pipeline never does.
+class _SampledJpeg {
+  const _SampledJpeg(this.rgb, this.w, this.h);
+  final Uint8List rgb; // 3 bytes/pixel, row-major
+  final int w;
+  final int h;
+}
+
+_SampledJpeg? _decodeJpegForColorSampling(String sourcePath) {
+  try {
+    final decoded = img.decodeImage(File(sourcePath).readAsBytesSync());
+    if (decoded == null) return null;
+    final w = decoded.width, h = decoded.height;
+    final out = Uint8List(w * h * 3);
+    var o = 0;
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        final p = decoded.getPixel(x, y);
+        out[o++] = p.r.toInt();
+        out[o++] = p.g.toInt();
+        out[o++] = p.b.toInt();
+      }
+    }
+    return _SampledJpeg(out, w, h);
+  } catch (_) {
+    return null;
+  }
+}
 
 Uint8List? _buildCaptureCardThumbnailBytes(String sourcePath) {
   final decoded = img.decodeImage(File(sourcePath).readAsBytesSync());
@@ -121,7 +161,7 @@ class _ARCapturePageState extends State<ARCapturePage>
   SfmLiveSnapshot? _sfmSnapshot;
   String? _sfmErrorText;
   int _sfmFed = 0;
-  int _sfmDropped = 0;
+  int _sfmQueued = 0;
 
   /// The finish flow wants to pop to Drafts, but the preview overlay owns
   /// the exit while it's up — set, then honoured by [_onSfmPreviewDone].
@@ -681,8 +721,9 @@ class _ARCapturePageState extends State<ARCapturePage>
       switch (event) {
         case SfmLiveFrameFed():
           _sfmFed = _sfmRecon?.fedCount ?? _sfmFed;
-        case SfmLiveFrameDropped():
-          _sfmDropped = _sfmRecon?.droppedCount ?? _sfmDropped;
+          _sfmQueued = _sfmRecon?.queuedCount ?? _sfmQueued;
+        case SfmLiveFrameQueued():
+          _sfmQueued = _sfmRecon?.queuedCount ?? _sfmQueued;
         case SfmLiveLocalReady(:final snapshot):
           _sfmSnapshot = snapshot;
           if (_sfmPhase == SfmPreviewPhase.generating) {
@@ -706,6 +747,137 @@ class _ARCapturePageState extends State<ARCapturePage>
           }
       }
     });
+    // Real-color pass: on-device extract_colors is off, so snapshots arrive
+    // colorless — sample the registered keyframes' JPEGs instead. Runs after
+    // the cloud is already visible (progressive enhancement).
+    switch (event) {
+      case SfmLiveLocalReady(:final snapshot):
+      case SfmLiveRefined(:final snapshot):
+        unawaited(_colorizeSnapshot(snapshot));
+      default:
+        break;
+    }
+  }
+
+  /// Samples real point colors the COLMAP way (extract_colors parity): each
+  /// point is sampled ONLY in the frames of its own track, at the keypoint
+  /// coordinates where it was actually detected, then averaged. Track
+  /// membership is a visibility proof, so occlusion cannot contaminate the
+  /// color. (The previous approach — reprojecting every point into 3
+  /// globally-picked frames — sampled whatever OCCLUDED the point there:
+  /// points on the red blanket turned white behind the bedding silhouette,
+  /// producing the striped/washed clouds.) Data-side rgb only — geometry
+  /// untouched. Skips silently when superseded by a newer snapshot.
+  Future<void> _colorizeSnapshot(SfmLiveSnapshot snap) async {
+    final recon = _sfmRecon;
+    if (recon == null || snap.pointCount == 0) return;
+    final n = snap.pointCount;
+    final offs = snap.obsOffsets;
+    final fids = snap.obsFrameIds;
+    final oxy = snap.obsXY;
+    if (fids.isEmpty || offs.length != n + 1) return; // no track data
+
+    // Group observations by frame so every JPEG decodes exactly once.
+    // byFrame[frameId] = flat [pointIndex, kpX, kpY, ...] triples.
+    final byFrame = <int, List<double>>{};
+    for (var i = 0; i < n; i++) {
+      for (var j = offs[i]; j < offs[i + 1]; j++) {
+        final f = fids[j];
+        if (!recon.fedFrameMeta.containsKey(f)) continue;
+        (byFrame[f] ??= <double>[])
+          ..add(i.toDouble())
+          ..add(oxy[j * 2])
+          ..add(oxy[j * 2 + 1]);
+      }
+    }
+    if (byFrame.isEmpty) return;
+
+    // Float accumulators — COLMAP sums bilinear-interpolated float samples,
+    // then rounds the mean (reconstruction.cc:1112).
+    final sumR = Float64List(n), sumG = Float64List(n), sumB = Float64List(n);
+    final hits = Int32List(n);
+    for (final entry in byFrame.entries) {
+      final meta = recon.fedFrameMeta[entry.key]!;
+      final sj = await compute(
+        _decodeJpegForColorSampling,
+        meta.jpegPath,
+        debugLabel: 'sfm_color_decode',
+      );
+      if (sj == null) continue;
+      if (!mounted || !identical(_sfmSnapshot, snap)) return; // superseded
+      // Keypoint coords live in fed-gray pixel space; the JPEG shares the
+      // same sensor orientation, only the scale differs (usually 1:1).
+      final scaleX = sj.w / meta.grayW, scaleY = sj.h / meta.grayH;
+      final tri = entry.value;
+      for (var k = 0; k < tri.length; k += 3) {
+        final i = tri[k].toInt();
+        // COLMAP samples at xy - 0.5 (upper-left pixel center = (0.5,0.5)),
+        // bilinear, out-of-bounds skipped — Bitmap::InterpolateBilinear.
+        final fx = tri[k + 1] * scaleX - 0.5;
+        final fy = tri[k + 2] * scaleY - 0.5;
+        final x0 = fx.floor(), y0 = fy.floor();
+        final x1 = x0 + 1, y1 = y0 + 1;
+        if (x0 < 0 || y0 < 0 || x1 >= sj.w || y1 >= sj.h) continue;
+        final dx = fx - x0, dy = fy - y0;
+        final w00 = (1 - dx) * (1 - dy), w01 = dx * (1 - dy);
+        final w10 = (1 - dx) * dy, w11 = dx * dy;
+        final o00 = (y0 * sj.w + x0) * 3, o01 = (y0 * sj.w + x1) * 3;
+        final o10 = (y1 * sj.w + x0) * 3, o11 = (y1 * sj.w + x1) * 3;
+        final rgbP = sj.rgb;
+        sumR[i] += w00 * rgbP[o00] +
+            w01 * rgbP[o01] +
+            w10 * rgbP[o10] +
+            w11 * rgbP[o11];
+        sumG[i] += w00 * rgbP[o00 + 1] +
+            w01 * rgbP[o01 + 1] +
+            w10 * rgbP[o10 + 1] +
+            w11 * rgbP[o11 + 1];
+        sumB[i] += w00 * rgbP[o00 + 2] +
+            w01 * rgbP[o01 + 2] +
+            w10 * rgbP[o10 + 2] +
+            w11 * rgbP[o11 + 2];
+        hits[i]++;
+      }
+    }
+    if (!mounted || !identical(_sfmSnapshot, snap)) return;
+
+    final rgb = Uint8List(n * 3);
+    for (var i = 0; i < n; i++) {
+      final h = hits[i];
+      if (h > 0) {
+        rgb[i * 3] = (sumR[i] / h).round().clamp(0, 255);
+        rgb[i * 3 + 1] = (sumG[i] / h).round().clamp(0, 255);
+        rgb[i * 3 + 2] = (sumB[i] / h).round().clamp(0, 255);
+      } else {
+        // Track frames unavailable (meta evicted / decode failed) — keep a
+        // readable light gray, never black.
+        rgb[i * 3] = 185;
+        rgb[i * 3 + 1] = 185;
+        rgb[i * 3 + 2] = 190;
+      }
+    }
+    setState(() {
+      _sfmSnapshot = SfmLiveSnapshot(
+        xyz: snap.xyz,
+        rgb: rgb,
+        posesPacked: snap.posesPacked,
+        summary: snap.summary,
+        refined: snap.refined,
+        obsOffsets: snap.obsOffsets,
+        obsFrameIds: snap.obsFrameIds,
+        obsXY: snap.obsXY,
+      );
+    });
+    // 每次拍摄的进度必须留档:真彩全量点云 + 元数据写进 captureDir(与草稿
+    // 素材同生命周期;REFINED 快照会覆盖 LOCAL 版)。
+    final captureDir = _session?.captureDir;
+    if (captureDir != null) {
+      unawaited(persistSparseSnapshot(
+        captureDir: captureDir,
+        snapshot: snap,
+        rgb: rgb,
+      ));
+    }
   }
 
   /// "完成" on the preview overlay: tear the worker down (frees the native
@@ -800,12 +972,14 @@ class _ARCapturePageState extends State<ARCapturePage>
       // draft disk work below; the preview overlay appears immediately
       // with its "正在生成预览…" state. Fewer than 2 fed frames can't
       // reconstruct — tear down silently and keep the classic exit.
+      // Every offered frame counts — the disk queue guarantees they all
+      // reach the reconstruction before finalize runs.
       final recon = _sfmRecon;
-      final sfmPreviewing = recon != null && recon.fedCount >= 2;
+      final sfmPreviewing = recon != null && recon.offeredCount >= 2;
       DeviceLog.log(
           'ARCapturePage',
           'finish: sfm fed=${recon?.fedCount ?? -1} '
-          'dropped=${recon?.droppedCount ?? -1} preview=$sfmPreviewing');
+          'queued=${recon?.queuedCount ?? -1} preview=$sfmPreviewing');
       if (sfmPreviewing) {
         await _sfmFeedSub?.cancel();
         _sfmFeedSub = null;
@@ -1088,7 +1262,7 @@ class _ARCapturePageState extends State<ARCapturePage>
               child: SafeArea(
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(16, 20, 0, 0),
-                  child: _SfmFeedChip(fed: _sfmFed, dropped: _sfmDropped),
+                  child: _SfmFeedChip(fed: _sfmFed, queued: _sfmQueued),
                 ),
               ),
             ),
@@ -1205,6 +1379,9 @@ class _ARCapturePageState extends State<ARCapturePage>
               phase: _sfmPhase!,
               snapshot: _sfmSnapshot,
               errorText: _sfmErrorText,
+              progressText: _sfmQueued > 0
+                  ? '已处理 $_sfmFed · 队列 $_sfmQueued'
+                  : '已处理 $_sfmFed 帧',
               onDone: _onSfmPreviewDone,
             ),
         ],
@@ -1839,13 +2016,14 @@ class _FinishArrowButton extends StatelessWidget {
   }
 }
 
-/// Tiny top-left chip while recording: keyframes fed to the live SfM vs
-/// dropped by backpressure. Informational only — capture never waits.
+/// Tiny top-left chip while recording: keyframes fed to the live SfM plus
+/// how many are parked in the disk queue (nothing is dropped — queued
+/// frames are fed as the worker frees up). Informational only.
 class _SfmFeedChip extends StatelessWidget {
-  const _SfmFeedChip({required this.fed, required this.dropped});
+  const _SfmFeedChip({required this.fed, required this.queued});
 
   final int fed;
-  final int dropped;
+  final int queued;
 
   @override
   Widget build(BuildContext context) {
@@ -1861,7 +2039,7 @@ class _SfmFeedChip extends StatelessWidget {
           const Icon(Icons.grain_rounded, color: Colors.white54, size: 13),
           const SizedBox(width: 5),
           Text(
-            dropped > 0 ? '$fed 帧 · 丢 $dropped' : '$fed 帧',
+            queued > 0 ? '$fed 帧 · 队列 $queued' : '$fed 帧',
             style: const TextStyle(color: Colors.white70, fontSize: 11.5),
           ),
         ],

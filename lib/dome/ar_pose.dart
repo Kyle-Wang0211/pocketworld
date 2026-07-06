@@ -444,6 +444,7 @@ class SfmFrameFeed {
     required this.intrinsicFxFyCxCy,
     required this.extrinsic4x4,
     required this.timestamp,
+    this.jpegPath,
   });
 
   /// Row-major top-down 8-bit grayscale, [grayW] x [grayH].
@@ -464,6 +465,23 @@ class SfmFrameFeed {
 
   /// ARFrame timestamp (CACurrentMediaTime seconds).
   final double timestamp;
+
+  /// Path of the JPEG this exact frame was saved to (attached by
+  /// CaptureSession after the save succeeds). Lets the preview colorize
+  /// reconstructed points by sampling the real photo. Null when unknown.
+  final String? jpegPath;
+
+  SfmFrameFeed withJpegPath(String path) => SfmFrameFeed(
+        gray: gray,
+        grayW: grayW,
+        grayH: grayH,
+        imageW: imageW,
+        imageH: imageH,
+        intrinsicFxFyCxCy: intrinsicFxFyCxCy,
+        extrinsic4x4: extrinsic4x4,
+        timestamp: timestamp,
+        jpegPath: path,
+      );
 }
 
 class ARFrameSaveResult {

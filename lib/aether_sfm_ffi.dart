@@ -155,6 +155,37 @@ typedef _GetPointsDart = int Function(Pointer<Void> session,
 typedef _PointsFreeC = Void Function(Pointer<_SfmPoint>);
 typedef _PointsFreeDart = void Function(Pointer<_SfmPoint>);
 
+// aether_sfm_track_obs_t — one 2D observation of a 3D point (the frame it
+// was DETECTED in + the keypoint position in that frame's fed pixel space).
+final class _SfmTrackObs extends Struct {
+  @Int32()
+  external int frameId;
+  @Float()
+  external double x;
+  @Float()
+  external double y;
+}
+
+typedef _GetPointsTrackedC = Int32 Function(
+    Pointer<Void> session,
+    Pointer<Pointer<_SfmPoint>> outPoints,
+    Pointer<Int32> outCount,
+    Pointer<Pointer<Int32>> outObsOffsets,
+    Pointer<Pointer<_SfmTrackObs>> outObs,
+    Pointer<Int64> outObsCount);
+typedef _GetPointsTrackedDart = int Function(
+    Pointer<Void> session,
+    Pointer<Pointer<_SfmPoint>> outPoints,
+    Pointer<Int32> outCount,
+    Pointer<Pointer<Int32>> outObsOffsets,
+    Pointer<Pointer<_SfmTrackObs>> outObs,
+    Pointer<Int64> outObsCount);
+
+typedef _TrackObsFreeC = Void Function(
+    Pointer<Int32> offsets, Pointer<_SfmTrackObs> obs);
+typedef _TrackObsFreeDart = void Function(
+    Pointer<Int32> offsets, Pointer<_SfmTrackObs> obs);
+
 typedef _SessionFreeC = Void Function(Pointer<Void>);
 typedef _SessionFreeDart = void Function(Pointer<Void>);
 
@@ -319,6 +350,12 @@ class AetherSfm {
       _lib.lookupFunction<_GetPointsC, _GetPointsDart>('pwsfm_get_points');
   static final _PointsFreeDart _pointsFree =
       _lib.lookupFunction<_PointsFreeC, _PointsFreeDart>('pwsfm_points_free');
+  static final _GetPointsTrackedDart _getPointsTracked =
+      _lib.lookupFunction<_GetPointsTrackedC, _GetPointsTrackedDart>(
+          'pwsfm_get_points_tracked');
+  static final _TrackObsFreeDart _trackObsFree =
+      _lib.lookupFunction<_TrackObsFreeC, _TrackObsFreeDart>(
+          'pwsfm_track_obs_free');
   static final _SessionFreeDart _sessionFree =
       _lib.lookupFunction<_SessionFreeC, _SessionFreeDart>('pwsfm_free');
 
@@ -408,6 +445,28 @@ class AetherSfmPointsPacked {
   int get count => xyz.length ~/ 3;
 }
 
+/// [AetherSfmPointsPacked] plus per-point track observations, all read from
+/// ONE native Reconstruction snapshot (point order and observation runs are
+/// mutually consistent even across the async LOCAL→REFINED swap).
+///
+/// Observations for point i: indices obsOffsets[i]..obsOffsets[i+1] into
+/// [obsFrameIds] / [obsXY] (2 floats per obs, fed-frame pixel coords). Track
+/// membership is a visibility proof — the COLMAP-faithful colorizer samples
+/// each point's OWN detection frames at these keypoint coords instead of
+/// reprojecting into globally-picked frames (which silently sampled occluder
+/// colors — the striped-color bug).
+class AetherSfmPointsTracked {
+  final Float32List xyz;
+  final Uint8List rgb;
+  final Int32List obsOffsets; // count+1 entries
+  final Int32List obsFrameIds; // obsCount entries
+  final Float32List obsXY; // 2*obsCount entries
+  const AetherSfmPointsTracked(
+      this.xyz, this.rgb, this.obsOffsets, this.obsFrameIds, this.obsXY);
+  int get count => xyz.length ~/ 3;
+  int get obsCount => obsFrameIds.length;
+}
+
 /// Streaming on-device SfM session (aether_sfm_create → add_frame* →
 /// finalize_async → poll finalize_status → getters → free).
 ///
@@ -428,14 +487,27 @@ class AetherSfmStreamSession {
   /// the dimensions of every gray buffer later passed to [addFrame]; the
   /// per-frame intrinsics reference the same size.
   ///
-  /// Options follow the validated config: max_features=2048, k_neighbors=6,
-  /// match_max_ratio=0.7 (native defaults, set explicitly here so a future
-  /// default change upstream can't silently shift the shipped behaviour),
-  /// with the GPU extract + match paths enabled (in-ABI CPU fallback).
+  /// Two operating tiers (2026-07-05, user-directed switch to research):
+  ///  • LIVE tier (former default): 2048 features / K=6 — the ≤2s/frame
+  ///    streaming budget config.
+  ///  • RESEARCH tier (current): 8192 features / K=12 at full-resolution
+  ///    feed — the desktop K=12 viewer operating point, enabled by the
+  ///    tiled-GEMM Metal matcher (pwsfm_gpu_match.mm; mutual cross-check,
+  ///    bench 11568² @ 119 ms on A16). CPU extraction is now the slow leg
+  ///    (~5-15 s/frame full-res) so live drop-rate rises — dropped frames
+  ///    only skip the preview, never the delivered JPEGs.
+  /// match_max_ratio stays 0.7 in both tiers.
+  static const int researchMaxFeatures = 8192;
+  static const int researchKNeighbors = 12;
+  static const int liveMaxFeatures = 2048;
+  static const int liveKNeighbors = 6;
+
   static AetherSfmStreamSession create(
     String dbPath, {
     required int imageWidth,
     required int imageHeight,
+    int maxFeatures = researchMaxFeatures,
+    int kNeighbors = researchKNeighbors,
   }) {
     if (!AetherSfm.isSupported) {
       throw UnsupportedError(
@@ -448,11 +520,11 @@ class AetherSfmStreamSession {
     try {
       AetherSfm._optionsDefault(optPtr);
       optPtr.ref
-        ..maxFeatures = 2048
+        ..maxFeatures = maxFeatures
         ..imageWidth = imageWidth
         ..imageHeight = imageHeight
         ..matchMaxRatio = 0.7
-        ..kNeighbors = 6
+        ..kNeighbors = kNeighbors
         ..useGpuMatch = 1
         ..useGpuExtract = 1;
       sessPtr.value = nullptr;
@@ -625,6 +697,73 @@ class AetherSfmStreamSession {
     } finally {
       malloc.free(countPtr);
       malloc.free(outPtr);
+    }
+  }
+
+  /// FULL sparse cloud + per-point track observations from one atomic
+  /// snapshot (see [AetherSfmPointsTracked]). Falls back to empty lists on
+  /// any non-OK result.
+  AetherSfmPointsTracked pointsTracked() {
+    _checkLive();
+    final countPtr = malloc<Int32>();
+    final outPtr = malloc<Pointer<_SfmPoint>>();
+    final offsPtr = malloc<Pointer<Int32>>();
+    final obsPtr = malloc<Pointer<_SfmTrackObs>>();
+    final obsCountPtr = malloc<Int64>();
+    try {
+      final rc = AetherSfm._getPointsTracked(
+          _session, outPtr, countPtr, offsPtr, obsPtr, obsCountPtr);
+      if (_resultFromCode(rc) != AetherSfmResult.ok) {
+        return AetherSfmPointsTracked(Float32List(0), Uint8List(0),
+            Int32List(1), Int32List(0), Float32List(0));
+      }
+      final n = countPtr.value;
+      final arr = outPtr.value;
+      final offs = offsPtr.value;
+      final obs = obsPtr.value;
+      final m = obsCountPtr.value;
+      if (n <= 0 || arr == nullptr || offs == nullptr) {
+        if (arr != nullptr) AetherSfm._pointsFree(arr);
+        if (offs != nullptr || obs != nullptr) {
+          AetherSfm._trackObsFree(offs, obs);
+        }
+        return AetherSfmPointsTracked(Float32List(0), Uint8List(0),
+            Int32List(1), Int32List(0), Float32List(0));
+      }
+      try {
+        final xyz = Float32List(n * 3);
+        final rgb = Uint8List(n * 3);
+        for (var i = 0; i < n; i++) {
+          final p = arr[i];
+          final o = i * 3;
+          xyz[o] = p.x;
+          xyz[o + 1] = p.y;
+          xyz[o + 2] = p.z;
+          rgb[o] = p.r;
+          rgb[o + 1] = p.g;
+          rgb[o + 2] = p.b;
+        }
+        final obsOffsets = Int32List(n + 1);
+        obsOffsets.setAll(0, offs.asTypedList(n + 1));
+        final obsFrameIds = Int32List(m);
+        final obsXY = Float32List(m * 2);
+        for (var j = 0; j < m; j++) {
+          final t = obs[j];
+          obsFrameIds[j] = t.frameId;
+          obsXY[j * 2] = t.x;
+          obsXY[j * 2 + 1] = t.y;
+        }
+        return AetherSfmPointsTracked(xyz, rgb, obsOffsets, obsFrameIds, obsXY);
+      } finally {
+        AetherSfm._pointsFree(arr); // lib-malloc'd; ONLY the lib may free
+        AetherSfm._trackObsFree(offs, obs);
+      }
+    } finally {
+      malloc.free(countPtr);
+      malloc.free(outPtr);
+      malloc.free(offsPtr);
+      malloc.free(obsPtr);
+      malloc.free(obsCountPtr);
     }
   }
 
