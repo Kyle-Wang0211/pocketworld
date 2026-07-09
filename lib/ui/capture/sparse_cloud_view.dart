@@ -93,12 +93,22 @@ class _SparseCloudViewState extends State<SparseCloudView>
   // tapped surface point (KIRI/Sketchfab-style focus), reframe resets it.
   late List<double> _pivot;
   ui.Image? _sprite; // white disc for drawRawAtlas point sprites
-  // User-locked defaults (2026-07-06): smallest point size (crisp sparse
-  // cloud, no per-open adjustment) and max exposure 5.0 (dim scenes read
-  // well without touching the slider). Sliders still adjust live.
-  double _pointSize = 1.0; // slider min
-  double _exposure = 5.0; // slider max
-  int _tone = 0; // 0=AgX, 1=ACES, 2=无 (three.js TONEMAPS order)
+  // Vivid tone-mapped look (2026-07-08): bigger discs + PBR Neutral tone map.
+  // Point size doubled 1.0→2.0 (user-requested; raise toward 5.0 for bigger).
+  // Tone = PBR Neutral (Khronos, tone=2) + exposure 1.0. The user wants a
+  // TONE-MAPPED look like RealityScan's (highlight rolloff, polished) but
+  // VIVID. AgX (was tone=0) + exposure 5.0 tone-maps but DELIBERATELY
+  // desaturates ("path to white"), washing colors pale; ACES (tone=1)
+  // desaturates the same way. Khronos PBR Neutral is the industry tone map
+  // built to roll off highlights WITHOUT killing in-gamut saturation (its
+  // stated purpose: true-to-life product color). NOT a claim of literal
+  // RealityScan-curve parity — RS's curve is closed/undocumented; this is the
+  // standard "vivid + tone-mapped" choice. If dim scenes read too dark, raise
+  // exposure toward ~1.3 (PBR Neutral rolls off the resulting brights safely).
+  // Sliders still adjust live.
+  final double _pointSize = 4.0; // 2× again (user: 点云大小放大一倍) — was 2.0
+  final double _exposure = 1.0; // PBR Neutral applies this first
+  final int _tone = 2; // PBR Neutral (0=AgX, 1=ACES, 3+=None)
 
   // Smooth camera transitions (double-tap focus / reframe). Orbit/pinch stay
   // direct for responsiveness; only re-target/reset eases via this ticker.
@@ -293,70 +303,10 @@ class _SparseCloudViewState extends State<SparseCloudView>
             },
           ),
         ),
-        if (widget.showControls) _controls(),
+        // Adjustment strip removed 2026-07-06 (user-locked): point size, tone
+        // (AgX), exposure stay at their defaults — a clean full-bleed cloud
+        // with no controls to fiddle with. Defaults live in the state fields.
       ],
-    );
-  }
-
-  /// 点大小 / 色调(AgX|线性) / 曝光 — mirrors the desktop viewers' strip.
-  Widget _controls() {
-    Widget label(String t) =>
-        Text(t, style: const TextStyle(color: Colors.white54, fontSize: 11));
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 18),
-      child: Row(
-        children: [
-          label('点大小'),
-          Expanded(
-            child: SliderTheme(
-              data: SliderTheme.of(context).copyWith(
-                trackHeight: 2,
-                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
-              ),
-              child: Slider(
-                value: _pointSize,
-                min: 1,
-                max: 40, // desktop viewer range
-                activeColor: Colors.white70,
-                inactiveColor: Colors.white24,
-                onChanged: (v) => setState(() => _pointSize = v),
-              ),
-            ),
-          ),
-          label('色调'),
-          const SizedBox(width: 4),
-          GestureDetector(
-            onTap: () => setState(() => _tone = (_tone + 1) % 3),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-              decoration: BoxDecoration(
-                color: const Color(0x33FFFFFF),
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Text(const ['AgX', 'ACES', '无'][_tone],
-                  style: const TextStyle(color: Colors.white, fontSize: 11)),
-            ),
-          ),
-          const SizedBox(width: 8),
-          label('曝光'),
-          Expanded(
-            child: SliderTheme(
-              data: SliderTheme.of(context).copyWith(
-                trackHeight: 2,
-                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
-              ),
-              child: Slider(
-                value: _exposure,
-                min: 0.5,
-                max: 5.0, // desktop viewer range, default 2.0
-                activeColor: Colors.white70,
-                inactiveColor: Colors.white24,
-                onChanged: (v) => setState(() => _exposure = v),
-              ),
-            ),
-          ),
-        ],
-      ),
     );
   }
 }
@@ -503,6 +453,41 @@ class SparseCloudPainter extends CustomPainter {
     ];
   }
 
+  /// Khronos PBR Neutral tone mapper — three.js `NeutralToneMapping`, constants
+  /// verified against KhronosGroup/ToneMapping (StartCompression 0.76,
+  /// Desaturation 0.15). A filmic tone map that rolls off highlights (graceful
+  /// "path to white") while PRESERVING in-gamut saturation — built precisely to
+  /// fix the AgX/ACES desaturation that washed our colors. In/out: Linear-sRGB;
+  /// exposure applied first (matches three.js `color *= toneMappingExposure`).
+  static List<double> _pbrNeutral(
+      double r, double g, double b, double exposure) {
+    const startCompression = 0.8 - 0.04; // 0.76
+    const desaturation = 0.15;
+    r *= exposure;
+    g *= exposure;
+    b *= exposure;
+    final x = math.min(r, math.min(g, b));
+    final offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+    r -= offset;
+    g -= offset;
+    b -= offset;
+    final peak = math.max(r, math.max(g, b));
+    if (peak < startCompression) return [r, g, b];
+    const d = 1.0 - startCompression;
+    final newPeak = 1.0 - d * d / (peak + d - startCompression);
+    final s = newPeak / peak;
+    r *= s;
+    g *= s;
+    b *= s;
+    // mix(color, vec3(newPeak), gg): desaturate bright peaks toward white.
+    final gg = 1.0 - 1.0 / (desaturation * (peak - newPeak) + 1.0);
+    return [
+      r + (newPeak - r) * gg,
+      g + (newPeak - g) * gg,
+      b + (newPeak - b) * gg,
+    ];
+  }
+
   // Per-point display colors, cached on (cloud, exposure, tone) — colors
   // don't change while orbiting, so the full 3-channel pipeline runs only
   // when a slider moves, never per frame.
@@ -542,6 +527,8 @@ class SparseCloudPainter extends CustomPainter {
           m = _agx(lr, lg, lb, exposure);
         case 1:
           m = _aces(lr, lg, lb, exposure);
+        case 2:
+          m = _pbrNeutral(lr, lg, lb, exposure);
         default:
           m = [
             (lr * exposure).clamp(0.0, 1.0),
@@ -568,6 +555,16 @@ class SparseCloudPainter extends CustomPainter {
   static double _minY = 0, _invYSpan = 1;
 
   static const int _maxDrawnPoints = 22000; // render thinning ONLY
+
+  // Opening-view fill factor. f = half·K·zoom is CONSTANT (NOT /radius): the
+  // scale lives only in camDist = radius·3.2, so vx = x1·f/depth is
+  // scale-INVARIANT — a 2 m room and a 20 m hall both fill the same fraction.
+  // (The old f = half·4.0/radius double-counted radius → scene shrank as the
+  // cloud grew, and looked tiny here.) K=2.6 puts the 99.5th-pct radius at
+  // ~0.78 × half-short-side (measured), i.e. ~20% margin — user-locked
+  // 2026-07-06. Kept in ONE place: paint() and pointAtScreen() must project
+  // identically or double-tap picking drifts.
+  static const double _fitFillK = 2.6;
 
   /// Ensures the fit cache (center + radius) for [xyz] and returns it — the
   /// widget uses this to seed / reset the orbit pivot without re-deriving the
@@ -600,7 +597,7 @@ class SparseCloudPainter extends CustomPainter {
     final cosY = math.cos(yaw), sinY = math.sin(yaw);
     final cosP = math.cos(pitch), sinP = math.sin(pitch);
     final half = size.shortestSide * 0.5;
-    final f = half * 4.0 * zoom / _radius;
+    final f = half * _fitFillK * zoom; // constant → scale-invariant (see _fitFillK)
     final camDist = _radius * 3.2;
     final ox = size.width * 0.5 + panX, oy = size.height * 0.5 + panY;
     const rPx = 44.0; // tap tolerance
@@ -678,19 +675,24 @@ class SparseCloudPainter extends CustomPainter {
     _cx = cnt > 0 ? sx / cnt : mx;
     _cy = cnt > 0 ? sy / cnt : myv;
     _cz = cnt > 0 ? sz / cnt : mz;
+    // Contain radius over ALL delivered points (not just inliers): the
+    // opening view MUST show the whole scene regardless of size. The 99.5th
+    // percentile drops only the ~0.5% most-distant points — the sparse SfM
+    // strays that would otherwise shrink the whole scene to a dot — while
+    // keeping every real surface (dense, so far walls sit well below 99.5%).
+    // Paired with the 20%-margin framing constant (_fitFillK) and a SPHERE
+    // fit, this guarantees full visibility at ANY orbit angle. Full set still
+    // renders; a zoom-out reveals the dropped strays.
     final dd = <double>[];
     for (var i = 0; i < n; i++) {
-      if ((xs[i] - mx).abs() > kx ||
-          (ys[i] - myv).abs() > ky ||
-          (zs[i] - mz).abs() > kz) {
-        continue;
-      }
       final dx = xs[i] - _cx, dy = ys[i] - _cy, dz = zs[i] - _cz;
       dd.add(math.sqrt(dx * dx + dy * dy + dz * dz));
     }
     dd.sort();
-    _radius = dd.isEmpty ? 1 : math.max(1e-6, dd[(dd.length * 0.97).floor()
-        .clamp(0, dd.length - 1)]);
+    _radius = dd.isEmpty
+        ? 1
+        : math.max(
+            1e-6, dd[(dd.length * 0.995).floor().clamp(0, dd.length - 1)]);
     // Height ramp domain for uncolored clouds.
     final ysSorted = ys.toList()..sort();
     _minY = ysSorted[(ysSorted.length * 0.05).floor()];
@@ -711,10 +713,10 @@ class SparseCloudPainter extends CustomPainter {
     final cosY = math.cos(yaw), sinY = math.sin(yaw);
     final cosP = math.cos(pitch), sinP = math.sin(pitch);
     final half = size.shortestSide * 0.5;
-    // Framing parity with the desktop viewer (fit radius ≈ 1.26× half the
-    // short side on open — theirs: r=1.5 @ dist≈2.55, fov50): screenR =
-    // fMul·half/camDistMul ⇒ fMul 4.0 / camDistMul 3.2 ≈ 1.25.
-    final f = half * 4.0 * zoom / _radius;
+    // Scale-invariant fit: constant focal (f = half·K·zoom), scale only in
+    // camDist = radius·3.2. Fills the 99.5th-pct radius to ~0.78·half (see
+    // _fitFillK). Sphere fit → whole scene stays framed at any orbit angle.
+    final f = half * _fitFillK * zoom;
     final camDist = _radius * 3.2;
     final ox = size.width * 0.5 + panX, oy = size.height * 0.5 + panY;
 

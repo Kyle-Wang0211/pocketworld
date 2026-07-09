@@ -44,9 +44,11 @@ dependencies:
   # P3.4: dart:ffi binding to aether_cpp's C ABI (aether_version_string).
   # Provides Pointer<Utf8>.toDartString() and friends.
   ffi: ^2.1.4
-  # shared_preferences removed 2026-04-27 — iOS 26.3.1 direct-launch
-  # crash in SharedPreferencesPlugin.register(with:) metadata race.
-  # Replaced by lib/aether_prefs.dart + ios/Runner/AetherPrefsPlugin.swift.
+  # Key-value prefs via lib/aether_prefs.dart (thin facade). The iOS-26
+  # registrar race that motivated the old custom AetherPrefsPlugin no longer
+  # reproduces — shared_preferences already registers every launch via
+  # supabase_flutter — so the native plugin was retired 2026-07-07.
+  shared_preferences: ^2.5.5
   vector_math: ^2.2.0
 
   # 2026-04-28: replaced firebase_core / firebase_auth with Supabase
@@ -215,10 +217,6 @@ flutter:
     # the original baseColorMap, so true KHR_materials_unlit override
     # while preserving textures isn't expressible via its public API).
     - assets/ibl/default_env_ibl.ktx
-    # DA3-BASE K35 real-device smoke fixture copied from the local MSD
-    # benchmark image folder. Used only by integration_test to build a
-    # photo_bundle on device and exercise the native CoreML Stage 1 path.
-    - assets/benchmarks/da3_msd/
     # MobileSAM (Apache-2.0) — on-device subject masking during capture.
     # Two ONNX sessions: encoder (28.2 MB, runs once per frame) +
     # decoder (16.5 MB, runs once per prompt point at center).

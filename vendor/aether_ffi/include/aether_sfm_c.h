@@ -154,6 +154,17 @@ aether_sfm_result_t aether_sfm_get_points(aether_sfm_session_t* s,
                                           int* out_count);
 void aether_sfm_points_free(aether_sfm_point_t* points);
 
+// ─── live preview (rough, throwaway) ────────────────────────────────
+// Rough point cloud triangulated DURING capture from per-frame matches + the
+// ARKit poses passed to aether_sfm_add_frame — available WITHOUT finalize, for
+// the instant capture-end region selector. NOT the authoritative model
+// (finalize() still produces that). Points are ARKit-world (x,y,z) triples.
+// Two-call sizing: pass out_xyz=NULL to read *out_count (total available), then
+// allocate cap*3 floats and call again; fills min(cap, *out_count) points.
+aether_sfm_result_t aether_sfm_get_preview_points(aether_sfm_session_t* s,
+                                                  float* out_xyz, int cap,
+                                                  int* out_count);
+
 // ─── track observations (COLMAP-faithful color sampling) ───────────
 // One 2D observation of a 3D point: the frame it was DETECTED in and the
 // keypoint position in that frame's fed pixel space. Track membership is a
@@ -182,6 +193,39 @@ aether_sfm_result_t aether_sfm_get_points_tracked(
     aether_sfm_track_obs_t** out_obs,
     int64_t* out_obs_count);
 void aether_sfm_track_obs_free(int32_t* offsets, aether_sfm_track_obs_t* obs);
+
+// Sibling of aether_sfm_get_points_tracked that reads the LIVE streaming
+// local-BA reconstruction (built incrementally during capture) rather than the
+// finalize output — so the worker can true-color the streaming cloud through
+// the same colorize path. Identical output contract (points freed via
+// aether_sfm_points_free, offsets+obs via aether_sfm_track_obs_free). Device
+// only: must be called on the capture worker isolate (see .cc threading note).
+aether_sfm_result_t aether_sfm_get_preview_tracked(
+    aether_sfm_session_t* s,
+    aether_sfm_point_t** out_points,
+    int* out_count,
+    int32_t** out_obs_offsets,
+    aether_sfm_track_obs_t** out_obs,
+    int64_t* out_obs_count);
+
+// Per-frame timing breakdown of the LAST aether_sfm_add_frame (perf
+// diagnostics). extract_ms > ~2000 ⇒ the GPU DSP-SIFT extractor fell back to
+// CPU internally; cpu_matches > 0 ⇒ the GPU GEMM matcher failed and fell back
+// to the CPU brute-force matcher per pair. Any out-ptr may be NULL.
+void aether_sfm_debug_last(aether_sfm_session_t* s, double* extract_ms,
+                           double* match_ms, int* n_cand, int* gpu_matches,
+                           int* cpu_matches);
+
+// Cumulative streaming-quality counters over the whole capture — which floater
+// filter did what. tvg_pairs/raw_pairs = grow/create pairs taken from the
+// geometric (TVG RANSAC) inliers vs raw-fallback; grow_accepted/rejected =
+// track-growth observations kept vs gated out by the reproj/cheirality gate;
+// reproj_filtered/tri_filtered = observations culled by the post-BA reprojection
+// and multi-view triangulation-angle filters. Any out-ptr may be NULL.
+void aether_sfm_stream_stats(aether_sfm_session_t* s, int64_t* tvg_pairs,
+                             int64_t* raw_pairs, int64_t* grow_accepted,
+                             int64_t* grow_rejected, int64_t* reproj_filtered,
+                             int64_t* tri_filtered);
 
 // Destroys session, drops the sqlite db file.
 void aether_sfm_free(aether_sfm_session_t* s);

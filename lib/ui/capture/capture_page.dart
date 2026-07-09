@@ -29,14 +29,10 @@ import 'package:vector_math/vector_math_64.dart' show Quaternion, Vector3;
 
 import '../../capture/capture_session.dart';
 import '../../capture/dome/dome_target_points.dart';
-import '../../capture/model_loader.dart';
 import '../../capture/realtime_capture_preview.dart';
-import '../../capture/ui/model_download_consent_dialog.dart';
-import '../../capture/ui/model_download_dialog.dart';
 import '../../dome/ar_pose.dart';
 import '../../l10n/app_localizations.dart';
 import '../../me/scan_record_store.dart';
-import '../../pipeline/local_pipeline_runner.dart';
 import '../../quality/guidance_engine.dart' show GuidanceSnapshot;
 import '../scan_record.dart';
 
@@ -137,110 +133,15 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
   int _diagPoseEvents = 0;
   int _diagQualityEvents = 0;
 
-  /// DA3 mlpackage readiness is checked before capture starts.
-  /// Downloaded once per app lifetime (NSBundleResourceRequest is sticky).
   DateTime? _lastArSessionResumeAt;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // 吃鸡 mode: do NOT auto-fetch on capture page mount. First check the
-    // cache; if model isn't there, prompt the user with a consent dialog
-    // and only start the ODR download if they explicitly tap 下载. This
-    // matches user-stated UX (2026-05-20) — App Store install bundle is
-    // ~80 MB; ML stack only downloads when user wants to create.
+    // Reconstruction is on-device streaming SfM + server-side recon on upload;
+    // no local model download gate. Install bundle stays ~80 MB.
     _initCamera();
-    // Defer consent dialog until after frame mounts (showDialog needs a
-    // valid widget tree). Fire-and-forget — _checkModelStatusAndPrompt
-    // owns navigation back if user declines.
-    WidgetsBinding.instance.addPostFrameCallback(
-      (_) => _checkModelStatusAndPrompt(),
-    );
-  }
-
-  /// Cache-first model readiness check with consent dialog gating.
-  ///
-  /// Flow:
-  ///   1. Check ModelLoader.localPathIfCached(tier) — fast, no network
-  ///   2a. Cached → capture flow proceeds normally
-  ///   2b. Not cached → show ModelDownloadConsentDialog
-  ///       3a. User taps 稍后 → Navigator.pop, exit capture page
-  ///       3b. User taps 下载 → call _ensureModelDownloaded (kicks off ODR)
-  Future<void> _checkModelStatusAndPrompt() async {
-    try {
-      final tier = await ModelLoader.instance.deviceTier();
-      if (!mounted) return;
-
-      // Fast path: already cached
-      final cached = await ModelLoader.instance.localPathIfCached(tier);
-      if (cached != null) {
-        if (!mounted) return;
-        if (_kDiagLog) {
-          // ignore: avoid_print
-          print(
-            '[CapturePage] model already cached for ${tier.wireName}: $cached',
-          );
-        }
-        return;
-      }
-
-      // Slow path — show consent dialog. User explicit "下载" choice.
-      if (!mounted) return;
-      final consented = await showModelDownloadConsentDialog(
-        context,
-        tier: tier,
-      );
-      if (!mounted) return;
-      if (!consented) {
-        // User tapped 稍后 — exit capture page back to wherever they came from.
-        if (_kDiagLog) {
-          // ignore: avoid_print
-          print('[CapturePage] user declined model download — exiting capture');
-        }
-        Navigator.of(context).pop();
-        return;
-      }
-
-      // User consented — start ODR fetch with progress UI.
-      await _ensureModelDownloaded();
-    } catch (e) {
-      if (_kDiagLog) {
-        // ignore: avoid_print
-        print('[CapturePage] _checkModelStatusAndPrompt FAILED: $e');
-      }
-    }
-  }
-
-  /// Trigger the actual ODR download. Called only AFTER user consents via
-  /// ModelDownloadConsentDialog; ModelDownloadDialog owns progress UI.
-  Future<void> _ensureModelDownloaded() async {
-    try {
-      if (_kDiagLog) {
-        // ignore: avoid_print
-        print(
-          '[CapturePage] user consented — triggering NSBundleResourceRequest',
-        );
-      }
-      final result = await ModelDownloadDialog.run(context);
-      if (!mounted) return;
-      if (result == null) {
-        Navigator.of(context).pop();
-        return;
-      }
-      if (_kDiagLog) {
-        // ignore: avoid_print
-        print(
-          '[CapturePage] model ready: ${result.localPath} '
-          '(wasAlreadyCached=${result.wasAlreadyCached})',
-        );
-      }
-    } catch (e) {
-      if (_kDiagLog) {
-        // ignore: avoid_print
-        print('[CapturePage] _ensureModelDownloaded FAILED: $e');
-      }
-    }
   }
 
   Future<void> _initCamera() async {
@@ -642,11 +543,12 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
       localRawRetainedForDebug: true,
     );
     await store.addOrUpdate(record);
-    unawaited(_runLocalPipeline(record));
+    // Draft stays at localPending for the uploader; reconstruction is
+    // streaming SfM on-device + server-side recon after upload.
     if (mounted && showSnackBar) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('已保存本地素材：$photoCount 张有效照片，正在生成本地派生产物'),
+          content: Text('已保存本地素材：$photoCount 张有效照片'),
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -828,58 +730,6 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
       debugPrint('[CapturePage] card thumbnail bake failed: $e');
       return false;
     }
-  }
-
-  Future<void> _runLocalPipeline(ScanRecord record) async {
-    final captureDirPath = record.captureDir;
-    if (captureDirPath == null) {
-      return;
-    }
-
-    final store = ScanRecordStore.instance;
-    await store.addOrUpdate(
-      (store.byId(record.id) ?? record).copyWith(
-        cloudUploadStatus: ScanCloudUploadStatus.processing,
-        clearCloudUploadFailureMessage: true,
-        localRawRetainedForDebug: true,
-      ),
-    );
-
-    final runner = LocalPipelineRunner(captureDir: Directory(captureDirPath));
-    final sub = runner.stream.listen((event) {
-      debugPrint('[CapturePage] local pipeline $event');
-    });
-    try {
-      await runner.run();
-      final output = File('$captureDirPath/stages/compress/output.glb');
-      await store.addOrUpdate(
-        (store.byId(record.id) ?? record).copyWith(
-          cloudUploadStatus: ScanCloudUploadStatus.completed,
-          artifactPath: output.existsSync() ? output.path : null,
-          clearCloudUploadFailureMessage: true,
-          localRawRetainedForDebug: true,
-        ),
-      );
-    } catch (e, st) {
-      debugPrint(
-        '[CapturePage] local pipeline failed for ${record.id}: $e\n$st',
-      );
-      await store.addOrUpdate(
-        (store.byId(record.id) ?? record).copyWith(
-          cloudUploadStatus: ScanCloudUploadStatus.failed,
-          cloudUploadFailureMessage: _shortUploadError(e),
-          localRawRetainedForDebug: true,
-        ),
-      );
-    } finally {
-      await sub.cancel();
-    }
-  }
-
-  String _shortUploadError(Object error) {
-    final text = error.toString();
-    if (text.length <= 240) return text;
-    return text.substring(0, 240);
   }
 
   @override

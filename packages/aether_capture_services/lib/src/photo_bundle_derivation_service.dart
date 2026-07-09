@@ -109,43 +109,12 @@ final class PhotoBundleDerivationService {
     written.addAll(sparseAudit);
 
     final tier = _asString(manifest['processingTier'], fallback: 'high');
-    final model = policyService.modelPolicy.resolveDa3Model(tier: tier);
-    final modelPolicy = policyService.modelPolicy.buildLicenseReport(
-      tier: tier,
-    );
-    await File(_join(bundleDirectory.path, 'model_policy.json')).writeAsString(
-      const JsonEncoder.withIndent('  ').convert(modelPolicy),
-    );
-    written.add('model_policy.json');
 
-    final kWindows = policyService.buildKWindowPlan(
-      manifest,
-      viewGraph,
-      tier: tier,
-      targetBridgeOverlap: targetBridgeOverlap,
-    );
-    await File(_join(bundleDirectory.path, 'da3_k_windows.json')).writeAsString(
-      const JsonEncoder.withIndent('  ').convert(kWindows),
-    );
-    written.add('da3_k_windows.json');
-
-    final da3InputManifest = await _deriveDa3InputImages(
-      bundleDirectory: bundleDirectory,
-      manifest: manifest,
-      model: model,
-    );
-    await File(
-      _join(bundleDirectory.path, 'da3_input_manifest.json'),
-    ).writeAsString(
-      const JsonEncoder.withIndent('  ').convert(da3InputManifest),
-    );
-    written.add('da3_input_manifest.json');
-    written.addAll(
-      _maps(da3InputManifest['frames'])
-          .map((frame) =>
-              _asString(frame['depthImageRelativePath'], fallback: ''))
-          .where((path) => path.isNotEmpty),
-    );
+    // DA3 depth sidecars (model_policy.json / da3_k_windows.json /
+    // da3_input_manifest.json + per-frame depth JPEGs) were retired with the
+    // on-device DA3 mesh pipeline. Reconstruction is streaming SfM + server
+    // recon; the server derives its own depth. Only the COLMAP / view-graph /
+    // texture / transport sidecars below remain.
 
     final preflight = policyService.buildPreflightPlan(manifest, viewGraph);
     await File(
@@ -364,121 +333,6 @@ image.Image _makePreview(image.Image source) {
   );
 }
 
-Future<Map<String, Object?>> _deriveDa3InputImages({
-  required Directory bundleDirectory,
-  required Map<String, Object?> manifest,
-  required AetherDa3ModelSpec model,
-}) async {
-  final inputWidth = model.inputWidth;
-  final inputHeight = model.inputHeight;
-  if (inputWidth == null || inputHeight == null) {
-    throw StateError('DA3 model policy did not lock inputWidth/inputHeight');
-  }
-
-  const photosDepthDir = 'photos_depth';
-  final photosHighresDir = _asString(
-    manifest['photosHighresDir'],
-    fallback: 'photos_highres',
-  );
-  final outputDir = Directory(_join(bundleDirectory.path, photosDepthDir));
-  outputDir.createSync(recursive: true);
-
-  final frames = _frames(manifest);
-  final entries = <Map<String, Object?>>[];
-  for (var i = 0; i < frames.length; i += 1) {
-    final frame = frames[i];
-    final id = _asString(
-      frame['id'],
-      fallback: 'frame_${i.toString().padLeft(4, '0')}',
-    );
-    final highresFilename = _asString(
-      frame['highresFilename'],
-      fallback: '$id.jpg',
-    );
-    final sourceRelativePath = '$photosHighresDir/$highresFilename';
-    final sourceFile = File(_join(bundleDirectory.path, sourceRelativePath));
-    if (!sourceFile.existsSync()) {
-      throw FileSystemException(
-          'missing high-res source image', sourceFile.path);
-    }
-
-    final decoded = image.decodeImage(await sourceFile.readAsBytes());
-    if (decoded == null) {
-      throw FormatException('could not decode high-res source image: '
-          '${sourceFile.path}');
-    }
-
-    final resized = image.copyResize(
-      decoded,
-      width: inputWidth,
-      height: inputHeight,
-      interpolation: image.Interpolation.cubic,
-    );
-    final depthFilename = '${_safeFilename(id)}.jpg';
-    final depthRelativePath = '$photosDepthDir/$depthFilename';
-    await File(_join(bundleDirectory.path, depthRelativePath)).writeAsBytes(
-      image.encodeJpg(resized, quality: 95),
-      flush: true,
-    );
-
-    final sourceWidth =
-        _positiveInt(frame['imageWidth'], fallback: decoded.width);
-    final sourceHeight =
-        _positiveInt(frame['imageHeight'], fallback: decoded.height);
-    final scaleX =
-        inputWidth / (sourceWidth <= 0 ? decoded.width : sourceWidth);
-    final scaleY =
-        inputHeight / (sourceHeight <= 0 ? decoded.height : sourceHeight);
-    entries.add({
-      'id': id,
-      'sourceHighresRelativePath': sourceRelativePath,
-      'depthImageRelativePath': depthRelativePath,
-      'sourceWidth': sourceWidth,
-      'sourceHeight': sourceHeight,
-      'inputWidth': inputWidth,
-      'inputHeight': inputHeight,
-      'resize': {
-        'mode': 'direct_stretch',
-        'interpolation': 'cubic',
-        'colorSpace': 'sRGB',
-        'jpegQuality': 95,
-      },
-      'transform': {
-        'scaleX': scaleX,
-        'scaleY': scaleY,
-        'offsetX': 0.0,
-        'offsetY': 0.0,
-        'cropX': 0.0,
-        'cropY': 0.0,
-        'cropWidth': sourceWidth,
-        'cropHeight': sourceHeight,
-      },
-      'intrinsicsTransform': {
-        'fxScale': scaleX,
-        'fyScale': scaleY,
-        'cxScale': scaleX,
-        'cyScale': scaleY,
-        'cxOffset': 0.0,
-        'cyOffset': 0.0,
-      },
-    });
-  }
-
-  return {
-    'schemaVersion': 'aether_da3_input_manifest_v1',
-    'sourceManifest': 'photo_bundle.json',
-    'photosDepthDir': photosDepthDir,
-    'model': model.toJson(),
-    'inputSizeLocked': true,
-    'inputWidth': inputWidth,
-    'inputHeight': inputHeight,
-    'preprocessOwner': 'Flutter/Dart photo bundle derivation service',
-    'nativeRunnerContract':
-        'native receives already-resized DA3 images and only decodes tensor bytes',
-    'frameCount': entries.length,
-    'frames': entries,
-  };
-}
 
 Future<List<String>> _deriveArkitSparsePointCloudAudit({
   required Directory bundleDirectory,
@@ -667,23 +521,10 @@ List<Map<String, Object?>> _frames(Map<String, Object?> manifest) {
   ];
 }
 
-List<Map<String, Object?>> _maps(Object? value) {
-  if (value is! List) return const <Map<String, Object?>>[];
-  return [
-    for (final item in value)
-      if (item is Map) item.cast<String, Object?>(),
-  ];
-}
-
 int _asInt(Object? value, {int fallback = 0}) {
   if (value is int) return value;
   if (value is num) return value.toInt();
   return fallback;
-}
-
-int _positiveInt(Object? value, {required int fallback}) {
-  final parsed = _asInt(value, fallback: fallback);
-  return parsed > 0 ? parsed : fallback;
 }
 
 bool _asBool(Object? value) => value == true;
@@ -896,22 +737,6 @@ Future<Map<String, Object?>> _readSidecarMetadata(File file) async {
     // image decode path below can still repair dimensions/previews.
   }
   return const <String, Object?>{};
-}
-
-String _safeFilename(String value) {
-  final buffer = StringBuffer();
-  for (final codeUnit in value.codeUnits) {
-    final isDigit = codeUnit >= 48 && codeUnit <= 57;
-    final isUpper = codeUnit >= 65 && codeUnit <= 90;
-    final isLower = codeUnit >= 97 && codeUnit <= 122;
-    if (isDigit || isUpper || isLower || codeUnit == 45 || codeUnit == 95) {
-      buffer.writeCharCode(codeUnit);
-    } else {
-      buffer.write('_');
-    }
-  }
-  final text = buffer.toString();
-  return text.isEmpty ? 'frame' : text;
 }
 
 String _join(String left, String right) {

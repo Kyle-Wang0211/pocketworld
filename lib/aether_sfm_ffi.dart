@@ -147,6 +147,11 @@ typedef _GetPosesC = Int32 Function(Pointer<Void> session,
 typedef _GetPosesDart = int Function(Pointer<Void> session,
     Pointer<_SfmPose> outPoses, int cap, Pointer<Int32> outCount);
 
+typedef _GetPreviewPointsC = Int32 Function(Pointer<Void> session,
+    Pointer<Float> outXyz, Int32 cap, Pointer<Int32> outCount);
+typedef _GetPreviewPointsDart = int Function(Pointer<Void> session,
+    Pointer<Float> outXyz, int cap, Pointer<Int32> outCount);
+
 typedef _GetPointsC = Int32 Function(Pointer<Void> session,
     Pointer<Pointer<_SfmPoint>> outPoints, Pointer<Int32> outCount);
 typedef _GetPointsDart = int Function(Pointer<Void> session,
@@ -185,6 +190,18 @@ typedef _TrackObsFreeC = Void Function(
     Pointer<Int32> offsets, Pointer<_SfmTrackObs> obs);
 typedef _TrackObsFreeDart = void Function(
     Pointer<Int32> offsets, Pointer<_SfmTrackObs> obs);
+
+typedef _DebugLastC = Void Function(Pointer<Void>, Pointer<Double>,
+    Pointer<Double>, Pointer<Int32>, Pointer<Int32>, Pointer<Int32>);
+typedef _DebugLastDart = void Function(Pointer<Void>, Pointer<Double>,
+    Pointer<Double>, Pointer<Int32>, Pointer<Int32>, Pointer<Int32>);
+
+typedef _StreamStatsC = Void Function(Pointer<Void>, Pointer<Int64>,
+    Pointer<Int64>, Pointer<Int64>, Pointer<Int64>, Pointer<Int64>,
+    Pointer<Int64>);
+typedef _StreamStatsDart = void Function(Pointer<Void>, Pointer<Int64>,
+    Pointer<Int64>, Pointer<Int64>, Pointer<Int64>, Pointer<Int64>,
+    Pointer<Int64>);
 
 typedef _SessionFreeC = Void Function(Pointer<Void>);
 typedef _SessionFreeDart = void Function(Pointer<Void>);
@@ -346,6 +363,9 @@ class AetherSfm {
       _lib.lookupFunction<_RunC, _RunDart>('pwsfm_run');
   static final _GetPosesDart _getPoses =
       _lib.lookupFunction<_GetPosesC, _GetPosesDart>('pwsfm_get_poses');
+  static final _GetPreviewPointsDart _getPreviewPoints =
+      _lib.lookupFunction<_GetPreviewPointsC, _GetPreviewPointsDart>(
+          'pwsfm_get_preview_points');
   static final _GetPointsDart _getPoints =
       _lib.lookupFunction<_GetPointsC, _GetPointsDart>('pwsfm_get_points');
   static final _PointsFreeDart _pointsFree =
@@ -353,9 +373,19 @@ class AetherSfm {
   static final _GetPointsTrackedDart _getPointsTracked =
       _lib.lookupFunction<_GetPointsTrackedC, _GetPointsTrackedDart>(
           'pwsfm_get_points_tracked');
+  // Same ABI as _getPointsTracked, but reads the LIVE streaming local-BA
+  // reconstruction — lets the worker true-color the streaming cloud through the
+  // identical colorize path (track observations → full-res bilinear sample).
+  static final _GetPointsTrackedDart _getPreviewTracked =
+      _lib.lookupFunction<_GetPointsTrackedC, _GetPointsTrackedDart>(
+          'pwsfm_get_preview_tracked');
   static final _TrackObsFreeDart _trackObsFree =
       _lib.lookupFunction<_TrackObsFreeC, _TrackObsFreeDart>(
           'pwsfm_track_obs_free');
+  static final _DebugLastDart _debugLast =
+      _lib.lookupFunction<_DebugLastC, _DebugLastDart>('pwsfm_debug_last');
+  static final _StreamStatsDart _streamStats =
+      _lib.lookupFunction<_StreamStatsC, _StreamStatsDart>('pwsfm_stream_stats');
   static final _SessionFreeDart _sessionFree =
       _lib.lookupFunction<_SessionFreeC, _SessionFreeDart>('pwsfm_free');
 
@@ -590,6 +620,76 @@ class AetherSfmStreamSession {
     }
   }
 
+  /// Per-frame timing breakdown of the LAST [addFrame] (perf diagnostics):
+  /// extraction ms, matching ms, candidate count, and how many pairs matched
+  /// on GPU vs CPU. extractMs > ~2000 ⇒ GPU DSP-SIFT fell back to CPU;
+  /// cpuMatches > 0 ⇒ the GPU GEMM matcher fell back per pair.
+  ({double extractMs, double matchMs, int nCand, int gpuMatches, int cpuMatches})
+      debugLast() {
+    _checkLive();
+    final e = malloc<Double>(), m = malloc<Double>();
+    final nc = malloc<Int32>(), gm = malloc<Int32>(), cm = malloc<Int32>();
+    try {
+      e.value = 0;
+      m.value = 0;
+      nc.value = 0;
+      gm.value = 0;
+      cm.value = 0;
+      AetherSfm._debugLast(_session, e, m, nc, gm, cm);
+      return (
+        extractMs: e.value,
+        matchMs: m.value,
+        nCand: nc.value,
+        gpuMatches: gm.value,
+        cpuMatches: cm.value,
+      );
+    } finally {
+      malloc.free(e);
+      malloc.free(m);
+      malloc.free(nc);
+      malloc.free(gm);
+      malloc.free(cm);
+    }
+  }
+
+  /// Cumulative streaming-quality counters over the whole capture — which
+  /// floater filter did what. tvgPairs/rawPairs = grow/create pairs taken from
+  /// the geometric (TVG RANSAC) inliers vs raw-fallback; growAccepted/Rejected =
+  /// track-growth observations kept vs gated; reprojFiltered/triFiltered =
+  /// observations culled by the post-BA reprojection and multi-view
+  /// triangulation-angle filters.
+  ({
+    int tvgPairs,
+    int rawPairs,
+    int growAccepted,
+    int growRejected,
+    int reprojFiltered,
+    int triFiltered
+  }) streamStats() {
+    _checkLive();
+    final tvg = malloc<Int64>(), raw = malloc<Int64>();
+    final ga = malloc<Int64>(), gr = malloc<Int64>();
+    final rf = malloc<Int64>(), tf = malloc<Int64>();
+    try {
+      for (final p in [tvg, raw, ga, gr, rf, tf]) {
+        p.value = 0;
+      }
+      AetherSfm._streamStats(_session, tvg, raw, ga, gr, rf, tf);
+      return (
+        tvgPairs: tvg.value,
+        rawPairs: raw.value,
+        growAccepted: ga.value,
+        growRejected: gr.value,
+        reprojFiltered: rf.value,
+        triFiltered: tf.value,
+      );
+    } finally {
+      for (final p in [tvg, raw, ga, gr, rf, tf]) {
+        malloc.free(p);
+      }
+    }
+  }
+
   /// Two-phase finalize. BLOCKS through phase 1 (incremental register +
   /// local BA — minutes-scale, frame-count dependent); on OK the LOCAL
   /// reconstruction is immediately readable via [posesPacked]/[pointsPacked]
@@ -624,15 +724,47 @@ class AetherSfmStreamSession {
         AetherSfm._finalizeStatus(_session));
   }
 
+  /// Rough live-preview cloud (throwaway) triangulated DURING capture from the
+  /// per-frame matches + ARKit poses — available WITHOUT finalize, for the
+  /// instant capture-end region selector. Flat [x,y,z, ...] in ARKit world
+  /// coords; empty until enough matched frames accumulate. NOT the model.
+  Float32List previewPoints() {
+    _checkLive();
+    final countPtr = malloc<Int32>();
+    try {
+      AetherSfm._getPreviewPoints(_session, nullptr, 0, countPtr);
+      final n = countPtr.value;
+      if (n <= 0) return Float32List(0);
+      final buf = malloc<Float>(n * 3);
+      try {
+        final rc = AetherSfm._getPreviewPoints(_session, buf, n, countPtr);
+        if (_resultFromCode(rc) != AetherSfmResult.ok) return Float32List(0);
+        final written = countPtr.value < n ? countPtr.value : n;
+        final out = Float32List(written * 3);
+        for (var i = 0; i < written * 3; i++) {
+          out[i] = buf[i];
+        }
+        return out;
+      } finally {
+        malloc.free(buf);
+      }
+    } finally {
+      malloc.free(countPtr);
+    }
+  }
+
   /// Camera poses packed 9 doubles per frame:
   /// [frameId, registered(0/1), qw, qx, qy, qz, tx, ty, tz] — CamFromWorld.
   Float64List posesPacked() {
     _checkLive();
     final countPtr = malloc<Int32>();
+    countPtr.value = 0; // get_poses returns before writing count when not registered
     try {
-      AetherSfm._getPoses(_session, nullptr, 0, countPtr);
+      final szrc = AetherSfm._getPoses(_session, nullptr, 0, countPtr);
       final n = countPtr.value;
-      if (n <= 0) return Float64List(0);
+      if (_resultFromCode(szrc) != AetherSfmResult.ok || n <= 0) {
+        return Float64List(0);
+      }
       final buf = malloc<_SfmPose>(n);
       try {
         final rc = AetherSfm._getPoses(_session, buf, n, countPtr);
@@ -703,7 +835,17 @@ class AetherSfmStreamSession {
   /// FULL sparse cloud + per-point track observations from one atomic
   /// snapshot (see [AetherSfmPointsTracked]). Falls back to empty lists on
   /// any non-OK result.
-  AetherSfmPointsTracked pointsTracked() {
+  AetherSfmPointsTracked pointsTracked() =>
+      _trackedFrom(AetherSfm._getPointsTracked);
+
+  /// Same shape as [pointsTracked] but reads the LIVE streaming local-BA
+  /// reconstruction (built incrementally during capture) instead of the
+  /// finalize output — so the streaming cloud can be true-colored through the
+  /// identical colorize path. Must be called on the capture worker isolate.
+  AetherSfmPointsTracked previewTracked() =>
+      _trackedFrom(AetherSfm._getPreviewTracked);
+
+  AetherSfmPointsTracked _trackedFrom(_GetPointsTrackedDart getter) {
     _checkLive();
     final countPtr = malloc<Int32>();
     final outPtr = malloc<Pointer<_SfmPoint>>();
@@ -711,8 +853,8 @@ class AetherSfmStreamSession {
     final obsPtr = malloc<Pointer<_SfmTrackObs>>();
     final obsCountPtr = malloc<Int64>();
     try {
-      final rc = AetherSfm._getPointsTracked(
-          _session, outPtr, countPtr, offsPtr, obsPtr, obsCountPtr);
+      final rc =
+          getter(_session, outPtr, countPtr, offsPtr, obsPtr, obsCountPtr);
       if (_resultFromCode(rc) != AetherSfmResult.ok) {
         return AetherSfmPointsTracked(Float32List(0), Uint8List(0),
             Int32List(1), Int32List(0), Float32List(0));

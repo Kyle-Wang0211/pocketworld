@@ -10,8 +10,8 @@
 		03D62ABCFE668FE66D5CD107 /* MetalRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16019E67BE3B581AE0E2152F /* MetalRenderer.swift */; };
 		1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */ = {isa = PBXBuildFile; fileRef = 1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */; };
 		14CB8F85797E871FB08CEF0B /* libPods-Runner.a in Frameworks */ = {isa = PBXBuildFile; fileRef = F5466D0AB0BD551F80CEAE3D /* libPods-Runner.a */; };
-		26ECACB32EC3E6601F329E1B /* AetherPrefsPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B16DAB8D4A994E1355EB573 /* AetherPrefsPlugin.swift */; };
 		DF75769717644F6F93C17AA7 /* AetherARKitPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEAD6EACA3D24E90926AFA5D /* AetherARKitPlugin.swift */; };
+		2110C7AE18324B40A728EE04 /* ReconUmbrella.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17D27761F0154088BD5EC06A /* ReconUmbrella.swift */; };
 		331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C807B294A618700263BE5 /* RunnerTests.swift */; };
 		3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */ = {isa = PBXBuildFile; fileRef = 3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */; };
 		74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74858FAE1ED2DC5600515810 /* AppDelegate.swift */; };
@@ -23,15 +23,6 @@
 		97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */; };
 		E0388DB63DBD4CF9745E00CE /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7779D977CD585B8DC1D4A1F9 /* SceneDelegate.swift */; };
 		A1B2C3D4E5F60000DEAD0007 /* test_scene.jpg in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60000DEAD0008 /* test_scene.jpg */; };
-		A1B2C3D4E5F60000DEAD0030 /* BiRefNetLite_1024.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60000DEAD0031 /* BiRefNetLite_1024.mlpackage */; };
-		A1B2C3D4E5F60000DEAD0050 /* BiRefNetWrapper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60000DEAD0051 /* BiRefNetWrapper.swift */; };
-		A1B2C3D4E5F60000DEAD0060 /* ModelLoaderPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60000DEAD0061 /* ModelLoaderPlugin.swift */; };
-		A1B2C3D4E5F60000DEAD0062 /* Da3DepthPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60000DEAD0063 /* Da3DepthPlugin.swift */; };
-		A1B2C3D4E5F60000DEAD00A0 /* DeviceHealthPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60000DEAD00A1 /* DeviceHealthPlugin.swift */; };
-		A1B2C3D4E5F60000DEAD0090 /* MaterialClassifierPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60000DEAD0091 /* MaterialClassifierPlugin.swift */; };
-		A1B2C3D4E5F60000DEAD0081 /* SigLIPBase_vision_fp16.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60000DEAD0080 /* SigLIPBase_vision_fp16.mlpackage */; settings = {ASSET_TAGS = ("tier:high", ); }; };
-		A1B2C3D4E5F60000DEAD0083 /* text_embeddings.json in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60000DEAD0082 /* text_embeddings.json */; settings = {ASSET_TAGS = ("tier:high", ); }; };
-		B3A5ECA71000000000000005 /* DA3BASE_476x742_N35_pose.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = B3A5ECA71000000000000006 /* DA3BASE_476x742_N35_pose.mlpackage */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -65,8 +56,8 @@
 		31D93AFE8F224CD7BE5B1DED /* Pods-RunnerTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.release.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.release.xcconfig"; sourceTree = "<group>"; };
 		331C807B294A618700263BE5 /* RunnerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunnerTests.swift; sourceTree = "<group>"; };
 		331C8081294A63A400263BE5 /* RunnerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RunnerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		3B16DAB8D4A994E1355EB573 /* AetherPrefsPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AetherPrefsPlugin.swift; sourceTree = "<group>"; };
 		FEAD6EACA3D24E90926AFA5D /* AetherARKitPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AetherARKitPlugin.swift; sourceTree = "<group>"; };
+		17D27761F0154088BD5EC06A /* ReconUmbrella.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ReconUmbrella.swift; sourceTree = "<group>"; };
 		3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = AppFrameworkInfo.plist; path = Flutter/AppFrameworkInfo.plist; sourceTree = "<group>"; };
 		4C40C533420E11A3B480744F /* AetherTexturePlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AetherTexturePlugin.swift; sourceTree = "<group>"; };
 		5919EC63F17119901FD77DC4 /* Pods-Runner.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.release.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.release.xcconfig"; sourceTree = "<group>"; };
@@ -88,15 +79,6 @@
 		CF98FE0171B5D456E32BB266 /* Pods-Runner.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.debug.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"; sourceTree = "<group>"; };
 		F5466D0AB0BD551F80CEAE3D /* libPods-Runner.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-Runner.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1B2C3D4E5F60000DEAD0008 /* test_scene.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; name = test_scene.jpg; path = "TestFixtures/test_scene.jpg"; sourceTree = "<group>"; };
-		A1B2C3D4E5F60000DEAD0031 /* BiRefNetLite_1024.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = wrapper.mlpackage; name = BiRefNetLite_1024.mlpackage; path = "Models/BiRefNet-CoreML/BiRefNetLite_1024.mlpackage"; sourceTree = "<group>"; };
-		A1B2C3D4E5F60000DEAD0051 /* BiRefNetWrapper.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BiRefNetWrapper.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60000DEAD0061 /* ModelLoaderPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ModelLoaderPlugin.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60000DEAD0063 /* Da3DepthPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Da3DepthPlugin.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60000DEAD00A1 /* DeviceHealthPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DeviceHealthPlugin.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60000DEAD0091 /* MaterialClassifierPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MaterialClassifierPlugin.swift; path = Runner/MaterialClassifierPlugin.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60000DEAD0080 /* SigLIPBase_vision_fp16.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = wrapper.mlpackage; name = "SigLIPBase_vision_fp16.mlpackage"; path = "Runner/Models/SigLIP/SigLIPBase_vision_fp16.mlpackage"; sourceTree = "<group>"; };
-		A1B2C3D4E5F60000DEAD0082 /* text_embeddings.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; name = "text_embeddings.json"; path = "Runner/Models/SigLIP/text_embeddings.json"; sourceTree = "<group>"; };
-		B3A5ECA71000000000000006 /* DA3BASE_476x742_N35_pose.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = wrapper.mlpackage; name = DA3BASE_476x742_N35_pose.mlpackage; path = "Models/DA3-BASE-CoreML/DA3BASE_476x742_N35_pose.mlpackage"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -186,18 +168,12 @@
 				1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */,
 				74858FAE1ED2DC5600515810 /* AppDelegate.swift */,
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
-				3B16DAB8D4A994E1355EB573 /* AetherPrefsPlugin.swift */,
 				4C40C533420E11A3B480744F /* AetherTexturePlugin.swift */,
 				FEAD6EACA3D24E90926AFA5D /* AetherARKitPlugin.swift */,
+				17D27761F0154088BD5EC06A /* ReconUmbrella.swift */,
 				16019E67BE3B581AE0E2152F /* MetalRenderer.swift */,
 				7779D977CD585B8DC1D4A1F9 /* SceneDelegate.swift */,
 				A1B2C3D4E5F60000DEAD0008 /* test_scene.jpg */,
-				A1B2C3D4E5F60000DEAD0031 /* BiRefNetLite_1024.mlpackage */,
-				A1B2C3D4E5F60000DEAD0051 /* BiRefNetWrapper.swift */,
-				B3A5ECA71000000000000006 /* DA3BASE_476x742_N35_pose.mlpackage */,
-				A1B2C3D4E5F60000DEAD0061 /* ModelLoaderPlugin.swift */,
-				A1B2C3D4E5F60000DEAD0063 /* Da3DepthPlugin.swift */,
-				A1B2C3D4E5F60000DEAD00A1 /* DeviceHealthPlugin.swift */,
 			);
 			path = Runner;
 			sourceTree = "<group>";
@@ -265,10 +241,6 @@
 		97C146E61CF9000F007C117D /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
-				knownAssetTags = (
-					"tier:low",
-					"tier:high",
-				);
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1510;
 				ORGANIZATIONNAME = "";
@@ -322,10 +294,6 @@
 				97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */,
 				97C146FC1CF9000F007C117D /* Main.storyboard in Resources */,
 				A1B2C3D4E5F60000DEAD0007 /* test_scene.jpg in Resources */,
-				A1B2C3D4E5F60000DEAD0030 /* BiRefNetLite_1024.mlpackage in Resources */,
-				B3A5ECA71000000000000005 /* DA3BASE_476x742_N35_pose.mlpackage in Resources */,
-				A1B2C3D4E5F60000DEAD0081 /* SigLIPBase_vision_fp16.mlpackage in Resources */,
-				A1B2C3D4E5F60000DEAD0083 /* text_embeddings.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -457,16 +425,11 @@
 			files = (
 				74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */,
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
-				26ECACB32EC3E6601F329E1B /* AetherPrefsPlugin.swift in Sources */,
 				8954836B39867FC637D6CA3C /* AetherTexturePlugin.swift in Sources */,
 				DF75769717644F6F93C17AA7 /* AetherARKitPlugin.swift in Sources */,
+				2110C7AE18324B40A728EE04 /* ReconUmbrella.swift in Sources */,
 				03D62ABCFE668FE66D5CD107 /* MetalRenderer.swift in Sources */,
 				E0388DB63DBD4CF9745E00CE /* SceneDelegate.swift in Sources */,
-				A1B2C3D4E5F60000DEAD0050 /* BiRefNetWrapper.swift in Sources */,
-				A1B2C3D4E5F60000DEAD0060 /* ModelLoaderPlugin.swift in Sources */,
-				A1B2C3D4E5F60000DEAD0062 /* Da3DepthPlugin.swift in Sources */,
-				A1B2C3D4E5F60000DEAD00A0 /* DeviceHealthPlugin.swift in Sources */,
-				A1B2C3D4E5F60000DEAD0090 /* MaterialClassifierPlugin.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

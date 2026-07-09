@@ -1,113 +1,44 @@
-// Drop-in replacement for the handful of `shared_preferences` calls
-// the app actually uses.
+// Thin facade over the standard `shared_preferences` pub package.
 //
-// Reason for existing: shared_preferences_foundation 2.5.6 crashes
-// iOS 26.3.1 at direct launch (SharedPreferencesPlugin.register(with:)
-// hits EXC_BAD_ACCESS inside swift_getObjectType — known Flutter /
-// iOS Swift-plugin metadata-registration race). Routing through an
-// in-Runner MethodChannel (`aether_prefs`) handled by
-// AetherPrefsPlugin.swift — which lives inside the Runner target, not
-// a pod — bypasses the race entirely.
-//
-// Only the subset the app uses is implemented (getString / setString /
-// getInt / setInt / remove). Grow on demand.
-//
-// For tests: `AetherPrefs.setMockInitialValues({...})` mirrors
-// `SharedPreferences.setMockInitialValues` so widget tests don't need
-// the MethodChannel mock boilerplate.
+// History: this used to route through an in-Runner MethodChannel
+// (`aether_prefs` + AetherPrefsPlugin.swift) to dodge a
+// shared_preferences_foundation iOS-26 direct-launch registrar race
+// (EXC_BAD_ACCESS in SharedPreferencesPlugin.register). That race no
+// longer reproduces — shared_preferences is already linked + registered
+// on every launch (via supabase_flutter) and the app runs clean — so the
+// custom native plugin was retired (2026-07-07) and this file is now a
+// straight pass-through to the cross-platform package. The static API is
+// unchanged, so the call sites (auth / locale / lifecycle / consent) are
+// untouched. Keys are passed through as-is; shared_preferences manages its
+// own `flutter.` storage prefix transparently.
 
-import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class AetherPrefs {
-  AetherPrefs._();
+  AetherPrefs._(this._prefs);
 
-  static const _channel = MethodChannel('aether_prefs');
+  final SharedPreferences _prefs;
 
-  static Map<String, Object?>? _mockStore;
-
-  /// Populate an in-memory store used by `flutter test` and non-iOS
-  /// platforms where the native channel isn't wired. After calling
-  /// this, every subsequent read/write goes through the mock store
-  /// — the native channel is not invoked.
-  static void setMockInitialValues(Map<String, Object?> values) {
-    _mockStore = Map<String, Object?>.from(values);
+  /// Test seam — mirrors `SharedPreferences.setMockInitialValues` so widget
+  /// tests keep working without any per-call channel mock.
+  static void setMockInitialValues(Map<String, Object> values) {
+    SharedPreferences.setMockInitialValues(values);
   }
 
-  /// Convenience singleton so call sites look identical to
-  /// `SharedPreferences.getInstance()` (returns `this` — there is no
-  /// real async init, but keeping the shape eases future migration
-  /// back to shared_preferences if the Flutter bug gets fixed).
-  static Future<AetherPrefs> getInstance() async => _instance;
-  static final AetherPrefs _instance = AetherPrefs._();
-
-  Future<String?> getString(String key) async {
-    if (_mockStore != null) return _mockStore![key] as String?;
-    try {
-      return await _channel
-          .invokeMethod<String>('getString', {'key': key});
-    } on MissingPluginException {
-      return null;
-    } on PlatformException {
-      return null;
-    }
+  /// Same shape as `SharedPreferences.getInstance()`. The underlying
+  /// instance is cached by the package, so repeated calls are cheap.
+  static Future<AetherPrefs> getInstance() async {
+    return AetherPrefs._(await SharedPreferences.getInstance());
   }
 
-  Future<bool> setString(String key, String value) async {
-    if (_mockStore != null) {
-      _mockStore![key] = value;
-      return true;
-    }
-    try {
-      final ok = await _channel
-          .invokeMethod<bool>('setString', {'key': key, 'value': value});
-      return ok ?? false;
-    } catch (_) {
-      return false;
-    }
-  }
+  Future<String?> getString(String key) async => _prefs.getString(key);
 
-  Future<int?> getInt(String key) async {
-    if (_mockStore != null) {
-      final v = _mockStore![key];
-      if (v is int) return v;
-      if (v is num) return v.toInt();
-      return null;
-    }
-    try {
-      final v = await _channel.invokeMethod<int>('getInt', {'key': key});
-      return v;
-    } on MissingPluginException {
-      return null;
-    } on PlatformException {
-      return null;
-    }
-  }
+  Future<bool> setString(String key, String value) =>
+      _prefs.setString(key, value);
 
-  Future<bool> setInt(String key, int value) async {
-    if (_mockStore != null) {
-      _mockStore![key] = value;
-      return true;
-    }
-    try {
-      final ok = await _channel
-          .invokeMethod<bool>('setInt', {'key': key, 'value': value});
-      return ok ?? false;
-    } catch (_) {
-      return false;
-    }
-  }
+  Future<int?> getInt(String key) async => _prefs.getInt(key);
 
-  Future<bool> remove(String key) async {
-    if (_mockStore != null) {
-      _mockStore!.remove(key);
-      return true;
-    }
-    try {
-      final ok =
-          await _channel.invokeMethod<bool>('remove', {'key': key});
-      return ok ?? false;
-    } catch (_) {
-      return false;
-    }
-  }
+  Future<bool> setInt(String key, int value) => _prefs.setInt(key, value);
+
+  Future<bool> remove(String key) => _prefs.remove(key);
 }

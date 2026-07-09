@@ -76,6 +76,34 @@ Future<void> persistSparseSnapshot({
       'summary': snapshot.summary,
       'poses': posesJson,
     }));
+    // ── track-length histogram (de-risk the ignore_two_view_tracks lever) ──
+    // Point i's track length = obsOffsets[i+1]-obsOffsets[i] (CSR offsets).
+    // The count in the len=2 bucket answers whether 2-view tracks are already
+    // KEPT (lever already spent) or absent/EXCLUDED (lever has headroom before
+    // we touch native / rebuild libglomap_core.a). Pure Dart, no rebuild.
+    final off = snapshot.obsOffsets;
+    if (off.length >= n + 1) {
+      final buckets = List<int>.filled(11, 0); // idx=len; 2..9, idx10 = 10+
+      var sumLen = 0;
+      var maxLen = 0;
+      for (var i = 0; i < n; i++) {
+        final len = off[i + 1] - off[i];
+        sumLen += len;
+        if (len > maxLen) maxLen = len;
+        final b = len >= 10 ? 10 : (len < 2 ? 2 : len);
+        buckets[b]++;
+      }
+      final twoView = buckets[2];
+      final pct = (100.0 * twoView / n).toStringAsFixed(1);
+      final mean = (sumLen / n).toStringAsFixed(2);
+      final hist = [
+        for (var l = 2; l <= 9; l++) 'L$l=${buckets[l]}',
+        'L10+=${buckets[10]}',
+      ].join(' ');
+      DeviceLog.log('SfmLive',
+          'track-hist: n=$n 2view=$twoView($pct%) mean=$mean max=$maxLen | $hist (refined=${snapshot.refined})');
+    }
+
     DeviceLog.log('SfmLive',
         'sparse persisted: $n pts (refined=${snapshot.refined}) → $captureDir/sfm_sparse.ply');
   } catch (e) {

@@ -111,6 +111,15 @@
 		<string>fetch</string>
 		<string>processing</string>
 	</array>
+	<!-- BGContinuedProcessingTask (iOS 26) keeps the SfM finalize running when
+	     the user backgrounds the app mid-solve. The identifier MUST be prefixed
+	     with the EXACT case-sensitive bundle id (com.kyle.PocketWorld) — dasd
+	     matches it string-level, and a lowercase form is silently dropped.
+	     See ios/Runner/ReconUmbrella.swift + the bg-umbrella recipe memory. -->
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.kyle.PocketWorld.recon</string>
+	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

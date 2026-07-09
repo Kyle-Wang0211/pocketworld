@@ -89,7 +89,9 @@ class _ARAlbumPageState extends State<ARAlbumPage> {
               child: InteractiveViewer(
                 minScale: 0.8,
                 maxScale: 4,
-                child: Center(child: Image.file(File(path), fit: BoxFit.contain)),
+                child: Center(
+                    child: Image.file(File(path),
+                        fit: BoxFit.contain, cacheWidth: 1600)),
               ),
             ),
             Positioned(
@@ -224,7 +226,7 @@ class _AlbumTile extends StatelessWidget {
           onTap: onOpen,
           child: ClipRRect(
             borderRadius: BorderRadius.circular(8),
-            child: Image.file(File(path), fit: BoxFit.cover),
+            child: Image.file(File(path), fit: BoxFit.cover, cacheWidth: 300),
           ),
         ),
         Positioned(

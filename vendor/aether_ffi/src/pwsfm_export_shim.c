@@ -98,6 +98,19 @@ PWSFM_EXPORT void pwsfm_points_free(aether_sfm_point_t* points) {
   aether_sfm_points_free(points);
 }
 
+PWSFM_EXPORT aether_sfm_result_t pwsfm_get_preview_points(
+    aether_sfm_session_t* s, float* out_xyz, int cap, int* out_count) {
+#if TARGET_OS_SIMULATOR
+  (void)s;
+  (void)out_xyz;
+  (void)cap;
+  if (out_count) *out_count = 0;
+  return AETHER_SFM_ERR_UNSUPPORTED;
+#else
+  return aether_sfm_get_preview_points(s, out_xyz, cap, out_count);
+#endif
+}
+
 PWSFM_EXPORT aether_sfm_result_t pwsfm_get_points_tracked(
     aether_sfm_session_t* s, aether_sfm_point_t** out_points, int* out_count,
     int32_t** out_obs_offsets, aether_sfm_track_obs_t** out_obs,
@@ -124,6 +137,51 @@ PWSFM_EXPORT void pwsfm_track_obs_free(int32_t* offsets,
   (void)obs;
 #else
   aether_sfm_track_obs_free(offsets, obs);
+#endif
+}
+
+PWSFM_EXPORT aether_sfm_result_t pwsfm_get_preview_tracked(
+    aether_sfm_session_t* s, aether_sfm_point_t** out_points, int* out_count,
+    int32_t** out_obs_offsets, aether_sfm_track_obs_t** out_obs,
+    int64_t* out_obs_count) {
+#if TARGET_OS_SIMULATOR
+  (void)s;
+  (void)out_points;
+  (void)out_count;
+  (void)out_obs_offsets;
+  (void)out_obs;
+  (void)out_obs_count;
+  return AETHER_SFM_ERR_UNSUPPORTED;
+#else
+  return aether_sfm_get_preview_tracked(s, out_points, out_count,
+                                        out_obs_offsets, out_obs,
+                                        out_obs_count);
+#endif
+}
+
+PWSFM_EXPORT void pwsfm_debug_last(aether_sfm_session_t* s, double* extract_ms,
+                                   double* match_ms, int* n_cand,
+                                   int* gpu_matches, int* cpu_matches) {
+#if TARGET_OS_SIMULATOR
+  (void)s; (void)extract_ms; (void)match_ms; (void)n_cand;
+  (void)gpu_matches; (void)cpu_matches;
+#else
+  aether_sfm_debug_last(s, extract_ms, match_ms, n_cand, gpu_matches,
+                        cpu_matches);
+#endif
+}
+
+PWSFM_EXPORT void pwsfm_stream_stats(aether_sfm_session_t* s, int64_t* tvg_pairs,
+                                     int64_t* raw_pairs, int64_t* grow_accepted,
+                                     int64_t* grow_rejected,
+                                     int64_t* reproj_filtered,
+                                     int64_t* tri_filtered) {
+#if TARGET_OS_SIMULATOR
+  (void)s; (void)tvg_pairs; (void)raw_pairs; (void)grow_accepted;
+  (void)grow_rejected; (void)reproj_filtered; (void)tri_filtered;
+#else
+  aether_sfm_stream_stats(s, tvg_pairs, raw_pairs, grow_accepted, grow_rejected,
+                          reproj_filtered, tri_filtered);
 #endif
 }
 

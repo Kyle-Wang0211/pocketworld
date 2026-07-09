@@ -51,7 +51,9 @@ class SfmPreviewOverlay extends StatelessWidget {
     final hasCloud = snap != null && snap.pointCount > 0;
     return Positioned.fill(
       child: Container(
-        color: const Color(0xE6000000),
+        // Fully opaque: the preview is a clean full-screen switch, not a
+        // translucent cover — the capture UI behind must not bleed through.
+        color: const Color(0xFF000000),
         child: Stack(
           children: [
             if (hasCloud)
@@ -184,10 +186,10 @@ class SfmPreviewOverlay extends StatelessWidget {
         text = '实时重建';
         icon = null;
       case SfmPreviewPhase.localReady:
-        text = '预览 · ${snapshot?.pointCount ?? 0} 点 · 精修中…';
+        text = '重建中 · ${snapshot?.pointCount ?? 0} 点…';
         icon = null;
       case SfmPreviewPhase.refined:
-        text = '精修完成 · ${snapshot?.pointCount ?? 0} 点';
+        text = '重建完成 · ${snapshot?.pointCount ?? 0} 点';
         icon = Icons.check_circle_rounded;
       case SfmPreviewPhase.error:
         text = '实时重建';

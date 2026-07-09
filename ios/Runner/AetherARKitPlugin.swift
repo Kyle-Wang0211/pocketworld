@@ -318,23 +318,22 @@ class AetherARKitPlugin: NSObject {
   /// rather amortize on first save, not at plugin init.
   private lazy var ciContext: CIContext = CIContext(options: nil)
 
-  // MARK: BiRefNet saliency (Plan H — capture-after mask source)
-  //
-  // Used by post-capture saliency MethodChannels. Earlier capture-during
-  // experiments tried to push AVCaptureDevice focus/exposure POIs from tap or
-  // saliency, but real-device testing on iPhone 14 Pro showed that single-shot
-  // hardware focus can get stuck at a near lens distance and make the AR preview
-  // look "near-sighted". Capture now leaves ARKit's continuous autofocus and
-  // autoexposure in charge; BiRefNet remains capture-after only.
-  //
-  // Same `Any?` boxing rationale as edgeTamSession (iOS 16+ type stashed on
-  // an iOS 11 class). Serial queue ensures the single-threaded MLModel
-  // predictions don't overlap if Dart fires lock → re-lock in quick succession.
-  private var biRefNetSession: Any?
-  private let biRefNetQueue = DispatchQueue(
-    label: "com.pocketworld.arkit.birefnet",
-    qos: .userInitiated
+  /// DEDICATED off-main queue for the preview colorizer's per-frame JPEG
+  /// decode (`decodeJpegForColor`). Kept SEPARATE from `jpegEncodeQueue`
+  /// on purpose: the shutter's own capture encode (`saveCurrentFrameAsJpeg`)
+  /// runs on jpegEncodeQueue, and the colorizer decodes N keyframes in a
+  /// loop when a background finalize completes. If those decodes ran on the
+  /// main thread (they used to, inline) they starved the shutter's channel
+  /// reply → `_capturing` stuck true → shutter spinner during background
+  /// processing; if they shared jpegEncodeQueue they'd serialize AHEAD of the
+  /// shutter's encode instead. A separate `.utility` queue (lower priority
+  /// than capture's `.userInitiated`) keeps colorize fully decoupled and
+  /// always yielding to capture. Serial → one 1280px buffer in flight (memory).
+  private let colorizeQueue = DispatchQueue(
+    label: "com.pocketworld.arkit.colorize",
+    qos: .utility
   )
+
 
   // MARK: Init
 
@@ -478,58 +477,44 @@ class AetherARKitPlugin: NSObject {
           result(payload)
         }
       }
-    case "runBiRefNetOnJpeg":
-      // Plan G W2 D1.5 Step 2: post-capture per-frame BiRefNet saliency.
-      // Reads JPEG at jpegPath, runs BiRefNetWrapper.Session.predictSaliency
-      // (auto-tier: HR@1024 on HIGH ≥5GB, lite@1024 on LOW 4GB), writes the
-      // 1024×1024 fp32 mask as raw bytes to maskOutPath (4 MB per mask).
-      // Caller (Dart capture_session.stop()) fires unawaited for top-N
-      // retained cell-photos. Returns inference metadata for logging /
-      // upload manifest.
-      //   Args: { jpegPath: String, maskOutPath: String }
-      //   Returns: { width, height, fgRatio, inferenceTimeMs, tier, ok }
-      if #available(iOS 16.0, *) {
-        handleRunBiRefNetOnJpeg(call: call, result: result)
-      } else {
-        result(FlutterError(
-          code: "ar_birefnet_unavailable",
-          message: "BiRefNet requires iOS 16+ (MLMultiArray .float16).",
-          details: nil
-        ))
-      }
-    case "lockFocusAtTapPoint":
-      // Deprecated capture-during focus hook. Keep the MethodChannel shape for
-      // old Dart/hot-reload clients, but do not touch AVCaptureDevice focus or
-      // exposure during AR capture.
+    case "beginReconUmbrella":
+      // Arm the iOS-26 background-continuation umbrella so the SfM finalize
+      // survives the user backgrounding the app mid-solve. MUST be invoked
+      // from the foreground (the preview is up) — dasd silently drops a submit
+      // made from a background state. No-op below iOS 26.
+      if #available(iOS 26.0, *) { ReconUmbrella.shared.begin() }
+      result(nil)
+    case "endReconUmbrella":
+      // Finalize + persist done — let the umbrella's handler loop complete the
+      // grant and cancel any still-pending request. Idempotent.
+      if #available(iOS 26.0, *) { ReconUmbrella.shared.end() }
+      result(nil)
+    case "decodeJpegForColor":
+      // Fast on-device colorizer decode: downscale-decode a saved 4K JPEG via
+      // ImageIO (CGImageSourceCreateThumbnailAtIndex) to maxPx on the long
+      // edge — never materializes the full frame, so 30-80 ms vs the 1.5-4 s
+      // of a pure-Dart full-res decode on a thermal-throttled A16. WITHOUT the
+      // EXIF transform: SfM keypoints live in raw sensor (landscape,
+      // top-down) pixel space, exactly what the colorizer samples.
+      //   Args: { jpegPath: String, maxPx?: Int=1280 }
+      //   Returns: { w, h, rgb: Uint8List (3 B/px, row-major top-down) }
       //
-      // Args:
-      //   { x: Double in [0,1] (buffer-relative, top-left origin),
-      //     y: Double in [0,1] }
-      // Returns:
-      //   { x: Double, y: Double, applied: false }
-      if #available(iOS 16.0, *) {
-        handleLockFocusAtTapPoint(call: call, result: result)
-      } else {
-        result(FlutterError(
-          code: "ar_lock_focus_unavailable",
-          message: "lockFocusAtTapPoint requires iOS 16+ (configurableCaptureDeviceForPrimaryCamera).",
-          details: nil
-        ))
+      // OFF-MAIN: the colorizer calls this in an N-keyframe loop the moment a
+      // BACKGROUND finalize completes. Run inline on the platform main thread,
+      // those N synchronous ImageIO decodes (30-80 ms each hot) saturated main
+      // and starved the shutter's own channel reply → `_capturing` stuck true →
+      // shutter spinner "during background processing" (the reported bug). The
+      // decode body is pure ImageIO + memory (no ARSession/UIKit), so it's safe
+      // on `colorizeQueue`; only the FlutterResult is marshaled back to main
+      // (tiny closure, matches saveCurrentFrameAsJpeg's convention). Capture is
+      // never gated by SfM — see CaptureSession.captureSinglePhoto's contract.
+      colorizeQueue.async { [weak self] in
+        let mainResult: FlutterResult = { value in
+          DispatchQueue.main.async { result(value) }
+        }
+        guard let self = self else { mainResult(nil); return }
+        self.handleDecodeJpegForColor(call: call, result: mainResult)
       }
-    case "getDeviceTier":
-      // Reports device memory tier so the Dart side can decide whether
-      // to start MobileSAM (HIGH only — LOW devices would OOM, see
-      // project_pocketworld_device_tier.md memory). Single source of
-      // truth for the 5 GB threshold lives in startSession() above
-      // where the 4K AR videoFormat decision uses the same boundary.
-      let physMemBytes = ProcessInfo.processInfo.physicalMemory
-      let physMemGB = Double(physMemBytes) / (1024.0 * 1024.0 * 1024.0)
-      let tier = physMemBytes >= 5_000_000_000 ? "high" : "low"
-      result([
-        "tier": tier,
-        "physicalMemoryBytes": NSNumber(value: physMemBytes),
-        "physicalMemoryGB": physMemGB,
-      ])
     case "addPhotoCard":
       // Anchor a RealityScan-style photo thumbnail at the CURRENT camera pose
       // (called immediately after a manual capture, so it == the capture pose).
@@ -1768,13 +1753,25 @@ extension AetherARKitPlugin {
   /// shared SIMPLE_PINHOLE camera — a non-uniform squash would break the
   /// single-focal-length premise.
   ///
-  /// RESEARCH TIER (2026-07-05, user-directed): full resolution — 4224
-  /// covers the 4K (3840×2160) and 1920×1440 capture tiers without any
-  /// downscale, matching the desktop K=12 research runs. Costs ~8.3 MB per
-  /// keyframe over the channel and pushes CPU extraction well past the old
-  /// ~0.6 s/frame target — acceptable: the GPU tiled-GEMM matcher absorbs
-  /// the matching side, and dropped keyframes only skip the live preview.
-  /// Previous live tier: 1280.
+  /// LIVE TIER = 4224 (full 4K, no downscale) — restored 2026-07-08.
+  /// This feeds the SIFT detector the full 3840×2160 gray, which with
+  /// maxFeatures=8192 + peak=0.004 yields the dense ~49k-point live cloud
+  /// (bedsheets/low-texture filled) at extract ~1.1 s/frame, mem ~1.6 GB,
+  /// feed queue ~6 — heavy but the capture path keeps pace (proven on
+  /// 30–70-frame captures). The contention that broke the shutter/album was
+  /// maxFeatures=12288 (14–17k keypoints, ~1.5 s/frame, queue→32), NOT this
+  /// 8192 tier — 8192@4K is the current best working config, so we keep 4K.
+  ///
+  /// A 2000-long-edge downscale was tried (extract 468 ms, mem 932 MB, queue
+  /// 0 — much safer margin) but it costs ~40% of the points: the live cloud
+  /// dropped to ~30k because 2000px physically loses the weak-texture
+  /// gradients (a box-average pre-filter did NOT help — SIFT rebuilds its own
+  /// Gaussian pyramid, so the pre-filter is redundant; resolution is the
+  /// binding constraint). Density was preferred over margin. If sustained/hot
+  /// captures later erode the margin, drop this toward 3200/2800 for a Pareto
+  /// point. Independent of storage/texturing either way (the on-disk 4K JPEG
+  /// is a separate encode pass; cloud reconstruction reads those full-res).
+  /// Prior tiers: 1280 (old live), 2000 (safe/sparse), 4224 (this / dense).
   static let sfmFeedMaxSide = 4224
 
   /// Stringified `ARCamera.TrackingState` for the pose stream's
@@ -1994,16 +1991,42 @@ extension AetherARKitPlugin {
     var data = Data(count: tw * th)
     data.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) in
       let dst = raw.bindMemory(to: UInt8.self).baseAddress!
-      // Same fixed-point step-and-pick sampling as `extractGray`.
-      let sxFixed = (width << 16) / tw
-      let syFixed = (height << 16) / th
+      // Box-average (area) downsample — replaces the old nearest-neighbor
+      // step-and-pick (2026-07-08). At the 3840→2000 live tier (~1.9× down)
+      // nearest-neighbor kept only 1 of every ~3.7 source pixels and discarded
+      // the rest, which aliased and — the real damage for photogrammetry —
+      // erased the weak-texture gradients (bedsheets, flat detail) the SIFT DoG
+      // detector needs, so those keypoints vanished and the live cloud thinned
+      // (28k vs 49k at full-res). Averaging each destination pixel over its full
+      // source block preserves those gradients so more real keypoints survive
+      // the downscale. The dst blocks tile the source plane exactly, so this is
+      // ONE pass over the source (~a few ms; detector is ~468 ms/frame — free).
+      // COLMAP downsamples with a proper filter for the same reason; the
+      // nearest-neighbor pick was the bug. Reduces to identity when tw==width
+      // (no-downscale research tier), block size 1.
       for dy in 0..<th {
-        let srcY = min((dy * syFixed) >> 16, height - 1)
-        let srcRowOffset = srcY * rowStride
+        let sy0 = dy * height / th
+        var sy1 = (dy + 1) * height / th
+        if sy1 <= sy0 { sy1 = sy0 + 1 }
         let dstRowOffset = dy * tw
         for dx in 0..<tw {
-          let srcX = min((dx * sxFixed) >> 16, width - 1)
-          dst[dstRowOffset + dx] = src[srcRowOffset + srcX]
+          let sx0 = dx * width / tw
+          var sx1 = (dx + 1) * width / tw
+          if sx1 <= sx0 { sx1 = sx0 + 1 }
+          var sum = 0
+          var cnt = 0
+          var sy = sy0
+          while sy < sy1 {
+            let rowOff = sy * rowStride
+            var sx = sx0
+            while sx < sx1 {
+              sum += Int(src[rowOff + sx])
+              cnt += 1
+              sx += 1
+            }
+            sy += 1
+          }
+          dst[dstRowOffset + dx] = UInt8(sum / cnt)
         }
       }
 
@@ -2156,122 +2179,72 @@ extension AetherARKitPlugin {
   }
 
 
-  // MARK: - Deprecated capture-during focus hook
-  //
-  // Older Dart clients may still call `lockFocusAtTapPoint` while the user is
-  // aiming. We intentionally no-op it now: ARKit's continuous autofocus is
-  // more stable than forcing a one-shot lens move from the app layer.
-  @available(iOS 16.0, *)
-  private func handleLockFocusAtTapPoint(
+  /// Downscale-decode a saved JPEG to `maxPx` (long edge) via ImageIO, no EXIF
+  /// transform, packed RGB — the preview colorizer's per-frame sampler. Runs on
+  /// colorizeQueue (see the decodeJpegForColor case), never the main thread.
+  private func handleDecodeJpegForColor(
     call: FlutterMethodCall,
     result: @escaping FlutterResult
   ) {
     guard let args = call.arguments as? [String: Any],
-          let x = (args["x"] as? NSNumber)?.doubleValue,
-          let y = (args["y"] as? NSNumber)?.doubleValue else {
-      result(FlutterError(
-        code: "ar_lock_focus_bad_args",
-        message: "lockFocusAtTapPoint requires {x: Double, y: Double} in [0,1]",
-        details: nil
-      ))
+          let path = args["jpegPath"] as? String else {
+      result(FlutterError(code: "ar_decode_bad_args",
+                          message: "decodeJpegForColor requires {jpegPath}",
+                          details: nil))
       return
     }
-    let poi = CGPoint(x: CGFloat(x), y: CGFloat(y))
-    restoreContinuousExposureFocus(reason: "deprecated tap focus")
-    NSLog("[AetherARKit] lockFocusAtTapPoint ignored; keeping ARKit continuous auto at (\(poi.x), \(poi.y))")
-    result([
-      "x": x,
-      "y": y,
-      "applied": false,
-    ])
-  }
-
-  /// Plan G W2 D1.5 Step 2: post-capture per-frame BiRefNet trigger.
-  /// Loads JPEG → BiRefNetWrapper.Session.predictSaliency → writes raw
-  /// fp32 mask (4 MB / 1024×1024) to disk. Runs on biRefNetQueue (serial)
-  /// so concurrent calls from the Dart batch loop pipeline rather than
-  /// thrash. Mask file format: 4-byte LE uint32 width + 4-byte LE uint32
-  /// height + width×height×4 bytes of fp32 saliency [0,1].
-  @available(iOS 16.0, *)
-  private func handleRunBiRefNetOnJpeg(
-    call: FlutterMethodCall,
-    result: @escaping FlutterResult
-  ) {
-    guard let args = call.arguments as? [String: Any],
-          let jpegPath = args["jpegPath"] as? String,
-          let maskOutPath = args["maskOutPath"] as? String else {
-      result(FlutterError(
-        code: "ar_birefnet_bad_args",
-        message: "runBiRefNetOnJpeg requires {jpegPath: String, maskOutPath: String}",
-        details: nil
-      ))
+    let maxPx = (args["maxPx"] as? Int) ?? 1280
+    // No EXIF transform → raw sensor (landscape) orientation, matching the
+    // gray fed to SfM and thus the keypoint coordinates.
+    let opts: [CFString: Any] = [
+      kCGImageSourceCreateThumbnailFromImageAlways: true,
+      kCGImageSourceCreateThumbnailWithTransform: false,
+      kCGImageSourceThumbnailMaxPixelSize: maxPx,
+    ]
+    guard let src = CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: path) as CFURL, nil),
+          let cg = CGImageSourceCreateThumbnailAtIndex(
+            src, 0, opts as CFDictionary) else {
+      result(FlutterError(code: "ar_decode_failed",
+                          message: "thumbnail decode failed: \(path)",
+                          details: nil))
       return
     }
-    biRefNetQueue.async { [weak self] in
-      guard let self = self else { return }
-      do {
-        let session = try self.loadBiRefNetSessionIfNeeded()
-
-        guard let uiImage = UIImage(contentsOfFile: jpegPath),
-              let cgImage = uiImage.cgImage else {
-          throw NSError(
-            domain: "AetherARKit", code: 500,
-            userInfo: [NSLocalizedDescriptionKey:
-              "runBiRefNetOnJpeg: failed to load JPEG at \(jpegPath)"]
-          )
-        }
-
-        let pred = try session.predictSaliency(image: cgImage)
-        NSLog("[AetherARKit] BiRefNet on \(jpegPath as NSString).lastPathComponent: " +
-              "fgRatio=\(pred.foregroundRatio) ms=\(pred.inferenceTimeMs)")
-
-        // Wire format: u32 width + u32 height + N×fp32 mask.
-        let w = UInt32(BiRefNetWrapper.inputSize).littleEndian
-        let h = UInt32(BiRefNetWrapper.inputSize).littleEndian
-        var blob = Data(capacity: 8 + pred.mask.count * 4)
-        withUnsafeBytes(of: w) { blob.append(contentsOf: $0) }
-        withUnsafeBytes(of: h) { blob.append(contentsOf: $0) }
-        pred.mask.withUnsafeBufferPointer { buf in
-          blob.append(UnsafeBufferPointer(start: buf.baseAddress, count: buf.count))
-        }
-        // Ensure parent dir exists.
-        let parent = (maskOutPath as NSString).deletingLastPathComponent
-        try? FileManager.default.createDirectory(
-          atPath: parent, withIntermediateDirectories: true
-        )
-        try blob.write(to: URL(fileURLWithPath: maskOutPath))
-
-        DispatchQueue.main.async {
-          result([
-            "width": BiRefNetWrapper.inputSize,
-            "height": BiRefNetWrapper.inputSize,
-            "fgRatio": Double(pred.foregroundRatio),
-            "inferenceTimeMs": pred.inferenceTimeMs,
-            "ok": true,
-          ])
-        }
-      } catch {
-        NSLog("[AetherARKit] runBiRefNetOnJpeg failed: \(error)")
-        DispatchQueue.main.async {
-          result(FlutterError(
-            code: "ar_birefnet_failed",
-            message: "BiRefNet inference failed: \(error.localizedDescription)",
-            details: nil
-          ))
-        }
+    let w = cg.width, h = cg.height
+    guard w > 0, h > 0 else {
+      result(FlutterError(code: "ar_decode_empty", message: "0-size",
+                          details: nil))
+      return
+    }
+    // Draw into a top-down RGBA8 bitmap (row 0 = top-left), then pack RGB.
+    var rgba = [UInt8](repeating: 0, count: w * h * 4)
+    let cs = CGColorSpaceCreateDeviceRGB()
+    let ok: Bool = rgba.withUnsafeMutableBytes { buf -> Bool in
+      guard let ctx = CGContext(
+              data: buf.baseAddress, width: w, height: h, bitsPerComponent: 8,
+              bytesPerRow: w * 4, space: cs,
+              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+        return false
+      }
+      ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+      return true
+    }
+    guard ok else {
+      result(FlutterError(code: "ar_decode_ctx", message: "CGContext failed",
+                          details: nil))
+      return
+    }
+    var rgb = Data(count: w * h * 3)
+    rgb.withUnsafeMutableBytes { (d: UnsafeMutableRawBufferPointer) in
+      let dst = d.bindMemory(to: UInt8.self).baseAddress!
+      var si = 0, di = 0
+      let px = w * h
+      for _ in 0..<px {
+        dst[di] = rgba[si]; dst[di + 1] = rgba[si + 1]; dst[di + 2] = rgba[si + 2]
+        si += 4; di += 3
       }
     }
-  }
-
-  @available(iOS 16.0, *)
-  private func loadBiRefNetSessionIfNeeded() throws -> BiRefNetWrapper.Session {
-    if let cached = biRefNetSession as? BiRefNetWrapper.Session {
-      return cached
-    }
-    let session = try BiRefNetWrapper.Session()
-    biRefNetSession = session
-    NSLog("[AetherARKit] BiRefNet session loaded (lite GPU, single track)")
-    return session
+    result(["w": w, "h": h, "rgb": FlutterStandardTypedData(bytes: rgb)])
   }
 }
 

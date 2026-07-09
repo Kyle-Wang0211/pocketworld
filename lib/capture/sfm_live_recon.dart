@@ -23,6 +23,7 @@
 // preview, never for the user's data.
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:math' as math;
@@ -115,6 +116,15 @@ class SfmLiveFrameQueued extends SfmLiveEvent {
   const SfmLiveFrameQueued(this.seq, this.queueDepth);
   final int seq;
   final int queueDepth;
+}
+
+/// Instant rough preview cloud (ARKit-pose triangulation, built during capture)
+/// emitted the moment finalize is requested — for the immediate region selector,
+/// BEFORE the minutes-scale authoritative finalize. Throwaway; ARKit-world xyz,
+/// no color/poses/tracks.
+class SfmLivePreview extends SfmLiveEvent {
+  const SfmLivePreview(this.snapshot);
+  final SfmLiveSnapshot snapshot;
 }
 
 /// Phase 1 of finalize done — local reconstruction is live.
@@ -471,6 +481,43 @@ class SfmLiveRecon {
     _maybeSendFinalize();
   }
 
+  /// RECOVERY: reconstruct from the existing sqlite db WITHOUT feeding any
+  /// frames — the worker opens the retained db and runs finalize_async over it.
+  /// Used to retry a capture whose live finalize was interrupted. LOCAL_READY /
+  /// REFINED / ERROR arrive via [events] exactly like a normal finalize.
+  /// [imageWidth]/[imageHeight] seed the session options only; the reconstruction
+  /// reads its geometry from the db, so a nominal capture resolution is fine.
+  void resumeFromDb({int imageWidth = 3840, int imageHeight = 2160}) {
+    if (_disposed || _finalizeRequested) return;
+    _finalizeRequested = true;
+    _finalizeSent = true;
+    _toWorker.send(<String, Object?>{
+      'cmd': 'resume',
+      'w': imageWidth,
+      'h': imageHeight,
+    });
+  }
+
+  /// Persist the SfM-frame-id → color-JPEG mapping (+ the gray dims the
+  /// keypoints live in) as a jsonl sidecar next to the db. A later resume reads
+  /// it to colorize the recovered cloud with TRUE per-point photo color — the
+  /// exact same track-observation sampling the live colorizer does — instead of
+  /// having to guess the mapping from disk. One tiny append per registered
+  /// frame; best-effort (colorize has a timestamp-order fallback if absent).
+  void _persistFedMeta(int frameId, SfmFedFrameMeta m) {
+    try {
+      final dir = File(_dbPath).parent.path;
+      final line = '${jsonEncode(<String, Object?>{
+            'frameId': frameId,
+            'jpegPath': m.jpegPath,
+            'grayW': m.grayW,
+            'grayH': m.grayH,
+          })}\n';
+      File('$dir/sfm_fed_frames.jsonl')
+          .writeAsStringSync(line, mode: FileMode.append, flush: false);
+    } catch (_) {}
+  }
+
   /// Frees the native session (joins the background BA thread, drops the
   /// sqlite db) and tears the isolate down. Safe to call more than once.
   Future<void> dispose() async {
@@ -515,6 +562,7 @@ class SfmLiveRecon {
         final meta = _pendingMeta.remove(seq);
         if (ok && meta != null && frameId >= 0) {
           _fedMeta[frameId] = meta;
+          _persistFedMeta(frameId, meta);
         }
         // Consolidated per-frame telemetry: timing (worker) + queue state
         // (facade owns the disk spool) + memory/thermal (worker peak sample).
@@ -548,6 +596,12 @@ class SfmLiveRecon {
         // Worker slot freed — feed the next spooled frame (and dispatch the
         // deferred finalize once everything drained).
         unawaited(_pump());
+      case 'preview':
+        // The streaming local-BA cloud, TRACK-ANNOTATED (same payload shape as
+        // local_ready) so it colorizes + gravity-aligns identically to finalize.
+        _events.add(SfmLivePreview(
+          _gravityAlign(_snapshotFromMsg(msg, refined: false)),
+        ));
       case 'local_ready':
         _events.add(SfmLiveLocalReady(
           _gravityAlign(_snapshotFromMsg(msg, refined: false)),
@@ -700,13 +754,38 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
     boot.reply.send(<String, Object?>{'evt': 'log', 'line': line});
   }
 
-  void sendSnapshot(String evt, Map<String, dynamic> summary, int ms) {
+  /// Packs + sends a full track-annotated snapshot (points + per-point track
+  /// observations → the colorizer input). When [preview] is true it reads the
+  /// LIVE streaming local-BA reconstruction (`previewTracked`) instead of the
+  /// finalize output (`pointsTracked`). Returns false — sending nothing — when
+  /// the requested reconstruction is empty; for a preview that means the session
+  /// has no live_recon (a resumed-from-db session), so the caller falls through
+  /// to the cold finalize.
+  bool sendSnapshot(String evt, Map<String, dynamic> summary, int ms,
+      {bool preview = false}) {
     final s = session;
-    if (s == null) return;
-    final points = s.pointsTracked();
-    final poses = s.posesPacked();
+    if (s == null) return false;
+    final points = preview ? s.previewTracked() : s.pointsTracked();
+    if (preview && points.count == 0) return false; // no live_recon → fall back
+    // posesPacked() reads the FINALIZE recon (s->recon), which is empty until the
+    // deferred global BA runs — so for the streaming preview it carries nothing
+    // useful (and would exercise get_poses' not-registered path). The streaming
+    // cloud is already in ARKit gravity-world (points triangulated in ARKit world,
+    // the windowed BA gauge pinned to ARKit-world points), so it needs no gravity
+    // rotation → send empty poses and let _gravityAlign no-op.
+    final poses = preview ? Float64List(0) : s.posesPacked();
     wlog('$evt: points=${points.count} obs=${points.obsCount} '
         'poses=${poses.length ~/ 9} ms=$ms summary=$summary');
+    if (preview) {
+      final st = s.streamStats();
+      final tvgPct = (st.tvgPairs + st.rawPairs) > 0
+          ? (100 * st.tvgPairs / (st.tvgPairs + st.rawPairs)).round()
+          : 0;
+      wlog('stream-stats: tvg-inlier pairs=${st.tvgPairs} raw-fallback=${st.rawPairs} '
+          '($tvgPct% verified) | grow accept=${st.growAccepted} '
+          'reject=${st.growRejected} | filtered reproj=${st.reprojFiltered} '
+          'tri-angle=${st.triFiltered}');
+    }
     boot.reply.send(<String, Object?>{
       'evt': evt,
       'xyz': points.xyz,
@@ -718,6 +797,7 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
       'summary': summary,
       'ms': ms,
     });
+    return true;
   }
 
   void fail(String stage, Object message) {
@@ -744,6 +824,14 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
               boot.dbPath,
               imageWidth: w,
               imageHeight: h,
+              // A/B (2026-07-08): tried 12288 to keep the ~10k raw keypoints
+              // peak=0.004 finds, but on the 4K gray it made per-frame extract
+              // heavy enough that the SfM worker couldn't keep up — the feed
+              // queue exploded (32 deep) and the heavy extract starved the
+              // photo-capture path (shutter unresponsive, frame count stuck).
+              // Reverted to 8192: 0.004 + 8192 was the balanced config (49k
+              // points, sheet filled, capture kept pace).
+              maxFeatures: 8192,
             );
             wlog('session created (${w}x$h, db=${boot.dbPath})');
             // DIAGNOSTIC TAP (errNotRegistered investigation): dump the
@@ -782,8 +870,15 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
           if (tel != null && tel.physFootprintMb > peakMb) {
             peakMb = tel.physFootprintMb;
           }
+          // Per-frame breakdown: locates a perf regression precisely —
+          // extract=Xms (>2000 ⇒ GPU extractor fell back to CPU),
+          // match=Yms over N candidates (cpu>0 ⇒ GPU matcher fell back).
+          final dbg = session!.debugLast();
           wlog('add_frame seq=${msg['seq']} frameId=${r.frameId} '
-              'rc=${r.result.name} ms=${sw.elapsedMilliseconds} (${w}x$h)'
+              'rc=${r.result.name} ms=${sw.elapsedMilliseconds} (${w}x$h) | '
+              'extract=${dbg.extractMs.toStringAsFixed(0)}ms '
+              'match=${dbg.matchMs.toStringAsFixed(0)}ms '
+              'cand=${dbg.nCand} gpuM=${dbg.gpuMatches} cpuM=${dbg.cpuMatches}'
               '${tel != null ? ' | mem=${tel.physFootprintMb.toStringAsFixed(0)}MB '
                   'peak=${peakMb.toStringAsFixed(0)}MB '
                   'thermal=${tel.thermalName}' : ''}');
@@ -808,11 +903,73 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
           });
           fail('add_frame', e);
         }
+      case 'resume':
+        // Resume an interrupted finalize from the retained sqlite db (no new
+        // frames fed). aether_sfm_create opens the existing db; finalizeAsync's
+        // RunIncremental reads keypoints/matches straight from it (image_path
+        // empty → all state comes from the db). This is the recovery leg of the
+        // "always produces output" guarantee: any capture whose finalize was
+        // killed (thermal / backgrounded / jetsam) gets retried on a later,
+        // cooler launch until a PLY lands.
+        if (session == null) {
+          try {
+            session = AetherSfmStreamSession.create(
+              boot.dbPath,
+              imageWidth: (msg['w'] as int?) ?? 3840,
+              imageHeight: (msg['h'] as int?) ?? 2160,
+              maxFeatures: AetherSfmStreamSession.liveMaxFeatures,
+              kNeighbors: AetherSfmStreamSession.liveKNeighbors,
+            );
+            wlog('resume: session opened on existing db (${boot.dbPath})');
+          } catch (e) {
+            fail('resume', 'create-from-db failed: $e');
+            break;
+          }
+        }
+        continue finalizeCase;
+      finalizeCase:
       case 'finalize':
         final s = session;
         if (s == null) {
           fail('finalize', 'no frames were fed — nothing to reconstruct');
           break;
+        }
+        // INSTANT, AUTHORITATIVE-FOR-SELECTION cloud: emit the streaming COLMAP
+        // local-BA reconstruction (windowed Cauchy BA + floater filter, built
+        // during add_frame), TRACK-ANNOTATED so it colorizes through the exact
+        // same path as finalize. This is the ONLY cloud the user sees — the
+        // global BA below is DEFERRED to after region selection (code kept, only
+        // its trigger moved). A normal live capture stops here.
+        //
+        // A resumed-from-db session (recovery leg) has NO live_recon, so
+        // sendSnapshot(preview) returns false → we fall through to the cold
+        // finalize, which is the only way to reconstruct a recovered capture.
+        try {
+          if (sendSnapshot('preview',
+              const <String, dynamic>{'source': 'streaming_local_ba'}, 0,
+              preview: true)) {
+            wlog('streaming local-BA cloud emitted (colorized); '
+                'global BA deferred to post-selection');
+            // BASELINE INSTRUMENTATION: retain the sqlite db (session.dispose()
+            // → aether_sfm_free drops the original) so the DELIVERED finalize
+            // model can be reconstructed host-side from two_view_geometries and
+            // compared to the streaming preview (double-wall / reproj / points).
+            // Cheap copy; remove once the device baseline is captured.
+            try {
+              final db = File(boot.dbPath);
+              if (db.existsSync()) {
+                db.copySync('${boot.dbPath}.retained');
+                wlog('baseline: db retained at ${boot.dbPath}.retained '
+                    '(${db.lengthSync()} bytes)');
+              }
+            } catch (e) {
+              wlog('baseline: db retain failed: $e');
+            }
+            break;
+          }
+          wlog('no live_recon (resumed session) → cold finalize');
+        } catch (e) {
+          wlog('streaming preview emit failed: $e → cold finalize');
         }
         final sw = Stopwatch()..start();
         try {
