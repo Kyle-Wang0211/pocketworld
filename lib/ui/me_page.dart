@@ -42,9 +42,22 @@ import 'scan_record.dart';
 import 'scan_record_cell.dart';
 
 class MePage extends StatefulWidget {
-  const MePage({super.key, this.showDraftsSignal});
+  const MePage({
+    super.key,
+    this.showDraftsSignal,
+    this.initialShowDrafts = false,
+    this.activeReconstructionCaptureDir,
+    this.onActiveReconstructionTap,
+  });
 
   final ValueListenable<int>? showDraftsSignal;
+  final bool initialShowDrafts;
+
+  /// When MePage is temporarily shown above a still-running capture route,
+  /// tapping that draft must reveal the existing reconstruction instead of
+  /// opening a partial PLY or starting any new work.
+  final String? activeReconstructionCaptureDir;
+  final VoidCallback? onActiveReconstructionTap;
 
   @override
   State<MePage> createState() => _MePageState();
@@ -65,11 +78,12 @@ class _MePageState extends State<MePage> {
       GlobalKey<ScaffoldMessengerState>();
 
   // true = show 项目 (completed GLB), false = show 草稿 (everything else).
-  bool _showProjects = true;
+  late bool _showProjects;
 
   @override
   void initState() {
     super.initState();
+    _showProjects = !widget.initialShowDrafts;
     widget.showDraftsSignal?.addListener(_showDraftsFromSignal);
     _stats.load();
     // Plan G W2 全本地 (2026-05-16): no cloud → local sync, drafts list
@@ -79,6 +93,11 @@ class _MePageState extends State<MePage> {
   @override
   void didUpdateWidget(covariant MePage oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (!oldWidget.initialShowDrafts &&
+        widget.initialShowDrafts &&
+        _showProjects) {
+      _showProjects = false;
+    }
     if (oldWidget.showDraftsSignal == widget.showDraftsSignal) return;
     oldWidget.showDraftsSignal?.removeListener(_showDraftsFromSignal);
     widget.showDraftsSignal?.addListener(_showDraftsFromSignal);
@@ -172,7 +191,12 @@ class _MePageState extends State<MePage> {
                   onSelect: (v) => setState(() => _showProjects = v),
                 ),
                 const SizedBox(height: AetherSpacing.lg),
-                _MyWorksSection(showProjects: _showProjects),
+                _MyWorksSection(
+                  showProjects: _showProjects,
+                  activeReconstructionCaptureDir:
+                      widget.activeReconstructionCaptureDir,
+                  onActiveReconstructionTap: widget.onActiveReconstructionTap,
+                ),
               ],
             ),
           ),
@@ -266,8 +290,14 @@ class _TabPill extends StatelessWidget {
 /// childAspectRatio so left and right cells share the same Y bounds.
 class _MyWorksSection extends StatefulWidget {
   final bool showProjects;
+  final String? activeReconstructionCaptureDir;
+  final VoidCallback? onActiveReconstructionTap;
 
-  const _MyWorksSection({required this.showProjects});
+  const _MyWorksSection({
+    required this.showProjects,
+    this.activeReconstructionCaptureDir,
+    this.onActiveReconstructionTap,
+  });
 
   @override
   State<_MyWorksSection> createState() => _MyWorksSectionState();
@@ -334,6 +364,17 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
   }
 
   void _onTap(ScanRecord record) {
+    // The capture route is still mounted beneath this temporary Drafts view.
+    // Re-open its waiting UI for the same job; never create/resume a second
+    // reconstruction and never prefer a partially persisted PLY.
+    final activeCaptureDir = widget.activeReconstructionCaptureDir;
+    final reopenActive = widget.onActiveReconstructionTap;
+    if (activeCaptureDir != null &&
+        record.captureDir == activeCaptureDir &&
+        reopenActive != null) {
+      reopenActive();
+      return;
+    }
     // Finished works (GLB artifact) open the detail page as before.
     if (record.artifactPath != null) {
       Navigator.of(context).push(
@@ -348,8 +389,9 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
     // interaction per 2026-07-05 product feedback. Long-press keeps
     // rename/delete/train.
     final captureDir = record.captureDir;
-    final sparsePlyPath =
-        captureDir == null ? null : '$captureDir/sfm_sparse.ply';
+    final sparsePlyPath = captureDir == null
+        ? null
+        : '$captureDir/sfm_sparse.ply';
     if (sparsePlyPath != null && File(sparsePlyPath).existsSync()) {
       Navigator.of(context).push(
         MaterialPageRoute<void>(
@@ -393,8 +435,9 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
         record.cloudUploadStatus != ScanCloudUploadStatus.processing;
     // 拍摄期落盘的稀疏点云(sfm_sparse.ply)存在时,提供 in-app 查看入口。
     final captureDir = record.captureDir;
-    final sparsePlyPath =
-        captureDir == null ? null : '$captureDir/sfm_sparse.ply';
+    final sparsePlyPath = captureDir == null
+        ? null
+        : '$captureDir/sfm_sparse.ply';
     final canViewSparse =
         sparsePlyPath != null && File(sparsePlyPath).existsSync();
     final action = await showModalBottomSheet<String>(
@@ -564,7 +607,6 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
     }
   }
 
-
   Future<void> _renameRecord(ScanRecord record) async {
     final l = AppL10n.of(context);
     final controller = TextEditingController(text: record.name);
@@ -673,7 +715,6 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
     return text.substring(0, 180);
   }
 }
-
 
 class _MeActionCopy {
   final String startTraining;

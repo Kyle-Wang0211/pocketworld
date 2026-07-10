@@ -1,10 +1,9 @@
-// sfm_preview_overlay.dart — capture-time sparse-cloud preview layer.
+// sfm_preview_overlay.dart — post-capture final sparse-cloud waiting layer.
 //
-// Shown on the AR capture page the moment streaming SfM's finalize phase 1
-// lands (LOCAL_READY). When the background global BA converges the refined
-// snapshot is swapped in silently — no interruption, just a small
-// "精修完成" badge. Rendering/controls are the shared SparseCloudView
-// (sparse_cloud_view.dart), identical to the drafts 查看点云 page.
+// Shown immediately after the user taps finish. It first reports the disk-backed
+// frame queue, then holds the user on the final-reconstruction state until the
+// authoritative colored cloud is ready. Rendering uses the shared
+// SparseCloudView, identical to the drafts 查看点云 page.
 
 import 'package:flutter/material.dart';
 
@@ -31,6 +30,7 @@ class SfmPreviewOverlay extends StatelessWidget {
     super.key,
     required this.phase,
     required this.snapshot,
+    required this.onBack,
     required this.onDone,
     this.errorText,
     this.progressText,
@@ -38,17 +38,20 @@ class SfmPreviewOverlay extends StatelessWidget {
 
   final SfmPreviewPhase phase;
   final SfmLiveSnapshot? snapshot;
+  final VoidCallback onBack;
   final VoidCallback onDone;
   final String? errorText;
 
-  /// Shown under the generating spinner (e.g. "已处理 12 · 队列 8" while the
-  /// disk queue drains before finalize).
+  /// Shown under the generating spinner while the disk queue drains and the
+  /// final reconstruction runs.
   final String? progressText;
 
   @override
   Widget build(BuildContext context) {
     final snap = snapshot;
     final hasCloud = snap != null && snap.pointCount > 0;
+    final canFinish =
+        phase == SfmPreviewPhase.refined || phase == SfmPreviewPhase.error;
     return Positioned.fill(
       child: Container(
         // Fully opaque: the preview is a clean full-screen switch, not a
@@ -82,6 +85,26 @@ class SfmPreviewOverlay extends StatelessWidget {
                 ),
               ),
             ),
+            // Leaving this screen only reveals Drafts. The capture route and
+            // its reconstruction worker stay mounted so progress can be
+            // reopened from the active task card.
+            Positioned(
+              top: 0,
+              left: 0,
+              child: SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 8, 0, 0),
+                  child: IconButton(
+                    key: const ValueKey('sfm_preview_back'),
+                    onPressed: onBack,
+                    tooltip: '返回草稿',
+                    icon: const Icon(Icons.arrow_back_ios_new_rounded),
+                    color: Colors.white,
+                    iconSize: 22,
+                  ),
+                ),
+              ),
+            ),
             // ── generating spinner (center, before any snapshot exists)
             if (phase == SfmPreviewPhase.generating)
               Center(
@@ -98,7 +121,7 @@ class SfmPreviewOverlay extends StatelessWidget {
                     ),
                     const SizedBox(height: 16),
                     const Text(
-                      '正在生成预览…',
+                      '正在生成最终点云…',
                       style: TextStyle(color: Colors.white70, fontSize: 14),
                     ),
                     if (progressText != null) ...[
@@ -106,7 +129,9 @@ class SfmPreviewOverlay extends StatelessWidget {
                       Text(
                         progressText!,
                         style: const TextStyle(
-                            color: Colors.white38, fontSize: 12),
+                          color: Colors.white38,
+                          fontSize: 12,
+                        ),
                       ),
                     ],
                   ],
@@ -119,8 +144,11 @@ class SfmPreviewOverlay extends StatelessWidget {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.cloud_off_rounded,
-                          color: Colors.white38, size: 40),
+                      const Icon(
+                        Icons.cloud_off_rounded,
+                        color: Colors.white38,
+                        size: 40,
+                      ),
                       const SizedBox(height: 14),
                       const Text(
                         '本次未能重建，已保留素材',
@@ -132,38 +160,45 @@ class SfmPreviewOverlay extends StatelessWidget {
                           errorText!,
                           textAlign: TextAlign.center,
                           style: const TextStyle(
-                              color: Colors.white38, fontSize: 11),
+                            color: Colors.white38,
+                            fontSize: 11,
+                          ),
                         ),
                       ],
                     ],
                   ),
                 ),
               ),
-            // ── done button (bottom; controls live inside SparseCloudView)
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: SafeArea(
-                top: false,
-                child: Padding(
-                  padding: const EdgeInsets.only(bottom: 16),
-                  child: Center(
-                    child: GestureDetector(
-                      onTap: onDone,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 44, vertical: 13),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(26),
-                        ),
-                        child: const Text(
-                          '完成',
-                          style: TextStyle(
-                            color: Colors.black,
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
+            // No early escape while frames/finalize are running: the user asked
+            // for the authoritative sparse result, not a background replacement.
+            if (canFinish)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: SafeArea(
+                  top: false,
+                  child: Padding(
+                    padding: const EdgeInsets.only(bottom: 16),
+                    child: Center(
+                      child: GestureDetector(
+                        onTap: onDone,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 44,
+                            vertical: 13,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(26),
+                          ),
+                          child: const Text(
+                            '完成',
+                            style: TextStyle(
+                              color: Colors.black,
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                         ),
                       ),
@@ -171,7 +206,6 @@ class SfmPreviewOverlay extends StatelessWidget {
                   ),
                 ),
               ),
-            ),
           ],
         ),
       ),
@@ -183,7 +217,7 @@ class SfmPreviewOverlay extends StatelessWidget {
     final IconData? icon;
     switch (phase) {
       case SfmPreviewPhase.generating:
-        text = '实时重建';
+        text = '最终重建';
         icon = null;
       case SfmPreviewPhase.localReady:
         text = '重建中 · ${snapshot?.pointCount ?? 0} 点…';
@@ -192,7 +226,7 @@ class SfmPreviewOverlay extends StatelessWidget {
         text = '重建完成 · ${snapshot?.pointCount ?? 0} 点';
         icon = Icons.check_circle_rounded;
       case SfmPreviewPhase.error:
-        text = '实时重建';
+        text = '重建结束';
         icon = null;
     }
     return Container(

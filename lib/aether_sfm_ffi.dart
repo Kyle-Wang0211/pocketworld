@@ -135,27 +135,67 @@ final class _SfmPoint extends Struct {
 typedef _OptionsDefaultC = Void Function(Pointer<_SfmOptions>);
 typedef _OptionsDefaultDart = void Function(Pointer<_SfmOptions>);
 
-typedef _RunC = Int32 Function(Pointer<Utf8> dbPath, Pointer<Utf8> imagePath,
-    Pointer<_SfmOptions> options, Pointer<Pointer<Void>> outSession,
-    Pointer<Utf8> outJson, Int32 outCap);
-typedef _RunDart = int Function(Pointer<Utf8> dbPath, Pointer<Utf8> imagePath,
-    Pointer<_SfmOptions> options, Pointer<Pointer<Void>> outSession,
-    Pointer<Utf8> outJson, int outCap);
+typedef _RunC =
+    Int32 Function(
+      Pointer<Utf8> dbPath,
+      Pointer<Utf8> imagePath,
+      Pointer<_SfmOptions> options,
+      Pointer<Pointer<Void>> outSession,
+      Pointer<Utf8> outJson,
+      Int32 outCap,
+    );
+typedef _RunDart =
+    int Function(
+      Pointer<Utf8> dbPath,
+      Pointer<Utf8> imagePath,
+      Pointer<_SfmOptions> options,
+      Pointer<Pointer<Void>> outSession,
+      Pointer<Utf8> outJson,
+      int outCap,
+    );
 
-typedef _GetPosesC = Int32 Function(Pointer<Void> session,
-    Pointer<_SfmPose> outPoses, Int32 cap, Pointer<Int32> outCount);
-typedef _GetPosesDart = int Function(Pointer<Void> session,
-    Pointer<_SfmPose> outPoses, int cap, Pointer<Int32> outCount);
+typedef _GetPosesC =
+    Int32 Function(
+      Pointer<Void> session,
+      Pointer<_SfmPose> outPoses,
+      Int32 cap,
+      Pointer<Int32> outCount,
+    );
+typedef _GetPosesDart =
+    int Function(
+      Pointer<Void> session,
+      Pointer<_SfmPose> outPoses,
+      int cap,
+      Pointer<Int32> outCount,
+    );
 
-typedef _GetPreviewPointsC = Int32 Function(Pointer<Void> session,
-    Pointer<Float> outXyz, Int32 cap, Pointer<Int32> outCount);
-typedef _GetPreviewPointsDart = int Function(Pointer<Void> session,
-    Pointer<Float> outXyz, int cap, Pointer<Int32> outCount);
+typedef _GetPreviewPointsC =
+    Int32 Function(
+      Pointer<Void> session,
+      Pointer<Float> outXyz,
+      Int32 cap,
+      Pointer<Int32> outCount,
+    );
+typedef _GetPreviewPointsDart =
+    int Function(
+      Pointer<Void> session,
+      Pointer<Float> outXyz,
+      int cap,
+      Pointer<Int32> outCount,
+    );
 
-typedef _GetPointsC = Int32 Function(Pointer<Void> session,
-    Pointer<Pointer<_SfmPoint>> outPoints, Pointer<Int32> outCount);
-typedef _GetPointsDart = int Function(Pointer<Void> session,
-    Pointer<Pointer<_SfmPoint>> outPoints, Pointer<Int32> outCount);
+typedef _GetPointsC =
+    Int32 Function(
+      Pointer<Void> session,
+      Pointer<Pointer<_SfmPoint>> outPoints,
+      Pointer<Int32> outCount,
+    );
+typedef _GetPointsDart =
+    int Function(
+      Pointer<Void> session,
+      Pointer<Pointer<_SfmPoint>> outPoints,
+      Pointer<Int32> outCount,
+    );
 
 typedef _PointsFreeC = Void Function(Pointer<_SfmPoint>);
 typedef _PointsFreeDart = void Function(Pointer<_SfmPoint>);
@@ -171,79 +211,186 @@ final class _SfmTrackObs extends Struct {
   external double y;
 }
 
-typedef _GetPointsTrackedC = Int32 Function(
-    Pointer<Void> session,
-    Pointer<Pointer<_SfmPoint>> outPoints,
-    Pointer<Int32> outCount,
-    Pointer<Pointer<Int32>> outObsOffsets,
-    Pointer<Pointer<_SfmTrackObs>> outObs,
-    Pointer<Int64> outObsCount);
-typedef _GetPointsTrackedDart = int Function(
-    Pointer<Void> session,
-    Pointer<Pointer<_SfmPoint>> outPoints,
-    Pointer<Int32> outCount,
-    Pointer<Pointer<Int32>> outObsOffsets,
-    Pointer<Pointer<_SfmTrackObs>> outObs,
-    Pointer<Int64> outObsCount);
+typedef _GetPointsTrackedC =
+    Int32 Function(
+      Pointer<Void> session,
+      Pointer<Pointer<_SfmPoint>> outPoints,
+      Pointer<Int32> outCount,
+      Pointer<Pointer<Int32>> outObsOffsets,
+      Pointer<Pointer<_SfmTrackObs>> outObs,
+      Pointer<Int64> outObsCount,
+    );
+typedef _GetPointsTrackedDart =
+    int Function(
+      Pointer<Void> session,
+      Pointer<Pointer<_SfmPoint>> outPoints,
+      Pointer<Int32> outCount,
+      Pointer<Pointer<Int32>> outObsOffsets,
+      Pointer<Pointer<_SfmTrackObs>> outObs,
+      Pointer<Int64> outObsCount,
+    );
 
-typedef _TrackObsFreeC = Void Function(
-    Pointer<Int32> offsets, Pointer<_SfmTrackObs> obs);
-typedef _TrackObsFreeDart = void Function(
-    Pointer<Int32> offsets, Pointer<_SfmTrackObs> obs);
+typedef _TrackObsFreeC =
+    Void Function(Pointer<Int32> offsets, Pointer<_SfmTrackObs> obs);
+typedef _TrackObsFreeDart =
+    void Function(Pointer<Int32> offsets, Pointer<_SfmTrackObs> obs);
 
-typedef _DebugLastC = Void Function(Pointer<Void>, Pointer<Double>,
-    Pointer<Double>, Pointer<Int32>, Pointer<Int32>, Pointer<Int32>);
-typedef _DebugLastDart = void Function(Pointer<Void>, Pointer<Double>,
-    Pointer<Double>, Pointer<Int32>, Pointer<Int32>, Pointer<Int32>);
+typedef _DebugLastC =
+    Void Function(
+      Pointer<Void>,
+      Pointer<Double>,
+      Pointer<Double>,
+      Pointer<Int32>,
+      Pointer<Int32>,
+      Pointer<Int32>,
+    );
+typedef _DebugLastDart =
+    void Function(
+      Pointer<Void>,
+      Pointer<Double>,
+      Pointer<Double>,
+      Pointer<Int32>,
+      Pointer<Int32>,
+      Pointer<Int32>,
+    );
 
-typedef _StreamStatsC = Void Function(Pointer<Void>, Pointer<Int64>,
-    Pointer<Int64>, Pointer<Int64>, Pointer<Int64>, Pointer<Int64>,
-    Pointer<Int64>);
-typedef _StreamStatsDart = void Function(Pointer<Void>, Pointer<Int64>,
-    Pointer<Int64>, Pointer<Int64>, Pointer<Int64>, Pointer<Int64>,
-    Pointer<Int64>);
+typedef _StreamStatsC =
+    Void Function(
+      Pointer<Void>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+    );
+typedef _StreamStatsDart =
+    void Function(
+      Pointer<Void>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+    );
 
 typedef _SessionFreeC = Void Function(Pointer<Void>);
 typedef _SessionFreeDart = void Function(Pointer<Void>);
 
 // ─── streaming surface (aether_sfm_create / add_frame / finalize_async) ───
-typedef _CreateC = Int32 Function(Pointer<Utf8> dbPath,
-    Pointer<_SfmOptions> options, Pointer<Pointer<Void>> outSession);
-typedef _CreateDart = int Function(Pointer<Utf8> dbPath,
-    Pointer<_SfmOptions> options, Pointer<Pointer<Void>> outSession);
+typedef _CreateC =
+    Int32 Function(
+      Pointer<Utf8> dbPath,
+      Pointer<_SfmOptions> options,
+      Pointer<Pointer<Void>> outSession,
+    );
+typedef _CreateDart =
+    int Function(
+      Pointer<Utf8> dbPath,
+      Pointer<_SfmOptions> options,
+      Pointer<Pointer<Void>> outSession,
+    );
 
-typedef _AddFrameC = Int32 Function(
-    Pointer<Void> session,
-    Pointer<Uint8> gray,
-    Int32 width,
-    Int32 height,
-    Float fx,
-    Float fy,
-    Float cx,
-    Float cy,
-    Pointer<Double> poseQwxyz, // may be nullptr
-    Pointer<Double> poseT, // may be nullptr
-    Pointer<Int32> outFrameId);
-typedef _AddFrameDart = int Function(
-    Pointer<Void> session,
-    Pointer<Uint8> gray,
-    int width,
-    int height,
-    double fx,
-    double fy,
-    double cx,
-    double cy,
-    Pointer<Double> poseQwxyz,
-    Pointer<Double> poseT,
-    Pointer<Int32> outFrameId);
+typedef _AddFrameC =
+    Int32 Function(
+      Pointer<Void> session,
+      Pointer<Uint8> gray,
+      Int32 width,
+      Int32 height,
+      Float fx,
+      Float fy,
+      Float cx,
+      Float cy,
+      Pointer<Double> poseQwxyz, // may be nullptr
+      Pointer<Double> poseT, // may be nullptr
+      Pointer<Int32> outFrameId,
+    );
+typedef _AddFrameDart =
+    int Function(
+      Pointer<Void> session,
+      Pointer<Uint8> gray,
+      int width,
+      int height,
+      double fx,
+      double fy,
+      double cx,
+      double cy,
+      Pointer<Double> poseQwxyz,
+      Pointer<Double> poseT,
+      Pointer<Int32> outFrameId,
+    );
 
-typedef _FinalizeAsyncC = Int32 Function(
-    Pointer<Void> session, Pointer<Utf8> outJson, Int32 outCap);
-typedef _FinalizeAsyncDart = int Function(
-    Pointer<Void> session, Pointer<Utf8> outJson, int outCap);
+typedef _FinalizeAsyncC =
+    Int32 Function(Pointer<Void> session, Pointer<Utf8> outJson, Int32 outCap);
+typedef _FinalizeAsyncDart =
+    int Function(Pointer<Void> session, Pointer<Utf8> outJson, int outCap);
 
 typedef _FinalizeStatusC = Int32 Function(Pointer<Void> session);
 typedef _FinalizeStatusDart = int Function(Pointer<Void> session);
+
+typedef _GlobalRefineC = Int32 Function(Pointer<Void> session);
+typedef _GlobalRefineDart = int Function(Pointer<Void> session);
 
 /// Outcome of an on-device SfM solve, carrying the live native session so the
 /// caller can read poses/points then must call [dispose].
@@ -271,12 +418,14 @@ class AetherSfmSolve {
         final written = countPtr.value < n ? countPtr.value : n;
         for (var i = 0; i < written; i++) {
           final p = buf[i];
-          out.add(AetherSfmPose(
-            frameId: p.frameId,
-            registered: p.registered != 0,
-            quatWxyz: [p.qwxyz[0], p.qwxyz[1], p.qwxyz[2], p.qwxyz[3]],
-            translation: [p.t[0], p.t[1], p.t[2]],
-          ));
+          out.add(
+            AetherSfmPose(
+              frameId: p.frameId,
+              registered: p.registered != 0,
+              quatWxyz: [p.qwxyz[0], p.qwxyz[1], p.qwxyz[2], p.qwxyz[3]],
+              translation: [p.t[0], p.t[1], p.t[2]],
+            ),
+          );
         }
         return out;
       } finally {
@@ -343,7 +492,8 @@ class AetherSfm {
     // Heuristic: the iOS simulator reports a simulator device. dart:io exposes
     // this via the SIMULATOR_DEVICE_NAME env on the host running the sim.
     final env = Platform.environment;
-    final isSim = env.containsKey('SIMULATOR_DEVICE_NAME') ||
+    final isSim =
+        env.containsKey('SIMULATOR_DEVICE_NAME') ||
         env.containsKey('SIMULATOR_UDID');
     return !isSim;
   }
@@ -356,52 +506,63 @@ class AetherSfm {
   // shim (vendor/aether_ffi/src/pwsfm_export_shim.c) re-exports 1:1
   // forwarders with default visibility under the pwsfm_ prefix; signatures
   // are identical to aether_sfm_c.h.
-  static final _OptionsDefaultDart _optionsDefault =
-      _lib.lookupFunction<_OptionsDefaultC, _OptionsDefaultDart>(
-          'pwsfm_options_default');
-  static final _RunDart _run =
-      _lib.lookupFunction<_RunC, _RunDart>('pwsfm_run');
-  static final _GetPosesDart _getPoses =
-      _lib.lookupFunction<_GetPosesC, _GetPosesDart>('pwsfm_get_poses');
-  static final _GetPreviewPointsDart _getPreviewPoints =
-      _lib.lookupFunction<_GetPreviewPointsC, _GetPreviewPointsDart>(
-          'pwsfm_get_preview_points');
-  static final _GetPointsDart _getPoints =
-      _lib.lookupFunction<_GetPointsC, _GetPointsDart>('pwsfm_get_points');
-  static final _PointsFreeDart _pointsFree =
-      _lib.lookupFunction<_PointsFreeC, _PointsFreeDart>('pwsfm_points_free');
-  static final _GetPointsTrackedDart _getPointsTracked =
-      _lib.lookupFunction<_GetPointsTrackedC, _GetPointsTrackedDart>(
-          'pwsfm_get_points_tracked');
+  static final _OptionsDefaultDart _optionsDefault = _lib
+      .lookupFunction<_OptionsDefaultC, _OptionsDefaultDart>(
+        'pwsfm_options_default',
+      );
+  static final _RunDart _run = _lib.lookupFunction<_RunC, _RunDart>(
+    'pwsfm_run',
+  );
+  static final _GetPosesDart _getPoses = _lib
+      .lookupFunction<_GetPosesC, _GetPosesDart>('pwsfm_get_poses');
+  static final _GetPreviewPointsDart _getPreviewPoints = _lib
+      .lookupFunction<_GetPreviewPointsC, _GetPreviewPointsDart>(
+        'pwsfm_get_preview_points',
+      );
+  static final _GetPointsDart _getPoints = _lib
+      .lookupFunction<_GetPointsC, _GetPointsDart>('pwsfm_get_points');
+  static final _PointsFreeDart _pointsFree = _lib
+      .lookupFunction<_PointsFreeC, _PointsFreeDart>('pwsfm_points_free');
+  static final _GetPointsTrackedDart _getPointsTracked = _lib
+      .lookupFunction<_GetPointsTrackedC, _GetPointsTrackedDart>(
+        'pwsfm_get_points_tracked',
+      );
   // Same ABI as _getPointsTracked, but reads the LIVE streaming local-BA
   // reconstruction — lets the worker true-color the streaming cloud through the
   // identical colorize path (track observations → full-res bilinear sample).
-  static final _GetPointsTrackedDart _getPreviewTracked =
-      _lib.lookupFunction<_GetPointsTrackedC, _GetPointsTrackedDart>(
-          'pwsfm_get_preview_tracked');
-  static final _TrackObsFreeDart _trackObsFree =
-      _lib.lookupFunction<_TrackObsFreeC, _TrackObsFreeDart>(
-          'pwsfm_track_obs_free');
-  static final _DebugLastDart _debugLast =
-      _lib.lookupFunction<_DebugLastC, _DebugLastDart>('pwsfm_debug_last');
-  static final _StreamStatsDart _streamStats =
-      _lib.lookupFunction<_StreamStatsC, _StreamStatsDart>('pwsfm_stream_stats');
-  static final _SessionFreeDart _sessionFree =
-      _lib.lookupFunction<_SessionFreeC, _SessionFreeDart>('pwsfm_free');
+  static final _GetPointsTrackedDart _getPreviewTracked = _lib
+      .lookupFunction<_GetPointsTrackedC, _GetPointsTrackedDart>(
+        'pwsfm_get_preview_tracked',
+      );
+  static final _TrackObsFreeDart _trackObsFree = _lib
+      .lookupFunction<_TrackObsFreeC, _TrackObsFreeDart>(
+        'pwsfm_track_obs_free',
+      );
+  static final _DebugLastDart _debugLast = _lib
+      .lookupFunction<_DebugLastC, _DebugLastDart>('pwsfm_debug_last');
+  static final _StreamStatsDart _streamStats = _lib
+      .lookupFunction<_StreamStatsC, _StreamStatsDart>('pwsfm_stream_stats');
+  static final _GlobalRefineDart _globalRefine = _lib
+      .lookupFunction<_GlobalRefineC, _GlobalRefineDart>('pwsfm_global_refine');
+  static final _SessionFreeDart _sessionFree = _lib
+      .lookupFunction<_SessionFreeC, _SessionFreeDart>('pwsfm_free');
 
   // Streaming surface. Bound lazily like the batch fns; the shim exists on
   // device AND simulator (sim guards finalize_async/status to UNSUPPORTED),
   // so lookup never throws asymmetrically.
-  static final _CreateDart _create =
-      _lib.lookupFunction<_CreateC, _CreateDart>('pwsfm_create');
-  static final _AddFrameDart _addFrame =
-      _lib.lookupFunction<_AddFrameC, _AddFrameDart>('pwsfm_add_frame');
-  static final _FinalizeAsyncDart _finalizeAsync =
-      _lib.lookupFunction<_FinalizeAsyncC, _FinalizeAsyncDart>(
-          'pwsfm_finalize_async');
-  static final _FinalizeStatusDart _finalizeStatus =
-      _lib.lookupFunction<_FinalizeStatusC, _FinalizeStatusDart>(
-          'pwsfm_finalize_status');
+  static final _CreateDart _create = _lib.lookupFunction<_CreateC, _CreateDart>(
+    'pwsfm_create',
+  );
+  static final _AddFrameDart _addFrame = _lib
+      .lookupFunction<_AddFrameC, _AddFrameDart>('pwsfm_add_frame');
+  static final _FinalizeAsyncDart _finalizeAsync = _lib
+      .lookupFunction<_FinalizeAsyncC, _FinalizeAsyncDart>(
+        'pwsfm_finalize_async',
+      );
+  static final _FinalizeStatusDart _finalizeStatus = _lib
+      .lookupFunction<_FinalizeStatusC, _FinalizeStatusDart>(
+        'pwsfm_finalize_status',
+      );
 
   /// Runs the validated incremental SfM pipeline over a prebuilt COLMAP sqlite
   /// db + image dir. Returns an [AetherSfmSolve] whose [AetherSfmSolve.dispose]
@@ -419,8 +580,9 @@ class AetherSfm {
   }) {
     if (!isSupported) {
       throw UnsupportedError(
-          'On-device SfM is unavailable on the iOS simulator (arm64 device '
-          'only). Run on a physical device.');
+        'On-device SfM is unavailable on the iOS simulator (arm64 device '
+        'only). Run on a physical device.',
+      );
     }
     final dbPtr = dbPath.toNativeUtf8();
     final imgPtr = imagePath.toNativeUtf8();
@@ -492,7 +654,12 @@ class AetherSfmPointsTracked {
   final Int32List obsFrameIds; // obsCount entries
   final Float32List obsXY; // 2*obsCount entries
   const AetherSfmPointsTracked(
-      this.xyz, this.rgb, this.obsOffsets, this.obsFrameIds, this.obsXY);
+    this.xyz,
+    this.rgb,
+    this.obsOffsets,
+    this.obsFrameIds,
+    this.obsXY,
+  );
   int get count => xyz.length ~/ 3;
   int get obsCount => obsFrameIds.length;
 }
@@ -521,7 +688,7 @@ class AetherSfmStreamSession {
   ///  • LIVE tier (former default): 2048 features / K=6 — the ≤2s/frame
   ///    streaming budget config.
   ///  • RESEARCH tier (current): 8192 features / K=12 at full-resolution
-  ///    feed — the desktop K=12 viewer operating point, enabled by the
+  ///    feed — the desktop K12/K20 viewer operating point, enabled by the
   ///    tiled-GEMM Metal matcher (pwsfm_gpu_match.mm; mutual cross-check,
   ///    bench 11568² @ 119 ms on A16). CPU extraction is now the slow leg
   ///    (~5-15 s/frame full-res) so live drop-rate rises — dropped frames
@@ -541,8 +708,9 @@ class AetherSfmStreamSession {
   }) {
     if (!AetherSfm.isSupported) {
       throw UnsupportedError(
-          'On-device SfM is unavailable on the iOS simulator (arm64 device '
-          'only). Run on a physical device.');
+        'On-device SfM is unavailable on the iOS simulator (arm64 device '
+        'only). Run on a physical device.',
+      );
     }
     final dbPtr = dbPath.toNativeUtf8();
     final optPtr = malloc<_SfmOptions>();
@@ -574,8 +742,9 @@ class AetherSfmStreamSession {
   /// Feeds one keyframe. [gray] is row-major top-down 8-bit grayscale of
   /// exactly the session's imageWidth x imageHeight; [fx]/[fy]/[cx]/[cy] are
   /// intrinsics at that SAME size. [quatWxyz] + [translation] are the
-  /// optional CamFromWorld (world→camera) ARKit pose prior — stored, unused
-  /// by the v1 solver, but forward the values whenever available.
+  /// optional CamFromWorld (world→camera) ARKit pose prior. Native uses it for
+  /// the ARKit-world live preview/local-BA path; authoritative finalize still
+  /// estimates its own SfM camera poses from image matches.
   ///
   /// The gray buffer is consumed synchronously inside the call (native copies
   /// what it needs); the malloc'd copy is freed before returning.
@@ -607,11 +776,24 @@ class AetherSfmStreamSession {
         tPtr.asTypedList(3).setAll(0, translation);
       }
       idPtr.value = -1;
-      final rc = AetherSfm._addFrame(_session, grayPtr, width, height, fx, fy,
-          cx, cy, qPtr, tPtr, idPtr);
+      final rc = AetherSfm._addFrame(
+        _session,
+        grayPtr,
+        width,
+        height,
+        fx,
+        fy,
+        cx,
+        cy,
+        qPtr,
+        tPtr,
+        idPtr,
+      );
       final result = _resultFromCode(rc);
       return AetherSfmAddFrameResult(
-          result, result == AetherSfmResult.ok ? idPtr.value : -1);
+        result,
+        result == AetherSfmResult.ok ? idPtr.value : -1,
+      );
     } finally {
       malloc.free(grayPtr);
       malloc.free(idPtr);
@@ -624,8 +806,14 @@ class AetherSfmStreamSession {
   /// extraction ms, matching ms, candidate count, and how many pairs matched
   /// on GPU vs CPU. extractMs > ~2000 ⇒ GPU DSP-SIFT fell back to CPU;
   /// cpuMatches > 0 ⇒ the GPU GEMM matcher fell back per pair.
-  ({double extractMs, double matchMs, int nCand, int gpuMatches, int cpuMatches})
-      debugLast() {
+  ({
+    double extractMs,
+    double matchMs,
+    int nCand,
+    int gpuMatches,
+    int cpuMatches,
+  })
+  debugLast() {
     _checkLive();
     final e = malloc<Double>(), m = malloc<Double>();
     final nc = malloc<Int32>(), gm = malloc<Int32>(), cm = malloc<Int32>();
@@ -655,26 +843,148 @@ class AetherSfmStreamSession {
   /// Cumulative streaming-quality counters over the whole capture — which
   /// floater filter did what. tvgPairs/rawPairs = grow/create pairs taken from
   /// the geometric (TVG RANSAC) inliers vs raw-fallback; growAccepted/Rejected =
-  /// track-growth observations kept vs gated; reprojFiltered/triFiltered =
-  /// observations culled by the post-BA reprojection and multi-view
-  /// triangulation-angle filters.
+  /// track-growth observations kept vs gated; mergeAccepted/Rejected =
+  /// conservative live track merges that passed/failed the full-track reproj
+  /// precheck; reprojFiltered/triFiltered = observations culled by the post-BA
+  /// reprojection and multi-view triangulation-angle filters.
   ({
     int tvgPairs,
     int rawPairs,
     int growAccepted,
     int growRejected,
     int reprojFiltered,
-    int triFiltered
-  }) streamStats() {
+    int triFiltered,
+    int growRejectCheirality,
+    int growRejectReproj,
+    int createRejectCheirality,
+    int createRejectTriAngle,
+    int createRejectReproj,
+    int alreadyAssigned,
+    int mergeNeeded,
+    int mergeAccepted,
+    int mergeRejected,
+    int spatialConsidered,
+    int spatialAttempted,
+    int spatialWritten,
+    int spatialInliers,
+    int spatialAnchorAttempted,
+    int spatialAnchorPassed,
+    int spatialRegionsConfirmed,
+    int spatialExpandedAttempted,
+    int spatialGuidedPairs,
+    int spatialGuidedInliers,
+    int spatialQuadraticAttempted,
+    int spatialQuadraticWritten,
+    int spatialBudgetSkipped,
+    int temporalDetailPairs,
+    int temporalDetailMatches,
+    int temporalDetailCreated,
+    int temporalDetailGrown,
+    int temporalDetailRejectCheirality,
+    int temporalDetailRejectReproj,
+    int temporalDetailRejectTriAngle,
+    int temporalDetailConflicts,
+  })
+  streamStats() {
     _checkLive();
     final tvg = malloc<Int64>(), raw = malloc<Int64>();
     final ga = malloc<Int64>(), gr = malloc<Int64>();
     final rf = malloc<Int64>(), tf = malloc<Int64>();
+    final grc = malloc<Int64>(), grr = malloc<Int64>();
+    final cch = malloc<Int64>(), cta = malloc<Int64>(), crp = malloc<Int64>();
+    final asg = malloc<Int64>(), merge = malloc<Int64>();
+    final mergeA = malloc<Int64>(), mergeR = malloc<Int64>();
+    final spc = malloc<Int64>(), spa = malloc<Int64>();
+    final spw = malloc<Int64>(), spi = malloc<Int64>();
+    final saa = malloc<Int64>(), sap = malloc<Int64>();
+    final src = malloc<Int64>(), sea = malloc<Int64>();
+    final sgp = malloc<Int64>(), sgi = malloc<Int64>();
+    final sqa = malloc<Int64>(), sqw = malloc<Int64>();
+    final sbs = malloc<Int64>();
+    final tdp = malloc<Int64>(), tdm = malloc<Int64>();
+    final tdc = malloc<Int64>(), tdg = malloc<Int64>();
+    final tdch = malloc<Int64>(), tdrp = malloc<Int64>();
+    final tdta = malloc<Int64>(), tdcf = malloc<Int64>();
     try {
-      for (final p in [tvg, raw, ga, gr, rf, tf]) {
+      for (final p in [
+        tvg,
+        raw,
+        ga,
+        gr,
+        rf,
+        tf,
+        grc,
+        grr,
+        cch,
+        cta,
+        crp,
+        asg,
+        merge,
+        mergeA,
+        mergeR,
+        spc,
+        spa,
+        spw,
+        spi,
+        saa,
+        sap,
+        src,
+        sea,
+        sgp,
+        sgi,
+        sqa,
+        sqw,
+        sbs,
+        tdp,
+        tdm,
+        tdc,
+        tdg,
+        tdch,
+        tdrp,
+        tdta,
+        tdcf,
+      ]) {
         p.value = 0;
       }
-      AetherSfm._streamStats(_session, tvg, raw, ga, gr, rf, tf);
+      AetherSfm._streamStats(
+        _session,
+        tvg,
+        raw,
+        ga,
+        gr,
+        rf,
+        tf,
+        grc,
+        grr,
+        cch,
+        cta,
+        crp,
+        asg,
+        merge,
+        mergeA,
+        mergeR,
+        spc,
+        spa,
+        spw,
+        spi,
+        saa,
+        sap,
+        src,
+        sea,
+        sgp,
+        sgi,
+        sqa,
+        sqw,
+        sbs,
+        tdp,
+        tdm,
+        tdc,
+        tdg,
+        tdch,
+        tdrp,
+        tdta,
+        tdcf,
+      );
       return (
         tvgPairs: tvg.value,
         rawPairs: raw.value,
@@ -682,9 +992,76 @@ class AetherSfmStreamSession {
         growRejected: gr.value,
         reprojFiltered: rf.value,
         triFiltered: tf.value,
+        growRejectCheirality: grc.value,
+        growRejectReproj: grr.value,
+        createRejectCheirality: cch.value,
+        createRejectTriAngle: cta.value,
+        createRejectReproj: crp.value,
+        alreadyAssigned: asg.value,
+        mergeNeeded: merge.value,
+        mergeAccepted: mergeA.value,
+        mergeRejected: mergeR.value,
+        spatialConsidered: spc.value,
+        spatialAttempted: spa.value,
+        spatialWritten: spw.value,
+        spatialInliers: spi.value,
+        spatialAnchorAttempted: saa.value,
+        spatialAnchorPassed: sap.value,
+        spatialRegionsConfirmed: src.value,
+        spatialExpandedAttempted: sea.value,
+        spatialGuidedPairs: sgp.value,
+        spatialGuidedInliers: sgi.value,
+        spatialQuadraticAttempted: sqa.value,
+        spatialQuadraticWritten: sqw.value,
+        spatialBudgetSkipped: sbs.value,
+        temporalDetailPairs: tdp.value,
+        temporalDetailMatches: tdm.value,
+        temporalDetailCreated: tdc.value,
+        temporalDetailGrown: tdg.value,
+        temporalDetailRejectCheirality: tdch.value,
+        temporalDetailRejectReproj: tdrp.value,
+        temporalDetailRejectTriAngle: tdta.value,
+        temporalDetailConflicts: tdcf.value,
       );
     } finally {
-      for (final p in [tvg, raw, ga, gr, rf, tf]) {
+      for (final p in [
+        tvg,
+        raw,
+        ga,
+        gr,
+        rf,
+        tf,
+        grc,
+        grr,
+        cch,
+        cta,
+        crp,
+        asg,
+        merge,
+        mergeA,
+        mergeR,
+        spc,
+        spa,
+        spw,
+        spi,
+        saa,
+        sap,
+        src,
+        sea,
+        sgp,
+        sgi,
+        sqa,
+        sqw,
+        sbs,
+        tdp,
+        tdm,
+        tdc,
+        tdg,
+        tdch,
+        tdrp,
+        tdta,
+        tdcf,
+      ]) {
         malloc.free(p);
       }
     }
@@ -720,8 +1097,7 @@ class AetherSfmStreamSession {
   /// Lock-free status poll of the background refinement.
   AetherSfmFinalizeStatus finalizeStatus() {
     _checkLive();
-    return aetherSfmFinalizeStatusFromCode(
-        AetherSfm._finalizeStatus(_session));
+    return aetherSfmFinalizeStatusFromCode(AetherSfm._finalizeStatus(_session));
   }
 
   /// Rough live-preview cloud (throwaway) triangulated DURING capture from the
@@ -758,7 +1134,8 @@ class AetherSfmStreamSession {
   Float64List posesPacked() {
     _checkLive();
     final countPtr = malloc<Int32>();
-    countPtr.value = 0; // get_poses returns before writing count when not registered
+    countPtr.value =
+        0; // get_poses returns before writing count when not registered
     try {
       final szrc = AetherSfm._getPoses(_session, nullptr, 0, countPtr);
       final n = countPtr.value;
@@ -838,6 +1215,20 @@ class AetherSfmStreamSession {
   AetherSfmPointsTracked pointsTracked() =>
       _trackedFrom(AetherSfm._getPointsTracked);
 
+  /// One-shot two-stage GLOBAL bundle adjustment over the live streaming
+  /// reconstruction, run at 完成 to COLLAPSE the double-wall drift the per-frame
+  /// windowed BA leaves behind. Refines the live cloud IN PLACE and republishes
+  /// the preview snapshot, so a subsequent [previewTracked] returns the
+  /// collapsed (single-surface) cloud. Observation-capped → cost is bounded and
+  /// decoupled from frame count (seconds at any capture size). Returns the
+  /// result code (OK on success; the windowed cloud is untouched on failure).
+  /// BLOCKS for the refine duration — MUST be called on the capture worker
+  /// isolate (never the UI isolate), ideally under the background umbrella.
+  AetherSfmResult globalRefine() {
+    _checkLive();
+    return _resultFromCode(AetherSfm._globalRefine(_session));
+  }
+
   /// Same shape as [pointsTracked] but reads the LIVE streaming local-BA
   /// reconstruction (built incrementally during capture) instead of the
   /// finalize output — so the streaming cloud can be true-colored through the
@@ -853,11 +1244,22 @@ class AetherSfmStreamSession {
     final obsPtr = malloc<Pointer<_SfmTrackObs>>();
     final obsCountPtr = malloc<Int64>();
     try {
-      final rc =
-          getter(_session, outPtr, countPtr, offsPtr, obsPtr, obsCountPtr);
+      final rc = getter(
+        _session,
+        outPtr,
+        countPtr,
+        offsPtr,
+        obsPtr,
+        obsCountPtr,
+      );
       if (_resultFromCode(rc) != AetherSfmResult.ok) {
-        return AetherSfmPointsTracked(Float32List(0), Uint8List(0),
-            Int32List(1), Int32List(0), Float32List(0));
+        return AetherSfmPointsTracked(
+          Float32List(0),
+          Uint8List(0),
+          Int32List(1),
+          Int32List(0),
+          Float32List(0),
+        );
       }
       final n = countPtr.value;
       final arr = outPtr.value;
@@ -869,8 +1271,13 @@ class AetherSfmStreamSession {
         if (offs != nullptr || obs != nullptr) {
           AetherSfm._trackObsFree(offs, obs);
         }
-        return AetherSfmPointsTracked(Float32List(0), Uint8List(0),
-            Int32List(1), Int32List(0), Float32List(0));
+        return AetherSfmPointsTracked(
+          Float32List(0),
+          Uint8List(0),
+          Int32List(1),
+          Int32List(0),
+          Float32List(0),
+        );
       }
       try {
         final xyz = Float32List(n * 3);

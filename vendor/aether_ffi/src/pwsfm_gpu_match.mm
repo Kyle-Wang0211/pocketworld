@@ -56,6 +56,11 @@ kernel void pw_match_gemm(device const half*  A          [[buffer(0)]],
                           constant uint&      numB        [[buffer(4)]],
                           constant float&     maxRatio    [[buffer(5)]],
                           constant float&     maxDistance [[buffer(6)]],
+                          device const float2* pointsA     [[buffer(7)]],
+                          device const float2* pointsB     [[buffer(8)]],
+                          device const float*  guideMatrix [[buffer(9)]],
+                          constant uint&       guideMode   [[buffer(10)]],
+                          constant float&      maxResidual [[buffer(11)]],
                           threadgroup half*   Bsh         [[threadgroup(0)]],
                           threadgroup float*  acc         [[threadgroup(1)]],
                           uint tgid  [[threadgroup_position_in_grid]],
@@ -109,6 +114,42 @@ kernel void pw_match_gemm(device const half*  A          [[buffer(0)]],
         for (uint t = 0; t < per; ++t) {
           const uint c = cg * per + t;
           if (col0 + c >= numB) break;
+          bool geometryOK = true;
+          if (guideMode == 1u) {
+            const float2 q = pointsA[row0 + row];
+            const float2 d = pointsB[col0 + c];
+            const float3 p1 = float3(q, 1.0f);
+            const float3 p2 = float3(d, 1.0f);
+            const float3 line2 = float3(
+                guideMatrix[0] * p1.x + guideMatrix[1] * p1.y + guideMatrix[2],
+                guideMatrix[3] * p1.x + guideMatrix[4] * p1.y + guideMatrix[5],
+                guideMatrix[6] * p1.x + guideMatrix[7] * p1.y + guideMatrix[8]);
+            const float3 line1 = float3(
+                guideMatrix[0] * p2.x + guideMatrix[3] * p2.y + guideMatrix[6],
+                guideMatrix[1] * p2.x + guideMatrix[4] * p2.y + guideMatrix[7],
+                guideMatrix[2] * p2.x + guideMatrix[5] * p2.y + guideMatrix[8]);
+            const float nom = dot(p2, line2);
+            const float denom = dot(line2.xy, line2.xy) +
+                                dot(line1.xy, line1.xy);
+            geometryOK = denom > 1e-12f &&
+                         nom * nom <= maxResidual * denom;
+          } else if (guideMode == 2u) {
+            const float2 q = pointsA[row0 + row];
+            const float2 d = pointsB[col0 + c];
+            const float hx = guideMatrix[0] * q.x + guideMatrix[1] * q.y +
+                             guideMatrix[2];
+            const float hy = guideMatrix[3] * q.x + guideMatrix[4] * q.y +
+                             guideMatrix[5];
+            const float hz = guideMatrix[6] * q.x + guideMatrix[7] * q.y +
+                             guideMatrix[8];
+            if (abs(hz) <= 1e-8f) {
+              geometryOK = false;
+            } else {
+              const float2 delta = float2(hx / hz, hy / hz) - d;
+              geometryOK = dot(delta, delta) <= maxResidual;
+            }
+          }
+          if (!geometryOK) continue;
           const float dot = acc[row * kBN + c];
           if (dot > pb) { ps = pb; pb = dot; pbi = (int)(col0 + c); }
           else if (dot > ps) { ps = dot; }
@@ -138,8 +179,21 @@ kernel void pw_match_gemm(device const half*  A          [[buffer(0)]],
     //   best_dist = acos(min(best_dot/512^2, 1));  reject if best_dist > max_distance
     //   second_dist = acos(min(second_dot/512^2, 1));
     //   reject if best_dist >= max_ratio * second_dist  (>= keeps best==second out)
-    const float bd = acos(min(bestT[lid]   * kInvSqNorm, 1.0f));
-    const float sd = acos(min(secondT[lid] * kInvSqNorm, 1.0f));
+    float bd;
+    float sd;
+    if (guideMode == 0u) {
+      bd = acos(min(bestT[lid] * kInvSqNorm, 1.0f));
+      sd = acos(min(secondT[lid] * kInvSqNorm, 1.0f));
+    } else {
+      // COLMAP's guided CPU path applies the thresholds in normalized L2.
+      // With fixed-norm 512 SIFT descriptors, L2^2 / 512^2 = 2 - 2*cos.
+      // A filtered candidate has COLMAP's sentinel distance 512, so it also
+      // serves as the second-best baseline when only one candidate lies in the
+      // geometry band.
+      const float secondDot = max(secondT[lid], 131072.0f);
+      bd = sqrt(max(0.0f, 2.0f - 2.0f * bestT[lid] * kInvSqNorm));
+      sd = sqrt(max(0.0f, 2.0f - 2.0f * secondDot * kInvSqNorm));
+    }
     const bool keep = (bd <= maxDistance) && (bd < maxRatio * sd);
     out[row0 + lid] = keep ? bi : -1;
   }
@@ -174,20 +228,25 @@ static BOOL ensureMetal(void) {
   return gGemm != nil;
 }
 
-// GEMM matcher with mutual cross-check, emitting index pairs.
-// out_pairs: caller-allocated, 2*max_pairs uint32 entries filled as
-// [idxA, idxB]; cross-checked matches are unique per idxA so
-// max_pairs = min(nA, nB) can never truncate. Returns 0 on success;
-// non-zero → caller falls back to the CPU matcher.
-extern "C" int aether_gpu_match_gemm_pairs(const uint8_t* dA, int nA,
-                                           const uint8_t* dB, int nB,
-                                           double max_ratio,
-                                           uint32_t* out_pairs, int max_pairs,
-                                           int* out_num_matches) {
+// Shared GEMM implementation. guideMode=0 is the original matcher;
+// guideMode=1 constrains candidates by E/F and guideMode=2 by H. The reverse
+// pass receives matrixBA (E/F transpose or H inverse), preserving the same
+// mutual cross-check as the unconstrained path.
+static int matchPairsImpl(const uint8_t* dA, int nA, const float* xyA,
+                          const uint8_t* dB, int nB, const float* xyB,
+                          double max_ratio, const float* matrixAB,
+                          const float* matrixBA, uint32_t guideMode,
+                          float maxResidual, uint32_t* out_pairs,
+                          int max_pairs, int* out_num_matches) {
   @autoreleasepool {
     if (out_num_matches) *out_num_matches = 0;
     if (!dA || !dB || nA <= 0 || nB <= 0) return 1;
     if (out_pairs != nullptr && max_pairs <= 0) return 1;
+    if (guideMode > 2u) return 1;
+    if (guideMode != 0u &&
+        (!xyA || !xyB || !matrixAB || !matrixBA || maxResidual <= 0.0f)) {
+      return 1;
+    }
     if (!ensureMetal()) return 2;
     const int D = 128;
     // Host-padded query buffers: multiple of kMB(128) rows, zero-filled,
@@ -210,6 +269,37 @@ extern "C" int aether_gpu_match_gemm_pairs(const uint8_t* dA, int nA,
     id<MTLBuffer> outBA = [gDev newBufferWithLength:(NSUInteger)nB * sizeof(int)
                                             options:MTLResourceStorageModeShared];
     if (!outAB || !outBA) return 6;
+    static const float kDummyPoints[2] = {0.0f, 0.0f};
+    static const float kDummyMatrix[9] = {1.0f, 0.0f, 0.0f,
+                                          0.0f, 1.0f, 0.0f,
+                                          0.0f, 0.0f, 1.0f};
+    const float* pointsA = guideMode == 0u ? kDummyPoints : xyA;
+    const float* pointsB = guideMode == 0u ? kDummyPoints : xyB;
+    const float* matrixAtoB = guideMode == 0u ? kDummyMatrix : matrixAB;
+    const float* matrixBtoA = guideMode == 0u ? kDummyMatrix : matrixBA;
+    const NSUInteger pointsALength =
+        guideMode == 0u ? sizeof(kDummyPoints)
+                        : (NSUInteger)nA * 2 * sizeof(float);
+    const NSUInteger pointsBLength =
+        guideMode == 0u ? sizeof(kDummyPoints)
+                        : (NSUInteger)nB * 2 * sizeof(float);
+    id<MTLBuffer> pointsABuf =
+        [gDev newBufferWithBytes:pointsA
+                          length:pointsALength
+                         options:MTLResourceStorageModeShared];
+    id<MTLBuffer> pointsBBuf =
+        [gDev newBufferWithBytes:pointsB
+                          length:pointsBLength
+                         options:MTLResourceStorageModeShared];
+    id<MTLBuffer> matrixABBuf =
+        [gDev newBufferWithBytes:matrixAtoB
+                          length:9 * sizeof(float)
+                         options:MTLResourceStorageModeShared];
+    id<MTLBuffer> matrixBABuf =
+        [gDev newBufferWithBytes:matrixBtoA
+                          length:9 * sizeof(float)
+                         options:MTLResourceStorageModeShared];
+    if (!pointsABuf || !pointsBBuf || !matrixABBuf || !matrixBABuf) return 6;
     // COLMAP thresholds passed straight through (angular domain in-kernel):
     // max_ratio from the caller (default 0.7), max_distance = COLMAP's
     // SiftMatchingOptions default 0.7. The angular kernel needs no
@@ -220,10 +310,11 @@ extern "C" int aether_gpu_match_gemm_pairs(const uint8_t* dA, int nA,
     const NSUInteger bshLen = 16 * 128 * sizeof(__fp16);
     const NSUInteger accLen = 128 * 16 * sizeof(float);
     id<MTLCommandBuffer> cmd = [gQueue commandBuffer];
-    void (^enc2)(id<MTLBuffer>, id<MTLBuffer>, id<MTLBuffer>, uint32_t,
-                 uint32_t) =
-        ^(id<MTLBuffer> Q, id<MTLBuffer> Db, id<MTLBuffer> O, uint32_t nQ,
-          uint32_t nDb) {
+    void (^enc2)(id<MTLBuffer>, id<MTLBuffer>, id<MTLBuffer>, id<MTLBuffer>,
+                 id<MTLBuffer>, id<MTLBuffer>, uint32_t, uint32_t) =
+        ^(id<MTLBuffer> Q, id<MTLBuffer> Db, id<MTLBuffer> O,
+          id<MTLBuffer> Qxy, id<MTLBuffer> Dbxy, id<MTLBuffer> M,
+          uint32_t nQ, uint32_t nDb) {
           id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
           [enc setComputePipelineState:gGemm];
           [enc setBuffer:Q offset:0 atIndex:0];
@@ -233,6 +324,11 @@ extern "C" int aether_gpu_match_gemm_pairs(const uint8_t* dA, int nA,
           [enc setBytes:&nDb length:4 atIndex:4];
           [enc setBytes:&maxRatio length:4 atIndex:5];
           [enc setBytes:&maxDistance length:4 atIndex:6];
+          [enc setBuffer:Qxy offset:0 atIndex:7];
+          [enc setBuffer:Dbxy offset:0 atIndex:8];
+          [enc setBuffer:M offset:0 atIndex:9];
+          [enc setBytes:&guideMode length:4 atIndex:10];
+          [enc setBytes:&maxResidual length:4 atIndex:11];
           [enc setThreadgroupMemoryLength:bshLen atIndex:0];
           [enc setThreadgroupMemoryLength:accLen atIndex:1];
           NSUInteger groups = (nQ + 127) / 128;
@@ -240,8 +336,10 @@ extern "C" int aether_gpu_match_gemm_pairs(const uint8_t* dA, int nA,
               threadsPerThreadgroup:MTLSizeMake(512, 1, 1)];
           [enc endEncoding];
         };
-    enc2(aBuf, bBuf, outAB, (uint32_t)nA, (uint32_t)nB);  // A→B
-    enc2(bBuf, aBuf, outBA, (uint32_t)nB, (uint32_t)nA);  // B→A
+    enc2(aBuf, bBuf, outAB, pointsABuf, pointsBBuf, matrixABBuf,
+         (uint32_t)nA, (uint32_t)nB);  // A→B
+    enc2(bBuf, aBuf, outBA, pointsBBuf, pointsABuf, matrixBABuf,
+         (uint32_t)nB, (uint32_t)nA);  // B→A
     [cmd commit];
     [cmd waitUntilCompleted];
     if (cmd.status == MTLCommandBufferStatusError) return 7;
@@ -264,4 +362,31 @@ extern "C" int aether_gpu_match_gemm_pairs(const uint8_t* dA, int nA,
     if (out_num_matches) *out_num_matches = n_out;
     return 0;
   }
+}
+
+// GEMM matcher with mutual cross-check, emitting index pairs.
+// out_pairs is caller-allocated as 2*max_pairs uint32 entries. Cross-checked
+// matches are unique per idxA, so max_pairs=min(nA,nB) cannot truncate.
+extern "C" int aether_gpu_match_gemm_pairs(const uint8_t* dA, int nA,
+                                           const uint8_t* dB, int nB,
+                                           double max_ratio,
+                                           uint32_t* out_pairs, int max_pairs,
+                                           int* out_num_matches) {
+  return matchPairsImpl(dA, nA, nullptr, dB, nB, nullptr, max_ratio, nullptr,
+                        nullptr, 0u, 0.0f, out_pairs, max_pairs,
+                        out_num_matches);
+}
+
+// COLMAP-style geometry-guided matcher. xy arrays contain two floats per
+// keypoint. matrixAB/matrixBA are row-major 3x3 matrices; guide_mode 1 means
+// epipolar E/F and 2 means homography H. A non-zero return is fail-closed by
+// native finalize and never triggers CPU matching on the device.
+extern "C" int aether_gpu_match_gemm_pairs_guided(
+    const uint8_t* dA, int nA, const float* xyA, const uint8_t* dB, int nB,
+    const float* xyB, double max_ratio, const float* matrixAB,
+    const float* matrixBA, int guide_mode, float max_residual,
+    uint32_t* out_pairs, int max_pairs, int* out_num_matches) {
+  return matchPairsImpl(dA, nA, xyA, dB, nB, xyB, max_ratio, matrixAB,
+                        matrixBA, (uint32_t)guide_mode, max_residual,
+                        out_pairs, max_pairs, out_num_matches);
 }

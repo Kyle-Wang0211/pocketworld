@@ -76,128 +76,135 @@ Future<void> main() async {
   // Defense-in-depth: any setup exception routes to the fallback
   // handler and the app still comes up (with mock auth) so the user
   // sees the sign-in page instead of a blank crash.
-  runZonedGuarded<Future<void>>(() async {
-    // ignore: avoid_print
-    print('[AET-SMOKE] inside runZonedGuarded');
-    WidgetsFlutterBinding.ensureInitialized();
-    // Release-visible container-file log (Documents/pw_device_log.txt) —
-    // print/debugPrint are invisible in release builds on device.
-    unawaited(DeviceLog.init());
-    // ignore: avoid_print
-    print('[AET-SMOKE] ensureInitialized done, about to runApp');
-
-    // Plan G W2 全本地 (2026-05-16): background_downloader init removed
-    // along with the rest of the cloud upload chain. Captures live
-    // entirely on-device — no background uploads to resume after force-
-    // quit, so the persistent task DB / TaskStatusUpdate listener serve
-    // no purpose. The `background_downloader` package can also be
-    // dropped from pubspec.yaml at the next dependency sweep.
-
-    // Launch the app with a mock auth service so runApp fires on the
-    // very next microtask and the splash paints immediately. Firebase
-    // is initialized in the background and swapped into CurrentUser
-    // once it's up (or after a 10-second timeout fallback to mock).
-    final currentUser = CurrentUser(service: MockAuthServiceImpl());
-    final localeNotifier = LocaleNotifier();
-    unawaited(localeNotifier.bootstrap());
-    runApp(PocketWorldApp(
-      currentUser: currentUser,
-      localeNotifier: localeNotifier,
-    ));
-    // ignore: avoid_print
-    print('[AET-SMOKE] runApp returned');
-
-    // Did Flutter actually paint the first frame?
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+  runZonedGuarded<Future<void>>(
+    () async {
       // ignore: avoid_print
-      print('[AET-SMOKE] first frame PAINTED');
-    });
-    WidgetsBinding.instance.waitUntilFirstFrameRasterized.then((_) {
+      print('[AET-SMOKE] inside runZonedGuarded');
+      WidgetsFlutterBinding.ensureInitialized();
+      // Release-visible container-file log (Documents/pw_device_log.txt) —
+      // print/debugPrint are invisible in release builds on device.
+      unawaited(DeviceLog.init());
       // ignore: avoid_print
-      print('[AET-SMOKE] first frame RASTERIZED');
-    });
+      print('[AET-SMOKE] ensureInitialized done, about to runApp');
 
-    unawaited(() async {
-      // Initialize Supabase with the published anon key + project URL
-      // for our PocketWorld dev project. The anon key is intentionally
-      // public — RLS policies on each table do the actual access
-      // control. Replace with --dart-define overrides for prod.
-      const supabaseUrl = String.fromEnvironment(
-        'SUPABASE_URL',
-        defaultValue: 'https://tzvwkqmgaourwqrmxbyb.supabase.co',
+      // Plan G W2 全本地 (2026-05-16): background_downloader init removed
+      // along with the rest of the cloud upload chain. Captures live
+      // entirely on-device — no background uploads to resume after force-
+      // quit, so the persistent task DB / TaskStatusUpdate listener serve
+      // no purpose. The `background_downloader` package can also be
+      // dropped from pubspec.yaml at the next dependency sweep.
+
+      // Launch the app with a mock auth service so runApp fires on the
+      // very next microtask and the splash paints immediately. Firebase
+      // is initialized in the background and swapped into CurrentUser
+      // once it's up (or after a 10-second timeout fallback to mock).
+      final currentUser = CurrentUser(service: MockAuthServiceImpl());
+      final localeNotifier = LocaleNotifier();
+      unawaited(localeNotifier.bootstrap());
+      runApp(
+        PocketWorldApp(
+          currentUser: currentUser,
+          localeNotifier: localeNotifier,
+        ),
       );
-      const supabaseAnonKey = String.fromEnvironment(
-        'SUPABASE_ANON_KEY',
-        defaultValue:
-            'sb_publishable_ur4tTV2iXSV4NsL3YYttyw_SIjFAMST',
-      );
-      const initTimeout = Duration(seconds: 10);
-      bool supabaseReady = false;
-      try {
-        await Supabase.initialize(
-          url: supabaseUrl,
-          anonKey: supabaseAnonKey,
-          debug: false,
-        ).timeout(initTimeout);
-        supabaseReady = true;
-      } catch (e) {
-        debugPrint(
-          '[main] Supabase.initialize failed/timeout: $e — '
-          'continuing with mock auth.',
-        );
-      }
-      if (supabaseReady) {
+      // ignore: avoid_print
+      print('[AET-SMOKE] runApp returned');
+      // Did Flutter actually paint the first frame?
+      WidgetsBinding.instance.addPostFrameCallback((_) {
         // ignore: avoid_print
-        print('[AUTH-DEBUG] Supabase.initialize done. '
+        print('[AET-SMOKE] first frame PAINTED');
+      });
+      WidgetsBinding.instance.waitUntilFirstFrameRasterized.then((_) {
+        // ignore: avoid_print
+        print('[AET-SMOKE] first frame RASTERIZED');
+      });
+
+      unawaited(() async {
+        // Initialize Supabase with the published anon key + project URL
+        // for our PocketWorld dev project. The anon key is intentionally
+        // public — RLS policies on each table do the actual access
+        // control. Replace with --dart-define overrides for prod.
+        const supabaseUrl = String.fromEnvironment(
+          'SUPABASE_URL',
+          defaultValue: 'https://tzvwkqmgaourwqrmxbyb.supabase.co',
+        );
+        const supabaseAnonKey = String.fromEnvironment(
+          'SUPABASE_ANON_KEY',
+          defaultValue: 'sb_publishable_ur4tTV2iXSV4NsL3YYttyw_SIjFAMST',
+        );
+        const initTimeout = Duration(seconds: 10);
+        bool supabaseReady = false;
+        try {
+          await Supabase.initialize(
+            url: supabaseUrl,
+            anonKey: supabaseAnonKey,
+            debug: false,
+          ).timeout(initTimeout);
+          supabaseReady = true;
+        } catch (e) {
+          debugPrint(
+            '[main] Supabase.initialize failed/timeout: $e — '
+            'continuing with mock auth.',
+          );
+        }
+        if (supabaseReady) {
+          // ignore: avoid_print
+          print(
+            '[AUTH-DEBUG] Supabase.initialize done. '
             'currentSession exists: '
             '${Supabase.instance.client.auth.currentSession != null} '
             'currentUser: '
-            '${Supabase.instance.client.auth.currentUser?.email ?? "null"}');
-        currentUser.swapService(
-          SupabaseAuthServiceImpl(localeNotifier: localeNotifier),
-        );
-      }
-      await currentUser.bootstrap();
-      // Belt-and-braces: kick a session refresh on cold start. Even
-      // though supabase_flutter has autoRefreshToken=true and runs a
-      // proactive ~10s-before-expiry refresh in the foreground, that
-      // timer doesn't help if the app just woke from being killed and
-      // the persisted access_token is already past its exp. Refresh
-      // here saves the first community-feed request from triggering
-      // the auto-refresh dance and avoids spurious 401s on launch.
-      // Failure is silent — refreshSession throws if the refresh
-      // token's also dead, and that's the same "session_expired" path
-      // the rest of the code handles already.
-      if (supabaseReady) {
-        unawaited(
-          Supabase.instance.client.auth
-              .refreshSession()
-              .then<void>((_) {})
-              .catchError((Object e) {
-            debugPrint('[main] cold-start refreshSession skipped: $e');
-          }),
-        );
-      }
-      // Plan G W2 全本地 (2026-05-16): no cloud upload, no job-status
-      // poll. Captures live entirely on-device — JobStatusWatcher
-      // deleted along with the rest of the cloud upload chain.
-    }());
-  }, (error, stack) {
-    // ignore: avoid_print
-    print('[main.runZonedGuarded] uncaught: $error\n$stack');
-    try {
-      WidgetsFlutterBinding.ensureInitialized();
-      final fallback =
-          CurrentUser(service: MockAuthServiceImpl())..bootstrap();
-      runApp(PocketWorldApp(
-        currentUser: fallback,
-        localeNotifier: LocaleNotifier(),
-      ));
-    } catch (e) {
+            '${Supabase.instance.client.auth.currentUser?.email ?? "null"}',
+          );
+          currentUser.swapService(
+            SupabaseAuthServiceImpl(localeNotifier: localeNotifier),
+          );
+        }
+        await currentUser.bootstrap();
+        // Belt-and-braces: kick a session refresh on cold start. Even
+        // though supabase_flutter has autoRefreshToken=true and runs a
+        // proactive ~10s-before-expiry refresh in the foreground, that
+        // timer doesn't help if the app just woke from being killed and
+        // the persisted access_token is already past its exp. Refresh
+        // here saves the first community-feed request from triggering
+        // the auto-refresh dance and avoids spurious 401s on launch.
+        // Failure is silent — refreshSession throws if the refresh
+        // token's also dead, and that's the same "session_expired" path
+        // the rest of the code handles already.
+        if (supabaseReady) {
+          unawaited(
+            Supabase.instance.client.auth
+                .refreshSession()
+                .then<void>((_) {})
+                .catchError((Object e) {
+                  debugPrint('[main] cold-start refreshSession skipped: $e');
+                }),
+          );
+        }
+        // Plan G W2 全本地 (2026-05-16): no cloud upload, no job-status
+        // poll. Captures live entirely on-device — JobStatusWatcher
+        // deleted along with the rest of the cloud upload chain.
+      }());
+    },
+    (error, stack) {
       // ignore: avoid_print
-      print('[main] fallback runApp also failed: $e');
-    }
-  });
+      print('[main.runZonedGuarded] uncaught: $error\n$stack');
+      try {
+        WidgetsFlutterBinding.ensureInitialized();
+        final fallback = CurrentUser(service: MockAuthServiceImpl())
+          ..bootstrap();
+        runApp(
+          PocketWorldApp(
+            currentUser: fallback,
+            localeNotifier: LocaleNotifier(),
+          ),
+        );
+      } catch (e) {
+        // ignore: avoid_print
+        print('[main] fallback runApp also failed: $e');
+      }
+    },
+  );
 }
 
 const Color _aetherColdStartBackground = AetherColors.bg;
@@ -250,10 +257,8 @@ class PocketWorldApp extends StatelessWidget {
             // callback is invoked for every route MaterialApp shows, so
             // wrapping `child` here makes AuthScope available to home AND
             // every pushed route uniformly.
-            builder: (context, child) => AuthScope(
-              currentUser: currentUser,
-              child: child!,
-            ),
+            builder: (context, child) =>
+                AuthScope(currentUser: currentUser, child: child!),
           );
         },
       ),
@@ -626,4 +631,3 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 }
-

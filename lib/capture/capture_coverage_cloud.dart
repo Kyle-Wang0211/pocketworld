@@ -42,6 +42,13 @@ class _CoverageVoxel {
   Vector3 position; // refreshed by the tracker (ingestPose)
   int photoCoverage = 0; // bumped by markCapture — THE product signal
   int seen = 1; // tracker persistence, pruning tie-breaker only
+
+  /// 首次被照片拍到时的视线方向(单位向量,相机中心→体素,世界系)。
+  Vector3? firstViewDir;
+
+  /// 历次观测视线与首观测视线的最大夹角(度)——该体素累计到的视差基线。
+  /// 视差背景一句话:"双墙"真身=低视差深度噪声壳,视差角是厚/薄的判别因子。
+  double maxParallaxDeg = 0;
 }
 
 class CaptureCoverageCloud {
@@ -49,6 +56,7 @@ class CaptureCoverageCloud {
     this.voxelSizeM = 0.04,
     this.maxVoxels = 6000,
     this.coverageSaturation = 5,
+    this.parallaxMinDeg = 8.0,
   });
 
   /// Single-scale voxel edge — coarse enough to stay cheap, fine enough to
@@ -58,6 +66,12 @@ class CaptureCoverageCloud {
 
   /// Photos needed for full "green".
   final int coverageSaturation;
+
+  /// 转绿所需的最小视差角(度)。观测次数达标但 maxParallaxDeg 低于此值的
+  /// 体素停在黄色——纯计数会把"原地连拍"误报成绿,而低视差正是"双墙"
+  /// (深度噪声壳)的成因。阈值 8°:真机实测厚区(双墙壳)5.2° vs 薄区
+  /// (干净表面)11.4°,取中偏严。
+  final double parallaxMinDeg;
 
   final Map<int, _CoverageVoxel> _voxels = <int, _CoverageVoxel>{};
   int _capturesMarked = 0;
@@ -136,6 +150,21 @@ class CaptureCoverageCloud {
       final u = fx * (pc.x / depth) + cx;
       final vpx = fy * (-pc.y / depth) + cy;
       if (u < 0 || u >= w || vpx < 0 || vpx >= h) continue;
+      // 视差累计:记录首观测视线(相机中心→体素,世界系单位向量),此后
+      // 每次命中都用当前视线与首视线的夹角刷新 maxParallaxDeg。
+      final viewDir = v.position - tC2w;
+      final viewLen = viewDir.length;
+      if (viewLen > 1e-6) {
+        viewDir.scale(1.0 / viewLen);
+        final first = v.firstViewDir;
+        if (first == null) {
+          v.firstViewDir = viewDir;
+        } else {
+          final cosAng = first.dot(viewDir).clamp(-1.0, 1.0);
+          final angDeg = math.acos(cosAng) * 180.0 / math.pi;
+          if (angDeg > v.maxParallaxDeg) v.maxParallaxDeg = angDeg;
+        }
+      }
       v.photoCoverage++;
       changed = true;
     }
@@ -146,6 +175,10 @@ class CaptureCoverageCloud {
   /// Packs only photo-covered voxels (0 captures ⇒ empty payload ⇒ the
   /// renderer clears). Ramp: 1 photo → red/orange, 2-3 → yellow,
   /// ≥[coverageSaturation] → green.
+  ///
+  /// 低视差压黄策略(信号1):观测次数达标但 maxParallaxDeg <
+  /// [parallaxMinDeg] 的体素把 ramp 参数封在 0.5(纯黄),不给绿——
+  /// 二进制布局(xyz 3×f32 + rgb 3×u8,逐点同序)绝不改变,只改颜色值。
   CoverageCloudPacked packed() {
     final covered =
         _voxels.values.where((v) => v.photoCoverage > 0).toList();
@@ -157,7 +190,9 @@ class CaptureCoverageCloud {
       xyz[o] = v.position.x;
       xyz[o + 1] = v.position.y;
       xyz[o + 2] = v.position.z;
-      final t = math.min(v.photoCoverage / coverageSaturation, 1.0);
+      var t = math.min(v.photoCoverage / coverageSaturation, 1.0);
+      // 低视差不给绿:停在黄(t=0.5)。低视差=深度噪声壳("双墙")高危区。
+      if (t > 0.5 && v.maxParallaxDeg < parallaxMinDeg) t = 0.5;
       final r = t < 0.5 ? 1.0 : (1.0 - (t - 0.5) * 2.0);
       final g = t < 0.5 ? (t * 2.0) : 1.0;
       rgb[o] = (r * 255).round();
@@ -166,6 +201,23 @@ class CaptureCoverageCloud {
     }
     return CoverageCloudPacked(xyz, rgb);
   }
+
+  /// UI 访问器(信号1):查询 [worldPos] 所在体素累计到的最大视差角(度)。
+  /// 该位置没有体素、或还没被任何照片拍到时返回 null。
+  double? parallaxDegAt(Vector3 worldPos) {
+    final v = _voxels[_key(worldPos)];
+    if (v == null || v.photoCoverage == 0) return null;
+    return v.maxParallaxDeg;
+  }
+
+  /// UI 访问器(信号1):观测次数已达标(≥[coverageSaturation])但视差
+  /// 不足(<[parallaxMinDeg])而被压在黄色的体素数。>0 时 UI 应提示
+  /// "换角度再拍此区域"(RS 式引导)。
+  int get parallaxStarvedVoxelCount => _voxels.values
+      .where((v) =>
+          v.photoCoverage >= coverageSaturation &&
+          v.maxParallaxDeg < parallaxMinDeg)
+      .length;
 
   void reset() {
     _voxels.clear();

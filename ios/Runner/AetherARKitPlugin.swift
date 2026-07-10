@@ -482,12 +482,20 @@ class AetherARKitPlugin: NSObject {
       // survives the user backgrounding the app mid-solve. MUST be invoked
       // from the foreground (the preview is up) — dasd silently drops a submit
       // made from a background state. No-op below iOS 26.
-      if #available(iOS 26.0, *) { ReconUmbrella.shared.begin() }
+      let args = call.arguments as? [String: Any]
+      let jobID = args?["jobId"] as? String ?? "legacy"
+      if #available(iOS 26.0, *) {
+        ReconUmbrella.shared.begin(jobID: jobID)
+      }
       result(nil)
     case "endReconUmbrella":
       // Finalize + persist done — let the umbrella's handler loop complete the
       // grant and cancel any still-pending request. Idempotent.
-      if #available(iOS 26.0, *) { ReconUmbrella.shared.end() }
+      let args = call.arguments as? [String: Any]
+      let jobID = args?["jobId"] as? String ?? "legacy"
+      if #available(iOS 26.0, *) {
+        ReconUmbrella.shared.end(jobID: jobID)
+      }
       result(nil)
     case "decodeJpegForColor":
       // Fast on-device colorizer decode: downscale-decode a saved 4K JPEG via

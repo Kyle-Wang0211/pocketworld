@@ -10,15 +10,15 @@ import UIKit
 /// execution (with a system progress UI) so the finalize completes regardless.
 ///
 /// Ported (simplified) from the validated glomapbench2 umbrella recipe
-/// (2026-07-04, iPhone 14 Pro iOS 26.5). The four death causes it encodes:
+/// (2026-07-04, iPhone 14 Pro iOS 26.5). The constraints it encodes:
 ///   1. dasd SILENTLY DROPS a submit made from the background — only submit
-///      from a foreground state (begin() is called while the preview is up).
+///      from a foreground user action.
 ///   2. identifier MUST be the exact-case bundle-id prefix.
-///   3. a foreground round-trip EXPIRES the grant ~2s after the next
-///      backgrounding — on didBecomeActive we break the handler loop, complete
-///      the old grant, and re-arm a fresh one.
-///   4. >30s without a STRICTLY-INCREASING completedUnitCount = the system
+///   3. >30s without a STRICTLY-INCREASING completedUnitCount = the system
 ///      kills it — the handler ticks monotonic progress every 2s.
+/// A single umbrella covers all active reconstruction job IDs. Foreground
+/// round-trips never recycle it: completing one card and submitting another is
+/// visible as duplicate Dynamic Island tasks and violates user expectations.
 /// Always setTaskCompleted(success: true): a NO leaves a system "task failed"
 /// tombstone card the app can't remove; the umbrella being recycled ≠ failure.
 @available(iOS 26.0, *)
@@ -27,9 +27,8 @@ final class ReconUmbrella {
 
   private let identifier = "com.kyle.PocketWorld.recon"  // exact-case bundle prefix
   private let lock = NSLock()
-  private var active = false        // finalize in progress
-  private var handlerFired = false  // handler currently holding a grant
-  private var closeUmbrella = false // request the current grant to end (recycle)
+  private var activeJobs = Set<String>()
+  private var handlerFired = false  // handler currently holding the one grant
   private var registered = false
   private var lastSubmit = Date(timeIntervalSince1970: 0)
 
@@ -42,6 +41,9 @@ final class ReconUmbrella {
   func register() {
     if registered { return }
     registered = true
+    // A queued request belongs to a previous process lifetime. Recovery is no
+    // longer automatic at launch, so it has no user-authorized job to serve.
+    BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: identifier)
     BGTaskScheduler.shared.register(
       forTaskWithIdentifier: identifier,
       using: DispatchQueue.global(qos: .userInitiated)
@@ -51,43 +53,41 @@ final class ReconUmbrella {
       }
       self?.runHandler(cp)
     }
-    // Death cause #3: a true activation expired any grant taken while
-    // backgrounded — break the loop (→ complete + re-arm) or arm if idle.
-    NotificationCenter.default.addObserver(
-      forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
-    ) { [weak self] _ in
-      guard let self = self else { return }
-      let (act, fired) = self.sync { (self.active, self.handlerFired) }
-      if act && fired {
-        self.sync { self.closeUmbrella = true }
-      } else if act {
-        self.submit(via: "activate")
-      }
-    }
   }
 
-  /// Finalize started — arm the umbrella. MUST be called on a foreground state.
-  func begin() {
-    sync { active = true; closeUmbrella = false }
+  /// A user-triggered finalize started. Repeating begin for the same job, or
+  /// starting another finalize while one umbrella is active, never submits a
+  /// second system task.
+  func begin(jobID: String) {
+    let key = jobID.isEmpty ? "legacy" : jobID
+    let shouldSubmit = sync { () -> Bool in
+      let inserted = activeJobs.insert(key).inserted
+      return inserted && activeJobs.count == 1 && !handlerFired
+    }
+    guard shouldSubmit else { return }
     submit(via: "begin")
   }
 
-  /// Finalize + persist done — the handler loop completes the grant, and any
-  /// still-pending (never-fired) request is cancelled.
-  func end() {
-    sync { active = false }
-    BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: identifier)
+  /// Complete the shared umbrella only after its final reconstruction job ends.
+  func end(jobID: String) {
+    let key = jobID.isEmpty ? "legacy" : jobID
+    let allDone = sync { () -> Bool in
+      activeJobs.remove(key)
+      return activeJobs.isEmpty
+    }
+    if allDone {
+      BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: identifier)
+    }
   }
 
   private func submit(via: String) {
-    if !sync({ active }) { return }
+    if sync({ activeJobs.isEmpty }) { return }
     if UIApplication.shared.applicationState == .background { return }  // #1
     if Date().timeIntervalSince(lastSubmit) < 2.0 { return }
     lastSubmit = Date()
-    // Validated recipe: try .fail first (runs NOW or errors so we see the drop),
-    // fall back to .queue (run when the system is willing) if that's rejected.
-    if trySubmit(strategy: .fail, via: "\(via)/fail") { return }
-    _ = trySubmit(strategy: .queue, via: "\(via)/queue")
+    // Do not queue a request that may surface on a later app launch with no
+    // active user job. Immediate-or-fail is the only acceptable UI contract.
+    _ = trySubmit(strategy: .fail, via: "\(via)/fail")
   }
 
   private func trySubmit(
@@ -108,20 +108,21 @@ final class ReconUmbrella {
   }
 
   private func runHandler(_ task: BGContinuedProcessingTask) {
-    sync { handlerFired = true; closeUmbrella = false }
+    sync { handlerFired = true }
     let prog = task.progress
     prog.totalUnitCount = 10000
     prog.completedUnitCount = max(prog.completedUnitCount, 100)
     var expired = false
-    task.expirationHandler = { expired = true }
+    task.expirationHandler = { [weak self] in
+      self?.sync { expired = true }
+    }
     let t0 = Date()
     // Hold the grant open, ticking MONOTONIC progress every 2s (#4). Synthetic
     // crawl: ~linear to 51% by 280s (dodge the 300s first ROP prompt), then a
     // slow creep, capped 99% — never pins, so the strict-monotonic stall
     // deadline can't trip during a genuinely long finalize.
-    while !expired {
-      let (done, recycle) = sync { (!active, closeUmbrella) }
-      if done || recycle { break }
+    while !sync({ expired }) {
+      if sync({ activeJobs.isEmpty }) { break }
       Thread.sleep(forTimeInterval: 2.0)
       let el = Date().timeIntervalSince(t0)
       let env = el <= 280 ? Int64(5100.0 * el / 280.0)
@@ -129,12 +130,10 @@ final class ReconUmbrella {
       let next = min(Int64(9900), max(prog.completedUnitCount + 40, env))
       if next > prog.completedUnitCount { prog.completedUnitCount = next }
     }
-    let recycled = sync { active && closeUmbrella && !expired }
-    if sync({ !active }) { prog.completedUnitCount = prog.totalUnitCount }
-    task.setTaskCompleted(success: true)  // ALWAYS YES — no tombstone card
-    sync { handlerFired = false; closeUmbrella = false }
-    if recycled {
-      DispatchQueue.main.async { [weak self] in self?.submit(via: "recycle") }
+    if sync({ activeJobs.isEmpty }) {
+      prog.completedUnitCount = prog.totalUnitCount
     }
+    task.setTaskCompleted(success: true)  // ALWAYS YES — no tombstone card
+    sync { handlerFired = false }
   }
 }

@@ -88,6 +88,143 @@ class SfmLiveSnapshot {
     }
     return n;
   }
+
+  /// 信号2【断连帧列表】:未注册(没连进重建)的帧 id,按 frameId 升序。
+  /// 数据源 = posesPacked 里已有的 per-frame registered bit(零 ABI 改动,
+  /// 与 [registeredCount] 同一来源)。注意:流式 preview 快照的 posesPacked
+  /// 为空(worker 对 preview 发空 poses),此时返回空列表——本信号只在
+  /// LOCAL_READY / REFINED 快照上有意义。
+  List<int> get unregisteredFrameIds {
+    final ids = <int>[];
+    for (var i = 0; i < posesPacked.length; i += 9) {
+      if (posesPacked[i + 1] == 0) ids.add(posesPacked[i].toInt());
+    }
+    ids.sort();
+    return ids;
+  }
+
+  /// 信号2【断连区段】:把未注册帧按 frameId 序归并成连续区段,供 UI 提示
+  /// "这一段没连上,在 prevRegisteredId 和 nextRegisteredId 之间补拍"
+  /// (RS 式引导)。prev/next 为 null 表示区段贴着拍摄开头/结尾,那一侧
+  /// 没有已注册邻帧。posesPacked 为空(preview 快照)时返回空列表。
+  List<SfmDisconnectedSegment> get disconnectedSegments {
+    final frames = List<({int id, bool reg})>.generate(poseCount, (k) {
+      final o = k * 9;
+      return (id: posesPacked[o].toInt(), reg: posesPacked[o + 1] != 0);
+    })..sort((a, b) => a.id.compareTo(b.id));
+    final segs = <SfmDisconnectedSegment>[];
+    int? prevRegistered;
+    var i = 0;
+    while (i < frames.length) {
+      if (frames[i].reg) {
+        prevRegistered = frames[i].id;
+        i++;
+        continue;
+      }
+      final start = i;
+      while (i < frames.length && !frames[i].reg) {
+        i++;
+      }
+      segs.add((
+        firstId: frames[start].id,
+        lastId: frames[i - 1].id,
+        count: i - start,
+        prevRegisteredId: prevRegistered,
+        nextRegisteredId: i < frames.length ? frames[i].id : null,
+      ));
+    }
+    return segs;
+  }
+}
+
+/// 信号2 的区段载体:[firstId..lastId] 是一段(按 frameId 序)连续的未注册
+/// 帧,count 为帧数;prev/nextRegisteredId 是两侧最近的已注册帧 id
+/// (null = 区段贴拍摄边界)。UI 文案示例:"在 prevRegisteredId 和
+/// nextRegisteredId 对应的拍摄位置之间补拍"。
+typedef SfmDisconnectedSegment = ({
+  int firstId,
+  int lastId,
+  int count,
+  int? prevRegisteredId,
+  int? nextRegisteredId,
+});
+
+/// Drops only points created exclusively by one time-far spatial pair.
+///
+/// A two-view point has no third-view depth confirmation. When its two frames
+/// are farther apart than the normal temporal K window, it can only have come
+/// from finish-time loop matching. Those points caused the observed long rays:
+/// wrong correspondences can retain low reprojection error while triangulating
+/// at extreme depth. Normal K12 two-view points and every 3+-view loop track are
+/// preserved, so this is not a generic density/outlier filter.
+({AetherSfmPointsTracked points, int removed}) filterFinalSpatialTwoViewPoints(
+  AetherSfmPointsTracked input, {
+  required int temporalK,
+}) {
+  final n = input.count;
+  final offsets = input.obsOffsets;
+  final frameIds = input.obsFrameIds;
+  final obsXY = input.obsXY;
+  if (n == 0 ||
+      offsets.length != n + 1 ||
+      obsXY.length != frameIds.length * 2) {
+    return (points: input, removed: 0);
+  }
+
+  final keep = Uint8List(n);
+  var keptPoints = 0;
+  var keptObs = 0;
+  for (var i = 0; i < n; i++) {
+    final start = offsets[i];
+    final end = offsets[i + 1];
+    if (start < 0 || end < start || end > frameIds.length) {
+      return (points: input, removed: 0);
+    }
+    final isUnsupportedSpatialTwoView =
+        end - start == 2 &&
+        (frameIds[start] - frameIds[start + 1]).abs() > temporalK;
+    if (!isUnsupportedSpatialTwoView) {
+      keep[i] = 1;
+      keptPoints++;
+      keptObs += end - start;
+    }
+  }
+  final removed = n - keptPoints;
+  if (removed == 0) return (points: input, removed: 0);
+
+  final xyz = Float32List(keptPoints * 3);
+  final rgb = Uint8List(keptPoints * 3);
+  final compactOffsets = Int32List(keptPoints + 1);
+  final compactFrameIds = Int32List(keptObs);
+  final compactObsXY = Float32List(keptObs * 2);
+  var pointOut = 0;
+  var obsOut = 0;
+  for (var i = 0; i < n; i++) {
+    if (keep[i] == 0) continue;
+    final srcPoint = i * 3;
+    final dstPoint = pointOut * 3;
+    xyz.setRange(dstPoint, dstPoint + 3, input.xyz, srcPoint);
+    rgb.setRange(dstPoint, dstPoint + 3, input.rgb, srcPoint);
+    compactOffsets[pointOut] = obsOut;
+    for (var j = offsets[i]; j < offsets[i + 1]; j++) {
+      compactFrameIds[obsOut] = frameIds[j];
+      compactObsXY[obsOut * 2] = obsXY[j * 2];
+      compactObsXY[obsOut * 2 + 1] = obsXY[j * 2 + 1];
+      obsOut++;
+    }
+    pointOut++;
+  }
+  compactOffsets[keptPoints] = obsOut;
+  return (
+    points: AetherSfmPointsTracked(
+      xyz,
+      rgb,
+      compactOffsets,
+      compactFrameIds,
+      compactObsXY,
+    ),
+    removed: removed,
+  );
 }
 
 /// Facade lifecycle events, delivered on the UI isolate.
@@ -165,6 +302,8 @@ class SfmFedFrameMeta {
     required this.cx,
     required this.cy,
     this.arkitQuatWxyz,
+    this.arkitTransTxyz,
+    this.arkitCameraCenterWorld,
   });
   final String jpegPath;
   final int imageW;
@@ -182,6 +321,12 @@ class SfmFedFrameMeta {
   /// that stands the (gauge-arbitrary) reconstruction upright. Null when the
   /// frame's extrinsic was degraded at capture.
   final List<double>? arkitQuatWxyz;
+
+  /// ARKit CamFromWorld translation [tx,ty,tz] paired with [arkitQuatWxyz].
+  final List<double>? arkitTransTxyz;
+
+  /// ARKit camera center in the gravity-aligned world frame, meters.
+  final List<double>? arkitCameraCenterWorld;
 }
 
 /// One keyframe parked on disk while the worker is busy. The gray bytes
@@ -222,7 +367,12 @@ class SfmLiveRecon {
   // subscription opened in [start] (which also handled the handshake) is
   // handed over here — never listen twice on the same port.
   SfmLiveRecon._(
-      this._toWorker, this._fromWorker, this._isolate, this._sub, this._dbPath);
+    this._toWorker,
+    this._fromWorker,
+    this._isolate,
+    this._sub,
+    this._dbPath,
+  );
 
   final SendPort _toWorker;
   final ReceivePort _fromWorker;
@@ -261,6 +411,10 @@ class SfmLiveRecon {
 
   /// Keyframes parked on disk awaiting the worker.
   int get queuedCount => _spool.length;
+
+  /// Frames not yet acknowledged by native SfM, including both disk-spooled
+  /// frames and the at-most-two worker calls currently in flight.
+  int get remainingCount => _spool.length + _inFlight;
 
   /// Every keyframe offered this take (fed + in-flight + queued).
   int get offeredCount => _seq;
@@ -309,8 +463,10 @@ class SfmLiveRecon {
     });
     SendPort? port;
     try {
-      port = await handshake.future
-          .timeout(const Duration(seconds: 10), onTimeout: () => null);
+      port = await handshake.future.timeout(
+        const Duration(seconds: 10),
+        onTimeout: () => null,
+      );
     } catch (_) {
       port = null;
     }
@@ -346,17 +502,21 @@ class SfmLiveRecon {
     final cy = feed.intrinsicFxFyCxCy[3] * s;
 
     // ARKit extrinsic is column-major camera-to-world; the ABI wants the
-    // CamFromWorld (world→camera) prior. v1 stores it unused, but we pass a
-    // correct value so the follow-up solver version can turn it on.
+    // CamFromWorld (world→camera) prior. Native uses it for the ARKit-world live
+    // preview/local-BA path; authoritative finalize still estimates its own SfM
+    // camera poses from image matches.
     Float64List? quatWxyz;
     Float64List? trans;
+    List<double>? cameraCenterWorld;
     if (feed.extrinsic4x4.length == 16) {
       final c2w = vm.Matrix4.fromList(feed.extrinsic4x4);
+      final cWorld = c2w.getTranslation();
       final rW2c = c2w.getRotation()..transpose();
-      final tW2c = rW2c.transform(-c2w.getTranslation());
+      final tW2c = rW2c.transform(-cWorld);
       final q = vm.Quaternion.fromRotation(rW2c)..normalize();
       quatWxyz = Float64List.fromList([q.w, q.x, q.y, q.z]);
       trans = Float64List.fromList([tW2c.x, tW2c.y, tW2c.z]);
+      cameraCenterWorld = [cWorld.x, cWorld.y, cWorld.z];
     }
 
     final jpegPath = feed.jpegPath;
@@ -372,13 +532,25 @@ class SfmLiveRecon {
         cx: cx,
         cy: cy,
         arkitQuatWxyz: quatWxyz?.toList(), // ARKit CamFromWorld (gravity frame)
+        arkitTransTxyz: trans?.toList(),
+        arkitCameraCenterWorld: cameraCenterWorld,
       );
     }
 
     if (_inFlight < 2 && _spool.isEmpty) {
       // Worker has room — feed directly, zero disk traffic.
-      _sendFrameCmd(seq, feed.gray, feed.grayW, feed.grayH, fx, fy, cx, cy,
-          quatWxyz, trans);
+      _sendFrameCmd(
+        seq,
+        feed.gray,
+        feed.grayW,
+        feed.grayH,
+        fx,
+        fy,
+        cx,
+        cy,
+        quatWxyz,
+        trans,
+      );
     } else {
       // Worker busy — park the gray plane on disk (full-res 4K ≈ 8.3 MB;
       // parking N frames costs disk, not RAM) and let the pump feed it in
@@ -386,28 +558,42 @@ class SfmLiveRecon {
       // preserved even while the write is still flushing.
       final path = '$_dbPath.spool.$seq.gray';
       final written = File(path).writeAsBytes(feed.gray, flush: false);
-      _spool.add(_SpooledFrame(
-        seq: seq,
-        path: path,
-        written: written,
-        w: feed.grayW,
-        h: feed.grayH,
-        fx: fx,
-        fy: fy,
-        cx: cx,
-        cy: cy,
-        quatWxyz: quatWxyz,
-        trans: trans,
-      ));
+      _spool.add(
+        _SpooledFrame(
+          seq: seq,
+          path: path,
+          written: written,
+          w: feed.grayW,
+          h: feed.grayH,
+          fx: fx,
+          fy: fy,
+          cx: cx,
+          cy: cy,
+          quatWxyz: quatWxyz,
+          trans: trans,
+        ),
+      );
       _events.add(SfmLiveFrameQueued(seq, _spool.length));
-      DeviceLog.log('SfmLive',
-          'frame#$seq queued (inFlight=$_inFlight, depth=${_spool.length})');
+      DeviceLog.log(
+        'SfmLive',
+        'frame#$seq queued (inFlight=$_inFlight, depth=${_spool.length})',
+      );
     }
     return true;
   }
 
-  void _sendFrameCmd(int seq, Uint8List gray, int w, int h, double fx,
-      double fy, double cx, double cy, Float64List? q, Float64List? t) {
+  void _sendFrameCmd(
+    int seq,
+    Uint8List gray,
+    int w,
+    int h,
+    double fx,
+    double fy,
+    double cx,
+    double cy,
+    Float64List? q,
+    Float64List? t,
+  ) {
     _inFlight++;
     _toWorker.send(<String, Object?>{
       'cmd': 'frame',
@@ -436,10 +622,23 @@ class SfmLiveRecon {
           await entry.written; // ensure the spill finished flushing
           final gray = await File(entry.path).readAsBytes();
           _spool.removeAt(0);
-          unawaited(File(entry.path).delete().then<void>((_) {},
-              onError: (Object _) {}));
-          _sendFrameCmd(entry.seq, gray, entry.w, entry.h, entry.fx, entry.fy,
-              entry.cx, entry.cy, entry.quatWxyz, entry.trans);
+          unawaited(
+            File(
+              entry.path,
+            ).delete().then<void>((_) {}, onError: (Object _) {}),
+          );
+          _sendFrameCmd(
+            entry.seq,
+            gray,
+            entry.w,
+            entry.h,
+            entry.fx,
+            entry.fy,
+            entry.cx,
+            entry.cy,
+            entry.quatWxyz,
+            entry.trans,
+          );
         } catch (e) {
           // Unreadable spill — skip this frame rather than stall the queue.
           _spool.removeAt(0);
@@ -473,8 +672,10 @@ class SfmLiveRecon {
     if (_disposed || _finalizeRequested) return;
     _finalizeRequested = true;
     if (_spool.isNotEmpty || _inFlight > 0) {
-      DeviceLog.log('SfmLive',
-          'finalize deferred: inFlight=$_inFlight queued=${_spool.length}');
+      DeviceLog.log(
+        'SfmLive',
+        'finalize deferred: inFlight=$_inFlight queued=${_spool.length}',
+      );
       unawaited(_pump());
       return;
     }
@@ -507,14 +708,27 @@ class SfmLiveRecon {
   void _persistFedMeta(int frameId, SfmFedFrameMeta m) {
     try {
       final dir = File(_dbPath).parent.path;
-      final line = '${jsonEncode(<String, Object?>{
-            'frameId': frameId,
-            'jpegPath': m.jpegPath,
-            'grayW': m.grayW,
-            'grayH': m.grayH,
-          })}\n';
-      File('$dir/sfm_fed_frames.jsonl')
-          .writeAsStringSync(line, mode: FileMode.append, flush: false);
+      final meta = <String, Object?>{
+        'frameId': frameId,
+        'jpegPath': m.jpegPath,
+        'grayW': m.grayW,
+        'grayH': m.grayH,
+      };
+      if (m.arkitQuatWxyz != null &&
+          m.arkitTransTxyz != null &&
+          m.arkitCameraCenterWorld != null) {
+        meta.addAll(<String, Object?>{
+          'arkitPoseConvention':
+              'worldAlignment.gravity; cameraToWorld from ARKit, stored as CamFromWorld plus camera center',
+          'arkitCamFromWorldQwxyz': m.arkitQuatWxyz,
+          'arkitCamFromWorldTxyz': m.arkitTransTxyz,
+          'arkitCameraCenterWorld': m.arkitCameraCenterWorld,
+        });
+      }
+      final line = '${jsonEncode(meta)}\n';
+      File(
+        '$dir/sfm_fed_frames.jsonl',
+      ).writeAsStringSync(line, mode: FileMode.append, flush: false);
     } catch (_) {}
   }
 
@@ -525,9 +739,9 @@ class SfmLiveRecon {
     _disposed = true;
     // Drop any undelivered spool files (page is going away).
     for (final entry in _spool) {
-      unawaited(File(entry.path)
-          .delete()
-          .then<void>((_) {}, onError: (Object _) {}));
+      unawaited(
+        File(entry.path).delete().then<void>((_) {}, onError: (Object _) {}),
+      );
     }
     _spool.clear();
     final ack = _disposeAck = Completer<void>();
@@ -587,36 +801,44 @@ class SfmLiveRecon {
               'peak=${peakMb?.toStringAsFixed(0) ?? '?'}MB '
               'thermal=$thermalName',
         );
-        _events.add(SfmLiveFrameFed(
-          seq: seq,
-          frameId: frameId,
-          elapsedMs: ms,
-          result: msg['result'] as String,
-        ));
+        _events.add(
+          SfmLiveFrameFed(
+            seq: seq,
+            frameId: frameId,
+            elapsedMs: ms,
+            result: msg['result'] as String,
+          ),
+        );
         // Worker slot freed — feed the next spooled frame (and dispatch the
         // deferred finalize once everything drained).
         unawaited(_pump());
       case 'preview':
         // The streaming local-BA cloud, TRACK-ANNOTATED (same payload shape as
         // local_ready) so it colorizes + gravity-aligns identically to finalize.
-        _events.add(SfmLivePreview(
-          _gravityAlign(_snapshotFromMsg(msg, refined: false)),
-        ));
+        _events.add(
+          SfmLivePreview(_gravityAlign(_snapshotFromMsg(msg, refined: false))),
+        );
       case 'local_ready':
-        _events.add(SfmLiveLocalReady(
-          _gravityAlign(_snapshotFromMsg(msg, refined: false)),
-          msg['ms'] as int,
-        ));
+        _events.add(
+          SfmLiveLocalReady(
+            _gravityAlign(_snapshotFromMsg(msg, refined: false)),
+            msg['ms'] as int,
+          ),
+        );
       case 'refined':
-        _events.add(SfmLiveRefined(
-          _gravityAlign(_snapshotFromMsg(msg, refined: true)),
-          msg['ms'] as int,
-        ));
+        _events.add(
+          SfmLiveRefined(
+            _gravityAlign(_snapshotFromMsg(msg, refined: true)),
+            msg['ms'] as int,
+          ),
+        );
       case 'error':
-        _events.add(SfmLiveFailed(
-          msg['stage'] as String? ?? 'unknown',
-          msg['message'] as String? ?? 'unknown',
-        ));
+        _events.add(
+          SfmLiveFailed(
+            msg['stage'] as String? ?? 'unknown',
+            msg['message'] as String? ?? 'unknown',
+          ),
+        );
       case 'disposed':
         _disposeAck?.complete();
     }
@@ -641,11 +863,11 @@ class SfmLiveRecon {
 
     // Hamilton product a*b (w,x,y,z).
     List<double> qmul(List<double> a, List<double> b) => [
-          a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3],
-          a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2],
-          a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1],
-          a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0],
-        ];
+      a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3],
+      a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2],
+      a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1],
+      a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0],
+    ];
 
     var aw = 0.0, ax = 0.0, ay = 0.0, az = 0.0;
     List<double>? ref;
@@ -663,8 +885,9 @@ class SfmLiveRecon {
       // capture data); with it they cluster to <2°. C = 180° about X = qC.
       const qC = [0.0, 1.0, 0.0, 0.0];
       var qw = qmul(qArkConj, qmul(qC, qCol)); // R_w = R_ark^T · C · R_col
-      final norm =
-          math.sqrt(qw[0] * qw[0] + qw[1] * qw[1] + qw[2] * qw[2] + qw[3] * qw[3]);
+      final norm = math.sqrt(
+        qw[0] * qw[0] + qw[1] * qw[1] + qw[2] * qw[2] + qw[3] * qw[3],
+      );
       if (norm < 1e-9) continue;
       qw = [qw[0] / norm, qw[1] / norm, qw[2] / norm, qw[3] / norm];
       ref ??= qw;
@@ -719,7 +942,8 @@ class SfmLiveRecon {
       xyz: msg['xyz'] as Float32List? ?? Float32List(0),
       rgb: msg['rgb'] as Uint8List? ?? Uint8List(0),
       posesPacked: msg['poses'] as Float64List? ?? Float64List(0),
-      summary: (msg['summary'] as Map?)?.cast<String, dynamic>() ??
+      summary:
+          (msg['summary'] as Map?)?.cast<String, dynamic>() ??
           const <String, dynamic>{},
       refined: refined,
       obsOffsets: msg['obsOffsets'] as Int32List? ?? Int32List(1),
@@ -761,12 +985,45 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
   /// the requested reconstruction is empty; for a preview that means the session
   /// has no live_recon (a resumed-from-db session), so the caller falls through
   /// to the cold finalize.
-  bool sendSnapshot(String evt, Map<String, dynamic> summary, int ms,
-      {bool preview = false}) {
+  bool sendSnapshot(
+    String evt,
+    Map<String, dynamic> summary,
+    int ms, {
+    bool preview = false,
+  }) {
     final s = session;
     if (s == null) return false;
-    final points = preview ? s.previewTracked() : s.pointsTracked();
+    var points = preview ? s.previewTracked() : s.pointsTracked();
     if (preview && points.count == 0) return false; // no live_recon → fall back
+    final deliveredSummary = Map<String, dynamic>.from(summary);
+    if (!preview) {
+      final detail = s.streamStats();
+      deliveredSummary['temporal_detail_created'] =
+          detail.temporalDetailCreated;
+      deliveredSummary['temporal_detail_grown'] = detail.temporalDetailGrown;
+      wlog(
+        'temporal-detail: pairs=${detail.temporalDetailPairs} '
+        'inliers=${detail.temporalDetailMatches} '
+        'created=${detail.temporalDetailCreated} '
+        'grown=${detail.temporalDetailGrown} | reject '
+        'cheirality=${detail.temporalDetailRejectCheirality} '
+        'reproj=${detail.temporalDetailRejectReproj} '
+        'tri-angle=${detail.temporalDetailRejectTriAngle} '
+        'conflicts=${detail.temporalDetailConflicts}',
+      );
+      final filtered = filterFinalSpatialTwoViewPoints(
+        points,
+        temporalK: AetherSfmStreamSession.researchKNeighbors,
+      );
+      points = filtered.points;
+      deliveredSummary['spatial_two_view_filtered'] = filtered.removed;
+      deliveredSummary['delivered_points'] = points.count;
+      wlog(
+        'quality-filter: spatial-only two-view removed=${filtered.removed} '
+        'kept=${points.count} temporalK='
+        '${AetherSfmStreamSession.researchKNeighbors}',
+      );
+    }
     // posesPacked() reads the FINALIZE recon (s->recon), which is empty until the
     // deferred global BA runs — so for the streaming preview it carries nothing
     // useful (and would exercise get_poses' not-registered path). The streaming
@@ -774,17 +1031,41 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
     // the windowed BA gauge pinned to ARKit-world points), so it needs no gravity
     // rotation → send empty poses and let _gravityAlign no-op.
     final poses = preview ? Float64List(0) : s.posesPacked();
-    wlog('$evt: points=${points.count} obs=${points.obsCount} '
-        'poses=${poses.length ~/ 9} ms=$ms summary=$summary');
+    wlog(
+      '$evt: points=${points.count} obs=${points.obsCount} '
+      'poses=${poses.length ~/ 9} ms=$ms summary=$deliveredSummary',
+    );
     if (preview) {
       final st = s.streamStats();
       final tvgPct = (st.tvgPairs + st.rawPairs) > 0
           ? (100 * st.tvgPairs / (st.tvgPairs + st.rawPairs)).round()
           : 0;
-      wlog('stream-stats: tvg-inlier pairs=${st.tvgPairs} raw-fallback=${st.rawPairs} '
-          '($tvgPct% verified) | grow accept=${st.growAccepted} '
-          'reject=${st.growRejected} | filtered reproj=${st.reprojFiltered} '
-          'tri-angle=${st.triFiltered}');
+      wlog(
+        'stream-stats: tvg-inlier pairs=${st.tvgPairs} raw-fallback=${st.rawPairs} '
+        '($tvgPct% verified) | grow accept=${st.growAccepted} '
+        'reject=${st.growRejected} | filtered reproj=${st.reprojFiltered} '
+        'tri-angle=${st.triFiltered}',
+      );
+      wlog(
+        'stream-gates: grow reject cheirality=${st.growRejectCheirality} '
+        'reproj=${st.growRejectReproj} | create reject '
+        'cheirality=${st.createRejectCheirality} '
+        'tri-angle=${st.createRejectTriAngle} '
+        'reproj=${st.createRejectReproj} | assigned same=${st.alreadyAssigned} '
+        'merge-needed=${st.mergeNeeded} accepted=${st.mergeAccepted} '
+        'rejected=${st.mergeRejected} | spatial considered='
+        '${st.spatialConsidered} attempted=${st.spatialAttempted} '
+        'written=${st.spatialWritten} inliers=${st.spatialInliers}',
+      );
+      wlog(
+        'spatial-loop: anchors=${st.spatialAnchorPassed}/'
+        '${st.spatialAnchorAttempted} regions=${st.spatialRegionsConfirmed} '
+        'expand-attempted=${st.spatialExpandedAttempted} guided='
+        '${st.spatialGuidedPairs}/${st.spatialGuidedInliers}candidates '
+        'quadratic=${st.spatialQuadraticWritten}/'
+        '${st.spatialQuadraticAttempted} budget-skipped='
+        '${st.spatialBudgetSkipped}',
+      );
     }
     boot.reply.send(<String, Object?>{
       'evt': evt,
@@ -794,7 +1075,7 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
       'obsOffsets': points.obsOffsets,
       'obsFrameIds': points.obsFrameIds,
       'obsXY': points.obsXY,
-      'summary': summary,
+      'summary': deliveredSummary,
       'ms': ms,
     });
     return true;
@@ -840,13 +1121,15 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
             // calibration sane?" question with one capture round.
             try {
               final pgm = File(
-                  '${File(boot.dbPath).parent.path}/sfm_debug_frame0.pgm');
+                '${File(boot.dbPath).parent.path}/sfm_debug_frame0.pgm',
+              );
               final header = 'P5\n$w $h\n255\n'.codeUnits;
-              pgm.writeAsBytesSync(
-                  [...header, ...(msg['gray'] as Uint8List)]);
-              wlog('debug: frame0 PGM dumped (${pgm.path}) '
-                  'fx=${msg['fx']} fy=${msg['fy']} '
-                  'cx=${msg['cx']} cy=${msg['cy']}');
+              pgm.writeAsBytesSync([...header, ...(msg['gray'] as Uint8List)]);
+              wlog(
+                'debug: frame0 PGM dumped (${pgm.path}) '
+                'fx=${msg['fx']} fy=${msg['fy']} '
+                'cx=${msg['cx']} cy=${msg['cy']}',
+              );
             } catch (e) {
               wlog('debug: PGM dump failed: $e');
             }
@@ -874,14 +1157,16 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
           // extract=Xms (>2000 ⇒ GPU extractor fell back to CPU),
           // match=Yms over N candidates (cpu>0 ⇒ GPU matcher fell back).
           final dbg = session!.debugLast();
-          wlog('add_frame seq=${msg['seq']} frameId=${r.frameId} '
-              'rc=${r.result.name} ms=${sw.elapsedMilliseconds} (${w}x$h) | '
-              'extract=${dbg.extractMs.toStringAsFixed(0)}ms '
-              'match=${dbg.matchMs.toStringAsFixed(0)}ms '
-              'cand=${dbg.nCand} gpuM=${dbg.gpuMatches} cpuM=${dbg.cpuMatches}'
-              '${tel != null ? ' | mem=${tel.physFootprintMb.toStringAsFixed(0)}MB '
-                  'peak=${peakMb.toStringAsFixed(0)}MB '
-                  'thermal=${tel.thermalName}' : ''}');
+          wlog(
+            'add_frame seq=${msg['seq']} frameId=${r.frameId} '
+            'rc=${r.result.name} ms=${sw.elapsedMilliseconds} (${w}x$h) | '
+            'extract=${dbg.extractMs.toStringAsFixed(0)}ms '
+            'match=${dbg.matchMs.toStringAsFixed(0)}ms '
+            'cand=${dbg.nCand} gpuM=${dbg.gpuMatches} cpuM=${dbg.cpuMatches}'
+            '${tel != null ? ' | mem=${tel.physFootprintMb.toStringAsFixed(0)}MB '
+                      'peak=${peakMb.toStringAsFixed(0)}MB '
+                      'thermal=${tel.thermalName}' : ''}',
+          );
           boot.reply.send(<String, Object?>{
             'evt': 'frame_done',
             'seq': msg['seq'],
@@ -934,43 +1219,10 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
           fail('finalize', 'no frames were fed — nothing to reconstruct');
           break;
         }
-        // INSTANT, AUTHORITATIVE-FOR-SELECTION cloud: emit the streaming COLMAP
-        // local-BA reconstruction (windowed Cauchy BA + floater filter, built
-        // during add_frame), TRACK-ANNOTATED so it colorizes through the exact
-        // same path as finalize. This is the ONLY cloud the user sees — the
-        // global BA below is DEFERRED to after region selection (code kept, only
-        // its trigger moved). A normal live capture stops here.
-        //
-        // A resumed-from-db session (recovery leg) has NO live_recon, so
-        // sendSnapshot(preview) returns false → we fall through to the cold
-        // finalize, which is the only way to reconstruct a recovered capture.
-        try {
-          if (sendSnapshot('preview',
-              const <String, dynamic>{'source': 'streaming_local_ba'}, 0,
-              preview: true)) {
-            wlog('streaming local-BA cloud emitted (colorized); '
-                'global BA deferred to post-selection');
-            // BASELINE INSTRUMENTATION: retain the sqlite db (session.dispose()
-            // → aether_sfm_free drops the original) so the DELIVERED finalize
-            // model can be reconstructed host-side from two_view_geometries and
-            // compared to the streaming preview (double-wall / reproj / points).
-            // Cheap copy; remove once the device baseline is captured.
-            try {
-              final db = File(boot.dbPath);
-              if (db.existsSync()) {
-                db.copySync('${boot.dbPath}.retained');
-                wlog('baseline: db retained at ${boot.dbPath}.retained '
-                    '(${db.lengthSync()} bytes)');
-              }
-            } catch (e) {
-              wlog('baseline: db retain failed: $e');
-            }
-            break;
-          }
-          wlog('no live_recon (resumed session) → cold finalize');
-        } catch (e) {
-          wlog('streaming preview emit failed: $e → cold finalize');
-        }
+        wlog(
+          'finalize requested: queue already drained; running full async '
+          'finalize and withholding LOCAL from the user-visible result',
+        );
         final sw = Stopwatch()..start();
         try {
           // Phase 1 (blocking here, minutes-scale): incremental register +
@@ -979,18 +1231,54 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
           if (telBefore != null && telBefore.physFootprintMb > peakMb) {
             peakMb = telBefore.physFootprintMb;
           }
-          wlog('finalize_async phase-1 starting…'
-              '${telBefore != null ? ' | $telBefore' : ''}');
+          wlog(
+            'finalize_async phase-1 starting…'
+            '${telBefore != null ? ' | $telBefore' : ''}',
+          );
           final summary = s.finalizeAsync();
           sw.stop();
           final telAfter = PwTelemetry.sample();
           if (telAfter != null && telAfter.physFootprintMb > peakMb) {
             peakMb = telAfter.physFootprintMb;
           }
-          wlog('finalize_async phase-1 done in ${sw.elapsedMilliseconds}ms'
-              '${telAfter != null ? ' | ${telAfter.physFootprintMb.toStringAsFixed(0)}MB '
-                  'peak=${peakMb.toStringAsFixed(0)}MB '
-                  'thermal=${telAfter.thermalName}' : ''}');
+          wlog(
+            'finalize_async phase-1 done in ${sw.elapsedMilliseconds}ms'
+            '${telAfter != null ? ' | ${telAfter.physFootprintMb.toStringAsFixed(0)}MB '
+                      'peak=${peakMb.toStringAsFixed(0)}MB '
+                      'thermal=${telAfter.thermalName}' : ''}',
+          );
+          final st = s.streamStats();
+          final tvgPct = (st.tvgPairs + st.rawPairs) > 0
+              ? (100 * st.tvgPairs / (st.tvgPairs + st.rawPairs)).round()
+              : 0;
+          wlog(
+            'stream-stats: tvg-inlier pairs=${st.tvgPairs} '
+            'raw-fallback=${st.rawPairs} ($tvgPct% verified) | '
+            'grow accept=${st.growAccepted} reject=${st.growRejected} | '
+            'filtered reproj=${st.reprojFiltered} tri-angle=${st.triFiltered}',
+          );
+          wlog(
+            'stream-gates: grow reject cheirality=${st.growRejectCheirality} '
+            'reproj=${st.growRejectReproj} | create reject '
+            'cheirality=${st.createRejectCheirality} '
+            'tri-angle=${st.createRejectTriAngle} '
+            'reproj=${st.createRejectReproj} | assigned same='
+            '${st.alreadyAssigned} merge-needed=${st.mergeNeeded} '
+            'accepted=${st.mergeAccepted} rejected=${st.mergeRejected} | '
+            'spatial considered=${st.spatialConsidered} '
+            'attempted=${st.spatialAttempted} written=${st.spatialWritten} '
+            'inliers=${st.spatialInliers}',
+          );
+          wlog(
+            'spatial-loop: anchors=${st.spatialAnchorPassed}/'
+            '${st.spatialAnchorAttempted} '
+            'regions=${st.spatialRegionsConfirmed} expand-attempted='
+            '${st.spatialExpandedAttempted} guided=${st.spatialGuidedPairs}/'
+            '${st.spatialGuidedInliers}candidates quadratic='
+            '${st.spatialQuadraticWritten}/'
+            '${st.spatialQuadraticAttempted} budget-skipped='
+            '${st.spatialBudgetSkipped}',
+          );
           if (summary['result'] != 'ok') {
             // DIAGNOSTIC TAP: preserve the accumulated sqlite db before the
             // session drops it, so keypoint/match/two-view-geometry counts
@@ -1000,17 +1288,21 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
               final db = File(boot.dbPath);
               if (db.existsSync()) {
                 db.copySync('${boot.dbPath}.debug');
-                wlog('debug: db preserved at ${boot.dbPath}.debug '
-                    '(${db.lengthSync()} bytes)');
+                wlog(
+                  'debug: db preserved at ${boot.dbPath}.debug '
+                  '(${db.lengthSync()} bytes)',
+                );
               }
             } catch (e) {
               wlog('debug: db preserve failed: $e');
             }
-            fail('finalize',
-                '${summary['result']} (rc=${summary['rc']}) $summary');
+            fail(
+              'finalize',
+              '${summary['result']} (rc=${summary['rc']}) $summary',
+            );
             break;
           }
-          sendSnapshot('local_ready', summary, sw.elapsedMilliseconds);
+          wlog('local_ready withheld; waiting for refined final snapshot');
           // Phase 2 runs on the session's own native thread; poll the
           // lock-free status flag until it lands.
           refineStart = DateTime.now().millisecondsSinceEpoch;
@@ -1018,8 +1310,7 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
             final st = s.finalizeStatus();
             if (st == AetherSfmFinalizeStatus.refined) {
               t.cancel();
-              final ms =
-                  DateTime.now().millisecondsSinceEpoch - refineStart;
+              final ms = DateTime.now().millisecondsSinceEpoch - refineStart;
               sendSnapshot('refined', summary, ms);
             } else if (st == AetherSfmFinalizeStatus.error) {
               t.cancel();

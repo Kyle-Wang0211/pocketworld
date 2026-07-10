@@ -25,7 +25,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data' show Int32List, Float32List, Float64List;
+import 'dart:typed_data' show Int32List, Float32List;
 
 import 'package:flutter/foundation.dart'
     show compute, defaultTargetPlatform, TargetPlatform;
@@ -36,6 +36,7 @@ import 'package:vector_math/vector_math_64.dart' show Quaternion, Vector3;
 
 import '../../capture/capture_coverage_cloud.dart';
 import '../../capture/capture_session.dart';
+import '../../capture/representative_color.dart';
 import '../../capture/sparse_ply.dart';
 import '../../capture/dome/dome_target_points.dart';
 import '../../capture/realtime_capture_preview.dart';
@@ -45,6 +46,7 @@ import '../../l10n/app_localizations.dart';
 import '../../me/scan_record_store.dart';
 import '../../quality/guidance_engine.dart' show GuidanceSnapshot;
 import '../../util/device_log.dart';
+import '../me_page.dart';
 import '../scan_record.dart';
 import 'ar_album_page.dart';
 import 'sfm_preview_overlay.dart';
@@ -122,14 +124,17 @@ class _ARCapturePageState extends State<ARCapturePage>
 
   /// Non-null while the post-capture preview overlay is showing.
   SfmPreviewPhase? _sfmPhase;
+
   /// The COLORED cloud shown in the overlay. Set only after colorization
   /// completes, so the user never sees a gray-then-color flash — geometry and
   /// true color land together.
   SfmLiveSnapshot? _sfmSnapshot;
+
   /// The latest colorless snapshot handed to the colorizer. Colorization keys
   /// its supersession + display off this (not `_sfmSnapshot`, which is the
   /// already-colored result), so a stale colorize pass can't clobber a newer one.
   SfmLiveSnapshot? _colorizeTarget;
+
   /// Colored LOCAL (phase-1) snapshot held back from display: we only reveal
   /// the cleaner REFINED (phase-2) cloud, but keep this so a REFINE failure
   /// still shows a usable colored cloud instead of an error (采集必出点云).
@@ -150,6 +155,15 @@ class _ARCapturePageState extends State<ARCapturePage>
   /// The finish flow wants to pop to Drafts, but the preview overlay owns
   /// the exit while it's up — set, then honoured by [_onSfmPreviewDone].
   bool _sfmPendingPop = false;
+
+  /// The waiting UI can be folded into Drafts without popping this route.
+  /// Keeping the route mounted is what keeps the worker, queue and final
+  /// snapshot alive for a later task-card tap.
+  bool _showDraftsWhileReconstructing = false;
+
+  /// Capture directory used as the idempotency key for the one iOS continued-
+  /// processing task protecting this user-triggered final reconstruction.
+  String? _reconUmbrellaJobID;
 
   // ─── RS-style capture-coverage cloud (Dart-owned policy) ──────────
   // Empty until the first committed shutter; every photo frustum-marks the
@@ -329,6 +343,16 @@ class _ARCapturePageState extends State<ARCapturePage>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    // BGContinuedProcessingTask's system card foregrounds the app but does not
+    // expose a distinct Dart tap callback. While this route owns an active job,
+    // any foreground return restores its waiting page. The in-app draft card
+    // below provides the exact same transition without backgrounding.
+    if (state == AppLifecycleState.resumed &&
+        _sfmPhase != null &&
+        _showDraftsWhileReconstructing &&
+        mounted) {
+      setState(() => _showDraftsWhileReconstructing = false);
+    }
     if (_session == null) return;
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden) {
@@ -532,14 +556,15 @@ class _ARCapturePageState extends State<ARCapturePage>
       // ARKit feature points, world-anchored, coloured by coverage).
       try {
         await _arKitChannel.invokeMethod<void>(
-          'setFeaturePointsVisible', <String, dynamic>{'visible': true});
+          'setFeaturePointsVisible',
+          <String, dynamic>{'visible': true},
+        );
       } catch (_) {}
       _previewModel.reset();
       // Fresh take → empty coverage cloud (0 photos ⇒ 0 dots on screen).
       _coverageCloud.reset();
       unawaited(_pushCoverageCloud());
-      _coverageFeedSub ??=
-          session.sfmFrameStream.listen(_onCoverageKeyframe);
+      _coverageFeedSub ??= session.sfmFrameStream.listen(_onCoverageKeyframe);
       setState(() {
         _recording = true;
         _isAiming = false;
@@ -593,8 +618,7 @@ class _ARCapturePageState extends State<ARCapturePage>
         DeviceLog.log('ARCapturePage', 'sfm: no captureDir — not started');
         return;
       }
-      final recon =
-          await SfmLiveRecon.start(dbPath: '$captureDir/sfm_live.db');
+      final recon = await SfmLiveRecon.start(dbPath: '$captureDir/sfm_live.db');
       if (recon == null) return; // reason already file-logged by start()
       if (!mounted || !_recording) {
         DeviceLog.log('ARCapturePage', 'sfm: page gone before worker up');
@@ -617,9 +641,9 @@ class _ARCapturePageState extends State<ARCapturePage>
       switch (event) {
         case SfmLiveFrameFed():
           _sfmFed = _sfmRecon?.fedCount ?? _sfmFed;
-          _sfmQueued = _sfmRecon?.queuedCount ?? _sfmQueued;
+          _sfmQueued = _sfmRecon?.remainingCount ?? _sfmQueued;
         case SfmLiveFrameQueued():
-          _sfmQueued = _sfmRecon?.queuedCount ?? _sfmQueued;
+          _sfmQueued = _sfmRecon?.remainingCount ?? _sfmQueued;
         case SfmLivePreview():
         case SfmLiveLocalReady():
         case SfmLiveRefined():
@@ -649,13 +673,10 @@ class _ARCapturePageState extends State<ARCapturePage>
           }
       }
     });
-    // Background umbrella: the native async solve reached a terminal state —
-    // both phases done (refined), or the finalize/refine failed. The heavy
-    // minutes-scale native work no longer needs background protection (the
-    // colorize+persist below is sub-second main-isolate work, and localReady
-    // already wrote a floor PLY). Idempotent no-op if never armed.
+    // A failure is terminal immediately. On success the umbrella stays alive
+    // through final colorization + PLY persistence and ends in
+    // [_colorizeSnapshot], just before the completion button appears.
     switch (event) {
-      case SfmLiveRefined():
       case SfmLiveFailed():
         unawaited(_endReconUmbrella());
       default:
@@ -678,7 +699,9 @@ class _ARCapturePageState extends State<ARCapturePage>
 
   /// Samples real point colors the COLMAP way (extract_colors parity): each
   /// point is sampled ONLY in the frames of its own track, at the keypoint
-  /// coordinates where it was actually detected, then averaged. Track
+  /// coordinates where it was actually detected, then reduced to ONE real
+  /// observed sample(亮度中位代表色,见 representative_color.dart;不再算术
+  /// 平均——平均会把白床单混成粉)。Track
   /// membership is a visibility proof, so occlusion cannot contaminate the
   /// color. (The previous approach — reprojecting every point into 3
   /// globally-picked frames — sampled whatever OCCLUDED the point there:
@@ -696,11 +719,14 @@ class _ARCapturePageState extends State<ARCapturePage>
 
     // Group observations by frame so every JPEG decodes exactly once.
     // byFrame[frameId] = flat [pointIndex, kpX, kpY, ...] triples.
+    // obsCap 顺带统计每点有效观测数,作为样本池的预分配容量。
     final byFrame = <int, List<double>>{};
+    final obsCap = Int32List(n);
     for (var i = 0; i < n; i++) {
       for (var j = offs[i]; j < offs[i + 1]; j++) {
         final f = fids[j];
         if (!recon.fedFrameMeta.containsKey(f)) continue;
+        obsCap[i]++;
         (byFrame[f] ??= <double>[])
           ..add(i.toDouble())
           ..add(oxy[j * 2])
@@ -710,10 +736,10 @@ class _ARCapturePageState extends State<ARCapturePage>
     if (byFrame.isEmpty) return;
 
     final sw = Stopwatch()..start();
-    // Float accumulators — COLMAP sums bilinear-interpolated float samples,
-    // then rounds the mean (reconstruction.cc:1112).
-    final sumR = Float64List(n), sumG = Float64List(n), sumB = Float64List(n);
-    final hits = Int32List(n);
+    // 代表色样本池:收集每点全部双线性观测样本,归约时选亮度中位的真实样本
+    // (不再算术平均——白床单混入个别红观测会被平均成粉,见
+    // representative_color.dart)。
+    final samples = RepresentativeColorSamples(obsCap);
     var decoded = 0, decodeFail = 0;
     for (final entry in byFrame.entries) {
       // Superseded by a newer snapshot? bail — that one's colorize will run.
@@ -751,31 +777,32 @@ class _ARCapturePageState extends State<ARCapturePage>
         final w10 = (1 - dx) * dy, w11 = dx * dy;
         final o00 = (y0 * jw + x0) * 3, o01 = (y0 * jw + x1) * 3;
         final o10 = (y1 * jw + x0) * 3, o11 = (y1 * jw + x1) * 3;
-        sumR[i] += w00 * rgbP[o00] +
-            w01 * rgbP[o01] +
-            w10 * rgbP[o10] +
-            w11 * rgbP[o11];
-        sumG[i] += w00 * rgbP[o00 + 1] +
-            w01 * rgbP[o01 + 1] +
-            w10 * rgbP[o10 + 1] +
-            w11 * rgbP[o11 + 1];
-        sumB[i] += w00 * rgbP[o00 + 2] +
-            w01 * rgbP[o01 + 2] +
-            w10 * rgbP[o10 + 2] +
-            w11 * rgbP[o11 + 2];
-        hits[i]++;
+        samples.add(
+          i,
+          w00 * rgbP[o00] +
+              w01 * rgbP[o01] +
+              w10 * rgbP[o10] +
+              w11 * rgbP[o11],
+          w00 * rgbP[o00 + 1] +
+              w01 * rgbP[o01 + 1] +
+              w10 * rgbP[o10 + 1] +
+              w11 * rgbP[o11 + 1],
+          w00 * rgbP[o00 + 2] +
+              w01 * rgbP[o01 + 2] +
+              w10 * rgbP[o10 + 2] +
+              w11 * rgbP[o11 + 2],
+        );
       }
     }
-    if (!identical(_colorizeTarget, snap)) return; // superseded during last frame
+    if (!identical(_colorizeTarget, snap)) {
+      return; // superseded during last frame
+    }
 
     final rgb = Uint8List(n * 3);
     var colored = 0;
     for (var i = 0; i < n; i++) {
-      final h = hits[i];
-      if (h > 0) {
-        rgb[i * 3] = (sumR[i] / h).round().clamp(0, 255);
-        rgb[i * 3 + 1] = (sumG[i] / h).round().clamp(0, 255);
-        rgb[i * 3 + 2] = (sumB[i] / h).round().clamp(0, 255);
+      // 代表色归约:选亮度中位的真实观测样本,不合成新颜色。
+      if (samples.selectInto(i, rgb)) {
         colored++;
       } else {
         // Track frames unavailable (decode failed) — readable light gray.
@@ -786,16 +813,17 @@ class _ARCapturePageState extends State<ARCapturePage>
     }
     sw.stop();
     DeviceLog.log(
-        'Colorize',
-        '${snap.refined ? "refined" : "local"} done in ${sw.elapsedMilliseconds}ms: '
-            'colored $colored/$n (${(100 * colored / n).round()}%) | '
-            'frames decoded=$decoded fail=$decodeFail');
+      'Colorize',
+      '${snap.refined ? "refined" : "local"} done in ${sw.elapsedMilliseconds}ms: '
+          'colored $colored/$n (${(100 * colored / n).round()}%) | '
+          'frames decoded=$decoded fail=$decodeFail',
+    );
     // ── Conservative orphan floater removal ── (workflow verify: density-
     // relative outlier removal nibbles real sparse walls/edges AND misses the
     // clustered floaters, so ship ONLY the risk-free zero-neighbor orphan test
     // at a high-percentile radius). Filters the DELIVERED cloud (screen +
     // sfm_sparse.ply); the dense path recomputes from sfm_live.db → untouched.
-    final flt = _floaterKeepIndices(snap.xyz);
+    final flt = _floaterKeepIndices(snap.xyz, obsOffsets: snap.obsOffsets);
     final keepIdx = flt.keep;
     final int m = keepIdx.length;
     final int removedF = n - m;
@@ -818,10 +846,12 @@ class _ARCapturePageState extends State<ARCapturePage>
       }
     }
     DeviceLog.log(
-        'Floater',
-        'orphan-filter: kept $m/$n removed=$removedF '
-            '(${n == 0 ? "0.0" : (100 * removedF / n).toStringAsFixed(1)}%) | '
-            'radius=${flt.radius.toStringAsExponential(2)} kMin=1 | ${flt.ms}ms');
+      'Floater',
+      'orphan-filter: kept $m/$n removed=$removedF '
+          '(${n == 0 ? "0.0" : (100 * removedF / n).toStringAsFixed(1)}%) | '
+          'radius=${flt.radius.toStringAsExponential(2)} kMin=1 '
+          'protectedStable=${flt.protectedStable} | ${flt.ms}ms',
+    );
     // Filtered snapshot reused for BOTH persist and display (empty obs — the
     // colorize already consumed them; persist's track-hist guards on obs length).
     final fsnap = SfmLiveSnapshot(
@@ -834,17 +864,19 @@ class _ARCapturePageState extends State<ARCapturePage>
       obsFrameIds: Int32List(0),
       obsXY: Float32List(0),
     );
-    // PERSIST FIRST, unconditional on mount: the draft PLY MUST carry color
-    // even if the user already tapped 完成 (the "white cloud" was partly this
-    // persist being gated behind !mounted). Guard only on identical so a
-    // superseded LOCAL pass doesn't clobber the REFINED colors.
+    // PERSIST FIRST: the completion button must mean that the final colored PLY
+    // is actually on disk, not merely queued for a later asynchronous write.
     final captureDir = _session?.captureDir;
     if (captureDir != null && identical(_colorizeTarget, snap)) {
-      unawaited(persistSparseSnapshot(
-        captureDir: captureDir,
-        snapshot: fsnap,
-        rgb: frgb,
-      ));
+      try {
+        await persistSparseSnapshot(
+          captureDir: captureDir,
+          snapshot: fsnap,
+          rgb: frgb,
+        );
+      } catch (e) {
+        DeviceLog.log('ARCapturePage', 'final sparse persist failed: $e');
+      }
     }
     // Display only if still mounted + current. THIS is where the cloud first
     // becomes visible — fully colored — and the phase advances in lock-step, so
@@ -853,11 +885,14 @@ class _ARCapturePageState extends State<ARCapturePage>
       // Show the orphan-FILTERED cloud (same buffers persisted above); it only
       // reads xyz+rgb and the obs arrays were already dropped in fsnap. (mem audit)
       final display = fsnap;
-      // The streaming local-BA cloud is the TERMINAL cloud (global BA deferred),
-      // so reveal it just like a refined one. Only the resume/cold-finalize
-      // two-phase path emits a noisier phase-1 `local_ready` that we still defer
-      // in favour of its `refined` follow-up.
-      final isStreamingPreview = snap.summary['source'] == 'streaming_local_ba';
+      // Streaming local-BA is now the terminal finish-time cloud: it matches the
+      // older good captures' delivery path and avoids a post-finish pure global
+      // BA wait/overwrite. `streaming_global_ba` remains accepted for old builds
+      // or explicit experiments. The resume/cold-finalize path still emits a
+      // noisier phase-1 `local_ready` that we defer for its `refined` follow-up.
+      final src = snap.summary['source'];
+      final isStreamingPreview =
+          src == 'streaming_local_ba' || src == 'streaming_global_ba';
       if (snap.refined || isStreamingPreview) {
         // Reveal the clean terminal cloud (streaming preview, or REFINED phase-2).
         setState(() {
@@ -872,15 +907,16 @@ class _ARCapturePageState extends State<ARCapturePage>
         _pendingLocalColored = display;
       }
     }
-    // Every fed frame has now been sampled by the colorize above, so the photo
-    // prune deferred at 完成 can run without starving it. Terminal snapshot only
-    // (streaming preview or refined) — a stale/local pass must not prune early;
-    // runs even if the page popped (photos are disk state, not UI). This is what
-    // guarantees 100% colorize (no frame deleted before it is sampled).
+    // Photo prune (deletes non-curated frames) may run ONLY after the LAST
+    // colorize that needs those frames. For the live streaming path the local-BA
+    // cloud is terminal; refined covers the resume/cold-finalize path.
     final isTerminalColorize =
-        snap.summary['source'] == 'streaming_local_ba' || snap.refined;
+        snap.summary['terminal'] == true ||
+        snap.summary['source'] == 'streaming_global_ba' ||
+        snap.refined;
     if (isTerminalColorize && identical(_colorizeTarget, snap)) {
       _flushDeferredPhotoPrune();
+      if (snap.refined) unawaited(_endReconUmbrella());
     }
   }
 
@@ -891,8 +927,10 @@ class _ARCapturePageState extends State<ARCapturePage>
     final pending = _deferredPhotoPrune;
     if (pending == null) return;
     _deferredPhotoPrune = null;
-    DeviceLog.log('ARCapturePage',
-        'photo prune FLUSH after colorize (keep ${pending.curated.length})');
+    DeviceLog.log(
+      'ARCapturePage',
+      'photo prune FLUSH after colorize (keep ${pending.curated.length})',
+    );
     unawaited(pending.session.retainOnlyCuratedPhotos(pending.curated));
   }
 
@@ -907,9 +945,9 @@ class _ARCapturePageState extends State<ARCapturePage>
   // density-relative removal (SOR / small radius) was rejected: on an ~80%-2-view
   // cloud it nibbles edges + sparse walls (violates 点更多不能稀疏) and can't kill
   // the clustered/ghost floaters anyway. This only removes unambiguous orphans.
-  static const int _kFloaterMinCloud = 2000;   // below this, don't filter
+  static const int _kFloaterMinCloud = 2000; // below this, don't filter
   static const int _kFloaterScaleSample = 4096; // NN-distribution subsample cap
-  static const double _kFloaterPct = 0.99;      // radius from this NN percentile
+  static const double _kFloaterPct = 0.99; // radius from this NN percentile
   static const double _kFloaterRadiusMul = 1.2; // headroom above the percentile
 
   static int _floaterCellKey(int cx, int cy, int cz) =>
@@ -917,8 +955,8 @@ class _ARCapturePageState extends State<ARCapturePage>
 
   /// Survivor indices after orphan removal. Returns ALL indices (no-op) on any
   /// degeneracy or a too-small cloud — always errs toward keeping points.
-  ({Int32List keep, double radius, int ms}) _floaterKeepIndices(
-      Float32List xyz) {
+  ({Int32List keep, double radius, int protectedStable, int ms})
+  _floaterKeepIndices(Float32List xyz, {Int32List? obsOffsets}) {
     final sw = Stopwatch()..start();
     final n = xyz.length ~/ 3;
     Int32List allIdx() {
@@ -928,8 +966,16 @@ class _ARCapturePageState extends State<ARCapturePage>
       }
       return a;
     }
+
+    ({Int32List keep, double radius, int protectedStable, int ms}) allKeep() =>
+        (
+          keep: allIdx(),
+          radius: 0,
+          protectedStable: 0,
+          ms: sw.elapsedMilliseconds,
+        );
     if (n < _kFloaterMinCloud) {
-      return (keep: allIdx(), radius: 0, ms: sw.elapsedMilliseconds);
+      return allKeep();
     }
     var minX = xyz[0], minY = xyz[1], minZ = xyz[2];
     var maxX = xyz[0], maxY = xyz[1], maxZ = xyz[2];
@@ -945,7 +991,7 @@ class _ARCapturePageState extends State<ARCapturePage>
     final ex = maxX - minX, ey = maxY - minY, ez = maxZ - minZ;
     final diag = math.sqrt(ex * ex + ey * ey + ez * ez);
     if (!(diag > 0)) {
-      return (keep: allIdx(), radius: 0, ms: sw.elapsedMilliseconds);
+      return allKeep();
     }
     Map<int, List<int>> build(double cell) {
       final g = <int, List<int>>{};
@@ -958,10 +1004,11 @@ class _ARCapturePageState extends State<ARCapturePage>
       }
       return g;
     }
+
     // 1) Estimate the nearest-neighbor distance distribution on a coarse grid.
     final c0 = diag / math.pow(n, 1 / 3);
     if (!(c0 > 0)) {
-      return (keep: allIdx(), radius: 0, ms: sw.elapsedMilliseconds);
+      return allKeep();
     }
     final g0 = build(c0);
     final inv0 = 1.0 / c0;
@@ -991,13 +1038,13 @@ class _ARCapturePageState extends State<ARCapturePage>
       if (best.isFinite) nn.add(math.sqrt(best));
     }
     if (nn.isEmpty) {
-      return (keep: allIdx(), radius: 0, ms: sw.elapsedMilliseconds);
+      return allKeep();
     }
     nn.sort();
     final p = nn[(nn.length * _kFloaterPct).floor().clamp(0, nn.length - 1)];
     final radius = p * _kFloaterRadiusMul;
     if (!(radius > 0)) {
-      return (keep: allIdx(), radius: 0, ms: sw.elapsedMilliseconds);
+      return allKeep();
     }
     // 2) Keep points with >=1 neighbor within `radius` (cell = radius so the
     //    27-cell neighborhood covers the sphere); delete zero-neighbor orphans.
@@ -1005,7 +1052,15 @@ class _ARCapturePageState extends State<ARCapturePage>
     final g = build(radius);
     final invR = 1.0 / radius;
     final keep = <int>[];
+    var protectedStable = 0;
     for (var i = 0; i < n; i++) {
+      if (obsOffsets != null &&
+          obsOffsets.length == n + 1 &&
+          obsOffsets[i + 1] - obsOffsets[i] >= 3) {
+        keep.add(i);
+        protectedStable++;
+        continue;
+      }
       final cx = ((xyz[i * 3] - minX) * invR).floor();
       final cy = ((xyz[i * 3 + 1] - minY) * invR).floor();
       final cz = ((xyz[i * 3 + 2] - minZ) * invR).floor();
@@ -1034,7 +1089,8 @@ class _ARCapturePageState extends State<ARCapturePage>
     return (
       keep: Int32List.fromList(keep),
       radius: radius,
-      ms: sw.elapsedMilliseconds
+      protectedStable: protectedStable,
+      ms: sw.elapsedMilliseconds,
     );
   }
 
@@ -1042,7 +1098,8 @@ class _ARCapturePageState extends State<ARCapturePage>
   /// long edge, raw sensor orientation (no EXIF transform), 3 B/px top-down.
   /// Returns null on any failure.
   Future<({Uint8List rgb, int w, int h})?> _decodeJpegNative(
-      String jpegPath) async {
+    String jpegPath,
+  ) async {
     try {
       final res = await _arKitChannel.invokeMethod<Map<Object?, Object?>>(
         'decodeJpegForColor',
@@ -1061,24 +1118,44 @@ class _ARCapturePageState extends State<ARCapturePage>
     }
   }
 
-  /// iOS-26 background-continuation umbrella around the native async finalize.
-  /// begin() MUST be called from the foreground (preview up); end() is
-  /// idempotent and no-ops below iOS 26 (the native side guards on availability).
-  Future<void> _beginReconUmbrella() async {
+  /// Arm the iOS-26 continuation task only for an actual user-triggered finish.
+  /// The capture directory is also the native idempotency key, so rebuilds or
+  /// duplicate callbacks cannot create another Dynamic Island task.
+  Future<void> _beginReconUmbrella(String captureDir) async {
+    if (_reconUmbrellaJobID == captureDir) return;
+    _reconUmbrellaJobID = captureDir;
     try {
-      await _arKitChannel.invokeMethod<void>('beginReconUmbrella');
-    } catch (_) {}
+      await _arKitChannel.invokeMethod<void>(
+        'beginReconUmbrella',
+        <String, Object?>{'jobId': captureDir},
+      );
+    } catch (_) {
+      if (_reconUmbrellaJobID == captureDir) {
+        _reconUmbrellaJobID = null;
+      }
+    }
   }
 
+  /// Idempotent teardown after the final colored point cloud (or an error).
   Future<void> _endReconUmbrella() async {
+    final jobID = _reconUmbrellaJobID;
+    if (jobID == null) return;
+    _reconUmbrellaJobID = null;
     try {
-      await _arKitChannel.invokeMethod<void>('endReconUmbrella');
+      await _arKitChannel.invokeMethod<void>(
+        'endReconUmbrella',
+        <String, Object?>{'jobId': jobID},
+      );
     } catch (_) {}
   }
 
   /// "完成" on the preview overlay: tear the worker down (frees the native
   /// session + sqlite db) and run the exit the finish flow deferred.
   void _onSfmPreviewDone() {
+    if (_sfmPhase != SfmPreviewPhase.refined &&
+        _sfmPhase != SfmPreviewPhase.error) {
+      return;
+    }
     // Catch-all umbrella teardown: covers a refine-failure-after-localReady
     // (log-only, no terminal event) and an early user exit. Idempotent.
     unawaited(_endReconUmbrella());
@@ -1090,11 +1167,26 @@ class _ARCapturePageState extends State<ARCapturePage>
     _sfmEventSub = null;
     if (recon != null) unawaited(recon.dispose());
     if (!mounted) return;
-    setState(() => _sfmPhase = null);
+    setState(() {
+      _sfmPhase = null;
+      _showDraftsWhileReconstructing = false;
+    });
     if (_sfmPendingPop) {
       _sfmPendingPop = false;
       Navigator.of(context).pop(true);
     }
+  }
+
+  /// Reveal Drafts without disposing the capture route or touching SfM.
+  void _showDraftsDuringReconstruction() {
+    if (_sfmPhase == null || _showDraftsWhileReconstructing) return;
+    setState(() => _showDraftsWhileReconstructing = true);
+  }
+
+  /// Called only by the matching active draft card.
+  void _showReconstructionProgress() {
+    if (_sfmPhase == null || !_showDraftsWhileReconstructing) return;
+    setState(() => _showDraftsWhileReconstructing = false);
   }
 
   /// Shutter tap → capture exactly ONE high-res still (RealityScan manual).
@@ -1109,9 +1201,11 @@ class _ARCapturePageState extends State<ARCapturePage>
       // finalize this used to balloon to seconds because the colorizer's main-
       // thread decodes starved this channel reply; with decodeJpegForColor now
       // off-main it should stay at single-encode magnitude even mid-colorize.
-      DeviceLog.log('ARCapturePage',
-          'shutter captureSinglePhoto waited=${shutterSw.elapsedMilliseconds}ms '
-          'sfmPhase=$_sfmPhase');
+      DeviceLog.log(
+        'ARCapturePage',
+        'shutter captureSinglePhoto waited=${shutterSw.elapsedMilliseconds}ms '
+            'sfmPhase=$_sfmPhase',
+      );
       if (jpegPath != null && mounted) {
         // Anchor a native, world-stable AR card at the capture pose (no drift).
         // Best-effort: a card failure must never fail the capture itself.
@@ -1163,7 +1257,9 @@ class _ARCapturePageState extends State<ARCapturePage>
       // T6: tear down the live sparse cloud when the take ends.
       try {
         await _arKitChannel.invokeMethod<void>(
-          'setFeaturePointsVisible', <String, dynamic>{'visible': false});
+          'setFeaturePointsVisible',
+          <String, dynamic>{'visible': false},
+        );
       } catch (_) {}
       if (mounted) {
         setState(() {
@@ -1182,40 +1278,22 @@ class _ARCapturePageState extends State<ARCapturePage>
       // pause() + clearing recentFrameSnapshots frees it all for CPU+GPU SfM.
       try {
         await _arKitChannel.invokeMethod<void>('stopSession');
-        DeviceLog.log('ARCapturePage', 'finish: ARSession stopped (camera off)');
-      } catch (_) {}
-      // Streaming SfM: every keyframe feed has been offered by now (the
-      // pending-saves barrier guarantees it), so kick the two-phase
-      // finalize. Phase 1 runs in the worker WHILE we do the curation +
-      // draft disk work below; the preview overlay appears immediately
-      // with its "正在生成预览…" state. Fewer than 2 fed frames can't
-      // reconstruct — tear down silently and keep the classic exit.
-      // Every offered frame counts — the disk queue guarantees they all
-      // reach the reconstruction before finalize runs.
-      final recon = _sfmRecon;
-      final sfmPreviewing = recon != null && recon.offeredCount >= 2;
-      DeviceLog.log(
+        DeviceLog.log(
           'ARCapturePage',
-          'finish: sfm fed=${recon?.fedCount ?? -1} '
-          'queued=${recon?.queuedCount ?? -1} preview=$sfmPreviewing');
-      if (sfmPreviewing) {
-        await _sfmFeedSub?.cancel();
-        _sfmFeedSub = null;
-        // NO background umbrella here: 完成 now just fetches the ALREADY-BUILT
-        // streaming local-BA cloud + colorizes it (sub-second, on the worker +
-        // main isolate). The minutes-scale global BA is DEFERRED to after region
-        // selection — the umbrella (and its Dynamic Island "正在生成稀疏点云…")
-        // arms there, not here. (The resume-recovery path in sfm_resume.dart
-        // keeps its own umbrella for the cold finalize it runs.)
-        recon.finalize();
-        if (mounted) {
-          setState(() => _sfmPhase = SfmPreviewPhase.generating);
-        }
-      } else if (recon != null) {
-        _onSfmPreviewDone(); // silent teardown, no overlay
-      }
+          'finish: ARSession stopped (camera off)',
+        );
+      } catch (_) {}
+      final recon = _sfmRecon;
       final curated = _targetPoints.curateForUpload(framesPerPoint: 5);
       if (curated.isEmpty) {
+        if (recon != null) {
+          _sfmRecon = null;
+          await _sfmFeedSub?.cancel();
+          _sfmFeedSub = null;
+          await _sfmEventSub?.cancel();
+          _sfmEventSub = null;
+          unawaited(recon.dispose());
+        }
         if (mounted && showSparseHint) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -1229,14 +1307,56 @@ class _ARCapturePageState extends State<ARCapturePage>
         }
         return;
       }
-      // Photo prune: when a streaming preview will colorize the cloud, DEFER the
-      // delete until the colorize has baked color into the PLY — pruning now
-      // deletes SfM-fed frames the colorizer still needs → gray points (the
-      // reported "3 帧解码失败"). Without a preview there's no colorize → prune now.
+
+      // Keep the post-capture waiting page alive until the authoritative final
+      // sparse cloud lands. SfM remains asynchronous: the worker drains every
+      // offered frame while this page merely renders queue progress, then runs
+      // spatial loop matching + full finalize. We deliberately retain the event
+      // subscription and session ownership here; detaching them would make the
+      // page exit straight to Drafts and hide the queue/final result.
+      final sfmPreviewing = recon != null && recon.offeredCount >= 2;
+      final captureDirForSfm = session.captureDir;
+      DeviceLog.log(
+        'ARCapturePage',
+        'finish: sfm fed=${recon?.fedCount ?? -1} '
+            'remaining=${recon?.remainingCount ?? -1} preview=$sfmPreviewing',
+      );
+      if (sfmPreviewing) {
+        await _sfmFeedSub?.cancel();
+        _sfmFeedSub = null;
+        if (mounted) {
+          setState(() {
+            _sfmFed = recon.fedCount;
+            _sfmQueued = recon.remainingCount;
+            _sfmSnapshot = null;
+            _colorizeTarget = null;
+            _pendingLocalColored = null;
+            _sfmErrorText = null;
+            _sfmPhase = SfmPreviewPhase.generating;
+            _showDraftsWhileReconstructing = false;
+          });
+        }
+        if (captureDirForSfm != null) {
+          await _beginReconUmbrella(captureDirForSfm);
+        }
+        recon.finalize();
+      } else if (recon != null) {
+        _sfmRecon = null;
+        await _sfmFeedSub?.cancel();
+        _sfmFeedSub = null;
+        await _sfmEventSub?.cancel();
+        _sfmEventSub = null;
+        unawaited(recon.dispose());
+      }
+      // The final colorizer needs every SfM-fed JPEG. Delete non-curated photos
+      // only after that final colored cloud has been persisted.
       if (sfmPreviewing) {
         _deferredPhotoPrune = (session: session, curated: curated);
-        DeviceLog.log('ARCapturePage',
-            'photo prune DEFERRED until colorize (keep ${curated.length} + all fed frames)');
+        DeviceLog.log(
+          'ARCapturePage',
+          'photo prune deferred until final colorize '
+              '(keep ${curated.length} + all fed frames until colorize)',
+        );
       } else {
         await session.retainOnlyCuratedPhotos(curated);
       }
@@ -1408,6 +1528,7 @@ class _ARCapturePageState extends State<ARCapturePage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    unawaited(_endReconUmbrella());
     _warmupFallbackTimer?.cancel();
     _poseSub?.cancel();
     // Streaming-SfM teardown: frees the native session (joins the background
@@ -1434,6 +1555,13 @@ class _ARCapturePageState extends State<ARCapturePage>
 
   @override
   Widget build(BuildContext context) {
+    if (_showDraftsWhileReconstructing && _sfmPhase != null) {
+      return MePage(
+        initialShowDrafts: true,
+        activeReconstructionCaptureDir: _session?.captureDir,
+        onActiveReconstructionTap: _showReconstructionProgress,
+      );
+    }
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
@@ -1515,7 +1643,6 @@ class _ARCapturePageState extends State<ARCapturePage>
           // Photo cards are now rendered NATIVELY as world-anchored SceneKit
           // quads (see AetherARKitPlugin addPhotoCard) — stable, no drift. The
           // old Flutter 2D-projected `_PhotoPositionOverlay` is removed.
-
           if (_recording && _session != null)
             Positioned(
               top: 0,
@@ -1562,19 +1689,17 @@ class _ARCapturePageState extends State<ARCapturePage>
               ),
             ),
 
-          // ─── Capture-time reconstruction preview (topmost). Appears the
-          // moment finish kicks finalize ("正在生成预览…"), turns interactive
-          // at LOCAL_READY, silently swaps the refined cloud in at REFINED,
-          // and NEVER blocks the user: its 完成 button runs the deferred
-          // exit-to-drafts; ERROR keeps素材 and exits the same way.
+          // ─── Post-capture final reconstruction (topmost). It owns navigation
+          // until the queue drains and the final colored sparse cloud lands.
           if (_sfmPhase != null)
             SfmPreviewOverlay(
               phase: _sfmPhase!,
               snapshot: _sfmSnapshot,
               errorText: _sfmErrorText,
               progressText: _sfmQueued > 0
-                  ? '已处理 $_sfmFed · 队列 $_sfmQueued'
-                  : '已处理 $_sfmFed 帧',
+                  ? '已处理 $_sfmFed 帧 · 剩余 $_sfmQueued 帧'
+                  : '帧队列已清空 · 正在生成最终点云',
+              onBack: _showDraftsDuringReconstruction,
               onDone: _onSfmPreviewDone,
             ),
         ],
@@ -2135,36 +2260,36 @@ class _ShutterButton extends StatelessWidget {
     return Opacity(
       opacity: enabled ? 1.0 : 0.4,
       child: GestureDetector(
-      onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: Container(
-        width: 76,
-        height: 76,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          border: Border.all(color: Colors.white, width: 4),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(5),
-          child: Container(
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: busy ? Colors.white54 : Colors.white,
-            ),
-            child: busy
-                ? const Padding(
-                    padding: EdgeInsets.all(20),
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      valueColor: AlwaysStoppedAnimation<Color>(
-                        Colors.black54,
+        onTap: onTap,
+        behavior: HitTestBehavior.opaque,
+        child: Container(
+          width: 76,
+          height: 76,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.white, width: 4),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(5),
+            child: Container(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: busy ? Colors.white54 : Colors.white,
+              ),
+              child: busy
+                  ? const Padding(
+                      padding: EdgeInsets.all(20),
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          Colors.black54,
+                        ),
                       ),
-                    ),
-                  )
-                : null,
+                    )
+                  : null,
+            ),
           ),
         ),
-      ),
       ),
     );
   }

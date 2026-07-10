@@ -159,6 +159,15 @@ PWSFM_EXPORT aether_sfm_result_t pwsfm_get_preview_tracked(
 #endif
 }
 
+PWSFM_EXPORT aether_sfm_result_t pwsfm_global_refine(aether_sfm_session_t* s) {
+#if TARGET_OS_SIMULATOR
+  (void)s;
+  return AETHER_SFM_ERR_UNSUPPORTED;
+#else
+  return aether_sfm_global_refine(s);
+#endif
+}
+
 PWSFM_EXPORT void pwsfm_debug_last(aether_sfm_session_t* s, double* extract_ms,
                                    double* match_ms, int* n_cand,
                                    int* gpu_matches, int* cpu_matches) {
@@ -175,13 +184,74 @@ PWSFM_EXPORT void pwsfm_stream_stats(aether_sfm_session_t* s, int64_t* tvg_pairs
                                      int64_t* raw_pairs, int64_t* grow_accepted,
                                      int64_t* grow_rejected,
                                      int64_t* reproj_filtered,
-                                     int64_t* tri_filtered) {
+                                     int64_t* tri_filtered,
+                                     int64_t* grow_reject_cheirality,
+                                     int64_t* grow_reject_reproj,
+                                     int64_t* create_reject_cheirality,
+                                     int64_t* create_reject_tri_angle,
+                                     int64_t* create_reject_reproj,
+                                     int64_t* already_assigned,
+                                     int64_t* merge_needed,
+                                     int64_t* merge_accepted,
+                                     int64_t* merge_rejected,
+                                     int64_t* spatial_considered,
+                                     int64_t* spatial_attempted,
+                                     int64_t* spatial_written,
+                                     int64_t* spatial_inliers,
+                                     int64_t* spatial_anchor_attempted,
+                                     int64_t* spatial_anchor_passed,
+                                     int64_t* spatial_regions_confirmed,
+                                     int64_t* spatial_expanded_attempted,
+                                     int64_t* spatial_guided_pairs,
+                                     int64_t* spatial_guided_inliers,
+                                     int64_t* spatial_quadratic_attempted,
+                                     int64_t* spatial_quadratic_written,
+                                     int64_t* spatial_budget_skipped,
+                                     int64_t* temporal_detail_pairs,
+                                     int64_t* temporal_detail_matches,
+                                     int64_t* temporal_detail_created,
+                                     int64_t* temporal_detail_grown,
+                                     int64_t* temporal_detail_reject_cheirality,
+                                     int64_t* temporal_detail_reject_reproj,
+                                     int64_t* temporal_detail_reject_tri_angle,
+                                     int64_t* temporal_detail_conflicts) {
 #if TARGET_OS_SIMULATOR
   (void)s; (void)tvg_pairs; (void)raw_pairs; (void)grow_accepted;
   (void)grow_rejected; (void)reproj_filtered; (void)tri_filtered;
+  (void)grow_reject_cheirality; (void)grow_reject_reproj;
+  (void)create_reject_cheirality; (void)create_reject_tri_angle;
+  (void)create_reject_reproj; (void)already_assigned; (void)merge_needed;
+  (void)merge_accepted; (void)merge_rejected; (void)spatial_considered;
+  (void)spatial_attempted; (void)spatial_written; (void)spatial_inliers;
+  (void)spatial_anchor_attempted; (void)spatial_anchor_passed;
+  (void)spatial_regions_confirmed; (void)spatial_expanded_attempted;
+  (void)spatial_guided_pairs; (void)spatial_guided_inliers;
+  (void)spatial_quadratic_attempted; (void)spatial_quadratic_written;
+  (void)spatial_budget_skipped;
+  (void)temporal_detail_pairs; (void)temporal_detail_matches;
+  (void)temporal_detail_created; (void)temporal_detail_grown;
+  (void)temporal_detail_reject_cheirality;
+  (void)temporal_detail_reject_reproj;
+  (void)temporal_detail_reject_tri_angle; (void)temporal_detail_conflicts;
 #else
   aether_sfm_stream_stats(s, tvg_pairs, raw_pairs, grow_accepted, grow_rejected,
-                          reproj_filtered, tri_filtered);
+                          reproj_filtered, tri_filtered,
+                          grow_reject_cheirality, grow_reject_reproj,
+                          create_reject_cheirality, create_reject_tri_angle,
+                          create_reject_reproj, already_assigned, merge_needed,
+                          merge_accepted, merge_rejected, spatial_considered,
+                          spatial_attempted, spatial_written, spatial_inliers,
+                          spatial_anchor_attempted, spatial_anchor_passed,
+                          spatial_regions_confirmed, spatial_expanded_attempted,
+                          spatial_guided_pairs, spatial_guided_inliers,
+                          spatial_quadratic_attempted, spatial_quadratic_written,
+                          spatial_budget_skipped, temporal_detail_pairs,
+                          temporal_detail_matches, temporal_detail_created,
+                          temporal_detail_grown,
+                          temporal_detail_reject_cheirality,
+                          temporal_detail_reject_reproj,
+                          temporal_detail_reject_tri_angle,
+                          temporal_detail_conflicts);
 #endif
 }
 
