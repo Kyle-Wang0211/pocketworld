@@ -255,6 +255,132 @@ PWSFM_EXPORT void pwsfm_stream_stats(aether_sfm_session_t* s, int64_t* tvg_pairs
 #endif
 }
 
+// [SPATIAL-FIRST 2026-07-11] Capture-time candidate-selection attribution
+// (spatial K-NN picks vs temporal fill/fallback). Guarded like stream_stats:
+// the simulator stub archive predates this symbol, so zero-fill there.
+PWSFM_EXPORT void pwsfm_candidate_stats(aether_sfm_session_t* s,
+                                        int64_t* spatial_first_pairs,
+                                        int64_t* temporal_fallback_pairs) {
+#if TARGET_OS_SIMULATOR
+  (void)s;
+  if (spatial_first_pairs) *spatial_first_pairs = 0;
+  if (temporal_fallback_pairs) *temporal_fallback_pairs = 0;
+#else
+  aether_sfm_candidate_stats(s, spatial_first_pairs, temporal_fallback_pairs);
+#endif
+}
+
+// [MATCH-FAIL TELEMETRY 2026-07-11] Capture-time GPU matcher failure buckets
+// (by pwsfm_gpu_match rc) + finalize starved-frame re-match counters — the
+// cap44 observability gap: these existed in the archive since 07-11 but were
+// never exported, so the Dart telemetry could not persist them. Guarded like
+// candidate_stats: the simulator stub archive predates this symbol, zero-fill
+// there. gpu_fail_by_rc, if non-NULL, must point at 8 int64 slots.
+PWSFM_EXPORT void pwsfm_match_fail_stats(aether_sfm_session_t* s,
+                                         int64_t* gpu_fail_total,
+                                         int64_t* gpu_fail_by_rc,
+                                         int64_t* gpu_fail_max_streak,
+                                         int64_t* rematch_starved_frames,
+                                         int64_t* rematch_candidates,
+                                         int64_t* rematch_attempted,
+                                         int64_t* rematch_written,
+                                         int64_t* rematch_inliers,
+                                         int64_t* rematch_failed) {
+#if TARGET_OS_SIMULATOR
+  (void)s;
+  if (gpu_fail_total) *gpu_fail_total = 0;
+  if (gpu_fail_by_rc) {
+    for (int i = 0; i < 8; ++i) gpu_fail_by_rc[i] = 0;
+  }
+  if (gpu_fail_max_streak) *gpu_fail_max_streak = 0;
+  if (rematch_starved_frames) *rematch_starved_frames = 0;
+  if (rematch_candidates) *rematch_candidates = 0;
+  if (rematch_attempted) *rematch_attempted = 0;
+  if (rematch_written) *rematch_written = 0;
+  if (rematch_inliers) *rematch_inliers = 0;
+  if (rematch_failed) *rematch_failed = 0;
+#else
+  aether_sfm_match_fail_stats(s, gpu_fail_total, gpu_fail_by_rc,
+                              gpu_fail_max_streak, rematch_starved_frames,
+                              rematch_candidates, rematch_attempted,
+                              rematch_written, rematch_inliers,
+                              rematch_failed);
+#endif
+}
+
+// [THERMAL-THROTTLE 2026-07-11] Platform thermal push (0..3, ProcessInfo
+// bucket) — the Dart worker calls this right before each add_frame so the
+// archive can halve the live match window under thermal serious (cap45
+// camera-freeze fix). Simulator stub archive predates the symbol: no-op there
+// (Dart gates on isSupported and never drives SfM on the simulator anyway).
+PWSFM_EXPORT void pwsfm_set_thermal_state(aether_sfm_session_t* s, int state) {
+#if TARGET_OS_SIMULATOR
+  (void)s;
+  (void)state;
+#else
+  aether_sfm_set_thermal_state(s, state);
+#endif
+}
+
+// [THERMAL-THROTTLE 2026-07-11] Frames fed with the reduced live K this
+// capture (telemetry; 0 = throttle never engaged). Zero-fill on simulator.
+PWSFM_EXPORT void pwsfm_thermal_throttle_stats(aether_sfm_session_t* s,
+                                               int64_t* throttled_frames) {
+#if TARGET_OS_SIMULATOR
+  (void)s;
+  if (throttled_frames) *throttled_frames = 0;
+#else
+  aether_sfm_thermal_throttle_stats(s, throttled_frames);
+#endif
+}
+
+// [P1-LIVE-REPAY 2026-07-11] Capture-idle debt repayment: re-match up to
+// max_pairs missing temporal-window pairs of starved frames through the
+// add_frame matcher route (db-only; thermal serious/critical refuses).
+// Guarded like match_fail_stats: the simulator stub archive predates this
+// symbol — return 0 (nothing to do) there.
+PWSFM_EXPORT int pwsfm_live_repay(aether_sfm_session_t* s, int max_pairs) {
+#if TARGET_OS_SIMULATOR
+  (void)s;
+  (void)max_pairs;
+  return 0;
+#else
+  return aether_sfm_live_repay(s, max_pairs);
+#endif
+}
+
+// [P1 2026-07-11] Finalize-speedup package counters: idle repay (see
+// pwsfm_live_repay), rc=7 backoff-retry, and the finalize enrichment time
+// budget. Zero-fill on the simulator (stub archive predates the symbol).
+PWSFM_EXPORT void pwsfm_repair_stats(aether_sfm_session_t* s,
+                                     int64_t* repay_calls,
+                                     int64_t* repay_attempted,
+                                     int64_t* repay_written,
+                                     int64_t* repay_inliers,
+                                     int64_t* repay_failed,
+                                     int64_t* repay_skipped_thermal,
+                                     int64_t* gpu_retry_attempts,
+                                     int64_t* gpu_retry_recovered,
+                                     int64_t* enrich_budget_stopped) {
+#if TARGET_OS_SIMULATOR
+  (void)s;
+  if (repay_calls) *repay_calls = 0;
+  if (repay_attempted) *repay_attempted = 0;
+  if (repay_written) *repay_written = 0;
+  if (repay_inliers) *repay_inliers = 0;
+  if (repay_failed) *repay_failed = 0;
+  if (repay_skipped_thermal) *repay_skipped_thermal = 0;
+  if (gpu_retry_attempts) *gpu_retry_attempts = 0;
+  if (gpu_retry_recovered) *gpu_retry_recovered = 0;
+  if (enrich_budget_stopped) *enrich_budget_stopped = 0;
+#else
+  aether_sfm_repair_stats(s, repay_calls, repay_attempted, repay_written,
+                          repay_inliers, repay_failed, repay_skipped_thermal,
+                          gpu_retry_attempts, gpu_retry_recovered,
+                          enrich_budget_stopped);
+#endif
+}
+
 PWSFM_EXPORT void pwsfm_free(aether_sfm_session_t* s) {
   aether_sfm_free(s);
 }

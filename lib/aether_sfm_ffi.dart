@@ -254,6 +254,90 @@ typedef _DebugLastDart =
       Pointer<Int32>,
     );
 
+typedef _CandidateStatsC =
+    Void Function(Pointer<Void>, Pointer<Int64>, Pointer<Int64>);
+typedef _CandidateStatsDart =
+    void Function(Pointer<Void>, Pointer<Int64>, Pointer<Int64>);
+
+// [MATCH-FAIL TELEMETRY 2026-07-11] aether_sfm_match_fail_stats — capture-time
+// GPU matcher failure buckets + finalize starved-frame re-match counters.
+// Param 3 (gpu_fail_by_rc) points at 8 int64 slots; the rest are scalars.
+typedef _MatchFailStatsC =
+    Void Function(
+      Pointer<Void>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+    );
+typedef _MatchFailStatsDart =
+    void Function(
+      Pointer<Void>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+    );
+
+// [THERMAL-THROTTLE 2026-07-11] aether_sfm_set_thermal_state — platform push
+// of the ProcessInfo thermal bucket (0..3); serious/critical halves the live
+// match candidate window in add_frame (cap45 camera-freeze fix).
+typedef _SetThermalStateC = Void Function(Pointer<Void>, Int32);
+typedef _SetThermalStateDart = void Function(Pointer<Void>, int);
+
+// [THERMAL-THROTTLE 2026-07-11] aether_sfm_thermal_throttle_stats — frames
+// fed with the reduced live K this capture (telemetry).
+typedef _ThermalThrottleStatsC = Void Function(Pointer<Void>, Pointer<Int64>);
+typedef _ThermalThrottleStatsDart =
+    void Function(Pointer<Void>, Pointer<Int64>);
+
+// [P1-LIVE-REPAY 2026-07-11] aether_sfm_live_repay — capture-idle debt
+// repayment: re-match up to max_pairs missing temporal-window pairs of
+// starved frames through the add_frame matcher route (db-only; native
+// refuses outright at thermal serious/critical). Returns pairs written
+// this call (0 = nothing to do / refused), -1 on bad args.
+typedef _LiveRepayC = Int32 Function(Pointer<Void>, Int32);
+typedef _LiveRepayDart = int Function(Pointer<Void>, int);
+
+// [P1 2026-07-11] aether_sfm_repair_stats — finalize-speedup package
+// counters: idle repay (live_repay), rc=7 backoff-retry, enrich time budget.
+typedef _RepairStatsC =
+    Void Function(
+      Pointer<Void>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+    );
+typedef _RepairStatsDart =
+    void Function(
+      Pointer<Void>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+      Pointer<Int64>,
+    );
+
 typedef _StreamStatsC =
     Void Function(
       Pointer<Void>,
@@ -542,6 +626,26 @@ class AetherSfm {
       .lookupFunction<_DebugLastC, _DebugLastDart>('pwsfm_debug_last');
   static final _StreamStatsDart _streamStats = _lib
       .lookupFunction<_StreamStatsC, _StreamStatsDart>('pwsfm_stream_stats');
+  static final _CandidateStatsDart _candidateStats = _lib
+      .lookupFunction<_CandidateStatsC, _CandidateStatsDart>(
+        'pwsfm_candidate_stats',
+      );
+  static final _MatchFailStatsDart _matchFailStats = _lib
+      .lookupFunction<_MatchFailStatsC, _MatchFailStatsDart>(
+        'pwsfm_match_fail_stats',
+      );
+  static final _SetThermalStateDart _setThermalState = _lib
+      .lookupFunction<_SetThermalStateC, _SetThermalStateDart>(
+        'pwsfm_set_thermal_state',
+      );
+  static final _ThermalThrottleStatsDart _thermalThrottleStats = _lib
+      .lookupFunction<_ThermalThrottleStatsC, _ThermalThrottleStatsDart>(
+        'pwsfm_thermal_throttle_stats',
+      );
+  static final _LiveRepayDart _liveRepay = _lib
+      .lookupFunction<_LiveRepayC, _LiveRepayDart>('pwsfm_live_repay');
+  static final _RepairStatsDart _repairStats = _lib
+      .lookupFunction<_RepairStatsC, _RepairStatsDart>('pwsfm_repair_stats');
   static final _GlobalRefineDart _globalRefine = _lib
       .lookupFunction<_GlobalRefineC, _GlobalRefineDart>('pwsfm_global_refine');
   static final _SessionFreeDart _sessionFree = _lib
@@ -1064,6 +1168,218 @@ class AetherSfmStreamSession {
       ]) {
         malloc.free(p);
       }
+    }
+  }
+
+  /// [SPATIAL-FIRST 2026-07-11] Capture-time candidate-selection attribution:
+  /// how many add_frame match candidates came from the spatial K-NN ∩
+  /// view-angle rule vs the temporal fill / no-pose fallback. Their sum is the
+  /// total match pairs attempted this capture (budget: K per frame).
+  ({int spatialFirstPairs, int temporalFallbackPairs}) candidateStats() {
+    _checkLive();
+    final sp = malloc<Int64>(), tf = malloc<Int64>();
+    try {
+      sp.value = 0;
+      tf.value = 0;
+      AetherSfm._candidateStats(_session, sp, tf);
+      return (spatialFirstPairs: sp.value, temporalFallbackPairs: tf.value);
+    } finally {
+      malloc.free(sp);
+      malloc.free(tf);
+    }
+  }
+
+  /// [MATCH-FAIL TELEMETRY 2026-07-11] Capture-time GPU matcher failure
+  /// accounting (total / rc buckets / longest consecutive-fail streak) +
+  /// finalize starved-frame re-match counters. rc buckets follow the
+  /// pwsfm_gpu_match return codes (1=bad args, 2=Metal unavailable,
+  /// 5/6=buffer alloc, 7=command-buffer error; bucket 0 = out-of-range rc).
+  /// The rematch_* counters are only final after finalize phase 2 (REFINED) —
+  /// the starved-frame re-match runs on the enrichment thread.
+  ({
+    int gpuFailTotal,
+    List<int> gpuFailByRc,
+    int gpuFailMaxStreak,
+    int rematchStarvedFrames,
+    int rematchCandidates,
+    int rematchAttempted,
+    int rematchWritten,
+    int rematchInliers,
+    int rematchFailed,
+  })
+  matchFailStats() {
+    _checkLive();
+    final total = malloc<Int64>();
+    final byRc = malloc<Int64>(8);
+    final streak = malloc<Int64>();
+    final starved = malloc<Int64>();
+    final cand = malloc<Int64>();
+    final att = malloc<Int64>();
+    final wr = malloc<Int64>();
+    final inl = malloc<Int64>();
+    final fail = malloc<Int64>();
+    try {
+      total.value = 0;
+      for (var i = 0; i < 8; i++) {
+        byRc[i] = 0;
+      }
+      streak.value = 0;
+      starved.value = 0;
+      cand.value = 0;
+      att.value = 0;
+      wr.value = 0;
+      inl.value = 0;
+      fail.value = 0;
+      AetherSfm._matchFailStats(
+        _session,
+        total,
+        byRc,
+        streak,
+        starved,
+        cand,
+        att,
+        wr,
+        inl,
+        fail,
+      );
+      return (
+        gpuFailTotal: total.value,
+        gpuFailByRc: List<int>.generate(8, (i) => byRc[i]),
+        gpuFailMaxStreak: streak.value,
+        rematchStarvedFrames: starved.value,
+        rematchCandidates: cand.value,
+        rematchAttempted: att.value,
+        rematchWritten: wr.value,
+        rematchInliers: inl.value,
+        rematchFailed: fail.value,
+      );
+    } finally {
+      malloc.free(total);
+      malloc.free(byRc);
+      malloc.free(streak);
+      malloc.free(starved);
+      malloc.free(cand);
+      malloc.free(att);
+      malloc.free(wr);
+      malloc.free(inl);
+      malloc.free(fail);
+    }
+  }
+
+  /// [THERMAL-THROTTLE 2026-07-11] Pushes the current ProcessInfo thermal
+  /// bucket (0 nominal · 1 fair · 2 serious · 3 critical) into the native
+  /// session. Call right before [addFrame]: state >= 2 halves the live match
+  /// candidate window (12→6) so the Metal matcher yields GPU time to the
+  /// camera pipeline (cap45 freeze fix). Throttled frames are re-matched to
+  /// the full window at finalize — delivered quality is unchanged.
+  void setThermalState(int state) {
+    _checkLive();
+    AetherSfm._setThermalState(_session, state);
+  }
+
+  /// [THERMAL-THROTTLE 2026-07-11] Frames fed with the reduced live K this
+  /// capture (0 = throttle never engaged). Telemetry only.
+  int thermalThrottledFrames() {
+    _checkLive();
+    final p = malloc<Int64>();
+    try {
+      p.value = 0;
+      AetherSfm._thermalThrottleStats(_session, p);
+      return p.value;
+    } finally {
+      malloc.free(p);
+    }
+  }
+
+  /// [P1-LIVE-REPAY 2026-07-11] Capture-idle debt repayment: re-matches up to
+  /// [maxPairs] missing temporal-window pairs of currently starved frames
+  /// (GPU matcher failures / thermal-throttled frames) through the same
+  /// matcher route and db-write sequence as addFrame. db-only — the live
+  /// preview recon is untouched; the delivered model is identical whether a
+  /// pair was repaid live or by the finalize starved-frame re-match (which
+  /// remains the safety net). Native refuses outright at thermal
+  /// serious/critical and attempts each missing pair at most once per
+  /// session. MUST be called from the same worker isolate as [addFrame],
+  /// only when the frame queue has slack. Returns pairs written this call
+  /// (0 = nothing to do / refused); throws on bad args (-1).
+  int liveRepay({int maxPairs = 4}) {
+    _checkLive();
+    final rc = AetherSfm._liveRepay(_session, maxPairs);
+    if (rc < 0) {
+      throw StateError('pwsfm_live_repay rejected args (rc=$rc)');
+    }
+    return rc;
+  }
+
+  /// [P1 2026-07-11] Finalize-speedup package counters: idle repay
+  /// ([liveRepay]), rc=7 backoff-retry, and the finalize enrichment time
+  /// budget. Same threading contract as [streamStats]; the gpu_retry/enrich
+  /// counters are only final after finalize phase 2 (REFINED).
+  ({
+    int repayCalls,
+    int repayAttempted,
+    int repayWritten,
+    int repayInliers,
+    int repayFailed,
+    int repaySkippedThermal,
+    int gpuRetryAttempts,
+    int gpuRetryRecovered,
+    int enrichBudgetStopped,
+  })
+  repairStats() {
+    _checkLive();
+    final calls = malloc<Int64>();
+    final att = malloc<Int64>();
+    final wr = malloc<Int64>();
+    final inl = malloc<Int64>();
+    final fail = malloc<Int64>();
+    final therm = malloc<Int64>();
+    final retryAtt = malloc<Int64>();
+    final retryRec = malloc<Int64>();
+    final budget = malloc<Int64>();
+    try {
+      calls.value = 0;
+      att.value = 0;
+      wr.value = 0;
+      inl.value = 0;
+      fail.value = 0;
+      therm.value = 0;
+      retryAtt.value = 0;
+      retryRec.value = 0;
+      budget.value = 0;
+      AetherSfm._repairStats(
+        _session,
+        calls,
+        att,
+        wr,
+        inl,
+        fail,
+        therm,
+        retryAtt,
+        retryRec,
+        budget,
+      );
+      return (
+        repayCalls: calls.value,
+        repayAttempted: att.value,
+        repayWritten: wr.value,
+        repayInliers: inl.value,
+        repayFailed: fail.value,
+        repaySkippedThermal: therm.value,
+        gpuRetryAttempts: retryAtt.value,
+        gpuRetryRecovered: retryRec.value,
+        enrichBudgetStopped: budget.value,
+      );
+    } finally {
+      malloc.free(calls);
+      malloc.free(att);
+      malloc.free(wr);
+      malloc.free(inl);
+      malloc.free(fail);
+      malloc.free(therm);
+      malloc.free(retryAtt);
+      malloc.free(retryRec);
+      malloc.free(budget);
     }
   }
 

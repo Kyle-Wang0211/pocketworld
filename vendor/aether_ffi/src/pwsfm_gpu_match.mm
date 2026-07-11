@@ -20,7 +20,40 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
+#include <atomic>
+#include <mutex>
 #include <stdint.h>
+#include <string.h>
+
+// ── [RC7-FILELOG 2026-07-11] Last command-buffer error stash ─────────────
+// The Metal error object (domain/code/description, e.g.
+// IOGPUCommandQueueErrorDomain "GPU hang under thermal pressure") is only
+// visible HERE, but the pair id + capture context live in the caller
+// (aether_sfm_c.cc NoteGpuMatchFailure, which writes the timestamped
+// sfm_match_fail.jsonl next to the capture db). Bridge: stash the latest
+// error text; the caller pulls it via aether_gpu_match_last_error (declared
+// WEAK there, so host builds without this TU keep working).
+static std::mutex gLastErrLock;
+static char gLastErr[192] = {0};
+
+static void stashLastError(NSError* error) {
+  NSString* text =
+      error ? [NSString stringWithFormat:@"%@ code=%ld %@", error.domain,
+                                         (long)error.code,
+                                         error.localizedDescription ?: @""]
+            : @"(nil error)";
+  std::lock_guard<std::mutex> lk(gLastErrLock);
+  strlcpy(gLastErr, text.UTF8String ?: "(utf8 failed)", sizeof(gLastErr));
+}
+
+// Copies the last stashed command-buffer error into buf (NUL-terminated).
+// Returns the number of bytes copied excluding the NUL (0 = nothing stashed).
+extern "C" int aether_gpu_match_last_error(char* buf, int cap) {
+  if (!buf || cap <= 0) return 0;
+  std::lock_guard<std::mutex> lk(gLastErrLock);
+  const size_t n = strlcpy(buf, gLastErr, (size_t)cap);
+  return (int)(n < (size_t)cap ? n : (size_t)cap - 1);
+}
 
 // ── pw_match_gemm v6 kernel — COLMAP-faithful angular matcher ───────────
 // Bit-parity with FindBestMatchesOneWayBruteForce (colmap/feature/sift.cc:770):
@@ -342,7 +375,27 @@ static int matchPairsImpl(const uint8_t* dA, int nA, const float* xyA,
          (uint32_t)nB, (uint32_t)nA);  // B→A
     [cmd commit];
     [cmd waitUntilCompleted];
-    if (cmd.status == MTLCommandBufferStatusError) return 7;
+    if (cmd.status == MTLCommandBufferStatusError) {
+      // [MATCH-FAIL TELEMETRY 2026-07-11] rc=7 is the ONLY "GPU command
+      // failed" code — distinct from rc=0 with *out_num_matches==0 (a
+      // legitimate zero-match pair) — so callers can bucket failures by rc.
+      // Log the underlying Metal error rate-limited (a thermal collapse fails
+      // hundreds of pairs back-to-back; capture 43 lost a 66-frame block this
+      // way) so device logs show WHY (e.g. IOGPUCommandQueueErrorDomain /
+      // GPU hang under thermal pressure).
+      static std::atomic<long> gCmdErrCount{0};
+      const long k = ++gCmdErrCount;
+      if (k <= 5 || (k % 100) == 0) {
+        NSLog(@"[pwsfm_gpu_match] command buffer error #%ld (rc=7): %@", k,
+              cmd.error);
+      }
+      // [RC7-FILELOG 2026-07-11] Stash the Metal error for the caller's
+      // timestamped sfm_match_fail.jsonl line (NSLog above is lost on
+      // detached/拔线 runs; the jsonl in the app container is recovered by
+      // devicectl copy — the cap44/45 forensic gap this closes).
+      stashLastError(cmd.error);
+      return 7;
+    }
 
     // Mutual cross-check, emitting pairs.
     const int* mAB = (const int*)outAB.contents;

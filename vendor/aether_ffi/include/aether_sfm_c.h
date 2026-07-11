@@ -67,7 +67,11 @@ typedef struct aether_sfm_options {
   int image_height;
   float match_max_ratio;  // 0.7 default (Lowe ratio for the matcher)
   int use_gpu_match;      // 1 = aether_gpu_match (Metal), 0 = CPU aether_sift_match
-  int k_neighbors;        // K=6..8 sequential window of pair candidates
+  int k_neighbors;        // K match candidates per frame (production 12).
+                          // [SPATIAL-FIRST 2026-07-11] selected spatial-first:
+                          // ARKit camera-center K-NN ∩ view-angle < 45°,
+                          // temporal fill to K; pure-temporal window when the
+                          // frame has no usable pose. Budget: at most K pairs.
   int use_gpu_extract;    // 1 = GPU DSP-SIFT (Dawn/WGSL, f16-on-A16, CPU
                           //     fallback in-ABI), 0 = CPU aether_dsp_sift_extract.
                           //     Default 0; the iOS/Flutter shim flips to 1.
@@ -84,8 +88,9 @@ aether_sfm_result_t aether_sfm_create(const char* db_path,
 // same as aether_dsp_sift_extract). ARKit intrinsics (fx,fy,cx,cy) +
 // world->cam pose prior (qw,qx,qy,qz, tx,ty,tz) supplied per frame.
 // Internally: aether_dsp_sift_extract -> WriteKeypoints/WriteDescriptors,
-// then match against the previous k_neighbors frames -> WriteMatches +
-// WriteTwoViewGeometry. Returns the assigned frame index in *out_frame_id.
+// then match against k_neighbors candidate frames (spatial-first selection;
+// see the k_neighbors field doc) -> WriteMatches + WriteTwoViewGeometry.
+// Returns the assigned frame index in *out_frame_id.
 aether_sfm_result_t aether_sfm_add_frame(aether_sfm_session_t* s,
                                          const uint8_t* gray,
                                          int width, int height,
@@ -94,6 +99,24 @@ aether_sfm_result_t aether_sfm_add_frame(aether_sfm_session_t* s,
                                          const double pose_qwxyz[4],  // may be NULL
                                          const double pose_t[3],      // may be NULL
                                          int* out_frame_id);
+
+// Feature-injection sibling of aether_sfm_add_frame: skips extraction and
+// feeds precomputed keypoints (xy pairs, extractor's +0.5 half-pixel
+// convention) + n_keypoints×128 UBC RootSIFT u8 descriptors into the same
+// streaming core (camera/db writes, k-neighbor matching, live track growth,
+// windowed BA). Built for HOST replay of a pulled device sfm_live.db —
+// verifying streaming-path changes against real captures without the device.
+// Production capture keeps using aether_sfm_add_frame.
+aether_sfm_result_t aether_sfm_add_frame_features(aether_sfm_session_t* s,
+                                                  const float* xy,
+                                                  const uint8_t* desc,
+                                                  int n_keypoints,
+                                                  int width, int height,
+                                                  float fx, float fy,
+                                                  float cx, float cy,
+                                                  const double pose_qwxyz[4],
+                                                  const double pose_t[3],
+                                                  int* out_frame_id);
 
 // Run colmap::IncrementalPipeline over the accumulated db (native incremental
 // triangulation + re-triangulation + local/global BA). out_json (optional)
@@ -105,20 +128,29 @@ aether_sfm_result_t aether_sfm_finalize(aether_sfm_session_t* s,
 // Progress flag for aether_sfm_finalize_async (poll via aether_sfm_finalize_status).
 typedef enum aether_sfm_finalize_status {
   AETHER_SFM_FINALIZE_IDLE = 0,         // not started
-  AETHER_SFM_FINALIZE_LOCAL_READY = 1,  // local recon live; global BA refining
+  AETHER_SFM_FINALIZE_LOCAL_READY = 1,  // worker refining (see note below)
   AETHER_SFM_FINALIZE_REFINED = 2,      // global BA done; recon swapped to refined
   AETHER_SFM_FINALIZE_ERROR = 3,        // refinement failed
 } aether_sfm_finalize_status_t;
 
-// Two-phase finalize for "拍完即出图". Phase 1 (this call, synchronous): runs the
-// incremental register + LOCAL BA only, so the LOCAL reconstruction is live the
-// instant this returns OK — read poses/points immediately (status becomes
-// LOCAL_READY). Phase 2 (background thread): the heavy O(N) finalize global BA
-// runs OFF the UI critical path; when it converges the globally-refined model is
-// atomically swapped in (status becomes REFINED) and the getters then return it.
-// out_json carries the LOCAL summary. The session owns the worker thread;
-// aether_sfm_free joins it. Downstream (depth/fusion) should wait for REFINED;
-// the live preview can use the LOCAL_READY model immediately.
+// Two-phase finalize for "拍完即出图". Phase 1 (this call): on the normal live
+// streaming path the capture-time live local-BA reconstruction is handed to
+// the background worker (milliseconds; out_json carries its summary with
+// phase1:"live_reuse"). Phase 2 (background worker): finish-time db
+// enrichment (spatial revisit + starved re-match, GPU) runs in parallel with
+// a stage-1 global refinement (CPU), then the stage-2 Cauchy global BA +
+// track completion consume the enriched db; the refined model is published
+// (status becomes REFINED) and the getters return it.
+//
+// [FINALIZE-ZEROCOPY 2026-07-11] On the live path the LOCAL model is NOT
+// published (product sign-off: it is never displayed) — get_poses/get_points
+// return AETHER_SFM_ERR_NOT_REGISTERED between LOCAL_READY and REFINED, and
+// the live-preview getters (get_preview_tracked / live_diag) also gate off
+// once this call returns. Resume sessions (rebuilt from an sfm_live.db, no
+// in-memory live recon) keep the old behavior: the db-driven LOCAL model is
+// published at LOCAL_READY and readable while the worker refines a copy.
+// The session owns the worker thread; aether_sfm_free joins it. Downstream
+// (colorize/depth/fusion) must wait for REFINED.
 aether_sfm_result_t aether_sfm_finalize_async(aether_sfm_session_t* s,
                                               char* out_json, int out_cap);
 
@@ -211,23 +243,25 @@ aether_sfm_result_t aether_sfm_get_preview_tracked(
 // Legacy experimental pure global BA over live_recon. It does not create
 // missing cross-view tracks, merge duplicate tracks, or retriangulate; do not
 // use it as the finish-time double-wall fix without a spatial-revisit bridge.
-// Device only: run on the capture worker isolate.
+// Device only: run on the capture worker isolate (see .cc threading).
 aether_sfm_result_t aether_sfm_global_refine(aether_sfm_session_t* s);
 
-// Per-frame timing breakdown of the LAST aether_sfm_add_frame (perf
-// diagnostics). extract_ms > ~2000 ⇒ the GPU DSP-SIFT extractor fell back to
-// CPU internally; cpu_matches > 0 ⇒ the GPU GEMM matcher failed and fell back
-// to the CPU brute-force matcher per pair. Any out-ptr may be NULL.
+// Per-frame timing/counters of the LAST aether_sfm_add_frame (perf
+// diagnostics) — the numbers behind the device log line
+//   extract=<..>ms match=<..>ms cand=<..> gpuM=<..> cpuM=<..>
+// extract_ms > ~2000 flags a GPU→CPU extractor fallback; cpu_matches > 0
+// flags a GPU matcher failure. Any out-ptr may be NULL; all fields are
+// zero before the first add_frame. (Declaration added 2026-07-11 — the
+// implementation predates it and the pwsfm shim already consumed it.)
 void aether_sfm_debug_last(aether_sfm_session_t* s, double* extract_ms,
                            double* match_ms, int* n_cand, int* gpu_matches,
                            int* cpu_matches);
 
 // Cumulative streaming-quality counters over the whole capture — which floater
-// filter did what. tvg_pairs/raw_pairs = grow/create pairs taken from the
-// geometric (TVG RANSAC) inliers vs raw-fallback; grow_accepted/rejected =
-// track-growth observations kept vs gated out by the reproj/cheirality gate;
-// reproj_filtered/tri_filtered = observations culled by the post-BA reprojection
-// and multi-view triangulation-angle filters. Any out-ptr may be NULL.
+// filter did what. tvg_pairs/raw_pairs = grow/create pairs from the geometric
+// (TVG RANSAC) inliers vs raw-fallback; grow_accepted/rejected = growth
+// observations kept vs gated; reproj_filtered/tri_filtered = obs culled by the
+// post-BA reprojection and multi-view triangulation-angle filters. Nullable.
 void aether_sfm_stream_stats(aether_sfm_session_t* s, int64_t* tvg_pairs,
                              int64_t* raw_pairs, int64_t* grow_accepted,
                              int64_t* grow_rejected, int64_t* reproj_filtered,
@@ -262,6 +296,119 @@ void aether_sfm_stream_stats(aether_sfm_session_t* s, int64_t* tvg_pairs,
                              int64_t* temporal_detail_reject_reproj,
                              int64_t* temporal_detail_reject_tri_angle,
                              int64_t* temporal_detail_conflicts);
+
+// Live-recon quality snapshot + merge-gate reject-reason breakdown (the
+// rejected total is in aether_sfm_stream_stats; these three attribute it).
+// mean_reproj_px is computed on demand over every live observation with the
+// recon's own camera. Same threading contract as aether_sfm_stream_stats:
+// call from the add_frame worker thread. All out-params nullable.
+void aether_sfm_live_diag(aether_sfm_session_t* s, double* mean_reproj_px,
+                          int64_t* n_points, int64_t* n_track3plus,
+                          int64_t* n_obs, int64_t* merge_reject_shared_image,
+                          int64_t* merge_reject_reproj,
+                          int64_t* merge_reject_missing);
+
+// [SPATIAL-FIRST 2026-07-11] Capture-time candidate-selection attribution:
+// spatial_first_pairs = add_frame match candidates chosen by the spatial K-NN
+// ∩ view-angle rule; temporal_fallback_pairs = candidates from the temporal
+// fill (spatial set short) or the full no-pose temporal fallback. Their sum is
+// the total match pairs attempted during capture. Same threading contract as
+// aether_sfm_stream_stats (call from the add_frame worker). Nullable.
+void aether_sfm_candidate_stats(aether_sfm_session_t* s,
+                                int64_t* spatial_first_pairs,
+                                int64_t* temporal_fallback_pairs);
+
+// [MATCH-FAIL TELEMETRY + FINALIZE-REMATCH 2026-07-11] Capture-time GPU
+// matcher failure accounting + finalize starved-frame re-match counters.
+// Motivation: a thermally throttled Metal matcher fails whole SEGMENTS of
+// pairs during capture (fail-closed skips → the db silently lacks those
+// matches → contiguous frame blocks never register). gpu_fail_* expose the
+// formerly-silent failures (by_rc = 8 int64 buckets indexed by the
+// pwsfm_gpu_match return code: 1=bad args, 2=Metal unavailable, 5/6=buffer
+// alloc, 7=command-buffer error; bucket 0 = out-of-range). rematch_* count
+// the finalize pass that re-runs missing temporal-window pairs for starved
+// frames through the same matcher route (cooler at finish time) before
+// RunIncremental consumes the db. Same threading contract as
+// aether_sfm_stream_stats. All out-params nullable.
+void aether_sfm_match_fail_stats(aether_sfm_session_t* s,
+                                 int64_t* gpu_fail_total,
+                                 int64_t* gpu_fail_by_rc,
+                                 int64_t* gpu_fail_max_streak,
+                                 int64_t* rematch_starved_frames,
+                                 int64_t* rematch_candidates,
+                                 int64_t* rematch_attempted,
+                                 int64_t* rematch_written,
+                                 int64_t* rematch_inliers,
+                                 int64_t* rematch_failed);
+
+// [THERMAL-THROTTLE 2026-07-11] Platform push of the ProcessInfo thermal
+// bucket (0 nominal · 1 fair · 2 serious · 3 critical; anything else =
+// unknown, never throttles). Call right before aether_sfm_add_frame. When the
+// state is serious/critical AND the throttle is enabled, add_frame reduces
+// its live match-candidate window (production 12 → AETHER_LIVE_CAND_K_HOT)
+// so the Metal matcher yields GPU time to the camera pipeline under thermal
+// pressure (cap45 camera-freeze root cause). Throttled frames are re-matched
+// to the full temporal window by the finalize starved-frame pass.
+// ⚠️ Throttle ships DEFAULT OFF (host A/B 2026-07-11: cap45 delivered +2.4%
+// MORE points than the ±2% gate — positive-direction band exceed via the
+// finalize backfill; see aether_sfm_c.cc). Opt-in: AETHER_LIVE_CAND_K_HOT=6.
+// Pushing the thermal state itself is always safe/no-op when disabled.
+void aether_sfm_set_thermal_state(aether_sfm_session_t* s, int state);
+
+// [THERMAL-THROTTLE 2026-07-11] Telemetry: frames fed with the reduced live K
+// this capture (0 = throttle never engaged). Same threading contract as
+// aether_sfm_stream_stats. Nullable out-param.
+void aether_sfm_thermal_throttle_stats(aether_sfm_session_t* s,
+                                       int64_t* throttled_frames);
+
+// [P1-LIVE-REPAY 2026-07-11] Capture-idle debt repayment: re-match up to
+// max_pairs missing temporal-window pairs of currently starved frames (GPU
+// matcher failures / thermal-throttled frames) through the same matcher route
+// and db-write sequence as add_frame — prepaying the debt the finalize
+// starved-frame re-match would otherwise pay on a hot finish-time GPU (cap46:
+// 336 pairs at ~410 ms → 137.9 s enrichment; a healthy capture-time GPU pair
+// costs ~16 ms). Call from the SAME worker thread as add_frame, only when the
+// frame queue has slack (offer interval > processing time). Refuses outright
+// at thermal serious/critical (never adds GPU load to the condition that
+// caused the debt). Each missing pair is attempted at most once per session;
+// the finalize re-match remains the safety net for anything still missing.
+// db-only (the live preview recon is untouched), so the delivered model is
+// identical whether a pair was repaid live or at finalize. Returns pairs
+// written this call (0 = nothing to do / refused), -1 on bad args.
+int aether_sfm_live_repay(aether_sfm_session_t* s, int max_pairs);
+
+// [P1 2026-07-11] Finalize-speedup package counters: idle repay (see
+// aether_sfm_live_repay), rc=7 backoff-retry (gpu_retry_attempts = extra
+// matcher invocations, gpu_retry_recovered = pairs saved by a retry;
+// AETHER_GPU_MATCH_RETRY=0 disables), and the finalize enrichment time
+// budget (enrich_budget_stopped = fresh match attempts skipped after the
+// budget was exhausted; AETHER_ENRICH_TIME_BUDGET_MS unset = auto/stage-1
+// window, >0 = fixed ms, <=0 = off). Same threading contract as
+// aether_sfm_stream_stats. All out-params nullable.
+void aether_sfm_repair_stats(aether_sfm_session_t* s, int64_t* repay_calls,
+                             int64_t* repay_attempted, int64_t* repay_written,
+                             int64_t* repay_inliers, int64_t* repay_failed,
+                             int64_t* repay_skipped_thermal,
+                             int64_t* gpu_retry_attempts,
+                             int64_t* gpu_retry_recovered,
+                             int64_t* enrich_budget_stopped);
+
+// Finalize-output quality snapshot: the live_diag quality fields computed over
+// the CURRENT finalize reconstruction (LOCAL or REFINED — whichever the
+// getters serve; snapshotted under the recon mutex, safe alongside the async
+// refine). mean_reproj_px uses the recon's own BA-refined camera. All zeros
+// before finalize. Out-params nullable.
+void aether_sfm_final_diag(aether_sfm_session_t* s, double* mean_reproj_px,
+                           int64_t* n_points, int64_t* n_track3plus,
+                           int64_t* n_obs);
+
+// [AETHER BA-MIXED A/B 2026-07-11] Debug/bench-only: write the current
+// authoritative reconstruction (refined after REFINED, else live/local) as a
+// COLMAP binary model (cameras.bin/images.bin/points3D.bin) into dir, so host
+// A/B harnesses can score it with pycolmap-based quality gates verbatim.
+// Never called by the app; snapshotted under the recon mutex.
+aether_sfm_result_t aether_sfm_debug_dump_model(aether_sfm_session_t* s,
+                                                const char* dir);
 
 // Destroys session, drops the sqlite db file.
 void aether_sfm_free(aether_sfm_session_t* s);
