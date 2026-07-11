@@ -27,10 +27,13 @@ import 'package:flutter/material.dart';
 import '../auth/auth_scope.dart';
 import '../capture/cloud_capture_raw_retention_service.dart';
 import '../capture/cloud_capture_training_service.dart';
+import '../capture/sfm_resume.dart';
 import '../i18n/locale_notifier.dart';
 import '../l10n/app_localizations.dart';
+import '../me/draft_card_action.dart';
 import '../me/scan_record_store.dart';
 import '../privacy/research_consent_service.dart';
+import 'capture/sfm_resume_wait_page.dart';
 import 'capture/sparse_cloud_viewer_page.dart';
 import 'design_system.dart';
 import 'home_view_model.dart';
@@ -363,54 +366,105 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
     );
   }
 
-  void _onTap(ScanRecord record) {
-    // The capture route is still mounted beneath this temporary Drafts view.
-    // Re-open its waiting UI for the same job; never create/resume a second
-    // reconstruction and never prefer a partially persisted PLY.
-    final activeCaptureDir = widget.activeReconstructionCaptureDir;
-    final reopenActive = widget.onActiveReconstructionTap;
-    if (activeCaptureDir != null &&
-        record.captureDir == activeCaptureDir &&
-        reopenActive != null) {
-      reopenActive();
-      return;
-    }
-    // Finished works (GLB artifact) open the detail page as before.
-    if (record.artifactPath != null) {
-      Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (_) => MyWorkDetailPage(recordId: record.id),
-        ),
-      );
-      return;
-    }
-    // Drafts: tapping the card goes STRAIGHT to the capture-time sparse
-    // cloud when one was persisted (每次拍摄的进度即点云) — the primary
-    // interaction per 2026-07-05 product feedback. Long-press keeps
-    // rename/delete/train.
+  Future<void> _onTap(ScanRecord record) async {
+    // 路由决策提纯为纯函数(draft_card_action.dart),契约由
+    // tool/draft_reentry_check.dart 在纯 Dart VM 上穷举断言:
+    //   • finalize 进行中点同一任务卡 → 回原等待页,绝不起第二个重建;
+    //   • finalize 完成后点击 → 打开成品;
+    //   • 重建被打断(有 sfm_live.db 无 PLY)→ 弹"继续重建"确认。
+    // 这里只做文件探测与执行。
     final captureDir = record.captureDir;
     final sparsePlyPath = captureDir == null
         ? null
         : '$captureDir/sfm_sparse.ply';
-    if (sparsePlyPath != null && File(sparsePlyPath).existsSync()) {
-      Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (_) => SparseCloudViewerPage(
-            plyPath: sparsePlyPath,
-            title: record.name.isEmpty ? '稀疏点云' : record.name,
+    final sparsePlyExists =
+        sparsePlyPath != null && File(sparsePlyPath).existsSync();
+    // 容器 UUID 变更兜底:按目录名在当前 Documents 下重找 sfm_live.db。
+    final recoverableDir = captureDir == null
+        ? null
+        : await resolveRecoverableCaptureDir(captureDir);
+    if (!mounted) return;
+    final action = draftCardActionFor(
+      recordCaptureDir: captureDir,
+      hasArtifact: record.artifactPath != null,
+      sparsePlyExists: sparsePlyExists,
+      sfmDbExists: recoverableDir != null,
+      activeReconstructionCaptureDir: widget.activeReconstructionCaptureDir,
+      hasActiveReconstructionCallback:
+          widget.onActiveReconstructionTap != null,
+    );
+    switch (action) {
+      case DraftCardAction.reopenActiveReconstruction:
+        // capture route 仍在本临时草稿视图之下 —— 回它的等待页看进度。
+        widget.onActiveReconstructionTap?.call();
+      case DraftCardAction.openWorkDetail:
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => MyWorkDetailPage(recordId: record.id),
           ),
+        );
+      case DraftCardAction.openSparseCloud:
+        await Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => SparseCloudViewerPage(
+              plyPath: sparsePlyPath!,
+              title: record.name.isEmpty ? '稀疏点云' : record.name,
+            ),
+          ),
+        );
+      case DraftCardAction.offerResume:
+        await _offerResume(record, recoverableDir!);
+      case DraftCardAction.none:
+        // 修3:原"正在生成 3D 模型,完成后会自动打开"底部弹窗已按用户
+        // 要求删除。无成品且无可恢复数据时,点击不再有任何弹层。
+        break;
+    }
+  }
+
+  /// 修2c:重建被打断的草稿 → 用户确认后从 sfm_live.db 断点续跑。
+  /// 已在续跑中(用户离开等待页后又点回来)则跳过确认,直接回等待页
+  /// 挂到同一个恢复 future 上 —— 与"同任务卡回原等待页"契约同精神。
+  ///
+  /// [regenerate]=true 是长按菜单"重新重建点云"入口:sfm_sparse.ply 已
+  /// 存在但用户想重跑(如旧版 resume 产物歪/浮点多)。恢复本身幂等 ——
+  /// resumeSingleCapture 完成时覆盖旧 PLY;只有确认文案不同。
+  Future<void> _offerResume(
+    ScanRecord record,
+    String recoverableDir, {
+    bool regenerate = false,
+  }) async {
+    if (!isResumeInFlight(recoverableDir)) {
+      final name = record.name.isEmpty ? '这次拍摄' : '「${record.name}」';
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text(regenerate ? '重新重建？' : '继续重建？'),
+          content: Text(
+            regenerate
+                ? '将用$name已保存的重建数据重新生成点云，完成后覆盖现有点云，无需重拍。'
+                : '$name的点云还没有生成。拍摄数据已完整保存，可以从中断处继续重建，无需重拍。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: Text(AppL10n.of(ctx).meActionCancel),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: Text(regenerate ? '重新重建' : '继续重建'),
+            ),
+          ],
         ),
       );
-      return;
+      if (confirmed != true) return;
     }
-    // No cloud yet (pre-persistence take / reconstruction failed) — keep
-    // the in-progress hint.
-    final l = AppL10n.of(context);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(l.meTapHintInProgress),
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 2),
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => SfmResumeWaitPage(
+          captureDir: recoverableDir,
+          title: record.name,
+        ),
       ),
     );
   }
@@ -440,6 +494,16 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
         : '$captureDir/sfm_sparse.ply';
     final canViewSparse =
         sparsePlyPath != null && File(sparsePlyPath).existsSync();
+    // 断点数据仍在(sfm_live.db 按契约保留)且当前没有别的重建在跑时,
+    // 提供"重新重建点云"入口 —— 覆盖 PLY 已存在的场景(点击卡片只会打开
+    // 查看器,永远到不了 offerResume 分支):恢复幂等,完成后覆盖旧 PLY。
+    // 有活跃重建时不提供(双原生 SfM 会话会把内存/热推过真机上限,与
+    // draft_card_action 的续跑门同一规矩)。
+    final rebuildDir =
+        widget.activeReconstructionCaptureDir == null && captureDir != null
+        ? await resolveRecoverableCaptureDir(captureDir)
+        : null;
+    if (!mounted) return;
     final action = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: AetherColors.bgCanvas,
@@ -461,6 +525,12 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
                 leading: const Icon(Icons.grain_rounded),
                 title: const Text('查看点云'),
                 onTap: () => Navigator.of(ctx).pop('view_sparse'),
+              ),
+            if (rebuildDir != null)
+              ListTile(
+                leading: const Icon(Icons.restart_alt_rounded),
+                title: Text(canViewSparse ? '重新重建点云' : '继续重建点云'),
+                onTap: () => Navigator.of(ctx).pop('rebuild_sparse'),
               ),
             ListTile(
               leading: const Icon(Icons.edit_outlined),
@@ -499,6 +569,8 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
           ),
         ),
       );
+    } else if (action == 'rebuild_sparse' && rebuildDir != null) {
+      await _offerResume(record, rebuildDir, regenerate: canViewSparse);
     } else if (action == 'train') {
       await _startTraining(record);
     } else if (action == 'rename') {
