@@ -13,7 +13,20 @@
 // _persistColored(sfm_resume.dart)——共享此实现,保证现场取色与恢复取色
 // 逐点一致(handoff §7.3)。
 
+import 'dart:math' as math;
 import 'dart:typed_data';
+
+/// 遥测【colorize】的每点观测数直方图桶(任务 E:buckets[1,2,3-4,5-8,9+]):
+/// 返回 0..4 = [1, 2, 3-4, 5-8, 9+] 的桶下标。count<=0 不应入直方图,
+/// 调用方先用 hitCount 过滤;防御性归入桶 0。
+/// tool/telemetry_check.dart 有边界断言。
+int obsHistBucket(int count) {
+  if (count <= 1) return 0;
+  if (count == 2) return 1;
+  if (count <= 4) return 2;
+  if (count <= 8) return 3;
+  return 4;
+}
 
 /// 纯函数:在扁平 `[r,g,b, r,g,b, ...]` 样本池中,对从第 `start` 个样本起、
 /// 共 `count` 个样本选代表样本,返回被选样本的样本下标(RGB 起点 = 下标*3)。
@@ -86,6 +99,25 @@ class RepresentativeColorSamples {
 
   /// 点 i 的已收样本数(替代旧 hits[i])。
   int hitCount(int i) => _count[i];
+
+  /// 遥测【colorize】混色嫌疑信号(任务 E):点 i 全部样本 RGB 对代表色
+  /// (r,g,b) 的均方差(RMS,0-255 灰阶单位)——每样本三通道平方差取均值、
+  /// 再对样本取均值、开方。样本数 <2 时返回 0(单样本无离散度)。
+  /// 白床单混入红观测的点该值显著升高(阈值 40 见 ar_capture_page 的
+  /// colorize 遥测),纯色表面接近 JPEG 噪声地板(<10)。
+  double rmsDeviation(int i, int r, int g, int b) {
+    final c = _count[i];
+    if (c < 2) return 0;
+    var sum = 0.0;
+    for (var k = 0; k < c; k++) {
+      final o = (_base[i] + k) * 3;
+      final dr = _rgb[o] - r;
+      final dg = _rgb[o + 1] - g;
+      final db = _rgb[o + 2] - b;
+      sum += (dr * dr + dg * dg + db * db) / 3.0;
+    }
+    return math.sqrt(sum / c);
+  }
 
   /// 为点 i 选代表色写入 out[i*3 .. i*3+2]。无样本返回 false(调用方涂灰)。
   bool selectInto(int i, Uint8List out) {

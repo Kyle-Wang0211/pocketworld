@@ -21,9 +21,11 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'auth/auth_scope.dart';
+import 'capture/telemetry_writer.dart';
 import 'auth/current_user.dart';
 import 'auth/mock_auth_service.dart';
 import 'auth/supabase_auth_service.dart';
@@ -84,6 +86,18 @@ Future<void> main() async {
       // Release-visible container-file log (Documents/pw_device_log.txt) —
       // print/debugPrint are invisible in release builds on device.
       unawaited(DeviceLog.init());
+      // 结构化遥测 JSONL(Documents/telemetry_dart.jsonl,真机验收显微镜;
+      // Swift 侧配对文件 telemetry_native.jsonl 由 AetherARKitPlugin 写)。
+      // init 前的事件进内存队列,init 后补写 —— 不丢启动早期事件。
+      unawaited(() async {
+        try {
+          final dir = await getApplicationDocumentsDirectory();
+          await TelemetryWriter.instance.init(
+            '${dir.path}/telemetry_dart.jsonl',
+          );
+          TelemetryWriter.instance.event('dart_session');
+        } catch (_) {}
+      }());
       // ignore: avoid_print
       print('[AET-SMOKE] ensureInitialized done, about to runApp');
 
