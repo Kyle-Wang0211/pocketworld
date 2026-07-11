@@ -4,7 +4,8 @@
 // CaptureCoverageCloud 的视差累计与"低视差压黄"颜色策略:
 //   1. 两个相机位置对同一体素,maxParallaxDeg = 两视线夹角(几何真值对拍);
 //   2. 同机位连拍 → 视差≈0,次数达标也只给黄(不给绿);
-//   3. 视差 ≥ parallaxMinDeg(8°)且次数达标 → 正常给绿;
+//   3. 视差 ≥ parallaxMinDeg(5°,2026-07-11 校准 8°→5°)且次数达标 →
+//      正常给绿;
 //   4. packed() 二进制布局不变(xyz 3×f32 + rgb 3×u8,逐点同序)。
 //
 // 运行:cd <仓根> && dart run tool/coverage_parallax_check.dart
@@ -119,7 +120,7 @@ void main() {
     '5 拍零视差 → 停在黄 (255,255,·) 而非绿',
   );
 
-  // ── 3. 视差充足(14° > 8°)且次数达标 → 正常给绿 ──────────────────
+  // ── 3. 视差充足(14° > 5°)且次数达标 → 正常给绿 ──────────────────
   stdout.writeln('[3] 视差达标给绿');
   final rich = CaptureCoverageCloud();
   rich.ingestPose(_poseWithPoint(voxelPos));
@@ -135,10 +136,10 @@ void main() {
     '5 拍 + 14° 视差 → 绿 (0,255,·)',
   );
 
-  // ── 4. 阈值边界:略低于 8° 压黄,略高于 8° 给绿 ───────────────────
-  stdout.writeln('[4] 8° 阈值边界');
-  // 侧移 x 使夹角 = atan(x/2):7.5° → x≈0.2634;8.5° → x≈0.2989。
-  for (final (deg, wantGreen) in <(double, bool)>[(7.5, false), (8.5, true)]) {
+  // ── 4. 阈值边界:略低于 5° 压黄,略高于 5° 给绿 ───────────────────
+  stdout.writeln('[4] 5° 阈值边界');
+  // 侧移 x 使夹角 = atan(x/2):4.5° → x≈0.1574;5.5° → x≈0.1925。
+  for (final (deg, wantGreen) in <(double, bool)>[(4.5, false), (5.5, true)]) {
     final x = 2.0 * math.tan(deg * math.pi / 180.0);
     final c = CaptureCoverageCloud();
     c.ingestPose(_poseWithPoint(voxelPos));
