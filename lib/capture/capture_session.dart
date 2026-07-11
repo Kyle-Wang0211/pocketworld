@@ -58,6 +58,7 @@ import 'dome/captured_frame_sample.dart';
 import 'dome/dome_config.dart';
 import 'dome/dome_target_points.dart';
 import 'orientation_tracker.dart';
+import 'photo_slot_naming.dart';
 import 'pose_drift_tracker.dart';
 
 class CaptureMotionSnapshot {
@@ -256,14 +257,16 @@ class CaptureSession {
   /// Plan G W2 photos-on-disk arch (replaces the deleted .mov writer
   /// 2026-05-16): absolute path to the directory holding cell-admitted
   /// JPEGs and per-photo metadata for this capture session. One file
-  /// pair per (cell, slot):
+  /// pair per admitted frame:
   ///
-  ///   `<photosDir>/cell_<i>_slot_<j>.jpg`
-  ///   `<photosDir>/cell_<i>_slot_<j>.json`
+  ///   `<photosDir>/cell_<i>_slot_<j>_<frameId>.jpg`
+  ///   `<photosDir>/cell_<i>_slot_<j>_<frameId>.json`
   ///
-  /// Diversity-eviction overwrites both files at the same path when a
-  /// new frame replaces a cell slot, so the directory always reflects
-  /// the cells' current retained set (no orphan cleanup needed).
+  /// [2026-07-11 色彩污染修复] 文件名带 frameId,重拍/驱逐同一槽位落
+  /// **新文件**而不是同名覆盖:SfM colorize 与 resume 按 fed jsonl 的
+  /// jpegPath 取色,覆盖会让先喂入的帧被陈旧内容染色(cap47 16% 点污染)。
+  /// 被驱逐帧的旧文件由 colorize 之后的 deferred prune
+  /// (retainOnlyCuratedPhotos)统一清理,磁盘不会无限增长。
   ///
   /// Null until [start] runs; the directory is recreated empty on each
   /// fresh capture session. W3 DA3 inference (待实现) iterates `*.jpg`
@@ -1162,12 +1165,20 @@ class CaptureSession {
       _pendingPhotoSaveCount += 1;
       _photoSaveStarted++;
       final saveStartedAt = DateTime.now();
-      final jpegPath =
-          '$_photosDir/cell_${admit.cellIdx}_slot_${admit.slotIdx}.jpg';
-      final previewPath =
-          '${_previewsDir ?? _photosDir}/cell_${admit.cellIdx}_slot_${admit.slotIdx}.jpg';
-      final metadataPath =
-          '$_photosDir/cell_${admit.cellIdx}_slot_${admit.slotIdx}.json';
+      // [2026-07-11 色彩污染修复] 文件名带 frameId 后缀,重拍同槽位不再
+      // 覆盖旧文件:colorize/resume 按 fed jsonl 的 jpegPath 取色,同名
+      // 覆盖会让先喂入 SfM 的帧被"陈旧内容"染色(cap47 实测 25/121 帧
+      // 中招,16% 点污染)。旧文件仍被 fed jsonl 引用,不能即时删——由
+      // 既有的 deferred prune(colorize 之后 retainOnlyCuratedPhotos)
+      // 统一收尾。frameId 目录内唯一(start() 重建目录 + _frameSeq 归零)。
+      final photoBase = photoSlotBaseName(
+        cellIdx: admit.cellIdx,
+        slotIdx: admit.slotIdx,
+        frameId: sample.frameId,
+      );
+      final jpegPath = '$_photosDir/$photoBase.jpg';
+      final previewPath = '${_previewsDir ?? _photosDir}/$photoBase.jpg';
+      final metadataPath = '$_photosDir/$photoBase.json';
       final saveSpec = ARFrameSaveSpec(
         frameID: sample.frameId,
         cellIndex: admit.cellIdx,
@@ -1340,10 +1351,17 @@ class CaptureSession {
     final admit = targetPoints.forceAdmit(sample);
     if (admit == null) return null;
 
-    final jpegPath =
-        '$photosDir/cell_${admit.cellIdx}_slot_${admit.slotIdx}.jpg';
-    final metadataPath =
-        '$photosDir/cell_${admit.cellIdx}_slot_${admit.slotIdx}.json';
+    // [2026-07-11 色彩污染修复] 同上:frameId 后缀保证重拍同槽位落新文件,
+    // fed jsonl 的 jpegPath 永远指向"喂入 SfM 那一刻"的真实内容。手动
+    // (RealityScan tap)路径是生产采集栈,cap47 的 cell_90/slot_1 六次
+    // 重拍覆盖即发生在这里。
+    final photoBase = photoSlotBaseName(
+      cellIdx: admit.cellIdx,
+      slotIdx: admit.slotIdx,
+      frameId: sample.frameId,
+    );
+    final jpegPath = '$photosDir/$photoBase.jpg';
+    final metadataPath = '$photosDir/$photoBase.json';
     final saveSpec = ARFrameSaveSpec(
       frameID: sample.frameId,
       cellIndex: admit.cellIdx,

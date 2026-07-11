@@ -56,8 +56,10 @@ class RingBufferCell {
   ///   • when eviction declined the new frame: `null`
   ///
   /// CaptureSession uses the returned slot to choose a JPEG path
-  /// (`cell_<cellIdx>_slot_<slotIdx>.jpg`) so eviction overwrites the
-  /// previous slot's JPEG in-place — Plan G W2 P2 photos-on-disk arch.
+  /// (`cell_<cellIdx>_slot_<slotIdx>_<frameId>.jpg`)。[2026-07-11 色彩
+  /// 污染修复] 文件名带 frameId,驱逐不再同名覆盖旧 JPEG——旧文件仍被
+  /// SfM fed jsonl 引用(colorize/resume 取色),由 colorize 后的
+  /// deferred prune 统一清理。
   int? append(CapturedFrameSample s) {
     if (_buf.length < capacity) {
       _buf.add(s);
