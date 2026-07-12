@@ -381,6 +381,32 @@ PWSFM_EXPORT void pwsfm_repair_stats(aether_sfm_session_t* s,
 #endif
 }
 
+// [L1-ARBITRATE 2026-07-12] Ghost-layer L1 CasDiffMVS 1-bit arbitration
+// (file-driven over the run_dir; see aether_sfm_c.h). WEAK-IMPORT forward:
+// the CURRENTLY vendored libglomap_core.a predates the symbol and the iOS
+// archive rebuild ships in the next unified wave — the weak reference lets
+// today's Runner link (podspec adds -Wl,-U,_aether_sfm_arbitrate) and
+// resolves to NULL at runtime until the rebuilt archive lands, in which case
+// this returns UNSUPPORTED and the Dart side treats L1 as a no-op.
+#if !TARGET_OS_SIMULATOR
+extern aether_sfm_result_t aether_sfm_arbitrate(aether_sfm_session_t* s,
+                                                char* out_json, int out_cap)
+    __attribute__((weak_import));
+#endif
+
+PWSFM_EXPORT aether_sfm_result_t pwsfm_arbitrate(aether_sfm_session_t* s,
+                                                 char* out_json, int out_cap) {
+#if TARGET_OS_SIMULATOR
+  (void)s;
+  (void)out_json;
+  (void)out_cap;
+  return AETHER_SFM_ERR_UNSUPPORTED;
+#else
+  if (&aether_sfm_arbitrate == 0) return AETHER_SFM_ERR_UNSUPPORTED;
+  return aether_sfm_arbitrate(s, out_json, out_cap);
+#endif
+}
+
 PWSFM_EXPORT void pwsfm_free(aether_sfm_session_t* s) {
   aether_sfm_free(s);
 }

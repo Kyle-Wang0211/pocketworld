@@ -23,6 +23,8 @@
 		97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */; };
 		E0388DB63DBD4CF9745E00CE /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7779D977CD585B8DC1D4A1F9 /* SceneDelegate.swift */; };
 		A1B2C3D4E5F60000DEAD0007 /* test_scene.jpg in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60000DEAD0008 /* test_scene.jpg */; };
+		A1B2C3D4E5F60000DEAD0011 /* CasDiffMVSRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60000DEAD0012 /* CasDiffMVSRunner.swift */; };
+		A1B2C3D4E5F60000DEAD0013 /* CasDiffMVS_fp32.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60000DEAD0014 /* CasDiffMVS_fp32.mlpackage */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -79,6 +81,8 @@
 		CF98FE0171B5D456E32BB266 /* Pods-Runner.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.debug.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"; sourceTree = "<group>"; };
 		F5466D0AB0BD551F80CEAE3D /* libPods-Runner.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-Runner.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1B2C3D4E5F60000DEAD0008 /* test_scene.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; name = test_scene.jpg; path = "TestFixtures/test_scene.jpg"; sourceTree = "<group>"; };
+		A1B2C3D4E5F60000DEAD0012 /* CasDiffMVSRunner.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CasDiffMVSRunner.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60000DEAD0014 /* CasDiffMVS_fp32.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = folder.mlpackage; name = CasDiffMVS_fp32.mlpackage; path = "Models/CasDiffMVS_fp32.mlpackage"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -170,6 +174,8 @@
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
 				4C40C533420E11A3B480744F /* AetherTexturePlugin.swift */,
 				FEAD6EACA3D24E90926AFA5D /* AetherARKitPlugin.swift */,
+				A1B2C3D4E5F60000DEAD0012 /* CasDiffMVSRunner.swift */,
+				A1B2C3D4E5F60000DEAD0014 /* CasDiffMVS_fp32.mlpackage */,
 				17D27761F0154088BD5EC06A /* ReconUmbrella.swift */,
 				16019E67BE3B581AE0E2152F /* MetalRenderer.swift */,
 				7779D977CD585B8DC1D4A1F9 /* SceneDelegate.swift */,
@@ -294,6 +300,7 @@
 				97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */,
 				97C146FC1CF9000F007C117D /* Main.storyboard in Resources */,
 				A1B2C3D4E5F60000DEAD0007 /* test_scene.jpg in Resources */,
+				A1B2C3D4E5F60000DEAD0013 /* CasDiffMVS_fp32.mlpackage in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -427,6 +434,7 @@
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
 				8954836B39867FC637D6CA3C /* AetherTexturePlugin.swift in Sources */,
 				DF75769717644F6F93C17AA7 /* AetherARKitPlugin.swift in Sources */,
+				A1B2C3D4E5F60000DEAD0011 /* CasDiffMVSRunner.swift in Sources */,
 				2110C7AE18324B40A728EE04 /* ReconUmbrella.swift in Sources */,
 				03D62ABCFE668FE66D5CD107 /* MetalRenderer.swift in Sources */,
 				E0388DB63DBD4CF9745E00CE /* SceneDelegate.swift in Sources */,

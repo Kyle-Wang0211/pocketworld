@@ -29,6 +29,7 @@ import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:flutter/services.dart' show MethodChannel;
 import 'package:vector_math/vector_math_64.dart' as vm;
 
 import '../aether_sfm_ffi.dart';
@@ -1003,6 +1004,14 @@ class SfmLiveRecon {
             msg['ms'] as int,
           ),
         );
+        // [L1-ARBITRATE 2026-07-12] 鬼层 L1 推理链:refined 已交付后启动
+        // (绝不 gate 快照)。plan 不存在(AETHER_GHOST_MASK 未设)= 零行为。
+        unawaited(_maybeRunL1Arbitration());
+      case 'arbitrate_done':
+        DeviceLog.log(
+          'SfmLive',
+          'l1-arbitrate done: ok=${msg['ok']} stats=${msg['stats']}',
+        );
       case 'error':
         // 遥测【finalize/error】:终态失败一行(stage=add_frame/finalize/refine)。
         TelemetryWriter.instance.event('sfm_error', {
@@ -1019,6 +1028,64 @@ class SfmLiveRecon {
         _disposeAck?.complete();
     }
   }
+
+  /// [L1-ARBITRATE 2026-07-12] 鬼层 L1 CasDiffMVS 推理链编排(主 isolate)。
+  ///
+  /// 触发:refined 快照已交付之后(绝不阻塞交付)。链路:
+  ///   1. `<db_dir>/arbitration_plan.json` 存在与否是唯一开关 —— 它由 native
+  ///      finalize 尾段在 AETHER_GHOST_MASK=1 时写出;未设 env = 文件不存在
+  ///      = 本函数零行为(全链默认关)。
+  ///   2. 平台通道 `runCasDiffMVSL1`(AetherARKitPlugin → CasDiffMVSRunner,
+  ///      专用串行后台队列):按 plan 逐 ref 解码/resize/CoreML fp32 推理,
+  ///      写 `<db_dir>/l1_depth_<frameId>.bin`。超时兜底 120s(名义 5-12
+  ///      ref × ~1s,热最坏 ~2×)。
+  ///   3. worker isolate 命令 'arbitrate' → native aether_sfm_arbitrate:
+  ///      纯文件驱动的 1-bit 仲裁,更新 ghost_mask.bin 的 rescued/confirmed
+  ///      位(误隐=0 标定规则,弃权→可见)。
+  ///   4. 遥测 l1 域:refs/推理 ms/解码 ms(runner 回报)+ rescue/confirm/
+  ///      abstain(仲裁回报,worker 侧 telem)。
+  /// 全程 fail-soft:任何一步失败只留日志,交付与展示不受影响(仲裁缺
+  /// depth bins 时自然全体弃权)。
+  Future<void> _maybeRunL1Arbitration() async {
+    if (_disposed) return;
+    final dbDir = File(_dbPath).parent.path;
+    final planPath = '$dbDir/arbitration_plan.json';
+    if (!File(planPath).existsSync()) return;
+    DeviceLog.log('SfmLive', 'l1: plan found — starting CasDiffMVS runner');
+    Map<Object?, Object?>? reply;
+    final sw = Stopwatch()..start();
+    try {
+      reply = await _l1Channel
+          .invokeMethod<Map<Object?, Object?>>('runCasDiffMVSL1', {
+            'planPath': planPath,
+            'dbDir': dbDir,
+          })
+          .timeout(const Duration(seconds: 120));
+    } catch (e) {
+      DeviceLog.log('SfmLive', 'l1 runner failed (non-fatal): $e');
+    }
+    sw.stop();
+    if (_disposed) return;
+    final ok = reply?['ok'] == true;
+    TelemetryWriter.instance.event('l1_infer', {
+      'ok': ok,
+      'wall_ms': sw.elapsedMilliseconds,
+      if (reply != null) ...{
+        'refs_planned': reply['refsPlanned'],
+        'refs_done': reply['refsDone'],
+        'total_ms': reply['totalMs'],
+        'decode_ms': reply['decodeMs'],
+        'infer_ms': reply['inferMs'],
+        'per_ref_ms': '${reply['perRefMs']}',
+        if (reply['error'] != null) 'error': '${reply['error']}',
+      },
+    });
+    // 仲裁无条件发起:即使 runner 失败(部分/零 depth bins),native 仲裁
+    // 也只会弃权(fail-open),且会把统计写进 ghost_arbitration.json。
+    _toWorker.send(const <String, Object?>{'cmd': 'arbitrate'});
+  }
+
+  static const MethodChannel _l1Channel = MethodChannel('aether_arkit');
 
   /// Rotates the reconstruction upright using the ARKit gravity frame.
   ///
@@ -1829,6 +1896,38 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
         } catch (e) {
           sw.stop();
           fail('finalize', e);
+        }
+      case 'arbitrate':
+        // [L1-ARBITRATE 2026-07-12] 鬼层 L1 1-bit 仲裁:facade 在 Swift
+        // runner 写完 l1_depth_*.bin 后发起。native 侧纯文件驱动(读 plan/
+        // points/mask + depth bins,更新 ghost_mask.bin 位 5/6),不碰重建
+        // 状态,worker 单事件循环天然与其它命令串行。fail-soft:输入缺失
+        // (plan 没写/runner 没跑/旧 .a 无符号)= no-op。
+        {
+          final s = session;
+          if (s == null) break;
+          final sw = Stopwatch()..start();
+          Map<String, dynamic>? stats;
+          try {
+            stats = s.arbitrate();
+          } catch (e) {
+            wlog('l1-arbitrate threw (non-fatal): $e');
+          }
+          sw.stop();
+          if (stats != null) {
+            wlog('l1-arbitrate: $stats (${sw.elapsedMilliseconds}ms)');
+            telem('l1_arbitrate', {
+              ...stats,
+              'wall_ms': sw.elapsedMilliseconds,
+            });
+          } else {
+            wlog('l1-arbitrate: no-op (inputs absent / unsupported archive)');
+          }
+          boot.reply.send(<String, Object?>{
+            'evt': 'arbitrate_done',
+            'ok': stats != null,
+            'stats': stats,
+          });
         }
       case 'dispose':
         disposed = true;

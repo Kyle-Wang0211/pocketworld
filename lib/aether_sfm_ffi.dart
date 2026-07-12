@@ -473,6 +473,13 @@ typedef _FinalizeAsyncDart =
 typedef _FinalizeStatusC = Int32 Function(Pointer<Void> session);
 typedef _FinalizeStatusDart = int Function(Pointer<Void> session);
 
+// [L1-ARBITRATE 2026-07-12] same (session, out_json, cap) shape as
+// finalize_async — the arbitration returns a small stats JSON.
+typedef _ArbitrateC =
+    Int32 Function(Pointer<Void> session, Pointer<Utf8> outJson, Int32 outCap);
+typedef _ArbitrateDart =
+    int Function(Pointer<Void> session, Pointer<Utf8> outJson, int outCap);
+
 typedef _GlobalRefineC = Int32 Function(Pointer<Void> session);
 typedef _GlobalRefineDart = int Function(Pointer<Void> session);
 
@@ -667,6 +674,11 @@ class AetherSfm {
       .lookupFunction<_FinalizeStatusC, _FinalizeStatusDart>(
         'pwsfm_finalize_status',
       );
+  // [L1-ARBITRATE 2026-07-12] lazily bound like the rest; an OLD vendored .a
+  // lacking the shim symbol throws on first use — callers catch (same
+  // contract as repairStats).
+  static final _ArbitrateDart _arbitrate = _lib
+      .lookupFunction<_ArbitrateC, _ArbitrateDart>('pwsfm_arbitrate');
 
   /// Runs the validated incremental SfM pipeline over a prebuilt COLMAP sqlite
   /// db + image dir. Returns an [AetherSfmSolve] whose [AetherSfmSolve.dispose]
@@ -1414,6 +1426,33 @@ class AetherSfmStreamSession {
   AetherSfmFinalizeStatus finalizeStatus() {
     _checkLive();
     return aetherSfmFinalizeStatusFromCode(AetherSfm._finalizeStatus(_session));
+  }
+
+  /// [L1-ARBITRATE 2026-07-12] Ghost-layer L1 CasDiffMVS 1-bit arbitration —
+  /// file-driven over the session's run_dir: consumes the AETHER_GHOST_MASK=1
+  /// finalize-tail sidecars + the l1_depth_*.bin maps written by the platform
+  /// CoreML runner (runCasDiffMVSL1), rewrites ghost_mask.bin with the
+  /// rescued/confirmed bits (5/6) and returns the stats JSON. Call AFTER
+  /// REFINED and after the runner replied. Safe on this worker isolate — the
+  /// native side reads files only, never the reconstruction. Returns null
+  /// when the inputs are absent (mask/plan never written, runner never ran,
+  /// or the vendored archive predates the symbol) — treat as a no-op.
+  Map<String, dynamic>? arbitrate() {
+    _checkLive();
+    const cap = 2048;
+    final jsonPtr = malloc.allocate<Uint8>(cap).cast<Utf8>();
+    try {
+      final rc = AetherSfm._arbitrate(_session, jsonPtr, cap);
+      if (_resultFromCode(rc) != AetherSfmResult.ok) return null;
+      final summary =
+          jsonDecode(jsonPtr.toDartString()) as Map<String, dynamic>;
+      return summary;
+    } catch (_) {
+      // old archive without the symbol / malformed stats — non-fatal no-op
+      return null;
+    } finally {
+      malloc.free(jsonPtr);
+    }
   }
 
   /// Rough live-preview cloud (throwaway) triangulated DURING capture from the
