@@ -52,6 +52,7 @@ class SfmLiveSnapshot {
     required this.obsOffsets,
     required this.obsFrameIds,
     required this.obsXY,
+    this.ghostSpatialKeepIdx,
   });
 
   /// 3 floats per point.
@@ -76,6 +77,13 @@ class SfmLiveSnapshot {
   /// 9 doubles per frame: [frameId, registered, qw,qx,qy,qz, tx,ty,tz]
   /// (CamFromWorld — invert before drawing a camera trajectory).
   final Float64List posesPacked;
+
+  /// [L2-ALIGN 2026-07-12] Compacted→native (Points3D-order) index map from the
+  /// finalize spatial-two-view filter — length == [pointCount]; null when that
+  /// filter removed nothing (identity). Lets the L2 render gate remap the
+  /// native ghost_mask.bin onto THIS snapshot's point order so the sidecar
+  /// aligns with the delivered cloud (mask 79458 → snap 79457 → PLY 78945).
+  final Int32List? ghostSpatialKeepIdx;
 
   /// {solve_ms, n_registered, n_points3d, reproj_px, rc, result} from the
   /// finalize phase that produced this snapshot (LOCAL summary for both).
@@ -170,7 +178,14 @@ typedef SfmDisconnectedSegment = ({
 /// wrong correspondences can retain low reprojection error while triangulating
 /// at extreme depth. Normal K12 two-view points and every 3+-view loop track are
 /// preserved, so this is not a generic density/outlier filter.
-({AetherSfmPointsTracked points, int removed}) filterFinalSpatialTwoViewPoints(
+// [L2-ALIGN 2026-07-12] `keepIdx` is the compacted→native index map (length ==
+// kept points; keepIdx[k] = the Points3D-order index of delivered point k). It
+// lets the L2 render gate remap the native ghost_mask.bin (written in Points3D
+// order, BEFORE this filter) onto the post-filter snapshot so the mask aligns
+// with the delivered cloud. Empty (Int32List(0)) when nothing was removed
+// (identity — the caller skips the remap).
+({AetherSfmPointsTracked points, int removed, Int32List keepIdx})
+filterFinalSpatialTwoViewPoints(
   AetherSfmPointsTracked input, {
   required int temporalK,
 }) {
@@ -181,7 +196,7 @@ typedef SfmDisconnectedSegment = ({
   if (n == 0 ||
       offsets.length != n + 1 ||
       obsXY.length != frameIds.length * 2) {
-    return (points: input, removed: 0);
+    return (points: input, removed: 0, keepIdx: Int32List(0));
   }
 
   final keep = Uint8List(n);
@@ -191,7 +206,7 @@ typedef SfmDisconnectedSegment = ({
     final start = offsets[i];
     final end = offsets[i + 1];
     if (start < 0 || end < start || end > frameIds.length) {
-      return (points: input, removed: 0);
+      return (points: input, removed: 0, keepIdx: Int32List(0));
     }
     final isUnsupportedSpatialTwoView =
         end - start == 2 &&
@@ -203,13 +218,14 @@ typedef SfmDisconnectedSegment = ({
     }
   }
   final removed = n - keptPoints;
-  if (removed == 0) return (points: input, removed: 0);
+  if (removed == 0) return (points: input, removed: 0, keepIdx: Int32List(0));
 
   final xyz = Float32List(keptPoints * 3);
   final rgb = Uint8List(keptPoints * 3);
   final compactOffsets = Int32List(keptPoints + 1);
   final compactFrameIds = Int32List(keptObs);
   final compactObsXY = Float32List(keptObs * 2);
+  final keepIdx = Int32List(keptPoints); // compacted→native (L2 mask remap)
   var pointOut = 0;
   var obsOut = 0;
   for (var i = 0; i < n; i++) {
@@ -218,6 +234,7 @@ typedef SfmDisconnectedSegment = ({
     final dstPoint = pointOut * 3;
     xyz.setRange(dstPoint, dstPoint + 3, input.xyz, srcPoint);
     rgb.setRange(dstPoint, dstPoint + 3, input.rgb, srcPoint);
+    keepIdx[pointOut] = i;
     compactOffsets[pointOut] = obsOut;
     for (var j = offsets[i]; j < offsets[i + 1]; j++) {
       compactFrameIds[obsOut] = frameIds[j];
@@ -237,6 +254,7 @@ typedef SfmDisconnectedSegment = ({
       compactObsXY,
     ),
     removed: removed,
+    keepIdx: keepIdx,
   );
 }
 
@@ -1073,6 +1091,11 @@ class SfmLiveRecon {
       if (reply != null) ...{
         'refs_planned': reply['refsPlanned'],
         'refs_done': reply['refsDone'],
+        // [L1-ROBUST 2026-07-12] per-ref degrade counters: refs_failed>0 with
+        // refs_done>0 == degraded (single-ref skips, chain survived).
+        'refs_failed': reply['refsFailed'],
+        'degraded': reply['degraded'],
+        'backend': reply['backend'], // "fp32" | "fp16" — which model ran
         'total_ms': reply['totalMs'],
         'decode_ms': reply['decodeMs'],
         'infer_ms': reply['inferMs'],
@@ -1119,6 +1142,7 @@ class SfmLiveRecon {
       obsOffsets: snap.obsOffsets,
       obsFrameIds: snap.obsFrameIds,
       obsXY: snap.obsXY,
+      ghostSpatialKeepIdx: snap.ghostSpatialKeepIdx,
     );
   }
 
@@ -1134,6 +1158,7 @@ class SfmLiveRecon {
       obsOffsets: msg['obsOffsets'] as Int32List? ?? Int32List(1),
       obsFrameIds: msg['obsFrameIds'] as Int32List? ?? Int32List(0),
       obsXY: msg['obsXY'] as Float32List? ?? Float32List(0),
+      ghostSpatialKeepIdx: msg['ghostSpatialKeepIdx'] as Int32List?,
     );
   }
 }
@@ -1221,6 +1246,7 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
     var points = preview ? s.previewTracked() : s.pointsTracked();
     if (preview && points.count == 0) return false; // no live_recon → fall back
     final deliveredSummary = Map<String, dynamic>.from(summary);
+    Int32List? spatialKeepIdx; // [L2-ALIGN] compacted→native (finalize only)
     if (!preview) {
       final detail = s.streamStats();
       deliveredSummary['temporal_detail_created'] =
@@ -1243,6 +1269,9 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
       points = filtered.points;
       deliveredSummary['spatial_two_view_filtered'] = filtered.removed;
       deliveredSummary['delivered_points'] = points.count;
+      // [L2-ALIGN 2026-07-12] carry the compacted→native map ONLY when the
+      // filter removed points (else identity — the L2 gate uses the raw mask).
+      spatialKeepIdx = filtered.removed > 0 ? filtered.keepIdx : null;
       wlog(
         'quality-filter: spatial-only two-view removed=${filtered.removed} '
         'kept=${points.count} temporalK='
@@ -1322,6 +1351,7 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
       'obsFrameIds': points.obsFrameIds,
       'obsXY': points.obsXY,
       'summary': deliveredSummary,
+      'ghostSpatialKeepIdx': ?spatialKeepIdx,
       'ms': ms,
     });
     return true;

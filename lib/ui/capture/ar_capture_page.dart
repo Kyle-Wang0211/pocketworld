@@ -1345,26 +1345,62 @@ class _ARCapturePageState extends State<ARCapturePage>
     // 与显示点序对齐。kGhostMaskViewFilter=false(默认)时只出遥测不改
     // 渲染 —— 统计是"若开门会隐藏多少"的暗舱观测窗。
     Uint8List? ghostVisibility;
+    // [L2-ALIGN 2026-07-12] Ghost flags remapped onto the DELIVERED PLY order
+    // (native→snap→floater), written to ghost_view_mask.bin at persist so the
+    // draft viewer (loads from PLY, no runtime maps) can align. null unless the
+    // native mask loaded and aligned this pass.
+    Uint8List? deliveredGhostFlags;
     final gDir = _session?.captureDir;
     if (gDir != null) {
-      final gFlags = tryLoadGhostMaskSidecar(gDir, n);
+      // [L2-ALIGN 2026-07-12] The native ghost_mask.bin is written in Points3D
+      // order — that is BEFORE the finalize spatial-two-view filter — so it
+      // carries `spatialRemoved` MORE points than this snapshot (cap48: mask
+      // 79458 vs snap 79457). Load against the native count and remap the mask
+      // onto the snap order via the compacted→native map; the existing floater
+      // compaction then carries visibility to the delivered cloud. Chain:
+      // mask(nativeCount) → snap(n) → PLY(m). If the map is unavailable we
+      // fail-open (aligned:false, all visible) exactly as before.
+      final spatialKeep = snap.ghostSpatialKeepIdx;
+      final int spatialRemoved =
+          (snap.summary['spatial_two_view_filtered'] as int?) ?? 0;
+      final int nativeCount = n + spatialRemoved;
+      final bool canRemap = spatialRemoved <= 0 ||
+          (spatialKeep != null && spatialKeep.length == n);
+      final gFlags =
+          canRemap ? tryLoadGhostMaskSidecar(gDir, nativeCount) : null;
       if (gFlags != null) {
+        // native Points3D order → this snapshot's order (identity when the
+        // spatial filter removed nothing). compactVisibilityByIndices is a
+        // positional Uint8 gather — it doubles as the flag remap here.
+        final snapFlags = spatialRemoved <= 0
+            ? gFlags
+            : compactVisibilityByIndices(gFlags, spatialKeep!);
         final gv = computeGhostViewVisibility(
-          gFlags,
+          snapFlags,
           obsOffsets: snap.obsOffsets,
         );
         final vis = removedF <= 0
             ? gv.visibility
             : compactVisibilityByIndices(gv.visibility, keepIdx);
         if (kGhostMaskViewFilter) ghostVisibility = vis;
+        // Flags in delivered PLY order (same floater keepIdx the PLY uses) for
+        // the on-disk ghost_view_mask.bin written at persist below.
+        deliveredGhostFlags = removedF <= 0
+            ? snapFlags
+            : compactVisibilityByIndices(snapFlags, keepIdx);
         // 遥测【ghost_view_filter】:视图过滤统计(任务④;开关关时也记,
         // enabled 字段区分)。导出/交付不受影响(断言脚本
-        // tool/ghost_view_filter_check.dart)。
+        // tool/ghost_view_filter_check.dart)。gv.stats 域 = snap(n) 点序
+        // (obsOffsets 只在孤点过滤前活着,谓词按设计在此层算);
+        // delivered_points=m 是孤点过滤后交付 PLY 点数。
         TelemetryWriter.instance.event('ghost_view_filter', {
           'surface': 'capture_preview',
           'enabled': kGhostMaskViewFilter,
           'aligned': true,
+          'native_points': nativeCount,
           'points': n,
+          'delivered_points': m,
+          'spatial_two_view_filtered': spatialRemoved,
           'hidden_ghost': gv.stats.hiddenGhost,
           'hidden_lowtrack': gv.stats.hiddenLowTrack,
           'rescued_visible': gv.stats.rescuedVisible,
@@ -1372,14 +1408,14 @@ class _ARCapturePageState extends State<ARCapturePage>
           'floater_removed': removedF,
         });
       } else if (File('$gDir/$kGhostMaskFileName').existsSync()) {
-        // sidecar 在但点数不一致(上游 Dart 过滤删过点)→ 拒用,全显示。
+        // sidecar 在但无法对齐(点数不符/缺 keep 映射)→ 拒用,全显示。
         TelemetryWriter.instance.event('ghost_view_filter', {
           'surface': 'capture_preview',
           'enabled': kGhostMaskViewFilter,
           'aligned': false,
           'points': n,
-          'spatial_two_view_filtered':
-              snap.summary['spatial_two_view_filtered'],
+          'native_points': nativeCount,
+          'spatial_two_view_filtered': spatialRemoved,
         });
       }
     }
@@ -1415,6 +1451,20 @@ class _ARCapturePageState extends State<ARCapturePage>
           rgb: frgb,
         );
         persistOk = true;
+        // [L2-ALIGN 2026-07-12] Write the delivered-order render mask alongside
+        // the PLY (SEPARATE from the arbitration-owned ghost_mask.bin). Its
+        // point order/count == sfm_sparse.ply, so the draft viewer aligns with
+        // no runtime maps. Best-effort: a failure never blocks the PLY.
+        if (deliveredGhostFlags != null &&
+            deliveredGhostFlags.length == fsnap.pointCount) {
+          try {
+            final tmp = File('$captureDir/$kGhostViewMaskFileName.tmp');
+            await tmp.writeAsBytes(deliveredGhostFlags, flush: true);
+            await tmp.rename('$captureDir/$kGhostViewMaskFileName');
+          } catch (e) {
+            DeviceLog.log('ARCapturePage', 'ghost_view_mask persist failed: $e');
+          }
+        }
       } catch (e) {
         DeviceLog.log('ARCapturePage', 'final sparse persist failed: $e');
       }

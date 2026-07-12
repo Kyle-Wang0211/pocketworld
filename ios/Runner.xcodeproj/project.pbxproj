@@ -25,6 +25,7 @@
 		A1B2C3D4E5F60000DEAD0007 /* test_scene.jpg in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60000DEAD0008 /* test_scene.jpg */; };
 		A1B2C3D4E5F60000DEAD0011 /* CasDiffMVSRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60000DEAD0012 /* CasDiffMVSRunner.swift */; };
 		A1B2C3D4E5F60000DEAD0013 /* CasDiffMVS_fp32.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60000DEAD0014 /* CasDiffMVS_fp32.mlpackage */; };
+		A1B2C3D4E5F60000DEAD0016 /* CasDiffMVS_fp16.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60000DEAD0015 /* CasDiffMVS_fp16.mlpackage */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -83,6 +84,7 @@
 		A1B2C3D4E5F60000DEAD0008 /* test_scene.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; name = test_scene.jpg; path = "TestFixtures/test_scene.jpg"; sourceTree = "<group>"; };
 		A1B2C3D4E5F60000DEAD0012 /* CasDiffMVSRunner.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CasDiffMVSRunner.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60000DEAD0014 /* CasDiffMVS_fp32.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = folder.mlpackage; name = CasDiffMVS_fp32.mlpackage; path = "Models/CasDiffMVS_fp32.mlpackage"; sourceTree = "<group>"; };
+		A1B2C3D4E5F60000DEAD0015 /* CasDiffMVS_fp16.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = folder.mlpackage; name = CasDiffMVS_fp16.mlpackage; path = "Models/CasDiffMVS_fp16.mlpackage"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -176,6 +178,7 @@
 				FEAD6EACA3D24E90926AFA5D /* AetherARKitPlugin.swift */,
 				A1B2C3D4E5F60000DEAD0012 /* CasDiffMVSRunner.swift */,
 				A1B2C3D4E5F60000DEAD0014 /* CasDiffMVS_fp32.mlpackage */,
+				A1B2C3D4E5F60000DEAD0015 /* CasDiffMVS_fp16.mlpackage */,
 				17D27761F0154088BD5EC06A /* ReconUmbrella.swift */,
 				16019E67BE3B581AE0E2152F /* MetalRenderer.swift */,
 				7779D977CD585B8DC1D4A1F9 /* SceneDelegate.swift */,
@@ -301,6 +304,7 @@
 				97C146FC1CF9000F007C117D /* Main.storyboard in Resources */,
 				A1B2C3D4E5F60000DEAD0007 /* test_scene.jpg in Resources */,
 				A1B2C3D4E5F60000DEAD0013 /* CasDiffMVS_fp32.mlpackage in Resources */,
+				A1B2C3D4E5F60000DEAD0016 /* CasDiffMVS_fp16.mlpackage in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

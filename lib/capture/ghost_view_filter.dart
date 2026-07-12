@@ -61,8 +61,21 @@ const int kGhostHideBits = kGhostFlagBand15;
 const int kGhostMinTrackLen = 3;
 
 /// sidecar 文件名(与 native MaybeWriteGhostMask 写出名一致,位于
-/// sfm_live.db 同目录 == captureDir)。
+/// sfm_live.db 同目录 == captureDir)。native 顺序 = Points3D 迭代序;
+/// **L1 仲裁(aether_sfm_arbitrate)拥有此文件**,仲裁后在 native 点序上
+/// 回写 rescued/confirmed 位 —— 所以绝不能被 Dart 改写点序(会毁掉仲裁
+/// 与 arbitration_points.bin 的索引对应)。
 const String kGhostMaskFileName = 'ghost_mask.bin';
+
+/// [L2-ALIGN 2026-07-12] 交付点序 mask sidecar。native `ghost_mask.bin` 在
+/// Points3D 序(persist 前),而交付 PLY 经 spatial-two-view + 孤点过滤后
+/// 点数更少且重排 —— 草稿查看页(从 PLY 加载,拿不到运行期 keep 映射)
+/// 无法把 native mask 对齐到 PLY。故 persist 时把 native mask 按
+/// spatial→floater 两级 keep 重排成**交付点序**另存此文件,点数/点序逐位
+/// == sfm_sparse.ply。查看页优先读它即可 aligned。
+/// ⚠️写在 L1 仲裁之前 → 暂不含 rescued 位(当前 rescue=0 无影响;rescue
+/// 落地后需在仲裁后重算此文件)。
+const String kGhostViewMaskFileName = 'ghost_view_mask.bin';
 
 /// 视图过滤统计(任务④遥测载荷)。
 class GhostViewStats {
@@ -89,10 +102,14 @@ class GhostViewStats {
 /// 读取并核对 sidecar。返回 per-point flag 字节(长度 == [expectedCount]);
 /// 文件缺失 / 读取失败 / 点数不一致 → null(容错:按"没有 sidecar"全显示,
 /// 绝不让一个错位的 mask 隐藏错点)。
-Uint8List? tryLoadGhostMaskSidecar(String dirPath, int expectedCount) {
+Uint8List? tryLoadGhostMaskSidecar(
+  String dirPath,
+  int expectedCount, {
+  String fileName = kGhostMaskFileName,
+}) {
   if (expectedCount <= 0) return null;
   try {
-    final f = File('$dirPath/$kGhostMaskFileName');
+    final f = File('$dirPath/$fileName');
     if (!f.existsSync()) return null;
     if (f.lengthSync() != expectedCount) return null; // 索引已错位,拒用
     final bytes = f.readAsBytesSync();

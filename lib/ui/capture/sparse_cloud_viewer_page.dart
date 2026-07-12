@@ -106,7 +106,14 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
     Uint8List? visibility;
     if (cloud != null && cloud.count > 0) {
       final dir = File(widget.plyPath).parent.path;
-      final flags = tryLoadGhostMaskSidecar(dir, cloud.count);
+      // [L2-ALIGN 2026-07-12] Prefer the delivered-order render mask (written at
+      // persist, point order == this PLY); fall back to the native mask for
+      // captures made before that sidecar existed (count check rejects it when
+      // its Points3D order doesn't match the filtered PLY).
+      final flags =
+          tryLoadGhostMaskSidecar(dir, cloud.count,
+                  fileName: kGhostViewMaskFileName) ??
+              tryLoadGhostMaskSidecar(dir, cloud.count);
       if (flags != null) {
         final gv = computeGhostViewVisibility(flags);
         if (kGhostMaskViewFilter) visibility = gv.visibility;

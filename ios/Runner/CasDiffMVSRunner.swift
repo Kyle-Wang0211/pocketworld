@@ -23,23 +23,50 @@ import CoreGraphics
 /// Mac harness (coremltools, cap46/47); a value-range guard re-checks at
 /// runtime because the traced names are toolchain-generated.
 ///
+/// [L1-FP16 2026-07-12] fp16 twin (CasDiffMVS_fp16.mlpackage, 4.9MB, float16
+/// IO) is bundled alongside and selectable via AETHER_L1_FP16=1 — but fp32 is
+/// the DEFAULT because the 误隐=0 red-line E2E arbitration gate has NOT been
+/// re-run since the cap46/47/48 fixtures were lost (device also unavailable).
+/// The feed path is dtype-adaptive (queries each input's required dataType and
+/// casts float32→float16 as needed) so an A/B flip is byte-honest once the
+/// gate can run again. Do NOT default to fp16 until the gate passes.
+///
 /// Concurrency: everything runs on the caller's queue (AetherARKitPlugin
 /// dispatches on a dedicated serial utility queue — decode must NEVER run on
-/// the platform main thread, colorize 主线程教训). Fail-soft: any error
-/// returns a message; the Dart side treats a failed run as "no depth bins" —
-/// the C++ arbitration then abstains (fail-open, 误隐=0 policy).
+/// the platform main thread, colorize 主线程教训). Fail-soft: a SINGLE ref's
+/// decode/inference failure is recorded + skipped (never aborts the chain —
+/// cap48 lesson: a dangling re-shot JPEG killed all 11 refs); only zero
+/// successful refs is a hard failure. The Dart side treats a failed run as
+/// "no depth bins" — the C++ arbitration then abstains (fail-open, 误隐=0).
 final class CasDiffMVSRunner {
 
   struct RunResult {
     var ok = false
     var refsPlanned = 0
     var refsDone = 0
+    var refsFailed = 0          // per-ref decode/inference failures (skipped)
     var totalMs = 0
     var decodeMs = 0
     var inferMs = 0
     var perRefMs: [Int] = []
-    var error: String?
+    var degraded = false        // ok but some refs were skipped
+    var backend = "fp32"        // "fp32" | "fp16" — which model actually ran
+    var error: String?          // first per-ref / fatal error (telemetry)
   }
+
+  /// fp16 A/B switch. Default fp32 (see class doc: red-line gate not re-run).
+  /// Env override lets the Mac harness / a future signed device build flip it
+  /// without a code change.
+  private static let useFp16: Bool =
+    ProcessInfo.processInfo.environment["AETHER_L1_FP16"] == "1"
+
+  private var modelBaseName: String {
+    Self.useFp16 ? "CasDiffMVS_fp16" : "CasDiffMVS_fp32"
+  }
+
+  /// The dataType the loaded model requires for its image inputs (fp16 model =
+  /// .float16, fp32 model = .float32). Set in loadModel; drives multiArray.
+  private var inputDataType: MLMultiArrayDataType = .float32
 
   private static let procW = 896
   private static let procH = 512
@@ -61,18 +88,23 @@ final class CasDiffMVSRunner {
     if let m = model { return m }
     let cfg = MLModelConfiguration()
     cfg.computeUnits = .cpuAndGPU  // NEVER .all — ANE ban (签决)
-    var url = Bundle.main.url(forResource: "CasDiffMVS_fp32",
-                              withExtension: "mlmodelc")
+    let base = modelBaseName
+    var url = Bundle.main.url(forResource: base, withExtension: "mlmodelc")
     if url == nil,
-       let pkg = Bundle.main.url(forResource: "CasDiffMVS_fp32",
-                                 withExtension: "mlpackage") {
+       let pkg = Bundle.main.url(forResource: base, withExtension: "mlpackage") {
       url = try MLModel.compileModel(at: pkg)
     }
     guard let modelURL = url else {
       throw NSError(domain: "CasDiffMVSRunner", code: 1, userInfo: [
-        NSLocalizedDescriptionKey: "CasDiffMVS_fp32 model not in bundle"])
+        NSLocalizedDescriptionKey: "\(base) model not in bundle"])
     }
     let m = try MLModel(contentsOf: modelURL, configuration: cfg)
+    // Match the feed dtype to what the model actually wants (fp16 model has
+    // float16 inputs; fp32 has float32). Read one image input's constraint.
+    if let c = m.modelDescription.inputDescriptionsByName["i0"]?
+      .multiArrayConstraint {
+      inputDataType = c.dataType
+    }
     model = m
     return m
   }
@@ -190,12 +222,22 @@ final class CasDiffMVSRunner {
     return chw
   }
 
+  /// Build an MLMultiArray in the model's required dtype (float32 for the fp32
+  /// model, float16 for the fp16 twin). The plan is always float32 on the wire;
+  /// we cast per-element to float16 only when the fp16 model is active.
   private func multiArray(_ shape: [NSNumber], _ values: [Float]) throws
     -> MLMultiArray {
-    let arr = try MLMultiArray(shape: shape, dataType: .float32)
-    values.withUnsafeBufferPointer { bp in
-      arr.dataPointer.bindMemory(to: Float.self, capacity: values.count)
-        .update(from: bp.baseAddress!, count: values.count)
+    let arr = try MLMultiArray(shape: shape, dataType: inputDataType)
+    switch inputDataType {
+    case .float16:
+      let dst = arr.dataPointer.bindMemory(to: Float16.self,
+                                           capacity: values.count)
+      for i in 0..<values.count { dst[i] = Float16(values[i]) }
+    default:  // .float32
+      values.withUnsafeBufferPointer { bp in
+        arr.dataPointer.bindMemory(to: Float.self, capacity: values.count)
+          .update(from: bp.baseAddress!, count: values.count)
+      }
     }
     return arr
   }
@@ -222,6 +264,27 @@ final class CasDiffMVSRunner {
     try FileManager.default.moveItem(at: tmp, to: dst)
   }
 
+  /// Read a HxW output plane as [Float], honoring the array's real dtype (the
+  /// fp16 model emits float16 outputs; the fp32 model float32). Depth bins are
+  /// always written float32 (L1DP v1) — fp16 is widened here.
+  private func plane(_ out: MLFeatureProvider, _ name: String) -> [Float]? {
+    guard let arr = out.featureValue(for: name)?.multiArrayValue else {
+      return nil
+    }
+    let n = Self.procW * Self.procH
+    guard arr.count == n else { return nil }
+    switch arr.dataType {
+    case .float16:
+      let p = arr.dataPointer.bindMemory(to: Float16.self, capacity: n)
+      var v = [Float](repeating: 0, count: n)
+      for i in 0..<n { v[i] = Float(p[i]) }
+      return v
+    default:  // .float32
+      let p = arr.dataPointer.bindMemory(to: Float.self, capacity: n)
+      return [Float](UnsafeBufferPointer(start: p, count: n))
+    }
+  }
+
   /// Run the whole plan. Synchronous — call on a background queue only.
   func run(planPath: String, dbDir: String) -> RunResult {
     var res = RunResult()
@@ -235,73 +298,96 @@ final class CasDiffMVSRunner {
         return res
       }
       res.refsPlanned = refs.count
+      res.backend = Self.useFp16 ? "fp16" : "fp32"
       let m = try loadModel()
       // output naming guard (see header): pick by value range on first ref
       var depthKey = "var_16044"
       var confKey = "var_16002"
       for ref in refs {
-        guard let fid = ref["frame_id"] as? Int,
-              let views = ref["views"] as? [[String: Any]],
-              views.count == Self.nViews,
-              let dv = ref["dv"] as? [Any], dv.count == Self.nDepth,
-              let proj = ref["proj"] as? [String: Any] else { continue }
-        var feats: [String: MLFeatureValue] = [:]
-        let tDec = CFAbsoluteTimeGetCurrent()
-        var decodeOk = true
-        for (i, view) in views.enumerated() {
-          guard let jpeg = view["jpeg"] as? String, !jpeg.isEmpty else {
-            decodeOk = false
-            break
+        // [L1-ROBUST 2026-07-12] Per-ref isolation: a single ref's decode /
+        // inference / write failure is recorded + skipped, NEVER aborting the
+        // whole runner (cap48: a dangling re-shot JPEG threw out of ref[1]'s
+        // view decode and killed all 11 refs). Only zero successful refs is a
+        // hard failure below.
+        do {
+          guard let fid = ref["frame_id"] as? Int,
+                let views = ref["views"] as? [[String: Any]],
+                views.count == Self.nViews,
+                let dv = ref["dv"] as? [Any], dv.count == Self.nDepth,
+                let proj = ref["proj"] as? [String: Any] else {
+            res.refsFailed += 1
+            if res.error == nil { res.error = "malformed ref entry" }
+            continue
           }
-          let chw = try decodeResizeCHW(jpeg)
-          feats["i\(i)"] = MLFeatureValue(multiArray: try multiArray(
-            [1, 3, NSNumber(value: Self.procH), NSNumber(value: Self.procW)],
-            chw))
-        }
-        if !decodeOk { continue }
-        res.decodeMs += Int((CFAbsoluteTimeGetCurrent() - tDec) * 1000)
-        for st in 1...4 {
-          guard let p = proj["stage\(st)"] as? [Any], p.count == 160 else {
-            decodeOk = false
-            break
+          var feats: [String: MLFeatureValue] = [:]
+          let tDec = CFAbsoluteTimeGetCurrent()
+          var shapeOk = true
+          for (i, view) in views.enumerated() {
+            guard let jpeg = view["jpeg"] as? String, !jpeg.isEmpty else {
+              shapeOk = false
+              break
+            }
+            let chw = try decodeResizeCHW(jpeg)  // per-ref: caught below
+            feats["i\(i)"] = MLFeatureValue(multiArray: try multiArray(
+              [1, 3, NSNumber(value: Self.procH), NSNumber(value: Self.procW)],
+              chw))
           }
-          feats["p\(st)"] = MLFeatureValue(multiArray: try multiArray(
-            [1, 5, 2, 4, 4], p.map { Float(($0 as? NSNumber)?.doubleValue ?? 0) }))
-        }
-        if !decodeOk { continue }
-        feats["dv"] = MLFeatureValue(multiArray: try multiArray(
-          [1, NSNumber(value: Self.nDepth)],
-          dv.map { Float(($0 as? NSNumber)?.doubleValue ?? 0) }))
+          guard shapeOk else {
+            res.refsFailed += 1
+            if res.error == nil { res.error = "ref view jpeg missing/empty" }
+            continue
+          }
+          res.decodeMs += Int((CFAbsoluteTimeGetCurrent() - tDec) * 1000)
+          for st in 1...4 {
+            guard let p = proj["stage\(st)"] as? [Any], p.count == 160 else {
+              shapeOk = false
+              break
+            }
+            feats["p\(st)"] = MLFeatureValue(multiArray: try multiArray(
+              [1, 5, 2, 4, 4],
+              p.map { Float(($0 as? NSNumber)?.doubleValue ?? 0) }))
+          }
+          guard shapeOk else {
+            res.refsFailed += 1
+            if res.error == nil { res.error = "ref proj stage malformed" }
+            continue
+          }
+          feats["dv"] = MLFeatureValue(multiArray: try multiArray(
+            [1, NSNumber(value: Self.nDepth)],
+            dv.map { Float(($0 as? NSNumber)?.doubleValue ?? 0) }))
 
-        let tInf = CFAbsoluteTimeGetCurrent()
-        let out = try m.prediction(
-          from: try MLDictionaryFeatureProvider(dictionary: feats))
-        let refMs = Int((CFAbsoluteTimeGetCurrent() - tInf) * 1000)
-        res.perRefMs.append(refMs)
-        res.inferMs += refMs
+          let tInf = CFAbsoluteTimeGetCurrent()
+          let out = try m.prediction(
+            from: try MLDictionaryFeatureProvider(dictionary: feats))
+          let refMs = Int((CFAbsoluteTimeGetCurrent() - tInf) * 1000)
+          res.perRefMs.append(refMs)
+          res.inferMs += refMs
 
-        func plane(_ name: String) -> [Float]? {
-          guard let arr = out.featureValue(for: name)?.multiArrayValue else {
-            return nil
+          guard var depth = plane(out, depthKey), var conf = plane(out, confKey)
+          else {
+            res.refsFailed += 1
+            if res.error == nil { res.error = "output plane read failed" }
+            continue
           }
-          let n = Self.procW * Self.procH
-          guard arr.count == n else { return nil }
-          let p = arr.dataPointer.bindMemory(to: Float.self, capacity: n)
-          return [Float](UnsafeBufferPointer(start: p, count: n))
-        }
-        guard var depth = plane(depthKey), var conf = plane(confKey) else {
+          // range guard: conf lives in [0,1]; depth spans metres (dv max >1.5)
+          if (depth.max() ?? 0) <= 1.01 && (conf.max() ?? 0) > 1.5 {
+            swap(&depth, &conf)
+            swap(&depthKey, &confKey)
+          }
+          try writeDepthBin(dbDir: dbDir, frameId: fid, depth: depth,
+                            conf: conf)
+          res.refsDone += 1
+        } catch {
+          // Single-ref failure — log via error, keep going. Evict any cache
+          // the failed decode may have half-populated is unnecessary (cache
+          // stores only fully-decoded frames).
+          res.refsFailed += 1
+          if res.error == nil { res.error = "ref failed: \(error)" }
           continue
         }
-        // range guard: conf lives in [0,1]; depth spans metres (dv max >1.5)
-        if (depth.max() ?? 0) <= 1.01 && (conf.max() ?? 0) > 1.5 {
-          swap(&depth, &conf)
-          swap(&depthKey, &confKey)
-        }
-        try writeDepthBin(dbDir: dbDir, frameId: fid, depth: depth,
-                          conf: conf)
-        res.refsDone += 1
       }
       res.ok = res.refsDone > 0
+      res.degraded = res.ok && res.refsFailed > 0
       if !res.ok && res.error == nil {
         res.error = "no ref produced a depth bin"
       }
