@@ -111,6 +111,11 @@ class AetherARKitPlugin: NSObject {
     // device 外推 finalize −17%;下次实拍看 finalize_segments 验真。
     // 删本行即同二进制回退(native 默认 0 = shipped 行为)。
     setenv("AETHER_STAGE1_ROUNDS_CAP", "4", 1)
+    // [2026-07-12] 鬼层 L1 暗舱标定采集:finalize 尾段写 ghost_mask.bin 鬼层
+    // 标记 + refined 交付后跑 L1 推理仲裁(CasDiffMVS 1-bit)。渲染门默认关,
+    // 不影响任何显示/交付数据——纯 sidecar+telemetry 采集,为 L1/L2 标定攒
+    // 真机数据。推理预算 ~12s 在交付之后,不 gate 用户。删本行即同二进制回退。
+    setenv("AETHER_GHOST_MASK", "1", 1)
     let plugin = AetherARKitPlugin(messenger: registrar.messenger())
     sharedInstance = plugin
     let factory = AetherARKitPreviewFactory(getSession: {
@@ -791,10 +796,15 @@ class AetherARKitPlugin: NSObject {
       // 遥测 F【resource】:拍摄页进入 → 10s 定时资源采样
       // (thermal/footprint/电池/CPU/SceneKit FPS → telemetry_native.jsonl)。
       PwNativeTelemetry.shared.startResourceSampling()
+      // [2026-07-12 热战役刀②,签决] 拍摄页进入 → 亮度调速器上岗
+      //(fair 封 70% / serious+ 封 60%,退出恢复;只在拍摄页生效)。
+      PwCaptureBrightnessGovernor.shared.begin()
       result(nil)
     case "telemetryCaptureEnd":
       // 拍摄页退出(含等待页完成)→ 停采样,收尾补一条。
       PwNativeTelemetry.shared.stopResourceSampling()
+      // 刀②:退出拍摄页(含 dispose 路径,Dart 侧 dispose() 必调)→ 恢复原亮度。
+      PwCaptureBrightnessGovernor.shared.end()
       result(nil)
     default:
       result(FlutterMethodNotImplemented)
@@ -840,6 +850,13 @@ class AetherARKitPlugin: NSObject {
     // X/Z plane left arbitrary at session start. This matches the
     // iOS reference's az/el math which assumes Y-up.
     configuration.worldAlignment = .gravity
+    // [2026-07-12 热战役刀①,签决] 关 ARKit 光照估计:默认 ON,每帧跑
+    // ambient intensity/color temperature 估计(常开 CPU/ISP 税)。全仓
+    // grep 核实零消费:无任何 lightEstimate/ARLightEstimate 读点;预览
+    // ARSCNView 虽 automaticallyUpdatesLighting=true,但场景内全部材质
+    // (点云/photo card 正反面/边框)lightingModel = .constant(unlit),
+    // 场景光对渲染零影响,相机背景帧不经场景光照。纯无损,删本行回默认。
+    configuration.isLightEstimationEnabled = false
     // Horizontal plane detection — verbatim of
     // ObjectModeV2ARDomeCoordinator.swift line 165. We don't read
     // the detected planes ourselves, but turning detection ON gives
@@ -848,6 +865,13 @@ class AetherARKitPlugin: NSObject {
     // Y axis comes from accelerometer alone and can drift a few
     // degrees, which leaks into elevation = atan2(rel.y, horizDist)
     // and makes the dome look "tilted when phone is level".
+    //
+    // TODO(热战役刀①-b,评估后缓行 2026-07-12):重力锁定(lockOrigin 成功)
+    // 后用 session.run(去掉 planeDetection 的新 config) 关平面检测,省常开
+    // 平面拟合热。机械上 <30 行可做,但上面的注释写明平面检测是**整段会话
+    // 持续**的重力拟合信号(不只锁定前)——锁定后关闭 = 接受后续陀螺/加计
+    // 漂移不再被地面法线纠正,有 dome 倾斜回归风险(质量无损是北极星)。
+    // 需先真机 A/B 证明锁定后关闭不动 elevation 精度,再走签决启用。
     configuration.planeDetection = [.horizontal]
 
     // 4K capture when the device supports it AND has enough RAM headroom.
@@ -2941,6 +2965,141 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
 
   deinit {
     pollTimer?.invalidate()
+  }
+}
+
+// MARK: - PwCaptureBrightnessGovernor(热战役刀②:拍摄期屏幕亮度封顶)
+//
+// [2026-07-12 签决] 热二轮审计:常开基线(4K 相机 + 渲染 + OLED 满亮度)是
+// 热大头,OLED 亮度是其中少数可无损干预的旋钮。策略(用户签决):
+//   nominal        → 不动(用户亮度自主)
+//   fair           → 封顶 70%
+//   serious/critical → 封顶 60%
+//   退出拍摄页     → 恢复进入时亮度
+// 只在拍摄页生效(telemetryCaptureBegin/End 已是拍摄页进/出的可靠配对,
+// Dart dispose() 必调 End)。封顶=min(基线, cap),绝不调高;用户拍摄中
+// 手动改亮度会被识别为新基线(当前值 ≠ 上次我们设的值 → 重新基线),
+// 不与用户抢方向盘。切后台恢复原亮度(封顶不外泄到别的 App),回前台重套。
+// 遥测:brightness_cap 事件(apply/restore,from/to/cap/thermal)。
+// 定义在本文件里同 PwNativeTelemetry 的理由:蹭已有 pbxproj 文件零风险。
+final class PwCaptureBrightnessGovernor {
+  static let shared = PwCaptureBrightnessGovernor()
+
+  private var active = false
+  private var baselineBrightness: CGFloat = 1.0
+  private var lastApplied: CGFloat?  // 我们最后设置的值;nil = 尚未干预
+  private init() {}
+
+  /// 拍摄页进入(主线程,channel handler)。幂等。
+  func begin() {
+    guard !active else { return }
+    active = true
+    baselineBrightness = UIScreen.main.brightness
+    lastApplied = nil
+    let nc = NotificationCenter.default
+    nc.addObserver(
+      self, selector: #selector(thermalDidChange),
+      name: ProcessInfo.thermalStateDidChangeNotification, object: nil)
+    nc.addObserver(
+      self, selector: #selector(appWillResignActive),
+      name: UIApplication.willResignActiveNotification, object: nil)
+    nc.addObserver(
+      self, selector: #selector(appDidBecomeActive),
+      name: UIApplication.didBecomeActiveNotification, object: nil)
+    applyPolicy(reason: "captureBegin")
+  }
+
+  /// 拍摄页退出/dispose(主线程)。幂等。恢复基线亮度。
+  func end() {
+    guard active else { return }
+    active = false
+    NotificationCenter.default.removeObserver(self)
+    rebaselineIfUserChanged()
+    if let last = lastApplied, abs(last - baselineBrightness) > 0.004 {
+      let from = UIScreen.main.brightness
+      UIScreen.main.brightness = baselineBrightness
+      PwNativeTelemetry.shared.log("brightness_cap", [
+        "action": "restore",
+        "from": Double(from),
+        "to": Double(baselineBrightness),
+        "thermal": ProcessInfo.processInfo.thermalState.rawValue,
+      ])
+    }
+    lastApplied = nil
+  }
+
+  // ── 内部 ──────────────────────────────────────────────────────────
+
+  private func cap(for state: ProcessInfo.ThermalState) -> CGFloat? {
+    switch state {
+    case .nominal: return nil
+    case .fair: return 0.70
+    case .serious, .critical: return 0.60
+    @unknown default: return nil  // 未来新档位:宁可不干预
+    }
+  }
+
+  /// 基线追随用户:未干预状态(lastApplied == nil,如 begin 后首次 / 切走
+  /// 归还后回前台)当前值就是用户意志 → 无条件作基线;干预中若当前值 ≠ 我们
+  /// 最后设的值 = 用户手动改过 → 以新值为基线并视为未干预。
+  private func rebaselineIfUserChanged() {
+    let current = UIScreen.main.brightness
+    if let last = lastApplied {
+      if abs(current - last) > 0.01 {
+        baselineBrightness = current
+        lastApplied = nil  // 视为未干预,restore 语义随基线走
+      }
+    } else {
+      baselineBrightness = current
+    }
+  }
+
+  private func applyPolicy(reason: String) {
+    guard active else { return }
+    rebaselineIfUserChanged()
+    let state = ProcessInfo.processInfo.thermalState
+    let target: CGFloat
+    if let c = cap(for: state) {
+      target = min(baselineBrightness, c)
+    } else {
+      target = baselineBrightness
+    }
+    let from = UIScreen.main.brightness
+    guard abs(from - target) > 0.004 else { return }
+    UIScreen.main.brightness = target
+    lastApplied = target
+    PwNativeTelemetry.shared.log("brightness_cap", [
+      "action": "apply",
+      "reason": reason,
+      "from": Double(from),
+      "to": Double(target),
+      "cap": cap(for: state).map { Double($0) } ?? -1.0,
+      "thermal": state.rawValue,
+    ])
+    NSLog("[BrightnessGov] %@ thermal=%ld %.2f→%.2f", reason, state.rawValue,
+          Double(from), Double(target))
+  }
+
+  @objc private func thermalDidChange() {
+    // thermal 通知可能在后台线程投递;UIScreen 必须主线程。
+    DispatchQueue.main.async { self.applyPolicy(reason: "thermalDidChange") }
+  }
+
+  @objc private func appWillResignActive() {
+    // 切走(控制中心/App 切换)→ 还原,封顶不外泄;回前台 didBecomeActive 重套。
+    DispatchQueue.main.async {
+      guard self.active, let last = self.lastApplied else { return }
+      let current = UIScreen.main.brightness
+      // 用户切走前手动改过 → 不抢方向盘(回前台 applyPolicy 会重新基线)。
+      if abs(current - last) <= 0.01 {
+        UIScreen.main.brightness = self.baselineBrightness
+        self.lastApplied = nil
+      }
+    }
+  }
+
+  @objc private func appDidBecomeActive() {
+    DispatchQueue.main.async { self.applyPolicy(reason: "didBecomeActive") }
   }
 }
 
