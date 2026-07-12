@@ -26,14 +26,67 @@ import 'package:path_provider/path_provider.dart';
 
 import '../me/scan_record_store.dart';
 import '../util/device_log.dart';
+import 'colorize_pipeline.dart';
+import 'floater_filter.dart';
 import 'representative_color.dart';
 import 'sfm_live_recon.dart';
 import 'sparse_ply.dart';
+import 'telemetry_writer.dart';
 
 const MethodChannel _arKitChannel = MethodChannel('aether_arkit');
 
 bool _sweeping = false;
 final Set<String> _detachedFinalizing = <String>{};
+
+/// 修2c【断点续跑入口】进行中的单 capture 恢复:captureDir → 完成 future。
+/// 同卡重复点击/重进等待页时直接挂到同一个 future 上 —— 绝不为同一个
+/// capture 起第二个 worker(与等待页重入契约同精神)。
+final Map<String, Future<bool>> _resumeInFlight = <String, Future<bool>>{};
+
+/// [resumeSingleCapture] 是否正在为 [captureDir] 跑。
+bool isResumeInFlight(String captureDir) =>
+    _resumeInFlight.containsKey(captureDir);
+
+/// 把 record 存的 captureDir 解析成**当前**磁盘上可恢复的目录:app 容器
+/// UUID 在重装/迁移后会变,存的绝对路径可能已失效 —— 按目录名(= record
+/// id)在当前 Documents/captures 下重建。找不到 sfm_live.db 时返回 null
+/// (无可恢复数据)。与 [resumeIncompleteCaptures] 的 sweep 同一逻辑。
+Future<String?> resolveRecoverableCaptureDir(String recordCaptureDir) async {
+  if (recordCaptureDir.isEmpty) return null;
+  if (File('$recordCaptureDir/sfm_live.db').existsSync()) {
+    return recordCaptureDir;
+  }
+  try {
+    final docs = (await getApplicationDocumentsDirectory()).path;
+    final rebuilt = '$docs/captures/${recordCaptureDir.split('/').last}';
+    if (File('$rebuilt/sfm_live.db').existsSync()) return rebuilt;
+  } catch (_) {}
+  return null;
+}
+
+/// 用户显式确认后的单 capture 断点续跑(修2c:草稿卡 → "继续重建"):
+/// 从保留的 sfm_live.db 重跑 finalize → 取色 → 持久化 PLY,全程灵动岛
+/// umbrella 保护(用户主动触发,符合"不凭空创建"契约)。返回"最终
+/// sfm_sparse.ply 是否已在磁盘上"。幂等:同目录并发调用共享同一 future。
+Future<bool> resumeSingleCapture(String captureDir) {
+  final existing = _resumeInFlight[captureDir];
+  if (existing != null) return existing;
+  final completer = Completer<bool>();
+  _resumeInFlight[captureDir] = completer.future;
+  () async {
+    try {
+      // 等待页在场、用户盯着进度 —— 给完整 Cauchy phase2 留足余量,
+      // 别沿用 sweep 的 8 分钟保守上限把 BA 中途掐死。
+      await _resumeOne(captureDir, timeout: const Duration(minutes: 25));
+    } catch (e) {
+      DeviceLog.log('SfmResume', 'single resume error $captureDir: $e');
+    } finally {
+      _resumeInFlight.remove(captureDir);
+      completer.complete(File('$captureDir/sfm_sparse.ply').existsSync());
+    }
+  }();
+  return completer.future;
+}
 
 /// Continue a just-finished live capture after the capture page exits.
 ///
@@ -162,7 +215,10 @@ Future<void> _runDetachedFinalize(
   }
 }
 
-Future<void> _resumeOne(String captureDir) async {
+Future<void> _resumeOne(
+  String captureDir, {
+  Duration timeout = const Duration(minutes: 8),
+}) async {
   SfmLiveRecon? recon;
   final done = Completer<void>();
   try {
@@ -172,6 +228,19 @@ Future<void> _resumeOne(String captureDir) async {
       DeviceLog.log('SfmResume', 'start unavailable for $captureDir');
       return;
     }
+    // 与 live 主路径对齐【重力对齐】:resume 会话没喂过帧,facade 的
+    // _fedMeta 为空 → _gravityAlign 会整段跳过(cnt<3),恢复出的点云
+    // 歪着。先用拍摄期落盘的 sfm_fed_frames.jsonl(含每帧
+    // arkitCamFromWorldQwxyz)回填,refined 快照就会走与 live 完全同一条
+    // _gravityAlign 链。sidecar 缺失(极老草稿)时按时间戳序兜底,无
+    // ARKit 四元数 → 对齐自然跳过(与今日行为一致,诚实降级)。
+    final frameMeta = await _loadFrameMeta(captureDir);
+    recon.seedFedMeta(frameMeta);
+    DeviceLog.log(
+      'SfmResume',
+      'fed-meta seeded: ${frameMeta.length} frames, '
+          'arkitQuat=${frameMeta.values.where((m) => m.arkitQuatWxyz != null).length}',
+    );
     final sub = recon.events.listen((e) {
       switch (e) {
         case SfmLiveLocalReady(:final snapshot):
@@ -180,8 +249,18 @@ Future<void> _resumeOne(String captureDir) async {
             'resume local ignored: ${snapshot.pointCount} pts',
           );
         case SfmLiveRefined(:final snapshot):
-          unawaited(_persistColored(captureDir, snapshot));
-          if (!done.isCompleted) done.complete();
+          // 与 detached 腿同构:persist 完成(取色+孤点过滤+PLY 落盘)才算
+          // 完成 —— 原先 refined 一到就 complete,等待页/调用方在 PLY 尚未
+          // 写完时就检查 existsSync,会把成功误报成失败(竞态)。
+          unawaited(() async {
+            try {
+              await _persistColored(captureDir, snapshot, frameMeta: frameMeta);
+            } catch (e) {
+              DeviceLog.log('SfmResume', 'resume persist failed: $e');
+            } finally {
+              if (!done.isCompleted) done.complete();
+            }
+          }());
         case SfmLiveFailed(:final stage, :final message):
           DeviceLog.log(
             'SfmResume',
@@ -197,7 +276,7 @@ Future<void> _resumeOne(String captureDir) async {
     // not persist LOCAL as the final user-visible cloud; a failed refine leaves
     // the db for a later retry.
     await done.future.timeout(
-      const Duration(minutes: 8),
+      timeout,
       onTimeout: () {
         DeviceLog.log('SfmResume', '$captureDir timed out (kept partial/none)');
       },
@@ -219,10 +298,14 @@ Future<void> _resumeOne(String captureDir) async {
 /// ——不算术平均,见 representative_color.dart), then persist. True color is a baseline of the
 /// sparse cloud, not an enhancement; a recovered draft looks identical to one
 /// finalized live.
-Future<void> _persistColored(String captureDir, SfmLiveSnapshot snap) async {
+Future<void> _persistColored(
+  String captureDir,
+  SfmLiveSnapshot snap, {
+  Map<int, SfmFedFrameMeta>? frameMeta,
+}) async {
   final n = snap.pointCount;
   if (n == 0) return;
-  final frameMeta = await _loadFrameMeta(captureDir);
+  frameMeta ??= await _loadFrameMeta(captureDir);
   final offs = snap.obsOffsets;
   final fids = snap.obsFrameIds;
   final oxy = snap.obsXY;
@@ -240,11 +323,7 @@ Future<void> _persistColored(String captureDir, SfmLiveSnapshot snap) async {
       'SfmResume',
       'colorize: no photo source for $captureDir → gray',
     );
-    await persistSparseSnapshot(
-      captureDir: captureDir,
-      snapshot: snap,
-      rgb: rgb,
-    );
+    await _filterAndPersist(captureDir, snap, rgb);
     return;
   }
 
@@ -265,44 +344,28 @@ Future<void> _persistColored(String captureDir, SfmLiveSnapshot snap) async {
   }
 
   // 代表色样本池:与 live 侧 _colorizeSnapshot 完全同构(共享
-  // representative_color.dart),保证冷恢复与现场取色逐点一致。
+  // representative_color.dart + colorize_pipeline.dart),保证冷恢复与
+  // 现场取色逐点一致。07-12 并行两刀(jpegPath 去重 + 有界并行 3)随
+  // 共享 pipeline 一并生效,输出逐位不变(顺序=byFrame 插入序)。
   final samples = RepresentativeColorSamples(obsCap);
+  final jobs = <ColorizeFrameJob>[];
   for (final entry in byFrame.entries) {
     final meta = frameMeta[entry.key]!;
-    final sj = await _decodeJpegNative(meta.jpegPath);
-    if (sj == null) continue;
-    final scaleX = sj.w / meta.grayW, scaleY = sj.h / meta.grayH;
-    final rgbP = sj.rgb;
-    final jw = sj.w, jh = sj.h;
-    final tri = entry.value;
-    for (var k = 0; k < tri.length; k += 3) {
-      final i = tri[k].toInt();
-      // COLMAP samples at xy - 0.5 (pixel-center convention), bilinear,
-      // out-of-bounds skipped.
-      final fx = tri[k + 1] * scaleX - 0.5;
-      final fy = tri[k + 2] * scaleY - 0.5;
-      final x0 = fx.floor(), y0 = fy.floor();
-      final x1 = x0 + 1, y1 = y0 + 1;
-      if (x0 < 0 || y0 < 0 || x1 >= jw || y1 >= jh) continue;
-      final dx = fx - x0, dy = fy - y0;
-      final w00 = (1 - dx) * (1 - dy), w01 = dx * (1 - dy);
-      final w10 = (1 - dx) * dy, w11 = dx * dy;
-      final o00 = (y0 * jw + x0) * 3, o01 = (y0 * jw + x1) * 3;
-      final o10 = (y1 * jw + x0) * 3, o11 = (y1 * jw + x1) * 3;
-      samples.add(
-        i,
-        w00 * rgbP[o00] + w01 * rgbP[o01] + w10 * rgbP[o10] + w11 * rgbP[o11],
-        w00 * rgbP[o00 + 1] +
-            w01 * rgbP[o01 + 1] +
-            w10 * rgbP[o10 + 1] +
-            w11 * rgbP[o11 + 1],
-        w00 * rgbP[o00 + 2] +
-            w01 * rgbP[o01 + 2] +
-            w10 * rgbP[o10 + 2] +
-            w11 * rgbP[o11 + 2],
-      );
-    }
+    jobs.add(
+      ColorizeFrameJob(
+        jpegPath: meta.jpegPath,
+        grayW: meta.grayW,
+        grayH: meta.grayH,
+        tri: entry.value,
+      ),
+    );
   }
+  await sampleColorsPipelined(
+    jobs: jobs,
+    samples: samples,
+    decode: _decodeJpegNative,
+    maxInFlight: 3,
+  );
 
   var colored = 0;
   for (var i = 0; i < n; i++) {
@@ -320,7 +383,60 @@ Future<void> _persistColored(String captureDir, SfmLiveSnapshot snap) async {
     'colorized ${snap.refined ? "refined" : "local"}: $colored/$n pts '
         'from ${byFrame.length} frames (${frameMeta.length} mapped)',
   );
-  await persistSparseSnapshot(captureDir: captureDir, snapshot: snap, rgb: rgb);
+  await _filterAndPersist(captureDir, snap, rgb);
+}
+
+/// 与 live 主路径对齐【孤点过滤】:live 在 _colorizeSnapshot 尾部对交付
+/// 点云跑保守 orphan filter(零近邻孤点删除,99 分位半径 ×1.2,≥3 观测
+/// track 保护)后才持久化;resume 原先直接 persist,浮点全数落盘。这里
+/// 用同一共享实现(floater_filter.dart)+ 同参数补齐:过滤 → 紧凑拷贝 →
+/// persist(与 live 相同,持久化快照不再携带 obs 数组 —— 观测已被取色
+/// 消费,过滤后的索引也不再对应)。
+Future<void> _filterAndPersist(
+  String captureDir,
+  SfmLiveSnapshot snap,
+  Uint8List rgb,
+) async {
+  final n = snap.pointCount;
+  final flt = floaterKeepIndices(snap.xyz, obsOffsets: snap.obsOffsets);
+  final keepIdx = flt.keep;
+  final m = keepIdx.length;
+  final removedF = n - m;
+  final Float32List fxyz;
+  final Uint8List frgb;
+  if (removedF <= 0) {
+    fxyz = snap.xyz;
+    frgb = rgb;
+  } else {
+    final compact = compactXyzRgbByIndices(snap.xyz, rgb, keepIdx);
+    fxyz = compact.xyz;
+    frgb = compact.rgb;
+  }
+  DeviceLog.log(
+    'Floater',
+    'orphan-filter(resume): kept $m/$n removed=$removedF '
+        '(${n == 0 ? "0.0" : (100 * removedF / n).toStringAsFixed(1)}%) | '
+        'radius=${flt.radius.toStringAsExponential(2)} kMin=1 '
+        'protectedStable=${flt.protectedStable} | ${flt.ms}ms',
+  );
+  TelemetryWriter.instance.event('floater', {
+    'kept': m,
+    'removed': removedF,
+    'protected_stable': flt.protectedStable,
+    'ms': flt.ms,
+    'leg': 'resume',
+  });
+  final fsnap = SfmLiveSnapshot(
+    xyz: fxyz,
+    rgb: frgb,
+    posesPacked: snap.posesPacked,
+    summary: snap.summary,
+    refined: snap.refined,
+    obsOffsets: Int32List(0),
+    obsFrameIds: Int32List(0),
+    obsXY: Float32List(0),
+  );
+  await persistSparseSnapshot(captureDir: captureDir, snapshot: fsnap, rgb: frgb);
 }
 
 Future<void> _prunePhotosAfterSparse(
@@ -362,16 +478,24 @@ Future<void> _prunePhotosAfterSparse(
 }
 
 /// Maps each SfM frame-id → its color photo + the gray dims its keypoints live
-/// in. Prefers the exact `sfm_fed_frames.jsonl` sidecar written during capture;
+/// in, PLUS(重力对齐)该帧的 ARKit CamFromWorld 四元数/平移(拍摄期
+/// _persistFedMeta 落盘的 arkitCamFromWorldQwxyz/Txyz)。返回值直接是
+/// [SfmFedFrameMeta],可原样回填 recon 的 fed-meta(seedFedMeta)——
+/// resume 的取色与重力对齐由此与 live 共享同一数据形状。
+/// 注意:sidecar 不含喂入内参(imageW/fx…),这些字段以 gray 尺寸/0 占位;
+/// resume 链只消费 jpegPath/grayW/grayH/arkitQuatWxyz,占位字段无人读。
+/// Prefers the exact `sfm_fed_frames.jsonl` sidecar written during capture;
 /// falls back (for captures made before that existed, e.g. legacy drafts) to
 /// the identity "SfM frame-id N == Nth shutter photo by capture timestamp",
 /// which holds because frames are fed to SfM in tap order. Paths are rebuilt
 /// under the CURRENT captureDir so a changed app-container UUID can't stale them.
-Future<Map<int, ({String jpegPath, int grayW, int grayH})>> _loadFrameMeta(
-  String captureDir,
-) async {
+Future<Map<int, SfmFedFrameMeta>> _loadFrameMeta(String captureDir) async {
   final photosDir = '$captureDir/photos_highres';
-  final map = <int, ({String jpegPath, int grayW, int grayH})>{};
+  final map = <int, SfmFedFrameMeta>{};
+
+  List<double>? doubles(Object? v) => v is List
+      ? v.map((e) => (e as num).toDouble()).toList(growable: false)
+      : null;
 
   final sidecar = File('$captureDir/sfm_fed_frames.jsonl');
   if (sidecar.existsSync()) {
@@ -381,10 +505,21 @@ Future<Map<int, ({String jpegPath, int grayW, int grayH})>> _loadFrameMeta(
         final m = jsonDecode(line) as Map<String, Object?>;
         final fid = m['frameId'] as int;
         final jpeg = '$photosDir/${(m['jpegPath'] as String).split('/').last}';
-        map[fid] = (
+        final grayW = (m['grayW'] as num).toInt();
+        final grayH = (m['grayH'] as num).toInt();
+        map[fid] = SfmFedFrameMeta(
           jpegPath: jpeg,
-          grayW: (m['grayW'] as num).toInt(),
-          grayH: (m['grayH'] as num).toInt(),
+          imageW: grayW, // 占位(sidecar 不含全分辨率;resume 链不读)
+          imageH: grayH,
+          grayW: grayW,
+          grayH: grayH,
+          fx: 0,
+          fy: 0,
+          cx: 0,
+          cy: 0,
+          arkitQuatWxyz: doubles(m['arkitCamFromWorldQwxyz']),
+          arkitTransTxyz: doubles(m['arkitCamFromWorldTxyz']),
+          arkitCameraCenterWorld: doubles(m['arkitCameraCenterWorld']),
         );
       }
     } catch (_) {}
@@ -392,6 +527,7 @@ Future<Map<int, ({String jpegPath, int grayW, int grayH})>> _loadFrameMeta(
   }
 
   // Legacy fallback: order the per-frame JSONs by capture timestamp.
+  // 无 ARKit 四元数 → 重力对齐自然跳过(cnt<3 门),行为与旧版一致。
   final dir = Directory(photosDir);
   if (!dir.existsSync()) return map;
   final rows = <({double t, String jpeg, int w, int h})>[];
@@ -412,7 +548,17 @@ Future<Map<int, ({String jpegPath, int grayW, int grayH})>> _loadFrameMeta(
   }
   rows.sort((a, b) => a.t.compareTo(b.t));
   for (var i = 0; i < rows.length; i++) {
-    map[i] = (jpegPath: rows[i].jpeg, grayW: rows[i].w, grayH: rows[i].h);
+    map[i] = SfmFedFrameMeta(
+      jpegPath: rows[i].jpeg,
+      imageW: rows[i].w,
+      imageH: rows[i].h,
+      grayW: rows[i].w,
+      grayH: rows[i].h,
+      fx: 0,
+      fy: 0,
+      cx: 0,
+      cy: 0,
+    );
   }
   return map;
 }

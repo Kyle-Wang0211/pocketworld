@@ -25,7 +25,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data' show Int32List, Float32List;
+import 'dart:typed_data' show Int32List, Float32List, Float64List;
 
 import 'package:flutter/foundation.dart'
     show compute, defaultTargetPlatform, TargetPlatform;
@@ -36,8 +36,15 @@ import 'package:vector_math/vector_math_64.dart' show Quaternion, Vector3;
 
 import '../../capture/capture_coverage_cloud.dart';
 import '../../capture/capture_session.dart';
+import '../../capture/colorize_pipeline.dart';
+import '../../capture/floater_filter.dart';
+import '../../capture/parallax_banner_gate.dart';
+import '../../capture/photo_card_state.dart';
+import '../../capture/pw_telemetry.dart';
 import '../../capture/representative_color.dart';
+import '../../capture/shutter_backpressure_gate.dart';
 import '../../capture/sparse_ply.dart';
+import '../../capture/telemetry_writer.dart';
 import '../../capture/dome/dome_target_points.dart';
 import '../../capture/realtime_capture_preview.dart';
 import '../../capture/sfm_live_recon.dart';
@@ -143,6 +150,22 @@ class _ARCapturePageState extends State<ARCapturePage>
   int _sfmFed = 0;
   int _sfmQueued = 0;
 
+  // ─── 修1【等待页阶段透明化】────────────────────────────────────────
+  // 队列清空后后台还有 4 个分钟级阶段(真机实测 phase1 就要 ~113s),
+  // 旧文案"帧队列已清空 · 正在生成最终点云"让用户以为卡死。这里按真实
+  // 事件推进阶段文案并每秒刷新已耗时。只驱动 progressText,不改等待页
+  // 结构/返回/完成逻辑。
+  // 0 = 未进入阶段流(队列还在排空);1 = phase1 整理帧数据(finalize
+  // 已下发→SfmLiveFinalizePhase1Done);2 = phase2 后台全局优化(→
+  // refined 快照);3 = 提取色彩(colorize);4 = 保存点云(persist)。
+  int _sfmFinalizeStage = 0;
+
+  /// 当前阶段的起始时刻(epoch ms),等待页显示"已 Xs"用。
+  int _sfmStageStartMs = 0;
+
+  /// 等待页计秒刷新(1s)。只在 generating 阶段运行,terminal 即停。
+  Timer? _sfmStageTicker;
+
   /// Deferred photo prune. `retainOnlyCuratedPhotos` DELETES every cell-slot
   /// JPEG not in the upload-curation set — but the streaming colorizer samples
   /// the SfM-FED frames (a different, larger set), so pruning at 完成 races the
@@ -172,6 +195,75 @@ class _ARCapturePageState extends State<ARCapturePage>
   // (cross-platform); native only displays what we push.
   final CaptureCoverageCloud _coverageCloud = CaptureCoverageCloud();
   StreamSubscription<SfmFrameFeed>? _coverageFeedSub;
+
+  // ─── "拍摄角度不足"实时横幅(补强1,真值口径)───────────────────────
+  // starvedTrue(观测达标但真实三角化角低于 parallaxMinDeg=5° 的体素数,
+  // 2026-07-11 阈值校准 8°→5°)持续 ≥20 → 顶部
+  // 非阻塞横幅提示绕行补拍;回落 <10(滞回)自动隐藏。去抖/滞回状态机在
+  // parallax_banner_gate.dart(纯 Dart,tool/parallax_banner_check.dart
+  // 断言);采样**不加新计时器**,挂在既有的 markCapture 回调
+  // (_onCoverageKeyframe)与 SfmLiveTrueParallax 事件上。
+  final StarvedParallaxBannerGate _starvedBannerGate =
+      StarvedParallaxBannerGate();
+  bool _starvedBannerVisible = false;
+
+  // ─── ③ 快门背压闸(2026-07-11,45 号冻结案)──────────────────────────
+  // 旧快门只受 `_capturing`(单张在途)约束,对 SfM 队列深度/thermal 无感。
+  // 状态机在 shutter_backpressure_gate.dart(纯 Dart,
+  // tool/shutter_backpressure_check.dart 断言):soft(队列 ≥6,或热机
+  // 队列 ≥4)→ 快门最小间隔 4s + 横幅克制提示;hard(队列 ≥10)→ 快门
+  // 置灰 + "处理中"。数据侧无损 —— 只配速,照片全都会被处理。采样挂在
+  // 既有 SfM 队列事件 + 快门点按上,零新增计时器。
+  ShutterPace _shutterPace = ShutterPace.normal;
+  int _lastShutterAcceptMs = 0;
+
+  // ─── AR 照片卡片四态边框(黑/白/红/黄,判定全在 Dart)──────────────
+  // 状态机在 photo_card_state.dart;native(AetherARKitPlugin 的
+  // setPhotoCardStates)只收 jpegPath→channelValue 做哑渲染。事件驱动:
+  // SfmLiveConnectivity(拍摄期合成连通性)/ finalize 快照(真值)/
+  // markCapture(视差中位数变化)三处触发差量刷新,不轮询。
+
+  /// 最新一份 posesPacked。拍摄期 = worker 的合成连通性(只有
+  /// [frameId, registered] 有效);finalize 快照到达后 = COLMAP 真值。
+  Float64List _sfmLatestPoses = Float64List(0);
+
+  /// Route B(真实三角化角):worker 的 SfmLiveTrueParallax 事件带来的
+  /// "frameId → 该帧观测点真实三角化角中位数(度)"。判黄**只用真值**
+  /// (photo_card_state.frameLowParallaxTrue):真值未到达的已注册帧保持
+  /// 黑(处理中),视锥近似已彻底退出卡片判定(白→黄反序修复);4°/6°
+  /// 滞回消黄白抖动。合并式 upsert:本次没被采样到的帧保留旧值。
+  final Map<int, double> _trueFrameParallaxDeg = <int, double>{};
+
+  /// 白态粘性(防动态污染):frameId → 连续低于白→黄 enter 阈(4°)的
+  /// 真值**采样**次数(photo_card_state.frameBelowEnterStreak 维护,只在
+  /// SfmLiveTrueParallax 采样到达时更新 —— 状态机刷新不计数,否则同一份
+  /// 陈旧采样会被重复计数)。已白帧需连续 2 次采样跌破 enter 阈才转黄,
+  /// 消"点云长大时一批新低视差点瞬间拉低中位"的单次抖动。
+  final Map<int, int> _frameBelowEnterStreak = <int, int>{};
+
+  /// Route B:最近一次 worker 真实视差聚合耗时(ms;-1=尚未到达)。
+  /// 遥测【guidance】行随行携带,便于真机对 SLA 直接对数。
+  int _trueParallaxComputeMs = -1;
+
+  /// 已推送给 native 的每卡状态(jpegPath → channelValue),差量推送用。
+  final Map<String, int> _photoCardStateSent = <String, int>{};
+
+  // ─── 遥测(真机验收显微镜,telemetry_dart.jsonl)────────────────────
+  /// 【tracking】上一次见到的 ARKit trackingStateName —— 变化才记一行。
+  String? _telemLastTrackingState;
+
+  /// 【card】jpegPath → 拍摄时刻(epoch ms):卡片状态变化行回填
+  /// "距拍摄延迟"。_onCoverageKeyframe(每次快门的既有回调)顺手记。
+  final Map<String, int> _photoCaptureEpochMs = <String, int>{};
+
+  /// 【guidance】5s 节流采样定时器(拍摄中运行,完成/退出即停)。
+  Timer? _guidanceTelemetryTimer;
+
+  /// 覆盖云推送合并节流(65k 提额,2026-07-11):满载 packed+编码
+  /// ≈975KB/次,快门与真值注入同秒到达时 leading edge 立即推、400ms
+  /// 窗口内的后续变更合并成一次 trailing 推。
+  Timer? _coveragePushTimer;
+  bool _coveragePushPending = false;
 
   /// 3-state UX: idle → aim → recording.
   /// idle:      user has not started anything; tap → enter aim.
@@ -276,9 +368,24 @@ class _ARCapturePageState extends State<ARCapturePage>
         // Coverage-cloud position upkeep — never lights points up by itself
         // (only markCapture at each shutter does).
         _coverageCloud.ingestPose(p);
+        // 遥测【tracking】:ARKit tracking state 变化事件(既有 pose 流顺手
+        // 记,只在字符串变化时写一行 —— 正常拍摄整场 <10 行)。
+        final tsName = p.trackingStateName;
+        if (tsName != null && tsName != _telemLastTrackingState) {
+          TelemetryWriter.instance.event('tracking', {
+            'state': tsName,
+            'prev': _telemLastTrackingState,
+          });
+          _telemLastTrackingState = tsName;
+        }
         _checkArWarmup(p);
       });
       await session.attach();
+      // 遥测【resource】:拍摄页进入 → 通知 Swift 起 10s 资源采样
+      // (thermal/footprint/电池/CPU/SceneKit FPS → telemetry_native.jsonl)。
+      try {
+        await _arKitChannel.invokeMethod<void>('telemetryCaptureBegin');
+      } catch (_) {}
       if (!mounted) {
         await session.dispose();
         return;
@@ -563,6 +670,17 @@ class _ARCapturePageState extends State<ARCapturePage>
       _previewModel.reset();
       // Fresh take → empty coverage cloud (0 photos ⇒ 0 dots on screen).
       _coverageCloud.reset();
+      // Fresh take → 卡片边框状态机归零(native 卡片已由 clearPhotoCards
+      // 清掉,这里清 Dart 侧差量缓存与连通性数据)。
+      _photoCardStateSent.clear();
+      _photoCaptureEpochMs.clear();
+      _sfmLatestPoses = Float64List(0);
+      _trueFrameParallaxDeg.clear();
+      _frameBelowEnterStreak.clear();
+      _trueParallaxComputeMs = -1;
+      // 补强1:starved 横幅门与覆盖云同时机归零(下方 setState 会重建)。
+      _starvedBannerGate.reset();
+      _starvedBannerVisible = false;
       unawaited(_pushCoverageCloud());
       _coverageFeedSub ??= session.sfmFrameStream.listen(_onCoverageKeyframe);
       setState(() {
@@ -570,6 +688,7 @@ class _ARCapturePageState extends State<ARCapturePage>
         _isAiming = false;
         _lockInProgress = false;
       });
+      _startGuidanceTelemetry();
       // Capture-time streaming SfM: spawn the worker and route keyframe
       // feeds to it. Fully off the critical path — a failed start just
       // means no live preview (the JPEG bundle is unaffected).
@@ -585,8 +704,67 @@ class _ARCapturePageState extends State<ARCapturePage>
   /// streaming SfM — but fully independent of the SfM worker, so the
   /// coverage UX works even where on-device SfM is unavailable).
   void _onCoverageKeyframe(SfmFrameFeed feed) {
-    _coverageCloud.markCapture(feed);
-    unawaited(_pushCoverageCloud());
+    // 遥测【card】:记下每张照片的拍摄时刻(epoch ms),卡片状态变化行
+    // 用它算"距拍摄延迟"。既有回调顺手记,零额外调用。
+    final jp = feed.jpegPath;
+    if (jp != null) {
+      _photoCaptureEpochMs[jp] = DateTime.now().millisecondsSinceEpoch;
+    }
+    // 只在覆盖真的变化时才重打包+推送(markCapture 返回 false = 视锥
+    // 没罩住任何体素,payload 没变);推送走 400ms 合并节流。
+    if (_coverageCloud.markCapture(feed)) {
+      _scheduleCoveragePush();
+    }
+    // 新照片刷新了体素 maxParallaxDeg → 已注册帧的黄/白可能翻转
+    // (黄=低视差,补拍换角度后转白)。差量推送,无变化零开销。
+    _refreshPhotoCardStates();
+    _sampleStarvedBanner();
+  }
+
+  /// 补强1:starved 横幅采样。挂在既有回调上(markCapture 后 +
+  /// SfmLiveTrueParallax 到达后),不新增计时器。只在可见性真的翻转时
+  /// setState —— SfmLiveTrueParallax 处理路径刻意不 rebuild,这里保持
+  /// 同样的克制(翻转是稀有事件)。
+  void _sampleStarvedBanner() {
+    if (!_recording) return;
+    // 真值口径:coverageStats().starvedTrue(观测达标 + 真实三角化角
+    // < parallaxMinDeg=5°),与【guidance】遥测的 starved_true 字段同源同义。
+    final visible = _starvedBannerGate.onSample(
+      _coverageCloud.coverageStats().starvedTrue,
+    );
+    if (visible != _starvedBannerVisible && mounted) {
+      setState(() => _starvedBannerVisible = visible);
+    }
+  }
+
+  /// ③ 快门背压闸采样:队列深度(SfM facade 的 remainingCount,与
+  /// `_sfmQueued` 同源)+ thermal 桶(pw_telemetry FFI,微秒级)→ 状态机
+  /// 得出新档位。挂在既有 SfM 队列事件与快门点按上,零新增计时器;只在
+  /// 档位真的翻转时 setState(翻转是稀有事件),同时记一行遥测。
+  /// [inSetState] = 调用点已在 setState 回调内(SfM 队列事件),此时只改
+  /// 字段,rebuild 由外层 setState 完成,不嵌套。
+  void _recomputeShutterPace({bool inSetState = false}) {
+    final queue = _sfmRecon?.remainingCount ?? 0;
+    final thermal = PwTelemetry.sample()?.thermalState ?? -1;
+    final next = shutterPaceNext(
+      previous: _shutterPace,
+      queueDepth: queue,
+      thermalState: thermal,
+    );
+    if (next == _shutterPace) return;
+    final prev = _shutterPace;
+    _shutterPace = next;
+    TelemetryWriter.instance.event('shutter_pace', {
+      'from': prev.name,
+      'to': next.name,
+      'queue': queue,
+      'thermal': thermal,
+    });
+    DeviceLog.log(
+      'ARCapturePage',
+      'shutter pace ${prev.name}→${next.name} (queue=$queue thermal=$thermal)',
+    );
+    if (!inSetState && mounted) setState(() {});
   }
 
   /// Ships the current coverage state to the native dumb renderer.
@@ -596,6 +774,144 @@ class _ARCapturePageState extends State<ARCapturePage>
       await _arKitChannel.invokeMethod<void>(
         'setCoveragePointCloud',
         <String, dynamic>{'xyz': packed.xyz, 'rgb': packed.rgb},
+      );
+    } catch (_) {
+      // Display-only channel — never let it disturb capture.
+    }
+  }
+
+  /// 覆盖云推送合并节流:首次调用立即推(引导反馈不加延迟),400ms 窗口
+  /// 内的后续变更合并为窗口结束时的一次 trailing 推(推的永远是当时的
+  /// 最新状态,不会丢末尾更新)。65k 满载单次 payload ≈975KB —— 快门
+  /// (~0.4Hz)与真值注入(~0.3Hz)撞在同一秒时从两次推缩成一次。
+  void _scheduleCoveragePush() {
+    if (_coveragePushTimer != null) {
+      _coveragePushPending = true;
+      return;
+    }
+    unawaited(_pushCoverageCloud());
+    _coveragePushTimer = Timer(const Duration(milliseconds: 400), () {
+      _coveragePushTimer = null;
+      if (_coveragePushPending) {
+        _coveragePushPending = false;
+        _scheduleCoveragePush();
+      }
+    });
+  }
+
+  /// 四态边框状态机刷新(判定纯 Dart,见 photo_card_state.dart):对每个
+  /// 已喂 SfM 的帧算 黑(未处理)/白(已注册)/黄(已注册但低视差)/
+  /// 红(断联),与上次推送差量对比,只把变化的 jpegPath→state 推给
+  /// native 哑渲染器。没喂过 SfM 的照片不推——native 默认黑,语义一致。
+  void _refreshPhotoCardStates() {
+    final recon = _sfmRecon;
+    if (recon == null) return;
+    final diff = <String, int>{};
+    recon.fedFrameMeta.forEach((frameId, meta) {
+      // 白→黄反序修复:判黄只用真值(SfmLiveTrueParallax)。真值未到达
+      // → frameLowParallaxTrue 返回 null → 已注册帧保持黑(处理中),
+      // 视锥近似不再参与卡片判定(覆盖云体素级的真值优先+近似兜底不受
+      // 影响)。滞回 4°/6°:上次白/黄裁决从已推送状态恢复,消 1↔3 抖动;
+      // 白→黄另加粘性(连续 2 次采样 <4°,计数在 SfmLiveTrueParallax
+      // 到达处维护,这里只读)。
+      final prev = _photoCardStateSent[meta.jpegPath];
+      final st = photoCardSfmState(
+        frameId: frameId,
+        posesPacked: _sfmLatestPoses,
+        lowParallax: frameLowParallaxTrue(
+          trueMedianDeg: _trueFrameParallaxDeg[frameId],
+          wasLowParallax: prev == PhotoCardSfmState.lowParallax.channelValue
+              ? true
+              : prev == PhotoCardSfmState.registered.channelValue
+              ? false
+              : null,
+          belowEnterStreak: _frameBelowEnterStreak[frameId] ?? 0,
+        ),
+      ).channelValue;
+      if (_photoCardStateSent[meta.jpegPath] != st) {
+        diff[meta.jpegPath] = st;
+      }
+    });
+    if (diff.isEmpty) return;
+    // 遥测【card】:每次状态变化一行(旧态→新态 + 距拍摄延迟)。差量处
+    // 数据都在手上;必须在 addAll 覆盖前读旧态。
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    diff.forEach((jpeg, next) {
+      final capturedAt = _photoCaptureEpochMs[jpeg];
+      TelemetryWriter.instance.event('card', {
+        'jpeg': jpeg.split('/').last,
+        'old': _photoCardStateSent[jpeg],
+        'new': next,
+        if (capturedAt != null) 'since_capture_ms': nowMs - capturedAt,
+      });
+    });
+    _photoCardStateSent.addAll(diff);
+    unawaited(_pushPhotoCardStates(diff));
+  }
+
+  /// 遥测【guidance】:拍摄期 5s 节流采样 —— 断连区段摘要(合成连通性
+  /// posesPacked)+ 覆盖云红黄绿体素计数 + 视差饥饿体素数。全部只读
+  /// 现有状态(coverageStats/disconnectedSegmentsFromPoses),不碰引导逻辑。
+  void _startGuidanceTelemetry() {
+    _guidanceTelemetryTimer?.cancel();
+    _guidanceTelemetryTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (!_recording) return;
+      try {
+        final cov = _coverageCloud.coverageStats();
+        final segs = disconnectedSegmentsFromPoses(_sfmLatestPoses);
+        var disconnectedFrames = 0;
+        for (final s in segs) {
+          disconnectedFrames += s.count;
+        }
+        TelemetryWriter.instance.event('guidance', {
+          'covered': cov.covered,
+          'red': cov.red,
+          'yellow': cov.yellow,
+          'green': cov.green,
+          'parallax_capped': cov.parallaxCapped,
+          'parallax_starved': _coverageCloud.parallaxStarvedVoxelCount,
+          // Route B 真值对数字段:starved_true = 观测达标但真实三角化角
+          // < parallaxMinDeg(5°,2026-07-11 校准)的体素(route A 同口径
+          // 上次只报 1/5997);true_lt8/true_vox 字段名沿革自旧锚 8°,现
+          // 口径 = <5°(历史对数:最终云点级 <8° 占比实锤 40.3%);
+          // true_frame_lp = 真值判黄的帧数;true_ms = worker 聚合耗时。
+          'starved_true': cov.starvedTrue,
+          'true_vox': cov.trueVoxels,
+          'true_lt8': cov.trueLt8,
+          'true_frame_lp': _trueFrameParallaxDeg.values
+              .where((d) => d < _coverageCloud.parallaxMinDeg)
+              .length,
+          'true_ms': _trueParallaxComputeMs,
+          // 案②修复对数:容量淘汰累计(>0 = 摸到 16000 安全阀;淘汰序已
+          // 保证新区必胜,这里只留观测量)。
+          'evicted': _coverageCloud.evictedTotal,
+          'captures': _coverageCloud.capturesMarked,
+          'fed': _sfmFed,
+          'queued': _sfmQueued,
+          'n_disconnected_frames': disconnectedFrames,
+          'n_segments': segs.length,
+          // 区段摘要(封顶 8 段防刷行):[firstId,lastId,count]。
+          'segments': [
+            for (final s in segs.take(8)) [s.firstId, s.lastId, s.count],
+          ],
+        });
+      } catch (_) {
+        // 遥测绝不伤害拍摄。
+      }
+    });
+  }
+
+  void _stopGuidanceTelemetry() {
+    _guidanceTelemetryTimer?.cancel();
+    _guidanceTelemetryTimer = null;
+  }
+
+  /// 把状态差量交给 native(AetherARKitPlugin `setPhotoCardStates`)。
+  Future<void> _pushPhotoCardStates(Map<String, int> diff) async {
+    try {
+      await _arKitChannel.invokeMethod<void>(
+        'setPhotoCardStates',
+        <String, dynamic>{'states': diff},
       );
     } catch (_) {
       // Display-only channel — never let it disturb capture.
@@ -635,15 +951,129 @@ class _ARCapturePageState extends State<ARCapturePage>
     }
   }
 
+  /// 修1:推进等待页阶段(单调递增,重复/回退调用被忽略),重置该阶段的
+  /// 计秒起点。事件驱动,不轮询 worker。
+  void _advanceSfmStage(int stage) {
+    if (stage <= _sfmFinalizeStage) return;
+    _sfmFinalizeStage = stage;
+    _sfmStageStartMs = DateTime.now().millisecondsSinceEpoch;
+    if (mounted && _sfmPhase != null) setState(() {});
+  }
+
+  /// 修1:等待页计秒 ticker。generating 期间每秒 setState 刷新"已 Xs";
+  /// 离开 generating 自停(refined/error/完成都会停)。
+  void _startSfmStageTicker() {
+    _sfmStageTicker?.cancel();
+    _sfmStageTicker = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted || _sfmPhase != SfmPreviewPhase.generating) {
+        t.cancel();
+        if (identical(_sfmStageTicker, t)) _sfmStageTicker = null;
+        return;
+      }
+      if (_sfmFinalizeStage > 0 && _sfmQueued == 0) setState(() {});
+    });
+  }
+
+  void _stopSfmStageTicker() {
+    _sfmStageTicker?.cancel();
+    _sfmStageTicker = null;
+    _sfmFinalizeStage = 0;
+    _sfmStageStartMs = 0;
+  }
+
+  /// 修1:队列清空后的阶段文案(带该阶段已耗时)。阶段事件尚未到达时
+  /// 保底沿用旧文案,绝不显示空白。
+  ///
+  /// 阶段 2 细分(2026-07-11 案③顺带,46 号 155s 无子进度):native 的
+  /// finalize_segments 只在结束后落盘、worker 阶段 2 内无中途事件,所以
+  /// 这里做文案层轮换 —— enrich 补匹配与 stage1 全局 BA 本来就是并行跑
+  /// (finalize 三重优化定案),12s 轮换两句都是真话;真实子进度事件
+  /// 以后有了再接,不过度工程。已用时显示保留。
+  String _sfmStageProgressText() {
+    if (_sfmFinalizeStage <= 0) return '帧队列已清空 · 正在生成最终点云';
+    final secs = _sfmStageStartMs > 0
+        ? ((DateTime.now().millisecondsSinceEpoch - _sfmStageStartMs) / 1000)
+              .floor()
+        : 0;
+    final elapsed = secs < 60 ? '$secs 秒' : '${secs ~/ 60} 分 ${secs % 60} 秒';
+    return switch (_sfmFinalizeStage) {
+      1 => '整理帧数据…(阶段 1/4 · 已 $elapsed)',
+      2 =>
+        (secs ~/ 12).isEven
+            ? '补全匹配中…(阶段 2/4 · 已 $elapsed)'
+            : '全局优化中…(阶段 2/4 · 已 $elapsed)',
+      3 => '提取色彩…(阶段 3/4 · 已 $elapsed)',
+      _ => '保存点云…(阶段 4/4 · 已 $elapsed)',
+    };
+  }
+
   void _onSfmEvent(SfmLiveEvent event) {
     if (!mounted) return;
+    // 卡片边框连通性(黑→白/红):native 渲染,Flutter 无需 rebuild —
+    // 不进 setState,处理完直接返回。
+    if (event is SfmLiveConnectivity) {
+      _sfmLatestPoses = event.posesPacked;
+      _refreshPhotoCardStates();
+      return;
+    }
+    // Route B 真实三角化角到达:①帧级中位数合并进判黄真值表 ②体素级
+    // 真值注入覆盖云(压黄逻辑改用真值)→ 卡片与覆盖云都可能变色。
+    // 全部 native 哑渲染,无需 rebuild —— 不进 setState,处理完直接返回。
+    if (event is SfmLiveTrueParallax) {
+      final fp = event.framesPacked;
+      for (var i = 0; i + 1 < fp.length; i += 2) {
+        final fid = fp[i].toInt();
+        final deg = fp[i + 1];
+        _trueFrameParallaxDeg[fid] = deg;
+        // 白态粘性计数:只在真值采样到达处更新(连续 <4° 采样次数;
+        // ≥4° 清零)。_refreshPhotoCardStates 只读,不重复计数。
+        _frameBelowEnterStreak[fid] = frameBelowEnterStreak(
+          sampleDeg: deg,
+          prevStreak: _frameBelowEnterStreak[fid] ?? 0,
+        );
+      }
+      _coverageCloud.applyTrueParallax(event.voxelKeys, event.voxelDeg);
+      _trueParallaxComputeMs = event.computeMs;
+      _refreshPhotoCardStates();
+      _scheduleCoveragePush(); // 真值可能翻体素颜色 → 合并节流推送
+
+      // 补强1:真值刚注入 → starved 计数可能变化,顺路采样(去抖/滞回
+      // 在 gate 内;只在横幅翻转时才 setState,不破坏本分支"不 rebuild"
+      // 的克制)。
+      _sampleStarvedBanner();
+      return;
+    }
     setState(() {
       switch (event) {
+        case SfmLiveConnectivity():
+        case SfmLiveTrueParallax():
+          break; // 已在上方早退处理(不触发 rebuild)
         case SfmLiveFrameFed():
           _sfmFed = _sfmRecon?.fedCount ?? _sfmFed;
           _sfmQueued = _sfmRecon?.remainingCount ?? _sfmQueued;
+          // ③ 快门背压闸:队列深度刚变,重估配速档(已在 setState 内)。
+          _recomputeShutterPace(inSetState: true);
+          // 修1:等待页上队列刚排空 → finalize 即将/已经下发,进入
+          // 阶段 1(整理帧数据/phase1)。已在 setState 内,直接改字段。
+          if (_sfmPhase == SfmPreviewPhase.generating &&
+              _sfmQueued == 0 &&
+              _sfmFinalizeStage == 0) {
+            _sfmFinalizeStage = 1;
+            _sfmStageStartMs = DateTime.now().millisecondsSinceEpoch;
+          }
         case SfmLiveFrameQueued():
           _sfmQueued = _sfmRecon?.remainingCount ?? _sfmQueued;
+          // ③ 快门背压闸:入队即重估(队列上行沿是闸的主要触发)。
+          _recomputeShutterPace(inSetState: true);
+        case SfmLiveFinalizePhase1Done():
+          // 修1:phase1 完成 → 阶段 2(后台全局 BA,分钟级)。
+          if (_sfmPhase == SfmPreviewPhase.generating &&
+              _sfmFinalizeStage < 2) {
+            _sfmFinalizeStage = 2;
+            _sfmStageStartMs = DateTime.now().millisecondsSinceEpoch;
+            // 案④:灵动岛真实进度锚点 1 —— phase1 完成 = 10%。
+            unawaited(_pushReconProgress(0.10, '全局优化中'));
+          }
         case SfmLivePreview():
         case SfmLiveLocalReady():
         case SfmLiveRefined():
@@ -690,6 +1120,21 @@ class _ARCapturePageState extends State<ARCapturePage>
       case SfmLivePreview(:final snapshot):
       case SfmLiveLocalReady(:final snapshot):
       case SfmLiveRefined(:final snapshot):
+        // 卡片边框终态刷新:快照的 posesPacked 是注册真值(finalize 为
+        // COLMAP registered 位;流式 preview 为合成连通性),覆盖拍摄期
+        // 的实时判定。空 poses(异常路径)不回退已有状态。
+        if (snapshot.posesPacked.isNotEmpty) {
+          _sfmLatestPoses = snapshot.posesPacked;
+          _refreshPhotoCardStates();
+        }
+        // 修1:finalize 快照到达 → 阶段 3(提取色彩)。拍摄期的流式
+        // preview(_sfmPhase == null)不进阶段流。
+        if (_sfmPhase == SfmPreviewPhase.generating) {
+          _advanceSfmStage(3);
+          // 案④:灵动岛真实进度锚点 2 —— RefineGlobalBA 全段完 = 75%
+          // (46 号 segments 实测:该段占总等待 96%,合成爬行在段内兜底)。
+          unawaited(_pushReconProgress(0.75, '提取色彩中'));
+        }
         _colorizeTarget = snapshot;
         unawaited(_colorizeSnapshot(snapshot));
       default:
@@ -740,70 +1185,68 @@ class _ARCapturePageState extends State<ARCapturePage>
     // (不再算术平均——白床单混入个别红观测会被平均成粉,见
     // representative_color.dart)。
     final samples = RepresentativeColorSamples(obsCap);
-    var decoded = 0, decodeFail = 0;
+    // 取色解码 pipeline(colorize_pipeline.dart,07-12 提速两刀,输出逐位
+    // 一致,tool/colorize_parallel_check.dart 有串行对拍断言):
+    //   ① 按 jpegPath 去重共享解码(槽位重拍历史同文件只解一次);
+    //   ② 有界并行 3 + 单 consumer 严格按 byFrame 插入序采样(与旧逐帧
+    //      串行同序)。cap47 遥测:6.8s ≈ 121×56ms 串行解码受限 → 预期 ~2s。
+    // native 侧配套:colorizeQueue 已改并发队列(Dart 窗口=唯一 in-flight
+    // 上限,3×1280px RGB ≈ 11MB)。每帧解码仍走 native ImageIO downscale
+    // (1280px 长边,30-80ms;纯 Dart 全分辨率解码 1.5-4s 是"白点云"旧根因)。
+    // 取消哨兵与旧逐帧检查同语义:被新快照取代立刻停。
+    // NOTE: no !mounted bail here — even if the user tapped 完成 and the page
+    // popped, we finish + PERSIST so the draft PLY carries color.
+    final jobs = <ColorizeFrameJob>[];
     for (final entry in byFrame.entries) {
-      // Superseded by a newer snapshot? bail — that one's colorize will run.
-      // NOTE: no !mounted bail here — even if the user tapped 完成 and the page
-      // popped, we finish + PERSIST so the draft PLY carries color.
-      if (!identical(_colorizeTarget, snap)) return;
       final meta = recon.fedFrameMeta[entry.key]!;
-      // FAST on-device decode: native ImageIO downscale (1280px long edge) —
-      // 30-80 ms vs the 1.5-4 s of a pure-Dart full-res 4K decode on a
-      // thermal-throttled A16 (the "white cloud" root cause: full-res never
-      // finished before the page popped). Full-res is host-regen-only now.
-      final sj = await _decodeJpegNative(meta.jpegPath);
-      if (sj == null) {
-        decodeFail++;
-        continue;
-      }
-      decoded++;
-      // Keypoint coords live in fed-gray pixel space; the JPEG shares the same
-      // sensor orientation, only the scale differs.
-      final scaleX = sj.w / meta.grayW, scaleY = sj.h / meta.grayH;
-      final rgbP = sj.rgb;
-      final jw = sj.w, jh = sj.h;
-      final tri = entry.value;
-      for (var k = 0; k < tri.length; k += 3) {
-        final i = tri[k].toInt();
-        // COLMAP samples at xy - 0.5 (upper-left pixel center = (0.5,0.5)),
-        // bilinear, out-of-bounds skipped — Bitmap::InterpolateBilinear.
-        final fx = tri[k + 1] * scaleX - 0.5;
-        final fy = tri[k + 2] * scaleY - 0.5;
-        final x0 = fx.floor(), y0 = fy.floor();
-        final x1 = x0 + 1, y1 = y0 + 1;
-        if (x0 < 0 || y0 < 0 || x1 >= jw || y1 >= jh) continue;
-        final dx = fx - x0, dy = fy - y0;
-        final w00 = (1 - dx) * (1 - dy), w01 = dx * (1 - dy);
-        final w10 = (1 - dx) * dy, w11 = dx * dy;
-        final o00 = (y0 * jw + x0) * 3, o01 = (y0 * jw + x1) * 3;
-        final o10 = (y1 * jw + x0) * 3, o11 = (y1 * jw + x1) * 3;
-        samples.add(
-          i,
-          w00 * rgbP[o00] +
-              w01 * rgbP[o01] +
-              w10 * rgbP[o10] +
-              w11 * rgbP[o11],
-          w00 * rgbP[o00 + 1] +
-              w01 * rgbP[o01 + 1] +
-              w10 * rgbP[o10 + 1] +
-              w11 * rgbP[o11 + 1],
-          w00 * rgbP[o00 + 2] +
-              w01 * rgbP[o01 + 2] +
-              w10 * rgbP[o10 + 2] +
-              w11 * rgbP[o11 + 2],
-        );
-      }
+      jobs.add(
+        ColorizeFrameJob(
+          jpegPath: meta.jpegPath,
+          grayW: meta.grayW,
+          grayH: meta.grayH,
+          tri: entry.value,
+        ),
+      );
     }
+    final dstats = await sampleColorsPipelined(
+      jobs: jobs,
+      samples: samples,
+      decode: _decodeJpegNative,
+      maxInFlight: 3,
+      isCancelled: () => !identical(_colorizeTarget, snap),
+    );
+    final decoded = dstats.framesSampled;
+    final decodeFail = dstats.decodeFail;
+    // 遥测【colorize】:每次真实 native 解码耗时(去重后 unique 次数;
+    // 中位数定位 ImageIO 慢帧/热降频)。
+    final decodeMsList = dstats.decodeMs;
     if (!identical(_colorizeTarget, snap)) {
-      return; // superseded during last frame
+      return; // superseded during decode/sampling
     }
 
     final rgb = Uint8List(n * 3);
     var colored = 0;
+    // 遥测【colorize】取色统计(归约处顺手算,几乎零成本):每点样本数
+    // 直方图 [1,2,3-4,5-8,9+]、样本对代表色的均方差(混色嫌疑信号)。
+    final obsHist = List<int>.filled(5, 0);
+    final rmsList = <double>[];
+    var rmsGt40 = 0;
     for (var i = 0; i < n; i++) {
       // 代表色归约:选亮度中位的真实观测样本,不合成新颜色。
       if (samples.selectInto(i, rgb)) {
         colored++;
+        final hc = samples.hitCount(i);
+        obsHist[obsHistBucket(hc)]++;
+        if (hc >= 2) {
+          final rms = samples.rmsDeviation(
+            i,
+            rgb[i * 3],
+            rgb[i * 3 + 1],
+            rgb[i * 3 + 2],
+          );
+          rmsList.add(rms);
+          if (rms > 40) rmsGt40++;
+        }
       } else {
         // Track frames unavailable (decode failed) — readable light gray.
         rgb[i * 3] = 185;
@@ -816,14 +1259,45 @@ class _ARCapturePageState extends State<ARCapturePage>
       'Colorize',
       '${snap.refined ? "refined" : "local"} done in ${sw.elapsedMilliseconds}ms: '
           'colored $colored/$n (${(100 * colored / n).round()}%) | '
-          'frames decoded=$decoded fail=$decodeFail',
+          'frames decoded=$decoded fail=$decodeFail '
+          'unique=${dstats.uniqueDecodes} par=3',
     );
+    // 遥测【colorize】一行汇总(排序两个小数组,~几 ms,等待页后台)。
+    try {
+      decodeMsList.sort();
+      rmsList.sort();
+      double r1(double? v) => v == null ? 0 : (v * 10).round() / 10;
+      TelemetryWriter.instance.event('colorize', {
+        'refined': snap.refined,
+        'total_ms': sw.elapsedMilliseconds,
+        'frames': byFrame.length,
+        'decoded': decoded,
+        'decode_fail': decodeFail,
+        // 07-12 并行化新增:真实 native 解码次数(按 jpegPath 去重)与
+        // 并行窗口;frames-decode_unique = 去重省下的解码次数。
+        'decode_unique': dstats.uniqueDecodes,
+        'decode_par': 3,
+        'decode_ms_p50': r1(percentileSorted(decodeMsList, 0.50)),
+        'decode_ms_p90': r1(percentileSorted(decodeMsList, 0.90)),
+        'decode_ms_max': decodeMsList.isEmpty ? 0 : decodeMsList.last.round(),
+        'points': n,
+        'colored': colored,
+        'no_obs': n - colored, // 无可用观测(解码失败/track 帧缺失)→ 灰点
+        'obs_hist': obsHist, // [1, 2, 3-4, 5-8, 9+]
+        'var_n': rmsList.length,
+        'var_p50': r1(percentileSorted(rmsList, 0.50)),
+        'var_p90': r1(percentileSorted(rmsList, 0.90)),
+        'var_gt40': rmsGt40, // 混色嫌疑点数(均方差 > 40 灰阶)
+      });
+    } catch (_) {}
     // ── Conservative orphan floater removal ── (workflow verify: density-
     // relative outlier removal nibbles real sparse walls/edges AND misses the
     // clustered floaters, so ship ONLY the risk-free zero-neighbor orphan test
     // at a high-percentile radius). Filters the DELIVERED cloud (screen +
     // sfm_sparse.ply); the dense path recomputes from sfm_live.db → untouched.
-    final flt = _floaterKeepIndices(snap.xyz, obsOffsets: snap.obsOffsets);
+    // 实现在 floater_filter.dart(逐字提出的共享纯函数,断点续跑
+    // sfm_resume.dart 复用同参数)。
+    final flt = floaterKeepIndices(snap.xyz, obsOffsets: snap.obsOffsets);
     final keepIdx = flt.keep;
     final int m = keepIdx.length;
     final int removedF = n - m;
@@ -833,17 +1307,9 @@ class _ARCapturePageState extends State<ARCapturePage>
       fxyz = snap.xyz;
       frgb = rgb;
     } else {
-      fxyz = Float32List(m * 3);
-      frgb = Uint8List(m * 3);
-      for (var k = 0; k < m; k++) {
-        final i = keepIdx[k];
-        fxyz[k * 3] = snap.xyz[i * 3];
-        fxyz[k * 3 + 1] = snap.xyz[i * 3 + 1];
-        fxyz[k * 3 + 2] = snap.xyz[i * 3 + 2];
-        frgb[k * 3] = rgb[i * 3];
-        frgb[k * 3 + 1] = rgb[i * 3 + 1];
-        frgb[k * 3 + 2] = rgb[i * 3 + 2];
-      }
+      final compact = compactXyzRgbByIndices(snap.xyz, rgb, keepIdx);
+      fxyz = compact.xyz;
+      frgb = compact.rgb;
     }
     DeviceLog.log(
       'Floater',
@@ -852,6 +1318,13 @@ class _ARCapturePageState extends State<ARCapturePage>
           'radius=${flt.radius.toStringAsExponential(2)} kMin=1 '
           'protectedStable=${flt.protectedStable} | ${flt.ms}ms',
     );
+    // 遥测【colorize/floater】:孤点过滤结果(数据已在手上)。
+    TelemetryWriter.instance.event('floater', {
+      'kept': m,
+      'removed': removedF,
+      'protected_stable': flt.protectedStable,
+      'ms': flt.ms,
+    });
     // Filtered snapshot reused for BOTH persist and display (empty obs — the
     // colorize already consumed them; persist's track-hist guards on obs length).
     final fsnap = SfmLiveSnapshot(
@@ -866,16 +1339,51 @@ class _ARCapturePageState extends State<ARCapturePage>
     );
     // PERSIST FIRST: the completion button must mean that the final colored PLY
     // is actually on disk, not merely queued for a later asynchronous write.
+    // 修1:进入阶段 4(保存点云)。
+    if (_sfmPhase == SfmPreviewPhase.generating &&
+        identical(_colorizeTarget, snap)) {
+      _advanceSfmStage(4);
+      // 案④:灵动岛真实进度锚点 3 —— 取色完成、开始落盘 = 85%。
+      unawaited(_pushReconProgress(0.85, '保存点云中'));
+    }
     final captureDir = _session?.captureDir;
     if (captureDir != null && identical(_colorizeTarget, snap)) {
+      final psw = Stopwatch()..start();
+      var persistOk = false;
       try {
         await persistSparseSnapshot(
           captureDir: captureDir,
           snapshot: fsnap,
           rgb: frgb,
         );
+        persistOk = true;
       } catch (e) {
         DeviceLog.log('ARCapturePage', 'final sparse persist failed: $e');
+      }
+      psw.stop();
+      // 遥测【persist】:PLY+meta 落盘耗时与字节数("完成"按钮的前置)。
+      try {
+        int fileLen(String p) {
+          try {
+            return File(p).lengthSync();
+          } catch (_) {
+            return -1;
+          }
+        }
+
+        TelemetryWriter.instance.event('persist', {
+          'ok': persistOk,
+          'ms': psw.elapsedMilliseconds,
+          'n_pts': fsnap.pointCount,
+          'refined': fsnap.refined,
+          'ply_bytes': fileLen('$captureDir/sfm_sparse.ply'),
+          'meta_bytes': fileLen('$captureDir/sfm_sparse_meta.json'),
+        });
+      } catch (_) {}
+      // 案④:灵动岛真实进度锚点 4 —— PLY 已在盘上 = 95%
+      // (100% 仍只由 endReconUmbrella 置,语义 = "完成"按钮可见)。
+      if (persistOk) {
+        unawaited(_pushReconProgress(0.95, '即将完成'));
       }
     }
     // Display only if still mounted + current. THIS is where the cloud first
@@ -934,165 +1442,9 @@ class _ARCapturePageState extends State<ARCapturePage>
     unawaited(pending.session.retainOnlyCuratedPhotos(pending.curated));
   }
 
-  // ── Orphan floater removal (conservative) ──
-  // Delete ONLY points with ZERO neighbors inside a HIGH-percentile radius —
-  // truly isolated speckle, never the dense surface or its (still-connected)
-  // sparse/edge regions. The radius comes from the cloud's OWN nearest-neighbor
-  // distribution (scale-invariant across captures) at the 99th percentile ×1.2,
-  // so legitimately sparse real walls stay above the cull line. O(n) via a hash
-  // grid (cell = radius → the 27-cell neighborhood covers the search sphere;
-  // early-exit on the first neighbor keeps the dense majority ~O(1)). Aggressive
-  // density-relative removal (SOR / small radius) was rejected: on an ~80%-2-view
-  // cloud it nibbles edges + sparse walls (violates 点更多不能稀疏) and can't kill
-  // the clustered/ghost floaters anyway. This only removes unambiguous orphans.
-  static const int _kFloaterMinCloud = 2000; // below this, don't filter
-  static const int _kFloaterScaleSample = 4096; // NN-distribution subsample cap
-  static const double _kFloaterPct = 0.99; // radius from this NN percentile
-  static const double _kFloaterRadiusMul = 1.2; // headroom above the percentile
-
-  static int _floaterCellKey(int cx, int cy, int cz) =>
-      (cx & 0x1FFFFF) | ((cy & 0x1FFFFF) << 21) | ((cz & 0x1FFFFF) << 42);
-
-  /// Survivor indices after orphan removal. Returns ALL indices (no-op) on any
-  /// degeneracy or a too-small cloud — always errs toward keeping points.
-  ({Int32List keep, double radius, int protectedStable, int ms})
-  _floaterKeepIndices(Float32List xyz, {Int32List? obsOffsets}) {
-    final sw = Stopwatch()..start();
-    final n = xyz.length ~/ 3;
-    Int32List allIdx() {
-      final a = Int32List(n);
-      for (var i = 0; i < n; i++) {
-        a[i] = i;
-      }
-      return a;
-    }
-
-    ({Int32List keep, double radius, int protectedStable, int ms}) allKeep() =>
-        (
-          keep: allIdx(),
-          radius: 0,
-          protectedStable: 0,
-          ms: sw.elapsedMilliseconds,
-        );
-    if (n < _kFloaterMinCloud) {
-      return allKeep();
-    }
-    var minX = xyz[0], minY = xyz[1], minZ = xyz[2];
-    var maxX = xyz[0], maxY = xyz[1], maxZ = xyz[2];
-    for (var i = 1; i < n; i++) {
-      final x = xyz[i * 3], y = xyz[i * 3 + 1], z = xyz[i * 3 + 2];
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
-      if (z < minZ) minZ = z;
-      if (z > maxZ) maxZ = z;
-    }
-    final ex = maxX - minX, ey = maxY - minY, ez = maxZ - minZ;
-    final diag = math.sqrt(ex * ex + ey * ey + ez * ez);
-    if (!(diag > 0)) {
-      return allKeep();
-    }
-    Map<int, List<int>> build(double cell) {
-      final g = <int, List<int>>{};
-      final inv = 1.0 / cell;
-      for (var i = 0; i < n; i++) {
-        final cx = ((xyz[i * 3] - minX) * inv).floor();
-        final cy = ((xyz[i * 3 + 1] - minY) * inv).floor();
-        final cz = ((xyz[i * 3 + 2] - minZ) * inv).floor();
-        (g[_floaterCellKey(cx, cy, cz)] ??= <int>[]).add(i);
-      }
-      return g;
-    }
-
-    // 1) Estimate the nearest-neighbor distance distribution on a coarse grid.
-    final c0 = diag / math.pow(n, 1 / 3);
-    if (!(c0 > 0)) {
-      return allKeep();
-    }
-    final g0 = build(c0);
-    final inv0 = 1.0 / c0;
-    final stride = (n / _kFloaterScaleSample).ceil().clamp(1, n);
-    final nn = <double>[];
-    for (var i = 0; i < n; i += stride) {
-      final cx = ((xyz[i * 3] - minX) * inv0).floor();
-      final cy = ((xyz[i * 3 + 1] - minY) * inv0).floor();
-      final cz = ((xyz[i * 3 + 2] - minZ) * inv0).floor();
-      var best = double.infinity;
-      for (var a = -1; a <= 1; a++) {
-        for (var b = -1; b <= 1; b++) {
-          for (var c = -1; c <= 1; c++) {
-            final lst = g0[_floaterCellKey(cx + a, cy + b, cz + c)];
-            if (lst == null) continue;
-            for (final j in lst) {
-              if (j == i) continue;
-              final dx = xyz[i * 3] - xyz[j * 3];
-              final dy = xyz[i * 3 + 1] - xyz[j * 3 + 1];
-              final dz = xyz[i * 3 + 2] - xyz[j * 3 + 2];
-              final d2 = dx * dx + dy * dy + dz * dz;
-              if (d2 < best) best = d2;
-            }
-          }
-        }
-      }
-      if (best.isFinite) nn.add(math.sqrt(best));
-    }
-    if (nn.isEmpty) {
-      return allKeep();
-    }
-    nn.sort();
-    final p = nn[(nn.length * _kFloaterPct).floor().clamp(0, nn.length - 1)];
-    final radius = p * _kFloaterRadiusMul;
-    if (!(radius > 0)) {
-      return allKeep();
-    }
-    // 2) Keep points with >=1 neighbor within `radius` (cell = radius so the
-    //    27-cell neighborhood covers the sphere); delete zero-neighbor orphans.
-    final r2 = radius * radius;
-    final g = build(radius);
-    final invR = 1.0 / radius;
-    final keep = <int>[];
-    var protectedStable = 0;
-    for (var i = 0; i < n; i++) {
-      if (obsOffsets != null &&
-          obsOffsets.length == n + 1 &&
-          obsOffsets[i + 1] - obsOffsets[i] >= 3) {
-        keep.add(i);
-        protectedStable++;
-        continue;
-      }
-      final cx = ((xyz[i * 3] - minX) * invR).floor();
-      final cy = ((xyz[i * 3 + 1] - minY) * invR).floor();
-      final cz = ((xyz[i * 3 + 2] - minZ) * invR).floor();
-      var found = false;
-      for (var a = -1; a <= 1 && !found; a++) {
-        for (var b = -1; b <= 1 && !found; b++) {
-          for (var c = -1; c <= 1 && !found; c++) {
-            final lst = g[_floaterCellKey(cx + a, cy + b, cz + c)];
-            if (lst == null) continue;
-            for (final j in lst) {
-              if (j == i) continue;
-              final dx = xyz[i * 3] - xyz[j * 3];
-              final dy = xyz[i * 3 + 1] - xyz[j * 3 + 1];
-              final dz = xyz[i * 3 + 2] - xyz[j * 3 + 2];
-              if (dx * dx + dy * dy + dz * dz <= r2) {
-                found = true;
-                break;
-              }
-            }
-          }
-        }
-      }
-      if (found) keep.add(i);
-    }
-    sw.stop();
-    return (
-      keep: Int32List.fromList(keep),
-      radius: radius,
-      protectedStable: protectedStable,
-      ms: sw.elapsedMilliseconds,
-    );
-  }
+  // ── Orphan floater removal ── 已提出为 lib/capture/floater_filter.dart 的
+  // 共享纯函数 floaterKeepIndices(算法/常数/护栏逐字未改):live 交付与
+  // 断点续跑(sfm_resume.dart)同参数复用,保证两条腿的孤点判定逐点一致。
 
   /// Fast native JPEG decode for colorization — ImageIO downscale to 1280px
   /// long edge, raw sensor orientation (no EXIF transform), 3 B/px top-down.
@@ -1149,6 +1501,30 @@ class _ARCapturePageState extends State<ARCapturePage>
     } catch (_) {}
   }
 
+  /// 案④【灵动岛真实进度】:finalize 阶段边界把真实进度推给
+  /// ReconUmbrella(Swift 侧与合成爬行曲线取 max,严格单调不回退;
+  /// 100% 仍只由 endReconUmbrella 置)。锚点(46 号 segments 实测比例):
+  /// phase1 done→0.10 / refined(RefineGlobalBA 全段完)→0.75 /
+  /// colorize 完→0.85 / persist 落盘→0.95。阶段之间由 Swift 合成爬行
+  /// 兜底递增(iOS 30s 看门狗保险)。伞未武装时静默 no-op。
+  /// 遥测【island】:每次推送记 {p, stage}(t 由 TelemetryWriter 自加),
+  /// 下次对账"岛显示 vs 真实进度"不再靠代码+时间轴反推。
+  Future<void> _pushReconProgress(double fraction, String subtitle) async {
+    if (_reconUmbrellaJobID == null) return;
+    TelemetryWriter.instance.event('island', {
+      'p': fraction,
+      'stage': subtitle,
+    });
+    try {
+      await _arKitChannel.invokeMethod<void>(
+        'setReconProgress',
+        <String, Object?>{'fraction': fraction, 'subtitle': subtitle},
+      );
+    } catch (_) {
+      // Display-only channel — never let it disturb the finalize.
+    }
+  }
+
   /// "完成" on the preview overlay: tear the worker down (frees the native
   /// session + sqlite db) and run the exit the finish flow deferred.
   void _onSfmPreviewDone() {
@@ -1159,6 +1535,7 @@ class _ARCapturePageState extends State<ARCapturePage>
     // Catch-all umbrella teardown: covers a refine-failure-after-localReady
     // (log-only, no terminal event) and an early user exit. Idempotent.
     unawaited(_endReconUmbrella());
+    _stopSfmStageTicker();
     final recon = _sfmRecon;
     _sfmRecon = null;
     _sfmFeedSub?.cancel();
@@ -1193,6 +1570,24 @@ class _ARCapturePageState extends State<ARCapturePage>
   Future<void> _onShutterTap() async {
     final session = _session;
     if (session == null || !_recording || _capturing) return;
+    // ③ 快门背压闸:先重估档位(队列/thermal 可能刚变),soft 档下不足
+    // 最小间隔的点按温和拒掉(横幅已在提示"放慢节奏"),hard 档兜异步
+    // 竞态(按钮已置灰)。数据侧无损 —— 拒掉的点按没拍照片,已拍的照片
+    // 一张不丢,只是配速。
+    _recomputeShutterPace();
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (!shutterTapAllowed(
+      pace: _shutterPace,
+      sinceLastShutterMs: nowMs - _lastShutterAcceptMs,
+    )) {
+      TelemetryWriter.instance.event('shutter_gate', {
+        'pace': _shutterPace.name,
+        'since_last_ms': nowMs - _lastShutterAcceptMs,
+        'queue': _sfmRecon?.remainingCount ?? 0,
+      });
+      return;
+    }
+    _lastShutterAcceptMs = nowMs;
     setState(() => _capturing = true);
     final shutterSw = Stopwatch()..start();
     try {
@@ -1206,6 +1601,13 @@ class _ARCapturePageState extends State<ARCapturePage>
         'shutter captureSinglePhoto waited=${shutterSw.elapsedMilliseconds}ms '
             'sfmPhase=$_sfmPhase',
       );
+      // 遥测【frame/shutter】:快门等待时长(UI 卡顿/主线程饿死的直接证据;
+      // 既有诊断顺手记,拍照路径不多等任何东西)。
+      TelemetryWriter.instance.event('shutter', {
+        'wait_ms': shutterSw.elapsedMilliseconds,
+        'phase': _sfmPhase?.name,
+        if (jpegPath != null) 'jpeg': jpegPath.split('/').last,
+      });
       if (jpegPath != null && mounted) {
         // Anchor a native, world-stable AR card at the capture pose (no drift).
         // Best-effort: a card failure must never fail the capture itself.
@@ -1236,6 +1638,59 @@ class _ARCapturePageState extends State<ARCapturePage>
     );
   }
 
+  /// 补强2:完成按钮的前置把关(真值口径,与横幅同一 starved 计数)。
+  /// **占比口径**:starved_true / true_vox > [kParallaxStarvedFinishRatio]
+  /// (40%)才弹(starvedFinishGateShouldPrompt;绝对数 >20 已废——大
+  /// 场景体素基数大必超,每次完成必弹;true_vox==0 真值未到达不拦)。
+  /// 文案定性 + 教动作,不报体素数(抄 RS:数字吓人且不可执行)。
+  /// 非破坏性确认门:【继续拍摄】关弹窗回拍摄(什么都不发生),
+  /// 【仍要完成】走原 [_finalizeRecording] 流程 —— 原逻辑一个字不改,
+  /// 弹窗只是前置门。每次点完成都记一行 finish_gate 遥测
+  /// (starved/true_vox + 用户选择;未触发门 = pass)。
+  Future<void> _onFinishTap() async {
+    if (_finalizingRecording) return;
+    final cov = _coverageCloud.coverageStats();
+    if (starvedFinishGateShouldPrompt(
+      starvedTrue: cov.starvedTrue,
+      trueVoxels: cov.trueVoxels,
+    )) {
+      final finishAnyway = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          title: const Text('拍摄角度可能不足'),
+          content: const Text(
+            '仍有较多区域拍摄角度不足，可能出现分层。\n'
+            '对黄色区域：横移一大步，或走近一半再拍。',
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('继续拍摄'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('仍要完成'),
+            ),
+          ],
+        ),
+      );
+      TelemetryWriter.instance.event('finish_gate', {
+        'starved': cov.starvedTrue,
+        'true_vox': cov.trueVoxels,
+        'choice': finishAnyway == true ? 'finish_anyway' : 'continue_capture',
+      });
+      if (finishAnyway != true || !mounted) return; // 回到拍摄,原地不动
+    } else {
+      TelemetryWriter.instance.event('finish_gate', {
+        'starved': cov.starvedTrue,
+        'true_vox': cov.trueVoxels,
+        'choice': 'pass',
+      });
+    }
+    await _finalizeRecording(navigateToDrafts: true, showSparseHint: true);
+  }
+
   /// Persist the just-recorded capture as a DRAFT scan.
   ///
   /// The Drafts card is the user-facing handle for the raw capture bundle:
@@ -1249,6 +1704,7 @@ class _ARCapturePageState extends State<ARCapturePage>
     final session = _session;
     if (session == null || _finalizingRecording) return;
     _finalizingRecording = true;
+    _stopGuidanceTelemetry(); // 拍摄结束,【guidance】采样停止
     try {
       // RECORDING → STOP. The high-res stills are written incrementally
       // under `<captureDir>/photos_highres/`; stop freezes curation and
@@ -1334,7 +1790,11 @@ class _ARCapturePageState extends State<ARCapturePage>
             _sfmErrorText = null;
             _sfmPhase = SfmPreviewPhase.generating;
             _showDraftsWhileReconstructing = false;
+            // 修1:队列已空则立即进入阶段 1;否则等 FrameFed 排空时进。
+            _sfmFinalizeStage = recon.remainingCount == 0 ? 1 : 0;
+            _sfmStageStartMs = DateTime.now().millisecondsSinceEpoch;
           });
+          _startSfmStageTicker();
         }
         if (captureDirForSfm != null) {
           await _beginReconUmbrella(captureDirForSfm);
@@ -1529,7 +1989,16 @@ class _ARCapturePageState extends State<ARCapturePage>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_endReconUmbrella());
+    _stopGuidanceTelemetry();
+    // 遥测【resource】:拍摄页退出 → 停 Swift 侧 10s 资源采样。
+    unawaited(
+      _arKitChannel
+          .invokeMethod<void>('telemetryCaptureEnd')
+          .then<void>((_) {}, onError: (Object _) {}),
+    );
     _warmupFallbackTimer?.cancel();
+    _sfmStageTicker?.cancel();
+    _coveragePushTimer?.cancel();
     _poseSub?.cancel();
     // Streaming-SfM teardown: frees the native session (joins the background
     // BA thread, drops the sqlite db) off this isolate — page dispose never
@@ -1555,6 +2024,26 @@ class _ARCapturePageState extends State<ARCapturePage>
 
   @override
   Widget build(BuildContext context) {
+    // 修2【任务卡重入回归根因】:本 route 是普通 MaterialPageRoute,iOS
+    // 边缘右滑(或任何 maybePop)可以在重建等待期把整个 capture route
+    // pop 掉 → State.dispose() → recon.dispose() 排队 → phase-1 一结束
+    // worker 就被销毁(真机日志 21:00:02 "local_ready withheld" 下一行
+    // 即 "dispose: freeing session")。这违反契约:返回草稿不得销毁
+    // capture route / SfM worker;同任务卡必须能回原等待页。
+    // 修法:重建进行中(_sfmPhase != null)禁止隐式 pop;把返回手势
+    // 折叠成"显示草稿"(与等待页左上角返回按钮同一语义)。显式的
+    // Navigator.pop(_exitToDrafts/_onSfmPreviewDone)不受 canPop 影响。
+    return PopScope(
+      canPop: _sfmPhase == null,
+      onPopInvokedWithResult: (bool didPop, Object? result) {
+        if (didPop || _sfmPhase == null) return;
+        if (!_showDraftsWhileReconstructing) _showDraftsDuringReconstruction();
+      },
+      child: _buildRouteBody(context),
+    );
+  }
+
+  Widget _buildRouteBody(BuildContext context) {
     if (_showDraftsWhileReconstructing && _sfmPhase != null) {
       return MePage(
         initialShowDrafts: true,
@@ -1658,6 +2147,45 @@ class _ARCapturePageState extends State<ARCapturePage>
               ),
             ),
 
+          // ─── 补强1:"拍摄角度不足"实时横幅(真值 starved 口径)。
+          // 非阻塞(IgnorePointer)、顶部第三档(60/104 已被硬拒/移速
+          // toast 占用),不遮取景中心。可见性由 _starvedBannerGate 的
+          // 去抖/滞回决定(tool/parallax_banner_check.dart 断言),采样
+          // 挂在既有覆盖云/true-parallax 回调上,零新增计时器。
+          if (_recording && _session != null)
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 148),
+                  child: Center(
+                    child: _ParallaxStarvedBanner(
+                      visible: _starvedBannerVisible,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+          // ─── ③ 快门背压闸横幅(第四档,192;克制文案,不吓用户)。
+          // soft = 建议放慢;hard = 快门已置灰,解释原因。可见性由
+          // `_shutterPace` 驱动(状态机在 shutter_backpressure_gate.dart),
+          // IgnorePointer 保证不挡交互。
+          if (_recording && _session != null)
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 192),
+                  child: Center(child: _ShutterPaceBanner(pace: _shutterPace)),
+                ),
+              ),
+            ),
+
           // RealityScan-style: the manual capture bar is shown as soon as the
           // AR session exists — no "initializing AR" stage and no big dome
           // button. The shutter is simply disabled (dimmed) until the silent
@@ -1674,17 +2202,16 @@ class _ARCapturePageState extends State<ARCapturePage>
                 top: false,
                 child: _ManualCaptureBar(
                   targetPoints: _targetPoints,
-                  ready: _recording,
+                  // ③ 快门背压闸 hard 档:快门置灰("处理中"横幅解释原因);
+                  // 相册/完成按钮不受影响。
+                  ready: _recording && _shutterPace != ShutterPace.hard,
                   capturing: _capturing,
                   finishing: _finalizingRecording,
                   onShutter: _onShutterTap,
                   onOpenAlbum: _openAlbum,
-                  onFinish: _finalizingRecording
-                      ? null
-                      : () => _finalizeRecording(
-                          navigateToDrafts: true,
-                          showSparseHint: true,
-                        ),
+                  // 补强2:完成前先过 starved 把关门(_onFinishTap),
+                  // 通过后才走原 _finalizeRecording,原流程一个字不改。
+                  onFinish: _finalizingRecording ? null : _onFinishTap,
                 ),
               ),
             ),
@@ -1698,7 +2225,7 @@ class _ARCapturePageState extends State<ARCapturePage>
               errorText: _sfmErrorText,
               progressText: _sfmQueued > 0
                   ? '已处理 $_sfmFed 帧 · 剩余 $_sfmQueued 帧'
-                  : '帧队列已清空 · 正在生成最终点云',
+                  : _sfmStageProgressText(),
               onBack: _showDraftsDuringReconstruction,
               onDone: _onSfmPreviewDone,
             ),
@@ -1835,6 +2362,99 @@ class _HardRejectToastState extends State<_HardRejectToast> {
               const SizedBox(width: 8),
               Text(
                 content.text,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 补强1:"拍摄角度不足"实时横幅。样式与 [_HardRejectToast] 同款黑底
+/// 圆角 pill(琥珀警示 icon 区分严重级),但生命周期不同:不自动淡出,
+/// 可见性完全由页面状态 `_starvedBannerVisible`(StarvedParallaxBannerGate
+/// 的去抖/滞回结论)驱动 —— 计数回落滞回线以下才隐藏。IgnorePointer
+/// 保证永不挡快门/取景交互。
+class _ParallaxStarvedBanner extends StatelessWidget {
+  const _ParallaxStarvedBanner({required this.visible});
+  final bool visible;
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: AnimatedOpacity(
+        opacity: visible ? 1.0 : 0.0,
+        duration: const Duration(milliseconds: 250),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.65),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: const Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.warning_amber_rounded,
+                color: Color(0xFFFFC53D),
+                size: 18,
+              ),
+              SizedBox(width: 8),
+              Text(
+                '对黄色区域：横移一大步/蹲低举高，再拍一张',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// ③ 快门背压闸横幅:soft = 建议放慢节奏,hard = 快门已置灰的"处理中"
+/// 解释。样式与 [_ParallaxStarvedBanner] 同款黑底 pill(处理中用中性
+/// hourglass icon,非警示红 —— 文案克制,不吓用户);IgnorePointer 永不
+/// 挡快门/取景交互。可见性由页面的 `_shutterPace` 直接驱动,无内部状态。
+class _ShutterPaceBanner extends StatelessWidget {
+  const _ShutterPaceBanner({required this.pace});
+  final ShutterPace pace;
+
+  @override
+  Widget build(BuildContext context) {
+    final visible = pace != ShutterPace.normal;
+    final text = pace == ShutterPace.hard ? '照片处理中，请稍候再拍' : '照片处理中，稍微放慢节奏';
+    return IgnorePointer(
+      child: AnimatedOpacity(
+        opacity: visible ? 1.0 : 0.0,
+        duration: const Duration(milliseconds: 250),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.65),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.hourglass_top_rounded,
+                color: Colors.white70,
+                size: 18,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                text,
                 style: const TextStyle(
                   color: Colors.white,
                   fontSize: 14,

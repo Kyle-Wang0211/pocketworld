@@ -76,12 +76,50 @@ class AetherARKitPlugin: NSObject {
   }
 
   static func register(with registrar: FlutterPluginRegistrar) {
+    // [2026-07-11] spatial-first 匹配 kill switch:native(aether_sfm_c.cc)读
+    // AETHER_STREAM_TEMPORAL_ONLY=1 时强制走旧的纯时间 K12 候选(已验证行为)。
+    // spatial-first 的 host A/B 尚未出数——验证通过前默认关死;通过后删本行即启用。
+    setenv("AETHER_STREAM_TEMPORAL_ONLY", "1", 1)
+    // [2026-07-11] ④ 热调速器 opt-in(45 号冻结案):thermal serious/critical
+    // 时 live 匹配候选 12→6,给相机/系统让 GPU;被降档帧由 finalize 补匹配
+    // 恢复全窗口(native 默认 OFF,此行是唯一开关,删掉即同二进制回退)。
+    // host A/B(设备一致配置 TEMPORAL_ONLY=1,GPU matcher):cap45 点数
+    // +1.26%/reproj +0.0016、cap44 +0.49%/+0.0090,注册数持平 —— 全门绿。
+    // ⚠️ 与上面的 kill switch 绑定:若未来启用 spatial-first,须先重跑
+    // 热调速 A/B(spatial-first 臂实测点数 +2.4% 超 ±2% 带,方向为正)。
+    setenv("AETHER_LIVE_CAND_K_HOT", "6", 1)
+    // [2026-07-11 签决:减厚组合刀@4px] finalize 减厚组合(native 默认全 OFF,
+    // 以下开关行是唯一开关,删行即同二进制回退)。host 已定价过门:
+    // 刀A 2-view 升维(TRACK_UPGRADE)+ 定向 enrich(TARGETED,pair cap 300)。
+    // rc=7 退避重试与 enrich AUTO 时间闸是 C++ 默认开,无需开关。
+    //
+    // [2026-07-11 法医定罪关停] 47 号采集双层地板案:host 同数据消融定罪
+    // FRAG_MERGE@4px 主犯(鬼层 4.3%→6.7%)、TD_GROW_REFIT 从犯(→5.5%),
+    // 组合叠加交互 ≈2.1×——把低视差深度歧义弥散壳凝聚成相干第二片。
+    // TRACK_UPGRADE/ENRICH_TARGETED/PAIR_CAP=300 消融无罪且正收益,保留。
+    // 重开条件:须以 tri-angle θ≥5° 门重新定价(鬼层 tri-angle p50=4.1°,
+    // 主层 5.7°),过九门再启。
+    // setenv("AETHER_TD_GROW_REFIT", "1", 1)   // 07-11 法医定罪关停(从犯)
+    setenv("AETHER_TRACK_UPGRADE", "1", 1)
+    setenv("AETHER_ENRICH_TARGETED", "1", 1)
+    setenv("AETHER_ENRICH_PAIR_CAP", "300", 1)
+    // setenv("AETHER_FRAG_MERGE", "1", 1)      // 07-11 法医定罪关停(主犯)
+    // setenv("AETHER_FRAG_MERGE_REPROJ_PX", "4", 1)  // 随 FRAG_MERGE 关停
+    // [2026-07-12] stage1 轮次帽(59555b8d 钩子 P1-STAGE1-RECIPE):stage-1
+    // 循环上限 = min(ba_global_max_refinements, 4);未用轮次按余量公式让给
+    // stage 2,enrich AUTO 时间闸窗口随 stage-1 提前收口。host 质量中性、
+    // device 外推 finalize −17%;下次实拍看 finalize_segments 验真。
+    // 删本行即同二进制回退(native 默认 0 = shipped 行为)。
+    setenv("AETHER_STAGE1_ROUNDS_CAP", "4", 1)
     let plugin = AetherARKitPlugin(messenger: registrar.messenger())
     sharedInstance = plugin
     let factory = AetherARKitPreviewFactory(getSession: {
       AetherARKitPlugin.currentSession()
     })
     registrar.register(factory, withId: "aether_arkit_preview")
+    // 遥测 A【session】:App 启动一条(机型/系统/电池/内存/构建时间戳)。
+    // register 在 didFinishLaunching 主线程跑,顺手开电池监控。
+    PwNativeTelemetry.shared.logSession()
   }
 
   // MARK: Photo cards (RealityScan-style anchored capture thumbnails)
@@ -139,6 +177,42 @@ class AetherARKitPlugin: NSObject {
     if !coverageCloudDirty { return nil }
     coverageCloudDirty = false
     return (coverageCloudXyz, coverageCloudRgb)
+  }
+
+  // ── Photo-card SfM border states (Dart-owned policy, dumb display) ──
+  // 四态边框(用户签决):0=黑(刚拍、SfM 未处理) 1=白(已注册)
+  // 2=红(断联,附近补拍) 3=黄(已注册但低视差,换角度补拍)。
+  // 判定逻辑 100% 在 Dart(lib/capture/photo_card_state.dart)——这里只
+  // 存 jpegPath→state 并打 dirty 标志,渲染线程(preview view 的
+  // updateAtTime)消费后把颜色刷到边框环 + 背板材质。镜像 coverage
+  // cloud 的 lock+dirty 共享模式。
+  static let photoCardStateLock = NSLock()
+  static var photoCardStates: [String: Int] = [:]  // jpegPath → state
+  static var photoCardStatesDirty = false
+
+  static func mergePhotoCardStates(_ update: [String: Int]) {
+    photoCardStateLock.lock()
+    photoCardStates.merge(update) { _, new in new }
+    photoCardStatesDirty = true
+    photoCardStateLock.unlock()
+  }
+
+  /// Card-add path: current state for a JPEG (0 = pending/black default).
+  static func photoCardState(forPath path: String) -> Int {
+    photoCardStateLock.lock()
+    defer { photoCardStateLock.unlock() }
+    return photoCardStates[path] ?? 0
+  }
+
+  /// Render-thread side: full merged dict iff anything changed since the
+  /// last take (cards added later read the dict via photoCardState(forPath:)
+  /// in renderer(_:didAdd:), so consuming the dirty flag here is safe).
+  static func takePhotoCardStatesIfDirty() -> [String: Int]? {
+    photoCardStateLock.lock()
+    defer { photoCardStateLock.unlock() }
+    if !photoCardStatesDirty { return nil }
+    photoCardStatesDirty = false
+    return photoCardStates
   }
   /// RS-style CLOSE anchor depth: the card is placed this many metres in front of
   /// the capture lens (NOT on the subject surface), so it fills the viewport at
@@ -328,10 +402,16 @@ class AetherARKitPlugin: NSObject {
   /// processing; if they shared jpegEncodeQueue they'd serialize AHEAD of the
   /// shutter's encode instead. A separate `.utility` queue (lower priority
   /// than capture's `.userInitiated`) keeps colorize fully decoupled and
-  /// always yielding to capture. Serial → one 1280px buffer in flight (memory).
+  /// always yielding to capture.
+  /// [2026-07-12 colorize 并行化] CONCURRENT(曾是串行):Dart 侧
+  /// colorize_pipeline.dart 有界并行发 3 个解码请求,串行队列会把并行度
+  /// 吃掉(cap47:121×56ms 串行解码 = 6.8s 的 99%)。in-flight 上限由
+  /// Dart 窗口(3)唯一控制 → 最多 3 张 1280px RGB ≈ 11MB 同时在内存;
+  /// 解码体是纯 ImageIO + 局部缓冲,无共享可变状态,线程安全。
   private let colorizeQueue = DispatchQueue(
     label: "com.pocketworld.arkit.colorize",
-    qos: .utility
+    qos: .utility,
+    attributes: .concurrent
   )
 
 
@@ -497,6 +577,18 @@ class AetherARKitPlugin: NSObject {
         ReconUmbrella.shared.end(jobID: jobID)
       }
       result(nil)
+    case "setReconProgress":
+      // 案④【灵动岛真实进度】:Dart 在 finalize 阶段边界推 {fraction 0..1,
+      // subtitle 阶段文案}。Swift 侧与合成爬行曲线取 max(严格单调、永不
+      // 回退,iOS 30s 递增看门狗仍由合成爬行兜底);100% 仍只由
+      // endReconUmbrella 置。No-op below iOS 26。
+      let args = call.arguments as? [String: Any]
+      let fraction = (args?["fraction"] as? NSNumber)?.doubleValue ?? 0
+      let subtitle = args?["subtitle"] as? String
+      if #available(iOS 26.0, *) {
+        ReconUmbrella.shared.setRealProgress(fraction: fraction, subtitle: subtitle)
+      }
+      result(nil)
     case "decodeJpegForColor":
       // Fast on-device colorizer decode: downscale-decode a saved 4K JPEG via
       // ImageIO (CGImageSourceCreateThumbnailAtIndex) to maxPx on the long
@@ -603,6 +695,23 @@ class AetherARKitPlugin: NSObject {
     case "clearPhotoCards":
       AetherARKitPlugin.clearPhotoCards(in: arSession)
       result(nil)
+    case "setPhotoCardStates":
+      // Dart-owned four-state border policy pushes {jpegPath: state} DIFFS
+      // here (0 black/pending, 1 white/registered, 2 red/disconnected,
+      // 3 yellow/low-parallax — see lib/capture/photo_card_state.dart).
+      // Dumb executor: merge + mark dirty, zero judgement native-side.
+      guard let args = call.arguments as? [String: Any],
+            let states = args["states"] as? [String: NSNumber] else {
+        result(FlutterError(
+          code: "photo_card_states_bad_args",
+          message: "setPhotoCardStates requires {states: {jpegPath: Int}}",
+          details: nil))
+        return
+      }
+      AetherARKitPlugin.mergePhotoCardStates(states.mapValues { $0.intValue })
+      // 遥测 G【cardpush】:记差量条数;渲染线程应用时(>1ms)合并落行。
+      PwNativeTelemetry.shared.noteCardPush(diffCount: states.count)
+      result(nil)
     case "setCoveragePointCloud":
       // Dart-owned coverage policy pushes its rendered state here (packed
       // Float32 xyz triplets + Uint8 rgb triplets). Empty arrays clear.
@@ -630,6 +739,15 @@ class AetherARKitPlugin: NSObject {
       AetherARKitPlugin.featurePointsVisible = visible
       NSLog("[AetherARKit] setFeaturePointsVisible=\(visible)")
       result(nil)
+    case "telemetryCaptureBegin":
+      // 遥测 F【resource】:拍摄页进入 → 10s 定时资源采样
+      // (thermal/footprint/电池/CPU/SceneKit FPS → telemetry_native.jsonl)。
+      PwNativeTelemetry.shared.startResourceSampling()
+      result(nil)
+    case "telemetryCaptureEnd":
+      // 拍摄页退出(含等待页完成)→ 停采样,收尾补一条。
+      PwNativeTelemetry.shared.stopResourceSampling()
+      result(nil)
     default:
       result(FlutterMethodNotImplemented)
     }
@@ -648,6 +766,11 @@ class AetherARKitPlugin: NSObject {
     }
     photoCardAnchors.removeAll()
     photoCardSpecs.removeAll()
+    // 卡片没了,四态边框状态一并清(新一轮拍摄由 Dart 重新推送)。
+    photoCardStateLock.lock()
+    photoCardStates.removeAll()
+    photoCardStatesDirty = false
+    photoCardStateLock.unlock()
   }
 
   private func startSession(resetWorld: Bool = true) throws {
@@ -768,6 +891,8 @@ class AetherARKitPlugin: NSObject {
     if let anchor = worldSubjectAnchor {
       arSession?.remove(anchor: anchor)
     }
+    // 案③:主动停 → 帧停是预期,解除 stall 看门狗(下一帧到达自动重武装)。
+    sessionDelegate.disarmStallWatchdog()
     arSession?.pause()
     worldOrigin = nil
     worldYaw = 0
@@ -1808,94 +1933,6 @@ extension AetherARKitPlugin {
     }
   }
 
-  /// Shared CIContext for the SAM frame snapshot path. CIContext is
-  /// expensive to create (~10ms cold-start, allocates Metal device +
-  /// program cache), so we keep one alive for the lifetime of the
-  /// process. CoreImage internally uses Metal/IOSurface and reuses
-  /// pipeline state across `render(toBitmap:)` calls; per-frame cost
-  /// is dominated by the YUV→RGB conversion shader + bilinear scale,
-  /// typically 8–20 ms on iPhone 12 Pro+ for a 1024×1024 output.
-  ///
-  /// Thread-safety: CIContext.render is documented as thread-safe
-  /// (see Apple's CIContext.h header). All callers run on
-  /// `qualityQueue` (serial), so even if Apple's docs were wrong
-  /// we'd still serialize accesses.
-  private static let samCIContext: CIContext = {
-    // High-quality color management adds ~30% latency for ARKit
-    // YUV→RGB but doesn't change the SAM mask (SAM is colorspace-
-    // agnostic at the binary mask level). Keep colorspace nil →
-    // CoreImage auto-detects from CVPixelBuffer attachments.
-    return CIContext(options: [
-      .useSoftwareRenderer: false,  // force GPU
-      .priorityRequestLow: true,    // don't compete with ARKit's
-                                    // own GPU rendering for the
-                                    // preview view
-    ])
-  }()
-
-  /// Snapshot the current ARFrame's `capturedImage` (typically a
-  /// 1920×1440 or 3840×2160 BiPlanar YUV CVPixelBuffer), convert to
-  /// RGBA, and downsample bilinearly to (target × target). Used by
-  /// the Dart-side `requestSamFrame` MethodChannel handler to feed
-  /// MobileSAM at its native 1024×1024 input resolution.
-  ///
-  /// Why a square output: SAM expects ResizeLongestSide(1024) input
-  /// with the short side zero-padded. Returning a square buffer
-  /// already-padded keeps the Dart wrapper trivial — it can feed the
-  /// bytes straight into the encoder ONNX without further reshape.
-  ///
-  /// We do NOT preserve the source aspect ratio. ARKit landscape
-  /// frames are 4:3 (1920×1440) or 16:9 (3840×2160); both squashed
-  /// to a square introduces vertical/horizontal stretch in SAM input.
-  /// MobileSAM was trained on stretched-to-1024² ImageNet, so this
-  /// matches its training distribution; the binary mask snaps back
-  /// to a true square the worker upsamples NEAREST onto the original
-  /// (non-square) JPEG, restoring the aspect.
-  ///
-  /// Returns nil if pixel buffer can't be wrapped as CIImage (would
-  /// only happen for a corrupted ARFrame, which we've never seen in
-  /// practice).
-  static func captureRgbaSquare(
-    pixelBuffer: CVPixelBuffer,
-    target: Int
-  ) -> Data? {
-    let srcWidth = CVPixelBufferGetWidth(pixelBuffer)
-    let srcHeight = CVPixelBufferGetHeight(pixelBuffer)
-    guard srcWidth > 0, srcHeight > 0, target > 0 else {
-      return nil
-    }
-
-    // CIImage(cvPixelBuffer:) accepts BiPlanar YUV directly and
-    // CoreImage handles the YUV→RGB conversion lazily on render.
-    let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-
-    // Squash to (target, target) via affine scale. Independent X/Y
-    // scales = stretch (matches MobileSAM's training preprocessing).
-    let scaleX = CGFloat(target) / CGFloat(srcWidth)
-    let scaleY = CGFloat(target) / CGFloat(srcHeight)
-    let scaled = ciImage.transformed(
-      by: CGAffineTransform(scaleX: scaleX, y: scaleY)
-    )
-
-    // Pre-allocate the destination RGBA8 byte buffer. CIContext.render
-    // writes into this directly (no extra copy).
-    var rgba = Data(count: target * target * 4)
-    let rect = CGRect(x: 0, y: 0, width: target, height: target)
-
-    rgba.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) in
-      guard let baseAddr = raw.baseAddress else { return }
-      samCIContext.render(
-        scaled,
-        toBitmap: baseAddr,
-        rowBytes: target * 4,
-        bounds: rect,
-        format: .RGBA8,
-        colorSpace: CGColorSpaceCreateDeviceRGB()
-      )
-    }
-    return rgba
-  }
-
   /// Pull the Y (luma) plane out of a YUV CVPixelBuffer and nearest-
   /// neighbour downsample it to a 128×128 uint8 thumbnail.
   ///
@@ -2304,10 +2341,95 @@ private class ARSessionForwarder: NSObject, ARSessionDelegate {
   private var loggedFirstFrame = false
   private var lastTrackingDescription: String = ""
 
+  // ── ①【ARSession 帧监视 2026-07-11】帧到达间隔水位遥测 ──────────────
+  // 44/45 号相机冻结:预览黑屏 ~2min,但没有任何"ARSession 断供"的一手
+  // 证据(NSLog 拔线全丢)。这里补上:1s 看门狗计时器盯 didUpdate 的到达
+  // 间隔,>1s 无新帧 → telemetry_native.jsonl 记一条 ar_frame_stall(带
+  // gap_ms + thermal + 是否 interrupted),停摆期间每 10s 续记一条,恢复
+  // 时记 ar_frame_resume(总 gap_ms)。低频水位事件,绝不逐帧写。
+  // 线程模型:didUpdate 在 AR 专属队列,计时器在自己的 utility 队列 ——
+  // 共享状态全部锁保护;didUpdate 热路径只做一次锁内赋值(纳秒级)。
+  private let stallLock = NSLock()
+  private var lastFrameAt: CFTimeInterval = 0
+  private var stalledSince: CFTimeInterval = 0  // 0 = not stalled
+  private var lastStallLogAt: CFTimeInterval = 0
+  private var interrupted = false
+  private var watchdog: DispatchSourceTimer?
+  private let watchdogQueue = DispatchQueue(
+    label: "com.pocketworld.arframe.watchdog",
+    qos: .utility
+  )
+
+  private func startWatchdogIfNeeded() {
+    watchdogQueue.async { [weak self] in
+      guard let self = self, self.watchdog == nil else { return }
+      let timer = DispatchSource.makeTimerSource(queue: self.watchdogQueue)
+      timer.schedule(deadline: .now() + 1, repeating: 1)
+      timer.setEventHandler { [weak self] in self?.watchdogTick() }
+      timer.resume()
+      self.watchdog = timer
+    }
+  }
+
+  /// ──【案③ 2026-07-11】主动停 ARSession(finish/stopSession)后解除
+  /// 武装:pause 后没有帧本来就是预期,继续报 stall 全是假告警(46 号
+  /// finish 后 54 条假 ar_frame_stall 污染遥测)。做法:清 lastFrameAt,
+  /// watchdogTick 的 `last > 0` 门自然短路;下一帧真的到达时 didUpdate
+  /// 重新填 lastFrameAt → 自动重新武装(恢复采集零额外调用)。
+  func disarmStallWatchdog() {
+    stallLock.lock()
+    lastFrameAt = 0
+    stalledSince = 0
+    lastStallLogAt = 0
+    stallLock.unlock()
+    NSLog("[AetherARKit] frame-stall watchdog disarmed (session stopped)")
+  }
+
+  private func watchdogTick() {
+    let now = CACurrentMediaTime()
+    stallLock.lock()
+    let last = lastFrameAt
+    let wasStalled = stalledSince > 0
+    let isInterrupted = interrupted
+    var emit: (type: String, gapMs: Int)? = nil
+    if last > 0, now - last > 1.0 {
+      if !wasStalled {
+        stalledSince = last
+        lastStallLogAt = now
+        emit = ("ar_frame_stall", Int((now - last) * 1000))
+      } else if now - lastStallLogAt >= 10.0 {
+        lastStallLogAt = now
+        emit = ("ar_frame_stall", Int((now - last) * 1000))
+      }
+    }
+    stallLock.unlock()
+    if let e = emit {
+      PwNativeTelemetry.shared.log(e.type, [
+        "gap_ms": e.gapMs,
+        "thermal": ProcessInfo.processInfo.thermalState.rawValue,
+        "interrupted": isInterrupted,
+      ])
+    }
+  }
+
   func session(_ session: ARSession, didUpdate frame: ARFrame) {
     if !loggedFirstFrame {
       loggedFirstFrame = true
       NSLog("[AetherARKit] first ARFrame received")
+      startWatchdogIfNeeded()
+    }
+    // 帧监视:恢复检测(热路径只碰锁一次;水位事件写盘走 telemetry 队列)。
+    let now = CACurrentMediaTime()
+    stallLock.lock()
+    let stalledFrom = stalledSince
+    lastFrameAt = now
+    stalledSince = 0
+    stallLock.unlock()
+    if stalledFrom > 0 {
+      PwNativeTelemetry.shared.log("ar_frame_resume", [
+        "gap_ms": Int((now - stalledFrom) * 1000),
+        "thermal": ProcessInfo.processInfo.thermalState.rawValue,
+      ])
     }
     let desc: String
     switch frame.camera.trackingState {
@@ -2325,14 +2447,34 @@ private class ARSessionForwarder: NSObject, ARSessionDelegate {
 
   func session(_ session: ARSession, didFailWithError error: Error) {
     NSLog("[AetherARKit] ARSession failed: \(error.localizedDescription)")
+    PwNativeTelemetry.shared.log("ar_session_failed", [
+      "error": error.localizedDescription,
+      "thermal": ProcessInfo.processInfo.thermalState.rawValue,
+    ])
   }
 
   func sessionWasInterrupted(_ session: ARSession) {
     NSLog("[AetherARKit] ARSession interrupted")
+    stallLock.lock()
+    interrupted = true
+    stallLock.unlock()
+    PwNativeTelemetry.shared.log("ar_interrupted", [
+      "thermal": ProcessInfo.processInfo.thermalState.rawValue,
+    ])
   }
 
   func sessionInterruptionEnded(_ session: ARSession) {
     NSLog("[AetherARKit] ARSession interruption ended")
+    stallLock.lock()
+    interrupted = false
+    stallLock.unlock()
+    PwNativeTelemetry.shared.log("ar_interruption_ended", [
+      "thermal": ProcessInfo.processInfo.thermalState.rawValue,
+    ])
+  }
+
+  deinit {
+    watchdog?.cancel()
   }
 }
 
@@ -2391,23 +2533,37 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
   private static let subjectMarkerRadius: CGFloat = 0.03 // 3 cm
   private static let subjectAnchorName = "pocketworld_subject_origin"
 
-  // ── RealityScan-style move-away shrink (also kills card parallax) ──
-  // A photo card fills the screen ONLY at the capture viewpoint (where the flat
-  // card aligns perfectly with the scene). As the camera LEAVES that spot — in
-  // ANY direction, including orbiting — we shrink the card toward a small chip by
-  // how far it has moved (halves every photoCardShrinkHalfLife metres). This both
-  // matches RS's "shrinks as you walk away" look AND fixes the real instability:
-  // a big flat card visibly parallaxes against the 3D scene, but a small chip does
-  // not (verified — a tiny anchored dot is rock-stable, a full card is not).
-  // photoCardNodes holds the per-card CONTAINER node we scale.
+  // ── 距离补偿缩放(用户签决,替换旧"额外收缩+0.15 下限"方案)────────
+  // 旧方案纯透视(视觉大小∝1/d)+额外收缩,2m 外卡片就看不见。新曲线:
+  // 保持近大远小,但远处衰减变缓 —— 节点缩放 node_scale = (d/d0)^β,
+  // 视觉大小 ∝ scale/d = d^(β-1) = d^-0.5(β=0.5):2m 处比纯透视大
+  // ~1.4×,10m ~3.2×,100m 仍持续变小。**绝无最小尺寸下限**:拍房子时
+  // 100m 处的卡片可以一路缩到 1 像素(旧 photoCardMinScale=0.15 下限已
+  // 删)。代价:远处卡片比旧方案大 → 平面卡片对场景的视差滑移更可见,
+  // 用户签决接受。photoCardNodes holds the per-card CONTAINER node we scale.
   private var photoCardNodes: [String: SCNNode] = [:]
-  private static let photoCardMinScale: Float = 0.15        // shrink floor — keep distant cards a VISIBLE chip (0.03 vanished)
-  /// Per-frame DISTANCE shrink: the card is FULL viewport size at its capture
-  /// distance d0 (where parallax is zero), then scale = (d0/d)^exponent as the
-  /// camera pulls away. The flat card's parallax grows with distance, but it
-  /// shrinks faster, so the on-screen slip stays tiny and it settles into a small,
-  /// rock-stable RS-style marker. Closer than d0 → clamped to 1.0 (won't overgrow).
-  private static let photoCardShrinkExponent: Float = 1.0   // close anchor already shrinks fast via perspective; 1.0 keeps it visible-but-quick
+  /// 距离补偿锚点 d0(米):d ≤ d0 时不放大(scale=1,保持原透视);
+  /// d > d0 时 scale=(d/d0)^β。真机调参常量。
+  private static let photoCardDistanceAnchorM: Float = 1.0
+  /// 补偿指数 β:视觉大小 ∝ d^(β-1)。0.5=签决默认(远处衰减减半);
+  /// 0=纯透视;1=恒定屏幕大小(billboard 感,不要)。真机调参常量。
+  private static let photoCardDistanceBeta: Float = 0.5
+
+  /// 四态边框材质(name → [边框环材质, 背板材质]),didAdd 登记、
+  /// didRemove 清理;applyPhotoCardStatesIfDirty 在渲染线程按 Dart 推的
+  /// 状态刷 diffuse 颜色。
+  private var photoCardStateMats: [String: [SCNMaterial]] = [:]
+
+  /// Dumb state→colour map(policy lives in Dart, photo_card_state.dart):
+  /// 0 黑=SfM 未处理 / 1 白=已注册 / 2 红=断联 / 3 黄=已注册但低视差。
+  private static func photoCardStateColor(_ state: Int) -> UIColor {
+    switch state {
+    case 1: return .white
+    case 2: return .systemRed
+    case 3: return .systemYellow
+    default: return .black
+    }
+  }
 
   // ── T6 v2: capture-coverage cloud — DUMB DISPLAY EXECUTOR ────────────────
   // All coverage policy (point selection, per-photo frustum counting, the
@@ -2612,10 +2768,10 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
     mat.diffuse.wrapT = .clamp
     geometry.materials = [mat]
 
-    // OPAQUE BLACK BACK: same quad, rendered only from the AWAY side (cullMode
+    // OPAQUE BACK: same quad, rendered only from the AWAY side (cullMode
     // .back = the face opposite the photo), so orbiting behind the card shows a
-    // solid black panel instead of the see-through/mirrored photo. (→ white after
-    // SfM, same rule as the border.) ONLY addition vs the committed version.
+    // solid panel instead of the see-through/mirrored photo. Colour follows the
+    // border's four-state rule (black→white/red/yellow via setPhotoCardStates).
     let backGeo = SCNGeometry(sources: [positionSource], elements: [element])
     let backMat = SCNMaterial()
     backMat.diffuse.contents = UIColor.black
@@ -2626,12 +2782,14 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
     backMat.writesToDepthBuffer = false
     backGeo.materials = [backMat]
 
-    // RS-style FRAME: a black border RING around the photo. Placeholder colour —
-    // will flip to WHITE once this frame's SfM registration succeeds (flag wired
-    // later). Built as a hollow ring (inner edge == photo edge, outer == +3%) so
+    // RS-style FRAME: the four-state border RING around the photo. Starts
+    // BLACK (= SfM pending); Dart's judgement (photo_card_state.dart) flips it
+    // white (registered) / red (disconnected) / yellow (low parallax) via the
+    // setPhotoCardStates channel — applied in applyPhotoCardStatesIfDirty.
+    // Built as a hollow ring (inner edge == photo edge, outer == +12%) so
     // it never overlaps the photo (no z-fight, no darkening of the image).
     let inner = spec.localCorners
-    let outer = inner.map { SCNVector3($0.x * 1.06, $0.y * 1.06, $0.z * 1.06) }  // 2× thicker
+    let outer = inner.map { SCNVector3($0.x * 1.12, $0.y * 1.12, $0.z * 1.12) }  // 4× the original 3% — 边框加粗一倍(签决:四态颜色要醒目)
     let frameVerts = inner + outer                       // 0-3 inner, 4-7 outer
     let frameIdx: [Int32] = [4, 5, 1, 4, 1, 0,           // top edge
                              5, 6, 2, 5, 2, 1,           // right edge
@@ -2653,30 +2811,66 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
     // scaling shrinks the card toward its own centre without moving it.
     let container = SCNNode()
     container.addChildNode(SCNNode(geometry: frameGeo))   // border behind/around
-    container.addChildNode(SCNNode(geometry: backGeo))    // opaque black back panel
+    container.addChildNode(SCNNode(geometry: backGeo))    // opaque back panel
     container.addChildNode(SCNNode(geometry: geometry))   // photo on the front
     node.addChildNode(container)
     photoCardNodes[name] = container
+    // 四态边框:登记环+背板材质,并立刻套用 Dart 已推过的状态(卡片
+    // 节点可能晚于状态到达 —— didAdd 是异步回调)。
+    photoCardStateMats[name] = [frameMat, backMat]
+    let initialState = AetherARKitPlugin.photoCardState(forPath: spec.path)
+    if initialState != 0 {
+      let c = Self.photoCardStateColor(initialState)
+      frameMat.diffuse.contents = c
+      backMat.diffuse.contents = c
+    }
   }
 
-  /// Per-frame: DELIBERATE distance shrink for the floating photo cards (RS-style).
-  /// Plain perspective only shrinks a full-screen card to ~30 % when you back away
-  /// 1 m; scaling the card node by d0/d on top of that gives a (d0/d)^2 on-screen
-  /// falloff → a few-cm chip, which is the look the user asked for. Cheap: one
-  /// distance + scale per card per frame, all on the SceneKit render thread.
+  /// Per-frame: distance-compensated scaling for the floating photo cards +
+  /// four-state border colour application. Cheap: one distance + scale per
+  /// card per frame (~百级节点一次 sqrt 可忽略), all on the SceneKit render
+  /// thread.
   func renderer(_ renderer: SCNSceneRenderer, updateAtTime time: TimeInterval) {
+    PwNativeTelemetry.shared.noteRenderFrame()  // 遥测 F:FPS 计帧(纳秒级)
     updateFeaturePointOverlay()    // T6: live sparse coverage cloud (independent of cards)
+    applyPhotoCardStatesIfDirty()  // 四态边框:消费 Dart 推来的状态差量
     guard !photoCardNodes.isEmpty, let cam = renderer.pointOfView else { return }
     let camPos = cam.simdWorldPosition
-    for (name, card) in photoCardNodes {
-      // Full size at the capture distance d0; shrink as the camera pulls away.
-      let d0 = AetherARKitPlugin.photoCardSpecs[name]?.captureDistance ?? 0.4
+    for card in photoCardNodes.values {
+      // 距离补偿缩放(签决,常量注释见 photoCardDistanceBeta):
+      // d ≤ d0(1m)→ scale=1 保持原透视;d > d0 → scale=(d/d0)^β,
+      // 视觉大小 ∝ d^(β-1)=d^-0.5 —— 近大远小保持、远处衰减变缓,
+      // 无最小尺寸下限(100m 处可以小到 1 像素,继续缩)。
       let d = simd_distance(camPos, card.simdWorldPosition)
-      let ratio = d > 0.001 ? d0 / d : 1.0
-      let s = max(Self.photoCardMinScale,
-                  min(1.0, powf(ratio, Self.photoCardShrinkExponent)))
+      let s = d > Self.photoCardDistanceAnchorM
+        ? powf(d / Self.photoCardDistanceAnchorM, Self.photoCardDistanceBeta)
+        : 1.0
       card.simdScale = simd_float3(repeating: s)
     }
+  }
+
+  /// Render-thread consumer of the Dart-pushed four-state border states:
+  /// recolours every card's ring + back-panel materials when the merged dict
+  /// changed (dirty flag). Cards added AFTER a push pick their state up in
+  /// renderer(_:didAdd:) via photoCardState(forPath:) — consuming the dirty
+  /// flag here never loses state. Judgement stays 100% in Dart.
+  private func applyPhotoCardStatesIfDirty() {
+    guard let states = AetherARKitPlugin.takePhotoCardStatesIfDirty() else {
+      return
+    }
+    // 遥测 G【cardpush】:渲染线程应用耗时(>1ms 才落行,防刷屏)。
+    let t0 = CACurrentMediaTime()
+    for (name, mats) in photoCardStateMats {
+      guard let path = AetherARKitPlugin.photoCardSpecs[name]?.path else {
+        continue
+      }
+      let color = Self.photoCardStateColor(states[path] ?? 0)
+      for m in mats { m.diffuse.contents = color }
+    }
+    PwNativeTelemetry.shared.logCardPushApply(
+      applyMs: (CACurrentMediaTime() - t0) * 1000.0,
+      cardCount: photoCardStateMats.count
+    )
   }
 
   /// Fires when ARKit removes our anchor (re-lock or stopSession).
@@ -2691,6 +2885,7 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
         NSLog("[PHOTOCARD] *** ANCHOR REMOVED by ARKit: %@ (card gone) ***", name)
       }
       photoCardNodes.removeValue(forKey: name)
+      photoCardStateMats.removeValue(forKey: name)
     }
     guard anchor.name == Self.subjectAnchorName else { return }
     NSLog("[AetherARKitPreview] subject anchor removed; marker went with it")
@@ -2698,5 +2893,279 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
 
   deinit {
     pollTimer?.invalidate()
+  }
+}
+
+// MARK: - PwNativeTelemetry(真机验收显微镜,native 侧 JSONL)
+//
+// 产物:Documents/telemetry_native.jsonl,每行 {"t":epoch_ms,"type":...}。
+// 与 Dart 侧 Documents/telemetry_dart.jsonl(lib/capture/telemetry_writer.dart)
+// 配对,devicectl 一次拉走。定义在本文件里(而非独立 .swift)是沿用
+// AetherARKitPreviewView 的同一理由:Runner.xcodeproj 只编译已列入
+// PBXFileReference 的文件,新文件要动 pbxproj —— 蹭已有文件零风险。
+//
+// 事件:
+//   session  — App 启动一条(AetherARKitPlugin.register 时):构建时间戳、
+//              机型/系统、电池、physicalMemory。
+//   resource — 拍摄页在场时 10s 一条(telemetryCaptureBegin/End 控制):
+//              thermalState / phys_footprint(TASK_VM_INFO)/ 电池 /
+//              进程 CPU(单核 % 口径,DeviceHealthPlugin 原语)/
+//              SceneKit 渲染 FPS(updateAtTime 计帧的 10s 窗口均值)。
+//   cardpush — setPhotoCardStates 差量应用:差量条数 + 渲染线程应用耗时
+//              (>1ms 才记,防刷屏)。
+//
+// 铁律:所有写盘都在专用串行 utility 队列;渲染线程/主线程只做入队
+// (dispatch async)或一次锁保护的计数自增,绝不等 IO。
+final class PwNativeTelemetry {
+  static let shared = PwNativeTelemetry()
+
+  private let queue = DispatchQueue(
+    label: "com.pocketworld.telemetry",
+    qos: .utility
+  )
+  private var handle: FileHandle?
+  private var handleFailed = false
+  private var resourceTimer: DispatchSourceTimer?
+
+  // SceneKit 渲染 FPS 计帧(updateAtTime 每帧自增;10s 采样窗清零)。
+  private let frameLock = NSLock()
+  private var renderFrames = 0
+  private var frameWindowStart = CACurrentMediaTime()
+
+  // cardpush 差量条数(channel 线程写,渲染线程消费;同 photoCardStates
+  // 一样用锁保护)。
+  private let cardPushLock = NSLock()
+  private var pendingCardPushCount = 0
+
+  private init() {}
+
+  // ── 写入(仅在 queue 上) ──────────────────────────────────────────
+
+  private func ensureHandle() -> FileHandle? {
+    if let h = handle { return h }
+    if handleFailed { return nil }
+    guard
+      let docs = FileManager.default.urls(
+        for: .documentDirectory, in: .userDomainMask
+      ).first
+    else {
+      handleFailed = true
+      return nil
+    }
+    let url = docs.appendingPathComponent("telemetry_native.jsonl")
+    if !FileManager.default.fileExists(atPath: url.path) {
+      FileManager.default.createFile(atPath: url.path, contents: nil)
+    }
+    guard let h = try? FileHandle(forWritingTo: url) else {
+      handleFailed = true
+      return nil
+    }
+    h.seekToEndOfFile()
+    handle = h
+    return h
+  }
+
+  /// 记一行(任意线程可调;真正的 JSON 编码 + 写盘在串行队列上)。
+  func log(_ type: String, _ fields: [String: Any] = [:]) {
+    let t = Int(Date().timeIntervalSince1970 * 1000)
+    queue.async { [weak self] in
+      guard let self = self, let h = self.ensureHandle() else { return }
+      var obj: [String: Any] = ["t": t, "type": type]
+      for (k, v) in fields { obj[k] = v }
+      guard JSONSerialization.isValidJSONObject(obj),
+            var data = try? JSONSerialization.data(withJSONObject: obj)
+      else { return }
+      data.append(0x0A)  // '\n'
+      h.write(data)
+    }
+  }
+
+  // ── A【session】 ───────────────────────────────────────────────────
+
+  /// App 启动一条。主线程调用(plugin register 时)——顺手开电池监控,
+  /// 后续 resource 采样才能读到 batteryLevel。
+  func logSession() {
+    UIDevice.current.isBatteryMonitoringEnabled = true
+    var sysinfo = utsname()
+    uname(&sysinfo)
+    let model = withUnsafePointer(to: &sysinfo.machine) {
+      $0.withMemoryRebound(to: CChar.self, capacity: 256) {
+        String(cString: $0)
+      }
+    }
+    var buildStamp = "unknown"
+    if let exe = Bundle.main.executablePath,
+       let attrs = try? FileManager.default.attributesOfItem(atPath: exe),
+       let mtime = attrs[.modificationDate] as? Date {
+      buildStamp = ISO8601DateFormatter().string(from: mtime)
+    }
+    let version =
+      (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String)
+      ?? "?"
+    let build =
+      (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "?"
+    let battery = UIDevice.current.batteryLevel  // -1 = 未知(刚开监控)
+    log("session", [
+      "build_stamp": buildStamp,
+      "app_version": "\(version)(\(build))",
+      "model": model,
+      "os": UIDevice.current.systemVersion,
+      "battery": Double(battery),
+      "phys_mem_mb": Double(ProcessInfo.processInfo.physicalMemory)
+        / 1_048_576.0,
+      "cores": ProcessInfo.processInfo.processorCount,
+      "thermal": ProcessInfo.processInfo.thermalState.rawValue,
+    ])
+  }
+
+  // ── F【resource】 ──────────────────────────────────────────────────
+
+  /// 拍摄页进入 → 10s 定时资源采样(串行队列上;幂等)。
+  func startResourceSampling() {
+    queue.async { [weak self] in
+      guard let self = self, self.resourceTimer == nil else { return }
+      self.frameLock.lock()
+      self.renderFrames = 0
+      self.frameWindowStart = CACurrentMediaTime()
+      self.frameLock.unlock()
+      let timer = DispatchSource.makeTimerSource(queue: self.queue)
+      timer.schedule(deadline: .now() + 10, repeating: 10)
+      timer.setEventHandler { [weak self] in
+        self?.sampleResourcesOnQueue()
+      }
+      timer.resume()
+      self.resourceTimer = timer
+      self.log("resource_begin")
+    }
+  }
+
+  /// 拍摄页退出 → 停采样(收尾补一条,拿到 finalize 末段的状态)。
+  func stopResourceSampling() {
+    queue.async { [weak self] in
+      guard let self = self, let timer = self.resourceTimer else { return }
+      timer.cancel()
+      self.resourceTimer = nil
+      self.sampleResourcesOnQueue()
+      self.log("resource_end")
+    }
+  }
+
+  /// SceneKit 渲染 tick(AetherARKitPreviewView.updateAtTime 每帧调用)。
+  /// 一次锁自增,纳秒级 —— 渲染线程零等待。
+  func noteRenderFrame() {
+    frameLock.lock()
+    renderFrames += 1
+    frameLock.unlock()
+  }
+
+  private func sampleResourcesOnQueue() {
+    // FPS 窗口(帧数 / 实际窗口秒)。
+    frameLock.lock()
+    let frames = renderFrames
+    let windowS = CACurrentMediaTime() - frameWindowStart
+    renderFrames = 0
+    frameWindowStart = CACurrentMediaTime()
+    frameLock.unlock()
+    let fps = windowS > 0.1 ? Double(frames) / windowS : 0
+
+    let footprint = Self.physFootprintMB()
+    let cpu = Self.processCpuOneCorePercent()
+    let thermal = ProcessInfo.processInfo.thermalState.rawValue
+    // batteryLevel 走主线程读(UIDevice 主线程约定),拿到后回队列写行。
+    DispatchQueue.main.async { [weak self] in
+      let battery = Double(UIDevice.current.batteryLevel)
+      let appState: String
+      switch UIApplication.shared.applicationState {
+      case .active: appState = "active"
+      case .inactive: appState = "inactive"
+      case .background: appState = "background"
+      @unknown default: appState = "unknown"
+      }
+      self?.log("resource", [
+        "thermal": thermal,
+        "footprint_mb": (footprint * 10).rounded() / 10,
+        "battery": battery,
+        "cpu_one_core_pct": (cpu * 10).rounded() / 10,
+        "scn_fps": (fps * 10).rounded() / 10,
+        "app_state": appState,
+      ])
+    }
+  }
+
+  // ── G【cardpush】 ──────────────────────────────────────────────────
+
+  /// channel 线程:记录一次 setPhotoCardStates 推送的差量条数。
+  func noteCardPush(diffCount: Int) {
+    cardPushLock.lock()
+    pendingCardPushCount += diffCount
+    cardPushLock.unlock()
+  }
+
+  /// 渲染线程:差量应用完成,>1ms 才落一行(防刷屏)。
+  func logCardPushApply(applyMs: Double, cardCount: Int) {
+    cardPushLock.lock()
+    let n = pendingCardPushCount
+    pendingCardPushCount = 0
+    cardPushLock.unlock()
+    guard applyMs > 1.0 else { return }
+    log("cardpush", [
+      "n": n,
+      "apply_ms": (applyMs * 100).rounded() / 100,
+      "cards": cardCount,
+    ])
+  }
+
+  // ── 底层原语 ────────────────────────────────────────────────────────
+
+  /// jetsam 相关的 phys_footprint(TASK_VM_INFO;pw_telemetry.mm 同款)。
+  private static func physFootprintMB() -> Double {
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(
+      MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size
+    )
+    let kr = withUnsafeMutablePointer(to: &info) { ptr in
+      ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+        task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+      }
+    }
+    guard kr == KERN_SUCCESS else { return -1 }
+    return Double(info.phys_footprint) / 1_048_576.0
+  }
+
+  /// 进程 CPU(单核 100% 口径;搬自退役 DeviceHealthPlugin.swift 的原语)。
+  private static func processCpuOneCorePercent() -> Double {
+    var threadList: thread_act_array_t?
+    var threadCount = mach_msg_type_number_t(0)
+    guard task_threads(mach_task_self_, &threadList, &threadCount)
+            == KERN_SUCCESS,
+          let threadList
+    else { return 0 }
+    defer {
+      vm_deallocate(
+        mach_task_self_,
+        vm_address_t(UInt(bitPattern: threadList)),
+        vm_size_t(Int(threadCount) * MemoryLayout<thread_t>.stride)
+      )
+    }
+    var total = 0.0
+    for index in 0..<Int(threadCount) {
+      var info = thread_basic_info()
+      var count = mach_msg_type_number_t(THREAD_INFO_MAX)
+      let result = withUnsafeMutablePointer(to: &info) { ptr in
+        ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+          thread_info(
+            threadList[index],
+            thread_flavor_t(THREAD_BASIC_INFO),
+            $0,
+            &count
+          )
+        }
+      }
+      guard result == KERN_SUCCESS else { continue }
+      if (info.flags & TH_FLAGS_IDLE) == 0 {
+        total += Double(info.cpu_usage) / Double(TH_USAGE_SCALE) * 100.0
+      }
+    }
+    return total
   }
 }
