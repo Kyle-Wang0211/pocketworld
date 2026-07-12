@@ -16,11 +16,18 @@
 //   blocks in-worker) → LOCAL_READY snapshot event → worker polls
 //   finalize_status until REFINED/ERROR → refined snapshot event.
 //
-// Backpressure (capture never waits for SfM): if more than one add_frame is
-// still unconsumed by the worker, new keyframes are DROPPED — a dropped
-// frame simply doesn't join the live reconstruction; the saved JPEG still
-// flows into the post-capture pipeline, so this is lossy only for the
-// preview, never for the user's data.
+// Backpressure (capture never waits for SfM, and NOTHING is ever dropped):
+// when the worker already has kSfmFeedMaxInFlight add_frame calls unconsumed,
+// the keyframe's gray plane is spilled to a disk file and only its PATH is
+// queued (RAM stays flat no matter how deep the queue grows — the bytes live
+// on disk, not in the spool entry). The pump feeds spooled frames in arrival
+// order as slots free; finalize is DEFERRED until the queue fully drains, so
+// every offered frame reaches the reconstruction (finalize frame count ==
+// captured frame count). Backpressure acts only on the background CONSUMER
+// (when the worker takes its next frame); it never propagates back to the
+// shutter. 07-12 签决:快门彻底不限流 + 队列不丢帧 + 不降质。Pure queue
+// predicates live in sfm_feed_queue.dart (host-tested by
+// tool/sfm_feed_queue_check.dart).
 
 import 'dart:async';
 import 'dart:convert';
@@ -37,6 +44,7 @@ import '../dome/ar_pose.dart' show SfmFrameFeed;
 import '../util/device_log.dart';
 import 'gravity_align.dart';
 import 'pw_telemetry.dart';
+import 'sfm_feed_queue.dart';
 import 'telemetry_writer.dart';
 import 'true_parallax.dart';
 
@@ -370,6 +378,19 @@ class SfmLiveFailed extends SfmLiveEvent {
   final String message;
 }
 
+/// [BIT5-FIX 2026-07-12] L1 1-bit 仲裁(aether_sfm_arbitrate)已完成 —— native
+/// `ghost_mask.bin` 此刻已在 Points3D 序上回写 rescued(bit5)/confirmed 位。
+/// 交付点序的 `ghost_view_mask.bin` 写在 persist(仲裁之前)时暂无 bit5;UI
+/// 收到本事件后按保存的 native→snap→floater keep 链**重算交付 mask**,让救援
+/// 位流到草稿查看页(见 ar_capture_page._recomputeDeliveredGhostMaskAfterArbitration)。
+/// 不带快照(纯文件驱动 —— native mask 已在磁盘)。[ok] 反映仲裁是否成功;
+/// 失败/no-op 时 native 全体弃权,重算是安全幂等(输出 == persist 版本)。
+class SfmLiveArbitrateDone extends SfmLiveEvent {
+  const SfmLiveArbitrateDone({required this.ok, this.stats});
+  final bool ok;
+  final Map<Object?, Object?>? stats;
+}
+
 /// What the facade remembers about each successfully-fed keyframe — enough
 /// for the preview to project reconstructed points back into the saved JPEG
 /// and sample real colors. Intrinsics here are at the FED gray resolution
@@ -631,7 +652,7 @@ class SfmLiveRecon {
       );
     }
 
-    if (_inFlight < 2 && _spool.isEmpty) {
+    if (!sfmFeedShouldSpool(inFlight: _inFlight, spoolDepth: _spool.length)) {
       // Worker has room — feed directly, zero disk traffic.
       _sendFrameCmd(
         seq,
@@ -711,7 +732,8 @@ class SfmLiveRecon {
     if (_pumping || _disposed) return;
     _pumping = true;
     try {
-      while (!_disposed && _inFlight < 2 && _spool.isNotEmpty) {
+      while (!_disposed &&
+          sfmFeedCanPumpNext(inFlight: _inFlight, spoolDepth: _spool.length)) {
         final entry = _spool.first;
         try {
           await entry.written; // ensure the spill finished flushing
@@ -749,10 +771,12 @@ class SfmLiveRecon {
 
   void _maybeSendFinalize() {
     if (_disposed ||
-        !_finalizeRequested ||
-        _finalizeSent ||
-        _spool.isNotEmpty ||
-        _inFlight > 0) {
+        !sfmFeedCanSendFinalize(
+          finalizeRequested: _finalizeRequested,
+          finalizeSent: _finalizeSent,
+          spoolDepth: _spool.length,
+          inFlight: _inFlight,
+        )) {
       return;
     }
     _finalizeSent = true;
@@ -1029,6 +1053,15 @@ class SfmLiveRecon {
         DeviceLog.log(
           'SfmLive',
           'l1-arbitrate done: ok=${msg['ok']} stats=${msg['stats']}',
+        );
+        // [BIT5-FIX 2026-07-12] native ghost_mask.bin 现已带回写的 bit5 —
+        // 通知 UI 按同一 keep 链重算交付点序的 ghost_view_mask.bin(草稿页
+        // 拿到救援位)。绝不 gate 交付,纯磁盘驱动的收尾。
+        _events.add(
+          SfmLiveArbitrateDone(
+            ok: msg['ok'] == true,
+            stats: msg['stats'] as Map<Object?, Object?>?,
+          ),
         );
       case 'error':
         // 遥测【finalize/error】:终态失败一行(stage=add_frame/finalize/refine)。

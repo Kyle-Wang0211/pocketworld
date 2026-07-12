@@ -1,6 +1,9 @@
-// tool/shutter_backpressure_check.dart — ③ 快门背压闸纯 Dart VM 断言
+// tool/shutter_backpressure_check.dart — 拥塞遥测分级器纯 Dart VM 断言
 // (host `dart tool/shutter_backpressure_check.dart`;flutter test 在此 host
 // 跑不了,纯 VM 能跑 —— 项目惯例同 tool/parallax_banner_check.dart)。
+//
+// ⚠️ 07-12 签决(彻底不限流)后 shutterPaceNext 只做**遥测分级**,不再阻挡
+// 快门。本断言只覆盖分级迁移 + 滞回(shutterTapAllowed 已随背压闸撤除删掉)。
 
 import 'package:pocketworld_flutter/capture/shutter_backpressure_gate.dart';
 
@@ -62,24 +65,6 @@ void main() {
     thermalState: -1,
   );
   check(p == ShutterPace.normal, '未知热态队列4 = normal');
-
-  // 点按判定。
-  check(
-    shutterTapAllowed(pace: ShutterPace.normal, sinceLastShutterMs: 0),
-    'normal 档不设最小间隔',
-  );
-  check(
-    !shutterTapAllowed(pace: ShutterPace.soft, sinceLastShutterMs: 3999),
-    'soft 档 3999ms 拒',
-  );
-  check(
-    shutterTapAllowed(pace: ShutterPace.soft, sinceLastShutterMs: 4000),
-    'soft 档 4000ms 放行',
-  );
-  check(
-    !shutterTapAllowed(pace: ShutterPace.hard, sinceLastShutterMs: 999999),
-    'hard 档一律拒',
-  );
 
   // ignore: avoid_print
   print('ALL PASS');

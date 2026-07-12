@@ -161,6 +161,119 @@ void main() {
     tmp.deleteSync(recursive: true);
   }
 
+  // ── [BIT5-FIX 2026-07-12] 仲裁后重算交付 mask:bit5 时序 gap ────────────
+  // 病理:交付点序 ghost_view_mask.bin 写在 persist(l1_arbitrate 回写 bit5
+  // rescue 约 22s 之前)→ 无救援位,草稿页 hidden=band15(把 L1 救援真点也隐)。
+  // 修复:仲裁 done 后按 persist 时保存的同一 native→snap→floater keep 链
+  // (GhostDeliveredMaskRemap)把带 bit5 的 native ghost_mask.bin 重排回交付点序。
+  // 本节复刻 ar_capture_page._recomputeDeliveredGhostMaskAfterArbitration 的算术。
+
+  // ① cap49 量级头条(恒等 keep 链):2840 band15,仲裁回写 358 个 bit5。
+  //    persist 面(无 bit5)hidden=2840;仲裁后重算面 hidden=2482、rescued=358。
+  {
+    const total = 5000;
+    const bandN = 2840;
+    const rescueN = 358;
+    // native Points3D 序:前 bandN 个是 band15(其余干净);仲裁把前 rescueN
+    // 个 band15 置 bit5(真踢脚/台阶白名单)。
+    final persistNative = Uint8List(total); // persist 时的 native mask(无 bit5)
+    final arbNative = Uint8List(total); // 仲裁回写后的 native mask(带 bit5)
+    for (var i = 0; i < total; i++) {
+      final band = i < bandN ? kGhostFlagBand15 : 0;
+      persistNative[i] = kGhostFlagInRegion | band;
+      final rescue = i < rescueN ? kGhostFlagRescued : 0;
+      arbNative[i] = kGhostFlagInRegion | band | rescue;
+    }
+    // 恒等 keep 链(spatial/floater 都没删点):deliveredCount == nativeCount。
+    final remap = GhostDeliveredMaskRemap(
+      nativeCount: total,
+      spatialKeep: null,
+      floaterKeep: null,
+      deliveredCount: total,
+    );
+    final persistDelivered = remap.remap(persistNative);
+    final arbDelivered = remap.remap(arbNative);
+    check(persistDelivered != null && arbDelivered != null,
+        'cap49 头条:恒等链 remap 成功(交付点序 == native 点序)');
+    final pv = computeGhostViewVisibility(persistDelivered!);
+    final av = computeGhostViewVisibility(arbDelivered!);
+    check(pv.stats.hiddenGhost == bandN && pv.stats.rescuedVisible == 0,
+        'persist 面(无 bit5):hidden=2840、rescued_visible=0(358 救援点被误隐)');
+    check(av.stats.hiddenGhost == bandN - rescueN,
+        '仲裁后重算面:hidden=${bandN - rescueN}(=2482,非 2840;358 救援点放行)');
+    check(av.stats.rescuedVisible == rescueN,
+        '仲裁后重算面:rescued_visible=358(band15∧rescued 白名单可见)');
+    check(av.stats.shown - pv.stats.shown == rescueN,
+        '仲裁重算净放行 = 358 点(shown 增量 == 救援点数,误隐→0)');
+  }
+
+  // ② 非恒等两级 keep 链:bit5 必须穿过 spatial + floater 两次重排到达交付点序
+  //    的正确位置(证明重算不是只在恒等下成立)。native 10 点,band15∈{2,4,6,8};
+  //    spatial 删 native#8,floater 删 snap#5(=native#5);仲裁给 native#6 置
+  //    bit5。交付点序 = native[0,1,2,3,4,6,7,9](8 点),band15∈{2,4,6},其中
+  //    native#6 落在交付索引 5 且带 rescued。
+  {
+    Uint8List native({required Set<int> band, Set<int> rescued = const {}}) {
+      final f = Uint8List(10);
+      for (var i = 0; i < 10; i++) {
+        f[i] = kGhostFlagInRegion |
+            (band.contains(i) ? kGhostFlagBand15 : 0) |
+            (rescued.contains(i) ? kGhostFlagRescued : 0);
+      }
+      return f;
+    }
+
+    const bandSet = {2, 4, 6, 8};
+    final persistNative = native(band: bandSet);
+    final arbNative = native(band: bandSet, rescued: {6});
+    final spatialKeep = Int32List.fromList([0, 1, 2, 3, 4, 5, 6, 7, 9]); // 删#8
+    final floaterKeep = Int32List.fromList([0, 1, 2, 3, 4, 6, 7, 8]); // snap 序删#5
+    final remap = GhostDeliveredMaskRemap(
+      nativeCount: 10,
+      spatialKeep: spatialKeep,
+      floaterKeep: floaterKeep,
+      deliveredCount: 8,
+    );
+    final pd = remap.remap(persistNative);
+    final ad = remap.remap(arbNative);
+    check(pd != null && ad != null && pd.length == 8 && ad.length == 8,
+        '两级链 remap 成功,交付点序 8 点');
+    final pv = computeGhostViewVisibility(pd!);
+    final av = computeGhostViewVisibility(ad!);
+    check(pv.stats.hiddenGhost == 3 && pv.stats.rescuedVisible == 0,
+        '两级链 persist 面:hidden=3(交付 band15 = native{2,4,6})、rescued=0');
+    check(av.stats.hiddenGhost == 2 && av.stats.rescuedVisible == 1,
+        '两级链仲裁面:hidden=2、rescued_visible=1(native#6 的 bit5 穿链到达)');
+    // native#6 → 交付索引 5:persist 面隐藏、仲裁面可见(bit5 精确落位)。
+    final pView = computeGhostViewVisibility(pd);
+    final aView = computeGhostViewVisibility(ad);
+    check(pView.visibility[5] == 0 && aView.visibility[5] == 1,
+        '救援位精确落位:交付索引 5(native#6)persist 隐 → 仲裁后放行');
+  }
+
+  // ③ 容错:native mask 点数与配方 nativeCount 不符(过期/错配)→ remap 返回
+  //    null(调用方保留 persist 版本交付 mask,绝不隐藏错点)。
+  {
+    final remap = GhostDeliveredMaskRemap(
+      nativeCount: 100,
+      spatialKeep: null,
+      floaterKeep: null,
+      deliveredCount: 100,
+    );
+    check(remap.remap(Uint8List(101)) == null,
+        'nativeCount 错位 → remap=null(fail-open,保留 persist 交付 mask)');
+    check(remap.remap(Uint8List(100)) != null, '点数一致 → remap 成功');
+    // deliveredCount 与链推出的长度不符也返回 null(自检兜底)。
+    final badDelivered = GhostDeliveredMaskRemap(
+      nativeCount: 100,
+      spatialKeep: null,
+      floaterKeep: null,
+      deliveredCount: 99, // 与恒等链输出长度 100 不符
+    );
+    check(badDelivered.remap(Uint8List(100)) == null,
+        'deliveredCount 自检不符 → remap=null');
+  }
+
   // ── 源码层断言:交付路径 0 引用渲染门 + 开关默认开且只此一处 ─────────
   final repoRoot = File(Platform.script.toFilePath()).parent.parent.path;
   String src(String rel) => File('$repoRoot/$rel').readAsStringSync();

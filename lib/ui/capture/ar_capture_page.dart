@@ -154,6 +154,14 @@ class _ARCapturePageState extends State<ARCapturePage>
   /// 生命周期与配对的快照字段完全同步(同 setState 赋值/清空)。
   Uint8List? _sfmGhostVisibility;
   Uint8List? _pendingLocalVisibility;
+
+  /// [BIT5-FIX 2026-07-12] 交付点序 mask 的重算配方 + 目录,保存于最后一次
+  /// persist(与盘上 ghost_view_mask.bin 逐位对应)。L1 仲裁完成后
+  /// (SfmLiveArbitrateDone)用它把带 bit5=rescued 的 native ghost_mask.bin
+  /// 重排回交付点序并改写 sidecar —— 无需保留运行期快照,只存两级 keep 索引。
+  /// null = 本次重建没出可对齐的 native mask(仲裁后重算是 no-op,fail-open)。
+  GhostDeliveredMaskRemap? _pendingGhostRemap;
+  String? _pendingGhostRemapDir;
   String? _sfmErrorText;
   int _sfmFed = 0;
   int _sfmQueued = 0;
@@ -215,15 +223,13 @@ class _ARCapturePageState extends State<ARCapturePage>
       StarvedParallaxBannerGate();
   bool _starvedBannerVisible = false;
 
-  // ─── ③ 快门背压闸(2026-07-11,45 号冻结案)──────────────────────────
-  // 旧快门只受 `_capturing`(单张在途)约束,对 SfM 队列深度/thermal 无感。
-  // 状态机在 shutter_backpressure_gate.dart(纯 Dart,
-  // tool/shutter_backpressure_check.dart 断言):soft(队列 ≥6,或热机
-  // 队列 ≥4)→ 快门最小间隔 4s + 横幅克制提示;hard(队列 ≥10)→ 快门
-  // 置灰 + "处理中"。数据侧无损 —— 只配速,照片全都会被处理。采样挂在
-  // 既有 SfM 队列事件 + 快门点按上,零新增计时器。
+  // ─── 拥塞遥测标签(07-12 签决:快门彻底不限流)──────────────────────
+  // 快门永不因队列深度/thermal 被阻挡——积压走 sfm_live_recon 的磁盘 spool
+  // 队列(不丢帧、不爆内存),热保护由 native 热调速器透明承担。这里只保留
+  // 一个**纯观测**标签(shutter_backpressure_gate.shutterPaceNext:队列 +
+  // thermal → normal/soft/hard 三级),转换时记一行 `shutter_pace` 遥测便于
+  // 事后画积压曲线;绝不 gate 快门、不置灰、不弹横幅。
   ShutterPace _shutterPace = ShutterPace.normal;
-  int _lastShutterAcceptMs = 0;
 
   // ─── AR 照片卡片四态边框(黑/白/红/黄,判定全在 Dart)──────────────
   // 状态机在 photo_card_state.dart;native(AetherARKitPlugin 的
@@ -745,12 +751,12 @@ class _ARCapturePageState extends State<ARCapturePage>
     }
   }
 
-  /// ③ 快门背压闸采样:队列深度(SfM facade 的 remainingCount,与
-  /// `_sfmQueued` 同源)+ thermal 桶(pw_telemetry FFI,微秒级)→ 状态机
-  /// 得出新档位。挂在既有 SfM 队列事件与快门点按上,零新增计时器;只在
-  /// 档位真的翻转时 setState(翻转是稀有事件),同时记一行遥测。
-  /// [inSetState] = 调用点已在 setState 回调内(SfM 队列事件),此时只改
-  /// 字段,rebuild 由外层 setState 完成,不嵌套。
+  /// 拥塞遥测标签采样(**纯观测,不阻挡快门**):队列深度(SfM facade 的
+  /// remainingCount,与 `_sfmQueued` 同源)+ thermal 桶(pw_telemetry FFI,
+  /// 微秒级)→ shutterPaceNext 得出新标签。挂在既有 SfM 队列事件与快门点按
+  /// 上,零新增计时器;只在标签真的翻转时记一行 `shutter_pace` 遥测(翻转
+  /// 是稀有事件)。[inSetState] = 调用点已在 setState 回调内,此时只改字段,
+  /// rebuild 由外层 setState 完成,不嵌套(标签本身不改变任何可见 UI)。
   void _recomputeShutterPace({bool inSetState = false}) {
     final queue = _sfmRecon?.remainingCount ?? 0;
     final thermal = PwTelemetry.sample()?.thermalState ?? -1;
@@ -1051,15 +1057,25 @@ class _ARCapturePageState extends State<ARCapturePage>
       _sampleStarvedBanner();
       return;
     }
+    // [BIT5-FIX 2026-07-12] L1 仲裁完成:native ghost_mask.bin 已带回写的
+    // bit5(rescued)。按 persist 时保存的 keep 链重算交付点序的
+    // ghost_view_mask.bin(草稿查看页下次加载即拿到救援位),并在当前展示的
+    // 就是交付云时顺手把 358 个救援点放行可见。纯磁盘收尾,绝不 gate 交付;
+    // 内部按需 setState,不落主 rebuild 分支。
+    if (event is SfmLiveArbitrateDone) {
+      unawaited(_recomputeDeliveredGhostMaskAfterArbitration());
+      return;
+    }
     setState(() {
       switch (event) {
         case SfmLiveConnectivity():
         case SfmLiveTrueParallax():
+        case SfmLiveArbitrateDone():
           break; // 已在上方早退处理(不触发 rebuild)
         case SfmLiveFrameFed():
           _sfmFed = _sfmRecon?.fedCount ?? _sfmFed;
           _sfmQueued = _sfmRecon?.remainingCount ?? _sfmQueued;
-          // ③ 快门背压闸:队列深度刚变,重估配速档(已在 setState 内)。
+          // 拥塞遥测标签:队列深度刚变,重估标签(纯观测,已在 setState 内)。
           _recomputeShutterPace(inSetState: true);
           // 修1:等待页上队列刚排空 → finalize 即将/已经下发,进入
           // 阶段 1(整理帧数据/phase1)。已在 setState 内,直接改字段。
@@ -1071,7 +1087,7 @@ class _ARCapturePageState extends State<ARCapturePage>
           }
         case SfmLiveFrameQueued():
           _sfmQueued = _sfmRecon?.remainingCount ?? _sfmQueued;
-          // ③ 快门背压闸:入队即重估(队列上行沿是闸的主要触发)。
+          // 拥塞遥测标签:入队即重估(队列上行沿是标签的主要触发,纯观测)。
           _recomputeShutterPace(inSetState: true);
         case SfmLiveFinalizePhase1Done():
           // 修1:phase1 完成 → 阶段 2(后台全局 BA,分钟级)。
@@ -1149,6 +1165,72 @@ class _ARCapturePageState extends State<ARCapturePage>
         unawaited(_colorizeSnapshot(snapshot));
       default:
         break;
+    }
+  }
+
+  /// [BIT5-FIX 2026-07-12] L1 仲裁(aether_sfm_arbitrate)完成后重算交付点序
+  /// 的 `ghost_view_mask.bin`。
+  ///
+  /// 病理:交付 mask 写在 persist 时(l1_arbitrate 回写 bit5 rescue 约 22s
+  /// 之前)→ 无救援位,草稿查看页开门后 hidden=band15(把 L1 救援的踢脚/台阶
+  /// 真点一并构造性误隐,仅渲染;导出永远全量)。修复:仲裁 done 后 native
+  /// `ghost_mask.bin` 已在 Points3D 序回写 bit5 —— 用 persist 时保存的同一
+  /// native→snap→floater keep 链(GhostDeliveredMaskRemap)把它重排回交付点序,
+  /// 原子改写 sidecar。谓词(visible=¬band15∨rescued)已消费 bit5,Dart 侧
+  /// 无需再改;草稿页下次加载即 hidden=band15∧¬rescued(cap49:2840→2482,
+  /// 358 救援点放行)。
+  ///
+  /// 全程 fail-open:配方缺失 / native mask 点数错位(与本次重建不符)/ 写盘
+  /// 失败 → 保留 persist 版本的交付 mask,绝不隐藏错点。当前展示的正是这份
+  /// 交付云时,顺手把带 bit5 的可见性数组换进渲染门 —— 救援点无需重开草稿页
+  /// 即弹回可见。
+  Future<void> _recomputeDeliveredGhostMaskAfterArbitration() async {
+    final remap = _pendingGhostRemap;
+    final dir = _pendingGhostRemapDir;
+    if (remap == null || dir == null) return;
+    // native ghost_mask.bin(默认文件名)此刻已带回写的 bit5=rescued。点数
+    // 必须 == 本次重建的 native 点数,否则是过期/错配的 mask → 拒用。
+    final nativeFlags = tryLoadGhostMaskSidecar(dir, remap.nativeCount);
+    if (nativeFlags == null) return; // 缺失 / 点数错位 → fail-open
+    final delivered = remap.remap(nativeFlags);
+    if (delivered == null) return; // 链长度自检失败 → fail-open
+    final gv = computeGhostViewVisibility(delivered);
+    try {
+      final tmp = File('$dir/$kGhostViewMaskFileName.tmp');
+      await tmp.writeAsBytes(delivered, flush: true);
+      await tmp.rename('$dir/$kGhostViewMaskFileName');
+    } catch (e) {
+      DeviceLog.log(
+        'ARCapturePage',
+        'ghost_view_mask post-arbitrate recompute persist failed: $e',
+      );
+      return;
+    }
+    DeviceLog.log(
+      'ARCapturePage',
+      'ghost_view_mask recomputed post-arbitration: '
+          'hidden=${gv.stats.hiddenGhost} rescued_visible=${gv.stats.rescuedVisible} '
+          'shown=${gv.stats.shown}/${remap.deliveredCount}',
+    );
+    // 遥测【ghost_view_filter】:仲裁后重算面(带 bit5 的最终交付 mask)。
+    // rescued_visible 现在应 >0(persist 面恒 0)—— 这是误隐=0 红线的观测窗。
+    TelemetryWriter.instance.event('ghost_view_filter', {
+      'surface': 'post_arbitrate_recompute',
+      'enabled': kGhostMaskViewFilter,
+      'aligned': true,
+      'delivered_points': remap.deliveredCount,
+      'hidden_ghost': gv.stats.hiddenGhost,
+      'rescued_visible': gv.stats.rescuedVisible,
+      'shown': gv.stats.shown,
+    });
+    // 顺手刷新在屏交付云的渲染门:当前展示的就是这份交付云(点数相等)时,
+    // 换上带 bit5 的可见性数组 —— 救援点即时弹回可见,不必重开草稿页。
+    if (!mounted) return;
+    if (kGhostMaskViewFilter &&
+        _sfmSnapshot?.pointCount == remap.deliveredCount) {
+      setState(() {
+        _sfmGhostVisibility = gv.visibility;
+      });
     }
   }
 
@@ -1350,6 +1432,10 @@ class _ARCapturePageState extends State<ARCapturePage>
     // draft viewer (loads from PLY, no runtime maps) can align. null unless the
     // native mask loaded and aligned this pass.
     Uint8List? deliveredGhostFlags;
+    // [BIT5-FIX 2026-07-12] The native→snap→floater keep chain that produced
+    // deliveredGhostFlags, stashed at persist so the L1-arbitration completion
+    // hook can re-run it against the (now bit5-carrying) native ghost_mask.bin.
+    GhostDeliveredMaskRemap? deliveredRemap;
     final gDir = _session?.captureDir;
     if (gDir != null) {
       // [L2-ALIGN 2026-07-12] The native ghost_mask.bin is written in Points3D
@@ -1369,6 +1455,16 @@ class _ARCapturePageState extends State<ARCapturePage>
       final gFlags =
           canRemap ? tryLoadGhostMaskSidecar(gDir, nativeCount) : null;
       if (gFlags != null) {
+        // [BIT5-FIX 2026-07-12] The two-level keep chain (native→snap→PLY).
+        // spatialKeep/floaterKeep are null when their filter removed nothing
+        // (identity), matching the persist-time semantics below. The SAME
+        // remap replays post-arbitration to pull bit5 into the delivered mask.
+        final remap = GhostDeliveredMaskRemap(
+          nativeCount: nativeCount,
+          spatialKeep: spatialRemoved <= 0 ? null : spatialKeep,
+          floaterKeep: removedF <= 0 ? null : keepIdx,
+          deliveredCount: m,
+        );
         // native Points3D order → this snapshot's order (identity when the
         // spatial filter removed nothing). compactVisibilityByIndices is a
         // positional Uint8 gather — it doubles as the flag remap here.
@@ -1381,10 +1477,12 @@ class _ARCapturePageState extends State<ARCapturePage>
             : compactVisibilityByIndices(gv.visibility, keepIdx);
         if (kGhostMaskViewFilter) ghostVisibility = vis;
         // Flags in delivered PLY order (same floater keepIdx the PLY uses) for
-        // the on-disk ghost_view_mask.bin written at persist below.
+        // the on-disk ghost_view_mask.bin written at persist below. Identical
+        // to remap.remap(gFlags) — kept inline for the telemetry gv above.
         deliveredGhostFlags = removedF <= 0
             ? snapFlags
             : compactVisibilityByIndices(snapFlags, keepIdx);
+        deliveredRemap = remap;
         // 遥测【ghost_view_filter】:视图过滤统计(开关开/关都记,enabled
         // 字段区分)。导出/交付不受影响(断言脚本
         // tool/ghost_view_filter_check.dart)。规则 visible=¬band15∨rescued;
@@ -1458,6 +1556,16 @@ class _ARCapturePageState extends State<ARCapturePage>
             final tmp = File('$captureDir/$kGhostViewMaskFileName.tmp');
             await tmp.writeAsBytes(deliveredGhostFlags, flush: true);
             await tmp.rename('$captureDir/$kGhostViewMaskFileName');
+            // [BIT5-FIX 2026-07-12] Stash the keep chain that produced this
+            // on-disk mask so the L1-arbitration completion hook can replay it
+            // against the (then bit5-carrying) native ghost_mask.bin. Only set
+            // when the sidecar actually landed — keeps field ⇔ disk consistent,
+            // and the last (refined) persist wins (its cloud is the delivered PLY).
+            if (deliveredRemap != null &&
+                deliveredRemap.deliveredCount == fsnap.pointCount) {
+              _pendingGhostRemap = deliveredRemap;
+              _pendingGhostRemapDir = captureDir;
+            }
           } catch (e) {
             DeviceLog.log('ARCapturePage', 'ghost_view_mask persist failed: $e');
           }
@@ -1677,25 +1785,11 @@ class _ARCapturePageState extends State<ARCapturePage>
   /// Shutter tap → capture exactly ONE high-res still (RealityScan manual).
   Future<void> _onShutterTap() async {
     final session = _session;
+    // 07-12 签决:快门彻底不限流 —— 队列多深/多热都立即可拍。唯一门是
+    // `_capturing`(单张在途,防止一次点按连拍两张,这是重入保护不是背压)。
+    // 拥塞标签仍刷新一次(纯遥测,不阻挡),便于事后画积压曲线。
     if (session == null || !_recording || _capturing) return;
-    // ③ 快门背压闸:先重估档位(队列/thermal 可能刚变),soft 档下不足
-    // 最小间隔的点按温和拒掉(横幅已在提示"放慢节奏"),hard 档兜异步
-    // 竞态(按钮已置灰)。数据侧无损 —— 拒掉的点按没拍照片,已拍的照片
-    // 一张不丢,只是配速。
     _recomputeShutterPace();
-    final nowMs = DateTime.now().millisecondsSinceEpoch;
-    if (!shutterTapAllowed(
-      pace: _shutterPace,
-      sinceLastShutterMs: nowMs - _lastShutterAcceptMs,
-    )) {
-      TelemetryWriter.instance.event('shutter_gate', {
-        'pace': _shutterPace.name,
-        'since_last_ms': nowMs - _lastShutterAcceptMs,
-        'queue': _sfmRecon?.remainingCount ?? 0,
-      });
-      return;
-    }
-    _lastShutterAcceptMs = nowMs;
     setState(() => _capturing = true);
     final shutterSw = Stopwatch()..start();
     try {
@@ -2279,22 +2373,9 @@ class _ARCapturePageState extends State<ARCapturePage>
               ),
             ),
 
-          // ─── ③ 快门背压闸横幅(第四档,192;克制文案,不吓用户)。
-          // soft = 建议放慢;hard = 快门已置灰,解释原因。可见性由
-          // `_shutterPace` 驱动(状态机在 shutter_backpressure_gate.dart),
-          // IgnorePointer 保证不挡交互。
-          if (_recording && _session != null)
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: SafeArea(
-                child: Padding(
-                  padding: const EdgeInsets.only(top: 192),
-                  child: Center(child: _ShutterPaceBanner(pace: _shutterPace)),
-                ),
-              ),
-            ),
+          // ─── 07-12 签决(彻底不限流):快门配速横幅已撤除。曾经在拥塞时
+          // 弹「照片处理中,请稍候再拍」——那与「快门永不阻挡」矛盾(等于劝
+          // 用户别拍)。热保护改由 native 热调速器透明承担;拥塞只记遥测。
 
           // RealityScan-style: the manual capture bar is shown as soon as the
           // AR session exists — no "initializing AR" stage and no big dome
@@ -2312,9 +2393,9 @@ class _ARCapturePageState extends State<ARCapturePage>
                 top: false,
                 child: _ManualCaptureBar(
                   targetPoints: _targetPoints,
-                  // ③ 快门背压闸 hard 档:快门置灰("处理中"横幅解释原因);
-                  // 相册/完成按钮不受影响。
-                  ready: _recording && _shutterPace != ShutterPace.hard,
+                  // 07-12 签决:快门彻底不限流 —— 只要在录制就永远可拍,
+                  // 绝不因队列深度/热态置灰(积压走磁盘 spool 队列,不回压快门)。
+                  ready: _recording,
                   capturing: _capturing,
                   finishing: _finalizingRecording,
                   onShutter: _onShutterTap,
@@ -2520,53 +2601,6 @@ class _ParallaxStarvedBanner extends StatelessWidget {
               Text(
                 '对黄色区域：横移一大步/蹲低举高，再拍一张',
                 style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// ③ 快门背压闸横幅:soft = 建议放慢节奏,hard = 快门已置灰的"处理中"
-/// 解释。样式与 [_ParallaxStarvedBanner] 同款黑底 pill(处理中用中性
-/// hourglass icon,非警示红 —— 文案克制,不吓用户);IgnorePointer 永不
-/// 挡快门/取景交互。可见性由页面的 `_shutterPace` 直接驱动,无内部状态。
-class _ShutterPaceBanner extends StatelessWidget {
-  const _ShutterPaceBanner({required this.pace});
-  final ShutterPace pace;
-
-  @override
-  Widget build(BuildContext context) {
-    final visible = pace != ShutterPace.normal;
-    final text = pace == ShutterPace.hard ? '照片处理中，请稍候再拍' : '照片处理中，稍微放慢节奏';
-    return IgnorePointer(
-      child: AnimatedOpacity(
-        opacity: visible ? 1.0 : 0.0,
-        duration: const Duration(milliseconds: 250),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.65),
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(
-                Icons.hourglass_top_rounded,
-                color: Colors.white70,
-                size: 18,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                text,
-                style: const TextStyle(
                   color: Colors.white,
                   fontSize: 14,
                   fontWeight: FontWeight.w500,

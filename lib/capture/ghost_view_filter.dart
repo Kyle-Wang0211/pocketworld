@@ -25,12 +25,14 @@
 //     位,渲染门不消费。
 //   • rescued = L1 CasDiffMVS 1-bit 仲裁的「真面」白名单位(bit5),误隐=0
 //     红线的守门:band15 里被判真几何(踢脚/台阶)的点置 1 → 放行可见。
-//     ⚠️ native 仲裁(aether_sfm_arbitrate)把 bit5 回写进 Points3D 序的
-//     ghost_mask.bin,但**仲裁跑在 persist 之后**(cap49 telemetry:persist
-//     +20ms → l1_arbitrate +22s);交付点序的 ghost_view_mask.bin 写在 persist
-//     时 → 暂不含 bit5,草稿查看页拿到的是无救援位的交付 mask(band15 全隐)。
-//     谓词已消费 bit5:交付 mask 在仲裁后重算带上救援位那天,Dart 侧零改动
-//     即自动守住那 358 个救援点(见 kGhostViewMaskFileName 注释)。
+//     native 仲裁(aether_sfm_arbitrate)把 bit5 回写进 Points3D 序的
+//     ghost_mask.bin,而**仲裁跑在 persist 之后**(cap49 telemetry:persist
+//     +20ms → l1_arbitrate +22s)。[BIT5-FIX 2026-07-12] sfm_live_recon 的
+//     arbitrate_done 钩子按同一 native→snap→floater keep 链(GhostDeliveredMaskRemap)
+//     **重算交付点序的 ghost_view_mask.bin**,让回写的 bit5 流到交付 mask —— 草稿
+//     查看页下次加载即拿到带救援位的 mask,那 358 个救援点(真踢脚/台阶)不再被
+//     隐藏(cap49:hidden 2840→2482)。仲裁前的短窗口内 mask 无 bit5(band15 全隐,
+//     构造性误隐,仅渲染;导出永远全量)。
 //   • ⚠️ 无 obs 依赖:2-view(obs<3)好点不再被当低质量隐藏 —— 旧规则的
 //     「obs≥3 ∨ rescued」那条腿会隐掉全云 64%(cap49:40591 个 2-view 点),
 //     按签决删除。点云全量交付,渲染只藏确证鬼。
@@ -84,12 +86,13 @@ const String kGhostMaskFileName = 'ghost_mask.bin';
 /// 无法把 native mask 对齐到 PLY。故 persist 时把 native mask 按
 /// spatial→floater 两级 keep 重排成**交付点序**另存此文件,点数/点序逐位
 /// == sfm_sparse.ply。查看页优先读它即可 aligned。
-/// ⚠️写在 persist(L1 仲裁之前)→ 交付 mask 暂不含 rescued(bit5)。新规则
-/// visible=¬band15∨rescued **消费** bit5:交付 mask 无救援位时退化为
-/// hidden=band15,把 cap49 那 358 个救援点(真踢脚/台阶)一并隐藏(构造性
-/// 误隐,仅渲染;导出永远全量)。修复 = 仲裁 done(sfm_live_recon 的
-/// arbitrate_done)后按同一 native→snap→floater keep 链重算此文件,让 bit5
-/// 流到交付点序;native ghost_mask.bin 仲裁后已带 bit5=358(cap49 实测)。
+/// 写两次:①persist(L1 仲裁之前)时按 keep 链重排 native mask(此刻无
+/// rescued/bit5);②[BIT5-FIX 2026-07-12] L1 仲裁 done 后(sfm_live_recon 的
+/// arbitrate_done → ar_capture_page._recomputeDeliveredGhostMaskAfterArbitration)
+/// 用 GhostDeliveredMaskRemap 按**同一 keep 链**重算此文件 —— 此刻 native
+/// ghost_mask.bin 已带回写的 bit5(cap49 实测 358),rescue 位随之流到交付
+/// 点序。新规则 visible=¬band15∨rescued 消费 bit5:第②步落盘后草稿查看页
+/// 下次加载即 hidden=band15∧¬rescued(cap49:2840→2482),358 救援点放行。
 const String kGhostViewMaskFileName = 'ghost_view_mask.bin';
 
 /// 视图过滤统计(遥测载荷)。
@@ -178,4 +181,47 @@ Uint8List compactVisibilityByIndices(Uint8List visibility, Int32List keepIdx) {
     out[k] = visibility[keepIdx[k]];
   }
   return out;
+}
+
+/// [BIT5-FIX 2026-07-12] 交付点序 mask 的重算配方 —— persist 时与 L1 仲裁
+/// 完成后**复用同一 native→snap→floater keep 链**,把任意版本的 native
+/// `ghost_mask.bin`(persist 时无 bit5;仲裁 +22s 后带 bit5=rescued)重排成
+/// 交付 PLY 点序的 flags。捕获链路一次(persist),仲裁 done 后再放一次相同
+/// 输入即可让 rescue 位流到交付 mask —— 无需保留运行期快照,只存两级索引。
+///
+/// 两级 keep 语义与 persist 现场逐字一致:
+///   • [spatialKeep] = finalize spatial-two-view 过滤的 compacted→native 序
+///     索引(native Points3D 序 → 该快照序);null == 恒等(该过滤没删点)。
+///   • [floaterKeep] = 孤点过滤的 compacted→snap 序索引(快照序 → 交付 PLY
+///     序);null == 恒等(没删孤点)。
+/// [nativeCount] = native mask 应有的点数(= 快照点数 + spatial 删除数);
+/// [deliveredCount] = 交付 PLY 点数(== 最终 mask 长度,写盘前核对)。
+class GhostDeliveredMaskRemap {
+  const GhostDeliveredMaskRemap({
+    required this.nativeCount,
+    required this.spatialKeep,
+    required this.floaterKeep,
+    required this.deliveredCount,
+  });
+
+  final int nativeCount;
+  final Int32List? spatialKeep;
+  final Int32List? floaterKeep;
+  final int deliveredCount;
+
+  /// native Points3D 序 flags → 交付 PLY 序 flags。长度不符(mask 与本次
+  /// 重建点数错位)→ null(容错:调用方按"不重算"处理,保留旧交付 mask)。
+  /// compactVisibilityByIndices 是逐位 gather —— 对 flag 字节同样成立(重排
+  /// 不改位),故此处直接复用作 flag 重映射。
+  Uint8List? remap(Uint8List nativeFlags) {
+    if (nativeFlags.length != nativeCount) return null;
+    final snapFlags = spatialKeep == null
+        ? nativeFlags
+        : compactVisibilityByIndices(nativeFlags, spatialKeep!);
+    final delivered = floaterKeep == null
+        ? snapFlags
+        : compactVisibilityByIndices(snapFlags, floaterKeep!);
+    if (delivered.length != deliveredCount) return null;
+    return delivered;
+  }
 }
