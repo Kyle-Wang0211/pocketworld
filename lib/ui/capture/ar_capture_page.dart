@@ -1375,10 +1375,7 @@ class _ARCapturePageState extends State<ARCapturePage>
         final snapFlags = spatialRemoved <= 0
             ? gFlags
             : compactVisibilityByIndices(gFlags, spatialKeep!);
-        final gv = computeGhostViewVisibility(
-          snapFlags,
-          obsOffsets: snap.obsOffsets,
-        );
+        final gv = computeGhostViewVisibility(snapFlags);
         final vis = removedF <= 0
             ? gv.visibility
             : compactVisibilityByIndices(gv.visibility, keepIdx);
@@ -1388,11 +1385,12 @@ class _ARCapturePageState extends State<ARCapturePage>
         deliveredGhostFlags = removedF <= 0
             ? snapFlags
             : compactVisibilityByIndices(snapFlags, keepIdx);
-        // 遥测【ghost_view_filter】:视图过滤统计(任务④;开关关时也记,
-        // enabled 字段区分)。导出/交付不受影响(断言脚本
-        // tool/ghost_view_filter_check.dart)。gv.stats 域 = snap(n) 点序
-        // (obsOffsets 只在孤点过滤前活着,谓词按设计在此层算);
-        // delivered_points=m 是孤点过滤后交付 PLY 点数。
+        // 遥测【ghost_view_filter】:视图过滤统计(开关开/关都记,enabled
+        // 字段区分)。导出/交付不受影响(断言脚本
+        // tool/ghost_view_filter_check.dart)。规则 visible=¬band15∨rescued;
+        // ⚠️此 surface 在 persist 时算(L1 仲裁之前)→ rescue 位恒 0,
+        // hidden_ghost=band15 全数、rescued_visible=0(仲裁 +22s 后才回写
+        // native mask);delivered_points=m 是孤点过滤后交付 PLY 点数。
         TelemetryWriter.instance.event('ghost_view_filter', {
           'surface': 'capture_preview',
           'enabled': kGhostMaskViewFilter,
@@ -1402,7 +1400,6 @@ class _ARCapturePageState extends State<ARCapturePage>
           'delivered_points': m,
           'spatial_two_view_filtered': spatialRemoved,
           'hidden_ghost': gv.stats.hiddenGhost,
-          'hidden_lowtrack': gv.stats.hiddenLowTrack,
           'rescued_visible': gv.stats.rescuedVisible,
           'shown': gv.stats.shown,
           'floater_removed': removedF,

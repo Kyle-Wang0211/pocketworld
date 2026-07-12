@@ -15,30 +15,45 @@
 //     "没有 sidecar"容错(全显示)。
 //   • DISPLAY-ONLY 铁律:sidecar 是隐藏候选的元数据,不删点不动点。
 //
-// 可见性谓词(任务①签发形式):
-//   visible(p) = ¬ghost_flag(p) ∧ [obs(p) ≥ 3 ∨ rescued_flag(p) ∨ obs 未知]
-//   • ghost_flag = kGhostHideBits(band15 —— header 里唯一的 display gate 位;
-//     cell_ghost/band10 是 L1 仲裁与参考位,渲染门不消费)。
-//   • obs 来自 colorize 已有的 per-point track 观测计数(CSR obsOffsets);
-//     渲染层拿不到 obs 时(草稿查看页从 PLY 加载)该项恒真 —— 本期容错,
-//     未来可从 sidecar 扩展位读(见 kGhostFlagRescued 注释)。
-//   • rescued = L1 CasDiffMVS 1-bit 仲裁的救援位(误隐=0 红线)。native
-//     当前不写此位(bits 文档只到 bit4),这里先定义 bit5 为救援位做
-//     前向兼容;正式启用前必须与 native 侧敲定位号。
+// 可见性谓词(鬼层歼灭战 07-12,用户签决「只藏确证鬼、放行所有 2-view 好点」):
+//   visible(p) = ¬band15(p) ∨ rescued(p)
+//   等价:hidden(p) = band15(p) ∧ ¬rescued(p) —— 只隐藏「band15 距离门命中
+//   (离地板 >1.5cm)且未被 L1 救援」的点。
+//   • band15 = kGhostHideBits —— header 唯一 display gate 位,语义 = D@1.5cm
+//     slab 外的地板下/远离地板伪影簇(cap49:2840 点整簇在地板下 -17cm,
+//     物理在地板下 = 确证反光地板镜像鬼)。cell_ghost/band10 是 L1 仲裁/参考
+//     位,渲染门不消费。
+//   • rescued = L1 CasDiffMVS 1-bit 仲裁的「真面」白名单位(bit5),误隐=0
+//     红线的守门:band15 里被判真几何(踢脚/台阶)的点置 1 → 放行可见。
+//     ⚠️ native 仲裁(aether_sfm_arbitrate)把 bit5 回写进 Points3D 序的
+//     ghost_mask.bin,但**仲裁跑在 persist 之后**(cap49 telemetry:persist
+//     +20ms → l1_arbitrate +22s);交付点序的 ghost_view_mask.bin 写在 persist
+//     时 → 暂不含 bit5,草稿查看页拿到的是无救援位的交付 mask(band15 全隐)。
+//     谓词已消费 bit5:交付 mask 在仲裁后重算带上救援位那天,Dart 侧零改动
+//     即自动守住那 358 个救援点(见 kGhostViewMaskFileName 注释)。
+//   • ⚠️ 无 obs 依赖:2-view(obs<3)好点不再被当低质量隐藏 —— 旧规则的
+//     「obs≥3 ∨ rescued」那条腿会隐掉全云 64%(cap49:40591 个 2-view 点),
+//     按签决删除。点云全量交付,渲染只藏确证鬼。
+//   • ⚠️ 真值:cap49 缺 dense truth;raised-structure(真台阶/高台)场景
+//     band15 可能误命中真结构,唯一兜底是 rescue 白名单 —— 交付 mask 带上
+//     救援位前,草稿查看页对这类点是构造性误隐(仅渲染,导出永远全量)。
 //
-// 开关(任务②):kGhostMaskViewFilter,纯编译期 env 式 flag,默认 false
-// (暗 ship)。铁律:禁止任何用户可见质量滑杆/档位 —— 此开关只允许
-// --dart-define 翻转,永不接 UI。
+// 开关:kGhostMaskViewFilter,纯编译期 env 式 flag。用户签决「鬼层必须
+// 消失」→ 默认 **true(开门)**,保留 --dart-define=false 暗关退路。铁律:
+// 禁止任何用户可见质量滑杆/档位 —— 此开关只允许 --dart-define 翻转,永不接 UI。
 
 import 'dart:io';
 import 'dart:typed_data';
 
-/// 渲染门总开关(默认关 = 全显示)。翻转方式:
-///   flutter build ios --profile --dart-define=PW_GHOST_VIEW_FILTER=true
-/// 等完整包(L1 救援 + 误隐=0 验证)过门后才允许默认置 true。
+/// 渲染门总开关。用户签决(07-12)「鬼层必须消失」→ 默认 **true(开门)**,
+/// 隐藏 band15∧¬rescued 确证鬼、放行所有 2-view 好点。暗关退路(排障/回归
+/// 对照):
+///   flutter build ios --profile --dart-define=PW_GHOST_VIEW_FILTER=false
+/// 铁律:只允许 --dart-define 翻转,永不接 UI 滑杆/档位;导出/PLY/上传路径
+/// 永远全量,绝不消费此门。
 const bool kGhostMaskViewFilter = bool.fromEnvironment(
   'PW_GHOST_VIEW_FILTER',
-  defaultValue: false,
+  defaultValue: true,
 );
 
 // ── GhostFlagBits(逐字对齐 aether_ghost_mask.h)────────────────────────
@@ -56,10 +71,6 @@ const int kGhostFlagRescued = 1 << 5;
 /// 其余位是仲裁/参考元数据,不得掺进隐藏判定。
 const int kGhostHideBits = kGhostFlagBand15;
 
-/// 低 track 隐藏阈值:obs ≥ 3 的点有第三视角深度确认,直接可见;
-/// 2-view 点须 L1 救援位背书(与 floater_filter 的 ≥3 保护同一语义锚)。
-const int kGhostMinTrackLen = 3;
-
 /// sidecar 文件名(与 native MaybeWriteGhostMask 写出名一致,位于
 /// sfm_live.db 同目录 == captureDir)。native 顺序 = Points3D 迭代序;
 /// **L1 仲裁(aether_sfm_arbitrate)拥有此文件**,仲裁后在 native 点序上
@@ -73,29 +84,30 @@ const String kGhostMaskFileName = 'ghost_mask.bin';
 /// 无法把 native mask 对齐到 PLY。故 persist 时把 native mask 按
 /// spatial→floater 两级 keep 重排成**交付点序**另存此文件,点数/点序逐位
 /// == sfm_sparse.ply。查看页优先读它即可 aligned。
-/// ⚠️写在 L1 仲裁之前 → 暂不含 rescued 位(当前 rescue=0 无影响;rescue
-/// 落地后需在仲裁后重算此文件)。
+/// ⚠️写在 persist(L1 仲裁之前)→ 交付 mask 暂不含 rescued(bit5)。新规则
+/// visible=¬band15∨rescued **消费** bit5:交付 mask 无救援位时退化为
+/// hidden=band15,把 cap49 那 358 个救援点(真踢脚/台阶)一并隐藏(构造性
+/// 误隐,仅渲染;导出永远全量)。修复 = 仲裁 done(sfm_live_recon 的
+/// arbitrate_done)后按同一 native→snap→floater keep 链重算此文件,让 bit5
+/// 流到交付点序;native ghost_mask.bin 仲裁后已带 bit5=358(cap49 实测)。
 const String kGhostViewMaskFileName = 'ghost_view_mask.bin';
 
-/// 视图过滤统计(任务④遥测载荷)。
+/// 视图过滤统计(遥测载荷)。
 class GhostViewStats {
   const GhostViewStats({
     required this.hiddenGhost,
-    required this.hiddenLowTrack,
     required this.rescuedVisible,
     required this.shown,
   });
 
-  /// 因 hide 位(band15)被隐藏的点数。
+  /// 实际被隐藏的点数 = band15 ∧ ¬rescued(确证鬼,未被 L1 救援)。
   final int hiddenGhost;
 
-  /// 非鬼、obs 已知且 <3、无救援位 → 被隐藏的点数。
-  final int hiddenLowTrack;
-
-  /// 非鬼、obs<3 但被 L1 救援位救回可见的点数(误隐=0 红线的观测窗)。
+  /// band15 命中但被 L1 救援位放行可见的点数(误隐=0 红线的观测窗;
+  /// 交付 mask 暂无 bit5 时恒 0 —— 见 kGhostViewMaskFileName 注释)。
   final int rescuedVisible;
 
-  /// 可见点数(= n − hiddenGhost − hiddenLowTrack)。
+  /// 可见点数(= n − hiddenGhost)。
   final int shown;
 }
 
@@ -122,35 +134,28 @@ Uint8List? tryLoadGhostMaskSidecar(
 
 /// 计算可见性数组(1 = 可见,0 = 渲染期跳过)+ 统计。
 ///
-/// [flags] 是与当前点序逐位对齐的 GhostFlagBits;[obsOffsets] 是 colorize
-/// 同源的 CSR 观测偏移(长度 n+1),传 null / 长度不符时低 track 项恒真
-/// (只有鬼位过滤生效)。纯函数,永不改动输入。
+/// [flags] 是与当前点序逐位对齐的 GhostFlagBits。规则:
+///   visible = ¬band15 ∨ rescued  ⇔  hidden = band15 ∧ ¬rescued。
+/// 纯函数,永不改动输入。2-view(obs<3)点不再参与隐藏判定 —— 用户签决
+/// 「只藏确证鬼、放行所有 2-view 好点」,故不再需要 obs 观测计数。
 ({Uint8List visibility, GhostViewStats stats}) computeGhostViewVisibility(
-  Uint8List flags, {
-  Int32List? obsOffsets,
-}) {
+  Uint8List flags,
+) {
   final n = flags.length;
-  final hasObs = obsOffsets != null && obsOffsets.length == n + 1;
   final visibility = Uint8List(n);
   var hiddenGhost = 0;
-  var hiddenLowTrack = 0;
   var rescuedVisible = 0;
   var shown = 0;
   for (var i = 0; i < n; i++) {
     final f = flags[i];
-    if (f & kGhostHideBits != 0) {
-      hiddenGhost++; // visibility[i] 保持 0
+    final isBand = f & kGhostHideBits != 0;
+    final isRescued = f & kGhostFlagRescued != 0;
+    if (isBand && !isRescued) {
+      hiddenGhost++; // visibility[i] 保持 0 = 隐藏(确证鬼)
       continue;
     }
-    if (hasObs) {
-      final obs = obsOffsets[i + 1] - obsOffsets[i];
-      if (obs < kGhostMinTrackLen) {
-        if (f & kGhostFlagRescued == 0) {
-          hiddenLowTrack++;
-          continue;
-        }
-        rescuedVisible++;
-      }
+    if (isBand && isRescued) {
+      rescuedVisible++; // band15 但 L1 救援 → 放行可见(白名单)
     }
     visibility[i] = 1;
     shown++;
@@ -159,7 +164,6 @@ Uint8List? tryLoadGhostMaskSidecar(
     visibility: visibility,
     stats: GhostViewStats(
       hiddenGhost: hiddenGhost,
-      hiddenLowTrack: hiddenLowTrack,
       rescuedVisible: rescuedVisible,
       shown: shown,
     ),

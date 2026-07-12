@@ -98,11 +98,13 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
   Future<void> _load() async {
     final cloud = await compute(loadSparsePly, widget.plyPath,
         debugLabel: 'sparse_ply_load');
-    // ── L2 渲染门(暗铺)── sidecar = PLY 同目录 ghost_mask.bin(native
-    // 写在 sfm_live.db 旁 == captureDir)。sidecar 点序 = get_points 迭代
-    // 序;PLY 是孤点过滤后的紧凑集,点数一致才敢用(tryLoad 核对),
-    // 不一致/缺失 → null = 全显示(容错)。obs 计数在渲染层拿不到
-    // (PLY 不携带 track),低 track 项恒真 —— 未来从 sidecar 扩展位读。
+    // ── L2 渲染门(已开门,默认 kGhostMaskViewFilter=true)── sidecar =
+    // PLY 同目录的交付点序 ghost_view_mask.bin(优先),回退 native
+    // ghost_mask.bin。规则 visible=¬band15∨rescued,不依赖 obs(2-view 好点
+    // 全放行)。点序 = 交付 PLY;点数一致才敢用(tryLoad 核对),不一致/缺失
+    // → null = 全显示(容错)。⚠️交付 mask 写在 L1 仲裁之前 → 无 rescue 位,
+    // 退化为 hidden=band15,会隐掉那 358 个救援点(仅渲染;导出永远全量。
+    // 待仲裁后重算交付 mask 带上 bit5 即自动守住 —— 见 ghost_view_filter)。
     Uint8List? visibility;
     if (cloud != null && cloud.count > 0) {
       final dir = File(widget.plyPath).parent.path;
@@ -123,7 +125,6 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
           'aligned': true,
           'points': cloud.count,
           'hidden_ghost': gv.stats.hiddenGhost,
-          'hidden_lowtrack': gv.stats.hiddenLowTrack,
           'rescued_visible': gv.stats.rescuedVisible,
           'shown': gv.stats.shown,
         });
