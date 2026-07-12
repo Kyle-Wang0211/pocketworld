@@ -114,7 +114,7 @@ class _SparseCloudViewState extends State<SparseCloudView>
   // standard "vivid + tone-mapped" choice. If dim scenes read too dark, raise
   // exposure toward ~1.3 (PBR Neutral rolls off the resulting brights safely).
   // Sliders still adjust live.
-  final double _pointSize = 4.0; // 2× again (user: 点云大小放大一倍) — was 2.0
+  final double _pointSize = 2.67; // −1/3 (user 07-12: 半径减少 1/3) — was 4.0
   final double _exposure = 1.0; // PBR Neutral applies this first
   final int _tone = 2; // PBR Neutral (0=AgX, 1=ACES, 3+=None)
 
