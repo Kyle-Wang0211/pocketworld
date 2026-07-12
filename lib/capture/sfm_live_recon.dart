@@ -1217,6 +1217,12 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
   var lastFrameProcEndMs = 0;
   var finalizing = false;
   Timer? idleRepayTimer;
+  // ④【空闲还债遥测 2026-07-12】采集期累计已还债对数 + 累计还债墙钟,
+  // 用于量化 debt 削减速率(还债速率 = 对数/ms);与 finalize 的
+  // repair_stats(repay_written)/match_fail_stats(rematch_candidates=剩余债)
+  // 对账。仅在 idle-repay 真还上对时透传(避免遥测刷屏)。
+  var idleRepayCumPairs = 0;
+  var idleRepayCumMs = 0;
   // True session high-water footprint — the public TASK_VM_INFO layout has no
   // historical peak field, so we take a running max of the instantaneous
   // sample taken right after each heavy native call.
@@ -1420,19 +1426,39 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
       // 还债前推一次新鲜 thermal:空闲期没有 add_frame 帮忙刷新,native 的
       // 拒绝门不能吃陈旧状态(setThermalState 走旧符号集,单独 guard)。
       final tel = PwTelemetry.sample();
+      // ①【激进还债 2026-07-12】凉机/fair(thermal 0/1)吃满 idle 窗:
+      // 每次还 24 对(健康 GPU ~16ms/对 ≈ 384ms 墙钟,远 < 单次 2s 红线;
+      // spool 缓冲帧不丢,最坏只让恢复的首帧多等一个 repay 窗)。serious
+      // (thermal 2)传 8 —— native 侧 kRepayThermal2MaxPairs 再夹到 8 并要求
+      // 近期无 rc=7;critical(3)native 直接全拒。thermal 读不到时保守取 8。
+      var budget = 8;
       if (tel != null && tel.thermalState >= 0) {
         try {
           s.setThermalState(tel.thermalState);
         } catch (_) {}
+        budget = tel.thermalState <= 1 ? 24 : 8;
       }
       final sw = Stopwatch()..start();
-      final repaid = s.liveRepay(maxPairs: 4);
+      final repaid = s.liveRepay(maxPairs: budget);
       sw.stop();
       if (repaid > 0) {
+        idleRepayCumPairs += repaid;
+        idleRepayCumMs += sw.elapsedMilliseconds;
         wlog(
           'idle-repay: $repaid pair(s) repaid in ${sw.elapsedMilliseconds}ms'
+          ' [cum $idleRepayCumPairs pair(s)/${idleRepayCumMs}ms]'
           '${tel != null ? ' (thermal=${tel.thermalName})' : ''}',
         );
+        // ④ 还债速率遥测(采集期在线):本次 + 累计,与 finalize 的
+        // repair_stats/match_fail_stats 对账 debt 削减。
+        telem('idle_repay', {
+          'pairs': repaid,
+          'ms': sw.elapsedMilliseconds,
+          'budget': budget,
+          'cum_pairs': idleRepayCumPairs,
+          'cum_ms': idleRepayCumMs,
+          if (tel != null) 'thermal': tel.thermalState,
+        });
       }
     } catch (e) {
       // 旧 .a 无 pwsfm_live_repay 符号 → 首次调用即抛;停表,本次采集不再

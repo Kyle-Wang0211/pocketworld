@@ -1309,11 +1309,14 @@ class AetherSfmStreamSession {
   /// matcher route and db-write sequence as addFrame. db-only — the live
   /// preview recon is untouched; the delivered model is identical whether a
   /// pair was repaid live or by the finalize starved-frame re-match (which
-  /// remains the safety net). Native refuses outright at thermal
-  /// serious/critical and attempts each missing pair at most once per
-  /// session. MUST be called from the same worker isolate as [addFrame],
-  /// only when the frame queue has slack. Returns pairs written this call
-  /// (0 = nothing to do / refused); throws on bad args (-1).
+  /// remains the safety net). Thermal gating lives native-side (PHASE-A
+  /// 2026-07-12): critical (3) refuses outright; serious (2) repays a small
+  /// clamped budget only when the recent GPU history is clean (no rc=7) and
+  /// aborts on the first struggling pair; nominal/fair (0/1) take the full
+  /// [maxPairs]. Each missing pair is attempted at most once per session.
+  /// MUST be called from the same worker isolate as [addFrame], only when the
+  /// frame queue has slack. Returns pairs written this call (0 = nothing to do
+  /// / refused); throws on bad args (-1).
   int liveRepay({int maxPairs = 4}) {
     _checkLive();
     final rc = AetherSfm._liveRepay(_session, maxPairs);
