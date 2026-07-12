@@ -9,7 +9,8 @@
 //
 // Rendering may thin points for frame rate (draw stride); the DATA is
 // always the full cloud — export/delivery paths never see a downsampled
-// set.
+// set. Same contract for the L2 ghost render gate ([visibility],
+// ghost_view_filter.dart): display-only skip, data untouched, 默认关。
 
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -59,6 +60,7 @@ class SparseCloudView extends StatefulWidget {
     super.key,
     required this.xyz,
     required this.rgb,
+    this.visibility,
     this.showControls = true,
   });
 
@@ -67,6 +69,12 @@ class SparseCloudView extends StatefulWidget {
 
   /// 3 bytes per point; all-zero → height-ramp grayscale fallback.
   final Uint8List rgb;
+
+  /// L2 渲染门(ghost_view_filter.dart 产出):1 byte/point,0 = 渲染期
+  /// 跳过,null = 全显示。RENDER-ONLY —— 只影响 paint / 双击拾取,数据
+  /// (xyz/rgb)与取景 fit 永远吃全量,导出路径根本看不到这个数组。
+  /// 长度与点数不符时整组忽略(容错,painter 侧核对)。
+  final Uint8List? visibility;
 
   final bool showControls;
 
@@ -182,6 +190,8 @@ class _SparseCloudViewState extends State<SparseCloudView>
       panX: _panX,
       panY: _panY,
       pivot: _pivot,
+      // 渲染门隐藏的点不该被双击对焦锁定(用户看不见它)。
+      visibility: widget.visibility,
     );
     if (world == null) return;
     _animateTo(_CamState(
@@ -270,6 +280,7 @@ class _SparseCloudViewState extends State<SparseCloudView>
                             painter: SparseCloudPainter(
                               xyz: widget.xyz,
                               rgb: widget.rgb,
+                              visibility: widget.visibility,
                               sprite: _sprite,
                               yaw: _yaw,
                               pitch: _pitch,
@@ -317,6 +328,7 @@ class SparseCloudPainter extends CustomPainter {
   SparseCloudPainter({
     required this.xyz,
     required this.rgb,
+    this.visibility,
     required this.sprite,
     required this.yaw,
     required this.pitch,
@@ -333,6 +345,10 @@ class SparseCloudPainter extends CustomPainter {
 
   final Float32List xyz;
   final Uint8List rgb;
+
+  /// L2 渲染门:1 byte/point,0 = 不进渲染 buffer(见 SparseCloudView 同名
+  /// 字段)。null 或长度不符 = 全显示。
+  final Uint8List? visibility;
   final ui.Image? sprite;
   final double yaw;
   final double pitch;
@@ -590,10 +606,14 @@ class SparseCloudPainter extends CustomPainter {
     required double panX,
     required double panY,
     required List<double> pivot,
+    Uint8List? visibility,
   }) {
     if (xyz.isEmpty || size.isEmpty) return null;
     _ensureFit(xyz);
     final n = xyz.length ~/ 3;
+    // 渲染门对齐:被隐藏的点不参与拾取(与 paint 同一容错——长度不符整组忽略)。
+    final vis =
+        visibility != null && visibility.length == n ? visibility : null;
     final cosY = math.cos(yaw), sinY = math.sin(yaw);
     final cosP = math.cos(pitch), sinP = math.sin(pitch);
     final half = size.shortestSide * 0.5;
@@ -606,6 +626,7 @@ class SparseCloudPainter extends CustomPainter {
     var bestAnyD2 = double.infinity;
     var bestAnyIdx = -1;
     for (var i = 0; i < n; i++) {
+      if (vis != null && vis[i] == 0) continue; // L2 渲染门:不可见不可拾取
       final px = xyz[i * 3] - pivot[0];
       final py = xyz[i * 3 + 1] - pivot[1];
       final pz = xyz[i * 3 + 2] - pivot[2];
@@ -710,6 +731,11 @@ class SparseCloudPainter extends CustomPainter {
 
     final n = xyz.length ~/ 3;
     final stride = math.max(1, n ~/ _maxDrawnPoints);
+    // L2 渲染门(默认 null = 全显示):被标记的点不进渲染 buffer。
+    // 长度不符 = mask 与当前点序错位 → 整组忽略(容错,绝不隐藏错点)。
+    // 取景 fit(_ensureFit)刻意仍吃全量:开关翻转不得改变取景/尺度。
+    final vis =
+        visibility != null && visibility!.length == n ? visibility : null;
     final cosY = math.cos(yaw), sinY = math.sin(yaw);
     final cosP = math.cos(pitch), sinP = math.sin(pitch);
     final half = size.shortestSide * 0.5;
@@ -747,6 +773,7 @@ class SparseCloudPainter extends CustomPainter {
     var m = 0;
 
     for (var i = 0; i < n; i += stride) {
+      if (vis != null && vis[i] == 0) continue; // L2 渲染门:ghost 点不进 buffer
       final wx = xyz[i * 3], wy = xyz[i * 3 + 1], wz = xyz[i * 3 + 2];
       final px = wx - pivotX, py = wy - pivotY, pz = wz - pivotZ;
       // yaw about Y, then pitch about X
@@ -816,6 +843,7 @@ class SparseCloudPainter extends CustomPainter {
   bool shouldRepaint(SparseCloudPainter old) =>
       old.xyz != xyz ||
       old.rgb != rgb ||
+      old.visibility != visibility ||
       old.sprite != sprite ||
       old.yaw != yaw ||
       old.pitch != pitch ||

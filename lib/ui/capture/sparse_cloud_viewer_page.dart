@@ -9,6 +9,8 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 
+import '../../capture/ghost_view_filter.dart';
+import '../../capture/telemetry_writer.dart';
 import 'sparse_cloud_view.dart';
 
 /// Parsed cloud (full set — delivery never downsamples).
@@ -84,6 +86,7 @@ class SparseCloudViewerPage extends StatefulWidget {
 
 class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
   SparseCloudData? _cloud;
+  Uint8List? _visibility;
   bool _loading = true;
 
   @override
@@ -95,9 +98,34 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
   Future<void> _load() async {
     final cloud = await compute(loadSparsePly, widget.plyPath,
         debugLabel: 'sparse_ply_load');
+    // ── L2 渲染门(暗铺)── sidecar = PLY 同目录 ghost_mask.bin(native
+    // 写在 sfm_live.db 旁 == captureDir)。sidecar 点序 = get_points 迭代
+    // 序;PLY 是孤点过滤后的紧凑集,点数一致才敢用(tryLoad 核对),
+    // 不一致/缺失 → null = 全显示(容错)。obs 计数在渲染层拿不到
+    // (PLY 不携带 track),低 track 项恒真 —— 未来从 sidecar 扩展位读。
+    Uint8List? visibility;
+    if (cloud != null && cloud.count > 0) {
+      final dir = File(widget.plyPath).parent.path;
+      final flags = tryLoadGhostMaskSidecar(dir, cloud.count);
+      if (flags != null) {
+        final gv = computeGhostViewVisibility(flags);
+        if (kGhostMaskViewFilter) visibility = gv.visibility;
+        TelemetryWriter.instance.event('ghost_view_filter', {
+          'surface': 'viewer_page',
+          'enabled': kGhostMaskViewFilter,
+          'aligned': true,
+          'points': cloud.count,
+          'hidden_ghost': gv.stats.hiddenGhost,
+          'hidden_lowtrack': gv.stats.hiddenLowTrack,
+          'rescued_visible': gv.stats.rescuedVisible,
+          'shown': gv.stats.shown,
+        });
+      }
+    }
     if (!mounted) return;
     setState(() {
       _cloud = cloud;
+      _visibility = visibility;
       _loading = false;
     });
   }
@@ -140,7 +168,11 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                   )
                 : Padding(
                     padding: const EdgeInsets.only(bottom: 10),
-                    child: SparseCloudView(xyz: cloud.xyz, rgb: cloud.rgb),
+                    child: SparseCloudView(
+                      xyz: cloud.xyz,
+                      rgb: cloud.rgb,
+                      visibility: _visibility,
+                    ),
                   ),
       ),
     );

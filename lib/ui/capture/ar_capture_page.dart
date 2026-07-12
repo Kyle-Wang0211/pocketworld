@@ -38,6 +38,7 @@ import '../../capture/capture_coverage_cloud.dart';
 import '../../capture/capture_session.dart';
 import '../../capture/colorize_pipeline.dart';
 import '../../capture/floater_filter.dart';
+import '../../capture/ghost_view_filter.dart';
 import '../../capture/parallax_banner_gate.dart';
 import '../../capture/photo_card_state.dart';
 import '../../capture/pw_telemetry.dart';
@@ -146,6 +147,13 @@ class _ARCapturePageState extends State<ARCapturePage>
   /// the cleaner REFINED (phase-2) cloud, but keep this so a REFINE failure
   /// still shows a usable colored cloud instead of an error (采集必出点云).
   SfmLiveSnapshot? _pendingLocalColored;
+
+  /// L2 渲染门可见性(ghost_view_filter.dart),与 [_sfmSnapshot] /
+  /// [_pendingLocalColored] 的点序逐位对齐;null = 全显示。RENDER-ONLY:
+  /// 只喂 SfmPreviewOverlay → SparseCloudView,persist/导出永远看不到。
+  /// 生命周期与配对的快照字段完全同步(同 setState 赋值/清空)。
+  Uint8List? _sfmGhostVisibility;
+  Uint8List? _pendingLocalVisibility;
   String? _sfmErrorText;
   int _sfmFed = 0;
   int _sfmQueued = 0;
@@ -1094,8 +1102,10 @@ class _ARCapturePageState extends State<ARCapturePage>
             final localFallback = _pendingLocalColored;
             if (localFallback != null) {
               _sfmSnapshot = localFallback;
+              _sfmGhostVisibility = _pendingLocalVisibility; // 渲染门随快照配对
               _sfmPhase = SfmPreviewPhase.refined; // show the done chip + cloud
               _pendingLocalColored = null;
+              _pendingLocalVisibility = null;
             } else {
               _sfmPhase = SfmPreviewPhase.error;
               _sfmErrorText = '$stage: $message';
@@ -1325,6 +1335,54 @@ class _ARCapturePageState extends State<ARCapturePage>
       'protected_stable': flt.protectedStable,
       'ms': flt.ms,
     });
+    // ── L2 渲染门(暗铺,ghost_view_filter.dart)──────────────────────
+    // native 在 finalize 时(env AETHER_GHOST_MASK=1)把 per-point 隐藏候选
+    // 位写到 <captureDir>/ghost_mask.bin,顺序 = get_points 迭代序 = 本
+    // snap 的点序 —— 前提是 worker 的 spatial two-view 过滤本次没删点
+    // (删过则点数错位,tryLoad 的一致性核对会拒用 → 全显示,容错语义;
+    // 完整包过门时由 native 在交付点序上出 mask 收口)。谓词在孤点过滤
+    // 【前】的 snap 上算(obsOffsets 只在这层还活着),再按 keepIdx 压实
+    // 与显示点序对齐。kGhostMaskViewFilter=false(默认)时只出遥测不改
+    // 渲染 —— 统计是"若开门会隐藏多少"的暗舱观测窗。
+    Uint8List? ghostVisibility;
+    final gDir = _session?.captureDir;
+    if (gDir != null) {
+      final gFlags = tryLoadGhostMaskSidecar(gDir, n);
+      if (gFlags != null) {
+        final gv = computeGhostViewVisibility(
+          gFlags,
+          obsOffsets: snap.obsOffsets,
+        );
+        final vis = removedF <= 0
+            ? gv.visibility
+            : compactVisibilityByIndices(gv.visibility, keepIdx);
+        if (kGhostMaskViewFilter) ghostVisibility = vis;
+        // 遥测【ghost_view_filter】:视图过滤统计(任务④;开关关时也记,
+        // enabled 字段区分)。导出/交付不受影响(断言脚本
+        // tool/ghost_view_filter_check.dart)。
+        TelemetryWriter.instance.event('ghost_view_filter', {
+          'surface': 'capture_preview',
+          'enabled': kGhostMaskViewFilter,
+          'aligned': true,
+          'points': n,
+          'hidden_ghost': gv.stats.hiddenGhost,
+          'hidden_lowtrack': gv.stats.hiddenLowTrack,
+          'rescued_visible': gv.stats.rescuedVisible,
+          'shown': gv.stats.shown,
+          'floater_removed': removedF,
+        });
+      } else if (File('$gDir/$kGhostMaskFileName').existsSync()) {
+        // sidecar 在但点数不一致(上游 Dart 过滤删过点)→ 拒用,全显示。
+        TelemetryWriter.instance.event('ghost_view_filter', {
+          'surface': 'capture_preview',
+          'enabled': kGhostMaskViewFilter,
+          'aligned': false,
+          'points': n,
+          'spatial_two_view_filtered':
+              snap.summary['spatial_two_view_filtered'],
+        });
+      }
+    }
     // Filtered snapshot reused for BOTH persist and display (empty obs — the
     // colorize already consumed them; persist's track-hist guards on obs length).
     final fsnap = SfmLiveSnapshot(
@@ -1405,14 +1463,17 @@ class _ARCapturePageState extends State<ARCapturePage>
         // Reveal the clean terminal cloud (streaming preview, or REFINED phase-2).
         setState(() {
           _sfmSnapshot = display;
+          _sfmGhostVisibility = ghostVisibility; // 渲染门随快照配对(默认 null)
           _sfmPhase = SfmPreviewPhase.refined;
           _pendingLocalColored = null;
+          _pendingLocalVisibility = null;
         });
       } else {
         // Defer: do NOT show the noisier phase-1 (local) cloud — wait for the
         // refined one. Hold it as the refine-failure fallback; the generating
         // spinner ("实时重建") stays up as the finalize loading state.
         _pendingLocalColored = display;
+        _pendingLocalVisibility = ghostVisibility;
       }
     }
     // Photo prune (deletes non-curated frames) may run ONLY after the LAST
@@ -1785,8 +1846,10 @@ class _ARCapturePageState extends State<ARCapturePage>
             _sfmFed = recon.fedCount;
             _sfmQueued = recon.remainingCount;
             _sfmSnapshot = null;
+            _sfmGhostVisibility = null;
             _colorizeTarget = null;
             _pendingLocalColored = null;
+            _pendingLocalVisibility = null;
             _sfmErrorText = null;
             _sfmPhase = SfmPreviewPhase.generating;
             _showDraftsWhileReconstructing = false;
@@ -2222,6 +2285,7 @@ class _ARCapturePageState extends State<ARCapturePage>
             SfmPreviewOverlay(
               phase: _sfmPhase!,
               snapshot: _sfmSnapshot,
+              visibility: _sfmGhostVisibility,
               errorText: _sfmErrorText,
               progressText: _sfmQueued > 0
                   ? '已处理 $_sfmFed 帧 · 剩余 $_sfmQueued 帧'
