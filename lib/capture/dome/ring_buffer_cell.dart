@@ -60,7 +60,7 @@ class RingBufferCell {
   /// 污染修复] 文件名带 frameId,驱逐不再同名覆盖旧 JPEG——旧文件仍被
   /// SfM fed jsonl 引用(colorize/resume 取色),由 colorize 后的
   /// deferred prune 统一清理。
-  int? append(CapturedFrameSample s) {
+  int? append(CapturedFrameSample s, {bool force = false}) {
     if (_buf.length < capacity) {
       _buf.add(s);
       return _buf.length - 1;
@@ -82,7 +82,14 @@ class RingBufferCell {
     // Primary: replace if new frame is meaningfully more novel.
     // Secondary: same novelty but higher quality (deduplicates near-
     //            identical frames, keeping the sharper one).
+    // [FORCE 2026-07-13] Manual shutter (forceAdmit) MUST always land. A full
+    // ring of same-quality manual frames (all stamped sharpness 9999.0) ties on
+    // BOTH gates (9999 is not > 9999), so plain append returned null →
+    // forceAdmit returned null → the shutter went permanently dead once a cell
+    // filled. force=true evicts the least-novel resident unconditionally so a
+    // user's manual tap never no-ops. Auto-ingest (force=false) keeps the gate.
     final shouldReplace =
+        force ||
         newNovelty > worstNovelty + 0.001 ||
         ((newNovelty - worstNovelty).abs() <= 1.0 && newQuality > worstQuality);
     if (shouldReplace) {

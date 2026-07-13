@@ -734,7 +734,9 @@ class DomeTargetPoints extends ChangeNotifier {
 
     final buffer = _buffers[bestIdx];
     final prevState = _states[bestIdx];
-    final slotIdx = buffer.append(sample);
+    // force: manual capture must never be silently declined by the ring's
+    // novelty/quality eviction gate (see RingBufferCell.append [FORCE]).
+    final slotIdx = buffer.append(sample, force: true);
     if (slotIdx == null) return null; // buffer declined; nothing to save
     _validFrameCount++;
     final raw = buffer.computeRawState(thresholds);
