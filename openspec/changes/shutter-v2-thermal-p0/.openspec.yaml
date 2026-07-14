@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-07-14
+goal: On iPhone 14 Pro, accepted taps equal durable JPEG/sidecar/SfM inputs and
+  final registered frames, with zero silent drops and no shutter blocking on
+  encode or reconstruction.

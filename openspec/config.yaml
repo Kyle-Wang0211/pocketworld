@@ -1,0 +1,32 @@
+schema: spec-driven
+
+context: |
+  PocketWorld is a local-only Flutter capture product with an iOS ARKit shim
+  and a cross-platform C++ reconstruction core. Supported product targets are
+  iOS, Android, HarmonyOS, and viewer-only Web. Dart owns policy and state;
+  Swift is a thin platform executor. Capture bytes never use a cloud service.
+
+  Hard capture invariants:
+  - Every accepted manual shutter tap is durable or remains an explicit,
+    blocking failure. The system must never silently drop or auto-delete it.
+  - Only an explicit user discard/delete operation may remove captured bytes.
+  - Reconstruction completion requires accepted == durable == SfM-ingested ==
+    registered. A run below 100% remains failed/pending; it is not rounded up.
+  - Thermal control may defer background reconstruction to disk, but must not
+    gate the shutter or trade away resolution, frames, or quality.
+  - Production dependencies and model weights must be open-source and
+    commercially usable with immutable revision/hash evidence.
+
+  Current E baseline is Git 1626543232eff47d1bd3664dad065165e472e1d7.
+  Product algorithm target is COLMAP 4.1.0 and Ceres 2.2 as a pinned Git
+  submodule; those migrations are separate from the shutter change.
+rules:
+  proposal:
+    - State explicit non-goals and phone-only acceptance work.
+    - Separate verified host facts from unverified device hypotheses.
+  design:
+    - Model accepted, snapshotted, durable, queued, ingested, registered, and deleted as distinct states.
+    - List crash, timeout, thermal, queue, finalize, discard, and recovery behavior.
+  tasks:
+    - Require failing-first tests before implementation.
+    - Never mark phone validation complete from simulator or host evidence.
