@@ -49,10 +49,11 @@ shutter, delete a queue item, lower image resolution, or skip a frame.
 - **THEN** the consumer preserves the full queue, enters an explicit paused/recovery state, and resumes or rebuilds without a silent loss
 
 ### Requirement: Registration completion uses exact set equality
-The system SHALL define the expected registration set as all accepted,
-photo-committed jobs not explicitly user-deleted.  It SHALL declare completion
-only when the committed, queued, ingested, and final registered job-ID sets are
-identical to that expected set.
+The system SHALL define the expected registration set as every accepted job not
+explicitly user-deleted, including an accepted job whose photo commit is still
+pending or failed.  It SHALL declare completion only when the photo-committed,
+queued, ingested, and final registered job-ID sets are each identical to that
+expected set.
 
 #### Scenario: Final output omits one frame
 - **WHEN** final reconstruction registers all but one expected job
