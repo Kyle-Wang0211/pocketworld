@@ -482,6 +482,7 @@ class SfmLiveRecon {
   bool _pumping = false;
   bool _disposed = false;
   bool _workerTerminated = false;
+  bool _foregroundCaptureActive = false;
   Completer<void>? _disposeAck;
 
   static const Duration _consumerRecheckInterval = Duration(seconds: 1);
@@ -527,11 +528,25 @@ class SfmLiveRecon {
   int get queuedCount => _waitingSpoolDepth;
 
   /// Frames not yet acknowledged by native SfM, including both disk-spooled
-  /// frames and the at-most-two worker calls currently in flight.
+  /// frames and the sole worker call currently in flight.
   int get remainingCount => _durableQueue.spoolDepth;
 
   /// Every keyframe offered this take (fed + in-flight + queued).
   int get offeredCount => _durableQueue.nextSequence;
+
+  /// Gives frame publication priority over background reconstruction. Durable
+  /// enqueue remains available while active; only native FIFO consumption is
+  /// paused. Dropping the gate immediately resumes the retained head.
+  void setForegroundCaptureActive(bool active) {
+    if (_disposed || _foregroundCaptureActive == active) return;
+    // This setter runs synchronously in the shutter call stack. Keep the
+    // active edge to one in-memory store: no telemetry encoding, thermal FFI,
+    // or DeviceLog synchronous file append is permitted here.
+    _foregroundCaptureActive = active;
+    if (!active) {
+      unawaited(_pump());
+    }
+  }
 
   bool get finalizeStarted => _finalizeRequested;
 
@@ -984,6 +999,7 @@ class SfmLiveRecon {
         inFlight: _inFlight,
         cooldownRemaining: _cooldownRemaining,
         finalizeRequested: _finalizeRequested,
+        foregroundCaptureActive: _foregroundCaptureActive,
       ),
     );
   }
@@ -1787,7 +1803,7 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
   // 调用点安全性:worker isolate 是单事件循环,timer 回调与 'frame'/'finalize'
   // 命令处理天然串行 —— 绝不与 add_frame 并发,恰好落在 add_frame 之间的
   // 空档;不阻塞喂帧(极端竞态下最多让下一帧多等一次 repay,≤4 对)。
-  // "队列空"的判据:facade 在 _inFlight<2 时立即续帧,所以距上帧处理结束
+  // "队列空"的判据:facade 在 _inFlight<1 时立即续帧,所以距上帧处理结束
   // >500ms 仍无新帧 = 磁盘 spool 已空、拍摄在歇。Dart 先用新鲜 thermal
   // 硬门控:只有 nominal/fair 才能调用 native;serious/critical/unknown 都
   // 延后。native 的门仍作为纵深兜底。每对至多尝试一次;finalize 补匹配

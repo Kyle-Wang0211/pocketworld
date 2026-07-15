@@ -84,6 +84,10 @@ class CaptureMotionSnapshot {
 /// terminal capture failure; accepted frames are never silently dropped.
 typedef ManualSfmFrameSink = FutureOr<bool> Function(SfmFrameFeed feed);
 
+/// Announces whether at least one accepted shutter job is still reserving or
+/// publishing its frame-exact JPEG/sidecar/gray bundle.
+typedef ManualCaptureActivitySink = void Function(bool active);
+
 /// The three observable stages of one accepted shutter tap.
 final class ManualPhotoCapture {
   const ManualPhotoCapture({
@@ -187,6 +191,17 @@ class CaptureSession {
     if (!_manualSfmSinkReady.isCompleted) {
       _manualSfmSinkReady.complete();
     }
+  }
+
+  /// Binds the foreground-priority gate used by the background recon worker.
+  /// The current state is delivered immediately so late worker startup cannot
+  /// miss publications that were already accepted.
+  void bindManualCaptureActivitySink(ManualCaptureActivitySink sink) {
+    if (_disposed) {
+      throw StateError('CaptureSession used after dispose');
+    }
+    _manualCaptureActivitySink = sink;
+    _notifyManualCaptureActivity(_manualCapturePublicationsInFlight > 0);
   }
 
   final StreamController<ARPose> _poseCtrl =
@@ -372,8 +387,10 @@ class CaptureSession {
   final Map<String, ManualPhotoCaptureException> _manualPhotoFailures =
       <String, ManualPhotoCaptureException>{};
   ManualSfmFrameSink? _manualSfmFrameSink;
+  ManualCaptureActivitySink? _manualCaptureActivitySink;
   final Completer<void> _manualSfmSinkReady = Completer<void>();
   Future<void> _manualSfmHandoffTail = Future<void>.value();
+  int _manualCapturePublicationsInFlight = 0;
   int _pendingPhotoSaveCount = 0;
   double _lastHighResStillTriggerSec = double.negativeInfinity;
   static const int _maxPendingPhotoSaves = 2;
@@ -848,6 +865,8 @@ class CaptureSession {
     _pendingPhotoSaves.clear();
     _manualPhotoFailures.clear();
     _manualSfmHandoffTail = Future<void>.value();
+    _manualCapturePublicationsInFlight = 0;
+    _notifyManualCaptureActivity(false);
     _pendingPhotoSaveCount = 0;
     _lastHighResStillTriggerSec = double.negativeInfinity;
     _resetPhotoSaveHealth();
@@ -1474,6 +1493,9 @@ class CaptureSession {
     final photosDir = _photosDir;
     if (pose == null || photosDir == null) return null;
 
+    _beginManualCapturePublication();
+    var publicationActivityOwnedByMethod = true;
+
     // Join the finish barrier before the first await. Therefore Finish cannot
     // race past a shutter that is currently waiting for native reservation.
     final reservationBarrier = Completer<void>();
@@ -1571,10 +1593,14 @@ class CaptureSession {
         sfmGrayPath: sfmGrayPath,
       );
 
-      final committed = _awaitManualPhotoCommit(
+      final nativeCommitted = _awaitManualPhotoCommit(
         manualProvider,
         reservation,
         frameId: sample.frameId,
+      );
+      publicationActivityOwnedByMethod = false;
+      final committed = nativeCommitted.whenComplete(
+        _endManualCapturePublication,
       );
       // Serialize gray-file reads and durable handoff. Native publication is
       // already serial, but several Dart completion callbacks can otherwise
@@ -1596,9 +1622,41 @@ class CaptureSession {
         completion: completion,
       );
     } finally {
+      if (publicationActivityOwnedByMethod) {
+        _endManualCapturePublication();
+      }
       if (!reservationBarrier.isCompleted) {
         reservationBarrier.complete();
       }
+    }
+  }
+
+  void _beginManualCapturePublication() {
+    _manualCapturePublicationsInFlight += 1;
+    if (_manualCapturePublicationsInFlight == 1) {
+      _notifyManualCaptureActivity(true);
+    }
+  }
+
+  void _endManualCapturePublication() {
+    if (_manualCapturePublicationsInFlight <= 0) return;
+    _manualCapturePublicationsInFlight -= 1;
+    if (_manualCapturePublicationsInFlight == 0) {
+      _notifyManualCaptureActivity(false);
+    }
+  }
+
+  void _notifyManualCaptureActivity(bool active) {
+    try {
+      _manualCaptureActivitySink?.call(active);
+    } catch (error, stackTrace) {
+      // Scheduling is a performance hint. It must never change the durable
+      // result of an already accepted photo.
+      // ignore: avoid_print
+      print(
+        '[CaptureSession] manual capture activity observer failed: '
+        '$error\n$stackTrace',
+      );
     }
   }
 

@@ -963,6 +963,7 @@ class _ARCapturePageState extends State<ARCapturePage>
         return;
       }
       _sfmRecon = recon;
+      session.bindManualCaptureActivitySink(recon.setForegroundCaptureActive);
       // This is the sole reconstruction feed. The compatibility broadcast is
       // emitted only after this durable sink succeeds and remains reserved for
       // coverage/visualization consumers; listening to both would double-feed

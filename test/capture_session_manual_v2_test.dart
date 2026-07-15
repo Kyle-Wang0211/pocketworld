@@ -126,6 +126,19 @@ void main() {
     },
   );
 
+  test('activity observer failure never fails an accepted photo', () async {
+    session.bindManualSfmFrameSink((_) => true);
+    session.bindManualCaptureActivitySink((_) {
+      throw StateError('diagnostic observer failed');
+    });
+
+    final capture = await session.captureSinglePhoto();
+    expect(capture, isNotNull);
+    await provider.completeCommitted();
+    expect((await capture!.committed).committed, isTrue);
+    await capture.completion;
+  });
+
   test(
     'missing gray and durable queue rejection are explicit failures',
     () async {
@@ -213,6 +226,47 @@ void main() {
         offered.map((feed) => feed.jpegPath).toSet(),
         session.capturedPhotoPaths.toSet(),
       );
+    },
+  );
+
+  test(
+    'manual publications hold foreground priority until every job terminates',
+    () async {
+      await session.dispose();
+      await provider.close();
+
+      final concurrentProvider = _ConcurrentManualV2PoseProvider();
+      addTearDown(concurrentProvider.close);
+      session = CaptureSession(poseProvider: concurrentProvider);
+      await session.start(autoLock: false, manualCapture: true);
+      concurrentProvider.emitPose();
+      await Future<void>.delayed(Duration.zero);
+
+      final activity = <bool>[];
+      session.bindManualCaptureActivitySink(activity.add);
+      session.bindManualSfmFrameSink((_) => true);
+
+      final captures = (await Future.wait(<Future<ManualPhotoCapture?>>[
+        session.captureSinglePhoto(),
+        session.captureSinglePhoto(),
+        session.captureSinglePhoto(),
+      ])).whereType<ManualPhotoCapture>().toList(growable: false);
+      final jobIDs = captures
+          .map((capture) => capture.captureJobID)
+          .toList(growable: false);
+
+      expect(activity, <bool>[false, true]);
+      await concurrentProvider.completeCommitted(jobIDs[2]);
+      await captures.singleWhere((c) => c.captureJobID == jobIDs[2]).committed;
+      expect(activity, <bool>[false, true]);
+      await concurrentProvider.completeCommitted(jobIDs[0]);
+      await captures.singleWhere((c) => c.captureJobID == jobIDs[0]).committed;
+      expect(activity, <bool>[false, true]);
+      await concurrentProvider.completeCommitted(jobIDs[1]);
+      await captures.singleWhere((c) => c.captureJobID == jobIDs[1]).committed;
+      expect(activity, <bool>[false, true, false]);
+
+      await Future.wait(captures.map((capture) => capture.completion));
     },
   );
 }

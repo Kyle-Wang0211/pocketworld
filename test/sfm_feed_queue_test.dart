@@ -7,6 +7,10 @@ import 'package:pocketworld_flutter/capture/sfm_feed_queue.dart';
 import 'package:pocketworld_flutter/capture/sfm_thermal_scheduler.dart';
 
 void main() {
+  test('background queue has exactly one outstanding native work item', () {
+    expect(kSfmFeedMaxInFlight, 1);
+  });
+
   group('durable queue acknowledgement', () {
     test('only an OK native acknowledgement removes the durable head', () {
       expect(
@@ -111,15 +115,23 @@ void main() {
         orderedEquals(List.generate(8, (i) => i)),
       );
       final first = await queue!.claimNext();
-      final second = await queue!.claimNext();
       expect(first?.frame.id, frames[0].id);
-      expect(second?.frame.id, frames[1].id);
       expect(
         await queue!.claimNext(),
         isNull,
-        reason: 'only two native calls may be in flight',
+        reason: 'only one native call may be outstanding',
       );
 
+      expect(
+        await queue!.acknowledge(
+          frameId: first!.frame.id,
+          nativeOk: true,
+          fedMeta: const <String, Object?>{'nativeFrameId': 21},
+        ),
+        SfmFeedAckDisposition.removeAfterSuccess,
+      );
+      final second = await queue!.claimNext();
+      expect(second?.frame.id, frames[1].id);
       expect(
         await queue!.acknowledge(
           frameId: second!.frame.id,
@@ -268,7 +280,7 @@ void main() {
         );
         expect(queue!.blocked, isFalse);
         expect((await queue!.claimNext())?.frame.id, first.id);
-        expect((await queue!.claimNext())?.frame.id, second.id);
+        expect(await queue!.claimNext(), isNull);
         expect(
           await queue!.acknowledge(
             frameId: first.id,
@@ -278,6 +290,7 @@ void main() {
           SfmFeedAckDisposition.removeAfterSuccess,
         );
         expect(queue!.nativeReplayRequired, isTrue);
+        expect((await queue!.claimNext())?.frame.id, second.id);
         expect(
           await queue!.acknowledge(
             frameId: second.id,

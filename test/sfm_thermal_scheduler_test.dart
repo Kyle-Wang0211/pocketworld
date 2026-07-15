@@ -12,6 +12,7 @@ void main() {
     int inFlight = 0,
     Duration cooldownRemaining = Duration.zero,
     bool finalizeRequested = false,
+    bool foregroundCaptureActive = false,
   }) {
     return SfmBackgroundScheduleInput(
       thermalState: thermalState,
@@ -21,21 +22,52 @@ void main() {
       inFlight: inFlight,
       cooldownRemaining: cooldownRemaining,
       finalizeRequested: finalizeRequested,
+      foregroundCaptureActive: foregroundCaptureActive,
     );
   }
 
   group('conservative defaults', () {
-    test('nominal sends one FIFO head when capacity is available', () {
-      final decision = decideSfmBackgroundSchedule(
+    test('nominal keeps only one background item outstanding', () {
+      final ready = decideSfmBackgroundSchedule(
+        input: input(thermalState: 0, queueDepth: 3),
+        config: conservative,
+      );
+      final full = decideSfmBackgroundSchedule(
         input: input(thermalState: 0, queueDepth: 3, inFlight: 1),
         config: conservative,
       );
 
-      expect(decision.send, isTrue);
-      expect(decision.pause, isFalse);
-      expect(decision.cooldown, isFalse);
-      expect(decision.allowedInFlight, 2);
-      expect(decision.reason, 'thermal_nominal_ready');
+      expect(ready.send, isTrue);
+      expect(ready.pause, isFalse);
+      expect(ready.cooldown, isFalse);
+      expect(ready.allowedInFlight, 1);
+      expect(ready.reason, 'thermal_nominal_ready');
+      expect(full.send, isFalse);
+      expect(full.pause, isTrue);
+      expect(full.allowedInFlight, 1);
+      expect(full.reason, 'in_flight_limit');
+    });
+
+    test('foreground publication owns priority over every thermal band', () {
+      for (final thermal in <int?>[0, 1, 2, 3, null]) {
+        final decision = decideSfmBackgroundSchedule(
+          input: input(
+            thermalState: thermal,
+            queueDepth: 100,
+            foregroundCaptureActive: true,
+          ),
+          config: conservative,
+        );
+
+        expect(decision.send, isFalse, reason: 'thermal=$thermal');
+        expect(decision.pause, isTrue, reason: 'thermal=$thermal');
+        expect(decision.allowedInFlight, 0, reason: 'thermal=$thermal');
+        expect(
+          decision.reason,
+          'foreground_capture_priority',
+          reason: 'thermal=$thermal',
+        );
+      }
     });
 
     test('fair uses the conservative one-in-flight budget', () {

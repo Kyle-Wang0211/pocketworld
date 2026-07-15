@@ -19,7 +19,7 @@
 /// fail-closed and cannot be configured open.
 final class SfmThermalSchedulerConfig {
   const SfmThermalSchedulerConfig({
-    this.nominalAllowedInFlight = 2,
+    this.nominalAllowedInFlight = 1,
     this.fairAllowedInFlight = 1,
     this.seriousAllowedInFlight = 0,
     this.consecutiveGpuFailureThreshold = 2,
@@ -44,6 +44,7 @@ final class SfmBackgroundScheduleInput {
     required this.inFlight,
     required this.cooldownRemaining,
     required this.finalizeRequested,
+    this.foregroundCaptureActive = false,
   });
 
   /// Platform thermal bucket: 0 nominal, 1 fair, 2 serious, 3 critical.
@@ -67,6 +68,11 @@ final class SfmBackgroundScheduleInput {
   final Duration cooldownRemaining;
 
   final bool finalizeRequested;
+
+  /// A shutter job is reserving or publishing its JPEG/sidecar/gray bundle.
+  /// Durable FIFO writes may continue, but no new native reconstruction work
+  /// may start until the foreground publication set becomes empty.
+  final bool foregroundCaptureActive;
 }
 
 /// A background-consumption decision. [cooldown] is a subtype of [pause].
@@ -202,6 +208,16 @@ SfmBackgroundScheduleDecision decideSfmBackgroundSchedule({
   }
 
   final thermal = _thermalBand(input.thermalState);
+
+  // Camera preview and shutter publication own the device. Already-running
+  // native work is not cancellable, but the one-outstanding queue limit means
+  // no second item can have been pre-sent behind it.
+  if (input.foregroundCaptureActive) {
+    return const SfmBackgroundScheduleDecision._pause(
+      allowedInFlight: 0,
+      reason: 'foreground_capture_priority',
+    );
+  }
 
   // Critical heat and rc=7 are not device-tunable: never start more GPU work.
   if (thermal == _ThermalBand.critical) {

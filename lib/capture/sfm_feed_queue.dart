@@ -25,8 +25,12 @@ import 'dart:io';
 import 'dart:typed_data';
 
 /// worker 同时在途 add_frame 的上限。超过即溢写磁盘排队(不阻塞、不丢帧)。
-/// 值 2 = 与旧内联实现逐字一致(offerFrame 的 `_inFlight < 2`)。
-const int kSfmFeedMaxInFlight = 2;
+///
+/// Keep exactly one command outstanding. The worker isolate is serial anyway,
+/// so a second pre-sent command adds no native parallelism; it only prevents a
+/// newly arriving shutter publication from taking priority before that second
+/// command starts.
+const int kSfmFeedMaxInFlight = 1;
 
 /// 这一帧持久化后是否必须等待，而不能立即由 pump 送 worker。
 /// 所有帧都会先落盘；true 仅表示 worker 已满或前面还有 FIFO 项。
