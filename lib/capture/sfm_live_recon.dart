@@ -17,11 +17,11 @@
 //   finalize_status until REFINED/ERROR → refined snapshot event.
 //
 // Backpressure (capture never waits for SfM, and NOTHING is ever dropped):
-// when the worker already has kSfmFeedMaxInFlight add_frame calls unconsumed,
-// the keyframe's gray plane is spilled to a disk file and only its PATH is
-// queued (RAM stays flat no matter how deep the queue grows — the bytes live
-// on disk, not in the spool entry). The pump feeds spooled frames in arrival
-// order as slots free; finalize is DEFERRED until the queue fully drains, so
+// every keyframe's gray plane is flushed to a disk file before worker offer.
+// Its queue entry and file remain until native returns an explicit OK. The pump
+// feeds frames in arrival order as scheduler-approved slots free; read/worker/
+// non-OK failures retain the affected item and block finalize. Finalize is
+// DEFERRED until the durable queue and in-flight set fully drain, so
 // every offered frame reaches the reconstruction (finalize frame count ==
 // captured frame count). Backpressure acts only on the background CONSUMER
 // (when the worker takes its next frame); it never propagates back to the
@@ -45,11 +45,14 @@ import '../util/device_log.dart';
 import 'gravity_align.dart';
 import 'pw_telemetry.dart';
 import 'sfm_feed_queue.dart';
+import 'sfm_thermal_scheduler.dart';
 import 'telemetry_writer.dart';
 import 'true_parallax.dart';
 
-/// One reconstruction snapshot (LOCAL_READY or REFINED). Always the FULL
-/// point set — render-side thinning is allowed, data-side never.
+/// One reconstruction snapshot (LOCAL_READY or REFINED). Contains only points
+/// promoted by the native multi-view birth gate; weaker internal proposals stay
+/// in the Reconstruction for registration/BA and never receive a product point
+/// slot. No Dart-side deletion or visibility filtering is part of delivery.
 class SfmLiveSnapshot {
   const SfmLiveSnapshot({
     required this.xyz,
@@ -434,36 +437,6 @@ class SfmFedFrameMeta {
   final List<double>? arkitCameraCenterWorld;
 }
 
-/// One keyframe parked on disk while the worker is busy. The gray bytes
-/// live in the file (memory stays flat no matter how deep the queue gets);
-/// [written] completes when the spill finished flushing.
-class _SpooledFrame {
-  _SpooledFrame({
-    required this.seq,
-    required this.path,
-    required this.written,
-    required this.w,
-    required this.h,
-    required this.fx,
-    required this.fy,
-    required this.cx,
-    required this.cy,
-    required this.quatWxyz,
-    required this.trans,
-  });
-  final int seq;
-  final String path;
-  final Future<void> written;
-  final int w;
-  final int h;
-  final double fx;
-  final double fy;
-  final double cx;
-  final double cy;
-  final Float64List? quatWxyz;
-  final Float64List? trans;
-}
-
 /// Main-isolate handle to the streaming-SfM worker. Create per capture take
 /// via [start]; feed via [offerFrame]; end via [finalize]; ALWAYS [dispose]
 /// (joins the native background thread + drops the session sqlite db).
@@ -476,16 +449,29 @@ class SfmLiveRecon {
     this._fromWorker,
     this._isolate,
     this._sub,
+    this._workerErrors,
+    this._workerExit,
+    this._workerErrorSub,
+    this._workerExitSub,
     this._dbPath,
-  );
+    this._durableQueue,
+  ) {
+    _events = StreamController<SfmLiveEvent>(onListen: _onEventsListen);
+    _restoreDurableState();
+  }
 
   final SendPort _toWorker;
   final ReceivePort _fromWorker;
   final Isolate _isolate;
   final StreamSubscription<dynamic> _sub;
+  final ReceivePort _workerErrors;
+  final ReceivePort _workerExit;
+  final StreamSubscription<dynamic> _workerErrorSub;
+  final StreamSubscription<dynamic> _workerExitSub;
   final String _dbPath;
+  final SfmDurableFeedQueue _durableQueue;
 
-  final _events = StreamController<SfmLiveEvent>.broadcast();
+  late final StreamController<SfmLiveEvent> _events;
   Stream<SfmLiveEvent> get events => _events.stream;
 
   int _seq = 0;
@@ -495,12 +481,23 @@ class SfmLiveRecon {
   bool _finalizeSent = false; // finalize cmd actually dispatched to worker
   bool _pumping = false;
   bool _disposed = false;
+  bool _workerTerminated = false;
   Completer<void>? _disposeAck;
 
-  // Disk-backed keyframe queue (research tier: NOTHING is dropped — photos
-  // and poses are all on disk anyway, so a busy worker just means the frame
-  // waits its turn; finalize is deferred until the queue drains).
-  final List<_SpooledFrame> _spool = <_SpooledFrame>[];
+  static const Duration _consumerRecheckInterval = Duration(seconds: 1);
+  final Stopwatch _scheduleClock = Stopwatch()..start();
+  Timer? _pumpRetryTimer;
+  Duration _cooldownUntil = Duration.zero;
+  int? _latestThermalState;
+  int? _recentGpuResultCode;
+  int _lastGpuRc7Count = 0;
+  int _consecutiveAddFrameFailures = 0;
+  String? _queueFailure;
+  String? _lastScheduleReason;
+
+  // Native command sequence -> durable queue frame identity. The durable
+  // manifest, not this in-memory map, owns pending/fed truth across restarts.
+  final Map<int, String> _durableFrameBySeq = <int, String>{};
 
   // seq → meta while in flight; frameId → meta once the worker acks the
   // add_frame (frame ids come back with frame_done).
@@ -523,15 +520,18 @@ class SfmLiveRecon {
   /// Keyframes successfully added to the live reconstruction.
   int get fedCount => _fedOk;
 
-  /// Keyframes parked on disk awaiting the worker.
-  int get queuedCount => _spool.length;
+  int get _waitingSpoolDepth =>
+      math.max(0, _durableQueue.spoolDepth - _inFlight);
+
+  /// Keyframes parked on disk and not currently in flight.
+  int get queuedCount => _waitingSpoolDepth;
 
   /// Frames not yet acknowledged by native SfM, including both disk-spooled
   /// frames and the at-most-two worker calls currently in flight.
-  int get remainingCount => _spool.length + _inFlight;
+  int get remainingCount => _durableQueue.spoolDepth;
 
   /// Every keyframe offered this take (fed + in-flight + queued).
-  int get offeredCount => _seq;
+  int get offeredCount => _durableQueue.nextSequence;
 
   bool get finalizeStarted => _finalizeRequested;
 
@@ -547,7 +547,73 @@ class SfmLiveRecon {
       DeviceLog.log('SfmLive', 'start: unsupported (simulator) — hidden');
       return null;
     }
+    final SfmDurableFeedQueue durableQueue;
+    try {
+      durableQueue = await SfmDurableFeedQueue.open(
+        Directory('$dbPath.sfm-feed'),
+      );
+    } catch (error) {
+      DeviceLog.log('SfmLive', 'durable queue open FAILED: $error');
+      return null;
+    }
+    // Pending entries at process startup are necessarily owned by a previous
+    // worker lifetime. Native may have committed any one of them before the
+    // Dart ACK crossed its atomic manifest boundary, so appending to the old
+    // COLMAP DB would risk either a duplicate frame or a name collision.
+    // Rewind every fed+pending payload and rebuild a fresh DB instead.
+    if (durableQueue.spoolDepth > 0) {
+      try {
+        final prepared = await durableQueue.prepareAllForFreshNativeReplay();
+        if (!prepared) {
+          DeviceLog.log(
+            'SfmLive',
+            'durable replay preparation FAILED: '
+                '${durableQueue.blockReason}',
+          );
+          await durableQueue.close();
+          return null;
+        }
+        await prepareSfmNativeDbForFreshReplay(dbPath);
+        DeviceLog.log(
+          'SfmLive',
+          'replaying ${durableQueue.spoolDepth} accepted frames into fresh DB',
+        );
+      } catch (error) {
+        await durableQueue.retainAndBlock(
+          SfmFeedBlock(
+            kind: SfmFeedBlockKind.replayIncomplete,
+            message: 'native DB replay preparation failed: $error',
+          ),
+        );
+        await durableQueue.close();
+        DeviceLog.log('SfmLive', 'native DB replay preparation FAILED: $error');
+        return null;
+      }
+    }
     final fromWorker = ReceivePort();
+    final workerErrors = ReceivePort();
+    final workerExit = ReceivePort();
+    final handshake = Completer<SendPort?>();
+    SfmLiveRecon? recon;
+    (String, Object?)? earlyTermination;
+    final workerErrorSub = workerErrors.listen((message) {
+      if (!handshake.isCompleted) handshake.complete(null);
+      final active = recon;
+      if (active == null) {
+        earlyTermination = ('isolate_error', message);
+      } else {
+        active._onWorkerTerminated('isolate_error', message);
+      }
+    });
+    final workerExitSub = workerExit.listen((message) {
+      if (!handshake.isCompleted) handshake.complete(null);
+      final active = recon;
+      if (active == null) {
+        earlyTermination = ('isolate_exit', message);
+      } else {
+        active._onWorkerTerminated('isolate_exit', message);
+      }
+    });
     final Isolate isolate;
     try {
       isolate = await Isolate.spawn(
@@ -555,9 +621,16 @@ class SfmLiveRecon {
         _SfmWorkerBootstrap(fromWorker.sendPort, dbPath),
         debugName: 'sfm_live_recon',
         errorsAreFatal: true,
+        onError: workerErrors.sendPort,
+        onExit: workerExit.sendPort,
       );
     } catch (e) {
       fromWorker.close();
+      await workerErrorSub.cancel();
+      await workerExitSub.cancel();
+      workerErrors.close();
+      workerExit.close();
+      await durableQueue.close();
       DeviceLog.log('SfmLive', 'worker spawn FAILED: $e');
       return null;
     }
@@ -566,8 +639,6 @@ class SfmLiveRecon {
     // (ReceivePort is single-subscription and closes on cancel — a second
     // listen() throws; this exact mistake shipped once and silently killed
     // the feature in release.)
-    final handshake = Completer<SendPort?>();
-    SfmLiveRecon? recon;
     final sub = fromWorker.listen((msg) {
       if (!handshake.isCompleted) {
         handshake.complete(msg is SendPort ? msg : null);
@@ -587,27 +658,135 @@ class SfmLiveRecon {
     if (port == null) {
       DeviceLog.log('SfmLive', 'worker handshake FAILED/timeout — disabled');
       await sub.cancel();
+      await workerErrorSub.cancel();
+      await workerExitSub.cancel();
       fromWorker.close();
+      workerErrors.close();
+      workerExit.close();
       isolate.kill(priority: Isolate.immediate);
+      await durableQueue.close();
       return null;
     }
-    recon = SfmLiveRecon._(port, fromWorker, isolate, sub, dbPath);
+    recon = SfmLiveRecon._(
+      port,
+      fromWorker,
+      isolate,
+      sub,
+      workerErrors,
+      workerExit,
+      workerErrorSub,
+      workerExitSub,
+      dbPath,
+      durableQueue,
+    );
+    final termination = earlyTermination;
+    if (termination != null) {
+      recon._onWorkerTerminated(termination.$1, termination.$2);
+    }
     DeviceLog.log('SfmLive', 'worker up (db=$dbPath)');
     return recon;
   }
 
-  /// Offers one keyframe to the live reconstruction. NEVER blocks and NEVER
-  /// drops: when the worker is busy the gray plane is spilled to disk and
-  /// fed as soon as a slot frees (finalize waits for the queue to drain, so
-  /// every offered frame reaches the reconstruction). Returns false only
-  /// when the feed lacks what add_frame needs.
-  bool offerFrame(SfmFrameFeed feed) {
-    if (_disposed || _finalizeRequested) return false;
+  void _onEventsListen() {
+    // A single-subscription controller buffers worker messages emitted before
+    // the consumer attaches. Start recovered queue consumption only after the
+    // listener exists so frame/failure events cannot disappear through the
+    // old broadcast-stream race.
+    if (_durableQueue.spoolDepth > 0 && !_disposed) unawaited(_pump());
+  }
+
+  void _restoreDurableState() {
+    _seq = _durableQueue.nextSequence;
+    _fedOk = _durableQueue.fedCount;
+    final persistedBlock = _durableQueue.blockReason;
+    if (persistedBlock != null) {
+      _queueFailure = persistedBlock.toString();
+      DeviceLog.log(
+        'SfmLive',
+        'durable queue reopened blocked: $persistedBlock',
+      );
+    }
+    for (final frame in _durableQueue.pendingFrames) {
+      final seq = frame.sequence + 1;
+      _durableFrameBySeq[seq] = frame.id;
+      final meta = _fedMetaFromDurable(frame.metadata);
+      if (meta != null) _pendingMeta[seq] = meta;
+      final offerMs = frame.metadata['offerEpochMs'];
+      if (offerMs is int) _seqOfferMs[seq] = offerMs;
+    }
+    for (final record in _durableQueue.fedRecords) {
+      final frameId = record.fedMeta['nativeFrameId'];
+      final meta = _fedMetaFromDurable(record.fedMeta);
+      if (frameId is int && frameId >= 0 && meta != null) {
+        _fedMeta[frameId] = meta;
+      }
+    }
+  }
+
+  SfmFedFrameMeta? _fedMetaFromDurable(Map<String, Object?> value) {
+    final jpegPath = value['jpegPath'];
+    if (jpegPath is! String || jpegPath.isEmpty) return null;
+    final imageW = _durableInt(value, 'imageW');
+    final imageH = _durableInt(value, 'imageH');
+    final grayW = _durableInt(value, 'grayW');
+    final grayH = _durableInt(value, 'grayH');
+    final fx = _durableDouble(value, 'fx');
+    final fy = _durableDouble(value, 'fy');
+    final cx = _durableDouble(value, 'cx');
+    final cy = _durableDouble(value, 'cy');
+    if (imageW <= 0 ||
+        imageH <= 0 ||
+        grayW <= 0 ||
+        grayH <= 0 ||
+        !fx.isFinite ||
+        !fy.isFinite ||
+        !cx.isFinite ||
+        !cy.isFinite) {
+      return null;
+    }
+    return SfmFedFrameMeta(
+      jpegPath: jpegPath,
+      imageW: imageW,
+      imageH: imageH,
+      grayW: grayW,
+      grayH: grayH,
+      fx: fx,
+      fy: fy,
+      cx: cx,
+      cy: cy,
+      arkitQuatWxyz: _durableDoubleList(value['arkitQuatWxyz']),
+      arkitTransTxyz: _durableDoubleList(value['arkitTransTxyz']),
+      arkitCameraCenterWorld: _durableDoubleList(
+        value['arkitCameraCenterWorld'],
+      ),
+    );
+  }
+
+  static int _durableInt(Map<String, Object?> value, String key) =>
+      (value[key] as num?)?.toInt() ?? -1;
+
+  static double _durableDouble(Map<String, Object?> value, String key) =>
+      (value[key] as num?)?.toDouble() ?? double.nan;
+
+  static List<double>? _durableDoubleList(Object? value) {
+    if (value is! List) return null;
+    final result = value
+        .whereType<num>()
+        .map((item) => item.toDouble())
+        .toList();
+    return result.length == value.length ? result : null;
+  }
+
+  /// Offers one keyframe to the live reconstruction. The Future completes only
+  /// after the gray plane is flushed to disk; consumption remains asynchronous
+  /// and thermal-controlled. Finalize waits for every OK acknowledgement.
+  /// Returns false when the frame cannot obtain durable queue ownership.
+  Future<bool> offerFrame(SfmFrameFeed feed) async {
+    if (_disposed || _finalizeRequested || _queueFailure != null) return false;
     if (feed.intrinsicFxFyCxCy.length < 4 || feed.imageW <= 0) {
       return false;
     }
-    final seq = ++_seq;
-    _seqOfferMs[seq] = DateTime.now().millisecondsSinceEpoch; // 遥测【frame】
+    final offerMs = DateTime.now().millisecondsSinceEpoch; // 遥测【frame】
     // Uniform intrinsics rescale full-res → gray resolution (the native
     // extract preserves aspect, so one factor serves fx/fy/cx/cy).
     final s = feed.grayW / feed.imageW;
@@ -635,65 +814,52 @@ class SfmLiveRecon {
     }
 
     final jpegPath = feed.jpegPath;
-    if (jpegPath != null) {
-      _pendingMeta[seq] = SfmFedFrameMeta(
-        jpegPath: jpegPath,
-        imageW: feed.imageW,
-        imageH: feed.imageH,
-        grayW: feed.grayW,
-        grayH: feed.grayH,
-        fx: fx,
-        fy: fy,
-        cx: cx,
-        cy: cy,
-        arkitQuatWxyz: quatWxyz?.toList(), // ARKit CamFromWorld (gravity frame)
-        arkitTransTxyz: trans?.toList(),
-        arkitCameraCenterWorld: cameraCenterWorld,
-      );
-    }
+    final durableMetadata = <String, Object?>{
+      'schemaVersion': 1,
+      'jpegPath': ?jpegPath,
+      'imageW': feed.imageW,
+      'imageH': feed.imageH,
+      'grayW': feed.grayW,
+      'grayH': feed.grayH,
+      'fx': fx,
+      'fy': fy,
+      'cx': cx,
+      'cy': cy,
+      if (quatWxyz != null) 'arkitQuatWxyz': quatWxyz.toList(),
+      if (trans != null) 'arkitTransTxyz': trans.toList(),
+      'arkitCameraCenterWorld': ?cameraCenterWorld,
+      'offerEpochMs': offerMs,
+    };
 
-    if (!sfmFeedShouldSpool(inFlight: _inFlight, spoolDepth: _spool.length)) {
-      // Worker has room — feed directly, zero disk traffic.
-      _sendFrameCmd(
-        seq,
-        feed.gray,
-        feed.grayW,
-        feed.grayH,
-        fx,
-        fy,
-        cx,
-        cy,
-        quatWxyz,
-        trans,
+    // Gray bytes, camera metadata, and FIFO identity are durably published
+    // before this Future succeeds. The manifest is the recovery source of
+    // truth; in-memory maps below are disposable indexes only.
+    final frame = await _durableQueue.enqueueGray(
+      grayBytes: feed.gray,
+      metadata: durableMetadata,
+    );
+    final seq = frame.sequence + 1;
+    _seq = math.max(_seq, seq);
+    _durableFrameBySeq[seq] = frame.id;
+    _seqOfferMs[seq] = offerMs;
+    final meta = _fedMetaFromDurable(durableMetadata);
+    if (meta != null) _pendingMeta[seq] = meta;
+    _events.add(SfmLiveFrameQueued(seq, _waitingSpoolDepth));
+    DeviceLog.log(
+      'SfmLive',
+      'frame#$seq durable-queued '
+          '(inFlight=$_inFlight, waiting=$_waitingSpoolDepth)',
+    );
+    if (_durableQueue.blocked) {
+      final reason = _durableQueue.blockReason;
+      _blockQueue(
+        stage: 'sfm_queue_write',
+        message: 'frame#$seq retained after durable enqueue failure: $reason',
       );
-    } else {
-      // Worker busy — park the gray plane on disk (full-res 4K ≈ 8.3 MB;
-      // parking N frames costs disk, not RAM) and let the pump feed it in
-      // arrival order. Entry is appended SYNCHRONOUSLY so ordering is
-      // preserved even while the write is still flushing.
-      final path = '$_dbPath.spool.$seq.gray';
-      final written = File(path).writeAsBytes(feed.gray, flush: false);
-      _spool.add(
-        _SpooledFrame(
-          seq: seq,
-          path: path,
-          written: written,
-          w: feed.grayW,
-          h: feed.grayH,
-          fx: fx,
-          fy: fy,
-          cx: cx,
-          cy: cy,
-          quatWxyz: quatWxyz,
-          trans: trans,
-        ),
-      );
-      _events.add(SfmLiveFrameQueued(seq, _spool.length));
-      DeviceLog.log(
-        'SfmLive',
-        'frame#$seq queued (inFlight=$_inFlight, depth=${_spool.length})',
-      );
+      return false;
     }
+    if (_disposed) return false;
+    unawaited(_pump());
     return true;
   }
 
@@ -709,8 +875,6 @@ class SfmLiveRecon {
     Float64List? q,
     Float64List? t,
   ) {
-    _inFlight++;
-    _seqSentMs[seq] = DateTime.now().millisecondsSinceEpoch; // 遥测【frame】
     _toWorker.send(<String, Object?>{
       'cmd': 'frame',
       'seq': seq,
@@ -724,6 +888,8 @@ class SfmLiveRecon {
       'q': q,
       't': t,
     });
+    _inFlight++;
+    _seqSentMs[seq] = DateTime.now().millisecondsSinceEpoch; // 遥测【frame】
   }
 
   /// Feeds spooled frames whenever the worker has room; sends the deferred
@@ -732,36 +898,68 @@ class SfmLiveRecon {
     if (_pumping || _disposed) return;
     _pumping = true;
     try {
-      while (!_disposed &&
-          sfmFeedCanPumpNext(inFlight: _inFlight, spoolDepth: _spool.length)) {
-        final entry = _spool.first;
-        try {
-          await entry.written; // ensure the spill finished flushing
-          final gray = await File(entry.path).readAsBytes();
-          _spool.removeAt(0);
-          unawaited(
-            File(
-              entry.path,
-            ).delete().then<void>((_) {}, onError: (Object _) {}),
-          );
-          _sendFrameCmd(
-            entry.seq,
-            gray,
-            entry.w,
-            entry.h,
-            entry.fx,
-            entry.fy,
-            entry.cx,
-            entry.cy,
-            entry.quatWxyz,
-            entry.trans,
-          );
-        } catch (e) {
-          // Unreadable spill — skip this frame rather than stall the queue.
-          _spool.removeAt(0);
-          _pendingMeta.remove(entry.seq);
-          DeviceLog.log('SfmLive', 'spool #${entry.seq} unreadable: $e');
+      while (!_disposed) {
+        final decision = _backgroundScheduleDecision();
+        _recordScheduleDecision(decision);
+        if (!sfmFeedCanPumpNext(
+          inFlight: _inFlight,
+          spoolDepth: _waitingSpoolDepth,
+          consumerPaused: decision.pause,
+          queueBlocked: _queueFailure != null,
+        )) {
+          if (decision.pause &&
+              _queueFailure == null &&
+              _waitingSpoolDepth > 0) {
+            _schedulePumpRetry();
+          }
+          break;
         }
+        final claim = await _durableQueue.claimNext();
+        if (claim == null) {
+          final reason = _durableQueue.blockReason;
+          if (reason != null) {
+            _blockQueue(
+              stage: 'sfm_queue_read',
+              message: 'durable queue retained its head: $reason',
+            );
+          }
+          break;
+        }
+        final metadata = claim.frame.metadata;
+        final seq = claim.frame.sequence + 1;
+        _durableFrameBySeq[seq] = claim.frame.id;
+        final width = _durableInt(metadata, 'grayW');
+        final height = _durableInt(metadata, 'grayH');
+        final fx = _durableDouble(metadata, 'fx');
+        final fy = _durableDouble(metadata, 'fy');
+        final cx = _durableDouble(metadata, 'cx');
+        final cy = _durableDouble(metadata, 'cy');
+        if (width <= 0 ||
+            height <= 0 ||
+            !fx.isFinite ||
+            !fy.isFinite ||
+            !cx.isFinite ||
+            !cy.isFinite) {
+          _blockQueue(
+            stage: 'sfm_queue_metadata',
+            message: 'frame#$seq retained after invalid durable metadata',
+          );
+          break;
+        }
+        final qValues = _durableDoubleList(metadata['arkitQuatWxyz']);
+        final tValues = _durableDoubleList(metadata['arkitTransTxyz']);
+        _sendFrameCmd(
+          seq,
+          claim.grayBytes,
+          width,
+          height,
+          fx,
+          fy,
+          cx,
+          cy,
+          qValues?.length == 4 ? Float64List.fromList(qValues!) : null,
+          tValues?.length == 3 ? Float64List.fromList(tValues!) : null,
+        );
       }
     } finally {
       _pumping = false;
@@ -769,13 +967,88 @@ class SfmLiveRecon {
     _maybeSendFinalize();
   }
 
+  Duration get _cooldownRemaining {
+    final remaining = _cooldownUntil - _scheduleClock.elapsed;
+    return remaining.isNegative ? Duration.zero : remaining;
+  }
+
+  SfmBackgroundScheduleDecision _backgroundScheduleDecision() {
+    final sample = PwTelemetry.sample();
+    if (sample != null) _latestThermalState = sample.thermalState;
+    return decideSfmBackgroundSchedule(
+      input: SfmBackgroundScheduleInput(
+        thermalState: _latestThermalState,
+        recentGpuResultCode: _recentGpuResultCode,
+        consecutiveGpuFailures: _consecutiveAddFrameFailures,
+        queueDepth: _waitingSpoolDepth,
+        inFlight: _inFlight,
+        cooldownRemaining: _cooldownRemaining,
+        finalizeRequested: _finalizeRequested,
+      ),
+    );
+  }
+
+  void _recordScheduleDecision(SfmBackgroundScheduleDecision decision) {
+    if (_recentGpuResultCode == 7) {
+      _recentGpuResultCode = null;
+      _cooldownUntil = _scheduleClock.elapsed + _consumerRecheckInterval;
+    }
+    if (_lastScheduleReason == decision.reason) return;
+    _lastScheduleReason = decision.reason;
+    DeviceLog.log(
+      'SfmLive',
+      'consumer ${decision.send ? 'send' : 'pause'}: ${decision.reason} '
+          '(thermal=${_latestThermalState ?? -1} '
+          'waiting=$_waitingSpoolDepth inFlight=$_inFlight)',
+    );
+    TelemetryWriter.instance.event('sfm_consumer_schedule', {
+      'send': decision.send,
+      'pause': decision.pause,
+      'cooldown': decision.cooldown,
+      'reason': decision.reason,
+      'allowed_inflight': decision.allowedInFlight,
+      'thermal': _latestThermalState ?? -1,
+      'waiting': _waitingSpoolDepth,
+      'inflight': _inFlight,
+      'consecutive_add_frame_failures': _consecutiveAddFrameFailures,
+    });
+  }
+
+  void _schedulePumpRetry() {
+    if (_pumpRetryTimer != null || _disposed || _queueFailure != null) return;
+    final cooldown = _cooldownRemaining;
+    final delay = cooldown > Duration.zero
+        ? cooldown
+        : _consumerRecheckInterval;
+    _pumpRetryTimer = Timer(delay, () {
+      _pumpRetryTimer = null;
+      unawaited(_pump());
+    });
+  }
+
+  void _blockQueue({required String stage, required String message}) {
+    if (_queueFailure != null) return;
+    _queueFailure = message;
+    _pumpRetryTimer?.cancel();
+    _pumpRetryTimer = null;
+    DeviceLog.log('SfmLive', message);
+    TelemetryWriter.instance.event('sfm_queue_blocked', {
+      'stage': stage,
+      'message': message,
+      'waiting': _waitingSpoolDepth,
+      'inflight': _inFlight,
+    });
+    _events.add(SfmLiveFailed(stage, message));
+  }
+
   void _maybeSendFinalize() {
     if (_disposed ||
         !sfmFeedCanSendFinalize(
           finalizeRequested: _finalizeRequested,
           finalizeSent: _finalizeSent,
-          spoolDepth: _spool.length,
+          spoolDepth: _durableQueue.spoolDepth,
           inFlight: _inFlight,
+          queueBlocked: _queueFailure != null,
         )) {
       return;
     }
@@ -799,10 +1072,13 @@ class SfmLiveRecon {
     if (_disposed || _finalizeRequested) return;
     _finalizeRequested = true;
     _finalizeRequestMs = DateTime.now().millisecondsSinceEpoch; // 遥测
-    if (_spool.isNotEmpty || _inFlight > 0) {
+    if (_durableQueue.spoolDepth > 0 ||
+        _inFlight > 0 ||
+        _queueFailure != null) {
       DeviceLog.log(
         'SfmLive',
-        'finalize deferred: inFlight=$_inFlight queued=${_spool.length}',
+        'finalize deferred: inFlight=$_inFlight '
+            'queued=${_durableQueue.spoolDepth}',
       );
       unawaited(_pump());
       return;
@@ -834,6 +1110,15 @@ class SfmLiveRecon {
   /// 让 refined 事件走与 live 完全同一条 _gravityAlign 调用链。
   void seedFedMeta(Map<int, SfmFedFrameMeta> meta) {
     _fedMeta.addAll(meta);
+  }
+
+  /// Releases internal replay payloads only after the final PLY/meta artifact
+  /// has been durably written. User JPEGs and AR sidecars are never touched.
+  Future<bool> markFinalArtifactCommitted() async {
+    final purged = await _durableQueue.purgeReplayPayloadsAfterFinalArtifact();
+    if (!purged) return false;
+    await purgeSfmNativeReplayBackup(_dbPath);
+    return true;
   }
 
   /// Persist the SfM-frame-id → color-JPEG mapping (+ the gray dims the
@@ -874,27 +1159,62 @@ class SfmLiveRecon {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
-    // Drop any undelivered spool files (page is going away).
-    for (final entry in _spool) {
-      unawaited(
-        File(entry.path).delete().then<void>((_) {}, onError: (Object _) {}),
-      );
-    }
-    _spool.clear();
+    _pumpRetryTimer?.cancel();
+    _pumpRetryTimer = null;
+    // Unacknowledged queue files intentionally survive facade disposal. A page
+    // lifecycle event is not proof that native ingested them.
     final ack = _disposeAck = Completer<void>();
     try {
-      _toWorker.send(const <String, Object?>{'cmd': 'dispose'});
-      // aether_sfm_free may legitimately block while joining a running
-      // global-BA thread; give it generous room before force-killing.
-      await ack.future.timeout(const Duration(seconds: 120));
+      if (!_workerTerminated) {
+        _toWorker.send(const <String, Object?>{'cmd': 'dispose'});
+        // aether_sfm_free may legitimately block while joining a running
+        // global-BA thread; give it generous room before force-killing.
+        await ack.future.timeout(const Duration(seconds: 120));
+      }
     } catch (_) {
       // Timeout/port death — fall through to kill.
     } finally {
       await _sub.cancel();
+      await _workerErrorSub.cancel();
+      await _workerExitSub.cancel();
       _fromWorker.close();
+      _workerErrors.close();
+      _workerExit.close();
       _isolate.kill(priority: Isolate.immediate);
+      await _durableQueue.close();
       await _events.close();
     }
+  }
+
+  void _onWorkerTerminated(String stage, Object? detail) {
+    if (_disposed || _workerTerminated) return;
+    _workerTerminated = true;
+    _pumpRetryTimer?.cancel();
+    _pumpRetryTimer = null;
+    final message = 'SfM worker terminated unexpectedly ($stage): $detail';
+    _queueFailure = message;
+    unawaited(
+      _durableQueue
+          .retainAndBlock(
+            SfmFeedBlock(kind: SfmFeedBlockKind.workerDied, message: message),
+          )
+          .catchError((Object error) {
+            DeviceLog.log(
+              'SfmLive',
+              'failed to persist worker termination: $error',
+            );
+          }),
+    );
+    DeviceLog.log('SfmLive', message);
+    TelemetryWriter.instance.event('sfm_queue_blocked', {
+      'stage': stage,
+      'message': message,
+      'waiting': _waitingSpoolDepth,
+      'inflight': _inFlight,
+    });
+    if (!_events.isClosed) _events.add(SfmLiveFailed(stage, message));
+    final ack = _disposeAck;
+    if (ack != null && !ack.isCompleted) ack.complete();
   }
 
   void _onWorkerMessage(dynamic msg) {
@@ -922,94 +1242,7 @@ class SfmLiveRecon {
           }
         }
       case 'frame_done':
-        _inFlight = _inFlight > 0 ? _inFlight - 1 : 0;
-        final ok = msg['result'] == 'ok';
-        if (ok) _fedOk++;
-        final seq = msg['seq'] as int;
-        final frameId = msg['frameId'] as int;
-        final meta = _pendingMeta.remove(seq);
-        if (ok && meta != null && frameId >= 0) {
-          _fedMeta[frameId] = meta;
-          _persistFedMeta(frameId, meta);
-        }
-        // Consolidated per-frame telemetry: timing (worker) + queue state
-        // (facade owns the disk spool) + memory/thermal (worker peak sample).
-        // One grep-able line — `[TELEM]` — for the whole capture profile.
-        final ms = msg['ms'] as int;
-        final memMb = msg['memMb'] as double?;
-        final peakMb = msg['peakMb'] as double?;
-        final thermal = msg['thermal'] as int?;
-        final thermalName = switch (thermal) {
-          0 => 'nominal',
-          1 => 'fair',
-          2 => 'serious',
-          3 => 'critical',
-          _ => '?',
-        };
-        DeviceLog.log(
-          'TELEM',
-          'frame#$seq fid=$frameId ${ok ? 'ok' : msg['result']} '
-              'proc=${ms}ms | queue=${_spool.length} inflight=$_inFlight '
-              'offered=$_seq fed=$_fedOk | '
-              'mem=${memMb?.toStringAsFixed(0) ?? '?'}MB '
-              'peak=${peakMb?.toStringAsFixed(0) ?? '?'}MB '
-              'thermal=$thermalName',
-        );
-        // ── 遥测【frame】结构化行:worker 已算好的字段(计时/提取/匹配/
-        // 内存/热)+ facade 独有的队列态与时间戳,汇成一行 JSONL。
-        // 全部数据都在手上,零重复计算。
-        {
-          final offerMs = _seqOfferMs.remove(seq);
-          final sentMs = _seqSentMs.remove(seq);
-          final extractMs = msg['extractMs'] as double?;
-          TelemetryWriter.instance.event('frame', {
-            'seq': seq,
-            'fid': frameId,
-            'result': msg['result'],
-            if (meta != null) 'jpeg': meta.jpegPath.split('/').last,
-            't_offer': ?offerMs,
-            't_fed': ?sentMs,
-            if (offerMs != null && sentMs != null)
-              'spool_wait_ms': sentMs - offerMs,
-            'proc_ms': ms,
-            'queue': _spool.length,
-            'inflight': _inFlight,
-            'offered': _seq,
-            'fed': _fedOk,
-            if (extractMs != null) 'extract_ms': extractMs.round(),
-            // ②【标签修准 2026-07-11】原 'cpu_suspect' 是误诊:>2000ms 只说明
-            // 提取慢(热降频下 GPU 提取本身就能超 2s,45 号实锤),并不能
-            // 证明走了 CPU 回退——native 没有显式回退标志,别再把慢当路径。
-            if (extractMs != null)
-              'extract_path': extractMs > 2000 ? 'slow_extract' : 'gpu',
-            if (msg['matchMs'] != null)
-              'match_ms': (msg['matchMs'] as double).round(),
-            if (msg['nCand'] != null) 'n_cand': msg['nCand'],
-            if (msg['gpuPairs'] != null) 'gpu_pairs': msg['gpuPairs'],
-            if (msg['cpuPairs'] != null) 'cpu_pairs': msg['cpuPairs'],
-            // ④【热调速器】累计被降档帧数(native 计数器;缺省=旧 .a)。
-            if (msg['throttledCum'] != null)
-              'throttled_cum': msg['throttledCum'],
-            if (msg['growAcc'] != null) 'grow_acc_cum': msg['growAcc'],
-            if (msg['growRej'] != null) 'grow_rej_cum': msg['growRej'],
-            if (msg['tvgPairs'] != null) 'tvg_pairs_cum': msg['tvgPairs'],
-            if (msg['rawPairs'] != null) 'raw_pairs_cum': msg['rawPairs'],
-            if (memMb != null) 'mem_mb': memMb.round(),
-            if (peakMb != null) 'peak_mb': peakMb.round(),
-            'thermal': ?thermal,
-          });
-        }
-        _events.add(
-          SfmLiveFrameFed(
-            seq: seq,
-            frameId: frameId,
-            elapsedMs: ms,
-            result: msg['result'] as String,
-          ),
-        );
-        // Worker slot freed — feed the next spooled frame (and dispatch the
-        // deferred finalize once everything drained).
-        unawaited(_pump());
+        unawaited(_handleFrameDone(Map<Object?, Object?>.from(msg)));
       case 'preview':
         // The streaming local-BA cloud, TRACK-ANNOTATED (same payload shape as
         // local_ready) so it colorizes + gravity-aligns identically to finalize.
@@ -1078,6 +1311,139 @@ class SfmLiveRecon {
       case 'disposed':
         _disposeAck?.complete();
     }
+  }
+
+  Future<void> _handleFrameDone(Map<Object?, Object?> msg) async {
+    _inFlight = _inFlight > 0 ? _inFlight - 1 : 0;
+    final result = msg['result'] as String? ?? 'unknown';
+    final seq = msg['seq'] as int? ?? -1;
+    final frameId = msg['frameId'] as int? ?? -1;
+    final nativeOk = result == 'ok' && seq > 0 && frameId >= 0;
+    final durableId = _durableFrameBySeq[seq];
+    final meta = _pendingMeta[seq];
+
+    SfmFeedAckDisposition disposition = SfmFeedAckDisposition.retainAndBlock;
+    if (durableId == null) {
+      _blockQueue(
+        stage: 'sfm_queue_ack',
+        message: 'native result for frame#$seq has no durable queue identity',
+      );
+    } else {
+      Map<String, Object?> durableMetadata = const <String, Object?>{};
+      for (final frame in _durableQueue.pendingFrames) {
+        if (frame.id == durableId) {
+          durableMetadata = frame.metadata;
+          break;
+        }
+      }
+      disposition = await _durableQueue.acknowledge(
+        frameId: durableId,
+        nativeOk: nativeOk,
+        fedMeta: <String, Object?>{
+          ...durableMetadata,
+          if (nativeOk) 'nativeFrameId': frameId,
+        },
+      );
+    }
+
+    final durablyCommitted =
+        nativeOk && disposition == SfmFeedAckDisposition.removeAfterSuccess;
+    if (durablyCommitted) {
+      _fedOk = _durableQueue.fedCount;
+      _consecutiveAddFrameFailures = 0;
+      _durableFrameBySeq.remove(seq);
+      _pendingMeta.remove(seq);
+      if (meta != null) {
+        _fedMeta[frameId] = meta;
+        _persistFedMeta(frameId, meta);
+      }
+    } else {
+      _consecutiveAddFrameFailures++;
+      final reason = _durableQueue.blockReason;
+      _blockQueue(
+        stage: nativeOk ? 'sfm_queue_ack' : 'add_frame',
+        message: nativeOk
+            ? 'frame#$seq retained because durable OK ACK failed: $reason'
+            : 'frame#$seq retained after non-OK native ack: $result',
+      );
+    }
+
+    final effectiveResult = durablyCommitted
+        ? result
+        : nativeOk
+        ? 'durable_ack_failed'
+        : result;
+    final ms = msg['ms'] as int? ?? -1;
+    final memMb = (msg['memMb'] as num?)?.toDouble();
+    final peakMb = (msg['peakMb'] as num?)?.toDouble();
+    final thermal = msg['thermal'] as int?;
+    if (thermal != null) _latestThermalState = thermal;
+    final gpuRc7Count = msg['gpuRc7Count'] as int?;
+    if (gpuRc7Count != null) {
+      if (gpuRc7Count > _lastGpuRc7Count) _recentGpuResultCode = 7;
+      _lastGpuRc7Count = gpuRc7Count;
+    }
+    final thermalName = switch (thermal) {
+      0 => 'nominal',
+      1 => 'fair',
+      2 => 'serious',
+      3 => 'critical',
+      _ => '?',
+    };
+    DeviceLog.log(
+      'TELEM',
+      'frame#$seq fid=$frameId $effectiveResult '
+          'proc=${ms}ms | queue=$_waitingSpoolDepth inflight=$_inFlight '
+          'offered=$offeredCount fed=$_fedOk | '
+          'mem=${memMb?.toStringAsFixed(0) ?? '?'}MB '
+          'peak=${peakMb?.toStringAsFixed(0) ?? '?'}MB '
+          'thermal=$thermalName',
+    );
+
+    final offerMs = _seqOfferMs.remove(seq);
+    final sentMs = _seqSentMs.remove(seq);
+    final extractMs = (msg['extractMs'] as num?)?.toDouble();
+    TelemetryWriter.instance.event('frame', {
+      'seq': seq,
+      'fid': frameId,
+      'result': effectiveResult,
+      if (meta != null) 'jpeg': meta.jpegPath.split('/').last,
+      't_offer': ?offerMs,
+      't_fed': ?sentMs,
+      if (offerMs != null && sentMs != null) 'spool_wait_ms': sentMs - offerMs,
+      'proc_ms': ms,
+      'queue': _waitingSpoolDepth,
+      'inflight': _inFlight,
+      'offered': offeredCount,
+      'fed': _fedOk,
+      if (extractMs != null) 'extract_ms': extractMs.round(),
+      if (extractMs != null)
+        'extract_path': extractMs > 2000 ? 'slow_extract' : 'gpu',
+      if (msg['matchMs'] != null) 'match_ms': (msg['matchMs'] as num).round(),
+      if (msg['nCand'] != null) 'n_cand': msg['nCand'],
+      if (msg['gpuPairs'] != null) 'gpu_pairs': msg['gpuPairs'],
+      if (msg['cpuPairs'] != null) 'cpu_pairs': msg['cpuPairs'],
+      if (msg['throttledCum'] != null) 'throttled_cum': msg['throttledCum'],
+      if (msg['growAcc'] != null) 'grow_acc_cum': msg['growAcc'],
+      if (msg['growRej'] != null) 'grow_rej_cum': msg['growRej'],
+      if (msg['tvgPairs'] != null) 'tvg_pairs_cum': msg['tvgPairs'],
+      if (msg['rawPairs'] != null) 'raw_pairs_cum': msg['rawPairs'],
+      if (memMb != null) 'mem_mb': memMb.round(),
+      if (peakMb != null) 'peak_mb': peakMb.round(),
+      'thermal': ?thermal,
+      'gpu_rc7_cum': ?gpuRc7Count,
+      if (msg['gpuFailMaxStreak'] != null)
+        'gpu_fail_max_streak': msg['gpuFailMaxStreak'],
+    });
+    _events.add(
+      SfmLiveFrameFed(
+        seq: seq,
+        frameId: frameId,
+        elapsedMs: ms,
+        result: effectiveResult,
+      ),
+    );
+    unawaited(_pump());
   }
 
   /// [L1-ARBITRATE 2026-07-12] 鬼层 L1 CasDiffMVS 推理链编排(主 isolate)。
@@ -1245,7 +1611,11 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
   /// TelemetryWriter 单写手(见 facade 的 'telem' case)。发送即完成,
   /// 不等写盘 —— worker 的重算路径零阻塞。
   void telem(String type, Map<String, Object?> data) {
-    boot.reply.send(<String, Object?>{'evt': 'telem', 'type': type, 'data': data});
+    boot.reply.send(<String, Object?>{
+      'evt': 'telem',
+      'type': type,
+      'data': data,
+    });
   }
 
   /// 连通性合成 poses(契约见 SfmLiveConnectivity):[obsFrameIds] 里出现
@@ -1282,7 +1652,7 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
   }) {
     final s = session;
     if (s == null) return false;
-    var points = preview ? s.previewTracked() : s.pointsTracked();
+    final points = preview ? s.previewTracked() : s.pointsTracked();
     if (preview && points.count == 0) return false; // no live_recon → fall back
     final deliveredSummary = Map<String, dynamic>.from(summary);
     Int32List? spatialKeepIdx; // [L2-ALIGN] compacted→native (finalize only)
@@ -1301,20 +1671,24 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
         'tri-angle=${detail.temporalDetailRejectTriAngle} '
         'conflicts=${detail.temporalDetailConflicts}',
       );
-      final filtered = filterFinalSpatialTwoViewPoints(
-        points,
-        temporalK: AetherSfmStreamSession.researchKNeighbors,
-      );
-      points = filtered.points;
-      deliveredSummary['spatial_two_view_filtered'] = filtered.removed;
+      final internalPoints = switch (summary['n_points3d']) {
+        final num value => value.toInt(),
+        _ => points.count,
+      };
+      final nativeRejected = math.max(0, internalPoints - points.count);
+      // Native owns point birth: no two-view/weak-parallax point crosses the
+      // ABI until it has >=3 observations, <=2px mean reprojection error, and
+      // >=5deg parallax. The legacy Dart compactor is intentionally bypassed;
+      // its compatibility counter stays zero so downstream schemas remain
+      // readable while proving that delivery performed no post-hoc deletion.
+      deliveredSummary['spatial_two_view_filtered'] = 0;
+      deliveredSummary['native_internal_points'] = internalPoints;
+      deliveredSummary['native_publish_rejected'] = nativeRejected;
       deliveredSummary['delivered_points'] = points.count;
-      // [L2-ALIGN 2026-07-12] carry the compacted→native map ONLY when the
-      // filter removed points (else identity — the L2 gate uses the raw mask).
-      spatialKeepIdx = filtered.removed > 0 ? filtered.keepIdx : null;
       wlog(
-        'quality-filter: spatial-only two-view removed=${filtered.removed} '
-        'kept=${points.count} temporalK='
-        '${AetherSfmStreamSession.researchKNeighbors}',
+        'native-birth-gate: internal=$internalPoints '
+        'published=${points.count} pending=$nativeRejected; '
+        'dart-post-filter=0',
       );
       // 遥测【finalize/snapshot】:交付快照的点/观测/过滤/细节恢复计数
       // (数据已在手上,顺手记)。
@@ -1322,7 +1696,9 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
         'evt': evt,
         'points_delivered': points.count,
         'obs': points.obsCount,
-        'spatial_two_view_filtered': filtered.removed,
+        'spatial_two_view_filtered': 0,
+        'native_internal_points': internalPoints,
+        'native_publish_rejected': nativeRejected,
         'temporal_detail_created': detail.temporalDetailCreated,
         'temporal_detail_grown': detail.temporalDetailGrown,
         'temporal_detail_pairs': detail.temporalDetailPairs,
@@ -1412,10 +1788,10 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
   // 命令处理天然串行 —— 绝不与 add_frame 并发,恰好落在 add_frame 之间的
   // 空档;不阻塞喂帧(极端竞态下最多让下一帧多等一次 repay,≤4 对)。
   // "队列空"的判据:facade 在 _inFlight<2 时立即续帧,所以距上帧处理结束
-  // >500ms 仍无新帧 = 磁盘 spool 已空、拍摄在歇。native 侧再兜两道底:
-  // thermal>=2 直接拒绝(绝不给"造成欠债的那个状态"加 GPU 负载)、每对
-  // 至多尝试一次;finalize 补匹配仍是安全网 —— 交付模型与不还债时一致,
-  // 只是把债挪到了免费的空闲窗。
+  // >500ms 仍无新帧 = 磁盘 spool 已空、拍摄在歇。Dart 先用新鲜 thermal
+  // 硬门控:只有 nominal/fair 才能调用 native;serious/critical/unknown 都
+  // 延后。native 的门仍作为纵深兜底。每对至多尝试一次;finalize 补匹配
+  // 仍是安全网 —— 交付模型与不还债时一致,只是把债挪到凉机空闲窗。
   idleRepayTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
     final s = session;
     if (s == null || disposed || finalizing || lastFrameProcEndMs == 0) return;
@@ -1426,18 +1802,17 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
       // 还债前推一次新鲜 thermal:空闲期没有 add_frame 帮忙刷新,native 的
       // 拒绝门不能吃陈旧状态(setThermalState 走旧符号集,单独 guard)。
       final tel = PwTelemetry.sample();
-      // ①【激进还债 2026-07-12】凉机/fair(thermal 0/1)吃满 idle 窗:
+      // ①【凉机还债】nominal/fair(thermal 0/1)吃满 idle 窗:
       // 每次还 24 对(健康 GPU ~16ms/对 ≈ 384ms 墙钟,远 < 单次 2s 红线;
-      // spool 缓冲帧不丢,最坏只让恢复的首帧多等一个 repay 窗)。serious
-      // (thermal 2)传 8 —— native 侧 kRepayThermal2MaxPairs 再夹到 8 并要求
-      // 近期无 rc=7;critical(3)native 直接全拒。thermal 读不到时保守取 8。
-      var budget = 8;
+      // spool 缓冲帧不丢,最坏只让恢复的首帧多等一个 repay 窗)。热状态
+      // serious/critical 或读不到时不启动任何可选 GPU 工作。
+      final budget = sfmIdleRepayBudgetForThermal(tel?.thermalState);
       if (tel != null && tel.thermalState >= 0) {
         try {
           s.setThermalState(tel.thermalState);
         } catch (_) {}
-        budget = tel.thermalState <= 1 ? 24 : 8;
       }
+      if (budget == null) return;
       final sw = Stopwatch()..start();
       final repaid = s.liveRepay(maxPairs: budget);
       sw.stop();
@@ -1556,6 +1931,14 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
             tvgPairs = stCum.tvgPairs;
             rawPairs = stCum.rawPairs;
           } catch (_) {}
+          var gpuRc7Count = -1, gpuFailMaxStreak = -1;
+          try {
+            final matchFailures = session!.matchFailStats();
+            if (matchFailures.gpuFailByRc.length > 7) {
+              gpuRc7Count = matchFailures.gpuFailByRc[7];
+            }
+            gpuFailMaxStreak = matchFailures.gpuFailMaxStreak;
+          } catch (_) {}
           // ④【热调速器】累计被降档帧数(纯计数器读;旧 .a 无符号 → -1)。
           var throttledCum = -1;
           try {
@@ -1591,6 +1974,8 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
             if (tvgPairs >= 0) 'tvgPairs': tvgPairs,
             if (rawPairs >= 0) 'rawPairs': rawPairs,
             if (throttledCum >= 0) 'throttledCum': throttledCum,
+            if (gpuRc7Count >= 0) 'gpuRc7Count': gpuRc7Count,
+            if (gpuFailMaxStreak >= 0) 'gpuFailMaxStreak': gpuFailMaxStreak,
           });
           // AR 照片卡片边框连通性(黑/白/红的数据源):喂入成功后节流发
           // 一份合成 poses。自带 try/catch —— 绝不允许它把异常抛进外层
@@ -1881,8 +2266,7 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
                 telem('finalize_segments', {
                   ...segs,
                   if (telP2 != null) 'thermal': telP2.thermalState,
-                  if (telP2 != null)
-                    'mem_mb': telP2.physFootprintMb.round(),
+                  if (telP2 != null) 'mem_mb': telP2.physFootprintMb.round(),
                 });
               } else {
                 wlog(
@@ -1966,7 +2350,10 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
               // 遥测【geom】几何自检:点级三角化角分布(worker 后台线程,
               // 不卡 UI;>1 万点自动跨步采样)。
               try {
-                final g = _triAngleTelemetry(s.pointsTracked(), s.posesPacked());
+                final g = _triAngleTelemetry(
+                  s.pointsTracked(),
+                  s.posesPacked(),
+                );
                 if (g != null) {
                   telem('geom', {
                     ...g,
@@ -2088,9 +2475,11 @@ Map<String, Object?>? _triAngleTelemetry(
   final cams = <List<double>>[];
   for (var i = 0; i < n; i += stride) {
     cams.clear();
-    for (var j = offs[i];
-        j < offs[i + 1] && cams.length < maxObsPerPoint;
-        j++) {
+    for (
+      var j = offs[i];
+      j < offs[i + 1] && cams.length < maxObsPerPoint;
+      j++
+    ) {
       final c = centers[fids[j]];
       if (c != null) cams.add(c);
     }
@@ -2107,8 +2496,10 @@ Map<String, Object?>? _triAngleTelemetry(
         final bx = cams[b][0] - px, by = cams[b][1] - py, bz = cams[b][2] - pz;
         final bn = math.sqrt(bx * bx + by * by + bz * bz);
         if (bn < 1e-12) continue;
-        final cosAng =
-            ((ax * bx + ay * by + az * bz) / (an * bn)).clamp(-1.0, 1.0);
+        final cosAng = ((ax * bx + ay * by + az * bz) / (an * bn)).clamp(
+          -1.0,
+          1.0,
+        );
         final ang = math.acos(cosAng);
         if (ang > best) best = ang;
       }

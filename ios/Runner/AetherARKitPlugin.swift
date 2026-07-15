@@ -2,11 +2,321 @@ import ARKit
 @preconcurrency import AVFoundation
 import CoreImage
 import CoreMedia
+import Darwin
 import Flutter
 import Foundation
 import ImageIO
 import simd
 import UIKit
+
+enum ARFrameCaptureMetadata {
+  static func angularVelocityRadPerSec(
+    previousCameraToWorld: simd_float3x3,
+    previousTimestamp: TimeInterval,
+    currentCameraToWorld: simd_float3x3,
+    currentTimestamp: TimeInterval
+  ) -> SIMD3<Float>? {
+    let dt = currentTimestamp - previousTimestamp
+    guard dt.isFinite, dt > 1e-6 else { return nil }
+    // Express the previous orientation in current-camera coordinates. Its
+    // rotvec points backwards in time, hence the final minus sign.
+    let relative = simd_transpose(currentCameraToWorld) * previousCameraToWorld
+    var quaternion = simd_normalize(simd_quatf(relative))
+    if quaternion.real < 0 {
+      quaternion = simd_quatf(
+        ix: -quaternion.imag.x,
+        iy: -quaternion.imag.y,
+        iz: -quaternion.imag.z,
+        r: -quaternion.real
+      )
+    }
+    let sinHalf = simd_length(quaternion.imag)
+    if sinHalf <= 1e-8 { return .zero }
+    let angle = 2 * atan2(sinHalf, quaternion.real)
+    let axis = quaternion.imag / sinHalf
+    return -axis * (angle / Float(dt))
+  }
+
+  static func number(
+    in metadata: [String: Any],
+    matchingNormalizedKey expectedKey: String
+  ) -> Double? {
+    func normalized(_ value: String) -> String {
+      value.lowercased().filter(\.isLetter)
+    }
+    func firstNumber(_ value: Any) -> Double? {
+      if let number = value as? NSNumber { return number.doubleValue }
+      if let values = value as? [Any] {
+        for item in values {
+          if let number = firstNumber(item) { return number }
+        }
+      }
+      return nil
+    }
+    func search(_ dictionary: [String: Any]) -> Double? {
+      for (key, value) in dictionary {
+        if normalized(key) == expectedKey,
+           let number = firstNumber(value) {
+          return number
+        }
+      }
+      for value in dictionary.values {
+        if let nested = value as? [String: Any],
+           let number = search(nested) {
+          return number
+        }
+      }
+      return nil
+    }
+    return search(metadata)
+  }
+}
+
+/// In-process rendezvous for the two-stage manual shutter contract.
+///
+/// The method channel normally calls this registry on Flutter's platform
+/// thread, while terminal publication originates on the JPEG queue. Keep the
+/// registry independently synchronized so an early/late await and completion
+/// cannot race even if a caller or test uses a different queue.
+final class ManualCaptureV2JobRegistry {
+  typealias Payload = [String: Any]
+  typealias Waiter = (Payload) -> Void
+
+  struct ArtifactPaths: Equatable {
+    let jpegPath: String
+    let metadataPath: String
+    let sfmGrayPath: String
+  }
+
+  enum RegistryError: LocalizedError {
+    case invalidJobID
+    case invalidPaths(String)
+    case pathAlreadyReserved(jobID: String, path: String, ownerJobID: String)
+    case duplicateJob(String)
+    case unknownJob(String)
+    case mismatchedResult(expected: String, actual: String?)
+    case mismatchedPath(
+      jobID: String,
+      field: String,
+      expected: String,
+      actual: String?
+    )
+    case invalidTerminalResult(jobID: String, reason: String)
+    case alreadyFinished(String)
+
+    var errorDescription: String? {
+      switch self {
+      case .invalidJobID:
+        return "captureJobId must not be empty"
+      case .invalidPaths(let jobID):
+        return "manual capture paths must be non-empty and distinct: \(jobID)"
+      case .pathAlreadyReserved(let jobID, let path, let ownerJobID):
+        return "manual capture \(jobID) path is already reserved by \(ownerJobID): \(path)"
+      case .duplicateJob(let jobID):
+        return "manual capture job already exists: \(jobID)"
+      case .unknownJob(let jobID):
+        return "manual capture job is unknown: \(jobID)"
+      case .mismatchedResult(let expected, let actual):
+        return "manual capture result belongs to \(actual ?? "<missing>"), expected \(expected)"
+      case .mismatchedPath(let jobID, let field, let expected, let actual):
+        return "manual capture \(jobID) returned \(field)=\(actual ?? "<missing>"), expected \(expected)"
+      case .invalidTerminalResult(let jobID, let reason):
+        return "manual capture \(jobID) returned an invalid terminal result: \(reason)"
+      case .alreadyFinished(let jobID):
+        return "manual capture job already finished: \(jobID)"
+      }
+    }
+  }
+
+  private struct Entry {
+    let paths: ArtifactPaths
+    var result: Payload?
+    var waiters: [Waiter] = []
+  }
+
+  private let lock = NSLock()
+  private var entries: [String: Entry] = [:]
+  private var pathOwners: [String: String] = [:]
+
+  func register(jobID: String, paths: ArtifactPaths) throws {
+    try withLock {
+      guard !jobID.isEmpty else { throw RegistryError.invalidJobID }
+      let pathSet = Set([
+        paths.jpegPath,
+        paths.metadataPath,
+        paths.sfmGrayPath,
+      ])
+      guard pathSet.count == 3,
+            !pathSet.contains(where: { $0.isEmpty }) else {
+        throw RegistryError.invalidPaths(jobID)
+      }
+      guard entries[jobID] == nil else {
+        throw RegistryError.duplicateJob(jobID)
+      }
+      for path in pathSet {
+        if let ownerJobID = pathOwners[path] {
+          throw RegistryError.pathAlreadyReserved(
+            jobID: jobID,
+            path: path,
+            ownerJobID: ownerJobID
+          )
+        }
+      }
+      entries[jobID] = Entry(paths: paths, result: nil)
+      for path in pathSet {
+        pathOwners[path] = jobID
+      }
+    }
+  }
+
+  func waitForResult(jobID: String, waiter: @escaping Waiter) throws {
+    let terminalResult: Payload? = try withLock {
+      guard var entry = entries[jobID] else {
+        throw RegistryError.unknownJob(jobID)
+      }
+      if let result = entry.result {
+        return result
+      }
+      entry.waiters.append(waiter)
+      entries[jobID] = entry
+      return nil
+    }
+    if let terminalResult {
+      waiter(terminalResult)
+    }
+  }
+
+  func finish(jobID: String, result: Payload) throws {
+    let waiters: [Waiter] = try withLock {
+      guard var entry = entries[jobID] else {
+        throw RegistryError.unknownJob(jobID)
+      }
+      let actualJobID = result["capture_job_id"] as? String
+      guard actualJobID == jobID else {
+        throw RegistryError.mismatchedResult(
+          expected: jobID,
+          actual: actualJobID
+        )
+      }
+      guard entry.result == nil else {
+        throw RegistryError.alreadyFinished(jobID)
+      }
+      try validateTerminalResult(
+        result,
+        jobID: jobID,
+        expectedPaths: entry.paths
+      )
+      let waiters = entry.waiters
+      entry.result = result
+      entry.waiters.removeAll(keepingCapacity: false)
+      entries[jobID] = entry
+      return waiters
+    }
+    for waiter in waiters {
+      waiter(result)
+    }
+  }
+
+  private func validateTerminalResult(
+    _ result: Payload,
+    jobID: String,
+    expectedPaths: ArtifactPaths
+  ) throws {
+    for (field, expected) in [
+      ("jpeg_path", expectedPaths.jpegPath),
+      ("metadata_path", expectedPaths.metadataPath),
+      ("sfm_gray_path", expectedPaths.sfmGrayPath),
+    ] {
+      let actual = result[field] as? String
+      guard actual == expected else {
+        throw RegistryError.mismatchedPath(
+          jobID: jobID,
+          field: field,
+          expected: expected,
+          actual: actual
+        )
+      }
+    }
+
+    guard let status = result["status"] as? String,
+          status == "committed" || status == "failed" else {
+      throw RegistryError.invalidTerminalResult(
+        jobID: jobID,
+        reason: "status must be committed or failed"
+      )
+    }
+    if status == "committed" {
+      let grayWidth = (result["sfm_gray_w"] as? NSNumber)?.intValue ?? 0
+      let grayHeight = (result["sfm_gray_h"] as? NSNumber)?.intValue ?? 0
+      guard grayWidth > 0, grayHeight > 0 else {
+        throw RegistryError.invalidTerminalResult(
+          jobID: jobID,
+          reason: "committed result requires positive sfm_gray dimensions"
+        )
+      }
+    } else {
+      let errorCode = result["error_code"] as? String
+      guard let errorCode, !errorCode.isEmpty else {
+        throw RegistryError.invalidTerminalResult(
+          jobID: jobID,
+          reason: "failed result requires a non-empty error_code"
+        )
+      }
+    }
+  }
+
+  private func withLock<T>(_ body: () throws -> T) rethrows -> T {
+    lock.lock()
+    defer { lock.unlock() }
+    return try body()
+  }
+}
+
+/// Same-directory, atomic, no-overwrite publication for manual shutter files.
+enum ManualCaptureV2AtomicPublisher {
+  static func temporaryURL(for finalURL: URL, jobID: String) -> URL {
+    finalURL.deletingLastPathComponent().appendingPathComponent(
+      ".\(finalURL.lastPathComponent).manual-v2-\(jobID).tmp",
+      isDirectory: false
+    )
+  }
+
+  static func publishNoReplace(tempURL: URL, finalURL: URL) throws {
+    let tempParent = tempURL.deletingLastPathComponent().standardizedFileURL
+    let finalParent = finalURL.deletingLastPathComponent().standardizedFileURL
+    guard tempParent == finalParent else {
+      throw NSError(
+        domain: NSPOSIXErrorDomain,
+        code: Int(EXDEV),
+        userInfo: [NSLocalizedDescriptionKey:
+          "manual capture temp and final files must share a directory"]
+      )
+    }
+
+    var renameResult: Int32 = -1
+    tempURL.withUnsafeFileSystemRepresentation { tempPath in
+      finalURL.withUnsafeFileSystemRepresentation { finalPath in
+        guard let tempPath, let finalPath else { return }
+        renameResult = renameatx_np(
+          AT_FDCWD,
+          tempPath,
+          AT_FDCWD,
+          finalPath,
+          UInt32(RENAME_EXCL)
+        )
+      }
+    }
+    guard renameResult == 0 else {
+      let capturedErrno = errno
+      throw NSError(
+        domain: NSPOSIXErrorDomain,
+        code: Int(capturedErrno),
+        userInfo: [NSLocalizedDescriptionKey:
+          "manual capture publish refused for \(finalURL.path): \(String(cString: strerror(capturedErrno)))"]
+      )
+    }
+  }
+}
 
 // AetherARKit — in-Runner-binary ARKit bridge.
 //
@@ -372,9 +682,15 @@ class AetherARKitPlugin: NSObject {
     let anchorsWorld: [[Float]]
     let anchorIds: [UInt64]
     let scaleAlignPremetrics: ScaleAlignPremetrics
+    let exifExposureDurationSec: Double?
+    let exifISO: Double?
+    let cameraAngularVelocityRadPerSec: SIMD3<Float>?
+    let cameraAngularVelocityDtSec: Double?
   }
   private var lastFrameSnapshot: LatestFrameSnapshot?
   private var recentFrameSnapshots: [LatestFrameSnapshot] = []
+  private var previousFrameRotation: simd_float3x3?
+  private var previousFrameTimestamp: TimeInterval?
   // Keep this intentionally small. Each 4K ARFrame pixel buffer is
   // ~12 MB, and ARKit will warn/freeze if the delegate holds on to too
   // many buffers while ARSCNView is trying to render the live preview.
@@ -390,6 +706,11 @@ class AetherARKitPlugin: NSObject {
     label: "com.pocketworld.arkit.jpeg",
     qos: .userInitiated
   )
+
+  /// Thread-safe registry for the reserve/await manual shutter handshake.
+  /// Pixel ownership remains the queued `LatestFrameSnapshot`; this registry
+  /// stores only small ticket/result dictionaries, never image bytes.
+  private let manualCaptureV2Jobs = ManualCaptureV2JobRegistry()
 
   /// One CIContext shared across all JPEG encodes (creating a fresh one
   /// per encode is several ms of overhead and allocates a GPU command
@@ -491,6 +812,29 @@ class AetherARKitPlugin: NSObject {
           code: "ar_no_frame",
           message: "ARSession has no current frame to lock against",
           details: nil
+        ))
+      }
+    case "reserveManualCaptureV2":
+      reserveManualCaptureV2(call: call, result: result)
+    case "awaitManualCaptureV2":
+      guard let args = call.arguments as? [String: Any],
+            let captureJobID = args["captureJobId"] as? String else {
+        result(FlutterError(
+          code: "ar_manual_capture_v2_bad_args",
+          message: "awaitManualCaptureV2 requires {captureJobId: String}",
+          details: nil
+        ))
+        return
+      }
+      do {
+        try manualCaptureV2Jobs.waitForResult(jobID: captureJobID) { payload in
+          result(payload)
+        }
+      } catch {
+        result(FlutterError(
+          code: "ar_manual_capture_v2_unknown_job",
+          message: error.localizedDescription,
+          details: ["capture_job_id": captureJobID]
         ))
       }
     case "saveCurrentFrameAsJpeg":
@@ -957,6 +1301,8 @@ class AetherARKitPlugin: NSObject {
     lastDriftLogTime = 0
     lastFrameSnapshot = nil
     recentFrameSnapshots.removeAll()
+    previousFrameRotation = nil
+    previousFrameTimestamp = nil
   }
 
   private func stopSession() {
@@ -976,6 +1322,8 @@ class AetherARKitPlugin: NSObject {
     lastDriftLogTime = 0
     lastFrameSnapshot = nil
     recentFrameSnapshots.removeAll()
+    previousFrameRotation = nil
+    previousFrameTimestamp = nil
   }
 
   // MARK: Lock origin (verbatim port of lockAtCameraForward)
@@ -1175,6 +1523,313 @@ class AetherARKitPlugin: NSObject {
       NSLog("[AetherARKit] camera auto restored (\(reason)): continuous exposure+focus")
     } catch {
       NSLog("[AetherARKit] camera auto restore failed (\(reason)): \(error)")
+    }
+  }
+
+  // MARK: Two-stage manual shutter v2 (in-process slice)
+
+  private func reserveManualCaptureV2(
+    call: FlutterMethodCall,
+    result: @escaping FlutterResult
+  ) {
+    guard let args = call.arguments as? [String: Any],
+          let captureJobID = args["captureJobId"] as? String,
+          let jpegPath = args["jpegPath"] as? String,
+          let metadataPath = args["metadataPath"] as? String,
+          let sfmGrayPath = args["sfmGrayPath"] as? String else {
+      result(FlutterError(
+        code: "ar_manual_capture_v2_bad_args",
+        message: "reserveManualCaptureV2 requires captureJobId, jpegPath, metadataPath, and sfmGrayPath",
+        details: nil
+      ))
+      return
+    }
+
+    let allowedJobCharacters = CharacterSet.alphanumerics.union(
+      CharacterSet(charactersIn: "-._")
+    )
+    guard !captureJobID.isEmpty,
+          captureJobID.rangeOfCharacter(from: allowedJobCharacters.inverted) == nil else {
+      result(FlutterError(
+        code: "ar_manual_capture_v2_bad_job_id",
+        message: "captureJobId may contain only letters, digits, '-', '.', and '_'",
+        details: ["capture_job_id": captureJobID]
+      ))
+      return
+    }
+
+    let jpegURL = URL(fileURLWithPath: jpegPath).standardizedFileURL
+    let metadataURL = URL(fileURLWithPath: metadataPath).standardizedFileURL
+    let sfmGrayURL = URL(fileURLWithPath: sfmGrayPath).standardizedFileURL
+    let finalPaths = Set([jpegURL.path, metadataURL.path, sfmGrayURL.path])
+    guard finalPaths.count == 3 else {
+      result(FlutterError(
+        code: "ar_manual_capture_v2_path_collision",
+        message: "jpegPath, metadataPath, and sfmGrayPath must be distinct",
+        details: ["capture_job_id": captureJobID]
+      ))
+      return
+    }
+
+    let jpegTempURL = ManualCaptureV2AtomicPublisher.temporaryURL(
+      for: jpegURL,
+      jobID: captureJobID
+    )
+    let metadataTempURL = ManualCaptureV2AtomicPublisher.temporaryURL(
+      for: metadataURL,
+      jobID: captureJobID
+    )
+    let sfmGrayTempURL = ManualCaptureV2AtomicPublisher.temporaryURL(
+      for: sfmGrayURL,
+      jobID: captureJobID
+    )
+    let fileManager = FileManager.default
+    if let occupiedURL = [
+      jpegURL, metadataURL, sfmGrayURL,
+      jpegTempURL, metadataTempURL, sfmGrayTempURL,
+    ].first(where: { fileManager.fileExists(atPath: $0.path) }) {
+      result(FlutterError(
+        code: "ar_manual_capture_v2_path_exists",
+        message: "manual capture refuses to overwrite an existing final or temp path",
+        details: [
+          "capture_job_id": captureJobID,
+          "occupied_path": occupiedURL.path,
+        ]
+      ))
+      return
+    }
+
+    let targetTimestamp = (args["targetTimestamp"] as? NSNumber)?.doubleValue
+    let maxTimestampDelta = (args["maxTimestampDelta"] as? NSNumber)?.doubleValue
+      ?? Self.defaultSaveMaxTimestampDelta
+    let quality = (args["quality"] as? NSNumber)?.floatValue ?? 0.9
+    guard maxTimestampDelta.isFinite, maxTimestampDelta >= 0,
+          quality.isFinite, (0...1).contains(quality) else {
+      result(FlutterError(
+        code: "ar_manual_capture_v2_bad_args",
+        message: "quality must be in 0...1 and maxTimestampDelta must be finite and non-negative",
+        details: ["capture_job_id": captureJobID]
+      ))
+      return
+    }
+
+    let selection = selectFrameSnapshot(
+      targetTimestamp: targetTimestamp,
+      maxTimestampDelta: maxTimestampDelta
+    )
+    guard let snapshot = selection.snapshot else {
+      result(FlutterError(
+        code: "ar_manual_capture_v2_no_frame",
+        message: selection.errorMessage
+          ?? "reserveManualCaptureV2: no ARFrame snapshot available",
+        details: ["capture_job_id": captureJobID]
+      ))
+      return
+    }
+
+    do {
+      try manualCaptureV2Jobs.register(
+        jobID: captureJobID,
+        paths: ManualCaptureV2JobRegistry.ArtifactPaths(
+          jpegPath: jpegURL.path,
+          metadataPath: metadataURL.path,
+          sfmGrayPath: sfmGrayURL.path
+        )
+      )
+    } catch {
+      result(FlutterError(
+        code: "ar_manual_capture_v2_duplicate_job",
+        message: error.localizedDescription,
+        details: ["capture_job_id": captureJobID]
+      ))
+      return
+    }
+
+    let metadataSchemaVersion =
+      (args["metadataSchemaVersion"] as? NSNumber)?.intValue ?? 1
+    let dartSaveContract = args["dartSaveContract"] as? [String: Any]
+    let selectedDelta = selection.delta
+    let context = ciContext
+    jpegEncodeQueue.async { [snapshot] in
+      let terminalPayload: [String: Any]
+      guard let gray = Self.extractGrayAspect(
+        snapshot.pixelBuffer,
+        maxSide: Self.sfmFeedMaxSide
+      ) else {
+        terminalPayload = [
+          "capture_job_id": captureJobID,
+          "status": "failed",
+          "error_code": "sfm_gray_unavailable",
+          "message": "The reserved ARFrame could not produce required sfm_gray; it is not registerable",
+          "jpeg_path": jpegURL.path,
+          "metadata_path": metadataURL.path,
+          "sfm_gray_path": sfmGrayURL.path,
+        ]
+        self.finishManualCaptureV2(
+          jobID: captureJobID,
+          payload: terminalPayload
+        )
+        return
+      }
+
+      do {
+        for parentURL in Set([
+          jpegURL.deletingLastPathComponent(),
+          metadataURL.deletingLastPathComponent(),
+          sfmGrayURL.deletingLastPathComponent(),
+        ]) {
+          try fileManager.createDirectory(
+            at: parentURL,
+            withIntermediateDirectories: true
+          )
+        }
+        if let occupiedURL = [
+          jpegURL, metadataURL, sfmGrayURL,
+          jpegTempURL, metadataTempURL, sfmGrayTempURL,
+        ].first(where: { fileManager.fileExists(atPath: $0.path) }) {
+          throw NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(EEXIST),
+            userInfo: [NSLocalizedDescriptionKey:
+              "manual capture refuses to overwrite \(occupiedURL.path)"]
+          )
+        }
+
+        try Self.encodeCVPixelBufferAsJpeg(
+          snapshot.pixelBuffer,
+          to: jpegTempURL,
+          quality: CGFloat(quality),
+          ciContext: context
+        )
+
+        var metadata: [String: Any] = [
+          "version": metadataSchemaVersion,
+          "native_role": "thin_arkit_frame_executor",
+          "manual_capture_schema": "aether_manual_capture_v2_in_process_v1",
+          "capture_job_id": captureJobID,
+          "t": snapshot.timestamp,
+          "image_w": snapshot.imageW,
+          "image_h": snapshot.imageH,
+          "extrinsic": snapshot.extrinsic,
+          "intrinsics_fxfycxcy": snapshot.intrinsicsFxFyCxCy,
+          "trackingStateName": snapshot.trackingStateName,
+          "tracking_state": snapshot.trackingStateName,
+          "is_tracking": snapshot.isTracking,
+          "anchors_world": snapshot.anchorsWorld,
+          "anchor_ids": snapshot.anchorIds.map { NSNumber(value: $0) },
+          "scale_align_premetrics": [
+            "anchor_depth_count": snapshot.scaleAlignPremetrics.anchorDepthCount,
+            "anchor_depth_min_m": snapshot.scaleAlignPremetrics.anchorDepthMinM,
+            "anchor_depth_max_m": snapshot.scaleAlignPremetrics.anchorDepthMaxM,
+            "anchor_depth_span_m": snapshot.scaleAlignPremetrics.anchorDepthSpanM,
+            "reliability_prior": snapshot.scaleAlignPremetrics.reliabilityPrior,
+          ],
+          "save_dt": selectedDelta ?? 0.0,
+          "sfm_gray_path": sfmGrayURL.path,
+          "sfm_gray_w": gray.width,
+          "sfm_gray_h": gray.height,
+        ]
+        if let exposure = snapshot.exifExposureDurationSec {
+          metadata["exif_exposure_duration_sec"] = exposure
+        }
+        if let iso = snapshot.exifISO {
+          metadata["exif_iso"] = iso
+        }
+        if let angularVelocity = snapshot.cameraAngularVelocityRadPerSec,
+           let angularVelocityDt = snapshot.cameraAngularVelocityDtSec {
+          metadata["camera_angular_velocity_rad_s_xyz"] = [
+            angularVelocity.x,
+            angularVelocity.y,
+            angularVelocity.z,
+          ]
+          metadata["camera_angular_velocity_dt_sec"] = angularVelocityDt
+          metadata["camera_angular_velocity_source"] =
+            "adjacent_arkit_frames_backward"
+        }
+        if let dartSaveContract {
+          metadata["dart_save_contract"] = dartSaveContract
+        }
+        if let targetTimestamp {
+          metadata["save_target_t"] = targetTimestamp
+        }
+
+        let json = try JSONSerialization.data(
+          withJSONObject: metadata,
+          options: []
+        )
+        try json.write(to: metadataTempURL, options: .withoutOverwriting)
+        try gray.data.write(to: sfmGrayTempURL, options: .withoutOverwriting)
+
+        // Publish the JPEG last. Its presence is the commit marker for this
+        // slice; every rename is same-directory and RENAME_EXCL, so no
+        // existing user frame or sidecar can be replaced.
+        try ManualCaptureV2AtomicPublisher.publishNoReplace(
+          tempURL: metadataTempURL,
+          finalURL: metadataURL
+        )
+        try ManualCaptureV2AtomicPublisher.publishNoReplace(
+          tempURL: sfmGrayTempURL,
+          finalURL: sfmGrayURL
+        )
+        try ManualCaptureV2AtomicPublisher.publishNoReplace(
+          tempURL: jpegTempURL,
+          finalURL: jpegURL
+        )
+
+        terminalPayload = [
+          "capture_job_id": captureJobID,
+          "status": "committed",
+          "jpeg_path": jpegURL.path,
+          "metadata_path": metadataURL.path,
+          "sfm_gray_path": sfmGrayURL.path,
+          "sfm_gray_w": gray.width,
+          "sfm_gray_h": gray.height,
+          "t": snapshot.timestamp,
+          "image_w": snapshot.imageW,
+          "image_h": snapshot.imageH,
+          "intrinsics_fxfycxcy": snapshot.intrinsicsFxFyCxCy,
+          "extrinsic": snapshot.extrinsic,
+        ]
+      } catch {
+        terminalPayload = [
+          "capture_job_id": captureJobID,
+          "status": "failed",
+          "error_code": "manual_capture_write_failed",
+          "message": error.localizedDescription,
+          "jpeg_path": jpegURL.path,
+          "metadata_path": metadataURL.path,
+          "sfm_gray_path": sfmGrayURL.path,
+        ]
+      }
+      self.finishManualCaptureV2(jobID: captureJobID, payload: terminalPayload)
+    }
+
+    // ACK only after the exact snapshot has been selected, retained by the
+    // serial JPEG queue closure, and bound to a unique captureJobId.
+    result([
+      "schema_version": "aether_manual_capture_ticket_v2",
+      "capture_job_id": captureJobID,
+      "status": "snapshot_reserved",
+      "snapshot_timestamp": snapshot.timestamp,
+      "save_dt": selectedDelta ?? 0.0,
+      "jpeg_path": jpegURL.path,
+      "metadata_path": metadataURL.path,
+      "sfm_gray_path": sfmGrayURL.path,
+    ])
+  }
+
+  private func finishManualCaptureV2(
+    jobID: String,
+    payload: [String: Any]
+  ) {
+    DispatchQueue.main.async {
+      do {
+        try self.manualCaptureV2Jobs.finish(jobID: jobID, result: payload)
+      } catch {
+        assertionFailure(
+          "manual capture v2 registry failed to finish \(jobID): \(error)"
+        )
+      }
     }
   }
 
@@ -1763,6 +2418,48 @@ class AetherARKitPlugin: NSObject {
       cameraTransform: cameraTransform,
       anchorsWorld: anchorsW
     )
+    let cameraRotation = simd_float3x3(columns: (
+      SIMD3<Float>(cameraTransform.columns.0.x, cameraTransform.columns.0.y,
+                   cameraTransform.columns.0.z),
+      SIMD3<Float>(cameraTransform.columns.1.x, cameraTransform.columns.1.y,
+                   cameraTransform.columns.1.z),
+      SIMD3<Float>(cameraTransform.columns.2.x, cameraTransform.columns.2.y,
+                   cameraTransform.columns.2.z)
+    ))
+    let angularVelocity: SIMD3<Float>?
+    let angularVelocityDt: Double?
+    if let previousRotation = previousFrameRotation,
+       let previousTimestamp = previousFrameTimestamp {
+      angularVelocity = ARFrameCaptureMetadata.angularVelocityRadPerSec(
+        previousCameraToWorld: previousRotation,
+        previousTimestamp: previousTimestamp,
+        currentCameraToWorld: cameraRotation,
+        currentTimestamp: frame.timestamp
+      )
+      angularVelocityDt = frame.timestamp - previousTimestamp
+    } else {
+      angularVelocity = nil
+      angularVelocityDt = nil
+    }
+    previousFrameRotation = cameraRotation
+    previousFrameTimestamp = frame.timestamp
+    let exifData: [String: Any]
+    if #available(iOS 16.0, *) {
+      exifData = frame.exifData
+    } else {
+      exifData = [:]
+    }
+    let exifExposureDurationSec = ARFrameCaptureMetadata.number(
+      in: exifData,
+      matchingNormalizedKey: "exposuretime"
+    )
+    let exifISO = ARFrameCaptureMetadata.number(
+      in: exifData,
+      matchingNormalizedKey: "isospeedratings"
+    ) ?? ARFrameCaptureMetadata.number(
+      in: exifData,
+      matchingNormalizedKey: "photographicsensitivity"
+    )
     let snapshot = LatestFrameSnapshot(
       pixelBuffer: pixelBuf,
       timestamp: frame.timestamp,
@@ -1774,7 +2471,11 @@ class AetherARKitPlugin: NSObject {
       isTracking: isTracking,
       anchorsWorld: anchorsW,
       anchorIds: anchorIds,
-      scaleAlignPremetrics: scaleAlignPremetrics
+      scaleAlignPremetrics: scaleAlignPremetrics,
+      exifExposureDurationSec: exifExposureDurationSec,
+      exifISO: exifISO,
+      cameraAngularVelocityRadPerSec: angularVelocity,
+      cameraAngularVelocityDtSec: angularVelocityDt
     )
     lastFrameSnapshot = snapshot
     recentFrameSnapshots.append(snapshot)

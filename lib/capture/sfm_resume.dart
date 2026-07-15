@@ -97,14 +97,13 @@ Future<bool> resumeSingleCapture(String captureDir) {
 void startDetachedSfmFinalize({
   required String captureDir,
   required SfmLiveRecon recon,
-  Iterable<String> keepJpegPaths = const <String>[],
 }) {
   if (!_detachedFinalizing.add(captureDir)) {
     DeviceLog.log('SfmResume', 'detached already running for $captureDir');
     unawaited(recon.dispose());
     return;
   }
-  unawaited(_runDetachedFinalize(captureDir, recon, keepJpegPaths.toSet()));
+  unawaited(_runDetachedFinalize(captureDir, recon));
 }
 
 /// Scans drafts for captures that have an SfM db but no persisted sparse cloud
@@ -157,11 +156,7 @@ Future<void> resumeIncompleteCaptures() async {
   }
 }
 
-Future<void> _runDetachedFinalize(
-  String captureDir,
-  SfmLiveRecon recon,
-  Set<String> keepJpegPaths,
-) async {
+Future<void> _runDetachedFinalize(String captureDir, SfmLiveRecon recon) async {
   StreamSubscription<SfmLiveEvent>? sub;
   final done = Completer<void>();
   try {
@@ -177,7 +172,6 @@ Future<void> _runDetachedFinalize(
           unawaited(() async {
             try {
               await _persistColored(captureDir, snapshot);
-              await _prunePhotosAfterSparse(captureDir, keepJpegPaths);
             } catch (e) {
               DeviceLog.log('SfmResume', 'detached persist failed: $e');
             } finally {
@@ -194,10 +188,7 @@ Future<void> _runDetachedFinalize(
           break;
       }
     });
-    DeviceLog.log(
-      'SfmResume',
-      'detached finalize start: $captureDir keep=${keepJpegPaths.length}',
-    );
+    DeviceLog.log('SfmResume', 'detached finalize start: $captureDir');
     recon.finalize();
     await done.future.timeout(
       const Duration(minutes: 12),
@@ -436,44 +427,10 @@ Future<void> _filterAndPersist(
     obsFrameIds: Int32List(0),
     obsXY: Float32List(0),
   );
-  await persistSparseSnapshot(captureDir: captureDir, snapshot: fsnap, rgb: frgb);
-}
-
-Future<void> _prunePhotosAfterSparse(
-  String captureDir,
-  Set<String> keepJpegPaths,
-) async {
-  if (keepJpegPaths.isEmpty) return;
-  final keepNames = <String>{
-    for (final path in keepJpegPaths) path.split('/').last,
-  };
-  Future<void> pruneDir(String dirPath, {required bool sidecars}) async {
-    final dir = Directory(dirPath);
-    if (!await dir.exists()) return;
-    await for (final entity in dir.list(followLinks: false)) {
-      if (entity is! File) continue;
-      final path = entity.path;
-      if (!path.endsWith('.jpg') && !(sidecars && path.endsWith('.json'))) {
-        continue;
-      }
-      final name = path.split('/').last;
-      final jpgName = name.endsWith('.json')
-          ? '${name.substring(0, name.length - '.json'.length)}.jpg'
-          : name;
-      if (keepNames.contains(jpgName)) continue;
-      try {
-        await entity.delete();
-      } on FileSystemException {
-        // Best effort: a late filesystem reader may still have the file open.
-      }
-    }
-  }
-
-  await pruneDir('$captureDir/photos_highres', sidecars: true);
-  await pruneDir('$captureDir/previews', sidecars: false);
-  DeviceLog.log(
-    'SfmResume',
-    'post-sparse photo prune: kept=${keepNames.length} capture=$captureDir',
+  await persistSparseSnapshot(
+    captureDir: captureDir,
+    snapshot: fsnap,
+    rgb: frgb,
   );
 }
 

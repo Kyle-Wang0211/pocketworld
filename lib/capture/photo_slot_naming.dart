@@ -14,13 +14,12 @@
 // _frameSeq 归零,frameId('tap-N'/'cap-N')在目录生命周期内单调唯一。
 //
 // 兼容性:所有消费方(colorize 解码、resume 的 basename 重join、
-// photo_bundle manifest、相册、prune)都把文件名当不透明 path 用,
+// photo_bundle manifest、相册)都把文件名当不透明 path 用,
 // 无一处反解 cell/slot;老采集的 fed jsonl 存的是旧式名,resume 按
 // basename 原样重join,读旧名不崩。
 //
-// 磁盘:重拍的旧文件仍被 fed jsonl 引用(colorize/resume 要读),
-// **不得**在新文件写成功后即删;由 colorize 之后的 deferred prune
-// (retainOnlyCuratedPhotos / _prunePhotosAfterSparse)统一收尾。
+// 磁盘:重拍的旧文件仍被 fed jsonl 引用(colorize/resume 要读),同时也是
+// 用户拥有的拍摄帧；除非用户明确删除，否则永不自动删除。
 //
 // host 断言:tool/photo_slot_naming_check.dart(项目惯例,flutter test
 // 在此 host 跑不了,纯 VM 能跑)。

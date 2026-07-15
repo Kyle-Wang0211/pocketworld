@@ -330,6 +330,22 @@ class DomeTargetPoints extends ChangeNotifier {
     _buffers[cellIdx].setSlotJpegPath(slotIdx, jpegPath);
   }
 
+  /// Associates an asynchronously committed JPEG with its immutable frame
+  /// identity. Returns false when that frame has already left the curation
+  /// buffer; importantly, it never attaches the old path to a reused slot.
+  bool stampJpegPathForFrame({
+    required String frameId,
+    required String jpegPath,
+  }) {
+    for (final buffer in _buffers) {
+      if (buffer.setFrameJpegPath(frameId, jpegPath)) {
+        notifyListeners();
+        return true;
+      }
+    }
+    return false;
+  }
+
   /// Plan G W2 photos-on-disk arch: list of every retained sample's
   /// `jpegPath` across every cell's ring buffer, filtered to non-null.
   /// CaptureSession reads this on stop() to know what to feed into the

@@ -427,6 +427,164 @@ class ARFrameSaveSpec {
   };
 }
 
+/// Dart-owned request for the in-process two-stage manual shutter slice.
+/// The job ID is the correlation boundary between reserve and await; native
+/// must never satisfy one job with another job's terminal result.
+class ManualCaptureV2Request {
+  const ManualCaptureV2Request({
+    required this.captureJobID,
+    required this.saveSpec,
+    required this.sfmGrayPath,
+  });
+
+  final String captureJobID;
+  final ARFrameSaveSpec saveSpec;
+  final String sfmGrayPath;
+
+  Map<String, Object?> toMethodArgs() => {
+    ...saveSpec.toMethodArgs(),
+    'captureJobId': captureJobID,
+    'sfmGrayPath': sfmGrayPath,
+  };
+}
+
+/// Immediate ACK proving that a specific ARFrame snapshot has been selected,
+/// retained by the sole JPEG queue, and bound to [captureJobID].
+class ManualCaptureV2Ticket {
+  const ManualCaptureV2Ticket({
+    required this.captureJobID,
+    required this.status,
+    required this.snapshotTimestamp,
+    required this.jpegPath,
+    required this.metadataPath,
+    required this.sfmGrayPath,
+  });
+
+  final String captureJobID;
+  final String status;
+  final double snapshotTimestamp;
+  final String jpegPath;
+  final String metadataPath;
+  final String sfmGrayPath;
+
+  factory ManualCaptureV2Ticket.fromPlatformReply(dynamic reply) {
+    if (reply is! Map) {
+      throw const FormatException('manual capture ticket is not a map');
+    }
+    String requiredString(String key) {
+      final value = reply[key];
+      if (value is String && value.isNotEmpty) return value;
+      throw FormatException('manual capture ticket missing $key');
+    }
+
+    final timestamp = (reply['snapshot_timestamp'] as num?)?.toDouble();
+    if (timestamp == null || !timestamp.isFinite) {
+      throw const FormatException(
+        'manual capture ticket missing snapshot_timestamp',
+      );
+    }
+    return ManualCaptureV2Ticket(
+      captureJobID: requiredString('capture_job_id'),
+      status: requiredString('status'),
+      snapshotTimestamp: timestamp,
+      jpegPath: requiredString('jpeg_path'),
+      metadataPath: requiredString('metadata_path'),
+      sfmGrayPath: requiredString('sfm_gray_path'),
+    );
+  }
+}
+
+/// Cached terminal result returned by `awaitManualCaptureV2`, whether await is
+/// attached before or after the serial JPEG job completes.
+class ManualCaptureV2Result {
+  const ManualCaptureV2Result({
+    required this.captureJobID,
+    required this.status,
+    required this.jpegPath,
+    required this.metadataPath,
+    required this.sfmGrayPath,
+    this.sfmGrayWidth = 0,
+    this.sfmGrayHeight = 0,
+    this.timestamp,
+    this.imageWidth = 0,
+    this.imageHeight = 0,
+    this.intrinsicFxFyCxCy = const <double>[],
+    this.extrinsic4x4 = const <double>[],
+    this.errorCode,
+    this.message,
+  });
+
+  final String captureJobID;
+  final String status;
+  final String jpegPath;
+  final String metadataPath;
+  final String sfmGrayPath;
+  final int sfmGrayWidth;
+  final int sfmGrayHeight;
+  final double? timestamp;
+  final int imageWidth;
+  final int imageHeight;
+  final List<double> intrinsicFxFyCxCy;
+  final List<double> extrinsic4x4;
+  final String? errorCode;
+  final String? message;
+
+  bool get committed => status == 'committed';
+
+  /// A committed result is registerable only when its required grayscale
+  /// artifact has explicit non-zero dimensions. Native reports missing gray
+  /// as terminal failure rather than silently degrading this predicate.
+  bool get registerable =>
+      committed &&
+      sfmGrayPath.isNotEmpty &&
+      sfmGrayWidth > 0 &&
+      sfmGrayHeight > 0;
+
+  factory ManualCaptureV2Result.fromPlatformReply(dynamic reply) {
+    if (reply is! Map) {
+      throw const FormatException('manual capture result is not a map');
+    }
+    String requiredString(String key) {
+      final value = reply[key];
+      if (value is String && value.isNotEmpty) return value;
+      throw FormatException('manual capture result missing $key');
+    }
+
+    List<double> doubles(String key) {
+      final value = reply[key];
+      if (value is! List) return const <double>[];
+      return value.whereType<num>().map((item) => item.toDouble()).toList();
+    }
+
+    return ManualCaptureV2Result(
+      captureJobID: requiredString('capture_job_id'),
+      status: requiredString('status'),
+      jpegPath: requiredString('jpeg_path'),
+      metadataPath: requiredString('metadata_path'),
+      sfmGrayPath: requiredString('sfm_gray_path'),
+      sfmGrayWidth: (reply['sfm_gray_w'] as num?)?.toInt() ?? 0,
+      sfmGrayHeight: (reply['sfm_gray_h'] as num?)?.toInt() ?? 0,
+      timestamp: (reply['t'] as num?)?.toDouble(),
+      imageWidth: (reply['image_w'] as num?)?.toInt() ?? 0,
+      imageHeight: (reply['image_h'] as num?)?.toInt() ?? 0,
+      intrinsicFxFyCxCy: doubles('intrinsics_fxfycxcy'),
+      extrinsic4x4: doubles('extrinsic'),
+      errorCode: reply['error_code'] as String?,
+      message: reply['message'] as String?,
+    );
+  }
+}
+
+/// Optional capability boundary: existing mock/non-iOS providers continue to
+/// implement [ARPoseProvider] without pretending they can reserve pixels.
+abstract interface class ManualCaptureV2Provider {
+  Future<ManualCaptureV2Ticket> reserveManualCaptureV2(
+    ManualCaptureV2Request request,
+  );
+
+  Future<ManualCaptureV2Result> awaitManualCaptureV2(String captureJobID);
+}
+
 /// Frame-exact streaming-SfM feed extracted natively alongside the JPEG save:
 /// an aspect-preserving grayscale of the SAME ARFrame snapshot plus that
 /// frame's intrinsics/extrinsic. This is the input contract for
@@ -472,16 +630,16 @@ class SfmFrameFeed {
   final String? jpegPath;
 
   SfmFrameFeed withJpegPath(String path) => SfmFrameFeed(
-        gray: gray,
-        grayW: grayW,
-        grayH: grayH,
-        imageW: imageW,
-        imageH: imageH,
-        intrinsicFxFyCxCy: intrinsicFxFyCxCy,
-        extrinsic4x4: extrinsic4x4,
-        timestamp: timestamp,
-        jpegPath: path,
-      );
+    gray: gray,
+    grayW: grayW,
+    grayH: grayH,
+    imageW: imageW,
+    imageH: imageH,
+    intrinsicFxFyCxCy: intrinsicFxFyCxCy,
+    extrinsic4x4: extrinsic4x4,
+    timestamp: timestamp,
+    jpegPath: path,
+  );
 }
 
 class ARFrameSaveResult {

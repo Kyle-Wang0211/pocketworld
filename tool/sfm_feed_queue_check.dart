@@ -8,9 +8,8 @@
 //   ③ 不降质靠 finalize 拿到全量帧(本测证 finalize 延后到队列排空);
 // 外加 ④ 内存红线:队列存**路径**不存字节 —— RAM 与队列深度无关。
 //
-// 手法:用 SfmLiveRecon.offerFrame/_pump/_maybeSendFinalize 真正调用的那三个
-// 纯谓词(sfm_feed_queue.dart)驱动一个忠实的队列模型,断言不变量。谓词是
-// 生产代码同一份,所以这里覆盖的是真实调度逻辑,不是复制品。
+// 手法:用 SfmLiveRecon._pump/_onWorkerMessage/_maybeSendFinalize 调用的 ack、
+// pump、finalize 纯谓词驱动一个忠实队列模型,断言 durable head 不变量。
 
 import 'package:pocketworld_flutter/capture/sfm_feed_queue.dart';
 
@@ -29,9 +28,11 @@ void check(bool cond, String what) {
 ///   这就是「内存与队列深度无关」的机器可证明版本。
 class _FeedQueueModel {
   final List<int> _inFlightQ = <int>[];
+  // Durable unacknowledged items. In-flight heads stay here until OK.
   final List<int> _spool = <int>[];
   bool _finalizeRequested = false;
   bool _finalizeSent = false;
+  bool _blocked = false;
 
   /// 被 worker ack 的 seq,按 ack 顺序(= 应与拍摄顺序逐位一致)。
   final List<int> acked = <int>[];
@@ -56,35 +57,38 @@ class _FeedQueueModel {
     if (_inFlightQ.length > peakInFlight) peakInFlight = _inFlightQ.length;
   }
 
-  /// offerFrame:worker 有空位则直送,否则**溢写磁盘**排队(不阻塞、不丢帧、
-  /// 不留字节)。[imageBytes] 模拟 4K gray 平面大小;直送时它随命令交给 worker
-  /// (不驻留),溢写时它落盘(ramBytesRetained 不增)——两条路径都不涨 RAM。
+  /// offerFrame:每帧先持久化并排队,有 scheduler-approved slot 才送 worker。
+  /// [imageBytes] 模拟 4K gray 平面大小；模型只留路径代理,不留图像字节。
   void offer(int seq, {required int imageBytes}) {
-    if (sfmFeedShouldSpool(
-      inFlight: _inFlightQ.length,
-      spoolDepth: _spool.length,
-    )) {
-      // 落盘:只把 seq(路径代理)排进内存队列,字节进磁盘。
-      _spool.add(seq);
-      if (_spool.length > peakSpoolDepth) peakSpoolDepth = _spool.length;
-    } else {
-      _send(seq);
-    }
+    _spool.add(seq);
+    if (_spool.length > peakSpoolDepth) peakSpoolDepth = _spool.length;
+    _pump();
   }
 
   /// worker 消化一帧(ack 最老的在途帧),空出的槽位由 pump 补喂磁盘队首。
-  void workerAckOne() {
+  void workerAckOne({bool ok = true}) {
     if (_inFlightQ.isEmpty) return;
-    acked.add(_inFlightQ.removeAt(0));
+    final seq = _inFlightQ.removeAt(0);
+    switch (sfmFeedAckDisposition(nativeOk: ok)) {
+      case SfmFeedAckDisposition.removeAfterSuccess:
+        acked.add(seq);
+        _spool.remove(seq);
+      case SfmFeedAckDisposition.retainAndBlock:
+        _blocked = true;
+    }
     _pump();
   }
+
+  int get _waitingDepth =>
+      _spool.where((seq) => !_inFlightQ.contains(seq)).length;
 
   void _pump() {
     while (sfmFeedCanPumpNext(
       inFlight: _inFlightQ.length,
-      spoolDepth: _spool.length,
+      spoolDepth: _waitingDepth,
+      queueBlocked: _blocked,
     )) {
-      _send(_spool.removeAt(0)); // FIFO:磁盘队首,保序
+      _send(_spool.firstWhere((seq) => !_inFlightQ.contains(seq)));
     }
     _maybeSendFinalize();
   }
@@ -100,6 +104,7 @@ class _FeedQueueModel {
       finalizeSent: _finalizeSent,
       spoolDepth: _spool.length,
       inFlight: _inFlightQ.length,
+      queueBlocked: _blocked,
     )) {
       return;
     }
@@ -142,6 +147,10 @@ void _predicateTruthTables() {
   check(
     !sfmFeedCanPumpNext(inFlight: 0, spoolDepth: 0),
     'canPumpNext: 空队列 = 不喂',
+  );
+  check(
+    !sfmFeedCanPumpNext(inFlight: 0, spoolDepth: 1, consumerPaused: true),
+    'canPumpNext: thermal pause = 保留队首不喂',
   );
 
   // canSendFinalize:已请求 + 未发 + 队列空 + 在途 0。
@@ -190,6 +199,16 @@ void _predicateTruthTables() {
     ),
     'canSendFinalize: 未请求 = 不发',
   );
+  check(
+    !sfmFeedCanSendFinalize(
+      finalizeRequested: true,
+      finalizeSent: false,
+      spoolDepth: 0,
+      inFlight: 0,
+      queueBlocked: true,
+    ),
+    'canSendFinalize: retained failure = 不发',
+  );
 }
 
 /// 场景 A —— 狂拍:worker 完全跟不上(N 帧全在 finalize 前 offer 完,期间零
@@ -233,18 +252,31 @@ void _scenarioBurstThenDrain(int n) {
   );
 }
 
-/// 场景 B —— 交错:worker 每次 offer 后立刻 ack 上一帧(能跟上)。应零溢写、
-/// finalize 请求即发(队列本就空)。
+/// 场景 B —— 交错:worker 每次 offer 后立刻 ack 上一帧(能跟上)。每帧仍先有
+/// 一份 durable queue 文件,OK ack 后立即移除;finalize 请求即发。
 void _scenarioInterleaved(int n) {
   final m = _FeedQueueModel();
   for (var seq = 1; seq <= n; seq++) {
     m.offer(seq, imageBytes: 8300000);
     m.workerAckOne(); // worker 跟得上
   }
-  check(m.peakSpoolDepth == 0, '交错$n:worker 跟得上 → 零溢写');
+  check(m.peakSpoolDepth == 1, '交错$n:每帧先持久化,OK 后队列即清');
   m.requestFinalize();
   check(m.finalizeSentCount == 1, '交错$n:队列空 → finalize 立即下发');
   check(m.acked.length == n, '交错$n:$n 帧全部喂入');
+}
+
+void _scenarioNonOkRetainsHead() {
+  final m = _FeedQueueModel();
+  for (var seq = 1; seq <= 3; seq++) {
+    m.offer(seq, imageBytes: 8300000);
+  }
+  m.requestFinalize();
+  m.workerAckOne(ok: false);
+  check(!m.drained, 'non-OK ack: durable head remains queued');
+  check(m._spool.contains(1), 'non-OK ack: failed head identity is retained');
+  check(m.finalizeSentCount == 0, 'non-OK ack: finalize remains blocked');
+  check(m.acked.isEmpty, 'non-OK ack: failed head is not counted as ingested');
 }
 
 void main() {
@@ -255,6 +287,7 @@ void main() {
   for (final n in <int>[1, 5, 50]) {
     _scenarioInterleaved(n);
   }
+  _scenarioNonOkRetainsHead();
   // ignore: avoid_print
   print('ALL PASS');
 }

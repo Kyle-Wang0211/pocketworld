@@ -7,9 +7,9 @@
 //     internally runs `_lockOriginWhenReady` to anchor the world origin in
 //     the background. No reticle, no "tap to aim" gesture.
 //
-//   • The center button is a plain shutter (white ring + 119×119 black
-//     fill + white dot). EACH tap calls `session.captureSinglePhoto()` to
-//     take exactly ONE still. Briefly disabled while the still saves.
+//   • The center button is a plain shutter (white ring + white fill). EACH tap
+//     calls `session.captureSinglePhoto()` to take exactly ONE still. It never
+//     becomes a loader or waits for an earlier tap's background work.
 //
 //   • The blue forward arrow (_FinishCaptureButton) ends the capture and
 //     persists the draft via the existing _finalizeRecording flow.
@@ -28,7 +28,7 @@ import 'dart:math' as math;
 import 'dart:typed_data' show Int32List, Float32List, Float64List;
 
 import 'package:flutter/foundation.dart'
-    show compute, defaultTargetPlatform, TargetPlatform;
+    show compute, defaultTargetPlatform, TargetPlatform, ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
@@ -57,6 +57,7 @@ import '../../util/device_log.dart';
 import '../me_page.dart';
 import '../scan_record.dart';
 import 'ar_album_page.dart';
+import 'manual_capture_shutter_button.dart';
 import 'sfm_preview_overlay.dart';
 
 class ARCapturePage extends StatefulWidget {
@@ -119,8 +120,9 @@ class _ARCapturePageState extends State<ARCapturePage>
   bool _lockInProgress = false;
   bool _finalizingRecording = false;
 
-  /// True while a single manual still is being saved (shutter disabled).
-  bool _capturing = false;
+  /// True only while native reserves and binds an ARFrame snapshot for the
+  /// current tap. JPEG/sidecar/gray commit continues in the background, so a
+  /// slow encode never keeps the shutter disabled.
 
   // ─── Capture-time streaming SfM (live sparse reconstruction) ──────
   // Worker handle + event plumbing. All heavy calls live in the worker
@@ -181,15 +183,6 @@ class _ARCapturePageState extends State<ARCapturePage>
 
   /// 等待页计秒刷新(1s)。只在 generating 阶段运行,terminal 即停。
   Timer? _sfmStageTicker;
-
-  /// Deferred photo prune. `retainOnlyCuratedPhotos` DELETES every cell-slot
-  /// JPEG not in the upload-curation set — but the streaming colorizer samples
-  /// the SfM-FED frames (a different, larger set), so pruning at 完成 races the
-  /// colorize and deletes frames it still needs → gray points (the reported
-  /// "3 帧解码失败"). When a preview will run, we stash the prune here and fire
-  /// it only AFTER the colorize has baked color into the PLY (see
-  /// [_flushDeferredPhotoPrune]), so every fed frame survives until it's sampled.
-  ({CaptureSession session, List<CuratedFrame> curated})? _deferredPhotoPrune;
 
   /// The finish flow wants to pop to Drafts, but the preview overlay owns
   /// the exit while it's up — set, then honoured by [_onSfmPreviewDone].
@@ -377,7 +370,7 @@ class _ARCapturePageState extends State<ARCapturePage>
         }
         _previewModel.updateFromPose(
           p,
-          photoCount: _targetPoints.retainedJpegPaths.length,
+          photoCount: session.capturedPhotoPaths.length,
         );
         // Coverage-cloud position upkeep — never lights points up by itself
         // (only markCapture at each shutter does).
@@ -940,27 +933,48 @@ class _ARCapturePageState extends State<ARCapturePage>
     try {
       if (_sfmRecon != null) return;
       if (!SfmLiveRecon.isSupported) {
+        session.bindManualSfmFrameSink((_) {
+          throw StateError('on-device SfM is unsupported on this device');
+        });
         DeviceLog.log('ARCapturePage', 'sfm: unsupported — preview hidden');
         return;
       }
       final captureDir = session.captureDir;
       if (captureDir == null) {
+        session.bindManualSfmFrameSink((_) {
+          throw StateError('capture directory is unavailable');
+        });
         DeviceLog.log('ARCapturePage', 'sfm: no captureDir — not started');
         return;
       }
       final recon = await SfmLiveRecon.start(dbPath: '$captureDir/sfm_live.db');
-      if (recon == null) return; // reason already file-logged by start()
+      if (recon == null) {
+        session.bindManualSfmFrameSink((_) {
+          throw StateError('on-device SfM worker failed to start');
+        });
+        return; // reason already file-logged by start()
+      }
       if (!mounted || !_recording) {
+        session.bindManualSfmFrameSink((_) {
+          throw StateError('capture ended before the SfM worker became ready');
+        });
         DeviceLog.log('ARCapturePage', 'sfm: page gone before worker up');
         unawaited(recon.dispose());
         return;
       }
       _sfmRecon = recon;
-      _sfmFeedSub = session.sfmFrameStream.listen(recon.offerFrame);
+      // This is the sole reconstruction feed. The compatibility broadcast is
+      // emitted only after this durable sink succeeds and remains reserved for
+      // coverage/visualization consumers; listening to both would double-feed
+      // every committed photo.
+      session.bindManualSfmFrameSink(recon.offerFrame);
       _sfmEventSub = recon.events.listen(_onSfmEvent);
       if (mounted) setState(() {}); // surface the feed chip immediately
       DeviceLog.log('ARCapturePage', 'sfm: live recon wired');
     } catch (e, st) {
+      session.bindManualSfmFrameSink((_) {
+        throw StateError('on-device SfM setup failed: $e');
+      });
       DeviceLog.log('ARCapturePage', 'sfm: start FAILED: $e\n$st');
     }
   }
@@ -1450,10 +1464,12 @@ class _ARCapturePageState extends State<ARCapturePage>
       final int spatialRemoved =
           (snap.summary['spatial_two_view_filtered'] as int?) ?? 0;
       final int nativeCount = n + spatialRemoved;
-      final bool canRemap = spatialRemoved <= 0 ||
+      final bool canRemap =
+          spatialRemoved <= 0 ||
           (spatialKeep != null && spatialKeep.length == n);
-      final gFlags =
-          canRemap ? tryLoadGhostMaskSidecar(gDir, nativeCount) : null;
+      final gFlags = canRemap
+          ? tryLoadGhostMaskSidecar(gDir, nativeCount)
+          : null;
       if (gFlags != null) {
         // [BIT5-FIX 2026-07-12] The two-level keep chain (native→snap→PLY).
         // spatialKeep/floaterKeep are null when their filter removed nothing
@@ -1536,6 +1552,10 @@ class _ARCapturePageState extends State<ARCapturePage>
       unawaited(_pushReconProgress(0.85, '保存点云中'));
     }
     final captureDir = _session?.captureDir;
+    final isTerminalColorize =
+        snap.summary['terminal'] == true ||
+        snap.summary['source'] == 'streaming_global_ba' ||
+        snap.refined;
     if (captureDir != null && identical(_colorizeTarget, snap)) {
       final psw = Stopwatch()..start();
       var persistOk = false;
@@ -1567,7 +1587,10 @@ class _ARCapturePageState extends State<ARCapturePage>
               _pendingGhostRemapDir = captureDir;
             }
           } catch (e) {
-            DeviceLog.log('ARCapturePage', 'ghost_view_mask persist failed: $e');
+            DeviceLog.log(
+              'ARCapturePage',
+              'ghost_view_mask persist failed: $e',
+            );
           }
         }
       } catch (e) {
@@ -1596,6 +1619,27 @@ class _ARCapturePageState extends State<ARCapturePage>
       // 案④:灵动岛真实进度锚点 4 —— PLY 已在盘上 = 95%
       // (100% 仍只由 endReconUmbrella 置,语义 = "完成"按钮可见)。
       if (persistOk) {
+        if (isTerminalColorize) {
+          try {
+            final replayPayloadsPurged = await _sfmRecon
+                ?.markFinalArtifactCommitted();
+            if (replayPayloadsPurged == false) {
+              DeviceLog.log(
+                'ARCapturePage',
+                'final artifact landed but replay payloads remain: '
+                    'queue is not durably closed',
+              );
+            }
+          } catch (e) {
+            // Cleanup is never allowed to invalidate the PLY that already
+            // landed. Retained replay bytes are safe and can be reclaimed on
+            // a later successful final-artifact acknowledgement.
+            DeviceLog.log(
+              'ARCapturePage',
+              'replay payload cleanup deferred: $e',
+            );
+          }
+        }
         unawaited(_pushReconProgress(0.95, '即将完成'));
       }
     }
@@ -1631,31 +1675,9 @@ class _ARCapturePageState extends State<ARCapturePage>
         _pendingLocalVisibility = ghostVisibility;
       }
     }
-    // Photo prune (deletes non-curated frames) may run ONLY after the LAST
-    // colorize that needs those frames. For the live streaming path the local-BA
-    // cloud is terminal; refined covers the resume/cold-finalize path.
-    final isTerminalColorize =
-        snap.summary['terminal'] == true ||
-        snap.summary['source'] == 'streaming_global_ba' ||
-        snap.refined;
     if (isTerminalColorize && identical(_colorizeTarget, snap)) {
-      _flushDeferredPhotoPrune();
       if (snap.refined) unawaited(_endReconUmbrella());
     }
-  }
-
-  /// Runs the photo prune deferred at 完成 (see [_deferredPhotoPrune]) — only
-  /// after the streaming colorize has sampled every fed frame, so deleting the
-  /// non-curated frames can no longer starve it. Idempotent (single-flight).
-  void _flushDeferredPhotoPrune() {
-    final pending = _deferredPhotoPrune;
-    if (pending == null) return;
-    _deferredPhotoPrune = null;
-    DeviceLog.log(
-      'ARCapturePage',
-      'photo prune FLUSH after colorize (keep ${pending.curated.length})',
-    );
-    unawaited(pending.session.retainOnlyCuratedPhotos(pending.curated));
   }
 
   // ── Orphan floater removal ── 已提出为 lib/capture/floater_filter.dart 的
@@ -1785,55 +1807,121 @@ class _ARCapturePageState extends State<ARCapturePage>
   /// Shutter tap → capture exactly ONE high-res still (RealityScan manual).
   Future<void> _onShutterTap() async {
     final session = _session;
-    // 07-12 签决:快门彻底不限流 —— 队列多深/多热都立即可拍。唯一门是
-    // `_capturing`(单张在途,防止一次点按连拍两张,这是重入保护不是背压)。
-    // 拥塞标签仍刷新一次(纯遥测,不阻挡),便于事后画积压曲线。
-    if (session == null || !_recording || _capturing) return;
+    // 快门彻底不限流:队列深度、thermal、JPEG/gray 写盘和先前 reserve
+    // 都不 gate 新 tap。每次调用在 CaptureSession/native registry 获得独立
+    // captureJobID;重叠完成可乱序,但不会错配或丢 tap。
+    if (session == null || !_recording) return;
     _recomputeShutterPace();
-    setState(() => _capturing = true);
     final shutterSw = Stopwatch()..start();
+    ManualPhotoCapture? capture;
     try {
-      final jpegPath = await session.captureSinglePhoto();
-      // Diagnostic: how long the shutter spinner was held. During a background
-      // finalize this used to balloon to seconds because the colorizer's main-
-      // thread decodes starved this channel reply; with decodeJpegForColor now
-      // off-main it should stay at single-encode magnitude even mid-colorize.
+      // This waits only for the native reservation ACK. The selected ARFrame is
+      // already retained and bound to captureJobID when this returns; all file
+      // writes and the durable SfM enqueue continue behind the returned
+      // futures.
+      capture = await session.captureSinglePhoto();
+      // Diagnostic: this is reservation latency, not JPEG encode latency.
       DeviceLog.log(
         'ARCapturePage',
-        'shutter captureSinglePhoto waited=${shutterSw.elapsedMilliseconds}ms '
+        'shutter reserve waited=${shutterSw.elapsedMilliseconds}ms '
             'sfmPhase=$_sfmPhase',
       );
-      // 遥测【frame/shutter】:快门等待时长(UI 卡顿/主线程饿死的直接证据;
-      // 既有诊断顺手记,拍照路径不多等任何东西)。
+      // 遥测【frame/shutter】:快门只等 reserve ACK，不等 JPEG。
       TelemetryWriter.instance.event('shutter', {
         'wait_ms': shutterSw.elapsedMilliseconds,
         'phase': _sfmPhase?.name,
-        if (jpegPath != null) 'jpeg': jpegPath.split('/').last,
+        if (capture != null) 'capture_job_id': capture.reservation.captureJobID,
+        if (capture != null)
+          'jpeg': capture.reservation.jpegPath.split('/').last,
       });
-      if (jpegPath != null && mounted) {
-        // Anchor a native, world-stable AR card at the capture pose (no drift).
-        // Best-effort: a card failure must never fail the capture itself.
-        try {
-          await _arKitChannel.invokeMethod<void>(
-            'addPhotoCard',
-            <String, dynamic>{'jpegPath': jpegPath},
-          );
-        } catch (e) {
-          // ignore: avoid_print
-          print('[ARCapturePage] addPhotoCard failed: $e');
-        }
+      if (capture == null) {
+        _showManualCaptureError('未能为这次快门保留相机帧，请立即重试。');
+        return;
       }
-    } finally {
-      if (mounted) setState(() => _capturing = false);
+    } catch (e, st) {
+      DeviceLog.log('ARCapturePage', 'shutter reserve failed: $e\n$st');
+      _showManualCaptureError('快门保留失败：$e');
     }
+
+    final accepted = capture;
+    if (accepted == null) return;
+
+    // Attach both handlers immediately. completion may fail before JPEG commit
+    // is observed, so delaying this error handler would produce an unhandled
+    // asynchronous error and hide a durable-queue failure from the user.
+    unawaited(_handleManualCaptureCommit(accepted));
+    unawaited(_handleManualCaptureCompletion(accepted));
+  }
+
+  Future<void> _handleManualCaptureCommit(ManualPhotoCapture capture) async {
+    final reservation = capture.reservation;
+    try {
+      final result = await capture.committed;
+      if (result.captureJobID != reservation.captureJobID) {
+        throw StateError(
+          'capture job mismatch: reserved ${reservation.captureJobID}, '
+          'committed ${result.captureJobID}',
+        );
+      }
+      if (!result.committed) {
+        final detail = result.message ?? result.errorCode ?? result.status;
+        throw StateError(detail);
+      }
+
+      // Anchor a native, world-stable AR card only after the JPEG is committed.
+      // A reservation is not proof that a displayable file exists yet.
+      if (!mounted) return;
+      try {
+        await _arKitChannel.invokeMethod<void>(
+          'addPhotoCard',
+          <String, dynamic>{'jpegPath': result.jpegPath},
+        );
+      } catch (e, st) {
+        DeviceLog.log(
+          'ARCapturePage',
+          'addPhotoCard failed job=${result.captureJobID}: $e\n$st',
+        );
+        _showManualCaptureError('照片已保存，但 AR 照片卡显示失败：$e');
+      }
+    } catch (e, st) {
+      DeviceLog.log(
+        'ARCapturePage',
+        'manual capture commit failed job=${reservation.captureJobID}: $e\n$st',
+      );
+      _showManualCaptureError('照片写入失败：$e');
+    }
+  }
+
+  Future<void> _handleManualCaptureCompletion(
+    ManualPhotoCapture capture,
+  ) async {
+    try {
+      await capture.completion;
+    } catch (e, st) {
+      DeviceLog.log(
+        'ARCapturePage',
+        'manual capture durable enqueue failed '
+            'job=${capture.reservation.captureJobID}: $e\n$st',
+      );
+      _showManualCaptureError('照片未进入重建队列：$e');
+    }
+  }
+
+  void _showManualCaptureError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), behavior: SnackBarBehavior.floating),
+    );
   }
 
   /// Open the full-screen, time-ordered photo album.
   void _openAlbum() {
+    final session = _session;
+    if (session == null) return;
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => ARAlbumPage(
-          targetPoints: _targetPoints,
+          capturedPhotos: session.capturedPhotos,
           onDelete: _deleteRetainedPhoto,
         ),
       ),
@@ -1944,6 +2032,13 @@ class _ARCapturePageState extends State<ARCapturePage>
       final recon = _sfmRecon;
       final curated = _targetPoints.curateForUpload(framesPerPoint: 5);
       if (curated.isEmpty) {
+        // A reconstruction-empty curation set must not erase a valid local
+        // capture. Persist the draft from the on-disk user photo inventory;
+        // the empty photo_bundle remains an honest reconstruction selection.
+        await _persistDraft(
+          curatedFrames: const <CuratedFrame>[],
+          showSnackBar: false,
+        );
         if (recon != null) {
           _sfmRecon = null;
           await _sfmFeedSub?.cancel();
@@ -2012,18 +2107,6 @@ class _ARCapturePageState extends State<ARCapturePage>
         _sfmEventSub = null;
         unawaited(recon.dispose());
       }
-      // The final colorizer needs every SfM-fed JPEG. Delete non-curated photos
-      // only after that final colored cloud has been persisted.
-      if (sfmPreviewing) {
-        _deferredPhotoPrune = (session: session, curated: curated);
-        DeviceLog.log(
-          'ARCapturePage',
-          'photo prune deferred until final colorize '
-              '(keep ${curated.length} + all fed frames until colorize)',
-        );
-      } else {
-        await session.retainOnlyCuratedPhotos(curated);
-      }
       await _persistDraft(
         curatedFrames: curated,
         showSnackBar: mounted && showSparseHint,
@@ -2057,7 +2140,8 @@ class _ARCapturePageState extends State<ARCapturePage>
     final session = _session;
     if (session == null) return;
     final dir = session.photosHighresDir ?? session.photosDir;
-    final photoCount = _targetPoints.retainedJpegPaths.length;
+    final capturedPhotoPaths = await session.reconcileCapturedPhotosFromDisk();
+    final photoCount = capturedPhotoPaths.length;
     final captureDirPath = session.captureDir;
     if (dir == null || captureDirPath == null || photoCount == 0) {
       if (mounted && showSnackBar) {
@@ -2083,11 +2167,9 @@ class _ARCapturePageState extends State<ARCapturePage>
     await store.ensureLoaded();
 
     String? thumbnailPath;
-    final firstPhoto =
-        _targetPoints.retainedJpegPaths
-            .where((p) => File(p).existsSync())
-            .toList(growable: false)
-          ..sort();
+    final firstPhoto = capturedPhotoPaths
+        .where((p) => File(p).existsSync())
+        .toList(growable: false);
     if (firstPhoto.isNotEmpty) {
       final thumbnail = await store.thumbnailFileFor(captureId);
       final sourcePath = _cardThumbnailSourceFor(firstPhoto.first);
@@ -2120,18 +2202,13 @@ class _ARCapturePageState extends State<ARCapturePage>
       photosDir: photosDir.path,
       captureManifestPath: manifestFile.path,
       photoCount: photoCount,
-      cloudUploadStatus: ScanCloudUploadStatus.localPending,
-      localRawRetainedForDebug: true,
     );
     await store.addOrUpdate(record);
-    // Reconstruction happens two ways, both independent of any local mesh
-    // pipeline: the streaming SfM preview (already running) and server-side
-    // recon once the draft uploads. The draft stays at localPending for the
-    // uploader to pick up.
+    // The draft and reconstruction artifacts remain entirely local.
     if (mounted && showSnackBar) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('已保存本地素材：$photoCount 张有效照片'),
+          content: Text('已保存本地素材：$photoCount 张照片'),
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -2150,6 +2227,7 @@ class _ARCapturePageState extends State<ARCapturePage>
   }
 
   Future<void> _deleteRetainedPhoto(String path) async {
+    _session?.forgetCapturedPhoto(path);
     final keep = _targetPoints.retainedJpegPaths.toSet()..remove(path);
     _targetPoints.retainOnlyJpegPaths(keep);
     final previewPath = path.replaceFirst('/photos_highres/', '/previews/');
@@ -2163,8 +2241,8 @@ class _ARCapturePageState extends State<ARCapturePage>
           await file.delete();
         }
       } on FileSystemException {
-        // Best-effort UI deletion. The final retainOnlyCuratedPhotos call
-        // also prunes unselected files before writing the manifest.
+        // Best-effort explicit user deletion. Automatic finalization never
+        // prunes captured photos.
       }
     }
     if (mounted) setState(() {});
@@ -2392,11 +2470,10 @@ class _ARCapturePageState extends State<ARCapturePage>
               child: SafeArea(
                 top: false,
                 child: _ManualCaptureBar(
-                  targetPoints: _targetPoints,
+                  capturedPhotos: _session!.capturedPhotos,
                   // 07-12 签决:快门彻底不限流 —— 只要在录制就永远可拍,
                   // 绝不因队列深度/热态置灰(积压走磁盘 spool 队列,不回压快门)。
                   ready: _recording,
-                  capturing: _capturing,
                   finishing: _finalizingRecording,
                   onShutter: _onShutterTap,
                   onOpenAlbum: _openAlbum,
@@ -2866,21 +2943,19 @@ class _PhotoPositionCard extends StatelessWidget {
 
 /// RealityScan-style bottom capture bar: latest-photo album thumbnail (left),
 /// center shutter (one tap = one photo), and a blue finish arrow (right).
-/// Rebuilds on every [targetPoints] change so the count + thumbnail stay live.
+/// Rebuilds on every committed-photo change so count + thumbnail stay live.
 class _ManualCaptureBar extends StatelessWidget {
   const _ManualCaptureBar({
-    required this.targetPoints,
+    required this.capturedPhotos,
     required this.ready,
-    required this.capturing,
     required this.finishing,
     required this.onShutter,
     required this.onOpenAlbum,
     required this.onFinish,
   });
 
-  final DomeTargetPoints targetPoints;
+  final ValueListenable<List<String>> capturedPhotos;
   final bool ready;
-  final bool capturing;
   final bool finishing;
   final VoidCallback onShutter;
   final VoidCallback onOpenAlbum;
@@ -2889,9 +2964,9 @@ class _ManualCaptureBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: targetPoints,
+      animation: capturedPhotos,
       builder: (context, _) {
-        final paths = targetPoints.retainedJpegPaths
+        final paths = capturedPhotos.value
             .where((p) => File(p).existsSync())
             .toList(growable: false);
         // Newest photo (by mtime) for the album thumbnail.
@@ -2922,10 +2997,9 @@ class _ManualCaptureBar extends StatelessWidget {
               ),
               Expanded(
                 child: Center(
-                  child: _ShutterButton(
-                    busy: capturing,
+                  child: ManualCaptureShutterButton(
                     enabled: ready,
-                    onTap: (ready && !capturing) ? onShutter : null,
+                    onTap: onShutter,
                   ),
                 ),
               ),
@@ -3003,57 +3077,6 @@ class _AlbumThumbButton extends StatelessWidget {
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ShutterButton extends StatelessWidget {
-  const _ShutterButton({
-    required this.busy,
-    required this.onTap,
-    this.enabled = true,
-  });
-
-  final bool busy;
-  final bool enabled;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Opacity(
-      opacity: enabled ? 1.0 : 0.4,
-      child: GestureDetector(
-        onTap: onTap,
-        behavior: HitTestBehavior.opaque,
-        child: Container(
-          width: 76,
-          height: 76,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            border: Border.all(color: Colors.white, width: 4),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(5),
-            child: Container(
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: busy ? Colors.white54 : Colors.white,
-              ),
-              child: busy
-                  ? const Padding(
-                      padding: EdgeInsets.all(20),
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        valueColor: AlwaysStoppedAnimation<Color>(
-                          Colors.black54,
-                        ),
-                      ),
-                    )
-                  : null,
-            ),
-          ),
         ),
       ),
     );

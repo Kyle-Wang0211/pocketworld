@@ -212,7 +212,7 @@ class ScanRecord {
   /// from the Drafts UI entry back to the raw JPEG + ARKit metadata bundle.
   final String? captureManifestPath;
 
-  /// Number of curated JPEG frames retained for this draft.
+  /// Number of user-captured JPEG frames retained for this local draft.
   final int? photoCount;
 
   /// Cloud upload state for the raw capture bundle. Local paths remain

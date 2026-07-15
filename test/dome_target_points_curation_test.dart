@@ -11,6 +11,7 @@ void main() {
     double sharpness = 900,
     double scaleReliability = 0.7,
     double cameraRadiusM = 1.0,
+    bool withJpeg = true,
   }) {
     return CapturedFrameSample(
       timestamp: timestamp,
@@ -27,7 +28,7 @@ void main() {
       exposureScore: 0.95,
       meanBrightness: 128,
       frameId: 'f$id',
-      jpegPath: '/tmp/f$id.jpg',
+      jpegPath: withJpeg ? '/tmp/f$id.jpg' : null,
       scaleAlignAnchorCount: 40,
       scaleAlignDepthSpanM: 0.35,
       scaleAlignReliabilityPrior: scaleReliability,
@@ -103,5 +104,36 @@ void main() {
     expect(curated, hasLength(5));
     expect(curated.map((f) => f.sample.frameId), isNot(contains('f99')));
     expect(curated.every((f) => f.radiusShellId == 0), isTrue);
+  });
+
+  test('late JPEG commit stamps by frame identity, never a reused slot', () {
+    final points = DomeTargetPoints(
+      config: const DomePointConfig(
+        equatorAzCount: 1,
+        elCount: 1,
+        minElevationDeg: 0,
+        maxElevationDeg: 0,
+      ),
+    );
+
+    // The default per-cell buffer holds 12 frames. The thirteenth forced
+    // capture reuses a slot while f0 is still waiting for native publication.
+    for (var i = 0; i < 13; i++) {
+      final admitted = points.forceAdmit(
+        sample(id: i, azimuth: 0, timestamp: 0, withJpeg: false),
+      );
+      expect(admitted, isNotNull);
+    }
+
+    expect(
+      points.stampJpegPathForFrame(frameId: 'f0', jpegPath: '/tmp/f0.jpg'),
+      isFalse,
+      reason: 'An evicted job must not stamp its old slot onto a newer frame.',
+    );
+    expect(
+      points.stampJpegPathForFrame(frameId: 'f12', jpegPath: '/tmp/f12.jpg'),
+      isTrue,
+    );
+    expect(points.retainedJpegPaths, ['/tmp/f12.jpg']);
   });
 }

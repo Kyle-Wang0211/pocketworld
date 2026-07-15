@@ -32,6 +32,7 @@ import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 
+import '../capture/captured_photo_catalog.dart';
 import '../ui/scan_record.dart';
 
 Uint8List? _uprightLandscapeThumbnailBytes(String path) {
@@ -203,7 +204,7 @@ class ScanRecordStore {
   /// recording. If the app is backgrounded or killed after those files are on
   /// disk but before `_persistDraft()` writes scan_records.json, we would have
   /// valuable raw material with no user-visible draft card. On load, scan
-  /// `Documents/captures/*/photos` and rehydrate any missing record.
+  /// `Documents/captures/*/photos_highres` and rehydrate any missing record.
   Future<int> _recoverOrphanCaptures() async {
     try {
       final root = await getApplicationDocumentsDirectory();
@@ -217,21 +218,21 @@ class ScanRecordStore {
             .where((s) => s.isNotEmpty)
             .lastOrNull;
         if (captureId == null || existingIds.contains(captureId)) continue;
-        final photosDir = Directory('${entity.path}/photos');
-        if (!await photosDir.exists()) continue;
-        final photos = <File>[];
-        await for (final photoEntity in photosDir.list(followLinks: false)) {
-          if (photoEntity is! File) continue;
-          final path = photoEntity.path.toLowerCase();
-          if (!path.endsWith('.jpg') && !path.endsWith('.jpeg')) continue;
-          final metadata = File(
-            photoEntity.path.replaceFirst(RegExp(r'\.[^.]+$'), '.json'),
-          );
-          if (await metadata.exists()) photos.add(photoEntity);
+        var photosDir = Directory('${entity.path}/photos_highres');
+        if (!await photosDir.exists()) {
+          // Read-only compatibility for captures created before the local
+          // high-resolution directory rename.
+          photosDir = Directory('${entity.path}/photos');
         }
+        if (!await photosDir.exists()) continue;
+        final photos = (await discoverCapturedPhotoPaths(
+          photosDir,
+        )).map(File.new).toList(growable: false);
         if (photos.isEmpty) continue;
-        photos.sort((a, b) => a.path.compareTo(b.path));
-        final manifestFile = File('${entity.path}/capture_manifest.json');
+        final localBundle = File('${entity.path}/photo_bundle.json');
+        final manifestFile = await localBundle.exists()
+            ? localBundle
+            : File('${entity.path}/capture_manifest.json');
         final stat = await entity.stat();
         final createdAt = stat.modified;
         if (!await manifestFile.exists()) {
@@ -258,14 +259,12 @@ class ScanRecordStore {
             id: captureId,
             name: '未命名(${_records.length + recovered.length + 1})',
             createdAt: createdAt,
-            preferredCaptureMode: CaptureMode.newRemote,
+            preferredCaptureMode: CaptureMode.local,
             thumbnailPath: thumbnailPath,
             captureDir: entity.path,
             photosDir: photosDir.path,
             captureManifestPath: manifestFile.path,
             photoCount: photos.length,
-            cloudUploadStatus: ScanCloudUploadStatus.localPending,
-            localRawRetainedForDebug: true,
           ),
         );
         existingIds.add(captureId);

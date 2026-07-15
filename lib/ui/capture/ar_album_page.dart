@@ -1,9 +1,9 @@
 // Full-screen photo album for the RealityScan-style AR capture flow.
 //
 // Replaces the dome capture page's modal bottom-sheet photo tray with a
-// dedicated full-screen page: a time-ordered grid of every retained photo,
+// dedicated full-screen page: a time-ordered grid of every captured photo,
 // tap-to-enlarge, per-photo delete, and a back button. Reads its list from
-// the live [DomeTargetPoints] (a ChangeNotifier) so it refreshes as photos
+// the live capture-session inventory so it refreshes as photos
 // are added or deleted while the capture session is still open.
 //
 // Cross-platform note: this is pure Flutter/Dart (no platform channels), so
@@ -11,19 +11,18 @@
 
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
-
-import '../../capture/dome/dome_target_points.dart';
 
 class ARAlbumPage extends StatefulWidget {
   const ARAlbumPage({
     super.key,
-    required this.targetPoints,
+    required this.capturedPhotos,
     required this.onDelete,
   });
 
-  /// Live capture store. Listened to so the grid updates on add/delete.
-  final DomeTargetPoints targetPoints;
+  /// User-owned photos committed in the current local capture.
+  final ValueListenable<List<String>> capturedPhotos;
 
   /// Deletes the photo at [path] (disk files + retained list) and updates
   /// the owning capture page. Provided by the capture page so deletion stays
@@ -40,12 +39,12 @@ class _ARAlbumPageState extends State<ARAlbumPage> {
   @override
   void initState() {
     super.initState();
-    widget.targetPoints.addListener(_onStoreChanged);
+    widget.capturedPhotos.addListener(_onStoreChanged);
   }
 
   @override
   void dispose() {
-    widget.targetPoints.removeListener(_onStoreChanged);
+    widget.capturedPhotos.removeListener(_onStoreChanged);
     super.dispose();
   }
 
@@ -62,7 +61,7 @@ class _ARAlbumPageState extends State<ARAlbumPage> {
   /// timestamps from the `.json` sidecar are wired in, swap them in here.)
   List<String> _orderedPhotos() {
     final entries = <(String, DateTime)>[];
-    for (final path in widget.targetPoints.retainedJpegPaths) {
+    for (final path in widget.capturedPhotos.value) {
       final file = File(path);
       if (!file.existsSync()) continue;
       DateTime mtime;
@@ -90,8 +89,12 @@ class _ARAlbumPageState extends State<ARAlbumPage> {
                 minScale: 0.8,
                 maxScale: 4,
                 child: Center(
-                    child: Image.file(File(path),
-                        fit: BoxFit.contain, cacheWidth: 1600)),
+                  child: Image.file(
+                    File(path),
+                    fit: BoxFit.contain,
+                    cacheWidth: 1600,
+                  ),
+                ),
               ),
             ),
             Positioned(
@@ -185,12 +188,11 @@ class _ARAlbumPageState extends State<ARAlbumPage> {
               )
             : GridView.builder(
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-                gridDelegate:
-                    const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 3,
-                      crossAxisSpacing: 10,
-                      mainAxisSpacing: 10,
-                    ),
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 3,
+                  crossAxisSpacing: 10,
+                  mainAxisSpacing: 10,
+                ),
                 itemCount: photos.length,
                 itemBuilder: (ctx, index) {
                   final path = photos[index];

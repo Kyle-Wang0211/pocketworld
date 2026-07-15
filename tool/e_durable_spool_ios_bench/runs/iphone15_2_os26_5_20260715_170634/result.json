@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "status": "pass",
+  "base_commit": "58d7f47ede6295f6d0bcb9d422bce17f44301647",
+  "device": {
+    "marketing_name": "iPhone 14 Pro",
+    "product_type": "iPhone15,2",
+    "hardware_model": "D73AP",
+    "os_version": "26.5"
+  },
+  "profile_app": {
+    "bundle_identifier": "com.kyle.PocketWorld",
+    "entrypoint": "tool/e_durable_spool_ios_bench.dart",
+    "entrypoint_sha256": "5d618fbaceb5c75ca3e473dbcd565476fade199a37bec7ff39c421926cfcb102"
+  },
+  "commands": [
+    "flutter build ios --profile -t tool/e_durable_spool_ios_bench.dart",
+    "xcrun devicectl device install app --device <device> build/ios/iphoneos/Runner.app",
+    "xcrun devicectl device process launch --device <device> --terminate-existing com.kyle.PocketWorld",
+    "xcrun devicectl device process terminate --device <device> --pid 3365 --kill",
+    "xcrun devicectl device process launch --device <device> com.kyle.PocketWorld"
+  ],
+  "before_sigkill": {
+    "expected": 12,
+    "fed": 4,
+    "pending": 8,
+    "block": "workerDied",
+    "isolate_error_port_observed": true,
+    "isolate_exit_port_observed": true,
+    "manifest_schema_version": 2,
+    "manifest_generation": 18,
+    "manifest_sha256": "d46ae99e65c89c24d0205663185418425e4276e27ae241d7659539daa5187192"
+  },
+  "after_sigkill_open": {
+    "fed": 4,
+    "pending": 8,
+    "block": "workerDied"
+  },
+  "after_full_replay": {
+    "fed": 12,
+    "pending": 0,
+    "native_replay_required": false,
+    "blocked": false,
+    "replay_payload_files": 0,
+    "payload_purge_after_final_artifact": true,
+    "manifest_generation": 31,
+    "manifest_sha256": "dcbfb5eccad3dfea6d88226392da73bc2b2a5cda77c3dbd343b5cf61d9ae46c2"
+  },
+  "scheduler_transition_probe": {
+    "source": "explicit scheduler inputs on physical device; not a claim about the observed device thermal sensor",
+    "serious": "thermal_serious_conservative_pause",
+    "critical": "thermal_critical_pause",
+    "unknown": "thermal_unknown_bounded_ready",
+    "fair_recovery": "thermal_fair_ready"
+  },
+  "phase_result_sha256": "bd636ab8114cabb578c5b551e7b9b4c243ed4ee28ec228abb795516da9330f60"
+}

@@ -1,0 +1,25 @@
+{
+  "descriptor_cols": 128,
+  "descriptor_rows_a": 8192,
+  "descriptor_rows_b": 8192,
+  "files": {
+    "desc43.u8": {
+      "bytes": 1048576,
+      "sha256": "b376ecdbd0437adab6bcb1ebbeb0e5788c406978014754992ede754e02757f9c"
+    },
+    "desc44.u8": {
+      "bytes": 1048576,
+      "sha256": "d0e1c4c7bb36349a0a6f43d101e0142a62b75e65fc265e9215e79ca469dfecda"
+    },
+    "matches43_44.u32": {
+      "bytes": 25416,
+      "sha256": "2e3ba175061fc7c4d46bb39c838eef7b186df55ec908c1448d3c1ba0a886cc52"
+    }
+  },
+  "image_a": 43,
+  "image_b": 44,
+  "schema_version": 1,
+  "source_db": "/Users/kaidongwang/.config/superpowers/worktrees/pocketworld_research_benchmarks/pocketworld-repro-contract-20260714/data/pocketworld_captures/cap51/fresh_device_pull_2026-07-14T085404+0800/retry/sfm_live.db",
+  "source_db_observed_sha256": "3103b783505579fb573094cf4516b861ebbc9ae2465a39abc77de8c4aacde5dd",
+  "stored_matches": 3177
+}

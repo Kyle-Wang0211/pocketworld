@@ -31,8 +31,7 @@ void check(bool cond, String what) {
 /// `if (vis != null && vis[i] == 0) continue;`)—— 返回进渲染 buffer 的
 /// 点索引。stride=1(渲染抽稀与本门正交)。
 List<int> renderBufferIndices(int n, Uint8List? visibility) {
-  final vis =
-      visibility != null && visibility.length == n ? visibility : null;
+  final vis = visibility != null && visibility.length == n ? visibility : null;
   final out = <int>[];
   for (var i = 0; i < n; i++) {
     if (vis != null && vis[i] == 0) continue; // L2 渲染门:确证鬼点不进 buffer
@@ -193,18 +192,28 @@ void main() {
     );
     final persistDelivered = remap.remap(persistNative);
     final arbDelivered = remap.remap(arbNative);
-    check(persistDelivered != null && arbDelivered != null,
-        'cap49 头条:恒等链 remap 成功(交付点序 == native 点序)');
+    check(
+      persistDelivered != null && arbDelivered != null,
+      'cap49 头条:恒等链 remap 成功(交付点序 == native 点序)',
+    );
     final pv = computeGhostViewVisibility(persistDelivered!);
     final av = computeGhostViewVisibility(arbDelivered!);
-    check(pv.stats.hiddenGhost == bandN && pv.stats.rescuedVisible == 0,
-        'persist 面(无 bit5):hidden=2840、rescued_visible=0(358 救援点被误隐)');
-    check(av.stats.hiddenGhost == bandN - rescueN,
-        '仲裁后重算面:hidden=${bandN - rescueN}(=2482,非 2840;358 救援点放行)');
-    check(av.stats.rescuedVisible == rescueN,
-        '仲裁后重算面:rescued_visible=358(band15∧rescued 白名单可见)');
-    check(av.stats.shown - pv.stats.shown == rescueN,
-        '仲裁重算净放行 = 358 点(shown 增量 == 救援点数,误隐→0)');
+    check(
+      pv.stats.hiddenGhost == bandN && pv.stats.rescuedVisible == 0,
+      'persist 面(无 bit5):hidden=2840、rescued_visible=0(358 救援点被误隐)',
+    );
+    check(
+      av.stats.hiddenGhost == bandN - rescueN,
+      '仲裁后重算面:hidden=${bandN - rescueN}(=2482,非 2840;358 救援点放行)',
+    );
+    check(
+      av.stats.rescuedVisible == rescueN,
+      '仲裁后重算面:rescued_visible=358(band15∧rescued 白名单可见)',
+    );
+    check(
+      av.stats.shown - pv.stats.shown == rescueN,
+      '仲裁重算净放行 = 358 点(shown 增量 == 救援点数,误隐→0)',
+    );
   }
 
   // ② 非恒等两级 keep 链:bit5 必须穿过 spatial + floater 两次重排到达交付点序
@@ -216,7 +225,8 @@ void main() {
     Uint8List native({required Set<int> band, Set<int> rescued = const {}}) {
       final f = Uint8List(10);
       for (var i = 0; i < 10; i++) {
-        f[i] = kGhostFlagInRegion |
+        f[i] =
+            kGhostFlagInRegion |
             (band.contains(i) ? kGhostFlagBand15 : 0) |
             (rescued.contains(i) ? kGhostFlagRescued : 0);
       }
@@ -227,7 +237,16 @@ void main() {
     final persistNative = native(band: bandSet);
     final arbNative = native(band: bandSet, rescued: {6});
     final spatialKeep = Int32List.fromList([0, 1, 2, 3, 4, 5, 6, 7, 9]); // 删#8
-    final floaterKeep = Int32List.fromList([0, 1, 2, 3, 4, 6, 7, 8]); // snap 序删#5
+    final floaterKeep = Int32List.fromList([
+      0,
+      1,
+      2,
+      3,
+      4,
+      6,
+      7,
+      8,
+    ]); // snap 序删#5
     final remap = GhostDeliveredMaskRemap(
       nativeCount: 10,
       spatialKeep: spatialKeep,
@@ -236,19 +255,27 @@ void main() {
     );
     final pd = remap.remap(persistNative);
     final ad = remap.remap(arbNative);
-    check(pd != null && ad != null && pd.length == 8 && ad.length == 8,
-        '两级链 remap 成功,交付点序 8 点');
+    check(
+      pd != null && ad != null && pd.length == 8 && ad.length == 8,
+      '两级链 remap 成功,交付点序 8 点',
+    );
     final pv = computeGhostViewVisibility(pd!);
     final av = computeGhostViewVisibility(ad!);
-    check(pv.stats.hiddenGhost == 3 && pv.stats.rescuedVisible == 0,
-        '两级链 persist 面:hidden=3(交付 band15 = native{2,4,6})、rescued=0');
-    check(av.stats.hiddenGhost == 2 && av.stats.rescuedVisible == 1,
-        '两级链仲裁面:hidden=2、rescued_visible=1(native#6 的 bit5 穿链到达)');
+    check(
+      pv.stats.hiddenGhost == 3 && pv.stats.rescuedVisible == 0,
+      '两级链 persist 面:hidden=3(交付 band15 = native{2,4,6})、rescued=0',
+    );
+    check(
+      av.stats.hiddenGhost == 2 && av.stats.rescuedVisible == 1,
+      '两级链仲裁面:hidden=2、rescued_visible=1(native#6 的 bit5 穿链到达)',
+    );
     // native#6 → 交付索引 5:persist 面隐藏、仲裁面可见(bit5 精确落位)。
     final pView = computeGhostViewVisibility(pd);
     final aView = computeGhostViewVisibility(ad);
-    check(pView.visibility[5] == 0 && aView.visibility[5] == 1,
-        '救援位精确落位:交付索引 5(native#6)persist 隐 → 仲裁后放行');
+    check(
+      pView.visibility[5] == 0 && aView.visibility[5] == 1,
+      '救援位精确落位:交付索引 5(native#6)persist 隐 → 仲裁后放行',
+    );
   }
 
   // ③ 容错:native mask 点数与配方 nativeCount 不符(过期/错配)→ remap 返回
@@ -260,8 +287,10 @@ void main() {
       floaterKeep: null,
       deliveredCount: 100,
     );
-    check(remap.remap(Uint8List(101)) == null,
-        'nativeCount 错位 → remap=null(fail-open,保留 persist 交付 mask)');
+    check(
+      remap.remap(Uint8List(101)) == null,
+      'nativeCount 错位 → remap=null(fail-open,保留 persist 交付 mask)',
+    );
     check(remap.remap(Uint8List(100)) != null, '点数一致 → remap 成功');
     // deliveredCount 与链推出的长度不符也返回 null(自检兜底)。
     final badDelivered = GhostDeliveredMaskRemap(
@@ -270,17 +299,18 @@ void main() {
       floaterKeep: null,
       deliveredCount: 99, // 与恒等链输出长度 100 不符
     );
-    check(badDelivered.remap(Uint8List(100)) == null,
-        'deliveredCount 自检不符 → remap=null');
+    check(
+      badDelivered.remap(Uint8List(100)) == null,
+      'deliveredCount 自检不符 → remap=null',
+    );
   }
 
-  // ── 源码层断言:交付路径 0 引用渲染门 + 开关默认开且只此一处 ─────────
+  // ── 源码层断言:交付路径 0 引用渲染门 + 开关默认关且只此一处 ─────────
   final repoRoot = File(Platform.script.toFilePath()).parent.parent.path;
   String src(String rel) => File('$repoRoot/$rel').readAsStringSync();
   for (final rel in [
     'lib/capture/sparse_ply.dart', // PLY 交付写手
     'lib/capture/sfm_resume.dart', // 断点续跑持久化腿
-    'lib/capture/cloud_capture_uploader.dart', // 素材上传
   ]) {
     final s = src(rel).toLowerCase();
     check(
@@ -290,17 +320,14 @@ void main() {
   }
   final viewSrc = src('lib/ui/capture/sparse_cloud_view.dart');
   check(
-    RegExp(r'vis\[i\] == 0\) continue')
-            .allMatches(viewSrc)
-            .length >=
-        2,
+    RegExp(r'vis\[i\] == 0\) continue').allMatches(viewSrc).length >= 2,
     'painter 的 paint 与双击拾取都装了渲染门(vis[i]==0 → continue)',
   );
   final modSrc = src('lib/capture/ghost_view_filter.dart');
   check(
     modSrc.contains("'PW_GHOST_VIEW_FILTER'") &&
-        modSrc.contains('defaultValue: true'),
-    '开关 kGhostMaskViewFilter = env 式编译期常量,默认 true(用户签决开门)',
+        modSrc.contains('defaultValue: false'),
+    '开关 kGhostMaskViewFilter = env 式编译期常量,默认 false(鬼层从出生机制压掉)',
   );
   var defineCount = 0;
   for (final e in Directory('$repoRoot/lib').listSync(recursive: true)) {
@@ -310,10 +337,7 @@ void main() {
       }
     }
   }
-  check(
-    defineCount == 1,
-    'PW_GHOST_VIEW_FILTER 只在模块内定义一处(无 UI 滑杆/档位,铁律)',
-  );
+  check(defineCount == 1, 'PW_GHOST_VIEW_FILTER 只在模块内定义一处(无 UI 滑杆/档位,铁律)');
 
   // ignore: avoid_print
   print('ALL PASS');

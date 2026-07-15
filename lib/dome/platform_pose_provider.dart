@@ -25,7 +25,8 @@ import '../quality/quality_compute.dart';
 import 'ar_pose.dart';
 import 'mock_pose_provider.dart';
 
-class PlatformARPoseProvider implements ARPoseProvider {
+class PlatformARPoseProvider
+    implements ARPoseProvider, ManualCaptureV2Provider {
   static const _method = MethodChannel('aether_arkit');
   static const _poseEvents = EventChannel('aether_arkit/pose_stream');
 
@@ -280,6 +281,52 @@ class PlatformARPoseProvider implements ARPoseProvider {
     } on MissingPluginException {
       return ARFrameSaveResult(spec: spec, status: 'unsupported');
     }
+  }
+
+  @override
+  Future<ManualCaptureV2Ticket> reserveManualCaptureV2(
+    ManualCaptureV2Request request,
+  ) async {
+    if (_usingFallback) {
+      throw UnsupportedError(
+        'manual capture v2 requires the native ARKit executor',
+      );
+    }
+    final reply = await _method.invokeMethod<dynamic>(
+      'reserveManualCaptureV2',
+      request.toMethodArgs(),
+    );
+    final ticket = ManualCaptureV2Ticket.fromPlatformReply(reply);
+    if (ticket.captureJobID != request.captureJobID) {
+      throw StateError(
+        'manual capture ticket job mismatch: '
+        '${ticket.captureJobID} != ${request.captureJobID}',
+      );
+    }
+    return ticket;
+  }
+
+  @override
+  Future<ManualCaptureV2Result> awaitManualCaptureV2(
+    String captureJobID,
+  ) async {
+    if (_usingFallback) {
+      throw UnsupportedError(
+        'manual capture v2 requires the native ARKit executor',
+      );
+    }
+    final reply = await _method.invokeMethod<dynamic>(
+      'awaitManualCaptureV2',
+      <String, Object?>{'captureJobId': captureJobID},
+    );
+    final terminal = ManualCaptureV2Result.fromPlatformReply(reply);
+    if (terminal.captureJobID != captureJobID) {
+      throw StateError(
+        'manual capture result job mismatch: '
+        '${terminal.captureJobID} != $captureJobID',
+      );
+    }
+    return terminal;
   }
 
   /// Parses the optional streaming-SfM feed off the `saveCurrentFrameAsJpeg`

@@ -25,14 +25,10 @@ import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 
 import '../auth/auth_scope.dart';
-import '../capture/cloud_capture_raw_retention_service.dart';
-import '../capture/cloud_capture_training_service.dart';
 import '../capture/sfm_resume.dart';
-import '../i18n/locale_notifier.dart';
 import '../l10n/app_localizations.dart';
 import '../me/draft_card_action.dart';
 import '../me/scan_record_store.dart';
-import '../privacy/research_consent_service.dart';
 import 'capture/sfm_resume_wait_page.dart';
 import 'capture/sparse_cloud_viewer_page.dart';
 import 'design_system.dart';
@@ -40,7 +36,6 @@ import 'home_view_model.dart';
 import 'me/my_work_detail_page.dart';
 import 'me_settings_page.dart';
 import 'me_stats_view_model.dart';
-import 'research_consent_dialog.dart';
 import 'scan_record.dart';
 import 'scan_record_cell.dart';
 
@@ -390,8 +385,7 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
       sparsePlyExists: sparsePlyExists,
       sfmDbExists: recoverableDir != null,
       activeReconstructionCaptureDir: widget.activeReconstructionCaptureDir,
-      hasActiveReconstructionCallback:
-          widget.onActiveReconstructionTap != null,
+      hasActiveReconstructionCallback: widget.onActiveReconstructionTap != null,
     );
     switch (action) {
       case DraftCardAction.reopenActiveReconstruction:
@@ -461,32 +455,15 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
     if (!mounted) return;
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => SfmResumeWaitPage(
-          captureDir: recoverableDir,
-          title: record.name,
-        ),
+        builder: (_) =>
+            SfmResumeWaitPage(captureDir: recoverableDir, title: record.name),
       ),
     );
   }
 
-  /// Long-press handler — opens a bottom sheet with train / rename / delete.
-  /// Drafts can explicitly enter the cloud worker queue from here; upload
-  /// acknowledgement alone is just "raw safely reached cloud".
+  /// Long-press handler for the local-only product route.
   Future<void> _showRecordActions(ScanRecord record) async {
     final l = AppL10n.of(context);
-    final copy = _MeActionCopy.of(context);
-    final busy =
-        record.cloudUploadStatus == ScanCloudUploadStatus.queued ||
-        record.cloudUploadStatus == ScanCloudUploadStatus.processing;
-    final canRequestTraining =
-        !busy &&
-        record.cloudRawDeletedAt == null &&
-        (record.cloudScanId != null || !record.hasCompletedArtifact);
-    final canDeleteCloudRaw =
-        record.cloudScanId != null &&
-        record.cloudRawDeletedAt == null &&
-        record.cloudUploadStatus != ScanCloudUploadStatus.queued &&
-        record.cloudUploadStatus != ScanCloudUploadStatus.processing;
     // 拍摄期落盘的稀疏点云(sfm_sparse.ply)存在时,提供 in-app 查看入口。
     final captureDir = record.captureDir;
     final sparsePlyPath = captureDir == null
@@ -514,12 +491,6 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (canRequestTraining)
-              ListTile(
-                leading: const Icon(Icons.play_arrow_rounded),
-                title: Text(copy.startTraining),
-                onTap: () => Navigator.of(ctx).pop('train'),
-              ),
             if (canViewSparse)
               ListTile(
                 leading: const Icon(Icons.grain_rounded),
@@ -537,12 +508,6 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
               title: Text(l.meActionRename),
               onTap: () => Navigator.of(ctx).pop('rename'),
             ),
-            if (canDeleteCloudRaw)
-              ListTile(
-                leading: const Icon(Icons.cloud_off_outlined),
-                title: Text(copy.deleteCloudRaw),
-                onTap: () => Navigator.of(ctx).pop('delete_cloud_raw'),
-              ),
             ListTile(
               leading: const Icon(
                 Icons.delete_outline,
@@ -571,111 +536,10 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
       );
     } else if (action == 'rebuild_sparse' && rebuildDir != null) {
       await _offerResume(record, rebuildDir, regenerate: canViewSparse);
-    } else if (action == 'train') {
-      await _startTraining(record);
     } else if (action == 'rename') {
       await _renameRecord(record);
-    } else if (action == 'delete_cloud_raw') {
-      await _confirmAndDeleteCloudRaw(record);
     } else if (action == 'delete') {
       await _confirmAndDelete(record);
-    }
-  }
-
-  Future<void> _startTraining(ScanRecord record) async {
-    final copy = _MeActionCopy.of(context);
-    final messenger = ScaffoldMessenger.of(context);
-    if (record.cloudUploadStatus == ScanCloudUploadStatus.queued ||
-        record.cloudUploadStatus == ScanCloudUploadStatus.processing) {
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(copy.alreadyQueued),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      return;
-    }
-    if (record.cloudRawDeletedAt != null) {
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(copy.cloudRawDeleted),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      return;
-    }
-    if (record.cloudUploadStatus == ScanCloudUploadStatus.failed &&
-        record.cloudScanId == null) {
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(copy.uploadFailed),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      return;
-    }
-    if (record.cloudScanId == null ||
-        !_hasCloudRawReadyForTraining(record.cloudUploadStatus)) {
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(copy.waitForUpload),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      return;
-    }
-
-    final consentService = ResearchConsentService.instance;
-    ResearchConsentSnapshot consent;
-    if (await consentService.shouldPromptForTraining()) {
-      if (!mounted) return;
-      final decision = await showResearchConsentDialog(context);
-      if (decision == null) return;
-      consent = await consentService.savePromptDecision(decision);
-    } else {
-      consent = await consentService.load(refreshRemote: false);
-    }
-
-    try {
-      await CloudCaptureTrainingService().requestTraining(
-        record: record,
-        researchConsent: consent,
-      );
-      await ScanRecordStore.instance.addOrUpdate(
-        record.copyWith(
-          cloudUploadStatus: ScanCloudUploadStatus.queued,
-          clearCloudUploadFailureMessage: true,
-        ),
-      );
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(copy.queued),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    } catch (e) {
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(copy.queueFailed(_shortTrainingError(e))),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    }
-  }
-
-  bool _hasCloudRawReadyForTraining(ScanCloudUploadStatus status) {
-    switch (status) {
-      case ScanCloudUploadStatus.acknowledged:
-      case ScanCloudUploadStatus.completed:
-      case ScanCloudUploadStatus.failed:
-        return true;
-      case ScanCloudUploadStatus.none:
-      case ScanCloudUploadStatus.localPending:
-      case ScanCloudUploadStatus.uploading:
-      case ScanCloudUploadStatus.uploaded:
-      case ScanCloudUploadStatus.queued:
-      case ScanCloudUploadStatus.processing:
-        return false;
     }
   }
 
@@ -734,125 +598,6 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
     );
     if (confirmed != true) return;
     await _vm.deleteRecord(record);
-  }
-
-  Future<void> _confirmAndDeleteCloudRaw(ScanRecord record) async {
-    final copy = _MeActionCopy.of(context);
-    final messenger = ScaffoldMessenger.of(context);
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(copy.deleteCloudRawTitle),
-        content: Text(copy.deleteCloudRawContent(record.name)),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: Text(AppL10n.of(context).meActionCancel),
-          ),
-          TextButton(
-            style: TextButton.styleFrom(foregroundColor: AetherColors.danger),
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: Text(copy.deleteCloudRaw),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-    try {
-      final deletedAt = await CloudCaptureRawRetentionService().deleteCloudRaw(
-        record,
-      );
-      await ScanRecordStore.instance.addOrUpdate(
-        record.copyWith(cloudRawDeletedAt: deletedAt ?? DateTime.now().toUtc()),
-      );
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(copy.deleteCloudRawDone),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    } catch (e) {
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(copy.deleteCloudRawFailed(_shortTrainingError(e))),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    }
-  }
-
-  String _shortTrainingError(Object error) {
-    final text = error.toString();
-    if (text.length <= 180) return text;
-    return text.substring(0, 180);
-  }
-}
-
-class _MeActionCopy {
-  final String startTraining;
-  final String alreadyQueued;
-  final String uploadFailed;
-  final String waitForUpload;
-  final String cloudRawDeleted;
-  final String queued;
-  final String Function(String) queueFailed;
-  final String deleteCloudRaw;
-  final String deleteCloudRawTitle;
-  final String Function(String) deleteCloudRawContent;
-  final String deleteCloudRawDone;
-  final String Function(String) deleteCloudRawFailed;
-
-  const _MeActionCopy({
-    required this.startTraining,
-    required this.alreadyQueued,
-    required this.uploadFailed,
-    required this.waitForUpload,
-    required this.cloudRawDeleted,
-    required this.queued,
-    required this.queueFailed,
-    required this.deleteCloudRaw,
-    required this.deleteCloudRawTitle,
-    required this.deleteCloudRawContent,
-    required this.deleteCloudRawDone,
-    required this.deleteCloudRawFailed,
-  });
-
-  static _MeActionCopy of(BuildContext context) {
-    final zh = LocaleScope.of(context).isChinese;
-    if (zh) {
-      return _MeActionCopy(
-        startTraining: '开始训练',
-        alreadyQueued: '这条任务已经在训练队列中',
-        uploadFailed: '素材上传失败，请等待自动重试或重新拍摄',
-        waitForUpload: '素材还在上传或等待云端确认，稍后再开始训练',
-        cloudRawDeleted: '云端原始素材已删除，无法重新训练',
-        queued: '已加入训练队列',
-        queueFailed: (e) => '开始训练失败：$e',
-        deleteCloudRaw: '删除云端原始素材',
-        deleteCloudRawTitle: '删除云端原始素材？',
-        deleteCloudRawContent: (name) =>
-            '删除「$name」的 4K 原始帧和拍摄 JSON 后，这次拍摄将不能再用高性能电脑或更高质量算法重新训练。已生成的模型不会被删除。',
-        deleteCloudRawDone: '云端原始素材已删除',
-        deleteCloudRawFailed: (e) => '删除云端原始素材失败：$e',
-      );
-    }
-    return _MeActionCopy(
-      startTraining: 'Start training',
-      alreadyQueued: 'This draft is already queued',
-      uploadFailed: 'Upload failed. Wait for retry or capture again.',
-      waitForUpload:
-          'The raw capture is still uploading or waiting for cloud ack.',
-      cloudRawDeleted:
-          'Cloud raw assets were deleted; retraining is unavailable.',
-      queued: 'Added to training queue',
-      queueFailed: (e) => 'Could not start training: $e',
-      deleteCloudRaw: 'Delete cloud raw assets',
-      deleteCloudRawTitle: 'Delete cloud raw assets?',
-      deleteCloudRawContent: (name) =>
-          'Deleting the 4K frames and capture JSON for "$name" means this capture cannot be retrained later on a desktop or higher-quality worker. Existing models are kept.',
-      deleteCloudRawDone: 'Cloud raw assets deleted',
-      deleteCloudRawFailed: (e) => 'Could not delete cloud raw assets: $e',
-    );
   }
 }
 

@@ -58,8 +58,8 @@ class RingBufferCell {
   /// CaptureSession uses the returned slot to choose a JPEG path
   /// (`cell_<cellIdx>_slot_<slotIdx>_<frameId>.jpg`)。[2026-07-11 色彩
   /// 污染修复] 文件名带 frameId,驱逐不再同名覆盖旧 JPEG——旧文件仍被
-  /// SfM fed jsonl 引用(colorize/resume 取色),由 colorize 后的
-  /// deferred prune 统一清理。
+  /// SfM fed jsonl 引用(colorize/resume 取色),也是用户拥有的拍摄帧，
+  /// 除非用户明确删除否则永久保留。
   int? append(CapturedFrameSample s, {bool force = false}) {
     if (_buf.length < capacity) {
       _buf.add(s);
@@ -114,6 +114,16 @@ class RingBufferCell {
   void setSlotJpegPath(int slotIdx, String jpegPath) {
     if (slotIdx < 0 || slotIdx >= _buf.length) return;
     _buf[slotIdx] = _buf[slotIdx].withJpegPath(jpegPath);
+  }
+
+  /// Stamp only the resident sample with [frameId]. Async native publication
+  /// may finish after later captures have reused the original slot, so callers
+  /// must never trust a stale slot index at commit time.
+  bool setFrameJpegPath(String frameId, String jpegPath) {
+    final index = _buf.indexWhere((sample) => sample.frameId == frameId);
+    if (index < 0) return false;
+    _buf[index] = _buf[index].withJpegPath(jpegPath);
+    return true;
   }
 
   /// Drop JPEG references that did not survive final upload curation.

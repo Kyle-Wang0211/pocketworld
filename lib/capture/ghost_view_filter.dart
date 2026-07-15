@@ -40,22 +40,22 @@
 //     band15 可能误命中真结构,唯一兜底是 rescue 白名单 —— 交付 mask 带上
 //     救援位前,草稿查看页对这类点是构造性误隐(仅渲染,导出永远全量)。
 //
-// 开关:kGhostMaskViewFilter,纯编译期 env 式 flag。用户签决「鬼层必须
-// 消失」→ 默认 **true(开门)**,保留 --dart-define=false 暗关退路。铁律:
+// 开关:kGhostMaskViewFilter,纯编译期 env 式 flag。2026-07-14 产品决策改为
+// 「从多视图生成机制阻止鬼点出生,绝不在生成后隐藏」,因此默认 **false**。
+// 保留显式 --dart-define=true 仅供旧 sidecar 诊断对照。铁律:
 // 禁止任何用户可见质量滑杆/档位 —— 此开关只允许 --dart-define 翻转,永不接 UI。
 
 import 'dart:io';
 import 'dart:typed_data';
 
-/// 渲染门总开关。用户签决(07-12)「鬼层必须消失」→ 默认 **true(开门)**,
-/// 隐藏 band15∧¬rescued 确证鬼、放行所有 2-view 好点。暗关退路(排障/回归
-/// 对照):
-///   flutter build ios --profile --dart-define=PW_GHOST_VIEW_FILTER=false
+/// 渲染门总开关。产品默认关闭:鬼层由 native 多视图出生证明从生成机制
+/// 阻止,不允许用显示期隐藏伪装质量。仅旧 sidecar 诊断可显式打开:
+///   flutter build ios --profile --dart-define=PW_GHOST_VIEW_FILTER=true
 /// 铁律:只允许 --dart-define 翻转,永不接 UI 滑杆/档位;导出/PLY/上传路径
 /// 永远全量,绝不消费此门。
 const bool kGhostMaskViewFilter = bool.fromEnvironment(
   'PW_GHOST_VIEW_FILTER',
-  defaultValue: true,
+  defaultValue: false,
 );
 
 // ── GhostFlagBits(逐字对齐 aether_ghost_mask.h)────────────────────────

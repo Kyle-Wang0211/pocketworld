@@ -47,6 +47,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:aether_capture_services/aether_capture_services.dart';
+import 'package:flutter/foundation.dart' show ValueListenable, ValueNotifier;
 import 'package:flutter/widgets.dart' show Offset;
 import 'package:path_provider/path_provider.dart';
 
@@ -54,6 +55,7 @@ import '../dome/ar_pose.dart';
 import '../dome/platform_pose_provider.dart';
 import '../quality/frame_quality_constants.dart';
 import '../quality/guidance_engine.dart';
+import 'captured_photo_catalog.dart';
 import 'dome/captured_frame_sample.dart';
 import 'dome/dome_config.dart';
 import 'dome/dome_target_points.dart';
@@ -73,6 +75,69 @@ class CaptureMotionSnapshot {
     required this.tooFast,
     this.trackingStateName,
   });
+}
+
+/// Durable owner for a committed manual-capture frame.
+///
+/// Returning `true` transfers the frame to a queue that will preserve it until
+/// native reconstruction acknowledges it. `false` or an exception is a
+/// terminal capture failure; accepted frames are never silently dropped.
+typedef ManualSfmFrameSink = FutureOr<bool> Function(SfmFrameFeed feed);
+
+/// The three observable stages of one accepted shutter tap.
+final class ManualPhotoCapture {
+  const ManualPhotoCapture({
+    required this.reservation,
+    required this.committed,
+    required this.completion,
+  });
+
+  /// Native snapshot-selection ACK. The shutter returns as soon as this exists.
+  final ManualCaptureV2Ticket reservation;
+
+  /// Native terminal publication result for JPEG, sidecar, and SfM gray.
+  final Future<ManualCaptureV2Result> committed;
+
+  /// Completes only after publication and durable SfM-queue ownership.
+  final Future<void> completion;
+
+  String get captureJobID => reservation.captureJobID;
+  String get jpegPath => reservation.jpegPath;
+}
+
+/// Terminal failure for one already accepted manual-capture job.
+final class ManualPhotoCaptureException implements Exception {
+  const ManualPhotoCaptureException({
+    required this.captureJobID,
+    required this.code,
+    required this.message,
+    this.cause,
+  });
+
+  final String captureJobID;
+  final String code;
+  final String message;
+  final Object? cause;
+
+  @override
+  String toString() =>
+      'ManualPhotoCaptureException($captureJobID, $code): $message';
+}
+
+/// Finish-barrier failure after all accepted jobs reached a terminal state.
+final class CapturePhotoSaveBarrierException implements Exception {
+  CapturePhotoSaveBarrierException(Iterable<ManualPhotoCaptureException> errors)
+    : failures = List<ManualPhotoCaptureException>.unmodifiable(errors);
+
+  final List<ManualPhotoCaptureException> failures;
+
+  @override
+  String toString() {
+    final jobs = failures
+        .map((failure) => '${failure.captureJobID}:${failure.code}')
+        .join(', ');
+    return 'CapturePhotoSaveBarrierException(${failures.length}): $jobs';
+  }
 }
 
 class CaptureSession {
@@ -108,6 +173,21 @@ class CaptureSession {
   /// listening simply means no live reconstruction — the JPEG bundle is
   /// untouched either way.
   Stream<SfmFrameFeed> get sfmFrameStream => _sfmFrameCtrl.stream;
+
+  /// Bind the durable owner of every committed manual SfM frame.
+  ///
+  /// A frame committed before this binding waits here instead of being lost to
+  /// broadcast-stream timing. Rebinding supports replacement of a failed
+  /// reconstruction worker.
+  void bindManualSfmFrameSink(ManualSfmFrameSink sink) {
+    if (_disposed) {
+      throw StateError('CaptureSession used after dispose');
+    }
+    _manualSfmFrameSink = sink;
+    if (!_manualSfmSinkReady.isCompleted) {
+      _manualSfmSinkReady.complete();
+    }
+  }
 
   final StreamController<ARPose> _poseCtrl =
       StreamController<ARPose>.broadcast();
@@ -265,8 +345,8 @@ class CaptureSession {
   /// [2026-07-11 色彩污染修复] 文件名带 frameId,重拍/驱逐同一槽位落
   /// **新文件**而不是同名覆盖:SfM colorize 与 resume 按 fed jsonl 的
   /// jpegPath 取色,覆盖会让先喂入的帧被陈旧内容染色(cap47 16% 点污染)。
-  /// 被驱逐帧的旧文件由 colorize 之后的 deferred prune
-  /// (retainOnlyCuratedPhotos)统一清理,磁盘不会无限增长。
+  /// 被覆盖度缓存驱逐的旧文件仍是用户照片，必须永久保留；驱逐只影响
+  /// 覆盖提示的轻量内存样本，不影响相册、草稿、SfM 或本地重建清单。
   ///
   /// Null until [start] runs; the directory is recreated empty on each
   /// fresh capture session. W3 DA3 inference (待实现) iterates `*.jpg`
@@ -279,7 +359,21 @@ class CaptureSession {
   String? _photosHighresDir;
   String? get previewsDir => _previewsDir;
   String? _previewsDir;
+  final ValueNotifier<List<String>> _capturedPhotos =
+      ValueNotifier<List<String>>(const <String>[]);
+
+  /// Live, user-owned photo inventory for the current take. Unlike
+  /// `targetPoints.retainedJpegPaths`, this list is never reduced by ring-buffer
+  /// eviction or reconstruction curation.
+  ValueListenable<List<String>> get capturedPhotos => _capturedPhotos;
+  List<String> get capturedPhotoPaths => _capturedPhotos.value;
+
   final List<Future<void>> _pendingPhotoSaves = <Future<void>>[];
+  final Map<String, ManualPhotoCaptureException> _manualPhotoFailures =
+      <String, ManualPhotoCaptureException>{};
+  ManualSfmFrameSink? _manualSfmFrameSink;
+  final Completer<void> _manualSfmSinkReady = Completer<void>();
+  Future<void> _manualSfmHandoffTail = Future<void>.value();
   int _pendingPhotoSaveCount = 0;
   double _lastHighResStillTriggerSec = double.negativeInfinity;
   static const int _maxPendingPhotoSaves = 2;
@@ -303,80 +397,147 @@ class CaptureSession {
       <String, HighResolutionStillCapture>{};
   final Map<String, PhotoBundleStillQuality> _qualityByPath =
       <String, PhotoBundleStillQuality>{};
+  final Map<String, CapturedFrameSample> _sampleByPath =
+      <String, CapturedFrameSample>{};
 
-  /// Delete cell-slot photos that lost final curation and clear their
-  /// in-memory paths. The ring buffers keep up to 12 candidates while
-  /// recording; the reconstruction handoff should see only the selected
-  /// ~5 per point.
-  Future<void> retainOnlyCuratedPhotos(List<CuratedFrame> curated) async {
-    final dirPath = _photosDir;
-    if (dirPath == null) return;
-    final keep = <String>{
-      for (final c in curated)
-        if (c.sample.jpegPath != null) c.sample.jpegPath!,
-    };
-    if (keep.isEmpty) return;
+  /// Rebuild the user-owned photo inventory from its durable local source.
+  /// Call after the pending-save barrier before persisting a draft.
+  Future<List<String>> reconcileCapturedPhotosFromDisk() async {
+    final path = _photosHighresDir ?? _photosDir;
+    final discovered = path == null
+        ? const <String>[]
+        : await discoverCapturedPhotoPaths(Directory(path));
+    if (!_disposed) _capturedPhotos.value = discovered;
+    return discovered;
+  }
 
-    final dir = Directory(dirPath);
-    if (await dir.exists()) {
-      await for (final entity in dir.list(followLinks: false)) {
-        if (entity is! File) continue;
-        final path = entity.path;
-        if (!path.endsWith('.jpg') && !path.endsWith('.json')) continue;
-        final jpgPath = path.endsWith('.json')
-            ? '${path.substring(0, path.length - '.json'.length)}.jpg'
-            : path;
-        if (!keep.contains(jpgPath)) {
-          try {
-            await entity.delete();
-          } on FileSystemException {
-            // Best effort: a late native encode may still be finishing.
-          }
-        }
-      }
+  /// Updates the live inventory after an explicit user deletion. This only
+  /// changes the in-memory view; the caller owns the requested disk deletion.
+  void forgetCapturedPhoto(String jpegPath) {
+    if (_disposed || !_capturedPhotos.value.contains(jpegPath)) return;
+    _capturedPhotos.value = List<String>.unmodifiable(
+      _capturedPhotos.value.where((path) => path != jpegPath),
+    );
+  }
+
+  Future<void> _recordCapturedPhotoIfPresent(String jpegPath) async {
+    if (_disposed || _capturedPhotos.value.contains(jpegPath)) return;
+    final jpeg = File(jpegPath);
+    try {
+      if (!await jpeg.exists() || await jpeg.length() <= 0) return;
+    } on FileSystemException {
+      return;
     }
-    targetPoints.retainOnlyJpegPaths(keep);
+    if (_disposed || _capturedPhotos.value.contains(jpegPath)) return;
+    _capturedPhotos.value = List<String>.unmodifiable(<String>[
+      ..._capturedPhotos.value,
+      jpegPath,
+    ]);
   }
 
   Future<File?> writePhotoBundleManifest(List<CuratedFrame> curated) async {
     final root = _captureDir;
     if (root == null) return null;
+    final curatedByPath = <String, CuratedFrame>{
+      for (final frame in curated)
+        if (frame.sample.jpegPath != null) frame.sample.jpegPath!: frame,
+    };
+    final capturedPaths = await reconcileCapturedPhotosFromDisk();
     final frames = <PhotoBundleFrameDraft>[];
-    for (final curatedFrame in curated) {
-      final sample = curatedFrame.sample;
-      final path = sample.jpegPath;
-      if (path == null || !File(path).existsSync()) continue;
+    for (final path in capturedPaths) {
+      final curatedFrame = curatedByPath[path];
+      final sample = _sampleByPath[path] ?? curatedFrame?.sample;
       final still = _stillByPath[path];
-      final quality = _qualityByPath[path] ?? _qualityFromSample(sample);
+      final quality =
+          _qualityByPath[path] ??
+          (sample == null
+              ? const PhotoBundleStillQuality(
+                  accepted: true,
+                  score: 0,
+                  laplacianVariance: 0,
+                  meanLuma: 0,
+                  underexposedRatio: 0,
+                  overexposedRatio: 0,
+                  textureCellRatio: 0,
+                  rejectReasons: <String>[],
+                )
+              : _qualityFromSample(sample));
+      Map<dynamic, dynamic> metadata = const <dynamic, dynamic>{};
+      try {
+        final sidecarPath = path.replaceFirst(RegExp(r'\.[^.]+$'), '.json');
+        final decoded = jsonDecode(await File(sidecarPath).readAsString());
+        if (decoded is Map) metadata = decoded;
+      } catch (_) {}
+      final contractRaw = metadata['dart_save_contract'];
+      final contract = contractRaw is Map
+          ? contractRaw
+          : const <dynamic, dynamic>{};
       final highresFilename = _basename(path);
-      final previewPath = still?.previewPath;
+      final derivedPreviewPath = path.replaceFirst(
+        '/photos_highres/',
+        '/previews/',
+      );
+      final previewPath =
+          still?.previewPath ??
+          (File(derivedPreviewPath).existsSync() ? derivedPreviewPath : null);
+      final sidecarTimestamp = _jsonDouble(metadata['t'], double.nan);
+      final triggerTimestamp = _jsonDouble(
+        contract['target_timestamp'],
+        sample?.timestamp ?? (sidecarTimestamp.isFinite ? sidecarTimestamp : 0),
+      );
+      final frameID =
+          sample?.frameId ??
+          _jsonString(contract['frame_id']) ??
+          highresFilename.replaceFirst(RegExp(r'\.[^.]+$'), '');
       frames.add(
         PhotoBundleFrameDraft(
-          id: sample.frameId,
+          id: frameID,
           highresFilename: highresFilename,
           previewFilename: previewPath == null
               ? highresFilename
               : _basename(previewPath),
-          timestamp: still?.timestamp ?? sample.timestamp,
-          triggerTimestamp: sample.timestamp,
-          azimuth: sample.azimuth,
-          elevation: sample.elevation,
-          captureKind: still?.captureKind ?? 'arkit_high_res_still',
-          poseSyncQuality:
-              still?.poseSyncQuality ?? 'ar_session_high_res_frame',
-          imageWidth: still?.imageWidth ?? 0,
-          imageHeight: still?.imageHeight ?? 0,
+          timestamp:
+              still?.timestamp ??
+              (sidecarTimestamp.isFinite
+                  ? sidecarTimestamp
+                  : sample?.timestamp ?? 0),
+          triggerTimestamp: triggerTimestamp,
+          azimuth: sample?.azimuth ?? 0,
+          elevation: sample?.elevation ?? 0,
+          captureKind:
+              still?.captureKind ??
+              (_jsonString(metadata['manual_capture_schema']) == null
+                  ? 'arkit_frame_snapshot'
+                  : 'manual_capture_v2'),
+          poseSyncQuality: still?.poseSyncQuality ?? 'ar_session_frame',
+          imageWidth: still?.imageWidth ?? _jsonInt(metadata['image_w']),
+          imageHeight: still?.imageHeight ?? _jsonInt(metadata['image_h']),
           quality: quality,
           cameraTransform:
-              still?.cameraTransform ?? sample.cameraExtrinsic4x4 ?? const [],
+              still?.cameraTransform ??
+              sample?.cameraExtrinsic4x4 ??
+              _jsonDoubleList(metadata['extrinsic']),
           intrinsics:
-              still?.intrinsics ?? sample.cameraIntrinsicFxFyCxCy ?? const [],
-          cameraRadiusM: sample.cameraRadiusM,
-          radiusShellID: '${curatedFrame.radiusShellId}',
-          poseSource: sample.poseSource,
-          focusStable: sample.focusStable,
-          trackingState: still?.trackingStateName ?? sample.trackingStateName,
-          cellID: '${curatedFrame.azBin}:${curatedFrame.elBin}',
+              still?.intrinsics ??
+              sample?.cameraIntrinsicFxFyCxCy ??
+              _jsonDoubleList(metadata['intrinsics_fxfycxcy']),
+          cameraRadiusM: sample?.cameraRadiusM,
+          radiusShellID: curatedFrame == null
+              ? null
+              : '${curatedFrame.radiusShellId}',
+          poseSource: sample?.poseSource ?? 'arkit',
+          focusStable: sample?.focusStable,
+          trackingState:
+              still?.trackingStateName ??
+              sample?.trackingStateName ??
+              _jsonString(
+                metadata['trackingStateName'] ?? metadata['tracking_state'],
+              ),
+          cellID:
+              _jsonString(contract['cell_id']) ??
+              (curatedFrame == null
+                  ? null
+                  : '${curatedFrame.azBin}:${curatedFrame.elBin}'),
         ),
       );
     }
@@ -685,6 +846,8 @@ class CaptureSession {
     _frameSeq = 0;
     _manualCaptureMode = manualCapture;
     _pendingPhotoSaves.clear();
+    _manualPhotoFailures.clear();
+    _manualSfmHandoffTail = Future<void>.value();
     _pendingPhotoSaveCount = 0;
     _lastHighResStillTriggerSec = double.negativeInfinity;
     _resetPhotoSaveHealth();
@@ -692,6 +855,8 @@ class CaptureSession {
     _lastMotionTooFast = false;
     _stillByPath.clear();
     _qualityByPath.clear();
+    _sampleByPath.clear();
+    _capturedPhotos.value = const <String>[];
     _diagArkitPoses = 0;
     _diagImuPoses = 0;
     _originSettleStartedAtSec = null;
@@ -857,18 +1022,18 @@ class CaptureSession {
   Future<void> waitForPendingPhotoSaves({
     Duration timeout = const Duration(seconds: 8),
   }) async {
-    final pending = _pendingPhotoSaves.toList(growable: false);
-    if (pending.isEmpty) return;
-    try {
-      await Future.wait(pending).timeout(timeout);
-    } on TimeoutException {
-      // ignore: avoid_print
-      print(
-        '[CaptureSession] waitForPendingPhotoSaves timed out after '
-        '${timeout.inMilliseconds}ms; continuing with files already written',
-      );
-    } finally {
-      _pendingPhotoSaves.removeWhere((f) => pending.contains(f));
+    // Kept as a source-compatible named argument while callers migrate. It is
+    // deliberately ignored: Finish must never pass an accepted job by timing
+    // out. Loop so reservations published while the barrier is waiting are
+    // included as well.
+    while (_pendingPhotoSaves.isNotEmpty) {
+      final pending = _pendingPhotoSaves.toList(growable: false);
+      await Future.wait(pending);
+      _pendingPhotoSaves.removeWhere(pending.contains);
+    }
+
+    if (_manualPhotoFailures.isNotEmpty) {
+      throw CapturePhotoSaveBarrierException(_manualPhotoFailures.values);
     }
   }
 
@@ -895,6 +1060,8 @@ class CaptureSession {
     _lastMotionTooFast = false;
     _stillByPath.clear();
     _qualityByPath.clear();
+    _sampleByPath.clear();
+    _capturedPhotos.value = const <String>[];
     _photosDir = null;
     _photosHighresDir = null;
     _previewsDir = null;
@@ -936,6 +1103,7 @@ class CaptureSession {
     if (!_guidanceCtrl.isClosed) await _guidanceCtrl.close();
     if (!_motionCtrl.isClosed) await _motionCtrl.close();
     if (!_sfmFrameCtrl.isClosed) await _sfmFrameCtrl.close();
+    _capturedPhotos.dispose();
   }
 
   // ─── Per-pose ingest ────────────────────────────────────────────────
@@ -1168,9 +1336,8 @@ class CaptureSession {
       // [2026-07-11 色彩污染修复] 文件名带 frameId 后缀,重拍同槽位不再
       // 覆盖旧文件:colorize/resume 按 fed jsonl 的 jpegPath 取色,同名
       // 覆盖会让先喂入 SfM 的帧被"陈旧内容"染色(cap47 实测 25/121 帧
-      // 中招,16% 点污染)。旧文件仍被 fed jsonl 引用,不能即时删——由
-      // 既有的 deferred prune(colorize 之后 retainOnlyCuratedPhotos)
-      // 统一收尾。frameId 目录内唯一(start() 重建目录 + _frameSeq 归零)。
+      // 中招,16% 点污染)。旧文件既被 fed jsonl 引用也是用户照片，永不
+      // 自动删除。frameId 目录内唯一(start() 重建目录 + _frameSeq 归零)。
       final photoBase = photoSlotBaseName(
         cellIdx: admit.cellIdx,
         slotIdx: admit.slotIdx,
@@ -1179,6 +1346,7 @@ class CaptureSession {
       final jpegPath = '$_photosDir/$photoBase.jpg';
       final previewPath = '${_previewsDir ?? _photosDir}/$photoBase.jpg';
       final metadataPath = '$_photosDir/$photoBase.json';
+      _sampleByPath[jpegPath] = sample;
       final saveSpec = ARFrameSaveSpec(
         frameID: sample.frameId,
         cellIndex: admit.cellIdx,
@@ -1234,9 +1402,8 @@ class CaptureSession {
                 }
                 _stillByPath[jpegPath] = effectiveStill;
                 _qualityByPath[jpegPath] = quality;
-                targetPoints.stampJpegPath(
-                  cellIdx: admit.cellIdx,
-                  slotIdx: admit.slotIdx,
+                targetPoints.stampJpegPathForFrame(
+                  frameId: sample.frameId,
                   jpegPath: jpegPath,
                 );
               } else {
@@ -1261,9 +1428,8 @@ class CaptureSession {
                 _stillByPath[jpegPath] = fallbackStill;
               }
               _qualityByPath[jpegPath] = _qualityFromSample(sample);
-              targetPoints.stampJpegPath(
-                cellIdx: admit.cellIdx,
-                slotIdx: admit.slotIdx,
+              targetPoints.stampJpegPathForFrame(
+                frameId: sample.frameId,
                 jpegPath: jpegPath,
               );
             } else {
@@ -1278,7 +1444,8 @@ class CaptureSession {
             // ignore: avoid_print
             print('[CaptureSession] photo save failed: $e\n$st');
           })
-          .whenComplete(() {
+          .whenComplete(() async {
+            await _recordCapturedPhotoIfPresent(jpegPath);
             final latencyMs =
                 DateTime.now().difference(saveStartedAt).inMicroseconds /
                 1000.0;
@@ -1296,136 +1463,373 @@ class CaptureSession {
     }
   }
 
-  /// Manually capture exactly ONE high-resolution still at the current
-  /// frame/pose — the RealityScan-style per-tap shutter. Bypasses the
-  /// motion/dome auto-admit gates via [DomeTargetPoints.forceAdmit] so the
-  /// user, not a gate, decides when to shoot. Returns the saved JPEG path on
-  /// success, or null (no usable pose / incomplete AR metadata / save failed).
+  /// Reserve exactly one current frame for the RealityScan-style shutter.
   ///
-  /// Only meaningful when the session was started with `manualCapture: true`.
-  Future<String?> captureSinglePhoto() async {
+  /// The returned object is available as soon as native binds a snapshot to a
+  /// job ID. JPEG/sidecar/gray publication and durable SfM handoff continue in
+  /// [ManualPhotoCapture.committed] and [ManualPhotoCapture.completion].
+  Future<ManualPhotoCapture?> captureSinglePhoto() async {
     if (!_started || _disposed) return null;
     final pose = _lastPose;
     final photosDir = _photosDir;
     if (pose == null || photosDir == null) return null;
-    // MANUAL capture is a deliberate user action: NEVER silently drop a tap.
-    // We still record the best ARKit extrinsic/intrinsic WHEN AVAILABLE (for the
-    // pipeline), but if the origin isn't locked yet or tracking has degraded to
-    // IMU dead-reckoning, we proceed anyway and save the JPEG to the album with
-    // best-effort (possibly null) pose. Downstream filters on pose quality later.
-    final extrinsic = _lastPoseSource == 'arkit' &&
-            pose.extrinsic4x4.isNotEmpty &&
-            pose.extrinsic4x4.length == 16
-        ? pose.extrinsic4x4
-        : null;
-    final intrinsic = _lastPoseSource == 'arkit' &&
-            pose.intrinsicFxFyCxCy.isNotEmpty &&
-            pose.intrinsicFxFyCxCy.length >= 4
-        ? pose.intrinsicFxFyCxCy
-        : null;
 
-    _frameSeq++;
-    final t = _clock.elapsedMicroseconds / 1e6;
-    var cameraRadiusM = pose.position.distanceTo(pose.worldOrigin);
-    if (!cameraRadiusM.isFinite || cameraRadiusM <= 0) cameraRadiusM = 1.0;
-    final sample = CapturedFrameSample(
-      timestamp: t,
-      azimuth: pose.azimuth,
-      elevation: pose.elevation,
-      // Force-admit path bypasses the sharpness gate, but a high nominal
-      // value keeps the ring buffer's high-water state sane.
-      sharpness: 9999.0,
-      motionScore: 0.0,
-      exposureScore: 1.0,
-      frameId: 'tap-$_frameSeq',
-      cameraRadiusM: cameraRadiusM,
-      cameraExtrinsic4x4: extrinsic,
-      cameraIntrinsicFxFyCxCy: intrinsic,
-      scaleAlignAnchorCount: pose.scaleAlignAnchorCount,
-      scaleAlignDepthSpanM: pose.scaleAlignDepthSpanM,
-      scaleAlignReliabilityPrior: pose.scaleAlignReliabilityPrior,
-      poseSource: _lastPoseSource,
-      trackingStateName: pose.trackingStateName,
-    );
-
-    final admit = targetPoints.forceAdmit(sample);
-    if (admit == null) return null;
-
-    // [2026-07-11 色彩污染修复] 同上:frameId 后缀保证重拍同槽位落新文件,
-    // fed jsonl 的 jpegPath 永远指向"喂入 SfM 那一刻"的真实内容。手动
-    // (RealityScan tap)路径是生产采集栈,cap47 的 cell_90/slot_1 六次
-    // 重拍覆盖即发生在这里。
-    final photoBase = photoSlotBaseName(
-      cellIdx: admit.cellIdx,
-      slotIdx: admit.slotIdx,
-      frameId: sample.frameId,
-    );
-    final jpegPath = '$photosDir/$photoBase.jpg';
-    final metadataPath = '$photosDir/$photoBase.json';
-    final saveSpec = ARFrameSaveSpec(
-      frameID: sample.frameId,
-      cellIndex: admit.cellIdx,
-      slotIndex: admit.slotIdx,
-      jpegPath: jpegPath,
-      metadataPath: metadataPath,
-      targetTimestamp: pose.timestamp,
-      quality: 0.92,
-    );
-
-    _pendingPhotoSaveCount += 1;
+    // Join the finish barrier before the first await. Therefore Finish cannot
+    // race past a shutter that is currently waiting for native reservation.
+    final reservationBarrier = Completer<void>();
+    _pendingPhotoSaves.add(reservationBarrier.future);
     try {
-      // INSTANT capture: encode the in-hand continuous ARFrame (4K, ~8.3 MP),
-      // NOT captureHighResolutionFrame. The high-res API momentarily RECONFIGURES
-      // the camera on every tap, which (a) stalls the shutter ~1-2 s ("loading"),
-      // (b) jolts world tracking → the AR card jumps, (c) heats the device. The
-      // continuous frame is already buffered; saveCurrentFrame just encodes the
-      // timestamp-matched snapshot. DA3/SfM downsample to ~2 K, so 4 K vs the
-      // 10 MP out-of-band still is immaterial for the pipeline. (Native
-      // captureHighResolutionStill is retained but no longer on the hot path.)
-      final saveResult = await poseProvider.saveCurrentFrame(saveSpec);
-      // Live-SfM feed: hand the frame-exact gray+intrinsics to whoever is
-      // running the capture-time reconstruction. Fire-and-forget — the SfM
-      // queue applies its own backpressure and NEVER gates the shutter.
-      final sfmFeed = saveResult.sfmFrame;
-      if (saveResult.saved && sfmFeed != null && !_sfmFrameCtrl.isClosed) {
-        // Attach the JPEG path so the preview can colorize reconstructed
-        // points by sampling the actual photo.
-        _sfmFrameCtrl.add(sfmFeed.withJpegPath(jpegPath));
-      }
-      if (saveResult.saved && await _hasCompleteArFrameSidecar(metadataPath)) {
-        targetPoints.stampJpegPath(
-          cellIdx: admit.cellIdx,
-          slotIdx: admit.slotIdx,
-          jpegPath: jpegPath,
+      final extrinsic =
+          _lastPoseSource == 'arkit' && pose.extrinsic4x4.length == 16
+          ? pose.extrinsic4x4
+          : null;
+      final intrinsic =
+          _lastPoseSource == 'arkit' && pose.intrinsicFxFyCxCy.length >= 4
+          ? pose.intrinsicFxFyCxCy
+          : null;
+
+      _frameSeq++;
+      final t = _clock.elapsedMicroseconds / 1e6;
+      var cameraRadiusM = pose.position.distanceTo(pose.worldOrigin);
+      if (!cameraRadiusM.isFinite || cameraRadiusM <= 0) cameraRadiusM = 1.0;
+      final sample = CapturedFrameSample(
+        timestamp: t,
+        azimuth: pose.azimuth,
+        elevation: pose.elevation,
+        sharpness: 9999.0,
+        motionScore: 0.0,
+        exposureScore: 1.0,
+        frameId: 'tap-$_frameSeq',
+        cameraRadiusM: cameraRadiusM,
+        cameraExtrinsic4x4: extrinsic,
+        cameraIntrinsicFxFyCxCy: intrinsic,
+        scaleAlignAnchorCount: pose.scaleAlignAnchorCount,
+        scaleAlignDepthSpanM: pose.scaleAlignDepthSpanM,
+        scaleAlignReliabilityPrior: pose.scaleAlignReliabilityPrior,
+        poseSource: _lastPoseSource,
+        trackingStateName: pose.trackingStateName,
+      );
+
+      final admit = targetPoints.forceAdmit(sample);
+      if (admit == null) return null;
+
+      final photoBase = photoSlotBaseName(
+        cellIdx: admit.cellIdx,
+        slotIdx: admit.slotIdx,
+        frameId: sample.frameId,
+      );
+      final jpegPath = '$photosDir/$photoBase.jpg';
+      final metadataPath = '$photosDir/$photoBase.json';
+      final sfmGrayPath = '$photosDir/$photoBase.sfm-gray';
+      _sampleByPath[jpegPath] = sample;
+      final saveSpec = ARFrameSaveSpec(
+        frameID: sample.frameId,
+        cellIndex: admit.cellIdx,
+        slotIndex: admit.slotIdx,
+        jpegPath: jpegPath,
+        metadataPath: metadataPath,
+        targetTimestamp: pose.timestamp,
+        quality: 0.92,
+      );
+      final captureRoot = _captureDir;
+      final captureJobID = captureRoot == null
+          ? '${DateTime.now().microsecondsSinceEpoch}-${sample.frameId}'
+          : '${_basename(captureRoot)}-${sample.frameId}';
+      final provider = poseProvider;
+      if (provider is! ManualCaptureV2Provider) {
+        throw ManualPhotoCaptureException(
+          captureJobID: captureJobID,
+          code: 'manual_capture_v2_unsupported',
+          message: 'The active pose provider cannot reserve a manual frame.',
         );
-        return jpegPath;
       }
-      // Manual capture is USER-FACING: as long as the JPEG was actually written,
-      // RETAIN it so the album + AR card never silently drop a tap — even when
-      // the AR sidecar is incomplete (degraded tracking / IMU dead-reckoning).
-      // Downstream pose-quality filtering is a separate concern; losing the
-      // user's photo here is not acceptable.
-      if (saveResult.saved && await File(jpegPath).exists()) {
-        // ignore: avoid_print
-        print('[CaptureSession] manual photo retained (sidecar incomplete): '
-            '$jpegPath');
-        targetPoints.stampJpegPath(
-          cellIdx: admit.cellIdx,
-          slotIdx: admit.slotIdx,
-          jpegPath: jpegPath,
+      final manualProvider = provider as ManualCaptureV2Provider;
+
+      late final ManualCaptureV2Ticket reservation;
+      try {
+        reservation = await manualProvider.reserveManualCaptureV2(
+          ManualCaptureV2Request(
+            captureJobID: captureJobID,
+            saveSpec: saveSpec,
+            sfmGrayPath: sfmGrayPath,
+          ),
         );
-        return jpegPath;
+      } catch (error) {
+        throw ManualPhotoCaptureException(
+          captureJobID: captureJobID,
+          code: 'snapshot_reservation_failed',
+          message: 'Native snapshot reservation failed: $error',
+          cause: error,
+        );
       }
-      // ignore: avoid_print
-      print('[CaptureSession] manual photo NOT saved (no JPEG): $jpegPath');
-      return null;
-    } catch (e, st) {
-      // ignore: avoid_print
-      print('[CaptureSession] captureSinglePhoto failed: $e\n$st');
-      return null;
+
+      _validateManualReservation(
+        reservation,
+        captureJobID: captureJobID,
+        jpegPath: jpegPath,
+        metadataPath: metadataPath,
+        sfmGrayPath: sfmGrayPath,
+      );
+
+      final committed = _awaitManualPhotoCommit(
+        manualProvider,
+        reservation,
+        frameId: sample.frameId,
+      );
+      // Serialize gray-file reads and durable handoff. Native publication is
+      // already serial, but several Dart completion callbacks can otherwise
+      // retain full gray planes concurrently while disk is slow or the device
+      // is hot. A failed predecessor must not prevent the next accepted job
+      // from reaching its own explicit terminal result.
+      final predecessor = _manualSfmHandoffTail;
+      final completion = committed.then<void>((terminal) async {
+        try {
+          await predecessor;
+        } catch (_) {}
+        await _completeManualPhoto(reservation, terminal);
+      });
+      _manualSfmHandoffTail = completion;
+      _trackAcceptedManualPhoto(captureJobID, completion);
+      return ManualPhotoCapture(
+        reservation: reservation,
+        committed: committed,
+        completion: completion,
+      );
     } finally {
-      _pendingPhotoSaveCount = math.max(0, _pendingPhotoSaveCount - 1);
+      if (!reservationBarrier.isCompleted) {
+        reservationBarrier.complete();
+      }
     }
+  }
+
+  void _validateManualReservation(
+    ManualCaptureV2Ticket reservation, {
+    required String captureJobID,
+    required String jpegPath,
+    required String metadataPath,
+    required String sfmGrayPath,
+  }) {
+    final valid =
+        reservation.captureJobID == captureJobID &&
+        reservation.status == 'snapshot_reserved' &&
+        reservation.snapshotTimestamp.isFinite &&
+        reservation.jpegPath == jpegPath &&
+        reservation.metadataPath == metadataPath &&
+        reservation.sfmGrayPath == sfmGrayPath;
+    if (valid) return;
+    throw ManualPhotoCaptureException(
+      captureJobID: captureJobID,
+      code: 'invalid_snapshot_reservation',
+      message: 'Native reservation did not match the requested job and paths.',
+    );
+  }
+
+  Future<ManualCaptureV2Result> _awaitManualPhotoCommit(
+    ManualCaptureV2Provider provider,
+    ManualCaptureV2Ticket reservation, {
+    required String frameId,
+  }) async {
+    try {
+      final terminal = await provider.awaitManualCaptureV2(
+        reservation.captureJobID,
+      );
+      if (terminal.captureJobID != reservation.captureJobID ||
+          terminal.jpegPath != reservation.jpegPath ||
+          terminal.metadataPath != reservation.metadataPath ||
+          terminal.sfmGrayPath != reservation.sfmGrayPath) {
+        throw ManualPhotoCaptureException(
+          captureJobID: reservation.captureJobID,
+          code: 'manual_capture_result_mismatch',
+          message: 'Native completion did not match its accepted reservation.',
+        );
+      }
+      if (terminal.committed) {
+        if (!await File(terminal.jpegPath).exists()) {
+          throw ManualPhotoCaptureException(
+            captureJobID: reservation.captureJobID,
+            code: 'committed_jpeg_missing',
+            message: 'Committed JPEG is missing: ${terminal.jpegPath}',
+          );
+        }
+        if (await File(terminal.jpegPath).length() <= 0) {
+          throw ManualPhotoCaptureException(
+            captureJobID: reservation.captureJobID,
+            code: 'committed_jpeg_empty',
+            message: 'Committed JPEG is empty: ${terminal.jpegPath}',
+          );
+        }
+        await _recordCapturedPhotoIfPresent(terminal.jpegPath);
+        // forceAdmit creates the album/curation slot before native reservation,
+        // but the user-visible path must not be published until native has
+        // atomically committed the job. Without this stamp, every manual-v2
+        // photo was saved on disk yet absent from retainedJpegPaths/manifests.
+        final stamped = targetPoints.stampJpegPathForFrame(
+          frameId: frameId,
+          jpegPath: terminal.jpegPath,
+        );
+        if (!stamped) {
+          // The JPEG remains user-owned on disk. It is simply no longer a
+          // reconstruction candidate because a newer capture replaced this
+          // frame before its asynchronous publication completed.
+          // ignore: avoid_print
+          print(
+            '[CaptureSession] committed manual frame left curation buffer '
+            'before stamp: job=${reservation.captureJobID} frame=$frameId',
+          );
+        }
+      }
+      return terminal;
+    } on ManualPhotoCaptureException {
+      rethrow;
+    } catch (error) {
+      throw ManualPhotoCaptureException(
+        captureJobID: reservation.captureJobID,
+        code: 'manual_capture_worker_failed',
+        message: 'Native manual-capture worker failed: $error',
+        cause: error,
+      );
+    }
+  }
+
+  Future<void> _completeManualPhoto(
+    ManualCaptureV2Ticket reservation,
+    ManualCaptureV2Result terminal,
+  ) async {
+    final captureJobID = reservation.captureJobID;
+    if (!terminal.committed) {
+      throw ManualPhotoCaptureException(
+        captureJobID: captureJobID,
+        code: terminal.errorCode ?? 'photo_commit_failed',
+        message: terminal.message ?? 'Native photo publication failed.',
+      );
+    }
+
+    if (!await File(terminal.jpegPath).exists()) {
+      throw ManualPhotoCaptureException(
+        captureJobID: captureJobID,
+        code: 'committed_jpeg_missing',
+        message: 'Committed JPEG is missing: ${terminal.jpegPath}',
+      );
+    }
+    if (!await File(terminal.metadataPath).exists()) {
+      throw ManualPhotoCaptureException(
+        captureJobID: captureJobID,
+        code: 'committed_sidecar_missing',
+        message:
+            'Committed metadata sidecar is missing: '
+            '${terminal.metadataPath}',
+      );
+    }
+    if (!terminal.registerable) {
+      throw ManualPhotoCaptureException(
+        captureJobID: captureJobID,
+        code: 'sfm_gray_invalid',
+        message: 'Committed result has no valid frame-exact gray dimensions.',
+      );
+    }
+
+    final grayFile = File(terminal.sfmGrayPath);
+    if (!await grayFile.exists()) {
+      throw ManualPhotoCaptureException(
+        captureJobID: captureJobID,
+        code: 'sfm_gray_missing',
+        message:
+            'Committed frame-exact gray input is missing: '
+            '${terminal.sfmGrayPath}',
+      );
+    }
+    final gray = await grayFile.readAsBytes();
+    final expectedGrayBytes = terminal.sfmGrayWidth * terminal.sfmGrayHeight;
+    if (gray.length != expectedGrayBytes) {
+      throw ManualPhotoCaptureException(
+        captureJobID: captureJobID,
+        code: 'sfm_gray_invalid',
+        message:
+            'Frame-exact gray has ${gray.length} bytes; '
+            'expected $expectedGrayBytes.',
+      );
+    }
+
+    final timestamp = terminal.timestamp;
+    if (timestamp == null ||
+        !timestamp.isFinite ||
+        terminal.imageWidth <= 0 ||
+        terminal.imageHeight <= 0 ||
+        terminal.intrinsicFxFyCxCy.length < 4) {
+      throw ManualPhotoCaptureException(
+        captureJobID: captureJobID,
+        code: 'sfm_metadata_invalid',
+        message: 'Committed frame lacks valid SfM camera metadata.',
+      );
+    }
+
+    final feed = SfmFrameFeed(
+      gray: gray,
+      grayW: terminal.sfmGrayWidth,
+      grayH: terminal.sfmGrayHeight,
+      imageW: terminal.imageWidth,
+      imageH: terminal.imageHeight,
+      intrinsicFxFyCxCy: terminal.intrinsicFxFyCxCy,
+      extrinsic4x4: terminal.extrinsic4x4.length == 16
+          ? terminal.extrinsic4x4
+          : const <double>[],
+      timestamp: timestamp,
+      jpegPath: terminal.jpegPath,
+    );
+
+    final sink = await _waitForManualSfmFrameSink();
+    late final bool queued;
+    try {
+      queued = await sink(feed);
+    } catch (error) {
+      throw ManualPhotoCaptureException(
+        captureJobID: captureJobID,
+        code: 'sfm_worker_failed',
+        message: 'Durable SfM sink failed: $error',
+        cause: error,
+      );
+    }
+    if (!queued) {
+      throw ManualPhotoCaptureException(
+        captureJobID: captureJobID,
+        code: 'sfm_queue_rejected',
+        message: 'Durable SfM queue rejected the accepted frame.',
+      );
+    }
+
+    // Compatibility/visualization only. Durable ownership above, not listener
+    // timing, is the completion criterion.
+    if (!_sfmFrameCtrl.isClosed) {
+      _sfmFrameCtrl.add(feed);
+    }
+  }
+
+  Future<ManualSfmFrameSink> _waitForManualSfmFrameSink() async {
+    if (_manualSfmFrameSink == null) {
+      await _manualSfmSinkReady.future;
+    }
+    return _manualSfmFrameSink!;
+  }
+
+  void _trackAcceptedManualPhoto(String captureJobID, Future<void> completion) {
+    _pendingPhotoSaveCount += 1;
+    final tracked = completion
+        .then<void>((_) {})
+        .catchError((Object error, StackTrace stackTrace) {
+          _manualPhotoFailures[captureJobID] =
+              error is ManualPhotoCaptureException
+              ? error
+              : ManualPhotoCaptureException(
+                  captureJobID: captureJobID,
+                  code: 'manual_capture_completion_failed',
+                  message: '$error',
+                  cause: error,
+                );
+        })
+        .whenComplete(() {
+          _pendingPhotoSaveCount = math.max(0, _pendingPhotoSaveCount - 1);
+        });
+    _pendingPhotoSaves.add(tracked);
   }
 
   Future<bool> _hasCompleteArFrameSidecar(String metadataPath) async {

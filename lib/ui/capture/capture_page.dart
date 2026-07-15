@@ -21,7 +21,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart'
-    show compute, defaultTargetPlatform, TargetPlatform;
+    show compute, defaultTargetPlatform, TargetPlatform, ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
@@ -186,7 +186,7 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
         }
         _previewModel.updateFromPose(
           p,
-          photoCount: _targetPoints.retainedJpegPaths.length,
+          photoCount: session.capturedPhotoPaths.length,
         );
         _checkArWarmup(p);
       });
@@ -440,6 +440,10 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
       await session.waitForPendingPhotoSaves();
       final curated = _targetPoints.curateForUpload(framesPerPoint: 5);
       if (curated.isEmpty) {
+        await _persistDraft(
+          curatedFrames: const <CuratedFrame>[],
+          showSnackBar: false,
+        );
         if (mounted && showSparseHint) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -453,7 +457,6 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
         }
         return;
       }
-      await session.retainOnlyCuratedPhotos(curated);
       await _persistDraft(
         curatedFrames: curated,
         showSnackBar: mounted && showSparseHint,
@@ -476,7 +479,8 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
     final session = _session;
     if (session == null) return;
     final dir = session.photosHighresDir ?? session.photosDir;
-    final photoCount = _targetPoints.retainedJpegPaths.length;
+    final capturedPhotoPaths = await session.reconcileCapturedPhotosFromDisk();
+    final photoCount = capturedPhotoPaths.length;
     final captureDirPath = session.captureDir;
     if (dir == null || captureDirPath == null || photoCount == 0) {
       if (mounted && showSnackBar) {
@@ -502,11 +506,9 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
     await store.ensureLoaded();
 
     String? thumbnailPath;
-    final firstPhoto =
-        _targetPoints.retainedJpegPaths
-            .where((p) => File(p).existsSync())
-            .toList(growable: false)
-          ..sort();
+    final firstPhoto = capturedPhotoPaths
+        .where((p) => File(p).existsSync())
+        .toList(growable: false);
     if (firstPhoto.isNotEmpty) {
       final thumbnail = await store.thumbnailFileFor(captureId);
       final sourcePath = _cardThumbnailSourceFor(firstPhoto.first);
@@ -539,16 +541,13 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
       photosDir: photosDir.path,
       captureManifestPath: manifestFile.path,
       photoCount: photoCount,
-      cloudUploadStatus: ScanCloudUploadStatus.localPending,
-      localRawRetainedForDebug: true,
     );
     await store.addOrUpdate(record);
-    // Draft stays at localPending for the uploader; reconstruction is
-    // streaming SfM on-device + server-side recon after upload.
+    // The draft and reconstruction artifacts remain entirely local.
     if (mounted && showSnackBar) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('已保存本地素材：$photoCount 张有效照片'),
+          content: Text('已保存本地素材：$photoCount 张照片'),
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -567,7 +566,7 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
   }
 
   List<String> _retainedPhotoPaths() {
-    final paths = _targetPoints.retainedJpegPaths
+    final paths = (_session?.capturedPhotoPaths ?? const <String>[])
         .where((p) => File(p).existsSync())
         .toList(growable: false);
     paths.sort();
@@ -575,6 +574,7 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
   }
 
   Future<void> _deleteRetainedPhoto(String path) async {
+    _session?.forgetCapturedPhoto(path);
     final keep = _targetPoints.retainedJpegPaths.toSet()..remove(path);
     _targetPoints.retainOnlyJpegPaths(keep);
     final previewPath = path.replaceFirst('/photos_highres/', '/previews/');
@@ -588,8 +588,8 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
           await file.delete();
         }
       } on FileSystemException {
-        // Best-effort UI deletion. The final retainOnlyCuratedPhotos call
-        // also prunes unselected files before writing the manifest.
+        // Best-effort explicit user deletion. Automatic finalization never
+        // prunes captured photos.
       }
     }
     if (mounted) setState(() {});
@@ -814,7 +814,7 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
               child: IgnorePointer(
                 child: _PhotoPositionOverlay(
                   model: _previewModel,
-                  targetPoints: _targetPoints,
+                  capturedPhotos: _session!.capturedPhotos,
                 ),
               ),
             ),
@@ -867,7 +867,7 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
                 top: false,
                 child: _RecordingBottomPanel(
                   model: _previewModel,
-                  targetPoints: _targetPoints,
+                  capturedPhotos: _session!.capturedPhotos,
                   onOpenPhotos: _openPhotoTray,
                   onFinish: _finalizingRecording
                       ? null
@@ -1126,24 +1126,24 @@ class _MotionSpeedToastState extends State<_MotionSpeedToast> {
 
 class _PhotoPositionOverlay extends StatelessWidget {
   final RealtimeCapturePreviewModel model;
-  final DomeTargetPoints targetPoints;
+  final ValueListenable<List<String>> capturedPhotos;
 
   const _PhotoPositionOverlay({
     required this.model,
-    required this.targetPoints,
+    required this.capturedPhotos,
   });
 
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: model,
+      animation: Listenable.merge(<Listenable>[model, capturedPhotos]),
       builder: (_, _) {
         final pose = model.lastPose;
         if (pose == null || model.cameraSamples.isEmpty) {
           return const SizedBox.expand();
         }
         final photoPaths =
-            targetPoints.retainedJpegPaths
+            capturedPhotos.value
                 .where((p) => File(p).existsSync())
                 .toList(growable: false)
               ..sort();
@@ -1297,13 +1297,13 @@ class _PhotoPositionCard extends StatelessWidget {
 
 class _RecordingBottomPanel extends StatelessWidget {
   final RealtimeCapturePreviewModel model;
-  final DomeTargetPoints targetPoints;
+  final ValueListenable<List<String>> capturedPhotos;
   final VoidCallback onOpenPhotos;
   final VoidCallback? onFinish;
 
   const _RecordingBottomPanel({
     required this.model,
-    required this.targetPoints,
+    required this.capturedPhotos,
     required this.onOpenPhotos,
     required this.onFinish,
   });
@@ -1324,9 +1324,9 @@ class _RecordingBottomPanel extends StatelessWidget {
         ),
       ),
       child: AnimatedBuilder(
-        animation: model,
+        animation: Listenable.merge(<Listenable>[model, capturedPhotos]),
         builder: (_, _) {
-          final photoCount = targetPoints.retainedJpegPaths.length;
+          final photoCount = capturedPhotos.value.length;
           return Row(
             children: [
               _PhotoTrayButton(photoCount: photoCount, onTap: onOpenPhotos),

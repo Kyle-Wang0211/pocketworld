@@ -1,0 +1,47 @@
+name: PWMatchBench
+options:
+  bundleIdPrefix: com.kyle
+  deploymentTarget:
+    iOS: "16.0"
+configs:
+  Debug: debug
+  Profile: release
+  Release: release
+targets:
+  PWMatchBench:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: ../../vendor/aether_ffi/src/pwsfm_gpu_match.mm
+      - path: Resources
+        buildPhase: resources
+    dependencies:
+      - sdk: Metal.framework
+    settings:
+      base:
+        DEVELOPMENT_TEAM: 26AH7V448L
+        PRODUCT_BUNDLE_IDENTIFIER: com.kyle.PocketWorld.MatchBench
+        PRODUCT_NAME: PWMatchBench
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: "1"
+        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+        CLANG_CXX_LANGUAGE_STANDARD: "c++17"
+        CLANG_CXX_LIBRARY: "libc++"
+        ENABLE_BITCODE: NO
+      configs:
+        Profile:
+          GCC_PREPROCESSOR_DEFINITIONS:
+            - "$(inherited)"
+            - "NDEBUG=1"
+          COPY_PHASE_STRIP: YES
+          DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: PW Match Bench
+        UILaunchScreen: {}
+        UIApplicationSupportsIndirectInputEvents: true
+        UIRequiresFullScreen: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait

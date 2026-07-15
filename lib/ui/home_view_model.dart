@@ -11,7 +11,6 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
-import '../capture/cloud_capture_sync_service.dart';
 import '../me/scan_record_store.dart';
 import 'scan_record.dart';
 
@@ -68,17 +67,8 @@ class HomeViewModel extends ChangeNotifier {
       _userRecords = next;
       notifyListeners();
     });
-    unawaited(_resumeCloudLoop());
     _loading = false;
     notifyListeners();
-  }
-
-  Future<void> _resumeCloudLoop() async {
-    try {
-      await CloudCaptureSyncService().resume();
-    } catch (e, st) {
-      debugPrint('[HomeViewModel] cloud capture sync skipped: $e\n$st');
-    }
   }
 
   /// Delete a record (user-owned only). Sample records are read-only.

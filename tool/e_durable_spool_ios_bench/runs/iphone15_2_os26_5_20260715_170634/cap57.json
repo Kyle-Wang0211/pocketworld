@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "status": "pass",
+  "capture_id": "cap_1784105959652657",
+  "device": "iPhone15,2",
+  "os_version": "26.5",
+  "profile_app_executable_sha256": "46aeef1bf8209566755d86242a618fd4e7004827eebcb1721381d82a61dde9ae",
+  "user_owned_files": {
+    "jpeg_count": 10,
+    "sidecar_count": 10,
+    "sfm_gray_count": 10
+  },
+  "durable_feed": {
+    "manifest_schema_version": 2,
+    "next_sequence": 10,
+    "fed": 10,
+    "pending": 0,
+    "native_replay_required": false,
+    "block": null,
+    "fed_ledger_lines": 10,
+    "internal_replay_payload_files_after_final_artifact": 0,
+    "manifest_sha256": "dd96cdabec474e4bd038ce2f1cc8bbf8cae8a5e5f625030e3685bbe6d9bb8cca"
+  },
+  "final_sparse": {
+    "registered_frames": 10,
+    "native_points": 4879,
+    "delivered_points": 740,
+    "reprojection_px": 0.8235,
+    "ply_sha256": "bf0d721330ac33384d5a627b22a14faed8cc34fe0d42afb82e394826cb7ac0d7",
+    "meta_sha256": "c31f3fdcd7294b9696ae6bc19ce8dcfb28de1dc21e60d0a8bb941f070646e8d5"
+  },
+  "photo_bundle": {
+    "frame_count": 10,
+    "sha256": "bb8c8ce49d4640bc1d142aa2eafce3ddd02def2a6cdb5beada4df7800eaf80df"
+  }
+}
