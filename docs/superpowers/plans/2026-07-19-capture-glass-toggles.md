@@ -459,7 +459,7 @@ git commit -m "feat(ios): add reversible capture card visibility"
 - [ ] **Step 1: Write failing technique tests**
 
 ~~~swift
-func testCaptureGlassLayoutUsesPhysicalPixelsAndGuardBand() {
+func testCaptureGlassLayoutSeparatesPointViewportAndPixelUniforms() {
   let layout = CaptureGlassLayout(
     viewBounds: CGRect(x: 0, y: 0, width: 393, height: 852),
     contentScale: 3,
@@ -468,12 +468,18 @@ func testCaptureGlassLayoutUsesPhysicalPixelsAndGuardBand() {
   )
   XCTAssertEqual(layout.glassRectPixels.width, 528, accuracy: 0.001)
   XCTAssertEqual(layout.glassRectPixels.height, 156, accuracy: 0.001)
-  XCTAssertTrue(layout.viewportPixels.contains(layout.glassRectPixels))
+  XCTAssertTrue(layout.viewportPoints.contains(
+    CGRect(x: 108.5, y: 680, width: 176, height: 52)
+  ))
+  XCTAssertEqual(layout.viewportPoints.minX * 3,
+                 floor(layout.viewportPoints.minX * 3), accuracy: 0.001)
+  XCTAssertEqual(layout.viewportPoints.maxX * 3,
+                 ceil(layout.viewportPoints.maxX * 3), accuracy: 0.001)
 }
 
 func testCaptureGlassTechniqueIsOnePassAndNeverClears() throws {
   let dict = CaptureGlassTechniqueBuilder.dictionary(
-    viewportPixels: CGRect(x: 300, y: 1900, width: 540, height: 168)
+    viewportPoints: CGRect(x: 100, y: 633, width: 180, height: 56)
   )
   XCTAssertEqual(dict["sequence"] as? [String], ["captureGlass"])
   let passes = try XCTUnwrap(dict["passes"] as? [String: Any])
@@ -502,7 +508,12 @@ Expected: compile failure because the layout/builder do not exist.
 - [ ] **Step 3: Implement layout and technique**
 
 CaptureGlassLayout intersects logical rect with view bounds, multiplies by
-contentScale, expands six physical pixels, and clamps to physical render bounds.
+contentScale for its shader uniforms, and keeps a separate pass viewport in
+local `ARSCNView` points. Expand the viewport by `6 / contentScale` points,
+round its edges outward to physical-pixel boundaries, and clamp it to the view
+bounds. The `SCNTechnique` viewport string uses these point values with a
+top-left origin; never serialize physical pixels there.
+
 CaptureGlassTechniqueBuilder creates exactly one DRAW_QUAD pass with:
 
 ~~~swift
@@ -519,18 +530,26 @@ CaptureGlassTechniqueBuilder creates exactly one DRAW_QUAD pass with:
 "viewport": "x y width height"
 ~~~
 
-Symbols are vec4. Set captureViewport to physical size/inverses,
-captureGlassRect to center/half size, and captureGlassOptics to radius,
-distortion, tint alpha, enabled. Use radius 20×scale, distortion 2×scale,
-tint 8/255, no dispersion.
+Symbols are vec4. Set `captureViewport` to physical full-view width, height,
+and their inverses; set `captureGlassRect` to physical full-view center and
+half-size; set `captureGlassOptics` to radius, distortion, tint alpha, and
+enabled. Use radius 20×scale, distortion 2×scale, tint 8/255, no dispersion.
+Bind vec4 values as `SCNVector4` on the installed `arscnView.technique` copy,
+not only on the pre-assignment object.
 
 - [ ] **Step 4: Implement and compile the Metal shader**
 
-The vertex forwards SceneKit quad position/texcoord. The fragment derives
-full-frame UV, evaluates a rounded-rectangle SDF, applies a seam-safe analytic
-normal displacement only inside, samples sceneColor exactly once, and adds only
+Follow Apple's documented DRAW_QUAD Metal layout: `position [[attribute(0)]]`
+and `texcoord0 [[attribute(1)]]`, a named custom-symbol struct at `[[buffer(0)]]`,
+and `sceneColor [[texture(0)]]`. The vertex forwards the quad position and may
+derive a local UV for diagnostics. The fragment derives full-frame UV from its
+raster position and the inverse physical view size, evaluates a
+rounded-rectangle SDF in physical pixels, applies a seam-safe analytic normal
+displacement only inside, samples `sceneColor` exactly once, and adds only
 0x08FFFFFF tint plus restrained edge light. Use half4 color, float coordinates,
-linear clamp_to_edge, no RGB split/blur/mips/history/second pass.
+a compile-time linear clamp-to-edge sampler, no RGB split/blur/mips/history/
+second pass. Do not use SceneKit semantic constants for the quad attributes and
+do not generate an unproven quad from `vertex_id`.
 
 ~~~sh
 xcrun -sdk iphoneos metal -c ios/Runner/CaptureGlass.metal \
@@ -543,10 +562,15 @@ Expected: exit 0.
 
 Add Swift and Metal as Runner Sources. Add the MIT notice as a Runner resource.
 The preview owns one technique controller and rebuilds only when glass-related
-generation changes or view bounds/scale changes. Disabled/invalid means
-arscnView.technique = nil. Set colorStates.clear false. Set rendersCameraGrain
+state or view bounds/scale changes. Convert the Flutter global rect to local
+`ARSCNView` points and install/remove the technique on the view-owning main
+path. Disabled/invalid means `arscnView.technique = nil`. Technique creation is
+failable; missing default-library functions or a nil dictionary must disable
+the effect safely. Set `colorStates.clear` false. Set `rendersCameraGrain`
 false before technique installation, while keeping a no-technique comparison
-with identical settings for performance attribution.
+with identical settings for performance attribution. Do not assume the
+symbolic COLOR read/write is zero-copy or that a partial viewport preserves
+outside pixels; both remain physical-device stop conditions.
 
 - [ ] **Step 6: Verify and commit**
 
@@ -558,6 +582,9 @@ xcodebuild build-for-testing -workspace ios/Runner.xcworkspace -scheme Runner \
 xcodebuild -workspace ios/Runner.xcworkspace -scheme Runner \
   -configuration Profile -sdk iphoneos -destination 'generic/platform=iOS' \
   CODE_SIGNING_ALLOWED=NO build
+# Inspect Runner.app/default.metallib and require both exact function names.
+xcrun metal-nm -j <profile Runner.app>/default.metallib | \
+  rg 'captureGlass(Vertex|Fragment)'
 git add ios/Runner/CaptureGlass.metal ios/Runner/CaptureGlassTechnique.swift \
   ios/Runner/CaptureGlass-LICENSE.txt ios/Runner/AetherARKitPlugin.swift \
   ios/RunnerTests/RunnerTests.swift ios/Runner.xcodeproj/project.pbxproj

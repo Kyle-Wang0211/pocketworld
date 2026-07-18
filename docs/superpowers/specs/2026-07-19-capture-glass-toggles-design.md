@@ -98,15 +98,26 @@ and full-screen Flutter backdrop filters are out of scope for the first pass.
 
 ## Coordinate Contract
 
-Dart reports the capsule's global logical-point rectangle after layout. Because
-the platform preview fills the capture stack, native converts that rectangle
-into `ARSCNView` coordinates and then into normalized full-frame UVs using the
-view bounds and `contentScaleFactor`.
+Dart reports the capsule's global logical-point rectangle after layout. Native
+converts that rectangle into local `ARSCNView` coordinates. The
+`SCNTechnique` pass `viewport` remains in UIKit view coordinates (logical
+points, upper-left origin); it must not be multiplied by
+`contentScaleFactor`. The six-physical-pixel guard band is converted to points
+and rounded outward to physical-pixel boundaries before the viewport string is
+built. Physical full-frame and glass measurements are passed separately as
+shader uniforms and are used to derive normalized full-frame UVs.
 
 Native must update correctly after safe-area changes, rotation, resize, and
-2×/3× display scale. A local quad's 0…1 UV must be remapped to full-frame UV;
-otherwise it would squeeze the whole camera image into the capsule. The padded
-sample rectangle is clamped to the source texture bounds.
+2×/3× display scale. A partial-viewport quad must sample with full-frame UVs
+derived from raster position and the physical render size; using its local 0…1
+UV would squeeze the whole camera image into the capsule. The padded sample
+rectangle is clamped to the source texture bounds.
+
+Apple supports one technique pass that reads and writes the symbolic `COLOR`
+target. This is not evidence that SceneKit performs the operation in-place or
+avoids a hidden full-frame copy/resolve, and `clear = false` does not publicly
+guarantee preservation of untouched pixels outside a partial viewport. Both
+properties remain device-spike acceptance gates.
 
 ## State and Failure Behavior
 
