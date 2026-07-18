@@ -15,6 +15,14 @@
 - Baseline commit: 1626543232eff47d1bd3664dad065165e472e1d7.
 - Worktree: /Users/kaidongwang/.config/superpowers/worktrees/pocketworld/capture-glass-toggles-20260719.
 - Acceptance device: Kyle’s iPhone, iPhone 14 Pro, iOS 26.5.2.
+- Native-test environment deviation (verified 2026-07-19): the pinned
+  `thermion_dart` 0.3.4+1 package links arm64-simulator builds against
+  Filament objects built for iOS device, so RunnerTests cannot link on the
+  simulator before any feature code is reached. Use generic-device
+  `build-for-testing` as the deterministic RED/GREEN compile gate, then run
+  the built tests and app on the acceptance iPhone. Pass
+  `DEVELOPMENT_TEAM=26AH7V448L` because the existing RunnerTests target does
+  not persist a development team.
 - Preserve capture algorithms, camera/session lifecycle, SfM, and unrelated files.
 - Stop SCNTechnique if the device spike omits camera, points, or cards from the same pass; clears outside pixels; or makes passthrough exceed the GPU gate.
 - Never substitute ARFrame.capturedImage for the complete composition.
@@ -399,9 +407,10 @@ func testCaptureVisualRectRejectsInvalidGeometry() {
 
 ~~~sh
 (cd ios && COCOAPODS_DISABLE_STATS=true pod install --deployment)
-xcodebuild test -workspace ios/Runner.xcworkspace -scheme Runner \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
-  -only-testing:RunnerTests/RunnerTests
+xcodebuild build-for-testing -workspace ios/Runner.xcworkspace -scheme Runner \
+  -destination 'generic/platform=iOS' \
+  -only-testing:RunnerTests/RunnerTests \
+  DEVELOPMENT_TEAM=26AH7V448L CODE_SIGNING_ALLOWED=NO
 ~~~
 
 Expected: compile failure because CaptureVisualStateStore does not exist.
@@ -424,9 +433,10 @@ Add the Swift file to Runner Sources, not Resources.
 - [ ] **Step 4: Verify and commit**
 
 ~~~sh
-xcodebuild test -workspace ios/Runner.xcworkspace -scheme Runner \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
-  -only-testing:RunnerTests/RunnerTests
+xcodebuild build-for-testing -workspace ios/Runner.xcworkspace -scheme Runner \
+  -destination 'generic/platform=iOS' \
+  -only-testing:RunnerTests/RunnerTests \
+  DEVELOPMENT_TEAM=26AH7V448L CODE_SIGNING_ALLOWED=NO
 xcodebuild -workspace ios/Runner.xcworkspace -scheme Runner \
   -configuration Debug -sdk iphoneos -destination 'generic/platform=iOS' \
   CODE_SIGNING_ALLOWED=NO build
@@ -481,9 +491,10 @@ func testCaptureGlassTechniqueIsOnePassAndNeverClears() throws {
 - [ ] **Step 2: Verify RED**
 
 ~~~sh
-xcodebuild test -workspace ios/Runner.xcworkspace -scheme Runner \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
-  -only-testing:RunnerTests/RunnerTests
+xcodebuild build-for-testing -workspace ios/Runner.xcworkspace -scheme Runner \
+  -destination 'generic/platform=iOS' \
+  -only-testing:RunnerTests/RunnerTests \
+  DEVELOPMENT_TEAM=26AH7V448L CODE_SIGNING_ALLOWED=NO
 ~~~
 
 Expected: compile failure because the layout/builder do not exist.
@@ -540,9 +551,10 @@ with identical settings for performance attribution.
 - [ ] **Step 6: Verify and commit**
 
 ~~~sh
-xcodebuild test -workspace ios/Runner.xcworkspace -scheme Runner \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
-  -only-testing:RunnerTests/RunnerTests
+xcodebuild build-for-testing -workspace ios/Runner.xcworkspace -scheme Runner \
+  -destination 'generic/platform=iOS' \
+  -only-testing:RunnerTests/RunnerTests \
+  DEVELOPMENT_TEAM=26AH7V448L CODE_SIGNING_ALLOWED=NO
 xcodebuild -workspace ios/Runner.xcworkspace -scheme Runner \
   -configuration Profile -sdk iphoneos -destination 'generic/platform=iOS' \
   CODE_SIGNING_ALLOWED=NO build
