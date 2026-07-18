@@ -1,7 +1,7 @@
 # Capture Glass Toggles Design
 
-**Date:** 2026-07-19  
-**Repository baseline:** `1626543232eff47d1bd3664dad065165e472e1d7`  
+**Date:** 2026-07-19
+**Repository baseline:** `1626543232eff47d1bd3664dad065165e472e1d7`
 **Target:** PocketWorld iOS capture flow (`ar-capture-rs`)
 
 ## Goal
