@@ -485,7 +485,7 @@ class AetherARKitPlugin: NSObject {
       return nil
     }
     let rect = CGRect(x: x, y: y, width: width, height: height)
-    guard !rect.isNull, !rect.isInfinite, !rect.isEmpty else { return nil }
+    guard CaptureVisualStateStore.isValid(rect) else { return nil }
     return rect
   }
 

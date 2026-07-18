@@ -51,16 +51,18 @@ final class CaptureVisualStateStore {
     generation &+= 1
   }
 
-  private static func isValid(_ rect: CGRect) -> Bool {
+  static func isValid(_ rect: CGRect) -> Bool {
     let components = [
       rect.origin.x,
       rect.origin.y,
       rect.size.width,
       rect.size.height,
     ]
+    // CGRect.width/height are standardized; raw size preserves a negative input.
     return components.allSatisfy { $0.isFinite }
+      && rect.size.width > 0
+      && rect.size.height > 0
       && !rect.isNull
       && !rect.isInfinite
-      && !rect.isEmpty
   }
 }
