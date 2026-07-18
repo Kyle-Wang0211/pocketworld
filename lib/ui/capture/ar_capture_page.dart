@@ -57,6 +57,8 @@ import '../../util/device_log.dart';
 import '../me_page.dart';
 import '../scan_record.dart';
 import 'ar_album_page.dart';
+import 'capture_overlay_controller.dart';
+import 'capture_overlay_controls.dart';
 import 'sfm_preview_overlay.dart';
 
 class ARCapturePage extends StatefulWidget {
@@ -105,6 +107,7 @@ class _ARCapturePageState extends State<ARCapturePage>
   final DomeTargetPoints _targetPoints = DomeTargetPoints();
   final RealtimeCapturePreviewModel _previewModel =
       RealtimeCapturePreviewModel();
+  late final CaptureOverlayController _captureOverlay;
   CaptureSession? _session;
   StreamSubscription<ARPose>? _poseSub;
 
@@ -328,11 +331,21 @@ class _ARCapturePageState extends State<ARCapturePage>
   @override
   void initState() {
     super.initState();
+    _captureOverlay = CaptureOverlayController(
+      invokeNative: (method, arguments) async {
+        await _arKitChannel.invokeMethod<void>(method, arguments);
+      },
+      repushCoverage: _pushCoverageCloud,
+    )..addListener(_onCaptureOverlayChanged);
     WidgetsBinding.instance.addObserver(this);
     // Capture reconstruction runs on-device via streaming SfM (see
     // _startSfmLiveRecon) plus server-side recon on upload — no local model
     // download gate. The App Store install bundle stays small (~80 MB).
     _initCamera();
+  }
+
+  void _onCaptureOverlayChanged() {
+    if (mounted) setState(() {});
   }
 
   Future<void> _initCamera() async {
@@ -539,6 +552,7 @@ class _ARCapturePageState extends State<ARCapturePage>
     }
   }
 
+  // ignore: unused_element
   Future<void> _stopRecordingIfRunning() async {
     if (!_recording) return;
     await _finalizeRecording(navigateToDrafts: false, showSparseHint: false);
@@ -585,6 +599,7 @@ class _ARCapturePageState extends State<ARCapturePage>
     Navigator.of(context).pop(false);
   }
 
+  // ignore: unused_element
   Future<void> _onCenterTap() async {
     final session = _session;
     if (session == null) return;
@@ -673,14 +688,6 @@ class _ARCapturePageState extends State<ARCapturePage>
       try {
         await _arKitChannel.invokeMethod<void>('clearPhotoCards');
       } catch (_) {}
-      // T6: turn on the live sparse coverage cloud for this take (RS-style —
-      // ARKit feature points, world-anchored, coloured by coverage).
-      try {
-        await _arKitChannel.invokeMethod<void>(
-          'setFeaturePointsVisible',
-          <String, dynamic>{'visible': true},
-        );
-      } catch (_) {}
       _previewModel.reset();
       // Fresh take → empty coverage cloud (0 photos ⇒ 0 dots on screen).
       _coverageCloud.reset();
@@ -695,7 +702,8 @@ class _ARCapturePageState extends State<ARCapturePage>
       // 补强1:starved 横幅门与覆盖云同时机归零(下方 setState 会重建)。
       _starvedBannerGate.reset();
       _starvedBannerVisible = false;
-      unawaited(_pushCoverageCloud());
+      await _captureOverlay.syncNativeVisibility();
+      if (!mounted) return;
       _coverageFeedSub ??= session.sfmFrameStream.listen(_onCoverageKeyframe);
       setState(() {
         _recording = true;
@@ -1450,10 +1458,12 @@ class _ARCapturePageState extends State<ARCapturePage>
       final int spatialRemoved =
           (snap.summary['spatial_two_view_filtered'] as int?) ?? 0;
       final int nativeCount = n + spatialRemoved;
-      final bool canRemap = spatialRemoved <= 0 ||
+      final bool canRemap =
+          spatialRemoved <= 0 ||
           (spatialKeep != null && spatialKeep.length == n);
-      final gFlags =
-          canRemap ? tryLoadGhostMaskSidecar(gDir, nativeCount) : null;
+      final gFlags = canRemap
+          ? tryLoadGhostMaskSidecar(gDir, nativeCount)
+          : null;
       if (gFlags != null) {
         // [BIT5-FIX 2026-07-12] The two-level keep chain (native→snap→PLY).
         // spatialKeep/floaterKeep are null when their filter removed nothing
@@ -1567,7 +1577,10 @@ class _ARCapturePageState extends State<ARCapturePage>
               _pendingGhostRemapDir = captureDir;
             }
           } catch (e) {
-            DeviceLog.log('ARCapturePage', 'ghost_view_mask persist failed: $e');
+            DeviceLog.log(
+              'ARCapturePage',
+              'ghost_view_mask persist failed: $e',
+            );
           }
         }
       } catch (e) {
@@ -2192,6 +2205,9 @@ class _ARCapturePageState extends State<ARCapturePage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    unawaited(_captureOverlay.detach());
+    _captureOverlay.removeListener(_onCaptureOverlayChanged);
+    _captureOverlay.dispose();
     unawaited(_endReconUmbrella());
     _stopGuidanceTelemetry();
     // 遥测【resource】:拍摄页退出 → 停 Swift 侧 10s 资源采样。
@@ -2391,18 +2407,39 @@ class _ARCapturePageState extends State<ARCapturePage>
               bottom: 0,
               child: SafeArea(
                 top: false,
-                child: _ManualCaptureBar(
-                  targetPoints: _targetPoints,
-                  // 07-12 签决:快门彻底不限流 —— 只要在录制就永远可拍,
-                  // 绝不因队列深度/热态置灰(积压走磁盘 spool 队列,不回压快门)。
-                  ready: _recording,
-                  capturing: _capturing,
-                  finishing: _finalizingRecording,
-                  onShutter: _onShutterTap,
-                  onOpenAlbum: _openAlbum,
-                  // 补强2:完成前先过 starved 把关门(_onFinishTap),
-                  // 通过后才走原 _finalizeRecording,原流程一个字不改。
-                  onFinish: _finalizingRecording ? null : _onFinishTap,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CaptureGlassRectReporter(
+                      onRectChanged: (rect) =>
+                          unawaited(_captureOverlay.reportGlassRect(rect)),
+                      child: CaptureOverlayControls(
+                        photoCardsVisible: _captureOverlay.photoCardsVisible,
+                        coveragePointsVisible:
+                            _captureOverlay.coveragePointsVisible,
+                        onPhotoCardsChanged: (value) => unawaited(
+                          _captureOverlay.setPhotoCardsVisible(value),
+                        ),
+                        onCoveragePointsChanged: (value) => unawaited(
+                          _captureOverlay.setCoveragePointsVisible(value),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    _ManualCaptureBar(
+                      targetPoints: _targetPoints,
+                      // 07-12 签决:快门彻底不限流 —— 只要在录制就永远可拍,
+                      // 绝不因队列深度/热态置灰(积压走磁盘 spool 队列,不回压快门)。
+                      ready: _recording,
+                      capturing: _capturing,
+                      finishing: _finalizingRecording,
+                      onShutter: _onShutterTap,
+                      onOpenAlbum: _openAlbum,
+                      // 补强2:完成前先过 starved 把关门(_onFinishTap),
+                      // 通过后才走原 _finalizeRecording,原流程一个字不改。
+                      onFinish: _finalizingRecording ? null : _onFinishTap,
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -2683,6 +2720,7 @@ class _MotionSpeedToastState extends State<_MotionSpeedToast> {
   }
 }
 
+// ignore: unused_element
 class _PhotoPositionOverlay extends StatelessWidget {
   final RealtimeCapturePreviewModel model;
   final DomeTargetPoints targetPoints;
@@ -3252,6 +3290,7 @@ class _AimReticlePainter extends CustomPainter {
 // Small dark pill with white text used as the idle-state hint above the
 // bottom shutter button. Same look as the in-aim hint pill so the
 // transition idle → aim feels like the text just changes, not the chrome.
+// ignore: unused_element
 class _IdleHintPill extends StatelessWidget {
   final String text;
   const _IdleHintPill({required this.text});
@@ -3278,6 +3317,7 @@ class _IdleHintPill extends StatelessWidget {
 
 // ─── Bottom HUD: 140×140 captureButtonOrDome ──────────────────────────
 
+// ignore: unused_element
 class _CaptureButtonOrDome extends StatelessWidget {
   /// True between user's first tap (entering aim mode) and the lock
   /// success that promotes to recording. Renders a checkmark instead
