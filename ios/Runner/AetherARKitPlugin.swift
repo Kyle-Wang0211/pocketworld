@@ -76,8 +76,17 @@ class AetherARKitPlugin: NSObject {
   }
 
   /// Atomic display-only state shared by the Flutter channel and SceneKit's
-  /// render thread. Capture/session/SfM paths do not depend on these values.
+  /// preview. Capture/session/SfM paths do not depend on these values.
   static let captureVisualStateStore = CaptureVisualStateStore()
+  fileprivate static let captureVisualStateDidChangeNotification =
+    Notification.Name("AetherARKit.captureVisualStateDidChange")
+
+  fileprivate static func announceCaptureVisualStateChange() {
+    NotificationCenter.default.post(
+      name: captureVisualStateDidChangeNotification,
+      object: nil
+    )
+  }
 
   static func register(with registrar: FlutterPluginRegistrar) {
     // [2026-07-11] spatial-first 匹配 kill switch:native(aether_sfm_c.cc)读
@@ -842,6 +851,7 @@ class AetherARKitPlugin: NSObject {
         return
       }
       Self.captureVisualStateStore.setGlassRect(rect)
+      Self.announceCaptureVisualStateChange()
       result(nil)
     case "setCaptureGlassEnabled":
       guard let args = call.arguments as? [String: Any],
@@ -853,6 +863,7 @@ class AetherARKitPlugin: NSObject {
         return
       }
       Self.captureVisualStateStore.setGlassEnabled(enabled)
+      Self.announceCaptureVisualStateChange()
       result(nil)
     case "setFeaturePointsVisible":
       let visible =
@@ -2652,9 +2663,12 @@ class AetherARKitPreviewFactory: NSObject, FlutterPlatformViewFactory {
 
 @available(iOS 11.0, *)
 class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
-  private let arscnView: ARSCNView
+  private let arscnView: CaptureGlassARSCNView
+  private let captureGlassTechniqueController: CaptureGlassTechniqueController
   private let getSession: () -> ARSession?
   private var pollTimer: Timer?
+  private var captureVisualStateObserver: NSObjectProtocol?
+  private var captureVisualApplyScheduled = false
 
   // ── Subject marker (Remy-style locked-origin visualization) ────────
   //
@@ -2784,7 +2798,10 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
   }
 
   init(frame: CGRect, getSession: @escaping () -> ARSession?) {
-    self.arscnView = ARSCNView(frame: frame)
+    let captureView = CaptureGlassARSCNView(frame: frame)
+    self.arscnView = captureView
+    self.captureGlassTechniqueController =
+      CaptureGlassTechniqueController(view: captureView)
     self.getSession = getSession
     super.init()
     arscnView.automaticallyUpdatesLighting = true
@@ -2792,8 +2809,47 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
     arscnView.rendersContinuously = true
     arscnView.preferredFramesPerSecond = 30
     arscnView.antialiasingMode = .none
+    // Keep the effect and no-effect routes comparable. Camera grain would add
+    // an independent full-frame post-process to only some ARKit configurations.
+    arscnView.rendersCameraGrain = false
     arscnView.delegate = self
+    arscnView.captureGlassLayoutDidChange = { [weak self] in
+      self?.scheduleCaptureVisualStateApplication()
+    }
+    captureVisualStateObserver = NotificationCenter.default.addObserver(
+      forName: AetherARKitPlugin.captureVisualStateDidChangeNotification,
+      object: nil,
+      queue: nil
+    ) { [weak self] _ in
+      self?.scheduleCaptureVisualStateApplication()
+    }
+    scheduleCaptureVisualStateApplication()
     attachSessionIfReady()
+  }
+
+  private func scheduleCaptureVisualStateApplication() {
+    guard Thread.isMainThread else {
+      DispatchQueue.main.async { [weak self] in
+        self?.scheduleCaptureVisualStateApplication()
+      }
+      return
+    }
+    guard !captureVisualApplyScheduled else { return }
+    captureVisualApplyScheduled = true
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      self.captureVisualApplyScheduled = false
+      self.applyLatestCaptureVisualState()
+    }
+  }
+
+  private func applyLatestCaptureVisualState() {
+    dispatchPrecondition(condition: .onQueue(.main))
+    let snapshot = AetherARKitPlugin.captureVisualStateStore.snapshot()
+    captureGlassTechniqueController.apply(
+      globalRect: snapshot.glassRect,
+      enabled: snapshot.glassEnabled
+    )
   }
 
   func view() -> UIView {
@@ -3051,6 +3107,18 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
 
   deinit {
     pollTimer?.invalidate()
+    if let captureVisualStateObserver {
+      NotificationCenter.default.removeObserver(captureVisualStateObserver)
+    }
+    arscnView.captureGlassLayoutDidChange = nil
+    if Thread.isMainThread {
+      captureGlassTechniqueController.remove()
+    } else {
+      let view = arscnView
+      DispatchQueue.main.async {
+        view.technique = nil
+      }
+    }
   }
 }
 
