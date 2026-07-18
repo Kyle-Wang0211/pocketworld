@@ -213,7 +213,7 @@ void main() {
     ]);
     expect(calls[0].arguments, <String, Object?>{'enabled': false});
     expect(calls[1].arguments, <String, Object?>{'visible': true});
-    expect(calls[2].arguments, <String, Object?>{'visible': true});
+    expect(calls[2].arguments, <String, Object?>{'visible': false});
   });
 
   test('glass rect reports after detach are ignored', () async {
@@ -248,6 +248,9 @@ void main() {
     addTearDown(controller.dispose);
     controller.addListener(() => notifications += 1);
     await controller.detach();
+    // Native idles with coverage off, while Dart keeps its fresh-capture
+    // default intent on for the next session sync.
+    expect(calls.last.arguments, <String, Object?>{'visible': false});
     calls.clear();
 
     await controller.setPhotoCardsVisible(false);
@@ -310,7 +313,7 @@ void main() {
       ]);
       expect(calls[1].arguments, <String, Object?>{'enabled': false});
       expect(calls[2].arguments, <String, Object?>{'visible': true});
-      expect(calls[3].arguments, <String, Object?>{'visible': true});
+      expect(calls[3].arguments, <String, Object?>{'visible': false});
       expect(repushAttempts, 0);
     },
   );
@@ -361,7 +364,7 @@ void main() {
     expect(calls[0].arguments, <String, Object?>{'visible': false});
     expect(calls[1].arguments, <String, Object?>{'enabled': false});
     expect(calls[2].arguments, <String, Object?>{'visible': true});
-    expect(calls[3].arguments, <String, Object?>{'visible': true});
+    expect(calls[3].arguments, <String, Object?>{'visible': false});
     expect(repushAttempts, 0);
   });
 
@@ -391,6 +394,7 @@ void main() {
       'setFeaturePointsVisible',
     ]);
     expect(calls[1].arguments, <String, Object?>{'enabled': false});
+    expect(calls[3].arguments, <String, Object?>{'visible': false});
 
     rectCompleted.complete();
     await report;

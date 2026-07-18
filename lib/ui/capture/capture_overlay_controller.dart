@@ -131,7 +131,8 @@ class CaptureOverlayController extends ChangeNotifier {
         'visible': true,
       });
       await _bestEffortNative('setFeaturePointsVisible', <String, Object?>{
-        'visible': true,
+        // Native idles with coverage off; fresh Dart capture intent remains on.
+        'visible': false,
       });
     });
     Future.wait<void>([glassDisable, visibilityReset]).then<void>((_) {
