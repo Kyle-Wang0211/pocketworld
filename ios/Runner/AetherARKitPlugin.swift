@@ -75,6 +75,10 @@ class AetherARKitPlugin: NSObject {
     return sharedInstance?.arSession
   }
 
+  /// Atomic display-only state shared by the Flutter channel and SceneKit's
+  /// render thread. Capture/session/SfM paths do not depend on these values.
+  static let captureVisualStateStore = CaptureVisualStateStore()
+
   static func register(with registrar: FlutterPluginRegistrar) {
     // [2026-07-11] spatial-first 匹配 kill switch:native(aether_sfm_c.cc)读
     // AETHER_STREAM_TEMPORAL_ONLY=1 时强制走旧的纯时间 K12 候选(已验证行为)。
@@ -455,6 +459,36 @@ class AetherARKitPlugin: NSObject {
 
   // MARK: MethodChannel handler
 
+  private static func flutterBoolean(_ value: Any?) -> Bool? {
+    guard let number = value as? NSNumber,
+          CFGetTypeID(number) == CFBooleanGetTypeID() else {
+      return nil
+    }
+    return number.boolValue
+  }
+
+  private static func finiteFlutterNumber(_ value: Any?) -> CGFloat? {
+    guard let number = value as? NSNumber,
+          CFGetTypeID(number) != CFBooleanGetTypeID() else {
+      return nil
+    }
+    let result = CGFloat(truncating: number)
+    return result.isFinite ? result : nil
+  }
+
+  private static func captureGlassRect(from arguments: Any?) -> CGRect? {
+    guard let args = arguments as? [String: Any],
+          let x = finiteFlutterNumber(args["x"]),
+          let y = finiteFlutterNumber(args["y"]),
+          let width = finiteFlutterNumber(args["width"]),
+          let height = finiteFlutterNumber(args["height"]) else {
+      return nil
+    }
+    let rect = CGRect(x: x, y: y, width: width, height: height)
+    guard !rect.isNull, !rect.isInfinite, !rect.isEmpty else { return nil }
+    return rect
+  }
+
   private func handle(call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
     case "isAvailable":
@@ -787,6 +821,38 @@ class AetherARKitPlugin: NSObject {
         rgb = [UInt8](t.data)
       }
       AetherARKitPlugin.setCoverageCloud(xyz: xyz, rgb: rgb)
+      result(nil)
+    case "setPhotoCardsVisible":
+      guard let args = call.arguments as? [String: Any],
+            let visible = Self.flutterBoolean(args["visible"]) else {
+        result(FlutterError(
+          code: "bad_args",
+          message: "setPhotoCardsVisible requires {visible: Bool}",
+          details: nil))
+        return
+      }
+      Self.captureVisualStateStore.setPhotoCardsVisible(visible)
+      result(nil)
+    case "setCaptureGlassRect":
+      guard let rect = Self.captureGlassRect(from: call.arguments) else {
+        result(FlutterError(
+          code: "bad_args",
+          message: "setCaptureGlassRect requires finite, non-empty {x, y, width, height}",
+          details: nil))
+        return
+      }
+      Self.captureVisualStateStore.setGlassRect(rect)
+      result(nil)
+    case "setCaptureGlassEnabled":
+      guard let args = call.arguments as? [String: Any],
+            let enabled = Self.flutterBoolean(args["enabled"]) else {
+        result(FlutterError(
+          code: "bad_args",
+          message: "setCaptureGlassEnabled requires {enabled: Bool}",
+          details: nil))
+        return
+      }
+      Self.captureVisualStateStore.setGlassEnabled(enabled)
       result(nil)
     case "setFeaturePointsVisible":
       let visible =
@@ -2617,6 +2683,8 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
   // 删)。代价:远处卡片比旧方案大 → 平面卡片对场景的视差滑移更可见,
   // 用户签决接受。photoCardNodes holds the per-card CONTAINER node we scale.
   private var photoCardNodes: [String: SCNNode] = [:]
+  private var appliedCaptureVisualGeneration: UInt64?
+  private var photoCardsVisible = true
   /// 距离补偿锚点 d0(米):d ≤ d0 时不放大(scale=1,保持原透视);
   /// d > d0 时 scale=(d/d0)^β。真机调参常量。
   private static let photoCardDistanceAnchorM: Float = 1.0
@@ -2888,6 +2956,8 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
     container.addChildNode(SCNNode(geometry: frameGeo))   // border behind/around
     container.addChildNode(SCNNode(geometry: backGeo))    // opaque back panel
     container.addChildNode(SCNNode(geometry: geometry))   // photo on the front
+    let visualSnapshot = AetherARKitPlugin.captureVisualStateStore.snapshot()
+    container.isHidden = !visualSnapshot.photoCardsVisible
     node.addChildNode(container)
     photoCardNodes[name] = container
     // 四态边框:登记环+背板材质,并立刻套用 Dart 已推过的状态(卡片
@@ -2907,9 +2977,12 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
   /// thread.
   func renderer(_ renderer: SCNSceneRenderer, updateAtTime time: TimeInterval) {
     PwNativeTelemetry.shared.noteRenderFrame()  // 遥测 F:FPS 计帧(纳秒级)
+    applyCaptureVisualStateIfNeeded()
     updateFeaturePointOverlay()    // T6: live sparse coverage cloud (independent of cards)
     applyPhotoCardStatesIfDirty()  // 四态边框:消费 Dart 推来的状态差量
-    guard !photoCardNodes.isEmpty, let cam = renderer.pointOfView else { return }
+    guard photoCardsVisible,
+          !photoCardNodes.isEmpty,
+          let cam = renderer.pointOfView else { return }
     let camPos = cam.simdWorldPosition
     for card in photoCardNodes.values {
       // 距离补偿缩放(签决,常量注释见 photoCardDistanceBeta):
@@ -2922,6 +2995,16 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
         : 1.0
       card.simdScale = simd_float3(repeating: s)
     }
+  }
+
+  private func applyCaptureVisualStateIfNeeded() {
+    let snapshot = AetherARKitPlugin.captureVisualStateStore.snapshot()
+    guard snapshot.generation != appliedCaptureVisualGeneration else { return }
+    photoCardsVisible = snapshot.photoCardsVisible
+    for container in photoCardNodes.values {
+      container.isHidden = !snapshot.photoCardsVisible
+    }
+    appliedCaptureVisualGeneration = snapshot.generation
   }
 
   /// Render-thread consumer of the Dart-pushed four-state border states:
