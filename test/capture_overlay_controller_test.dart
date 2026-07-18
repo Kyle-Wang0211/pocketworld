@@ -190,7 +190,7 @@ void main() {
     );
   });
 
-  test('detach disables glass once', () async {
+  test('detach disables glass and restores native defaults once', () async {
     final calls = <NativeOverlayCall>[];
     final controller = CaptureOverlayController(
       invokeNative: (method, arguments) async {
@@ -199,13 +199,21 @@ void main() {
       repushCoverage: () async {},
     );
     addTearDown(controller.dispose);
+    await controller.setPhotoCardsVisible(false);
+    await controller.setCoveragePointsVisible(false);
+    calls.clear();
 
     await controller.detach();
     await controller.detach();
 
-    expect(calls, hasLength(1));
-    expect(calls.single.method, 'setCaptureGlassEnabled');
-    expect(calls.single.arguments, <String, Object?>{'enabled': false});
+    expect(calls.map((call) => call.method), <String>[
+      'setCaptureGlassEnabled',
+      'setPhotoCardsVisible',
+      'setFeaturePointsVisible',
+    ]);
+    expect(calls[0].arguments, <String, Object?>{'enabled': false});
+    expect(calls[1].arguments, <String, Object?>{'visible': true});
+    expect(calls[2].arguments, <String, Object?>{'visible': true});
   });
 
   test('glass rect reports after detach are ignored', () async {
@@ -223,6 +231,138 @@ void main() {
     await controller.reportGlassRect(const Rect.fromLTWH(0, 0, 176, 52));
 
     expect(calls, isEmpty);
+  });
+
+  test('visibility setters and sync are no-ops after detach', () async {
+    final calls = <NativeOverlayCall>[];
+    var repushAttempts = 0;
+    var notifications = 0;
+    final controller = CaptureOverlayController(
+      invokeNative: (method, arguments) async {
+        calls.add(NativeOverlayCall(method, arguments));
+      },
+      repushCoverage: () async {
+        repushAttempts += 1;
+      },
+    );
+    addTearDown(controller.dispose);
+    controller.addListener(() => notifications += 1);
+    await controller.detach();
+    calls.clear();
+
+    await controller.setPhotoCardsVisible(false);
+    await controller.setCoveragePointsVisible(false);
+    await controller.syncNativeVisibility();
+
+    expect(calls, isEmpty);
+    expect(repushAttempts, 0);
+    expect(notifications, 0);
+    expect(controller.photoCardsVisible, isTrue);
+    expect(controller.coveragePointsVisible, isTrue);
+  });
+
+  test(
+    'detach fences repush and resets after blocked coverage enable',
+    () async {
+      final enableCompleted = Completer<void>();
+      final calls = <NativeOverlayCall>[];
+      var blockEnable = false;
+      var repushAttempts = 0;
+      final controller = CaptureOverlayController(
+        invokeNative: (method, arguments) {
+          calls.add(NativeOverlayCall(method, arguments));
+          if (blockEnable &&
+              method == 'setFeaturePointsVisible' &&
+              arguments['visible'] == true) {
+            return enableCompleted.future;
+          }
+          return Future<void>.value();
+        },
+        repushCoverage: () async {
+          repushAttempts += 1;
+        },
+      );
+      addTearDown(controller.dispose);
+      await controller.setCoveragePointsVisible(false);
+      calls.clear();
+      blockEnable = true;
+
+      final enable = controller.setCoveragePointsVisible(true);
+      expect(calls.map((call) => call.method), <String>[
+        'setFeaturePointsVisible',
+      ]);
+      final detach = controller.detach();
+      expect(calls.map((call) => call.method), <String>[
+        'setFeaturePointsVisible',
+        'setCaptureGlassEnabled',
+      ]);
+      expect(repushAttempts, 0);
+
+      enableCompleted.complete();
+      await enable;
+      await detach;
+
+      expect(calls.map((call) => call.method), <String>[
+        'setFeaturePointsVisible',
+        'setCaptureGlassEnabled',
+        'setPhotoCardsVisible',
+        'setFeaturePointsVisible',
+      ]);
+      expect(calls[1].arguments, <String, Object?>{'enabled': false});
+      expect(calls[2].arguments, <String, Object?>{'visible': true});
+      expect(calls[3].arguments, <String, Object?>{'visible': true});
+      expect(repushAttempts, 0);
+    },
+  );
+
+  test('detach stops a blocked sync and makes reset calls final', () async {
+    final photoCompleted = Completer<void>();
+    final calls = <NativeOverlayCall>[];
+    var blockPhoto = false;
+    var repushAttempts = 0;
+    final controller = CaptureOverlayController(
+      invokeNative: (method, arguments) {
+        calls.add(NativeOverlayCall(method, arguments));
+        if (blockPhoto &&
+            method == 'setPhotoCardsVisible' &&
+            arguments['visible'] == false) {
+          return photoCompleted.future;
+        }
+        return Future<void>.value();
+      },
+      repushCoverage: () async {
+        repushAttempts += 1;
+      },
+    );
+    addTearDown(controller.dispose);
+    await controller.setPhotoCardsVisible(false);
+    await controller.setCoveragePointsVisible(false);
+    calls.clear();
+    blockPhoto = true;
+
+    final sync = controller.syncNativeVisibility();
+    expect(calls.map((call) => call.method), <String>['setPhotoCardsVisible']);
+    final detach = controller.detach();
+    expect(calls.map((call) => call.method), <String>[
+      'setPhotoCardsVisible',
+      'setCaptureGlassEnabled',
+    ]);
+
+    photoCompleted.complete();
+    await sync;
+    await detach;
+
+    expect(calls.map((call) => call.method), <String>[
+      'setPhotoCardsVisible',
+      'setCaptureGlassEnabled',
+      'setPhotoCardsVisible',
+      'setFeaturePointsVisible',
+    ]);
+    expect(calls[0].arguments, <String, Object?>{'visible': false});
+    expect(calls[1].arguments, <String, Object?>{'enabled': false});
+    expect(calls[2].arguments, <String, Object?>{'visible': true});
+    expect(calls[3].arguments, <String, Object?>{'visible': true});
+    expect(repushAttempts, 0);
   });
 
   test('detach fences an in-flight glass rect before it can enable', () async {
@@ -247,16 +387,20 @@ void main() {
     expect(calls.map((call) => call.method), <String>[
       'setCaptureGlassRect',
       'setCaptureGlassEnabled',
+      'setPhotoCardsVisible',
+      'setFeaturePointsVisible',
     ]);
-    expect(calls.last.arguments, <String, Object?>{'enabled': false});
+    expect(calls[1].arguments, <String, Object?>{'enabled': false});
 
     rectCompleted.complete();
     await report;
     expect(calls.map((call) => call.method), <String>[
       'setCaptureGlassRect',
       'setCaptureGlassEnabled',
+      'setPhotoCardsVisible',
+      'setFeaturePointsVisible',
     ]);
-    expect(calls.last.arguments, <String, Object?>{'enabled': false});
+    expect(calls[1].arguments, <String, Object?>{'enabled': false});
   });
 
   test('channel and repush errors never escape or roll back intent', () async {
@@ -296,6 +440,8 @@ void main() {
       'setCaptureGlassRect',
       'setCaptureGlassEnabled',
       'setCaptureGlassEnabled',
+      'setPhotoCardsVisible',
+      'setFeaturePointsVisible',
     ]);
     expect(repushAttempts, 2);
   });

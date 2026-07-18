@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
@@ -24,6 +25,9 @@ class CaptureOverlayController extends ChangeNotifier {
   Rect? _lastGlassRect;
   bool _glassEnableSent = false;
   bool _detached = false;
+  Future<void> _visibilityTail = Future<void>.value();
+  int _pendingVisibilityOperations = 0;
+  Completer<void>? _detachCompleter;
 
   CaptureOverlayController({
     required NativeOverlayInvoker invokeNative,
@@ -34,25 +38,39 @@ class CaptureOverlayController extends ChangeNotifier {
   bool get photoCardsVisible => _photoCardsVisible;
   bool get coveragePointsVisible => _coveragePointsVisible;
 
-  Future<void> setPhotoCardsVisible(bool visible) async {
-    if (_photoCardsVisible == visible) return;
+  Future<void> setPhotoCardsVisible(bool visible) {
+    if (_detached || _photoCardsVisible == visible) {
+      return Future<void>.value();
+    }
 
     _photoCardsVisible = visible;
     notifyListeners();
-    await _bestEffortNative('setPhotoCardsVisible', <String, Object?>{
-      'visible': visible,
+    return _enqueueVisibility(() async {
+      if (_detached) return;
+      await _bestEffortNative('setPhotoCardsVisible', <String, Object?>{
+        'visible': visible,
+      });
     });
   }
 
-  Future<void> setCoveragePointsVisible(bool visible) async {
-    if (_coveragePointsVisible == visible) return;
+  Future<void> setCoveragePointsVisible(bool visible) {
+    if (_detached || _coveragePointsVisible == visible) {
+      return Future<void>.value();
+    }
 
     _coveragePointsVisible = visible;
     notifyListeners();
-    await _bestEffortNative('setFeaturePointsVisible', <String, Object?>{
-      'visible': visible,
+    return _enqueueVisibility(() async {
+      if (_detached) return;
+      await _bestEffortNative('setFeaturePointsVisible', <String, Object?>{
+        'visible': visible,
+      });
+      if (_detached) return;
+      if (visible) {
+        await _bestEffortRepushCoverage();
+        if (_detached) return;
+      }
     });
-    if (visible) await _bestEffortRepushCoverage();
   }
 
   Future<void> reportGlassRect(Rect rect) async {
@@ -75,22 +93,51 @@ class CaptureOverlayController extends ChangeNotifier {
     }
   }
 
-  Future<void> syncNativeVisibility() async {
-    await _bestEffortNative('setPhotoCardsVisible', <String, Object?>{
-      'visible': _photoCardsVisible,
+  Future<void> syncNativeVisibility() {
+    if (_detached) return Future<void>.value();
+
+    final photoCardsVisible = _photoCardsVisible;
+    final coveragePointsVisible = _coveragePointsVisible;
+    return _enqueueVisibility(() async {
+      if (_detached) return;
+      await _bestEffortNative('setPhotoCardsVisible', <String, Object?>{
+        'visible': photoCardsVisible,
+      });
+      if (_detached) return;
+      await _bestEffortNative('setFeaturePointsVisible', <String, Object?>{
+        'visible': coveragePointsVisible,
+      });
+      if (_detached) return;
+      if (coveragePointsVisible) {
+        await _bestEffortRepushCoverage();
+        if (_detached) return;
+      }
     });
-    await _bestEffortNative('setFeaturePointsVisible', <String, Object?>{
-      'visible': _coveragePointsVisible,
-    });
-    if (_coveragePointsVisible) await _bestEffortRepushCoverage();
   }
 
-  Future<void> detach() async {
-    if (_detached) return;
+  Future<void> detach() {
+    final existingDetach = _detachCompleter;
+    if (existingDetach != null) return existingDetach.future;
+
     _detached = true;
-    await _bestEffortNative('setCaptureGlassEnabled', <String, Object?>{
-      'enabled': false,
+    final detachCompleter = Completer<void>();
+    _detachCompleter = detachCompleter;
+    final glassDisable = _bestEffortNative(
+      'setCaptureGlassEnabled',
+      <String, Object?>{'enabled': false},
+    );
+    final visibilityReset = _enqueueVisibility(() async {
+      await _bestEffortNative('setPhotoCardsVisible', <String, Object?>{
+        'visible': true,
+      });
+      await _bestEffortNative('setFeaturePointsVisible', <String, Object?>{
+        'visible': true,
+      });
     });
+    Future.wait<void>([glassDisable, visibilityReset]).then<void>((_) {
+      detachCompleter.complete();
+    });
+    return detachCompleter.future;
   }
 
   bool _isValidGlassRect(Rect rect) {
@@ -115,5 +162,28 @@ class CaptureOverlayController extends ChangeNotifier {
     try {
       await _repushCoverage();
     } catch (_) {}
+  }
+
+  Future<void> _enqueueVisibility(Future<void> Function() operation) {
+    final runImmediately = _pendingVisibilityOperations == 0;
+    _pendingVisibilityOperations += 1;
+    final operationFuture = runImmediately
+        ? Future<void>.sync(operation)
+        : _visibilityTail.then<void>((_) => operation());
+
+    Future<void> settle() async {
+      try {
+        await operationFuture;
+      } catch (_) {
+        // Visibility is display-only; a failed operation must not stall the
+        // queue or prevent detach from restoring the native defaults.
+      } finally {
+        _pendingVisibilityOperations -= 1;
+      }
+    }
+
+    final completion = settle();
+    _visibilityTail = completion;
+    return completion;
   }
 }
