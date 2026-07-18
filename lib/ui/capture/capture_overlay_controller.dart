@@ -56,7 +56,7 @@ class CaptureOverlayController extends ChangeNotifier {
   }
 
   Future<void> reportGlassRect(Rect rect) async {
-    if (!_isValidGlassRect(rect) || _lastGlassRect == rect) return;
+    if (_detached || !_isValidGlassRect(rect) || _lastGlassRect == rect) return;
 
     _lastGlassRect = rect;
     final shouldEnable = !_glassEnableSent;
@@ -68,7 +68,7 @@ class CaptureOverlayController extends ChangeNotifier {
       'width': rect.width,
       'height': rect.height,
     });
-    if (shouldEnable) {
+    if (shouldEnable && !_detached) {
       await _bestEffortNative('setCaptureGlassEnabled', <String, Object?>{
         'enabled': true,
       });

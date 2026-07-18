@@ -208,6 +208,57 @@ void main() {
     expect(calls.single.arguments, <String, Object?>{'enabled': false});
   });
 
+  test('glass rect reports after detach are ignored', () async {
+    final calls = <NativeOverlayCall>[];
+    final controller = CaptureOverlayController(
+      invokeNative: (method, arguments) async {
+        calls.add(NativeOverlayCall(method, arguments));
+      },
+      repushCoverage: () async {},
+    );
+    addTearDown(controller.dispose);
+    await controller.detach();
+    calls.clear();
+
+    await controller.reportGlassRect(const Rect.fromLTWH(0, 0, 176, 52));
+
+    expect(calls, isEmpty);
+  });
+
+  test('detach fences an in-flight glass rect before it can enable', () async {
+    final rectCompleted = Completer<void>();
+    final calls = <NativeOverlayCall>[];
+    final controller = CaptureOverlayController(
+      invokeNative: (method, arguments) {
+        calls.add(NativeOverlayCall(method, arguments));
+        if (method == 'setCaptureGlassRect') return rectCompleted.future;
+        return Future<void>.value();
+      },
+      repushCoverage: () async {},
+    );
+    addTearDown(controller.dispose);
+
+    final report = controller.reportGlassRect(
+      const Rect.fromLTWH(0, 0, 176, 52),
+    );
+    expect(calls.map((call) => call.method), <String>['setCaptureGlassRect']);
+
+    await controller.detach();
+    expect(calls.map((call) => call.method), <String>[
+      'setCaptureGlassRect',
+      'setCaptureGlassEnabled',
+    ]);
+    expect(calls.last.arguments, <String, Object?>{'enabled': false});
+
+    rectCompleted.complete();
+    await report;
+    expect(calls.map((call) => call.method), <String>[
+      'setCaptureGlassRect',
+      'setCaptureGlassEnabled',
+    ]);
+    expect(calls.last.arguments, <String, Object?>{'enabled': false});
+  });
+
   test('channel and repush errors never escape or roll back intent', () async {
     final attempts = <String>[];
     var repushAttempts = 0;
