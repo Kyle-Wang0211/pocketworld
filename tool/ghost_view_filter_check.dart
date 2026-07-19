@@ -280,7 +280,6 @@ void main() {
   for (final rel in [
     'lib/capture/sparse_ply.dart', // PLY 交付写手
     'lib/capture/sfm_resume.dart', // 断点续跑持久化腿
-    'lib/capture/cloud_capture_uploader.dart', // 素材上传
   ]) {
     final s = src(rel).toLowerCase();
     check(

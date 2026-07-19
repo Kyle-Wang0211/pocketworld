@@ -13,7 +13,6 @@ import '../i18n/locale_notifier.dart';
 import '../l10n/app_localizations.dart';
 import 'design_system.dart';
 import 'me_stats_view_model.dart';
-import 'research_consent_settings_page.dart';
 
 class MeSettingsPage extends StatelessWidget {
   final MeStatsViewModel stats;
@@ -102,16 +101,6 @@ class _SettingsSection extends StatelessWidget {
         onTap: null,
       ),
       _SettingsRowSpec(
-        icon: Icons.auto_awesome_outlined,
-        title: _researchConsentTitle(context),
-        trailing: _researchConsentTrailing(context),
-        onTap: () => Navigator.of(context).push(
-          MaterialPageRoute<void>(
-            builder: (_) => const ResearchConsentSettingsPage(),
-          ),
-        ),
-      ),
-      _SettingsRowSpec(
         icon: Icons.language_rounded,
         title: l.meLanguage,
         trailing: isZh ? l.meLanguageZh : l.meLanguageEn,
@@ -143,16 +132,6 @@ class _SettingsSection extends StatelessWidget {
         ],
       ),
     );
-  }
-
-  static String _researchConsentTitle(BuildContext context) {
-    final isZh = LocaleScope.of(context).isChinese;
-    return isZh ? 'AI 模型改进授权' : 'AI Improvement Consent';
-  }
-
-  static String _researchConsentTrailing(BuildContext context) {
-    final isZh = LocaleScope.of(context).isChinese;
-    return isZh ? '管理' : 'Manage';
   }
 
   static Future<void> _showLanguageDialog(
