@@ -11,10 +11,6 @@
 		1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */ = {isa = PBXBuildFile; fileRef = 1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */; };
 		14CB8F85797E871FB08CEF0B /* libPods-Runner.a in Frameworks */ = {isa = PBXBuildFile; fileRef = F5466D0AB0BD551F80CEAE3D /* libPods-Runner.a */; };
 		DF75769717644F6F93C17AA7 /* AetherARKitPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEAD6EACA3D24E90926AFA5D /* AetherARKitPlugin.swift */; };
-		D45A100119F74F47BA7C6001 /* CaptureVisualStateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D45A100219F74F47BA7C6002 /* CaptureVisualStateStore.swift */; };
-		C4A5500119F74F47BA7C5001 /* CaptureGlassTechnique.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4A5500219F74F47BA7C5002 /* CaptureGlassTechnique.swift */; };
-		C4A5500319F74F47BA7C5003 /* CaptureGlass.metal in Sources */ = {isa = PBXBuildFile; fileRef = C4A5500419F74F47BA7C5004 /* CaptureGlass.metal */; };
-		C4A5500519F74F47BA7C5005 /* CaptureGlass-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = C4A5500619F74F47BA7C5006 /* CaptureGlass-LICENSE.txt */; };
 		2110C7AE18324B40A728EE04 /* ReconUmbrella.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17D27761F0154088BD5EC06A /* ReconUmbrella.swift */; };
 		331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C807B294A618700263BE5 /* RunnerTests.swift */; };
 		3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */ = {isa = PBXBuildFile; fileRef = 3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */; };
@@ -64,10 +60,6 @@
 		331C807B294A618700263BE5 /* RunnerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunnerTests.swift; sourceTree = "<group>"; };
 		331C8081294A63A400263BE5 /* RunnerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RunnerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		FEAD6EACA3D24E90926AFA5D /* AetherARKitPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AetherARKitPlugin.swift; sourceTree = "<group>"; };
-		D45A100219F74F47BA7C6002 /* CaptureVisualStateStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptureVisualStateStore.swift; sourceTree = "<group>"; };
-		C4A5500219F74F47BA7C5002 /* CaptureGlassTechnique.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CaptureGlassTechnique.swift; sourceTree = "<group>"; };
-		C4A5500419F74F47BA7C5004 /* CaptureGlass.metal */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.metal; path = CaptureGlass.metal; sourceTree = "<group>"; };
-		C4A5500619F74F47BA7C5006 /* CaptureGlass-LICENSE.txt */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; path = "CaptureGlass-LICENSE.txt"; sourceTree = "<group>"; };
 		17D27761F0154088BD5EC06A /* ReconUmbrella.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ReconUmbrella.swift; sourceTree = "<group>"; };
 		3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = AppFrameworkInfo.plist; path = Flutter/AppFrameworkInfo.plist; sourceTree = "<group>"; };
 		4C40C533420E11A3B480744F /* AetherTexturePlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = AetherTexturePlugin.swift; sourceTree = "<group>"; };
@@ -184,10 +176,6 @@
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
 				4C40C533420E11A3B480744F /* AetherTexturePlugin.swift */,
 				FEAD6EACA3D24E90926AFA5D /* AetherARKitPlugin.swift */,
-				D45A100219F74F47BA7C6002 /* CaptureVisualStateStore.swift */,
-				C4A5500219F74F47BA7C5002 /* CaptureGlassTechnique.swift */,
-				C4A5500419F74F47BA7C5004 /* CaptureGlass.metal */,
-				C4A5500619F74F47BA7C5006 /* CaptureGlass-LICENSE.txt */,
 				A1B2C3D4E5F60000DEAD0012 /* CasDiffMVSRunner.swift */,
 				A1B2C3D4E5F60000DEAD0014 /* CasDiffMVS_fp32.mlpackage */,
 				A1B2C3D4E5F60000DEAD0015 /* CasDiffMVS_fp16.mlpackage */,
@@ -317,7 +305,6 @@
 				A1B2C3D4E5F60000DEAD0007 /* test_scene.jpg in Resources */,
 				A1B2C3D4E5F60000DEAD0013 /* CasDiffMVS_fp32.mlpackage in Resources */,
 				A1B2C3D4E5F60000DEAD0016 /* CasDiffMVS_fp16.mlpackage in Resources */,
-				C4A5500519F74F47BA7C5005 /* CaptureGlass-LICENSE.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -451,9 +438,6 @@
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
 				8954836B39867FC637D6CA3C /* AetherTexturePlugin.swift in Sources */,
 				DF75769717644F6F93C17AA7 /* AetherARKitPlugin.swift in Sources */,
-				D45A100119F74F47BA7C6001 /* CaptureVisualStateStore.swift in Sources */,
-				C4A5500119F74F47BA7C5001 /* CaptureGlassTechnique.swift in Sources */,
-				C4A5500319F74F47BA7C5003 /* CaptureGlass.metal in Sources */,
 				A1B2C3D4E5F60000DEAD0011 /* CasDiffMVSRunner.swift in Sources */,
 				2110C7AE18324B40A728EE04 /* ReconUmbrella.swift in Sources */,
 				03D62ABCFE668FE66D5CD107 /* MetalRenderer.swift in Sources */,
