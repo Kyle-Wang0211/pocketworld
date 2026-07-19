@@ -18,9 +18,14 @@
 // host 断言(tool/sfm_feed_queue_check.dart:狂喂 N 帧证明零丢帧、内存
 // bounded、finalize==offered、顺序保持)。
 
+import '../capture/capture_format.dart';
+
 /// worker 同时在途 add_frame 的上限。超过即溢写磁盘排队(不阻塞、不丢帧)。
 /// 值 2 = 与旧内联实现逐字一致(offerFrame 的 `_inFlight < 2`)。
-const int kSfmFeedMaxInFlight = 2;
+/// [E24 OOM 修复 2026-07-19] photo43(12MP)降为 1:两路并发 12MP 提取的
+/// 金字塔瞬态(~2×300MB)是 2282MB jetsam 死亡曲线的主成分之一;spool
+/// 架构保证零丢帧,只是消化排队变慢——稳定性优先(热稳定铁律)。
+const int kSfmFeedMaxInFlight = pwPhoto43 ? 1 : 2;
 
 /// 这一帧是否该**溢写磁盘排队**(而非直接送 worker)。
 /// true = worker 忙(在途已满)或前面还有排队帧(必须保序,不能插队)。
