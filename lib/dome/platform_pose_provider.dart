@@ -52,7 +52,14 @@ class PlatformARPoseProvider implements ARPoseProvider {
         _switchToFallback();
         return;
       }
-      await _method.invokeMethod('startSession');
+      // [E24 探针] PW_VIDEO_FORMAT: '4k'(默认,现行为)| 'default43'
+      // (留系统默认 1920×1440 4:3,测其 out-of-band 静照分辨率)。
+      await _method.invokeMethod('startSession', <String, dynamic>{
+        'videoFormatMode': const String.fromEnvironment(
+          'PW_VIDEO_FORMAT',
+          defaultValue: '4k',
+        ),
+      });
       _nativeSub = _poseEvents.receiveBroadcastStream().listen(
         (event) => _onNativePose(event),
         onError: (Object _) => _switchToFallback(),

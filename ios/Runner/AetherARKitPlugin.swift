@@ -158,6 +158,10 @@ class AetherARKitPlugin: NSObject {
   /// 套用(见 updateAtTime),与 featurePointsVisible 各自独立、非二选一。
   static var photoCardsVisible: Bool = true
 
+  /// [E24 探针] 会话视频格式模式:"4k"(现行为)| "default43"(留系统默认
+  /// 1920×1440 4:3)。startSession 入参设定,格式选择块消费。
+  static var videoFormatMode: String = "4k"
+
   /// T6 v2 — capture-coverage cloud DISPLAY buffer. Per the algorithm-
   /// executor boundary (see ARFrameSaveSpec.dartOwns), ALL coverage policy —
   /// which points exist, how many photos covered each, the red→yellow→green
@@ -469,6 +473,12 @@ class AetherARKitPlugin: NSObject {
       do {
         let resume =
           (call.arguments as? [String: Any])?["resume"] as? Bool ?? false
+        // [E24 探针 2026-07-19] videoFormatMode: "4k"(默认,现行为)|
+        // "default43"(跳过 4K 覆盖,留系统默认 1920×1440 4:3 —— 测它的
+        // out-of-band 静照分辨率与 tracking 健康;dart-define 门控,默认关)。
+        AetherARKitPlugin.videoFormatMode =
+          ((call.arguments as? [String: Any])?["videoFormatMode"] as? String)
+            ?? "4k"
         try startSession(resetWorld: !resume)
         result(nil)
       } catch {
@@ -928,7 +938,28 @@ class AetherARKitPlugin: NSObject {
     let physMemBytes = ProcessInfo.processInfo.physicalMemory
     let physMemGB = Double(physMemBytes) / (1024.0 * 1024.0 * 1024.0)
     let kFourKMemThresholdBytes: UInt64 = 5_000_000_000  // 5.0 GB
+    // [E24 探针] default43 模式:跳过 4K 覆盖,留在系统默认格式(1920×1440
+    // 4:3,LOW 档设备长期实证 tracking 正常)。与当年实测判死的
+    // recommendedVideoFormatForHighResolutionFrameCapturing(见上注释)是
+    // 不同的格式条目——本探针专测默认格式的 out-of-band 静照分辨率。
     let allow4K = physMemBytes >= kFourKMemThresholdBytes
+      && AetherARKitPlugin.videoFormatMode != "default43"
+      && AetherARKitPlugin.videoFormatMode != "hires43"
+    if AetherARKitPlugin.videoFormatMode == "default43" {
+      NSLog("[AetherARKit] [E24] videoFormatMode=default43 — skipping 4K override")
+    }
+    // [E24 探针②] hires43:重验历史判死的高清捕获推荐格式(4032×3024 静照
+    // 档)。历史实测(本文件上方注释):iOS 26 下 tracking 永不 .normal。
+    // 本模式仅为验证苹果是否已在 26.x 修复;若复现冻结即最终判死 E24。
+    if AetherARKitPlugin.videoFormatMode == "hires43", #available(iOS 16.0, *) {
+      if let hires =
+        ARWorldTrackingConfiguration.recommendedVideoFormatForHighResolutionFrameCapturing {
+        configuration.videoFormat = hires
+        NSLog("[AetherARKit] [E24] hires43 probe: \(hires.imageResolution) @ \(hires.framesPerSecond) fps")
+      } else {
+        NSLog("[AetherARKit] [E24] hires43 probe: recommended format nil, system default")
+      }
+    }
     if #available(iOS 16.0, *), allow4K {
       if let fourK = ARWorldTrackingConfiguration.recommendedVideoFormatFor4KResolution {
         configuration.videoFormat = fourK
@@ -939,6 +970,38 @@ class AetherARKitPlugin: NSObject {
     } else {
       let res = configuration.videoFormat.imageResolution
       NSLog("[AetherARKit] device tier LOW (\(String(format: "%.2f", physMemGB)) GB RAM), staying on default videoFormat \(res) to avoid 4K jetsam risk")
+    }
+
+    // [E24 探针] 真实格式菜单落盘(ground truth,每次会话覆写):设备实际
+    // supportedVideoFormats + 本次选中格式 + 模式。供跨端/格式决策引用,
+    // 不再背菜单。
+    do {
+      var rows: [[String: Any]] = []
+      for f in ARWorldTrackingConfiguration.supportedVideoFormats {
+        var row: [String: Any] = [
+          "width": Int(f.imageResolution.width),
+          "height": Int(f.imageResolution.height),
+          "fps": f.framesPerSecond,
+        ]
+        if #available(iOS 16.0, *) {
+          row["recommendedForHighResCapture"] =
+            f.isRecommendedForHighResolutionFrameCapturing
+        }
+        rows.append(row)
+      }
+      let dump: [String: Any] = [
+        "mode": AetherARKitPlugin.videoFormatMode,
+        "chosenWidth": Int(configuration.videoFormat.imageResolution.width),
+        "chosenHeight": Int(configuration.videoFormat.imageResolution.height),
+        "formats": rows,
+      ]
+      let docs = FileManager.default.urls(
+        for: .documentDirectory, in: .userDomainMask)[0]
+      let data = try JSONSerialization.data(
+        withJSONObject: dump, options: [.prettyPrinted])
+      try data.write(to: docs.appendingPathComponent("ar_video_formats.json"))
+    } catch {
+      NSLog("[AetherARKit] [E24] formats dump failed: \(error)")
     }
 
     let session = arSession ?? ARSession()
