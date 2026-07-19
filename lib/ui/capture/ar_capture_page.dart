@@ -40,6 +40,7 @@ import '../../capture/colorize_pipeline.dart';
 import '../../capture/floater_filter.dart';
 import '../../capture/ghost_view_filter.dart';
 import '../../capture/parallax_banner_gate.dart';
+import '../../capture/capture_format.dart';
 import '../../capture/photo_card_state.dart';
 import '../../capture/pw_telemetry.dart';
 import '../../capture/representative_color.dart';
@@ -2576,10 +2577,21 @@ class _ARCapturePageState extends State<ARCapturePage>
     // strategy. Other platforms fall back to a dark backdrop until a
     // platform-specific preview is wired (Android ARCore / HarmonyOS).
     if (defaultTargetPlatform == TargetPlatform.iOS) {
-      return const UiKitView(
-        viewType: 'aether_arkit_preview',
-        creationParams: <String, dynamic>{},
-        creationParamsCodec: StandardMessageCodec(),
+      // [WYSIWYG 2026-07-19] 预览 letterbox 成照片画幅(photo43=3:4),黑边
+      // 顶底,显示完整 4:3 画面 —— 所见即所得。native 卡片几何按同一 3:4
+      // 视口算(AetherARKitPlugin videoFormatMode==hires43 分支),两者对齐。
+      return const ColoredBox(
+        color: Color(0xFF000000),
+        child: Center(
+          child: AspectRatio(
+            aspectRatio: pwPreviewAspect,
+            child: UiKitView(
+              viewType: 'aether_arkit_preview',
+              creationParams: <String, dynamic>{},
+              creationParamsCodec: StandardMessageCodec(),
+            ),
+          ),
+        ),
       );
     }
     return const ColoredBox(color: Color(0xFF111113));

@@ -734,15 +734,22 @@ class AetherARKitPlugin: NSObject {
       // the viewport edges (NDC ±1) sit at ±halfX/±halfY in view space (half =
       // z/projectionScale), so the quad EXACTLY fills the viewport at capture
       // regardless of z, and world-anchored on the surface it peels off the lens.
-      let viewportSize = UIScreen.main.bounds.size
+      // [WYSIWYG 第二步 2026-07-19] 卡片视口 = 预览 letterbox 视口。photo43
+      // 下 Flutter 把预览 letterbox 成 3:4(满宽、高=宽×4/3、顶底黑边),所以
+      // 卡片按这个 3:4 视口算 → 卡片恰好填满预览、且是照片 4:3 画幅,不再是
+      // 屏幕形状裁切。4k 回退保持全屏视口。
+      let screenSize = UIScreen.main.bounds.size
+      let viewportSize: CGSize =
+        AetherARKitPlugin.videoFormatMode == "hires43"
+          ? CGSize(width: screenSize.width, height: screenSize.width * 4.0 / 3.0)
+          : screenSize
       let proj = camera.projectionMatrix(for: .portrait,
                                          viewportSize: viewportSize,
                                          zNear: 0.001, zFar: 1000)
       let invView = camera.viewMatrix(for: .portrait).inverse
-      // View space: +X right, +Y up, -Z forward.
+      // View space: +X right, +Y up, -Z forward. halfX/halfY 都按同一 3:4
+      // 视口投影算 —— 一致(上次坏在 halfX 全屏、halfY 却强设 3:4 错配)。
       let halfX = z / proj.columns.0.x
-      // [第一步:12MP 4:3 照片,卡片几何保持 909a6a2 原样=填满屏幕视口贴镜头]
-      // 预览 4:3 与卡片按画幅对齐留到第二步(须按预览实际 letterbox 视口算)。
       let halfY = z / proj.columns.1.y
       NSLog("[PHOTOCARD] addPhotoCard viewport=%.0fx%.0f z=%.2f halfX=%.3f halfY=%.3f",
             viewportSize.width, viewportSize.height, z, halfX, halfY)
