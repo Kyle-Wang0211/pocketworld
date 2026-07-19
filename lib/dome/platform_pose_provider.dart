@@ -21,7 +21,6 @@ import 'dart:math' as math;
 import 'package:flutter/services.dart';
 import 'package:vector_math/vector_math_64.dart';
 
-import '../capture/capture_format.dart';
 import '../quality/quality_compute.dart';
 import 'ar_pose.dart';
 import 'mock_pose_provider.dart';
@@ -56,7 +55,10 @@ class PlatformARPoseProvider implements ARPoseProvider {
       // [E24 探针] PW_VIDEO_FORMAT: '4k'(默认,现行为)| 'default43'
       // (留系统默认 1920×1440 4:3,测其 out-of-band 静照分辨率)。
       await _method.invokeMethod('startSession', <String, dynamic>{
-        'videoFormatMode': pwVideoFormat,
+        'videoFormatMode': const String.fromEnvironment(
+          'PW_VIDEO_FORMAT',
+          defaultValue: '4k',
+        ),
       });
       _nativeSub = _poseEvents.receiveBroadcastStream().listen(
         (event) => _onNativePose(event),
@@ -336,7 +338,6 @@ class PlatformARPoseProvider implements ARPoseProvider {
     double? triggerTimestamp,
     double quality = 0.92,
     ARFrameSaveSpec? saveSpec,
-    bool feedSfm = false,
   }) async {
     if (_usingFallback) {
       return _fallback.captureHighResolutionStill(
@@ -345,7 +346,6 @@ class PlatformARPoseProvider implements ARPoseProvider {
         triggerTimestamp: triggerTimestamp,
         quality: quality,
         saveSpec: saveSpec,
-        feedSfm: feedSfm,
       );
     }
     try {
@@ -353,7 +353,6 @@ class PlatformARPoseProvider implements ARPoseProvider {
         'highresPath': highresPath,
         'previewPath': previewPath,
         'quality': quality,
-        'feedSfm': feedSfm,
       };
       if (triggerTimestamp != null) {
         args['triggerTimestamp'] = triggerTimestamp;
@@ -399,11 +398,6 @@ class PlatformARPoseProvider implements ARPoseProvider {
             (result['poseSyncQuality'] as String?) ??
             'ar_session_high_res_frame',
         trackingStateName: result['trackingStateName'] as String?,
-        sfmGray: result['sfm_gray'] is Uint8List
-            ? result['sfm_gray'] as Uint8List
-            : null,
-        sfmGrayW: (result['sfm_gray_w'] as num?)?.toInt(),
-        sfmGrayH: (result['sfm_gray_h'] as num?)?.toInt(),
       );
     } on PlatformException catch (e) {
       // ignore: avoid_print
