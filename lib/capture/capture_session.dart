@@ -289,15 +289,11 @@ class CaptureSession {
   // 防止连拍堆叠相机重配(API 每次捕获会短暂重配相机——tracking 抖动+热,
   // 真机热定价在设备批验收)。
   bool _hiresStillInFlight = false;
-  // [E24 快门瞬时化] photo43 静照串行链:tap 即刻返回,静照按 FIFO 后台追。
-  Future<void> _stillChain = Future<void>.value();
   int _hiresStillStarted = 0;
   int _hiresStillOk = 0;
   int _hiresStillFailed = 0;
   double _lastHighResStillTriggerSec = double.negativeInfinity;
-  // [E24 快门瞬时化] photo43 队列存"请求"不存像素(静照串行链一次只占一份
-  // 12MP 缓冲),上限放宽到 12 支撑 RS 式连拍;4k 旧世界维持 2。
-  static const int _maxPendingPhotoSaves = pwPhoto43 ? 12 : 2;
+  static const int _maxPendingPhotoSaves = 2;
   static const Duration _minHighResStillInterval = Duration(milliseconds: 250);
   static const int _minScaleAlignAnchorsForPersistedFrame = 8;
   double _photoSaveHealthWindowStartSec = 0;
@@ -1388,7 +1384,6 @@ class CaptureSession {
     );
 
     _pendingPhotoSaveCount += 1;
-    var pendingReleasedByChain = false;
     try {
       // [E24 S2 2026-07-19] 证据模式分支(单一事实源 capture_format.dart):
       //   pwPhoto43(hires43,默认):静照即证据 —— 4032×3024 12MP 4:3
@@ -1400,76 +1395,46 @@ class CaptureSession {
       //     证据 + 旁存 _hr 静照。
       var savedOk = false;
       if (pwPhoto43) {
-        // [E24 快门瞬时化 2026-07-19,RS 口径] tap 立即返回(卡片/相册用
-        // jpegPath 乐观引用,文件落盘后自然可见);静照走串行 FIFO 链——
-        // 一次只占一份 12MP 缓冲(OOM 修复另一半);sidecar 检查与 stamp
-        // 移入链内;pending 计数由链释放(下方 finally 跳过)。
         _hiresStillStarted++;
         final previewPath = '${_previewsDir ?? photosDir}/$photoBase.jpg';
-        final cellIdx = admit.cellIdx;
-        final slotIdx = admit.slotIdx;
-        _stillChain = _stillChain.then((_) async {
-          try {
-            final still = await poseProvider.captureHighResolutionStill(
-              highresPath: jpegPath,
-              previewPath: previewPath,
-              triggerTimestamp: pose.timestamp,
-              saveSpec: saveSpec,
-              feedSfm: true,
-            );
-            var ok = false;
-            if (still != null) {
-              _hiresStillOk++;
-              ok = true;
-              final g = still.sfmGray;
-              if (g != null &&
-                  still.sfmGrayW != null &&
-                  still.sfmGrayH != null &&
-                  !_sfmFrameCtrl.isClosed) {
-                _sfmFrameCtrl.add(
-                  SfmFrameFeed(
-                    gray: g,
-                    grayW: still.sfmGrayW!,
-                    grayH: still.sfmGrayH!,
-                    imageW: still.imageWidth,
-                    imageH: still.imageHeight,
-                    intrinsicFxFyCxCy: still.intrinsics,
-                    extrinsic4x4: still.cameraTransform,
-                    timestamp: still.timestamp,
-                    jpegPath: jpegPath,
-                  ),
-                );
-              }
-            } else {
-              _hiresStillFailed++;
-              final saveResult = await poseProvider.saveCurrentFrame(saveSpec);
-              ok = saveResult.saved;
-              final sfmFeed = saveResult.sfmFrame;
-              if (ok && sfmFeed != null && !_sfmFrameCtrl.isClosed) {
-                _sfmFrameCtrl.add(sfmFeed.withJpegPath(jpegPath));
-              }
-            }
-            if (ok) {
-              targetPoints.stampJpegPath(
-                cellIdx: cellIdx,
-                slotIdx: slotIdx,
+        final still = await poseProvider.captureHighResolutionStill(
+          highresPath: jpegPath,
+          previewPath: previewPath,
+          triggerTimestamp: pose.timestamp,
+          saveSpec: saveSpec,
+          feedSfm: true,
+        );
+        if (still != null) {
+          _hiresStillOk++;
+          savedOk = true;
+          final g = still.sfmGray;
+          if (g != null &&
+              still.sfmGrayW != null &&
+              still.sfmGrayH != null &&
+              !_sfmFrameCtrl.isClosed) {
+            _sfmFrameCtrl.add(
+              SfmFrameFeed(
+                gray: g,
+                grayW: still.sfmGrayW!,
+                grayH: still.sfmGrayH!,
+                imageW: still.imageWidth,
+                imageH: still.imageHeight,
+                intrinsicFxFyCxCy: still.intrinsics,
+                extrinsic4x4: still.cameraTransform,
+                timestamp: still.timestamp,
                 jpegPath: jpegPath,
-              );
-            } else {
-              // ignore: avoid_print
-              print('[CaptureSession] photo43 still+fallback both failed: '
-                  '$jpegPath');
-            }
-          } catch (e) {
-            _hiresStillFailed++;
-            // ignore: avoid_print
-            print('[CaptureSession] photo43 still chain error: $e');
-          } finally {
-            _pendingPhotoSaveCount = math.max(0, _pendingPhotoSaveCount - 1);
+              ),
+            );
           }
-        });
-        pendingReleasedByChain = true;
-        return jpegPath; // 乐观返回:快门即刻解锁(RS 口径)
+        } else {
+          _hiresStillFailed++;
+          final saveResult = await poseProvider.saveCurrentFrame(saveSpec);
+          savedOk = saveResult.saved;
+          final sfmFeed = saveResult.sfmFrame;
+          if (savedOk && sfmFeed != null && !_sfmFrameCtrl.isClosed) {
+            _sfmFrameCtrl.add(sfmFeed.withJpegPath(jpegPath));
+          }
+        }
       } else {
         // '4k' 回退:INSTANT capture(视频帧即时编码)+ SfM 喂图 + 旁存
         // _hr 静照(语义与 E24 前逐字一致)。
@@ -1555,9 +1520,7 @@ class CaptureSession {
       print('[CaptureSession] captureSinglePhoto failed: $e\n$st');
       return null;
     } finally {
-      if (!pendingReleasedByChain) {
-        _pendingPhotoSaveCount = math.max(0, _pendingPhotoSaveCount - 1);
-      }
+      _pendingPhotoSaveCount = math.max(0, _pendingPhotoSaveCount - 1);
     }
   }
 

@@ -143,8 +143,6 @@ class AetherARKitPlugin: NSObject {
     let captureCamPos: simd_float3  // camera world position AT CAPTURE (shrink reference)
   }
   static var photoCardSpecs: [String: PhotoCardSpec] = [:]
-  // [E24] 卡片缩略图解码重试计数(photo43 静照后台落盘的时序补偿)。
-  static var photoCardThumbRetries: [String: Int] = [:]
   private static var photoCardAnchors: [ARAnchor] = []
   private static var photoCardCounter = 0
 
@@ -2903,24 +2901,9 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
             URL(fileURLWithPath: spec.path) as CFURL, nil),
           let thumbCG = CGImageSourceCreateThumbnailAtIndex(
             imgSrc, 0, thumbOpts as CFDictionary) else {
-      // [E24 快门瞬时化回归修复 2026-07-19] photo43 下静照走后台串行链,tap
-      // 时文件尚未落盘,didAdd 解码会读到空/缺文件 → 卡片无纹理消失。文件
-      // 落盘只差数百 ms,短延迟重试(每 150ms,最多 ~4.5s)。位姿/几何全在
-      // spec 里,重试不动位姿。计数存 photoCardThumbRetries 防无限重试。
-      let tries = AetherARKitPlugin.photoCardThumbRetries[name, default: 0]
-      if tries < 30 {
-        AetherARKitPlugin.photoCardThumbRetries[name] = tries + 1
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak node] in
-          guard let self, let node else { return }
-          self.renderer(renderer, didAdd: node, for: anchor)
-        }
-      } else {
-        NSLog("[PHOTOCARD] renderer: thumbnail decode FAILED (gave up) for %@", name)
-        AetherARKitPlugin.photoCardThumbRetries.removeValue(forKey: name)
-      }
+      NSLog("[PHOTOCARD] renderer: thumbnail decode FAILED for %@", name)
       return
     }
-    AetherARKitPlugin.photoCardThumbRetries.removeValue(forKey: name)
     let image = UIImage(cgImage: thumbCG)   // upright portrait, ~thumb px long edge
     NSLog("[PHOTOCARD] renderer building quad for %@ (%d corners) thumb=%dx%d",
           name, spec.localCorners.count, thumbCG.width, thumbCG.height)
