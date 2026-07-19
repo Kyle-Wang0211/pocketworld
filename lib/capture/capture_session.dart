@@ -281,6 +281,16 @@ class CaptureSession {
   String? _previewsDir;
   final List<Future<void>> _pendingPhotoSaves = <Future<void>>[];
   int _pendingPhotoSaveCount = 0;
+
+  // ── 12MP 静照(2026-07-19 甲案落地第一步,纯 Dart 编排)────────────────
+  // 每次快门在即时 4K 之外并行落一张 4:3 12MP 静照(`<photoBase>_hr.jpg`),
+  // RS 对齐的高清素材;失败退化为仅 4K,不重试、不阻塞快门。in-flight 守卫
+  // 防止连拍堆叠相机重配(API 每次捕获会短暂重配相机——tracking 抖动+热,
+  // 真机热定价在设备批验收)。
+  bool _hiresStillInFlight = false;
+  int _hiresStillStarted = 0;
+  int _hiresStillOk = 0;
+  int _hiresStillFailed = 0;
   double _lastHighResStillTriggerSec = double.negativeInfinity;
   static const int _maxPendingPhotoSaves = 2;
   static const Duration _minHighResStillInterval = Duration(milliseconds: 250);
@@ -1392,6 +1402,56 @@ class CaptureSession {
         // points by sampling the actual photo.
         _sfmFrameCtrl.add(sfmFeed.withJpegPath(jpegPath));
       }
+      // ── 12MP 静照(甲案落地第一步):4K 已落盘、SfM 已喂图之后才触发
+      // (顺序保证相机重配不影响本 tap 的 4K 帧)。SfM 喂图与取色仍走
+      // 4K 路(认证检测配置 3840×2160、photo==fed 的 1:1 取色不变量都
+      // 不动);静照与其位姿元数据存 `_hr.jpg` / `_hr.json`,供 finalize/
+      // 交付纹理侧消费。fed jsonl 的 jpegPath 不指向 _hr(静照是另一
+      // 时刻另一位姿的图,直接混用会破 1:1 采样——07-19 E22 实测教训)。
+      if (saveResult.saved && !_hiresStillInFlight) {
+        _hiresStillInFlight = true;
+        _hiresStillStarted++;
+        final hrPath = '$photosDir/${photoBase}_hr.jpg';
+        final hrPreviewPath =
+            '${_previewsDir ?? photosDir}/${photoBase}_hr_preview.jpg';
+        unawaited(
+          poseProvider
+              .captureHighResolutionStill(
+                highresPath: hrPath,
+                previewPath: hrPreviewPath,
+                triggerTimestamp: pose.timestamp,
+              )
+              .then<void>((still) async {
+                if (still == null) {
+                  _hiresStillFailed++;
+                  return;
+                }
+                _hiresStillOk++;
+                // 位姿/内参 sidecar:未来 4:3↔16:9 跨内参映射的唯一依据。
+                await File('$photosDir/${photoBase}_hr.json').writeAsString(
+                  jsonEncode(<String, dynamic>{
+                    'schema': 'hires_still_sidecar_v1',
+                    'highresPath': hrPath,
+                    'timestamp': still.timestamp,
+                    'imageWidth': still.imageWidth,
+                    'imageHeight': still.imageHeight,
+                    'cameraTransform': still.cameraTransform,
+                    'intrinsics': still.intrinsics,
+                    'captureKind': still.captureKind,
+                    'poseSyncQuality': still.poseSyncQuality,
+                    'trackingStateName': still.trackingStateName,
+                    'triggerTimestamp': pose.timestamp,
+                  }),
+                );
+              })
+              .catchError((Object _) {
+                _hiresStillFailed++;
+              })
+              .whenComplete(() {
+                _hiresStillInFlight = false;
+              }),
+        );
+      }
       if (saveResult.saved && await _hasCompleteArFrameSidecar(metadataPath)) {
         targetPoints.stampJpegPath(
           cellIdx: admit.cellIdx,
@@ -1564,7 +1624,10 @@ class CaptureSession {
       'backpressureSkips=$_photoSaveBackpressureSkips '
       'intervalSkips=$_photoSaveIntervalSkips '
       'avgMs=${avgLatencyMs.toStringAsFixed(0)} '
-      'maxMs=${_photoSaveLatencyMsMax.toStringAsFixed(0)}',
+      'maxMs=${_photoSaveLatencyMsMax.toStringAsFixed(0)} '
+      'hiresStarted=$_hiresStillStarted '
+      'hiresOk=$_hiresStillOk '
+      'hiresFailed=$_hiresStillFailed',
     );
 
     _photoSaveHealthWindowStartSec = t;
