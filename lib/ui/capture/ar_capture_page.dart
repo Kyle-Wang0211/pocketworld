@@ -1856,16 +1856,19 @@ class _ARCapturePageState extends State<ARCapturePage>
       });
       if (jpegPath != null && mounted) {
         // Anchor a native, world-stable AR card at the capture pose (no drift).
-        // Best-effort: a card failure must never fail the capture itself.
-        try {
-          await _arKitChannel.invokeMethod<void>(
-            'addPhotoCard',
-            <String, dynamic>{'jpegPath': jpegPath},
-          );
-        } catch (e) {
-          // ignore: avoid_print
-          print('[ARCapturePage] addPhotoCard failed: $e');
-        }
+        // [0延迟 2026-07-19] 不 await —— 建卡是显示层,不该占用快门反应时间;
+        // fire-and-forget,快门在此立即解锁。卡片在 native 侧异步建好。
+        unawaited(
+          _arKitChannel
+              .invokeMethod<void>(
+                'addPhotoCard',
+                <String, dynamic>{'jpegPath': jpegPath},
+              )
+              .catchError((Object e) {
+                // ignore: avoid_print
+                print('[ARCapturePage] addPhotoCard failed: $e');
+              }),
+        );
       }
     } finally {
       if (mounted) setState(() => _capturing = false);
@@ -3204,22 +3207,14 @@ class _ShutterButton extends StatelessWidget {
           ),
           child: Padding(
             padding: const EdgeInsets.all(5),
+            // [0延迟 2026-07-19] 快门~50ms,去掉转圈 spinner ——它反而制造
+            // "加载中"错觉。按钮恒为白色实心圆,拍照瞬间只轻微 dim 一下作
+            // 触觉反馈(相机快门语义),不显 loading 指示。
             child: Container(
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: busy ? Colors.white54 : Colors.white,
+                color: busy ? Colors.white70 : Colors.white,
               ),
-              child: busy
-                  ? const Padding(
-                      padding: EdgeInsets.all(20),
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        valueColor: AlwaysStoppedAnimation<Color>(
-                          Colors.black54,
-                        ),
-                      ),
-                    )
-                  : null,
             ),
           ),
         ),
