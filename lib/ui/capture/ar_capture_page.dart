@@ -674,11 +674,12 @@ class _ARCapturePageState extends State<ARCapturePage>
         await _arKitChannel.invokeMethod<void>('clearPhotoCards');
       } catch (_) {}
       // T6: turn on the live sparse coverage cloud for this take (RS-style —
-      // ARKit feature points, world-anchored, coloured by coverage).
+      // ARKit feature points, world-anchored, coloured by coverage)。尊重
+      // 用户显示开关:开关关着就保持隐藏(数据照常计算)。
       try {
         await _arKitChannel.invokeMethod<void>(
           'setFeaturePointsVisible',
-          <String, dynamic>{'visible': true},
+          <String, dynamic>{'visible': _coverageDotsVisible},
         );
       } catch (_) {}
       _previewModel.reset();
@@ -779,6 +780,39 @@ class _ARCapturePageState extends State<ARCapturePage>
       'shutter pace ${prev.name}→${next.name} (queue=$queue thermal=$thermal)',
     );
     if (!inSetState && mounted) setState(() {});
+  }
+
+  // ─── RS 复刻:快门上方两个独立显示开关(2026-07-19 用户规格)──────────
+  // 都是 display-only:关闭只隐藏,不删照片/AR 锚点/拍摄记录/SfM 数据;
+  // 拍照、覆盖率计算、点云更新、质量判断、重建全部照常;两开关相互独立。
+  bool _photoCardsVisible = true; // 左:AR 照片卡片(照片图标)
+  bool _coverageDotsVisible = true; // 右:彩色覆盖点(3×3 九点图标,恒黄)
+
+  Future<void> _togglePhotoCards() async {
+    setState(() => _photoCardsVisible = !_photoCardsVisible);
+    try {
+      await _arKitChannel.invokeMethod<void>(
+        'setPhotoCardsVisible',
+        <String, dynamic>{'visible': _photoCardsVisible},
+      );
+    } catch (_) {
+      // Display-only channel — never let it disturb capture.
+    }
+  }
+
+  Future<void> _toggleCoverageDots() async {
+    setState(() => _coverageDotsVisible = !_coverageDotsVisible);
+    try {
+      await _arKitChannel.invokeMethod<void>(
+        'setFeaturePointsVisible',
+        <String, dynamic>{'visible': _coverageDotsVisible},
+      );
+    } catch (_) {}
+    if (_coverageDotsVisible) {
+      // 隐藏期 native 丢弃推送防旧云;重开必须立刻补推当前全量状态——
+      // 用户规格:显示最新计算结果,不能等用户再拍一张才恢复。
+      await _pushCoverageCloud();
+    }
   }
 
   /// Ships the current coverage state to the native dumb renderer.
@@ -2391,18 +2425,51 @@ class _ARCapturePageState extends State<ARCapturePage>
               bottom: 0,
               child: SafeArea(
                 top: false,
-                child: _ManualCaptureBar(
-                  targetPoints: _targetPoints,
-                  // 07-12 签决:快门彻底不限流 —— 只要在录制就永远可拍,
-                  // 绝不因队列深度/热态置灰(积压走磁盘 spool 队列,不回压快门)。
-                  ready: _recording,
-                  capturing: _capturing,
-                  finishing: _finalizingRecording,
-                  onShutter: _onShutterTap,
-                  onOpenAlbum: _openAlbum,
-                  // 补强2:完成前先过 starved 把关门(_onFinishTap),
-                  // 通过后才走原 _finalizeRecording,原流程一个字不改。
-                  onFinish: _finalizingRecording ? null : _onFinishTap,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // RS 复刻:快门上方两个独立显示开关(照片卡片/覆盖点)。
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          _DisplayToggleButton(
+                            onTap: _togglePhotoCards,
+                            child: Icon(
+                              Icons.photo_outlined,
+                              size: 26,
+                              color: _photoCardsVisible
+                                  ? const Color(0xFFF5B821)
+                                  : Colors.white54,
+                            ),
+                          ),
+                          const SizedBox(width: 64),
+                          _DisplayToggleButton(
+                            onTap: _toggleCoverageDots,
+                            child: _NineDotIcon(
+                              color: _coverageDotsVisible
+                                  ? const Color(0xFFF5B821)
+                                  : Colors.white54,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    _ManualCaptureBar(
+                      targetPoints: _targetPoints,
+                      // 07-12 签决:快门彻底不限流 —— 只要在录制就永远可拍,
+                      // 绝不因队列深度/热态置灰(积压走磁盘 spool 队列,不回压快门)。
+                      ready: _recording,
+                      capturing: _capturing,
+                      finishing: _finalizingRecording,
+                      onShutter: _onShutterTap,
+                      onOpenAlbum: _openAlbum,
+                      // 补强2:完成前先过 starved 把关门(_onFinishTap),
+                      // 通过后才走原 _finalizeRecording,原流程一个字不改。
+                      onFinish: _finalizingRecording ? null : _onFinishTap,
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -2862,6 +2929,61 @@ class _PhotoPositionCard extends StatelessWidget {
       ),
     );
   }
+}
+
+/// RS 复刻显示开关的按钮壳:44×44 点击区,纯显示层,无任何业务副作用。
+class _DisplayToggleButton extends StatelessWidget {
+  const _DisplayToggleButton({required this.onTap, required this.child});
+
+  final VoidCallback onTap;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: SizedBox(width: 44, height: 44, child: Center(child: child)),
+    );
+  }
+}
+
+/// 3×3 九点图标(覆盖点显示开关)。规格(2026-07-19):图标恒定单色——
+/// 开=全黄、关=灰;绝不出现绿色圆点(不映射实时覆盖色)。
+class _NineDotIcon extends StatelessWidget {
+  const _NineDotIcon({required this.color});
+
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(size: const Size(24, 24), painter: _NineDotPainter(color));
+  }
+}
+
+class _NineDotPainter extends CustomPainter {
+  const _NineDotPainter(this.color);
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = color;
+    final step = size.width / 3;
+    final r = step * 0.30;
+    for (var row = 0; row < 3; row++) {
+      for (var col = 0; col < 3; col++) {
+        canvas.drawCircle(
+          Offset(step * (col + 0.5), step * (row + 0.5)),
+          r,
+          paint,
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_NineDotPainter oldDelegate) => oldDelegate.color != color;
 }
 
 /// RealityScan-style bottom capture bar: latest-photo album thumbnail (left),

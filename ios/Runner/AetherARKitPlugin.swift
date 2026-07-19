@@ -152,6 +152,12 @@ class AetherARKitPlugin: NSObject {
   /// view can read it, mirroring the photoCardSpecs sharing pattern.
   static var featurePointsVisible: Bool = false
 
+  /// RS 复刻显示开关(2026-07-19 用户规格):AR 照片卡片可见性。display-only
+  /// ——只隐藏卡片节点,照片/AR 锚点/拍摄记录/SfM 数据全不动;隐藏期间照常
+  /// 拍照建卡(生成即隐藏),重开即全量回显。isHidden 在渲染循环逐帧幂等
+  /// 套用(见 updateAtTime),与 featurePointsVisible 各自独立、非二选一。
+  static var photoCardsVisible: Bool = true
+
   /// T6 v2 — capture-coverage cloud DISPLAY buffer. Per the algorithm-
   /// executor boundary (see ARFrameSaveSpec.dartOwns), ALL coverage policy —
   /// which points exist, how many photos covered each, the red→yellow→green
@@ -794,6 +800,13 @@ class AetherARKitPlugin: NSObject {
           ?? false
       AetherARKitPlugin.featurePointsVisible = visible
       NSLog("[AetherARKit] setFeaturePointsVisible=\(visible)")
+      result(nil)
+    case "setPhotoCardsVisible":
+      let visible =
+        ((call.arguments as? [String: Any])?["visible"] as? NSNumber)?.boolValue
+          ?? true
+      AetherARKitPlugin.photoCardsVisible = visible
+      NSLog("[AetherARKit] setPhotoCardsVisible=\(visible)")
       result(nil)
     case "telemetryCaptureBegin":
       // 遥测 F【resource】:拍摄页进入 → 10s 定时资源采样
@@ -2912,6 +2925,9 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
     guard !photoCardNodes.isEmpty, let cam = renderer.pointOfView else { return }
     let camPos = cam.simdWorldPosition
     for card in photoCardNodes.values {
+      // RS 复刻显示开关:逐帧幂等套用可见性 —— 隐藏期新建的卡片下一帧即
+      // 隐藏,重开下一帧全量回显,无需遍历时机协调。
+      card.isHidden = !AetherARKitPlugin.photoCardsVisible
       // 距离补偿缩放(签决,常量注释见 photoCardDistanceBeta):
       // d ≤ d0(1m)→ scale=1 保持原透视;d > d0 → scale=(d/d0)^β,
       // 视觉大小 ∝ d^(β-1)=d^-0.5 —— 近大远小保持、远处衰减变缓,
