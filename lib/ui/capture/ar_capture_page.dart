@@ -41,6 +41,7 @@ import '../../capture/floater_filter.dart';
 import '../../capture/ghost_view_filter.dart';
 import '../../capture/parallax_banner_gate.dart';
 import '../../capture/photo_card_state.dart';
+import '../../capture/capture_format.dart';
 import '../../capture/pw_telemetry.dart';
 import '../../capture/representative_color.dart';
 import '../../capture/shutter_backpressure_gate.dart';
@@ -2530,10 +2531,22 @@ class _ARCapturePageState extends State<ARCapturePage>
     // strategy. Other platforms fall back to a dark backdrop until a
     // platform-specific preview is wired (Android ARCore / HarmonyOS).
     if (defaultTargetPlatform == TargetPlatform.iOS) {
-      return const UiKitView(
-        viewType: 'aether_arkit_preview',
-        creationParams: <String, dynamic>{},
-        creationParamsCodec: StandardMessageCodec(),
+      // [E24 S2] WYSIWYG 取景(用户规格 2026-07-19):预览画幅恒等于照片
+      // 画幅(photo43=3:4,4k=9:16),RS 式等比居中、上下留 UI 区。视频帧
+      // 与静照同画幅,AspectRatio 使 SceneKit 的 aspect-fill 恰为无裁切
+      // (fill==fit);物理边界:静照视场比预览多 ~5% 边缘余量,只多不少。
+      return const ColoredBox(
+        color: Color(0xFF000000),
+        child: Center(
+          child: AspectRatio(
+            aspectRatio: pwPreviewAspect,
+            child: UiKitView(
+              viewType: 'aether_arkit_preview',
+              creationParams: <String, dynamic>{},
+              creationParamsCodec: StandardMessageCodec(),
+            ),
+          ),
+        ),
       );
     }
     return const ColoredBox(color: Color(0xFF111113));

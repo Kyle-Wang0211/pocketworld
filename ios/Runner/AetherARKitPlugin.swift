@@ -570,6 +570,9 @@ class AetherARKitPlugin: NSObject {
         ?? Self.defaultSaveMaxTimestampDelta
       let metadataSchemaVersion = (args["metadataSchemaVersion"] as? NSNumber)?.intValue ?? 1
       let dartSaveContract = args["dartSaveContract"] as? [String: Any]
+      // [E24 S2] feedSfm: 静照即证据模式 —— 载荷附带全分辨率 SfM 灰度喂图
+      // (photo==fed 的 1:1 不变量在 12MP 世界恢复)。
+      let feedSfm = (args["feedSfm"] as? NSNumber)?.boolValue ?? false
       captureHighResolutionStill(
         highresPath: highresPath,
         previewPath: previewPath,
@@ -578,7 +581,8 @@ class AetherARKitPlugin: NSObject {
         targetTimestamp: targetTimestamp,
         maxTimestampDelta: maxTimestampDelta,
         metadataSchemaVersion: metadataSchemaVersion,
-        dartSaveContract: dartSaveContract
+        dartSaveContract: dartSaveContract,
+        feedSfm: feedSfm
       ) { payload, error in
         if let error = error {
           result(FlutterError(
@@ -1415,6 +1419,7 @@ class AetherARKitPlugin: NSObject {
       AetherARKitPlugin.defaultSaveMaxTimestampDelta,
     metadataSchemaVersion: Int = 1,
     dartSaveContract: [String: Any]? = nil,
+    feedSfm: Bool = false,
     completion: @escaping ([String: Any]?, Error?) -> Void
   ) {
     guard let session = arSession else {
@@ -1601,6 +1606,17 @@ class AetherARKitPlugin: NSObject {
             }
             if let gray128 {
               payload["q_gray128"] = FlutterStandardTypedData(bytes: gray128)
+            }
+            // [E24 S2] 静照即证据:全分辨率灰度(4032≤sfmFeedMaxSide=4224,
+            // 不降采样)+ 静照自己的位姿/内参已在载荷 —— Dart 据此组
+            // SfmFrameFeed 喂流式 SfM,与 saveCurrentFrame 的 sfm_gray
+            // 键语义逐字一致。
+            if feedSfm, let g = Self.extractGrayAspect(
+              pixelBuffer, maxSide: Self.sfmFeedMaxSide
+            ) {
+              payload["sfm_gray"] = FlutterStandardTypedData(bytes: g.data)
+              payload["sfm_gray_w"] = g.width
+              payload["sfm_gray_h"] = g.height
             }
             DispatchQueue.main.async { completion(payload, nil) }
           } catch {

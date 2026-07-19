@@ -51,6 +51,7 @@ import 'package:flutter/widgets.dart' show Offset;
 import 'package:path_provider/path_provider.dart';
 
 import '../dome/ar_pose.dart';
+import 'capture_format.dart';
 import '../dome/platform_pose_provider.dart';
 import '../quality/frame_quality_constants.dart';
 import '../quality/guidance_engine.dart';
@@ -1384,75 +1385,110 @@ class CaptureSession {
 
     _pendingPhotoSaveCount += 1;
     try {
-      // INSTANT capture: encode the in-hand continuous ARFrame (4K, ~8.3 MP),
-      // NOT captureHighResolutionFrame. The high-res API momentarily RECONFIGURES
-      // the camera on every tap, which (a) stalls the shutter ~1-2 s ("loading"),
-      // (b) jolts world tracking → the AR card jumps, (c) heats the device. The
-      // continuous frame is already buffered; saveCurrentFrame just encodes the
-      // timestamp-matched snapshot. DA3/SfM downsample to ~2 K, so 4 K vs the
-      // 10 MP out-of-band still is immaterial for the pipeline. (Native
-      // captureHighResolutionStill is retained but no longer on the hot path.)
-      final saveResult = await poseProvider.saveCurrentFrame(saveSpec);
-      // Live-SfM feed: hand the frame-exact gray+intrinsics to whoever is
-      // running the capture-time reconstruction. Fire-and-forget — the SfM
-      // queue applies its own backpressure and NEVER gates the shutter.
-      final sfmFeed = saveResult.sfmFrame;
-      if (saveResult.saved && sfmFeed != null && !_sfmFrameCtrl.isClosed) {
-        // Attach the JPEG path so the preview can colorize reconstructed
-        // points by sampling the actual photo.
-        _sfmFrameCtrl.add(sfmFeed.withJpegPath(jpegPath));
-      }
-      // ── 12MP 静照(甲案落地第一步):4K 已落盘、SfM 已喂图之后才触发
-      // (顺序保证相机重配不影响本 tap 的 4K 帧)。SfM 喂图与取色仍走
-      // 4K 路(认证检测配置 3840×2160、photo==fed 的 1:1 取色不变量都
-      // 不动);静照与其位姿元数据存 `_hr.jpg` / `_hr.json`,供 finalize/
-      // 交付纹理侧消费。fed jsonl 的 jpegPath 不指向 _hr(静照是另一
-      // 时刻另一位姿的图,直接混用会破 1:1 采样——07-19 E22 实测教训)。
-      if (saveResult.saved && !_hiresStillInFlight) {
-        _hiresStillInFlight = true;
+      // [E24 S2 2026-07-19] 证据模式分支(单一事实源 capture_format.dart):
+      //   pwPhoto43(hires43,默认):静照即证据 —— 4032×3024 12MP 4:3
+      //     直接作为主图落盘 jpegPath;元数据 sidecar 走同一 saveSpec 契约
+      //     (键表与视频帧路完全一致,Plan H 契约);SfM 喂图取自静照全分
+      //     辨率灰度(feedSfm)—— photo==fed 的 1:1 取色不变量在 12MP 世界
+      //     恢复。失败降级 saveCurrentFrame(1440p 视频帧),宁降不丢 tap。
+      //   '4k'(回退,S3 九门对照用):旧认证世界逐字保留 —— 视频帧即
+      //     证据 + 旁存 _hr 静照。
+      var savedOk = false;
+      if (pwPhoto43) {
         _hiresStillStarted++;
-        final hrPath = '$photosDir/${photoBase}_hr.jpg';
-        final hrPreviewPath =
-            '${_previewsDir ?? photosDir}/${photoBase}_hr_preview.jpg';
-        unawaited(
-          poseProvider
-              .captureHighResolutionStill(
-                highresPath: hrPath,
-                previewPath: hrPreviewPath,
-                triggerTimestamp: pose.timestamp,
-              )
-              .then<void>((still) async {
-                if (still == null) {
-                  _hiresStillFailed++;
-                  return;
-                }
-                _hiresStillOk++;
-                // 位姿/内参 sidecar:未来 4:3↔16:9 跨内参映射的唯一依据。
-                await File('$photosDir/${photoBase}_hr.json').writeAsString(
-                  jsonEncode(<String, dynamic>{
-                    'schema': 'hires_still_sidecar_v1',
-                    'highresPath': hrPath,
-                    'timestamp': still.timestamp,
-                    'imageWidth': still.imageWidth,
-                    'imageHeight': still.imageHeight,
-                    'cameraTransform': still.cameraTransform,
-                    'intrinsics': still.intrinsics,
-                    'captureKind': still.captureKind,
-                    'poseSyncQuality': still.poseSyncQuality,
-                    'trackingStateName': still.trackingStateName,
-                    'triggerTimestamp': pose.timestamp,
-                  }),
-                );
-              })
-              .catchError((Object _) {
-                _hiresStillFailed++;
-              })
-              .whenComplete(() {
-                _hiresStillInFlight = false;
-              }),
+        final previewPath = '${_previewsDir ?? photosDir}/$photoBase.jpg';
+        final still = await poseProvider.captureHighResolutionStill(
+          highresPath: jpegPath,
+          previewPath: previewPath,
+          triggerTimestamp: pose.timestamp,
+          saveSpec: saveSpec,
+          feedSfm: true,
         );
+        if (still != null) {
+          _hiresStillOk++;
+          savedOk = true;
+          final g = still.sfmGray;
+          if (g != null &&
+              still.sfmGrayW != null &&
+              still.sfmGrayH != null &&
+              !_sfmFrameCtrl.isClosed) {
+            _sfmFrameCtrl.add(
+              SfmFrameFeed(
+                gray: g,
+                grayW: still.sfmGrayW!,
+                grayH: still.sfmGrayH!,
+                imageW: still.imageWidth,
+                imageH: still.imageHeight,
+                intrinsicFxFyCxCy: still.intrinsics,
+                extrinsic4x4: still.cameraTransform,
+                timestamp: still.timestamp,
+                jpegPath: jpegPath,
+              ),
+            );
+          }
+        } else {
+          _hiresStillFailed++;
+          final saveResult = await poseProvider.saveCurrentFrame(saveSpec);
+          savedOk = saveResult.saved;
+          final sfmFeed = saveResult.sfmFrame;
+          if (savedOk && sfmFeed != null && !_sfmFrameCtrl.isClosed) {
+            _sfmFrameCtrl.add(sfmFeed.withJpegPath(jpegPath));
+          }
+        }
+      } else {
+        // '4k' 回退:INSTANT capture(视频帧即时编码)+ SfM 喂图 + 旁存
+        // _hr 静照(语义与 E24 前逐字一致)。
+        final saveResult = await poseProvider.saveCurrentFrame(saveSpec);
+        savedOk = saveResult.saved;
+        final sfmFeed = saveResult.sfmFrame;
+        if (savedOk && sfmFeed != null && !_sfmFrameCtrl.isClosed) {
+          _sfmFrameCtrl.add(sfmFeed.withJpegPath(jpegPath));
+        }
+        if (savedOk && !_hiresStillInFlight) {
+          _hiresStillInFlight = true;
+          _hiresStillStarted++;
+          final hrPath = '$photosDir/${photoBase}_hr.jpg';
+          final hrPreviewPath =
+              '${_previewsDir ?? photosDir}/${photoBase}_hr_preview.jpg';
+          unawaited(
+            poseProvider
+                .captureHighResolutionStill(
+                  highresPath: hrPath,
+                  previewPath: hrPreviewPath,
+                  triggerTimestamp: pose.timestamp,
+                )
+                .then<void>((still) async {
+                  if (still == null) {
+                    _hiresStillFailed++;
+                    return;
+                  }
+                  _hiresStillOk++;
+                  await File('$photosDir/${photoBase}_hr.json').writeAsString(
+                    jsonEncode(<String, dynamic>{
+                      'schema': 'hires_still_sidecar_v1',
+                      'highresPath': hrPath,
+                      'timestamp': still.timestamp,
+                      'imageWidth': still.imageWidth,
+                      'imageHeight': still.imageHeight,
+                      'cameraTransform': still.cameraTransform,
+                      'intrinsics': still.intrinsics,
+                      'captureKind': still.captureKind,
+                      'poseSyncQuality': still.poseSyncQuality,
+                      'trackingStateName': still.trackingStateName,
+                      'triggerTimestamp': pose.timestamp,
+                    }),
+                  );
+                })
+                .catchError((Object _) {
+                  _hiresStillFailed++;
+                })
+                .whenComplete(() {
+                  _hiresStillInFlight = false;
+                }),
+          );
+        }
       }
-      if (saveResult.saved && await _hasCompleteArFrameSidecar(metadataPath)) {
+      if (savedOk && await _hasCompleteArFrameSidecar(metadataPath)) {
         targetPoints.stampJpegPath(
           cellIdx: admit.cellIdx,
           slotIdx: admit.slotIdx,
@@ -1465,7 +1501,7 @@ class CaptureSession {
       // the AR sidecar is incomplete (degraded tracking / IMU dead-reckoning).
       // Downstream pose-quality filtering is a separate concern; losing the
       // user's photo here is not acceptable.
-      if (saveResult.saved && await File(jpegPath).exists()) {
+      if (savedOk && await File(jpegPath).exists()) {
         // ignore: avoid_print
         print('[CaptureSession] manual photo retained (sidecar incomplete): '
             '$jpegPath');
