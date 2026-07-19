@@ -513,7 +513,12 @@ class _ARCapturePageState extends State<ARCapturePage>
     try {
       // resume:true → native keeps the world map + photo-card anchors (no
       // resetTracking / removeExistingAnchors) so the AR cards survive.
-      await _arKitChannel.invokeMethod<void>('startSession', {'resume': true});
+      await _arKitChannel.invokeMethod<void>('startSession', {
+        'resume': true,
+        // [E24 修复] 恢复路径必须带格式模式,否则 native 缺参回落 4K,
+        // 同一采集里混入 16:9/4:3 两种内参帧(2026-07-19 真机实锤)。
+        'videoFormatMode': pwVideoFormat,
+      });
       if (!mounted) return;
       if (_recording) {
         // Continue the SAME capture (session still _started, photos intact).
@@ -788,6 +793,9 @@ class _ARCapturePageState extends State<ARCapturePage>
   // 拍照、覆盖率计算、点云更新、质量判断、重建全部照常;两开关相互独立。
   bool _photoCardsVisible = true; // 左:AR 照片卡片(照片图标)
   bool _coverageDotsVisible = true; // 右:彩色覆盖点(3×3 九点图标,恒黄)
+  // RS 复刻:开关面板可收起(chevron)。展开=灰底条遮住取景下缘(RS 同);
+  // 收起=面板隐藏、取景 4:3 全露,仅留 chevron 小舌。纯显示状态。
+  bool _displayPanelExpanded = true;
 
   Future<void> _togglePhotoCards() async {
     setState(() => _photoCardsVisible = !_photoCardsVisible);
@@ -2429,34 +2437,62 @@ class _ARCapturePageState extends State<ARCapturePage>
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    // RS 复刻:快门上方两个独立显示开关(照片卡片/覆盖点)。
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          _DisplayToggleButton(
-                            onTap: _togglePhotoCards,
-                            child: Icon(
-                              Icons.photo_outlined,
-                              size: 26,
-                              color: _photoCardsVisible
-                                  ? const Color(0xFFF5B821)
-                                  : Colors.white54,
+                    // RS 复刻:开关面板(灰底条,chevron 可收起/升起)。
+                    Center(
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => setState(
+                          () => _displayPanelExpanded = !_displayPanelExpanded,
+                        ),
+                        child: Container(
+                          width: 56,
+                          height: 22,
+                          decoration: const BoxDecoration(
+                            color: Color(0xCC1C1C20),
+                            borderRadius: BorderRadius.vertical(
+                              top: Radius.circular(11),
                             ),
                           ),
-                          const SizedBox(width: 64),
-                          _DisplayToggleButton(
-                            onTap: _toggleCoverageDots,
-                            child: _NineDotIcon(
-                              color: _coverageDotsVisible
-                                  ? const Color(0xFFF5B821)
-                                  : Colors.white54,
-                            ),
+                          child: Icon(
+                            _displayPanelExpanded
+                                ? Icons.keyboard_arrow_down_rounded
+                                : Icons.keyboard_arrow_up_rounded,
+                            size: 20,
+                            color: Colors.white70,
                           ),
-                        ],
+                        ),
                       ),
                     ),
+                    if (_displayPanelExpanded)
+                      Container(
+                        width: double.infinity,
+                        color: const Color(0xE61C1C20),
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            _DisplayToggleButton(
+                              onTap: _togglePhotoCards,
+                              child: Icon(
+                                Icons.photo_outlined,
+                                size: 26,
+                                color: _photoCardsVisible
+                                    ? const Color(0xFFF5B821)
+                                    : Colors.white54,
+                              ),
+                            ),
+                            const SizedBox(width: 96),
+                            _DisplayToggleButton(
+                              onTap: _toggleCoverageDots,
+                              child: _NineDotIcon(
+                                color: _coverageDotsVisible
+                                    ? const Color(0xFFF5B821)
+                                    : Colors.white54,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     _ManualCaptureBar(
                       targetPoints: _targetPoints,
                       // 07-12 签决:快门彻底不限流 —— 只要在录制就永远可拍,

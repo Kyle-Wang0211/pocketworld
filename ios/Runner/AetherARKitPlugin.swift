@@ -476,9 +476,11 @@ class AetherARKitPlugin: NSObject {
         // [E24 探针 2026-07-19] videoFormatMode: "4k"(默认,现行为)|
         // "default43"(跳过 4K 覆盖,留系统默认 1920×1440 4:3 —— 测它的
         // out-of-band 静照分辨率与 tracking 健康;dart-define 门控,默认关)。
+        // 缺参时保持现值(而非重置 4k):恢复/内部重启路径不得改变用户
+        // 会话格式 —— 2026-07-19 切后台重进混内参 bug 的第二道保险。
         AetherARKitPlugin.videoFormatMode =
           ((call.arguments as? [String: Any])?["videoFormatMode"] as? String)
-            ?? "4k"
+            ?? AetherARKitPlugin.videoFormatMode
         try startSession(resetWorld: !resume)
         result(nil)
       } catch {
@@ -736,9 +738,16 @@ class AetherARKitPlugin: NSObject {
       let invView = camera.viewMatrix(for: .portrait).inverse
       // View space: +X right, +Y up, -Z forward.
       let halfX = z / proj.columns.0.x
-      let halfY = z / proj.columns.1.y
-      NSLog("[PHOTOCARD] addPhotoCard viewport=%.0fx%.0f z=%.2f halfX=%.3f halfY=%.3f",
-            viewportSize.width, viewportSize.height, z, halfX, halfY)
+      // [E24 修复 2026-07-19] 卡片 quad = 照片画幅(WYSIWYG):photo43→3:4、
+      // 4k→9:16(竖屏 w/h)。旧实现取整块屏幕视口(~19.5:9)→ 卡片是
+      // "屏幕形状"而非照片形状、贴图被裁;对齐照片画幅后,渲染器的通用
+      // UV 裁切(texAspect vs quadAspect)自动退化为恒等。宽度保持视口宽
+      // (与取景等宽),高度由画幅推出。
+      let cardPortraitAspect: Float =
+        AetherARKitPlugin.videoFormatMode == "hires43" ? 3.0 / 4.0 : 9.0 / 16.0
+      let halfY = halfX / cardPortraitAspect
+      NSLog("[PHOTOCARD] addPhotoCard viewport=%.0fx%.0f z=%.2f halfX=%.3f halfY=%.3f aspect=%.3f",
+            viewportSize.width, viewportSize.height, z, halfX, halfY, cardPortraitAspect)
       // Screen order TL, TR, BR, BL (matches texUVs in the renderer).
       let viewCornersV: [simd_float4] = [
         simd_float4(-halfX,  halfY, -z, 1),   // TL
