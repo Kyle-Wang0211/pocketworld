@@ -121,6 +121,10 @@ class _ARCapturePageState extends State<ARCapturePage>
 
   /// True while a single manual still is being saved (shutter disabled).
   bool _capturing = false;
+  // [12MP 快门排队 2026-07-19] 12MP 静照拍照 ~400ms,期间的每一次 tap 都记入
+  // 计数器(不是bool——bool只补1张会丢连点),当前拍完按计数逐张补拍,点几下
+  // 出几张、一张不丢。纯 UI 层重入排队,不碰拍照/卡片时序。上限8防误触狂点。
+  int _queuedShutterTaps = 0;
 
   // ─── Capture-time streaming SfM (live sparse reconstruction) ──────
   // Worker handle + event plumbing. All heavy calls live in the worker
@@ -787,6 +791,9 @@ class _ARCapturePageState extends State<ARCapturePage>
   // 拍照、覆盖率计算、点云更新、质量判断、重建全部照常;两开关相互独立。
   bool _photoCardsVisible = true; // 左:AR 照片卡片(照片图标)
   bool _coverageDotsVisible = true; // 右:彩色覆盖点(3×3 九点图标,恒黄)
+  // RS 复刻:两图标面板可收起(chevron)。展开=灰底条露两图标;收起=只留
+  // chevron 小舌、面板隐藏。纯显示状态,不碰卡片/拍照/覆盖数据(参考 eb0e1c1)。
+  bool _displayPanelExpanded = true;
 
   Future<void> _togglePhotoCards() async {
     setState(() => _photoCardsVisible = !_photoCardsVisible);
@@ -1819,10 +1826,13 @@ class _ARCapturePageState extends State<ARCapturePage>
   /// Shutter tap → capture exactly ONE high-res still (RealityScan manual).
   Future<void> _onShutterTap() async {
     final session = _session;
-    // 07-12 签决:快门彻底不限流 —— 队列多深/多热都立即可拍。唯一门是
-    // `_capturing`(单张在途,防止一次点按连拍两张,这是重入保护不是背压)。
-    // 拥塞标签仍刷新一次(纯遥测,不阻挡),便于事后画积压曲线。
-    if (session == null || !_recording || _capturing) return;
+    // 07-12 签决:快门彻底不限流。`_capturing` 是单张在途重入保护。
+    // [12MP 排队] 在途时不丢弃 tap —— 记一个 pending,当前拍完在 finally 补拍。
+    if (session == null || !_recording) return;
+    if (_capturing) {
+      if (_queuedShutterTaps < 8) _queuedShutterTaps++;
+      return;
+    }
     _recomputeShutterPace();
     setState(() => _capturing = true);
     final shutterSw = Stopwatch()..start();
@@ -1859,6 +1869,11 @@ class _ARCapturePageState extends State<ARCapturePage>
       }
     } finally {
       if (mounted) setState(() => _capturing = false);
+      // [12MP 排队] 在途期间点过几下 → 逐张补拍(计数器,一张不丢)。
+      if (_queuedShutterTaps > 0 && mounted && _recording) {
+        _queuedShutterTaps--;
+        unawaited(_onShutterTap());
+      }
     }
   }
 
@@ -2428,34 +2443,62 @@ class _ARCapturePageState extends State<ARCapturePage>
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    // RS 复刻:快门上方两个独立显示开关(照片卡片/覆盖点)。
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          _DisplayToggleButton(
-                            onTap: _togglePhotoCards,
-                            child: Icon(
-                              Icons.photo_outlined,
-                              size: 26,
-                              color: _photoCardsVisible
-                                  ? const Color(0xFFF5B821)
-                                  : Colors.white54,
+                    // RS 复刻:快门上方两图标显示开关 + 可收起面板(chevron)。
+                    Center(
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => setState(
+                          () => _displayPanelExpanded = !_displayPanelExpanded,
+                        ),
+                        child: Container(
+                          width: 56,
+                          height: 22,
+                          decoration: const BoxDecoration(
+                            color: Color(0xCC1C1C20),
+                            borderRadius: BorderRadius.vertical(
+                              top: Radius.circular(11),
                             ),
                           ),
-                          const SizedBox(width: 64),
-                          _DisplayToggleButton(
-                            onTap: _toggleCoverageDots,
-                            child: _NineDotIcon(
-                              color: _coverageDotsVisible
-                                  ? const Color(0xFFF5B821)
-                                  : Colors.white54,
-                            ),
+                          child: Icon(
+                            _displayPanelExpanded
+                                ? Icons.keyboard_arrow_down_rounded
+                                : Icons.keyboard_arrow_up_rounded,
+                            size: 20,
+                            color: Colors.white70,
                           ),
-                        ],
+                        ),
                       ),
                     ),
+                    if (_displayPanelExpanded)
+                      Container(
+                        width: double.infinity,
+                        color: const Color(0xE61C1C20),
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            _DisplayToggleButton(
+                              onTap: _togglePhotoCards,
+                              child: Icon(
+                                Icons.photo_outlined,
+                                size: 26,
+                                color: _photoCardsVisible
+                                    ? const Color(0xFFF5B821)
+                                    : Colors.white54,
+                              ),
+                            ),
+                            const SizedBox(width: 96),
+                            _DisplayToggleButton(
+                              onTap: _toggleCoverageDots,
+                              child: _NineDotIcon(
+                                color: _coverageDotsVisible
+                                    ? const Color(0xFFF5B821)
+                                    : Colors.white54,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     _ManualCaptureBar(
                       targetPoints: _targetPoints,
                       // 07-12 签决:快门彻底不限流 —— 只要在录制就永远可拍,
@@ -3047,7 +3090,10 @@ class _ManualCaptureBar extends StatelessWidget {
                   child: _ShutterButton(
                     busy: capturing,
                     enabled: ready,
-                    onTap: (ready && !capturing) ? onShutter : null,
+                    // [12MP 排队 2026-07-19] 拍照中(capturing)也接收点击 ——
+                    // 不再 null 禁用;点击传进 _onShutterTap 由 _shutterQueued
+                    // 排队补拍,一张不丢(真凶:12MP 静照~400ms内点击被丢弃)。
+                    onTap: ready ? onShutter : null,
                   ),
                 ),
               ),

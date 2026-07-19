@@ -328,6 +328,9 @@ class HighResolutionStillCapture {
     this.captureKind = 'arkit_high_res_still',
     this.poseSyncQuality = 'ar_session_high_res_frame',
     this.trackingStateName,
+    this.sfmGray,
+    this.sfmGrayW,
+    this.sfmGrayH,
   });
 
   final String highresPath;
@@ -342,6 +345,12 @@ class HighResolutionStillCapture {
   final String captureKind;
   final String poseSyncQuality;
   final String? trackingStateName;
+
+  /// [E24 S2] 静照即证据:native feedSfm=true 时返回的全分辨率灰度
+  /// (row-major top-down 8-bit),供 Dart 组 SfmFrameFeed 喂流式 SfM。
+  final Uint8List? sfmGray;
+  final int? sfmGrayW;
+  final int? sfmGrayH;
 }
 
 class ARFrameSaveSpec {
@@ -560,6 +569,7 @@ abstract class ARPoseProvider {
     double? triggerTimestamp,
     double quality = 0.92,
     ARFrameSaveSpec? saveSpec,
+    bool feedSfm = false,
   });
 
   /// Stop the AR session. Does not dispose the provider; a subsequent

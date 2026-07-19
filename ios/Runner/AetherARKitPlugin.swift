@@ -143,6 +143,9 @@ class AetherARKitPlugin: NSObject {
     let captureCamPos: simd_float3  // camera world position AT CAPTURE (shrink reference)
   }
   static var photoCardSpecs: [String: PhotoCardSpec] = [:]
+  // [瞬时快门 2026-07-19] 卡片缩略图解码重试计数:photo43 下 12MP 静照后台
+  // 落盘,didAdd 建卡时文件可能还没写完;每 150ms 重试直到落盘(最多~4.5s)。
+  static var photoCardThumbRetries: [String: Int] = [:]
   private static var photoCardAnchors: [ARAnchor] = []
   private static var photoCardCounter = 0
 
@@ -476,9 +479,11 @@ class AetherARKitPlugin: NSObject {
         // [E24 探针 2026-07-19] videoFormatMode: "4k"(默认,现行为)|
         // "default43"(跳过 4K 覆盖,留系统默认 1920×1440 4:3 —— 测它的
         // out-of-band 静照分辨率与 tracking 健康;dart-define 门控,默认关)。
+        // 缺参时保持现值(而非重置 4k):恢复/内部重启路径不得改变用户
+        // 会话格式 —— 2026-07-19 切后台重进混内参 bug 的第二道保险。
         AetherARKitPlugin.videoFormatMode =
           ((call.arguments as? [String: Any])?["videoFormatMode"] as? String)
-            ?? "4k"
+            ?? AetherARKitPlugin.videoFormatMode
         try startSession(resetWorld: !resume)
         result(nil)
       } catch {
@@ -570,6 +575,9 @@ class AetherARKitPlugin: NSObject {
         ?? Self.defaultSaveMaxTimestampDelta
       let metadataSchemaVersion = (args["metadataSchemaVersion"] as? NSNumber)?.intValue ?? 1
       let dartSaveContract = args["dartSaveContract"] as? [String: Any]
+      // [E24 S2] feedSfm: 静照即证据模式 —— 载荷附带全分辨率 SfM 灰度喂图
+      // (photo==fed 的 1:1 不变量在 12MP 世界恢复)。
+      let feedSfm = (args["feedSfm"] as? NSNumber)?.boolValue ?? false
       captureHighResolutionStill(
         highresPath: highresPath,
         previewPath: previewPath,
@@ -578,7 +586,8 @@ class AetherARKitPlugin: NSObject {
         targetTimestamp: targetTimestamp,
         maxTimestampDelta: maxTimestampDelta,
         metadataSchemaVersion: metadataSchemaVersion,
-        dartSaveContract: dartSaveContract
+        dartSaveContract: dartSaveContract,
+        feedSfm: feedSfm
       ) { payload, error in
         if let error = error {
           result(FlutterError(
@@ -732,6 +741,8 @@ class AetherARKitPlugin: NSObject {
       let invView = camera.viewMatrix(for: .portrait).inverse
       // View space: +X right, +Y up, -Z forward.
       let halfX = z / proj.columns.0.x
+      // [第一步:12MP 4:3 照片,卡片几何保持 909a6a2 原样=填满屏幕视口贴镜头]
+      // 预览 4:3 与卡片按画幅对齐留到第二步(须按预览实际 letterbox 视口算)。
       let halfY = z / proj.columns.1.y
       NSLog("[PHOTOCARD] addPhotoCard viewport=%.0fx%.0f z=%.2f halfX=%.3f halfY=%.3f",
             viewportSize.width, viewportSize.height, z, halfX, halfY)
@@ -1415,6 +1426,7 @@ class AetherARKitPlugin: NSObject {
       AetherARKitPlugin.defaultSaveMaxTimestampDelta,
     metadataSchemaVersion: Int = 1,
     dartSaveContract: [String: Any]? = nil,
+    feedSfm: Bool = false,
     completion: @escaping ([String: Any]?, Error?) -> Void
   ) {
     guard let session = arSession else {
@@ -1601,6 +1613,17 @@ class AetherARKitPlugin: NSObject {
             }
             if let gray128 {
               payload["q_gray128"] = FlutterStandardTypedData(bytes: gray128)
+            }
+            // [E24 S2] 静照即证据:全分辨率灰度(4032≤sfmFeedMaxSide=4224,
+            // 不降采样)+ 静照自己的位姿/内参已在载荷 —— Dart 据此组
+            // SfmFrameFeed 喂流式 SfM,与 saveCurrentFrame 的 sfm_gray
+            // 键语义逐字一致。
+            if feedSfm, let g = Self.extractGrayAspect(
+              pixelBuffer, maxSide: Self.sfmFeedMaxSide
+            ) {
+              payload["sfm_gray"] = FlutterStandardTypedData(bytes: g.data)
+              payload["sfm_gray_w"] = g.width
+              payload["sfm_gray_h"] = g.height
             }
             DispatchQueue.main.async { completion(payload, nil) }
           } catch {
@@ -2876,9 +2899,23 @@ class AetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
             URL(fileURLWithPath: spec.path) as CFURL, nil),
           let thumbCG = CGImageSourceCreateThumbnailAtIndex(
             imgSrc, 0, thumbOpts as CFDictionary) else {
-      NSLog("[PHOTOCARD] renderer: thumbnail decode FAILED for %@", name)
+      // [瞬时快门] 12MP 静照后台落盘,文件可能还没写完 → 解码读空。卡片
+      // 锚点/几何已建好(贴镜头),只差纹理;每 150ms 重试直到落盘(最多
+      // 30 次~4.5s)。位姿/几何在 spec 里,重试不动位姿。
+      let tries = AetherARKitPlugin.photoCardThumbRetries[name, default: 0]
+      if tries < 30 {
+        AetherARKitPlugin.photoCardThumbRetries[name] = tries + 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak node] in
+          guard let self, let node else { return }
+          self.renderer(renderer, didAdd: node, for: anchor)
+        }
+      } else {
+        NSLog("[PHOTOCARD] renderer: thumbnail decode FAILED (gave up) for %@", name)
+        AetherARKitPlugin.photoCardThumbRetries.removeValue(forKey: name)
+      }
       return
     }
+    AetherARKitPlugin.photoCardThumbRetries.removeValue(forKey: name)
     let image = UIImage(cgImage: thumbCG)   // upright portrait, ~thumb px long edge
     NSLog("[PHOTOCARD] renderer building quad for %@ (%d corners) thumb=%dx%d",
           name, spec.localCorners.count, thumbCG.width, thumbCG.height)
