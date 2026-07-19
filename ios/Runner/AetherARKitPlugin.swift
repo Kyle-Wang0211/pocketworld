@@ -1423,6 +1423,21 @@ class AetherARKitPlugin: NSObject {
     }
   }
 
+  /// 当前进程 phys_footprint(MB)—— jetsam 实际盯的那个数。读法逐字照搬
+  /// AetherTexturePlugin 已验证的 TASK_VM_INFO 口径;失败返回 -1(调用方
+  /// 据此不刹车,宁可放行也不因读数失败误伤拍照)。
+  static func physFootprintMB() -> Double {
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(
+      MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+    let kr = withUnsafeMutablePointer(to: &info) {
+      $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { reb in
+        task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), reb, &count)
+      }
+    }
+    return (kr == KERN_SUCCESS) ? Double(info.phys_footprint) / 1_048_576.0 : -1.0
+  }
+
   private func captureHighResolutionStill(
     highresPath: String,
     previewPath: String,
@@ -1441,6 +1456,24 @@ class AetherARKitPlugin: NSObject {
         domain: "AetherARKit", code: 210,
         userInfo: [NSLocalizedDescriptionKey:
           "captureHighResolutionStill: ARSession is not running"]
+      ))
+      return
+    }
+    // [内存刹车 2026-07-19] app 有 increased-memory entitlement,上限约 4GB。
+    // 刹车按*预测峰值*判,不按当前值:12MP 捕获瞬时 +~900MB,等 footprint 自己
+    // 到 4GB 再刹已经晚了(那一帧会冲到 4.9GB 过 jetsam)。所以门 = 天花板 4000
+    // 减尖峰 900 ⇒ 实际触发 footprint>3100,把 4GB 余量吃满且不越线。
+    // 正常 footprint 600-1500MB,这道刹车基本碰不到,纯最后保险。
+    // 跳过=只保主图(即时帧),Dart 收 nil 自然降级,不影响拍照与相册。
+    let kMemCeilingMB = 4000.0
+    let kStillSpikeMB = 900.0
+    let footprintNow = Self.physFootprintMB()
+    if footprintNow + kStillSpikeMB > kMemCeilingMB {
+      NSLog("[AetherARKit] [内存刹车] footprint=%.0fMB +900 尖峰将过 4000MB 天花板, 跳过本帧12MP", footprintNow)
+      completion(nil, NSError(
+        domain: "AetherARKit", code: 213,
+        userInfo: [NSLocalizedDescriptionKey:
+          "captureHighResolutionStill: skipped under memory pressure"]
       ))
       return
     }
