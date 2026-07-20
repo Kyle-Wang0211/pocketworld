@@ -60,6 +60,25 @@ PWSFM_EXPORT aether_sfm_result_t pwsfm_add_frame(aether_sfm_session_t* s,
                               pose_qwxyz, pose_t, out_frame_id);
 }
 
+/* [REMOVE-FRAME 2026-07-20] 用户删照片 → 撤回该帧的全部重建贡献。
+   转发到 aether_sfm_remove_frame(内部全部是 COLMAP 现成操作:
+   ObservationManager::DeRegisterFrame + Database::DeleteMatches/
+   DeleteTwoViewGeometry)。模拟器无 native slice,返回 UNSUPPORTED。 */
+PWSFM_EXPORT aether_sfm_result_t pwsfm_remove_frame(aether_sfm_session_t* s,
+                                                    int frame_id,
+                                                    char* out_json,
+                                                    int out_cap) {
+#if TARGET_OS_SIMULATOR
+  (void)s;
+  (void)frame_id;
+  (void)out_json;
+  (void)out_cap;
+  return AETHER_SFM_ERR_UNSUPPORTED;
+#else
+  return aether_sfm_remove_frame(s, frame_id, out_json, out_cap);
+#endif
+}
+
 PWSFM_EXPORT aether_sfm_result_t pwsfm_finalize_async(aether_sfm_session_t* s,
                                                       char* out_json,
                                                       int out_cap) {

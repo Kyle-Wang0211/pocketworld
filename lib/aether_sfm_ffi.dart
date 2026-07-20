@@ -470,6 +470,24 @@ typedef _FinalizeAsyncC =
 typedef _FinalizeAsyncDart =
     int Function(Pointer<Void> session, Pointer<Utf8> outJson, int outCap);
 
+// [REMOVE-FRAME 2026-07-20] 删照片 → 撤回该帧的重建贡献。
+// (session, frame_id, out_json, cap) → 结果码;out_json 带
+// {removed_obs, deleted_points, cleared_pairs, n_registered, n_points3d}。
+typedef _RemoveFrameC =
+    Int32 Function(
+      Pointer<Void> session,
+      Int32 frameId,
+      Pointer<Utf8> outJson,
+      Int32 outCap,
+    );
+typedef _RemoveFrameDart =
+    int Function(
+      Pointer<Void> session,
+      int frameId,
+      Pointer<Utf8> outJson,
+      int outCap,
+    );
+
 typedef _FinalizeStatusC = Int32 Function(Pointer<Void> session);
 typedef _FinalizeStatusDart = int Function(Pointer<Void> session);
 
@@ -670,6 +688,8 @@ class AetherSfm {
       .lookupFunction<_FinalizeAsyncC, _FinalizeAsyncDart>(
         'pwsfm_finalize_async',
       );
+  static final _RemoveFrameDart _removeFrame = _lib
+      .lookupFunction<_RemoveFrameC, _RemoveFrameDart>('pwsfm_remove_frame');
   static final _FinalizeStatusDart _finalizeStatus = _lib
       .lookupFunction<_FinalizeStatusC, _FinalizeStatusDart>(
         'pwsfm_finalize_status',
@@ -1452,6 +1472,40 @@ class AetherSfmStreamSession {
       return summary;
     } catch (_) {
       // old archive without the symbol / malformed stats — non-fatal no-op
+      return null;
+    } finally {
+      malloc.free(jsonPtr);
+    }
+  }
+
+  /// [REMOVE-FRAME 2026-07-20] 撤回一帧的**全部重建贡献** —— 用户删照片时调用。
+  ///
+  /// 用户签决:"照片删了,那数据也必须删了"(拍虚 / 有人经过的照片产生的不良
+  /// 点云本来就该被纠正)。这推翻了 07-13 的旧语义「删照片≠删数据」。
+  ///
+  /// native 侧每一步都是 COLMAP 现成操作,零自创:
+  ///   · `ObservationManager::DeRegisterFrame` —— 撤该帧全部观测、删 track 掉到
+  ///     2 元以下的 3D 点(DeleteObservation 的文档行为)、维护 correspondence
+  ///     graph 可见计数、注销该帧;
+  ///   · `Database::DeleteMatches` / `DeleteTwoViewGeometry` —— 把该图在 db 里
+  ///     孤立,任何 db 驱动的重建(断点续跑 / refine 失败的 full-rerun 兜底)
+  ///     都无法再注册它(COLMAP 没有"删单张图",孤立是官方等价做法)。
+  ///
+  /// **幸存点的坐标不会立即修正** —— 它们仍是"含被删帧"时三角化出来的值。
+  /// 修正发生在 finalize 的 phase-2 全局 BA(现有路径,无需额外调用):少了那帧
+  /// 的约束,位置重新收敛。用户可见效果 = 删照片瞬间"只被它看到的点"消失,
+  /// 点"完成"时其余点轻微归位。此取舍已由用户签决。
+  ///
+  /// 返回 stats JSON;null = 撤回失败或旧 archive 无该符号(视作 no-op)。
+  Map<String, dynamic>? removeFrame(int frameId) {
+    _checkLive();
+    const cap = 512;
+    final jsonPtr = malloc.allocate<Uint8>(cap).cast<Utf8>();
+    try {
+      final rc = AetherSfm._removeFrame(_session, frameId, jsonPtr, cap);
+      if (_resultFromCode(rc) != AetherSfmResult.ok) return null;
+      return jsonDecode(jsonPtr.toDartString()) as Map<String, dynamic>;
+    } catch (_) {
       return null;
     } finally {
       malloc.free(jsonPtr);
