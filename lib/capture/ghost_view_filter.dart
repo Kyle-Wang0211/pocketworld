@@ -47,15 +47,24 @@
 import 'dart:io';
 import 'dart:typed_data';
 
-/// 渲染门总开关。用户签决(07-12)「鬼层必须消失」→ 默认 **true(开门)**,
-/// 隐藏 band15∧¬rescued 确证鬼、放行所有 2-view 好点。暗关退路(排障/回归
-/// 对照):
-///   flutter build ios --profile --dart-define=PW_GHOST_VIEW_FILTER=false
-/// 铁律:只允许 --dart-define 翻转,永不接 UI 滑杆/档位;导出/PLY/上传路径
-/// 永远全量,绝不消费此门。
+/// 渲染门总开关。**默认 false(关门)—— 用户 2026-07-20 当面看图签决。**
+///
+/// 历史:07-12 曾签决「鬼层必须消失」→ 默认 true;07-18 用户看图后改判
+/// 「L2 也不是正收益」,但那条指令一直没落地,默认值停在 true 两天。
+/// 07-20 用同 gauge 双窗对照(未命名5,6,401 点全量 vs 4,997 过滤后,被隐藏的
+/// 1,404 点涂红)当面复核,用户判定**这些不是鬼点**,明确要求关闭。
+///
+/// 关闭后连带消除的 UX 缺陷(实测,三次采集全复现):预览先出 4,668 点,
+/// 等 L1 深度推理(CoreML 4 参考帧,实测 10.7s)+ 仲裁跑完再补上 371 个
+/// 救援点 → 用户看到「点云延迟弹出」;且标题的 6,401 与画面永远对不上。
+///
+/// 暗开退路(排障/回归对照):
+///   flutter build ios --profile --dart-define=PW_GHOST_VIEW_FILTER=true
+/// 铁律不变:只允许 --dart-define 翻转,永不接 UI 滑杆/档位;导出/PLY/上传
+/// 路径永远全量,绝不消费此门。
 const bool kGhostMaskViewFilter = bool.fromEnvironment(
   'PW_GHOST_VIEW_FILTER',
-  defaultValue: true,
+  defaultValue: false,
 );
 
 // ── GhostFlagBits(逐字对齐 aether_ghost_mask.h)────────────────────────

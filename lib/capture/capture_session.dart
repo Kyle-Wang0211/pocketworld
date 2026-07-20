@@ -47,6 +47,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:aether_capture_services/aether_capture_services.dart';
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:flutter/widgets.dart' show Offset;
 import 'package:path_provider/path_provider.dart';
 
@@ -60,6 +61,7 @@ import 'dome/dome_config.dart';
 import 'dome/dome_target_points.dart';
 import 'orientation_tracker.dart';
 import 'photo_slot_naming.dart';
+import 'telemetry_writer.dart';
 import 'pose_drift_tracker.dart';
 
 class CaptureMotionSnapshot {
@@ -288,10 +290,21 @@ class CaptureSession {
   // RS 对齐的高清素材;失败退化为仅 4K,不重试、不阻塞快门。in-flight 守卫
   // 防止连拍堆叠相机重配(API 每次捕获会短暂重配相机——tracking 抖动+热,
   // 真机热定价在设备批验收)。
-  bool _hiresStillInFlight = false;
   int _hiresStillStarted = 0;
   int _hiresStillOk = 0;
   int _hiresStillFailed = 0;
+  // [E25 2026-07-20] 目标:每次快门都有 _hr(用户要求 100% 覆盖,与 1440p 主图
+  // 齐平)。基线只有 ~40%(实测 7/17、11/29),而**真实死因当时没有记录**——
+  // 我曾推断是 0.18s 时间戳闸,但那是猜的,没有任何错误码在案。所以这一版
+  // 在放开两道门的同时,把每次失败的 native 错误码原样记下来,下次一看便知。
+  int _hiresStillDropped = 0; // 队列满被丢弃(对纹理零贡献)
+  int _stillQueueDepth = 0;
+  /// 每种失败原因的次数,key = native 错误码(210 无 session / 211 无帧 /
+  /// 212 时间戳超差 / 213 内存刹车 / other)。
+  final Map<String, int> _hiresStillFailReasons = <String, int>{};
+  /// 队列上限。按实测拍摄节奏(相邻快门约 3.5s、单张静照约 0.15s)队列几乎
+  /// 不该堆积;设 12 是给连点留足余量,同时防止无界积压把内存/热拖垮。
+  static const int _maxQueuedHiresStills = 12;
   // [瞬时快门 2026-07-19] photo43 的 12MP 静照后台串行链:快门瞬时返回,
   // 12MP 一张一张在后台拍(串行防相机重配堆叠+内存只占一份),SfM 喂图
   // 随落盘。快门永不阻塞——用户硬约束:前端零加载零卡顿。
@@ -326,9 +339,18 @@ class CaptureSession {
   Future<void> retainOnlyCuratedPhotos(List<CuratedFrame> curated) async {
     final dirPath = _photosDir;
     if (dirPath == null) return;
+    // [E25 2026-07-20] 连带保留策展帧的 12MP 静照 `<base>_hr.jpg`(及其
+    // sidecar)。此前 keep 只含主图路径,`_hr` 一律被当作"未策展"删除 ——
+    // 实测:15 次快门全部成功产出 _hr(遥测 outcome=ok ×15),但点"完成"
+    // 后 photos_highres 里 _hr 为 0,而 previews/ 下的 `_hr_preview.jpg`
+    // 全在(该目录不被本函数遍历),正是被这里删掉的铁证。
+    // _hr 是后续纹理的素材源,必须随它对应的主图一起留下。
     final keep = <String>{
       for (final c in curated)
-        if (c.sample.jpegPath != null) c.sample.jpegPath!,
+        if (c.sample.jpegPath != null) ...<String>[
+          c.sample.jpegPath!,
+          c.sample.jpegPath!.replaceFirst(RegExp(r'\.jpg$'), '_hr.jpg'),
+        ],
     };
     if (keep.isEmpty) return;
 
@@ -1409,47 +1431,11 @@ class CaptureSession {
         if (savedOk && sfmFeed != null && !_sfmFrameCtrl.isClosed) {
           _sfmFrameCtrl.add(sfmFeed.withJpegPath(jpegPath));
         }
-        if (savedOk && !_hiresStillInFlight) {
-          _hiresStillInFlight = true;
-          _hiresStillStarted++;
-          final hrPath = '$photosDir/${photoBase}_hr.jpg';
-          final hrPreviewPath =
-              '${_previewsDir ?? photosDir}/${photoBase}_hr_preview.jpg';
-          unawaited(
-            poseProvider
-                .captureHighResolutionStill(
-                  highresPath: hrPath,
-                  previewPath: hrPreviewPath,
-                  triggerTimestamp: pose.timestamp,
-                )
-                .then<void>((still) async {
-                  if (still == null) {
-                    _hiresStillFailed++;
-                    return;
-                  }
-                  _hiresStillOk++;
-                  await File('$photosDir/${photoBase}_hr.json').writeAsString(
-                    jsonEncode(<String, dynamic>{
-                      'schema': 'hires_still_sidecar_v1',
-                      'highresPath': hrPath,
-                      'timestamp': still.timestamp,
-                      'imageWidth': still.imageWidth,
-                      'imageHeight': still.imageHeight,
-                      'cameraTransform': still.cameraTransform,
-                      'intrinsics': still.intrinsics,
-                      'captureKind': still.captureKind,
-                      'poseSyncQuality': still.poseSyncQuality,
-                      'trackingStateName': still.trackingStateName,
-                      'triggerTimestamp': pose.timestamp,
-                    }),
-                  );
-                })
-                .catchError((Object _) {
-                  _hiresStillFailed++;
-                })
-                .whenComplete(() {
-                  _hiresStillInFlight = false;
-                }),
+        if (savedOk) {
+          _enqueueHiresStill(
+            photoBase: photoBase,
+            photosDir: photosDir,
+            triggerTimestamp: pose.timestamp,
           );
         }
       }
@@ -1487,6 +1473,108 @@ class CaptureSession {
     } finally {
       _pendingPhotoSaveCount = math.max(0, _pendingPhotoSaveCount - 1);
     }
+  }
+
+  /// [E25 2026-07-20] 12MP `_hr` 静照后台**串行队列** —— 目标 100% 快门覆盖。
+  ///
+  /// 与基线的差别只有两点,且都只影响 `_hr` 的**产出率**,不碰任何几何:
+  ///   ① 原本 `!_hiresStillInFlight` 命中就**永久跳过**这次快门(基线实测只有
+  ///      ~40% 覆盖:7/17、11/29);现在改成排队,一张一张拍,不丢。
+  ///   ② native 默认 0.18s 的时间戳闸对排队项太紧(靠后的项要等前面拍完),
+  ///      放宽到 2.0s。静照带的是**它自己的位姿与内参**,晚一点拍到仍是合法
+  ///      素材(基线成功项实测 delta 0.067-0.167s,正擦着 0.18 上限)。
+  ///
+  /// ⚠️ **不带 `feedSfm`**。2026-07-19 的 AR 点云漂移事故元凶是 `feedSfm=true`
+  /// 让 12.19MB 灰度过 Flutter method channel(主线程投递),不是队列本身。
+  /// SfM 喂图仍走主图那条 1440p 即时帧,与已验证稳定的基线逐字一致。
+  ///
+  /// ⚠️ 已知未验证风险:静照次数从 ~40% 涨到 100% = **相机重配次数约 2.5 倍**,
+  /// 而 07-19 观测到的 ARKit 会话重初始化全部落在静照时刻。**这一步必须单独
+  /// 装机、单独验漂移**,不得与别的改动捆绑。
+  ///
+  /// 快门永不阻塞:本方法只入队立即返回。
+  void _enqueueHiresStill({
+    required String photoBase,
+    required String photosDir,
+    required double triggerTimestamp,
+  }) {
+    if (_stillQueueDepth >= _maxQueuedHiresStills) {
+      _hiresStillDropped++;
+      return;
+    }
+    _stillQueueDepth++;
+    _hiresStillStarted++;
+    final hrPath = '$photosDir/${photoBase}_hr.jpg';
+    final hrPreviewPath =
+        '${_previewsDir ?? photosDir}/${photoBase}_hr_preview.jpg';
+    // 串行:一次只拍一张 —— 相机重配不堆叠,~900MB 尖峰只占一份。
+    _stillChain = _stillChain.then<void>((_) async {
+      final sw = Stopwatch()..start();
+      var outcome = 'ok';
+      try {
+        // ⚠️ 必须带超时:串行链把**独立失败**变成了**级联失败** —— 只要一次
+        // native completion 不回调,整条链永久卡死,后面每一次快门都排队等一个
+        // 永不完成的 future。2026-07-20 实测 14 次手动快门产出 0 个 _hr(基线
+        // 是 17/26=65%),这是唯一能解释"恰好为 0"这个绝对值的机制。
+        // 3s 上限:实测成功项的 delta 是 0.067-0.167s,3s 已是它的 20 倍。
+        final still = await poseProvider
+            .captureHighResolutionStill(
+              highresPath: hrPath,
+              previewPath: hrPreviewPath,
+              triggerTimestamp: triggerTimestamp,
+              maxTimestampDelta: 2.0,
+            )
+            .timeout(
+              const Duration(seconds: 3),
+              onTimeout: () => null,
+            );
+        if (still == null) {
+          _hiresStillFailed++;
+          outcome = 'null_or_timeout';
+          _noteStillFailure(outcome);
+          return;
+        }
+        _hiresStillOk++;
+        await File('$photosDir/${photoBase}_hr.json').writeAsString(
+          jsonEncode(<String, dynamic>{
+            'schema': 'hires_still_sidecar_v1',
+            'highresPath': hrPath,
+            'timestamp': still.timestamp,
+            'imageWidth': still.imageWidth,
+            'imageHeight': still.imageHeight,
+            'cameraTransform': still.cameraTransform,
+            'intrinsics': still.intrinsics,
+            'captureKind': still.captureKind,
+            'poseSyncQuality': still.poseSyncQuality,
+            'trackingStateName': still.trackingStateName,
+            'triggerTimestamp': triggerTimestamp,
+          }),
+        );
+      } catch (e) {
+        _hiresStillFailed++;
+        outcome = e is PlatformException ? e.code : 'exception';
+        _noteStillFailure(outcome);
+      } finally {
+        _stillQueueDepth = math.max(0, _stillQueueDepth - 1);
+        // [E25] 逐次落遥测 —— 上一版把计数挂在 photo_save_health 上,而那个
+        // 事件只在**自动路径**有活动时才发,手动快门全程一条都没发出来,
+        // 导致死因再次无法回收。这次每次尝试都单独记一条。
+        TelemetryWriter.instance.event('hires_still', {
+          'outcome': outcome,
+          'ms': sw.elapsedMilliseconds,
+          'queue_depth': _stillQueueDepth,
+          'started': _hiresStillStarted,
+          'ok': _hiresStillOk,
+          'failed': _hiresStillFailed,
+          'dropped': _hiresStillDropped,
+        });
+      }
+    });
+  }
+
+  /// 记一次静照失败的原因码 —— 上一轮就是因为没记,只能靠猜死因。
+  void _noteStillFailure(String code) {
+    _hiresStillFailReasons[code] = (_hiresStillFailReasons[code] ?? 0) + 1;
   }
 
   Future<bool> _hasCompleteArFrameSidecar(String metadataPath) async {
@@ -1616,6 +1704,20 @@ class CaptureSession {
     final avgLatencyMs = _photoSaveCompleted == 0
         ? 0.0
         : _photoSaveLatencyMsSum / _photoSaveCompleted;
+    // [E25] 同一份计数进遥测 JSONL —— print() 只到 stdout,拔线测试后取不回来,
+    // 违反"日志写文件、退出后再看"的规矩。上一轮我加的 hires 计数器就因此
+    // 完全无法回收,只能靠猜死因。
+    TelemetryWriter.instance.event('photo_save_health', {
+      'pending': _pendingPhotoSaveCount,
+      'started': _photoSaveStarted,
+      'completed': _photoSaveCompleted,
+      'hires_started': _hiresStillStarted,
+      'hires_ok': _hiresStillOk,
+      'hires_failed': _hiresStillFailed,
+      'hires_dropped': _hiresStillDropped,
+      'hires_queue_depth': _stillQueueDepth,
+      'hires_fail_reasons': Map<String, int>.from(_hiresStillFailReasons),
+    });
     // ignore: avoid_print
     print(
       '[CaptureSession] photo save health: '
@@ -1628,7 +1730,9 @@ class CaptureSession {
       'maxMs=${_photoSaveLatencyMsMax.toStringAsFixed(0)} '
       'hiresStarted=$_hiresStillStarted '
       'hiresOk=$_hiresStillOk '
-      'hiresFailed=$_hiresStillFailed',
+      'hiresFailed=$_hiresStillFailed '
+      'hiresDropped=$_hiresStillDropped '
+      'hiresFailReasons=$_hiresStillFailReasons',
     );
 
     _photoSaveHealthWindowStartSec = t;

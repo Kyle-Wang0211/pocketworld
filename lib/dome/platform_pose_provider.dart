@@ -337,6 +337,7 @@ class PlatformARPoseProvider implements ARPoseProvider {
     double quality = 0.92,
     ARFrameSaveSpec? saveSpec,
     bool feedSfm = false,
+    double? maxTimestampDelta,
   }) async {
     if (_usingFallback) {
       return _fallback.captureHighResolutionStill(
@@ -346,6 +347,7 @@ class PlatformARPoseProvider implements ARPoseProvider {
         quality: quality,
         saveSpec: saveSpec,
         feedSfm: feedSfm,
+        maxTimestampDelta: maxTimestampDelta,
       );
     }
     try {
@@ -363,6 +365,10 @@ class PlatformARPoseProvider implements ARPoseProvider {
         args['metadataSchemaVersion'] = saveSpec.metadataSchemaVersion;
         args['metadataPath'] = saveSpec.metadataPath;
         args['maxTimestampDelta'] = saveSpec.maxTimestampDelta;
+      }
+      // 显式参数最后写,压过 saveSpec 的默认值。
+      if (maxTimestampDelta != null) {
+        args['maxTimestampDelta'] = maxTimestampDelta;
       }
       final result = await _method.invokeMapMethod<String, dynamic>(
         'captureHighResolutionStill',

@@ -563,6 +563,9 @@ abstract class ARPoseProvider {
   /// write [highresPath] and [previewPath], then return the still ARFrame
   /// metadata. Native may also return a small luma thumbnail; Dart owns
   /// the quality decision.
+  /// [maxTimestampDelta]:静照离快门时刻多远仍算数(秒)。null = native 默认
+  /// 0.18s。串行队列下靠后的项要等前面拍完,0.18s 会把它们全判死,所以队列
+  /// 化时必须放宽。静照携带**它自己的位姿与内参**,晚一点拍到的仍是合法素材。
   Future<HighResolutionStillCapture?> captureHighResolutionStill({
     required String highresPath,
     required String previewPath,
@@ -570,6 +573,7 @@ abstract class ARPoseProvider {
     double quality = 0.92,
     ARFrameSaveSpec? saveSpec,
     bool feedSfm = false,
+    double? maxTimestampDelta,
   });
 
   /// Stop the AR session. Does not dispose the provider; a subsequent

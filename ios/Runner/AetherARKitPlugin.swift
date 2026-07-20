@@ -111,11 +111,24 @@ class AetherARKitPlugin: NSObject {
     // device 外推 finalize −17%;下次实拍看 finalize_segments 验真。
     // 删本行即同二进制回退(native 默认 0 = shipped 行为)。
     setenv("AETHER_STAGE1_ROUNDS_CAP", "4", 1)
-    // [2026-07-12] 鬼层 L1 暗舱标定采集:finalize 尾段写 ghost_mask.bin 鬼层
-    // 标记 + refined 交付后跑 L1 推理仲裁(CasDiffMVS 1-bit)。渲染门默认关,
-    // 不影响任何显示/交付数据——纯 sidecar+telemetry 采集,为 L1/L2 标定攒
-    // 真机数据。推理预算 ~12s 在交付之后,不 gate 用户。删本行即同二进制回退。
-    setenv("AETHER_GHOST_MASK", "1", 1)
+    // [E25-C 2026-07-20] 鬼层 mask 产出**已停用**(原 `setenv("AETHER_GHOST_MASK","1",1)`
+    // 已删)。native 侧 MaybeWriteGhostMask 由该 env 门控(aether_sfm_c.cc 注释:
+    // "Env-gated (AETHER_GHOST_MASK=1, default OFF)"),不设即回到 shipped 默认关。
+    //
+    // 连带停止产出:ghost_mask.bin / ghost_mask.json / ghost_view_mask.bin /
+    // arbitration_plan.json|bin / arbitration_points.bin,以及 finalize 尾段的
+    // 平面拟合+分箱开销。
+    //
+    // ⚠️ 原注释曾写「渲染门默认关」,但当时 Dart 侧 kGhostMaskViewFilter 实际是
+    // **true(开)** —— 注释与代码矛盾了 8 天,是本轮排障被误导的来源之一。
+    //
+    // 停用理由与 L1 同批(见 sfm_live_recon.dart 的 E25-B 注释):认证管线无
+    // 等价物 / parity 参考已丢失 / 零消费者 / 完整机制无公开先例。
+    // 回滚:加回 `setenv("AETHER_GHOST_MASK", "1", 1)` 一行即可。
+    //
+    // 📌 研究仓离线分析脚本(E17/E18/TRAILS/DR5/E14 等)依赖这些 sidecar,
+    // 但 cap50/cap51 的 device_full_pull_2026-07-17 fixture 里已存有全套历史
+    // 数据,可继续跑;产品侧不再产新数据。
     let plugin = AetherARKitPlugin(messenger: registrar.messenger())
     sharedInstance = plugin
     let factory = AetherARKitPreviewFactory(getSession: {

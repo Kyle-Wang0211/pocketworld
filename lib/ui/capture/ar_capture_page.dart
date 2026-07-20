@@ -1414,6 +1414,10 @@ class _ARCapturePageState extends State<ARCapturePage>
         'decode_ms_p50': r1(percentileSorted(decodeMsList, 0.50)),
         'decode_ms_p90': r1(percentileSorted(decodeMsList, 0.90)),
         'decode_ms_max': decodeMsList.isEmpty ? 0 : decodeMsList.last.round(),
+        // [E25] 实际解码尺寸 + 配置上限 —— 证明"全分辨率取色"是否真生效。
+        'decode_w': _colorizeDecodeW,
+        'decode_h': _colorizeDecodeH,
+        'decode_max_px_cfg': kColorizeDecodeMaxPx,
         'points': n,
         'colored': colored,
         'no_obs': n - colored, // 无可用观测(解码失败/track 帧缺失)→ 灰点
@@ -1704,19 +1708,32 @@ class _ARCapturePageState extends State<ARCapturePage>
   // 共享纯函数 floaterKeepIndices(算法/常数/护栏逐字未改):live 交付与
   // 断点续跑(sfm_resume.dart)同参数复用,保证两条腿的孤点判定逐点一致。
 
-  /// Fast native JPEG decode for colorization — ImageIO downscale to 1280px
-  /// long edge, raw sensor orientation (no EXIF transform), 3 B/px top-down.
+  /// Fast native JPEG decode for colorization — ImageIO decode at
+  /// [kColorizeDecodeMaxPx] (= 全分辨率,见该常量的出处注释), raw sensor
+  /// orientation (no EXIF transform), 3 B/px top-down.
   /// Returns null on any failure.
+  int _colorizeDecodeW = 0;
+  int _colorizeDecodeH = 0;
+  int _colorizeDecodeMaxArea = 0;
+
   Future<({Uint8List rgb, int w, int h})?> _decodeJpegNative(
     String jpegPath,
   ) async {
     try {
       final res = await _arKitChannel.invokeMethod<Map<Object?, Object?>>(
         'decodeJpegForColor',
-        {'jpegPath': jpegPath, 'maxPx': 1280},
+        {'jpegPath': jpegPath, 'maxPx': kColorizeDecodeMaxPx},
       );
       if (res == null) return null;
       final w = res['w'] as int?, h = res['h'] as int?;
+      // [E25 遥测] 记住实际解码尺寸 —— 上一轮改成全分辨率后拿不出任何证据
+      // 证明它生效(耗时几乎没变,因为 1280 本就不落 DCT 整除档、旧版也是
+      // 全解再缩)。把尺寸打进 colorize 事件,下次一读便知。
+      if (w != null && h != null && w * h > _colorizeDecodeMaxArea) {
+        _colorizeDecodeMaxArea = w * h;
+        _colorizeDecodeW = w;
+        _colorizeDecodeH = h;
+      }
       final rgb = res['rgb'] as Uint8List?;
       if (w == null || h == null || rgb == null || w <= 0 || h <= 0) {
         return null;
@@ -2209,7 +2226,18 @@ class _ARCapturePageState extends State<ARCapturePage>
     final sidecarPath = path.endsWith('.jpg')
         ? '${path.substring(0, path.length - 4)}.json'
         : '$path.json';
-    for (final candidate in <String>{path, previewPath, sidecarPath}) {
+    // [E25 2026-07-20] 连带删掉 12MP 静照及其 sidecar。此前 `_hr` 反正会在
+    // 点"完成"时被策展清理全删,漏删无所谓;现在 `_hr` 要长期留存(它是纹理
+    // 素材源),不跟着删就会变成永久孤儿文件(每个约 4MB)。
+    final hrPath = path.replaceFirst(RegExp(r'\.jpg$'), '_hr.jpg');
+    final hrSidecarPath = path.replaceFirst(RegExp(r'\.jpg$'), '_hr.json');
+    for (final candidate in <String>{
+      path,
+      previewPath,
+      sidecarPath,
+      hrPath,
+      hrSidecarPath,
+    }) {
       try {
         final file = File(candidate);
         if (await file.exists()) {

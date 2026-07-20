@@ -67,6 +67,7 @@ class MockARPoseProvider implements ARPoseProvider {
     double quality = 0.92,
     ARFrameSaveSpec? saveSpec,
     bool feedSfm = false,
+    double? maxTimestampDelta,
   }) async => null;
 
   @override

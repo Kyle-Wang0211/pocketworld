@@ -444,8 +444,14 @@ Future<void> _prunePhotosAfterSparse(
   Set<String> keepJpegPaths,
 ) async {
   if (keepJpegPaths.isEmpty) return;
+  // [E25 2026-07-20] 与 capture_session.retainOnlyCuratedPhotos 同修:连带
+  // 保留 `<base>_hr.jpg`。这是 `_hr` 被删的**第二条**路径(detached finalize /
+  // 断点续跑),只修 retainOnlyCuratedPhotos 会漏掉它。
   final keepNames = <String>{
-    for (final path in keepJpegPaths) path.split('/').last,
+    for (final path in keepJpegPaths) ...<String>[
+      path.split('/').last,
+      path.split('/').last.replaceFirst(RegExp(r'\.jpg$'), '_hr.jpg'),
+    ],
   };
   Future<void> pruneDir(String dirPath, {required bool sidecars}) async {
     final dir = Directory(dirPath);
@@ -563,15 +569,15 @@ Future<Map<int, SfmFedFrameMeta>> _loadFrameMeta(String captureDir) async {
   return map;
 }
 
-/// Fast native JPEG decode (ImageIO downscale to 1280px, raw sensor
-/// orientation) — the same channel the live colorizer uses.
+/// Fast native JPEG decode (ImageIO at [kColorizeDecodeMaxPx] = 全分辨率,
+/// raw sensor orientation) — the same channel the live colorizer uses.
 Future<({Uint8List rgb, int w, int h})?> _decodeJpegNative(
   String jpegPath,
 ) async {
   try {
     final res = await _arKitChannel.invokeMethod<Map<Object?, Object?>>(
       'decodeJpegForColor',
-      {'jpegPath': jpegPath, 'maxPx': 1280},
+      {'jpegPath': jpegPath, 'maxPx': kColorizeDecodeMaxPx},
     );
     if (res == null) return null;
     final w = res['w'] as int?, h = res['h'] as int?;

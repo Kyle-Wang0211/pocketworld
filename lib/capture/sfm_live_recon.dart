@@ -1046,9 +1046,26 @@ class SfmLiveRecon {
             msg['ms'] as int,
           ),
         );
-        // [L1-ARBITRATE 2026-07-12] 鬼层 L1 推理链:refined 已交付后启动
-        // (绝不 gate 快照)。plan 不存在(AETHER_GHOST_MASK 未设)= 零行为。
-        unawaited(_maybeRunL1Arbitration());
+        // [E25-B 2026-07-20] 鬼层 L1 推理链**已停用** —— 用户签决删除 L1/L2。
+        //
+        // 停用理由(四重,任一独立成立):
+        //   ① 认证 'o' 管线里没有任何 L1/L2 等价物 → 违「参数全抄认证配置,
+        //      不自创」铁律;
+        //   ② L1 的 parity Python 参考已丢失,其参数(cell 20cm / gap≥1.2cm /
+        //      slab 8cm / 1.5cm 带宽)不可复核、不可重跑 parity;
+        //   ③ **零消费者**:rescue 位(bit5)的读者只有 ghost_view_filter
+        //      (已于同批次默认关闭)与 aether_mirror_cull(默认关/未装机/
+        //      产品侧零引用);
+        //   ④ 完整机制在 2026-07-20 的公开先例检索(学术+正式会刊+专利+
+        //      商业产品+社区工具)下未找到先例。
+        //
+        // 实测代价:每次采集 CoreML fp32 × 4 参考帧 ≈ **10.7 秒**,产出一个
+        // 没人读的位;并制造「预览先出 N 点、10.7s 后再弹出救援点」的 UX 缺陷。
+        //
+        // 这是**唯一入口** —— 不调用即整条链(runCasDiffMVSL1 → worker
+        // 'arbitrate' → arbitrate_done → ghost_view_mask 重算)全部不可达。
+        // 编排代码暂留作死代码,由后续增量 D 统一清除。
+        // 回滚:恢复本行 `unawaited(_maybeRunL1Arbitration());` 即可。
       case 'arbitrate_done':
         DeviceLog.log(
           'SfmLive',

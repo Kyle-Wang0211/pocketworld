@@ -28,8 +28,29 @@ import 'dart:typed_data';
 
 import 'representative_color.dart';
 
+/// 交付取色的解码长边上限(px)。
+///
+/// **出处 = A/B 类:回抄认证配置。** 认证 'o' 口径是**全分辨率**双线性
+/// (TRAILS README 白纸黑字 3840×2160);端上的 1280 是 2026-07-09 streaming
+/// 大 commit 沿用旧 live 灰度档带进来的,**早于** 07-12 的取色对齐定案,
+/// 且从无有损签决 —— 违反"参数全抄认证配置,不自创"铁律。
+/// 07-18 参数审计实测(cap51,61,761 点,1280 vs 全分辨率):ΔRGB p50=3/p90=12,
+/// **边缘层 10,013 点里 21% 偏色 >16 级、3.7% >32 级**,平坦层仅 1.6% ——
+/// 边缘混色病灶实锤。用户 2026-07-20 签决升全分辨率。
+///
+/// 取 8192 而非"无上限":ImageIO 需要一个具体的
+/// `kCGImageSourceThumbnailMaxPixelSize`,8192 已高于任何在产照片边长
+/// (主图 1920×1440、12MP 静照 4032×3024),等效于不降采样,同时保留一道
+/// 防御性上限,避免将来接入更大图源时无意中撑爆内存。
+///
+/// ⚠️ live **预览**取色不受此约束(审计原文"live 预览可留 1280") —— 本常量
+/// 只用于**交付**云的取色(ar_capture_page 的 _colorizeSnapshot 与
+/// sfm_resume 的冷恢复取色,两者共享本 pipeline)。
+const int kColorizeDecodeMaxPx = 8192;
+
 /// native 解码回调签名(live/resume 各自的 `_decodeJpegNative`):
-/// 1280px 长边降采样、raw sensor 方向、3B/px top-down;失败返回 null。
+/// 按 [kColorizeDecodeMaxPx] 降采样(实际=不降)、raw sensor 方向、
+/// 3B/px top-down;失败返回 null。
 typedef ColorJpegDecoder =
     Future<({Uint8List rgb, int w, int h})?> Function(String jpegPath);
 

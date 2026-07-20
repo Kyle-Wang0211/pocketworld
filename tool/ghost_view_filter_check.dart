@@ -298,8 +298,9 @@ void main() {
   final modSrc = src('lib/capture/ghost_view_filter.dart');
   check(
     modSrc.contains("'PW_GHOST_VIEW_FILTER'") &&
-        modSrc.contains('defaultValue: true'),
-    '开关 kGhostMaskViewFilter = env 式编译期常量,默认 true(用户签决开门)',
+        modSrc.contains('defaultValue: false'),
+    '开关 kGhostMaskViewFilter = env 式编译期常量,'
+        '默认 false(2026-07-20 用户看图签决关门)',
   );
   var defineCount = 0;
   for (final e in Directory('$repoRoot/lib').listSync(recursive: true)) {
