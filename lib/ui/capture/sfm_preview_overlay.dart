@@ -34,7 +34,6 @@ class SfmPreviewOverlay extends StatelessWidget {
     required this.snapshot,
     required this.onBack,
     required this.onDone,
-    this.visibility,
     this.errorText,
     this.progressText,
   });
@@ -44,7 +43,6 @@ class SfmPreviewOverlay extends StatelessWidget {
 
   /// L2 渲染门可见性(ghost_view_filter.dart;与 [snapshot] 点序逐位对齐,
   /// null = 全显示)。RENDER-ONLY,只透传给 SparseCloudView。
-  final Uint8List? visibility;
   final VoidCallback onBack;
   final VoidCallback onDone;
   final String? errorText;
@@ -77,7 +75,6 @@ class SfmPreviewOverlay extends StatelessWidget {
                     key: const ValueKey('capture_preview_cloud'),
                     xyz: snap.xyz,
                     rgb: snap.rgb,
-                    visibility: visibility,
                   ),
                 ),
               ),

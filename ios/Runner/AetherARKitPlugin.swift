@@ -445,17 +445,6 @@ class AetherARKitPlugin: NSObject {
     attributes: .concurrent
   )
 
-  /// [L1-ARBITRATE 2026-07-12] Dedicated SERIAL queue for the ghost-layer L1
-  /// CasDiffMVS runner (`runCasDiffMVSL1`). Serial by design: the fp32 model
-  /// holds ~634MB at inference peak — one prediction at a time. `.utility`
-  /// so it never competes with capture (finalize has already delivered the
-  /// refined snapshot when Dart invokes this). The runner instance is reused
-  /// so the compiled model loads once per process.
-  private let diffmvsQueue = DispatchQueue(
-    label: "com.pocketworld.arkit.diffmvs_l1",
-    qos: .utility
-  )
-  private let diffmvsRunner = CasDiffMVSRunner()
 
 
   // MARK: Init
@@ -611,45 +600,6 @@ class AetherARKitPlugin: NSObject {
         } else {
           result(payload)
         }
-      }
-    case "runCasDiffMVSL1":
-      // [L1-ARBITRATE 2026-07-12] Ghost-layer L1 depth inference over the
-      // finalize-tail arbitration plan (written by native C++ when
-      // AETHER_GHOST_MASK=1). Pure platform shim: decode/resize/predict/write
-      // depth bins — every numeric contract (proj matrices, dv, scheduling)
-      // is precomputed in the plan by aether_l1_plan.h. Runs on the dedicated
-      // serial diffmvsQueue (fp32 peak ~634MB, one prediction at a time;
-      // decode strictly off-main — colorize 主线程教训). Dart calls
-      // pwsfm_arbitrate AFTER this reply; a failed run just means no depth
-      // bins → the C++ arbitration abstains (fail-open).
-      guard let args = call.arguments as? [String: Any],
-            let planPath = args["planPath"] as? String,
-            let dbDir = args["dbDir"] as? String else {
-        result(FlutterError(
-          code: "bad_args",
-          message: "runCasDiffMVSL1 requires {planPath, dbDir}",
-          details: nil))
-        return
-      }
-      diffmvsQueue.async { [weak self] in
-        let mainResult: FlutterResult = { value in
-          DispatchQueue.main.async { result(value) }
-        }
-        guard let self = self else { mainResult(nil); return }
-        let r = self.diffmvsRunner.run(planPath: planPath, dbDir: dbDir)
-        mainResult([
-          "ok": r.ok,
-          "refsPlanned": r.refsPlanned,
-          "refsDone": r.refsDone,
-          "refsFailed": r.refsFailed,
-          "degraded": r.degraded,
-          "backend": r.backend,
-          "totalMs": r.totalMs,
-          "decodeMs": r.decodeMs,
-          "inferMs": r.inferMs,
-          "perRefMs": r.perRefMs,
-          "error": r.error as Any,
-        ])
       }
     case "beginReconUmbrella":
       // Arm the iOS-26 background-continuation umbrella so the SfM finalize

@@ -9,8 +9,6 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 
-import '../../capture/ghost_view_filter.dart';
-import '../../capture/telemetry_writer.dart';
 import 'sparse_cloud_view.dart';
 
 /// Parsed cloud (full set — delivery never downsamples).
@@ -86,7 +84,6 @@ class SparseCloudViewerPage extends StatefulWidget {
 
 class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
   SparseCloudData? _cloud;
-  Uint8List? _visibility;
   bool _loading = true;
 
   @override
@@ -98,42 +95,12 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
   Future<void> _load() async {
     final cloud = await compute(loadSparsePly, widget.plyPath,
         debugLabel: 'sparse_ply_load');
-    // ── L2 渲染门(已开门,默认 kGhostMaskViewFilter=true)── sidecar =
-    // PLY 同目录的交付点序 ghost_view_mask.bin(优先),回退 native
-    // ghost_mask.bin。规则 visible=¬band15∨rescued,不依赖 obs(2-view 好点
-    // 全放行)。点序 = 交付 PLY;点数一致才敢用(tryLoad 核对),不一致/缺失
-    // → null = 全显示(容错)。⚠️交付 mask 写在 L1 仲裁之前 → 无 rescue 位,
-    // 退化为 hidden=band15,会隐掉那 358 个救援点(仅渲染;导出永远全量。
-    // 待仲裁后重算交付 mask 带上 bit5 即自动守住 —— 见 ghost_view_filter)。
-    Uint8List? visibility;
-    if (cloud != null && cloud.count > 0) {
-      final dir = File(widget.plyPath).parent.path;
-      // [L2-ALIGN 2026-07-12] Prefer the delivered-order render mask (written at
-      // persist, point order == this PLY); fall back to the native mask for
-      // captures made before that sidecar existed (count check rejects it when
-      // its Points3D order doesn't match the filtered PLY).
-      final flags =
-          tryLoadGhostMaskSidecar(dir, cloud.count,
-                  fileName: kGhostViewMaskFileName) ??
-              tryLoadGhostMaskSidecar(dir, cloud.count);
-      if (flags != null) {
-        final gv = computeGhostViewVisibility(flags);
-        if (kGhostMaskViewFilter) visibility = gv.visibility;
-        TelemetryWriter.instance.event('ghost_view_filter', {
-          'surface': 'viewer_page',
-          'enabled': kGhostMaskViewFilter,
-          'aligned': true,
-          'points': cloud.count,
-          'hidden_ghost': gv.stats.hiddenGhost,
-          'rescued_visible': gv.stats.rescuedVisible,
-          'shown': gv.stats.shown,
-        });
-      }
-    }
+    // [E25-D 2026-07-20] L2 渲染门已删除 —— 草稿查看页渲染全量交付点云。
+    // 原逻辑读 ghost_view_mask.bin / ghost_mask.bin 算可见性并隐藏 band15
+    // 非救援点;整条 L1/L2 已按用户签决移除(理由见 git log 7e98b5e)。
     if (!mounted) return;
     setState(() {
       _cloud = cloud;
-      _visibility = visibility;
       _loading = false;
     });
   }
@@ -179,7 +146,6 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                     child: SparseCloudView(
                       xyz: cloud.xyz,
                       rgb: cloud.rgb,
-                      visibility: _visibility,
                     ),
                   ),
       ),

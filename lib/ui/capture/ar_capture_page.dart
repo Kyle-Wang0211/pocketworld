@@ -38,7 +38,6 @@ import '../../capture/capture_coverage_cloud.dart';
 import '../../capture/capture_session.dart';
 import '../../capture/colorize_pipeline.dart';
 import '../../capture/floater_filter.dart';
-import '../../capture/ghost_view_filter.dart';
 import '../../capture/parallax_banner_gate.dart';
 import '../../capture/capture_format.dart';
 import '../../capture/photo_card_state.dart';
@@ -156,17 +155,7 @@ class _ARCapturePageState extends State<ARCapturePage>
   /// L2 渲染门可见性(ghost_view_filter.dart),与 [_sfmSnapshot] /
   /// [_pendingLocalColored] 的点序逐位对齐;null = 全显示。RENDER-ONLY:
   /// 只喂 SfmPreviewOverlay → SparseCloudView,persist/导出永远看不到。
-  /// 生命周期与配对的快照字段完全同步(同 setState 赋值/清空)。
-  Uint8List? _sfmGhostVisibility;
-  Uint8List? _pendingLocalVisibility;
 
-  /// [BIT5-FIX 2026-07-12] 交付点序 mask 的重算配方 + 目录,保存于最后一次
-  /// persist(与盘上 ghost_view_mask.bin 逐位对应)。L1 仲裁完成后
-  /// (SfmLiveArbitrateDone)用它把带 bit5=rescued 的 native ghost_mask.bin
-  /// 重排回交付点序并改写 sidecar —— 无需保留运行期快照,只存两级 keep 索引。
-  /// null = 本次重建没出可对齐的 native mask(仲裁后重算是 no-op,fail-open)。
-  GhostDeliveredMaskRemap? _pendingGhostRemap;
-  String? _pendingGhostRemapDir;
   String? _sfmErrorText;
   int _sfmFed = 0;
   int _sfmQueued = 0;
@@ -1099,15 +1088,9 @@ class _ARCapturePageState extends State<ARCapturePage>
       _sampleStarvedBanner();
       return;
     }
-    // [BIT5-FIX 2026-07-12] L1 仲裁完成:native ghost_mask.bin 已带回写的
-    // bit5(rescued)。按 persist 时保存的 keep 链重算交付点序的
-    // ghost_view_mask.bin(草稿查看页下次加载即拿到救援位),并在当前展示的
-    // 就是交付云时顺手把 358 个救援点放行可见。纯磁盘收尾,绝不 gate 交付;
-    // 内部按需 setState,不落主 rebuild 分支。
-    if (event is SfmLiveArbitrateDone) {
-      unawaited(_recomputeDeliveredGhostMaskAfterArbitration());
-      return;
-    }
+    // [E25-D 2026-07-20] L1 仲裁已停用(E25-B),该事件不再发生;原钩子在此
+    // 重算带 rescue 位的 ghost_view_mask.bin。整条 L1/L2 已删。
+    if (event is SfmLiveArbitrateDone) return;
     setState(() {
       switch (event) {
         case SfmLiveConnectivity():
@@ -1160,11 +1143,9 @@ class _ARCapturePageState extends State<ARCapturePage>
             final localFallback = _pendingLocalColored;
             if (localFallback != null) {
               _sfmSnapshot = localFallback;
-              _sfmGhostVisibility = _pendingLocalVisibility; // 渲染门随快照配对
               _sfmPhase = SfmPreviewPhase.refined; // show the done chip + cloud
               _pendingLocalColored = null;
-              _pendingLocalVisibility = null;
-            } else {
+                } else {
               _sfmPhase = SfmPreviewPhase.error;
               _sfmErrorText = '$stage: $message';
             }
@@ -1225,68 +1206,6 @@ class _ARCapturePageState extends State<ARCapturePage>
   /// 全程 fail-open:配方缺失 / native mask 点数错位(与本次重建不符)/ 写盘
   /// 失败 → 保留 persist 版本的交付 mask,绝不隐藏错点。当前展示的正是这份
   /// 交付云时,顺手把带 bit5 的可见性数组换进渲染门 —— 救援点无需重开草稿页
-  /// 即弹回可见。
-  Future<void> _recomputeDeliveredGhostMaskAfterArbitration() async {
-    final remap = _pendingGhostRemap;
-    final dir = _pendingGhostRemapDir;
-    if (remap == null || dir == null) return;
-    // native ghost_mask.bin(默认文件名)此刻已带回写的 bit5=rescued。点数
-    // 必须 == 本次重建的 native 点数,否则是过期/错配的 mask → 拒用。
-    final nativeFlags = tryLoadGhostMaskSidecar(dir, remap.nativeCount);
-    if (nativeFlags == null) return; // 缺失 / 点数错位 → fail-open
-    final delivered = remap.remap(nativeFlags);
-    if (delivered == null) return; // 链长度自检失败 → fail-open
-    final gv = computeGhostViewVisibility(delivered);
-    try {
-      final tmp = File('$dir/$kGhostViewMaskFileName.tmp');
-      await tmp.writeAsBytes(delivered, flush: true);
-      await tmp.rename('$dir/$kGhostViewMaskFileName');
-    } catch (e) {
-      DeviceLog.log(
-        'ARCapturePage',
-        'ghost_view_mask post-arbitrate recompute persist failed: $e',
-      );
-      return;
-    }
-    DeviceLog.log(
-      'ARCapturePage',
-      'ghost_view_mask recomputed post-arbitration: '
-          'hidden=${gv.stats.hiddenGhost} rescued_visible=${gv.stats.rescuedVisible} '
-          'shown=${gv.stats.shown}/${remap.deliveredCount}',
-    );
-    // 遥测【ghost_view_filter】:仲裁后重算面(带 bit5 的最终交付 mask)。
-    // rescued_visible 现在应 >0(persist 面恒 0)—— 这是误隐=0 红线的观测窗。
-    TelemetryWriter.instance.event('ghost_view_filter', {
-      'surface': 'post_arbitrate_recompute',
-      'enabled': kGhostMaskViewFilter,
-      'aligned': true,
-      'delivered_points': remap.deliveredCount,
-      'hidden_ghost': gv.stats.hiddenGhost,
-      'rescued_visible': gv.stats.rescuedVisible,
-      'shown': gv.stats.shown,
-    });
-    // 顺手刷新在屏交付云的渲染门:当前展示的就是这份交付云(点数相等)时,
-    // 换上带 bit5 的可见性数组 —— 救援点即时弹回可见,不必重开草稿页。
-    if (!mounted) return;
-    if (kGhostMaskViewFilter &&
-        _sfmSnapshot?.pointCount == remap.deliveredCount) {
-      setState(() {
-        _sfmGhostVisibility = gv.visibility;
-      });
-    }
-  }
-
-  /// Samples real point colors the COLMAP way (extract_colors parity): each
-  /// point is sampled ONLY in the frames of its own track, at the keypoint
-  /// coordinates where it was actually detected, then reduced to ONE real
-  /// observed sample(亮度中位代表色,见 representative_color.dart;不再算术
-  /// 平均——平均会把白床单混成粉)。Track
-  /// membership is a visibility proof, so occlusion cannot contaminate the
-  /// color. (The previous approach — reprojecting every point into 3
-  /// globally-picked frames — sampled whatever OCCLUDED the point there:
-  /// points on the red blanket turned white behind the bedding silhouette,
-  /// producing the striped/washed clouds.) Data-side rgb only — geometry
-  /// untouched. Skips silently when superseded by a newer snapshot.
   Future<void> _colorizeSnapshot(SfmLiveSnapshot snap) async {
     final recon = _sfmRecon;
     if (recon == null || snap.pointCount == 0) return;
@@ -1463,103 +1382,9 @@ class _ARCapturePageState extends State<ARCapturePage>
       'protected_stable': flt.protectedStable,
       'ms': flt.ms,
     });
-    // ── L2 渲染门(暗铺,ghost_view_filter.dart)──────────────────────
-    // native 在 finalize 时(env AETHER_GHOST_MASK=1)把 per-point 隐藏候选
-    // 位写到 <captureDir>/ghost_mask.bin,顺序 = get_points 迭代序 = 本
-    // snap 的点序 —— 前提是 worker 的 spatial two-view 过滤本次没删点
-    // (删过则点数错位,tryLoad 的一致性核对会拒用 → 全显示,容错语义;
-    // 完整包过门时由 native 在交付点序上出 mask 收口)。谓词在孤点过滤
-    // 【前】的 snap 上算(obsOffsets 只在这层还活着),再按 keepIdx 压实
-    // 与显示点序对齐。kGhostMaskViewFilter=false(默认)时只出遥测不改
-    // 渲染 —— 统计是"若开门会隐藏多少"的暗舱观测窗。
-    Uint8List? ghostVisibility;
-    // [L2-ALIGN 2026-07-12] Ghost flags remapped onto the DELIVERED PLY order
-    // (native→snap→floater), written to ghost_view_mask.bin at persist so the
-    // draft viewer (loads from PLY, no runtime maps) can align. null unless the
-    // native mask loaded and aligned this pass.
-    Uint8List? deliveredGhostFlags;
-    // [BIT5-FIX 2026-07-12] The native→snap→floater keep chain that produced
-    // deliveredGhostFlags, stashed at persist so the L1-arbitration completion
-    // hook can re-run it against the (now bit5-carrying) native ghost_mask.bin.
-    GhostDeliveredMaskRemap? deliveredRemap;
-    final gDir = _session?.captureDir;
-    if (gDir != null) {
-      // [L2-ALIGN 2026-07-12] The native ghost_mask.bin is written in Points3D
-      // order — that is BEFORE the finalize spatial-two-view filter — so it
-      // carries `spatialRemoved` MORE points than this snapshot (cap48: mask
-      // 79458 vs snap 79457). Load against the native count and remap the mask
-      // onto the snap order via the compacted→native map; the existing floater
-      // compaction then carries visibility to the delivered cloud. Chain:
-      // mask(nativeCount) → snap(n) → PLY(m). If the map is unavailable we
-      // fail-open (aligned:false, all visible) exactly as before.
-      final spatialKeep = snap.ghostSpatialKeepIdx;
-      final int spatialRemoved =
-          (snap.summary['spatial_two_view_filtered'] as int?) ?? 0;
-      final int nativeCount = n + spatialRemoved;
-      final bool canRemap = spatialRemoved <= 0 ||
-          (spatialKeep != null && spatialKeep.length == n);
-      final gFlags =
-          canRemap ? tryLoadGhostMaskSidecar(gDir, nativeCount) : null;
-      if (gFlags != null) {
-        // [BIT5-FIX 2026-07-12] The two-level keep chain (native→snap→PLY).
-        // spatialKeep/floaterKeep are null when their filter removed nothing
-        // (identity), matching the persist-time semantics below. The SAME
-        // remap replays post-arbitration to pull bit5 into the delivered mask.
-        final remap = GhostDeliveredMaskRemap(
-          nativeCount: nativeCount,
-          spatialKeep: spatialRemoved <= 0 ? null : spatialKeep,
-          floaterKeep: removedF <= 0 ? null : keepIdx,
-          deliveredCount: m,
-        );
-        // native Points3D order → this snapshot's order (identity when the
-        // spatial filter removed nothing). compactVisibilityByIndices is a
-        // positional Uint8 gather — it doubles as the flag remap here.
-        final snapFlags = spatialRemoved <= 0
-            ? gFlags
-            : compactVisibilityByIndices(gFlags, spatialKeep!);
-        final gv = computeGhostViewVisibility(snapFlags);
-        final vis = removedF <= 0
-            ? gv.visibility
-            : compactVisibilityByIndices(gv.visibility, keepIdx);
-        if (kGhostMaskViewFilter) ghostVisibility = vis;
-        // Flags in delivered PLY order (same floater keepIdx the PLY uses) for
-        // the on-disk ghost_view_mask.bin written at persist below. Identical
-        // to remap.remap(gFlags) — kept inline for the telemetry gv above.
-        deliveredGhostFlags = removedF <= 0
-            ? snapFlags
-            : compactVisibilityByIndices(snapFlags, keepIdx);
-        deliveredRemap = remap;
-        // 遥测【ghost_view_filter】:视图过滤统计(开关开/关都记,enabled
-        // 字段区分)。导出/交付不受影响(断言脚本
-        // tool/ghost_view_filter_check.dart)。规则 visible=¬band15∨rescued;
-        // ⚠️此 surface 在 persist 时算(L1 仲裁之前)→ rescue 位恒 0,
-        // hidden_ghost=band15 全数、rescued_visible=0(仲裁 +22s 后才回写
-        // native mask);delivered_points=m 是孤点过滤后交付 PLY 点数。
-        TelemetryWriter.instance.event('ghost_view_filter', {
-          'surface': 'capture_preview',
-          'enabled': kGhostMaskViewFilter,
-          'aligned': true,
-          'native_points': nativeCount,
-          'points': n,
-          'delivered_points': m,
-          'spatial_two_view_filtered': spatialRemoved,
-          'hidden_ghost': gv.stats.hiddenGhost,
-          'rescued_visible': gv.stats.rescuedVisible,
-          'shown': gv.stats.shown,
-          'floater_removed': removedF,
-        });
-      } else if (File('$gDir/$kGhostMaskFileName').existsSync()) {
-        // sidecar 在但无法对齐(点数不符/缺 keep 映射)→ 拒用,全显示。
-        TelemetryWriter.instance.event('ghost_view_filter', {
-          'surface': 'capture_preview',
-          'enabled': kGhostMaskViewFilter,
-          'aligned': false,
-          'points': n,
-          'native_points': nativeCount,
-          'spatial_two_view_filtered': spatialRemoved,
-        });
-      }
-    }
+    // [E25-D 2026-07-20] L2 渲染门已删除 —— 交付即显示,不再计算/落盘
+    // ghost_view_mask.bin。原块(97 行)在此计算 band15∧¬rescued 可见性、
+    // 把 native ghost_mask.bin 重排到交付点序、并发 ghost_view_filter 遥测。
     // Filtered snapshot reused for BOTH persist and display (empty obs — the
     // colorize already consumed them; persist's track-hist guards on obs length).
     final fsnap = SfmLiveSnapshot(
@@ -1592,30 +1417,8 @@ class _ARCapturePageState extends State<ARCapturePage>
           rgb: frgb,
         );
         persistOk = true;
-        // [L2-ALIGN 2026-07-12] Write the delivered-order render mask alongside
-        // the PLY (SEPARATE from the arbitration-owned ghost_mask.bin). Its
-        // point order/count == sfm_sparse.ply, so the draft viewer aligns with
-        // no runtime maps. Best-effort: a failure never blocks the PLY.
-        if (deliveredGhostFlags != null &&
-            deliveredGhostFlags.length == fsnap.pointCount) {
-          try {
-            final tmp = File('$captureDir/$kGhostViewMaskFileName.tmp');
-            await tmp.writeAsBytes(deliveredGhostFlags, flush: true);
-            await tmp.rename('$captureDir/$kGhostViewMaskFileName');
-            // [BIT5-FIX 2026-07-12] Stash the keep chain that produced this
-            // on-disk mask so the L1-arbitration completion hook can replay it
-            // against the (then bit5-carrying) native ghost_mask.bin. Only set
-            // when the sidecar actually landed — keeps field ⇔ disk consistent,
-            // and the last (refined) persist wins (its cloud is the delivered PLY).
-            if (deliveredRemap != null &&
-                deliveredRemap.deliveredCount == fsnap.pointCount) {
-              _pendingGhostRemap = deliveredRemap;
-              _pendingGhostRemapDir = captureDir;
-            }
-          } catch (e) {
-            DeviceLog.log('ARCapturePage', 'ghost_view_mask persist failed: $e');
-          }
-        }
+        // [E25-D 2026-07-20] 原在此把交付点序的 ghost_view_mask.bin 与 PLY
+        // 一起落盘(供草稿查看页对齐渲染门)。L2 已删,不再产该 sidecar。
       } catch (e) {
         DeviceLog.log('ARCapturePage', 'final sparse persist failed: $e');
       }
@@ -1664,17 +1467,14 @@ class _ARCapturePageState extends State<ARCapturePage>
         // Reveal the clean terminal cloud (streaming preview, or REFINED phase-2).
         setState(() {
           _sfmSnapshot = display;
-          _sfmGhostVisibility = ghostVisibility; // 渲染门随快照配对(默认 null)
           _sfmPhase = SfmPreviewPhase.refined;
           _pendingLocalColored = null;
-          _pendingLocalVisibility = null;
         });
       } else {
         // Defer: do NOT show the noisier phase-1 (local) cloud — wait for the
         // refined one. Hold it as the refine-failure fallback; the generating
         // spinner ("实时重建") stays up as the finalize loading state.
         _pendingLocalColored = display;
-        _pendingLocalVisibility = ghostVisibility;
       }
     }
     // Photo prune (deletes non-curated frames) may run ONLY after the LAST
@@ -1738,11 +1538,27 @@ class _ARCapturePageState extends State<ARCapturePage>
       if (w == null || h == null || rgb == null || w <= 0 || h <= 0) {
         return null;
       }
-      if (rgb.length < w * h * 3) return null;
+      if (rgb.length < w * h * 3) {
+        _noteColorizeDecodeFail('short_buffer');
+        return null;
+      }
       return (rgb: rgb, w: w, h: h);
-    } catch (_) {
+    } catch (e) {
+      // [E25 2026-07-20] 原本是 `catch (_) { return null; }` —— 把 native 抛的
+      // 错误码整个吞掉,结果 colorize 遥测只能报 decode_fail=N,**永远查不出
+      // 为什么**(2026-07-20 未命名7 出现 decode_fail=1,死因不可知)。
+      // native 侧的码是有意义的:ar_decode_failed=文件打不开(被删/未写完)、
+      // ar_decode_empty=尺寸为 0、ar_decode_bad_args=缺参数。记下来。
+      _noteColorizeDecodeFail(e is PlatformException ? e.code : 'exception');
       return null;
     }
+  }
+
+  /// 取色解码失败原因计数,随 colorize 事件一起落遥测。
+  final Map<String, int> _colorizeDecodeFailReasons = <String, int>{};
+  void _noteColorizeDecodeFail(String code) {
+    _colorizeDecodeFailReasons[code] =
+        (_colorizeDecodeFailReasons[code] ?? 0) + 1;
   }
 
   /// Arm the iOS-26 continuation task only for an actual user-triggered finish.
@@ -2057,11 +1873,9 @@ class _ARCapturePageState extends State<ARCapturePage>
             _sfmFed = recon.fedCount;
             _sfmQueued = recon.remainingCount;
             _sfmSnapshot = null;
-            _sfmGhostVisibility = null;
             _colorizeTarget = null;
             _pendingLocalColored = null;
-            _pendingLocalVisibility = null;
-            _sfmErrorText = null;
+              _sfmErrorText = null;
             _sfmPhase = SfmPreviewPhase.generating;
             _showDraftsWhileReconstructing = false;
             // 修1:队列已空则立即进入阶段 1;否则等 FrameFed 排空时进。
@@ -2555,7 +2369,6 @@ class _ARCapturePageState extends State<ARCapturePage>
             SfmPreviewOverlay(
               phase: _sfmPhase!,
               snapshot: _sfmSnapshot,
-              visibility: _sfmGhostVisibility,
               errorText: _sfmErrorText,
               progressText: _sfmQueued > 0
                   ? '已处理 $_sfmFed 帧 · 剩余 $_sfmQueued 帧'
