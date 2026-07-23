@@ -8,6 +8,49 @@ import 'package:flutter/material.dart';
 
 import '../l10n/app_localizations.dart';
 
+/// Immutable identity of the end-to-end capture stack that owns a scan.
+///
+/// This is deliberately separate from [CaptureMode]: capture mode describes
+/// where processing happens, while pipeline kind selects the independent
+/// self-developed or official-alignment implementation.
+enum CapturePipelineKind { self, official }
+
+extension CapturePipelineKindWire on CapturePipelineKind {
+  String get wireName {
+    switch (this) {
+      case CapturePipelineKind.self:
+        return 'self';
+      case CapturePipelineKind.official:
+        return 'official';
+    }
+  }
+
+  String get displayLabel {
+    switch (this) {
+      case CapturePipelineKind.self:
+        return '自研';
+      case CapturePipelineKind.official:
+        return '官方';
+    }
+  }
+
+  /// Parses an explicitly present wire value.
+  ///
+  /// Legacy migration is intentionally not handled here: callers may map a
+  /// completely absent field to [CapturePipelineKind.self], but an explicitly
+  /// present null, wrong type, or unknown string must fail closed.
+  static CapturePipelineKind fromWireName(Object? value) {
+    switch (value) {
+      case 'self':
+        return CapturePipelineKind.self;
+      case 'official':
+        return CapturePipelineKind.official;
+      default:
+        throw FormatException('Invalid pipeline_kind: $value');
+    }
+  }
+}
+
 // 2026-05-21: cloud capture upload is back, but as a frame-first staging
 // channel (JPG/JSON + cloud manifest), not the deleted .mov upload chain.
 // These states describe the raw-capture handoff only; training/packaging
@@ -187,6 +230,7 @@ class ScanRecord {
   final String id;
   final String name;
   final DateTime createdAt;
+  final CapturePipelineKind pipelineKind;
   final CaptureMode preferredCaptureMode;
 
   /// Null for now (no real image pipeline). Kept so ScanRecordCell can
@@ -248,6 +292,7 @@ class ScanRecord {
     required this.id,
     required this.name,
     required this.createdAt,
+    this.pipelineKind = CapturePipelineKind.self,
     this.preferredCaptureMode = CaptureMode.local,
     this.thumbnailPath,
     this.artifactPath,
@@ -276,6 +321,7 @@ class ScanRecord {
   ScanRecord copyWith({
     String? name,
     String? thumbnailPath,
+    bool clearThumbnailPath = false,
     String? artifactPath,
     bool clearArtifactPath = false,
     String? captureDir,
@@ -300,8 +346,11 @@ class ScanRecord {
       id: id,
       name: name ?? this.name,
       createdAt: createdAt,
+      pipelineKind: pipelineKind,
       preferredCaptureMode: preferredCaptureMode,
-      thumbnailPath: thumbnailPath ?? this.thumbnailPath,
+      thumbnailPath: clearThumbnailPath
+          ? null
+          : (thumbnailPath ?? this.thumbnailPath),
       artifactPath: clearArtifactPath
           ? null
           : (artifactPath ?? this.artifactPath),

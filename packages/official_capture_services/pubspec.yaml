@@ -1,0 +1,12 @@
+name: official_capture_services
+description: Shared local capture bundle validation and view graph services for Aether3D Flutter clients.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  # MIT. Pure-Dart JPEG decode/resize/encode so DA3 fixed-size input
+  # cache generation stays in Flutter/Dart instead of platform code.
+  image: ^4.3.0

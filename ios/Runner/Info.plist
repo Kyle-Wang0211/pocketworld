@@ -119,6 +119,7 @@
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>com.kyle.PocketWorld.recon</string>
+		<string>com.kyle.PocketWorld.official.recon</string>
 	</array>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>

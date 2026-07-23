@@ -10,8 +10,34 @@
 import 'package:flutter/material.dart';
 
 import 'capture/ar_capture_page.dart';
-import 'design_system.dart';
+import 'capture_pipeline_chooser.dart';
+import 'draft_capture_shell.dart';
 import 'me_page.dart';
+import 'official_capture/ar_capture_page.dart';
+import 'official_capture/official_gallery_routes.dart';
+import 'scan_record.dart';
+
+Future<void> _pushOfficialResumeRoute(
+  BuildContext context,
+  ScanRecord record,
+  String captureDir, {
+  required bool regenerate,
+}) {
+  return pushOfficialResumeRoute(
+    context,
+    record,
+    captureDir,
+    regenerate: regenerate,
+  );
+}
+
+Future<void> _pushOfficialViewerRoute(
+  BuildContext context,
+  ScanRecord record,
+  String plyPath,
+) {
+  return pushOfficialViewerRoute(context, record, plyPath);
+}
 
 class MeRootPage extends StatefulWidget {
   const MeRootPage({super.key});
@@ -30,12 +56,29 @@ class _MeRootPageState extends State<MeRootPage> {
     super.dispose();
   }
 
-  /// Black "+" FAB → straight into AR capture (no 拍摄/上传 chooser sheet).
-  /// ARCapturePage returns `true` when a scan kicked off → bump the signal so
-  /// MePage shows the new draft right away.
+  /// Black "+" FAB → choose one of the two physically independent capture
+  /// stacks. Both stacks currently preserve the product algorithm semantics;
+  /// the official route is the isolated copy used for later alignment work.
   Future<void> _openCapture() async {
+    final choice = await showModalBottomSheet<CaptureRouteChoice>(
+      context: context,
+      useSafeArea: false,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withValues(alpha: 0.32),
+      builder: (sheetContext) => CapturePipelineChooser(
+        onSelected: (value) => Navigator.of(sheetContext).pop(value),
+      ),
+    );
+    if (!mounted || choice == null) return;
+
     final created = await Navigator.of(context).push<bool>(
-      MaterialPageRoute<bool>(builder: (_) => const ARCapturePage()),
+      MaterialPageRoute<bool>(
+        builder: (_) => switch (choice) {
+          CaptureRouteChoice.selfDeveloped => const ARCapturePage(),
+          CaptureRouteChoice.official => const OfficialARCapturePage(),
+        },
+      ),
     );
     if (!mounted) return;
     if (created == true) _showDraftsSignal.value += 1;
@@ -43,49 +86,12 @@ class _MeRootPageState extends State<MeRootPage> {
 
   @override
   Widget build(BuildContext context) {
-    final bottomInset = MediaQuery.of(context).padding.bottom;
-    return Stack(
-      children: [
-        Positioned.fill(
-          child: MePage(showDraftsSignal: _showDraftsSignal),
-        ),
-        Positioned(
-          right: 20,
-          bottom: 24 + bottomInset,
-          child: _CaptureFab(onTap: _openCapture),
-        ),
-      ],
-    );
-  }
-}
-
-/// The black spherical "+" capture button — same look as the old bottom-nav
-/// center button, relocated to a bottom-right FAB and sized up as the V1
-/// primary action.
-class _CaptureFab extends StatelessWidget {
-  final VoidCallback onTap;
-  const _CaptureFab({required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: Container(
-        width: 60,
-        height: 60,
-        decoration: BoxDecoration(
-          color: AetherColors.primary,
-          shape: BoxShape.circle,
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.22),
-              blurRadius: 16,
-              offset: const Offset(0, 6),
-            ),
-          ],
-        ),
-        child: const Icon(Icons.add_rounded, color: Colors.white, size: 30),
+    return DraftCaptureShell(
+      onCaptureTap: _openCapture,
+      child: MePage(
+        showDraftsSignal: _showDraftsSignal,
+        officialResumeRoute: _pushOfficialResumeRoute,
+        officialViewerRoute: _pushOfficialViewerRoute,
       ),
     );
   }

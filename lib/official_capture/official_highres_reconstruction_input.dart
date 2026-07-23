@@ -1,0 +1,102 @@
+enum OfficialHighResInputFailure {
+  captureFailed,
+  unexpectedDimensions,
+  outOfSync,
+  missingPose,
+  missingIntrinsics,
+  missingJpeg,
+}
+
+class OfficialHighResInputValidation {
+  const OfficialHighResInputValidation.accepted(this.input) : failure = null;
+
+  const OfficialHighResInputValidation.rejected(this.failure) : input = null;
+
+  final OfficialHighResReconstructionInput? input;
+  final OfficialHighResInputFailure? failure;
+
+  bool get isAccepted => input != null;
+}
+
+class OfficialHighResReconstructionInput {
+  const OfficialHighResReconstructionInput._({
+    required this.jpegPath,
+    required this.imageWidth,
+    required this.imageHeight,
+    required this.triggerTimestamp,
+    required this.captureTimestamp,
+    required this.cameraTransform,
+    required this.intrinsics,
+  });
+
+  static const int requiredWidth = 4032;
+  static const int requiredHeight = 3024;
+
+  final String jpegPath;
+  final int imageWidth;
+  final int imageHeight;
+  final double triggerTimestamp;
+  final double captureTimestamp;
+  final List<double> cameraTransform;
+  final List<double> intrinsics;
+
+  double get timestampDeltaSeconds =>
+      (captureTimestamp - triggerTimestamp).abs();
+
+  static OfficialHighResInputValidation validate({
+    required String jpegPath,
+    required int imageWidth,
+    required int imageHeight,
+    required double triggerTimestamp,
+    required double captureTimestamp,
+    required List<double> cameraTransform,
+    required List<double> intrinsics,
+  }) {
+    if (jpegPath.isEmpty ||
+        !(jpegPath.toLowerCase().endsWith('.jpg') ||
+            jpegPath.toLowerCase().endsWith('.jpeg'))) {
+      return const OfficialHighResInputValidation.rejected(
+        OfficialHighResInputFailure.missingJpeg,
+      );
+    }
+    if (imageWidth != requiredWidth || imageHeight != requiredHeight) {
+      return const OfficialHighResInputValidation.rejected(
+        OfficialHighResInputFailure.unexpectedDimensions,
+      );
+    }
+    // `captureHighResolutionFrame` completes the exact native request that
+    // created this input, and image/pose/intrinsics/timestamp all come from
+    // that one returned ARFrame. The request-to-frame delta is camera pipeline
+    // latency (250 ms median and up to 1.23 s on the target iPhone), not a
+    // measure of image/pose synchronization. Keep both clocks for audit, but
+    // never reject a valid transaction merely because the sensor was slow.
+    if (!triggerTimestamp.isFinite || !captureTimestamp.isFinite) {
+      return const OfficialHighResInputValidation.rejected(
+        OfficialHighResInputFailure.outOfSync,
+      );
+    }
+    if (cameraTransform.length != 16 ||
+        cameraTransform.any((value) => !value.isFinite)) {
+      return const OfficialHighResInputValidation.rejected(
+        OfficialHighResInputFailure.missingPose,
+      );
+    }
+    if (intrinsics.length < 4 ||
+        intrinsics.take(4).any((value) => !value.isFinite || value <= 0)) {
+      return const OfficialHighResInputValidation.rejected(
+        OfficialHighResInputFailure.missingIntrinsics,
+      );
+    }
+    return OfficialHighResInputValidation.accepted(
+      OfficialHighResReconstructionInput._(
+        jpegPath: jpegPath,
+        imageWidth: imageWidth,
+        imageHeight: imageHeight,
+        triggerTimestamp: triggerTimestamp,
+        captureTimestamp: captureTimestamp,
+        cameraTransform: List<double>.unmodifiable(cameraTransform),
+        intrinsics: List<double>.unmodifiable(intrinsics.take(4)),
+      ),
+    );
+  }
+}

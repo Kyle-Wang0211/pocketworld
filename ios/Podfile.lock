@@ -55,6 +55,7 @@ PODS:
   - libwebp/sharpyuv (1.5.0)
   - libwebp/webp (1.5.0):
     - libwebp/sharpyuv
+  - official_sfm (1.0.0)
   - onnxruntime (0.0.1):
     - Flutter
     - onnxruntime-objc (= 1.15.1)
@@ -88,6 +89,7 @@ DEPENDENCIES:
   - file_picker (from `.symlinks/plugins/file_picker/ios`)
   - Flutter (from `Flutter`)
   - integration_test (from `.symlinks/plugins/integration_test/ios`)
+  - official_sfm (from `../vendor/official_sfm`)
   - onnxruntime (from `.symlinks/plugins/onnxruntime/ios`)
   - sensors_plus (from `.symlinks/plugins/sensors_plus/ios`)
   - shared_preferences_foundation (from `.symlinks/plugins/shared_preferences_foundation/darwin`)
@@ -120,6 +122,8 @@ EXTERNAL SOURCES:
     :path: Flutter
   integration_test:
     :path: ".symlinks/plugins/integration_test/ios"
+  official_sfm:
+    :path: "../vendor/official_sfm"
   onnxruntime:
     :path: ".symlinks/plugins/onnxruntime/ios"
   sensors_plus:
@@ -144,6 +148,7 @@ SPEC CHECKSUMS:
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
   integration_test: 4a889634ef21a45d28d50d622cf412dc6d9f586e
   libwebp: 02b23773aedb6ff1fd38cec7a77b81414c6842a8
+  official_sfm: 10c92e340b375a5ff373bcb9ddae06614e5b6db6
   onnxruntime: 2ab1957eb029c71d47f7bb35cc4efc9f0d297828
   onnxruntime-c: ebdcfd8650bcbd10121c125262f99dea681b92a3
   onnxruntime-objc: ae7acec7a3d03eaf072d340afed7a35635c1c2a6
@@ -155,6 +160,6 @@ SPEC CHECKSUMS:
   url_launcher_ios: 7a95fa5b60cc718a708b8f2966718e93db0cef1b
   video_thumbnail: b637e0ad5f588ca9945f6e2c927f73a69a661140
 
-PODFILE CHECKSUM: 9dce0862ec893c057562b0ca875133daa85267d4
+PODFILE CHECKSUM: 8407c68a3191125a7d5c8eabb459712317e565f1
 
 COCOAPODS: 1.16.2

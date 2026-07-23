@@ -54,7 +54,10 @@ import '../../l10n/app_localizations.dart';
 import '../../me/scan_record_store.dart';
 import '../../quality/guidance_engine.dart' show GuidanceSnapshot;
 import '../../util/device_log.dart';
+import '../draft_capture_shell.dart';
 import '../me_page.dart';
+import '../reconstruction_draft_route_state.dart';
+import '../reconstruction_route_release_gate.dart';
 import '../scan_record.dart';
 import 'ar_album_page.dart';
 import 'sfm_preview_overlay.dart';
@@ -134,6 +137,18 @@ class _ARCapturePageState extends State<ARCapturePage>
   StreamSubscription<SfmFrameFeed>? _sfmFeedSub;
   StreamSubscription<SfmLiveEvent>? _sfmEventSub;
 
+  /// Live reconstruction is part of the capture contract, not an optional
+  /// preview. Until its worker owns the shared lease, both capture controls
+  /// stay disabled. A startup failure remains visible until this take exits.
+  bool _sfmStarting = false;
+  String? _sfmStartFailureText;
+
+  bool get _sfmCaptureReady =>
+      _recording &&
+      !_sfmStarting &&
+      _sfmStartFailureText == null &&
+      _sfmRecon != null;
+
   /// Non-null while the post-capture preview overlay is showing.
   SfmPreviewPhase? _sfmPhase;
 
@@ -193,6 +208,9 @@ class _ARCapturePageState extends State<ARCapturePage>
   /// Keeping the route mounted is what keeps the worker, queue and final
   /// snapshot alive for a later task-card tap.
   bool _showDraftsWhileReconstructing = false;
+  bool _draftTerminalExitScheduled = false;
+  final ReconstructionRouteReleaseGate _routeReleaseGate =
+      ReconstructionRouteReleaseGate();
 
   /// Capture directory used as the idempotency key for the one iOS continued-
   /// processing task protecting this user-triggered final reconstruction.
@@ -694,14 +712,16 @@ class _ARCapturePageState extends State<ARCapturePage>
       _coverageFeedSub ??= session.sfmFrameStream.listen(_onCoverageKeyframe);
       setState(() {
         _recording = true;
+        _sfmStarting = true;
+        _sfmStartFailureText = null;
         _isAiming = false;
         _lockInProgress = false;
       });
       _startGuidanceTelemetry();
-      // Capture-time streaming SfM: spawn the worker and route keyframe
-      // feeds to it. Fully off the critical path — a failed start just
-      // means no live preview (the JPEG bundle is unaffected).
-      unawaited(_startSfmLiveRecon(session));
+      // Capture-time streaming SfM is required for a valid product take.
+      // Await only worker startup (not reconstruction); controls remain
+      // disabled while the native lease/session is being acquired.
+      await _startSfmLiveRecon(session);
     } catch (e) {
       // ignore: avoid_print
       print('[ARCapturePage] manual capture start failed: $e');
@@ -963,24 +983,40 @@ class _ARCapturePageState extends State<ARCapturePage>
     }
   }
 
-  /// Spawns the streaming-SfM worker for this take and wires the keyframe
-  /// feed. No-op on the simulator ([SfmLiveRecon.isSupported] == false) so
-  /// the whole live-preview feature is hidden there. Never throws into the
-  /// zone — a failed start only costs the live preview, never the capture.
+  void _markSfmStartFailure(String detail) {
+    DeviceLog.log('ARCapturePage', 'sfm: startup blocked: $detail');
+    if (!mounted) return;
+    setState(() {
+      _sfmStarting = false;
+      _queuedShutterTaps = 0;
+      _sfmStartFailureText = '点云重建未能启动（$detail）。请退出后重试；此次拍摄不会保存。';
+    });
+  }
+
+  /// Spawns the required streaming-SfM worker for this take and wires the
+  /// keyframe feed. Startup is fail-closed: unsupported devices, missing
+  /// capture storage, lease contention (reported as a null worker), and thrown
+  /// errors all leave a persistent page error with capture/save disabled.
   Future<void> _startSfmLiveRecon(CaptureSession session) async {
     try {
-      if (_sfmRecon != null) return;
+      if (_sfmRecon != null) {
+        if (mounted) setState(() => _sfmStarting = false);
+        return;
+      }
       if (!SfmLiveRecon.isSupported) {
-        DeviceLog.log('ARCapturePage', 'sfm: unsupported — preview hidden');
+        _markSfmStartFailure('当前设备不支持本地点云重建');
         return;
       }
       final captureDir = session.captureDir;
       if (captureDir == null) {
-        DeviceLog.log('ARCapturePage', 'sfm: no captureDir — not started');
+        _markSfmStartFailure('拍摄目录不可用');
         return;
       }
       final recon = await SfmLiveRecon.start(dbPath: '$captureDir/sfm_live.db');
-      if (recon == null) return; // reason already file-logged by start()
+      if (recon == null) {
+        _markSfmStartFailure('重建资源正被占用或启动失败');
+        return;
+      }
       if (!mounted || !_recording) {
         DeviceLog.log('ARCapturePage', 'sfm: page gone before worker up');
         unawaited(recon.dispose());
@@ -989,10 +1025,13 @@ class _ARCapturePageState extends State<ARCapturePage>
       _sfmRecon = recon;
       _sfmFeedSub = session.sfmFrameStream.listen(recon.offerFrame);
       _sfmEventSub = recon.events.listen(_onSfmEvent);
-      if (mounted) setState(() {}); // surface the feed chip immediately
+      if (mounted) {
+        setState(() => _sfmStarting = false); // enable controls + feed chip
+      }
       DeviceLog.log('ARCapturePage', 'sfm: live recon wired');
     } catch (e, st) {
       DeviceLog.log('ARCapturePage', 'sfm: start FAILED: $e\n$st');
+      _markSfmStartFailure('重建服务启动异常');
     }
   }
 
@@ -1145,7 +1184,7 @@ class _ARCapturePageState extends State<ARCapturePage>
               _sfmSnapshot = localFallback;
               _sfmPhase = SfmPreviewPhase.refined; // show the done chip + cloud
               _pendingLocalColored = null;
-                } else {
+            } else {
               _sfmPhase = SfmPreviewPhase.error;
               _sfmErrorText = '$stage: $message';
             }
@@ -1618,31 +1657,39 @@ class _ARCapturePageState extends State<ARCapturePage>
 
   /// "完成" on the preview overlay: tear the worker down (frees the native
   /// session + sqlite db) and run the exit the finish flow deferred.
-  void _onSfmPreviewDone() {
+  Future<void> _onSfmPreviewDone() async {
     if (_sfmPhase != SfmPreviewPhase.refined &&
         _sfmPhase != SfmPreviewPhase.error) {
       return;
     }
-    // Catch-all umbrella teardown: covers a refine-failure-after-localReady
-    // (log-only, no terminal event) and an early user exit. Idempotent.
-    unawaited(_endReconUmbrella());
-    _stopSfmStageTicker();
-    final recon = _sfmRecon;
-    _sfmRecon = null;
-    _sfmFeedSub?.cancel();
-    _sfmFeedSub = null;
-    _sfmEventSub?.cancel();
-    _sfmEventSub = null;
-    if (recon != null) unawaited(recon.dispose());
-    if (!mounted) return;
-    setState(() {
-      _sfmPhase = null;
-      _showDraftsWhileReconstructing = false;
-    });
-    if (_sfmPendingPop) {
-      _sfmPendingPop = false;
-      Navigator.of(context).pop(true);
-    }
+    await _routeReleaseGate.release(
+      releaseResources: () async {
+        // The root FAB must not become enabled until dispose releases the
+        // process-wide reconstruction lease.
+        await _endReconUmbrella();
+        _stopSfmStageTicker();
+        final recon = _sfmRecon;
+        final feedSub = _sfmFeedSub;
+        final eventSub = _sfmEventSub;
+        _sfmRecon = null;
+        _sfmFeedSub = null;
+        _sfmEventSub = null;
+        await feedSub?.cancel();
+        await eventSub?.cancel();
+        if (recon != null) await recon.dispose();
+      },
+      revealRoot: () {
+        if (!mounted) return;
+        setState(() {
+          _sfmPhase = null;
+          _showDraftsWhileReconstructing = false;
+        });
+        if (_sfmPendingPop) {
+          _sfmPendingPop = false;
+          Navigator.of(context).pop(true);
+        }
+      },
+    );
   }
 
   /// Reveal Drafts without disposing the capture route or touching SfM.
@@ -1657,12 +1704,41 @@ class _ARCapturePageState extends State<ARCapturePage>
     setState(() => _showDraftsWhileReconstructing = false);
   }
 
+  void _scheduleDraftTerminalExitIfNeeded() {
+    final terminal =
+        _sfmPhase == SfmPreviewPhase.refined ||
+        _sfmPhase == SfmPreviewPhase.error;
+    if (_draftTerminalExitScheduled ||
+        !shouldAutoExitReconstructionDrafts(
+          showingDrafts: _showDraftsWhileReconstructing,
+          reconstructionTerminal: terminal,
+        )) {
+      return;
+    }
+    _draftTerminalExitScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _draftTerminalExitScheduled = false;
+      if (!mounted) return;
+      final stillTerminal =
+          _sfmPhase == SfmPreviewPhase.refined ||
+          _sfmPhase == SfmPreviewPhase.error;
+      if (!shouldAutoExitReconstructionDrafts(
+        showingDrafts: _showDraftsWhileReconstructing,
+        reconstructionTerminal: stillTerminal,
+      )) {
+        return;
+      }
+      _sfmPendingPop = true;
+      unawaited(_onSfmPreviewDone());
+    });
+  }
+
   /// Shutter tap → capture exactly ONE high-res still (RealityScan manual).
   Future<void> _onShutterTap() async {
     final session = _session;
     // 07-12 签决:快门彻底不限流。`_capturing` 是单张在途重入保护。
     // [12MP 排队] 在途时不丢弃 tap —— 记一个 pending,当前拍完在 finally 补拍。
-    if (session == null || !_recording) return;
+    if (session == null || !_sfmCaptureReady) return;
     if (_capturing) {
       if (_queuedShutterTaps < 8) _queuedShutterTaps++;
       return;
@@ -1694,10 +1770,9 @@ class _ARCapturePageState extends State<ARCapturePage>
         // fire-and-forget,快门在此立即解锁。卡片在 native 侧异步建好。
         unawaited(
           _arKitChannel
-              .invokeMethod<void>(
-                'addPhotoCard',
-                <String, dynamic>{'jpegPath': jpegPath},
-              )
+              .invokeMethod<void>('addPhotoCard', <String, dynamic>{
+                'jpegPath': jpegPath,
+              })
               .catchError((Object e) {
                 // ignore: avoid_print
                 print('[ARCapturePage] addPhotoCard failed: $e');
@@ -1707,7 +1782,7 @@ class _ARCapturePageState extends State<ARCapturePage>
     } finally {
       if (mounted) setState(() => _capturing = false);
       // [12MP 排队] 在途期间点过几下 → 逐张补拍(计数器,一张不丢)。
-      if (_queuedShutterTaps > 0 && mounted && _recording) {
+      if (_queuedShutterTaps > 0 && mounted && _sfmCaptureReady) {
         _queuedShutterTaps--;
         unawaited(_onShutterTap());
       }
@@ -1736,7 +1811,7 @@ class _ARCapturePageState extends State<ARCapturePage>
   /// 弹窗只是前置门。每次点完成都记一行 finish_gate 遥测
   /// (starved/true_vox + 用户选择;未触发门 = pass)。
   Future<void> _onFinishTap() async {
-    if (_finalizingRecording) return;
+    if (!_sfmCaptureReady || _finalizingRecording) return;
     final cov = _coverageCloud.coverageStats();
     if (starvedFinishGateShouldPrompt(
       starvedTrue: cov.starvedTrue,
@@ -1790,7 +1865,8 @@ class _ARCapturePageState extends State<ARCapturePage>
     required bool showSparseHint,
   }) async {
     final session = _session;
-    if (session == null || _finalizingRecording) return;
+    if (session == null || !_sfmCaptureReady) return;
+    if (_finalizingRecording) return;
     _finalizingRecording = true;
     _stopGuidanceTelemetry(); // 拍摄结束,【guidance】采样停止
     try {
@@ -1875,7 +1951,7 @@ class _ARCapturePageState extends State<ARCapturePage>
             _sfmSnapshot = null;
             _colorizeTarget = null;
             _pendingLocalColored = null;
-              _sfmErrorText = null;
+            _sfmErrorText = null;
             _sfmPhase = SfmPreviewPhase.generating;
             _showDraftsWhileReconstructing = false;
             // 修1:队列已空则立即进入阶段 1;否则等 FrameFed 排空时进。
@@ -1973,7 +2049,10 @@ class _ARCapturePageState extends State<ARCapturePage>
             .toList(growable: false)
           ..sort();
     if (firstPhoto.isNotEmpty) {
-      final thumbnail = await store.thumbnailFileFor(captureId);
+      final thumbnail = await store.thumbnailFileFor(
+        captureId,
+        pipelineKind: CapturePipelineKind.self,
+      );
       final sourcePath = _cardThumbnailSourceFor(firstPhoto.first);
       try {
         await thumbnail.parent.create(recursive: true);
@@ -2143,11 +2222,16 @@ class _ARCapturePageState extends State<ARCapturePage>
   }
 
   Widget _buildRouteBody(BuildContext context) {
+    _scheduleDraftTerminalExitIfNeeded();
     if (_showDraftsWhileReconstructing && _sfmPhase != null) {
-      return MePage(
-        initialShowDrafts: true,
-        activeReconstructionCaptureDir: _session?.captureDir,
-        onActiveReconstructionTap: _showReconstructionProgress,
+      return DraftCaptureShell(
+        blockedMessage: '当前任务正在重建',
+        onCaptureTap: _showReconstructionProgress,
+        child: MePage(
+          initialShowDrafts: true,
+          activeReconstructionCaptureDir: _session?.captureDir,
+          onActiveReconstructionTap: _showReconstructionProgress,
+        ),
       );
     }
     return Scaffold(
@@ -2173,7 +2257,7 @@ class _ARCapturePageState extends State<ARCapturePage>
               ),
             ),
 
-          // ─── Top bar: just the X close button (right).
+          // ─── Top bar: subtle route marker + X close button (right).
           // Tracking dot was previously rendered dead-center here, but
           // it sat right under iOS's Dynamic Island (visually colliding
           // with the system camera-in-use indicator) and the abstract
@@ -2189,14 +2273,70 @@ class _ARCapturePageState extends State<ARCapturePage>
                 padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
                 child: SizedBox(
                   height: 38,
-                  child: Align(
-                    alignment: Alignment.centerRight,
-                    child: _CloseButton(onTap: _onCloseTap),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      const _CaptureRouteBadge(
+                        key: ValueKey<String>('capture-route-badge-self'),
+                        label: '自研',
+                      ),
+                      const SizedBox(width: 8),
+                      _CloseButton(onTap: _onCloseTap),
+                    ],
                   ),
                 ),
               ),
             ),
           ),
+
+          // A live-SfM worker is mandatory for this product route. Keep the
+          // failure on screen (rather than a transient snackbar) and leave X
+          // available so the user can discard the invalid take and retry.
+          if (_sfmStartFailureText != null)
+            Positioned(
+              top: 0,
+              left: 16,
+              right: 16,
+              child: SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 66),
+                  child: Container(
+                    key: const ValueKey<String>(
+                      'sfm-start-failure-banner-self',
+                    ),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 12,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xE6A52828),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: Colors.white24),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(
+                          Icons.error_outline_rounded,
+                          color: Colors.white,
+                          size: 22,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            _sfmStartFailureText!,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
 
           // ─── Aim mode overlay: center crosshair + hint text.
           // Only rendered while `_isAiming` is true (between idle and
@@ -2349,14 +2489,16 @@ class _ARCapturePageState extends State<ARCapturePage>
                       targetPoints: _targetPoints,
                       // 07-12 签决:快门彻底不限流 —— 只要在录制就永远可拍,
                       // 绝不因队列深度/热态置灰(积压走磁盘 spool 队列,不回压快门)。
-                      ready: _recording,
+                      ready: _sfmCaptureReady,
                       capturing: _capturing,
                       finishing: _finalizingRecording,
                       onShutter: _onShutterTap,
                       onOpenAlbum: _openAlbum,
                       // 补强2:完成前先过 starved 把关门(_onFinishTap),
                       // 通过后才走原 _finalizeRecording,原流程一个字不改。
-                      onFinish: _finalizingRecording ? null : _onFinishTap,
+                      onFinish: _sfmCaptureReady && !_finalizingRecording
+                          ? _onFinishTap
+                          : null,
                     ),
                   ],
                 ),
@@ -2374,7 +2516,7 @@ class _ARCapturePageState extends State<ARCapturePage>
                   ? '已处理 $_sfmFed 帧 · 剩余 $_sfmQueued 帧'
                   : _sfmStageProgressText(),
               onBack: _showDraftsDuringReconstruction,
-              onDone: _onSfmPreviewDone,
+              onDone: () => unawaited(_onSfmPreviewDone()),
             ),
         ],
       ),
@@ -2856,7 +2998,10 @@ class _NineDotIcon extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return CustomPaint(size: const Size(24, 24), painter: _NineDotPainter(color));
+    return CustomPaint(
+      size: const Size(24, 24),
+      painter: _NineDotPainter(color),
+    );
   }
 }
 
@@ -3142,6 +3287,35 @@ class _SfmFeedChip extends StatelessWidget {
             style: const TextStyle(color: Colors.white70, fontSize: 11.5),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _CaptureRouteBadge extends StatelessWidget {
+  const _CaptureRouteBadge({super.key, required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 30,
+      padding: const EdgeInsets.symmetric(horizontal: 11),
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.35),
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: Colors.white.withValues(alpha: 0.86),
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 0.4,
+        ),
       ),
     );
   }

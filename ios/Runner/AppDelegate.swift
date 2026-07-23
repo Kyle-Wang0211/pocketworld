@@ -28,6 +28,13 @@ import UIKit
       } else {
         NSLog("[AppDelegate] registrar(forPlugin: AetherARKitPlugin) nil — dome will fall back to mock pose")
       }
+      if let registrar = self.registrar(
+        forPlugin: "OfficialAetherARKitPlugin"
+      ) {
+        OfficialAetherARKitPlugin.register(with: registrar)
+      } else {
+        NSLog("[AppDelegate] registrar(forPlugin: OfficialAetherARKitPlugin) nil — official capture route unavailable")
+      }
     }
 
     // Background-continuation umbrella (iOS 26): the SfM finalize keeps running
@@ -35,6 +42,7 @@ import UIKit
     // before the app finishes launching, or the system drops the launch.
     if #available(iOS 26.0, *) {
       ReconUmbrella.shared.register()
+      OfficialReconUmbrella.shared.register()
     }
 
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)

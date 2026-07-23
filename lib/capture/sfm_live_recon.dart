@@ -41,6 +41,7 @@ import 'package:vector_math/vector_math_64.dart' as vm;
 
 import '../aether_sfm_ffi.dart';
 import '../dome/ar_pose.dart' show SfmFrameFeed;
+import '../reconstruction_lease.dart';
 import '../util/device_log.dart';
 import 'gravity_align.dart';
 import 'pw_telemetry.dart';
@@ -477,6 +478,7 @@ class SfmLiveRecon {
     this._isolate,
     this._sub,
     this._dbPath,
+    this._leaseOwner,
   );
 
   final SendPort _toWorker;
@@ -484,6 +486,7 @@ class SfmLiveRecon {
   final Isolate _isolate;
   final StreamSubscription<dynamic> _sub;
   final String _dbPath;
+  final Object _leaseOwner;
 
   final _events = StreamController<SfmLiveEvent>.broadcast();
   Stream<SfmLiveEvent> get events => _events.stream;
@@ -542,58 +545,92 @@ class SfmLiveRecon {
 
   /// Spawns the worker. Returns null when unsupported or when the worker
   /// fails to come up — callers degrade by not showing the preview layer.
+  /// Throws [ReconstructionLeaseBusyException] when either physical pipeline
+  /// copy still owns the process-wide SfM worker; no cross-route fallback is
+  /// attempted.
   static Future<SfmLiveRecon?> start({required String dbPath}) async {
     if (!isSupported) {
       DeviceLog.log('SfmLive', 'start: unsupported (simulator) — hidden');
       return null;
     }
+    final leaseOwner = Object();
+    reconstructionLease.acquire(
+      owner: leaseOwner,
+      pipeline: ReconstructionPipeline.selfDeveloped,
+    );
     final fromWorker = ReceivePort();
-    final Isolate isolate;
+    Isolate? isolate;
+    StreamSubscription<dynamic>? sub;
+    var handedOff = false;
     try {
-      isolate = await Isolate.spawn(
-        _sfmWorkerMain,
-        _SfmWorkerBootstrap(fromWorker.sendPort, dbPath),
-        debugName: 'sfm_live_recon',
-        errorsAreFatal: true,
-      );
-    } catch (e) {
-      fromWorker.close();
-      DeviceLog.log('SfmLive', 'worker spawn FAILED: $e');
-      return null;
-    }
-    // ONE subscription for the port's whole life: first message is the
-    // handshake SendPort, everything after routes to the live handler.
-    // (ReceivePort is single-subscription and closes on cancel — a second
-    // listen() throws; this exact mistake shipped once and silently killed
-    // the feature in release.)
-    final handshake = Completer<SendPort?>();
-    SfmLiveRecon? recon;
-    final sub = fromWorker.listen((msg) {
-      if (!handshake.isCompleted) {
-        handshake.complete(msg is SendPort ? msg : null);
-        return;
+      try {
+        isolate = await Isolate.spawn(
+          _sfmWorkerMain,
+          _SfmWorkerBootstrap(fromWorker.sendPort, dbPath),
+          debugName: 'sfm_live_recon',
+          errorsAreFatal: true,
+        );
+      } catch (e) {
+        DeviceLog.log('SfmLive', 'worker spawn FAILED: $e');
+        return null;
       }
-      recon?._onWorkerMessage(msg);
-    });
-    SendPort? port;
-    try {
-      port = await handshake.future.timeout(
-        const Duration(seconds: 10),
-        onTimeout: () => null,
+
+      // ONE subscription for the port's whole life: first message is the
+      // handshake SendPort, everything after routes to the live handler.
+      // (ReceivePort is single-subscription and closes on cancel — a second
+      // listen() throws; this exact mistake shipped once and silently killed
+      // the feature in release.)
+      final handshake = Completer<SendPort?>();
+      SfmLiveRecon? recon;
+      sub = fromWorker.listen((msg) {
+        if (!handshake.isCompleted) {
+          handshake.complete(msg is SendPort ? msg : null);
+          return;
+        }
+        recon?._onWorkerMessage(msg);
+      });
+      SendPort? port;
+      try {
+        port = await handshake.future.timeout(
+          const Duration(seconds: 10),
+          onTimeout: () => null,
+        );
+      } catch (_) {
+        port = null;
+      }
+      if (port == null) {
+        DeviceLog.log('SfmLive', 'worker handshake FAILED/timeout — disabled');
+        return null;
+      }
+      recon = SfmLiveRecon._(
+        port,
+        fromWorker,
+        isolate,
+        sub,
+        dbPath,
+        leaseOwner,
       );
-    } catch (_) {
-      port = null;
-    }
-    if (port == null) {
-      DeviceLog.log('SfmLive', 'worker handshake FAILED/timeout — disabled');
-      await sub.cancel();
-      fromWorker.close();
-      isolate.kill(priority: Isolate.immediate);
+      handedOff = true;
+      DeviceLog.log('SfmLive', 'worker up (db=$dbPath)');
+      return recon;
+    } catch (e, st) {
+      DeviceLog.log('SfmLive', 'worker startup FAILED: $e\n$st');
       return null;
+    } finally {
+      if (!handedOff) {
+        try {
+          await sub?.cancel();
+        } catch (_) {
+          // Cleanup continues below so a failed start cannot leak the lease.
+        }
+        try {
+          fromWorker.close();
+          isolate?.kill(priority: Isolate.immediate);
+        } finally {
+          reconstructionLease.release(leaseOwner);
+        }
+      }
     }
-    recon = SfmLiveRecon._(port, fromWorker, isolate, sub, dbPath);
-    DeviceLog.log('SfmLive', 'worker up (db=$dbPath)');
-    return recon;
   }
 
   /// Offers one keyframe to the live reconstruction. NEVER blocks and NEVER
@@ -890,10 +927,18 @@ class SfmLiveRecon {
     } catch (_) {
       // Timeout/port death — fall through to kill.
     } finally {
-      await _sub.cancel();
+      try {
+        await _sub.cancel();
+      } catch (_) {
+        // Continue deterministic termination and lease release.
+      }
       _fromWorker.close();
       _isolate.kill(priority: Isolate.immediate);
-      await _events.close();
+      try {
+        await _events.close();
+      } finally {
+        reconstructionLease.release(_leaseOwner);
+      }
     }
   }
 

@@ -39,13 +39,75 @@ import 'me_stats_view_model.dart';
 import 'scan_record.dart';
 import 'scan_record_cell.dart';
 
+String sparsePlyFileNameForPipeline(CapturePipelineKind kind) {
+  switch (kind) {
+    case CapturePipelineKind.self:
+      return 'sfm_sparse.ply';
+    case CapturePipelineKind.official:
+      return 'official_sfm_sparse.ply';
+  }
+}
+
+String sfmDatabaseFileNameForPipeline(CapturePipelineKind kind) {
+  switch (kind) {
+    case CapturePipelineKind.self:
+      return 'sfm_live.db';
+    case CapturePipelineKind.official:
+      return 'official_sfm_live.db';
+  }
+}
+
+bool pipelineOwnsActiveReconstruction({
+  required CapturePipelineKind recordPipelineKind,
+  required CapturePipelineKind activePipelineKind,
+}) {
+  return recordPipelineKind == activePipelineKind;
+}
+
+/// Dispatches a sparse-cloud viewer without allowing either implementation to
+/// fall back to the other pipeline. Returns whether a route was opened.
+Future<bool> dispatchSparseCloudViewerForPipeline({
+  required CapturePipelineKind pipelineKind,
+  required Future<void> Function() openSelf,
+  Future<void> Function()? openOfficial,
+}) async {
+  switch (pipelineKind) {
+    case CapturePipelineKind.self:
+      await openSelf();
+      return true;
+    case CapturePipelineKind.official:
+      final route = openOfficial;
+      if (route == null) return false;
+      await route();
+      return true;
+  }
+}
+
+typedef OfficialScanResumeRoute =
+    Future<void> Function(
+      BuildContext context,
+      ScanRecord record,
+      String captureDir, {
+      required bool regenerate,
+    });
+
+typedef OfficialScanViewerRoute =
+    Future<void> Function(
+      BuildContext context,
+      ScanRecord record,
+      String plyPath,
+    );
+
 class MePage extends StatefulWidget {
   const MePage({
     super.key,
     this.showDraftsSignal,
     this.initialShowDrafts = false,
     this.activeReconstructionCaptureDir,
+    this.activeReconstructionPipelineKind = CapturePipelineKind.self,
     this.onActiveReconstructionTap,
+    this.officialResumeRoute,
+    this.officialViewerRoute,
   });
 
   final ValueListenable<int>? showDraftsSignal;
@@ -55,7 +117,14 @@ class MePage extends StatefulWidget {
   /// tapping that draft must reveal the existing reconstruction instead of
   /// opening a partial PLY or starting any new work.
   final String? activeReconstructionCaptureDir;
+  final CapturePipelineKind activeReconstructionPipelineKind;
   final VoidCallback? onActiveReconstructionTap;
+
+  /// Injection point for the physically separate official resume page.
+  /// Until that page is installed, official records never fall back to the
+  /// self-developed `SfmResumeWaitPage`.
+  final OfficialScanResumeRoute? officialResumeRoute;
+  final OfficialScanViewerRoute? officialViewerRoute;
 
   @override
   State<MePage> createState() => _MePageState();
@@ -193,7 +262,11 @@ class _MePageState extends State<MePage> {
                   showProjects: _showProjects,
                   activeReconstructionCaptureDir:
                       widget.activeReconstructionCaptureDir,
+                  activeReconstructionPipelineKind:
+                      widget.activeReconstructionPipelineKind,
                   onActiveReconstructionTap: widget.onActiveReconstructionTap,
+                  officialResumeRoute: widget.officialResumeRoute,
+                  officialViewerRoute: widget.officialViewerRoute,
                 ),
               ],
             ),
@@ -289,12 +362,18 @@ class _TabPill extends StatelessWidget {
 class _MyWorksSection extends StatefulWidget {
   final bool showProjects;
   final String? activeReconstructionCaptureDir;
+  final CapturePipelineKind activeReconstructionPipelineKind;
   final VoidCallback? onActiveReconstructionTap;
+  final OfficialScanResumeRoute? officialResumeRoute;
+  final OfficialScanViewerRoute? officialViewerRoute;
 
   const _MyWorksSection({
     required this.showProjects,
     this.activeReconstructionCaptureDir,
+    this.activeReconstructionPipelineKind = CapturePipelineKind.self,
     this.onActiveReconstructionTap,
+    this.officialResumeRoute,
+    this.officialViewerRoute,
   });
 
   @override
@@ -371,22 +450,27 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
     final captureDir = record.captureDir;
     final sparsePlyPath = captureDir == null
         ? null
-        : '$captureDir/sfm_sparse.ply';
+        : '$captureDir/${sparsePlyFileNameForPipeline(record.pipelineKind)}';
     final sparsePlyExists =
         sparsePlyPath != null && File(sparsePlyPath).existsSync();
     // 容器 UUID 变更兜底:按目录名在当前 Documents 下重找 sfm_live.db。
-    final recoverableDir = captureDir == null
-        ? null
-        : await resolveRecoverableCaptureDir(captureDir);
+    final recoverableDir = await _resolveRecoverableCaptureDir(record);
     if (!mounted) return;
+    final ownsActiveReconstruction = pipelineOwnsActiveReconstruction(
+      recordPipelineKind: record.pipelineKind,
+      activePipelineKind: widget.activeReconstructionPipelineKind,
+    );
     final action = draftCardActionFor(
       recordCaptureDir: captureDir,
       hasArtifact: record.artifactPath != null,
       sparsePlyExists: sparsePlyExists,
       sfmDbExists: recoverableDir != null,
+      // The native SfM session is process-global: an active reconstruction in
+      // either route blocks starting a resume in the other route too. Keep the
+      // route check only for the callback that reopens the owning wait page.
       activeReconstructionCaptureDir: widget.activeReconstructionCaptureDir,
       hasActiveReconstructionCallback:
-          widget.onActiveReconstructionTap != null,
+          ownsActiveReconstruction && widget.onActiveReconstructionTap != null,
     );
     switch (action) {
       case DraftCardAction.reopenActiveReconstruction:
@@ -399,14 +483,7 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
           ),
         );
       case DraftCardAction.openSparseCloud:
-        await Navigator.of(context).push(
-          MaterialPageRoute<void>(
-            builder: (_) => SparseCloudViewerPage(
-              plyPath: sparsePlyPath!,
-              title: record.name.isEmpty ? '稀疏点云' : record.name,
-            ),
-          ),
-        );
+        await _openSparseCloud(record, sparsePlyPath!);
       case DraftCardAction.offerResume:
         await _offerResume(record, recoverableDir!);
       case DraftCardAction.none:
@@ -428,6 +505,12 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
     String recoverableDir, {
     bool regenerate = false,
   }) async {
+    if (record.pipelineKind == CapturePipelineKind.official) {
+      final route = widget.officialResumeRoute;
+      if (route == null) return;
+      await route(context, record, recoverableDir, regenerate: regenerate);
+      return;
+    }
     if (!isResumeInFlight(recoverableDir)) {
       final name = record.name.isEmpty ? '这次拍摄' : '「${record.name}」';
       final confirmed = await showDialog<bool>(
@@ -456,10 +539,8 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
     if (!mounted) return;
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => SfmResumeWaitPage(
-          captureDir: recoverableDir,
-          title: record.name,
-        ),
+        builder: (_) =>
+            SfmResumeWaitPage(captureDir: recoverableDir, title: record.name),
       ),
     );
   }
@@ -473,7 +554,7 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
     final captureDir = record.captureDir;
     final sparsePlyPath = captureDir == null
         ? null
-        : '$captureDir/sfm_sparse.ply';
+        : '$captureDir/${sparsePlyFileNameForPipeline(record.pipelineKind)}';
     final canViewSparse =
         sparsePlyPath != null && File(sparsePlyPath).existsSync();
     // 断点数据仍在(sfm_live.db 按契约保留)且当前没有别的重建在跑时,
@@ -483,7 +564,7 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
     // draft_card_action 的续跑门同一规矩)。
     final rebuildDir =
         widget.activeReconstructionCaptureDir == null && captureDir != null
-        ? await resolveRecoverableCaptureDir(captureDir)
+        ? await _resolveRecoverableCaptureDir(record)
         : null;
     if (!mounted) return;
     final action = await showModalBottomSheet<String>(
@@ -531,14 +612,7 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
     );
     if (!mounted) return;
     if (action == 'view_sparse' && sparsePlyPath != null) {
-      await Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (_) => SparseCloudViewerPage(
-            plyPath: sparsePlyPath,
-            title: record.name.isEmpty ? '稀疏点云' : record.name,
-          ),
-        ),
-      );
+      await _openSparseCloud(record, sparsePlyPath);
     } else if (action == 'rebuild_sparse' && rebuildDir != null) {
       await _offerResume(record, rebuildDir, regenerate: canViewSparse);
     } else if (action == 'rename') {
@@ -548,7 +622,40 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
     }
   }
 
+  Future<void> _openSparseCloud(ScanRecord record, String plyPath) async {
+    final officialRoute = widget.officialViewerRoute;
+    await dispatchSparseCloudViewerForPipeline(
+      pipelineKind: record.pipelineKind,
+      openSelf: () => Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => SparseCloudViewerPage(
+            plyPath: plyPath,
+            title: record.name.isEmpty ? '稀疏点云' : record.name,
+          ),
+        ),
+      ),
+      openOfficial: officialRoute == null
+          ? null
+          : () => officialRoute(context, record, plyPath),
+    );
+  }
 
+  Future<String?> _resolveRecoverableCaptureDir(ScanRecord record) async {
+    final captureDir = record.captureDir;
+    if (captureDir == null || captureDir.isEmpty) return null;
+    if (record.pipelineKind == CapturePipelineKind.self) {
+      return resolveRecoverableCaptureDir(captureDir);
+    }
+
+    final databaseName = sfmDatabaseFileNameForPipeline(record.pipelineKind);
+    if (File('$captureDir/$databaseName').existsSync()) return captureDir;
+    final fresh = await ScanRecordStore.instance.captureDirFor(
+      record.id,
+      pipelineKind: record.pipelineKind,
+    );
+    if (File('${fresh.path}/$databaseName').existsSync()) return fresh.path;
+    return null;
+  }
 
   Future<void> _renameRecord(ScanRecord record) async {
     final l = AppL10n.of(context);
@@ -606,10 +713,7 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
     if (confirmed != true) return;
     await _vm.deleteRecord(record);
   }
-
-
 }
-
 
 /// Absolute timestamp formatter for the personal grid — "YY-M-D HH:MM".
 /// Replaces the previous relative ("X 天前") formatter at the request

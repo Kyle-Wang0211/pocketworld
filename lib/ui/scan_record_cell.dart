@@ -23,11 +23,13 @@ import 'scan_record.dart';
 class ScanRecordCell extends StatelessWidget {
   final ScanRecord record;
   final String subtitle;
+
   /// Fixed thumbnail height; pass null when the cell sits inside a
   /// constraint-bounded parent (e.g. GridView cell with childAspectRatio)
   /// and the thumbnail should expand to fill the remaining space.
   final double? imageHeight;
   final VoidCallback? onTap;
+
   /// Long-press handler. MePage uses this to show a "delete this scan"
   /// confirmation; the community feed leaves it null since visitors
   /// can't delete other authors' works.
@@ -112,6 +114,11 @@ class _ThumbnailSection extends StatelessWidget {
       fit: StackFit.expand,
       children: [
         _ThumbnailImage(record: record),
+        Positioned(
+          top: AetherSpacing.md,
+          left: AetherSpacing.md,
+          child: _PipelineBadge(kind: record.pipelineKind),
+        ),
         if (showCompletedBadge && record.hasCompletedArtifact)
           const Positioned(
             top: AetherSpacing.md,
@@ -128,6 +135,33 @@ class _ThumbnailSection extends StatelessWidget {
     // cell). Use Expanded so the thumbnail fills the leftover space
     // after the info section sizes itself.
     return Expanded(child: stack);
+  }
+}
+
+class _PipelineBadge extends StatelessWidget {
+  const _PipelineBadge({required this.kind});
+
+  final CapturePipelineKind kind;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: const ValueKey<String>('scan-pipeline-badge'),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.58),
+        borderRadius: BorderRadius.circular(AetherRadii.pill),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.24)),
+      ),
+      child: Text(
+        kind.displayLabel,
+        style: const TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+          color: Colors.white,
+        ),
+      ),
+    );
   }
 }
 
@@ -226,6 +260,7 @@ class _CompletedBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
+      key: const ValueKey<String>('scan-completed-badge'),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.92),
@@ -234,8 +269,11 @@ class _CompletedBadge extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.check_rounded,
-              size: 12, color: AetherColors.primary),
+          const Icon(
+            Icons.check_rounded,
+            size: 12,
+            color: AetherColors.primary,
+          ),
           const SizedBox(width: 4),
           Text(
             AppL10n.of(context).scanLifecycleCompleted,
@@ -296,7 +334,9 @@ class _InfoSection extends StatelessWidget {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
-          if (!minimal && record.caption != null && record.caption!.isNotEmpty) ...[
+          if (!minimal &&
+              record.caption != null &&
+              record.caption!.isNotEmpty) ...[
             const SizedBox(height: 6),
             Text(
               record.caption!,

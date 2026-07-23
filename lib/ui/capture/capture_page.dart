@@ -508,7 +508,10 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
             .toList(growable: false)
           ..sort();
     if (firstPhoto.isNotEmpty) {
-      final thumbnail = await store.thumbnailFileFor(captureId);
+      final thumbnail = await store.thumbnailFileFor(
+        captureId,
+        pipelineKind: CapturePipelineKind.self,
+      );
       final sourcePath = _cardThumbnailSourceFor(firstPhoto.first);
       try {
         await thumbnail.parent.create(recursive: true);

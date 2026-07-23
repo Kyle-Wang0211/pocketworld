@@ -12,8 +12,11 @@
 //    hasOrigin, worldOriginX, worldOriginY, worldOriginZ, worldYaw,
 //    isTracking, trackingStateName, t}
 //
-// If neither iOS ARKit nor Android ARCore is available this provider
-// transparently falls back to MockARPoseProvider.
+// This production provider is deliberately fail-closed. Native startup
+// failures must reach CaptureSession.attach() instead of silently replacing
+// real camera/AR data with synthetic poses. Tests and development tools that
+// need synthetic data can explicitly inject MockARPoseProvider into
+// CaptureSession.
 
 import 'dart:async';
 import 'dart:math' as math;
@@ -24,14 +27,12 @@ import 'package:vector_math/vector_math_64.dart';
 import '../capture/capture_format.dart';
 import '../quality/quality_compute.dart';
 import 'ar_pose.dart';
-import 'mock_pose_provider.dart';
 
 class PlatformARPoseProvider implements ARPoseProvider {
   static const _method = MethodChannel('aether_arkit');
   static const _poseEvents = EventChannel('aether_arkit/pose_stream');
 
-  final MockARPoseProvider _fallback = MockARPoseProvider();
-  bool _usingFallback = false;
+  Future<void>? _startFuture;
   StreamSubscription<dynamic>? _nativeSub;
   final _controller = StreamController<ARPose>.broadcast();
   ARPose? _lastPose;
@@ -41,34 +42,33 @@ class PlatformARPoseProvider implements ARPoseProvider {
 
   @override
   Stream<ARPose> start() {
-    _tryStartNative();
+    _startFuture ??= _startNative();
     return _controller.stream;
   }
 
-  Future<void> _tryStartNative() async {
-    if (_usingFallback) return;
-    try {
-      final isAvailable = await _method.invokeMethod<bool>('isAvailable');
-      if (isAvailable != true) {
-        _switchToFallback();
-        return;
-      }
-      // [E24 探针] PW_VIDEO_FORMAT: '4k'(默认,现行为)| 'default43'
-      // (留系统默认 1920×1440 4:3,测其 out-of-band 静照分辨率)。
-      await _method.invokeMethod('startSession', <String, dynamic>{
-        'videoFormatMode': pwVideoFormat,
-      });
-      _nativeSub = _poseEvents.receiveBroadcastStream().listen(
-        (event) => _onNativePose(event),
-        onError: (Object _) => _switchToFallback(),
-      );
-    } on MissingPluginException {
-      _switchToFallback();
-    } on PlatformException {
-      _switchToFallback();
-    } catch (_) {
-      _switchToFallback();
+  /// Completes only after the native AR session has started. The capture
+  /// session awaits this so errors such as `ar_camera_busy` remain visible to
+  /// the page rather than turning into a synthetic capture.
+  Future<void> ensureStarted() => _startFuture ??= _startNative();
+
+  Future<void> _startNative() async {
+    final isAvailable = await _method.invokeMethod<bool>('isAvailable');
+    if (isAvailable != true) {
+      throw StateError('Self-developed AR capture plugin is unavailable');
     }
+    // [E24 探针] PW_VIDEO_FORMAT: '4k'(默认,现行为)| 'default43'
+    // (留系统默认 1920×1440 4:3,测其 out-of-band 静照分辨率)。
+    await _method.invokeMethod('startSession', <String, dynamic>{
+      'videoFormatMode': pwVideoFormat,
+    });
+    _nativeSub = _poseEvents.receiveBroadcastStream().listen(
+      (event) => _onNativePose(event),
+      onError: (Object error, StackTrace stackTrace) {
+        if (!_controller.isClosed) {
+          _controller.addError(error, stackTrace);
+        }
+      },
+    );
   }
 
   void _onNativePose(dynamic event) {
@@ -225,15 +225,6 @@ class PlatformARPoseProvider implements ARPoseProvider {
     return List.unmodifiable(out);
   }
 
-  void _switchToFallback() {
-    if (_usingFallback) return;
-    _usingFallback = true;
-    _fallback.start().listen((p) {
-      _lastPose = p;
-      if (!_controller.isClosed) _controller.add(p);
-    });
-  }
-
   @override
   Future<bool> saveCurrentFrameAsJpeg({
     required String jpegPath,
@@ -259,9 +250,6 @@ class PlatformARPoseProvider implements ARPoseProvider {
 
   @override
   Future<ARFrameSaveResult> saveCurrentFrame(ARFrameSaveSpec spec) async {
-    if (_usingFallback) {
-      return _fallback.saveCurrentFrame(spec);
-    }
     try {
       final reply = await _method.invokeMethod<dynamic>(
         'saveCurrentFrameAsJpeg',
@@ -339,17 +327,6 @@ class PlatformARPoseProvider implements ARPoseProvider {
     bool feedSfm = false,
     double? maxTimestampDelta,
   }) async {
-    if (_usingFallback) {
-      return _fallback.captureHighResolutionStill(
-        highresPath: highresPath,
-        previewPath: previewPath,
-        triggerTimestamp: triggerTimestamp,
-        quality: quality,
-        saveSpec: saveSpec,
-        feedSfm: feedSfm,
-        maxTimestampDelta: maxTimestampDelta,
-      );
-    }
     try {
       final args = <String, dynamic>{
         'highresPath': highresPath,
@@ -424,9 +401,6 @@ class PlatformARPoseProvider implements ARPoseProvider {
 
   @override
   Future<ARLockResult?> lockOrigin({double distanceMeters = 1.0}) async {
-    if (_usingFallback) {
-      return _fallback.lockOrigin(distanceMeters: distanceMeters);
-    }
     try {
       final result = await _method.invokeMapMethod<String, dynamic>(
         'lockOrigin',
@@ -452,7 +426,6 @@ class PlatformARPoseProvider implements ARPoseProvider {
   Future<void> stop() async {
     await _nativeSub?.cancel();
     _nativeSub = null;
-    await _fallback.stop();
     try {
       await _method.invokeMethod('stopSession');
     } catch (_) {

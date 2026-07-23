@@ -56,13 +56,23 @@ Uint8List? _uprightLandscapeThumbnailBytes(String path) {
 }
 
 class ScanRecordStore {
-  ScanRecordStore._();
+  ScanRecordStore._({Directory? documentsDirectory})
+    : _documentsDirectoryOverride = documentsDirectory;
   static final ScanRecordStore instance = ScanRecordStore._();
+
+  /// Isolated store used by persistence contract tests. Production continues
+  /// to use [instance] and `path_provider`.
+  @visibleForTesting
+  ScanRecordStore.forTesting({required Directory documentsDirectory})
+    : _documentsDirectoryOverride = documentsDirectory;
+
+  final Directory? _documentsDirectoryOverride;
 
   /// Snapshot of the current store. Modifying this list directly is a
   /// no-op (we always return a defensive copy from `records`).
   List<ScanRecord> _records = const <ScanRecord>[];
   Future<void>? _loadFuture;
+  Object? _loadFailure;
   final _ctrl = StreamController<List<ScanRecord>>.broadcast();
   Future<void> _writeLock = Future<void>.value();
 
@@ -94,7 +104,10 @@ class ScanRecordStore {
       }
     } catch (e, st) {
       debugPrint('[ScanRecordStore] load failed: $e\n$st');
+      _loadFailure = e;
       _records = const <ScanRecord>[];
+      _emit();
+      return;
     }
     final recovered = await _recoverOrphanCaptures();
     // Re-anchor stale absolute paths.
@@ -120,10 +133,22 @@ class ScanRecordStore {
     for (final r in _records) {
       var rec = r;
       if (rec.thumbnailPath != null && rec.thumbnailPath!.isNotEmpty) {
-        if (!File(rec.thumbnailPath!).existsSync()) {
-          final fresh = await thumbnailFileFor(rec.id);
+        final crossesRoute = _crossesPipelineNamespace(
+          rec.thumbnailPath!,
+          pipelineKind: rec.pipelineKind,
+        );
+        if (!File(rec.thumbnailPath!).existsSync() || crossesRoute) {
+          final fresh = await thumbnailFileFor(
+            rec.id,
+            pipelineKind: rec.pipelineKind,
+          );
           if (await fresh.exists()) {
             rec = rec.copyWith(thumbnailPath: fresh.path);
+            rewrites++;
+          } else if (crossesRoute) {
+            // A path into the other route must not become valid later merely
+            // because a same-id artifact is created there.
+            rec = rec.copyWith(clearThumbnailPath: true);
             rewrites++;
           }
         }
@@ -134,27 +159,73 @@ class ScanRecordStore {
         final p = rec.artifactPath!.startsWith('file://')
             ? rec.artifactPath!.substring(7)
             : rec.artifactPath!;
-        if (!File(p).existsSync()) {
-          final fresh = await glbFileFor(rec.id);
+        final crossesRoute = _crossesPipelineNamespace(
+          p,
+          pipelineKind: rec.pipelineKind,
+        );
+        if (!File(p).existsSync() || crossesRoute) {
+          final fresh = await glbFileFor(
+            rec.id,
+            pipelineKind: rec.pipelineKind,
+          );
           if (await fresh.exists()) {
             rec = rec.copyWith(artifactPath: 'file://${fresh.path}');
+            rewrites++;
+          } else if (crossesRoute) {
+            rec = rec.copyWith(clearArtifactPath: true);
             rewrites++;
           }
         }
       }
-      if (rec.captureDir != null && rec.captureDir!.isNotEmpty) {
-        if (!Directory(rec.captureDir!).existsSync()) {
-          final fresh = await captureDirFor(rec.id);
-          if (await fresh.exists()) {
+      final captureMetadata = <String?>[
+        rec.captureDir,
+        rec.photosDir,
+        rec.captureManifestPath,
+      ].whereType<String>().where((path) => path.isNotEmpty).toList();
+      if (captureMetadata.isNotEmpty) {
+        final routeRoot = await _capturesRoot(pipelineKind: rec.pipelineKind);
+        final suppliedCaptureDir = rec.captureDir == null
+            ? null
+            : Directory(rec.captureDir!);
+        final allPathsOwned = captureMetadata.every(
+          (path) =>
+              !_crossesPipelineNamespace(
+                path,
+                pipelineKind: rec.pipelineKind,
+              ) &&
+              _isWithinDirectory(path, routeRoot.path),
+        );
+        var captureDir = allPathsOwned && suppliedCaptureDir != null
+            ? suppliedCaptureDir
+            : await captureDirFor(rec.id, pipelineKind: rec.pipelineKind);
+        if (!await captureDir.exists()) {
+          captureDir = await captureDirFor(
+            rec.id,
+            pipelineKind: rec.pipelineKind,
+          );
+        }
+        if (await captureDir.exists() &&
+            _isWithinDirectory(captureDir.path, routeRoot.path)) {
+          final paths = await _capturePaths(
+            captureDir,
+            pipelineKind: rec.pipelineKind,
+          );
+          if (rec.captureDir != captureDir.path ||
+              rec.photosDir != paths.photosDir.path ||
+              rec.captureManifestPath != paths.manifestFile.path) {
             rec = rec.copyWith(
-              captureDir: fresh.path,
-              photosDir: Directory('${fresh.path}/photos').path,
-              captureManifestPath: File(
-                '${fresh.path}/capture_manifest.json',
-              ).path,
+              captureDir: captureDir.path,
+              photosDir: paths.photosDir.path,
+              captureManifestPath: paths.manifestFile.path,
             );
             rewrites++;
           }
+        } else {
+          // Never retain stale or cross-route capture metadata. In particular,
+          // an official record must not spring back to life if a self capture
+          // with the same id later appears (and vice versa).
+          rec = _withoutCaptureMetadata(rec);
+          rewrites++;
         }
       }
       if (rec.captureDir != null &&
@@ -206,69 +277,83 @@ class ScanRecordStore {
   /// `Documents/captures/*/photos` and rehydrate any missing record.
   Future<int> _recoverOrphanCaptures() async {
     try {
-      final root = await getApplicationDocumentsDirectory();
-      final capturesRoot = Directory('${root.path}/captures');
-      if (!await capturesRoot.exists()) return 0;
+      final root = await _documentsDirectory();
       final existingIds = _records.map((r) => r.id).toSet();
       final recovered = <ScanRecord>[];
-      await for (final entity in capturesRoot.list(followLinks: false)) {
-        if (entity is! Directory) continue;
-        final captureId = entity.uri.pathSegments
-            .where((s) => s.isNotEmpty)
-            .lastOrNull;
-        if (captureId == null || existingIds.contains(captureId)) continue;
-        final photosDir = Directory('${entity.path}/photos');
-        if (!await photosDir.exists()) continue;
-        final photos = <File>[];
-        await for (final photoEntity in photosDir.list(followLinks: false)) {
-          if (photoEntity is! File) continue;
-          final path = photoEntity.path.toLowerCase();
-          if (!path.endsWith('.jpg') && !path.endsWith('.jpeg')) continue;
-          final metadata = File(
-            photoEntity.path.replaceFirst(RegExp(r'\.[^.]+$'), '.json'),
+      final roots = <(Directory, CapturePipelineKind)>[
+        (Directory('${root.path}/captures'), CapturePipelineKind.self),
+        (
+          Directory('${root.path}/captures_official'),
+          CapturePipelineKind.official,
+        ),
+      ];
+      for (final (capturesRoot, pipelineKind) in roots) {
+        if (!await capturesRoot.exists()) continue;
+        await for (final entity in capturesRoot.list(followLinks: false)) {
+          if (entity is! Directory) continue;
+          final captureId = entity.uri.pathSegments
+              .where((s) => s.isNotEmpty)
+              .lastOrNull;
+          if (captureId == null || existingIds.contains(captureId)) continue;
+          final paths = await _capturePaths(entity, pipelineKind: pipelineKind);
+          final photosDir = paths.photosDir;
+          if (!await photosDir.exists()) continue;
+          final photos = <File>[];
+          await for (final photoEntity in photosDir.list(followLinks: false)) {
+            if (photoEntity is! File) continue;
+            final path = photoEntity.path.toLowerCase();
+            if (!path.endsWith('.jpg') && !path.endsWith('.jpeg')) continue;
+            final metadata = File(
+              photoEntity.path.replaceFirst(RegExp(r'\.[^.]+$'), '.json'),
+            );
+            if (await metadata.exists()) photos.add(photoEntity);
+          }
+          if (photos.isEmpty) continue;
+          photos.sort((a, b) => a.path.compareTo(b.path));
+          final manifestFile = paths.manifestFile;
+          final stat = await entity.stat();
+          final createdAt = stat.modified;
+          if (!await manifestFile.exists()) {
+            await _writeRecoveredCaptureManifest(
+              manifestFile: manifestFile,
+              captureId: captureId,
+              createdAt: createdAt,
+              captureDir: entity,
+              photosDir: photosDir,
+              photos: photos,
+              pipelineKind: pipelineKind,
+            );
+          }
+          String? thumbnailPath;
+          try {
+            final thumbnail = await thumbnailFileFor(
+              captureId,
+              pipelineKind: pipelineKind,
+            );
+            await thumbnail.parent.create(recursive: true);
+            await photos.first.copy(thumbnail.path);
+            thumbnailPath = thumbnail.path;
+          } on FileSystemException {
+            thumbnailPath = photos.first.path;
+          }
+          recovered.add(
+            ScanRecord(
+              id: captureId,
+              name: '未命名(${_records.length + recovered.length + 1})',
+              createdAt: createdAt,
+              pipelineKind: pipelineKind,
+              preferredCaptureMode: CaptureMode.newRemote,
+              thumbnailPath: thumbnailPath,
+              captureDir: entity.path,
+              photosDir: photosDir.path,
+              captureManifestPath: manifestFile.path,
+              photoCount: photos.length,
+              cloudUploadStatus: ScanCloudUploadStatus.localPending,
+              localRawRetainedForDebug: true,
+            ),
           );
-          if (await metadata.exists()) photos.add(photoEntity);
+          existingIds.add(captureId);
         }
-        if (photos.isEmpty) continue;
-        photos.sort((a, b) => a.path.compareTo(b.path));
-        final manifestFile = File('${entity.path}/capture_manifest.json');
-        final stat = await entity.stat();
-        final createdAt = stat.modified;
-        if (!await manifestFile.exists()) {
-          await _writeRecoveredCaptureManifest(
-            manifestFile: manifestFile,
-            captureId: captureId,
-            createdAt: createdAt,
-            captureDir: entity,
-            photosDir: photosDir,
-            photos: photos,
-          );
-        }
-        String? thumbnailPath;
-        try {
-          final thumbnail = await thumbnailFileFor(captureId);
-          await thumbnail.parent.create(recursive: true);
-          await photos.first.copy(thumbnail.path);
-          thumbnailPath = thumbnail.path;
-        } on FileSystemException {
-          thumbnailPath = photos.first.path;
-        }
-        recovered.add(
-          ScanRecord(
-            id: captureId,
-            name: '未命名(${_records.length + recovered.length + 1})',
-            createdAt: createdAt,
-            preferredCaptureMode: CaptureMode.newRemote,
-            thumbnailPath: thumbnailPath,
-            captureDir: entity.path,
-            photosDir: photosDir.path,
-            captureManifestPath: manifestFile.path,
-            photoCount: photos.length,
-            cloudUploadStatus: ScanCloudUploadStatus.localPending,
-            localRawRetainedForDebug: true,
-          ),
-        );
-        existingIds.add(captureId);
       }
       if (recovered.isEmpty) return 0;
       _records = _sortNewestFirst([..._records, ...recovered]);
@@ -279,6 +364,30 @@ class ScanRecordStore {
     }
   }
 
+  /// Resolve the route-owned image directory and manifest without ever mixing
+  /// the recovery manifest schema into the canonical photo-bundle filename.
+  /// Existing canonical and legacy manifests are left untouched; when neither
+  /// exists, callers receive the route-specific legacy filename.
+  Future<({Directory photosDir, File manifestFile})> _capturePaths(
+    Directory captureDir, {
+    required CapturePipelineKind pipelineKind,
+  }) async {
+    final photosHighres = Directory('${captureDir.path}/photos_highres');
+    final photosDir = await photosHighres.exists()
+        ? photosHighres
+        : Directory('${captureDir.path}/photos');
+    final preferredManifest = pipelineKind == CapturePipelineKind.official
+        ? File('${captureDir.path}/official_photo_bundle.json')
+        : File('${captureDir.path}/photo_bundle.json');
+    final legacyManifest = pipelineKind == CapturePipelineKind.official
+        ? File('${captureDir.path}/official_capture_manifest.json')
+        : File('${captureDir.path}/capture_manifest.json');
+    final manifestFile = await preferredManifest.exists()
+        ? preferredManifest
+        : legacyManifest;
+    return (photosDir: photosDir, manifestFile: manifestFile);
+  }
+
   Future<void> _writeRecoveredCaptureManifest({
     required File manifestFile,
     required String captureId,
@@ -286,6 +395,7 @@ class ScanRecordStore {
     required Directory captureDir,
     required Directory photosDir,
     required List<File> photos,
+    required CapturePipelineKind pipelineKind,
   }) async {
     final frames = <Map<String, Object?>>[];
     for (final photo in photos) {
@@ -302,6 +412,7 @@ class ScanRecordStore {
     final manifest = <String, Object?>{
       'schema': 'pocketworld.capture_manifest.v1',
       'capture_id': captureId,
+      'pipeline_kind': pipelineKind.wireName,
       'created_at': createdAt.toIso8601String(),
       'capture_dir': captureDir.path,
       'photos_dir': photosDir.path,
@@ -316,6 +427,15 @@ class ScanRecordStore {
   /// first so the gallery natural order is "most recent on top".
   Future<void> addOrUpdate(ScanRecord r) async {
     await ensureLoaded();
+    _ensureWritable();
+    await _ensureRouteOwnedPaths(r);
+    final previous = byId(r.id);
+    if (previous != null && previous.pipelineKind != r.pipelineKind) {
+      throw StateError(
+        'Cannot change pipeline kind for existing scan ${r.id}: '
+        '${previous.pipelineKind.wireName} -> ${r.pipelineKind.wireName}',
+      );
+    }
     final next = <ScanRecord>[
       r,
       for (final old in _records)
@@ -340,50 +460,160 @@ class ScanRecordStore {
   /// until next reinstall).
   Future<void> delete(String id) async {
     await ensureLoaded();
+    _ensureWritable();
+    // Resolve ownership before removing the record from memory. Legacy callers
+    // that delete an unknown id retain the historical self-route behaviour,
+    // while an official record can never touch `Documents/scans`.
+    final pipelineKind = byId(id)?.pipelineKind ?? CapturePipelineKind.self;
     _records = _records.where((r) => r.id != id).toList(growable: false);
     _emit();
     await _flush();
     // Cleanup artifact + thumbnail + retry sources, best-effort.
     try {
-      final f = await glbFileFor(id);
+      final f = await glbFileFor(id, pipelineKind: pipelineKind);
       if (await f.exists()) await f.delete();
     } catch (_) {}
     try {
-      final t = await thumbnailFileFor(id);
+      final t = await thumbnailFileFor(id, pipelineKind: pipelineKind);
       if (await t.exists()) await t.delete();
     } catch (_) {}
   }
 
   /// Where on disk to persist `<id>.glb` for a given record. W3 (待实现)
   /// will write the local-generated GLB here.
-  Future<File> glbFileFor(String id) async {
-    final dir = await _scansDir();
+  Future<File> glbFileFor(
+    String id, {
+    CapturePipelineKind pipelineKind = CapturePipelineKind.self,
+  }) async {
+    final dir = await _scansDir(pipelineKind: pipelineKind);
     return File('${dir.path}/$id.glb');
   }
 
-  Future<Directory> captureDirFor(String id) async {
-    final root = await getApplicationDocumentsDirectory();
-    return Directory('${root.path}/captures/$id');
+  Future<Directory> captureDirFor(
+    String id, {
+    CapturePipelineKind pipelineKind = CapturePipelineKind.self,
+  }) async {
+    final root = await _capturesRoot(pipelineKind: pipelineKind);
+    return Directory('${root.path}/$id');
+  }
+
+  Future<Directory> _capturesRoot({
+    required CapturePipelineKind pipelineKind,
+  }) async {
+    final root = await _documentsDirectory();
+    final directoryName = pipelineKind == CapturePipelineKind.official
+        ? 'captures_official'
+        : 'captures';
+    return Directory('${root.path}/$directoryName');
   }
 
   /// Where on disk to persist the scan card's cover thumbnail. Plan G
   /// W2 全本地 (2026-05-16) — a future Drafts UI revamp can populate
   /// this from the first cell-admitted JPEG in `<captureDir>/photos/`.
-  Future<File> thumbnailFileFor(String id) async {
-    final dir = await _scansDir();
+  Future<File> thumbnailFileFor(
+    String id, {
+    CapturePipelineKind pipelineKind = CapturePipelineKind.self,
+  }) async {
+    final dir = await _scansDir(pipelineKind: pipelineKind);
     return File('${dir.path}/$id.jpg');
   }
 
-  Future<Directory> _scansDir() async {
-    final root = await getApplicationDocumentsDirectory();
-    final dir = Directory('${root.path}/scans');
+  Future<Directory> _scansDir({
+    required CapturePipelineKind pipelineKind,
+  }) async {
+    final root = await _documentsDirectory();
+    final directoryName = pipelineKind == CapturePipelineKind.official
+        ? 'scans_official'
+        : 'scans';
+    final dir = Directory('${root.path}/$directoryName');
     if (!await dir.exists()) await dir.create(recursive: true);
     return dir;
   }
 
   Future<File> _storeFile() async {
-    final root = await getApplicationDocumentsDirectory();
+    final root = await _documentsDirectory();
     return File('${root.path}/scan_records.json');
+  }
+
+  Future<Directory> _documentsDirectory() async {
+    return _documentsDirectoryOverride ??
+        await getApplicationDocumentsDirectory();
+  }
+
+  static bool _crossesPipelineNamespace(
+    String rawPath, {
+    required CapturePipelineKind pipelineKind,
+  }) {
+    final path = rawPath.startsWith('file://') ? rawPath.substring(7) : rawPath;
+    final segments = path
+        .split(RegExp(r'[/\\]+'))
+        .where((segment) => segment.isNotEmpty)
+        .toSet();
+    final otherRouteDirectories = pipelineKind == CapturePipelineKind.official
+        ? const <String>{'scans', 'captures'}
+        : const <String>{'scans_official', 'captures_official'};
+    return segments.any(otherRouteDirectories.contains);
+  }
+
+  Future<void> _ensureRouteOwnedPaths(ScanRecord record) async {
+    final paths = <String?>[record.thumbnailPath, record.artifactPath];
+    for (final path in paths) {
+      if (path == null || path.isEmpty) continue;
+      if (_crossesPipelineNamespace(path, pipelineKind: record.pipelineKind)) {
+        throw StateError(
+          'Scan ${record.id} (${record.pipelineKind.wireName}) references '
+          'an artifact owned by the other pipeline: $path',
+        );
+      }
+    }
+
+    final captureRoot = await _capturesRoot(pipelineKind: record.pipelineKind);
+    final capturePaths = <String?>[
+      record.captureDir,
+      record.photosDir,
+      record.captureManifestPath,
+    ];
+    for (final path in capturePaths) {
+      if (path == null || path.isEmpty) continue;
+      if (_crossesPipelineNamespace(path, pipelineKind: record.pipelineKind) ||
+          !_isWithinDirectory(path, captureRoot.path)) {
+        throw StateError(
+          'Scan ${record.id} (${record.pipelineKind.wireName}) references '
+          'capture metadata outside its route-owned namespace: $path',
+        );
+      }
+    }
+  }
+
+  static bool _isWithinDirectory(String rawPath, String rawRoot) {
+    final path = _normalizedFilePath(rawPath);
+    final root = _normalizedFilePath(rawRoot);
+    return path == root || path.startsWith('$root${Platform.pathSeparator}');
+  }
+
+  static String _normalizedFilePath(String rawPath) {
+    final path = rawPath.startsWith('file://')
+        ? Uri.parse(rawPath).toFilePath()
+        : File(rawPath).absolute.path;
+    return Uri.file(path).normalizePath().toFilePath();
+  }
+
+  static ScanRecord _withoutCaptureMetadata(ScanRecord record) {
+    final json = _recordToJson(record)
+      ..remove('captureDir')
+      ..remove('photosDir')
+      ..remove('captureManifestPath');
+    return _recordFromJson(json);
+  }
+
+  void _ensureWritable() {
+    final failure = _loadFailure;
+    if (failure != null) {
+      throw StateError(
+        'scan_records.json failed validation; refusing to overwrite it: '
+        '$failure',
+      );
+    }
   }
 
   void _emit() {
@@ -419,6 +649,7 @@ class ScanRecordStore {
     'id': r.id,
     'name': r.name,
     'createdAt': r.createdAt.toIso8601String(),
+    'pipeline_kind': r.pipelineKind.wireName,
     if (r.preferredCaptureMode != CaptureMode.local)
       'preferredCaptureMode': r.preferredCaptureMode.name,
     if (r.thumbnailPath != null) 'thumbnailPath': r.thumbnailPath,
@@ -454,10 +685,14 @@ class ScanRecordStore {
 
   static ScanRecord _recordFromJson(Map<String, dynamic> j) {
     final captureModeName = j['preferredCaptureMode'] as String?;
+    final pipelineKind = j.containsKey('pipeline_kind')
+        ? CapturePipelineKindWire.fromWireName(j['pipeline_kind'])
+        : CapturePipelineKind.self;
     return ScanRecord(
       id: j['id'] as String,
       name: j['name'] as String,
       createdAt: DateTime.parse(j['createdAt'] as String),
+      pipelineKind: pipelineKind,
       preferredCaptureMode: captureModeName == null
           ? CaptureMode.local
           : CaptureMode.values.firstWhere(

@@ -70,6 +70,9 @@ target 'Runner' do
   # predate them → on-device dlsym "symbol not found" at finalize). See
   # vendor/aether_ffi/aether3d_ffi.podspec header for the exact link deltas.
   pod 'aether3d_ffi', :path => '../vendor/aether_ffi'
+  # Independent dynamic SfM image for the "官方" capture route. The framework
+  # exports only pwofficial_*; it cannot fall back to the self-route pwsfm_* ABI.
+  pod 'official_sfm', :path => '../vendor/official_sfm'
 end
 
 post_install do |installer|

@@ -33,6 +33,8 @@ import 'i18n/locale_notifier.dart';
 import 'l10n/app_localizations.dart';
 import 'lifecycle_observer.dart';
 import 'object_transform.dart';
+import 'official_capture/telemetry_writer.dart' as official_telemetry;
+import 'official_util/device_log.dart' as official_device_log;
 import 'orbit_controls.dart';
 import 'ui/me_root_page.dart';
 import 'ui/auth/auth_root_view.dart';
@@ -86,6 +88,10 @@ Future<void> main() async {
       // Release-visible container-file log (Documents/pw_device_log.txt) —
       // print/debugPrint are invisible in release builds on device.
       unawaited(DeviceLog.init());
+      // The physically independent official capture stack owns a separate
+      // release-visible log file; initialize it alongside (not through) the
+      // self-developed logger.
+      unawaited(official_device_log.DeviceLog.init());
       // 结构化遥测 JSONL(Documents/telemetry_dart.jsonl,真机验收显微镜;
       // Swift 侧配对文件 telemetry_native.jsonl 由 AetherARKitPlugin 写)。
       // init 前的事件进内存队列,init 后补写 —— 不丢启动早期事件。
@@ -96,6 +102,21 @@ Future<void> main() async {
             '${dir.path}/telemetry_dart.jsonl',
           );
           TelemetryWriter.instance.event('dart_session');
+        } catch (_) {}
+      }());
+      // Keep the official Dart event stream physically separate from both the
+      // self-developed Dart stream and OfficialAetherARKitPlugin's native
+      // stream. Events queued before this completes are flushed by its copied
+      // writer implementation.
+      unawaited(() async {
+        try {
+          final dir = await getApplicationDocumentsDirectory();
+          await official_telemetry.TelemetryWriter.instance.init(
+            '${dir.path}/telemetry_official_dart.jsonl',
+          );
+          official_telemetry.TelemetryWriter.instance.event(
+            'official_dart_session',
+          );
         } catch (_) {}
       }());
       // ignore: avoid_print

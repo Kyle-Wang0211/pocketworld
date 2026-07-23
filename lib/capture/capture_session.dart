@@ -579,6 +579,17 @@ class CaptureSession {
       _emitMotionSnapshot(p);
       _onPoseTick(p);
     });
+
+    try {
+      if (poseProvider case final PlatformARPoseProvider platformProvider) {
+        await platformProvider.ensureStarted();
+      }
+    } catch (_) {
+      await _poseSub?.cancel();
+      _poseSub = null;
+      _attached = false;
+      rethrow;
+    }
   }
 
   /// Hybrid pose resolution. Returns either:

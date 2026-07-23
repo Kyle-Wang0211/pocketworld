@@ -8,6 +8,10 @@ import ImageIO
 import simd
 import UIKit
 
+enum SelfDevelopedARKitIdentifiers {
+  static let cameraOwner = "self"
+}
+
 // AetherARKit — in-Runner-binary ARKit bridge.
 //
 // What it exposes:
@@ -466,6 +470,11 @@ class AetherARKitPlugin: NSObject {
     sessionDelegate.onFrame = { [weak self] frame in
       self?.broadcast(frame: frame)
     }
+    sessionDelegate.onSessionFailure = {
+      PwARCameraLease.shared.release(
+        owner: SelfDevelopedARKitIdentifiers.cameraOwner
+      )
+    }
   }
 
   // MARK: MethodChannel handler
@@ -475,6 +484,16 @@ class AetherARKitPlugin: NSObject {
     case "isAvailable":
       result(ARWorldTrackingConfiguration.isSupported)
     case "startSession":
+      guard PwARCameraLease.shared.acquire(
+        owner: SelfDevelopedARKitIdentifiers.cameraOwner
+      ) else {
+        result(FlutterError(
+          code: "ar_camera_busy",
+          message: "The camera is already owned by another capture pipeline",
+          details: nil
+        ))
+        return
+      }
       do {
         let resume =
           (call.arguments as? [String: Any])?["resume"] as? Bool ?? false
@@ -489,6 +508,9 @@ class AetherARKitPlugin: NSObject {
         try startSession(resetWorld: !resume)
         result(nil)
       } catch {
+        PwARCameraLease.shared.release(
+          owner: SelfDevelopedARKitIdentifiers.cameraOwner
+        )
         result(FlutterError(
           code: "ar_start_failed",
           message: error.localizedDescription,
@@ -1017,6 +1039,11 @@ class AetherARKitPlugin: NSObject {
   }
 
   private func stopSession() {
+    defer {
+      PwARCameraLease.shared.release(
+        owner: SelfDevelopedARKitIdentifiers.cameraOwner
+      )
+    }
     if #available(iOS 16.0, *) {
       restoreContinuousExposureFocus(reason: "session stop")
     }
@@ -2513,6 +2540,7 @@ private class PoseStreamHandler: NSObject, FlutterStreamHandler {
 @available(iOS 11.0, *)
 private class ARSessionForwarder: NSObject, ARSessionDelegate {
   var onFrame: ((ARFrame) -> Void)?
+  var onSessionFailure: (() -> Void)?
 
   // Diagnostic state — log only on transitions, not every frame.
   private var loggedFirstFrame = false
@@ -2628,6 +2656,7 @@ private class ARSessionForwarder: NSObject, ARSessionDelegate {
       "error": error.localizedDescription,
       "thermal": ProcessInfo.processInfo.thermalState.rawValue,
     ])
+    onSessionFailure?()
   }
 
   func sessionWasInterrupted(_ session: ARSession) {

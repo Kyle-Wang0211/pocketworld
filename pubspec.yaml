@@ -170,6 +170,11 @@ dependencies:
   # validation artifacts locally from the manifest.
   aether_capture_services:
     path: packages/aether_capture_services
+  # Physically independent copy used by the "官方" capture route. Keeping a
+  # separate package prevents later official-alignment work from silently
+  # calling the production bundle implementation through the original import.
+  official_capture_services:
+    path: packages/official_capture_services
 
 
 dev_dependencies:
