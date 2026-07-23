@@ -17,9 +17,9 @@ import 'package:flutter/material.dart';
 
 import '../l10n/app_localizations.dart';
 import '../me/import_glb_coordinator.dart';
-import 'capture/ar_capture_page.dart';
 import 'design_system.dart';
 import 'me_page.dart';
+import 'official_capture/ar_capture_page.dart';
 import 'vault_page.dart';
 
 // 2026-04-28 IA reshape: bottom nav simplified to two tabs — Community
@@ -143,9 +143,9 @@ class _AetherAppShellState extends State<AetherAppShell> {
     // CapturePage returns `true` when the user tapped Stop and the
     // upload kicked off — that's our cue to flip the bottom nav to
     // Me so the freshly-created scan card is visible right away.
-    final shouldShowMe = await Navigator.of(
-      context,
-    ).push<bool>(MaterialPageRoute<bool>(builder: (_) => const ARCapturePage()));
+    final shouldShowMe = await Navigator.of(context).push<bool>(
+      MaterialPageRoute<bool>(builder: (_) => const OfficialARCapturePage()),
+    );
     if (!mounted) return;
     if (shouldShowMe == true) {
       if (_tab != AetherRootTab.me) {

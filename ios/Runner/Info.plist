@@ -115,10 +115,9 @@
 	     the user backgrounds the app mid-solve. The identifier MUST be prefixed
 	     with the EXACT case-sensitive bundle id (com.kyle.PocketWorld) — dasd
 	     matches it string-level, and a lowercase form is silently dropped.
-	     See ios/Runner/ReconUmbrella.swift + the bg-umbrella recipe memory. -->
+	     See ios/Runner/OfficialReconUmbrella.swift. -->
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>com.kyle.PocketWorld.recon</string>
 		<string>com.kyle.PocketWorld.official.recon</string>
 	</array>
 	<key>UILaunchStoryboardName</key>

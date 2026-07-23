@@ -4,7 +4,6 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   const routes = <String, String>{
-    'self': 'lib/ui/capture/ar_capture_page.dart',
     'official': 'lib/ui/official_capture/ar_capture_page.dart',
   };
 

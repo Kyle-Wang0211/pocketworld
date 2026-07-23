@@ -12,9 +12,9 @@ import UIKit
     // In-Runner-target Swift plugins.
     // AetherTexturePlugin bridges the Flutter Texture widget to the
     // aether3d_ffi native scene renderer (Dawn/Filament PBR + splat).
-    // AetherARKitPlugin exposes ARKit world-tracking (ARSession +
-    // delegate) to Dart for the dome capture flow — see
-    // PlatformARPoseProvider on the Dart side.
+    // OfficialAetherARKitPlugin exposes the single production ARKit capture
+    // runtime. Legacy self-route records remain readable from disk but cannot
+    // start a second capture session.
     // (Key-value prefs now use the standard shared_preferences pod,
     // registered by GeneratedPluginRegistrant above.)
     if let registrar = self.registrar(forPlugin: "AetherTexturePlugin") {
@@ -23,11 +23,6 @@ import UIKit
       NSLog("[AppDelegate] registrar(forPlugin: AetherTexturePlugin) nil — texture widget will be blank")
     }
     if #available(iOS 11.0, *) {
-      if let registrar = self.registrar(forPlugin: "AetherARKitPlugin") {
-        AetherARKitPlugin.register(with: registrar)
-      } else {
-        NSLog("[AppDelegate] registrar(forPlugin: AetherARKitPlugin) nil — dome will fall back to mock pose")
-      }
       if let registrar = self.registrar(
         forPlugin: "OfficialAetherARKitPlugin"
       ) {
@@ -41,7 +36,6 @@ import UIKit
     // if the user backgrounds the app mid-solve. MUST register the handler
     // before the app finishes launching, or the system drops the launch.
     if #available(iOS 26.0, *) {
-      ReconUmbrella.shared.register()
       OfficialReconUmbrella.shared.register()
     }
 

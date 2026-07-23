@@ -121,11 +121,8 @@ void main() {
     },
   );
 
-  test('both capture pages expose explicit route markers', () {
-    expect(
-      read('lib/ui/capture/ar_capture_page.dart'),
-      contains("ValueKey<String>('capture-route-badge-self')"),
-    );
+  test('the single production capture page keeps its route marker', () {
+    expect(File('lib/ui/capture/ar_capture_page.dart').existsSync(), isFalse);
     expect(
       read('lib/ui/official_capture/ar_capture_page.dart'),
       contains("ValueKey<String>('capture-route-badge-official')"),

@@ -9,8 +9,6 @@
 
 import 'package:flutter/material.dart';
 
-import 'capture/ar_capture_page.dart';
-import 'capture_pipeline_chooser.dart';
 import 'draft_capture_shell.dart';
 import 'me_page.dart';
 import 'official_capture/ar_capture_page.dart';
@@ -56,29 +54,10 @@ class _MeRootPageState extends State<MeRootPage> {
     super.dispose();
   }
 
-  /// Black "+" FAB → choose one of the two physically independent capture
-  /// stacks. Both stacks currently preserve the product algorithm semantics;
-  /// the official route is the isolated copy used for later alignment work.
+  /// Black "+" FAB → the single production capture route.
   Future<void> _openCapture() async {
-    final choice = await showModalBottomSheet<CaptureRouteChoice>(
-      context: context,
-      useSafeArea: false,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      barrierColor: Colors.black.withValues(alpha: 0.32),
-      builder: (sheetContext) => CapturePipelineChooser(
-        onSelected: (value) => Navigator.of(sheetContext).pop(value),
-      ),
-    );
-    if (!mounted || choice == null) return;
-
     final created = await Navigator.of(context).push<bool>(
-      MaterialPageRoute<bool>(
-        builder: (_) => switch (choice) {
-          CaptureRouteChoice.selfDeveloped => const ARCapturePage(),
-          CaptureRouteChoice.official => const OfficialARCapturePage(),
-        },
-      ),
+      MaterialPageRoute<bool>(builder: (_) => const OfficialARCapturePage()),
     );
     if (!mounted) return;
     if (created == true) _showDraftsSignal.value += 1;
