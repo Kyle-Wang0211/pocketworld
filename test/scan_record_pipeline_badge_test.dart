@@ -5,7 +5,7 @@ import 'package:pocketworld_flutter/ui/scan_record.dart';
 import 'package:pocketworld_flutter/ui/scan_record_cell.dart';
 
 void main() {
-  testWidgets('work card labels self and official routes', (tester) async {
+  testWidgets('work cards never expose their pipeline route', (tester) async {
     Future<void> pump(CapturePipelineKind kind) async {
       await tester.pumpWidget(
         MaterialApp(
@@ -33,13 +33,21 @@ void main() {
     }
 
     await pump(CapturePipelineKind.self);
-    expect(find.text('自研'), findsOneWidget);
+    expect(find.text('自研'), findsNothing);
+    expect(
+      find.byKey(const ValueKey<String>('scan-pipeline-badge')),
+      findsNothing,
+    );
 
     await pump(CapturePipelineKind.official);
-    expect(find.text('官方'), findsOneWidget);
+    expect(find.text('官方'), findsNothing);
+    expect(
+      find.byKey(const ValueKey<String>('scan-pipeline-badge')),
+      findsNothing,
+    );
   });
 
-  testWidgets('route badge and completed badge occupy opposite corners', (
+  testWidgets('completed status remains visible without a pipeline badge', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -57,7 +65,7 @@ void main() {
                 name: 'record',
                 createdAt: DateTime.utc(2026, 7, 22),
                 pipelineKind: CapturePipelineKind.official,
-                artifactPath: 'file:///does/not-need-to-exist.glb',
+                artifactPath: 'file:///does-not-need-to-exist.glb',
               ),
               subtitle: '2026-07-22',
             ),
@@ -67,13 +75,13 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    final official = tester.getTopLeft(
+    expect(
       find.byKey(const ValueKey<String>('scan-pipeline-badge')),
+      findsNothing,
     );
-    final completed = tester.getTopLeft(
+    expect(
       find.byKey(const ValueKey<String>('scan-completed-badge')),
+      findsOneWidget,
     );
-    expect(official.dx, lessThan(completed.dx));
-    expect(official.dy, completed.dy);
   });
 }

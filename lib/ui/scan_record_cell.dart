@@ -114,11 +114,6 @@ class _ThumbnailSection extends StatelessWidget {
       fit: StackFit.expand,
       children: [
         _ThumbnailImage(record: record),
-        Positioned(
-          top: AetherSpacing.md,
-          left: AetherSpacing.md,
-          child: _PipelineBadge(kind: record.pipelineKind),
-        ),
         if (showCompletedBadge && record.hasCompletedArtifact)
           const Positioned(
             top: AetherSpacing.md,
@@ -135,33 +130,6 @@ class _ThumbnailSection extends StatelessWidget {
     // cell). Use Expanded so the thumbnail fills the leftover space
     // after the info section sizes itself.
     return Expanded(child: stack);
-  }
-}
-
-class _PipelineBadge extends StatelessWidget {
-  const _PipelineBadge({required this.kind});
-
-  final CapturePipelineKind kind;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      key: const ValueKey<String>('scan-pipeline-badge'),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.58),
-        borderRadius: BorderRadius.circular(AetherRadii.pill),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.24)),
-      ),
-      child: Text(
-        kind.displayLabel,
-        style: const TextStyle(
-          fontSize: 11,
-          fontWeight: FontWeight.w600,
-          color: Colors.white,
-        ),
-      ),
-    );
   }
 }
 
