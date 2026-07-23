@@ -11,7 +11,7 @@ void aether_sfm_options_default(aether_sfm_options_t* out) {
   out->max_features = 2048;
   out->image_width = 0;
   out->image_height = 0;
-  out->match_max_ratio = 0.7f;
+  out->match_max_ratio = 0.8f;
   out->use_gpu_match = 0;
   out->k_neighbors = 6;
   out->use_gpu_extract = 0;

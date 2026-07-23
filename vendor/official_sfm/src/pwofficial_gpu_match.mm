@@ -334,11 +334,11 @@ static int matchPairsImpl(const uint8_t* dA, int nA, const float* xyA,
                          options:MTLResourceStorageModeShared];
     if (!pointsABuf || !pointsBBuf || !matrixABBuf || !matrixBABuf) return 6;
     // COLMAP thresholds passed straight through (angular domain in-kernel):
-    // max_ratio from the caller (default 0.7), max_distance = COLMAP's
+    // max_ratio from the caller (product default 0.8), max_distance = COLMAP's
     // SiftMatchingOptions default 0.7. The angular kernel needs no
     // per-descriptor norms — it uses the idealized 512^2 normalization.
     float maxRatio = (float)max_ratio;
-    if (maxRatio <= 0.0f) maxRatio = 0.7f;
+    if (maxRatio <= 0.0f) maxRatio = 0.8f;
     float maxDistance = 0.7f;  // colmap::SiftMatchingOptions::max_distance default
     const NSUInteger bshLen = 16 * 128 * sizeof(__fp16);
     const NSUInteger accLen = 128 * 16 * sizeof(float);

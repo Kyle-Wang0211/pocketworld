@@ -2843,21 +2843,17 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
   private static let subjectMarkerRadius: CGFloat = 0.03 // 3 cm
   private static let subjectAnchorName = "pocketworld_official_subject_origin"
 
-  // ── 距离补偿缩放(用户签决,替换旧"额外收缩+0.15 下限"方案)────────
-  // 旧方案纯透视(视觉大小∝1/d)+额外收缩,2m 外卡片就看不见。新曲线:
-  // 保持近大远小,但远处衰减变缓 —— 节点缩放 node_scale = (d/d0)^β,
-  // 视觉大小 ∝ scale/d = d^(β-1) = d^-0.5(β=0.5):2m 处比纯透视大
-  // ~1.4×,10m ~3.2×,100m 仍持续变小。**绝无最小尺寸下限**:拍房子时
-  // 100m 处的卡片可以一路缩到 1 像素(旧 photoCardMinScale=0.15 下限已
-  // 删)。代价:远处卡片比旧方案大 → 平面卡片对场景的视差滑移更可见,
-  // 用户签决接受。photoCardNodes holds the per-card CONTAINER node we scale.
+  // ── 照片卡激进缩放档(用户签决)──────────────────────────────────
+  // photoCardNodes holds the per-card CONTAINER node we scale.
   private var photoCardNodes: [String: SCNNode] = [:]
-  /// 距离补偿锚点 d0(米):d ≤ d0 时不放大(scale=1,保持原透视);
-  /// d > d0 时 scale=(d/d0)^β。真机调参常量。
-  private static let photoCardDistanceAnchorM: Float = 1.0
-  /// 补偿指数 β:视觉大小 ∝ d^(β-1)。0.5=签决默认(远处衰减减半);
-  /// 0=纯透视;1=恒定屏幕大小(billboard 感,不要)。真机调参常量。
-  private static let photoCardDistanceBeta: Float = 0.5
+  /// 屏幕视觉尺度曲线:拍照瞬间保持原始尺寸;离开拍摄位置约 3cm 时
+  /// 视觉尺寸仅剩约 20%(缩小 80%),随后迅速转入平缓区。由于卡片固定在 5cm close-anchor,
+  /// 单纯缩 node 会叠加透视而随移动方向忽大忽小;这里用当前相机到卡片距离
+  /// 抵消近距离透视,再套视觉曲线。node 补偿封顶 2×,远距离不会物理膨胀。
+  private static let photoCardBaseScale: Float = 1.0
+  private static let photoCardMinVisualScale: Float = 0.08
+  private static let photoCardVisualTransitionM: Float = 0.0045
+  private static let photoCardMaxNodeScale: Float = 2.0
 
   /// 四态边框材质(name → [边框环材质, 背板材质]),didAdd 登记、
   /// didRemove 清理;applyPhotoCardStatesIfDirty 在渲染线程按 Dart 推的
@@ -3162,18 +3158,19 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
     applyPhotoCardStatesIfDirty()  // 四态边框:消费 Dart 推来的状态差量
     guard !photoCardNodes.isEmpty, let cam = renderer.pointOfView else { return }
     let camPos = cam.simdWorldPosition
-    for card in photoCardNodes.values {
+    for (name, card) in photoCardNodes {
       // RS 复刻显示开关:逐帧幂等套用可见性 —— 隐藏期新建的卡片下一帧即
       // 隐藏,重开下一帧全量回显,无需遍历时机协调。
       card.isHidden = !OfficialAetherARKitPlugin.photoCardsVisible
-      // 距离补偿缩放(签决,常量注释见 photoCardDistanceBeta):
-      // d ≤ d0(1m)→ scale=1 保持原透视;d > d0 → scale=(d/d0)^β,
-      // 视觉大小 ∝ d^(β-1)=d^-0.5 —— 近大远小保持、远处衰减变缓,
-      // 无最小尺寸下限(100m 处可以小到 1 像素,继续缩)。
-      let d = simd_distance(camPos, card.simdWorldPosition)
-      let s = d > Self.photoCardDistanceAnchorM
-        ? powf(d / Self.photoCardDistanceAnchorM, Self.photoCardDistanceBeta)
-        : 1.0
+      // 以每张卡自己的拍摄相机位置为零点:3cm≈20%(缩小80%),随后双曲线趋平。
+      // currentDistance/captureDistance 抵消 close-anchor 自然透视,让观察到
+      // 的视觉比例只由 travel 决定;2×封顶后远处继续缓慢变小。
+      guard let spec = OfficialAetherARKitPlugin.photoCardSpecs[name] else { continue }
+      let travel = simd_distance(camPos, spec.captureCamPos)
+      let visualScale = Self.photoCardMinVisualScale + (1.0 - Self.photoCardMinVisualScale) / (1.0 + travel / Self.photoCardVisualTransitionM)
+      let currentDistance = max(simd_distance(camPos, card.simdWorldPosition), 0.001)
+      let perspectiveCompensation = currentDistance / max(spec.captureDistance, 0.001)
+      let s = min(Self.photoCardMaxNodeScale, Self.photoCardBaseScale * visualScale * perspectiveCompensation)
       card.simdScale = simd_float3(repeating: s)
     }
   }

@@ -25,7 +25,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data' show Int32List, Float32List, Float64List;
+import 'dart:typed_data' show Int32List, Float32List, Float64List, Uint8List;
 
 import 'package:flutter/foundation.dart'
     show compute, defaultTargetPlatform, TargetPlatform;
@@ -38,10 +38,12 @@ import '../../official_capture/capture_coverage_cloud.dart';
 import '../../official_capture/capture_session.dart';
 import '../../official_capture/colorize_pipeline.dart';
 import '../../official_capture/floater_filter.dart';
+import '../../official_capture/live_sfm_publish_policy.dart';
 import '../../official_capture/official_highres_reconstruction_input.dart';
 import '../../official_capture/parallax_banner_gate.dart';
 import '../../official_capture/capture_format.dart';
 import '../../official_capture/photo_card_state.dart';
+import '../../official_capture/project_photo_album.dart';
 import '../../official_capture/pw_telemetry.dart';
 import '../../official_capture/representative_color.dart';
 import '../../official_capture/shutter_backpressure_gate.dart';
@@ -108,6 +110,7 @@ Uint8List? _buildCaptureCardThumbnailBytes(String sourcePath) {
 class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     with WidgetsBindingObserver {
   final DomeTargetPoints _targetPoints = DomeTargetPoints();
+  final OfficialProjectPhotoAlbum _projectPhotos = OfficialProjectPhotoAlbum();
   final RealtimeCapturePreviewModel _previewModel =
       RealtimeCapturePreviewModel();
   CaptureSession? _session;
@@ -190,15 +193,6 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// 等待页计秒刷新(1s)。只在 generating 阶段运行,terminal 即停。
   Timer? _sfmStageTicker;
 
-  /// Deferred photo prune. `retainOnlyCuratedPhotos` DELETES every cell-slot
-  /// JPEG not in the upload-curation set — but the streaming colorizer samples
-  /// the SfM-FED frames (a different, larger set), so pruning at 完成 races the
-  /// colorize and deletes frames it still needs → gray points (the reported
-  /// "3 帧解码失败"). When a preview will run, we stash the prune here and fire
-  /// it only AFTER the colorize has baked color into the PLY (see
-  /// [_flushDeferredPhotoPrune]), so every fed frame survives until it's sampled.
-  ({CaptureSession session, List<CuratedFrame> curated})? _deferredPhotoPrune;
-
   /// The finish flow wants to pop to Drafts, but the preview overlay owns
   /// the exit while it's up — set, then honoured by [_onSfmPreviewDone].
   bool _sfmPendingPop = false;
@@ -222,6 +216,13 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   // (cross-platform); native only displays what we push.
   final CaptureCoverageCloud _coverageCloud = CaptureCoverageCloud();
   StreamSubscription<OfficialHighResReconstructionInput>? _coverageFeedSub;
+
+  /// The last globally-BA-refined official SfM cloud published to AR.
+  /// Capture coverage voxels remain a private guidance signal; the native
+  /// renderer receives nothing before V20 and only stable SfM versions after.
+  CoverageCloudPacked? _officialSfmArCloud;
+  bool _entryTipVisible = false;
+  Timer? _entryTipTimer;
 
   // ─── "拍摄角度不足"实时横幅(补强1,真值口径)───────────────────────
   // starvedTrue(观测达标但真实三角化角低于 parallaxMinDeg=5° 的体素数,
@@ -387,10 +388,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           _diagPoseClock.reset();
           _diagPoseClock.start();
         }
-        _previewModel.updateFromPose(
-          p,
-          photoCount: _targetPoints.retainedJpegPaths.length,
-        );
+        _previewModel.updateFromPose(p, photoCount: _projectPhotos.count);
         // Coverage-cloud position upkeep — never lights points up by itself
         // (only markCapture at each shutter does).
         _coverageCloud.ingestPose(p);
@@ -558,7 +556,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   }
 
   Future<void> _onCloseTap() async {
-    if (_finalizingRecording || _lockInProgress) return;
+    if (_finalizingRecording || _lockInProgress || _capturing) return;
     if (!_recording) {
       if (mounted) Navigator.of(context).maybePop(false);
       return;
@@ -603,7 +601,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     if (session == null) return;
 
     if (_recording) {
-      await _finalizeRecording(navigateToDrafts: true, showSparseHint: true);
+      await _onFinishTap();
       return;
     }
 
@@ -696,8 +694,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         );
       } catch (_) {}
       _previewModel.reset();
+      _projectPhotos.clear();
       // Fresh take → empty coverage cloud (0 photos ⇒ 0 dots on screen).
       _coverageCloud.reset();
+      _officialSfmArCloud = null;
       // Fresh take → 卡片边框状态机归零(native 卡片已由 clearPhotoCards
       // 清掉,这里清 Dart 侧差量缓存与连通性数据)。
       _photoCardStateSent.clear();
@@ -718,6 +718,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         _sfmStartFailureText = null;
         _isAiming = false;
         _lockInProgress = false;
+        _entryTipVisible = true;
+      });
+      _entryTipTimer?.cancel();
+      _entryTipTimer = Timer(const Duration(seconds: 6), () {
+        if (mounted) setState(() => _entryTipVisible = false);
       });
       _startGuidanceTelemetry();
       // Capture-time streaming SfM is required for a valid product take.
@@ -735,6 +740,19 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// streaming SfM — but fully independent of the SfM worker, so the
   /// coverage UX works even where on-device SfM is unavailable).
   void _onCoverageKeyframe(OfficialHighResReconstructionInput input) {
+    final committed = _projectPhotos.commitVerified(
+      jpegPath: input.jpegPath,
+      captureTimestamp: input.captureTimestamp,
+      imageWidth: input.imageWidth,
+      imageHeight: input.imageHeight,
+    );
+    if (!committed) {
+      DeviceLog.log(
+        'OfficialARCapturePage',
+        'verified project photo was not committed: ${input.jpegPath}',
+      );
+      return;
+    }
     final feed = SfmFrameFeed(
       gray: Uint8List(0),
       grayW: input.imageWidth,
@@ -845,9 +863,13 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     }
   }
 
-  /// Ships the current coverage state to the native dumb renderer.
+  /// Ships the latest stable official SfM version to the native dumb renderer.
+  /// Before the first successful 20-frame global BA this intentionally sends
+  /// an empty cloud, even though private capture-guidance voxels already exist.
   Future<void> _pushCoverageCloud() async {
-    final packed = _coverageCloud.packed();
+    final packed =
+        _officialSfmArCloud ??
+        CoverageCloudPacked(Float32List(0), Uint8List(0));
     try {
       await _arKitChannel.invokeMethod<void>(
         'setCoveragePointCloud',
@@ -856,6 +878,40 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     } catch (_) {
       // Display-only channel — never let it disturb capture.
     }
+  }
+
+  /// Atomically replaces the AR overlay with a globally refined official SfM
+  /// snapshot. This is display-only: no point is removed or rewritten in the
+  /// reconstruction or final PLY.
+  Future<void> _publishOfficialSfmCloudToAr(SfmLiveSnapshot snapshot) async {
+    if (!_recording ||
+        snapshot.summary['source'] != 'streaming_global_ba' ||
+        snapshot.pointCount <= 0) {
+      return;
+    }
+    final rgb = Uint8List(snapshot.pointCount * 3);
+    final offsets = snapshot.obsOffsets;
+    for (var i = 0; i < snapshot.pointCount; i++) {
+      final trackLength = offsets.length == snapshot.pointCount + 1
+          ? offsets[i + 1] - offsets[i]
+          : 0;
+      final base = i * 3;
+      if (trackLength >= 5) {
+        rgb[base] = 56;
+        rgb[base + 1] = 220;
+        rgb[base + 2] = 110;
+      } else if (trackLength >= 3) {
+        rgb[base] = 255;
+        rgb[base + 1] = 210;
+        rgb[base + 2] = 45;
+      } else {
+        rgb[base] = 255;
+        rgb[base + 1] = 82;
+        rgb[base + 2] = 47;
+      }
+    }
+    _officialSfmArCloud = CoverageCloudPacked(snapshot.xyz, rgb);
+    await _pushCoverageCloud();
   }
 
   /// 覆盖云推送合并节流:首次调用立即推(引导反馈不加延迟),400ms 窗口
@@ -893,7 +949,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // 白→黄另加粘性(连续 2 次采样 <4°,计数在 SfmLiveTrueParallax
       // 到达处维护,这里只读)。
       final prev = _photoCardStateSent[meta.jpegPath];
-      final st = photoCardSfmState(
+      final state = photoCardSfmState(
         frameId: frameId,
         posesPacked: _sfmLatestPoses,
         lowParallax: frameLowParallaxTrue(
@@ -905,7 +961,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               : null,
           belowEnterStreak: _frameBelowEnterStreak[frameId] ?? 0,
         ),
-      ).channelValue;
+      );
+      _projectPhotos.updateAnalysisState(meta.jpegPath, state);
+      final st = state.channelValue;
       if (_photoCardStateSent[meta.jpegPath] != st) {
         diff[meta.jpegPath] = st;
       }
@@ -925,6 +983,21 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     });
     _photoCardStateSent.addAll(diff);
     unawaited(_pushPhotoCardStates(diff));
+  }
+
+  void _markPhotoDisconnected(String jpegPath, String reason) {
+    const state = PhotoCardSfmState.disconnected;
+    _projectPhotos.updateAnalysisState(jpegPath, state);
+    if (_photoCardStateSent[jpegPath] == state.channelValue) return;
+    _photoCardStateSent[jpegPath] = state.channelValue;
+    DeviceLog.log(
+      'OfficialARCapturePage',
+      'photo retained but marked disconnected: '
+          '${jpegPath.split('/').last} ($reason)',
+    );
+    unawaited(
+      _pushPhotoCardStates(<String, int>{jpegPath: state.channelValue}),
+    );
   }
 
   /// 遥测【guidance】:拍摄期 5s 节流采样 —— 断连区段摘要(合成连通性
@@ -1148,6 +1221,16 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
 
   void _onSfmEvent(SfmLiveEvent event) {
     if (!mounted) return;
+    if (event is SfmLivePreview &&
+        event.snapshot.summary['source'] == 'streaming_global_ba') {
+      final snapshot = event.snapshot;
+      if (snapshot.posesPacked.isNotEmpty) {
+        _sfmLatestPoses = snapshot.posesPacked;
+        _refreshPhotoCardStates();
+      }
+      unawaited(_publishOfficialSfmCloudToAr(snapshot));
+      return;
+    }
     // 卡片边框连通性(黑→白/红):native 渲染,Flutter 无需 rebuild —
     // 不进 setState,处理完直接返回。
     if (event is SfmLiveConnectivity) {
@@ -1185,10 +1268,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     if (event is SfmLiveFrameFed &&
         event.result != 'ok' &&
         event.jpegPath != null) {
-      _markPhotoCardFailed(
-        event.jpegPath!,
-        '高分辨率照片被官方重建器拒绝（${event.result}），本张未进入重建，请重拍',
-      );
+      _markPhotoDisconnected(event.jpegPath!, event.result);
     }
     // [E25-D 2026-07-20] L1 仲裁已停用(E25-B),该事件不再发生;原钩子在此
     // 重算带 rescue 位的 ghost_view_mask.bin。整条 L1/L2 已删。
@@ -1582,31 +1662,13 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         _pendingLocalColored = display;
       }
     }
-    // Photo prune (deletes non-curated frames) may run ONLY after the LAST
-    // colorize that needs those frames. For the live streaming path the local-BA
-    // cloud is terminal; refined covers the resume/cold-finalize path.
     final isTerminalColorize =
         snap.summary['terminal'] == true ||
         snap.summary['source'] == 'streaming_global_ba' ||
         snap.refined;
     if (isTerminalColorize && identical(_colorizeTarget, snap)) {
-      _flushDeferredPhotoPrune();
       if (snap.refined) unawaited(_endReconUmbrella());
     }
-  }
-
-  /// Runs the photo prune deferred at 完成 (see [_deferredPhotoPrune]) — only
-  /// after the streaming colorize has sampled every fed frame, so deleting the
-  /// non-curated frames can no longer starve it. Idempotent (single-flight).
-  void _flushDeferredPhotoPrune() {
-    final pending = _deferredPhotoPrune;
-    if (pending == null) return;
-    _deferredPhotoPrune = null;
-    DeviceLog.log(
-      'OfficialARCapturePage',
-      'photo prune FLUSH after colorize (keep ${pending.curated.length})',
-    );
-    unawaited(pending.session.retainOnlyCuratedPhotos(pending.curated));
   }
 
   // ── Orphan floater removal ── 已提出为 lib/capture/floater_filter.dart 的
@@ -1862,8 +1924,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => ARAlbumPage(
-          targetPoints: _targetPoints,
-          onDelete: _deleteRetainedPhoto,
+          projectPhotos: _projectPhotos,
+          onDelete: _deleteProjectPhoto,
         ),
       ),
     );
@@ -1880,6 +1942,29 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// (starved/true_vox + 用户选择;未触发门 = pass)。
   Future<void> _onFinishTap() async {
     if (!_sfmCaptureReady || _finalizingRecording) return;
+    final acceptedFrameCount = _projectPhotos.count;
+    if (!officialCaptureCanFinish(acceptedFrameCount: acceptedFrameCount)) {
+      final remaining = kOfficialMinimumCaptureFrames - acceptedFrameCount;
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          key: const ValueKey<String>('official-minimum-photos-dialog'),
+          title: const Text('至少拍摄20张照片'),
+          content: Text(
+            '要结束任务，必须至少拍摄20张照片。\n'
+            '当前已完成 $acceptedFrameCount 张，还需要 $remaining 张。',
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('继续拍摄'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
     final cov = _coverageCloud.coverageStats();
     if (starvedFinishGateShouldPrompt(
       starvedTrue: cov.starvedTrue,
@@ -1974,8 +2059,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         );
       } catch (_) {}
       final recon = _sfmRecon;
-      final curated = _targetPoints.curateForUpload(framesPerPoint: 5);
-      if (curated.isEmpty) {
+      if (_projectPhotos.count == 0) {
         if (recon != null) {
           _sfmRecon = null;
           await _sfmFeedSub?.cancel();
@@ -2042,22 +2126,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         _sfmEventSub = null;
         unawaited(recon.dispose());
       }
-      // The final colorizer needs every SfM-fed JPEG. Delete non-curated photos
-      // only after that final colored cloud has been persisted.
-      if (sfmPreviewing) {
-        _deferredPhotoPrune = (session: session, curated: curated);
-        DeviceLog.log(
-          'OfficialARCapturePage',
-          'photo prune deferred until final colorize '
-              '(keep ${curated.length} + all fed frames until colorize)',
-        );
-      } else {
-        await session.retainOnlyCuratedPhotos(curated);
-      }
-      await _persistDraft(
-        curatedFrames: curated,
-        showSnackBar: mounted && showSparseHint,
-      );
+      // Every verified 12MP shutter is a project photo. Upload curation may
+      // choose a subset for a later stage, but it must never delete photos from
+      // the user-visible album or change its one authoritative count.
+      await _persistDraft(showSnackBar: mounted && showSparseHint);
       // Pop with `true` as a signal to AetherAppShell that it should
       // switch the active tab to Me Drafts (the user just created a
       // scan and expects to see it sitting in their drafts list).
@@ -2080,14 +2152,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     Navigator.of(context).pop(true);
   }
 
-  Future<void> _persistDraft({
-    required List<CuratedFrame> curatedFrames,
-    required bool showSnackBar,
-  }) async {
+  Future<void> _persistDraft({required bool showSnackBar}) async {
     final session = _session;
     if (session == null) return;
     final dir = session.photosHighresDir ?? session.photosDir;
-    final photoCount = _targetPoints.retainedJpegPaths.length;
+    final photoCount = _projectPhotos.count;
     final captureDirPath = session.captureDir;
     if (dir == null || captureDirPath == null || photoCount == 0) {
       if (mounted && showSnackBar) {
@@ -2114,7 +2183,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
 
     String? thumbnailPath;
     final firstPhoto =
-        _targetPoints.retainedJpegPaths
+        _projectPhotos.paths
             .where((p) => File(p).existsSync())
             .toList(growable: false)
           ..sort();
@@ -2141,7 +2210,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       }
     }
 
-    final manifestFile = await session.writePhotoBundleManifest(curatedFrames);
+    final manifestFile = await session.writeProjectPhotoBundleManifest(
+      _projectPhotos.paths,
+    );
     if (manifestFile == null || !manifestFile.existsSync()) return;
     final record = ScanRecord(
       id: captureId,
@@ -2183,9 +2254,48 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     return highresPath;
   }
 
-  Future<void> _deleteRetainedPhoto(String path) async {
+  Future<void> _deleteProjectPhoto(String path) async {
+    final recon = _sfmRecon;
+    int? removedFrameId;
+    if (recon != null) {
+      for (final entry in recon.fedFrameMeta.entries) {
+        if (entry.value.jpegPath == path) {
+          removedFrameId = entry.key;
+          break;
+        }
+      }
+      final removed = await recon.removePhoto(path);
+      if (!removed) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(
+              const SnackBar(
+                content: Text('照片暂时无法从重建中撤回，请稍后重试'),
+                behavior: SnackBarBehavior.floating,
+              ),
+            );
+        }
+        return;
+      }
+    }
+    _projectPhotos.remove(path);
+    _photoCardStateSent.remove(path);
+    _photoCaptureEpochMs.remove(path);
+    _failedEvidenceJpegPaths.remove(path);
+    if (removedFrameId != null) {
+      _trueFrameParallaxDeg.remove(removedFrameId);
+      _frameBelowEnterStreak.remove(removedFrameId);
+    }
     final keep = _targetPoints.retainedJpegPaths.toSet()..remove(path);
     _targetPoints.retainOnlyJpegPaths(keep);
+    unawaited(
+      _arKitChannel
+          .invokeMethod<void>('removePhotoCard', <String, dynamic>{
+            'evidenceJpegPath': path,
+          })
+          .catchError((Object _) {}),
+    );
     final previewPath = path.replaceFirst('/photos_highres/', '/previews/');
     final sidecarPath = path.endsWith('.jpg')
         ? '${path.substring(0, path.length - 4)}.json'
@@ -2208,8 +2318,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           await file.delete();
         }
       } on FileSystemException {
-        // Best-effort UI deletion. The final retainOnlyCuratedPhotos call
-        // also prunes unselected files before writing the manifest.
+        // Best-effort UI deletion; the authoritative ledger has already been
+        // updated so the count cannot resurrect on a widget rebuild.
       }
     }
     if (mounted) setState(() {});
@@ -2247,6 +2357,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     );
     _warmupFallbackTimer?.cancel();
     _sfmStageTicker?.cancel();
+    _entryTipTimer?.cancel();
     _coveragePushTimer?.cancel();
     _poseSub?.cancel();
     // Streaming-SfM teardown: frees the native session (joins the background
@@ -2261,6 +2372,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     if (sfmRecon != null) unawaited(sfmRecon.dispose());
     _session?.dispose();
     _previewModel.dispose();
+    _projectPhotos.dispose();
     _targetPoints.dispose();
     // Evict the full-res capture bitmaps decoded for the album/thumbnails so
     // they don't linger in the global imageCache into the community/me tabs.
@@ -2315,22 +2427,6 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         children: [
           // Camera preview / init / error placeholder.
           Positioned.fill(child: _buildPreviewLayer()),
-
-          // ─── Live-SfM feed counter (top-left, recording only): fed vs
-          // backpressure-dropped keyframes. Dropped frames simply skip the
-          // live reconstruction — never an error, so the chip stays quiet
-          // gray. Hidden entirely when the worker isn't running (simulator).
-          if (_recording && _sfmRecon != null)
-            Positioned(
-              top: 0,
-              left: 0,
-              child: SafeArea(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 20, 0, 0),
-                  child: _SfmFeedChip(fed: _sfmFed, queued: _sfmQueued),
-                ),
-              ),
-            ),
 
           // ─── Top bar: subtle route marker + X close button (right).
           // Tracking dot was previously rendered dead-center here, but
@@ -2413,6 +2509,58 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               ),
             ),
 
+          if (_recording && _entryTipVisible)
+            Positioned(
+              top: 0,
+              left: 18,
+              right: 18,
+              child: SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 60),
+                  child: GestureDetector(
+                    onTap: () {
+                      _entryTipTimer?.cancel();
+                      setState(() => _entryTipVisible = false);
+                    },
+                    child: Container(
+                      key: const ValueKey<String>('official-capture-entry-tip'),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xD91C1C20),
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: Colors.white24),
+                      ),
+                      child: const Row(
+                        children: [
+                          Icon(
+                            Icons.tips_and_updates_outlined,
+                            color: Color(0xFFF5B821),
+                            size: 22,
+                          ),
+                          SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              '尽量从更多不同角度拍摄照片\n'
+                              '完成20张并分析后，点云会覆盖显示在物体上',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                                height: 1.35,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
           // ─── Aim mode overlay: center crosshair + hint text.
           // Only rendered while `_isAiming` is true (between idle and
           // recording). User actively aligns the crosshair on the
@@ -2435,7 +2583,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               right: 0,
               child: SafeArea(
                 child: Padding(
-                  padding: const EdgeInsets.only(top: 60),
+                  padding: EdgeInsets.only(top: _entryTipVisible ? 148 : 60),
                   child: Center(
                     child: _HardRejectToast(stream: _session!.guidanceStream),
                   ),
@@ -2453,7 +2601,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               right: 0,
               child: SafeArea(
                 child: Padding(
-                  padding: const EdgeInsets.only(top: 104),
+                  padding: EdgeInsets.only(top: _entryTipVisible ? 192 : 104),
                   child: Center(
                     child: _MotionSpeedToast(stream: _session!.motionStream),
                   ),
@@ -2473,10 +2621,34 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               right: 0,
               child: SafeArea(
                 child: Padding(
-                  padding: const EdgeInsets.only(top: 148),
+                  padding: EdgeInsets.only(top: _entryTipVisible ? 236 : 148),
                   child: Center(
                     child: _ParallaxStarvedBanner(
                       visible: _starvedBannerVisible,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+          // RealityScan-style unconnected-photo warning. The project ledger
+          // owns the ratio, so pending analysis cannot masquerade as success
+          // and no photo is removed merely because this banner is visible.
+          if (_recording && _session != null)
+            Positioned(
+              top: 0,
+              left: 18,
+              right: 18,
+              child: SafeArea(
+                child: Padding(
+                  padding: EdgeInsets.only(top: _entryTipVisible ? 280 : 192),
+                  child: AnimatedBuilder(
+                    animation: _projectPhotos,
+                    builder: (context, _) => _DisconnectedPhotoBanner(
+                      visible: _projectPhotos.shouldWarnDisconnected,
+                      disconnected: _projectPhotos.disconnectedCount,
+                      analyzed: _projectPhotos.analyzedCount,
+                      onTap: _openAlbum,
                     ),
                   ),
                 ),
@@ -2561,7 +2733,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                         ),
                       ),
                     _ManualCaptureBar(
-                      targetPoints: _targetPoints,
+                      projectPhotos: _projectPhotos,
                       // 07-12 签决:快门彻底不限流 —— 只要在录制就永远可拍,
                       // 绝不因队列深度/热态置灰(积压走磁盘 spool 队列,不回压快门)。
                       ready: _sfmCaptureReady,
@@ -2790,6 +2962,64 @@ class _ParallaxStarvedBanner extends StatelessWidget {
                 ),
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DisconnectedPhotoBanner extends StatelessWidget {
+  const _DisconnectedPhotoBanner({
+    required this.visible,
+    required this.disconnected,
+    required this.analyzed,
+    required this.onTap,
+  });
+
+  final bool visible;
+  final int disconnected;
+  final int analyzed;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedOpacity(
+      opacity: visible ? 1 : 0,
+      duration: const Duration(milliseconds: 250),
+      child: IgnorePointer(
+        ignoring: !visible,
+        child: GestureDetector(
+          onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.72),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: const Color(0xFFFF4D4F), width: 1),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.warning_amber_rounded,
+                  color: Color(0xFFFF5A5F),
+                  size: 18,
+                ),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    '$disconnected/$analyzed 张照片未连接；'
+                    '请在红色照片附近补拍连接画面',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -3110,7 +3340,7 @@ class _NineDotPainter extends CustomPainter {
 /// Rebuilds on every [targetPoints] change so the count + thumbnail stay live.
 class _ManualCaptureBar extends StatelessWidget {
   const _ManualCaptureBar({
-    required this.targetPoints,
+    required this.projectPhotos,
     required this.ready,
     required this.capturing,
     required this.finishing,
@@ -3119,7 +3349,7 @@ class _ManualCaptureBar extends StatelessWidget {
     required this.onFinish,
   });
 
-  final DomeTargetPoints targetPoints;
+  final OfficialProjectPhotoAlbum projectPhotos;
   final bool ready;
   final bool capturing;
   final bool finishing;
@@ -3130,9 +3360,9 @@ class _ManualCaptureBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: targetPoints,
+      animation: projectPhotos,
       builder: (context, _) {
-        final paths = targetPoints.retainedJpegPaths
+        final paths = projectPhotos.paths
             .where((p) => File(p).existsSync())
             .toList(growable: false);
         // Newest photo (by mtime) for the album thumbnail.
@@ -3157,7 +3387,7 @@ class _ManualCaptureBar extends StatelessWidget {
                 width: 72,
                 child: _AlbumThumbButton(
                   latestPath: latest,
-                  count: paths.length,
+                  count: projectPhotos.count,
                   onTap: onOpenAlbum,
                 ),
               ),
@@ -3178,8 +3408,8 @@ class _ManualCaptureBar extends StatelessWidget {
                 child: Align(
                   alignment: Alignment.centerRight,
                   child: _FinishArrowButton(
-                    busy: finishing,
-                    onTap: paths.isEmpty ? null : onFinish,
+                    busy: finishing || capturing,
+                    onTap: capturing || paths.isEmpty ? null : onFinish,
                   ),
                 ),
               ),
@@ -3207,47 +3437,56 @@ class _AlbumThumbButton extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
-      child: Container(
-        width: 60,
-        height: 60,
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.44),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: Colors.white.withValues(alpha: 0.5),
-            width: 1.5,
-          ),
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            if (latestPath != null)
-              Image.file(File(latestPath!), fit: BoxFit.cover, cacheWidth: 120)
-            else
-              const Icon(
-                Icons.photo_library_outlined,
-                color: Colors.white,
-                size: 22,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Container(
+            width: 60,
+            height: 60,
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.44),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.5),
+                width: 1.5,
               ),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: latestPath != null
+                ? Image.file(
+                    File(latestPath!),
+                    fit: BoxFit.cover,
+                    cacheWidth: 120,
+                  )
+                : const Icon(
+                    Icons.photo_library_outlined,
+                    color: Colors.white,
+                    size: 22,
+                  ),
+          ),
+          if (count > 0)
             Positioned(
-              right: 0,
-              bottom: 0,
+              right: -2,
+              bottom: -2,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                color: Colors.black.withValues(alpha: 0.55),
+                constraints: const BoxConstraints(minWidth: 24, minHeight: 22),
+                alignment: Alignment.center,
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.82),
+                  borderRadius: BorderRadius.circular(8),
+                ),
                 child: Text(
-                  '$count',
+                  '$count 张',
                   style: const TextStyle(
                     color: Colors.white,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w800,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
                   ),
                 ),
               ),
             ),
-          ],
-        ),
+        ],
       ),
     );
   }
@@ -3330,38 +3569,6 @@ class _FinishArrowButton extends StatelessWidget {
                 color: Colors.white,
                 size: 28,
               ),
-      ),
-    );
-  }
-}
-
-/// Tiny top-left chip while recording: keyframes fed to the live SfM plus
-/// how many are parked in the disk queue (nothing is dropped — queued
-/// frames are fed as the worker frees up). Informational only.
-class _SfmFeedChip extends StatelessWidget {
-  const _SfmFeedChip({required this.fed, required this.queued});
-
-  final int fed;
-  final int queued;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-      decoration: BoxDecoration(
-        color: const Color(0x8C1C1C1E),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Icon(Icons.grain_rounded, color: Colors.white54, size: 13),
-          const SizedBox(width: 5),
-          Text(
-            queued > 0 ? '$fed 帧 · 队列 $queued' : '$fed 帧',
-            style: const TextStyle(color: Colors.white70, fontSize: 11.5),
-          ),
-        ],
       ),
     );
   }

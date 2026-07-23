@@ -183,6 +183,43 @@ void main() {
     },
   );
 
+  test(
+    'official shutter transaction retries until one verified 12MP succeeds',
+    () {
+      final session = File(
+        'lib/official_capture/capture_session.dart',
+      ).readAsStringSync();
+
+      expect(session, contains('while (_started && !_disposed)'));
+      expect(session, contains('return input;'));
+      expect(
+        session,
+        contains(
+          'Future<OfficialHighResReconstructionInput> '
+          '_captureOfficialHighResInput',
+        ),
+      );
+    },
+  );
+
+  test('official capture cannot finish or close an in-flight 12MP shutter', () {
+    final page = File(
+      'lib/ui/official_capture/ar_capture_page.dart',
+    ).readAsStringSync();
+
+    expect(
+      page,
+      contains(
+        'if (_finalizingRecording || _lockInProgress || _capturing) return;',
+      ),
+    );
+    expect(page, contains('busy: finishing || capturing'));
+    expect(
+      page,
+      contains('onTap: capturing || paths.isEmpty ? null : onFinish'),
+    );
+  });
+
   test('official native route locks preview size and transaction sync', () {
     final source = File(
       'ios/Runner/OfficialAetherARKitPlugin.swift',

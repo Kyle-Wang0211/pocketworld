@@ -28,11 +28,13 @@ SELF_ADAPTER_OBJECT_SHA256 = (
 DIRTY_GHOST_MASK_SHA256 = (
     "d32694cb42451095a66a093d61f47b668f075423733e5aabfe62944551e0ce20"
 )
-# The official route intentionally carries one reviewed algorithm delta from
-# the frozen self-route copy: one fixed ARKit PINHOLE camera per image.  Pin the
+# The official route intentionally carries reviewed deltas from the frozen
+# self-route copy: one fixed ARKit PINHOLE camera per image, upstream COLMAP
+# six-image local and iterative global refinement for the independent V20 /
+# +10% publication schedule, and the product-selected 0.8 Lowe ratio. Pin the
 # complete normalized translation unit so this exception cannot grow silently.
 OFFICIAL_PER_IMAGE_PINHOLE_SHA256 = (
-    "42fac38886afd122368993891046042f54b39b5d2c76855a3b477d0f1bcbaf33"
+    "7a8ee12f1ab2d6c11d1fc5574386f3bba3cf15d9db5281674db28f22d0f41e08"
 )
 REQUIRED_PER_IMAGE_PINHOLE_MARKERS = (
     b"colmap::PinholeCameraModel::model_id",
@@ -86,6 +88,20 @@ def normalize_product_wrapper(data: bytes, *, telemetry: bool = False) -> bytes:
             b'__attribute__((visibility("default"), used))\n', b""
         )
     return normalized
+
+
+def normalize_official_match_ratio_delta(data: bytes) -> bytes:
+    """Map only the reviewed official-route 0.8 default back to self 0.7."""
+    replacements = (
+        (b"0.8 product default", b"0.7 default"),
+        (b"product default 0.8", b"default 0.7"),
+        (b"maxRatio = 0.8f", b"maxRatio = 0.7f"),
+        (b"max_ratio > 0 ? max_ratio : 0.8",
+         b"max_ratio > 0 ? max_ratio : 0.7"),
+    )
+    for official, self_route in replacements:
+        data = data.replace(official, self_route)
+    return data
 
 
 def without_whitespace(data: bytes) -> bytes:
@@ -152,9 +168,10 @@ def main() -> None:
                     fail(f"shared-camera implementation returned: {marker!r}")
             print(
                 "PASS source src/official_aether_sfm_c.cc "
-                "(pinned per-image PINHOLE delta)"
+                "(pinned per-image PINHOLE + official BA deltas)"
             )
             continue
+        actual = normalize_official_match_ratio_delta(actual)
         if actual != expected:
             fail(
                 "source copy diverged beyond allowed ownership names: "
@@ -172,9 +189,11 @@ def main() -> None:
         "src/pwofficial_telemetry.mm": "vendor/aether_ffi/src/pw_telemetry.mm",
     }
     for official_relative, self_relative in product_pairs.items():
-        official_data = normalize_product_wrapper(
-            (root / official_relative).read_bytes(),
-            telemetry=official_relative.endswith("telemetry.mm"),
+        official_data = normalize_official_match_ratio_delta(
+            normalize_product_wrapper(
+                (root / official_relative).read_bytes(),
+                telemetry=official_relative.endswith("telemetry.mm"),
+            )
         )
         self_data = (dev_root / self_relative).read_bytes()
         if without_whitespace(official_data) != without_whitespace(self_data):
@@ -198,7 +217,10 @@ def main() -> None:
     expected_type_header = git_show(
         aether_root, SELF_SOURCE_REVISION, "aether_cpp/include/aether_sfm_c.h"
     )
-    if product_type_header.read_bytes() != expected_type_header:
+    if (
+        normalize_official_match_ratio_delta(product_type_header.read_bytes())
+        != expected_type_header
+    ):
         fail("vendored product type header is not the ea77244a header")
     print("PASS product type header (no b930 BUSY enum)")
 
@@ -272,8 +294,8 @@ def main() -> None:
 
     print(
         "PASS: native official route is ea77244a self semantics plus the "
-        "pinned per-image PINHOLE delta, ownership names, and frozen "
-        "dirty ghost-mask"
+        "pinned per-image PINHOLE, official BA, and 0.8 ratio deltas, "
+        "ownership names, and frozen dirty ghost-mask"
     )
 
 

@@ -753,7 +753,7 @@ class AetherSfm {
     String dbPath,
     String imagePath, {
     int maxFeatures = 2048,
-    double matchMaxRatio = 0.7,
+    double matchMaxRatio = 0.8,
     bool useGpuMatch = false,
     int kNeighbors = 6,
   }) {
@@ -872,11 +872,12 @@ class AetherSfmStreamSession {
   ///    bench 11568² @ 119 ms on A16). CPU extraction is now the slow leg
   ///    (~5-15 s/frame full-res) so live drop-rate rises — dropped frames
   ///    only skip the preview, never the delivered JPEGs.
-  /// match_max_ratio stays 0.7 in both tiers.
+  /// match_max_ratio stays 0.8 in both tiers.
   static const int researchMaxFeatures = 8192;
   static const int researchKNeighbors = 12;
   static const int liveMaxFeatures = 2048;
   static const int liveKNeighbors = 6;
+  static const double defaultMatchMaxRatio = 0.8;
 
   static AetherSfmStreamSession create(
     String dbPath, {
@@ -900,7 +901,7 @@ class AetherSfmStreamSession {
         ..maxFeatures = maxFeatures
         ..imageWidth = imageWidth
         ..imageHeight = imageHeight
-        ..matchMaxRatio = 0.7
+        ..matchMaxRatio = defaultMatchMaxRatio
         ..kNeighbors = kNeighbors
         ..useGpuMatch = 1
         ..useGpuExtract = 1;

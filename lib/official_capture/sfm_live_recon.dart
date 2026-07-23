@@ -41,6 +41,7 @@ import '../official_aether_sfm_ffi.dart';
 import '../official_util/device_log.dart';
 import '../reconstruction_lease.dart';
 import 'gravity_align.dart';
+import 'live_sfm_publish_policy.dart';
 import 'official_highres_reconstruction_input.dart';
 import 'pw_telemetry.dart';
 import 'sfm_feed_queue.dart';
@@ -509,6 +510,11 @@ class SfmLiveRecon {
   // add_frame (frame ids come back with frame_done).
   final Map<int, SfmFedFrameMeta> _pendingMeta = <int, SfmFedFrameMeta>{};
   final Map<int, SfmFedFrameMeta> _fedMeta = <int, SfmFedFrameMeta>{};
+  final Map<String, int> _nativeFrameIdByJpegPath = <String, int>{};
+  final Map<String, Completer<bool>> _removeWhenFrameAcked =
+      <String, Completer<bool>>{};
+  final Map<int, Completer<bool>> _removeRequests = <int, Completer<bool>>{};
+  int _nextRemoveRequestId = 0;
 
   // ── 遥测【frame】时间戳(epoch ms):seq → offer 到达 / 实际送 worker。
   // frame_done 时合成一行结构化 frame 事件后移除(既有回调顺手记,零阻塞)。
@@ -721,6 +727,66 @@ class SfmLiveRecon {
       );
     }
     return true;
+  }
+
+  /// Withdraws one user-selected project photo from every live-SfM state.
+  ///
+  /// A queued photo is removed before it reaches native. An in-flight photo
+  /// waits for its add-frame acknowledgement and is then de-registered. A
+  /// frame already in COLMAP is removed through the existing native
+  /// ObservationManager/database path. Analysis status never calls this
+  /// method; the only caller is the explicit album delete action.
+  Future<bool> removePhoto(String jpegPath) async {
+    if (_disposed || _finalizeRequested || jpegPath.isEmpty) return false;
+
+    final queuedIndex = _spool.indexWhere((entry) => entry.path == jpegPath);
+    if (queuedIndex >= 0) {
+      final entry = _spool.removeAt(queuedIndex);
+      _pendingMeta.remove(entry.seq);
+      _seqOfferMs.remove(entry.seq);
+      _seqSentMs.remove(entry.seq);
+      _events.add(SfmLiveFrameQueued(entry.seq, _spool.length));
+      DeviceLog.log('SfmLive', 'user removed queued frame#${entry.seq}');
+      return true;
+    }
+
+    final nativeFrameId = _nativeFrameIdByJpegPath[jpegPath];
+    if (nativeFrameId != null) {
+      return _requestNativeFrameRemoval(nativeFrameId);
+    }
+
+    final isInFlight = _pendingMeta.values.any(
+      (meta) => meta.jpegPath == jpegPath,
+    );
+    if (isInFlight) {
+      final existing = _removeWhenFrameAcked[jpegPath];
+      if (existing != null) return existing.future;
+      final completer = Completer<bool>();
+      _removeWhenFrameAcked[jpegPath] = completer;
+      return completer.future;
+    }
+
+    // The ledger can be notified before the reconstruction stream listener.
+    // In that narrow window the photo has no SfM contribution, so deletion is
+    // already complete from the solver's perspective.
+    return true;
+  }
+
+  Future<bool> _requestNativeFrameRemoval(int frameId) async {
+    final requestId = ++_nextRemoveRequestId;
+    final completer = Completer<bool>();
+    _removeRequests[requestId] = completer;
+    _toWorker.send(<String, Object?>{
+      'cmd': 'remove_frame',
+      'requestId': requestId,
+      'frameId': frameId,
+    });
+    try {
+      return await completer.future.timeout(const Duration(seconds: 30));
+    } on TimeoutException {
+      _removeRequests.remove(requestId);
+      return false;
+    }
   }
 
   void _sendJpegFrameCmd(
@@ -964,11 +1030,31 @@ class SfmLiveRecon {
       case 'frame_done':
         _inFlight = _inFlight > 0 ? _inFlight - 1 : 0;
         final ok = msg['result'] == 'ok';
-        if (ok) _fedOk++;
         final seq = msg['seq'] as int;
         final frameId = msg['frameId'] as int;
         final meta = _pendingMeta.remove(seq);
-        if (ok && meta != null && frameId >= 0) {
+        final removeAfterAck = meta == null
+            ? null
+            : _removeWhenFrameAcked.remove(meta.jpegPath);
+        if (meta != null && frameId >= 0) {
+          _nativeFrameIdByJpegPath[meta.jpegPath] = frameId;
+        }
+        if (ok && removeAfterAck == null) _fedOk++;
+        if (removeAfterAck != null) {
+          if (frameId >= 0) {
+            unawaited(
+              _requestNativeFrameRemoval(frameId).then((removed) {
+                if (!removeAfterAck.isCompleted) {
+                  removeAfterAck.complete(removed);
+                }
+              }),
+            );
+          } else if (!removeAfterAck.isCompleted) {
+            // The frame never entered native SfM, so there is no contribution
+            // to withdraw even though the add-frame result itself failed.
+            removeAfterAck.complete(true);
+          }
+        } else if (ok && meta != null && frameId >= 0) {
           _fedMeta[frameId] = meta;
           _persistFedMeta(frameId, meta);
         }
@@ -1051,6 +1137,25 @@ class SfmLiveRecon {
         // Worker slot freed — feed the next spooled frame (and dispatch the
         // deferred finalize once everything drained).
         unawaited(_pump());
+      case 'frame_removed':
+        final requestId = msg['requestId'] as int;
+        final frameId = msg['frameId'] as int;
+        final removed = msg['ok'] == true;
+        if (removed) {
+          final hadFrame = _fedMeta.remove(frameId) != null;
+          if (hadFrame && _fedOk > 0) _fedOk--;
+          _nativeFrameIdByJpegPath.removeWhere(
+            (_, mappedFrameId) => mappedFrameId == frameId,
+          );
+        }
+        final completer = _removeRequests.remove(requestId);
+        if (completer != null && !completer.isCompleted) {
+          completer.complete(removed);
+        }
+        DeviceLog.log(
+          'SfmLive',
+          'user remove frameId=$frameId ok=$removed stats=${msg['stats']}',
+        );
       case 'preview':
         // The streaming local-BA cloud, TRACK-ANNOTATED (same payload shape as
         // local_ready) so it colorizes + gravity-aligns identically to finalize.
@@ -1224,6 +1329,7 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
   var peakMb = 0.0;
   // 已成功喂入的 frameId(卡片边框连通性的全集)+ 连通性事件节流时钟。
   final fedIds = <int>[];
+  final publishPolicy = OfficialLiveSfmPublishPolicy();
   var lastConnectivityMs = 0;
   // Route B(真实三角化角):已喂帧的 ARKit 相机中心(gravity 世界系,
   // 与 previewTracked 的点同一世界 —— 流式云在 ARKit 世界三角化)+
@@ -1588,6 +1694,61 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
                 if (c != null) frameCenters[r.frameId] = c;
               }
             }
+            // RS-style outer schedule, official reconstruction underneath:
+            // publish nothing before 20 registered frames; then publish only
+            // after a successful whole-component global BA. Later stable
+            // versions advance when registered cameras or points grow 40%.
+            // This call stays inside the single worker event: it is a serial
+            // checkpoint after the accepted frame, so later captured photos can
+            // spool without overlapping this BA or starving the shutter.
+            try {
+              final beforeGlobal = session!.previewTracked();
+              if (publishPolicy.shouldRunGlobalBa(
+                registeredFrames: fedIds.length,
+                pointCount: beforeGlobal.count,
+              )) {
+                final globalSw = Stopwatch()..start();
+                final globalResult = session!.globalRefine();
+                globalSw.stop();
+                if (globalResult == AetherSfmResult.ok) {
+                  final refined = session!.previewTracked();
+                  final nextVersion = publishPolicy.version + 1;
+                  final delivered = sendSnapshot(
+                    'preview',
+                    <String, dynamic>{
+                      'source': 'streaming_global_ba',
+                      'terminal': false,
+                      'publish_version': nextVersion,
+                      'n_registered': fedIds.length,
+                      'n_points3d': refined.count,
+                    },
+                    globalSw.elapsedMilliseconds,
+                    preview: true,
+                  );
+                  if (delivered && refined.count > 0) {
+                    publishPolicy.markGlobalBaPublished(
+                      registeredFrames: fedIds.length,
+                      pointCount: refined.count,
+                    );
+                    telem('live_global_publish', {
+                      'version': publishPolicy.version,
+                      'registered': fedIds.length,
+                      'points': refined.count,
+                      'ms': globalSw.elapsedMilliseconds,
+                    });
+                  }
+                } else {
+                  wlog(
+                    'live-global-ba: rc=${globalResult.name}; '
+                    'stable cloud unchanged',
+                  );
+                }
+              }
+            } catch (e) {
+              // Fail closed for publication: keep the previous stable cloud
+              // and retry on the next accepted frame.
+              wlog('live-global-ba failed (non-fatal): $e');
+            }
             final nowMs = DateTime.now().millisecondsSinceEpoch;
             if (nowMs - lastConnectivityMs >= 1200) {
               lastConnectivityMs = nowMs;
@@ -1666,6 +1827,41 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
         // ③【空闲还债】帧处理(成功或异常)结束时刻 —— 还债 tick 的
         // ">500ms 无新帧 = 空闲"判据锚点。
         lastFrameProcEndMs = DateTime.now().millisecondsSinceEpoch;
+      case 'remove_frame':
+        final requestId = msg['requestId'] as int;
+        final frameId = msg['frameId'] as int;
+        Map<String, dynamic>? stats;
+        var removed = session == null;
+        try {
+          if (session != null) {
+            stats = session!.removeFrame(frameId);
+            removed = stats != null;
+          }
+          if (removed) {
+            fedIds.remove(frameId);
+            frameCenters.remove(frameId);
+            if (session != null) {
+              final tracked = session!.previewTracked();
+              final poses = tracked.count > 0
+                  ? connectivityPosesFrom(tracked.obsFrameIds)
+                  : Float64List(0);
+              boot.reply.send(<String, Object?>{
+                'evt': 'live_poses',
+                'poses': poses,
+              });
+            }
+          }
+        } catch (e) {
+          removed = false;
+          wlog('remove-frame failed frameId=$frameId: $e');
+        }
+        boot.reply.send(<String, Object?>{
+          'evt': 'frame_removed',
+          'requestId': requestId,
+          'frameId': frameId,
+          'ok': removed,
+          'stats': stats,
+        });
       case 'resume':
         // Resume an interrupted finalize from the retained sqlite db (no new
         // frames fed). aether_sfm_create opens the existing db; finalizeAsync's
@@ -1760,7 +1956,7 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
             if (telAfter != null) 'thermal': telAfter.thermalState,
             'loss_local': 'cauchy@1.0',
             'liter': 15,
-            'lnum': 10,
+            'lnum': 6,
             'defer_global_ba': true,
             // native 回报 phase1=live_reuse 时,phase-1 只是 db 补匹配 +
             // live recon 深拷贝(S3.5);缺省(resume)= db 全量重跑。

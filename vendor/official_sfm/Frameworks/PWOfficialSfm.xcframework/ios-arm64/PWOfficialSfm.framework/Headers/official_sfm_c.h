@@ -65,7 +65,7 @@ typedef struct aether_sfm_options {
   int max_features;     // 2048 (validated config)
   int image_width;      // intrinsics reference width
   int image_height;
-  float match_max_ratio;  // 0.7 default (Lowe ratio for the matcher)
+  float match_max_ratio;  // 0.8 product default (Lowe ratio for the matcher)
   int use_gpu_match;      // 1 = aether_gpu_match (Metal), 0 = CPU aether_sift_match
   int k_neighbors;        // K match candidates per frame (production 12).
                           // [SPATIAL-FIRST 2026-07-11] selected spatial-first:

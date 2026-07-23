@@ -98,7 +98,7 @@ class OfficialManualCaptureResult {
 
   final String previewJpegPath;
   final String evidenceJpegPath;
-  final Future<void> highResolutionCompletion;
+  final Future<OfficialHighResReconstructionInput> highResolutionCompletion;
 }
 
 class CaptureSession {
@@ -353,6 +353,8 @@ class CaptureSession {
       <String, HighResolutionStillCapture>{};
   final Map<String, PhotoBundleStillQuality> _qualityByPath =
       <String, PhotoBundleStillQuality>{};
+  final Map<String, CapturedFrameSample> _sampleByPath =
+      <String, CapturedFrameSample>{};
 
   /// Delete cell-slot photos that lost final curation and clear their
   /// in-memory paths. The ring buffers keep up to 12 candidates while
@@ -405,37 +407,12 @@ class CaptureSession {
       final sample = curatedFrame.sample;
       final path = sample.jpegPath;
       if (path == null || !File(path).existsSync()) continue;
-      final still = _stillByPath[path];
-      final quality = _qualityByPath[path] ?? _qualityFromSample(sample);
-      final highresFilename = _basename(path);
-      final previewPath = still?.previewPath;
       frames.add(
-        PhotoBundleFrameDraft(
-          id: sample.frameId,
-          highresFilename: highresFilename,
-          previewFilename: previewPath == null
-              ? highresFilename
-              : _basename(previewPath),
-          timestamp: still?.timestamp ?? sample.timestamp,
-          triggerTimestamp: sample.timestamp,
-          azimuth: sample.azimuth,
-          elevation: sample.elevation,
-          captureKind: still?.captureKind ?? 'arkit_high_res_still',
-          poseSyncQuality:
-              still?.poseSyncQuality ?? 'ar_session_high_res_frame',
-          imageWidth: still?.imageWidth ?? 0,
-          imageHeight: still?.imageHeight ?? 0,
-          quality: quality,
-          cameraTransform:
-              still?.cameraTransform ?? sample.cameraExtrinsic4x4 ?? const [],
-          intrinsics:
-              still?.intrinsics ?? sample.cameraIntrinsicFxFyCxCy ?? const [],
-          cameraRadiusM: sample.cameraRadiusM,
-          radiusShellID: '${curatedFrame.radiusShellId}',
-          poseSource: sample.poseSource,
-          focusStable: sample.focusStable,
-          trackingState: still?.trackingStateName ?? sample.trackingStateName,
-          cellID: '${curatedFrame.azBin}:${curatedFrame.elBin}',
+        _photoBundleFrameDraft(
+          sample: sample,
+          path: path,
+          radiusShellId: '${curatedFrame.radiusShellId}',
+          cellId: '${curatedFrame.azBin}:${curatedFrame.elBin}',
         ),
       );
     }
@@ -449,6 +426,85 @@ class CaptureSession {
       },
     );
     return File('$root/official_photo_bundle.json');
+  }
+
+  /// Writes the official route's authoritative manifest from the user's photo
+  /// album, not from internal coverage curation or current SfM registration.
+  ///
+  /// Every path here has already passed the same-frame 4032×3024 JPEG + ARKit
+  /// metadata contract. Pending/disconnected/low-parallax states deliberately
+  /// do not affect membership. A path disappears only after the user explicitly
+  /// removes it from the project album.
+  Future<File?> writeProjectPhotoBundleManifest(
+    List<String> projectPhotoPaths,
+  ) async {
+    final root = _captureDir;
+    if (root == null) return null;
+    final frames = <PhotoBundleFrameDraft>[];
+    for (var index = 0; index < projectPhotoPaths.length; index++) {
+      final path = projectPhotoPaths[index];
+      if (!File(path).existsSync()) continue;
+      final sample = _sampleByPath[path];
+      final still = _stillByPath[path];
+      if (sample == null || still == null) continue;
+      frames.add(
+        _photoBundleFrameDraft(
+          sample: sample,
+          path: path,
+          radiusShellId: 'project',
+          cellId: 'project:$index',
+        ),
+      );
+    }
+    await _photoBundleManifest.writeManifest(
+      bundleDirectory: Directory(root),
+      frames: frames,
+      sourceKind: 'flutter_high_res_still',
+      extra: const <String, Object?>{
+        'processingTier': 'high',
+        'photoBundleOwner': 'flutter_dart',
+        'selectionPolicy': 'all_user_retained_project_photos',
+      },
+    );
+    return File('$root/official_photo_bundle.json');
+  }
+
+  PhotoBundleFrameDraft _photoBundleFrameDraft({
+    required CapturedFrameSample sample,
+    required String path,
+    required String radiusShellId,
+    required String cellId,
+  }) {
+    final still = _stillByPath[path];
+    final quality = _qualityByPath[path] ?? _qualityFromSample(sample);
+    final highresFilename = _basename(path);
+    final previewPath = still?.previewPath;
+    return PhotoBundleFrameDraft(
+      id: sample.frameId,
+      highresFilename: highresFilename,
+      previewFilename: previewPath == null
+          ? highresFilename
+          : _basename(previewPath),
+      timestamp: still?.timestamp ?? sample.timestamp,
+      triggerTimestamp: sample.timestamp,
+      azimuth: sample.azimuth,
+      elevation: sample.elevation,
+      captureKind: still?.captureKind ?? 'arkit_high_res_still',
+      poseSyncQuality: still?.poseSyncQuality ?? 'ar_session_high_res_frame',
+      imageWidth: still?.imageWidth ?? 0,
+      imageHeight: still?.imageHeight ?? 0,
+      quality: quality,
+      cameraTransform:
+          still?.cameraTransform ?? sample.cameraExtrinsic4x4 ?? const [],
+      intrinsics:
+          still?.intrinsics ?? sample.cameraIntrinsicFxFyCxCy ?? const [],
+      cameraRadiusM: sample.cameraRadiusM,
+      radiusShellID: radiusShellId,
+      poseSource: sample.poseSource,
+      focusStable: sample.focusStable,
+      trackingState: still?.trackingStateName ?? sample.trackingStateName,
+      cellID: cellId,
+    );
   }
 
   PhotoBundleStillQuality _qualityFromSample(CapturedFrameSample sample) {
@@ -762,6 +818,7 @@ class CaptureSession {
     _lastMotionTooFast = false;
     _stillByPath.clear();
     _qualityByPath.clear();
+    _sampleByPath.clear();
     _diagArkitPoses = 0;
     _diagImuPoses = 0;
     _originSettleStartedAtSec = null;
@@ -965,6 +1022,7 @@ class CaptureSession {
     _lastMotionTooFast = false;
     _stillByPath.clear();
     _qualityByPath.clear();
+    _sampleByPath.clear();
     _photosDir = null;
     _photosHighresDir = null;
     _previewsDir = null;
@@ -1494,105 +1552,122 @@ class CaptureSession {
     );
   }
 
-  Future<void> _captureOfficialHighResInput({
+  Future<OfficialHighResReconstructionInput> _captureOfficialHighResInput({
     required CapturedFrameSample sample,
     required ARFrameSaveSpec evidenceSaveSpec,
     required String previewPath,
   }) async {
     if (_highResCaptureInFlight) {
       _hiresStillDropped++;
-      _reportHighResFailure(
-        sample.frameId,
-        evidenceSaveSpec.jpegPath,
-        OfficialHighResInputFailure.captureFailed,
+      throw StateError(
+        'A verified 12MP shutter transaction is already in flight',
       );
-      return;
     }
     _highResCaptureInFlight = true;
-    _hiresStillStarted++;
-    // Invoke the native high-resolution request synchronously in the shutter
-    // call stack. Constructing a deferred Future here would let the preview
-    // save overtake it and would no longer represent tap time.
-    final stillFuture = poseProvider.captureHighResolutionStill(
-      highresPath: evidenceSaveSpec.jpegPath,
-      previewPath: previewPath,
-      triggerTimestamp: evidenceSaveSpec.targetTimestamp,
-      saveSpec: evidenceSaveSpec,
-      deriveAuxiliary: false,
-    );
-    final sw = Stopwatch()..start();
-    var outcome = 'ok';
+    var attempt = 0;
     try {
-      final still = await stillFuture;
-      if (still == null) {
+      while (_started && !_disposed) {
+        attempt++;
+        _hiresStillStarted++;
+        final sw = Stopwatch()..start();
+        var outcome = 'ok';
+        OfficialHighResInputFailure failure =
+            OfficialHighResInputFailure.captureFailed;
+        try {
+          // Every retry is a new direct ARKit
+          // captureHighResolutionFrame transaction. It never reuses a queued
+          // preview frame: the accepted JPEG, pose, intrinsics, and timestamp
+          // all come from that one returned high-resolution ARFrame.
+          final still = await poseProvider.captureHighResolutionStill(
+            highresPath: evidenceSaveSpec.jpegPath,
+            previewPath: previewPath,
+            triggerTimestamp: evidenceSaveSpec.targetTimestamp,
+            saveSpec: evidenceSaveSpec,
+            deriveAuxiliary: false,
+          );
+          if (still == null) {
+            failure = OfficialHighResInputFailure.captureFailed;
+          } else {
+            final validation = OfficialHighResReconstructionInput.validate(
+              jpegPath: still.highresPath,
+              imageWidth: still.imageWidth,
+              imageHeight: still.imageHeight,
+              triggerTimestamp: still.requestTimestamp,
+              captureTimestamp: still.timestamp,
+              cameraTransform: still.cameraTransform,
+              intrinsics: still.intrinsics,
+            );
+            if (!validation.isAccepted ||
+                !await File(still.highresPath).exists()) {
+              failure =
+                  validation.failure ?? OfficialHighResInputFailure.missingJpeg;
+            } else {
+              final input = validation.input!;
+              _hiresStillOk++;
+              _stillByPath[input.jpegPath] = still;
+              _qualityByPath[input.jpegPath] = _qualityFromSample(sample);
+              _sampleByPath[input.jpegPath] = sample.withJpegPath(
+                input.jpegPath,
+              );
+              final admit = targetPoints.forceAdmit(sample);
+              if (admit != null) {
+                targetPoints.stampJpegPath(
+                  cellIdx: admit.cellIdx,
+                  slotIdx: admit.slotIdx,
+                  jpegPath: input.jpegPath,
+                );
+              }
+              if (!_sfmFrameCtrl.isClosed) {
+                _sfmFrameCtrl.add(input);
+              }
+              TelemetryWriter.instance.event('hires_still', {
+                'outcome': outcome,
+                'attempt': attempt,
+                'ms': sw.elapsedMilliseconds,
+                'queue_depth': 0,
+                'started': _hiresStillStarted,
+                'ok': _hiresStillOk,
+                'failed': _hiresStillFailed,
+                'dropped': _hiresStillDropped,
+              });
+              return input;
+            }
+          }
+        } catch (_) {
+          failure = OfficialHighResInputFailure.captureFailed;
+        }
+
         _hiresStillFailed++;
-        outcome = OfficialHighResInputFailure.captureFailed.name;
-        _noteStillFailure(outcome);
-        _reportHighResFailure(
-          sample.frameId,
-          evidenceSaveSpec.jpegPath,
-          OfficialHighResInputFailure.captureFailed,
+        outcome = '${failure.name}_retry';
+        _noteStillFailure(failure.name);
+        TelemetryWriter.instance.event('hires_still', {
+          'outcome': outcome,
+          'attempt': attempt,
+          'ms': sw.elapsedMilliseconds,
+          'queue_depth': 0,
+          'started': _hiresStillStarted,
+          'ok': _hiresStillOk,
+          'failed': _hiresStillFailed,
+          'dropped': _hiresStillDropped,
+        });
+        // A shutter tap is not allowed to finish as a failed project photo.
+        // Keep the same UI transaction locked and retry a fresh ARKit 12MP
+        // frame after a short camera-recovery yield.
+        await Future<void>.delayed(
+          Duration(milliseconds: math.min(350, 80 + (attempt - 1) * 40)),
         );
-        return;
-      }
-      final validation = OfficialHighResReconstructionInput.validate(
-        jpegPath: still.highresPath,
-        imageWidth: still.imageWidth,
-        imageHeight: still.imageHeight,
-        triggerTimestamp: still.requestTimestamp,
-        captureTimestamp: still.timestamp,
-        cameraTransform: still.cameraTransform,
-        intrinsics: still.intrinsics,
-      );
-      if (!validation.isAccepted || !await File(still.highresPath).exists()) {
-        final failure =
-            validation.failure ?? OfficialHighResInputFailure.missingJpeg;
-        _hiresStillFailed++;
-        outcome = failure.name;
-        _noteStillFailure(outcome);
-        _reportHighResFailure(
-          sample.frameId,
-          evidenceSaveSpec.jpegPath,
-          failure,
-        );
-        return;
       }
 
-      final input = validation.input!;
-      _hiresStillOk++;
-      _stillByPath[input.jpegPath] = still;
-      _qualityByPath[input.jpegPath] = _qualityFromSample(sample);
-      final admit = targetPoints.forceAdmit(sample);
-      if (admit != null) {
-        targetPoints.stampJpegPath(
-          cellIdx: admit.cellIdx,
-          slotIdx: admit.slotIdx,
-          jpegPath: input.jpegPath,
-        );
-      }
-      if (!_sfmFrameCtrl.isClosed) {
-        _sfmFrameCtrl.add(input);
-      }
-    } catch (e) {
-      _hiresStillFailed++;
-      outcome = OfficialHighResInputFailure.captureFailed.name;
-      _noteStillFailure(outcome);
+      // Only explicit capture/session teardown can terminate the retry loop.
+      // Surface that cancellation so callers cannot mistake it for a photo.
       _reportHighResFailure(
         sample.frameId,
         evidenceSaveSpec.jpegPath,
         OfficialHighResInputFailure.captureFailed,
       );
+      throw StateError('12MP shutter transaction cancelled before success');
     } finally {
       _highResCaptureInFlight = false;
-      TelemetryWriter.instance.event('hires_still', {
-        'outcome': outcome,
-        'ms': sw.elapsedMilliseconds,
-        'queue_depth': 0,
-        'started': _hiresStillStarted,
-        'ok': _hiresStillOk,
-        'failed': _hiresStillFailed,
-        'dropped': _hiresStillDropped,
-      });
     }
   }
 
