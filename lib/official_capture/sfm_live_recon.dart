@@ -1312,17 +1312,6 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
   Timer? pollTimer;
   var refineStart = 0;
   var disposed = false;
-  // ③【空闲还债 2026-07-11】上一帧 'frame' 命令处理结束的时刻(epoch ms;
-  // 0 = 还没喂过帧)+ finalize 已开始标志(还债 tick 的两道闸)。
-  var lastFrameProcEndMs = 0;
-  var finalizing = false;
-  Timer? idleRepayTimer;
-  // ④【空闲还债遥测 2026-07-12】采集期累计已还债对数 + 累计还债墙钟,
-  // 用于量化 debt 削减速率(还债速率 = 对数/ms);与 finalize 的
-  // repair_stats(repay_written)/match_fail_stats(rematch_candidates=剩余债)
-  // 对账。仅在 idle-repay 真还上对时透传(避免遥测刷屏)。
-  var idleRepayCumPairs = 0;
-  var idleRepayCumMs = 0;
   // True session high-water footprint — the public TASK_VM_INFO layout has no
   // historical peak field, so we take a running max of the instantaneous
   // sample taken right after each heavy native call.
@@ -1387,10 +1376,9 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
   }) {
     final s = session;
     if (s == null) return false;
-    var points = preview ? s.previewTracked() : s.pointsTracked();
+    final points = preview ? s.previewTracked() : s.pointsTracked();
     if (preview && points.count == 0) return false; // no live_recon → fall back
     final deliveredSummary = Map<String, dynamic>.from(summary);
-    Int32List? spatialKeepIdx; // [L2-ALIGN] compacted→native (finalize only)
     if (!preview) {
       final detail = s.streamStats();
       deliveredSummary['temporal_detail_created'] =
@@ -1406,20 +1394,13 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
         'tri-angle=${detail.temporalDetailRejectTriAngle} '
         'conflicts=${detail.temporalDetailConflicts}',
       );
-      final filtered = filterFinalSpatialTwoViewPoints(
-        points,
-        temporalK: AetherSfmStreamSession.researchKNeighbors,
-      );
-      points = filtered.points;
-      deliveredSummary['spatial_two_view_filtered'] = filtered.removed;
+      // Production ships the exact COLMAP endpoint: final global BA followed by
+      // COLMAP's own filtering. No Dart point deletion is allowed here.
+      deliveredSummary['spatial_two_view_filtered'] = 0;
       deliveredSummary['delivered_points'] = points.count;
-      // [L2-ALIGN 2026-07-12] carry the compacted→native map ONLY when the
-      // filter removed points (else identity — the L2 gate uses the raw mask).
-      spatialKeepIdx = filtered.removed > 0 ? filtered.keepIdx : null;
       wlog(
-        'quality-filter: spatial-only two-view removed=${filtered.removed} '
-        'kept=${points.count} temporalK='
-        '${AetherSfmStreamSession.researchKNeighbors}',
+        'official-endpoint: delivered=${points.count} '
+        'after native final BA/filtering; Dart filtering disabled',
       );
       // 遥测【finalize/snapshot】:交付快照的点/观测/过滤/细节恢复计数
       // (数据已在手上,顺手记)。
@@ -1427,7 +1408,7 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
         'evt': evt,
         'points_delivered': points.count,
         'obs': points.obsCount,
-        'spatial_two_view_filtered': filtered.removed,
+        'spatial_two_view_filtered': 0,
         'temporal_detail_created': detail.temporalDetailCreated,
         'temporal_detail_grown': detail.temporalDetailGrown,
         'temporal_detail_pairs': detail.temporalDetailPairs,
@@ -1495,7 +1476,6 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
       'obsFrameIds': points.obsFrameIds,
       'obsXY': points.obsXY,
       'summary': deliveredSummary,
-      'ghostSpatialKeepIdx': ?spatialKeepIdx,
       'ms': ms,
     });
     return true;
@@ -1509,69 +1489,6 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
       'message': '$message',
     });
   }
-
-  // ③【空闲还债 2026-07-11】拍摄空档把饥饿帧(GPU matcher 失败/热降档)的
-  // 缺失 temporal 匹配提前补上,免得欠债全堆给 finalize 在热透的 GPU 上还
-  // (cap46:336 对欠债 ~410ms/对 = 137.9s enrich;拍摄期健康 GPU ~16ms/对)。
-  // 调用点安全性:worker isolate 是单事件循环,timer 回调与 'frame'/'finalize'
-  // 命令处理天然串行 —— 绝不与 add_frame 并发,恰好落在 add_frame 之间的
-  // 空档;不阻塞喂帧(极端竞态下最多让下一帧多等一次 repay,≤4 对)。
-  // "队列空"的判据:facade 在 _inFlight<2 时立即续帧,所以距上帧处理结束
-  // >500ms 仍无新帧 = 磁盘 spool 已空、拍摄在歇。native 侧再兜两道底:
-  // thermal>=2 直接拒绝(绝不给"造成欠债的那个状态"加 GPU 负载)、每对
-  // 至多尝试一次;finalize 补匹配仍是安全网 —— 交付模型与不还债时一致,
-  // 只是把债挪到了免费的空闲窗。
-  idleRepayTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
-    final s = session;
-    if (s == null || disposed || finalizing || lastFrameProcEndMs == 0) return;
-    if (DateTime.now().millisecondsSinceEpoch - lastFrameProcEndMs <= 500) {
-      return;
-    }
-    try {
-      // 还债前推一次新鲜 thermal:空闲期没有 add_frame 帮忙刷新,native 的
-      // 拒绝门不能吃陈旧状态(setThermalState 走旧符号集,单独 guard)。
-      final tel = PwTelemetry.sample();
-      // ①【激进还债 2026-07-12】凉机/fair(thermal 0/1)吃满 idle 窗:
-      // 每次还 24 对(健康 GPU ~16ms/对 ≈ 384ms 墙钟,远 < 单次 2s 红线;
-      // spool 缓冲帧不丢,最坏只让恢复的首帧多等一个 repay 窗)。serious
-      // (thermal 2)传 8 —— native 侧 kRepayThermal2MaxPairs 再夹到 8 并要求
-      // 近期无 rc=7;critical(3)native 直接全拒。thermal 读不到时保守取 8。
-      var budget = 8;
-      if (tel != null && tel.thermalState >= 0) {
-        try {
-          s.setThermalState(tel.thermalState);
-        } catch (_) {}
-        budget = tel.thermalState <= 1 ? 24 : 8;
-      }
-      final sw = Stopwatch()..start();
-      final repaid = s.liveRepay(maxPairs: budget);
-      sw.stop();
-      if (repaid > 0) {
-        idleRepayCumPairs += repaid;
-        idleRepayCumMs += sw.elapsedMilliseconds;
-        wlog(
-          'idle-repay: $repaid pair(s) repaid in ${sw.elapsedMilliseconds}ms'
-          ' [cum $idleRepayCumPairs pair(s)/${idleRepayCumMs}ms]'
-          '${tel != null ? ' (thermal=${tel.thermalName})' : ''}',
-        );
-        // ④ 还债速率遥测(采集期在线):本次 + 累计,与 finalize 的
-        // repair_stats/match_fail_stats 对账 debt 削减。
-        telem('idle_repay', {
-          'pairs': repaid,
-          'ms': sw.elapsedMilliseconds,
-          'budget': budget,
-          'cum_pairs': idleRepayCumPairs,
-          'cum_ms': idleRepayCumMs,
-          if (tel != null) 'thermal': tel.thermalState,
-        });
-      }
-    } catch (e) {
-      // 旧 .a 无 pwofficial_live_repay 符号 → 首次调用即抛;停表,本次采集不再
-      // 试(finalize 补匹配照旧兜底)。
-      idleRepayTimer?.cancel();
-      wlog('idle-repay unavailable — disabled for this session: $e');
-    }
-  });
 
   cmds.listen((dynamic msg) {
     if (msg is! Map || disposed) return;
@@ -1824,9 +1741,6 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
           });
           fail('add_frame', e);
         }
-        // ③【空闲还债】帧处理(成功或异常)结束时刻 —— 还债 tick 的
-        // ">500ms 无新帧 = 空闲"判据锚点。
-        lastFrameProcEndMs = DateTime.now().millisecondsSinceEpoch;
       case 'remove_frame':
         final requestId = msg['requestId'] as int;
         final frameId = msg['frameId'] as int;
@@ -1895,11 +1809,6 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
         continue finalizeCase;
       finalizeCase:
       case 'finalize':
-        // ③【空闲还债】finalize 开始即永久停掉还债 tick:enrich/全局 BA
-        // 期间绝不追加 GPU 匹配负载,剩余欠债由 native 的 finalize
-        // 补匹配(安全网)接管。
-        finalizing = true;
-        idleRepayTimer?.cancel();
         final s = session;
         if (s == null) {
           fail('finalize', 'no frames were fed — nothing to reconstruct');
@@ -2167,7 +2076,6 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
       case 'dispose':
         disposed = true;
         pollTimer?.cancel();
-        idleRepayTimer?.cancel();
         wlog('dispose: freeing session (joins bg BA thread)…');
         try {
           session?.dispose(); // joins the background BA thread

@@ -33,16 +33,22 @@ DIRTY_GHOST_MASK_SHA256 = (
 # six-image local and iterative global refinement for the independent V20 /
 # +10% publication schedule, and the product-selected 0.8 Lowe ratio. Pin the
 # complete normalized translation unit so this exception cannot grow silently.
-OFFICIAL_PER_IMAGE_PINHOLE_SHA256 = (
-    "7a8ee12f1ab2d6c11d1fc5574386f3bba3cf15d9db5281674db28f22d0f41e08"
+# Production additionally hard-stops at COLMAP's final global BA + official
+# filtering; all historical self repair/detail passes remain compiled only for
+# old-run reproducibility and are unreachable in the shipping route.
+OFFICIAL_PRODUCTION_ENDPOINT_SHA256 = (
+    "65248a5cdb33f3934b04b83c8237cffe51732f3bc26439a899e0981e75be6874"
 )
-REQUIRED_PER_IMAGE_PINHOLE_MARKERS = (
+REQUIRED_PRODUCTION_ENDPOINT_MARKERS = (
     b"colmap::PinholeCameraModel::model_id",
     b"camera.SetFocalLengthX(fx);",
     b"camera.SetFocalLengthY(fy);",
     b"rec.camera_id = camera_id;",
     b"rec.camera = camera;",
     b"SetAllCameraIntrinsicsConstant(",
+    b"constexpr bool kProductionOfficialEndpointOnly = true;",
+    b"if (kProductionOfficialEndpointOnly) return;",
+    b"if (kProductionOfficialEndpointOnly) return 0;",
 )
 FORBIDDEN_SHARED_CAMERA_MARKERS = (
     b"colmap::kInvalidCameraId, colmap::SimplePinholeCameraModel::model_id",
@@ -152,25 +158,25 @@ def main() -> None:
         if not official_path.is_file():
             fail(f"missing official source copy: {official_path}")
         actual = normalize_owned_names(official_path.read_bytes())
-        expected = git_show(aether_root, SELF_SOURCE_REVISION, source_path)
         if official_relative == "src/official_aether_sfm_c.cc":
             actual_hash = sha256(actual)
-            if actual_hash != OFFICIAL_PER_IMAGE_PINHOLE_SHA256:
+            if actual_hash != OFFICIAL_PRODUCTION_ENDPOINT_SHA256:
                 fail(
-                    "official per-image PINHOLE source identity changed: "
+                    "official production-endpoint source identity changed: "
                     f"{actual_hash}"
                 )
-            for marker in REQUIRED_PER_IMAGE_PINHOLE_MARKERS:
+            for marker in REQUIRED_PRODUCTION_ENDPOINT_MARKERS:
                 if marker not in actual:
-                    fail(f"missing per-image PINHOLE marker: {marker!r}")
+                    fail(f"missing production-endpoint marker: {marker!r}")
             for marker in FORBIDDEN_SHARED_CAMERA_MARKERS:
                 if marker in actual:
                     fail(f"shared-camera implementation returned: {marker!r}")
             print(
                 "PASS source src/official_aether_sfm_c.cc "
-                "(pinned per-image PINHOLE + official BA deltas)"
+                "(pinned per-image PINHOLE + official BA/filter endpoint)"
             )
             continue
+        expected = git_show(aether_root, SELF_SOURCE_REVISION, source_path)
         actual = normalize_official_match_ratio_delta(actual)
         if actual != expected:
             fail(

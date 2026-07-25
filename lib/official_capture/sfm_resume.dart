@@ -27,11 +27,9 @@ import 'package:path_provider/path_provider.dart';
 import '../me/scan_record_store.dart';
 import '../official_util/device_log.dart';
 import 'colorize_pipeline.dart';
-import 'floater_filter.dart';
 import 'representative_color.dart';
 import 'sfm_live_recon.dart';
 import 'sparse_ply.dart';
-import 'telemetry_writer.dart';
 
 const MethodChannel _arKitChannel = MethodChannel('pocketworld_official_arkit');
 
@@ -328,7 +326,7 @@ Future<void> _persistColored(
       'SfmResume',
       'colorize: no photo source for $captureDir → gray',
     );
-    await _filterAndPersist(captureDir, snap, rgb);
+    await _persistOfficialEndpoint(captureDir, snap, rgb);
     return;
   }
 
@@ -388,52 +386,20 @@ Future<void> _persistColored(
     'colorized ${snap.refined ? "refined" : "local"}: $colored/$n pts '
         'from ${byFrame.length} frames (${frameMeta.length} mapped)',
   );
-  await _filterAndPersist(captureDir, snap, rgb);
+  await _persistOfficialEndpoint(captureDir, snap, rgb);
 }
 
-/// 与 live 主路径对齐【孤点过滤】:live 在 _colorizeSnapshot 尾部对交付
-/// 点云跑保守 orphan filter(零近邻孤点删除,99 分位半径 ×1.2,≥3 观测
-/// track 保护)后才持久化;resume 原先直接 persist,浮点全数落盘。这里
-/// 用同一共享实现(floater_filter.dart)+ 同参数补齐:过滤 → 紧凑拷贝 →
-/// persist(与 live 相同,持久化快照不再携带 obs 数组 —— 观测已被取色
-/// 消费,过滤后的索引也不再对应)。
-Future<void> _filterAndPersist(
+/// Resume preserves the same official endpoint as the live route. Colorization
+/// supplies RGB only; no Dart point deletion, repair, or enrichment is allowed
+/// after COLMAP's final global BA and official filtering.
+Future<void> _persistOfficialEndpoint(
   String captureDir,
   SfmLiveSnapshot snap,
   Uint8List rgb,
 ) async {
-  final n = snap.pointCount;
-  final flt = floaterKeepIndices(snap.xyz, obsOffsets: snap.obsOffsets);
-  final keepIdx = flt.keep;
-  final m = keepIdx.length;
-  final removedF = n - m;
-  final Float32List fxyz;
-  final Uint8List frgb;
-  if (removedF <= 0) {
-    fxyz = snap.xyz;
-    frgb = rgb;
-  } else {
-    final compact = compactXyzRgbByIndices(snap.xyz, rgb, keepIdx);
-    fxyz = compact.xyz;
-    frgb = compact.rgb;
-  }
-  DeviceLog.log(
-    'Floater',
-    'orphan-filter(resume): kept $m/$n removed=$removedF '
-        '(${n == 0 ? "0.0" : (100 * removedF / n).toStringAsFixed(1)}%) | '
-        'radius=${flt.radius.toStringAsExponential(2)} kMin=1 '
-        'protectedStable=${flt.protectedStable} | ${flt.ms}ms',
-  );
-  TelemetryWriter.instance.event('floater', {
-    'kept': m,
-    'removed': removedF,
-    'protected_stable': flt.protectedStable,
-    'ms': flt.ms,
-    'leg': 'resume',
-  });
   final fsnap = SfmLiveSnapshot(
-    xyz: fxyz,
-    rgb: frgb,
+    xyz: snap.xyz,
+    rgb: rgb,
     posesPacked: snap.posesPacked,
     summary: snap.summary,
     refined: snap.refined,
@@ -444,7 +410,7 @@ Future<void> _filterAndPersist(
   await persistSparseSnapshot(
     captureDir: captureDir,
     snapshot: fsnap,
-    rgb: frgb,
+    rgb: rgb,
   );
 }
 

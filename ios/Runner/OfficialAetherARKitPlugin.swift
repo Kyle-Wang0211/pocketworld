@@ -95,23 +95,9 @@ class OfficialAetherARKitPlugin: NSObject {
     // ⚠️ 与上面的 kill switch 绑定:若未来启用 spatial-first,须先重跑
     // 热调速 A/B(spatial-first 臂实测点数 +2.4% 超 ±2% 带,方向为正)。
     setenv("OFFICIAL_AETHER_LIVE_CAND_K_HOT", "6", 1)
-    // [2026-07-11 签决:减厚组合刀@4px] finalize 减厚组合(native 默认全 OFF,
-    // 以下开关行是唯一开关,删行即同二进制回退)。host 已定价过门:
-    // 刀A 2-view 升维(TRACK_UPGRADE)+ 定向 enrich(TARGETED,pair cap 300)。
-    // rc=7 退避重试与 enrich AUTO 时间闸是 C++ 默认开,无需开关。
-    //
-    // [2026-07-11 法医定罪关停] 47 号采集双层地板案:host 同数据消融定罪
-    // FRAG_MERGE@4px 主犯(鬼层 4.3%→6.7%)、TD_GROW_REFIT 从犯(→5.5%),
-    // 组合叠加交互 ≈2.1×——把低视差深度歧义弥散壳凝聚成相干第二片。
-    // TRACK_UPGRADE/ENRICH_TARGETED/PAIR_CAP=300 消融无罪且正收益,保留。
-    // 重开条件:须以 tri-angle θ≥5° 门重新定价(鬼层 tri-angle p50=4.1°,
-    // 主层 5.7°),过九门再启。
-    // setenv("OFFICIAL_AETHER_TD_GROW_REFIT", "1", 1)   // 07-11 法医定罪关停(从犯)
-    setenv("OFFICIAL_AETHER_TRACK_UPGRADE", "1", 1)
-    setenv("OFFICIAL_AETHER_ENRICH_TARGETED", "1", 1)
-    setenv("OFFICIAL_AETHER_ENRICH_PAIR_CAP", "300", 1)
-    // setenv("OFFICIAL_AETHER_FRAG_MERGE", "1", 1)      // 07-11 法医定罪关停(主犯)
-    // setenv("OFFICIAL_AETHER_FRAG_MERGE_REPROJ_PX", "4", 1)  // 随 FRAG_MERGE 关停
+    // Production ends at COLMAP's final global BA + official filtering.
+    // Historical RestoreTemporalDetail / repair / enrichment passes are hard
+    // disabled in the native translation unit and are not re-enabled here.
     // [2026-07-12] stage1 轮次帽(59555b8d 钩子 P1-STAGE1-RECIPE):stage-1
     // 循环上限 = min(ba_global_max_refinements, 4);未用轮次按余量公式让给
     // stage 2,enrich AUTO 时间闸窗口随 stage-1 提前收口。host 质量中性、

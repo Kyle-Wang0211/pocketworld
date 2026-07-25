@@ -37,7 +37,6 @@ import 'package:vector_math/vector_math_64.dart' show Quaternion, Vector3;
 import '../../official_capture/capture_coverage_cloud.dart';
 import '../../official_capture/capture_session.dart';
 import '../../official_capture/colorize_pipeline.dart';
-import '../../official_capture/floater_filter.dart';
 import '../../official_capture/live_sfm_publish_policy.dart';
 import '../../official_capture/official_highres_reconstruction_input.dart';
 import '../../official_capture/parallax_banner_gate.dart';
@@ -1529,49 +1528,15 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         'var_gt40': rmsGt40, // 混色嫌疑点数(均方差 > 40 灰阶)
       });
     } catch (_) {}
-    // ── Conservative orphan floater removal ── (workflow verify: density-
-    // relative outlier removal nibbles real sparse walls/edges AND misses the
-    // clustered floaters, so ship ONLY the risk-free zero-neighbor orphan test
-    // at a high-percentile radius). Filters the DELIVERED cloud (screen +
-    // official_sfm_sparse.ply); the dense path recomputes from official_sfm_live.db → untouched.
-    // 实现在 floater_filter.dart(逐字提出的共享纯函数,断点续跑
-    // sfm_resume.dart 复用同参数)。
-    final flt = floaterKeepIndices(snap.xyz, obsOffsets: snap.obsOffsets);
-    final keepIdx = flt.keep;
-    final int m = keepIdx.length;
-    final int removedF = n - m;
-    final Float32List fxyz;
-    final Uint8List frgb;
-    if (removedF <= 0) {
-      fxyz = snap.xyz;
-      frgb = rgb;
-    } else {
-      final compact = compactXyzRgbByIndices(snap.xyz, rgb, keepIdx);
-      fxyz = compact.xyz;
-      frgb = compact.rgb;
-    }
-    DeviceLog.log(
-      'Floater',
-      'orphan-filter: kept $m/$n removed=$removedF '
-          '(${n == 0 ? "0.0" : (100 * removedF / n).toStringAsFixed(1)}%) | '
-          'radius=${flt.radius.toStringAsExponential(2)} kMin=1 '
-          'protectedStable=${flt.protectedStable} | ${flt.ms}ms',
-    );
-    // 遥测【colorize/floater】:孤点过滤结果(数据已在手上)。
-    TelemetryWriter.instance.event('floater', {
-      'kept': m,
-      'removed': removedF,
-      'protected_stable': flt.protectedStable,
-      'ms': flt.ms,
-    });
     // [E25-D 2026-07-20] L2 渲染门已删除 —— 交付即显示,不再计算/落盘
     // ghost_view_mask.bin。原块(97 行)在此计算 band15∧¬rescued 可见性、
     // 把 native ghost_mask.bin 重排到交付点序、并发 ghost_view_filter 遥测。
-    // Filtered snapshot reused for BOTH persist and display (empty obs — the
-    // colorize already consumed them; persist's track-hist guards on obs length).
+    // The official endpoint snapshot is reused unchanged for BOTH persistence
+    // and display. Colorization may add RGB, but no Dart stage may delete,
+    // repair, or enrich a point after COLMAP's final BA/filtering.
     final fsnap = SfmLiveSnapshot(
-      xyz: fxyz,
-      rgb: frgb,
+      xyz: snap.xyz,
+      rgb: rgb,
       posesPacked: snap.posesPacked,
       summary: snap.summary,
       refined: snap.refined,
@@ -1596,7 +1561,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         await persistSparseSnapshot(
           captureDir: captureDir,
           snapshot: fsnap,
-          rgb: frgb,
+          rgb: rgb,
         );
         persistOk = true;
         // [E25-D 2026-07-20] 原在此把交付点序的 ghost_view_mask.bin 与 PLY
@@ -1670,10 +1635,6 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       if (snap.refined) unawaited(_endReconUmbrella());
     }
   }
-
-  // ── Orphan floater removal ── 已提出为 lib/capture/floater_filter.dart 的
-  // 共享纯函数 floaterKeepIndices(算法/常数/护栏逐字未改):live 交付与
-  // 断点续跑(sfm_resume.dart)同参数复用,保证两条腿的孤点判定逐点一致。
 
   /// Fast native JPEG decode for colorization — ImageIO decode at
   /// [kColorizeDecodeMaxPx] (= 全分辨率,见该常量的出处注释), raw sensor
