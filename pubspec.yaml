@@ -176,6 +176,14 @@ dependencies:
   official_capture_services:
     path: packages/official_capture_services
 
+# 2026-07-25 build-env fix: path_provider_foundation 2.6.0 migrated to a pure
+# dart-FFI plugin (no CocoaPods podspec, native_build:false) that fails to bundle
+# on this Flutter 3.41.8 + CocoaPods setup, so getApplicationDocumentsDirectory
+# throws MissingPluginException (empty drafts / no logs / auth can't persist).
+# Pin to the last podspec-based release.
+dependency_overrides:
+  path_provider_foundation: 2.5.1
+
 
 dev_dependencies:
   flutter_test:
