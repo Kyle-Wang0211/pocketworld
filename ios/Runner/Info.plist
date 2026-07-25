@@ -32,7 +32,7 @@
 	<key>CFBundleName</key>
 	<string>pocketworld_flutter</string>
 	<key>PWBuildMarker</key>
-	<string>official-colmap-endpoint-20260725</string>
+	<string>official-point-display-lod-20260725</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

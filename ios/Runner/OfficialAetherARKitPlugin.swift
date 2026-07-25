@@ -2805,6 +2805,89 @@ class OfficialAetherARKitPreviewFactory: NSObject, FlutterPlatformViewFactory {
   }
 }
 
+/// Capture-only adaptive point budget.
+///
+/// The full progressive cloud remains resident. Lower tiers are strict
+/// prefixes of the Potree-style octree order prepared by Dart, so a tier
+/// change never reshuffles surviving points. Decisions use a smoothed render
+/// cadence, thermal pressure, two-second decision windows, and a long upgrade
+/// hysteresis; the final PLY and Review viewer never pass through this class.
+private final class CapturePointCloudLodController {
+  private let fractions = [1.0, 0.67, 0.40, 0.25]
+  private var tier = 0
+  private var lastFrameTime: TimeInterval?
+  private var smoothedFrameSeconds = 1.0 / 30.0
+  private var lastDecisionTime: TimeInterval = 0
+  private var healthySince: TimeInterval?
+
+  func reset(totalPoints: Int) -> Int {
+    lastFrameTime = nil
+    healthySince = nil
+    // Small clouds are cheaper than rebuilding a lower tier.
+    if totalPoints <= 24_000 { tier = 0 }
+    return renderCount(totalPoints: totalPoints)
+  }
+
+  func renderCount(totalPoints: Int) -> Int {
+    guard totalPoints > 0 else { return 0 }
+    if totalPoints <= 24_000 { return totalPoints }
+    let fraction = fractions[min(tier, fractions.count - 1)]
+    return min(totalPoints, max(12_000, Int((Double(totalPoints) * fraction).rounded(.up))))
+  }
+
+  /// Returns a new prefix size only when the stable tier actually changes.
+  func observeFrame(time: TimeInterval, totalPoints: Int) -> Int? {
+    defer { lastFrameTime = time }
+    guard totalPoints > 24_000, let previous = lastFrameTime else { return nil }
+    let dt = time - previous
+    guard dt > 0, dt < 0.25 else { return nil }
+    smoothedFrameSeconds = smoothedFrameSeconds * 0.92 + dt * 0.08
+    guard time - lastDecisionTime >= 2.0 else { return nil }
+    lastDecisionTime = time
+
+    let fps = 1.0 / max(smoothedFrameSeconds, 1.0 / 120.0)
+    let thermal = ProcessInfo.processInfo.thermalState
+    let oldTier = tier
+
+    switch thermal {
+    case .critical:
+      tier = max(tier, 3)
+      healthySince = nil
+    case .serious:
+      tier = max(tier, 2)
+      healthySince = nil
+    case .nominal, .fair:
+      if fps < 24.0 {
+        tier = min(tier + 1, fractions.count - 1)
+        healthySince = nil
+      } else if fps >= 28.5 {
+        if healthySince == nil { healthySince = time }
+        // Upgrades need a long healthy window; downgrades react in one window.
+        if tier > 0, time - (healthySince ?? time) >= 8.0 {
+          tier -= 1
+          healthySince = time
+        }
+      } else {
+        healthySince = nil
+      }
+    @unknown default:
+      healthySince = nil
+    }
+
+    guard tier != oldTier else { return nil }
+    let count = renderCount(totalPoints: totalPoints)
+    OfficialPwNativeTelemetry.shared.log("capture_point_lod", [
+      "from_tier": oldTier,
+      "to_tier": tier,
+      "render_points": count,
+      "source_points": totalPoints,
+      "fps_ewma": (fps * 10).rounded() / 10,
+      "thermal": thermal.rawValue,
+    ])
+    return count
+  }
+}
+
 @available(iOS 11.0, *)
 class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDelegate {
   private let arscnView: ARSCNView
@@ -2857,40 +2940,57 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
     }
   }
 
-  // ── T6 v2: capture-coverage cloud — DUMB DISPLAY EXECUTOR ────────────────
-  // All coverage policy (point selection, per-photo frustum counting, the
-  // red→yellow→green ramp, 0-photos-⇒-0-dots gating) lives in DART — see
-  // lib/capture/capture_coverage_cloud.dart and the algorithm-executor
-  // boundary in ARFrameSaveSpec. Native's only job: world-anchor the packed
-  // xyz+rgb Dart pushed via `setCoveragePointCloud`, as one SceneKit
-  // `.point` geometry on the world root (depth-correct, no 2D-projection
-  // parallax — same reason the photo cards are native).
+  // ── Capture sparse cloud: full resident data + stable dynamic LOD ─────────
+  // Dart sends a complete Potree-style progressive octree order. Native keeps
+  // the full display copy resident and draws one SceneKit point batch. Under
+  // sustained render/thermal pressure only the prefix budget
+  // changes; final PLY and Review are outside this display path.
   private var pointCloudNode: SCNNode?
+  private var fullPointCloudXyz: [Float] = []
+  private var fullPointCloudRgb: [UInt8] = []
+  private let pointCloudLod = CapturePointCloudLodController()
+  private var renderedPointCount = 0
 
   /// Render-loop tick: apply the latest Dart-pushed cloud when it changed.
   /// Toggled off → tear the node down.
-  private func updateFeaturePointOverlay() {
+  private func updateFeaturePointOverlay(at time: TimeInterval) {
     if !OfficialAetherARKitPlugin.featurePointsVisible {
       if pointCloudNode != nil {
         pointCloudNode?.removeFromParentNode()
         pointCloudNode = nil
       }
+      renderedPointCount = 0
       _ = OfficialAetherARKitPlugin.takeCoverageCloudIfDirty() // drop stale pushes
       return
     }
-    guard let cloud = OfficialAetherARKitPlugin.takeCoverageCloudIfDirty() else {
-      return
+    if let cloud = OfficialAetherARKitPlugin.takeCoverageCloudIfDirty() {
+      fullPointCloudXyz = cloud.xyz
+      fullPointCloudRgb = cloud.rgb
+      let totalPoints = fullPointCloudXyz.count / 3
+      renderedPointCount = pointCloudLod.reset(totalPoints: totalPoints)
+      rebuildPointCloud(renderCount: renderedPointCount)
     }
-    rebuildPointCloud(xyz: cloud.xyz, rgb: cloud.rgb)
+    let totalPoints = fullPointCloudXyz.count / 3
+    if let nextCount = pointCloudLod.observeFrame(
+      time: time,
+      totalPoints: totalPoints
+    ), nextCount != renderedPointCount {
+      renderedPointCount = nextCount
+      rebuildPointCloud(renderCount: nextCount)
+    }
   }
 
-  private func rebuildPointCloud(xyz: [Float], rgb: [UInt8]) {
-    let n = xyz.count / 3
-    guard n > 0, rgb.count >= n * 3 else {
+  private func rebuildPointCloud(renderCount: Int) {
+    let available = min(fullPointCloudXyz.count / 3, fullPointCloudRgb.count / 3)
+    let n = min(max(0, renderCount), available)
+    guard n > 0 else {
       pointCloudNode?.removeFromParentNode()
       pointCloudNode = nil
       return
     }
+    // Stable nested LOD: every lower tier is a prefix of the higher tier.
+    let xyz = Array(fullPointCloudXyz.prefix(renderCount * 3))
+    let rgb = Array(fullPointCloudRgb.prefix(renderCount * 3))
     var verts: [SCNVector3] = []
     var colors: [SIMD4<Float>] = []
     verts.reserveCapacity(n)
@@ -3140,7 +3240,7 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
   /// thread.
   func renderer(_ renderer: SCNSceneRenderer, updateAtTime time: TimeInterval) {
     OfficialPwNativeTelemetry.shared.noteRenderFrame()  // 遥测 F:FPS 计帧(纳秒级)
-    updateFeaturePointOverlay()    // T6: live sparse coverage cloud (independent of cards)
+    updateFeaturePointOverlay(at: time) // stable dynamic LOD; independent of cards
     applyPhotoCardStatesIfDirty()  // 四态边框:消费 Dart 推来的状态差量
     guard !photoCardNodes.isEmpty, let cam = renderer.pointOfView else { return }
     let camPos = cam.simdWorldPosition

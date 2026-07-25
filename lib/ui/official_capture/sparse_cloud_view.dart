@@ -7,16 +7,17 @@
 // 2-finger pinch zoom + drag pan, 点大小/AgX/曝光 controls, render-only
 // outlier clip, palette-bucketed true colors) never drifts between them.
 //
-// Rendering may thin points for frame rate (draw stride); the DATA is
-// always the full cloud — export/delivery paths never see a downsampled
-// set. Same contract for the L2 ghost render gate ([visibility],
-// ghost_view_filter.dart): display-only skip, data untouched, 默认关。
+// Review is authoritative and renders the complete persisted PLY. Capture AR
+// has its own display-only progressive LOD; neither surface can rewrite the
+// reconstruction or exported point set.
 
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+
+import '../../point_cloud_display/progressive_octree_order.dart';
 
 /// Snapshot of the animatable camera state (double-tap focus / reframe lerp).
 class _CamState {
@@ -586,8 +587,6 @@ class SparseCloudPainter extends CustomPainter {
   static double _cx = 0, _cy = 0, _cz = 0, _radius = 1;
   static double _minY = 0, _invYSpan = 1;
 
-  static const int _maxDrawnPoints = 22000; // render thinning ONLY
-
   // Opening-view fill factor. f = half·K·zoom is CONSTANT (NOT /radius): the
   // scale lives only in camDist = radius·3.2, so vx = x1·f/depth is
   // scale-INVARIANT — a 2 m room and a 20 m hall both fill the same fraction.
@@ -754,7 +753,9 @@ class SparseCloudPainter extends CustomPainter {
     _ensureFit(xyz);
 
     final n = xyz.length ~/ 3;
-    final stride = math.max(1, n ~/ _maxDrawnPoints);
+    // Review is the authoritative visual inspection surface. It must render
+    // every persisted PLY point; Capture AR owns the separate dynamic LOD.
+    final stride = ReviewPointCloudPolicy.drawStrideFor(n);
     // L2 渲染门(默认 null = 全显示):被标记的点不进渲染 buffer。
     // 长度不符 = mask 与当前点序错位 → 整组忽略(容错,绝不隐藏错点)。
     // 取景 fit(_ensureFit)刻意仍吃全量:开关翻转不得改变取景/尺度。

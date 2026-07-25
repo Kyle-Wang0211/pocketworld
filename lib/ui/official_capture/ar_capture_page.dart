@@ -34,6 +34,7 @@ import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
 import 'package:vector_math/vector_math_64.dart' show Quaternion, Vector3;
 
+import '../../point_cloud_display/progressive_octree_order.dart';
 import '../../official_capture/capture_coverage_cloud.dart';
 import '../../official_capture/capture_session.dart';
 import '../../official_capture/colorize_pipeline.dart';
@@ -909,7 +910,17 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         rgb[base + 2] = 47;
       }
     }
-    _officialSfmArCloud = CoverageCloudPacked(snapshot.xyz, rgb);
+    // Potree-style hierarchy ordering is computed on a worker isolate. This is
+    // display-only: the source SfM snapshot and final PLY stay intact.
+    final displayCloud = await compute(buildProgressivePointCloud, (
+      xyz: snapshot.xyz,
+      rgb: rgb,
+    ), debugLabel: 'capture_progressive_octree_order');
+    if (!_recording) return;
+    _officialSfmArCloud = CoverageCloudPacked(
+      displayCloud.xyz,
+      displayCloud.rgb,
+    );
     await _pushCoverageCloud();
   }
 
