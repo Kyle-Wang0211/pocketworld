@@ -3409,8 +3409,12 @@ class _ManualCaptureBar extends StatelessWidget {
                 child: Align(
                   alignment: Alignment.centerRight,
                   child: _FinishArrowButton(
-                    busy: finishing || capturing,
-                    onTap: capturing || paths.isEmpty ? null : onFinish,
+                    // 2026-07-25 回退 eaf8706 的 capturing 门:「完成」必须随时
+                    // 可点。快门期间置灰+转圈是多余的 —— _finalizeRecording 本来
+                    // 就会等齐所有已点击快门、仍在队列/处理中的照片再收尾,
+                    // 按钮层再拦一道只会让 UX 出现本不该有的加载态。
+                    busy: finishing,
+                    onTap: paths.isEmpty ? null : onFinish,
                   ),
                 ),
               ),

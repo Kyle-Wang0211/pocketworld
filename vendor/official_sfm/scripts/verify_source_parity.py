@@ -36,8 +36,17 @@ DIRTY_GHOST_MASK_SHA256 = (
 # Production additionally hard-stops at COLMAP's final global BA + official
 # filtering; all historical self repair/detail passes remain compiled only for
 # old-run reproducibility and are unreachable in the shipping route.
+# 2026-07-25 reviewed delta: AddOfficialQuadraticPairs — a faithful port of
+# upstream SequentialPairingOptions{overlap=10, quadratic_overlap=true}
+# (colmap/controllers/pairing.{h,cc}) that appends the (i, i+2^k) long-range
+# pairs the capture-time K-window never produces. It is pair SELECTION only:
+# candidates are matched with the shipped matcher, verified under COLMAP
+# DEFAULT TwoViewGeometryOptions, and appended to matches /
+# two_view_geometries; no Point3D or observation is touched, and it runs
+# strictly BEFORE the final global BA, so the delivered model is still the
+# official endpoint. Kill switch: OFFICIAL_AETHER_QUADRATIC_OVERLAP=0.
 OFFICIAL_PRODUCTION_ENDPOINT_SHA256 = (
-    "65248a5cdb33f3934b04b83c8237cffe51732f3bc26439a899e0981e75be6874"
+    "77fb9150ccbb9a86ea0ceab3fe0e73f86000a8f67e9a2816548ae0ffec5a7ae0"
 )
 REQUIRED_PRODUCTION_ENDPOINT_MARKERS = (
     b"colmap::PinholeCameraModel::model_id",
@@ -49,6 +58,12 @@ REQUIRED_PRODUCTION_ENDPOINT_MARKERS = (
     b"constexpr bool kProductionOfficialEndpointOnly = true;",
     b"if (kProductionOfficialEndpointOnly) return;",
     b"if (kProductionOfficialEndpointOnly) return 0;",
+    # Upstream quadratic overlap must stay wired and stay official-default:
+    # a silent removal (or a switch to the tightened self-route gates) would
+    # otherwise pass every other check in this file.
+    b"void AddOfficialQuadraticPairs(aether_sfm_session* s) {",
+    b"const colmap::TwoViewGeometryOptions tvg_options;  // colmap defaults",
+    b"AddOfficialQuadraticPairs(s);",
 )
 FORBIDDEN_SHARED_CAMERA_MARKERS = (
     b"colmap::kInvalidCameraId, colmap::SimplePinholeCameraModel::model_id",
