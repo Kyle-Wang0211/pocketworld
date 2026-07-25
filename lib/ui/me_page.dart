@@ -64,6 +64,32 @@ bool pipelineOwnsActiveReconstruction({
   return recordPipelineKind == activePipelineKind;
 }
 
+bool recordOwnsActiveReconstruction({
+  required String? recordCaptureDir,
+  required CapturePipelineKind recordPipelineKind,
+  required String? activeCaptureDir,
+  required CapturePipelineKind activePipelineKind,
+}) {
+  if (!pipelineOwnsActiveReconstruction(
+    recordPipelineKind: recordPipelineKind,
+    activePipelineKind: activePipelineKind,
+  )) {
+    return false;
+  }
+  final record = _normalizedCaptureDir(recordCaptureDir);
+  final active = _normalizedCaptureDir(activeCaptureDir);
+  return record != null && active != null && record == active;
+}
+
+String? _normalizedCaptureDir(String? path) {
+  if (path == null) return null;
+  var normalized = path.trim();
+  while (normalized.length > 1 && normalized.endsWith('/')) {
+    normalized = normalized.substring(0, normalized.length - 1);
+  }
+  return normalized.isEmpty ? null : normalized;
+}
+
 /// Dispatches a sparse-cloud viewer without allowing either implementation to
 /// fall back to the other pipeline. Returns whether a route was opened.
 Future<bool> dispatchSparseCloudViewerForPipeline({
@@ -98,6 +124,8 @@ typedef OfficialScanViewerRoute =
       String plyPath,
     );
 
+typedef ActiveReconstructionDelete = Future<void> Function(ScanRecord record);
+
 class MePage extends StatefulWidget {
   const MePage({
     super.key,
@@ -106,6 +134,7 @@ class MePage extends StatefulWidget {
     this.activeReconstructionCaptureDir,
     this.activeReconstructionPipelineKind = CapturePipelineKind.self,
     this.onActiveReconstructionTap,
+    this.onActiveReconstructionDelete,
     this.officialResumeRoute,
     this.officialViewerRoute,
   });
@@ -119,6 +148,7 @@ class MePage extends StatefulWidget {
   final String? activeReconstructionCaptureDir;
   final CapturePipelineKind activeReconstructionPipelineKind;
   final VoidCallback? onActiveReconstructionTap;
+  final ActiveReconstructionDelete? onActiveReconstructionDelete;
 
   /// Injection point for the physically separate official resume page.
   /// Until that page is installed, official records never fall back to the
@@ -265,6 +295,8 @@ class _MePageState extends State<MePage> {
                   activeReconstructionPipelineKind:
                       widget.activeReconstructionPipelineKind,
                   onActiveReconstructionTap: widget.onActiveReconstructionTap,
+                  onActiveReconstructionDelete:
+                      widget.onActiveReconstructionDelete,
                   officialResumeRoute: widget.officialResumeRoute,
                   officialViewerRoute: widget.officialViewerRoute,
                 ),
@@ -364,6 +396,7 @@ class _MyWorksSection extends StatefulWidget {
   final String? activeReconstructionCaptureDir;
   final CapturePipelineKind activeReconstructionPipelineKind;
   final VoidCallback? onActiveReconstructionTap;
+  final ActiveReconstructionDelete? onActiveReconstructionDelete;
   final OfficialScanResumeRoute? officialResumeRoute;
   final OfficialScanViewerRoute? officialViewerRoute;
 
@@ -372,6 +405,7 @@ class _MyWorksSection extends StatefulWidget {
     this.activeReconstructionCaptureDir,
     this.activeReconstructionPipelineKind = CapturePipelineKind.self,
     this.onActiveReconstructionTap,
+    this.onActiveReconstructionDelete,
     this.officialResumeRoute,
     this.officialViewerRoute,
   });
@@ -711,6 +745,16 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
       ),
     );
     if (confirmed != true) return;
+    if (recordOwnsActiveReconstruction(
+          recordCaptureDir: record.captureDir,
+          recordPipelineKind: record.pipelineKind,
+          activeCaptureDir: widget.activeReconstructionCaptureDir,
+          activePipelineKind: widget.activeReconstructionPipelineKind,
+        ) &&
+        widget.onActiveReconstructionDelete != null) {
+      await widget.onActiveReconstructionDelete!(record);
+      return;
+    }
     await _vm.deleteRecord(record);
   }
 }

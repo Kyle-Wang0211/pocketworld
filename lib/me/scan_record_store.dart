@@ -28,6 +28,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
@@ -71,6 +72,7 @@ class ScanRecordStore {
   /// Snapshot of the current store. Modifying this list directly is a
   /// no-op (we always return a defensive copy from `records`).
   List<ScanRecord> _records = const <ScanRecord>[];
+  Set<String> _deletionTombstones = const <String>{};
   Future<void>? _loadFuture;
   Object? _loadFailure;
   final _ctrl = StreamController<List<ScanRecord>>.broadcast();
@@ -109,6 +111,35 @@ class ScanRecordStore {
       _emit();
       return;
     }
+    try {
+      _deletionTombstones = await _loadDeletionTombstones();
+    } catch (e, st) {
+      debugPrint('[ScanRecordStore] deletion tombstone load failed: $e\n$st');
+      _loadFailure = e;
+      _records = const <ScanRecord>[];
+      _emit();
+      return;
+    }
+    final retained = <ScanRecord>[];
+    var deletedRecordsPurged = 0;
+    for (final record in _records) {
+      if (!_isPermanentlyDeleted(record.id, record.pipelineKind)) {
+        retained.add(record);
+        continue;
+      }
+      deletedRecordsPurged++;
+      try {
+        await _deleteProjectFiles(record);
+      } catch (e, st) {
+        // Keep the opaque tombstone even when storage is temporarily
+        // unavailable. The project remains hidden and cleanup retries on the
+        // next load instead of resurrecting user-deleted content.
+        debugPrint(
+          '[ScanRecordStore] tombstoned project cleanup deferred: $e\n$st',
+        );
+      }
+    }
+    _records = retained;
     final recovered = await _recoverOrphanCaptures();
     // Re-anchor stale absolute paths.
     //
@@ -240,10 +271,11 @@ class ScanRecordStore {
       patched.add(rec);
     }
     _records = _sortNewestFirst(patched);
-    if (rewrites > 0 || recovered > 0) {
+    if (rewrites > 0 || recovered > 0 || deletedRecordsPurged > 0) {
       debugPrint(
         '[ScanRecordStore] re-anchored $rewrites stale path(s), '
-        'recovered $recovered orphan capture(s)',
+        'recovered $recovered orphan capture(s), '
+        'purged $deletedRecordsPurged deleted record(s)',
       );
       // Persist the patched paths so the next load doesn't have to
       // re-scan + re-write.
@@ -294,7 +326,26 @@ class ScanRecordStore {
           final captureId = entity.uri.pathSegments
               .where((s) => s.isNotEmpty)
               .lastOrNull;
-          if (captureId == null || existingIds.contains(captureId)) continue;
+          if (captureId == null) continue;
+          if (_isPermanentlyDeleted(captureId, pipelineKind)) {
+            try {
+              await _deleteProjectFiles(
+                ScanRecord(
+                  id: captureId,
+                  name: '',
+                  createdAt: DateTime.fromMillisecondsSinceEpoch(0),
+                  pipelineKind: pipelineKind,
+                ),
+              );
+            } catch (e, st) {
+              debugPrint(
+                '[ScanRecordStore] late deleted capture cleanup deferred: '
+                '$e\n$st',
+              );
+            }
+            continue;
+          }
+          if (existingIds.contains(captureId)) continue;
           final paths = await _capturePaths(entity, pipelineKind: pipelineKind);
           final photosDir = paths.photosDir;
           if (!await photosDir.exists()) continue;
@@ -428,6 +479,13 @@ class ScanRecordStore {
   Future<void> addOrUpdate(ScanRecord r) async {
     await ensureLoaded();
     _ensureWritable();
+    if (_isPermanentlyDeleted(r.id, r.pipelineKind)) {
+      // A native/Dart finalize callback can arrive after the user has
+      // confirmed deletion. Never let that late result recreate either the
+      // card or its files.
+      await _deleteProjectFiles(r);
+      return;
+    }
     await _ensureRouteOwnedPaths(r);
     final previous = byId(r.id);
     if (previous != null && previous.pipelineKind != r.pipelineKind) {
@@ -454,29 +512,94 @@ class ScanRecordStore {
     return null;
   }
 
-  /// Delete by id. Best-effort removes the on-disk GLB + thumbnail too —
-  /// failure to delete either doesn't fail the call (the record vanishes
-  /// from the gallery either way; orphan files just leak ~30 MB of disk
-  /// until next reinstall).
+  /// Permanently delete one complete user project.
+  ///
+  /// The opaque tombstone is persisted first so an interrupted delete or a
+  /// late reconstruction writer cannot make the project reappear through
+  /// orphan recovery. All files in the route-owned capture namespace
+  /// (photos, metadata, databases, point clouds, and caches) are then removed,
+  /// followed by every route-owned scan artifact and finally the record.
   Future<void> delete(String id) async {
     await ensureLoaded();
     _ensureWritable();
-    // Resolve ownership before removing the record from memory. Legacy callers
-    // that delete an unknown id retain the historical self-route behaviour,
-    // while an official record can never touch `Documents/scans`.
-    final pipelineKind = byId(id)?.pipelineKind ?? CapturePipelineKind.self;
+    final record = byId(id);
+    if (record == null) return;
+    await _addDeletionTombstone(record);
+    await _deleteProjectFiles(record);
     _records = _records.where((r) => r.id != id).toList(growable: false);
     _emit();
     await _flush();
-    // Cleanup artifact + thumbnail + retry sources, best-effort.
-    try {
-      final f = await glbFileFor(id, pipelineKind: pipelineKind);
-      if (await f.exists()) await f.delete();
-    } catch (_) {}
-    try {
-      final t = await thumbnailFileFor(id, pipelineKind: pipelineKind);
-      if (await t.exists()) await t.delete();
-    } catch (_) {}
+  }
+
+  Future<void> _deleteProjectFiles(ScanRecord record) async {
+    final routeRoot = await _capturesRoot(pipelineKind: record.pipelineKind);
+    final canonicalCaptureDir = await captureDirFor(
+      record.id,
+      pipelineKind: record.pipelineKind,
+    );
+    final captureDirs = <String>{canonicalCaptureDir.path};
+    final storedCaptureDir = record.captureDir;
+    if (storedCaptureDir != null &&
+        _isWithinDirectory(storedCaptureDir, routeRoot.path)) {
+      captureDirs.add(storedCaptureDir);
+    }
+    for (final path in captureDirs) {
+      final captureDir = Directory(path);
+      if (await captureDir.exists()) {
+        await captureDir.delete(recursive: true);
+      }
+    }
+
+    final scansDir = await _scansDir(pipelineKind: record.pipelineKind);
+    if (!await scansDir.exists()) return;
+    await for (final entity in scansDir.list(followLinks: false)) {
+      final name = entity.uri.pathSegments
+          .where((segment) => segment.isNotEmpty)
+          .lastOrNull;
+      if (name == null ||
+          (name != record.id && !name.startsWith('${record.id}.'))) {
+        continue;
+      }
+      await entity.delete(recursive: entity is Directory);
+    }
+  }
+
+  Future<void> _addDeletionTombstone(ScanRecord record) async {
+    final next = <String>{
+      ..._deletionTombstones,
+      _deletionHash(record.id, record.pipelineKind),
+    };
+    final file = await _deletionTombstoneFile();
+    await file.writeAsString(jsonEncode(next.toList()..sort()), flush: true);
+    _deletionTombstones = next;
+  }
+
+  Future<Set<String>> _loadDeletionTombstones() async {
+    final file = await _deletionTombstoneFile();
+    if (!await file.exists()) return const <String>{};
+    final decoded = jsonDecode(await file.readAsString());
+    if (decoded is! List) {
+      throw const FormatException('deletion tombstones must be a JSON list');
+    }
+    final hashes = <String>{};
+    for (final value in decoded) {
+      if (value is! String || !RegExp(r'^[0-9a-f]{64}$').hasMatch(value)) {
+        throw const FormatException('invalid deletion tombstone hash');
+      }
+      hashes.add(value);
+    }
+    return hashes;
+  }
+
+  bool _isPermanentlyDeleted(String id, CapturePipelineKind pipelineKind) {
+    return _deletionTombstones.contains(_deletionHash(id, pipelineKind));
+  }
+
+  static String _deletionHash(String id, CapturePipelineKind pipelineKind) {
+    final bytes = utf8.encode(
+      'pocketworld.project-deletion.v1:${pipelineKind.wireName}:$id',
+    );
+    return sha256.convert(bytes).toString();
   }
 
   /// Where on disk to persist `<id>.glb` for a given record. W3 (待实现)
@@ -533,6 +656,11 @@ class ScanRecordStore {
   Future<File> _storeFile() async {
     final root = await _documentsDirectory();
     return File('${root.path}/scan_records.json');
+  }
+
+  Future<File> _deletionTombstoneFile() async {
+    final root = await _documentsDirectory();
+    return File('${root.path}/scan_record_deletion_tombstones.json');
   }
 
   Future<Directory> _documentsDirectory() async {

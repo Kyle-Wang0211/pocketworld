@@ -37,7 +37,7 @@
   "meActionSave": "Save",
   "meRenameDialogTitle": "Rename",
   "meDeleteDialogTitle": "Delete this scan?",
-  "meDeleteDialogContent": "\"{name}\" will be removed from your works. Items already published to the community are unaffected.",
+  "meDeleteDialogContent": "This will permanently delete \"{name}\" and all local original photos, point cloud, reconstruction databases, and caches. This action cannot be undone.",
   "@meDeleteDialogContent": {
     "placeholders": {
       "name": {

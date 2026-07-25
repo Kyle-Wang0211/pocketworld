@@ -353,4 +353,34 @@ void main() {
       DraftCardAction.none,
     );
   });
+
+  test('only the matching route-owned card can cancel itself for deletion', () {
+    expect(
+      recordOwnsActiveReconstruction(
+        recordCaptureDir: '/captures_official/live-official/',
+        recordPipelineKind: CapturePipelineKind.official,
+        activeCaptureDir: '/captures_official/live-official',
+        activePipelineKind: CapturePipelineKind.official,
+      ),
+      isTrue,
+    );
+    expect(
+      recordOwnsActiveReconstruction(
+        recordCaptureDir: '/captures_official/other',
+        recordPipelineKind: CapturePipelineKind.official,
+        activeCaptureDir: '/captures_official/live-official',
+        activePipelineKind: CapturePipelineKind.official,
+      ),
+      isFalse,
+    );
+    expect(
+      recordOwnsActiveReconstruction(
+        recordCaptureDir: '/captures_official/live-official',
+        recordPipelineKind: CapturePipelineKind.self,
+        activeCaptureDir: '/captures_official/live-official',
+        activePipelineKind: CapturePipelineKind.official,
+      ),
+      isFalse,
+    );
+  });
 }

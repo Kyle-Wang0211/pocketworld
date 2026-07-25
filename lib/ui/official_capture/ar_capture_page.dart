@@ -1757,30 +1757,32 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
 
   /// "完成" on the preview overlay: tear the worker down (frees the native
   /// session + sqlite db) and run the exit the finish flow deferred.
+  Future<void> _releaseLiveReconstructionResources() async {
+    // The root FAB must not become enabled until dispose releases the
+    // process-wide reconstruction lease.
+    await _endReconUmbrella();
+    _stopSfmStageTicker();
+    final recon = _sfmRecon;
+    final feedSub = _sfmFeedSub;
+    final eventSub = _sfmEventSub;
+    final failureSub = _highResFailureSub;
+    _sfmRecon = null;
+    _sfmFeedSub = null;
+    _sfmEventSub = null;
+    _highResFailureSub = null;
+    await feedSub?.cancel();
+    await eventSub?.cancel();
+    await failureSub?.cancel();
+    if (recon != null) await recon.dispose();
+  }
+
   Future<void> _onSfmPreviewDone() async {
     if (_sfmPhase != SfmPreviewPhase.refined &&
         _sfmPhase != SfmPreviewPhase.error) {
       return;
     }
     await _routeReleaseGate.release(
-      releaseResources: () async {
-        // The root FAB must not become enabled until dispose releases the
-        // process-wide reconstruction lease.
-        await _endReconUmbrella();
-        _stopSfmStageTicker();
-        final recon = _sfmRecon;
-        final feedSub = _sfmFeedSub;
-        final eventSub = _sfmEventSub;
-        final failureSub = _highResFailureSub;
-        _sfmRecon = null;
-        _sfmFeedSub = null;
-        _sfmEventSub = null;
-        _highResFailureSub = null;
-        await feedSub?.cancel();
-        await eventSub?.cancel();
-        await failureSub?.cancel();
-        if (recon != null) await recon.dispose();
-      },
+      releaseResources: _releaseLiveReconstructionResources,
       revealRoot: () {
         if (!mounted) return;
         setState(() {
@@ -1793,6 +1795,32 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         }
       },
     );
+  }
+
+  Future<void> _permanentlyDeleteActiveReconstruction(ScanRecord record) async {
+    if (!recordOwnsActiveReconstruction(
+      recordCaptureDir: record.captureDir,
+      recordPipelineKind: record.pipelineKind,
+      activeCaptureDir: _session?.captureDir,
+      activePipelineKind: CapturePipelineKind.official,
+    )) {
+      return;
+    }
+    final released = await _routeReleaseGate.release(
+      releaseResources: () async {
+        await _releaseLiveReconstructionResources();
+        await _coverageFeedSub?.cancel();
+        _coverageFeedSub = null;
+        final session = _session;
+        _session = null;
+        await session?.dispose();
+      },
+      revealRoot: () {},
+    );
+    if (!released) return;
+
+    await ScanRecordStore.instance.delete(record.id);
+    if (mounted) Navigator.of(context).pop(true);
   }
 
   /// Reveal Drafts without disposing the capture route or touching SfM.
@@ -2388,6 +2416,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           activeReconstructionCaptureDir: _session?.captureDir,
           activeReconstructionPipelineKind: CapturePipelineKind.official,
           onActiveReconstructionTap: _showReconstructionProgress,
+          onActiveReconstructionDelete: _permanentlyDeleteActiveReconstruction,
           officialResumeRoute: pushOfficialResumeRoute,
           officialViewerRoute: pushOfficialViewerRoute,
         ),

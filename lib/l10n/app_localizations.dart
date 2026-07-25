@@ -262,7 +262,7 @@ abstract class AppL10n {
   /// No description provided for @meDeleteDialogContent.
   ///
   /// In en, this message translates to:
-  /// **'\"{name}\" will be removed from your works. Items already published to the community are unaffected.'**
+  /// **'This will permanently delete \"{name}\" and all local original photos, point cloud, reconstruction databases, and caches. This action cannot be undone.'**
   String meDeleteDialogContent(String name);
 
   /// No description provided for @defaultUntitledScan.

@@ -94,7 +94,7 @@ class AppL10nEn extends AppL10n {
 
   @override
   String meDeleteDialogContent(String name) {
-    return '\"$name\" will be removed from your works. Items already published to the community are unaffected.';
+    return 'This will permanently delete \"$name\" and all local original photos, point cloud, reconstruction databases, and caches. This action cannot be undone.';
   }
 
   @override

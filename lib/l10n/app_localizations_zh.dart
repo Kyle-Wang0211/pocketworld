@@ -93,7 +93,7 @@ class AppL10nZh extends AppL10n {
 
   @override
   String meDeleteDialogContent(String name) {
-    return '\"$name\" 将从你的作品里移除。已发布到社区的内容不受影响。';
+    return '\"$name\" 的本机原始照片、点云、重建数据库和缓存将被永久删除，无法恢复。';
   }
 
   @override

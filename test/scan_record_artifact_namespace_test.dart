@@ -472,6 +472,164 @@ void main() {
     });
 
     test(
+      'deleting official permanently removes its complete project namespace',
+      () async {
+        const id = 'delete-complete-project';
+        await store.ensureLoaded();
+        final officialCapture = await store.captureDirFor(
+          id,
+          pipelineKind: CapturePipelineKind.official,
+        );
+        final officialPhotos = Directory(
+          '${officialCapture.path}/photos_highres',
+        );
+        final officialCache = Directory(
+          '${officialCapture.path}/matcher_cache/nested',
+        );
+        await officialPhotos.create(recursive: true);
+        await officialCache.create(recursive: true);
+        final jpeg = img.encodeJpg(img.Image(width: 1, height: 2));
+        await File('${officialPhotos.path}/frame_0001.jpg').writeAsBytes(jpeg);
+        await File(
+          '${officialPhotos.path}/frame_0001.json',
+        ).writeAsString('{}');
+        await File(
+          '${officialCapture.path}/official_photo_bundle.json',
+        ).writeAsString('{}');
+        await File(
+          '${officialCapture.path}/official_sfm_live.db',
+        ).writeAsString('database');
+        await File(
+          '${officialCapture.path}/official_sfm_sparse.ply',
+        ).writeAsString('point cloud');
+        await File('${officialCache.path}/matches.bin').writeAsString('cache');
+
+        final officialThumbnail = await store.thumbnailFileFor(
+          id,
+          pipelineKind: CapturePipelineKind.official,
+        );
+        final officialGlb = await store.glbFileFor(
+          id,
+          pipelineKind: CapturePipelineKind.official,
+        );
+        await officialThumbnail.writeAsString('thumbnail');
+        await officialGlb.writeAsString('mesh');
+
+        final selfCapture = await store.captureDirFor(
+          id,
+          pipelineKind: CapturePipelineKind.self,
+        );
+        final selfPhotos = Directory('${selfCapture.path}/photos_highres');
+        await selfPhotos.create(recursive: true);
+        await File('${selfPhotos.path}/frame_0001.jpg').writeAsBytes(jpeg);
+        await File('${selfPhotos.path}/frame_0001.json').writeAsString('{}');
+        final selfThumbnail = await store.thumbnailFileFor(
+          id,
+          pipelineKind: CapturePipelineKind.self,
+        );
+        final selfGlb = await store.glbFileFor(
+          id,
+          pipelineKind: CapturePipelineKind.self,
+        );
+        await selfThumbnail.writeAsString('self thumbnail');
+        await selfGlb.writeAsString('self mesh');
+
+        await store.addOrUpdate(
+          ScanRecord(
+            id: id,
+            name: 'official',
+            createdAt: DateTime.utc(2026, 7, 25),
+            pipelineKind: CapturePipelineKind.official,
+            thumbnailPath: officialThumbnail.path,
+            artifactPath: 'file://${officialGlb.path}',
+            captureDir: officialCapture.path,
+            photosDir: officialPhotos.path,
+            captureManifestPath:
+                '${officialCapture.path}/official_photo_bundle.json',
+            photoCount: 1,
+          ),
+        );
+
+        await store.delete(id);
+
+        expect(store.byId(id), isNull);
+        expect(officialCapture.existsSync(), isFalse);
+        expect(officialThumbnail.existsSync(), isFalse);
+        expect(officialGlb.existsSync(), isFalse);
+        expect(selfCapture.existsSync(), isTrue);
+        expect(selfThumbnail.existsSync(), isTrue);
+        expect(selfGlb.existsSync(), isTrue);
+
+        // A late reconstruction writer must not resurrect a project after the
+        // user confirmed permanent deletion.
+        await officialPhotos.create(recursive: true);
+        await File('${officialPhotos.path}/late_frame.jpg').writeAsBytes(jpeg);
+        await File(
+          '${officialPhotos.path}/late_frame.json',
+        ).writeAsString('{}');
+        await officialThumbnail.writeAsString('late thumbnail');
+        final lateScanCache = File(
+          '${officialThumbnail.parent.path}/$id.preview-cache',
+        );
+        await lateScanCache.writeAsString('late cache');
+
+        // A finalize callback already queued before deletion may still try to
+        // persist the same record. Tombstones must reject direct late writes
+        // as well as orphan-directory recovery.
+        await store.addOrUpdate(
+          ScanRecord(
+            id: id,
+            name: 'late finalize',
+            createdAt: DateTime.utc(2026, 7, 25),
+            pipelineKind: CapturePipelineKind.official,
+            captureDir: officialCapture.path,
+            photosDir: officialPhotos.path,
+            photoCount: 1,
+          ),
+        );
+        expect(store.byId(id), isNull);
+        expect(officialCapture.existsSync(), isFalse);
+
+        // Simulate one more late native write after the direct callback so a
+        // cold-load recovery pass also has material it might resurrect.
+        await officialPhotos.create(recursive: true);
+        await File(
+          '${officialPhotos.path}/recovery_late.jpg',
+        ).writeAsBytes(jpeg);
+        await File(
+          '${officialPhotos.path}/recovery_late.json',
+        ).writeAsString('{}');
+
+        final reloaded = ScanRecordStore.forTesting(
+          documentsDirectory: documentsDirectory,
+        );
+        await reloaded.ensureLoaded();
+        expect(
+          reloaded.records.where(
+            (record) =>
+                record.id == id &&
+                record.pipelineKind == CapturePipelineKind.official,
+          ),
+          isEmpty,
+          reason: 'a deleted project must never be recovered as an orphan',
+        );
+        expect(officialCapture.existsSync(), isFalse);
+        expect(officialThumbnail.existsSync(), isFalse);
+        expect(lateScanCache.existsSync(), isFalse);
+
+        final tombstones = File(
+          '${documentsDirectory.path}/scan_record_deletion_tombstones.json',
+        );
+        expect(tombstones.existsSync(), isTrue);
+        expect(
+          await tombstones.readAsString(),
+          isNot(contains(id)),
+          reason: 'the permanent deletion guard must not retain project ids',
+        );
+      },
+    );
+
+    test(
       'legacy record without pipeline_kind remains in self namespace',
       () async {
         final selfDir = Directory('${documentsDirectory.path}/scans');
