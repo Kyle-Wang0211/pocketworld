@@ -1513,11 +1513,19 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         ),
       );
     }
+    // [COLORIZE-PAR6 2026-07-26, signed] 3→6:cap_1785070530166049 实测
+    // colorize 12.57s 是纯解码吞吐瓶颈(par=3 完美线性 2.93×,decode
+    // p50≈240ms/帧全分辨率),且此时 BA 已结束、A16 六核全空。par=3 的
+    // 内存论证是 1280px 时代遗产(3×3.5MB);全分辨率 6 槽 ≈220MB,
+    // 远低于 BA 期实测 1877MB 不 OOM 的余量。取色数学(track 观测+
+    // 全分辨率双线性+round)与并行度无关,输出逐位一致(tool/
+    // colorize_parallel_check.dart 的对拍口径)。
+    const colorizePar = 6;
     final dstats = await sampleColorsPipelined(
       jobs: jobs,
       samples: samples,
       decode: _decodeJpegNative,
-      maxInFlight: 3,
+      maxInFlight: colorizePar,
       isCancelled: () => !identical(_colorizeTarget, snap),
     );
     final decoded = dstats.framesSampled;
@@ -1565,7 +1573,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       '${snap.refined ? "refined" : "local"} done in ${sw.elapsedMilliseconds}ms: '
           'colored $colored/$n (${(100 * colored / n).round()}%) | '
           'frames decoded=$decoded fail=$decodeFail '
-          'unique=${dstats.uniqueDecodes} par=3',
+          'unique=${dstats.uniqueDecodes} par=$colorizePar',
     );
     // 遥测【colorize】一行汇总(排序两个小数组,~几 ms,等待页后台)。
     try {

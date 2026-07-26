@@ -118,8 +118,20 @@ DIRTY_GHOST_MASK_SHA256 = (
 # prepaid_attempted/prepaid_written) even when the prepay left it nothing to
 # do. Kill switch: OFFICIAL_AETHER_QUADRATIC_PREPAY=0. The self-route
 # starved-window repay body stays behind the endpoint gate unchanged.
+# 2026-07-26 reviewed delta (telemetry-only, signed): T1/T2/T3 observation
+# timers — frame_split (per-frame five-way split of the match= wall: GPU
+# pairing / TVG+writes / official triangulation / local BA / tail),
+# finalize_split (stage-1 BA-vs-merge, enrich-gate wait, stage-2 interior via
+# pure-timing hooks added to the vendored IterativeGlobalRefinement), and a
+# build_stamp line at session create (twice in one day a capture was analysed
+# against code written after it). All records go to the pullable
+# sfm_match_fail.jsonl; zero algorithm changes. The vendored colmap tree also
+# carries upstream PR #4553 (RANSAC lock-scope fix, MERGED upstream; local
+# byte-parity proven on 40 device pairs; our builds never enabled OpenMP so
+# the original critical was compiled out — the patch is upstream alignment +
+# protection if parallel RANSAC is ever enabled).
 OFFICIAL_PRODUCTION_ENDPOINT_SHA256 = (
-    "f2db4385e870eae98815fe54d9c5ce32b80d323d8f028ec6e954809af4f947f2"
+    "b984c76213e9e5778b6189e6beaa295f2b83013b3c4038a47e35e1c6f087e37f"
 )
 REQUIRED_PRODUCTION_ENDPOINT_MARKERS = (
     b"colmap::PinholeCameraModel::model_id",

@@ -382,6 +382,19 @@ static std::atomic<int> gCaptureActive{1};
 extern "C" void aether_gpu_match_set_capture_active(int active) {
   gCaptureActive.store(active ? 1 : 0, std::memory_order_relaxed);
 }
+// [SPRINT-RACE 2026-07-26, signed] Read side for the Dart worker: the
+// finish_pending message travels the same FIFO as frame events, so a finish
+// tapped while a frame event is mid-flight cannot flip the Dart flag in time
+// to stop that event's preview BA (cap_1785070530166049 lost 9.5s exactly
+// this way). Swift flips gCaptureActive synchronously in stopSession, so an
+// FFI read here closes the race window.
+// `used` + default visibility: the only referencer is the Dart worker's
+// runtime dlsym — without a static reference the linker dead-strips the
+// symbol and the race gate silently degrades to message-only.
+extern "C" __attribute__((used, visibility("default"))) int
+aether_gpu_match_get_capture_active(void) {
+  return gCaptureActive.load(std::memory_order_relaxed);
+}
 static bool ThermalHot(void) {
   if (gCaptureActive.load(std::memory_order_relaxed) == 0) return false;
   if (@available(iOS 11.0, macOS 10.10.3, *)) {

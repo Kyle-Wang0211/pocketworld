@@ -30,6 +30,7 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:math' as math;
@@ -47,6 +48,11 @@ import 'pw_telemetry.dart';
 import 'sfm_feed_queue.dart';
 import 'telemetry_writer.dart';
 import 'true_parallax.dart';
+
+// [SPRINT-RACE 2026-07-26] matcher capture-active atomic, read side (see
+// pwofficial_gpu_match.mm aether_gpu_match_get_capture_active).
+typedef _CaptureActiveC = ffi.Int32 Function();
+typedef _CaptureActiveDart = int Function();
 
 /// One reconstruction snapshot (LOCAL_READY or REFINED). Always the FULL
 /// point set — render-side thinning is allowed, data-side never.
@@ -1350,6 +1356,29 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
   // Finalize's own stage-1/stage-2 refinement redoes this work to its own
   // convergence criteria, so skipping interim preview BAs sheds no data.
   var finishPending = false;
+  // [SPRINT-RACE 2026-07-26, signed] The finish_pending message travels the
+  // same FIFO as frame events, so a finish tapped while a frame event is
+  // mid-flight cannot flip the flag in time to stop THAT event's preview BA
+  // (cap4 lost 9.5s exactly this way). Swift flips the matcher's
+  // gCaptureActive atomic synchronously in stopSession — an FFI read closes
+  // the window. Unresolvable symbol → assume active (legacy behaviour).
+  _CaptureActiveDart? captureActiveFn;
+  var captureActiveResolved = false;
+  bool nativeCaptureActive() {
+    if (!captureActiveResolved) {
+      captureActiveResolved = true;
+      try {
+        captureActiveFn = ffi.DynamicLibrary.process()
+            .lookupFunction<_CaptureActiveC, _CaptureActiveDart>(
+              'aether_gpu_match_get_capture_active',
+            );
+      } catch (_) {
+        // Symbol absent (host tests / old binary) — gate stays message-only.
+      }
+    }
+    final fn = captureActiveFn;
+    return fn == null || fn() != 0;
+  }
   // True session high-water footprint — the public TASK_VM_INFO layout has no
   // historical peak field, so we take a running max of the instantaneous
   // sample taken right after each heavy native call.
@@ -1659,8 +1688,12 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
             try {
               // [SPRINT-MODE] No preview BA once finish is pending — see the
               // finishPending declaration for the measured rationale.
-              final beforeGlobal =
-                  finishPending ? null : session!.previewTracked();
+              // [SPRINT-RACE] Also consult the native capture-active atomic:
+              // it flips synchronously with the AR session stop, closing the
+              // in-flight-event race the message-driven flag cannot cover.
+              final beforeGlobal = (finishPending || !nativeCaptureActive())
+                  ? null
+                  : session!.previewTracked();
               if (beforeGlobal != null &&
                   publishPolicy.shouldRunGlobalBa(
                     registeredFrames: fedIds.length,
