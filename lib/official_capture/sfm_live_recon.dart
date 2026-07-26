@@ -496,6 +496,8 @@ class SfmLiveRecon {
   int _inFlight = 0; // frames sent to the worker but not yet acked
   int _fedOk = 0;
   bool _finalizeRequested = false; // finish tapped — no new frames accepted
+  // [QUAD-PREPAY 2026-07-26] one idle prepay cmd in flight at a time.
+  bool _prepayInFlight = false;
   bool _finalizeSent = false; // finalize cmd actually dispatched to worker
   bool _pumping = false;
   bool _disposed = false;
@@ -894,6 +896,21 @@ class SfmLiveRecon {
     _toWorker.send(const <String, Object?>{'cmd': 'finalize'});
   }
 
+  /// [QUAD-PREPAY 2026-07-26, signed] Drive the capture-idle official
+  /// quadratic prepay: only when the frame queue is truly empty (no spooled
+  /// frames, nothing in flight), capture still running, and no prepay cmd
+  /// already outstanding. The worker answers with repay_done{n}; n>0 chains
+  /// the next tick, so idle stretches drain the due-pair queue while a new
+  /// frame's cmd always preempts (FIFO ahead of the next repay cmd). Budget
+  /// 2 pairs/tick keeps the worst-case added shutter latency to one small
+  /// matcher call (~a few hundred ms hot).
+  void _maybePrepay() {
+    if (_disposed || _finalizeRequested || _prepayInFlight) return;
+    if (_spool.isNotEmpty || _inFlight > 0) return;
+    _prepayInFlight = true;
+    _toWorker.send(const <String, Object?>{'cmd': 'repay', 'budget': 2});
+  }
+
   /// Ends the capture. New frames are refused from this moment; the worker
   /// finishes the disk queue first, then runs finalize_async (phase 1
   /// blocks in-worker; LOCAL_READY and REFINED/ERROR arrive via [events]).
@@ -906,6 +923,10 @@ class SfmLiveRecon {
         'SfmLive',
         'finalize deferred: inFlight=$_inFlight queued=${_spool.length}',
       );
+      // [SPRINT-MODE 2026-07-26] Tell the worker immediately so the drain
+      // frames skip interim preview BAs (measured 9.5s of wasted wall time
+      // between the finish tap and REFINED on cap_1785070530166049).
+      _toWorker.send(const <String, Object?>{'cmd': 'finish_pending'});
       unawaited(_pump());
       return;
     }
@@ -1137,6 +1158,15 @@ class SfmLiveRecon {
         // Worker slot freed — feed the next spooled frame (and dispatch the
         // deferred finalize once everything drained).
         unawaited(_pump());
+        // [QUAD-PREPAY 2026-07-26, signed] Queue empty → spend the idle gap
+        // prepaying official quadratic pairs so finish-time debt → 0.
+        _maybePrepay();
+      case 'repay_done':
+        _prepayInFlight = false;
+        // Chain while native reports work remained AND we are still idle —
+        // a newly arriving frame naturally preempts (its cmd is FIFO-ahead
+        // of the next repay cmd, and _maybePrepay refuses while busy).
+        if (((msg['n'] as int?) ?? 0) > 0) _maybePrepay();
       case 'frame_removed':
         final requestId = msg['requestId'] as int;
         final frameId = msg['frameId'] as int;
@@ -1312,6 +1342,14 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
   Timer? pollTimer;
   var refineStart = 0;
   var disposed = false;
+  // [SPRINT-MODE 2026-07-26, signed] finish tapped → the drain frames still
+  // feed (their matches/observations are delivery data), but the periodic
+  // streaming-global-BA PREVIEW publishes stop: the user is on the
+  // processing screen, and cap_1785070530166049 measured a 9.5s preview BA
+  // running after the finish tap — pure wasted wall time before REFINED.
+  // Finalize's own stage-1/stage-2 refinement redoes this work to its own
+  // convergence criteria, so skipping interim preview BAs sheds no data.
+  var finishPending = false;
   // True session high-water footprint — the public TASK_VM_INFO layout has no
   // historical peak field, so we take a running max of the instantaneous
   // sample taken right after each heavy native call.
@@ -1619,11 +1657,15 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
             // checkpoint after the accepted frame, so later captured photos can
             // spool without overlapping this BA or starving the shutter.
             try {
-              final beforeGlobal = session!.previewTracked();
-              if (publishPolicy.shouldRunGlobalBa(
-                registeredFrames: fedIds.length,
-                pointCount: beforeGlobal.count,
-              )) {
+              // [SPRINT-MODE] No preview BA once finish is pending — see the
+              // finishPending declaration for the measured rationale.
+              final beforeGlobal =
+                  finishPending ? null : session!.previewTracked();
+              if (beforeGlobal != null &&
+                  publishPolicy.shouldRunGlobalBa(
+                    registeredFrames: fedIds.length,
+                    pointCount: beforeGlobal.count,
+                  )) {
                 final globalSw = Stopwatch()..start();
                 final globalResult = session!.globalRefine();
                 globalSw.stop();
@@ -1776,6 +1818,30 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
           'ok': removed,
           'stats': stats,
         });
+      case 'finish_pending':
+        // [SPRINT-MODE] Finish tapped while frames are still draining: keep
+        // feeding (delivery data), stop interim preview BAs (wasted wall
+        // time before REFINED — see finishPending declaration).
+        finishPending = true;
+      case 'repay':
+        // [QUAD-PREPAY 2026-07-26, signed] Capture-idle official quadratic
+        // prepay: the facade only sends this when the frame queue is empty,
+        // so the matcher works through the (i, i+2^k) long-range pairs the
+        // finalize pass would otherwise have to run at finish time. Native
+        // returns matcher invocations consumed (0 = nothing due); the facade
+        // chains while >0 and still idle. Never runs once finish is pending
+        // (finalize's own pass sprints through the remainder).
+        var repaid = 0;
+        if (!finishPending && session != null) {
+          try {
+            repaid = session!.liveRepay(
+              maxPairs: (msg['budget'] as int?) ?? 2,
+            );
+          } catch (e) {
+            wlog('quad-prepay failed (non-fatal): $e');
+          }
+        }
+        boot.reply.send(<String, Object?>{'evt': 'repay_done', 'n': repaid});
       case 'resume':
         // Resume an interrupted finalize from the retained sqlite db (no new
         // frames fed). aether_sfm_create opens the existing db; finalizeAsync's

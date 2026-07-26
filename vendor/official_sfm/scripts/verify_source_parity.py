@@ -105,8 +105,21 @@ DIRTY_GHOST_MASK_SHA256 = (
 # shipped plugin currently disarms the budget entirely
 # (OFFICIAL_AETHER_ENRICH_TIME_BUDGET_MS=0, user-signed: full K12 + full
 # quadratic, no truncation).
+# 2026-07-26 reviewed delta (QUAD-PREPAY, signed): the capture-idle channel
+# (aether_sfm_live_repay, driven by the Dart facade only when the frame queue
+# is empty) now performs the OFFICIAL quadratic-overlap prepay at the
+# production endpoint: the exact candidate set (i, i+2^k with 2^k > live K),
+# matcher, ratio, and colmap-DEFAULT TwoViewGeometry verification the
+# finalize AddOfficialQuadraticPairs pass runs at finish time, executed
+# earlier so the finish-time debt shrinks toward zero (user constraint:
+# post-capture wait must not grow). db-only writes, identical per-pair
+# results (descriptors frozen at extraction); the finalize pass remains the
+# unconditional backstop and now always emits its quadratic_summary (with
+# prepaid_attempted/prepaid_written) even when the prepay left it nothing to
+# do. Kill switch: OFFICIAL_AETHER_QUADRATIC_PREPAY=0. The self-route
+# starved-window repay body stays behind the endpoint gate unchanged.
 OFFICIAL_PRODUCTION_ENDPOINT_SHA256 = (
-    "23be3781b1be87f2dfb6d8af23693cbd6c4739ccd1e8d0eecbcbae71ace4bcec"
+    "f2db4385e870eae98815fe54d9c5ce32b80d323d8f028ec6e954809af4f947f2"
 )
 REQUIRED_PRODUCTION_ENDPOINT_MARKERS = (
     b"colmap::PinholeCameraModel::model_id",
@@ -117,7 +130,11 @@ REQUIRED_PRODUCTION_ENDPOINT_MARKERS = (
     b"SetAllCameraIntrinsicsConstant(",
     b"constexpr bool kProductionOfficialEndpointOnly = true;",
     b"if (kProductionOfficialEndpointOnly) return;",
-    b"if (kProductionOfficialEndpointOnly) return 0;",
+    # 2026-07-26 QUAD-PREPAY: the one `return 0;`-form gate (live_repay) now
+    # routes the production path to the official quadratic prepay instead of
+    # a bare no-op; the marker below pins that wiring (and the gate itself)
+    # against silent removal. The self-route repay body stays behind it.
+    b"if (kProductionOfficialEndpointOnly) {\n    return PrepayQuadraticTick(s, max_pairs);\n  }",
     # Upstream quadratic overlap must stay wired and stay official-default:
     # a silent removal (or a switch to the tightened self-route gates) would
     # otherwise pass every other check in this file.
