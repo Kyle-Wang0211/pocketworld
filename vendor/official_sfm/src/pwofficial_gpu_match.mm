@@ -1,5 +1,74 @@
-// pwofficial_gpu_match.mm — pocketworld-vendored tiled-GEMM Metal descriptor
-// matcher, adapted from the research harness's GpuMatch.m (iosapp/Sources,
+// pwofficial_gpu_match_v2.mm — pocketworld-vendored Metal descriptor matcher,
+// v2 candidate: KNIFE-A/B single-pass dual-direction fused kernel layered on
+// top of the shipped v1 (tiled-GEMM two-pass + KNIFE-C chunked dispatch).
+//
+// ── v2 design (parity-audited on M3 Pro host, 2026-07-26) ────────────────
+// One traversal of the numA x numB dot grid computes BOTH directions:
+//   * row-wise top-2 (A→B) tracked in registers, gated in-kernel exactly as
+//     v1 (angular acos domain plain / normalized-L2 + 131072 sentinel
+//     guided), written to outAB;
+//   * column-wise top-2 partials per (row-block, column) written to a small
+//     SoA device buffer (best/second fp32 + row idx int32, ~6 MB @ 8192²);
+//     a tiny merge kernel (pw_match_merge_cols) reduces the partials over
+//     row-blocks in ASCENDING order and applies the SAME final gates,
+//     reproducing the standalone B→A pass bit-exactly. The fully redundant
+//     second GEMM of v1 is eliminated (~2x), and the 32-wide column tile +
+//     per-simdgroup accumulator staging cuts threadgroup barriers from 6 to
+//     2 per 32 columns (measured 3.05x total, 256,418/256,418 matches
+//     byte-identical on the 402-pair K12 device-capture fixture).
+// Tie-break semantics (no epsilon: dots are exact integers < 2^24 in fp32):
+// best = max dot, LOWEST index wins ties; second = max of the remaining
+// multiset. Every scan iterates ascending index with strict `>`; every merge
+// level (lcg butterfly, ascending-sgid loop, ascending row-block loop)
+// combines an ordered lower-index chunk with a higher-index chunk keeping
+// "ours" on ties — so the global tie-break matches v1's single ascending
+// scan exactly.
+// Zero-padding invariant: the host pads BOTH descriptor buffers (and, when
+// guided, both keypoint buffers) to 128-row multiples, zero-filled, and
+// over-allocates outAB to the padded row count. Padded rows/columns produce
+// dot == 0 candidates which under strict-`>` insertion against best/second
+// initialized to 0 can never become best nor raise second — constructively
+// harmless — so the hot loops carry NO per-candidate bounds guards (guards
+// measurably cost ~1.4 ms/pair via lost unrolling). Verified on truncated
+// odd-count fixtures.
+// Guided mode: function-constant-specialized pipelines. The plain pipeline
+// (kGuideMode=0) keeps the unguarded hot loop — zero cost. Guided pipelines
+// insert the v1 geometry gate before top-2 insertion in BOTH trackers:
+//   row (A→B):    q = pointsA[row], d = pointsB[col], M = matrixAB;
+//   column (B→A): q = pointsB[col], d = pointsA[row], M = matrixBA —
+// exactly what v1's second pass computes with its swapped arguments.
+// ⚠️ GUIDED DEFAULTS TO THE V1 PATH. The gate's nom is a near-cancellation,
+// so its float value is hypersensitive to the compiler's fast-math algebra,
+// which differs between the two kernels' compilations (loop shapes drive
+// different contraction/reassociation). Host-probed on M3 Pro: 1,575
+// mul/add/fma recombination hypotheses of the gate formula, extracted
+// against 1,112 black-box borderline probes of the compiled v1 pipeline —
+// ZERO reproduce v1's accept bits (best 62/712 mismatches; mode-2 also hits
+// non-emulable approximate native division). Bit-parity of a fused guided
+// gate against v1 is therefore NOT achievable by construction; divergence is
+// confined to candidates within ~1e-3 relative of the residual threshold
+// (measured: only razor-thin res=0.05 fixtures flip, ±1 match/pair). Until
+// a bit-stability strategy exists, guided calls route to the proven v1
+// two-pass kernel (bit-exact trivially); the fused guided pipelines remain
+// implemented and opt-in for device evaluation.
+// Kill switches (env, cached per process like the other knobs):
+//   OFFICIAL_AETHER_MATCH_V2       default 1; 0 = shipped v1 path verbatim.
+//   OFFICIAL_AETHER_MATCH_V2_HALF  default 0; 1 = half-storage ABI instead
+//                                  of the default packed-u8 ABI (triage).
+//   OFFICIAL_AETHER_MATCH_V2_GUIDED_FUSED default 0 (guided → v1 path);
+//                                  1 = fused guided kernel (near-parity:
+//                                  boundary-only divergence, see above).
+//   OFFICIAL_AETHER_MATCH_CHUNK_TARGET_MS keeps its KNIFE-C meaning for v2:
+//   0 = one command buffer (fused + merge); >0 = row-block chunks sized by
+//   the same self-calibrating cost model with the same thermal duty-cycle
+//   gaps, merge dispatched once after the last chunk. Row blocks are
+//   independent and partials are indexed by ABSOLUTE row-block, so any
+//   chunking is bit-identical (host-verified chunked-vs-monolithic cmp).
+// Whole match calls are serialized behind a mutex (buffer pools are
+// grow-only shared state; GPU work is serial anyway).
+//
+// ── v1 heritage (kept verbatim below, selectable at runtime) ─────────────
+// Adapted from the research harness's GpuMatch.m (iosapp/Sources,
 // bench-proven on iPhone 14 Pro: 11568×11568 @ 0.7 ratio, mutual cross-check
 // in 119 ms). Two deltas vs the harness original:
 //
@@ -57,7 +126,28 @@ extern "C" int aether_gpu_match_last_error(char* buf, int cap) {
   return (int)(n < (size_t)cap ? n : (size_t)cap - 1);
 }
 
-// ── pw_match_gemm v6 kernel — COLMAP-faithful angular matcher ───────────
+// [MATCH-FAIL TELEMETRY 2026-07-11] rc=7 is the ONLY "GPU command
+// failed" code — distinct from rc=0 with *out_num_matches==0 (a
+// legitimate zero-match pair) — so callers can bucket failures by rc.
+// Log the underlying Metal error rate-limited (a thermal collapse fails
+// hundreds of pairs back-to-back; capture 43 lost a 66-frame block this
+// way) so device logs show WHY (e.g. IOGPUCommandQueueErrorDomain /
+// GPU hang under thermal pressure).
+// [RC7-FILELOG 2026-07-11] Also stash the Metal error for the caller's
+// timestamped sfm_match_fail.jsonl line (NSLog is lost on detached/拔线
+// runs; the jsonl in the app container is recovered by devicectl copy).
+// Shared by the v1 and v2 paths so the rate limit covers the process.
+static void NoteCmdError(id<MTLCommandBuffer> cmd) {
+  static std::atomic<long> gCmdErrCount{0};
+  const long k = ++gCmdErrCount;
+  if (k <= 5 || (k % 100) == 0) {
+    NSLog(@"[pwofficial_gpu_match] command buffer error #%ld (rc=7): %@", k,
+          cmd.error);
+  }
+  stashLastError(cmd.error);
+}
+
+// ── pw_match_gemm v6 kernel — COLMAP-faithful angular matcher (v1) ───────
 // Bit-parity with FindBestMatchesOneWayBruteForce (colmap/feature/sift.cc:770):
 // best/second are selected by MAXIMUM dot product (the GEMM output), and the
 // ratio + absolute thresholds are applied in the acos(dot/512^2) ANGULAR
@@ -315,9 +405,12 @@ static double ThermalGapPct(void) {
 }
 // EMA of measured GPU ms per (row threadgroup × 1024 database columns) —
 // the chunk sizer's cost model. Self-calibrates across thermal states.
+// v1 and v2 keep separate EMAs (a v2 fused threadgroup costs ~2x a v1
+// per-direction threadgroup; the model self-calibrates either way).
 static std::atomic<double> gMsPerTgKCol{0.0};
+static std::atomic<double> gMsPerTgKColV2{0.0};
 
-// Lazily-built shared Metal context.
+// Lazily-built shared Metal context (v1).
 static id<MTLDevice> gDev;
 static id<MTLCommandQueue> gQueue;
 static id<MTLComputePipelineState> gGemm;
@@ -345,7 +438,8 @@ static BOOL ensureMetal(void) {
   return gGemm != nil;
 }
 
-// Shared GEMM implementation. guideMode=0 is the original matcher;
+// Shared GEMM implementation (v1, shipped path — kept verbatim; selected by
+// OFFICIAL_AETHER_MATCH_V2=0). guideMode=0 is the original matcher;
 // guideMode=1 constrains candidates by E/F and guideMode=2 by H. The reverse
 // pass receives matrixBA (E/F transpose or H inverse), preserving the same
 // mutual cross-check as the unconstrained path.
@@ -452,25 +546,6 @@ static int matchPairsImpl(const uint8_t* dA, int nA, const float* xyA,
           threadsPerThreadgroup:MTLSizeMake(512, 1, 1)];
       [enc endEncoding];
     };
-    // [MATCH-FAIL TELEMETRY 2026-07-11] rc=7 is the ONLY "GPU command
-    // failed" code — distinct from rc=0 with *out_num_matches==0 (a
-    // legitimate zero-match pair) — so callers can bucket failures by rc.
-    // Log the underlying Metal error rate-limited (a thermal collapse fails
-    // hundreds of pairs back-to-back; capture 43 lost a 66-frame block this
-    // way) so device logs show WHY (e.g. IOGPUCommandQueueErrorDomain /
-    // GPU hang under thermal pressure).
-    // [RC7-FILELOG 2026-07-11] Also stash the Metal error for the caller's
-    // timestamped sfm_match_fail.jsonl line (NSLog is lost on detached/拔线
-    // runs; the jsonl in the app container is recovered by devicectl copy).
-    auto noteCmdError = [](id<MTLCommandBuffer> cmd) {
-      static std::atomic<long> gCmdErrCount{0};
-      const long k = ++gCmdErrCount;
-      if (k <= 5 || (k % 100) == 0) {
-        NSLog(@"[pwofficial_gpu_match] command buffer error #%ld (rc=7): %@", k,
-              cmd.error);
-      }
-      stashLastError(cmd.error);
-    };
     const double chunkTargetMs = ChunkTargetMs();
     if (chunkTargetMs <= 0.0) {
       // Legacy monolithic path (kill switch): both directions in a single
@@ -485,7 +560,7 @@ static int matchPairsImpl(const uint8_t* dA, int nA, const float* xyA,
       [cmd commit];
       [cmd waitUntilCompleted];
       if (cmd.status == MTLCommandBufferStatusError) {
-        noteCmdError(cmd);
+        NoteCmdError(cmd);
         return 7;
       }
     } else {
@@ -519,7 +594,7 @@ static int matchPairsImpl(const uint8_t* dA, int nA, const float* xyA,
           [cmd commit];
           [cmd waitUntilCompleted];
           if (cmd.status == MTLCommandBufferStatusError) {
-            noteCmdError(cmd);
+            NoteCmdError(cmd);
             return 7;
           }
           const double gpuMs = (cmd.GPUEndTime - cmd.GPUStartTime) * 1000.0;
@@ -569,6 +644,716 @@ static int matchPairsImpl(const uint8_t* dA, int nA, const float* xyA,
   }
 }
 
+// ═════════════════════════ v2: fused dual-direction ═════════════════════
+
+// Kill switches — cached per process like every other knob in this file
+// (parity harnesses must therefore use one process per env config).
+static bool MatchV2Enabled(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char* e = getenv("OFFICIAL_AETHER_MATCH_V2");
+    v = (e && atoi(e) == 0) ? 0 : 1;  // default ON
+  }
+  return v != 0;
+}
+static bool MatchV2ForceHalf(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char* e = getenv("OFFICIAL_AETHER_MATCH_V2_HALF");
+    v = (e && atoi(e) != 0) ? 1 : 0;  // default packed-u8 ABI
+  }
+  return v != 0;
+}
+// Guided calls default to the v1 two-pass path: the fused guided gate cannot
+// be made bit-identical to v1's compiled gate (fast-math algebra is compile-
+// context-dependent and the gate is cancellation-amplified — see header).
+static bool MatchV2GuidedFused(void) {
+  static int v = -1;
+  if (v < 0) {
+    const char* e = getenv("OFFICIAL_AETHER_MATCH_V2_GUIDED_FUSED");
+    v = (e && atoi(e) != 0) ? 1 : 0;  // default OFF
+  }
+  return v != 0;
+}
+
+// ── pw_match_gemm2 kernel — fused dual-direction, v2 ────────────────────
+// Same COLMAP-faithful selection + gates as pw_match_gemm v6 (see that
+// kernel's comment); the deltas are structural: 32-wide column tiles,
+// per-simdgroup accumulator staging (2 threadgroup barriers per tile instead
+// of 6), row results finished in-kernel, column direction emitted as
+// per-row-block partials for pw_match_merge_cols. Specialized via function
+// constants: kPacked (u8-packed vs half descriptor ABI — u8→half is exact so
+// both are bit-identical) and kGuideMode (0 keeps the hot loops entirely
+// gate-free; 1/2 insert the v1 geometry gate before top-2 insertion in BOTH
+// trackers).
+static const char* kGemm2KernelSrc = R"MSL(
+#include <metal_stdlib>
+#include <metal_simdgroup_matrix>
+using namespace metal;
+
+constant bool kPacked    [[function_constant(0)]];
+constant uint kGuideMode [[function_constant(1)]];
+
+constant uint kD  = 128u;         // descriptor dim
+constant uint kKT = 16u;          // K tiles of 8
+constant uint kSG = 16u;          // simdgroups per threadgroup
+constant uint kMB = kSG * 8u;     // 128 query rows per threadgroup
+constant uint kBN = 32u;          // database columns per tile (v1: 16)
+constant uint kNT = kBN / 8u;     // 8x8 col blocks per tile
+constant uint kTGT = kSG * 32u;   // 512 threads
+constant float kInvSqNorm = 1.0f / 262144.0f;  // 1/512^2 (exact power of two)
+
+// v1's geometry gate (E/F Sampson-style band, H transfer error), open-coded
+// verbatim at both tracker sites below. PARITY-CRITICAL: `nom` suffers
+// near-cancellation for candidates close to the epipolar line, so single-ulp
+// differences in intermediate rounding (fma contraction choices) amplify to
+// ~1e-3 relative residual shifts and flip borderline gates. The gate is
+// therefore kept TEXTUALLY identical to v1 — same expression trees, same
+// device address spaces for points and matrix, loads inside the candidate
+// loop — so the Metal compiler makes the same contraction choices it makes
+// for v1 (host-verified: guided fixtures cmp byte-identical). Do NOT
+// refactor into a helper taking values or hoist the loads.
+// PW_GUIDE_OK expands v1's gate body: sets `geometryOK` from (Q, DPT, M).
+#define PW_GUIDE_OK(Q, DPT, M)                                            \
+  bool geometryOK = true;                                                 \
+  if (kGuideMode == 1u) {                                                 \
+    const float2 q = (Q);                                                 \
+    const float2 d = (DPT);                                               \
+    const float3 p1 = float3(q, 1.0f);                                    \
+    const float3 p2 = float3(d, 1.0f);                                    \
+    const float3 line2 = float3(                                          \
+        M[0] * p1.x + M[1] * p1.y + M[2],                                 \
+        M[3] * p1.x + M[4] * p1.y + M[5],                                 \
+        M[6] * p1.x + M[7] * p1.y + M[8]);                                \
+    const float3 line1 = float3(                                          \
+        M[0] * p2.x + M[3] * p2.y + M[6],                                 \
+        M[1] * p2.x + M[4] * p2.y + M[7],                                 \
+        M[2] * p2.x + M[5] * p2.y + M[8]);                                \
+    const float nom = dot(p2, line2);                                     \
+    const float denom = dot(line2.xy, line2.xy) +                         \
+                        dot(line1.xy, line1.xy);                          \
+    geometryOK = denom > 1e-12f &&                                        \
+                 nom * nom <= maxResidual * denom;                        \
+  } else if (kGuideMode == 2u) {                                          \
+    const float2 q = (Q);                                                 \
+    const float2 d = (DPT);                                               \
+    const float hx = M[0] * q.x + M[1] * q.y + M[2];                      \
+    const float hy = M[3] * q.x + M[4] * q.y + M[5];                      \
+    const float hz = M[6] * q.x + M[7] * q.y + M[8];                      \
+    if (abs(hz) <= 1e-8f) {                                               \
+      geometryOK = false;                                                 \
+    } else {                                                              \
+      const float2 delta = float2(hx / hz, hy / hz) - d;                  \
+      geometryOK = dot(delta, delta) <= maxResidual;                      \
+    }                                                                     \
+  }
+
+kernel void pw_match_gemm2(
+    device const half*  Ah          [[buffer(0)]],
+    device const half*  Bh          [[buffer(1)]],
+    device int*         outAB       [[buffer(2)]],
+    constant uint&      numA        [[buffer(3)]],
+    constant uint&      numB        [[buffer(4)]],
+    constant float&     maxRatio    [[buffer(5)]],
+    constant float&     maxDistance [[buffer(6)]],
+    constant uint&      rowBase     [[buffer(7)]],
+    device float*       colBestOut  [[buffer(8)]],
+    device float*       colSecondOut[[buffer(9)]],
+    device int*         colIdxOut   [[buffer(10)]],
+    constant uint&      colStride   [[buffer(11)]],
+    device const uint*  Ap          [[buffer(12)]],
+    device const uint*  Bp          [[buffer(13)]],
+    device const float2* pointsA    [[buffer(14)]],
+    device const float2* pointsB    [[buffer(15)]],
+    device const float* matAB       [[buffer(16)]],
+    device const float* matBA       [[buffer(17)]],
+    constant float&     maxResidual [[buffer(18)]],
+    uint tgid [[threadgroup_position_in_grid]],
+    uint lid  [[thread_index_in_threadgroup]],
+    uint sgid [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]) {
+  // Threadgroup budget: 8 KB + 16 KB + 3*2 KB = 30 KB (< 32 KB limit).
+  threadgroup half4 Bsh4[kBN * kD / 4u];       //  8 KB staged B tile
+  threadgroup float accSG[kSG * 8u * kBN];     // 16 KB per-SG 8 x kBN scratch
+  threadgroup float cpBest[kSG * kBN];         //  2 KB per-SG column partials
+  threadgroup float cpSecond[kSG * kBN];       //  2 KB
+  threadgroup int   cpIdx[kSG * kBN];          //  2 KB
+  threadgroup half* Bsh = (threadgroup half*)Bsh4;
+
+  // rowBase: first row-block of this chunk (KNIFE-C). Row blocks are
+  // independent and column partials are indexed by the ABSOLUTE row-block,
+  // so per-row and per-column results are identical for any chunking.
+  const uint rb   = rowBase + tgid;   // absolute row-block index
+  const uint row0 = rb * kMB;
+  if (row0 >= numA) { return; }  // dispatch-overshoot safety (uniform)
+
+  const uint lrow = lane >> 2u;                // 0..7: row within simdgroup
+  const uint lcg  = lane & 3u;                 // 0..3: column group
+  const uint gRow = row0 + sgid * 8u + lrow;   // global (padded) A row
+
+  // Load this simdgroup's 8 query rows into registers (16 x 8x8 half frags).
+  const uint aRow0 = row0 + sgid * 8u;
+  simdgroup_matrix<half, 8, 8> aFrag[kKT];
+  if (!kPacked) {
+    for (uint k = 0; k < kKT; ++k) {
+      simdgroup_load(aFrag[k], Ah + aRow0 * kD + k * 8u, kD, ulong2(0, 0));
+    }
+  } else {
+    // Packed A: unpack this SG's 8 rows (256 uints) into a Bsh quadrant, in
+    // 4 waves of 4 simdgroups (Bsh = 4096 halfs = exactly 4 x (8*128)).
+    const uint wave = sgid >> 2u, slot = sgid & 3u;
+    threadgroup half* scratch = Bsh + slot * (8u * kD);
+    for (uint w = 0; w < 4u; ++w) {
+      if (w == wave) {
+        device const uint* src = Ap + (aRow0 * kD) / 4u;
+        threadgroup half4* s4 = (threadgroup half4*)scratch;
+        for (uint e = lane; e < 256u; e += 32u) {
+          const uint u = src[e];
+          s4[e] = half4(half(u & 0xFFu), half((u >> 8u) & 0xFFu),
+                        half((u >> 16u) & 0xFFu), half(u >> 24u));
+        }
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint k = 0; k < kKT; ++k) {
+          simdgroup_load(aFrag[k], scratch + k * 8u, kD, ulong2(0, 0));
+        }
+      }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+  }
+
+  // Running A->B top-2 for row `gRow`, held by the lcg==0 lane.
+  float rowBestD = 0.0f, rowSecondD = 0.0f;
+  int   rowBestI = -1;
+
+  for (uint col0 = 0; col0 < numB; col0 += kBN) {
+    // Cooperative contiguous B-tile load (host pads B to a 128-multiple,
+    // zero-filled, so the tile read never goes OOB).
+    if (!kPacked) {
+      device const half4* src4 = (device const half4*)(Bh + col0 * kD);
+      for (uint e = lid; e < kBN * kD / 4u; e += kTGT) { Bsh4[e] = src4[e]; }
+    } else {
+      device const uint* src = Bp + (col0 * kD) / 4u;
+      for (uint e = lid; e < kBN * kD / 4u; e += kTGT) {
+        const uint u = src[e];
+        Bsh4[e] = half4(half(u & 0xFFu), half((u >> 8u) & 0xFFu),
+                        half((u >> 16u) & 0xFFu), half(u >> 24u));
+      }
+    }
+    // Barrier (A): Bsh ready; also fences last tile's cp readers vs the
+    // cp writes below (merge threads re-join here).
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // GEMM: this SG's 8 rows x the 32-column tile, staged per-SG (no
+    // cross-SG sharing -> simdgroup_barrier only).
+    for (uint nt = 0; nt < kNT; ++nt) {
+      simdgroup_matrix<float, 8, 8> c =
+          make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+      for (uint k = 0; k < kKT; ++k) {
+        simdgroup_matrix<half, 8, 8> bF;
+        simdgroup_load(bF, Bsh + (nt * 8u) * kD + k * 8u, kD, ulong2(0, 0),
+                       true);
+        simdgroup_multiply_accumulate(c, aFrag[k], bF, c);
+      }
+      simdgroup_store(c, accSG + sgid * (8u * kBN) + nt * 8u, kBN,
+                      ulong2(0, 0));
+    }
+    simdgroup_barrier(mem_flags::mem_threadgroup);
+
+    // ── Row direction (A->B): lane lcg scans 8 consecutive columns
+    //    ascending with strict `>` (v1 semantics), then a 2-stage lcg
+    //    butterfly (ours-on-tie, ascending groups) reduces to lcg==0.
+    {
+      threadgroup const float* accRow =
+          accSG + sgid * (8u * kBN) + lrow * kBN;
+      const uint per = kBN / 4u;
+      float pb = 0.0f, ps = 0.0f;
+      int pbi = -1;
+      for (uint t = 0; t < per; ++t) {
+        const uint cLoc = lcg * per + t;
+        if (kGuideMode != 0u) {
+          // Row gate: q = pointsA[query row], d = pointsB[candidate col],
+          // M = matrixAB — v1 pass-1 verbatim.
+          PW_GUIDE_OK(pointsA[gRow], pointsB[col0 + cLoc], matAB)
+          if (!geometryOK) continue;
+        }
+        const float d = accRow[cLoc];
+        if (d > pb) { ps = pb; pb = d; pbi = (int)(col0 + cLoc); }
+        else if (d > ps) { ps = d; }
+      }
+      for (ushort off = 1; off <= 2; off <<= 1) {
+        const float ob = simd_shuffle_xor(pb, off);
+        const float os = simd_shuffle_xor(ps, off);
+        const int   oi = simd_shuffle_xor(pbi, off);
+        if (ob > pb) { ps = max(os, pb); pb = ob; pbi = oi; }
+        else         { ps = max(ps, ob); }
+      }
+      if (lcg == 0u) {
+        if (pb > rowBestD) {
+          rowSecondD = max(rowBestD, ps); rowBestD = pb; rowBestI = pbi;
+        } else {
+          rowSecondD = max(rowSecondD, pb);
+        }
+      }
+    }
+
+    // ── Column direction (B->A): each lane owns one column of the tile
+    //    (kBN == simd width == 32) and scans this SG's 8 rows ascending with
+    //    strict `>` — literally the standalone B->A per-query scan
+    //    restricted to an 8-row slice.
+    {
+      const uint cc = lane;  // requires kBN == 32
+      float cb = 0.0f, cs = 0.0f;
+      int ci = -1;
+      threadgroup const float* accCol = accSG + sgid * (8u * kBN) + cc;
+      for (uint r = 0; r < 8u; ++r) {
+        if (kGuideMode != 0u) {
+          // Column gate: q = pointsB[query col], d = pointsA[candidate row],
+          // M = matrixBA — exactly v1's pass-2 with its swapped arguments.
+          PW_GUIDE_OK(pointsB[col0 + cc], pointsA[row0 + sgid * 8u + r],
+                      matBA)
+          if (!geometryOK) continue;
+        }
+        const float d = accCol[r * kBN];
+        if (d > cb) { cs = cb; cb = d; ci = (int)(row0 + sgid * 8u + r); }
+        else if (d > cs) { cs = d; }
+      }
+      cpBest[sgid * kBN + cc] = cb;
+      cpSecond[sgid * kBN + cc] = cs;
+      cpIdx[sgid * kBN + cc] = ci;
+    }
+
+    // Barrier (B): cp complete from all SGs; all Bsh readers done.
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Cross-SG merge, ascending sgid == ascending global row (tie-break
+    // preserved). Runs on 32 threads and overlaps with the other 480
+    // threads' next-tile Bsh load (they only sync at barrier A). A parallel
+    // shuffle-tree merge was probed and measured SLOWER — the serial form
+    // hides behind the other threads' progress. Padded columns of the last
+    // tile write harmless partials (stride covers them).
+    if (lid < kBN) {
+      float b = cpBest[lid], s = cpSecond[lid];
+      int bi = cpIdx[lid];
+      for (uint sg = 1u; sg < kSG; ++sg) {
+        const float ob = cpBest[sg * kBN + lid];
+        const float os = cpSecond[sg * kBN + lid];
+        const int   oi = cpIdx[sg * kBN + lid];
+        if (ob > b) { s = max(b, os); b = ob; bi = oi; }
+        else        { s = max(s, ob); }
+      }
+      const uint j = col0 + lid;
+      colBestOut[rb * colStride + j] = b;
+      colSecondOut[rb * colStride + j] = s;
+      colIdxOut[rb * colStride + j] = bi;
+    }
+  }
+
+  // Final A->B gates — identical expressions to pw_match_gemm v6 (angular
+  // acos domain plain; normalized-L2 + 131072 sentinel guided). Padded rows
+  // also write (outAB is over-allocated to the padded row count; the CPU
+  // cross-check reads only the first numA entries).
+  if (lcg == 0u) {
+    if (rowBestI < 0) {
+      outAB[gRow] = -1;
+    } else {
+      float bd;
+      float sd;
+      if (kGuideMode == 0u) {
+        bd = acos(min(rowBestD * kInvSqNorm, 1.0f));
+        sd = acos(min(rowSecondD * kInvSqNorm, 1.0f));
+      } else {
+        const float secondDot = max(rowSecondD, 131072.0f);
+        bd = sqrt(max(0.0f, 2.0f - 2.0f * rowBestD * kInvSqNorm));
+        sd = sqrt(max(0.0f, 2.0f - 2.0f * secondDot * kInvSqNorm));
+      }
+      const bool keep = (bd <= maxDistance) && (bd < maxRatio * sd);
+      outAB[gRow] = keep ? rowBestI : -1;
+    }
+  }
+}
+
+// Reduces the per-row-block column partials over row-blocks in ascending
+// order (== ascending global A row), then applies the SAME final gates as
+// the standalone B->A pass (v1 second run). One thread per B column.
+kernel void pw_match_merge_cols(
+    device const float* colBest   [[buffer(0)]],
+    device const float* colSecond [[buffer(1)]],
+    device const int*   colIdx    [[buffer(2)]],
+    device int*         outBA     [[buffer(3)]],
+    constant uint&      numB      [[buffer(4)]],
+    constant uint&      colStride [[buffer(5)]],
+    constant uint&      numBlocks [[buffer(6)]],
+    constant float&     maxRatio  [[buffer(7)]],
+    constant float&     maxDistance [[buffer(8)]],
+    constant uint&      guideMode [[buffer(9)]],
+    uint gid [[thread_position_in_grid]]) {
+  if (gid >= numB) return;
+  float b = 0.0f, s = 0.0f;
+  int bi = -1;
+  for (uint rbk = 0; rbk < numBlocks; ++rbk) {
+    const uint o = rbk * colStride + gid;
+    const float ob = colBest[o];
+    const float os = colSecond[o];
+    const int   oi = colIdx[o];
+    if (ob > b) { s = max(b, os); b = ob; bi = oi; }
+    else        { s = max(s, ob); }
+  }
+  if (bi < 0) { outBA[gid] = -1; return; }
+  float bd;
+  float sd;
+  if (guideMode == 0u) {
+    bd = acos(min(b * kInvSqNorm, 1.0f));
+    sd = acos(min(s * kInvSqNorm, 1.0f));
+  } else {
+    const float secondDot = max(s, 131072.0f);
+    bd = sqrt(max(0.0f, 2.0f - 2.0f * b * kInvSqNorm));
+    sd = sqrt(max(0.0f, 2.0f - 2.0f * secondDot * kInvSqNorm));
+  }
+  const bool keep = (bd <= maxDistance) && (bd < maxRatio * sd);
+  outBA[gid] = keep ? bi : -1;
+}
+)MSL";
+
+// Lazily-built shared Metal context (v2). Pipelines are specialized per
+// (packed, guideMode) on first use; the library compiles once.
+static id<MTLDevice> gV2Dev;
+static id<MTLCommandQueue> gV2Queue;
+static id<MTLLibrary> gV2Lib;
+static id<MTLComputePipelineState> gV2Fused[2][3];  // [packed][guideMode]
+static id<MTLComputePipelineState> gV2Merge;
+static id<MTLBuffer> gV2Dummy;  // 16-byte filler for unused point bindings
+
+static BOOL ensureMetalV2(void) {
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    gV2Dev = MTLCreateSystemDefaultDevice();
+    if (!gV2Dev) return;
+    gV2Queue = [gV2Dev newCommandQueue];
+    NSError* e = nil;
+    gV2Lib = [gV2Dev
+        newLibraryWithSource:[NSString stringWithUTF8String:kGemm2KernelSrc]
+                     options:nil  // same defaults as v1 (fast-math on)
+                       error:&e];
+    if (!gV2Lib) {
+      NSLog(@"[pwofficial_gpu_match] v2 kernel compile failed: %@", e);
+      return;
+    }
+    id<MTLFunction> fm = [gV2Lib newFunctionWithName:@"pw_match_merge_cols"];
+    if (fm) gV2Merge = [gV2Dev newComputePipelineStateWithFunction:fm error:&e];
+    if (!gV2Merge) {
+      NSLog(@"[pwofficial_gpu_match] v2 merge pipeline failed: %@", e);
+      gV2Lib = nil;
+      return;
+    }
+    gV2Dummy = [gV2Dev newBufferWithLength:16
+                                   options:MTLResourceStorageModeShared];
+  });
+  return gV2Lib != nil && gV2Merge != nil && gV2Dummy != nil;
+}
+
+// Callers hold the global match mutex, so plain lazy init is safe.
+static id<MTLComputePipelineState> v2FusedPipeline(bool packed,
+                                                   uint32_t guideMode) {
+  const int p = packed ? 1 : 0;
+  if (gV2Fused[p][guideMode]) return gV2Fused[p][guideMode];
+  MTLFunctionConstantValues* fc = [MTLFunctionConstantValues new];
+  bool pv = packed;
+  [fc setConstantValue:&pv type:MTLDataTypeBool atIndex:0];
+  [fc setConstantValue:&guideMode type:MTLDataTypeUInt atIndex:1];
+  NSError* e = nil;
+  id<MTLFunction> f = [gV2Lib newFunctionWithName:@"pw_match_gemm2"
+                                   constantValues:fc
+                                            error:&e];
+  id<MTLComputePipelineState> pso =
+      f ? [gV2Dev newComputePipelineStateWithFunction:f error:&e] : nil;
+  if (!pso) {
+    NSLog(@"[pwofficial_gpu_match] v2 pipeline (packed=%d guide=%u) "
+          @"failed: %@", p, guideMode, e);
+    return nil;
+  }
+  if (pso.maxTotalThreadsPerThreadgroup < 512) {
+    // Register pressure sank below the 512-thread dispatch shape — refuse
+    // the specialization (caller falls out with rc=2; the v1 kill switch
+    // remains available).
+    NSLog(@"[pwofficial_gpu_match] v2 pipeline (packed=%d guide=%u) "
+          @"maxThreads=%lu < 512 — refusing", p, guideMode,
+          (unsigned long)pso.maxTotalThreadsPerThreadgroup);
+    return nil;
+  }
+  gV2Fused[p][guideMode] = pso;
+  return pso;
+}
+
+// Grow-only buffer pool (persistent across calls: freshly allocated
+// MTLBuffers pay a first-GPU-touch mapping cost, ~1 ms/pair measured, and
+// the chunked path shares the column-partial buffers across chunks).
+// Guarded by the global match mutex.
+static id<MTLBuffer> gV2A, gV2B, gV2OutAB, gV2OutBA, gV2PtsA, gV2PtsB;
+static id<MTLBuffer> gV2ColBest, gV2ColSecond, gV2ColIdx;
+static id<MTLBuffer> gV2MatAB, gV2MatBA;  // 9 floats each, device-space
+static NSUInteger gV2ACap, gV2BCap, gV2OutACap, gV2OutBCap, gV2PtsACap,
+    gV2PtsBCap, gV2ColCap, gV2MatABCap, gV2MatBACap;
+
+static id<MTLBuffer> v2PoolBuf(id<MTLBuffer> __strong* slot, NSUInteger* cap,
+                               NSUInteger need, MTLResourceOptions opt) {
+  if (*cap < need || !*slot) {
+    *slot = [gV2Dev newBufferWithLength:need options:opt];
+    *cap = *slot ? need : 0;
+  }
+  return *slot;
+}
+
+// v2 fused implementation. Same argument contract and rc semantics as
+// matchPairsImpl: 1 = bad args, 2 = Metal unavailable/pipeline refused,
+// 5 = descriptor buffer alloc failed, 6 = aux buffer alloc failed,
+// 7 = GPU command buffer error (rate-limited NSLog + stashLastError).
+static int matchPairsImplV2(const uint8_t* dA, int nA, const float* xyA,
+                            const uint8_t* dB, int nB, const float* xyB,
+                            double max_ratio, const float* matrixAB,
+                            const float* matrixBA, uint32_t guideMode,
+                            float maxResidual, uint32_t* out_pairs,
+                            int max_pairs, int* out_num_matches) {
+  @autoreleasepool {
+    if (out_num_matches) *out_num_matches = 0;
+    if (!dA || !dB || nA <= 0 || nB <= 0) return 1;
+    if (out_pairs != nullptr && max_pairs <= 0) return 1;
+    if (guideMode > 2u) return 1;
+    if (guideMode != 0u &&
+        (!xyA || !xyB || !matrixAB || !matrixBA || maxResidual <= 0.0f)) {
+      return 1;
+    }
+    if (!ensureMetalV2()) return 2;
+    const bool packed = !MatchV2ForceHalf();
+    id<MTLComputePipelineState> fused = v2FusedPipeline(packed, guideMode);
+    if (!fused) return 2;
+    const int D = 128;
+    // Host-padded buffers: multiple of kMB(128) rows, zero-filled — the
+    // guard-free kernel relies on this (see header invariant).
+    const NSUInteger nApad = (((NSUInteger)nA + 127) / 128) * 128;
+    const NSUInteger nBpad = (((NSUInteger)nB + 127) / 128) * 128;
+    id<MTLBuffer> aBuf, bBuf;
+    if (!packed) {
+      aBuf = v2PoolBuf(&gV2A, &gV2ACap, nApad * D * sizeof(__fp16),
+                       MTLResourceStorageModeShared);
+      bBuf = v2PoolBuf(&gV2B, &gV2BCap, nBpad * D * sizeof(__fp16),
+                       MTLResourceStorageModeShared);
+      if (!aBuf || !bBuf) return 5;
+      __fp16* af = (__fp16*)aBuf.contents;
+      for (NSUInteger i = 0; i < (NSUInteger)nA * D; ++i) af[i] = (__fp16)dA[i];
+      for (NSUInteger i = (NSUInteger)nA * D; i < nApad * D; ++i) af[i] = 0;
+      __fp16* bf = (__fp16*)bBuf.contents;
+      for (NSUInteger i = 0; i < (NSUInteger)nB * D; ++i) bf[i] = (__fp16)dB[i];
+      for (NSUInteger i = (NSUInteger)nB * D; i < nBpad * D; ++i) bf[i] = 0;
+    } else {
+      // Packed ABI: raw u8 bytes ARE the packed little-endian uint32 layout
+      // (matches the future WGSL dot4U8Packed layout); u8→half unpack
+      // in-kernel is exact, so bit-identical to the half path.
+      aBuf = v2PoolBuf(&gV2A, &gV2ACap, nApad * D,
+                       MTLResourceStorageModeShared);
+      bBuf = v2PoolBuf(&gV2B, &gV2BCap, nBpad * D,
+                       MTLResourceStorageModeShared);
+      if (!aBuf || !bBuf) return 5;
+      memcpy(aBuf.contents, dA, (size_t)nA * D);
+      memset((uint8_t*)aBuf.contents + (size_t)nA * D, 0,
+             (size_t)(nApad - (NSUInteger)nA) * D);
+      memcpy(bBuf.contents, dB, (size_t)nB * D);
+      memset((uint8_t*)bBuf.contents + (size_t)nB * D, 0,
+             (size_t)(nBpad - (NSUInteger)nB) * D);
+    }
+    // outAB over-allocated to the padded row count (guard-free kernel also
+    // writes padded rows; the cross-check below reads only the first nA).
+    id<MTLBuffer> outAB = v2PoolBuf(&gV2OutAB, &gV2OutACap,
+                                    nApad * sizeof(int),
+                                    MTLResourceStorageModeShared);
+    id<MTLBuffer> outBA = v2PoolBuf(&gV2OutBA, &gV2OutBCap,
+                                    (NSUInteger)nB * sizeof(int),
+                                    MTLResourceStorageModeShared);
+    if (!outAB || !outBA) return 6;
+    id<MTLBuffer> ptsA = gV2Dummy;
+    id<MTLBuffer> ptsB = gV2Dummy;
+    if (guideMode != 0u) {
+      // Keypoint buffers padded like the descriptors (zero-filled): padded
+      // rows/cols read in-bounds garbage-free points whose gate verdict is
+      // irrelevant (their dot==0 candidates are uninsertable).
+      ptsA = v2PoolBuf(&gV2PtsA, &gV2PtsACap, nApad * 2 * sizeof(float),
+                       MTLResourceStorageModeShared);
+      ptsB = v2PoolBuf(&gV2PtsB, &gV2PtsBCap, nBpad * 2 * sizeof(float),
+                       MTLResourceStorageModeShared);
+      if (!ptsA || !ptsB) return 6;
+      memcpy(ptsA.contents, xyA, (size_t)nA * 2 * sizeof(float));
+      memset((uint8_t*)ptsA.contents + (size_t)nA * 2 * sizeof(float), 0,
+             (size_t)(nApad - (NSUInteger)nA) * 2 * sizeof(float));
+      memcpy(ptsB.contents, xyB, (size_t)nB * 2 * sizeof(float));
+      memset((uint8_t*)ptsB.contents + (size_t)nB * 2 * sizeof(float), 0,
+             (size_t)(nBpad - (NSUInteger)nB) * 2 * sizeof(float));
+    }
+    const NSUInteger numBlocksA = nApad / 128;
+    const NSUInteger colBytes = numBlocksA * nBpad * 4;
+    if (gV2ColCap < colBytes) {
+      gV2ColBest = [gV2Dev newBufferWithLength:colBytes
+                                       options:MTLResourceStorageModePrivate];
+      gV2ColSecond = [gV2Dev newBufferWithLength:colBytes
+                                         options:MTLResourceStorageModePrivate];
+      gV2ColIdx = [gV2Dev newBufferWithLength:colBytes
+                                      options:MTLResourceStorageModePrivate];
+      gV2ColCap = (gV2ColBest && gV2ColSecond && gV2ColIdx) ? colBytes : 0;
+      if (gV2ColCap == 0) return 6;
+    }
+    static const float kIdentity[9] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+                                       0.0f, 0.0f, 0.0f, 1.0f};
+    const float* matAtoB = guideMode == 0u ? kIdentity : matrixAB;
+    const float* matBtoA = guideMode == 0u ? kIdentity : matrixBA;
+    // Device-space matrix buffers (NOT setBytes/constant space): the gate is
+    // codegen-sensitive (see kernel comment) and v1 reads its matrix from a
+    // device buffer, so v2 must too.
+    id<MTLBuffer> matABBuf = v2PoolBuf(&gV2MatAB, &gV2MatABCap,
+                                       9 * sizeof(float),
+                                       MTLResourceStorageModeShared);
+    id<MTLBuffer> matBABuf = v2PoolBuf(&gV2MatBA, &gV2MatBACap,
+                                       9 * sizeof(float),
+                                       MTLResourceStorageModeShared);
+    if (!matABBuf || !matBABuf) return 6;
+    memcpy(matABBuf.contents, matAtoB, 9 * sizeof(float));
+    memcpy(matBABuf.contents, matBtoA, 9 * sizeof(float));
+    float maxRatio = (float)max_ratio;
+    if (maxRatio <= 0.0f) maxRatio = 0.8f;
+    float maxDistance = 0.7f;  // colmap::SiftMatchingOptions::max_distance default
+    const uint32_t numAU = (uint32_t)nA, numBU = (uint32_t)nB;
+    const uint32_t colStride = (uint32_t)nBpad;
+    const uint32_t numBlocksU = (uint32_t)numBlocksA;
+
+    auto encFused = [&](id<MTLCommandBuffer> cmd, uint32_t rowBase,
+                        NSUInteger groups) {
+      id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+      [enc setComputePipelineState:fused];
+      [enc setBuffer:aBuf offset:0 atIndex:0];
+      [enc setBuffer:bBuf offset:0 atIndex:1];
+      [enc setBuffer:outAB offset:0 atIndex:2];
+      [enc setBytes:&numAU length:4 atIndex:3];
+      [enc setBytes:&numBU length:4 atIndex:4];
+      [enc setBytes:&maxRatio length:4 atIndex:5];
+      [enc setBytes:&maxDistance length:4 atIndex:6];
+      [enc setBytes:&rowBase length:4 atIndex:7];
+      [enc setBuffer:gV2ColBest offset:0 atIndex:8];
+      [enc setBuffer:gV2ColSecond offset:0 atIndex:9];
+      [enc setBuffer:gV2ColIdx offset:0 atIndex:10];
+      [enc setBytes:&colStride length:4 atIndex:11];
+      [enc setBuffer:aBuf offset:0 atIndex:12];  // packed alias (untyped)
+      [enc setBuffer:bBuf offset:0 atIndex:13];
+      [enc setBuffer:ptsA offset:0 atIndex:14];
+      [enc setBuffer:ptsB offset:0 atIndex:15];
+      [enc setBuffer:matABBuf offset:0 atIndex:16];
+      [enc setBuffer:matBABuf offset:0 atIndex:17];
+      [enc setBytes:&maxResidual length:4 atIndex:18];
+      [enc dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(512, 1, 1)];
+      [enc endEncoding];
+    };
+    auto encMerge = [&](id<MTLCommandBuffer> cmd) {
+      id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+      [enc setComputePipelineState:gV2Merge];
+      [enc setBuffer:gV2ColBest offset:0 atIndex:0];
+      [enc setBuffer:gV2ColSecond offset:0 atIndex:1];
+      [enc setBuffer:gV2ColIdx offset:0 atIndex:2];
+      [enc setBuffer:outBA offset:0 atIndex:3];
+      [enc setBytes:&numBU length:4 atIndex:4];
+      [enc setBytes:&colStride length:4 atIndex:5];
+      [enc setBytes:&numBlocksU length:4 atIndex:6];
+      [enc setBytes:&maxRatio length:4 atIndex:7];
+      [enc setBytes:&maxDistance length:4 atIndex:8];
+      [enc setBytes:&guideMode length:4 atIndex:9];
+      [enc dispatchThreadgroups:MTLSizeMake(((NSUInteger)nB + 255) / 256, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+      [enc endEncoding];
+    };
+
+    const double chunkTargetMs = ChunkTargetMs();
+    if (chunkTargetMs <= 0.0) {
+      // Monolithic: the whole fused pass + merge in one command buffer.
+      id<MTLCommandBuffer> cmd = [gV2Queue commandBuffer];
+      encFused(cmd, 0u, numBlocksA);
+      encMerge(cmd);
+      [cmd commit];
+      [cmd waitUntilCompleted];
+      if (cmd.status == MTLCommandBufferStatusError) {
+        NoteCmdError(cmd);
+        return 7;
+      }
+    } else {
+      // [KNIFE-C] Chunked: same sizing loop and thermal duty-cycle as v1,
+      // over the SINGLE fused pass (both directions at once). The merge
+      // kernel runs after the last chunk. Bit-identical for any chunking.
+      const NSUInteger totalGroups = numBlocksA;
+      NSUInteger tg0 = 0;
+      while (tg0 < totalGroups) {
+        const double target =
+            ThermalHot() ? chunkTargetMs : ChunkTargetCoolMs();
+        const double unit = gMsPerTgKColV2.load();
+        NSUInteger want = 8;  // first probe: 1024 rows (~few ms cool)
+        if (unit > 0.0) {
+          const double perTg = unit * ((double)numBU / 1024.0);
+          const double ideal = target / (perTg > 1e-6 ? perTg : 1e-6);
+          want = ideal < 1.0 ? 1 : (NSUInteger)ideal;
+        }
+        const NSUInteger groups =
+            want < totalGroups - tg0 ? want : totalGroups - tg0;
+        id<MTLCommandBuffer> cmd = [gV2Queue commandBuffer];
+        encFused(cmd, (uint32_t)tg0, groups);
+        [cmd commit];
+        [cmd waitUntilCompleted];
+        if (cmd.status == MTLCommandBufferStatusError) {
+          NoteCmdError(cmd);
+          return 7;
+        }
+        const double gpuMs = (cmd.GPUEndTime - cmd.GPUStartTime) * 1000.0;
+        if (gpuMs > 0.0 && gpuMs < 10000.0) {
+          const double u = gpuMs / ((double)groups * ((double)numBU / 1024.0));
+          const double prev = gMsPerTgKColV2.load();
+          gMsPerTgKColV2.store(prev <= 0.0 ? u : prev * 0.7 + u * 0.3);
+        }
+        const double gapPct = ThermalGapPct();
+        if (gapPct > 0.0 && gpuMs > 0.0) {
+          double gapMs = gpuMs * gapPct / 100.0;
+          if (gapMs > 250.0) gapMs = 250.0;
+          usleep((useconds_t)(gapMs * 1000.0));
+        }
+        tg0 += groups;
+      }
+      id<MTLCommandBuffer> cmd = [gV2Queue commandBuffer];
+      encMerge(cmd);
+      [cmd commit];
+      [cmd waitUntilCompleted];
+      if (cmd.status == MTLCommandBufferStatusError) {
+        NoteCmdError(cmd);
+        return 7;
+      }
+    }
+
+    // Mutual cross-check, emitting pairs (identical loop to v1).
+    const int* mAB = (const int*)outAB.contents;
+    const int* mBA = (const int*)outBA.contents;
+    int n_out = 0;
+    for (int i = 0; i < nA; ++i) {
+      int j = mAB[i];
+      if (j >= 0 && j < nB && mBA[j] == i) {
+        if (out_pairs != nullptr) {
+          if (n_out >= max_pairs) break;  // unreachable per contract
+          out_pairs[2 * n_out] = (uint32_t)i;
+          out_pairs[2 * n_out + 1] = (uint32_t)j;
+        }
+        ++n_out;
+      }
+    }
+    if (out_num_matches) *out_num_matches = n_out;
+    return 0;
+  }
+}
+
+// ── Exported entry points ────────────────────────────────────────────────
+// Whole calls serialized (grow-only pools are shared state; GPU work is
+// serial anyway). Dispatch to v2 unless OFFICIAL_AETHER_MATCH_V2=0.
+static std::mutex gMatchCallLock;
+
 // GEMM matcher with mutual cross-check, emitting index pairs.
 // out_pairs is caller-allocated as 2*max_pairs uint32 entries. Cross-checked
 // matches are unique per idxA, so max_pairs=min(nA,nB) cannot truncate.
@@ -577,6 +1362,12 @@ extern "C" int aether_gpu_match_gemm_pairs(const uint8_t* dA, int nA,
                                            double max_ratio,
                                            uint32_t* out_pairs, int max_pairs,
                                            int* out_num_matches) {
+  std::lock_guard<std::mutex> lk(gMatchCallLock);
+  if (MatchV2Enabled()) {
+    return matchPairsImplV2(dA, nA, nullptr, dB, nB, nullptr, max_ratio,
+                            nullptr, nullptr, 0u, 0.0f, out_pairs, max_pairs,
+                            out_num_matches);
+  }
   return matchPairsImpl(dA, nA, nullptr, dB, nB, nullptr, max_ratio, nullptr,
                         nullptr, 0u, 0.0f, out_pairs, max_pairs,
                         out_num_matches);
@@ -591,6 +1382,15 @@ extern "C" int aether_gpu_match_gemm_pairs_guided(
     const float* xyB, double max_ratio, const float* matrixAB,
     const float* matrixBA, int guide_mode, float max_residual,
     uint32_t* out_pairs, int max_pairs, int* out_num_matches) {
+  std::lock_guard<std::mutex> lk(gMatchCallLock);
+  // Guided fused path is opt-in only (near-parity, boundary-only divergence
+  // — see header); default routes guided matching through the proven v1
+  // two-pass kernel for constructive bit-exactness.
+  if (MatchV2Enabled() && MatchV2GuidedFused()) {
+    return matchPairsImplV2(dA, nA, xyA, dB, nB, xyB, max_ratio, matrixAB,
+                            matrixBA, (uint32_t)guide_mode, max_residual,
+                            out_pairs, max_pairs, out_num_matches);
+  }
   return matchPairsImpl(dA, nA, xyA, dB, nB, xyB, max_ratio, matrixAB,
                         matrixBA, (uint32_t)guide_mode, max_residual,
                         out_pairs, max_pairs, out_num_matches);
