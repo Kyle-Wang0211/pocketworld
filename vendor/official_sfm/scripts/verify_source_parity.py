@@ -61,8 +61,26 @@ DIRTY_GHOST_MASK_SHA256 = (
 # "unconnected photo, reshoot nearby" card. The handler now logs e.what() and
 # appends an add_frame_throw record to sfm_match_fail.jsonl (pullable after a
 # detached run), plus a catch-all for non-std exceptions.
+# 2026-07-26 reviewed delta (env-gated experiment knobs, defaults unchanged =
+# shipped behaviour byte-identical when unset):
+#   OFFICIAL_AETHER_OFFICIAL_TRIANGULATE=1  — call upstream
+#     IncrementalMapper::TriangulateImage on each accepted frame, the way
+#     controllers/incremental_pipeline.cc does after registering an image.
+#   OFFICIAL_AETHER_SELFDEV_TRIANGULATE=0   — skip the hand-written live
+#     create/grow/merge point authoring (matching + db writes unaffected).
+#   OFFICIAL_AETHER_TRI_IGNORE_2VIEW=0      — let the official triangulator
+#     keep two-view tracks (upstream default true; the flag confounded the
+#     official-vs-selfdev comparison).
+#   OFFICIAL_AETHER_CREATE_REPROJ_PX        — live new-point gate, default 10.
+# Plus a diagnostic point-provenance count at finalize publish (live vs
+# official vs dropped, logged + appended to sfm_match_fail.jsonl) and the
+# add_frame exception logger. Seven-arm host A/B on a 131-frame device db:
+# official TriangulateImage with 2-view enabled beats the self-dev authoring
+# on depth-sigma in every track-length bucket, +33% 7+-tracks, waste 27.7%->
+# 8.4%, at -6.9% total points (the worst 2-view tail). Production switch
+# pending on-device sign-off.
 OFFICIAL_PRODUCTION_ENDPOINT_SHA256 = (
-    "b695de0fd734e73328d645d8c367067d0f812eaaecc9a89969f3275ff60b32d2"
+    "0fdbb3760eef0544ea1bf387900e260f294527f2da2fac2b810082c317000eb3"
 )
 REQUIRED_PRODUCTION_ENDPOINT_MARKERS = (
     b"colmap::PinholeCameraModel::model_id",
