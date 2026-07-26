@@ -23,7 +23,9 @@
 #include <atomic>
 #include <mutex>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 // ── [RC7-FILELOG 2026-07-11] Last command-buffer error stash ─────────────
 // The Metal error object (domain/code/description, e.g.
@@ -94,12 +96,18 @@ kernel void pw_match_gemm(device const half*  A          [[buffer(0)]],
                           device const float*  guideMatrix [[buffer(9)]],
                           constant uint&       guideMode   [[buffer(10)]],
                           constant float&      maxResidual [[buffer(11)]],
+                          constant uint&       rowBase     [[buffer(12)]],
                           threadgroup half*   Bsh         [[threadgroup(0)]],
                           threadgroup float*  acc         [[threadgroup(1)]],
                           uint tgid  [[threadgroup_position_in_grid]],
                           uint lid   [[thread_index_in_threadgroup]],
                           uint sgid  [[simdgroup_index_in_threadgroup]]) {
-  const uint row0 = tgid * kMB;
+  // rowBase: first row-block of this chunk. Chunked dispatch splits one
+  // logical (numA x numB) pass into several small command buffers so a
+  // single dispatch never occupies the GPU long enough to starve the
+  // ARKit camera/render pipeline (rc=7 pathology). Row blocks are
+  // independent — per-row results are identical for any chunking.
+  const uint row0 = (rowBase + tgid) * kMB;
   if (row0 >= numA) { return; }
   const uint rows = min(kMB, numA - row0);
 
@@ -233,6 +241,82 @@ kernel void pw_match_gemm(device const half*  A          [[buffer(0)]],
 }
 )MSL";
 
+// ── [KNIFE-C 2026-07-26, signed] Chunked dispatch + thermal duty-cycle ───
+// cap45 pathology: under thermal-serious a monolithic 8192² dispatch
+// (~25ms cool, ~160ms+ downclocked) monopolizes the GPU and ARKit loses
+// Metal command buffers (rc=7) → camera freeze. Apple's documented remedy
+// for long compute coexisting with rendering is splitting work into small
+// chunks and interleaving (developer.apple.com/forums/thread/87964);
+// MTLCommandQueue has no priority/QoS API. So: split each direction's
+// row range into chunks sized to ~OFFICIAL_AETHER_MATCH_CHUNK_TARGET_MS
+// of GPU time (default 6ms, 0 = legacy monolithic dispatch), keep exactly
+// one command buffer in flight, and under thermal serious/critical insert
+// a gap between chunks (duty-cycle) so the camera pipeline always has GPU
+// headroom. Row blocks are independent in the kernel, so the match set is
+// bit-identical for any chunking (host-verified by parity diff).
+static double ChunkTargetMs(void) {
+  static double v = -1.0;
+  if (v < 0.0) {
+    const char* e = getenv("OFFICIAL_AETHER_MATCH_CHUNK_TARGET_MS");
+    v = e ? atof(e) : 6.0;
+    if (v < 0.0) v = 0.0;
+  }
+  return v;
+}
+// Cool-state (nominal/fair) chunk target. Contention only bites under
+// thermal serious/critical, and each chunk costs a CPU↔GPU sync round-trip
+// (host-measured ~19% at 6ms chunks), so when cool we use bigger chunks and
+// only tighten to ChunkTargetMs() when the device heats up.
+static double ChunkTargetCoolMs(void) {
+  static double v = -1.0;
+  if (v < 0.0) {
+    const char* e = getenv("OFFICIAL_AETHER_MATCH_CHUNK_TARGET_COOL_MS");
+    v = e ? atof(e) : 16.0;
+    if (v < 0.0) v = 0.0;
+  }
+  const double hot = ChunkTargetMs();
+  return v > hot ? v : hot;
+}
+static bool ThermalHot(void) {
+  if (@available(iOS 11.0, macOS 10.10.3, *)) {
+    const NSProcessInfoThermalState st =
+        NSProcessInfo.processInfo.thermalState;
+    return st == NSProcessInfoThermalStateSerious ||
+           st == NSProcessInfoThermalStateCritical;
+  }
+  return false;
+}
+// Extra idle gap between chunks as % of the last chunk's GPU time.
+// serious default 100 (≈50% duty), critical default 300 (≈25% duty).
+static double ThermalGapPct(void) {
+  if (@available(iOS 11.0, macOS 10.10.3, *)) {
+    const NSProcessInfoThermalState st =
+        NSProcessInfo.processInfo.thermalState;
+    if (st == NSProcessInfoThermalStateSerious) {
+      static double v = -1.0;
+      if (v < 0.0) {
+        const char* e = getenv("OFFICIAL_AETHER_MATCH_GAP_SERIOUS_PCT");
+        v = e ? atof(e) : 100.0;
+        if (v < 0.0) v = 0.0;
+      }
+      return v;
+    }
+    if (st == NSProcessInfoThermalStateCritical) {
+      static double v = -1.0;
+      if (v < 0.0) {
+        const char* e = getenv("OFFICIAL_AETHER_MATCH_GAP_CRITICAL_PCT");
+        v = e ? atof(e) : 300.0;
+        if (v < 0.0) v = 0.0;
+      }
+      return v;
+    }
+  }
+  return 0.0;
+}
+// EMA of measured GPU ms per (row threadgroup × 1024 database columns) —
+// the chunk sizer's cost model. Self-calibrates across thermal states.
+static std::atomic<double> gMsPerTgKCol{0.0};
+
 // Lazily-built shared Metal context.
 static id<MTLDevice> gDev;
 static id<MTLCommandQueue> gQueue;
@@ -342,59 +426,127 @@ static int matchPairsImpl(const uint8_t* dA, int nA, const float* xyA,
     float maxDistance = 0.7f;  // colmap::SiftMatchingOptions::max_distance default
     const NSUInteger bshLen = 16 * 128 * sizeof(__fp16);
     const NSUInteger accLen = 128 * 16 * sizeof(float);
-    id<MTLCommandBuffer> cmd = [gQueue commandBuffer];
-    void (^enc2)(id<MTLBuffer>, id<MTLBuffer>, id<MTLBuffer>, id<MTLBuffer>,
-                 id<MTLBuffer>, id<MTLBuffer>, uint32_t, uint32_t) =
-        ^(id<MTLBuffer> Q, id<MTLBuffer> Db, id<MTLBuffer> O,
-          id<MTLBuffer> Qxy, id<MTLBuffer> Dbxy, id<MTLBuffer> M,
-          uint32_t nQ, uint32_t nDb) {
-          id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
-          [enc setComputePipelineState:gGemm];
-          [enc setBuffer:Q offset:0 atIndex:0];
-          [enc setBuffer:Db offset:0 atIndex:1];
-          [enc setBuffer:O offset:0 atIndex:2];
-          [enc setBytes:&nQ length:4 atIndex:3];
-          [enc setBytes:&nDb length:4 atIndex:4];
-          [enc setBytes:&maxRatio length:4 atIndex:5];
-          [enc setBytes:&maxDistance length:4 atIndex:6];
-          [enc setBuffer:Qxy offset:0 atIndex:7];
-          [enc setBuffer:Dbxy offset:0 atIndex:8];
-          [enc setBuffer:M offset:0 atIndex:9];
-          [enc setBytes:&guideMode length:4 atIndex:10];
-          [enc setBytes:&maxResidual length:4 atIndex:11];
-          [enc setThreadgroupMemoryLength:bshLen atIndex:0];
-          [enc setThreadgroupMemoryLength:accLen atIndex:1];
-          NSUInteger groups = (nQ + 127) / 128;
-          [enc dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
-              threadsPerThreadgroup:MTLSizeMake(512, 1, 1)];
-          [enc endEncoding];
-        };
-    enc2(aBuf, bBuf, outAB, pointsABuf, pointsBBuf, matrixABBuf,
-         (uint32_t)nA, (uint32_t)nB);  // A→B
-    enc2(bBuf, aBuf, outBA, pointsBBuf, pointsABuf, matrixBABuf,
-         (uint32_t)nB, (uint32_t)nA);  // B→A
-    [cmd commit];
-    [cmd waitUntilCompleted];
-    if (cmd.status == MTLCommandBufferStatusError) {
-      // [MATCH-FAIL TELEMETRY 2026-07-11] rc=7 is the ONLY "GPU command
-      // failed" code — distinct from rc=0 with *out_num_matches==0 (a
-      // legitimate zero-match pair) — so callers can bucket failures by rc.
-      // Log the underlying Metal error rate-limited (a thermal collapse fails
-      // hundreds of pairs back-to-back; capture 43 lost a 66-frame block this
-      // way) so device logs show WHY (e.g. IOGPUCommandQueueErrorDomain /
-      // GPU hang under thermal pressure).
+    // Encodes one row-chunk of one direction (rowBase..rowBase+groups blocks).
+    auto encChunk = [&](id<MTLCommandBuffer> cmd, id<MTLBuffer> Q,
+                        id<MTLBuffer> Db, id<MTLBuffer> O, id<MTLBuffer> Qxy,
+                        id<MTLBuffer> Dbxy, id<MTLBuffer> M, uint32_t nQ,
+                        uint32_t nDb, uint32_t rowBase, NSUInteger groups) {
+      id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+      [enc setComputePipelineState:gGemm];
+      [enc setBuffer:Q offset:0 atIndex:0];
+      [enc setBuffer:Db offset:0 atIndex:1];
+      [enc setBuffer:O offset:0 atIndex:2];
+      [enc setBytes:&nQ length:4 atIndex:3];
+      [enc setBytes:&nDb length:4 atIndex:4];
+      [enc setBytes:&maxRatio length:4 atIndex:5];
+      [enc setBytes:&maxDistance length:4 atIndex:6];
+      [enc setBuffer:Qxy offset:0 atIndex:7];
+      [enc setBuffer:Dbxy offset:0 atIndex:8];
+      [enc setBuffer:M offset:0 atIndex:9];
+      [enc setBytes:&guideMode length:4 atIndex:10];
+      [enc setBytes:&maxResidual length:4 atIndex:11];
+      [enc setBytes:&rowBase length:4 atIndex:12];
+      [enc setThreadgroupMemoryLength:bshLen atIndex:0];
+      [enc setThreadgroupMemoryLength:accLen atIndex:1];
+      [enc dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(512, 1, 1)];
+      [enc endEncoding];
+    };
+    // [MATCH-FAIL TELEMETRY 2026-07-11] rc=7 is the ONLY "GPU command
+    // failed" code — distinct from rc=0 with *out_num_matches==0 (a
+    // legitimate zero-match pair) — so callers can bucket failures by rc.
+    // Log the underlying Metal error rate-limited (a thermal collapse fails
+    // hundreds of pairs back-to-back; capture 43 lost a 66-frame block this
+    // way) so device logs show WHY (e.g. IOGPUCommandQueueErrorDomain /
+    // GPU hang under thermal pressure).
+    // [RC7-FILELOG 2026-07-11] Also stash the Metal error for the caller's
+    // timestamped sfm_match_fail.jsonl line (NSLog is lost on detached/拔线
+    // runs; the jsonl in the app container is recovered by devicectl copy).
+    auto noteCmdError = [](id<MTLCommandBuffer> cmd) {
       static std::atomic<long> gCmdErrCount{0};
       const long k = ++gCmdErrCount;
       if (k <= 5 || (k % 100) == 0) {
         NSLog(@"[pwsfm_gpu_match] command buffer error #%ld (rc=7): %@", k,
               cmd.error);
       }
-      // [RC7-FILELOG 2026-07-11] Stash the Metal error for the caller's
-      // timestamped sfm_match_fail.jsonl line (NSLog above is lost on
-      // detached/拔线 runs; the jsonl in the app container is recovered by
-      // devicectl copy — the cap44/45 forensic gap this closes).
       stashLastError(cmd.error);
-      return 7;
+    };
+    const double chunkTargetMs = ChunkTargetMs();
+    if (chunkTargetMs <= 0.0) {
+      // Legacy monolithic path (kill switch): both directions in a single
+      // command buffer — the exact pre-KNIFE-C scheduling.
+      id<MTLCommandBuffer> cmd = [gQueue commandBuffer];
+      encChunk(cmd, aBuf, bBuf, outAB, pointsABuf, pointsBBuf, matrixABBuf,
+               (uint32_t)nA, (uint32_t)nB, 0u,
+               ((NSUInteger)nA + 127) / 128);  // A→B
+      encChunk(cmd, bBuf, aBuf, outBA, pointsBBuf, pointsABuf, matrixBABuf,
+               (uint32_t)nB, (uint32_t)nA, 0u,
+               ((NSUInteger)nB + 127) / 128);  // B→A
+      [cmd commit];
+      [cmd waitUntilCompleted];
+      if (cmd.status == MTLCommandBufferStatusError) {
+        noteCmdError(cmd);
+        return 7;
+      }
+    } else {
+      // [KNIFE-C] Chunked path: one small command buffer at a time, sized
+      // from the measured cost model to ~chunkTargetMs of GPU time, with a
+      // thermal duty-cycle gap between chunks. Numerically identical output
+      // for any chunking (row blocks are independent in the kernel).
+      auto runDirection = [&](id<MTLBuffer> Q, id<MTLBuffer> Db,
+                              id<MTLBuffer> O, id<MTLBuffer> Qxy,
+                              id<MTLBuffer> Dbxy, id<MTLBuffer> M, uint32_t nQ,
+                              uint32_t nDb) -> int {
+        const NSUInteger totalGroups = ((NSUInteger)nQ + 127) / 128;
+        NSUInteger tg0 = 0;
+        while (tg0 < totalGroups) {
+          // Re-evaluated per chunk so a thermal transition mid-pair
+          // immediately tightens/relaxes the chunk size.
+          const double target =
+              ThermalHot() ? chunkTargetMs : ChunkTargetCoolMs();
+          const double unit = gMsPerTgKCol.load();
+          NSUInteger want = 8;  // first probe: 1024 rows (~few ms cool)
+          if (unit > 0.0) {
+            const double perTg = unit * ((double)nDb / 1024.0);
+            const double ideal = target / (perTg > 1e-6 ? perTg : 1e-6);
+            want = ideal < 1.0 ? 1 : (NSUInteger)ideal;
+          }
+          const NSUInteger groups =
+              want < totalGroups - tg0 ? want : totalGroups - tg0;
+          id<MTLCommandBuffer> cmd = [gQueue commandBuffer];
+          encChunk(cmd, Q, Db, O, Qxy, Dbxy, M, nQ, nDb, (uint32_t)tg0,
+                   groups);
+          [cmd commit];
+          [cmd waitUntilCompleted];
+          if (cmd.status == MTLCommandBufferStatusError) {
+            noteCmdError(cmd);
+            return 7;
+          }
+          const double gpuMs = (cmd.GPUEndTime - cmd.GPUStartTime) * 1000.0;
+          if (gpuMs > 0.0 && gpuMs < 10000.0) {
+            const double u = gpuMs / ((double)groups * ((double)nDb / 1024.0));
+            const double prev = gMsPerTgKCol.load();
+            gMsPerTgKCol.store(prev <= 0.0 ? u : prev * 0.7 + u * 0.3);
+          }
+          const double gapPct = ThermalGapPct();
+          if (gapPct > 0.0 && gpuMs > 0.0) {
+            // Cap the idle gap so a pathologically slow chunk (deep
+            // downclock) cannot stall the matcher for seconds.
+            double gapMs = gpuMs * gapPct / 100.0;
+            if (gapMs > 250.0) gapMs = 250.0;
+            usleep((useconds_t)(gapMs * 1000.0));
+          }
+          tg0 += groups;
+        }
+        return 0;
+      };
+      int rc = runDirection(aBuf, bBuf, outAB, pointsABuf, pointsBBuf,
+                            matrixABBuf, (uint32_t)nA, (uint32_t)nB);  // A→B
+      if (rc == 0) {
+        rc = runDirection(bBuf, aBuf, outBA, pointsBBuf, pointsABuf,
+                          matrixBABuf, (uint32_t)nB, (uint32_t)nA);  // B→A
+      }
+      if (rc != 0) return rc;
     }
 
     // Mutual cross-check, emitting pairs.
