@@ -110,6 +110,12 @@ class OfficialAetherARKitPlugin: NSObject {
     // 截断。预算门机制保留在 native(armed 时 rematch 优先 + quadratic
     // gap 升序),供未来需要限时的形态复用;本行删除即回到 kAuto 30s。
     setenv("OFFICIAL_AETHER_ENRICH_TIME_BUDGET_MS", "0", 1)
+    // [PREPAY-OFF 2026-07-26, signed] 预付回退:cap_1785078141726265 的
+    // finalize_split 铁证 enrich_gate_wait_ms=0 —— quadratic 匹配与 stage-1
+    // BA 并行且 stage-1 更慢,预付根本不在关键路径上;它偷走采集期空闲
+    // (38 对 ≈ 8-15s)换来 finalize 收益 ≈0,代价是 finish 时队列 33 深
+    // (前次 15)、排干 95s。native 机制保留,删本行即重新启用。
+    setenv("OFFICIAL_AETHER_QUADRATIC_PREPAY", "0", 1)
     // [SPRINT-MODE 2026-07-26] 拍完等待不得增加(用户硬约束)的两条腿之二:
     // 采集期 serious 占空 100%→25%(匹配墙钟 K12 热态 ~1.8s→~1.1s/帧,
     // 跟上 ~2.3s/帧拍摄节奏 → 队列不积压)。让路余量是为旧匹配器(每对

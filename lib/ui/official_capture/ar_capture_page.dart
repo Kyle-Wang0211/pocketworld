@@ -1513,14 +1513,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         ),
       );
     }
-    // [COLORIZE-PAR6 2026-07-26, signed] 3→6:cap_1785070530166049 实测
-    // colorize 12.57s 是纯解码吞吐瓶颈(par=3 完美线性 2.93×,decode
-    // p50≈240ms/帧全分辨率),且此时 BA 已结束、A16 六核全空。par=3 的
-    // 内存论证是 1280px 时代遗产(3×3.5MB);全分辨率 6 槽 ≈220MB,
-    // 远低于 BA 期实测 1877MB 不 OOM 的余量。取色数学(track 观测+
-    // 全分辨率双线性+round)与并行度无关,输出逐位一致(tool/
-    // colorize_parallel_check.dart 的对拍口径)。
-    const colorizePar = 6;
+    // [COLORIZE-PAR 2026-07-26, signed] 6→3 回退:par=6 在
+    // cap_1785078141726265 实测 14.4s,反而慢于 par=3 的 12.6s
+    // (cap_1785070530166049)——瓶颈在硬件解码器吞吐/热降频,3→6 无收益。
+    // par=3 与串行的逐位一致对拍见 tool/colorize_parallel_check.dart。
+    const colorizePar = 3;
     final dstats = await sampleColorsPipelined(
       jobs: jobs,
       samples: samples,
