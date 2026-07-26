@@ -141,8 +141,19 @@ DIRTY_GHOST_MASK_SHA256 = (
 # (OFFICIAL_AETHER_STAGE1_HALF_THREADS=1 / _STAGE1_UTILITY_QOS=1). Plus the
 # ba_rounds per-solve ring telemetry (official_bundle_adjustment_ceres.cc
 # ring + AppendBaRingJsonl at both stages) — pure observation.
+# 2026-07-26 reviewed delta (QUAD-PIPELINE, signed): the quadratic
+# enrichment pass gains an order-preserving matcher prefetch. Provenance is
+# upstream COLMAP's own matcher→verifier JobQueue pipeline
+# (feature_matching_utils.h:103-106) — the serial per-pair match→TVG loop
+# was our own simplification. The prefetch thread runs ONLY the
+# deterministic Metal matcher (no PRNG); TVG estimation and all db writes
+# stay on the enrichment thread in todo order, so the RANSAC thread-local
+# PRNG stream — and therefore the written matches/two_view_geometries — are
+# byte-identical to the serial loop (acceptance: host replay A/B db diff).
+# Live sessions only; resume sessions and OFFICIAL_AETHER_QUAD_PIPELINE=0
+# keep the serial loop verbatim.
 OFFICIAL_PRODUCTION_ENDPOINT_SHA256 = (
-    "dd0e04a6d157d8d7ef75a983799f95ae503ab0bfecbab90b254091566c12fe3d"
+    "69c6c92836b61228926426b0107dddb1973110c3722abd90fdf7d56eff5f50ba"
 )
 # [BA-RING 2026-07-26] Pin for src/official_bundle_adjustment_ceres.cc (see
 # the reviewed-delta comment at its branch in main()).
