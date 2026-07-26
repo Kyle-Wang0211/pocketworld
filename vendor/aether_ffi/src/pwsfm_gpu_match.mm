@@ -367,7 +367,23 @@ static double ChunkTargetCoolMs(void) {
   const double hot = ChunkTargetMs();
   return v > hot ? v : hot;
 }
+// ── [SPRINT-MODE 2026-07-26, signed] Capture-active flag ─────────────────
+// The duty-cycle gaps and small hot chunks exist ONLY to keep the ARKit
+// camera/render pipeline fed while capturing. Once the user taps finish the
+// camera session stops and there is nothing left to yield to — yet the
+// queued-frame drain and the finalize enrichment (full quadratic) used to
+// keep running at thermal half-speed. The Swift plugin flips this flag on
+// AR-session start/stop (@_silgen_name binding); while inactive the matcher
+// runs full speed: no duty gaps, cool-size chunks. Pure scheduling — the
+// match set is bit-identical either way. Default 1 (capture semantics) so
+// host tools and any caller that never flips it keep today's behaviour on a
+// thermally-serious machine.
+static std::atomic<int> gCaptureActive{1};
+extern "C" void aether_gpu_match_set_capture_active(int active) {
+  gCaptureActive.store(active ? 1 : 0, std::memory_order_relaxed);
+}
 static bool ThermalHot(void) {
+  if (gCaptureActive.load(std::memory_order_relaxed) == 0) return false;
   if (@available(iOS 11.0, macOS 10.10.3, *)) {
     const NSProcessInfoThermalState st =
         NSProcessInfo.processInfo.thermalState;
@@ -378,7 +394,9 @@ static bool ThermalHot(void) {
 }
 // Extra idle gap between chunks as % of the last chunk's GPU time.
 // serious default 100 (≈50% duty), critical default 300 (≈25% duty).
+// Sprint mode (capture inactive) always returns 0 — nothing to yield to.
 static double ThermalGapPct(void) {
+  if (gCaptureActive.load(std::memory_order_relaxed) == 0) return 0.0;
   if (@available(iOS 11.0, macOS 10.10.3, *)) {
     const NSProcessInfoThermalState st =
         NSProcessInfo.processInfo.thermalState;

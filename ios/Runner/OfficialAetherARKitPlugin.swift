@@ -8,6 +8,15 @@ import ImageIO
 import simd
 import UIKit
 
+// [SPRINT-MODE 2026-07-26] Direct binding to the Metal matcher's
+// capture-active flag (pwofficial_gpu_match.mm, linked into this binary via
+// the official_sfm pod). 1 = camera live → yield-to-camera pacing (thermal
+// duty gaps, small hot chunks); 0 = camera stopped → full-speed matching for
+// the queued-frame drain and finalize enrichment. Scheduling only — the
+// match set is bit-identical either way.
+@_silgen_name("aether_gpu_match_set_capture_active")
+func aether_gpu_match_set_capture_active(_ active: Int32)
+
 enum OfficialARKitIdentifiers {
   static let methodChannel = "pocketworld_official_arkit"
   static let poseEventChannel = "pocketworld_official_arkit/pose_stream"
@@ -104,8 +113,14 @@ class OfficialAetherARKitPlugin: NSObject {
     // enrich 预算关死(0 = kOff,legacy 不限时),quadratic/rematch 永不被
     // 截断。预算门机制保留在 native(armed 时 rematch 优先 + quadratic
     // gap 升序),供未来需要限时的形态复用;本行删除即回到 kAuto 30s。
-    // 代价(签收):热态拍完等待 +1~2 分钟(quadratic 365 对全量)。
     setenv("OFFICIAL_AETHER_ENRICH_TIME_BUDGET_MS", "0", 1)
+    // [SPRINT-MODE 2026-07-26] 拍完等待不得增加(用户硬约束)的两条腿之二:
+    // 采集期 serious 占空 100%→25%(匹配墙钟 K12 热态 ~1.8s→~1.1s/帧,
+    // 跟上 ~2.3s/帧拍摄节奏 → 队列不积压)。让路余量是为旧匹配器(每对
+    // GPU 时间 3× 于现在)定的;新 kernel 下 25% 的绝对让路时间与旧 100%
+    // 相当。判据:rc=7 仍为 0、相机不冻;失败删本行回 100%。
+    // (腿一 = capture-active 冲刺模式,见 startSession/stopSession。)
+    setenv("OFFICIAL_AETHER_MATCH_GAP_SERIOUS_PCT", "25", 1)
     // [SIGNED 2026-07-26] Point authoring = upstream
     // IncrementalMapper::TriangulateImage with two-view tracks kept; the
     // hand-written live create/grow/merge is off (matching and db writes are
@@ -1118,6 +1133,9 @@ class OfficialAetherARKitPlugin: NSObject {
       OfficialAetherARKitPlugin.clearPhotoCards(in: session)
     }
     arSession = session
+    // [SPRINT-MODE 2026-07-26] Camera is live again → matcher back to
+    // yield-to-camera pacing (thermal duty gaps + small hot chunks).
+    aether_gpu_match_set_capture_active(1)
     if #available(iOS 16.0, *) {
       restoreContinuousExposureFocus(
         reason: resetWorld ? "session start" : "session resume")
@@ -1148,6 +1166,12 @@ class OfficialAetherARKitPlugin: NSObject {
     // 案③:主动停 → 帧停是预期,解除 stall 看门狗(下一帧到达自动重武装)。
     sessionDelegate.disarmStallWatchdog()
     arSession?.pause()
+    // [SPRINT-MODE 2026-07-26] Camera stopped → nothing to yield to. The
+    // queued-frame drain + finalize enrichment (full quadratic) now run at
+    // full matcher speed: duty gaps off, cool-size chunks. Pure scheduling,
+    // match set bit-identical; this is what keeps "全程 K12 + 全量
+    // quadratic" from ADDING post-capture wait.
+    aether_gpu_match_set_capture_active(0)
     worldOrigin = nil
     worldYaw = 0
     worldSubjectAnchor = nil
