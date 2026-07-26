@@ -94,7 +94,18 @@ class OfficialAetherARKitPlugin: NSObject {
     // +1.26%/reproj +0.0016、cap44 +0.49%/+0.0090,注册数持平 —— 全门绿。
     // ⚠️ 与上面的 kill switch 绑定:若未来启用 spatial-first,须先重跑
     // 热调速 A/B(spatial-first 臂实测点数 +2.4% 超 ±2% 带,方向为正)。
-    setenv("OFFICIAL_AETHER_LIVE_CAND_K_HOT", "6", 1)
+    // [EXPERIMENT 2026-07-26, user-directed] K12 全程试验:三刀落地后热态
+    // 匹配已从 1954ms/帧 降到 ~900ms/帧(cap_1785066707194992,156 帧
+    // 115 serious,0 rc=7),用户要求验证"全程 K12、退役 K6"。本次装机
+    // 12 = 热态不降档;判据:rc=7 仍为 0、队列不失控、点/帧回升。
+    // 试验失败改回 "6" 即同二进制回退;试验通过后删本行(native 默认关)。
+    setenv("OFFICIAL_AETHER_LIVE_CAND_K_HOT", "12", 1)
+    // [SIGNED 2026-07-26] 用户定调:全程 K12 + 无损 + 全量 quadratic —
+    // enrich 预算关死(0 = kOff,legacy 不限时),quadratic/rematch 永不被
+    // 截断。预算门机制保留在 native(armed 时 rematch 优先 + quadratic
+    // gap 升序),供未来需要限时的形态复用;本行删除即回到 kAuto 30s。
+    // 代价(签收):热态拍完等待 +1~2 分钟(quadratic 365 对全量)。
+    setenv("OFFICIAL_AETHER_ENRICH_TIME_BUDGET_MS", "0", 1)
     // [SIGNED 2026-07-26] Point authoring = upstream
     // IncrementalMapper::TriangulateImage with two-view tracks kept; the
     // hand-written live create/grow/merge is off (matching and db writes are

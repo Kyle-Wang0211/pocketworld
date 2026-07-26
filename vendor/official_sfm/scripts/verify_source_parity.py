@@ -90,8 +90,23 @@ DIRTY_GHOST_MASK_SHA256 = (
 # fewer points than the same db with full matching). The remaining five
 # endpoint gates (temporal-detail / spatial-revisit / low-parallax upgrade /
 # fragment merge / live repay) stay in place.
+# 2026-07-26 reviewed delta (enrichment scheduling, signed): device capture
+# cap_1785066707194992 (156 frames, 115 thermal-serious) proved the armed
+# enrichment order inverted the "most valuable debt first" principle — the
+# unbudgeted quadratic pass consumed the whole kAuto window on long-range
+# pairs (gap-128 avg 0.7 inliers) and the starved-frame re-match was
+# budget-stopped at zero, leaving ~100 throttled frames without gaps 7-12.
+# Fix: armed order is now rematch → quadratic → spatial; the quadratic pass
+# gained the same per-pair EnrichBudgetExhausted gate and a gap-ascending
+# stable sort (a budget stop sheds the least-valuable far tail); both passes
+# append a pullable summary record (quadratic_summary /
+# finalize_rematch_summary) to sfm_match_fail.jsonl because glog is invisible
+# in release builds. Unarmed runs keep the legacy order bit-identically; the
+# shipped plugin currently disarms the budget entirely
+# (OFFICIAL_AETHER_ENRICH_TIME_BUDGET_MS=0, user-signed: full K12 + full
+# quadratic, no truncation).
 OFFICIAL_PRODUCTION_ENDPOINT_SHA256 = (
-    "6e208dc69564e8ed24b226781e53459e6fdaf0b93c9d00dbfdf9ca94f6f47b95"
+    "23be3781b1be87f2dfb6d8af23693cbd6c4739ccd1e8d0eecbcbae71ace4bcec"
 )
 REQUIRED_PRODUCTION_ENDPOINT_MARKERS = (
     b"colmap::PinholeCameraModel::model_id",
