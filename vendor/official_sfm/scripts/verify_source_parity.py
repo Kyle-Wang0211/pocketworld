@@ -130,8 +130,24 @@ DIRTY_GHOST_MASK_SHA256 = (
 # byte-parity proven on 40 device pairs; our builds never enabled OpenMP so
 # the original critical was compiled out — the patch is upstream alignment +
 # protection if parallel RANSAC is ever enabled).
+# 2026-07-26 reviewed delta (BA-STAGE1-FULL, signed): the cap43-era stage-1
+# protections (UTILITY QoS + halved ceres threads) assumed enrichment was
+# the finalize critical path; cap_1785078141726265 measured that inverted
+# after the v2 matcher (enrich 35.6s < stage-1 46.7s, gate_wait=0) — the
+# protections taxed the true critical path 2x. Defaults flip to full speed
+# (thread count is signed bit-equal; the plugin pins STAGE1_ROUNDS_CAP=2 so
+# the 2/3 round allocation is frozen and the change stays EXACT); legacy
+# posture one env away for the heavy-revisit shape
+# (OFFICIAL_AETHER_STAGE1_HALF_THREADS=1 / _STAGE1_UTILITY_QOS=1). Plus the
+# ba_rounds per-solve ring telemetry (official_bundle_adjustment_ceres.cc
+# ring + AppendBaRingJsonl at both stages) — pure observation.
 OFFICIAL_PRODUCTION_ENDPOINT_SHA256 = (
-    "b984c76213e9e5778b6189e6beaa295f2b83013b3c4038a47e35e1c6f087e37f"
+    "dd0e04a6d157d8d7ef75a983799f95ae503ab0bfecbab90b254091566c12fe3d"
+)
+# [BA-RING 2026-07-26] Pin for src/official_bundle_adjustment_ceres.cc (see
+# the reviewed-delta comment at its branch in main()).
+OFFICIAL_BA_CERES_WRAPPER_SHA256 = (
+    "411d1307963f8ca12ac596975fb1ab942490bbc73572c7fdeab0022fc9b2b2ab"
 )
 REQUIRED_PRODUCTION_ENDPOINT_MARKERS = (
     b"colmap::PinholeCameraModel::model_id",
@@ -281,6 +297,29 @@ def main() -> None:
             print(
                 "PASS source src/official_aether_sfm_c.cc "
                 "(pinned per-image PINHOLE + official BA/filter endpoint)"
+            )
+            continue
+        # 2026-07-26 reviewed delta (BA-RING, signed): the solver wrapper
+        # carries a per-solve observation ring (AetherBaSolveRec +
+        # aether_ba_ring_reset/count/get, appended inside the existing
+        # AetherLastBaSolveInfo stash lock) so finalize can attribute each
+        # BA round's iterations/jacobian/linear-solver time. Telemetry only —
+        # solve options and numerics untouched. Pinned like the sfm_c
+        # endpoint so this exception cannot grow silently.
+        if official_relative == "src/official_bundle_adjustment_ceres.cc":
+            actual_hash = sha256(actual)
+            if actual_hash != OFFICIAL_BA_CERES_WRAPPER_SHA256:
+                fail(
+                    "BA solver wrapper source identity changed: "
+                    f"{actual_hash}"
+                )
+            for marker in (b"aether_ba_ring_reset", b"aether_ba_ring_get",
+                           b"kAetherBaRingCap"):
+                if marker not in actual:
+                    fail(f"missing BA-ring marker: {marker!r}")
+            print(
+                "PASS source src/official_bundle_adjustment_ceres.cc "
+                "(pinned solver wrapper + ba_rounds ring)"
             )
             continue
         expected = git_show(aether_root, SELF_SOURCE_REVISION, source_path)

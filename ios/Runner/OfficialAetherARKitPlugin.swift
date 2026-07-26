@@ -148,7 +148,14 @@ class OfficialAetherARKitPlugin: NSObject {
     // stage 2,enrich AUTO 时间闸窗口随 stage-1 提前收口。host 质量中性、
     // device 外推 finalize −17%;下次实拍看 finalize_segments 验真。
     // 删本行即同二进制回退(native 默认 0 = shipped 行为)。
-    setenv("OFFICIAL_AETHER_STAGE1_ROUNDS_CAP", "4", 1)
+    // [BA-STAGE1-FULL 2026-07-26, signed] CAP 4→2 与 stage-1 全速化(native
+    // 默认线程满+USER_INITIATED)绑定:全速轮 ~11s,窗口 ~36s 能塞 3+ 轮,
+    // 不钉住 CAP 会让轮分配从 2/3 漂成 4/1(NOISE-BAND,须另行签决=第二
+    // 步)。CAP=2 冻结今晚实测的 2/3 分配,使提速严格 EXACT(轮序不变,
+    // 线程数已签逐位全等)。预期 phase-2 80.6→~70s;k(全速 stage-1 与
+    // enrich 争核膨胀)由本采集的 enrich_ms 直读。第二步(CAP 回 4 放飘
+    // 分配,~58s)拿 ba_rounds 遥测的 ftol 早停证据后签决。
+    setenv("OFFICIAL_AETHER_STAGE1_ROUNDS_CAP", "2", 1)
     // [E25-C 2026-07-20] 鬼层 mask 产出**已停用**(原 `setenv("OFFICIAL_AETHER_GHOST_MASK","1",1)`
     // 已删)。native 侧 MaybeWriteGhostMask 由该 env 门控(aether_sfm_c.cc 注释:
     // "Env-gated (OFFICIAL_AETHER_GHOST_MASK=1, default OFF)"),不设即回到 shipped 默认关。
