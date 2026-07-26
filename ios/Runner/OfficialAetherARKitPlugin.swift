@@ -96,19 +96,15 @@ class OfficialAetherARKitPlugin: NSObject {
     // OFFICIAL_AETHER_STREAM_TEMPORAL_ONLY=1 时强制走旧的纯时间 K12 候选(已验证行为)。
     // spatial-first 的 host A/B 尚未出数——验证通过前默认关死;通过后删本行即启用。
     setenv("OFFICIAL_AETHER_STREAM_TEMPORAL_ONLY", "1", 1)
-    // [2026-07-11] ④ 热调速器 opt-in(45 号冻结案):thermal serious/critical
-    // 时 live 匹配候选 12→6,给相机/系统让 GPU;被降档帧由 finalize 补匹配
-    // 恢复全窗口(native 默认 OFF,此行是唯一开关,删掉即同二进制回退)。
-    // host A/B(设备一致配置 TEMPORAL_ONLY=1,GPU matcher):cap45 点数
-    // +1.26%/reproj +0.0016、cap44 +0.49%/+0.0090,注册数持平 —— 全门绿。
-    // ⚠️ 与上面的 kill switch 绑定:若未来启用 spatial-first,须先重跑
-    // 热调速 A/B(spatial-first 臂实测点数 +2.4% 超 ±2% 带,方向为正)。
-    // [EXPERIMENT 2026-07-26, user-directed] K12 全程试验:三刀落地后热态
-    // 匹配已从 1954ms/帧 降到 ~900ms/帧(cap_1785066707194992,156 帧
-    // 115 serious,0 rc=7),用户要求验证"全程 K12、退役 K6"。本次装机
-    // 12 = 热态不降档;判据:rc=7 仍为 0、队列不失控、点/帧回升。
-    // 试验失败改回 "6" 即同二进制回退;试验通过后删本行(native 默认关)。
-    setenv("OFFICIAL_AETHER_LIVE_CAND_K_HOT", "12", 1)
+    // [K6 RETIRED 2026-07-26, signed] 热调速器(2026-07-11 引入,cap45 冻结
+    // 案的权宜之计:thermal serious 时 live 候选 12→6)正式退役——它是为
+    // 旧匹配器(热态 325ms/对、monolithic dispatch 挤死相机)定的。三刀
+    // (融合 kernel 3×/分块调度/冲刺模式)落地后的 K12 全程验证采集
+    // cap_1785070530166049:155 帧、112 serious、cand=12×143、0 rc=7、
+    // 0 errInternal、相机不冻、拍完等待持平。native 默认即无降档;此处
+    // 不再 setenv。若极端机型需要重新降档,设
+    // OFFICIAL_AETHER_LIVE_CAND_K_HOT=6 即同二进制恢复(finalize 补账
+    // 链路仍在:armed 时 rematch 优先,见 native ENRICH-ORDER)。
     // [SIGNED 2026-07-26] 用户定调:全程 K12 + 无损 + 全量 quadratic —
     // enrich 预算关死(0 = kOff,legacy 不限时),quadratic/rematch 永不被
     // 截断。预算门机制保留在 native(armed 时 rematch 优先 + quadratic
