@@ -95,6 +95,23 @@ class OfficialAetherARKitPlugin: NSObject {
     // ⚠️ 与上面的 kill switch 绑定:若未来启用 spatial-first,须先重跑
     // 热调速 A/B(spatial-first 臂实测点数 +2.4% 超 ±2% 带,方向为正)。
     setenv("OFFICIAL_AETHER_LIVE_CAND_K_HOT", "6", 1)
+    // [SIGNED 2026-07-26] Point authoring = upstream
+    // IncrementalMapper::TriangulateImage with two-view tracks kept; the
+    // hand-written live create/grow/merge is off (matching and db writes are
+    // untouched — the official triangulator consumes exactly those
+    // correspondences, and registration stays ARKit-pose-driven).
+    // Evidence: seven-arm host A/B on two device dbs plus one on-device
+    // capture. Quality is within capture-to-capture variance of the self-dev
+    // authoring in both directions (db-10: official wins depth-sigma, fewer
+    // points; db-11: official wins points+reproj, self-dev wins sigma), with
+    // two stable advantages for official — waste (points created then killed
+    // by official filtering) ~10pp lower on both dbs, and track>=3 parity.
+    // User signed the switch under the official-first rule: when quality is
+    // a wash, ship the upstream algorithm. Delete these three lines to
+    // restore the self-dev authoring.
+    setenv("OFFICIAL_AETHER_OFFICIAL_TRIANGULATE", "1", 1)
+    setenv("OFFICIAL_AETHER_SELFDEV_TRIANGULATE", "0", 1)
+    setenv("OFFICIAL_AETHER_TRI_IGNORE_2VIEW", "0", 1)
     // Production ends at COLMAP's final global BA + official filtering.
     // Historical RestoreTemporalDetail / repair / enrichment passes are hard
     // disabled in the native translation unit and are not re-enabled here.

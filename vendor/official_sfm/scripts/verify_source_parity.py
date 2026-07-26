@@ -79,8 +79,19 @@ DIRTY_GHOST_MASK_SHA256 = (
 # on depth-sigma in every track-length bucket, +33% 7+-tracks, waste 27.7%->
 # 8.4%, at -6.9% total points (the worst 2-view tail). Production switch
 # pending on-device sign-off.
+# 2026-07-26 reviewed delta (signed): FinalizeRematchStarvedFrames un-gated
+# from kProductionOfficialEndpointOnly. It is pair generation + matching under
+# colmap-DEFAULT TwoViewGeometryOptions and only appends matches /
+# two_view_geometries — the same official-semantics classification that
+# re-enabled the quadratic pass — and it is what repays the thermal
+# throttle's debt (the shipped plugin opts into LIVE_CAND_K_HOT=6 whose
+# "delivery-lossless" promise depends on this backfill; with the gate in
+# place, a 149-frame capture with 118 thermal-serious frames delivered ~20%
+# fewer points than the same db with full matching). The remaining five
+# endpoint gates (temporal-detail / spatial-revisit / low-parallax upgrade /
+# fragment merge / live repay) stay in place.
 OFFICIAL_PRODUCTION_ENDPOINT_SHA256 = (
-    "0fdbb3760eef0544ea1bf387900e260f294527f2da2fac2b810082c317000eb3"
+    "6e208dc69564e8ed24b226781e53459e6fdaf0b93c9d00dbfdf9ca94f6f47b95"
 )
 REQUIRED_PRODUCTION_ENDPOINT_MARKERS = (
     b"colmap::PinholeCameraModel::model_id",
