@@ -45,8 +45,24 @@ DIRTY_GHOST_MASK_SHA256 = (
 # two_view_geometries; no Point3D or observation is touched, and it runs
 # strictly BEFORE the final global BA, so the delivered model is still the
 # official endpoint. Kill switch: OFFICIAL_AETHER_QUADRATIC_OVERLAP=0.
+# 2026-07-26 reviewed delta: the capture-time global BA
+# (aether_sfm_global_refine) now enables upstream's own global-BA size
+# reducer, mapper.ba_global_ignore_redundant_points3D = true. Upstream
+# IncrementalMapper::AdjustGlobalBundle then splits the whole-model problem
+# into a joint solve over the cameras plus only the non-redundant points,
+# followed by a second pass that optimizes the dropped points alone with every
+# other parameter fixed — nothing is discarded, so it is lossless by
+# construction. It bounds the joint Jacobian/Schur workspace, which is the
+# block that OOM-killed a 126-frame capture on an iPhone 14 Pro.
+# 2026-07-26 reviewed delta (diagnostic only, no algorithm change):
+# aether_sfm_add_frame's catch used to discard the exception message, so a
+# device take that lost 25 consecutive frames to errInternal left no evidence
+# of what threw — and every one of those frames surfaced to the user as a red
+# "unconnected photo, reshoot nearby" card. The handler now logs e.what() and
+# appends an add_frame_throw record to sfm_match_fail.jsonl (pullable after a
+# detached run), plus a catch-all for non-std exceptions.
 OFFICIAL_PRODUCTION_ENDPOINT_SHA256 = (
-    "77fb9150ccbb9a86ea0ceab3fe0e73f86000a8f67e9a2816548ae0ffec5a7ae0"
+    "b695de0fd734e73328d645d8c367067d0f812eaaecc9a89969f3275ff60b32d2"
 )
 REQUIRED_PRODUCTION_ENDPOINT_MARKERS = (
     b"colmap::PinholeCameraModel::model_id",
@@ -61,6 +77,9 @@ REQUIRED_PRODUCTION_ENDPOINT_MARKERS = (
     # Upstream quadratic overlap must stay wired and stay official-default:
     # a silent removal (or a switch to the tightened self-route gates) would
     # otherwise pass every other check in this file.
+    # The capture-time global BA must keep upstream's size reducer on: without
+    # it the joint problem is whole-model again and 126-frame captures OOM.
+    b"official_options.mapper.ba_global_ignore_redundant_points3D = true;",
     b"void AddOfficialQuadraticPairs(aether_sfm_session* s) {",
     b"const colmap::TwoViewGeometryOptions tvg_options;  // colmap defaults",
     b"AddOfficialQuadraticPairs(s);",

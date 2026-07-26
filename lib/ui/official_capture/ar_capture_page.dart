@@ -710,7 +710,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // 补强1:starved 横幅门与覆盖云同时机归零(下方 setState 会重建)。
       _starvedBannerGate.reset();
       _starvedBannerVisible = false;
-      unawaited(_pushCoverageCloud());
+      // force:新一轮拍摄的归零推送必须落到 native,不能被去重门挡掉。
+      unawaited(_pushCoverageCloud(force: true));
       _coverageFeedSub ??= session.sfmFrameStream.listen(_onCoverageKeyframe);
       setState(() {
         _recording = true;
@@ -859,24 +860,40 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     if (_coverageDotsVisible) {
       // 隐藏期 native 丢弃推送防旧云;重开必须立刻补推当前全量状态——
       // 用户规格:显示最新计算结果,不能等用户再拍一张才恢复。
-      await _pushCoverageCloud();
+      // force:native 侧已丢弃过,内容没变也必须重推。
+      await _pushCoverageCloud(force: true);
     }
   }
 
   /// Ships the latest stable official SfM version to the native dumb renderer.
   /// Before the first successful 20-frame global BA this intentionally sends
   /// an empty cloud, even though private capture-guidance voxels already exist.
-  Future<void> _pushCoverageCloud() async {
+  /// The exact payload last handed to native, so an unchanged cloud is never
+  /// re-marshalled. [AR-PERF 2026-07-26] eaf8706 repointed this from the
+  /// capped coverage-voxel cloud (~188 pts/photo, 65k ceiling) to the uncapped
+  /// official SfM cloud (~1.3k pts/frame): at 126 frames that is ~170k points,
+  /// and every display-toggle / coverage-dot tap re-sent the identical buffer
+  /// across the method channel. Copying that per push is what made the capture
+  /// UI feel laggy late in a long take. The cloud object is replaced wholesale
+  /// on each publish, so identity is a sound change test.
+  CoverageCloudPacked? _pushedArCloud;
+
+  Future<void> _pushCoverageCloud({bool force = false}) async {
     final packed =
         _officialSfmArCloud ??
         CoverageCloudPacked(Float32List(0), Uint8List(0));
+    if (!force && identical(packed, _pushedArCloud)) return;
+    _pushedArCloud = packed;
     try {
       await _arKitChannel.invokeMethod<void>(
         'setCoveragePointCloud',
         <String, dynamic>{'xyz': packed.xyz, 'rgb': packed.rgb},
       );
     } catch (_) {
-      // Display-only channel — never let it disturb capture.
+      // Display-only channel — never let it disturb capture. Forget the
+      // payload so the next push retries instead of de-duplicating against a
+      // send that never landed.
+      _pushedArCloud = null;
     }
   }
 
@@ -993,6 +1010,27 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     });
     _photoCardStateSent.addAll(diff);
     unawaited(_pushPhotoCardStates(diff));
+  }
+
+  /// Consecutive native add_frame faults. A single throw is noise (one lost
+  /// frame, the next one usually lands); a RUN of them means the worker is
+  /// broken and every further shutter tap is wasted, which is the state one
+  /// device take spent 25 frames in while the UI blamed the user's coverage.
+  int _sfmInternalFailureStreak = 0;
+  static const int _kSfmInternalFailureWarnStreak = 3;
+
+  void _noteSfmInternalFailure(String reason) {
+    _sfmInternalFailureStreak++;
+    DeviceLog.log(
+      'OfficialARCapturePage',
+      'sfm internal fault #$_sfmInternalFailureStreak ($reason) — '
+          'frame not fed; NOT a coverage problem',
+    );
+    if (_sfmInternalFailureStreak < _kSfmInternalFailureWarnStreak) return;
+    const text = '点云重建服务出错，最近的照片没有进入重建。'
+        '照片已保留，但继续拍摄不会改善——请结束本次拍摄后重试。';
+    if (_sfmStartFailureText == text || !mounted) return;
+    setState(() => _sfmStartFailureText = text);
   }
 
   void _markPhotoDisconnected(String jpegPath, String reason) {
@@ -1275,10 +1313,32 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       _sampleStarvedBanner();
       return;
     }
+    if (event is SfmLiveFrameFed && event.result == 'ok') {
+      // A frame landed: the worker is healthy again, so a past isolated throw
+      // must not accumulate toward the fault banner.
+      _sfmInternalFailureStreak = 0;
+    }
     if (event is SfmLiveFrameFed &&
         event.result != 'ok' &&
         event.jpegPath != null) {
-      _markPhotoDisconnected(event.jpegPath!, event.result);
+      // [MONITORING 2026-07-26] Not every failure is a coverage problem.
+      //   errNotRegistered = COLMAP looked at the frame and declined to
+      //     register it. Upstream treats an unregistered image as a normal
+      //     outcome, and "shoot again near the red cards" is genuinely the
+      //     fix — keep the red disconnected state.
+      //   errInternal      = the native call THREW; the frame never entered
+      //     the reconstruction at all (frameId == -1). Reshooting cannot help
+      //     — it hits the same fault. Painting it red told the user to do
+      //     useless work AND disguised a real bug as a capture problem: one
+      //     device take lost 25 consecutive frames this way and it read as
+      //     "you didn't shoot well enough". Leave the card in its pending
+      //     state (black = SfM has not processed it, which is exactly true)
+      //     and surface the fault as a fault.
+      if (event.result == 'errInternal') {
+        _noteSfmInternalFailure(event.result);
+      } else {
+        _markPhotoDisconnected(event.jpegPath!, event.result);
+      }
     }
     // [E25-D 2026-07-20] L1 仲裁已停用(E25-B),该事件不再发生;原钩子在此
     // 重算带 rescue 位的 ghost_view_mask.bin。整条 L1/L2 已删。
