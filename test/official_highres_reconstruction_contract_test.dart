@@ -202,7 +202,11 @@ void main() {
     },
   );
 
-  test('official capture cannot finish or close an in-flight 12MP shutter', () {
+  // [SIGNED 2026-07-26] 契约反转:完成键必须随时可点(快门加载回归案,
+  // "用户必须随时可以点完成")。eaf8706 的 capturing 门已回退;在途 12MP
+  // 保存由 finalize 的排队语义等待,不再靠禁用完成键。本测试反向钉死,
+  // 防 eaf8706 形态复发。
+  test('finish stays tappable; in-flight shutter is awaited by finalize', () {
     final page = File(
       'lib/ui/official_capture/ar_capture_page.dart',
     ).readAsStringSync();
@@ -213,10 +217,12 @@ void main() {
         'if (_finalizingRecording || _lockInProgress || _capturing) return;',
       ),
     );
-    expect(page, contains('busy: finishing || capturing'));
+    expect(page, contains('busy: finishing'));
+    expect(page, isNot(contains('busy: finishing || capturing')));
+    expect(page, contains('onTap: paths.isEmpty ? null : onFinish'));
     expect(
       page,
-      contains('onTap: capturing || paths.isEmpty ? null : onFinish'),
+      isNot(contains('onTap: capturing || paths.isEmpty ? null : onFinish')),
     );
   });
 

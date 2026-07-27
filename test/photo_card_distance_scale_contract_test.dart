@@ -35,7 +35,9 @@ void main() {
         source,
         contains('private static let photoCardDistanceBeta: Float = 0.5'),
       );
-      expect(source, contains('for (name, card) in photoCardNodes'));
+      // [SIGNED 2026-07-26] 24 号形态回退:循环不带 name(飞出/躲开回归案)。
+      expect(source, contains('for card in photoCardNodes.values'));
+      expect(source, isNot(contains('for (name, card) in photoCardNodes')));
       expect(
         source,
         contains('let d = simd_distance(camPos, card.simdWorldPosition)'),

@@ -46,18 +46,32 @@ void main() {
         '  if (kProductionOfficialEndpointOnly) return;',
       ),
     );
+    // [SIGNED 2026-07-26] FinalizeRematchStarvedFrames 解除生产 gate:它是
+    // 官方语义(colmap 默认 TVG,只写 matches/two_view_geometries),且是
+    // 热降档"交付无损"承诺的另一半。断言函数在且不再 endpoint 早退。
     expect(
       source,
-      contains(
-        'void FinalizeRematchStarvedFrames(aether_sfm_session* s) {\n'
-        '  if (kProductionOfficialEndpointOnly) return;',
-      ),
+      contains('void FinalizeRematchStarvedFrames(aether_sfm_session* s) {'),
     );
     expect(
       source,
+      isNot(
+        contains(
+          'void FinalizeRematchStarvedFrames(aether_sfm_session* s) {\n'
+          '  if (kProductionOfficialEndpointOnly) return;',
+        ),
+      ),
+    );
+    expect(source, contains('Un-gated from kProductionOfficialEndpointOnly'));
+    // [SIGNED 2026-07-26 QUAD-PREPAY] live_repay 的生产路径 = 官方 quadratic
+    // 预付(PrepayQuadraticTick);旧自研 starved-window repay 体仍留在
+    // endpoint gate 之后。
+    expect(
+      source,
       contains(
-        'int aether_sfm_live_repay(aether_sfm_session_t* s, int max_pairs) {\n'
-        '  if (kProductionOfficialEndpointOnly) return 0;',
+        'if (kProductionOfficialEndpointOnly) {\n'
+        '    return PrepayQuadraticTick(s, max_pairs);\n'
+        '  }',
       ),
     );
 
@@ -94,7 +108,12 @@ void main() {
       RegExp(r'filterFinalSpatialTwoViewPoints\(').allMatches(worker).length,
       1,
     );
-    expect(worker, isNot(contains('.liveRepay(')));
+    // [SIGNED 2026-07-26 QUAD-PREPAY] worker 恰有一处 liveRepay 调用 = 官方
+    // quadratic 空闲预付通道(native 生产 gate 内路由 PrepayQuadraticTick,
+    // 出货插件当前 OFFICIAL_AETHER_QUADRATIC_PREPAY=0 关闭);旧自研 idle
+    // repay 无生产调用。
+    expect(RegExp(r'\.liveRepay\(').allMatches(worker).length, 1);
+    expect(worker, contains('[QUAD-PREPAY 2026-07-26, signed]'));
 
     for (final source in [liveUi, resume]) {
       expect(
