@@ -36,8 +36,10 @@ void main() {
     final rejectedFrameStart = captureSource.indexOf(
       "event is SfmLiveFrameFed",
     );
+    // [增量D 2026-07-28] 旧边界标记 `if (event is SfmLiveArbitrateDone)` 随
+    // L1/L2 残件清理删除;改用事件泵下一个稳定锚点(setState 开头)切片。
     final rejectedFrameEnd = captureSource.indexOf(
-      'if (event is SfmLiveArbitrateDone)',
+      'setState(() {',
       rejectedFrameStart,
     );
     final rejectedFrameSource = captureSource.substring(

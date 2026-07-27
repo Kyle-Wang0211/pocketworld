@@ -1334,14 +1334,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         _markPhotoDisconnected(event.jpegPath!, event.result);
       }
     }
-    // [E25-D 2026-07-20] L1 仲裁已停用(E25-B),该事件不再发生;原钩子在此
-    // 重算带 rescue 位的 ghost_view_mask.bin。整条 L1/L2 已删。
-    if (event is SfmLiveArbitrateDone) return;
     setState(() {
       switch (event) {
         case SfmLiveConnectivity():
         case SfmLiveTrueParallax():
-        case SfmLiveArbitrateDone():
           break; // 已在上方早退处理(不触发 rebuild)
         case SfmLiveFrameFed():
           _sfmFed = _sfmRecon?.fedCount ?? _sfmFed;
@@ -1437,21 +1433,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     }
   }
 
-  /// [BIT5-FIX 2026-07-12] L1 仲裁(aether_sfm_arbitrate)完成后重算交付点序
-  /// 的 `ghost_view_mask.bin`。
-  ///
-  /// 病理:交付 mask 写在 persist 时(l1_arbitrate 回写 bit5 rescue 约 22s
-  /// 之前)→ 无救援位,草稿查看页开门后 hidden=band15(把 L1 救援的踢脚/台阶
-  /// 真点一并构造性误隐,仅渲染;导出永远全量)。修复:仲裁 done 后 native
-  /// `ghost_mask.bin` 已在 Points3D 序回写 bit5 —— 用 persist 时保存的同一
-  /// native→snap→floater keep 链(GhostDeliveredMaskRemap)把它重排回交付点序,
-  /// 原子改写 sidecar。谓词(visible=¬band15∨rescued)已消费 bit5,Dart 侧
-  /// 无需再改;草稿页下次加载即 hidden=band15∧¬rescued(cap49:2840→2482,
-  /// 358 救援点放行)。
-  ///
-  /// 全程 fail-open:配方缺失 / native mask 点数错位(与本次重建不符)/ 写盘
-  /// 失败 → 保留 persist 版本的交付 mask,绝不隐藏错点。当前展示的正是这份
-  /// 交付云时,顺手把带 bit5 的可见性数组换进渲染门 —— 救援点无需重开草稿页
+  // [增量D 2026-07-28] 此处原挂着一段 BIT5/L1 仲裁重算的孤儿注释(所述
+  // 函数早已随 E25 停用删除)——注释一并清理,勿被其误导。
   Future<void> _colorizeSnapshot(SfmLiveSnapshot snap) async {
     final recon = _sfmRecon;
     if (recon == null || snap.pointCount == 0) return;

@@ -520,13 +520,6 @@ typedef _RemoveFrameDart =
 typedef _FinalizeStatusC = Int32 Function(Pointer<Void> session);
 typedef _FinalizeStatusDart = int Function(Pointer<Void> session);
 
-// [L1-ARBITRATE 2026-07-12] same (session, out_json, cap) shape as
-// finalize_async — the arbitration returns a small stats JSON.
-typedef _ArbitrateC =
-    Int32 Function(Pointer<Void> session, Pointer<Utf8> outJson, Int32 outCap);
-typedef _ArbitrateDart =
-    int Function(Pointer<Void> session, Pointer<Utf8> outJson, int outCap);
-
 typedef _GlobalRefineC = Int32 Function(Pointer<Void> session);
 typedef _GlobalRefineDart = int Function(Pointer<Void> session);
 
@@ -739,9 +732,6 @@ class AetherSfm {
   // [L1-ARBITRATE 2026-07-12] lazily bound like the rest; an OLD vendored .a
   // lacking the shim symbol throws on first use — callers catch (same
   // contract as repairStats).
-  static final _ArbitrateDart _arbitrate = _lib
-      .lookupFunction<_ArbitrateC, _ArbitrateDart>('pwofficial_arbitrate');
-
   /// Runs the validated incremental SfM pipeline over a prebuilt COLMAP sqlite
   /// db + image dir. Returns an [AetherSfmSolve] whose [AetherSfmSolve.dispose]
   /// MUST be called to free the native session.
@@ -1557,24 +1547,6 @@ class AetherSfmStreamSession {
   /// native side reads files only, never the reconstruction. Returns null
   /// when the inputs are absent (mask/plan never written, runner never ran,
   /// or the vendored archive predates the symbol) — treat as a no-op.
-  Map<String, dynamic>? arbitrate() {
-    _checkLive();
-    const cap = 2048;
-    final jsonPtr = malloc.allocate<Uint8>(cap).cast<Utf8>();
-    try {
-      final rc = AetherSfm._arbitrate(_session, jsonPtr, cap);
-      if (_resultFromCode(rc) != AetherSfmResult.ok) return null;
-      final summary =
-          jsonDecode(jsonPtr.toDartString()) as Map<String, dynamic>;
-      return summary;
-    } catch (_) {
-      // old archive without the symbol / malformed stats — non-fatal no-op
-      return null;
-    } finally {
-      malloc.free(jsonPtr);
-    }
-  }
-
   /// [REMOVE-FRAME 2026-07-20] 撤回一帧的**全部重建贡献** —— 用户删照片时调用。
   ///
   /// 用户签决:"照片删了,那数据也必须删了"(拍虚 / 有人经过的照片产生的不良

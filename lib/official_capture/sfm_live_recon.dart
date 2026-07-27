@@ -66,7 +66,6 @@ class SfmLiveSnapshot {
     required this.obsOffsets,
     required this.obsFrameIds,
     required this.obsXY,
-    this.ghostSpatialKeepIdx,
     this.gravityAlignQuatWxyz,
     this.posesPackedRawColmap,
   });
@@ -113,13 +112,6 @@ class SfmLiveSnapshot {
   /// cross-checks — a float inverse rotation is not bit-exact, so raw truth
   /// must be carried, not recomputed. Null when no alignment was applied.
   final Float64List? posesPackedRawColmap;
-
-  /// [L2-ALIGN 2026-07-12] Compacted→native (Points3D-order) index map from the
-  /// finalize spatial-two-view filter — length == [pointCount]; null when that
-  /// filter removed nothing (identity). Lets the L2 render gate remap the
-  /// native ghost_mask.bin onto THIS snapshot's point order so the sidecar
-  /// aligns with the delivered cloud (mask 79458 → snap 79457 → PLY 78945).
-  final Int32List? ghostSpatialKeepIdx;
 
   /// {solve_ms, n_registered, n_points3d, reproj_px, rc, result} from the
   /// finalize phase that produced this snapshot (LOCAL summary for both).
@@ -206,93 +198,10 @@ typedef SfmDisconnectedSegment = ({
   int? nextRegisteredId,
 });
 
-/// Drops only points created exclusively by one time-far spatial pair.
-///
-/// A two-view point has no third-view depth confirmation. When its two frames
-/// are farther apart than the normal temporal K window, it can only have come
-/// from finish-time loop matching. Those points caused the observed long rays:
-/// wrong correspondences can retain low reprojection error while triangulating
-/// at extreme depth. Normal K12 two-view points and every 3+-view loop track are
-/// preserved, so this is not a generic density/outlier filter.
-// [L2-ALIGN 2026-07-12] `keepIdx` is the compacted→native index map (length ==
-// kept points; keepIdx[k] = the Points3D-order index of delivered point k). It
-// lets the L2 render gate remap the native ghost_mask.bin (written in Points3D
-// order, BEFORE this filter) onto the post-filter snapshot so the mask aligns
-// with the delivered cloud. Empty (Int32List(0)) when nothing was removed
-// (identity — the caller skips the remap).
-({AetherSfmPointsTracked points, int removed, Int32List keepIdx})
-filterFinalSpatialTwoViewPoints(
-  AetherSfmPointsTracked input, {
-  required int temporalK,
-}) {
-  final n = input.count;
-  final offsets = input.obsOffsets;
-  final frameIds = input.obsFrameIds;
-  final obsXY = input.obsXY;
-  if (n == 0 ||
-      offsets.length != n + 1 ||
-      obsXY.length != frameIds.length * 2) {
-    return (points: input, removed: 0, keepIdx: Int32List(0));
-  }
-
-  final keep = Uint8List(n);
-  var keptPoints = 0;
-  var keptObs = 0;
-  for (var i = 0; i < n; i++) {
-    final start = offsets[i];
-    final end = offsets[i + 1];
-    if (start < 0 || end < start || end > frameIds.length) {
-      return (points: input, removed: 0, keepIdx: Int32List(0));
-    }
-    final isUnsupportedSpatialTwoView =
-        end - start == 2 &&
-        (frameIds[start] - frameIds[start + 1]).abs() > temporalK;
-    if (!isUnsupportedSpatialTwoView) {
-      keep[i] = 1;
-      keptPoints++;
-      keptObs += end - start;
-    }
-  }
-  final removed = n - keptPoints;
-  if (removed == 0) return (points: input, removed: 0, keepIdx: Int32List(0));
-
-  final xyz = Float32List(keptPoints * 3);
-  final rgb = Uint8List(keptPoints * 3);
-  final compactOffsets = Int32List(keptPoints + 1);
-  final compactFrameIds = Int32List(keptObs);
-  final compactObsXY = Float32List(keptObs * 2);
-  final keepIdx = Int32List(keptPoints); // compacted→native (L2 mask remap)
-  var pointOut = 0;
-  var obsOut = 0;
-  for (var i = 0; i < n; i++) {
-    if (keep[i] == 0) continue;
-    final srcPoint = i * 3;
-    final dstPoint = pointOut * 3;
-    xyz.setRange(dstPoint, dstPoint + 3, input.xyz, srcPoint);
-    rgb.setRange(dstPoint, dstPoint + 3, input.rgb, srcPoint);
-    keepIdx[pointOut] = i;
-    compactOffsets[pointOut] = obsOut;
-    for (var j = offsets[i]; j < offsets[i + 1]; j++) {
-      compactFrameIds[obsOut] = frameIds[j];
-      compactObsXY[obsOut * 2] = obsXY[j * 2];
-      compactObsXY[obsOut * 2 + 1] = obsXY[j * 2 + 1];
-      obsOut++;
-    }
-    pointOut++;
-  }
-  compactOffsets[keptPoints] = obsOut;
-  return (
-    points: AetherSfmPointsTracked(
-      xyz,
-      rgb,
-      compactOffsets,
-      compactFrameIds,
-      compactObsXY,
-    ),
-    removed: removed,
-    keepIdx: keepIdx,
-  );
-}
+// [增量D 2026-07-28] filterFinalSpatialTwoViewPoints(时间远距 spatial 2-view
+// 删点器,官方栈零调用的死代码)与其 keepIdx 契约已删——它是
+// ghostSpatialKeepIdx 的唯一生产者,鬼层 L1/L2 链 07-20 E25 签决停用后
+// 整条管道无消费者。复活走 git 历史。
 
 /// Facade lifecycle events, delivered on the UI isolate.
 sealed class SfmLiveEvent {
@@ -408,18 +317,9 @@ class SfmLiveFailed extends SfmLiveEvent {
   final String message;
 }
 
-/// [BIT5-FIX 2026-07-12] L1 1-bit 仲裁(aether_sfm_arbitrate)已完成 —— native
-/// `ghost_mask.bin` 此刻已在 Points3D 序上回写 rescued(bit5)/confirmed 位。
-/// 交付点序的 `ghost_view_mask.bin` 写在 persist(仲裁之前)时暂无 bit5;UI
-/// 收到本事件后按保存的 native→snap→floater keep 链**重算交付 mask**,让救援
-/// 位流到草稿查看页(见 ar_capture_page._recomputeDeliveredGhostMaskAfterArbitration)。
-/// 不带快照(纯文件驱动 —— native mask 已在磁盘)。[ok] 反映仲裁是否成功;
-/// 失败/no-op 时 native 全体弃权,重算是安全幂等(输出 == persist 版本)。
-class SfmLiveArbitrateDone extends SfmLiveEvent {
-  const SfmLiveArbitrateDone({required this.ok, this.stats});
-  final bool ok;
-  final Map<Object?, Object?>? stats;
-}
+// [增量D 2026-07-28] SfmLiveArbitrateDone 事件已删:L1 仲裁链 07-20 E25
+// 签决停用(鬼层终审:事后清算天花板钉死),入口早已不可达,本次把事件类/
+// 发射点/FFI 绑定/ghostSpatialKeepIdx 管道一并清除。复活走 git 历史。
 
 /// What the facade remembers about each successfully-fed keyframe — enough
 /// for the preview to project reconstructed points back into the saved JPEG
@@ -1250,40 +1150,10 @@ class SfmLiveRecon {
             msg['ms'] as int,
           ),
         );
-      // [E25-B 2026-07-20] 鬼层 L1 推理链**已停用** —— 用户签决删除 L1/L2。
-      //
-      // 停用理由(四重,任一独立成立):
-      //   ① 认证 'o' 管线里没有任何 L1/L2 等价物 → 违「参数全抄认证配置,
-      //      不自创」铁律;
-      //   ② L1 的 parity Python 参考已丢失,其参数(cell 20cm / gap≥1.2cm /
-      //      slab 8cm / 1.5cm 带宽)不可复核、不可重跑 parity;
-      //   ③ **零消费者**:rescue 位(bit5)的读者只有 ghost_view_filter
-      //      (已于同批次默认关闭)与 aether_mirror_cull(默认关/未装机/
-      //      产品侧零引用);
-      //   ④ 完整机制在 2026-07-20 的公开先例检索(学术+正式会刊+专利+
-      //      商业产品+社区工具)下未找到先例。
-      //
-      // 实测代价:每次采集 CoreML fp32 × 4 参考帧 ≈ **10.7 秒**,产出一个
-      // 没人读的位;并制造「预览先出 N 点、10.7s 后再弹出救援点」的 UX 缺陷。
-      //
-      // 这是**唯一入口** —— 不调用即整条链(runCasDiffMVSL1 → worker
-      // 'arbitrate' → arbitrate_done → ghost_view_mask 重算)全部不可达。
-      // 编排代码暂留作死代码,由后续增量 D 统一清除。
-      // 回滚:恢复本行 `unawaited(_maybeRunL1Arbitration());` 即可。
-      case 'arbitrate_done':
-        DeviceLog.log(
-          'SfmLive',
-          'l1-arbitrate done: ok=${msg['ok']} stats=${msg['stats']}',
-        );
-        // [BIT5-FIX 2026-07-12] native ghost_mask.bin 现已带回写的 bit5 —
-        // 通知 UI 按同一 keep 链重算交付点序的 ghost_view_mask.bin(草稿页
-        // 拿到救援位)。绝不 gate 交付,纯磁盘驱动的收尾。
-        _events.add(
-          SfmLiveArbitrateDone(
-            ok: msg['ok'] == true,
-            stats: msg['stats'] as Map<Object?, Object?>?,
-          ),
-        );
+      // [增量D 2026-07-28] 鬼层 L1/L2 链的最后残件(arbitrate_done 处理器 +
+      // SfmLiveArbitrateDone 事件 + FFI 绑定)已删。链本体 07-20 E25 用户
+      // 签决停用(四重理由:违认证铁律/parity 参考丢失/rescue 位零消费者/
+      // 全网无先例;实测每采集烧 10.7s 产出没人读的位)。复活走 git 历史。
       case 'error':
         // 遥测【finalize/error】:终态失败一行(stage=add_frame/finalize/refine)。
         TelemetryWriter.instance.event('sfm_error', {
@@ -1337,7 +1207,6 @@ class SfmLiveRecon {
       obsOffsets: snap.obsOffsets,
       obsFrameIds: snap.obsFrameIds,
       obsXY: snap.obsXY,
-      ghostSpatialKeepIdx: snap.ghostSpatialKeepIdx,
       gravityAlignQuatWxyz: q,
       posesPackedRawColmap: snap.posesPacked,
     );
@@ -1355,7 +1224,6 @@ class SfmLiveRecon {
       obsOffsets: msg['obsOffsets'] as Int32List? ?? Int32List(1),
       obsFrameIds: msg['obsFrameIds'] as Int32List? ?? Int32List(0),
       obsXY: msg['obsXY'] as Float32List? ?? Float32List(0),
-      ghostSpatialKeepIdx: msg['ghostSpatialKeepIdx'] as Int32List?,
     );
   }
 }
