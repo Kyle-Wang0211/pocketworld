@@ -115,6 +115,59 @@ void main() {
     );
   });
 
+  testWidgets('系统返回(iOS 侧滑/Android 返回键)同样走 save_draft 链路', (tester) async {
+    // 回归覆盖:SelectionPage 曾经整页无 PopScope,系统返回会被 Navigator
+    // 直接 pop(null) 绕过 —— 跳过 _flush() 丢最后一次改动,且
+    // ar_capture_page.dart 的 `result == 'save_draft'` 判断不成立,用户
+    // 会落回等待页(违反"选区页返回不回等待页"签决)。这里用
+    // flutter_test 模拟系统返回的标准手法(WidgetsApp.didPopRoute)驱动
+    // 页面的 PopScope,而不是点击左上角按钮(那条路径已被上面那条用例
+    // 覆盖)。
+    late Directory dir;
+    late Float32List xyz;
+    late Uint8List rgb;
+    await tester.runAsync(() async {
+      (dir, xyz, rgb) = await _fixture();
+    });
+    addTearDown(() => dir.delete(recursive: true));
+    String? popped;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (ctx) => ElevatedButton(
+            onPressed: () async {
+              popped = await Navigator.of(ctx).push<String>(
+                MaterialPageRoute(
+                  builder: (_) =>
+                      SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
+                ),
+              );
+            },
+            child: const Text('go'),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('go'));
+    await tester.pump();
+    await _pumpUntilLoaded(tester);
+    await tester.pumpAndSettle();
+
+    final dynamic widgetsAppState = tester.state(find.byType(WidgetsApp));
+    await widgetsAppState.didPopRoute();
+    await tester.pump();
+    // _onBackPressed 里的 _flush() 是真实 saveTo IO —— 等它的延续(含
+    // Navigator.pop)冒泡回来,再消化 pop 转场动画。
+    await _pumpUntilRealAsyncSettles(tester, () => popped != null);
+    await tester.pumpAndSettle();
+
+    expect(popped, 'save_draft');
+    expect(
+      File('${dir.path}/$kSelectionBoxFileName').existsSync(),
+      isTrue, // 系统返回同样兜底 flush
+    );
+  });
+
   testWidgets('Ready to Process:轻提示,不 pop', (tester) async {
     late Directory dir;
     late Float32List xyz;

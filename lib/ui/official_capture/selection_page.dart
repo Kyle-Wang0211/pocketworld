@@ -65,6 +65,11 @@ class _SelectionPageState extends State<SelectionPage>
   double _animPresetYaw = kOrientationPresets[0].yaw;
   double _animPitch = kOrientationPresets[0].pitch;
 
+  /// 本次动画的 yaw 目标(见 _selectPreset)—— 与 kOrientationPresets 表中
+  /// 的原始 yaw 不同:已归一化到与 _fromYaw 最短弧,避免 Back↔Left(表中
+  /// 相差 270°)之类的预设走 3/4 圈长弧动画。
+  double _toYaw = kOrientationPresets[0].yaw;
+
   /// 测试用:直接读当前盒(见 test/selection_page_test.dart)。
   @visibleForTesting
   SelectionBox? get debugBox => _box;
@@ -109,10 +114,12 @@ class _SelectionPageState extends State<SelectionPage>
 
   void _onPresetTick() {
     final t = Curves.easeOutCubic.transform(_presetAnim.value);
-    final target = kOrientationPresets[_presetIdx];
+    final targetPitch = kOrientationPresets[_presetIdx].pitch;
     setState(() {
-      _animPresetYaw = _fromYaw + (target.yaw - _fromYaw) * t;
-      _animPitch = _fromPitch + (target.pitch - _fromPitch) * t;
+      // 用归一化后的 _toYaw(不是表里的原始 yaw)做 lerp 目标,见
+      // _selectPreset 里的最短弧归一化。
+      _animPresetYaw = _fromYaw + (_toYaw - _fromYaw) * t;
+      _animPitch = _fromPitch + (targetPitch - _fromPitch) * t;
     });
   }
 
@@ -120,6 +127,21 @@ class _SelectionPageState extends State<SelectionPage>
     if (idx == _presetIdx) return;
     _fromYaw = _animPresetYaw;
     _fromPitch = _animPitch;
+    // Back(π)↔Left(-π/2)之类的预设在表里相差 270°:朴素 lerp 会摆动经过
+    // Front/Right,走 3/4 圈长弧。把目标 yaw 归一化到与 _fromYaw 的最短弧
+    // (±π 内)再存进动画目标 _toYaw,而不是改 kOrientationPresets 表本身
+    // (表仍是每个朝向的规范角度,供其它读者——如 orientation cube 标签——
+    // 使用)。动画结束后 _animPresetYaw 可能带 2π 整数倍偏移,但它只会喂
+    // 进 viewYaw 的 cos/sin(见 _buildLoaded),周期函数对整数倍 2π 偏移
+    // 不敏感,不影响渲染或后续联动计算。
+    var target = kOrientationPresets[idx].yaw;
+    while (target - _fromYaw > math.pi) {
+      target -= 2 * math.pi;
+    }
+    while (target - _fromYaw < -math.pi) {
+      target += 2 * math.pi;
+    }
+    _toYaw = target;
     setState(() => _presetIdx = idx);
     unawaited(_presetAnim.forward(from: 0));
   }
@@ -174,14 +196,28 @@ class _SelectionPageState extends State<SelectionPage>
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF0B0B0D),
-      body: SafeArea(
-        child: _loading
-            ? const Center(
-                child: CircularProgressIndicator(color: Colors.white70),
-              )
-            : _buildLoaded(context),
+    // 系统返回(iOS 侧滑 / Android 返回键)必须走同一条 flush→'save_draft'
+    // 链路,而不是被 Navigator 直接 pop(null) 绕过:① 跳过 _flush() 会丢
+    // 500ms debounce 窗口内的最后一次改动;② ar_capture_page.dart 的
+    // `result == 'save_draft'` 判断不成立,用户会落回等待页 —— 违反
+    // spec"选区页返回不回等待页"签决。_onBackPressed 内部已有 mounted
+    // 守卫和显式 Navigator.pop(context, 'save_draft'),canPop:false 时
+    // 显式 pop 不受影响,所以这里安全地拦截隐式 pop 并转发到同一处理器。
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (bool didPop, Object? result) {
+        if (didPop) return;
+        unawaited(_onBackPressed());
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFF0B0B0D),
+        body: SafeArea(
+          child: _loading
+              ? const Center(
+                  child: CircularProgressIndicator(color: Colors.white70),
+                )
+              : _buildLoaded(context),
+        ),
       ),
     );
   }

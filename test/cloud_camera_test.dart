@@ -3,8 +3,32 @@ import 'dart:ui' show Size;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/ui/official_capture/cloud_camera.dart';
+import 'package:pocketworld_flutter/ui/official_capture/sparse_cloud_view.dart'
+    show SparseCloudPainter;
 
 void main() {
+  test('fillK 默认值与 SparseCloudPainter.fitFillK 同源不漂移', () {
+    // cloud_camera.dart 的 CloudCamera.fillK 默认值与
+    // sparse_cloud_view.dart 的 SparseCloudPainter.fitFillK 曾是两个各写
+    // 一份的字面量(都是 2.6),没有任何东西守着它们不漂移 —— 漂移会让
+    // 选区页手柄矩形静默错尺度。这条测试就是那道守卫:任一边改了数值而
+    // 另一边没跟着改,这里就会先炸。
+    expect(
+      const CloudCamera(
+        yaw: 0,
+        pitch: 0,
+        zoom: 1,
+        panX: 0,
+        panY: 0,
+        pivotX: 0,
+        pivotY: 0,
+        pivotZ: 0,
+        radius: 1,
+      ).fillK,
+      SparseCloudPainter.fitFillK,
+    );
+  });
+
   test('project() 与手工展开逐位一致(随机相机×随机点)', () {
     final rnd = math.Random(42);
     for (var t = 0; t < 200; t++) {

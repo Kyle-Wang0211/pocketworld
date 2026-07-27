@@ -48,8 +48,10 @@ class SelectionBox {
   bool contains(double wx, double wy, double wz) {
     // 世界 → 盒局部。正变换(局部→世界,见 selectionBoxCorners)是
     //   wx = lx·cosθ − lz·sinθ; wz = lx·sinθ + lz·cosθ  (θ = yawDeg)
-    // 其标准逆式如下 —— 别用"负角+正式"的写法,那不是它的逆
-    // (计划自审时抓过一次这个旋转方向 bug)。
+    // 其标准逆式如下(与 selectionBoxCorners 的正变换互逆)。注:数学上
+    // R(−θ) = R(θ)⁻¹,所以"负角代入正变换公式"本身与下面这套逆式等价,
+    // 并不是错误写法 —— 计划自审时抓到的那个 bug,根因是把逆变换的旋转
+    // 方向写反了(符号搞反,不是"负角+正式"这个思路本身的问题)。
     final t = yawDeg * math.pi / 180.0;
     final c = math.cos(t), s = math.sin(t);
     final px = wx - cx, py = wy - cy, pz = wz - cz;

@@ -2823,7 +2823,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                   : _sfmStageProgressText(),
               onBack: _showDraftsDuringReconstruction,
               onDone: () => unawaited(_onSfmPreviewDone()),
-              onNext: _sfmSnapshot != null ? _onSfmPreviewNext : null,
+              onNext: _sfmSnapshot != null && _sfmSnapshot!.pointCount > 0
+                  ? _onSfmPreviewNext
+                  : null,
             ),
         ],
       ),

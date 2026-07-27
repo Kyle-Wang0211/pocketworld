@@ -635,7 +635,15 @@ class SparseCloudPainter extends CustomPainter {
   // ~0.78 × half-short-side (measured), i.e. ~20% margin — user-locked
   // 2026-07-06. Kept in ONE place: paint() and pointAtScreen() must project
   // identically or double-tap picking drifts.
-  static const double _fitFillK = 2.6;
+  // Public (not `_`-private): CloudCamera's own default `fillK` (2.6, in
+  // cloud_camera.dart) is a second, hand-synced literal copy of this same
+  // constant — the two could silently drift and mis-scale the selection
+  // page's handle rectangles. They stay two literals (CloudCamera can't
+  // import this file without a cycle: this file already imports
+  // cloud_camera.dart), but exposing this one lets
+  // test/cloud_camera_test.dart assert `CloudCamera(...).fillK ==
+  // SparseCloudPainter.fitFillK` as a runtime drift guard.
+  static const double fitFillK = 2.6;
 
   /// Ensures the fit cache (center + radius) for [xyz] and returns it — the
   /// widget uses this to seed / reset the orbit pivot without re-deriving the
@@ -681,7 +689,7 @@ class SparseCloudPainter extends CustomPainter {
       pivotY: pivot[1],
       pivotZ: pivot[2],
       radius: _radius,
-      fillK: _fitFillK,
+      fillK: fitFillK,
     ).projectionFor(size);
     final cosY = proj.cosY, sinY = proj.sinY;
     final cosP = proj.cosP, sinP = proj.sinP;
@@ -767,7 +775,7 @@ class SparseCloudPainter extends CustomPainter {
     // percentile drops only the ~0.5% most-distant points — the sparse SfM
     // strays that would otherwise shrink the whole scene to a dot — while
     // keeping every real surface (dense, so far walls sit well below 99.5%).
-    // Paired with the 20%-margin framing constant (_fitFillK) and a SPHERE
+    // Paired with the 20%-margin framing constant (fitFillK) and a SPHERE
     // fit, this guarantees full visibility at ANY orbit angle. Full set still
     // renders; a zoom-out reveals the dropped strays.
     final dd = <double>[];
@@ -812,7 +820,7 @@ class SparseCloudPainter extends CustomPainter {
         : null;
     // Scale-invariant fit: constant focal (f = half·K·zoom), scale only in
     // camDist = radius·3.2. Fills the 99.5th-pct radius to ~0.78·half (see
-    // _fitFillK). Sphere fit → whole scene stays framed at any orbit angle.
+    // fitFillK). Sphere fit → whole scene stays framed at any orbit angle.
     final proj = CloudCamera(
       yaw: yaw,
       pitch: pitch,
@@ -823,7 +831,7 @@ class SparseCloudPainter extends CustomPainter {
       pivotY: pivotY,
       pivotZ: pivotZ,
       radius: _radius,
-      fillK: _fitFillK,
+      fillK: fitFillK,
     ).projectionFor(size);
     final cosY = proj.cosY, sinY = proj.sinY;
     final cosP = proj.cosP, sinP = proj.sinP;
