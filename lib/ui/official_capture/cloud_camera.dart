@@ -83,11 +83,15 @@ class CloudProjection {
   /// = 视空间 x1 减小)对应的世界方向单位向量。
   List<double> rightAxisWorld() => [-cosY, 0, -sinY];
 
-  /// 屏幕 +y(向下)对应的世界方向单位向量。
-  /// 推导:sy = oy − y2·f/depth ⇒ 屏幕下移(+y)要求 y2 增大;
+  /// 屏幕 −y(向上)对应的世界方向单位向量(与函数名 upAxisWorld 一致:
+  /// yaw=pitch=0 时返回 (0,1,0)=世界 +Y,即"抬头"方向)。
+  /// 推导:sy = oy − y2·f/depth ⇒ ∂sy/∂y2 = −f/depth < 0,即 y2 增大会让
+  /// sy 减小 ⇒ 屏幕上移(−y);
   /// y2 = py·cosP − z1·sinP,z1 = −px·sinY + pz·cosY
-  /// ⇒ ∂y2/∂(px,py,pz) = (sinY·sinP, cosP, −cosY·sinP)。
-  /// 注:brief 手推稿在此处符号有误(多取了一次负),已用数值微分测试
-  /// (test/cloud_camera_test.dart)核验修正 —— 不取负,直接是该梯度方向。
+  /// ⇒ ∂y2/∂(px,py,pz) = (sinY·sinP, cosP, −cosY·sinP),此即"y2 增大方向"
+  /// = 屏幕上移方向,不需要再取负。
+  /// 注:brief 手推稿在此处符号有误(把"y2 增大 ⇒ 屏幕上移"误写成"屏幕
+  /// 下移要求 y2 增大"),已用数值微分测试(test/cloud_camera_test.dart)
+  /// 核验修正。
   List<double> upAxisWorld() => [sinY * sinP, cosP, -cosY * sinP];
 }
