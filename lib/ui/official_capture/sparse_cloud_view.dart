@@ -18,6 +18,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 import '../../point_cloud_display/progressive_octree_order.dart';
+import 'cloud_camera.dart';
 
 /// Snapshot of the animatable camera state (double-tap focus / reframe lerp).
 class _CamState {
@@ -631,13 +632,21 @@ class SparseCloudPainter extends CustomPainter {
     final vis = visibility != null && visibility.length == n
         ? visibility
         : null;
-    final cosY = math.cos(yaw), sinY = math.sin(yaw);
-    final cosP = math.cos(pitch), sinP = math.sin(pitch);
-    final half = size.shortestSide * 0.5;
-    final f =
-        half * _fitFillK * zoom; // constant → scale-invariant (see _fitFillK)
-    final camDist = _radius * 3.2;
-    final ox = size.width * 0.5 + panX, oy = size.height * 0.5 + panY;
+    final proj = CloudCamera(
+      yaw: yaw,
+      pitch: pitch,
+      zoom: zoom,
+      panX: panX,
+      panY: panY,
+      pivotX: pivot[0],
+      pivotY: pivot[1],
+      pivotZ: pivot[2],
+      radius: _radius,
+      fillK: _fitFillK,
+    ).projectionFor(size);
+    final cosY = proj.cosY, sinY = proj.sinY;
+    final cosP = proj.cosP, sinP = proj.sinP;
+    final f = proj.f, camDist = proj.camDist, ox = proj.ox, oy = proj.oy;
     const rPx = 44.0; // tap tolerance
     var bestInRadiusDepth = double.infinity;
     var bestInRadiusIdx = -1;
@@ -762,15 +771,24 @@ class SparseCloudPainter extends CustomPainter {
     final vis = visibility != null && visibility!.length == n
         ? visibility
         : null;
-    final cosY = math.cos(yaw), sinY = math.sin(yaw);
-    final cosP = math.cos(pitch), sinP = math.sin(pitch);
-    final half = size.shortestSide * 0.5;
     // Scale-invariant fit: constant focal (f = half·K·zoom), scale only in
     // camDist = radius·3.2. Fills the 99.5th-pct radius to ~0.78·half (see
     // _fitFillK). Sphere fit → whole scene stays framed at any orbit angle.
-    final f = half * _fitFillK * zoom;
-    final camDist = _radius * 3.2;
-    final ox = size.width * 0.5 + panX, oy = size.height * 0.5 + panY;
+    final proj = CloudCamera(
+      yaw: yaw,
+      pitch: pitch,
+      zoom: zoom,
+      panX: panX,
+      panY: panY,
+      pivotX: pivotX,
+      pivotY: pivotY,
+      pivotZ: pivotZ,
+      radius: _radius,
+      fillK: _fitFillK,
+    ).projectionFor(size);
+    final cosY = proj.cosY, sinY = proj.sinY;
+    final cosP = proj.cosP, sinP = proj.sinP;
+    final f = proj.f, camDist = proj.camDist, ox = proj.ox, oy = proj.oy;
 
     var hasColor = false;
     for (var i = 0; i < rgb.length; i += 3 * math.max(1, stride)) {
