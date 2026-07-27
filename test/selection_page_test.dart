@@ -115,14 +115,17 @@ void main() {
     );
   });
 
-  testWidgets('系统返回(iOS 侧滑/Android 返回键)同样走 save_draft 链路', (tester) async {
+  testWidgets('Android 系统返回键经 maybePop 转发到 save_draft 链路', (tester) async {
     // 回归覆盖:SelectionPage 曾经整页无 PopScope,系统返回会被 Navigator
     // 直接 pop(null) 绕过 —— 跳过 _flush() 丢最后一次改动,且
     // ar_capture_page.dart 的 `result == 'save_draft'` 判断不成立,用户
     // 会落回等待页(违反"选区页返回不回等待页"签决)。这里用
-    // flutter_test 模拟系统返回的标准手法(WidgetsApp.didPopRoute)驱动
-    // 页面的 PopScope,而不是点击左上角按钮(那条路径已被上面那条用例
-    // 覆盖)。
+    // flutter_test 模拟系统返回的标准手法(WidgetsApp.didPopRoute,对应
+    // Android 系统返回键经 maybePop 触发 PopScope)驱动页面的 PopScope,
+    // 而不是点击左上角按钮(那条路径已被上面那条用例覆盖)。注:
+    // canPop:false 下 iOS 侧滑手势被框架直接禁用(popGestureEnabled →
+    // false,手势 inert),不会走到这条 didPopRoute 路径 —— iOS 上返回
+    // 的唯一出口是左上角返回按钮,这条用例不覆盖也不代表 iOS 侧滑。
     late Directory dir;
     late Float32List xyz;
     late Uint8List rgb;
@@ -164,7 +167,7 @@ void main() {
     expect(popped, 'save_draft');
     expect(
       File('${dir.path}/$kSelectionBoxFileName').existsSync(),
-      isTrue, // 系统返回同样兜底 flush
+      isTrue, // 系统返回(Android)同样兜底 flush
     );
   });
 

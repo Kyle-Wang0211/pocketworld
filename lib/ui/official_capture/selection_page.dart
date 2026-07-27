@@ -53,6 +53,11 @@ class _SelectionPageState extends State<SelectionPage>
   int _presetIdx = 0;
   Timer? _saveDebounce;
 
+  /// in-flight 守卫:_onBackPressed 里 await _flush() 期间(真实 IO)若
+  /// 二次触发(例如返回按钮被连点),没有这个守卫会二次 Navigator.pop,
+  /// 把本页之上的 capture route 也 pop 掉。
+  bool _exiting = false;
+
   // 显式在 initState 里建(不用 late final = 惰性初始化):否则若用户全程
   // 没碰朝向立方体,_presetAnim 从未被访问过,首次访问会拖到 dispose() 里
   // 因 `_presetAnim.dispose()` 触发惰性构造 —— 此时 vsync(this) 要向上找
@@ -183,6 +188,11 @@ class _SelectionPageState extends State<SelectionPage>
   }
 
   Future<void> _onBackPressed() async {
+    // 防重入:_flush() 是真实 saveTo IO,await 期间若二次触发(连点返回
+    // 按钮/Android 返回键连按两次)没有这个守卫会二次 pop,把本页之上的
+    // capture route 也带出去。
+    if (_exiting) return;
+    _exiting = true;
     await _flush();
     if (!mounted) return;
     Navigator.pop(context, 'save_draft');
@@ -196,13 +206,19 @@ class _SelectionPageState extends State<SelectionPage>
 
   @override
   Widget build(BuildContext context) {
-    // 系统返回(iOS 侧滑 / Android 返回键)必须走同一条 flush→'save_draft'
-    // 链路,而不是被 Navigator 直接 pop(null) 绕过:① 跳过 _flush() 会丢
-    // 500ms debounce 窗口内的最后一次改动;② ar_capture_page.dart 的
+    // 隐式 pop(不经 _onBackPressed)必须被杜绝,否则会跳过 _flush()
+    // (丢 500ms debounce 窗口内的最后一次改动)且 ar_capture_page.dart 的
     // `result == 'save_draft'` 判断不成立,用户会落回等待页 —— 违反
-    // spec"选区页返回不回等待页"签决。_onBackPressed 内部已有 mounted
-    // 守卫和显式 Navigator.pop(context, 'save_draft'),canPop:false 时
-    // 显式 pop 不受影响,所以这里安全地拦截隐式 pop 并转发到同一处理器。
+    // spec"选区页返回不回等待页"签决。canPop:false 下两端行为不同,准确
+    // 表述(别再写成"两端都转发"):
+    // · Android 系统返回键经 maybePop 触发 onPopInvokedWithResult
+    //   (didPop=false)→ 转发到 _onBackPressed,走同一条 flush→pop 链路。
+    // · iOS 侧滑手势被框架直接禁用(popGestureEnabled → false,手势
+    //   inert,不产生 pop 尝试,onPopInvokedWithResult 不会因侧滑触发)。
+    //   iOS 上唯一的返回出口是左上角返回按钮(与父路由 ar_capture_page
+    //   同款处理)。
+    // _onBackPressed 内部已有 mounted 守卫和显式
+    // Navigator.pop(context, 'save_draft'),canPop:false 不影响显式 pop。
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (bool didPop, Object? result) {
