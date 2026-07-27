@@ -16,4 +16,7 @@ const bool pwPhoto43 = true;
 
 /// 取景画幅(竖屏 w/h):photo43=3:4,其余=9:16 —— WYSIWYG:预览画幅
 /// 恒等于照片画幅(用户规格 2026-07-19:拍摄阶段 AR 与照片显示相同画面)。
+/// 取景矩形的位置/尺寸与底部控件条的几何在
+/// `lib/ui/official_capture/capture_preview_rect.dart`(那边要 dart:ui,
+/// 本文件保持纯常量)。
 const double pwPreviewAspect = 3 / 4;

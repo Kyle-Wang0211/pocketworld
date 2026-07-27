@@ -121,12 +121,18 @@ void main() {
     },
   );
 
-  test('the single production capture page keeps its route marker', () {
+  // [2026-07-27 UI 签决]"官方"路由徽章已删除。它当初是两条采集路由并存时
+  // 的消歧标记,而另一条(lib/ui/capture/ar_capture_page.dart)早就不存在了
+  // —— 对用户零信息量,只占着取景框右上角。这里改锁"只剩一条路由 + 徽章
+  // 确实没了",防止它随手被加回来。
+  test('there is exactly one capture route and it carries no route badge', () {
     expect(File('lib/ui/capture/ar_capture_page.dart').existsSync(), isFalse);
+    final page = read('lib/ui/official_capture/ar_capture_page.dart');
     expect(
-      read('lib/ui/official_capture/ar_capture_page.dart'),
-      contains("ValueKey<String>('capture-route-badge-official')"),
+      page,
+      isNot(contains("ValueKey<String>('capture-route-badge-official')")),
     );
+    expect(page, isNot(contains('_CaptureRouteBadge')));
   });
 
   test('official FFI binds only the official ABI and fails closed', () {
