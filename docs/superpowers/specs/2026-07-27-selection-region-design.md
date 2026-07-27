@@ -76,16 +76,40 @@ SelectionBox { cx, cy, cz,  sx, sy, sz,  yawDeg }
 
 **选区页 `selection_page.dart` + `selection_cloud_view.dart`(新)**:
 
+> [2026-07-27 调研修订,用户批准] 手柄模型与滑杆语义按 RS Mobile 官方文档
+> 修订(dev.epicgames.com RealityScan-Step-by-Step-Guide 一手核实):
+> "circular corner widgets adjusting size in two directions and oblong edge
+> widgets adjusting size parallel to the corresponding edge";
+> "the rotation slider will rotate the point cloud around the axis
+> perpendicular to the device screen"。
+
 - 左上返回:flush 框 → 触发与"保存草稿"同一退出链路 → 草稿列表。
-- 右上朝向立方体:Top / Front / Left / Right / Back / Bottom + 上下箭头,
+- 右上朝向立方体:Top / Front / Left / Right / Back / Bottom + 箭头切换,
   相机 lerp 到预设 `yaw/pitch`(重力对齐 ⇒ 预设确定性成立)。
-- 中央:全量点云 + 盒线框 + 8 角球手柄 + 4 边条手柄;**框外点实时变红**
-  (painter 逐点 `contains` 调制色;框外点不消失)。
-- 手势:单指落在手柄 → 拖对应面/角改盒尺寸(屏幕 delta ×
-  `worldPerPixelAt` 映射世界轴);单指落空白 → 平移盒中心;双指捏合 →
-  视图缩放。无自由单指旋转(视角只走预设立方体)。
-- 底部:`Rotate Point Cloud` 刻度滑杆 = 改 `yawDeg`(转盒对齐点云,视觉
-  等效转点云,不动数据);`Ready to Process` 大按钮 = 轻提示占位。
+- 中央:全量点云 + **盒的 2D 投影矩形**(RS Mobile 同款,不是 3D 线框):
+  当前视角下盒可见两轴的屏幕对齐矩形,4 角圆手柄(双轴)+ 4 边条手柄
+  (单轴),纯屏幕空间命中,无 3D 手柄深度歧义。切视角改第三轴。
+  **框外点实时变红**(painter 逐点 `contains` 调制色;框外点不消失)。
+  矩形几何用盒中心深度做统一缩放(正交近似)—— 拖拽逆映射用同一深度,
+  往返自洽;框是控制器 UI,不是几何贴合线(RS Mobile 同样近似)。
+- 手势:单指落在手柄 → 拖角/边,受控局部轴外扩/收缩、**对面不动**;
+  单指落空白 → 平移盒中心(视平面映射);双指捏合 → 视图缩放。
+  无自由单指旋转(视角只走预设立方体)。
+- 底部:`Rotate Point Cloud` 刻度滑杆 = 改 `yawDeg`;渲染上
+  **相机 yaw = 预设 yaw + yawDeg**(点云随滑杆转、矩形保持屏幕对齐,
+  与 RS"转点云"observable 一致)。**已知差异(签决记录)**:RS 滑杆绕
+  屏幕法向轴,Top/Bottom 视角下与本实现完全一致;侧视角下 RS 是 roll、
+  本实现是绕重力轴 —— 盒模型是签决过的 yaw-only(全姿态盒会把
+  contains/JSON/稠密化边界全复杂化),且"把歪模型转正"在重力轴上更合理。
+  按"复刻 RS 只抄证明有效的"规矩记录在案。
+  `Ready to Process` 大按钮 = 轻提示占位。
+
+**调研出处与 license(2026-07-27)**:交互范式对照 Potree clip volume
+(`HIGHLIGHT_INSIDE` 语义 == 本设计"框外变红",行业标准)、three.js
+TransformControls(gizmo 范式)、Open3D OBB crop(yaw-盒 = 受限 OBB,
+行业同款);Flutter 生态无可用组件(pub.dev 3D 包全是 WebView+JS 引擎,
+与自绘 `Float32List` 点云不兼容)。**零第三方代码/依赖引入,零 license
+义务**(范式不受版权保护)。
 
 **草稿查看器回显(改)**:
 
@@ -116,5 +140,6 @@ SelectionBox { cx, cy, cz,  sx, sy, sz,  yawDeg }
 
 - localReady 期间的即时选区(架构预留的 `SfmLivePreview` 不在本期接线)。
 - 从草稿重进选区编辑(本期查看器只读回显;要编辑等稠密化一起设计)。
-- 盒的 pitch/roll(RS 也只有绕竖直轴旋转)。
+- 盒的 pitch/roll(yaw-only 是签决;RS Mobile 滑杆实为屏幕法向轴,差异
+  已在选区页小节记录)。
 - Ready to Process 的真实处理链。

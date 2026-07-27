@@ -681,138 +681,172 @@ git commit -F <(printf 'feat(selection): SparseCloudView 只读选区回显(框�
 
 ---
 
-### Task 4: 选区手势数学(纯函数)+ SelectionCloudView
+### Task 4: 选区 2D 矩形手柄数学(纯函数)+ SelectionCloudView
+
+> [2026-07-27 调研修订] 手柄模型 = RS Mobile 官方同款 **2D 投影矩形**
+> (角=双轴、边=单轴、纯屏幕命中),不做 3D 的 8 角+4 竖边手柄。
+> 矩形几何用盒中心深度统一缩放(正交近似),拖拽逆映射用同一深度 ——
+> 往返自洽。盒局部轴的屏幕方向由投影**数值差分**求得,零手写映射表,
+> 符号自动正确。
 
 **Files:**
 - Create: `lib/ui/official_capture/selection_cloud_view.dart`
-- Test: `test/selection_drag_math_test.dart`
+- Modify: `lib/ui/official_capture/sparse_cloud_view.dart`(SparseCloudPainter 加 `drawSelectionWireframe` 开关,默认 true —— 选区页要红点但不要 3D 线框)
+- Test: `test/selection_rect_math_test.dart`
 
 **Interfaces:**
-- Consumes: Task 1 `SelectionBox`;Task 2 `CloudCamera/CloudProjection`;Task 3 `selectionBoxCorners/kSelectionOutColor`
+- Consumes: Task 1 `SelectionBox`;Task 2 `CloudCamera/CloudProjection`;Task 3 `SparseCloudPainter(selectionBox:)`
 - Produces(全在 `selection_cloud_view.dart` 顶层,test 直接 import):
-  - `enum SelectionHandle { cornerNNN, cornerPNN, cornerNPN, cornerPPN, cornerNNP, cornerPNP, cornerNPP, cornerPPP, edgeXN, edgeXP, edgeZN, edgeZP }`(角命名 = x/y/z 位的 N 负 P 正,与 `selectionBoxCorners` index 同序:cornerNNN=index0 … cornerPPP=index7;edge 为四条竖边中点手柄,XN=局部 -x 面 等)
-  - `List<double> handleWorldPos(SelectionBox b, SelectionHandle h)`
-  - `SelectionHandle? hitHandle({required SelectionBox box, required CloudProjection proj, required Offset tap, double tolPx = 34})`
-  - `SelectionBox applyHandleDrag({required SelectionBox box, required SelectionHandle h, required List<double> worldDelta, required double minHalfSize})` — 拖手柄:受控轴尺寸随局部 delta 变、对面不动(中心补偿);y 轴由角手柄同时控制
-  - `SelectionBox applyBoxPan({required SelectionBox box, required List<double> worldDelta})` — 整盒平移
+  - `enum RectHandle { cornerTL, cornerTR, cornerBL, cornerBR, edgeL, edgeR, edgeT, edgeB }`(屏幕语义命名)
+  - `class BoxScreenBasis { final int hAxis, vAxis; final double hSx, vSy; final double scale; final double cxS, cyS; }` — 当前视角下盒的屏幕基:h/vAxis ∈ {0:x,1:y,2:z}(盒局部轴),hSx/vSy = 该局部轴单位向量的屏幕 x/y 分量(带符号),scale = f/centerDepth,(cxS,cyS) = 盒中心屏幕坐标
+  - `BoxScreenBasis boxScreenBasis(CloudProjection proj, SelectionBox box)` — 对盒局部 x/y/z 三轴做投影差分,|屏幕x| 最大者为 hAxis、|屏幕y| 最大者为 vAxis(两者必不同轴,断言保护)
+  - `Rect selectionScreenRect(BoxScreenBasis b, SelectionBox box)` — 屏幕对齐矩形:中心 (cxS,cyS),半宽 = 盒 hAxis 半尺寸·scale,半高 = vAxis 半尺寸·scale
+  - `RectHandle? hitRectHandle(Rect r, Offset tap, {double tolPx = 34})` — 纯 2D:8 个手柄点(4 角 + 4 边中点)最近命中
+  - `SelectionBox applyRectHandleDrag({required SelectionBox box, required BoxScreenBasis basis, required RectHandle h, required Offset screenDelta, required double minHalfSize})` — 受控局部面外扩/收缩、对面不动(中心补偿);corner 控 h+v 两轴,edge 控单轴
+  - `SelectionBox applyBoxPan({required SelectionBox box, required CloudProjection proj, required Offset screenDelta, required double depth})` — 空白拖动整盒平移(视平面 right/up × worldPerPixelAt)
   - `class SelectionCloudView extends StatefulWidget`:
-    `SelectionCloudView({required Float32List xyz, required Uint8List rgb, required SelectionBox box, required ValueChanged<SelectionBox> onBoxChanged, required double presetYaw, required double presetPitch})`
+    `SelectionCloudView({required Float32List xyz, required Uint8List rgb, required SelectionBox box, required ValueChanged<SelectionBox> onBoxChanged, required double viewYaw, required double viewPitch})`
+    (viewYaw **已含**滑杆分量 —— Task 5 传 `preset.yaw + box.yawDeg·π/180`)
 
 - [ ] **Step 1: 写失败测试(纯函数层)**
 
 ```dart
-// test/selection_drag_math_test.dart
-import 'dart:ui' show Offset, Size;
+// test/selection_rect_math_test.dart
+import 'dart:ui' show Offset, Rect, Size;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/official_capture/selection_box.dart';
 import 'package:pocketworld_flutter/ui/official_capture/cloud_camera.dart';
 import 'package:pocketworld_flutter/ui/official_capture/selection_cloud_view.dart';
 
+CloudProjection _proj({double yaw = 0, double pitch = 0}) => CloudCamera(
+  yaw: yaw, pitch: pitch, zoom: 1, panX: 0, panY: 0,
+  pivotX: 0, pivotY: 0, pivotZ: 0, radius: 2,
+).projectionFor(const Size(400, 400));
+
 void main() {
   const box = SelectionBox(
-    cx: 0, cy: 0, cz: 0, sx: 2, sy: 2, sz: 2, yawDeg: 0);
+    cx: 0, cy: 0, cz: 0, sx: 2, sy: 4, sz: 6, yawDeg: 0);
 
-  test('handleWorldPos:cornerPPP = (+1,+1,+1)', () {
-    final p = handleWorldPos(box, SelectionHandle.cornerPPP);
-    expect(p[0], closeTo(1, 1e-9));
-    expect(p[1], closeTo(1, 1e-9));
-    expect(p[2], closeTo(1, 1e-9));
+  test('Front 视角(yaw0,pitch0):可见轴 = 局部 x/y', () {
+    final b = boxScreenBasis(_proj(), box);
+    expect(b.hAxis, 0); // x
+    expect(b.vAxis, 1); // y
+    // 屏幕投影带负号(sx = ox − x1·f/depth):局部 +x → 屏幕 −x
+    expect(b.hSx, lessThan(0));
+    // y 向上为正、屏幕 y 向下 ⇒ 局部 +y → 屏幕 −y
+    expect(b.vSy, lessThan(0));
   });
 
-  test('拖 +x 角沿 +x 0.5:sx 变 2.5,-x 面不动', () {
-    final out = applyHandleDrag(
-      box: box,
-      h: SelectionHandle.cornerPPP,
-      worldDelta: [0.5, 0, 0],
-      minHalfSize: 0.01,
-    );
-    expect(out.sx, closeTo(2.5, 1e-9));
-    expect(out.cx, closeTo(0.25, 1e-9)); // 中心补偿一半
-    // -x 面位置 = cx - sx/2 = 0.25 - 1.25 = -1(不动)
-    expect(out.cx - out.sx / 2, closeTo(-1, 1e-9));
-    expect(out.sy, closeTo(2.5, 1e-9)); // 角手柄同时控 y
-    expect(out.sz, closeTo(2, 1e-9)); // PPP 的 z 分量 delta=0 → 不变
+  test('Top 视角(pitch=−π/2):可见轴 = 局部 x/z', () {
+    final b = boxScreenBasis(_proj(pitch: -3.141592653589793 / 2), box);
+    expect(b.hAxis, 0); // x
+    expect(b.vAxis, 2); // z
   });
 
-  test('拖 -x 边手柄沿 -x:sx 增大,+x 面不动', () {
-    final out = applyHandleDrag(
-      box: box,
-      h: SelectionHandle.edgeXN,
-      worldDelta: [-0.4, 0, 0],
-      minHalfSize: 0.01,
-    );
-    expect(out.sx, closeTo(2.4, 1e-9));
-    expect(out.cx + out.sx / 2, closeTo(1, 1e-9)); // +x 面不动
-    expect(out.sy, closeTo(2, 1e-9)); // 边手柄只控单轴
+  test('Right 视角(yaw=π/2):可见轴 = 局部 z/y', () {
+    final b = boxScreenBasis(_proj(yaw: 3.141592653589793 / 2), box);
+    expect(b.hAxis, 2); // z
+    expect(b.vAxis, 1); // y
   });
 
-  test('yaw=90° 盒:世界 delta 旋进局部系再作用', () {
-    const b = SelectionBox(
-      cx: 0, cy: 0, cz: 0, sx: 2, sy: 2, sz: 2, yawDeg: 90);
-    // yaw90 正变换(selectionBoxCorners):局部 +x → 世界 +z。
-    // 所以世界 +z 方向拖 0.5 = 局部 +x 面外扩 0.5。
-    final out = applyHandleDrag(
-      box: b,
-      h: SelectionHandle.edgeXP,
-      worldDelta: [0, 0, 0.5],
-      minHalfSize: 0.01,
-    );
-    expect(out.sx, closeTo(2.5, 1e-9));
+  test('盒 yaw 被相机 yaw 抵消后仍是干净的 x/y(滑杆语义)', () {
+    const turned = SelectionBox(
+      cx: 0, cy: 0, cz: 0, sx: 2, sy: 4, sz: 6, yawDeg: 30);
+    // 相机 yaw = preset(0) + 盒 yaw(30°) —— Task 5 的组装约定
+    final b = boxScreenBasis(_proj(yaw: 30 * 3.141592653589793 / 180), turned);
+    expect(b.hAxis, 0);
+    expect(b.vAxis, 1);
+    // 抵消后矩形保持屏幕对齐:单位局部轴的屏幕分量 ≈ scale(全量落在
+    // 水平方向,没有泄漏到另一轴)
+    expect(b.hSx.abs(), greaterThan(b.scale * 0.9));
   });
 
-  test('clamp:不许拖成退化盒', () {
-    final out = applyHandleDrag(
-      box: box,
-      h: SelectionHandle.edgeXP,
-      worldDelta: [-5, 0, 0], // 往里挤穿对面
-      minHalfSize: 0.05,
-    );
-    expect(out.sx, greaterThanOrEqualTo(0.1)); // 2×minHalfSize
+  test('selectionScreenRect:半宽/半高 = 半尺寸×scale', () {
+    final b = boxScreenBasis(_proj(), box);
+    final r = selectionScreenRect(b, box);
+    expect(r.width, closeTo(box.sx * b.scale, 1e-6));
+    expect(r.height, closeTo(box.sy * b.scale, 1e-6));
+    expect(r.center.dx, closeTo(b.cxS, 1e-6));
   });
 
-  test('applyBoxPan 平移中心', () {
-    final out = applyBoxPan(box: box, worldDelta: [1, -2, 3]);
-    expect(out.cx, 1);
-    expect(out.cy, -2);
-    expect(out.cz, 3);
-    expect(out.sx, 2);
+  test('hitRectHandle:角/边/空白', () {
+    const r = Rect.fromLTRB(100, 100, 300, 260);
+    expect(hitRectHandle(r, const Offset(102, 98)), RectHandle.cornerTL);
+    expect(hitRectHandle(r, const Offset(300, 180)), RectHandle.edgeR);
+    expect(hitRectHandle(r, const Offset(200, 262)), RectHandle.edgeB);
+    expect(hitRectHandle(r, const Offset(200, 180)), isNull); // 矩形内部空白
+    expect(hitRectHandle(r, const Offset(10, 10)), isNull);
   });
 
-  test('hitHandle:命中最近手柄,空白 null', () {
-    const cam = CloudCamera(
-      yaw: 0, pitch: 0, zoom: 1, panX: 0, panY: 0,
-      pivotX: 0, pivotY: 0, pivotZ: 0, radius: 2);
-    final proj = cam.projectionFor(const Size(400, 400));
-    final (hx, hy, _) = proj.project(1, 1, 1); // cornerPPP 屏幕位置
-    // 手算:radius=2→camDist=6.4;PPP depth=7.4、PPN depth=5.4,透视缩放
-    // 不同 ⇒ 两角屏幕相距 ~37px,tap 离 PPP 仅 ~4px ⇒ 最近屏幕距离规则
-    // 唯一确定返回 PPP(平手才比深度)。
+  test('拖 edgeR 向屏幕右:hAxis 尺寸变、对面不动', () {
+    final b = boxScreenBasis(_proj(), box);
+    // Front 视角 hSx<0:屏幕右移 = 局部 −x 方向 ⇒ edgeR 对应局部 −x 面
+    // 外扩。不管符号怎么落,不变量是:受控轴是 x、y/z 不变、对面世界坐标
+    // 不动、矩形右边跟手。
+    final out = applyRectHandleDrag(
+      box: box, basis: b, h: RectHandle.edgeR,
+      screenDelta: const Offset(20, 0), minHalfSize: 0.01);
+    expect(out.sy, closeTo(box.sy, 1e-9));
+    expect(out.sz, closeTo(box.sz, 1e-9));
+    expect(out.sx, greaterThan(box.sx)); // 往外拖 = 变大
+    // 对面(edgeL 对应的局部面)世界位置不动:
+    final worldGrow = 20 / b.scale;
+    expect(out.sx, closeTo(box.sx + worldGrow, 1e-6));
+    // 中心沿受控面方向补偿一半
     expect(
-      hitHandle(box: box, proj: proj, tap: Offset(hx + 3, hy - 3)),
-      SelectionHandle.cornerPPP,
+      (out.cx - box.cx).abs() + (out.cz - box.cz).abs(),
+      closeTo(worldGrow / 2, 1e-6),
     );
-    expect(hitHandle(box: box, proj: proj, tap: const Offset(5, 5)), isNull);
+  });
+
+  test('拖 cornerBR:h/v 两轴都变,第三轴不变', () {
+    final b = boxScreenBasis(_proj(), box);
+    final out = applyRectHandleDrag(
+      box: box, basis: b, h: RectHandle.cornerBR,
+      screenDelta: const Offset(10, 10), minHalfSize: 0.01);
+    expect(out.sx, isNot(closeTo(box.sx, 1e-9)));
+    expect(out.sy, isNot(closeTo(box.sy, 1e-9)));
+    expect(out.sz, closeTo(box.sz, 1e-9));
+  });
+
+  test('clamp:往里挤穿也不退化', () {
+    final b = boxScreenBasis(_proj(), box);
+    final out = applyRectHandleDrag(
+      box: box, basis: b, h: RectHandle.edgeR,
+      screenDelta: const Offset(-99999, 0), minHalfSize: 0.05);
+    expect(out.sx, greaterThanOrEqualTo(0.1));
+  });
+
+  test('applyBoxPan:屏幕拖动平移盒中心,尺寸不变', () {
+    final proj = _proj();
+    final out = applyBoxPan(
+      box: box, proj: proj, screenDelta: const Offset(10, -6), depth: 6.4);
+    expect(out.sx, box.sx);
+    final moved = (out.cx - box.cx).abs() +
+        (out.cy - box.cy).abs() +
+        (out.cz - box.cz).abs();
+    expect(moved, greaterThan(0));
   });
 }
 ```
 
-(注:上面 `yaw=90°` 用例里的 `b: 0 == 0 ? b : b` 是笔误示范,实现者写测试时删掉该行,只保留 `box: b` —— 计划文档保真提醒:**测试代码以能编译为准**,签名以 Interfaces 块为准。)
-
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `flutter test test/selection_drag_math_test.dart`
+Run: `flutter test test/selection_rect_math_test.dart`
 Expected: FAIL(文件不存在)
 
-- [ ] **Step 3: 实现纯函数 + widget**
+- [ ] **Step 3: 实现纯函数**
 
-`selection_cloud_view.dart` 结构(完整实现要点):
+`selection_cloud_view.dart` 纯函数部分(完整实现):
 
 ```dart
-// selection_cloud_view.dart — 选区页专用渲染 + 手势。
-// 视角只走预设(presetYaw/presetPitch,外部 lerp 后传入)+ 双指缩放;
-// 单指:手柄拖拽(改盒)/ 空白拖拽(平移盒)。渲染:全量点云(框外红)
-// + 盒线框 + 8 角球 + 4 竖边条手柄。投影一律走 CloudCamera(Task 2)。
+// selection_cloud_view.dart — 选区页专用渲染 + RS Mobile 同款 2D 矩形手柄。
+//
+// [2026-07-27 调研修订] RS Mobile 官方:角手柄=双轴、边手柄=单轴、框是
+// 当前视角的屏幕对齐矩形(不是 3D 线框)。矩形用盒中心深度统一缩放
+// (正交近似),拖拽逆映射用同一深度 —— 往返自洽;框是控制器 UI,不是
+// 几何贴合线。盒局部轴的屏幕方向由投影差分求得,零手写映射表。
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -821,132 +855,238 @@ import 'package:flutter/material.dart';
 
 import '../../official_capture/selection_box.dart';
 import 'cloud_camera.dart';
-import 'sparse_cloud_view.dart' show selectionBoxCorners, kSelectionOutColor,
-    SparseCloudPainter; // fitOf 复用
+import 'sparse_cloud_view.dart' show SparseCloudPainter;
 
-enum SelectionHandle {
-  cornerNNN, cornerPNN, cornerNPN, cornerPPN,
-  cornerNNP, cornerPNP, cornerNPP, cornerPPP,
-  edgeXN, edgeXP, edgeZN, edgeZP,
+enum RectHandle {
+  cornerTL, cornerTR, cornerBL, cornerBR,
+  edgeL, edgeR, edgeT, edgeB,
 }
 
-/// 手柄的局部轴控制表:每轴 -1(负面)/0(不控)/+1(正面)。
-/// 角手柄控 x/y/z 三轴(y 由角控,无单独 y 边手柄 —— RS 同款);
-/// 竖边手柄只控水平单轴。
-const Map<SelectionHandle, List<int>> _handleAxes = {
-  SelectionHandle.cornerNNN: [-1, -1, -1],
-  SelectionHandle.cornerPNN: [1, -1, -1],
-  SelectionHandle.cornerNPN: [-1, 1, -1],
-  SelectionHandle.cornerPPN: [1, 1, -1],
-  SelectionHandle.cornerNNP: [-1, -1, 1],
-  SelectionHandle.cornerPNP: [1, -1, 1],
-  SelectionHandle.cornerNPP: [-1, 1, 1],
-  SelectionHandle.cornerPPP: [1, 1, 1],
-  SelectionHandle.edgeXN: [-1, 0, 0],
-  SelectionHandle.edgeXP: [1, 0, 0],
-  SelectionHandle.edgeZN: [0, 0, -1],
-  SelectionHandle.edgeZP: [0, 0, 1],
-};
+class BoxScreenBasis {
+  const BoxScreenBasis({
+    required this.hAxis,
+    required this.vAxis,
+    required this.hSx,
+    required this.vSy,
+    required this.scale,
+    required this.cxS,
+    required this.cyS,
+  });
 
-List<double> handleWorldPos(SelectionBox b, SelectionHandle h) {
-  final ax = _handleAxes[h]!;
-  final lx = ax[0] * b.sx / 2, ly = ax[1] * b.sy / 2, lz = ax[2] * b.sz / 2;
-  final a = b.yawDeg * math.pi / 180.0;
-  final c = math.cos(a), s = math.sin(a);
-  return [b.cx + lx * c - lz * s, b.cy + ly, b.cz + lx * s + lz * c];
+  /// 屏幕水平/垂直方向对应的盒局部轴(0:x 1:y 2:z)。
+  final int hAxis, vAxis;
+
+  /// 该局部轴单位向量的屏幕分量(带符号;拖拽方向映射用)。
+  final double hSx, vSy;
+
+  /// f / centerDepth —— 世界长度 → 屏幕像素(正交近似)。
+  final double scale;
+
+  /// 盒中心屏幕坐标。
+  final double cxS, cyS;
 }
 
-SelectionBox applyHandleDrag({
-  required SelectionBox box,
-  required SelectionHandle h,
-  required List<double> worldDelta,
-  required double minHalfSize,
-}) {
-  // 世界 delta → 盒局部(与 SelectionBox.contains 完全同一逆式;
-  // θ 取正 yaw,别写成负角 —— 那不是正变换的逆)。
+/// 盒局部三轴 → 屏幕方向(投影差分,符号自动正确)。
+BoxScreenBasis boxScreenBasis(CloudProjection proj, SelectionBox box) {
   final t = box.yawDeg * math.pi / 180.0;
   final c = math.cos(t), s = math.sin(t);
-  final dlx = worldDelta[0] * c + worldDelta[2] * s;
-  final dly = worldDelta[1];
-  final dlz = -worldDelta[0] * s + worldDelta[2] * c;
-  final ax = _handleAxes[h]!;
-  final local = [dlx, dly, dlz];
-  var size = [box.sx, box.sy, box.sz];
-  var centerLocalShift = [0.0, 0.0, 0.0];
-  for (var i = 0; i < 3; i++) {
-    if (ax[i] == 0) continue;
-    final grow = ax[i] * local[i]; // 该面沿其法向的位移
-    final newSize = math.max(size[i] + grow, minHalfSize * 2);
-    final applied = newSize - size[i];
-    size[i] = newSize;
-    centerLocalShift[i] = ax[i] * applied / 2; // 对面不动
+  // 盒局部轴单位向量的世界方向(corners 正变换的列向量)
+  final axes = [
+    [c, 0.0, s], // 局部 +x
+    [0.0, 1.0, 0.0], // 局部 +y
+    [-s, 0.0, c], // 局部 +z
+  ];
+  final (c0x, c0y, d0) = proj.project(box.cx, box.cy, box.cz);
+  const eps = 1e-3;
+  final sx = List<double>.filled(3, 0);
+  final sy = List<double>.filled(3, 0);
+  for (var a = 0; a < 3; a++) {
+    final (px, py, _) = proj.project(
+      box.cx + axes[a][0] * eps,
+      box.cy + axes[a][1] * eps,
+      box.cz + axes[a][2] * eps,
+    );
+    sx[a] = (px - c0x) / eps;
+    sy[a] = (py - c0y) / eps;
   }
-  // 局部位移 → 世界(正 yaw)
-  final aw = box.yawDeg * math.pi / 180.0;
-  final cw = math.cos(aw), sw = math.sin(aw);
-  return box.copyWith(
-    cx: box.cx + centerLocalShift[0] * cw - centerLocalShift[2] * sw,
-    cy: box.cy + centerLocalShift[1],
-    cz: box.cz + centerLocalShift[0] * sw + centerLocalShift[2] * cw,
-    sx: size[0], sy: size[1], sz: size[2],
+  var h = 0, v = 0;
+  for (var a = 1; a < 3; a++) {
+    if (sx[a].abs() > sx[h].abs()) h = a;
+    if (sy[a].abs() > sy[v].abs()) v = a;
+  }
+  assert(h != v, 'boxScreenBasis: 视角退化,水平/垂直命中同一局部轴');
+  return BoxScreenBasis(
+    hAxis: h, vAxis: v, hSx: sx[h], vSy: sy[v],
+    scale: proj.f / d0, cxS: c0x, cyS: c0y,
+  );
+}
+
+double _sizeOfAxis(SelectionBox b, int axis) =>
+    axis == 0 ? b.sx : (axis == 1 ? b.sy : b.sz);
+
+ui.Rect selectionScreenRect(BoxScreenBasis b, SelectionBox box) {
+  final hw = _sizeOfAxis(box, b.hAxis) / 2 * b.scale;
+  final hh = _sizeOfAxis(box, b.vAxis) / 2 * b.scale;
+  return ui.Rect.fromCenter(
+    center: ui.Offset(b.cxS, b.cyS), width: hw * 2, height: hh * 2);
+}
+
+ui.Offset _handlePos(ui.Rect r, RectHandle h) => switch (h) {
+  RectHandle.cornerTL => r.topLeft,
+  RectHandle.cornerTR => r.topRight,
+  RectHandle.cornerBL => r.bottomLeft,
+  RectHandle.cornerBR => r.bottomRight,
+  RectHandle.edgeL => ui.Offset(r.left, r.center.dy),
+  RectHandle.edgeR => ui.Offset(r.right, r.center.dy),
+  RectHandle.edgeT => ui.Offset(r.center.dx, r.top),
+  RectHandle.edgeB => ui.Offset(r.center.dx, r.bottom),
+};
+
+RectHandle? hitRectHandle(ui.Rect r, ui.Offset tap, {double tolPx = 34}) {
+  RectHandle? best;
+  var bestD2 = tolPx * tolPx;
+  for (final h in RectHandle.values) {
+    final p = _handlePos(r, h);
+    final dx = p.dx - tap.dx, dy = p.dy - tap.dy;
+    final d2 = dx * dx + dy * dy;
+    if (d2 < bestD2) {
+      bestD2 = d2;
+      best = h;
+    }
+  }
+  return best;
+}
+
+/// 手柄 → (是否控水平轴, 屏幕方向符号) ×(是否控垂直轴, 符号)。
+/// 屏幕符号:+1 = 该手柄在矩形的右/下侧。
+(({bool on, int side}), ({bool on, int side})) _handleControl(RectHandle h) =>
+    switch (h) {
+      RectHandle.cornerTL => ((on: true, side: -1), (on: true, side: -1)),
+      RectHandle.cornerTR => ((on: true, side: 1), (on: true, side: -1)),
+      RectHandle.cornerBL => ((on: true, side: -1), (on: true, side: 1)),
+      RectHandle.cornerBR => ((on: true, side: 1), (on: true, side: 1)),
+      RectHandle.edgeL => ((on: true, side: -1), (on: false, side: 0)),
+      RectHandle.edgeR => ((on: true, side: 1), (on: false, side: 0)),
+      RectHandle.edgeT => ((on: false, side: 0), (on: true, side: -1)),
+      RectHandle.edgeB => ((on: false, side: 0), (on: true, side: 1)),
+    };
+
+SelectionBox applyRectHandleDrag({
+  required SelectionBox box,
+  required BoxScreenBasis basis,
+  required RectHandle h,
+  required ui.Offset screenDelta,
+  required double minHalfSize,
+}) {
+  final (hc, vc) = _handleControl(h);
+  var out = box;
+  if (hc.on) {
+    // 屏幕上"往外拖"(delta 与手柄侧同号)= 该侧外扩。
+    final growPx = screenDelta.dx * hc.side;
+    // 受控的是局部 hAxis;该手柄对应局部面的符号 = 屏幕侧 × 轴屏幕方向符号
+    final faceSign = hc.side * (basis.hSx >= 0 ? 1 : -1);
+    out = _growAxis(out, basis.hAxis, faceSign, growPx / basis.scale,
+        minHalfSize);
+  }
+  if (vc.on) {
+    final growPx = screenDelta.dy * vc.side;
+    final faceSign = vc.side * (basis.vSy >= 0 ? 1 : -1);
+    out = _growAxis(out, basis.vAxis, faceSign, growPx / basis.scale,
+        minHalfSize);
+  }
+  return out;
+}
+
+/// 局部轴 axis 的 faceSign 面外扩 grow(世界长度;负=收缩),对面不动。
+SelectionBox _growAxis(
+  SelectionBox b, int axis, int faceSign, double grow, double minHalfSize) {
+  final old = _sizeOfAxis(b, axis);
+  final next = math.max(old + grow, minHalfSize * 2);
+  final applied = next - old;
+  // 中心沿该局部面方向补偿一半(局部 → 世界用 corners 正变换)
+  final t = b.yawDeg * math.pi / 180.0;
+  final c = math.cos(t), s = math.sin(t);
+  final shift = faceSign * applied / 2;
+  double dx = 0, dy = 0, dz = 0;
+  if (axis == 0) {
+    dx = shift * c;
+    dz = shift * s;
+  } else if (axis == 1) {
+    dy = shift;
+  } else {
+    dx = -shift * s;
+    dz = shift * c;
+  }
+  return b.copyWith(
+    cx: b.cx + dx, cy: b.cy + dy, cz: b.cz + dz,
+    sx: axis == 0 ? next : b.sx,
+    sy: axis == 1 ? next : b.sy,
+    sz: axis == 2 ? next : b.sz,
   );
 }
 
 SelectionBox applyBoxPan({
   required SelectionBox box,
-  required List<double> worldDelta,
-}) => box.copyWith(
-  cx: box.cx + worldDelta[0],
-  cy: box.cy + worldDelta[1],
-  cz: box.cz + worldDelta[2],
-);
-
-SelectionHandle? hitHandle({
-  required SelectionBox box,
   required CloudProjection proj,
-  required Offset tap,
-  double tolPx = 34,
+  required ui.Offset screenDelta,
+  required double depth,
 }) {
-  SelectionHandle? best;
-  var bestD2 = tolPx * tolPx;
-  var bestDepth = double.infinity;
-  for (final h in SelectionHandle.values) {
-    final w = handleWorldPos(box, h);
-    final (sx, sy, depth) = proj.project(w[0], w[1], w[2]);
-    if (depth <= 0) continue;
-    final dx = sx - tap.dx, dy = sy - tap.dy;
-    final d2 = dx * dx + dy * dy;
-    if (d2 < bestD2 - 1e-9 || (d2 <= bestD2 && depth < bestDepth)) {
-      best = h;
-      bestD2 = math.min(d2, bestD2);
-      bestDepth = depth;
-    }
-  }
-  return best;
+  final wpp = proj.worldPerPixelAt(depth);
+  final r = proj.rightAxisWorld();
+  final u = proj.upAxisWorld();
+  return box.copyWith(
+    cx: box.cx + (r[0] * screenDelta.dx + u[0] * screenDelta.dy) * wpp,
+    cy: box.cy + (r[1] * screenDelta.dx + u[1] * screenDelta.dy) * wpp,
+    cz: box.cz + (r[2] * screenDelta.dx + u[2] * screenDelta.dy) * wpp,
+  );
 }
 ```
 
-Widget 部分(`SelectionCloudView`,State 内):
-- 状态:`_zoom`(双指捏合,0.3–6 clamp)、`_dragHandle`(onScaleStart 时 `hitHandle`;null=平移盒)。
-- `CloudCamera` 组装:`yaw: widget.presetYaw, pitch: widget.presetPitch, zoom: _zoom, panX/panY: 0, pivot = SparseCloudPainter.fitOf(xyz) 中心, radius = fitOf.radius`。
-- onScaleUpdate:`pointerCount >= 2` → 改 `_zoom *= details.scale增量`;单指 → `focalPointDelta` 屏幕 delta,`wpp = proj.worldPerPixelAt(handleDepth 或盒中心深度)`,`worldDelta = right·(dx·wpp) + up·(dy·wpp)`(right/up 取自 `proj.rightAxisWorld()/upAxisWorld()`),路由到 `applyHandleDrag`(带 `minHalfSize = fit.radius × SelectionBox.kMinHalfSizeFraction`)或 `applyBoxPan`,`widget.onBoxChanged(newBox)`。
-- painter **不复制任何绘制逻辑**:点渲染 + 框线 + 框外红全部由 Task 3 改造后的 `SparseCloudPainter` 完成(传 `selectionBox: box`,`yaw: presetYaw, pitch: presetPitch, zoom: _zoom, panX/panY: 0, pivot: fitOf 中心`;`pointSize/exposure/tone` 用 SparseCloudView 里的现有默认值,照抄现场)。`SelectionCloudView` 只**叠加**一个自己的 `CustomPaint` 画 12 个手柄:角 = `canvas.drawCircle(白, r: 9)`(位置 = `proj.project(handleWorldPos(...))`),竖边 = 圆角胶囊 `RRect.fromRectAndRadius(22×8)`。手柄 painter 的投影标量同样取自 `CloudProjection` —— 全链路一个公式源。
+⚠️ 实现者自查两处符号:
+1. `applyRectHandleDrag` 的 faceSign 推导 —— "屏幕右侧手柄往右拖 = 外扩"
+   是不变量;faceSign = 屏幕侧 × 局部轴屏幕方向符号,Step 1 的 edgeR 测试
+   (对面不动 + 尺寸增大)就是抓它。
+2. `boxScreenBasis` 的 axes 列向量必须与 `selectionBoxCorners` 的正变换
+   一致(x 轴 `[c,0,s]`、z 轴 `[-s,0,c]`)—— 与 Task 1 `contains` 逆式
+   互逆,别再引入第三种旋转写法。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [ ] **Step 4: Widget 部分实现**
 
-Run: `flutter test test/selection_drag_math_test.dart`
-Expected: 全 PASS
+`SelectionCloudView`(同文件,State 内):
+- 状态:`_zoom`(双指捏合 0.3–6 clamp)、`_activeHandle`(`RectHandle?`,
+  onScaleStart 时 `hitRectHandle`;null 且落在矩形内 = 平移盒;矩形外 =
+  无操作)。
+- 相机组装:`CloudCamera(yaw: widget.viewYaw, pitch: widget.viewPitch,
+  zoom: _zoom, panX: 0, panY: 0, pivot: SparseCloudPainter.fitOf(xyz) 中心,
+  radius: fitOf.radius)`(fillK 默认)。
+- onScaleUpdate:`pointerCount >= 2` → `_zoom` 乘增量;单指:
+  `_activeHandle != null` → `applyRectHandleDrag`(basis 每次用当前投影现
+  算;`minHalfSize = fit.radius × SelectionBox.kMinHalfSizeFraction`);
+  否则落点在 `selectionScreenRect` 内 → `applyBoxPan(depth: 盒中心深度)`;
+  结果经 `widget.onBoxChanged` 上报。
+- 渲染 Stack:
+  1. `CustomPaint(painter: SparseCloudPainter(..., selectionBox: widget.box,
+     drawSelectionWireframe: false))` — 点云 + 框外红,**无 3D 线框**;
+  2. 自绘矩形层:`selectionScreenRect` 白描边(1.4,`0xCCFFFFFF`)+ 4 角
+     `drawCircle(r: 9, 白)` + 4 边中点圆角胶囊
+     `RRect.fromRectAndRadius(22×8, r4)`(横边横放、竖边竖放)。
+- `SparseCloudPainter` 加 `this.drawSelectionWireframe = true`,Task 3 画
+  框线段包 `if (drawSelectionWireframe)`;`shouldRepaint` 补该字段。
 
-- [ ] **Step 5: format + analyze + 提交**
+- [ ] **Step 5: 跑测试确认通过**
+
+Run: `flutter test test/selection_rect_math_test.dart && flutter test`
+Expected: 新测试全 PASS;全量无新增失败
+
+- [ ] **Step 6: format + analyze + 提交**
 
 ```bash
-dart format lib/ui/official_capture/selection_cloud_view.dart test/selection_drag_math_test.dart
+dart format lib/ui/official_capture/selection_cloud_view.dart lib/ui/official_capture/sparse_cloud_view.dart test/selection_rect_math_test.dart
 flutter analyze lib/ test/
-git add lib/ui/official_capture/selection_cloud_view.dart test/selection_drag_math_test.dart
-git commit -F <(printf 'feat(selection): SelectionCloudView 手势数学纯函数 + 渲染组件\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n') </dev/null
+git add lib/ui/official_capture/selection_cloud_view.dart lib/ui/official_capture/sparse_cloud_view.dart test/selection_rect_math_test.dart
+git commit -F <(printf 'feat(selection): RS 同款 2D 矩形手柄数学 + SelectionCloudView\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n') </dev/null
 ```
 
----
 
 ### Task 5: SelectionPage(朝向立方体 + 滑杆 + Ready to Process + 持久化)
 
@@ -960,6 +1100,10 @@ git commit -F <(printf 'feat(selection): SelectionCloudView 手势数学纯函�
   - `class SelectionPage extends StatefulWidget { SelectionPage({required Float32List xyz, required Uint8List rgb, required String captureDir}); }`
   - pop 返回值:`'save_draft'`(左上返回)。Ready to Process 不 pop。
   - 顶层 `const List<({String label, double yaw, double pitch})> kOrientationPresets`,六项按序:Top(yaw 0, pitch −π/2)、Front(0, 0)、Right(π/2, 0)、Back(π, 0)、Left(−π/2, 0)、Bottom(0, π/2)。
+- **滑杆↔相机联动约定(调研修订)**:传给 `SelectionCloudView` 的
+  `viewYaw = kOrientationPresets[i].yaw + box.yawDeg·π/180`(点云随滑杆
+  绕重力轴转、矩形保持屏幕对齐;Top/Bottom 下与 RS 语义完全一致,侧视角
+  差异已在 spec 记录)。`viewPitch = preset.pitch`。
 
 - [ ] **Step 1: 写失败测试**
 
@@ -972,6 +1116,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/official_capture/selection_box.dart';
+import 'package:pocketworld_flutter/ui/official_capture/selection_cloud_view.dart';
 import 'package:pocketworld_flutter/ui/official_capture/selection_page.dart';
 
 Future<(Directory, Float32List, Uint8List)> _fixture() async {
@@ -1052,6 +1197,32 @@ void main() {
     final page = tester.state(find.byType(SelectionPage)) as dynamic;
     expect((page.debugBox as SelectionBox).yawDeg, 45);
   });
+
+  testWidgets('滑杆改 yawDeg,且 viewYaw 跟随(滑杆↔相机联动)', (tester) async {
+    final (dir, xyz, rgb) = await _fixture();
+    addTearDown(() => dir.delete(recursive: true));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final slider = find.byType(Slider);
+    expect(slider, findsOneWidget);
+    await tester.drag(slider, const Offset(60, 0));
+    await tester.pumpAndSettle();
+    final page = tester.state(find.byType(SelectionPage)) as dynamic;
+    final yaw = (page.debugBox as SelectionBox).yawDeg;
+    expect(yaw, isNot(0));
+    // 相机联动:SelectionCloudView 收到的 viewYaw 含滑杆分量
+    final view = tester
+        .widget<SelectionCloudView>(find.byType(SelectionCloudView));
+    final preset = kOrientationPresets.first; // 初始 Top
+    expect(
+      view.viewYaw,
+      closeTo(preset.yaw + yaw * math.pi / 180, 1e-9),
+    );
+  });
 }
 ```
 
@@ -1068,17 +1239,32 @@ Expected: FAIL(文件不存在)
 // selection_page.dart — RS Reconstruction Region 同款选区页。
 // 返回 = flush 框 → pop('save_draft')(调用方走保存草稿链路;签决:
 // 不回等待页,直接草稿列表)。Ready to Process = 稠密化占位。
+// 滑杆↔相机联动:viewYaw = preset.yaw + box.yawDeg(调研修订,spec 有
+// 差异记录)。
 ```
 
-- State:`SelectionBox? _box`;`int _presetIdx = 0`;`double _animYaw/_animPitch`(用 `AnimationController` 200ms lerp 到 `kOrientationPresets[_presetIdx]`);`Timer? _saveDebounce`。
-- `initState`:`SelectionBox.loadFrom(captureDir)` → null 时 `SelectionBox.initialFor(fitOf(xyz)...)`。加载完成前中央转圈。
-- `_onBoxChanged(b)`:`setState(_box = b)` + debounce 500ms `b.saveTo(captureDir)`(写失败 catch 静默 + `DeviceLog.log`)。
+- State:`SelectionBox? _box`;`int _presetIdx = 0`;
+  `Timer? _saveDebounce`;预设切换用 `AnimationController`(200ms)lerp
+  `_animPresetYaw/_animPitch` 到 `kOrientationPresets[_presetIdx]`。
+- `initState`:`SelectionBox.loadFrom(captureDir)` → null 时
+  `SelectionBox.initialFor(fitOf(xyz)...)`。加载完成前中央转圈。
+- `_onBoxChanged(b)`:`setState(_box = b)` + debounce 500ms
+  `b.saveTo(captureDir)`(写失败 catch 静默 + `DeviceLog.log`)。
 - 暴露 `@visibleForTesting SelectionBox? get debugBox => _box;`
-- 返回按钮(`ValueKey('selection-back')`,左上):`await _flush(); Navigator.pop(context, 'save_draft');`(`_flush` = 取消 debounce 立即 save)。
-- 朝向立方体(右上):中央方块显示 `kOrientationPresets[_presetIdx].label`,左右 `<` `>` 循环切换、上下 `^` `v` 在 Top/当前/Bottom 间切(实现为:上箭头 → Top,下箭头 → Bottom,左右 → Front/Right/Back/Left 循环 —— 四水平面索引 1..4)。
-- 底部:`Rotate Point Cloud` + 刻度 `Slider(min: -180, max: 180, value: _box.yawDeg)` → `_onBoxChanged(_box.copyWith(yawDeg: v))`;
-  `Ready to Process` 全宽蓝底按钮 → `ScaffoldMessenger.showSnackBar(SnackBar(content: Text('稠密化处理即将上线')))`。
-- 中央:`SelectionCloudView(xyz, rgb, box: _box!, onBoxChanged: _onBoxChanged, presetYaw: _animYaw, presetPitch: _animPitch)`。
+- 返回按钮(`ValueKey('selection-back')`,左上):
+  `await _flush(); Navigator.pop(context, 'save_draft');`
+  (`_flush` = 取消 debounce 立即 save)。
+- 朝向立方体(右上):中央方块显示当前 label,左右 `<` `>` 在四个水平面
+  (Front/Right/Back/Left,索引 1..4)循环,上箭头 → Top(0)、下箭头 →
+  Bottom(5)。
+- 中央:`SelectionCloudView(xyz: ..., rgb: ..., box: _box!,
+  onBoxChanged: _onBoxChanged,
+  viewYaw: _animPresetYaw + _box!.yawDeg * math.pi / 180,
+  viewPitch: _animPitch)`。
+- 底部:`Rotate Point Cloud` 标签 + `Slider(min: -180, max: 180,
+  value: _box!.yawDeg)` → `_onBoxChanged(_box!.copyWith(yawDeg: v))`;
+  `Ready to Process` 全宽蓝底按钮 →
+  `ScaffoldMessenger.showSnackBar(SnackBar(content: Text('稠密化处理即将上线')))`。
 
 - [ ] **Step 4: 跑测试确认通过**
 
@@ -1091,10 +1277,9 @@ Expected: 全 PASS
 dart format lib/ui/official_capture/selection_page.dart test/selection_page_test.dart
 flutter analyze lib/ test/
 git add lib/ui/official_capture/selection_page.dart test/selection_page_test.dart
-git commit -F <(printf 'feat(selection): SelectionPage 朝向预设+旋转滑杆+持久化+占位处理键\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n') </dev/null
+git commit -F <(printf 'feat(selection): SelectionPage 朝向预设+滑杆联动+持久化+占位处理键\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n') </dev/null
 ```
 
----
 
 ### Task 6: 等待页双按钮 + 路由接线
 
