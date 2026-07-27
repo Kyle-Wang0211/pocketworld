@@ -3501,61 +3501,87 @@ class _AlbumThumbButton extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          Container(
-            width: kCaptureAlbumThumbSize,
-            height: kCaptureAlbumThumbSize,
-            decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: 0.44),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: Colors.white.withValues(alpha: 0.5),
-                width: 1.5,
-              ),
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: latestPath != null
-                ? Image.file(
-                    File(latestPath!),
-                    fit: BoxFit.cover,
-                    cacheWidth: 120,
-                  )
-                : const Icon(
-                    Icons.photo_library_outlined,
-                    color: Colors.white,
-                    size: 22,
-                  ),
+      child: Container(
+        width: kCaptureAlbumThumbSize,
+        height: kCaptureAlbumThumbSize,
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.44),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.5),
+            width: 1.5,
           ),
-          // [SIGNED 2026-07-27] RS 同款分子/分母:上限恒可见(RS 从 0/300 起
-          // 就显示),让用户随时知道预算还剩多少 —— 不是拍到头才告知。达到
-          // 上限时徽章转琥珀色,与快门置灰同源(officialCaptureCanShoot)。
-          Positioned(
-            right: -2,
-            bottom: -2,
-            child: Container(
-              constraints: const BoxConstraints(minWidth: 24, minHeight: 22),
-              alignment: Alignment.center,
-              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-              decoration: BoxDecoration(
-                color: officialCaptureCanShoot(acceptedFrameCount: count)
-                    ? Colors.black.withValues(alpha: 0.82)
-                    : const Color(0xFFB26A00).withValues(alpha: 0.92),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                '$count/$kOfficialMaximumCaptureFrames',
-                style: const TextStyle(
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            if (latestPath != null)
+              Image.file(File(latestPath!), fit: BoxFit.cover, cacheWidth: 120)
+            else
+              const Center(
+                child: Icon(
+                  Icons.photo_library_outlined,
                   color: Colors.white,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
+                  size: 22,
                 ),
               ),
-            ),
-          ),
-        ],
+            // [SIGNED 2026-07-27] 分子/分母:上限恒可见(RS 从 0/300 起就
+            // 显示),让用户随时知道预算还剩多少 —— 不是拍到头才告知。达到
+            // 上限时转琥珀色,与快门置灰同源(officialCaptureCanShoot)。
+            //
+            // [2026-07-27 UI-4] 复刻 RS 的呈现:数字从右下角的黑胶囊徽章挪到
+            // 缩略图**正中**,去掉徽章底色**直接压在照片上**,并改成 RS 那种
+            // 上下堆叠的分数(分子 / 横线 / 分母)。可读性靠文字阴影而不是
+            // 底色 —— 底色会挡住照片,那正是这次要去掉的东西。
+            Center(child: _AlbumCountFraction(count: count)),
+          ],
+        ),
       ),
+    );
+  }
+}
+
+/// RS 同款的堆叠分数:已拍张数 / 上限,压在缩略图正中,无底色。
+class _AlbumCountFraction extends StatelessWidget {
+  const _AlbumCountFraction({required this.count});
+
+  final int count;
+
+  static const List<Shadow> _shadows = <Shadow>[
+    Shadow(color: Color(0xCC000000), blurRadius: 4, offset: Offset(0, 1)),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    // 与快门置灰同源:拍满即转琥珀,不额外判断数字。
+    final tint = officialCaptureCanShoot(acceptedFrameCount: count)
+        ? Colors.white
+        : const Color(0xFFFFC24D);
+    final style = TextStyle(
+      color: tint,
+      fontSize: 15,
+      height: 1.05,
+      fontWeight: FontWeight.w700,
+      shadows: _shadows,
+    );
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text('$count', style: style),
+        Container(
+          width: 26,
+          height: 1.5,
+          margin: const EdgeInsets.symmetric(vertical: 2),
+          decoration: BoxDecoration(
+            color: tint,
+            boxShadow: const [
+              BoxShadow(color: Color(0xCC000000), blurRadius: 4),
+            ],
+          ),
+        ),
+        Text('$kOfficialMaximumCaptureFrames', style: style),
+      ],
     );
   }
 }

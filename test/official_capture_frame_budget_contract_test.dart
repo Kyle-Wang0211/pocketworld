@@ -30,10 +30,19 @@ void main() {
       'lib/ui/official_capture/ar_capture_page.dart',
     ).readAsStringSync();
 
-    // 相册徽章 = 分子/分母,且上限恒可见(不再是 "$count 张",也不再
+    // 相册上的预算 = 分子/分母,且上限恒可见(不再是 "$count 张",也不再
     // 只在 count>0 时才出现 —— RS 从 0/300 起就显示预算)。
-    expect(page, contains(r"'$count/$kOfficialMaximumCaptureFrames'"));
+    //
+    // [2026-07-27 UI-4] 呈现形式改了、契约没改:分数从右下角黑胶囊挪进
+    // 缩略图正中、去掉底色直接压在照片上、并按 RS 拆成上下堆叠的
+    // 分子/横线/分母两个 Text。所以这里从"单串"改断言"两段都在"。
+    expect(page, contains(r"Text('$count'"));
+    expect(page, contains(r"Text('$kOfficialMaximumCaptureFrames'"));
     expect(page, isNot(contains(r"'$count 张'")));
+    // 恒可见:不许再退回 count>0 才显示。
+    expect(page, isNot(contains('if (count > 0)')));
+    // 无底色:数字直接压在照片上,靠阴影保可读性。
+    expect(page, contains('class _AlbumCountFraction'));
 
     // 快门置灰 + 逻辑兜底,两处都走同一个判据函数。
     expect(page, contains('enabled: ready && canShoot'));

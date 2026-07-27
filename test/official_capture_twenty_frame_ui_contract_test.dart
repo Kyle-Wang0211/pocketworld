@@ -68,9 +68,12 @@ void main() {
     expect(source, contains('final OfficialProjectPhotoAlbum _projectPhotos'));
     expect(source, contains('_projectPhotos.commitVerified('));
     expect(source, contains('acceptedFrameCount = _projectPhotos.count'));
-    // [SIGNED 2026-07-27] 计数徽章改成 RS 同款分子/分母(N/300):上限恒
-    // 可见,详见 official_capture_frame_budget_contract_test.dart。
-    expect(source, contains(r"'$count/$kOfficialMaximumCaptureFrames'"));
+    // [SIGNED 2026-07-27] 计数改成 RS 同款分子/分母(N/300):上限恒可见。
+    // [2026-07-27 UI-4] 呈现从右下角黑胶囊挪进缩略图正中、去底色、拆成
+    // 上下堆叠两个 Text,所以这里断言两段而不是单串;
+    // 详见 official_capture_frame_budget_contract_test.dart。
+    expect(source, contains(r"Text('$count'"));
+    expect(source, contains(r"Text('$kOfficialMaximumCaptureFrames'"));
     expect(source, isNot(contains("'\$count 张'")));
     expect(albumSource, contains('required this.count,'));
     expect(albumSource, contains('final int count;'));
