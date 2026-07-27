@@ -213,8 +213,19 @@ DIRTY_GHOST_MASK_SHA256 = (
 # C * (C_old^-1 * C_new). Ideas only — ORB-SLAM3 is GPLv3. The correction
 # magnitude is reported in apvba_summary (corr_mm / corr_deg) so the next
 # matrix can say whether the seam explains v2's -2.4%.
+# 2026-07-27 A1b-v5 (controlled-comparison knobs, still DEFAULT OFF): the
+# v4 matrix cleared every engineering gate (zero eaten frames, dropped 0/7,
+# B-runs byte-deterministic, in-feed blocking BA -93%) but its point delta
+# could not be attributed — v4 changed propagation AND scheduling at once,
+# and the async arm runs MORE global BA than sync (harvest-less ticks leave
+# the publish-policy baselines unreset, so it re-kicks back-to-back; more BA
+# = more FilterPoints/FilterFrames deletions). Two knobs isolate the causes:
+# OFFICIAL_AETHER_ASYNC_PREVIEW_BA_PROPAGATE=0 disables only the correction
+# propagation (= v3 semantics); _MATCH_CADENCE=1 kicks at most one
+# background pass per successful publish (BA workload parity with sync).
+# apvba_summary now records both flags.
 OFFICIAL_PRODUCTION_ENDPOINT_SHA256 = (
-    "fb2647a5b3e9be916b402ea8f891d2bb8204c307c3b0aa49ceecba80df380a4e"
+    "6facb1db9ffa00986c6208fdf8a70db51513a2bd83fc8b4a472ae0f1eeb0aa3a"
 )
 # [BA-RING 2026-07-26] Pin for src/official_bundle_adjustment_ceres.cc (see
 # the reviewed-delta comment at its branch in main()).
