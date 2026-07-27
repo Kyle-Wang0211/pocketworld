@@ -3435,7 +3435,9 @@ class _ManualCaptureBar extends StatelessWidget {
             20,
             0,
             20,
-            captureShutterRowBottomPadding(MediaQuery.paddingOf(context).bottom),
+            captureShutterRowBottomPadding(
+              MediaQuery.paddingOf(context).bottom,
+            ),
           ),
           child: Row(
             children: [
@@ -3516,16 +3518,11 @@ class _AlbumThumbButton extends StatelessWidget {
         child: Stack(
           fit: StackFit.expand,
           children: [
+            // [2026-07-27 UI-5] 无照片时不再放相册占位图标 —— 分数就画在正
+            // 中央,图标正好垫在数字底下糊成一团。空态留纯深色底,分数自己
+            // 就是"这里是相册、已拍 N/上限"的全部信息。
             if (latestPath != null)
-              Image.file(File(latestPath!), fit: BoxFit.cover, cacheWidth: 120)
-            else
-              const Center(
-                child: Icon(
-                  Icons.photo_library_outlined,
-                  color: Colors.white,
-                  size: 22,
-                ),
-              ),
+              Image.file(File(latestPath!), fit: BoxFit.cover, cacheWidth: 120),
             // [SIGNED 2026-07-27] 分子/分母:上限恒可见(RS 从 0/300 起就
             // 显示),让用户随时知道预算还剩多少 —— 不是拍到头才告知。达到
             // 上限时转琥珀色,与快门置灰同源(officialCaptureCanShoot)。
