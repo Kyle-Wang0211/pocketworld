@@ -17,8 +17,31 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
+import '../../official_capture/selection_box.dart';
 import '../../point_cloud_display/progressive_octree_order.dart';
 import 'cloud_camera.dart';
+
+/// 框外点的调制色(RS 同款红;只影响渲染调制,不碰数据)。
+const int kSelectionOutColor = 0xFFE05252;
+
+/// 选区盒 8 角世界坐标。index = x位 + y位·2 + z位·4(0=负,1=正)。
+List<List<double>> selectionBoxCorners(SelectionBox b) {
+  final a = b.yawDeg * math.pi / 180.0;
+  final c = math.cos(a), s = math.sin(a);
+  final out = <List<double>>[];
+  for (var zi = 0; zi < 2; zi++) {
+    for (var yi = 0; yi < 2; yi++) {
+      for (var xi = 0; xi < 2; xi++) {
+        final lx = (xi == 0 ? -1 : 1) * b.sx / 2;
+        final ly = (yi == 0 ? -1 : 1) * b.sy / 2;
+        final lz = (zi == 0 ? -1 : 1) * b.sz / 2;
+        // 局部 → 世界:绕 Y 转 +yaw(contains 的逆变换)
+        out.add([b.cx + lx * c - lz * s, b.cy + ly, b.cz + lx * s + lz * c]);
+      }
+    }
+  }
+  return out;
+}
 
 /// Snapshot of the animatable camera state (double-tap focus / reframe lerp).
 class _CamState {
@@ -64,6 +87,7 @@ class SparseCloudView extends StatefulWidget {
     required this.rgb,
     this.visibility,
     this.showControls = true,
+    this.selectionBox,
   });
 
   /// 3 floats per point (full set).
@@ -79,6 +103,10 @@ class SparseCloudView extends StatefulWidget {
   final Uint8List? visibility;
 
   final bool showControls;
+
+  /// 只读选区回显(草稿查看器):画框线 + 框外点变红。null = 无选区。
+  /// 渲染层行为 —— 不影响数据、fit、导出;编辑在 SelectionPage。
+  final SelectionBox? selectionBox;
 
   @override
   State<SparseCloudView> createState() => _SparseCloudViewState();
@@ -304,6 +332,7 @@ class _SparseCloudViewState extends State<SparseCloudView>
                               pointSize: _pointSize,
                               exposure: _exposure,
                               tone: _tone,
+                              selectionBox: widget.selectionBox,
                             ),
                             size: Size.infinite,
                           ),
@@ -352,6 +381,7 @@ class SparseCloudPainter extends CustomPainter {
     required this.pointSize,
     required this.exposure,
     required this.tone,
+    this.selectionBox,
   });
 
   final Float32List xyz;
@@ -374,6 +404,9 @@ class SparseCloudPainter extends CustomPainter {
   final double pointSize;
   final double exposure;
   final int tone; // 0=AgX, 1=ACES, 2=无 — three.js TONEMAPS parity
+
+  /// 只读选区回显(见 SparseCloudView 同名字段):null = 无选区,不改渲染。
+  final SelectionBox? selectionBox;
 
   // ── Color pipeline: VERBATIM port of the desktop viewer_ab.html chain ──
   // PLY sRGB bytes → exact sRGB EOTF decode (their S2L table) →
@@ -846,7 +879,11 @@ class SparseCloudPainter extends CustomPainter {
       // the fitted cloud distance).
       scaleA[m] = baseScale * (camDist / depth);
       depthA[m] = depth;
-      colorA[m] = displayColors[i];
+      var argb = displayColors[i];
+      if (selectionBox != null && !selectionBox!.contains(wx, wy, wz)) {
+        argb = kSelectionOutColor; // 框外 → 红(点不消失)
+      }
+      colorA[m] = argb;
       m++;
     }
     if (m == 0) return;
@@ -883,6 +920,38 @@ class SparseCloudPainter extends CustomPainter {
       null,
       Paint()..isAntiAlias = true,
     );
+
+    // 选区框线(只读回显):8 角连边,与点用同一套投影标量。
+    final selBox = selectionBox;
+    if (selBox != null) {
+      final corners = selectionBoxCorners(selBox);
+      const edges = [
+        [0, 1], [2, 3], [4, 5], [6, 7], // x 向边
+        [0, 2], [1, 3], [4, 6], [5, 7], // y 向边
+        [0, 4], [1, 5], [2, 6], [3, 7], // z 向边
+      ];
+      final line = Paint()
+        ..color = const Color(0xCCFFFFFF)
+        ..strokeWidth = 1.4
+        ..style = PaintingStyle.stroke;
+      for (final e in edges) {
+        final a = corners[e[0]], b = corners[e[1]];
+        // 用与点同一套标量投影(cosY 等就是循环上方的那批局部变量)
+        Offset? proj3(List<double> w) {
+          final px = w[0] - pivotX, py = w[1] - pivotY, pz = w[2] - pivotZ;
+          final x1 = px * cosY + pz * sinY;
+          final z1 = -px * sinY + pz * cosY;
+          final y2 = py * cosP - z1 * sinP;
+          final z2 = py * sinP + z1 * cosP;
+          final depth = z2 + camDist;
+          if (depth <= 1e-6) return null;
+          return Offset(ox - x1 * f / depth, oy - y2 * f / depth);
+        }
+
+        final pa = proj3(a), pb = proj3(b);
+        if (pa != null && pb != null) canvas.drawLine(pa, pb, line);
+      }
+    }
   }
 
   @override
@@ -901,5 +970,6 @@ class SparseCloudPainter extends CustomPainter {
       old.pivotZ != pivotZ ||
       old.pointSize != pointSize ||
       old.exposure != exposure ||
-      old.tone != tone;
+      old.tone != tone ||
+      old.selectionBox != selectionBox;
 }
