@@ -382,6 +382,7 @@ class SparseCloudPainter extends CustomPainter {
     required this.exposure,
     required this.tone,
     this.selectionBox,
+    this.drawSelectionWireframe = true,
   });
 
   final Float32List xyz;
@@ -407,6 +408,11 @@ class SparseCloudPainter extends CustomPainter {
 
   /// 只读选区回显(见 SparseCloudView 同名字段):null = 无选区,不改渲染。
   final SelectionBox? selectionBox;
+
+  /// 是否画选区 3D 线框(8 角连边)。默认 true(草稿只读回显用)。
+  /// SelectionCloudView(选区编辑页,Task 4)传 false —— 编辑页要框外红点,
+  /// 但用自己的 2D 屏幕矩形手柄层,不要这条 3D 线框(会和手柄矩形叠加冗余)。
+  final bool drawSelectionWireframe;
 
   // ── Color pipeline: VERBATIM port of the desktop viewer_ab.html chain ──
   // PLY sRGB bytes → exact sRGB EOTF decode (their S2L table) →
@@ -923,7 +929,7 @@ class SparseCloudPainter extends CustomPainter {
 
     // 选区框线(只读回显):8 角连边,与点用同一套投影标量。
     final selBox = selectionBox;
-    if (selBox != null) {
+    if (selBox != null && drawSelectionWireframe) {
       final corners = selectionBoxCorners(selBox);
       const edges = [
         [0, 1], [2, 3], [4, 5], [6, 7], // x 向边
@@ -971,5 +977,6 @@ class SparseCloudPainter extends CustomPainter {
       old.pointSize != pointSize ||
       old.exposure != exposure ||
       old.tone != tone ||
-      old.selectionBox != selectionBox;
+      old.selectionBox != selectionBox ||
+      old.drawSelectionWireframe != drawSelectionWireframe;
 }
