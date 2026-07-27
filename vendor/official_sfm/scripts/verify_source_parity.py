@@ -171,8 +171,18 @@ DIRTY_GHOST_MASK_SHA256 = (
 # descriptor stage dominates DSP×10 — never measured on our kernel). The
 # gpu-extract archive is rebuilt with the same recipe; pwofficial and pwsfm
 # archives remain byte-identical copies. Zero algorithm changes.
+# 2026-07-27 reviewed delta (A1B-ASYNC-PVBA experiment arm, DEFAULT OFF —
+# unset env keeps the sync preview BA byte-identical): the streaming-BA
+# publish is superlinear in poses (495ms@20 → 9.5s@140; ~40s extrapolated
+# at 300 frames — the blocker for the signed 20-300 range). The arm runs
+# the SAME BA on a snapshot copy on a background thread (own db read
+# connection, WAL) and the worker merges poses + surviving point positions
+# back at the next publish trigger. NOISE-BAND (refinements land a few
+# frames late) — ships only through the host matrix + sign-off. Knobs:
+# OFFICIAL_AETHER_ASYNC_PREVIEW_BA / _ASYNC_PREVIEW_BA_THREADS;
+# apvba_summary jsonl when armed.
 OFFICIAL_PRODUCTION_ENDPOINT_SHA256 = (
-    "c5b1b7607c19757a5a29266d906d47c9eec18637776de6ea0e182214e86e8a86"
+    "c4819ddf2b9443b94f0a4c809919061727da065d881580a563ffb463bb84f868"
 )
 # [BA-RING 2026-07-26] Pin for src/official_bundle_adjustment_ceres.cc (see
 # the reviewed-delta comment at its branch in main()).
