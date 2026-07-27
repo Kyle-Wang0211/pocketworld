@@ -190,8 +190,18 @@ DIRTY_GHOST_MASK_SHA256 = (
 # PINHOLE + trivial rig, AddImageWithTrivialFrame with the ARKit pose, then
 # IncrementalMapper::TriangulateImage over the db matches). Nothing is
 # hand-merged. Still NOISE-BAND, still sign-off gated.
+# 2026-07-27 A1b-v3 (still DEFAULT OFF): v2's matrix fixed the deletion
+# 病根 (track-length fingerprint reversed: long tracks GREW) but exposed a
+# P0 — the harvest built its DatabaseCache on the worker while the
+# background thread had its own Database::Open, and the lock contention
+# silently ate 4 accepted frames (add_frame_features ... ERR_INTERNAL),
+# which contradicts "采集必出点云". v3: the cache is built once at kick on
+# the worker's own connection and handed to the background thread, which
+# never touches sqlite; consecutive drops back off (2 ⇒ skip 2 kicks, 3+ ⇒
+# skip 4) instead of re-kicking every frame; the background catch records
+# the exception text into apvba_summary.last_error.
 OFFICIAL_PRODUCTION_ENDPOINT_SHA256 = (
-    "1a84b4f078cb93fbd165b070391e0a518e4da433e7fc40148df545b617b7bf5d"
+    "b484836882f7b3e5e314da8e6d39316b969fa13b7c40560d8f80314dc4a6f0f5"
 )
 # [BA-RING 2026-07-26] Pin for src/official_bundle_adjustment_ceres.cc (see
 # the reviewed-delta comment at its branch in main()).
