@@ -291,4 +291,37 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Top'), findsOneWidget);
   });
+
+  testWidgets('Top 视角左右箭头 = 原地转 90°,不跳层;随后下箭头落到对应面', (tester) async {
+    late Directory dir;
+    late Float32List xyz;
+    late Uint8List rgb;
+    await tester.runAsync(() async {
+      (dir, xyz, rgb) = await _fixture();
+    });
+    addTearDown(() => dir.delete(recursive: true));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
+      ),
+    );
+    await _pumpUntilLoaded(tester);
+    await tester.pumpAndSettle();
+    expect(find.text('Top'), findsOneWidget);
+
+    // Top 点右箭头:label 仍 Top(原地俯视旋转,无直达跳层),
+    // 相机 yaw 转了 +90°。
+    await tester.tap(find.byKey(const ValueKey('cube-right')));
+    await tester.pumpAndSettle();
+    expect(find.text('Top'), findsOneWidget);
+    final view = tester.widget<SelectionCloudView>(
+      find.byType(SelectionCloudView),
+    );
+    expect(view.viewYaw, closeTo(math.pi / 2, 1e-6));
+
+    // 随后下箭头:回落到与画面朝向一致的水平面 = Right(一步一个面)。
+    await tester.tap(find.byKey(const ValueKey('cube-down')));
+    await tester.pumpAndSettle();
+    expect(find.text('Right'), findsOneWidget);
+  });
 }
