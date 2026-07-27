@@ -333,6 +333,11 @@ class _SparseCloudViewState extends State<SparseCloudView>
                               exposure: _exposure,
                               tone: _tone,
                               selectionBox: widget.selectionBox,
+                              // [2026-07-27 用户签决] 查看器回显只要"框外
+                              // 变红",不要 3D 白色立方体线框(自由旋转下
+                              // 线框喧宾夺主)。要线框/矩形的编辑场景
+                              // (SelectionCloudView)自己构造 painter。
+                              drawSelectionWireframe: false,
                             ),
                             size: Size.infinite,
                           ),
