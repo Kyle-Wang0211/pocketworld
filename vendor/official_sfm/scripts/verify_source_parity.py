@@ -200,8 +200,21 @@ DIRTY_GHOST_MASK_SHA256 = (
 # never touches sqlite; consecutive drops back off (2 ⇒ skip 2 kicks, 3+ ⇒
 # skip 4) instead of re-kicking every frame; the background catch records
 # the exception text into apvba_summary.last_error.
+# 2026-07-27 A1b-v4 (still DEFAULT OFF): correction propagation. v2/v3
+# replayed the frames accepted during the background pass with their RAW
+# ARKit poses, leaving a seam — one side of the model BA-corrected, the
+# other not. ORB-SLAM2 (arXiv:1610.06475) solves exactly this when its full
+# BA runs in a separate thread: "propagating the correction of updated
+# keyframes (i.e. the transformation from the non-optimized to the
+# optimized pose) to non-updated keyframes through the spanning tree".
+# Adapted here: the reference is the newest frame the pass did optimize
+# (the spanning-tree parent of a sequential K-window capture), the pre-BA
+# poses are snapshotted at kick, and each replayed frame's pose becomes
+# C * (C_old^-1 * C_new). Ideas only — ORB-SLAM3 is GPLv3. The correction
+# magnitude is reported in apvba_summary (corr_mm / corr_deg) so the next
+# matrix can say whether the seam explains v2's -2.4%.
 OFFICIAL_PRODUCTION_ENDPOINT_SHA256 = (
-    "b484836882f7b3e5e314da8e6d39316b969fa13b7c40560d8f80314dc4a6f0f5"
+    "fb2647a5b3e9be916b402ea8f891d2bb8204c307c3b0aa49ceecba80df380a4e"
 )
 # [BA-RING 2026-07-26] Pin for src/official_bundle_adjustment_ceres.cc (see
 # the reviewed-delta comment at its branch in main()).
