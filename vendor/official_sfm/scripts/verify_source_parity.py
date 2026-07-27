@@ -181,8 +181,17 @@ DIRTY_GHOST_MASK_SHA256 = (
 # frames late) — ships only through the host matrix + sign-off. Knobs:
 # OFFICIAL_AETHER_ASYNC_PREVIEW_BA / _ASYNC_PREVIEW_BA_THREADS;
 # apvba_summary jsonl when armed.
+# 2026-07-27 A1b-v2 (still DEFAULT OFF): the field-merge harvest was killed
+# by its own matrix — it discarded the background pass's FilterFrames /
+# FilterPoints deletions, delivering -5.65%/-6.33% points against a 0.059%
+# noise band. The harvest now ADOPTS THE REFINED MODEL WHOLESALE (every BA
+# decision, deletions included) and replays the frames accepted during the
+# background pass through the same official path add_frame uses (per-image
+# PINHOLE + trivial rig, AddImageWithTrivialFrame with the ARKit pose, then
+# IncrementalMapper::TriangulateImage over the db matches). Nothing is
+# hand-merged. Still NOISE-BAND, still sign-off gated.
 OFFICIAL_PRODUCTION_ENDPOINT_SHA256 = (
-    "c4819ddf2b9443b94f0a4c809919061727da065d881580a563ffb463bb84f868"
+    "1a84b4f078cb93fbd165b070391e0a518e4da433e7fc40148df545b617b7bf5d"
 )
 # [BA-RING 2026-07-26] Pin for src/official_bundle_adjustment_ceres.cc (see
 # the reviewed-delta comment at its branch in main()).
