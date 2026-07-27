@@ -152,8 +152,18 @@ DIRTY_GHOST_MASK_SHA256 = (
 # byte-identical to the serial loop (acceptance: host replay A/B db diff).
 # Live sessions only; resume sessions and OFFICIAL_AETHER_QUAD_PIPELINE=0
 # keep the serial loop verbatim.
+# 2026-07-27 reviewed delta (EPI-PRIOR experiment arm, DEFAULT OFF — unset
+# env keeps shipped behaviour byte-identical): ARKit epipolar-prior guided
+# matching for the sign-off dossier. Synthesizes E from the FED ARKit poses
+# (FrameRecord.cam_from_world, never BA-refined) and routes through the
+# EXISTING COLMAP-parity guided kernel via PrepareGuidedGeometry's
+# calibrated path, gap-adaptive band + match-count-collapse fallback to the
+# unchanged full GEMM. Classification: APPROXIMATE — ships only through
+# noise-band quality gates + user sign-off. Knobs:
+# OFFICIAL_AETHER_EPI_PRIOR_MATCH / _EPI_BAND_BASE_PX / _EPI_BAND_PER_GAP_PX
+# / _EPI_BAND_MAX_PX / _EPI_FALLBACK_MIN; epi_summary jsonl when armed.
 OFFICIAL_PRODUCTION_ENDPOINT_SHA256 = (
-    "69c6c92836b61228926426b0107dddb1973110c3722abd90fdf7d56eff5f50ba"
+    "f287bc916348afc56d7524c1a5acb01d978f599e68327eef52272eae59e0f92d"
 )
 # [BA-RING 2026-07-26] Pin for src/official_bundle_adjustment_ceres.cc (see
 # the reviewed-delta comment at its branch in main()).
