@@ -224,8 +224,17 @@ DIRTY_GHOST_MASK_SHA256 = (
 # propagation (= v3 semantics); _MATCH_CADENCE=1 kicks at most one
 # background pass per successful publish (BA workload parity with sync).
 # apvba_summary now records both flags.
+# 2026-07-27 A1b-v6 (_PARAM_ONLY knob, still DEFAULT OFF): the v5 2x2
+# isolated the async delta to a STRUCTURAL residual (2-view deletions +
+# track merges decided on a stale snapshot); cadence and propagation each
+# measured ~0. v6 therefore lets the background pass solve parameters only
+# (one official AdjustGlobalBundle; no CompleteAndMergeTracks, no
+# FilterPoints/FilterFrames, no retriangulation) and defers every
+# structural decision to the synchronous finalize, which redoes them from
+# scratch over the full db anyway. Late-arriving parameter perturbations
+# wash out in stage-1/2 convergence; structural divergence does not.
 OFFICIAL_PRODUCTION_ENDPOINT_SHA256 = (
-    "6facb1db9ffa00986c6208fdf8a70db51513a2bd83fc8b4a472ae0f1eeb0aa3a"
+    "bb09b21991eab9ac1e7f7d8adfdfbe0dddc676e6a6ae883533e0847f5bb0cbb6"
 )
 # [BA-RING 2026-07-26] Pin for src/official_bundle_adjustment_ceres.cc (see
 # the reviewed-delta comment at its branch in main()).
