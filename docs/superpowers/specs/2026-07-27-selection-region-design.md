@@ -136,6 +136,21 @@ TransformControls(gizmo 范式)、Open3D OBB crop(yaw-盒 = 受限 OBB,
    返回走保存草稿链路。
 6. `SparseCloudView` 带只读框渲染不崩;框外红只影响调制色不影响点数。
 
+## 增补(2026-07-27 晚,用户批准):草稿查看器的选区入口
+
+用户签决原话:"跟刚才完全一样——只是加一个入口,其他什么都不变"。
+
+- `SparseCloudViewerPage`(草稿卡片 → 查看点云)在点云加载成功时,底部渲染
+  与等待页 refined 态**完全同款**的"保存草稿 | 下一步"双按钮(同样式同文案):
+  - 保存草稿 = `Navigator.pop`(本来就是草稿,无写盘动作);
+  - 下一步 = push `SelectionPage(xyz, rgb, captureDir=plyPath 父目录)`,
+    **SelectionPage 零改动复用**;返回后重新 `SelectionBox.loadFrom` 刷新
+    只读回显。
+- 按钮样式把 `SfmPreviewOverlay._bottomButton` 提成共享公开组件,两处同源。
+- 加载失败/加载中不显示双按钮。数据语义(PLY 全量、JSON 覆盖、容错)全走
+  既有链路,零新增持久化逻辑。
+- 本节替代下方"明确不做"里的"从草稿重进选区编辑"一条(其余 YAGNI 不变)。
+
 ## 明确不做(YAGNI)
 
 - localReady 期间的即时选区(架构预留的 `SfmLivePreview` 不在本期接线)。
