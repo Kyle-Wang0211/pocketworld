@@ -9,6 +9,7 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 
+import '../../official_capture/selection_box.dart';
 import 'sparse_cloud_view.dart';
 
 /// Parsed cloud (full set — delivery never downsamples).
@@ -80,6 +81,7 @@ class SparseCloudViewerPage extends StatefulWidget {
 
 class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
   SparseCloudData? _cloud;
+  SelectionBox? _selectionBox;
   bool _loading = true;
 
   @override
@@ -97,9 +99,15 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
     // [E25-D 2026-07-20] L2 渲染门已删除 —— 草稿查看页渲染全量交付点云。
     // 原逻辑读 ghost_view_mask.bin / ghost_mask.bin 算可见性并隐藏 band15
     // 非救援点;整条 L1/L2 已按用户签决移除(理由见 git log 7e98b5e)。
+    // [选区 2026-07-27] 只读回显:有选区文件就显示框 + 框外红。
+    // 损坏/缺失 → null(loadFrom 内部容错),查看器照常全量显示。
+    final selBox = await SelectionBox.loadFrom(
+      File(widget.plyPath).parent.path,
+    );
     if (!mounted) return;
     setState(() {
       _cloud = cloud;
+      _selectionBox = selBox;
       _loading = false;
     });
   }
@@ -142,7 +150,11 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
               )
             : Padding(
                 padding: const EdgeInsets.only(bottom: 10),
-                child: SparseCloudView(xyz: cloud.xyz, rgb: cloud.rgb),
+                child: SparseCloudView(
+                  xyz: cloud.xyz,
+                  rgb: cloud.rgb,
+                  selectionBox: _selectionBox,
+                ),
               ),
       ),
     );
