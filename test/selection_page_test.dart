@@ -253,4 +253,42 @@ void main() {
     final preset = kOrientationPresets.first; // 初始 Top
     expect(view.viewYaw, closeTo(preset.yaw + yaw * math.pi / 180, 1e-9));
   });
+
+  testWidgets('朝向立方体上下箭头 = 三层移动:Top↕水平↕Bottom', (tester) async {
+    late Directory dir;
+    late Float32List xyz;
+    late Uint8List rgb;
+    await tester.runAsync(() async {
+      (dir, xyz, rgb) = await _fixture();
+    });
+    addTearDown(() => dir.delete(recursive: true));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
+      ),
+    );
+    await _pumpUntilRealAsyncSettles(
+      tester,
+      () => tester.any(find.byKey(const ValueKey('cube-down'))),
+    );
+    await tester.pumpAndSettle();
+    // 初始 Top;下箭头 → 水平面(默认 Front),再下 → Bottom,再下 → 不变。
+    expect(find.text('Top'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('cube-down')));
+    await tester.pumpAndSettle();
+    expect(find.text('Front'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('cube-down')));
+    await tester.pumpAndSettle();
+    expect(find.text('Bottom'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('cube-down')));
+    await tester.pumpAndSettle();
+    expect(find.text('Bottom'), findsOneWidget); // 端点:无操作而非报错
+    // 上箭头逐层回:Bottom → 水平面 → Top。
+    await tester.tap(find.byKey(const ValueKey('cube-up')));
+    await tester.pumpAndSettle();
+    expect(find.text('Front'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('cube-up')));
+    await tester.pumpAndSettle();
+    expect(find.text('Top'), findsOneWidget);
+  });
 }

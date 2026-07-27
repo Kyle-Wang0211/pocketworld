@@ -147,6 +147,7 @@ class _SelectionPageState extends State<SelectionPage>
       target += 2 * math.pi;
     }
     _toYaw = target;
+    if (idx >= 1 && idx <= 4) _lastHorizontalIdx = idx; // 供上下箭头回落
     setState(() => _presetIdx = idx);
     unawaited(_presetAnim.forward(from: 0));
   }
@@ -156,6 +157,35 @@ class _SelectionPageState extends State<SelectionPage>
     final cur = _presetIdx >= 1 && _presetIdx <= 4 ? _presetIdx : 1;
     final next = ((cur - 1 + delta) % 4 + 4) % 4 + 1;
     _selectPreset(next);
+  }
+
+  /// 记住最近停留的水平面(1..4),从 Top/Bottom 回落时回到它而不是硬编码
+  /// Front。由 [_selectPreset] 在进入水平面时更新。
+  int _lastHorizontalIdx = 1;
+
+  /// 上下箭头 = 三层间移动:Top(0) ↕ 水平面(1..4) ↕ Bottom(5)。
+  ///
+  /// [2026-07-27 用户实机反馈修复] 旧实现是"上=直达 Top、下=直达 Bottom",
+  /// 已在 Bottom 再点下箭头就撞上 _selectPreset 的同值早退 → 看着像坏了。
+  /// 层级式移动后端点再按同向仍无操作(没有更下/更上了,与 RS 一致),
+  /// 但中间层级有明确反馈,不会再出现"从 Top 一键跳 Bottom"的跳层。
+  void _stepVertical(int dir) {
+    final horizontal = _presetIdx >= 1 && _presetIdx <= 4;
+    if (dir < 0) {
+      // 上:Bottom → 水平面;水平面 → Top;Top → 无操作。
+      if (_presetIdx == 5) {
+        _selectPreset(_lastHorizontalIdx);
+      } else if (horizontal) {
+        _selectPreset(0);
+      }
+    } else {
+      // 下:Top → 水平面;水平面 → Bottom;Bottom → 无操作。
+      if (_presetIdx == 0) {
+        _selectPreset(_lastHorizontalIdx);
+      } else if (horizontal) {
+        _selectPreset(5);
+      }
+    }
   }
 
   void _onBoxChanged(SelectionBox b) {
@@ -284,7 +314,11 @@ class _SelectionPageState extends State<SelectionPage>
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        _cubeArrow(Icons.keyboard_arrow_up_rounded, () => _selectPreset(0)),
+        _cubeArrow(
+          Icons.keyboard_arrow_up_rounded,
+          () => _stepVertical(-1),
+          key: const ValueKey('cube-up'),
+        ),
         Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -312,19 +346,25 @@ class _SelectionPageState extends State<SelectionPage>
             ),
           ],
         ),
-        _cubeArrow(Icons.keyboard_arrow_down_rounded, () => _selectPreset(5)),
+        _cubeArrow(
+          Icons.keyboard_arrow_down_rounded,
+          () => _stepVertical(1),
+          key: const ValueKey('cube-down'),
+        ),
       ],
     );
   }
 
-  Widget _cubeArrow(IconData icon, VoidCallback onTap) => IconButton(
-    onPressed: onTap,
-    icon: Icon(icon),
-    color: Colors.white70,
-    iconSize: 20,
-    padding: EdgeInsets.zero,
-    constraints: const BoxConstraints(minWidth: 32, minHeight: 24),
-  );
+  Widget _cubeArrow(IconData icon, VoidCallback onTap, {Key? key}) =>
+      IconButton(
+        key: key,
+        onPressed: onTap,
+        icon: Icon(icon),
+        color: Colors.white70,
+        iconSize: 20,
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(minWidth: 32, minHeight: 24),
+      );
 
   Widget _bottomPanel(SelectionBox box) {
     return Container(
