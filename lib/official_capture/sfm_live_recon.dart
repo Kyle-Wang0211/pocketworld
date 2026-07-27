@@ -67,6 +67,8 @@ class SfmLiveSnapshot {
     required this.obsFrameIds,
     required this.obsXY,
     this.ghostSpatialKeepIdx,
+    this.gravityAlignQuatWxyz,
+    this.posesPackedRawColmap,
   });
 
   /// 3 floats per point.
@@ -90,7 +92,27 @@ class SfmLiveSnapshot {
 
   /// 9 doubles per frame: [frameId, registered, qw,qx,qy,qz, tx,ty,tz]
   /// (CamFromWorld — invert before drawing a camera trajectory).
+  ///
+  /// [GRAV-CONSIST 2026-07-28] When [gravityAlignQuatWxyz] is non-null these
+  /// poses are in the SAME gravity-aligned world as [xyz] — the whole model
+  /// transforms together (COLMAP `Reconstruction::Transform` semantics; the
+  /// industry has zero precedent for rotating points without poses — COLMAP /
+  /// AliceVision `applyTransform` / nerfstudio all move the model as one).
   final Float64List posesPacked;
+
+  /// [GRAV-CONSIST 2026-07-28] The applied world rotation R_w as quaternion
+  /// [w,x,y,z]: maps raw-COLMAP world → gravity world (+Y up), points as
+  /// x' = R_w·x, poses as C' = C∘R_w⁻¹ (rotation-only; translations
+  /// unchanged). Null = no alignment applied (posesPacked is raw COLMAP and
+  /// posesPackedRawColmap is null). Recorded following nerfstudio's
+  /// dataparser_transforms.json precedent so artifacts stay invertible.
+  final List<double>? gravityAlignQuatWxyz;
+
+  /// [GRAV-CONSIST 2026-07-28] The untransformed CamFromWorld poses (same
+  /// packing), kept as an EXPLICIT raw-COLMAP truth for host parity
+  /// cross-checks — a float inverse rotation is not bit-exact, so raw truth
+  /// must be carried, not recomputed. Null when no alignment was applied.
+  final Float64List? posesPackedRawColmap;
 
   /// [L2-ALIGN 2026-07-12] Compacted→native (Points3D-order) index map from the
   /// finalize spatial-two-view filter — length == [pointCount]; null when that
@@ -1296,22 +1318,28 @@ class SfmLiveRecon {
   /// 数学与门限在 gravity_align.dart(逐字提出的纯函数,live 与断点续跑
   /// 共用同一实现;tool/gravity_align_check.dart 有纯 Dart VM 断言)。
   SfmLiveSnapshot _gravityAlign(SfmLiveSnapshot snap) {
-    final out = gravityAlignedPoints(
-      xyz: snap.xyz,
+    // [GRAV-CONSIST 2026-07-28] 整模型一致变换:点与位姿吃同一个 R_w
+    // (COLMAP Reconstruction::Transform 语义;此前只转点、posesPacked 留
+    // raw,形成"混合帧工件对",行业查无先例)。raw 位姿以显式字段保留
+    // (host parity 复核需要逐位真值,浮点逆旋转不保逐位),R_w 本体也
+    // 随快照落盘(nerfstudio dataparser_transforms.json 先例)。
+    final q = gravityAlignQuatWxyz(
       posesPacked: snap.posesPacked,
       arkitQuatWxyzOf: (frameId) => _fedMeta[frameId]?.arkitQuatWxyz,
     );
-    if (out == null) return snap;
+    if (q == null || snap.xyz.isEmpty) return snap;
     return SfmLiveSnapshot(
-      xyz: out,
+      xyz: rotatePointsByQuatWxyz(snap.xyz, q),
       rgb: snap.rgb,
-      posesPacked: snap.posesPacked,
+      posesPacked: gravityAlignedPosesPacked(snap.posesPacked, q),
       summary: snap.summary,
       refined: snap.refined,
       obsOffsets: snap.obsOffsets,
       obsFrameIds: snap.obsFrameIds,
       obsXY: snap.obsXY,
       ghostSpatialKeepIdx: snap.ghostSpatialKeepIdx,
+      gravityAlignQuatWxyz: q,
+      posesPackedRawColmap: snap.posesPacked,
     );
   }
 

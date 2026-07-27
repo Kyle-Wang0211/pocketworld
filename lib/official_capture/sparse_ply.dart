@@ -58,25 +58,38 @@ Future<void> persistSparseSnapshot({
     sink.add(body);
     await sink.close();
 
-    // ── meta JSON (poses stay CamFromWorld, 9 doubles per frame) ──
+    // ── meta JSON v2 ──
+    // [GRAV-CONSIST 2026-07-28] `poses` 与 PLY 点**同一坐标系**(整模型一致,
+    // COLMAP Reconstruction::Transform 语义 —— 行业查无"只转点不转位姿"的
+    // 先例);所施加的 R_w 记在 `gravity_align_quat_wxyz`(nerfstudio
+    // dataparser_transforms.json 先例:x' = R_w·x,C' = C∘R_w⁻¹,纯旋转、
+    // 平移不变;null = 没对齐);raw-COLMAP 位姿以显式字段 `poses_raw_colmap`
+    // 保留逐位真值(host parity 复核用,浮点逆旋转不保逐位)。
+    Map<String, Object?> poseEntry(Float64List p, int i) => {
+      'frame_id': p[i].toInt(),
+      'registered': p[i + 1] != 0,
+      'quat_wxyz': [p[i + 2], p[i + 3], p[i + 4], p[i + 5]],
+      't': [p[i + 6], p[i + 7], p[i + 8]],
+    };
     final poses = snapshot.posesPacked;
-    final posesJson = <Map<String, Object?>>[];
-    for (var i = 0; i < poses.length; i += 9) {
-      posesJson.add({
-        'frame_id': poses[i].toInt(),
-        'registered': poses[i + 1] != 0,
-        'quat_wxyz': [poses[i + 2], poses[i + 3], poses[i + 4], poses[i + 5]],
-        't': [poses[i + 6], poses[i + 7], poses[i + 8]],
-      });
-    }
+    final posesJson = <Map<String, Object?>>[
+      for (var i = 0; i < poses.length; i += 9) poseEntry(poses, i),
+    ];
+    final rawPoses = snapshot.posesPackedRawColmap;
     await File('$captureDir/official_sfm_sparse_meta.json').writeAsString(
       jsonEncode({
-        'schema': 'pw_sfm_sparse_meta_v1',
+        'schema': 'pw_sfm_sparse_meta_v2',
         'written_at': DateTime.now().toIso8601String(),
         'refined': snapshot.refined,
         'n_points': n,
         'summary': snapshot.summary,
         'poses': posesJson,
+        'gravity_align_quat_wxyz': snapshot.gravityAlignQuatWxyz,
+        if (rawPoses != null)
+          'poses_raw_colmap': <Map<String, Object?>>[
+            for (var i = 0; i < rawPoses.length; i += 9)
+              poseEntry(rawPoses, i),
+          ],
       }),
     );
     // ── track-length histogram (de-risk the ignore_two_view_tracks lever) ──

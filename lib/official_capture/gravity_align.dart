@@ -34,8 +34,27 @@ Float32List? gravityAlignedPoints({
   required Float64List posesPacked,
   required List<double>? Function(int frameId) arkitQuatWxyzOf,
 }) {
+  if (xyz.isEmpty) return null;
+  final q = gravityAlignQuatWxyz(
+    posesPacked: posesPacked,
+    arkitQuatWxyzOf: arkitQuatWxyzOf,
+  );
+  if (q == null) return null;
+  return rotatePointsByQuatWxyz(xyz, q);
+}
+
+/// [GRAV-CONSIST 2026-07-28] 均值 R_w 四元数本体([w,x,y,z],把 raw-COLMAP
+/// 世界带到重力世界)。从 [gravityAlignedPoints] 原地拆出(数学一字未改,
+/// 单一来源防漂移):调用方由此可"整模型一致变换 + 记录所施加变换"
+/// (COLMAP `Reconstruction::Transform` 语义 + nerfstudio
+/// dataparser_transforms.json 先例;行业查无"只转点不转位姿"的先例)。
+/// 证据不足(已注册且带 ARKit 四元数的帧 <3)或退化时返回 null。
+List<double>? gravityAlignQuatWxyz({
+  required Float64List posesPacked,
+  required List<double>? Function(int frameId) arkitQuatWxyzOf,
+}) {
   final poses = posesPacked;
-  if (xyz.isEmpty || poses.isEmpty) return null;
+  if (poses.isEmpty) return null;
 
   // Hamilton product a*b (w,x,y,z).
   List<double> qmul(List<double> a, List<double> b) => [
@@ -80,7 +99,13 @@ Float32List? gravityAlignedPoints({
 
   final an = math.sqrt(aw * aw + ax * ax + ay * ay + az * az);
   if (an < 1e-9) return null;
-  final w = aw / an, x = ax / an, y = ay / an, z = az / an;
+  return [aw / an, ax / an, ay / an, az / an];
+}
+
+/// 把点云按 R_w([q] = [w,x,y,z])旋转:x' = R_w·x。数学与旧
+/// [gravityAlignedPoints] 内联段逐字相同(单一来源化拆出)。
+Float32List rotatePointsByQuatWxyz(Float32List xyz, List<double> q) {
+  final w = q[0], x = q[1], y = q[2], z = q[3];
   // Rotation matrix rows for the mean R_w.
   final r00 = 1 - 2 * (y * y + z * z),
       r01 = 2 * (x * y - z * w),
@@ -99,6 +124,32 @@ Float32List? gravityAlignedPoints({
     out[i] = r00 * px + r01 * py + r02 * pz;
     out[i + 1] = r10 * px + r11 * py + r12 * pz;
     out[i + 2] = r20 * px + r21 * py + r22 * pz;
+  }
+  return out;
+}
+
+/// [GRAV-CONSIST 2026-07-28] 把 R_w(=[qAlign],wxyz)按 COLMAP
+/// `TransformCameraWorld` 语义作用到 CamFromWorld 位姿上:
+///   世界变换 x' = R·x ⇒ C' = C∘R⁻¹ ⇒ q' = q ⊗ conj(qAlign),t' = t
+/// (纯旋转、绕原点,平移分量在相机系,不变)。自检:代入任一点
+/// C'(R·x) == C(x) 恒等。未注册帧(registered==0)原样透传;
+/// 全 0 合成四元数不受影响(乘完仍全 0,契约同 SfmLiveConnectivity)。
+Float64List gravityAlignedPosesPacked(
+  Float64List posesPacked,
+  List<double> qAlign,
+) {
+  final out = Float64List.fromList(posesPacked);
+  final cw = qAlign[0], cx = -qAlign[1], cy = -qAlign[2], cz = -qAlign[3];
+  for (var i = 0; i < out.length; i += 9) {
+    if (out[i + 1] == 0) continue; // unregistered: leave verbatim
+    final w = out[i + 2], x = out[i + 3], y = out[i + 4], z = out[i + 5];
+    // q' = q ⊗ conj(qAlign)  (Hamilton)
+    out[i + 2] = w * cw - x * cx - y * cy - z * cz;
+    out[i + 3] = w * cx + x * cw + y * cz - z * cy;
+    out[i + 4] = w * cy - x * cz + y * cw + z * cx;
+    out[i + 5] = w * cz + x * cy - y * cx + z * cw;
+    // t unchanged: rotation-only world transform about the origin keeps the
+    // camera-frame translation component of CamFromWorld intact.
   }
   return out;
 }
