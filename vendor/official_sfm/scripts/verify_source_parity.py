@@ -162,8 +162,17 @@ DIRTY_GHOST_MASK_SHA256 = (
 # noise-band quality gates + user sign-off. Knobs:
 # OFFICIAL_AETHER_EPI_PRIOR_MATCH / _EPI_BAND_BASE_PX / _EPI_BAND_PER_GAP_PX
 # / _EPI_BAND_MAX_PX / _EPI_FALLBACK_MIN; epi_summary jsonl when armed.
+# 2026-07-27 reviewed delta (T-EXTRACT, telemetry-only, signed): the
+# extractor's nine SED stage durations (always recorded in
+# sift_extract_dawn.cc, printing still env-gated) are read after each
+# extract via the WEAK aether_sed_last_stages() and appended to the
+# frame_split sidecar record as "ex":[pyr,pack,det,sup,aff,ori,clamp,desc,
+# rb]. Sizes the A6 descriptor-batching knife (PopSift predicts the
+# descriptor stage dominates DSP×10 — never measured on our kernel). The
+# gpu-extract archive is rebuilt with the same recipe; pwofficial and pwsfm
+# archives remain byte-identical copies. Zero algorithm changes.
 OFFICIAL_PRODUCTION_ENDPOINT_SHA256 = (
-    "f287bc916348afc56d7524c1a5acb01d978f599e68327eef52272eae59e0f92d"
+    "c5b1b7607c19757a5a29266d906d47c9eec18637776de6ea0e182214e86e8a86"
 )
 # [BA-RING 2026-07-26] Pin for src/official_bundle_adjustment_ceres.cc (see
 # the reviewed-delta comment at its branch in main()).
