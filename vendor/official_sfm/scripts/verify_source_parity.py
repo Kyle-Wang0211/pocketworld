@@ -233,8 +233,21 @@ DIRTY_GHOST_MASK_SHA256 = (
 # structural decision to the synchronous finalize, which redoes them from
 # scratch over the full db anyway. Late-arriving parameter perturbations
 # wash out in stage-1/2 convergence; structural divergence does not.
+# 2026-07-28 reviewed delta (BA-THREADS-POST, EXACT): the finalize thread
+# budget drops its two-core camera reserve — min(6,hw-2) -> min(6,hw),
+# A16 4 -> 6 — because finalize runs strictly after capture (same rationale
+# as the matcher sprint mode and the signed stage-1 full-thread knife).
+# Quality evidence: thread-count bit-equality signed 07-11 and re-proven on
+# host 07-28 (_host_fixtures/prepay_threads_exact: T4/T6 x2 delivered PLYs
+# byte-identical, identical iteration counts; finalize wall -16.1%/-12.8%).
+# The capture-period windowed incremental BA keeps the reserve via the new
+# LiveBaThreads() (env OFFICIAL_AETHER_LIVE_BA_THREADS). Same experiment
+# also killed the QUAD-PREPAY revival: prepay is NOT byte-exact (the
+# earlier TVG estimation shifts the RANSAC stream — 1375-1556 of ~2000
+# two_view_geometries rows differ, both arms individually deterministic)
+# and bought zero net finalize time; it stays disabled.
 OFFICIAL_PRODUCTION_ENDPOINT_SHA256 = (
-    "bb09b21991eab9ac1e7f7d8adfdfbe0dddc676e6a6ae883533e0847f5bb0cbb6"
+    "95ea7fb6622c6edb81ea6749d4fe651f519a1393b634e688af61e70919f646d3"
 )
 # [BA-RING 2026-07-26] Pin for src/official_bundle_adjustment_ceres.cc (see
 # the reviewed-delta comment at its branch in main()).
