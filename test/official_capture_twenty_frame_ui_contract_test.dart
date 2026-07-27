@@ -21,17 +21,26 @@ void main() {
     );
   });
 
-  test(
-    'official capture shows a fresh multi-angle entry notice every take',
-    () {
-      expect(
-        source,
-        contains("ValueKey<String>('official-capture-entry-tip')"),
-      );
-      expect(source, contains('尽量从更多不同角度拍摄照片'));
-      expect(source, contains('完成20张并分析后，点云会覆盖显示在物体上'));
-    },
-  );
+  // [2026-07-27 UI 签决] 入场提示改为完成门提示:开拍时不再弹任何"20 张"
+  // 横幅(它挡取景框、说的又是用户此刻做不了的事),同一句话只在用户不足
+  // 20 张就点完成时出现。断言两头都锁:横幅确实没了 + 文案确实在对话框里。
+  test('the multi-angle notice fires only at the under-20 finish gate', () {
+    expect(
+      source,
+      isNot(contains("ValueKey<String>('official-capture-entry-tip')")),
+    );
+    expect(source, isNot(contains('_entryTipVisible')));
+
+    final dialogStart = source.indexOf(
+      "ValueKey<String>('official-minimum-photos-dialog')",
+    );
+    expect(dialogStart, greaterThanOrEqualTo(0));
+    final dialogEnd = source.indexOf('actions:', dialogStart);
+    final dialogSource = source.substring(dialogStart, dialogEnd);
+
+    expect(dialogSource, contains('尽量从更多不同角度拍摄照片'));
+    expect(dialogSource, contains('完成20张并分析后，点云会覆盖显示在物体上'));
+  });
 
   test(
     'official AR overlay receives only globally published SfM snapshots',
@@ -59,7 +68,10 @@ void main() {
     expect(source, contains('final OfficialProjectPhotoAlbum _projectPhotos'));
     expect(source, contains('_projectPhotos.commitVerified('));
     expect(source, contains('acceptedFrameCount = _projectPhotos.count'));
-    expect(source, contains("'\$count 张'"));
+    // [SIGNED 2026-07-27] 计数徽章改成 RS 同款分子/分母(N/300):上限恒
+    // 可见,详见 official_capture_frame_budget_contract_test.dart。
+    expect(source, contains(r"'$count/$kOfficialMaximumCaptureFrames'"));
+    expect(source, isNot(contains("'\$count 张'")));
     expect(albumSource, contains('required this.count,'));
     expect(albumSource, contains('final int count;'));
     expect(source, isNot(contains(r"'$fed 帧'")));

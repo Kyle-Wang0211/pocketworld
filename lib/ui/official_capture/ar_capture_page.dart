@@ -41,7 +41,6 @@ import '../../official_capture/colorize_pipeline.dart';
 import '../../official_capture/live_sfm_publish_policy.dart';
 import '../../official_capture/official_highres_reconstruction_input.dart';
 import '../../official_capture/parallax_banner_gate.dart';
-import '../../official_capture/capture_format.dart';
 import '../../official_capture/photo_card_state.dart';
 import '../../official_capture/project_photo_album.dart';
 import '../../official_capture/pw_telemetry.dart';
@@ -63,6 +62,7 @@ import '../reconstruction_draft_route_state.dart';
 import '../reconstruction_route_release_gate.dart';
 import '../scan_record.dart';
 import 'ar_album_page.dart';
+import 'capture_preview_rect.dart';
 import 'official_gallery_routes.dart';
 import 'sfm_preview_overlay.dart';
 
@@ -221,8 +221,6 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// Capture coverage voxels remain a private guidance signal; the native
   /// renderer receives nothing before V20 and only stable SfM versions after.
   CoverageCloudPacked? _officialSfmArCloud;
-  bool _entryTipVisible = false;
-  Timer? _entryTipTimer;
 
   // ─── "拍摄角度不足"实时横幅(补强1,真值口径)───────────────────────
   // starvedTrue(观测达标但真实三角化角低于 parallaxMinDeg=5° 的体素数,
@@ -719,12 +717,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         _sfmStartFailureText = null;
         _isAiming = false;
         _lockInProgress = false;
-        _entryTipVisible = true;
       });
-      _entryTipTimer?.cancel();
-      _entryTipTimer = Timer(const Duration(seconds: 6), () {
-        if (mounted) setState(() => _entryTipVisible = false);
-      });
+      // [2026-07-27 UI 签决] 开拍即弹的"20 张"入场提示已删除 —— 每次进
+      // 拍摄都挡一次取景框、说的又是用户还没到的事。同一句提示改在真正
+      // 相关的时刻出现:不足 20 张点完成时的 _onFinishTap 对话框。
       _startGuidanceTelemetry();
       // Capture-time streaming SfM is required for a valid product take.
       // Await only worker startup (not reconstruction); controls remain
@@ -833,9 +829,6 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   // 拍照、覆盖率计算、点云更新、质量判断、重建全部照常;两开关相互独立。
   bool _photoCardsVisible = true; // 左:AR 照片卡片(照片图标)
   bool _coverageDotsVisible = true; // 右:彩色覆盖点(3×3 九点图标,恒黄)
-  // RS 复刻:两图标面板可收起(chevron)。展开=灰底条露两图标;收起=只留
-  // chevron 小舌、面板隐藏。纯显示状态,不碰卡片/拍照/覆盖数据(参考 eb0e1c1)。
-  bool _displayPanelExpanded = true;
 
   Future<void> _togglePhotoCards() async {
     setState(() => _photoCardsVisible = !_photoCardsVisible);
@@ -1934,6 +1927,29 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     final session = _session;
     if (session == null || !_sfmCaptureReady) return;
     if (_capturing) return;
+    // [SIGNED 2026-07-27] 300 张硬上限:在快门入口卡死(UI 已置灰,这里是
+    // 逻辑侧的同源兜底,防竞态/程序化调用越过)。达到上限提示一次去结束。
+    if (!officialCaptureCanShoot(acceptedFrameCount: _projectPhotos.count)) {
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          key: const ValueKey<String>('official-maximum-photos-dialog'),
+          title: const Text('已达 $kOfficialMaximumCaptureFrames 张上限'),
+          content: const Text(
+            '单次任务最多拍摄 $kOfficialMaximumCaptureFrames 张照片。\n'
+            '点击右下角箭头结束拍摄并开始重建。',
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('好'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
     _recomputeShutterPace();
     setState(() => _capturing = true);
     final shutterSw = Stopwatch()..start();
@@ -2018,7 +2034,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           title: const Text('至少拍摄20张照片'),
           content: Text(
             '要结束任务，必须至少拍摄20张照片。\n'
-            '当前已完成 $acceptedFrameCount 张，还需要 $remaining 张。',
+            '当前已完成 $acceptedFrameCount 张，还需要 $remaining 张。\n'
+            '尽量从更多不同角度拍摄照片，'
+            '完成20张并分析后，点云会覆盖显示在物体上。',
           ),
           actions: [
             FilledButton(
@@ -2422,7 +2440,6 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     );
     _warmupFallbackTimer?.cancel();
     _sfmStageTicker?.cancel();
-    _entryTipTimer?.cancel();
     _coveragePushTimer?.cancel();
     _poseSub?.cancel();
     // Streaming-SfM teardown: frees the native session (joins the background
@@ -2510,16 +2527,12 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                 padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
                 child: SizedBox(
                   height: 38,
+                  // [2026-07-27 UI 签决]"官方"路由徽章已删除:线上只剩这一条
+                  // 采集路由(另一条 lib/ui/capture/ar_capture_page.dart 早已
+                  // 不存在),标签对用户零信息量,只是占着取景框右上角。
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      const _CaptureRouteBadge(
-                        key: ValueKey<String>('capture-route-badge-official'),
-                        label: '官方',
-                      ),
-                      const SizedBox(width: 8),
-                      _CloseButton(onTap: _onCloseTap),
-                    ],
+                    children: [_CloseButton(onTap: _onCloseTap)],
                   ),
                 ),
               ),
@@ -2575,64 +2588,29 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               ),
             ),
 
-          if (_recording && _entryTipVisible)
-            Positioned(
-              top: 0,
-              left: 18,
-              right: 18,
-              child: SafeArea(
-                child: Padding(
-                  padding: const EdgeInsets.only(top: 60),
-                  child: GestureDetector(
-                    onTap: () {
-                      _entryTipTimer?.cancel();
-                      setState(() => _entryTipVisible = false);
-                    },
-                    child: Container(
-                      key: const ValueKey<String>('official-capture-entry-tip'),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 12,
-                      ),
-                      decoration: BoxDecoration(
-                        color: const Color(0xD91C1C20),
-                        borderRadius: BorderRadius.circular(18),
-                        border: Border.all(color: Colors.white24),
-                      ),
-                      child: const Row(
-                        children: [
-                          Icon(
-                            Icons.tips_and_updates_outlined,
-                            color: Color(0xFFF5B821),
-                            size: 22,
-                          ),
-                          SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              '尽量从更多不同角度拍摄照片\n'
-                              '完成20张并分析后，点云会覆盖显示在物体上',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 13,
-                                height: 1.35,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
+          // ─── [2026-07-27 UI 签决] 开拍即弹的"20 张"入场提示已删除。
+          // 它每次进拍摄都占掉取景框顶部一大条,内容又是用户此刻做不了的事。
+          // 同一句话搬到 _onFinishTap 的"至少拍摄20张照片"对话框——只在真
+          // 需要时出现。下面几档顶部横幅(硬拒/移速/starved/未连接)因此回到
+          // 各自的固定档位,不再有让位入场提示的偏移。
 
           // ─── Aim mode overlay: center crosshair + hint text.
           // Only rendered while `_isAiming` is true (between idle and
           // recording). User actively aligns the crosshair on the
           // subject and taps the bottom button to lock origin.
+          // 准星盒改用取景矩形(CapturePreviewRect)而不是整屏:画面挪位置
+          // 之后,按整屏定位的准星会离画面中心更远。注意准星图形本身刻意带
+          // Alignment(0, -0.10) 的上偏(下方要留出提示条),所以这里只是把
+          // 偏移的基准换成画面本身,并非"与画面同心"——真正的锁定射线走的是
+          // 相机光轴(native lockOrigin),落在画面正中心,准星仍偏上约 4%。
+          // ⚠️ 这个分支目前是死代码:_isAiming 唯一的赋值点 _onCenterTap 全仓
+          // 无人调用(analyzer 的 unused_element 警告即是),HEAD 亦然。
           if (_isAiming)
-            const Positioned.fill(child: IgnorePointer(child: _AimOverlay())),
+            const Positioned.fill(
+              child: IgnorePointer(
+                child: CapturePreviewRect(child: _AimOverlay()),
+              ),
+            ),
 
           // ─── Plan G W2 P3 transient hint toast (recording only).
           // Surfaces blur / dark / bright GuidanceEngine hard-reject
@@ -2649,7 +2627,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               right: 0,
               child: SafeArea(
                 child: Padding(
-                  padding: EdgeInsets.only(top: _entryTipVisible ? 148 : 60),
+                  padding: const EdgeInsets.only(top: 60),
                   child: Center(
                     child: _HardRejectToast(stream: _session!.guidanceStream),
                   ),
@@ -2667,7 +2645,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               right: 0,
               child: SafeArea(
                 child: Padding(
-                  padding: EdgeInsets.only(top: _entryTipVisible ? 192 : 104),
+                  padding: const EdgeInsets.only(top: 104),
                   child: Center(
                     child: _MotionSpeedToast(stream: _session!.motionStream),
                   ),
@@ -2687,7 +2665,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               right: 0,
               child: SafeArea(
                 child: Padding(
-                  padding: EdgeInsets.only(top: _entryTipVisible ? 236 : 148),
+                  padding: const EdgeInsets.only(top: 148),
                   child: Center(
                     child: _ParallaxStarvedBanner(
                       visible: _starvedBannerVisible,
@@ -2707,7 +2685,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               right: 18,
               child: SafeArea(
                 child: Padding(
-                  padding: EdgeInsets.only(top: _entryTipVisible ? 280 : 192),
+                  padding: const EdgeInsets.only(top: 192),
                   child: AnimatedBuilder(
                     animation: _projectPhotos,
                     builder: (context, _) => _DisconnectedPhotoBanner(
@@ -2742,62 +2720,57 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    // RS 复刻:快门上方两图标显示开关 + 可收起面板(chevron)。
-                    Center(
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () => setState(
-                          () => _displayPanelExpanded = !_displayPanelExpanded,
-                        ),
-                        child: Container(
-                          width: 56,
-                          height: 22,
-                          decoration: const BoxDecoration(
-                            color: Color(0xCC1C1C20),
-                            borderRadius: BorderRadius.vertical(
-                              top: Radius.circular(11),
+                    // 快门上方的两个显示开关(左:AR 照片卡片;右:覆盖点)。
+                    // [2026-07-27 UI 签决] 收起功能(chevron)已删除:预览改为
+                    // 在这条控件条上方(见 CapturePreviewRect),完整 4:3 画面
+                    // 不再被面板压住,所以没有任何需要临时收起的理由 —— 面板与
+                    // 快门条从此常驻同屏。这里的尺寸一律取自 capture_preview_rect
+                    // 的常量,不写字面量(常量与真实高度脱钩过一次,见该文件)。
+                    // [UI-3] 底色从 0xE6(90% 半透明)改成全不透明:半透明会
+                    // 让画面从面板顶部透出来,用户看到的就是"画面和灰底重叠"。
+                    // 画面底边现在也不再贴着这个灰底,而是隔着一个
+                    // captureSeparatorGap。
+                    Container(
+                      width: double.infinity,
+                      color: const Color(0xFF1C1C20),
+                      padding: const EdgeInsets.symmetric(
+                        vertical: kCaptureIconPanelPadV,
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          _DisplayToggleButton(
+                            onTap: _togglePhotoCards,
+                            child: Icon(
+                              Icons.photo_outlined,
+                              size: 26,
+                              color: _photoCardsVisible
+                                  ? const Color(0xFFF5B821)
+                                  : Colors.white54,
                             ),
                           ),
-                          child: Icon(
-                            _displayPanelExpanded
-                                ? Icons.keyboard_arrow_down_rounded
-                                : Icons.keyboard_arrow_up_rounded,
-                            size: 20,
-                            color: Colors.white70,
+                          const SizedBox(width: 96),
+                          _DisplayToggleButton(
+                            onTap: _toggleCoverageDots,
+                            child: _NineDotIcon(
+                              color: _coverageDotsVisible
+                                  ? const Color(0xFFF5B821)
+                                  : Colors.white54,
+                            ),
                           ),
-                        ),
+                        ],
                       ),
                     ),
-                    if (_displayPanelExpanded)
-                      Container(
-                        width: double.infinity,
-                        color: const Color(0xE61C1C20),
-                        padding: const EdgeInsets.symmetric(vertical: 8),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            _DisplayToggleButton(
-                              onTap: _togglePhotoCards,
-                              child: Icon(
-                                Icons.photo_outlined,
-                                size: 26,
-                                color: _photoCardsVisible
-                                    ? const Color(0xFFF5B821)
-                                    : Colors.white54,
-                              ),
-                            ),
-                            const SizedBox(width: 96),
-                            _DisplayToggleButton(
-                              onTap: _toggleCoverageDots,
-                              child: _NineDotIcon(
-                                color: _coverageDotsVisible
-                                    ? const Color(0xFFF5B821)
-                                    : Colors.white54,
-                              ),
-                            ),
-                          ],
-                        ),
+                    // [UI-3] 灰底面板与快门圆之间的确定间隔 —— 之前快门圆
+                    // 顶边正好抵在面板下边缘,看着像"灰底压住快门"。
+                    // 与画面↔面板用的是同一个间距,空间不够时一起让掉。
+                    SizedBox(
+                      height: captureSeparatorGap(
+                        screen: MediaQuery.sizeOf(context),
+                        safeTop: MediaQuery.paddingOf(context).top,
+                        safeBottom: MediaQuery.paddingOf(context).bottom,
                       ),
+                    ),
                     _ManualCaptureBar(
                       projectPhotos: _projectPhotos,
                       // 07-12 签决:快门彻底不限流 —— 只要在录制就永远可拍,
@@ -2878,14 +2851,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // 视口算(AetherARKitPlugin videoFormatMode==hires43 分支),两者对齐。
       return const ColoredBox(
         color: Color(0xFF000000),
-        child: Center(
-          child: AspectRatio(
-            aspectRatio: pwPreviewAspect,
-            child: UiKitView(
-              viewType: 'pocketworld_official_arkit_preview',
-              creationParams: <String, dynamic>{},
-              creationParamsCodec: StandardMessageCodec(),
-            ),
+        child: CapturePreviewRect(
+          child: UiKitView(
+            viewType: 'pocketworld_official_arkit_preview',
+            creationParams: <String, dynamic>{},
+            creationParamsCodec: StandardMessageCodec(),
           ),
         ),
       );
@@ -3355,7 +3325,11 @@ class _DisplayToggleButton extends StatelessWidget {
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
-      child: SizedBox(width: 44, height: 44, child: Center(child: child)),
+      child: SizedBox(
+        width: kCaptureToggleButtonSize,
+        height: kCaptureToggleButtonSize,
+        child: Center(child: child),
+      ),
     );
   }
 }
@@ -3428,6 +3402,11 @@ class _ManualCaptureBar extends StatelessWidget {
     return AnimatedBuilder(
       animation: projectPhotos,
       builder: (context, _) {
+        // [SIGNED 2026-07-27] 300 张预算用尽 → 快门置灰(与相册徽章的
+        // 琥珀态、_onShutterTap 的兜底同源)。
+        final canShoot = officialCaptureCanShoot(
+          acceptedFrameCount: projectPhotos.count,
+        );
         final paths = projectPhotos.paths
             .where((p) => File(p).existsSync())
             .toList(growable: false);
@@ -3446,7 +3425,18 @@ class _ManualCaptureBar extends StatelessWidget {
           }
         }
         return Padding(
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+          // [2026-07-27 UI-2 签决] 底部内边距 24→0:相册/快门/完成整排向下
+          // 平移 24pt,贴到 SafeArea 上沿 —— 刘海机由 SafeArea 让开的 34pt
+          // 兜着,按钮不进 Home 手势区。⚠️ Home 键机型(SE 2/3)的
+          // padding.bottom 是 0,SafeArea 让开的也是 0,所以那类机型要靠
+          // captureShutterRowBottomPadding 补一个最小外边距,否则快门圆会贴
+          // 死屏幕物理底边。
+          padding: EdgeInsets.fromLTRB(
+            20,
+            0,
+            20,
+            captureShutterRowBottomPadding(MediaQuery.paddingOf(context).bottom),
+          ),
           child: Row(
             children: [
               SizedBox(
@@ -3461,11 +3451,15 @@ class _ManualCaptureBar extends StatelessWidget {
                 child: Center(
                   child: _ShutterButton(
                     busy: capturing,
-                    enabled: ready,
+                    // [SIGNED 2026-07-27] 300 张上限:唯一置灰理由(与
+                    // _onShutterTap 的兜底同源 officialCaptureCanShoot)。
+                    // 07-12 的"快门永不因队列/热态置灰"铁律不受影响 ——
+                    // 这不是限流,是任务预算用尽。
+                    enabled: ready && canShoot,
                     // [12MP 排队 2026-07-19] 拍照中(capturing)也接收点击 ——
                     // 不再 null 禁用;点击传进 _onShutterTap 由 _shutterQueued
                     // 排队补拍,一张不丢(真凶:12MP 静照~400ms内点击被丢弃)。
-                    onTap: ready ? onShutter : null,
+                    onTap: ready && canShoot ? onShutter : null,
                   ),
                 ),
               ),
@@ -3511,8 +3505,8 @@ class _AlbumThumbButton extends StatelessWidget {
         clipBehavior: Clip.none,
         children: [
           Container(
-            width: 60,
-            height: 60,
+            width: kCaptureAlbumThumbSize,
+            height: kCaptureAlbumThumbSize,
             decoration: BoxDecoration(
               color: Colors.black.withValues(alpha: 0.44),
               borderRadius: BorderRadius.circular(14),
@@ -3534,28 +3528,32 @@ class _AlbumThumbButton extends StatelessWidget {
                     size: 22,
                   ),
           ),
-          if (count > 0)
-            Positioned(
-              right: -2,
-              bottom: -2,
-              child: Container(
-                constraints: const BoxConstraints(minWidth: 24, minHeight: 22),
-                alignment: Alignment.center,
-                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.82),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  '$count 张',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w700,
-                  ),
+          // [SIGNED 2026-07-27] RS 同款分子/分母:上限恒可见(RS 从 0/300 起
+          // 就显示),让用户随时知道预算还剩多少 —— 不是拍到头才告知。达到
+          // 上限时徽章转琥珀色,与快门置灰同源(officialCaptureCanShoot)。
+          Positioned(
+            right: -2,
+            bottom: -2,
+            child: Container(
+              constraints: const BoxConstraints(minWidth: 24, minHeight: 22),
+              alignment: Alignment.center,
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+              decoration: BoxDecoration(
+                color: officialCaptureCanShoot(acceptedFrameCount: count)
+                    ? Colors.black.withValues(alpha: 0.82)
+                    : const Color(0xFFB26A00).withValues(alpha: 0.92),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                '$count/$kOfficialMaximumCaptureFrames',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
                 ),
               ),
             ),
+          ),
         ],
       ),
     );
@@ -3581,8 +3579,10 @@ class _ShutterButton extends StatelessWidget {
         onTap: onTap,
         behavior: HitTestBehavior.opaque,
         child: Container(
-          width: 76,
-          height: 76,
+          // 快门是快门行里最高的子项 —— 行高即由它决定,见
+          // kCaptureShutterRowHeight。
+          width: kCaptureShutterDiameter,
+          height: kCaptureShutterDiameter,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             border: Border.all(color: Colors.white, width: 4),
@@ -3618,8 +3618,8 @@ class _FinishArrowButton extends StatelessWidget {
       onTap: enabled ? onTap : null,
       behavior: HitTestBehavior.opaque,
       child: Container(
-        width: 56,
-        height: 56,
+        width: kCaptureFinishButtonSize,
+        height: kCaptureFinishButtonSize,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
           color: enabled
@@ -3639,35 +3639,6 @@ class _FinishArrowButton extends StatelessWidget {
                 color: Colors.white,
                 size: 28,
               ),
-      ),
-    );
-  }
-}
-
-class _CaptureRouteBadge extends StatelessWidget {
-  const _CaptureRouteBadge({super.key, required this.label});
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 30,
-      padding: const EdgeInsets.symmetric(horizontal: 11),
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.35),
-        borderRadius: BorderRadius.circular(15),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          color: Colors.white.withValues(alpha: 0.86),
-          fontSize: 12,
-          fontWeight: FontWeight.w600,
-          letterSpacing: 0.4,
-        ),
       ),
     );
   }

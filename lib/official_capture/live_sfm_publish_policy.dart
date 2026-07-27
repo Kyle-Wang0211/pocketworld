@@ -10,8 +10,18 @@
 const int kOfficialMinimumCaptureFrames = 20;
 const double kOfficialGlobalBaGrowthRatio = 1.40;
 
+/// [SIGNED 2026-07-27] 采集张数硬上限 —— 单次任务支持 20-300 张(RS 同款
+/// 分子/分母口径,相册按钮上直接显示 N/300)。上限是产品承诺也是工程边界:
+/// 端上重建的时间/内存曲线按这个范围验证,超出即无保障,故在**快门入口**
+/// 硬卡死,而不是靠提示劝阻。
+const int kOfficialMaximumCaptureFrames = 300;
+
 bool officialCaptureCanFinish({required int acceptedFrameCount}) =>
     acceptedFrameCount >= kOfficialMinimumCaptureFrames;
+
+/// 快门是否还能再拍(达到上限即 false;唯一判据,UI 与逻辑同源)。
+bool officialCaptureCanShoot({required int acceptedFrameCount}) =>
+    acceptedFrameCount < kOfficialMaximumCaptureFrames;
 
 class OfficialLiveSfmPublishPolicy {
   int _publishedRegisteredFrames = 0;
