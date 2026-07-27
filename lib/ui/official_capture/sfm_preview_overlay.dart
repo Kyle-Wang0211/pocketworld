@@ -34,6 +34,7 @@ class SfmPreviewOverlay extends StatelessWidget {
     required this.snapshot,
     required this.onBack,
     required this.onDone,
+    this.onNext,
     this.errorText,
     this.progressText,
   });
@@ -45,6 +46,10 @@ class SfmPreviewOverlay extends StatelessWidget {
   /// null = 全显示)。RENDER-ONLY,只透传给 SparseCloudView。
   final VoidCallback onBack;
   final VoidCallback onDone;
+
+  /// [选区 2026-07-27] refined 且非 null 时渲染"保存草稿|下一步"双按钮
+  /// (下一步进选区页);error 或调用方未接选区入口时保持单"完成"。
+  final VoidCallback? onNext;
   final String? errorText;
 
   /// Shown under the generating spinner while the disk queue drains and the
@@ -184,34 +189,67 @@ class SfmPreviewOverlay extends StatelessWidget {
                 child: SafeArea(
                   top: false,
                   child: Padding(
-                    padding: const EdgeInsets.only(bottom: 16),
-                    child: Center(
-                      child: GestureDetector(
-                        onTap: onDone,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 44,
-                            vertical: 13,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(26),
-                          ),
-                          child: const Text(
-                            '完成',
-                            style: TextStyle(
-                              color: Colors.black,
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
+                    padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+                    // refined 且有下一步入口 → RS 同款双按钮;error(没云
+                    // 没得选)或调用方未接选区 → 保持单"完成"。
+                    child: phase == SfmPreviewPhase.refined && onNext != null
+                        ? Row(
+                            children: [
+                              Expanded(
+                                child: _bottomButton(
+                                  label: '保存草稿',
+                                  filled: false,
+                                  onTap: onDone,
+                                ),
+                              ),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: _bottomButton(
+                                  label: '下一步',
+                                  filled: true,
+                                  onTap: onNext!,
+                                ),
+                              ),
+                            ],
+                          )
+                        : Center(
+                            child: _bottomButton(
+                              label: '完成',
+                              filled: true,
+                              onTap: onDone,
                             ),
                           ),
-                        ),
-                      ),
-                    ),
                   ),
                 ),
               ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _bottomButton({
+    required String label,
+    required bool filled,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 13),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: filled ? Colors.white : const Color(0xFF2A2A2E),
+          borderRadius: BorderRadius.circular(26),
+          border: filled ? null : Border.all(color: Colors.white24),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: filled ? Colors.black : Colors.white,
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ),
     );

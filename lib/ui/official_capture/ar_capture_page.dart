@@ -64,6 +64,7 @@ import '../scan_record.dart';
 import 'ar_album_page.dart';
 import 'capture_preview_rect.dart';
 import 'official_gallery_routes.dart';
+import 'selection_page.dart';
 import 'sfm_preview_overlay.dart';
 
 class OfficialARCapturePage extends StatefulWidget {
@@ -1855,6 +1856,25 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     );
   }
 
+  /// [选区 2026-07-27] 等待页"下一步"→ 选区页。返回 'save_draft'(签决:
+  /// 选区页返回不回等待页)→ 走与"保存草稿"完全同一的退出链路。
+  Future<void> _onSfmPreviewNext() async {
+    if (_sfmPhase != SfmPreviewPhase.refined) return;
+    final snap = _sfmSnapshot;
+    final dir = _session?.captureDir;
+    if (snap == null || dir == null || snap.pointCount == 0) return;
+    final result = await Navigator.of(context).push<String>(
+      MaterialPageRoute<String>(
+        builder: (_) => SelectionPage(
+          xyz: snap.xyz,
+          rgb: snap.rgb,
+          captureDir: dir,
+        ),
+      ),
+    );
+    if (result == 'save_draft') await _onSfmPreviewDone();
+  }
+
   Future<void> _permanentlyDeleteActiveReconstruction(ScanRecord record) async {
     if (!recordOwnsActiveReconstruction(
       recordCaptureDir: record.captureDir,
@@ -2803,6 +2823,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                   : _sfmStageProgressText(),
               onBack: _showDraftsDuringReconstruction,
               onDone: () => unawaited(_onSfmPreviewDone()),
+              onNext: _sfmSnapshot != null ? _onSfmPreviewNext : null,
             ),
         ],
       ),
