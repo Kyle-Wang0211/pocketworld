@@ -280,16 +280,18 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('cube-down')));
     await tester.pumpAndSettle();
     expect(find.text('Bottom'), findsOneWidget);
+    // 过极循环(ViewCube 行为):Bottom 再下 → 对面(Front 的对面=Back),
+    // 每步仍是 90° 相邻面,无死点无直达。
     await tester.tap(find.byKey(const ValueKey('cube-down')));
     await tester.pumpAndSettle();
-    expect(find.text('Bottom'), findsOneWidget); // 端点:无操作而非报错
-    // 上箭头逐层回:Bottom → 水平面 → Top。
-    await tester.tap(find.byKey(const ValueKey('cube-up')));
-    await tester.pumpAndSettle();
-    expect(find.text('Front'), findsOneWidget);
+    expect(find.text('Back'), findsOneWidget);
+    // 到达 Back 后 lastH=Back:上→Top,再上→过极到 Back 的对面=Front。
     await tester.tap(find.byKey(const ValueKey('cube-up')));
     await tester.pumpAndSettle();
     expect(find.text('Top'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('cube-up')));
+    await tester.pumpAndSettle();
+    expect(find.text('Front'), findsOneWidget);
   });
 
   testWidgets('Top 视角左右箭头 = 原地转 90°,不跳层;随后下箭头落到对应面', (tester) async {

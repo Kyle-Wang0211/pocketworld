@@ -178,24 +178,38 @@ class _SelectionPageState extends State<SelectionPage>
   /// Front。由 [_selectPreset] 在进入水平面时更新。
   int _lastHorizontalIdx = 1;
 
-  /// 上下箭头 = 三层间移动:Top(0) ↕ 水平面(1..4) ↕ Bottom(5)。
+  /// 对面(Front↔Back,Right↔Left)。
+  int _oppositeOf(int h) => ((h - 1 + 2) % 4) + 1;
+
+  /// 上下箭头 = 竖直大圆滚动,每步 90° 相邻面,**过极点循环、永不无操作**。
   ///
-  /// [2026-07-27 用户实机反馈修复] 旧实现是"上=直达 Top、下=直达 Bottom",
-  /// 已在 Bottom 再点下箭头就撞上 _selectPreset 的同值早退 → 看着像坏了。
-  /// 层级式移动后端点再按同向仍无操作(没有更下/更上了,与 RS 一致),
-  /// 但中间层级有明确反馈,不会再出现"从 Top 一键跳 Bottom"的跳层。
+  /// [2026-07-28 用户签决 + Autodesk ViewCube 官方行为核实] ViewCube 的
+  /// orbit 箭头在 Top 视角继续按上会滚到 Back("already looking at the
+  /// top, you'll get the back view"),四步一圈,不存在死点。AutoCAD 到达
+  /// 的 Back 是倒置的(up 翻转);我们的 yaw/pitch 相机不表达 up 翻转,
+  /// 采用 up 修正版:过极点直接落到**正立**的对面(label 立即有意义,
+  /// 触屏产品更合适)。规则:
+  /// · 上:水平面 → Top;Top → 对面(过极);Bottom → 回水平面。
+  /// · 下:水平面 → Bottom;Bottom → 对面(过极);Top → 回水平面。
+  /// 到达对面后 _selectPreset 会把 _lastHorizontalIdx 更新为该面,下一圈
+  /// 自动以它为基 —— 连续按同一箭头 = Front→Top→Back→Top→Front… 的
+  /// 四步循环(up 每步修正后"向上"语义重置,与 ViewCube 修正版一致)。
   void _stepVertical(int dir) {
     final horizontal = _presetIdx >= 1 && _presetIdx <= 4;
     if (dir < 0) {
-      // 上:Bottom → 水平面;水平面 → Top;Top → 无操作。
-      if (_presetIdx == 5) {
+      // 上箭头
+      if (_presetIdx == 0) {
+        _selectPreset(_oppositeOf(_lastHorizontalIdx)); // 过极 → 对面(正立)
+      } else if (_presetIdx == 5) {
         _selectPreset(_lastHorizontalIdx);
       } else if (horizontal) {
         _selectPreset(0);
       }
     } else {
-      // 下:Top → 水平面;水平面 → Bottom;Bottom → 无操作。
-      if (_presetIdx == 0) {
+      // 下箭头
+      if (_presetIdx == 5) {
+        _selectPreset(_oppositeOf(_lastHorizontalIdx)); // 过极 → 对面(正立)
+      } else if (_presetIdx == 0) {
         _selectPreset(_lastHorizontalIdx);
       } else if (horizontal) {
         _selectPreset(5);
