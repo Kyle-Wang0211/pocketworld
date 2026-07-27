@@ -3,6 +3,7 @@
 // long-press menu ("查看点云"). Same SparseCloudView as the capture-time
 // preview, so the experience is identical everywhere.
 
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -10,6 +11,8 @@ import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 
 import '../../official_capture/selection_box.dart';
+import 'selection_page.dart';
+import 'sfm_preview_overlay.dart' show SfmBottomActionButton;
 import 'sparse_cloud_view.dart';
 
 /// Parsed cloud (full set — delivery never downsamples).
@@ -148,15 +151,67 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                   style: TextStyle(color: Colors.white54, fontSize: 14),
                 ),
               )
-            : Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: SparseCloudView(
-                  xyz: cloud.xyz,
-                  rgb: cloud.rgb,
-                  selectionBox: _selectionBox,
-                ),
+            : Column(
+                children: [
+                  Expanded(
+                    child: SparseCloudView(
+                      xyz: cloud.xyz,
+                      rgb: cloud.rgb,
+                      selectionBox: _selectionBox,
+                    ),
+                  ),
+                  // [2026-07-27 增补] 与等待页 refined 态完全同款的双按钮:
+                  // 拍完进和草稿进,同一个"看稀疏点云的页面"长一个样(用户
+                  // 签决:只加入口,其他什么都不变)。
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: SfmBottomActionButton(
+                            label: '保存草稿',
+                            filled: false,
+                            // 本来就是草稿,无需写盘 —— 直接退回草稿列表。
+                            onTap: () => Navigator.of(context).pop(),
+                          ),
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: SfmBottomActionButton(
+                            label: '下一步',
+                            filled: true,
+                            onTap: () => unawaited(_openSelection()),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
       ),
     );
+  }
+
+  /// 下一步 → 选区页(SelectionPage 零改动复用);返回后重读选区文件刷新
+  /// 只读回显(用户刚改完的框和红点立刻可见)。pop 载荷 'save_draft' 在
+  /// 此入口无退出动作,忽略即可。
+  Future<void> _openSelection() async {
+    final cloud = _cloud;
+    if (cloud == null) return;
+    await Navigator.of(context).push<String>(
+      MaterialPageRoute<String>(
+        builder: (_) => SelectionPage(
+          xyz: cloud.xyz,
+          rgb: cloud.rgb,
+          captureDir: File(widget.plyPath).parent.path,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    final selBox = await SelectionBox.loadFrom(
+      File(widget.plyPath).parent.path,
+    );
+    if (!mounted) return;
+    setState(() => _selectionBox = selBox);
   }
 }

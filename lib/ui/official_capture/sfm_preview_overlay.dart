@@ -196,7 +196,7 @@ class SfmPreviewOverlay extends StatelessWidget {
                         ? Row(
                             children: [
                               Expanded(
-                                child: _bottomButton(
+                                child: SfmBottomActionButton(
                                   label: '保存草稿',
                                   filled: false,
                                   onTap: onDone,
@@ -204,7 +204,7 @@ class SfmPreviewOverlay extends StatelessWidget {
                               ),
                               const SizedBox(width: 14),
                               Expanded(
-                                child: _bottomButton(
+                                child: SfmBottomActionButton(
                                   label: '下一步',
                                   filled: true,
                                   onTap: onNext!,
@@ -213,7 +213,7 @@ class SfmPreviewOverlay extends StatelessWidget {
                             ],
                           )
                         : Center(
-                            child: _bottomButton(
+                            child: SfmBottomActionButton(
                               label: '完成',
                               filled: true,
                               onTap: onDone,
@@ -223,33 +223,6 @@ class SfmPreviewOverlay extends StatelessWidget {
                 ),
               ),
           ],
-        ),
-      ),
-    );
-  }
-
-  Widget _bottomButton({
-    required String label,
-    required bool filled,
-    required VoidCallback onTap,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 13),
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: filled ? Colors.white : const Color(0xFF2A2A2E),
-          borderRadius: BorderRadius.circular(26),
-          border: filled ? null : Border.all(color: Colors.white24),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            color: filled ? Colors.black : Colors.white,
-            fontSize: 15,
-            fontWeight: FontWeight.w600,
-          ),
         ),
       ),
     );
@@ -291,6 +264,45 @@ class SfmPreviewOverlay extends StatelessWidget {
             style: const TextStyle(color: Colors.white, fontSize: 12.5),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// 等待页/草稿查看器共用的底部动作按钮(保存草稿|下一步|完成 同款样式)。
+/// [2026-07-27 增补] 草稿查看器复用同一形态 —— 两处必须同源,别再复制样式。
+class SfmBottomActionButton extends StatelessWidget {
+  const SfmBottomActionButton({
+    super.key,
+    required this.label,
+    required this.filled,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool filled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 13),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: filled ? Colors.white : const Color(0xFF2A2A2E),
+          borderRadius: BorderRadius.circular(26),
+          border: filled ? null : Border.all(color: Colors.white24),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: filled ? Colors.black : Colors.white,
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
       ),
     );
   }
