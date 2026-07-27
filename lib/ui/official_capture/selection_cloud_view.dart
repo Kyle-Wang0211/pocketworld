@@ -83,7 +83,9 @@ BoxScreenBasis boxScreenBasis(CloudProjection proj, SelectionBox box) {
     vAxis: v,
     hSx: sx[h],
     vSy: sy[v],
-    scale: proj.f / d0,
+    // 正交下缩放与深度无关(f/camDist,矩形与盒投影严格重合 —— 守门测试
+    // 锁);透视下保留旧口径(盒中心深度的正交近似)。
+    scale: proj.orthographic ? proj.f / proj.camDist : proj.f / d0,
     cxS: c0x,
     cyS: c0y,
   );
@@ -297,6 +299,9 @@ class _SelectionCloudViewState extends State<SelectionCloudView> {
     pivotY: _fit.cy,
     pivotZ: _fit.cz,
     radius: _fit.radius,
+    // [2026-07-27 用户签决"框外必须全红"] 编辑视图正交:矩形/手柄/拖拽
+    // 逆映射与点云渲染(painter 同模式)在同一正交空间,零透视错位。
+    orthographic: true,
   ).projectionFor(size);
 
   void _onScaleStart(ScaleStartDetails d) {
@@ -386,6 +391,9 @@ class _SelectionCloudViewState extends State<SelectionCloudView> {
                     tone: 2,
                     selectionBox: widget.box,
                     drawSelectionWireframe: false,
+                    // [2026-07-27 用户签决"框外必须全红"] 编辑视图用正交:
+                    // 矩形与盒投影严格重合,屏幕框外 ⇔ 可见两轴出盒 ⇔ 红。
+                    orthographic: true,
                   ),
                   size: Size.infinite,
                 ),

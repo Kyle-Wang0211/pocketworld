@@ -122,4 +122,42 @@ void main() {
     expect((sy2 - sy0) / eps, closeTo(-p.f / d0, 1e-2)); // 屏幕 y 向下为正
     expect((sx2 - sx0).abs() / eps, lessThan(1e-2));
   });
+
+  test('正交模式:除数恒 camDist,与手工展开一致;worldPerPixel 与深度无关', () {
+    final rnd = math.Random(7);
+    for (var t = 0; t < 50; t++) {
+      final cam = CloudCamera(
+        yaw: rnd.nextDouble() * 6 - 3,
+        pitch: rnd.nextDouble() * 3 - 1.5,
+        zoom: 0.5 + rnd.nextDouble() * 2,
+        panX: 0,
+        panY: 0,
+        pivotX: 0,
+        pivotY: 0,
+        pivotZ: 0,
+        radius: 1 + rnd.nextDouble() * 3,
+        orthographic: true,
+      );
+      const size = Size(400, 400);
+      final p = cam.projectionFor(size);
+      final wx = rnd.nextDouble() * 4 - 2;
+      final wy = rnd.nextDouble() * 4 - 2;
+      final wz = rnd.nextDouble() * 4 - 2;
+      final cosY = math.cos(cam.yaw), sinY = math.sin(cam.yaw);
+      final cosP = math.cos(cam.pitch), sinP = math.sin(cam.pitch);
+      final f = size.shortestSide * 0.5 * cam.fillK * cam.zoom;
+      final camDist = cam.radius * 3.2;
+      final x1 = wx * cosY + wz * sinY;
+      final z1 = -wx * sinY + wz * cosY;
+      final y2 = wy * cosP - z1 * sinP;
+      final z2 = wy * sinP + z1 * cosP;
+      final (sx, sy, d) = p.project(wx, wy, wz);
+      // depth 仍是真值(排序/裁剪语义不变),但缩放除数恒 camDist。
+      expect(d, closeTo(z2 + camDist, 1e-9));
+      expect(sx, closeTo(200 - x1 * f / camDist, 1e-9));
+      expect(sy, closeTo(200 - y2 * f / camDist, 1e-9));
+      expect(p.worldPerPixelAt(d), closeTo(camDist / f, 1e-12));
+      expect(p.worldPerPixelAt(999), closeTo(camDist / f, 1e-12));
+    }
+  });
 }

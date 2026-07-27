@@ -10,12 +10,14 @@
 // 屏幕上方移),已按 controller correction 修正为
 // `cy + (r[1]·dx − u[1]·dy)·wpp` 等价写法。测试用逐分量 closeTo 断言方向,
 // 不能只断 moved>0。
+import 'dart:math' as math;
 import 'dart:ui' show Offset, Rect, Size;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/official_capture/selection_box.dart';
 import 'package:pocketworld_flutter/ui/official_capture/cloud_camera.dart';
 import 'package:pocketworld_flutter/ui/official_capture/selection_cloud_view.dart';
+import 'package:pocketworld_flutter/ui/official_capture/sparse_cloud_view.dart';
 
 CloudProjection _proj({double yaw = 0, double pitch = 0}) => CloudCamera(
   yaw: yaw,
@@ -162,5 +164,47 @@ void main() {
         (out.cy - box.cy).abs() +
         (out.cz - box.cz).abs();
     expect(moved, greaterThan(0));
+  });
+
+  test('正交模式:selectionScreenRect 与盒 8 角投影严格重合(可见两轴)', () {
+    // 用户签决"屏幕框外必须全红"的几何前提:正交下矩形 == 盒投影,
+    // 任何点若屏幕落在矩形外,其可见两轴必出盒 ⇒ contains 必假 ⇒ 必红。
+    const box2 = SelectionBox(
+      cx: 0.3,
+      cy: -0.2,
+      cz: 0.5,
+      sx: 1.6,
+      sy: 2.4,
+      sz: 3.2,
+      yawDeg: 25,
+    );
+    final cam = CloudCamera(
+      yaw: 25 * 3.141592653589793 / 180, // 相机抵消盒 yaw(联动约定)
+      pitch: 0,
+      zoom: 1.2,
+      panX: 0,
+      panY: 0,
+      pivotX: 0,
+      pivotY: 0,
+      pivotZ: 0,
+      radius: 2,
+      orthographic: true,
+    );
+    final proj = cam.projectionFor(const Size(400, 700));
+    final basis = boxScreenBasis(proj, box2);
+    final rect = selectionScreenRect(basis, box2);
+    // 8 角投影的包围矩形应与 selectionScreenRect 重合(容差 1e-6)
+    double minX = 1e18, maxX = -1e18, minY = 1e18, maxY = -1e18;
+    for (final c in selectionBoxCorners(box2)) {
+      final (sx, sy, _) = proj.project(c[0], c[1], c[2]);
+      minX = math.min(minX, sx);
+      maxX = math.max(maxX, sx);
+      minY = math.min(minY, sy);
+      maxY = math.max(maxY, sy);
+    }
+    expect(rect.left, closeTo(minX, 1e-6));
+    expect(rect.right, closeTo(maxX, 1e-6));
+    expect(rect.top, closeTo(minY, 1e-6));
+    expect(rect.bottom, closeTo(maxY, 1e-6));
   });
 }

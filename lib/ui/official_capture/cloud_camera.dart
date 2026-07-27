@@ -20,7 +20,16 @@ class CloudCamera {
     required this.pivotZ,
     required this.radius,
     this.fillK = 2.6, // SparseCloudView 开屏取景系数(user-locked 2026-07-06)
+    this.orthographic = false,
   });
+
+  /// [2026-07-27 用户签决"框外必须全红"] 正交投影模式:选区编辑视图专用。
+  /// 透视下近点被放大,屏幕上跑出 2D 选区矩形但 3D 仍在盒内 → 不红,
+  /// 与直觉相悖(真机实测)。正交下每点缩放因子相同(f/camDist),
+  /// 选区矩形与盒投影**严格重合**,"屏幕框外 ⇔ 可见两轴出盒 ⇔ 红"。
+  /// 这也是行业惯例:选区/裁剪编辑视图用正交,避免透视错位
+  /// (RS 编辑页观感同款;查看器保持透视不受影响)。
+  final bool orthographic;
 
   final double yaw, pitch, zoom, panX, panY;
   final double pivotX, pivotY, pivotZ;
@@ -43,6 +52,7 @@ class CloudCamera {
       pivotX: pivotX,
       pivotY: pivotY,
       pivotZ: pivotZ,
+      orthographic: orthographic,
     );
   }
 }
@@ -60,10 +70,15 @@ class CloudProjection {
     required this.pivotX,
     required this.pivotY,
     required this.pivotZ,
+    required this.orthographic,
   });
 
   final double cosY, sinY, cosP, sinP, f, camDist, ox, oy;
   final double pivotX, pivotY, pivotZ;
+
+  /// 正交模式(见 CloudCamera.orthographic):缩放除数用 camDist 而非逐点
+  /// depth。depth 仍按真值返回 —— 排序/衰减/裁剪语义不变。
+  final bool orthographic;
 
   /// 权威投影:世界点 → (屏幕x, 屏幕y, 深度)。深度 <= 0 表示在相机后。
   (double, double, double) project(double wx, double wy, double wz) {
@@ -73,11 +88,13 @@ class CloudProjection {
     final y2 = py * cosP - z1 * sinP;
     final z2 = py * sinP + z1 * cosP;
     final depth = z2 + camDist;
-    return (ox - x1 * f / depth, oy - y2 * f / depth, depth);
+    final d = orthographic ? camDist : depth;
+    return (ox - x1 * f / d, oy - y2 * f / d, depth);
   }
 
   /// 深度 depth 处,1 屏幕像素对应的世界距离(手柄拖拽逆映射)。
-  double worldPerPixelAt(double depth) => depth / f;
+  /// 正交模式下与 depth 无关(恒 camDist/f)。
+  double worldPerPixelAt(double depth) => (orthographic ? camDist : depth) / f;
 
   /// 屏幕 +x 方向(注意投影带负号:sx = ox - x1·f/depth,所以屏幕右移
   /// = 视空间 x1 减小)对应的世界方向单位向量。

@@ -388,6 +388,7 @@ class SparseCloudPainter extends CustomPainter {
     required this.tone,
     this.selectionBox,
     this.drawSelectionWireframe = true,
+    this.orthographic = false,
   });
 
   final Float32List xyz;
@@ -418,6 +419,10 @@ class SparseCloudPainter extends CustomPainter {
   /// SelectionCloudView(选区编辑页,Task 4)传 false —— 编辑页要框外红点,
   /// 但用自己的 2D 屏幕矩形手柄层,不要这条 3D 线框(会和手柄矩形叠加冗余)。
   final bool drawSelectionWireframe;
+
+  /// 正交投影(选区编辑视图专用;见 CloudCamera.orthographic)。查看器
+  /// 保持透视(false)。
+  final bool orthographic;
 
   // ── Color pipeline: VERBATIM port of the desktop viewer_ab.html chain ──
   // PLY sRGB bytes → exact sRGB EOTF decode (their S2L table) →
@@ -837,10 +842,12 @@ class SparseCloudPainter extends CustomPainter {
       pivotZ: pivotZ,
       radius: _radius,
       fillK: fitFillK,
+      orthographic: orthographic,
     ).projectionFor(size);
     final cosY = proj.cosY, sinY = proj.sinY;
     final cosP = proj.cosP, sinP = proj.sinP;
     final f = proj.f, camDist = proj.camDist, ox = proj.ox, oy = proj.oy;
+    final ortho = proj.orthographic;
 
     var hasColor = false;
     for (var i = 0; i < rgb.length; i += 3 * math.max(1, stride)) {
@@ -884,8 +891,10 @@ class SparseCloudPainter extends CustomPainter {
       // +x1 as screen-right renders the scene MIRRORED (nightstand jumps to
       // the wrong side). Negating x1 flips "right" so the visual basis is
       // right-handed again, matching the desktop three.js viewer.
-      final vx = ox - x1 * f / depth; // perspective divide (chirality-correct)
-      final vy = oy - y2 * f / depth;
+      // 除数按投影模式选(与 CloudProjection.project() 同式,parity 测试锁)
+      final dd = ortho ? camDist : depth;
+      final vx = ox - x1 * f / dd;
+      final vy = oy - y2 * f / dd;
       if (vx < -24 ||
           vx > size.width + 24 ||
           vy < -24 ||
@@ -896,7 +905,7 @@ class SparseCloudPainter extends CustomPainter {
       vyA[m] = vy;
       // sizeAttenuation: point radius scales with 1/depth (unit size at
       // the fitted cloud distance).
-      scaleA[m] = baseScale * (camDist / depth);
+      scaleA[m] = ortho ? baseScale : baseScale * (camDist / depth);
       depthA[m] = depth;
       var argb = displayColors[i];
       if (selectionBox != null && !selectionBox!.contains(wx, wy, wz)) {
@@ -964,7 +973,8 @@ class SparseCloudPainter extends CustomPainter {
           final z2 = py * sinP + z1 * cosP;
           final depth = z2 + camDist;
           if (depth <= 1e-6) return null;
-          return Offset(ox - x1 * f / depth, oy - y2 * f / depth);
+          final dd = ortho ? camDist : depth;
+          return Offset(ox - x1 * f / dd, oy - y2 * f / dd);
         }
 
         final pa = proj3(a), pb = proj3(b);
