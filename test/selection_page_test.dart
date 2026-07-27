@@ -59,6 +59,12 @@ Future<void> _pumpUntilLoaded(WidgetTester tester) async {
   });
 }
 
+/// 立方体改 TextPainter 绘制后 find.text 找不到面标签 —— 语义断言读 state。
+String _facingLabel(WidgetTester tester) {
+  final dynamic st = tester.state(find.byType(SelectionPage));
+  return st.debugFacingLabel as String;
+}
+
 void main() {
   test('朝向预设表:六面 + Top 是 -90° 俯视', () {
     expect(kOrientationPresets, hasLength(6));
@@ -273,25 +279,25 @@ void main() {
     );
     await tester.pumpAndSettle();
     // 初始 Top;下箭头 → 水平面(默认 Front),再下 → Bottom,再下 → 不变。
-    expect(find.text('Top'), findsOneWidget);
+    expect(_facingLabel(tester), 'Top');
     await tester.tap(find.byKey(const ValueKey('cube-down')));
     await tester.pumpAndSettle();
-    expect(find.text('Front'), findsOneWidget);
+    expect(_facingLabel(tester), 'Front');
     await tester.tap(find.byKey(const ValueKey('cube-down')));
     await tester.pumpAndSettle();
-    expect(find.text('Bottom'), findsOneWidget);
+    expect(_facingLabel(tester), 'Bottom');
     // 过极循环(ViewCube 行为):Bottom 再下 → 对面(Front 的对面=Back),
     // 每步仍是 90° 相邻面,无死点无直达。
     await tester.tap(find.byKey(const ValueKey('cube-down')));
     await tester.pumpAndSettle();
-    expect(find.text('Back'), findsOneWidget);
+    expect(_facingLabel(tester), 'Back');
     // 到达 Back 后 lastH=Back:上→Top,再上→过极到 Back 的对面=Front。
     await tester.tap(find.byKey(const ValueKey('cube-up')));
     await tester.pumpAndSettle();
-    expect(find.text('Top'), findsOneWidget);
+    expect(_facingLabel(tester), 'Top');
     await tester.tap(find.byKey(const ValueKey('cube-up')));
     await tester.pumpAndSettle();
-    expect(find.text('Front'), findsOneWidget);
+    expect(_facingLabel(tester), 'Front');
   });
 
   testWidgets('Top 视角左右箭头 = 原地转 90°,不跳层;随后下箭头落到对应面', (tester) async {
@@ -309,13 +315,13 @@ void main() {
     );
     await _pumpUntilLoaded(tester);
     await tester.pumpAndSettle();
-    expect(find.text('Top'), findsOneWidget);
+    expect(_facingLabel(tester), 'Top');
 
     // Top 点右箭头:label 仍 Top(原地俯视旋转,无直达跳层),
     // 相机 yaw 转了 +90°。
     await tester.tap(find.byKey(const ValueKey('cube-right')));
     await tester.pumpAndSettle();
-    expect(find.text('Top'), findsOneWidget);
+    expect(_facingLabel(tester), 'Top');
     final view = tester.widget<SelectionCloudView>(
       find.byType(SelectionCloudView),
     );
@@ -324,6 +330,6 @@ void main() {
     // 随后下箭头:回落到与画面朝向一致的水平面 = Right(一步一个面)。
     await tester.tap(find.byKey(const ValueKey('cube-down')));
     await tester.pumpAndSettle();
-    expect(find.text('Right'), findsOneWidget);
+    expect(_facingLabel(tester), 'Right');
   });
 }

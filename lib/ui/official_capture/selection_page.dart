@@ -12,6 +12,7 @@ import 'package:flutter/material.dart';
 import '../../official_capture/selection_box.dart';
 import '../../official_util/device_log.dart';
 import 'selection_cloud_view.dart';
+import 'view_cube.dart';
 import 'sparse_cloud_view.dart' show SparseCloudPainter;
 
 /// 六向朝向预设(顺序即立方体循环顺序:Top → Front → Right → Back → Left →
@@ -78,6 +79,11 @@ class _SelectionPageState extends State<SelectionPage>
   /// 测试用:直接读当前盒(见 test/selection_page_test.dart)。
   @visibleForTesting
   SelectionBox? get debugBox => _box;
+
+  /// 测试用:当前预设面的标签(立方体改 TextPainter 绘制后 find.text 不再
+  /// 可用,语义断言走这里)。
+  @visibleForTesting
+  String get debugFacingLabel => kOrientationPresets[_presetIdx].label;
 
   @override
   void initState() {
@@ -339,7 +345,6 @@ class _SelectionPageState extends State<SelectionPage>
   }
 
   Widget _orientationCube() {
-    final label = kOrientationPresets[_presetIdx].label;
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -356,19 +361,12 @@ class _SelectionPageState extends State<SelectionPage>
               () => _cycleHorizontal(-1),
               key: const ValueKey('cube-left'),
             ),
-            Container(
-              width: 56,
-              height: 56,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.08),
-                border: Border.all(color: Colors.white38),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                label,
-                style: const TextStyle(color: Colors.white, fontSize: 12),
-              ),
+            // [2026-07-28 用户签决] 文本方块 → 3D 正方体,与点云相机绑定
+            // (同一 viewYaw/viewPitch,含滑杆分量与 Top/Bottom 原地转):
+            // 点云转到哪,立方体转到哪,每个面贴自己的标签。
+            ViewCube(
+              viewYaw: _animPresetYaw + (_box?.yawDeg ?? 0) * math.pi / 180,
+              viewPitch: _animPitch,
             ),
             _cubeArrow(
               Icons.keyboard_arrow_right_rounded,
