@@ -87,7 +87,6 @@ class SparseCloudView extends StatefulWidget {
     required this.rgb,
     this.visibility,
     this.showControls = true,
-    this.selectionBox,
   });
 
   /// 3 floats per point (full set).
@@ -103,10 +102,6 @@ class SparseCloudView extends StatefulWidget {
   final Uint8List? visibility;
 
   final bool showControls;
-
-  /// 只读选区回显(草稿查看器):画框线 + 框外点变红。null = 无选区。
-  /// 渲染层行为 —— 不影响数据、fit、导出;编辑在 SelectionPage。
-  final SelectionBox? selectionBox;
 
   @override
   State<SparseCloudView> createState() => _SparseCloudViewState();
@@ -332,12 +327,6 @@ class _SparseCloudViewState extends State<SparseCloudView>
                               pointSize: _pointSize,
                               exposure: _exposure,
                               tone: _tone,
-                              selectionBox: widget.selectionBox,
-                              // [2026-07-27 用户签决] 查看器回显只要"框外
-                              // 变红",不要 3D 白色立方体线框(自由旋转下
-                              // 线框喧宾夺主)。要线框/矩形的编辑场景
-                              // (SelectionCloudView)自己构造 painter。
-                              drawSelectionWireframe: false,
                             ),
                             size: Size.infinite,
                           ),

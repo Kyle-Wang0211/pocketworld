@@ -10,7 +10,6 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 
-import '../../official_capture/selection_box.dart';
 import 'selection_page.dart';
 import 'sfm_preview_overlay.dart' show SfmBottomActionButton;
 import 'sparse_cloud_view.dart';
@@ -84,7 +83,6 @@ class SparseCloudViewerPage extends StatefulWidget {
 
 class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
   SparseCloudData? _cloud;
-  SelectionBox? _selectionBox;
   bool _loading = true;
 
   @override
@@ -102,15 +100,9 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
     // [E25-D 2026-07-20] L2 渲染门已删除 —— 草稿查看页渲染全量交付点云。
     // 原逻辑读 ghost_view_mask.bin / ghost_mask.bin 算可见性并隐藏 band15
     // 非救援点;整条 L1/L2 已按用户签决移除(理由见 git log 7e98b5e)。
-    // [选区 2026-07-27] 只读回显:有选区文件就显示框 + 框外红。
-    // 损坏/缺失 → null(loadFrom 内部容错),查看器照常全量显示。
-    final selBox = await SelectionBox.loadFrom(
-      File(widget.plyPath).parent.path,
-    );
     if (!mounted) return;
     setState(() {
       _cloud = cloud;
-      _selectionBox = selBox;
       _loading = false;
     });
   }
@@ -154,11 +146,7 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
             : Column(
                 children: [
                   Expanded(
-                    child: SparseCloudView(
-                      xyz: cloud.xyz,
-                      rgb: cloud.rgb,
-                      selectionBox: _selectionBox,
-                    ),
+                    child: SparseCloudView(xyz: cloud.xyz, rgb: cloud.rgb),
                   ),
                   // [2026-07-27 增补] 与等待页 refined 态完全同款的双按钮:
                   // 拍完进和草稿进,同一个"看稀疏点云的页面"长一个样(用户
@@ -207,11 +195,7 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
         ),
       ),
     );
-    if (!mounted) return;
-    final selBox = await SelectionBox.loadFrom(
-      File(widget.plyPath).parent.path,
-    );
-    if (!mounted) return;
-    setState(() => _selectionBox = selBox);
+    // [2026-07-28 用户签决] 预览模式不再显示选区回显(框外红只属于编辑
+    // 页),返回后无需刷新任何选区状态。
   }
 }

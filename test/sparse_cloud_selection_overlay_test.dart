@@ -1,7 +1,5 @@
 import 'dart:math' as math;
-import 'dart:typed_data';
 
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/official_capture/selection_box.dart';
 import 'package:pocketworld_flutter/ui/official_capture/sparse_cloud_view.dart';
@@ -42,34 +40,8 @@ void main() {
     }
   });
 
-  testWidgets('带 selectionBox 渲染不崩(1000 点半内半外)', (tester) async {
-    final n = 1000;
-    final xyz = Float32List(n * 3);
-    final rgb = Uint8List(n * 3);
-    final rnd = math.Random(7);
-    for (var i = 0; i < n; i++) {
-      xyz[i * 3] = rnd.nextDouble() * 4 - 2;
-      xyz[i * 3 + 1] = rnd.nextDouble() * 4 - 2;
-      xyz[i * 3 + 2] = rnd.nextDouble() * 4 - 2;
-      rgb[i * 3] = 100;
-    }
-    const box = SelectionBox(
-      cx: 0,
-      cy: 0,
-      cz: 0,
-      sx: 2,
-      sy: 2,
-      sz: 2,
-      yawDeg: 20,
-    );
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: SparseCloudView(xyz: xyz, rgb: rgb, selectionBox: box),
-        ),
-      ),
-    );
-    await tester.pump(const Duration(milliseconds: 300));
-    expect(tester.takeException(), isNull);
-  });
+  // [2026-07-28 用户签决] SparseCloudView 的只读选区回显已移除(预览模式
+  // 不显示框外红,红色只属于编辑页 SelectionCloudView)—— 原'带 selectionBox
+  // 渲染不崩'widget 用例随参数删除;selectionBoxCorners 纯函数(编辑页框线
+  // 仍在用)保留在上方两个用例中。
 }

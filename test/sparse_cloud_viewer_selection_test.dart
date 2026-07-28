@@ -20,9 +20,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pocketworld_flutter/official_capture/selection_box.dart';
 import 'package:pocketworld_flutter/ui/official_capture/selection_page.dart';
-import 'package:pocketworld_flutter/ui/official_capture/sparse_cloud_view.dart';
 import 'package:pocketworld_flutter/ui/official_capture/sparse_cloud_viewer_page.dart';
 
 /// 反复 runAsync(短真实延时)+pump,直到 [done] 为真;超时 fail 带诊断,
@@ -69,59 +67,6 @@ Future<String> _writePly(Directory dir) async {
 }
 
 void main() {
-  testWidgets('有 JSON:SparseCloudView 收到 selectionBox', (tester) async {
-    late Directory dir;
-    late String ply;
-    await tester.runAsync(() async {
-      dir = await Directory.systemTemp.createTemp('viewer');
-      ply = await _writePly(dir);
-      const box = SelectionBox(
-        cx: 0,
-        cy: 0,
-        cz: 0,
-        sx: 1,
-        sy: 1,
-        sz: 1,
-        yawDeg: 10,
-      );
-      await box.saveTo(dir.path);
-    });
-    addTearDown(() => dir.delete(recursive: true));
-    await tester.pumpWidget(
-      MaterialApp(home: SparseCloudViewerPage(plyPath: ply)),
-    );
-    await tester.pump();
-    await _pumpUntilRealAsyncSettles(
-      tester,
-      () => tester.any(find.byType(SparseCloudView)),
-    );
-    await tester.pumpAndSettle();
-    final view = tester.widget<SparseCloudView>(find.byType(SparseCloudView));
-    expect(view.selectionBox, isNotNull);
-    expect(view.selectionBox!.yawDeg, 10);
-  });
-
-  testWidgets('无 JSON:selectionBox 为 null,页面正常', (tester) async {
-    late Directory dir;
-    late String ply;
-    await tester.runAsync(() async {
-      dir = await Directory.systemTemp.createTemp('viewer2');
-      ply = await _writePly(dir);
-    });
-    addTearDown(() => dir.delete(recursive: true));
-    await tester.pumpWidget(
-      MaterialApp(home: SparseCloudViewerPage(plyPath: ply)),
-    );
-    await tester.pump();
-    await _pumpUntilRealAsyncSettles(
-      tester,
-      () => tester.any(find.byType(SparseCloudView)),
-    );
-    await tester.pumpAndSettle();
-    final view = tester.widget<SparseCloudView>(find.byType(SparseCloudView));
-    expect(view.selectionBox, isNull);
-  });
-
   testWidgets('加载成功:底部出现 保存草稿|下一步 双按钮', (tester) async {
     late Directory dir;
     late String ply;
@@ -162,12 +107,12 @@ void main() {
     expect(find.text('下一步'), findsNothing);
   });
 
-  testWidgets('下一步 push SelectionPage;返回后框回显刷新', (tester) async {
+  testWidgets('下一步 push SelectionPage;返回后回到干净查看态', (tester) async {
     late Directory dir;
     late String ply;
     await tester.runAsync(() async {
       dir = await Directory.systemTemp.createTemp('viewer5');
-      ply = await _writePly(dir); // 无 JSON:初始 selectionBox == null
+      ply = await _writePly(dir);
     });
     addTearDown(() => dir.delete(recursive: true));
     await tester.pumpWidget(
@@ -179,8 +124,6 @@ void main() {
       () => find.text('下一步').evaluate().isNotEmpty,
     );
     await tester.pumpAndSettle();
-    var view = tester.widget<SparseCloudView>(find.byType(SparseCloudView));
-    expect(view.selectionBox, isNull);
 
     await tester.tap(find.text('下一步'));
     await tester.pump();
@@ -204,18 +147,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(SelectionPage), findsNothing);
     expect(find.byType(SparseCloudViewerPage), findsOneWidget);
-    // 返回后查看器 _openSelection() 还得再 loadFrom 一轮真实 IO 才把
-    // selectionBox 灌回 setState —— 等它落地,回显不再是 null。
-    await _pumpUntilRealAsyncSettles(
-      tester,
-      () =>
-          tester
-              .widget<SparseCloudView>(find.byType(SparseCloudView))
-              .selectionBox !=
-          null,
-    );
-    view = tester.widget<SparseCloudView>(find.byType(SparseCloudView));
-    expect(view.selectionBox, isNotNull);
+    // [2026-07-28 用户签决] 预览模式不显示选区回显(框外红只属于编辑页),
+    // 返回后只需回到干净的点云查看态。
   });
 
   testWidgets('保存草稿 = pop 查看器', (tester) async {
