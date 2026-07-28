@@ -140,6 +140,16 @@ class OfficialAetherARKitPlugin: NSObject {
     setenv("OFFICIAL_AETHER_OFFICIAL_TRIANGULATE", "1", 1)
     setenv("OFFICIAL_AETHER_SELFDEV_TRIANGULATE", "0", 1)
     setenv("OFFICIAL_AETHER_TRI_IGNORE_2VIEW", "0", 1)
+    // [SCALE-ANCHOR 2026-07-28 用户签决"四端通用,上生产"] 交付模型米制
+    // 尺度锚定:BA 后全局 scale 是无锚 gauge 漂移(单目对 scale 严格不可
+    // 观测;35 run 实测每采集 ±4~10.6% 系统性偏移),锚回平台 VIO
+    // (IMU 米制,四端皆有:ARKit/ARCore/AREngine;LiDAR 仅 iPhone Pro
+    // 加分项非依赖)。相似变换严格保重投影残差——质量零扰动,只把"一米"
+    // 变回真一米。Dart 侧实现(sfm_live_recon._gravityAlign 链),
+    // fail-open:估计失败/|s−1|>15% 即不缩放。裁决档
+    // _host_fixtures/pose_drift_audit/SCALE_VERDICT.md;并排对比
+    // _host_fixtures/scale_anchor_compare/(用户肉眼批准)。
+    setenv("OFFICIAL_AETHER_SCALE_ANCHOR", "1", 1)
     // Production ends at COLMAP's final global BA + official filtering.
     // Historical RestoreTemporalDetail / repair / enrichment passes are hard
     // disabled in the native translation unit and are not re-enabled here.
