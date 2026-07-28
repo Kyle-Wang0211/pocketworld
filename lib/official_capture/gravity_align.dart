@@ -102,6 +102,115 @@ List<double>? gravityAlignQuatWxyz({
   return [aw / an, ax / an, ay / an, az / an];
 }
 
+/// [SCALE-ANCHOR 2026-07-28] 交付模型的米制尺度重锚:BA 后模型相对 ARKit
+/// 的全局 scale 每 capture 偏 ±4%(35 run 实测钉死 ±0.5% 内可复现)。
+/// 单目重投影对全局 scale 严格不可观测(Triggs gauge orbit;Strasdat
+/// RSS'10),BA 的 scale 是无锚 gauge 滑移不是测量;ARKit 是 IMU+LiDAR
+/// 物理测量(公开评测室内 ~0.3-1%)⇒ 锚回 ARKit。裁决档
+/// `_host_fixtures/pose_drift_audit/SCALE_VERDICT.md`。
+///
+/// 估计:s = median_i(|c_ark_i − centroid_ark| / |c_ba_i − centroid_ba|)
+/// (质心距比,逐帧中位数 —— 对离群帧鲁棒且 O(n) 确定性;scale 与旋转
+/// 无关,原始/对齐后的中心算出来相同)。应用:x' = s·x,t' = s·t,R 不动
+/// —— 相似变换,x_cam' = s·x_cam,针孔投影 u = fx·x/z 中 s 消去,
+/// **全部重投影残差严格不变**(模型质量零扰动,变的只是坐标刻度)。
+///
+/// 证据不足(配对帧 <3)、比值退化(非有限/非正)、或 s 离 1 太远
+/// (>15%,防 ARKit 位姿本身坏掉的采集)时返回 null —— 调用方不缩放,
+/// 保持现状交付(fail-open,契约同 gravityAlignQuatWxyz)。
+double? scaleAnchorFactor({
+  required Float64List posesPacked,
+  required List<double>? Function(int frameId) arkitCenterWorldOf,
+}) {
+  final poses = posesPacked;
+  if (poses.isEmpty) return null;
+
+  final baC = <List<double>>[];
+  final arkC = <List<double>>[];
+  for (var i = 0; i < poses.length; i += 9) {
+    if (poses[i + 1] == 0) continue; // unregistered
+    final ac = arkitCenterWorldOf(poses[i].toInt());
+    if (ac == null || ac.length != 3) continue;
+    final w = poses[i + 2], x = poses[i + 3], y = poses[i + 4], z = poses[i + 5];
+    final n2 = w * w + x * x + y * y + z * z;
+    if (n2 < 1e-12) continue; // synthetic all-zero quat (connectivity)
+    // center = -R^T·t for CamFromWorld (R from quat, t = poses[i+6..8]).
+    final tx = poses[i + 6], ty = poses[i + 7], tz = poses[i + 8];
+    // R^T rows == R columns; R from unit quat (normalize by n2 for safety).
+    final r00 = 1 - 2 * (y * y + z * z) / n2,
+        r01 = 2 * (x * y - z * w) / n2,
+        r02 = 2 * (x * z + y * w) / n2;
+    final r10 = 2 * (x * y + z * w) / n2,
+        r11 = 1 - 2 * (x * x + z * z) / n2,
+        r12 = 2 * (y * z - x * w) / n2;
+    final r20 = 2 * (x * z - y * w) / n2,
+        r21 = 2 * (y * z + x * w) / n2,
+        r22 = 1 - 2 * (x * x + y * y) / n2;
+    baC.add([
+      -(r00 * tx + r10 * ty + r20 * tz),
+      -(r01 * tx + r11 * ty + r21 * tz),
+      -(r02 * tx + r12 * ty + r22 * tz),
+    ]);
+    arkC.add(ac);
+  }
+  if (baC.length < 3) return null;
+
+  List<double> centroid(List<List<double>> pts) {
+    var cx = 0.0, cy = 0.0, cz = 0.0;
+    for (final p in pts) {
+      cx += p[0];
+      cy += p[1];
+      cz += p[2];
+    }
+    final n = pts.length.toDouble();
+    return [cx / n, cy / n, cz / n];
+  }
+
+  final cb = centroid(baC), ca = centroid(arkC);
+  final ratios = <double>[];
+  for (var i = 0; i < baC.length; i++) {
+    final db = math.sqrt(
+      math.pow(baC[i][0] - cb[0], 2) +
+          math.pow(baC[i][1] - cb[1], 2) +
+          math.pow(baC[i][2] - cb[2], 2),
+    );
+    final da = math.sqrt(
+      math.pow(arkC[i][0] - ca[0], 2) +
+          math.pow(arkC[i][1] - ca[1], 2) +
+          math.pow(arkC[i][2] - ca[2], 2),
+    );
+    if (db > 1e-6 && da.isFinite && da > 0) ratios.add(da / db);
+  }
+  if (ratios.length < 3) return null;
+  ratios.sort();
+  final s = ratios[ratios.length ~/ 2];
+  if (!s.isFinite || s <= 0) return null;
+  if ((s - 1.0).abs() > 0.15) return null; // ARKit 位姿可疑,不冒险
+  return s;
+}
+
+/// [SCALE-ANCHOR] 把 s 应用到 posesPacked:t' = s·t(R 不动;见上方推导,
+/// 相似变换下 CamFromWorld 的平移分量按 s 缩放)。未注册帧原样透传。
+Float64List scaleAnchoredPosesPacked(Float64List posesPacked, double s) {
+  final out = Float64List.fromList(posesPacked);
+  for (var i = 0; i < out.length; i += 9) {
+    if (out[i + 1] == 0) continue;
+    out[i + 6] *= s;
+    out[i + 7] *= s;
+    out[i + 8] *= s;
+  }
+  return out;
+}
+
+/// [SCALE-ANCHOR] 把 s 应用到点云:x' = s·x。
+Float32List scaleAnchoredPoints(Float32List xyz, double s) {
+  final out = Float32List(xyz.length);
+  for (var i = 0; i < xyz.length; i++) {
+    out[i] = xyz[i] * s;
+  }
+  return out;
+}
+
 /// 把点云按 R_w([q] = [w,x,y,z])旋转:x' = R_w·x。数学与旧
 /// [gravityAlignedPoints] 内联段逐字相同(单一来源化拆出)。
 Float32List rotatePointsByQuatWxyz(Float32List xyz, List<double> q) {

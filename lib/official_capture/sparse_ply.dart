@@ -85,6 +85,8 @@ Future<void> persistSparseSnapshot({
         'summary': snapshot.summary,
         'poses': posesJson,
         'gravity_align_quat_wxyz': snapshot.gravityAlignQuatWxyz,
+        // [SCALE-ANCHOR] 应用的米制锚定因子;null=臂关/估计失败(未缩放)。
+        'scale_anchor_factor': snapshot.scaleAnchorFactor,
         if (rawPoses != null)
           'poses_raw_colmap': <Map<String, Object?>>[
             for (var i = 0; i < rawPoses.length; i += 9)

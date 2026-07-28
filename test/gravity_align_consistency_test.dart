@@ -13,6 +13,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/official_capture/gravity_align.dart';
 
 void main() {
+  scaleAnchorTests();
   // 不变量:对任意点 X 与任意 CamFromWorld C,变换后相机坐标不变:
   //   C'(R·X) == C(X)   (C' = C∘R⁻¹,纯旋转、平移不变)
   // 相机坐标是重投影的唯一输入,所以这条恒等式成立 ⇔ 整模型变换零失真。
@@ -114,5 +115,115 @@ void main() {
     expect(live, contains('gravityAlignedPosesPacked(snap.posesPacked, q)'));
     expect(live, contains('posesPackedRawColmap: snap.posesPacked'));
     expect(live, contains('gravityAlignQuatWxyz: q'));
+  });
+}
+
+// ═══ [SCALE-ANCHOR 2026-07-28] 米制尺度锚定的契约 ═══
+void scaleAnchorTests() {
+  test('similarity transform preserves pinhole projection exactly', () {
+    // x' = s·x, t' = s·t ⇒ x_cam' = s·x_cam ⇒ u = fx·x/z 不变(s 消去)。
+    final rng = math.Random(7);
+    for (var trial = 0; trial < 20; trial++) {
+      final s = 0.9 + rng.nextDouble() * 0.2;
+      final q = [0.9, 0.1, 0.3, math.sqrt(1 - 0.81 - 0.01 - 0.09)];
+      final t = [rng.nextDouble(), rng.nextDouble(), rng.nextDouble() + 2];
+      final pt = [rng.nextDouble(), rng.nextDouble(), rng.nextDouble()];
+      final poses = Float64List.fromList([
+        0, 1, q[0], q[1], q[2], q[3], t[0], t[1], t[2], //
+      ]);
+      final xyz = Float32List.fromList(pt.map((v) => v).toList());
+      final sp = scaleAnchoredPosesPacked(poses, s);
+      final sx = scaleAnchoredPoints(xyz, s);
+      // cam coords: R·X + t vs R·(sX) + s·t = s·(R·X + t) → 比值逐轴 == s
+      // 且投影 x/z 完全一致。用数值验证 x/z:
+      List<double> cam(List<double> qq, List<double> X, List<double> tt) {
+        final w = qq[0], x = qq[1], y = qq[2], z = qq[3];
+        return [
+          (1 - 2 * (y * y + z * z)) * X[0] +
+              2 * (x * y - z * w) * X[1] +
+              2 * (x * z + y * w) * X[2] +
+              tt[0],
+          2 * (x * y + z * w) * X[0] +
+              (1 - 2 * (x * x + z * z)) * X[1] +
+              2 * (y * z - x * w) * X[2] +
+              tt[1],
+          2 * (x * z - y * w) * X[0] +
+              2 * (y * z + x * w) * X[1] +
+              (1 - 2 * (x * x + y * y)) * X[2] +
+              tt[2],
+        ];
+      }
+
+      final c0 = cam(q, pt, t);
+      final c1 = cam(q, [sx[0], sx[1], sx[2]], [sp[6], sp[7], sp[8]]);
+      expect(c1[0] / c1[2], closeTo(c0[0] / c0[2], 1e-6));
+      expect(c1[1] / c1[2], closeTo(c0[1] / c0[2], 1e-6));
+    }
+  });
+
+  test('scaleAnchorFactor recovers a synthetic scale offset', () {
+    // 构造 20 帧圆弧轨迹,ARKit 中心 = 1.043 × BA 中心(平移无关:两边
+    // 各自减质心)——期望 s ≈ 1.043。
+    const sTrue = 1.043;
+    final poses = <double>[];
+    final arkC = <int, List<double>>{};
+    for (var i = 0; i < 20; i++) {
+      final a = i * 0.3;
+      final c = [math.cos(a) * 2, 0.1 * i, math.sin(a) * 2];
+      // CamFromWorld with R=I: t = -c
+      poses.addAll([i.toDouble(), 1, 1, 0, 0, 0, -c[0], -c[1], -c[2]]);
+      arkC[i] = [c[0] * sTrue + 5, c[1] * sTrue - 3, c[2] * sTrue]; // 平移无关
+    }
+    final s = scaleAnchorFactor(
+      posesPacked: Float64List.fromList(poses),
+      arkitCenterWorldOf: (id) => arkC[id],
+    );
+    expect(s, isNotNull);
+    expect(s!, closeTo(sTrue, 1e-6));
+  });
+
+  test('fail-open: too few frames / crazy scale / missing centers → null', () {
+    final two = Float64List.fromList([
+      0, 1, 1, 0, 0, 0, 1, 0, 0, //
+      1, 1, 1, 0, 0, 0, 0, 1, 0, //
+    ]);
+    expect(
+      scaleAnchorFactor(
+        posesPacked: two,
+        arkitCenterWorldOf: (id) => [1, 2, 3],
+      ),
+      isNull,
+    );
+    // >15% 偏差拒绝(ARKit 可疑)。
+    final poses = <double>[];
+    final arkC = <int, List<double>>{};
+    for (var i = 0; i < 10; i++) {
+      final c = [i * 1.0, 0.0, math.sin(i * 1.0)];
+      poses.addAll([i.toDouble(), 1, 1, 0, 0, 0, -c[0], -c[1], -c[2]]);
+      arkC[i] = [c[0] * 1.3, c[1] * 1.3, c[2] * 1.3];
+    }
+    expect(
+      scaleAnchorFactor(
+        posesPacked: Float64List.fromList(poses),
+        arkitCenterWorldOf: (id) => arkC[id],
+      ),
+      isNull,
+    );
+  });
+
+  test('persist writes scale_anchor_factor and the arm is env-gated', () {
+    final ply = File(
+      'lib/official_capture/sparse_ply.dart',
+    ).readAsStringSync();
+    expect(ply, contains("'scale_anchor_factor': snapshot.scaleAnchorFactor"));
+    final live = File(
+      'lib/official_capture/sfm_live_recon.dart',
+    ).readAsStringSync();
+    expect(
+      live,
+      contains("Platform.environment['OFFICIAL_AETHER_SCALE_ANCHOR'] == '1'"),
+    );
+    // raw 真值不含缩放:posesPackedRawColmap 存的是缩放前的 snap.posesPacked。
+    expect(live, contains('posesPackedRawColmap: snap.posesPacked'));
   });
 }

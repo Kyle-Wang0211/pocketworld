@@ -68,6 +68,7 @@ class SfmLiveSnapshot {
     required this.obsXY,
     this.gravityAlignQuatWxyz,
     this.posesPackedRawColmap,
+    this.scaleAnchorFactor,
   });
 
   /// 3 floats per point.
@@ -112,6 +113,11 @@ class SfmLiveSnapshot {
   /// cross-checks — a float inverse rotation is not bit-exact, so raw truth
   /// must be carried, not recomputed. Null when no alignment was applied.
   final Float64List? posesPackedRawColmap;
+
+  /// [SCALE-ANCHOR 2026-07-28] 应用到本快照的米制尺度锚定因子(x'=s·x,
+  /// t'=s·t;详见 gravity_align.dart scaleAnchorFactor)。null = 臂关闭或
+  /// 估计失败(未缩放)。posesPackedRawColmap 不含此缩放(raw 真值)。
+  final double? scaleAnchorFactor;
 
   /// {solve_ms, n_registered, n_points3d, reproj_px, rc, result} from the
   /// finalize phase that produced this snapshot (LOCAL summary for both).
@@ -1204,10 +1210,28 @@ class SfmLiveRecon {
       arkitQuatWxyzOf: (frameId) => _fedMeta[frameId]?.arkitQuatWxyz,
     );
     if (q == null || snap.xyz.isEmpty) return snap;
+    // [SCALE-ANCHOR 2026-07-28] 实验臂,默认关(env OFFICIAL_AETHER_SCALE_
+    // ANCHOR=1 开):把交付模型的 gauge 尺度锚回 ARKit 米制(±4% 系统性
+    // 滑移,裁决见 gravity_align.dart 的 scaleAnchorFactor 注释)。相似
+    // 变换保持全部重投影残差 —— 质量零扰动,只改坐标刻度。fail-open:
+    // 估计失败即不缩放。
+    final double? s = _scaleAnchorEnabled
+        ? scaleAnchorFactor(
+            posesPacked: snap.posesPacked,
+            arkitCenterWorldOf: (frameId) =>
+                _fedMeta[frameId]?.arkitCameraCenterWorld,
+          )
+        : null;
+    var xyz = rotatePointsByQuatWxyz(snap.xyz, q);
+    var poses = gravityAlignedPosesPacked(snap.posesPacked, q);
+    if (s != null) {
+      xyz = scaleAnchoredPoints(xyz, s);
+      poses = scaleAnchoredPosesPacked(poses, s);
+    }
     return SfmLiveSnapshot(
-      xyz: rotatePointsByQuatWxyz(snap.xyz, q),
+      xyz: xyz,
       rgb: snap.rgb,
-      posesPacked: gravityAlignedPosesPacked(snap.posesPacked, q),
+      posesPacked: poses,
       summary: snap.summary,
       refined: snap.refined,
       obsOffsets: snap.obsOffsets,
@@ -1215,8 +1239,14 @@ class SfmLiveRecon {
       obsXY: snap.obsXY,
       gravityAlignQuatWxyz: q,
       posesPackedRawColmap: snap.posesPacked,
+      scaleAnchorFactor: s,
     );
   }
+
+  /// [SCALE-ANCHOR] 默认关;插件 setenv 后进程内可见。static final:
+  /// 每次采集会话读一次即可(env 在进程生命周期内不变)。
+  static final bool _scaleAnchorEnabled =
+      Platform.environment['OFFICIAL_AETHER_SCALE_ANCHOR'] == '1';
 
   static SfmLiveSnapshot _snapshotFromMsg(Map msg, {required bool refined}) {
     return SfmLiveSnapshot(
