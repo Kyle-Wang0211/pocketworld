@@ -148,30 +148,17 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                   Expanded(
                     child: SparseCloudView(xyz: cloud.xyz, rgb: cloud.rgb),
                   ),
-                  // [2026-07-27 增补] 与等待页 refined 态完全同款的双按钮:
-                  // 拍完进和草稿进,同一个"看稀疏点云的页面"长一个样(用户
-                  // 签决:只加入口,其他什么都不变)。
+                  // [2026-07-28 用户签决] 草稿页进来的查看器只留"下一步":
+                  // 本来就是草稿,"保存草稿"无意义(退出走返回键);双按钮
+                  // 只保留在刚拍完的等待页预览。
                   Padding(
                     padding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: SfmBottomActionButton(
-                            label: '保存草稿',
-                            filled: false,
-                            // 本来就是草稿,无需写盘 —— 直接退回草稿列表。
-                            onTap: () => Navigator.of(context).pop(),
-                          ),
-                        ),
-                        const SizedBox(width: 14),
-                        Expanded(
-                          child: SfmBottomActionButton(
-                            label: '下一步',
-                            filled: true,
-                            onTap: () => unawaited(_openSelection()),
-                          ),
-                        ),
-                      ],
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: SfmBottomActionButton(
+                        label: '下一步',
+                        onTap: () => unawaited(_openSelection()),
+                      ),
                     ),
                   ),
                 ],

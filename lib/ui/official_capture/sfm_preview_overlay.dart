@@ -198,7 +198,6 @@ class SfmPreviewOverlay extends StatelessWidget {
                               Expanded(
                                 child: SfmBottomActionButton(
                                   label: '保存草稿',
-                                  filled: false,
                                   onTap: onDone,
                                 ),
                               ),
@@ -206,7 +205,6 @@ class SfmPreviewOverlay extends StatelessWidget {
                               Expanded(
                                 child: SfmBottomActionButton(
                                   label: '下一步',
-                                  filled: true,
                                   onTap: onNext!,
                                 ),
                               ),
@@ -215,7 +213,6 @@ class SfmPreviewOverlay extends StatelessWidget {
                         : Center(
                             child: SfmBottomActionButton(
                               label: '完成',
-                              filled: true,
                               onTap: onDone,
                             ),
                           ),
@@ -275,30 +272,29 @@ class SfmBottomActionButton extends StatelessWidget {
   const SfmBottomActionButton({
     super.key,
     required this.label,
-    required this.filled,
     required this.onTap,
   });
 
   final String label;
-  final bool filled;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
+    // [2026-07-28 用户签决] 全部实心白胶囊:此前"保存草稿"是深灰底描边款,
+    // 黑底上观感像一块半透明背景片,用户点名删除 —— 按钮本体保留、实心。
     return GestureDetector(
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 13),
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: filled ? Colors.white : const Color(0xFF2A2A2E),
+          color: Colors.white,
           borderRadius: BorderRadius.circular(26),
-          border: filled ? null : Border.all(color: Colors.white24),
         ),
         child: Text(
           label,
-          style: TextStyle(
-            color: filled ? Colors.black : Colors.white,
+          style: const TextStyle(
+            color: Colors.black,
             fontSize: 15,
             fontWeight: FontWeight.w600,
           ),

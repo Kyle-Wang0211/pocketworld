@@ -67,7 +67,7 @@ Future<String> _writePly(Directory dir) async {
 }
 
 void main() {
-  testWidgets('加载成功:底部出现 保存草稿|下一步 双按钮', (tester) async {
+  testWidgets('加载成功:底部只出现 下一步 单按钮(草稿页入口无保存草稿)', (tester) async {
     late Directory dir;
     late String ply;
     await tester.runAsync(() async {
@@ -81,10 +81,10 @@ void main() {
     await tester.pump();
     await _pumpUntilRealAsyncSettles(
       tester,
-      () => find.text('保存草稿').evaluate().isNotEmpty,
+      () => find.text('下一步').evaluate().isNotEmpty,
     );
     await tester.pumpAndSettle();
-    expect(find.text('保存草稿'), findsOneWidget);
+    expect(find.text('保存草稿'), findsNothing);
     expect(find.text('下一步'), findsOneWidget);
   });
 
@@ -149,39 +149,5 @@ void main() {
     expect(find.byType(SparseCloudViewerPage), findsOneWidget);
     // [2026-07-28 用户签决] 预览模式不显示选区回显(框外红只属于编辑页),
     // 返回后只需回到干净的点云查看态。
-  });
-
-  testWidgets('保存草稿 = pop 查看器', (tester) async {
-    late Directory dir;
-    late String ply;
-    await tester.runAsync(() async {
-      dir = await Directory.systemTemp.createTemp('viewer6');
-      ply = await _writePly(dir);
-    });
-    addTearDown(() => dir.delete(recursive: true));
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Builder(
-          builder: (ctx) => ElevatedButton(
-            onPressed: () => Navigator.of(ctx).push(
-              MaterialPageRoute<void>(
-                builder: (_) => SparseCloudViewerPage(plyPath: ply),
-              ),
-            ),
-            child: const Text('open'),
-          ),
-        ),
-      ),
-    );
-    await tester.tap(find.text('open'));
-    await tester.pump();
-    await _pumpUntilRealAsyncSettles(
-      tester,
-      () => find.text('保存草稿').evaluate().isNotEmpty,
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('保存草稿'));
-    await tester.pumpAndSettle();
-    expect(find.byType(SparseCloudViewerPage), findsNothing);
   });
 }

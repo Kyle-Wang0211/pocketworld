@@ -300,6 +300,19 @@ void main() {
     final delta = yaw() - before;
     expect(delta.abs(), greaterThan(0.5));
     expect((yaw() % 5.0).abs(), isNot(closeTo(0.0, 1e-6)));
+
+    // 3) 惯性:带速度甩动后,总转角显著超过手指拖动距离本身
+    //(50px ≈ 45.5°;摩擦模拟应继续滑行),pumpAndSettle 等它自然停下。
+    // -80px@1000px/s:测试手势更短时速度估计器出 0(探针实测),非组件问题。
+    await tester.fling(ruler, const Offset(-80, 0), 1000);
+    await tester.pump();
+    final atRelease = yaw();
+    // 松手后 50ms 仍在滑行 = 惯性存在(短窗采样,环向折叠安全)。
+    await tester.pump(const Duration(milliseconds: 50));
+    double glide = (yaw() - atRelease).abs() % 360.0;
+    if (glide > 180.0) glide = 360.0 - glide;
+    expect(glide, greaterThan(2.0), reason: '松手后应靠惯性继续滑行');
+    await tester.pumpAndSettle(); // 摩擦模拟自然停下,不悬挂
   });
 
   testWidgets('朝向立方体上下箭头 = 三层移动:Top↕水平↕Bottom', (tester) async {
