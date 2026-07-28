@@ -179,103 +179,120 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
   @override
   Widget build(BuildContext context) {
     final cloud = _cloud;
+    // [2026-07-28 用户实机指认"进编辑页点云会上移"] 根因是编辑态隐藏了
+    // AppBar ⇒ body 高度变 ⇒ 视图尺寸变 ⇒ 投影中心变。改为**点云视图恒占
+    // 全屏**,标题/按钮/工具层全部叠加其上 —— 切换只是 UI 变化,点云一个
+    // 像素都不动(用户原话:"整个背景和点云不是一个东西吗")。
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: _editing
-          ? null
-          : AppBar(
-              backgroundColor: Colors.black,
-              foregroundColor: Colors.white,
-              elevation: 0,
-              title: Text(
-                cloud != null
-                    ? AppL10n.of(context).viewerTitleWithCount(
-                        widget.title ??
-                            AppL10n.of(context).viewerSparseCloudTitle,
-                        cloud.count,
-                      )
-                    : (widget.title ??
-                          AppL10n.of(context).viewerSparseCloudTitle),
-                style: const TextStyle(fontSize: 15),
+      body: _loading
+          ? const Center(
+              child: SizedBox(
+                width: 28,
+                height: 28,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.4,
+                  color: Colors.white70,
+                ),
               ),
-            ),
-      body: SafeArea(
-        top: false,
-        child: _loading
-            ? const Center(
-                child: SizedBox(
-                  width: 28,
-                  height: 28,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2.4,
-                    color: Colors.white70,
+            )
+          : cloud == null
+          ? Center(
+              child: Text(
+                AppL10n.of(context).viewerLoadFailed,
+                style: const TextStyle(color: Colors.white54, fontSize: 14),
+              ),
+            )
+          : Stack(
+              children: [
+                // 同一个视图实例贯穿浏览与编辑,尺寸恒为全屏。
+                Positioned.fill(
+                  child: SparseCloudView(
+                    xyz: cloud.xyz,
+                    rgb: cloud.rgb,
+                    controller: _cloudController,
+                    onCameraChanged: (c) => _camera.value = c,
+                    selectionBox: _editing ? _box : null,
+                    onBoxChanged: _onBoxChanged,
+                    liveBox: () =>
+                        _box ??
+                        const SelectionBox(
+                          cx: 0,
+                          cy: 0,
+                          cz: 0,
+                          sx: 1,
+                          sy: 1,
+                          sz: 1,
+                          yawDeg: 0,
+                        ),
+                    editing: _editing,
+                    bottomGestureExclusion: _editing ? 110 : 0,
                   ),
                 ),
-              )
-            : cloud == null
-            ? Center(
-                child: Text(
-                  AppL10n.of(context).viewerLoadFailed,
-                  style: const TextStyle(color: Colors.white54, fontSize: 14),
-                ),
-              )
-            : Stack(
-                children: [
-                  // 同一个视图实例贯穿浏览与编辑 —— 切换只改 editing 标志,
-                  // 相机 State 原地不动,所以点云不会跳一下。
-                  Positioned.fill(
-                    child: SparseCloudView(
-                      xyz: cloud.xyz,
-                      rgb: cloud.rgb,
-                      controller: _cloudController,
-                      // 骰子经 ValueListenable 跟随,不触发整页重建。
-                      onCameraChanged: (c) => _camera.value = c,
-                      selectionBox: _editing ? _box : null,
-                      onBoxChanged: _onBoxChanged,
-                      liveBox: () =>
-                          _box ??
-                          const SelectionBox(
-                            cx: 0,
-                            cy: 0,
-                            cz: 0,
-                            sx: 1,
-                            sy: 1,
-                            sz: 1,
-                            yawDeg: 0,
+                if (!_editing) ...[
+                  Positioned(
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Row(
+                        children: [
+                          IconButton(
+                            onPressed: () => Navigator.of(context).maybePop(),
+                            icon: const Icon(
+                              Icons.arrow_back_ios_new_rounded,
+                              color: Colors.white,
+                              size: 20,
+                            ),
                           ),
-                      editing: _editing,
-                      bottomGestureExclusion: _editing ? 110 : 0,
+                          Expanded(
+                            child: Text(
+                              AppL10n.of(context).viewerTitleWithCount(
+                                widget.title ??
+                                    AppL10n.of(context).viewerSparseCloudTitle,
+                                cloud.count,
+                              ),
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 15,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 48),
+                        ],
+                      ),
                     ),
                   ),
-                  if (!_editing)
-                    Positioned(
-                      left: 24,
-                      right: 24,
-                      bottom: 16,
-                      child: SafeArea(
-                        top: false,
-                        child: SizedBox(
-                          width: double.infinity,
-                          child: SfmBottomActionButton(
-                            label: AppL10n.of(context).sfmNext,
-                            onTap: () => unawaited(_enterEditing()),
-                          ),
+                  Positioned(
+                    left: 24,
+                    right: 24,
+                    bottom: 16,
+                    child: SafeArea(
+                      top: false,
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: SfmBottomActionButton(
+                          label: AppL10n.of(context).sfmNext,
+                          onTap: () => unawaited(_enterEditing()),
                         ),
                       ),
                     ),
-                  if (_editing && _box != null)
-                    Positioned.fill(
-                      child: SelectionToolsLayer(
-                        box: _box!,
-                        onBoxChanged: _onBoxChanged,
-                        camera: _camera,
-                        controller: _cloudController,
-                        onExit: () => unawaited(_exitEditing()),
-                      ),
-                    ),
+                  ),
                 ],
-              ),
-      ),
+                if (_editing && _box != null)
+                  Positioned.fill(
+                    child: SelectionToolsLayer(
+                      box: _box!,
+                      onBoxChanged: _onBoxChanged,
+                      camera: _camera,
+                      controller: _cloudController,
+                      onExit: () => unawaited(_exitEditing()),
+                    ),
+                  ),
+              ],
+            ),
     );
   }
 }

@@ -11,7 +11,6 @@ import 'package:flutter/material.dart';
 
 import '../../official_capture/selection_box.dart';
 import 'cloud_camera.dart';
-import 'sparse_cloud_view.dart' show selectionBoxCorners;
 
 /// 手柄标识:盒局部三轴上的符号 (sx,sy,sz) ∈ {-1,0,1}³(非全零)。
 /// 恰一个非零 = 面手柄(单轴);三个非零 = 角手柄(三轴同动)。

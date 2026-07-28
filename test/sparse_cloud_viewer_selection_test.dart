@@ -25,6 +25,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/l10n/app_localizations.dart';
 import 'package:pocketworld_flutter/official_capture/selection_box.dart';
+import 'package:pocketworld_flutter/ui/official_capture/selection_handles_3d.dart';
 import 'package:pocketworld_flutter/ui/official_capture/selection_tools_layer.dart';
 import 'package:pocketworld_flutter/ui/official_capture/sparse_cloud_view.dart';
 import 'package:pocketworld_flutter/ui/official_capture/view_cube.dart';
@@ -109,6 +110,7 @@ void main() {
     await openViewer(tester, ply);
 
     final before = tester.state(find.byType(SparseCloudView));
+    final rectBefore = tester.getRect(find.byType(SparseCloudView));
     expect(find.byType(SelectionToolsLayer), findsNothing);
 
     await tester.tap(find.text('Next'));
@@ -123,6 +125,16 @@ void main() {
     expect(
       identical(tester.state(find.byType(SparseCloudView)), before),
       isTrue,
+    );
+    // 视图矩形逐像素不变 —— 编辑态曾隐藏 AppBar 导致 body 变高、点云整体
+    // 上移(用户实机指认"整个点云的位置应该完全不变")。UI 只能叠加。
+    expect(tester.getRect(find.byType(SparseCloudView)), rectBefore);
+    // 编辑态必须画出 3D 框手柄(painter 参数与手柄层曾漏接,框整个不见)。
+    expect(
+      find.byWidgetPredicate(
+        (w) => w is CustomPaint && w.painter is BoxHandlesPainter,
+      ),
+      findsOneWidget,
     );
     expect(find.byType(SelectionToolsLayer), findsOneWidget);
     expect(find.byType(ViewCube), findsOneWidget);
@@ -140,6 +152,7 @@ void main() {
       identical(tester.state(find.byType(SparseCloudView)), before),
       isTrue,
     );
+    expect(tester.getRect(find.byType(SparseCloudView)), rectBefore);
     expect(find.text('Next'), findsOneWidget);
     expect(boxOf(tester), isNull); // 浏览态不显示框
   });

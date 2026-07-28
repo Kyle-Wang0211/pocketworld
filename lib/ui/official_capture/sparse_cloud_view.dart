@@ -532,10 +532,25 @@ class _SparseCloudViewState extends State<SparseCloudView>
                               pointSize: _pointSize,
                               exposure: _exposure,
                               tone: _tone,
+                              selectionBox: widget.selectionBox,
+                              // 3D 线框(12 边)+ 框外点变红:与红点判定同
+                              // 一个盒,永远吻合。
+                              drawSelectionWireframe:
+                                  widget.selectionBox != null,
                             ),
                             size: Size.infinite,
                           ),
                         ),
+                        if (widget.editing && widget.selectionBox != null)
+                          Positioned.fill(
+                            child: CustomPaint(
+                              painter: BoxHandlesPainter(
+                                box: widget.selectionBox!,
+                                proj: _projectionFor(_viewSize),
+                              ),
+                              size: Size.infinite,
+                            ),
+                          ),
                         // Reframe safety net (top-right).
                         Positioned(
                           top: 10,
