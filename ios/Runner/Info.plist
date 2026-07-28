@@ -23,6 +23,8 @@
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
 	<string>PocketWorld</string>
+	<key>PWBuildExperimentMarker</key>
+	<string>future-jxl-lossless-archive-v1+transient-ar-previews-v1</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
