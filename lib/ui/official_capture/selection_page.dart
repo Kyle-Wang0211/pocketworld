@@ -185,6 +185,7 @@ class _SelectionPageState extends State<SelectionPage>
   }
 
   void _cycleHorizontal(int delta) {
+    _vertMomentum = 0; // 左右切换打断竖直环
     // [2026-07-28 用户签决二轮:四个箭头**永远翻面**,每次一个相邻面]
     // 此前 Top/Bottom 的左右箭头做"原地转 90°"——用户实机指认:点了
     // 根本不翻面,点云只是转了 90°,不是想要的。删除原地转;极面的左右
@@ -204,41 +205,56 @@ class _SelectionPageState extends State<SelectionPage>
   /// 对面(Front↔Back,Right↔Left)。
   int _oppositeOf(int h) => ((h - 1 + 2) % 4) + 1;
 
-  /// 上下箭头 = 竖直大圆滚动,每步 90° 相邻面,**过极点循环、永不无操作**。
-  ///
-  /// [2026-07-28 用户签决 + Autodesk ViewCube 官方行为核实] ViewCube 的
-  /// orbit 箭头在 Top 视角继续按上会滚到 Back("already looking at the
-  /// top, you'll get the back view"),四步一圈,不存在死点。AutoCAD 到达
-  /// 的 Back 是倒置的(up 翻转);我们的 yaw/pitch 相机不表达 up 翻转,
-  /// 采用 up 修正版:过极点直接落到**正立**的对面(label 立即有意义,
-  /// 触屏产品更合适)。规则:
-  /// · 上:水平面 → Top;Top → 对面(过极);Bottom → 回水平面。
-  /// · 下:水平面 → Bottom;Bottom → 对面(过极);Top → 回水平面。
-  /// 到达对面后 _selectPreset 会把 _lastHorizontalIdx 更新为该面,下一圈
-  /// 自动以它为基 —— 连续按同一箭头 = Front→Top→Back→Top→Front… 的
-  /// 四步循环(up 每步修正后"向上"语义重置,与 ViewCube 修正版一致)。
+  /// 滚动动量:+1 = 下行环,−1 = 上行环,0 = 无(刚点过左右箭头等)。
+  /// [2026-07-28 用户实机指认] 无动量时"水平面下→必去 Bottom"会产生
+  /// bottom→back→bottom→front 震荡,永远经过不了 Top。有动量后连续按
+  /// 同一箭头 = 沿同一竖直大圆绕整圈:Front→Bottom→Back→Top→Front,
+  /// 四面全经过(下行);上行对称反向。
+  int _vertMomentum = 0;
+
+  /// 本轮竖直环的基面(进入环时所在的水平面):环 = base → Bottom →
+  /// opp(base) → Top → base(下行序)。水平面在环中的下一站由"它是 base
+  /// 还是 opp(base)"决定。
+  int _ringBase = 1;
+
+  /// 上下箭头 = 竖直大圆滚动,每步一个相邻面,过极循环、永不无操作。
+  /// 动画角:H↔极面(上下文 yaw)90° 纯翻;极面→对面水平面 180°
+  /// (翻过极点+回正合成的单轴平滑旋转 —— SO(3) 里"90° 纯翻到正立对面"
+  /// 不存在,翻过去必倒置,AutoCAD ViewCube 停在倒置,我们选正立落定)。
   void _stepVertical(int dir) {
     final horizontal = _presetIdx >= 1 && _presetIdx <= 4;
-    if (dir < 0) {
-      // 上箭头
-      if (_presetIdx == 0) {
-        _selectPreset(_oppositeOf(_lastHorizontalIdx)); // 过极 → 对面(正立)
-      } else if (_presetIdx == 5) {
-        _selectPreset(_lastHorizontalIdx);
-      } else if (horizontal) {
-        // 上下文 yaw:从当前水平面的朝向上翻,恒 90° 纯翻。
-        _selectPreset(0, targetYaw: kOrientationPresets[_presetIdx].yaw);
+    final m = dir < 0 ? -1 : 1;
+    final prevM = _vertMomentum;
+    if (prevM != m) {
+      // 方向改变/首次进入:以当前水平面(或极面的回落参考)为环基。
+      _ringBase = horizontal ? _presetIdx : _lastHorizontalIdx;
+    }
+    _vertMomentum = m;
+    if (_presetIdx == 0) {
+      // Top:同向 = 环继续/过极 → 对面(180°);反向(刚沿环到达又按
+      // 相反箭头)= 原路 retrace 回 lastH(90°),画面严格倒放上一步。
+      final continueRing = (dir < 0 && prevM != 1) || (dir > 0 && prevM == 1);
+      _selectPreset(
+        continueRing ? _oppositeOf(_lastHorizontalIdx) : _lastHorizontalIdx,
+      );
+    } else if (_presetIdx == 5) {
+      // Bottom:镜像对称。
+      final continueRing = (dir > 0 && prevM != -1) || (dir < 0 && prevM == -1);
+      _selectPreset(
+        continueRing ? _oppositeOf(_lastHorizontalIdx) : _lastHorizontalIdx,
+      );
+    } else if (horizontal) {
+      // 水平面:默认下→Bottom/上→Top(90° 纯翻,上下文 yaw);唯当处于
+      // 环中继(带动量且已滚到环基对面)时反配极面,使连续同向按键沿
+      // 大圆绕整圈把四个面全走一遍。
+      final atOpp = _presetIdx == _oppositeOf(_ringBase);
+      final int target;
+      if (dir > 0) {
+        target = (prevM == 1 && atOpp) ? 0 : 5;
+      } else {
+        target = (prevM == -1 && atOpp) ? 5 : 0;
       }
-    } else {
-      // 下箭头
-      if (_presetIdx == 5) {
-        _selectPreset(_oppositeOf(_lastHorizontalIdx)); // 过极 → 对面(正立)
-      } else if (_presetIdx == 0) {
-        _selectPreset(_lastHorizontalIdx);
-      } else if (horizontal) {
-        // 上下文 yaw:从当前水平面的朝向下翻,恒 90° 纯翻。
-        _selectPreset(5, targetYaw: kOrientationPresets[_presetIdx].yaw);
-      }
+      _selectPreset(target, targetYaw: kOrientationPresets[_presetIdx].yaw);
     }
   }
 

@@ -301,6 +301,51 @@ void main() {
     expect(_facingLabel(tester), 'Front');
   });
 
+  testWidgets('连续下箭头 = 大圆绕圈走全四面(含 Top,无 bottom-back 震荡)', (tester) async {
+    late Directory dir;
+    late Float32List xyz;
+    late Uint8List rgb;
+    await tester.runAsync(() async {
+      (dir, xyz, rgb) = await _fixture();
+    });
+    addTearDown(() => dir.delete(recursive: true));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
+      ),
+    );
+    await _pumpUntilLoaded(tester);
+    await tester.pumpAndSettle();
+    expect(_facingLabel(tester), 'Top');
+    // [2026-07-28 用户实机指认] 修复前一直按下 = bottom-back-bottom-front
+    // 震荡,永远经过不了 Top。滚动动量环后连续同向 = 沿同一竖直大圆绕圈,
+    // 四面全经过并循环。
+    const expected = [
+      'Front', 'Bottom', 'Back', 'Top', //
+      'Front', 'Bottom', 'Back', 'Top',
+    ];
+    final seen = <String>[];
+    for (var i = 0; i < expected.length; i++) {
+      await tester.tap(find.byKey(const ValueKey('cube-down')));
+      await tester.pumpAndSettle();
+      seen.add(_facingLabel(tester));
+    }
+    expect(seen, expected);
+    // 接着连续上箭头:首步 = 原路 retrace(Top 刚从 Back 滚上来,按上
+    // 应先倒回 Back),随后进入反向环,四面循环。
+    const expectedUp = [
+      'Back', 'Top', 'Front', 'Bottom', //
+      'Back', 'Top', 'Front', 'Bottom',
+    ];
+    final seenUp = <String>[];
+    for (var i = 0; i < expectedUp.length; i++) {
+      await tester.tap(find.byKey(const ValueKey('cube-up')));
+      await tester.pumpAndSettle();
+      seenUp.add(_facingLabel(tester));
+    }
+    expect(seenUp, expectedUp);
+  });
+
   testWidgets('Top 视角左右箭头 = 翻到相邻水平面(永远翻面,无原地转)', (tester) async {
     late Directory dir;
     late Float32List xyz;
