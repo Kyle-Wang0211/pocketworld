@@ -907,8 +907,14 @@ class SfmLiveRecon {
           m.arkitTransTxyz != null &&
           m.arkitCameraCenterWorld != null) {
         meta.addAll(<String, Object?>{
+          // [07-28 勘误] 旧标签让外部分析误以为已做 COLMAP 相机系翻转;
+          // 实际存的是 ARKit 相机轴约定的 CamFromWorld(C=diag(1,-1,-1)
+          // **未**应用——gravity align 公式 R_w=R_ark^T·C·R_col 自带 C,
+          // 吃的就是 raw)。标签改为显式声明,数据一字未动。
           'arkitPoseConvention':
-              'worldAlignment.gravity; cameraToWorld from ARKit, stored as CamFromWorld plus camera center',
+              'worldAlignment.gravity; CamFromWorld inverted from ARKit '
+              'cameraToWorld, in ARKit CAMERA AXES (COLMAP C=diag(1,-1,-1) '
+              'flip NOT applied); plus camera center in world',
           'arkitCamFromWorldQwxyz': m.arkitQuatWxyz,
           'arkitCamFromWorldTxyz': m.arkitTransTxyz,
           'arkitCameraCenterWorld': m.arkitCameraCenterWorld,
