@@ -32,6 +32,7 @@ import 'i18n/locale_notifier.dart';
 import 'l10n/app_localizations.dart';
 import 'lifecycle_observer.dart';
 import 'object_transform.dart';
+import 'official_capture/photo_archive_runtime.dart';
 import 'official_capture/telemetry_writer.dart' as official_telemetry;
 import 'official_util/device_log.dart' as official_device_log;
 import 'orbit_controls.dart';
@@ -130,6 +131,14 @@ Future<void> main() async {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         // ignore: avoid_print
         print('[AET-SMOKE] first frame PAINTED');
+        unawaited(() async {
+          try {
+            final documents = await getApplicationDocumentsDirectory();
+            await photoArchiveCoordinator.discoverUnderDocuments(documents);
+          } catch (_) {
+            // Startup archive recovery is best effort and fails closed.
+          }
+        }());
       });
       WidgetsBinding.instance.waitUntilFirstFrameRasterized.then((_) {
         // ignore: avoid_print

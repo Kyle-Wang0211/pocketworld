@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		B70000010000000000000001 /* pw_jxl_bridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = B70000110000000000000001 /* pw_jxl_bridge.mm */; };
+		B70000020000000000000002 /* PWJXLBridgeTests.mm in Sources */ = {isa = PBXBuildFile; fileRef = B70000130000000000000003 /* PWJXLBridgeTests.mm */; };
 		03D62ABCFE668FE66D5CD107 /* MetalRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16019E67BE3B581AE0E2152F /* MetalRenderer.swift */; };
 		0F1C1A100000000000000011 /* OfficialAetherARKitPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A100000000000000001 /* OfficialAetherARKitPlugin.swift */; };
 		0F1C1A100000000000000012 /* OfficialReconUmbrella.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A100000000000000002 /* OfficialReconUmbrella.swift */; };
@@ -50,6 +52,9 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B70000110000000000000001 /* pw_jxl_bridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = pw_jxl_bridge.mm; sourceTree = "<group>"; };
+		B70000120000000000000002 /* pw_jxl_bridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = pw_jxl_bridge.h; sourceTree = "<group>"; };
+		B70000130000000000000003 /* PWJXLBridgeTests.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PWJXLBridgeTests.mm; sourceTree = "<group>"; };
 		0F1C1A100000000000000001 /* OfficialAetherARKitPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OfficialAetherARKitPlugin.swift; sourceTree = "<group>"; };
 		0F1C1A100000000000000002 /* OfficialReconUmbrella.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OfficialReconUmbrella.swift; sourceTree = "<group>"; };
 		0F1C1A100000000000000003 /* PwARCameraLease.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PwARCameraLease.swift; sourceTree = "<group>"; };
@@ -121,6 +126,7 @@
 		331C8082294A63A400263BE5 /* RunnerTests */ = {
 			isa = PBXGroup;
 			children = (
+				B70000130000000000000003 /* PWJXLBridgeTests.mm */,
 				331C807B294A618700263BE5 /* RunnerTests.swift */,
 			);
 			path = RunnerTests;
@@ -177,6 +183,8 @@
 				16019E67BE3B581AE0E2152F /* MetalRenderer.swift */,
 				7779D977CD585B8DC1D4A1F9 /* SceneDelegate.swift */,
 				A1B2C3D4E5F60000DEAD0008 /* test_scene.jpg */,
+				B70000120000000000000002 /* pw_jxl_bridge.h */,
+				B70000110000000000000001 /* pw_jxl_bridge.mm */,
 			);
 			path = Runner;
 			sourceTree = "<group>";
@@ -436,6 +444,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B70000020000000000000002 /* PWJXLBridgeTests.mm in Sources */,
 				331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -444,6 +453,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B70000010000000000000001 /* pw_jxl_bridge.mm in Sources */,
 				74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */,
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
 				8954836B39867FC637D6CA3C /* AetherTexturePlugin.swift in Sources */,
@@ -542,17 +552,53 @@
 			baseConfigurationReference = 7AFA3C8E1D35360C0083082E /* Release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				DEVELOPMENT_TEAM = 26AH7V448L;
 				ENABLE_BITCODE = NO;
+				DEAD_CODE_STRIPPING = YES;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"JXL_STATIC_DEFINE=1",
+					"JXL_CMS_STATIC_DEFINE=1",
+					"JXL_THREADS_STATIC_DEFINE=1",
+				);
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Vendor/JXL/include",
+				);
 				INFOPLIST_FILE = Runner/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				OTHER_LDFLAGS = "$(inherited)";
+				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Vendor/JXL/lib",
+				);
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Vendor/JXL/lib-simulator",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-ljxl",
+					"-ljxl_cms",
+					"-ljxl_threads",
+					"-lhwy",
+					"-lbrotlienc",
+					"-lbrotlidec",
+					"-lbrotlicommon",
+					"-lc++",
+					"-lz",
+					"-Wl,-u,_pw_jxl_version",
+					"-Wl,-u,_pw_jxl_revision",
+					"-Wl,-u,_pw_jxl_error_message",
+					"-Wl,-u,_pw_jxl_encode_jpeg_file",
+					"-Wl,-u,_pw_jxl_reconstruct_jpeg_file",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.kyle.PocketWorld;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
@@ -727,17 +773,53 @@
 			baseConfigurationReference = 9740EEB21CF90195004384FC /* Debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				DEVELOPMENT_TEAM = 26AH7V448L;
 				ENABLE_BITCODE = NO;
+				DEAD_CODE_STRIPPING = YES;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"JXL_STATIC_DEFINE=1",
+					"JXL_CMS_STATIC_DEFINE=1",
+					"JXL_THREADS_STATIC_DEFINE=1",
+				);
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Vendor/JXL/include",
+				);
 				INFOPLIST_FILE = Runner/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				OTHER_LDFLAGS = "$(inherited)";
+				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Vendor/JXL/lib",
+				);
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Vendor/JXL/lib-simulator",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-ljxl",
+					"-ljxl_cms",
+					"-ljxl_threads",
+					"-lhwy",
+					"-lbrotlienc",
+					"-lbrotlidec",
+					"-lbrotlicommon",
+					"-lc++",
+					"-lz",
+					"-Wl,-u,_pw_jxl_version",
+					"-Wl,-u,_pw_jxl_revision",
+					"-Wl,-u,_pw_jxl_error_message",
+					"-Wl,-u,_pw_jxl_encode_jpeg_file",
+					"-Wl,-u,_pw_jxl_reconstruct_jpeg_file",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.kyle.PocketWorld;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
@@ -752,17 +834,53 @@
 			baseConfigurationReference = 7AFA3C8E1D35360C0083082E /* Release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
 				DEVELOPMENT_TEAM = 26AH7V448L;
 				ENABLE_BITCODE = NO;
+				DEAD_CODE_STRIPPING = YES;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"JXL_STATIC_DEFINE=1",
+					"JXL_CMS_STATIC_DEFINE=1",
+					"JXL_THREADS_STATIC_DEFINE=1",
+				);
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Vendor/JXL/include",
+				);
 				INFOPLIST_FILE = Runner/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				OTHER_LDFLAGS = "$(inherited)";
+				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Vendor/JXL/lib",
+				);
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Vendor/JXL/lib-simulator",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-ljxl",
+					"-ljxl_cms",
+					"-ljxl_threads",
+					"-lhwy",
+					"-lbrotlienc",
+					"-lbrotlidec",
+					"-lbrotlicommon",
+					"-lc++",
+					"-lz",
+					"-Wl,-u,_pw_jxl_version",
+					"-Wl,-u,_pw_jxl_revision",
+					"-Wl,-u,_pw_jxl_error_message",
+					"-Wl,-u,_pw_jxl_encode_jpeg_file",
+					"-Wl,-u,_pw_jxl_reconstruct_jpeg_file",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.kyle.PocketWorld;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";

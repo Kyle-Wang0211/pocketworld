@@ -59,6 +59,9 @@ import 'dome/dome_config.dart';
 import 'dome/dome_target_points.dart';
 import 'orientation_tracker.dart';
 import 'official_highres_reconstruction_input.dart';
+import 'photo_archive_coordinator.dart';
+import 'photo_archive_policy.dart';
+import 'photo_archive_runtime.dart';
 import 'photo_slot_naming.dart';
 import 'telemetry_writer.dart';
 import 'pose_drift_tracker.dart';
@@ -309,6 +312,7 @@ class CaptureSession {
   String? _photosHighresDir;
   String? get previewsDir => _previewsDir;
   String? _previewsDir;
+  PhotoArchiveActivityLease? _photoArchiveCaptureLease;
   final List<Future<void>> _pendingPhotoSaves = <Future<void>>[];
   int _pendingPhotoSaveCount = 0;
 
@@ -804,6 +808,7 @@ class CaptureSession {
     }
     if (_started) return;
     if (!_attached) await attach();
+    _photoArchiveCaptureLease = photoArchiveCoordinator.beginCaptureActivity();
 
     targetPoints.reset();
     guidance.beginRecording();
@@ -865,6 +870,7 @@ class CaptureSession {
       final previews = Directory('${root.path}/previews');
       await highres.create(recursive: true);
       await previews.create(recursive: true);
+      await PhotoArchivePolicy.writeForNewCapture(root);
       _captureDir = root.path;
       _photosDir = highres.path;
       _photosHighresDir = highres.path;
@@ -979,6 +985,9 @@ class CaptureSession {
     // BiRefNet lite mlpackage + Wrapper + native runBiRefNetOnJpeg handler
     // are RETAINED in the build for a future "一键抠出主体物" tool in the
     // GLB editor (W6+). They are not invoked during capture-after flow.
+    final archiveLease = _photoArchiveCaptureLease;
+    _photoArchiveCaptureLease = null;
+    if (archiveLease != null) unawaited(archiveLease.close());
   }
 
   Future<void> waitForPendingPhotoSaves({
@@ -1045,6 +1054,9 @@ class CaptureSession {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    final archiveLease = _photoArchiveCaptureLease;
+    _photoArchiveCaptureLease = null;
+    if (archiveLease != null) unawaited(archiveLease.close());
     if (_started) {
       _started = false;
       _clock.stop();

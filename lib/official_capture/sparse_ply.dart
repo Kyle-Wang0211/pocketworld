@@ -10,11 +10,13 @@
 //                                        poses + counts + timestamps
 // The desktop research viewers and any standard tool open the PLY directly.
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'sfm_live_recon.dart';
+import 'photo_archive_runtime.dart';
 import '../official_util/device_log.dart';
 
 Future<void> persistSparseSnapshot({
@@ -127,6 +129,9 @@ Future<void> persistSparseSnapshot({
     DeviceLog.log(
       'SfmLive',
       'sparse persisted: $n pts (refined=${snapshot.refined}) → $captureDir/official_sfm_sparse.ply',
+    );
+    unawaited(
+      photoArchiveCoordinator.noteArtifactsPersisted(Directory(captureDir)),
     );
   } catch (e) {
     DeviceLog.log('SfmLive', 'sparse persist FAILED: $e');

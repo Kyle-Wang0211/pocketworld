@@ -218,6 +218,7 @@ flutter:
     - assets/models/Avocado.glb
     - assets/models/BoomBox.glb
     - assets/models/WaterBottle.glb
+    - ios/Vendor/JXL/licenses/
     - assets/models/Duck.glb
     - assets/models/Lantern.glb
     # Neutral image-based light for the community viewer.
