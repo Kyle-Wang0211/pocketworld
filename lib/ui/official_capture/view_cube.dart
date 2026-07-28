@@ -97,6 +97,7 @@ List<String> visibleViewCubeFaces(double yaw, double pitch) {
     pivotY: 0,
     pivotZ: 0,
     radius: 1,
+    fillK: kViewCubeFillK,
     orthographic: true,
   ).projectionFor(const Size(100, 100));
   final (_, _, centerDepth) = proj.project(0, 0, 0);
@@ -135,6 +136,69 @@ String primaryViewCubeFace(double yaw, double pitch) {
   return best;
 }
 
+/// 点击立方体时命中的面(建模软件同款:点哪面就转到那面正对)。
+/// 判据:点落在该面投影四边形内 且 该面朝相机;多面命中取最靠前的。
+String? hitViewCubeFace(
+  double yaw,
+  double pitch,
+  double roll,
+  Size size,
+  Offset local,
+) {
+  final proj = CloudCamera(
+    yaw: yaw,
+    pitch: pitch,
+    zoom: 1,
+    panX: 0,
+    panY: 0,
+    pivotX: 0,
+    pivotY: 0,
+    pivotZ: 0,
+    radius: 1,
+    fillK: kViewCubeFillK,
+    orthographic: true,
+    roll: roll,
+  ).projectionFor(size);
+  final (_, _, centerDepth) = proj.project(0, 0, 0);
+  String? best;
+  var bestDepth = double.infinity;
+  for (final f in kViewCubeFaces) {
+    final (_, _, nd) = proj.project(f.normal[0], f.normal[1], f.normal[2]);
+    if (nd >= centerDepth - 1e-9) continue; // 背面不接受点击
+    final pts = f.corners
+        .map((c) {
+          final (sx, sy, _) = proj.project(c[0], c[1], c[2]);
+          return Offset(sx, sy);
+        })
+        .toList(growable: false);
+    if (!_pointInQuad(pts, local)) continue;
+    if (nd < bestDepth) {
+      bestDepth = nd;
+      best = f.label;
+    }
+  }
+  return best;
+}
+
+bool _pointInQuad(List<Offset> q, Offset p) {
+  var sign = 0;
+  for (var i = 0; i < q.length; i++) {
+    final a = q[i], b = q[(i + 1) % q.length];
+    final cr = (b.dx - a.dx) * (p.dy - a.dy) - (b.dy - a.dy) * (p.dx - a.dx);
+    if (cr.abs() < 1e-12) continue;
+    final s = cr > 0 ? 1 : -1;
+    if (sign == 0) {
+      sign = s;
+    } else if (s != sign) {
+      return false;
+    }
+  }
+  return sign != 0;
+}
+
+/// 立方体投影充满系数(命中与绘制必须同值,否则点击与所见错位)。
+const double kViewCubeFillK = 2.9;
+
 /// 与点云相机绑定的 3D 朝向立方体。
 class ViewCube extends StatelessWidget {
   const ViewCube({
@@ -144,7 +208,11 @@ class ViewCube extends StatelessWidget {
     this.viewRoll = 0,
     this.size = 60,
     this.faceLabels,
+    this.onFaceTap,
   });
+
+  /// 点击某个面 → 回调该面 ID(建模软件同款一键归位)。
+  final ValueChanged<String>? onFaceTap;
 
   final double viewYaw;
   final double viewPitch;
@@ -159,7 +227,7 @@ class ViewCube extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
+    final cube = SizedBox(
       width: size,
       height: size,
       // [2026-07-28 用户反馈] 不裁剪:此前 ClipRect 在转动时把伸出画布的
@@ -172,6 +240,21 @@ class ViewCube extends StatelessWidget {
           faceLabels: faceLabels,
         ),
       ),
+    );
+    if (onFaceTap == null) return cube;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTapDown: (d) {
+        final f = hitViewCubeFace(
+          viewYaw,
+          viewPitch,
+          viewRoll,
+          Size(size, size),
+          d.localPosition,
+        );
+        if (f != null) onFaceTap!(f);
+      },
+      child: cube,
     );
   }
 }
@@ -204,9 +287,9 @@ class _ViewCubePainter extends CustomPainter {
       pivotY: 0,
       pivotZ: 0,
       radius: 1,
-      // [2026-07-28 用户反馈二轮] 实质收紧:2.9 → 正对面宽 ~54px@60 画布,
-      // 空白仅 3px/边,箭头紧贴(RS 观感);斜角越出部分由外层 ClipRect 裁。
-      fillK: 2.9,
+      // [2026-07-28] 与 hitViewCubeFace 同源常量:两处必须一致,否则
+      // 点击位置与所见错位。
+      fillK: kViewCubeFillK,
       orthographic: true,
       roll: roll,
     ).projectionFor(size);

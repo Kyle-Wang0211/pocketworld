@@ -151,7 +151,13 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
             : Column(
                 children: [
                   Expanded(
-                    child: SparseCloudView(xyz: cloud.xyz, rgb: cloud.rgb),
+                    child: SparseCloudView(
+                      xyz: cloud.xyz,
+                      rgb: cloud.rgb,
+                      // 相机快照:进选区页时原样继承(不 setState —— 每帧
+                      // 手势都会回调)。
+                      onCameraChanged: (c) => _camera = c,
+                    ),
                   ),
                   // [2026-07-28 用户签决] 草稿页进来的查看器只留"下一步":
                   // 本来就是草稿,"保存草稿"无意义(退出走返回键);双按钮
@@ -175,6 +181,9 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
   /// 下一步 → 选区页(SelectionPage 零改动复用);返回后重读选区文件刷新
   /// 只读回显(用户刚改完的框和红点立刻可见)。pop 载荷 'save_draft' 在
   /// 此入口无退出动作,忽略即可。
+  /// 预览相机的最新快照(见 SparseCloudView.onCameraChanged)。
+  CloudViewCamera? _camera;
+
   Future<void> _openSelection() async {
     final cloud = _cloud;
     if (cloud == null) return;
@@ -184,6 +193,7 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
           xyz: cloud.xyz,
           rgb: cloud.rgb,
           captureDir: File(widget.plyPath).parent.path,
+          initialCamera: _camera,
         ),
       ),
     );

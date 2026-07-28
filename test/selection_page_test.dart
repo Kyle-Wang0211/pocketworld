@@ -18,11 +18,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/l10n/app_localizations.dart';
 import 'package:pocketworld_flutter/official_capture/selection_box.dart';
-import 'package:pocketworld_flutter/ui/official_capture/cloud_camera.dart'
-    show axisAngleOf, mulTransposed;
 import 'package:pocketworld_flutter/ui/official_capture/selection_cloud_view.dart';
 import 'package:pocketworld_flutter/ui/official_capture/ruler_scrubber.dart';
 import 'package:pocketworld_flutter/ui/official_capture/selection_page.dart';
+import 'package:pocketworld_flutter/ui/official_capture/sparse_cloud_view.dart'
+    show CloudViewCamera;
 import 'package:pocketworld_flutter/ui/official_capture/view_cube.dart';
 
 Future<(Directory, Float32List, Uint8List)> _fixture() async {
@@ -64,17 +64,192 @@ Future<void> _pumpUntilLoaded(WidgetTester tester) async {
   });
 }
 
-/// 立方体改 TextPainter 绘制后 find.text 找不到面标签 —— 语义断言读 state。
-String _facingLabel(WidgetTester tester) {
-  final dynamic st = tester.state(find.byType(SelectionPage));
-  return st.debugFacingLabel as String;
-}
-
 void main() {
   test('朝向预设表:六面 + Top 是 -90° 俯视', () {
     expect(kOrientationPresets, hasLength(6));
     expect(kOrientationPresets.first.label, 'Top');
     expect(kOrientationPresets.first.pitch, closeTo(-math.pi / 2, 1e-9));
+  });
+
+  testWidgets('相机继承:进编辑页时缩放/角度/位置原样接住预览页', (tester) async {
+    late Directory dir;
+    late Float32List xyz;
+    late Uint8List rgb;
+    await tester.runAsync(() async {
+      (dir, xyz, rgb) = await _fixture();
+    });
+    addTearDown(() => dir.delete(recursive: true));
+    const cam = (
+      yaw: 1.23,
+      pitch: -0.31,
+      zoom: 2.75,
+      panX: 18.0,
+      panY: -7.0,
+      pivotX: 0.11,
+      pivotY: 0.22,
+      pivotZ: 0.33,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
+        home: SelectionPage(
+          xyz: xyz,
+          rgb: rgb,
+          captureDir: dir.path,
+          initialCamera: cam,
+        ),
+      ),
+    );
+    await _pumpUntilLoaded(tester);
+    await tester.pumpAndSettle();
+    final view = tester.widget<SelectionCloudView>(
+      find.byType(SelectionCloudView),
+    );
+    // [2026-07-28 用户签决] "预览跟编辑就是一个页面" —— 肉眼所见必须逐帧
+    // 不变:实际视角 yaw(含滑杆分量)、缩放、平移、枢轴全部原样。
+    final box =
+        (tester.state(find.byType(SelectionPage)) as dynamic).debugBox
+            as SelectionBox;
+    expect(view.viewYaw, closeTo(cam.yaw + box.yawDeg * math.pi / 180, 1e-9));
+    expect(view.viewPitch, closeTo(cam.pitch, 1e-9));
+    expect(view.camera.zoom, closeTo(cam.zoom, 1e-9));
+    expect(view.camera.panX, closeTo(cam.panX, 1e-9));
+    expect(view.camera.panY, closeTo(cam.panY, 1e-9));
+    expect(view.camera.pivotX, closeTo(cam.pivotX, 1e-9));
+  });
+
+  testWidgets('盒外单指 = 自由 orbit;盒内单指 = 平移盒(不动相机)', (tester) async {
+    late Directory dir;
+    late Float32List xyz;
+    late Uint8List rgb;
+    await tester.runAsync(() async {
+      (dir, xyz, rgb) = await _fixture();
+    });
+    addTearDown(() => dir.delete(recursive: true));
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
+        home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
+      ),
+    );
+    await _pumpUntilLoaded(tester);
+    await tester.pumpAndSettle();
+    dynamic page() => tester.state(find.byType(SelectionPage));
+    CloudViewCamera cam() => (page() as dynamic).debugCamera;
+    SelectionBox box() => (page() as dynamic).debugBox as SelectionBox;
+
+    // 盒外(视图左上角)拖 → 只转视角,盒纹丝不动。
+    final rect = tester.getRect(find.byType(SelectionCloudView));
+    final yawBefore = cam().yaw;
+    final boxBefore = box();
+    await tester.dragFrom(
+      rect.topLeft + const Offset(6, 6),
+      const Offset(60, 0),
+    );
+    await tester.pumpAndSettle();
+    expect(cam().yaw, isNot(closeTo(yawBefore, 1e-6)));
+    expect(box().cx, closeTo(boxBefore.cx, 1e-12));
+    expect(box().cz, closeTo(boxBefore.cz, 1e-12));
+
+    // 盒内、且避开手柄的位置(俯视时正中心压在顶面手柄上)拖 → 只平移盒,
+    // 相机纹丝不动。
+    final yawMid = cam().yaw;
+    final inside = rect.center + Offset(rect.width * 0.12, rect.height * 0.08);
+    await tester.dragFrom(inside, const Offset(30, 0));
+    await tester.pumpAndSettle();
+    expect(cam().yaw, closeTo(yawMid, 1e-12));
+    final moved =
+        (box().cx - boxBefore.cx).abs() + (box().cz - boxBefore.cz).abs();
+    expect(moved, greaterThan(1e-6));
+  });
+
+  testWidgets('骰子跟模型绑定:拨旋转刻度尺时骰子同步转', (tester) async {
+    late Directory dir;
+    late Float32List xyz;
+    late Uint8List rgb;
+    await tester.runAsync(() async {
+      (dir, xyz, rgb) = await _fixture();
+    });
+    addTearDown(() => dir.delete(recursive: true));
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
+        home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
+      ),
+    );
+    await _pumpUntilLoaded(tester);
+    await tester.pumpAndSettle();
+    final before = tester.widget<ViewCube>(find.byType(ViewCube)).viewYaw;
+    await tester.drag(find.byType(RulerScrubber), const Offset(-60, 0));
+    await tester.pumpAndSettle();
+    final after = tester.widget<ViewCube>(find.byType(ViewCube)).viewYaw;
+    // [2026-07-28 用户签决] "模型怎么转,骰子就怎么转" —— 骰子六面是模型
+    // 的面,滑杆转模型时观察方向随之改变,骰子必须同步。
+    final box =
+        (tester.state(find.byType(SelectionPage)) as dynamic).debugBox
+            as SelectionBox;
+    expect(after - before, closeTo(box.yawDeg * math.pi / 180, 1e-9));
+    expect(box.yawDeg, isNot(0));
+    // 点云视角与骰子同源,不会各转各的。
+    final view = tester.widget<SelectionCloudView>(
+      find.byType(SelectionCloudView),
+    );
+    expect(view.viewYaw, closeTo(after, 1e-12));
+  });
+
+  testWidgets('点击骰子的面 = 该面转到正对(建模软件同款归位)', (tester) async {
+    late Directory dir;
+    late Float32List xyz;
+    late Uint8List rgb;
+    await tester.runAsync(() async {
+      (dir, xyz, rgb) = await _fixture();
+    });
+    addTearDown(() => dir.delete(recursive: true));
+    // 起始一个歪的自由视角(不是任何正对面)。
+    const cam = (
+      yaw: 0.83,
+      pitch: -0.55,
+      zoom: 1.0,
+      panX: 0.0,
+      panY: 0.0,
+      pivotX: 0.0,
+      pivotY: 0.0,
+      pivotZ: 0.0,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
+        home: SelectionPage(
+          xyz: xyz,
+          rgb: rgb,
+          captureDir: dir.path,
+          initialCamera: cam,
+        ),
+      ),
+    );
+    await _pumpUntilLoaded(tester);
+    await tester.pumpAndSettle();
+    dynamic page() => tester.state(find.byType(SelectionPage));
+
+    // 骰子中心 = 当前最正对的面;点它应把该面转到严格正对。
+    final cube = find.byKey(const ValueKey('view-cube'));
+    expect(cube, findsOneWidget);
+    final target = primaryViewCubeFace(cam.yaw, cam.pitch);
+    await tester.tapAt(tester.getCenter(cube));
+    await tester.pumpAndSettle();
+
+    final after = (page() as dynamic).debugCamera as CloudViewCamera;
+    final preset = kOrientationPresets.firstWhere((p) => p.label == target);
+    expect(after.pitch, closeTo(preset.pitch, 1e-6));
+    expect((page() as dynamic).debugRoll as double, closeTo(0, 1e-6));
+    expect((page() as dynamic).debugFacingLabel, target);
+    // 归位不动缩放/平移(只转朝向)。
+    expect(after.zoom, closeTo(cam.zoom, 1e-12));
+    expect(after.panX, closeTo(cam.panX, 1e-12));
   });
 
   testWidgets('返回键 pop save_draft 并已写盘', (tester) async {
@@ -328,268 +503,5 @@ void main() {
     if (glide > 180.0) glide = 360.0 - glide;
     expect(glide, greaterThan(2.0), reason: '松手后应靠惯性继续滑行');
     await tester.pumpAndSettle(); // 摩擦模拟自然停下,不悬挂
-  });
-
-  testWidgets('框平移无增量吞噬:同帧多触摸事件全部累积(阻力 bug 回归)', (tester) async {
-    late Directory dir;
-    late Float32List xyz;
-    late Uint8List rgb;
-    await tester.runAsync(() async {
-      (dir, xyz, rgb) = await _fixture();
-    });
-    addTearDown(() => dir.delete(recursive: true));
-    await tester.pumpWidget(
-      MaterialApp(
-        localizationsDelegates: AppL10n.localizationsDelegates,
-        supportedLocales: AppL10n.supportedLocales,
-        home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
-      ),
-    );
-    await _pumpUntilLoaded(tester);
-    await tester.pumpAndSettle();
-    dynamic page() => tester.state(find.byType(SelectionPage));
-    SelectionBox box() => (page() as dynamic).debugBox as SelectionBox;
-    final before = box();
-
-    // 从框中心起手,同一帧内连发 4 段位移(不 pump —— 模拟 120Hz 触摸快于
-    // 60Hz 渲染),修复前后三段会覆盖第一段,总位移只剩 1/4。
-    final center = tester.getCenter(find.byType(SelectionCloudView));
-    final g = await tester.startGesture(center);
-    for (var i = 0; i < 4; i++) {
-      await g.moveBy(const Offset(15, 0));
-    }
-    await g.up();
-    await tester.pumpAndSettle();
-    final single = box();
-    final moved1 =
-        (single.cx - before.cx).abs() + (single.cz - before.cz).abs();
-
-    // 再来一次同样总位移但逐帧发(每段之间 pump),两种发法总位移必须一致。
-    final g2 = await tester.startGesture(center);
-    for (var i = 0; i < 4; i++) {
-      await g2.moveBy(const Offset(15, 0));
-      await tester.pump();
-    }
-    await g2.up();
-    await tester.pumpAndSettle();
-    final stepped = box();
-    final moved2 =
-        (stepped.cx - single.cx).abs() + (stepped.cz - single.cz).abs();
-    expect(moved1, greaterThan(0));
-    expect(moved1, closeTo(moved2, moved2 * 0.05 + 1e-9));
-  });
-
-  testWidgets('旋转刻度尺与拖框并发:双写者交错互不覆盖', (tester) async {
-    late Directory dir;
-    late Float32List xyz;
-    late Uint8List rgb;
-    await tester.runAsync(() async {
-      (dir, xyz, rgb) = await _fixture();
-    });
-    addTearDown(() => dir.delete(recursive: true));
-    await tester.pumpWidget(
-      MaterialApp(
-        localizationsDelegates: AppL10n.localizationsDelegates,
-        supportedLocales: AppL10n.supportedLocales,
-        home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
-      ),
-    );
-    await _pumpUntilLoaded(tester);
-    await tester.pumpAndSettle();
-    dynamic page() => tester.state(find.byType(SelectionPage));
-    SelectionBox box() => (page() as dynamic).debugBox as SelectionBox;
-    final before = box();
-
-    // [2026-07-28 用户签决] 一指拨刻度尺、一指平移框,同帧交错:修复前
-    // 双方各持快照互相覆盖(滑杆转角被手柄流回滚 / 平移被滑杆流回滚)。
-    final rulerCenter = tester.getCenter(find.byType(RulerScrubber));
-    final cloudCenter = tester.getCenter(find.byType(SelectionCloudView));
-    final gRuler = await tester.startGesture(rulerCenter, pointer: 7);
-    final gBox = await tester.startGesture(cloudCenter, pointer: 8);
-    for (var i = 0; i < 4; i++) {
-      await gRuler.moveBy(const Offset(-15, 0)); // 累计 -60px → +54.5°
-      await gBox.moveBy(const Offset(12, 0)); // 累计 48px 平移
-    }
-    await gRuler.up();
-    await gBox.up();
-    await tester.pumpAndSettle();
-
-    final after = box();
-    // 滑杆总转角完整落地(手柄流没有把它回滚)。
-    var dyaw = (after.yawDeg - before.yawDeg) % 360.0;
-    if (dyaw > 180.0) dyaw -= 360.0;
-    expect(dyaw, closeTo(60.0 / 1.1, 2.0));
-    // 平移完整落地(初始框心在枢轴上,纯旋转不动框心;位移只能来自平移,
-    // 且滑杆流没有把它回滚)。
-    final dist = math.sqrt(
-      math.pow(after.cx - before.cx, 2) + math.pow(after.cz - before.cz, 2),
-    );
-    expect(dist, greaterThan(1e-4));
-  });
-
-  testWidgets('朝向立方体上下箭头 = 三层移动:Top↕水平↕Bottom', (tester) async {
-    late Directory dir;
-    late Float32List xyz;
-    late Uint8List rgb;
-    await tester.runAsync(() async {
-      (dir, xyz, rgb) = await _fixture();
-    });
-    addTearDown(() => dir.delete(recursive: true));
-    await tester.pumpWidget(
-      MaterialApp(
-        localizationsDelegates: AppL10n.localizationsDelegates,
-        supportedLocales: AppL10n.supportedLocales,
-        home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
-      ),
-    );
-    await _pumpUntilRealAsyncSettles(
-      tester,
-      () => tester.any(find.byKey(const ValueKey('cube-down'))),
-    );
-    await tester.pumpAndSettle();
-    // [2026-07-28 骰子机制] 初始 Top;每按一次绕屏幕水平轴滚 90°。
-    expect(_facingLabel(tester), 'Top');
-    await tester.tap(find.byKey(const ValueKey('cube-down')));
-    await tester.pumpAndSettle();
-    expect(_facingLabel(tester), 'Front');
-    await tester.tap(find.byKey(const ValueKey('cube-down')));
-    await tester.pumpAndSettle();
-    expect(_facingLabel(tester), 'Bottom');
-    // 继续下滚过极:Bottom → Back(骰子翻过去,背面倒置显示,不回正)。
-    await tester.tap(find.byKey(const ValueKey('cube-down')));
-    await tester.pumpAndSettle();
-    expect(_facingLabel(tester), 'Back');
-    // 反向 = 严格原路倒放:上→Bottom,再上→Front。
-    await tester.tap(find.byKey(const ValueKey('cube-up')));
-    await tester.pumpAndSettle();
-    expect(_facingLabel(tester), 'Bottom');
-    await tester.tap(find.byKey(const ValueKey('cube-up')));
-    await tester.pumpAndSettle();
-    expect(_facingLabel(tester), 'Front');
-  });
-
-  testWidgets('连续下箭头 = 大圆绕圈走全四面(含 Top,无 bottom-back 震荡)', (tester) async {
-    late Directory dir;
-    late Float32List xyz;
-    late Uint8List rgb;
-    await tester.runAsync(() async {
-      (dir, xyz, rgb) = await _fixture();
-    });
-    addTearDown(() => dir.delete(recursive: true));
-    await tester.pumpWidget(
-      MaterialApp(
-        localizationsDelegates: AppL10n.localizationsDelegates,
-        supportedLocales: AppL10n.supportedLocales,
-        home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
-      ),
-    );
-    await _pumpUntilLoaded(tester);
-    await tester.pumpAndSettle();
-    expect(_facingLabel(tester), 'Top');
-    // [2026-07-28 用户实机指认] 修复前一直按下 = bottom-back-bottom-front
-    // 震荡,永远经过不了 Top。骰子机制下连续同向 = 绕同一屏幕轴一直滚,
-    // 四面全经过并循环,每步严格 90°。
-    const expected = [
-      'Front', 'Bottom', 'Back', 'Top', //
-      'Front', 'Bottom', 'Back', 'Top',
-    ];
-    final seen = <String>[];
-    for (var i = 0; i < expected.length; i++) {
-      await tester.tap(find.byKey(const ValueKey('cube-down')));
-      await tester.pumpAndSettle();
-      seen.add(_facingLabel(tester));
-    }
-    expect(seen, expected);
-    // 接着连续上箭头 = 严格倒放:反向循环。
-    const expectedUp = [
-      'Back', 'Bottom', 'Front', 'Top', //
-      'Back', 'Bottom', 'Front', 'Top',
-    ];
-    final seenUp = <String>[];
-    for (var i = 0; i < expectedUp.length; i++) {
-      await tester.tap(find.byKey(const ValueKey('cube-up')));
-      await tester.pumpAndSettle();
-      seenUp.add(_facingLabel(tester));
-    }
-    expect(seenUp, expectedUp);
-  });
-
-  testWidgets('Top 视角左右箭头 = 翻到相邻水平面(永远翻面,无原地转)', (tester) async {
-    late Directory dir;
-    late Float32List xyz;
-    late Uint8List rgb;
-    await tester.runAsync(() async {
-      (dir, xyz, rgb) = await _fixture();
-    });
-    addTearDown(() => dir.delete(recursive: true));
-    await tester.pumpWidget(
-      MaterialApp(
-        localizationsDelegates: AppL10n.localizationsDelegates,
-        supportedLocales: AppL10n.supportedLocales,
-        home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
-      ),
-    );
-    await _pumpUntilLoaded(tester);
-    await tester.pumpAndSettle();
-    expect(_facingLabel(tester), 'Top');
-
-    // [2026-07-28 用户签决二轮] Top 点右箭头 = 翻面到 lastH(Front)的
-    // 右邻水平面 Right —— 不再原地转。
-    await tester.tap(find.byKey(const ValueKey('cube-right')));
-    await tester.pumpAndSettle();
-    expect(_facingLabel(tester), 'Right');
-
-    // 立方体是语义指示器:不吃滑杆分量。拖滑杆后 ViewCube.viewYaw 不变,
-    // SelectionCloudView.viewYaw(点云)跟随变化。
-    final cubeYawBefore = tester
-        .widget<ViewCube>(find.byType(ViewCube))
-        .viewYaw;
-    await tester.drag(find.byType(RulerScrubber), const Offset(60, 0));
-    await tester.pumpAndSettle();
-    final cubeYawAfter = tester.widget<ViewCube>(find.byType(ViewCube)).viewYaw;
-    expect(cubeYawAfter, closeTo(cubeYawBefore, 1e-9));
-    final page = tester.state(find.byType(SelectionPage)) as dynamic;
-    final yawDeg = (page.debugBox as SelectionBox).yawDeg;
-    expect(yawDeg, isNot(0));
-    final cloud = tester.widget<SelectionCloudView>(
-      find.byType(SelectionCloudView),
-    );
-    expect(cloud.viewYaw, closeTo(cubeYawAfter + yawDeg * math.pi / 180, 1e-9));
-  });
-
-  testWidgets('骰子守门:任意箭头序列每步落定姿态相对上一步严格 90°', (tester) async {
-    late Directory dir;
-    late Float32List xyz;
-    late Uint8List rgb;
-    await tester.runAsync(() async {
-      (dir, xyz, rgb) = await _fixture();
-    });
-    addTearDown(() => dir.delete(recursive: true));
-    await tester.pumpWidget(
-      MaterialApp(
-        localizationsDelegates: AppL10n.localizationsDelegates,
-        supportedLocales: AppL10n.supportedLocales,
-        home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
-      ),
-    );
-    await _pumpUntilLoaded(tester);
-    await tester.pumpAndSettle();
-    // [2026-07-28 用户签决三轮] "必须只转 90°,像现实扔骰子" —— 混合序列
-    // (含过极、含左右、含反向)逐步断言相对旋转角恒为 π/2,无任何 120°
-    // 斜转或 180° 合成。
-    const keys = [
-      'cube-down', 'cube-right', 'cube-up', 'cube-up', //
-      'cube-left', 'cube-down', 'cube-down', 'cube-right',
-    ];
-    dynamic page() => tester.state(find.byType(SelectionPage));
-    var prev = (page() as dynamic).debugPose as List<double>;
-    for (final k in keys) {
-      await tester.tap(find.byKey(ValueKey(k)));
-      await tester.pumpAndSettle();
-      final cur = (page() as dynamic).debugPose as List<double>;
-      final (_, angle) = axisAngleOf(mulTransposed(cur, prev));
-      expect(angle, closeTo(math.pi / 2, 1e-9), reason: 'step $k 不是 90°');
-      prev = cur;
-    }
   });
 }

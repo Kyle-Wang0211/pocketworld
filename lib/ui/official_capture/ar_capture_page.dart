@@ -64,6 +64,7 @@ import '../reconstruction_route_release_gate.dart';
 import '../scan_record.dart';
 import 'ar_album_page.dart';
 import 'capture_preview_rect.dart';
+import 'sparse_cloud_view.dart' show CloudViewCamera;
 import 'official_gallery_routes.dart';
 import 'selection_page.dart';
 import 'sfm_preview_overlay.dart';
@@ -1834,6 +1835,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
 
   /// [选区 2026-07-27] 等待页"下一步"→ 选区页。返回 'save_draft'(签决:
   /// 选区页返回不回等待页)→ 走与"保存草稿"完全同一的退出链路。
+  /// 预览相机最新快照(SfmPreviewOverlay 每帧上报,不 setState)。
+  CloudViewCamera? _sfmPreviewCamera;
+
   Future<void> _onSfmPreviewNext() async {
     if (_sfmPhase != SfmPreviewPhase.refined) return;
     final snap = _sfmSnapshot;
@@ -1841,8 +1845,12 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     if (snap == null || dir == null || snap.pointCount == 0) return;
     final result = await Navigator.of(context).push<String>(
       MaterialPageRoute<String>(
-        builder: (_) =>
-            SelectionPage(xyz: snap.xyz, rgb: snap.rgb, captureDir: dir),
+        builder: (_) => SelectionPage(
+          xyz: snap.xyz,
+          rgb: snap.rgb,
+          captureDir: dir,
+          initialCamera: _sfmPreviewCamera,
+        ),
       ),
     );
     if (result == 'save_draft') await _onSfmPreviewDone();
@@ -2796,6 +2804,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                       context,
                     ).sfmProgressFedQueued(_sfmFed, _sfmQueued)
                   : _sfmStageProgressText(context),
+              onCameraChanged: (c) => _sfmPreviewCamera = c,
               onBack: _showDraftsDuringReconstruction,
               onDone: () => unawaited(_onSfmPreviewDone()),
               onNext: _sfmSnapshot != null && _sfmSnapshot!.pointCount > 0

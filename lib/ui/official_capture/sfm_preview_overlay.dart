@@ -39,6 +39,7 @@ class SfmPreviewOverlay extends StatelessWidget {
     this.onNext,
     this.errorText,
     this.progressText,
+    this.onCameraChanged,
   });
 
   final SfmPreviewPhase phase;
@@ -57,6 +58,10 @@ class SfmPreviewOverlay extends StatelessWidget {
   /// Shown under the generating spinner while the disk queue drains and the
   /// final reconstruction runs.
   final String? progressText;
+
+  /// 预览相机快照上报 —— "下一步"进选区页时原样继承(用户签决:预览与
+  /// 编辑是同一个页面,点下一步只是让工具显现)。
+  final ValueChanged<CloudViewCamera>? onCameraChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -82,6 +87,7 @@ class SfmPreviewOverlay extends StatelessWidget {
                     key: const ValueKey('capture_preview_cloud'),
                     xyz: snap.xyz,
                     rgb: snap.rgb,
+                    onCameraChanged: onCameraChanged,
                   ),
                 ),
               ),

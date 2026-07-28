@@ -80,6 +80,20 @@ class _RoundIconButton extends StatelessWidget {
   }
 }
 
+/// 点云查看相机快照 —— 预览页 ⇄ 选区编辑页之间"原样继承"的载体。
+/// [2026-07-28 用户签决] 进编辑页时大小/角度/位置直接继承,不再重置到
+/// 固定俯视预设。
+typedef CloudViewCamera = ({
+  double yaw,
+  double pitch,
+  double zoom,
+  double panX,
+  double panY,
+  double pivotX,
+  double pivotY,
+  double pivotZ,
+});
+
 class SparseCloudView extends StatefulWidget {
   const SparseCloudView({
     super.key,
@@ -87,7 +101,16 @@ class SparseCloudView extends StatefulWidget {
     required this.rgb,
     this.visibility,
     this.showControls = true,
+    this.initialCamera,
+    this.onCameraChanged,
   });
+
+  /// 初始相机(null = 默认取景)。
+  final CloudViewCamera? initialCamera;
+
+  /// 相机变化上报(供父页面记住,进编辑页时传下去)。**不要**在回调里
+  /// setState —— 每帧手势都会触发。
+  final ValueChanged<CloudViewCamera>? onCameraChanged;
 
   /// 3 floats per point (full set).
   final Float32List xyz;
@@ -165,6 +188,15 @@ class _SparseCloudViewState extends State<SparseCloudView>
     _buildSprite();
     final fit = SparseCloudPainter.fitOf(widget.xyz);
     _pivot = [fit.cx, fit.cy, fit.cz];
+    final cam = widget.initialCamera;
+    if (cam != null) {
+      _yaw = cam.yaw;
+      _pitch = cam.pitch;
+      _zoom = cam.zoom;
+      _panX = cam.panX;
+      _panY = cam.panY;
+      _pivot = [cam.pivotX, cam.pivotY, cam.pivotZ];
+    }
     _tween = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 280),
@@ -175,6 +207,19 @@ class _SparseCloudViewState extends State<SparseCloudView>
   void dispose() {
     _tween.dispose();
     super.dispose();
+  }
+
+  void _emitCamera() {
+    widget.onCameraChanged?.call((
+      yaw: _yaw,
+      pitch: _pitch,
+      zoom: _zoom,
+      panX: _panX,
+      panY: _panY,
+      pivotX: _pivot[0],
+      pivotY: _pivot[1],
+      pivotZ: _pivot[2],
+    ));
   }
 
   void _onTween() {
@@ -193,6 +238,7 @@ class _SparseCloudViewState extends State<SparseCloudView>
       _yaw = a.yaw + (b.yaw - a.yaw) * t;
       _pitch = a.pitch + (b.pitch - a.pitch) * t;
     });
+    _emitCamera();
   }
 
   void _animateTo(_CamState to) {
@@ -312,6 +358,7 @@ class _SparseCloudViewState extends State<SparseCloudView>
                       );
                     }
                   });
+                  _emitCamera();
                 },
                 onDoubleTapDown: (d) => _focusAt(d.localPosition),
                 child: RepaintBoundary(

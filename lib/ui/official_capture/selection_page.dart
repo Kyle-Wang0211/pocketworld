@@ -24,7 +24,7 @@ import 'cloud_camera.dart'
 import 'ruler_scrubber.dart';
 import 'selection_cloud_view.dart';
 import 'view_cube.dart';
-import 'sparse_cloud_view.dart' show SparseCloudPainter;
+import 'sparse_cloud_view.dart' show CloudViewCamera, SparseCloudPainter;
 
 /// 六向朝向预设(顺序即立方体循环顺序:Top → Front → Right → Back → Left →
 /// Bottom)。索引 1..4 是水平面四向,0/5 是俯视/仰视。
@@ -43,7 +43,12 @@ class SelectionPage extends StatefulWidget {
     required this.xyz,
     required this.rgb,
     required this.captureDir,
+    this.initialCamera,
   });
+
+  /// [2026-07-28 用户签决] "预览跟编辑就是一个页面":进来时点云的大小/
+  /// 角度/位置**直接继承**预览页,不再重置到固定俯视预设。
+  final CloudViewCamera? initialCamera;
 
   /// 3 floats per point(full set)。
   final Float32List xyz;
@@ -80,9 +85,40 @@ class _SelectionPageState extends State<SelectionPage>
   // deactivated widget's ancestor is unsafe"(真机同样会炸,非测试专属)。
   late final AnimationController _presetAnim;
 
-  double _animPresetYaw = kOrientationPresets[0].yaw;
-  double _animPitch = kOrientationPresets[0].pitch;
-  double _animRoll = 0;
+  /// 相机唯一真值源(yaw/pitch/zoom/pan/pivot)。orbit、双指、骰子归位
+  /// 动画都写它;骰子读它 ⇒ "模型怎么转骰子就怎么转"。
+  CloudViewCamera _camera = (
+    yaw: kOrientationPresets[0].yaw,
+    pitch: kOrientationPresets[0].pitch,
+    zoom: 1.0,
+    panX: 0.0,
+    panY: 0.0,
+    pivotX: 0.0,
+    pivotY: 0.0,
+    pivotZ: 0.0,
+  );
+
+  /// 屏幕滚转(骰子归位动画途中非零)。
+  double _viewRoll = 0;
+
+  /// 滑杆分量(弧度):滑杆转的是模型自身,相机 yaw 与它相加才是"我相对
+  /// 模型的观察方向"。
+  double get _boxYawRad => (_box?.yawDeg ?? 0) * math.pi / 180.0;
+
+  /// 观察方向 = 相机 yaw + 滑杆分量。骰子读它 ⇒ 模型怎么转骰子就怎么转
+  /// (骰子六面是**模型**的面,建模软件同款语义)。
+  double get _effectiveYaw => _camera.yaw + _boxYawRad;
+
+  CloudViewCamera _withPose(double yaw, double pitch) => (
+    yaw: yaw,
+    pitch: pitch,
+    zoom: _camera.zoom,
+    panX: _camera.panX,
+    panY: _camera.panY,
+    pivotX: _camera.pivotX,
+    pivotY: _camera.pivotY,
+    pivotZ: _camera.pivotZ,
+  );
 
   // [2026-07-28 用户签决三轮] **骰子机制**:姿态 = 完整旋转矩阵 _pose,
   // 箭头 = 绕**屏幕轴**premultiply ±90°(下 = 绕屏幕水平轴向下滚,右 =
@@ -91,7 +127,9 @@ class _SelectionPageState extends State<SelectionPage>
   // 规范化:此前为让落定永远正立搞的环/动量/上下文 yaw 机制被用户否决
   // ("我就需要像现实生活中扔骰子一样,必须只转 90°"),全部删除。
   // 动画仍是 SO(3) 轴角 slerp(90° 单轴)。
-  List<double> _pose = composeViewMatrix(
+  List<double> get _pose =>
+      composeViewMatrix(_effectiveYaw, _camera.pitch, _viewRoll);
+  List<double> _slerpTo = composeViewMatrix(
     kOrientationPresets[0].yaw,
     kOrientationPresets[0].pitch,
     0,
@@ -115,9 +153,17 @@ class _SelectionPageState extends State<SelectionPage>
     return primaryViewCubeFace(y, p);
   }
 
-  /// 测试用:落定目标姿态矩阵(锁"每步严格 90°"守门断言)。
+  /// 测试用:当前姿态矩阵。
   @visibleForTesting
   List<double> get debugPose => List.unmodifiable(_pose);
+
+  /// 测试用:当前相机(继承/orbit/归位守门)。
+  @visibleForTesting
+  CloudViewCamera get debugCamera => _camera;
+
+  /// 测试用:当前屏幕滚转。
+  @visibleForTesting
+  double get debugRoll => _viewRoll;
 
   @override
   void initState() {
@@ -145,6 +191,31 @@ class _SelectionPageState extends State<SelectionPage>
       );
     }
     if (!mounted) return;
+    // 相机继承:视图实际 viewYaw = _camera.yaw + box.yawDeg,所以继承
+    // 绝对视角时要把滑杆分量先扣掉,肉眼所见才逐帧不变。
+    final cam = widget.initialCamera;
+    final boxYaw = box.yawDeg * math.pi / 180.0;
+    _camera = cam != null
+        ? (
+            yaw: cam.yaw - boxYaw,
+            pitch: cam.pitch,
+            zoom: cam.zoom,
+            panX: cam.panX,
+            panY: cam.panY,
+            pivotX: cam.pivotX,
+            pivotY: cam.pivotY,
+            pivotZ: cam.pivotZ,
+          )
+        : (
+            yaw: kOrientationPresets[0].yaw - boxYaw,
+            pitch: kOrientationPresets[0].pitch,
+            zoom: 1.0,
+            panX: 0.0,
+            panY: 0.0,
+            pivotX: fit.cx,
+            pivotY: fit.cy,
+            pivotZ: fit.cz,
+          );
     setState(() {
       _box = box;
       _loading = false;
@@ -162,12 +233,9 @@ class _SelectionPageState extends State<SelectionPage>
     final t = Curves.easeOutCubic.transform(_presetAnim.value);
     setState(() {
       if (t >= 1.0) {
-        // 落定:精确取目标姿态角。骰子机制下 roll 不归零 —— 翻过极点
-        // 背面就是倒的,和现实骰子一致。
-        final (y, p, r) = decomposeViewMatrix(_pose);
-        _animPresetYaw = y;
-        _animPitch = p;
-        _animRoll = r;
+        final (y, p, r) = decomposeViewMatrix(_slerpTo);
+        _camera = _withPose(y - _boxYawRad, p);
+        _viewRoll = r;
         return;
       }
       final r = mulMatrix(
@@ -175,29 +243,45 @@ class _SelectionPageState extends State<SelectionPage>
         _slerpFrom,
       );
       final (y, p, roll) = decomposeViewMatrix(r);
-      _animPresetYaw = y;
-      _animPitch = p;
-      _animRoll = roll;
+      _camera = _withPose(y - _boxYawRad, p);
+      _viewRoll = roll;
     });
   }
 
-  /// 视空间 90° 旋转(premultiply 用):下/上 = 绕屏幕水平轴,右/左 =
-  /// 绕屏幕竖直轴。方向验证:Top 按下 → Front;Front 按右 → Right。
-  static const List<double> _kRollDown = [1, 0, 0, 0, 0, -1, 0, 1, 0];
-  static const List<double> _kRollUp = [1, 0, 0, 0, 0, 1, 0, -1, 0];
-  static const List<double> _kRollRight = [0, 0, 1, 0, 1, 0, -1, 0, 0];
-  static const List<double> _kRollLeft = [0, 0, -1, 0, 1, 0, 1, 0, 0];
-
-  /// 骰子滚动:目标姿态 = viewRot·当前目标姿态(严格 90°);动画从当前
-  /// 显示姿态(可能在动画中途)slerp 过去,连点自然追赶累积。
-  void _rollCube(List<double> viewRot) {
-    _slerpFrom = composeViewMatrix(_animPresetYaw, _animPitch, _animRoll);
-    _pose = mulMatrix(viewRot, _pose);
-    final (axis, angle) = axisAngleOf(mulTransposed(_pose, _slerpFrom));
+  /// 点击骰子某个面 → 该面转到正对相机(建模软件同款一键归位),
+  /// 走 SO(3) 轴角 slerp 的最短路径。
+  ///
+  /// [2026-07-28 用户签决] 六固定视图 + 四个箭头已删除:相机现在完全自由
+  /// (盒外单指 orbit),骰子既是朝向指示器也是归位入口。
+  void _snapToFace(String label) {
+    final preset = kOrientationPresets.firstWhere((p) => p.label == label);
+    var targetYaw = preset.yaw;
+    if (label == 'Top' || label == 'Bottom') {
+      // 极面朝向退化(世界 +Y 与视线平行):用最接近当前朝向的 90° 倍数
+      // 作上下文 yaw,避免从侧视角进俯视时绕一个斜轴长转。
+      const q = math.pi / 2;
+      targetYaw = (_effectiveYaw / q).roundToDouble() * q;
+    }
+    _slerpFrom = composeViewMatrix(_effectiveYaw, _camera.pitch, _viewRoll);
+    _slerpTo = composeViewMatrix(targetYaw, preset.pitch, 0);
+    final (axis, angle) = axisAngleOf(mulTransposed(_slerpTo, _slerpFrom));
+    if (angle < 1e-6) return; // 已经正对该面
     _slerpAxis = axis;
     _slerpAngle = angle;
+    _presetAnim.duration = Duration(
+      milliseconds: (200 * (angle / (math.pi / 2))).round().clamp(160, 320),
+    );
     setState(() {});
     unawaited(_presetAnim.forward(from: 0));
+  }
+
+  /// 自由 orbit / 双指平移缩放:相机唯一写入口。
+  void _onCameraChanged(CloudViewCamera cam) {
+    if (_presetAnim.isAnimating) _presetAnim.stop(); // 手一碰就接管动画
+    setState(() {
+      _camera = cam;
+      _viewRoll = 0; // 手动转视角 ⇒ 回到无滚转的自然姿态
+    });
   }
 
   void _onBoxChanged(SelectionBox b) {
@@ -300,9 +384,11 @@ class _SelectionPageState extends State<SelectionPage>
                     box: box,
                     liveBox: () => _box ?? box,
                     onBoxChanged: _onBoxChanged,
-                    viewYaw: _animPresetYaw + box.yawDeg * math.pi / 180,
-                    viewPitch: _animPitch,
-                    viewRoll: _animRoll,
+                    viewYaw: _effectiveYaw,
+                    viewPitch: _camera.pitch,
+                    viewRoll: _viewRoll,
+                    camera: _camera,
+                    onCameraChanged: _onCameraChanged,
                   ),
           ),
         ),
@@ -348,61 +434,18 @@ class _SelectionPageState extends State<SelectionPage>
   }
 
   Widget _orientationCube() {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _cubeArrow(
-          Icons.keyboard_arrow_up_rounded,
-          () => _rollCube(_kRollUp),
-          key: const ValueKey('cube-up'),
-        ),
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _cubeArrow(
-              Icons.keyboard_arrow_left_rounded,
-              () => _rollCube(_kRollLeft),
-              key: const ValueKey('cube-left'),
-            ),
-            // [2026-07-28 用户签决二轮] 立方体 = **语义朝向指示器**:只吃
-            // 预设姿态(_animPresetYaw/_animPitch),不吃滑杆分量 —— 滑杆是
-            // "点云对齐盒"的任意角微调,喂进立方体会让它常年歪着
-            // (用户实机两次指认)。预设切换动画期间立方体随动画转,落定
-            // 即整齐正对。
-            ViewCube(
-              viewYaw: _animPresetYaw,
-              viewPitch: _animPitch,
-              viewRoll: _animRoll,
-              faceLabels: _cubeFaceLabels(context),
-            ),
-            _cubeArrow(
-              Icons.keyboard_arrow_right_rounded,
-              () => _rollCube(_kRollRight),
-              key: const ValueKey('cube-right'),
-            ),
-          ],
-        ),
-        _cubeArrow(
-          Icons.keyboard_arrow_down_rounded,
-          () => _rollCube(_kRollDown),
-          key: const ValueKey('cube-down'),
-        ),
-      ],
+    // [2026-07-28 用户签决] 四个箭头删除;骰子与相机完全绑定(含自由
+    // orbit 的任意角度),点击某面 = 转到该面正对。
+    return ViewCube(
+      key: const ValueKey('view-cube'),
+      viewYaw: _effectiveYaw,
+      viewPitch: _camera.pitch,
+      viewRoll: _viewRoll,
+      faceLabels: _cubeFaceLabels(context),
+      onFaceTap: _snapToFace,
+      size: 72,
     );
   }
-
-  Widget _cubeArrow(IconData icon, VoidCallback onTap, {Key? key}) =>
-      IconButton(
-        key: key,
-        onPressed: onTap,
-        icon: Icon(icon),
-        color: Colors.white70,
-        iconSize: 18,
-        padding: EdgeInsets.zero,
-        // [2026-07-28 用户反馈] 与立方体贴紧(RS 观感)。
-        constraints: const BoxConstraints(minWidth: 24, minHeight: 18),
-        visualDensity: VisualDensity.compact,
-      );
 
   Widget _bottomPanel(SelectionBox box) {
     return Container(
