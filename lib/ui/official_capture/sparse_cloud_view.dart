@@ -378,6 +378,7 @@ class SparseCloudPainter extends CustomPainter {
     this.selectionBox,
     this.drawSelectionWireframe = true,
     this.orthographic = false,
+    this.roll = 0,
   });
 
   final Float32List xyz;
@@ -412,6 +413,10 @@ class SparseCloudPainter extends CustomPainter {
   /// 正交投影(选区编辑视图专用;见 CloudCamera.orthographic)。查看器
   /// 保持透视(false)。
   final bool orthographic;
+
+  /// 屏幕滚转(过极翻面动画专用;见 CloudCamera.roll)。roll==0 时热循环
+  /// 零开销跳过,查看器路径逐位不变。
+  final double roll;
 
   // ── Color pipeline: VERBATIM port of the desktop viewer_ab.html chain ──
   // PLY sRGB bytes → exact sRGB EOTF decode (their S2L table) →
@@ -832,11 +837,14 @@ class SparseCloudPainter extends CustomPainter {
       radius: _radius,
       fillK: fitFillK,
       orthographic: orthographic,
+      roll: roll,
     ).projectionFor(size);
     final cosY = proj.cosY, sinY = proj.sinY;
     final cosP = proj.cosP, sinP = proj.sinP;
     final f = proj.f, camDist = proj.camDist, ox = proj.ox, oy = proj.oy;
     final ortho = proj.orthographic;
+    final cosR = proj.cosR, sinR = proj.sinR;
+    final hasRoll = !(sinR == 0.0 && cosR == 1.0);
 
     var hasColor = false;
     for (var i = 0; i < rgb.length; i += 3 * math.max(1, stride)) {
@@ -882,8 +890,13 @@ class SparseCloudPainter extends CustomPainter {
       // right-handed again, matching the desktop three.js viewer.
       // 除数按投影模式选(与 CloudProjection.project() 同式,parity 测试锁)
       final dd = ortho ? camDist : depth;
-      final vx = ox - x1 * f / dd;
-      final vy = oy - y2 * f / dd;
+      var vx = ox - x1 * f / dd;
+      var vy = oy - y2 * f / dd;
+      if (hasRoll) {
+        final rx = vx - ox, ry = vy - oy;
+        vx = ox + rx * cosR - ry * sinR;
+        vy = oy + rx * sinR + ry * cosR;
+      }
       if (vx < -24 ||
           vx > size.width + 24 ||
           vy < -24 ||
@@ -963,7 +976,14 @@ class SparseCloudPainter extends CustomPainter {
           final depth = z2 + camDist;
           if (depth <= 1e-6) return null;
           final dd = ortho ? camDist : depth;
-          return Offset(ox - x1 * f / dd, oy - y2 * f / dd);
+          var lx = ox - x1 * f / dd;
+          var ly = oy - y2 * f / dd;
+          if (hasRoll) {
+            final rx = lx - ox, ry = ly - oy;
+            lx = ox + rx * cosR - ry * sinR;
+            ly = oy + rx * sinR + ry * cosR;
+          }
+          return Offset(lx, ly);
         }
 
         final pa = proj3(a), pb = proj3(b);

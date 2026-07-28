@@ -141,11 +141,15 @@ class ViewCube extends StatelessWidget {
     super.key,
     required this.viewYaw,
     required this.viewPitch,
+    this.viewRoll = 0,
     this.size = 72,
   });
 
   final double viewYaw;
   final double viewPitch;
+
+  /// 屏幕滚转(过极翻面动画期间与点云同步;见 CloudCamera.roll)。
+  final double viewRoll;
   final double size;
 
   @override
@@ -154,17 +158,26 @@ class ViewCube extends StatelessWidget {
       width: size,
       height: size,
       child: CustomPaint(
-        painter: _ViewCubePainter(yaw: viewYaw, pitch: viewPitch),
+        painter: _ViewCubePainter(
+          yaw: viewYaw,
+          pitch: viewPitch,
+          roll: viewRoll,
+        ),
       ),
     );
   }
 }
 
 class _ViewCubePainter extends CustomPainter {
-  const _ViewCubePainter({required this.yaw, required this.pitch});
+  const _ViewCubePainter({
+    required this.yaw,
+    required this.pitch,
+    required this.roll,
+  });
 
   final double yaw;
   final double pitch;
+  final double roll;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -181,8 +194,11 @@ class _ViewCubePainter extends CustomPainter {
       pivotY: 0,
       pivotZ: 0,
       radius: 1,
-      fillK: 2.05,
+      // [2026-07-28 用户反馈] 向里收紧:2.05 → 2.45,立方体占画布 ~77%,
+      // 与四个箭头贴近(RS 观感);斜角对角轻微越出画布边缘可接受(黑底)。
+      fillK: 2.45,
       orthographic: true,
+      roll: roll,
     ).projectionFor(size);
     final (_, _, centerDepth) = proj.project(0, 0, 0);
 
@@ -259,5 +275,5 @@ class _ViewCubePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_ViewCubePainter old) =>
-      old.yaw != yaw || old.pitch != pitch;
+      old.yaw != yaw || old.pitch != pitch || old.roll != roll;
 }

@@ -256,6 +256,7 @@ class SelectionCloudView extends StatefulWidget {
     required this.onBoxChanged,
     required this.viewYaw,
     required this.viewPitch,
+    this.viewRoll = 0,
   });
 
   /// 3 floats per point(full set)。
@@ -271,6 +272,9 @@ class SelectionCloudView extends StatefulWidget {
   /// 视角 yaw(**已含**滑杆分量 —— Task 5 传 preset.yaw + box.yawDeg·π/180)。
   final double viewYaw;
   final double viewPitch;
+
+  /// 屏幕滚转(过极翻面动画期间非零;见 CloudCamera.roll)。
+  final double viewRoll;
 
   @override
   State<SelectionCloudView> createState() => _SelectionCloudViewState();
@@ -302,6 +306,7 @@ class _SelectionCloudViewState extends State<SelectionCloudView> {
     // [2026-07-27 用户签决"框外必须全红"] 编辑视图正交:矩形/手柄/拖拽
     // 逆映射与点云渲染(painter 同模式)在同一正交空间,零透视错位。
     orthographic: true,
+    roll: widget.viewRoll,
   ).projectionFor(size);
 
   void _onScaleStart(ScaleStartDetails d) {
@@ -394,6 +399,7 @@ class _SelectionCloudViewState extends State<SelectionCloudView> {
                     // [2026-07-27 用户签决"框外必须全红"] 编辑视图用正交:
                     // 矩形与盒投影严格重合,屏幕框外 ⇔ 可见两轴出盒 ⇔ 红。
                     orthographic: true,
+                    roll: widget.viewRoll,
                   ),
                   size: Size.infinite,
                 ),

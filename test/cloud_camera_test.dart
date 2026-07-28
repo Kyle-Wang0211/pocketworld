@@ -160,4 +160,90 @@ void main() {
       expect(p.worldPerPixelAt(999), closeTo(camDist / f, 1e-12));
     }
   });
+
+  test('SO(3) 工具:compose↔decompose 随机 roundtrip', () {
+    final rnd = math.Random(11);
+    for (var i = 0; i < 200; i++) {
+      final yaw = rnd.nextDouble() * 6 - 3;
+      final pitch = rnd.nextDouble() * 3 - 1.5;
+      final roll = rnd.nextDouble() * 6 - 3;
+      final m = composeViewMatrix(yaw, pitch, roll);
+      final (y2, p2, r2) = decomposeViewMatrix(m);
+      final m2 = composeViewMatrix(y2, p2, r2);
+      for (var k = 0; k < 9; k++) {
+        expect(m2[k], closeTo(m[k], 1e-9), reason: 'i=$i k=$k');
+      }
+    }
+  });
+
+  test('slerp 端点与角度:相邻面 90°,对面 180°;落定即目标', () {
+    List<double> pose(double y, double p) => composeViewMatrix(y, p, 0);
+    // Front→Top:90°
+    var (_, ang) = axisAngleOf(
+      mulTransposed(pose(0, -math.pi / 2), pose(0, 0)),
+    );
+    expect(ang, closeTo(math.pi / 2, 1e-9));
+    // Bottom(lastH=Front 停留态)→ Back:单轴一次旋转(过极翻+回正合成)
+    final from = pose(0, math.pi / 2);
+    final to = pose(math.pi, 0);
+    final (axis, a2) = axisAngleOf(mulTransposed(to, from));
+    expect(a2, closeTo(math.pi, 1e-6));
+    // 中点姿态仍是正交矩阵且 t=1 精确落到目标
+    final mid = mulMatrix(rotationFromAxisAngle(axis, a2 / 2), from);
+    final (my, mp, mr) = decomposeViewMatrix(mid);
+    final re = composeViewMatrix(my, mp, mr);
+    for (var k = 0; k < 9; k++) {
+      expect(re[k], closeTo(mid[k], 1e-9));
+    }
+    final end = mulMatrix(rotationFromAxisAngle(axis, a2), from);
+    for (var k = 0; k < 9; k++) {
+      expect(end[k], closeTo(to[k], 1e-9));
+    }
+  });
+
+  test('roll 管线:project 带 roll 与手工二维旋转一致;基向量含 roll', () {
+    const cam = CloudCamera(
+      yaw: 0.4,
+      pitch: -0.3,
+      zoom: 1,
+      panX: 0,
+      panY: 0,
+      pivotX: 0,
+      pivotY: 0,
+      pivotZ: 0,
+      radius: 2,
+      roll: 0.7,
+    );
+    const size = Size(400, 400);
+    final p = cam.projectionFor(size);
+    const noRoll = CloudCamera(
+      yaw: 0.4,
+      pitch: -0.3,
+      zoom: 1,
+      panX: 0,
+      panY: 0,
+      pivotX: 0,
+      pivotY: 0,
+      pivotZ: 0,
+      radius: 2,
+    );
+    final p0 = noRoll.projectionFor(size);
+    final (sx0, sy0, d0) = p0.project(0.5, -0.2, 0.7);
+    final (sx1, sy1, d1) = p.project(0.5, -0.2, 0.7);
+    expect(d1, closeTo(d0, 1e-12));
+    final c = math.cos(0.7), s = math.sin(0.7);
+    final dx = sx0 - 200, dy = sy0 - 200;
+    expect(sx1, closeTo(200 + dx * c - dy * s, 1e-9));
+    expect(sy1, closeTo(200 + dx * s + dy * c, 1e-9));
+    // 基向量数值微分(roll 下 right/up 仍应与投影一致)
+    final r = p.rightAxisWorld();
+    const eps = 1e-4;
+    final (rx, ry, _) = p.project(
+      0.5 + r[0] * eps,
+      -0.2 + r[1] * eps,
+      0.7 + r[2] * eps,
+    );
+    expect((rx - sx1) / eps, greaterThan(0)); // 屏幕 +x
+    expect(((ry - sy1) / eps).abs(), lessThan(1e-1));
+  });
 }

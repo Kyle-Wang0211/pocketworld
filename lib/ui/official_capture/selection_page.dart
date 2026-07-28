@@ -11,6 +11,14 @@ import 'package:flutter/material.dart';
 
 import '../../official_capture/selection_box.dart';
 import '../../official_util/device_log.dart';
+import 'cloud_camera.dart'
+    show
+        composeViewMatrix,
+        decomposeViewMatrix,
+        mulMatrix,
+        mulTransposed,
+        axisAngleOf,
+        rotationFromAxisAngle;
 import 'selection_cloud_view.dart';
 import 'view_cube.dart';
 import 'sparse_cloud_view.dart' show SparseCloudPainter;
@@ -66,15 +74,22 @@ class _SelectionPageState extends State<SelectionPage>
   // deactivated widget's ancestor is unsafe"(真机同样会炸,非测试专属)。
   late final AnimationController _presetAnim;
 
-  double _fromYaw = kOrientationPresets[0].yaw;
-  double _fromPitch = kOrientationPresets[0].pitch;
   double _animPresetYaw = kOrientationPresets[0].yaw;
   double _animPitch = kOrientationPresets[0].pitch;
+  double _animRoll = 0;
 
-  /// 本次动画的 yaw 目标(见 _selectPreset)—— 与 kOrientationPresets 表中
-  /// 的原始 yaw 不同:已归一化到与 _fromYaw 最短弧,避免 Back↔Left(表中
-  /// 相差 270°)之类的预设走 3/4 圈长弧动画。
-  double _toYaw = kOrientationPresets[0].yaw;
+  // [2026-07-28 用户签决"抄成熟机制"] 预设切换动画 = SO(3) 轴角 slerp
+  // (ViewCube/three.js CameraControls 同款):从当前姿态到目标规范姿态
+  // 绕单一固定轴平滑旋转。Bottom→Back 因此是一次连续翻转(翻+回正合成
+  // 单轴),不再是 yaw 空间的水平长绕。中间帧分解回 (yaw,pitch,roll) 喂
+  // 现有投影管线;落定 = 目标规范角,roll 精确归零。
+  List<double> _slerpFrom = composeViewMatrix(
+    kOrientationPresets[0].yaw,
+    kOrientationPresets[0].pitch,
+    0,
+  );
+  List<double> _slerpAxis = [1, 0, 0];
+  double _slerpAngle = 0;
 
   /// 测试用:直接读当前盒(见 test/selection_page_test.dart)。
   @visibleForTesting
@@ -125,34 +140,39 @@ class _SelectionPageState extends State<SelectionPage>
 
   void _onPresetTick() {
     final t = Curves.easeOutCubic.transform(_presetAnim.value);
-    final targetPitch = kOrientationPresets[_presetIdx].pitch;
     setState(() {
-      // 用归一化后的 _toYaw(不是表里的原始 yaw)做 lerp 目标,见
-      // _selectPreset 里的最短弧归一化。
-      _animPresetYaw = _fromYaw + (_toYaw - _fromYaw) * t;
-      _animPitch = _fromPitch + (targetPitch - _fromPitch) * t;
+      if (t >= 1.0) {
+        // 落定:精确取目标规范角,不经分解(避免尾差),roll 归零。
+        _animPresetYaw = kOrientationPresets[_presetIdx].yaw;
+        _animPitch = kOrientationPresets[_presetIdx].pitch;
+        _animRoll = 0;
+        return;
+      }
+      final r = mulMatrix(
+        rotationFromAxisAngle(_slerpAxis, _slerpAngle * t),
+        _slerpFrom,
+      );
+      final (y, p, roll) = decomposeViewMatrix(r);
+      _animPresetYaw = y;
+      _animPitch = p;
+      _animRoll = roll;
     });
   }
 
   void _selectPreset(int idx) {
     if (idx == _presetIdx) return;
-    _fromYaw = _animPresetYaw;
-    _fromPitch = _animPitch;
-    // Back(π)↔Left(-π/2)之类的预设在表里相差 270°:朴素 lerp 会摆动经过
-    // Front/Right,走 3/4 圈长弧。把目标 yaw 归一化到与 _fromYaw 的最短弧
-    // (±π 内)再存进动画目标 _toYaw,而不是改 kOrientationPresets 表本身
-    // (表仍是每个朝向的规范角度,供其它读者——如 orientation cube 标签——
-    // 使用)。动画结束后 _animPresetYaw 可能带 2π 整数倍偏移,但它只会喂
-    // 进 viewYaw 的 cos/sin(见 _buildLoaded),周期函数对整数倍 2π 偏移
-    // 不敏感,不影响渲染或后续联动计算。
-    var target = kOrientationPresets[idx].yaw;
-    while (target - _fromYaw > math.pi) {
-      target -= 2 * math.pi;
-    }
-    while (target - _fromYaw < -math.pi) {
-      target += 2 * math.pi;
-    }
-    _toYaw = target;
+    // slerp:从当前(可能在动画中途,含 roll)姿态到目标规范姿态的
+    // 单轴最短旋转 —— 相邻面自动 90°,对面 180°,方向由 SO(3) 测地线
+    // 决定(Bottom→Back = 一次平滑翻转,不走 yaw 水平长绕)。
+    _slerpFrom = composeViewMatrix(_animPresetYaw, _animPitch, _animRoll);
+    final to = composeViewMatrix(
+      kOrientationPresets[idx].yaw,
+      kOrientationPresets[idx].pitch,
+      0,
+    );
+    final (axis, angle) = axisAngleOf(mulTransposed(to, _slerpFrom));
+    _slerpAxis = axis;
+    _slerpAngle = angle;
     if (idx >= 1 && idx <= 4) _lastHorizontalIdx = idx; // 供上下箭头回落
     setState(() => _presetIdx = idx);
     unawaited(_presetAnim.forward(from: 0));
@@ -315,6 +335,7 @@ class _SelectionPageState extends State<SelectionPage>
                     onBoxChanged: _onBoxChanged,
                     viewYaw: _animPresetYaw + box.yawDeg * math.pi / 180,
                     viewPitch: _animPitch,
+                    viewRoll: _animRoll,
                   ),
           ),
         ),
@@ -357,7 +378,11 @@ class _SelectionPageState extends State<SelectionPage>
             // "点云对齐盒"的任意角微调,喂进立方体会让它常年歪着
             // (用户实机两次指认)。预设切换动画期间立方体随动画转,落定
             // 即整齐正对。
-            ViewCube(viewYaw: _animPresetYaw, viewPitch: _animPitch),
+            ViewCube(
+              viewYaw: _animPresetYaw,
+              viewPitch: _animPitch,
+              viewRoll: _animRoll,
+            ),
             _cubeArrow(
               Icons.keyboard_arrow_right_rounded,
               () => _cycleHorizontal(1),
