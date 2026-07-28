@@ -17,6 +17,8 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/official_capture/selection_box.dart';
+import 'package:pocketworld_flutter/ui/official_capture/cloud_camera.dart'
+    show axisAngleOf, mulTransposed;
 import 'package:pocketworld_flutter/ui/official_capture/selection_cloud_view.dart';
 import 'package:pocketworld_flutter/ui/official_capture/selection_page.dart';
 import 'package:pocketworld_flutter/ui/official_capture/view_cube.dart';
@@ -279,7 +281,7 @@ void main() {
       () => tester.any(find.byKey(const ValueKey('cube-down'))),
     );
     await tester.pumpAndSettle();
-    // 初始 Top;下箭头 → 水平面(默认 Front),再下 → Bottom,再下 → 不变。
+    // [2026-07-28 骰子机制] 初始 Top;每按一次绕屏幕水平轴滚 90°。
     expect(_facingLabel(tester), 'Top');
     await tester.tap(find.byKey(const ValueKey('cube-down')));
     await tester.pumpAndSettle();
@@ -287,15 +289,14 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('cube-down')));
     await tester.pumpAndSettle();
     expect(_facingLabel(tester), 'Bottom');
-    // 过极循环(ViewCube 行为):Bottom 再下 → 对面(Front 的对面=Back),
-    // 每步仍是 90° 相邻面,无死点无直达。
+    // 继续下滚过极:Bottom → Back(骰子翻过去,背面倒置显示,不回正)。
     await tester.tap(find.byKey(const ValueKey('cube-down')));
     await tester.pumpAndSettle();
     expect(_facingLabel(tester), 'Back');
-    // 到达 Back 后 lastH=Back:上→Top,再上→过极到 Back 的对面=Front。
+    // 反向 = 严格原路倒放:上→Bottom,再上→Front。
     await tester.tap(find.byKey(const ValueKey('cube-up')));
     await tester.pumpAndSettle();
-    expect(_facingLabel(tester), 'Top');
+    expect(_facingLabel(tester), 'Bottom');
     await tester.tap(find.byKey(const ValueKey('cube-up')));
     await tester.pumpAndSettle();
     expect(_facingLabel(tester), 'Front');
@@ -318,8 +319,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(_facingLabel(tester), 'Top');
     // [2026-07-28 用户实机指认] 修复前一直按下 = bottom-back-bottom-front
-    // 震荡,永远经过不了 Top。滚动动量环后连续同向 = 沿同一竖直大圆绕圈,
-    // 四面全经过并循环。
+    // 震荡,永远经过不了 Top。骰子机制下连续同向 = 绕同一屏幕轴一直滚,
+    // 四面全经过并循环,每步严格 90°。
     const expected = [
       'Front', 'Bottom', 'Back', 'Top', //
       'Front', 'Bottom', 'Back', 'Top',
@@ -331,11 +332,10 @@ void main() {
       seen.add(_facingLabel(tester));
     }
     expect(seen, expected);
-    // 接着连续上箭头:首步 = 原路 retrace(Top 刚从 Back 滚上来,按上
-    // 应先倒回 Back),随后进入反向环,四面循环。
+    // 接着连续上箭头 = 严格倒放:反向循环。
     const expectedUp = [
-      'Back', 'Top', 'Front', 'Bottom', //
-      'Back', 'Top', 'Front', 'Bottom',
+      'Back', 'Bottom', 'Front', 'Top', //
+      'Back', 'Bottom', 'Front', 'Top',
     ];
     final seenUp = <String>[];
     for (var i = 0; i < expectedUp.length; i++) {
@@ -387,7 +387,7 @@ void main() {
     expect(cloud.viewYaw, closeTo(cubeYawAfter + yawDeg * math.pi / 180, 1e-9));
   });
 
-  testWidgets('上下箭头进出 Top 带上下文 yaw:Right 上翻后画面朝向不变', (tester) async {
+  testWidgets('骰子守门:任意箭头序列每步落定姿态相对上一步严格 90°', (tester) async {
     late Directory dir;
     late Float32List xyz;
     late Uint8List rgb;
@@ -402,21 +402,22 @@ void main() {
     );
     await _pumpUntilLoaded(tester);
     await tester.pumpAndSettle();
-    // Top(初始)→ 下到 Front → 右到 Right → 上到 Top:
-    await tester.tap(find.byKey(const ValueKey('cube-down')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('cube-right')));
-    await tester.pumpAndSettle();
-    expect(_facingLabel(tester), 'Right');
-    await tester.tap(find.byKey(const ValueKey('cube-up')));
-    await tester.pumpAndSettle();
-    expect(_facingLabel(tester), 'Top');
-    // 上下文 yaw:Top 停留姿态的 yaw = Right 的 π/2(纯 90° 上翻,不歪转
-    // 到"up 朝 Front"的 Top),滑杆为 0 时 viewYaw 应 ≈ π/2。
-    final view = tester.widget<SelectionCloudView>(
-      find.byType(SelectionCloudView),
-    );
-    expect(view.viewYaw, closeTo(math.pi / 2, 1e-6));
-    expect(view.viewRoll, closeTo(0, 1e-9)); // 落定 roll 归零
+    // [2026-07-28 用户签决三轮] "必须只转 90°,像现实扔骰子" —— 混合序列
+    // (含过极、含左右、含反向)逐步断言相对旋转角恒为 π/2,无任何 120°
+    // 斜转或 180° 合成。
+    const keys = [
+      'cube-down', 'cube-right', 'cube-up', 'cube-up', //
+      'cube-left', 'cube-down', 'cube-down', 'cube-right',
+    ];
+    dynamic page() => tester.state(find.byType(SelectionPage));
+    var prev = (page() as dynamic).debugPose as List<double>;
+    for (final k in keys) {
+      await tester.tap(find.byKey(ValueKey(k)));
+      await tester.pumpAndSettle();
+      final cur = (page() as dynamic).debugPose as List<double>;
+      final (_, angle) = axisAngleOf(mulTransposed(cur, prev));
+      expect(angle, closeTo(math.pi / 2, 1e-9), reason: 'step $k 不是 90°');
+      prev = cur;
+    }
   });
 }

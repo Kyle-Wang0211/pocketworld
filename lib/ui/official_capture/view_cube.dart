@@ -157,14 +157,13 @@ class ViewCube extends StatelessWidget {
     return SizedBox(
       width: size,
       height: size,
-      // 动画斜角时立方体对角会略越出画布,裁掉,别压到旁边的箭头。
-      child: ClipRect(
-        child: CustomPaint(
-          painter: _ViewCubePainter(
-            yaw: viewYaw,
-            pitch: viewPitch,
-            roll: viewRoll,
-          ),
+      // [2026-07-28 用户反馈] 不裁剪:此前 ClipRect 在转动时把伸出画布的
+      // 边角裁没了(用户视觉上像被"相框"遮挡)。CustomPaint 允许溢出。
+      child: CustomPaint(
+        painter: _ViewCubePainter(
+          yaw: viewYaw,
+          pitch: viewPitch,
+          roll: viewRoll,
         ),
       ),
     );
