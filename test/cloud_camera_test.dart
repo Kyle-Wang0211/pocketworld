@@ -53,7 +53,7 @@ void main() {
       final cosP = math.cos(cam.pitch), sinP = math.sin(cam.pitch);
       final half = size.shortestSide * 0.5;
       final f = half * cam.fillK * cam.zoom;
-      final camDist = cam.radius * 3.2;
+      final camDist = cam.radius * kCamDistK;
       final ox = size.width * 0.5 + cam.panX;
       final oy = size.height * 0.5 + cam.panY;
       final px = wx - cam.pivotX, py = wy - cam.pivotY, pz = wz - cam.pivotZ;
@@ -146,7 +146,7 @@ void main() {
       final cosY = math.cos(cam.yaw), sinY = math.sin(cam.yaw);
       final cosP = math.cos(cam.pitch), sinP = math.sin(cam.pitch);
       final f = size.shortestSide * 0.5 * cam.fillK * cam.zoom;
-      final camDist = cam.radius * 3.2;
+      final camDist = cam.radius * kCamDistK;
       final x1 = wx * cosY + wz * sinY;
       final z1 = -wx * sinY + wz * cosY;
       final y2 = wy * cosP - z1 * sinP;

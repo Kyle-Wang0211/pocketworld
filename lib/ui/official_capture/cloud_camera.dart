@@ -19,7 +19,7 @@ class CloudCamera {
     required this.pivotY,
     required this.pivotZ,
     required this.radius,
-    this.fillK = 2.6, // SparseCloudView 开屏取景系数(user-locked 2026-07-06)
+    this.fillK = kFitFillK, // 开屏取景系数(见 kFitFillK)
     this.orthographic = false,
     this.roll = 0,
   });
@@ -53,7 +53,7 @@ class CloudCamera {
       cosP: math.cos(pitch),
       sinP: math.sin(pitch),
       f: half * fillK * zoom,
-      camDist: radius * 3.2,
+      camDist: radius * kCamDistK,
       ox: size.width * 0.5 + panX,
       oy: size.height * 0.5 + panY,
       pivotX: pivotX,
@@ -271,3 +271,14 @@ List<double> rotationFromAxisAngle(List<double> axis, double angle) {
     t * x * z - s * y, t * y * z + s * x, t * z * z + c,
   ];
 }
+
+/// 相机距离系数(camDist = radius·kCamDistK)与取景系数(f = half·fillK·zoom)。
+///
+/// [2026-07-28 用户实机指认"3D 框不是一个立方体"] 原值 3.2 / 2.6 是"物体
+/// 刚好填满画面"的最近距离:半径 r 的包围球,其外接立方体的角落在 1.73r,
+/// 深度跨度 3.2±1.73 ⇒ 近远角投影尺度差 **3.3×**,立方体被拉成星形(点云
+/// 集中在中心所以看不出来,画上盒子才暴露)。改远摄:距离 ×2.5、焦距 ×2.5,
+/// **成像大小逐像素不变**(f/camDist 恒为 0.8125),尺度差降到 1.55×,
+/// 立方体看起来就是立方体。两个常量必须同比,否则取景会变。
+const double kCamDistK = 8.0;
+const double kFitFillK = 6.5;

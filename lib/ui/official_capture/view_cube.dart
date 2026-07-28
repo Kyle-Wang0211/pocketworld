@@ -9,6 +9,8 @@
 //
 // 面→世界法向的标签映射与投影语义一致(推导:pitch=−90° 时朝相机面 =
 // +Y ⇒ Top;yaw=0,pitch=0 时朝相机面 = −Z ⇒ Front;yaw=+90° ⇒ +X=Right)。
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import 'cloud_camera.dart';
@@ -197,7 +199,9 @@ bool _pointInQuad(List<Offset> q, Offset p) {
 }
 
 /// 立方体投影充满系数(命中与绘制必须同值,否则点击与所见错位)。
-const double kViewCubeFillK = 2.9;
+/// 立方体填充系数。与 kCamDistK 同比:原 2.9 是 camDist=3.2 时代的值,
+/// 相机改远摄后要 ×(8.0/3.2) 才能保持同样大小(且立方体不再被透视拉歪)。
+const double kViewCubeFillK = 2.9 * kCamDistK / 3.2;
 
 /// 与点云相机绑定的 3D 朝向立方体。
 class ViewCube extends StatelessWidget {
@@ -306,10 +310,13 @@ class _ViewCubePainter extends CustomPainter {
     // [2026-07-28 用户实机反馈] 标签只画**最正对**的一个面:斜视角下多面
     // 同时朝相机时逐面画标签会拼成 "RightBack",且仿射贴面在反侧手性下
     // 文字镜像、沿倾斜面延伸还会跑出面界。
+    // [2026-07-28 用户签决] 面**实心不透明**(此前 0x2E 半透明,叠在一起
+    // 像玻璃);**每个朝相机的面都一直显示文字**(此前只画最正对的一面)。
     final primary = primaryViewCubeFace(yaw, pitch);
     for (final f in faces) {
       final (_, _, nd) = proj.project(f.normal[0], f.normal[1], f.normal[2]);
       final facing = nd < centerDepth - 1e-9;
+      if (!facing) continue; // 实心后背面被完全遮挡,不画
       final pts = f.corners
           .map((c) {
             final (sx, sy, _) = proj.project(c[0], c[1], c[2]);
@@ -317,28 +324,22 @@ class _ViewCubePainter extends CustomPainter {
           })
           .toList(growable: false);
       final path = Path()..addPolygon(pts, true);
-      if (facing) {
-        canvas.drawPath(path, Paint()..color = const Color(0x2EFFFFFF));
-        canvas.drawPath(
-          path,
-          Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.2
-            ..color = const Color(0xB3FFFFFF),
-        );
-        if (f.label == primary) {
-          _drawFaceLabel(canvas, faceLabels?[f.label] ?? f.label, pts);
-        }
-      } else {
-        // 背面只画极淡描边,保留立方体体积感。
-        canvas.drawPath(
-          path,
-          Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 0.8
-            ..color = const Color(0x22FFFFFF),
-        );
-      }
+      canvas.drawPath(
+        path,
+        Paint()
+          // 当前正对的面提亮,一眼看出朝向。
+          ..color = f.label == primary
+              ? const Color(0xFF8A8A90)
+              : const Color(0xFF5A5A60),
+      );
+      canvas.drawPath(
+        path,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.2
+          ..color = const Color(0xFFFFFFFF),
+      );
+      _drawFaceLabel(canvas, faceLabels?[f.label] ?? f.label, pts);
     }
   }
 
@@ -350,22 +351,37 @@ class _ViewCubePainter extends CustomPainter {
   void _drawFaceLabel(Canvas canvas, String label, List<Offset> pts) {
     final cx = (pts[0].dx + pts[1].dx + pts[2].dx + pts[3].dx) / 4;
     final cy = (pts[0].dy + pts[1].dy + pts[2].dy + pts[3].dy) / 4;
+    // 面投影包围盒 —— 斜视角下的面很窄,字号要自适应,否则文字跑出面外。
+    var minX = pts[0].dx, maxX = pts[0].dx, minY = pts[0].dy, maxY = pts[0].dy;
+    for (final p in pts) {
+      minX = math.min(minX, p.dx);
+      maxX = math.max(maxX, p.dx);
+      minY = math.min(minY, p.dy);
+      maxY = math.max(maxY, p.dy);
+    }
+    final availW = (maxX - minX) * 0.86, availH = (maxY - minY) * 0.86;
 
-    final tp = TextPainter(
+    TextPainter build(double fs) => TextPainter(
       text: TextSpan(
         text: label,
-        style: const TextStyle(
+        style: TextStyle(
           color: Colors.white,
-          fontSize: 11,
+          fontSize: fs,
           fontWeight: FontWeight.w600,
-          shadows: [Shadow(color: Color(0xCC000000), blurRadius: 3)],
+          shadows: const [Shadow(color: Color(0x99000000), blurRadius: 2)],
         ),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
 
-    // [2026-07-28 用户反馈] 不加底色,靠文字阴影保读性。
-    tp.paint(canvas, Offset(cx - tp.width / 2, cy - tp.height / 2));
+    for (var fs = 11.0; fs >= 6.0; fs -= 1.0) {
+      final tp = build(fs);
+      if (tp.width <= availW && tp.height <= availH) {
+        tp.paint(canvas, Offset(cx - tp.width / 2, cy - tp.height / 2));
+        return;
+      }
+    }
+    // 面太窄(接近侧视)⇒ 放弃这一面的文字,不硬塞出界。
   }
 
   @override

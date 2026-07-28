@@ -6,6 +6,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/official_capture/selection_box.dart';
 import 'package:pocketworld_flutter/ui/official_capture/cloud_camera.dart';
 import 'package:pocketworld_flutter/ui/official_capture/selection_handles_3d.dart';
+import 'package:pocketworld_flutter/ui/official_capture/sparse_cloud_view.dart'
+    show selectionBoxCorners;
 
 const _box = SelectionBox(
   cx: 0.2,
@@ -195,5 +197,68 @@ void main() {
     expect(q[0], closeTo(-1, 1e-12));
     expect(q[2], closeTo(0, 1e-12));
     expect(math.max(p[1].abs(), q[1].abs()), closeTo(0, 1e-12));
+  });
+
+  test('立方体看起来是立方体:同向边投影长度差 < 1.6×(远摄相机守门)', () {
+    // [2026-07-28 用户实机指认"3D 框不是一个立方体"] 根因是相机太近:
+    // camDist=3.2r 时立方体角落(1.73r)深度跨度让近远边投影差 3.3×,盒被
+    // 拉成星形。改远摄(kCamDistK=8)后差值必须收敛。
+    const cube = SelectionBox(
+      cx: 0,
+      cy: 0,
+      cz: 0,
+      sx: 2,
+      sy: 2,
+      sz: 2,
+      yawDeg: 0,
+    );
+    final proj = CloudCamera(
+      yaw: 0.6,
+      pitch: -0.42,
+      zoom: 1,
+      panX: 0,
+      panY: 0,
+      pivotX: 0,
+      pivotY: 0,
+      pivotZ: 0,
+      radius: 1,
+    ).projectionFor(const Size(390, 640));
+
+    Offset px(List<double> w) {
+      final (x, y, _) = proj.project(w[0], w[1], w[2]);
+      return Offset(x, y);
+    }
+
+    final c = selectionBoxCorners(cube);
+    const edgeGroups = [
+      [
+        [0, 1],
+        [2, 3],
+        [4, 5],
+        [6, 7],
+      ], // x 向
+      [
+        [0, 2],
+        [1, 3],
+        [4, 6],
+        [5, 7],
+      ], // y 向
+      [
+        [0, 4],
+        [1, 5],
+        [2, 6],
+        [3, 7],
+      ], // z 向
+    ];
+    for (final g in edgeGroups) {
+      final lens = g.map((e) => (px(c[e[0]]) - px(c[e[1]])).distance).toList();
+      final ratio = lens.reduce(math.max) / lens.reduce(math.min);
+      expect(ratio, lessThan(1.6), reason: '同向边长度差 $ratio 过大');
+    }
+  });
+
+  test('远摄改造保持成像大小:fillK/camDist 比值不变', () {
+    // 距离与焦距必须同比改,否则取景会变(点云突然变大/变小)。
+    expect(kFitFillK / kCamDistK, closeTo(2.6 / 3.2, 1e-12));
   });
 }

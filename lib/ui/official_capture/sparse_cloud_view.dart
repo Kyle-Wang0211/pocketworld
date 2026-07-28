@@ -704,7 +704,7 @@ class SparseCloudPainter extends CustomPainter {
   // cloud_camera.dart), but exposing this one lets
   // test/cloud_camera_test.dart assert `CloudCamera(...).fillK ==
   // SparseCloudPainter.fitFillK` as a runtime drift guard.
-  static const double fitFillK = 2.6;
+  static const double fitFillK = kFitFillK;
 
   /// Ensures the fit cache (center + radius) for [xyz] and returns it — the
   /// widget uses this to seed / reset the orbit pivot without re-deriving the
