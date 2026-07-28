@@ -852,6 +852,12 @@ abstract class AppL10n {
   /// In en, this message translates to:
   /// **'Bottom'**
   String get cubeFaceBottom;
+
+  /// No description provided for @selectionBackToPreview.
+  ///
+  /// In en, this message translates to:
+  /// **'Back to Preview'**
+  String get selectionBackToPreview;
 }
 
 class _AppL10nDelegate extends LocalizationsDelegate<AppL10n> {

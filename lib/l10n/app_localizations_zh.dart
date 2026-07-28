@@ -433,4 +433,7 @@ class AppL10nZh extends AppL10n {
 
   @override
   String get cubeFaceBottom => '底';
+
+  @override
+  String get selectionBackToPreview => '返回预览页面';
 }

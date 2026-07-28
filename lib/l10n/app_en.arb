@@ -305,5 +305,6 @@
   "cubeFaceRight": "Right",
   "cubeFaceBack": "Back",
   "cubeFaceLeft": "Left",
-  "cubeFaceBottom": "Bottom"
+  "cubeFaceBottom": "Bottom",
+  "selectionBackToPreview": "Back to Preview"
 }

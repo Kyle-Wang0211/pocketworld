@@ -160,5 +160,6 @@
   "cubeFaceRight": "右",
   "cubeFaceBack": "后",
   "cubeFaceLeft": "左",
-  "cubeFaceBottom": "底"
+  "cubeFaceBottom": "底",
+  "selectionBackToPreview": "返回预览页面"
 }

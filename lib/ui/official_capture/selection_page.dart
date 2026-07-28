@@ -309,12 +309,23 @@ class _SelectionPageState extends State<SelectionPage>
         Positioned(
           top: 8,
           left: 4,
-          child: IconButton(
+          // [2026-07-28 用户签决] 返回箭头后带文字"返回预览页面"。
+          child: TextButton.icon(
             key: const ValueKey('selection-back'),
             onPressed: () => unawaited(_onBackPressed()),
-            icon: const Icon(Icons.arrow_back_ios_new_rounded),
-            color: Colors.white,
-            iconSize: 22,
+            icon: const Icon(
+              Icons.arrow_back_ios_new_rounded,
+              color: Colors.white,
+              size: 20,
+            ),
+            label: Text(
+              AppL10n.of(context).selectionBackToPreview,
+              style: const TextStyle(color: Colors.white, fontSize: 15),
+            ),
+            style: TextButton.styleFrom(
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+            ),
           ),
         ),
         Positioned(top: 8, right: 12, child: _orientationCube()),

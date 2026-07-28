@@ -114,6 +114,8 @@ void main() {
     await _pumpUntilLoaded(tester);
     await tester.pumpAndSettle();
 
+    // [2026-07-28] 返回按钮带文字(en 包 "Back to Preview")。
+    expect(find.text('Back to Preview'), findsOneWidget);
     await tester.tap(find.byKey(const ValueKey('selection-back')));
     await tester.pump();
     // _onBackPressed 里的 _flush() 是真实 saveTo IO —— 等它的延续(含

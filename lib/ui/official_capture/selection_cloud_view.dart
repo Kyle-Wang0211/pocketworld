@@ -354,7 +354,10 @@ class _SelectionCloudViewState extends State<SelectionCloudView> {
       // 双指捏合缩放视角(与手柄/平移互斥)。
       if (d.scale != 1.0) {
         setState(() {
-          _zoom = (_zoom * d.scale).clamp(0.3, 6.0);
+          // [2026-07-28 用户签决] 与预览页(sparse_cloud_view)同款柔和
+          // 缩放:0.08 阻尼渐进,而不是拿累计 scale 直接连乘(复利爆炸,
+          // 一捏就飞)。clamp 范围也对齐。
+          _zoom = (_zoom * (1 + (d.scale - 1) * 0.08)).clamp(0.15, 20.0);
         });
       }
       return;

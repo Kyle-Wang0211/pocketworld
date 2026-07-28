@@ -439,4 +439,7 @@ class AppL10nEn extends AppL10n {
 
   @override
   String get cubeFaceBottom => 'Bottom';
+
+  @override
+  String get selectionBackToPreview => 'Back to Preview';
 }
