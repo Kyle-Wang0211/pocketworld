@@ -57,4 +57,29 @@ void main() {
     );
     expect(tester.takeException(), isNull);
   });
+
+  test('primaryViewCubeFace:任何姿态只有一个标签;六预设正对面正确', () {
+    final cases = <(double, double, String)>[
+      (0, -math.pi / 2, 'Top'),
+      (0, 0, 'Front'),
+      (math.pi / 2, 0, 'Right'),
+      (math.pi, 0, 'Back'),
+      (-math.pi / 2, 0, 'Left'),
+      (0, math.pi / 2, 'Bottom'),
+    ];
+    for (final (yaw, pitch, label) in cases) {
+      expect(
+        primaryViewCubeFace(yaw, pitch),
+        label,
+        reason: 'yaw=$yaw pitch=$pitch',
+      );
+    }
+    // 斜视角(用户截图场景:两面同时可见)也只返回一个 —— 更朝向相机的
+    // 那面。yaw=40°(<45°)时 Front 仍更正对。
+    expect(primaryViewCubeFace(40 * math.pi / 180, 0), 'Front');
+    expect(primaryViewCubeFace(50 * math.pi / 180, 0), 'Right');
+    // Bottom + 滑杆任意角:primary 恒 Bottom(立方体随滑杆原地转,标签
+    // 不闪跳)。
+    expect(primaryViewCubeFace(1.234, math.pi / 2), 'Bottom');
+  });
 }

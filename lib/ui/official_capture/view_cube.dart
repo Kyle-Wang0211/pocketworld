@@ -9,8 +9,6 @@
 //
 // 面→世界法向的标签映射与投影语义一致(推导:pitch=−90° 时朝相机面 =
 // +Y ⇒ Top;yaw=0,pitch=0 时朝相机面 = −Z ⇒ Front;yaw=+90° ⇒ +X=Right)。
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
 
 import 'cloud_camera.dart';
@@ -110,6 +108,33 @@ List<String> visibleViewCubeFaces(double yaw, double pitch) {
   return out;
 }
 
+/// 当前姿态下**最正对相机**的面标签(立方体上唯一显示的单词)。
+/// 判据:面法向投影深度最小 = 法向最朝向相机。
+String primaryViewCubeFace(double yaw, double pitch) {
+  final proj = CloudCamera(
+    yaw: yaw,
+    pitch: pitch,
+    zoom: 1,
+    panX: 0,
+    panY: 0,
+    pivotX: 0,
+    pivotY: 0,
+    pivotZ: 0,
+    radius: 1,
+    orthographic: true,
+  ).projectionFor(const Size(100, 100));
+  var best = kViewCubeFaces.first.label;
+  var bestD = double.infinity;
+  for (final f in kViewCubeFaces) {
+    final (_, _, d) = proj.project(f.normal[0], f.normal[1], f.normal[2]);
+    if (d < bestD) {
+      bestD = d;
+      best = f.label;
+    }
+  }
+  return best;
+}
+
 /// 与点云相机绑定的 3D 朝向立方体。
 class ViewCube extends StatelessWidget {
   const ViewCube({
@@ -165,14 +190,14 @@ class _ViewCubePainter extends CustomPainter {
     final faces = [...kViewCubeFaces]
       ..sort((a, b) {
         final (_, _, da) = proj.project(a.normal[0], a.normal[1], a.normal[2]);
-        final (_, _, db) = proj.project(
-          b.normal[0],
-          b.normal[1],
-          b.normal[2],
-        );
+        final (_, _, db) = proj.project(b.normal[0], b.normal[1], b.normal[2]);
         return db.compareTo(da);
       });
 
+    // [2026-07-28 用户实机反馈] 标签只画**最正对**的一个面:斜视角下多面
+    // 同时朝相机时逐面画标签会拼成 "RightBack",且仿射贴面在反侧手性下
+    // 文字镜像、沿倾斜面延伸还会跑出面界。
+    final primary = primaryViewCubeFace(yaw, pitch);
     for (final f in faces) {
       final (_, _, nd) = proj.project(f.normal[0], f.normal[1], f.normal[2]);
       final facing = nd < centerDepth - 1e-9;
@@ -192,7 +217,7 @@ class _ViewCubePainter extends CustomPainter {
             ..strokeWidth = 1.2
             ..color = const Color(0xB3FFFFFF),
         );
-        _drawFaceLabel(canvas, f.label, pts);
+        if (f.label == primary) _drawFaceLabel(canvas, f.label, pts);
       } else {
         // 背面只画极淡描边,保留立方体体积感。
         canvas.drawPath(
@@ -206,15 +231,14 @@ class _ViewCubePainter extends CustomPainter {
     }
   }
 
-  /// 标签仿射贴面:把以面中心为原点的单位文字空间映射到投影平行四边形
-  /// (正交投影下仿射精确)。u = 角0→角1(面横向),v = 角0→角3(面纵向)。
+  /// 标签:水平居中画在面投影中心(带小暗底)。
+  ///
+  /// [2026-07-28 用户实机反馈修订] 不再仿射贴面:贴面文字在反侧手性下会
+  /// 镜像("ЯightBack"),沿倾斜面延伸会跑出面界。水平画法永不镜像、
+  /// 永不出界、任何角度可读;转向反馈由立方体轮廓的转动承担。
   void _drawFaceLabel(Canvas canvas, String label, List<Offset> pts) {
-    final o = pts[0];
-    final u = pts[1] - pts[0];
-    final v = pts[3] - pts[0];
-    // 面几乎侧对相机时(投影面积趋零)标签会糊成一条线,跳过。
-    final area = (u.dx * v.dy - u.dy * v.dx).abs();
-    if (area < 120) return;
+    final cx = (pts[0].dx + pts[1].dx + pts[2].dx + pts[3].dx) / 4;
+    final cy = (pts[0].dy + pts[1].dy + pts[2].dy + pts[3].dy) / 4;
 
     final tp = TextPainter(
       text: TextSpan(
@@ -228,28 +252,16 @@ class _ViewCubePainter extends CustomPainter {
       textDirection: TextDirection.ltr,
     )..layout();
 
-    // 仿射:文字局部 (x,y) ∈ 面内坐标,原点=面中心;单位向量取 u/v 的
-    // 归一化屏幕方向。文字保持自身比例(不随面拉伸),只随面旋转/倾斜。
-    final ulen = u.distance, vlen = v.distance;
-    if (ulen < 1e-6 || vlen < 1e-6) return;
-    final ux = u.dx / ulen, uy = u.dy / ulen;
-    // v 方向带透视压扁比(vlen/ulen),让文字"躺"在面上。
-    final squash = (vlen / ulen).clamp(0.25, 1.0);
-    final vx = v.dx / vlen * squash, vy = v.dy / vlen * squash;
-    final cx = o.dx + (u.dx + v.dx) / 2;
-    final cy = o.dy + (u.dy + v.dy) / 2;
-
-    canvas.save();
-    canvas.transform(
-      Float64List.fromList([
-        ux, uy, 0, 0, //
-        vx, vy, 0, 0, //
-        0, 0, 1, 0, //
-        cx, cy, 0, 1,
-      ]),
+    final bg = RRect.fromRectAndRadius(
+      Rect.fromCenter(
+        center: Offset(cx, cy),
+        width: tp.width + 10,
+        height: tp.height + 4,
+      ),
+      const Radius.circular(5),
     );
-    tp.paint(canvas, Offset(-tp.width / 2, -tp.height / 2));
-    canvas.restore();
+    canvas.drawRRect(bg, Paint()..color = const Color(0x99000000));
+    tp.paint(canvas, Offset(cx - tp.width / 2, cy - tp.height / 2));
   }
 
   @override
