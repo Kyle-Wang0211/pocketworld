@@ -154,8 +154,11 @@ class OfficialAetherARKitPlugin: NSObject {
     // 放大到 20 会让红/黄/绿 track-length 分层被点径糊掉(用户实机判负,
     // 截图为证),而 AR 期的诉求是"看清覆盖分层"不是"糊成实体面"。
     // 需要"糊成面"的是草稿页预览(Flutter 侧,另行加大)。
-    // 不设该变量即 6px;此行留作后续调档入口。
-    setenv("OFFICIAL_AETHER_AR_SPLAT_MAX_PX", "6", 1)
+    // [P3 2026-07-28] 与 P1 饱和色标同批:点径上限 6 → 12。RS 实测其近端
+    // "直径/间距≈0.65" 的近连毯让眼睛自己做空间平均;我们卡在 6px 时每颗点
+    // 都被独立解析出来,配合硬阈值色标就成了椒盐。饱和色标(P1)+ 稍大点径
+    // (P3)是 RS 那份读感的两个必要条件,须一起判。
+    setenv("OFFICIAL_AETHER_AR_SPLAT_MAX_PX", "12", 1)
     // Production ends at COLMAP's final global BA + official filtering.
     // Historical RestoreTemporalDetail / repair / enrichment passes are hard
     // disabled in the native translation unit and are not re-enabled here.

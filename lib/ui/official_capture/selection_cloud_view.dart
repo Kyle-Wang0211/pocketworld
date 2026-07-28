@@ -257,6 +257,7 @@ class SelectionCloudView extends StatefulWidget {
     required this.viewYaw,
     required this.viewPitch,
     this.viewRoll = 0,
+    this.liveBox,
   });
 
   /// 3 floats per point(full set)。
@@ -268,6 +269,13 @@ class SelectionCloudView extends StatefulWidget {
   /// 当前选区盒(受控组件:变更经 onBoxChanged 上报,不在内部持有真值)。
   final SelectionBox box;
   final ValueChanged<SelectionBox> onBoxChanged;
+
+  /// [2026-07-28 用户签决"旋转刻度尺与拖框可同时"] 手势读数用的**同步**
+  /// 真值源:widget.box 要等父级 build 才刷新,双写者(框手势+旋转刻度
+  /// 尺)同帧并发时各自的快照会互相覆盖(转着转着框被手柄流回滚)。
+  /// 父级 setState 是同步写,经此 getter 每个触摸事件都拿到最新盒,
+  /// 交错应用互不覆盖。null 时退回手势期快照(_gestureBox)。
+  final SelectionBox Function()? liveBox;
 
   /// 视角 yaw(**已含**滑杆分量 —— Task 5 传 preset.yaw + box.yawDeg·π/180)。
   final double viewYaw;
@@ -293,21 +301,22 @@ class _SelectionCloudViewState extends State<SelectionCloudView> {
     _fit = SparseCloudPainter.fitOf(widget.xyz);
   }
 
-  CloudProjection _projectionFor(Size size) => CloudCamera(
-    yaw: widget.viewYaw,
-    pitch: widget.viewPitch,
-    zoom: _zoom,
-    panX: 0,
-    panY: 0,
-    pivotX: _fit.cx,
-    pivotY: _fit.cy,
-    pivotZ: _fit.cz,
-    radius: _fit.radius,
-    // [2026-07-27 用户签决"框外必须全红"] 编辑视图正交:矩形/手柄/拖拽
-    // 逆映射与点云渲染(painter 同模式)在同一正交空间,零透视错位。
-    orthographic: true,
-    roll: widget.viewRoll,
-  ).projectionFor(size);
+  CloudProjection _projectionFor(Size size, {double? yawOverride}) =>
+      CloudCamera(
+        yaw: yawOverride ?? widget.viewYaw,
+        pitch: widget.viewPitch,
+        zoom: _zoom,
+        panX: 0,
+        panY: 0,
+        pivotX: _fit.cx,
+        pivotY: _fit.cy,
+        pivotZ: _fit.cz,
+        radius: _fit.radius,
+        // [2026-07-27 用户签决"框外必须全红"] 编辑视图正交:矩形/手柄/拖拽
+        // 逆映射与点云渲染(painter 同模式)在同一正交空间,零透视错位。
+        orthographic: true,
+        roll: widget.viewRoll,
+      ).projectionFor(size);
 
   /// 手势期间的盒累积基准。⚠️不能每次 update 用 widget.box 做基准:
   /// 触摸事件一帧可到多个,widget.box 要等父级 setState 重建后才刷新,
@@ -315,15 +324,28 @@ class _SelectionCloudViewState extends State<SelectionCloudView> {
   /// 实机观感"框拖不动/阻力大"(与 RulerScrubber 同根因,用户两次指认)。
   SelectionBox? _gestureBox;
 
+  /// 手势用最新盒 + 与之匹配的 yaw 修正(滑杆同帧刚转过的角度,
+  /// widget.viewYaw 还没跟上,按最短环向差补齐,盒与投影严格同系)。
+  (SelectionBox, CloudProjection) _liveBoxAndProj() {
+    final base = widget.liveBox?.call() ?? _gestureBox ?? widget.box;
+    var dyaw = (base.yawDeg - widget.box.yawDeg) % 360.0;
+    if (dyaw > 180.0) dyaw -= 360.0;
+    final proj = _projectionFor(
+      _viewSize,
+      yawOverride: widget.viewYaw + dyaw * math.pi / 180.0,
+    );
+    return (base, proj);
+  }
+
   void _onScaleStart(ScaleStartDetails d) {
     if (_viewSize.isEmpty) return;
-    final proj = _projectionFor(_viewSize);
-    final basis = boxScreenBasis(proj, widget.box);
-    final rect = selectionScreenRect(basis, widget.box);
+    final (base, proj) = _liveBoxAndProj();
+    final basis = boxScreenBasis(proj, base);
+    final rect = selectionScreenRect(basis, base);
     final handle = hitRectHandle(rect, d.localFocalPoint);
     _activeHandle = handle;
     _panningBox = handle == null && rect.contains(d.localFocalPoint);
-    _gestureBox = widget.box;
+    _gestureBox = base;
   }
 
   void _onScaleUpdate(ScaleUpdateDetails d) {
@@ -337,8 +359,7 @@ class _SelectionCloudViewState extends State<SelectionCloudView> {
       }
       return;
     }
-    final base = _gestureBox ?? widget.box;
-    final proj = _projectionFor(_viewSize);
+    final (base, proj) = _liveBoxAndProj();
     final basis = boxScreenBasis(proj, base);
     if (_activeHandle != null) {
       final minHalfSize = _fit.radius * SelectionBox.kMinHalfSizeFraction;

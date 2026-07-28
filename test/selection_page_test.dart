@@ -362,6 +362,52 @@ void main() {
     expect(moved1, closeTo(moved2, moved2 * 0.05 + 1e-9));
   });
 
+  testWidgets('旋转刻度尺与拖框并发:双写者交错互不覆盖', (tester) async {
+    late Directory dir;
+    late Float32List xyz;
+    late Uint8List rgb;
+    await tester.runAsync(() async {
+      (dir, xyz, rgb) = await _fixture();
+    });
+    addTearDown(() => dir.delete(recursive: true));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
+      ),
+    );
+    await _pumpUntilLoaded(tester);
+    await tester.pumpAndSettle();
+    dynamic page() => tester.state(find.byType(SelectionPage));
+    SelectionBox box() => (page() as dynamic).debugBox as SelectionBox;
+    final before = box();
+
+    // [2026-07-28 用户签决] 一指拨刻度尺、一指平移框,同帧交错:修复前
+    // 双方各持快照互相覆盖(滑杆转角被手柄流回滚 / 平移被滑杆流回滚)。
+    final rulerCenter = tester.getCenter(find.byType(RulerScrubber));
+    final cloudCenter = tester.getCenter(find.byType(SelectionCloudView));
+    final gRuler = await tester.startGesture(rulerCenter, pointer: 7);
+    final gBox = await tester.startGesture(cloudCenter, pointer: 8);
+    for (var i = 0; i < 4; i++) {
+      await gRuler.moveBy(const Offset(-15, 0)); // 累计 -60px → +54.5°
+      await gBox.moveBy(const Offset(12, 0)); // 累计 48px 平移
+    }
+    await gRuler.up();
+    await gBox.up();
+    await tester.pumpAndSettle();
+
+    final after = box();
+    // 滑杆总转角完整落地(手柄流没有把它回滚)。
+    var dyaw = (after.yawDeg - before.yawDeg) % 360.0;
+    if (dyaw > 180.0) dyaw -= 360.0;
+    expect(dyaw, closeTo(60.0 / 1.1, 2.0));
+    // 平移完整落地(初始框心在枢轴上,纯旋转不动框心;位移只能来自平移,
+    // 且滑杆流没有把它回滚)。
+    final dist = math.sqrt(
+      math.pow(after.cx - before.cx, 2) + math.pow(after.cz - before.cz, 2),
+    );
+    expect(dist, greaterThan(1e-4));
+  });
+
   testWidgets('朝向立方体上下箭头 = 三层移动:Top↕水平↕Bottom', (tester) async {
     late Directory dir;
     late Float32List xyz;

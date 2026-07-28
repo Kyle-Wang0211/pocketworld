@@ -296,6 +296,7 @@ class _SelectionPageState extends State<SelectionPage>
                     xyz: widget.xyz,
                     rgb: widget.rgb,
                     box: box,
+                    liveBox: () => _box ?? box,
                     onBoxChanged: _onBoxChanged,
                     viewYaw: _animPresetYaw + box.yawDeg * math.pi / 180,
                     viewPitch: _animPitch,
@@ -398,9 +399,12 @@ class _SelectionPageState extends State<SelectionPage>
               // 与相机 viewYaw 增量精确抵消;yaw 落盘前归一化 (-180,180]。
               final fit = _fit;
               if (fit == null) return;
-              var delta = (v - box.yawDeg) % 360.0;
+              // 用 state 最新盒(非 build 闭包快照):框手势可能同帧并发
+              // 改盒,双写者都读改同步真值才互不覆盖。
+              final live = _box ?? box;
+              var delta = (v - live.yawDeg) % 360.0;
               if (delta > 180.0) delta -= 360.0;
-              final rotated = box.rotatedAroundPivot(fit.cx, fit.cz, delta);
+              final rotated = live.rotatedAroundPivot(fit.cx, fit.cz, delta);
               final y = rotated.yawDeg;
               final wrapped = y - 360.0 * ((y + 180.0) / 360.0).floorToDouble();
               _onBoxChanged(rotated.copyWith(yawDeg: wrapped));

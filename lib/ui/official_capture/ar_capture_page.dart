@@ -36,6 +36,7 @@ import 'package:vector_math/vector_math_64.dart' show Quaternion, Vector3;
 
 import '../../point_cloud_display/progressive_octree_order.dart';
 import '../../official_capture/capture_coverage_cloud.dart';
+import '../../official_capture/capture_quality_ramp.dart';
 import '../../official_capture/capture_session.dart';
 import '../../official_capture/colorize_pipeline.dart';
 import '../../official_capture/live_sfm_publish_policy.dart';
@@ -907,19 +908,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           ? offsets[i + 1] - offsets[i]
           : 0;
       final base = i * 3;
-      if (trackLength >= 5) {
-        rgb[base] = 56;
-        rgb[base + 1] = 220;
-        rgb[base + 2] = 110;
-      } else if (trackLength >= 3) {
-        rgb[base] = 255;
-        rgb[base + 1] = 210;
-        rgb[base + 2] = 45;
-      } else {
-        rgb[base] = 255;
-        rgb[base + 1] = 82;
-        rgb[base + 2] = 47;
-      }
+      final c = kCaptureQualityRamp.colorFor(trackLength);
+      rgb[base] = c.$1;
+      rgb[base + 1] = c.$2;
+      rgb[base + 2] = c.$3;
     }
     // Potree-style hierarchy ordering is computed on a worker isolate. This is
     // display-only: the source SfM snapshot and final PLY stay intact.
