@@ -16,6 +16,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pocketworld_flutter/l10n/app_localizations.dart';
 import 'package:pocketworld_flutter/official_capture/selection_box.dart';
 import 'package:pocketworld_flutter/ui/official_capture/cloud_camera.dart'
     show axisAngleOf, mulTransposed;
@@ -87,6 +88,8 @@ void main() {
     String? popped;
     await tester.pumpWidget(
       MaterialApp(
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
         home: Builder(
           builder: (ctx) => ElevatedButton(
             onPressed: () async {
@@ -146,6 +149,8 @@ void main() {
     String? popped;
     await tester.pumpWidget(
       MaterialApp(
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
         home: Builder(
           builder: (ctx) => ElevatedButton(
             onPressed: () async {
@@ -191,6 +196,8 @@ void main() {
     addTearDown(() => dir.delete(recursive: true));
     await tester.pumpWidget(
       MaterialApp(
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
         home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
       ),
     );
@@ -199,7 +206,7 @@ void main() {
 
     await tester.tap(find.text('Ready to Process'));
     await tester.pump(const Duration(milliseconds: 300));
-    expect(find.text('稠密化处理即将上线'), findsOneWidget);
+    expect(find.text('Dense processing coming soon'), findsOneWidget);
     expect(find.byType(SelectionPage), findsOneWidget); // 没退出
   });
 
@@ -223,6 +230,8 @@ void main() {
     addTearDown(() => dir.delete(recursive: true));
     await tester.pumpWidget(
       MaterialApp(
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
         home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
       ),
     );
@@ -243,6 +252,8 @@ void main() {
     addTearDown(() => dir.delete(recursive: true));
     await tester.pumpWidget(
       MaterialApp(
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
         home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
       ),
     );
@@ -274,6 +285,8 @@ void main() {
     addTearDown(() => dir.delete(recursive: true));
     await tester.pumpWidget(
       MaterialApp(
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
         home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
       ),
     );
@@ -325,6 +338,8 @@ void main() {
     addTearDown(() => dir.delete(recursive: true));
     await tester.pumpWidget(
       MaterialApp(
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
         home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
       ),
     );
@@ -372,6 +387,8 @@ void main() {
     addTearDown(() => dir.delete(recursive: true));
     await tester.pumpWidget(
       MaterialApp(
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
         home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
       ),
     );
@@ -418,6 +435,8 @@ void main() {
     addTearDown(() => dir.delete(recursive: true));
     await tester.pumpWidget(
       MaterialApp(
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
         home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
       ),
     );
@@ -457,6 +476,8 @@ void main() {
     addTearDown(() => dir.delete(recursive: true));
     await tester.pumpWidget(
       MaterialApp(
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
         home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
       ),
     );
@@ -501,6 +522,8 @@ void main() {
     addTearDown(() => dir.delete(recursive: true));
     await tester.pumpWidget(
       MaterialApp(
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
         home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
       ),
     );
@@ -542,6 +565,8 @@ void main() {
     addTearDown(() => dir.delete(recursive: true));
     await tester.pumpWidget(
       MaterialApp(
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
         home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
       ),
     );

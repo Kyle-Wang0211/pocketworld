@@ -128,5 +128,37 @@
         "type": "String"
       }
     }
-  }
+  },
+  "sfmSaveDraft": "保存草稿",
+  "sfmNext": "下一步",
+  "sfmDone": "完成",
+  "sfmBackToDrafts": "返回草稿",
+  "sfmGeneratingFinalCloud": "正在生成最终点云…",
+  "sfmReconFailedKeptFrames": "本次未能重建,已保留素材",
+  "sfmChipFinalRecon": "最终重建",
+  "sfmChipReconstructing": "重建中 · {count} 点…",
+  "sfmChipReconDone": "重建完成 · {count} 点",
+  "sfmChipReconEnded": "重建结束",
+  "sfmQueueDrainedFinal": "帧队列已清空 · 正在生成最终点云",
+  "sfmProgressFedQueued": "已处理 {fed} 帧 · 剩余 {queued} 帧",
+  "sfmElapsedSec": "{secs} 秒",
+  "sfmElapsedMinSec": "{min} 分 {sec} 秒",
+  "sfmStage1": "整理帧数据…(阶段 1/4 · 已 {elapsed})",
+  "sfmStage2a": "补全匹配中…(阶段 2/4 · 已 {elapsed})",
+  "sfmStage2b": "全局优化中…(阶段 2/4 · 已 {elapsed})",
+  "sfmStage3": "提取色彩…(阶段 3/4 · 已 {elapsed})",
+  "sfmStage4": "保存点云…(阶段 4/4 · 已 {elapsed})",
+  "viewerSparseCloudTitle": "稀疏点云",
+  "viewerTitleWithCount": "{title} · {count} 点",
+  "viewerLoadFailed": "点云文件读取失败",
+  "selectionRotatePointCloud": "旋转点云",
+  "selectionReadyToProcess": "开始处理",
+  "selectionDensifyComingSoon": "稠密化处理即将上线",
+  "selectionNoCloud": "暂无点云数据",
+  "cubeFaceTop": "顶",
+  "cubeFaceFront": "前",
+  "cubeFaceRight": "右",
+  "cubeFaceBack": "后",
+  "cubeFaceLeft": "左",
+  "cubeFaceBottom": "底"
 }

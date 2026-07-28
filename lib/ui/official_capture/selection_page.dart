@@ -9,6 +9,8 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import '../../l10n/app_localizations.dart';
+
 import '../../official_capture/selection_box.dart';
 import '../../official_util/device_log.dart';
 import 'cloud_camera.dart'
@@ -239,9 +241,9 @@ class _SelectionPageState extends State<SelectionPage>
   }
 
   void _onReadyToProcess() {
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('稠密化处理即将上线')));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(AppL10n.of(context).selectionDensifyComingSoon)),
+    );
   }
 
   @override
@@ -286,9 +288,9 @@ class _SelectionPageState extends State<SelectionPage>
           child: Padding(
             padding: const EdgeInsets.only(top: 64, bottom: 148),
             child: widget.xyz.isEmpty
-                ? const Center(
+                ? Center(
                     child: Text(
-                      '暂无点云数据',
+                      AppL10n.of(context).selectionNoCloud,
                       style: TextStyle(color: Colors.white54, fontSize: 14),
                     ),
                   )
@@ -321,6 +323,19 @@ class _SelectionPageState extends State<SelectionPage>
     );
   }
 
+  /// 面 ID(内部恒英文)→ 本地化显示词。
+  Map<String, String> _cubeFaceLabels(BuildContext context) {
+    final l = AppL10n.of(context);
+    return {
+      'Top': l.cubeFaceTop,
+      'Front': l.cubeFaceFront,
+      'Right': l.cubeFaceRight,
+      'Back': l.cubeFaceBack,
+      'Left': l.cubeFaceLeft,
+      'Bottom': l.cubeFaceBottom,
+    };
+  }
+
   Widget _orientationCube() {
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -347,6 +362,7 @@ class _SelectionPageState extends State<SelectionPage>
               viewYaw: _animPresetYaw,
               viewPitch: _animPitch,
               viewRoll: _animRoll,
+              faceLabels: _cubeFaceLabels(context),
             ),
             _cubeArrow(
               Icons.keyboard_arrow_right_rounded,
@@ -385,9 +401,9 @@ class _SelectionPageState extends State<SelectionPage>
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'Rotate Point Cloud',
-            style: TextStyle(color: Colors.white70, fontSize: 13),
+          Text(
+            AppL10n.of(context).selectionRotatePointCloud,
+            style: const TextStyle(color: Colors.white70, fontSize: 13),
           ),
           // [2026-07-28 用户签决] RS 同款无限刻度尺:无端点可一直拨,
           // 360° 循环;连续值不吸附刻度。落盘前归一化到 (-180,180]。
@@ -423,7 +439,7 @@ class _SelectionPageState extends State<SelectionPage>
                   borderRadius: BorderRadius.circular(12),
                 ),
               ),
-              child: const Text('Ready to Process'),
+              child: Text(AppL10n.of(context).selectionReadyToProcess),
             ),
           ),
         ],

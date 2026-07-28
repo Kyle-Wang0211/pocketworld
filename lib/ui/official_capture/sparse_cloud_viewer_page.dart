@@ -10,6 +10,8 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
 
+import '../../l10n/app_localizations.dart';
+
 import 'selection_page.dart';
 import 'sfm_preview_overlay.dart' show SfmBottomActionButton;
 import 'sparse_cloud_view.dart';
@@ -118,8 +120,11 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
         elevation: 0,
         title: Text(
           cloud != null
-              ? '${widget.title ?? '稀疏点云'} · ${cloud.count} 点'
-              : (widget.title ?? '稀疏点云'),
+              ? AppL10n.of(context).viewerTitleWithCount(
+                  widget.title ?? AppL10n.of(context).viewerSparseCloudTitle,
+                  cloud.count,
+                )
+              : (widget.title ?? AppL10n.of(context).viewerSparseCloudTitle),
           style: const TextStyle(fontSize: 15),
         ),
       ),
@@ -137,10 +142,10 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                 ),
               )
             : cloud == null
-            ? const Center(
+            ? Center(
                 child: Text(
-                  '点云文件读取失败',
-                  style: TextStyle(color: Colors.white54, fontSize: 14),
+                  AppL10n.of(context).viewerLoadFailed,
+                  style: const TextStyle(color: Colors.white54, fontSize: 14),
                 ),
               )
             : Column(
@@ -156,7 +161,7 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                     child: SizedBox(
                       width: double.infinity,
                       child: SfmBottomActionButton(
-                        label: '下一步',
+                        label: AppL10n.of(context).sfmNext,
                         onTap: () => unawaited(_openSelection()),
                       ),
                     ),

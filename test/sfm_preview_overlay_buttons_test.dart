@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pocketworld_flutter/l10n/app_localizations.dart';
 import 'package:pocketworld_flutter/ui/official_capture/sfm_preview_overlay.dart';
 
 Widget _host(
@@ -8,6 +9,8 @@ Widget _host(
   VoidCallback? onDone,
 }) {
   return MaterialApp(
+    localizationsDelegates: AppL10n.localizationsDelegates,
+    supportedLocales: AppL10n.supportedLocales,
     home: Scaffold(
       body: Stack(
         children: [
@@ -34,24 +37,24 @@ void main() {
         onDone: () => done++,
       ),
     );
-    expect(find.text('保存草稿'), findsOneWidget);
-    expect(find.text('下一步'), findsOneWidget);
-    expect(find.text('完成'), findsNothing);
-    await tester.tap(find.text('下一步'));
+    expect(find.text('Save Draft'), findsOneWidget);
+    expect(find.text('Next'), findsOneWidget);
+    expect(find.text('Done'), findsNothing);
+    await tester.tap(find.text('Next'));
     expect(next, 1);
-    await tester.tap(find.text('保存草稿'));
+    await tester.tap(find.text('Save Draft'));
     expect(done, 1);
   });
 
   testWidgets('error:只有"完成"', (tester) async {
     await tester.pumpWidget(_host(SfmPreviewPhase.error, onNext: () {}));
-    expect(find.text('完成'), findsOneWidget);
-    expect(find.text('下一步'), findsNothing);
+    expect(find.text('Done'), findsOneWidget);
+    expect(find.text('Next'), findsNothing);
   });
 
   testWidgets('generating:无底部按钮', (tester) async {
     await tester.pumpWidget(_host(SfmPreviewPhase.generating, onNext: () {}));
-    expect(find.text('完成'), findsNothing);
-    expect(find.text('下一步'), findsNothing);
+    expect(find.text('Done'), findsNothing);
+    expect(find.text('Next'), findsNothing);
   });
 }

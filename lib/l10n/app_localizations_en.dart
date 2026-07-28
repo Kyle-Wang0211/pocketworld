@@ -319,4 +319,124 @@ class AppL10nEn extends AppL10n {
   String meDisplayNameUpdateFailed(String error) {
     return 'Update failed: $error';
   }
+
+  @override
+  String get sfmSaveDraft => 'Save Draft';
+
+  @override
+  String get sfmNext => 'Next';
+
+  @override
+  String get sfmDone => 'Done';
+
+  @override
+  String get sfmBackToDrafts => 'Back to drafts';
+
+  @override
+  String get sfmGeneratingFinalCloud => 'Generating final point cloud…';
+
+  @override
+  String get sfmReconFailedKeptFrames =>
+      'Reconstruction failed — captures kept';
+
+  @override
+  String get sfmChipFinalRecon => 'Final reconstruction';
+
+  @override
+  String sfmChipReconstructing(int count) {
+    return 'Reconstructing · $count pts…';
+  }
+
+  @override
+  String sfmChipReconDone(int count) {
+    return 'Reconstruction complete · $count pts';
+  }
+
+  @override
+  String get sfmChipReconEnded => 'Reconstruction ended';
+
+  @override
+  String get sfmQueueDrainedFinal =>
+      'Frame queue drained · generating final point cloud';
+
+  @override
+  String sfmProgressFedQueued(int fed, int queued) {
+    return 'Processed $fed frames · $queued remaining';
+  }
+
+  @override
+  String sfmElapsedSec(int secs) {
+    return '${secs}s';
+  }
+
+  @override
+  String sfmElapsedMinSec(int min, int sec) {
+    return '${min}m ${sec}s';
+  }
+
+  @override
+  String sfmStage1(String elapsed) {
+    return 'Organizing frames… (stage 1/4 · $elapsed)';
+  }
+
+  @override
+  String sfmStage2a(String elapsed) {
+    return 'Completing matches… (stage 2/4 · $elapsed)';
+  }
+
+  @override
+  String sfmStage2b(String elapsed) {
+    return 'Global optimization… (stage 2/4 · $elapsed)';
+  }
+
+  @override
+  String sfmStage3(String elapsed) {
+    return 'Extracting colors… (stage 3/4 · $elapsed)';
+  }
+
+  @override
+  String sfmStage4(String elapsed) {
+    return 'Saving point cloud… (stage 4/4 · $elapsed)';
+  }
+
+  @override
+  String get viewerSparseCloudTitle => 'Sparse Point Cloud';
+
+  @override
+  String viewerTitleWithCount(String title, int count) {
+    return '$title · $count pts';
+  }
+
+  @override
+  String get viewerLoadFailed => 'Failed to load point cloud';
+
+  @override
+  String get selectionRotatePointCloud => 'Rotate Point Cloud';
+
+  @override
+  String get selectionReadyToProcess => 'Ready to Process';
+
+  @override
+  String get selectionDensifyComingSoon => 'Dense processing coming soon';
+
+  @override
+  String get selectionNoCloud => 'No point cloud data';
+
+  @override
+  String get cubeFaceTop => 'Top';
+
+  @override
+  String get cubeFaceFront => 'Front';
+
+  @override
+  String get cubeFaceRight => 'Right';
+
+  @override
+  String get cubeFaceBack => 'Back';
+
+  @override
+  String get cubeFaceLeft => 'Left';
+
+  @override
+  String get cubeFaceBottom => 'Bottom';
 }

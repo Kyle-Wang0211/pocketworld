@@ -1013,7 +1013,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           'frame not fed; NOT a coverage problem',
     );
     if (_sfmInternalFailureStreak < _kSfmInternalFailureWarnStreak) return;
-    const text = '点云重建服务出错，最近的照片没有进入重建。'
+    const text =
+        '点云重建服务出错，最近的照片没有进入重建。'
         '照片已保留，但继续拍摄不会改善——请结束本次拍摄后重试。';
     if (_sfmStartFailureText == text || !mounted) return;
     setState(() => _sfmStartFailureText = text);
@@ -1235,21 +1236,21 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// 这里做文案层轮换 —— enrich 补匹配与 stage1 全局 BA 本来就是并行跑
   /// (finalize 三重优化定案),12s 轮换两句都是真话;真实子进度事件
   /// 以后有了再接,不过度工程。已用时显示保留。
-  String _sfmStageProgressText() {
-    if (_sfmFinalizeStage <= 0) return '帧队列已清空 · 正在生成最终点云';
+  String _sfmStageProgressText(BuildContext context) {
+    final l = AppL10n.of(context);
+    if (_sfmFinalizeStage <= 0) return l.sfmQueueDrainedFinal;
     final secs = _sfmStageStartMs > 0
         ? ((DateTime.now().millisecondsSinceEpoch - _sfmStageStartMs) / 1000)
               .floor()
         : 0;
-    final elapsed = secs < 60 ? '$secs 秒' : '${secs ~/ 60} 分 ${secs % 60} 秒';
+    final elapsed = secs < 60
+        ? l.sfmElapsedSec(secs)
+        : l.sfmElapsedMinSec(secs ~/ 60, secs % 60);
     return switch (_sfmFinalizeStage) {
-      1 => '整理帧数据…(阶段 1/4 · 已 $elapsed)',
-      2 =>
-        (secs ~/ 12).isEven
-            ? '补全匹配中…(阶段 2/4 · 已 $elapsed)'
-            : '全局优化中…(阶段 2/4 · 已 $elapsed)',
-      3 => '提取色彩…(阶段 3/4 · 已 $elapsed)',
-      _ => '保存点云…(阶段 4/4 · 已 $elapsed)',
+      1 => l.sfmStage1(elapsed),
+      2 => (secs ~/ 12).isEven ? l.sfmStage2a(elapsed) : l.sfmStage2b(elapsed),
+      3 => l.sfmStage3(elapsed),
+      _ => l.sfmStage4(elapsed),
     };
   }
 
@@ -1840,11 +1841,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     if (snap == null || dir == null || snap.pointCount == 0) return;
     final result = await Navigator.of(context).push<String>(
       MaterialPageRoute<String>(
-        builder: (_) => SelectionPage(
-          xyz: snap.xyz,
-          rgb: snap.rgb,
-          captureDir: dir,
-        ),
+        builder: (_) =>
+            SelectionPage(xyz: snap.xyz, rgb: snap.rgb, captureDir: dir),
       ),
     );
     if (result == 'save_draft') await _onSfmPreviewDone();
@@ -2794,8 +2792,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               snapshot: _sfmSnapshot,
               errorText: _sfmErrorText,
               progressText: _sfmQueued > 0
-                  ? '已处理 $_sfmFed 帧 · 剩余 $_sfmQueued 帧'
-                  : _sfmStageProgressText(),
+                  ? AppL10n.of(
+                      context,
+                    ).sfmProgressFedQueued(_sfmFed, _sfmQueued)
+                  : _sfmStageProgressText(context),
               onBack: _showDraftsDuringReconstruction,
               onDone: () => unawaited(_onSfmPreviewDone()),
               onNext: _sfmSnapshot != null && _sfmSnapshot!.pointCount > 0

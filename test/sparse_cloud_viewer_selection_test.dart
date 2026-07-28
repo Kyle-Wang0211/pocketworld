@@ -20,6 +20,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pocketworld_flutter/l10n/app_localizations.dart';
 import 'package:pocketworld_flutter/ui/official_capture/selection_page.dart';
 import 'package:pocketworld_flutter/ui/official_capture/sparse_cloud_viewer_page.dart';
 
@@ -76,16 +77,20 @@ void main() {
     });
     addTearDown(() => dir.delete(recursive: true));
     await tester.pumpWidget(
-      MaterialApp(home: SparseCloudViewerPage(plyPath: ply)),
+      MaterialApp(
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
+        home: SparseCloudViewerPage(plyPath: ply),
+      ),
     );
     await tester.pump();
     await _pumpUntilRealAsyncSettles(
       tester,
-      () => find.text('下一步').evaluate().isNotEmpty,
+      () => find.text('Next').evaluate().isNotEmpty,
     );
     await tester.pumpAndSettle();
-    expect(find.text('保存草稿'), findsNothing);
-    expect(find.text('下一步'), findsOneWidget);
+    expect(find.text('Save Draft'), findsNothing);
+    expect(find.text('Next'), findsOneWidget);
   });
 
   testWidgets('加载失败:无双按钮', (tester) async {
@@ -95,16 +100,20 @@ void main() {
     });
     addTearDown(() => dir.delete(recursive: true));
     await tester.pumpWidget(
-      MaterialApp(home: SparseCloudViewerPage(plyPath: '${dir.path}/nope.ply')),
+      MaterialApp(
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
+        home: SparseCloudViewerPage(plyPath: '${dir.path}/nope.ply'),
+      ),
     );
     await tester.pump();
     await _pumpUntilRealAsyncSettles(
       tester,
-      () => find.text('点云文件读取失败').evaluate().isNotEmpty,
+      () => find.text('Failed to load point cloud').evaluate().isNotEmpty,
     );
     await tester.pumpAndSettle();
-    expect(find.text('点云文件读取失败'), findsOneWidget);
-    expect(find.text('下一步'), findsNothing);
+    expect(find.text('Failed to load point cloud'), findsOneWidget);
+    expect(find.text('Next'), findsNothing);
   });
 
   testWidgets('下一步 push SelectionPage;返回后回到干净查看态', (tester) async {
@@ -116,16 +125,20 @@ void main() {
     });
     addTearDown(() => dir.delete(recursive: true));
     await tester.pumpWidget(
-      MaterialApp(home: SparseCloudViewerPage(plyPath: ply)),
+      MaterialApp(
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
+        home: SparseCloudViewerPage(plyPath: ply),
+      ),
     );
     await tester.pump();
     await _pumpUntilRealAsyncSettles(
       tester,
-      () => find.text('下一步').evaluate().isNotEmpty,
+      () => find.text('Next').evaluate().isNotEmpty,
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('下一步'));
+    await tester.tap(find.text('Next'));
     await tester.pump();
     // 等到返回键出现 —— 即 SelectionPage 的 _load()(真实 IO)已完成、
     // 离开 _loading 分支。只等页面类型出现是不够的:loading 态没有返回键,

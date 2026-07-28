@@ -9,6 +9,8 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import '../../l10n/app_localizations.dart';
+
 import '../../official_capture/sfm_live_recon.dart';
 import 'sparse_cloud_view.dart';
 
@@ -91,7 +93,7 @@ class SfmPreviewOverlay extends StatelessWidget {
               child: SafeArea(
                 child: Padding(
                   padding: const EdgeInsets.only(top: 14),
-                  child: Center(child: _statusChip()),
+                  child: Center(child: _statusChip(context)),
                 ),
               ),
             ),
@@ -107,7 +109,7 @@ class SfmPreviewOverlay extends StatelessWidget {
                   child: IconButton(
                     key: const ValueKey('sfm_preview_back'),
                     onPressed: onBack,
-                    tooltip: '返回草稿',
+                    tooltip: AppL10n.of(context).sfmBackToDrafts,
                     icon: const Icon(Icons.arrow_back_ios_new_rounded),
                     color: Colors.white,
                     iconSize: 22,
@@ -160,8 +162,8 @@ class SfmPreviewOverlay extends StatelessWidget {
                         size: 40,
                       ),
                       const SizedBox(height: 14),
-                      const Text(
-                        '本次未能重建，已保留素材',
+                      Text(
+                        AppL10n.of(context).sfmReconFailedKeptFrames,
                         style: TextStyle(color: Colors.white, fontSize: 15),
                       ),
                       if (errorText != null) ...[
@@ -197,14 +199,14 @@ class SfmPreviewOverlay extends StatelessWidget {
                             children: [
                               Expanded(
                                 child: SfmBottomActionButton(
-                                  label: '保存草稿',
+                                  label: AppL10n.of(context).sfmSaveDraft,
                                   onTap: onDone,
                                 ),
                               ),
                               const SizedBox(width: 14),
                               Expanded(
                                 child: SfmBottomActionButton(
-                                  label: '下一步',
+                                  label: AppL10n.of(context).sfmNext,
                                   onTap: onNext!,
                                 ),
                               ),
@@ -212,7 +214,7 @@ class SfmPreviewOverlay extends StatelessWidget {
                           )
                         : Center(
                             child: SfmBottomActionButton(
-                              label: '完成',
+                              label: AppL10n.of(context).sfmDone,
                               onTap: onDone,
                             ),
                           ),
@@ -225,21 +227,22 @@ class SfmPreviewOverlay extends StatelessWidget {
     );
   }
 
-  Widget _statusChip() {
+  Widget _statusChip(BuildContext context) {
+    final l = AppL10n.of(context);
     final String text;
     final IconData? icon;
     switch (phase) {
       case SfmPreviewPhase.generating:
-        text = '最终重建';
+        text = l.sfmChipFinalRecon;
         icon = null;
       case SfmPreviewPhase.localReady:
-        text = '重建中 · ${snapshot?.pointCount ?? 0} 点…';
+        text = l.sfmChipReconstructing(snapshot?.pointCount ?? 0);
         icon = null;
       case SfmPreviewPhase.refined:
-        text = '重建完成 · ${snapshot?.pointCount ?? 0} 点';
+        text = l.sfmChipReconDone(snapshot?.pointCount ?? 0);
         icon = Icons.check_circle_rounded;
       case SfmPreviewPhase.error:
-        text = '重建结束';
+        text = l.sfmChipReconEnded;
         icon = null;
     }
     return Container(
@@ -256,9 +259,13 @@ class SfmPreviewOverlay extends StatelessWidget {
             Icon(icon, color: const Color(0xFF6EE7A0), size: 15),
             const SizedBox(width: 6),
           ],
-          Text(
-            text,
-            style: const TextStyle(color: Colors.white, fontSize: 12.5),
+          Flexible(
+            child: Text(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Colors.white, fontSize: 12.5),
+            ),
           ),
         ],
       ),

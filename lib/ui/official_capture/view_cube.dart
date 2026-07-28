@@ -143,6 +143,7 @@ class ViewCube extends StatelessWidget {
     required this.viewPitch,
     this.viewRoll = 0,
     this.size = 60,
+    this.faceLabels,
   });
 
   final double viewYaw;
@@ -151,6 +152,10 @@ class ViewCube extends StatelessWidget {
   /// 屏幕滚转(过极翻面动画期间与点云同步;见 CloudCamera.roll)。
   final double viewRoll;
   final double size;
+
+  /// 面 ID → 本地化显示词(null 时直接显示英文 ID;内部语义/测试恒用
+  /// 英文 ID,翻译只发生在绘制层)。
+  final Map<String, String>? faceLabels;
 
   @override
   Widget build(BuildContext context) {
@@ -164,6 +169,7 @@ class ViewCube extends StatelessWidget {
           yaw: viewYaw,
           pitch: viewPitch,
           roll: viewRoll,
+          faceLabels: faceLabels,
         ),
       ),
     );
@@ -175,11 +181,13 @@ class _ViewCubePainter extends CustomPainter {
     required this.yaw,
     required this.pitch,
     required this.roll,
+    this.faceLabels,
   });
 
   final double yaw;
   final double pitch;
   final double roll;
+  final Map<String, String>? faceLabels;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -235,7 +243,9 @@ class _ViewCubePainter extends CustomPainter {
             ..strokeWidth = 1.2
             ..color = const Color(0xB3FFFFFF),
         );
-        if (f.label == primary) _drawFaceLabel(canvas, f.label, pts);
+        if (f.label == primary) {
+          _drawFaceLabel(canvas, faceLabels?[f.label] ?? f.label, pts);
+        }
       } else {
         // 背面只画极淡描边,保留立方体体积感。
         canvas.drawPath(
@@ -277,5 +287,8 @@ class _ViewCubePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_ViewCubePainter old) =>
-      old.yaw != yaw || old.pitch != pitch || old.roll != roll;
+      old.yaw != yaw ||
+      old.pitch != pitch ||
+      old.roll != roll ||
+      old.faceLabels != faceLabels;
 }

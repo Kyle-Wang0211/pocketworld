@@ -315,4 +315,122 @@ class AppL10nZh extends AppL10n {
   String meDisplayNameUpdateFailed(String error) {
     return '更新失败:$error';
   }
+
+  @override
+  String get sfmSaveDraft => '保存草稿';
+
+  @override
+  String get sfmNext => '下一步';
+
+  @override
+  String get sfmDone => '完成';
+
+  @override
+  String get sfmBackToDrafts => '返回草稿';
+
+  @override
+  String get sfmGeneratingFinalCloud => '正在生成最终点云…';
+
+  @override
+  String get sfmReconFailedKeptFrames => '本次未能重建,已保留素材';
+
+  @override
+  String get sfmChipFinalRecon => '最终重建';
+
+  @override
+  String sfmChipReconstructing(int count) {
+    return '重建中 · $count 点…';
+  }
+
+  @override
+  String sfmChipReconDone(int count) {
+    return '重建完成 · $count 点';
+  }
+
+  @override
+  String get sfmChipReconEnded => '重建结束';
+
+  @override
+  String get sfmQueueDrainedFinal => '帧队列已清空 · 正在生成最终点云';
+
+  @override
+  String sfmProgressFedQueued(int fed, int queued) {
+    return '已处理 $fed 帧 · 剩余 $queued 帧';
+  }
+
+  @override
+  String sfmElapsedSec(int secs) {
+    return '$secs 秒';
+  }
+
+  @override
+  String sfmElapsedMinSec(int min, int sec) {
+    return '$min 分 $sec 秒';
+  }
+
+  @override
+  String sfmStage1(String elapsed) {
+    return '整理帧数据…(阶段 1/4 · 已 $elapsed)';
+  }
+
+  @override
+  String sfmStage2a(String elapsed) {
+    return '补全匹配中…(阶段 2/4 · 已 $elapsed)';
+  }
+
+  @override
+  String sfmStage2b(String elapsed) {
+    return '全局优化中…(阶段 2/4 · 已 $elapsed)';
+  }
+
+  @override
+  String sfmStage3(String elapsed) {
+    return '提取色彩…(阶段 3/4 · 已 $elapsed)';
+  }
+
+  @override
+  String sfmStage4(String elapsed) {
+    return '保存点云…(阶段 4/4 · 已 $elapsed)';
+  }
+
+  @override
+  String get viewerSparseCloudTitle => '稀疏点云';
+
+  @override
+  String viewerTitleWithCount(String title, int count) {
+    return '$title · $count 点';
+  }
+
+  @override
+  String get viewerLoadFailed => '点云文件读取失败';
+
+  @override
+  String get selectionRotatePointCloud => '旋转点云';
+
+  @override
+  String get selectionReadyToProcess => '开始处理';
+
+  @override
+  String get selectionDensifyComingSoon => '稠密化处理即将上线';
+
+  @override
+  String get selectionNoCloud => '暂无点云数据';
+
+  @override
+  String get cubeFaceTop => '顶';
+
+  @override
+  String get cubeFaceFront => '前';
+
+  @override
+  String get cubeFaceRight => '右';
+
+  @override
+  String get cubeFaceBack => '后';
+
+  @override
+  String get cubeFaceLeft => '左';
+
+  @override
+  String get cubeFaceBottom => '底';
 }

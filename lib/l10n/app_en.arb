@@ -187,5 +187,123 @@
         "type": "String"
       }
     }
-  }
+  },
+  "sfmSaveDraft": "Save Draft",
+  "sfmNext": "Next",
+  "sfmDone": "Done",
+  "sfmBackToDrafts": "Back to drafts",
+  "sfmGeneratingFinalCloud": "Generating final point cloud…",
+  "sfmReconFailedKeptFrames": "Reconstruction failed — captures kept",
+  "sfmChipFinalRecon": "Final reconstruction",
+  "sfmChipReconstructing": "Reconstructing · {count} pts…",
+  "@sfmChipReconstructing": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "sfmChipReconDone": "Reconstruction complete · {count} pts",
+  "@sfmChipReconDone": {
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "sfmChipReconEnded": "Reconstruction ended",
+  "sfmQueueDrainedFinal": "Frame queue drained · generating final point cloud",
+  "sfmProgressFedQueued": "Processed {fed} frames · {queued} remaining",
+  "@sfmProgressFedQueued": {
+    "placeholders": {
+      "fed": {
+        "type": "int"
+      },
+      "queued": {
+        "type": "int"
+      }
+    }
+  },
+  "sfmElapsedSec": "{secs}s",
+  "@sfmElapsedSec": {
+    "placeholders": {
+      "secs": {
+        "type": "int"
+      }
+    }
+  },
+  "sfmElapsedMinSec": "{min}m {sec}s",
+  "@sfmElapsedMinSec": {
+    "placeholders": {
+      "min": {
+        "type": "int"
+      },
+      "sec": {
+        "type": "int"
+      }
+    }
+  },
+  "sfmStage1": "Organizing frames… (stage 1/4 · {elapsed})",
+  "@sfmStage1": {
+    "placeholders": {
+      "elapsed": {
+        "type": "String"
+      }
+    }
+  },
+  "sfmStage2a": "Completing matches… (stage 2/4 · {elapsed})",
+  "@sfmStage2a": {
+    "placeholders": {
+      "elapsed": {
+        "type": "String"
+      }
+    }
+  },
+  "sfmStage2b": "Global optimization… (stage 2/4 · {elapsed})",
+  "@sfmStage2b": {
+    "placeholders": {
+      "elapsed": {
+        "type": "String"
+      }
+    }
+  },
+  "sfmStage3": "Extracting colors… (stage 3/4 · {elapsed})",
+  "@sfmStage3": {
+    "placeholders": {
+      "elapsed": {
+        "type": "String"
+      }
+    }
+  },
+  "sfmStage4": "Saving point cloud… (stage 4/4 · {elapsed})",
+  "@sfmStage4": {
+    "placeholders": {
+      "elapsed": {
+        "type": "String"
+      }
+    }
+  },
+  "viewerSparseCloudTitle": "Sparse Point Cloud",
+  "viewerTitleWithCount": "{title} · {count} pts",
+  "@viewerTitleWithCount": {
+    "placeholders": {
+      "title": {
+        "type": "String"
+      },
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+  "viewerLoadFailed": "Failed to load point cloud",
+  "selectionRotatePointCloud": "Rotate Point Cloud",
+  "selectionReadyToProcess": "Ready to Process",
+  "selectionDensifyComingSoon": "Dense processing coming soon",
+  "selectionNoCloud": "No point cloud data",
+  "cubeFaceTop": "Top",
+  "cubeFaceFront": "Front",
+  "cubeFaceRight": "Right",
+  "cubeFaceBack": "Back",
+  "cubeFaceLeft": "Left",
+  "cubeFaceBottom": "Bottom"
 }
