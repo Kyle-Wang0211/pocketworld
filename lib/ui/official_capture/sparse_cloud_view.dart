@@ -20,6 +20,7 @@ import 'package:flutter/material.dart';
 import '../../official_capture/selection_box.dart';
 import '../../point_cloud_display/progressive_octree_order.dart';
 import 'cloud_camera.dart';
+import 'selection_handles_3d.dart';
 
 /// 框外点的调制色(RS 同款红;只影响渲染调制,不碰数据)。
 const int kSelectionOutColor = 0xFFE05252;
@@ -94,6 +95,23 @@ typedef CloudViewCamera = ({
   double pivotZ,
 });
 
+/// 外部驱动相机的控制器(骰子点击归位用)。视图仍是相机的持有者 ——
+/// 这里只投递"请转到这个姿态"的一次性目标,避免把整套相机状态提升出去。
+class CloudViewController extends ChangeNotifier {
+  CloudViewCamera? _target;
+
+  void moveTo(CloudViewCamera c) {
+    _target = c;
+    notifyListeners();
+  }
+
+  CloudViewCamera? takeTarget() {
+    final t = _target;
+    _target = null;
+    return t;
+  }
+}
+
 class SparseCloudView extends StatefulWidget {
   const SparseCloudView({
     super.key,
@@ -103,7 +121,36 @@ class SparseCloudView extends StatefulWidget {
     this.showControls = true,
     this.initialCamera,
     this.onCameraChanged,
+    this.selectionBox,
+    this.onBoxChanged,
+    this.liveBox,
+    this.editing = false,
+    this.controller,
+    this.bottomGestureExclusion = 0,
   });
+
+  /// 底部这么高的区域不接受相机手势 —— 编辑态工具面板压在全屏点云视图
+  /// 之上(视图保持全屏才不会在切换时跳),而手势竞技场拦不住:实测拨
+  /// 刻度尺时下层仍吃到 8px 位移并把视角转走。位置判定是确定性的。
+  final double bottomGestureExclusion;
+
+  /// 见 [CloudViewController]。
+
+  /// [2026-07-28 用户签决] "浏览页面和编辑页面需要是同一个页面 —— 根本
+  /// 不用做两个画面":同一个视图既是预览也是编辑器。传 selectionBox 就画
+  /// 3D 线框和红点;editing=true 再挂手柄与盒手势(单指命中手柄改尺寸 /
+  /// 盒内平移盒 / 盒外自由 orbit)。相机自始至终是这一个 State,天然连续。
+  final SelectionBox? selectionBox;
+  final ValueChanged<SelectionBox>? onBoxChanged;
+
+  /// 手势读数用的同步真值源(父级 setState 是同步写;widget.selectionBox
+  /// 要等重建才刷新,双写者同帧并发会互相覆盖)。
+  final SelectionBox Function()? liveBox;
+
+  /// 编辑态:显示手柄、启用盒手势。false = 纯浏览(全屏 orbit)。
+  final bool editing;
+
+  final CloudViewController? controller;
 
   /// 初始相机(null = 默认取景)。
   final CloudViewCamera? initialCamera;
@@ -136,6 +183,8 @@ const double _kDefaultPitch = -0.42;
 // exact pole singularity. Was clamped to ±1.35 (±77°) — the head-on
 // "can't see the top/bottom" dead zone the competitor audit flagged.
 const double _kPitchLimit = math.pi / 2 - 0.02;
+
+enum _BoxDrag { none, handle, pan }
 
 class _SparseCloudViewState extends State<SparseCloudView>
     with SingleTickerProviderStateMixin {
@@ -181,13 +230,16 @@ class _SparseCloudViewState extends State<SparseCloudView>
   late final AnimationController _tween;
   _CamState? _tweenFrom, _tweenTo;
   Size _viewSize = Size.zero;
+  double _fitRadius = 1;
 
   @override
   void initState() {
     super.initState();
     _buildSprite();
     final fit = SparseCloudPainter.fitOf(widget.xyz);
+    _fitRadius = fit.radius;
     _pivot = [fit.cx, fit.cy, fit.cz];
+    widget.controller?.addListener(_onControllerTarget);
     final cam = widget.initialCamera;
     if (cam != null) {
       _yaw = cam.yaw;
@@ -205,8 +257,100 @@ class _SparseCloudViewState extends State<SparseCloudView>
 
   @override
   void dispose() {
+    widget.controller?.removeListener(_onControllerTarget);
     _tween.dispose();
     super.dispose();
+  }
+
+  // ── 选区编辑手势(editing=true 时生效)────────────────────────────
+  BoxHandle3D? _activeHandle;
+  _BoxDrag _boxMode = _BoxDrag.none;
+  SelectionBox? _gestureBox;
+
+  CloudProjection _projectionFor(Size size) => CloudCamera(
+    yaw: _yaw,
+    pitch: _pitch,
+    zoom: _zoom,
+    panX: _panX,
+    panY: _panY,
+    pivotX: _pivot[0],
+    pivotY: _pivot[1],
+    pivotZ: _pivot[2],
+    radius: _fitRadius,
+  ).projectionFor(size);
+
+  SelectionBox? get _liveBox =>
+      widget.liveBox?.call() ?? _gestureBox ?? widget.selectionBox;
+
+  bool _ignoreGesture = false;
+
+  void _onScaleStart(ScaleStartDetails d) {
+    _gestureBox = null;
+    _activeHandle = null;
+    _boxMode = _BoxDrag.none;
+    _ignoreGesture =
+        widget.bottomGestureExclusion > 0 &&
+        !_viewSize.isEmpty &&
+        d.localFocalPoint.dy > _viewSize.height - widget.bottomGestureExclusion;
+    if (_ignoreGesture) return;
+    if (!widget.editing || _viewSize.isEmpty) return;
+    final box = _liveBox;
+    if (box == null) return;
+    final proj = _projectionFor(_viewSize);
+    final h = hitBoxHandle3D(box, proj, d.localFocalPoint);
+    if (h != null) {
+      _activeHandle = h;
+      _boxMode = _BoxDrag.handle;
+    } else if (pointInBoxSilhouette(box, proj, d.localFocalPoint)) {
+      _boxMode = _BoxDrag.pan;
+    }
+    _gestureBox = box;
+  }
+
+  /// 返回 true 表示这次手势归盒所有(相机不动)。
+  bool _handleBoxGesture(ScaleUpdateDetails d) {
+    if (_ignoreGesture) return true; // 手势属于工具面板,相机与盒都不动
+    if (!widget.editing || d.pointerCount >= 2) return false;
+    if (_boxMode == _BoxDrag.none) return false;
+    final box = _liveBox;
+    final cb = widget.onBoxChanged;
+    if (box == null || cb == null || _viewSize.isEmpty) return false;
+    final proj = _projectionFor(_viewSize);
+    final SelectionBox next;
+    if (_boxMode == _BoxDrag.handle && _activeHandle != null) {
+      next = applyHandle3DDrag(
+        box: box,
+        proj: proj,
+        handle: _activeHandle!,
+        screenDelta: d.focalPointDelta,
+        minHalfSize: _fitRadius * SelectionBox.kMinHalfSizeFraction,
+      );
+    } else {
+      final (_, _, depth) = proj.project(box.cx, box.cy, box.cz);
+      next = applyBoxPan(
+        box: box,
+        proj: proj,
+        screenDelta: d.focalPointDelta,
+        depth: depth,
+      );
+    }
+    _gestureBox = next;
+    cb(next);
+    return true;
+  }
+
+  void _onControllerTarget() {
+    final t = widget.controller?.takeTarget();
+    if (t == null || !mounted) return;
+    setState(() {
+      _yaw = t.yaw;
+      _pitch = t.pitch;
+      _zoom = t.zoom;
+      _panX = t.panX;
+      _panY = t.panY;
+      _pivot = [t.pivotX, t.pivotY, t.pivotZ];
+    });
+    _emitCamera();
   }
 
   void _emitCamera() {
@@ -332,8 +476,12 @@ class _SparseCloudViewState extends State<SparseCloudView>
             builder: (context, constraints) {
               _viewSize = constraints.biggest;
               return GestureDetector(
+                onScaleStart: _onScaleStart,
                 onScaleUpdate: (d) {
                   if (_tween.isAnimating) return; // don't fight a transition
+                  // 编辑态:命中手柄/落在盒轮廓内的单指手势归盒所有,
+                  // 相机不动。
+                  if (_handleBoxGesture(d)) return;
                   setState(() {
                     if (d.pointerCount >= 2) {
                       // Two-finger drag = pan; pinch = zoom (dolly-in range
@@ -359,6 +507,11 @@ class _SparseCloudViewState extends State<SparseCloudView>
                     }
                   });
                   _emitCamera();
+                },
+                onScaleEnd: (_) {
+                  _activeHandle = null;
+                  _boxMode = _BoxDrag.none;
+                  _gestureBox = null;
                 },
                 onDoubleTapDown: (d) => _focusAt(d.localPosition),
                 child: RepaintBoundary(

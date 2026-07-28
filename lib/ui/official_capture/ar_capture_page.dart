@@ -64,9 +64,11 @@ import '../reconstruction_route_release_gate.dart';
 import '../scan_record.dart';
 import 'ar_album_page.dart';
 import 'capture_preview_rect.dart';
-import 'sparse_cloud_view.dart' show CloudViewCamera;
+import '../../official_capture/selection_box.dart';
+import 'selection_tools_layer.dart';
+import 'sparse_cloud_view.dart'
+    show CloudViewCamera, CloudViewController, SparseCloudPainter;
 import 'official_gallery_routes.dart';
-import 'selection_page.dart';
 import 'sfm_preview_overlay.dart';
 
 class OfficialARCapturePage extends StatefulWidget {
@@ -1835,25 +1837,63 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
 
   /// [选区 2026-07-27] 等待页"下一步"→ 选区页。返回 'save_draft'(签决:
   /// 选区页返回不回等待页)→ 走与"保存草稿"完全同一的退出链路。
-  /// 预览相机最新快照(SfmPreviewOverlay 每帧上报,不 setState)。
-  CloudViewCamera? _sfmPreviewCamera;
+  /// 预览相机(骰子经 ValueListenable 跟随,不触发整页重建)。
+  final ValueNotifier<CloudViewCamera?> _sfmPreviewCamera = ValueNotifier(null);
+  final CloudViewController _sfmCloudController = CloudViewController();
+
+  /// [2026-07-28 用户签决] "预览跟编辑就是一个页面":不再 push 选区页,
+  /// 点"下一步"只把工具层叠到同一个预览视图上,相机原地不动。
+  bool _sfmEditing = false;
+  SelectionBox? _sfmBox;
+  Timer? _sfmBoxSaveDebounce;
 
   Future<void> _onSfmPreviewNext() async {
     if (_sfmPhase != SfmPreviewPhase.refined) return;
     final snap = _sfmSnapshot;
     final dir = _session?.captureDir;
     if (snap == null || dir == null || snap.pointCount == 0) return;
-    final result = await Navigator.of(context).push<String>(
-      MaterialPageRoute<String>(
-        builder: (_) => SelectionPage(
-          xyz: snap.xyz,
-          rgb: snap.rgb,
-          captureDir: dir,
-          initialCamera: _sfmPreviewCamera,
-        ),
-      ),
+    final fit = SparseCloudPainter.fitOf(snap.xyz);
+    final loaded = await SelectionBox.loadFrom(dir);
+    final box =
+        (loaded != null &&
+            loaded.isSaneFor(
+              fitCx: fit.cx,
+              fitCy: fit.cy,
+              fitCz: fit.cz,
+              fitRadius: fit.radius,
+            ))
+        ? loaded
+        : SelectionBox.initialFor(
+            cx: fit.cx,
+            cy: fit.cy,
+            cz: fit.cz,
+            radius: fit.radius,
+          );
+    if (!mounted) return;
+    setState(() {
+      _sfmBox = box;
+      _sfmEditing = true;
+    });
+  }
+
+  void _onSfmBoxChanged(SelectionBox b) {
+    setState(() => _sfmBox = b);
+    final dir = _session?.captureDir;
+    if (dir == null) return;
+    _sfmBoxSaveDebounce?.cancel();
+    _sfmBoxSaveDebounce = Timer(
+      const Duration(milliseconds: 500),
+      () => unawaited(b.saveTo(dir)),
     );
-    if (result == 'save_draft') await _onSfmPreviewDone();
+  }
+
+  Future<void> _exitSfmEditing() async {
+    _sfmBoxSaveDebounce?.cancel();
+    final dir = _session?.captureDir;
+    final b = _sfmBox;
+    if (dir != null && b != null) await b.saveTo(dir);
+    if (!mounted) return;
+    setState(() => _sfmEditing = false);
   }
 
   Future<void> _permanentlyDeleteActiveReconstruction(ScanRecord record) async {
@@ -2804,7 +2844,20 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                       context,
                     ).sfmProgressFedQueued(_sfmFed, _sfmQueued)
                   : _sfmStageProgressText(context),
-              onCameraChanged: (c) => _sfmPreviewCamera = c,
+              onCameraChanged: (c) => _sfmPreviewCamera.value = c,
+              editing: _sfmEditing,
+              selectionBox: _sfmBox,
+              onBoxChanged: _onSfmBoxChanged,
+              cloudController: _sfmCloudController,
+              toolsOverlay: _sfmEditing && _sfmBox != null
+                  ? SelectionToolsLayer(
+                      box: _sfmBox!,
+                      onBoxChanged: _onSfmBoxChanged,
+                      camera: _sfmPreviewCamera,
+                      controller: _sfmCloudController,
+                      onExit: () => unawaited(_exitSfmEditing()),
+                    )
+                  : null,
               onBack: _showDraftsDuringReconstruction,
               onDone: () => unawaited(_onSfmPreviewDone()),
               onNext: _sfmSnapshot != null && _sfmSnapshot!.pointCount > 0

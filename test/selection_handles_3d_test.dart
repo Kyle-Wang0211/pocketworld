@@ -261,4 +261,99 @@ void main() {
     // 距离与焦距必须同比改,否则取景会变(点云突然变大/变小)。
     expect(kFitFillK / kCamDistK, closeTo(2.6 / 3.2, 1e-12));
   });
+
+  test('近视线轴禁用:任意视角狂拖角手柄都压不出纸片盒', () {
+    // [2026-07-28 用户实机指认] 修复前:轴接近视线时 |dir|→0,dWorld 被
+    // 除以 |dir|² 放大几十倍,一拖就把某维压成纸片(截图里的"四边形框")。
+    const cube = SelectionBox(
+      cx: 0,
+      cy: 0,
+      cz: 0,
+      sx: 2,
+      sy: 2,
+      sz: 2,
+      yawDeg: 0,
+    );
+    for (final yaw in [0.0, 0.3, 0.7854, 1.2, 1.5708, 2.5]) {
+      for (final pitch in [0.0, -0.42, -1.4, 0.9]) {
+        final proj = CloudCamera(
+          yaw: yaw,
+          pitch: pitch,
+          zoom: 1,
+          panX: 0,
+          panY: 0,
+          pivotX: 0,
+          pivotY: 0,
+          pivotZ: 0,
+          radius: 1,
+        ).projectionFor(const Size(390, 640));
+        for (final h in kBoxHandles3D) {
+          var b = cube;
+          for (var i = 0; i < 12; i++) {
+            b = applyHandle3DDrag(
+              box: b,
+              proj: proj,
+              handle: h,
+              screenDelta: const Offset(14, -11),
+              minHalfSize: 0.02,
+            );
+          }
+          // 12 次 14px 拖动最多改变 ~1.5 个世界单位/轴(基准 ≈158px/单位);
+          // 任何轴暴涨到 20 倍原尺寸 = 近视线轴放大 bug 复发。
+          for (final side in [b.sx, b.sy, b.sz]) {
+            expect(
+              side,
+              lessThan(40.0),
+              reason: 'yaw=$yaw pitch=$pitch handle=$h 轴暴涨',
+            );
+            expect(side, greaterThan(0.03), reason: '轴被压成纸片');
+          }
+        }
+      }
+    }
+  });
+
+  test('退化框自愈:压扁的 / 飞到点云外的框判为不可用', () {
+    const fit = (cx: 0.0, cy: 0.0, cz: 0.0, radius: 1.0);
+    bool sane(SelectionBox b) => b.isSaneFor(
+      fitCx: fit.cx,
+      fitCy: fit.cy,
+      fitCz: fit.cz,
+      fitRadius: fit.radius,
+    );
+    expect(
+      sane(SelectionBox.initialFor(cx: 0, cy: 0, cz: 0, radius: fit.radius)),
+      isTrue,
+    );
+    // 纸片(y 被压扁)
+    expect(
+      sane(
+        const SelectionBox(
+          cx: 0,
+          cy: 0,
+          cz: 0,
+          sx: 2,
+          sy: 0.01,
+          sz: 2,
+          yawDeg: 0,
+        ),
+      ),
+      isFalse,
+    );
+    // 飞出点云
+    expect(
+      sane(
+        const SelectionBox(
+          cx: 40,
+          cy: 0,
+          cz: 0,
+          sx: 2,
+          sy: 2,
+          sz: 2,
+          yawDeg: 0,
+        ),
+      ),
+      isFalse,
+    );
+  });
 }

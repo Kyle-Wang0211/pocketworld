@@ -68,6 +68,22 @@ class SelectionBox {
   /// 在屏幕上不转),但框心若不在相机枢轴上,投影位置仍会漂移 —— 解法
   /// 就是整盒绕**相机枢轴**(点云 fit 中心)刚性旋转,位置+朝向双抵消,
   /// 投影不变性由 selection_box_pivot_rotation_test 以 1e-6 锁定。
+  /// 框是否仍然可用(旧版本手柄 bug 会把某一维压成纸片,或把框拖到点云
+  /// 之外)。不可用时调用方回退到 [initialFor] —— 否则用户进来看到的是
+  /// 一个选不中任何点的退化框,且没有任何自救入口。
+  bool isSaneFor({
+    required double fitCx,
+    required double fitCy,
+    required double fitCz,
+    required double fitRadius,
+  }) {
+    final minSide = fitRadius * 0.05;
+    if (sx < minSide || sy < minSide || sz < minSide) return false;
+    final dx = cx - fitCx, dy = cy - fitCy, dz = cz - fitCz;
+    final dist = math.sqrt(dx * dx + dy * dy + dz * dz);
+    return dist <= fitRadius * 5;
+  }
+
   SelectionBox rotatedAroundPivot(
     double pivotX,
     double pivotZ,

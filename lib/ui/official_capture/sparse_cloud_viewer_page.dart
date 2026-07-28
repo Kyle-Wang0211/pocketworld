@@ -12,7 +12,8 @@ import 'package:flutter/material.dart';
 
 import '../../l10n/app_localizations.dart';
 
-import 'selection_page.dart';
+import '../../official_capture/selection_box.dart';
+import 'selection_tools_layer.dart';
 import 'sfm_preview_overlay.dart' show SfmBottomActionButton;
 import 'sparse_cloud_view.dart';
 
@@ -87,10 +88,73 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
   SparseCloudData? _cloud;
   bool _loading = true;
 
+  // [2026-07-28 用户签决] 浏览与编辑是**同一个页面**:点"下一步"只是把
+  // 工具层叠上来(_editing=true),点云视图与相机是同一个 State,不重建、
+  // 不 push 新路由 ⇒ 角度/位置/缩放天然连续。
+  bool _editing = false;
+  SelectionBox? _box;
+  final ValueNotifier<CloudViewCamera?> _camera = ValueNotifier(null);
+  final CloudViewController _cloudController = CloudViewController();
+  Timer? _saveDebounce;
+
   @override
   void initState() {
     super.initState();
     _load();
+  }
+
+  @override
+  void dispose() {
+    _saveDebounce?.cancel();
+    _cloudController.dispose();
+    _camera.dispose();
+    super.dispose();
+  }
+
+  String get _captureDir => File(widget.plyPath).parent.path;
+
+  Future<void> _enterEditing() async {
+    final cloud = _cloud;
+    if (cloud == null) return;
+    final fit = SparseCloudPainter.fitOf(cloud.xyz);
+    final loaded = await SelectionBox.loadFrom(_captureDir);
+    final box =
+        (loaded != null &&
+            loaded.isSaneFor(
+              fitCx: fit.cx,
+              fitCy: fit.cy,
+              fitCz: fit.cz,
+              fitRadius: fit.radius,
+            ))
+        ? loaded
+        : SelectionBox.initialFor(
+            cx: fit.cx,
+            cy: fit.cy,
+            cz: fit.cz,
+            radius: fit.radius,
+          );
+    if (!mounted) return;
+    setState(() {
+      _box = box;
+      _editing = true;
+    });
+  }
+
+  void _onBoxChanged(SelectionBox b) {
+    setState(() => _box = b);
+    _saveDebounce?.cancel();
+    _saveDebounce = Timer(
+      const Duration(milliseconds: 500),
+      () => unawaited(b.saveTo(_captureDir)),
+    );
+  }
+
+  Future<void> _exitEditing() async {
+    _saveDebounce?.cancel();
+    final b = _box;
+    if (b != null) await b.saveTo(_captureDir);
+    if (!mounted) return;
+    setState(() => _editing = false);
   }
 
   Future<void> _load() async {
@@ -114,20 +178,24 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
     final cloud = _cloud;
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        foregroundColor: Colors.white,
-        elevation: 0,
-        title: Text(
-          cloud != null
-              ? AppL10n.of(context).viewerTitleWithCount(
-                  widget.title ?? AppL10n.of(context).viewerSparseCloudTitle,
-                  cloud.count,
-                )
-              : (widget.title ?? AppL10n.of(context).viewerSparseCloudTitle),
-          style: const TextStyle(fontSize: 15),
-        ),
-      ),
+      appBar: _editing
+          ? null
+          : AppBar(
+              backgroundColor: Colors.black,
+              foregroundColor: Colors.white,
+              elevation: 0,
+              title: Text(
+                cloud != null
+                    ? AppL10n.of(context).viewerTitleWithCount(
+                        widget.title ??
+                            AppL10n.of(context).viewerSparseCloudTitle,
+                        cloud.count,
+                      )
+                    : (widget.title ??
+                          AppL10n.of(context).viewerSparseCloudTitle),
+                style: const TextStyle(fontSize: 15),
+              ),
+            ),
       body: SafeArea(
         top: false,
         child: _loading
@@ -148,56 +216,63 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                   style: const TextStyle(color: Colors.white54, fontSize: 14),
                 ),
               )
-            : Column(
+            : Stack(
                 children: [
-                  Expanded(
+                  // 同一个视图实例贯穿浏览与编辑 —— 切换只改 editing 标志,
+                  // 相机 State 原地不动,所以点云不会跳一下。
+                  Positioned.fill(
                     child: SparseCloudView(
                       xyz: cloud.xyz,
                       rgb: cloud.rgb,
-                      // 相机快照:进选区页时原样继承(不 setState —— 每帧
-                      // 手势都会回调)。
-                      onCameraChanged: (c) => _camera = c,
+                      controller: _cloudController,
+                      // 骰子经 ValueListenable 跟随,不触发整页重建。
+                      onCameraChanged: (c) => _camera.value = c,
+                      selectionBox: _editing ? _box : null,
+                      onBoxChanged: _onBoxChanged,
+                      liveBox: () =>
+                          _box ??
+                          const SelectionBox(
+                            cx: 0,
+                            cy: 0,
+                            cz: 0,
+                            sx: 1,
+                            sy: 1,
+                            sz: 1,
+                            yawDeg: 0,
+                          ),
+                      editing: _editing,
+                      bottomGestureExclusion: _editing ? 110 : 0,
                     ),
                   ),
-                  // [2026-07-28 用户签决] 草稿页进来的查看器只留"下一步":
-                  // 本来就是草稿,"保存草稿"无意义(退出走返回键);双按钮
-                  // 只保留在刚拍完的等待页预览。
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
-                    child: SizedBox(
-                      width: double.infinity,
-                      child: SfmBottomActionButton(
-                        label: AppL10n.of(context).sfmNext,
-                        onTap: () => unawaited(_openSelection()),
+                  if (!_editing)
+                    Positioned(
+                      left: 24,
+                      right: 24,
+                      bottom: 16,
+                      child: SafeArea(
+                        top: false,
+                        child: SizedBox(
+                          width: double.infinity,
+                          child: SfmBottomActionButton(
+                            label: AppL10n.of(context).sfmNext,
+                            onTap: () => unawaited(_enterEditing()),
+                          ),
+                        ),
                       ),
                     ),
-                  ),
+                  if (_editing && _box != null)
+                    Positioned.fill(
+                      child: SelectionToolsLayer(
+                        box: _box!,
+                        onBoxChanged: _onBoxChanged,
+                        camera: _camera,
+                        controller: _cloudController,
+                        onExit: () => unawaited(_exitEditing()),
+                      ),
+                    ),
                 ],
               ),
       ),
     );
-  }
-
-  /// 下一步 → 选区页(SelectionPage 零改动复用);返回后重读选区文件刷新
-  /// 只读回显(用户刚改完的框和红点立刻可见)。pop 载荷 'save_draft' 在
-  /// 此入口无退出动作,忽略即可。
-  /// 预览相机的最新快照(见 SparseCloudView.onCameraChanged)。
-  CloudViewCamera? _camera;
-
-  Future<void> _openSelection() async {
-    final cloud = _cloud;
-    if (cloud == null) return;
-    await Navigator.of(context).push<String>(
-      MaterialPageRoute<String>(
-        builder: (_) => SelectionPage(
-          xyz: cloud.xyz,
-          rgb: cloud.rgb,
-          captureDir: File(widget.plyPath).parent.path,
-          initialCamera: _camera,
-        ),
-      ),
-    );
-    // [2026-07-28 用户签决] 预览模式不再显示选区回显(框外红只属于编辑
-    // 页),返回后无需刷新任何选区状态。
   }
 }

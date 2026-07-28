@@ -7,7 +7,7 @@
 // **世界轴**逆映射。透视下手柄天然贴合盒轮廓,框外红点与线框永远吻合。
 import 'dart:math' as math;
 
-import 'package:flutter/painting.dart' show Offset;
+import 'package:flutter/material.dart';
 
 import '../../official_capture/selection_box.dart';
 import 'cloud_camera.dart';
@@ -123,11 +123,20 @@ SelectionBox applyHandle3DDrag({
   var cx = box.cx, cy = box.cy, cz = box.cz;
   final newSizes = [...sizes];
 
+  // [2026-07-28 用户实机指认"框仍然不是立方体"] 近视线轴必须禁用:轴越
+  // 接近视线,它的屏幕方向越短,而 dWorld = ⟨Δ,dir⟩/|dir|² 要除以这个长度
+  // 的平方 —— |dir| 掉到基准的 1/30 时,拖 10px 会改出 30 倍的世界位移,
+  // 一下就把盒压成纸片(用户截图里的四边形"框"就是被压扁的立方体)。
+  // 基准 = 该深度下的 像素/世界单位;低于 25% 视为不可操作,整轴跳过。
+  final (_, _, atDepth) = proj.project(at[0], at[1], at[2]);
+  final refPxPerWorld = 1.0 / proj.worldPerPixelAt(atDepth);
+  final minDirLen = refPxPerWorld * 0.25;
+
   for (var k = 0; k < 3; k++) {
     if (sgn[k] == 0) continue;
     final dir = _axisScreenDir(proj, at, axes[k]);
     final len2 = dir.dx * dir.dx + dir.dy * dir.dy;
-    if (len2 < 1e-12) continue; // 该轴正对视线,屏幕上没有位移方向可言
+    if (len2 < minDirLen * minDirLen) continue; // 该轴近视线,不可靠
     // 屏幕位移在该轴屏幕方向上的世界位移量。
     final dWorld = (screenDelta.dx * dir.dx + screenDelta.dy * dir.dy) / len2;
     final want = sizes[k] + sgn[k] * dWorld;
@@ -201,4 +210,65 @@ bool pointInBoxSilhouette(SelectionBox b, CloudProjection proj, Offset p) {
     }
   }
   return true;
+}
+
+/// 空白拖动整盒平移(视平面 right/up × worldPerPixelAt)。
+///
+/// ⚠️ Controller resolution(binding,覆盖 brief 原始实现):Task 2 实测
+/// 锁定 `upAxisWorld()` 返回的是**屏幕 −y(向上)**方向的世界向量(该函数
+/// 注释已写明),`rightAxisWorld()` 是屏幕 +x(向右)。brief 原式
+/// `c? + (r·dx + u·dy)·wpp` 会让垂直方向反向(往下拖 dy>0 却把盒往屏幕
+/// 上方移)。这里改为垂直分量取 `−screenDelta.dy`:
+/// screenDelta.dy>0(手指下拖)对应"屏幕向下" = up 的反方向,故世界位移
+/// 沿 up 的分量是 `u · (−dy)`。
+SelectionBox applyBoxPan({
+  required SelectionBox box,
+  required CloudProjection proj,
+  required Offset screenDelta,
+  required double depth,
+}) {
+  final wpp = proj.worldPerPixelAt(depth);
+  final r = proj.rightAxisWorld();
+  final u = proj.upAxisWorld();
+  final dx = screenDelta.dx;
+  final dy = -screenDelta.dy; // controller correction:垂直分量反号
+  return box.copyWith(
+    cx: box.cx + (r[0] * dx + u[0] * dy) * wpp,
+    cy: box.cy + (r[1] * dx + u[1] * dy) * wpp,
+    cz: box.cz + (r[2] * dx + u[2] * dy) * wpp,
+  );
+}
+
+/// 3D bound-box gizmo 手柄绘制:8 角(大点)+ 6 面中心(小点),画在盒的
+/// 真实角/面投影上 —— 透视下自动贴合线框,背面手柄淡显以保留体积感。
+class BoxHandlesPainter extends CustomPainter {
+  const BoxHandlesPainter({required this.box, required this.proj});
+
+  final SelectionBox box;
+  final CloudProjection proj;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final (_, _, centerDepth) = proj.project(box.cx, box.cy, box.cz);
+    final items = <({Offset p, double depth, bool corner})>[];
+    for (final h in kBoxHandles3D) {
+      final w = handleWorldPos(box, h);
+      final (sx, sy, depth) = proj.project(w[0], w[1], w[2]);
+      items.add((p: Offset(sx, sy), depth: depth, corner: isCornerHandle(h)));
+    }
+    items.sort((a, b) => b.depth.compareTo(a.depth));
+    for (final it in items) {
+      final front = it.depth <= centerDepth;
+      canvas.drawCircle(
+        it.p,
+        it.corner ? 8.5 : 6.0,
+        Paint()
+          ..color = front ? const Color(0xFFFFFFFF) : const Color(0x66FFFFFF),
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant BoxHandlesPainter old) =>
+      old.box != box || old.proj != proj;
 }

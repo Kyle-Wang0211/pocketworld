@@ -16,7 +16,7 @@ import 'dart:ui' show Offset, Size;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/official_capture/selection_box.dart';
 import 'package:pocketworld_flutter/ui/official_capture/cloud_camera.dart';
-import 'package:pocketworld_flutter/ui/official_capture/selection_cloud_view.dart';
+import 'package:pocketworld_flutter/ui/official_capture/selection_handles_3d.dart';
 
 CloudProjection _proj({double yaw = 0, double pitch = 0}) => CloudCamera(
   yaw: yaw,

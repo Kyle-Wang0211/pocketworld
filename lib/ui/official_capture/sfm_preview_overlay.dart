@@ -12,6 +12,7 @@ import 'package:flutter/material.dart';
 import '../../l10n/app_localizations.dart';
 
 import '../../official_capture/sfm_live_recon.dart';
+import '../../official_capture/selection_box.dart';
 import 'sparse_cloud_view.dart';
 
 /// Preview lifecycle the capture page drives.
@@ -40,6 +41,11 @@ class SfmPreviewOverlay extends StatelessWidget {
     this.errorText,
     this.progressText,
     this.onCameraChanged,
+    this.editing = false,
+    this.selectionBox,
+    this.onBoxChanged,
+    this.cloudController,
+    this.toolsOverlay,
   });
 
   final SfmPreviewPhase phase;
@@ -62,6 +68,14 @@ class SfmPreviewOverlay extends StatelessWidget {
   /// 预览相机快照上报 —— "下一步"进选区页时原样继承(用户签决:预览与
   /// 编辑是同一个页面,点下一步只是让工具显现)。
   final ValueChanged<CloudViewCamera>? onCameraChanged;
+
+  /// [2026-07-28 用户签决] 预览与编辑是同一个页面:点"下一步"只是把工具层
+  /// 叠上来 —— 同一个 SparseCloudView 实例、同一份相机,零跳变。
+  final bool editing;
+  final SelectionBox? selectionBox;
+  final ValueChanged<SelectionBox>? onBoxChanged;
+  final CloudViewController? cloudController;
+  final Widget? toolsOverlay;
 
   @override
   Widget build(BuildContext context) {
@@ -88,21 +102,28 @@ class SfmPreviewOverlay extends StatelessWidget {
                     xyz: snap.xyz,
                     rgb: snap.rgb,
                     onCameraChanged: onCameraChanged,
+                    controller: cloudController,
+                    selectionBox: editing ? selectionBox : null,
+                    onBoxChanged: onBoxChanged,
+                    liveBox: selectionBox == null ? null : () => selectionBox!,
+                    editing: editing,
+                    bottomGestureExclusion: editing ? 110 : 0,
                   ),
                 ),
               ),
             // ── status chip (top center)
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: SafeArea(
-                child: Padding(
-                  padding: const EdgeInsets.only(top: 14),
-                  child: Center(child: _statusChip(context)),
+            if (!editing)
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: SafeArea(
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 14),
+                    child: Center(child: _statusChip(context)),
+                  ),
                 ),
               ),
-            ),
             // Leaving this screen only reveals Drafts. The capture route and
             // its reconstruction worker stay mounted so progress can be
             // reopened from the active task card.
@@ -189,7 +210,7 @@ class SfmPreviewOverlay extends StatelessWidget {
               ),
             // No early escape while frames/finalize are running: the user asked
             // for the authoritative sparse result, not a background replacement.
-            if (canFinish)
+            if (canFinish && !editing)
               Positioned(
                 left: 0,
                 right: 0,
@@ -227,6 +248,7 @@ class SfmPreviewOverlay extends StatelessWidget {
                   ),
                 ),
               ),
+            if (toolsOverlay != null) Positioned.fill(child: toolsOverlay!),
           ],
         ),
       ),
