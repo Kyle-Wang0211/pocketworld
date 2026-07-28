@@ -34,7 +34,7 @@ CloudProjection _proj({bool ortho = false, double yaw = 0.6}) => CloudCamera(
 
 void main() {
   test('手柄集合 = 6 面 + 8 角,面手柄在面中心、角手柄在角上', () {
-    expect(kBoxHandles3D.length, 14);
+    expect(kBoxHandles3D.length, 14); // 6 面 + 8 角,无中心/平移手柄
     expect(kBoxHandles3D.where(isCornerHandle).length, 8);
 
     // +x 面手柄 = 盒心沿局部 x 轴外移半边长。
@@ -163,19 +163,6 @@ void main() {
       expect((Offset(hx, hy) - Offset(sx, sy)).distance, lessThan(1e-6));
     }
     expect(hitBoxHandle3D(_box, proj, const Offset(-500, -500)), isNull);
-  });
-
-  test('轮廓内外判定:盒心在内,远处在外', () {
-    final proj = _proj();
-    final (cx, cy, _) = proj.project(_box.cx, _box.cy, _box.cz);
-    expect(pointInBoxSilhouette(_box, proj, Offset(cx, cy)), isTrue);
-    expect(pointInBoxSilhouette(_box, proj, const Offset(-300, -300)), isFalse);
-    // 所有 8 角投影都应在轮廓内(凸包性质)。
-    for (final h in kBoxHandles3D.where(isCornerHandle)) {
-      final w = handleWorldPos(_box, h);
-      final (x, y, _) = proj.project(w[0], w[1], w[2]);
-      expect(pointInBoxSilhouette(_box, proj, Offset(x, y)), isTrue);
-    }
   });
 
   test('yawDeg 旋转下手柄仍贴合盒(轴随盒转)', () {
@@ -322,7 +309,9 @@ void main() {
       fitRadius: fit.radius,
     );
     expect(
-      sane(SelectionBox.initialFor(cx: 0, cy: 0, cz: 0, radius: fit.radius)),
+      sane(
+        SelectionBox.initialFor(cx: 0, cy: 0, cz: 0, hx: 0.5, hy: 0.5, hz: 0.5),
+      ),
       isTrue,
     );
     // 纸片(y 被压扁)

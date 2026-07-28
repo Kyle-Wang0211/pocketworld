@@ -184,7 +184,7 @@ const double _kDefaultPitch = -0.42;
 // "can't see the top/bottom" dead zone the competitor audit flagged.
 const double _kPitchLimit = math.pi / 2 - 0.02;
 
-enum _BoxDrag { none, handle, pan }
+enum _BoxDrag { none, handle }
 
 class _SparseCloudViewState extends State<SparseCloudView>
     with SingleTickerProviderStateMixin {
@@ -299,10 +299,11 @@ class _SparseCloudViewState extends State<SparseCloudView>
     final proj = _projectionFor(_viewSize);
     final h = hitBoxHandle3D(box, proj, d.localFocalPoint);
     if (h != null) {
+      // [2026-07-28 用户签决] 只有手柄接管手势,且只改尺寸 —— 单指整体
+      // 平移框已删除(盒在屏幕上很大,"轮廓内 = 平移"几乎处处抢手势,
+      // 用户实机指认"左右滑动点云没反应")。
       _activeHandle = h;
       _boxMode = _BoxDrag.handle;
-    } else if (pointInBoxSilhouette(box, proj, d.localFocalPoint)) {
-      _boxMode = _BoxDrag.pan;
     }
     _gestureBox = box;
   }
@@ -317,7 +318,7 @@ class _SparseCloudViewState extends State<SparseCloudView>
     if (box == null || cb == null || _viewSize.isEmpty) return false;
     final proj = _projectionFor(_viewSize);
     final SelectionBox next;
-    if (_boxMode == _BoxDrag.handle && _activeHandle != null) {
+    if (_activeHandle != null) {
       next = applyHandle3DDrag(
         box: box,
         proj: proj,
@@ -326,13 +327,7 @@ class _SparseCloudViewState extends State<SparseCloudView>
         minHalfSize: _fitRadius * SelectionBox.kMinHalfSizeFraction,
       );
     } else {
-      final (_, _, depth) = proj.project(box.cx, box.cy, box.cz);
-      next = applyBoxPan(
-        box: box,
-        proj: proj,
-        screenDelta: d.focalPointDelta,
-        depth: depth,
-      );
+      return false;
     }
     _gestureBox = next;
     cb(next);
@@ -867,6 +862,40 @@ class SparseCloudPainter extends CustomPainter {
   ) {
     _ensureFit(xyz);
     return (cx: _cx, cy: _cy, cz: _cz, radius: _radius);
+  }
+
+  /// 点云的轴对齐包围盒(中心 + 半边长)。
+  ///
+  /// [2026-07-28 用户实机指认"3D 框直接消失了 / 左右滑点云没反应"] 初始
+  /// 选区框原本取"外接球的外接立方体"(边长 2r):它的角落在 1.73r,而相机
+  /// 取景是按"半径 r 填满屏幕"标定的 ⇒ 框投影比屏幕大 40%,线框整个跑到
+  /// 屏幕外(看不见),同时屏幕上任何一点都落在框轮廓内(拖动全被判成平移
+  /// 框,视角纹丝不动)。改用 AABB:它内接于外接球,投影恰好在取景内。
+  static ({double cx, double cy, double cz, double hx, double hy, double hz})
+  aabbOf(Float32List xyz) {
+    if (xyz.length < 3) {
+      return (cx: 0, cy: 0, cz: 0, hx: 0.5, hy: 0.5, hz: 0.5);
+    }
+    var minX = xyz[0], maxX = xyz[0];
+    var minY = xyz[1], maxY = xyz[1];
+    var minZ = xyz[2], maxZ = xyz[2];
+    for (var i = 3; i + 2 < xyz.length; i += 3) {
+      final x = xyz[i], y = xyz[i + 1], z = xyz[i + 2];
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      if (z < minZ) minZ = z;
+      if (z > maxZ) maxZ = z;
+    }
+    return (
+      cx: (minX + maxX) / 2,
+      cy: (minY + maxY) / 2,
+      cz: (minZ + maxZ) / 2,
+      hx: math.max((maxX - minX) / 2, 1e-4),
+      hy: math.max((maxY - minY) / 2, 1e-4),
+      hz: math.max((maxZ - minZ) / 2, 1e-4),
+    );
   }
 
   /// Nearest surface point to a screen tap, in world coords (double-tap

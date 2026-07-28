@@ -70,11 +70,14 @@ void main() {
     expect(back!.yawDeg, -15);
   });
 
-  test('initialFor = fit 球外接立方', () {
-    final b = SelectionBox.initialFor(cx: 1, cy: 2, cz: 3, radius: 5);
+  test('initialFor = 点云 AABB + 2% 余量(不再是外接球的外接立方)', () {
+    final b = SelectionBox.initialFor(cx: 1, cy: 2, cz: 3, hx: 5, hy: 4, hz: 2);
     expect(b.cx, 1);
-    expect(b.sx, 10); // 2×radius
-    expect(b.sy, 10);
+    // [2026-07-28] 贴合 AABB:边长 = 2·半边 ×1.02。原先取 2×外接球半径,
+    // 框比相机取景大 40%,整个跑到屏幕外(用户实机指认"3D 框直接消失了")。
+    expect(b.sx, closeTo(10.2, 1e-9));
+    expect(b.sy, closeTo(8.16, 1e-9));
+    expect(b.sz, closeTo(4.08, 1e-9));
     expect(b.yawDeg, 0);
   });
 }

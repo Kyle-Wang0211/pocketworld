@@ -19,6 +19,8 @@ typedef BoxHandle3D = ({int sx, int sy, int sz});
 
 /// 6 面 + 8 角 = 14 个手柄(边手柄不做:屏幕上 26 个点太密,建模软件的
 /// bound-box gizmo 同样只给角+面)。
+/// [2026-07-28 用户签决] 只有手柄响应手势(框内空白照常 orbit),且**没有
+/// 整体平移**:六个面各自可拖 ⇒ 任意包围盒都能调出来,不需要移动整个盒。
 const List<BoxHandle3D> kBoxHandles3D = [
   (sx: 1, sy: 0, sz: 0),
   (sx: -1, sy: 0, sz: 0),
@@ -158,84 +160,6 @@ SelectionBox applyHandle3DDrag({
     sx: newSizes[0],
     sy: newSizes[1],
     sz: newSizes[2],
-  );
-}
-
-/// 盒 8 角投影的凸包(逆时针,Andrew monotone chain)。
-List<Offset> boxSilhouette(SelectionBox b, CloudProjection proj) {
-  final pts =
-      selectionBoxCorners(b).map((w) {
-        final (x, y, _) = proj.project(w[0], w[1], w[2]);
-        return Offset(x, y);
-      }).toList()..sort(
-        (p, q) => p.dx != q.dx ? p.dx.compareTo(q.dx) : p.dy.compareTo(q.dy),
-      );
-  double cross(Offset o, Offset a, Offset c) =>
-      (a.dx - o.dx) * (c.dy - o.dy) - (a.dy - o.dy) * (c.dx - o.dx);
-  final lower = <Offset>[];
-  for (final p in pts) {
-    while (lower.length >= 2 &&
-        cross(lower[lower.length - 2], lower.last, p) <= 0) {
-      lower.removeLast();
-    }
-    lower.add(p);
-  }
-  final upper = <Offset>[];
-  for (final p in pts.reversed) {
-    while (upper.length >= 2 &&
-        cross(upper[upper.length - 2], upper.last, p) <= 0) {
-      upper.removeLast();
-    }
-    upper.add(p);
-  }
-  lower.removeLast();
-  upper.removeLast();
-  return [...lower, ...upper];
-}
-
-/// 点是否落在盒的屏幕轮廓内(决定单指拖是"平移框"还是"转视角")。
-bool pointInBoxSilhouette(SelectionBox b, CloudProjection proj, Offset p) {
-  final hull = boxSilhouette(b, proj);
-  if (hull.length < 3) return false;
-  var sign = 0;
-  for (var i = 0; i < hull.length; i++) {
-    final a = hull[i], c = hull[(i + 1) % hull.length];
-    final cr = (c.dx - a.dx) * (p.dy - a.dy) - (c.dy - a.dy) * (p.dx - a.dx);
-    if (cr.abs() < 1e-9) continue;
-    final s = cr > 0 ? 1 : -1;
-    if (sign == 0) {
-      sign = s;
-    } else if (s != sign) {
-      return false;
-    }
-  }
-  return true;
-}
-
-/// 空白拖动整盒平移(视平面 right/up × worldPerPixelAt)。
-///
-/// ⚠️ Controller resolution(binding,覆盖 brief 原始实现):Task 2 实测
-/// 锁定 `upAxisWorld()` 返回的是**屏幕 −y(向上)**方向的世界向量(该函数
-/// 注释已写明),`rightAxisWorld()` 是屏幕 +x(向右)。brief 原式
-/// `c? + (r·dx + u·dy)·wpp` 会让垂直方向反向(往下拖 dy>0 却把盒往屏幕
-/// 上方移)。这里改为垂直分量取 `−screenDelta.dy`:
-/// screenDelta.dy>0(手指下拖)对应"屏幕向下" = up 的反方向,故世界位移
-/// 沿 up 的分量是 `u · (−dy)`。
-SelectionBox applyBoxPan({
-  required SelectionBox box,
-  required CloudProjection proj,
-  required Offset screenDelta,
-  required double depth,
-}) {
-  final wpp = proj.worldPerPixelAt(depth);
-  final r = proj.rightAxisWorld();
-  final u = proj.upAxisWorld();
-  final dx = screenDelta.dx;
-  final dy = -screenDelta.dy; // controller correction:垂直分量反号
-  return box.copyWith(
-    cx: box.cx + (r[0] * dx + u[0] * dy) * wpp,
-    cy: box.cy + (r[1] * dx + u[1] * dy) * wpp,
-    cz: box.cz + (r[2] * dx + u[2] * dy) * wpp,
   );
 }
 

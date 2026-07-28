@@ -1853,6 +1853,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     final dir = _session?.captureDir;
     if (snap == null || dir == null || snap.pointCount == 0) return;
     final fit = SparseCloudPainter.fitOf(snap.xyz);
+    final aabb = SparseCloudPainter.aabbOf(snap.xyz);
     final loaded = await SelectionBox.loadFrom(dir);
     final box =
         (loaded != null &&
@@ -1864,10 +1865,12 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
             ))
         ? loaded
         : SelectionBox.initialFor(
-            cx: fit.cx,
-            cy: fit.cy,
-            cz: fit.cz,
-            radius: fit.radius,
+            cx: aabb.cx,
+            cy: aabb.cy,
+            cz: aabb.cz,
+            hx: aabb.hx,
+            hy: aabb.hy,
+            hz: aabb.hz,
           );
     if (!mounted) return;
     setState(() {

@@ -117,6 +117,7 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
     final cloud = _cloud;
     if (cloud == null) return;
     final fit = SparseCloudPainter.fitOf(cloud.xyz);
+    final aabb = SparseCloudPainter.aabbOf(cloud.xyz);
     final loaded = await SelectionBox.loadFrom(_captureDir);
     final box =
         (loaded != null &&
@@ -128,10 +129,12 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
             ))
         ? loaded
         : SelectionBox.initialFor(
-            cx: fit.cx,
-            cy: fit.cy,
-            cz: fit.cz,
-            radius: fit.radius,
+            cx: aabb.cx,
+            cy: aabb.cy,
+            cz: aabb.cz,
+            hx: aabb.hx,
+            hy: aabb.hy,
+            hz: aabb.hz,
           );
     if (!mounted) return;
     setState(() {

@@ -30,18 +30,25 @@ class SelectionBox {
   static const double kMinHalfSizeFraction = 0.02;
 
   /// 初始盒 = fit 球(SparseCloudPainter.fitOf)的外接立方。
+  /// 初始框 = 点云的轴对齐包围盒(略放一点余量)。
+  ///
+  /// [2026-07-28 用户实机指认] 原先取"外接球的外接立方体"(边长 2·radius),
+  /// 角落落在 1.73·radius —— 比相机取景(按 radius 填满屏幕标定)大 40%,
+  /// 框整个跑到屏幕外,而且屏幕处处都算"框内"导致拖不动视角。
   factory SelectionBox.initialFor({
     required double cx,
     required double cy,
     required double cz,
-    required double radius,
+    required double hx,
+    required double hy,
+    required double hz,
   }) => SelectionBox(
     cx: cx,
     cy: cy,
     cz: cz,
-    sx: radius * 2,
-    sy: radius * 2,
-    sz: radius * 2,
+    sx: hx * 2 * 1.02,
+    sy: hy * 2 * 1.02,
+    sz: hz * 2 * 1.02,
     yawDeg: 0,
   );
 
