@@ -7,7 +7,6 @@ final class PhotoBundleFrameDraft {
   const PhotoBundleFrameDraft({
     required this.id,
     required this.highresFilename,
-    required this.previewFilename,
     required this.timestamp,
     required this.triggerTimestamp,
     required this.azimuth,
@@ -25,11 +24,12 @@ final class PhotoBundleFrameDraft {
     this.focusStable,
     this.trackingState,
     this.cellID,
+    this.previewFilename,
   });
 
   final String id;
   final String highresFilename;
-  final String previewFilename;
+  final String? previewFilename;
   final double timestamp;
   final double triggerTimestamp;
   final double azimuth;
@@ -51,7 +51,8 @@ final class PhotoBundleFrameDraft {
   Map<String, Object?> toJson() => {
         'id': id,
         'highresFilename': highresFilename,
-        'previewFilename': previewFilename,
+        if (previewFilename != null && previewFilename!.isNotEmpty)
+          'previewFilename': previewFilename,
         'timestamp': timestamp,
         'triggerTimestamp': triggerTimestamp,
         'azimuth': azimuth,
@@ -81,7 +82,7 @@ final class PhotoBundleManifestService {
     DateTime? createdAt,
     String sourceKind = 'arkit_high_res_still',
     String photosHighresDir = 'photos_highres',
-    String previewsDir = 'previews',
+    String? previewsDir,
     PhotoBundleStillQualityPolicy stillQualityPolicy =
         const PhotoBundleStillQualityPolicy(),
     int rejectedStillCount = 0,
@@ -93,7 +94,8 @@ final class PhotoBundleManifestService {
       'createdAt': (createdAt ?? DateTime.now()).toUtc().toIso8601String(),
       'sourceKind': sourceKind,
       'photosHighresDir': photosHighresDir,
-      'previewsDir': previewsDir,
+      if (previewsDir != null && previewsDir.isNotEmpty)
+        'previewsDir': previewsDir,
       'stillQualityPolicy': stillQualityPolicy.toJson(),
       'rejectedStillCount': rejectedStillCount,
       ...extra,
@@ -112,7 +114,7 @@ final class PhotoBundleManifestService {
     DateTime? createdAt,
     String sourceKind = 'arkit_high_res_still',
     String photosHighresDir = 'photos_highres',
-    String previewsDir = 'previews',
+    String? previewsDir,
     PhotoBundleStillQualityPolicy stillQualityPolicy =
         const PhotoBundleStillQualityPolicy(),
     int rejectedStillCount = 0,

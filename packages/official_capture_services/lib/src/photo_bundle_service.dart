@@ -194,10 +194,8 @@ final class PhotoBundleService {
       manifest['photosHighresDir'],
       fallback: 'photos_highres',
     );
-    final previewsDir = _asString(
-      manifest['previewsDir'],
-      fallback: 'previews',
-    );
+    final previewsDir = _asString(manifest['previewsDir']);
+    final hasPreviewContract = previewsDir.isNotEmpty;
     final colmapSparseDir = _asString(
       manifest['colmapSparseDir'],
       fallback: 'colmap/sparse/0',
@@ -247,12 +245,15 @@ final class PhotoBundleService {
 
       if (fileExists != null) {
         final highresFilename = _asString(frame['highresFilename']);
-        final previewFilename = _asString(frame['previewFilename']);
         if (!fileExists('$photosHighresDir/$highresFilename')) {
           missingHighresCount += 1;
         }
-        if (!fileExists('$previewsDir/$previewFilename')) {
-          missingPreviewCount += 1;
+        if (hasPreviewContract) {
+          final previewFilename = _asString(frame['previewFilename']);
+          if (previewFilename.isEmpty ||
+              !fileExists('$previewsDir/$previewFilename')) {
+            missingPreviewCount += 1;
+          }
         }
       }
     }
@@ -296,11 +297,13 @@ final class PhotoBundleService {
         missingHighresCount == 0,
         'missing highres files: $missingHighresCount',
       );
-      addCheck(
-        'preview_files',
-        missingPreviewCount == 0,
-        'missing preview files: $missingPreviewCount',
-      );
+      if (hasPreviewContract) {
+        addCheck(
+          'preview_files',
+          missingPreviewCount == 0,
+          'missing preview files: $missingPreviewCount',
+        );
+      }
       for (final filename in ['cameras.txt', 'images.txt', 'points3D.txt']) {
         addCheck(
           'colmap_$filename',

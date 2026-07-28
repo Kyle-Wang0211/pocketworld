@@ -25,6 +25,8 @@ production archive commit must independently prove byte identity.
 - Make each file transaction crash-safe and resumable.
 - Keep capture and reconstruction responsive by processing one file at a time
   and pausing background work while foreground capture/reconstruction is active.
+- Retain 1920×1440 preview JPEGs only while AR capture UI needs them, then
+  delete them after an independent draft thumbnail and record are durable.
 - Keep archive format portable and codec policy in Dart while using libjxl's
   native C++ implementation for the compression primitive.
 
@@ -33,7 +35,8 @@ production archive commit must independently prove byte identity.
 - Migrating, scanning by date, or rewriting any capture without the new policy
   marker.
 - Compressing preview JPEGs, scan thumbnails, PLY files, databases, sidecars,
-  or unreferenced files.
+  or unreferenced files. Preview JPEGs are deleted as transient UI data rather
+  than archived.
 - Lossy image transcoding, decoded-pixel-only equality, or cloud deletion.
 - Installing this change on the production iPhone as part of local
   implementation.
@@ -90,6 +93,25 @@ escaping the `photos_highres` directory, duplicates, or non-JPEG extensions
 are rejected. Preview filenames and directory glob results never become
 candidates.
 
+### AR previews are transient, not project assets
+
+The official shutter writes a 1920×1440 JPEG only so the live AR scene can
+texture a world-anchored photo card without decoding the 12 MP algorithm input.
+Draft persistence writes a separate card thumbnail under
+`scans_official/<captureId>.jpg`. After the manifest and `ScanRecord` are
+durable, the app removes `<capture>/previews` on a best-effort basis.
+
+Future `official_photo_bundle.json` files omit `previewsDir` and each frame
+omits `previewFilename`. Official bundle validation checks only high-resolution
+algorithm inputs. Asset repair must not regenerate previews, and the transport
+manifest must not list previews as required content. Legacy manifests that
+explicitly contain preview fields remain readable by the shared services.
+
+The marker-gated cold coordinator retries preview cleanup before JPEG archival,
+so a crash after draft persistence cannot make previews permanent. It never
+cleans an unmarked capture. The independent draft thumbnail is outside the
+capture directory and is not a cleanup target.
+
 ### Each JPEG uses a conservative atomic transaction
 
 For source `x.jpg`, the coordinator:
@@ -136,6 +158,11 @@ unverified bytes.
   begins only after all existing consumers have released the capture.
 - **[A JXL is larger for an unusual source]** → Keep the JPEG and record a
   skipped result; storage never regresses.
+- **[Crash before immediate preview cleanup]** → Retry only for marker-bearing
+  future captures at the cold archive boundary; never scan legacy captures.
+- **[Thumbnail generation fails]** → Persist no path into `previews/`; the
+  draft may show a placeholder, while all 12 MP algorithm inputs remain
+  authoritative and untouched.
 - **[License or patent uncertainty]** → Ship upstream license/notice texts and
   retain the exact revision inventory. The engineering evidence is not legal
   advice and a formal distribution audit remains a release gate.

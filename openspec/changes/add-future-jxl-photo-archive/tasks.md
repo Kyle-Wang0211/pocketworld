@@ -25,3 +25,15 @@
 - [x] 5.1 Run focused archive tests, full Flutter tests, static analysis, and OpenSpec validation
 - [x] 5.2 Build the iOS app locally with the pinned toolchain and `--no-pub`, inspect its bundle/signature inputs and measure binary-size impact without installing it on the production phone
 - [x] 5.3 Review the integrated diff for legacy-capture safety, source-deletion ordering, licensing evidence, and production-bundle invariant compliance
+
+## 6. Transient AR previews
+
+- [x] 6.1 Add failing tests proving future manifests omit preview requirements,
+      validation/repair/transport do not recreate them, and cleanup preserves
+      high-resolution photos and the independent thumbnail
+- [x] 6.2 Make official preview fields optional for legacy reads but absent
+      from newly written durable bundles
+- [x] 6.3 Delete the future capture preview directory after durable draft
+      persistence and retry cleanup only through marker-gated cold discovery
+- [x] 6.4 Run focused service/lifecycle tests, full Flutter tests, analysis,
+      OpenSpec validation, and the unsigned iPhoneOS release build

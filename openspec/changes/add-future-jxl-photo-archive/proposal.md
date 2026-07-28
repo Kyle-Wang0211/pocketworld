@@ -10,7 +10,11 @@ Future PocketWorld captures keep many full-resolution JPEG source frames after r
 - Keep the JPEG when encoding fails, verification fails, the archive is not smaller, required artifacts are missing, or capture/reconstruction work is active.
 - Persist an atomic archive manifest so interrupted work can safely resume for marked future captures.
 - Provide a resolver that returns an existing JPEG or materializes an exact JPEG from its verified JPEG XL archive for future consumers.
-- Leave previews, thumbnails, unreferenced files, all existing captures, and the production iPhone data container untouched.
+- Treat 1920×1440 AR-card previews as temporary capture UI files: copy one
+  independent draft thumbnail, remove previews from the durable photo-bundle
+  contract, and delete the future capture's preview directory after draft
+  persistence with marker-gated cold retry.
+- Leave independent thumbnails, unreferenced files, all existing captures, and the production iPhone data container untouched.
 
 ## Capabilities
 
@@ -24,7 +28,8 @@ None.
 
 ## Impact
 
-- Dart capture lifecycle, archive coordination, manifest handling, and tests.
+- Dart capture lifecycle, archive coordination, manifest handling, transient
+  preview cleanup, photo-bundle validation/transport, and tests.
 - A small C/C++ FFI bridge backed by pinned libjxl 0.12.0 native artifacts; no Swift compression algorithm.
 - iOS Runner linking and third-party license notices.
 - New capture directories gain policy/archive metadata; existing directory schemas remain readable and are never migrated automatically.

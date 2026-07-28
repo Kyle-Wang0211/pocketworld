@@ -150,3 +150,45 @@ libjxl 0.12.0, iOS Objective-C++ bridge, XCTest/Flutter test.
    uncompressed/stripped bundle deltas, and the final diff.
 8. Do not run `flutter drive`, uninstall, install, or any `devicectl` command
    against `com.kyle.PocketWorld`.
+
+## Task 7: Retire durable AR previews
+
+**Files:**
+
+- Create: `lib/official_capture/transient_preview_cleanup.dart`
+- Create: `test/official_photo_bundle_without_preview_test.dart`
+- Create: `test/official_transient_preview_cleanup_test.dart`
+- Modify: `lib/ui/official_capture/ar_capture_page.dart`
+- Modify: `lib/official_capture/capture_session.dart`
+- Modify: `lib/official_capture/photo_archive_coordinator.dart`
+- Modify: `packages/official_capture_services/lib/src/photo_bundle_manifest_service.dart`
+- Modify: `packages/official_capture_services/lib/src/photo_bundle_service.dart`
+- Modify: `packages/official_capture_services/lib/src/photo_bundle_derivation_service.dart`
+- Modify: `packages/official_capture_services/lib/src/photo_bundle_pipeline_policy_service.dart`
+
+1. Write a failing test that builds a future official manifest and asserts it
+   has neither `previewsDir` nor `previewFilename`.
+2. Add failing validation, derivation, and transport assertions proving a
+   high-resolution-only bundle passes without creating or requiring
+   `previews/`.
+3. Add a failing cleanup test with files under `photos_highres`, `previews`,
+   and an external thumbnail. Assert only `previews` is deleted, and assert an
+   incompatible/missing policy marker blocks cold retry cleanup.
+4. Run:
+   `flutter test test/official_photo_bundle_without_preview_test.dart
+   test/official_transient_preview_cleanup_test.dart`
+   and confirm failures are caused by the current durable-preview contract.
+5. Make `PhotoBundleFrameDraft.previewFilename` and manifest `previewsDir`
+   nullable. Omit both from new official manifests while retaining explicit
+   legacy-preview validation and repair behavior when those fields exist.
+6. Make transport entries conditional on an explicit non-empty
+   `previewsDir`, and prevent asset repair from creating previews for manifests
+   without the preview contract.
+7. Add `removeTransientCapturePreviews`, scoped to the exact
+   `<capture>/previews` directory. Call it only after
+   `ScanRecordStore.addOrUpdate` completes, and retry from the existing cold
+   coordinator only after it has accepted a compatible creation-time marker.
+8. Re-run the focused test until green, then run all archive/lifecycle tests.
+9. Format changed Dart, run targeted analysis, full `flutter test --no-pub`,
+   OpenSpec validation, whitespace checks, and an unsigned iPhoneOS Release
+   build without installation.
