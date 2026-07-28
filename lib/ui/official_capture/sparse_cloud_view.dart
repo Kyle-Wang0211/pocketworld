@@ -139,7 +139,17 @@ class _SparseCloudViewState extends State<SparseCloudView>
   // standard "vivid + tone-mapped" choice. If dim scenes read too dark, raise
   // exposure toward ~1.3 (PBR Neutral rolls off the resulting brights safely).
   // Sliders still adjust live.
-  final double _pointSize = 2.67; // −1/3 (user 07-12: 半径减少 1/3) — was 4.0
+  // [SPLAT-RADIUS 2026-07-28 用户判决] 草稿页预览点径 2.67 → 6。
+  //
+  // 这是"预览/回看"面,诉求与拍摄期(AR)相反:AR 要看清红/黄/绿覆盖分层
+  // 所以点必须小(放大到 20 实机判负,分层被糊掉);**预览要的是点糊成
+  // 实体面**——RS 的 Review Scan 就是大圆盘。20 档过猛,用户改判 6。
+  //
+  // 注:这里是**基准**点径,实际绘制已按 1/深度 透视缩放
+  // (`scaleA[m] = baseScale * (camDist / depth)`,见 build 路径),
+  // 圆盘 sprite + 画家算法深度排序都是既有能力,本次只放开基准值。
+  // 纯渲染:点数据/几何/交付/导出零改动。
+  final double _pointSize = 6.0; // was 20 (太猛), 2.67 (07-12 −1/3), 4.0
   final double _exposure = 1.0; // PBR Neutral applies this first
   final int _tone = 2; // PBR Neutral (0=AgX, 1=ACES, 3+=None)
 

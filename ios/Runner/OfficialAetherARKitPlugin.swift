@@ -150,9 +150,12 @@ class OfficialAetherARKitPlugin: NSObject {
     // _host_fixtures/pose_drift_audit/SCALE_VERDICT.md;并排对比
     // _host_fixtures/scale_anchor_compare/(用户肉眼批准)。
     setenv("OFFICIAL_AETHER_SCALE_ANCHOR", "1", 1)
-    // [SPLAT-RADIUS 2026-07-28] 实验臂当前档:AR 点云近处点径上限(px)。
-    // 6=旧行为 / 20 / 50 三档肉眼对比用;拍板后改默认值并删旋钮。
-    setenv("OFFICIAL_AETHER_AR_SPLAT_MAX_PX", "20", 1)
+    // [SPLAT-RADIUS 2026-07-28 用户判决] AR 拍摄期**保持原尺寸(6px)**:
+    // 放大到 20 会让红/黄/绿 track-length 分层被点径糊掉(用户实机判负,
+    // 截图为证),而 AR 期的诉求是"看清覆盖分层"不是"糊成实体面"。
+    // 需要"糊成面"的是草稿页预览(Flutter 侧,另行加大)。
+    // 不设该变量即 6px;此行留作后续调档入口。
+    setenv("OFFICIAL_AETHER_AR_SPLAT_MAX_PX", "6", 1)
     // Production ends at COLMAP's final global BA + official filtering.
     // Historical RestoreTemporalDetail / repair / enrichment passes are hard
     // disabled in the native translation unit and are not re-enabled here.
