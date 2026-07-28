@@ -12,7 +12,9 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show ValueListenable;
+import 'package:flutter/gestures.dart' show DragStartBehavior, Velocity;
 import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart';
 
 import '../../l10n/app_localizations.dart';
 import '../../official_capture/selection_box.dart';
@@ -55,9 +57,20 @@ class SelectionToolsLayer extends StatefulWidget {
 }
 
 class _SelectionToolsLayerState extends State<SelectionToolsLayer>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   late final AnimationController _snap;
   double _fromYaw = 0, _fromPitch = 0, _toYaw = 0, _toPitch = 0;
+
+  /// 骰子甩动惯性(与刻度尺同款 FrictionSimulation)。
+  late final AnimationController _fling;
+  double _flingYaw0 = 0, _flingPitch0 = 0;
+  double _flingDirYaw = 0, _flingDirPitch = 0;
+
+  /// 骰子拖动灵敏度(rad/px)。比点云视图(0.008/0.006)大 2.5 倍 ——
+  /// 骰子只有 72px 宽,同样的手指行程要能转得动(用户:"阻力要小")。
+  static const double _kCubeYawPerPx = 0.020;
+  static const double _kCubePitchPerPx = 0.015;
+  static const double _kPitchLimit = math.pi / 2 - 0.02;
 
   @override
   void initState() {
@@ -66,12 +79,69 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
       vsync: this,
       duration: const Duration(milliseconds: 240),
     )..addListener(_onSnapTick);
+    _fling = AnimationController.unbounded(vsync: this)
+      ..addListener(_onFlingTick);
   }
 
   @override
   void dispose() {
     _snap.dispose();
+    _fling.dispose();
     super.dispose();
+  }
+
+  void _applyPose(double yaw, double pitch) {
+    final cam = _cam;
+    if (cam == null) return;
+    widget.controller.moveTo((
+      yaw: yaw,
+      pitch: pitch.clamp(-_kPitchLimit, _kPitchLimit),
+      zoom: cam.zoom,
+      panX: cam.panX,
+      panY: cam.panY,
+      pivotX: cam.pivotX,
+      pivotY: cam.pivotY,
+      pivotZ: cam.pivotZ,
+    ));
+  }
+
+  void _onFlingTick() {
+    final d = _fling.value;
+    _applyPose(
+      _flingYaw0 + _flingDirYaw * d,
+      _flingPitch0 + _flingDirPitch * d,
+    );
+  }
+
+  /// [2026-07-28 用户签决] 立方体可自由拖动,点云跟着转(它就是相机的
+  /// 另一个把手)。单指拖 = orbit;松手按摩擦模型滑行渐停。
+  void _onCubeDragStart() {
+    _fling.stop();
+    _snap.stop();
+  }
+
+  void _onCubeDrag(Offset delta) {
+    final cam = _cam;
+    if (cam == null) return;
+    _applyPose(
+      cam.yaw - delta.dx * _kCubeYawPerPx,
+      cam.pitch + delta.dy * _kCubePitchPerPx,
+    );
+  }
+
+  void _onCubeDragEnd(Velocity v) {
+    final cam = _cam;
+    if (cam == null) return;
+    final px = v.pixelsPerSecond;
+    final speed = px.distance;
+    if (speed < 40) return; // 轻推不甩
+    _flingYaw0 = cam.yaw;
+    _flingPitch0 = cam.pitch;
+    // 单位方向上的角速度(rad/单位距离),距离标量由摩擦模型驱动。
+    _flingDirYaw = -px.dx / speed * _kCubeYawPerPx;
+    _flingDirPitch = px.dy / speed * _kCubePitchPerPx;
+    _fling.value = 0;
+    unawaited(_fling.animateWith(FrictionSimulation(0.135, 0, speed)));
   }
 
   /// 观察方向 = 相机 yaw + 滑杆分量。骰子读它 ⇒ 模型怎么转骰子怎么转
@@ -166,7 +236,10 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
           top: 8,
           right: 12,
           child: SafeArea(
-            child: _AbsorbCameraGestures(
+            child: _CubeGestures(
+              onDragStart: _onCubeDragStart,
+              onDrag: _onCubeDrag,
+              onDragEnd: _onCubeDragEnd,
               child: ValueListenableBuilder<CloudViewCamera?>(
                 valueListenable: widget.camera,
                 builder: (_, cam, _) => ViewCube(
@@ -227,6 +300,66 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
       ],
     );
   }
+}
+
+/// 骰子手势:单指拖 = 转视角(带惯性),同时不让手势落到下层点云视图。
+/// 点击某面归位由 ViewCube 自己的 onTapDown 处理,与拖动共存。
+class _CubeGestures extends StatefulWidget {
+  const _CubeGestures({
+    required this.onDragStart,
+    required this.onDrag,
+    required this.onDragEnd,
+    required this.child,
+  });
+
+  final VoidCallback onDragStart;
+  final ValueChanged<Offset> onDrag;
+  final ValueChanged<Velocity> onDragEnd;
+  final Widget child;
+
+  @override
+  State<_CubeGestures> createState() => _CubeGesturesState();
+}
+
+class _CubeGesturesState extends State<_CubeGestures> {
+  Duration? _lastTimestamp;
+  Offset _fallbackVelocity = Offset.zero;
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+    behavior: HitTestBehavior.opaque,
+    dragStartBehavior: DragStartBehavior.down,
+    onPanStart: (d) {
+      _lastTimestamp = d.sourceTimeStamp;
+      _fallbackVelocity = Offset.zero;
+      widget.onDragStart();
+    },
+    onPanUpdate: (d) {
+      final timestamp = d.sourceTimeStamp;
+      final previous = _lastTimestamp;
+      if (timestamp != null && previous != null) {
+        final elapsed = timestamp - previous;
+        if (elapsed > Duration.zero && d.delta != Offset.zero) {
+          _fallbackVelocity =
+              d.delta *
+              (Duration.microsecondsPerSecond / elapsed.inMicroseconds);
+        }
+      }
+      _lastTimestamp = timestamp;
+      widget.onDrag(d.delta);
+    },
+    onPanEnd: (d) {
+      var velocity = d.velocity;
+      if (velocity.pixelsPerSecond == Offset.zero &&
+          _fallbackVelocity != Offset.zero) {
+        velocity = Velocity(
+          pixelsPerSecond: _fallbackVelocity,
+        ).clampMagnitude(0, 8000);
+      }
+      widget.onDragEnd(velocity);
+    },
+    child: widget.child,
+  );
 }
 
 /// 吃掉缩放/拖拽手势,阻止它们落到下层的点云视图(Stack 上层先命中,

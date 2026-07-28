@@ -2,7 +2,7 @@
 //
 // [2026-07-28 用户签决] "右上角要做成一个正方体模型,它的转向和点云的转向
 // 一致,做绑定":本组件用与点云**完全相同**的 (viewYaw, viewPitch) 经
-// CloudCamera(orthographic) 投影渲染一个立方体,六面贴标签(仿射贴面,
+// CloudCamera 透视投影渲染一个立方体,六面贴标签(仿射贴面,
 // 正交下面投影是平行四边形,仿射精确)。点云转到哪,立方体转到哪 ——
 // 含滑杆分量与 Top/Bottom 原地转(此前只有文本 label,原地转毫无反馈,
 // 用户实机指认)。
@@ -100,7 +100,7 @@ List<String> visibleViewCubeFaces(double yaw, double pitch) {
     pivotZ: 0,
     radius: 1,
     fillK: kViewCubeFillK,
-    orthographic: true,
+    orthographic: kViewCubeOrthographic,
   ).projectionFor(const Size(100, 100));
   final (_, _, centerDepth) = proj.project(0, 0, 0);
   final out = <String>[];
@@ -124,7 +124,8 @@ String primaryViewCubeFace(double yaw, double pitch) {
     pivotY: 0,
     pivotZ: 0,
     radius: 1,
-    orthographic: true,
+    fillK: kViewCubeFillK,
+    orthographic: kViewCubeOrthographic,
   ).projectionFor(const Size(100, 100));
   var best = kViewCubeFaces.first.label;
   var bestD = double.infinity;
@@ -158,7 +159,7 @@ String? hitViewCubeFace(
     pivotZ: 0,
     radius: 1,
     fillK: kViewCubeFillK,
-    orthographic: true,
+    orthographic: kViewCubeOrthographic,
     roll: roll,
   ).projectionFor(size);
   final (_, _, centerDepth) = proj.project(0, 0, 0);
@@ -201,7 +202,15 @@ bool _pointInQuad(List<Offset> q, Offset p) {
 /// 立方体投影充满系数(命中与绘制必须同值,否则点击与所见错位)。
 /// 立方体填充系数。与 kCamDistK 同比:原 2.9 是 camDist=3.2 时代的值,
 /// 相机改远摄后要 ×(8.0/3.2) 才能保持同样大小(且立方体不再被透视拉歪)。
-const double kViewCubeFillK = 2.9 * kCamDistK / 3.2;
+/// [2026-07-29 用户签决] 骰子改**透视**:"需要是一个真正的立方体,需要有
+/// 透视"。原先是正交(平行投影),六个面永远等大,看起来像展开的纸盒。
+/// 透视下 camDist = 1·kCamDistK = 8、立方体角落在 √3 ≈ 1.73 ⇒ 近远深度比
+/// 1.55×,近大远小明显但不会像早先 camDist=3.2 那样被拉成星形。
+const bool kViewCubeOrthographic = false;
+
+/// 立方体填充系数。透视下近角比正交时更外扩(除以更小的 depth),所以要
+/// 比正交值收一点,否则立方体会溢出画布压到旁边。
+const double kViewCubeFillK = 6.0;
 
 /// 与点云相机绑定的 3D 朝向立方体。
 class ViewCube extends StatelessWidget {
@@ -294,7 +303,7 @@ class _ViewCubePainter extends CustomPainter {
       // [2026-07-28] 与 hitViewCubeFace 同源常量:两处必须一致,否则
       // 点击位置与所见错位。
       fillK: kViewCubeFillK,
-      orthographic: true,
+      orthographic: kViewCubeOrthographic,
       roll: roll,
     ).projectionFor(size);
     final (_, _, centerDepth) = proj.project(0, 0, 0);

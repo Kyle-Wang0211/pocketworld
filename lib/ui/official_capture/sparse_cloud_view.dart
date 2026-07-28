@@ -253,6 +253,9 @@ class _SparseCloudViewState extends State<SparseCloudView>
       vsync: this,
       duration: const Duration(milliseconds: 280),
     )..addListener(_onTween);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _emitCamera();
+    });
   }
 
   @override

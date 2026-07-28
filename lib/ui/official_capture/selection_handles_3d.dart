@@ -172,7 +172,6 @@ class BoxHandlesPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final (_, _, centerDepth) = proj.project(box.cx, box.cy, box.cz);
     final items = <({Offset p, double depth, bool corner})>[];
     for (final h in kBoxHandles3D) {
       final w = handleWorldPos(box, h);
@@ -180,14 +179,11 @@ class BoxHandlesPainter extends CustomPainter {
       items.add((p: Offset(sx, sy), depth: depth, corner: isCornerHandle(h)));
     }
     items.sort((a, b) => b.depth.compareTo(a.depth));
+    // [2026-07-28 用户签决] 手柄一律纯白 —— 原先按"比盒心近/远"分白/半透明
+    // 做深度提示,屏幕上前后手柄交错,观感是杂乱的灰白点阵而非提示。
+    final paint = Paint()..color = const Color(0xFFFFFFFF);
     for (final it in items) {
-      final front = it.depth <= centerDepth;
-      canvas.drawCircle(
-        it.p,
-        it.corner ? 8.5 : 6.0,
-        Paint()
-          ..color = front ? const Color(0xFFFFFFFF) : const Color(0x66FFFFFF),
-      );
+      canvas.drawCircle(it.p, it.corner ? 8.5 : 6.0, paint);
     }
   }
 

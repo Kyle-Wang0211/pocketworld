@@ -200,6 +200,37 @@ void main() {
     expect(moved, greaterThan(1e-6));
   });
 
+  testWidgets('拖动骰子 = 点云跟着转,松手有惯性', (tester) async {
+    final (dir, ply) = await fixture(tester);
+    addTearDown(() => dir.delete(recursive: true));
+    await openViewer(tester, ply);
+    await tester.tap(find.text('Next'));
+    await _pumpUntilRealAsyncSettles(
+      tester,
+      () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
+    );
+    await tester.pumpAndSettle();
+
+    double cubeYaw() => tester.widget<ViewCube>(find.byType(ViewCube)).viewYaw;
+    // 点云视角与骰子同源(骰子读的就是相机 yaw),断言骰子即断言点云。
+    final before = cubeYaw();
+    final cube = find.byType(ViewCube);
+    // [2026-07-28 用户签决] 立方体可自由拖动,点云跟着转,阻力要小:
+    // 30px 拖动应转出 ≥0.3 rad(灵敏度 0.02 rad/px,扣掉手势 slop)。
+    await tester.drag(cube, const Offset(-30, 0));
+    await tester.pumpAndSettle();
+    final afterDrag = cubeYaw();
+    expect((afterDrag - before).abs(), greaterThan(0.3));
+
+    // 甩动后松手继续滑行(惯性)。
+    await tester.fling(cube, const Offset(-40, 0), 1000);
+    await tester.pump();
+    final atRelease = cubeYaw();
+    await tester.pump(const Duration(milliseconds: 60));
+    expect((cubeYaw() - atRelease).abs(), greaterThan(0.01));
+    await tester.pumpAndSettle();
+  });
+
   testWidgets('点击骰子的面 = 该面转到正对', (tester) async {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));
