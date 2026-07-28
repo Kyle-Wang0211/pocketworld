@@ -247,20 +247,13 @@ class _ViewCubePainter extends CustomPainter {
           color: Colors.white,
           fontSize: 11,
           fontWeight: FontWeight.w600,
+          shadows: [Shadow(color: Color(0xCC000000), blurRadius: 3)],
         ),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
 
-    final bg = RRect.fromRectAndRadius(
-      Rect.fromCenter(
-        center: Offset(cx, cy),
-        width: tp.width + 10,
-        height: tp.height + 4,
-      ),
-      const Radius.circular(5),
-    );
-    canvas.drawRRect(bg, Paint()..color = const Color(0x99000000));
+    // [2026-07-28 用户反馈] 不加底色,靠文字阴影保读性。
     tp.paint(canvas, Offset(cx - tp.width / 2, cy - tp.height / 2));
   }
 

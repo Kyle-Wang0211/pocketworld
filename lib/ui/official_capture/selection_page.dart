@@ -159,24 +159,15 @@ class _SelectionPageState extends State<SelectionPage>
   }
 
   void _cycleHorizontal(int delta) {
-    // [2026-07-28 用户签决:所有箭头每次只转一个面,无任何直达]
-    if (_presetIdx == 0 || _presetIdx == 5) {
-      // Top/Bottom 视角:左右箭头 = 俯/仰视图**原地**绕竖直轴转 90°
-      // (RS 立方体同款),不跳到水平面。同步回落参考面
-      // (_lastHorizontalIdx),让随后的下/上箭头落到与当前画面朝向
-      // 一致的水平面。label 保持 Top/Bottom(yaw 只进 cos/sin,带整数
-      // 倍 90° 偏移无碍)。
-      final next = ((_lastHorizontalIdx - 1 + delta) % 4 + 4) % 4 + 1;
-      _lastHorizontalIdx = next;
-      _fromYaw = _animPresetYaw;
-      _fromPitch = _animPitch;
-      _toYaw = _fromYaw + delta * math.pi / 2; // 与水平循环同向,恒 90° 一步
-      setState(() {});
-      unawaited(_presetAnim.forward(from: 0));
-      return;
-    }
-    // 水平四向(索引 1..4)循环:Front→Right→Back→Left→Front,每步 90°。
-    final next = ((_presetIdx - 1 + delta) % 4 + 4) % 4 + 1;
+    // [2026-07-28 用户签决二轮:四个箭头**永远翻面**,每次一个相邻面]
+    // 此前 Top/Bottom 的左右箭头做"原地转 90°"——用户实机指认:点了
+    // 根本不翻面,点云只是转了 90°,不是想要的。删除原地转;极面的左右
+    // 箭头 = 翻到回落参考面(_lastHorizontalIdx)的相邻水平面,与水平
+    // 循环同一方向语义,恒 90° 一步。
+    final base = (_presetIdx >= 1 && _presetIdx <= 4)
+        ? _presetIdx
+        : _lastHorizontalIdx;
+    final next = ((base - 1 + delta) % 4 + 4) % 4 + 1;
     _selectPreset(next);
   }
 
@@ -361,13 +352,12 @@ class _SelectionPageState extends State<SelectionPage>
               () => _cycleHorizontal(-1),
               key: const ValueKey('cube-left'),
             ),
-            // [2026-07-28 用户签决] 文本方块 → 3D 正方体,与点云相机绑定
-            // (同一 viewYaw/viewPitch,含滑杆分量与 Top/Bottom 原地转):
-            // 点云转到哪,立方体转到哪,每个面贴自己的标签。
-            ViewCube(
-              viewYaw: _animPresetYaw + (_box?.yawDeg ?? 0) * math.pi / 180,
-              viewPitch: _animPitch,
-            ),
+            // [2026-07-28 用户签决二轮] 立方体 = **语义朝向指示器**:只吃
+            // 预设姿态(_animPresetYaw/_animPitch),不吃滑杆分量 —— 滑杆是
+            // "点云对齐盒"的任意角微调,喂进立方体会让它常年歪着
+            // (用户实机两次指认)。预设切换动画期间立方体随动画转,落定
+            // 即整齐正对。
+            ViewCube(viewYaw: _animPresetYaw, viewPitch: _animPitch),
             _cubeArrow(
               Icons.keyboard_arrow_right_rounded,
               () => _cycleHorizontal(1),

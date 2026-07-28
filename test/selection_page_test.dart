@@ -19,6 +19,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/official_capture/selection_box.dart';
 import 'package:pocketworld_flutter/ui/official_capture/selection_cloud_view.dart';
 import 'package:pocketworld_flutter/ui/official_capture/selection_page.dart';
+import 'package:pocketworld_flutter/ui/official_capture/view_cube.dart';
 
 Future<(Directory, Float32List, Uint8List)> _fixture() async {
   final dir = await Directory.systemTemp.createTemp('selpage');
@@ -300,7 +301,7 @@ void main() {
     expect(_facingLabel(tester), 'Front');
   });
 
-  testWidgets('Top 视角左右箭头 = 原地转 90°,不跳层;随后下箭头落到对应面', (tester) async {
+  testWidgets('Top 视角左右箭头 = 翻到相邻水平面(永远翻面,无原地转)', (tester) async {
     late Directory dir;
     late Float32List xyz;
     late Uint8List rgb;
@@ -317,19 +318,27 @@ void main() {
     await tester.pumpAndSettle();
     expect(_facingLabel(tester), 'Top');
 
-    // Top 点右箭头:label 仍 Top(原地俯视旋转,无直达跳层),
-    // 相机 yaw 转了 +90°。
+    // [2026-07-28 用户签决二轮] Top 点右箭头 = 翻面到 lastH(Front)的
+    // 右邻水平面 Right —— 不再原地转。
     await tester.tap(find.byKey(const ValueKey('cube-right')));
     await tester.pumpAndSettle();
-    expect(_facingLabel(tester), 'Top');
-    final view = tester.widget<SelectionCloudView>(
+    expect(_facingLabel(tester), 'Right');
+
+    // 立方体是语义指示器:不吃滑杆分量。拖滑杆后 ViewCube.viewYaw 不变,
+    // SelectionCloudView.viewYaw(点云)跟随变化。
+    final cubeYawBefore = tester
+        .widget<ViewCube>(find.byType(ViewCube))
+        .viewYaw;
+    await tester.drag(find.byType(Slider), const Offset(60, 0));
+    await tester.pumpAndSettle();
+    final cubeYawAfter = tester.widget<ViewCube>(find.byType(ViewCube)).viewYaw;
+    expect(cubeYawAfter, closeTo(cubeYawBefore, 1e-9));
+    final page = tester.state(find.byType(SelectionPage)) as dynamic;
+    final yawDeg = (page.debugBox as SelectionBox).yawDeg;
+    expect(yawDeg, isNot(0));
+    final cloud = tester.widget<SelectionCloudView>(
       find.byType(SelectionCloudView),
     );
-    expect(view.viewYaw, closeTo(math.pi / 2, 1e-6));
-
-    // 随后下箭头:回落到与画面朝向一致的水平面 = Right(一步一个面)。
-    await tester.tap(find.byKey(const ValueKey('cube-down')));
-    await tester.pumpAndSettle();
-    expect(_facingLabel(tester), 'Right');
+    expect(cloud.viewYaw, closeTo(cubeYawAfter + yawDeg * math.pi / 180, 1e-9));
   });
 }
