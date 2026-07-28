@@ -49,6 +49,7 @@ import '../../official_capture/representative_color.dart';
 import '../../official_capture/shutter_backpressure_gate.dart';
 import '../../official_capture/sparse_ply.dart';
 import '../../official_capture/telemetry_writer.dart';
+import '../../official_capture/transient_preview_cleanup.dart';
 import '../../official_capture/dome/dome_target_points.dart';
 import '../../official_capture/realtime_capture_preview.dart';
 import '../../official_capture/sfm_live_recon.dart';
@@ -2333,7 +2334,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           thumbnailPath = thumbnail.path;
         }
       } on FileSystemException {
-        thumbnailPath = sourcePath;
+        thumbnailPath = null;
       }
     }
 
@@ -2356,6 +2357,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       localRawRetainedForDebug: true,
     );
     await store.addOrUpdate(record);
+    unawaited(removeTransientCapturePreviews(captureDir));
     // Reconstruction happens two ways, both independent of any local mesh
     // pipeline: the streaming SfM preview (already running) and server-side
     // recon once the draft uploads. The draft stays at localPending for the

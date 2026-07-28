@@ -4,6 +4,7 @@ import 'dart:io';
 import 'photo_archive_codec.dart';
 import 'photo_archive_policy.dart';
 import 'photo_archive_transaction.dart';
+import 'transient_preview_cleanup.dart';
 
 class PhotoArchiveActivityLease {
   PhotoArchiveActivityLease(this._onClose);
@@ -98,6 +99,7 @@ class PhotoArchiveCoordinator {
         return;
       }
       if (!await _isDurablyReady(item.value)) continue;
+      await removeTransientCapturePreviews(item.value);
       final result = await PhotoArchiveTransaction(
         codec: codec,
         canStartNext: () => _foregroundActivityCount == 0,

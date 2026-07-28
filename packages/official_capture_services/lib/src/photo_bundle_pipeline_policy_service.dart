@@ -600,6 +600,7 @@ final class PhotoBundlePipelinePolicyService {
   }
 
   Map<String, Object?> buildTransportManifest(Map<String, Object?> manifest) {
+    final previewsDir = _asString(manifest['previewsDir']);
     return {
       'schemaVersion': 'aether_bundle_transport_v1',
       'container': 'tar.zst',
@@ -609,7 +610,7 @@ final class PhotoBundlePipelinePolicyService {
       'requiredEntries': [
         'official_photo_bundle.json',
         _asString(manifest['photosHighresDir'], fallback: 'photos_highres'),
-        _asString(manifest['previewsDir'], fallback: 'previews'),
+        if (previewsDir.isNotEmpty) previewsDir,
         'colmap/sparse/0/cameras.txt',
         'colmap/sparse/0/images.txt',
         'colmap/sparse/0/points3D.txt',

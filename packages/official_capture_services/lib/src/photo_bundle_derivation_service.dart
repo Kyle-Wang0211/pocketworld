@@ -192,10 +192,8 @@ Future<Map<String, Object?>> _repairManifestAssets({
     manifest['photosHighresDir'],
     fallback: 'photos_highres',
   );
-  final previewsDir = _asString(
-    manifest['previewsDir'],
-    fallback: 'previews',
-  );
+  final previewsDir = _asString(manifest['previewsDir']);
+  final hasPreviewContract = previewsDir.isNotEmpty;
   final frames = _frames(manifest);
   var changed = false;
   var repairedImageSizeCount = 0;
@@ -205,8 +203,11 @@ Future<Map<String, Object?>> _repairManifestAssets({
   final generatedPreviewFrameIDs = <String>[];
   final repairedMetadataFrameIDs = <String>[];
   final repairedFrames = <Map<String, Object?>>[];
-  final previewDir = Directory(_join(bundleDirectory.path, previewsDir));
-  previewDir.createSync(recursive: true);
+  if (hasPreviewContract) {
+    Directory(
+      _join(bundleDirectory.path, previewsDir),
+    ).createSync(recursive: true);
+  }
 
   for (var i = 0; i < frames.length; i += 1) {
     final frame = Map<String, Object?>.from(frames[i]);
@@ -218,10 +219,9 @@ Future<Map<String, Object?>> _repairManifestAssets({
       frame['highresFilename'],
       fallback: '$id.jpg',
     );
-    final previewFilename = _asString(
-      frame['previewFilename'],
-      fallback: highresFilename,
-    );
+    final previewFilename = hasPreviewContract
+        ? _asString(frame['previewFilename'], fallback: highresFilename)
+        : '';
     final highresFile = File(
       _join(bundleDirectory.path, '$photosHighresDir/$highresFilename'),
     );
@@ -231,9 +231,9 @@ Future<Map<String, Object?>> _repairManifestAssets({
         '$photosHighresDir/${_stripExtension(highresFilename)}.json',
       ),
     );
-    final previewFile = File(
-      _join(bundleDirectory.path, '$previewsDir/$previewFilename'),
-    );
+    final previewFile = hasPreviewContract
+        ? File(_join(bundleDirectory.path, '$previewsDir/$previewFilename'))
+        : null;
     final metadata = await _readSidecarMetadata(metadataFile);
     var metadataChanged = false;
     final sidecarTimestamp = _asDouble(metadata['t']);
@@ -268,7 +268,7 @@ Future<Map<String, Object?>> _repairManifestAssets({
     }
     final needsSizeRepair =
         _asInt(frame['imageWidth']) <= 0 || _asInt(frame['imageHeight']) <= 0;
-    final needsPreviewRepair = !previewFile.existsSync();
+    final needsPreviewRepair = previewFile != null && !previewFile.existsSync();
     image.Image? decoded;
     if ((needsSizeRepair || needsPreviewRepair) && highresFile.existsSync()) {
       decoded = image.decodeImage(await highresFile.readAsBytes());

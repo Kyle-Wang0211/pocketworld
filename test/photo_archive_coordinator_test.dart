@@ -28,7 +28,10 @@ void main() {
   }) async {
     final capture = Directory('${documentsDir.path}/captures_official/$name');
     final highres = Directory('${capture.path}/photos_highres');
+    final previews = Directory('${capture.path}/previews');
     await highres.create(recursive: true);
+    await previews.create(recursive: true);
+    await File('${previews.path}/preview.jpg').writeAsBytes([7, 8, 9]);
     if (marked) await PhotoArchivePolicy.writeForNewCapture(capture);
     for (var index = 0; index < photos.length; index++) {
       await File(
@@ -81,6 +84,8 @@ void main() {
     expect(await File('${legacySource.path}.jxl').exists(), isFalse);
     expect(await futureSource.exists(), isFalse);
     expect(await File('${futureSource.path}.jxl').exists(), isTrue);
+    expect(await Directory('${legacy.path}/previews').exists(), isTrue);
+    expect(await Directory('${future.path}/previews').exists(), isFalse);
   });
 
   test('foreground activity pauses between individual files', () async {

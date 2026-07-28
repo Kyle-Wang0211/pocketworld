@@ -53,6 +53,30 @@ clouds, or paths outside `photos_highres`.
 - **WHEN** a frame declares an absolute path, path separator, parent traversal, duplicate, or non-JPEG high-resolution filename
 - **THEN** that entry is rejected without touching the declared target
 
+### Requirement: Transient AR previews
+For future marked captures, the system SHALL treat 1920×1440 AR-card preview
+JPEGs as temporary capture UI data rather than durable project inputs. It SHALL
+write any persistent draft thumbnail outside the capture preview directory,
+omit previews from the future photo-bundle validation and transport contract,
+and remove the capture preview directory only after the draft record is
+durable. Cleanup MUST NOT target an unmarked capture.
+
+#### Scenario: Draft persistence succeeds
+- **WHEN** a future marked capture has copied its independent draft thumbnail and durably stored its draft record
+- **THEN** the system deletes `<capture>/previews` without modifying `photos_highres` or the independent thumbnail
+
+#### Scenario: Immediate cleanup is interrupted
+- **WHEN** the app stops after draft persistence but before deleting previews
+- **THEN** marker-gated cold archive reconciliation retries the preview cleanup
+
+#### Scenario: Legacy unmarked capture contains previews
+- **WHEN** startup discovery encounters an unmarked capture with a preview directory
+- **THEN** the system leaves that directory and every contained file unchanged
+
+#### Scenario: Future bundle validation and transport
+- **WHEN** a future manifest omits `previewsDir` and per-frame `previewFilename`
+- **THEN** validation does not report missing previews, asset repair does not regenerate them, and transport does not require a preview directory
+
 ### Requirement: Byte-exact JPEG XL transaction
 For each candidate, the system SHALL use JPEG XL JPEG-reconstruction mode and
 MUST prove that the reconstructed file is byte-for-byte identical to the

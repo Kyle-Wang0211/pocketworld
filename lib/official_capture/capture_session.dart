@@ -482,13 +482,9 @@ class CaptureSession {
     final still = _stillByPath[path];
     final quality = _qualityByPath[path] ?? _qualityFromSample(sample);
     final highresFilename = _basename(path);
-    final previewPath = still?.previewPath;
     return PhotoBundleFrameDraft(
       id: sample.frameId,
       highresFilename: highresFilename,
-      previewFilename: previewPath == null
-          ? highresFilename
-          : _basename(previewPath),
       timestamp: still?.timestamp ?? sample.timestamp,
       triggerTimestamp: sample.timestamp,
       azimuth: sample.azimuth,
