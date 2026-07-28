@@ -27,6 +27,8 @@ import 'package:path_provider/path_provider.dart';
 import '../me/scan_record_store.dart';
 import '../official_util/device_log.dart';
 import 'colorize_pipeline.dart';
+import 'photo_archive_resolver.dart';
+import 'photo_archive_runtime.dart';
 import 'representative_color.dart';
 import 'sfm_live_recon.dart';
 import 'sparse_ply.dart';
@@ -292,6 +294,7 @@ Future<void> _resumeOne(
   } finally {
     if (recon != null) await recon.dispose();
     await _umbrella('endReconUmbrella', captureDir);
+    await _clearMaterializedArchiveCache(captureDir);
   }
 }
 
@@ -309,6 +312,7 @@ Future<void> _persistColored(
   final n = snap.pointCount;
   if (n == 0) return;
   frameMeta ??= await _loadFrameMeta(captureDir);
+  frameMeta = await _materializeArchivedJpegs(captureDir, frameMeta);
   final offs = snap.obsOffsets;
   final fids = snap.obsFrameIds;
   final oxy = snap.obsXY;
@@ -524,7 +528,9 @@ Future<Map<int, SfmFedFrameMeta>> _loadFrameMeta(String captureDir) async {
       final w = (j['image_w'] as num?)?.toInt() ?? 3840;
       final h = (j['image_h'] as num?)?.toInt() ?? 2160;
       final jpeg = f.path.replaceAll(RegExp(r'\.json$'), '.jpg');
-      if (File(jpeg).existsSync()) rows.add((t: t, jpeg: jpeg, w: w, h: h));
+      if (File(jpeg).existsSync() || File('$jpeg.jxl').existsSync()) {
+        rows.add((t: t, jpeg: jpeg, w: w, h: h));
+      }
     } catch (_) {}
   }
   rows.sort((a, b) => a.t.compareTo(b.t));
@@ -542,6 +548,84 @@ Future<Map<int, SfmFedFrameMeta>> _loadFrameMeta(String captureDir) async {
     );
   }
   return map;
+}
+
+/// Rehydrates only the JPEGs a later colorization pass will actually read.
+///
+/// Canonical sources are returned in place. Archive-only sources go through
+/// the verified resolver and live in the application cache for the duration of
+/// this explicit recovery run.
+Future<Map<int, SfmFedFrameMeta>> _materializeArchivedJpegs(
+  String captureDir,
+  Map<int, SfmFedFrameMeta> frameMeta,
+) async {
+  if (frameMeta.isEmpty) return frameMeta;
+  try {
+    final captureDirectory = Directory(captureDir);
+    final cacheDirectory = await _archiveRestoreCacheDirectory(captureDir);
+    final resolver = PhotoArchiveResolver(codec: photoArchiveCodec);
+    final resolvedByName = <String, String>{};
+    for (final meta in frameMeta.values) {
+      final name = meta.jpegPath.split('/').last;
+      if (resolvedByName.containsKey(name)) continue;
+      final resolved = await resolver.resolveJpeg(
+        captureDirectory: captureDirectory,
+        highresFilename: name,
+        cacheDirectory: cacheDirectory,
+      );
+      if (resolved != null) resolvedByName[name] = resolved.path;
+    }
+    if (resolvedByName.isEmpty) return frameMeta;
+    return frameMeta.map((frameId, meta) {
+      final resolvedPath = resolvedByName[meta.jpegPath.split('/').last];
+      if (resolvedPath == null || resolvedPath == meta.jpegPath) {
+        return MapEntry(frameId, meta);
+      }
+      return MapEntry(
+        frameId,
+        SfmFedFrameMeta(
+          jpegPath: resolvedPath,
+          imageW: meta.imageW,
+          imageH: meta.imageH,
+          grayW: meta.grayW,
+          grayH: meta.grayH,
+          fx: meta.fx,
+          fy: meta.fy,
+          cx: meta.cx,
+          cy: meta.cy,
+          captureTimestamp: meta.captureTimestamp,
+          arkitQuatWxyz: meta.arkitQuatWxyz,
+          arkitTransTxyz: meta.arkitTransTxyz,
+          arkitCameraCenterWorld: meta.arkitCameraCenterWorld,
+        ),
+      );
+    });
+  } catch (e) {
+    DeviceLog.log(
+      'SfmResume',
+      'archive materialization unavailable for $captureDir: $e',
+    );
+    return frameMeta;
+  }
+}
+
+Future<Directory> _archiveRestoreCacheDirectory(String captureDir) async {
+  final temporary = await getTemporaryDirectory();
+  final captureName = Directory(captureDir).uri.pathSegments
+      .where((segment) => segment.isNotEmpty)
+      .last;
+  return Directory(
+    '${temporary.path}/pocketworld_photo_archive/$captureName',
+  );
+}
+
+Future<void> _clearMaterializedArchiveCache(String captureDir) async {
+  try {
+    final cache = await _archiveRestoreCacheDirectory(captureDir);
+    if (await cache.exists()) await cache.delete(recursive: true);
+  } catch (_) {
+    // Temporary materializations are safe for the OS cache to reclaim later.
+  }
 }
 
 /// Fast native JPEG decode (ImageIO at [kColorizeDecodeMaxPx] = 全分辨率,

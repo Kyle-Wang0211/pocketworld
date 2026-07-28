@@ -32,3 +32,37 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 The views and conclusions contained in the software and documentation are those
 of the authors and should not be interpreted as representing official policies,
 either expressed or implied, of the FreeBSD Project.
+
+JPEG XL native archive stack
+============================
+
+Use in PocketWorld: byte-exact JPEG reconstruction archives for future
+official captures.
+
+JPEG XL / libjxl
+Source: https://github.com/libjxl/libjxl
+Revision: a7a9c787341cf703dede03c2009fa460cae5e5df
+License: BSD-3-Clause
+Bundled license: ios/Vendor/JXL/licenses/libjxl-LICENSE
+
+Brotli
+Source: https://github.com/google/brotli
+Revision: 028fb5a23661f123017c060daa546b55cf4bde29
+License: MIT
+Bundled license: ios/Vendor/JXL/licenses/brotli-LICENSE
+
+Highway
+Source: https://github.com/google/highway
+Revision: 457c891775a7397bdb0376bb1031e6e027af1c48
+Licenses: Apache-2.0 and BSD-3-Clause
+Bundled licenses: ios/Vendor/JXL/licenses/highway-LICENSE and
+ios/Vendor/JXL/licenses/highway-LICENSE-BSD3
+
+skcms
+Source: https://skia.googlesource.com/skcms
+Revision: 96d9171c94b937a1b5f0293de7309ac16311b722
+License: BSD-3-Clause
+Bundled license: ios/Vendor/JXL/licenses/skcms-LICENSE
+
+The complete upstream license texts above are shipped as Flutter assets. This
+inventory records engineering provenance and is not legal advice.

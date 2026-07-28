@@ -44,6 +44,8 @@ import '../reconstruction_lease.dart';
 import 'gravity_align.dart';
 import 'live_sfm_publish_policy.dart';
 import 'official_highres_reconstruction_input.dart';
+import 'photo_archive_coordinator.dart';
+import 'photo_archive_runtime.dart';
 import 'pw_telemetry.dart';
 import 'sfm_feed_queue.dart';
 import 'telemetry_writer.dart';
@@ -414,6 +416,7 @@ class SfmLiveRecon {
     this._sub,
     this._dbPath,
     this._leaseOwner,
+    this._photoArchiveActivityLease,
   );
 
   final SendPort _toWorker;
@@ -422,6 +425,7 @@ class SfmLiveRecon {
   final StreamSubscription<dynamic> _sub;
   final String _dbPath;
   final Object _leaseOwner;
+  final PhotoArchiveActivityLease _photoArchiveActivityLease;
 
   final _events = StreamController<SfmLiveEvent>.broadcast();
   Stream<SfmLiveEvent> get events => _events.stream;
@@ -500,6 +504,8 @@ class SfmLiveRecon {
       owner: leaseOwner,
       pipeline: ReconstructionPipeline.official,
     );
+    final photoArchiveActivityLease = photoArchiveCoordinator
+        .beginReconstructionActivity(Directory(File(dbPath).parent.path));
     final fromWorker = ReceivePort();
     Isolate? isolate;
     StreamSubscription<dynamic>? sub;
@@ -551,6 +557,7 @@ class SfmLiveRecon {
         sub,
         dbPath,
         leaseOwner,
+        photoArchiveActivityLease,
       );
       handedOff = true;
       DeviceLog.log('SfmLive', 'worker up (db=$dbPath)');
@@ -570,6 +577,7 @@ class SfmLiveRecon {
           isolate?.kill(priority: Isolate.immediate);
         } finally {
           reconstructionLease.release(leaseOwner);
+          await photoArchiveActivityLease.close();
         }
       }
     }
@@ -960,6 +968,7 @@ class SfmLiveRecon {
         await _events.close();
       } finally {
         reconstructionLease.release(_leaseOwner);
+        unawaited(_photoArchiveActivityLease.close());
       }
     }
   }
