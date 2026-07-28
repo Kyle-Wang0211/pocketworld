@@ -315,6 +315,53 @@ void main() {
     await tester.pumpAndSettle(); // 摩擦模拟自然停下,不悬挂
   });
 
+  testWidgets('框平移无增量吞噬:同帧多触摸事件全部累积(阻力 bug 回归)', (tester) async {
+    late Directory dir;
+    late Float32List xyz;
+    late Uint8List rgb;
+    await tester.runAsync(() async {
+      (dir, xyz, rgb) = await _fixture();
+    });
+    addTearDown(() => dir.delete(recursive: true));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
+      ),
+    );
+    await _pumpUntilLoaded(tester);
+    await tester.pumpAndSettle();
+    dynamic page() => tester.state(find.byType(SelectionPage));
+    SelectionBox box() => (page() as dynamic).debugBox as SelectionBox;
+    final before = box();
+
+    // 从框中心起手,同一帧内连发 4 段位移(不 pump —— 模拟 120Hz 触摸快于
+    // 60Hz 渲染),修复前后三段会覆盖第一段,总位移只剩 1/4。
+    final center = tester.getCenter(find.byType(SelectionCloudView));
+    final g = await tester.startGesture(center);
+    for (var i = 0; i < 4; i++) {
+      await g.moveBy(const Offset(15, 0));
+    }
+    await g.up();
+    await tester.pumpAndSettle();
+    final single = box();
+    final moved1 =
+        (single.cx - before.cx).abs() + (single.cz - before.cz).abs();
+
+    // 再来一次同样总位移但逐帧发(每段之间 pump),两种发法总位移必须一致。
+    final g2 = await tester.startGesture(center);
+    for (var i = 0; i < 4; i++) {
+      await g2.moveBy(const Offset(15, 0));
+      await tester.pump();
+    }
+    await g2.up();
+    await tester.pumpAndSettle();
+    final stepped = box();
+    final moved2 =
+        (stepped.cx - single.cx).abs() + (stepped.cz - single.cz).abs();
+    expect(moved1, greaterThan(0));
+    expect(moved1, closeTo(moved2, moved2 * 0.05 + 1e-9));
+  });
+
   testWidgets('朝向立方体上下箭头 = 三层移动:Top↕水平↕Bottom', (tester) async {
     late Directory dir;
     late Float32List xyz;

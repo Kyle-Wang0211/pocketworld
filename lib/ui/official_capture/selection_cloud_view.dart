@@ -309,6 +309,12 @@ class _SelectionCloudViewState extends State<SelectionCloudView> {
     roll: widget.viewRoll,
   ).projectionFor(size);
 
+  /// 手势期间的盒累积基准。⚠️不能每次 update 用 widget.box 做基准:
+  /// 触摸事件一帧可到多个,widget.box 要等父级 setState 重建后才刷新,
+  /// 同帧后到的事件会用同一个旧盒**覆盖**前一个的增量 —— 大半拖动量被吞,
+  /// 实机观感"框拖不动/阻力大"(与 RulerScrubber 同根因,用户两次指认)。
+  SelectionBox? _gestureBox;
+
   void _onScaleStart(ScaleStartDetails d) {
     if (_viewSize.isEmpty) return;
     final proj = _projectionFor(_viewSize);
@@ -317,6 +323,7 @@ class _SelectionCloudViewState extends State<SelectionCloudView> {
     final handle = hitRectHandle(rect, d.localFocalPoint);
     _activeHandle = handle;
     _panningBox = handle == null && rect.contains(d.localFocalPoint);
+    _gestureBox = widget.box;
   }
 
   void _onScaleUpdate(ScaleUpdateDetails d) {
@@ -330,30 +337,29 @@ class _SelectionCloudViewState extends State<SelectionCloudView> {
       }
       return;
     }
+    final base = _gestureBox ?? widget.box;
     final proj = _projectionFor(_viewSize);
-    final basis = boxScreenBasis(proj, widget.box);
+    final basis = boxScreenBasis(proj, base);
     if (_activeHandle != null) {
       final minHalfSize = _fit.radius * SelectionBox.kMinHalfSizeFraction;
       final next = applyRectHandleDrag(
-        box: widget.box,
+        box: base,
         basis: basis,
         h: _activeHandle!,
         screenDelta: d.focalPointDelta,
         minHalfSize: minHalfSize,
       );
+      _gestureBox = next;
       widget.onBoxChanged(next);
     } else if (_panningBox) {
-      final (_, _, depth) = proj.project(
-        widget.box.cx,
-        widget.box.cy,
-        widget.box.cz,
-      );
+      final (_, _, depth) = proj.project(base.cx, base.cy, base.cz);
       final next = applyBoxPan(
-        box: widget.box,
+        box: base,
         proj: proj,
         screenDelta: d.focalPointDelta,
         depth: depth,
       );
+      _gestureBox = next;
       widget.onBoxChanged(next);
     }
   }
@@ -361,6 +367,7 @@ class _SelectionCloudViewState extends State<SelectionCloudView> {
   void _onScaleEnd(ScaleEndDetails d) {
     _activeHandle = null;
     _panningBox = false;
+    _gestureBox = null;
   }
 
   @override
