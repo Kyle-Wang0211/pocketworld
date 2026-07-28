@@ -20,6 +20,7 @@ import 'package:pocketworld_flutter/official_capture/selection_box.dart';
 import 'package:pocketworld_flutter/ui/official_capture/cloud_camera.dart'
     show axisAngleOf, mulTransposed;
 import 'package:pocketworld_flutter/ui/official_capture/selection_cloud_view.dart';
+import 'package:pocketworld_flutter/ui/official_capture/ruler_scrubber.dart';
 import 'package:pocketworld_flutter/ui/official_capture/selection_page.dart';
 import 'package:pocketworld_flutter/ui/official_capture/view_cube.dart';
 
@@ -248,7 +249,7 @@ void main() {
     await _pumpUntilLoaded(tester);
     await tester.pumpAndSettle();
 
-    final slider = find.byType(Slider);
+    final slider = find.byType(RulerScrubber);
     expect(slider, findsOneWidget);
     await tester.drag(slider, const Offset(60, 0));
     await tester.pumpAndSettle();
@@ -261,6 +262,44 @@ void main() {
     );
     final preset = kOrientationPresets.first; // 初始 Top
     expect(view.viewYaw, closeTo(preset.yaw + yaw * math.pi / 180, 1e-9));
+  });
+
+  testWidgets('旋转刻度尺:无端点 360° 循环,连续值不吸附刻度', (tester) async {
+    late Directory dir;
+    late Float32List xyz;
+    late Uint8List rgb;
+    await tester.runAsync(() async {
+      (dir, xyz, rgb) = await _fixture();
+    });
+    addTearDown(() => dir.delete(recursive: true));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
+      ),
+    );
+    await _pumpUntilLoaded(tester);
+    await tester.pumpAndSettle();
+    final ruler = find.byType(RulerScrubber);
+    dynamic page() => tester.state(find.byType(SelectionPage));
+    double yaw() => ((page() as dynamic).debugBox as SelectionBox).yawDeg;
+
+    // [2026-07-28 用户签决] 1) 没有尽头:累计拖过 360° 也不 clamp,值环向
+    // 归一化到 (-180,180],绝不停在端点。
+    for (var i = 0; i < 12; i++) {
+      await tester.drag(ruler, const Offset(-100, 0)); // 每次 ≈ +45.5°
+      await tester.pump();
+    }
+    expect(yaw().abs(), lessThanOrEqualTo(180.0));
+    // 拖了 ≈546°,若被 clamp 在端点会恰为 ±180;环向 wrap 后必不在端点。
+    expect(yaw().abs(), isNot(closeTo(180.0, 1.0)));
+
+    // 2) 连续不吸附:小步 7px ≈ 3.18°,落点不该是 5° 刻度的整数倍。
+    final before = yaw();
+    await tester.drag(ruler, const Offset(-7, 0));
+    await tester.pump();
+    final delta = yaw() - before;
+    expect(delta.abs(), greaterThan(0.5));
+    expect((yaw() % 5.0).abs(), isNot(closeTo(0.0, 1e-6)));
   });
 
   testWidgets('朝向立方体上下箭头 = 三层移动:Top↕水平↕Bottom', (tester) async {
@@ -374,7 +413,7 @@ void main() {
     final cubeYawBefore = tester
         .widget<ViewCube>(find.byType(ViewCube))
         .viewYaw;
-    await tester.drag(find.byType(Slider), const Offset(60, 0));
+    await tester.drag(find.byType(RulerScrubber), const Offset(60, 0));
     await tester.pumpAndSettle();
     final cubeYawAfter = tester.widget<ViewCube>(find.byType(ViewCube)).viewYaw;
     expect(cubeYawAfter, closeTo(cubeYawBefore, 1e-9));

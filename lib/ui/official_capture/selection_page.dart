@@ -19,6 +19,7 @@ import 'cloud_camera.dart'
         mulTransposed,
         axisAngleOf,
         rotationFromAxisAngle;
+import 'ruler_scrubber.dart';
 import 'selection_cloud_view.dart';
 import 'view_cube.dart';
 import 'sparse_cloud_view.dart' show SparseCloudPainter;
@@ -382,11 +383,14 @@ class _SelectionPageState extends State<SelectionPage>
             'Rotate Point Cloud',
             style: TextStyle(color: Colors.white70, fontSize: 13),
           ),
-          Slider(
-            min: -180,
-            max: 180,
-            value: box.yawDeg.clamp(-180, 180),
-            onChanged: (v) => _onBoxChanged(box.copyWith(yawDeg: v)),
+          // [2026-07-28 用户签决] RS 同款无限刻度尺:无端点可一直拨,
+          // 360° 循环;连续值不吸附刻度。落盘前归一化到 (-180,180]。
+          RulerScrubber(
+            value: box.yawDeg,
+            onChanged: (v) {
+              final wrapped = v - 360.0 * ((v + 180.0) / 360.0).floorToDouble();
+              _onBoxChanged(box.copyWith(yawDeg: wrapped));
+            },
           ),
           const SizedBox(height: 8),
           SizedBox(
