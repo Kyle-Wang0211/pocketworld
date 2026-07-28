@@ -150,6 +150,9 @@ class OfficialAetherARKitPlugin: NSObject {
     // _host_fixtures/pose_drift_audit/SCALE_VERDICT.md;并排对比
     // _host_fixtures/scale_anchor_compare/(用户肉眼批准)。
     setenv("OFFICIAL_AETHER_SCALE_ANCHOR", "1", 1)
+    // [SPLAT-RADIUS 2026-07-28] 实验臂当前档:AR 点云近处点径上限(px)。
+    // 6=旧行为 / 20 / 50 三档肉眼对比用;拍板后改默认值并删旋钮。
+    setenv("OFFICIAL_AETHER_AR_SPLAT_MAX_PX", "20", 1)
     // Production ends at COLMAP's final global BA + official filtering.
     // Historical RestoreTemporalDetail / repair / enrichment passes are hard
     // disabled in the native translation unit and are not re-enabled here.
@@ -2272,6 +2275,18 @@ extension OfficialAetherARKitPlugin {
   /// Prior tiers: 1280 (old live), 2000 (safe/sparse), 4224 (this / dense).
   static let sfmFeedMaxSide = 4224
 
+  /// [SPLAT-RADIUS 2026-07-28] AR 点云近处点径上限(像素)。实验臂:
+  /// `OFFICIAL_AETHER_AR_SPLAT_MAX_PX` 覆盖(6=旧行为 / 20 / 50 三档对比),
+  /// 未设时用 6 —— **默认即旧行为,不设环境变量则渲染逐像素不变**。
+  /// 真机对比拍板后把默认值改成签决档,再删这个旋钮。
+  static let arSplatMaxScreenRadius: CGFloat = {
+    if let raw = ProcessInfo.processInfo.environment["OFFICIAL_AETHER_AR_SPLAT_MAX_PX"],
+       let v = Double(raw), v >= 2, v <= 200 {
+      return CGFloat(v)
+    }
+    return 6
+  }()
+
   /// Stringified `ARCamera.TrackingState` for the pose stream's
   /// `trackingStateName` field. Mirrors the enum 1:1 so the Dart side
   /// (PoseDriftTracker) can attribute degraded windows to a root cause
@@ -3081,9 +3096,21 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
       dataStride: MemoryLayout<SIMD4<Float>>.stride)
     let element = SCNGeometryElement(
       indices: (0..<verts.count).map { Int32($0) }, primitiveType: .point)
+    // [SPLAT-RADIUS 2026-07-28] 实验臂:近处点径上限。SceneKit 的 pointSize
+    // 是**世界单位**,min/max ScreenSpaceRadius 把投影后的像素半径钳在区间内
+    // —— 即"1/深度 透视自适应 + 钳制",与 Potree 的出货配方同构
+    // (`pointSize = size * spacing * projFactor` 后 clamp)。
+    //
+    // 病灶:上限 6px 把近处点焊死在小圆点,表面永远糊不成片。参照:Potree
+    // 出货推荐 clamp(2, 50);RS 手机端截图取证近端实测 7-11px(我们上限
+    // 6px 连它的下沿都够不到)。⇒ 放开上限是唯一"一行见效"的动作。
+    //
+    // 纯渲染:点数据一个字节不动,几何/交付/导出全不受影响。
+    // 档案:project_pocketworld_pointcloud_rendering_audit(记忆库)。
     element.pointSize = 6
     element.minimumPointScreenSpaceRadius = 2
-    element.maximumPointScreenSpaceRadius = 6
+    element.maximumPointScreenSpaceRadius =
+      OfficialAetherARKitPlugin.arSplatMaxScreenRadius
     let geo = SCNGeometry(sources: [vSource, cSource], elements: [element])
     let mat = SCNMaterial()
     mat.lightingModel = .constant
