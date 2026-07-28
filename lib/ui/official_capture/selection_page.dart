@@ -60,6 +60,10 @@ class _SelectionPageState extends State<SelectionPage>
     with SingleTickerProviderStateMixin {
   SelectionBox? _box;
   bool _loading = true;
+
+  /// 点云 fit 中心 = 相机枢轴(与 SelectionCloudView 内部一致),滑杆
+  /// 旋转时框绕它公转以钉死屏幕位置。
+  ({double cx, double cy, double cz, double radius})? _fit;
   Timer? _saveDebounce;
 
   /// in-flight 守卫:_onBackPressed 里 await _flush() 期间(真实 IO)若
@@ -125,11 +129,12 @@ class _SelectionPageState extends State<SelectionPage>
 
   Future<void> _load() async {
     final loaded = await SelectionBox.loadFrom(widget.captureDir);
+    final fit = SparseCloudPainter.fitOf(widget.xyz);
+    _fit = fit;
     final SelectionBox box;
     if (loaded != null) {
       box = loaded;
     } else {
-      final fit = SparseCloudPainter.fitOf(widget.xyz);
       box = SelectionBox.initialFor(
         cx: fit.cx,
         cy: fit.cy,
@@ -388,8 +393,17 @@ class _SelectionPageState extends State<SelectionPage>
           RulerScrubber(
             value: box.yawDeg,
             onChanged: (v) {
-              final wrapped = v - 360.0 * ((v + 180.0) / 360.0).floorToDouble();
-              _onBoxChanged(box.copyWith(yawDeg: wrapped));
+              // [2026-07-28 用户签决] 旋转时框在屏幕上不动:增量取最短环向
+              // 差(甩动惯性给的是无界连续值),整盒绕相机枢轴刚性旋转,
+              // 与相机 viewYaw 增量精确抵消;yaw 落盘前归一化 (-180,180]。
+              final fit = _fit;
+              if (fit == null) return;
+              var delta = (v - box.yawDeg) % 360.0;
+              if (delta > 180.0) delta -= 360.0;
+              final rotated = box.rotatedAroundPivot(fit.cx, fit.cz, delta);
+              final y = rotated.yawDeg;
+              final wrapped = y - 360.0 * ((y + 180.0) / 360.0).floorToDouble();
+              _onBoxChanged(rotated.copyWith(yawDeg: wrapped));
             },
           ),
           const SizedBox(height: 8),

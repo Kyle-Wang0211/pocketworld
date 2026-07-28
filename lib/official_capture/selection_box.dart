@@ -60,6 +60,29 @@ class SelectionBox {
     return lx.abs() <= sx / 2 && py.abs() <= sy / 2 && lz.abs() <= sz / 2;
   }
 
+  /// 绕世界竖直枢轴 (pivotX, pivotZ) 刚性旋转 deltaDeg°:中心公转 +
+  /// 自身 yaw 同步自转(旋转方向与 corners 正变换同约定)。
+  ///
+  /// [2026-07-28 用户签决] 旋转刻度尺期间"框在屏幕上不能动":相机
+  /// viewYaw = preset + yawDeg,框朝向的 +Δ 正好抵消相机 +Δ(所以框
+  /// 在屏幕上不转),但框心若不在相机枢轴上,投影位置仍会漂移 —— 解法
+  /// 就是整盒绕**相机枢轴**(点云 fit 中心)刚性旋转,位置+朝向双抵消,
+  /// 投影不变性由 selection_box_pivot_rotation_test 以 1e-6 锁定。
+  SelectionBox rotatedAroundPivot(
+    double pivotX,
+    double pivotZ,
+    double deltaDeg,
+  ) {
+    final t = deltaDeg * math.pi / 180.0;
+    final c = math.cos(t), s = math.sin(t);
+    final dx = cx - pivotX, dz = cz - pivotZ;
+    return copyWith(
+      cx: pivotX + dx * c - dz * s,
+      cz: pivotZ + dx * s + dz * c,
+      yawDeg: yawDeg + deltaDeg,
+    );
+  }
+
   SelectionBox copyWith({
     double? cx,
     double? cy,
