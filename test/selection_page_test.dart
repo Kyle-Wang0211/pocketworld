@@ -341,4 +341,37 @@ void main() {
     );
     expect(cloud.viewYaw, closeTo(cubeYawAfter + yawDeg * math.pi / 180, 1e-9));
   });
+
+  testWidgets('上下箭头进出 Top 带上下文 yaw:Right 上翻后画面朝向不变', (tester) async {
+    late Directory dir;
+    late Float32List xyz;
+    late Uint8List rgb;
+    await tester.runAsync(() async {
+      (dir, xyz, rgb) = await _fixture();
+    });
+    addTearDown(() => dir.delete(recursive: true));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SelectionPage(xyz: xyz, rgb: rgb, captureDir: dir.path),
+      ),
+    );
+    await _pumpUntilLoaded(tester);
+    await tester.pumpAndSettle();
+    // Top(初始)→ 下到 Front → 右到 Right → 上到 Top:
+    await tester.tap(find.byKey(const ValueKey('cube-down')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('cube-right')));
+    await tester.pumpAndSettle();
+    expect(_facingLabel(tester), 'Right');
+    await tester.tap(find.byKey(const ValueKey('cube-up')));
+    await tester.pumpAndSettle();
+    expect(_facingLabel(tester), 'Top');
+    // 上下文 yaw:Top 停留姿态的 yaw = Right 的 π/2(纯 90° 上翻,不歪转
+    // 到"up 朝 Front"的 Top),滑杆为 0 时 viewYaw 应 ≈ π/2。
+    final view = tester.widget<SelectionCloudView>(
+      find.byType(SelectionCloudView),
+    );
+    expect(view.viewYaw, closeTo(math.pi / 2, 1e-6));
+    expect(view.viewRoll, closeTo(0, 1e-9)); // 落定 roll 归零
+  });
 }

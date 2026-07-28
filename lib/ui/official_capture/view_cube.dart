@@ -142,7 +142,7 @@ class ViewCube extends StatelessWidget {
     required this.viewYaw,
     required this.viewPitch,
     this.viewRoll = 0,
-    this.size = 72,
+    this.size = 60,
   });
 
   final double viewYaw;
@@ -157,11 +157,14 @@ class ViewCube extends StatelessWidget {
     return SizedBox(
       width: size,
       height: size,
-      child: CustomPaint(
-        painter: _ViewCubePainter(
-          yaw: viewYaw,
-          pitch: viewPitch,
-          roll: viewRoll,
+      // 动画斜角时立方体对角会略越出画布,裁掉,别压到旁边的箭头。
+      child: ClipRect(
+        child: CustomPaint(
+          painter: _ViewCubePainter(
+            yaw: viewYaw,
+            pitch: viewPitch,
+            roll: viewRoll,
+          ),
         ),
       ),
     );
@@ -194,9 +197,9 @@ class _ViewCubePainter extends CustomPainter {
       pivotY: 0,
       pivotZ: 0,
       radius: 1,
-      // [2026-07-28 用户反馈] 向里收紧:2.05 → 2.45,立方体占画布 ~77%,
-      // 与四个箭头贴近(RS 观感);斜角对角轻微越出画布边缘可接受(黑底)。
-      fillK: 2.45,
+      // [2026-07-28 用户反馈二轮] 实质收紧:2.9 → 正对面宽 ~54px@60 画布,
+      // 空白仅 3px/边,箭头紧贴(RS 观感);斜角越出部分由外层 ClipRect 裁。
+      fillK: 2.9,
       orthographic: true,
       roll: roll,
     ).projectionFor(size);

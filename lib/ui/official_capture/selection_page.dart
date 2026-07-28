@@ -91,6 +91,13 @@ class _SelectionPageState extends State<SelectionPage>
   List<double> _slerpAxis = [1, 0, 0];
   double _slerpAngle = 0;
 
+  /// 本次切换的目标姿态角。Top/Bottom 的 yaw **带上下文**(= 来源水平面的
+  /// 朝向):kOrientationPresets 里 Top/Bottom yaw 固定 0 会让 Right→Top
+  /// 变成 120° 斜轴歪转(host 角度表实测);上下文 yaw 下 H↔Top/Bottom
+  /// 恒为纯 90° 翻转。落定用这两个值,不再拍回表里的规范 yaw。
+  double _targetYaw = kOrientationPresets[0].yaw;
+  double _targetPitch = kOrientationPresets[0].pitch;
+
   /// 测试用:直接读当前盒(见 test/selection_page_test.dart)。
   @visibleForTesting
   SelectionBox? get debugBox => _box;
@@ -142,9 +149,9 @@ class _SelectionPageState extends State<SelectionPage>
     final t = Curves.easeOutCubic.transform(_presetAnim.value);
     setState(() {
       if (t >= 1.0) {
-        // 落定:精确取目标规范角,不经分解(避免尾差),roll 归零。
-        _animPresetYaw = kOrientationPresets[_presetIdx].yaw;
-        _animPitch = kOrientationPresets[_presetIdx].pitch;
+        // 落定:精确取目标角(含上下文 yaw),不经分解(避免尾差),roll 归零。
+        _animPresetYaw = _targetYaw;
+        _animPitch = _targetPitch;
         _animRoll = 0;
         return;
       }
@@ -159,17 +166,16 @@ class _SelectionPageState extends State<SelectionPage>
     });
   }
 
-  void _selectPreset(int idx) {
+  void _selectPreset(int idx, {double? targetYaw}) {
     if (idx == _presetIdx) return;
-    // slerp:从当前(可能在动画中途,含 roll)姿态到目标规范姿态的
-    // 单轴最短旋转 —— 相邻面自动 90°,对面 180°,方向由 SO(3) 测地线
-    // 决定(Bottom→Back = 一次平滑翻转,不走 yaw 水平长绕)。
+    // slerp:从当前(可能在动画中途,含 roll)姿态到目标姿态的单轴最短
+    // 旋转 —— 上下箭头进出 Top/Bottom(上下文 yaw)恒 90°,水平相邻 90°,
+    // 过极 180°(翻+回正合成单轴),侧翻 120°(SO(3) 几何下限,AutoCAD
+    // ViewCube 相同)。
     _slerpFrom = composeViewMatrix(_animPresetYaw, _animPitch, _animRoll);
-    final to = composeViewMatrix(
-      kOrientationPresets[idx].yaw,
-      kOrientationPresets[idx].pitch,
-      0,
-    );
+    _targetYaw = targetYaw ?? kOrientationPresets[idx].yaw;
+    _targetPitch = kOrientationPresets[idx].pitch;
+    final to = composeViewMatrix(_targetYaw, _targetPitch, 0);
     final (axis, angle) = axisAngleOf(mulTransposed(to, _slerpFrom));
     _slerpAxis = axis;
     _slerpAngle = angle;
@@ -220,7 +226,8 @@ class _SelectionPageState extends State<SelectionPage>
       } else if (_presetIdx == 5) {
         _selectPreset(_lastHorizontalIdx);
       } else if (horizontal) {
-        _selectPreset(0);
+        // 上下文 yaw:从当前水平面的朝向上翻,恒 90° 纯翻。
+        _selectPreset(0, targetYaw: kOrientationPresets[_presetIdx].yaw);
       }
     } else {
       // 下箭头
@@ -229,7 +236,8 @@ class _SelectionPageState extends State<SelectionPage>
       } else if (_presetIdx == 0) {
         _selectPreset(_lastHorizontalIdx);
       } else if (horizontal) {
-        _selectPreset(5);
+        // 上下文 yaw:从当前水平面的朝向下翻,恒 90° 纯翻。
+        _selectPreset(5, targetYaw: kOrientationPresets[_presetIdx].yaw);
       }
     }
   }
@@ -405,9 +413,11 @@ class _SelectionPageState extends State<SelectionPage>
         onPressed: onTap,
         icon: Icon(icon),
         color: Colors.white70,
-        iconSize: 20,
+        iconSize: 18,
         padding: EdgeInsets.zero,
-        constraints: const BoxConstraints(minWidth: 32, minHeight: 24),
+        // [2026-07-28 用户反馈] 与立方体贴紧(RS 观感)。
+        constraints: const BoxConstraints(minWidth: 24, minHeight: 18),
+        visualDensity: VisualDensity.compact,
       );
 
   Widget _bottomPanel(SelectionBox box) {
