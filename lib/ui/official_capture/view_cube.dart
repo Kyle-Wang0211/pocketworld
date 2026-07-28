@@ -9,7 +9,7 @@
 //
 // 面→世界法向的标签映射与投影语义一致(推导:pitch=−90° 时朝相机面 =
 // +Y ⇒ Top;yaw=0,pitch=0 时朝相机面 = −Z ⇒ Front;yaw=+90° ⇒ +X=Right)。
-import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
@@ -343,45 +343,46 @@ class _ViewCubePainter extends CustomPainter {
     }
   }
 
-  /// 标签:水平居中画在面投影中心(带小暗底)。
+  /// 标签**贴在面上**(仿射贴面):用面投影四边形的两条边作为文字的
+  /// x/y 基向量 ⇒ 文字随立方体一起透视变形,永远长在那一面上。
   ///
-  /// [2026-07-28 用户实机反馈修订] 不再仿射贴面:贴面文字在反侧手性下会
-  /// 镜像("ЯightBack"),沿倾斜面延伸会跑出面界。水平画法永不镜像、
-  /// 永不出界、任何角度可读;转向反馈由立方体轮廓的转动承担。
+  /// [2026-07-28 用户签决] 此前是"水平画在面中心 + 字号自适应 + 放不下就
+  /// 不画",用户要的是贴面且常驻。镜像问题(曾出现 "ЯightBack")由手性
+  /// 判定解决:面投影四边形若在屏幕上呈左手系(投影把世界 X 翻转过),
+  /// 就换用相邻角作原点,使基向量恢复右手系,文字绝不会反写。
   void _drawFaceLabel(Canvas canvas, String label, List<Offset> pts) {
-    final cx = (pts[0].dx + pts[1].dx + pts[2].dx + pts[3].dx) / 4;
-    final cy = (pts[0].dy + pts[1].dy + pts[2].dy + pts[3].dy) / 4;
-    // 面投影包围盒 —— 斜视角下的面很窄,字号要自适应,否则文字跑出面外。
-    var minX = pts[0].dx, maxX = pts[0].dx, minY = pts[0].dy, maxY = pts[0].dy;
-    for (final p in pts) {
-      minX = math.min(minX, p.dx);
-      maxX = math.max(maxX, p.dx);
-      minY = math.min(minY, p.dy);
-      maxY = math.max(maxY, p.dy);
+    var origin = pts[0];
+    var ex = pts[1] - pts[0];
+    var ey = pts[3] - pts[0];
+    if (ex.dx * ey.dy - ex.dy * ey.dx < 0) {
+      origin = pts[1];
+      ex = pts[0] - pts[1];
+      ey = pts[2] - pts[1];
     }
-    final availW = (maxX - minX) * 0.86, availH = (maxY - minY) * 0.86;
-
-    TextPainter build(double fs) => TextPainter(
+    // 逻辑面 = s×s;文字按该空间排版,再由 ex/ey 变换到真实面上。
+    const s = 64.0;
+    final tp = TextPainter(
       text: TextSpan(
         text: label,
-        style: TextStyle(
+        style: const TextStyle(
           color: Colors.white,
-          fontSize: fs,
-          fontWeight: FontWeight.w600,
-          shadows: const [Shadow(color: Color(0x99000000), blurRadius: 2)],
+          fontSize: 17,
+          fontWeight: FontWeight.w700,
         ),
       ),
       textDirection: TextDirection.ltr,
     )..layout();
-
-    for (var fs = 11.0; fs >= 6.0; fs -= 1.0) {
-      final tp = build(fs);
-      if (tp.width <= availW && tp.height <= availH) {
-        tp.paint(canvas, Offset(cx - tp.width / 2, cy - tp.height / 2));
-        return;
-      }
-    }
-    // 面太窄(接近侧视)⇒ 放弃这一面的文字,不硬塞出界。
+    canvas.save();
+    canvas.transform(
+      Float64List.fromList([
+        ex.dx / s, ex.dy / s, 0, 0, //
+        ey.dx / s, ey.dy / s, 0, 0,
+        0, 0, 1, 0,
+        origin.dx, origin.dy, 0, 1,
+      ]),
+    );
+    tp.paint(canvas, Offset((s - tp.width) / 2, (s - tp.height) / 2));
+    canvas.restore();
   }
 
   @override
