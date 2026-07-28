@@ -59,7 +59,6 @@ class _SelectionPageState extends State<SelectionPage>
     with SingleTickerProviderStateMixin {
   SelectionBox? _box;
   bool _loading = true;
-  int _presetIdx = 0;
   Timer? _saveDebounce;
 
   /// in-flight 守卫:_onBackPressed 里 await _flush() 期间(真实 IO)若
@@ -78,11 +77,18 @@ class _SelectionPageState extends State<SelectionPage>
   double _animPitch = kOrientationPresets[0].pitch;
   double _animRoll = 0;
 
-  // [2026-07-28 用户签决"抄成熟机制"] 预设切换动画 = SO(3) 轴角 slerp
-  // (ViewCube/three.js CameraControls 同款):从当前姿态到目标规范姿态
-  // 绕单一固定轴平滑旋转。Bottom→Back 因此是一次连续翻转(翻+回正合成
-  // 单轴),不再是 yaw 空间的水平长绕。中间帧分解回 (yaw,pitch,roll) 喂
-  // 现有投影管线;落定 = 目标规范角,roll 精确归零。
+  // [2026-07-28 用户签决三轮] **骰子机制**:姿态 = 完整旋转矩阵 _pose,
+  // 箭头 = 绕**屏幕轴**premultiply ±90°(下 = 绕屏幕水平轴向下滚,右 =
+  // 绕屏幕竖直轴向右滚)。每按一次严格 90°,任何序列、任何状态,无例外
+  // —— 就像现实中滚骰子。翻过极点后背面自然倒置(roll≠0),不做"回正"
+  // 规范化:此前为让落定永远正立搞的环/动量/上下文 yaw 机制被用户否决
+  // ("我就需要像现实生活中扔骰子一样,必须只转 90°"),全部删除。
+  // 动画仍是 SO(3) 轴角 slerp(90° 单轴)。
+  List<double> _pose = composeViewMatrix(
+    kOrientationPresets[0].yaw,
+    kOrientationPresets[0].pitch,
+    0,
+  );
   List<double> _slerpFrom = composeViewMatrix(
     kOrientationPresets[0].yaw,
     kOrientationPresets[0].pitch,
@@ -91,21 +97,20 @@ class _SelectionPageState extends State<SelectionPage>
   List<double> _slerpAxis = [1, 0, 0];
   double _slerpAngle = 0;
 
-  /// 本次切换的目标姿态角。Top/Bottom 的 yaw **带上下文**(= 来源水平面的
-  /// 朝向):kOrientationPresets 里 Top/Bottom yaw 固定 0 会让 Right→Top
-  /// 变成 120° 斜轴歪转(host 角度表实测);上下文 yaw 下 H↔Top/Bottom
-  /// 恒为纯 90° 翻转。落定用这两个值,不再拍回表里的规范 yaw。
-  double _targetYaw = kOrientationPresets[0].yaw;
-  double _targetPitch = kOrientationPresets[0].pitch;
-
   /// 测试用:直接读当前盒(见 test/selection_page_test.dart)。
   @visibleForTesting
   SelectionBox? get debugBox => _box;
 
-  /// 测试用:当前预设面的标签(立方体改 TextPainter 绘制后 find.text 不再
-  /// 可用,语义断言走这里)。
+  /// 测试用:当前(落定目标)姿态下最正对相机的面标签。
   @visibleForTesting
-  String get debugFacingLabel => kOrientationPresets[_presetIdx].label;
+  String get debugFacingLabel {
+    final (y, p, _) = decomposeViewMatrix(_pose);
+    return primaryViewCubeFace(y, p);
+  }
+
+  /// 测试用:落定目标姿态矩阵(锁"每步严格 90°"守门断言)。
+  @visibleForTesting
+  List<double> get debugPose => List.unmodifiable(_pose);
 
   @override
   void initState() {
@@ -149,10 +154,12 @@ class _SelectionPageState extends State<SelectionPage>
     final t = Curves.easeOutCubic.transform(_presetAnim.value);
     setState(() {
       if (t >= 1.0) {
-        // 落定:精确取目标角(含上下文 yaw),不经分解(避免尾差),roll 归零。
-        _animPresetYaw = _targetYaw;
-        _animPitch = _targetPitch;
-        _animRoll = 0;
+        // 落定:精确取目标姿态角。骰子机制下 roll 不归零 —— 翻过极点
+        // 背面就是倒的,和现实骰子一致。
+        final (y, p, r) = decomposeViewMatrix(_pose);
+        _animPresetYaw = y;
+        _animPitch = p;
+        _animRoll = r;
         return;
       }
       final r = mulMatrix(
@@ -166,106 +173,23 @@ class _SelectionPageState extends State<SelectionPage>
     });
   }
 
-  // [2026-07-28 用户签决四轮定案] 纯骰子机制(严格每步 90°)已实测否决:
-  // 真骰子滚两步后对面必倒置(SO(3) 几何),用户实机指认"Front 倒过来
-  // 了,模型在手里不可能倒" —— **落定永不倒置(重力锚定)是最硬约束**。
-  // 回到六固定视图+动量环:水平四面唯一正立;过极步动画 = 翻转+摆正
-  // 合成的 180° 单轴平滑(时长缩放保持干脆观感)。
-  void _selectPreset(int idx, {double? targetYaw}) {
-    if (idx == _presetIdx) return;
-    // slerp:从当前(可能在动画中途,含 roll)姿态到目标姿态的单轴最短
-    // 旋转 —— 上下箭头进出 Top/Bottom(上下文 yaw)恒 90°,水平相邻 90°,
-    // 过极 180°(翻+回正合成单轴),侧翻 120°(SO(3) 几何下限,AutoCAD
-    // ViewCube 相同)。
+  /// 视空间 90° 旋转(premultiply 用):下/上 = 绕屏幕水平轴,右/左 =
+  /// 绕屏幕竖直轴。方向验证:Top 按下 → Front;Front 按右 → Right。
+  static const List<double> _kRollDown = [1, 0, 0, 0, 0, -1, 0, 1, 0];
+  static const List<double> _kRollUp = [1, 0, 0, 0, 0, 1, 0, -1, 0];
+  static const List<double> _kRollRight = [0, 0, 1, 0, 1, 0, -1, 0, 0];
+  static const List<double> _kRollLeft = [0, 0, -1, 0, 1, 0, 1, 0, 0];
+
+  /// 骰子滚动:目标姿态 = viewRot·当前目标姿态(严格 90°);动画从当前
+  /// 显示姿态(可能在动画中途)slerp 过去,连点自然追赶累积。
+  void _rollCube(List<double> viewRot) {
     _slerpFrom = composeViewMatrix(_animPresetYaw, _animPitch, _animRoll);
-    _targetYaw = targetYaw ?? kOrientationPresets[idx].yaw;
-    _targetPitch = kOrientationPresets[idx].pitch;
-    final to = composeViewMatrix(_targetYaw, _targetPitch, 0);
-    final (axis, angle) = axisAngleOf(mulTransposed(to, _slerpFrom));
+    _pose = mulMatrix(viewRot, _pose);
+    final (axis, angle) = axisAngleOf(mulTransposed(_pose, _slerpFrom));
     _slerpAxis = axis;
     _slerpAngle = angle;
-    // 时长按转角缩放:90° 一步 200ms;过极步(转过去+摆正合成 180°)
-    // 280ms,保持"一次干脆翻转"的观感而不是慢悠悠转半圈。
-    _presetAnim.duration = Duration(
-      milliseconds: (200 * (angle / (math.pi / 2))).round().clamp(140, 280),
-    );
-    if (idx >= 1 && idx <= 4) _lastHorizontalIdx = idx; // 供上下箭头回落
-    setState(() => _presetIdx = idx);
+    setState(() {});
     unawaited(_presetAnim.forward(from: 0));
-  }
-
-  void _cycleHorizontal(int delta) {
-    _vertMomentum = 0; // 左右切换打断竖直环
-    // [2026-07-28 用户签决二轮:四个箭头**永远翻面**,每次一个相邻面]
-    // 此前 Top/Bottom 的左右箭头做"原地转 90°"——用户实机指认:点了
-    // 根本不翻面,点云只是转了 90°,不是想要的。删除原地转;极面的左右
-    // 箭头 = 翻到回落参考面(_lastHorizontalIdx)的相邻水平面,与水平
-    // 循环同一方向语义,恒 90° 一步。
-    final base = (_presetIdx >= 1 && _presetIdx <= 4)
-        ? _presetIdx
-        : _lastHorizontalIdx;
-    final next = ((base - 1 + delta) % 4 + 4) % 4 + 1;
-    _selectPreset(next);
-  }
-
-  /// 记住最近停留的水平面(1..4),从 Top/Bottom 回落时回到它而不是硬编码
-  /// Front。由 [_selectPreset] 在进入水平面时更新。
-  int _lastHorizontalIdx = 1;
-
-  /// 对面(Front↔Back,Right↔Left)。
-  int _oppositeOf(int h) => ((h - 1 + 2) % 4) + 1;
-
-  /// 滚动动量:+1 = 下行环,−1 = 上行环,0 = 无(刚点过左右箭头等)。
-  /// [2026-07-28 用户实机指认] 无动量时"水平面下→必去 Bottom"会产生
-  /// bottom→back→bottom→front 震荡,永远经过不了 Top。有动量后连续按
-  /// 同一箭头 = 沿同一竖直大圆绕整圈:Front→Bottom→Back→Top→Front,
-  /// 四面全经过(下行);上行对称反向。
-  int _vertMomentum = 0;
-
-  /// 本轮竖直环的基面(进入环时所在的水平面):环 = base → Bottom →
-  /// opp(base) → Top → base(下行序)。水平面在环中的下一站由"它是 base
-  /// 还是 opp(base)"决定。
-  int _ringBase = 1;
-
-  /// 上下箭头 = 竖直大圆滚动,每步一个相邻面,过极循环、永不无操作。
-  /// 动画角:H↔极面(上下文 yaw)90° 纯翻;极面→对面水平面 180°
-  /// (翻过极点+回正合成的单轴平滑旋转 —— SO(3) 里"90° 纯翻到正立对面"
-  /// 不存在,翻过去必倒置,AutoCAD ViewCube 停在倒置,我们选正立落定)。
-  void _stepVertical(int dir) {
-    final horizontal = _presetIdx >= 1 && _presetIdx <= 4;
-    final m = dir < 0 ? -1 : 1;
-    final prevM = _vertMomentum;
-    if (prevM != m) {
-      // 方向改变/首次进入:以当前水平面(或极面的回落参考)为环基。
-      _ringBase = horizontal ? _presetIdx : _lastHorizontalIdx;
-    }
-    _vertMomentum = m;
-    if (_presetIdx == 0) {
-      // Top:同向 = 环继续/过极 → 对面(180°);反向(刚沿环到达又按
-      // 相反箭头)= 原路 retrace 回 lastH(90°),画面严格倒放上一步。
-      final continueRing = (dir < 0 && prevM != 1) || (dir > 0 && prevM == 1);
-      _selectPreset(
-        continueRing ? _oppositeOf(_lastHorizontalIdx) : _lastHorizontalIdx,
-      );
-    } else if (_presetIdx == 5) {
-      // Bottom:镜像对称。
-      final continueRing = (dir > 0 && prevM != -1) || (dir < 0 && prevM == -1);
-      _selectPreset(
-        continueRing ? _oppositeOf(_lastHorizontalIdx) : _lastHorizontalIdx,
-      );
-    } else if (horizontal) {
-      // 水平面:默认下→Bottom/上→Top(90° 纯翻,上下文 yaw);唯当处于
-      // 环中继(带动量且已滚到环基对面)时反配极面,使连续同向按键沿
-      // 大圆绕整圈把四个面全走一遍。
-      final atOpp = _presetIdx == _oppositeOf(_ringBase);
-      final int target;
-      if (dir > 0) {
-        target = (prevM == 1 && atOpp) ? 0 : 5;
-      } else {
-        target = (prevM == -1 && atOpp) ? 5 : 0;
-      }
-      _selectPreset(target, targetYaw: kOrientationPresets[_presetIdx].yaw);
-    }
   }
 
   void _onBoxChanged(SelectionBox b) {
@@ -396,7 +320,7 @@ class _SelectionPageState extends State<SelectionPage>
       children: [
         _cubeArrow(
           Icons.keyboard_arrow_up_rounded,
-          () => _stepVertical(-1),
+          () => _rollCube(_kRollUp),
           key: const ValueKey('cube-up'),
         ),
         Row(
@@ -404,7 +328,7 @@ class _SelectionPageState extends State<SelectionPage>
           children: [
             _cubeArrow(
               Icons.keyboard_arrow_left_rounded,
-              () => _cycleHorizontal(-1),
+              () => _rollCube(_kRollLeft),
               key: const ValueKey('cube-left'),
             ),
             // [2026-07-28 用户签决二轮] 立方体 = **语义朝向指示器**:只吃
@@ -419,14 +343,14 @@ class _SelectionPageState extends State<SelectionPage>
             ),
             _cubeArrow(
               Icons.keyboard_arrow_right_rounded,
-              () => _cycleHorizontal(1),
+              () => _rollCube(_kRollRight),
               key: const ValueKey('cube-right'),
             ),
           ],
         ),
         _cubeArrow(
           Icons.keyboard_arrow_down_rounded,
-          () => _stepVertical(1),
+          () => _rollCube(_kRollDown),
           key: const ValueKey('cube-down'),
         ),
       ],
