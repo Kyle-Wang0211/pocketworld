@@ -219,6 +219,30 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
   String _rollFace = '';
   List<double> _rollAxis = const [0, 1, 0];
 
+  /// 滑轨的**绝对**基准:框朝向 = R(轴, 读数) · 基准朝向。
+  ///
+  /// [2026-07-29 用户实机三次指认"转一圈回不到原点"] 增量累加的路子太脆:
+  /// 任何一次基准错位(换轴、丢帧、浮点)都会永久留下残差,而且无从校正。
+  /// 绝对定位下"读数 = 0 ⇒ 框 = 基准"是恒等式,中间经历什么都不影响。
+  List<double> _rollBaseRot = kIdentityRot;
+  List<double> _rollBaseCenter = const [0, 0, 0];
+
+  /// 我自己 emit 出去的框。父级回传的若不是它,说明框被别的入口改了
+  /// (拖手柄),此时必须重新烘焙基准,否则拨滑轨会把那次改动拽回去。
+  SelectionBox? _rollEmitted;
+
+  void _rebaseRoll() {
+    _rollBaseRot = widget.box.rot;
+    _rollBaseCenter = [widget.box.cx, widget.box.cy, widget.box.cz];
+    _rollDeg = 0;
+  }
+
+  @override
+  void didUpdateWidget(SelectionToolsLayer old) {
+    super.didUpdateWidget(old);
+    if (!identical(widget.box, _rollEmitted)) _rebaseRoll();
+  }
+
   void _syncRollAxis() {
     final cam = _cam;
     if (cam == null) return;
@@ -234,8 +258,8 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
       r[3] * n[0] + r[4] * n[1] + r[5] * n[2],
       r[6] * n[0] + r[7] * n[1] + r[8] * n[2],
     ];
-    // 换了参考面 ⇒ "0 刻度"的含义也换了:黄标归位到当前朝向。
-    _rollDeg = 0;
+    // 换了参考面 ⇒ "0 刻度"的含义也换了:黄标归位、基准重烘焙。
+    _rebaseRoll();
   }
 
   void _onRoll(double v) {
@@ -243,36 +267,43 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     // 跟着变(骰子六面是模型的面),轴会被重算、黄标被悄悄归零 —— 用户
     // 拨"一整圈"时中途换了好几根轴,自然回不到原点(实机指认)。
     // 换轴只该由**相机变动**触发,见 _onCameraChanged。
-    if (_rollFace.isEmpty) _syncRollAxis();
-    // 增量取最短环向差(甩动惯性给的是无界连续值)。
-    var delta = (v - _rollDeg) % 360.0;
-    if (delta > 180.0) delta -= 360.0;
-    if (delta == 0) return;
+    if (_rollFace.isEmpty) {
+      _syncRollAxis();
+      _rebaseRoll();
+    }
     final cam = _cam;
     if (cam == null) return;
-    setState(() {
-      _rollDeg = v - 360.0 * ((v + 180.0) / 360.0).floorToDouble();
-    });
-    // 绕相机枢轴刚性旋转 ⇒ 框在屏幕上不跑位,只有朝向变。
-    widget.onBoxChanged(
-      widget.box.rotatedAroundAxis(
-        axis: _rollAxis,
-        deltaDeg: delta,
-        pivotX: cam.pivotX,
-        pivotY: cam.pivotY,
-        pivotZ: cam.pivotZ,
-      ),
+    // 读数归一化到 (-180,180];R(轴,±180) 等价,所以拨满 360° 时读数回到
+    // 0 ⇒ R = 单位阵 ⇒ 框精确回到基准。
+    final deg = v - 360.0 * ((v + 180.0) / 360.0).floorToDouble();
+    final r = rotAboutAxisDeg(_rollAxis, deg);
+    final dx = _rollBaseCenter[0] - cam.pivotX;
+    final dy = _rollBaseCenter[1] - cam.pivotY;
+    final dz = _rollBaseCenter[2] - cam.pivotZ;
+    final next = widget.box.copyWith(
+      // 中心绕相机枢轴同步公转 ⇒ 框在屏幕上不跑位,只有朝向变。
+      cx: cam.pivotX + r[0] * dx + r[1] * dy + r[2] * dz,
+      cy: cam.pivotY + r[3] * dx + r[4] * dy + r[5] * dz,
+      cz: cam.pivotZ + r[6] * dx + r[7] * dy + r[8] * dz,
+      rot: mulRot(r, _rollBaseRot),
     );
+    setState(() => _rollDeg = deg);
+    _rollEmitted = next;
+    widget.onBoxChanged(next);
   }
 
   /// [2026-07-29 用户签决] "⋯" 菜单项一:框朝向回到初始(轴对齐),滑轨
-  /// 读数同步归零 —— 尺寸与位置不动,只把转过的角度还原。
+  /// 读数与基准同步归零 —— 尺寸与位置不动,只把转过的角度还原。
   void _resetRotation() {
+    final next = widget.box.copyWith(rot: kIdentityRot);
     setState(() {
       _rollDeg = 0;
       _rollFace = ''; // 强制下次拨动按新朝向重算轴
+      _rollBaseRot = kIdentityRot;
+      _rollBaseCenter = [next.cx, next.cy, next.cz];
     });
-    widget.onBoxChanged(widget.box.copyWith(rot: kIdentityRot));
+    _rollEmitted = next;
+    widget.onBoxChanged(next);
   }
 
   /// 菜单项二:相机回到默认取景(点云回到刚进来时的大小)。框不动。
