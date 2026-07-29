@@ -239,7 +239,11 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
   }
 
   void _onRoll(double v) {
-    _syncRollAxis();
+    // ⚠️ 只在**首次**同步轴。不能每次拨动都同步:框一转,骰子的正对面就
+    // 跟着变(骰子六面是模型的面),轴会被重算、黄标被悄悄归零 —— 用户
+    // 拨"一整圈"时中途换了好几根轴,自然回不到原点(实机指认)。
+    // 换轴只该由**相机变动**触发,见 _onCameraChanged。
+    if (_rollFace.isEmpty) _syncRollAxis();
     // 增量取最短环向差(甩动惯性给的是无界连续值)。
     var delta = (v - _rollDeg) % 360.0;
     if (delta > 180.0) delta -= 360.0;

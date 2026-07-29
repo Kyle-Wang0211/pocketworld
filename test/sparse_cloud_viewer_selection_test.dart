@@ -295,6 +295,39 @@ void main() {
     }
   });
 
+  testWidgets('连拨一整圈(360°)回到黄色刻度:框朝向精确复原', (tester) async {
+    final (dir, ply) = await fixture(tester);
+    addTearDown(() => dir.delete(recursive: true));
+    await openViewer(tester, ply);
+    await tester.tap(find.text('Next'));
+    await _pumpUntilRealAsyncSettles(
+      tester,
+      () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
+    );
+    await tester.pumpAndSettle();
+    List<double> rot() => tester
+        .widget<SparseCloudView>(find.byType(SparseCloudView))
+        .selectionBox!
+        .rot;
+
+    final before = [...rot()];
+    // [2026-07-29 用户实机指认"转完一圈还是无法回到原点"] 一圈 = 396px
+    // (1.1 px/度)。分 4 段拨完,中途框会转过很多角度 —— 转轴绝不能因此
+    // 被重算,否则每段绕的是不同的轴,累计不闭合。
+    // 慢速匀速拨(19.8 px/s < 甩动阈值),避免惯性多转一截让"整圈"失准。
+    final ruler = find.byType(RulerScrubber);
+    final g = await tester.startGesture(tester.getCenter(ruler));
+    for (var i = 0; i < 50; i++) {
+      await g.moveBy(const Offset(-7.92, 0));
+      await tester.pump(const Duration(milliseconds: 400));
+    }
+    await g.up();
+    await tester.pumpAndSettle();
+    for (var i = 0; i < 9; i++) {
+      expect(rot()[i], closeTo(before[i], 1e-6), reason: '整圈必须闭合');
+    }
+  });
+
   testWidgets('⋯ 菜单:回到初始旋转角度 / 回到初始点云大小', (tester) async {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));
