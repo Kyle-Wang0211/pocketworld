@@ -101,4 +101,43 @@ void main() {
     final e = SparseCloudPainter.sceneAabbOf(Float32List(0));
     expect(e.hx, greaterThan(0));
   });
+
+  test('密集核心 + 稀疏外围:外围(床架/地板类)不得被判到框外', () {
+    // [2026-07-29 用户实机指认"一打开删了这么多"] 病灶复现:床垫这类密集
+    // 核心占了绝大多数点,MAD 被压到极小,8·MAD 只框住核心,床架与地板
+    // 整片变红。分位判据不受密度分布影响。
+    const core = 20000; // 密集核心,半宽 0.3
+    const shell = 4000; // 稀疏外围,半宽 1.5
+    final rnd = math.Random(3);
+    final xyz = Float32List((core + shell) * 3);
+    for (var i = 0; i < core; i++) {
+      xyz[i * 3] = (rnd.nextDouble() - 0.5) * 0.6;
+      xyz[i * 3 + 1] = (rnd.nextDouble() - 0.5) * 0.6;
+      xyz[i * 3 + 2] = (rnd.nextDouble() - 0.5) * 0.6;
+    }
+    for (var k = 0; k < shell; k++) {
+      final i = core + k;
+      xyz[i * 3] = (rnd.nextDouble() - 0.5) * 3.0;
+      xyz[i * 3 + 1] = (rnd.nextDouble() - 0.5) * 3.0;
+      xyz[i * 3 + 2] = (rnd.nextDouble() - 0.5) * 3.0;
+    }
+    final aabb = SparseCloudPainter.sceneAabbOf(xyz);
+    final box = SelectionBox.initialFor(
+      cx: aabb.cx,
+      cy: aabb.cy,
+      cz: aabb.cz,
+      hx: aabb.hx,
+      hy: aabb.hy,
+      hz: aabb.hz,
+    );
+    var inside = 0;
+    final total = core + shell;
+    for (var i = 0; i < total; i++) {
+      if (box.contains(xyz[i * 3], xyz[i * 3 + 1], xyz[i * 3 + 2])) inside++;
+    }
+    // MAD 判据在这里只能覆盖 ~83%;分位判据必须 ≥97%。
+    expect(inside / total, greaterThan(0.97));
+    // 框要真的把稀疏外围包进去(半宽接近 1.5,而不是核心的 0.3)。
+    expect(aabb.hx, greaterThan(1.2));
+  });
 }

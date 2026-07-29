@@ -890,15 +890,19 @@ class SparseCloudPainter extends CustomPainter {
   static ({double cx, double cy, double cz, double hx, double hy, double hz})
   aabbOf(Float32List xyz) => sceneAabbOf(xyz);
 
-  /// 点云**场景本体**的轴对齐包围盒(中心 + 半边长),飞点不计入。
+  /// 点云**场景本体**的轴对齐包围盒(中心 + 半边长),外围飞点不计入。
   ///
-  /// [2026-07-29 用户签决] "初始 3D 框的范围只包括场景就好,外围的浮点噪点
-  /// 可以直接在框外"。判据与取景 [fitOf] 同源、同常数,不另立门户:
-  ///   1) 每轴 median ± 8·MAD 判 inlier —— MAD 对孤立飞点极鲁棒,对紧凑
-  ///      场景又足够宽松(均匀分布时 8·MAD 远超场景半宽,一个真实点都不丢);
-  ///   2) 对 inlier 再取每轴 0.5%~99.5% 分位 —— 与 fitOf 的 99.5 分位半径
-  ///      同一口径,削掉贴着 inlier 边界的稀疏散点。
-  /// 渲染仍然是全量点(框外只是变红,PLY 永不因此改写)。
+  /// [2026-07-29 用户签决] "初始 3D 框只包括场景,外围的浮点噪点直接在框外"。
+  ///
+  /// 判据 = 每轴 [P0.5, P99.5] 分位(与 fitOf 的 99.5 分位半径同口径):
+  /// 最外 1% 留在框外,其余全部包住。
+  ///
+  /// ⚠️ 不要改回 median ± k·MAD:MAD 是**中位**绝对偏差,点云一旦是"密集
+  /// 核心 + 稀疏外围"(床垫上万点、床架与地板几千点),MAD 就被核心压得
+  /// 极小,8·MAD 只框得住核心,床架/地板整片被判到框外 —— 用户实机指认
+  /// "一打开删了这么多"。分位不受密度分布影响,才是这里正确的统计量。
+  ///
+  /// 渲染仍是全量点(框外只变红,不删任何点;PLY 永不因此改写)。
   static ({double cx, double cy, double cz, double hx, double hy, double hz})
   sceneAabbOf(Float32List xyz) {
     final n = xyz.length ~/ 3;
@@ -911,43 +915,16 @@ class SparseCloudPainter extends CustomPainter {
       ys[i] = xyz[i * 3 + 1];
       zs[i] = xyz[i * 3 + 2];
     }
-    double med(Float64List a) {
+    (double, double) span(Float64List a) {
       final b = a.toList()..sort();
-      return b[b.length >> 1];
-    }
-
-    double mad(Float64List a, double m) {
-      final b = [for (final v in a) (v - m).abs()]..sort();
-      final r = b[b.length >> 1];
-      return r == 0 ? 1 : r;
-    }
-
-    final mx = med(xs), my = med(ys), mz = med(zs);
-    final kx = 8 * mad(xs, mx), ky = 8 * mad(ys, my), kz = 8 * mad(zs, mz);
-    final ix = <double>[], iy = <double>[], iz = <double>[];
-    for (var i = 0; i < n; i++) {
-      if ((xs[i] - mx).abs() > kx ||
-          (ys[i] - my).abs() > ky ||
-          (zs[i] - mz).abs() > kz) {
-        continue;
-      }
-      ix.add(xs[i]);
-      iy.add(ys[i]);
-      iz.add(zs[i]);
-    }
-    if (ix.isEmpty) {
-      return (cx: mx, cy: my, cz: mz, hx: 0.5, hy: 0.5, hz: 0.5);
-    }
-    (double, double) span(List<double> a) {
-      a.sort();
-      final lo = a[(a.length * 0.005).floor().clamp(0, a.length - 1)];
-      final hi = a[(a.length * 0.995).ceil().clamp(0, a.length - 1)];
+      final lo = b[(b.length * 0.005).floor().clamp(0, b.length - 1)];
+      final hi = b[(b.length * 0.995).ceil().clamp(0, b.length - 1)];
       return (lo, hi);
     }
 
-    final (x0, x1) = span(ix);
-    final (y0, y1) = span(iy);
-    final (z0, z1) = span(iz);
+    final (x0, x1) = span(xs);
+    final (y0, y1) = span(ys);
+    final (z0, z1) = span(zs);
     return (
       cx: (x0 + x1) / 2,
       cy: (y0 + y1) / 2,
