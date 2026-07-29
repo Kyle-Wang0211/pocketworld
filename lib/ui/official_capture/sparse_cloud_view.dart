@@ -885,37 +885,76 @@ class SparseCloudPainter extends CustomPainter {
     return (cx: _cx, cy: _cy, cz: _cz, radius: _radius);
   }
 
-  /// 点云的轴对齐包围盒(中心 + 半边长)。
-  ///
-  /// [2026-07-28 用户实机指认"3D 框直接消失了 / 左右滑点云没反应"] 初始
-  /// 选区框原本取"外接球的外接立方体"(边长 2r):它的角落在 1.73r,而相机
-  /// 取景是按"半径 r 填满屏幕"标定的 ⇒ 框投影比屏幕大 40%,线框整个跑到
-  /// 屏幕外(看不见),同时屏幕上任何一点都落在框轮廓内(拖动全被判成平移
-  /// 框,视角纹丝不动)。改用 AABB:它内接于外接球,投影恰好在取景内。
+  /// 旧名。行为已随 [sceneAabbOf] 升级(飞点不再撑大框)—— 保留别名是为了
+  /// 不去动别的 agent 正在改的调用点文件。
   static ({double cx, double cy, double cz, double hx, double hy, double hz})
-  aabbOf(Float32List xyz) {
-    if (xyz.length < 3) {
+  aabbOf(Float32List xyz) => sceneAabbOf(xyz);
+
+  /// 点云**场景本体**的轴对齐包围盒(中心 + 半边长),飞点不计入。
+  ///
+  /// [2026-07-29 用户签决] "初始 3D 框的范围只包括场景就好,外围的浮点噪点
+  /// 可以直接在框外"。判据与取景 [fitOf] 同源、同常数,不另立门户:
+  ///   1) 每轴 median ± 8·MAD 判 inlier —— MAD 对孤立飞点极鲁棒,对紧凑
+  ///      场景又足够宽松(均匀分布时 8·MAD 远超场景半宽,一个真实点都不丢);
+  ///   2) 对 inlier 再取每轴 0.5%~99.5% 分位 —— 与 fitOf 的 99.5 分位半径
+  ///      同一口径,削掉贴着 inlier 边界的稀疏散点。
+  /// 渲染仍然是全量点(框外只是变红,PLY 永不因此改写)。
+  static ({double cx, double cy, double cz, double hx, double hy, double hz})
+  sceneAabbOf(Float32List xyz) {
+    final n = xyz.length ~/ 3;
+    if (n == 0) {
       return (cx: 0, cy: 0, cz: 0, hx: 0.5, hy: 0.5, hz: 0.5);
     }
-    var minX = xyz[0], maxX = xyz[0];
-    var minY = xyz[1], maxY = xyz[1];
-    var minZ = xyz[2], maxZ = xyz[2];
-    for (var i = 3; i + 2 < xyz.length; i += 3) {
-      final x = xyz[i], y = xyz[i + 1], z = xyz[i + 2];
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
-      if (z < minZ) minZ = z;
-      if (z > maxZ) maxZ = z;
+    final xs = Float64List(n), ys = Float64List(n), zs = Float64List(n);
+    for (var i = 0; i < n; i++) {
+      xs[i] = xyz[i * 3];
+      ys[i] = xyz[i * 3 + 1];
+      zs[i] = xyz[i * 3 + 2];
     }
+    double med(Float64List a) {
+      final b = a.toList()..sort();
+      return b[b.length >> 1];
+    }
+
+    double mad(Float64List a, double m) {
+      final b = [for (final v in a) (v - m).abs()]..sort();
+      final r = b[b.length >> 1];
+      return r == 0 ? 1 : r;
+    }
+
+    final mx = med(xs), my = med(ys), mz = med(zs);
+    final kx = 8 * mad(xs, mx), ky = 8 * mad(ys, my), kz = 8 * mad(zs, mz);
+    final ix = <double>[], iy = <double>[], iz = <double>[];
+    for (var i = 0; i < n; i++) {
+      if ((xs[i] - mx).abs() > kx ||
+          (ys[i] - my).abs() > ky ||
+          (zs[i] - mz).abs() > kz) {
+        continue;
+      }
+      ix.add(xs[i]);
+      iy.add(ys[i]);
+      iz.add(zs[i]);
+    }
+    if (ix.isEmpty) {
+      return (cx: mx, cy: my, cz: mz, hx: 0.5, hy: 0.5, hz: 0.5);
+    }
+    (double, double) span(List<double> a) {
+      a.sort();
+      final lo = a[(a.length * 0.005).floor().clamp(0, a.length - 1)];
+      final hi = a[(a.length * 0.995).ceil().clamp(0, a.length - 1)];
+      return (lo, hi);
+    }
+
+    final (x0, x1) = span(ix);
+    final (y0, y1) = span(iy);
+    final (z0, z1) = span(iz);
     return (
-      cx: (minX + maxX) / 2,
-      cy: (minY + maxY) / 2,
-      cz: (minZ + maxZ) / 2,
-      hx: math.max((maxX - minX) / 2, 1e-4),
-      hy: math.max((maxY - minY) / 2, 1e-4),
-      hz: math.max((maxZ - minZ) / 2, 1e-4),
+      cx: (x0 + x1) / 2,
+      cy: (y0 + y1) / 2,
+      cz: (z0 + z1) / 2,
+      hx: math.max((x1 - x0) / 2, 1e-4),
+      hy: math.max((y1 - y0) / 2, 1e-4),
+      hz: math.max((z1 - z0) / 2, 1e-4),
     );
   }
 

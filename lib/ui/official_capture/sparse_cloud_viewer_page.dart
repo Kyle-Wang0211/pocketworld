@@ -117,7 +117,7 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
     final cloud = _cloud;
     if (cloud == null) return;
     final fit = SparseCloudPainter.fitOf(cloud.xyz);
-    final aabb = SparseCloudPainter.aabbOf(cloud.xyz);
+    final aabb = SparseCloudPainter.sceneAabbOf(cloud.xyz);
     final loaded = await SelectionBox.loadFrom(_captureDir);
     final box =
         (loaded != null &&
