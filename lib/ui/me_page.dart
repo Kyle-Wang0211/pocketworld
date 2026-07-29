@@ -29,6 +29,7 @@ import '../capture/sfm_resume.dart';
 import '../l10n/app_localizations.dart';
 import '../me/draft_card_action.dart';
 import '../me/scan_record_store.dart';
+import '../official_capture/sfm_resume.dart' as official_sfm_resume;
 import 'capture/sfm_resume_wait_page.dart';
 import 'capture/sparse_cloud_viewer_page.dart';
 import 'design_system.dart';
@@ -680,15 +681,7 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
     if (record.pipelineKind == CapturePipelineKind.self) {
       return resolveRecoverableCaptureDir(captureDir);
     }
-
-    final databaseName = sfmDatabaseFileNameForPipeline(record.pipelineKind);
-    if (File('$captureDir/$databaseName').existsSync()) return captureDir;
-    final fresh = await ScanRecordStore.instance.captureDirFor(
-      record.id,
-      pipelineKind: record.pipelineKind,
-    );
-    if (File('${fresh.path}/$databaseName').existsSync()) return fresh.path;
-    return null;
+    return official_sfm_resume.resolveRecoverableCaptureDir(captureDir);
   }
 
   Future<void> _renameRecord(ScanRecord record) async {

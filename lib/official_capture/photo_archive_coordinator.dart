@@ -1,6 +1,9 @@
 import 'dart:collection';
 import 'dart:io';
 
+import 'database_archive_codec.dart';
+import 'database_archive_policy.dart';
+import 'database_archive_transaction.dart';
 import 'photo_archive_codec.dart';
 import 'photo_archive_policy.dart';
 import 'photo_archive_transaction.dart';
@@ -21,9 +24,10 @@ class PhotoArchiveActivityLease {
 
 /// Serializes cold JPEG XL archive work across official captures.
 class PhotoArchiveCoordinator {
-  PhotoArchiveCoordinator({required this.codec});
+  PhotoArchiveCoordinator({required this.codec, this.databaseCodec});
 
   final PhotoArchiveCodec codec;
+  final DatabaseArchiveCodec? databaseCodec;
   final LinkedHashMap<String, Directory> _pending =
       LinkedHashMap<String, Directory>();
   final Set<String> _reconstructionOwners = <String>{};
@@ -32,6 +36,7 @@ class PhotoArchiveCoordinator {
 
   PhotoArchiveActivityLease beginCaptureActivity() {
     _foregroundActivityCount++;
+    databaseCodec?.requestCancellation();
     return PhotoArchiveActivityLease(() async {
       if (_foregroundActivityCount > 0) _foregroundActivityCount--;
       await _pumpQueue();
@@ -44,6 +49,7 @@ class PhotoArchiveCoordinator {
     final path = _canonicalKey(captureDirectory);
     _foregroundActivityCount++;
     _reconstructionOwners.add(path);
+    databaseCodec?.requestCancellation();
     return PhotoArchiveActivityLease(() async {
       if (_foregroundActivityCount > 0) _foregroundActivityCount--;
       _reconstructionOwners.remove(path);
@@ -68,7 +74,11 @@ class PhotoArchiveCoordinator {
       }
       directories.sort((left, right) => left.path.compareTo(right.path));
       for (final capture in directories) {
-        if (await PhotoArchivePolicy.readCompatible(capture) == null) {
+        final photoEligible =
+            await PhotoArchivePolicy.readCompatible(capture) != null;
+        final databaseEligible =
+            await DatabaseArchivePolicy.readCompatible(capture) != null;
+        if (!photoEligible && !databaseEligible) {
           continue;
         }
         _pending[_canonicalKey(capture)] = capture.absolute;
@@ -77,6 +87,11 @@ class PhotoArchiveCoordinator {
     } on FileSystemException {
       // Startup recovery is best effort and always fails closed.
     }
+  }
+
+  Future<void> waitForIdle() async {
+    final active = _pumpFuture;
+    if (active != null) await active;
   }
 
   Future<void> _pumpQueue() {
@@ -108,11 +123,26 @@ class PhotoArchiveCoordinator {
         _pending[item.key] = item.value;
         return;
       }
+      final database = databaseCodec;
+      if (database != null && _foregroundActivityCount == 0) {
+        final databaseResult = await DatabaseArchiveTransaction(
+          codec: database,
+          canContinue: () => _foregroundActivityCount == 0,
+        ).archiveCapture(item.value);
+        if (databaseResult.interrupted || _foregroundActivityCount != 0) {
+          _pending[item.key] = item.value;
+          return;
+        }
+      }
     }
   }
 
   Future<bool> _isDurablyReady(Directory captureDirectory) async {
-    if (await PhotoArchivePolicy.readCompatible(captureDirectory) == null) {
+    final photoEligible =
+        await PhotoArchivePolicy.readCompatible(captureDirectory) != null;
+    final databaseEligible =
+        await DatabaseArchivePolicy.readCompatible(captureDirectory) != null;
+    if (!photoEligible && !databaseEligible) {
       return false;
     }
     for (final relativePath in const <String>[

@@ -57,6 +57,7 @@ import '../official_quality/guidance_engine.dart';
 import 'dome/captured_frame_sample.dart';
 import 'dome/dome_config.dart';
 import 'dome/dome_target_points.dart';
+import 'database_archive_policy.dart';
 import 'orientation_tracker.dart';
 import 'official_highres_reconstruction_input.dart';
 import 'photo_archive_coordinator.dart';
@@ -805,6 +806,7 @@ class CaptureSession {
     if (_started) return;
     if (!_attached) await attach();
     _photoArchiveCaptureLease = photoArchiveCoordinator.beginCaptureActivity();
+    await photoArchiveCoordinator.waitForIdle();
 
     targetPoints.reset();
     guidance.beginRecording();
@@ -867,6 +869,7 @@ class CaptureSession {
       await highres.create(recursive: true);
       await previews.create(recursive: true);
       await PhotoArchivePolicy.writeForNewCapture(root);
+      await DatabaseArchivePolicy.writeForNewCapture(root);
       _captureDir = root.path;
       _photosDir = highres.path;
       _photosHighresDir = highres.path;

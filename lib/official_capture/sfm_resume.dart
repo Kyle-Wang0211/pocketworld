@@ -27,6 +27,8 @@ import 'package:path_provider/path_provider.dart';
 import '../me/scan_record_store.dart';
 import '../official_util/device_log.dart';
 import 'colorize_pipeline.dart';
+import 'database_archive_resolver.dart';
+import 'photo_archive_coordinator.dart';
 import 'photo_archive_resolver.dart';
 import 'photo_archive_runtime.dart';
 import 'representative_color.dart';
@@ -53,14 +55,15 @@ bool isResumeInFlight(String captureDir) =>
 /// (无可恢复数据)。与 [resumeIncompleteCaptures] 的 sweep 同一逻辑。
 Future<String?> resolveRecoverableCaptureDir(String recordCaptureDir) async {
   if (recordCaptureDir.isEmpty) return null;
-  if (File('$recordCaptureDir/official_sfm_live.db').existsSync()) {
-    return recordCaptureDir;
-  }
+  final resolver = DatabaseArchiveResolver(codec: databaseArchiveCodec);
+  final direct = Directory(recordCaptureDir);
+  if (await resolver.isRecoverable(direct)) return direct.path;
   try {
     final docs = (await getApplicationDocumentsDirectory()).path;
-    final rebuilt =
-        '$docs/captures_official/${recordCaptureDir.split('/').last}';
-    if (File('$rebuilt/official_sfm_live.db').existsSync()) return rebuilt;
+    final rebuilt = Directory(
+      '$docs/captures_official/${recordCaptureDir.split('/').last}',
+    );
+    if (await resolver.isRecoverable(rebuilt)) return rebuilt.path;
   } catch (_) {}
   return null;
 }
@@ -126,17 +129,23 @@ Future<void> resumeIncompleteCaptures() async {
       'sweep start: ${records.length} records | docs=$docs',
     );
     final pending = <String>[];
+    final databaseResolver = DatabaseArchiveResolver(
+      codec: databaseArchiveCodec,
+    );
     for (final r in records) {
       var dir = r.captureDir;
       if (dir == null || dir.isEmpty) continue;
       // Robust against a changed app-container UUID: if the stored absolute
       // path is stale, rebuild it under the CURRENT documents dir by its
       // capture-dir name (which equals the record id).
-      if (!File('$dir/official_sfm_live.db').existsSync()) {
+      var hasDb = await databaseResolver.isRecoverable(Directory(dir));
+      if (!hasDb) {
         final rebuilt = '$docs/captures_official/${dir.split('/').last}';
-        if (File('$rebuilt/official_sfm_live.db').existsSync()) dir = rebuilt;
+        if (await databaseResolver.isRecoverable(Directory(rebuilt))) {
+          dir = rebuilt;
+          hasDb = true;
+        }
       }
-      final hasDb = File('$dir/official_sfm_live.db').existsSync();
       final hasPly = File('$dir/official_sfm_sparse.ply').existsSync();
       DeviceLog.log(
         'SfmResume',
@@ -223,12 +232,25 @@ Future<void> _resumeOne(
   Duration timeout = const Duration(minutes: 8),
 }) async {
   SfmLiveRecon? recon;
+  PhotoArchiveActivityLease? archiveLease;
   final done = Completer<void>();
   try {
-    await _umbrella('beginReconUmbrella', captureDir);
-    recon = await SfmLiveRecon.start(
-      dbPath: '$captureDir/official_sfm_live.db',
+    archiveLease = photoArchiveCoordinator.beginReconstructionActivity(
+      Directory(captureDir),
     );
+    await photoArchiveCoordinator.waitForIdle();
+    await _umbrella('beginReconUmbrella', captureDir);
+    final database = await DatabaseArchiveResolver(
+      codec: databaseArchiveCodec,
+    ).resolveDatabase(Directory(captureDir));
+    if (database == null) {
+      DeviceLog.log(
+        'SfmResume',
+        'verified database unavailable for $captureDir',
+      );
+      return;
+    }
+    recon = await SfmLiveRecon.start(dbPath: database.path);
     if (recon == null) {
       DeviceLog.log('SfmResume', 'start unavailable for $captureDir');
       return;
@@ -294,6 +316,7 @@ Future<void> _resumeOne(
   } finally {
     if (recon != null) await recon.dispose();
     await _umbrella('endReconUmbrella', captureDir);
+    await archiveLease?.close();
     await _clearMaterializedArchiveCache(captureDir);
   }
 }
@@ -611,12 +634,10 @@ Future<Map<int, SfmFedFrameMeta>> _materializeArchivedJpegs(
 
 Future<Directory> _archiveRestoreCacheDirectory(String captureDir) async {
   final temporary = await getTemporaryDirectory();
-  final captureName = Directory(captureDir).uri.pathSegments
-      .where((segment) => segment.isNotEmpty)
-      .last;
-  return Directory(
-    '${temporary.path}/pocketworld_photo_archive/$captureName',
-  );
+  final captureName = Directory(
+    captureDir,
+  ).uri.pathSegments.where((segment) => segment.isNotEmpty).last;
+  return Directory('${temporary.path}/pocketworld_photo_archive/$captureName');
 }
 
 Future<void> _clearMaterializedArchiveCache(String captureDir) async {
