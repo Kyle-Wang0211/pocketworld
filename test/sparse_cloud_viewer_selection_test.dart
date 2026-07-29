@@ -261,6 +261,40 @@ void main() {
     expect(primaryViewCubeFace(after.viewYaw, after.viewPitch), target);
   });
 
+  testWidgets('滑轨拨出去再拨回初始刻度:框朝向精确复原', (tester) async {
+    final (dir, ply) = await fixture(tester);
+    addTearDown(() => dir.delete(recursive: true));
+    await openViewer(tester, ply);
+    await tester.tap(find.text('Next'));
+    await _pumpUntilRealAsyncSettles(
+      tester,
+      () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
+    );
+    await tester.pumpAndSettle();
+    List<double> rot() => tester
+        .widget<SparseCloudView>(find.byType(SparseCloudView))
+        .selectionBox!
+        .rot;
+
+    final before = [...rot()];
+    // [2026-07-29 用户实机指认"每次拨回初始刻度角度都不一样"] 转轴此前每次
+    // 都拿被转过的框重算,增量不可逆。锁轴后来回等量拨动必须精确抵消。
+    final ruler = find.byType(RulerScrubber);
+    await tester.drag(ruler, const Offset(-60, 0));
+    await tester.pumpAndSettle();
+    var moved = 0.0;
+    for (var i = 0; i < 9; i++) {
+      moved += (rot()[i] - before[i]).abs();
+    }
+    expect(moved, greaterThan(0.1), reason: '先要真的转出去');
+
+    await tester.drag(ruler, const Offset(60, 0));
+    await tester.pumpAndSettle();
+    for (var i = 0; i < 9; i++) {
+      expect(rot()[i], closeTo(before[i], 1e-9), reason: '回到 0 刻度必须复原');
+    }
+  });
+
   testWidgets('⋯ 菜单:回到初始旋转角度 / 回到初始点云大小', (tester) async {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));

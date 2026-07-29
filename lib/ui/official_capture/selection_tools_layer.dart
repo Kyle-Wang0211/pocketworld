@@ -85,10 +85,19 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     )..addListener(_onSnapTick);
     _fling = AnimationController.unbounded(vsync: this)
       ..addListener(_onFlingTick);
+    // 相机一动可能换正对面 ⇒ 换转轴、黄标归位。
+    widget.camera.addListener(_onCameraChanged);
+  }
+
+  void _onCameraChanged() {
+    final before = _rollFace;
+    _syncRollAxis();
+    if (before != _rollFace && mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    widget.camera.removeListener(_onCameraChanged);
     _snap.dispose();
     _fling.dispose();
     super.dispose();
@@ -199,28 +208,38 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     unawaited(_snap.forward(from: 0));
   }
 
-  /// 当前正对面的**世界法向** = 旋转滑轨的转轴。
+  /// 旋转滑轨的转轴(世界系),**一轮之内锁定**。
   ///
-  /// [2026-07-29 用户签决] "当点云被判定在哪个面的时候,按那个面为底开始
-  /// 旋转":正对 Top ⇒ 绕世界 Y(俯视图里框在水平面内转);正对 Front ⇒
-  /// 绕世界 Z;正对 Right ⇒ 绕世界 X。面由骰子的正对面判定给出,与用户
-  /// 看到的完全一致。
-  List<double> _rollAxisWorld() {
+  /// [2026-07-29 用户实机指认"每次拨回初始刻度角度都不一样"] 原先每次
+  /// onChanged 都拿**当前框**的面法向重算轴 —— 而框刚被上一次拨动转过,
+  /// 轴就跟着转了。绕移动靶做增量旋转不可交换、也不可逆:拨 +30 再拨 −30
+  /// 落在 R(a₂,−30)·R(a₁,+30) ≠ 单位阵,所以回到 0 刻度时框是歪的。
+  /// 现在只在**正对面改变**时重算并锁定,同一参考面内轴恒定 ⇒
+  /// R(a,d₁)·R(a,d₂)… = R(a,Σd),回到 0 精确复原。
+  String _rollFace = '';
+  List<double> _rollAxis = const [0, 1, 0];
+
+  void _syncRollAxis() {
     final cam = _cam;
-    if (cam == null) return const [0, 1, 0];
+    if (cam == null) return;
     final label = primaryViewCubeFace(_effectiveYaw, cam.pitch);
+    if (label == _rollFace) return;
+    _rollFace = label;
     final f = kViewCubeFaces.firstWhere((e) => e.label == label);
-    // 面法向是**框局部**方向(骰子六面 = 框的面),转成世界。
+    // 面法向是**框局部**方向(骰子六面 = 框的面),按当前朝向转成世界后锁定。
     final r = widget.box.rot;
     final n = f.normal;
-    return [
+    _rollAxis = [
       r[0] * n[0] + r[1] * n[1] + r[2] * n[2],
       r[3] * n[0] + r[4] * n[1] + r[5] * n[2],
       r[6] * n[0] + r[7] * n[1] + r[8] * n[2],
     ];
+    // 换了参考面 ⇒ "0 刻度"的含义也换了:黄标归位到当前朝向。
+    _rollDeg = 0;
   }
 
   void _onRoll(double v) {
+    _syncRollAxis();
     // 增量取最短环向差(甩动惯性给的是无界连续值)。
     var delta = (v - _rollDeg) % 360.0;
     if (delta > 180.0) delta -= 360.0;
@@ -233,7 +252,7 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     // 绕相机枢轴刚性旋转 ⇒ 框在屏幕上不跑位,只有朝向变。
     widget.onBoxChanged(
       widget.box.rotatedAroundAxis(
-        axis: _rollAxisWorld(),
+        axis: _rollAxis,
         deltaDeg: delta,
         pivotX: cam.pivotX,
         pivotY: cam.pivotY,
@@ -245,7 +264,10 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
   /// [2026-07-29 用户签决] "⋯" 菜单项一:框朝向回到初始(轴对齐),滑轨
   /// 读数同步归零 —— 尺寸与位置不动,只把转过的角度还原。
   void _resetRotation() {
-    setState(() => _rollDeg = 0);
+    setState(() {
+      _rollDeg = 0;
+      _rollFace = ''; // 强制下次拨动按新朝向重算轴
+    });
     widget.onBoxChanged(widget.box.copyWith(rot: kIdentityRot));
   }
 
