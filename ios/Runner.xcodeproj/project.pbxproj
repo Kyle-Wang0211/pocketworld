@@ -9,6 +9,10 @@
 /* Begin PBXBuildFile section */
 		B70000010000000000000001 /* pw_jxl_bridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = B70000110000000000000001 /* pw_jxl_bridge.mm */; };
 		B70000020000000000000002 /* PWJXLBridgeTests.mm in Sources */ = {isa = PBXBuildFile; fileRef = B70000130000000000000003 /* PWJXLBridgeTests.mm */; };
+		C80000010000000000000001 /* pw_zpaq_bridge.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C80000110000000000000001 /* pw_zpaq_bridge.cpp */; settings = {COMPILER_FLAGS = "-DNOJIT -Dunix"; }; };
+		C80000020000000000000002 /* libzpaq.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C80000130000000000000003 /* libzpaq.cpp */; settings = {COMPILER_FLAGS = "-DNOJIT -Dunix"; }; };
+		C80000030000000000000003 /* PWZpaqBridgeTests.mm in Sources */ = {isa = PBXBuildFile; fileRef = C80000150000000000000005 /* PWZpaqBridgeTests.mm */; };
+		C80000040000000000000004 /* Zpaq-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = C80000160000000000000006 /* Zpaq-LICENSE.txt */; };
 		03D62ABCFE668FE66D5CD107 /* MetalRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16019E67BE3B581AE0E2152F /* MetalRenderer.swift */; };
 		0F1C1A100000000000000011 /* OfficialAetherARKitPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A100000000000000001 /* OfficialAetherARKitPlugin.swift */; };
 		0F1C1A100000000000000012 /* OfficialReconUmbrella.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A100000000000000002 /* OfficialReconUmbrella.swift */; };
@@ -55,6 +59,12 @@
 		B70000110000000000000001 /* pw_jxl_bridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = pw_jxl_bridge.mm; sourceTree = "<group>"; };
 		B70000120000000000000002 /* pw_jxl_bridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = pw_jxl_bridge.h; sourceTree = "<group>"; };
 		B70000130000000000000003 /* PWJXLBridgeTests.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PWJXLBridgeTests.mm; sourceTree = "<group>"; };
+		C80000110000000000000001 /* pw_zpaq_bridge.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = pw_zpaq_bridge.cpp; sourceTree = "<group>"; };
+		C80000120000000000000002 /* pw_zpaq_bridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = pw_zpaq_bridge.h; sourceTree = "<group>"; };
+		C80000130000000000000003 /* libzpaq.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; name = libzpaq.cpp; path = Vendor/Zpaq/src/libzpaq.cpp; sourceTree = SOURCE_ROOT; };
+		C80000140000000000000004 /* libzpaq.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = libzpaq.h; path = Vendor/Zpaq/include/libzpaq.h; sourceTree = SOURCE_ROOT; };
+		C80000150000000000000005 /* PWZpaqBridgeTests.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PWZpaqBridgeTests.mm; sourceTree = "<group>"; };
+		C80000160000000000000006 /* Zpaq-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = "Zpaq-LICENSE.txt"; path = "Vendor/Zpaq/Zpaq-LICENSE.txt"; sourceTree = SOURCE_ROOT; };
 		0F1C1A100000000000000001 /* OfficialAetherARKitPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OfficialAetherARKitPlugin.swift; sourceTree = "<group>"; };
 		0F1C1A100000000000000002 /* OfficialReconUmbrella.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OfficialReconUmbrella.swift; sourceTree = "<group>"; };
 		0F1C1A100000000000000003 /* PwARCameraLease.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PwARCameraLease.swift; sourceTree = "<group>"; };
@@ -127,6 +137,7 @@
 			isa = PBXGroup;
 			children = (
 				B70000130000000000000003 /* PWJXLBridgeTests.mm */,
+				C80000150000000000000005 /* PWZpaqBridgeTests.mm */,
 				331C807B294A618700263BE5 /* RunnerTests.swift */,
 			);
 			path = RunnerTests;
@@ -185,6 +196,11 @@
 				A1B2C3D4E5F60000DEAD0008 /* test_scene.jpg */,
 				B70000120000000000000002 /* pw_jxl_bridge.h */,
 				B70000110000000000000001 /* pw_jxl_bridge.mm */,
+				C80000120000000000000002 /* pw_zpaq_bridge.h */,
+				C80000110000000000000001 /* pw_zpaq_bridge.cpp */,
+				C80000140000000000000004 /* libzpaq.h */,
+				C80000130000000000000003 /* libzpaq.cpp */,
+				C80000160000000000000006 /* Zpaq-LICENSE.txt */,
 			);
 			path = Runner;
 			sourceTree = "<group>";
@@ -306,6 +322,7 @@
 				97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */,
 				97C146FC1CF9000F007C117D /* Main.storyboard in Resources */,
 				A1B2C3D4E5F60000DEAD0007 /* test_scene.jpg in Resources */,
+				C80000040000000000000004 /* Zpaq-LICENSE.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -445,6 +462,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				B70000020000000000000002 /* PWJXLBridgeTests.mm in Sources */,
+				C80000030000000000000003 /* PWZpaqBridgeTests.mm in Sources */,
 				331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -454,6 +472,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				B70000010000000000000001 /* pw_jxl_bridge.mm in Sources */,
+				C80000010000000000000001 /* pw_zpaq_bridge.cpp in Sources */,
+				C80000020000000000000002 /* libzpaq.cpp in Sources */,
 				74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */,
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
 				8954836B39867FC637D6CA3C /* AetherTexturePlugin.swift in Sources */,
@@ -568,6 +588,7 @@
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Vendor/JXL/include",
+					"$(PROJECT_DIR)/Vendor/Zpaq/include",
 				);
 				INFOPLIST_FILE = Runner/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -598,6 +619,14 @@
 					"-Wl,-u,_pw_jxl_error_message",
 					"-Wl,-u,_pw_jxl_encode_jpeg_file",
 					"-Wl,-u,_pw_jxl_reconstruct_jpeg_file",
+					"-Wl,-u,_pw_zpaq_version",
+					"-Wl,-u,_pw_zpaq_revision",
+					"-Wl,-u,_pw_zpaq_error_message",
+					"-Wl,-u,_pw_zpaq_last_error",
+					"-Wl,-u,_pw_zpaq_compress_file",
+					"-Wl,-u,_pw_zpaq_decompress_file",
+					"-Wl,-u,_pw_zpaq_cancellation_generation",
+					"-Wl,-u,_pw_zpaq_request_cancel",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.kyle.PocketWorld;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -789,6 +818,7 @@
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Vendor/JXL/include",
+					"$(PROJECT_DIR)/Vendor/Zpaq/include",
 				);
 				INFOPLIST_FILE = Runner/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -819,6 +849,14 @@
 					"-Wl,-u,_pw_jxl_error_message",
 					"-Wl,-u,_pw_jxl_encode_jpeg_file",
 					"-Wl,-u,_pw_jxl_reconstruct_jpeg_file",
+					"-Wl,-u,_pw_zpaq_version",
+					"-Wl,-u,_pw_zpaq_revision",
+					"-Wl,-u,_pw_zpaq_error_message",
+					"-Wl,-u,_pw_zpaq_last_error",
+					"-Wl,-u,_pw_zpaq_compress_file",
+					"-Wl,-u,_pw_zpaq_decompress_file",
+					"-Wl,-u,_pw_zpaq_cancellation_generation",
+					"-Wl,-u,_pw_zpaq_request_cancel",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.kyle.PocketWorld;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -850,6 +888,7 @@
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Vendor/JXL/include",
+					"$(PROJECT_DIR)/Vendor/Zpaq/include",
 				);
 				INFOPLIST_FILE = Runner/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -880,6 +919,14 @@
 					"-Wl,-u,_pw_jxl_error_message",
 					"-Wl,-u,_pw_jxl_encode_jpeg_file",
 					"-Wl,-u,_pw_jxl_reconstruct_jpeg_file",
+					"-Wl,-u,_pw_zpaq_version",
+					"-Wl,-u,_pw_zpaq_revision",
+					"-Wl,-u,_pw_zpaq_error_message",
+					"-Wl,-u,_pw_zpaq_last_error",
+					"-Wl,-u,_pw_zpaq_compress_file",
+					"-Wl,-u,_pw_zpaq_decompress_file",
+					"-Wl,-u,_pw_zpaq_cancellation_generation",
+					"-Wl,-u,_pw_zpaq_request_cancel",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.kyle.PocketWorld;
 				PRODUCT_NAME = "$(TARGET_NAME)";

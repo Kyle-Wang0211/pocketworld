@@ -24,7 +24,7 @@
 	<key>CFBundleDisplayName</key>
 	<string>PocketWorld</string>
 	<key>PWBuildExperimentMarker</key>
-	<string>future-jxl-lossless-archive-v1+transient-ar-previews-v1</string>
+	<string>future-jxl-lossless-archive-v1+transient-ar-previews-v1+future-official-zpaq-db-archive-v1</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>

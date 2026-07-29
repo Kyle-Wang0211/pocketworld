@@ -66,3 +66,22 @@ Bundled license: ios/Vendor/JXL/licenses/skcms-LICENSE
 
 The complete upstream license texts above are shipped as Flutter assets. This
 inventory records engineering provenance and is not legal advice.
+
+ZPAQ 7.15 database archive stack
+================================
+
+Use in PocketWorld: byte-exact cold archives of future official-capture SQLite
+databases using method 5.
+
+ZPAQ / libzpaq
+Source: https://mattmahoney.net/dc/zpaq.html
+Release: official-zpaq-7.15.zip
+Source archive SHA-256:
+e85ec2529eb0ba22ceaeabd461e55357ef099b80f61c14f377b429ea3d49d418
+License: Unlicense, with the embedded libdivsufsort-lite portion under MIT
+Bundled license: ios/Vendor/Zpaq/Zpaq-LICENSE.txt
+
+The exact official source files and their SHA-256 values are recorded in
+ios/Vendor/Zpaq/SHA256SUMS. The complete upstream license text is shipped as a
+Flutter asset and an iOS Runner resource. This inventory records engineering
+provenance and is not legal advice.

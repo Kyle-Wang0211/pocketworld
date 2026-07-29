@@ -106,7 +106,10 @@ whose SHA-256 is
 `e85ec2529eb0ba22ceaeabd461e55357ef099b80f61c14f377b429ea3d49d418`.
 
 The bridge exports version, revision, error, compress, decompress, and
-cooperative-cancel functions. iOS compiles the source with `NOJIT`; future
+cooperative-cancel functions. Cancellation uses an atomic generation counter:
+each operation captures the current generation, and foreground activity
+increments it. This prevents an older operation from clearing or consuming a
+newer cancellation request. iOS compiles the source with `NOJIT`; future
 platforms compile the same source behind the same Dart contract.
 
 ## Risks / Trade-offs

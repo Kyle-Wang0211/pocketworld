@@ -860,8 +860,11 @@ Copy only these already-audited benchmark files without downloading:
 Verify the copied source hashes against `SHA256SUMS`. The bridge is pure C++17,
 defines `libzpaq::error` as a caught exception, streams `FILE*` through
 `libzpaq::Reader`/`Writer`, flushes and `fsync`s output, rejects every method
-except 5, and checks a process-global atomic cancellation flag from both reader
-and writer callbacks. Compile bridge and libzpaq with `-DNOJIT -Dunix`.
+except 5, and checks a process-global atomic cancellation generation from both
+reader and writer callbacks. Each Dart operation captures the current
+generation; foreground activity increments it, so one operation cannot consume
+or clear a newer cancellation request. Compile bridge and libzpaq with
+`-DNOJIT -Dunix`.
 
 - [ ] **Step 4: Implement Dart FFI and native round-trip test**
 
