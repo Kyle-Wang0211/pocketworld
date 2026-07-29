@@ -27,8 +27,7 @@ const int kSelectionOutColor = 0xFFE05252;
 
 /// 选区盒 8 角世界坐标。index = x位 + y位·2 + z位·4(0=负,1=正)。
 List<List<double>> selectionBoxCorners(SelectionBox b) {
-  final a = b.yawDeg * math.pi / 180.0;
-  final c = math.cos(a), s = math.sin(a);
+  final r = b.rot;
   final out = <List<double>>[];
   for (var zi = 0; zi < 2; zi++) {
     for (var yi = 0; yi < 2; yi++) {
@@ -36,8 +35,12 @@ List<List<double>> selectionBoxCorners(SelectionBox b) {
         final lx = (xi == 0 ? -1 : 1) * b.sx / 2;
         final ly = (yi == 0 ? -1 : 1) * b.sy / 2;
         final lz = (zi == 0 ? -1 : 1) * b.sz / 2;
-        // 局部 → 世界:绕 Y 转 +yaw(contains 的逆变换)
-        out.add([b.cx + lx * c - lz * s, b.cy + ly, b.cz + lx * s + lz * c]);
+        // 局部 → 世界:world = rot·local(行主序)。
+        out.add([
+          b.cx + r[0] * lx + r[1] * ly + r[2] * lz,
+          b.cy + r[3] * lx + r[4] * ly + r[5] * lz,
+          b.cz + r[6] * lx + r[7] * ly + r[8] * lz,
+        ]);
       }
     }
   }

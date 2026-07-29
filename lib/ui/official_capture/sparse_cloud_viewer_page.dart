@@ -223,7 +223,6 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                           sx: 1,
                           sy: 1,
                           sz: 1,
-                          yawDeg: 0,
                         ),
                     editing: _editing,
                     bottomGestureExclusion: _editing ? 110 : 0,

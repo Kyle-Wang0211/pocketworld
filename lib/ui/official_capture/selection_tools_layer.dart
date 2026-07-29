@@ -6,8 +6,8 @@
 // State,连一次重建都没有,所以位置/角度/缩放天然连续。
 //
 // 本层 = 朝向骰子(跟随相机 + 点击某面归位)+ 返回 + 开始处理。
-// [2026-07-28 用户签决] 底部"旋转点云"刻度尺已删除:自由 orbit 上线后它
-// 是冗余入口(而且压在全屏点云视图上会跟视图抢手势)。
+// [2026-07-29 用户签决] 底部"旋转点云"滑轨回归,且升级语义:转轴 = 当前
+// 正对面的法向("按那个面为底开始旋转"),不再固定绕竖直轴。
 import 'dart:async';
 import 'dart:math' as math;
 
@@ -18,6 +18,7 @@ import 'package:flutter/physics.dart';
 
 import '../../l10n/app_localizations.dart';
 import '../../official_capture/selection_box.dart';
+import 'ruler_scrubber.dart';
 import 'sparse_cloud_view.dart' show CloudViewCamera, CloudViewController;
 import 'view_cube.dart';
 
@@ -65,6 +66,9 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
   late final AnimationController _fling;
   double _flingYaw0 = 0, _flingPitch0 = 0;
   double _flingDirYaw = 0, _flingDirPitch = 0;
+
+  /// 旋转滑轨的读数(纯 UI 累计角,框的真实朝向在 box.rot 里)。
+  double _rollDeg = 0;
 
   /// 骰子拖动灵敏度(rad/px)。比点云视图(0.008/0.006)大 2.5 倍 ——
   /// 骰子只有 72px 宽,同样的手指行程要能转得动(用户:"阻力要小")。
@@ -144,11 +148,14 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     unawaited(_fling.animateWith(FrictionSimulation(0.135, 0, speed)));
   }
 
-  /// 观察方向 = 相机 yaw + 滑杆分量。骰子读它 ⇒ 模型怎么转骰子怎么转
-  /// (骰子六面是**模型**的面)。
+  /// 相机相对**框**的朝向 = camera.yaw − 框自身的 yaw。
+  ///
+  /// [2026-07-29 用户实机指认"立方体正面时框却是斜的"] 此前写成 **+**:
+  /// 框绕 Y 转了 θ 时,要正对框的某个面相机也得转 +θ,相对朝向应当抵消
+  /// (相减)。写成相加会让骰子与框差 2θ —— 骰子显示"后"正对,框却斜着。
   double get _boxYawRad => widget.box.yawDeg * math.pi / 180.0;
   CloudViewCamera? get _cam => widget.camera.value;
-  double get _effectiveYaw => (_cam?.yaw ?? 0) + _boxYawRad;
+  double get _effectiveYaw => (_cam?.yaw ?? 0) - _boxYawRad;
 
   void _onSnapTick() {
     final t = Curves.easeOutCubic.transform(_snap.value);
@@ -183,13 +190,56 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     _fromYaw = cam.yaw;
     _fromPitch = cam.pitch;
     _toPitch = preset.pitch;
-    var delta = (targetYaw - _boxYawRad) - _fromYaw;
+    var delta = (targetYaw + _boxYawRad) - _fromYaw;
     delta = delta.remainder(2 * math.pi);
     if (delta > math.pi) delta -= 2 * math.pi;
     if (delta < -math.pi) delta += 2 * math.pi;
     _toYaw = _fromYaw + delta;
     if (delta.abs() < 1e-6 && (_toPitch - _fromPitch).abs() < 1e-6) return;
     unawaited(_snap.forward(from: 0));
+  }
+
+  /// 当前正对面的**世界法向** = 旋转滑轨的转轴。
+  ///
+  /// [2026-07-29 用户签决] "当点云被判定在哪个面的时候,按那个面为底开始
+  /// 旋转":正对 Top ⇒ 绕世界 Y(俯视图里框在水平面内转);正对 Front ⇒
+  /// 绕世界 Z;正对 Right ⇒ 绕世界 X。面由骰子的正对面判定给出,与用户
+  /// 看到的完全一致。
+  List<double> _rollAxisWorld() {
+    final cam = _cam;
+    if (cam == null) return const [0, 1, 0];
+    final label = primaryViewCubeFace(_effectiveYaw, cam.pitch);
+    final f = kViewCubeFaces.firstWhere((e) => e.label == label);
+    // 面法向是**框局部**方向(骰子六面 = 框的面),转成世界。
+    final r = widget.box.rot;
+    final n = f.normal;
+    return [
+      r[0] * n[0] + r[1] * n[1] + r[2] * n[2],
+      r[3] * n[0] + r[4] * n[1] + r[5] * n[2],
+      r[6] * n[0] + r[7] * n[1] + r[8] * n[2],
+    ];
+  }
+
+  void _onRoll(double v) {
+    // 增量取最短环向差(甩动惯性给的是无界连续值)。
+    var delta = (v - _rollDeg) % 360.0;
+    if (delta > 180.0) delta -= 360.0;
+    if (delta == 0) return;
+    final cam = _cam;
+    if (cam == null) return;
+    setState(() {
+      _rollDeg = v - 360.0 * ((v + 180.0) / 360.0).floorToDouble();
+    });
+    // 绕相机枢轴刚性旋转 ⇒ 框在屏幕上不跑位,只有朝向变。
+    widget.onBoxChanged(
+      widget.box.rotatedAroundAxis(
+        axis: _rollAxisWorld(),
+        deltaDeg: delta,
+        pivotX: cam.pivotX,
+        pivotY: cam.pivotY,
+        pivotZ: cam.pivotZ,
+      ),
+    );
   }
 
   Map<String, String> _faceLabels(BuildContext context) {
@@ -244,7 +294,7 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
                 valueListenable: widget.camera,
                 builder: (_, cam, _) => ViewCube(
                   key: const ValueKey('view-cube'),
-                  viewYaw: (cam?.yaw ?? 0) + _boxYawRad,
+                  viewYaw: (cam?.yaw ?? 0) - _boxYawRad,
                   viewPitch: cam?.pitch ?? 0,
                   faceLabels: _faceLabels(context),
                   onFaceTap: _snapToFace,
@@ -271,6 +321,15 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    Text(
+                      l.selectionRotatePointCloud,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 13,
+                      ),
+                    ),
+                    RulerScrubber(value: _rollDeg, onChanged: _onRoll),
+                    const SizedBox(height: 8),
                     SizedBox(
                       width: double.infinity,
                       height: 50,

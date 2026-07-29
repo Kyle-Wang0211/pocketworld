@@ -42,12 +42,12 @@ bool isCornerHandle(BoxHandle3D h) => h.sx != 0 && h.sy != 0 && h.sz != 0;
 /// 盒局部轴在世界中的单位方向(与 selectionBoxCorners 的正变换同约定:
 /// world = c·lx − s·lz, ly, s·lx + c·lz)。
 List<List<double>> boxWorldAxes(SelectionBox b) {
-  final a = b.yawDeg * math.pi / 180.0;
-  final c = math.cos(a), s = math.sin(a);
+  // 局部轴 eₖ 映射到世界 = rot 的第 k **列**(rot 行主序,world = rot·local)。
+  final r = b.rot;
   return [
-    [c, 0.0, s],
-    [0.0, 1.0, 0.0],
-    [-s, 0.0, c],
+    [r[0], r[3], r[6]],
+    [r[1], r[4], r[7]],
+    [r[2], r[5], r[8]],
   ];
 }
 

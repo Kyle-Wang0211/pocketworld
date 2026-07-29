@@ -5,7 +5,7 @@ import 'package:pocketworld_flutter/official_capture/selection_box.dart';
 
 void main() {
   test('JSON round-trip 保真', () {
-    const b = SelectionBox(
+    final b = SelectionBox.withYaw(
       cx: 1,
       cy: -2,
       cz: 3,
@@ -18,7 +18,7 @@ void main() {
     expect(back, isNotNull);
     expect(back!.cx, 1);
     expect(back.sy, 5);
-    expect(back.yawDeg, 30);
+    expect(back.yawDeg, closeTo(30, 1e-9));
   });
 
   test('损坏 JSON → null,不抛', () {
@@ -29,7 +29,15 @@ void main() {
   });
 
   test('contains:轴对齐盒', () {
-    const b = SelectionBox(cx: 0, cy: 0, cz: 0, sx: 2, sy: 4, sz: 6, yawDeg: 0);
+    final b = SelectionBox.withYaw(
+      cx: 0,
+      cy: 0,
+      cz: 0,
+      sx: 2,
+      sy: 4,
+      sz: 6,
+      yawDeg: 0,
+    );
     expect(b.contains(0.99, 1.99, 2.99), isTrue);
     expect(b.contains(1.01, 0, 0), isFalse);
     expect(b.contains(0, 2.01, 0), isFalse);
@@ -39,7 +47,7 @@ void main() {
   test('contains:yaw=90° 时 x/z 半尺寸互换', () {
     // 盒局部 x 半尺寸 1、z 半尺寸 3;绕 Y 转 90° 后世界 x 方向的可容纳
     // 范围由局部 z 决定。
-    const b = SelectionBox(
+    final b = SelectionBox.withYaw(
       cx: 0,
       cy: 0,
       cz: 0,
@@ -56,7 +64,7 @@ void main() {
     final dir = await Directory.systemTemp.createTemp('selbox');
     addTearDown(() => dir.delete(recursive: true));
     expect(await SelectionBox.loadFrom(dir.path), isNull);
-    const b = SelectionBox(
+    final b = SelectionBox.withYaw(
       cx: 1,
       cy: 2,
       cz: 3,
@@ -67,7 +75,7 @@ void main() {
     );
     await b.saveTo(dir.path);
     final back = await SelectionBox.loadFrom(dir.path);
-    expect(back!.yawDeg, -15);
+    expect(back!.yawDeg, closeTo(-15, 1e-9));
   });
 
   test('initialFor = 点云 AABB + 2% 余量(不再是外接球的外接立方)', () {
@@ -78,6 +86,63 @@ void main() {
     expect(b.sx, closeTo(10.2, 1e-9));
     expect(b.sy, closeTo(8.16, 1e-9));
     expect(b.sz, closeTo(4.08, 1e-9));
-    expect(b.yawDeg, 0);
+    expect(b.yawDeg, closeTo(0, 1e-9));
+  });
+
+  test('绕任意世界轴旋转:正对面为底 ⇒ 转轴 = 该面法向', () {
+    // [2026-07-29 用户签决] "按那个面为底开始旋转":正对 Front 时绕世界 Z、
+    // 正对 Right 时绕世界 X —— 单一 yawDeg 表示不了,故升级为 rot 矩阵。
+    const b = SelectionBox(cx: 0, cy: 0, cz: 0, sx: 2, sy: 1, sz: 4);
+    // 绕世界 Z 转 90°:局部 x 轴(半长 1)应转到世界 ±y。
+    final rz = b.rotatedAroundAxis(
+      axis: const [0, 0, 1],
+      deltaDeg: 90,
+      pivotX: 0,
+      pivotY: 0,
+      pivotZ: 0,
+    );
+    expect(rz.contains(0, 0.99, 0), isTrue); // 原本 x 方向的半宽 1 转到了 y
+    expect(rz.contains(0.99, 0, 0), isFalse); // 原 x 方向现在只剩 sy/2=0.5
+    // 绕世界 X 转 90°:局部 z 轴(半长 2)应转到世界 ±y。
+    final rx = b.rotatedAroundAxis(
+      axis: const [1, 0, 0],
+      deltaDeg: 90,
+      pivotX: 0,
+      pivotY: 0,
+      pivotZ: 0,
+    );
+    expect(rx.contains(0, 1.9, 0), isTrue);
+    expect(rx.contains(0, 0, 1.9), isFalse);
+    // 尺寸与体积不变(刚性)。
+    for (final r in [rz, rx]) {
+      expect(r.sx, b.sx);
+      expect(r.sy, b.sy);
+      expect(r.sz, b.sz);
+    }
+  });
+
+  test('旧存档(只有 yawDeg)仍能读,且与 withYaw 等价', () {
+    final legacy = SelectionBox.fromJson(<String, dynamic>{
+      'cx': 1.0,
+      'cy': 2.0,
+      'cz': 3.0,
+      'sx': 2.0,
+      'sy': 2.0,
+      'sz': 2.0,
+      'yawDeg': 37.0,
+    });
+    expect(legacy, isNotNull);
+    final direct = SelectionBox.withYaw(
+      cx: 1,
+      cy: 2,
+      cz: 3,
+      sx: 2,
+      sy: 2,
+      sz: 2,
+      yawDeg: 37,
+    );
+    for (var i = 0; i < 9; i++) {
+      expect(legacy!.rot[i], closeTo(direct.rot[i], 1e-12));
+    }
   });
 }

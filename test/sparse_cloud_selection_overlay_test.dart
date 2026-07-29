@@ -6,7 +6,15 @@ import 'package:pocketworld_flutter/ui/official_capture/sparse_cloud_view.dart';
 
 void main() {
   test('selectionBoxCorners:轴对齐盒 8 角', () {
-    const b = SelectionBox(cx: 1, cy: 2, cz: 3, sx: 2, sy: 4, sz: 6, yawDeg: 0);
+    final b = SelectionBox.withYaw(
+      cx: 1,
+      cy: 2,
+      cz: 3,
+      sx: 2,
+      sy: 4,
+      sz: 6,
+      yawDeg: 0,
+    );
     final c = selectionBoxCorners(b);
     expect(c, hasLength(8));
     // index 0 = (-,-,-):世界 (1-1, 2-2, 3-3) = (0,0,0)
@@ -20,7 +28,7 @@ void main() {
   });
 
   test('selectionBoxCorners:yaw 旋转绕中心', () {
-    const b = SelectionBox(
+    final b = SelectionBox.withYaw(
       cx: 0,
       cy: 0,
       cz: 0,

@@ -9,7 +9,7 @@ import 'package:pocketworld_flutter/ui/official_capture/selection_handles_3d.dar
 import 'package:pocketworld_flutter/ui/official_capture/sparse_cloud_view.dart'
     show selectionBoxCorners;
 
-const _box = SelectionBox(
+final _box = SelectionBox.withYaw(
   cx: 0.2,
   cy: -0.1,
   cz: 0.5,
@@ -166,7 +166,7 @@ void main() {
   });
 
   test('yawDeg 旋转下手柄仍贴合盒(轴随盒转)', () {
-    const rotated = SelectionBox(
+    final rotated = SelectionBox.withYaw(
       cx: 0,
       cy: 0,
       cz: 0,
@@ -190,15 +190,7 @@ void main() {
     // [2026-07-28 用户实机指认"3D 框不是一个立方体"] 根因是相机太近:
     // camDist=3.2r 时立方体角落(1.73r)深度跨度让近远边投影差 3.3×,盒被
     // 拉成星形。改远摄(kCamDistK=8)后差值必须收敛。
-    const cube = SelectionBox(
-      cx: 0,
-      cy: 0,
-      cz: 0,
-      sx: 2,
-      sy: 2,
-      sz: 2,
-      yawDeg: 0,
-    );
+    const cube = SelectionBox(cx: 0, cy: 0, cz: 0, sx: 2, sy: 2, sz: 2);
     final proj = CloudCamera(
       yaw: 0.6,
       pitch: -0.42,
@@ -252,15 +244,7 @@ void main() {
   test('近视线轴禁用:任意视角狂拖角手柄都压不出纸片盒', () {
     // [2026-07-28 用户实机指认] 修复前:轴接近视线时 |dir|→0,dWorld 被
     // 除以 |dir|² 放大几十倍,一拖就把某维压成纸片(截图里的"四边形框")。
-    const cube = SelectionBox(
-      cx: 0,
-      cy: 0,
-      cz: 0,
-      sx: 2,
-      sy: 2,
-      sz: 2,
-      yawDeg: 0,
-    );
+    const cube = SelectionBox(cx: 0, cy: 0, cz: 0, sx: 2, sy: 2, sz: 2);
     for (final yaw in [0.0, 0.3, 0.7854, 1.2, 1.5708, 2.5]) {
       for (final pitch in [0.0, -0.42, -1.4, 0.9]) {
         final proj = CloudCamera(
@@ -316,32 +300,12 @@ void main() {
     );
     // 纸片(y 被压扁)
     expect(
-      sane(
-        const SelectionBox(
-          cx: 0,
-          cy: 0,
-          cz: 0,
-          sx: 2,
-          sy: 0.01,
-          sz: 2,
-          yawDeg: 0,
-        ),
-      ),
+      sane(const SelectionBox(cx: 0, cy: 0, cz: 0, sx: 2, sy: 0.01, sz: 2)),
       isFalse,
     );
     // 飞出点云
     expect(
-      sane(
-        const SelectionBox(
-          cx: 40,
-          cy: 0,
-          cz: 0,
-          sx: 2,
-          sy: 2,
-          sz: 2,
-          yawDeg: 0,
-        ),
-      ),
+      sane(const SelectionBox(cx: 40, cy: 0, cz: 0, sx: 2, sy: 2, sz: 2)),
       isFalse,
     );
   });

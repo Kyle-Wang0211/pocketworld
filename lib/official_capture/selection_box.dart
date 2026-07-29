@@ -1,10 +1,48 @@
-// 选区盒(重力系轴对齐 + 绕竖直轴 yaw)。给未来稠密化划边界的元数据;PLY 永不因它改写。
+// 选区盒(任意 3D 朝向)。给未来稠密化划边界的元数据;PLY 永不因它改写。
+//
+// [2026-07-29 用户签决] 朝向从"仅绕竖直轴 yawDeg"升级为完整旋转矩阵:
+// 旋转滑轨要"按当前正对的那个面为底开始旋转",正对 Front/Right 时转轴是
+// 世界 Z/X —— 单一 yaw 表示不了。rot 是行主序 3×3,局部→世界。
 // 设计:docs/superpowers/specs/2026-07-27-selection-region-design.md
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
 const String kSelectionBoxFileName = 'official_selection_box.json';
+
+/// 单位旋转(轴对齐)。
+const List<double> kIdentityRot = <double>[1, 0, 0, 0, 1, 0, 0, 0, 1];
+
+/// 绕任意单位轴转 deg° 的旋转矩阵(Rodrigues,行主序)。
+List<double> rotAboutAxisDeg(List<double> axis, double deg) {
+  final n = math.sqrt(
+    axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2],
+  );
+  if (n < 1e-12) return kIdentityRot;
+  final x = axis[0] / n, y = axis[1] / n, z = axis[2] / n;
+  final t = deg * math.pi / 180.0;
+  final c = math.cos(t), s = math.sin(t), k = 1 - c;
+  return <double>[
+    c + x * x * k, x * y * k - z * s, x * z * k + y * s, //
+    y * x * k + z * s, c + y * y * k, y * z * k - x * s,
+    z * x * k - y * s, z * y * k + x * s, c + z * z * k,
+  ];
+}
+
+/// 行主序 3×3 相乘(a·b)。
+List<double> mulRot(List<double> a, List<double> b) {
+  final out = List<double>.filled(9, 0);
+  for (var r = 0; r < 3; r++) {
+    for (var c = 0; c < 3; c++) {
+      var v = 0.0;
+      for (var k = 0; k < 3; k++) {
+        v += a[r * 3 + k] * b[k * 3 + c];
+      }
+      out[r * 3 + c] = v;
+    }
+  }
+  return out;
+}
 
 class SelectionBox {
   const SelectionBox({
@@ -14,8 +52,29 @@ class SelectionBox {
     required this.sx,
     required this.sy,
     required this.sz,
-    required this.yawDeg,
+    this.rot = kIdentityRot,
   });
+
+  /// 绕世界 Y 轴 yaw 的便捷构造(旧存档与既有调用点)。
+  factory SelectionBox.withYaw({
+    required double cx,
+    required double cy,
+    required double cz,
+    required double sx,
+    required double sy,
+    required double sz,
+    required double yawDeg,
+  }) => SelectionBox(
+    cx: cx,
+    cy: cy,
+    cz: cz,
+    sx: sx,
+    sy: sy,
+    sz: sz,
+    // 负角:既有约定是 wx = lx·cosθ − lz·sinθ(见 selectionBoxCorners),
+    // 与 Rodrigues 绕 +Y 的右手旋向相反,取 −θ 才逐位等价。
+    rot: rotAboutAxisDeg(const [0, 1, 0], -yawDeg),
+  );
 
   /// 盒中心(世界系,点云已重力对齐:Y=重力上)。
   final double cx, cy, cz;
@@ -23,8 +82,11 @@ class SelectionBox {
   /// 盒全尺寸(局部系各轴)。
   final double sx, sy, sz;
 
-  /// 绕世界 Y 轴旋转角(度)。盒转、点云不动。
-  final double yawDeg;
+  /// 局部→世界的旋转(行主序 3×3)。盒转、点云不动。
+  final List<double> rot;
+
+  /// 绕世界 Y 轴的分量(度)—— 兼容读数与旧存档。
+  double get yawDeg => math.atan2(rot[6], rot[0]) * 180.0 / math.pi;
 
   /// 盒最小半尺寸 = fit radius × 此值(手柄 clamp 用,防拖成退化盒)。
   static const double kMinHalfSizeFraction = 0.02;
@@ -49,22 +111,15 @@ class SelectionBox {
     sx: hx * 2 * 1.02,
     sy: hy * 2 * 1.02,
     sz: hz * 2 * 1.02,
-    yawDeg: 0,
   );
 
   bool contains(double wx, double wy, double wz) {
-    // 世界 → 盒局部。正变换(局部→世界,见 selectionBoxCorners)是
-    //   wx = lx·cosθ − lz·sinθ; wz = lx·sinθ + lz·cosθ  (θ = yawDeg)
-    // 其标准逆式如下(与 selectionBoxCorners 的正变换互逆)。注:数学上
-    // R(−θ) = R(θ)⁻¹,所以"负角代入正变换公式"本身与下面这套逆式等价,
-    // 并不是错误写法 —— 计划自审时抓到的那个 bug,根因是把逆变换的旋转
-    // 方向写反了(符号搞反,不是"负角+正式"这个思路本身的问题)。
-    final t = yawDeg * math.pi / 180.0;
-    final c = math.cos(t), s = math.sin(t);
+    // 世界 → 局部 = rotᵀ·(p − c)(rot 行主序,其转置的第 i 行 = rot 第 i 列)。
     final px = wx - cx, py = wy - cy, pz = wz - cz;
-    final lx = px * c + pz * s;
-    final lz = -px * s + pz * c;
-    return lx.abs() <= sx / 2 && py.abs() <= sy / 2 && lz.abs() <= sz / 2;
+    final lx = rot[0] * px + rot[3] * py + rot[6] * pz;
+    final ly = rot[1] * px + rot[4] * py + rot[7] * pz;
+    final lz = rot[2] * px + rot[5] * py + rot[8] * pz;
+    return lx.abs() <= sx / 2 && ly.abs() <= sy / 2 && lz.abs() <= sz / 2;
   }
 
   /// 绕世界竖直枢轴 (pivotX, pivotZ) 刚性旋转 deltaDeg°:中心公转 +
@@ -91,18 +146,24 @@ class SelectionBox {
     return dist <= fitRadius * 5;
   }
 
-  SelectionBox rotatedAroundPivot(
-    double pivotX,
-    double pivotZ,
-    double deltaDeg,
-  ) {
-    final t = deltaDeg * math.pi / 180.0;
-    final c = math.cos(t), s = math.sin(t);
-    final dx = cx - pivotX, dz = cz - pivotZ;
+  /// 绕**任意世界轴**刚性旋转 deltaDeg°(中心绕 pivot 公转 + 自身同步自转)。
+  ///
+  /// [2026-07-29 用户签决] 转轴 = 当前正对面的法向 ⇒ "以那个面为底转"。
+  /// 中心公转保证框在屏幕上不动(相机也绕同一轴等量反转时精确抵消)。
+  SelectionBox rotatedAroundAxis({
+    required List<double> axis,
+    required double deltaDeg,
+    required double pivotX,
+    required double pivotY,
+    required double pivotZ,
+  }) {
+    final r = rotAboutAxisDeg(axis, deltaDeg);
+    final dx = cx - pivotX, dy = cy - pivotY, dz = cz - pivotZ;
     return copyWith(
-      cx: pivotX + dx * c - dz * s,
-      cz: pivotZ + dx * s + dz * c,
-      yawDeg: yawDeg + deltaDeg,
+      cx: pivotX + r[0] * dx + r[1] * dy + r[2] * dz,
+      cy: pivotY + r[3] * dx + r[4] * dy + r[5] * dz,
+      cz: pivotZ + r[6] * dx + r[7] * dy + r[8] * dz,
+      rot: mulRot(r, rot),
     );
   }
 
@@ -113,7 +174,7 @@ class SelectionBox {
     double? sx,
     double? sy,
     double? sz,
-    double? yawDeg,
+    List<double>? rot,
   }) => SelectionBox(
     cx: cx ?? this.cx,
     cy: cy ?? this.cy,
@@ -121,7 +182,7 @@ class SelectionBox {
     sx: sx ?? this.sx,
     sy: sy ?? this.sy,
     sz: sz ?? this.sz,
-    yawDeg: yawDeg ?? this.yawDeg,
+    rot: rot ?? this.rot,
   );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -131,25 +192,45 @@ class SelectionBox {
     'sx': sx,
     'sy': sy,
     'sz': sz,
+    'rot': rot,
+    // 旧版本只认 yawDeg;写出来让降级安装仍能读到大致朝向。
     'yawDeg': yawDeg,
   };
 
+  /// 任何形状不对/类型不对/非有限值 → null(容错:选区文件坏不许拖垮查看器)。
   /// 任何形状不对/类型不对/非有限值 → null(容错:选区文件坏不许拖垮查看器)。
   static SelectionBox? fromJson(Object? j) {
     if (j is! Map) return null;
     double? d(Object? v) => (v is num && v.isFinite) ? v.toDouble() : null;
     final cx = d(j['cx']), cy = d(j['cy']), cz = d(j['cz']);
     final sx = d(j['sx']), sy = d(j['sy']), sz = d(j['sz']);
+    if ([cx, cy, cz, sx, sy, sz].contains(null)) return null;
+    // 优先读完整旋转;旧存档只有 yawDeg。
+    final rawRot = j['rot'];
+    if (rawRot is List && rawRot.length == 9) {
+      final r = rawRot.map(d).toList();
+      if (!r.contains(null)) {
+        return SelectionBox(
+          cx: cx!,
+          cy: cy!,
+          cz: cz!,
+          sx: sx!,
+          sy: sy!,
+          sz: sz!,
+          rot: r.cast<double>(),
+        );
+      }
+    }
     final yaw = d(j['yawDeg']);
-    if ([cx, cy, cz, sx, sy, sz, yaw].contains(null)) return null;
-    return SelectionBox(
+    if (yaw == null) return null;
+    return SelectionBox.withYaw(
       cx: cx!,
       cy: cy!,
       cz: cz!,
       sx: sx!,
       sy: sy!,
       sz: sz!,
-      yawDeg: yaw!,
+      yawDeg: yaw,
     );
   }
 

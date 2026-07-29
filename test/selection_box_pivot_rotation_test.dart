@@ -17,7 +17,7 @@ void main() {
     const pivot = (cx: 0.3, cy: -0.2, cz: 1.1);
     const radius = 2.0;
     // 框心刻意偏离枢轴(用户实机指认的漂移正来自这个偏心)。
-    const box = SelectionBox(
+    final box = SelectionBox.withYaw(
       cx: 0.9,
       cy: 0.1,
       cz: 0.4,
@@ -58,7 +58,13 @@ void main() {
     for (final (pitch, roll) in [(0.0, 0.0), (-0.9, 0.0), (0.5, 1.2)]) {
       final before = project(box, pitch, roll);
       for (final delta in [25.0, -60.0, 180.0, 3.7]) {
-        final rotated = box.rotatedAroundPivot(pivot.cx, pivot.cz, delta);
+        final rotated = box.rotatedAroundAxis(
+          axis: const [0, 1, 0],
+          deltaDeg: delta,
+          pivotX: pivot.cx,
+          pivotY: pivot.cy,
+          pivotZ: pivot.cz,
+        );
         final after = project(rotated, pitch, roll);
         for (var i = 0; i < 8; i++) {
           expect(after[i].$1, closeTo(before[i].$1, 1e-6));
@@ -69,7 +75,7 @@ void main() {
   });
 
   test('刚性旋转保体积/保内含语义:旋转前后 contains 对应旋转点一致', () {
-    const box = SelectionBox(
+    final box = SelectionBox.withYaw(
       cx: 0.9,
       cy: 0.1,
       cz: 0.4,
@@ -80,18 +86,24 @@ void main() {
     );
     const px = 0.3, pz = 1.1;
     const delta = 41.0;
-    final rotated = box.rotatedAroundPivot(px, pz, delta);
-    final t = delta * math.pi / 180.0;
-    final c = math.cos(t), s = math.sin(t);
+    final rotated = box.rotatedAroundAxis(
+      axis: const [0, 1, 0],
+      deltaDeg: delta,
+      pivotX: px,
+      pivotY: 0,
+      pivotZ: pz,
+    );
+    // 用同一个旋转矩阵转参考点(手写公式与 Rodrigues 旋向相反,会假阳性)。
+    final r = rotAboutAxisDeg(const [0, 1, 0], delta);
     final rnd = math.Random(7);
     for (var i = 0; i < 200; i++) {
       final wx = box.cx + (rnd.nextDouble() - 0.5) * 3;
       final wy = box.cy + (rnd.nextDouble() - 0.5) * 2;
       final wz = box.cz + (rnd.nextDouble() - 0.5) * 3;
       // 世界点跟着同一刚性旋转走,内含关系必须不变。
-      final dx = wx - px, dz = wz - pz;
-      final rx = px + dx * c - dz * s;
-      final rz = pz + dx * s + dz * c;
+      final dx = wx - px, dy = wy, dz = wz - pz;
+      final rx = px + r[0] * dx + r[1] * dy + r[2] * dz;
+      final rz = pz + r[6] * dx + r[7] * dy + r[8] * dz;
       expect(rotated.contains(rx, wy, rz), box.contains(wx, wy, wz));
     }
   });
