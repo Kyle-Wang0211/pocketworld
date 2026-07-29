@@ -107,7 +107,7 @@ class SfmPreviewOverlay extends StatelessWidget {
                     onBoxChanged: onBoxChanged,
                     liveBox: selectionBox == null ? null : () => selectionBox!,
                     editing: editing,
-                    bottomGestureExclusion: editing ? 110 : 0,
+                    bottomGestureExclusion: editing ? 200 : 0,
                   ),
                 ),
               ),

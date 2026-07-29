@@ -102,6 +102,7 @@ typedef CloudViewCamera = ({
 /// 这里只投递"请转到这个姿态"的一次性目标,避免把整套相机状态提升出去。
 class CloudViewController extends ChangeNotifier {
   CloudViewCamera? _target;
+  bool _reframe = false;
 
   void moveTo(CloudViewCamera c) {
     _target = c;
@@ -112,6 +113,18 @@ class CloudViewController extends ChangeNotifier {
     final t = _target;
     _target = null;
     return t;
+  }
+
+  /// 请求回到默认取景("回到初始点云大小")。
+  void requestReframe() {
+    _reframe = true;
+    notifyListeners();
+  }
+
+  bool takeReframe() {
+    final r = _reframe;
+    _reframe = false;
+    return r;
   }
 }
 
@@ -341,6 +354,10 @@ class _SparseCloudViewState extends State<SparseCloudView>
   }
 
   void _onControllerTarget() {
+    if (widget.controller?.takeReframe() ?? false) {
+      if (mounted) _reframe();
+      return;
+    }
     final t = widget.controller?.takeTarget();
     if (t == null || !mounted) return;
     setState(() {

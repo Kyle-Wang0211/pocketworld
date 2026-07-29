@@ -858,6 +858,18 @@ abstract class AppL10n {
   /// In en, this message translates to:
   /// **'Back to Preview'**
   String get selectionBackToPreview;
+
+  /// No description provided for @selectionResetRotation.
+  ///
+  /// In en, this message translates to:
+  /// **'Reset Rotation'**
+  String get selectionResetRotation;
+
+  /// No description provided for @selectionResetZoom.
+  ///
+  /// In en, this message translates to:
+  /// **'Reset Zoom'**
+  String get selectionResetZoom;
 }
 
 class _AppL10nDelegate extends LocalizationsDelegate<AppL10n> {

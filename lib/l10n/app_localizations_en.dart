@@ -442,4 +442,10 @@ class AppL10nEn extends AppL10n {
 
   @override
   String get selectionBackToPreview => 'Back to Preview';
+
+  @override
+  String get selectionResetRotation => 'Reset Rotation';
+
+  @override
+  String get selectionResetZoom => 'Reset Zoom';
 }

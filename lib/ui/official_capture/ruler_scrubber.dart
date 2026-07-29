@@ -19,6 +19,7 @@ class RulerScrubber extends StatefulWidget {
     required this.onChanged,
     this.pixelsPerDegree = 1.1,
     this.height = 56,
+    this.originDeg = 0,
   });
 
   /// 当前角度(度,任意实数;绘制按 mod 360 环向处理)。
@@ -29,6 +30,10 @@ class RulerScrubber extends StatefulWidget {
   /// [2026-07-28 用户反馈"阻力太大"] 2.2 → 1.1:同样一拨转过两倍角度。
   final double pixelsPerDegree;
   final double height;
+
+  /// 初始刻度(度)。画成**黄色且比大刻度更长**,一眼看出"没转过"的基准
+  /// 位置在哪([2026-07-29 用户签决])。
+  final double originDeg;
 
   @override
   State<RulerScrubber> createState() => _RulerScrubberState();
@@ -92,6 +97,7 @@ class _RulerScrubberState extends State<RulerScrubber>
           painter: _RulerPainter(
             value: widget.value,
             pxPerDeg: widget.pixelsPerDegree,
+            originDeg: widget.originDeg,
           ),
         ),
       ),
@@ -100,10 +106,15 @@ class _RulerScrubberState extends State<RulerScrubber>
 }
 
 class _RulerPainter extends CustomPainter {
-  const _RulerPainter({required this.value, required this.pxPerDeg});
+  const _RulerPainter({
+    required this.value,
+    required this.pxPerDeg,
+    required this.originDeg,
+  });
 
   final double value;
   final double pxPerDeg;
+  final double originDeg;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -121,17 +132,25 @@ class _RulerPainter extends CustomPainter {
       final x = cx + delta * pxPerDeg;
       if (x < -2 || x > size.width + 2) continue;
       final isMajor = a % majorEvery == 0;
+      // 初始刻度:黄色,且比大刻度再长一截。
+      var da = (a - originDeg) % 360.0;
+      if (da > 180.0) da -= 360.0;
+      final isOrigin = da.abs() < minorStep / 2;
       // 边缘淡出(RS 观感)。
       final fade = 1.0 - math.pow((x - cx).abs() / halfW, 2.0).toDouble();
-      final alpha = ((isMajor ? 0.95 : 0.45) * fade.clamp(0.0, 1.0) * 255)
-          .round();
-      final h = isMajor ? baseline - tickTop : (baseline - tickTop) * 0.62;
+      final f01 = fade.clamp(0.0, 1.0);
+      final alpha = ((isMajor ? 0.95 : 0.45) * f01 * 255).round();
+      final h = isOrigin
+          ? (baseline - tickTop) * 1.34
+          : (isMajor ? baseline - tickTop : (baseline - tickTop) * 0.62);
       canvas.drawLine(
         Offset(x, baseline - h),
         Offset(x, baseline),
         Paint()
-          ..color = Color.fromARGB(alpha, 255, 255, 255)
-          ..strokeWidth = isMajor ? 2.0 : 1.4
+          ..color = isOrigin
+              ? Color.fromARGB((f01 * 255).round(), 0xFF, 0xC1, 0x07)
+              : Color.fromARGB(alpha, 255, 255, 255)
+          ..strokeWidth = isOrigin ? 2.6 : (isMajor ? 2.0 : 1.4)
           ..strokeCap = StrokeCap.round,
       );
     }
@@ -150,5 +169,7 @@ class _RulerPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_RulerPainter old) =>
-      old.value != value || old.pxPerDeg != pxPerDeg;
+      old.value != value ||
+      old.pxPerDeg != pxPerDeg ||
+      old.originDeg != originDeg;
 }

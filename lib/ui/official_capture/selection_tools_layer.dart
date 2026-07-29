@@ -242,6 +242,20 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     );
   }
 
+  /// [2026-07-29 用户签决] "⋯" 菜单项一:框朝向回到初始(轴对齐),滑轨
+  /// 读数同步归零 —— 尺寸与位置不动,只把转过的角度还原。
+  void _resetRotation() {
+    setState(() => _rollDeg = 0);
+    widget.onBoxChanged(widget.box.copyWith(rot: kIdentityRot));
+  }
+
+  /// 菜单项二:相机回到默认取景(点云回到刚进来时的大小)。框不动。
+  void _resetZoom() {
+    _fling.stop();
+    _snap.stop();
+    widget.controller.requestReframe();
+  }
+
   Map<String, String> _faceLabels(BuildContext context) {
     final l = AppL10n.of(context);
     return {
@@ -263,22 +277,67 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
           top: 8,
           left: 4,
           child: SafeArea(
-            child: TextButton.icon(
-              key: const ValueKey('selection-back'),
-              onPressed: widget.onExit,
-              icon: const Icon(
-                Icons.arrow_back_ios_new_rounded,
-                color: Colors.white,
-                size: 20,
-              ),
-              label: Text(
-                l.selectionBackToPreview,
-                style: const TextStyle(color: Colors.white, fontSize: 15),
-              ),
-              style: TextButton.styleFrom(
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-              ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextButton.icon(
+                  key: const ValueKey('selection-back'),
+                  onPressed: widget.onExit,
+                  icon: const Icon(
+                    Icons.arrow_back_ios_new_rounded,
+                    color: Colors.white,
+                    size: 20,
+                  ),
+                  label: Text(
+                    l.selectionBackToPreview,
+                    style: const TextStyle(color: Colors.white, fontSize: 15),
+                  ),
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                _AbsorbCameraGestures(
+                  child: PopupMenuButton<int>(
+                    key: const ValueKey('selection-more'),
+                    tooltip: '',
+                    color: const Color(0xFF2A2A2E),
+                    position: PopupMenuPosition.under,
+                    icon: Container(
+                      width: 34,
+                      height: 34,
+                      alignment: Alignment.center,
+                      decoration: const BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Color(0x33FFFFFF),
+                      ),
+                      child: const Icon(
+                        Icons.more_horiz_rounded,
+                        color: Colors.white,
+                        size: 20,
+                      ),
+                    ),
+                    onSelected: (i) => i == 0 ? _resetRotation() : _resetZoom(),
+                    itemBuilder: (_) => [
+                      PopupMenuItem<int>(
+                        value: 0,
+                        child: Text(
+                          l.selectionResetRotation,
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                      ),
+                      PopupMenuItem<int>(
+                        value: 1,
+                        child: Text(
+                          l.selectionResetZoom,
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ),
         ),
@@ -310,48 +369,48 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
           bottom: 0,
           child: SafeArea(
             top: false,
-            // [2026-07-28 实测] 点云视图是全屏 Positioned.fill(切换编辑态
-            // 时尺寸不变才不会跳),所以工具层必须自己吃掉手势 —— 否则拨
-            // 刻度尺时下层同时在 orbit(实测刻度尺只收到 1/5 位移)。
-            child: _AbsorbCameraGestures(
-              child: Container(
-                padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
-                color: const Color(0xE60B0B0D),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      l.selectionRotatePointCloud,
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 13,
-                      ),
-                    ),
-                    RulerScrubber(value: _rollDeg, onChanged: _onRoll),
-                    const SizedBox(height: 8),
-                    SizedBox(
-                      width: double.infinity,
-                      height: 50,
-                      child: ElevatedButton(
-                        onPressed: () =>
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text(l.selectionDensifyComingSoon),
-                              ),
+            // 底部面板**不**包手势拦截器:外层的 Scale 识别器会和刻度尺的
+            // 水平拖动抢竞技场,把滑轨拖动整个吃掉(实测框纹丝不动)。
+            // 下层点云视图改由 bottomGestureExclusion 按位置忽略该区域 ——
+            // 确定性判定,不依赖竞技场。
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+              color: const Color(0xE60B0B0D),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    l.selectionRotatePointCloud,
+                    style: const TextStyle(color: Colors.white70, fontSize: 13),
+                  ),
+                  RulerScrubber(
+                    value: _rollDeg,
+                    onChanged: _onRoll,
+                    originDeg: 0,
+                  ),
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 50,
+                    child: ElevatedButton(
+                      onPressed: () =>
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(l.selectionDensifyComingSoon),
                             ),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF0A84FF),
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
                           ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF0A84FF),
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
                         ),
-                        child: Text(l.selectionReadyToProcess),
                       ),
+                      child: Text(l.selectionReadyToProcess),
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
           ),

@@ -225,7 +225,7 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                           sz: 1,
                         ),
                     editing: _editing,
-                    bottomGestureExclusion: _editing ? 110 : 0,
+                    bottomGestureExclusion: _editing ? 200 : 0,
                   ),
                 ),
                 if (!_editing) ...[

@@ -25,6 +25,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/l10n/app_localizations.dart';
 import 'package:pocketworld_flutter/official_capture/selection_box.dart';
+import 'package:pocketworld_flutter/ui/official_capture/ruler_scrubber.dart';
 import 'package:pocketworld_flutter/ui/official_capture/selection_handles_3d.dart';
 import 'package:pocketworld_flutter/ui/official_capture/selection_tools_layer.dart';
 import 'package:pocketworld_flutter/ui/official_capture/sparse_cloud_view.dart';
@@ -258,6 +259,51 @@ void main() {
     final preset = kOrientationPresets.firstWhere((p) => p.label == target);
     expect(after.viewPitch, closeTo(preset.pitch, 1e-6));
     expect(primaryViewCubeFace(after.viewYaw, after.viewPitch), target);
+  });
+
+  testWidgets('⋯ 菜单:回到初始旋转角度 / 回到初始点云大小', (tester) async {
+    final (dir, ply) = await fixture(tester);
+    addTearDown(() => dir.delete(recursive: true));
+    await openViewer(tester, ply);
+    await tester.tap(find.text('Next'));
+    await _pumpUntilRealAsyncSettles(
+      tester,
+      () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
+    );
+    await tester.pumpAndSettle();
+    SelectionBox box() => tester
+        .widget<SparseCloudView>(find.byType(SparseCloudView))
+        .selectionBox!;
+
+    // 先把框转歪(拨滑轨),再用菜单还原。
+    await tester.drag(find.byType(RulerScrubber), const Offset(-70, 0));
+    await tester.pumpAndSettle();
+    // 注意:转轴 = 当前正对面的法向,默认视角正对 Front ⇒ 绕世界 Z 转,
+    // 绕 Y 的分量(yawDeg)并不会变 —— 断言矩阵整体偏离单位阵才对。
+    var moved = 0.0;
+    for (var i = 0; i < 9; i++) {
+      moved += (box().rot[i] - kIdentityRot[i]).abs();
+    }
+    expect(moved, greaterThan(0.1), reason: '滑轨应已转动框');
+
+    await tester.tap(find.byKey(const ValueKey('selection-more')));
+    await tester.pumpAndSettle();
+    expect(find.text('Reset Rotation'), findsOneWidget);
+    expect(find.text('Reset Zoom'), findsOneWidget);
+    await tester.tap(find.text('Reset Rotation'));
+    await tester.pumpAndSettle();
+    // 朝向回到轴对齐(单位阵),尺寸不动。
+    for (var i = 0; i < 9; i++) {
+      expect(box().rot[i], closeTo(kIdentityRot[i], 1e-12));
+    }
+
+    // 缩放:菜单还原到默认取景(不崩、工具层仍在即达标 —— 相机重置的
+    // 数值语义由 SparseCloudView 的 reframe 自身负责)。
+    await tester.tap(find.byKey(const ValueKey('selection-more')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Reset Zoom'));
+    await tester.pumpAndSettle();
+    expect(find.byType(SelectionToolsLayer), findsOneWidget);
   });
 
   testWidgets('加载失败:无编辑入口', (tester) async {

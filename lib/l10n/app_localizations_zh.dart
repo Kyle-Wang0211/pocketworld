@@ -436,4 +436,10 @@ class AppL10nZh extends AppL10n {
 
   @override
   String get selectionBackToPreview => '返回预览页面';
+
+  @override
+  String get selectionResetRotation => '回到初始旋转角度';
+
+  @override
+  String get selectionResetZoom => '回到初始点云大小';
 }

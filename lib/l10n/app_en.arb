@@ -306,5 +306,7 @@
   "cubeFaceBack": "Back",
   "cubeFaceLeft": "Left",
   "cubeFaceBottom": "Bottom",
-  "selectionBackToPreview": "Back to Preview"
+  "selectionBackToPreview": "Back to Preview",
+  "selectionResetRotation": "Reset Rotation",
+  "selectionResetZoom": "Reset Zoom"
 }

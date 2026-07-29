@@ -161,5 +161,7 @@
   "cubeFaceBack": "后",
   "cubeFaceLeft": "左",
   "cubeFaceBottom": "底",
-  "selectionBackToPreview": "返回预览页面"
+  "selectionBackToPreview": "返回预览页面",
+  "selectionResetRotation": "回到初始旋转角度",
+  "selectionResetZoom": "回到初始点云大小"
 }
