@@ -10,6 +10,11 @@ import 'dart:math' as math;
 
 const String kSelectionBoxFileName = 'official_selection_box.json';
 
+/// 存档版本。**初始框的判定算法一变就要 +1** —— 否则老草稿会一直复用上一版
+/// 算出的框,新算法根本看不到效果(用户实机指认"覆盖率明显不是 97%",实为
+/// 读到了 MAD 判据存下的小框)。版本不符 = 当作没有存档,按当前算法重算。
+const int kSelectionBoxSchemaVersion = 2;
+
 /// 单位旋转(轴对齐)。
 const List<double> kIdentityRot = <double>[1, 0, 0, 0, 1, 0, 0, 0, 1];
 
@@ -186,6 +191,7 @@ class SelectionBox {
   );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
+    'v': kSelectionBoxSchemaVersion,
     'cx': cx,
     'cy': cy,
     'cz': cz,
@@ -201,6 +207,8 @@ class SelectionBox {
   /// 任何形状不对/类型不对/非有限值 → null(容错:选区文件坏不许拖垮查看器)。
   static SelectionBox? fromJson(Object? j) {
     if (j is! Map) return null;
+    // 版本不符(含无版本的旧档)⇒ 交由调用方按当前算法重算初始框。
+    if (j['v'] != kSelectionBoxSchemaVersion) return null;
     double? d(Object? v) => (v is num && v.isFinite) ? v.toDouble() : null;
     final cx = d(j['cx']), cy = d(j['cy']), cz = d(j['cz']);
     final sx = d(j['sx']), sy = d(j['sy']), sz = d(j['sz']);

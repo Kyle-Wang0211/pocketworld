@@ -121,8 +121,9 @@ void main() {
     }
   });
 
-  test('旧存档(只有 yawDeg)仍能读,且与 withYaw 等价', () {
+  test('当前版本存档:只有 yawDeg 也能读,且与 withYaw 等价', () {
     final legacy = SelectionBox.fromJson(<String, dynamic>{
+      'v': kSelectionBoxSchemaVersion,
       'cx': 1.0,
       'cy': 2.0,
       'cz': 3.0,
@@ -144,5 +145,32 @@ void main() {
     for (var i = 0; i < 9; i++) {
       expect(legacy!.rot[i], closeTo(direct.rot[i], 1e-12));
     }
+  });
+
+  test('旧版本存档一律作废(算法变更后必须按当前算法重算初始框)', () {
+    // [2026-07-29 用户实机指认"覆盖率明显不是 97%"] 根因不是判据不准,而是
+    // 老草稿里存着上一版(MAD 判据)算出的小框,isSaneFor 判它"可用"就直接
+    // 复用了 —— 新算法根本没跑。版本号是这条的结构性防线。
+    const body = {
+      'cx': 0.0,
+      'cy': 0.0,
+      'cz': 0.0,
+      'sx': 1.0,
+      'sy': 1.0,
+      'sz': 1.0,
+      'yawDeg': 0.0,
+    };
+    expect(SelectionBox.fromJson(body), isNull, reason: '无版本号 = 旧档');
+    expect(
+      SelectionBox.fromJson({...body, 'v': kSelectionBoxSchemaVersion - 1}),
+      isNull,
+    );
+    expect(
+      SelectionBox.fromJson({...body, 'v': kSelectionBoxSchemaVersion}),
+      isNotNull,
+    );
+    // 自己写出来的一定读得回来。
+    const b = SelectionBox(cx: 1, cy: 2, cz: 3, sx: 4, sy: 5, sz: 6);
+    expect(SelectionBox.fromJson(b.toJson()), isNotNull);
   });
 }
