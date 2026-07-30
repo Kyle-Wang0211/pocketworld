@@ -95,13 +95,38 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
       ..addListener(_onFlingTick);
     // 相机一动可能换正对面 ⇒ 换转轴、黄标归位。
     widget.camera.addListener(_onCameraChanged);
+    // 相机此刻可能已有值(浏览态一直在跑),不会再触发上面的监听 ⇒ 首帧后
+    // 主动对齐一次。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _alignToNearestFaceOnce();
+    });
   }
 
   void _onCameraChanged() {
     // 拨滑轨自己造成的相机变化不算"用户转了视角",否则会当场把基准和读数
     // 重置掉(用户实机指认"点云自动重置到初始角度")。
     if (_rolling || !mounted) return;
+    _alignToNearestFaceOnce();
     setState(_rebaseRoll);
+  }
+
+  bool _alignedOnce = false;
+
+  /// 进编辑时把相机对齐到框最近的主面 —— 每次编辑只做一次。
+  ///
+  /// [2026-07-30 实机定罪] 框带独立朝向是**功能**(滑轨语义 = 刻度转一圈点云
+  /// 转 360°,转半圈框相对场景自然歪);滑轨转动期间相机与框同步转,相对姿态
+  /// 恒为正对,骰子不歪、2D 矩形贴合。破裂只发生在**重开草稿**:框朝向落了盘
+  /// 而当时的视角没落盘 ⇒ 框歪 41.2° 配默认俯视相机 ⇒ 骰子被画成菱形(用户
+  /// 实机指认"立方体没有水平放置")。修相机而不是修框:框是用户的选区,不能
+  /// 动;取"最近主面"而非固定 Top,视角跳变最小,框 rot=I 的新采集下相机本就
+  /// 正对 ⇒ _snapToFace 自带幂等 early-return,零跳变。
+  void _alignToNearestFaceOnce() {
+    if (_alignedOnce) return;
+    if (_cam == null) return;
+    _alignedOnce = true;
+    final (ry, rp, _) = decomposeViewMatrix(_relPose);
+    _snapToFace(primaryViewCubeFace(ry, rp));
   }
 
   @override

@@ -29,6 +29,8 @@ class BoxScreenBasis {
     required this.vAxis,
     required this.hSx,
     required this.vSy,
+    required this.axSx,
+    required this.axSy,
     required this.scale,
     required this.cxS,
     required this.cyS,
@@ -39,6 +41,13 @@ class BoxScreenBasis {
 
   /// 该局部轴单位向量的屏幕分量(带符号;拖拽方向映射用)。
   final double hSx, vSy;
+
+  /// 局部三轴单位向量的屏幕 x / y 分量(px per 世界长度,带符号)。
+  ///
+  /// 矩形边长不能用"盒沿某轴的尺寸 × scale" —— 那只在该局部轴与屏幕轴平行时
+  /// 成立。框允许任意朝向(滑轨转框 + 用户自由转视角),斜朝向下真实投影宽度
+  /// 是三轴投影分量的绝对值之和,必须逐轴累加。
+  final List<double> axSx, axSy;
 
   /// f / centerDepth —— 世界长度 → 屏幕像素(正交近似)。
   final double scale;
@@ -71,17 +80,25 @@ BoxScreenBasis boxScreenBasis(CloudProjection proj, SelectionBox box) {
     sx[a] = (px - c0x) / eps;
     sy[a] = (py - c0y) / eps;
   }
-  var h = 0, v = 0;
+  // 水平轴取屏幕 x 分量最大者;垂直轴只在**剩下两轴**里选 —— 独立取最大时
+  // 两者会撞到同一轴(例:框斜 45° + 正俯视,x/z 的 |sx|、|sy| 全相等),
+  // release 下 assert 不生效,basis 就是坏的。
+  var h = 0;
   for (var a = 1; a < 3; a++) {
     if (sx[a].abs() > sx[h].abs()) h = a;
-    if (sy[a].abs() > sy[v].abs()) v = a;
   }
-  assert(h != v, 'boxScreenBasis: 视角退化,水平/垂直命中同一局部轴');
+  var v = -1;
+  for (var a = 0; a < 3; a++) {
+    if (a == h) continue;
+    if (v < 0 || sy[a].abs() > sy[v].abs()) v = a;
+  }
   return BoxScreenBasis(
     hAxis: h,
     vAxis: v,
     hSx: sx[h],
     vSy: sy[v],
+    axSx: sx,
+    axSy: sy,
     // 正交下缩放与深度无关(f/camDist,矩形与盒投影严格重合 —— 守门测试
     // 锁);透视下保留旧口径(盒中心深度的正交近似)。
     scale: proj.orthographic ? proj.f / proj.camDist : proj.f / d0,
@@ -93,9 +110,18 @@ BoxScreenBasis boxScreenBasis(CloudProjection proj, SelectionBox box) {
 double _sizeOfAxis(SelectionBox b, int axis) =>
     axis == 0 ? b.sx : (axis == 1 ? b.sy : b.sz);
 
+/// 盒投影的屏幕对齐外接矩形。
+///
+/// 逐轴累加 |半尺寸 × 该轴屏幕分量| —— 这就是有朝向盒投影的支撑函数,任意朝向
+/// / 任意视角下都严格等于盒 8 角投影的包围盒(正交下逐位相等,守门测试锁)。
+/// 轴对齐时退化为旧口径 size/2 × scale,既有 11 例守门逐位不变。
 ui.Rect selectionScreenRect(BoxScreenBasis b, SelectionBox box) {
-  final hw = _sizeOfAxis(box, b.hAxis) / 2 * b.scale;
-  final hh = _sizeOfAxis(box, b.vAxis) / 2 * b.scale;
+  var hw = 0.0, hh = 0.0;
+  for (var a = 0; a < 3; a++) {
+    final half = _sizeOfAxis(box, a) / 2;
+    hw += half * b.axSx[a].abs();
+    hh += half * b.axSy[a].abs();
+  }
   return ui.Rect.fromCenter(
     center: ui.Offset(b.cxS, b.cyS),
     width: hw * 2,
@@ -157,11 +183,13 @@ SelectionBox applyRectHandleDrag({
     final growPx = screenDelta.dx * hc.side;
     // 受控的是局部 hAxis;该手柄对应局部面的符号 = 屏幕侧 × 轴屏幕方向符号
     final faceSign = hc.side * (basis.hSx >= 0 ? 1 : -1);
+    // 矩形边对该局部轴的敏感度 = |轴的屏幕 x 分量|(斜朝向下 < scale);用
+    // scale 会让斜框拖不跟手。轴对齐时二者相等。
     out = _growAxis(
       out,
       basis.hAxis,
       faceSign,
-      growPx / basis.scale,
+      growPx / _sensitivity(basis.axSx[basis.hAxis], basis.scale),
       minHalfSize,
     );
   }
@@ -172,11 +200,18 @@ SelectionBox applyRectHandleDrag({
       out,
       basis.vAxis,
       faceSign,
-      growPx / basis.scale,
+      growPx / _sensitivity(basis.axSy[basis.vAxis], basis.scale),
       minHalfSize,
     );
   }
   return out;
+}
+
+/// 轴近乎垂直于该屏幕方向时敏感度 →0,除法会把拖动放大成纸片/巨盒;
+/// 退回 scale 兜底(该轴本来就不该被这个手柄控,选轴已优先避开)。
+double _sensitivity(double axisScreenComponent, double scale) {
+  final s = axisScreenComponent.abs();
+  return s > scale.abs() * 0.25 ? s : scale.abs();
 }
 
 /// 局部轴 axis 的 faceSign 面外扩 grow(世界长度;负=收缩),对面不动。

@@ -595,4 +595,56 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Next'), findsNothing);
   });
+  // ── [2026-07-30 实机定罪] 斜朝向存档:进编辑必须把相机对齐到框 ────────
+  //
+  // 手机草稿实测 rot 带 yawDeg=-41.2°(滑轨转框留下的**合法**朝向:滑轨
+  // 语义就是"刻度转一圈点云转 360°",转半圈框相对场景自然是歪的)。滑轨
+  // 转动期间相机与框同步转、相对姿态恒为正对,所以骰子不歪、矩形贴合;
+  // 破裂只发生在**重开草稿**:框朝向落了盘,当时的视角没落盘 ⇒ 框歪 41°
+  // 而相机是默认俯视,相对姿态歪 41° ⇒ 骰子被画成菱形(用户实机指认
+  // "立方体没有水平放置")。修法 = 进编辑时对齐到最近主面一次。
+  testWidgets('斜朝向存档(yawDeg=-41.2°)进编辑:骰子回正(相对姿态落在 90° 倍数)', (tester) async {
+    final (dir, ply) = await fixture(tester);
+    addTearDown(() => dir.delete(recursive: true));
+    await tester.runAsync(
+      () => File('${dir.path}/official_selection_box.json').writeAsString(
+        '{"v":2,"cx":0.0,"cy":0.0,"cz":0.0,'
+        '"sx":3.4273421857647204,"sy":2.9928319280554696,'
+        '"sz":3.9394953630036667,'
+        '"rot":[0.7522755429705815,0.0,0.6588486225593229,'
+        '0.0,1.0,0.0,'
+        '-0.6588486225593229,0.0,0.7522755429705815],'
+        '"yawDeg":-41.21212121212105}',
+      ),
+    );
+    await openViewer(tester, ply);
+
+    await tester.tap(find.text('Next'));
+    await _pumpUntilRealAsyncSettles(
+      tester,
+      () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
+    );
+    await tester.pumpAndSettle();
+
+    // 存档确实是斜的(否则本用例什么都没测到)。
+    final box = boxOf(tester)!;
+    expect(_rotDev(box), greaterThan(0.5), reason: '存档框应带 41° 朝向');
+
+    // 骰子读的是"框相对相机"的姿态:立方体正着放 ⟺ 三分量都落在 90° 倍数。
+    final cube = tester.widget<ViewCube>(
+      find.byKey(const ValueKey('view-cube')),
+    );
+    for (final (name, v) in [
+      ('yaw', cube.viewYaw),
+      ('pitch', cube.viewPitch),
+      ('roll', cube.viewRoll),
+    ]) {
+      final q = v / (math.pi / 2);
+      expect(
+        (q - q.roundToDouble()).abs(),
+        lessThan(0.02),
+        reason: '骰子 $name=${v * 180 / math.pi}° 不是 90° 的整数倍(立方体歪着)',
+      );
+    }
+  });
 }

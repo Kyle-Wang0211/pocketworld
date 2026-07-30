@@ -207,4 +207,72 @@ void main() {
     expect(rect.top, closeTo(minY, 1e-6));
     expect(rect.bottom, closeTo(maxY, 1e-6));
   });
+
+  // ── [2026-07-30 实机定罪] 斜朝向框:矩形必须等于盒投影的真实外接范围 ──
+  //
+  // 病理:草稿存档里的框带 yawDeg=-41.2°(滑轨转框留下的合法朝向)。旧
+  // selectionScreenRect 把"盒沿局部轴的尺寸"直接当屏幕边长,只在局部轴与
+  // 屏幕轴平行时成立;斜 41.2° 时盒真实投影宽 = sx·cos41+sz·sin41 = 5.18,
+  // 而矩形只画 sx = 3.43 ⇒ 矩形画在盒里面小 34%,矩形外那一圈点其实在 3D
+  // 盒内(判定为内、不红)—— 用户实机报"框外的点云没有变红"的真凶。
+  group('斜朝向框(实机草稿 yawDeg=-41.2°)', () {
+    final skew = SelectionBox.withYaw(
+      cx: -0.2268750841983959,
+      cy: -0.2792477736933909,
+      cz: 2.1342483015100395,
+      sx: 3.4273421857647204,
+      sy: 2.9928319280554696,
+      sz: 3.9394953630036667,
+      yawDeg: -41.21212121212105,
+    );
+
+    ({Rect rect, Rect trueBounds}) measure({
+      double yaw = 0,
+      double pitch = 0,
+      bool ortho = true,
+    }) {
+      final proj = CloudCamera(
+        yaw: yaw,
+        pitch: pitch,
+        zoom: 1,
+        panX: 0,
+        panY: 0,
+        pivotX: skew.cx,
+        pivotY: skew.cy,
+        pivotZ: skew.cz,
+        radius: 3,
+        orthographic: ortho,
+      ).projectionFor(const Size(400, 800));
+      final rect = selectionScreenRect(boxScreenBasis(proj, skew), skew);
+      var x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+      for (final c in selectionBoxCorners(skew)) {
+        final (sx, sy, _) = proj.project(c[0], c[1], c[2]);
+        x0 = math.min(x0, sx);
+        x1 = math.max(x1, sx);
+        y0 = math.min(y0, sy);
+        y1 = math.max(y1, sy);
+      }
+      return (rect: rect, trueBounds: Rect.fromLTRB(x0, y0, x1, y1));
+    }
+
+    test('正俯视(初始视角):矩形 = 盒 8 角投影外接矩形', () {
+      final m = measure(yaw: math.pi, pitch: -math.pi / 2);
+      expect(m.rect.left, closeTo(m.trueBounds.left, 1e-6));
+      expect(m.rect.top, closeTo(m.trueBounds.top, 1e-6));
+      expect(m.rect.width, closeTo(m.trueBounds.width, 1e-6));
+      expect(m.rect.height, closeTo(m.trueBounds.height, 1e-6));
+    });
+
+    test('Front 视角:矩形 = 盒 8 角投影外接矩形', () {
+      final m = measure();
+      expect(m.rect.width, closeTo(m.trueBounds.width, 1e-6));
+      expect(m.rect.height, closeTo(m.trueBounds.height, 1e-6));
+    });
+
+    test('45° 斜视(旧实现选轴平局退化):h≠v 且矩形仍外接', () {
+      final m = measure(yaw: math.pi / 4, pitch: -math.pi / 2);
+      expect(m.rect.width, closeTo(m.trueBounds.width, 1e-6));
+      expect(m.rect.height, closeTo(m.trueBounds.height, 1e-6));
+    });
+  });
 }
