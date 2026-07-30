@@ -328,6 +328,41 @@ void main() {
     }
   });
 
+  testWidgets('拨滑轨 = 点云转、框在屏幕上不动(复刻 RS)', (tester) async {
+    final (dir, ply) = await fixture(tester);
+    addTearDown(() => dir.delete(recursive: true));
+    await openViewer(tester, ply);
+    await tester.tap(find.text('Next'));
+    await _pumpUntilRealAsyncSettles(
+      tester,
+      () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
+    );
+    await tester.pumpAndSettle();
+    ViewCube cube() => tester.widget<ViewCube>(find.byType(ViewCube));
+    List<double> rot() => tester
+        .widget<SparseCloudView>(find.byType(SparseCloudView))
+        .selectionBox!
+        .rot;
+
+    final poseBefore = [cube().viewYaw, cube().viewPitch, cube().viewRoll];
+    final rotBefore = [...rot()];
+    await tester.drag(find.byType(RulerScrubber), const Offset(-70, 0));
+    await tester.pumpAndSettle();
+
+    // ① 框相对相机的姿态不变 ⇒ 框在屏幕上纹丝不动(骰子读的就是这个相对
+    //    姿态,所以骰子也不该动)。
+    final poseAfter = [cube().viewYaw, cube().viewPitch, cube().viewRoll];
+    for (var i = 0; i < 3; i++) {
+      expect(poseAfter[i], closeTo(poseBefore[i], 1e-6), reason: '框在屏幕上动了');
+    }
+    // ② 框在世界里确实转了 ⇒ 它相对点云的关系变了,选区随之改变。
+    var moved = 0.0;
+    for (var i = 0; i < 9; i++) {
+      moved += (rot()[i] - rotBefore[i]).abs();
+    }
+    expect(moved, greaterThan(0.1), reason: '框相对点云没转,等于什么都没做');
+  });
+
   testWidgets('⋯ 菜单:回到初始旋转角度 / 回到初始点云大小', (tester) async {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));

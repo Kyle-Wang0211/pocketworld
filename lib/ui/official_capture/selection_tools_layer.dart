@@ -19,6 +19,8 @@ import 'package:flutter/physics.dart';
 import '../../l10n/app_localizations.dart';
 import '../../official_capture/selection_box.dart';
 import 'ruler_scrubber.dart';
+import 'cloud_camera.dart'
+    show composeViewMatrix, decomposeViewMatrix, mulMatrix;
 import 'sparse_cloud_view.dart' show CloudViewCamera, CloudViewController;
 import 'view_cube.dart';
 
@@ -109,6 +111,7 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     widget.controller.moveTo((
       yaw: yaw,
       pitch: pitch.clamp(-_kPitchLimit, _kPitchLimit),
+      roll: 0, // 手动 orbit 不带滚转
       zoom: cam.zoom,
       panX: cam.panX,
       panY: cam.panY,
@@ -162,9 +165,26 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
   /// [2026-07-29 用户实机指认"立方体正面时框却是斜的"] 此前写成 **+**:
   /// 框绕 Y 转了 θ 时,要正对框的某个面相机也得转 +θ,相对朝向应当抵消
   /// (相减)。写成相加会让骰子与框差 2θ —— 骰子显示"后"正对,框却斜着。
-  double get _boxYawRad => widget.box.yawDeg * math.pi / 180.0;
   CloudViewCamera? get _cam => widget.camera.value;
-  double get _effectiveYaw => (_cam?.yaw ?? 0) - _boxYawRad;
+
+  /// 框相对相机的完整姿态 = M_camera · box.rot(框局部 → 相机系)。
+  ///
+  /// [2026-07-29] 此前用 `cam.yaw − box.yawDeg` 近似,只在绕竖直轴时成立;
+  /// 现在滑轨会给相机带来滚转,必须走完整矩阵。骰子读它 ⇒ 框在屏幕上不动
+  /// 时骰子也不动。
+  List<double> get _relPose {
+    final cam = _cam;
+    if (cam == null) return kIdentityRot;
+    return mulMatrix(
+      composeViewMatrix(cam.yaw, cam.pitch, cam.roll),
+      widget.box.rot,
+    );
+  }
+
+  double get _effectiveYaw {
+    final (y, _, _) = decomposeViewMatrix(_relPose);
+    return y;
+  }
 
   void _onSnapTick() {
     final t = Curves.easeOutCubic.transform(_snap.value);
@@ -173,6 +193,7 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     widget.controller.moveTo((
       yaw: _fromYaw + (_toYaw - _fromYaw) * t,
       pitch: _fromPitch + (_toPitch - _fromPitch) * t,
+      roll: 0,
       zoom: cam.zoom,
       panX: cam.panX,
       panY: cam.panY,
@@ -186,20 +207,24 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
   /// yaw 走最短角差、pitch 直插 —— 相机 up 始终朝上,不产生滚转。
   void _snapToFace(String label) {
     final preset = kOrientationPresets.firstWhere((p) => p.label == label);
+    final cam = _cam;
+    if (cam == null) return;
     var targetYaw = preset.yaw;
     if (label == 'Top' || label == 'Bottom') {
-      // 极面朝向退化(世界 +Y 与视线平行):保留当前朝向的最近 90° 倍数,
+      // 极面朝向退化(框的 +Y 与视线平行):保留当前朝向的最近 90° 倍数,
       // 从侧视角进俯视时才不会莫名其妙横转一圈。
       const q = math.pi / 2;
       targetYaw = (_effectiveYaw / q).roundToDouble() * q;
     }
-    // 目标是"观察方向",写回相机要扣掉滑杆分量。
-    final cam = _cam;
-    if (cam == null) return;
+    // 目标相对姿态 = 该面正对;反解相机姿态 = 目标 · box.rotᵀ。
+    final target = composeViewMatrix(targetYaw, preset.pitch, 0);
+    final r = widget.box.rot;
+    final rotT = <double>[r[0], r[3], r[6], r[1], r[4], r[7], r[2], r[5], r[8]];
+    final (ty, tp, _) = decomposeViewMatrix(mulMatrix(target, rotT));
     _fromYaw = cam.yaw;
     _fromPitch = cam.pitch;
-    _toPitch = preset.pitch;
-    var delta = (targetYaw + _boxYawRad) - _fromYaw;
+    _toPitch = tp;
+    var delta = ty - _fromYaw;
     delta = delta.remainder(2 * math.pi);
     if (delta > math.pi) delta -= 2 * math.pi;
     if (delta < -math.pi) delta += 2 * math.pi;
@@ -227,6 +252,9 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
   List<double> _rollBaseRot = kIdentityRot;
   List<double> _rollBaseCenter = const [0, 0, 0];
 
+  /// 基准相机(视图矩阵)与其 zoom/pan/pivot —— 拨滑轨要同步转相机。
+  List<double> _rollBaseView = kIdentityRot;
+
   /// 我自己 emit 出去的框。父级回传的若不是它,说明框被别的入口改了
   /// (拖手柄),此时必须重新烘焙基准,否则拨滑轨会把那次改动拽回去。
   SelectionBox? _rollEmitted;
@@ -234,6 +262,10 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
   void _rebaseRoll() {
     _rollBaseRot = widget.box.rot;
     _rollBaseCenter = [widget.box.cx, widget.box.cy, widget.box.cz];
+    final cam = _cam;
+    if (cam != null) {
+      _rollBaseView = composeViewMatrix(cam.yaw, cam.pitch, cam.roll);
+    }
     _rollDeg = 0;
   }
 
@@ -246,7 +278,8 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
   void _syncRollAxis() {
     final cam = _cam;
     if (cam == null) return;
-    final label = primaryViewCubeFace(_effectiveYaw, cam.pitch);
+    final (ry, rp, _) = decomposeViewMatrix(_relPose);
+    final label = primaryViewCubeFace(ry, rp);
     if (label == _rollFace) return;
     _rollFace = label;
     final f = kViewCubeFaces.firstWhere((e) => e.label == label);
@@ -262,30 +295,49 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     _rebaseRoll();
   }
 
+  /// 拨滑轨 = **点云转、框不动**(复刻 RS)。
+  ///
+  /// [2026-07-29 用户签决] "RS 的做法是框不动,转的是点云;刻度转一圈是点云
+  /// 转 360°"。点云的世界坐标不能改(PLY 是交付物),所以:
+  ///   · 相机视图矩阵 M = M_base · R(a, θ) ⇒ 视觉上点云绕 a 转了 θ;
+  ///   · 框在世界里转 −θ(中心也绕枢轴转 −θ)⇒ M·q 恒等于 M_base·q_base,
+  ///     框在屏幕上纹丝不动,但它相对点云确实转了,选中的点集随之改变。
+  /// θ 归一化到 (-180,180],拨满一圈 θ 回到 0 ⇒ R = 单位阵 ⇒ 相机与框
+  /// 同时精确复原。
   void _onRoll(double v) {
-    // ⚠️ 只在**首次**同步轴。不能每次拨动都同步:框一转,骰子的正对面就
-    // 跟着变(骰子六面是模型的面),轴会被重算、黄标被悄悄归零 —— 用户
-    // 拨"一整圈"时中途换了好几根轴,自然回不到原点(实机指认)。
-    // 换轴只该由**相机变动**触发,见 _onCameraChanged。
     if (_rollFace.isEmpty) {
       _syncRollAxis();
       _rebaseRoll();
     }
     final cam = _cam;
     if (cam == null) return;
-    // 读数归一化到 (-180,180];R(轴,±180) 等价,所以拨满 360° 时读数回到
-    // 0 ⇒ R = 单位阵 ⇒ 框精确回到基准。
     final deg = v - 360.0 * ((v + 180.0) / 360.0).floorToDouble();
-    final r = rotAboutAxisDeg(_rollAxis, deg);
+    final fwd = rotAboutAxisDeg(_rollAxis, deg);
+    final inv = rotAboutAxisDeg(_rollAxis, -deg);
+
+    // ① 相机:绕世界轴 +θ ⇒ 点云在屏幕上转 θ。
+    final (ny, np, nr) = decomposeViewMatrix(mulMatrix(_rollBaseView, fwd));
+    widget.controller.moveTo((
+      yaw: ny,
+      pitch: np,
+      roll: nr,
+      zoom: cam.zoom,
+      panX: cam.panX,
+      panY: cam.panY,
+      pivotX: cam.pivotX,
+      pivotY: cam.pivotY,
+      pivotZ: cam.pivotZ,
+    ));
+
+    // ② 框:世界里转 −θ,与相机抵消 ⇒ 屏幕上不动。
     final dx = _rollBaseCenter[0] - cam.pivotX;
     final dy = _rollBaseCenter[1] - cam.pivotY;
     final dz = _rollBaseCenter[2] - cam.pivotZ;
     final next = widget.box.copyWith(
-      // 中心绕相机枢轴同步公转 ⇒ 框在屏幕上不跑位,只有朝向变。
-      cx: cam.pivotX + r[0] * dx + r[1] * dy + r[2] * dz,
-      cy: cam.pivotY + r[3] * dx + r[4] * dy + r[5] * dz,
-      cz: cam.pivotZ + r[6] * dx + r[7] * dy + r[8] * dz,
-      rot: mulRot(r, _rollBaseRot),
+      cx: cam.pivotX + inv[0] * dx + inv[1] * dy + inv[2] * dz,
+      cy: cam.pivotY + inv[3] * dx + inv[4] * dy + inv[5] * dz,
+      cz: cam.pivotZ + inv[6] * dx + inv[7] * dy + inv[8] * dz,
+      rot: mulRot(inv, _rollBaseRot),
     );
     setState(() => _rollDeg = deg);
     _rollEmitted = next;
@@ -408,14 +460,18 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
               onDragEnd: _onCubeDragEnd,
               child: ValueListenableBuilder<CloudViewCamera?>(
                 valueListenable: widget.camera,
-                builder: (_, cam, _) => ViewCube(
-                  key: const ValueKey('view-cube'),
-                  viewYaw: (cam?.yaw ?? 0) - _boxYawRad,
-                  viewPitch: cam?.pitch ?? 0,
-                  faceLabels: _faceLabels(context),
-                  onFaceTap: _snapToFace,
-                  size: 72,
-                ),
+                builder: (_, cam, _) {
+                  final (cy, cp, cr) = decomposeViewMatrix(_relPose);
+                  return ViewCube(
+                    key: const ValueKey('view-cube'),
+                    viewYaw: cy,
+                    viewPitch: cp,
+                    viewRoll: cr,
+                    faceLabels: _faceLabels(context),
+                    onFaceTap: _snapToFace,
+                    size: 72,
+                  );
+                },
               ),
             ),
           ),

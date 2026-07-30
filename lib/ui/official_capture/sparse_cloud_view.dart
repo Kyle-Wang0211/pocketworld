@@ -90,6 +90,10 @@ class _RoundIconButton extends StatelessWidget {
 typedef CloudViewCamera = ({
   double yaw,
   double pitch,
+
+  /// 屏幕滚转。[2026-07-29 用户签决"框不动、点云转"] 旋转滑轨绕任意世界轴
+  /// 转相机,分解出来一般带滚转,故提升为一等相机分量。
+  double roll,
   double zoom,
   double panX,
   double panY,
@@ -206,6 +210,7 @@ class _SparseCloudViewState extends State<SparseCloudView>
     with SingleTickerProviderStateMixin {
   double _yaw = _kDefaultYaw;
   double _pitch = _kDefaultPitch;
+  double _roll = 0;
   double _zoom = 1.0;
   double _panX = 0;
   double _panY = 0;
@@ -260,6 +265,7 @@ class _SparseCloudViewState extends State<SparseCloudView>
     if (cam != null) {
       _yaw = cam.yaw;
       _pitch = cam.pitch;
+      _roll = cam.roll;
       _zoom = cam.zoom;
       _panX = cam.panX;
       _panY = cam.panY;
@@ -289,6 +295,7 @@ class _SparseCloudViewState extends State<SparseCloudView>
   CloudProjection _projectionFor(Size size) => CloudCamera(
     yaw: _yaw,
     pitch: _pitch,
+    roll: _roll,
     zoom: _zoom,
     panX: _panX,
     panY: _panY,
@@ -363,6 +370,7 @@ class _SparseCloudViewState extends State<SparseCloudView>
     setState(() {
       _yaw = t.yaw;
       _pitch = t.pitch;
+      _roll = t.roll;
       _zoom = t.zoom;
       _panX = t.panX;
       _panY = t.panY;
@@ -375,6 +383,7 @@ class _SparseCloudViewState extends State<SparseCloudView>
     widget.onCameraChanged?.call((
       yaw: _yaw,
       pitch: _pitch,
+      roll: _roll,
       zoom: _zoom,
       panX: _panX,
       panY: _panY,
@@ -546,6 +555,7 @@ class _SparseCloudViewState extends State<SparseCloudView>
                               sprite: _sprite,
                               yaw: _yaw,
                               pitch: _pitch,
+                              roll: _roll,
                               zoom: _zoom,
                               panX: _panX,
                               panY: _panY,
