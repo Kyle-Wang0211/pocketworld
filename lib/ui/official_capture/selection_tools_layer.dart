@@ -19,8 +19,6 @@ import 'package:flutter/physics.dart';
 import '../../l10n/app_localizations.dart';
 import '../../official_capture/selection_box.dart';
 import 'ruler_scrubber.dart';
-import 'cloud_camera.dart'
-    show composeViewMatrix, decomposeViewMatrix, mulMatrix;
 import 'sparse_cloud_view.dart' show CloudViewCamera, CloudViewController;
 import 'view_cube.dart';
 
@@ -168,25 +166,14 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
   /// (相减)。写成相加会让骰子与框差 2θ —— 骰子显示"后"正对,框却斜着。
   CloudViewCamera? get _cam => widget.camera.value;
 
-  /// 框相对相机的完整姿态 = M_camera · box.rot(框局部 → 相机系)。
+  /// 骰子读**相机相对世界**的姿态,不掺框的朝向。
   ///
-  /// [2026-07-29] 此前用 `cam.yaw − box.yawDeg` 近似,只在绕竖直轴时成立;
-  /// 现在滑轨会给相机带来滚转,必须走完整矩阵。骰子读它 ⇒ 框在屏幕上不动
-  /// 时骰子也不动。
-  List<double> get _relPose {
-    final cam = _cam;
-    if (cam == null) return kIdentityRot;
-    return mulMatrix(
-      composeViewMatrix(cam.yaw, cam.pitch, cam.roll),
-      widget.box.rot,
-    );
-  }
-
-  double get _effectiveYaw {
-    final (y, _, _) = decomposeViewMatrix(_relPose);
-    return y;
-  }
-
+  /// [2026-07-29 用户实机指认"立方体和字还是歪的"] 此前读的是"框相对相机"
+  /// 的姿态 M_cam·box.rot —— 而框的朝向是历史遗留的(前几轮滑轨绕过任意
+  /// 轴,存档里带着非竖直的旋转分量),乘进去骰子就歪。骰子的六个面本来就
+  /// 是**世界轴**的名字(顶/底 = 重力,前后左右锚在世界水平轴上),读相机
+  /// 姿态才是自洽的;相机滚转恒 0 ⇒ 立方体永远正着放。
+  /// 拨滑轨时相机水平转 ⇒ 骰子跟着点云一起转,与"骰子跟模型绑定"一致。
   void _onSnapTick() {
     final t = Curves.easeOutCubic.transform(_snap.value);
     final cam = _cam;
@@ -206,26 +193,23 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
 
   /// 点击骰子某面 ⇒ 该面转到正对(建模软件同款一键归位)。
   /// yaw 走最短角差、pitch 直插 —— 相机 up 始终朝上,不产生滚转。
+  /// 点击骰子某面 ⇒ 相机转到正对该世界方向(建模软件同款一键归位)。
+  /// yaw 走最短角差、pitch 直插、roll 归零 —— 画面永远水平。
   void _snapToFace(String label) {
     final preset = kOrientationPresets.firstWhere((p) => p.label == label);
     final cam = _cam;
     if (cam == null) return;
     var targetYaw = preset.yaw;
     if (label == 'Top' || label == 'Bottom') {
-      // 极面朝向退化(框的 +Y 与视线平行):保留当前朝向的最近 90° 倍数,
+      // 极面朝向退化(视线与重力平行):保留当前朝向的最近 90° 倍数,
       // 从侧视角进俯视时才不会莫名其妙横转一圈。
       const q = math.pi / 2;
-      targetYaw = (_effectiveYaw / q).roundToDouble() * q;
+      targetYaw = (cam.yaw / q).roundToDouble() * q;
     }
-    // 目标相对姿态 = 该面正对;反解相机姿态 = 目标 · box.rotᵀ。
-    final target = composeViewMatrix(targetYaw, preset.pitch, 0);
-    final r = widget.box.rot;
-    final rotT = <double>[r[0], r[3], r[6], r[1], r[4], r[7], r[2], r[5], r[8]];
-    final (ty, tp, _) = decomposeViewMatrix(mulMatrix(target, rotT));
     _fromYaw = cam.yaw;
     _fromPitch = cam.pitch;
-    _toPitch = tp;
-    var delta = ty - _fromYaw;
+    _toPitch = preset.pitch;
+    var delta = targetYaw - _fromYaw;
     delta = delta.remainder(2 * math.pi);
     if (delta > math.pi) delta -= 2 * math.pi;
     if (delta < -math.pi) delta += 2 * math.pi;
@@ -436,18 +420,15 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
               onDragEnd: _onCubeDragEnd,
               child: ValueListenableBuilder<CloudViewCamera?>(
                 valueListenable: widget.camera,
-                builder: (_, cam, _) {
-                  final (cy, cp, cr) = decomposeViewMatrix(_relPose);
-                  return ViewCube(
-                    key: const ValueKey('view-cube'),
-                    viewYaw: cy,
-                    viewPitch: cp,
-                    viewRoll: cr,
-                    faceLabels: _faceLabels(context),
-                    onFaceTap: _snapToFace,
-                    size: 72,
-                  );
-                },
+                builder: (_, cam, _) => ViewCube(
+                  key: const ValueKey('view-cube'),
+                  viewYaw: cam?.yaw ?? 0,
+                  viewPitch: cam?.pitch ?? 0,
+                  viewRoll: cam?.roll ?? 0,
+                  faceLabels: _faceLabels(context),
+                  onFaceTap: _snapToFace,
+                  size: 72,
+                ),
               ),
             ),
           ),

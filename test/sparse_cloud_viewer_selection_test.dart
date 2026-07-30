@@ -19,6 +19,7 @@
 // (done 谓词版:超时会 fail 带诊断,不会像"跑满轮直接返回"那样掩盖真实
 // 卡死)。
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -328,7 +329,7 @@ void main() {
     }
   });
 
-  testWidgets('拨滑轨 = 点云转、框在屏幕上不动(复刻 RS)', (tester) async {
+  testWidgets('拨滑轨 = 点云转、框在屏幕上不动、画面永不歪', (tester) async {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));
     await openViewer(tester, ply);
@@ -339,31 +340,25 @@ void main() {
     );
     await tester.pumpAndSettle();
     ViewCube cube() => tester.widget<ViewCube>(find.byType(ViewCube));
-    List<double> rot() => tester
+    SelectionBox box() => tester
         .widget<SparseCloudView>(find.byType(SparseCloudView))
-        .selectionBox!
-        .rot;
+        .selectionBox!;
 
-    final poseBefore = [cube().viewYaw, cube().viewPitch, cube().viewRoll];
-    final rotBefore = [...rot()];
+    final camYaw0 = cube().viewYaw;
+    final boxYaw0 = box().yawDeg;
     await tester.drag(find.byType(RulerScrubber), const Offset(-70, 0));
     await tester.pumpAndSettle();
 
-    // ① 框相对相机的姿态不变 ⇒ 框在屏幕上纹丝不动(骰子读的就是这个相对
-    //    姿态,所以骰子也不该动)。
-    final poseAfter = [cube().viewYaw, cube().viewPitch, cube().viewRoll];
-    for (var i = 0; i < 3; i++) {
-      expect(poseAfter[i], closeTo(poseBefore[i], 1e-6), reason: '框在屏幕上动了');
-    }
-    // ② 框在世界里确实转了 ⇒ 它相对点云的关系变了,选区随之改变。
-    var moved = 0.0;
-    for (var i = 0; i < 9; i++) {
-      moved += (rot()[i] - rotBefore[i]).abs();
-    }
-    expect(moved, greaterThan(0.1), reason: '框相对点云没转,等于什么都没做');
-    // ③ [2026-07-29 用户签决] 画面永不滚转:骰子的 roll 必须恒为 0,否则
-    //    立方体会歪、文字横过来(此前按"正对面法向"转 ≈ 绕视线轴转的后果)。
-    expect(cube().viewRoll.abs(), lessThan(1e-6), reason: '立方体歪了');
+    // ① 点云真的转了(骰子读相机姿态,跟着点云一起转)。
+    final dCam = cube().viewYaw - camYaw0;
+    expect(dCam.abs(), greaterThan(0.1), reason: '点云没转');
+    // ② 框在世界里等量反向旋转 ⇒ 屏幕上纹丝不动。
+    //    注意符号:box.yawDeg 的旋向约定与相机 yaw 相反(withYaw 用负角
+    //    构造矩阵),所以"抵消"在读数上表现为**两者相等**,不是相加为零。
+    final dBox = (box().yawDeg - boxYaw0) * math.pi / 180.0;
+    expect(dBox, closeTo(dCam, 1e-6), reason: '框在屏幕上动了');
+    // ③ [2026-07-29 用户签决] 立方体永远正着放:相机滚转恒 0。
+    expect(cube().viewRoll.abs(), lessThan(1e-9), reason: '立方体/文字歪了');
   });
 
   testWidgets('连续拨动不会中途把点云重置回初始角度', (tester) async {
