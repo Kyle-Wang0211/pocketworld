@@ -73,6 +73,30 @@ void main() {
     expect(await File('${source.path}.jxl').exists(), isTrue);
   });
 
+  test(
+    'production gate remains active until every pipeline lease closes',
+    () async {
+      final capture = await createCompleteCapture('multi-lease', marked: true);
+      final coordinator = PhotoArchiveCoordinator(
+        codec: _ZlibCoordinatorCodec(),
+      );
+
+      final recording = coordinator.beginCaptureActivity();
+      final reconstruction = coordinator.beginReconstructionActivity(capture);
+
+      expect(coordinator.isProductionPipelineActive, isTrue);
+      expect(coordinator.activeProductionPipelineCount, 2);
+
+      await recording.close();
+      expect(coordinator.isProductionPipelineActive, isTrue);
+      expect(coordinator.activeProductionPipelineCount, 1);
+
+      await reconstruction.close();
+      expect(coordinator.isProductionPipelineActive, isFalse);
+      expect(coordinator.activeProductionPipelineCount, 0);
+    },
+  );
+
   test('startup discovery never migrates an unmarked legacy capture', () async {
     final legacy = await createCompleteCapture('legacy', marked: false);
     final future = await createCompleteCapture('future', marked: true);

@@ -43,11 +43,13 @@ class PhotoArchiveCoordinator {
       LinkedHashMap<String, Directory>();
   final Map<String, String> _triggerByPath = <String, String>{};
   final Set<String> _reconstructionOwners = <String>{};
-  int _foregroundActivityCount = 0;
+  int _activeProductionPipelineCount = 0;
   int _interruptionGeneration = 0;
   Future<void>? _pumpFuture;
 
   bool get hasPendingWork => _pending.isNotEmpty;
+  bool get isProductionPipelineActive => _activeProductionPipelineCount != 0;
+  int get activeProductionPipelineCount => _activeProductionPipelineCount;
 
   void requestSystemInterruption() {
     _interruptionGeneration++;
@@ -61,28 +63,47 @@ class PhotoArchiveCoordinator {
     );
   }
 
-  PhotoArchiveActivityLease beginCaptureActivity() {
-    _foregroundActivityCount++;
-    databaseCodec?.requestCancellation();
-    return PhotoArchiveActivityLease(() async {
-      if (_foregroundActivityCount > 0) _foregroundActivityCount--;
-      await _pumpQueue();
-    });
-  }
+  PhotoArchiveActivityLease beginCaptureActivity() =>
+      _beginProductionActivity();
 
   PhotoArchiveActivityLease beginReconstructionActivity(
     Directory captureDirectory,
-  ) {
-    final path = _canonicalKey(captureDirectory);
-    _foregroundActivityCount++;
-    _reconstructionOwners.add(path);
+  ) => _beginProductionActivity(reconstructionDirectory: captureDirectory);
+
+  PhotoArchiveActivityLease _beginProductionActivity({
+    Directory? reconstructionDirectory,
+  }) {
+    _activeProductionPipelineCount++;
+    if (reconstructionDirectory != null) {
+      _reconstructionOwners.add(_canonicalKey(reconstructionDirectory));
+    }
     databaseCodec?.requestCancellation();
-    return PhotoArchiveActivityLease(() async {
-      if (_foregroundActivityCount > 0) _foregroundActivityCount--;
+    return PhotoArchiveActivityLease(
+      () => _releaseProductionActivity(
+        reconstructionDirectory: reconstructionDirectory,
+      ),
+    );
+  }
+
+  Future<void> _releaseProductionActivity({
+    Directory? reconstructionDirectory,
+  }) async {
+    if (_activeProductionPipelineCount > 0) {
+      _activeProductionPipelineCount--;
+    }
+    if (reconstructionDirectory != null) {
+      final path = _canonicalKey(reconstructionDirectory);
       _reconstructionOwners.remove(path);
-      _pending[path] = captureDirectory.absolute;
-      await _pumpQueue();
-    });
+      _pending[path] = reconstructionDirectory.absolute;
+    }
+    if (isProductionPipelineActive) return;
+
+    // A production lease can close before an interruptible database codec has
+    // observed its cancellation request. Wait for that transaction to reach
+    // its source-safe boundary, then restart anything it requeued.
+    final active = _pumpFuture;
+    if (active != null) await active;
+    if (_pending.isNotEmpty) await _pumpQueue();
   }
 
   Future<void> noteArtifactsPersisted(Directory captureDirectory) async {
@@ -181,7 +202,7 @@ class PhotoArchiveCoordinator {
   Future<void> _runPump() async {
     final runGeneration = _interruptionGeneration;
     while (_pending.isNotEmpty &&
-        _foregroundActivityCount == 0 &&
+        !isProductionPipelineActive &&
         runGeneration == _interruptionGeneration) {
       final item = _pending.entries.first;
       _pending.remove(item.key);
@@ -210,7 +231,7 @@ class PhotoArchiveCoordinator {
       final result = await PhotoArchiveTransaction(
         codec: codec,
         canStartNext: () =>
-            _foregroundActivityCount == 0 &&
+            !isProductionPipelineActive &&
             runGeneration == _interruptionGeneration,
       ).archiveCapture(item.value);
       if (result.paused || result.failedNames.isNotEmpty) {
@@ -230,16 +251,16 @@ class PhotoArchiveCoordinator {
       }
       final database = databaseCodec;
       DatabaseArchiveRunResult? databaseResult;
-      if (database != null && _foregroundActivityCount == 0) {
+      if (database != null && !isProductionPipelineActive) {
         databaseResult = await DatabaseArchiveTransaction(
           codec: database,
           canContinue: () =>
-              _foregroundActivityCount == 0 &&
+              !isProductionPipelineActive &&
               runGeneration == _interruptionGeneration,
         ).archiveCapture(item.value);
         if (databaseResult.interrupted ||
             databaseResult.failed ||
-            _foregroundActivityCount != 0 ||
+            isProductionPipelineActive ||
             runGeneration != _interruptionGeneration) {
           _pending[item.key] = item.value;
           _triggerByPath[item.key] = trigger;

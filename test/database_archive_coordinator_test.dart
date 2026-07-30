@@ -151,6 +151,43 @@ void main() {
     },
   );
 
+  test(
+    'release during cancellation automatically resumes queued database work',
+    () async {
+      final capture = await createReadyCapture(
+        'cancel-release-race',
+        photoMarked: false,
+        databaseMarked: true,
+      );
+      final databaseCodec = _BlockingDatabaseCodec();
+      final coordinator = PhotoArchiveCoordinator(
+        codec: _ZlibPhotoCodec(),
+        databaseCodec: databaseCodec,
+      );
+
+      final archiveFuture = coordinator.noteArtifactsPersisted(capture);
+      await databaseCodec.started.future;
+      final lease = coordinator.beginCaptureActivity();
+      await lease.close();
+      await archiveFuture;
+
+      expect(databaseCodec.cancellationRequests, 1);
+      expect(databaseCodec.compressCalls, 2);
+      expect(
+        await File(
+          '${capture.path}/${DatabaseArchivePolicy.sourceFileName}',
+        ).exists(),
+        isFalse,
+      );
+      expect(
+        await File(
+          '${capture.path}/${DatabaseArchivePolicy.sourceFileName}.zpaq',
+        ).exists(),
+        isTrue,
+      );
+    },
+  );
+
   test('startup discovers an independent database marker', () async {
     final capture = await createReadyCapture(
       'database-only',
