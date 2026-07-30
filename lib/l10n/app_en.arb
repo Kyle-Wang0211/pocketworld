@@ -308,5 +308,6 @@
   "cubeFaceBottom": "Bottom",
   "selectionBackToPreview": "Back to Preview",
   "selectionResetRotation": "Reset Rotation",
-  "selectionResetZoom": "Reset Zoom"
+  "selectionResetZoom": "Reset Zoom",
+  "selectionResetBoxSize": "Reset Box Size"
 }

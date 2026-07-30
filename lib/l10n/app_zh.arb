@@ -163,5 +163,6 @@
   "cubeFaceBottom": "底",
   "selectionBackToPreview": "返回预览页面",
   "selectionResetRotation": "回到初始旋转角度",
-  "selectionResetZoom": "回到初始点云大小"
+  "selectionResetZoom": "回到初始点云大小",
+  "selectionResetBoxSize": "恢复原始框大小"
 }

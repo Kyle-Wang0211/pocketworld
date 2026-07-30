@@ -448,4 +448,7 @@ class AppL10nEn extends AppL10n {
 
   @override
   String get selectionResetZoom => 'Reset Zoom';
+
+  @override
+  String get selectionResetBoxSize => 'Reset Box Size';
 }

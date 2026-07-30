@@ -427,6 +427,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Reset Rotation'), findsOneWidget);
     expect(find.text('Reset Zoom'), findsOneWidget);
+    expect(find.text('Reset Box Size'), findsOneWidget);
     await tester.tap(find.text('Reset Rotation'));
     await tester.pumpAndSettle();
     // 朝向回到轴对齐(单位阵),尺寸不动。
@@ -441,6 +442,19 @@ void main() {
     await tester.tap(find.text('Reset Zoom'));
     await tester.pumpAndSettle();
     expect(find.byType(SelectionToolsLayer), findsOneWidget);
+
+    // 恢复原始框大小:先拨滑轨改朝向,再复位 —— 框必须回到按点云重算的初始
+    // 框(朝向为轴对齐、尺寸等于场景包围盒)。
+    await tester.drag(find.byType(RulerScrubber), const Offset(-50, 0));
+    await tester.pumpAndSettle();
+    expect(box().yawDeg.abs(), greaterThan(1.0));
+    await tester.tap(find.byKey(const ValueKey('selection-more')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Reset Box Size'));
+    await tester.pumpAndSettle();
+    for (var i = 0; i < 9; i++) {
+      expect(box().rot[i], closeTo(kIdentityRot[i], 1e-12));
+    }
   });
 
   testWidgets('加载失败:无编辑入口', (tester) async {

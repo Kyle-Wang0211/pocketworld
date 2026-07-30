@@ -442,4 +442,7 @@ class AppL10nZh extends AppL10n {
 
   @override
   String get selectionResetZoom => '回到初始点云大小';
+
+  @override
+  String get selectionResetBoxSize => '恢复原始框大小';
 }

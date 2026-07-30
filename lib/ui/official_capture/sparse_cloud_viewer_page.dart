@@ -152,6 +152,21 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
     );
   }
 
+  /// "恢复原始框大小":按当前点云重算初始框(位置/尺寸/朝向全复位)。
+  void _resetBoxSize(SparseCloudData cloud) {
+    final aabb = SparseCloudPainter.sceneAabbOf(cloud.xyz);
+    _onBoxChanged(
+      SelectionBox.initialFor(
+        cx: aabb.cx,
+        cy: aabb.cy,
+        cz: aabb.cz,
+        hx: aabb.hx,
+        hy: aabb.hy,
+        hz: aabb.hz,
+      ),
+    );
+  }
+
   Future<void> _exitEditing() async {
     _saveDebounce?.cancel();
     final b = _box;
@@ -288,6 +303,7 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                       camera: _camera,
                       controller: _cloudController,
                       onExit: () => unawaited(_exitEditing()),
+                      onResetBoxSize: () => _resetBoxSize(cloud),
                     ),
                   ),
               ],

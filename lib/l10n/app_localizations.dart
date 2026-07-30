@@ -870,6 +870,12 @@ abstract class AppL10n {
   /// In en, this message translates to:
   /// **'Reset Zoom'**
   String get selectionResetZoom;
+
+  /// No description provided for @selectionResetBoxSize.
+  ///
+  /// In en, this message translates to:
+  /// **'Reset Box Size'**
+  String get selectionResetBoxSize;
 }
 
 class _AppL10nDelegate extends LocalizationsDelegate<AppL10n> {

@@ -40,6 +40,7 @@ class SelectionToolsLayer extends StatefulWidget {
     required this.camera,
     required this.controller,
     required this.onExit,
+    this.onResetBoxSize,
   });
 
   final SelectionBox box;
@@ -52,6 +53,10 @@ class SelectionToolsLayer extends StatefulWidget {
 
   /// 返回浏览态(工具层收起)。
   final VoidCallback onExit;
+
+  /// "恢复原始框大小":按当前点云重算初始框(位置/尺寸/朝向全复位)。
+  /// 由父级实现 —— 它才持有点云数据。null 时不显示该菜单项。
+  final VoidCallback? onResetBoxSize;
 
   @override
   State<SelectionToolsLayer> createState() => _SelectionToolsLayerState();
@@ -346,8 +351,10 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
           top: 8,
           left: 4,
           child: SafeArea(
-            child: Row(
+            child: Column(
               mainAxisSize: MainAxisSize.min,
+              // [2026-07-29 用户签决] "⋯" 放在"返回预览页面"**下方、左对齐**。
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 TextButton.icon(
                   key: const ValueKey('selection-back'),
@@ -366,13 +373,15 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
                     padding: const EdgeInsets.symmetric(horizontal: 8),
                   ),
                 ),
-                const SizedBox(width: 4),
-                _AbsorbCameraGestures(
+                Padding(
+                  // 与返回箭头的左边缘对齐(TextButton 内边距 8)。
+                  padding: const EdgeInsets.only(left: 8, top: 2),
                   child: PopupMenuButton<int>(
                     key: const ValueKey('selection-more'),
                     tooltip: '',
                     color: const Color(0xFF2A2A2E),
                     position: PopupMenuPosition.under,
+                    padding: EdgeInsets.zero,
                     icon: Container(
                       width: 34,
                       height: 34,
@@ -387,7 +396,11 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
                         size: 20,
                       ),
                     ),
-                    onSelected: (i) => i == 0 ? _resetRotation() : _resetZoom(),
+                    onSelected: (i) => switch (i) {
+                      0 => _resetRotation(),
+                      1 => _resetZoom(),
+                      _ => widget.onResetBoxSize?.call(),
+                    },
                     itemBuilder: (_) => [
                       PopupMenuItem<int>(
                         value: 0,
@@ -403,6 +416,14 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
                           style: const TextStyle(color: Colors.white),
                         ),
                       ),
+                      if (widget.onResetBoxSize != null)
+                        PopupMenuItem<int>(
+                          value: 2,
+                          child: Text(
+                            l.selectionResetBoxSize,
+                            style: const TextStyle(color: Colors.white),
+                          ),
+                        ),
                     ],
                   ),
                 ),
@@ -547,22 +568,5 @@ class _CubeGesturesState extends State<_CubeGestures> {
       widget.onDragEnd(velocity);
     },
     child: widget.child,
-  );
-}
-
-/// 吃掉缩放/拖拽手势,阻止它们落到下层的点云视图(Stack 上层先命中,
-/// 先入竞技场者胜)。
-class _AbsorbCameraGestures extends StatelessWidget {
-  const _AbsorbCameraGestures({required this.child});
-
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) => GestureDetector(
-    behavior: HitTestBehavior.opaque,
-    onScaleStart: (_) {},
-    onScaleUpdate: (_) {},
-    onScaleEnd: (_) {},
-    child: child,
   );
 }
