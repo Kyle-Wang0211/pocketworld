@@ -1,6 +1,9 @@
+import 'dart:async';
 import 'dart:collection';
 import 'dart:io';
 
+import 'archive_audit_store.dart';
+import 'archive_background_scheduler.dart';
 import 'database_archive_codec.dart';
 import 'database_archive_policy.dart';
 import 'database_archive_transaction.dart';
@@ -24,15 +27,39 @@ class PhotoArchiveActivityLease {
 
 /// Serializes cold JPEG XL archive work across official captures.
 class PhotoArchiveCoordinator {
-  PhotoArchiveCoordinator({required this.codec, this.databaseCodec});
+  PhotoArchiveCoordinator({
+    required this.codec,
+    this.databaseCodec,
+    this.auditStore,
+    ArchiveBackgroundScheduler? backgroundScheduler,
+  }) : backgroundScheduler =
+           backgroundScheduler ?? const NoopArchiveBackgroundScheduler();
 
   final PhotoArchiveCodec codec;
   final DatabaseArchiveCodec? databaseCodec;
+  final OfficialArchiveAuditStore? auditStore;
+  final ArchiveBackgroundScheduler backgroundScheduler;
   final LinkedHashMap<String, Directory> _pending =
       LinkedHashMap<String, Directory>();
+  final Map<String, String> _triggerByPath = <String, String>{};
   final Set<String> _reconstructionOwners = <String>{};
   int _foregroundActivityCount = 0;
+  int _interruptionGeneration = 0;
   Future<void>? _pumpFuture;
+
+  bool get hasPendingWork => _pending.isNotEmpty;
+
+  void requestSystemInterruption() {
+    _interruptionGeneration++;
+    databaseCodec?.requestCancellation();
+    unawaited(
+      _recordAudit(
+        event: 'system_interrupted',
+        trigger: 'bg_processing',
+        details: const <String, Object?>{'work_remaining': true},
+      ),
+    );
+  }
 
   PhotoArchiveActivityLease beginCaptureActivity() {
     _foregroundActivityCount++;
@@ -59,15 +86,42 @@ class PhotoArchiveCoordinator {
   }
 
   Future<void> noteArtifactsPersisted(Directory captureDirectory) async {
-    _pending[_canonicalKey(captureDirectory)] = captureDirectory.absolute;
+    final key = _canonicalKey(captureDirectory);
+    _pending[key] = captureDirectory.absolute;
+    _triggerByPath[key] = 'artifacts_persisted';
+    await _recordAudit(
+      event: 'capture_enqueued',
+      trigger: 'artifacts_persisted',
+      captureId: _captureId(captureDirectory),
+      details: const <String, Object?>{'work_remaining': true},
+    );
+    await _scheduleBackground();
     await _pumpQueue();
   }
 
   /// Restarts only work explicitly opted in by the creation-time marker.
-  Future<void> discoverUnderDocuments(Directory documentsDirectory) async {
+  Future<void> discoverUnderDocuments(
+    Directory documentsDirectory, {
+    String trigger = 'startup',
+  }) async {
     final captures = Directory('${documentsDirectory.path}/captures_official');
+    await _recordAudit(
+      event: 'scan_started',
+      trigger: trigger,
+      details: const <String, Object?>{'work_remaining': true},
+    );
     try {
-      if (!await captures.exists()) return;
+      if (!await captures.exists()) {
+        await _recordAudit(
+          event: 'scan_completed',
+          trigger: trigger,
+          details: const <String, Object?>{
+            'candidates': 0,
+            'work_remaining': false,
+          },
+        );
+        return;
+      }
       final directories = <Directory>[];
       await for (final entity in captures.list(followLinks: false)) {
         if (entity is Directory) directories.add(entity);
@@ -81,9 +135,20 @@ class PhotoArchiveCoordinator {
         if (!photoEligible && !databaseEligible) {
           continue;
         }
-        _pending[_canonicalKey(capture)] = capture.absolute;
+        final key = _canonicalKey(capture);
+        _pending[key] = capture.absolute;
+        _triggerByPath[key] = trigger;
       }
+      if (_pending.isNotEmpty) await _scheduleBackground();
       await _pumpQueue();
+      await _recordAudit(
+        event: 'scan_completed',
+        trigger: trigger,
+        details: <String, Object?>{
+          'candidates': directories.length,
+          'work_remaining': _pending.isNotEmpty,
+        },
+      );
     } on FileSystemException {
       // Startup recovery is best effort and always fails closed.
     }
@@ -98,7 +163,15 @@ class PhotoArchiveCoordinator {
     final existing = _pumpFuture;
     if (existing != null) return existing;
     late final Future<void> started;
-    started = _runPump().whenComplete(() {
+    started = _runPump().whenComplete(() async {
+      if (_pending.isEmpty) {
+        await _recordAudit(
+          event: 'queue_drained',
+          trigger: 'coordinator',
+          details: const <String, Object?>{'work_remaining': false},
+        );
+        await _cancelScheduledBackground();
+      }
       if (identical(_pumpFuture, started)) _pumpFuture = null;
     });
     _pumpFuture = started;
@@ -106,34 +179,101 @@ class PhotoArchiveCoordinator {
   }
 
   Future<void> _runPump() async {
-    while (_pending.isNotEmpty && _foregroundActivityCount == 0) {
+    final runGeneration = _interruptionGeneration;
+    while (_pending.isNotEmpty &&
+        _foregroundActivityCount == 0 &&
+        runGeneration == _interruptionGeneration) {
       final item = _pending.entries.first;
       _pending.remove(item.key);
+      final trigger = _triggerByPath.remove(item.key) ?? 'coordinator';
       if (_reconstructionOwners.contains(item.key)) {
         _pending[item.key] = item.value;
+        _triggerByPath[item.key] = trigger;
         return;
       }
-      if (!await _isDurablyReady(item.value)) continue;
+      if (!await _isDurablyReady(item.value)) {
+        await _recordAudit(
+          event: 'capture_not_ready',
+          trigger: trigger,
+          captureId: _captureId(item.value),
+          details: const <String, Object?>{'work_remaining': false},
+        );
+        continue;
+      }
+      await _recordAudit(
+        event: 'capture_started',
+        trigger: trigger,
+        captureId: _captureId(item.value),
+        details: const <String, Object?>{'work_remaining': true},
+      );
       await removeTransientCapturePreviews(item.value);
       final result = await PhotoArchiveTransaction(
         codec: codec,
-        canStartNext: () => _foregroundActivityCount == 0,
+        canStartNext: () =>
+            _foregroundActivityCount == 0 &&
+            runGeneration == _interruptionGeneration,
       ).archiveCapture(item.value);
-      if (result.paused) {
+      if (result.paused || result.failedNames.isNotEmpty) {
         _pending[item.key] = item.value;
+        _triggerByPath[item.key] = trigger;
+        await _recordAudit(
+          event: result.paused ? 'capture_paused' : 'capture_retry_required',
+          trigger: trigger,
+          captureId: _captureId(item.value),
+          details: <String, Object?>{
+            'photos_archived': result.archivedNames.length,
+            'photos_failed': result.failedNames.length,
+            'work_remaining': true,
+          },
+        );
         return;
       }
       final database = databaseCodec;
+      DatabaseArchiveRunResult? databaseResult;
       if (database != null && _foregroundActivityCount == 0) {
-        final databaseResult = await DatabaseArchiveTransaction(
+        databaseResult = await DatabaseArchiveTransaction(
           codec: database,
-          canContinue: () => _foregroundActivityCount == 0,
+          canContinue: () =>
+              _foregroundActivityCount == 0 &&
+              runGeneration == _interruptionGeneration,
         ).archiveCapture(item.value);
-        if (databaseResult.interrupted || _foregroundActivityCount != 0) {
+        if (databaseResult.interrupted ||
+            databaseResult.failed ||
+            _foregroundActivityCount != 0 ||
+            runGeneration != _interruptionGeneration) {
           _pending[item.key] = item.value;
+          _triggerByPath[item.key] = trigger;
+          await _recordAudit(
+            event: databaseResult.interrupted
+                ? 'capture_paused'
+                : 'capture_retry_required',
+            trigger: trigger,
+            captureId: _captureId(item.value),
+            details: <String, Object?>{
+              'photos_archived': result.archivedNames.length,
+              'database_interrupted': databaseResult.interrupted,
+              'database_failed': databaseResult.failed,
+              'work_remaining': true,
+            },
+          );
           return;
         }
       }
+      await _recordAudit(
+        event: 'capture_completed',
+        trigger: trigger,
+        captureId: _captureId(item.value),
+        details: <String, Object?>{
+          'photos_archived': result.archivedNames.length,
+          'photos_skipped': result.skippedNames.length,
+          'photos_failed': result.failedNames.length,
+          if (databaseResult != null)
+            'database_archived': databaseResult.archived,
+          if (databaseResult != null)
+            'database_skipped': databaseResult.skipped,
+          'work_remaining': _pending.isNotEmpty,
+        },
+      );
     }
   }
 
@@ -161,4 +301,46 @@ class PhotoArchiveCoordinator {
   }
 
   String _canonicalKey(Directory directory) => directory.absolute.path;
+
+  String _captureId(Directory directory) =>
+      directory.path.split(Platform.pathSeparator).last;
+
+  Future<void> _scheduleBackground() async {
+    try {
+      await backgroundScheduler.schedule();
+    } catch (_) {
+      // Scheduling is an execution opportunity, never a source-safety gate.
+    }
+  }
+
+  Future<void> _cancelScheduledBackground() async {
+    try {
+      await backgroundScheduler.cancelScheduled();
+    } catch (_) {
+      // A stale system request only causes a later idempotent disk rescan.
+    }
+  }
+
+  Future<void> _recordAudit({
+    required String event,
+    required String trigger,
+    String? captureId,
+    Map<String, Object?> details = const <String, Object?>{},
+  }) async {
+    final store = auditStore;
+    if (store == null) return;
+    try {
+      await store.record(
+        ArchiveAuditEvent(
+          timestamp: DateTime.now().toUtc(),
+          event: event,
+          trigger: trigger,
+          captureId: captureId,
+          details: details,
+        ),
+      );
+    } catch (_) {
+      // Audit is observable evidence, never part of deletion authorization.
+    }
+  }
 }

@@ -85,6 +85,7 @@ Future<void> main() async {
       // ignore: avoid_print
       print('[AET-SMOKE] inside runZonedGuarded');
       WidgetsFlutterBinding.ensureInitialized();
+      await officialArchiveBackgroundRuntime.initialize();
       // Release-visible container-file log (Documents/pw_device_log.txt) —
       // print/debugPrint are invisible in release builds on device.
       unawaited(DeviceLog.init());

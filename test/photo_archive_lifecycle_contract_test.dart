@@ -34,8 +34,14 @@ void main() {
     'startup discovery is post-frame and marker-filtered by coordinator',
     () {
       final main = File('lib/main.dart').readAsStringSync();
+      final runtime = File(
+        'lib/official_capture/photo_archive_runtime.dart',
+      ).readAsStringSync();
       expect(main, contains('photoArchiveCoordinator.discoverUnderDocuments('));
       expect(main, contains('addPostFrameCallback'));
+      expect(main, contains('officialArchiveBackgroundRuntime.initialize()'));
+      expect(runtime, contains('MethodChannelArchiveBackgroundScheduler'));
+      expect(runtime, contains('OfficialArchiveAuditStore'));
     },
   );
 
@@ -46,6 +52,9 @@ void main() {
 
     expect(resume, contains('PhotoArchiveResolver'));
     expect(resume, contains('photoArchiveCodec'));
-    expect(resume, contains('_materializeArchivedJpegs(captureDir, frameMeta)'));
+    expect(
+      resume,
+      contains('_materializeArchivedJpegs(captureDir, frameMeta)'),
+    );
   });
 }

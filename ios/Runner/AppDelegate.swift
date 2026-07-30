@@ -32,6 +32,19 @@ import UIKit
       }
     }
 
+    // Automatic cold archive maintenance uses a separate BGProcessingTask.
+    // Register before launch returns so iOS can deliver a persisted request to
+    // a fresh process; Dart still owns every archive/deletion decision.
+    if #available(iOS 13.0, *) {
+      if let registrar = self.registrar(
+        forPlugin: "OfficialArchiveBackgroundTask"
+      ) {
+        OfficialArchiveBackgroundTask.shared.register(with: registrar)
+      } else {
+        NSLog("[AppDelegate] archive background registrar unavailable")
+      }
+    }
+
     // Background-continuation umbrella (iOS 26): the SfM finalize keeps running
     // if the user backgrounds the app mid-solve. MUST register the handler
     // before the app finishes launching, or the system drops the launch.

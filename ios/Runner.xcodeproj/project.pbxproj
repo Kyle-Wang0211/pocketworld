@@ -17,6 +17,7 @@
 		0F1C1A100000000000000011 /* OfficialAetherARKitPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A100000000000000001 /* OfficialAetherARKitPlugin.swift */; };
 		0F1C1A100000000000000012 /* OfficialReconUmbrella.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A100000000000000002 /* OfficialReconUmbrella.swift */; };
 		0F1C1A100000000000000013 /* PwARCameraLease.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A100000000000000003 /* PwARCameraLease.swift */; };
+		0F1C1A200000000000000014 /* OfficialArchiveBackgroundTask.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A200000000000000004 /* OfficialArchiveBackgroundTask.swift */; };
 		1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */ = {isa = PBXBuildFile; fileRef = 1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */; };
 		14CB8F85797E871FB08CEF0B /* libPods-Runner.a in Frameworks */ = {isa = PBXBuildFile; fileRef = F5466D0AB0BD551F80CEAE3D /* libPods-Runner.a */; };
 		331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C807B294A618700263BE5 /* RunnerTests.swift */; };
@@ -68,6 +69,7 @@
 		0F1C1A100000000000000001 /* OfficialAetherARKitPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OfficialAetherARKitPlugin.swift; sourceTree = "<group>"; };
 		0F1C1A100000000000000002 /* OfficialReconUmbrella.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OfficialReconUmbrella.swift; sourceTree = "<group>"; };
 		0F1C1A100000000000000003 /* PwARCameraLease.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PwARCameraLease.swift; sourceTree = "<group>"; };
+		0F1C1A200000000000000004 /* OfficialArchiveBackgroundTask.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OfficialArchiveBackgroundTask.swift; sourceTree = "<group>"; };
 		1498D2321E8E86230040F4C2 /* GeneratedPluginRegistrant.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GeneratedPluginRegistrant.h; sourceTree = "<group>"; };
 		1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = GeneratedPluginRegistrant.m; sourceTree = "<group>"; };
 		16019E67BE3B581AE0E2152F /* MetalRenderer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MetalRenderer.swift; sourceTree = "<group>"; };
@@ -191,6 +193,7 @@
 				0F1C1A100000000000000001 /* OfficialAetherARKitPlugin.swift */,
 				0F1C1A100000000000000002 /* OfficialReconUmbrella.swift */,
 				0F1C1A100000000000000003 /* PwARCameraLease.swift */,
+				0F1C1A200000000000000004 /* OfficialArchiveBackgroundTask.swift */,
 				16019E67BE3B581AE0E2152F /* MetalRenderer.swift */,
 				7779D977CD585B8DC1D4A1F9 /* SceneDelegate.swift */,
 				A1B2C3D4E5F60000DEAD0008 /* test_scene.jpg */,
@@ -480,6 +483,7 @@
 				0F1C1A100000000000000011 /* OfficialAetherARKitPlugin.swift in Sources */,
 				0F1C1A100000000000000012 /* OfficialReconUmbrella.swift in Sources */,
 				0F1C1A100000000000000013 /* PwARCameraLease.swift in Sources */,
+				0F1C1A200000000000000014 /* OfficialArchiveBackgroundTask.swift in Sources */,
 				03D62ABCFE668FE66D5CD107 /* MetalRenderer.swift in Sources */,
 				E0388DB63DBD4CF9745E00CE /* SceneDelegate.swift in Sources */,
 			);
