@@ -14,6 +14,13 @@ codec but does not relax the production invariants: old captures are immutable,
 the daily-use bundle is never replaced for test convenience, and every
 production archive commit must independently prove byte identity.
 
+The subsequent 25-image physical-iPhone parameter run used the same immutable
+106,507,504-byte JPEG input set for efforts 7, 10, and 11. Effort 10 reduced it
+to 87,282,911 bytes, and effort 11 produced the same 25 JXL files byte for
+byte. Production therefore uses effort 10: it is the lowest effort tied for the
+smallest eligible archive. Temperature, foreground state, and elapsed time did
+not participate in that size-first selection.
+
 ## Goals / Non-Goals
 
 **Goals:**
@@ -84,6 +91,10 @@ pixels and contains no Swift compression algorithm.
 The current production bridge is linked into the iOS Runner. The archive format
 and libjxl implementation are cross-platform; additional platform build wiring
 can reuse the same C ABI without changing stored data.
+
+The production Dart adapter passes effort 10 to the pinned native bridge.
+Changing this parameter requires a new physical-phone byte-exact benchmark and
+an explicit production decision; it is not inferred from encoder level alone.
 
 ### Candidate membership comes only from the authoritative bundle
 

@@ -19,6 +19,8 @@
 - [x] 4.1 Import the pinned libjxl 0.12.0 headers, static libraries, bridge source, and upstream notices from the verified benchmark bundle
 - [x] 4.2 Add a file-oriented FFI adapter and iOS Runner linking while preserving unsupported-platform fail-closed behavior
 - [x] 4.3 Verify native JPEG-to-JXL-to-byte-identical-JPEG fixture round trips and record the exact linked revisions
+- [x] 4.4 Select effort 10 from the physical-iPhone 100 MB size-first
+      benchmark and guard the production Dart default with a failing-first test
 
 ## 5. Verification
 

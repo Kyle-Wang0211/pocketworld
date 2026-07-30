@@ -79,6 +79,7 @@ durable. Cleanup MUST NOT target an unmarked capture.
 
 ### Requirement: Byte-exact JPEG XL transaction
 For each candidate, the system SHALL use JPEG XL JPEG-reconstruction mode and
+libjxl effort 10, as selected by the physical-iPhone size-first benchmark, and
 MUST prove that the reconstructed file is byte-for-byte identical to the
 original JPEG before committing an archive or deleting the source. Decoded
 pixel equality alone is insufficient.
@@ -86,6 +87,10 @@ pixel equality alone is insufficient.
 #### Scenario: Exact smaller archive
 - **WHEN** encoding succeeds, reconstruction matches every source byte, and the JXL file is smaller
 - **THEN** the system atomically commits the JXL and verified manifest entry before deleting the source JPEG
+
+#### Scenario: Production encoder configuration
+- **WHEN** the production JPEG XL codec is constructed without a test override
+- **THEN** it passes effort 10 to the pinned libjxl bridge
 
 #### Scenario: Reconstruction mismatch
 - **WHEN** reconstructed bytes differ by any byte or length

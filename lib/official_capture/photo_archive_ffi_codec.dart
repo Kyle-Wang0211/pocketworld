@@ -9,7 +9,7 @@ import 'photo_archive_policy.dart';
 
 /// Production JPEG XL codec backed by the pinned native libjxl bridge.
 class JxlFfiPhotoArchiveCodec implements PhotoArchiveCodec {
-  JxlFfiPhotoArchiveCodec({this.effort = 7});
+  JxlFfiPhotoArchiveCodec({this.effort = 10});
 
   final int effort;
   bool? _supported;

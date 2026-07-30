@@ -6,6 +6,9 @@ Future PocketWorld captures keep many full-resolution JPEG source frames after r
 
 - Mark only captures created by the new build with a durable, versioned photo-archive policy file.
 - After the final sparse PLY and metadata are durable and reconstruction resources are released, archive only manifest-referenced high-resolution JPEGs to JPEG XL in sequential background work.
+- Use libjxl effort 10, selected by the physical-iPhone 100 MB byte-exact
+  benchmark; effort 11 produced byte-identical archives and no additional
+  storage reduction.
 - Verify every candidate by reconstructing the JPEG and comparing its bytes with the source before committing the archive and deleting the source.
 - Keep the JPEG when encoding fails, verification fails, the archive is not smaller, required artifacts are missing, or capture/reconstruction work is active.
 - Persist an atomic archive manifest so interrupted work can safely resume for marked future captures.

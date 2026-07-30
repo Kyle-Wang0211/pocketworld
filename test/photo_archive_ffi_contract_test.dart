@@ -5,6 +5,10 @@ import 'package:pocketworld_flutter/official_capture/photo_archive_ffi_codec.dar
 import 'package:pocketworld_flutter/official_capture/photo_archive_policy.dart';
 
 void main() {
+  test('production JPEG XL archive uses the verified effort 10', () {
+    expect(JxlFfiPhotoArchiveCodec().effort, 10);
+  });
+
   test('desktop test process fails closed instead of loading iOS symbols', () {
     if (!Platform.isIOS) {
       expect(JxlFfiPhotoArchiveCodec().isSupported, isFalse);
@@ -75,7 +79,10 @@ void main() {
       'highway-LICENSE-BSD3',
       'skcms-LICENSE',
     ]) {
-      expect(File('ios/Vendor/JXL/licenses/$license').lengthSync(), greaterThan(0));
+      expect(
+        File('ios/Vendor/JXL/licenses/$license').lengthSync(),
+        greaterThan(0),
+      );
     }
   });
 }
