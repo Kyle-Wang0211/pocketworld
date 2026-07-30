@@ -513,6 +513,44 @@ void main() {
     expect(camOf().roll.abs(), greaterThan(0.05), reason: '手动 orbit 把滑轨的滚转清零了');
   });
 
+  testWidgets('进编辑的初始视角永远是正上方的"顶"(哪怕预览页转到了侧视)', (tester) async {
+    final (dir, ply) = await fixture(tester);
+    addTearDown(() => dir.delete(recursive: true));
+    await openViewer(tester, ply);
+
+    // 在**浏览态**把视角转到侧视(垂直拖 = 改 pitch)。
+    await tester.drag(find.byType(SparseCloudView), const Offset(0, 220));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Next'));
+    await _pumpUntilRealAsyncSettles(
+      tester,
+      () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
+    );
+    await tester.pumpAndSettle();
+
+    // [2026-07-30 用户签决] "初始视角永远是点云正上方的顶"。此前对齐到
+    // **最近主面**(从侧视进来就停在侧面),现在固定落到 Top。
+    final cam = tester
+        .widget<SelectionToolsLayer>(find.byType(SelectionToolsLayer))
+        .camera
+        .value!;
+    expect(
+      cam.pitch,
+      closeTo(-math.pi / 2, 0.03),
+      reason: '进编辑不是正上方俯视(pitch=${cam.pitch * 180 / math.pi}°)',
+    );
+    final box = tester
+        .widget<SparseCloudView>(find.byType(SparseCloudView))
+        .selectionBox!;
+    final rel = mulMatrix(
+      composeViewMatrix(cam.yaw, cam.pitch, cam.roll),
+      box.rot,
+    );
+    final (ry, rp, _) = decomposeViewMatrix(rel);
+    expect(primaryViewCubeFace(ry, rp), 'Top', reason: '骰子的正对面不是"顶"');
+  });
+
   testWidgets('连续拨动不会中途把点云重置回初始角度', (tester) async {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));

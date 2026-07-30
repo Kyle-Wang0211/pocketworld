@@ -6,8 +6,8 @@
 // State,连一次重建都没有,所以位置/角度/缩放天然连续。
 //
 // 本层 = 朝向骰子(跟随相机 + 点击某面归位)+ 返回 + 开始处理。
-// [2026-07-29 用户签决] 底部"旋转点云"滑轨回归,且升级语义:转轴 = 当前
-// 正对面的法向("按那个面为底开始旋转"),不再固定绕竖直轴。
+// [2026-07-30 用户签决] 底部"旋转点云"滑轨语义 = **钟表指针**:转轴恒为
+// 视线轴,点云在屏幕平面内原地打转(转轴四代变迁见 _rebaseRoll 上的注释)。
 import 'dart:async';
 import 'dart:math' as math;
 
@@ -98,7 +98,7 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     // 相机此刻可能已有值(浏览态一直在跑),不会再触发上面的监听 ⇒ 首帧后
     // 主动对齐一次。
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _alignToNearestFaceOnce();
+      if (mounted) _alignToTopOnce();
     });
   }
 
@@ -106,27 +106,28 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     // 拨滑轨自己造成的相机变化不算"用户转了视角",否则会当场把基准和读数
     // 重置掉(用户实机指认"点云自动重置到初始角度")。
     if (_rolling || !mounted) return;
-    _alignToNearestFaceOnce();
+    _alignToTopOnce();
     setState(_rebaseRoll);
   }
 
   bool _alignedOnce = false;
 
-  /// 进编辑时把相机对齐到框最近的主面 —— 每次编辑只做一次。
+  /// 进编辑时把相机落到框的**"顶"面正对** —— 每次编辑只做一次。
   ///
-  /// [2026-07-30 实机定罪] 框带独立朝向是**功能**(滑轨语义 = 刻度转一圈点云
-  /// 转 360°,转半圈框相对场景自然歪);滑轨转动期间相机与框同步转,相对姿态
-  /// 恒为正对,骰子不歪、2D 矩形贴合。破裂只发生在**重开草稿**:框朝向落了盘
-  /// 而当时的视角没落盘 ⇒ 框歪 41.2° 配默认俯视相机 ⇒ 骰子被画成菱形(用户
-  /// 实机指认"立方体没有水平放置")。修相机而不是修框:框是用户的选区,不能
-  /// 动;取"最近主面"而非固定 Top,视角跳变最小,框 rot=I 的新采集下相机本就
-  /// 正对 ⇒ _snapToFace 自带幂等 early-return,零跳变。
-  void _alignToNearestFaceOnce() {
+  /// [2026-07-30 用户签决] "初始视角永远是点云正上方的顶"。此前取"最近主面"
+  /// (从侧视进来就停在侧面),现在固定 Top。
+  ///
+  /// 走 _snapToFace('Top') 而不是硬写 preset 的 yaw/pitch:框带独立朝向是
+  /// **功能**(滑轨语义 = 刻度转一圈点云转 360°,转半圈框相对场景自然歪),
+  /// 硬写相机姿态会让框歪 41.2° 时骰子重新变成菱形 —— 那正是用户实机指认过
+  /// 的"立方体没有水平放置"。反解 M_cam = preset_Top · box.rotᵀ 才能同时保住
+  /// "正上方俯视"和"骰子正着放":框只带绕竖直轴的旋转时 pitch 严格是 −90°,
+  /// 变的只有屏幕内朝向。修相机而不是修框 —— 框是用户的选区,不能动。
+  void _alignToTopOnce() {
     if (_alignedOnce) return;
     if (_cam == null) return;
     _alignedOnce = true;
-    final (ry, rp, _) = decomposeViewMatrix(_relPose);
-    _snapToFace(primaryViewCubeFace(ry, rp));
+    _snapToFace('Top');
   }
 
   @override
@@ -195,22 +196,16 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     unawaited(_fling.animateWith(FrictionSimulation(0.135, 0, speed)));
   }
 
-  /// 相机相对**框**的朝向 = camera.yaw − 框自身的 yaw。
-  ///
-  /// [2026-07-29 用户实机指认"立方体正面时框却是斜的"] 此前写成 **+**:
-  /// 框绕 Y 转了 θ 时,要正对框的某个面相机也得转 +θ,相对朝向应当抵消
-  /// (相减)。写成相加会让骰子与框差 2θ —— 骰子显示"后"正对,框却斜着。
   CloudViewCamera? get _cam => widget.camera.value;
 
   /// 骰子 = **框的朝向指示器**:读框相对相机的水平朝向差。
   ///
   /// [2026-07-29 用户签决"框和立方体必须同步的正"] 骰子正对某面 ⟺ 框的那
   /// 一面正对屏幕,所以它必须反映**框相对相机**的关系,而不是相机相对世界。
-  /// 之所以以前这样做会歪,是因为存档里的框带着非竖直旋转分量;现在
-  /// SelectionBox.fromJson 会把朝向投影到纯竖直旋转、滑轨也只绕竖直轴,
-  /// 加上相机滚转恒 0 ⇒ 相对姿态的滚转恒 0,立方体永远正着放。
-  /// 框相对相机的完整姿态 = M_camera · box.rot(框局部 → 相机系)。
-  /// 骰子读它 ⇒ 框在屏幕上不动时骰子也不动;框翻滚时骰子跟着俯仰。
+  /// 完整姿态 = M_camera · box.rot(框局部 → 相机系)。
+  /// "立方体永远正着放"现在是构造性的:钟表滑轨让相机与框同步转 ⇒ 这个乘积
+  /// 恒定 ⇒ 拨动全程骰子一动不动;进编辑时又固定对齐到 Top(_alignToTopOnce)
+  /// 把重开草稿的失配一次抹平。
   List<double> get _relPose {
     final cam = _cam;
     if (cam == null) return kIdentityRot;
