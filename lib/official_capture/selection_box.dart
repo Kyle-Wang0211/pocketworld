@@ -218,21 +218,16 @@ class SelectionBox {
     if (rawRot is List && rawRot.length == 9) {
       final r = rawRot.map(d).toList();
       if (!r.contains(null)) {
-        final rot = r.cast<double>();
-        // ⚠️ 不变量:框的朝向**只允许绕竖直轴**。
-        //
-        // [2026-07-29 用户实机指认"框和立方体没同步的正"] 早几轮的滑轨曾绕
-        // "正对面法向"转框,存档里因此留下了非竖直的旋转分量 —— 那种框永远
-        // 摆不正,骰子(读框相对相机的姿态)也就永远是歪的。读回来时投影到
-        // 纯竖直旋转:只保留绕 Y 的分量,其余丢弃。自愈,不需要用户手动清。
-        return SelectionBox.withYaw(
+        // [2026-07-29 滑轨改横轴翻滚] 框朝向现在是任意 3D 旋转(翻滚会带
+        // 俯仰/滚转分量),恢复完整 rot,不再投影到竖直。
+        return SelectionBox(
           cx: cx!,
           cy: cy!,
           cz: cz!,
           sx: sx!,
           sy: sy!,
           sz: sz!,
-          yawDeg: math.atan2(rot[6], rot[0]) * 180.0 / math.pi,
+          rot: r.cast<double>(),
         );
       }
     }

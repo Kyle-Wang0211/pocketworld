@@ -49,13 +49,14 @@ class BoxScreenBasis {
 
 /// 盒局部三轴 → 屏幕方向(投影差分,符号自动正确)。
 BoxScreenBasis boxScreenBasis(CloudProjection proj, SelectionBox box) {
-  final t = box.yawDeg * math.pi / 180.0;
-  final c = math.cos(t), s = math.sin(t);
-  // 盒局部轴单位向量的世界方向(corners 正变换的列向量)
+  // 盒局部轴单位向量的世界方向 = box.rot 的列(与 selectionBoxCorners 的
+  // 正变换 world=rot·local 一致)。[2026-07-29 支持任意朝向框:滑轨改横轴
+  // 翻滚后框不再只绕竖直轴,不能再用 yawDeg 重建。]
+  final r = box.rot;
   final axes = [
-    [c, 0.0, s], // 局部 +x
-    [0.0, 1.0, 0.0], // 局部 +y
-    [-s, 0.0, c], // 局部 +z
+    [r[0], r[3], r[6]], // 局部 +x
+    [r[1], r[4], r[7]], // 局部 +y
+    [r[2], r[5], r[8]], // 局部 +z
   ];
   final (c0x, c0y, d0) = proj.project(box.cx, box.cy, box.cz);
   const eps = 1e-3;
@@ -189,20 +190,12 @@ SelectionBox _growAxis(
   final old = _sizeOfAxis(b, axis);
   final next = math.max(old + grow, minHalfSize * 2);
   final applied = next - old;
-  // 中心沿该局部面方向补偿一半(局部 → 世界用 corners 正变换)
-  final t = b.yawDeg * math.pi / 180.0;
-  final c = math.cos(t), s = math.sin(t);
+  // 中心沿该局部轴世界方向补偿一半(rot 列,任意朝向通用)。
+  final r = b.rot;
   final shift = faceSign * applied / 2;
-  double dx = 0, dy = 0, dz = 0;
-  if (axis == 0) {
-    dx = shift * c;
-    dz = shift * s;
-  } else if (axis == 1) {
-    dy = shift;
-  } else {
-    dx = -shift * s;
-    dz = shift * c;
-  }
+  final dx = r[axis] * shift;
+  final dy = r[3 + axis] * shift;
+  final dz = r[6 + axis] * shift;
   return b.copyWith(
     cx: b.cx + dx,
     cy: b.cy + dy,

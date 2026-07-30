@@ -18,6 +18,8 @@ import 'package:flutter/physics.dart';
 
 import '../../l10n/app_localizations.dart';
 import '../../official_capture/selection_box.dart';
+import 'cloud_camera.dart'
+    show composeViewMatrix, decomposeViewMatrix, mulMatrix;
 import 'ruler_scrubber.dart';
 import 'sparse_cloud_view.dart' show CloudViewCamera, CloudViewController;
 import 'view_cube.dart';
@@ -65,7 +67,8 @@ class SelectionToolsLayer extends StatefulWidget {
 class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     with TickerProviderStateMixin {
   late final AnimationController _snap;
-  double _fromYaw = 0, _fromPitch = 0, _toYaw = 0, _toPitch = 0;
+  double _fromYaw = 0, _fromPitch = 0, _fromRoll = 0;
+  double _toYaw = 0, _toPitch = 0, _toRoll = 0;
 
   /// 骰子甩动惯性(与刻度尺同款 FrictionSimulation)。
   late final AnimationController _fling;
@@ -178,7 +181,17 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
   /// 之所以以前这样做会歪,是因为存档里的框带着非竖直旋转分量;现在
   /// SelectionBox.fromJson 会把朝向投影到纯竖直旋转、滑轨也只绕竖直轴,
   /// 加上相机滚转恒 0 ⇒ 相对姿态的滚转恒 0,立方体永远正着放。
-  double get _relYaw => (_cam?.yaw ?? 0) - widget.box.yawDeg * math.pi / 180.0;
+  /// 框相对相机的完整姿态 = M_camera · box.rot(框局部 → 相机系)。
+  /// 骰子读它 ⇒ 框在屏幕上不动时骰子也不动;框翻滚时骰子跟着俯仰。
+  List<double> get _relPose {
+    final cam = _cam;
+    if (cam == null) return kIdentityRot;
+    return mulMatrix(
+      composeViewMatrix(cam.yaw, cam.pitch, cam.roll),
+      widget.box.rot,
+    );
+  }
+
   void _onSnapTick() {
     final t = Curves.easeOutCubic.transform(_snap.value);
     final cam = _cam;
@@ -186,7 +199,7 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     widget.controller.moveTo((
       yaw: _fromYaw + (_toYaw - _fromYaw) * t,
       pitch: _fromPitch + (_toPitch - _fromPitch) * t,
-      roll: 0,
+      roll: _fromRoll + (_toRoll - _fromRoll) * t,
       zoom: cam.zoom,
       panX: cam.panX,
       panY: cam.panY,
@@ -196,32 +209,34 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     ));
   }
 
-  /// 点击骰子某面 ⇒ 该面转到正对(建模软件同款一键归位)。
-  /// yaw 走最短角差、pitch 直插 —— 相机 up 始终朝上,不产生滚转。
-  /// 点击骰子某面 ⇒ 相机转到正对该世界方向(建模软件同款一键归位)。
-  /// yaw 走最短角差、pitch 直插、roll 归零 —— 画面永远水平。
+  /// 点击骰子某面 ⇒ 该面转到正对相机(建模软件同款一键归位)。
+  ///
+  /// 框可任意 3D 朝向(翻滚后带俯仰/滚转),所以走完整矩阵:目标相对姿态 =
+  /// 该面正对(preset),反解相机姿态 M_cam = preset · box.rotᵀ,再分解成
+  /// yaw/pitch/roll 三元由 _snap 插值动画。
   void _snapToFace(String label) {
     final preset = kOrientationPresets.firstWhere((p) => p.label == label);
     final cam = _cam;
     if (cam == null) return;
-    final boxYaw = widget.box.yawDeg * math.pi / 180.0;
-    // 目标先在**相对朝向**(骰子看到的那个)上定,再加回框自身朝向换成相机
-    // 朝向 —— 吸附必须作用在相对朝向上,否则减去 boxYaw 之后就不是 90° 的
-    // 倍数了,立方体照样停在斜角度(用户实机指认,测试已复现)。
-    // 极面(Top/Bottom)退化:视线与重力平行,yaw 是屏幕内旋转。直接落到
-    // preset.yaw = 该面**文字正立**的 yaw(探针实测两极面均为 π),而不是
-    // "吸附到最近 90° 倍数" —— 后者有 4 个不歪姿态、只有 1 个文字正,会让
-    // 点"顶/底"后文字横着(用户签决"顶必须文字正")。
-    final targetYaw = preset.yaw + boxYaw;
+    final target = composeViewMatrix(preset.yaw, preset.pitch, 0);
+    final r = widget.box.rot;
+    final rotT = <double>[r[0], r[3], r[6], r[1], r[4], r[7], r[2], r[5], r[8]];
+    final (ty, tp, tr) = decomposeViewMatrix(mulMatrix(target, rotT));
     _fromYaw = cam.yaw;
     _fromPitch = cam.pitch;
-    _toPitch = preset.pitch;
-    var delta = targetYaw - _fromYaw;
+    _fromRoll = cam.roll;
+    _toPitch = tp;
+    _toRoll = tr;
+    var delta = ty - _fromYaw;
     delta = delta.remainder(2 * math.pi);
     if (delta > math.pi) delta -= 2 * math.pi;
     if (delta < -math.pi) delta += 2 * math.pi;
     _toYaw = _fromYaw + delta;
-    if (delta.abs() < 1e-6 && (_toPitch - _fromPitch).abs() < 1e-6) return;
+    if (delta.abs() < 1e-6 &&
+        (_toPitch - _fromPitch).abs() < 1e-6 &&
+        (_toRoll - _fromRoll).abs() < 1e-6) {
+      return;
+    }
     unawaited(_snap.forward(from: 0));
   }
 
@@ -231,7 +246,6 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
   /// 水平、不能有倾斜"。此前按"正对面法向"转,正对侧面时那根轴≈视线方向,
   /// 绕它转相机就是**屏幕内滚转** —— 画面整个歪掉、骰子文字横过来。
   /// 只有绕重力轴转才既让点云水平转动、又保证相机永不滚转(roll ≡ 0)。
-  static const List<double> _kRollAxis = [0, 1, 0];
 
   /// 滑轨的**绝对**基准:相机 = 基准 yaw + 读数;框 = R(轴, −读数) · 基准。
   ///
@@ -239,8 +253,9 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
   /// 基准错位都会永久留下残差。绝对定位下"读数 = 0 ⇒ 回到基准"是恒等式。
   List<double> _rollBaseRot = kIdentityRot;
   List<double> _rollBaseCenter = const [0, 0, 0];
-  double _rollBaseYaw = 0;
-  double _rollBasePitch = 0;
+
+  /// 基准相机视图矩阵(拨滑轨那一刻锁定)。翻滚绕它的 right 轴(第 0 行)。
+  List<double> _rollBaseView = kIdentityRot;
 
   /// 我自己 emit 出去的框。父级回传的若不是它,说明框被别的入口改了
   /// (拖手柄),此时必须重新烘焙基准,否则拨滑轨会把那次改动拽回去。
@@ -264,8 +279,7 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     _rollBaseCenter = [widget.box.cx, widget.box.cy, widget.box.cz];
     final cam = _cam;
     if (cam != null) {
-      _rollBaseYaw = cam.yaw;
-      _rollBasePitch = cam.pitch;
+      _rollBaseView = composeViewMatrix(cam.yaw, cam.pitch, cam.roll);
     }
     _rollDeg = 0;
   }
@@ -276,20 +290,30 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     if (!_rolling && !identical(widget.box, _rollEmitted)) _rebaseRoll();
   }
 
-  /// 拨滑轨 = **点云转、框不动**(复刻 RS)。
+  /// 拨滑轨 = **点云绕横轴俯仰翻滚、框在屏幕上不动**(RS 语义 + 用户签决
+  /// "垂直方向旋转")。
   ///
-  /// [2026-07-29 用户签决] "RS 的做法是框不动,转的是点云;刻度转一圈是点云
-  /// 转 360°"。点云世界坐标不能改(PLY 是交付物),所以:
-  ///   · 相机绕重力轴 +θ(只改 yaw,roll 恒 0 ⇒ 画面永远水平);
-  ///   · 框在世界里绕同轴 −θ(中心亦绕枢轴 −θ)⇒ 两者抵消,框在屏幕上纹丝
-  ///     不动,但相对点云确实转了,选中的点集随之改变。
+  /// 点云世界坐标不能改(PLY 是交付物),所以相机与框反向同步:
+  ///   · 相机绕**基准相机的 right 轴**(屏幕水平轴,世界系)转 +θ ⇒ 视觉上
+  ///     点云俯仰翻滚 θ;绕 right 轴纯俯仰,过顶时自然出现滚转(点云倒置),
+  ///     这是翻滚一圈的必然,与真实翻物体一致。
+  ///   · 框绕同一世界轴 −θ(中心亦绕枢轴 −θ)⇒ M·q ≡ M_base·q_base,框在
+  ///     屏幕上纹丝不动,但相对点云确实翻了,选中的点集随之改变。
   /// 读数归一化到 (-180,180],拨满一圈回到 0 ⇒ 相机与框同时精确复原。
   void _onRoll(double v) {
     final cam = _cam;
     if (cam == null) return;
-    if (_rollEmitted == null) _rebaseRoll(); // 首次:烘焙基准
+    if (_rollEmitted == null) _rebaseRoll();
     final deg = v - 360.0 * ((v + 180.0) / 360.0).floorToDouble();
-    final inv = rotAboutAxisDeg(_kRollAxis, -deg);
+    // 相机:绕自身 right 轴(相机系 x)转 deg = 视图矩阵左乘 Rx(deg)。
+    final camView = mulMatrix(
+      rotAboutAxisDeg(const [1, 0, 0], deg),
+      _rollBaseView,
+    );
+    final (ny, np, nr) = decomposeViewMatrix(camView);
+    // 框:绕**世界** right 轴(= 基准视图第 0 行)转 −deg。
+    final worldRight = [_rollBaseView[0], _rollBaseView[1], _rollBaseView[2]];
+    final inv = rotAboutAxisDeg(worldRight, -deg);
     final dx = _rollBaseCenter[0] - cam.pivotX;
     final dy = _rollBaseCenter[1] - cam.pivotY;
     final dz = _rollBaseCenter[2] - cam.pivotZ;
@@ -304,9 +328,9 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     _rollEmitted = next;
     widget.onBoxChanged(next);
     widget.controller.moveTo((
-      yaw: _rollBaseYaw + deg * math.pi / 180.0,
-      pitch: _rollBasePitch,
-      roll: 0,
+      yaw: ny,
+      pitch: np,
+      roll: nr,
       zoom: cam.zoom,
       panX: cam.panX,
       panY: cam.panY,
@@ -455,15 +479,18 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
               onDragEnd: _onCubeDragEnd,
               child: ValueListenableBuilder<CloudViewCamera?>(
                 valueListenable: widget.camera,
-                builder: (_, cam, _) => ViewCube(
-                  key: const ValueKey('view-cube'),
-                  viewYaw: _relYaw,
-                  viewPitch: cam?.pitch ?? 0,
-                  viewRoll: cam?.roll ?? 0,
-                  faceLabels: _faceLabels(context),
-                  onFaceTap: _snapToFace,
-                  size: 72,
-                ),
+                builder: (_, cam, _) {
+                  final (cy, cp, cr) = decomposeViewMatrix(_relPose);
+                  return ViewCube(
+                    key: const ValueKey('view-cube'),
+                    viewYaw: cy,
+                    viewPitch: cp,
+                    viewRoll: cr,
+                    faceLabels: _faceLabels(context),
+                    onFaceTap: _snapToFace,
+                    size: 72,
+                  );
+                },
               ),
             ),
           ),

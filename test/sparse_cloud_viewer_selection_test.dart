@@ -76,6 +76,22 @@ Future<String> _writePly(Directory dir) async {
   return f.path;
 }
 
+/// 环向最短角差(±π 是同一个角,不能直接相减)。
+double _angDiff(double a, double b) {
+  var d = (a - b).remainder(2 * math.pi);
+  if (d > math.pi) d -= 2 * math.pi;
+  if (d < -math.pi) d += 2 * math.pi;
+  return d;
+}
+
+double _rotDev(SelectionBox b) {
+  var d = 0.0;
+  for (var i = 0; i < 9; i++) {
+    d += (b.rot[i] - kIdentityRot[i]).abs();
+  }
+  return d;
+}
+
 void main() {
   Future<(Directory, String)> fixture(WidgetTester tester) async {
     late Directory dir;
@@ -339,17 +355,35 @@ void main() {
         .widget<SparseCloudView>(find.byType(SparseCloudView))
         .selectionBox!;
 
-    final cubeYaw0 = cube().viewYaw;
-    final boxYaw0 = box().yawDeg;
+    final poseY = cube().viewYaw, poseP = cube().viewPitch;
+    final poseR = cube().viewRoll;
+    final rot0 = [...box().rot];
     await tester.drag(find.byType(RulerScrubber), const Offset(-70, 0));
     await tester.pumpAndSettle();
 
-    // ① 框相对点云确实转了(点云在屏幕上转了)。
-    expect((box().yawDeg - boxYaw0).abs(), greaterThan(1.0), reason: '点云没转');
-    // ② 骰子 = 框相对相机的朝向 ⇒ 框在屏幕上不动,骰子也不动。
-    expect(cube().viewYaw, closeTo(cubeYaw0, 1e-6), reason: '框在屏幕上动了');
-    // ③ [2026-07-29 用户签决] 立方体永远正着放:滚转恒 0。
-    expect(cube().viewRoll.abs(), lessThan(1e-9), reason: '立方体/文字歪了');
+    // ① [2026-07-29 横轴翻滚] 框相对点云翻了 ⇒ 框朝向整体偏离基准。
+    var dev = 0.0;
+    for (var i = 0; i < 9; i++) {
+      dev += (box().rot[i] - rot0[i]).abs();
+    }
+    expect(dev, greaterThan(0.1), reason: '点云没翻');
+    // ② 骰子 = 框相对相机的姿态 ⇒ 框在屏幕上不动,骰子 pose 三分量都不动。
+    // ±π 是同一个角,用环向最短差比较。
+    expect(
+      _angDiff(cube().viewYaw, poseY).abs(),
+      lessThan(1e-6),
+      reason: '框在屏幕上动了(yaw)',
+    );
+    expect(
+      _angDiff(cube().viewPitch, poseP).abs(),
+      lessThan(1e-6),
+      reason: '框动了(pitch)',
+    );
+    expect(
+      _angDiff(cube().viewRoll, poseR).abs(),
+      lessThan(1e-6),
+      reason: '框动了(roll)',
+    );
   });
 
   testWidgets('点击骰子任一面:框与立方体同步正对(极面也不歪)', (tester) async {
@@ -364,19 +398,44 @@ void main() {
     await tester.pumpAndSettle();
     ViewCube cube() => tester.widget<ViewCube>(find.byType(ViewCube));
 
-    // 先把框拨歪,再转到**极面**(俯视/仰视 —— yaw 在此退化为屏幕内旋转,
-    // 正是"点底之后立方体停在斜角度"的病灶),然后点骰子归位。
-    // 初始视角就是极面(正俯视),不用再转过去。
+    // 初始正俯视,正对面 = Top。拨歪(横轴翻滚)后点当前正对面归位,
+    // 归位后该面应重新精确正对相机(primaryViewCubeFace 稳定)。
     expect(cube().viewPitch.abs(), greaterThan(1.2), reason: '初始应为正俯视');
+    final target = primaryViewCubeFace(cube().viewYaw, cube().viewPitch);
     await tester.drag(find.byType(RulerScrubber), const Offset(-37, 0));
     await tester.pumpAndSettle();
     await tester.tapAt(tester.getCenter(find.byType(ViewCube)));
     await tester.pumpAndSettle();
+    expect(
+      primaryViewCubeFace(cube().viewYaw, cube().viewPitch),
+      target,
+      reason: '归位后该面未正对',
+    );
+  });
 
-    const q = math.pi / 2;
-    final k = (cube().viewYaw / q).roundToDouble();
-    expect(cube().viewYaw, closeTo(k * q, 1e-6), reason: '立方体停在斜角度');
-    expect(cube().viewRoll.abs(), lessThan(1e-9));
+  testWidgets('滑轨方向 = 垂直翻滚(俯仰),不是水平自转', (tester) async {
+    final (dir, ply) = await fixture(tester);
+    addTearDown(() => dir.delete(recursive: true));
+    await openViewer(tester, ply);
+    await tester.tap(find.text('Next'));
+    await _pumpUntilRealAsyncSettles(
+      tester,
+      () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
+    );
+    await tester.pumpAndSettle();
+    SelectionBox box() => tester
+        .widget<SparseCloudView>(find.byType(SparseCloudView))
+        .selectionBox!;
+
+    // [2026-07-29 用户签决] "滑轨应该让点云垂直方向旋转,而不是水平方向"。
+    // 判据取框的**局部 +Y 轴**(rot 第 1 列)在世界中的走向:
+    //   · 绕竖直轴自转(旧行为)⇒ +Y 始终指向世界 +Y,竖直分量不变;
+    //   · 绕横轴翻滚(新行为)⇒ +Y 被扳倒,竖直分量显著减小。
+    double upY() => box().rot[4]; // rot[3..5] 是第 1 列 → [4] 是它的 y 分量
+    expect(upY().abs(), closeTo(1.0, 1e-9), reason: '初始框应轴对齐');
+    await tester.drag(find.byType(RulerScrubber), const Offset(-70, 0));
+    await tester.pumpAndSettle();
+    expect(upY().abs(), lessThan(0.9), reason: '框的竖直轴没被扳倒 ⇒ 还是水平自转,不是垂直翻滚');
   });
 
   testWidgets('连续拨动不会中途把点云重置回初始角度', (tester) async {
@@ -465,7 +524,7 @@ void main() {
     // 框(朝向为轴对齐、尺寸等于场景包围盒)。
     await tester.drag(find.byType(RulerScrubber), const Offset(-50, 0));
     await tester.pumpAndSettle();
-    expect(box().yawDeg.abs(), greaterThan(1.0));
+    expect(_rotDev(box()), greaterThan(0.1), reason: '先要真的拨歪');
     await tester.tap(find.byKey(const ValueKey('selection-more')));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Reset Box Size'));
@@ -497,10 +556,10 @@ void main() {
 
     // [2026-07-29 用户签决] 菜单展开时底下照常可操作 —— PopupMenuButton 的
     // 全屏 ModalBarrier 会把这些手势全吞掉,故改自绘浮层。
-    final yaw0 = box().yawDeg;
+    final dev0 = _rotDev(box());
     await tester.drag(find.byType(RulerScrubber), const Offset(-45, 0));
     await tester.pumpAndSettle();
-    expect((box().yawDeg - yaw0).abs(), greaterThan(1.0), reason: '菜单挡住了刻度');
+    expect((_rotDev(box()) - dev0).abs(), greaterThan(0.1), reason: '菜单挡住了刻度');
 
     final cubeYaw0 = cube().viewYaw;
     await tester.drag(find.byType(ViewCube), const Offset(-30, 0));
