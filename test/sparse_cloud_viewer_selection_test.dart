@@ -361,6 +361,46 @@ void main() {
       moved += (rot()[i] - rotBefore[i]).abs();
     }
     expect(moved, greaterThan(0.1), reason: '框相对点云没转,等于什么都没做');
+    // ③ [2026-07-29 用户签决] 画面永不滚转:骰子的 roll 必须恒为 0,否则
+    //    立方体会歪、文字横过来(此前按"正对面法向"转 ≈ 绕视线轴转的后果)。
+    expect(cube().viewRoll.abs(), lessThan(1e-6), reason: '立方体歪了');
+  });
+
+  testWidgets('连续拨动不会中途把点云重置回初始角度', (tester) async {
+    final (dir, ply) = await fixture(tester);
+    addTearDown(() => dir.delete(recursive: true));
+    await openViewer(tester, ply);
+    await tester.tap(find.text('Next'));
+    await _pumpUntilRealAsyncSettles(
+      tester,
+      () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
+    );
+    await tester.pumpAndSettle();
+    List<double> rot() => tester
+        .widget<SparseCloudView>(find.byType(SparseCloudView))
+        .selectionBox!
+        .rot;
+
+    // [2026-07-29 用户实机指认"开始调节时点云自动重置到初始角度"] 根因是
+    // moveTo 同步回调把基准重新烘焙、读数归零。慢速连续拨动,框的朝向必须
+    // 单调累积,不能中途跳回。
+    final ruler = find.byType(RulerScrubber);
+    final g = await tester.startGesture(tester.getCenter(ruler));
+    var lastDev = 0.0;
+    for (var i = 0; i < 12; i++) {
+      await g.moveBy(const Offset(-6, 0));
+      await tester.pump(const Duration(milliseconds: 400));
+      var dev = 0.0;
+      for (var k = 0; k < 9; k++) {
+        dev += (rot()[k] - kIdentityRot[k]).abs();
+      }
+      // 单调不减(容差留给浮点);任何一次归零都说明被重置了。
+      expect(dev, greaterThanOrEqualTo(lastDev - 1e-9), reason: '第 $i 步被重置');
+      lastDev = dev;
+    }
+    await g.up();
+    await tester.pumpAndSettle();
+    expect(lastDev, greaterThan(0.05), reason: '整段拨动应累积出可观的旋转');
   });
 
   testWidgets('⋯ 菜单:回到初始旋转角度 / 回到初始点云大小', (tester) async {

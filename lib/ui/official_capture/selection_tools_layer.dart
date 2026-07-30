@@ -92,9 +92,10 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
   }
 
   void _onCameraChanged() {
-    final before = _rollFace;
-    _syncRollAxis();
-    if (before != _rollFace && mounted) setState(() {});
+    // 拨滑轨自己造成的相机变化不算"用户转了视角",否则会当场把基准和读数
+    // 重置掉(用户实机指认"点云自动重置到初始角度")。
+    if (_rolling || !mounted) return;
+    setState(_rebaseRoll);
   }
 
   @override
@@ -233,38 +234,42 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     unawaited(_snap.forward(from: 0));
   }
 
-  /// 旋转滑轨的转轴(世界系),**一轮之内锁定**。
+  /// 旋转滑轨的转轴 = **世界竖直轴(重力)**,固定不变。
   ///
-  /// [2026-07-29 用户实机指认"每次拨回初始刻度角度都不一样"] 原先每次
-  /// onChanged 都拿**当前框**的面法向重算轴 —— 而框刚被上一次拨动转过,
-  /// 轴就跟着转了。绕移动靶做增量旋转不可交换、也不可逆:拨 +30 再拨 −30
-  /// 落在 R(a₂,−30)·R(a₁,+30) ≠ 单位阵,所以回到 0 刻度时框是歪的。
-  /// 现在只在**正对面改变**时重算并锁定,同一参考面内轴恒定 ⇒
-  /// R(a,d₁)·R(a,d₂)… = R(a,Σd),回到 0 精确复原。
-  String _rollFace = '';
-  List<double> _rollAxis = const [0, 1, 0];
+  /// [2026-07-29 用户签决三条] "立方体必须永远正着放"、"点击面后立方体要
+  /// 水平、不能有倾斜"。此前按"正对面法向"转,正对侧面时那根轴≈视线方向,
+  /// 绕它转相机就是**屏幕内滚转** —— 画面整个歪掉、骰子文字横过来。
+  /// 只有绕重力轴转才既让点云水平转动、又保证相机永不滚转(roll ≡ 0)。
+  static const List<double> _kRollAxis = [0, 1, 0];
 
-  /// 滑轨的**绝对**基准:框朝向 = R(轴, 读数) · 基准朝向。
+  /// 滑轨的**绝对**基准:相机 = 基准 yaw + 读数;框 = R(轴, −读数) · 基准。
   ///
-  /// [2026-07-29 用户实机三次指认"转一圈回不到原点"] 增量累加的路子太脆:
-  /// 任何一次基准错位(换轴、丢帧、浮点)都会永久留下残差,而且无从校正。
-  /// 绝对定位下"读数 = 0 ⇒ 框 = 基准"是恒等式,中间经历什么都不影响。
+  /// [2026-07-29 用户实机指认"转一圈回不到原点"] 增量累加太脆:任何一次
+  /// 基准错位都会永久留下残差。绝对定位下"读数 = 0 ⇒ 回到基准"是恒等式。
   List<double> _rollBaseRot = kIdentityRot;
   List<double> _rollBaseCenter = const [0, 0, 0];
-
-  /// 基准相机(视图矩阵)与其 zoom/pan/pivot —— 拨滑轨要同步转相机。
-  List<double> _rollBaseView = kIdentityRot;
+  double _rollBaseYaw = 0;
+  double _rollBasePitch = 0;
 
   /// 我自己 emit 出去的框。父级回传的若不是它,说明框被别的入口改了
   /// (拖手柄),此时必须重新烘焙基准,否则拨滑轨会把那次改动拽回去。
   SelectionBox? _rollEmitted;
+
+  /// 拨滑轨期间置位。
+  ///
+  /// [2026-07-29 用户实机指认"开始调节时点云自动重置到初始角度"] 根因是
+  /// 顺序:_onRoll 先 moveTo 相机(同步通知 → _onCameraChanged),此刻框还
+  /// 没更新,相对姿态自然偏离基准,于是被当成"用户转了视角"重新烘焙基准、
+  /// 读数归零 —— 点云当场跳回原点。拨动期间必须屏蔽这条回路。
+  bool _rolling = false;
 
   void _rebaseRoll() {
     _rollBaseRot = widget.box.rot;
     _rollBaseCenter = [widget.box.cx, widget.box.cy, widget.box.cz];
     final cam = _cam;
     if (cam != null) {
-      _rollBaseView = composeViewMatrix(cam.yaw, cam.pitch, cam.roll);
+      _rollBaseYaw = cam.yaw;
+      _rollBasePitch = cam.pitch;
     }
     _rollDeg = 0;
   }
@@ -272,64 +277,23 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
   @override
   void didUpdateWidget(SelectionToolsLayer old) {
     super.didUpdateWidget(old);
-    if (!identical(widget.box, _rollEmitted)) _rebaseRoll();
-  }
-
-  void _syncRollAxis() {
-    final cam = _cam;
-    if (cam == null) return;
-    final (ry, rp, _) = decomposeViewMatrix(_relPose);
-    final label = primaryViewCubeFace(ry, rp);
-    if (label == _rollFace) return;
-    _rollFace = label;
-    final f = kViewCubeFaces.firstWhere((e) => e.label == label);
-    // 面法向是**框局部**方向(骰子六面 = 框的面),按当前朝向转成世界后锁定。
-    final r = widget.box.rot;
-    final n = f.normal;
-    _rollAxis = [
-      r[0] * n[0] + r[1] * n[1] + r[2] * n[2],
-      r[3] * n[0] + r[4] * n[1] + r[5] * n[2],
-      r[6] * n[0] + r[7] * n[1] + r[8] * n[2],
-    ];
-    // 换了参考面 ⇒ "0 刻度"的含义也换了:黄标归位、基准重烘焙。
-    _rebaseRoll();
+    if (!_rolling && !identical(widget.box, _rollEmitted)) _rebaseRoll();
   }
 
   /// 拨滑轨 = **点云转、框不动**(复刻 RS)。
   ///
   /// [2026-07-29 用户签决] "RS 的做法是框不动,转的是点云;刻度转一圈是点云
-  /// 转 360°"。点云的世界坐标不能改(PLY 是交付物),所以:
-  ///   · 相机视图矩阵 M = M_base · R(a, θ) ⇒ 视觉上点云绕 a 转了 θ;
-  ///   · 框在世界里转 −θ(中心也绕枢轴转 −θ)⇒ M·q 恒等于 M_base·q_base,
-  ///     框在屏幕上纹丝不动,但它相对点云确实转了,选中的点集随之改变。
-  /// θ 归一化到 (-180,180],拨满一圈 θ 回到 0 ⇒ R = 单位阵 ⇒ 相机与框
-  /// 同时精确复原。
+  /// 转 360°"。点云世界坐标不能改(PLY 是交付物),所以:
+  ///   · 相机绕重力轴 +θ(只改 yaw,roll 恒 0 ⇒ 画面永远水平);
+  ///   · 框在世界里绕同轴 −θ(中心亦绕枢轴 −θ)⇒ 两者抵消,框在屏幕上纹丝
+  ///     不动,但相对点云确实转了,选中的点集随之改变。
+  /// 读数归一化到 (-180,180],拨满一圈回到 0 ⇒ 相机与框同时精确复原。
   void _onRoll(double v) {
-    if (_rollFace.isEmpty) {
-      _syncRollAxis();
-      _rebaseRoll();
-    }
     final cam = _cam;
     if (cam == null) return;
+    if (_rollEmitted == null) _rebaseRoll(); // 首次:烘焙基准
     final deg = v - 360.0 * ((v + 180.0) / 360.0).floorToDouble();
-    final fwd = rotAboutAxisDeg(_rollAxis, deg);
-    final inv = rotAboutAxisDeg(_rollAxis, -deg);
-
-    // ① 相机:绕世界轴 +θ ⇒ 点云在屏幕上转 θ。
-    final (ny, np, nr) = decomposeViewMatrix(mulMatrix(_rollBaseView, fwd));
-    widget.controller.moveTo((
-      yaw: ny,
-      pitch: np,
-      roll: nr,
-      zoom: cam.zoom,
-      panX: cam.panX,
-      panY: cam.panY,
-      pivotX: cam.pivotX,
-      pivotY: cam.pivotY,
-      pivotZ: cam.pivotZ,
-    ));
-
-    // ② 框:世界里转 −θ,与相机抵消 ⇒ 屏幕上不动。
+    final inv = rotAboutAxisDeg(_kRollAxis, -deg);
     final dx = _rollBaseCenter[0] - cam.pivotX;
     final dy = _rollBaseCenter[1] - cam.pivotY;
     final dz = _rollBaseCenter[2] - cam.pivotZ;
@@ -339,9 +303,22 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
       cz: cam.pivotZ + inv[6] * dx + inv[7] * dy + inv[8] * dz,
       rot: mulRot(inv, _rollBaseRot),
     );
+    _rolling = true;
     setState(() => _rollDeg = deg);
     _rollEmitted = next;
     widget.onBoxChanged(next);
+    widget.controller.moveTo((
+      yaw: _rollBaseYaw + deg * math.pi / 180.0,
+      pitch: _rollBasePitch,
+      roll: 0,
+      zoom: cam.zoom,
+      panX: cam.panX,
+      panY: cam.panY,
+      pivotX: cam.pivotX,
+      pivotY: cam.pivotY,
+      pivotZ: cam.pivotZ,
+    ));
+    _rolling = false;
   }
 
   /// [2026-07-29 用户签决] "⋯" 菜单项一:框朝向回到初始(轴对齐),滑轨
@@ -350,7 +327,6 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     final next = widget.box.copyWith(rot: kIdentityRot);
     setState(() {
       _rollDeg = 0;
-      _rollFace = ''; // 强制下次拨动按新朝向重算轴
       _rollBaseRot = kIdentityRot;
       _rollBaseCenter = [next.cx, next.cy, next.cz];
     });
