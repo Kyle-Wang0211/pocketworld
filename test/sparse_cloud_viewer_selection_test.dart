@@ -344,21 +344,49 @@ void main() {
         .widget<SparseCloudView>(find.byType(SparseCloudView))
         .selectionBox!;
 
-    final camYaw0 = cube().viewYaw;
+    final cubeYaw0 = cube().viewYaw;
     final boxYaw0 = box().yawDeg;
     await tester.drag(find.byType(RulerScrubber), const Offset(-70, 0));
     await tester.pumpAndSettle();
 
-    // ① 点云真的转了(骰子读相机姿态,跟着点云一起转)。
-    final dCam = cube().viewYaw - camYaw0;
-    expect(dCam.abs(), greaterThan(0.1), reason: '点云没转');
-    // ② 框在世界里等量反向旋转 ⇒ 屏幕上纹丝不动。
-    //    注意符号:box.yawDeg 的旋向约定与相机 yaw 相反(withYaw 用负角
-    //    构造矩阵),所以"抵消"在读数上表现为**两者相等**,不是相加为零。
-    final dBox = (box().yawDeg - boxYaw0) * math.pi / 180.0;
-    expect(dBox, closeTo(dCam, 1e-6), reason: '框在屏幕上动了');
-    // ③ [2026-07-29 用户签决] 立方体永远正着放:相机滚转恒 0。
+    // ① 框相对点云确实转了(点云在屏幕上转了)。
+    expect((box().yawDeg - boxYaw0).abs(), greaterThan(1.0), reason: '点云没转');
+    // ② 骰子 = 框相对相机的朝向 ⇒ 框在屏幕上不动,骰子也不动。
+    expect(cube().viewYaw, closeTo(cubeYaw0, 1e-6), reason: '框在屏幕上动了');
+    // ③ [2026-07-29 用户签决] 立方体永远正着放:滚转恒 0。
     expect(cube().viewRoll.abs(), lessThan(1e-9), reason: '立方体/文字歪了');
+  });
+
+  testWidgets('点击骰子任一面:框与立方体同步正对(极面也不歪)', (tester) async {
+    final (dir, ply) = await fixture(tester);
+    addTearDown(() => dir.delete(recursive: true));
+    await openViewer(tester, ply);
+    await tester.tap(find.text('Next'));
+    await _pumpUntilRealAsyncSettles(
+      tester,
+      () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
+    );
+    await tester.pumpAndSettle();
+    ViewCube cube() => tester.widget<ViewCube>(find.byType(ViewCube));
+
+    // 先把框拨歪,再转到**极面**(俯视/仰视 —— yaw 在此退化为屏幕内旋转,
+    // 正是"点底之后立方体停在斜角度"的病灶),然后点骰子归位。
+    await tester.drag(find.byType(RulerScrubber), const Offset(-37, 0));
+    await tester.pumpAndSettle();
+    final rect = tester.getRect(find.byType(SparseCloudView));
+    await tester.dragFrom(
+      rect.topLeft + const Offset(6, 6),
+      const Offset(0, 340),
+    );
+    await tester.pumpAndSettle();
+    expect(cube().viewPitch.abs(), greaterThan(1.2), reason: '没转到极面');
+    await tester.tapAt(tester.getCenter(find.byType(ViewCube)));
+    await tester.pumpAndSettle();
+
+    const q = math.pi / 2;
+    final k = (cube().viewYaw / q).roundToDouble();
+    expect(cube().viewYaw, closeTo(k * q, 1e-6), reason: '立方体停在斜角度');
+    expect(cube().viewRoll.abs(), lessThan(1e-9));
   });
 
   testWidgets('连续拨动不会中途把点云重置回初始角度', (tester) async {

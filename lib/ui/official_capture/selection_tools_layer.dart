@@ -171,14 +171,14 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
   /// (相减)。写成相加会让骰子与框差 2θ —— 骰子显示"后"正对,框却斜着。
   CloudViewCamera? get _cam => widget.camera.value;
 
-  /// 骰子读**相机相对世界**的姿态,不掺框的朝向。
+  /// 骰子 = **框的朝向指示器**:读框相对相机的水平朝向差。
   ///
-  /// [2026-07-29 用户实机指认"立方体和字还是歪的"] 此前读的是"框相对相机"
-  /// 的姿态 M_cam·box.rot —— 而框的朝向是历史遗留的(前几轮滑轨绕过任意
-  /// 轴,存档里带着非竖直的旋转分量),乘进去骰子就歪。骰子的六个面本来就
-  /// 是**世界轴**的名字(顶/底 = 重力,前后左右锚在世界水平轴上),读相机
-  /// 姿态才是自洽的;相机滚转恒 0 ⇒ 立方体永远正着放。
-  /// 拨滑轨时相机水平转 ⇒ 骰子跟着点云一起转,与"骰子跟模型绑定"一致。
+  /// [2026-07-29 用户签决"框和立方体必须同步的正"] 骰子正对某面 ⟺ 框的那
+  /// 一面正对屏幕,所以它必须反映**框相对相机**的关系,而不是相机相对世界。
+  /// 之所以以前这样做会歪,是因为存档里的框带着非竖直旋转分量;现在
+  /// SelectionBox.fromJson 会把朝向投影到纯竖直旋转、滑轨也只绕竖直轴,
+  /// 加上相机滚转恒 0 ⇒ 相对姿态的滚转恒 0,立方体永远正着放。
+  double get _relYaw => (_cam?.yaw ?? 0) - widget.box.yawDeg * math.pi / 180.0;
   void _onSnapTick() {
     final t = Curves.easeOutCubic.transform(_snap.value);
     final cam = _cam;
@@ -204,13 +204,18 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     final preset = kOrientationPresets.firstWhere((p) => p.label == label);
     final cam = _cam;
     if (cam == null) return;
-    var targetYaw = preset.yaw;
+    final boxYaw = widget.box.yawDeg * math.pi / 180.0;
+    // 目标先在**相对朝向**(骰子看到的那个)上定,再加回框自身朝向换成相机
+    // 朝向 —— 吸附必须作用在相对朝向上,否则减去 boxYaw 之后就不是 90° 的
+    // 倍数了,立方体照样停在斜角度(用户实机指认,测试已复现)。
+    var targetRel = preset.yaw;
     if (label == 'Top' || label == 'Bottom') {
-      // 极面朝向退化(视线与重力平行):保留当前朝向的最近 90° 倍数,
-      // 从侧视角进俯视时才不会莫名其妙横转一圈。
+      // 极面退化:视线与重力平行,yaw 变成屏幕内旋转 ⇒ 吸附到 90° 的倍数,
+      // 立方体才是正着的。
       const q = math.pi / 2;
-      targetYaw = (cam.yaw / q).roundToDouble() * q;
+      targetRel = (_relYaw / q).roundToDouble() * q;
     }
+    final targetYaw = targetRel + boxYaw;
     _fromYaw = cam.yaw;
     _fromPitch = cam.pitch;
     _toPitch = preset.pitch;
@@ -443,7 +448,7 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
                 valueListenable: widget.camera,
                 builder: (_, cam, _) => ViewCube(
                   key: const ValueKey('view-cube'),
-                  viewYaw: cam?.yaw ?? 0,
+                  viewYaw: _relYaw,
                   viewPitch: cam?.pitch ?? 0,
                   viewRoll: cam?.roll ?? 0,
                   faceLabels: _faceLabels(context),
