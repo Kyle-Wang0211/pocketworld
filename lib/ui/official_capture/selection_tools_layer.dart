@@ -112,22 +112,38 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
 
   bool _alignedOnce = false;
 
-  /// 进编辑时把相机落到框的**"顶"面正对** —— 每次编辑只做一次。
+  /// 进编辑时落到**重力正上方**的"顶",框朝向一并复位 —— 每次编辑做一次。
   ///
-  /// [2026-07-30 用户签决] "初始视角永远是点云正上方的顶"。此前取"最近主面"
-  /// (从侧视进来就停在侧面),现在固定 Top。
+  /// [2026-07-30 用户签决] "初始视角永远是点云正上方的顶"、"你没有加重力的
+  /// 参数吗"。点云世界 +Y 就是重力上(_gravityAlign,ARKit worldAlignment=
+  /// .gravity),所以"正上方"= 相机 pitch 严格 −90°,与框的朝向无关。
   ///
-  /// 走 _snapToFace('Top') 而不是硬写 preset 的 yaw/pitch:框带独立朝向是
-  /// **功能**(滑轨语义 = 刻度转一圈点云转 360°,转半圈框相对场景自然歪),
-  /// 硬写相机姿态会让框歪 41.2° 时骰子重新变成菱形 —— 那正是用户实机指认过
-  /// 的"立方体没有水平放置"。反解 M_cam = preset_Top · box.rotᵀ 才能同时保住
-  /// "正上方俯视"和"骰子正着放":框只带绕竖直轴的旋转时 pitch 严格是 −90°,
-  /// 变的只有屏幕内朝向。修相机而不是修框 —— 框是用户的选区,不能动。
+  /// 三条路只有一条走得通,两条都被实机否决过:
+  ///   ① 反解 M_cam = preset_Top · box.rotᵀ(让**框的**顶面正对)—— 框带 61°
+  ///      俯仰时相机 pitch 实测只有 −29.1°,就是"顶不是点云正上方";
+  ///   ② 硬写 pitch=−90° 而框保留朝向 —— 歪框的骰子重新变菱形("立方体没有
+  ///      水平放置");
+  ///   ③ 骰子改读相机相对世界 —— 点某面时框会斜,违反"框和立方体必须同步
+  ///      的正"。
+  /// ①② 数学上不可兼得(框歪着时"相机在重力正上方"与"骰子正着放"互斥),
+  /// 唯一两全 = **框朝向也复位到重力对齐**。只复位朝向,中心/尺寸不动 ——
+  /// 用户调过的选区大小必须留着。滑轨转出的朝向在编辑期间照常有效,只是不
+  /// 跨会话保留("⋯"里本来就有"回到初始旋转角度")。
   void _alignToTopOnce() {
     if (_alignedOnce) return;
     if (_cam == null) return;
     _alignedOnce = true;
-    _snapToFace('Top');
+    var dev = 0.0;
+    for (var i = 0; i < 9; i++) {
+      dev += (widget.box.rot[i] - kIdentityRot[i]).abs();
+    }
+    if (dev > 1e-9) {
+      widget.onBoxChanged(widget.box.copyWith(rot: kIdentityRot));
+    }
+    // 目标直接用 preset 而不是 _snapToFace('Top') —— onBoxChanged 要等父级
+    // setState,当帧 widget.box.rot 还是旧的歪值,反解出来照样偏。
+    final top = kOrientationPresets.first;
+    _snapTo(top.yaw, top.pitch, 0);
   }
 
   @override
@@ -245,12 +261,19 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     final r = widget.box.rot;
     final rotT = <double>[r[0], r[3], r[6], r[1], r[4], r[7], r[2], r[5], r[8]];
     final (ty, tp, tr) = decomposeViewMatrix(mulMatrix(target, rotT));
+    _snapTo(ty, tp, tr);
+  }
+
+  /// 相机动画到给定姿态(yaw 走环向最短路;已在目标上则不启动动画)。
+  void _snapTo(double yaw, double pitch, double roll) {
+    final cam = _cam;
+    if (cam == null) return;
     _fromYaw = cam.yaw;
     _fromPitch = cam.pitch;
     _fromRoll = cam.roll;
-    _toPitch = tp;
-    _toRoll = tr;
-    var delta = ty - _fromYaw;
+    _toPitch = pitch;
+    _toRoll = roll;
+    var delta = yaw - _fromYaw;
     delta = delta.remainder(2 * math.pi);
     if (delta > math.pi) delta -= 2 * math.pi;
     if (delta < -math.pi) delta += 2 * math.pi;

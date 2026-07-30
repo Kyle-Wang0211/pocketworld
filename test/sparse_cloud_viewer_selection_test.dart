@@ -513,12 +513,25 @@ void main() {
     expect(camOf().roll.abs(), greaterThan(0.05), reason: '手动 orbit 把滑轨的滚转清零了');
   });
 
-  testWidgets('进编辑的初始视角永远是正上方的"顶"(哪怕预览页转到了侧视)', (tester) async {
+  testWidgets('进编辑的初始视角 = 重力正上方的"顶",框朝向一并复位', (tester) async {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));
+    // 实机草稿实测的框:带 41.2° 水平朝向 **且** 61° 俯仰(俯仰是被否决的
+    // "横轴翻滚"那版拨出来落盘的)。
+    await tester.runAsync(
+      () => File('${dir.path}/official_selection_box.json').writeAsString(
+        '{"v":2,"cx":-0.1376,"cy":-0.1533,"cz":2.2362,'
+        '"sx":3.4273421857647204,"sy":2.9928319280554696,'
+        '"sz":3.9394953630036667,'
+        '"rot":[0.7522755429705815,0.5757,0.3203,'
+        '-0.0,0.4862,-0.8738,'
+        '-0.6588486225593229,0.6574,0.3658],'
+        '"yawDeg":-41.21212121212105}',
+      ),
+    );
     await openViewer(tester, ply);
 
-    // 在**浏览态**把视角转到侧视(垂直拖 = 改 pitch)。
+    // 浏览态先转到侧视,确认"初始视角"不是靠继承碰巧对的。
     await tester.drag(find.byType(SparseCloudView), const Offset(0, 220));
     await tester.pumpAndSettle();
 
@@ -529,8 +542,15 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    // [2026-07-30 用户签决] "初始视角永远是点云正上方的顶"。此前对齐到
-    // **最近主面**(从侧视进来就停在侧面),现在固定落到 Top。
+    // [2026-07-30 用户签决] "初始视角永远是点云正上方的顶" + "你没有加重力的
+    // 参数吗"。点云世界 +Y 就是重力上(_gravityAlign,ARKit worldAlignment=
+    // .gravity;该草稿实测逐轴标准差 Y=0.289 << X=0.677/Z=0.635)。所以"正
+    // 上方"= 相机 pitch 严格 −90°,与框的朝向无关。
+    //
+    // 上一版反解 M_cam = preset_Top · box.rotᵀ(让**框的**顶面正对),框带
+    // 61° 俯仰时实测 pitch=−29.1° —— 用户实机指认的"顶不是点云正上方"。
+    // 而单纯硬写 pitch=−90° 又会让歪框的骰子重新变菱形(更早那次实机指认)。
+    // 两者数学上不可兼得,唯一两全 = 框朝向一并复位到重力对齐。
     final cam = tester
         .widget<SelectionToolsLayer>(find.byType(SelectionToolsLayer))
         .camera
@@ -538,17 +558,37 @@ void main() {
     expect(
       cam.pitch,
       closeTo(-math.pi / 2, 0.03),
-      reason: '进编辑不是正上方俯视(pitch=${cam.pitch * 180 / math.pi}°)',
+      reason: '不是重力正上方(pitch=${cam.pitch * 180 / math.pi}°)',
     );
+    expect(cam.roll.abs(), lessThan(0.03), reason: '正上方视角不该带滚转');
+
     final box = tester
         .widget<SparseCloudView>(find.byType(SparseCloudView))
         .selectionBox!;
+    expect(_rotDev(box), lessThan(1e-6), reason: '框朝向没复位到重力对齐');
+    // 尺寸/中心不动 —— 复位的只是朝向,不是用户调过的选区大小。
+    expect(box.sx, closeTo(3.4273421857647204, 1e-9));
+    expect(box.sy, closeTo(2.9928319280554696, 1e-9));
+    expect(box.sz, closeTo(3.9394953630036667, 1e-9));
+
+    // 骰子:框正 + 相机正上方 ⇒ 正对面是"顶"且正着放。
     final rel = mulMatrix(
       composeViewMatrix(cam.yaw, cam.pitch, cam.roll),
       box.rot,
     );
     final (ry, rp, _) = decomposeViewMatrix(rel);
     expect(primaryViewCubeFace(ry, rp), 'Top', reason: '骰子的正对面不是"顶"');
+    final cube = tester.widget<ViewCube>(
+      find.byKey(const ValueKey('view-cube')),
+    );
+    for (final v in [cube.viewYaw, cube.viewPitch, cube.viewRoll]) {
+      final q = v / (math.pi / 2);
+      expect(
+        (q - q.roundToDouble()).abs(),
+        lessThan(0.02),
+        reason: '骰子歪着(${v * 180 / math.pi}°)',
+      );
+    }
   });
 
   testWidgets('连续拨动不会中途把点云重置回初始角度', (tester) async {
@@ -739,9 +779,12 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    // 存档确实是斜的(否则本用例什么都没测到)。
+    // [2026-07-30 语义更新,不是回归] 本用例原来断言"框仍带 41° 朝向、只把
+    // 相机对齐过去"。用户随后签决"初始视角永远是重力正上方的顶",而框歪着时
+    // "相机在正上方"与"骰子正着放"数学上互斥 ⇒ 改为框朝向一并复位。这里跟着
+    // 断言复位到位;骰子落在 90° 倍数这条核心断言不变。
     final box = boxOf(tester)!;
-    expect(_rotDev(box), greaterThan(0.5), reason: '存档框应带 41° 朝向');
+    expect(_rotDev(box), lessThan(1e-6), reason: '框朝向应复位到重力对齐');
 
     // 骰子读的是"框相对相机"的姿态:立方体正着放 ⟺ 三分量都落在 90° 倍数。
     final cube = tester.widget<ViewCube>(
