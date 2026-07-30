@@ -24,12 +24,12 @@ import 'view_cube.dart';
 
 /// 六向朝向预设(骰子点击归位的目标姿态)。
 const List<({String label, double yaw, double pitch})> kOrientationPresets = [
-  (label: 'Top', yaw: 0, pitch: -math.pi / 2),
+  (label: 'Top', yaw: math.pi, pitch: -math.pi / 2), // 文字正立(探针实测)
   (label: 'Front', yaw: 0, pitch: 0),
   (label: 'Right', yaw: math.pi / 2, pitch: 0),
   (label: 'Back', yaw: math.pi, pitch: 0),
   (label: 'Left', yaw: -math.pi / 2, pitch: 0),
-  (label: 'Bottom', yaw: 0, pitch: math.pi / 2),
+  (label: 'Bottom', yaw: math.pi, pitch: math.pi / 2), // 文字正立(探针实测)
 ];
 
 class SelectionToolsLayer extends StatefulWidget {
@@ -208,14 +208,11 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     // 目标先在**相对朝向**(骰子看到的那个)上定,再加回框自身朝向换成相机
     // 朝向 —— 吸附必须作用在相对朝向上,否则减去 boxYaw 之后就不是 90° 的
     // 倍数了,立方体照样停在斜角度(用户实机指认,测试已复现)。
-    var targetRel = preset.yaw;
-    if (label == 'Top' || label == 'Bottom') {
-      // 极面退化:视线与重力平行,yaw 变成屏幕内旋转 ⇒ 吸附到 90° 的倍数,
-      // 立方体才是正着的。
-      const q = math.pi / 2;
-      targetRel = (_relYaw / q).roundToDouble() * q;
-    }
-    final targetYaw = targetRel + boxYaw;
+    // 极面(Top/Bottom)退化:视线与重力平行,yaw 是屏幕内旋转。直接落到
+    // preset.yaw = 该面**文字正立**的 yaw(探针实测两极面均为 π),而不是
+    // "吸附到最近 90° 倍数" —— 后者有 4 个不歪姿态、只有 1 个文字正,会让
+    // 点"顶/底"后文字横着(用户签决"顶必须文字正")。
+    final targetYaw = preset.yaw + boxYaw;
     _fromYaw = cam.yaw;
     _fromPitch = cam.pitch;
     _toPitch = preset.pitch;

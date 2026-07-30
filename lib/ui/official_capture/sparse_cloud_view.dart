@@ -20,7 +20,7 @@ import 'package:flutter/material.dart';
 import '../../official_capture/selection_box.dart';
 import '../../point_cloud_display/progressive_octree_order.dart';
 import 'cloud_camera.dart';
-import 'selection_handles_3d.dart';
+import 'selection_rect_handles.dart';
 
 /// 框外点的调制色(RS 同款红;只影响渲染调制,不碰数据)。
 const int kSelectionOutColor = 0xFFE05252;
@@ -197,9 +197,10 @@ class SparseCloudView extends StatefulWidget {
   State<SparseCloudView> createState() => _SparseCloudViewState();
 }
 
-// [2026-07-29 用户签决] 所有点云的初始视角 = 骰子"顶"的正面(正俯视)。
-// 与 kOrientationPresets['Top'] 同一姿态,进来就是摆平的俯视图。
-const double _kDefaultYaw = 0.0;
+// [2026-07-29 用户签决] 所有点云的初始视角 = 骰子"顶"的**正面**(文字朝上)。
+// 正俯视下 yaw 是屏幕内旋转:探针实测 yaw=π 时"顶"标签才正立(yaw=0 是
+// 倒置)。与 kOrientationPresets['Top'].yaw 同值,点"顶"归位到同一姿态。
+const double _kDefaultYaw = math.pi;
 const double _kDefaultPitch = -math.pi / 2;
 // Near-full pitch: reach straight-up/down (±90°) minus a hair to dodge the
 // exact pole singularity. Was clamped to ±1.35 (±77°) — the head-on
@@ -290,7 +291,7 @@ class _SparseCloudViewState extends State<SparseCloudView>
   }
 
   // ── 选区编辑手势(editing=true 时生效)────────────────────────────
-  BoxHandle3D? _activeHandle;
+  RectHandle? _activeHandle;
   _BoxDrag _boxMode = _BoxDrag.none;
   SelectionBox? _gestureBox;
 
@@ -305,6 +306,9 @@ class _SparseCloudViewState extends State<SparseCloudView>
     pivotY: _pivot[1],
     pivotZ: _pivot[2],
     radius: _fitRadius,
+    // [2026-07-29 用户签决] 编辑态切正交:RS 2D 矩形手柄与盒投影严格重合。
+    // 浏览态保持透视(下方 painter 用 widget.editing 区分)。
+    orthographic: widget.editing,
   ).projectionFor(size);
 
   SelectionBox? get _liveBox =>
@@ -325,11 +329,11 @@ class _SparseCloudViewState extends State<SparseCloudView>
     final box = _liveBox;
     if (box == null) return;
     final proj = _projectionFor(_viewSize);
-    final h = hitBoxHandle3D(box, proj, d.localFocalPoint);
+    final basis = boxScreenBasis(proj, box);
+    final rect = selectionScreenRect(basis, box);
+    final h = hitRectHandle(rect, d.localFocalPoint);
     if (h != null) {
-      // [2026-07-28 用户签决] 只有手柄接管手势,且只改尺寸 —— 单指整体
-      // 平移框已删除(盒在屏幕上很大,"轮廓内 = 平移"几乎处处抢手势,
-      // 用户实机指认"左右滑动点云没反应")。
+      // 只有手柄接管手势,且只改尺寸 —— 框内空白拖动交给相机(转视角)。
       _activeHandle = h;
       _boxMode = _BoxDrag.handle;
     }
@@ -347,10 +351,10 @@ class _SparseCloudViewState extends State<SparseCloudView>
     final proj = _projectionFor(_viewSize);
     final SelectionBox next;
     if (_activeHandle != null) {
-      next = applyHandle3DDrag(
+      next = applyRectHandleDrag(
         box: box,
-        proj: proj,
-        handle: _activeHandle!,
+        basis: boxScreenBasis(proj, box),
+        h: _activeHandle!,
         screenDelta: d.focalPointDelta,
         minHalfSize: _fitRadius * SelectionBox.kMinHalfSizeFraction,
       );
@@ -568,10 +572,12 @@ class _SparseCloudViewState extends State<SparseCloudView>
                               exposure: _exposure,
                               tone: _tone,
                               selectionBox: widget.selectionBox,
-                              // 3D 线框(12 边)+ 框外点变红:与红点判定同
-                              // 一个盒,永远吻合。
-                              drawSelectionWireframe:
-                                  widget.selectionBox != null,
+                              // [2026-07-29 回退 2D 框] 编辑态不画 3D 线框
+                              // (由 RS 2D 矩形手柄代替);框外点变红保留。
+                              // painter 与手柄同用正交 ⇒ 红点判定与矩形严格
+                              // 重合(RS 观感)。
+                              drawSelectionWireframe: false,
+                              orthographic: widget.editing,
                             ),
                             size: Size.infinite,
                           ),
@@ -579,9 +585,14 @@ class _SparseCloudViewState extends State<SparseCloudView>
                         if (widget.editing && widget.selectionBox != null)
                           Positioned.fill(
                             child: CustomPaint(
-                              painter: BoxHandlesPainter(
-                                box: widget.selectionBox!,
-                                proj: _projectionFor(_viewSize),
+                              painter: RectHandlesPainter(
+                                rect: selectionScreenRect(
+                                  boxScreenBasis(
+                                    _projectionFor(_viewSize),
+                                    widget.selectionBox!,
+                                  ),
+                                  widget.selectionBox!,
+                                ),
                               ),
                               size: Size.infinite,
                             ),
