@@ -12,14 +12,18 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart' show ValueListenable;
-import 'package:flutter/gestures.dart' show DragStartBehavior, Velocity;
 import 'package:flutter/material.dart';
-import 'package:flutter/physics.dart';
 
 import '../../l10n/app_localizations.dart';
 import '../../official_capture/selection_box.dart';
 import 'cloud_camera.dart'
-    show composeViewMatrix, decomposeViewMatrix, mulMatrix;
+    show
+        axisAngleOf,
+        composeViewMatrix,
+        decomposeViewMatrix,
+        mulMatrix,
+        mulTransposed,
+        rotationFromAxisAngle;
 import 'ruler_scrubber.dart';
 import 'sparse_cloud_view.dart' show CloudViewCamera, CloudViewController;
 import 'view_cube.dart';
@@ -67,22 +71,9 @@ class SelectionToolsLayer extends StatefulWidget {
 class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     with TickerProviderStateMixin {
   late final AnimationController _snap;
-  double _fromYaw = 0, _fromPitch = 0, _fromRoll = 0;
-  double _toYaw = 0, _toPitch = 0, _toRoll = 0;
-
-  /// 骰子甩动惯性(与刻度尺同款 FrictionSimulation)。
-  late final AnimationController _fling;
-  double _flingYaw0 = 0, _flingPitch0 = 0;
-  double _flingDirYaw = 0, _flingDirPitch = 0;
 
   /// 旋转滑轨的读数(纯 UI 累计角,框的真实朝向在 box.rot 里)。
   double _rollDeg = 0;
-
-  /// 骰子拖动灵敏度(rad/px)。比点云视图(0.008/0.006)大 2.5 倍 ——
-  /// 骰子只有 72px 宽,同样的手指行程要能转得动(用户:"阻力要小")。
-  static const double _kCubeYawPerPx = 0.020;
-  static const double _kCubePitchPerPx = 0.015;
-  static const double _kPitchLimit = math.pi / 2 - 0.02;
 
   @override
   void initState() {
@@ -91,8 +82,6 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
       vsync: this,
       duration: const Duration(milliseconds: 240),
     )..addListener(_onSnapTick);
-    _fling = AnimationController.unbounded(vsync: this)
-      ..addListener(_onFlingTick);
     // 相机一动可能换正对面 ⇒ 换转轴、黄标归位。
     widget.camera.addListener(_onCameraChanged);
     // 相机此刻可能已有值(浏览态一直在跑),不会再触发上面的监听 ⇒ 首帧后
@@ -143,73 +132,37 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     // 目标直接用 preset 而不是 _snapToFace('Top') —— onBoxChanged 要等父级
     // setState,当帧 widget.box.rot 还是旧的歪值,反解出来照样偏。
     final top = kOrientationPresets.first;
-    _snapTo(top.yaw, top.pitch, 0);
+    _snapToPose(composeViewMatrix(top.yaw, top.pitch, 0));
   }
 
   @override
   void dispose() {
     widget.camera.removeListener(_onCameraChanged);
     _snap.dispose();
-    _fling.dispose();
     super.dispose();
   }
 
-  void _applyPose(double yaw, double pitch) {
+  /// 骰子箭头 = 绕**屏幕轴** premultiply ±90°。
+  ///
+  /// [2026-07-30 用户签决] "完全复刻 RS,点云只能固定六个面动,立方体上下
+  /// 左右的四个箭头也加回来" —— 机制照 b3588f6^ 的骰子实现回滚:下 = 绕屏幕
+  /// 水平轴向下滚,右 = 绕屏幕竖直轴向右滚,每按一次严格 90°,任何序列任何
+  /// 状态无例外(就像现实中滚骰子)。翻过极点后背面自然倒置,不做"回正"
+  /// 规范化 —— 用户终审签决过"接受背面倒置,每步严格 90°"(见 6e83756)。
+  static const List<double> _kRollDown = [1, 0, 0, 0, 0, -1, 0, 1, 0];
+  static const List<double> _kRollUp = [1, 0, 0, 0, 0, 1, 0, -1, 0];
+  static const List<double> _kRollRight = [0, 0, 1, 0, 1, 0, -1, 0, 0];
+  static const List<double> _kRollLeft = [0, 0, -1, 0, 1, 0, 1, 0, 0];
+
+  /// 目标姿态 = viewRot · 当前目标姿态(动画中途连点也精确累积 90°,不会因为
+  /// 拿"显示中的中途姿态"当基准而漂)。
+  void _rollCube(List<double> viewRot) {
     final cam = _cam;
     if (cam == null) return;
-    widget.controller.moveTo((
-      yaw: yaw,
-      pitch: pitch.clamp(-_kPitchLimit, _kPitchLimit),
-      // 滚转原样保留 —— 钟表旋转(滑轨)把角度就存在相机 roll 里,框绕视线
-      // 反转同角度抵消。这里硬写 0 会把滑轨的成果清掉而框的朝向留着,框与
-      // 骰子当场歪掉(旧约束"手动 orbit 不带滚转"随钟表签决作废)。
-      roll: cam.roll,
-      zoom: cam.zoom,
-      panX: cam.panX,
-      panY: cam.panY,
-      pivotX: cam.pivotX,
-      pivotY: cam.pivotY,
-      pivotZ: cam.pivotZ,
-    ));
-  }
-
-  void _onFlingTick() {
-    final d = _fling.value;
-    _applyPose(
-      _flingYaw0 + _flingDirYaw * d,
-      _flingPitch0 + _flingDirPitch * d,
-    );
-  }
-
-  /// [2026-07-28 用户签决] 立方体可自由拖动,点云跟着转(它就是相机的
-  /// 另一个把手)。单指拖 = orbit;松手按摩擦模型滑行渐停。
-  void _onCubeDragStart() {
-    _fling.stop();
-    _snap.stop();
-  }
-
-  void _onCubeDrag(Offset delta) {
-    final cam = _cam;
-    if (cam == null) return;
-    _applyPose(
-      cam.yaw - delta.dx * _kCubeYawPerPx,
-      cam.pitch + delta.dy * _kCubePitchPerPx,
-    );
-  }
-
-  void _onCubeDragEnd(Velocity v) {
-    final cam = _cam;
-    if (cam == null) return;
-    final px = v.pixelsPerSecond;
-    final speed = px.distance;
-    if (speed < 40) return; // 轻推不甩
-    _flingYaw0 = cam.yaw;
-    _flingPitch0 = cam.pitch;
-    // 单位方向上的角速度(rad/单位距离),距离标量由摩擦模型驱动。
-    _flingDirYaw = -px.dx / speed * _kCubeYawPerPx;
-    _flingDirPitch = px.dy / speed * _kCubePitchPerPx;
-    _fling.value = 0;
-    unawaited(_fling.animateWith(FrictionSimulation(0.135, 0, speed)));
+    final base = _snap.isAnimating && _slerpTarget != null
+        ? _slerpTarget!
+        : composeViewMatrix(cam.yaw, cam.pitch, cam.roll);
+    _snapToPose(mulMatrix(viewRot, base));
   }
 
   CloudViewCamera? get _cam => widget.camera.value;
@@ -231,14 +184,41 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     );
   }
 
+  /// 姿态过渡走 **SO(3) 轴角 slerp**,不是三个欧拉角各自线性插值 —— 过极点
+  /// 时欧拉分量会突变(yaw/roll 在 pitch=±90° 处简并),线性插值会让画面绕
+  /// 一大圈。slerp 走的是两姿态之间的最短大圆弧。
+  List<double> _slerpFrom = kIdentityRot;
+  List<double> _slerpAxis = const [1, 0, 0];
+  double _slerpAngle = 0;
+  List<double>? _slerpTarget;
+
+  void _snapToPose(List<double> target) {
+    final cam = _cam;
+    if (cam == null) return;
+    _slerpFrom = composeViewMatrix(cam.yaw, cam.pitch, cam.roll);
+    final (axis, angle) = axisAngleOf(mulTransposed(target, _slerpFrom));
+    if (angle.abs() < 1e-6) return;
+    _slerpAxis = axis;
+    _slerpAngle = angle;
+    _slerpTarget = target;
+    unawaited(_snap.forward(from: 0));
+  }
+
   void _onSnapTick() {
     final t = Curves.easeOutCubic.transform(_snap.value);
     final cam = _cam;
     if (cam == null) return;
+    final r = t >= 1.0
+        ? (_slerpTarget ?? _slerpFrom)
+        : mulMatrix(
+            rotationFromAxisAngle(_slerpAxis, _slerpAngle * t),
+            _slerpFrom,
+          );
+    final (y, p, roll) = decomposeViewMatrix(r);
     widget.controller.moveTo((
-      yaw: _fromYaw + (_toYaw - _fromYaw) * t,
-      pitch: _fromPitch + (_toPitch - _fromPitch) * t,
-      roll: _fromRoll + (_toRoll - _fromRoll) * t,
+      yaw: y,
+      pitch: p,
+      roll: roll,
       zoom: cam.zoom,
       panX: cam.panX,
       panY: cam.panY,
@@ -260,30 +240,7 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     final target = composeViewMatrix(preset.yaw, preset.pitch, 0);
     final r = widget.box.rot;
     final rotT = <double>[r[0], r[3], r[6], r[1], r[4], r[7], r[2], r[5], r[8]];
-    final (ty, tp, tr) = decomposeViewMatrix(mulMatrix(target, rotT));
-    _snapTo(ty, tp, tr);
-  }
-
-  /// 相机动画到给定姿态(yaw 走环向最短路;已在目标上则不启动动画)。
-  void _snapTo(double yaw, double pitch, double roll) {
-    final cam = _cam;
-    if (cam == null) return;
-    _fromYaw = cam.yaw;
-    _fromPitch = cam.pitch;
-    _fromRoll = cam.roll;
-    _toPitch = pitch;
-    _toRoll = roll;
-    var delta = yaw - _fromYaw;
-    delta = delta.remainder(2 * math.pi);
-    if (delta > math.pi) delta -= 2 * math.pi;
-    if (delta < -math.pi) delta += 2 * math.pi;
-    _toYaw = _fromYaw + delta;
-    if (delta.abs() < 1e-6 &&
-        (_toPitch - _fromPitch).abs() < 1e-6 &&
-        (_toRoll - _fromRoll).abs() < 1e-6) {
-      return;
-    }
-    unawaited(_snap.forward(from: 0));
+    _snapToPose(mulMatrix(target, rotT));
   }
 
   /// 旋转滑轨的转轴 = **视线轴**(相机系 z),任何视角下都固定为它。
@@ -410,10 +367,21 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
 
   /// 菜单项二:相机回到默认取景(点云回到刚进来时的大小)。框不动。
   void _resetZoom() {
-    _fling.stop();
     _snap.stop();
     widget.controller.requestReframe();
   }
+
+  /// 箭头按钮:与立方体贴紧(RS 观感),18px 图标 + 紧凑命中区。
+  Widget _cubeArrow(IconData icon, VoidCallback onTap, Key key) => IconButton(
+    key: key,
+    onPressed: onTap,
+    icon: Icon(icon),
+    color: Colors.white70,
+    iconSize: 18,
+    padding: EdgeInsets.zero,
+    constraints: const BoxConstraints(minWidth: 24, minHeight: 18),
+    visualDensity: VisualDensity.compact,
+  );
 
   Widget _menuItem(String label, VoidCallback onTap) => InkWell(
     onTap: () {
@@ -527,25 +495,50 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
           top: 8,
           right: 12,
           child: SafeArea(
-            child: _CubeGestures(
-              onDragStart: _onCubeDragStart,
-              onDrag: _onCubeDrag,
-              onDragEnd: _onCubeDragEnd,
-              child: ValueListenableBuilder<CloudViewCamera?>(
-                valueListenable: widget.camera,
-                builder: (_, cam, _) {
-                  final (cy, cp, cr) = decomposeViewMatrix(_relPose);
-                  return ViewCube(
-                    key: const ValueKey('view-cube'),
-                    viewYaw: cy,
-                    viewPitch: cp,
-                    viewRoll: cr,
-                    faceLabels: _faceLabels(context),
-                    onFaceTap: _snapToFace,
-                    size: 72,
-                  );
-                },
-              ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _cubeArrow(
+                  Icons.keyboard_arrow_up_rounded,
+                  () => _rollCube(_kRollUp),
+                  const ValueKey('cube-up'),
+                ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _cubeArrow(
+                      Icons.keyboard_arrow_left_rounded,
+                      () => _rollCube(_kRollLeft),
+                      const ValueKey('cube-left'),
+                    ),
+                    ValueListenableBuilder<CloudViewCamera?>(
+                      valueListenable: widget.camera,
+                      builder: (_, cam, _) {
+                        final (cy, cp, cr) = decomposeViewMatrix(_relPose);
+                        return ViewCube(
+                          key: const ValueKey('view-cube'),
+                          viewYaw: cy,
+                          viewPitch: cp,
+                          viewRoll: cr,
+                          faceLabels: _faceLabels(context),
+                          onFaceTap: _snapToFace,
+                          size: 72,
+                        );
+                      },
+                    ),
+                    _cubeArrow(
+                      Icons.keyboard_arrow_right_rounded,
+                      () => _rollCube(_kRollRight),
+                      const ValueKey('cube-right'),
+                    ),
+                  ],
+                ),
+                _cubeArrow(
+                  Icons.keyboard_arrow_down_rounded,
+                  () => _rollCube(_kRollDown),
+                  const ValueKey('cube-down'),
+                ),
+              ],
             ),
           ),
         ),
@@ -608,60 +601,3 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
 
 /// 骰子手势:单指拖 = 转视角(带惯性),同时不让手势落到下层点云视图。
 /// 点击某面归位由 ViewCube 自己的 onTapDown 处理,与拖动共存。
-class _CubeGestures extends StatefulWidget {
-  const _CubeGestures({
-    required this.onDragStart,
-    required this.onDrag,
-    required this.onDragEnd,
-    required this.child,
-  });
-
-  final VoidCallback onDragStart;
-  final ValueChanged<Offset> onDrag;
-  final ValueChanged<Velocity> onDragEnd;
-  final Widget child;
-
-  @override
-  State<_CubeGestures> createState() => _CubeGesturesState();
-}
-
-class _CubeGesturesState extends State<_CubeGestures> {
-  Duration? _lastTimestamp;
-  Offset _fallbackVelocity = Offset.zero;
-
-  @override
-  Widget build(BuildContext context) => GestureDetector(
-    behavior: HitTestBehavior.opaque,
-    dragStartBehavior: DragStartBehavior.down,
-    onPanStart: (d) {
-      _lastTimestamp = d.sourceTimeStamp;
-      _fallbackVelocity = Offset.zero;
-      widget.onDragStart();
-    },
-    onPanUpdate: (d) {
-      final timestamp = d.sourceTimeStamp;
-      final previous = _lastTimestamp;
-      if (timestamp != null && previous != null) {
-        final elapsed = timestamp - previous;
-        if (elapsed > Duration.zero && d.delta != Offset.zero) {
-          _fallbackVelocity =
-              d.delta *
-              (Duration.microsecondsPerSecond / elapsed.inMicroseconds);
-        }
-      }
-      _lastTimestamp = timestamp;
-      widget.onDrag(d.delta);
-    },
-    onPanEnd: (d) {
-      var velocity = d.velocity;
-      if (velocity.pixelsPerSecond == Offset.zero &&
-          _fallbackVelocity != Offset.zero) {
-        velocity = Velocity(
-          pixelsPerSecond: _fallbackVelocity,
-        ).clampMagnitude(0, 8000);
-      }
-      widget.onDragEnd(velocity);
-    },
-    child: widget.child,
-  );
-}

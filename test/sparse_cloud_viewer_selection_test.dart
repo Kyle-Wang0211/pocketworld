@@ -176,7 +176,7 @@ void main() {
     expect(boxOf(tester), isNull); // 浏览态不显示框
   });
 
-  testWidgets('编辑态:单指一律转视角,框只由手柄改动', (tester) async {
+  testWidgets('编辑态:单指一律不转视角,框只由手柄改动', (tester) async {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));
     await openViewer(tester, ply);
@@ -190,7 +190,10 @@ void main() {
     final rect = tester.getRect(find.byType(SparseCloudView));
     double cubeYaw() => tester.widget<ViewCube>(find.byType(ViewCube)).viewYaw;
 
-    // 盒外(左上角)拖 → 转视角,盒不动。
+    // [2026-07-30 语义反转,不是回归] 原用例断言"单指一律**转**视角"。用户
+    // 签决"完全复刻 RS,点云只能固定六个面动"后,编辑态没有自由 orbit ——
+    // 换面只能走骰子的四个箭头或点骰子的面(见 group「RS 六面机制」)。
+    // "框只由手柄改动"这半条不变,继续守。
     final yaw0 = cubeYaw();
     final box0 = boxOf(tester)!;
     await tester.dragFrom(
@@ -198,23 +201,20 @@ void main() {
       const Offset(70, 0),
     );
     await tester.pumpAndSettle();
-    expect(cubeYaw(), isNot(closeTo(yaw0, 1e-6)));
+    expect(cubeYaw(), closeTo(yaw0, 1e-9), reason: '盒外单指拖动转了视角');
     expect(boxOf(tester)!.cx, closeTo(box0.cx, 1e-12));
 
-    // [2026-07-29] 单指整体平移框已按用户签决删除 ⇒ 框内空白拖动同样是转
-    // 视角,框纹丝不动(只有拖手柄才改框)。
-    final yawMid = cubeYaw();
     await tester.dragFrom(
       rect.center + const Offset(0, 60),
       const Offset(40, 0),
     );
     await tester.pumpAndSettle();
-    expect(cubeYaw(), isNot(closeTo(yawMid, 1e-6)), reason: '框内拖动应转视角');
+    expect(cubeYaw(), closeTo(yaw0, 1e-9), reason: '框内单指拖动转了视角');
     expect(boxOf(tester)!.cx, closeTo(box0.cx, 1e-12), reason: '框被平移了');
     expect(boxOf(tester)!.cz, closeTo(box0.cz, 1e-12));
   });
 
-  testWidgets('拖动骰子 = 点云跟着转,松手有惯性', (tester) async {
+  testWidgets('四个箭头各转一次:方向互不相同,四向都能换面', (tester) async {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));
     await openViewer(tester, ply);
@@ -225,24 +225,54 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    double cubeYaw() => tester.widget<ViewCube>(find.byType(ViewCube)).viewYaw;
-    // 点云视角与骰子同源(骰子读的就是相机 yaw),断言骰子即断言点云。
-    final before = cubeYaw();
-    final cube = find.byType(ViewCube);
-    // [2026-07-28 用户签决] 立方体可自由拖动,点云跟着转,阻力要小:
-    // 30px 拖动应转出 ≥0.3 rad(灵敏度 0.02 rad/px,扣掉手势 slop)。
-    await tester.drag(cube, const Offset(-30, 0));
-    await tester.pumpAndSettle();
-    final afterDrag = cubeYaw();
-    expect((afterDrag - before).abs(), greaterThan(0.3));
+    // [2026-07-30 语义替换,不是回归] 原用例是"拖动骰子 = 点云跟着转,松手
+    // 有惯性"。用户签决"点云只能固定六个面动"后骰子拖动整个删掉,换面入口
+    // 改成四个箭头。这里守"四向各自有效且方向不同"——每个箭头把姿态转到
+    // 不同的正交视图,不能有两个箭头等效。
+    List<double> pose() {
+      final cam = tester
+          .widget<SelectionToolsLayer>(find.byType(SelectionToolsLayer))
+          .camera
+          .value!;
+      return composeViewMatrix(cam.yaw, cam.pitch, cam.roll);
+    }
 
-    // 甩动后松手继续滑行(惯性)。
-    await tester.fling(cube, const Offset(-40, 0), 1000);
-    await tester.pump();
-    final atRelease = cubeYaw();
-    await tester.pump(const Duration(milliseconds: 60));
-    expect((cubeYaw() - atRelease).abs(), greaterThan(0.01));
-    await tester.pumpAndSettle();
+    final base = pose();
+    final results = <String, List<double>>{};
+    for (final k in ['cube-up', 'cube-down', 'cube-left', 'cube-right']) {
+      await tester.tap(find.byKey(ValueKey(k)));
+      await tester.pumpAndSettle();
+      results[k] = pose();
+      // 转回来,让每个箭头都从同一基准出发。
+      final inverse = {
+        'cube-up': 'cube-down',
+        'cube-down': 'cube-up',
+        'cube-left': 'cube-right',
+        'cube-right': 'cube-left',
+      }[k]!;
+      await tester.tap(find.byKey(ValueKey(inverse)));
+      await tester.pumpAndSettle();
+      var back = 0.0;
+      for (var i = 0; i < 9; i++) {
+        back += (pose()[i] - base[i]).abs();
+      }
+      expect(back, lessThan(1e-6), reason: '$k 的反向箭头没能精确回到基准');
+    }
+    // 四个结果两两不同。
+    final keys = results.keys.toList();
+    for (var a = 0; a < keys.length; a++) {
+      for (var b = a + 1; b < keys.length; b++) {
+        var dev = 0.0;
+        for (var i = 0; i < 9; i++) {
+          dev += (results[keys[a]]![i] - results[keys[b]]![i]).abs();
+        }
+        expect(
+          dev,
+          greaterThan(0.1),
+          reason: '${keys[a]} 与 ${keys[b]} 转到了同一个姿态',
+        );
+      }
+    }
   });
 
   testWidgets('点击骰子的面 = 该面转到正对', (tester) async {
@@ -591,6 +621,100 @@ void main() {
     }
   });
 
+  // ── [2026-07-30 用户签决] 完全复刻 RS:点云只能在六个正交面之间切换 ──
+  //
+  // "点云只能固定六个面动,立方体上下左右的四个箭头也加回来"。自由 orbit
+  // (单指拖点云 / 拖骰子)全部取消,唯一的换面入口 = 四个箭头 + 点骰子的面。
+  // 箭头机制照 b3588f6^ 的骰子实现回滚:目标姿态 = 90° 视图矩阵 premultiply
+  // 当前姿态,每按一次严格 90°,动画走 SO(3) 轴角 slerp。
+  group('RS 六面机制', () {
+    Future<void> enterEditing(WidgetTester tester, String ply) async {
+      await openViewer(tester, ply);
+      await tester.tap(find.text('Next'));
+      await _pumpUntilRealAsyncSettles(
+        tester,
+        () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
+      );
+      await tester.pumpAndSettle();
+    }
+
+    CloudViewCamera camOf(WidgetTester tester) => tester
+        .widget<SelectionToolsLayer>(find.byType(SelectionToolsLayer))
+        .camera
+        .value!;
+
+    testWidgets('编辑态单指拖点云不再转视角(自由 orbit 已禁)', (tester) async {
+      final (dir, ply) = await fixture(tester);
+      addTearDown(() => dir.delete(recursive: true));
+      await enterEditing(tester, ply);
+      final before = camOf(tester);
+      // 用既有"单指一律转视角"用例验证过的坐标(框内,离手柄远)——
+      // 靠视图边角起手会被上层 UI 或手柄命中区吃掉,那样是平凡通过。
+      final r = tester.getRect(find.byType(SparseCloudView));
+      await tester.dragFrom(
+        r.center + const Offset(0, 60),
+        const Offset(70, 0),
+      );
+      await tester.pumpAndSettle();
+      final after = camOf(tester);
+      expect(after.yaw, closeTo(before.yaw, 1e-9), reason: '单指拖动改了 yaw');
+      expect(after.pitch, closeTo(before.pitch, 1e-9), reason: '单指拖动改了 pitch');
+    });
+
+    testWidgets('拖骰子不再自由转视角', (tester) async {
+      final (dir, ply) = await fixture(tester);
+      addTearDown(() => dir.delete(recursive: true));
+      await enterEditing(tester, ply);
+      final before = camOf(tester);
+      await tester.drag(
+        find.byKey(const ValueKey('view-cube')),
+        const Offset(40, 25),
+      );
+      await tester.pumpAndSettle();
+      final after = camOf(tester);
+      expect(after.yaw, closeTo(before.yaw, 1e-9));
+      expect(after.pitch, closeTo(before.pitch, 1e-9));
+    });
+
+    testWidgets('四个箭头都在,每按一次严格 90° 且落在六个正交面上', (tester) async {
+      final (dir, ply) = await fixture(tester);
+      addTearDown(() => dir.delete(recursive: true));
+      await enterEditing(tester, ply);
+      for (final k in ['cube-up', 'cube-down', 'cube-left', 'cube-right']) {
+        expect(find.byKey(ValueKey(k)), findsOneWidget, reason: '$k 箭头不存在');
+      }
+
+      // 一路按"下",每一步都必须是精确 90°:相对上一步的旋转角 = 90°,且
+      // 姿态矩阵九个元素全落在 {0, ±1}(正交视图的充要特征)。
+      var prev = composeViewMatrix(
+        camOf(tester).yaw,
+        camOf(tester).pitch,
+        camOf(tester).roll,
+      );
+      for (var i = 0; i < 4; i++) {
+        await tester.tap(find.byKey(const ValueKey('cube-down')));
+        await tester.pumpAndSettle();
+        final cam = camOf(tester);
+        final now = composeViewMatrix(cam.yaw, cam.pitch, cam.roll);
+        for (var k = 0; k < 9; k++) {
+          final v = now[k].abs();
+          expect(
+            math.min(v, (v - 1).abs()),
+            lessThan(1e-6),
+            reason: '第 ${i + 1} 步姿态不是正交视图(元素 $k = ${now[k]})',
+          );
+        }
+        final (_, angle) = axisAngleOf(mulTransposed(now, prev));
+        expect(
+          angle.abs(),
+          closeTo(math.pi / 2, 1e-6),
+          reason: '第 ${i + 1} 步不是 90°(实测 ${angle * 180 / math.pi}°)',
+        );
+        prev = now;
+      }
+    });
+  });
+
   testWidgets('连续拨动不会中途把点云重置回初始角度', (tester) async {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));
@@ -687,7 +811,7 @@ void main() {
     }
   });
 
-  testWidgets('⋯ 菜单展开时:仍能拨刻度 / 转立方体 / 转点云', (tester) async {
+  testWidgets('⋯ 菜单展开时:仍能拨刻度 / 按箭头换面', (tester) async {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));
     await openViewer(tester, ply);
@@ -714,14 +838,20 @@ void main() {
     await tester.pumpAndSettle();
     expect((_rotDev(box()) - dev0).abs(), greaterThan(0.1), reason: '菜单挡住了刻度');
 
-    final cubeYaw0 = cube().viewYaw;
-    await tester.drag(find.byType(ViewCube), const Offset(-30, 0));
+    // [2026-07-30 语义替换] 骰子拖动随"点云只能固定六个面动"删除,换面入口
+    // 是四个箭头 —— 守的还是同一件事:菜单浮层不能吞掉下层手势。
+    // 判据取骰子姿态矩阵的偏离量(单看 yaw 不行:按"下"主要改 pitch,极面
+    // 附近 yaw 还会因欧拉简并跳变)。
+    List<double> cubePose() =>
+        composeViewMatrix(cube().viewYaw, cube().viewPitch, cube().viewRoll);
+    final pose0 = cubePose();
+    await tester.tap(find.byKey(const ValueKey('cube-down')));
     await tester.pumpAndSettle();
-    expect(
-      (cube().viewYaw - cubeYaw0).abs(),
-      greaterThan(0.1),
-      reason: '菜单挡住了立方体拖动',
-    );
+    var poseDev = 0.0;
+    for (var i = 0; i < 9; i++) {
+      poseDev += (cubePose()[i] - pose0[i]).abs();
+    }
+    expect(poseDev, greaterThan(0.5), reason: '菜单挡住了箭头');
 
     // 菜单仍然开着(自绘浮层不会因为下层手势自动收起)。
     expect(find.text('Reset Rotation'), findsOneWidget);

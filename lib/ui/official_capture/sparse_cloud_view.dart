@@ -527,11 +527,16 @@ class _SparseCloudViewState extends State<SparseCloudView>
                           20.0,
                         );
                       }
-                    } else {
+                    } else if (!widget.editing) {
                       // Yaw sign negated to match the un-mirrored projection
                       // (screen-X flipped in the painter) — keeps "drag right
                       // → scene turns right" intuitive. Pitch now reaches the
                       // poles (±89°) instead of the old ±77° dead zone.
+                      //
+                      // [2026-07-30 用户签决] "完全复刻 RS,点云只能固定六个
+                      // 面动" ⇒ **编辑态没有自由 orbit**,换面只能走骰子的四
+                      // 个箭头或点骰子的面。浏览态不受影响(照旧自由转)。
+                      // 双指 pan/zoom 两态都保留。
                       _yaw -= d.focalPointDelta.dx * 0.008;
                       _pitch = (_pitch + d.focalPointDelta.dy * 0.006).clamp(
                         -_kPitchLimit,
