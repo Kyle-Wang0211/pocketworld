@@ -159,7 +159,7 @@ void main() {
     expect(boxOf(tester), isNull); // 浏览态不显示框
   });
 
-  testWidgets('编辑态:盒外单指转视角、盒内单指平移盒', (tester) async {
+  testWidgets('编辑态:单指一律转视角,框只由手柄改动', (tester) async {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));
     await openViewer(tester, ply);
@@ -184,22 +184,17 @@ void main() {
     expect(cubeYaw(), isNot(closeTo(yaw0, 1e-6)));
     expect(boxOf(tester)!.cx, closeTo(box0.cx, 1e-12));
 
-    // 盒内(避开手柄)拖 → 平移盒,视角不动。
-    final yawAfterOrbit = cubeYaw();
+    // [2026-07-29] 单指整体平移框已按用户签决删除 ⇒ 框内空白拖动同样是转
+    // 视角,框纹丝不动(只有拖手柄才改框)。
+    final yawMid = cubeYaw();
     await tester.dragFrom(
-      // 盒占屏幕大半,中心偏下 60px 稳在盒内,又离中心那颗面手柄(容差
-      // 30px)足够远。
       rect.center + const Offset(0, 60),
       const Offset(40, 0),
     );
     await tester.pumpAndSettle();
-    // 盒手势期间相机严格不动(此前 onScaleStart / 盒手势分派两处接线漏
-    // 掉,盒内拖会变成转视角 —— 这条就是那次的回归守门)。
-    expect(cubeYaw(), closeTo(yawAfterOrbit, 1e-12));
-    final moved =
-        (boxOf(tester)!.cx - box0.cx).abs() +
-        (boxOf(tester)!.cz - box0.cz).abs();
-    expect(moved, greaterThan(1e-6));
+    expect(cubeYaw(), isNot(closeTo(yawMid, 1e-6)), reason: '框内拖动应转视角');
+    expect(boxOf(tester)!.cx, closeTo(box0.cx, 1e-12), reason: '框被平移了');
+    expect(boxOf(tester)!.cz, closeTo(box0.cz, 1e-12));
   });
 
   testWidgets('拖动骰子 = 点云跟着转,松手有惯性', (tester) async {
@@ -371,15 +366,10 @@ void main() {
 
     // 先把框拨歪,再转到**极面**(俯视/仰视 —— yaw 在此退化为屏幕内旋转,
     // 正是"点底之后立方体停在斜角度"的病灶),然后点骰子归位。
+    // 初始视角就是极面(正俯视),不用再转过去。
+    expect(cube().viewPitch.abs(), greaterThan(1.2), reason: '初始应为正俯视');
     await tester.drag(find.byType(RulerScrubber), const Offset(-37, 0));
     await tester.pumpAndSettle();
-    final rect = tester.getRect(find.byType(SparseCloudView));
-    await tester.dragFrom(
-      rect.topLeft + const Offset(6, 6),
-      const Offset(0, 340),
-    );
-    await tester.pumpAndSettle();
-    expect(cube().viewPitch.abs(), greaterThan(1.2), reason: '没转到极面');
     await tester.tapAt(tester.getCenter(find.byType(ViewCube)));
     await tester.pumpAndSettle();
 
@@ -483,6 +473,46 @@ void main() {
     for (var i = 0; i < 9; i++) {
       expect(box().rot[i], closeTo(kIdentityRot[i], 1e-12));
     }
+  });
+
+  testWidgets('⋯ 菜单展开时:仍能拨刻度 / 转立方体 / 转点云', (tester) async {
+    final (dir, ply) = await fixture(tester);
+    addTearDown(() => dir.delete(recursive: true));
+    await openViewer(tester, ply);
+    await tester.tap(find.text('Next'));
+    await _pumpUntilRealAsyncSettles(
+      tester,
+      () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
+    );
+    await tester.pumpAndSettle();
+    ViewCube cube() => tester.widget<ViewCube>(find.byType(ViewCube));
+    SelectionBox box() => tester
+        .widget<SparseCloudView>(find.byType(SparseCloudView))
+        .selectionBox!;
+
+    // 展开菜单(自绘浮层,**不带遮罩**)。
+    await tester.tap(find.byKey(const ValueKey('selection-more')));
+    await tester.pumpAndSettle();
+    expect(find.text('Reset Rotation'), findsOneWidget);
+
+    // [2026-07-29 用户签决] 菜单展开时底下照常可操作 —— PopupMenuButton 的
+    // 全屏 ModalBarrier 会把这些手势全吞掉,故改自绘浮层。
+    final yaw0 = box().yawDeg;
+    await tester.drag(find.byType(RulerScrubber), const Offset(-45, 0));
+    await tester.pumpAndSettle();
+    expect((box().yawDeg - yaw0).abs(), greaterThan(1.0), reason: '菜单挡住了刻度');
+
+    final cubeYaw0 = cube().viewYaw;
+    await tester.drag(find.byType(ViewCube), const Offset(-30, 0));
+    await tester.pumpAndSettle();
+    expect(
+      (cube().viewYaw - cubeYaw0).abs(),
+      greaterThan(0.1),
+      reason: '菜单挡住了立方体拖动',
+    );
+
+    // 菜单仍然开着(自绘浮层不会因为下层手势自动收起)。
+    expect(find.text('Reset Rotation'), findsOneWidget);
   });
 
   testWidgets('加载失败:无编辑入口', (tester) async {

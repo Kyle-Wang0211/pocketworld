@@ -249,6 +249,11 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
   /// (拖手柄),此时必须重新烘焙基准,否则拨滑轨会把那次改动拽回去。
   SelectionBox? _rollEmitted;
 
+  /// "⋯" 菜单是否展开。自绘浮层、**不带遮罩** —— 展开时底下照常可以转立方体、
+  /// 拨刻度、转点云(用户签决)。PopupMenuButton 自带全屏 ModalBarrier,会把
+  /// 这些手势全吞掉,故不能用它。
+  bool _menuOpen = false;
+
   /// 拨滑轨期间置位。
   ///
   /// [2026-07-29 用户实机指认"开始调节时点云自动重置到初始角度"] 根因是
@@ -335,6 +340,20 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     widget.controller.requestReframe();
   }
 
+  Widget _menuItem(String label, VoidCallback onTap) => InkWell(
+    onTap: () {
+      setState(() => _menuOpen = false);
+      onTap();
+    },
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 13),
+      child: Text(
+        label,
+        style: const TextStyle(color: Colors.white, fontSize: 15),
+      ),
+    ),
+  );
+
   Map<String, String> _faceLabels(BuildContext context) {
     final l = AppL10n.of(context);
     return {
@@ -381,13 +400,11 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
                 Padding(
                   // 与返回箭头的左边缘对齐(TextButton 内边距 8)。
                   padding: const EdgeInsets.only(left: 8, top: 2),
-                  child: PopupMenuButton<int>(
+                  child: GestureDetector(
                     key: const ValueKey('selection-more'),
-                    tooltip: '',
-                    color: const Color(0xFF2A2A2E),
-                    position: PopupMenuPosition.under,
-                    padding: EdgeInsets.zero,
-                    icon: Container(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => setState(() => _menuOpen = !_menuOpen),
+                    child: Container(
                       width: 34,
                       height: 34,
                       alignment: Alignment.center,
@@ -401,37 +418,32 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
                         size: 20,
                       ),
                     ),
-                    onSelected: (i) => switch (i) {
-                      0 => _resetRotation(),
-                      1 => _resetZoom(),
-                      _ => widget.onResetBoxSize?.call(),
-                    },
-                    itemBuilder: (_) => [
-                      PopupMenuItem<int>(
-                        value: 0,
-                        child: Text(
-                          l.selectionResetRotation,
-                          style: const TextStyle(color: Colors.white),
-                        ),
-                      ),
-                      PopupMenuItem<int>(
-                        value: 1,
-                        child: Text(
-                          l.selectionResetZoom,
-                          style: const TextStyle(color: Colors.white),
-                        ),
-                      ),
-                      if (widget.onResetBoxSize != null)
-                        PopupMenuItem<int>(
-                          value: 2,
-                          child: Text(
-                            l.selectionResetBoxSize,
-                            style: const TextStyle(color: Colors.white),
-                          ),
-                        ),
-                    ],
                   ),
                 ),
+                if (_menuOpen)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 8, top: 6),
+                    child: Material(
+                      color: const Color(0xF22A2A2E),
+                      borderRadius: BorderRadius.circular(12),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        // ⚠️ 不能用 stretch:菜单在 Stack 的 Positioned 里,
+                        // 宽度无界,stretch 会让子项拿不到约束而崩(RenderBox
+                        // was not laid out)。宽度由文本自然决定。
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _menuItem(l.selectionResetRotation, _resetRotation),
+                          _menuItem(l.selectionResetZoom, _resetZoom),
+                          if (widget.onResetBoxSize != null)
+                            _menuItem(
+                              l.selectionResetBoxSize,
+                              widget.onResetBoxSize!,
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),

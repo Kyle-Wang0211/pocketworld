@@ -197,8 +197,10 @@ class SparseCloudView extends StatefulWidget {
   State<SparseCloudView> createState() => _SparseCloudViewState();
 }
 
-const double _kDefaultYaw = 0.6;
-const double _kDefaultPitch = -0.42;
+// [2026-07-29 用户签决] 所有点云的初始视角 = 骰子"顶"的正面(正俯视)。
+// 与 kOrientationPresets['Top'] 同一姿态,进来就是摆平的俯视图。
+const double _kDefaultYaw = 0.0;
+const double _kDefaultPitch = -math.pi / 2;
 // Near-full pitch: reach straight-up/down (±90°) minus a hair to dodge the
 // exact pole singularity. Was clamped to ±1.35 (±77°) — the head-on
 // "can't see the top/bottom" dead zone the competitor audit flagged.
