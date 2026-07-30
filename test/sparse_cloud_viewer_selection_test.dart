@@ -26,6 +26,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/l10n/app_localizations.dart';
 import 'package:pocketworld_flutter/official_capture/selection_box.dart';
+import 'package:pocketworld_flutter/ui/official_capture/cloud_camera.dart';
 import 'package:pocketworld_flutter/ui/official_capture/ruler_scrubber.dart';
 import 'package:pocketworld_flutter/ui/official_capture/selection_rect_handles.dart';
 import 'package:pocketworld_flutter/ui/official_capture/selection_tools_layer.dart';
@@ -413,7 +414,7 @@ void main() {
     );
   });
 
-  testWidgets('滑轨方向 = 垂直翻滚(俯仰),不是水平自转', (tester) async {
+  testWidgets('滑轨方向 = 钟表指针(绕视线轴的屏幕内旋转)', (tester) async {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));
     await openViewer(tester, ply);
@@ -423,19 +424,93 @@ void main() {
       () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
     );
     await tester.pumpAndSettle();
-    SelectionBox box() => tester
-        .widget<SparseCloudView>(find.byType(SparseCloudView))
-        .selectionBox!;
+    CloudViewCamera camOf() => tester
+        .widget<SelectionToolsLayer>(find.byType(SelectionToolsLayer))
+        .camera
+        .value!;
+    ViewCube cube() =>
+        tester.widget<ViewCube>(find.byKey(const ValueKey('view-cube')));
 
-    // [2026-07-29 用户签决] "滑轨应该让点云垂直方向旋转,而不是水平方向"。
-    // 判据取框的**局部 +Y 轴**(rot 第 1 列)在世界中的走向:
-    //   · 绕竖直轴自转(旧行为)⇒ +Y 始终指向世界 +Y,竖直分量不变;
-    //   · 绕横轴翻滚(新行为)⇒ +Y 被扳倒,竖直分量显著减小。
-    double upY() => box().rot[4]; // rot[3..5] 是第 1 列 → [4] 是它的 y 分量
-    expect(upY().abs(), closeTo(1.0, 1e-9), reason: '初始框应轴对齐');
+    // [2026-07-30 用户签决] "就跟钟表一样,指针一样" —— 点云在屏幕平面内原地
+    // 打转,转轴 = **视线轴**,任何视角下都是钟表。上一版绕横轴翻滚(顶视翻
+    // 成侧视)与更早的绕世界竖直轴自转都被实机否决;后者只在顶/底视角碰巧
+    // 是钟表效果,侧视角就退化成水平自转(用户原话"现在只有顶部和底部是
+    // 垂直方向")。
+    //
+    // 判据取相机相对基准的旋转 M_now · M_baseᵀ:钟表 ⇒ 它必须是绕相机系 z
+    // (视线)的 Rz —— 第 3 行/列恒为 (0,0,1);绕横轴翻滚会变成 Rx(第 1 行
+    // 才是不动的那一行),绕竖直轴自转在非极视角下也不是纯 Rz。
+    final c0 = camOf();
+    final base = composeViewMatrix(c0.yaw, c0.pitch, c0.roll);
+    final cubeBefore = cube();
+
     await tester.drag(find.byType(RulerScrubber), const Offset(-70, 0));
     await tester.pumpAndSettle();
-    expect(upY().abs(), lessThan(0.9), reason: '框的竖直轴没被扳倒 ⇒ 还是水平自转,不是垂直翻滚');
+
+    final c1 = camOf();
+    final now = composeViewMatrix(c1.yaw, c1.pitch, c1.roll);
+    // rel = now · baseᵀ
+    final rel = List<double>.filled(9, 0);
+    for (var i = 0; i < 3; i++) {
+      for (var j = 0; j < 3; j++) {
+        var acc = 0.0;
+        for (var k = 0; k < 3; k++) {
+          acc += now[i * 3 + k] * base[j * 3 + k];
+        }
+        rel[i * 3 + j] = acc;
+      }
+    }
+    // 必须确实转了(否则用例什么都没测到)。注意不能用 rel[0]:横轴翻滚
+    // (Rx)下它恒为 1 —— 那正是被否决行为的指纹,不是"没转"。
+    var dev = 0.0;
+    for (var k = 0; k < 9; k++) {
+      dev += (rel[k] - kIdentityRot[k]).abs();
+    }
+    expect(dev, greaterThan(0.1), reason: '滑轨没让相机动');
+    // Rz:视线轴是旋转轴 ⇒ 第 3 行、第 3 列都是 (0,0,1)。
+    expect(rel[8], closeTo(1.0, 1e-6), reason: '转轴不是视线轴 ⇒ 不是钟表旋转');
+    expect(rel[2], closeTo(0.0, 1e-6), reason: '转轴不是视线轴');
+    expect(rel[5], closeTo(0.0, 1e-6), reason: '转轴不是视线轴');
+    expect(rel[6], closeTo(0.0, 1e-6), reason: '转轴不是视线轴');
+    expect(rel[7], closeTo(0.0, 1e-6), reason: '转轴不是视线轴');
+
+    // 相机与框同步转 ⇒ 相对姿态不变 ⇒ 骰子纹丝不动、永远正着放。
+    expect(cube().viewYaw, closeTo(cubeBefore.viewYaw, 1e-6));
+    expect(cube().viewPitch, closeTo(cubeBefore.viewPitch, 1e-6));
+    expect(cube().viewRoll, closeTo(cubeBefore.viewRoll, 1e-6));
+  });
+
+  testWidgets('拨完滑轨再手动转视角:滚转不被清零(否则框与骰子当场失配)', (tester) async {
+    final (dir, ply) = await fixture(tester);
+    addTearDown(() => dir.delete(recursive: true));
+    await openViewer(tester, ply);
+    await tester.tap(find.text('Next'));
+    await _pumpUntilRealAsyncSettles(
+      tester,
+      () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
+    );
+    await tester.pumpAndSettle();
+    CloudViewCamera camOf() => tester
+        .widget<SelectionToolsLayer>(find.byType(SelectionToolsLayer))
+        .camera
+        .value!;
+
+    // 钟表旋转把角度存在**相机 roll** 里(框绕视线反转同角度抵消)。旧
+    // _applyPose 为"手动 orbit 不带滚转"把 roll 硬写 0 —— 手动转一下视角就
+    // 把滑轨的成果清掉,而框的朝向留着,框与骰子当场歪掉。
+    await tester.drag(find.byType(RulerScrubber), const Offset(-70, 0));
+    await tester.pumpAndSettle();
+    final rolled = camOf().roll;
+    expect(rolled.abs(), greaterThan(0.05), reason: '滑轨应产生滚转');
+
+    // 手动拖**骰子** orbit —— 走 _applyPose 的就是这条路径(点云自身的
+    // orbit 在 SparseCloudView 内部,不经过它)。
+    await tester.drag(
+      find.byKey(const ValueKey('view-cube')),
+      const Offset(30, 0),
+    );
+    await tester.pumpAndSettle();
+    expect(camOf().roll.abs(), greaterThan(0.05), reason: '手动 orbit 把滑轨的滚转清零了');
   });
 
   testWidgets('连续拨动不会中途把点云重置回初始角度', (tester) async {

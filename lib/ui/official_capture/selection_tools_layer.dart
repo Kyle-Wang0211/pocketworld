@@ -143,7 +143,10 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     widget.controller.moveTo((
       yaw: yaw,
       pitch: pitch.clamp(-_kPitchLimit, _kPitchLimit),
-      roll: 0, // 手动 orbit 不带滚转
+      // 滚转原样保留 —— 钟表旋转(滑轨)把角度就存在相机 roll 里,框绕视线
+      // 反转同角度抵消。这里硬写 0 会把滑轨的成果清掉而框的朝向留着,框与
+      // 骰子当场歪掉(旧约束"手动 orbit 不带滚转"随钟表签决作废)。
+      roll: cam.roll,
       zoom: cam.zoom,
       panX: cam.panX,
       panY: cam.panY,
@@ -265,12 +268,14 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     unawaited(_snap.forward(from: 0));
   }
 
-  /// 旋转滑轨的转轴 = **世界竖直轴(重力)**,固定不变。
+  /// 旋转滑轨的转轴 = **视线轴**(相机系 z),任何视角下都固定为它。
   ///
-  /// [2026-07-29 用户签决三条] "立方体必须永远正着放"、"点击面后立方体要
-  /// 水平、不能有倾斜"。此前按"正对面法向"转,正对侧面时那根轴≈视线方向,
-  /// 绕它转相机就是**屏幕内滚转** —— 画面整个歪掉、骰子文字横过来。
-  /// 只有绕重力轴转才既让点云水平转动、又保证相机永不滚转(roll ≡ 0)。
+  /// [2026-07-30 用户签决] "就跟钟表一样,指针一样" —— 点云在屏幕平面内原地
+  /// 打转。三代都被实机否决过:①绕"正对面法向"(轴是移动靶,拨到中途换轴);
+  /// ②绕世界竖直轴(只在顶/底视角碰巧是钟表,侧视角退化成水平自转 —— 用户
+  /// 原话"现在只有顶部和底部是垂直方向");③绕横轴翻滚(顶视翻成侧视 ——
+  /// "还是水平的翻转")。绕视线轴同时满足另两条老签决:相机与框同步转 ⇒
+  /// 相对姿态恒定 ⇒ 骰子一动不动、永远正着放,框在屏幕上纹丝不动。
 
   /// 滑轨的**绝对**基准:相机 = 基准 yaw + 读数;框 = R(轴, −读数) · 基准。
   ///
@@ -330,15 +335,21 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     if (cam == null) return;
     if (_rollEmitted == null) _rebaseRoll();
     final deg = v - 360.0 * ((v + 180.0) / 360.0).floorToDouble();
-    // 相机:绕自身 right 轴(相机系 x)转 deg = 视图矩阵左乘 Rx(deg)。
+    // 相机:绕自身**视线轴**(相机系 z)转 deg = 视图矩阵左乘 Rz(deg) =
+    // 屏幕平面内的旋转 ⇒ 点云像钟表指针一样在屏幕上原地打转。
     final camView = mulMatrix(
-      rotAboutAxisDeg(const [1, 0, 0], deg),
+      rotAboutAxisDeg(const [0, 0, 1], deg),
       _rollBaseView,
     );
     final (ny, np, nr) = decomposeViewMatrix(camView);
-    // 框:绕**世界** right 轴(= 基准视图第 0 行)转 −deg。
-    final worldRight = [_rollBaseView[0], _rollBaseView[1], _rollBaseView[2]];
-    final inv = rotAboutAxisDeg(worldRight, -deg);
+    // 框:绕**世界**视线轴(= 基准视图第 3 行)转 −deg。
+    //
+    // 该轴在 Rz 作用下不动(它就是转轴),所以 camView 第 3 行 ≡ 基准第 3 行
+    // —— 轴恒定,不随读数漂移。不变性:baseView·R(axis,−θ) = Rz(−θ)·baseView
+    // (因 baseView·axis = e3),于是 camView·boxRot ≡ baseView·baseRot,框在
+    // 屏幕上纹丝不动、相对姿态不变 ⇒ 骰子也一动不动、永远正着放。
+    final worldViewDir = [_rollBaseView[6], _rollBaseView[7], _rollBaseView[8]];
+    final inv = rotAboutAxisDeg(worldViewDir, -deg);
     final dx = _rollBaseCenter[0] - cam.pivotX;
     final dy = _rollBaseCenter[1] - cam.pivotY;
     final dz = _rollBaseCenter[2] - cam.pivotZ;
