@@ -6,6 +6,7 @@ import 'archive_audit_store.dart';
 import 'archive_background_scheduler.dart';
 import 'database_archive_codec.dart';
 import 'database_archive_policy.dart';
+import 'database_archive_preprocessor.dart';
 import 'database_archive_transaction.dart';
 import 'photo_archive_codec.dart';
 import 'photo_archive_policy.dart';
@@ -30,6 +31,7 @@ class PhotoArchiveCoordinator {
   PhotoArchiveCoordinator({
     required this.codec,
     this.databaseCodec,
+    this.databasePreprocessor,
     this.auditStore,
     ArchiveBackgroundScheduler? backgroundScheduler,
   }) : backgroundScheduler =
@@ -37,6 +39,7 @@ class PhotoArchiveCoordinator {
 
   final PhotoArchiveCodec codec;
   final DatabaseArchiveCodec? databaseCodec;
+  final DatabaseArchivePreprocessor? databasePreprocessor;
   final OfficialArchiveAuditStore? auditStore;
   final ArchiveBackgroundScheduler backgroundScheduler;
   final LinkedHashMap<String, Directory> _pending =
@@ -54,6 +57,7 @@ class PhotoArchiveCoordinator {
   void requestSystemInterruption() {
     _interruptionGeneration++;
     databaseCodec?.requestCancellation();
+    databasePreprocessor?.requestCancellation();
     unawaited(
       _recordAudit(
         event: 'system_interrupted',
@@ -78,6 +82,7 @@ class PhotoArchiveCoordinator {
       _reconstructionOwners.add(_canonicalKey(reconstructionDirectory));
     }
     databaseCodec?.requestCancellation();
+    databasePreprocessor?.requestCancellation();
     return PhotoArchiveActivityLease(
       () => _releaseProductionActivity(
         reconstructionDirectory: reconstructionDirectory,
@@ -254,6 +259,7 @@ class PhotoArchiveCoordinator {
       if (database != null && !isProductionPipelineActive) {
         databaseResult = await DatabaseArchiveTransaction(
           codec: database,
+          preprocessor: databasePreprocessor,
           canContinue: () =>
               !isProductionPipelineActive &&
               runGeneration == _interruptionGeneration,

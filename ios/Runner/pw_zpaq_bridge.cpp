@@ -237,3 +237,13 @@ uint64_t pw_zpaq_cancellation_generation(void) {
 void pw_zpaq_request_cancel(void) {
   g_cancellation_generation.fetch_add(1, std::memory_order_acq_rel);
 }
+
+// Keep the reversible SQLite transform in the same already-retained native
+// object as the ZPAQ bridge. This avoids touching the shared Xcode project file
+// while still compiling the exact source used by the standalone benchmark.
+#define g_last_error g_sqlite_descriptor_transform_last_error
+#define g_cancellation_generation \
+  g_sqlite_descriptor_transform_cancellation_generation
+#include "pw_sqlite_descriptor_transform.cpp"
+#undef g_cancellation_generation
+#undef g_last_error

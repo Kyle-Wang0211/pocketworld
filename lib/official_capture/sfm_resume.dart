@@ -55,7 +55,10 @@ bool isResumeInFlight(String captureDir) =>
 /// (无可恢复数据)。与 [resumeIncompleteCaptures] 的 sweep 同一逻辑。
 Future<String?> resolveRecoverableCaptureDir(String recordCaptureDir) async {
   if (recordCaptureDir.isEmpty) return null;
-  final resolver = DatabaseArchiveResolver(codec: databaseArchiveCodec);
+  final resolver = DatabaseArchiveResolver(
+    codec: databaseArchiveCodec,
+    preprocessor: databaseArchivePreprocessor,
+  );
   final direct = Directory(recordCaptureDir);
   if (await resolver.isRecoverable(direct)) return direct.path;
   try {
@@ -131,6 +134,7 @@ Future<void> resumeIncompleteCaptures() async {
     final pending = <String>[];
     final databaseResolver = DatabaseArchiveResolver(
       codec: databaseArchiveCodec,
+      preprocessor: databaseArchivePreprocessor,
     );
     for (final r in records) {
       var dir = r.captureDir;
@@ -242,6 +246,7 @@ Future<void> _resumeOne(
     await _umbrella('beginReconUmbrella', captureDir);
     final database = await DatabaseArchiveResolver(
       codec: databaseArchiveCodec,
+      preprocessor: databaseArchivePreprocessor,
     ).resolveDatabase(Directory(captureDir));
     if (database == null) {
       DeviceLog.log(

@@ -3,12 +3,37 @@ import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/official_capture/database_archive_ffi_codec.dart';
+import 'package:pocketworld_flutter/official_capture/database_archive_ffi_preprocessor.dart';
 import 'package:pocketworld_flutter/official_capture/database_archive_policy.dart';
 
 void main() {
   test('desktop process fails closed instead of loading iOS symbols', () {
     if (!Platform.isIOS) {
       expect(ZpaqFfiDatabaseArchiveCodec().isSupported, isFalse);
+      expect(TrackDeltaFfiDatabaseArchivePreprocessor().isSupported, isFalse);
+    }
+  });
+
+  test('track preprocessor uses the cancellable native ABI in an isolate', () {
+    final header = File(
+      'ios/Runner/pw_sqlite_descriptor_transform.h',
+    ).readAsStringSync();
+    final bridge = File(
+      'ios/Runner/pw_sqlite_descriptor_transform.cpp',
+    ).readAsStringSync();
+    final dart = File(
+      'lib/official_capture/database_archive_ffi_preprocessor.dart',
+    ).readAsStringSync();
+
+    expect(dart, contains('Isolate.run'));
+    for (final symbol in const <String>[
+      'pw_sqlite_descriptor_transform_file_cancellable',
+      'pw_sqlite_descriptor_transform_cancellation_generation',
+      'pw_sqlite_descriptor_transform_request_cancel',
+    ]) {
+      expect(header, contains(symbol));
+      expect(bridge, contains(symbol));
+      expect(dart, contains(symbol));
     }
   });
 
@@ -116,5 +141,6 @@ void main() {
     expect(notices, contains('Unlicense'));
     expect(notices, contains('MIT'));
     expect(infoPlist, contains('future-official-zpaq-db-archive-v1'));
+    expect(infoPlist, contains('sqlite-dual-candidate-archive-v2'));
   });
 }
