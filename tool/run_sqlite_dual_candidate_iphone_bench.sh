@@ -5,7 +5,10 @@ repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 input=${1:-}
 device=${PW_BENCH_DEVICE_ID:-1B290474-D354-5B4C-AAB0-0805AC5DC832}
 bundle_id=com.kyle.PocketWorld.ArchiveBench
-repeat_count=3
+team_id=${PW_BENCH_TEAM_ID:-26AH7V448L}
+signing_identity=${PW_BENCH_CODE_SIGN_IDENTITY:-1C30FFB54D965CA96917C5EC0DC4B34F9EDDA775}
+provisioning_profile=${PW_BENCH_PROVISIONING_PROFILE:-$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/edc53ec5-7583-45da-8044-de6a9a1885c2.mobileprovision}
+repeat_count=1
 run_id=$(date -u +%Y%m%dT%H%M%SZ)
 
 if [ -z "$input" ] || [ ! -f "$input" ]; then
@@ -19,9 +22,21 @@ input_sha=$(shasum -a 256 "$input" | awk '{print $1}')
 task_root=$(mktemp -d /private/tmp/pw-sqlite-dual-iphone.XXXXXX)
 config_root="$task_root/config"
 derived_data="$task_root/DerivedData"
-products="$task_root/products"
+build_dir="$task_root/build"
+obj_root="$task_root/obj"
+decoded_profile="$task_root/provisioning-profile.plist"
+benchmark_entitlements="$task_root/ArchiveBench.entitlements"
 downloaded_result="$task_root/database_archive_benchmark_result.json"
-mkdir -p "$config_root" "$products"
+mkdir -p "$config_root" "$build_dir" "$obj_root"
+
+if [ ! -f "$provisioning_profile" ]; then
+  echo "independent benchmark provisioning profile is missing: $provisioning_profile" >&2
+  exit 1
+fi
+if ! security find-identity -v -p codesigning | grep -q "$signing_identity"; then
+  echo "independent benchmark signing identity is unavailable: $signing_identity" >&2
+  exit 1
+fi
 
 cd "$repo_root"
 XDG_CONFIG_HOME="$config_root" flutter build ios \
@@ -39,13 +54,15 @@ xcodebuild \
   -sdk iphoneos \
   -destination 'generic/platform=iOS' \
   -derivedDataPath "$derived_data" \
-  -allowProvisioningUpdates \
   PRODUCT_BUNDLE_IDENTIFIER="$bundle_id" \
   FLUTTER_TARGET=lib/database_archive_benchmark_main.dart \
-  CONFIGURATION_BUILD_DIR="$products" \
+  BUILD_DIR="$build_dir" \
+  OBJROOT="$obj_root" \
+  CODE_SIGN_ENTITLEMENTS= \
+  CODE_SIGNING_ALLOWED=NO \
   build
 
-app="$products/Runner.app"
+app="$build_dir/Release-iphoneos/Runner.app"
 if [ ! -d "$app" ]; then
   echo "independent benchmark app was not produced" >&2
   exit 1
@@ -55,6 +72,46 @@ if [ "$actual_bundle" != "$bundle_id" ]; then
   echo "refusing install: bundle id is $actual_bundle" >&2
   exit 1
 fi
+
+security cms -D -i "$provisioning_profile" > "$decoded_profile"
+profile_app_id=$(/usr/libexec/PlistBuddy \
+  -c 'Print :Entitlements:application-identifier' \
+  "$decoded_profile")
+if [ "$profile_app_id" != "$team_id.*" ]; then
+  echo "refusing sign: benchmark profile is not the expected wildcard profile" >&2
+  exit 1
+fi
+if /usr/libexec/PlistBuddy \
+  -c 'Print :Entitlements:com.apple.developer.kernel.extended-virtual-addressing' \
+  "$decoded_profile" >/dev/null 2>&1 || \
+  /usr/libexec/PlistBuddy \
+    -c 'Print :Entitlements:com.apple.developer.kernel.increased-memory-limit' \
+    "$decoded_profile" >/dev/null 2>&1; then
+  echo "refusing sign: benchmark profile unexpectedly grants production memory entitlements" >&2
+  exit 1
+fi
+plutil -extract Entitlements xml1 -o "$benchmark_entitlements" "$decoded_profile"
+/usr/libexec/PlistBuddy \
+  -c "Set :application-identifier $team_id.$bundle_id" \
+  "$benchmark_entitlements"
+/usr/libexec/PlistBuddy \
+  -c "Set :keychain-access-groups:0 $team_id.$bundle_id" \
+  "$benchmark_entitlements"
+ditto "$provisioning_profile" "$app/embedded.mobileprovision"
+find "$app/Frameworks" -type f -name '*.dylib' -print0 | \
+  while IFS= read -r -d '' binary; do
+    codesign --force --sign "$signing_identity" --timestamp=none "$binary"
+  done
+find "$app/Frameworks" -type d -name '*.framework' -print0 | \
+  while IFS= read -r -d '' framework; do
+    codesign --force --sign "$signing_identity" --timestamp=none "$framework"
+  done
+codesign \
+  --force \
+  --sign "$signing_identity" \
+  --entitlements "$benchmark_entitlements" \
+  --timestamp=none \
+  "$app"
 codesign --verify --deep --strict "$app"
 if ! nm -gU "$app/Runner" | grep -q '_pw_sqlite_descriptor_transform_file_cancellable'; then
   echo "track-delta transform symbol missing from signed app" >&2

@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include <pthread.h>
 #include <unistd.h>
 
 namespace {
@@ -202,6 +203,45 @@ bool ReadDescriptor(const std::string& path,
   return ok;
 }
 
+struct SmallStackTransformArguments {
+  const char* source = nullptr;
+  const char* output = nullptr;
+  int32_t status = PW_SQLITE_DESCRIPTOR_TRANSFORM_MALFORMED;
+};
+
+void* RunSmallStackTransform(void* opaque) {
+  auto* arguments = static_cast<SmallStackTransformArguments*>(opaque);
+  arguments->status = pw_sqlite_descriptor_transform_file(
+      arguments->source, arguments->output,
+      PW_SQLITE_DESCRIPTOR_TRACK_DELTA, false, nullptr);
+  return nullptr;
+}
+
+bool TransformOnHalfMiBStack(const std::string& source,
+                             const std::string& output) {
+  pthread_attr_t attributes;
+  if (pthread_attr_init(&attributes) != 0) {
+    return false;
+  }
+  const int stack_status =
+      pthread_attr_setstacksize(&attributes, 512u * 1024u);
+  SmallStackTransformArguments arguments{
+      source.c_str(), output.c_str(),
+      PW_SQLITE_DESCRIPTOR_TRANSFORM_MALFORMED};
+  pthread_t thread;
+  const int create_status =
+      stack_status == 0
+          ? pthread_create(&thread, &attributes, RunSmallStackTransform,
+                           &arguments)
+          : stack_status;
+  pthread_attr_destroy(&attributes);
+  if (create_status != 0) {
+    return false;
+  }
+  return pthread_join(thread, nullptr) == 0 &&
+         arguments.status == PW_SQLITE_DESCRIPTOR_TRANSFORM_OK;
+}
+
 }  // namespace
 
 int main() {
@@ -215,6 +255,8 @@ int main() {
   const std::string source = std::string(directory) + "/source.db";
   const std::string transformed = std::string(directory) + "/transformed.db";
   const std::string restored = std::string(directory) + "/restored.db";
+  const std::string small_stack =
+      std::string(directory) + "/small-stack.db";
 
   int result = 0;
   if (!CreateFixture(source)) {
@@ -224,6 +266,10 @@ int main() {
   std::vector<unsigned char> source_before;
   if (result == 0 && !ReadFile(source, &source_before)) {
     result = Fail("source read failed");
+  }
+
+  if (result == 0 && !TransformOnHalfMiBStack(source, small_stack)) {
+    result = Fail("transform overflowed a half MiB worker stack");
   }
 
   PWSQLiteDescriptorTransformStats forward_stats{};
@@ -377,6 +423,7 @@ int main() {
   std::remove(source.c_str());
   std::remove(transformed.c_str());
   std::remove(restored.c_str());
+  std::remove(small_stack.c_str());
   std::remove(cancelled.c_str());
   rmdir(directory);
 

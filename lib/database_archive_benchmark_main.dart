@@ -12,7 +12,7 @@ import 'official_capture/database_archive_policy.dart';
 import 'official_capture/database_archive_resolver.dart';
 import 'official_capture/database_archive_transaction.dart';
 
-const repeatCount = 3;
+const repeatCount = 1;
 const _resultFileName = 'database_archive_benchmark_result.json';
 const _runId = String.fromEnvironment(
   'PW_BENCH_RUN_ID',

@@ -16,6 +16,12 @@ void main() {
     expect(runner, contains('PRODUCT_BUNDLE_IDENTIFIER='));
     expect(runner, contains('lib/database_archive_benchmark_main.dart'));
     expect(runner, contains('--no-pub'));
+    expect(runner, contains('CODE_SIGNING_ALLOWED=NO'));
+    expect(runner, contains(r'BUILD_DIR="$build_dir"'));
+    expect(runner, isNot(contains('CONFIGURATION_BUILD_DIR=')));
+    expect(runner, contains('embedded.mobileprovision'));
+    expect(runner, contains('ArchiveBench.entitlements'));
+    expect(runner, contains(r'$team_id.$bundle_id'));
     expect(entrypoint, contains('benchmark_input.db'));
     expect(entrypoint, contains('DatabaseArchiveTransaction'));
     expect(entrypoint, contains('DatabaseArchiveResolver'));
@@ -23,6 +29,7 @@ void main() {
     expect(entrypoint, contains('ZpaqFfiDatabaseArchiveCodec'));
     expect(entrypoint, contains('integrityCheck'));
     expect(entrypoint, contains('database_archive_benchmark_result.json'));
-    expect(entrypoint, contains('repeatCount = 3'));
+    expect(entrypoint, contains('repeatCount = 1'));
+    expect(runner, contains('repeat_count=1'));
   });
 }

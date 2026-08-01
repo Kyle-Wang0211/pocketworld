@@ -261,7 +261,7 @@ bool CopyFile(const char* source_path, const char* output_path) {
     g_last_error = "could not create transformed database";
     return false;
   }
-  std::array<char, 1024 * 1024> buffer{};
+  std::vector<char> buffer(1024 * 1024);
   while (input) {
     if (!ContinueOperation()) {
       return false;
