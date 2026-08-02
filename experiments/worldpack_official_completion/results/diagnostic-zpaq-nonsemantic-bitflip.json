@@ -1,0 +1,19 @@
+{
+  "schema": "pw_zpaq_nonsemantic_bitflip_diagnostic_v1",
+  "status": "diagnostic_not_comparable_codec_arm",
+  "codec": "zpaq_7_15_method5",
+  "source_label": "keypoint_float32_3_complete",
+  "archive_bytes": 428,
+  "flipped_offset": 214,
+  "original_byte": 9,
+  "flipped_byte": 137,
+  "source_sha256": "f2736b5cad96c6778f65ea527004608f62a994422c44df4e5ef8e3ae14b7517c",
+  "original_archive_sha256": "28b334577db57a8e36eb10a84e1bdfca28321f1b8e2829b22dd764f430e2db31",
+  "mutated_archive_sha256": "2b0e89ca5ee2a58d8643eac67b4af66533267df9b94e372539d036448494b9f0",
+  "restored_sha256": "f2736b5cad96c6778f65ea527004608f62a994422c44df4e5ef8e3ae14b7517c",
+  "decoder_returned_success": true,
+  "restored_bytes_equal_source": true,
+  "interpretation": "The selected midpoint belongs to a non-semantic archive region. The registered fail-closed probe therefore flips the stored checksum byte; complete WorldPack additionally verifies every member archive SHA-256 before decoding.",
+  "production_promoted": false,
+  "phone_accessed": false
+}

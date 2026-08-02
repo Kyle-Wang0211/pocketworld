@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import struct
 import sys
@@ -14,6 +15,8 @@ sys.path.insert(0, str(EXPERIMENT_ROOT))
 
 from exact_io import ExactFrame, decode_frame, encode_frame  # noqa: E402
 from prepare_inputs import (  # noqa: E402
+    build_alp_columns,
+    build_alp_minimum_columns,
     build_descriptor_pair_chunks,
     prepare_database,
 )
@@ -229,3 +232,69 @@ def test_real_pair_chunks_are_local_reversible_typed_bundles(
     assert all(chunk.parents for chunk in chunks)
     assert all(_openzl_bundle_tags(chunk.openzl_bundle) == [1000, 1001, 1002] for chunk in chunks)
     assert len({hashlib.sha256(chunk.openzl_bundle).digest() for chunk in chunks}) == 2
+
+
+def test_alp_minimum_columns_keep_real_float_bits_and_column_identity(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "pairs.db"
+    _make_fixture(database_path)
+    metadata_root = tmp_path / "photos_highres"
+    metadata_root.mkdir()
+    (metadata_root / "official_tap-2.json").write_text(
+        json.dumps(
+            {
+                "extrinsic": [float(index) for index in range(16)],
+                "intrinsics_fxfycxcy": [10.5, 11.5, 12.5, 13.5],
+                "t": 100.125,
+            }
+        )
+    )
+    (metadata_root / "official_tap-1.json").write_text(
+        json.dumps(
+            {
+                "extrinsic": [float(index + 20) for index in range(16)],
+                "intrinsics_fxfycxcy": [20.5, 21.5, 22.5, 23.5],
+                "t": 99.875,
+            }
+        )
+    )
+
+    columns = build_alp_minimum_columns(database_path, metadata_root)
+    one_value_columns = build_alp_columns(
+        database_path,
+        metadata_root,
+        maximum_keypoint_values=1,
+    )
+    complete_columns = build_alp_columns(
+        database_path,
+        metadata_root,
+        maximum_keypoint_values=None,
+    )
+
+    labels = [column.label for column in columns]
+    assert labels == sorted(labels)
+    assert labels.count("keypoint_float32_0") == 1
+    assert "pose_extrinsic_float32_15" in labels
+    assert "pose_intrinsics_float32_3" in labels
+    assert "capture_timestamp_float64" in labels
+    timestamp = next(
+        column for column in columns if column.label == "capture_timestamp_float64"
+    )
+    assert timestamp.element_type == "float64"
+    assert timestamp.payload == struct.pack("<dd", 99.875, 100.125)
+    assert all(column.payload for column in columns)
+    assert len(
+        next(
+            column
+            for column in one_value_columns
+            if column.label == "keypoint_float32_0"
+        ).payload
+    ) == 4
+    assert len(
+        next(
+            column
+            for column in complete_columns
+            if column.label == "keypoint_float32_0"
+        ).payload
+    ) == 6 * 4

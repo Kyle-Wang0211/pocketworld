@@ -1,0 +1,46 @@
+schema: pw_alp_official_profile_v1
+upstream:
+  repository: https://github.com/cwida/ALP
+  commit: 31ca0ed11c93c99d3f5b5c30e01a3e1c3832d3ce
+  license: MIT
+  source_tree_policy: pinned_clean_unmodified
+official_primitives:
+  row_group_selection: alp::encoder<T>::init
+  decimal_encode: alp::encoder<T>::encode
+  decimal_decode: alp::decoder<T>::decode
+  decimal_exception_patch: alp::decoder<T>::patch_exceptions
+  high_precision_init: alp::rd_encoder<T>::init
+  high_precision_encode: alp::rd_encoder<T>::encode
+  high_precision_decode: alp::rd_encoder<T>::decode
+  integer_pack: fastlanes::generated::ffor::fallback::scalar
+  integer_unpack: fastlanes::generated::unffor::fallback::scalar
+  vector_size: 1024
+  vectors_per_row_group: 100
+task_owned_complete_framing:
+  reason: upstream exposes codec kernels and benchmark size estimates, not a persisted archive format
+  counted: true
+  contents:
+    - element type and exact element count
+    - row-group scheme and ALP-RD dictionaries
+    - per-vector factor, exponent, bases, bit widths and exceptions
+    - exact FastLanes packed bytes
+    - source SHA-256 and archive-body SHA-256
+  padding: zero padded to the official 1024-value vector size and counted
+strictness:
+  quantization: forbidden
+  nan_payload_bits: preserved
+  signed_zero_bits: preserved
+  infinity_bits: preserved
+  all_ieee_bits_equal: required
+  source_sha256_equal: required
+registered_real_columns:
+  keypoint_float32_columns: 6
+  extrinsic_float32_columns: 16
+  intrinsic_float32_columns: 4
+  capture_timestamp_float64_columns: 1
+expansion:
+  minimum_keypoint_values_per_column: 1024
+  pose_values: all_155_available_values
+  complete_expansion: only_minimum_winning_keypoint_columns
+result_scope: registered_real_float_columns_only
+production_promoted: false

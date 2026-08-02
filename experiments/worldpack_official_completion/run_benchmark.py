@@ -16,7 +16,11 @@ import time
 import mlflow
 import yaml
 
-from prepare_inputs import build_descriptor_pair_chunks
+from prepare_inputs import (
+    build_alp_columns,
+    build_alp_minimum_columns,
+    build_descriptor_pair_chunks,
+)
 
 
 EXPERIMENT_ROOT = Path(__file__).resolve().parent
@@ -30,6 +34,10 @@ ZPAQ_ADAPTER = Path(
     "/private/tmp/pw_worldpack_zpaq_adapter_bin.v715/worldpack_zpaq_adapter"
 )
 OPENZL_SOURCE = Path("/private/tmp/pw_worldpack_upstreams.8vBT0j/openzl")
+ALP_ADAPTER = Path(
+    "/private/tmp/pw_worldpack_alp_adapter_bin.31ca0ed/worldpack_alp_adapter"
+)
+ALP_SOURCE = Path("/private/tmp/pw_worldpack_upstreams.8vBT0j/alp")
 MLFLOW_DATABASE = EXPERIMENT_ROOT / "mlflow.db"
 
 
@@ -261,12 +269,16 @@ def _openzl_arm(
     return arm
 
 
-def _zpaq_arm(test_path: Path, scratch: Path) -> dict[str, object]:
-    archive = scratch / "zpaq_method5.zpaq"
-    restored = scratch / "zpaq_method5.restored"
-    corrupt = scratch / "zpaq_method5.corrupt"
-    corrupt_output = scratch / "zpaq_method5.corrupt.restored"
-    checkpoint = scratch / "zpaq_method5.checkpoint.json"
+def _zpaq_arm(
+    test_path: Path,
+    scratch: Path,
+    artifact_stem: str = "zpaq_method5",
+) -> dict[str, object]:
+    archive = scratch / f"{artifact_stem}.zpaq"
+    restored = scratch / f"{artifact_stem}.restored"
+    corrupt = scratch / f"{artifact_stem}.corrupt"
+    corrupt_output = scratch / f"{artifact_stem}.corrupt.restored"
+    checkpoint = scratch / f"{artifact_stem}.checkpoint.json"
     source_bytes, source_sha = _file_identity(test_path)
     if checkpoint.is_file():
         saved = json.loads(checkpoint.read_text())
@@ -281,13 +293,13 @@ def _zpaq_arm(test_path: Path, scratch: Path) -> dict[str, object]:
         ):
             print(
                 "ZPAQ_ARM_RESUME "
-                f"zpaq_method5 bytes={arm['complete_persisted_bytes']}",
+                f"{artifact_stem} bytes={arm['complete_persisted_bytes']}",
                 flush=True,
             )
             return arm
     for generated in (archive, restored, corrupt, corrupt_output, checkpoint):
         generated.unlink(missing_ok=True)
-    print("ZPAQ_ARM_START zpaq_method5", flush=True)
+    print(f"ZPAQ_ARM_START {artifact_stem}", flush=True)
     compressed = _run_json(
         [str(ZPAQ_ADAPTER), "compress", str(test_path), str(archive)]
     )
@@ -298,7 +310,12 @@ def _zpaq_arm(test_path: Path, scratch: Path) -> dict[str, object]:
     if source_bytes != restored_bytes or source_sha != restored_sha:
         raise RuntimeError("ZPAQ failed byte/SHA restoration")
     corrupt_bytes = bytearray(archive.read_bytes())
-    corrupt_bytes[len(corrupt_bytes) // 2] ^= 0x80
+    if not corrupt_bytes:
+        raise RuntimeError("ZPAQ produced an empty archive")
+    # ZPAQ archives can contain non-semantic model bytes: flipping one of those
+    # may legitimately decode to the same source. Flip the stored checksum byte
+    # so this registered corruption must fail closed.
+    corrupt_bytes[-1] ^= 0x80
     corrupt.write_bytes(corrupt_bytes)
     rejected = subprocess.run(
         [str(ZPAQ_ADAPTER), "decompress", str(corrupt), str(corrupt_output)],
@@ -338,7 +355,80 @@ def _zpaq_arm(test_path: Path, scratch: Path) -> dict[str, object]:
             "arm": arm,
         },
     )
-    print(f"ZPAQ_ARM_DONE zpaq_method5 bytes={frame_bytes}", flush=True)
+    print(f"ZPAQ_ARM_DONE {artifact_stem} bytes={frame_bytes}", flush=True)
+    return arm
+
+
+def _alp_arm(
+    label: str,
+    element_type: str,
+    test_path: Path,
+    scratch: Path,
+) -> dict[str, object]:
+    archive = scratch / f"{label}.alp"
+    restored = scratch / f"{label}.alp.restored"
+    checkpoint = scratch / f"{label}.alp.checkpoint.json"
+    source_bytes, source_sha = _file_identity(test_path)
+    if checkpoint.is_file():
+        saved = json.loads(checkpoint.read_text())
+        arm = saved["arm"]
+        if (
+            saved["test_sha256"] == source_sha
+            and archive.is_file()
+            and restored.is_file()
+            and sha256_file(archive) == saved["archive_sha256"]
+            and sha256_file(restored) == source_sha
+            and archive.stat().st_size == arm["complete_persisted_bytes"]
+        ):
+            print(
+                f"ALP_ARM_RESUME {label} bytes={arm['complete_persisted_bytes']}",
+                flush=True,
+            )
+            return arm
+    for generated in (archive, restored, checkpoint):
+        generated.unlink(missing_ok=True)
+    print(f"ALP_ARM_START {label}", flush=True)
+    native = _run_json(
+        [
+            str(ALP_ADAPTER),
+            element_type,
+            str(test_path),
+            str(archive),
+            str(restored),
+        ]
+    )
+    restored_bytes, restored_sha = _file_identity(restored)
+    if source_bytes != restored_bytes or source_sha != restored_sha:
+        raise RuntimeError(f"ALP failed byte/SHA restoration for {label}")
+    if native["revision"] != "31ca0ed11c93c99d3f5b5c30e01a3e1c3832d3ce":
+        raise RuntimeError("ALP native revision does not match the frozen contract")
+    archive_bytes = archive.stat().st_size
+    if archive_bytes != native["complete_persisted_bytes"]:
+        raise RuntimeError(f"ALP archive accounting mismatch for {label}")
+    arm = {
+        "mode": "alp_official",
+        "input_bytes": source_bytes,
+        "complete_persisted_bytes": archive_bytes,
+        "byte_equal": int(native["byte_equal"]),
+        "sha256_equal": 1,
+        "source_sha256": source_sha,
+        "restored_sha256": restored_sha,
+        "corruption_rejected": int(native["corruption_rejected"]),
+        "alp_vectors": int(native["alp_vectors"]),
+        "alprd_vectors": int(native["alprd_vectors"]),
+        "padded_values": int(native["padded_values"]),
+    }
+    if not arm["byte_equal"] or not arm["corruption_rejected"]:
+        raise RuntimeError(f"ALP strict checks failed for {label}")
+    _atomic_json(
+        checkpoint,
+        {
+            "test_sha256": source_sha,
+            "archive_sha256": sha256_file(archive),
+            "arm": arm,
+        },
+    )
+    print(f"ALP_ARM_DONE {label} bytes={archive_bytes}", flush=True)
     return arm
 
 
@@ -436,10 +526,296 @@ def run_openzl_minimum() -> None:
     print("OPENZL_MINIMUM_RESULT_WRITTEN", flush=True)
 
 
+def run_alp_minimum() -> None:
+    contract = yaml.safe_load(CONTRACT_PATH.read_text())
+    capture_root = Path(contract["input"]["capture_root"])
+    database_path = capture_root / contract["input"]["sqlite"]["path"]
+    metadata_root = capture_root / "photos_highres"
+    columns = build_alp_minimum_columns(database_path, metadata_root)
+    if len(columns) != 27:
+        raise RuntimeError(f"expected 27 registered ALP columns, got {len(columns)}")
+    if not ALP_ADAPTER.is_file() or not ZPAQ_ADAPTER.is_file():
+        raise FileNotFoundError("pinned ALP and ZPAQ adapters must be built first")
+    revision = subprocess.check_output(
+        ["git", "-C", str(ALP_SOURCE), "rev-parse", "HEAD"], text=True
+    ).strip()
+    source_tree_clean = not subprocess.check_output(
+        ["git", "-C", str(ALP_SOURCE), "status", "--porcelain"], text=True
+    ).strip()
+    if revision != contract["upstreams"]["alp"]["commit"] or not source_tree_clean:
+        raise RuntimeError("ALP source identity is not the clean frozen revision")
+
+    scratch = Path("/private/tmp/pw_worldpack_alp_minimum.checkpoint")
+    scratch.mkdir(parents=True, exist_ok=True)
+    started = time.time()
+    result_columns: list[dict[str, object]] = []
+    source_identities: set[tuple[str, str]] = set()
+    for column in columns:
+        source_identities.update(column.source_identities)
+        input_path = scratch / f"{column.label}.raw"
+        input_path.write_bytes(column.payload)
+        alp_arm = _alp_arm(
+            column.label,
+            column.element_type,
+            input_path,
+            scratch,
+        )
+        zpaq_arm = _zpaq_arm(
+            input_path,
+            scratch,
+            artifact_stem=f"{column.label}.zpaq_method5",
+        )
+        alp_bytes = int(alp_arm["complete_persisted_bytes"])
+        zpaq_bytes = int(zpaq_arm["complete_persisted_bytes"])
+        result_columns.append(
+            {
+                "label": column.label,
+                "element_type": column.element_type,
+                "input_bytes": len(column.payload),
+                "source_sha256": hashlib.sha256(column.payload).hexdigest(),
+                "restored_sha256": alp_arm["restored_sha256"],
+                "alp_complete_persisted_bytes": alp_bytes,
+                "zpaq_complete_persisted_bytes": zpaq_bytes,
+                "local_winner": (
+                    "alp" if alp_bytes < zpaq_bytes else "zpaq_method5"
+                ),
+                "byte_equal": alp_arm["byte_equal"],
+                "sha256_equal": alp_arm["sha256_equal"],
+                "corruption_rejected": min(
+                    int(alp_arm["corruption_rejected"]),
+                    int(zpaq_arm["corruption_rejected"]),
+                ),
+                "alp_vectors": alp_arm["alp_vectors"],
+                "alprd_vectors": alp_arm["alprd_vectors"],
+                "padded_values": alp_arm["padded_values"],
+            }
+        )
+    encoded_identities = json.dumps(
+        sorted(source_identities), separators=(",", ":")
+    ).encode("utf-8")
+    input_bytes = sum(int(arm["input_bytes"]) for arm in result_columns)
+    alp_bytes = sum(
+        int(arm["alp_complete_persisted_bytes"]) for arm in result_columns
+    )
+    zpaq_bytes = sum(
+        int(arm["zpaq_complete_persisted_bytes"]) for arm in result_columns
+    )
+    selected_bytes = sum(
+        min(
+            int(arm["alp_complete_persisted_bytes"]),
+            int(arm["zpaq_complete_persisted_bytes"]),
+        )
+        for arm in result_columns
+    )
+    expandable_columns = [
+        arm["label"]
+        for arm in result_columns
+        if arm["local_winner"] == "alp"
+        and str(arm["label"]).startswith("keypoint_")
+    ]
+    result: dict[str, object] = {
+        "schema": "pw_alp_complete_minimum_result_v1",
+        "scope": "all_registered_real_float_columns_minimum",
+        "official_revision": revision,
+        "source_tree_clean": source_tree_clean,
+        "run_count_per_arm": 1,
+        "source_database_sha256": contract["input"]["sqlite"]["sha256"],
+        "source_identity_manifest_sha256": hashlib.sha256(
+            encoded_identities
+        ).hexdigest(),
+        "minimum_policy": {
+            "keypoint_values_per_column": 1024,
+            "pose_values_per_column": "all_available",
+            "float_columns_independent": True,
+        },
+        "columns": result_columns,
+        "input_bytes": input_bytes,
+        "alp_bytes": alp_bytes,
+        "zpaq_bytes": zpaq_bytes,
+        "selected_bytes": selected_bytes,
+        "expandable_keypoint_columns": expandable_columns,
+        "wall_seconds": time.time() - started,
+        "host": {
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+            "python": platform.python_version(),
+        },
+        "production_promoted": False,
+        "phone_accessed": False,
+        "conclusion_scope": "registered_alp_real_float_columns_only",
+        "family_global_optimum_claimed": False,
+    }
+    mlflow.set_tracking_uri(f"sqlite:///{MLFLOW_DATABASE}")
+    mlflow.set_experiment("pocketworld-worldpack-official-completion")
+    with mlflow.start_run(run_name="alp-minimum") as active_run:
+        result["mlflow_run_id"] = active_run.info.run_id
+        result["mlflow_tracking_store"] = MLFLOW_DATABASE.name
+        mlflow.log_params(
+            {
+                "schema": result["schema"],
+                "scope": result["scope"],
+                "official_revision": revision,
+                "run_count_per_arm": 1,
+            }
+        )
+        mlflow.log_metrics(
+            {
+                "input_bytes": input_bytes,
+                "alp_bytes": alp_bytes,
+                "zpaq_bytes": zpaq_bytes,
+                "selected_bytes": selected_bytes,
+                "alp_local_wins": sum(
+                    arm["local_winner"] == "alp" for arm in result_columns
+                ),
+            }
+        )
+        result_path = RESULTS_ROOT / "alp-minimum.json"
+        _atomic_json(result_path, result)
+        mlflow.log_artifact(str(result_path), artifact_path="results")
+    print("ALP_MINIMUM_RESULT_WRITTEN", flush=True)
+
+
+def run_alp_complete() -> None:
+    minimum_result_path = RESULTS_ROOT / "alp-minimum.json"
+    minimum_result = json.loads(minimum_result_path.read_text())
+    winning_labels = set(minimum_result["expandable_keypoint_columns"])
+    if not winning_labels:
+        raise RuntimeError("ALP minimum result contains no expandable columns")
+    contract = yaml.safe_load(CONTRACT_PATH.read_text())
+    capture_root = Path(contract["input"]["capture_root"])
+    database_path = capture_root / contract["input"]["sqlite"]["path"]
+    complete_columns = build_alp_columns(
+        database_path,
+        capture_root / "photos_highres",
+        maximum_keypoint_values=None,
+    )
+    columns = [column for column in complete_columns if column.label in winning_labels]
+    if {column.label for column in columns} != winning_labels:
+        raise RuntimeError("ALP complete inputs do not cover every minimum winner")
+    revision = subprocess.check_output(
+        ["git", "-C", str(ALP_SOURCE), "rev-parse", "HEAD"], text=True
+    ).strip()
+    source_tree_clean = not subprocess.check_output(
+        ["git", "-C", str(ALP_SOURCE), "status", "--porcelain"], text=True
+    ).strip()
+    if revision != contract["upstreams"]["alp"]["commit"] or not source_tree_clean:
+        raise RuntimeError("ALP source identity is not the clean frozen revision")
+
+    scratch = Path("/private/tmp/pw_worldpack_alp_complete.checkpoint")
+    scratch.mkdir(parents=True, exist_ok=True)
+    started = time.time()
+    result_columns: list[dict[str, object]] = []
+    for column in columns:
+        input_path = scratch / f"{column.label}.raw"
+        input_path.write_bytes(column.payload)
+        alp_arm = _alp_arm(
+            column.label,
+            column.element_type,
+            input_path,
+            scratch,
+        )
+        zpaq_arm = _zpaq_arm(
+            input_path,
+            scratch,
+            artifact_stem=f"{column.label}.zpaq_method5",
+        )
+        alp_bytes = int(alp_arm["complete_persisted_bytes"])
+        zpaq_bytes = int(zpaq_arm["complete_persisted_bytes"])
+        result_columns.append(
+            {
+                "label": column.label,
+                "element_type": column.element_type,
+                "input_bytes": len(column.payload),
+                "source_sha256": hashlib.sha256(column.payload).hexdigest(),
+                "restored_sha256": alp_arm["restored_sha256"],
+                "alp_complete_persisted_bytes": alp_bytes,
+                "zpaq_complete_persisted_bytes": zpaq_bytes,
+                "local_winner": (
+                    "alp" if alp_bytes < zpaq_bytes else "zpaq_method5"
+                ),
+                "byte_equal": alp_arm["byte_equal"],
+                "sha256_equal": alp_arm["sha256_equal"],
+                "corruption_rejected": min(
+                    int(alp_arm["corruption_rejected"]),
+                    int(zpaq_arm["corruption_rejected"]),
+                ),
+                "alp_vectors": alp_arm["alp_vectors"],
+                "alprd_vectors": alp_arm["alprd_vectors"],
+                "padded_values": alp_arm["padded_values"],
+            }
+        )
+    input_bytes = sum(int(column["input_bytes"]) for column in result_columns)
+    alp_bytes = sum(
+        int(column["alp_complete_persisted_bytes"]) for column in result_columns
+    )
+    zpaq_bytes = sum(
+        int(column["zpaq_complete_persisted_bytes"]) for column in result_columns
+    )
+    selected_bytes = sum(
+        min(
+            int(column["alp_complete_persisted_bytes"]),
+            int(column["zpaq_complete_persisted_bytes"]),
+        )
+        for column in result_columns
+    )
+    result: dict[str, object] = {
+        "schema": "pw_alp_complete_expansion_result_v1",
+        "scope": "complete_minimum_winning_keypoint_columns",
+        "official_revision": revision,
+        "source_tree_clean": source_tree_clean,
+        "minimum_result_sha256": sha256_file(minimum_result_path),
+        "run_count_per_arm": 1,
+        "columns": result_columns,
+        "input_bytes": input_bytes,
+        "alp_bytes": alp_bytes,
+        "zpaq_bytes": zpaq_bytes,
+        "selected_bytes": selected_bytes,
+        "approximately_100mb_stage": (
+            "not_applicable_complete_registered_input_below_100mb"
+        ),
+        "wall_seconds": time.time() - started,
+        "production_promoted": False,
+        "phone_accessed": False,
+        "conclusion_scope": "registered_alp_complete_winning_columns_only",
+        "family_global_optimum_claimed": False,
+    }
+    mlflow.set_tracking_uri(f"sqlite:///{MLFLOW_DATABASE}")
+    mlflow.set_experiment("pocketworld-worldpack-official-completion")
+    with mlflow.start_run(run_name="alp-complete") as active_run:
+        result["mlflow_run_id"] = active_run.info.run_id
+        result["mlflow_tracking_store"] = MLFLOW_DATABASE.name
+        mlflow.log_params(
+            {
+                "schema": result["schema"],
+                "scope": result["scope"],
+                "official_revision": revision,
+                "run_count_per_arm": 1,
+            }
+        )
+        mlflow.log_metrics(
+            {
+                "input_bytes": input_bytes,
+                "alp_bytes": alp_bytes,
+                "zpaq_bytes": zpaq_bytes,
+                "selected_bytes": selected_bytes,
+                "alp_local_wins": sum(
+                    column["local_winner"] == "alp"
+                    for column in result_columns
+                ),
+            }
+        )
+        result_path = RESULTS_ROOT / "alp-complete.json"
+        _atomic_json(result_path, result)
+        mlflow.log_artifact(str(result_path), artifact_path="results")
+    print("ALP_COMPLETE_RESULT_WRITTEN", flush=True)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--write-manifest", action="store_true")
-    parser.add_argument("--stage", choices=["openzl-minimum"])
+    parser.add_argument(
+        "--stage", choices=["openzl-minimum", "alp-minimum", "alp-complete"]
+    )
     return parser.parse_args()
 
 
@@ -449,6 +825,10 @@ def main() -> int:
         write_manifest()
     elif args.stage == "openzl-minimum":
         run_openzl_minimum()
+    elif args.stage == "alp-minimum":
+        run_alp_minimum()
+    elif args.stage == "alp-complete":
+        run_alp_complete()
     else:
         raise SystemExit("select --write-manifest or a registered --stage")
     return 0

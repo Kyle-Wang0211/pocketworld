@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import json
+import math
 from pathlib import Path
 import sqlite3
 import struct
@@ -111,6 +113,14 @@ class DescriptorPairChunk:
         if root_offset != len(self.roots) or residual_offset != len(self.residuals):
             raise ValueError("pair chunk descriptor streams contain trailing bytes")
         return b"".join(node for node in nodes if node is not None)
+
+
+@dataclass(frozen=True)
+class AlpColumn:
+    label: str
+    element_type: str
+    payload: bytes
+    source_identities: tuple[tuple[str, str], ...]
 
 
 def _connect_read_only(database_path: Path) -> sqlite3.Connection:
@@ -456,6 +466,130 @@ def build_descriptor_pair_chunks(
     if _sha256(database_path) != source_sha_before:
         raise RuntimeError("source database changed during pair extraction")
     return tuple(chunks)
+
+
+def _float32_bytes_exact(value: object, *, field: str) -> bytes:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} must contain JSON numbers")
+    double_value = float(value)
+    encoded = struct.pack("<f", double_value)
+    restored = struct.unpack("<f", encoded)[0]
+    if not (
+        restored == double_value
+        or (math.isnan(restored) and math.isnan(double_value))
+    ):
+        raise ValueError(f"{field} is not exactly representable as float32")
+    return encoded
+
+
+def _float64_bytes(value: object, *, field: str) -> bytes:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field} must contain JSON numbers")
+    return struct.pack("<d", float(value))
+
+
+def build_alp_columns(
+    database_path: Path,
+    metadata_root: Path,
+    *,
+    maximum_keypoint_values: int | None,
+) -> tuple[AlpColumn, ...]:
+    if maximum_keypoint_values is not None and maximum_keypoint_values <= 0:
+        raise ValueError("maximum keypoint values must be positive")
+    database_path = database_path.resolve()
+    metadata_root = metadata_root.resolve()
+    source_database_sha = _sha256(database_path)
+    connection = _connect_read_only(database_path)
+    try:
+        keypoint_columns, _keypoint_layout = _read_keypoint_columns(connection)
+    finally:
+        connection.close()
+    columns: list[AlpColumn] = []
+    for frame in keypoint_columns:
+        maximum_bytes = (
+            len(frame.payload)
+            if maximum_keypoint_values is None
+            else maximum_keypoint_values * frame.element_width
+        )
+        columns.append(
+            AlpColumn(
+                label=f"keypoint_float32_{frame.ordinal}",
+                element_type="float32",
+                payload=frame.payload[:maximum_bytes],
+                source_identities=((database_path.name, source_database_sha),),
+            )
+        )
+
+    metadata_paths = sorted(
+        metadata_root.glob("official_tap-*.json"),
+        key=lambda path: path.name.encode("utf-8"),
+    )
+    if not metadata_paths:
+        raise ValueError("capture metadata JSON files are missing")
+    metadata_identities: list[tuple[str, str]] = []
+    metadata_values: list[dict[str, object]] = []
+    for path in metadata_paths:
+        before = _sha256(path)
+        value = json.loads(path.read_text())
+        if not isinstance(value, dict):
+            raise ValueError(f"metadata root must be an object: {path.name}")
+        after = _sha256(path)
+        if before != after:
+            raise RuntimeError(f"metadata changed while reading: {path.name}")
+        metadata_identities.append((path.name, before))
+        metadata_values.append(value)
+    source_identities = tuple(metadata_identities)
+
+    for field_name, field_length, label_prefix in (
+        ("extrinsic", 16, "pose_extrinsic_float32"),
+        ("intrinsics_fxfycxcy", 4, "pose_intrinsics_float32"),
+    ):
+        field_columns = [bytearray() for _ in range(field_length)]
+        for metadata in metadata_values:
+            values = metadata.get(field_name)
+            if not isinstance(values, list) or len(values) != field_length:
+                raise ValueError(f"{field_name} must contain {field_length} values")
+            for ordinal, value in enumerate(values):
+                field_columns[ordinal].extend(
+                    _float32_bytes_exact(value, field=field_name)
+                )
+        for ordinal, payload in enumerate(field_columns):
+            columns.append(
+                AlpColumn(
+                    label=f"{label_prefix}_{ordinal}",
+                    element_type="float32",
+                    payload=bytes(payload),
+                    source_identities=source_identities,
+                )
+            )
+
+    timestamps = bytearray()
+    for metadata in metadata_values:
+        timestamps.extend(_float64_bytes(metadata.get("t"), field="t"))
+    columns.append(
+        AlpColumn(
+            label="capture_timestamp_float64",
+            element_type="float64",
+            payload=bytes(timestamps),
+            source_identities=source_identities,
+        )
+    )
+    if _sha256(database_path) != source_database_sha:
+        raise RuntimeError("source database changed during ALP input extraction")
+    if any(not column.payload for column in columns):
+        raise ValueError("ALP minimum columns must be non-empty")
+    return tuple(sorted(columns, key=lambda column: column.label))
+
+
+def build_alp_minimum_columns(
+    database_path: Path,
+    metadata_root: Path,
+) -> tuple[AlpColumn, ...]:
+    return build_alp_columns(
+        database_path,
+        metadata_root,
+        maximum_keypoint_values=1024,
+    )
 
 
 def prepare_database(database_path: Path) -> PreparedInputs:
