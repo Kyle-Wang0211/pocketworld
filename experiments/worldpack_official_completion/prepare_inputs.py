@@ -123,6 +123,14 @@ class AlpColumn:
     source_identities: tuple[tuple[str, str], ...]
 
 
+@dataclass(frozen=True)
+class WebGraphInput:
+    scope: str
+    arcs: tuple[GraphArc, ...]
+    payload: bytes
+    source_sha256: str
+
+
 def _connect_read_only(database_path: Path) -> sqlite3.Connection:
     uri = f"{database_path.resolve().as_uri()}?mode=ro&immutable=1"
     connection = sqlite3.connect(uri, uri=True)
@@ -589,6 +597,136 @@ def build_alp_minimum_columns(
         database_path,
         metadata_root,
         maximum_keypoint_values=1024,
+    )
+
+
+_WEBGRAPH_MAGIC = b"PWGI1\x00\x00\x00"
+_WEBGRAPH_RECORD = struct.Struct("<B3xQIIIII")
+_WEBGRAPH_HEADER = struct.Struct("<8sIQ32s")
+_WEBGRAPH_TABLE_IDS = {"matches": 0, "two_view_geometries": 1}
+_WEBGRAPH_TABLE_NAMES = {value: key for key, value in _WEBGRAPH_TABLE_IDS.items()}
+
+
+def encode_webgraph_input(arcs: tuple[GraphArc, ...]) -> bytes:
+    if not arcs:
+        raise ValueError("WebGraph input must contain at least one arc record")
+    body = bytearray()
+    for arc in arcs:
+        try:
+            table_id = _WEBGRAPH_TABLE_IDS[arc.table]
+        except KeyError as error:
+            raise ValueError(f"unsupported WebGraph table: {arc.table}") from error
+        body.extend(
+            _WEBGRAPH_RECORD.pack(
+                table_id,
+                arc.pair_id,
+                arc.row_ordinal,
+                arc.source[0],
+                arc.source[1],
+                arc.target[0],
+                arc.target[1],
+            )
+        )
+    return _WEBGRAPH_HEADER.pack(
+        _WEBGRAPH_MAGIC,
+        _WEBGRAPH_RECORD.size,
+        len(arcs),
+        hashlib.sha256(body).digest(),
+    ) + bytes(body)
+
+
+def decode_webgraph_input(encoded: bytes) -> tuple[GraphArc, ...]:
+    if len(encoded) < _WEBGRAPH_HEADER.size:
+        raise ValueError("WebGraph input header is truncated")
+    magic, record_size, arc_count, body_sha = _WEBGRAPH_HEADER.unpack_from(encoded)
+    if magic != _WEBGRAPH_MAGIC or record_size != _WEBGRAPH_RECORD.size:
+        raise ValueError("WebGraph input identity is invalid")
+    body = encoded[_WEBGRAPH_HEADER.size :]
+    if len(body) != arc_count * record_size:
+        raise ValueError("WebGraph input length is inconsistent")
+    if hashlib.sha256(body).digest() != body_sha:
+        raise ValueError("WebGraph input body SHA-256 mismatch")
+    arcs: list[GraphArc] = []
+    for offset in range(0, len(body), record_size):
+        (
+            table_id,
+            pair_id,
+            row_ordinal,
+            source_image,
+            source_feature,
+            target_image,
+            target_feature,
+        ) = _WEBGRAPH_RECORD.unpack_from(body, offset)
+        try:
+            table = _WEBGRAPH_TABLE_NAMES[table_id]
+        except KeyError as error:
+            raise ValueError("WebGraph input contains an unknown table ID") from error
+        arcs.append(
+            GraphArc(
+                table=table,
+                pair_id=pair_id,
+                row_ordinal=row_ordinal,
+                source=(source_image, source_feature),
+                target=(target_image, target_feature),
+            )
+        )
+    return tuple(arcs)
+
+
+def _build_webgraph_input(
+    database_path: Path,
+    *,
+    minimum_common_pair_only: bool,
+) -> WebGraphInput:
+    database_path = database_path.resolve()
+    source_sha = _sha256(database_path)
+    connection = _connect_read_only(database_path)
+    try:
+        matches = _read_match_table(connection, "matches")
+        geometries = _read_match_table(connection, "two_view_geometries")
+    finally:
+        connection.close()
+    if minimum_common_pair_only:
+        common_pairs = sorted(
+            {arc.pair_id for arc in matches}
+            & {arc.pair_id for arc in geometries}
+        )
+        if not common_pairs:
+            raise ValueError("matches and two-view tables have no common pair")
+        selected_pair = common_pairs[0]
+        arcs = tuple(
+            arc
+            for arc in matches + geometries
+            if arc.pair_id == selected_pair
+        )
+        scope = f"minimum_common_pair_{selected_pair}"
+    else:
+        arcs = matches + geometries
+        scope = "complete_matches_and_two_view_geometries"
+    payload = encode_webgraph_input(arcs)
+    if decode_webgraph_input(payload) != arcs:
+        raise RuntimeError("WebGraph canonical input is not reversible")
+    if _sha256(database_path) != source_sha:
+        raise RuntimeError("source database changed during WebGraph input extraction")
+    return WebGraphInput(
+        scope=scope,
+        arcs=arcs,
+        payload=payload,
+        source_sha256=source_sha,
+    )
+
+
+def build_webgraph_minimum_input(database_path: Path) -> WebGraphInput:
+    return _build_webgraph_input(
+        database_path,
+        minimum_common_pair_only=True,
+    )
+
+
+def build_webgraph_complete_input(database_path: Path) -> WebGraphInput:
+    return _build_webgraph_input(
+        database_path,
+        minimum_common_pair_only=False,
     )
 
 

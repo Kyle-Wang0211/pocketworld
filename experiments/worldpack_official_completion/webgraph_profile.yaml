@@ -1,0 +1,74 @@
+schema: pw_webgraph_official_profile_v1
+upstream:
+  repository: https://github.com/vigna/webgraph-rs
+  commit: f8698a7bdda2c4e171017548307179cd5c7a3166
+  crate: webgraph
+  crate_version: 0.6.1
+  license_choice: Apache-2.0
+  source_tree_policy: pinned_clean_unmodified
+build:
+  rustc: rustc 1.95.0 (59807616e 2026-04-14) (Homebrew)
+  cargo: cargo 1.95.0 (f2d3ce0bd 2026-03-21) (Homebrew)
+  cargo_sha256: c905263371d3b9cf800ff0e89bb255e03eca6ff0b1db576d316cd9b5f2b68532
+  upstream_lockfile_present: false
+  frozen_task_lockfile: webgraph-Cargo.lock
+  frozen_task_lockfile_sha256: a1792590dceb0c14be81415644c88f913db61d826659f8a62f5616e6e8b9a98c
+  official_roundtrip_tests:
+    passed: 39
+    failed: 0
+  task_local_dynamic_library_compatibility:
+    reason: >-
+      Homebrew cargo's libgit2 referenced llhttp 9.3 while the pinned host has
+      llhttp 9.4.1. A task-local DYLD_LIBRARY_PATH symlink was used only while
+      invoking cargo; no global package was installed or replaced.
+    target_sha256: e8f9c65d7aff5633ca09ab643684500df8ff9125acc91f080056f97d85a50aa4
+    algorithm_source_changed: false
+adapter:
+  binary_sha256: 091649080861ee7fd827fed0994c406e10f5bcfa93554d3e915714ded1816c03
+  graph_writer: webgraph::prelude::BvComp
+  graph_reader: webgraph::prelude::BvGraph
+  elias_fano_builder: webgraph::prelude::store_ef_with_data
+  endianness: BE
+  load_mode: LoadMem
+grid:
+  compression_windows: [3, 7]
+  maximum_reference_counts: [3, 7]
+  minimum_interval_lengths: [2, 4]
+  codes: [gamma, zeta3]
+  code_applied_to: [outdegrees, references, blocks, intervals, residuals]
+  total_arms: 16
+reversible_representation:
+  graph_nodes:
+    - sorted unique image-and-feature identities
+    - one record node per original match or two-view row
+  graph_arcs: two directed arcs per record node
+  sidecar:
+    - feature identity mapping
+    - table identity
+    - pair identity
+    - per-pair row count
+    - source body SHA-256
+  preserves:
+    - every record
+    - duplicates
+    - table order
+    - pair order
+    - row order
+random_access:
+  offsets_file: build_only_deleted
+  persisted_index: elias_fano
+  verification: eight_evenly_spaced_record_nodes_after_reload_without_offsets
+accounting:
+  counted:
+    - graph
+    - properties
+    - elias_fano
+    - zpaq_compressed_reversible_mapping
+  excluded:
+    - build_only_offsets_deleted_before_random_access_verification
+expansion:
+  rule: strictly_smaller_than_same_input_zpaq
+  minimum_result: rejected
+  reason: best_complete_persisted_bytes_26907_vs_zpaq_6542
+result_scope: registered_webgraph_0_6_1_grid_only
+production_promoted: false

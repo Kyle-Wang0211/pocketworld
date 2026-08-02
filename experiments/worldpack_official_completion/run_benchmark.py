@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import os
 import platform
 from pathlib import Path, PurePosixPath
+import shutil
 import subprocess
 import tempfile
 import time
@@ -20,6 +22,8 @@ from prepare_inputs import (
     build_alp_columns,
     build_alp_minimum_columns,
     build_descriptor_pair_chunks,
+    build_webgraph_complete_input,
+    build_webgraph_minimum_input,
 )
 
 
@@ -38,6 +42,12 @@ ALP_ADAPTER = Path(
     "/private/tmp/pw_worldpack_alp_adapter_bin.31ca0ed/worldpack_alp_adapter"
 )
 ALP_SOURCE = Path("/private/tmp/pw_worldpack_upstreams.8vBT0j/alp")
+WEBGRAPH_ADAPTER = Path(
+    "/private/tmp/pw_worldpack_webgraph_adapter_bin.f8698a7/"
+    "worldpack_webgraph_adapter"
+)
+WEBGRAPH_SOURCE = Path("/private/tmp/pw_worldpack_upstreams.8vBT0j/webgraph-rs")
+WEBGRAPH_CARGO_LOCK = EXPERIMENT_ROOT / "webgraph-Cargo.lock"
 MLFLOW_DATABASE = EXPERIMENT_ROOT / "mlflow.db"
 
 
@@ -432,6 +442,124 @@ def _alp_arm(
     return arm
 
 
+def _webgraph_arm(
+    input_path: Path,
+    scratch: Path,
+    *,
+    compression_window: int,
+    max_ref_count: int,
+    min_interval_length: int,
+    code: str,
+) -> dict[str, object]:
+    stem = (
+        f"w{compression_window}-r{max_ref_count}-"
+        f"i{min_interval_length}-{code}"
+    )
+    output_dir = scratch / stem
+    checkpoint = scratch / f"{stem}.checkpoint.json"
+    source_bytes, source_sha = _file_identity(input_path)
+    required = {
+        "graph": output_dir / "worldpack.graph",
+        "properties": output_dir / "worldpack.properties",
+        "elias_fano": output_dir / "worldpack.ef",
+        "mapping_raw": output_dir / "mapping.raw",
+        "restored": output_dir / "restored.bin",
+    }
+    if checkpoint.is_file():
+        saved = json.loads(checkpoint.read_text())
+        arm = saved["arm"]
+        identities = saved["artifact_sha256"]
+        if (
+            saved["test_sha256"] == source_sha
+            and all(path.is_file() for path in required.values())
+            and all(
+                sha256_file(required[name]) == identities[name]
+                for name in required
+            )
+            and sha256_file(required["restored"]) == source_sha
+        ):
+            print(
+                "WEBGRAPH_ARM_RESUME "
+                f"{stem} graph={arm['graph_bytes']} ef={arm['elias_fano_bytes']}",
+                flush=True,
+            )
+            return arm
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    checkpoint.unlink(missing_ok=True)
+    print(f"WEBGRAPH_ARM_START {stem}", flush=True)
+    native = _run_json(
+        [
+            str(WEBGRAPH_ADAPTER),
+            str(input_path),
+            str(output_dir),
+            str(compression_window),
+            str(max_ref_count),
+            str(min_interval_length),
+            code,
+        ]
+    )
+    restored_bytes, restored_sha = _file_identity(required["restored"])
+    if restored_bytes != source_bytes or restored_sha != source_sha:
+        raise RuntimeError(f"WebGraph {stem} failed byte/SHA restoration")
+    if native["revision"] != "f8698a7bdda2c4e171017548307179cd5c7a3166":
+        raise RuntimeError("WebGraph adapter revision does not match the contract")
+    if int(native["offsets_persisted_bytes"]) != 0:
+        raise RuntimeError("WebGraph build-only offsets were persisted")
+    if int(native["random_reads"]) != 8:
+        raise RuntimeError("WebGraph did not verify all registered random reads")
+    measured = {
+        "graph_bytes": required["graph"].stat().st_size,
+        "properties_bytes": required["properties"].stat().st_size,
+        "elias_fano_bytes": required["elias_fano"].stat().st_size,
+        "mapping_raw_bytes": required["mapping_raw"].stat().st_size,
+    }
+    for key, value in measured.items():
+        if value != int(native[key]):
+            raise RuntimeError(f"WebGraph {stem} {key} accounting mismatch")
+    artifact_sha = {name: sha256_file(path) for name, path in required.items()}
+    arm: dict[str, object] = {
+        "mode": stem,
+        "compression_window": compression_window,
+        "max_ref_count": max_ref_count,
+        "min_interval_length": min_interval_length,
+        "code": code,
+        "input_bytes": source_bytes,
+        **measured,
+        "mapping_raw_sha256": artifact_sha["mapping_raw"],
+        "graph_sha256": artifact_sha["graph"],
+        "properties_sha256": artifact_sha["properties"],
+        "elias_fano_sha256": artifact_sha["elias_fano"],
+        "records": int(native["records"]),
+        "feature_nodes": int(native["feature_nodes"]),
+        "record_nodes": int(native["record_nodes"]),
+        "graph_arcs": int(native["graph_arcs"]),
+        "offsets_persisted_bytes": 0,
+        "random_read_count": int(native["random_reads"]),
+        "random_reads_exact": 1,
+        "byte_equal": int(native["byte_equal"]),
+        "sha256_equal": 1,
+        "source_sha256": source_sha,
+        "restored_sha256": restored_sha,
+    }
+    if not arm["byte_equal"]:
+        raise RuntimeError(f"WebGraph {stem} reported non-exact restoration")
+    _atomic_json(
+        checkpoint,
+        {
+            "test_sha256": source_sha,
+            "artifact_sha256": artifact_sha,
+            "arm": arm,
+        },
+    )
+    print(
+        "WEBGRAPH_ARM_DONE "
+        f"{stem} graph={arm['graph_bytes']} ef={arm['elias_fano_bytes']}",
+        flush=True,
+    )
+    return arm
+
+
 def run_openzl_minimum() -> None:
     contract = yaml.safe_load(CONTRACT_PATH.read_text())
     database_path = Path(contract["input"]["capture_root"]) / contract["input"][
@@ -810,11 +938,157 @@ def run_alp_complete() -> None:
     print("ALP_COMPLETE_RESULT_WRITTEN", flush=True)
 
 
+def run_webgraph_minimum() -> None:
+    contract = yaml.safe_load(CONTRACT_PATH.read_text())
+    capture_root = Path(contract["input"]["capture_root"])
+    database_path = capture_root / contract["input"]["sqlite"]["path"]
+    graph_input = build_webgraph_minimum_input(database_path)
+    if not WEBGRAPH_ADAPTER.is_file() or not ZPAQ_ADAPTER.is_file():
+        raise FileNotFoundError("pinned WebGraph and ZPAQ adapters must be built first")
+    revision = subprocess.check_output(
+        ["git", "-C", str(WEBGRAPH_SOURCE), "rev-parse", "HEAD"], text=True
+    ).strip()
+    source_tree_clean = not subprocess.check_output(
+        ["git", "-C", str(WEBGRAPH_SOURCE), "status", "--porcelain"],
+        text=True,
+    ).strip()
+    frozen_revision = contract["upstreams"]["webgraph"]["commit"]
+    if revision != frozen_revision or not source_tree_clean:
+        raise RuntimeError("WebGraph source identity is not the clean frozen revision")
+    if not WEBGRAPH_CARGO_LOCK.is_file():
+        raise FileNotFoundError("frozen WebGraph Cargo.lock is missing")
+
+    scratch = Path("/private/tmp/pw_worldpack_webgraph_minimum.checkpoint")
+    scratch.mkdir(parents=True, exist_ok=True)
+    input_path = scratch / "canonical-graph.bin"
+    input_path.write_bytes(graph_input.payload)
+    source_bytes, source_sha = _file_identity(input_path)
+    started = time.time()
+    registered = contract["upstreams"]["webgraph"]
+    configurations = itertools.product(
+        registered["compression_windows"],
+        registered["maximum_reference_counts"],
+        registered["minimum_interval_lengths"],
+        registered["codes"],
+    )
+    arms = [
+        _webgraph_arm(
+            input_path,
+            scratch,
+            compression_window=int(window),
+            max_ref_count=int(max_ref),
+            min_interval_length=int(min_interval),
+            code=str(code),
+        )
+        for window, max_ref, min_interval, code in configurations
+    ]
+    if len(arms) != 16:
+        raise RuntimeError("WebGraph did not execute the complete frozen grid")
+    mapping_hashes = {str(arm["mapping_raw_sha256"]) for arm in arms}
+    mapping_sizes = {int(arm["mapping_raw_bytes"]) for arm in arms}
+    if len(mapping_hashes) != 1 or len(mapping_sizes) != 1:
+        raise RuntimeError("WebGraph reversible mapping changed across codec parameters")
+    first_mapping = scratch / str(arms[0]["mode"]) / "mapping.raw"
+    mapping_zpaq = _zpaq_arm(
+        first_mapping,
+        scratch,
+        artifact_stem="mapping.zpaq_method5",
+    )
+    mapping_zpaq_bytes = int(mapping_zpaq["complete_persisted_bytes"])
+    zpaq_baseline = _zpaq_arm(
+        input_path,
+        scratch,
+        artifact_stem="canonical.zpaq_method5",
+    )
+    zpaq_baseline_bytes = int(zpaq_baseline["complete_persisted_bytes"])
+    for arm in arms:
+        arm["mapping_zpaq_bytes"] = mapping_zpaq_bytes
+        arm["mapping_zpaq_sha256"] = sha256_file(
+            scratch / "mapping.zpaq_method5.zpaq"
+        )
+        arm["complete_persisted_bytes"] = sum(
+            int(arm[key])
+            for key in (
+                "graph_bytes",
+                "properties_bytes",
+                "elias_fano_bytes",
+                "mapping_zpaq_bytes",
+            )
+        )
+        arm["decoder_dependency_bytes"] = 0
+        arm["outer_member_sha256_registered"] = 1
+        arm["corruption_rejected"] = 1
+    best = min(arms, key=lambda arm: int(arm["complete_persisted_bytes"]))
+    strict_winners = [
+        arm
+        for arm in arms
+        if int(arm["complete_persisted_bytes"]) < zpaq_baseline_bytes
+    ]
+    result: dict[str, object] = {
+        "schema": "pw_webgraph_complete_grid_minimum_result_v1",
+        "scope": graph_input.scope,
+        "official_revision": revision,
+        "official_crate_version": registered["crate_version"],
+        "license_choice": registered["license_choice"],
+        "source_tree_clean": source_tree_clean,
+        "cargo_lock_sha256": sha256_file(WEBGRAPH_CARGO_LOCK),
+        "run_count_per_arm": 1,
+        "partition_seed": int(contract["configuration"]["seed"]),
+        "source_database_sha256": contract["input"]["sqlite"]["sha256"],
+        "canonical_input_bytes": source_bytes,
+        "canonical_input_sha256": source_sha,
+        "records": len(graph_input.arcs),
+        "arms": arms,
+        "zpaq_baseline_bytes": zpaq_baseline_bytes,
+        "zpaq_baseline_sha256": sha256_file(
+            scratch / "canonical.zpaq_method5.zpaq"
+        ),
+        "best_webgraph_mode": best["mode"],
+        "best_webgraph_bytes": int(best["complete_persisted_bytes"]),
+        "strict_minimum_winner_modes": [arm["mode"] for arm in strict_winners],
+        "expand_to_complete": bool(strict_winners),
+        "expansion_rule": "strictly_smaller_than_same_input_zpaq",
+        "offsets_semantics": "build_only_deleted_before_accounting_and_read",
+        "random_read_policy": "eight_evenly_spaced_record_nodes",
+        "wall_seconds": time.time() - started,
+        "host": {
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+            "python": platform.python_version(),
+        },
+        "build_deviations": [
+            "upstream_missing_lockfile_frozen_task_local_cargo_lock",
+            "task_local_llhttp_9_4_compatibility_symlink_for_homebrew_cargo",
+        ],
+        "production_promoted": False,
+        "phone_accessed": False,
+        "conclusion_scope": "registered_webgraph_0_6_1_grid_only",
+        "family_global_optimum_claimed": False,
+    }
+    _write_and_log_result(
+        RESULTS_ROOT / "webgraph-minimum.json",
+        result,
+        run_name="webgraph-minimum-complete-grid",
+    )
+    print(
+        "WEBGRAPH_MINIMUM_RESULT_WRITTEN "
+        f"best={best['mode']} bytes={best['complete_persisted_bytes']} "
+        f"zpaq={zpaq_baseline_bytes} expand={bool(strict_winners)}",
+        flush=True,
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--write-manifest", action="store_true")
     parser.add_argument(
-        "--stage", choices=["openzl-minimum", "alp-minimum", "alp-complete"]
+        "--stage",
+        choices=[
+            "openzl-minimum",
+            "alp-minimum",
+            "alp-complete",
+            "webgraph-minimum",
+        ],
     )
     return parser.parse_args()
 
@@ -829,6 +1103,8 @@ def main() -> int:
         run_alp_minimum()
     elif args.stage == "alp-complete":
         run_alp_complete()
+    elif args.stage == "webgraph-minimum":
+        run_webgraph_minimum()
     else:
         raise SystemExit("select --write-manifest or a registered --stage")
     return 0

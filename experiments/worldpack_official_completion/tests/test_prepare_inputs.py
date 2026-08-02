@@ -18,6 +18,8 @@ from prepare_inputs import (  # noqa: E402
     build_alp_columns,
     build_alp_minimum_columns,
     build_descriptor_pair_chunks,
+    build_webgraph_minimum_input,
+    decode_webgraph_input,
     prepare_database,
 )
 
@@ -298,3 +300,24 @@ def test_alp_minimum_columns_keep_real_float_bits_and_column_identity(
             if column.label == "keypoint_float32_0"
         ).payload
     ) == 6 * 4
+
+
+def test_webgraph_minimum_input_preserves_table_pair_order_and_duplicates(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "graph.db"
+    _make_fixture(database_path)
+
+    graph_input = build_webgraph_minimum_input(database_path)
+    restored = decode_webgraph_input(graph_input.payload)
+
+    assert restored == graph_input.arcs
+    assert {arc.table for arc in restored} == {"matches", "two_view_geometries"}
+    assert len({arc.pair_id for arc in restored}) == 1
+    assert [arc.row_ordinal for arc in restored if arc.table == "matches"] == [
+        0,
+        1,
+    ]
+    geometry = [arc for arc in restored if arc.table == "two_view_geometries"]
+    assert len(geometry) == 2
+    assert graph_input.payload.startswith(b"PWGI1\x00\x00\x00")
