@@ -13,7 +13,10 @@ EXPERIMENT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(EXPERIMENT_ROOT))
 
 from exact_io import ExactFrame, decode_frame, encode_frame  # noqa: E402
-from prepare_inputs import prepare_database  # noqa: E402
+from prepare_inputs import (  # noqa: E402
+    build_descriptor_pair_chunks,
+    prepare_database,
+)
 
 
 MAX_IMAGE_ID = 2_147_483_647
@@ -30,6 +33,20 @@ def _descriptor(seed: int) -> bytes:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _openzl_bundle_tags(bundle: bytes) -> list[int]:
+    tags: list[int] = []
+    position = 0
+    while position < len(bundle):
+        length = struct.unpack_from("<I", bundle, position)[0]
+        width = bundle[position + 4]
+        tag = struct.unpack_from("<I", bundle, position + 5)[0]
+        assert width in {1, 2, 4, 8}
+        position += 9 + length
+        tags.append(tag)
+    assert position == len(bundle)
+    return tags
 
 
 def _make_fixture(path: Path) -> bytes:
@@ -189,3 +206,26 @@ def test_malformed_descriptor_dimensions_fail_closed(tmp_path: Path) -> None:
     assert expected
     with pytest.raises(ValueError, match="descriptor byte length"):
         prepare_database(database_path)
+
+
+def test_real_pair_chunks_are_local_reversible_typed_bundles(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "pairs.db"
+    _make_fixture(database_path)
+
+    chunks = build_descriptor_pair_chunks(
+        database_path,
+        maximum_matches=2,
+        maximum_chunks=2,
+        require_disjoint_images=False,
+    )
+
+    assert len(chunks) == 2
+    assert [chunk.pair_id for chunk in chunks] == sorted(
+        chunk.pair_id for chunk in chunks
+    )
+    assert all(chunk.reconstruct() == chunk.original_descriptors for chunk in chunks)
+    assert all(chunk.parents for chunk in chunks)
+    assert all(_openzl_bundle_tags(chunk.openzl_bundle) == [1000, 1001, 1002] for chunk in chunks)
+    assert len({hashlib.sha256(chunk.openzl_bundle).digest() for chunk in chunks}) == 2

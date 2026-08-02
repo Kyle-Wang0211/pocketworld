@@ -4,12 +4,14 @@ set -eu
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 build_dir=$(mktemp -d /private/tmp/pw-worldpack-zpaq-build.XXXXXX)
 run_dir=$(mktemp -d /private/tmp/pw-worldpack-zpaq-run.XXXXXX)
+adapter_bin_dir=${PW_ZPAQ_ADAPTER_BIN_DIR:-/private/tmp/pw_worldpack_zpaq_adapter_bin.v715}
 cleanup() {
   find "$build_dir" -mindepth 1 -delete
   find "$run_dir" -mindepth 1 -delete
   rmdir "$build_dir" "$run_dir"
 }
 trap cleanup EXIT HUP INT TERM
+mkdir -p "$adapter_bin_dir"
 
 common_flags="-std=c++17 -O2 -Wall -Wextra -Werror -Wno-unused-parameter -Wno-null-pointer-subtraction -Dunix -DNOJIT"
 xcrun clang++ $common_flags \
@@ -22,6 +24,10 @@ xcrun clang++ $common_flags \
   -c "$repo_root/tool/worldpack_zpaq_adapter_test.cpp" \
   -o "$build_dir/test.o"
 xcrun clang++ $common_flags \
+  -I"$repo_root/tool" \
+  -c "$repo_root/tool/worldpack_zpaq_adapter_main.cpp" \
+  -o "$build_dir/main.o"
+xcrun clang++ $common_flags \
   -I"$repo_root/ios/Vendor/Zpaq/include" \
   -c "$repo_root/ios/Vendor/Zpaq/src/libzpaq.cpp" \
   -o "$build_dir/libzpaq.o"
@@ -31,5 +37,12 @@ xcrun clang++ \
   "$build_dir/libzpaq.o" \
   -framework Security \
   -o "$build_dir/worldpack_zpaq_adapter_test"
+xcrun clang++ \
+  "$build_dir/adapter.o" \
+  "$build_dir/main.o" \
+  "$build_dir/libzpaq.o" \
+  -framework Security \
+  -o "$adapter_bin_dir/worldpack_zpaq_adapter"
 
 "$build_dir/worldpack_zpaq_adapter_test" "$run_dir"
+echo "$adapter_bin_dir/worldpack_zpaq_adapter"

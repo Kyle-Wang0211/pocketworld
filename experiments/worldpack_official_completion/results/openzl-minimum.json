@@ -1,0 +1,130 @@
+{
+  "schema": "pw_openzl_complete_minimum_result_v1",
+  "scope": "minimum_descriptor_bundle",
+  "official_revision": "3dceb64867840201fb8f57a29d179995f700c9b8",
+  "source_tree_clean": true,
+  "typed_parser": "pw_exact_frame_bundle_v1",
+  "training_time_limit_seconds": null,
+  "official_ace_max_generations": 250,
+  "run_count_per_arm": 1,
+  "partition_seed": 20260802,
+  "train_pair_ids": [
+    6442450945,
+    19327352833,
+    15032385537,
+    10737418241
+  ],
+  "test_pair_ids": [
+    2147483649
+  ],
+  "train_chunk_sha256": [
+    "7f44bfec4f44d900f202211cf295ab307b94a4203a91c0afbea4c76f2a354be3",
+    "5f53b2147f9a4fed197ea812411100ea9958d9c9128559e4a0d25082f20b4061",
+    "df769097dd76f460e6a3a30cdf770ce8de32414013a73b180cd8b9516eb5e06c",
+    "a188c6927874ea8041e8aa937b741f4696abe51d27f3d685350269da7c40bf12"
+  ],
+  "test_chunk_sha256": [
+    "8d3d2eef6357338fa89a519ba09574b24bc478b20b08dd3270335c57b1511736"
+  ],
+  "maximum_matches_per_pair": 128,
+  "source_database_sha256": "0c12c0dfa76d50cae59929774242282d8236daeb852bdee6ac99c3062d6d08b0",
+  "arms": [
+    {
+      "mode": "untrained_parser",
+      "input_bytes": 33819,
+      "frame_bytes": 23601,
+      "decoder_dependency_bytes": 0,
+      "complete_persisted_bytes": 23601,
+      "encoder_model_bytes": 135,
+      "training_completed": 0,
+      "completion_semantics": "not_applicable",
+      "byte_equal": 1,
+      "sha256_equal": 1,
+      "source_sha256": "8d3d2eef6357338fa89a519ba09574b24bc478b20b08dd3270335c57b1511736",
+      "restored_sha256": "8d3d2eef6357338fa89a519ba09574b24bc478b20b08dd3270335c57b1511736",
+      "corruption_rejected": 1,
+      "training_microseconds": 268,
+      "compression_microseconds": 2424,
+      "decompression_microseconds": 666,
+      "typed_data_streams": 3,
+      "trainer_log_bytes": 0,
+      "trainer_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "mode": "ace_complete",
+      "input_bytes": 33819,
+      "frame_bytes": 22764,
+      "decoder_dependency_bytes": 0,
+      "complete_persisted_bytes": 22764,
+      "encoder_model_bytes": 1945,
+      "training_completed": 1,
+      "completion_semantics": "official_return_without_max_time",
+      "byte_equal": 1,
+      "sha256_equal": 1,
+      "source_sha256": "8d3d2eef6357338fa89a519ba09574b24bc478b20b08dd3270335c57b1511736",
+      "restored_sha256": "8d3d2eef6357338fa89a519ba09574b24bc478b20b08dd3270335c57b1511736",
+      "corruption_rejected": 1,
+      "training_microseconds": 8589791,
+      "compression_microseconds": 96,
+      "decompression_microseconds": 48,
+      "typed_data_streams": 3,
+      "trainer_log_bytes": 71593,
+      "trainer_log_sha256": "902294310d152aac91e4ada05b0576997686fa72bfe3b03ef87750742032cec0"
+    },
+    {
+      "mode": "clustering_plus_ace_complete",
+      "input_bytes": 33819,
+      "frame_bytes": 22767,
+      "decoder_dependency_bytes": 0,
+      "complete_persisted_bytes": 22767,
+      "encoder_model_bytes": 3680,
+      "training_completed": 1,
+      "completion_semantics": "official_return_without_max_time",
+      "byte_equal": 1,
+      "sha256_equal": 1,
+      "source_sha256": "8d3d2eef6357338fa89a519ba09574b24bc478b20b08dd3270335c57b1511736",
+      "restored_sha256": "8d3d2eef6357338fa89a519ba09574b24bc478b20b08dd3270335c57b1511736",
+      "corruption_rejected": 1,
+      "training_microseconds": 21293789,
+      "compression_microseconds": 124,
+      "decompression_microseconds": 60,
+      "typed_data_streams": 3,
+      "trainer_log_bytes": 120534,
+      "trainer_log_sha256": "962373bc4f2899779d916f38b9009a2d6b8f73ac809449cd322266193c894d00"
+    },
+    {
+      "mode": "zpaq_method5",
+      "input_bytes": 33819,
+      "frame_bytes": 22378,
+      "decoder_dependency_bytes": 0,
+      "complete_persisted_bytes": 22378,
+      "encoder_model_bytes": 0,
+      "training_completed": 0,
+      "completion_semantics": "not_applicable",
+      "byte_equal": 1,
+      "sha256_equal": 1,
+      "source_sha256": "8d3d2eef6357338fa89a519ba09574b24bc478b20b08dd3270335c57b1511736",
+      "restored_sha256": "8d3d2eef6357338fa89a519ba09574b24bc478b20b08dd3270335c57b1511736",
+      "corruption_rejected": 1,
+      "training_microseconds": 0,
+      "compression_microseconds": 110316,
+      "decompression_microseconds": 94689,
+      "typed_data_streams": 3
+    }
+  ],
+  "wall_seconds": 0.3262300491333008,
+  "host": {
+    "platform": "macOS-26.1-arm64-arm-64bit",
+    "machine": "arm64",
+    "python": "3.11.15"
+  },
+  "build_deviations": [
+    "official_cmake_logger_dependency"
+  ],
+  "production_promoted": false,
+  "phone_accessed": false,
+  "conclusion_scope": "registered_openzl_0_2_0_modes_only",
+  "family_global_optimum_claimed": false,
+  "mlflow_run_id": "f6d53c111f5b40889d6a7e0890078e01",
+  "mlflow_tracking_store": "mlflow.db"
+}

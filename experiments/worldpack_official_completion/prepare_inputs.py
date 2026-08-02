@@ -73,6 +73,46 @@ class PreparedInputs:
     graph_arcs: tuple[GraphArc, ...]
 
 
+@dataclass(frozen=True)
+class DescriptorPairChunk:
+    pair_id: int
+    image_ids: tuple[int, int]
+    node_keys: tuple[tuple[int, int], ...]
+    parents: tuple[int, ...]
+    roots: bytes
+    residuals: bytes
+    original_descriptors: bytes
+    openzl_bundle: bytes
+
+    def reconstruct(self) -> bytes:
+        dimension = 128
+        nodes: list[bytes | None] = [None] * len(self.node_keys)
+        root_offset = 0
+        residual_offset = 0
+        for ordinal, parent in enumerate(self.parents):
+            if parent < 0:
+                nodes[ordinal] = self.roots[
+                    root_offset : root_offset + dimension
+                ]
+                root_offset += dimension
+            else:
+                if parent >= ordinal or nodes[parent] is None:
+                    raise ValueError("pair chunk parent ordering is invalid")
+                residual = self.residuals[
+                    residual_offset : residual_offset + dimension
+                ]
+                residual_offset += dimension
+                parent_value = nodes[parent]
+                assert parent_value is not None
+                nodes[ordinal] = bytes(
+                    (parent_value[lane] + residual[lane]) & 0xFF
+                    for lane in range(dimension)
+                )
+        if root_offset != len(self.roots) or residual_offset != len(self.residuals):
+            raise ValueError("pair chunk descriptor streams contain trailing bytes")
+        return b"".join(node for node in nodes if node is not None)
+
+
 def _connect_read_only(database_path: Path) -> sqlite3.Connection:
     uri = f"{database_path.resolve().as_uri()}?mode=ro&immutable=1"
     connection = sqlite3.connect(uri, uri=True)
@@ -267,6 +307,157 @@ def _read_keypoint_columns(
     return frames, tuple(layout)
 
 
+def _typed_bundle_record(element_width: int, tag: int, payload: bytes) -> bytes:
+    return struct.pack("<IBI", len(payload), element_width, tag) + payload
+
+
+def _descriptor_row(
+    connection: sqlite3.Connection, image_id: int
+) -> tuple[int, bytes]:
+    row = connection.execute(
+        "SELECT rows, cols, data FROM descriptors WHERE image_id = ?", (image_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"descriptor row is missing for image {image_id}")
+    row_count = int(row[0])
+    column_count = int(row[1])
+    payload = bytes(row[2] or b"")
+    if row_count < 0 or column_count != 128 or len(payload) != row_count * 128:
+        raise ValueError("descriptor byte length does not match pair dimensions")
+    return row_count, payload
+
+
+def build_descriptor_pair_chunks(
+    database_path: Path,
+    *,
+    maximum_matches: int,
+    maximum_chunks: int,
+    require_disjoint_images: bool,
+) -> tuple[DescriptorPairChunk, ...]:
+    if maximum_matches <= 0 or maximum_chunks <= 0:
+        raise ValueError("pair chunk limits must be positive")
+    database_path = database_path.resolve()
+    source_sha_before = _sha256(database_path)
+    connection = _connect_read_only(database_path)
+    chunks: list[DescriptorPairChunk] = []
+    used_images: set[int] = set()
+    try:
+        rows = connection.execute(
+            "SELECT pair_id, rows, cols, data FROM two_view_geometries "
+            "WHERE rows > 0 ORDER BY pair_id"
+        )
+        for pair_id_value, row_count_value, column_count_value, data_value in rows:
+            pair_id = int(pair_id_value)
+            first_image, second_image = _decode_pair_id(pair_id)
+            if require_disjoint_images and (
+                first_image in used_images or second_image in used_images
+            ):
+                continue
+            row_count = int(row_count_value)
+            column_count = int(column_count_value)
+            payload = bytes(data_value or b"")
+            if column_count < 2 or len(payload) != row_count * column_count * 4:
+                raise ValueError("two-view byte length does not match pair dimensions")
+            selected_edges: list[tuple[tuple[int, int], tuple[int, int]]] = []
+            for row_ordinal in range(min(row_count, maximum_matches)):
+                begin = row_ordinal * column_count * 4
+                first_feature, second_feature = struct.unpack_from(
+                    "<II", payload, begin
+                )
+                selected_edges.append(
+                    (
+                        (first_image, first_feature),
+                        (second_image, second_feature),
+                    )
+                )
+            if not selected_edges:
+                continue
+
+            descriptor_rows = {
+                first_image: _descriptor_row(connection, first_image),
+                second_image: _descriptor_row(connection, second_image),
+            }
+            node_keys = sorted(
+                {node for edge in selected_edges for node in edge}
+            )
+            values: list[bytes] = []
+            for image_id, feature_ordinal in node_keys:
+                image_rows, image_payload = descriptor_rows[image_id]
+                if feature_ordinal >= image_rows:
+                    raise ValueError("two-view feature index exceeds descriptor rows")
+                begin = feature_ordinal * 128
+                values.append(image_payload[begin : begin + 128])
+
+            ordinal_by_key = {
+                key: ordinal for ordinal, key in enumerate(node_keys)
+            }
+            earlier_neighbors: list[set[int]] = [set() for _ in node_keys]
+            for first, second in selected_edges:
+                source = ordinal_by_key[first]
+                target = ordinal_by_key[second]
+                if source == target:
+                    continue
+                earlier, later = sorted((source, target))
+                earlier_neighbors[later].add(earlier)
+
+            parents: list[int] = []
+            roots = bytearray()
+            residuals = bytearray()
+            for ordinal, value in enumerate(values):
+                candidates = earlier_neighbors[ordinal]
+                if not candidates:
+                    parents.append(-1)
+                    roots.extend(value)
+                    continue
+                parent = min(
+                    candidates,
+                    key=lambda candidate: (
+                        sum(
+                            abs(value[lane] - values[candidate][lane])
+                            for lane in range(128)
+                        ),
+                        candidate,
+                    ),
+                )
+                parents.append(parent)
+                residuals.extend(
+                    (value[lane] - values[parent][lane]) & 0xFF
+                    for lane in range(128)
+                )
+            encoded_parents = b"".join(
+                struct.pack("<I", parent if parent >= 0 else 0xFFFFFFFF)
+                for parent in parents
+            )
+            bundle = b"".join(
+                (
+                    _typed_bundle_record(1, 1000, bytes(roots)),
+                    _typed_bundle_record(1, 1001, bytes(residuals)),
+                    _typed_bundle_record(4, 1002, encoded_parents),
+                )
+            )
+            chunk = DescriptorPairChunk(
+                pair_id=pair_id,
+                image_ids=(first_image, second_image),
+                node_keys=tuple(node_keys),
+                parents=tuple(parents),
+                roots=bytes(roots),
+                residuals=bytes(residuals),
+                original_descriptors=b"".join(values),
+                openzl_bundle=bundle,
+            )
+            if chunk.reconstruct() != chunk.original_descriptors:
+                raise RuntimeError("pair chunk descriptor transform is not reversible")
+            chunks.append(chunk)
+            used_images.update((first_image, second_image))
+            if len(chunks) == maximum_chunks:
+                break
+    finally:
+        connection.close()
+    if _sha256(database_path) != source_sha_before:
+        raise RuntimeError("source database changed during pair extraction")
+    return tuple(chunks)
+
+
 def prepare_database(database_path: Path) -> PreparedInputs:
     database_path = database_path.resolve()
     source_sha_before = _sha256(database_path)
@@ -289,4 +480,3 @@ def prepare_database(database_path: Path) -> PreparedInputs:
         keypoint_layout=keypoint_layout,
         graph_arcs=match_arcs + geometry_arcs,
     )
-

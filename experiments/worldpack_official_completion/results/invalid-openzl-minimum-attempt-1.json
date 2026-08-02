@@ -1,0 +1,26 @@
+{
+  "schema": "pw_invalid_experiment_attempt_v1",
+  "stage": "openzl-minimum",
+  "status": "invalid_harness",
+  "comparable": false,
+  "preserve_reason": "failed runs are retained by experiment policy",
+  "completed_before_invalidation": [
+    "untrained_parser",
+    "ace_complete",
+    "clustering_plus_ace_complete"
+  ],
+  "known_diagnostic_bytes": {
+    "untrained_parser": 23601,
+    "clustering_plus_ace_complete": 22774
+  },
+  "failure": {
+    "arm": "zpaq_method5",
+    "probe": "flip_archive_byte_0",
+    "observation": "decoder treated the mutated prefix as an empty archive and published an empty output",
+    "root_cause": "Python aggregation layer used a different corruption vector than the passing native midpoint-bitflip contract",
+    "fix": "use the registered midpoint bit flip and persist per-arm checkpoints"
+  },
+  "winner_claimed": false,
+  "production_promoted": false,
+  "phone_accessed": false
+}

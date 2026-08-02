@@ -15,5 +15,5 @@ stages:
       size: 3298
     - path: run_benchmark.py
       hash: md5
-      md5: 94d37571674c451080b58f0b7a412fd3
-      size: 3327
+      md5: 5853c35e8cb0ca7f41a5d55121293d28
+      size: 17026

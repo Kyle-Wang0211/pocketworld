@@ -1,0 +1,67 @@
+schema: pw_openzl_official_profile_v1
+upstream:
+  repository: https://github.com/facebook/openzl.git
+  tag: v0.2.0
+  commit: 3dceb64867840201fb8f57a29d179995f700c9b8
+  source_tree_policy: clean_unmodified
+  license: BSD-3-Clause
+build:
+  mode: opt
+  target_architecture: arm64-macos
+  introspection: enabled_for_official_training_sample_collection
+  deviations:
+    - id: official_cmake_logger_dependency
+      description: >-
+        OPENZL_BUILD_LOGGER=ON is required because the official tools/io and
+        tools/training targets depend on logger when CLI is disabled.
+      algorithm_source_changed: false
+parser:
+  identity: pw_exact_frame_bundle_v1
+  basis: upstream_examples_training_cpp_typed_dispatch
+  framing: little_endian_u32_bytes_u8_element_width_u32_tag_payload
+  streams:
+    - descriptor_roots_uint8
+    - descriptor_residuals_uint8_mod256
+    - descriptor_parent_ordinals_uint32
+  parser_metadata_streams_preserved: true
+  parser_output_reconstructs_entire_input_bundle: true
+modes:
+  untrained_parser:
+    backend: ZL_GRAPH_COMPRESS_GENERIC
+    training: none
+  ace_complete:
+    backend: ZL_Compressor_buildACEGraph
+    distinct_ace_graph_per_typed_data_stream: true
+    official_population_size: 100
+    official_max_generations: 250
+    official_internal_seed: 0
+    max_time_seconds: null
+    completion_semantics: official_return_without_max_time
+  clustering_plus_ace_complete:
+    clustering_api: ZL_Clustering_registerGraph
+    trainer: Greedy
+    successors:
+      - ZL_GRAPH_STORE
+      - ZL_GRAPH_ZSTD
+      - ZL_GRAPH_COMPRESS_GENERIC
+      - ZL_NODE_DELTA_INT_then_ZL_GRAPH_FIELD_LZ
+    ace_successors_enabled: true
+    official_population_size: 100
+    official_max_generations: 250
+    official_internal_seed: 0
+    max_time_seconds: null
+    completion_semantics: official_return_without_max_time
+partition:
+  seed: 20260802
+  policy: deterministic_chunk_hash
+  disjoint_train_test: true
+accounting:
+  frame_bytes: counted
+  decoder_dependency_bytes: counted
+  serialized_encoder_model_bytes: reported_separately
+  model_counted_as_decoder_dependency_only_if_fresh_dctx_requires_it: true
+exactness:
+  entire_bundle_byte_equal: required
+  entire_bundle_sha256_equal: required
+  corrupt_frame_rejected: required
+  source_chunks_unchanged: required
