@@ -1,0 +1,19 @@
+schema: '2.0'
+stages:
+  freeze-input-manifest:
+    cmd: uv run --frozen --project . python run_benchmark.py --write-manifest
+    deps:
+    - path: 
+        /private/tmp/pw_portable_sfm_update.6RQ6nt/before/Documents/captures_official/cap_1785512421333592
+      hash: md5
+      md5: e264524bf88361ee15068eda67e7a70d.dir
+      size: 580406089
+      nfiles: 322
+    - path: experiment-contract.yaml
+      hash: md5
+      md5: 1b87493b5350305fe4aa3960eddd2a5e
+      size: 3298
+    - path: run_benchmark.py
+      hash: md5
+      md5: 94d37571674c451080b58f0b7a412fd3
+      size: 3327

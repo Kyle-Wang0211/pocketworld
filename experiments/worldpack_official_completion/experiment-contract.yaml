@@ -1,0 +1,96 @@
+schema: pw_worldpack_official_completion_contract_v1
+frozen_at: "2026-08-02T23:30:00+08:00"
+scope: host_only_strict_lossless_completion
+evidence_role: host_candidate_screen_only
+repository:
+  design_start_commit: eb269acdd8f8a941a10b55ce2d97f8b77ccc8f0e
+  design_commit: b504ee9
+  plan_commit: 47ce5f3
+  preserve_shared_dirty_worktree: true
+input:
+  capture_id: cap_1785512421333592
+  capture_root: /private/tmp/pw_portable_sfm_update.6RQ6nt/before/Documents/captures_official/cap_1785512421333592
+  manifest: input-manifest.yaml
+  manifest_ordering: normalized_relative_path_utf8
+  sqlite:
+    path: official_sfm_live.db
+    bytes: 198983680
+    sha256: 0c12c0dfa76d50cae59929774242282d8236daeb852bdee6ac99c3062d6d08b0
+    integrity_check: ok
+  sparse_ply:
+    path: official_sfm_sparse.ply
+    bytes: 1162370
+    sha256: ba941c8b1fff4e6bbeb270aed8f4e328a14e570c46647dbd91b48e74c713dd3a
+baselines:
+  zpaq:
+    version: "7.15"
+    method: 5
+    source_sha256: e85ec2529eb0ba22ceaeabd461e55357ef099b80f61c14f377b429ea3d49d418
+  sqlite_track_delta_zpaq_bytes: 124401918
+  sqlite_similarity_forest_zpaq_bytes: 116739319
+  sparse_ply_zpaq_bytes: 857476
+upstreams:
+  openzl:
+    tag: v0.2.0
+    commit: 3dceb64867840201fb8f57a29d179995f700c9b8
+    source_policy: pinned_clean_unmodified
+    typed_parser: true
+    modes: [untrained_parser, ace_complete, clustering_plus_ace_complete]
+    disjoint_train_test: true
+    training_time_limit_seconds: null
+    count_serialized_decoder_dependencies: true
+  alp:
+    commit: 31ca0ed11c93c99d3f5b5c30e01a3e1c3832d3ce
+    source_policy: pinned_clean_unmodified
+    inputs: [real_keypoint_float_columns, real_pose_float_columns]
+    preserve_nan_payloads: true
+    preserve_signed_zero: true
+    all_ieee_bits_equal: true
+    count_complete_framing: true
+  webgraph:
+    commit: f8698a7bdda2c4e171017548307179cd5c7a3166
+    crate: webgraph
+    crate_version: 0.6.1
+    source_policy: pinned_clean_unmodified
+    license_choice: Apache-2.0
+    compression_windows: [3, 7]
+    maximum_reference_counts: [3, 7]
+    minimum_interval_lengths: [2, 4]
+    codes: [gamma, zeta3]
+    count_graph_file: true
+    count_properties_file: true
+    count_elias_fano_file: true
+    count_reversible_mappings: true
+configuration:
+  seed: 20260802
+  repeat_count: 1
+  run_each_registered_arm_once: true
+  train_test_split:
+    policy: deterministic_chunk_hash
+    training_fraction_numerator: 4
+    training_fraction_denominator: 5
+  stages: [minimum, approximately_100mb, complete]
+  expansion_policy: strict_exact_local_winner_only
+  worldpack_runs_with_verified_fallbacks: true
+acceptance:
+  byte_equal: true
+  sha256_equal: true
+  all_ieee_bits_equal: true
+  row_count_equal: true
+  row_order_equal: true
+  sqlite_integrity_check: ok
+  random_reads_exact: true
+  source_unchanged: true
+  complete_persisted_bytes: true
+  count_models_indexes_manifests_and_sidecars: true
+  corruption_rejected: true
+  production_changes: forbidden
+  phone_access: forbidden
+stop_rules:
+  - reject_arm_on_any_exactness_failure
+  - do_not_expand_member_codec_without_strict_minimum_win
+  - stop_worldpack_before_100mb_on_minimum_exactness_failure
+  - stop_worldpack_before_complete_on_100mb_exactness_failure
+  - preserve_failed_and_stopped_results
+  - never_generalize_beyond_registered_modes
+

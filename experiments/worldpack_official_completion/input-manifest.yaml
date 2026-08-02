@@ -1,0 +1,1619 @@
+{
+  "schema": "pw_worldpack_input_manifest_v1",
+  "capture_id": "cap_1785512421333592",
+  "ordering": "normalized_relative_path_utf8",
+  "entry_count": 322,
+  "source_bytes": 580406089,
+  "entries": [
+    {
+      "path": "official_database_archive_policy.json",
+      "bytes": 252,
+      "sha256": "842dc5b34eca74f88b436fd7d0a5b2270d95f9b70085a990eae317320a9744b8"
+    },
+    {
+      "path": "official_finalize_segments.json",
+      "bytes": 1521,
+      "sha256": "da67d4cf7952ed49c1341db9fe6d1039cae1ef196a1fd26e57270f01881e01ff"
+    },
+    {
+      "path": "official_photo_archive.json",
+      "bytes": 56360,
+      "sha256": "00d06aefbeda22b84347c3afd8caf0a96d6a687f84e6c34c6466c3acc578b4e4"
+    },
+    {
+      "path": "official_photo_archive_policy.json",
+      "bytes": 190,
+      "sha256": "5eb64ea49377b3114871e43c9b12c38af3e8a0d0bacd0a506e63cfacb79dfe30"
+    },
+    {
+      "path": "official_photo_bundle.json",
+      "bytes": 308038,
+      "sha256": "dded6aafaaf7d96edf509329305c7ae77a7c85b6b06714eeebfa3c376c832d70"
+    },
+    {
+      "path": "official_sfm_fed_frames.jsonl",
+      "bytes": 110960,
+      "sha256": "7d3f9e9dd2a140eed1aa74ca6ccdb118029a9560f4796dcdcb19d149ca96359a"
+    },
+    {
+      "path": "official_sfm_live.db",
+      "bytes": 198983680,
+      "sha256": "0c12c0dfa76d50cae59929774242282d8236daeb852bdee6ac99c3062d6d08b0"
+    },
+    {
+      "path": "official_sfm_live.db-shm",
+      "bytes": 32768,
+      "sha256": "fd4c9fda9cd3f9ae7c962b0ddf37232294d55580e1aa165aa06129b8549389eb"
+    },
+    {
+      "path": "official_sfm_live.db-wal",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "official_sfm_sparse.ply",
+      "bytes": 1162370,
+      "sha256": "ba941c8b1fff4e6bbeb270aed8f4e328a14e570c46647dbd91b48e74c713dd3a"
+    },
+    {
+      "path": "official_sfm_sparse_meta.json",
+      "bytes": 30332,
+      "sha256": "965f7f82d228c4d66ed512ce44e7138d0339aedb262c180e2b1835a71bf6d565"
+    },
+    {
+      "path": "photos_highres/official_tap-1024.jpg.jxl",
+      "bytes": 2229950,
+      "sha256": "d36935a3feb9d493fcc180a297dddef272fe4344ff1b805b5844dfb50c0ce5d6"
+    },
+    {
+      "path": "photos_highres/official_tap-1024.json",
+      "bytes": 2924,
+      "sha256": "37a8bfa890622e4cd6f0d00202bfd6f4bae19d3b8dffd7ad3062d632dbeed946"
+    },
+    {
+      "path": "photos_highres/official_tap-1035.jpg.jxl",
+      "bytes": 2216469,
+      "sha256": "e040f393b86b045b8fe300ffa202762e8d17e6b28d5be594d76ca450b3bb8623"
+    },
+    {
+      "path": "photos_highres/official_tap-1035.json",
+      "bytes": 5886,
+      "sha256": "7cae4a1f4e60b7d812f7ffa2abddd91e1d2dd2ac38fa9b81034e2819959dc15a"
+    },
+    {
+      "path": "photos_highres/official_tap-1051.jpg.jxl",
+      "bytes": 2334879,
+      "sha256": "928373d11429da246b74c5aad7a615111d90919b4bc681c2c7110d4475d3a581"
+    },
+    {
+      "path": "photos_highres/official_tap-1051.json",
+      "bytes": 11317,
+      "sha256": "1ab51e3ba6efcbcda52ea2067322f4ab36b13dd2a1d3fd55c19f944d0a7868a5"
+    },
+    {
+      "path": "photos_highres/official_tap-1066.jpg.jxl",
+      "bytes": 2424742,
+      "sha256": "89e6b743c4045a6b7039dbb35e8a4008efa4a7054a96dc091b971c06d455ca56"
+    },
+    {
+      "path": "photos_highres/official_tap-1066.json",
+      "bytes": 8978,
+      "sha256": "98d20355b95c44e80121cd6826774d49717b0bfeb95064d4443abe357d15bba6"
+    },
+    {
+      "path": "photos_highres/official_tap-1085.jpg.jxl",
+      "bytes": 2387840,
+      "sha256": "d6901bcea6c7f45fffc4e5fb9e60d88a0014e02bf0a1527458375070758bb743"
+    },
+    {
+      "path": "photos_highres/official_tap-1085.json",
+      "bytes": 8537,
+      "sha256": "a25f85804e03a6278868cad113b3fff5701aace499be2f26b12786100b98be35"
+    },
+    {
+      "path": "photos_highres/official_tap-110.jpg.jxl",
+      "bytes": 2388187,
+      "sha256": "cbb48701cbabe03792e921797c7d6e540a7eef13b761a9d1bbe17b59b7b69d4b"
+    },
+    {
+      "path": "photos_highres/official_tap-110.json",
+      "bytes": 6208,
+      "sha256": "6d81036f8a7a511061876479915580b7c801fa45df7b55517514cb4411c5972e"
+    },
+    {
+      "path": "photos_highres/official_tap-1100.jpg.jxl",
+      "bytes": 2293896,
+      "sha256": "46cc2daa382d496a573b4fe76aba321ff1a7b690fca324f90c418fa6618aae9d"
+    },
+    {
+      "path": "photos_highres/official_tap-1100.json",
+      "bytes": 10308,
+      "sha256": "057bedb2abe3052e78374f60d7fd0e2a71d6dce86e3369edbbbd94d83300c44a"
+    },
+    {
+      "path": "photos_highres/official_tap-1113.jpg.jxl",
+      "bytes": 2403278,
+      "sha256": "e1531f05eb501dd9f0ca272665ed043441961c0baa0ef550b9dceaae576ea46a"
+    },
+    {
+      "path": "photos_highres/official_tap-1113.json",
+      "bytes": 3159,
+      "sha256": "0b919669c61b2693f4eb75bcafe7d1ef6814a96c373737bf7e485994cba2b50a"
+    },
+    {
+      "path": "photos_highres/official_tap-1127.jpg.jxl",
+      "bytes": 2318375,
+      "sha256": "05789f333ccafe705fcef21088c9d065e74ca1a4cea83cc7ca43d916e556af3e"
+    },
+    {
+      "path": "photos_highres/official_tap-1127.json",
+      "bytes": 11498,
+      "sha256": "a13839182867a574f989f5c10365af627aeebc63904263f50b2f2a2a1fe59289"
+    },
+    {
+      "path": "photos_highres/official_tap-1150.jpg.jxl",
+      "bytes": 2246760,
+      "sha256": "e4f67a2970fb6b88c3c6bd118d7bece3a556af993ff7166eda40cc0750c1752f"
+    },
+    {
+      "path": "photos_highres/official_tap-1150.json",
+      "bytes": 4312,
+      "sha256": "98d0545288893ef941cd7ef7b166bd079d216dd516bf0a18282b70d8ea470dda"
+    },
+    {
+      "path": "photos_highres/official_tap-1170.jpg.jxl",
+      "bytes": 2490736,
+      "sha256": "fa17a77bc1afa5d63134d5288c66198ed1e184ef72e10d05eae1d5e48c686c15"
+    },
+    {
+      "path": "photos_highres/official_tap-1170.json",
+      "bytes": 29047,
+      "sha256": "deb66bf8d512344ccada9e2c26fd137c0523ed365445cee35cf29c995a2ff92a"
+    },
+    {
+      "path": "photos_highres/official_tap-1180.jpg.jxl",
+      "bytes": 2285026,
+      "sha256": "31ea103c45e19825a05db149ae905e38616a502613b3cc94dc8570cd536f6e8b"
+    },
+    {
+      "path": "photos_highres/official_tap-1180.json",
+      "bytes": 24977,
+      "sha256": "37d2eca314aead6d0c517f39d512cec745df7645fb1d98db0331828bc45b6a4e"
+    },
+    {
+      "path": "photos_highres/official_tap-1196.jpg.jxl",
+      "bytes": 2297898,
+      "sha256": "fab789230d0b66f0e7bab1eb6598e4a5bd2048f4272503e972ecd4be5a119ac8"
+    },
+    {
+      "path": "photos_highres/official_tap-1196.json",
+      "bytes": 16770,
+      "sha256": "ae6b649df8aa48a2634f56d7a1ff7e2206268a17529ea076d5dccdc001d0c3c1"
+    },
+    {
+      "path": "photos_highres/official_tap-12.jpg.jxl",
+      "bytes": 2319472,
+      "sha256": "364c452ba446212955b1fc81c7633044c938134efd500c93eb850743f978b252"
+    },
+    {
+      "path": "photos_highres/official_tap-12.json",
+      "bytes": 9151,
+      "sha256": "61e2c7b5eac473030f4e32d6e3ed04e2459e99f0de3bc0a5b594f0ee7f376cbf"
+    },
+    {
+      "path": "photos_highres/official_tap-1210.jpg.jxl",
+      "bytes": 2304499,
+      "sha256": "3ffb37efe2e742fd6327de684e60309e5b9c3925d1748065b4f51887e9573c44"
+    },
+    {
+      "path": "photos_highres/official_tap-1210.json",
+      "bytes": 19931,
+      "sha256": "d1eb5b8aff4d484fffe26db7cbdb7d40a42751756f8a6e9af5b00c960cdaa13b"
+    },
+    {
+      "path": "photos_highres/official_tap-1222.jpg.jxl",
+      "bytes": 2170263,
+      "sha256": "db2681ba73305416fcb4d082482950499baf36fac9a9d52dc322fc8a5b2fc4d9"
+    },
+    {
+      "path": "photos_highres/official_tap-1222.json",
+      "bytes": 23092,
+      "sha256": "6551beb104f75b19def9d530a5256bd15cbbeb76e7006204c83f86a0b33e4544"
+    },
+    {
+      "path": "photos_highres/official_tap-1230.jpg.jxl",
+      "bytes": 2141907,
+      "sha256": "d71a875fc8fbf743941c1c61c18fa32d87c1c4164399787d722d1e1bcdf4ca62"
+    },
+    {
+      "path": "photos_highres/official_tap-1230.json",
+      "bytes": 31943,
+      "sha256": "bf85e73bb82fb23d11dd7c136ff1d0b29f740ce3e0686f58a67e78d86b238e19"
+    },
+    {
+      "path": "photos_highres/official_tap-1241.jpg.jxl",
+      "bytes": 2137210,
+      "sha256": "52810aebfc55b08ca8bcdf2e73bb32a4f60818cf07aaaf46272aa1faeb371d64"
+    },
+    {
+      "path": "photos_highres/official_tap-1241.json",
+      "bytes": 28692,
+      "sha256": "7b2bd3b832d0add5dad9c216a4ec47fcd7536daafe0a247610497eb2e1575d8f"
+    },
+    {
+      "path": "photos_highres/official_tap-1251.jpg.jxl",
+      "bytes": 2220226,
+      "sha256": "bb4fda76745dc8bc6169ae1c3107bbecd2d75a17e178444d37f18381cc80ecf0"
+    },
+    {
+      "path": "photos_highres/official_tap-1251.json",
+      "bytes": 26007,
+      "sha256": "62fe9d22bc15bbad3abcdc9155a9f2a3c618841aa12e5a112fe98bead5501dc8"
+    },
+    {
+      "path": "photos_highres/official_tap-1266.jpg.jxl",
+      "bytes": 2316576,
+      "sha256": "413c57d2270fd59fecaeb3a3cb4ae6821485ac0f02d3e7fc4492355a65814d36"
+    },
+    {
+      "path": "photos_highres/official_tap-1266.json",
+      "bytes": 2573,
+      "sha256": "1e5c6050afc6360493f1adea4fb4f9733b19c910460ed7042353bbd4f13db6b0"
+    },
+    {
+      "path": "photos_highres/official_tap-1278.jpg.jxl",
+      "bytes": 2380435,
+      "sha256": "840a1608405f28242053fe2169a1686f7e9eb2fe2b4ac87edfaa763fc342ec7f"
+    },
+    {
+      "path": "photos_highres/official_tap-1278.json",
+      "bytes": 19277,
+      "sha256": "e7906b3092ee107ce7886ab03163f5737f72ab43e43cb834a7fd63fb28ea1350"
+    },
+    {
+      "path": "photos_highres/official_tap-1329.jpg.jxl",
+      "bytes": 2380403,
+      "sha256": "aec2962589e2b382fc74c378581dc5de700a8ab0cfb0cbbea606b59d7ad2729f"
+    },
+    {
+      "path": "photos_highres/official_tap-1329.json",
+      "bytes": 7177,
+      "sha256": "a63ff650ecb8e3e2441840efc1af4acef0c8c6aabd3466f8b95b692b0d0fbde1"
+    },
+    {
+      "path": "photos_highres/official_tap-133.jpg.jxl",
+      "bytes": 2490635,
+      "sha256": "052917a6305349d7e3133d9bd774d7382c27b3493b79d778d2a10c2896325102"
+    },
+    {
+      "path": "photos_highres/official_tap-133.json",
+      "bytes": 6459,
+      "sha256": "ddc551eec4c456be4fe53ad15a3ce4b7e5e5aa77cc701633899f6fd2580bd93e"
+    },
+    {
+      "path": "photos_highres/official_tap-1338.jpg.jxl",
+      "bytes": 2374811,
+      "sha256": "9bb439e89f18d03c2c66a77ebae3a7e5d61c0c1c3d47f22a7f22d59a45a1ebf9"
+    },
+    {
+      "path": "photos_highres/official_tap-1338.json",
+      "bytes": 22078,
+      "sha256": "675496758a558862c6b00f27bb8e8ce5ee3972f07d0b82d253d2d8edce521cc6"
+    },
+    {
+      "path": "photos_highres/official_tap-1348.jpg.jxl",
+      "bytes": 2314565,
+      "sha256": "6a667ecb5bfbd31a05a5125d4e29101a39f26b9b341311c7d6b633a0cd684492"
+    },
+    {
+      "path": "photos_highres/official_tap-1348.json",
+      "bytes": 18547,
+      "sha256": "005ab77aca1cebc468d876a9d471c1f371166ef059eb03846a0ed7f44667b9a3"
+    },
+    {
+      "path": "photos_highres/official_tap-1358.jpg.jxl",
+      "bytes": 2311991,
+      "sha256": "305b9c92c9b5e91b71e1328af6aa6136e4ed134d433ffe66f8116cd614059d9a"
+    },
+    {
+      "path": "photos_highres/official_tap-1358.json",
+      "bytes": 21169,
+      "sha256": "f2d658d1d2d82bb349a63d305ef6d1d64f68149f4c19fb8529e610618a544848"
+    },
+    {
+      "path": "photos_highres/official_tap-1367.jpg.jxl",
+      "bytes": 2272293,
+      "sha256": "f7067c31479d99fd519e4883f39cb2edf4285f4a8e8eccc7f793df918c86dd6f"
+    },
+    {
+      "path": "photos_highres/official_tap-1367.json",
+      "bytes": 27751,
+      "sha256": "4507c198a4e45231e32622d48c41773d968da0b820cfabd724a22002929d36ea"
+    },
+    {
+      "path": "photos_highres/official_tap-1412.jpg.jxl",
+      "bytes": 2206651,
+      "sha256": "688771b4f146273f4863c714442c739c689c363ec5781d811de04e7a3a0a899f"
+    },
+    {
+      "path": "photos_highres/official_tap-1412.json",
+      "bytes": 7880,
+      "sha256": "7881693ae1598ab526b527a082c22905c74576731ab7a176d82636d264969ff7"
+    },
+    {
+      "path": "photos_highres/official_tap-1433.jpg.jxl",
+      "bytes": 2316117,
+      "sha256": "42a8c15a640d1f113329b6be73f6bbf3f02d885bc6fd95a9589cd792146ba180"
+    },
+    {
+      "path": "photos_highres/official_tap-1433.json",
+      "bytes": 6125,
+      "sha256": "107ae6544cbc2f0c5d0b70ee973b1c3e04f21c43a13f003171c5982afdb2906b"
+    },
+    {
+      "path": "photos_highres/official_tap-148.jpg.jxl",
+      "bytes": 2460606,
+      "sha256": "5d33b24e45a742c7c9ccdace3d47979537a138fc8d1a1c4b62c58c10515e2473"
+    },
+    {
+      "path": "photos_highres/official_tap-148.json",
+      "bytes": 8312,
+      "sha256": "140a4b4f8b23762ef22c1198bc0ececbb06a12b3a551c383cdf0a06ae5f0b0b1"
+    },
+    {
+      "path": "photos_highres/official_tap-166.jpg.jxl",
+      "bytes": 2481033,
+      "sha256": "266b2f177b795e0b561016c7b538d77d388729db23013a407dd646bcd150ad3f"
+    },
+    {
+      "path": "photos_highres/official_tap-166.json",
+      "bytes": 7823,
+      "sha256": "6a3d32edfc40d5a115cce9c85ce17efd14edd0b12efe5b773507d8816954abdc"
+    },
+    {
+      "path": "photos_highres/official_tap-1714.jpg.jxl",
+      "bytes": 2140826,
+      "sha256": "c4feb2c5b5d0cfb0054b62dec7b83ebbbbd659686908a59008c18e3621ea5b0b"
+    },
+    {
+      "path": "photos_highres/official_tap-1714.json",
+      "bytes": 7228,
+      "sha256": "569c870ea185be8cadca6ae4aa1c134bc37306ca74e26c0333c0465fca1578a6"
+    },
+    {
+      "path": "photos_highres/official_tap-1730.jpg.jxl",
+      "bytes": 2169167,
+      "sha256": "ffac9f6613b217db20513ceb744b975b58abdcc7e1b2dfda11a57f6400cf4588"
+    },
+    {
+      "path": "photos_highres/official_tap-1730.json",
+      "bytes": 14577,
+      "sha256": "3d1de4b7cf7957289f98e30c0027b9d9c1aaef3776c086d8b3c999f38619b7de"
+    },
+    {
+      "path": "photos_highres/official_tap-1749.jpg.jxl",
+      "bytes": 2267266,
+      "sha256": "d07452eebd1e5038f442c65f324c9a5e8ad8e64dc60dc7769fe3f577e7e982ae"
+    },
+    {
+      "path": "photos_highres/official_tap-1749.json",
+      "bytes": 5123,
+      "sha256": "e680c8ca21064c8f41acbf5b501e95469c47ed729b6063d9886e2b901107529a"
+    },
+    {
+      "path": "photos_highres/official_tap-1761.jpg.jxl",
+      "bytes": 2355165,
+      "sha256": "509e2c7fdd1fcc70712ab849ed3733ccea3d538fb73705b6b9a68e517bfef887"
+    },
+    {
+      "path": "photos_highres/official_tap-1761.json",
+      "bytes": 10200,
+      "sha256": "5421c6a33563e4304d493e07f8c95ea00a3e6f2338aaad094992dcc25441e6dd"
+    },
+    {
+      "path": "photos_highres/official_tap-1775.jpg.jxl",
+      "bytes": 2250079,
+      "sha256": "849bf6f955234daadf97aa6ef5e482dba972adb0c96dd6188fa882abde76ba45"
+    },
+    {
+      "path": "photos_highres/official_tap-1775.json",
+      "bytes": 13425,
+      "sha256": "ae333b12880c64ebf9bd3fdd58506d215dd07454530c8bea7e480de2c3e01899"
+    },
+    {
+      "path": "photos_highres/official_tap-178.jpg.jxl",
+      "bytes": 2464465,
+      "sha256": "e1b8b896990fe5934fd94d5751bb58e951464b1a71874a2fee85e796a183d222"
+    },
+    {
+      "path": "photos_highres/official_tap-178.json",
+      "bytes": 15451,
+      "sha256": "5e9356bbef833f652eb83738d99272c293674a1e54ecc74f61c7578e8b3b40f8"
+    },
+    {
+      "path": "photos_highres/official_tap-1786.jpg.jxl",
+      "bytes": 2267160,
+      "sha256": "1e2bfe19fff7c671ad8b14f2922263609f010658a4e76d3e494342d8d0a37235"
+    },
+    {
+      "path": "photos_highres/official_tap-1786.json",
+      "bytes": 26825,
+      "sha256": "04398cc5fd8ad9f365f6650a99a6786e02d1cf70e51ef89f0ba6e71d0ba439ef"
+    },
+    {
+      "path": "photos_highres/official_tap-1799.jpg.jxl",
+      "bytes": 2329816,
+      "sha256": "1d5afcf23d8ed78c0468dd9a99279aeeec710c2f47f9d9b89004800e875a06f5"
+    },
+    {
+      "path": "photos_highres/official_tap-1799.json",
+      "bytes": 18346,
+      "sha256": "3be684d46d0984589c571bcff0ef9547f3ac582c849e0280b405b36a3cb4e444"
+    },
+    {
+      "path": "photos_highres/official_tap-1815.jpg.jxl",
+      "bytes": 2345830,
+      "sha256": "1cb9bfab4b2133adf0a2e46456b93efa7e830b5414796afe3f081c1121ccd1ad"
+    },
+    {
+      "path": "photos_highres/official_tap-1815.json",
+      "bytes": 9863,
+      "sha256": "35c5796a0f780928ae956a91eb0c4ced7607d09107061c1548ce5b4adfaa7b14"
+    },
+    {
+      "path": "photos_highres/official_tap-1827.jpg.jxl",
+      "bytes": 2229333,
+      "sha256": "b5801caf5f7ed48cc1aa3687990f884744b091c18cda1bc33243000ab2fb7316"
+    },
+    {
+      "path": "photos_highres/official_tap-1827.json",
+      "bytes": 16847,
+      "sha256": "820e081d98bc3f8e45a6ac3fd1bd993f6a6292f5fcbc64432cf57a0fee4ea5c8"
+    },
+    {
+      "path": "photos_highres/official_tap-1840.jpg.jxl",
+      "bytes": 2295496,
+      "sha256": "cc1422d9a69bbfc4b999f9267c4c7ae43e3ba0b60fddef7d7ca9c108ed38e8a3"
+    },
+    {
+      "path": "photos_highres/official_tap-1840.json",
+      "bytes": 20812,
+      "sha256": "7f0dfb74b181262ff0fecbe27864238f841c3bc3d63037a13fc16d8df9c1a5c6"
+    },
+    {
+      "path": "photos_highres/official_tap-1850.jpg.jxl",
+      "bytes": 2262083,
+      "sha256": "1e4c3730fecb2faa8f2eeb178181e70f4e0cfdef5b845e3dc9938ffcff69642c"
+    },
+    {
+      "path": "photos_highres/official_tap-1850.json",
+      "bytes": 14871,
+      "sha256": "080392534bd0050354fdece61782e24e42a08acdb9bfa13669556335195f4742"
+    },
+    {
+      "path": "photos_highres/official_tap-1863.jpg.jxl",
+      "bytes": 2338410,
+      "sha256": "5006282a9ad554e13d4233570094d8a9bc391a12809a7511eca64ca12bb6bd6a"
+    },
+    {
+      "path": "photos_highres/official_tap-1863.json",
+      "bytes": 6232,
+      "sha256": "037138c42886de7c5d26db3f8e17c942cda0fc49d14adf41ba4a229a7b506e92"
+    },
+    {
+      "path": "photos_highres/official_tap-1882.jpg.jxl",
+      "bytes": 2184373,
+      "sha256": "fbd4f2ac0965b19a5035f50759bac0db005621ee7be3440a2c78e36821f9cff9"
+    },
+    {
+      "path": "photos_highres/official_tap-1882.json",
+      "bytes": 4705,
+      "sha256": "46f3c2943867435538c100c1c12b8352e4744e434b05928ed31904cde504335b"
+    },
+    {
+      "path": "photos_highres/official_tap-190.jpg.jxl",
+      "bytes": 2446530,
+      "sha256": "7e40c5af91ffb46ab6533a7d29c975452daa4ce2d7af166615ba37449387a016"
+    },
+    {
+      "path": "photos_highres/official_tap-190.json",
+      "bytes": 10140,
+      "sha256": "d8ac79d594ecc8e536793475a66a5390ab0a5e4f5269ca19a053a9e23f885717"
+    },
+    {
+      "path": "photos_highres/official_tap-1902.jpg.jxl",
+      "bytes": 2311117,
+      "sha256": "959b9dee40bbf5db7ae48eb0362e0f8cd8e4a3f3f12badb2343583b64181d817"
+    },
+    {
+      "path": "photos_highres/official_tap-1902.json",
+      "bytes": 2454,
+      "sha256": "036dcde1fac2055338325aab86eecabf901a10ef4779482d0ce5c8be5ae47115"
+    },
+    {
+      "path": "photos_highres/official_tap-1919.jpg.jxl",
+      "bytes": 2211511,
+      "sha256": "27418c0c61708ea023997afc9ee0691696b1b0eaaefd628105d3123f64b1a2f9"
+    },
+    {
+      "path": "photos_highres/official_tap-1919.json",
+      "bytes": 3411,
+      "sha256": "a4273e3d1060d5d845be997ec6b4f18d489d07b93f2758aa2560d032473d0c99"
+    },
+    {
+      "path": "photos_highres/official_tap-1942.jpg.jxl",
+      "bytes": 2173375,
+      "sha256": "80061ac67c1def3810b4e69b6f890a2dc773c0e23b12f97cb89b27e6a4e128ec"
+    },
+    {
+      "path": "photos_highres/official_tap-1942.json",
+      "bytes": 7164,
+      "sha256": "579e6264f0949aa71457bf7f9c873e3f8927291bca20e69d44506c17876273bb"
+    },
+    {
+      "path": "photos_highres/official_tap-1954.jpg.jxl",
+      "bytes": 2252976,
+      "sha256": "4f9bd861e0027e3f4c4e53d332ce943022b42936cc61bf9841566085f1155fdc"
+    },
+    {
+      "path": "photos_highres/official_tap-1954.json",
+      "bytes": 8031,
+      "sha256": "fd2feef9dbc8d112efa6b3a6e92ff67ce0d0ec192862f2c6dfa46fe0b2c67853"
+    },
+    {
+      "path": "photos_highres/official_tap-1976.jpg.jxl",
+      "bytes": 2403945,
+      "sha256": "1c8983d069f313a6a88b0d9d5897c056581fb4bdb6ff07bc1425de906405d04a"
+    },
+    {
+      "path": "photos_highres/official_tap-1976.json",
+      "bytes": 2617,
+      "sha256": "d5b6ce1d5d49c501ceab254acb65e27ebd76df8c913207bbd039d9b4d4f17335"
+    },
+    {
+      "path": "photos_highres/official_tap-1999.jpg.jxl",
+      "bytes": 2208188,
+      "sha256": "5b417dc474cc28340c09ec384e7e6d3c56df74ea92d5b6424e4b97840dff8990"
+    },
+    {
+      "path": "photos_highres/official_tap-1999.json",
+      "bytes": 2448,
+      "sha256": "0bd32e6c84e82fb66596b2f0340e835f51573988ff7cecbe3e729803624ee7c0"
+    },
+    {
+      "path": "photos_highres/official_tap-2010.jpg.jxl",
+      "bytes": 2283299,
+      "sha256": "39b5789836782972247b7b30fc12b6338f76089e30873958a79bb2cf9a28b5de"
+    },
+    {
+      "path": "photos_highres/official_tap-2010.json",
+      "bytes": 6339,
+      "sha256": "e07fc56320565d04ade32e33915b0d63014918ea374fd79297ec2b5d7f134e5e"
+    },
+    {
+      "path": "photos_highres/official_tap-2019.jpg.jxl",
+      "bytes": 2215345,
+      "sha256": "d297da0ed0e400da7e00db7d2142a46a51481cd81ec1dd826e31bba41f0f22a2"
+    },
+    {
+      "path": "photos_highres/official_tap-2019.json",
+      "bytes": 3567,
+      "sha256": "064b20bcf4224f1a4097d8397365bfc3ac77042d11184c896ea2fc51069ba330"
+    },
+    {
+      "path": "photos_highres/official_tap-2032.jpg",
+      "bytes": 2794655,
+      "sha256": "29aaef47f97b6b41fa3453b321dff030a0fcf3b4abac1d6aece72f11429744a4"
+    },
+    {
+      "path": "photos_highres/official_tap-2032.json",
+      "bytes": 2384,
+      "sha256": "62b3993fed99a33d6285bfba10ac2abcd2542339deb8d22f17ed7cc968b5f8c6"
+    },
+    {
+      "path": "photos_highres/official_tap-2042.jpg",
+      "bytes": 2784834,
+      "sha256": "e9921ca35925f264270c3addc36fe1bb8468824edea8a587c85b0c10fbe6ffec"
+    },
+    {
+      "path": "photos_highres/official_tap-2042.json",
+      "bytes": 3286,
+      "sha256": "fd93ca689657e96f49ef2c1f4e155cd339e80cea23d5fa3a048d22addf265f44"
+    },
+    {
+      "path": "photos_highres/official_tap-2057.jpg",
+      "bytes": 2796995,
+      "sha256": "d7e2d1134158cb5d40c195e81948179b6d93b118188a79837faba21d7f763461"
+    },
+    {
+      "path": "photos_highres/official_tap-2057.json",
+      "bytes": 3008,
+      "sha256": "d3a0be0de733f7632219b3b59ba6232b06399c296fd13a4d83f62899f9478aa1"
+    },
+    {
+      "path": "photos_highres/official_tap-206.jpg.jxl",
+      "bytes": 2405140,
+      "sha256": "549763333905db0512b795d754402509bc01d194c9f43f3b38516598cad3f871"
+    },
+    {
+      "path": "photos_highres/official_tap-206.json",
+      "bytes": 9200,
+      "sha256": "8e36fc2f6b603a6dfc8c07376e784b2522dc085da80f7b44acf46526f56118f9"
+    },
+    {
+      "path": "photos_highres/official_tap-2072.jpg",
+      "bytes": 2822302,
+      "sha256": "51541a4a218e969c4f06f85405996e9bf21a5d2c42f3c253839c3057a8487d23"
+    },
+    {
+      "path": "photos_highres/official_tap-2072.json",
+      "bytes": 3429,
+      "sha256": "e4bf1ad506bcaaf36edfebe5c51a1c5f76020b938b824bbdb3c94464c0be188d"
+    },
+    {
+      "path": "photos_highres/official_tap-2087.jpg",
+      "bytes": 2844846,
+      "sha256": "e681975754a9745e8d2cfaea54deec6f04278a5aedc19b5976cd7c5c9ba9e95d"
+    },
+    {
+      "path": "photos_highres/official_tap-2087.json",
+      "bytes": 5079,
+      "sha256": "f115fb7aa30cd2d22308dbfb39fd171690b01e434bc015f69c114b8835d50a4f"
+    },
+    {
+      "path": "photos_highres/official_tap-2105.jpg",
+      "bytes": 2837825,
+      "sha256": "e378d0f4c5a307ddb5883d40562c6c7c94549512285571ebe0a7dad453f93b19"
+    },
+    {
+      "path": "photos_highres/official_tap-2105.json",
+      "bytes": 7037,
+      "sha256": "66a784c0859b2bae8e4cb3589bc41cc64c99bb3b6f1b7d7af0a1aac6e5c5ebad"
+    },
+    {
+      "path": "photos_highres/official_tap-2119.jpg",
+      "bytes": 2914463,
+      "sha256": "28336654ff5459566b480acf600df81dcc6b81982f88eb3c67ca80f758b20d59"
+    },
+    {
+      "path": "photos_highres/official_tap-2119.json",
+      "bytes": 9208,
+      "sha256": "f94f8df6948d3b5721a9d7e64e9c51f1634b23e376c90d656c1dc9291d406498"
+    },
+    {
+      "path": "photos_highres/official_tap-2153.jpg",
+      "bytes": 2755717,
+      "sha256": "61928c78d5cefd4009e790db087b4ecc9464019e3fe7b408ae290e986e98f4bf"
+    },
+    {
+      "path": "photos_highres/official_tap-2153.json",
+      "bytes": 8989,
+      "sha256": "a7098206041af80fc9e4a3b0876d9c4723c54bdbe1e2fb01da9bf5a4a1c7118a"
+    },
+    {
+      "path": "photos_highres/official_tap-2164.jpg",
+      "bytes": 2914773,
+      "sha256": "3ce983d0bee9c1534002dec556515fa123dfa8afc7427259327145005ea83c2d"
+    },
+    {
+      "path": "photos_highres/official_tap-2164.json",
+      "bytes": 18141,
+      "sha256": "37435a9d95259a8a64511ff47ca1798262845a14fbc9d34b1befac2b96a599a5"
+    },
+    {
+      "path": "photos_highres/official_tap-2178.jpg",
+      "bytes": 3043473,
+      "sha256": "438b3bb4324f74a2de7bbc67596aca7cab420675e05f952c9d56ac667f215752"
+    },
+    {
+      "path": "photos_highres/official_tap-2178.json",
+      "bytes": 5877,
+      "sha256": "8ee222671b30a0ec0451a14d5286e376092a08705472d19f0e2a9f7fb3cedf2b"
+    },
+    {
+      "path": "photos_highres/official_tap-2193.jpg",
+      "bytes": 2828644,
+      "sha256": "4aee5ad7d8ac35798589fb770928ff9fc38455d329dcfbcf9628ee4c902e56d6"
+    },
+    {
+      "path": "photos_highres/official_tap-2193.json",
+      "bytes": 2767,
+      "sha256": "e28f54f0eb5fc119439f06eb0f683e1f5159ca4ef4627bd6f6c81c60ab15a2f6"
+    },
+    {
+      "path": "photos_highres/official_tap-2207.jpg",
+      "bytes": 2758450,
+      "sha256": "54b177baf606f5b3abda5dbb26832a1bfa741a7f2bd6d5249654f42e2819f7dd"
+    },
+    {
+      "path": "photos_highres/official_tap-2207.json",
+      "bytes": 21331,
+      "sha256": "9e5b8928db53ac45dda19290f4c3d062f08d6c67533c6de37aa7aca23743931f"
+    },
+    {
+      "path": "photos_highres/official_tap-221.jpg.jxl",
+      "bytes": 2404862,
+      "sha256": "5ec8c1dd81be480b3a3f4ce639331d10332e603d5e595f67bf92976cf328eee0"
+    },
+    {
+      "path": "photos_highres/official_tap-221.json",
+      "bytes": 2359,
+      "sha256": "f98c8ede9a7aa815ae964ab1b5fed5f51dfc6f9913a1c7c708ebd3eeee2a4a93"
+    },
+    {
+      "path": "photos_highres/official_tap-2228.jpg",
+      "bytes": 2605125,
+      "sha256": "f6997b9959fc2d1540e0e447f860ced12ca17ab18957e85366226d562e735fd3"
+    },
+    {
+      "path": "photos_highres/official_tap-2228.json",
+      "bytes": 17989,
+      "sha256": "7c66d5cc7d48b776c456ccd0ae99f0961762f1a0f8c14e9fe79422339943ef81"
+    },
+    {
+      "path": "photos_highres/official_tap-2237.jpg",
+      "bytes": 2760784,
+      "sha256": "f0dfa76e25707ab51c6f193305908eee2ca2a139bdc359ce4b1f84a49a2db10a"
+    },
+    {
+      "path": "photos_highres/official_tap-2237.json",
+      "bytes": 18210,
+      "sha256": "4b83d1b92ee117fda28befe88add8224de555f782247098fea2fa0b44823e93c"
+    },
+    {
+      "path": "photos_highres/official_tap-2248.jpg",
+      "bytes": 2772579,
+      "sha256": "a8568019c0ec8e316a41c117880042c1c8355b4b49f2e52724307f819c651fc6"
+    },
+    {
+      "path": "photos_highres/official_tap-2248.json",
+      "bytes": 10251,
+      "sha256": "1b10fb1aa68777bbd1b6411d0a6cbc5e16bee054f88108b6e836f4ee8aad40e3"
+    },
+    {
+      "path": "photos_highres/official_tap-2260.jpg",
+      "bytes": 2572765,
+      "sha256": "bba06b719a07a360c47c0dc57ec257b82a90550e0b0c7d68bb00c53ea94161df"
+    },
+    {
+      "path": "photos_highres/official_tap-2260.json",
+      "bytes": 13674,
+      "sha256": "d3507f60e8869f2d6daf54ce1ebf85040fd25b5b50f7c22b7bb4db49414c42be"
+    },
+    {
+      "path": "photos_highres/official_tap-2270.jpg",
+      "bytes": 2791334,
+      "sha256": "b1ebb5edb5568fd3ccc9e13575700153f85f520395ea98f5e4583dec28088c34"
+    },
+    {
+      "path": "photos_highres/official_tap-2270.json",
+      "bytes": 14134,
+      "sha256": "46c5f06bb98584bfb6c2c8ee89a4b0521008024d7b3dd623aaf2950e35e9fe7b"
+    },
+    {
+      "path": "photos_highres/official_tap-2279.jpg",
+      "bytes": 2726143,
+      "sha256": "296151309a7d6e171e653e863eba58d7445fe22af455795e2f71aee3f45332e4"
+    },
+    {
+      "path": "photos_highres/official_tap-2279.json",
+      "bytes": 7485,
+      "sha256": "b64a259c4c343f10cbb1ba55faf252dc4136250d7cc3d40d4d9fe1c77d1675da"
+    },
+    {
+      "path": "photos_highres/official_tap-2291.jpg",
+      "bytes": 3010225,
+      "sha256": "e42ef88bbde3a9990ba92bb75150ea104119a50e742f593ac2ea9a91f52e526e"
+    },
+    {
+      "path": "photos_highres/official_tap-2291.json",
+      "bytes": 3537,
+      "sha256": "35f23e6d84f1fa0bb7bc72ba2a27f3a2db928c158106f620b0fc085b5adf2dde"
+    },
+    {
+      "path": "photos_highres/official_tap-2311.jpg",
+      "bytes": 2716905,
+      "sha256": "d6677b2b040d5b9d403f12fd6927b71d332845ced7fc34b5c2fae6a58d160c16"
+    },
+    {
+      "path": "photos_highres/official_tap-2311.json",
+      "bytes": 12462,
+      "sha256": "92f1b330b4e7695c674896bd56a61a06580c63de324d95ffb00ba7e681119b3e"
+    },
+    {
+      "path": "photos_highres/official_tap-2320.jpg",
+      "bytes": 2786713,
+      "sha256": "0af97a39c30d4cd823b9b32012a44a9c3cc26a588afb600eb3d7dac8876028ee"
+    },
+    {
+      "path": "photos_highres/official_tap-2320.json",
+      "bytes": 7769,
+      "sha256": "c2c8c3a2da3f32ee7570d0554fc35adcf2285e90b7df1b753d675b46697e6e3c"
+    },
+    {
+      "path": "photos_highres/official_tap-2330.jpg",
+      "bytes": 2646163,
+      "sha256": "a6ee2f7e341b1c07c8ac9e3b28a8f961fd4ecc4846a02d69bfe78b25f4dd0a7d"
+    },
+    {
+      "path": "photos_highres/official_tap-2330.json",
+      "bytes": 11921,
+      "sha256": "b3d4ab00d58dd09419e69e380071e9ca4f524a83dc364469ff6a74d8ddbe7e5e"
+    },
+    {
+      "path": "photos_highres/official_tap-2342.jpg",
+      "bytes": 2858985,
+      "sha256": "dc6d44380c1c900cf9d0e803790ab3c62dc9d4ec0c762f1b8e160296272258f1"
+    },
+    {
+      "path": "photos_highres/official_tap-2342.json",
+      "bytes": 12889,
+      "sha256": "eda2bc1703d147e0e507c78b10abe3bdbc0525362604b0c598c228de2682517d"
+    },
+    {
+      "path": "photos_highres/official_tap-2353.jpg",
+      "bytes": 2831589,
+      "sha256": "eb59389a1195d69a0d001416d86752bb18e555ed96626be27db2322c88c25e8e"
+    },
+    {
+      "path": "photos_highres/official_tap-2353.json",
+      "bytes": 14332,
+      "sha256": "6b0677944129d45bc416ed6f324ddb769cf9a187ca52ab528dbbcef6a37ce8c9"
+    },
+    {
+      "path": "photos_highres/official_tap-2361.jpg",
+      "bytes": 2947961,
+      "sha256": "fffa067d642814284b55272afdc864b05f6a997fa36ab41503c34d2e2c22f1c5"
+    },
+    {
+      "path": "photos_highres/official_tap-2361.json",
+      "bytes": 11835,
+      "sha256": "af28d5263cf21cb022e6a71e70fd770c257b824275b942205bca7e949d64f64f"
+    },
+    {
+      "path": "photos_highres/official_tap-2371.jpg",
+      "bytes": 2745873,
+      "sha256": "4ab3ed3e493db84ddb05cdccde37eb635392124bba2be8ac2e229fef77abcc41"
+    },
+    {
+      "path": "photos_highres/official_tap-2371.json",
+      "bytes": 24367,
+      "sha256": "ffbeadf5d6f40c12543a0413e405b4b020b8353d4be4b57645ed4245acd1c000"
+    },
+    {
+      "path": "photos_highres/official_tap-2379.jpg",
+      "bytes": 2646230,
+      "sha256": "6b45fbcb06c24fd0328d5ad009a84211d1006401ae16ef45ec832795de0117f8"
+    },
+    {
+      "path": "photos_highres/official_tap-2379.json",
+      "bytes": 22983,
+      "sha256": "65ea6de0cade380c21c4fcaa2bd0e9d663c5c595027df8e88ff073350a45c44e"
+    },
+    {
+      "path": "photos_highres/official_tap-2389.jpg",
+      "bytes": 2666923,
+      "sha256": "e216999060be50465f17dccd151e9af2498124b8817e4156121bba6fee9de6bd"
+    },
+    {
+      "path": "photos_highres/official_tap-2389.json",
+      "bytes": 9526,
+      "sha256": "c7176862d050da820ffb85679327b5ddd4470f8c6912d3235929d0a9f171772a"
+    },
+    {
+      "path": "photos_highres/official_tap-2403.jpg",
+      "bytes": 2630970,
+      "sha256": "59d53e0f68d71170a513a9276d7f3ef69301a1ec8876dbea4a5c4324305cea66"
+    },
+    {
+      "path": "photos_highres/official_tap-2403.json",
+      "bytes": 3777,
+      "sha256": "a5ea5f88fe6bc7139a9284132a3f45517729b1488d1d47aca06bd1e1325118b4"
+    },
+    {
+      "path": "photos_highres/official_tap-2416.jpg",
+      "bytes": 2756474,
+      "sha256": "131cbfc4eaae8b8bb2d4edd3d7d5c8f7600da11011a6c75f7f6a7ef9abf0d6a9"
+    },
+    {
+      "path": "photos_highres/official_tap-2416.json",
+      "bytes": 3637,
+      "sha256": "cdfb44ff7bca9a3e4a8585b7ec08218ec7bea9f100a4c960afb04c2d186c2611"
+    },
+    {
+      "path": "photos_highres/official_tap-2431.jpg",
+      "bytes": 2868182,
+      "sha256": "f77df22d1f5802fec7b17b7d683ede96f63d4ded259825fbf0d6eb9b2cdf90a4"
+    },
+    {
+      "path": "photos_highres/official_tap-2431.json",
+      "bytes": 13048,
+      "sha256": "fb1533275c42c9953770ad8209a5781663563cc2d0e28f4de05e75cf048c4dca"
+    },
+    {
+      "path": "photos_highres/official_tap-2446.jpg",
+      "bytes": 2627399,
+      "sha256": "1cdf2633eb3e5782719572cd4ecae13961c1049416705b576bfa0337befa7fa7"
+    },
+    {
+      "path": "photos_highres/official_tap-2446.json",
+      "bytes": 4202,
+      "sha256": "cfeb16d00e8d7eb616776ed436c024eaa5fb1e343c80854e3a045e6dd20437e3"
+    },
+    {
+      "path": "photos_highres/official_tap-245.jpg.jxl",
+      "bytes": 2288888,
+      "sha256": "eed4a5f020c60967aef55f831f4c7b88f1fadb65f8548b7abed9a3a784383f3a"
+    },
+    {
+      "path": "photos_highres/official_tap-245.json",
+      "bytes": 5143,
+      "sha256": "8d853e247853ffe46c659c4142dabfd1f6962e1a73efa6bacd7057f000999fb8"
+    },
+    {
+      "path": "photos_highres/official_tap-2457.jpg",
+      "bytes": 2746512,
+      "sha256": "3a3cbc9c5e12b13ef228ea4d153164c8ceb8189190d5e7bc4193ba2f508c2fe3"
+    },
+    {
+      "path": "photos_highres/official_tap-2457.json",
+      "bytes": 8088,
+      "sha256": "daa2b2e20a5714298b48d4c28f5ab5b71d2c8ce73573be89b29c8195f8a1b85d"
+    },
+    {
+      "path": "photos_highres/official_tap-2468.jpg",
+      "bytes": 2889954,
+      "sha256": "d337a8616395a9904e422392cf4cd91aad314ebcd48626f7bf2791cb7110850a"
+    },
+    {
+      "path": "photos_highres/official_tap-2468.json",
+      "bytes": 6199,
+      "sha256": "50675cca6d6408e1ee3b4dd2c63e45a8d85c3413fc61a681203febf0a4ddc5df"
+    },
+    {
+      "path": "photos_highres/official_tap-2484.jpg",
+      "bytes": 3145545,
+      "sha256": "da1376f6ed173f4302a80e98d544db7f0e7098194f78cc83015de8891a346319"
+    },
+    {
+      "path": "photos_highres/official_tap-2484.json",
+      "bytes": 7851,
+      "sha256": "db23dcc81acd7ea1c15bf0c139b08902eeccac20296554054d1924379e76808f"
+    },
+    {
+      "path": "photos_highres/official_tap-2495.jpg",
+      "bytes": 2799773,
+      "sha256": "86c18e46ba8cee672e9bc855ed0d4f5bbd9d1495eb3e1f26956222ae97355b8d"
+    },
+    {
+      "path": "photos_highres/official_tap-2495.json",
+      "bytes": 5526,
+      "sha256": "e809b4bf627af1f83fbce25f2f392832d3de5a684cf65d2d7ccf7a870b9dd065"
+    },
+    {
+      "path": "photos_highres/official_tap-25.jpg.jxl",
+      "bytes": 2345048,
+      "sha256": "eaee0db04c3d904ce2e7e181fb5b32478c3f8c5edf2a6f02850aa45de1ea998b"
+    },
+    {
+      "path": "photos_highres/official_tap-25.json",
+      "bytes": 12632,
+      "sha256": "e0bf4a8cc2138fd4fbcd8d7f2e2d3bb988de47cda04004170c76012f6e2cdc98"
+    },
+    {
+      "path": "photos_highres/official_tap-2524.jpg",
+      "bytes": 2722488,
+      "sha256": "c161f4625f4f232aba40c0ab7df46f8118ecade7a16374b3c3e6e91cc8d8b183"
+    },
+    {
+      "path": "photos_highres/official_tap-2524.json",
+      "bytes": 6173,
+      "sha256": "52a8a6199868aa3dddb4ea6d6da9e1cd64a8f30040afbcd419843b1f7d8f2f14"
+    },
+    {
+      "path": "photos_highres/official_tap-2556.jpg",
+      "bytes": 2851236,
+      "sha256": "404a598423bd53262b604e2412ddcfc1a089f433b8b0bc428443376481be19c6"
+    },
+    {
+      "path": "photos_highres/official_tap-2556.json",
+      "bytes": 3965,
+      "sha256": "b08efff4f399da4e2bd8a8c2add76b1f70a309a11255e2ec3c8122a3da20f3ff"
+    },
+    {
+      "path": "photos_highres/official_tap-256.jpg.jxl",
+      "bytes": 2245029,
+      "sha256": "fe01e0e75a5639ff291765d791f02549af165ab17426af1367b32c494111c6f0"
+    },
+    {
+      "path": "photos_highres/official_tap-256.json",
+      "bytes": 11311,
+      "sha256": "df9b952db3c7cc991654f2d9c05cef72bfae075e2e57a81fb279a4f7c24b9cd1"
+    },
+    {
+      "path": "photos_highres/official_tap-2608.jpg",
+      "bytes": 2496051,
+      "sha256": "12c7f98ca96200305a72f8ee5b599377178be7ec9be3d9837faab6e92796a8a9"
+    },
+    {
+      "path": "photos_highres/official_tap-2608.json",
+      "bytes": 4565,
+      "sha256": "de5b11eff1d51f7e2b652e01b991f7c093f6853cadad4dcb4cb268d9af99ce11"
+    },
+    {
+      "path": "photos_highres/official_tap-2616.jpg",
+      "bytes": 2504320,
+      "sha256": "de3474393520056e76f2cd8caac3fb6625ef649a8039665274dffd6296a6b16f"
+    },
+    {
+      "path": "photos_highres/official_tap-2616.json",
+      "bytes": 8294,
+      "sha256": "70e98dbdc15b7642015a2903c5fc46b6aa5b333928323378b403ffe9a742cce0"
+    },
+    {
+      "path": "photos_highres/official_tap-2629.jpg",
+      "bytes": 2653276,
+      "sha256": "6d6a846a5fe986c069fda0175abc466b70e1027fc6da7faee85620ff02dfc9b8"
+    },
+    {
+      "path": "photos_highres/official_tap-2629.json",
+      "bytes": 12758,
+      "sha256": "79fa26f7736e175c3a5050471d8162dea5b093eecc5d47b04c753e5b1f69b778"
+    },
+    {
+      "path": "photos_highres/official_tap-2639.jpg",
+      "bytes": 2888460,
+      "sha256": "a68c4b3cdfdb30feba5a9acacfdcf44d9d1ce07fc0085e0608f946254e8a2a81"
+    },
+    {
+      "path": "photos_highres/official_tap-2639.json",
+      "bytes": 17928,
+      "sha256": "e763e2381f81633a091fde8973a132dc93718040dde807bec5f948fb21424027"
+    },
+    {
+      "path": "photos_highres/official_tap-2650.jpg",
+      "bytes": 2979440,
+      "sha256": "1ed7ad5c55baf87fa3360fb8e8c70ff312a45cbae1b74f5142c2defd7906e15a"
+    },
+    {
+      "path": "photos_highres/official_tap-2650.json",
+      "bytes": 9492,
+      "sha256": "3c96f3a125d7df731483489f26dabf21ac1b8b82d9a9bcb6651119483586a69f"
+    },
+    {
+      "path": "photos_highres/official_tap-266.jpg.jxl",
+      "bytes": 2286534,
+      "sha256": "f127be5c4c863995cf4ae4ea6dacd8157ce4b8afa2294c7b4ff3ea3a9831019d"
+    },
+    {
+      "path": "photos_highres/official_tap-266.json",
+      "bytes": 12804,
+      "sha256": "e8c86ee138f011169f6fb0c6e89b9971b5d3e4e056f613de937fc44d567c2189"
+    },
+    {
+      "path": "photos_highres/official_tap-2662.jpg",
+      "bytes": 3000706,
+      "sha256": "6e18c489f40e28b46af0da556bd2b74a294a306503d8d412ff3ba347ee1079c5"
+    },
+    {
+      "path": "photos_highres/official_tap-2662.json",
+      "bytes": 7132,
+      "sha256": "856a17507edbaeeae62a6756b7eb577c14613bed764510a01040426f04862657"
+    },
+    {
+      "path": "photos_highres/official_tap-281.jpg.jxl",
+      "bytes": 2249826,
+      "sha256": "fa55e0f313011dc746a6c63e627e476d9f1637f78e7fa0be93012b72c822a325"
+    },
+    {
+      "path": "photos_highres/official_tap-281.json",
+      "bytes": 2820,
+      "sha256": "bc4c8de7b8eb70a0066d17b0a34b4c51bd48b64934585f50d9b40b468267fa3a"
+    },
+    {
+      "path": "photos_highres/official_tap-297.jpg.jxl",
+      "bytes": 2241403,
+      "sha256": "1570b1fc92d6e662c59f7c9d30f9617fb50881608dae7e902ef12a8577a37cd3"
+    },
+    {
+      "path": "photos_highres/official_tap-297.json",
+      "bytes": 9675,
+      "sha256": "93503af6cb4baadfa468e699350c38741dd00c3ae9ef75aa11be9d3fba6ebca0"
+    },
+    {
+      "path": "photos_highres/official_tap-307.jpg.jxl",
+      "bytes": 2339209,
+      "sha256": "265e0669762f5b1b49e75bd89701961266fb4afeb2e2bcf84a2c98c1f9adc1d7"
+    },
+    {
+      "path": "photos_highres/official_tap-307.json",
+      "bytes": 26618,
+      "sha256": "4dab4f513a93f638c44ad2eaa9e4399ba60200e0787fc566d5a1a994544407bd"
+    },
+    {
+      "path": "photos_highres/official_tap-316.jpg.jxl",
+      "bytes": 2408717,
+      "sha256": "845310c2247dda66ea0112b21ef144a815d2c3dd89e9e65a06d55ae3c58bac31"
+    },
+    {
+      "path": "photos_highres/official_tap-316.json",
+      "bytes": 20317,
+      "sha256": "c70b68aab18a32b4c3b4662d0ed868eb65f4cf92df1a8bceb2f0219bd7d06c8b"
+    },
+    {
+      "path": "photos_highres/official_tap-329.jpg.jxl",
+      "bytes": 2400387,
+      "sha256": "c99d67c19d8d9f91330b5e7283509aa5310a7c8e3bf21fde5fc1cbc3a01def36"
+    },
+    {
+      "path": "photos_highres/official_tap-329.json",
+      "bytes": 11293,
+      "sha256": "d0cfd9d7c33fd0cea7361b554f3eaedad51f6e045ccfea2097989238bb0fe6ac"
+    },
+    {
+      "path": "photos_highres/official_tap-35.jpg.jxl",
+      "bytes": 2312935,
+      "sha256": "c151dac7dc3e19c6cf3dca80f194ae1f6d71a162ff3adbf0dc29d6a34e8cf395"
+    },
+    {
+      "path": "photos_highres/official_tap-35.json",
+      "bytes": 12671,
+      "sha256": "04c9ab4352afa18ce0ff2acf211605aaad16ce4a831049fe5f2dbcb43851e2cd"
+    },
+    {
+      "path": "photos_highres/official_tap-387.jpg.jxl",
+      "bytes": 2302878,
+      "sha256": "950f71a9581234efb5883bd0bf7288033d241e938baa64c7628aa3b91730af12"
+    },
+    {
+      "path": "photos_highres/official_tap-387.json",
+      "bytes": 13031,
+      "sha256": "04861416782d145bc4d7f475d63c70627671005906661e36c1fcf1012762b2b3"
+    },
+    {
+      "path": "photos_highres/official_tap-399.jpg.jxl",
+      "bytes": 2332651,
+      "sha256": "5c081fab41ca8d8feb4f6b4932d8e07bb6563e83aa85476ecb445749393c5451"
+    },
+    {
+      "path": "photos_highres/official_tap-399.json",
+      "bytes": 7037,
+      "sha256": "cde4e837632a2d8ef481e763310d9d1a30c833d5cb497661f1e342df48dad9fe"
+    },
+    {
+      "path": "photos_highres/official_tap-425.jpg.jxl",
+      "bytes": 2316969,
+      "sha256": "9b748077a2fcb404892068aa01fef3d7b6e17a43544b6229cef304c28583b5e0"
+    },
+    {
+      "path": "photos_highres/official_tap-425.json",
+      "bytes": 5734,
+      "sha256": "da65495c4682c5b312f004df7f43a36e3de11a769fa233abd696e27a1294a127"
+    },
+    {
+      "path": "photos_highres/official_tap-45.jpg.jxl",
+      "bytes": 2289431,
+      "sha256": "ec1186c25d68e8be190a8d16e228d6ccc19df35b042a86460ab6bf56a4eb277b"
+    },
+    {
+      "path": "photos_highres/official_tap-45.json",
+      "bytes": 10645,
+      "sha256": "c049623dcf9da17b21dcd10c9f0e31512cdfd0436d1efe78c77757d2a8a868cb"
+    },
+    {
+      "path": "photos_highres/official_tap-450.jpg.jxl",
+      "bytes": 2313347,
+      "sha256": "55994afb8ef27fcd5b5ca535f48ced0b55c6c41e4025bbb42431fdf64492cd8e"
+    },
+    {
+      "path": "photos_highres/official_tap-450.json",
+      "bytes": 4679,
+      "sha256": "e4304ed0a9c6fbf16578c12556fcb215ca373eb47ba441ae5fbf6d0a59e8666b"
+    },
+    {
+      "path": "photos_highres/official_tap-492.jpg.jxl",
+      "bytes": 2349036,
+      "sha256": "aa9a5532a443faec6b9568064867aed3219f5ebdb7603a6cae7897c987326867"
+    },
+    {
+      "path": "photos_highres/official_tap-492.json",
+      "bytes": 2507,
+      "sha256": "a35461ecb886e379675e07873c9a568e8e3fdaa7c531250176fff5971b4039d7"
+    },
+    {
+      "path": "photos_highres/official_tap-507.jpg.jxl",
+      "bytes": 2297962,
+      "sha256": "6033aa807023b83b9a59d77898817c6e12652ca41331fb42f7c09f82cfe7c3a9"
+    },
+    {
+      "path": "photos_highres/official_tap-507.json",
+      "bytes": 16211,
+      "sha256": "fcaa68507740d17540e208a094411953b368635eaf362b5b1f9f48e62b6505e7"
+    },
+    {
+      "path": "photos_highres/official_tap-522.jpg.jxl",
+      "bytes": 2428071,
+      "sha256": "e7113146f48c36ee4fab2eb10a27775ba1aa587121d94b789c37bd1acd078a15"
+    },
+    {
+      "path": "photos_highres/official_tap-522.json",
+      "bytes": 9999,
+      "sha256": "b5af5dee84579e3621d62abcc39978ea02c5df426681838bc57851b8ce48c5f4"
+    },
+    {
+      "path": "photos_highres/official_tap-534.jpg.jxl",
+      "bytes": 2474346,
+      "sha256": "433e9c64f9bda063baa7d0fa37c03c31a95879f07754024fb2163e92e935d277"
+    },
+    {
+      "path": "photos_highres/official_tap-534.json",
+      "bytes": 7579,
+      "sha256": "16de16dde442de1f60912eb34dbfa865698d79896b3eab76649cb4b58406611a"
+    },
+    {
+      "path": "photos_highres/official_tap-563.jpg.jxl",
+      "bytes": 2412427,
+      "sha256": "ea037f21830b3c09b9fd0edc79ca53f7a5c5b8e32a82eef045a8d3944eaa372b"
+    },
+    {
+      "path": "photos_highres/official_tap-563.json",
+      "bytes": 7044,
+      "sha256": "ab709e47b085d2e3e1b1f9a6d669777edb1377359c16e76552c5c93e32344a5c"
+    },
+    {
+      "path": "photos_highres/official_tap-57.jpg.jxl",
+      "bytes": 2313256,
+      "sha256": "281c3630a42197d4e51ca4a0b9e4372b0860d505f7644e5b8b95e0da44742c34"
+    },
+    {
+      "path": "photos_highres/official_tap-57.json",
+      "bytes": 8767,
+      "sha256": "c50f351cf44c4f3ca6d53e80e200abcaa94779365026ab0304d632db8382f2ba"
+    },
+    {
+      "path": "photos_highres/official_tap-577.jpg.jxl",
+      "bytes": 2441800,
+      "sha256": "703ebd4df0a566c209adb5fc2e8fed72431efc2d4378b1b332f26241b78fce11"
+    },
+    {
+      "path": "photos_highres/official_tap-577.json",
+      "bytes": 6683,
+      "sha256": "67990c15ab79e3e70f29e0d5655f79850d11b48a21c8073cdb39520348f8411e"
+    },
+    {
+      "path": "photos_highres/official_tap-598.jpg.jxl",
+      "bytes": 2238471,
+      "sha256": "2557d2bd6658c0f7ce56ffe917851d5d898cf968183696acba55d882acddbf25"
+    },
+    {
+      "path": "photos_highres/official_tap-598.json",
+      "bytes": 5960,
+      "sha256": "9865c3d04f531be02a32e0059c5c9a6460f7638585b56e67658df1a839501f4b"
+    },
+    {
+      "path": "photos_highres/official_tap-632.jpg.jxl",
+      "bytes": 2193842,
+      "sha256": "6e4bfb77ba2a9a3e0ceda1d848af91b3497d86494e80c3630227152525476261"
+    },
+    {
+      "path": "photos_highres/official_tap-632.json",
+      "bytes": 10275,
+      "sha256": "602e58f0ea7d128381ccee49b64a6c80c382068c8a45382ae12e627906bc0a45"
+    },
+    {
+      "path": "photos_highres/official_tap-644.jpg.jxl",
+      "bytes": 2298332,
+      "sha256": "dfbc5c3735a8a8f68872e127ff551914a02a49b8b45620fcd5973a8b32c0194e"
+    },
+    {
+      "path": "photos_highres/official_tap-644.json",
+      "bytes": 23346,
+      "sha256": "ea4b50ef6252d0b701db9a65888a0fab6c19df005be771c24567ec92f0f98444"
+    },
+    {
+      "path": "photos_highres/official_tap-656.jpg.jxl",
+      "bytes": 2232936,
+      "sha256": "b389275898c794e7628183c5c405c1c619cfe27b8620f49abd8dfa9e569e7f85"
+    },
+    {
+      "path": "photos_highres/official_tap-656.json",
+      "bytes": 19046,
+      "sha256": "13694ecc2deeacfa34c821e58ac53f050a94329387c57e4c069cff79b38521ee"
+    },
+    {
+      "path": "photos_highres/official_tap-676.jpg.jxl",
+      "bytes": 2301537,
+      "sha256": "4d43f5917ca6c250944eb6654759f3003fb054bf1600401bee805d9252a4c653"
+    },
+    {
+      "path": "photos_highres/official_tap-676.json",
+      "bytes": 7591,
+      "sha256": "29bc46e4761e1bce96c57ded2aba06e4363f6612a0d694dff84dd9f451bf1171"
+    },
+    {
+      "path": "photos_highres/official_tap-706.jpg.jxl",
+      "bytes": 2288173,
+      "sha256": "ef40ef1f7f3657f0404fe88c636f57e30a02051308944b7550deff4dd77c2e27"
+    },
+    {
+      "path": "photos_highres/official_tap-706.json",
+      "bytes": 4770,
+      "sha256": "5dbb83864fadb0b6e99dce47be17fa86f9d5f605650e25b35f0b3a7e7dcaba24"
+    },
+    {
+      "path": "photos_highres/official_tap-722.jpg.jxl",
+      "bytes": 2266853,
+      "sha256": "193f6320e3c0b21ae4ddb78fb46d9451e9f28440450653e12f7ed38982a8b969"
+    },
+    {
+      "path": "photos_highres/official_tap-722.json",
+      "bytes": 12854,
+      "sha256": "53f9024daf0f3b8f26785078fc8ec7bd81d2111b528755f2977e39aea32ce4f1"
+    },
+    {
+      "path": "photos_highres/official_tap-731.jpg.jxl",
+      "bytes": 2208086,
+      "sha256": "ef82fcf4caebcf01d943b644952541fe8f0d19e29f23e728f1dd673e37e8cda0"
+    },
+    {
+      "path": "photos_highres/official_tap-731.json",
+      "bytes": 8158,
+      "sha256": "bd90a013273f3f3ebe1f9545d34da8138156256d9919947a69283a93841ccb89"
+    },
+    {
+      "path": "photos_highres/official_tap-738.jpg.jxl",
+      "bytes": 2226783,
+      "sha256": "5c9e09f973b4b0eff55652bed18168dd1dedc95d55d661d3a6073bcc24009fa4"
+    },
+    {
+      "path": "photos_highres/official_tap-738.json",
+      "bytes": 11773,
+      "sha256": "7a4e0126e034c2f74fdc08ef2d5dcaf1ee27ae99daa680bc577f0d5ec9465796"
+    },
+    {
+      "path": "photos_highres/official_tap-747.jpg.jxl",
+      "bytes": 2187533,
+      "sha256": "53167ac4f2e3981f88e18d01cf7997143f495e67f51b9e342e51fdc6fce8d5d5"
+    },
+    {
+      "path": "photos_highres/official_tap-747.json",
+      "bytes": 11187,
+      "sha256": "cbe18587a80f844d9d689d03d183361f82260b11eefc2af06ebee717b2531b2e"
+    },
+    {
+      "path": "photos_highres/official_tap-754.jpg.jxl",
+      "bytes": 2146521,
+      "sha256": "f39b0b75bcb83b702c670c1705f852aaf79674561b39aca63bef7ef3998edc4f"
+    },
+    {
+      "path": "photos_highres/official_tap-754.json",
+      "bytes": 7425,
+      "sha256": "c090341da21ab4a5b51e12ab2b9d160d2892b8edbc831255d9ac794d94b09213"
+    },
+    {
+      "path": "photos_highres/official_tap-76.jpg.jxl",
+      "bytes": 2180316,
+      "sha256": "d2fe754a895a5f033b9549411ecf6dfd15bd2a26b5918e19d69390dbcabf97a9"
+    },
+    {
+      "path": "photos_highres/official_tap-76.json",
+      "bytes": 4118,
+      "sha256": "59e3a7516fb5b1ee6ccc817199d9ad2b5e9be1424b4e354e6f6e824c0c1ac0f5"
+    },
+    {
+      "path": "photos_highres/official_tap-763.jpg.jxl",
+      "bytes": 2207703,
+      "sha256": "ca36ae08ec71add583c23a63720cfd3c5011dbc7c37d2ce3bf62d49dacd0f5b8"
+    },
+    {
+      "path": "photos_highres/official_tap-763.json",
+      "bytes": 11454,
+      "sha256": "f76ee2bb5466b662711ebe24facaad8dba62e8087b887f9932cb8bcbe877ed56"
+    },
+    {
+      "path": "photos_highres/official_tap-774.jpg.jxl",
+      "bytes": 2295537,
+      "sha256": "c38be45003ea93dec8928358ec2c848f659bc208535b9b4521a333d79380195b"
+    },
+    {
+      "path": "photos_highres/official_tap-774.json",
+      "bytes": 11987,
+      "sha256": "2daee531c94ca015a926a29ef262fe7bf3dadf4b48b1d242cdc5c773bf0f2422"
+    },
+    {
+      "path": "photos_highres/official_tap-786.jpg.jxl",
+      "bytes": 2365539,
+      "sha256": "ca76ef3b323d7ce440c2aaff48cf6635a47ce06cfa83cd5874122c8c1cd6637d"
+    },
+    {
+      "path": "photos_highres/official_tap-786.json",
+      "bytes": 12774,
+      "sha256": "9423fc5bf8af2a4d94bbcb8dcfacfa89e9cda0eceee6b8a321e2549b5fefdece"
+    },
+    {
+      "path": "photos_highres/official_tap-796.jpg.jxl",
+      "bytes": 2302661,
+      "sha256": "3302ce103bef214e2b14fe26fdd4269240a268e48c49d69c302d2a57dd10b569"
+    },
+    {
+      "path": "photos_highres/official_tap-796.json",
+      "bytes": 18055,
+      "sha256": "588d746962fa5ba18fe846faeb6e8c3bdb801d2aa957039ca39c075e0da4c39a"
+    },
+    {
+      "path": "photos_highres/official_tap-805.jpg.jxl",
+      "bytes": 2272181,
+      "sha256": "a4035082c121ce7082b183a83d664155c0f2dbc83fa1a2b112c82cce64b25212"
+    },
+    {
+      "path": "photos_highres/official_tap-805.json",
+      "bytes": 20444,
+      "sha256": "61e71aa2fce917a01883b7f6af829c537deff2542b17cada7dc555de0c8405b4"
+    },
+    {
+      "path": "photos_highres/official_tap-816.jpg.jxl",
+      "bytes": 2441474,
+      "sha256": "a195dd096a2b5b04ab661dcd68c37f2edffe2bec4ba1e95007a5abd57e662551"
+    },
+    {
+      "path": "photos_highres/official_tap-816.json",
+      "bytes": 14787,
+      "sha256": "ca7d91a28f0bb144b41b31dd10f5c4da49780e8db43fdf810a3e655cd6fc4732"
+    },
+    {
+      "path": "photos_highres/official_tap-828.jpg.jxl",
+      "bytes": 2294325,
+      "sha256": "5cb28f63b0107a82e52859e1bc0e97e25d359039d52c8a6ed70ec54d8cd88317"
+    },
+    {
+      "path": "photos_highres/official_tap-828.json",
+      "bytes": 11631,
+      "sha256": "fd5545658d48a095e5dc3f023a17352e58efb89a6cbae7df4b15264b536bc98f"
+    },
+    {
+      "path": "photos_highres/official_tap-836.jpg.jxl",
+      "bytes": 2352916,
+      "sha256": "d39a1412164bc0f0965c15372216be547906ad0221530f4aeedb0f7242d2f339"
+    },
+    {
+      "path": "photos_highres/official_tap-836.json",
+      "bytes": 12676,
+      "sha256": "596f6385a2208ce2032273557b49c6aa0405345a7a0161421e458e5fb4fcb1c5"
+    },
+    {
+      "path": "photos_highres/official_tap-846.jpg.jxl",
+      "bytes": 2302460,
+      "sha256": "729343addba39d6ebaebf577a1282e6ca06212b9711862e44221a081722619cd"
+    },
+    {
+      "path": "photos_highres/official_tap-846.json",
+      "bytes": 12010,
+      "sha256": "26b7c3a046069e72b25d5db383945f1cead18ce981e86ab7a4fd04bd3337b326"
+    },
+    {
+      "path": "photos_highres/official_tap-857.jpg.jxl",
+      "bytes": 2289169,
+      "sha256": "74940ba18118c856b58b63728cb4075a8a25243299d4b252478475e3a7449c32"
+    },
+    {
+      "path": "photos_highres/official_tap-857.json",
+      "bytes": 15690,
+      "sha256": "dcc5a7b96cdf23d591b4e3dd371ac877fea64df5a2e9ee0cd6e83dc5fff81c91"
+    },
+    {
+      "path": "photos_highres/official_tap-872.jpg.jxl",
+      "bytes": 2362438,
+      "sha256": "eec0e0a938594f412abfa7d4cad2fa0d2de81eb1b882d0c63e7ab749fd532315"
+    },
+    {
+      "path": "photos_highres/official_tap-872.json",
+      "bytes": 4221,
+      "sha256": "8b12140859b92780a8f10dc7a1ffbd40a86753a200d2cb122ec5c25488ca8554"
+    },
+    {
+      "path": "photos_highres/official_tap-880.jpg.jxl",
+      "bytes": 2360980,
+      "sha256": "a203cde22e8c415a997d1fbf62d1f8b72ea6a195fe266f60ed2870f3d582ad1c"
+    },
+    {
+      "path": "photos_highres/official_tap-880.json",
+      "bytes": 11037,
+      "sha256": "ba085222b8f4c156852132e9e41f2f82653800a0414340d6cc302ae66e77c00c"
+    },
+    {
+      "path": "photos_highres/official_tap-890.jpg.jxl",
+      "bytes": 2188391,
+      "sha256": "701d07153c9c305588a0145b388bf2bfa52a1ed2a37ef9a3afe98b78196d955e"
+    },
+    {
+      "path": "photos_highres/official_tap-890.json",
+      "bytes": 6259,
+      "sha256": "b111865b135a4c0630fc462ad20b4fd4bab89d84b2a156af2752908298bf96c6"
+    },
+    {
+      "path": "photos_highres/official_tap-898.jpg.jxl",
+      "bytes": 2130803,
+      "sha256": "4fd26c60f4838d97d269064cd052d7e7c8da6d0bbb7bede11e860827aed9c061"
+    },
+    {
+      "path": "photos_highres/official_tap-898.json",
+      "bytes": 9547,
+      "sha256": "f86d26b8f1d5716b9736962a69c7dd5e67b896217f5a4b7f3b5d0b7ebeb7a71b"
+    },
+    {
+      "path": "photos_highres/official_tap-908.jpg.jxl",
+      "bytes": 2076916,
+      "sha256": "27818e6bbf08289d8b90c01dfe71ee203c200cbbf431e7ad07df4d69bf6b47aa"
+    },
+    {
+      "path": "photos_highres/official_tap-908.json",
+      "bytes": 5288,
+      "sha256": "368d95616401abbc9cceaa0d9f6eed7a802684d27da84eaadad31fd774322270"
+    },
+    {
+      "path": "photos_highres/official_tap-919.jpg.jxl",
+      "bytes": 2127194,
+      "sha256": "4a36fbb25eeae1e17ed4a39d75ed7297f54a8226a8c59c39b599099dd890844e"
+    },
+    {
+      "path": "photos_highres/official_tap-919.json",
+      "bytes": 9415,
+      "sha256": "8a5331203304ec59bf2d5c1a1145771d9d92da8b80f9ba3736c181b1fc8bcadc"
+    },
+    {
+      "path": "photos_highres/official_tap-93.jpg.jxl",
+      "bytes": 2305183,
+      "sha256": "b9a261a9faa1db4582978803e94222f619a10bd74c1e3a5bc67d1464249361ef"
+    },
+    {
+      "path": "photos_highres/official_tap-93.json",
+      "bytes": 2791,
+      "sha256": "a39e45fb3c39aeef2fb510463e7175909ad0137c336d8778efd18bc2f8b33ac0"
+    },
+    {
+      "path": "photos_highres/official_tap-933.jpg.jxl",
+      "bytes": 2132596,
+      "sha256": "839eda3b90b20d7b447e80e89a0753e9b071723991198f9d37bfea5df60963df"
+    },
+    {
+      "path": "photos_highres/official_tap-933.json",
+      "bytes": 2550,
+      "sha256": "2c452cae8db83bd6d05878f24d9bbcbf90756d85e97ecc11a54e3e9ae492cf21"
+    },
+    {
+      "path": "photos_highres/official_tap-942.jpg.jxl",
+      "bytes": 2346387,
+      "sha256": "746a64674e2ed86618394d4c389c76e001e9f651d82651644cddcc2d4dda3f4b"
+    },
+    {
+      "path": "photos_highres/official_tap-942.json",
+      "bytes": 5597,
+      "sha256": "97cbadfe73f79f8b53102fa30111df2ad62237af8aa23e40e8f87f464439e943"
+    },
+    {
+      "path": "photos_highres/official_tap-953.jpg.jxl",
+      "bytes": 2322922,
+      "sha256": "72e6a98d3db58f825b1e9e1a0c1433808a25481721e10e61af6d64fd8ac7ce4b"
+    },
+    {
+      "path": "photos_highres/official_tap-953.json",
+      "bytes": 8574,
+      "sha256": "587fc95c1e6eae4cb672168189ff96015aa341fe040a179d149a41ffdfc151b2"
+    },
+    {
+      "path": "photos_highres/official_tap-985.jpg.jxl",
+      "bytes": 2479744,
+      "sha256": "e8ffb1b2ce13ab564c09c70d098c137d717bc1f646997bc005e332598c267277"
+    },
+    {
+      "path": "photos_highres/official_tap-985.json",
+      "bytes": 3150,
+      "sha256": "9a0b16124f02bb7b5216df785917232b14328514ca65bcdafbae677a9dd8aa7d"
+    },
+    {
+      "path": "sfm_match_fail.jsonl",
+      "bytes": 56702,
+      "sha256": "197c49abab7f385e80aab054adcf2b49aa6f21ed3be357c504444d2a066706f5"
+    }
+  ]
+}
