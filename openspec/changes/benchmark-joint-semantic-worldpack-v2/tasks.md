@@ -27,9 +27,9 @@
 
 ## 3. Complete byte accounting
 
-- [ ] 3.1 Add RED tests requiring models, graph edges, selectors, mappings,
+- [x] 3.1 Add RED tests requiring models, graph edges, selectors, mappings,
       indexes, manifests, and checksums in persisted size.
-- [ ] 3.2 Implement the minimum WorldPack v2 dependency group and fail-closed
+- [x] 3.2 Implement the minimum WorldPack v2 dependency group and fail-closed
       reader.
 - [ ] 3.3 Restore both JPEGs and all semantic records; compare byte/SHA/bit/order
       identity and reject registered corruptions.
