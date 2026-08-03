@@ -205,3 +205,41 @@ def restore_exact_jpeg(frame: ExactJpegFrame, tool: Path) -> bytes:
         raise ExactJpegError("restored JPEG identity mismatch")
     return restored
 
+
+def make_exact_jpeg_frame(
+    *,
+    source_bytes: int,
+    source_sha256: str,
+    tool_sha256: str,
+    restart_interval: int,
+    header: bytes,
+    component_shapes: tuple[tuple[int, int], ...],
+    coefficient_payload: bytes,
+) -> ExactJpegFrame:
+    if len(source_sha256) != 64 or len(tool_sha256) != 64:
+        raise ExactJpegError("exact JPEG identities must be SHA-256 hex strings")
+    coefficient_counts = tuple(height * width * 64 for height, width in component_shapes)
+    if len(coefficient_payload) != sum(coefficient_counts) * 2:
+        raise ExactJpegError("coefficient payload length does not match component shapes")
+    serialized = bytearray(MAGIC)
+    serialized.extend(
+        struct.pack(
+            "<IIIQ",
+            VERSION,
+            restart_interval,
+            len(component_shapes),
+            len(header),
+        )
+    )
+    for (height, width), count in zip(
+        component_shapes, coefficient_counts, strict=True
+    ):
+        serialized.extend(struct.pack("<IIQ", width, height, count))
+    serialized.extend(header)
+    serialized.extend(coefficient_payload)
+    return _parse_frame(
+        bytes(serialized),
+        source_bytes=source_bytes,
+        source_sha256=source_sha256,
+        tool_sha256=tool_sha256,
+    )

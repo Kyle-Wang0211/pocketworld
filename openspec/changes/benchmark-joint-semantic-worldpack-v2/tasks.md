@@ -17,11 +17,11 @@
       unsupported-input rejection.
 - [x] 2.4 Implement versioned exact JPEG logical framing using the existing
       libjpeg coefficient boundary.
-- [ ] 2.5 Add RED tests for feature-cost tree state, global/local compensation,
+- [x] 2.5 Add RED tests for feature-cost tree state, global/local compensation,
       frequency selectors, and exact residual inversion.
 - [x] 2.6 Stop the faithful-2016 arm because required details are missing and
       record `blocked_fidelity` without running a misleading benchmark.
-- [ ] 2.7 Implement the separately preregistered PocketWorld independent
+- [x] 2.7 Implement the separately preregistered PocketWorld independent
       predictor and label every substitution; never attribute its result to the
       paper.
 
