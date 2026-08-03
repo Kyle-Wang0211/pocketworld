@@ -1,0 +1,47 @@
+{
+  "schema": "pw_plr_phase2_throughput_diagnostic_evidence_v1",
+  "diagnostic_only": true,
+  "decision": {
+    "registered_data_loader_workers": 12,
+    "reason": "12 workers exceeded 16-worker extraction throughput and prepared one 64-photo batch faster than the compact model consumed it"
+  },
+  "hardware": {
+    "host": "Mac15,6",
+    "chip": "Apple M3 Pro",
+    "memory_gib": 18
+  },
+  "runs": [
+    {
+      "sample_count": 128,
+      "workers": 16,
+      "probe_seconds": 4.193387833001907,
+      "extract_seconds": 15.771321291002096,
+      "extract_images_per_second": 8.115997235629647
+    },
+    {
+      "sample_count": 128,
+      "workers": 12,
+      "probe_seconds": 4.520112500002142,
+      "extract_seconds": 14.636416707995522,
+      "extract_images_per_second": 8.745309904307158
+    },
+    {
+      "sample_count": 64,
+      "workers": 12,
+      "probe_seconds": 2.432164792000549,
+      "extract_seconds": 9.515619999998307,
+      "extract_images_per_second": 6.725783501233907,
+      "model_n": 96,
+      "model_m": 144,
+      "train_batch_size": 64,
+      "train_batch_seconds": 9.388218874999438,
+      "train_loss_bits_per_pixel": 18.370563507080078
+    }
+  ],
+  "invalid_diagnostics_preserved": [
+    "stdin multiprocessing harness could not be imported by spawned workers",
+    "first file-backed harness omitted the combined-corpus image_id field"
+  ],
+  "compression_baseline_measured": false,
+  "frozen_pair_used": false
+}

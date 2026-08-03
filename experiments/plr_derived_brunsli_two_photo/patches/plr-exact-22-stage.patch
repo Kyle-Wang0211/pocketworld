@@ -1,0 +1,63 @@
+diff --git a/compressai/latent_codecs/gaussian_conditional.py b/compressai/latent_codecs/gaussian_conditional.py
+index 1279453..36404af 100644
+--- a/compressai/latent_codecs/gaussian_conditional.py
++++ b/compressai/latent_codecs/gaussian_conditional.py
+@@ -97,10 +97,13 @@ class GaussianConditionalLatentCodec(LatentCodec):
+         )
+         self.entropy_parameters = entropy_parameters or nn.Identity()
+         self.chunks = tuple(chunks)
++        self.last_decision_tensors = None
+ 
+     def forward(self, y: Tensor, ctx_params: Tensor) -> Dict[str, Any]:
+         gaussian_params = self.entropy_parameters(ctx_params)
+         scales_hat, means_hat = self._chunk(gaussian_params)
++        if means_hat is not None:
++            means_hat = quantize_ste(means_hat)
+         y_hat, y_likelihoods = self.gaussian_conditional(y, scales_hat, means=means_hat)
+         if self.quantizer == "ste":
+             y_hat = quantize_ste(y - means_hat) + means_hat
+@@ -109,7 +112,15 @@ class GaussianConditionalLatentCodec(LatentCodec):
+     def compress(self, y: Tensor, ctx_params: Tensor) -> Dict[str, Any]:
+         gaussian_params = self.entropy_parameters(ctx_params)
+         scales_hat, means_hat = self._chunk(gaussian_params)
++        if means_hat is not None:
++            means_hat = torch.round(means_hat)
+         indexes = self.gaussian_conditional.build_indexes(scales_hat)
++        self.last_decision_tensors = (
++            indexes.detach().cpu().contiguous(),
++            means_hat.detach().cpu().contiguous()
++            if means_hat is not None
++            else None,
++        )
+         y_strings = self.gaussian_conditional.compress(y, indexes, means_hat)
+         y_hat = self.gaussian_conditional.decompress(
+             y_strings, indexes, means=means_hat
+@@ -126,7 +137,15 @@ class GaussianConditionalLatentCodec(LatentCodec):
+         (y_strings,) = strings
+         gaussian_params = self.entropy_parameters(ctx_params)
+         scales_hat, means_hat = self._chunk(gaussian_params)
++        if means_hat is not None:
++            means_hat = torch.round(means_hat)
+         indexes = self.gaussian_conditional.build_indexes(scales_hat)
++        self.last_decision_tensors = (
++            indexes.detach().cpu().contiguous(),
++            means_hat.detach().cpu().contiguous()
++            if means_hat is not None
++            else None,
++        )
+         y_hat = self.gaussian_conditional.decompress(
+             y_strings, indexes, means=means_hat
+         )
+diff --git a/compressai/models/base_eff.py b/compressai/models/base_eff.py
+index cf6e0cf..9409d6c 100644
+--- a/compressai/models/base_eff.py
++++ b/compressai/models/base_eff.py
+@@ -46,7 +46,7 @@ class EfficientJPEGRecompression(CompressionModel):
+         in_channels_Y1 = [N + sum_val for sum_val in cumulative_sum[:-1]]  # 去掉最后一个元素
+         in_channels_Y234 = [N + 3*sum_val for sum_val in cumulative_sum[:-1]]  # 去掉最后一个元素
+ 
+-        self.gaussian_latent_encode = GaussianConditionalLatentCodec if chunk == ("scales",) else GaussianConditionalLatentCodec_ST
++        self.gaussian_latent_encode = GaussianConditionalLatentCodec
+ 
+         h_e_Y = nn.Sequential(
+             conv(64*4, N, stride=1, kernel_size=3),

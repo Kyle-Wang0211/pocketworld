@@ -1,0 +1,135 @@
+schema: pw_plr_phase2_model_config_v1
+registered_at: 2026-08-03T00:00:00+08:00
+upstream:
+  repository: https://github.com/zhuiguangzhe123/PLR.git
+  commit: 8a65e4d0d3daa9292e40df0541e8f43fcaada2d7
+  tree: 67796f3cfc8ef558d3b2287fcf315a8731ae1f14
+  lazy_import_patch_sha256: 96699a4fc3fa10476b784c7ae86b514c74b74609396d4f6a0b4d1f39f18e3f59
+  exact_completion_patch_sha256: 307b4a6f5713e3c79845b63b86e1980b3054caef11bc05d9b1286dc5bcc84bf0
+implementation:
+  label: PLR-derived completion
+  official_reproduction: false
+  reason: >-
+    The public TransJPEGRecompression422 forward omits Cb/Cr rate terms and its
+    compress/decompress methods reference undefined modules. The selected
+    sibling supplies a complete Y/Cb/Cr 22-stage schedule, while the local
+    patch replaces only the incomplete latent codec bridge with the mature
+    pinned CompressAI GaussianConditionalLatentCodec and integer means.
+  class: compressai.models.base_eff.EfficientJPEGRecompression
+  entropy_bridge: compressai.latent_codecs.GaussianConditionalLatentCodec
+  chunks:
+    - scales
+    - means
+  frequency_groups:
+    - 28
+    - 8
+    - 7
+    - 6
+    - 5
+    - 4
+    - 3
+    - 2
+    - 1
+  decoder_sequential_passes: 22
+  maximum_decoder_sequential_passes: 24
+model_arms:
+  - id: official_width
+    N: 192
+    M: 288
+  - id: scope2_compact
+    N: 96
+    M: 144
+selection:
+  uses_frozen_pair: false
+  split: validation
+  metric: validation_entropy_bytes_plus_ceil_model_bytes_times_photo_count_over_96
+  checkpoint_rule: minimum_registered_validation_metric_over_epochs_1_through_100
+  tie_breaker: smaller_complete_model_bytes_then_lexicographic_arm_id
+  terminal_arms: 1
+  entropy_estimator:
+    validation_patch_epoch: 0
+    edge_padding: exact_zero_pad_then_crop_to_registered_block_geometry
+    full_photo_tile_count: ceil_luma_width_over_32_times_ceil_luma_height_over_32
+    batching: group_equal_tile_counts_before_rate_accumulation
+    model_cost: ceil_raw_state_dict_bytes_times_validation_photo_count_over_96
+input:
+  source: exact_quantized_coefficients_from_original_jpeg
+  extractor:
+    path: build/v0.1/pw_brunsli_training_extract
+    sha256: ae74a5bddad01a16e7fbaa356aa08847b543d66e413a72aecaca6976612af22a
+  synthesized_quality_75_jpeg: forbidden
+  accepted_jpeg_geometry: three_component_4_2_0
+  coefficient_type_on_disk: signed_int16
+  coefficient_value_transform: exact_float32_cast_without_normalization
+  patch:
+    luma_blocks:
+      - 32
+      - 32
+    luma_shape:
+      - 32
+      - 32
+      - 64
+    cb_shape:
+      - 1
+      - 128
+      - 128
+    cr_shape:
+      - 1
+      - 128
+      - 128
+    origin_rule: deterministic_even_block_origin_from_seed_epoch_and_image_sha256
+corpus:
+  first_party_manifest: phase2-training-corpus-manifest.json
+  public_manifest: openimages-v7-cvdf-corpus.json
+  public_target_count: 10000
+  public_split_counts:
+    train: 9000
+    validation: 500
+    diagnostic: 500
+  frozen_capture_exclusion_manifest: training-exclusion-manifest.json
+  exact_sha_overlap: forbidden
+training:
+  runs_per_arm: 1
+  epochs: 100
+  batch_size: 64
+  data_loader_workers: 12
+  prefetch_factor: 2
+  seed: 20260803
+  device: mps_with_cpu_erfc_fallback
+  environment:
+    PYTORCH_ENABLE_MPS_FALLBACK: '1'
+    uv_lock_sha256: 77a699a4027b023bdd5bb6ad892e8a0103796be16daa8840dcd5cb6039d14a0c
+  deterministic_algorithms_where_supported: true
+  main_optimizer: Adam
+  main_learning_rate: 0.0001
+  auxiliary_optimizer: Adam
+  auxiliary_learning_rate: 0.001
+  scheduler:
+    name: ReduceLROnPlateau
+    mode: min
+    factor: 0.1
+    patience: 10
+  gradient_clip_max_norm: 1.0
+  loss: negative_log2_likelihood_bits_per_coefficient
+  invalid_if:
+    - non_finite_loss
+    - non_finite_gradient
+    - source_identity_drift
+    - frozen_capture_or_sha_leakage
+    - checkpoint_not_recoverable
+  checkpoint_retention:
+    - atomically_replaced_latest_resumable
+    - atomically_replaced_best_validation
+    - append_only_all_epoch_metrics
+hardware:
+  host: Mac15,6
+  chip: Apple M3 Pro
+  memory_gib: 18
+  operating_system: macOS 26.1
+terminal:
+  device: cpu
+  threads: 1
+  encoder_decoder_processes: separate
+  exact_coefficient_roundtrip_required: true
+  integer_cdf_trace_parity_required: true
+  frozen_jpeg_byte_and_sha256_equality_required: true

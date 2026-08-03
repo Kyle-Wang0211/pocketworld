@@ -32,6 +32,21 @@ stages:
       - training-exclusion-manifest.json:
           cache: false
 
+  freeze_phase2_training_corpus:
+    cmd: >-
+      uv run python run_freeze_training_corpus.py
+      --config phase2-training-corpus-sources.yaml
+      --output phase2-training-corpus-manifest.json
+    deps:
+      - phase2-training-corpus-sources.yaml
+      - pw_plr/training_corpus.py
+      - pw_plr/training_exclusion.py
+      - run_freeze_training_corpus.py
+      - training-exclusion-manifest.json
+    metrics:
+      - phase2-training-corpus-manifest.json:
+          cache: false
+
   verify_phase2_inputs:
     cmd: >-
       uv run python run_verify_inputs.py

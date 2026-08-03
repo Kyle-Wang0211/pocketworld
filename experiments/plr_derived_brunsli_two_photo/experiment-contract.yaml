@@ -57,6 +57,7 @@ phase_boundary:
   lepton_measurement: forbidden_until_phase_4
 phase2:
   input_manifest: phase2-input-manifest.yaml
+  model_config: phase2-model-config.yaml
   training_exclusion_manifest: training-exclusion-manifest.json
   training_exclusion_manifest_sha256: 09cef816e7fcfd6b21dbf46aa23281800b67c07ff022e6d25eaa63623b6714c2
   training_exclusion_identity_sha256: 1f11a4e11b4b0a01185272924df76dc6140f36c7378619d9755a2a434060acd8

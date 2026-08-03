@@ -1,0 +1,42 @@
+{
+  "class_name": "TransJPEGRecompression422",
+  "compress_undefined_attributes": [
+    "Gaussion_Ys",
+    "Gaussion_Ys_234",
+    "Guassian_cbcr_anchor",
+    "Guassian_cbcr_non_anchor",
+    "entropy_aprameters_prior",
+    "frequency"
+  ],
+  "constructor_attributes": [
+    "CbCr_cond_emb",
+    "Gaussian_CbCr",
+    "Gaussian_Y",
+    "M",
+    "N",
+    "Y_cond_emb",
+    "chunk",
+    "entropy_net_CbCr",
+    "entropy_net_Y",
+    "gaussian",
+    "gaussian_latent_encode",
+    "hyper_Y",
+    "hyper_cbcr",
+    "lsize",
+    "rle"
+  ],
+  "decompress_undefined_attributes": [
+    "Gaussion_Ys",
+    "Gaussion_Ys_234",
+    "Guassian_cbcr_anchor",
+    "Guassian_cbcr_non_anchor",
+    "entropy_aprameters_prior",
+    "frequency"
+  ],
+  "forward_reads_gaussian_cbcr": false,
+  "schema": "pw_plr_upstream_static_audit_v1",
+  "source_path": "build/plr-upstream/compressai/models/trans_eff.py",
+  "source_sha256": "0f48df30e3c6d949aa394cc6a8c146e12ad57a2c05c50d7f7aa5eeabb51db7c5",
+  "upstream_revision": "8a65e4d0d3daa9292e40df0541e8f43fcaada2d7",
+  "verdict": "upstream_public_training_forward_and_codec_methods_require_completion"
+}

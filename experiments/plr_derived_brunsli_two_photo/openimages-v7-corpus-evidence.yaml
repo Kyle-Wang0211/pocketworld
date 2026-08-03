@@ -1,0 +1,52 @@
+schema: pw_plr_public_corpus_evidence_v1
+accessed_at: 2026-08-04T00:00:00+08:00
+dataset: Open Images V7
+official_sources:
+  download_page:
+    url: https://storage.googleapis.com/openimages/web/download_v7.html
+    authority: Open Images official Google Cloud site
+    support: Identifies the CVDF-hosted image distribution used by the official downloader.
+  facts_page:
+    url: https://storage.googleapis.com/openimages/web/factsfigures_v7.html
+    authority: Open Images official Google Cloud site
+    support: Describes Open Images V7 scope and dataset composition.
+  attribution_metadata:
+    url: https://storage.googleapis.com/openimages/2018_04/image_ids_and_rotation.csv
+    etag: f7f38346dcd57968e473758cbabfc488
+    content_length: 3348497077
+    last_modified: 2018-05-17T14:33:33Z
+    streamed_not_persisted: true
+  cvdf_bucket:
+    endpoint: https://open-images-dataset.s3.amazonaws.com/
+    prefix: train/
+    complete_listing_page_count: 1744
+    complete_listing_image_count: 1743042
+    complete_listing_bytes: 550619457914
+selection:
+  seed: pw-plr-openimages-v7-cvdf-v1-2026-08-03
+  policy: lowest_sha256_seed_colon_image_id_over_complete_train_listing
+  eligibility:
+    - official_metadata_subset_is_train
+    - official_metadata_license_is_cc_by_2_0
+    - cvdf_bytes_match_listing
+    - cvdf_md5_matches_single_part_etag
+    - local_sha256_recorded
+    - brunsli_accepts_complete_jpeg
+    - exactly_three_components
+    - exact_4_2_0_sampling_and_block_geometry
+    - at_least_one_32_by_32_luma_block_patch
+license:
+  metadata_value: https://creativecommons.org/licenses/by/2.0/
+  attribution_preserved_fields:
+    - image_id
+    - original_url
+    - original_landing_url
+    - author_profile_url
+    - author
+    - title
+  decision: research_use_only_in_this_contract
+  limitation: >-
+    Metadata license status does not prove that an uploader owned every depicted
+    right. Production or model-distribution use requires a separate product and
+    legal review; this experiment preserves per-image attribution rather than
+    inferring broader permission.

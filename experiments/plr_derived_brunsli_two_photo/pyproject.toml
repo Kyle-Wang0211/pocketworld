@@ -1,10 +1,20 @@
 [project]
 name = "pocketworld-plr-derived-brunsli-two-photo"
 version = "0.1.0"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.11,<3.12"
 dependencies = [
+  "einops==0.8.1",
+  "mlflow==3.14.0",
+  "numpy==1.26.4",
   "PyYAML>=6.0,<7",
+  "pybind11==2.13.6",
   "pytest>=8.4,<9",
+  "scipy==1.14.1",
+  "setuptools==83.0.0",
+  "timm==1.0.15",
+  "torch==2.2.2",
+  "torchvision==0.17.2",
+  "tqdm==4.67.1",
 ]
 
 [tool.pytest.ini_options]

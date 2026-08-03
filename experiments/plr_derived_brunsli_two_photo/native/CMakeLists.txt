@@ -16,7 +16,12 @@ add_subdirectory("${BRUNSLI_SOURCE_DIR}" brunsli EXCLUDE_FROM_ALL)
 find_library(SECURITY_FRAMEWORK Security REQUIRED)
 
 add_executable(pw_brunsli_side_adapter brunsli_side_adapter.cc)
+add_executable(pw_brunsli_training_extract brunsli_training_extract.cc)
 target_include_directories(pw_brunsli_side_adapter PRIVATE
+  "${BRUNSLI_SOURCE_DIR}"
+  "${BRUNSLI_SOURCE_DIR}/c/include"
+)
+target_include_directories(pw_brunsli_training_extract PRIVATE
   "${BRUNSLI_SOURCE_DIR}"
   "${BRUNSLI_SOURCE_DIR}/c/include"
 )
@@ -26,9 +31,20 @@ target_compile_options(pw_brunsli_side_adapter PRIVATE
   -Werror
   -Wno-error=sign-compare
 )
+target_compile_options(pw_brunsli_training_extract PRIVATE
+  -Wall
+  -Wextra
+  -Werror
+  -Wno-error=sign-compare
+)
 target_link_libraries(pw_brunsli_side_adapter PRIVATE
   brunslienc-static
   brunslidec-static
+  brunslicommon-static
+  "${SECURITY_FRAMEWORK}"
+)
+target_link_libraries(pw_brunsli_training_extract PRIVATE
+  brunslienc-static
   brunslicommon-static
   "${SECURITY_FRAMEWORK}"
 )

@@ -1,0 +1,6 @@
+outs:
+- md5: 126fb825c74bf8a425ae75d19c0dd567.dir
+  size: 1347113173
+  nfiles: 414
+  hash: md5
+  path: first_party_training

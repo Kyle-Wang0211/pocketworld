@@ -1,0 +1,60 @@
+diff --git a/compressai/__init__.py b/compressai/__init__.py
+index 5085338..4ea8263 100644
+--- a/compressai/__init__.py
++++ b/compressai/__init__.py
+@@ -27,21 +27,6 @@
+ # OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+ # ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ 
+-from compressai import (
+-    datasets,
+-    entropy_models,
+-    latent_codecs,
+-    layers,
+-    losses,
+-    models,
+-    ops,
+-    optimizers,
+-    registry,
+-    transforms,
+-    typing,
+-    zoo,
+-)
+-
+ try:
+     from .version import __version__
+ except ImportError:
+@@ -91,18 +76,6 @@ def available_entropy_coders():
+ 
+ 
+ __all__ = [
+-    "datasets",
+-    "entropy_models",
+-    "latent_codecs",
+-    "layers",
+-    "losses",
+-    "models",
+-    "ops",
+-    "optimizers",
+-    "registry",
+-    "transforms",
+-    "typing",
+-    "zoo",
+     "available_entropy_coders",
+     "get_entropy_coder",
+     "set_entropy_coder",
+diff --git a/compressai/models/__init__.py b/compressai/models/__init__.py
+index b0a35e5..c7c6f59 100644
+--- a/compressai/models/__init__.py
++++ b/compressai/models/__init__.py
+@@ -27,9 +27,4 @@
+ # OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+ # ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ 
+-from .base import *
+-from .google import *
+-from .pointcloud import *
+-from .sensetime import *
+-from .vbr import *
+-from .waseda import *
++"""Model namespace kept lazy for the frozen PLR research build."""

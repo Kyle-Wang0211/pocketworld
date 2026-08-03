@@ -1,0 +1,23 @@
+schema: pw_plr_training_corpus_sources_v1
+capture_id: cap_1779949415373229
+source_kind: first_party_user_capture
+photos_path: /Users/kaidongwang/Developer/Aether3D-cross/pocketworld_flutter/device_captures/app_documents_latest/cap_1779949415373229/photos_highres
+expected_photo_count: 414
+expected_group_count: 57
+group_pattern: '^cell_(\d+)_slot_\d+\.jpg$'
+split_seed: pw-plr-phase2-corpus-v1-2026-08-03
+split_group_counts:
+  train: 45
+  validation: 6
+  diagnostic: 6
+exclusion_manifest: training-exclusion-manifest.json
+scene_review:
+  status: visually_distinct_from_frozen_capture
+  frozen_sample: data/frozen_pair/cell_85_slot_4.jpg
+  corpus_samples:
+    - cell_66_slot_3.jpg
+    - cell_100_slot_1.jpg
+  note: >-
+    The frozen pair shows a desk and power equipment. The registered corpus
+    samples show a globe/stool/window scene. Exact SHA overlap is also rejected
+    programmatically for every corpus photo.

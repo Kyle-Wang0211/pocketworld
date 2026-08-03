@@ -97,6 +97,48 @@ def test_phase2_contract_uses_self_contained_inputs_and_capture_level_exclusion(
     )
 
 
+def test_phase2_model_arms_and_selection_rule_are_frozen_before_training() -> None:
+    contract = yaml.safe_load((ROOT / "experiment-contract.yaml").read_text())
+    config = yaml.safe_load((ROOT / "phase2-model-config.yaml").read_text())
+
+    assert contract["phase2"]["model_config"] == "phase2-model-config.yaml"
+    assert config["upstream"]["commit"] == (
+        "8a65e4d0d3daa9292e40df0541e8f43fcaada2d7"
+    )
+    assert config["implementation"]["label"] == "PLR-derived completion"
+    assert config["implementation"]["official_reproduction"] is False
+    assert config["implementation"]["class"] == (
+        "compressai.models.base_eff.EfficientJPEGRecompression"
+    )
+    assert config["model_arms"] == [
+        {"id": "official_width", "N": 192, "M": 288},
+        {"id": "scope2_compact", "N": 96, "M": 144},
+    ]
+    assert config["selection"]["uses_frozen_pair"] is False
+    assert config["selection"]["metric"] == (
+        "validation_entropy_bytes_plus_ceil_model_bytes_times_photo_count_over_96"
+    )
+    assert config["training"]["epochs"] == 100
+    assert config["training"]["batch_size"] == 64
+    assert config["training"]["data_loader_workers"] == 12
+    assert config["training"]["seed"] == 20260803
+    assert config["training"]["device"] == "mps_with_cpu_erfc_fallback"
+    assert config["training"]["scheduler"] == {
+        "name": "ReduceLROnPlateau",
+        "mode": "min",
+        "factor": 0.1,
+        "patience": 10,
+    }
+    assert config["input"]["extractor"]["sha256"] == (
+        "ae74a5bddad01a16e7fbaa356aa08847b543d66e413a72aecaca6976612af22a"
+    )
+    assert config["training"]["environment"]["uv_lock_sha256"] == (
+        "77a699a4027b023bdd5bb6ad892e8a0103796be16daa8840dcd5cb6039d14a0c"
+    )
+    assert config["terminal"]["device"] == "cpu"
+    assert config["terminal"]["threads"] == 1
+
+
 def test_phase2_manifest_and_dvc_pointer_are_self_contained() -> None:
     manifest = yaml.safe_load((ROOT / "phase2-input-manifest.yaml").read_text())
     dvc_pointer = yaml.safe_load((ROOT / "data/frozen_pair.dvc").read_text())
