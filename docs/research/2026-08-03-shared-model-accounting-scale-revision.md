@@ -4,7 +4,7 @@
 >
 > 作用域：PLR-derived + Brunsli 相邻双照片 Mac 严格无损实验
 >
-> 结论：删除 15–20 MB 模型硬上限，改用完整字节准入与项目规模盈亏平衡分析
+> 结论：删除 15–20 MB 模型硬上限；`M` 改为预登记部署存储候选中的最小严格可逆结果；正式作用域冻结为每项目自包含归档
 
 ## 一、这次改了什么
 
@@ -19,34 +19,36 @@
 3. 继续把模型的全部真实解码依赖计入候选，但通过 `2 / 项目照片数` 分配给双图实验。
 4. 141 张仍是本轮正式准入规模，JXL 之和的严格门槛不变。
 5. 新增模型规模敏感性报告和严格的 `N_break_even` 盈亏平衡照片数。
-6. 141 张失败但更大项目可能获胜时，不把算法误判为普遍失败；报告为“当前规模失败、规模拐点明确”。
+6. 141 张失败但 `N_break_even <= 300` 时，报告为“当前规模失败、但在批准的每项目作用域内可达”；若 `N_break_even > 300`，本轮直接判定为作用域内不可达的失败。
 7. 模型运行内存、App 包体、启动时间和 iPhone ARM64 可执行性继续保留，但作为未来生产门槛单独判断，不与压缩率硬混在一起。
+8. `M` 不再使用裸 `.pt` 或未压缩 fp32 文件大小，而是从 Phase 0 预登记的严格可逆部署存储候选中按完整持久字节选小。
+9. 全局跨项目共享模型不再作为本轮“第二次机会”；scope 1 需要独立的长期模型保留设计，不能在看到 Phase 4 结果后改变作用域。
 
 ## 二、为什么绝对上限在数学上有问题
 
-模型是固定成本，照片数据是随项目规模增长的可变成本。假设同一个模型可以处理整个项目：
+模型是固定成本，照片数据是随项目规模增长的可变成本。假设同一个模型可以处理一个自包含项目：
 
 - 项目有 141 张照片，模型只保存一次；
-- 项目有 1,000 张照片，模型仍只保存一次；
-- 项目有 10,000 张照片，模型还是只保存一次。
+- 项目有 300 张照片，模型仍只保存一次。
 
 因此模型越大不一定越差。真正的问题是：模型带来的总码流节省是否大于它自身占用，而不是模型是否超过一个人为数字。
 
-例如 60 MB 模型：
+下面的 60 MB 表格只解释数学，不代表本轮模型实测值：
 
 | 共用模型的照片数 | 每张分摊 | 双图分摊 |
 |---:|---:|---:|
 | 141 | 约 425.5 KB | 约 851.1 KB |
-| 1,000 | 60 KB | 120 KB |
-| 10,000 | 6 KB | 12 KB |
+| 300 | 约 200 KB | 约 400 KB |
+| 1,000 | 60 KB | 120 KB（纯信息，不属于批准作用域） |
+| 10,000 | 6 KB | 12 KB（纯信息，不属于批准作用域） |
 
-如果它在两张照片上只能比 JXL 节省 500 KB，那么 141 张规模不合格，但 1,000 张规模可能合格。如果它能比 JXL 节省 1.5 MB，那么即使在 141 张规模也可能获胜。硬设 20 MB 上限会把后一种真正有价值的模型提前杀死。
+如果它在两张照片上只能比 JXL 节省 500 KB，那么 141 张规模不合格；只有盈亏平衡点不超过 300，才可称为在本轮批准的真实项目范围内可达。如果它能比 JXL 节省 1.5 MB，那么即使在 141 张规模也可能获胜。硬设 20 MB 上限会把后一种真正有价值的模型提前杀死。
 
 项目照片更大时也是同一逻辑：模型字节不变，照片码流和潜在节省通常随照片内容增加。不能用“模型 MB 数”独立决定胜负，必须用冻结真实输入的完整输出计算。
 
 ## 三、正式会计对象是什么
 
-计费对象不是训练时随手保存的 `.ckpt` 文件，而是干净机器完成解码实际需要的“规范化解码模型工件集合”，包括：
+计费对象不是训练时随手保存的 `.ckpt` 文件，而是干净机器完成解码实际需要的“规范化解码模型工件集合”的**部署存储形态**，包括：
 
 - 推理权重；
 - 权重量化或缩放表；
@@ -67,19 +69,38 @@
 
 相反，不能因为一个模型随 App、动态库或云端服务分发，就把它当成零字节。只要它是恢复归档必需的依赖，就必须在选定的存储作用域中计费。
 
+### `M` 的固定测量办法
+
+Phase 0 在看到终局照片码流前，固定下面三个存储候选：
+
+1. 未压缩的规范化部署模型；
+2. Zstandard 1.5.7 level 22；
+3. ZPAQ 7.15 method 5，源文件 SHA-256 为 `e85ec2529eb0ba22ceaeabd461e55357ef099b80f61c14f377b429ea3d49d418`。
+
+三者都必须计算完整 envelope、manifest 和 codec identity，且压缩候选必须在干净环境恢复出与规范化部署模型长度、字节和 SHA-256 完全相同的文件。`M` 取三者完整持久字节的最小值。看到结果后不得再增加 codec、level、dictionary 或另一种序列化来追小。
+
+报告必须同时保留：fp32 reference 大小/SHA、部署精度、部署模型未压缩大小/SHA、每个存储候选的参数和版本、压缩文件 SHA、恢复 SHA、逐字节结果，以及最终获胜的 `M`。
+
+这里必须分清两种“无损”：
+
+- Zstd/ZPAQ 对规范化部署模型的压缩必须逐字节无损；
+- fp32→fp16/int8 只有在注册验证集上**不改变任何整数 CDF 符号判决**时，才能登记为 decoder-equivalent deployment serialization。
+
+若精度变化导致任一 CDF 判决变化，它就是另一条模型臂，必须在终局前冻结，不能称为同一个 fp32 模型的无损压缩。无论使用哪条模型臂，两张原 JPEG 的恢复仍必须逐字节和 SHA-256 完全一致。
+
 ## 四、三种部署作用域必须分开
 
 ### 1. 全局模型，跨所有项目只存一份
 
 模型作为 App/云端解码仓库的版本化对象保存，项目归档只记录 model ID 和 hash。模型成本在所有能稳定使用它的项目照片之间分摊。
 
-优点是长期总成本最低；缺点是归档不再完全自包含，必须保证离线解码、旧版本模型永久保留、云端复制和 hash 校验。没有这些保证时，不允许使用全局分摊把实验数字做小。
+优点是长期总成本最低；缺点是归档不再完全自包含，必须保证离线解码、旧版本模型永久保留、云端复制和 hash 校验。本轮已经冻结“压缩归档是唯一长期副本”和“项目必须自包含”，所以 scope 1 不参与本轮判定，也不能在 Phase 4 失败后用它救结果。若未来研究 scope 1，必须另立合同先证明永久模型保留机制。
 
 ### 2. 每个项目保存一个模型
 
 每个项目归档自包含一份模型。一个项目无论有多少张照片，完整项目只加一次模型大小。
 
-本轮正式实验采用这一保守作用域。141 张照片共用一个模型，双图承担 `2/141` 的模型成本。这样不会假设未来所有项目都能依赖 App 内某个永久存在的全局模型。
+本轮正式实验只采用这一作用域。141 张照片共用一个模型，双图承担 `2/141` 的模型成本。依据用户登记的历史采集与产品目标，本合同批准的现实范围是 93–300 张；141 是正式判定点，300 是可达性上界。
 
 ### 3. 每张照片各自保存模型
 
@@ -92,7 +113,7 @@
 ```text
 J = 两张同输入 JXL exact-JPEG 归档字节之和
 B = 候选双图在计入共享模型分摊前的全部字节
-M = 规范化解码模型工件总字节
+M = 三个预登记严格可逆部署存储候选中的最小完整字节
 N = 共用这一模型的项目照片数
 H = J - B
 ```
@@ -155,18 +176,48 @@ B + ceil(2 * M / N_break_even) < J
 
 这个公式只回答“固定模型成本从多少张开始摊得过来”，不证明双图的码流比例能外推到完整项目。达到拐点后，仍然需要把预登记的完整项目真正编码一次。
 
+新增可达性判断：
+
+```text
+break_even_reachable_under_approved_scope =
+    N_break_even != null && N_break_even <= 300
+```
+
+- `142 <= N_break_even <= 300`：141 张正式失败，但批准的 scope 2 范围内可达；
+- `N_break_even > 300`：本轮 scope 2 不可达，必须作为真实失败报告；
+- 1,000/10,000 张只保留为数学敏感性信息，不得改变终局状态。
+
 ## 七、报告必须怎样改
 
 每次正式结果新增以下字段：
 
 ```yaml
 model_accounting:
-  canonical_model_bytes: <integer>
+  reference_fp32_bytes: <integer-or-null>
+  reference_fp32_sha256: <hex-or-null>
+  deployment_precision: <string>
+  canonical_deployment_model_bytes: <integer>
+  canonical_deployment_model_sha256: <hex>
+  cdf_decision_parity_with_reference: <true-false-or-not-applicable>
+  storage_candidates:
+    - codec: raw
+      complete_persisted_bytes: <integer>
+      restored_byte_equal: true
+    - codec: zstd-1.5.7-level-22
+      complete_persisted_bytes: <integer>
+      restored_byte_equal: true
+    - codec: zpaq-7.15-method-5
+      complete_persisted_bytes: <integer>
+      restored_byte_equal: true
+  model_stored_bytes_M: <minimum-complete-persisted-bytes>
   storage_scope: per_project
+  approved_scope_photo_count_min: 93
+  approved_scope_photo_count_max: 300
   formal_project_photo_count: 141
   formal_pair_model_charge_bytes: <ceil(2*M/141)>
   stream_headroom_before_model_bytes: <J-B>
   break_even_photo_count: <integer-or-null>
+  break_even_reachable_under_approved_scope: <true-or-false>
   sensitivity:
     - photo_count: 2
       pair_model_charge_bytes: <integer>
@@ -175,10 +226,16 @@ model_accounting:
     - photo_count: 44
       ...
     - photo_count: 141
+      decision_role: formal
+      ...
+    - photo_count: 300
+      decision_role: approved_scope_boundary
       ...
     - photo_count: 1000
+      decision_role: informational_only
       ...
     - photo_count: 10000
+      decision_role: informational_only
       ...
 ```
 
@@ -186,8 +243,8 @@ model_accounting:
 
 - `winner_beats_jxl_and_lepton`
 - `winner_beats_jxl_but_loses_lepton`
-- `loser_complete_but_not_smaller_than_jxl`
-- `loser_at_141_but_scale_break_even_defined`
+- `loser_at_141_but_reachable_within_scope2`
+- `loser_at_141_break_even_unreachable_scope2`
 - `loser_stream_before_model_accounting`
 - `invalid_exactness_failure`
 - `invalid_incomplete_cost_accounting`
@@ -205,16 +262,23 @@ model_accounting:
 现在：
 
 1. 冻结模型结构、参数量、序列化格式和解码依赖。
-2. 生成规范化模型工件并记录真实大小和 SHA。
-3. 检查 ARM64 operator 路线、CUDA-only 依赖和跨平台 CDF 决定性。
-4. 计算 2/44/141/1,000/10,000 张下的模型分摊，但不按绝对模型大小停止。
-5. 只有缺少未计费依赖、无法序列化、解码依赖 CUDA-only，才在 Phase 0 阻塞。
+2. 冻结部署精度和 CDF 判决一致性合同；若判决改变，把它登记成独立模型臂。
+3. 运行 raw、Zstd 1.5.7 level 22、ZPAQ 7.15 method 5 三个固定存储候选，全部做模型工件逐字节恢复，按完整字节选出 `M`。
+4. 冻结 scope 2、正式 N=141、批准范围 93–300；scope 1 不参与本轮。
+5. 检查 ARM64 operator 路线、CUDA-only 依赖和跨平台 CDF 决定性。
+6. 计算 2/44/141/300/1,000/10,000 张下的模型分摊；1,000/10,000 标为纯信息；不按绝对模型大小停止。
+7. 预先钉死 Brunsli v0.1 与唯一 fallback master 的 commit。只有 v0.1 对冻结双图 exact round-trip 失败才允许运行 master，禁止手补丁。
+8. 只有缺少未计费依赖、存在未登记序列化、无法恢复部署模型、或解码依赖 CUDA-only，才在 Phase 0 阻塞。
 
 ### Phase 1–3
 
 exact container、完整 Y/Cb/Cr intra entropy stream 和唯一 A→B conditional arm 的顺序不变。H2 仍不允许无限调参。
 
+Brunsli 主版本固定为 v0.1 commit `8a0e9b8ca2e3e089731c95a1da7ce8a3180e667c`。唯一 fallback 固定为 master commit `c9128f43994c1ca830dd079777d85f16736d6ba7`。若 v0.1 失败，原样运行一次 master；v0.1 通过则不运行 master；两者都失败则阻塞。不得 cherry-pick 或本地修补 JPEG wrapper。
+
 ### Phase 4
+
+证据审计确认：冻结双图当前没有同输入 JXL 结果，因此 `J`、`H` 和 `N_break_even` 在 Phase 4 之前全部是 unknown。审核中的估算数字仅用于解释，不能写入结果、门槛或停止规则。Phase 4 对两张图各运行一次 JXL exact-JPEG encode/decode，永久保存输入、归档和恢复 SHA；不得为了“稳定性”重跑。
 
 除了正式 JXL 门槛和诊断 Lepton 门槛，还必须：
 
@@ -222,7 +286,7 @@ exact container、完整 Y/Cb/Cr intra entropy stream 和唯一 A→B conditiona
 2. 报告 141 张的正式模型分摊；
 3. 计算并验证 `N_break_even`；
 4. 生成规模敏感性表；
-5. 若141张失败但存在更大规模拐点，保留候选作为规模研究证据，不进入当前项目生产；
+5. 若141张失败且拐点在142–300，保留为 scope 2 可达证据；若超过300，明确判为本作用域不可达失败；
 6. 若141张获胜，再按原计划扩展到固定4/8图组和一次完整项目。
 
 ## 九、哪些东西完全没有改变
@@ -243,8 +307,8 @@ exact container、完整 Y/Cb/Cr intra entropy stream 和唯一 A→B conditiona
 
 1. 先看不计共享模型时，完整真实双图码流是否产生正 headroom；
 2. 再把规范化模型按141张正式分摊，判断当前项目是否严格胜过 JXL；
-3. 当前规模若失败，计算模型从多少张照片开始摊得过来；
+3. 当前规模若失败，计算模型从多少张照片开始摊得过来，并以300张判断本合同内是否可达；
 4. 只有真实完整项目编码才能确认大规模收益，不能靠双图比例直接外推；
 5. 生产阶段再独立评估模型 RAM、App 包体、启动成本和 iPhone ARM64 可执行性。
 
-这样既不会把模型成本藏起来，也不会因为项目暂时较小而误杀一个在大型作品或跨项目全局模型场景中真正有效的方案。
+这样既不会把裸 fp32 或 App 外置模型的错误口径带进账，也不会用无现实对应的 1,000/10,000 张制造“精神胜利”。本轮只回答：在自包含、唯一长期副本、93–300 张的真实 scope 2 内，它是否严格胜过同输入 JXL。

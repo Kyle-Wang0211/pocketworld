@@ -12,6 +12,12 @@ scale. This keeps the 141-photo formal gate unchanged while avoiding the false
 conclusion that a fixed model which loses on a small project must also lose on a
 large project.
 
+Revision 2 closes four accounting and interpretation gaps. `M` is now the
+smallest preregistered, byte-exact deployment storage form rather than a raw
+training file; project-scope reachability is frozen at 300 photos; the formal
+scope is permanently the self-contained per-project archive; and same-input
+JXL sizes are explicitly unknown until their one allowed Phase 4 measurement.
+
 ## Objective
 
 Build one complete, independently decodable two-photo archive that uses a
@@ -59,11 +65,16 @@ selection, and parameter tuning.
 The formal baseline is the sum of the two same-input libjxl 0.12.0
 exact-JPEG, effort-10 archive sizes.
 
+- The evidence audit found no saved JXL result for these exact two SHA-256
+  inputs. The pre-execution baseline state is therefore `not_yet_measured`.
 - Reuse saved, hash-matching results when present.
 - If a same-input result does not exist, run each JXL encode/decode exactly once
-  and persist the result identity permanently.
+  in Phase 4 and persist the result identity permanently.
 - Never rerun the baseline for stability. Encoded byte size is deterministic
   evidence, not a noisy timing metric.
+- Until those two runs finish, `J`, `H`, and `N_break_even` are unknown. Size
+  estimates and reviewer hypotheticals must not enter the experiment result,
+  stopping rules, or acceptance decision.
 
 ### Diagnostic production-relevance baseline
 
@@ -84,6 +95,39 @@ training-only optimizer checkpoint. It includes weights, quantization or scale
 tables, entropy buffers, architecture/version metadata, and any bytes required
 to reproduce the decoder's integer CDF decisions.
 
+`model_stored_bytes` is not the size of a naked `.pt` file. It is the minimum
+complete persisted size among a fixed Phase 0 candidate set that can restore
+the selected canonical deployment artifact byte for byte on a clean machine.
+The registered storage candidates are:
+
+1. uncompressed canonical deployment artifact;
+2. Zstandard 1.5.7 level 22;
+3. ZPAQ 7.15 method 5, source SHA-256
+   `e85ec2529eb0ba22ceaeabd461e55357ef099b80f61c14f377b429ea3d49d418`.
+
+Each candidate includes its envelope, manifest, codec identity, and all bytes
+needed for clean-machine restoration. Each compressed arm must restore the
+canonical deployment artifact length, bytes, and SHA-256 exactly. The minimum
+of these three complete results defines `M`. No codec, level, dictionary, or
+serialization may be added after terminal sizes are visible.
+
+The report must separately record:
+
+- reference fp32 artifact size and SHA-256, when one exists;
+- selected deployment precision and canonical uncompressed deployment bytes;
+- canonical deployment artifact SHA-256;
+- every registered storage candidate's codec revision, parameters, persisted
+  bytes, persisted SHA-256, restored SHA-256, and byte-equality result;
+- the winning storage candidate and final charged `M`.
+
+A precision conversion is not automatically lossless model storage. If fp16,
+int8, or another representation preserves every registered integer-CDF symbol
+decision, it may be registered in Phase 0 as a decoder-equivalent deployment
+serialization, with decision-parity evidence. If any CDF decision changes, it
+is a distinct model arm, must be frozen before the terminal comparison, and
+cannot be described as byte-exact compression of the fp32 model. Either model
+arm remains subject to exact restoration of both original JPEG files.
+
 There is no fixed 15 MB, 20 MB, or other absolute rejection threshold. A fixed
 model is constant overhead while project data grows. An absolute ceiling would
 incorrectly reject a larger model that may create more than enough stream
@@ -101,9 +145,11 @@ once. The pair formula is an allocation of that one shared model, not a claim
 that the archive stores 2/141 of a physical file.
 
 The result must also report model-overhead sensitivity for photo counts
-`2`, `44`, `141`, `1,000`, and `10,000`, plus the actual count of any later
-project. Only `141` determines this experiment's formal verdict. Other counts
-explain scale behavior and do not move the frozen gate.
+`2`, `44`, `141`, `300`, `1,000`, and `10,000`. Only `141` determines this
+experiment's formal verdict. `300` is the approved self-contained scope's
+reachability boundary. `2`, `44`, `1,000`, and `10,000` are informational rows;
+in particular, `1,000` and `10,000` have no decision authority under the
+per-project scope and cannot rescue a losing candidate.
 
 ### Deployment scopes
 
@@ -119,11 +165,20 @@ The report must distinguish three storage scopes:
 3. **One model per photo.** Charge the entire model to every photo. This is not
    the selected design and must never be disguised as a shared global model.
 
-The formal 141-photo experiment uses scope 2, the conservative self-contained
-project case. A later production design may use scope 1 only if global model
-availability, versioning, offline decode, cloud retention, and hash identity
-are guaranteed. Scope 1 must not be used retroactively to make this experiment
-look smaller.
+The formal 141-photo experiment and every break-even reachability verdict use
+scope 2, the self-contained per-project archive. This scope is frozen before
+results because the compressed archive is intended to be the only long-term
+copy and must remain decodable without an external model repository.
+
+The approved realistic project range for this contract is 93–300 photos, based
+on the user-provided historical captures and product target. The formal point
+remains 141; 300 is the largest approved scope-2 reachability point.
+
+Scope 1 is outside this experiment. It may be studied only under a separate
+future design that proves permanent byte-identical model retention, offline
+decode, cloud replication, version lookup, and failure recovery. Scope 1 must
+not be selected after Phase 4 to rescue a scope-2 loss. Scope 3 is also outside
+the formal design.
 
 ### Training checkpoint versus decoder model
 
@@ -166,7 +221,7 @@ Let:
 ```text
 J = jxl_a_archive_bytes + jxl_b_archive_bytes
 B = complete candidate pair bytes before the amortized shared-model charge
-M = canonical stored decoder-model bytes
+M = minimum complete bytes among preregistered exact model-storage candidates
 H = J - B
 N = number of project photos sharing that one model
 ```
@@ -194,10 +249,17 @@ N_break_even = ceil((2 * M) / (H - 1))
 The implementation must verify this integer result by evaluating the exact
 ceiling expression at `N_break_even - 1` and `N_break_even`.
 
-Example: a 60 MB shared model is not automatically rejected. Its two-photo
-charge is about 851 KB at 141 photos, 120 KB at 1,000 photos, and 12 KB at
-10,000 photos. Whether it wins is decided by the actual stream headroom `H`,
-not by the number 60 MB in isolation.
+It must also emit:
+
+```text
+break_even_reachable_under_approved_scope =
+    N_break_even != null && N_break_even <= 300
+```
+
+When `N_break_even` is 142–300, the candidate is a formal loss at 141 but has a
+reachable scale point inside the approved self-contained scope. When it exceeds
+300, it is an unreachable loss under this contract. A mathematically defined
+break-even at 1,000 or 10,000 is diagnostic only, not a positive verdict.
 
 `N_break_even` describes only fixed-model overhead. It is not permission to
 extrapolate a two-photo stream ratio to a complete project. A later complete
@@ -219,8 +281,14 @@ coefficient payload. It must not retain a full Brunsli coefficient stream next
 to the PLR-derived coefficient stream, because that would duplicate the
 dominant data.
 
-The adapter is tested before any model training. A failure to round-trip either
-frozen JPEG stops the experiment.
+The adapter is tested before any model training. Phase 0 also pins current
+Brunsli master commit `c9128f43994c1ca830dd079777d85f16736d6ba7` as the only
+allowed fallback. If unmodified v0.1 fails exact round-trip on either frozen
+JPEG, do not patch, cherry-pick, or locally repair it. Run the same unmodified
+Phase 1 test once on the pinned master commit and record the deviation. Use
+master only if it passes every exactness and corruption gate. If v0.1 passes,
+do not run master. If both pinned revisions fail, stop as
+`blocked_upstream_exact_container`.
 
 ### PLR-derived entropy layer
 
@@ -282,10 +350,14 @@ external caches are not decoder dependencies.
 
 1. **Phase 0 — identity, license, and model accounting:** freeze revisions,
    manifests, environment, canonical decoder-model serialization, parameter
-   count, storage scope, and iPhone ARM64 operator inventory. Record the model
-   size and projected charges, but do not reject it solely for exceeding an
-   arbitrary byte ceiling. Stop only on an unaccounted decoder dependency or a
-   CUDA-only decoding requirement.
+   count, deployment precision, CDF-decision parity contract, the three fixed
+   model-storage candidates, scope 2, the 93–300 approved range, both Brunsli
+   revision hashes, and iPhone ARM64 operator inventory. Produce byte-exact
+   model-storage round trips and choose `M` by complete persisted bytes. Record
+   the model size and projected charges, but do not reject it solely for
+   exceeding an arbitrary byte ceiling. Stop on an unaccounted decoder
+   dependency, an unregistered model serialization, or a CUDA-only decoding
+   requirement.
 2. **Phase 1 — Brunsli exact container:** extract non-coefficient state and raw
    coefficients, restore both source files, and pass corruption tests. Stop on
    any byte mismatch.
@@ -294,10 +366,13 @@ external caches are not decoder dependencies.
    JPEGs. Stop if any stream or decoder dependency is missing.
 4. **Phase 3 — bounded conditional arm:** run the single frozen A-to-B arm and
    the intra attribution arm. Stop H2 if its complete B bytes do not improve.
-5. **Phase 4 — one terminal A/B:** read saved JXL and diagnostic Lepton
-   baselines; create one formal candidate; apply the cost equation, exactness
-   gates, and corruption gates; calculate `N_break_even` and the registered
-   scale-sensitivity rows; emit one terminal verdict.
+5. **Phase 4 — one terminal A/B:** because the exact-pair JXL baseline is
+   currently absent, encode/decode each frozen input with JXL exactly once and
+   persist both results. Reuse a hash-matching Lepton result or create each
+   missing diagnostic result once. Create one formal candidate; apply the cost
+   equation, exactness gates, and corruption gates; calculate `N_break_even`,
+   reachability, and the registered scale-sensitivity rows; emit one terminal
+   verdict. No estimated `J` or `H` is permitted.
 
 No later phase starts when an earlier phase fails.
 
@@ -305,13 +380,14 @@ No later phase starts when an earlier phase fails.
 
 - `winner_beats_jxl_and_lepton`
 - `winner_beats_jxl_but_loses_lepton`
-- `loser_complete_but_not_smaller_than_jxl`
-- `loser_at_141_but_scale_break_even_defined`
+- `loser_at_141_but_reachable_within_scope2`
+- `loser_at_141_break_even_unreachable_scope2`
 - `loser_stream_before_model_accounting`
 - `invalid_exactness_failure`
 - `invalid_incomplete_cost_accounting`
 - `blocked_portability`
 - `blocked_upstream_or_license`
+- `blocked_upstream_exact_container`
 
 ## Evidence requirements
 
