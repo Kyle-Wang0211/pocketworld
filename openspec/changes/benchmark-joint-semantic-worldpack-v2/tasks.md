@@ -47,4 +47,4 @@
 - [x] 5.1 Run focused tests twice without rerunning the benchmark, strict
       OpenSpec validation, manifest verification,
       and deterministic result checks.
-- [ ] 5.2 Inspect only owned files and report evidence, deviations, and verdict.
+- [x] 5.2 Inspect only owned files and report evidence, deviations, and verdict.
