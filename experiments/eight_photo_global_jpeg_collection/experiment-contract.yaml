@@ -1,0 +1,78 @@
+schema: pw_eight_photo_global_jpeg_collection_contract_v1
+registered_at: "2026-08-03T14:35:00+08:00"
+scope: host_only_eight_photo_collection
+evidence_role: host_candidate_screen_only
+implementation_identity: pocketworld_global_hybrid_dct_v1
+phone_access: false
+production_changes: false
+repository:
+  path: /Users/kaidongwang/Developer/pocketworld
+  head_at_registration: b1eb7cd6aa4a346327ccc0e8d454c05beb27978c
+  tracked_dirty_diff_sha256: 87d066bbe365c214851eeb33ec2c9a61cdfc2cc37f29df21c2b1c56e709f4bc3
+  porcelain_sha256_before_owned_files: a60b174495f55aaaa0ee0fbd0913b3af43b877a45b76e7a30bec76b50a950cb8
+  shared_dirty_worktree_policy: preserve_every_unrelated_change
+claims:
+  faithful_microsoft_2016: false
+  faithful_fdbm_2024: false
+  paper_31_percent_is_promise: false
+  label: declared_pocketworld_independent_implementation
+input:
+  manifest: input-manifest.yaml
+  capture_id: cap_1785512421333592
+  selection_rule: first_eight_capture_order_before_candidate_size
+  photo_count: 8
+  graph_edge_count: 28
+baseline:
+  execution: forbidden_reference_only
+  saved_jxl_bytes: 18453828
+  source_jpeg_bytes: 22635503
+  paper_31_percent_target_bytes: 15618497
+  complete_project_reference_execution: forbidden
+candidate:
+  root_rule: maximum_verified_edge_centrality_then_smaller_saved_jxl_then_image_id
+  edge_rule: maximum_spanning_tree_verified_rows_then_lower_descriptor_distance_then_image_ids
+  expected_root_database_image_id: 2
+  expected_tree_edges_undirected:
+    - [1, 2, 1395]
+    - [2, 3, 890]
+    - [7, 8, 733]
+    - [3, 8, 583]
+    - [6, 7, 473]
+    - [3, 5, 438]
+    - [3, 4, 435]
+  predictors: [global_homography, local_verified_match_displacement, bounded_low_frequency_search, reconstructed_left_top_intra, zero]
+  affine_fraction_bits: 20
+  low_frequency_search_radius_blocks: 4
+  exact_residual: signed_int16
+  streams: [luma_dc, chroma_dc, luma_low_ac, chroma_low_ac, luma_high_ac, chroma_high_ac, modes, motion, graph_models_headers]
+  entropy:
+    backend: zpaq_7_15_method5
+    revision_sha256: e85ec2529eb0ba22ceaeabd461e55357ef099b80f61c14f377b429ea3d49d418
+    raw_fallback_per_stream: true
+metrics:
+  primary: complete_candidate_persisted_bytes
+  report: [source_jpeg_bytes, saved_jxl_bytes, candidate_bytes, paper_target_bytes, per_stream_raw_and_stored_bytes, exact_jpeg_count, graph_edges, maximum_dependency_photos, elapsed_ms, peak_rss_bytes, peak_scratch_bytes]
+acceptance:
+  candidate_strictly_smaller_than_saved_jxl: true
+  jpeg_byte_equal: true
+  jpeg_sha256_equal: true
+  all_coefficients_bit_equal: true
+  source_unchanged: true
+  corruption_rejected: true
+  maximum_random_read_dependency_photos: 8
+run_control:
+  seed: 20260803
+  baseline_runs: 0
+  candidate_runs: 1
+  automatic_repeats: 0
+  synthetic_tests_may_not_encode_frozen_photos: true
+  full_project_execution: forbidden
+  phone_execution: forbidden
+  production_execution: forbidden
+stop_rules:
+  - reject_on_any_byte_sha_coefficient_or_source_mismatch
+  - reject_if_candidate_is_not_strictly_smaller_than_saved_jxl
+  - preserve_failed_or_invalid_result
+  - do_not_rerun_real_candidate
+  - do_not_claim_microsoft_or_fdbm_fidelity
+

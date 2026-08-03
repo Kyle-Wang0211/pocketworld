@@ -1,0 +1,38 @@
+schema: pw_eight_photo_global_jpeg_collection_input_v1
+frozen_at: "2026-08-03T14:35:00+08:00"
+capture:
+  id: cap_1785512421333592
+  root: /private/tmp/pw_portable_sfm_update.6RQ6nt/before/Documents/captures_official/cap_1785512421333592
+selection:
+  rule: first_eight_capture_order_before_candidate_size
+  capture_ordinals: [0, 1, 2, 3, 4, 5, 6, 7]
+  database_image_ids: [1, 2, 3, 4, 5, 6, 7, 8]
+  all_registered_sfm: true
+  relationship_edges: 28
+  verified_match_rows: 11546
+photos:
+  - {ordinal: 0, name: official_tap-12.jpg, source_bytes: 2845753, source_sha256: ec48efba9574f6250e17305ef172b4454c9be6df31832a9349c2facecdc68f1d, archive_bytes: 2319472, archive_sha256: 364c452ba446212955b1fc81c7633044c938134efd500c93eb850743f978b252, metadata_bytes: 9151, metadata_sha256: 61e2c7b5eac473030f4e32d6e3ed04e2459e99f0de3bc0a5b594f0ee7f376cbf}
+  - {ordinal: 1, name: official_tap-25.jpg, source_bytes: 2871951, source_sha256: 9310e1cda59def8e66c3b4ceb873a28d81da00b88f30fd6bde5eb4e357a8db3a, archive_bytes: 2345048, archive_sha256: eaee0db04c3d904ce2e7e181fb5b32478c3f8c5edf2a6f02850aa45de1ea998b, metadata_bytes: 12632, metadata_sha256: e0bf4a8cc2138fd4fbcd8d7f2e2d3bb988de47cda04004170c76012f6e2cdc98}
+  - {ordinal: 2, name: official_tap-35.jpg, source_bytes: 2833158, source_sha256: e9c1b92fcfad842e9422ee2a278fc4d3b5dc23f440d2e5ea72b86b4aca1712bc, archive_bytes: 2312935, archive_sha256: c151dac7dc3e19c6cf3dca80f194ae1f6d71a162ff3adbf0dc29d6a34e8cf395, metadata_bytes: 12671, metadata_sha256: 04c9ab4352afa18ce0ff2acf211605aaad16ce4a831049fe5f2dbcb43851e2cd}
+  - {ordinal: 3, name: official_tap-45.jpg, source_bytes: 2812132, source_sha256: 14984f279018954d90caa307de8cbd5ae3f5c2ad71f6b54c38b28c88b0b61cc4, archive_bytes: 2289431, archive_sha256: ec1186c25d68e8be190a8d16e228d6ccc19df35b042a86460ab6bf56a4eb277b, metadata_bytes: 10645, metadata_sha256: c049623dcf9da17b21dcd10c9f0e31512cdfd0436d1efe78c77757d2a8a868cb}
+  - {ordinal: 4, name: official_tap-57.jpg, source_bytes: 2837151, source_sha256: ce7c1b2c487a6253697ff264ad73e1ccc5738af6439b9fe86c5da7b2b5e6fc38, archive_bytes: 2313256, archive_sha256: 281c3630a42197d4e51ca4a0b9e4372b0860d505f7644e5b8b95e0da44742c34, metadata_bytes: 8767, metadata_sha256: c50f351cf44c4f3ca6d53e80e200abcaa94779365026ab0304d632db8382f2ba}
+  - {ordinal: 5, name: official_tap-76.jpg, source_bytes: 2679719, source_sha256: fed480b17435c5dd907d7e842a8bc8df4fde21e77f3eb87b84a05f1c5fb238d9, archive_bytes: 2180316, archive_sha256: d2fe754a895a5f033b9549411ecf6dfd15bd2a26b5918e19d69390dbcabf97a9, metadata_bytes: 4118, metadata_sha256: 59e3a7516fb5b1ee6ccc817199d9ad2b5e9be1424b4e354e6f6e824c0c1ac0f5}
+  - {ordinal: 6, name: official_tap-93.jpg, source_bytes: 2830559, source_sha256: 5bfefd978ba7685fb8179b0c25bab162555b517d15b31e048d6a3da4a115354d, archive_bytes: 2305183, archive_sha256: b9a261a9faa1db4582978803e94222f619a10bd74c1e3a5bc67d1464249361ef, metadata_bytes: 2791, metadata_sha256: a39e45fb3c39aeef2fb510463e7175909ad0137c336d8778efd18bc2f8b33ac0}
+  - {ordinal: 7, name: official_tap-110.jpg, source_bytes: 2925080, source_sha256: ced4afe582b24065e2162614367ae2a00c5c4bad360895e18af7a57f23d561ee, archive_bytes: 2388187, archive_sha256: cbb48701cbabe03792e921797c7d6e540a7eef13b761a9d1bbe17b59b7b69d4b, metadata_bytes: 6208, metadata_sha256: 6d81036f8a7a511061876479915580b7c801fa45df7b55517514cb4411c5972e}
+totals:
+  source_jpeg_bytes: 22635503
+  saved_jxl_bytes: 18453828
+  paper_31_percent_target_bytes: 15618497
+context_files:
+  - {path: official_photo_archive.json, bytes: 56360, sha256: 00d06aefbeda22b84347c3afd8caf0a96d6a687f84e6c34c6466c3acc578b4e4}
+  - {path: official_photo_bundle.json, bytes: 308038, sha256: dded6aafaaf7d96edf509329305c7ae77a7c85b6b06714eeebfa3c376c832d70}
+  - {path: official_sfm_fed_frames.jsonl, bytes: 110960, sha256: 7d3f9e9dd2a140eed1aa74ca6ccdb118029a9560f4796dcdcb19d149ca96359a}
+  - {path: official_sfm_live.db, bytes: 198983680, sha256: 0c12c0dfa76d50cae59929774242282d8236daeb852bdee6ac99c3062d6d08b0, integrity_check: ok}
+  - {path: official_sfm_sparse.ply, bytes: 1162370, sha256: ba941c8b1fff4e6bbeb270aed8f4e328a14e570c46647dbd91b48e74c713dd3a}
+  - {path: official_sfm_sparse_meta.json, bytes: 30332, sha256: 965f7f82d228c4d66ed512ce44e7138d0339aedb262c180e2b1835a71bf6d565}
+source_policy:
+  capture_read_only: true
+  originals_restored_to_task_scratch_only: true
+  existing_jxl_never_rewritten: true
+  all_hashes_reverified_before_candidate: true
+

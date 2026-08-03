@@ -1,0 +1,46 @@
+{
+  "schema": "pw_eight_photo_global_jpeg_collection_evidence_v1",
+  "recorded_at": "2026-08-03T14:35:00+08:00",
+  "claim_boundary": {
+    "implementation": "declared PocketWorld independent implementation",
+    "faithful_microsoft_2016": false,
+    "faithful_fdbm_2024": false
+  },
+  "sources": [
+    {
+      "title": "Lossless Compression of JPEG Coded Photo Collections",
+      "url": "https://www.microsoft.com/en-us/research/publication/lossless-compression-jpeg-coded-photo-collections/",
+      "authority": "author institution",
+      "support": "global feature-domain pseudo-video, hybrid global/local disparity compensation, adaptive frequency-domain redundancy reduction, average bit savings above 31 percent",
+      "limitation": "abstract only; no public reference implementation or complete bitstream details found"
+    },
+    {
+      "title": "Lossless Compression of JPEG Coded Photo Albums",
+      "url": "https://www.researchgate.net/publication/275178537_Lossless_Compression_of_JPEG_Coded_Photo_Albums",
+      "authority": "author manuscript",
+      "support": "feature prediction structure, geometric and photometric compensation, local block compensation, exact quantized-DCT residual",
+      "limitation": "2014 precursor rather than the 2016 method"
+    },
+    {
+      "title": "Incremental SfM Based Lossless Compression of JPEG Coded Photo Album",
+      "url": "https://www.researchgate.net/publication/296676479_Incremental_SfM_Based_Lossless_Compression_of_JPEG_Coded_Photo_Album",
+      "authority": "author manuscript",
+      "support": "SfM camera geometry, sparse point cloud, Delaunay/depth warping, homography fallback and block mode selection",
+      "limitation": "2015 precursor; CABAC implementation and patent suitability are not supplied"
+    },
+    {
+      "title": "Lossless JPEG Recompression for Similar Images via Frequency Domain Block Matching",
+      "doi": "10.1109/PCS60826.2024.10566381",
+      "url": "https://ieeexplore.ieee.org/document/10566381",
+      "authority": "IEEE bibliographic record and author abstract",
+      "support": "CSBS similar-block search, OMVC motion-vector coding and VLRC residual coding",
+      "limitation": "closed full text and no official code found; concrete implementation cannot be called a reproduction"
+    }
+  ],
+  "commercial_status": {
+    "paper_methods": "insufficient-evidence for fidelity or patent clearance",
+    "zpaq": "existing audited product dependency",
+    "candidate": "host research only; no production approval"
+  }
+}
+
