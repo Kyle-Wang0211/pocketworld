@@ -1,0 +1,112 @@
+schema: pw_joint_semantic_worldpack_v2_contract_v1
+registered_at: "2026-08-03T13:35:00+08:00"
+scope: host_only_two_photo_joint_unit
+evidence_role: host_candidate_screen_only
+implementation_identity: pocketworld_independent_v2
+phone_access: false
+production_changes: false
+
+repository:
+  path: /Users/kaidongwang/Developer/pocketworld
+  head_at_registration: 1882eb1de2abca809660660ccf359e1dd4c05c6c
+  tracked_dirty_diff_sha256: e4d5afba8eb61d169d38db3cf868457b5edeb4f6f08634d337dabccbbbd3e090
+  porcelain_sha256: 7178cd31479df2b86ffbbecc4580708c0b31a14825cba3a79a2d8d1ecfab2b6f
+  shared_dirty_worktree_policy: preserve_every_unrelated_change
+
+fidelity:
+  method_map: method-map.md
+  evidence: evidence.json
+  faithful_2016_claim_allowed: false
+  paper_31_percent_is_acceptance_target: false
+  benchmark_label: declared_independent_implementation
+  exactness_boundary: original_jpeg_byte_sequence_and_sha256
+
+baseline:
+  original_source_bytes: 638645632
+  complete_persisted_bytes: 471146040
+  execution: forbidden_reference_only
+  persisted_result_source: ../worldpack_official_completion/results/worldpack-complete-project.json
+  incumbent_two_photo_payload_bytes: 4664520
+  incumbent_two_photo_payload_kind: verified_jxl_members
+  shared_semantic_stream_accounting: cancel_only_when_bit_identical_in_both_arms
+
+input:
+  capture_id: cap_1785512421333592
+  capture_root: /private/tmp/pw_portable_sfm_update.6RQ6nt/before/Documents/captures_official/cap_1785512421333592
+  manifest: input-manifest.yaml
+  selection_rule: >-
+    Walk official_photo_bundle capture order and choose the first adjacent pair
+    for which both images have registered SfM poses and at least one verified
+    two-view geometry row; never inspect candidate compressed size during selection.
+  selected_capture_ordinals: [0, 1]
+  selected_frame_ids: [0, 1]
+  selected_database_image_ids: [1, 2]
+  selected_pair_id: 2147483649
+
+candidate:
+  photo_schema: pw_exact_joint_photo_group_v1
+  prediction_inputs:
+    - capture_order
+    - arkit_intrinsics_exact_ieee_bits
+    - arkit_extrinsics_exact_ieee_bits
+    - sfm_pose_exact_ieee_bits
+    - verified_two_view_matches
+    - sparse_geometry
+  encoder_rule: frozen_before_size_measurement
+  exact_target_dct_residual_required: true
+  count_root_payload: true
+  count_residual_payload: true
+  count_prediction_graph: true
+  count_models_selectors_indexes_manifests_checksums: true
+  fallback: independently_decodable_verified_jxl_member
+
+metrics:
+  primary: complete_candidate_dependency_group_bytes
+  compare_with: incumbent_two_photo_payload_bytes
+  report:
+    - source_jpeg_bytes
+    - incumbent_payload_bytes
+    - candidate_payload_bytes
+    - candidate_total_persisted_bytes
+    - exactness_status
+    - bounded_random_read_dependency_count
+    - source_manifest_reverification
+
+acceptance:
+  jpeg_byte_equal: true
+  jpeg_sha256_equal: true
+  all_semantic_bits_equal: true
+  semantic_counts_equal: true
+  semantic_order_equal: true
+  candidate_must_be_strictly_smaller: true
+  random_read_dependency_bounded: true
+  corruption_rejected: true
+  source_unchanged: true
+
+run_control:
+  seed: 20260803
+  automatic_repeats: 0
+  candidate_runs: 1
+  automatic_scale_up: forbidden
+  baseline_execution: forbidden
+  eight_photo_execution: forbidden_until_minimum_strict_win
+  complete_project_execution: forbidden_until_eight_photo_strict_win
+  phone_execution: forbidden
+
+stop_rules:
+  - reject_on_any_jpeg_byte_or_sha_mismatch
+  - reject_on_any_semantic_value_count_or_order_mismatch
+  - reject_if_candidate_total_is_not_strictly_smaller
+  - preserve_failed_and_invalid_runs
+  - do_not_generalize_beyond_the_registered_pair
+  - never_label_the_candidate_as_the_2016_microsoft_bitstream
+
+required_artifacts:
+  - input-manifest.yaml
+  - method-map.md
+  - evidence.json
+  - exact_restoration_report.json
+  - byte_accounting.json
+  - corruption_result.json
+  - source_reverification.json
+

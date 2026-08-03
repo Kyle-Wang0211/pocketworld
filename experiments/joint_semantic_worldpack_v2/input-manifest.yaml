@@ -1,0 +1,81 @@
+schema: pw_joint_semantic_worldpack_v2_input_manifest_v1
+frozen_at: "2026-08-03T13:35:00+08:00"
+capture:
+  id: cap_1785512421333592
+  root: /private/tmp/pw_portable_sfm_update.6RQ6nt/before/Documents/captures_official/cap_1785512421333592
+  complete_manifest:
+    path: experiments/worldpack_official_completion/input-manifest.yaml
+    entry_count: 322
+    current_source_bytes: 580406089
+    sha256: 46d0621460ffd99dbb6c9da5bd7340a177f8242d86b1bc83b4be70edbd9c2a92
+
+selection:
+  rule: >-
+    Walk official_photo_bundle capture order and choose the first adjacent pair
+    for which both images have registered SfM poses and at least one verified
+    two-view geometry row; never inspect candidate compressed size during selection.
+  result: first_eligible_pair
+  capture_ordinals: [0, 1]
+  frame_ids: [0, 1]
+  database_image_ids: [1, 2]
+  database_names: [frame_000000.jpg, frame_000001.jpg]
+  colmap_pair_id: 2147483649
+  raw_match_rows: 1697
+  verified_two_view_rows: 1395
+  shared_arkit_anchor_ids: 16
+
+photos:
+  - capture_ordinal: 0
+    frame_id: 0
+    id: tap-12
+    original_relative_path: photos_highres/official_tap-12.jpg
+    original_bytes: 2845753
+    original_sha256: ec48efba9574f6250e17305ef172b4454c9be6df31832a9349c2facecdc68f1d
+    incumbent_relative_path: photos_highres/official_tap-12.jpg.jxl
+    incumbent_bytes: 2319472
+    incumbent_sha256: 364c452ba446212955b1fc81c7633044c938134efd500c93eb850743f978b252
+    archive_status: verified
+  - capture_ordinal: 1
+    frame_id: 1
+    id: tap-25
+    original_relative_path: photos_highres/official_tap-25.jpg
+    original_bytes: 2871951
+    original_sha256: 9310e1cda59def8e66c3b4ceb873a28d81da00b88f30fd6bde5eb4e357a8db3a
+    incumbent_relative_path: photos_highres/official_tap-25.jpg.jxl
+    incumbent_bytes: 2345048
+    incumbent_sha256: eaee0db04c3d904ce2e7e181fb5b32478c3f8c5edf2a6f02850aa45de1ea998b
+    archive_status: verified
+
+context_files:
+  - path: official_photo_archive.json
+    bytes: 56360
+    sha256: 00d06aefbeda22b84347c3afd8caf0a96d6a687f84e6c34c6466c3acc578b4e4
+  - path: official_photo_bundle.json
+    bytes: 308038
+    sha256: dded6aafaaf7d96edf509329305c7ae77a7c85b6b06714eeebfa3c376c832d70
+  - path: official_sfm_fed_frames.jsonl
+    bytes: 110960
+    sha256: 7d3f9e9dd2a140eed1aa74ca6ccdb118029a9560f4796dcdcb19d149ca96359a
+  - path: official_sfm_live.db
+    bytes: 198983680
+    sha256: 0c12c0dfa76d50cae59929774242282d8236daeb852bdee6ac99c3062d6d08b0
+    integrity_check: ok
+  - path: official_sfm_sparse.ply
+    bytes: 1162370
+    sha256: ba941c8b1fff4e6bbeb270aed8f4e328a14e570c46647dbd91b48e74c713dd3a
+  - path: official_sfm_sparse_meta.json
+    bytes: 30332
+    sha256: 965f7f82d228c4d66ed512ce44e7138d0339aedb262c180e2b1835a71bf6d565
+    registered_frame_ids_include: [0, 1]
+  - path: photos_highres/official_tap-12.json
+    bytes: 9151
+    sha256: 61e2c7b5eac473030f4e32d6e3ed04e2459e99f0de3bc0a5b594f0ee7f376cbf
+  - path: photos_highres/official_tap-25.json
+    bytes: 12632
+    sha256: e0bf4a8cc2138fd4fbcd8d7f2e2d3bb988de47cda04004170c76012f6e2cdc98
+
+source_policy:
+  capture_is_read_only: true
+  original_jpegs_are_restored_to_task_scratch_only: true
+  incumbent_archives_are_never_rewritten: true
+  all_hashes_reverified_before_candidate_run: true
