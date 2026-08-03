@@ -1,0 +1,83 @@
+{
+  "schema": "pw_plr_phase1_evidence_v1",
+  "verdict": "phase_1_exact_container_passed",
+  "compression_verdict": "not_authorized_before_phase_4",
+  "repository": {
+    "path": "/Users/kaidongwang/Developer/pocketworld",
+    "execution_head": "ac0a8822a45f2cbd01e0d64530d25320d646e7a9",
+    "source_manifest": "results/source-manifest.sha256",
+    "source_manifest_sha256": "28fdb0eb5d928d0f0c637dad1d4b4f95b5b483df60c1c2200f2ac9aac844fe8a",
+    "shared_dirty_tree_preserved": true
+  },
+  "upstream": {
+    "brunsli_revision": "8a0e9b8ca2e3e089731c95a1da7ce8a3180e667c",
+    "brunsli_revision_label": "v0.1",
+    "brunsli_source_modified": false,
+    "brunsli_direct_submodules": {
+      "brotli": "35ef5c55482570454cc8d3e35cf68d24c30c0b6a",
+      "googletest": "2fe3bd994b3189899d93f1d5a881e725e046fdc2",
+      "highwayhash": "0aaf66b49e1c0348b51af82432252e671f35da59"
+    },
+    "plr_reference_revision": "8a65e4d0d3daa9292e40df0541e8f43fcaada2d7",
+    "plr_reference_used_for_phase1_bitstream": false,
+    "master_fallback_executed": false
+  },
+  "environment": {
+    "host": "macOS 26.1 25B78 Apple Silicon",
+    "clang": "Apple clang 17.0.0 clang-1700.6.3.2",
+    "cmake": "4.2.3",
+    "dvc": "3.67.1",
+    "mlflow": "3.14.0",
+    "python_lock_sha256": "0416eda1492eee479baf7b16a0e40b9cfb2d130c7fbce5904d3381c534b487df"
+  },
+  "formal_execution": {
+    "run_count": 1,
+    "command": "uv run python run_phase1.py --manifest input-manifest.yaml --revision v0.1 --adapter build/v0.1/pw_brunsli_side_adapter --work-directory results/work/v0.1 --output results/phase1-v0.1.json",
+    "result_path": "results/phase1-v0.1.json",
+    "result_sha256": "543adc4d82323fadd0670dfa03142641f8e6a753e7bf9e4a0e75c620c4eacac1",
+    "adapter_sha256": "1001c6c14b22d813e8e6d732ac31319c8beea8fd8f5e3ce4340c748e7209d0fc",
+    "dvc_lock_sha256": "deb3bde3da81b7ba5e4482e9203d5c78f58d47f728843cf6f3bdfca32193f0c4",
+    "mlflow_run_id": "c3f09751c0144ddfa067660b2d7ae295"
+  },
+  "metrics": {
+    "source_pair_bytes": 6108699,
+    "raw_separated_pair_bytes": 60421524,
+    "reconstruction_side_pair_bytes": 1196,
+    "raw_coefficient_pair_bytes": 60420328,
+    "exact_inputs": 2,
+    "corruption_cases_rejected": 14,
+    "byte_equal_inputs": 2,
+    "sha256_equal_inputs": 2,
+    "source_unchanged_inputs": 2
+  },
+  "phase0": {
+    "identity_and_accounting_contract_tests_passed": true,
+    "provisional_model_raw_upper_bound_bytes": null,
+    "status": "pending_frozen_deployment_architecture",
+    "reason": "No model artifact may be measured before the Phase 2 deployment architecture and CDF-decision contract are frozen."
+  },
+  "cleanup": {
+    "deleted_generated_corruption_probe_files": 28,
+    "canonical_side_and_coefficient_artifacts_preserved": true,
+    "restored_exact_jpegs_preserved": true,
+    "recoverability": "Corruption probes are deterministic derivatives of DVC-identified canonical payloads and the frozen runner."
+  },
+  "deviations": [
+    {
+      "event": "recursive_submodule_fetch_replaced",
+      "effect": "An interrupted temporary recursive fetch was discarded; the final build used only the three exact direct pinned submodule revisions.",
+      "formal_result_affected": false
+    },
+    {
+      "event": "upstream_sign_compare_warning",
+      "effect": "The adapter build retains Werror except for Brunsli's existing sign-compare warning; no upstream source was edited.",
+      "formal_result_affected": false
+    },
+    {
+      "event": "mlflow_filestore_rejected",
+      "effect": "MLflow 3.14 rejected maintenance-mode FileStore, so evidence was recorded in the supported local SQLite backend.",
+      "formal_result_affected": false
+    }
+  ],
+  "next_gate": "Freeze and review the Phase 2/3 architecture, deployment model, integer-CDF parity trace, training corpus exclusions, and one intra plus one A-to-B conditional arm before training."
+}

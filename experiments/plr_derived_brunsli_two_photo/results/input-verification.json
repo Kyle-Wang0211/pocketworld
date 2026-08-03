@@ -1,0 +1,18 @@
+{
+  "inputs": [
+    {
+      "bytes": 2995750,
+      "path": "/Users/kaidongwang/Developer/Aether3D-cross/pocketworld_flutter/device_captures/analysis_cap_1779777762841797/photos_highres/cell_85_slot_4.jpg",
+      "role": "A",
+      "sha256": "ac91faba107c41f891dbce7128f0ecc8e66cb451892e231479d8bf8b738e4be6"
+    },
+    {
+      "bytes": 3112949,
+      "path": "/Users/kaidongwang/Developer/Aether3D-cross/pocketworld_flutter/device_captures/analysis_cap_1779777762841797/photos_highres/cell_85_slot_5.jpg",
+      "role": "B",
+      "sha256": "73ec448d66a2242f5d8a07d3531d9018f604d3a67b219a5689901734fce83e4e"
+    }
+  ],
+  "schema": "pw_plr_input_verification_v1",
+  "status": "verified"
+}

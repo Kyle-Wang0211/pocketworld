@@ -1,0 +1,99 @@
+schema: '2.0'
+stages:
+  verify_inputs:
+    cmd: uv run python run_verify_inputs.py --manifest input-manifest.yaml 
+      --output results/input-verification.json
+    deps:
+    - path: input-manifest.yaml
+      hash: md5
+      md5: 32219f9688f0348e855ffffcd7efb6ec
+      size: 1011
+    - path: pw_plr/input_identity.py
+      hash: md5
+      md5: 312648f87166839ebd6ea6f224680506
+      size: 2065
+    - path: run_verify_inputs.py
+      hash: md5
+      md5: 12e0c1db6cda795dedd2a4b3f237198e
+      size: 1144
+    outs:
+    - path: results/input-verification.json
+      hash: md5
+      md5: e40c07dbfceeb7ff1b94c9ec2808438d
+      size: 689
+  phase1_exact_container:
+    cmd: scripts/fetch_build_brunsli.sh v0.1 build/v0.1 && uv run python 
+      run_phase1.py --manifest input-manifest.yaml --revision v0.1 --adapter 
+      build/v0.1/pw_brunsli_side_adapter --work-directory results/work/v0.1 
+      --output results/phase1-v0.1.json
+    deps:
+    - path: input-manifest.yaml
+      hash: md5
+      md5: 32219f9688f0348e855ffffcd7efb6ec
+      size: 1011
+    - path: native/CMakeLists.txt
+      hash: md5
+      md5: 2eb7fff707b7b54c4ea0580c064f0ed1
+      size: 941
+    - path: native/brunsli_side_adapter.cc
+      hash: md5
+      md5: 0c53387ee491f21f8a3f475a723a9022
+      size: 11722
+    - path: pw_plr/brunsli_phase1.py
+      hash: md5
+      md5: 48019799d419791cf952955f69944700
+      size: 8281
+    - path: pw_plr/input_identity.py
+      hash: md5
+      md5: 312648f87166839ebd6ea6f224680506
+      size: 2065
+    - path: results/input-verification.json
+      hash: md5
+      md5: e40c07dbfceeb7ff1b94c9ec2808438d
+      size: 689
+    - path: run_phase1.py
+      hash: md5
+      md5: cc4dc3eed55014743b63c145a77712c6
+      size: 1520
+    - path: scripts/fetch_build_brunsli.sh
+      hash: md5
+      md5: 8bd8083b5c1c6168ab7a5501340b218f
+      size: 1575
+      isexec: true
+    outs:
+    - path: build/v0.1/pw_brunsli_side_adapter
+      hash: md5
+      md5: 0ba87d7861e85d32f36a425ca9eaa9b9
+      size: 1082280
+      isexec: true
+    - path: results/phase1-v0.1.json
+      hash: md5
+      md5: 23abcfed707dfb7884e05c2247e5bc03
+      size: 2766
+    - path: results/work/v0.1/A/A.pwbs
+      hash: md5
+      md5: 5c9096d8b86800f227b0d359d1d61aec
+      size: 598
+    - path: results/work/v0.1/A/A.pwcf
+      hash: md5
+      md5: 76297693a7c1c52147a4d8d76d72015d
+      size: 30210164
+    - path: results/work/v0.1/B/B.pwbs
+      hash: md5
+      md5: cff0258843c711d346cc14c65e2b7838
+      size: 598
+    - path: results/work/v0.1/B/B.pwcf
+      hash: md5
+      md5: 8afda22fc87f4af8bb01837199de32bf
+      size: 30210164
+  phase0_accounting_contract:
+    cmd: uv run pytest tests/test_model_accounting.py -q
+    deps:
+    - path: pw_plr/model_accounting.py
+      hash: md5
+      md5: 64e8254f8afced63f6e51cea8486139d
+      size: 4205
+    - path: tests/test_model_accounting.py
+      hash: md5
+      md5: 1b9d46caaefee301fd252e9d9c740f24
+      size: 3385

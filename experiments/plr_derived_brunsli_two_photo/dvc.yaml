@@ -1,0 +1,48 @@
+stages:
+  verify_inputs:
+    cmd: >-
+      uv run python run_verify_inputs.py
+      --manifest input-manifest.yaml
+      --output results/input-verification.json
+    deps:
+      - input-manifest.yaml
+      - pw_plr/input_identity.py
+      - run_verify_inputs.py
+    metrics:
+      - results/input-verification.json:
+          cache: false
+
+  phase0_accounting_contract:
+    cmd: uv run pytest tests/test_model_accounting.py -q
+    deps:
+      - pw_plr/model_accounting.py
+      - tests/test_model_accounting.py
+
+  phase1_exact_container:
+    frozen: true
+    cmd: >-
+      scripts/fetch_build_brunsli.sh v0.1 build/v0.1 &&
+      uv run python run_phase1.py
+      --manifest input-manifest.yaml
+      --revision v0.1
+      --adapter build/v0.1/pw_brunsli_side_adapter
+      --work-directory results/work/v0.1
+      --output results/phase1-v0.1.json
+    deps:
+      - input-manifest.yaml
+      - native/CMakeLists.txt
+      - native/brunsli_side_adapter.cc
+      - pw_plr/brunsli_phase1.py
+      - pw_plr/input_identity.py
+      - run_phase1.py
+      - scripts/fetch_build_brunsli.sh
+      - results/input-verification.json
+    outs:
+      - build/v0.1/pw_brunsli_side_adapter
+      - results/work/v0.1/A/A.pwbs
+      - results/work/v0.1/A/A.pwcf
+      - results/work/v0.1/B/B.pwbs
+      - results/work/v0.1/B/B.pwcf
+    metrics:
+      - results/phase1-v0.1.json:
+          cache: false

@@ -1,0 +1,60 @@
+schema: pw_plr_derived_brunsli_two_photo_v1
+registered_at: 2026-08-03T00:00:00+08:00
+objective: >-
+  Prove that a pinned Brunsli exact-JPEG container can separate reconstruction
+  state from all DCT coefficients and restore the two immutable PocketWorld
+  JPEG files byte for byte before any learned entropy training begins.
+repository:
+  path: /Users/kaidongwang/Developer/pocketworld
+  accepted_design_head: ee99c76
+  execution_plan_head: ac0a882
+  worktree_policy: shared_dirty_preserve_every_unrelated_change
+formal_project_photo_count: 141
+approved_scope_photo_count:
+  min: 93
+  max: 300
+baseline:
+  codec: libjxl-0.12.0-exact-jpeg-effort-10
+  state: not_yet_measured
+  measurement_phase: 4
+  permitted_runs_per_input: 1
+model_accounting:
+  storage_scope: per_project_self_contained
+  provisional_value: complete_raw_untrained_deployment_artifact
+  provisional_compressed_results: diagnostic_only
+  final_value: minimum_exact_complete_persisted_final_candidate
+  storage_candidates:
+    - raw
+    - zstd-1.5.7-level-22
+    - zpaq-7.15-method-5
+  zpaq_source_sha256: e85ec2529eb0ba22ceaeabd461e55357ef099b80f61c14f377b429ea3d49d418
+  cdf_decision_parity_priority: true
+brunsli:
+  repository: https://github.com/google/brunsli.git
+  primary_commit: 8a0e9b8ca2e3e089731c95a1da7ce8a3180e667c
+  fallback_commit: c9128f43994c1ca830dd079777d85f16736d6ba7
+  fallback_condition: primary_upstream_exact_container_failure_only
+  upstream_edits: forbidden
+plr:
+  repository: https://github.com/zhuiguangzhe123/PLR.git
+  reference_commit: 8a65e4d0d3daa9292e40df0541e8f43fcaada2d7
+  reference_tree: 67796f3cfc8ef558d3b2287fcf315a8731ae1f14
+  implementation_label: PLR-derived completion
+run_control:
+  host: macos-apple-silicon
+  phone: forbidden
+  production: forbidden
+  full_project: forbidden_before_two_photo_win
+  subagents: forbidden_by_user
+phase_boundary:
+  current: phase_0_and_1
+  training: forbidden_until_phase_1_review
+  jxl_measurement: forbidden_until_phase_4
+  lepton_measurement: forbidden_until_phase_4
+terminal_states:
+  - phase_1_exact_container_passed
+  - invalid_exactness_failure
+  - invalid_incomplete_cost_accounting
+  - blocked_portability
+  - blocked_upstream_or_license
+  - blocked_upstream_exact_container
