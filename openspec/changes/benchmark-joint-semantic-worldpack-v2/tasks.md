@@ -31,19 +31,20 @@
       indexes, manifests, and checksums in persisted size.
 - [x] 3.2 Implement the minimum WorldPack v2 dependency group and fail-closed
       reader.
-- [ ] 3.3 Restore both JPEGs and all semantic records; compare byte/SHA/bit/order
+- [x] 3.3 Restore both JPEGs and all semantic records; compare byte/SHA/bit/order
       identity and reject registered corruptions.
 
 ## 4. Execute and decide
 
-- [ ] 4.1 Reference the saved incumbent bytes without executing its encoder.
-- [ ] 4.2 Run the candidate exactly once after focused tests pass.
-- [ ] 4.3 Stop and retain evidence if the candidate is not strictly smaller.
-- [ ] 4.4 If it wins, create a separate eight-photo expansion plan; do not run a
-      complete project or access the phone in this change.
+- [x] 4.1 Reference the saved incumbent bytes without executing its encoder.
+- [x] 4.2 Run the candidate exactly once after focused tests pass.
+- [x] 4.3 Stop and retain evidence because the candidate is not strictly smaller.
+- [x] 4.4 Do not create an eight-photo expansion plan because the minimum unit
+      lost; no complete project or phone execution is authorized.
 
 ## 5. Verification
 
-- [ ] 5.1 Run focused tests, strict OpenSpec validation, manifest verification,
+- [x] 5.1 Run focused tests twice without rerunning the benchmark, strict
+      OpenSpec validation, manifest verification,
       and deterministic result checks.
 - [ ] 5.2 Inspect only owned files and report evidence, deviations, and verdict.

@@ -1,0 +1,111 @@
+{
+  "baseline_execution": "reference_only",
+  "candidate_archive_sha256": "837a81456d0a50debdf34f5e12d9474dbbbc39dfc6febd349b43b3c1a1a42ceb",
+  "candidate_complete_bytes": 5802253,
+  "candidate_footer_bytes": 40,
+  "candidate_header_bytes": 32,
+  "candidate_index_bytes": 1957,
+  "candidate_reduction_vs_incumbent_fraction": -0.24391212815037777,
+  "candidate_run_count": 1,
+  "commercial_use_verdict": "independent_host_experiment_only_pending_production_audit",
+  "corruption_rejected": true,
+  "corruption_results": {
+    "dependency": true,
+    "hash": true,
+    "index": true,
+    "payload": true
+  },
+  "faithful_2016_reproduction_claimed": false,
+  "homography_inlier_count": 542,
+  "implementation_identity": "pocketworld_independent_v2",
+  "incumbent_complete_bytes": 4664520,
+  "input_manifest_sha256": "001afa34a00c49f79af0c478861cd010faed00e84a59fe5c1a9b65b0b1e8a014",
+  "jpeg_byte_equal": true,
+  "jpeg_coefficient_tool_sha256": "3360e9dce2eed55c7b231519ca55840a5edb3f30cf72c81faa96fa265bbf8f1a",
+  "jpeg_sha256_equal": true,
+  "members": [
+    {
+      "codec": "raw",
+      "compression_elapsed_seconds": 0.0,
+      "kind": "root_jpeg",
+      "original_bytes": 2319472,
+      "persisted_payload_bytes": 2319472,
+      "zpaq_candidate_bytes": null
+    },
+    {
+      "codec": "raw",
+      "compression_elapsed_seconds": 0.024800416998914443,
+      "kind": "prediction_graph",
+      "original_bytes": 342,
+      "persisted_payload_bytes": 342,
+      "zpaq_candidate_bytes": 495
+    },
+    {
+      "codec": "zpaq_7_15_method5",
+      "compression_elapsed_seconds": 0.6684037079976406,
+      "kind": "compensation_state",
+      "original_bytes": 285768,
+      "persisted_payload_bytes": 118511,
+      "zpaq_candidate_bytes": 118511
+    },
+    {
+      "codec": "raw",
+      "compression_elapsed_seconds": 0.021496459001355106,
+      "kind": "frequency_selectors",
+      "original_bytes": 192,
+      "persisted_payload_bytes": 192,
+      "zpaq_candidate_bytes": 330
+    },
+    {
+      "codec": "zpaq_7_15_method5",
+      "compression_elapsed_seconds": 153.0119831669981,
+      "kind": "coefficient_residuals",
+      "original_bytes": 73156608,
+      "persisted_payload_bytes": 3360690,
+      "zpaq_candidate_bytes": 3360690
+    },
+    {
+      "codec": "zpaq_7_15_method5",
+      "compression_elapsed_seconds": 0.026462165998964338,
+      "kind": "jpeg_side_information",
+      "original_bytes": 1143,
+      "persisted_payload_bytes": 1017,
+      "zpaq_candidate_bytes": 1017
+    }
+  ],
+  "mlflow_run_id": "7fc5831ed26c4536be1cfca0576fb2c2",
+  "paper_31_percent_used_as_acceptance_target": false,
+  "peak_rss_bytes": 1151352832,
+  "phone_access": false,
+  "prediction_residual_count": 18289152,
+  "production_changes": false,
+  "random_read_dependency_bounded": true,
+  "repository_head_at_execution": "7e5a0c2e0ddd5385a20f3964605f5dc33c67381b",
+  "schema": "pw_joint_semantic_worldpack_v2_minimum_result_v1",
+  "selected_capture_ordinals": [
+    0,
+    1
+  ],
+  "semantic_bits_and_order_equal": true,
+  "semantic_slice_identity_sha256": "50c8eb8c80f81dad7d1bf5b929d979fe6cb6a99974daf416b876dec78b3a9325",
+  "semantic_stream_accounting": "shared_verified_streams_cancel_from_both_photo_arms",
+  "shared_arkit_anchor_count": 16,
+  "source_jpeg_bytes": 5717704,
+  "source_jpeg_count": 2,
+  "source_jpeg_sha256": [
+    "ec48efba9574f6250e17305ef172b4454c9be6df31832a9349c2facecdc68f1d",
+    "9310e1cda59def8e66c3b4ceb873a28d81da00b88f30fd6bde5eb4e357a8db3a"
+  ],
+  "source_unchanged": true,
+  "stage_elapsed_seconds": {
+    "exact_extract": 1.1445947499996691,
+    "homography_fit": 0.08461920899935649,
+    "prediction": 1.2517784169976949,
+    "prediction_and_entropy": 155.05180837499938,
+    "tool_build": 3.55468291699799
+  },
+  "total_elapsed_seconds": 305.54821195800105,
+  "verified_match_count": 1395,
+  "winner": "incumbent",
+  "zpaq_revision": "e85ec2529eb0ba22ceaeabd461e55357ef099b80f61c14f377b429ea3d49d418"
+}

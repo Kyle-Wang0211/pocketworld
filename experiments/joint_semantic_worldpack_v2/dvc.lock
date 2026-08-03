@@ -1,0 +1,28 @@
+schema: '2.0'
+stages:
+  verify-input:
+    cmd: PYTHONPATH=. ../worldpack_official_completion/.venv/bin/python 
+      run_minimum.py --contract experiment-contract.yaml --verify-input-only
+    deps:
+    - path: 
+        /private/tmp/pw_portable_sfm_update.6RQ6nt/before/Documents/captures_official/cap_1785512421333592
+      hash: md5
+      md5: e264524bf88361ee15068eda67e7a70d.dir
+      size: 580406089
+      nfiles: 322
+    - path: experiment-contract.yaml
+      hash: md5
+      md5: 6163b4702e488282158fe9ced86a0571
+      size: 5220
+    - path: input-manifest.yaml
+      hash: md5
+      md5: b14949b602a9dc6cb83e3e5c2874e297
+      size: 3255
+    - path: run_minimum.py
+      hash: md5
+      md5: 7becf0a878a77aa123dba66b43265dda
+      size: 22637
+    - path: semantic_slice.py
+      hash: md5
+      md5: d89ac07dbd7fb446eaa66f0c74173ede
+      size: 13306

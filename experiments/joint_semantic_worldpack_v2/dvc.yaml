@@ -1,0 +1,10 @@
+stages:
+  verify-input:
+    cmd: PYTHONPATH=. ../worldpack_official_completion/.venv/bin/python 
+      run_minimum.py --contract experiment-contract.yaml --verify-input-only
+    deps:
+    - /private/tmp/pw_portable_sfm_update.6RQ6nt/before/Documents/captures_official/cap_1785512421333592
+    - experiment-contract.yaml
+    - input-manifest.yaml
+    - run_minimum.py
+    - semantic_slice.py
