@@ -81,6 +81,13 @@ Phase 0 在看到终局照片码流前，固定下面三个存储候选：
 
 报告必须同时保留：fp32 reference 大小/SHA、部署精度、部署模型未压缩大小/SHA、每个存储候选的参数和版本、压缩文件 SHA、恢复 SHA、逐字节结果，以及最终获胜的 `M`。
 
+Phase 0 尚未产生最终训练权重，因此必须登记两个阶段：
+
+- `provisional_model_raw_upper_bound_bytes`：冻结架构、精度、tensor shape、metadata schema 和 envelope 后，未训练部署工件的完整 raw 字节。只有这些条件保证最终 raw 工件长度相同，它才是可证明上界；
+- `final_M`：Phase 4 前对最终训练工件原样重跑 raw/Zstd/ZPAQ 三候选后得到的最小完整持久字节，只有它能进入正式公式。
+
+未训练权重的 Zstd/ZPAQ 结果只作诊断。随机初始化通常难压并不构成数学保证，不能把其压缩结果直接锁成最终 `M`。三个 codec 只运行固定参数，不做压缩器搜索；Phase 0 的主要证据预算应放在 CDF 判决 trace 和 fp32/fp16/int8 候选的判决一致性上。
+
 这里必须分清两种“无损”：
 
 - Zstd/ZPAQ 对规范化部署模型的压缩必须逐字节无损；
@@ -250,6 +257,7 @@ model_accounting:
 - `invalid_incomplete_cost_accounting`
 - `blocked_portability`
 - `blocked_upstream_or_license`
+- `blocked_upstream_exact_container`
 
 不再存在 `model_budget_rejected`。
 
@@ -263,7 +271,7 @@ model_accounting:
 
 1. 冻结模型结构、参数量、序列化格式和解码依赖。
 2. 冻结部署精度和 CDF 判决一致性合同；若判决改变，把它登记成独立模型臂。
-3. 运行 raw、Zstd 1.5.7 level 22、ZPAQ 7.15 method 5 三个固定存储候选，全部做模型工件逐字节恢复，按完整字节选出 `M`。
+3. 对未训练的冻结架构运行 raw、Zstd 1.5.7 level 22、ZPAQ 7.15 method 5 三个固定存储候选，全部做模型工件逐字节恢复；raw 完整字节登记为 provisional upper bound，两个压缩结果只作诊断。
 4. 冻结 scope 2、正式 N=141、批准范围 93–300；scope 1 不参与本轮。
 5. 检查 ARM64 operator 路线、CUDA-only 依赖和跨平台 CDF 决定性。
 6. 计算 2/44/141/300/1,000/10,000 张下的模型分摊；1,000/10,000 标为纯信息；不按绝对模型大小停止。
@@ -282,12 +290,13 @@ Brunsli 主版本固定为 v0.1 commit `8a0e9b8ca2e3e089731c95a1da7ce8a3180e667c
 
 除了正式 JXL 门槛和诊断 Lepton 门槛，还必须：
 
-1. 分别报告 `B`、`M`、`H`；
-2. 报告 141 张的正式模型分摊；
-3. 计算并验证 `N_break_even`；
-4. 生成规模敏感性表；
-5. 若141张失败且拐点在142–300，保留为 scope 2 可达证据；若超过300，明确判为本作用域不可达失败；
-6. 若141张获胜，再按原计划扩展到固定4/8图组和一次完整项目。
+1. 对最终训练模型重跑同一组三个存储候选与 CDF 判决一致性，选出 `final_M`，并同时保留 provisional 表；
+2. 分别报告 `B`、`final_M`、`H`；
+3. 报告 141 张的正式模型分摊；
+4. 计算并验证 `N_break_even`；
+5. 生成规模敏感性表；
+6. 若141张失败且拐点在142–300，保留为 scope 2 可达证据；若超过300，明确判为本作用域不可达失败；
+7. 若141张获胜，再按原计划扩展到固定4/8图组和一次完整项目。
 
 ## 九、哪些东西完全没有改变
 
@@ -300,6 +309,7 @@ Brunsli 主版本固定为 v0.1 commit `8a0e9b8ca2e3e089731c95a1da7ce8a3180e667c
 - 不动生产代码、不上手机、不跑 100 MB。
 - H2 只有一个冻结 conditional arm 和一个 intra-only 归因臂。
 - Mac 结果不能直接批准生产。
+- `loser_at_141_but_reachable_within_scope2` 不授权生产按照片数自动切换 codec；这需要另立产品合同审查格式兼容、恢复路径和复杂度成本。
 
 ## 十、修改后的核心决策
 

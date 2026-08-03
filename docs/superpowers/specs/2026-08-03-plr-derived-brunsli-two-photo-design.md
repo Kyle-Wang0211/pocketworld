@@ -18,6 +18,11 @@ training file; project-scope reachability is frozen at 300 photos; the formal
 scope is permanently the self-contained per-project archive; and same-input
 JXL sizes are explicitly unknown until their one allowed Phase 4 measurement.
 
+Revision 3 separates provisional and final model accounting. Phase 0 records a
+provable raw-artifact upper bound from the frozen architecture and exercises
+the storage and CDF-parity harnesses; Phase 4 reruns the same frozen candidates
+on the final trained artifact and uses only `final_M` for the terminal verdict.
+
 ## Objective
 
 Build one complete, independently decodable two-photo archive that uses a
@@ -111,6 +116,23 @@ canonical deployment artifact length, bytes, and SHA-256 exactly. The minimum
 of these three complete results defines `M`. No codec, level, dictionary, or
 serialization may be added after terminal sizes are visible.
 
+Phase 0 runs before final training. It must therefore record:
+
+```text
+provisional_model_raw_upper_bound_bytes =
+    complete uncompressed bytes of the frozen untrained deployment artifact
+```
+
+This raw value is a provable upper bound only when the frozen architecture,
+deployment precision, tensor shapes, metadata schema, and envelope make the
+final raw artifact the same complete length. Zstd and ZPAQ results on untrained
+weights are diagnostics; they must not be called mathematical upper bounds.
+Immediately before Phase 4, rerun the unchanged raw/Zstd/ZPAQ candidate set on
+the final trained deployment artifact, register both provisional and final
+tables, and define `final_M` as the minimum final complete persisted size. Only
+`final_M` enters `candidate_effective_bytes`, `H`, `N_break_even`, and the
+terminal verdict.
+
 The report must separately record:
 
 - reference fp32 artifact size and SHA-256, when one exists;
@@ -127,6 +149,10 @@ serialization, with decision-parity evidence. If any CDF decision changes, it
 is a distinct model arm, must be frozen before the terminal comparison, and
 cannot be described as byte-exact compression of the fp32 model. Either model
 arm remains subject to exact restoration of both original JPEG files.
+
+Phase 0 effort prioritizes the deterministic CDF-decision trace and parity
+evidence for registered deployment precisions. The three storage codecs remain
+a fixed, bounded accounting step; they are not a parameter-search campaign.
 
 There is no fixed 15 MB, 20 MB, or other absolute rejection threshold. A fixed
 model is constant overhead while project data grows. An absolute ceiling would
@@ -261,6 +287,11 @@ reachable scale point inside the approved self-contained scope. When it exceeds
 300, it is an unreachable loss under this contract. A mathematically defined
 break-even at 1,000 or 10,000 is diagnostic only, not a positive verdict.
 
+A reachable loss does not authorize the production encoder to switch codecs by
+project photo count. Such an automatic internal policy is a separate product
+decision with its own format-compatibility, recovery, and complexity review;
+this research contract records the branch but grants no production authority.
+
 `N_break_even` describes only fixed-model overhead. It is not permission to
 extrapolate a two-photo stream ratio to a complete project. A later complete
 project run must still encode every registered photo exactly once.
@@ -353,11 +384,13 @@ external caches are not decoder dependencies.
    count, deployment precision, CDF-decision parity contract, the three fixed
    model-storage candidates, scope 2, the 93–300 approved range, both Brunsli
    revision hashes, and iPhone ARM64 operator inventory. Produce byte-exact
-   model-storage round trips and choose `M` by complete persisted bytes. Record
-   the model size and projected charges, but do not reject it solely for
-   exceeding an arbitrary byte ceiling. Stop on an unaccounted decoder
-   dependency, an unregistered model serialization, or a CUDA-only decoding
-   requirement.
+   model-storage round trips for the untrained frozen architecture; register
+   its complete raw bytes as `provisional_model_raw_upper_bound_bytes`, while
+   keeping provisional Zstd/ZPAQ sizes diagnostic. Establish the CDF-decision
+   trace and parity harness. Record projected charges, but do not reject the
+   model solely for exceeding an arbitrary byte ceiling. Stop on an unaccounted
+   decoder dependency, an unregistered model serialization, or a CUDA-only
+   decoding requirement.
 2. **Phase 1 — Brunsli exact container:** extract non-coefficient state and raw
    coefficients, restore both source files, and pass corruption tests. Stop on
    any byte mismatch.
@@ -369,10 +402,12 @@ external caches are not decoder dependencies.
 5. **Phase 4 — one terminal A/B:** because the exact-pair JXL baseline is
    currently absent, encode/decode each frozen input with JXL exactly once and
    persist both results. Reuse a hash-matching Lepton result or create each
-   missing diagnostic result once. Create one formal candidate; apply the cost
-   equation, exactness gates, and corruption gates; calculate `N_break_even`,
-   reachability, and the registered scale-sensitivity rows; emit one terminal
-   verdict. No estimated `J` or `H` is permitted.
+   missing diagnostic result once. Rerun the frozen raw/Zstd/ZPAQ model-storage
+   candidates and CDF-decision parity test on the final trained artifact, then
+   select `final_M`. Create one formal candidate; apply the cost equation,
+   exactness gates, and corruption gates; calculate `N_break_even`, reachability,
+   and the registered scale-sensitivity rows; emit one terminal verdict. No
+   provisional `M`, estimated `J`, or estimated `H` is permitted.
 
 No later phase starts when an earlier phase fails.
 
