@@ -1,26 +1,29 @@
 ## 1. Freeze evidence and scope
 
-- [ ] 1.1 Record the exact 2016/2015 method map, accessible source hashes,
+- [x] 1.1 Record the exact 2016/2015 method map, accessible source hashes,
       implementation gaps, license components, and commercial-use verdict.
-- [ ] 1.2 Freeze the current repository identity, dirty-diff hash, original
+- [x] 1.2 Freeze the current repository identity, dirty-diff hash, original
       project manifest, saved baseline artifact hash, selection rule, metrics,
       and stop conditions.
-- [ ] 1.3 Validate this OpenSpec change strictly.
+- [x] 1.3 Validate this OpenSpec change strictly.
 
 ## 2. Minimum joint-unit TDD
 
-- [ ] 2.1 Add RED tests for deterministic pair selection and complete input
+- [x] 2.1 Add RED tests for deterministic pair selection and complete input
       identity.
-- [ ] 2.2 Implement a read-only extractor for two exact JPEGs and their pose,
+- [x] 2.2 Implement a read-only extractor for two exact JPEGs and their pose,
       track, match, descriptor, and sparse-point slice.
-- [ ] 2.3 Add RED tests for exact JPEG coefficient/header round trips and
+- [x] 2.3 Add RED tests for exact JPEG coefficient/header round trips and
       unsupported-input rejection.
-- [ ] 2.4 Implement versioned exact JPEG logical framing using the existing
+- [x] 2.4 Implement versioned exact JPEG logical framing using the existing
       libjpeg coefficient boundary.
 - [ ] 2.5 Add RED tests for feature-cost tree state, global/local compensation,
       frequency selectors, and exact residual inversion.
-- [ ] 2.6 Implement only the prediction stages supported by the method map;
-      mark and stop on missing fidelity details.
+- [x] 2.6 Stop the faithful-2016 arm because required details are missing and
+      record `blocked_fidelity` without running a misleading benchmark.
+- [ ] 2.7 Implement the separately preregistered PocketWorld independent
+      predictor and label every substitution; never attribute its result to the
+      paper.
 
 ## 3. Complete byte accounting
 

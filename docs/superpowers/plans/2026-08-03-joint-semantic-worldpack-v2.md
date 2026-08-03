@@ -327,7 +327,12 @@ git add experiments/joint_semantic_worldpack_v2/jpeg_exact.py \
 git commit -m "test(compression): prove exact joint JPEG framing"
 ```
 
-### Task 5: Implement only fidelity-approved prediction stages with TDD
+### Task 5: Implement the preregistered independent prediction stages with TDD
+
+The method audit blocked a faithful-2016 claim. This task therefore implements
+`pocketworld_independent_v2`, using the exact algorithm registered in
+`experiment-contract.yaml`. It is an independent ablation, not the Microsoft
+bitstream, and the paper's reported percentage is not an acceptance promise.
 
 **Files:**
 - Create: `experiments/joint_semantic_worldpack_v2/jpeg_collection_model.py`
@@ -354,14 +359,14 @@ def test_every_parent_is_backward_and_every_selector_is_bounded(encoded_child):
 
 Expected: missing `jpeg_collection_model` symbols.
 
-- [ ] **Step 3: Implement the feature-domain parent record**
+- [ ] **Step 3: Implement the independently registered parent record**
 
-For two photos the root/child direction is fixed by capture order; compute and
-persist the paper-mapped feature cost for audit. Use verified COLMAP matches and
-exact keypoint/descriptor inputs. Do not choose direction based on compressed
-bytes.
+For two photos the root/child direction is fixed by capture order. Use verified
+COLMAP two-view correspondences and exact keypoint/descriptor inputs. Fit the
+registered deterministic child-to-root homography; do not choose direction or
+fit parameters based on compressed bytes.
 
-- [ ] **Step 4: Implement the approved global/local compensation state**
+- [ ] **Step 4: Implement the registered global/local compensation state**
 
 Use integer or explicitly specified fixed-point serialization for every fitted
 parameter. Persist enough information to reproduce the exact coefficient

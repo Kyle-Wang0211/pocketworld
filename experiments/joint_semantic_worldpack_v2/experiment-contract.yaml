@@ -59,6 +59,38 @@ candidate:
   count_prediction_graph: true
   count_models_selectors_indexes_manifests_checksums: true
   fallback: independently_decodable_verified_jxl_member
+  registered_predictor:
+    identity: pw_quantized_homography_local_dct_v1
+    claim: declared_independent_implementation
+    relationship_source: verified_two_view_geometries
+    homography_direction: child_pixels_to_root_pixels
+    fit:
+      algorithm: normalized_dlt_with_deterministic_ransac
+      seed: 20260803
+      iterations: 512
+      reprojection_threshold_pixels: 4.0
+      tie_break: maximum_inliers_then_minimum_squared_error_then_sample_order
+    decoder_transform:
+      homography_fixed_point_fraction_bits: 32
+      arithmetic: signed_integer_floor_division
+      border_mode: invalid_parent_uses_zero_prediction
+    local_block_search:
+      radius_blocks: 2
+      candidate_order: zero_then_manhattan_distance_then_dy_then_dx
+      selection_cost: sum_absolute_exact_quantized_dct_residual
+      tie_break: first_candidate
+    frequency_selection:
+      granularity: component_and_dct_frequency
+      inter_cost: sum_absolute_exact_residual
+      intra_cost: sum_absolute_target_coefficient
+      tie_break: inter
+    residual:
+      representation: signed_int32_little_endian
+      inverse: checked_int16_parent_plus_residual
+    entropy:
+      backend: zpaq_7_15_method5
+      revision: e85ec2529eb0ba22ceaeabd461e55357ef099b80f61c14f377b429ea3d49d418
+      raw_fallback_when_not_smaller: true
 
 metrics:
   primary: complete_candidate_dependency_group_bytes
@@ -109,4 +141,3 @@ required_artifacts:
   - byte_accounting.json
   - corruption_result.json
   - source_reverification.json
-

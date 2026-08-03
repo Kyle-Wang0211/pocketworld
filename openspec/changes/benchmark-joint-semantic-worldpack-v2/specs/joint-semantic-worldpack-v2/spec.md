@@ -45,6 +45,15 @@ deviation.
 - **THEN** the benchmark SHALL stop before claiming a faithful reproduction
 - **AND** SHALL NOT silently replace the missing detail with a custom heuristic
 
+#### Scenario: Independent replacement is tested
+
+- **WHEN** the faithful-publication arm is blocked but a separately specified
+  exact predictor is preregistered
+- **THEN** it SHALL use a distinct implementation identity and complete byte
+  accounting
+- **AND** its result SHALL NOT be attributed to the publication or compared to
+  the publication's reported percentage as an acceptance promise
+
 ### Requirement: Complete persisted byte comparison
 
 The candidate SHALL count every byte required for independent decoding and

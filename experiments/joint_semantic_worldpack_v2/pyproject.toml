@@ -6,6 +6,7 @@ requires-python = ">=3.11,<3.12"
 dependencies = [
   "dvc==3.67.1",
   "mlflow==3.14.0",
+  "numpy==2.4.6",
   "pytest==8.4.1",
   "pyyaml==6.0.2",
 ]
@@ -15,4 +16,3 @@ package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
