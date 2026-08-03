@@ -27,9 +27,7 @@ def _entropy_table_record(module: Any) -> dict[str, Any]:
     }
 
 
-def _gaussian_stages(model: Any) -> Iterable[tuple[str, Any]]:
-    yield "cbcr_anchor", model.Guassian_cbcr_anchor
-    yield "cbcr_non_anchor", model.Guassian_cbcr_non_anchor
+def _luma_gaussian_stages(model: Any) -> Iterable[tuple[str, Any]]:
     for index, module in enumerate(model.Gaussion_Ys):
         yield f"y1_frequency_{index}", module
     for index, module in enumerate(model.Gaussion_Ys_234):
@@ -40,10 +38,8 @@ def collect_model_decision_trace(model: Any) -> dict[str, Any]:
     """Hash all integer decisions used by the codec's 22 entropy stages."""
 
     stages: list[dict[str, Any]] = []
-    for name, entropy_bottleneck in (
-        ("hyper_cbcr", model.hyper_cbcr.entropy_bottleneck),
-        ("hyper_y", model.hyper_Y.entropy_bottleneck),
-    ):
+
+    def add_entropy_bottleneck(name: str, entropy_bottleneck: Any) -> None:
         stages.append(
             {
                 "name": name,
@@ -52,7 +48,7 @@ def collect_model_decision_trace(model: Any) -> dict[str, Any]:
             }
         )
 
-    for name, codec in _gaussian_stages(model):
+    def add_gaussian(name: str, codec: Any) -> None:
         decision = codec.last_decision_tensors
         if decision is None:
             raise RuntimeError(f"entropy stage {name} has not produced a decision")
@@ -68,6 +64,14 @@ def collect_model_decision_trace(model: Any) -> dict[str, Any]:
                 ),
             }
         )
+
+    # Preserve the actual arithmetic stream order used by base_eff.compress.
+    add_entropy_bottleneck("hyper_cbcr", model.hyper_cbcr.entropy_bottleneck)
+    add_gaussian("cbcr_anchor", model.Guassian_cbcr_anchor)
+    add_gaussian("cbcr_non_anchor", model.Guassian_cbcr_non_anchor)
+    add_entropy_bottleneck("hyper_y", model.hyper_Y.entropy_bottleneck)
+    for name, codec in _luma_gaussian_stages(model):
+        add_gaussian(name, codec)
 
     serialized = json.dumps(
         stages, sort_keys=True, separators=(",", ":")

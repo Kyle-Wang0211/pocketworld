@@ -1,7 +1,7 @@
 schema: '2.0'
 stages:
   verify_inputs:
-    cmd: uv run python run_verify_inputs.py --manifest input-manifest.yaml 
+    cmd: uv run python run_verify_inputs.py --manifest input-manifest.yaml
       --output results/input-verification.json
     deps:
     - path: input-manifest.yaml
@@ -22,9 +22,9 @@ stages:
       md5: e40c07dbfceeb7ff1b94c9ec2808438d
       size: 689
   phase1_exact_container:
-    cmd: scripts/fetch_build_brunsli.sh v0.1 build/v0.1 && uv run python 
-      run_phase1.py --manifest input-manifest.yaml --revision v0.1 --adapter 
-      build/v0.1/pw_brunsli_side_adapter --work-directory results/work/v0.1 
+    cmd: scripts/fetch_build_brunsli.sh v0.1 build/v0.1 && uv run python
+      run_phase1.py --manifest input-manifest.yaml --revision v0.1 --adapter
+      build/v0.1/pw_brunsli_side_adapter --work-directory results/work/v0.1
       --output results/phase1-v0.1.json
     deps:
     - path: input-manifest.yaml
@@ -148,3 +148,85 @@ stages:
       hash: md5
       md5: de18aeb238380591058995c441ae8326
       size: 473
+  freeze_phase2_training_corpus:
+    cmd: uv run python run_freeze_training_corpus.py --config
+      phase2-training-corpus-sources.yaml --output
+      phase2-training-corpus-manifest.json
+    deps:
+    - path: phase2-training-corpus-sources.yaml
+      hash: md5
+      md5: dcf3d88266b8947b7d9f79e684c1ec87
+      size: 918
+    - path: pw_plr/training_corpus.py
+      hash: md5
+      md5: a8129a5c9e3ddadc74bc235b1e44649f
+      size: 6516
+    - path: pw_plr/training_exclusion.py
+      hash: md5
+      md5: b79e17fbeeefdd0b5f950db874f7fd06
+      size: 6376
+    - path: run_freeze_training_corpus.py
+      hash: md5
+      md5: 2755bf6fe75953ee912b6788d4ce0b7d
+      size: 530
+    - path: training-exclusion-manifest.json
+      hash: md5
+      md5: ed352822599fe43abd8dee598bc3a4ff
+      size: 16836
+    outs:
+    - path: phase2-training-corpus-manifest.json
+      hash: md5
+      md5: 9cff9323cfe94cc4a9b0e107b21c9bea
+      size: 215861
+  freeze_combined_training_corpus:
+    cmd: uv run python run_freeze_combined_corpus.py --first-party
+      phase2-training-corpus-manifest.json --first-party-root
+      data/first_party_training --public openimages-v7-cvdf-corpus.json
+      --exclusions training-exclusion-manifest.json --probe-binary
+      build/v0.1/pw_brunsli_training_extract --workers 32 --output
+      phase2-combined-corpus.json
+    deps:
+    - path: build/v0.1/pw_brunsli_training_extract
+      hash: md5
+      md5: a314deec5d706d1f2103eb099512c9c9
+      size: 99704
+      isexec: true
+    - path: data/first_party_training
+      hash: md5
+      md5: 126fb825c74bf8a425ae75d19c0dd567.dir
+      size: 1347113173
+      nfiles: 414
+    - path: data/openimages_v7_cvdf_jpeg
+      hash: md5
+      md5: 59c1781bdfc187fc59a5aff393107282.dir
+      size: 2008796736
+      nfiles: 10000
+    - path: openimages-v7-cvdf-corpus.json
+      hash: md5
+      md5: 34e01806b3ed70e464eb46268fbd77e4
+      size: 20294757
+    - path: phase2-training-corpus-manifest.json
+      hash: md5
+      md5: 9cff9323cfe94cc4a9b0e107b21c9bea
+      size: 215861
+    - path: pw_plr/combined_corpus.py
+      hash: md5
+      md5: f24505b310ebc65af0db656fe7a279fa
+      size: 2447
+    - path: pw_plr/openimages_corpus.py
+      hash: md5
+      md5: 8afdbc78a04b81cd397a006916218a48
+      size: 16251
+    - path: run_freeze_combined_corpus.py
+      hash: md5
+      md5: 0c48b27c5c9756b6d2bbb6f717ce14a9
+      size: 3125
+    - path: training-exclusion-manifest.json
+      hash: md5
+      md5: ed352822599fe43abd8dee598bc3a4ff
+      size: 16836
+    outs:
+    - path: phase2-combined-corpus.json
+      hash: md5
+      md5: dc9d70ebd27715b7cec9169edf599b76
+      size: 15525069

@@ -1,0 +1,5 @@
+outs:
+- md5: 5476e7d7a085ea185c231368c4ff2437
+  size: 32624160
+  hash: md5
+  path: openimages-v7-cvdf-attributed-candidates-v2.json

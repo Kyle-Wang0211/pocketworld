@@ -4,3 +4,7 @@ results/work/
 /mlflow.db
 /mlartifacts/
 /mlruns/
+/openimages-v7-cvdf-candidates-v2.json
+/openimages-v7-cvdf-attributed-candidates-v2.json
+/openimages-v7-cvdf-corpus.json
+/phase2-combined-corpus.json

@@ -1,0 +1,6 @@
+outs:
+- md5: 59c1781bdfc187fc59a5aff393107282.dir
+  size: 2008796736
+  nfiles: 10000
+  hash: md5
+  path: openimages_v7_cvdf_jpeg

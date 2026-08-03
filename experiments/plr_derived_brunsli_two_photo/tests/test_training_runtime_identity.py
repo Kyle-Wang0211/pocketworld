@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from run_train_phase2 import _verify_runtime_identity
+from run_train_phase2 import _implementation_identity, _verify_runtime_identity
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,3 +36,16 @@ def test_registered_training_runtime_rejects_wrong_extractor(
             upstream=ROOT / "build/plr-upstream",
             extractor=wrong_extractor,
         )
+
+
+def test_training_implementation_identity_covers_the_critical_path() -> None:
+    identity = _implementation_identity(ROOT)
+
+    assert set(identity["files"]) == {
+        "pw_plr/dct_training.py",
+        "pw_plr/exact_dataset.py",
+        "pw_plr/trainer.py",
+        "pw_plr/training_metrics.py",
+        "run_train_phase2.py",
+    }
+    assert len(identity["sha256"]) == 64

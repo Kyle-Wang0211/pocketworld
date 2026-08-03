@@ -25,6 +25,21 @@ official_sources:
 selection:
   seed: pw-plr-openimages-v7-cvdf-v1-2026-08-03
   policy: lowest_sha256_seed_colon_image_id_over_complete_train_listing
+  candidate_count: 35000
+  attributed_candidate_count: 35000
+  excluded_attribution_count: 0
+  attributed_candidate_manifest_sha256: df57bd38362afdbb37f2570121b5623e78331f48d01cf270dbe329cce24905fd
+  terminal_corpus:
+    verified_photo_count: 10000
+    total_jpeg_bytes: 2008796736
+    strict_4_2_0_photo_count: 10000
+    content_identity_sha256: 1e4fdcf58aaf5cecf28dba09416e9d442d2f2fc09b5237cc82c40d7dfe49849c
+    manifest_sha256: ce141775660a84cf0e31298a1642618a19e98638e5331e6f150465d806e033fe
+    split_counts:
+      train: 9000
+      validation: 500
+      diagnostic: 500
+    rejected_non_complete_jpeg_count: 6
   eligibility:
     - official_metadata_subset_is_train
     - official_metadata_license_is_cc_by_2_0
@@ -35,6 +50,10 @@ selection:
     - exactly_three_components
     - exact_4_2_0_sampling_and_block_geometry
     - at_least_one_32_by_32_luma_block_patch
+  download_policy:
+    attempts_per_candidate: 5
+    timeout_seconds_per_attempt: 12
+    deterministic_backoff_seconds: [0.25, 0.5, 1.0, 2.0]
 license:
   metadata_value: https://creativecommons.org/licenses/by/2.0/
   attribution_preserved_fields:

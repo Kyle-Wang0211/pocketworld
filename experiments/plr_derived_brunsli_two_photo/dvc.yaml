@@ -47,6 +47,29 @@ stages:
       - phase2-training-corpus-manifest.json:
           cache: false
 
+  freeze_combined_training_corpus:
+    cmd: >-
+      uv run python run_freeze_combined_corpus.py
+      --first-party phase2-training-corpus-manifest.json
+      --first-party-root data/first_party_training
+      --public openimages-v7-cvdf-corpus.json
+      --exclusions training-exclusion-manifest.json
+      --probe-binary build/v0.1/pw_brunsli_training_extract
+      --workers 32
+      --output phase2-combined-corpus.json
+    deps:
+      - data/first_party_training
+      - data/openimages_v7_cvdf_jpeg
+      - phase2-training-corpus-manifest.json
+      - openimages-v7-cvdf-corpus.json
+      - training-exclusion-manifest.json
+      - build/v0.1/pw_brunsli_training_extract
+      - pw_plr/combined_corpus.py
+      - pw_plr/openimages_corpus.py
+      - run_freeze_combined_corpus.py
+    outs:
+      - phase2-combined-corpus.json
+
   verify_phase2_inputs:
     cmd: >-
       uv run python run_verify_inputs.py

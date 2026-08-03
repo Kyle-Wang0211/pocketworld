@@ -55,6 +55,7 @@ def main() -> None:
                         successes.append(probed)
                     else:
                         ineligible.append(probed)
+                        Path(str(probed["path"])).unlink(missing_ok=True)
                 except Exception as error:
                     failures.append(
                         {
@@ -84,8 +85,6 @@ def main() -> None:
     )
     for extra in successes[arguments.target_count :]:
         Path(str(extra["path"])).unlink(missing_ok=True)
-    for excluded in ineligible:
-        Path(str(excluded["path"])).unlink(missing_ok=True)
     result = {
         "schema": "pw_plr_openimages_v7_cvdf_jpegs_v1",
         "candidate_manifest_sha256": hashlib.sha256(candidate_bytes).hexdigest(),
@@ -93,6 +92,11 @@ def main() -> None:
         "verified_count": len(selected),
         "eligible_plr_420_count": len(successes),
         "ineligible_jpeg_count": len(ineligible),
+        "download_policy": {
+            "attempts_per_candidate": 5,
+            "timeout_seconds_per_attempt": 12,
+            "backoff_seconds": [0.25, 0.5, 1.0, 2.0],
+        },
         "total_bytes": sum(int(item["bytes"]) for item in selected),
         "split_seed": arguments.split_seed,
         "split_counts": {

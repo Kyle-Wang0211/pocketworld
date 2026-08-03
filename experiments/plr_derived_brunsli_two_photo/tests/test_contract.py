@@ -121,6 +121,24 @@ def test_phase2_model_arms_and_selection_rule_are_frozen_before_training() -> No
     assert config["training"]["epochs"] == 100
     assert config["training"]["batch_size"] == 64
     assert config["training"]["data_loader_workers"] == 12
+    assert config["corpus"]["public_candidate_reserve_count"] == 35000
+    assert config["corpus"]["reserve_basis"]["strict_4_2_0_count"] == 394
+    assert config["corpus"]["combined_manifest"] == (
+        "phase2-combined-corpus.json"
+    )
+    assert config["corpus"]["combined_manifest_sha256"] == (
+        "4949b3648ac0b0754c92558517b094dcbe78cbb8adcb8fc90868c2b0f02cebac"
+    )
+    assert config["corpus"]["combined_content_identity_sha256"] == (
+        "f0f1c309a4237da178c1e5e752ec8b522e2e5a44195187e32649a066a55e2b75"
+    )
+    assert config["corpus"]["combined_photo_count"] == 10414
+    assert config["corpus"]["combined_split_counts"] == {
+        "train": 9323,
+        "validation": 551,
+        "diagnostic": 540,
+    }
+    assert config["corpus"]["exact_exclusion_overlap_count"] == 0
     assert config["training"]["seed"] == 20260803
     assert config["training"]["device"] == "mps_with_cpu_erfc_fallback"
     assert config["training"]["scheduler"] == {
@@ -155,6 +173,36 @@ def test_phase2_manifest_and_dvc_pointer_are_self_contained() -> None:
     ]
     assert dvc_pointer["outs"][0]["size"] == 6_108_699
     assert dvc_pointer["outs"][0]["nfiles"] == 2
+
+
+def test_combined_training_corpus_is_connected_to_the_dvc_graph() -> None:
+    graph = yaml.safe_load((ROOT / "dvc.yaml").read_text())
+    pointer = yaml.safe_load(
+        (ROOT / "data/openimages_v7_cvdf_jpeg.dvc").read_text()
+    )
+    stage = graph["stages"]["freeze_combined_training_corpus"]
+
+    assert pointer["outs"][0] == {
+        "md5": "59c1781bdfc187fc59a5aff393107282.dir",
+        "size": 2_008_796_736,
+        "nfiles": 10_000,
+        "hash": "md5",
+        "path": "openimages_v7_cvdf_jpeg",
+    }
+    assert stage["cmd"].endswith("--output phase2-combined-corpus.json")
+    assert {
+        "data/first_party_training",
+        "data/openimages_v7_cvdf_jpeg",
+        "phase2-training-corpus-manifest.json",
+        "openimages-v7-cvdf-corpus.json",
+        "training-exclusion-manifest.json",
+        "build/v0.1/pw_brunsli_training_extract",
+        "pw_plr/combined_corpus.py",
+        "pw_plr/openimages_corpus.py",
+        "run_freeze_combined_corpus.py",
+    } <= set(stage["deps"])
+    assert stage["outs"] == ["phase2-combined-corpus.json"]
+    assert "metrics" not in stage
 
 
 def test_training_exclusion_manifest_covers_neighbors_and_duplicate_capture() -> None:

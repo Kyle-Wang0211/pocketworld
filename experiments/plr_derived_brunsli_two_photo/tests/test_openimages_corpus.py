@@ -5,6 +5,7 @@ import io
 import json
 from pathlib import Path
 import subprocess
+import urllib.error
 
 import pytest
 
@@ -14,6 +15,7 @@ from pw_plr.openimages_corpus import (
     download_and_probe_cvdf_candidate,
     download_cvdf_candidate,
     enrich_cvdf_candidates,
+    fetch_url_with_retries,
     parse_cvdf_listing,
     probe_cvdf_jpeg,
     select_metadata_candidates,
@@ -451,3 +453,27 @@ def test_download_and_probe_cvdf_candidate_is_one_verified_worker_unit(
     assert result["sha256"] == hashlib.sha256(payload).hexdigest()
     assert result["eligible_plr_420"] is True
     assert result["luma_width_in_blocks"] == 128
+
+
+def test_official_image_fetch_retries_transient_failures() -> None:
+    attempts = 0
+    delays: list[float] = []
+
+    def opener(request: object, timeout: float) -> io.BytesIO:
+        nonlocal attempts
+        attempts += 1
+        assert timeout == 12
+        if attempts < 3:
+            raise urllib.error.URLError("temporary")
+        return io.BytesIO(b"complete")
+
+    payload = fetch_url_with_retries(
+        "https://example/image.jpg",
+        attempts=5,
+        opener=opener,
+        sleep=delays.append,
+    )
+
+    assert payload == b"complete"
+    assert attempts == 3
+    assert delays == [0.25, 0.5]

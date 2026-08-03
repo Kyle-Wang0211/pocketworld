@@ -39,6 +39,24 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _implementation_identity(root: Path) -> dict[str, object]:
+    paths = (
+        "pw_plr/dct_training.py",
+        "pw_plr/exact_dataset.py",
+        "pw_plr/trainer.py",
+        "pw_plr/training_metrics.py",
+        "run_train_phase2.py",
+    )
+    files = {path: _sha256(root / path) for path in paths}
+    serialized = json.dumps(
+        files, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return {
+        "files": files,
+        "sha256": hashlib.sha256(serialized).hexdigest(),
+    }
+
+
 def _verify_runtime_identity(
     config: dict[str, object],
     *,
@@ -123,6 +141,15 @@ def main() -> None:
 
     config_bytes = arguments.config.read_bytes()
     corpus_bytes = arguments.corpus.read_bytes()
+    implementation_identity = _implementation_identity(
+        arguments.config.resolve().parent
+    )
+    repository_head = subprocess.run(
+        ["git", "-C", str(arguments.config.resolve().parent), "rev-parse", "HEAD"],
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
     config = yaml.safe_load(config_bytes)
     corpus = json.loads(corpus_bytes)
     if config["schema"] != "pw_plr_phase2_model_config_v1":
@@ -215,6 +242,10 @@ def main() -> None:
             raise ValueError("resume config identity mismatch")
         if checkpoint["corpus_sha256"] != hashlib.sha256(corpus_bytes).hexdigest():
             raise ValueError("resume corpus identity mismatch")
+        if checkpoint["implementation_identity"] != implementation_identity:
+            raise ValueError("resume implementation identity mismatch")
+        if checkpoint["repository_head"] != repository_head:
+            raise ValueError("resume repository HEAD mismatch")
         model.load_state_dict(checkpoint["model"])
         main_optimizer.load_state_dict(checkpoint["main_optimizer"])
         auxiliary_optimizer.load_state_dict(checkpoint["auxiliary_optimizer"])
@@ -245,6 +276,10 @@ def main() -> None:
                     "corpus_sha256": hashlib.sha256(corpus_bytes).hexdigest(),
                     "config_sha256": hashlib.sha256(config_bytes).hexdigest(),
                     "upstream_commit": config["upstream"]["commit"],
+                    "repository_head": repository_head,
+                    "implementation_identity_sha256": (
+                        implementation_identity["sha256"]
+                    ),
                     "raw_model_tensor_bytes": model_bytes.complete_tensor_bytes,
                 }
             )
@@ -347,6 +382,8 @@ def main() -> None:
                 "metric": metric,
                 "config_sha256": hashlib.sha256(config_bytes).hexdigest(),
                 "corpus_sha256": hashlib.sha256(corpus_bytes).hexdigest(),
+                "implementation_identity": implementation_identity,
+                "repository_head": repository_head,
                 "mlflow_run_id": active_run.info.run_id,
             }
             _atomic_torch_save(checkpoint, latest_path)

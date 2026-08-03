@@ -81,7 +81,22 @@ input:
 corpus:
   first_party_manifest: phase2-training-corpus-manifest.json
   public_manifest: openimages-v7-cvdf-corpus.json
+  combined_manifest: phase2-combined-corpus.json
+  combined_manifest_sha256: 4949b3648ac0b0754c92558517b094dcbe78cbb8adcb8fc90868c2b0f02cebac
+  combined_content_identity_sha256: f0f1c309a4237da178c1e5e752ec8b522e2e5a44195187e32649a066a55e2b75
+  combined_photo_count: 10414
+  combined_split_counts:
+    train: 9323
+    validation: 551
+    diagnostic: 540
+  exact_exclusion_overlap_count: 0
   public_target_count: 10000
+  public_candidate_reserve_count: 35000
+  reserve_basis:
+    diagnostic_sample_count: 1024
+    strict_4_2_0_count: 394
+    strict_4_2_0_fraction: 0.384765625
+    rule: expand_only_the_same_frozen_global_hash_ranking
   public_split_counts:
     train: 9000
     validation: 500

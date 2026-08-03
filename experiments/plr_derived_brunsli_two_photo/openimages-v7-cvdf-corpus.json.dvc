@@ -1,0 +1,5 @@
+outs:
+- md5: 34e01806b3ed70e464eb46268fbd77e4
+  size: 20294757
+  hash: md5
+  path: openimages-v7-cvdf-corpus.json

@@ -11,7 +11,9 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import time
 from typing import Callable, Iterable, TextIO
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 
@@ -253,13 +255,32 @@ def select_metadata_candidates(
     return result
 
 
-def _fetch_url(url: str) -> bytes:
+def fetch_url_with_retries(
+    url: str,
+    *,
+    attempts: int = 5,
+    opener: Callable[..., object] = urllib.request.urlopen,
+    sleep: Callable[[float], None] = time.sleep,
+) -> bytes:
+    if attempts <= 0:
+        raise ValueError("download attempts must be positive")
     request = urllib.request.Request(
         url,
         headers={"User-Agent": "PocketWorld-PLR-Research/1.0"},
     )
-    with urllib.request.urlopen(request, timeout=12) as response:
-        return response.read()
+    for attempt in range(attempts):
+        try:
+            with opener(request, timeout=12) as response:
+                return response.read()
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
+            if attempt + 1 == attempts:
+                raise
+            sleep(0.25 * (2**attempt))
+    raise AssertionError("unreachable retry state")
+
+
+def _fetch_url(url: str) -> bytes:
+    return fetch_url_with_retries(url)
 
 
 def _verify_payload(candidate: dict[str, object], payload: bytes) -> str:
