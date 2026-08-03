@@ -61,6 +61,15 @@ The frozen public revision fails the official-codec gate before training:
 - the selected model constructs `Gaussian_Y` and `Gaussian_CbCr`, while its
   public `compress/decompress` methods refer to multiple different, undefined
   attributes;
+- the training entry explicitly selects `TransJPEGRecompression422`, whose
+  forward path comments out Cb/Cr entropy modeling and returns
+  `bpp_likelihoods_cbcr == 0`; even its likelihood estimate is therefore not a
+  complete JPEG rate;
+- the undefined codec members are not merely misspelled Transformer members:
+  they belong to the older MLCC-style implementation in `sensetime.py`. The
+  PLR Transformer forward API needs target coefficients, context and masks,
+  while its inherited compress/decompress blocks supply context alone. A
+  target-aware sequential entropy traversal is missing;
 - no official checkpoint, release asset, `jpegio.write`, whole-JPEG serializer,
   or byte/SHA restoration check exists in the frozen repository.
 
@@ -68,7 +77,57 @@ Therefore installing PyTorch or training on natural images cannot produce the
 required official PLR archive. Repairing the missing codec would be a new
 PocketWorld implementation, not a faithful run of the official release.
 
+## Community and adjacent implementation audit
+
+The repository history contains no deleted completion: after the initial public
+commit, upstream deleted only issue templates and five plot scripts. As of
+2026-08-03 the repository is less than three weeks old and has zero forks,
+issues, and releases, so no public community patch exists yet.
+
+Community reverse engineering of PackJPG and discussions around JXL, Brunsli,
+Lepton and libjpeg-turbo consistently split exact JPEG recompression into two
+layers: preserve/reconstruct the JPEG container and original entropy-coder
+choices, while a specialized model encodes the quantized DCT coefficients.
+Decoding pixels and writing a new JPEG is not sufficient.
+
+The most relevant recent cross-photo clue is the 2024 PCS method "Lossless JPEG
+Recompression for Similar Images via Frequency Domain Block Matching". Its
+authors also filed pending Chinese patent CN117857794A. The disclosed route
+uses a 3x3 frequency-domain block search, optimizes the tradeoff between motion
+direction continuity and residual magnitude, selectively deltas only the first
+N zigzag coefficients, and sends the streams through Brunsli/Brotli. The patent
+reports 37% reduction from JPEG and 17% improvement over a single Brunsli route
+on its pedestrian-image dataset. This is a useful architecture clue but not
+commercially reusable code, and its pending claims require patent review before
+a faithful product implementation.
+
+Newer 2025-2026 papers report learned decomposition or joint
+spatial/transform-domain predictions, including 31.54% on Kodak for PLLR, but
+no discoverable public source or checkpoints were found. They remain research
+leads, not runnable official candidates.
+
+## Minimum diagnostics
+
+Three real PocketWorld camera JPEGs were parsed without changing production.
+Each has exactly 1,501 bytes of non-scan data when raw marker bytes, quantization
+and Huffman tables, restart markers and trailing data are conservatively counted
+as reconstruction side data. That is only 0.0482%-0.0539% of each source. Exact
+JPEG reconstruction overhead is therefore not what blocks PLR on this capture;
+the absent complete DCT entropy stream is.
+
+A separate two-photo diagnostic used adjacent 4224x2376 captures 0.319 seconds
+apart. It implemented only the disclosed 3x3 block search and first-N exact DCT
+residual, with 4-bit directions, then compared both arms under the same Zstd-22
+backend. Search improved every residual over same-position prediction, proving
+that block selection carries signal, but the simplified candidate was still
+2.20%-14.46% larger than coding the target coefficients directly. This does not
+reject the 2024 method: it demonstrates that the omitted tolerance optimization
+and Brunsli coefficient contexts are material and that "residual plus a generic
+codec" is not a faithful reproduction.
+
 ## Status
 
 `preflight_rejected_official_codec_incomplete`. Production and the saved JXL
-baseline remain unchanged.
+baseline remain unchanged. Any next implementation is explicitly a new
+PLR-derived completion or a licensed/reimplemented 2024-style candidate, not an
+official PLR run.

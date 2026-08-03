@@ -1,0 +1,64 @@
+{
+  "schema": "pw_similar_jpeg_blockmatch_micro_v1",
+  "run_date": "2026-08-03",
+  "scope": "One adjacent two-photo host diagnostic. It tests the structural clue only and cannot select production.",
+  "environment": {
+    "platform": "macOS 26.1 arm64",
+    "compiler": "Apple clang 17.0.0",
+    "zstd": "1.5.7 level 22 ultra",
+    "zstd_binary_sha256": "aff8169fb421bb925fb16c44a7e0143fa2c7a941dc45cce76b15062a2ce54917",
+    "jpeg_coeff_tool_source_sha256": "b933127c320fd3a300c36a16400c80a1fbdf549be7fa376738aaf25ce57f34a5",
+    "jpeg_coeff_tool_binary_sha256": "3360e9dce2eed55c7b231519ca55840a5edb3f30cf72c81faa96fa265bbf8f1a"
+  },
+  "inputs": {
+    "capture": "analysis_cap_1779777762841797",
+    "reference": {
+      "id": "cap-9",
+      "filename": "cell_85_slot_4.jpg",
+      "trigger_timestamp": 2.265686,
+      "dimensions": [4224, 2376],
+      "bytes": 2995750,
+      "sha256": "ac91faba107c41f891dbce7128f0ecc8e66cb451892e231479d8bf8b738e4be6"
+    },
+    "target": {
+      "id": "cap-11",
+      "filename": "cell_85_slot_5.jpg",
+      "trigger_timestamp": 2.584402,
+      "dimensions": [4224, 2376],
+      "bytes": 3112949,
+      "sha256": "73ec448d66a2242f5d8a07d3531d9018f604d3a67b219a5689901734fce83e4e"
+    }
+  },
+  "baseline": {
+    "representation": "Target quantized DCT int16 components",
+    "backend": "Zstd level 22 ultra",
+    "bytes": 4018843
+  },
+  "candidate": {
+    "search": "Exact minimum SAD among the same-position 8x8 DCT block and its eight neighboring reference blocks",
+    "coefficient_order": "JPEG zigzag",
+    "direction_encoding": "4-bit packed",
+    "transform": "First N coefficients are target minus selected reference; remaining coefficients are target literals",
+    "backend": "The same Zstd level 22 ultra"
+  },
+  "results": [
+    {"n": 4, "bytes": 4107443, "change_vs_baseline_bytes": 88600, "change_vs_baseline_percent": 2.204615, "same_position_percent": 6.252973, "coefficient_exact": true},
+    {"n": 8, "bytes": 4170033, "change_vs_baseline_bytes": 151190, "change_vs_baseline_percent": 3.762028, "same_position_percent": 6.675499, "coefficient_exact": true},
+    {"n": 16, "bytes": 4267553, "change_vs_baseline_bytes": 248710, "change_vs_baseline_percent": 6.188597, "same_position_percent": 6.971056, "coefficient_exact": true},
+    {"n": 32, "bytes": 4431875, "change_vs_baseline_bytes": 413032, "change_vs_baseline_percent": 10.277386, "same_position_percent": 7.201641, "coefficient_exact": true},
+    {"n": 64, "bytes": 4599833, "change_vs_baseline_bytes": 580990, "change_vs_baseline_percent": 14.456648, "same_position_percent": 7.252174, "coefficient_exact": true}
+  ],
+  "ablation_same_position_only": [
+    {"n": 4, "bytes": 4139762, "change_vs_baseline_percent": 3.008801},
+    {"n": 8, "bytes": 4246704, "change_vs_baseline_percent": 5.669816},
+    {"n": 16, "bytes": 4397900, "change_vs_baseline_percent": 9.431993},
+    {"n": 32, "bytes": 4617718, "change_vs_baseline_percent": 14.901677},
+    {"n": 64, "bytes": 4847745, "change_vs_baseline_percent": 20.625389}
+  ],
+  "exactness": {
+    "coefficient_inverse": "passed for every N",
+    "zstd_round_trip": "passed for completed candidate streams",
+    "whole_jpeg": "not admitted: the old diagnostic coefficient wrapper crashed in libmalloc while restoring this capture; no whole-JPEG winner is claimed"
+  },
+  "verdict": "The 3x3 search improves every tested residual over same-position prediction, but the simplified Zstd realization remains 2.20% to 14.46% larger than coding target coefficients directly. This does not reproduce or reject the 2024 method because it omits its tolerance optimization and Brunsli coefficient contexts. It proves those omitted pieces are material, so a generic residual plus codec is not a faithful test."
+}

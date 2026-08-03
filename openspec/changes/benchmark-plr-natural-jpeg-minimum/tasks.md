@@ -14,6 +14,22 @@
   JPEG markers, headers, metadata, coefficients, length, bytes, and SHA-256.
 - [x] 2.3 Inspect the selected model's public `compress/decompress` attributes,
   public checkpoints, tags, and release assets.
+- [x] 2.4 Inspect the full public Git history, forks, issues, releases, adjacent
+  implementations, reverse-engineering discussions, and recent exact-JPEG
+  literature for a missing official completion.
+- [x] 2.5 Verify whether the selected training class counts all Y/Cb/Cr rate and
+  whether its Transformer entropy API can generate a real stream.
+
+## 2A. Run bounded structural diagnostics
+
+- [x] 2A.1 Parse one real PocketWorld JPEG and count conservative raw bytes
+  needed outside its entropy scan; expand to only the adjacent pair needed for
+  a cross-photo minimum unit.
+- [x] 2A.2 Test a 3x3 frequency-domain block-match residual on exactly one
+  adjacent pair under the same backend and verify coefficient inversion.
+- [x] 2A.3 Record the result as diagnostic only: the simplified port lost, and
+  the unimplemented tolerance/Brunsli contexts are material. Do not classify
+  the published 2024 method as failed.
 
 ## 3. Execute only if preflight passes
 

@@ -1,5 +1,5 @@
 {
-  "schema": "pw_plr_upstream_audit_v1",
+  "schema": "pw_plr_upstream_audit_v2",
   "upstream_commit": "8a65e4d0d3daa9292e40df0541e8f43fcaada2d7",
   "upstream_tree": "67796f3cfc8ef558d3b2287fcf315a8731ae1f14",
   "verdict": "official_codec_incomplete",
@@ -28,6 +28,17 @@
         "compressai/datasets/image.py:499-503"
       ]
     },
+    "training_selected_model_counts_chroma_rate": {
+      "status": "failed",
+      "selected_class": "TransJPEGRecompression422",
+      "details": "The selected class initializes bpp_likelihoods_cbcr to zero, comments out its Cb/Cr entropy-model call and returns the unchanged zero in bpp_loss.",
+      "evidence": [
+        "train_lossless_jpeg_trans.py:20",
+        "compressai/models/trans_eff.py:1148",
+        "compressai/models/trans_eff.py:1199-1202",
+        "compressai/models/trans_eff.py:1205"
+      ]
+    },
     "selected_model_compress_decompress_members_initialized": {
       "status": "failed",
       "initialized": ["Gaussian_Y", "Gaussian_CbCr"],
@@ -44,6 +55,30 @@
         "compressai/models/trans_eff.py:1211-1306"
       ]
     },
+    "stale_codec_members_origin": {
+      "status": "confirmed",
+      "details": "The undefined members referenced by every TransJPEGRecompression compress/decompress block are initialized by an older MLCC-style model in sensetime.py, showing that the public PLR codec methods were copied without being adapted to the Transformer model.",
+      "evidence": [
+        "compressai/models/sensetime.py:577-617",
+        "compressai/models/sensetime.py:731-837",
+        "compressai/models/trans_eff.py:376-468",
+        "compressai/models/trans_eff.py:770-860",
+        "compressai/models/trans_eff.py:1211-1306",
+        "compressai/models/trans_eff.py:1613-1706"
+      ]
+    },
+    "transformer_entropy_codec_signature_matches_forward": {
+      "status": "failed",
+      "details": "The Transformer forward path supplies target y, context and masks to entropy_parameters; its compress/decompress path supplies only context. A sequential target-aware Transformer entropy traversal is absent.",
+      "evidence": [
+        "compressai/latent_codecs/gaussian_conditional.py:318-363",
+        "compressai/latent_codecs/gaussian_conditional.py:436-470"
+      ]
+    },
+    "training_updates_entropy_cdf_buffers": {
+      "status": "absent",
+      "searched_symbols": ["model.update", "update_model", "update_quantiles"]
+    },
     "official_checkpoint_files": {
       "status": "absent",
       "patterns": ["*.pth", "*.pth.tar", "*.pt", "*.ckpt"]
@@ -59,7 +94,22 @@
     },
     "whole_jpeg_byte_or_sha_verification": {
       "status": "absent"
+    },
+    "repository_history_contains_removed_codec": {
+      "status": "no",
+      "initial_commit": "a063616",
+      "initial_tree": "8691404ae403377fdfd1a11cff2a62c779c52346",
+      "later_changes": "Only GitHub issue templates and five plotting scripts were deleted; no encoder, decoder, checkpoint or JPEG wrapper existed in the initial public commit."
+    },
+    "public_community_completion": {
+      "status": "absent_as_of_2026-08-03",
+      "repository_created_at": "2026-07-15T08:01:50Z",
+      "repository_last_push": "2026-07-16T09:56:33Z",
+      "forks": 0,
+      "open_issues": 0,
+      "releases": 0,
+      "owner_public_repositories": ["zhuiguangzhe123/PLR"]
     }
   },
-  "stop_condition": "Do not install a large ML environment or train. The public route cannot produce the registered artifact without locally implementing missing codec behavior."
+  "stop_condition": "Do not install a large ML environment or train. The public route cannot produce the registered artifact without locally implementing missing codec behavior, adding the omitted chroma rate path and building a target-aware Transformer entropy traversal."
 }

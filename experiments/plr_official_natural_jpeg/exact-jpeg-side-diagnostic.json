@@ -1,0 +1,42 @@
+{
+  "schema": "pw_jpeg_exact_side_diagnostic_v1",
+  "run_date": "2026-08-03",
+  "scope": "Host-only structural diagnostic; not a production codec comparison.",
+  "method": "Parse JPEG marker segments and entropy scans. Count every non-scan byte, restart marker and trailing byte as a conservative raw exact-reconstruction side-data upper bound.",
+  "files": [
+    {
+      "name": "cell_85_slot_4.jpg",
+      "bytes": 2995750,
+      "sha256": "ac91faba107c41f891dbce7128f0ecc8e66cb451892e231479d8bf8b738e4be6",
+      "entropy_scan_bytes": 2994249,
+      "raw_exact_side_bytes_upper_bound": 1501,
+      "raw_exact_side_fraction_percent": 0.050104,
+      "scan_count": 1,
+      "restart_marker_bytes": 296,
+      "trailing_bytes": 0
+    },
+    {
+      "name": "cell_85_slot_5.jpg",
+      "bytes": 3112949,
+      "sha256": "73ec448d66a2242f5d8a07d3531d9018f604d3a67b219a5689901734fce83e4e",
+      "entropy_scan_bytes": 3111448,
+      "raw_exact_side_bytes_upper_bound": 1501,
+      "raw_exact_side_fraction_percent": 0.048218,
+      "scan_count": 1,
+      "restart_marker_bytes": 296,
+      "trailing_bytes": 0
+    },
+    {
+      "name": "cell_69_slot_5.jpg",
+      "bytes": 2784405,
+      "sha256": "514515ef58f39e4bb28cf61897827c7034e4dc3787a1c95580b0dc52527e55ef",
+      "entropy_scan_bytes": 2782904,
+      "raw_exact_side_bytes_upper_bound": 1501,
+      "raw_exact_side_fraction_percent": 0.053907,
+      "scan_count": 1,
+      "restart_marker_bytes": 296,
+      "trailing_bytes": 0
+    }
+  ],
+  "verdict": "Exact original-JPEG reconstruction data is not the dominant cost for these PocketWorld camera files. The missing complete DCT entropy stream is the operative PLR blocker."
+}

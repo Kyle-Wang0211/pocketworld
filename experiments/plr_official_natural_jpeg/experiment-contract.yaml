@@ -79,6 +79,30 @@ stopping_rules:
   - never_call_locally_repaired_code_official_plr
   - stop_after_one_terminal_minimum_unit_result
 status: preflight_rejected_official_codec_incomplete
+diagnostics:
+  upstream_fidelity_audit:
+    artifact: experiments/plr_official_natural_jpeg/upstream-audit.json
+    finding: >-
+      Public training selects a model whose Cb/Cr rate path is commented out;
+      its codec methods are stale MLCC code and no target-aware Transformer
+      entropy traversal, CDF update, checkpoint, or exact-JPEG wrapper exists.
+  exact_jpeg_side_data:
+    artifact: experiments/plr_official_natural_jpeg/exact-jpeg-side-diagnostic.json
+    input_count: 3
+    result: 1501 raw side bytes per file, or 0.048218%-0.053907%
+  similar_jpeg_blockmatch:
+    artifact: experiments/plr_official_natural_jpeg/similar-jpeg-blockmatch-diagnostic.json
+    input_count: 2
+    backend: zstd_1.5.7_level_22_ultra
+    result: >-
+      Exact 3x3 DCT block-search residual was 2.204615%-14.456648%
+      larger than direct target coefficients. This is a diagnostic rejection
+      of the simplified generic-codec port, not of the published method.
 deviations:
   dvc: not_initialized_because_no_data_or_model_run_was_permitted
   mlflow: no_run_created_because_preflight_stopped_before_experiment_execution
+  phone: forbidden_host_diagnostics_only
+  published_2024_reproduction: >-
+    Not performed because no public source was found, the disclosed method
+    depends on Brunsli-specific contexts and tolerance optimization, and its
+    authors have a pending patent application CN117857794A.
