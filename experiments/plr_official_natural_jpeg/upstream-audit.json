@@ -1,0 +1,65 @@
+{
+  "schema": "pw_plr_upstream_audit_v1",
+  "upstream_commit": "8a65e4d0d3daa9292e40df0541e8f43fcaada2d7",
+  "upstream_tree": "67796f3cfc8ef558d3b2287fcf315a8731ae1f14",
+  "verdict": "official_codec_incomplete",
+  "compression_performance_verdict": "not_measured",
+  "checks": {
+    "training_calls_forward_only": {
+      "status": "confirmed",
+      "evidence": [
+        "train_lossless_jpeg_trans.py:90",
+        "train_lossless_jpeg_trans.py:130"
+      ]
+    },
+    "training_calls_compress_or_decompress": {
+      "status": "absent",
+      "evidence": []
+    },
+    "training_saves_checkpoint_only": {
+      "status": "confirmed",
+      "evidence": ["train_lossless_jpeg_trans.py:150-153"]
+    },
+    "selected_loader_synthetically_quantizes_decoded_pixels": {
+      "status": "confirmed",
+      "evidence": [
+        "train_lossless_jpeg_trans.py:18",
+        "train_lossless_jpeg_trans.py:209-211",
+        "compressai/datasets/image.py:499-503"
+      ]
+    },
+    "selected_model_compress_decompress_members_initialized": {
+      "status": "failed",
+      "initialized": ["Gaussian_Y", "Gaussian_CbCr"],
+      "referenced_but_uninitialized": [
+        "Guassian_cbcr_anchor",
+        "Guassian_cbcr_non_anchor",
+        "Gaussion_Ys",
+        "Gaussion_Ys_234",
+        "entropy_aprameters_prior",
+        "frequency"
+      ],
+      "evidence": [
+        "compressai/models/trans_eff.py:1063-1064",
+        "compressai/models/trans_eff.py:1211-1306"
+      ]
+    },
+    "official_checkpoint_files": {
+      "status": "absent",
+      "patterns": ["*.pth", "*.pth.tar", "*.pt", "*.ckpt"]
+    },
+    "official_release_assets": {
+      "status": "absent",
+      "github_release_count": 0,
+      "git_tag_count": 0
+    },
+    "original_jpeg_writer": {
+      "status": "absent",
+      "searched_symbols": ["jpegio.write"]
+    },
+    "whole_jpeg_byte_or_sha_verification": {
+      "status": "absent"
+    }
+  },
+  "stop_condition": "Do not install a large ML environment or train. The public route cannot produce the registered artifact without locally implementing missing codec behavior."
+}

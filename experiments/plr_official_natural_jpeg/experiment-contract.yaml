@@ -1,0 +1,84 @@
+schema: pw_plr_official_natural_jpeg_minimum_v1
+registered_at: 2026-08-03T00:00:00+08:00
+objective: >-
+  Faithfully run the public PLR implementation with one fixed global model and
+  admit scale-up only after one PocketWorld JPEG produces a complete archive,
+  restores every original byte, and is strictly smaller than same-input JXL
+  after explicit model-cost accounting.
+repository:
+  path: /Users/kaidongwang/Developer/pocketworld
+  git_head: 6801068081508df306b99b279f8564593959b09a
+  unstaged_binary_diff_sha256: 041e040ba327cf39e7ab5a240af4e9cbfd7d41a11251e7411e66ab1616c0e61a
+  staged_binary_diff_sha256: 5939c62a613505f35bb3731fb9b8db6aae96f8240b13737300a8b4111185a354
+  porcelain_v1_z_sha256: e0ed37ed692222c26f42de946614923415e11eb36318e2b71ff39225f6017789
+  worktree_policy: shared_dirty_preserve_every_unrelated_change
+upstream:
+  repository: https://github.com/zhuiguangzhe123/PLR.git
+  commit: 8a65e4d0d3daa9292e40df0541e8f43fcaada2d7
+  tree: 67796f3cfc8ef558d3b2287fcf315a8731ae1f14
+  branch: main
+  tags_at_registration: 0
+  github_releases_at_registration: 0
+  license: BSD-3-Clause-Clear
+  license_sha256: 009a9886ecbc3cf352dab271d232515ef767a3efdae8bb58851ed9ee33f84a29
+  source_hashes:
+    train_lossless_jpeg_trans.py: bfc263d848929540fd81dac3705fce39969037b891d76f9159dd60b0ee7c569b
+    compressai/datasets/image.py: e36a5f30d5f01f4e1cb995c42929366ff39e288ee34f8d6132baf93be0a6def4
+    compressai/models/trans_eff.py: 0f48df30e3c6d949aa394cc6a8c146e12ad57a2c05c50d7f7aa5eeabb51db7c5
+input:
+  capture_id: cap_1785512421333592
+  relative_path: photos_highres/official_tap-2019.jpg
+  bytes: 2725495
+  sha256: a1cb8de1d3b91edbb7e05233c7930200c46e04554c3651153e267e5abd262138
+  count: 1
+baseline:
+  codec: production_libjxl_0.12.0_jpeg_reconstruction_effort_10
+  archive_bytes: 2215345
+  exact_round_trip: true
+  evidence: experiments/lepton_jxl_iphone/experiment-contract.yaml
+cost_accounting:
+  project_photo_count: 141
+  standalone_expression: >-
+    stream_bytes + container_bytes + exact_jpeg_side_data_bytes + model_bytes
+  project_amortized_expression: >-
+    stream_bytes + container_bytes + exact_jpeg_side_data_bytes +
+    ceil(model_bytes / 141)
+metrics:
+  - source_bytes
+  - source_sha256
+  - stream_bytes
+  - container_bytes
+  - exact_jpeg_side_data_bytes
+  - model_bytes
+  - standalone_effective_bytes
+  - project_amortized_effective_bytes
+  - restored_bytes
+  - restored_sha256
+  - byte_equal
+acceptance:
+  actual_serialized_stream_required: true
+  official_decoder_required: true
+  source_length_equal_required: true
+  source_sha256_equal_required: true
+  source_byte_equal_required: true
+  strict_jxl_threshold_bytes: 2215345
+  scale_up_expression: >-
+    official_codec_complete && actual_stream && byte_equal &&
+    project_amortized_effective_bytes < 2215345
+run_control:
+  training_runs: 1
+  pocketworld_images: 1
+  repeats: 0
+  old_cross_photo_predictor: stopped
+  phone_bundle: forbidden
+  production_change: forbidden
+  complete_project: forbidden_before_scale_up_gate
+stopping_rules:
+  - stop_before_dependency_install_if_official_codec_is_incomplete
+  - never_compare_likelihood_bpp_with_actual_jxl_file_bytes
+  - never_call_locally_repaired_code_official_plr
+  - stop_after_one_terminal_minimum_unit_result
+status: preflight_rejected_official_codec_incomplete
+deviations:
+  dvc: not_initialized_because_no_data_or_model_run_was_permitted
+  mlflow: no_run_created_because_preflight_stopped_before_experiment_execution
