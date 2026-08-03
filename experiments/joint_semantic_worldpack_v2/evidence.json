@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "audit_date": "2026-08-03",
+  "target": {
+    "title": "Lossless Compression of JPEG Coded Photo Collections",
+    "doi": "10.1109/TIP.2016.2551366",
+    "intended_use": "closed-source commercial iOS production",
+    "target_revision": "2016 IEEE TIP publication"
+  },
+  "terminal_verdict": "blocked_fidelity",
+  "commercial_use_verdict": "insufficient-evidence",
+  "faithful_2016_reproduction_allowed": false,
+  "full_2016_text_access": "not_available_in_audited_public_sources",
+  "official_reference_implementation": "not_found",
+  "method_stages": {
+    "feature_prediction": {
+      "status": "blocked_missing_detail",
+      "known": "The 2014 precursor describes a matched-SIFT-distance prediction graph and a spanning prediction structure.",
+      "missing": "The complete 2016 objective, pruning, constraints, deterministic tie breaking, and changed method are unavailable."
+    },
+    "global_compensation": {
+      "status": "blocked_missing_detail",
+      "known": "Earlier papers describe homography, photometric transformation, SfM projection, and fallback selection.",
+      "missing": "Exact 2016 estimation, interpolation, precision, edge handling, signaling, and rate selection are unavailable."
+    },
+    "local_compensation": {
+      "status": "blocked_missing_detail",
+      "known": "Earlier work combines a global transform with block motion compensation.",
+      "missing": "Partitioning, search, costs, precision, interpolation, borders, predictors, tie breaking, and syntax are unavailable."
+    },
+    "frequency_prediction": {
+      "status": "blocked_missing_detail",
+      "known": "Earlier work transforms and quantizes the compensated predictor and stores exact target-coefficient residuals.",
+      "missing": "The 2016 adaptive modes, contexts, coefficient order, selection, precision, and syntax are unavailable."
+    },
+    "entropy_coding": {
+      "status": "blocked_missing_detail",
+      "known": "The 2015 SfM extension names CABAC; the 2016 abstract names advanced context-adaptive entropy coding.",
+      "missing": "Contexts, initialization, updates, binarization, termination, alignment, and authoritative code are unavailable."
+    },
+    "jpeg_binary_reconstruction": {
+      "status": "faithful_with_declared_substitution",
+      "known": "The product boundary can require and test restoration of every original JPEG byte and SHA-256.",
+      "substitution": "PocketWorld coefficient framing can enforce exact reconstruction but is not the unpublished Microsoft bitstream."
+    }
+  },
+  "evidence_ledger": [
+    {
+      "claim": "The 2016 work jointly exploits feature, spatial, and frequency redundancy and reports average savings above 31 percent relative to JPEG collections.",
+      "source": "Microsoft Research publication page",
+      "canonical_url": "https://www.microsoft.com/en-us/research/publication/lossless-compression-jpeg-coded-photo-collections/",
+      "authority": "publisher/author institution",
+      "version_or_date": "2016",
+      "status": "confirmed",
+      "limitation": "Abstract-level description; no complete algorithm or code on the audited page."
+    },
+    {
+      "claim": "The 2014 precursor uses SIFT-derived prediction structure, hybrid geometric/photometric/local compensation, and exact quantized-DCT residuals.",
+      "source": "Author-uploaded 2014 paper, Lossless Compression of JPEG Coded Photo Albums",
+      "canonical_url": "https://www.researchgate.net/publication/275178537_Lossless_Compression_of_JPEG_Coded_Photo_Albums",
+      "authority": "author manuscript",
+      "version_or_date": "2014",
+      "status": "supported",
+      "limitation": "Precursor, not the 2016 TIP method; some implementation details are delegated or omitted."
+    },
+    {
+      "claim": "The 2015 extension uses incremental SfM, Delaunay/depth-based warping, homography fallback, block mode selection, and CABAC residual coding.",
+      "source": "Author-uploaded 2015 paper, Incremental SfM Based Lossless Compression of JPEG Coded Photo Album",
+      "canonical_url": "https://www.researchgate.net/publication/296676479_Incremental_SfM_Based_Lossless_Compression_of_JPEG_Coded_Photo_Album",
+      "authority": "author manuscript",
+      "version_or_date": "2015",
+      "status": "supported",
+      "limitation": "Precursor/extension; exact codec implementation and full bitstream are not supplied."
+    },
+    {
+      "claim": "OpenZL supports custom prediction graphs/codecs for multidimensional data, so an ACE-only experiment does not exhaust OpenZL's design space.",
+      "source": "OpenZL official documentation",
+      "canonical_url": "https://openzl.org/getting-started/using-openzl/",
+      "authority": "official project documentation",
+      "version_or_date": "accessed 2026-08-03",
+      "status": "confirmed",
+      "limitation": "Capability evidence only; it does not supply the Microsoft photo predictor."
+    },
+    {
+      "claim": "The audited repository did not reveal a public author-owned reference implementation of the 2016 codec.",
+      "source": "Exact-title and author/project searches across the Microsoft page, GitHub, and general web search",
+      "canonical_url": "https://www.microsoft.com/en-us/research/publication/lossless-compression-jpeg-coded-photo-collections/",
+      "authority": "search audit",
+      "version_or_date": "2026-08-03",
+      "status": "supported",
+      "limitation": "Absence cannot be proven globally; a private or differently named implementation may exist."
+    }
+  ],
+  "commercial_risk_signals": [
+    {
+      "signal": "The publication page's copyright/readability terms are not a software implementation license.",
+      "status": "confirmed"
+    },
+    {
+      "signal": "CABAC/HEVC-like elements require a separate patent and licensing analysis before commercial deployment.",
+      "status": "unresolved"
+    },
+    {
+      "signal": "WO2015006894A1, Feature-based image set compression, is a potentially related patent-family signal requiring claim-level counsel review.",
+      "canonical_url": "https://patents.google.com/patent/WO2015006894A1/en",
+      "status": "unresolved"
+    }
+  ],
+  "allowed_next_step": {
+    "kind": "declared_independent_implementation",
+    "claim_limit": "May benchmark a separately specified exact semantic-photo codec; may not call it a faithful 2016 reproduction or use 31 percent as a promised result."
+  }
+}
