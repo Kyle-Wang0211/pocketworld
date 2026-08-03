@@ -23,6 +23,7 @@ class ModelStorageChoice:
 
 @dataclass(frozen=True)
 class BreakEvenResult:
+    formal_photo_count: int
     stream_headroom_bytes: int
     effective_bytes_at_formal_count: int
     wins_at_formal_count: bool
@@ -98,6 +99,7 @@ def evaluate_break_even(
 
     if headroom <= 0 or headroom == 1:
         return BreakEvenResult(
+            formal_photo_count=formal_photo_count,
             stream_headroom_bytes=headroom,
             effective_bytes_at_formal_count=effective_formal,
             wins_at_formal_count=wins_formal,
@@ -117,13 +119,14 @@ def evaluate_break_even(
 
     reachable = break_even <= approved_max_photo_count
     if wins_formal:
-        verdict = "winner_at_141_pending_lepton_diagnostic"
+        verdict = "winner_at_formal_count_pending_lepton_diagnostic"
     elif reachable:
-        verdict = "loser_at_141_but_reachable_within_scope2"
+        verdict = "loser_at_formal_count_but_reachable_within_scope2"
     else:
-        verdict = "loser_at_141_break_even_unreachable_scope2"
+        verdict = "loser_at_formal_count_break_even_unreachable_scope2"
 
     return BreakEvenResult(
+        formal_photo_count=formal_photo_count,
         stream_headroom_bytes=headroom,
         effective_bytes_at_formal_count=effective_formal,
         wins_at_formal_count=wins_formal,

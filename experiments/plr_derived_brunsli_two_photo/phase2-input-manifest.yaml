@@ -1,0 +1,30 @@
+schema: pw_plr_derived_brunsli_two_photo_inputs_v2
+capture_id: analysis_cap_1779777762841797
+formal_project_photo_count: 96
+ordered: true
+inputs:
+  - role: A
+    filename: cell_85_slot_4.jpg
+    path: data/frozen_pair/cell_85_slot_4.jpg
+    bytes: 2995750
+    sha256: ac91faba107c41f891dbce7128f0ecc8e66cb451892e231479d8bf8b738e4be6
+    trigger_timestamp_seconds: 2.265686
+  - role: B
+    filename: cell_85_slot_5.jpg
+    path: data/frozen_pair/cell_85_slot_5.jpg
+    bytes: 3112949
+    sha256: 73ec448d66a2242f5d8a07d3531d9018f604d3a67b219a5689901734fce83e4e
+    trigger_timestamp_seconds: 2.584402
+training_exclusion:
+  granularity: capture
+  manifest: training-exclusion-manifest.json
+  manifest_sha256: 09cef816e7fcfd6b21dbf46aa23281800b67c07ff022e6d25eaa63623b6714c2
+  exclusion_identity_sha256: 1f11a4e11b4b0a01185272924df76dc6140f36c7378619d9755a2a434060acd8
+  excluded_capture_ids:
+    - analysis_cap_1779777762841797
+    - analysis_cap_1779777762841797_v2
+  applies_to:
+    - training
+    - validation
+    - model_selection
+    - tuning

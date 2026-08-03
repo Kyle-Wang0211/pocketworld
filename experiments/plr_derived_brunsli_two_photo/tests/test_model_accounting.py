@@ -60,14 +60,15 @@ def test_break_even_is_verified_and_reachable_at_300() -> None:
         jxl_bytes=1_000,
         stream_bytes=600,
         final_model_bytes=59_800,
-        formal_photo_count=141,
+        formal_photo_count=96,
         approved_max_photo_count=300,
     )
 
     assert result.break_even_photo_count == 300
     assert result.reachable_under_approved_scope is True
     assert result.wins_at_formal_count is False
-    assert result.verdict == "loser_at_141_but_reachable_within_scope2"
+    assert result.formal_photo_count == 96
+    assert result.verdict == "loser_at_formal_count_but_reachable_within_scope2"
 
 
 def test_break_even_above_300_is_an_unreachable_loss() -> None:
@@ -75,13 +76,15 @@ def test_break_even_above_300_is_an_unreachable_loss() -> None:
         jxl_bytes=1_000,
         stream_bytes=600,
         final_model_bytes=60_000,
-        formal_photo_count=141,
+        formal_photo_count=96,
         approved_max_photo_count=300,
     )
 
     assert result.break_even_photo_count == 301
     assert result.reachable_under_approved_scope is False
-    assert result.verdict == "loser_at_141_break_even_unreachable_scope2"
+    assert result.verdict == (
+        "loser_at_formal_count_break_even_unreachable_scope2"
+    )
 
 
 def test_nonpositive_stream_headroom_can_never_be_rescued() -> None:
@@ -89,7 +92,7 @@ def test_nonpositive_stream_headroom_can_never_be_rescued() -> None:
         jxl_bytes=1_000,
         stream_bytes=1_000,
         final_model_bytes=1,
-        formal_photo_count=141,
+        formal_photo_count=96,
         approved_max_photo_count=300,
     )
 
@@ -103,10 +106,10 @@ def test_formal_winner_uses_strict_inequality() -> None:
         jxl_bytes=1_000,
         stream_bytes=500,
         final_model_bytes=100,
-        formal_photo_count=141,
+        formal_photo_count=96,
         approved_max_photo_count=300,
     )
 
-    assert result.effective_bytes_at_formal_count == 502
+    assert result.effective_bytes_at_formal_count == 503
     assert result.wins_at_formal_count is True
-    assert result.verdict == "winner_at_141_pending_lepton_diagnostic"
+    assert result.verdict == "winner_at_formal_count_pending_lepton_diagnostic"

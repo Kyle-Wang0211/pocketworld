@@ -8,7 +8,7 @@ experiment that can produce a valid winner, loser, invalid, or blocked verdict.
 
 Revision 1 removes the proposed 15–20 MB hard model-size ceiling. Model size is
 now governed by complete byte accounting and an explicit break-even project
-scale. This keeps the 141-photo formal gate unchanged while avoiding the false
+scale. This kept the then-registered formal gate unchanged while avoiding the false
 conclusion that a fixed model which loses on a small project must also lose on a
 large project.
 
@@ -22,6 +22,12 @@ Revision 3 separates provisional and final model accounting. Phase 0 records a
 provable raw-artifact upper bound from the frozen architecture and exercises
 the storage and CDF-parity harnesses; Phase 4 reruns the same frozen candidates
 on the final trained artifact and uses only `final_M` for the terminal verdict.
+
+Revision 4 corrects the formal denominator before training. The frozen pair is
+bound to a verified 96-photo capture, not the previously unbound 141 count. It
+also excludes the complete capture and its byte-identical `_v2` duplicate,
+places the pair under experiment-local DVC identity, and freezes a 22-stage
+grouped decoder plus cross-process CPU integer-CDF parity gate.
 
 ## Objective
 
@@ -60,8 +66,11 @@ Both are 4224x2376 and are separated by 0.319 seconds. Their registered capture
 order, ARKit/SfM state, shared tracks, matches, and visible sparse points are
 part of the immutable input manifest when used by the conditional arm.
 
-The two files are excluded from model training, model selection, validation
-selection, and parameter tuning.
+All 96 files from `analysis_cap_1779777762841797` and its byte-identical
+`analysis_cap_1779777762841797_v2` duplicate are excluded from model training,
+model selection, validation selection, and parameter tuning. Their ordered
+content-manifest SHA-256 values are frozen before training. Byte-identical
+copies of A and B are stored under the experiment's DVC data identity.
 
 ## Frozen baselines
 
@@ -159,19 +168,20 @@ model is constant overhead while project data grows. An absolute ceiling would
 incorrectly reject a larger model that may create more than enough stream
 savings on a large project.
 
-The formal experiment continues to use `141` photos because that is the frozen
-project scale. The two-photo model charge remains:
+The formal experiment uses `96` photos because that is the verified number of
+high-resolution JPEG files in the capture containing A and B. The two-photo
+model charge is:
 
 ```text
-formal_pair_model_charge = ceil(model_stored_bytes * 2 / 141)
+formal_pair_model_charge = ceil(model_stored_bytes * 2 / 96)
 ```
 
-At complete 141-photo project scale, the same accounting adds the model exactly
+At complete 96-photo project scale, the same accounting adds the model exactly
 once. The pair formula is an allocation of that one shared model, not a claim
-that the archive stores 2/141 of a physical file.
+that the archive stores 2/96 of a physical file.
 
 The result must also report model-overhead sensitivity for photo counts
-`2`, `44`, `141`, `300`, `1,000`, and `10,000`. Only `141` determines this
+`2`, `44`, `96`, `300`, `1,000`, and `10,000`. Only `96` determines this
 experiment's formal verdict. `300` is the approved self-contained scope's
 reachability boundary. `2`, `44`, `1,000`, and `10,000` are informational rows;
 in particular, `1,000` and `10,000` have no decision authority under the
@@ -191,14 +201,14 @@ The report must distinguish three storage scopes:
 3. **One model per photo.** Charge the entire model to every photo. This is not
    the selected design and must never be disguised as a shared global model.
 
-The formal 141-photo experiment and every break-even reachability verdict use
+The formal 96-photo experiment and every break-even reachability verdict use
 scope 2, the self-contained per-project archive. This scope is frozen before
 results because the compressed archive is intended to be the only long-term
 copy and must remain decodable without an external model repository.
 
 The approved realistic project range for this contract is 93–300 photos, based
 on the user-provided historical captures and product target. The formal point
-remains 141; 300 is the largest approved scope-2 reachability point.
+is 96; 300 is the largest approved scope-2 reachability point.
 
 Scope 1 is outside this experiment. It may be studied only under a separate
 future design that proves permanent byte-identical model retention, offline
@@ -224,7 +234,7 @@ candidate_effective_bytes =
   + exact_jpeg_reconstruction_side_bytes
   + cross_photo_reference_and_selector_bytes
   + index_manifest_checksum_bytes
-  + ceil(model_stored_bytes * 2 / 141)
+  + ceil(model_stored_bytes * 2 / 96)
 ```
 
 No byte may be omitted because it is shared, small, generated, cached, or
@@ -282,7 +292,7 @@ break_even_reachable_under_approved_scope =
     N_break_even != null && N_break_even <= 300
 ```
 
-When `N_break_even` is 142–300, the candidate is a formal loss at 141 but has a
+When `N_break_even` is 97–300, the candidate is a formal loss at 96 but has a
 reachable scale point inside the approved self-contained scope. When it exceeds
 300, it is an unreachable loss under this contract. A mathematically defined
 break-even at 1,000 or 10,000 is diagnostic only, not a positive verdict.
@@ -337,6 +347,21 @@ decoder derive the same distribution from already decoded target context.
   decisions must be removed, quantized deterministically, or classified as an
   ARM64 portability blocker.
 
+The Phase 2 decoder schedule is frozen at 22 ordered network distribution
+stages per photo, derived as two hyperprior stages, two Cb/Cr checkerboard
+stages, nine Y1 frequency-group stages, and nine combined Y2/Y3/Y4
+frequency-group stages. The frequency grouping is
+`[28, 8, 7, 6, 5, 4, 3, 2, 1]`, matching the official sibling implementation
+used to complete the selected Trans path's missing initialization. The number
+of stages is constant with image coefficient count. Per-coefficient
+autoregression is forbidden; more than 24 stages is `blocked_portability`
+before training.
+
+The terminal encoder and decoder run in separate processes on CPU with one
+fixed thread, deterministic algorithms, and no MPS/CUDA backend. Each process
+emits the complete integer-CDF decision trace. Any trace difference invalidates
+the arm even if a same-process round-trip happened to succeed.
+
 ### Pair envelope
 
 The pair archive has a fixed version, model hash, source manifest hash,
@@ -388,7 +413,9 @@ external caches are not decoder dependencies.
    its complete raw bytes as `provisional_model_raw_upper_bound_bytes`, while
    keeping provisional Zstd/ZPAQ sizes diagnostic. Establish the CDF-decision
    trace and parity harness. Record projected charges, but do not reject the
-   model solely for exceeding an arbitrary byte ceiling. Stop on an unaccounted
+   model solely for exceeding an arbitrary byte ceiling. Freeze the two
+   capture-wide exclusions, the experiment-local DVC pair, and the 22-stage
+   decoder schedule before training. Stop on an unaccounted
    decoder dependency, an unregistered model serialization, or a CUDA-only
    decoding requirement.
 2. **Phase 1 — Brunsli exact container:** extract non-coefficient state and raw
@@ -396,7 +423,9 @@ external caches are not decoder dependencies.
    any byte mismatch.
 3. **Phase 2 — complete intra entropy codec:** serialize real Y/Cb/Cr streams
    for A and B independently, decode with updated CDF state, and restore both
-   JPEGs. Stop if any stream or decoder dependency is missing.
+   JPEGs. Run terminal exactness across separate one-thread CPU processes and
+   require identical integer-CDF traces. Stop if any stream or decoder
+   dependency is missing or the declared decoder exceeds 24 ordered stages.
 4. **Phase 3 — bounded conditional arm:** run the single frozen A-to-B arm and
    the intra attribution arm. Stop H2 if its complete B bytes do not improve.
 5. **Phase 4 — one terminal A/B:** because the exact-pair JXL baseline is
@@ -415,8 +444,8 @@ No later phase starts when an earlier phase fails.
 
 - `winner_beats_jxl_and_lepton`
 - `winner_beats_jxl_but_loses_lepton`
-- `loser_at_141_but_reachable_within_scope2`
-- `loser_at_141_break_even_unreachable_scope2`
+- `loser_at_formal_count_but_reachable_within_scope2`
+- `loser_at_formal_count_break_even_unreachable_scope2`
 - `loser_stream_before_model_accounting`
 - `invalid_exactness_failure`
 - `invalid_incomplete_cost_accounting`

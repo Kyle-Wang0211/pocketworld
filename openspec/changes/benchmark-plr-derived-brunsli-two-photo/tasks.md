@@ -31,3 +31,14 @@
 - [x] 4.2 Validate pytest, DVC reproduction, OpenSpec, and diff hygiene.
 - [x] 4.3 Stop before model training, terminal baselines, phone, production, or
   full-project work and request review of the Phase 2/3 plan.
+
+## 5. Correct the pre-Phase-2 contract
+
+- [x] 5.1 Bind the formal scope-2 denominator to the verified 96-photo capture
+  and remove count-specific terminal names.
+- [x] 5.2 Freeze complete-capture exclusion manifests for the canonical capture
+  and its byte-identical `_v2` duplicate.
+- [x] 5.3 DVC-track self-contained copies of the two frozen JPEG files.
+- [x] 5.4 Register 22 decoder stages, reject more than 24, and require separate
+  one-thread CPU encoder/decoder CDF parity.
+- [x] 5.5 Validate all contracts without rerunning Phase 1 or measuring JXL.

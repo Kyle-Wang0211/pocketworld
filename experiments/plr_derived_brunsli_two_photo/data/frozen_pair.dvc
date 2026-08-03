@@ -1,0 +1,6 @@
+outs:
+- md5: 0b58d438fb960f8ca2a6774271978c65.dir
+  size: 6108699
+  nfiles: 2
+  hash: md5
+  path: frozen_pair

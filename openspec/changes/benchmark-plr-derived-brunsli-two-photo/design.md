@@ -6,8 +6,11 @@ The pair is `cell_85_slot_4.jpg` followed by `cell_85_slot_5.jpg`, with sizes
 2,995,750 and 3,112,949 bytes and SHA-256 values
 `ac91faba107c41f891dbce7128f0ecc8e66cb451892e231479d8bf8b738e4be6`
 and `73ec448d66a2242f5d8a07d3531d9018f604d3a67b219a5689901734fce83e4e`.
-The formal project count is 141 and the approved self-contained range is
-93–300 photos.
+The formal project count is 96 because both frozen inputs belong to
+`analysis_cap_1779777762841797`, whose `photos_highres` directory contains 96
+registered lowercase `.jpg` files. The approved self-contained range remains
+93–300 photos. The previous 141 count had no binding to the frozen pair and is
+retired before any model training or terminal baseline measurement.
 
 Brunsli primary source is v0.1 commit
 `8a0e9b8ca2e3e089731c95a1da7ce8a3180e667c`. The sole fallback is the
@@ -33,6 +36,25 @@ Precision conversion is a different concern. A converted representation may
 be called decoder-equivalent only when its registered integer-CDF decision
 trace is identical. Any changed decision makes it a separately frozen model
 arm, even if that arm still restores JPEG data exactly.
+
+## Pre-Phase-2 leakage and portability correction
+
+Training, validation, model selection, and tuning exclude the complete
+`analysis_cap_1779777762841797` capture. The byte-identical
+`analysis_cap_1779777762841797_v2` duplicate is excluded as the same physical
+scene. Their 96-file ordered content manifests are hashed before training. The
+two formal JPEG inputs are copied byte for byte into an experiment-local DVC
+output so the test archive no longer depends on the lifetime of another
+repository.
+
+The registered decoder schedule has 22 ordered network distribution stages per
+photo: two hyperprior stages, two Cb/Cr checkerboard stages, nine Y1 frequency
+groups, and nine Y2/Y3/Y4 frequency groups. The official sibling implementation
+supplies the frozen frequency grouping `[28, 8, 7, 6, 5, 4, 3, 2, 1]` that the
+selected Trans implementation references but does not initialize. More than 24
+stages or any per-coefficient autoregression is `blocked_portability` before
+training. Terminal CDF evidence runs on CPU with one thread and separate encoder
+and decoder processes; their integer-CDF traces must match exactly.
 
 ## Exact container split
 

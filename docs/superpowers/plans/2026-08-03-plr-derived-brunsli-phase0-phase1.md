@@ -1,5 +1,11 @@
 # PLR-Derived Brunsli Phase 0/1 Implementation Plan
 
+> **Revision 4 accounting notice:** This completed Phase 0/1 execution plan is
+> retained as historical evidence. Any `141`-photo denominator or
+> count-specific verdict name below is superseded before training by the
+> verified 96-photo capture contract in the authoritative design/OpenSpec. It
+> must not be reused for Phase 2 accounting.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 > **Execution choice for this task:** The user explicitly requires inline execution without subagents. Use `executing-plans` in the current shared dirty tree, preserve every unrelated change, and commit only explicit paths owned by this plan.

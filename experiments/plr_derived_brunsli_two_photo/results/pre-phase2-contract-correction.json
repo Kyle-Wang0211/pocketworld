@@ -1,0 +1,80 @@
+{
+  "schema": "pw_plr_pre_phase2_contract_correction_v1",
+  "status": "pre_phase2_contract_corrected",
+  "phase1_rerun": false,
+  "jxl_runs": 0,
+  "lepton_runs": 0,
+  "training_runs": 0,
+  "mlflow_run_id": "3338e34b85534ef495da02238cbf58c2",
+  "formal_scope2": {
+    "retired_unbound_photo_count": 141,
+    "formal_project_photo_count": 96,
+    "capture_id": "analysis_cap_1779777762841797",
+    "photos_highres_count": 96,
+    "approved_scope_min": 93,
+    "approved_scope_max": 300,
+    "old_cost_understatement_factor": 1.46875,
+    "example_model_bytes": 30000000,
+    "old_pair_charge_bytes": 425532,
+    "correct_pair_charge_bytes": 625000,
+    "correction_bytes": 199468
+  },
+  "training_exclusion": {
+    "granularity": "capture",
+    "excluded_capture_ids": [
+      "analysis_cap_1779777762841797",
+      "analysis_cap_1779777762841797_v2"
+    ],
+    "canonical_photo_count": 96,
+    "duplicate_is_byte_identical": true,
+    "ordered_content_manifest_sha256": "2cc8516cf8b12756ec861e213606f22251787ad2f888a627b8a8d0700be0ed80",
+    "manifest_sha256": "09cef816e7fcfd6b21dbf46aa23281800b67c07ff022e6d25eaa63623b6714c2",
+    "exclusion_identity_sha256": "1f11a4e11b4b0a01185272924df76dc6140f36c7378619d9755a2a434060acd8",
+    "applies_to": [
+      "training",
+      "validation",
+      "model_selection",
+      "tuning"
+    ]
+  },
+  "self_contained_pair": {
+    "dvc_pointer": "data/frozen_pair.dvc",
+    "dvc_pointer_sha256": "8fc465df22fce2f1ac472211146acde4bfa5282bb1cb0f1ef1140a4b0d8fd647",
+    "total_bytes": 6108699,
+    "files": [
+      {
+        "filename": "cell_85_slot_4.jpg",
+        "bytes": 2995750,
+        "sha256": "ac91faba107c41f891dbce7128f0ecc8e66cb451892e231479d8bf8b738e4be6"
+      },
+      {
+        "filename": "cell_85_slot_5.jpg",
+        "bytes": 3112949,
+        "sha256": "73ec448d66a2242f5d8a07d3531d9018f604d3a67b219a5689901734fce83e4e"
+      }
+    ]
+  },
+  "decoder_portability": {
+    "decoder_sequential_passes": 22,
+    "maximum_allowed_passes": 24,
+    "unit": "ordered_network_distribution_stages_per_photo",
+    "frequency_groups": [28, 8, 7, 6, 5, 4, 3, 2, 1],
+    "derivation": {
+      "hyperprior": 2,
+      "cbcr_checkerboard": 2,
+      "y1_frequency_groups": 9,
+      "y234_frequency_groups": 9
+    },
+    "per_coefficient_autoregression": "forbidden",
+    "violation": "blocked_portability"
+  },
+  "terminal_determinism": {
+    "device": "cpu",
+    "fixed_thread_count": 1,
+    "encoder_decoder_processes": "separate",
+    "mps": "forbidden",
+    "cuda": "forbidden",
+    "integer_cdf_trace_must_match": true
+  },
+  "dvc_lock_sha256": "9e9efb82e52f9e2523a82a10cb5548d3f6e4087608193a1bf64aa2678c728b08"
+}

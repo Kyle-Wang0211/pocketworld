@@ -1,0 +1,9 @@
+schema: pw_plr_training_exclusion_sources_v1
+canonical_capture_id: analysis_cap_1779777762841797
+expected_photo_count: 96
+captures:
+  - capture_id: analysis_cap_1779777762841797
+    photos_path: /Users/kaidongwang/Developer/Aether3D-cross/pocketworld_flutter/device_captures/analysis_cap_1779777762841797/photos_highres
+  - capture_id: analysis_cap_1779777762841797_v2
+    photos_path: /Users/kaidongwang/Developer/Aether3D-cross/pocketworld_flutter/device_captures/analysis_cap_1779777762841797_v2/photos_highres
+    must_be_byte_identical_to: analysis_cap_1779777762841797

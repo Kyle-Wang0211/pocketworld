@@ -9,7 +9,11 @@ repository:
   accepted_design_head: ee99c76
   execution_plan_head: ac0a882
   worktree_policy: shared_dirty_preserve_every_unrelated_change
-formal_project_photo_count: 141
+formal_project_photo_count: 96
+formal_project_photo_count_evidence:
+  capture_id: analysis_cap_1779777762841797
+  photos_highres_count: 96
+  counting_rule: regular_files_with_lowercase_jpg_extension
 approved_scope_photo_count:
   min: 93
   max: 300
@@ -47,11 +51,39 @@ run_control:
   full_project: forbidden_before_two_photo_win
   subagents: forbidden_by_user
 phase_boundary:
-  current: phase_0_and_1
-  training: forbidden_until_phase_1_review
+  current: phase_2_contract_frozen
+  training: authorized_after_phase_2_contract_validation_and_commit
   jxl_measurement: forbidden_until_phase_4
   lepton_measurement: forbidden_until_phase_4
+phase2:
+  input_manifest: phase2-input-manifest.yaml
+  training_exclusion_manifest: training-exclusion-manifest.json
+  training_exclusion_manifest_sha256: 09cef816e7fcfd6b21dbf46aa23281800b67c07ff022e6d25eaa63623b6714c2
+  training_exclusion_identity_sha256: 1f11a4e11b4b0a01185272924df76dc6140f36c7378619d9755a2a434060acd8
+  decoder_sequential_passes:
+    registered: 22
+    maximum: 24
+    unit: ordered_network_distribution_stages_per_photo
+    frequency_groups:
+      - 28
+      - 8
+      - 7
+      - 6
+      - 5
+      - 4
+      - 3
+      - 2
+      - 1
+    derivation: 2_hyperprior_plus_2_cbcr_checkerboard_plus_9_y1_groups_plus_9_y234_groups
+    per_coefficient_autoregression: forbidden
+    violation: blocked_portability
+  terminal_backend:
+    device: cpu
+    fixed_thread_count: 1
+    encoder_decoder_processes: separate
+    integer_cdf_trace_must_match: true
 terminal_states:
+  - pre_phase2_contract_corrected
   - phase_1_exact_container_passed
   - invalid_exactness_failure
   - invalid_incomplete_cost_accounting

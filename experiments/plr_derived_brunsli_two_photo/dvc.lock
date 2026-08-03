@@ -10,8 +10,8 @@ stages:
       size: 1011
     - path: pw_plr/input_identity.py
       hash: md5
-      md5: 312648f87166839ebd6ea6f224680506
-      size: 2065
+      md5: 03bac0fa36304947f4495d97ed836eb2
+      size: 2147
     - path: run_verify_inputs.py
       hash: md5
       md5: 12e0c1db6cda795dedd2a4b3f237198e
@@ -91,9 +91,60 @@ stages:
     deps:
     - path: pw_plr/model_accounting.py
       hash: md5
-      md5: 64e8254f8afced63f6e51cea8486139d
-      size: 4205
+      md5: 70eece9b5323f0e94213bafaaf7d3251
+      size: 4358
     - path: tests/test_model_accounting.py
       hash: md5
-      md5: 1b9d46caaefee301fd252e9d9c740f24
-      size: 3385
+      md5: 1cb69eb90a3028fcc288f8a140b107de
+      size: 3467
+  freeze_training_exclusions:
+    cmd: uv run python run_freeze_training_exclusions.py --config
+      training-exclusion-sources.yaml --output training-exclusion-manifest.json
+    deps:
+    - path: pw_plr/training_exclusion.py
+      hash: md5
+      md5: b79e17fbeeefdd0b5f950db874f7fd06
+      size: 6376
+    - path: run_freeze_training_exclusions.py
+      hash: md5
+      md5: 3c31b0a68bbfbae9be3bd5d76e43b6fc
+      size: 544
+    - path: training-exclusion-sources.yaml
+      hash: md5
+      md5: 21c777d24814c55ff336bb621801ddb7
+      size: 575
+    outs:
+    - path: training-exclusion-manifest.json
+      hash: md5
+      md5: ed352822599fe43abd8dee598bc3a4ff
+      size: 16836
+  verify_phase2_inputs:
+    cmd: uv run python run_verify_inputs.py --manifest
+      phase2-input-manifest.yaml --output results/phase2-input-verification.json
+    deps:
+    - path: data/frozen_pair
+      hash: md5
+      md5: 0b58d438fb960f8ca2a6774271978c65.dir
+      size: 6108699
+      nfiles: 2
+    - path: phase2-input-manifest.yaml
+      hash: md5
+      md5: 729a08077e9297860f38a05ab544017b
+      size: 1046
+    - path: pw_plr/input_identity.py
+      hash: md5
+      md5: 03bac0fa36304947f4495d97ed836eb2
+      size: 2147
+    - path: run_verify_inputs.py
+      hash: md5
+      md5: 12e0c1db6cda795dedd2a4b3f237198e
+      size: 1144
+    - path: training-exclusion-manifest.json
+      hash: md5
+      md5: ed352822599fe43abd8dee598bc3a4ff
+      size: 16836
+    outs:
+    - path: results/phase2-input-verification.json
+      hash: md5
+      md5: de18aeb238380591058995c441ae8326
+      size: 473

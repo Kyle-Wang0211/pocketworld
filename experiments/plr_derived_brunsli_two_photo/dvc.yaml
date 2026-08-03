@@ -18,6 +18,35 @@ stages:
       - pw_plr/model_accounting.py
       - tests/test_model_accounting.py
 
+  freeze_training_exclusions:
+    frozen: true
+    cmd: >-
+      uv run python run_freeze_training_exclusions.py
+      --config training-exclusion-sources.yaml
+      --output training-exclusion-manifest.json
+    deps:
+      - pw_plr/training_exclusion.py
+      - run_freeze_training_exclusions.py
+      - training-exclusion-sources.yaml
+    metrics:
+      - training-exclusion-manifest.json:
+          cache: false
+
+  verify_phase2_inputs:
+    cmd: >-
+      uv run python run_verify_inputs.py
+      --manifest phase2-input-manifest.yaml
+      --output results/phase2-input-verification.json
+    deps:
+      - data/frozen_pair
+      - phase2-input-manifest.yaml
+      - pw_plr/input_identity.py
+      - run_verify_inputs.py
+      - training-exclusion-manifest.json
+    metrics:
+      - results/phase2-input-verification.json:
+          cache: false
+
   phase1_exact_container:
     frozen: true
     cmd: >-

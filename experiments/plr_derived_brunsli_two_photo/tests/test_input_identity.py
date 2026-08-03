@@ -45,6 +45,32 @@ def test_verify_inputs_preserves_registered_order(tmp_path: Path) -> None:
     assert [item.bytes for item in verified] == [6, 5]
 
 
+def test_verify_inputs_resolves_relative_paths_from_manifest_directory(
+    tmp_path: Path,
+) -> None:
+    data_directory = tmp_path / "data"
+    data_directory.mkdir()
+    source = data_directory / "source.jpg"
+    source.write_bytes(b"self-contained")
+    manifest = tmp_path / "manifest.yaml"
+    _write_manifest(
+        manifest,
+        [
+            {
+                "role": "A",
+                "filename": source.name,
+                "path": "data/source.jpg",
+                "bytes": source.stat().st_size,
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            }
+        ],
+    )
+
+    verified = verify_inputs(manifest)
+
+    assert verified[0].path == source
+
+
 def test_verify_inputs_rejects_length_mismatch(tmp_path: Path) -> None:
     source = tmp_path / "a.jpg"
     source.write_bytes(b"source")

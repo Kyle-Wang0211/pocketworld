@@ -4,7 +4,7 @@
 >
 > 作用域：PLR-derived + Brunsli 相邻双照片 Mac 严格无损实验
 >
-> 结论：删除 15–20 MB 模型硬上限；`M` 改为预登记部署存储候选中的最小严格可逆结果；正式作用域冻结为每项目自包含归档
+> 结论：删除 15–20 MB 模型硬上限；`M` 改为预登记部署存储候选中的最小严格可逆结果；正式作用域冻结为每项目自包含归档；Revision 4 将未绑定的 141 分母纠正为冻结双图所属 capture 的 96
 
 ## 一、这次改了什么
 
@@ -17,9 +17,9 @@
 1. 删除 `15,000,000 B` 目标上限和 `20,000,000 B` 硬停止线。
 2. 不再使用 `model_budget_rejected` 作为终局状态。
 3. 继续把模型的全部真实解码依赖计入候选，但通过 `2 / 项目照片数` 分配给双图实验。
-4. 141 张仍是本轮正式准入规模，JXL 之和的严格门槛不变。
+4. 正式准入规模在训练前纠正为冻结双图所属 capture 的 96 张；JXL 之和的严格门槛不变。
 5. 新增模型规模敏感性报告和严格的 `N_break_even` 盈亏平衡照片数。
-6. 141 张失败但 `N_break_even <= 300` 时，报告为“当前规模失败、但在批准的每项目作用域内可达”；若 `N_break_even > 300`，本轮直接判定为作用域内不可达的失败。
+6. 96 张失败但 `N_break_even <= 300` 时，报告为“当前规模失败、但在批准的每项目作用域内可达”；若 `N_break_even > 300`，本轮直接判定为作用域内不可达的失败。
 7. 模型运行内存、App 包体、启动时间和 iPhone ARM64 可执行性继续保留，但作为未来生产门槛单独判断，不与压缩率硬混在一起。
 8. `M` 不再使用裸 `.pt` 或未压缩 fp32 文件大小，而是从 Phase 0 预登记的严格可逆部署存储候选中按完整持久字节选小。
 9. 全局跨项目共享模型不再作为本轮“第二次机会”；scope 1 需要独立的长期模型保留设计，不能在看到 Phase 4 结果后改变作用域。
@@ -28,7 +28,7 @@
 
 模型是固定成本，照片数据是随项目规模增长的可变成本。假设同一个模型可以处理一个自包含项目：
 
-- 项目有 141 张照片，模型只保存一次；
+- 冻结项目有 96 张照片，模型只保存一次；
 - 项目有 300 张照片，模型仍只保存一次。
 
 因此模型越大不一定越差。真正的问题是：模型带来的总码流节省是否大于它自身占用，而不是模型是否超过一个人为数字。
@@ -37,12 +37,12 @@
 
 | 共用模型的照片数 | 每张分摊 | 双图分摊 |
 |---:|---:|---:|
-| 141 | 约 425.5 KB | 约 851.1 KB |
+| 96 | 625 KB | 1.25 MB |
 | 300 | 约 200 KB | 约 400 KB |
 | 1,000 | 60 KB | 120 KB（纯信息，不属于批准作用域） |
 | 10,000 | 6 KB | 12 KB（纯信息，不属于批准作用域） |
 
-如果它在两张照片上只能比 JXL 节省 500 KB，那么 141 张规模不合格；只有盈亏平衡点不超过 300，才可称为在本轮批准的真实项目范围内可达。如果它能比 JXL 节省 1.5 MB，那么即使在 141 张规模也可能获胜。硬设 20 MB 上限会把后一种真正有价值的模型提前杀死。
+如果它在两张照片上只能比 JXL 节省 500 KB，那么 96 张规模不合格；只有盈亏平衡点不超过 300，才可称为在本轮批准的真实项目范围内可达。如果它能比 JXL 节省 1.5 MB，那么在 96 张规模也可能获胜。硬设 20 MB 上限会把后一种真正有价值的模型提前杀死。
 
 项目照片更大时也是同一逻辑：模型字节不变，照片码流和潜在节省通常随照片内容增加。不能用“模型 MB 数”独立决定胜负，必须用冻结真实输入的完整输出计算。
 
@@ -107,7 +107,7 @@ Phase 0 尚未产生最终训练权重，因此必须登记两个阶段：
 
 每个项目归档自包含一份模型。一个项目无论有多少张照片，完整项目只加一次模型大小。
 
-本轮正式实验只采用这一作用域。141 张照片共用一个模型，双图承担 `2/141` 的模型成本。依据用户登记的历史采集与产品目标，本合同批准的现实范围是 93–300 张；141 是正式判定点，300 是可达性上界。
+本轮正式实验只采用这一作用域。冻结 capture 的 96 张照片共用一个模型，双图承担 `2/96` 的模型成本。依据用户登记的历史采集与产品目标，本合同批准的现实范围是 93–300 张；96 是正式判定点，300 是可达性上界。
 
 ### 3. 每张照片各自保存模型
 
@@ -146,7 +146,7 @@ candidate_effective_bytes(N) = B + ceil(2 * M / N)
 B + ceil(2 * M / N) < J
 ```
 
-本轮正式判断使用 `N = 141`。
+本轮正式判断使用 `N = 96`。
 
 ## 六、盈亏平衡照片数
 
@@ -190,7 +190,7 @@ break_even_reachable_under_approved_scope =
     N_break_even != null && N_break_even <= 300
 ```
 
-- `142 <= N_break_even <= 300`：141 张正式失败，但批准的 scope 2 范围内可达；
+- `97 <= N_break_even <= 300`：96 张正式失败，但批准的 scope 2 范围内可达；
 - `N_break_even > 300`：本轮 scope 2 不可达，必须作为真实失败报告；
 - 1,000/10,000 张只保留为数学敏感性信息，不得改变终局状态。
 
@@ -220,8 +220,8 @@ model_accounting:
   storage_scope: per_project
   approved_scope_photo_count_min: 93
   approved_scope_photo_count_max: 300
-  formal_project_photo_count: 141
-  formal_pair_model_charge_bytes: <ceil(2*M/141)>
+  formal_project_photo_count: 96
+  formal_pair_model_charge_bytes: <ceil(2*M/96)>
   stream_headroom_before_model_bytes: <J-B>
   break_even_photo_count: <integer-or-null>
   break_even_reachable_under_approved_scope: <true-or-false>
@@ -232,7 +232,7 @@ model_accounting:
       beats_jxl: <true-or-false>
     - photo_count: 44
       ...
-    - photo_count: 141
+    - photo_count: 96
       decision_role: formal
       ...
     - photo_count: 300
@@ -250,8 +250,8 @@ model_accounting:
 
 - `winner_beats_jxl_and_lepton`
 - `winner_beats_jxl_but_loses_lepton`
-- `loser_at_141_but_reachable_within_scope2`
-- `loser_at_141_break_even_unreachable_scope2`
+- `loser_at_formal_count_but_reachable_within_scope2`
+- `loser_at_formal_count_break_even_unreachable_scope2`
 - `loser_stream_before_model_accounting`
 - `invalid_exactness_failure`
 - `invalid_incomplete_cost_accounting`
@@ -272,9 +272,9 @@ model_accounting:
 1. 冻结模型结构、参数量、序列化格式和解码依赖。
 2. 冻结部署精度和 CDF 判决一致性合同；若判决改变，把它登记成独立模型臂。
 3. 对未训练的冻结架构运行 raw、Zstd 1.5.7 level 22、ZPAQ 7.15 method 5 三个固定存储候选，全部做模型工件逐字节恢复；raw 完整字节登记为 provisional upper bound，两个压缩结果只作诊断。
-4. 冻结 scope 2、正式 N=141、批准范围 93–300；scope 1 不参与本轮。
+4. 冻结 scope 2、正式 N=96、批准范围 93–300；scope 1 不参与本轮。
 5. 检查 ARM64 operator 路线、CUDA-only 依赖和跨平台 CDF 决定性。
-6. 计算 2/44/141/300/1,000/10,000 张下的模型分摊；1,000/10,000 标为纯信息；不按绝对模型大小停止。
+6. 计算 2/44/96/300/1,000/10,000 张下的模型分摊；1,000/10,000 标为纯信息；不按绝对模型大小停止。
 7. 预先钉死 Brunsli v0.1 与唯一 fallback master 的 commit。只有 v0.1 对冻结双图 exact round-trip 失败才允许运行 master，禁止手补丁。
 8. 只有缺少未计费依赖、存在未登记序列化、无法恢复部署模型、或解码依赖 CUDA-only，才在 Phase 0 阻塞。
 
@@ -284,6 +284,12 @@ exact container、完整 Y/Cb/Cr intra entropy stream 和唯一 A→B conditiona
 
 Brunsli 主版本固定为 v0.1 commit `8a0e9b8ca2e3e089731c95a1da7ce8a3180e667c`。唯一 fallback 固定为 master commit `c9128f43994c1ca830dd079777d85f16736d6ba7`。若 v0.1 失败，原样运行一次 master；v0.1 通过则不运行 master；两者都失败则阻塞。不得 cherry-pick 或本地修补 JPEG wrapper。
 
+训练开始前新增三道守门：
+
+1. 排除粒度从两张文件提升为完整 capture。`analysis_cap_1779777762841797` 的 96 张照片全部从 training、validation、model selection 和 tuning 中排除；逐文件审计确认 `analysis_cap_1779777762841797_v2` 的 96 张与其完全相同，因此也作为同一物理场景排除。两者的 ordered content manifest SHA-256 均为 `2cc8516cf8b12756ec861e213606f22251787ad2f888a627b8a8d0700be0ed80`；完整排除文件 SHA-256 为 `09cef816e7fcfd6b21dbf46aa23281800b67c07ff022e6d25eaa63623b6714c2`。
+2. 冻结双图各复制一份到实验自己的 DVC data output；复制后大小和 SHA-256 与 Phase 1 输入完全相同。外部 capture 目录消失不能再使正式测试对失。
+3. `decoder_sequential_passes` 冻结为每图 22 个有序网络概率阶段：2 个 hyperprior、2 个 Cb/Cr checkerboard、9 个 Y1 frequency group、9 个合并的 Y2/Y3/Y4 frequency group。frequency group 使用官方 sibling implementation 已存在的 `[28, 8, 7, 6, 5, 4, 3, 2, 1]`。逐系数自回归禁止；超过 24 直接 `blocked_portability`，不开始训练。终局 encoder/decoder 必须分进程、CPU 单线程运行并输出完全一致的整数 CDF trace，不能用同进程往复或 MPS 结果代替。
+
 ### Phase 4
 
 证据审计确认：冻结双图当前没有同输入 JXL 结果，因此 `J`、`H` 和 `N_break_even` 在 Phase 4 之前全部是 unknown。审核中的估算数字仅用于解释，不能写入结果、门槛或停止规则。Phase 4 对两张图各运行一次 JXL exact-JPEG encode/decode，永久保存输入、归档和恢复 SHA；不得为了“稳定性”重跑。
@@ -292,11 +298,11 @@ Brunsli 主版本固定为 v0.1 commit `8a0e9b8ca2e3e089731c95a1da7ce8a3180e667c
 
 1. 对最终训练模型重跑同一组三个存储候选与 CDF 判决一致性，选出 `final_M`，并同时保留 provisional 表；
 2. 分别报告 `B`、`final_M`、`H`；
-3. 报告 141 张的正式模型分摊；
+3. 报告 96 张的正式模型分摊；
 4. 计算并验证 `N_break_even`；
 5. 生成规模敏感性表；
-6. 若141张失败且拐点在142–300，保留为 scope 2 可达证据；若超过300，明确判为本作用域不可达失败；
-7. 若141张获胜，再按原计划扩展到固定4/8图组和一次完整项目。
+6. 若96张失败且拐点在97–300，保留为 scope 2 可达证据；若超过300，明确判为本作用域不可达失败；
+7. 若96张获胜，再按原计划扩展到固定4/8图组和一次完整项目。
 
 ## 九、哪些东西完全没有改变
 
@@ -309,14 +315,14 @@ Brunsli 主版本固定为 v0.1 commit `8a0e9b8ca2e3e089731c95a1da7ce8a3180e667c
 - 不动生产代码、不上手机、不跑 100 MB。
 - H2 只有一个冻结 conditional arm 和一个 intra-only 归因臂。
 - Mac 结果不能直接批准生产。
-- `loser_at_141_but_reachable_within_scope2` 不授权生产按照片数自动切换 codec；这需要另立产品合同审查格式兼容、恢复路径和复杂度成本。
+- `loser_at_formal_count_but_reachable_within_scope2` 不授权生产按照片数自动切换 codec；这需要另立产品合同审查格式兼容、恢复路径和复杂度成本。
 
 ## 十、修改后的核心决策
 
 模型大小不再被一个脱离项目规模的数字裁决。新的决策顺序是：
 
 1. 先看不计共享模型时，完整真实双图码流是否产生正 headroom；
-2. 再把规范化模型按141张正式分摊，判断当前项目是否严格胜过 JXL；
+2. 再把规范化模型按96张正式分摊，判断当前项目是否严格胜过 JXL；
 3. 当前规模若失败，计算模型从多少张照片开始摊得过来，并以300张判断本合同内是否可达；
 4. 只有真实完整项目编码才能确认大规模收益，不能靠双图比例直接外推；
 5. 生产阶段再独立评估模型 RAM、App 包体、启动成本和 iPhone ARM64 可执行性。

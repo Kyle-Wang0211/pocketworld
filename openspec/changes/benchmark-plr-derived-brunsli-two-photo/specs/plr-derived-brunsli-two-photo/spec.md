@@ -36,15 +36,63 @@ the canonical deployment artifact byte for byte with the same SHA-256.
 
 ### Requirement: Scope-2 break-even reachability
 
-The formal verdict SHALL use 141 photos and a self-contained per-project model.
+The formal verdict SHALL use the frozen pair's verified 96-photo capture and a
+self-contained per-project model.
 Break-even SHALL be reachable only when the verified minimum photo count is at
 most 300; rows at 1,000 and 10,000 are informational only.
 
 #### Scenario: Break-even is 301 photos
 
-- **WHEN** the candidate loses at 141 and `N_break_even` is 301
-- **THEN** the verdict is `loser_at_141_break_even_unreachable_scope2`
+- **WHEN** the candidate loses at 96 and `N_break_even` is 301
+- **THEN** the verdict is `loser_at_formal_count_break_even_unreachable_scope2`
 - **AND** global model sharing cannot rescue it
+
+### Requirement: Training exclusion is capture-wide
+
+The experiment SHALL exclude every photo from
+`analysis_cap_1779777762841797` and its byte-identical `_v2` duplicate from
+training, validation, model selection, and tuning. It SHALL persist the ordered
+96-photo content manifest and its SHA-256 before training.
+
+#### Scenario: A neighboring slot enters a training split
+
+- **WHEN** any registered photo hash from either excluded capture appears in a
+  training, validation, selection, or tuning manifest
+- **THEN** training stops as invalid before reading that sample
+
+### Requirement: Frozen pair data is self-contained
+
+Both source JPEG files SHALL exist as byte-identical experiment-local DVC data
+with their original size and SHA-256 before Phase 2.
+
+#### Scenario: The historical capture directory is removed
+
+- **WHEN** the external source path no longer exists
+- **THEN** the Phase 2 pair remains restorable from DVC without changing either
+  registered source SHA-256
+
+### Requirement: Decoder sequential work is bounded before training
+
+The registered decoder SHALL use 22 ordered network distribution stages per
+photo and SHALL NOT use per-coefficient autoregression. More than 24 stages is
+`blocked_portability` before training.
+
+#### Scenario: A proposed entropy path invokes the network per coefficient
+
+- **WHEN** its declared decoder schedule grows with the 30,210,048 pair
+  coefficient count rather than the fixed grouped schedule
+- **THEN** training is rejected as `blocked_portability`
+
+### Requirement: Terminal CDF decisions cross a process boundary
+
+The terminal encoder and decoder SHALL run as separate CPU processes with one
+fixed thread each and SHALL emit identical integer-CDF decision traces.
+
+#### Scenario: Same-process round-trip succeeds but cross-process CDF differs
+
+- **WHEN** any integer-CDF entry or symbol decision differs across processes
+- **THEN** the candidate is invalid regardless of JPEG round-trip observed in a
+  single process
 
 ### Requirement: Brunsli exact-container fallback is unmodified and bounded
 

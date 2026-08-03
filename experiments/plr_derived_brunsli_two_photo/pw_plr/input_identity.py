@@ -42,6 +42,8 @@ def verify_inputs(manifest_path: Path) -> tuple[VerifiedInput, ...]:
         seen_roles.add(role)
 
         path = Path(entry["path"])
+        if not path.is_absolute():
+            path = manifest_path.parent / path
         if not path.is_file():
             raise InputIdentityError(f"not a readable file: {path}")
 
