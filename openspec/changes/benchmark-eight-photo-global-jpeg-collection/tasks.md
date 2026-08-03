@@ -8,9 +8,9 @@
 
 ## 2. TDD
 
-- [ ] 2.1 Add RED tests for fixed eight-photo selection and complete 28-edge
+- [x] 2.1 Add RED tests for fixed eight-photo selection and complete 28-edge
       graph extraction.
-- [ ] 2.2 Implement read-only collection extraction and deterministic graph
+- [x] 2.2 Implement read-only collection extraction and deterministic graph
       construction.
 - [ ] 2.3 Add RED tests for hybrid predictor modes, fixed-point affine models,
       typed frequency streams, and exact inversion.
