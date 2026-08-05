@@ -685,6 +685,42 @@ abstract class AppL10n {
   /// **'Back to drafts'**
   String get sfmBackToDrafts;
 
+  /// No description provided for @sfmEditSelection.
+  ///
+  /// In en, this message translates to:
+  /// **'Edit selection'**
+  String get sfmEditSelection;
+
+  /// No description provided for @sfmSelectionSaveTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Save selection changes?'**
+  String get sfmSelectionSaveTitle;
+
+  /// No description provided for @sfmSelectionSaveBody.
+  ///
+  /// In en, this message translates to:
+  /// **'You adjusted the selection box. Saving keeps only the points inside it in the preview and the delivered cloud.'**
+  String get sfmSelectionSaveBody;
+
+  /// No description provided for @sfmSelectionSaveKeep.
+  ///
+  /// In en, this message translates to:
+  /// **'Save'**
+  String get sfmSelectionSaveKeep;
+
+  /// No description provided for @sfmSelectionSaveDiscard.
+  ///
+  /// In en, this message translates to:
+  /// **'Discard'**
+  String get sfmSelectionSaveDiscard;
+
+  /// No description provided for @sfmSelectionSaveCancel.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancel'**
+  String get sfmSelectionSaveCancel;
+
   /// No description provided for @sfmGeneratingFinalCloud.
   ///
   /// In en, this message translates to:
@@ -796,20 +832,8 @@ abstract class AppL10n {
   /// No description provided for @selectionRotatePointCloud.
   ///
   /// In en, this message translates to:
-  /// **'Rotate Point Cloud'**
+  /// **'Rotate'**
   String get selectionRotatePointCloud;
-
-  /// No description provided for @selectionReadyToProcess.
-  ///
-  /// In en, this message translates to:
-  /// **'Ready to Process'**
-  String get selectionReadyToProcess;
-
-  /// No description provided for @selectionDensifyComingSoon.
-  ///
-  /// In en, this message translates to:
-  /// **'Dense processing coming soon'**
-  String get selectionDensifyComingSoon;
 
   /// No description provided for @selectionNoCloud.
   ///
@@ -853,11 +877,29 @@ abstract class AppL10n {
   /// **'Bottom'**
   String get cubeFaceBottom;
 
-  /// No description provided for @selectionBackToPreview.
+  /// No description provided for @denseStageUnavailable.
   ///
   /// In en, this message translates to:
-  /// **'Back to Preview'**
-  String get selectionBackToPreview;
+  /// **'Processing is not available on this device yet'**
+  String get denseStageUnavailable;
+
+  /// No description provided for @selectionCancel.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancel'**
+  String get selectionCancel;
+
+  /// No description provided for @selectionDiscardTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Discard changes?'**
+  String get selectionDiscardTitle;
+
+  /// No description provided for @selectionDiscardConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Discard Changes'**
+  String get selectionDiscardConfirm;
 
   /// No description provided for @selectionResetRotation.
   ///

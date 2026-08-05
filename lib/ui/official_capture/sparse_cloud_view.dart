@@ -132,6 +132,14 @@ class CloudViewController extends ChangeNotifier {
   }
 }
 
+/// 点云视图的投影模式 —— 浏览与编辑**共用**这一个值。
+///
+/// [2026-07-30 用户签决"点云和投影是同一个"] 两态分别取值会在进出编辑态时
+/// 造成肉眼可见的形变(见 _projectionFor 上的注释)。要换回透视就改这一个
+/// 常量,但先看清 CloudCamera.orthographic 的注释:选区手柄依赖正交才严格
+/// 重合。
+const bool kCloudOrthographic = true;
+
 class SparseCloudView extends StatefulWidget {
   const SparseCloudView({
     super.key,
@@ -306,9 +314,18 @@ class _SparseCloudViewState extends State<SparseCloudView>
     pivotY: _pivot[1],
     pivotZ: _pivot[2],
     radius: _fitRadius,
-    // [2026-07-29 用户签决] 编辑态切正交:RS 2D 矩形手柄与盒投影严格重合。
-    // 浏览态保持透视(下方 painter 用 widget.editing 区分)。
-    orthographic: widget.editing,
+    // [2026-07-30 用户签决] 浏览与编辑用**同一种**投影。
+    //
+    // 曾经是 `orthographic: widget.editing` —— 07-29 为"框外必须全红"给编辑态
+    // 切了正交,却把 07-28"浏览与编辑是同一个画面"破坏掉了:点"完成"时相机
+    // 一个数没动,但每点的除数从恒定 camDist 换成各自的 depth,近处 +14%、
+    // 远处 −11%(camDist = radius×kCamDistK = 8×radius),看上去就是"角度微微
+    // 变了"(用户实机指认)。
+    //
+    // 统一取正交:2D 矩形手柄与盒投影严格重合这条必须留(透视下屏幕跑出矩形
+    // 但 3D 仍在盒内的点不会红,与直觉相悖,是真机实测定的)。代价是预览失去
+    // 近大远小,但 camDist 已是 8×radius 的长焦,原本的透视就很弱。
+    orthographic: kCloudOrthographic,
   ).projectionFor(size);
 
   SelectionBox? get _liveBox =>
@@ -577,12 +594,15 @@ class _SparseCloudViewState extends State<SparseCloudView>
                               exposure: _exposure,
                               tone: _tone,
                               selectionBox: widget.selectionBox,
+                              // [SEL-PREVIEW 2026-07-30] 浏览态剔除框外点
+                              // (预览 = 交付预期);编辑态染红不剔除。
+                              cullOutsideSelection: !widget.editing,
                               // [2026-07-29 回退 2D 框] 编辑态不画 3D 线框
                               // (由 RS 2D 矩形手柄代替);框外点变红保留。
                               // painter 与手柄同用正交 ⇒ 红点判定与矩形严格
                               // 重合(RS 观感)。
                               drawSelectionWireframe: false,
-                              orthographic: widget.editing,
+                              orthographic: kCloudOrthographic,
                             ),
                             size: Size.infinite,
                           ),
@@ -647,6 +667,7 @@ class SparseCloudPainter extends CustomPainter {
     required this.exposure,
     required this.tone,
     this.selectionBox,
+    this.cullOutsideSelection = false,
     this.drawSelectionWireframe = true,
     this.orthographic = false,
     this.roll = 0,
@@ -676,13 +697,20 @@ class SparseCloudPainter extends CustomPainter {
   /// 只读选区回显(见 SparseCloudView 同名字段):null = 无选区,不改渲染。
   final SelectionBox? selectionBox;
 
+  /// [SEL-PREVIEW 2026-07-30] 框外点是**剔除**还是**染红**。
+  ///
+  /// 浏览态 true:预览呈现的就是选区后的范围,所见即交付预期。
+  /// 编辑态 false:框外染红而不消失 —— 用户需要看见自己正在切掉什么,
+  /// 点一消失就没法判断框拖得对不对了。
+  final bool cullOutsideSelection;
+
   /// 是否画选区 3D 线框(8 角连边)。默认 true(草稿只读回显用)。
   /// SelectionCloudView(选区编辑页,Task 4)传 false —— 编辑页要框外红点,
   /// 但用自己的 2D 屏幕矩形手柄层,不要这条 3D 线框(会和手柄矩形叠加冗余)。
   final bool drawSelectionWireframe;
 
-  /// 正交投影(选区编辑视图专用;见 CloudCamera.orthographic)。查看器
-  /// 保持透视(false)。
+  /// 正交投影(见 CloudCamera.orthographic)。浏览与编辑同取
+  /// [kCloudOrthographic] —— 两态用不同投影会在切换瞬间造成"角度变了"的错觉。
   final bool orthographic;
 
   /// 屏幕滚转(过极翻面动画专用;见 CloudCamera.roll)。roll==0 时热循环
@@ -1196,6 +1224,13 @@ class SparseCloudPainter extends CustomPainter {
     for (var i = 0; i < n; i += stride) {
       if (vis != null && vis[i] == 0) continue; // L2 渲染门:ghost 点不进 buffer
       final wx = xyz[i * 3], wy = xyz[i * 3 + 1], wz = xyz[i * 3 + 2];
+      // [SEL-PREVIEW 2026-07-30 用户签决] "用了选区,预览呈现的就是选区后的
+      // 范围"。编辑态仍把框外点染红(用户要看见自己切掉了什么);浏览态直接
+      // 剔除 —— 预览就是交付预期。剔除放在最前面:一旦写进 vxA/colorA 就
+      // 已经付了投影与排序的代价,而这条路径每帧跑十几万次。
+      final outsideSelection =
+          selectionBox != null && !selectionBox!.contains(wx, wy, wz);
+      if (outsideSelection && cullOutsideSelection) continue;
       final px = wx - pivotX, py = wy - pivotY, pz = wz - pivotZ;
       // yaw about Y, then pitch about X
       final x1 = px * cosY + pz * sinY;
@@ -1231,8 +1266,8 @@ class SparseCloudPainter extends CustomPainter {
       scaleA[m] = ortho ? baseScale : baseScale * (camDist / depth);
       depthA[m] = depth;
       var argb = displayColors[i];
-      if (selectionBox != null && !selectionBox!.contains(wx, wy, wz)) {
-        argb = kSelectionOutColor; // 框外 → 红(点不消失)
+      if (outsideSelection) {
+        argb = kSelectionOutColor; // 编辑态:框外 → 红(点不消失)
       }
       colorA[m] = argb;
       m++;

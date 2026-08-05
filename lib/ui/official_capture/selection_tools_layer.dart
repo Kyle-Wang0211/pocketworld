@@ -5,7 +5,7 @@
 // 只是把这一层**叠**到同一个 SparseCloudView 上。相机自始至终是那一个
 // State,连一次重建都没有,所以位置/角度/缩放天然连续。
 //
-// 本层 = 朝向骰子(跟随相机 + 点击某面归位)+ 返回 + 开始处理。
+// 本层 = 朝向骰子(跟随相机 + 点击某面归位)+ 旋转滑轨 + 左"取消"/右"完成"。
 // [2026-07-30 用户签决] 底部"旋转点云"滑轨语义 = **钟表指针**:转轴恒为
 // 视线轴,点云在屏幕平面内原地打转(转轴四代变迁见 _rebaseRoll 上的注释)。
 import 'dart:async';
@@ -28,6 +28,11 @@ import 'ruler_scrubber.dart';
 import 'sparse_cloud_view.dart' show CloudViewCamera, CloudViewController;
 import 'view_cube.dart';
 
+/// 左上"取消"按钮 —— 页面据此把"放弃更改"浮层锚定到它**下方**(苹果相册版式,
+/// 2026-08-03 用户签决 + 截图)。用 GlobalKey 而不是让工具层自己弹:回滚逻辑
+/// 在页面手里,浮层的去留必须由它裁决。
+final GlobalKey kSelectionCancelKey = GlobalKey(debugLabel: 'selection-cancel');
+
 /// 六向朝向预设(骰子点击归位的目标姿态)。
 const List<({String label, double yaw, double pitch})> kOrientationPresets = [
   (label: 'Top', yaw: math.pi, pitch: -math.pi / 2), // 文字正立(探针实测)
@@ -46,6 +51,7 @@ class SelectionToolsLayer extends StatefulWidget {
     required this.camera,
     required this.controller,
     required this.onExit,
+    required this.onCancel,
     this.onResetBoxSize,
   });
 
@@ -57,8 +63,18 @@ class SelectionToolsLayer extends StatefulWidget {
   final ValueListenable<CloudViewCamera?> camera;
   final CloudViewController controller;
 
-  /// 返回浏览态(工具层收起)。
+  /// 右上"完成":提交本次编辑,**不问**。
+  ///
+  /// [2026-07-30 用户签决"直接学苹果的相册"] 左"取消" / 右"完成",确认的负担
+  /// 全压在破坏性的那一侧:完成直接生效,取消才问(而且只在真改过时问)。
   final VoidCallback onExit;
+
+  /// 左上"取消":放弃本次编辑。
+  ///
+  /// 没改过就直接回浏览态;改过则由父级弹"确定要放弃更改吗?"。父级必须实现成
+  /// **真回滚** —— 编辑期改动是去抖自动落盘的,磁盘上早就是新值,"放弃"不能靠
+  /// "跳过写盘"。
+  final VoidCallback onCancel;
 
   /// "恢复原始框大小":按当前点云重算初始框(位置/尺寸/朝向全复位)。
   /// 由父级实现 —— 它才持有点云数据。null 时不显示该菜单项。
@@ -132,7 +148,9 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     // 目标直接用 preset 而不是 _snapToFace('Top') —— onBoxChanged 要等父级
     // setState,当帧 widget.box.rot 还是旧的歪值,反解出来照样偏。
     final top = kOrientationPresets.first;
-    _snapToPose(composeViewMatrix(top.yaw, top.pitch, 0));
+    final target = composeViewMatrix(top.yaw, top.pitch, 0);
+    _logicalRel = target;
+    _snapToPose(target);
   }
 
   @override
@@ -142,13 +160,22 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     super.dispose();
   }
 
+  /// 右侧六视图列的起点 —— 让开上方 48pt 的"完成"按钮,再留 4pt 间隙。
+  /// 左侧的 "⋯" 同样被上方的"取消"顶下来,两边高度因此对齐。
+  /// 两个 Positioned 都包在 SafeArea 里,所以这是同一个基准。
+  static const double _kRightColumnTop = 8 + 48 + 4;
+
   /// 骰子箭头 = 绕**屏幕轴** premultiply ±90°。
   ///
   /// [2026-07-30 用户签决] "完全复刻 RS,点云只能固定六个面动,立方体上下
   /// 左右的四个箭头也加回来" —— 机制照 b3588f6^ 的骰子实现回滚:下 = 绕屏幕
-  /// 水平轴向下滚,右 = 绕屏幕竖直轴向右滚,每按一次严格 90°,任何序列任何
-  /// 状态无例外(就像现实中滚骰子)。翻过极点后背面自然倒置,不做"回正"
-  /// 规范化 —— 用户终审签决过"接受背面倒置,每步严格 90°"(见 6e83756)。
+  /// 水平轴向下滚,右 = 绕屏幕竖直轴向右滚,每按一次严格 90°。
+  ///
+  /// [2026-07-31 用户签决,推翻 6e83756] "前后左右的文字和点云都要永远正面
+  /// 朝上(重力参数),因为用户可以用旋转刻度来转"。此前的终审是"接受背面
+  /// 倒置" —— 现在反过来:滚出的姿态一律吸附回该面的 preset(_uprightSnap),
+  /// 于是任何序列都不会出现倒置或歪斜的面。倾斜只能来自用户拨滑轨,不能
+  /// 来自换面。
   static const List<double> _kRollDown = [1, 0, 0, 0, 0, -1, 0, 1, 0];
   static const List<double> _kRollUp = [1, 0, 0, 0, 0, 1, 0, -1, 0];
   static const List<double> _kRollRight = [0, 0, 1, 0, 1, 0, -1, 0, 0];
@@ -156,13 +183,84 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
 
   /// 目标姿态 = viewRot · 当前目标姿态(动画中途连点也精确累积 90°,不会因为
   /// 拿"显示中的中途姿态"当基准而漂)。
+  /// 骰子换面的**逻辑**姿态(框局部 → 相机):照常自然滚,允许倒置。
+  ///
+  /// 相机实际落到它回正之后的姿态,但下一次按箭头是从**逻辑**姿态继续滚的。
+  /// 分开这两者是必需的:若拿回正后的姿态当基准,过极点那一下的 180° 修正会
+  /// 把"上/下"调个个儿 —— 按上再按下回不到原处(实测,测试已锁)。
+  ///
+  /// 存**相对**姿态而不是世界姿态,是因为拨滑轨时相机与框同步转 ⇒ 相对姿态
+  /// 恒定,逻辑姿态天然不会被滑轨弄脏。
+  List<double>? _logicalRel;
+
   void _rollCube(List<double> viewRot) {
-    final cam = _cam;
-    if (cam == null) return;
-    final base = _snap.isAnimating && _slerpTarget != null
-        ? _slerpTarget!
-        : composeViewMatrix(cam.yaw, cam.pitch, cam.roll);
-    _snapToPose(mulMatrix(viewRot, base));
+    if (_cam == null) return;
+    // [2026-07-31 用户实机指认] "我在左的角度,当我想要向左转,就到了底部"。
+    // 根因:逻辑姿态原样保留滚转分量,下一次箭头绕的"屏幕竖直轴"在带滚转的
+    // 姿态里已经不竖直,"左"就退化成俯仰。**纯按箭头也会累积滚转**,不只是
+    // 拨滑轨:从"顶"按一次"左",视线到了"右"但整个姿态比 Right preset 多转
+    // 90°,再按"左"就掉到"底"(探针实测,与实机吻合)。
+    // 修法:逻辑姿态每步一并摆正(_upright),于是"摆正 ⇒ 屏幕竖直 ≡ 框局部
+    // +Y(重力上)",左右恒为水平换面、四次一圈精确回原处。
+    //
+    // ⚠️ 代价(已向用户明示):上下往返不再可逆 —— 顶按"上"到前、前按"下"到
+    // 底,回不到顶。"沿经线 4 循环"能可逆,但与"永远正面朝上"几何互斥:绕一
+    // 条经线转整圈,侧面必然经过倒置(底按下到后时 up = 框局部 −Y)。既然
+    // 07-31 签决是"前后左右的文字和点云都要永远正面朝上",取正立、舍可逆。
+    final next = _upright(mulMatrix(viewRot, _logicalRel ?? _relPose));
+    _logicalRel = next;
+    _snapToPose(_poseForRel(next));
+  }
+
+  /// 把姿态摆正:视线吸附到最近的主轴,屏幕上方对齐"正立"方向。
+  ///
+  /// 侧面的正立 = 上方朝框局部 +Y(重力上);极面(视线沿 ±Y)时上方无法对齐
+  /// 重力,取 preset 的水平上方 —— 探针实测那才是"顶/底"标签正立的朝向。
+  List<double> _upright(List<double> rel) {
+    final f = _snapAxis([rel[6], rel[7], rel[8]]);
+    final up = f[1].abs() > 0.5
+        ? <double>[0, 0, f[1] < 0 ? -1 : 1]
+        : const <double>[0, 1, 0];
+    // right = up × forward(与视图矩阵的右手约定一致,六个 preset 全对得上)。
+    return <double>[
+      up[1] * f[2] - up[2] * f[1],
+      up[2] * f[0] - up[0] * f[2],
+      up[0] * f[1] - up[1] * f[0],
+      up[0], up[1], up[2], //
+      f[0], f[1], f[2],
+    ];
+  }
+
+  /// 吸附到 ±x/±y/±z 中分量绝对值最大的那根。
+  List<double> _snapAxis(List<double> v) {
+    var k = 0;
+    for (var i = 1; i < 3; i++) {
+      if (v[i].abs() > v[k].abs()) k = i;
+    }
+    final s = v[k] >= 0 ? 1.0 : -1.0;
+    return <double>[k == 0 ? s : 0.0, k == 1 ? s : 0.0, k == 2 ? s : 0.0];
+  }
+
+  /// 逻辑相对姿态 → 相机世界姿态:先按**视线轴**吸附到最近的 preset(把滚转
+  /// 分量整个丢掉 —— 那正是倒置的来源),再回代 preset · box.rotᵀ。
+  ///
+  /// 与 _snapToFace 同一族公式,所以用户拨滑轨转出的倾斜照常保留(它记在
+  /// box.rot 里,相机跟着一起转)。
+  List<double> _poseForRel(List<double> rel) {
+    final vz = [rel[6], rel[7], rel[8]];
+    var best = kOrientationPresets.first;
+    var bestDot = -2.0;
+    for (final p in kOrientationPresets) {
+      final m = composeViewMatrix(p.yaw, p.pitch, 0);
+      final d = m[6] * vz[0] + m[7] * vz[1] + m[8] * vz[2];
+      if (d > bestDot) {
+        bestDot = d;
+        best = p;
+      }
+    }
+    final r = widget.box.rot;
+    final rotT = <double>[r[0], r[3], r[6], r[1], r[4], r[7], r[2], r[5], r[8]];
+    return mulMatrix(composeViewMatrix(best.yaw, best.pitch, 0), rotT);
   }
 
   CloudViewCamera? get _cam => widget.camera.value;
@@ -238,6 +336,7 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     final cam = _cam;
     if (cam == null) return;
     final target = composeViewMatrix(preset.yaw, preset.pitch, 0);
+    _logicalRel = target; // 显式指定了面 ⇒ 逻辑姿态一并归位
     final r = widget.box.rot;
     final rotT = <double>[r[0], r[3], r[6], r[1], r[4], r[7], r[2], r[5], r[8]];
     _snapToPose(mulMatrix(target, rotT));
@@ -354,6 +453,14 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
 
   /// [2026-07-29 用户签决] "⋯" 菜单项一:框朝向回到初始(轴对齐),滑轨
   /// 读数与基准同步归零 —— 尺寸与位置不动,只把转过的角度还原。
+  ///
+  /// [2026-07-30 用户实机指认"框变大而且红色点云在框内"] 原实现只复位了**框**,
+  /// 没有把**视角**一起送回"顶"。拨滑轨的机制是点云转、框反向补偿以保持屏幕
+  /// 对齐 —— 单独把 rot 打回单位阵,框就相对当前(转过的)视角歪着了:2D 手柄
+  /// 矩形退化成歪框的屏幕包围盒(看着"变大"),而落在这个矩形里、却在 3D 框
+  /// 之外的点照常判为框外染红(看着"红点在框内")。两者都不是渲染 bug,是
+  /// 框与视角失配。进编辑态的 _alignToTopOnce 本来就是"框复位 + 视角回顶"
+  /// 一起做的,这里必须同款。
   void _resetRotation() {
     final next = widget.box.copyWith(rot: kIdentityRot);
     setState(() {
@@ -363,6 +470,11 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     });
     _rollEmitted = next;
     widget.onBoxChanged(next);
+    // 视角同步回重力正上方的"顶" —— 与 _alignToTopOnce 同一个目标姿态。
+    final top = kOrientationPresets.first;
+    final target = composeViewMatrix(top.yaw, top.pitch, 0);
+    _logicalRel = target;
+    _snapToPose(target);
   }
 
   /// 菜单项二:相机回到默认取景(点云回到刚进来时的大小)。框不动。
@@ -377,9 +489,10 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     onPressed: onTap,
     icon: Icon(icon),
     color: Colors.white70,
-    iconSize: 18,
+    // [2026-07-31 用户签决] 骰子与箭头整体变小,箭头再贴近骰子(对齐 RS)。
+    iconSize: 15,
     padding: EdgeInsets.zero,
-    constraints: const BoxConstraints(minWidth: 24, minHeight: 18),
+    constraints: const BoxConstraints(minWidth: 17, minHeight: 13),
     visualDensity: VisualDensity.compact,
   );
 
@@ -420,28 +533,24 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
           child: SafeArea(
             child: Column(
               mainAxisSize: MainAxisSize.min,
-              // [2026-07-29 用户签决] "⋯" 放在"返回预览页面"**下方、左对齐**。
+              // [2026-07-30 用户签决] 苹果相册版式:左上"取消",右上"完成",
+              // "⋯" 排在取消下方、左对齐。
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                TextButton.icon(
-                  key: const ValueKey('selection-back'),
-                  onPressed: widget.onExit,
-                  icon: const Icon(
-                    Icons.arrow_back_ios_new_rounded,
-                    color: Colors.white,
-                    size: 20,
-                  ),
-                  label: Text(
-                    l.selectionBackToPreview,
-                    style: const TextStyle(color: Colors.white, fontSize: 15),
-                  ),
+                TextButton(
+                  key: kSelectionCancelKey,
+                  onPressed: widget.onCancel,
                   style: TextButton.styleFrom(
                     foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    minimumSize: const Size(0, 48),
+                  ),
+                  child: Text(
+                    l.selectionCancel,
+                    style: const TextStyle(color: Colors.white, fontSize: 15),
                   ),
                 ),
                 Padding(
-                  // 与返回箭头的左边缘对齐(TextButton 内边距 8)。
                   padding: const EdgeInsets.only(left: 8, top: 2),
                   child: GestureDetector(
                     key: const ValueKey('selection-more'),
@@ -491,8 +600,30 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
             ),
           ),
         ),
+        // [2026-07-30 用户签决] 右上角是**文字**不是图标:预览页写"选区编辑",
+        // 编辑页同一位置写"完成"(点它弹"编辑记录是否保存",三选一)。
         Positioned(
           top: 8,
+          right: 4,
+          child: SafeArea(
+            child: TextButton(
+              key: const ValueKey('selection-back'),
+              onPressed: widget.onExit,
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                minimumSize: const Size(0, 48),
+              ),
+              child: Text(
+                l.sfmDone,
+                style: const TextStyle(color: Colors.white, fontSize: 15),
+              ),
+            ),
+          ),
+        ),
+        // 六视图箭头 + 立方体整体下移,给上面的"完成"让位。
+        Positioned(
+          top: _kRightColumnTop,
           right: 12,
           child: SafeArea(
             child: Column(
@@ -522,7 +653,7 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
                           viewRoll: cr,
                           faceLabels: _faceLabels(context),
                           onFaceTap: _snapToFace,
-                          size: 72,
+                          size: 54,
                         );
                       },
                     ),
@@ -546,50 +677,41 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
           left: 0,
           right: 0,
           bottom: 0,
-          child: SafeArea(
-            top: false,
-            // 底部面板**不**包手势拦截器:外层的 Scale 识别器会和刻度尺的
-            // 水平拖动抢竞技场,把滑轨拖动整个吃掉(实测框纹丝不动)。
-            // 下层点云视图改由 bottomGestureExclusion 按位置忽略该区域 ——
-            // 确定性判定,不依赖竞技场。
-            child: Container(
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
-              color: const Color(0xE60B0B0D),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    l.selectionRotatePointCloud,
-                    style: const TextStyle(color: Colors.white70, fontSize: 13),
-                  ),
-                  RulerScrubber(
-                    value: _rollDeg,
-                    onChanged: _onRoll,
-                    originDeg: 0,
-                  ),
-                  const SizedBox(height: 8),
-                  SizedBox(
-                    width: double.infinity,
-                    height: 50,
-                    child: ElevatedButton(
-                      onPressed: () =>
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text(l.selectionDensifyComingSoon),
-                            ),
-                          ),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF0A84FF),
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
+          // [2026-08-03 用户实机"黑色滑轴 UI 下面还有灰色背景"] 背景色必须在
+          // SafeArea **外面** —— 包在里面时 home indicator 那条 inset 落在
+          // Container 之外,露出下层灰底。现在黑色一直铺到屏幕最底边,内容靠
+          // SafeArea 的 inset 自适应避开 indicator。
+          child: Container(
+            color: const Color(0xE60B0B0D),
+            child: SafeArea(
+              top: false,
+              // 底部面板**不**包手势拦截器:外层的 Scale 识别器会和刻度尺的
+              // 水平拖动抢竞技场,把滑轨拖动整个吃掉(实测框纹丝不动)。
+              // 下层点云视图改由 bottomGestureExclusion 按位置忽略该区域 ——
+              // 确定性判定,不依赖竞技场。
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      l.selectionRotatePointCloud,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 13,
                       ),
-                      child: Text(l.selectionReadyToProcess),
                     ),
-                  ),
-                ],
+                    // [2026-07-30 用户签决] 底部的蓝色"开始处理"按钮删除 ——
+                    // 它只弹一句"敬请期待"的 snackbar,不做任何事;编辑的出口
+                    // 现在是右上"保存"/左上"返回"。
+                    RulerScrubber(
+                      value: _rollDeg,
+                      onChanged: _onRoll,
+                      originDeg: 0,
+                    ),
+                  ],
+                ),
               ),
             ),
           ),

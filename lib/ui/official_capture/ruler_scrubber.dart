@@ -12,13 +12,43 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/physics.dart';
 
+/// 刻度尺几何(顶层常量,供守门测试直接断言)。
+///
+/// 不变量:指针尖脚的底边必须落在最长(黄色初始)刻度的顶端**之上** ——
+/// rulerPinBottom(h) <= rulerOriginTickTop(h)。
+const double kRulerHeight = 68;
+const double kRulerPinZone = 20; // 顶部留给指针的带宽
+const double kRulerPinRadius = 4.5;
+
+/// 刻度密度。
+///
+/// [2026-08-03] 曾一度改成 0.75(以为"阻力大"是指灵敏度),用户澄清指的是
+/// **松手后的滑行**,与这里无关 ⇒ 回退到 1.1,避免无关变化,也免掉低密度带来
+/// 的副作用(一圈 270px < 屏宽 ⇒ 屏上会同时出现两个黄色初始刻度)。
+const double kRulerPxPerDeg = 1.1;
+
+/// 松手后进入滑行的最低速度(度/s)。
+///
+/// [2026-08-03 用户实机"滑动之后齿轮应该慢慢减速停下,不是立刻停"] 原值 30
+/// 度/s(≈33 px/s)对**真实手指**太高:人拨完通常是减速后再抬起,抬手瞬时
+/// 速度常低于它 ⇒ 判成"轻推不甩"当场停住。合成 fling 的速度是给定的,所以
+/// 测试一直看不出这个坑。降到 5 度/s,只挡真正的点按/轻触。
+const double kRulerFlingMinDegPerSec = 5.0;
+
+/// 最长(黄色)刻度的顶端 y。
+double rulerOriginTickTop(double height) => kRulerPinZone;
+
+/// 指针尖脚的底端 y。
+double rulerPinBottom(double height) =>
+    kRulerPinRadius + 1.5 + kRulerPinRadius * 2.2;
+
 class RulerScrubber extends StatefulWidget {
   const RulerScrubber({
     super.key,
     required this.value,
     required this.onChanged,
-    this.pixelsPerDegree = 1.1,
-    this.height = 56,
+    this.pixelsPerDegree = kRulerPxPerDeg,
+    this.height = kRulerHeight,
     this.originDeg = 0,
   });
 
@@ -65,20 +95,52 @@ class _RulerScrubberState extends State<RulerScrubber>
   /// 被吞,实机观感就是"阻力太大"(用户实机指认的根因)。
   double _gestureValue = 0;
 
+  /// 最近若干次 update 的 (事件时间戳, 当时读数) —— 抬手时**自己**算速度用。
+  ///
+  /// [2026-08-03 用户实机三次指认"没有触发任何惯性"] 不能只信
+  /// DragEndDetails.velocity:实机上它常常拿不到可用值(合成手势里也复现不出
+  /// 来,所以此前的测试一直是假绿/假红)。改成以自算速度兜底 —— 只要抬手前
+  /// 100ms 内确实在移动,就一定有滑行。
+  final List<(Duration, double)> _samples = [];
+  static const Duration _kVelWindow = Duration(milliseconds: 100);
+
   void _onDragStart(DragStartDetails d) {
     _fling.stop();
     _gestureValue = widget.value;
+    _samples.clear();
+    final ts = d.sourceTimeStamp;
+    if (ts != null) _samples.add((ts, _gestureValue));
   }
 
   void _onDragUpdate(DragUpdateDetails d) {
     // 刻度带跟手:手指右移 → 刻度右移 → 读数变小。无端点,不 clamp。
     _gestureValue -= d.delta.dx / widget.pixelsPerDegree;
+    final ts = d.sourceTimeStamp;
+    if (ts != null) {
+      _samples.add((ts, _gestureValue));
+      while (_samples.length > 2 && ts - _samples.first.$1 > _kVelWindow) {
+        _samples.removeAt(0);
+      }
+    }
     widget.onChanged(_gestureValue);
   }
 
+  /// 抬手速度(度/s):框架值优先,拿不到就用自己的样本窗口算。
+  double _releaseVelocity(DragEndDetails d) {
+    final framework = -d.velocity.pixelsPerSecond.dx / widget.pixelsPerDegree;
+    if (framework.abs() >= kRulerFlingMinDegPerSec) return framework;
+    if (_samples.length < 2) return framework;
+    final dt =
+        (_samples.last.$1 - _samples.first.$1).inMicroseconds / 1000000.0;
+    if (dt < 0.008) return framework; // 样本跨度太短,数值不可信
+    // 读数增长方向与 FrictionSimulation 需要的方向一致,无需再翻符号。
+    return (_samples.last.$2 - _samples.first.$2) / dt;
+  }
+
   void _onDragEnd(DragEndDetails d) {
-    final v = -d.velocity.pixelsPerSecond.dx / widget.pixelsPerDegree; // 度/s
-    if (v.abs() < 30) return; // 轻推不甩,直接停在手指位置
+    final v = _releaseVelocity(d);
+    _samples.clear();
+    if (v.abs() < kRulerFlingMinDegPerSec) return; // 纯点按才不甩
     _fling.value = _gestureValue;
     unawaited(_fling.animateWith(FrictionSimulation(0.135, _gestureValue, v)));
   }
@@ -122,27 +184,34 @@ class _RulerPainter extends CustomPainter {
     final halfW = size.width / 2;
     const minorStep = 5.0; // 小刻度 5°
     const majorEvery = 30.0; // 大刻度 30°
-    final tickTop = size.height * 0.35;
     final baseline = size.height;
+    // [2026-08-03 用户实机指认"指针太低,挡住了最高的黄色刻度"] 顶部固定留出
+    // kRulerPinZone 给指针,刻度一律从它下面起画 —— 此前指针 y 和刻度高度各算
+    // 各的(pin 底 18.7 vs 黄标顶 7.2),必然重叠。
+    final originH = baseline - kRulerPinZone; // 黄标(最长)
+    final majorH = originH / 1.34;
+    final minorH = majorH * 0.62;
 
-    for (var a = 0.0; a < 360.0; a += minorStep) {
-      // 最短环向距离 → 环缝处无缝循环。
-      var delta = (a - value) % 360.0;
-      if (delta > 180.0) delta -= 360.0;
-      final x = cx + delta * pxPerDeg;
+    // [2026-08-03] 刻度带**重复**绘制而不是只画一圈:灵敏度调低后一圈的像素
+    // 宽度(360×pxPerDeg)会小于屏幕宽,只画 ±180° 会让两侧露白。角度按 360
+    // 取模判断大/小/黄标,所以"相邻黄标间距 = 360°"依然成立。
+    final spanDeg = halfW / pxPerDeg + minorStep;
+    final first = ((value - spanDeg) / minorStep).ceilToDouble() * minorStep;
+    for (var a = first; a <= value + spanDeg; a += minorStep) {
+      final x = cx + (a - value) * pxPerDeg;
       if (x < -2 || x > size.width + 2) continue;
-      final isMajor = a % majorEvery == 0;
-      // 初始刻度:黄色,且比大刻度再长一截。
-      var da = (a - originDeg) % 360.0;
+      final m = ((a % 360.0) + 360.0) % 360.0;
+      final isMajor =
+          (m % majorEvery).abs() < minorStep / 2 ||
+          (majorEvery - (m % majorEvery)).abs() < minorStep / 2;
+      var da = ((m - originDeg) % 360.0 + 360.0) % 360.0;
       if (da > 180.0) da -= 360.0;
       final isOrigin = da.abs() < minorStep / 2;
       // 边缘淡出(RS 观感)。
       final fade = 1.0 - math.pow((x - cx).abs() / halfW, 2.0).toDouble();
       final f01 = fade.clamp(0.0, 1.0);
       final alpha = ((isMajor ? 0.95 : 0.45) * f01 * 255).round();
-      final h = isOrigin
-          ? (baseline - tickTop) * 1.34
-          : (isMajor ? baseline - tickTop : (baseline - tickTop) * 0.62);
+      final h = isOrigin ? originH : (isMajor ? majorH : minorH);
       canvas.drawLine(
         Offset(x, baseline - h),
         Offset(x, baseline),
@@ -156,8 +225,8 @@ class _RulerPainter extends CustomPainter {
     }
 
     // 中心固定指针:小水滴(圆头+尖脚),RS 同款。
-    final pinY = tickTop * 0.45;
-    const r = 4.5;
+    final pinY = kRulerPinRadius + 1.5;
+    const r = kRulerPinRadius;
     final pin = Path()
       ..addOval(Rect.fromCircle(center: Offset(cx, pinY), radius: r))
       ..moveTo(cx - r * 0.7, pinY + r * 0.6)

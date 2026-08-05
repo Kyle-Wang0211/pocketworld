@@ -333,6 +333,25 @@ class AppL10nEn extends AppL10n {
   String get sfmBackToDrafts => 'Back to drafts';
 
   @override
+  String get sfmEditSelection => 'Edit selection';
+
+  @override
+  String get sfmSelectionSaveTitle => 'Save selection changes?';
+
+  @override
+  String get sfmSelectionSaveBody =>
+      'You adjusted the selection box. Saving keeps only the points inside it in the preview and the delivered cloud.';
+
+  @override
+  String get sfmSelectionSaveKeep => 'Save';
+
+  @override
+  String get sfmSelectionSaveDiscard => 'Discard';
+
+  @override
+  String get sfmSelectionSaveCancel => 'Cancel';
+
+  @override
   String get sfmGeneratingFinalCloud => 'Generating final point cloud…';
 
   @override
@@ -411,13 +430,7 @@ class AppL10nEn extends AppL10n {
   String get viewerLoadFailed => 'Failed to load point cloud';
 
   @override
-  String get selectionRotatePointCloud => 'Rotate Point Cloud';
-
-  @override
-  String get selectionReadyToProcess => 'Ready to Process';
-
-  @override
-  String get selectionDensifyComingSoon => 'Dense processing coming soon';
+  String get selectionRotatePointCloud => 'Rotate';
 
   @override
   String get selectionNoCloud => 'No point cloud data';
@@ -441,7 +454,17 @@ class AppL10nEn extends AppL10n {
   String get cubeFaceBottom => 'Bottom';
 
   @override
-  String get selectionBackToPreview => 'Back to Preview';
+  String get denseStageUnavailable =>
+      'Processing is not available on this device yet';
+
+  @override
+  String get selectionCancel => 'Cancel';
+
+  @override
+  String get selectionDiscardTitle => 'Discard changes?';
+
+  @override
+  String get selectionDiscardConfirm => 'Discard Changes';
 
   @override
   String get selectionResetRotation => 'Reset Rotation';

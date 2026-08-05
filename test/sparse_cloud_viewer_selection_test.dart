@@ -115,7 +115,10 @@ void main() {
     await tester.pump();
     await _pumpUntilRealAsyncSettles(
       tester,
-      () => find.text('Next').evaluate().isNotEmpty,
+      () => find
+          .byKey(const ValueKey('viewer-enter-editing'))
+          .evaluate()
+          .isNotEmpty,
     );
     await tester.pumpAndSettle();
   }
@@ -132,7 +135,7 @@ void main() {
     final rectBefore = tester.getRect(find.byType(SparseCloudView));
     expect(find.byType(SelectionToolsLayer), findsNothing);
 
-    await tester.tap(find.text('Next'));
+    await tester.tap(find.byKey(const ValueKey('viewer-enter-editing')));
     await _pumpUntilRealAsyncSettles(
       tester,
       () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
@@ -157,7 +160,8 @@ void main() {
     );
     expect(find.byType(SelectionToolsLayer), findsOneWidget);
     expect(find.byType(ViewCube), findsOneWidget);
-    expect(find.text('Next'), findsNothing);
+    // [2026-07-31] 底部"下一步"已改作启动后续处理;进编辑的入口是右上角那个。
+    expect(find.byKey(const ValueKey('viewer-enter-editing')), findsNothing);
     expect(boxOf(tester), isNotNull);
 
     // 返回浏览态:同样不重建视图。
@@ -172,15 +176,25 @@ void main() {
       isTrue,
     );
     expect(tester.getRect(find.byType(SparseCloudView)), rectBefore);
-    expect(find.text('Next'), findsOneWidget);
-    expect(boxOf(tester), isNull); // 浏览态不显示框
+    expect(find.byKey(const ValueKey('viewer-enter-editing')), findsOneWidget);
+    // [2026-08-03 语义更新] 原断言是"一个手柄都没碰过 ⇒ 不算用了选区,浏览态
+    // 交回原始点云"。用户随后签决"用户第一次点进来,点云其实就已经是被编辑的
+    // 状态了(初始的框就已经算编辑了)" ⇒ 点了**"完成"**就是把当前框(哪怕没
+    // 碰过的初始框)确立为选区,浏览态按它裁剪。
+    // "未进入编辑页面之前展示原始点云"那条依然成立,由**取消**那一侧和从未进
+    // 过编辑的路径守(见「选区 = 可选动作」group)。
+    expect(boxOf(tester), isNotNull, reason: '点了"完成"却没把选区应用到浏览态');
+    expect(
+      tester.widget<SparseCloudView>(find.byType(SparseCloudView)).editing,
+      isFalse,
+    );
   });
 
   testWidgets('编辑态:单指一律不转视角,框只由手柄改动', (tester) async {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));
     await openViewer(tester, ply);
-    await tester.tap(find.text('Next'));
+    await tester.tap(find.byKey(const ValueKey('viewer-enter-editing')));
     await _pumpUntilRealAsyncSettles(
       tester,
       () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
@@ -214,67 +228,6 @@ void main() {
     expect(boxOf(tester)!.cz, closeTo(box0.cz, 1e-12));
   });
 
-  testWidgets('四个箭头各转一次:方向互不相同,四向都能换面', (tester) async {
-    final (dir, ply) = await fixture(tester);
-    addTearDown(() => dir.delete(recursive: true));
-    await openViewer(tester, ply);
-    await tester.tap(find.text('Next'));
-    await _pumpUntilRealAsyncSettles(
-      tester,
-      () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
-    );
-    await tester.pumpAndSettle();
-
-    // [2026-07-30 语义替换,不是回归] 原用例是"拖动骰子 = 点云跟着转,松手
-    // 有惯性"。用户签决"点云只能固定六个面动"后骰子拖动整个删掉,换面入口
-    // 改成四个箭头。这里守"四向各自有效且方向不同"——每个箭头把姿态转到
-    // 不同的正交视图,不能有两个箭头等效。
-    List<double> pose() {
-      final cam = tester
-          .widget<SelectionToolsLayer>(find.byType(SelectionToolsLayer))
-          .camera
-          .value!;
-      return composeViewMatrix(cam.yaw, cam.pitch, cam.roll);
-    }
-
-    final base = pose();
-    final results = <String, List<double>>{};
-    for (final k in ['cube-up', 'cube-down', 'cube-left', 'cube-right']) {
-      await tester.tap(find.byKey(ValueKey(k)));
-      await tester.pumpAndSettle();
-      results[k] = pose();
-      // 转回来,让每个箭头都从同一基准出发。
-      final inverse = {
-        'cube-up': 'cube-down',
-        'cube-down': 'cube-up',
-        'cube-left': 'cube-right',
-        'cube-right': 'cube-left',
-      }[k]!;
-      await tester.tap(find.byKey(ValueKey(inverse)));
-      await tester.pumpAndSettle();
-      var back = 0.0;
-      for (var i = 0; i < 9; i++) {
-        back += (pose()[i] - base[i]).abs();
-      }
-      expect(back, lessThan(1e-6), reason: '$k 的反向箭头没能精确回到基准');
-    }
-    // 四个结果两两不同。
-    final keys = results.keys.toList();
-    for (var a = 0; a < keys.length; a++) {
-      for (var b = a + 1; b < keys.length; b++) {
-        var dev = 0.0;
-        for (var i = 0; i < 9; i++) {
-          dev += (results[keys[a]]![i] - results[keys[b]]![i]).abs();
-        }
-        expect(
-          dev,
-          greaterThan(0.1),
-          reason: '${keys[a]} 与 ${keys[b]} 转到了同一个姿态',
-        );
-      }
-    }
-  });
-
   testWidgets('点击骰子的面 = 该面转到正对', (tester) async {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));
@@ -286,7 +239,7 @@ void main() {
       const Offset(40, 25),
     );
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Next'));
+    await tester.tap(find.byKey(const ValueKey('viewer-enter-editing')));
     await _pumpUntilRealAsyncSettles(
       tester,
       () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
@@ -308,7 +261,7 @@ void main() {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));
     await openViewer(tester, ply);
-    await tester.tap(find.text('Next'));
+    await tester.tap(find.byKey(const ValueKey('viewer-enter-editing')));
     await _pumpUntilRealAsyncSettles(
       tester,
       () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
@@ -342,7 +295,7 @@ void main() {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));
     await openViewer(tester, ply);
-    await tester.tap(find.text('Next'));
+    await tester.tap(find.byKey(const ValueKey('viewer-enter-editing')));
     await _pumpUntilRealAsyncSettles(
       tester,
       () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
@@ -354,14 +307,17 @@ void main() {
         .rot;
 
     final before = [...rot()];
-    // [2026-07-29 用户实机指认"转完一圈还是无法回到原点"] 一圈 = 396px
-    // (1.1 px/度)。分 4 段拨完,中途框会转过很多角度 —— 转轴绝不能因此
-    // 被重算,否则每段绕的是不同的轴,累计不闭合。
-    // 慢速匀速拨(19.8 px/s < 甩动阈值),避免惯性多转一截让"整圈"失准。
+    // [2026-07-29 用户实机指认"转完一圈还是无法回到原点"] 分 50 小段拨满一圈,
+    // 中途框会转过很多角度 —— 转轴绝不能因此被重算,否则每段绕的是不同的轴,
+    // 累计不闭合。慢速匀速拨(< 甩动阈值),避免惯性多转一截让"整圈"失准。
+    // 一圈的像素宽从 kRulerPxPerDeg 算,不硬编码(2026-08-03 灵敏度 1.1→0.75
+    // 时这里漏改过一次,红在"整圈必须闭合")。
+    const fullTurnPx = 360.0 * kRulerPxPerDeg;
+    final step = fullTurnPx / 50;
     final ruler = find.byType(RulerScrubber);
     final g = await tester.startGesture(tester.getCenter(ruler));
     for (var i = 0; i < 50; i++) {
-      await g.moveBy(const Offset(-7.92, 0));
+      await g.moveBy(Offset(-step, 0));
       await tester.pump(const Duration(milliseconds: 400));
     }
     await g.up();
@@ -375,7 +331,7 @@ void main() {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));
     await openViewer(tester, ply);
-    await tester.tap(find.text('Next'));
+    await tester.tap(find.byKey(const ValueKey('viewer-enter-editing')));
     await _pumpUntilRealAsyncSettles(
       tester,
       () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
@@ -421,7 +377,7 @@ void main() {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));
     await openViewer(tester, ply);
-    await tester.tap(find.text('Next'));
+    await tester.tap(find.byKey(const ValueKey('viewer-enter-editing')));
     await _pumpUntilRealAsyncSettles(
       tester,
       () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
@@ -448,7 +404,7 @@ void main() {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));
     await openViewer(tester, ply);
-    await tester.tap(find.text('Next'));
+    await tester.tap(find.byKey(const ValueKey('viewer-enter-editing')));
     await _pumpUntilRealAsyncSettles(
       tester,
       () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
@@ -514,7 +470,7 @@ void main() {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));
     await openViewer(tester, ply);
-    await tester.tap(find.text('Next'));
+    await tester.tap(find.byKey(const ValueKey('viewer-enter-editing')));
     await _pumpUntilRealAsyncSettles(
       tester,
       () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
@@ -565,7 +521,7 @@ void main() {
     await tester.drag(find.byType(SparseCloudView), const Offset(0, 220));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Next'));
+    await tester.tap(find.byKey(const ValueKey('viewer-enter-editing')));
     await _pumpUntilRealAsyncSettles(
       tester,
       () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
@@ -630,7 +586,7 @@ void main() {
   group('RS 六面机制', () {
     Future<void> enterEditing(WidgetTester tester, String ply) async {
       await openViewer(tester, ply);
-      await tester.tap(find.text('Next'));
+      await tester.tap(find.byKey(const ValueKey('viewer-enter-editing')));
       await _pumpUntilRealAsyncSettles(
         tester,
         () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
@@ -676,7 +632,151 @@ void main() {
       expect(after.pitch, closeTo(before.pitch, 1e-9));
     });
 
-    testWidgets('四个箭头都在,每按一次严格 90° 且落在六个正交面上', (tester) async {
+    // [2026-07-31 用户签决,推翻 6e83756"接受背面倒置"] "前后左右的文字和点云
+    // 都要永远正面朝上(重力参数),因为用户可以用旋转刻度来转"。
+    //
+    // 判据:点云世界 +Y(= 重力上,ARKit worldAlignment=.gravity)在屏幕上必须
+    // 指向**上方**。相机 z 轴与 +Y 平行的顶/底视角除外 —— 那里 +Y 投在屏幕外,
+    // 由 preset 自己保证文字正立。
+    testWidgets('任何箭头序列之后,面都正立(不倒置也不歪斜)', (tester) async {
+      final (dir, ply) = await fixture(tester);
+      addTearDown(() => dir.delete(recursive: true));
+      await enterEditing(tester, ply);
+
+      // 覆盖到会翻过极点的序列:一路"下"必然过顶/过底。
+      const seq = [
+        'cube-down',
+        'cube-down',
+        'cube-down',
+        'cube-down',
+        'cube-right',
+        'cube-down',
+        'cube-left',
+        'cube-up',
+        'cube-up',
+        'cube-right',
+        'cube-right',
+        'cube-down',
+      ];
+      for (var i = 0; i < seq.length; i++) {
+        await tester.tap(find.byKey(ValueKey(seq[i])));
+        await tester.pumpAndSettle();
+        final cam = camOf(tester);
+        final m = composeViewMatrix(cam.yaw, cam.pitch, cam.roll);
+        // 世界 +Y 在相机系的分量:x = m[1](屏幕横), y = m[4](屏幕纵)。
+        final ux = m[1], uy = m[4];
+        final onScreen = math.sqrt(ux * ux + uy * uy);
+        if (onScreen < 1e-6) continue; // 顶/底视角
+        expect(
+          uy,
+          greaterThan(0.9),
+          reason:
+              '第 ${i + 1} 步(${seq[i]})之后重力上在屏幕上不朝上 '
+              '(ux=$ux, uy=$uy) ⇒ 画面倒置或歪斜',
+        );
+        expect(ux.abs(), lessThan(1e-6), reason: '第 ${i + 1} 步之后画面歪了');
+      }
+    });
+
+    testWidgets('四个箭头:每按一步都换面,且每一步都是正立的正交视图', (tester) async {
+      final (dir, ply) = await fixture(tester);
+      addTearDown(() => dir.delete(recursive: true));
+      await enterEditing(tester, ply);
+
+      // [2026-07-31 语义修正两次]
+      // ① 原用例断言"反向箭头精确回到基准"。实测极面起步时**左右也不可逆**:
+      //    顶按"左"到右、右按"右"到后 —— 极面的屏幕竖直轴与侧面的不是同一根,
+      //    两者不互逆。上下更是按 07-31 签决("永远正面朝上")主动舍弃了可逆。
+      // ② 改写版本想"每轮重建页面回到同一基准",但同类型 widget 重复
+      //    pumpWidget 会复用 Element、页面停在编辑态,加 key 强制重建后 tap
+      //    "Next" 又进不了编辑态(对方 agent 正在重构这条路径)。所以不回基准,
+      //    改为在同一次编辑里连着按 —— 守的是每一步的不变量,更强也更稳。
+      List<double> pose() {
+        final cam = tester
+            .widget<SelectionToolsLayer>(find.byType(SelectionToolsLayer))
+            .camera
+            .value!;
+        return composeViewMatrix(cam.yaw, cam.pitch, cam.roll);
+      }
+
+      var prev = pose();
+      for (final k in [
+        'cube-up',
+        'cube-left',
+        'cube-down',
+        'cube-right',
+        'cube-left',
+        'cube-left',
+      ]) {
+        await tester.tap(find.byKey(ValueKey(k)));
+        await tester.pumpAndSettle();
+        final now = pose();
+
+        var moved = 0.0;
+        for (var i = 0; i < 9; i++) {
+          moved += (now[i] - prev[i]).abs();
+        }
+        expect(moved, greaterThan(0.1), reason: '$k 没换面');
+
+        // 正立:姿态必须逐位等于该面的 preset(滚转分量为 0),否则面上的文字
+        // 是歪的或倒的 —— 07-31 签决"前后左右的文字和点云都要永远正面朝上"。
+        final (y, p, _) = decomposeViewMatrix(now);
+        final label = primaryViewCubeFace(y, p);
+        final preset = kOrientationPresets.firstWhere((e) => e.label == label);
+        final ref = composeViewMatrix(preset.yaw, preset.pitch, 0);
+        var dev = 0.0;
+        for (var i = 0; i < 9; i++) {
+          dev += (now[i] - ref[i]).abs();
+        }
+        expect(dev, lessThan(1e-6), reason: '$k 到达 $label 时不是正立的');
+        prev = now;
+      }
+    });
+
+    testWidgets('拨过滑轨后箭头方向不许错乱(骰子在"左"按"左"要到"后",不是"底")', (tester) async {
+      final (dir, ply) = await fixture(tester);
+      addTearDown(() => dir.delete(recursive: true));
+      await enterEditing(tester, ply);
+      String face(WidgetTester t) {
+        final c = t.widget<ViewCube>(find.byKey(const ValueKey('view-cube')));
+        return primaryViewCubeFace(c.viewYaw, c.viewPitch);
+      }
+
+      // 走到"左":Top --左--> Right --左--> Front --左--> Left。
+      for (var i = 0; i < 3; i++) {
+        await tester.tap(find.byKey(const ValueKey('cube-left')));
+        await tester.pumpAndSettle();
+      }
+      expect(face(tester), 'Left', reason: '没走到"左"面,后面的断言无意义');
+
+      // 拨滑轨:钟表旋转给**相机**注入 roll,框绕视线反转同角度抵消 ⇒ 骰子
+      // 显示的面不变。
+      await tester.drag(find.byType(RulerScrubber), const Offset(-70, 0));
+      await tester.pumpAndSettle();
+      final camRoll = tester
+          .widget<SelectionToolsLayer>(find.byType(SelectionToolsLayer))
+          .camera
+          .value!
+          .roll;
+      expect(camRoll.abs(), greaterThan(0.05), reason: '滑轨没产生滚转');
+      expect(face(tester), 'Left', reason: '滑轨不该改变骰子显示的面');
+
+      // [2026-07-30 用户实机指认] "我在左的角度,当我想要向左转,就到了底部"。
+      // 根因:箭头 premultiply 在**相机**姿态上,而相机带着滑轨的 roll ——
+      // 骰子读 M_cam·box.rot 时 roll 被框朝向抵消,所以骰子照样显示"左",但
+      // 箭头绕的"屏幕竖直轴"在带 roll 的相机里已经不竖直,"左"退化成俯仰。
+      // 探针实测 roll=−90° 时左→Bottom、+90° 时左→Top,与实机吻合。
+      // 修法:箭头作用在**骰子看到的姿态**上,再反解回相机(与点击面同一套)。
+      await tester.tap(find.byKey(const ValueKey('cube-left')));
+      await tester.pumpAndSettle();
+      expect(
+        face(tester),
+        'Back',
+        reason: '带滚转时"左"箭头转错了方向(到了 ${face(tester)})',
+      );
+    });
+
+    testWidgets('四个箭头都在,每按一次换到相邻面且落在六个正交视图上', (tester) async {
       final (dir, ply) = await fixture(tester);
       addTearDown(() => dir.delete(recursive: true));
       await enterEditing(tester, ply);
@@ -684,8 +784,13 @@ void main() {
         expect(find.byKey(ValueKey(k)), findsOneWidget, reason: '$k 箭头不存在');
       }
 
-      // 一路按"下",每一步都必须是精确 90°:相对上一步的旋转角 = 90°,且
-      // 姿态矩阵九个元素全落在 {0, ±1}(正交视图的充要特征)。
+      // [2026-07-31 语义修订,不是回归] 原断言"相对上一步的整体旋转角 = 90°"。
+      // 用户签决"永远正面朝上"之后,这条与"每步 90°"数学上不可兼得:绕屏幕轴
+      // 滚 90° 过极点必然把远端那一面滚成倒置的,回正就得再绕视线轴补 180° ——
+      // 那一步的整体旋转因此是 180°。
+      //
+      // 真正守得住、也是用户要的那条是:**正对的面**每次恰好换到相邻面,即
+      // 视线轴(姿态矩阵第三行)每步转 90°;至于面内怎么摆,由回正保证正立。
       var prev = composeViewMatrix(
         camOf(tester).yaw,
         camOf(tester).pitch,
@@ -704,11 +809,14 @@ void main() {
             reason: '第 ${i + 1} 步姿态不是正交视图(元素 $k = ${now[k]})',
           );
         }
-        final (_, angle) = axisAngleOf(mulTransposed(now, prev));
+        // 视线轴 = 第三行;相邻面 ⇒ 两轴正交 ⇒ 点积为 0。
+        final dot = now[6] * prev[6] + now[7] * prev[7] + now[8] * prev[8];
         expect(
-          angle.abs(),
-          closeTo(math.pi / 2, 1e-6),
-          reason: '第 ${i + 1} 步不是 90°(实测 ${angle * 180 / math.pi}°)',
+          dot.abs(),
+          lessThan(1e-6),
+          reason:
+              '第 ${i + 1} 步没换到相邻面(视线轴点积 $dot ⇒ '
+              '${math.acos(dot.clamp(-1, 1)) * 180 / math.pi}°)',
         );
         prev = now;
       }
@@ -719,7 +827,7 @@ void main() {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));
     await openViewer(tester, ply);
-    await tester.tap(find.text('Next'));
+    await tester.tap(find.byKey(const ValueKey('viewer-enter-editing')));
     await _pumpUntilRealAsyncSettles(
       tester,
       () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
@@ -756,7 +864,7 @@ void main() {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));
     await openViewer(tester, ply);
-    await tester.tap(find.text('Next'));
+    await tester.tap(find.byKey(const ValueKey('viewer-enter-editing')));
     await _pumpUntilRealAsyncSettles(
       tester,
       () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
@@ -788,6 +896,25 @@ void main() {
     for (var i = 0; i < 9; i++) {
       expect(box().rot[i], closeTo(kIdentityRot[i], 1e-12));
     }
+    // [2026-07-30 用户实机指认"框变大而且红色点云在框内"] 只复位框是不够的:
+    // 拨滑轨是点云转 + 框反向补偿,单独把 rot 打回单位阵会让框相对**当前
+    // 视角**歪着 —— 2D 手柄矩形退化成歪框的屏幕包围盒(看着"变大"),矩形内
+    // 但 3D 框外的点照常染红(看着"红点在框内")。视角必须一起回"顶"。
+    final cube = tester.widget<ViewCube>(find.byType(ViewCube));
+    for (final (name, v) in [
+      ('yaw', cube.viewYaw),
+      ('pitch', cube.viewPitch),
+      ('roll', cube.viewRoll),
+    ]) {
+      final q = v / (math.pi / 2);
+      expect(
+        (q - q.roundToDouble()).abs(),
+        lessThan(0.02),
+        reason:
+            '复位后骰子 $name=${v * 180 / math.pi}° 不是 90° 的整数倍 ⇒ '
+            '框与视角失配(框会显得变大、框内出现红点)',
+      );
+    }
 
     // 缩放:菜单还原到默认取景(不崩、工具层仍在即达标 —— 相机重置的
     // 数值语义由 SparseCloudView 的 reframe 自身负责)。
@@ -815,7 +942,7 @@ void main() {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));
     await openViewer(tester, ply);
-    await tester.tap(find.text('Next'));
+    await tester.tap(find.byKey(const ValueKey('viewer-enter-editing')));
     await _pumpUntilRealAsyncSettles(
       tester,
       () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
@@ -876,7 +1003,7 @@ void main() {
       () => find.text('Failed to load point cloud').evaluate().isNotEmpty,
     );
     await tester.pumpAndSettle();
-    expect(find.text('Next'), findsNothing);
+    expect(find.byKey(const ValueKey('viewer-enter-editing')), findsNothing);
   });
   // ── [2026-07-30 实机定罪] 斜朝向存档:进编辑必须把相机对齐到框 ────────
   //
@@ -902,7 +1029,7 @@ void main() {
     );
     await openViewer(tester, ply);
 
-    await tester.tap(find.text('Next'));
+    await tester.tap(find.byKey(const ValueKey('viewer-enter-editing')));
     await _pumpUntilRealAsyncSettles(
       tester,
       () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
@@ -932,5 +1059,353 @@ void main() {
         reason: '骰子 $name=${v * 180 / math.pi}° 不是 90° 的整数倍(立方体歪着)',
       );
     }
+  });
+
+  // [SEL-ENTRY / SEL-PREVIEW / SEL-DISCARD 2026-07-30 用户签决] 选区从"必经的
+  // 下一步"降级成可选动作:右上角一个 icon 进,同一位置的"返回"出;用了选区,
+  // 浏览态就只画框内的点;退到草稿页时若改过框要问一句存不存。
+  group('选区 = 可选动作', () {
+    /// 让 [box] 落到盘上,当作"上次编辑留下的选区"。
+    Future<void> seed(WidgetTester tester, Directory dir, SelectionBox box) =>
+        tester.runAsync(() => box.saveTo(dir.path));
+
+    /// 把页面 **push** 到一个占位首页之上。
+    ///
+    /// 不能像 openViewer 那样直接当 `home` —— ④ 的裁决通过后会 pop 本页,而
+    /// pop 掉最后一条路由会留下一段永远 settle 不了的转场,pumpAndSettle 要空
+    /// 转满 10 分钟默认超时才报错(实测整个测试进程像挂死)。底下垫一层就没事。
+    Future<void> pushViewer(WidgetTester tester, String ply) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          localizationsDelegates: AppL10n.localizationsDelegates,
+          supportedLocales: AppL10n.supportedLocales,
+          home: Builder(
+            builder: (ctx) => TextButton(
+              onPressed: () => Navigator.of(ctx).push(
+                MaterialPageRoute<void>(
+                  builder: (_) => SparseCloudViewerPage(plyPath: ply),
+                ),
+              ),
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('open'));
+      await tester.pump();
+      await _pumpUntilRealAsyncSettles(
+        tester,
+        () => find.text('Next').evaluate().isNotEmpty,
+      );
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> enterEditing(WidgetTester tester) async {
+      await tester.tap(find.byKey(const ValueKey('viewer-enter-editing')));
+      await _pumpUntilRealAsyncSettles(
+        tester,
+        () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
+      );
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('右上角"选区编辑"是进编辑态的入口(不必再点"下一步")', (tester) async {
+      final (dir, ply) = await fixture(tester);
+      addTearDown(() => dir.delete(recursive: true));
+      await openViewer(tester, ply);
+
+      final entry = find.byKey(const ValueKey('viewer-enter-editing'));
+      expect(entry, findsOneWidget);
+      // 用户要的是**文字**不是图标。
+      expect(find.text('Edit selection'), findsOneWidget);
+      // 真的在右上角:中心落在屏幕右侧 1/4、顶部 1/6 内。
+      final size = tester.view.physicalSize / tester.view.devicePixelRatio;
+      final c = tester.getCenter(entry);
+      expect(c.dx, greaterThan(size.width * 0.75));
+      expect(c.dy, lessThan(size.height / 6));
+
+      await enterEditing(tester);
+      expect(find.byType(SelectionToolsLayer), findsOneWidget);
+    });
+
+    testWidgets('编辑态:左"取消"右"完成",六视图立方体在完成下方', (tester) async {
+      final (dir, ply) = await fixture(tester);
+      addTearDown(() => dir.delete(recursive: true));
+      await openViewer(tester, ply);
+      final entryRect = tester.getRect(
+        find.byKey(const ValueKey('viewer-enter-editing')),
+      );
+      await enterEditing(tester);
+
+      final back = find.byKey(const ValueKey('selection-back'));
+      expect(back, findsOneWidget);
+      expect(find.text('Done'), findsOneWidget);
+      // 苹果相册版式:左上"取消"。
+      final cancel = find.byKey(kSelectionCancelKey);
+      expect(cancel, findsOneWidget);
+      expect(find.text('Cancel'), findsOneWidget);
+      final w = tester.view.physicalSize.width / tester.view.devicePixelRatio;
+      expect(tester.getCenter(cancel).dx, lessThan(w / 4), reason: '"取消"不在左上角');
+      final backRect = tester.getRect(back);
+      // ⚠️ 比的是**右边缘**不是中心:"选区编辑"比"完成"宽得多,两个右对齐的
+      // 按钮中心天然差几十 pt(实测 71.5),拿中心比会误判成没对齐。
+      expect((backRect.right - entryRect.right).abs(), lessThan(12));
+      expect((backRect.center.dy - entryRect.center.dy).abs(), lessThan(12));
+      // 立方体让位到"完成"下方。
+      expect(
+        tester.getRect(find.byType(ViewCube)).top,
+        greaterThan(backRect.bottom),
+        reason: '六视图立方体压在"完成"上,点不到',
+      );
+
+      await tester.tap(back);
+      await _pumpUntilRealAsyncSettles(
+        tester,
+        () => find.byType(SelectionToolsLayer).evaluate().isEmpty,
+      );
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('viewer-enter-editing')),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('盘上已有选区:一进页面浏览态就按框裁剪,标题报框内点数', (tester) async {
+      final (dir, ply) = await fixture(tester);
+      addTearDown(() => dir.delete(recursive: true));
+      // fixture 是 (0,0,0) 与 (1,1,1) 两点;这个框只圈住原点。
+      await seed(
+        tester,
+        dir,
+        SelectionBox.initialFor(cx: 0, cy: 0, cz: 0, hx: 0.2, hy: 0.2, hz: 0.2),
+      );
+      await openViewer(tester, ply);
+
+      expect(boxOf(tester), isNotNull, reason: '浏览态没拿到盘上的框 ⇒ 重开草稿会显示全量点云');
+      // 标题必须跟着走,否则"2 pts"和眼前 1 个点自相矛盾。
+      expect(find.textContaining('1 pts'), findsOneWidget);
+      expect(find.textContaining('2 pts'), findsNothing);
+    });
+
+    Future<void> tapAndSettleExitKey(WidgetTester tester, Key key) async {
+      await tester.tap(find.byKey(key));
+      await _pumpUntilRealAsyncSettles(
+        tester,
+        () => find.byType(SelectionToolsLayer).evaluate().isEmpty,
+      );
+      await tester.pumpAndSettle();
+    }
+
+    Future<void> tapAndSettleExit(WidgetTester tester, String key) async {
+      await tester.tap(find.byKey(ValueKey(key)));
+      await _pumpUntilRealAsyncSettles(
+        tester,
+        () => find.byType(SelectionToolsLayer).evaluate().isEmpty,
+      );
+      await tester.pumpAndSettle();
+    }
+
+    // [2026-07-30 用户签决"点云和投影是同一个"] 07-29 曾给编辑态单独切正交,
+    // 结果点"完成"时相机一个数没动、画面却明显形变(近 +14% / 远 −11%,
+    // camDist = 8×radius)。两态必须同一种投影。
+    testWidgets('浏览与编辑用同一种投影 —— 进出编辑态不产生形变', (tester) async {
+      final (dir, ply) = await fixture(tester);
+      addTearDown(() => dir.delete(recursive: true));
+      await pushViewer(tester, ply);
+
+      bool orthoOf(WidgetTester t) => t
+          .widgetList<CustomPaint>(find.byType(CustomPaint))
+          .map((w) => w.painter)
+          .whereType<SparseCloudPainter>()
+          .single
+          .orthographic;
+
+      final browse = orthoOf(tester);
+      await enterEditing(tester);
+      expect(orthoOf(tester), browse, reason: '编辑态换了投影 ⇒ 点"完成"回浏览态时画面会形变');
+      await tapAndSettleExitKey(tester, kSelectionCancelKey);
+      expect(orthoOf(tester), browse);
+    });
+
+    Future<void> editBox(WidgetTester tester) async {
+      await enterEditing(tester);
+      await tester.drag(find.byType(RulerScrubber), const Offset(-60, 0));
+      await tester.pumpAndSettle();
+      expect(_rotDev(boxOf(tester)!), greaterThan(0.1), reason: '滑轨应已转动框');
+    }
+
+    testWidgets('"完成"直接提交,不问 —— 确认只压在破坏性那一侧', (tester) async {
+      final (dir, ply) = await fixture(tester);
+      addTearDown(() => dir.delete(recursive: true));
+      final f = File('${dir.path}/$kSelectionBoxFileName');
+
+      await pushViewer(tester, ply);
+      await editBox(tester);
+      await tapAndSettleExit(tester, 'selection-back');
+
+      expect(find.text('Discard changes?'), findsNothing);
+      expect(f.existsSync(), isTrue);
+      expect(boxOf(tester), isNotNull, reason: '提交后浏览态应按新框裁剪');
+    });
+
+    testWidgets('没编辑就点"取消":不弹窗,直接回预览,点云形状回到原样', (tester) async {
+      final (dir, ply) = await fixture(tester);
+      addTearDown(() => dir.delete(recursive: true));
+      final f = File('${dir.path}/$kSelectionBoxFileName');
+      await pushViewer(tester, ply);
+      await enterEditing(tester);
+
+      await tapAndSettleExitKey(tester, kSelectionCancelKey);
+      expect(
+        find.text('Discard changes?'),
+        findsNothing,
+        reason: '一个手柄都没碰,点"取消"却被拦了一次',
+      );
+      expect(find.byType(SelectionToolsLayer), findsNothing);
+      // [2026-08-03 用户签决] "用户第一次点进来,点云其实就已经是被编辑的状态了
+      // (初始的框就已经算编辑了),所以点取消就是撤回本次所有编辑,包括初始
+      // 框" —— 撤回要落到**点云形状**上:浏览态交回原始点云,盘上不留记录。
+      expect(boxOf(tester), isNull, reason: '浏览态还在按初始框裁剪');
+      expect(f.existsSync(), isFalse, reason: '初始框没撤掉,盘上还留着记录');
+    });
+
+    testWidgets('首次进编辑什么都不动点"完成":初始框就是选区,必须落盘', (tester) async {
+      final (dir, ply) = await fixture(tester);
+      addTearDown(() => dir.delete(recursive: true));
+      final f = File('${dir.path}/$kSelectionBoxFileName');
+      await pushViewer(tester, ply);
+      await enterEditing(tester);
+
+      // 与"取消"对称:初始框既然算一次编辑,点"完成"就该把它确立为选区。
+      // 此前 _persist 的 applied 取 _selectionApplied,而它只在用户拖动框时
+      // 才置真 ⇒ 不动就点"完成"会走**删文件**分支,选区直接丢掉。
+      await tapAndSettleExit(tester, 'selection-back');
+      expect(find.text('Discard changes?'), findsNothing, reason: '"完成"不该问');
+      expect(f.existsSync(), isTrue, reason: '点了"完成"却没把初始框落盘');
+      expect(boxOf(tester), isNotNull, reason: '浏览态应按选区裁剪');
+    });
+
+    testWidgets('"放弃更改"浮层锚定在左上"取消"下方(苹果相册版式)', (tester) async {
+      final (dir, ply) = await fixture(tester);
+      addTearDown(() => dir.delete(recursive: true));
+      await pushViewer(tester, ply);
+      await editBox(tester);
+
+      final cancelRect = tester.getRect(find.byKey(kSelectionCancelKey));
+      await tester.tap(find.byKey(kSelectionCancelKey));
+      await tester.pumpAndSettle();
+
+      // [2026-08-03 用户签决 + 截图] 学苹果:确认从被点的那个按钮下面弹出来,
+      // 不是从屏幕底部升起的动作单(原实现 showCupertinoModalPopup 弹在底部,
+      // 离触发点最远)。
+      final pop = find.byKey(const ValueKey('selection-discard-popover'));
+      expect(pop, findsOneWidget, reason: '浮层不在');
+      final popRect = tester.getRect(pop);
+      expect(
+        popRect.top,
+        greaterThanOrEqualTo(cancelRect.bottom),
+        reason:
+            '浮层没落在"取消"下方(top=\${popRect.top} vs 按钮 bottom='
+            '\${cancelRect.bottom})',
+      );
+      expect(
+        popRect.top - cancelRect.bottom,
+        lessThan(24),
+        reason: '浮层离"取消"太远,视觉上不像从它弹出来的',
+      );
+      expect(
+        (popRect.left - cancelRect.left).abs(),
+        lessThan(20),
+        reason: '浮层没和"取消"左对齐',
+      );
+      // 屏幕上半部分 —— 反过来锁死"不许再回到底部动作单"。
+      final h = tester.view.physicalSize.height / tester.view.devicePixelRatio;
+      expect(popRect.top, lessThan(h / 2), reason: '浮层又跑到屏幕下半部了');
+
+      // 点浮层以外 ⇒ 收起,留在编辑页(语义不变)。
+      await tester.tapAt(Offset(popRect.left + 10, h - 10));
+      await tester.pumpAndSettle();
+      expect(pop, findsNothing);
+      expect(find.byType(SelectionToolsLayer), findsOneWidget);
+    });
+
+    testWidgets('编辑过再点"取消":问一句,"放弃更改"回滚落盘', (tester) async {
+      final (dir, ply) = await fixture(tester);
+      addTearDown(() => dir.delete(recursive: true));
+      final f = File('${dir.path}/$kSelectionBoxFileName');
+
+      await pushViewer(tester, ply);
+      await editBox(tester);
+      // 编辑期只改内存；正式记录必须等用户点“完成”才写。
+      await tester.tap(find.byKey(kSelectionCancelKey));
+      await tester.pumpAndSettle();
+      expect(find.text('Discard changes?'), findsOneWidget);
+
+      await tester.tap(find.text('Discard Changes'));
+      await _pumpUntilRealAsyncSettles(
+        tester,
+        () => find.byType(SelectionToolsLayer).evaluate().isEmpty,
+      );
+      await tester.pumpAndSettle();
+
+      // 进编辑前盘上没有框 ⇒ 回滚 = 删掉这次写出来的文件,不能靠"跳过写盘"。
+      expect(f.existsSync(), isFalse, reason: '"放弃更改"把本次编辑留在盘上了');
+      expect(boxOf(tester), isNull, reason: '放弃后仍在按框裁剪');
+    });
+
+    testWidgets('点动作单以外的地方:弹窗消失,留在编辑页', (tester) async {
+      final (dir, ply) = await fixture(tester);
+      addTearDown(() => dir.delete(recursive: true));
+      final persisted = File('${dir.path}/$kSelectionBoxFileName');
+      await pushViewer(tester, ply);
+      await editBox(tester);
+      final edited = boxOf(tester)!;
+
+      // 显式越过去抖期限，再给真实 dart:io 一个完成窗口。pumpAndSettle 只推进
+      // FakeAsync，不保证 unawaited 的文件写入已经完成。
+      await tester.pump(const Duration(milliseconds: 600));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 30)),
+      );
+
+      // 取消是一笔尚未提交的编辑事务。即使停留时间已经超过旧版本的 500ms
+      // 去抖窗口，用户没点“完成”前也绝不能写正式记录；否则动作单被点空白
+      // 处关闭后，界面看似仍在编辑，磁盘却已偷偷保存。
+      expect(
+        persisted.existsSync(),
+        isFalse,
+        reason: '未点“完成”就提前落盘，随后点“取消”无法可靠撤销',
+      );
+
+      await tester.tap(find.byKey(kSelectionCancelKey));
+      await tester.pumpAndSettle();
+      expect(find.text('Discard changes?'), findsOneWidget);
+
+      // 顶部空白处 = 动作单以外。
+      await tester.tapAt(const Offset(200, 40));
+      await tester.pumpAndSettle();
+      expect(find.text('Discard changes?'), findsNothing);
+      expect(
+        find.byType(SelectionToolsLayer),
+        findsOneWidget,
+        reason: '点外部却退出了编辑页',
+      );
+      expect(boxOf(tester)!.sameAs(edited), isTrue, reason: '框被动了');
+      expect(
+        persisted.existsSync(),
+        isFalse,
+        reason: '关闭放弃动作单不等于提交，正式选区记录必须仍未创建',
+      );
+    });
+
+    // [2026-07-30 缺口,记在原地] 这里本该有一条 '"保存" = 新框留在盘上' 的
+    // 对照用例,写了但**没能让它稳定**:tap 'Save' 之后裁决会 pop 本页,而落盘
+    // 是 FakeAsync 里 await 的真实 dart:io —— 等弹窗消失、等页面退出、定量驱动
+    // 真实异步三种写法都挂到框架 10 分钟超时(其余六条同文件同 harness 全绿)。
+    // 没有把它改成"看起来在测、其实什么都没等"的样子留下。
+    //
+    // 覆盖现状:回滚语义由上面 '"不保存" = 回滚落盘' 正面守住(它断言文件被
+    // 真的删掉);'保存' 分支的代码形状由 test/selection_optional_entry_test.dart
+    // 钉住。真正没被自动化覆盖的只剩"选保存后磁盘内容 == 编辑后的框"这一步。
   });
 }

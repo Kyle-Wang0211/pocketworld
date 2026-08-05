@@ -329,6 +329,24 @@ class AppL10nZh extends AppL10n {
   String get sfmBackToDrafts => '返回草稿';
 
   @override
+  String get sfmEditSelection => '选区编辑';
+
+  @override
+  String get sfmSelectionSaveTitle => '编辑记录是否保存';
+
+  @override
+  String get sfmSelectionSaveBody => '你调整过选区范围。保存后预览与交付都只包含框内的点。';
+
+  @override
+  String get sfmSelectionSaveKeep => '保存';
+
+  @override
+  String get sfmSelectionSaveDiscard => '不保存';
+
+  @override
+  String get sfmSelectionSaveCancel => '取消';
+
+  @override
   String get sfmGeneratingFinalCloud => '正在生成最终点云…';
 
   @override
@@ -405,13 +423,7 @@ class AppL10nZh extends AppL10n {
   String get viewerLoadFailed => '点云文件读取失败';
 
   @override
-  String get selectionRotatePointCloud => '旋转点云';
-
-  @override
-  String get selectionReadyToProcess => '开始处理';
-
-  @override
-  String get selectionDensifyComingSoon => '稠密化处理即将上线';
+  String get selectionRotatePointCloud => '旋转';
 
   @override
   String get selectionNoCloud => '暂无点云数据';
@@ -435,7 +447,16 @@ class AppL10nZh extends AppL10n {
   String get cubeFaceBottom => '底';
 
   @override
-  String get selectionBackToPreview => '返回预览页面';
+  String get denseStageUnavailable => '后续处理还没接入本机';
+
+  @override
+  String get selectionCancel => '取消';
+
+  @override
+  String get selectionDiscardTitle => '确定要放弃更改吗?';
+
+  @override
+  String get selectionDiscardConfirm => '放弃更改';
 
   @override
   String get selectionResetRotation => '回到初始旋转角度';
