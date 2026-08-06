@@ -92,10 +92,112 @@ class OfficialAetherARKitPlugin: NSObject {
   }
 
   static func register(with registrar: FlutterPluginRegistrar) {
-    // [2026-07-11] spatial-first 匹配 kill switch:native(aether_sfm_c.cc)读
-    // OFFICIAL_AETHER_STREAM_TEMPORAL_ONLY=1 时强制走旧的纯时间 K12 候选(已验证行为)。
-    // spatial-first 的 host A/B 尚未出数——验证通过前默认关死;通过后删本行即启用。
-    setenv("OFFICIAL_AETHER_STREAM_TEMPORAL_ONLY", "1", 1)
+    // ⛔ [SPATIAL-CAND 真机判负 2026-07-29] kill switch 恢复。**这次是干净的单变量
+    // 实验**,与上午那次被混淆的回滚不同:提取器库已回滚且本次未动、配对数完全
+    // 相同、场景密度相近(extract 1156→1267,+10%),唯一变量就是本臂。
+    //
+    //   臂            帧    逐帧总    extract  GPU每对  配对/帧  gpuM   拍完等待
+    //   纯时序 13:11  170   2827ms    1156     79       11.5     6280   209s
+    //   几何   15:06  160   5088ms    1267     245      11.5     6965   520s
+    //
+    // ⇒ 配对数不变、匹配数仅 +11%,而**每对匹配成本 ×3.1**,等待翻倍。
+    // 【推断,未证实】几何臂挑"空间近但时间远"的帧,其描述子已不在 GPU 驻留,
+    // 每对都要重新上传 8192×128;纯时序挑最近 12 帧,描述子还在。host 构造性
+    // 测不到这一维(统一内存 + replay 全程驻留),所以 host A/B 才会显示"零代价"。
+    //
+    // ⚠️ 被推翻的只是"它是免费的",**不是它的质量收益**:M5 RU / M1 壳厚 /
+    // M4 自由空间三把独立尺子在两个 fixture 上的一致改善仍然成立(逐位确定性
+    // 重放)。所以这是一笔**质量 vs 采集吞吐的取舍,须用户签决**,不是纯回归。
+    // 若要复活:先解决描述子驻留(例如把候选限制在"空间近 AND 时间不太远",
+    // 或为老帧做描述子缓存),而不是直接删本行。
+    //
+    // ✅ [SPATIAL-REVIVE 2026-08-05 用户签决] 复活条件已满足 —— 上面这条注释要求的
+    // "为老帧做描述子缓存"**早已实现且编译在产品里**,只是从未启用:
+    //   · C++ 侧 DescriptorResidencyPolicyV1(LRU + 字节预算 + 命中/逐出统计)
+    //   · Metal 侧 aether_gpu_match_descriptor_residency_{invalidate,clear_session,stats}
+    //   · AETHER_COMPILE_DESCRIPTOR_RESIDENCY_V1 宏默认 1(已编译)
+    //   · 但运行时开关 OFFICIAL_AETHER_DESCRIPTOR_RESIDENCY_V1 默认关,插件从没设过
+    // 默认预算 48MB ≈ 48 帧描述子常驻(8192×128 = 1MB/帧),正好覆盖空间序要的
+    // "时间远、空间近"的老帧 —— 即当初判死本臂的那条成本(每对重传 8192×128)。
+    // 故本次**成对启用**:开驻留 + 放开空间序,单独开任何一个都没有意义。
+    //
+    // ⚠️ 仍是"质量 vs 采集吞吐"的取舍,且 host 构造性测不到这一维(统一内存 +
+    // replay 全程驻留)⇒ **只能真机判**。判据不是肉眼而是驻留命中率(见下方
+    // RESIDENCY_STATS 日志):命中率高 ⇒ 上传代价被消掉,可留;命中率低 ⇒ 48MB
+    // 不够,调 OFFICIAL_AETHER_DESCRIPTOR_RESIDENCY_BYTES 或按注释收窄候选为
+    // "空间近 AND 时间不太远"。
+    // ⛔ 应急回滚:恢复下面这行 setenv(改回 "1")即刻回到纯时序 K12。
+    setenv("OFFICIAL_AETHER_STREAM_TEMPORAL_ONLY", "0", 1)
+    setenv("OFFICIAL_AETHER_DESCRIPTOR_RESIDENCY_V1", "1", 1)
+    // [RESIDENCY-BUDGET 2026-08-05] 48MB(默认)→ 400MB。
+    // 依据:一帧描述子 8192×128 = 1MB,单次采集硬上限 300 帧
+    // (kOfficialMaximumCaptureFrames)⇒ 400MB 足以装下**整场采集的全部**描述子,
+    // 是这个用途的理论天花板;再大只是空缓存,不会再提升命中率。
+    // 为什么要加:08-05 17:36 实测(空间序+驻留,184 帧)serious 下每帧 5624ms /
+    // 匹配 4065ms,而同规模纯时序(08-03,200-201 帧)是 3196-3459ms / 1926-2219ms。
+    // 空间序挑"空间近但时间可能很远"的帧,48MB≈48 帧的窗口在 184 帧采集里
+    // 大概率装不下 ⇒ 命中率低 ⇒ 仍在重传 8192×128(正是当初判死空间序的那笔成本)。
+    // ⚠️ 这是**推断不是实测**:驻留统计符号按 ABI 边界设计不导出
+    // (frozen 26-symbol surface),拿不到 hit/miss,只能靠外部效应(匹配耗时/热)判断。
+    // ⚠️ 内存天花板 2GB —— 由 **iPhone 11(4GB 机型)** 决定,不是 14 Pro(jetsam 4.1GB)。
+    // 当前 peak 约 1058MB,+400MB 仍有余量;若真机 OOM 先回退本行。
+    setenv("OFFICIAL_AETHER_DESCRIPTOR_RESIDENCY_BYTES", "419430400", 1)  // 400 MiB
+    // [K20 2026-08-05] 空间序放开后实测 `cand=12` 仍恒定、`spatial-first=858 /
+    // temporal-fallback=0` —— 即**空间选择确实在工作,但 K 被外层截断到 12**:
+    // 候选上限 base_k 取自 `s->options.k_neighbors`(Dart 侧传 12),而不是
+    // pair_policy_v2 的 `spatial_k=20`。本 env 是覆盖 base_k 的正规旋钮
+    // (official_aether_sfm_c.cc `OFFICIAL_AETHER_LIVE_CAND_K`)。
+    // ⚠️ 每帧配对 12→20 = 匹配量 +67%,而当前 20-30 帧即 thermal=serious。
+    // 若热失控,先回退本行(回到 K12 空间序),而不是关掉空间序本身。
+    // ✅ [K20 2026-08-05 启用] 驻留预算 400MB 已实测通过,阻塞条件解除。
+    // 实测依据(201 帧同规模对照,`add_frame` 日志):
+    //   · 空间序 + 48MB : serious 下每帧 5624ms / 匹配 4065ms,seq=24 即 serious
+    //   · 空间序 + 400MB: serious 下每帧 2776ms / 匹配 1762ms,**seq=59** 才 serious
+    //   · 纯时序 K12 基线: 每帧 3196-3459ms / 匹配 1926-2219ms,seq=38-39 serious
+    //   ⇒ 空间序+足量驻留**比纯时序还快 13-20% 且更晚发热**,当初判死它的
+    //     "每对重传 8192×128" 成本已被驻留消掉。
+    // 本行把候选上限从 options.k_neighbors(12)解开到 20 —— 注意 pair_policy_v2 的
+    // spatial_k 本来就是 20,此前是被外层 base_k 截断,并非空间选择没生效
+    // (当时日志已是 spatial-first=858 / temporal-fallback=0)。
+    // ⚠️ 每帧匹配量 +67%;按上面的基线 1762ms 粗估约 2900ms,仍优于 48MB 时的 4065ms。
+    // ⛔ 若热提前(serious 早于 seq≈40)或匹配超过 3500ms,先回退本行(回到 K12 空间序)。
+    // ⛔ [K20 回滚 2026-08-06 用户签决"K10上产"] K20 触发上面自定的回滚线:
+    // 未命名6(200帧,cand=22)实测 match 均值 4247ms(>3500ms 线),21 帧超 8s,
+    // 深度降频连带 finalize 113s→299s(enrich 3.3×/stage1 2.6×/stage2 1.7× 全线等比,
+    // 热因非代码因)。质量侧同场真机匹配图 A/B(断点续跑,3395对 vs 每帧空间10+时间2
+    // 的 2156 对):点数 −0.34%、track≥3 −1.8pp、壳带/远点/重投影持平 ⇒ 空间序 K 在
+    // 12 对/帧即饱和,K20 的 1239 对增量几乎全是冗余边。删除本行 = 回到默认
+    // base_k=12(pair_policy_v2 空间10+时间2),即实验中的"K10臂"。
+    // 证据:_artifacts/floater_removal_20260805/(resume_out vs resume_k10_out)。
+    // 原行留档:setenv("OFFICIAL_AETHER_LIVE_CAND_K", "20", 1)
+    //
+    // 以下为装机依据,留档:
+    // [SPATIAL-CAND] kill switch 再次删除。
+    //
+    // 中途曾因真机变慢回滚一次,事后归因证明**与本臂无关**:
+    //   • 配对数 1626→1758(几乎不变,与 host 的 1674/1674 一致)——本臂按定义
+    //     不改变匹配量,只改变"匹配哪几帧";
+    //   • 同次劣化里**特征提取也翻倍**(745→1437ms/帧),而提取跑在候选选择
+    //     **之前**,本臂构造性影响不到它;
+    //   • 真凶已定位:4c69e07(07-27 21:06)换掉的 GPU 提取器库
+    //     libpwsfm_gpu_extract.a。逐目标文件比对:15 个 .o 里只有
+    //     dawn_kernel_harness.o(+5320,新增 SetUncapturedErrorCallback /
+    //     take_device_error)与 sift_extract_dawn.o(−40)变了,**13 个 WGSL
+    //     着色器逐字节相同**。回滚该库后 GPU 每对匹配 226ms → 79ms(基线 78ms),
+    //     拍完等待 526s → 209s(且帧数更多)。
+    //
+    // 装机依据(未被上述事件推翻,均来自逐位确定性重放):
+    // [SPATIAL-CAND 2026-07-29] spatial-first 候选选择器装机依据——
+    // 2026-07-11 引入时按"host A/B 出数前默认关死"的约定 setenv 了 kill switch,
+    // 数已出,三把参考系互不相干的尺子在两个 fixture 上给出同一排序,故删除该行:
+    //   M5 RU(参考系=BA 雅可比)   share(RU>10) 70.4→66.8%(cap7)/ 68.8→67.3%(cap3)
+    //   M1 壳厚(参考系=局部邻居)  p50@r30mm  3.088→2.928mm / 3.790→3.723mm
+    //   M4 自由空间(参考系=相机视线) 违规率@8px 13.96→12.58% / 25.26→23.63%
+    // 代价:配对数与基线**完全相同**(1674/1794),GPU 匹配耗时在 A/A2 噪声带内
+    // (13518 vs 带 14185-15473)——流式侧不增负载。⚠️ 但 finalize 在 cap3 上
+    // +20%(32-34s→41.2s),根因是点数 +5.5%(更多点=更多要平差的量),**非本刀特有**
+    // (K30 臂同样 +20%);真机需复核,见 M5_RU_VERDICT_2026-07-29.md。
+    // 应急同二进制回滚:setenv("OFFICIAL_AETHER_STREAM_TEMPORAL_ONLY", "1", 1)
     // [K6 RETIRED 2026-07-26, signed] 热调速器(2026-07-11 引入,cap45 冻结
     // 案的权宜之计:thermal serious 时 live 候选 12→6)正式退役——它是为
     // 旧匹配器(热态 325ms/对、monolithic dispatch 挤死相机)定的。三刀
@@ -150,15 +252,42 @@ class OfficialAetherARKitPlugin: NSObject {
     // _host_fixtures/pose_drift_audit/SCALE_VERDICT.md;并排对比
     // _host_fixtures/scale_anchor_compare/(用户肉眼批准)。
     setenv("OFFICIAL_AETHER_SCALE_ANCHOR", "1", 1)
+    // [AR-EVERY-FRAME 2026-08-05 设备实验臂] 开启后:拍摄期每个被接受的帧
+    // 都把当前 previewTracked(实时局部BA点云)推给 AR,让点云每帧可见生长,
+    // 而不是只在稀疏的全局BA检查点(~8次)才刷新。Dart 侧默认关(读此 env);
+    // 全局BA仍保留(帮 finalize)。host 前提已证 previewTracked 每帧单调增长
+    // (Aether3D-cross openspec .../ar-display-decouple-premise-v1.md)。
+    // ⛔ 应急回滚:删除此行即恢复稀疏检查点刷新(Dart env 读不到 → 分支不进)。
+    setenv("OFFICIAL_AETHER_AR_EVERY_FRAME", "1", 1)
     // [SPLAT-RADIUS 2026-07-28 用户判决] AR 拍摄期**保持原尺寸(6px)**:
     // 放大到 20 会让红/黄/绿 track-length 分层被点径糊掉(用户实机判负,
     // 截图为证),而 AR 期的诉求是"看清覆盖分层"不是"糊成实体面"。
     // 需要"糊成面"的是草稿页预览(Flutter 侧,另行加大)。
-    // [P3 2026-07-28] 与 P1 饱和色标同批:点径上限 6 → 12。RS 实测其近端
-    // "直径/间距≈0.65" 的近连毯让眼睛自己做空间平均;我们卡在 6px 时每颗点
-    // 都被独立解析出来,配合硬阈值色标就成了椒盐。饱和色标(P1)+ 稍大点径
-    // (P3)是 RS 那份读感的两个必要条件,须一起判。
-    setenv("OFFICIAL_AETHER_AR_SPLAT_MAX_PX", "12", 1)
+    // ⛔ [SPLAT-RADIUS ROLLED BACK 2026-07-29] 12 → 6(恢复 d9f7c83 之前的硬编码值)。
+    //
+    // 病因定位:遥测里 queue_drain(拍完 → 队列排空)的历史序列把回归窗口卡死了——
+    //   07-26 全天 131-156 帧:26s / 48s / 94s / 95s
+    //   07-27 00:18  173 帧:106s
+    //   07-27 20:34  142 帧:**23s**   ← 最后一次已知正常
+    //   07-28 16:52  146 帧:**208s**  ← 回归首次出现(3.5 分钟)
+    //   07-29 11:10  153 帧:**451s**  ← 7.5 分钟,外加 finalize 124s
+    // 该窗口内共 27 个提交,**只有 d9f7c83(07-28 16:23,本行)碰了采集期渲染路径**;
+    // 其余全是选区页/骰子 UI(拍完才跑)与 SCALE-ANCHOR(finalize 期一次相似变换)。
+    // 提交 16:23 → 首次变慢采集 16:52,间隔 29 分钟。
+    //
+    // 机理:点径上限翻倍 = **每点填充面积 4 倍**,且十万级点在采集全程持续绘制。
+    // AR 渲染与 SfM 的 GPU 匹配、GPU 特征提取抢同一块 GPU ⇒ 逐帧法医显示
+    // GPU 每对 78→172~219ms、GPU 提取 745→1207~1437ms/帧,并因发热连带把
+    // CPU 侧的 local BA 拖慢 4.6×。三次采集的**冷启动速度一致**(27/39/28 ms/对),
+    // 说明峰值性能未变、变的是持续能力——与"渲染抢 GPU + 热"一致,与代码回归不符。
+    //
+    // [SIGNED 2026-07-29] 归因结束:本行**不是**变慢的原因(真凶是 4c69e07 换掉的
+    // GPU 提取器库,见 register() 顶部)。用户签决:**点径就保持 6,不再动**。
+    // ⚠️ 已知代价:P1 饱和色标(kCaptureQualityRamp)当初是与点径 12 **同批**判的,
+    // 两者是复刻 RS 分层读感的一对条件。点径停在 6 意味着 AR 分层会偏"椒盐"一侧;
+    // 若日后要拿回那份读感,应从"降低 AR 绘制点数/只在低密度区放大"这类不增加
+    // 持续 GPU 负载的方向走,而不是简单把上限调回 12。
+    setenv("OFFICIAL_AETHER_AR_SPLAT_MAX_PX", "6", 1)
     // Production ends at COLMAP's final global BA + official filtering.
     // Historical RestoreTemporalDetail / repair / enrichment passes are hard
     // disabled in the native translation unit and are not re-enabled here.
@@ -1531,9 +1660,7 @@ class OfficialAetherARKitPlugin: NSObject {
         if let targetTimestamp {
           metadata["save_target_t"] = targetTimestamp
         }
-        let json = try JSONSerialization.data(
-          withJSONObject: metadata, options: []
-        )
+        let json = try PWJSONSafety.data(withJSONObject: metadata)
         try json.write(to: URL(fileURLWithPath: metadataPath))
         // Streaming-SfM feed: attach an aspect-preserving grayscale of the
         // SAME snapshot (so intrinsics/extrinsic below are frame-exact) for
@@ -1696,6 +1823,25 @@ class OfficialAetherARKitPlugin: NSObject {
             anchorIds.append(raw.identifiers[i])
           }
         }
+        let finiteAnchors = PWJSONSafety.finitePointPairs(
+          anchorsWorld,
+          identifiers: anchorIds
+        )
+        anchorsWorld = finiteAnchors.points
+        anchorIds = finiteAnchors.identifiers
+        do {
+          try PWJSONSafety.requireFinite(
+            cameraTransform,
+            field: "extrinsic"
+          )
+          try PWJSONSafety.requireFinite(
+            intrinsicFxFyCxCy,
+            field: "intrinsics_fxfycxcy"
+          )
+        } catch {
+          completion(nil, error)
+          return
+        }
         let scaleAlignPremetrics = Self.computeScaleAlignPremetrics(
           cameraTransform: transform,
           anchorsWorld: anchorsWorld
@@ -1778,9 +1924,7 @@ class OfficialAetherARKitPlugin: NSObject {
               } else {
                 metadata["save_dt"] = 0.0
               }
-              let json = try JSONSerialization.data(
-                withJSONObject: metadata, options: []
-              )
+              let json = try PWJSONSafety.data(withJSONObject: metadata)
               try json.write(to: URL(fileURLWithPath: metadataPath))
             }
 
@@ -2058,6 +2202,12 @@ class OfficialAetherARKitPlugin: NSObject {
         anchorIds.append(raw.identifiers[i])
       }
     }
+    let finiteAnchors = PWJSONSafety.finitePointPairs(
+      anchorsW,
+      identifiers: anchorIds
+    )
+    anchorsW = finiteAnchors.points
+    anchorIds = finiteAnchors.identifiers
     let scaleAlignPremetrics = Self.computeScaleAlignPremetrics(
       cameraTransform: cameraTransform,
       anchorsWorld: anchorsW

@@ -29,6 +29,9 @@ import 'dart:typed_data' show Int32List, Float32List, Float64List, Uint8List;
 
 import 'package:flutter/foundation.dart'
     show compute, defaultTargetPlatform, TargetPlatform;
+import '../../official_capture/dense_stage.dart';
+import 'package:flutter/cupertino.dart'
+    show CupertinoActionSheet, CupertinoActionSheetAction, showCupertinoModalPopup;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
@@ -40,6 +43,7 @@ import '../../official_capture/capture_quality_ramp.dart';
 import '../../official_capture/capture_session.dart';
 import '../../official_capture/colorize_pipeline.dart';
 import '../../official_capture/live_sfm_publish_policy.dart';
+import '../../official_capture/manual_capture_queue.dart';
 import '../../official_capture/official_highres_reconstruction_input.dart';
 import '../../official_capture/parallax_banner_gate.dart';
 import '../../official_capture/photo_card_state.dart';
@@ -119,6 +123,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   final OfficialProjectPhotoAlbum _projectPhotos = OfficialProjectPhotoAlbum();
   final RealtimeCapturePreviewModel _previewModel =
       RealtimeCapturePreviewModel();
+  late final ManualCaptureQueue _shutterQueue;
   CaptureSession? _session;
   StreamSubscription<ARPose>? _poseSub;
 
@@ -132,9 +137,14 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   bool _recording = false;
   bool _lockInProgress = false;
   bool _finalizingRecording = false;
-
-  /// True while a single manual still is being saved (shutter disabled).
-  bool _capturing = false;
+  bool _finishTapInProgress = false;
+  bool _finishCancellationRequested = false;
+  bool _finishDrainFailed = false;
+  bool _closeTapInProgress = false;
+  bool _discardingCapture = false;
+  bool _cameraResumeFailed = false;
+  bool _maximumPhotosDialogOpen = false;
+  String? _captureQueueFailureText;
 
   // ─── Capture-time streaming SfM (live sparse reconstruction) ──────
   // Worker handle + event plumbing. All heavy calls live in the worker
@@ -247,6 +257,16 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   // 事后画积压曲线;绝不 gate 快门、不置灰、不弹横幅。
   ShutterPace _shutterPace = ShutterPace.normal;
 
+  /// 遥测【WAIT-BUDGET 2026-07-29】上一次快门的 epoch ms。
+  ///
+  /// 用户签决「可忍受发热,不可忍受等待变长」后,**快门间隔是整笔账的分母**:
+  /// 流式 SfM 的逐帧成本(host 实测 A=760ms/帧、候选 K30 臂=1144ms/帧)只有
+  /// 低于用户实际的按快门间隔时才对用户隐形。这个分母我们**从来没量过**,
+  /// 没有它就无法判断 K30 的 +384ms/帧 是被完全吸收还是变成欠债。
+  /// `shutter` 事件本身带 `t`,理论上可事后差分,但失败/被拒的快门不写事件,
+  /// 差分会把它们静默算成"用户拍得慢",故记成一等字段。
+  int _lastShutterMs = 0;
+
   // ─── AR 照片卡片四态边框(黑/白/红/黄,判定全在 Dart)──────────────
   // 状态机在 photo_card_state.dart;native(AetherARKitPlugin 的
   // setPhotoCardStates)只收 jpegPath→channelValue 做哑渲染。事件驱动:
@@ -345,6 +365,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   @override
   void initState() {
     super.initState();
+    _shutterQueue = ManualCaptureQueue(
+      maxTickets: kOfficialMaximumCaptureFrames,
+      execute: _executeShutterTicket,
+      onError: _onShutterTicketError,
+    );
     WidgetsBinding.instance.addObserver(this);
     // Capture reconstruction runs on-device via streaming SfM (see
     // _startSfmLiveRecon) plus server-side recon on upload — no local model
@@ -423,7 +448,16 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         _session = session;
         _initializing = false;
       });
-      _armArWarmupFallback();
+      // The pose stream is subscribed before attach completes. A healthy pose
+      // can therefore win the race, mark warmup complete, and attempt manual
+      // startup while `_session` is still null. Retry from the other side of
+      // the rendezvous once the attached session has been published; otherwise
+      // the fallback sees warmup=true and the shutter stays disabled forever.
+      if (_arWarmupComplete) {
+        unawaited(_startManualCapture());
+      } else {
+        _armArWarmupFallback();
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -512,15 +546,21 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   Future<void> _pauseArForBackground() async {
     // Release only the camera; leave the Dart CaptureSession started and its
     // retained photos untouched so resume continues the same capture.
+    final session = _session;
+    session?.suspendManualCaptureTransactions();
     try {
       await _arKitChannel.invokeMethod<void>('stopSession');
-    } catch (_) {}
+    } catch (_) {
+      session?.resumeManualCaptureTransactions();
+    }
   }
 
   Future<void> _restartArSessionAfterResume() async {
     final now = DateTime.now();
     final last = _lastArSessionResumeAt;
-    if (last != null && now.difference(last).inMilliseconds < 1200) {
+    if (last != null &&
+        now.difference(last).inMilliseconds < 1200 &&
+        !(_session?.manualCaptureTransactionsSuspended ?? false)) {
       return;
     }
     _lastArSessionResumeAt = now;
@@ -528,6 +568,14 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // resume:true → native keeps the world map + photo-card anchors (no
       // resetTracking / removeExistingAnchors) so the AR cards survive.
       await _arKitChannel.invokeMethod<void>('startSession', {'resume': true});
+      _cameraResumeFailed = false;
+      _session?.resumeManualCaptureTransactions();
+      if (_recording &&
+          !_finishTapInProgress &&
+          !_closeTapInProgress &&
+          !_shutterQueue.accepting) {
+        _shutterQueue.resume();
+      }
       if (!mounted) return;
       if (_recording) {
         // Continue the SAME capture (session still _started, photos intact).
@@ -547,6 +595,14 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         print('[CapturePage] ARSession restarted after app resume');
       }
     } catch (e) {
+      _shutterQueue.cancelPending();
+      _session?.failSuspendedManualCaptureTransactions(e);
+      _cameraResumeFailed = true;
+      if (mounted) {
+        setState(() {
+          _captureQueueFailureText = '相机恢复失败；已停止等待中的拍摄，请重试或退出。';
+        });
+      }
       if (_kDiagLog) {
         // ignore: avoid_print
         print('[CapturePage] ARSession resume restart skipped: $e');
@@ -560,44 +616,60 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   }
 
   Future<void> _onCloseTap() async {
-    if (_finalizingRecording || _lockInProgress || _capturing) return;
+    if (_finalizingRecording ||
+        _lockInProgress ||
+        _closeTapInProgress ||
+        _discardingCapture) {
+      return;
+    }
     if (!_recording) {
       if (mounted) Navigator.of(context).maybePop(false);
       return;
     }
 
-    final discard = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: const Text('退出拍摄？'),
-        content: const Text('这次拍摄的素材会被丢弃，不会进入草稿。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('继续拍摄'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('退出并丢弃'),
-          ),
-        ],
-      ),
-    );
-    if (!mounted || discard != true) return;
+    if (_finishTapInProgress) _finishCancellationRequested = true;
+    _closeTapInProgress = true;
+    try {
+      final discard = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          title: const Text('退出拍摄？'),
+          content: const Text('这次拍摄的素材会被丢弃，不会进入草稿。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('继续拍摄'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('退出并丢弃'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted || discard != true) return;
 
-    final session = _session;
-    if (session != null) {
-      await session.discardCurrentCapture();
+      _discardingCapture = true;
+      _shutterQueue.cancelPending();
+      final session = _session;
+      if (session != null) await session.stop();
+      await _shutterQueue.freezeAndDrain();
+      if (session != null) {
+        await session.discardCurrentCapture();
+      }
+      if (!mounted) return;
+      setState(() {
+        _recording = false;
+        _isAiming = false;
+        _lockInProgress = false;
+      });
+      _previewModel.reset();
+      Navigator.of(context).pop(false);
+    } finally {
+      _discardingCapture = false;
+      _closeTapInProgress = false;
     }
-    if (!mounted) return;
-    setState(() {
-      _recording = false;
-      _isAiming = false;
-      _lockInProgress = false;
-    });
-    _previewModel.reset();
-    Navigator.of(context).pop(false);
   }
 
   Future<void> _onCenterTap() async {
@@ -699,6 +771,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       } catch (_) {}
       _previewModel.reset();
       _projectPhotos.clear();
+      _captureQueueFailureText = null;
+      _cameraResumeFailed = false;
       // Fresh take → empty coverage cloud (0 photos ⇒ 0 dots on screen).
       _coverageCloud.reset();
       _officialSfmArCloud = null;
@@ -900,8 +974,16 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// snapshot. This is display-only: no point is removed or rewritten in the
   /// reconstruction or final PLY.
   Future<void> _publishOfficialSfmCloudToAr(SfmLiveSnapshot snapshot) async {
+    // [AR-EVERY-FRAME 2026-08-04] 接受两种拍摄期流式 source:检查点的
+    // 'streaming_global_ba'(既有),以及每帧的 'streaming_local_ba_live'(实验臂
+    // OFFICIAL_AETHER_AR_EVERY_FRAME=1 时才由生产端发出)。env 关时后者永不
+    // 到达,故此处放开对现状零影响(逐字节复现)。注意用 '_live' 后缀,
+    // 与 finish-time 终态云的 'streaming_local_ba' 严格区分。两种都是
+    // display-only,不删改重建或最终 PLY。
+    final source = snapshot.summary['source'];
     if (!_recording ||
-        snapshot.summary['source'] != 'streaming_global_ba' ||
+        (source != 'streaming_global_ba' &&
+            source != 'streaming_local_ba_live') ||
         snapshot.pointCount <= 0) {
       return;
     }
@@ -1261,7 +1343,13 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   void _onSfmEvent(SfmLiveEvent event) {
     if (!mounted) return;
     if (event is SfmLivePreview &&
-        event.snapshot.summary['source'] == 'streaming_global_ba') {
+        (event.snapshot.summary['source'] == 'streaming_global_ba' ||
+            event.snapshot.summary['source'] == 'streaming_local_ba_live')) {
+      // [AR-EVERY-FRAME 2026-08-04] 两种拍摄期流式 source 都路由到 AR overlay
+      // 并 return:检查点的 'streaming_global_ba'(既有,~8次),以及每帧的
+      // 'streaming_local_ba_live'(实验臂,默认关时永不发出)。**必须在此 return**,
+      // 否则会落进下方 colorize 路径,而那里 'streaming_local_ba'(注意无 _live)
+      // 被当作拍完的终态云会提前弹浮层。'_live' 后缀正是为避开该撞名。
       final snapshot = event.snapshot;
       if (snapshot.posesPacked.isNotEmpty) {
         _sfmLatestPoses = snapshot.posesPacked;
@@ -1846,9 +1934,41 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// 点"下一步"只把工具层叠到同一个预览视图上,相机原地不动。
   bool _sfmEditing = false;
   SelectionBox? _sfmBox;
-  Timer? _sfmBoxSaveDebounce;
 
-  Future<void> _onSfmPreviewNext() async {
+  /// [SEL-DISCARD 2026-07-30 用户签决] 退到草稿页时问"编辑记录是否保存"。
+  ///
+  /// [2026-08-03 修正] 拖框只更新内存预览；正式选区记录只在用户点"完成"
+  /// 后提交。取消或关闭放弃动作单都不能提前保存。基线回写仍保留，用于清理
+  /// 旧版本可能已经提前落盘的记录。
+  ///
+  /// 基线在**第一次修改之前**抓取(而不是进编辑态时),因为用户可能进出编辑态
+  /// 多次而一次都没动过框 —— 那种情况不该弹窗。null = 本次会话从未改过。
+  SelectionBox? _sfmBoxBaseline;
+  bool _sfmBoxBaselineWasAbsent = false;
+
+  /// 底部"下一步":把这一份点云交给后续处理。
+  ///
+  /// 选区只在用户**真的**选过时才带上 —— 没选区就传 null 表示"处理整朵云"。
+  Future<void> _startDenseStage() async {
+    final dir = _session?.captureDir;
+    final snap = _sfmSnapshot;
+    if (dir == null || snap == null) return;
+    final r = await denseStageLauncher.start(
+      DenseStageRequest(
+        captureDir: dir,
+        sparsePlyPath: '$dir/official_sfm_sparse.ply',
+        pointCount: snap.pointCount,
+        selection: _sfmSelectionApplied ? _sfmBox : null,
+      ),
+    );
+    if (!mounted || r.status == DenseStageStatus.started) return;
+    final l = AppL10n.of(context);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(r.message ?? l.denseStageUnavailable)),
+    );
+  }
+
+  Future<void> _enterSfmEditing() async {
     if (_sfmPhase != SfmPreviewPhase.refined) return;
     final snap = _sfmSnapshot;
     final dir = _session?.captureDir;
@@ -1856,14 +1976,15 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     final fit = SparseCloudPainter.fitOf(snap.xyz);
     final aabb = SparseCloudPainter.aabbOf(snap.xyz);
     final loaded = await SelectionBox.loadFrom(dir);
-    final box =
-        (loaded != null &&
-            loaded.isSaneFor(
-              fitCx: fit.cx,
-              fitCy: fit.cy,
-              fitCz: fit.cz,
-              fitRadius: fit.radius,
-            ))
+    final sane =
+        loaded != null &&
+        loaded.isSaneFor(
+          fitCx: fit.cx,
+          fitCy: fit.cy,
+          fitCz: fit.cz,
+          fitRadius: fit.radius,
+        );
+    final box = sane
         ? loaded
         : SelectionBox.initialFor(
             cx: aabb.cx,
@@ -1875,29 +1996,207 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           );
     if (!mounted) return;
     setState(() {
+      _sfmEditEntryBox = box;
+      _sfmEditEntryApplied = _sfmSelectionApplied;
+      _sfmSelectionApplied = sane;
       _sfmBox = box;
       _sfmEditing = true;
     });
   }
 
   void _onSfmBoxChanged(SelectionBox b) {
+    final previousApplied = _sfmSelectionApplied;
+    // [SEL-DISCARD] 第一次修改时抓基线(见 _sfmBoxBaseline 的注释:必须是
+    // "改之前"而不是"进编辑态时",否则进出而未改也会被判成脏)。
+    if (_sfmBoxBaseline == null && !_sfmBoxBaselineWasAbsent) {
+      final prev = _sfmBox;
+      if (prev != null && !prev.sameAs(b)) {
+        _sfmBoxBaseline = prev;
+        // 初次打开时用于显示的兜底框不是正式选区。必须把“盘上原本没有
+        // 选区”与框几何一起冻结，否则退页点“不保存”会反而写入兜底框。
+        _sfmBoxBaselineWasAbsent = !previousApplied;
+      } else if (prev == null) {
+        _sfmBoxBaselineWasAbsent = true;
+      }
+    }
+    // 用户动手改了框 ⇒ 从此这就是"他的选区",浏览态开始按它裁剪。
+    _sfmSelectionApplied = true;
     setState(() => _sfmBox = b);
-    final dir = _session?.captureDir;
-    if (dir == null) return;
-    _sfmBoxSaveDebounce?.cancel();
-    _sfmBoxSaveDebounce = Timer(
-      const Duration(milliseconds: 500),
-      () => unawaited(b.saveTo(dir)),
+  }
+
+  /// "恢复原始框大小":按当前点云重算初始框。
+  void _resetSfmBoxSize() {
+    final snap = _sfmSnapshot;
+    if (snap == null) return;
+    final aabb = SparseCloudPainter.aabbOf(snap.xyz);
+    _onSfmBoxChanged(
+      SelectionBox.initialFor(
+        cx: aabb.cx,
+        cy: aabb.cy,
+        cz: aabb.cz,
+        hx: aabb.hx,
+        hy: aabb.hy,
+        hz: aabb.hz,
+      ),
     );
   }
 
+  /// 用户**真的**选过区吗 —— 没选过时预览呈现原始点云,不能拿按 AABB 算出来的
+  /// 兜底框去裁(initialFor 留边距,会悄悄切掉外圈的点)。
+  bool _sfmSelectionApplied = false;
+
+  /// 进编辑态那一刻的框 —— "不保存"回滚到这里。
+  SelectionBox? _sfmEditEntryBox;
+  bool _sfmEditEntryApplied = false;
+
+  /// 右上"完成":提交本次编辑,不问。
+  ///
+  /// [2026-07-30 用户签决"直接学苹果的相册"] 确认的负担只压在破坏性的那一侧。
   Future<void> _exitSfmEditing() async {
-    _sfmBoxSaveDebounce?.cancel();
     final dir = _session?.captureDir;
     final b = _sfmBox;
-    if (dir != null && b != null) await b.saveTo(dir);
+    if (dir == null || b == null) return;
+    await _persistSfmBox(b, dir, applied: _sfmSelectionApplied);
     if (!mounted) return;
-    setState(() => _sfmEditing = false);
+    setState(() {
+      _sfmEditing = false;
+      _sfmBoxBaseline = null; // 已表态,下次修改重新抓基线
+      _sfmBoxBaselineWasAbsent = false;
+    });
+  }
+
+  /// 左上"取消":放弃本次编辑。没改过直接回浏览态;改过则弹苹果那张动作单,
+  /// 点其它地方消失并留在编辑页。
+  ///
+  /// "放弃"是**真回滚**；编辑期只改内存，入口状态写回同时兼容清理旧版本
+  /// 可能遗留的提前落盘记录。
+  Future<void> _cancelSfmEditing() async {
+    final dir = _session?.captureDir;
+    final entry = _sfmEditEntryBox;
+    final b = _sfmBox;
+    if (dir == null) return;
+    final dirty = entry != null && b != null && !b.sameAs(entry);
+
+    if (dirty) {
+      final confirmed = await showCupertinoModalPopup<bool>(
+        context: context,
+        builder: (ctx) => CupertinoActionSheet(
+          title: Text(AppL10n.of(ctx).selectionDiscardTitle),
+          actions: [
+            CupertinoActionSheetAction(
+              isDestructiveAction: true,
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: Text(AppL10n.of(ctx).selectionDiscardConfirm),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true) return; // 点了动作单以外的地方 ⇒ 留在编辑页
+    }
+
+    final finalBox = entry ?? b;
+    final finalApplied =
+        entry != null ? _sfmEditEntryApplied : _sfmSelectionApplied;
+    if (finalBox != null) {
+      await _persistSfmBox(finalBox, dir, applied: finalApplied);
+    }
+    if (!mounted) return;
+    setState(() {
+      _sfmEditing = false;
+      if (finalBox != null) _sfmBox = finalBox;
+      _sfmSelectionApplied = finalApplied;
+      _sfmBoxBaseline = null;
+      _sfmBoxBaselineWasAbsent = false;
+    });
+  }
+
+  /// 落盘;[applied] 为假表示"用户没有选区",此时删掉文件而不是留一个兜底的
+  /// 全域框冒充选区。
+  Future<void> _persistSfmBox(
+    SelectionBox box,
+    String dir, {
+    required bool applied,
+  }) async {
+    if (applied) {
+      await box.saveTo(dir);
+      return;
+    }
+    try {
+      final f = File('$dir/$kSelectionBoxFileName');
+      if (f.existsSync()) await f.delete();
+    } catch (_) {}
+  }
+
+  /// [SEL-DISCARD 2026-07-30 用户签决] 退到草稿页前问"编辑记录是否保存"。
+  ///
+  /// 只在本次会话真的改过框时才问 —— 进出编辑态而没动过框不该被打断。
+  /// "不保存"回滚到基线并写盘；显式回写兼容旧版本可能留下的提前落盘记录。
+  /// 返回 true = 可以离开。
+  Future<bool> _confirmLeaveWithSelectionEdits() async {
+    final baseline = _sfmBoxBaseline;
+    if (baseline == null) return true; // 没改过 → 直接走
+    final l = AppL10n.of(context);
+    final choice = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: Text(l.sfmSelectionSaveTitle),
+        content: Text(l.sfmSelectionSaveBody),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop('cancel'),
+            child: Text(l.sfmSelectionSaveCancel),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop('discard'),
+            child: Text(l.sfmSelectionSaveDiscard),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop('keep'),
+            child: Text(l.sfmSelectionSaveKeep),
+          ),
+        ],
+      ),
+    );
+    if (choice == null || choice == 'cancel') return false;
+    final dir = _session?.captureDir;
+    if (choice == 'discard') {
+      // 回滚到编辑前的正式状态。若当时盘上没有选区，删除旧版本可能提前
+      // 写入的记录；不能把仅用于显示的兜底框冒充成用户保存的选区。
+      if (dir != null) {
+        await _persistSfmBox(
+          baseline,
+          dir,
+          applied: !_sfmBoxBaselineWasAbsent,
+        );
+      }
+      if (mounted) {
+        setState(() {
+          _sfmBox = baseline;
+          _sfmSelectionApplied = !_sfmBoxBaselineWasAbsent;
+        });
+      }
+    } else if (dir != null && _sfmBox != null) {
+      await _persistSfmBox(
+        _sfmBox!,
+        dir,
+        applied: _sfmSelectionApplied,
+      );
+    }
+    _sfmBoxBaseline = null; // 本次编辑已裁决,下次修改重新抓基线
+    _sfmBoxBaselineWasAbsent = false;
+    TelemetryWriter.instance.event('selection_leave', {
+      'choice': choice,
+      'was_editing': _sfmEditing,
+    });
+    return true;
+  }
+
+  /// 返回草稿页的统一入口 —— 先过选区保存裁决,再让草稿层显现。
+  Future<void> _onSfmPreviewBack() async {
+    if (!await _confirmLeaveWithSelectionEdits()) return;
+    if (!mounted) return;
+    _showDraftsDuringReconstruction();
   }
 
   Future<void> _permanentlyDeleteActiveReconstruction(ScanRecord record) async {
@@ -1967,15 +2266,22 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     });
   }
 
-  /// Shutter tap → capture exactly ONE high-res still (RealityScan manual).
-  Future<void> _onShutterTap() async {
-    final session = _session;
-    if (session == null || !_sfmCaptureReady) return;
-    if (_capturing) return;
-    // [SIGNED 2026-07-27] 300 张硬上限:在快门入口卡死(UI 已置灰,这里是
-    // 逻辑侧的同源兜底,防竞态/程序化调用越过)。达到上限提示一次去结束。
-    if (!officialCaptureCanShoot(acceptedFrameCount: _projectPhotos.count)) {
-      if (!mounted) return;
+  /// O(1) UI admission only. Camera, JPEG, disk, and SfM work are serialized
+  /// by [_shutterQueue] after this callback has already returned.
+  void _onShutterTap() {
+    if (_session == null || !_sfmCaptureReady || !_shutterQueue.accepting) {
+      return;
+    }
+    final ticket = _shutterQueue.enqueue(verifiedCount: _projectPhotos.count);
+    if (ticket == null) {
+      unawaited(_showMaximumPhotosDialog());
+    }
+  }
+
+  Future<void> _showMaximumPhotosDialog() async {
+    if (!mounted || _maximumPhotosDialogOpen) return;
+    _maximumPhotosDialogOpen = true;
+    try {
       await showDialog<void>(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -1993,56 +2299,94 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           ],
         ),
       );
-      return;
-    }
-    _recomputeShutterPace();
-    setState(() => _capturing = true);
-    final shutterSw = Stopwatch()..start();
-    try {
-      final capture = await session.captureSinglePhoto();
-      // Diagnostic: how long the shutter spinner was held. During a background
-      // finalize this used to balloon to seconds because the colorizer's main-
-      // thread decodes starved this channel reply; with decodeJpegForColor now
-      // off-main it should stay at single-encode magnitude even mid-colorize.
-      DeviceLog.log(
-        'OfficialARCapturePage',
-        'shutter captureSinglePhoto waited=${shutterSw.elapsedMilliseconds}ms '
-            'sfmPhase=$_sfmPhase',
-      );
-      // 遥测【frame/shutter】:快门等待时长(UI 卡顿/主线程饿死的直接证据;
-      // 既有诊断顺手记,拍照路径不多等任何东西)。
-      TelemetryWriter.instance.event('shutter', {
-        'wait_ms': shutterSw.elapsedMilliseconds,
-        'phase': _sfmPhase?.name,
-        if (capture != null) 'jpeg': capture.evidenceJpegPath.split('/').last,
-      });
-      if (capture != null &&
-          mounted &&
-          !_failedEvidenceJpegPaths.contains(capture.evidenceJpegPath)) {
-        // Anchor a native, world-stable AR card at the capture pose (no drift).
-        // [0延迟 2026-07-19] 不 await 建卡 —— 显示层立刻开始；快门锁
-        // 仅等待下面的 12 MP 事务，不等待 SceneKit 卡片渲染。
-        unawaited(
-          _arKitChannel
-              .invokeMethod<void>('addPhotoCard', <String, dynamic>{
-                'textureJpegPath': capture.previewJpegPath,
-                'evidenceJpegPath': capture.evidenceJpegPath,
-              })
-              .catchError((Object e) {
-                // ignore: avoid_print
-                print('[OfficialARCapturePage] addPhotoCard failed: $e');
-              }),
-        );
-      }
-      // Keep the shutter busy until this tap's one native 12 MP transaction
-      // completes. The display card is still requested immediately above, but
-      // a second high-resolution request cannot overtake or drop this one.
-      if (capture != null) {
-        await capture.highResolutionCompletion;
-      }
     } finally {
-      if (mounted) setState(() => _capturing = false);
+      _maximumPhotosDialogOpen = false;
     }
+  }
+
+  /// Serial executor for one admitted shutter ticket. This preserves the
+  /// production native transaction and canonical 4032x3024 on-disk JPEG.
+  Future<void> _executeShutterTicket(ManualCaptureTicket ticket) async {
+    final session = _session;
+    if (session == null) {
+      throw StateError('accepted shutter ticket has no capture session');
+    }
+    final queueWaitMicros =
+        DateTime.now().microsecondsSinceEpoch - ticket.tapTimestampMicros;
+    final tapMs = ticket.tapTimestampMicros ~/ 1000;
+    final gapMs = _lastShutterMs > 0 ? tapMs - _lastShutterMs : -1;
+    _lastShutterMs = tapMs;
+    final shutterSw = Stopwatch()..start();
+    final capture = await session.captureSinglePhoto();
+    if (capture == null) {
+      throw StateError('accepted shutter ticket could not start');
+    }
+    DeviceLog.log(
+      'OfficialARCapturePage',
+      'shutter ticket=${ticket.id} queue_wait_us=$queueWaitMicros '
+          'capture_start_wait_ms=${shutterSw.elapsedMilliseconds} '
+          'sfmPhase=$_sfmPhase',
+    );
+    TelemetryWriter.instance.event('shutter_admit', {
+      'ticket_id': ticket.id,
+      'tap_timestamp_us': ticket.tapTimestampMicros,
+      'queue_wait_us': queueWaitMicros,
+      'verified_at_start': _projectPhotos.count,
+      'outstanding_at_start': _shutterQueue.outstandingCount,
+    });
+    if (mounted &&
+        !_failedEvidenceJpegPaths.contains(capture.evidenceJpegPath)) {
+      unawaited(
+        _arKitChannel
+            .invokeMethod<void>('addPhotoCard', <String, dynamic>{
+              'textureJpegPath': capture.previewJpegPath,
+              'evidenceJpegPath': capture.evidenceJpegPath,
+            })
+            .catchError((Object e) {
+              // ignore: avoid_print
+              print('[OfficialARCapturePage] addPhotoCard failed: $e');
+            }),
+      );
+    }
+    final input = await capture.highResolutionCompletion;
+    _recomputeShutterPace();
+    TelemetryWriter.instance.event('shutter', {
+      'ticket_id': ticket.id,
+      'tap_timestamp_us': ticket.tapTimestampMicros,
+      'queue_wait_us': queueWaitMicros,
+      'wait_ms': shutterSw.elapsedMilliseconds,
+      'gap_ms': gapMs,
+      'transaction_ms': shutterSw.elapsedMilliseconds,
+      'capture_timestamp': input.captureTimestamp,
+      'phase': _sfmPhase?.name,
+      'jpeg': capture.evidenceJpegPath.split('/').last,
+    });
+  }
+
+  void _onShutterTicketError(
+    ManualCaptureTicket ticket,
+    Object error,
+    StackTrace stackTrace,
+  ) {
+    DeviceLog.log(
+      'OfficialARCapturePage',
+      'shutter ticket=${ticket.id} FAILED: $error\n$stackTrace',
+    );
+    TelemetryWriter.instance.event('shutter_error', {
+      'ticket_id': ticket.id,
+      'tap_timestamp_us': ticket.tapTimestampMicros,
+      'error': '$error',
+    });
+    if (_finishTapInProgress) {
+      _finishDrainFailed = true;
+      _shutterQueue.cancelPending();
+    }
+    if (!mounted || _discardingCapture) return;
+    setState(() {
+      _captureQueueFailureText =
+          '有一张高分辨率照片未完成（任务 ${ticket.id}）。'
+          '已继续处理后续拍摄；你可以继续拍摄或退出重试。';
+    });
   }
 
   /// Open the full-screen, time-ordered photo album.
@@ -2067,72 +2411,100 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// 弹窗只是前置门。每次点完成都记一行 finish_gate 遥测
   /// (starved/true_vox + 用户选择;未触发门 = pass)。
   Future<void> _onFinishTap() async {
-    if (!_sfmCaptureReady || _finalizingRecording) return;
-    final acceptedFrameCount = _projectPhotos.count;
-    if (!officialCaptureCanFinish(acceptedFrameCount: acceptedFrameCount)) {
-      final remaining = kOfficialMinimumCaptureFrames - acceptedFrameCount;
-      await showDialog<void>(
-        context: context,
-        barrierDismissible: false,
-        builder: (ctx) => AlertDialog(
-          key: const ValueKey<String>('official-minimum-photos-dialog'),
-          title: const Text('至少拍摄20张照片'),
-          content: Text(
-            '要结束任务，必须至少拍摄20张照片。\n'
-            '当前已完成 $acceptedFrameCount 张，还需要 $remaining 张。\n'
-            '尽量从更多不同角度拍摄照片，'
-            '完成20张并分析后，点云会覆盖显示在物体上。',
-          ),
-          actions: [
-            FilledButton(
-              onPressed: () => Navigator.of(ctx).pop(),
-              child: const Text('继续拍摄'),
-            ),
-          ],
-        ),
-      );
+    if (!_sfmCaptureReady ||
+        _finalizingRecording ||
+        _finishTapInProgress ||
+        _closeTapInProgress ||
+        _discardingCapture) {
       return;
     }
-    final cov = _coverageCloud.coverageStats();
-    if (starvedFinishGateShouldPrompt(
-      starvedTrue: cov.starvedTrue,
-      trueVoxels: cov.trueVoxels,
-    )) {
-      final finishAnyway = await showDialog<bool>(
-        context: context,
-        barrierDismissible: false,
-        builder: (ctx) => AlertDialog(
-          title: const Text('拍摄角度可能不足'),
-          content: const Text(
-            '仍有较多区域拍摄角度不足，可能出现分层。\n'
-            '对黄色区域：横移一大步，或走近一半再拍。',
+    _finishCancellationRequested = false;
+    _finishDrainFailed = false;
+    setState(() => _finishTapInProgress = true);
+    try {
+      await _shutterQueue.freezeAndDrain();
+      if (!mounted ||
+          _finishCancellationRequested ||
+          _finishDrainFailed ||
+          _discardingCapture ||
+          !_recording) {
+        return;
+      }
+      final acceptedFrameCount = _projectPhotos.count;
+      if (!officialCaptureCanFinish(acceptedFrameCount: acceptedFrameCount)) {
+        final remaining = kOfficialMinimumCaptureFrames - acceptedFrameCount;
+        await showDialog<void>(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => AlertDialog(
+            key: const ValueKey<String>('official-minimum-photos-dialog'),
+            title: const Text('至少拍摄20张照片'),
+            content: Text(
+              '要结束任务，必须至少拍摄20张照片。\n'
+              '当前已完成 $acceptedFrameCount 张，还需要 $remaining 张。\n'
+              '尽量从更多不同角度拍摄照片，'
+              '完成20张并分析后，点云会覆盖显示在物体上。',
+            ),
+            actions: [
+              FilledButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('继续拍摄'),
+              ),
+            ],
           ),
-          actions: [
-            FilledButton(
-              onPressed: () => Navigator.of(ctx).pop(false),
-              child: const Text('继续拍摄'),
+        );
+        return;
+      }
+      final cov = _coverageCloud.coverageStats();
+      if (starvedFinishGateShouldPrompt(
+        starvedTrue: cov.starvedTrue,
+        trueVoxels: cov.trueVoxels,
+      )) {
+        final finishAnyway = await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (ctx) => AlertDialog(
+            title: const Text('拍摄角度可能不足'),
+            content: const Text(
+              '仍有较多区域拍摄角度不足，可能出现分层。\n'
+              '对黄色区域：横移一大步，或走近一半再拍。',
             ),
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(true),
-              child: const Text('仍要完成'),
-            ),
-          ],
-        ),
-      );
-      TelemetryWriter.instance.event('finish_gate', {
-        'starved': cov.starvedTrue,
-        'true_vox': cov.trueVoxels,
-        'choice': finishAnyway == true ? 'finish_anyway' : 'continue_capture',
-      });
-      if (finishAnyway != true || !mounted) return; // 回到拍摄,原地不动
-    } else {
-      TelemetryWriter.instance.event('finish_gate', {
-        'starved': cov.starvedTrue,
-        'true_vox': cov.trueVoxels,
-        'choice': 'pass',
-      });
+            actions: [
+              FilledButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('继续拍摄'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                child: const Text('仍要完成'),
+              ),
+            ],
+          ),
+        );
+        TelemetryWriter.instance.event('finish_gate', {
+          'starved': cov.starvedTrue,
+          'true_vox': cov.trueVoxels,
+          'choice': finishAnyway == true ? 'finish_anyway' : 'continue_capture',
+        });
+        if (finishAnyway != true || !mounted) return;
+      } else {
+        TelemetryWriter.instance.event('finish_gate', {
+          'starved': cov.starvedTrue,
+          'true_vox': cov.trueVoxels,
+          'choice': 'pass',
+        });
+      }
+      await _finalizeRecording(navigateToDrafts: true, showSparseHint: true);
+    } finally {
+      if (mounted &&
+          _recording &&
+          !_discardingCapture &&
+          !_cameraResumeFailed) {
+        _shutterQueue.resume();
+      }
+      _finishCancellationRequested = false;
+      if (mounted) setState(() => _finishTapInProgress = false);
     }
-    await _finalizeRecording(navigateToDrafts: true, showSparseHint: true);
   }
 
   /// Persist the just-recorded capture as a DRAFT scan.
@@ -2151,6 +2523,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     _finalizingRecording = true;
     _stopGuidanceTelemetry(); // 拍摄结束,【guidance】采样停止
     try {
+      await _shutterQueue.freezeAndDrain();
       // RECORDING → STOP. The high-res stills are written incrementally
       // under `<captureDir>/photos_highres/`; stop freezes curation and
       // writes the shared photo_bundle contract.
@@ -2344,7 +2717,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     if (manifestFile == null || !manifestFile.existsSync()) return;
     final record = ScanRecord(
       id: captureId,
-      name: '未命名(${store.records.length + 1})',
+      name: nextUntitledScanName(store.records.map((r) => r.name)),
       createdAt: createdAt,
       pipelineKind: CapturePipelineKind.official,
       preferredCaptureMode: CaptureMode.local,
@@ -2473,6 +2846,16 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     }
   }
 
+  Future<void> _disposeCaptureResourcesAfterQueueDrain(
+    ManualCaptureQueue shutterQueue,
+    CaptureSession? session,
+  ) async {
+    await session?.stop();
+    await shutterQueue.freezeAndDrain();
+    shutterQueue.dispose();
+    await session?.dispose();
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
@@ -2495,10 +2878,14 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     _sfmFeedSub?.cancel();
     _sfmEventSub?.cancel();
     _highResFailureSub?.cancel();
+    final shutterQueue = _shutterQueue;
+    final session = _session;
+    _session = null;
+    shutterQueue.cancelPending();
+    unawaited(_disposeCaptureResourcesAfterQueueDrain(shutterQueue, session));
     final sfmRecon = _sfmRecon;
     _sfmRecon = null;
     if (sfmRecon != null) unawaited(sfmRecon.dispose());
-    _session?.dispose();
     _previewModel.dispose();
     _projectPhotos.dispose();
     _targetPoints.dispose();
@@ -2588,7 +2975,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           // A live-SfM worker is mandatory for this product route. Keep the
           // failure on screen (rather than a transient snackbar) and leave X
           // available so the user can discard the invalid take and retry.
-          if (_sfmStartFailureText != null)
+          if (_sfmStartFailureText != null || _captureQueueFailureText != null)
             Positioned(
               top: 0,
               left: 16,
@@ -2619,7 +3006,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                         const SizedBox(width: 10),
                         Expanded(
                           child: Text(
-                            _sfmStartFailureText!,
+                            _sfmStartFailureText ?? _captureQueueFailureText!,
                             style: const TextStyle(
                               color: Colors.white,
                               fontSize: 13,
@@ -2819,16 +3206,20 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                     ),
                     _ManualCaptureBar(
                       projectPhotos: _projectPhotos,
+                      shutterQueue: _shutterQueue,
+                      processedCount: _sfmFed,
                       // 07-12 签决:快门彻底不限流 —— 只要在录制就永远可拍,
                       // 绝不因队列深度/热态置灰(积压走磁盘 spool 队列,不回压快门)。
                       ready: _sfmCaptureReady,
-                      capturing: _capturing,
-                      finishing: _finalizingRecording,
+                      finishing: _finalizingRecording || _finishTapInProgress,
                       onShutter: _onShutterTap,
                       onOpenAlbum: _openAlbum,
                       // 补强2:完成前先过 starved 把关门(_onFinishTap),
                       // 通过后才走原 _finalizeRecording,原流程一个字不改。
-                      onFinish: _sfmCaptureReady && !_finalizingRecording
+                      onFinish:
+                          _sfmCaptureReady &&
+                              !_finalizingRecording &&
+                              !_finishTapInProgress
                           ? _onFinishTap
                           : null,
                     ),
@@ -2851,7 +3242,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                   : _sfmStageProgressText(context),
               onCameraChanged: (c) => _sfmPreviewCamera.value = c,
               editing: _sfmEditing,
-              selectionBox: _sfmBox,
+              // 编辑态要框(画手柄);浏览态只在用户真选过区时才裁剪,否则
+              // 呈现原始点云。
+              selectionBox: (_sfmEditing || _sfmSelectionApplied)
+                  ? _sfmBox
+                  : null,
               onBoxChanged: _onSfmBoxChanged,
               cloudController: _sfmCloudController,
               toolsOverlay: _sfmEditing && _sfmBox != null
@@ -2861,12 +3256,28 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                       camera: _sfmPreviewCamera,
                       controller: _sfmCloudController,
                       onExit: () => unawaited(_exitSfmEditing()),
+                      onCancel: () => unawaited(_cancelSfmEditing()),
+                      onResetBoxSize: _resetSfmBoxSize,
                     )
                   : null,
-              onBack: _showDraftsDuringReconstruction,
+              // [SEL-DISCARD 2026-07-30] 退到草稿前先裁决未保存的选区编辑。
+              onBack: () => unawaited(_onSfmPreviewBack()),
               onDone: () => unawaited(_onSfmPreviewDone()),
-              onNext: _sfmSnapshot != null && _sfmSnapshot!.pointCount > 0
-                  ? _onSfmPreviewNext
+              // [2026-07-31 用户签决] 底部"下一步" = 启动后续处理;进选区
+              // 编辑归右上角那个可选入口。
+              onNext:
+                  _sfmSnapshot != null &&
+                      _sfmSnapshot!.pointCount > 0 &&
+                      denseStageLauncher.isAvailable
+                  ? () => unawaited(_startDenseStage())
+                  : null,
+              // [SEL-ENTRY 2026-07-30] 右上角"选区编辑":选区是可选动作,不点
+              // 就直接保存草稿。与底部"下一步"共用同一个进入函数,所以两个
+              // 入口不会产生两种状态。编辑态的出口("保存"/"返回")归
+              // SelectionToolsLayer,这里不再出按钮。
+              onEnterEditing: _sfmSnapshot != null &&
+                      _sfmSnapshot!.pointCount > 0
+                  ? _enterSfmEditing
                   : null,
             ),
         ],
@@ -3446,8 +3857,9 @@ class _NineDotPainter extends CustomPainter {
 class _ManualCaptureBar extends StatelessWidget {
   const _ManualCaptureBar({
     required this.projectPhotos,
+    required this.shutterQueue,
+    required this.processedCount,
     required this.ready,
-    required this.capturing,
     required this.finishing,
     required this.onShutter,
     required this.onOpenAlbum,
@@ -3455,8 +3867,14 @@ class _ManualCaptureBar extends StatelessWidget {
   });
 
   final OfficialProjectPhotoAlbum projectPhotos;
+  final ManualCaptureQueue shutterQueue;
+
+  /// [RS-RING 2026-08-06 用户签决] SfM 已处理完的帧数(页面 `_sfmFed`,每个
+  /// SfmLiveFrameFed 事件 setState 实时刷新)。相册缩略图外圈的白色进度环
+  /// = processedCount / count:拍新照分母涨环回退,处理跟上环前进,转满一圈
+  /// = 全部处理完成。复刻 RS 的相册进度环(RS 蓝,我们白)。
+  final int processedCount;
   final bool ready;
-  final bool capturing;
   final bool finishing;
   final VoidCallback onShutter;
   final VoidCallback onOpenAlbum;
@@ -3465,30 +3883,15 @@ class _ManualCaptureBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: projectPhotos,
+      animation: Listenable.merge(<Listenable>[projectPhotos, shutterQueue]),
       builder: (context, _) {
         // [SIGNED 2026-07-27] 300 张预算用尽 → 快门置灰(与相册徽章的
         // 琥珀态、_onShutterTap 的兜底同源)。
         final canShoot = officialCaptureCanShoot(
-          acceptedFrameCount: projectPhotos.count,
+          acceptedFrameCount:
+              projectPhotos.count + shutterQueue.outstandingCount,
         );
-        final paths = projectPhotos.paths
-            .where((p) => File(p).existsSync())
-            .toList(growable: false);
-        // Newest photo (by mtime) for the album thumbnail.
-        String? latest;
-        var latestAt = DateTime.fromMillisecondsSinceEpoch(0);
-        for (final p in paths) {
-          try {
-            final m = File(p).lastModifiedSync();
-            if (m.isAfter(latestAt)) {
-              latestAt = m;
-              latest = p;
-            }
-          } on FileSystemException {
-            // skip unreadable file
-          }
-        }
+        final latest = projectPhotos.latestPath;
         return Padding(
           // [2026-07-27 UI-2 签决] 底部内边距 24→0:相册/快门/完成整排向下
           // 平移 24pt,贴到 SafeArea 上沿 —— 刘海机由 SafeArea 让开的 34pt
@@ -3511,22 +3914,23 @@ class _ManualCaptureBar extends StatelessWidget {
                 child: _AlbumThumbButton(
                   latestPath: latest,
                   count: projectPhotos.count,
+                  processed: processedCount,
                   onTap: onOpenAlbum,
                 ),
               ),
               Expanded(
                 child: Center(
                   child: _ShutterButton(
-                    busy: capturing,
                     // [SIGNED 2026-07-27] 300 张上限:唯一置灰理由(与
                     // _onShutterTap 的兜底同源 officialCaptureCanShoot)。
                     // 07-12 的"快门永不因队列/热态置灰"铁律不受影响 ——
                     // 这不是限流,是任务预算用尽。
-                    enabled: ready && canShoot,
-                    // [12MP 排队 2026-07-19] 拍照中(capturing)也接收点击 ——
-                    // 不再 null 禁用;点击传进 _onShutterTap 由 _shutterQueued
-                    // 排队补拍,一张不丢(真凶:12MP 静照~400ms内点击被丢弃)。
-                    onTap: ready && canShoot ? onShutter : null,
+                    enabled: ready && shutterQueue.accepting && canShoot,
+                    // 在途/排队期间继续接收点击；只有 admission 已冻结、会话
+                    // 未就绪或预算用尽才禁用。
+                    onTap: ready && shutterQueue.accepting && canShoot
+                        ? onShutter
+                        : null,
                   ),
                 ),
               ),
@@ -3540,7 +3944,10 @@ class _ManualCaptureBar extends StatelessWidget {
                     // 就会等齐所有已点击快门、仍在队列/处理中的照片再收尾,
                     // 按钮层再拦一道只会让 UX 出现本不该有的加载态。
                     busy: finishing,
-                    onTap: paths.isEmpty ? null : onFinish,
+                    onTap:
+                        projectPhotos.count + shutterQueue.outstandingCount == 0
+                        ? null
+                        : onFinish,
                   ),
                 ),
               ),
@@ -3556,24 +3963,36 @@ class _AlbumThumbButton extends StatelessWidget {
   const _AlbumThumbButton({
     required this.latestPath,
     required this.count,
+    required this.processed,
     required this.onTap,
   });
 
   final String? latestPath;
   final int count;
+
+  /// SfM 已处理帧数;`processed/count` 驱动外圈白色进度环([RS-RING])。
+  final int processed;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
+    // [RS-RING 2026-08-06] 分母是"当前已拍",不是 300 上限 —— 拍新照环回退、
+    // 处理追上环闭合,与 RS 的语义一致(转满一圈 = 目前拍的全处理完)。
+    final double progress = count <= 0
+        ? 0.0
+        : (processed / count).clamp(0.0, 1.0);
     return GestureDetector(
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
-      child: Container(
+      child: CustomPaint(
+        foregroundPainter: _AlbumRingPainter(progress: progress),
+        child: Container(
         width: kCaptureAlbumThumbSize,
         height: kCaptureAlbumThumbSize,
         decoration: BoxDecoration(
           color: Colors.black.withValues(alpha: 0.44),
           borderRadius: BorderRadius.circular(14),
+          // [RS-RING] 原 0.5α 静态白边即进度环的"轨道";实心白弧压其上。
           border: Border.all(
             color: Colors.white.withValues(alpha: 0.5),
             width: 1.5,
@@ -3599,9 +4018,56 @@ class _AlbumThumbButton extends StatelessWidget {
             Center(child: _AlbumCountFraction(count: count)),
           ],
         ),
+        ),
       ),
     );
   }
+}
+
+/// [RS-RING 2026-08-06] 相册缩略图外圈进度环:沿圆角矩形边框路径顺时针扫过
+/// 的实心白弧,从顶边正中起笔。复刻 RS 的处理进度环呈现(RS 蓝我们白),
+/// 用 PathMetric 沿现有 14 圆角边框走线,不另起圆形以免与方形缩略图打架。
+class _AlbumRingPainter extends CustomPainter {
+  const _AlbumRingPainter({required this.progress});
+
+  /// 0..1;1 = 当前已拍全部处理完成(环闭合)。
+  final double progress;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (progress <= 0) return;
+    final rrect = RRect.fromRectAndRadius(
+      Offset.zero & size,
+      const Radius.circular(14),
+    );
+    final path = Path()..addRRect(rrect);
+    final metric = path.computeMetrics().first;
+    final total = metric.length;
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round
+      ..color = Colors.white;
+    if (progress >= 1) {
+      canvas.drawPath(path, paint);
+      return;
+    }
+    // addRRect 的路径起点在左上圆角后的顶边起点;把起笔挪到顶边正中,
+    // 环从 12 点方向顺时针生长(与 RS 一致)。
+    final start = (size.width / 2 - 14).clamp(0.0, total);
+    final sweep = total * progress;
+    final end = start + sweep;
+    if (end <= total) {
+      canvas.drawPath(metric.extractPath(start, end), paint);
+    } else {
+      canvas.drawPath(metric.extractPath(start, total), paint);
+      canvas.drawPath(metric.extractPath(0, end - total), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(_AlbumRingPainter oldDelegate) =>
+      oldDelegate.progress != progress;
 }
 
 /// RS 同款的堆叠分数:已拍张数 / 上限,压在缩略图正中,无底色。
@@ -3649,13 +4115,8 @@ class _AlbumCountFraction extends StatelessWidget {
 }
 
 class _ShutterButton extends StatelessWidget {
-  const _ShutterButton({
-    required this.busy,
-    required this.onTap,
-    this.enabled = true,
-  });
+  const _ShutterButton({required this.onTap, this.enabled = true});
 
-  final bool busy;
   final bool enabled;
   final VoidCallback? onTap;
 
@@ -3677,13 +4138,12 @@ class _ShutterButton extends StatelessWidget {
           ),
           child: Padding(
             padding: const EdgeInsets.all(5),
-            // [0延迟 2026-07-19] 快门~50ms,去掉转圈 spinner ——它反而制造
-            // "加载中"错觉。按钮恒为白色实心圆,拍照瞬间只轻微 dim 一下作
-            // 触觉反馈(相机快门语义),不显 loading 指示。
+            // 队列忙碌不进入视觉状态：按钮只在会话未就绪、完成流程冻结
+            // admission 或 300 张预算用尽时变灰；在途/排队期间恒为纯白。
             child: Container(
-              decoration: BoxDecoration(
+              decoration: const BoxDecoration(
                 shape: BoxShape.circle,
-                color: busy ? Colors.white70 : Colors.white,
+                color: Colors.white,
               ),
             ),
           ),

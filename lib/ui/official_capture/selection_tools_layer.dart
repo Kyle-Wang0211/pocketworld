@@ -195,6 +195,7 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
 
   void _rollCube(List<double> viewRot) {
     if (_cam == null) return;
+    _closeMenu();
     // [2026-07-31 用户实机指认] "我在左的角度,当我想要向左转,就到了底部"。
     // 根因:逻辑姿态原样保留滚转分量,下一次箭头绕的"屏幕竖直轴"在带滚转的
     // 姿态里已经不竖直,"左"就退化成俯仰。**纯按箭头也会累积滚转**,不只是
@@ -332,6 +333,7 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
   /// 该面正对(preset),反解相机姿态 M_cam = preset · box.rotᵀ,再分解成
   /// yaw/pitch/roll 三元由 _snap 插值动画。
   void _snapToFace(String label) {
+    _closeMenu();
     final preset = kOrientationPresets.firstWhere((p) => p.label == label);
     final cam = _cam;
     if (cam == null) return;
@@ -370,6 +372,11 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
   /// 这些手势全吞掉,故不能用它。
   bool _menuOpen = false;
 
+  /// 关掉 "⋯" 浮层(已关就不 setState —— _onRoll 每帧都会调它)。
+  void _closeMenu() {
+    if (_menuOpen && mounted) setState(() => _menuOpen = false);
+  }
+
   /// 拨滑轨期间置位。
   ///
   /// [2026-07-29 用户实机指认"开始调节时点云自动重置到初始角度"] 根因是
@@ -407,6 +414,7 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
   void _onRoll(double v) {
     final cam = _cam;
     if (cam == null) return;
+    _closeMenu();
     if (_rollEmitted == null) _rebaseRoll();
     final deg = v - 360.0 * ((v + 180.0) / 360.0).floorToDouble();
     // 相机:绕自身**视线轴**(相机系 z)转 deg = 视图矩阵左乘 Rz(deg) =
@@ -527,6 +535,22 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     final l = AppL10n.of(context);
     return Stack(
       children: [
+        // [2026-08-03 用户签决] "点击屏幕其他区域时,'⋯' 弹窗自动消失(跟取消
+        // 的弹窗逻辑一样)"。
+        //
+        // ⚠️ 不能像取消弹窗那样用全屏 opaque 遮罩:那会吞掉手势,而 07-30 那条
+        // 签决要求"拉开 ⋯ 时依然能转立方体 / 拨刻度 / 转点云"。这里放在 Stack
+        // **最底层**且 translucent —— Stack 的命中测试是上层优先、命中即止,所以
+        // 它只收得到落在空白处的点击(那正是"其他区域");点骰子/滑轨/箭头由那
+        // 些交互自己顺手关菜单(见 _closeMenu 的调用点),一次点击既关菜单又生效。
+        if (_menuOpen)
+          Positioned.fill(
+            key: const ValueKey('selection-menu-dismiss'),
+            child: Listener(
+              behavior: HitTestBehavior.translucent,
+              onPointerDown: (_) => _closeMenu(),
+            ),
+          ),
         Positioned(
           top: 8,
           left: 4,
@@ -537,17 +561,24 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
               // "⋯" 排在取消下方、左对齐。
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // [PILL-BTN 2026-08-06 用户签决] 白色胶囊底+黑字。
                 TextButton(
                   key: kSelectionCancelKey,
                   onPressed: widget.onCancel,
                   style: TextButton.styleFrom(
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    minimumSize: const Size(0, 48),
+                    backgroundColor: Colors.white,
+                    foregroundColor: Colors.black,
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    minimumSize: const Size(0, 38),
+                    shape: const StadiumBorder(),
                   ),
                   child: Text(
                     l.selectionCancel,
-                    style: const TextStyle(color: Colors.white, fontSize: 15),
+                    style: const TextStyle(
+                      color: Colors.black,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
                 Padding(
@@ -606,17 +637,24 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
           top: 8,
           right: 4,
           child: SafeArea(
+            // [PILL-BTN 2026-08-06 用户签决] 白色胶囊底+黑字。
             child: TextButton(
               key: const ValueKey('selection-back'),
               onPressed: widget.onExit,
               style: TextButton.styleFrom(
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                minimumSize: const Size(0, 48),
+                backgroundColor: Colors.white,
+                foregroundColor: Colors.black,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                minimumSize: const Size(0, 38),
+                shape: const StadiumBorder(),
               ),
               child: Text(
                 l.sfmDone,
-                style: const TextStyle(color: Colors.white, fontSize: 15),
+                style: const TextStyle(
+                  color: Colors.black,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
           ),

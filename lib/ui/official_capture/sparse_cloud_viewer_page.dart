@@ -286,10 +286,14 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
         kSelectionCancelKey.currentContext?.findRenderObject() as RenderBox?;
     final anchor = box == null
         ? const Offset(12, 56)
-        : box.localToGlobal(Offset.zero) + Offset(0, box.size.height + 6);
+        : box.localToGlobal(Offset.zero) + Offset(0, box.size.height + 2);
     return showDialog<bool>(
       context: context,
       barrierColor: Colors.transparent, // 苹果的 popover 不压暗背景
+      // ⚠️ 必须关掉:默认 true 会把下面的 Stack 包进 SafeArea,而 anchor 是
+      // **全局**坐标(localToGlobal),于是浮层被状态栏高度又顶下去一截 ——
+      // 用户实机指认"位置需要调整,应该紧贴取消下面"的直接原因。
+      useSafeArea: false,
       builder: (ctx) => Stack(
         children: [
           // 全屏透明命中层:点浮层以外 ⇒ 收起,什么都不做。
@@ -308,19 +312,19 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
               borderRadius: BorderRadius.circular(14),
               elevation: 8,
               child: ConstrainedBox(
-                constraints: const BoxConstraints(minWidth: 232, maxWidth: 280),
+                constraints: const BoxConstraints(minWidth: 168, maxWidth: 212),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+                      padding: const EdgeInsets.fromLTRB(14, 11, 14, 10),
                       child: Text(
                         l.selectionDiscardTitle,
                         textAlign: TextAlign.center,
                         style: const TextStyle(
                           color: Color(0xFF1C1C1E),
-                          fontSize: 15,
+                          fontSize: 14,
                         ),
                       ),
                     ),
@@ -328,13 +332,13 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                     InkWell(
                       onTap: () => Navigator.of(ctx).pop(true),
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
                         child: Text(
                           l.selectionDiscardConfirm,
                           textAlign: TextAlign.center,
                           style: const TextStyle(
                             color: Color(0xFFFF3B30), // iOS 破坏性红
-                            fontSize: 17,
+                            fontSize: 16,
                             fontWeight: FontWeight.w500,
                           ),
                         ),
@@ -602,21 +606,26 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                             // 在同一位置写"完成" ⇒ 同一个开关在切换。
                             Align(
                               alignment: Alignment.centerRight,
+                              // [PILL-BTN 2026-08-06 用户签决] 白色胶囊底+黑字
+                              // (与编辑态的"取消/完成"同款)。
                               child: TextButton(
                                 key: const ValueKey('viewer-enter-editing'),
                                 onPressed: _enterEditing,
                                 style: TextButton.styleFrom(
-                                  foregroundColor: Colors.white,
+                                  backgroundColor: Colors.white,
+                                  foregroundColor: Colors.black,
                                   padding: const EdgeInsets.symmetric(
-                                    horizontal: 12,
+                                    horizontal: 16,
                                   ),
-                                  minimumSize: const Size(0, 48),
+                                  minimumSize: const Size(0, 38),
+                                  shape: const StadiumBorder(),
                                 ),
                                 child: Text(
                                   AppL10n.of(context).sfmEditSelection,
                                   style: const TextStyle(
-                                    color: Colors.white,
+                                    color: Colors.black,
                                     fontSize: 15,
+                                    fontWeight: FontWeight.w600,
                                   ),
                                 ),
                               ),
