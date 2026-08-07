@@ -23,6 +23,15 @@ CXXFLAGS=(
   -std=c++20 -stdlib=libc++ -O2 -w
   -DEIGEN_MPL2_ONLY -DGLOG_USE_GLOG_EXPORT -DGLOG_NO_ABBREVIATED_SEVERITIES
   -DGLOG_VERSION_MAJOR=0 -DGLOG_VERSION_MINOR=7
+  # [GPU-HANG-A1 2026-08-06] dsp_sift_gpu_c.cc 引入 preclamp 插桩后需要命名空间
+  # 环境宏 + official_pipeline 头路径(生产=official 命名空间)。
+  -DAETHER_FEATURE_SELECTION_ENV_OFFICIAL=1
+  -DAETHER_GPU_TIMESTAMPS_ENV_OFFICIAL=1
+  -I"$A/official_pipeline/src"
+  # [GPU-HANG-A1] Dawn 指纹钉(08-05 时间戳探针要求;值=现役载具逐字抠出,
+  # 与打包脚本 shasum 的 libwebgpu_dawn.a 一致)。
+  '-DAETHER_GPU_TIMESTAMP_DAWN_REVISION="12ee391c7411285895f4289a3d889a182c093014"'
+  '-DAETHER_GPU_TIMESTAMP_DAWN_ARTIFACT_SHA256="625cf65dded708ad1abd3dc92f3b47c3c90c384f508676b56303f9341d301b42"' 
   -I"$A/tools" -I"$A/include" -I"$A/third_party/stb"
   -I"$A/third_party/dawn/include"
   -I"$A/build-ios-device-dawn/third_party/dawn/gen/include"
@@ -37,6 +46,7 @@ CXXFLAGS=(
 
 SRCS=(
   "$A/third_party/glomap_vendor/bench/dsp_sift_gpu_c.cc"
+  "$A/src/sfm/canonical_feature_selector_v1.cc"
   "$A/tools/sift_extract_dawn.cc"
   "$A/tools/sift_pyramid_dawn.cc"
   "$A/tools/dawn_kernel_harness.cpp"

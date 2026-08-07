@@ -90,11 +90,24 @@
 #import <Metal/Metal.h>
 
 #include <atomic>
+#include <chrono>              // [GPU-HANG-A1] bounded command-buffer wait
+#include <condition_variable>  // [GPU-HANG-A1] std::condition_variable (跨端)
+#include <cstdlib>
+#include <memory>
 #include <mutex>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unordered_map>
 #include <unistd.h>
+
+#if __has_include("aether/sfm/descriptor_residency_policy_v1.h")
+#include "aether/sfm/descriptor_residency_policy_v1.h"
+#else
+#include "../include/aether/sfm/descriptor_residency_policy_v1.h"
+#endif
+
+static void ClearAllDescriptorResidencyForDeviceError(void);
 
 // ── [RC7-FILELOG 2026-07-11] Last command-buffer error stash ─────────────
 // The Metal error object (domain/code/description, e.g.
@@ -145,6 +158,96 @@ static void NoteCmdError(id<MTLCommandBuffer> cmd) {
           cmd.error);
   }
   stashLastError(cmd.error);
+  ClearAllDescriptorResidencyForDeviceError();
+}
+
+// ── [GPU-HANG-A1 2026-08-06] 带超时的 command buffer 等待 ────────────────
+// MoltenVK handleMTLCommandBufferError 分类学 + Chromium GPU watchdog 有限
+// 超时(挂死的 GPU 等待绝不无限期)。等待用 std::condition_variable::wait_for
+// (标准库,iOS/安卓/鸿蒙三端同一语义;不用 dispatch_semaphore —— 跨端铁律)。
+// Apple 专属代码仅在下方 Metal 错误码 → 可移植返回值分类的映射处;Vulkan
+// 后端(安卓/鸿蒙)将 VK_ERROR_DEVICE_LOST 等映射到同一返回值分类。
+// 返回:0=成功 7=可重试(超时/瞬态错误——上层 GpuMatchGemmPairsRetry 只
+// 重试 7) 8=永久(设备拉黑/后台受限——上层不得重试,fail-closed 跳过)。
+// helper 自己 commit;addCompletedHandler 必须在 commit 之前注册。
+static uint64_t CmdWaitTimeoutMs(void) {
+  // 默认 30s,env OFFICIAL_AETHER_GPU_MATCH_WAIT_MS 覆盖(>0 生效,一次性缓存)。
+  static const uint64_t v = [] {
+    const char* e = getenv("OFFICIAL_AETHER_GPU_MATCH_WAIT_MS");
+    if (e != nullptr) {
+      const long long ms = atoll(e);
+      if (ms > 0) return (uint64_t)ms;
+    }
+    return (uint64_t)30000;
+  }();
+  return v;
+}
+
+static int WaitCmdWithTimeout(id<MTLCommandBuffer> cmd, uint64_t timeout_ms) {
+  // shared_ptr:超时返回后 handler 仍可能晚到,状态必须活到 handler 之后。
+  struct WaitState {
+    std::mutex mu;
+    std::condition_variable cv;
+    bool done = false;
+  };
+  auto state = std::make_shared<WaitState>();
+  // handler 只置位,不做重活(MoltenVK 同款:重活留在等待线程)。
+  [cmd addCompletedHandler:^(id<MTLCommandBuffer>) {
+    std::lock_guard<std::mutex> lk(state->mu);
+    state->done = true;
+    state->cv.notify_all();
+  }];
+  [cmd commit];
+  {
+    std::unique_lock<std::mutex> lk(state->mu);
+    if (!state->cv.wait_for(lk, std::chrono::milliseconds(timeout_ms),
+                            [&] { return state->done; })) {
+      // 超时:**不要**继续等(Chromium watchdog 语义)。NoteCmdError 风格的
+      // 日志 + 错误 stash,判为可重试(上层退避重试或最终跳过该 pair)。
+      static std::atomic<long> gCmdTimeoutCount{0};
+      const long k = ++gCmdTimeoutCount;
+      if (k <= 5 || (k % 100) == 0) {
+        NSLog(@"[pwofficial_gpu_match] command buffer wait TIMEOUT #%ld after "
+              @"%llu ms (rc=7): status=%ld",
+              k, (unsigned long long)timeout_ms, (long)cmd.status);
+      }
+      stashLastError([NSError
+          errorWithDomain:MTLCommandBufferErrorDomain
+                     code:MTLCommandBufferErrorTimeout
+                 userInfo:@{
+                   NSLocalizedDescriptionKey : [NSString
+                       stringWithFormat:@"host-side wait timeout after %llu ms",
+                                        (unsigned long long)timeout_ms]
+                 }]);
+      ClearAllDescriptorResidencyForDeviceError();
+      return 7;
+    }
+  }
+  // 完成:按 MoltenVK handleMTLCommandBufferError 映射表分类 status/error。
+  if (cmd.status == MTLCommandBufferStatusError || cmd.error != nil) {
+    NSError* err = cmd.error;
+    NoteCmdError(cmd);  // 既有遥测/stash/残留清理照旧
+    if (err != nil &&
+        [err.domain isEqualToString:MTLCommandBufferErrorDomain]) {
+      switch (err.code) {
+        case MTLCommandBufferErrorAccessRevoked:
+          // 即旧名 MTLCommandBufferErrorBlacklisted(同值 4,macOS 13/iOS 16
+          // 改名):设备被系统拉黑 → 永久失败,上层不得重试。
+          return 8;
+        case MTLCommandBufferErrorNotPermitted:
+          // iOS 后台无 entitlement 跑 GPU 的错误码 —— 配合后台续跑要单独
+          // 分档:不是硬件死,但当前进程状态下重试必然再失败,判永久。
+          return 8;
+        case MTLCommandBufferErrorTimeout:
+          // GPU 侧超时(如热压 GPU hang)→ 可重试。
+          return 7;
+        default:
+          break;
+      }
+    }
+    return 7;  // 其余错误按瞬态处理(与既有 rc=7 语义一致)
+  }
+  return 0;
 }
 
 // ── pw_match_gemm v6 kernel — COLMAP-faithful angular matcher (v1) ───────
@@ -588,12 +691,10 @@ static int matchPairsImpl(const uint8_t* dA, int nA, const float* xyA,
       encChunk(cmd, bBuf, aBuf, outBA, pointsBBuf, pointsABuf, matrixBABuf,
                (uint32_t)nB, (uint32_t)nA, 0u,
                ((NSUInteger)nB + 127) / 128);  // B→A
-      [cmd commit];
-      [cmd waitUntilCompleted];
-      if (cmd.status == MTLCommandBufferStatusError) {
-        NoteCmdError(cmd);
-        return 7;
-      }
+      // [GPU-HANG-A1 2026-08-06] 有限超时等待(commit 在 helper 内;7=可重试
+      // 保持原位语义,8=永久直接透传——上层 retry 封装只重试 7)。
+      const int wrc = WaitCmdWithTimeout(cmd, CmdWaitTimeoutMs());
+      if (wrc != 0) return wrc;
     } else {
       // [KNIFE-C] Chunked path: one small command buffer at a time, sized
       // from the measured cost model to ~chunkTargetMs of GPU time, with a
@@ -622,12 +723,9 @@ static int matchPairsImpl(const uint8_t* dA, int nA, const float* xyA,
           id<MTLCommandBuffer> cmd = [gQueue commandBuffer];
           encChunk(cmd, Q, Db, O, Qxy, Dbxy, M, nQ, nDb, (uint32_t)tg0,
                    groups);
-          [cmd commit];
-          [cmd waitUntilCompleted];
-          if (cmd.status == MTLCommandBufferStatusError) {
-            NoteCmdError(cmd);
-            return 7;
-          }
+          // [GPU-HANG-A1 2026-08-06] 有限超时等待(commit 在 helper 内)。
+          const int wrc = WaitCmdWithTimeout(cmd, CmdWaitTimeoutMs());
+          if (wrc != 0) return wrc;
           const double gpuMs = (cmd.GPUEndTime - cmd.GPUStartTime) * 1000.0;
           if (gpuMs > 0.0 && gpuMs < 10000.0) {
             const double u = gpuMs / ((double)groups * ((double)nDb / 1024.0));
@@ -1134,6 +1232,128 @@ static id<MTLBuffer> v2PoolBuf(id<MTLBuffer> __strong* slot, NSUInteger* cap,
   return *slot;
 }
 
+// ── Descriptor Residency V1 (default-off, exact raw-u8 reuse) ───────────
+// The shared policy owns identity/LRU/byte accounting. This Metal TU owns only
+// backend handles. The matcher kernel and output path below are unchanged.
+using aether::sfm::DescriptorFormatV1;
+using aether::sfm::DescriptorResidencyKeyHashV1;
+using aether::sfm::DescriptorResidencyKeyV1;
+using aether::sfm::DescriptorResidencyMetadataV1;
+using aether::sfm::DescriptorResidencyPolicyV1;
+
+static bool DescriptorResidencyEnabled(void) {
+  static const bool enabled = [] {
+    const char* value = std::getenv("OFFICIAL_AETHER_DESCRIPTOR_RESIDENCY_V1");
+    return value && value[0] == '1' && value[1] == '\0';
+  }();
+  return enabled;
+}
+
+static uint64_t DescriptorResidencyBudgetBytes(void) {
+  static const uint64_t budget = [] {
+    constexpr uint64_t kDefault = UINT64_C(48) * 1024 * 1024;
+    const char* value =
+        std::getenv("OFFICIAL_AETHER_DESCRIPTOR_RESIDENCY_BYTES");
+    if (!value || !value[0]) return kDefault;
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(value, &end, 10);
+    if (!end || *end != '\0') return kDefault;
+    return static_cast<uint64_t>(parsed);
+  }();
+  return budget;
+}
+
+struct DescriptorResidencyMetalSessionV1 {
+  explicit DescriptorResidencyMetalSessionV1(uint64_t budget)
+      : policy(budget) {}
+
+  DescriptorResidencyPolicyV1 policy;
+  std::unordered_map<DescriptorResidencyKeyV1, id<MTLBuffer>,
+                     DescriptorResidencyKeyHashV1>
+      buffers;
+  uint64_t upload_bytes = 0;
+  uint64_t allocation_failures = 0;
+  uint64_t device_resets = 0;
+};
+
+static std::unordered_map<uint64_t,
+                          std::unique_ptr<DescriptorResidencyMetalSessionV1>>
+    gDescriptorResidencySessions;
+
+static DescriptorResidencyMetalSessionV1* DescriptorResidencySession(
+    uint64_t nonce) {
+  auto found = gDescriptorResidencySessions.find(nonce);
+  if (found != gDescriptorResidencySessions.end()) return found->second.get();
+  auto inserted = gDescriptorResidencySessions.emplace(
+      nonce, std::make_unique<DescriptorResidencyMetalSessionV1>(
+                 DescriptorResidencyBudgetBytes()));
+  return inserted.first->second.get();
+}
+
+static void EraseResidentBuffers(
+    DescriptorResidencyMetalSessionV1* session,
+    const std::vector<DescriptorResidencyKeyV1>& keys) {
+  if (!session) return;
+  for (const auto& key : keys) session->buffers.erase(key);
+}
+
+static id<MTLBuffer> v2ResidentRawU8Buffer(
+    uint64_t session_nonce, uint32_t frame_ordinal, uint32_t generation,
+    const uint8_t* descriptors, uint32_t descriptor_count,
+    NSUInteger padded_rows) {
+  if (!DescriptorResidencyEnabled() || session_nonce == 0 || !descriptors ||
+      descriptor_count == 0 || padded_rows < descriptor_count) {
+    return nil;
+  }
+  DescriptorResidencyMetalSessionV1* session =
+      DescriptorResidencySession(session_nonce);
+  const DescriptorResidencyKeyV1 key{session_nonce, frame_ordinal, generation};
+  const uint64_t bytes = static_cast<uint64_t>(padded_rows) * 128;
+  const DescriptorResidencyMetadataV1 metadata{
+      descriptor_count, DescriptorFormatV1::kRawU8, bytes};
+  auto access = session->policy.Access(key, metadata);
+  EraseResidentBuffers(session, access.evicted);
+  if (access.hit) {
+    const auto found = session->buffers.find(key);
+    if (found != session->buffers.end() && found->second) return found->second;
+    // Policy/backend divergence is fail-safe: forget this frame and rebuild it
+    // as an ordinary miss. This branch is not expected in a healthy process.
+    EraseResidentBuffers(
+        session,
+        session->policy.InvalidateFrame(session_nonce, frame_ordinal));
+    access = session->policy.Access(key, metadata);
+    EraseResidentBuffers(session, access.evicted);
+  }
+  if (!access.admitted) return nil;
+
+  id<MTLBuffer> buffer =
+      [gV2Dev newBufferWithLength:static_cast<NSUInteger>(bytes)
+                          options:MTLResourceStorageModeShared];
+  if (!buffer) {
+    ++session->allocation_failures;
+    EraseResidentBuffers(
+        session,
+        session->policy.InvalidateFrame(session_nonce, frame_ordinal));
+    return nil;
+  }
+  const size_t live_bytes = static_cast<size_t>(descriptor_count) * 128;
+  std::memcpy(buffer.contents, descriptors, live_bytes);
+  std::memset(static_cast<uint8_t*>(buffer.contents) + live_bytes, 0,
+              static_cast<size_t>(bytes) - live_bytes);
+  session->upload_bytes += bytes;
+  session->buffers[key] = buffer;
+  return buffer;
+}
+
+static void ClearAllDescriptorResidencyForDeviceError(void) {
+  for (auto& [nonce, session] : gDescriptorResidencySessions) {
+    (void)nonce;
+    session->policy.ClearAll();
+    session->buffers.clear();
+    ++session->device_resets;
+  }
+}
+
 // v2 fused implementation. Same argument contract and rc semantics as
 // matchPairsImpl: 1 = bad args, 2 = Metal unavailable/pipeline refused,
 // 5 = descriptor buffer alloc failed, 6 = aux buffer alloc failed,
@@ -1143,7 +1363,12 @@ static int matchPairsImplV2(const uint8_t* dA, int nA, const float* xyA,
                             double max_ratio, const float* matrixAB,
                             const float* matrixBA, uint32_t guideMode,
                             float maxResidual, uint32_t* out_pairs,
-                            int max_pairs, int* out_num_matches) {
+                            int max_pairs, int* out_num_matches,
+                            uint64_t residency_session_nonce = 0,
+                            uint32_t residency_frame_a = 0,
+                            uint32_t residency_generation_a = 0,
+                            uint32_t residency_frame_b = 0,
+                            uint32_t residency_generation_b = 0) {
   @autoreleasepool {
     if (out_num_matches) *out_num_matches = 0;
     if (!dA || !dB || nA <= 0 || nB <= 0) return 1;
@@ -1179,17 +1404,33 @@ static int matchPairsImplV2(const uint8_t* dA, int nA, const float* xyA,
       // Packed ABI: raw u8 bytes ARE the packed little-endian uint32 layout
       // (matches the future WGSL dot4U8Packed layout); u8→half unpack
       // in-kernel is exact, so bit-identical to the half path.
-      aBuf = v2PoolBuf(&gV2A, &gV2ACap, nApad * D,
-                       MTLResourceStorageModeShared);
-      bBuf = v2PoolBuf(&gV2B, &gV2BCap, nBpad * D,
-                       MTLResourceStorageModeShared);
+      aBuf = v2ResidentRawU8Buffer(
+          residency_session_nonce, residency_frame_a,
+          residency_generation_a, dA, static_cast<uint32_t>(nA), nApad);
+      bBuf = v2ResidentRawU8Buffer(
+          residency_session_nonce, residency_frame_b,
+          residency_generation_b, dB, static_cast<uint32_t>(nB), nBpad);
+      const bool aResident = aBuf != nil;
+      const bool bResident = bBuf != nil;
+      if (!aBuf) {
+        aBuf = v2PoolBuf(&gV2A, &gV2ACap, nApad * D,
+                         MTLResourceStorageModeShared);
+      }
+      if (!bBuf) {
+        bBuf = v2PoolBuf(&gV2B, &gV2BCap, nBpad * D,
+                         MTLResourceStorageModeShared);
+      }
       if (!aBuf || !bBuf) return 5;
-      memcpy(aBuf.contents, dA, (size_t)nA * D);
-      memset((uint8_t*)aBuf.contents + (size_t)nA * D, 0,
-             (size_t)(nApad - (NSUInteger)nA) * D);
-      memcpy(bBuf.contents, dB, (size_t)nB * D);
-      memset((uint8_t*)bBuf.contents + (size_t)nB * D, 0,
-             (size_t)(nBpad - (NSUInteger)nB) * D);
+      if (!aResident) {
+        memcpy(aBuf.contents, dA, (size_t)nA * D);
+        memset((uint8_t*)aBuf.contents + (size_t)nA * D, 0,
+               (size_t)(nApad - (NSUInteger)nA) * D);
+      }
+      if (!bResident) {
+        memcpy(bBuf.contents, dB, (size_t)nB * D);
+        memset((uint8_t*)bBuf.contents + (size_t)nB * D, 0,
+               (size_t)(nBpad - (NSUInteger)nB) * D);
+      }
     }
     // outAB over-allocated to the padded row count (guard-free kernel also
     // writes padded rows; the cross-check below reads only the first nA).
@@ -1304,12 +1545,10 @@ static int matchPairsImplV2(const uint8_t* dA, int nA, const float* xyA,
       id<MTLCommandBuffer> cmd = [gV2Queue commandBuffer];
       encFused(cmd, 0u, numBlocksA);
       encMerge(cmd);
-      [cmd commit];
-      [cmd waitUntilCompleted];
-      if (cmd.status == MTLCommandBufferStatusError) {
-        NoteCmdError(cmd);
-        return 7;
-      }
+      // [GPU-HANG-A1 2026-08-06] 有限超时等待(commit 在 helper 内;7=可重试
+      // 保持原位语义,8=永久直接透传)。
+      const int wrc = WaitCmdWithTimeout(cmd, CmdWaitTimeoutMs());
+      if (wrc != 0) return wrc;
     } else {
       // [KNIFE-C] Chunked: same sizing loop and thermal duty-cycle as v1,
       // over the SINGLE fused pass (both directions at once). The merge
@@ -1330,12 +1569,9 @@ static int matchPairsImplV2(const uint8_t* dA, int nA, const float* xyA,
             want < totalGroups - tg0 ? want : totalGroups - tg0;
         id<MTLCommandBuffer> cmd = [gV2Queue commandBuffer];
         encFused(cmd, (uint32_t)tg0, groups);
-        [cmd commit];
-        [cmd waitUntilCompleted];
-        if (cmd.status == MTLCommandBufferStatusError) {
-          NoteCmdError(cmd);
-          return 7;
-        }
+        // [GPU-HANG-A1 2026-08-06] 有限超时等待(commit 在 helper 内)。
+        const int wrc = WaitCmdWithTimeout(cmd, CmdWaitTimeoutMs());
+        if (wrc != 0) return wrc;
         const double gpuMs = (cmd.GPUEndTime - cmd.GPUStartTime) * 1000.0;
         if (gpuMs > 0.0 && gpuMs < 10000.0) {
           const double u = gpuMs / ((double)groups * ((double)numBU / 1024.0));
@@ -1352,12 +1588,10 @@ static int matchPairsImplV2(const uint8_t* dA, int nA, const float* xyA,
       }
       id<MTLCommandBuffer> cmd = [gV2Queue commandBuffer];
       encMerge(cmd);
-      [cmd commit];
-      [cmd waitUntilCompleted];
-      if (cmd.status == MTLCommandBufferStatusError) {
-        NoteCmdError(cmd);
-        return 7;
-      }
+      // [GPU-HANG-A1 2026-08-06] 有限超时等待(commit 在 helper 内;7=可重试
+      // 保持原位语义,8=永久直接透传)。
+      const int wrc = WaitCmdWithTimeout(cmd, CmdWaitTimeoutMs());
+      if (wrc != 0) return wrc;
     }
 
     // Mutual cross-check, emitting pairs (identical loop to v1).
@@ -1402,6 +1636,83 @@ extern "C" int aether_gpu_match_gemm_pairs(const uint8_t* dA, int nA,
   return matchPairsImpl(dA, nA, nullptr, dB, nB, nullptr, max_ratio, nullptr,
                         nullptr, 0u, 0.0f, out_pairs, max_pairs,
                         out_num_matches);
+}
+
+// Same matcher semantics with explicit runtime resource identity. When the
+// experiment is disabled, v2 is unavailable, or half-storage is forced, this
+// is the old path verbatim. Generation V1 is currently 1 for immutable
+// per-frame descriptor tables and is still explicit so replacement is safe.
+extern "C" int aether_gpu_match_gemm_pairs_resident(
+    uint64_t session_nonce, uint32_t frame_a, uint32_t generation_a,
+    const uint8_t* dA, int nA, uint32_t frame_b, uint32_t generation_b,
+    const uint8_t* dB, int nB, double max_ratio, uint32_t* out_pairs,
+    int max_pairs, int* out_num_matches) {
+  std::lock_guard<std::mutex> lk(gMatchCallLock);
+  if (MatchV2Enabled()) {
+    return matchPairsImplV2(
+        dA, nA, nullptr, dB, nB, nullptr, max_ratio, nullptr, nullptr, 0u,
+        0.0f, out_pairs, max_pairs, out_num_matches, session_nonce, frame_a,
+        generation_a, frame_b, generation_b);
+  }
+  return matchPairsImpl(dA, nA, nullptr, dB, nB, nullptr, max_ratio, nullptr,
+                        nullptr, 0u, 0.0f, out_pairs, max_pairs,
+                        out_num_matches);
+}
+
+extern "C" void aether_gpu_match_descriptor_residency_invalidate(
+    uint64_t session_nonce, uint32_t frame_ordinal) {
+  std::lock_guard<std::mutex> lk(gMatchCallLock);
+  const auto found = gDescriptorResidencySessions.find(session_nonce);
+  if (found == gDescriptorResidencySessions.end()) return;
+  EraseResidentBuffers(
+      found->second.get(),
+      found->second->policy.InvalidateFrame(session_nonce, frame_ordinal));
+}
+
+extern "C" void aether_gpu_match_descriptor_residency_clear_session(
+    uint64_t session_nonce) {
+  std::lock_guard<std::mutex> lk(gMatchCallLock);
+  const auto found = gDescriptorResidencySessions.find(session_nonce);
+  if (found == gDescriptorResidencySessions.end()) return;
+  found->second->policy.ClearSession(session_nonce);
+  found->second->buffers.clear();
+  gDescriptorResidencySessions.erase(found);
+}
+
+extern "C" int aether_gpu_match_descriptor_residency_stats(
+    uint64_t session_nonce, uint64_t* hits, uint64_t* misses,
+    uint64_t* evictions, uint64_t* stale_replacements,
+    uint64_t* upload_bytes, uint64_t* resident_bytes,
+    uint64_t* resident_entries, uint64_t* allocation_failures,
+    uint64_t* device_resets) {
+  std::lock_guard<std::mutex> lk(gMatchCallLock);
+  uint64_t values[9] = {0};
+  const auto found = gDescriptorResidencySessions.find(session_nonce);
+  if (found != gDescriptorResidencySessions.end()) {
+    const auto stats = found->second->policy.stats();
+    values[0] = stats.hits;
+    values[1] = stats.misses;
+    values[2] = stats.evictions;
+    values[3] = stats.stale_replacements;
+    values[4] = found->second->upload_bytes;
+    values[5] = found->second->policy.resident_bytes();
+    values[6] = found->second->policy.size();
+    values[7] = found->second->allocation_failures;
+    values[8] = found->second->device_resets;
+  }
+  uint64_t* outputs[9] = {hits,
+                          misses,
+                          evictions,
+                          stale_replacements,
+                          upload_bytes,
+                          resident_bytes,
+                          resident_entries,
+                          allocation_failures,
+                          device_resets};
+  for (size_t i = 0; i < 9; ++i) {
+    if (outputs[i]) *outputs[i] = values[i];
+  }
+  return found == gDescriptorResidencySessions.end() ? 0 : 1;
 }
 
 // COLMAP-style geometry-guided matcher. xy arrays contain two floats per

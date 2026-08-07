@@ -51,6 +51,30 @@ import 'sfm_feed_queue.dart';
 import 'telemetry_writer.dart';
 import 'true_parallax.dart';
 
+/// [AR-EVERY-FRAME 2026-08-04] 实验臂,默认关(env
+/// OFFICIAL_AETHER_AR_EVERY_FRAME=1)。开启后:每个被接受、且已有 live_recon
+/// 点的帧,把当前 previewTracked(实时局部BA点云)以 source='streaming_local_ba'
+/// 推给 AR,让点云每帧可见生长,而不是只在稀疏的全局BA检查点(20帧起+1.40×
+/// 增长,300帧约刷新~8次)才刷新。host 前提已证:previewTracked 每帧存在且
+/// 单调增长(evidence/ar-display-decouple-premise-v1.md)。
+///
+/// 关键:这是**叠加**,不改动既有全局BA检查点逻辑——globalRefine 仍在拍摄期
+/// 跑并发布 'streaming_global_ba'(用户签决:保留拍摄期全局BA以预热 finalize、
+/// 缩短拍完等待)。本臂只让**显示**不再被全局BA门控。AR 侧 400ms 合并节流
+/// (_pushCoverageCloud)兜住每帧推的传输成本,正是 eaf8706 动效延迟的既有防线。
+/// 🔴 [ROOT-CAUSE FIX 2026-08-05] 曾用 `Platform.environment[...] == '1'` 读
+/// native setenv 设的 env——**不可靠**:C 的 getenv() 读活 environ 能看到 setenv,
+/// 但 Dart 的 Platform.environment 是**进程启动快照**,看不到启动后 setenv 的值
+/// (设备实测:主 isolate 读 == false,导致每帧推送整条从不触发,连炸两次真机测试)。
+/// 所有 C 侧 OFFICIAL_AETHER_* flag 正常正是因为走 getenv;Dart 侧走 Platform.
+/// environment 的 flag(本臂 + scale-anchor)都踩这个坑。
+/// ⚠️scale-anchor(line ~1440,同机制)很可能也一直静默关着——待单独核实。
+///
+/// 实验 build 里改用**编译期常量**,彻底绕开 env 时机问题。开=true / 关=false
+/// 各重建一次(实验臂本就每次装机决定开关,不需要运行时可切)。仍经 boot 消息
+/// 传给 worker isolate(worker 读不到主 isolate 的顶层常量也无妨,常量已内联)。
+const bool _arEveryFrameEnabled = true;
+
 // [SPRINT-RACE 2026-07-26] matcher capture-active atomic, read side (see
 // pwofficial_gpu_match.mm aether_gpu_match_get_capture_active).
 typedef _CaptureActiveC = ffi.Int32 Function();
@@ -402,6 +426,11 @@ class _SpooledFrame {
   final Float64List? trans;
 }
 
+/// Identifies the coordinate-space contract of a snapshot before alignment.
+/// Preview points already come from ARKit in gravity-aligned metric space;
+/// delivery snapshots come from COLMAP and need the final alignment path.
+enum _AlignmentSnapshotStage { preview, localReady, refined }
+
 /// Main-isolate handle to the streaming-SfM worker. Create per capture take
 /// via [start]; feed via [offerFrame]; end via [finalize]; ALWAYS [dispose]
 /// (joins the native background thread + drops the session sqlite db).
@@ -465,6 +494,16 @@ class SfmLiveRecon {
   /// [_maybeSendFinalize] 真正下发的间隔 = 队列排空耗时。
   int _finalizeRequestMs = 0;
 
+  /// 遥测【WAIT-BUDGET 2026-07-29】完成动作那一刻的**欠债深度**。
+  ///
+  /// 用户签决的约束是「可以忍受发热,不能忍受等待变长」,这把该量的东西从热
+  /// 换成了吞吐:拍摄期的流式计算**只有跟得上快门时才是隐形的**,跟不上就一帧
+  /// 一帧攒着,最后整批砸成"拍完之后干等"。`queue_drain.ms` 只说了排空花了多久,
+  /// 没说**排的是多少帧** —— 而候选预算(K12 vs K30)影响的正是逐帧成本,所以
+  /// 必须能把等待时间归因到"欠了几帧"上,否则 K30 的账算不清。
+  int _finalizeBacklog = 0;
+  int _finalizeInFlight = 0;
+
   /// Per-registered-frame sampling metadata, keyed by the solver's frameId
   /// (== SfmLiveSnapshot.posesPacked frame ids).
   Map<int, SfmFedFrameMeta> get fedFrameMeta => _fedMeta;
@@ -514,7 +553,9 @@ class SfmLiveRecon {
       try {
         isolate = await Isolate.spawn(
           _sfmWorkerMain,
-          _SfmWorkerBootstrap(fromWorker.sendPort, dbPath),
+          // _arEveryFrameEnabled 在此(主 isolate)读——env 在主 isolate 才有效。
+          _SfmWorkerBootstrap(
+              fromWorker.sendPort, dbPath, _arEveryFrameEnabled),
           debugName: 'official_sfm_live_recon',
           errorsAreFatal: true,
         );
@@ -772,12 +813,27 @@ class SfmLiveRecon {
     try {
       while (!_disposed &&
           sfmFeedCanPumpNext(inFlight: _inFlight, spoolDepth: _spool.length)) {
-        final entry = _spool.first;
+        // [C2-BACKPRESSURE 2026-08-06 用户签决] 拍摄期 latest-first,排空期
+        // FIFO。拍摄期取 _spool 最新一帧优先喂(live 点云跟手,预览永远反映
+        // 刚拍到的视角);finalize 请求后(_finalizeRequested)转为取最旧一帧,
+        // 按拍摄序回填,与既有排空行为一致。设计依据:
+        //   1. 乱序喂帧 A/B 四指标实证安全——注册帧零差、点数 +0.44%、
+        //      重投影误差 +1.25%、轨迹长度无损;
+        //   2. 空间配对(spatial pairing)不吃喂入顺序,配对集由几何决定;
+        //   3. 进度条口径零改动——queuedCount/remainingCount 只看长度,
+        //      不看顺序;本改动不丢帧,深度无上限保持,只改处理顺序;
+        //   4. AVCapture 的 alwaysDiscardsLateVideoFrames 同向:实时管线
+        //      标准做法就是最新优先。
+        // 取帧即出队(removeLast/removeAt(0)),不在 await 之后再按索引删,
+        // 避免挂起期间新帧 append 使尾部索引漂移。
+        // 回滚 = 本处与下方出队两处改回 `_spool.first` / `_spool.removeAt(0)`
+        // 的旧形态(严格 FIFO)。
+        final entry =
+            _finalizeRequested ? _spool.removeAt(0) : _spool.removeLast();
         try {
           if (!await File(entry.path).exists()) {
             throw FileSystemException('canonical JPEG missing', entry.path);
           }
-          _spool.removeAt(0);
           _sendJpegFrameCmd(
             entry.seq,
             entry.path,
@@ -793,7 +849,7 @@ class SfmLiveRecon {
           );
         } catch (e) {
           // Unreadable spill — skip this frame rather than stall the queue.
-          _spool.removeAt(0);
+          // ([C2-BACKPRESSURE] entry 已在取帧处出队,此处无需再删。)
           final meta = _pendingMeta.remove(entry.seq);
           _seqOfferMs.remove(entry.seq);
           _seqSentMs.remove(entry.seq);
@@ -834,6 +890,11 @@ class SfmLiveRecon {
           : 0,
       'offered': _seq,
       'fed': _fedOk,
+      // [WAIT-BUDGET 2026-07-29] 完成动作那一刻欠了多少帧(见 _finalizeBacklog)。
+      // backlog=0 ⇒ 流式跟上了快门,拍摄期成本对用户完全隐形;backlog>0 ⇒ 这
+      // 些帧的处理时间就是用户多等的秒数,且 ms/backlog = 每欠一帧的实际代价。
+      'backlog': _finalizeBacklog,
+      'in_flight': _finalizeInFlight,
     });
     _toWorker.send(const <String, Object?>{'cmd': 'finalize'});
   }
@@ -860,6 +921,10 @@ class SfmLiveRecon {
     if (_disposed || _finalizeRequested) return;
     _finalizeRequested = true;
     _finalizeRequestMs = DateTime.now().millisecondsSinceEpoch; // 遥测
+    // 遥测【WAIT-BUDGET】欠债快照必须在这一刻取:_pump() 一旦跑起来 _spool
+    // 就开始缩,到 _maybeSendFinalize 时永远是 0。
+    _finalizeBacklog = _spool.length;
+    _finalizeInFlight = _inFlight;
     if (_spool.isNotEmpty || _inFlight > 0) {
       DeviceLog.log(
         'SfmLive',
@@ -1136,10 +1201,16 @@ class SfmLiveRecon {
           'user remove frameId=$frameId ok=$removed stats=${msg['stats']}',
         );
       case 'preview':
-        // The streaming local-BA cloud, TRACK-ANNOTATED (same payload shape as
-        // local_ready) so it colorizes + gravity-aligns identically to finalize.
+        // Preview xyz is already in ARKit's gravity-aligned metric world. It
+        // shares the payload shape with local_ready but not its coordinate-space
+        // contract, so final alignment must not be run a second time.
         _events.add(
-          SfmLivePreview(_gravityAlign(_snapshotFromMsg(msg, refined: false))),
+          SfmLivePreview(
+            _gravityAlign(
+              _snapshotFromMsg(msg, refined: false),
+              stage: _AlignmentSnapshotStage.preview,
+            ),
+          ),
         );
       case 'live_poses':
         // 拍摄期逐帧连通性(合成 posesPacked,契约见 SfmLiveConnectivity)。
@@ -1158,16 +1229,34 @@ class SfmLiveRecon {
           ),
         );
       case 'local_ready':
+        // [WAIT-BUDGET 2026-07-29] finalize 墙钟落遥测。此前这个数只进 Dart
+        // 事件(等待页文案用),没有落盘 —— 而它是「用户等待」的第二个分量
+        // (第一个是 queue_drain 的欠债排空)。host 上这个数在同一 fixture 的
+        // 两次重跑间摆动 36.3s↔66.3s(83%),所以判决只能来自真机多次采集。
+        TelemetryWriter.instance.event('finalize_wall', {
+          'phase': 'local_ready',
+          'ms': msg['ms'] as int? ?? -1,
+        });
         _events.add(
           SfmLiveLocalReady(
-            _gravityAlign(_snapshotFromMsg(msg, refined: false)),
+            _gravityAlign(
+              _snapshotFromMsg(msg, refined: false),
+              stage: _AlignmentSnapshotStage.localReady,
+            ),
             msg['ms'] as int,
           ),
         );
       case 'refined':
+        TelemetryWriter.instance.event('finalize_wall', {
+          'phase': 'refined',
+          'ms': msg['ms'] as int? ?? -1,
+        });
         _events.add(
           SfmLiveRefined(
-            _gravityAlign(_snapshotFromMsg(msg, refined: true)),
+            _gravityAlign(
+              _snapshotFromMsg(msg, refined: true),
+              stage: _AlignmentSnapshotStage.refined,
+            ),
             msg['ms'] as int,
           ),
         );
@@ -1208,29 +1297,144 @@ class SfmLiveRecon {
   ///
   /// 数学与门限在 gravity_align.dart(逐字提出的纯函数,live 与断点续跑
   /// 共用同一实现;tool/gravity_align_check.dart 有纯 Dart VM 断言)。
-  SfmLiveSnapshot _gravityAlign(SfmLiveSnapshot snap) {
+  SfmLiveSnapshot _gravityAlign(
+    SfmLiveSnapshot snap, {
+    required _AlignmentSnapshotStage stage,
+  }) {
+    if (stage == _AlignmentSnapshotStage.preview) {
+      TelemetryWriter.instance.event('preview_skip', {
+        'schema_version': 1,
+        'phase': 'preview',
+        'reason': 'already_arkit_gravity_metric',
+        'gravity_status': 'not_required',
+        'scale_status': 'not_required',
+        'n_points': snap.pointCount,
+      });
+      return snap;
+    }
+
+    final stageTelemetry = stage == _AlignmentSnapshotStage.refined
+        ? <String, Object?>{'phase': 'refined', 'authority': 'authoritative'}
+        : <String, Object?>{
+            'phase': 'local_ready',
+            'authority': 'fallback_candidate',
+          };
+
+    void emitFinalAlignmentResult({
+      required String gravityStatus,
+      required String? gravityReason,
+      required List<double>? gravityQuatWxyz,
+      required String scaleStatus,
+      required String? scaleReason,
+      required double? scaleFactor,
+      required GravityAlignDiagV1 gravityDiag,
+      ScaleAnchorDiagV1? scaleDiag,
+    }) {
+      TelemetryWriter.instance.event('final_alignment_result', {
+        'schema_version': 1,
+        ...stageTelemetry,
+        'gravity_status': gravityStatus,
+        'gravity_reason': gravityReason,
+        'gravity_quat_wxyz': gravityQuatWxyz,
+        'registered_frames': gravityDiag.registeredFrames,
+        'frames_with_arkit_quat': gravityDiag.framesWithArkitQuat,
+        'required_frames': gravityDiag.requiredFrames,
+        'scale_status': scaleStatus,
+        'scale_reason': scaleReason,
+        'scale_factor': scaleFactor,
+        'scale_registered_frames': scaleDiag?.registeredFrames,
+        'scale_pairs_with_arkit_center': scaleDiag?.pairsWithArkitCenter,
+        'scale_usable_ratios': scaleDiag?.usableRatios,
+        'scale_required_pairs': scaleDiag?.requiredPairs,
+        'scale_rejected_factor': scaleDiag?.rejectedFactor,
+        'fed_meta_size': _fedMeta.length,
+        'n_points': snap.pointCount,
+      });
+    }
+
     // [GRAV-CONSIST 2026-07-28] 整模型一致变换:点与位姿吃同一个 R_w
     // (COLMAP Reconstruction::Transform 语义;此前只转点、posesPacked 留
     // raw,形成"混合帧工件对",行业查无先例)。raw 位姿以显式字段保留
     // (host parity 复核需要逐位真值,浮点逆旋转不保逐位),R_w 本体也
     // 随快照落盘(nerfstudio dataparser_transforms.json 先例)。
+    // [GRAV-DIAG 2026-07-30] 重力对齐是 fail-open 的 —— 拿不到 R_w 就原样交付。
+    // 这一点保留(歪的云胜过没有云),但**静默**去掉:用户在编辑页用肉眼发现
+    // 点云是歪的,而日志里一个字都没有,只能事后翻 meta 的
+    // gravity_align_quat_wxyz 是否为 null。现在跳过即上报,含成因与计数。
+    final diag = GravityAlignDiagV1();
     final q = gravityAlignQuatWxyz(
       posesPacked: snap.posesPacked,
       arkitQuatWxyzOf: (frameId) => _fedMeta[frameId]?.arkitQuatWxyz,
+      diag: diag,
     );
-    if (q == null || snap.xyz.isEmpty) return snap;
+    if (q == null || snap.xyz.isEmpty) {
+      // xyz 为空是合法空结果(0 特征帧),不是重力故障 —— 分开标注,免得把
+      // 空重建计成对齐失败。
+      final reason = snap.xyz.isEmpty
+          ? 'empty_cloud'
+          : (diag.skipReason ?? 'unknown');
+      emitFinalAlignmentResult(
+        gravityStatus: 'skipped',
+        gravityReason: reason,
+        gravityQuatWxyz: null,
+        scaleStatus: 'skipped',
+        scaleReason: 'gravity_not_applied',
+        scaleFactor: null,
+        gravityDiag: diag,
+      );
+      DeviceLog.log(
+        'SfmLive',
+        'gravity align SKIPPED (reason=$reason '
+            'registered=${diag.registeredFrames} '
+            'withArkitQuat=${diag.framesWithArkitQuat}/${diag.requiredFrames} '
+            'fedMeta=${_fedMeta.length} refined=${snap.refined}) '
+            '→ delivering UNALIGNED cloud',
+      );
+      return snap;
+    }
     // [SCALE-ANCHOR 2026-07-28] 实验臂,默认关(env OFFICIAL_AETHER_SCALE_
     // ANCHOR=1 开):把交付模型的 gauge 尺度锚回 ARKit 米制(±4% 系统性
     // 滑移,裁决见 gravity_align.dart 的 scaleAnchorFactor 注释)。相似
     // 变换保持全部重投影残差 —— 质量零扰动,只改坐标刻度。fail-open:
     // 估计失败即不缩放。
+    // [SCALE-DIAG 2026-07-30] 同 GRAV-DIAG 的动机,但这一条更要紧:SCALE-ANCHOR
+    // 是**生产开启**的臂,它的五个 fail-open 分支此前全部静默 —— 交付物的尺度
+    // 可能压根没锚回米制,而没有任何信号。其中 scale_out_of_band 不是"数据不够"
+    // 而是"量到了却拒绝施加",所以被拒的 s 必须一起上报。
+    final scaleDiag = _scaleAnchorEnabled ? ScaleAnchorDiagV1() : null;
     final double? s = _scaleAnchorEnabled
         ? scaleAnchorFactor(
             posesPacked: snap.posesPacked,
             arkitCenterWorldOf: (frameId) =>
                 _fedMeta[frameId]?.arkitCameraCenterWorld,
+            diag: scaleDiag,
           )
         : null;
+    if (scaleDiag != null && s == null) {
+      DeviceLog.log(
+        'SfmLive',
+        'scale anchor SKIPPED (reason=${scaleDiag.skipReason} '
+            'registered=${scaleDiag.registeredFrames} '
+            'pairs=${scaleDiag.pairsWithArkitCenter}/${scaleDiag.requiredPairs} '
+            'ratios=${scaleDiag.usableRatios} '
+            'rejected_s=${scaleDiag.rejectedFactor?.toStringAsFixed(4) ?? '-'}) '
+            '→ delivering UNSCALED (raw BA gauge)',
+      );
+    }
+    emitFinalAlignmentResult(
+      gravityStatus: 'applied',
+      gravityReason: null,
+      gravityQuatWxyz: q,
+      scaleStatus: !_scaleAnchorEnabled
+          ? 'disabled'
+          : (s != null ? 'applied' : 'skipped'),
+      scaleReason: !_scaleAnchorEnabled
+          ? 'feature_disabled'
+          : (s == null ? (scaleDiag?.skipReason ?? 'unknown') : null),
+      scaleFactor: s,
+      gravityDiag: diag,
+      scaleDiag: scaleDiag,
+    );
     var xyz = rotatePointsByQuatWxyz(snap.xyz, q);
     var poses = gravityAlignedPosesPacked(snap.posesPacked, q);
     if (s != null) {
@@ -1276,14 +1480,27 @@ class SfmLiveRecon {
 // ─── worker isolate ──────────────────────────────────────────────────
 
 class _SfmWorkerBootstrap {
-  const _SfmWorkerBootstrap(this.reply, this.dbPath);
+  const _SfmWorkerBootstrap(this.reply, this.dbPath, this.arEveryFrame);
   final SendPort reply;
   final String dbPath;
+  // [AR-EVERY-FRAME 2026-08-05 ROOT-CAUSE FIX] 必须经 boot 消息传入,不能让
+  // worker 直接读 env:worker 是 Isolate.spawn 出来的独立 isolate,其
+  // Platform.environment **读不到** 主 isolate 里 native setenv 设的值(实测:
+  // scale-anchor 在 _gravityAlign=主 isolate 读所以生效,而本 flag 曾在 worker
+  // 读恒为 false,导致每帧推送整条从不触发)。env 只在主 isolate 有效,故在
+  // spawn 处(主 isolate)读好、随 boot 传进来。
+  final bool arEveryFrame;
 }
 
 void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
   final cmds = ReceivePort();
   boot.reply.send(cmds.sendPort);
+  // [AR-EVERY-FRAME 观测] 让 flag 的到达值在设备日志可见——上一版正是这条
+  // 通路断了(worker 读 env 恒 false)而无声失败。下次真机测试 grep 此行即可确认。
+  boot.reply.send(<String, Object?>{
+    'evt': 'log',
+    'line': 'worker up: arEveryFrame=${boot.arEveryFrame}',
+  });
 
   AetherSfmStreamSession? session;
   Timer? pollTimer;
@@ -1381,10 +1598,15 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
     Map<String, dynamic> summary,
     int ms, {
     bool preview = false,
+    AetherSfmPointsTracked? prefetched,
   }) {
     final s = session;
     if (s == null) return false;
-    final points = preview ? s.previewTracked() : s.pointsTracked();
+    // [AR-EVERY-FRAME] prefetched reuses a points object the caller already
+    // pulled this frame (beforeGlobal), avoiding a second full previewTracked
+    // copy. Default null ⇒ byte-exact prior behaviour.
+    final points =
+        prefetched ?? (preview ? s.previewTracked() : s.pointsTracked());
     if (preview && points.count == 0) return false; // no live_recon → fall back
     final deliveredSummary = Map<String, dynamic>.from(summary);
     if (!preview) {
@@ -1635,6 +1857,32 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
               final beforeGlobal = (finishPending || !nativeCaptureActive())
                   ? null
                   : session!.previewTracked();
+              // [AR-EVERY-FRAME 2026-08-04] 默认关。开启后:每个被接受、且已有
+              // live_recon 点的帧,直接把这份已在手的 previewTracked 推给 AR,
+              // 让点云每帧可见生长,而不是只在下面的全局BA检查点刷新。复用
+              // beforeGlobal(不再二次拷贝);source='streaming_local_ba' 区别于
+              // 检查点的 'streaming_global_ba'。不改动下方全局BA逻辑(保留)。
+              // AR 侧 400ms 合并节流兜住传输成本(eaf8706 动效延迟的既有防线)。
+              if (boot.arEveryFrame &&
+                  beforeGlobal != null &&
+                  beforeGlobal.count > 0) {
+                sendSnapshot(
+                  'preview',
+                  <String, dynamic>{
+                    // 独立 source 名,避免与 finish-time 终态云复用的
+                    // 'streaming_local_ba' 撞名(那条在 colorize 路径里被当作
+                    // 拍完的终态云会提前弹浮层)。'_live' 专指拍摄期每帧推送。
+                    'source': 'streaming_local_ba_live',
+                    'terminal': false,
+                    'publish_version': publishPolicy.version,
+                    'n_registered': fedIds.length,
+                    'n_points3d': beforeGlobal.count,
+                  },
+                  0,
+                  preview: true,
+                  prefetched: beforeGlobal,
+                );
+              }
               if (beforeGlobal != null &&
                   publishPolicy.shouldRunGlobalBa(
                     registeredFrames: fedIds.length,

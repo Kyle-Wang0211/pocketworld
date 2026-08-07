@@ -207,11 +207,20 @@ class OfficialAetherARKitPlugin: NSObject {
     // 不再 setenv。若极端机型需要重新降档,设
     // OFFICIAL_AETHER_LIVE_CAND_K_HOT=6 即同二进制恢复(finalize 补账
     // 链路仍在:armed 时 rematch 优先,见 native ENRICH-ORDER)。
-    // [SIGNED 2026-07-26] 用户定调:全程 K12 + 无损 + 全量 quadratic —
-    // enrich 预算关死(0 = kOff,legacy 不限时),quadratic/rematch 永不被
-    // 截断。预算门机制保留在 native(armed 时 rematch 优先 + quadratic
-    // gap 升序),供未来需要限时的形态复用;本行删除即回到 kAuto 30s。
-    setenv("OFFICIAL_AETHER_ENRICH_TIME_BUDGET_MS", "0", 1)
+    // [SIGNED 2026-07-26 → ⚰️2026-08-06 用户签决翻案] 旧签"无损+全量 quadratic
+    // +预算关死"的前提被三重实测推翻:①enrich 真机 135-220s 而 quadratic
+    // 写入=0(cap6 470 次/cap2 281 次尝试全零,长程 gap128 平均 0.7 内点);
+    // ②长程覆盖已由选择式通道接管(空间重访+回环选中的 gap64-128 对
+    // p50 内点 100-205);③host 双场 A/B 全关 quadratic 质量零差(误差
+    // 0.988→0.984 微优,点数 +0.22%)。行业口径(_artifacts/enrich_budget_
+    // 20260806/REPORT.md):COLMAP 对长程的正解=检索式挑选而非盲配,
+    // 数量预算是压倒性主流。
+    // 动作:quadratic 全关(kill switch,native 注释钦定入口);
+    // ENRICH_TIME_BUDGET_MS 行删除 ⇒ 回 kAuto(悬垂截断护栏,RTAB-Map 软
+    // 语义:只停发新尝试不 abort 进行中)。rematch/空间重访(高价值,
+    // 8 次写 2 条 220 内点)不受影响。回滚:删下面一行 + 恢复
+    // setenv("OFFICIAL_AETHER_ENRICH_TIME_BUDGET_MS", "0", 1)。
+    setenv("OFFICIAL_AETHER_QUADRATIC_OVERLAP", "0", 1)
     // [PREPAY-OFF 2026-07-26, signed] 预付回退:cap_1785078141726265 的
     // finalize_split 铁证 enrich_gate_wait_ms=0 —— quadratic 匹配与 stage-1
     // BA 并行且 stage-1 更慢,预付根本不在关键路径上;它偷走采集期空闲
