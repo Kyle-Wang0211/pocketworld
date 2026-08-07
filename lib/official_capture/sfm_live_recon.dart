@@ -465,6 +465,9 @@ class SfmLiveRecon {
   bool _finalizeRequested = false; // finish tapped — no new frames accepted
   // [QUAD-PREPAY 2026-07-26] one idle prepay cmd in flight at a time.
   bool _prepayInFlight = false;
+  // [THERMAL-DOWNSHIFT 2026-08-07] serious 档"喂一帧、歇一次"的奇偶闸
+  // (见 _thermalAllowsFeedNow)。
+  bool _thermalDropArmed = false;
   bool _finalizeSent = false; // finalize cmd actually dispatched to worker
   bool _pumping = false;
   bool _disposed = false;
@@ -675,7 +678,10 @@ class SfmLiveRecon {
       arkitCameraCenterWorld: cameraCenterWorld,
     );
 
-    if (!sfmFeedShouldSpool(inFlight: _inFlight, spoolDepth: _spool.length)) {
+    // [THERMAL-DOWNSHIFT 2026-08-07] 直发路径同样过热闸(短路求值:要 spool
+    // 时不消耗奇偶);被闸下的帧走 spool,排空期回填,交付数据零损失。
+    if (!sfmFeedShouldSpool(inFlight: _inFlight, spoolDepth: _spool.length) &&
+        _thermalAllowsFeedNow()) {
       _sendJpegFrameCmd(
         seq,
         feed.jpegPath,
@@ -711,6 +717,10 @@ class SfmLiveRecon {
         'frame#$seq queued (inFlight=$_inFlight, depth=${_spool.length})',
       );
     }
+    // [THERMAL-DOWNSHIFT 2026-08-07] critical 下 spool 会在 inFlight==0 时积
+    // 压(旧不变式"spool>0 ⇒ inFlight>0"被热闸打破,frame_done 泵不会来)。
+    // 每次新 offer 补踢一脚泵;泵内逐轮重查热档,过热时立即 break,零多喂。
+    if (_spool.isNotEmpty && _inFlight == 0) unawaited(_pump());
     return true;
   }
 
@@ -805,6 +815,36 @@ class SfmLiveRecon {
     });
   }
 
+  /// [THERMAL-DOWNSHIFT 2026-08-07] 拍摄期热前瞻降频:喂帧前的热档决策。
+  ///
+  /// 依据 Apple ProcessInfo.ThermalState 官方建议
+  /// (developer.apple.com/documentation/foundation/processinfo/thermalstate):
+  ///   - `.serious`:"Reduce usage of the CPU, GPU, and I/O" —— 拍摄期每喂
+  ///     1 帧丢 1 次喂帧机会(工作量减半);被"丢"的帧**不删除**,留在
+  ///     `_spool` 里等排空期按拍摄序回填(finalize 后转 FIFO,见 _pump 的
+  ///     [C2-BACKPRESSURE] 取帧逻辑),交付数据零损失;
+  ///   - `.critical`:"reduce work to the minimum level needed" —— 拍摄期
+  ///     全部不喂只排队,排空期(_finalizeRequested)不受影响照常喂。
+  /// 与 C2 latest-first 共存:本闸只决定"这一轮泵不泵",不改取帧顺序;
+  /// 进度条口径零改动(queuedCount/remainingCount 只看长度)。
+  /// 注意:本方法带奇偶副作用(_thermalDropArmed),每个喂帧决策点只许调一次。
+  bool _thermalAllowsFeedNow() {
+    if (_finalizeRequested) return true; // 排空期不丢
+    final thermal = PwTelemetry.sample()?.thermalState ?? -1;
+    if (thermal >= 3) return false; // critical:只排队
+    if (thermal == 2) {
+      // serious:喂一帧、歇一次(1:1 隔帧)。
+      if (_thermalDropArmed) {
+        _thermalDropArmed = false;
+        return false;
+      }
+      _thermalDropArmed = true;
+      return true;
+    }
+    _thermalDropArmed = false; // nominal/fair:闸复位,全速
+    return true;
+  }
+
   /// Feeds spooled frames whenever the worker has room; sends the deferred
   /// finalize once everything drained. Single-flight (re-entry guarded).
   Future<void> _pump() async {
@@ -813,6 +853,11 @@ class SfmLiveRecon {
     try {
       while (!_disposed &&
           sfmFeedCanPumpNext(inFlight: _inFlight, spoolDepth: _spool.length)) {
+        // [THERMAL-DOWNSHIFT 2026-08-07] 拍摄期热闸:serious 隔帧、critical
+        // 停喂(帧留在 spool,排空期回填;排空期本闸恒放行)。break 而非
+        // continue —— "歇一次"的语义是这一轮不喂,下一次 frame_done/offer
+        // 再泵时重新决策。
+        if (!_finalizeRequested && !_thermalAllowsFeedNow()) break;
         // [C2-BACKPRESSURE 2026-08-06 用户签决] 拍摄期 latest-first,排空期
         // FIFO。拍摄期取 _spool 最新一帧优先喂(live 点云跟手,预览永远反映
         // 刚拍到的视角);finalize 请求后(_finalizeRequested)转为取最旧一帧,
