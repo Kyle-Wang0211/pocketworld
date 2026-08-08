@@ -2,14 +2,14 @@
 
 <style>
   :root {
-    --ground: #FAFAFA;
+    --ground: #FFFFFF;
     --surface: #FFFFFF;
-    --sunken: #F3F3F2;
-    --ink: #111111;
+    --sunken: rgba(0,0,0,.04);
+    --ink: #000000;
     --ink-mid: #6B6B6B;
     --ink-faint: #9B9B9B;
     --rule: #E4E4E4;
-    --rule-strong: #CCCCCC;
+    --rule-strong: #E4E4E4;
     --flag: #C83E3E;
     --flag-wash: #FBF0EF;
     --cabin: #0B0B0D;
@@ -49,14 +49,14 @@
     --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
   }
   :root[data-theme="light"] {
-    --ground: #FAFAFA;
+    --ground: #FFFFFF;
     --surface: #FFFFFF;
-    --sunken: #F3F3F2;
-    --ink: #111111;
+    --sunken: rgba(0,0,0,.04);
+    --ink: #000000;
     --ink-mid: #6B6B6B;
     --ink-faint: #9B9B9B;
     --rule: #E4E4E4;
-    --rule-strong: #CCCCCC;
+    --rule-strong: #E4E4E4;
     --flag: #C83E3E;
     --flag-wash: #FBF0EF;
     --shadow: 0 1px 2px rgba(0,0,0,.05), 0 8px 24px rgba(0,0,0,.05);
@@ -135,6 +135,7 @@
     grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); }
   .sw { border: 1px solid var(--rule); border-radius: 8px; overflow: hidden;
     background: var(--surface); }
+  /* 纯白底上白卡片必须靠描边立住 —— 本册自己遵守这条(见 01 色彩) */
   .sw .chip { height: 56px; border-bottom: 1px solid var(--rule); }
   .sw .meta { padding: 8px 10px 10px; }
   .sw .nm { font-size: 12.5px; font-weight: 600; }
@@ -205,7 +206,7 @@
 <main>
 
 <h1>PocketWorld UI 规范手册</h1>
-<p class="lede">一台装在 iPhone 里的三维扫描仪。它的界面分两个世界:亮白的资料库,和深色的三维编辑舱。这本册子把两个世界的取值收敛成可照着做的阶梯。</p>
+<p class="lede">一台装在 iPhone 里的三维扫描仪。它的界面分两个世界:纯白的资料库,和纯黑的三维编辑舱。这本册子把两个世界的取值收敛成可照着做的阶梯 —— 五个中性色、六级字号、四级圆角、三档图标。</p>
 
 <section id="how" style="border-top:0;margin-top:24px;padding-top:24px">
   <p class="eyebrow">00 / 怎么用</p>
@@ -213,6 +214,7 @@
   <p>每一章给的阶梯都是<strong>唯一正确取值</strong>。现有页面里有一批偏离项,已经逐条记在 <a href="#debt">08 偏离清单</a>,那是迁移待办,不是可选风格。</p>
   <p>做新界面时:先在本册找到对应阶梯,取整到最近的一级。<strong>阶梯里没有的值就是不允许的值</strong> —— 需要新增一级时改这本册子,而不是在页面里破例。</p>
   <div class="kv">
+    <dt>中性色</dt><dd><strong>纯白 + 纯黑 + 三档灰,共五个</strong>。红黄绿另算(状态色,见 01)</dd>
     <dt>代码事实源</dt><dd><code>lib/ui/design_system.dart</code> —— 本册的取值与它一致,它是唯一实现</dd>
     <dt>本册覆盖</dt><dd>色彩 · 字号 · 间距 · 圆角 · 图标 · 功能分区 · 动效</dd>
     <dt>不覆盖</dt><dd>插画风格 · 图标绘制规范 · 应用商店素材 —— 尚未成体系,别在这里假装有</dd>
@@ -221,48 +223,62 @@
 
 <section id="color">
   <p class="eyebrow">01 / 色彩</p>
-  <h2>无彩色承担一切结构,彩色只用来报告状态</h2>
+  <h2>五个中性色承担一切结构,彩色只用来报告状态</h2>
   <p>这台仪器的界面是黑白灰的。<strong>彩色不做装饰、不做品牌表达,只用于报告系统状态</strong>——绿色永远意味着"成功产出",红色永远意味着"需要你处理"。看到彩色就该是有事发生。</p>
 
   <h3>中性色 · 亮色世界(资料库、设置、草稿页)</h3>
+  <p><strong>纯白、纯黑,加三档灰。就这五个。</strong>没有第二种白、没有暖白、没有近黑 —— 想不出该用哪一档时,说明那个界面的层级本身没想清楚,不是色板不够。</p>
   <div class="swatches">
-    <div class="sw"><div class="chip" style="background:#FAFAFA"></div><div class="meta"><div class="nm">ground</div><div class="hx">#FAFAFA</div><div class="use">页面底色。暖白,不是纯白</div></div></div>
-    <div class="sw"><div class="chip" style="background:#FFFFFF"></div><div class="meta"><div class="nm">surface</div><div class="hx">#FFFFFF</div><div class="use">卡片 / 弹层 / sheet</div></div></div>
-    <div class="sw"><div class="chip" style="background:#F3F3F2"></div><div class="meta"><div class="nm">sunken</div><div class="hx">#F3F3F2</div><div class="use">内嵌面板 / 分段控件槽</div></div></div>
-    <div class="sw"><div class="chip" style="background:#111111"></div><div class="meta"><div class="nm">ink</div><div class="hx">#111111</div><div class="use">主文字 / 主按钮底 / 图标</div></div></div>
-    <div class="sw"><div class="chip" style="background:#6B6B6B"></div><div class="meta"><div class="nm">ink-mid</div><div class="hx">#6B6B6B</div><div class="use">次要文字 / 说明</div></div></div>
-    <div class="sw"><div class="chip" style="background:#9B9B9B"></div><div class="meta"><div class="nm">ink-faint</div><div class="hx">#9B9B9B</div><div class="use">时间戳 / 占位 / 禁用</div></div></div>
-    <div class="sw"><div class="chip" style="background:#E4E4E4"></div><div class="meta"><div class="nm">rule</div><div class="hx">#E4E4E4</div><div class="use">分隔线 / 卡片描边</div></div></div>
-    <div class="sw"><div class="chip" style="background:#CCCCCC"></div><div class="meta"><div class="nm">rule-strong</div><div class="hx">#CCCCCC</div><div class="use">次按钮描边 / 强调分隔</div></div></div>
+    <div class="sw"><div class="chip" style="background:#FFFFFF"></div><div class="meta"><div class="nm">paper</div><div class="hx">#FFFFFF</div><div class="use">页面底 · 卡片 · 弹层。同一个白</div></div></div>
+    <div class="sw"><div class="chip" style="background:#000000"></div><div class="meta"><div class="nm">ink</div><div class="hx">#000000</div><div class="use">主文字 · 主按钮底 · 图标</div></div></div>
+    <div class="sw"><div class="chip" style="background:#6B6B6B"></div><div class="meta"><div class="nm">gray-1</div><div class="hx">#6B6B6B</div><div class="use">次要文字 · 说明</div></div></div>
+    <div class="sw"><div class="chip" style="background:#9B9B9B"></div><div class="meta"><div class="nm">gray-2</div><div class="hx">#9B9B9B</div><div class="use">时间戳 · 占位 · 禁用</div></div></div>
+    <div class="sw"><div class="chip" style="background:#E4E4E4"></div><div class="meta"><div class="nm">gray-3</div><div class="hx">#E4E4E4</div><div class="use">分隔线 · 卡片描边</div></div></div>
   </div>
 
+  <div class="callout">
+    <strong>页面底和卡片是同一个白 ⇒ 卡片必须有描边。</strong>此前卡片靠"白 #FFFFFF 压在暖白 #FAFAFA 上"那 2% 差异浮起来,两者统一成纯白后这个手段没了。所有卡片、弹层、内嵌面板<strong>一律 1px <code>gray-3</code> 描边</strong>,不靠底色差异区分层级。这是本次收敛唯一带来新增工作量的一条。
+  </div>
+
+  <h3>浅填充:用 ink 的不透明度,不加第四档灰</h3>
+  <p>分段控件的槽底、内嵌面板需要一块比 <code>gray-3</code> 更轻的填充。<strong>不要为此新增灰色</strong>——用纯黑的低不透明度派生:</p>
+  <div class="demo">
+    <span class="demo-label">派生填充 · 不算新色</span>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">
+      <div style="text-align:center"><div style="width:96px;height:44px;background:rgba(0,0,0,.04);border-radius:999px"></div><div style="font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);margin-top:6px">ink @4% · 槽底</div></div>
+      <div style="text-align:center"><div style="width:96px;height:44px;background:rgba(0,0,0,.08);border-radius:12px"></div><div style="font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);margin-top:6px">ink @8% · 按下态</div></div>
+      <div style="text-align:center"><div style="width:96px;height:44px;background:#000;border-radius:999px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;font-weight:600">选中</div><div style="font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);margin-top:6px">ink · 选中项</div></div>
+    </div>
+  </div>
+  <p class="note">不透明度派生的代价:同一个 <code>ink @4%</code> 叠在不同底色上算出的实际颜色不同。本册所有亮色界面的底色都是纯白,所以这里不存在歧义 —— 但如果以后引入其他底色,这些派生值要重新核对。</p>
+
   <h3>中性色 · 三维编辑舱(点云预览、选区编辑、拍摄)</h3>
-  <p class="note">深色舱不是"亮色世界的暗色主题",它是另一个场景:相机取景与点云必须在无干扰的暗底上判读。<strong>两套中性色不通用。</strong></p>
+  <p class="note">深色舱不是"亮色世界的暗色主题",它是另一个判读场景:点云和相机取景必须在无干扰的纯黑上看。<strong>规则与亮色世界完全对称</strong>——纯黑底 + 白的三档不透明度,同一个原则,不用记两套。</p>
   <div class="demo cabin">
-    <span class="demo-label">cabin</span>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:10px;width:100%">
-      <div><div style="height:40px;background:#1A1A1A;border:1px solid #2A2A2F;border-radius:6px"></div><div style="font-family:var(--mono);font-size:10.5px;color:#8A8A92;margin-top:5px">#1A1A1A · scene</div></div>
-      <div><div style="height:40px;background:#0B0B0D;border:1px solid #2A2A2F;border-radius:6px"></div><div style="font-family:var(--mono);font-size:10.5px;color:#8A8A92;margin-top:5px">#0B0B0D · panel</div></div>
-      <div><div style="height:40px;background:#FFFFFF;border-radius:6px"></div><div style="font-family:var(--mono);font-size:10.5px;color:#8A8A92;margin-top:5px">#FFFFFF · 手柄/框</div></div>
-      <div><div style="height:40px;background:rgba(255,255,255,.7);border-radius:6px"></div><div style="font-family:var(--mono);font-size:10.5px;color:#8A8A92;margin-top:5px">white 70% · 次要</div></div>
+    <span class="demo-label">cabin · 纯黑底 + 白的三档</span>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(124px,1fr));gap:10px;width:100%">
+      <div><div style="height:40px;background:#000;border:1px solid #2A2A2F;border-radius:6px"></div><div style="font-family:var(--mono);font-size:10.5px;color:#8A8A92;margin-top:5px">#000000 · 场景底</div></div>
+      <div><div style="height:40px;background:#FFFFFF;border-radius:6px"></div><div style="font-family:var(--mono);font-size:10.5px;color:#8A8A92;margin-top:5px">white · 框线/主字</div></div>
+      <div><div style="height:40px;background:rgba(255,255,255,.7);border-radius:6px"></div><div style="font-family:var(--mono);font-size:10.5px;color:#8A8A92;margin-top:5px">white @70% · 标题/图标</div></div>
+      <div><div style="height:40px;background:rgba(255,255,255,.45);border-radius:6px"></div><div style="font-family:var(--mono);font-size:10.5px;color:#8A8A92;margin-top:5px">white @45% · 刻度</div></div>
     </div>
   </div>
   <div class="tw"><table>
     <tr><th>令牌</th><th class="num">值</th><th>用在哪</th></tr>
-    <tr><td>cabin-scene</td><td class="num">#1A1A1A</td><td>三维场景底色(点云画布)</td></tr>
-    <tr><td>cabin-panel</td><td class="num">#0B0B0D @ 90%</td><td>底部工具面板 / 覆盖条</td></tr>
+    <tr><td>cabin-scene</td><td class="num">#000000</td><td>三维场景底色(点云画布)</td></tr>
+    <tr><td>cabin-panel</td><td class="num">#000000 @ 90%</td><td>底部工具面板 / 覆盖条(半透明,让点云透出来)</td></tr>
     <tr><td>cabin-ink</td><td class="num">#FFFFFF</td><td>选区框线 / 手柄 / 主文字</td></tr>
-    <tr><td>cabin-ink-mid</td><td class="num">white 70%</td><td>标题 / 图标 / 刻度</td></tr>
-    <tr><td>cabin-tick</td><td class="num">white 45%</td><td>刻度尺的小刻度</td></tr>
+    <tr><td>cabin-ink-mid</td><td class="num">white @ 70%</td><td>标题 / 图标</td></tr>
+    <tr><td>cabin-tick</td><td class="num">white @ 45%</td><td>刻度尺的小刻度</td></tr>
   </table></div>
 
   <h3>状态色</h3>
-  <p>四个,不多不少。全部取 iOS 系统色 —— 用户在这台设备上已经学会了它们的含义,自创色只会削弱识别。</p>
+  <p>红、黄、绿,<strong>另算</strong>——它们不参与上面那五个中性色的收敛,因为承担的是完全不同的职责。全部取 iOS 系统色:用户在这台设备上已经学会了它们的含义,自创色只会削弱识别。</p>
   <div class="swatches">
     <div class="sw"><div class="chip" style="background:#34C759"></div><div class="meta"><div class="nm">success</div><div class="hx">#34C759</div><div class="use">生成完成。绿底白字胶囊</div></div></div>
     <div class="sw"><div class="chip" style="background:#FF3B30"></div><div class="meta"><div class="nm">danger</div><div class="hx">#FF3B30</div><div class="use">未完成 / 破坏性操作</div></div></div>
     <div class="sw"><div class="chip" style="background:#FFC107"></div><div class="meta"><div class="nm">accent</div><div class="hx">#FFC107</div><div class="use">刻度尺原点。唯一的强调黄</div></div></div>
-    <div class="sw"><div class="chip" style="background:#111111"></div><div class="meta"><div class="nm">neutral-state</div><div class="hx">#111111 @ 90%</div><div class="use">进行中。黑底白字胶囊</div></div></div>
+    <div class="sw"><div class="chip" style="background:#000000"></div><div class="meta"><div class="nm">neutral-state</div><div class="hx">ink @ 90%</div><div class="use">进行中。黑底白字胶囊(不是新色,是 ink)</div></div></div>
   </div>
   <div class="callout">
     <strong>三处必须改掉的语义冲突。</strong>代码里 <code>success</code> 目前是 <code>#111111</code>(近黑),而"完成"胶囊用的是 <code>#34C759</code> —— 同一概念两个值。同样地,<code>warning</code> 和 <code>info</code> 都是 <code>#6B6B6B</code>,等于没有语义。这三个令牌要么按上表重定义,要么删掉。
@@ -278,7 +294,7 @@
   </div>
   <div class="tw"><table>
     <tr><th>状态</th><th>底色</th><th>含义</th><th>什么时候消失</th></tr>
-    <tr><td>生成中</td><td class="num">#111111 @ 90%</td><td>点云<strong>正在</strong>生成</td><td>生成结束</td></tr>
+    <tr><td>生成中</td><td class="num">ink @ 90%</td><td>点云<strong>正在</strong>生成</td><td>生成结束</td></tr>
     <tr><td>未完成</td><td class="num">#FF3B30</td><td>点云没出来,而且<strong>没在跑</strong>(闪退 / 被杀)</td><td>续跑成功</td></tr>
     <tr><td>完成</td><td class="num">#34C759</td><td>点云已生成,用户还没看过</td><td>用户点进去看过一次</td></tr>
   </table></div>
@@ -407,8 +423,8 @@
   </div>
   <div class="tw"><table>
     <tr><th>类型</th><th>底 / 描边</th><th>文字</th><th>什么时候用</th></tr>
-    <tr><td>主按钮</td><td class="num">底 #111111</td><td class="num">#FAFAFA · 15/w600</td><td>一屏唯一的推进动作</td></tr>
-    <tr><td>次按钮</td><td class="num">描边 #CCCCCC</td><td class="num">#111111 · 15/w600</td><td>次要动作 / 取消</td></tr>
+    <tr><td>主按钮</td><td class="num">底 ink #000000</td><td class="num">paper #FFFFFF · 15/w600</td><td>一屏唯一的推进动作</td></tr>
+    <tr><td>次按钮</td><td class="num">描边 gray-3</td><td class="num">ink · 15/w600</td><td>次要动作 / 取消</td></tr>
     <tr><td>破坏性</td><td class="num">描边 #FF3B30</td><td class="num">#FF3B30 · 15/w600</td><td>删除 / 放弃更改。一屏最多一个</td></tr>
   </table></div>
   <p class="note">内边距 <code>22 / 11</code>,最小命中高度 <code>44</code>。<strong>确认的负担只压在破坏性那一侧</strong>——"完成"直接生效不问,"取消"才弹确认,而且只在真改过时弹。</p>
@@ -566,31 +582,56 @@
   <p>下面每一条都是实测出来的,不是估计。<strong>做新界面时按前七章;碰到这些旧值时顺手改掉。</strong></p>
 
   <h3>色彩 · 最严重</h3>
-  <p>同一个视觉概念存在多个取值。近黑 6 个、红 5 个、绿 5 个、黄 4 个、蓝 3 个。</p>
+  <p>收敛到五个中性色后,要改的分两类:<strong>①现有令牌本身要合并或删除</strong>,②散落的硬编码值要归位。下表每个次数都是实测的。</p>
+
+  <h4 style="font-size:13.5px;font-weight:600;margin:20px 0 6px">① 令牌层:11 个中性色令牌收成 5 个</h4>
+  <div class="tw"><table>
+    <tr><th>现有令牌</th><th class="num">值</th><th class="num">引用</th><th>处理</th></tr>
+    <tr><td>bgCanvas</td><td class="num">#FFFFFF</td><td class="num">23</td><td>→ <code>paper</code>。保留,改名</td></tr>
+    <tr class="flagged"><td>bg</td><td class="num">#FAFAFA</td><td class="num">9</td><td>→ <code>paper #FFFFFF</code>。暖白取消</td></tr>
+    <tr class="flagged"><td>bgElevated</td><td class="num">#F3F3F2</td><td class="num">7</td><td><strong>删</strong>。槽底/内嵌面板改 <code>ink @4%</code></td></tr>
+    <tr class="flagged"><td>bgOverlay</td><td class="num">#E6FAFAFA</td><td class="num">0</td><td><strong>删</strong>。定义了从没用过</td></tr>
+    <tr><td>textPrimary</td><td class="num">#111111</td><td class="num">34</td><td>→ <code>ink #000000</code></td></tr>
+    <tr class="flagged"><td>primary</td><td class="num">#111111</td><td class="num">33</td><td><strong>与 textPrimary 同值</strong>,合并为 <code>ink</code>。两个名字一个颜色</td></tr>
+    <tr class="flagged"><td>primarySoft</td><td class="num">#3A3A3A</td><td class="num">0</td><td><strong>删</strong>。按下态改 <code>ink @8%</code> 叠加</td></tr>
+    <tr><td>textSecondary</td><td class="num">#6B6B6B</td><td class="num">17</td><td>→ <code>gray-1</code>。值不变</td></tr>
+    <tr><td>textTertiary</td><td class="num">#9B9B9B</td><td class="num">29</td><td>→ <code>gray-2</code>。值不变</td></tr>
+    <tr><td>border</td><td class="num">#E4E4E4</td><td class="num">21</td><td>→ <code>gray-3</code>。值不变</td></tr>
+    <tr class="flagged"><td>borderStrong</td><td class="num">#CCCCCC</td><td class="num">2</td><td><strong>删</strong>。→ <code>gray-3</code></td></tr>
+    <tr class="flagged"><td>warning</td><td class="num">#6B6B6B</td><td class="num">—</td><td><strong>删</strong>。与 textSecondary 同值,毫无语义。需警示用 <code>accent</code></td></tr>
+    <tr class="flagged"><td>info</td><td class="num">#6B6B6B</td><td class="num">—</td><td><strong>删</strong>。同上。需说明用 <code>gray-1</code></td></tr>
+    <tr class="flagged"><td>success</td><td class="num">#111111</td><td class="num">—</td><td><strong>重定义为 #34C759</strong>。当前是近黑,而"完成"胶囊用绿 —— 同一概念两个值</td></tr>
+    <tr class="flagged"><td>danger</td><td class="num">#C83E3E</td><td class="num">—</td><td><strong>重定义为 #FF3B30</strong>(iOS systemRed)</td></tr>
+    <tr class="flagged"><td>insp* × 4</td><td class="num">绿/黄/红/蓝</td><td class="num">—</td><td>设计检查器专用,<strong>不属于产品色板</strong>。移到独立命名空间,别和产品令牌混在一张表里</td></tr>
+  </table></div>
+  <p class="note">净结果:11 个中性色令牌 → 5 个;删掉 6 个(其中 2 个从没被引用过);2 个状态令牌重定义。<code>bg</code> 那 9 处改值后**卡片会与页面同色**,必须同批加描边 —— 见下。</p>
+
+  <h4 style="font-size:13.5px;font-weight:600;margin:20px 0 6px">② 新增工作:所有卡片补描边</h4>
+  <p class="note">页面底与卡片统一成纯白后,原先靠 2% 底色差浮起的元素全部失去层级。需要补 1px <code>gray-3</code> 描边的:草稿/项目网格卡片、设置页分组、弹层与动作单、内嵌面板。这是收敛的代价,不是可选优化。</p>
+
+  <h4 style="font-size:13.5px;font-weight:600;margin:20px 0 6px">③ 硬编码层:同一概念多个取值</h4>
+  <p>近黑 6 个、红 5 个、绿 5 个、黄 4 个、蓝 3 个。</p>
   <div class="tw"><table>
     <tr><th>概念</th><th class="num">现有取值</th><th class="num">次数</th><th>应统一为</th></tr>
-    <tr class="flagged"><td rowspan="6">近黑</td><td class="num">#111113</td><td class="num">13</td><td rowspan="6"><code>ink #111111</code>(亮色)<br><code>cabin-scene #1A1A1A</code> / <code>cabin-panel #0B0B0D</code>(深色舱)</td></tr>
+    <tr class="flagged"><td rowspan="6">近黑</td><td class="num">#111113</td><td class="num">13</td><td rowspan="6"><code>ink #000000</code>(亮色)<br><code>cabin-scene #000000</code> / <code>cabin-panel ink@90%</code>(深色舱)</td></tr>
     <tr class="flagged"><td class="num">#0B0B0C</td><td class="num">3</td></tr>
     <tr class="flagged"><td class="num">#1A1A1A</td><td class="num">2</td></tr>
     <tr class="flagged"><td class="num">#07080A</td><td class="num">2</td></tr>
     <tr class="flagged"><td class="num">#171A20</td><td class="num">2</td></tr>
     <tr class="flagged"><td class="num">#0b1118</td><td class="num">2</td></tr>
-    <tr class="flagged"><td rowspan="4">红</td><td class="num">#C83E3E<span class="tag" style="margin-left:6px">现 danger</span></td><td class="num">—</td><td rowspan="4"><code>danger #FF3B30</code></td></tr>
-    <tr class="flagged"><td class="num">#E9583F</td><td class="num">3</td></tr>
+    <tr class="flagged"><td rowspan="3">红</td><td class="num">#E9583F</td><td class="num">3</td><td rowspan="3"><code>danger #FF3B30</code></td></tr>
     <tr class="flagged"><td class="num">#FF5A5F</td><td class="num">2</td></tr>
     <tr class="flagged"><td class="num">#F87171</td><td class="num">—</td></tr>
-    <tr class="flagged"><td rowspan="4">绿</td><td class="num">#111111<span class="tag drop" style="margin-left:6px">现 success = 近黑</span></td><td class="num">—</td><td rowspan="4"><code>success #34C759</code></td></tr>
-    <tr class="flagged"><td class="num">#6EE7A0</td><td class="num">4</td></tr>
+    <tr class="flagged"><td rowspan="3">绿</td><td class="num">#6EE7A0</td><td class="num">4</td><td rowspan="3"><code>success #34C759</code></td></tr>
     <tr class="flagged"><td class="num">#34D399</td><td class="num">—</td></tr>
     <tr class="flagged"><td class="num">#1FB31F</td><td class="num">2</td></tr>
     <tr class="flagged"><td rowspan="3">黄</td><td class="num">#F5B821</td><td class="num">4</td><td rowspan="3"><code>accent #FFC107</code></td></tr>
     <tr class="flagged"><td class="num">#FFC53D</td><td class="num">2</td></tr>
     <tr class="flagged"><td class="num">#FBBF24</td><td class="num">—</td></tr>
-    <tr class="flagged"><td rowspan="3">蓝</td><td class="num">#2F97FF</td><td class="num">4</td><td rowspan="3">删除。<strong>本规范没有蓝色</strong>——现有蓝色全部是"未归类的强调",按语义改成 ink 或状态色</td></tr>
+    <tr class="flagged"><td rowspan="3">蓝</td><td class="num">#2F97FF</td><td class="num">4</td><td rowspan="3">删除。<strong>本规范没有蓝色</strong>——现有蓝色全部是"未归类的强调",按语义改成 <code>ink</code> 或状态色</td></tr>
     <tr class="flagged"><td class="num">#2CB8F0</td><td class="num">4</td></tr>
     <tr class="flagged"><td class="num">#3B82F6</td><td class="num">—</td></tr>
   </table></div>
-  <p class="note">另有 <code>warning</code> 与 <code>info</code> 两个令牌当前都等于 <code>#6B6B6B</code>(即次要文字色),没有任何语义区分 —— 建议删除,需要警示时用 <code>accent</code>,需要说明时用 <code>ink-mid</code>。</p>
 
   <h3>字号</h3>
   <div class="tw"><table>
