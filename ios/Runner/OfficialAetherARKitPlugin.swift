@@ -127,8 +127,14 @@ class OfficialAetherARKitPlugin: NSObject {
     // 不够,调 OFFICIAL_AETHER_DESCRIPTOR_RESIDENCY_BYTES 或按注释收窄候选为
     // "空间近 AND 时间不太远"。
     // ⛔ 应急回滚:恢复下面这行 setenv(改回 "1")即刻回到纯时序 K12。
-    setenv("OFFICIAL_AETHER_STREAM_TEMPORAL_ONLY", "0", 1)
-    setenv("OFFICIAL_AETHER_DESCRIPTOR_RESIDENCY_V1", "1", 1)
+    // [DEVICE-AB-UNBLOCK 2026-08-08] 本块所有 setenv 的 overwrite 一律由 1 改 0。
+    // 语义:env 未设时与之前**逐位相同**(这里的值仍是出货默认);env 设了则
+    // 启动参数优先。为什么必须这样:今天想在真机上 A/B 一个旋钮(占空比、
+    // tail-cache…)时才发现 overwrite=1 让插件永远赢,**启动 env 进不来,
+    // 每试一档都要重编装机**——于是一天下来两场真机采集几乎没换到 A/B 价值。
+    // 改成 0 之后,同一个二进制就能用 --environment-variables 逐档试。
+    setenv("OFFICIAL_AETHER_STREAM_TEMPORAL_ONLY", "0", 0)
+    setenv("OFFICIAL_AETHER_DESCRIPTOR_RESIDENCY_V1", "1", 0)
     // [RESIDENCY-BUDGET 2026-08-05] 48MB(默认)→ 400MB。
     // 依据:一帧描述子 8192×128 = 1MB,单次采集硬上限 300 帧
     // (kOfficialMaximumCaptureFrames)⇒ 400MB 足以装下**整场采集的全部**描述子,
@@ -141,7 +147,7 @@ class OfficialAetherARKitPlugin: NSObject {
     // (frozen 26-symbol surface),拿不到 hit/miss,只能靠外部效应(匹配耗时/热)判断。
     // ⚠️ 内存天花板 2GB —— 由 **iPhone 11(4GB 机型)** 决定,不是 14 Pro(jetsam 4.1GB)。
     // 当前 peak 约 1058MB,+400MB 仍有余量;若真机 OOM 先回退本行。
-    setenv("OFFICIAL_AETHER_DESCRIPTOR_RESIDENCY_BYTES", "419430400", 1)  // 400 MiB
+    setenv("OFFICIAL_AETHER_DESCRIPTOR_RESIDENCY_BYTES", "419430400", 0)  // 400 MiB
     // [K20 2026-08-05] 空间序放开后实测 `cand=12` 仍恒定、`spatial-first=858 /
     // temporal-fallback=0` —— 即**空间选择确实在工作,但 K 被外层截断到 12**:
     // 候选上限 base_k 取自 `s->options.k_neighbors`(Dart 侧传 12),而不是
@@ -220,20 +226,51 @@ class OfficialAetherARKitPlugin: NSObject {
     // 语义:只停发新尝试不 abort 进行中)。rematch/空间重访(高价值,
     // 8 次写 2 条 220 内点)不受影响。回滚:删下面一行 + 恢复
     // setenv("OFFICIAL_AETHER_ENRICH_TIME_BUDGET_MS", "0", 1)。
-    setenv("OFFICIAL_AETHER_QUADRATIC_OVERLAP", "0", 1)
+// [GPU-TIMESTAMP 2026-08-08 用户签"把 GPU 时间戳接进这次的装机批次"]
+    // 08-08 真机 150 帧实测:匹配耗时随热态爆炸(nominal 454ms → serious 1776ms,
+    // 单对 30ms → 134ms),而提取全程平的(1093 → 1007ms)。两个假设的治法完全相反:
+    //   排队 —— 每帧 24 次"提交+阻塞等待"排在相机的 GPU 活后面 ⇒ 治法=减少提交次数
+    //   降频 —— GPU 时钟真的被压低了       ⇒ 治法=降能耗,减少提交没用
+    // CPU 侧墙钟分不出这两者,GPU 侧 kernel 时长可以:时长平=排队,时长涨=降频。
+    // 该设施已在树里(official_gpu_timestamp_writer_v1),此前默认关,日志里恒为
+    // "timestamp query not requested"。这里开启以取得判据。纯观测,不改算法。
+    setenv("OFFICIAL_AETHER_GPU_TIMESTAMPS", "1", 0)
+    // [TAIL-CACHE 证据 2026-08-08] tail-cache 已默认开,但它的逐帧证据字段由
+    // TailCacheTraceEnabled() 控制,而那个函数在 env **未设置**时返回 false ——
+    // 于是出现了"默认开、却没有任何在跑的证据"这个盲区(08-08 这一场就无法确认)。
+    // 显式设成 "1" 既保持默认行为,又把 cache_ms / tail_cache / tail_gen 打进 frame_split。
+    setenv("OFFICIAL_AETHER_TAIL_CACHE_V1", "1", 0)
+    setenv("OFFICIAL_AETHER_QUADRATIC_OVERLAP", "0", 0)
     // [PREPAY-OFF 2026-07-26, signed] 预付回退:cap_1785078141726265 的
     // finalize_split 铁证 enrich_gate_wait_ms=0 —— quadratic 匹配与 stage-1
     // BA 并行且 stage-1 更慢,预付根本不在关键路径上;它偷走采集期空闲
     // (38 对 ≈ 8-15s)换来 finalize 收益 ≈0,代价是 finish 时队列 33 深
     // (前次 15)、排干 95s。native 机制保留,删本行即重新启用。
-    setenv("OFFICIAL_AETHER_QUADRATIC_PREPAY", "0", 1)
+    setenv("OFFICIAL_AETHER_QUADRATIC_PREPAY", "0", 0)
     // [SPRINT-MODE 2026-07-26] 拍完等待不得增加(用户硬约束)的两条腿之二:
     // 采集期 serious 占空 100%→25%(匹配墙钟 K12 热态 ~1.8s→~1.1s/帧,
     // 跟上 ~2.3s/帧拍摄节奏 → 队列不积压)。让路余量是为旧匹配器(每对
     // GPU 时间 3× 于现在)定的;新 kernel 下 25% 的绝对让路时间与旧 100%
     // 相当。判据:rc=7 仍为 0、相机不冻;失败删本行回 100%。
     // (腿一 = capture-active 冲刺模式,见 startSession/stopSession。)
-    setenv("OFFICIAL_AETHER_MATCH_GAP_SERIOUS_PCT", "25", 1)
+    // [DUTY-TUNABLE 2026-08-08] overwrite 由 1 改 0:出货默认仍是 25(env 未设时
+    // 与之前逐位相同),但**启动时带 env 就能覆盖**,于是这条"提速 vs 相机流畅"
+    // 的定价曲线可以同一个二进制逐档试,不必每档重编装机。
+    // 为什么现在要复议这个值:07-26 定 25 时的判据是"跟上 ~2.3s/帧拍摄节奏,
+    // 队列不积压";08-08 真机 200 帧实测每帧 2832ms、161/200 帧 serious,
+    // 该前提已经不成立。实测占空比政策(休眠 25% × 6ms 小块 19%)约值
+    // 1.49×,折合 ~97s / 全场 566s = 17%。
+    // ⚠️ 它护的是 cap45 那次"相机冻结 2 分钟",放松必须盯相机。
+    // [DUTY 25→12 2026-08-08,证据见下] 前人 07-26 定 25 的**判据有两条**:
+    //   ① rc=7 仍为 0 —— 今天 692 帧**全部 rc=ok,0 次失败**,安全余量充足
+    //   ② 跟上拍摄节奏、队列不积压 —— 今天 343 帧里 **140 帧队列非空,最深 5**,
+    //      每帧 2832ms 远超当初假设的 ~2.3s ⇒ **这条判据已经守不住了**
+    // 一条判据仍绿、另一条已红,且红的那条正是这个值存在的目的 ⇒ 减半到 12。
+    // 不是取消让路(那会退回 cap45 相机冻结的风险),是把让路调到与今天的
+    // 匹配器成本相称的档位。同批装的 m_gpu/m_sleep/m_chunks 三分账会给出
+    // 实测的"政策 vs 物理"拆分,下一档按实测定,不再按推算。
+    // 回退:启动时 --environment-variables 里设 25(overwrite=0,env 优先)。
+    setenv("OFFICIAL_AETHER_MATCH_GAP_SERIOUS_PCT", "12", 0)
     // [SIGNED 2026-07-26] Point authoring = upstream
     // IncrementalMapper::TriangulateImage with two-view tracks kept; the
     // hand-written live create/grow/merge is off (matching and db writes are
@@ -248,9 +285,9 @@ class OfficialAetherARKitPlugin: NSObject {
     // User signed the switch under the official-first rule: when quality is
     // a wash, ship the upstream algorithm. Delete these three lines to
     // restore the self-dev authoring.
-    setenv("OFFICIAL_AETHER_OFFICIAL_TRIANGULATE", "1", 1)
-    setenv("OFFICIAL_AETHER_SELFDEV_TRIANGULATE", "0", 1)
-    setenv("OFFICIAL_AETHER_TRI_IGNORE_2VIEW", "0", 1)
+    setenv("OFFICIAL_AETHER_OFFICIAL_TRIANGULATE", "1", 0)
+    setenv("OFFICIAL_AETHER_SELFDEV_TRIANGULATE", "0", 0)
+    setenv("OFFICIAL_AETHER_TRI_IGNORE_2VIEW", "0", 0)
     // [SCALE-ANCHOR 2026-07-28 用户签决"四端通用,上生产"] 交付模型米制
     // 尺度锚定:BA 后全局 scale 是无锚 gauge 漂移(单目对 scale 严格不可
     // 观测;35 run 实测每采集 ±4~10.6% 系统性偏移),锚回平台 VIO
@@ -260,14 +297,14 @@ class OfficialAetherARKitPlugin: NSObject {
     // fail-open:估计失败/|s−1|>15% 即不缩放。裁决档
     // _host_fixtures/pose_drift_audit/SCALE_VERDICT.md;并排对比
     // _host_fixtures/scale_anchor_compare/(用户肉眼批准)。
-    setenv("OFFICIAL_AETHER_SCALE_ANCHOR", "1", 1)
+    setenv("OFFICIAL_AETHER_SCALE_ANCHOR", "1", 0)
     // [AR-EVERY-FRAME 2026-08-05 设备实验臂] 开启后:拍摄期每个被接受的帧
     // 都把当前 previewTracked(实时局部BA点云)推给 AR,让点云每帧可见生长,
     // 而不是只在稀疏的全局BA检查点(~8次)才刷新。Dart 侧默认关(读此 env);
     // 全局BA仍保留(帮 finalize)。host 前提已证 previewTracked 每帧单调增长
     // (Aether3D-cross openspec .../ar-display-decouple-premise-v1.md)。
     // ⛔ 应急回滚:删除此行即恢复稀疏检查点刷新(Dart env 读不到 → 分支不进)。
-    setenv("OFFICIAL_AETHER_AR_EVERY_FRAME", "1", 1)
+    setenv("OFFICIAL_AETHER_AR_EVERY_FRAME", "1", 0)
     // [SPLAT-RADIUS 2026-07-28 用户判决] AR 拍摄期**保持原尺寸(6px)**:
     // 放大到 20 会让红/黄/绿 track-length 分层被点径糊掉(用户实机判负,
     // 截图为证),而 AR 期的诉求是"看清覆盖分层"不是"糊成实体面"。
@@ -296,7 +333,7 @@ class OfficialAetherARKitPlugin: NSObject {
     // 两者是复刻 RS 分层读感的一对条件。点径停在 6 意味着 AR 分层会偏"椒盐"一侧;
     // 若日后要拿回那份读感,应从"降低 AR 绘制点数/只在低密度区放大"这类不增加
     // 持续 GPU 负载的方向走,而不是简单把上限调回 12。
-    setenv("OFFICIAL_AETHER_AR_SPLAT_MAX_PX", "6", 1)
+    setenv("OFFICIAL_AETHER_AR_SPLAT_MAX_PX", "6", 0)
     // Production ends at COLMAP's final global BA + official filtering.
     // Historical RestoreTemporalDetail / repair / enrichment passes are hard
     // disabled in the native translation unit and are not re-enabled here.
@@ -312,7 +349,7 @@ class OfficialAetherARKitPlugin: NSObject {
     // 线程数已签逐位全等)。预期 phase-2 80.6→~70s;k(全速 stage-1 与
     // enrich 争核膨胀)由本采集的 enrich_ms 直读。第二步(CAP 回 4 放飘
     // 分配,~58s)拿 ba_rounds 遥测的 ftol 早停证据后签决。
-    setenv("OFFICIAL_AETHER_STAGE1_ROUNDS_CAP", "2", 1)
+    setenv("OFFICIAL_AETHER_STAGE1_ROUNDS_CAP", "2", 0)
     // [E25-C 2026-07-20] 鬼层 mask 产出**已停用**(原 `setenv("OFFICIAL_AETHER_GHOST_MASK","1",1)`
     // 已删)。native 侧 MaybeWriteGhostMask 由该 env 门控(aether_sfm_c.cc 注释:
     // "Env-gated (OFFICIAL_AETHER_GHOST_MASK=1, default OFF)"),不设即回到 shipped 默认关。
@@ -994,6 +1031,75 @@ class OfficialAetherARKitPlugin: NSObject {
       OfficialAetherARKitPlugin.photoCardAnchors.append(cardAnchor)
       session.add(anchor: cardAnchor)
       result(nil)
+    // [AF-SELFHEAL 2026-08-10 用户签] 自动对焦自愈的薄原语(无 UI、无手势,
+    // 手动对焦已按用户指示删除)。病灶:失焦死锁 —— 糊掉的低纹理画面既无
+    // 相位信号也无反差梯度,连续 AF 收不到"失焦证据"不触发扫描(健身房
+    // 跑步机 10s+ 实测);ARKit 又刻意压制对焦频率(对焦呼吸伤 VIO)。
+    // 判定循环全在 Dart(持续糊+静止+节流,跨端同式);这里只执行一脚:
+    // 中心单次对焦(强制扫描打破死锁)→ 1.2s 后自动回连续。
+    case "focusNudge":
+      guard #available(iOS 16.0, *),
+            let device =
+              ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera
+      else { result(false); return }
+      do {
+        try device.lockForConfiguration()
+        if device.isFocusPointOfInterestSupported {
+          device.focusPointOfInterest = CGPoint(x: 0.5, y: 0.5)
+        }
+        if device.isFocusModeSupported(.autoFocus) {
+          device.focusMode = .autoFocus
+        }
+        device.unlockForConfiguration()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+          guard let d =
+                  ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera
+          else { return }
+          do {
+            try d.lockForConfiguration()
+            if d.isFocusModeSupported(.continuousAutoFocus) {
+              d.focusMode = .continuousAutoFocus
+            }
+            d.unlockForConfiguration()
+          } catch {}
+        }
+        NSLog("[AF-SELFHEAL] center one-shot nudge fired")
+        result(true)
+      } catch {
+        result(false)
+      }
+    // [ADAPTIVE-FPS 2026-08-10 用户签] 自适应取景帧率的薄执行器。策略全在
+    // Dart(热态滞回:fair≥10s→30fps,nominal≥30s→回 60,比苹果自带热降帧
+    // 更早出手,把 serious[帧税3.5×]推得更远)。这里走苹果自家热降帧的同一条
+    // 低层路:configurableCaptureDevice 会话内调帧间隔 —— 不换格式、不
+    // session.run、跟踪不断。区间越界或 API 不可用返回 false(能力申报)。
+    case "setPreviewFps":
+      guard #available(iOS 16.0, *),
+            let args = call.arguments as? [String: Any],
+            let fps = args["fps"] as? Int, fps > 0,
+            let device =
+              ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera
+      else { result(false); return }
+      let supported = device.activeFormat.videoSupportedFrameRateRanges
+        .contains { $0.minFrameRate <= Double(fps) &&
+                    Double(fps) <= $0.maxFrameRate }
+      guard supported else {
+        NSLog("[ADAPTIVE-FPS] fps=%d out of active format ranges — refused", fps)
+        result(false)
+        return
+      }
+      do {
+        try device.lockForConfiguration()
+        let dur = CMTime(value: 1, timescale: CMTimeScale(fps))
+        device.activeVideoMinFrameDuration = dur
+        device.activeVideoMaxFrameDuration = dur
+        device.unlockForConfiguration()
+        NSLog("[ADAPTIVE-FPS] preview fps set to %d (in-session)", fps)
+        result(true)
+      } catch {
+        NSLog("[ADAPTIVE-FPS] lockForConfiguration failed: \(error)")
+        result(false)
+      }
     case "clearPhotoCards":
       OfficialAetherARKitPlugin.clearPhotoCards(in: arSession)
       result(nil)
@@ -1067,15 +1173,12 @@ class OfficialAetherARKitPlugin: NSObject {
       // 遥测 F【resource】:拍摄页进入 → 10s 定时资源采样
       // (thermal/footprint/电池/CPU/SceneKit FPS → telemetry_official_native.jsonl)。
       OfficialPwNativeTelemetry.shared.startResourceSampling()
-      // [2026-07-12 热战役刀②,签决] 拍摄页进入 → 亮度调速器上岗
-      //(fair 封 70% / serious+ 封 60%,退出恢复;只在拍摄页生效)。
-      OfficialPwCaptureBrightnessGovernor.shared.begin()
+      // [2026-08-10 签决撤销] 热亮度调速器(原刀②)已删除:拍摄期屏幕保持
+      // 用户亮度不变,不随热状态封顶。
       result(nil)
     case "telemetryCaptureEnd":
       // 拍摄页退出(含等待页完成)→ 停采样,收尾补一条。
       OfficialPwNativeTelemetry.shared.stopResourceSampling()
-      // 刀②:退出拍摄页(含 dispose 路径,Dart 侧 dispose() 必调)→ 恢复原亮度。
-      OfficialPwCaptureBrightnessGovernor.shared.end()
       result(nil)
     default:
       result(FlutterMethodNotImplemented)
@@ -1251,6 +1354,34 @@ class OfficialAetherARKitPlugin: NSObject {
       NSLog("[OfficialAetherARKit] device tier LOW (\(String(format: "%.2f", physMemGB)) GB RAM), staying on default videoFormat \(res) to avoid 4K jetsam risk")
     }
 
+    // [热税刀② 2026-08-10 实验臂 OFFICIAL_AETHER_AR_30FPS=1,默认不存在=
+    // 零变化] 取景流 60→30fps:同分辨率、半帧率。取景流不进重建(重建只吃
+    // 快门 12MP 静照),砍的是传感器/ISP/ARKit 每秒一半的纯功耗 —— 目标是
+    // 推迟/避免 thermal serious(该态下每帧处理慢 3.5×)。风险靶=ARKit 位姿
+    // 质量(VIO 吃这条流),真机 A/B 判据:位姿轨迹/交付质量/热态时间线。
+    if ProcessInfo.processInfo.environment["OFFICIAL_AETHER_AR_30FPS"] == "1",
+       #available(iOS 16.0, *) {
+      // ⚠️ [2026-08-10 首测踩坑] 同分辨率同帧率的格式条目有"支持/不支持
+      // 高清静照"两个版本,菜单里不支持版排前面 —— 首版 .first 抓错,
+      // 12MP 快门 6 连败("有一张高分辨率照片未完成"横幅)。必须保持
+      // isRecommendedForHighResolutionFrameCapturing 与基线一致。
+      let want = configuration.videoFormat.imageResolution
+      let needHires =
+        configuration.videoFormat.isRecommendedForHighResolutionFrameCapturing
+      let half = ARWorldTrackingConfiguration.supportedVideoFormats
+        .filter {
+          $0.imageResolution == want && $0.framesPerSecond == 30 &&
+          $0.isRecommendedForHighResolutionFrameCapturing == needHires
+        }
+        .first
+      if let half {
+        configuration.videoFormat = half
+        NSLog("[OfficialAetherARKit] [AR-30FPS] locked \(half.imageResolution) @ 30 fps (hires=\(needHires))")
+      } else {
+        NSLog("[OfficialAetherARKit] [AR-30FPS] no matching 30fps format at \(want) hires=\(needHires) — staying at \(configuration.videoFormat.framesPerSecond) fps")
+      }
+    }
+
     // [E24 探针] 真实格式菜单落盘(ground truth,每次会话覆写):设备实际
     // supportedVideoFormats + 本次选中格式 + 模式。供跨端/格式决策引用,
     // 不再背菜单。
@@ -1268,12 +1399,23 @@ class OfficialAetherARKitPlugin: NSObject {
         }
         rows.append(row)
       }
-      let dump: [String: Any] = [
+      var dump: [String: Any] = [
         "mode": OfficialAetherARKitPlugin.videoFormatMode,
         "chosenWidth": Int(configuration.videoFormat.imageResolution.width),
         "chosenHeight": Int(configuration.videoFormat.imageResolution.height),
+        "chosenFps": configuration.videoFormat.framesPerSecond,
         "formats": rows,
       ]
+      // [ADAPTIVE-FPS 探针 2026-08-10] 选中格式底层 AVFormat 的帧率区间 ——
+      // 决定"会话内调帧间隔"(苹果自家热降帧的低层路)是否可行。
+      if #available(iOS 16.0, *),
+         let dev = ARWorldTrackingConfiguration
+           .configurableCaptureDeviceForPrimaryCamera {
+        dump["activeFormatFpsRanges"] =
+          dev.activeFormat.videoSupportedFrameRateRanges.map {
+            ["min": $0.minFrameRate, "max": $0.maxFrameRate]
+          }
+      }
       let docs = FileManager.default.urls(
         for: .documentDirectory, in: .userDomainMask)[0]
       let data = try JSONSerialization.data(
@@ -3300,6 +3442,11 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
     arscnView.automaticallyUpdatesLighting = true
     arscnView.scene = SCNScene()         // empty scene — camera feed only
     arscnView.rendersContinuously = true
+    // [热税刀② 2026-08-10 实验臂] 同一开关下渲染帧率也砍半(点云/卡片
+    // 显示层,不进重建)。默认不存在=零变化。
+    if ProcessInfo.processInfo.environment["OFFICIAL_AETHER_AR_30FPS"] == "1" {
+      arscnView.preferredFramesPerSecond = 30
+    }
     arscnView.preferredFramesPerSecond = 30
     arscnView.antialiasingMode = .none
     arscnView.delegate = self
@@ -3578,140 +3725,10 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
   }
 }
 
-// MARK: - OfficialPwCaptureBrightnessGovernor(热战役刀②:拍摄期屏幕亮度封顶)
-//
-// [2026-07-12 签决] 热二轮审计:常开基线(4K 相机 + 渲染 + OLED 满亮度)是
-// 热大头,OLED 亮度是其中少数可无损干预的旋钮。策略(用户签决):
-//   nominal        → 不动(用户亮度自主)
-//   fair           → 封顶 70%
-//   serious/critical → 封顶 60%
-//   退出拍摄页     → 恢复进入时亮度
-// 只在拍摄页生效(telemetryCaptureBegin/End 已是拍摄页进/出的可靠配对,
-// Dart dispose() 必调 End)。封顶=min(基线, cap),绝不调高;用户拍摄中
-// 手动改亮度会被识别为新基线(当前值 ≠ 上次我们设的值 → 重新基线),
-// 不与用户抢方向盘。切后台恢复原亮度(封顶不外泄到别的 App),回前台重套。
-// 遥测:brightness_cap 事件(apply/restore,from/to/cap/thermal)。
-// 定义在本文件里同 OfficialPwNativeTelemetry 的理由:蹭已有 pbxproj 文件零风险。
-final class OfficialPwCaptureBrightnessGovernor {
-  static let shared = OfficialPwCaptureBrightnessGovernor()
-
-  private var active = false
-  private var baselineBrightness: CGFloat = 1.0
-  private var lastApplied: CGFloat?  // 我们最后设置的值;nil = 尚未干预
-  private init() {}
-
-  /// 拍摄页进入(主线程,channel handler)。幂等。
-  func begin() {
-    guard !active else { return }
-    active = true
-    baselineBrightness = UIScreen.main.brightness
-    lastApplied = nil
-    let nc = NotificationCenter.default
-    nc.addObserver(
-      self, selector: #selector(thermalDidChange),
-      name: ProcessInfo.thermalStateDidChangeNotification, object: nil)
-    nc.addObserver(
-      self, selector: #selector(appWillResignActive),
-      name: UIApplication.willResignActiveNotification, object: nil)
-    nc.addObserver(
-      self, selector: #selector(appDidBecomeActive),
-      name: UIApplication.didBecomeActiveNotification, object: nil)
-    applyPolicy(reason: "captureBegin")
-  }
-
-  /// 拍摄页退出/dispose(主线程)。幂等。恢复基线亮度。
-  func end() {
-    guard active else { return }
-    active = false
-    NotificationCenter.default.removeObserver(self)
-    rebaselineIfUserChanged()
-    if let last = lastApplied, abs(last - baselineBrightness) > 0.004 {
-      let from = UIScreen.main.brightness
-      UIScreen.main.brightness = baselineBrightness
-      OfficialPwNativeTelemetry.shared.log("brightness_cap", [
-        "action": "restore",
-        "from": Double(from),
-        "to": Double(baselineBrightness),
-        "thermal": ProcessInfo.processInfo.thermalState.rawValue,
-      ])
-    }
-    lastApplied = nil
-  }
-
-  // ── 内部 ──────────────────────────────────────────────────────────
-
-  private func cap(for state: ProcessInfo.ThermalState) -> CGFloat? {
-    switch state {
-    case .nominal: return nil
-    case .fair: return 0.70
-    case .serious, .critical: return 0.60
-    @unknown default: return nil  // 未来新档位:宁可不干预
-    }
-  }
-
-  /// 基线追随用户:未干预状态(lastApplied == nil,如 begin 后首次 / 切走
-  /// 归还后回前台)当前值就是用户意志 → 无条件作基线;干预中若当前值 ≠ 我们
-  /// 最后设的值 = 用户手动改过 → 以新值为基线并视为未干预。
-  private func rebaselineIfUserChanged() {
-    let current = UIScreen.main.brightness
-    if let last = lastApplied {
-      if abs(current - last) > 0.01 {
-        baselineBrightness = current
-        lastApplied = nil  // 视为未干预,restore 语义随基线走
-      }
-    } else {
-      baselineBrightness = current
-    }
-  }
-
-  private func applyPolicy(reason: String) {
-    guard active else { return }
-    rebaselineIfUserChanged()
-    let state = ProcessInfo.processInfo.thermalState
-    let target: CGFloat
-    if let c = cap(for: state) {
-      target = min(baselineBrightness, c)
-    } else {
-      target = baselineBrightness
-    }
-    let from = UIScreen.main.brightness
-    guard abs(from - target) > 0.004 else { return }
-    UIScreen.main.brightness = target
-    lastApplied = target
-    OfficialPwNativeTelemetry.shared.log("brightness_cap", [
-      "action": "apply",
-      "reason": reason,
-      "from": Double(from),
-      "to": Double(target),
-      "cap": cap(for: state).map { Double($0) } ?? -1.0,
-      "thermal": state.rawValue,
-    ])
-    NSLog("[BrightnessGov] %@ thermal=%ld %.2f→%.2f", reason, state.rawValue,
-          Double(from), Double(target))
-  }
-
-  @objc private func thermalDidChange() {
-    // thermal 通知可能在后台线程投递;UIScreen 必须主线程。
-    DispatchQueue.main.async { self.applyPolicy(reason: "thermalDidChange") }
-  }
-
-  @objc private func appWillResignActive() {
-    // 切走(控制中心/App 切换)→ 还原,封顶不外泄;回前台 didBecomeActive 重套。
-    DispatchQueue.main.async {
-      guard self.active, let last = self.lastApplied else { return }
-      let current = UIScreen.main.brightness
-      // 用户切走前手动改过 → 不抢方向盘(回前台 applyPolicy 会重新基线)。
-      if abs(current - last) <= 0.01 {
-        UIScreen.main.brightness = self.baselineBrightness
-        self.lastApplied = nil
-      }
-    }
-  }
-
-  @objc private func appDidBecomeActive() {
-    DispatchQueue.main.async { self.applyPolicy(reason: "didBecomeActive") }
-  }
-}
+// MARK: - (已删除) OfficialPwCaptureBrightnessGovernor
+// [2026-08-10 用户签决] 原"热战役刀②:拍摄期亮度封顶"(2026-07-12 签决,
+// fair→70%/serious+→60%)整体删除:拍摄期屏幕亮度保持用户设定,恒定不变。
+// 历史实现见 git 历史与 docs 热二轮审计记录。
 
 // MARK: - OfficialPwNativeTelemetry(真机验收显微镜,native 侧 JSONL)
 //
