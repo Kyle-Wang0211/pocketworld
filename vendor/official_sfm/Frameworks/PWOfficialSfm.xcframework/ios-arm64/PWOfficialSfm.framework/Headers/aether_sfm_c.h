@@ -100,6 +100,20 @@ aether_sfm_result_t aether_sfm_add_frame(aether_sfm_session_t* s,
                                          const double pose_t[3],      // may be NULL
                                          int* out_frame_id);
 
+
+// [EXTRACT-PREFETCH 2026-08-08] Frame-level extract/match pipelining (PTAM/
+// ORB-SLAM front/back-end split; COLMAP's own extractor JobQueue shape, one
+// level up). Non-blocking: copies `gray`, hands it to the session's dedicated
+// extraction thread, returns immediately. The next aether_sfm_add_frame whose
+// image content matches adopts the finished features byte-for-byte instead of
+// extracting inline. Gated by OFFICIAL_AETHER_EXTRACT_PREFETCH=1; when unset
+// this is a no-op and add_frame is bit-identical to the pre-change path.
+// Returns 0 = enqueued, 1 = disabled/invalid args, 2 = busy (depth-1 queue
+// still holds the previous request — caller just skips prefetch this frame).
+int aether_sfm_prefetch_frame(aether_sfm_session_t* s,
+                              const unsigned char* gray, int width,
+                              int height);
+
 // Feature-injection sibling of aether_sfm_add_frame: skips extraction and
 // feeds precomputed keypoints (xy pairs, extractor's +0.5 half-pixel
 // convention) + n_keypoints×128 UBC RootSIFT u8 descriptors into the same

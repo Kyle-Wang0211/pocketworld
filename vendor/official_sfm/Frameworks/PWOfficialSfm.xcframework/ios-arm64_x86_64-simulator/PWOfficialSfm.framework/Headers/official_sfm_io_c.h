@@ -24,6 +24,16 @@ aether_sfm_result_t pwofficial_add_jpeg_frame(
     const double pose_t[3],
     int* out_frame_id);
 
+// [EXTRACT-PREFETCH 2026-08-09] JPEG-path prefetch: decode with the SAME
+// helper as pwofficial_add_jpeg_frame, then hand the luma plane to the
+// session's dedicated extraction thread (non-blocking). The next add whose
+// image content matches adopts the finished features byte-for-byte. No-op
+// (returns 1) unless OFFICIAL_AETHER_EXTRACT_PREFETCH=1.
+// Returns 0=enqueued, 1=disabled/invalid/decode-failure, 2=busy(skip).
+int pwofficial_prefetch_jpeg_frame(
+    aether_sfm_session_t* session,
+    const char* jpeg_path);
+
 // Diagnostic-only v6 Phase-B cached-capture replay ABI. Status values mirror
 // the private replay driver: 0=OFF, 1=OK, 2=invalid argument, 4=decode/extract
 // failure, and 7=sealed. This route performs extraction/counting only.
