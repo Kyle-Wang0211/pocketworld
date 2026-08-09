@@ -1,6 +1,12 @@
-// photo_card_state.dart — AR 空中照片卡片四态边框的纯 Dart 判定层。
+// photo_card_state.dart — AR 空中照片卡片边框的纯 Dart 判定层。
 //
-// 用户签决的设计(拍摄期 RS 式引导):
+// [2026-08-09 用户签决] **两态**:黑 = 没算(未处理/未注册),白 = 算完
+// (已注册)。红(断联)与黄(低视差)废除 —— live 云已改全白显示,质量
+// 分级信号整体退出边框层;覆盖云体素级引导(黄色区域横幅)是另一套系统,
+// 保留。下方四态枚举与黄态滞回机件保留(枚举值是跨 MethodChannel 的稳定
+// 编码,Swift 哑渲染器无需改;判定函数不再产出 2/3)。
+//
+// ── 以下为废除前的四态设计存档(阈值校准记录仍有史料价值)──
 //   黑 = 处理中:后台 SfM 还没算到这帧(帧不在最新快照/连通性数据里),
 //       **或已注册但真值视差还没算出来**(白/黄都是"真值已裁决"的状态,
 //       真值未到达不冒充"拍好了");
@@ -82,13 +88,15 @@ PhotoCardSfmState photoCardSfmState({
   required Float64List posesPacked,
   required bool? lowParallax,
 }) {
+  // [2026-08-09 用户签决] 四态 → 两态:"没算就是黑边框,算完就是白边框,
+  // 不需要再有红色状态"。红(断联)与黄(低视差)一并废除 —— live 云已
+  // 改全白显示,质量分级信号整体退出边框层;覆盖云体素级引导(黄色区域
+  // 横幅)是另一套系统,保留不动。registered==0 归"没算"(黑);已注册
+  // 即白,不再等真值视差裁决。lowParallax 参数保留签名兼容,判定忽略。
   for (var i = 0; i + 8 < posesPacked.length; i += 9) {
     if (posesPacked[i].toInt() != frameId) continue;
-    if (posesPacked[i + 1] == 0) return PhotoCardSfmState.disconnected;
-    if (lowParallax == null) return PhotoCardSfmState.pending;
-    return lowParallax
-        ? PhotoCardSfmState.lowParallax
-        : PhotoCardSfmState.registered;
+    if (posesPacked[i + 1] == 0) return PhotoCardSfmState.pending;
+    return PhotoCardSfmState.registered;
   }
   return PhotoCardSfmState.pending;
 }

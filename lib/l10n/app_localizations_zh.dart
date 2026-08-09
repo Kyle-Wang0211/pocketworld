@@ -294,6 +294,15 @@ class AppL10nZh extends AppL10n {
   String get meTabProjects => '项目';
 
   @override
+  String get meBadgeGenerating => '生成中';
+
+  @override
+  String get meBadgeUnfinished => '未完成';
+
+  @override
+  String get meBadgeDone => '完成';
+
+  @override
   String get meTabDrafts => '草稿';
 
   @override
@@ -373,7 +382,7 @@ class AppL10nZh extends AppL10n {
 
   @override
   String sfmProgressFedQueued(int fed, int queued) {
-    return '已处理 $fed 帧 · 剩余 $queued 帧';
+    return '已完成 $fed/$queued 帧';
   }
 
   @override

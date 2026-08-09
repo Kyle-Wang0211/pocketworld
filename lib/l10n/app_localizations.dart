@@ -619,6 +619,24 @@ abstract class AppL10n {
   /// **'Projects'**
   String get meTabProjects;
 
+  /// No description provided for @meBadgeGenerating.
+  ///
+  /// In en, this message translates to:
+  /// **'Generating'**
+  String get meBadgeGenerating;
+
+  /// No description provided for @meBadgeUnfinished.
+  ///
+  /// In en, this message translates to:
+  /// **'Unfinished'**
+  String get meBadgeUnfinished;
+
+  /// No description provided for @meBadgeDone.
+  ///
+  /// In en, this message translates to:
+  /// **'Done'**
+  String get meBadgeDone;
+
   /// No description provided for @meTabDrafts.
   ///
   /// In en, this message translates to:
@@ -766,7 +784,7 @@ abstract class AppL10n {
   /// No description provided for @sfmProgressFedQueued.
   ///
   /// In en, this message translates to:
-  /// **'Processed {fed} frames · {queued} remaining'**
+  /// **'Completed {fed}/{queued} frames'**
   String sfmProgressFedQueued(int fed, int queued);
 
   /// No description provided for @sfmElapsedSec.

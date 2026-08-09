@@ -61,9 +61,26 @@ class CaptureQualityRamp {
       (a + (b - a) * u).round().clamp(0, 255);
 }
 
-/// 出货档:2 视=纯红,8 视及以上=纯绿(中间连续)。
+/// 出货档:2 视=纯红,5 视及以上=纯绿(中间连续)。
 ///
-/// satAt=8 的取法:cap7 实测 track 分布 2 视 62.4% / 3 视 18.5% / 4 视 8.1% /
-/// ≥5 视 11.0%,均值 2.905、最长 33。定 8 让"绕着拍够的地方"能真正走到纯绿
-/// (对应 RS 主体 67% 饱和的读感),同时保留 2→8 的分辨力。**待肉眼签决**。
-const kCaptureQualityRamp = CaptureQualityRamp(floor: 2, satAt: 8);
+/// [T_SAT 8→5 2026-08-05] 三方独立证据一致落在 5,故下调:
+///  ① **Pix4D 官方**(同构的红→绿覆盖热图,唯一带数字的行业锚)逐字:
+///     "the overlap should be in green, i.e. each pixel should be visible in
+///     **more than 5 images**"。
+///  ② **我方实测**(146 帧真机采集 12.5 万点,E3 A 臂 points3D):track length
+///     p50=2 / p75=3 / **p90=5** / p95=6 / p99=10 / max=28。
+///  ③ **RC 逐点法医**(586,258 点原生 Bundler 直方图):**p90 同样是 5**。
+///
+/// 为什么原来的 8 太高:到 8 视的点只占 **1.9%**,到 10 视只占 0.9% ——
+/// 饱和段实际上永远够不着,屏幕上不可能出现"这块搞定了"的纯绿区。
+/// satAt=5 让 top ~10% 的点饱和成绿,才形成 RS 那种"主体绿 / 外围杂色"的对比。
+///
+/// ⚠️ 不要上调到 10–12:那是从"RS 主体被 30+ 相机看到"反推的,而那个 30+ 本身
+/// 是像素观察推断,**官方与民间均无公开阈值**(两轮穷尽检索确认)。按我方分布,
+/// 10–12 会让 99% 的点都不饱和,比 8 更糟。
+///
+/// ⚠️ 已知机制缺陷(暂不修):纯 track length 会被**同角度连拍虚涨**——Epic 官方
+/// FAQ 措辞是 "from various good **angles**"、"angles **in between** previous
+/// shots",Apple Object Capture 专利 US12394145B2 则把它实现成"入射角接近已有
+/// 视角则贡献打折"。长期应考虑角度加权;该专利需先过 FTO,不得照抄公式。
+const kCaptureQualityRamp = CaptureQualityRamp(floor: 2, satAt: 5);

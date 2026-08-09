@@ -31,7 +31,10 @@ import 'package:flutter/foundation.dart'
     show compute, defaultTargetPlatform, TargetPlatform;
 import '../../official_capture/dense_stage.dart';
 import 'package:flutter/cupertino.dart'
-    show CupertinoActionSheet, CupertinoActionSheetAction, showCupertinoModalPopup;
+    show
+        CupertinoActionSheet,
+        CupertinoActionSheetAction,
+        showCupertinoModalPopup;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
@@ -39,7 +42,6 @@ import 'package:vector_math/vector_math_64.dart' show Quaternion, Vector3;
 
 import '../../point_cloud_display/progressive_octree_order.dart';
 import '../../official_capture/capture_coverage_cloud.dart';
-import '../../official_capture/capture_quality_ramp.dart';
 import '../../official_capture/capture_session.dart';
 import '../../official_capture/colorize_pipeline.dart';
 import '../../official_capture/live_sfm_publish_policy.dart';
@@ -72,9 +74,15 @@ import 'capture_preview_rect.dart';
 import '../../official_capture/selection_box.dart';
 import 'selection_tools_layer.dart';
 import 'sparse_cloud_view.dart'
-    show CloudViewCamera, CloudViewController, SparseCloudPainter;
+    show
+        CloudViewCamera,
+        CloudViewController,
+        SparseCloudPainter,
+        editingFrameOf;
+import 'capture_exit_dialog.dart';
 import 'official_gallery_routes.dart';
 import 'sfm_preview_overlay.dart';
+import '../sparse_thumbnail.dart';
 
 class OfficialARCapturePage extends StatefulWidget {
   const OfficialARCapturePage({super.key});
@@ -237,6 +245,173 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// Capture coverage voxels remain a private guidance signal; the native
   /// renderer receives nothing before V20 and only stable SfM versions after.
   CoverageCloudPacked? _officialSfmArCloud;
+
+  // ─── [ENGINE-DRAFT 2026-08-09 用户签"第1张就要出云"] ─────────────────
+  // 引擎草稿云:第 1 张快门后、SfM 云(配对草稿/正式)到达前,把 ARKit VIO
+  // 特征点的 voxel 累积(_previewModel,已有取色与多尺度 hash)推给同一条
+  // setCoveragePointCloud 显示通道。纯显示层:一个点都不进重建。快门前零
+  // 显示(用户签);SfM 云一到,_pushCoverageCloud 的优先级自动让位。
+  CoverageCloudPacked? _engineDraftCloud;
+  int _engineDraftLastBuildMs = 0;
+  static const int _engineDraftMinObservations = 3; // v0 配方:≥3 次晋升
+  static const int _engineDraftMaxPoints = 20000;
+  static const int _engineDraftThrottleMs = 500;
+
+  // ── [ADAPTIVE-FPS 2026-08-10 用户签] 取景帧率热自适应(跨端策略层)──
+  // 苹果自带热降帧要等到真热才动;这里更早出手:fair 持续 ≥10s → 30fps,
+  // 回 nominal 持续 ≥30s → 回 60fps(滞回防抖)。取景流不进重建(重建只吃
+  // 快门 12MP 静照),纯功耗刀,目标=把 serious(帧税 3.5×)推得更远。
+  // 执行器各端一个薄调用(iOS=setPreviewFps 会话内调帧间隔,跟踪不断;
+  // Android ARCore/鸿蒙待接,能力差异实测申报)。
+  // env OFFICIAL_AETHER_ADAPTIVE_FPS=0(launch)可关。
+  static final bool _adaptiveFpsEnabled =
+      Platform.environment['OFFICIAL_AETHER_ADAPTIVE_FPS'] != '0';
+  Timer? _adaptiveFpsTimer;
+  int _adaptiveFpsCurrent = 60;
+  int _adaptiveHotSinceMs = 0;
+  int _adaptiveCoolSinceMs = 0;
+
+  void _adaptiveFpsTick() {
+    if (!_adaptiveFpsEnabled) return;
+    final tel = PwTelemetry.sample();
+    if (tel == null) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final hot = tel.thermalState >= 1; // fair 即算热(比苹果更早)
+    if (hot) {
+      _adaptiveCoolSinceMs = 0;
+      _adaptiveHotSinceMs = _adaptiveHotSinceMs == 0
+          ? now
+          : _adaptiveHotSinceMs;
+      if (_adaptiveFpsCurrent != 30 && now - _adaptiveHotSinceMs >= 10000) {
+        _adaptiveSetFps(30, tel.thermalState);
+      }
+    } else {
+      _adaptiveHotSinceMs = 0;
+      _adaptiveCoolSinceMs = _adaptiveCoolSinceMs == 0
+          ? now
+          : _adaptiveCoolSinceMs;
+      if (_adaptiveFpsCurrent != 60 && now - _adaptiveCoolSinceMs >= 30000) {
+        _adaptiveSetFps(60, tel.thermalState);
+      }
+    }
+  }
+
+  void _adaptiveSetFps(int fps, int thermal) {
+    _adaptiveFpsCurrent = fps;
+    DeviceLog.log(
+      'OfficialARCapturePage',
+      'adaptive-fps: → ${fps}fps (thermal=$thermal)',
+    );
+    unawaited(
+      _arKitChannel
+          .invokeMethod<bool>('setPreviewFps', {'fps': fps})
+          .then((ok) {
+            if (ok != true) {
+              DeviceLog.log(
+                'OfficialARCapturePage',
+                'adaptive-fps: 执行器拒绝 fps=$fps(能力申报)',
+              );
+            }
+            return null;
+          })
+          .catchError((_) => null),
+    );
+  }
+
+  // ── [AF-SELFHEAL 2026-08-10 用户签] 失焦死锁自愈(无 UI 零操作)─────
+  // 病灶:糊掉的低纹理画面无相位信号无反差梯度 → 连续 AF 收不到失焦证据
+  // 不触发扫描(健身房实测 10s+)。判定(跨端同式,各端只执行 focusNudge):
+  // 持续糊 ≥1.8s(sharpnessConsensus<100,6Hz 画质样本)且相机基本静止
+  // (500ms 窗口 <6cm/<6°)且距上次 ≥5s → 踢一脚中心单次对焦。
+  int _afBlurSinceMs = 0;
+  int _afLastNudgeMs = 0;
+  Vector3? _afPrevPos;
+  Quaternion? _afPrevOrient;
+  int _afPrevPoseMs = 0;
+
+  void _afSelfHealCheck(ARPose p) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    bool stationary = false;
+    final prevPos = _afPrevPos;
+    final prevOri = _afPrevOrient;
+    if (prevPos != null && prevOri != null && now - _afPrevPoseMs <= 900) {
+      final moved = (p.position - prevPos).length;
+      final dot =
+          (p.orientation.w * prevOri.w +
+                  p.orientation.x * prevOri.x +
+                  p.orientation.y * prevOri.y +
+                  p.orientation.z * prevOri.z)
+              .abs()
+              .clamp(0.0, 1.0);
+      final angle = 2 * math.acos(dot);
+      stationary = moved < 0.06 && angle < 0.10;
+    }
+    if (now - _afPrevPoseMs > 400) {
+      _afPrevPos = p.position.clone();
+      _afPrevOrient = Quaternion.copy(p.orientation);
+      _afPrevPoseMs = now;
+    }
+    final q = p.quality;
+    if (q == null) return;
+    final blurred = q.sharpnessConsensus < 100.0;
+    if (!blurred) {
+      _afBlurSinceMs = 0;
+      return;
+    }
+    if (!stationary) return; // 移动中的糊是运动模糊,不踢
+    _afBlurSinceMs = _afBlurSinceMs == 0 ? now : _afBlurSinceMs;
+    if (now - _afBlurSinceMs >= 1800 && now - _afLastNudgeMs >= 5000) {
+      _afLastNudgeMs = now;
+      _afBlurSinceMs = 0;
+      DeviceLog.log(
+        'OfficialARCapturePage',
+        'af-selfheal: nudge fired '
+            '(sharpC=${q.sharpnessConsensus.toStringAsFixed(0)})',
+      );
+      unawaited(
+        _arKitChannel
+            .invokeMethod<bool>('focusNudge')
+            .then((_) => null)
+            .catchError((_) => null),
+      );
+    }
+  }
+
+  void _maybePushEngineDraft() {
+    if (!_recording || _projectPhotos.count < 1) return;
+    final sfm = _officialSfmArCloud;
+    if (sfm != null && sfm.xyz.isNotEmpty) return; // SfM 云已接管显示
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (nowMs - _engineDraftLastBuildMs < _engineDraftThrottleMs) return;
+    _engineDraftLastBuildMs = nowMs;
+    // voxels getter 已按 observations 降序 —— 截断即"最稳的前 N 个"。
+    final voxels = _previewModel.voxels;
+    var n = 0;
+    for (final v in voxels) {
+      if (v.observations >= _engineDraftMinObservations) n++;
+      if (n >= _engineDraftMaxPoints) break;
+    }
+    if (n == 0) return;
+    final xyz = Float32List(n * 3);
+    final rgb = Uint8List(n * 3);
+    var i = 0;
+    for (final v in voxels) {
+      if (v.observations < _engineDraftMinObservations) continue;
+      final base = i * 3;
+      xyz[base] = v.position.x;
+      xyz[base + 1] = v.position.y;
+      xyz[base + 2] = v.position.z;
+      // [2026-08-09 用户签决"全部都是白色"] 草稿云原取体素真彩(相机采样均值),
+      // 与 SfM 云统一改白 —— 不然开头几秒彩色、SfM 云一到全白,肉眼一跳。
+      rgb[base] = 255;
+      rgb[base + 1] = 255;
+      rgb[base + 2] = 255;
+      i++;
+      if (i >= n) break;
+    }
+    _engineDraftCloud = CoverageCloudPacked(xyz, rgb);
+    _scheduleCoveragePush();
+  }
 
   // ─── "拍摄角度不足"实时横幅(补强1,真值口径)───────────────────────
   // starvedTrue(观测达标但真实三角化角低于 parallaxMinDeg=5° 的体素数,
@@ -418,6 +593,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           _diagPoseClock.start();
         }
         _previewModel.updateFromPose(p, photoCount: _projectPhotos.count);
+        // [AF-SELFHEAL] 失焦死锁自愈判定(取景与拍摄全程生效)。
+        _afSelfHealCheck(p);
+        // [ENGINE-DRAFT] 第 1 张后、SfM 云到达前的引擎草稿推送(内部自带
+        // 节流与让位判断,SfM 云接管后是纯 no-op)。
+        _maybePushEngineDraft();
         // Coverage-cloud position upkeep — never lights points up by itself
         // (only markCapture at each shutter does).
         _coverageCloud.ingestPose(p);
@@ -434,6 +614,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         _checkArWarmup(p);
       });
       await session.attach();
+      // [ADAPTIVE-FPS] 策略时钟(5s 轮询,页面生命周期内)。
+      _adaptiveFpsTimer ??= Timer.periodic(
+        const Duration(seconds: 5),
+        (_) => _adaptiveFpsTick(),
+      );
       // 遥测【resource】:拍摄页进入 → 通知 Swift 起 10s 资源采样
       // (thermal/footprint/电池/CPU/SceneKit FPS →
       // telemetry_official_native.jsonl)。
@@ -630,25 +815,43 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     if (_finishTapInProgress) _finishCancellationRequested = true;
     _closeTapInProgress = true;
     try {
-      final discard = await showDialog<bool>(
-        context: context,
-        barrierDismissible: false,
-        builder: (ctx) => AlertDialog(
-          title: const Text('退出拍摄？'),
-          content: const Text('这次拍摄的素材会被丢弃，不会进入草稿。'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(false),
-              child: const Text('继续拍摄'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(ctx).pop(true),
-              child: const Text('退出并丢弃'),
-            ),
-          ],
-        ),
-      );
-      if (!mounted || discard != true) return;
+      // [2026-08-09 用户签决,附截图] 黑白弹窗 + 滑轴:左=退出并保存照片,
+      // 右=退出并不保存照片;第二行"继续拍摄";点弹窗外自动返回拍摄。
+      final choice = await showCaptureExitDialog(context);
+      if (!mounted || choice == null) return;
+
+      if (choice == CaptureExitChoice.saveExit) {
+        // 退出并保存:与"完成"同一条落草稿链路,但**不启动重建** ——
+        // 照片与增量 db 原样留在盘上,草稿显示"未完成",点卡片可断点续跑。
+        // 无损:不 cancelPending,先把在途快门全部落地。
+        _discardingCapture = true;
+        final session = _session;
+        await _shutterQueue.freezeAndDrain();
+        if (session != null) {
+          await session.stop();
+          await session.waitForPendingPhotoSaves();
+        }
+        final recon = _sfmRecon;
+        if (recon != null) {
+          _sfmRecon = null;
+          await _sfmFeedSub?.cancel();
+          _sfmFeedSub = null;
+          await _sfmEventSub?.cancel();
+          _sfmEventSub = null;
+          unawaited(recon.dispose());
+        }
+        await _persistDraft(showSnackBar: false);
+        if (!mounted) return;
+        setState(() {
+          _recording = false;
+          _isAiming = false;
+          _lockInProgress = false;
+        });
+        _previewModel.reset();
+        // pop(true) = 提示外壳切到"我的草稿"(与完成路径同语义)。
+        Navigator.of(context).pop(true);
+        return;
+      }
 
       _discardingCapture = true;
       _shutterQueue.cancelPending();
@@ -776,6 +979,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // Fresh take → empty coverage cloud (0 photos ⇒ 0 dots on screen).
       _coverageCloud.reset();
       _officialSfmArCloud = null;
+      _engineDraftCloud = null;
+      _engineDraftLastBuildMs = 0;
       // Fresh take → 卡片边框状态机归零(native 卡片已由 clearPhotoCards
       // 清掉,这里清 Dart 侧差量缓存与连通性数据)。
       _photoCardStateSent.clear();
@@ -952,8 +1157,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   CoverageCloudPacked? _pushedArCloud;
 
   Future<void> _pushCoverageCloud({bool force = false}) async {
+    // [ENGINE-DRAFT] 优先级:SfM 云(配对草稿/正式)> 引擎草稿 > 空。
     final packed =
         _officialSfmArCloud ??
+        _engineDraftCloud ??
         CoverageCloudPacked(Float32List(0), Uint8List(0));
     if (!force && identical(packed, _pushedArCloud)) return;
     _pushedArCloud = packed;
@@ -983,22 +1190,28 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     final source = snapshot.summary['source'];
     if (!_recording ||
         (source != 'streaming_global_ba' &&
-            source != 'streaming_local_ba_live') ||
-        snapshot.pointCount <= 0) {
+            source != 'streaming_local_ba_live')) {
       return;
     }
-    final rgb = Uint8List(snapshot.pointCount * 3);
-    final offsets = snapshot.obsOffsets;
-    for (var i = 0; i < snapshot.pointCount; i++) {
-      final trackLength = offsets.length == snapshot.pointCount + 1
-          ? offsets[i + 1] - offsets[i]
-          : 0;
-      final base = i * 3;
-      final c = kCaptureQualityRamp.colorFor(trackLength);
-      rgb[base] = c.$1;
-      rgb[base + 1] = c.$2;
-      rgb[base + 2] = c.$3;
+    if (snapshot.pointCount <= 0) {
+      // [ENGINE-DRAFT 2026-08-09] 删照片把 live 模型删空(3→2→1)时,worker
+      // 的 frame_removed 推送会带 0 点 —— 此前这里直接 return,屏幕会留着
+      // 删除前的旧云。现在:清掉 SfM 云占位,让 _pushCoverageCloud 落回
+      // 引擎草稿(还有照片时)或空(全删光)。
+      if (snapshot.summary['frame_removed'] != null) {
+        _officialSfmArCloud = null;
+        if (_projectPhotos.count < 1) _engineDraftCloud = null;
+        _engineDraftLastBuildMs = 0;
+        await _pushCoverageCloud(force: true);
+      }
+      return;
     }
+    // [2026-08-09 用户签决] 拍摄期 AR live 云**全白**,不再按质量分绿/黄/红。
+    // 原先每个点按 track 长度过 kCaptureQualityRamp 上色(2=红 3=橙 4=黄绿
+    // ≥5=绿),用户裁掉:"不用根据颜色区分状态"。ramp 本体与它的引导横幅
+    // ("对黄色区域…",挂的是覆盖体素统计,另一套系统)不在本刀范围。
+    final rgb = Uint8List(snapshot.pointCount * 3);
+    rgb.fillRange(0, rgb.length, 255);
     // Potree-style hierarchy ordering is computed on a worker isolate. This is
     // display-only: the source SfM snapshot and final PLY stay intact.
     final displayCloud = await compute(buildProgressivePointCloud, (
@@ -1702,6 +1915,21 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           rgb: rgb,
         );
         persistOk = true;
+        // [2026-08-08 用户实机指认] "点云诞生出来的那一刻就删除封面照片然后立刻
+        // 替换成点云截图" —— 草稿卡片的封面在这里就画好,而不是等回到草稿页轮询
+        // 补图(那会让卡片先显示照片、几秒后肉眼跳变一下)。
+        //
+        // unawaited 是刻意的:上面那句注释说明了 persist 必须先完成才让"完成"
+        // 按钮出现,画封面不能再往这条路上加延迟。用户此刻还在预览页看结果,
+        // 等他点"完成"再走到草稿页,封面早就在盘上了。万一没赶上(立刻点完成),
+        // 草稿页的懒补图仍是兜底。
+        unawaited(
+          writeSparseThumbFrom(
+            captureDir: captureDir,
+            xyz: fsnap.xyz,
+            rgb: rgb,
+          ),
+        );
         // [E25-D 2026-07-20] 原在此把交付点序的 ghost_view_mask.bin 与 PLY
         // 一起落盘(供草稿查看页对齐渲染门)。L2 已删,不再产该 sidecar。
       } catch (e) {
@@ -1974,7 +2202,6 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     final dir = _session?.captureDir;
     if (snap == null || dir == null || snap.pointCount == 0) return;
     final fit = SparseCloudPainter.fitOf(snap.xyz);
-    final aabb = SparseCloudPainter.aabbOf(snap.xyz);
     final loaded = await SelectionBox.loadFrom(dir);
     final sane =
         loaded != null &&
@@ -1984,15 +2211,14 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           fitCz: fit.cz,
           fitRadius: fit.radius,
         );
+    final frame = editingFrameOf(snap.xyz);
     final box = sane
         ? loaded
-        : SelectionBox.initialFor(
-            cx: aabb.cx,
-            cy: aabb.cy,
-            cz: aabb.cz,
-            hx: aabb.hx,
-            hy: aabb.hy,
-            hz: aabb.hz,
+        : SelectionBox.initialSquareFace(
+            cx: frame.center[0],
+            cy: frame.center[1],
+            cz: frame.center[2],
+            halfExtent: math.max(frame.hx, math.max(frame.hy, frame.hz)),
           );
     if (!mounted) return;
     setState(() {
@@ -2028,15 +2254,13 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   void _resetSfmBoxSize() {
     final snap = _sfmSnapshot;
     if (snap == null) return;
-    final aabb = SparseCloudPainter.aabbOf(snap.xyz);
+    final frame = editingFrameOf(snap.xyz);
     _onSfmBoxChanged(
-      SelectionBox.initialFor(
-        cx: aabb.cx,
-        cy: aabb.cy,
-        cz: aabb.cz,
-        hx: aabb.hx,
-        hy: aabb.hy,
-        hz: aabb.hz,
+      SelectionBox.initialSquareFace(
+        cx: frame.center[0],
+        cy: frame.center[1],
+        cz: frame.center[2],
+        halfExtent: math.max(frame.hx, math.max(frame.hy, frame.hz)),
       ),
     );
   }
@@ -2095,8 +2319,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     }
 
     final finalBox = entry ?? b;
-    final finalApplied =
-        entry != null ? _sfmEditEntryApplied : _sfmSelectionApplied;
+    final finalApplied = entry != null
+        ? _sfmEditEntryApplied
+        : _sfmSelectionApplied;
     if (finalBox != null) {
       await _persistSfmBox(finalBox, dir, applied: finalApplied);
     }
@@ -2164,11 +2389,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // 回滚到编辑前的正式状态。若当时盘上没有选区，删除旧版本可能提前
       // 写入的记录；不能把仅用于显示的兜底框冒充成用户保存的选区。
       if (dir != null) {
-        await _persistSfmBox(
-          baseline,
-          dir,
-          applied: !_sfmBoxBaselineWasAbsent,
-        );
+        await _persistSfmBox(baseline, dir, applied: !_sfmBoxBaselineWasAbsent);
       }
       if (mounted) {
         setState(() {
@@ -2177,11 +2398,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         });
       }
     } else if (dir != null && _sfmBox != null) {
-      await _persistSfmBox(
-        _sfmBox!,
-        dir,
-        applied: _sfmSelectionApplied,
-      );
+      await _persistSfmBox(_sfmBox!, dir, applied: _sfmSelectionApplied);
     }
     _sfmBoxBaseline = null; // 本次编辑已裁决,下次修改重新抓基线
     _sfmBoxBaselineWasAbsent = false;
@@ -2886,6 +3103,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     final sfmRecon = _sfmRecon;
     _sfmRecon = null;
     if (sfmRecon != null) unawaited(sfmRecon.dispose());
+    _adaptiveFpsTimer?.cancel(); // [ADAPTIVE-FPS]
     _previewModel.dispose();
     _projectPhotos.dispose();
     _targetPoints.dispose();
@@ -2963,8 +3181,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                   // [2026-07-27 UI 签决]"官方"路由徽章已删除:线上只剩这一条
                   // 采集路由(另一条 lib/ui/capture/ar_capture_page.dart 早已
                   // 不存在),标签对用户零信息量,只是占着取景框右上角。
+                  // [2026-08-10 用户签决,附截图] 右上角"×"改为左上角"<",
+                  // 功能保持不变(仍走 _onCloseTap 的退出弹窗)。
                   child: Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
+                    mainAxisAlignment: MainAxisAlignment.start,
                     children: [_CloseButton(onTap: _onCloseTap)],
                   ),
                 ),
@@ -3235,10 +3455,14 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               phase: _sfmPhase!,
               snapshot: _sfmSnapshot,
               errorText: _sfmErrorText,
+              // [2026-08-09 用户签决] 进度口径=用户视角:"已完成 x/N 帧",
+              // N=本场实拍照片数。补算/重喂是内部机制,不暴露 —— 欠账帧
+              // 补算完成时 fed 自然爬到 N,用户只看到计数在涨。
               progressText: _sfmQueued > 0
-                  ? AppL10n.of(
-                      context,
-                    ).sfmProgressFedQueued(_sfmFed, _sfmQueued)
+                  ? AppL10n.of(context).sfmProgressFedQueued(
+                      math.min(_sfmFed, _projectPhotos.count),
+                      _projectPhotos.count,
+                    )
                   : _sfmStageProgressText(context),
               onCameraChanged: (c) => _sfmPreviewCamera.value = c,
               editing: _sfmEditing,
@@ -3275,8 +3499,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               // 就直接保存草稿。与底部"下一步"共用同一个进入函数,所以两个
               // 入口不会产生两种状态。编辑态的出口("保存"/"返回")归
               // SelectionToolsLayer,这里不再出按钮。
-              onEnterEditing: _sfmSnapshot != null &&
-                      _sfmSnapshot!.pointCount > 0
+              onEnterEditing:
+                  _sfmSnapshot != null && _sfmSnapshot!.pointCount > 0
                   ? _enterSfmEditing
                   : null,
             ),
@@ -3987,37 +4211,22 @@ class _AlbumThumbButton extends StatelessWidget {
       child: CustomPaint(
         foregroundPainter: _AlbumRingPainter(progress: progress),
         child: Container(
-        width: kCaptureAlbumThumbSize,
-        height: kCaptureAlbumThumbSize,
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.44),
-          borderRadius: BorderRadius.circular(14),
-          // [RS-RING] 原 0.5α 静态白边即进度环的"轨道";实心白弧压其上。
-          border: Border.all(
-            color: Colors.white.withValues(alpha: 0.5),
-            width: 1.5,
+          width: kCaptureAlbumThumbSize,
+          height: kCaptureAlbumThumbSize,
+          decoration: BoxDecoration(
+            color: Colors.black.withValues(alpha: 0.44),
+            borderRadius: BorderRadius.circular(14),
+            // [RS-RING] 原 0.5α 静态白边即进度环的"轨道";实心白弧压其上。
+            border: Border.all(
+              color: Colors.white.withValues(alpha: 0.5),
+              width: 1.5,
+            ),
           ),
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            // [2026-07-27 UI-5] 无照片时不再放相册占位图标 —— 分数就画在正
-            // 中央,图标正好垫在数字底下糊成一团。空态留纯深色底,分数自己
-            // 就是"这里是相册、已拍 N/上限"的全部信息。
-            if (latestPath != null)
-              Image.file(File(latestPath!), fit: BoxFit.cover, cacheWidth: 120),
-            // [SIGNED 2026-07-27] 分子/分母:上限恒可见(RS 从 0/300 起就
-            // 显示),让用户随时知道预算还剩多少 —— 不是拍到头才告知。达到
-            // 上限时转琥珀色,与快门置灰同源(officialCaptureCanShoot)。
-            //
-            // [2026-07-27 UI-4] 复刻 RS 的呈现:数字从右下角的黑胶囊徽章挪到
-            // 缩略图**正中**,去掉徽章底色**直接压在照片上**,并改成 RS 那种
-            // 上下堆叠的分数(分子 / 横线 / 分母)。可读性靠文字阴影而不是
-            // 底色 —— 底色会挡住照片,那正是这次要去掉的东西。
-            Center(child: _AlbumCountFraction(count: count)),
-          ],
-        ),
+          clipBehavior: Clip.antiAlias,
+          // [2026-08-10 用户签决,附手绘] 相册缩略图照片撤下,徽章只显示计数:
+          // 左上**大**分子(已拍帧数)+ 斜杠 + 右下**小** 300。取代 07-27 的
+          // "照片上压竖排分数"。点击仍开相册,进度环照旧。
+          child: _AlbumCountFraction(count: count),
         ),
       ),
     );
@@ -4093,23 +4302,63 @@ class _AlbumCountFraction extends StatelessWidget {
       fontWeight: FontWeight.w700,
       shadows: _shadows,
     );
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text('$count', style: style),
-        Container(
-          width: 26,
-          height: 1.5,
-          margin: const EdgeInsets.symmetric(vertical: 2),
-          decoration: BoxDecoration(
-            color: tint,
-            boxShadow: const [
-              BoxShadow(color: Color(0xCC000000), blurRadius: 4),
-            ],
-          ),
-        ),
-        Text('$kOfficialMaximumCaptureFrames', style: style),
-      ],
+    // [2026-08-10 用户签决,附手绘] 斜杠分数版式:左上大分子 + 45° 斜杠 +
+    // 右下小分母。分子随位数自适应字号(3 位数不撑破 60pt 徽章)。
+    //
+    // [2026-08-10 二稿] 斜杠恒 45°,且到两个数字的距离相等 —— 用 TextPainter
+    // 实测两段文字的包围盒,把斜杠中心放在"分子右下角 ↔ 分母左上角"连线的
+    // 中点上;位数变化(字宽变化)时自动保持等距,不靠写死坐标。
+    final bigSize = count >= 100 ? 19.0 : 22.0;
+    final bigStyle = style.copyWith(fontSize: bigSize, height: 1.0);
+    final smallStyle = style.copyWith(fontSize: 10, height: 1.0);
+    final bigTp = TextPainter(
+      text: TextSpan(text: '$count', style: bigStyle),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    final smallTp = TextPainter(
+      text: TextSpan(text: '$kOfficialMaximumCaptureFrames', style: smallStyle),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    const slashLen = 24.0;
+    return LayoutBuilder(
+      builder: (context, c) {
+        final w = c.maxWidth, h = c.maxHeight;
+        // 分子锚在 (7,5),分母锚在 right:6/bottom:4(与 Positioned 一致)。
+        final bigBR = Offset(7 + bigTp.width, 5 + bigTp.height);
+        final smallTL = Offset(w - 6 - smallTp.width, h - 4 - smallTp.height);
+        final mid = Offset(
+          (bigBR.dx + smallTL.dx) / 2,
+          (bigBR.dy + smallTL.dy) / 2,
+        );
+        return Stack(
+          children: [
+            Positioned(left: 7, top: 5, child: Text('$count', style: bigStyle)),
+            // 斜杠:竖线顺时针转 45° = "/",中心 = 两数字近角连线中点。
+            Positioned(
+              left: mid.dx - 0.75,
+              top: mid.dy - slashLen / 2,
+              child: Transform.rotate(
+                angle: math.pi / 4,
+                child: Container(
+                  width: 1.5,
+                  height: slashLen,
+                  decoration: BoxDecoration(
+                    color: tint,
+                    boxShadow: const [
+                      BoxShadow(color: Color(0xCC000000), blurRadius: 4),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              right: 6,
+              bottom: 4,
+              child: Text('$kOfficialMaximumCaptureFrames', style: smallStyle),
+            ),
+          ],
+        );
+      },
     );
   }
 }
@@ -4210,7 +4459,8 @@ class _CloseButton extends StatelessWidget {
         ),
         alignment: Alignment.center,
         child: Icon(
-          Icons.close_rounded,
+          // [2026-08-10 用户签决] "×"→"<"(与草稿等待页的返回箭头同款)。
+          Icons.arrow_back_ios_new_rounded,
           size: 17,
           color: Colors.white.withValues(alpha: 0.9),
         ),

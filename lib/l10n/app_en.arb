@@ -174,6 +174,9 @@
   "commonCancel": "Cancel",
   "commonOk": "OK",
   "meTabProjects": "Projects",
+  "meBadgeGenerating": "Generating",
+  "meBadgeUnfinished": "Unfinished",
+  "meBadgeDone": "Done",
   "meTabDrafts": "Drafts",
   "defaultImportedScan": "Imported model",
   "meDisplayName": "Display name",
@@ -219,7 +222,7 @@
   },
   "sfmChipReconEnded": "Reconstruction ended",
   "sfmQueueDrainedFinal": "Frame queue drained · generating final point cloud",
-  "sfmProgressFedQueued": "Processed {fed} frames · {queued} remaining",
+  "sfmProgressFedQueued": "Completed {fed}/{queued} frames",
   "@sfmProgressFedQueued": {
     "placeholders": {
       "fed": {

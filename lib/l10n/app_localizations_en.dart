@@ -298,6 +298,15 @@ class AppL10nEn extends AppL10n {
   String get meTabProjects => 'Projects';
 
   @override
+  String get meBadgeGenerating => 'Generating';
+
+  @override
+  String get meBadgeUnfinished => 'Unfinished';
+
+  @override
+  String get meBadgeDone => 'Done';
+
+  @override
   String get meTabDrafts => 'Drafts';
 
   @override
@@ -380,7 +389,7 @@ class AppL10nEn extends AppL10n {
 
   @override
   String sfmProgressFedQueued(int fed, int queued) {
-    return 'Processed $fed frames · $queued remaining';
+    return 'Completed $fed/$queued frames';
   }
 
   @override
