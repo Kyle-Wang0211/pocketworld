@@ -22,7 +22,10 @@
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:pocketworld_flutter/capture/photo_card_state.dart';
+// [2026-08-09] 改指出货栈:lib/capture/ 是退役旧栈的平行副本,采集页
+// (ar_capture_page)实际 import 的是 official_capture/ 这份 —— 测错树
+// 等于没测(平行同名实现老坑,见记忆 feedback_parallel_trees)。
+import 'package:pocketworld_flutter/official_capture/photo_card_state.dart';
 
 int _failures = 0;
 
@@ -48,21 +51,21 @@ void main() {
   // 快照:帧 3、7 已注册,帧 5 未注册(断联),帧 9 根本不在快照里。
   final poses = fakePoses([(3, true), (5, false), (7, true)]);
 
-  // ── 三态基线(黑/白/红)────────────────────────────────────────────
+  // ── [2026-08-09 用户签决] 两态契约:没算=黑,算完(已注册)=白 ─────
   check(
     '不在快照 → 黑(pending)',
     photoCardSfmState(frameId: 9, posesPacked: poses, lowParallax: null),
     PhotoCardSfmState.pending,
   );
   check(
-    '在快照且 registered==1 + 真值裁决"视差充分" → 白(registered)',
+    '已注册 → 白(真值视差不再参与边框裁决)',
     photoCardSfmState(frameId: 3, posesPacked: poses, lowParallax: false),
     PhotoCardSfmState.registered,
   );
   check(
-    '在快照且 registered==0 → 红(disconnected,无需视差证据)',
+    '在快照但 registered==0 → 黑(红态废除,"没算"即黑)',
     photoCardSfmState(frameId: 5, posesPacked: poses, lowParallax: null),
-    PhotoCardSfmState.disconnected,
+    PhotoCardSfmState.pending,
   );
   check(
     '空快照(拍摄刚开始)→ 黑',
@@ -70,32 +73,23 @@ void main() {
         frameId: 3, posesPacked: Float64List(0), lowParallax: null),
     PhotoCardSfmState.pending,
   );
-
-  // ── 白→黄反序修复:已注册但真值未到达(null)→ 保持黑(处理中)────
   check(
-    '已注册 + 真值未到达(null)→ 黑(不再让视锥近似抢答白)',
+    '已注册 + 真值未到达(null)→ 仍是白(不再等真值裁决)',
     photoCardSfmState(frameId: 3, posesPacked: poses, lowParallax: null),
-    PhotoCardSfmState.pending,
-  );
-
-  // ── 第四态(黄=已注册但低视差)+ 优先级 红 > 黄 > 白 > 黑 ─────────
-  check(
-    '已注册 + 真值低视差 → 黄(lowParallax)',
-    photoCardSfmState(frameId: 7, posesPacked: poses, lowParallax: true),
-    PhotoCardSfmState.lowParallax,
-  );
-  check(
-    '已注册 + 真值视差充分 → 白',
-    photoCardSfmState(frameId: 7, posesPacked: poses, lowParallax: false),
     PhotoCardSfmState.registered,
   );
   check(
-    '断联 + 低视差 → 仍是红(红 > 黄)',
-    photoCardSfmState(frameId: 5, posesPacked: poses, lowParallax: true),
-    PhotoCardSfmState.disconnected,
+    '已注册 + 真值低视差 → 仍是白(黄态废除)',
+    photoCardSfmState(frameId: 7, posesPacked: poses, lowParallax: true),
+    PhotoCardSfmState.registered,
   );
   check(
-    '未处理 + 低视差 → 仍是黑(没算完不谈质量)',
+    '未注册 + 低视差 → 黑(黄红皆废,没算即黑)',
+    photoCardSfmState(frameId: 5, posesPacked: poses, lowParallax: true),
+    PhotoCardSfmState.pending,
+  );
+  check(
+    '未处理 + 低视差 → 黑',
     photoCardSfmState(frameId: 9, posesPacked: poses, lowParallax: true),
     PhotoCardSfmState.pending,
   );
@@ -236,11 +230,14 @@ void main() {
       return photoCardSfmState(frameId: 1, posesPacked: p, lowParallax: was);
     }
 
-    check('端到端:真值未到 → 黑', st(null), PhotoCardSfmState.pending);
-    check('端到端:首个真值 3° → 黄(黑直达黄,无白→黄反序)',
-        st(3.0), PhotoCardSfmState.lowParallax);
-    check('端到端:抖到 5.3°(带内)→ 保持黄',
-        st(5.3), PhotoCardSfmState.lowParallax);
+    // [2026-08-09 两态] 真值/滞回仍在算(frameLowParallaxTrue 机件保留),
+    // 但边框判定一律忽略 —— 已注册恒白。
+    check('端到端:真值未到 → 白(两态:已注册即算完)',
+        st(null), PhotoCardSfmState.registered);
+    check('端到端:首个真值 3° → 仍白(黄态废除)',
+        st(3.0), PhotoCardSfmState.registered);
+    check('端到端:抖到 5.3° → 仍白',
+        st(5.3), PhotoCardSfmState.registered);
     check('端到端:补拍后 8° → 白', st(8.0), PhotoCardSfmState.registered);
   }
 
