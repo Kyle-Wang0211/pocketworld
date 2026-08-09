@@ -60,6 +60,25 @@ PWOFFICIAL_EXPORT aether_sfm_result_t pwofficial_add_frame(aether_sfm_session_t*
                               pose_qwxyz, pose_t, out_frame_id);
 }
 
+/* [EXTRACT-PREFETCH 2026-08-09] 提取∥匹配帧级流水的对外入口。转发到
+   aether_sfm_prefetch_frame:非阻塞,拷 gray 交给会话的专属提取线程后立即
+   返回;下一次 add_frame 图像内容匹配(FNV 抽样摘要)即字节等同地领取成品,
+   不再内联提取。env OFFICIAL_AETHER_EXTRACT_PREFETCH 未设时 native 内部
+   no-op(返回 1),add_frame 与改动前逐位相同。模拟器无 native slice。 */
+PWOFFICIAL_EXPORT int pwofficial_prefetch_frame(aether_sfm_session_t* s,
+                                                const unsigned char* gray,
+                                                int width, int height) {
+#if TARGET_OS_SIMULATOR
+  (void)s;
+  (void)gray;
+  (void)width;
+  (void)height;
+  return 1;
+#else
+  return aether_sfm_prefetch_frame(s, gray, width, height);
+#endif
+}
+
 /* [REMOVE-FRAME 2026-07-20] 用户删照片 → 撤回该帧的全部重建贡献。
    转发到 aether_sfm_remove_frame(内部全部是 COLMAP 现成操作:
    ObservationManager::DeRegisterFrame + Database::DeleteMatches/

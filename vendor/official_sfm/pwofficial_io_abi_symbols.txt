@@ -1,1 +1,6 @@
 pwofficial_add_jpeg_frame
+pwofficial_prefetch_jpeg_frame
+pwofficial_phase_b_replay_create_v1
+pwofficial_phase_b_replay_add_jpeg_v1
+pwofficial_phase_b_replay_seal_v1
+pwofficial_phase_b_replay_destroy_v1

@@ -16,6 +16,7 @@ pwofficial_live_repay
 pwofficial_match_fail_stats
 pwofficial_options_default
 pwofficial_points_free
+pwofficial_prefetch_frame
 pwofficial_remove_frame
 pwofficial_repair_stats
 pwofficial_run
