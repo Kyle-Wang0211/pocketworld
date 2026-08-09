@@ -22,6 +22,40 @@ import 'package:ffi/ffi.dart';
 import 'official_aether_ffi.dart'
     show OfficialAetherFfi, OfficialFfiResolutionError;
 
+/// [EXTRACT-DEBT REPAY 2026-08-09] 进程级 setenv/unsetenv(libc,跨端)。
+/// 用途:facade 在拍完等待期临时放开 native OOM 兜底闸
+/// (OFFICIAL_AETHER_EXTRACT_CPU_FALLBACK)—— 该闸在失败路径上每次现读 env,
+/// 所以进程内 setenv 即时生效。⚠️ 别拿它去改 native 已静态缓存(static const
+/// cached)的旋钮:那些只在首次读取时生效,中途改了也不会变。
+class AetherProcessEnv {
+  static final _setenv = DynamicLibrary.process().lookupFunction<
+      Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Int32),
+      int Function(Pointer<Utf8>, Pointer<Utf8>, int)>('setenv');
+  static final _unsetenv = DynamicLibrary.process().lookupFunction<
+      Int32 Function(Pointer<Utf8>),
+      int Function(Pointer<Utf8>)>('unsetenv');
+
+  static void set(String name, String value) {
+    final n = name.toNativeUtf8();
+    final v = value.toNativeUtf8();
+    try {
+      _setenv(n, v, 1);
+    } finally {
+      malloc.free(n);
+      malloc.free(v);
+    }
+  }
+
+  static void unset(String name) {
+    final n = name.toNativeUtf8();
+    try {
+      _unsetenv(n);
+    } finally {
+      malloc.free(n);
+    }
+  }
+}
+
 /// Result codes from aether_sfm_c.h (kept in lock-step; append-only).
 enum AetherSfmResult {
   ok,
@@ -494,6 +528,13 @@ typedef _AddJpegFrameDart =
       Pointer<Int32> outFrameId,
     );
 
+// [EXTRACT-PREFETCH 2026-08-09] JPEG 版预取:非阻塞,壳层解码后交核内专属
+// 提取线程;env OFFICIAL_AETHER_EXTRACT_PREFETCH 未设时 native 是 no-op。
+typedef _PrefetchJpegFrameC =
+    Int32 Function(Pointer<Void> session, Pointer<Utf8> jpegPath);
+typedef _PrefetchJpegFrameDart =
+    int Function(Pointer<Void> session, Pointer<Utf8> jpegPath);
+
 typedef _FinalizeAsyncC =
     Int32 Function(Pointer<Void> session, Pointer<Utf8> outJson, Int32 outCap);
 typedef _FinalizeAsyncDart =
@@ -716,6 +757,12 @@ class AetherSfm {
   static final _AddJpegFrameDart _addJpegFrame = _lib
       .lookupFunction<_AddJpegFrameC, _AddJpegFrameDart>(
         'pwofficial_add_jpeg_frame',
+      );
+  // [EXTRACT-PREFETCH] 懒绑定;旧 framework 无此符号时首次调用抛错,调用方
+  // catch(与 repairStats 同一契约)。
+  static final _PrefetchJpegFrameDart _prefetchJpegFrame = _lib
+      .lookupFunction<_PrefetchJpegFrameC, _PrefetchJpegFrameDart>(
+        'pwofficial_prefetch_jpeg_frame',
       );
   static final _FinalizeAsyncDart _finalizeAsync = _lib
       .lookupFunction<_FinalizeAsyncC, _FinalizeAsyncDart>(
@@ -975,6 +1022,19 @@ class AetherSfmStreamSession {
   /// Feeds one keyframe by handing the original JPEG path to the independent
   /// official native runtime. The native boundary decodes at the file's exact
   /// dimensions and performs no crop, resize, or histogram normalization.
+  /// [EXTRACT-PREFETCH] 把"下一帧"JPEG 交给 native 专属提取线程预解码+预提取。
+  /// 非阻塞(壳层解码 ~百毫秒级后立即返回);env 关/旧 framework/失败一律
+  /// 无害。返回 native 状态码(0=入队 1=关闭或失败 2=busy),仅供日志。
+  int prefetchJpegFrame(String jpegPath) {
+    _checkLive();
+    final pathPtr = jpegPath.toNativeUtf8();
+    try {
+      return AetherSfm._prefetchJpegFrame(_session, pathPtr);
+    } finally {
+      malloc.free(pathPtr);
+    }
+  }
+
   AetherSfmAddFrameResult addJpegFrame(
     String jpegPath, {
     required double captureTimestamp,

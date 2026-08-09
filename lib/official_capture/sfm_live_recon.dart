@@ -469,6 +469,24 @@ class SfmLiveRecon {
   // (见 _thermalAllowsFeedNow)。
   bool _thermalDropArmed = false;
   bool _finalizeSent = false; // finalize cmd actually dispatched to worker
+
+  // [PREFETCH-AB] 同场分块交替 A/B 的块长(launch env;0=关=恒预取)。
+  static final int _prefetchAbBlock = (() {
+    final v = Platform.environment['OFFICIAL_AETHER_PREFETCH_AB_BLOCK'];
+    return v == null ? 0 : (int.tryParse(v) ?? 0);
+  })();
+  static bool _prefetchAbArmB(int seq) =>
+      _prefetchAbBlock <= 0 || ((seq ~/ _prefetchAbBlock) % 2 == 1);
+
+  // ── [EXTRACT-DEBT REPAY 2026-08-09 用户铁律] 交付绝对无损 ─────────────
+  // GPU 提取失败(errExtract,如热态 20s 超时 + OOM 闸拦下 CPU 兜底)的帧
+  // **绝不永久丢弃**:记欠账,排空完成后、finalize 下发前,临时放开 CPU 兜底
+  // 重喂补算(拍完等待期相机停/内存空/GPU 闲,没有拍摄期爆内存的土壤)。
+  // 重喂走 100% 正常喂帧路径(_SpooledFrame + _pump)⇒ fed_frames.jsonl /
+  // 取色映射 / 事件流 / 遥测全部沿用,零特殊分支。
+  final List<SfmFedFrameMeta> _extractDebts = [];
+  final Set<int> _debtRefeedSeqs = {};
+  bool _debtCpuEnvSet = false;
   bool _pumping = false;
   bool _disposed = false;
   Completer<void>? _disposeAck;
@@ -879,6 +897,22 @@ class SfmLiveRecon {
           if (!await File(entry.path).exists()) {
             throw FileSystemException('canonical JPEG missing', entry.path);
           }
+          // [EXTRACT-PREFETCH 2026-08-09] 队列里还有下一帧(=堵车,提取在
+          // 关键路径上)→ 先把它的路径发给 worker 预取(解码+提取搬到专属
+          // 线程,与本帧的匹配并行)。消息序:prefetch 先于 frame,worker
+          // 按序处理。env 关时 native no-op,零成本。
+          // [PREFETCH-AB 2026-08-09 用户:"不可能跑两遍"] 同场分块交替:
+          // OFFICIAL_AETHER_PREFETCH_AB_BLOCK=<n>(launch env)时按 seq 每
+          // n 帧翻相位,奇相位块才发预取 ⇒ 一场之内 A(无预取)/B(预取)
+          // 交替,同场景同热漂;frame_split 的 pf 命中位标注真实臂。未设=
+          // 恒发(生产形态)。跨帧状态刀不能逐帧翻,分块是它的合法交替粒度。
+          if (_spool.isNotEmpty && _prefetchAbArmB(entry.seq)) {
+            final next = _finalizeRequested ? _spool.first : _spool.last;
+            _toWorker.send(<String, Object?>{
+              'cmd': 'prefetch',
+              'path': next.path,
+            });
+          }
           _sendJpegFrameCmd(
             entry.seq,
             entry.path,
@@ -926,6 +960,17 @@ class SfmLiveRecon {
         )) {
       return;
     }
+    // [EXTRACT-DEBT REPAY] 排空完成、finalize 未下发 —— 先还提取欠账。
+    // 还账帧重新入 spool 走正常泵;它们的 frame_done 会再次驱动到这里,
+    // 欠账清零后才真正下发 finalize。
+    if (_extractDebts.isNotEmpty) {
+      _repayExtractDebts();
+      return;
+    }
+    if (_debtCpuEnvSet) {
+      AetherProcessEnv.unset('OFFICIAL_AETHER_EXTRACT_CPU_FALLBACK');
+      _debtCpuEnvSet = false;
+    }
     _finalizeSent = true;
     DeviceLog.log('SfmLive', 'queue drained → finalize dispatched');
     // 遥测【finalize/queue_drain】:完成动作 → 队列排空 → finalize 下发。
@@ -942,6 +987,50 @@ class SfmLiveRecon {
       'in_flight': _finalizeInFlight,
     });
     _toWorker.send(const <String, Object?>{'cmd': 'finalize'});
+  }
+
+  /// [EXTRACT-DEBT REPAY 2026-08-09] 把欠账帧按拍摄序重新入 spool 补算。
+  /// 临时放开 native 的 CPU 兜底闸(拍完等待期安全;finalize 下发前恢复)。
+  /// 单次重试:重喂 seq 记入 _debtRefeedSeqs,再失败不三喂、大声上报。
+  void _repayExtractDebts() {
+    final debts = List<SfmFedFrameMeta>.of(_extractDebts);
+    _extractDebts.clear();
+    if (!_debtCpuEnvSet) {
+      AetherProcessEnv.set('OFFICIAL_AETHER_EXTRACT_CPU_FALLBACK', '1');
+      _debtCpuEnvSet = true;
+    }
+    for (final m in debts) {
+      final seq = ++_seq;
+      _seqOfferMs[seq] = DateTime.now().millisecondsSinceEpoch;
+      _debtRefeedSeqs.add(seq);
+      _pendingMeta[seq] = m;
+      _spool.add(
+        _SpooledFrame(
+          seq: seq,
+          path: m.jpegPath,
+          w: m.imageW,
+          h: m.imageH,
+          captureTimestamp: m.captureTimestamp ?? 0.0,
+          fx: m.fx,
+          fy: m.fy,
+          cx: m.cx,
+          cy: m.cy,
+          quatWxyz: m.arkitQuatWxyz != null
+              ? Float64List.fromList(m.arkitQuatWxyz!)
+              : null,
+          trans: m.arkitTransTxyz != null
+              ? Float64List.fromList(m.arkitTransTxyz!)
+              : null,
+        ),
+      );
+    }
+    DeviceLog.log(
+      'SfmLive',
+      'extract-debt repay: refeeding ${debts.length} frame(s) '
+      'with CPU fallback temporarily enabled',
+    );
+    TelemetryWriter.instance.event('extract_debt_repay', {'n': debts.length});
+    unawaited(_pump());
   }
 
   /// [QUAD-PREPAY 2026-07-26, signed] Drive the capture-idle official
@@ -1137,6 +1226,35 @@ class SfmLiveRecon {
         } else if (ok && meta != null && frameId >= 0) {
           _fedMeta[frameId] = meta;
           _persistFedMeta(frameId, meta);
+        }
+        // [EXTRACT-DEBT REPAY] 提取失败的帧记欠账(照片在盘上、pose 在 meta
+        // 里,什么都不缺,只是晚算)。正被删除的帧(removeAfterAck)不欠;
+        // 补喂仍失败的帧(_debtRefeedSeqs)不再入账 —— 单次重试,失败大声上报。
+        if (msg['result'] == 'errExtract' && meta != null) {
+          if (_debtRefeedSeqs.remove(seq)) {
+            DeviceLog.log(
+              'SfmLive',
+              'extract-debt REPAY FAILED (CPU fallback also failed): '
+              '${meta.jpegPath.split('/').last} — frame missing from '
+              'delivery, ESCALATE',
+            );
+            TelemetryWriter.instance.event('extract_debt_repay_failed', {
+              'jpeg': meta.jpegPath.split('/').last,
+            });
+          } else if (removeAfterAck == null) {
+            _extractDebts.add(meta);
+            DeviceLog.log(
+              'SfmLive',
+              'extract-debt recorded (#${_extractDebts.length}): '
+              '${meta.jpegPath.split('/').last} — repay before finalize',
+            );
+            TelemetryWriter.instance.event('extract_debt_recorded', {
+              'jpeg': meta.jpegPath.split('/').last,
+              'debts': _extractDebts.length,
+            });
+          }
+        } else {
+          _debtRefeedSeqs.remove(seq);
         }
         // Consolidated per-frame telemetry: timing (worker) + queue state
         // (facade owns the disk spool) + memory/thermal (worker peak sample).
@@ -1652,7 +1770,11 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
     // copy. Default null ⇒ byte-exact prior behaviour.
     final points =
         prefetched ?? (preview ? s.previewTracked() : s.pointsTracked());
-    if (preview && points.count == 0) return false; // no live_recon → fall back
+    // [REMOVE-REFRESH 2026-08-09] frame_removed 来源豁免空云拦截:删除到空时
+    // 必须把"空"推出去,否则 AR 永远显示删除前的旧云。其余来源维持原语义。
+    if (preview && points.count == 0 && !summary.containsKey('frame_removed')) {
+      return false; // no live_recon → fall back
+    }
     final deliveredSummary = Map<String, dynamic>.from(summary);
     if (!preview) {
       final detail = s.streamStats();
@@ -2072,6 +2194,27 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
                 'evt': 'live_poses',
                 'poses': poses,
               });
+              // [REMOVE-REFRESH 2026-08-09 生产缺陷修复] 用户删掉刚拍的照片,
+              // AR 里它的点云纹丝不动 —— native remove_frame 早已把观测和
+              // 孤儿点从 live_recon 删干净(DeRegisterFrame),但这里只推了
+              // live_poses(位姿),从没把删除后的点云推给 AR;预览快照又只在
+              // add_frame 末尾刷新,删的是最后一张时就永远停在删除前的画面。
+              // 修复 = 删除成功后立刻用同一条 'preview' 通道把手上这份
+              // previewTracked(已是删除后的新云)推出去;点数为 0(全部删光)
+              // 也要推,否则"删到空"永远显示旧云。
+              sendSnapshot(
+                'preview',
+                <String, dynamic>{
+                  'source': 'streaming_local_ba_live',
+                  'terminal': false,
+                  'n_registered': fedIds.length,
+                  'n_points3d': tracked.count,
+                  'frame_removed': frameId,
+                },
+                0,
+                preview: true,
+                prefetched: tracked,
+              );
             }
           }
         } catch (e) {
@@ -2085,6 +2228,20 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
           'ok': removed,
           'stats': stats,
         });
+      case 'prefetch':
+        // [EXTRACT-PREFETCH 2026-08-09] 堵车时 facade 在派发当前帧之前发来
+        // "下一帧"的路径:壳层解码(同一 helper)后交 native 专属提取线程,
+        // 与当前帧的匹配/局部BA 并行。env 关时 native 秒退,纯 no-op;
+        // 猜错下一帧(latest-first 抢跑)由 FNV 摘要挡住,只浪费一次后台
+        // 提取,正确性无关。任何异常吞掉 —— 预取永远不许影响喂帧。
+        if (session != null) {
+          try {
+            final prc = session!.prefetchJpegFrame(msg['path'] as String);
+            if (prc == 0) {
+              wlog('prefetch queued: ${(msg['path'] as String).split('/').last}');
+            }
+          } catch (_) {} // 旧 framework 无符号 → 静默跳过
+        }
       case 'finish_pending':
         // [SPRINT-MODE] Finish tapped while frames are still draining: keep
         // feeding (delivery data), stop interim preview BAs (wasted wall
