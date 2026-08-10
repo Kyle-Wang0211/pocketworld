@@ -88,17 +88,6 @@ typedef struct aether_sfm_options {
 // see the k_neighbors field doc) -> WriteMatches + WriteTwoViewGeometry.
 // Returns the assigned frame index in *out_frame_id.
 
-
-// [EXTRACT-PREFETCH 2026-08-08] Frame-level extract/match pipelining (PTAM/
-// ORB-SLAM front/back-end split; COLMAP's own extractor JobQueue shape, one
-// level up). Non-blocking: copies `gray`, hands it to the session's dedicated
-// extraction thread, returns immediately. The next pwofficial_add_frame whose
-// image content matches adopts the finished features byte-for-byte instead of
-// extracting inline. Gated by OFFICIAL_OFFICIAL_AETHER_EXTRACT_PREFETCH=1; when unset
-// this is a no-op and add_frame is bit-identical to the pre-change path.
-// Returns 0 = enqueued, 1 = disabled/invalid args, 2 = busy (depth-1 queue
-// still holds the previous request — caller just skips prefetch this frame).
-
 // Feature-injection sibling of pwofficial_add_frame: skips extraction and
 // feeds precomputed keypoints (xy pairs, extractor's +0.5 half-pixel
 // convention) + n_keypoints×128 UBC RootSIFT u8 descriptors into the same
@@ -284,6 +273,19 @@ typedef struct aether_sfm_track_obs {
 // finalize backfill; see aether_sfm_c.cc). Opt-in: OFFICIAL_AETHER_LIVE_CAND_K_HOT=6.
 // Pushing the thermal state itself is always safe/no-op when disabled.
 
+// [SPRINT-FIX + YIELD-FPS-LINK 2026-08-10] 匹配器调度旗的框架内正路。
+// 既有 Swift @_silgen_name / Dart process-lookup 在 TWOLEVEL 下解析到 Runner
+// 里力载的旧栈同名副本 —— 框架内匹配器的 gCaptureActive 自 07-26 起从未被
+// 翻过(拍完等待一直给已停相机白让路)。这两个入口编进框架,内部绑定必中。
+// 纯调度,匹配集合逐位不变。
+
+// [EXTRACT-PREFETCH 2026-08-08] Frame-level extract/match pipelining. Non-
+// blocking: copies `gray`, hands it to the session's dedicated extraction
+// thread, returns immediately; the next add_frame whose image content matches
+// adopts the finished features byte-for-byte. Gated by
+// OFFICIAL_OFFICIAL_AETHER_EXTRACT_PREFETCH=1; unset == no-op / bit-identical.
+// Returns 0 = enqueued, 1 = disabled/invalid args, 2 = busy (depth-1 queue).
+
 // [THERMAL-THROTTLE 2026-07-11] Telemetry: frames fed with the reduced live K
 // this capture (0 = throttle never engaged). Same threading contract as
 // pwofficial_stream_stats. Nullable out-param.
@@ -363,8 +365,13 @@ aether_sfm_result_t pwofficial_add_frame(aether_sfm_session_t* s,
                                          int width, int height,
                                          float fx, float fy,
                                          float cx, float cy,
-                                         const double pose_qwxyz[4],  // may be NULL
-                                         const double pose_t[3],      // may be NULL
+                                         // MANDATORY on the production ARKit
+                                         // route: NULL, non-finite or
+                                         // zero-norm input is rejected before
+                                         // any db write. It is not permission
+                                         // to create an unposed frame.
+                                         const double pose_qwxyz[4],
+                                         const double pose_t[3],
                                          int* out_frame_id);
 
 aether_sfm_result_t pwofficial_arbitrate(aether_sfm_session_t* s,
@@ -420,6 +427,10 @@ aether_sfm_result_t pwofficial_get_preview_tracked(
 aether_sfm_result_t pwofficial_global_refine(aether_sfm_session_t* s);
 
 int pwofficial_live_repay(aether_sfm_session_t* s, int max_pairs);
+
+void pwofficial_match_set_capture_active(int active);
+
+void pwofficial_match_set_preview_fps30(int on);
 
 void pwofficial_match_fail_stats(aether_sfm_session_t* s,
                                  int64_t* gpu_fail_total,
