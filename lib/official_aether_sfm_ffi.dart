@@ -15,7 +15,7 @@
 
 import 'dart:convert';
 import 'dart:ffi';
-import 'dart:io' show Platform;
+import 'dart:io' show File, Platform;
 import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 
@@ -53,6 +53,38 @@ class AetherProcessEnv {
     } finally {
       malloc.free(n);
     }
+  }
+}
+
+/// [ENV-FILE 2026-08-10] 诊断 env 文件直通:启动时读
+/// `Documents/official_env.json`({"KEY":"value"},value 为空串=unset),
+/// 只认 OFFICIAL_ 前缀键(框架自路由键政策)。文件不存在=零行为。
+/// 用途:装机一次后,任何 native 诊断臂(如 OFFICIAL_AETHER_GPU_TIMESTAMPS)
+/// 推个文件+重启 app 即开,不再为开关诊断重编重装。⚠️ 只对"init 时读一次"
+/// 的旋钮有意义的前提是本函数必须在首次进 native 之前跑完 —— 由 main()
+/// await 保证。
+class AetherEnvFile {
+  static Future<List<String>> applyFrom(String documentsPath) async {
+    final applied = <String>[];
+    try {
+      final f = File('$documentsPath/official_env.json');
+      if (!await f.exists()) return applied;
+      final raw = jsonDecode(await f.readAsString());
+      if (raw is! Map<String, dynamic>) return applied;
+      for (final e in raw.entries) {
+        if (!e.key.startsWith('OFFICIAL_')) continue;
+        final v = e.value;
+        if (v is! String) continue;
+        if (v.isEmpty) {
+          AetherProcessEnv.unset(e.key);
+          applied.add('${e.key}=<unset>');
+        } else {
+          AetherProcessEnv.set(e.key, v);
+          applied.add('${e.key}=$v');
+        }
+      }
+    } catch (_) {}
+    return applied;
   }
 }
 

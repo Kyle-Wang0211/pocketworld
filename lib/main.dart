@@ -32,6 +32,7 @@ import 'i18n/locale_notifier.dart';
 import 'l10n/app_localizations.dart';
 import 'lifecycle_observer.dart';
 import 'object_transform.dart';
+import 'official_aether_sfm_ffi.dart' show AetherEnvFile;
 import 'official_capture/photo_archive_runtime.dart';
 import 'official_capture/telemetry_writer.dart' as official_telemetry;
 import 'official_util/device_log.dart' as official_device_log;
@@ -86,6 +87,15 @@ Future<void> main() async {
       print('[AET-SMOKE] inside runZonedGuarded');
       WidgetsFlutterBinding.ensureInitialized();
       await officialArchiveBackgroundRuntime.initialize();
+      // [ENV-FILE 2026-08-10] 诊断 env 直通:必须 await(在任何拍摄/进
+      // native 之前生效);文件不存在=零行为。应用结果记进 device log 留证。
+      try {
+        final docs = await getApplicationDocumentsDirectory();
+        final applied = await AetherEnvFile.applyFrom(docs.path);
+        if (applied.isNotEmpty) {
+          official_device_log.DeviceLog.log('EnvFile', 'applied: $applied');
+        }
+      } catch (_) {}
       // Release-visible container-file log (Documents/pw_device_log.txt) —
       // print/debugPrint are invisible in release builds on device.
       unawaited(DeviceLog.init());
