@@ -50,6 +50,8 @@ import '../../official_capture/official_highres_reconstruction_input.dart';
 import '../../official_capture/parallax_banner_gate.dart';
 import '../../official_capture/photo_card_state.dart';
 import '../../official_capture/project_photo_album.dart';
+import '../../official_aether_sfm_ffi.dart'
+    show AetherMatchFlags; // [YIELD-FPS-LINK]
 import '../../official_capture/pw_telemetry.dart';
 import '../../official_capture/representative_color.dart';
 import '../../official_capture/shutter_backpressure_gate.dart';
@@ -298,6 +300,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
 
   void _adaptiveSetFps(int fps, int thermal) {
     _adaptiveFpsCurrent = fps;
+    // [YIELD-FPS-LINK] 匹配器让路档随帧率联动(30fps=让路减半)。
+    AetherMatchFlags.setPreviewFps30(fps <= 30);
     DeviceLog.log(
       'OfficialARCapturePage',
       'adaptive-fps: → ${fps}fps (thermal=$thermal)',
@@ -996,6 +1000,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // force:新一轮拍摄的归零推送必须落到 native,不能被去重门挡掉。
       unawaited(_pushCoverageCloud(force: true));
       _coverageFeedSub ??= session.sfmFrameStream.listen(_onCoverageKeyframe);
+      // [SPRINT-FIX + YIELD-FPS-LINK] 新一轮拍摄:框架内匹配器旗复位。
+      AetherMatchFlags.setCaptureActive(true);
+      AetherMatchFlags.setPreviewFps30(_adaptiveFpsCurrent <= 30);
       setState(() {
         _recording = true;
         _sfmStarting = true;

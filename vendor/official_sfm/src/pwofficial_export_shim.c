@@ -377,6 +377,23 @@ PWOFFICIAL_EXPORT void pwofficial_thermal_throttle_stats(aether_sfm_session_t* s
 // add_frame matcher route (db-only; thermal serious/critical refuses).
 // Guarded like match_fail_stats: the simulator stub archive predates this
 // symbol — return 0 (nothing to do) there.
+/* [SPRINT-FIX + YIELD-FPS-LINK 2026-08-10] 匹配器调度旗的框架内正路(见
+   aether_sfm_c.h 注释:silgen/process-lookup 在 TWOLEVEL 下解析到旧栈副本,
+   框架内匹配器的旗从未被翻过)。 */
+PWOFFICIAL_EXPORT void pwofficial_match_set_capture_active(int active) {
+#if TARGET_OS_SIMULATOR
+  (void)active;
+#else
+  aether_sfm_match_set_capture_active(active);
+#endif
+}
+PWOFFICIAL_EXPORT void pwofficial_match_set_preview_fps30(int on) {
+#if TARGET_OS_SIMULATOR
+  (void)on;
+#else
+  aether_sfm_match_set_preview_fps30(on);
+#endif
+}
 PWOFFICIAL_EXPORT int pwofficial_live_repay(aether_sfm_session_t* s, int max_pairs) {
 #if TARGET_OS_SIMULATOR
   (void)s;

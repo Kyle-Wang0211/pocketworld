@@ -56,6 +56,38 @@ class AetherProcessEnv {
   }
 }
 
+/// [SPRINT-FIX + YIELD-FPS-LINK 2026-08-10] 匹配器调度旗(框架内正路)。
+/// 既有 silgen/process-lookup 在 TWOLEVEL 下解析到旧栈副本 —— 框架内匹配器
+/// 的旗从未被翻过。这两个走框架导出符号,必中真旗。旧包缺符号 → 静默跳过。
+class AetherMatchFlags {
+  static void Function(int)? _setActive;
+  static void Function(int)? _setFps30;
+  static bool _resolved = false;
+  static void _resolve() {
+    if (_resolved) return;
+    _resolved = true;
+    try {
+      final lib = OfficialAetherFfi.resolveLibraryForBindings();
+      _setActive = lib
+          .lookupFunction<Void Function(Int32), void Function(int)>(
+              'pwofficial_match_set_capture_active');
+      _setFps30 = lib
+          .lookupFunction<Void Function(Int32), void Function(int)>(
+              'pwofficial_match_set_preview_fps30');
+    } catch (_) {}
+  }
+
+  static void setCaptureActive(bool active) {
+    _resolve();
+    _setActive?.call(active ? 1 : 0);
+  }
+
+  static void setPreviewFps30(bool on) {
+    _resolve();
+    _setFps30?.call(on ? 1 : 0);
+  }
+}
+
 /// Result codes from aether_sfm_c.h (kept in lock-step; append-only).
 enum AetherSfmResult {
   ok,

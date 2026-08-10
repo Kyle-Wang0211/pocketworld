@@ -1054,6 +1054,9 @@ class SfmLiveRecon {
   void finalize() {
     if (_disposed || _finalizeRequested) return;
     _finalizeRequested = true;
+    // [SPRINT-FIX] 完成即翻框架内匹配器的 capture_active(排空+enrich 不再
+    // 给已停相机让路;旧 silgen 只翻了旧栈副本 —— 07-26 起的哑旗)。
+    AetherMatchFlags.setCaptureActive(false);
     _finalizeRequestMs = DateTime.now().millisecondsSinceEpoch; // 遥测
     // 遥测【WAIT-BUDGET】欠债快照必须在这一刻取:_pump() 一旦跑起来 _spool
     // 就开始缩,到 _maybeSendFinalize 时永远是 0。

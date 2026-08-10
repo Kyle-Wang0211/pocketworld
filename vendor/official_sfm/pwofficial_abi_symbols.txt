@@ -13,6 +13,8 @@ pwofficial_get_preview_points
 pwofficial_get_preview_tracked
 pwofficial_global_refine
 pwofficial_live_repay
+pwofficial_match_set_capture_active
+pwofficial_match_set_preview_fps30
 pwofficial_match_fail_stats
 pwofficial_options_default
 pwofficial_points_free
