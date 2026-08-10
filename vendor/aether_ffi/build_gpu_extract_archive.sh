@@ -52,6 +52,7 @@ SRCS=(
   "$A/tools/dawn_kernel_harness.cpp"
   "$A/build/generated/aether/shaders/sift_gray_to_f32_wgsl.cpp"
   "$A/build/generated/aether/shaders/sift_gss_blur_wgsl.cpp"
+  "$A/build/generated/aether/shaders/sift_gss_blur_fused_wgsl.cpp"
   "$A/build/generated/aether/shaders/sift_gss_resample_wgsl.cpp"
   "$A/build/generated/aether/shaders/sift_dog_detect_wgsl.cpp"
   "$A/build/generated/aether/shaders/sift_nonextrema_suppress_wgsl.cpp"
@@ -59,6 +60,7 @@ SRCS=(
   "$A/build/generated/aether/shaders/sift_orientation_wgsl.cpp"
   "$A/build/generated/aether/shaders/sift_dsp_descriptor_wgsl.cpp"
   "$A/build/generated/aether/shaders/sift_dsp_descriptor_f16_wgsl.cpp"
+  "$A/build/generated/aether/shaders/sift_dsp_descriptor_f16_atomic_wgsl.cpp"
   "$A/build/generated/aether/shaders/sift_dsp_descriptor_par_wgsl.cpp"
   "$A/build/generated/aether/shaders/sift_dsp_mean_wgsl.cpp"
 )
