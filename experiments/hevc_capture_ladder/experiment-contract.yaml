@@ -1,0 +1,21 @@
+schema: pw_hevc_capture_ladder_contract_v1
+frozen_at: "2026-08-04"
+purpose: >-
+  P0-b of the 5-10x archive strategy: measure real HEVC hardware-encode ladder
+  ratios and reconstruction parity on a real 96-frame capture, before any
+  product change. Plan: docs/research/2026-08-04-5x-archive-strategy-global-survey-and-plan.md
+input:
+  capture_id: analysis_cap_1779777762841797
+  frames: 96
+  jpeg_total_bytes: 251773820
+  ordering: triggerTimestamp
+  manifest: input-manifest.json
+encoder_proxy:
+  host: M3 Pro (Mac15,6) VideoToolbox hevc_videotoolbox
+  caveat: A-series device probe separate (vtprobe/, iPhone15,2 = A16)
+production_untouched: true
+phone_flow: install-launch-fetch, unplug-safe
+results:
+  - results/ladder-m3pro.json
+  - results/sfm-parity-m3pro.json
+  - results/feature_parity.json

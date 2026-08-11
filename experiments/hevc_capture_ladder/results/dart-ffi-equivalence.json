@@ -1,0 +1,34 @@
+{
+ "schema": "pw_dart_ffi_equivalence_v1",
+ "claim": "压缩管线可 100% 用 Dart 编排,平台层零 Swift",
+ "architecture": {
+  "dart_owns": "归档格式、GOP 索引、manifest、SHA 校验、随机访问、码率决策、全部编排",
+  "apple_platform_layer": "pw_vt_encoder.c(~200 行纯 C,iOS/macOS 共用同一文件,VideoToolbox 是 C API 非 Swift API)",
+  "android_platform_layer": "AMediaCodec NDK C API(同步拉取式,Dart FFI 直达,连 C shim 都不需要)",
+  "swift_lines": 0,
+  "kotlin_java_lines_for_codec_path": 0,
+  "decode_cross_platform_guarantee": "HEVC 解码按标准位精确:同一码流在任何合规解码器输出相同像素——归档跨端可解是规范保证",
+  "encode_cross_device_note": "不同设备编码器产出字节不同(不影响归档完整性;无损锚点=逐字节保存采集写盘的码流)"
+ },
+ "equivalence_test": {
+  "input": "同一 96 帧 NV12(analysis_cap_1779777762841797),同参数 q=0.65 gop=8",
+  "ffmpeg_videotoolbox_bytes": 21313102,
+  "dart_ffi_videotoolbox_bytes": 21312594,
+  "delta_bytes": 508,
+  "delta_explanation": "mov 容器开销 vs 裸 Annex-B",
+  "dart_stream_decoded_frames": 96,
+  "keyframes": 12,
+  "dart_y_psnr_avg": 39.03,
+  "dart_y_psnr_min": 36.62,
+  "ffmpeg_y_psnr_avg": 39.03,
+  "ffmpeg_y_psnr_min": 36.62,
+  "encode_ms_per_frame": 40.0,
+  "verdict": "IDENTICAL_ENGINE_BEHAVIOR"
+ },
+ "crash_fixed": "IOSurface 属性空字典用 NULL 回调表导致 objc_retain 野指针;去掉 IOSurface 属性后修复",
+ "remaining": [
+  "Android AMediaCodec FFI 绑定(架构已定,未实现)",
+  "A16 真机探针(已装待用户点击)",
+  "Flutter app 内跑同一 C shim 的真机复测"
+ ]
+}

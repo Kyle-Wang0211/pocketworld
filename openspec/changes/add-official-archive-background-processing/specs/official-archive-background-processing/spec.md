@@ -43,9 +43,18 @@ work through the existing Dart official archive coordinator.
 #### Scenario: System expiration
 
 - **WHEN** iOS invokes the task expiration handler
-- **THEN** Dart stops before the next JPEG, requests ZPAQ cancellation, retains
-  every original whose transaction is not committed, and reports remaining work
-  for a later scheduling opportunity
+- **THEN** Dart closes the cold-work gate, requests JPEG XL and ZPAQ
+  cancellation, removes only uncommitted temporary output, retains every
+  authoritative source whose transaction is not committed, and reports
+  remaining work for a later scheduling opportunity
+
+#### Scenario: Production pipeline takes priority
+
+- **WHEN** capture, live reconstruction, resumed reconstruction, or final
+  refinement begins while a system-background archive task is active
+- **THEN** the same cancellation path stops archive work, foreground production
+  proceeds without waiting for cold maintenance, and archival resumes only
+  after the final production lease closes
 
 ### Requirement: Full byte-exact photo retention
 

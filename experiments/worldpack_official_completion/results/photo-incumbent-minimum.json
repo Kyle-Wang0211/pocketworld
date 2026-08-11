@@ -1,0 +1,40 @@
+{
+  "automatic_repeats": 0,
+  "input_bytes": 2733670,
+  "input_logical_path": "photos_highres/official_tap-1024.jpg",
+  "input_sha256": "2eb2c45a9830866e7a563e66eb278bc0ff2658286523f58f35bc2e4c705010d0",
+  "phone_accessed": false,
+  "production_promoted": false,
+  "schema": "pw_photo_incumbent_minimum_v1",
+  "selection_rule": "strictly_smallest_complete_exact_archive_then_stop_losing_arm",
+  "winner": "lepton_jpeg_0_5_8",
+  "arms": [
+    {
+      "archive_bytes": 2229950,
+      "archive_sha256": "d36935a3feb9d493fcc180a297dddef272fe4344ff1b805b5844dfb50c0ce5d6",
+      "byte_equal": true,
+      "codec": "jxl_0_12_0_exact_jpeg",
+      "revision": "a7a9c787341cf703dede03c2009fa460cae5e5df",
+      "sha256_equal": true
+    },
+    {
+      "archive_bytes": 2175228,
+      "archive_sha256": "531b95f81fb1373a09001e02d93902ab1d8af614a154eb6b78159ecc9e6d0211",
+      "binary_sha256": "3173002ec9b63ea11de48c6c5c48a653d0060abb024100bf5865a7049c8a907e",
+      "byte_equal": true,
+      "codec": "lepton_jpeg_0_5_8",
+      "revision": "90fdc27828676892fbb41777cfcc6bad1e470516",
+      "sha256_equal": true
+    },
+    {
+      "archive_bytes": 2178719,
+      "archive_sha256": "da772c6dadd093dccead734a4bf4f6c967baaafb2868042130e86351447bd9f8",
+      "decoder_sha256": "7fcc9f2aa08b252ed0b20dbf1469c6c1cf18d1e5875823ef8f4e8b0881f0e2e0",
+      "encoder_sha256": "761deae216c9bc230c336db9c94105dfc8be4e2c73b9267c1f9eeb81c1a8ec6a",
+      "byte_equal": true,
+      "codec": "brunsli_v0_1_default",
+      "revision": "8a0e9b8ca2e3e089731c95a1da7ce8a3180e667c",
+      "sha256_equal": true
+    }
+  ]
+}

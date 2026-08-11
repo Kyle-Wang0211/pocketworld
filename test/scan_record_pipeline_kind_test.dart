@@ -246,38 +246,43 @@ void main() {
       expect(officialJson['pipeline_kind'], 'official');
     });
 
-    test('reanchoring preserves official photos and manifest conventions', () async {
-      final officialDir = Directory(
-        '${documentsDirectory.path}/captures_official/reanchored-official',
-      );
-      final photos = Directory('${officialDir.path}/photos_highres');
-      await photos.create(recursive: true);
-      final manifest = File('${officialDir.path}/official_photo_bundle.json');
-      await manifest.writeAsString('{}');
-      await storeFile.writeAsString(
-        jsonEncode(<Map<String, Object?>>[
-          <String, Object?>{
-            'id': 'reanchored-official',
-            'name': 'official',
-            'createdAt': DateTime.utc(2026, 7, 22).toIso8601String(),
-            'pipeline_kind': 'official',
-            'captureDir': '/stale/container/captures_official/reanchored-official',
-            'photosDir': '/stale/container/photos_highres',
-            'captureManifestPath': '/stale/container/official_photo_bundle.json',
-          },
-        ]),
-      );
-      final store = ScanRecordStore.forTesting(
-        documentsDirectory: documentsDirectory,
-      );
+    test(
+      'reanchoring preserves official photos and manifest conventions',
+      () async {
+        final officialDir = Directory(
+          '${documentsDirectory.path}/captures_official/reanchored-official',
+        );
+        final photos = Directory('${officialDir.path}/photos_highres');
+        await photos.create(recursive: true);
+        final manifest = File('${officialDir.path}/official_photo_bundle.json');
+        await manifest.writeAsString('{}');
+        await storeFile.writeAsString(
+          jsonEncode(<Map<String, Object?>>[
+            <String, Object?>{
+              'id': 'reanchored-official',
+              'name': 'official',
+              'createdAt': DateTime.utc(2026, 7, 22).toIso8601String(),
+              'pipeline_kind': 'official',
+              'captureDir':
+                  '/stale/container/captures_official/reanchored-official',
+              'photosDir': '/stale/container/photos_highres',
+              'captureManifestPath':
+                  '/stale/container/official_photo_bundle.json',
+            },
+          ]),
+        );
+        final store = ScanRecordStore.forTesting(
+          documentsDirectory: documentsDirectory,
+        );
 
-      await store.ensureLoaded();
+        await store.ensureLoaded();
 
-      final record = store.records.single;
-      expect(record.captureDir, officialDir.path);
-      expect(record.photosDir, photos.path);
-      expect(record.captureManifestPath, manifest.path);
-    });
+        final record = store.records.single;
+        expect(record.captureDir, officialDir.path);
+        expect(record.photosDir, photos.path);
+        expect(record.captureManifestPath, manifest.path);
+      },
+    );
 
     for (final invalid in <Object?>[null, 'experimental', 1, true]) {
       test('explicit invalid pipeline_kind=$invalid fails closed', () async {

@@ -1,0 +1,40 @@
+schema: pw_cross_photo_abc_inputs_v1
+frozen_at: "2026-08-02T00:00:00+08:00"
+source_kind: verified-production-container-backup-copy
+source_root: /private/tmp/pw_portable_sfm_update.6RQ6nt/before/Documents/captures_official/cap_1785301356006181
+selection: first-consecutive-frames-until-at-least-100-mib
+ordered_jpeg_count: 25
+ordered_jpeg_bytes: 107649656
+ordered_jxl_member_bytes: 88409901
+immutable: true
+sidecars:
+  official_photo_bundle.json: bb4c71e39d6d8f10e1b01519a0529f00734497b552c67fff16fddb6399fe225e
+  official_photo_archive.json: cab0ab747388c54c8834ae5f04344d46969fe19406dea20b6e61a0f57444b9fb
+  official_sfm_sparse.ply: b5a745a347ae742d64bb03db96001fe79e5cc374d9f01eb244d35a01a4273644
+  official_sfm_sparse_meta.json: ebf9d57ddd72b64c60c8bfda1ac256866a1419542c712fc3b6c75f014d1ddef4
+photos:
+  - {index: 0, frame_id: tap-14, name: official_tap-14.jpg, bytes: 4379733, sha256: f906a402d0c0e6d59b86e336339a9d3c44084976fec6bbbba590d108b512dc4f, jxl_bytes: 3609940, jxl_sha256: 01006e743567587e42faaeeaf4a00782fe65c9519a8bba5b0d7ac73a48aca6cf}
+  - {index: 1, frame_id: tap-22, name: official_tap-22.jpg, bytes: 4375583, sha256: 06e4d697625449b5b32463ccb73a13f1fc70641fbd7fb01525744b8bc65d4e99, jxl_bytes: 3597443, jxl_sha256: 2fe070cb3881d93a247e6710f2440e02a04144c70b492090d862261ce29d94d9}
+  - {index: 2, frame_id: tap-36, name: official_tap-36.jpg, bytes: 4241444, sha256: d4af458803ae8d5310b1af8777266babd410ce32b5a87f2f60695e4e77bf072c, jxl_bytes: 3476416, jxl_sha256: 4da267d8d90612ad75ff9a07d47c00a98a6e28e13e75d9aa2034feda6c68e89b}
+  - {index: 3, frame_id: tap-50, name: official_tap-50.jpg, bytes: 4341681, sha256: 036096561fc049aed714779ace793dbd0501b6204b7e201980dbcaf3a1416366, jxl_bytes: 3568021, jxl_sha256: 21edeba495d9a7f5f7606c1583dbd743141698abd9d2bfb47106ad41ec0b081c}
+  - {index: 4, frame_id: tap-64, name: official_tap-64.jpg, bytes: 4655078, sha256: e30cb5ae9058338dfabf3684df7231d3918b48a308438c56b43f1b8eca897120, jxl_bytes: 3844293, jxl_sha256: c0026482466f6f40c6e3cfd5c6b66107a881d4e50b1c118b9321bd9193da7cbc}
+  - {index: 5, frame_id: tap-83, name: official_tap-83.jpg, bytes: 4619474, sha256: f110e93e4a5476007aa0cdd47e335ca1f201ff2027df8e71836493a62a09b0aa, jxl_bytes: 3815536, jxl_sha256: 70ea538d573e4d9ca67b4fc240956fd31baa99c51dd755f9403b5346f1326b87}
+  - {index: 6, frame_id: tap-114, name: official_tap-114.jpg, bytes: 4470101, sha256: b4a568e5ba5f96c9416942351d91af9cd59fc81e9dc0e1fae4299ba720120fe6, jxl_bytes: 3679557, jxl_sha256: dd52b5c3a9931bd5a5ff7c7ef79431262e92612f08c2616962db684ded36f97b}
+  - {index: 7, frame_id: tap-137, name: official_tap-137.jpg, bytes: 4406532, sha256: a193a57fd407170535dcac7840ed5b96f6a26325e583ed6c11d6b3c1210f8ace, jxl_bytes: 3613621, jxl_sha256: 6a7ab014802f1e7ab44068aaa56c53f6f55c011243d1109afdf7d60fbb4dd54e}
+  - {index: 8, frame_id: tap-156, name: official_tap-156.jpg, bytes: 4941540, sha256: ca924af16fef9233afce766b70d06a2a1a9dd6c618b9ba050dd1996fe52e913f, jxl_bytes: 4074847, jxl_sha256: 9f632739e7593c8559b973b2dd24b057c00a51e23557c4d16a2684b5245cac72}
+  - {index: 9, frame_id: tap-173, name: official_tap-173.jpg, bytes: 3946188, sha256: ea7901c1b6b449bc035c10ccbb81753a7f5f606c16b7e83e65fdd1e5f329899a, jxl_bytes: 3231448, jxl_sha256: 6779b3e13a0c94034e876f56a749486f1bed44e65ca3c345c520bd9dc446c7a8}
+  - {index: 10, frame_id: tap-188, name: official_tap-188.jpg, bytes: 3963446, sha256: aa8fb0a338d6a1cbd534b2f28eaf96fb9c4cd5cdcc98a4df46a186a8a6b51428, jxl_bytes: 3248541, jxl_sha256: 1cee9933a0c42c28eaede6c902cfd6329f474ebfce8927f6caef382e18c364cf}
+  - {index: 11, frame_id: tap-201, name: official_tap-201.jpg, bytes: 3918611, sha256: 67145cccf3ab8b0e22c0995c187851fdae63cbb6519a4153757e7520a0546baf, jxl_bytes: 3197280, jxl_sha256: 605e19d10d7e7d6f85933d5158465aa59abd8be3d3e1674108b757dae2bf1e7f}
+  - {index: 12, frame_id: tap-215, name: official_tap-215.jpg, bytes: 4095343, sha256: 8fba5d8bf96b33240067192076cd36c1d13f8c406895b455ff017a1496571086, jxl_bytes: 3366403, jxl_sha256: c4e604e42c198d9975280cb96166de3a90eaa54ebb8f8813b817e59def306bb1}
+  - {index: 13, frame_id: tap-230, name: official_tap-230.jpg, bytes: 4600066, sha256: 7ae975274eee99488f99ee13e00d90f00f2c42d7873c62da938c31ae139677e9, jxl_bytes: 3789337, jxl_sha256: ac6228b15669254418ddf80e314a8d9d4897678f491fb93c5c6f517f459d8aa2}
+  - {index: 14, frame_id: tap-245, name: official_tap-245.jpg, bytes: 4462597, sha256: a39c7ff3ec1497814ba0d0e4ed239cf6f9b4fe19b913d44fbd27ea2a0b22e80f, jxl_bytes: 3688854, jxl_sha256: cd3f20d5712eb91491698023a5f4a2ade45389795ef824991afcfe6d32d09759}
+  - {index: 15, frame_id: tap-258, name: official_tap-258.jpg, bytes: 4285375, sha256: f9a98d89b233df8c059ffcbbeb2ac57833a3572584150dd4b5cd547b450b6045, jxl_bytes: 3534966, jxl_sha256: 99843a0e10ee7da553d75af8b76fb42e65771bd39f4b4483f3411e5106ee6d43}
+  - {index: 16, frame_id: tap-270, name: official_tap-270.jpg, bytes: 4228140, sha256: 55403af955e9dcaf1acd2798830a267852d71a9930382b3adf62bba389ea8d19, jxl_bytes: 3474455, jxl_sha256: 3387a0e54fd395992645bbf855013388b6af325dc1bf6a59b1077c171d10405b}
+  - {index: 17, frame_id: tap-282, name: official_tap-282.jpg, bytes: 4069896, sha256: 365c0252874a85d1639eb07d91c93fd1b24b4b057fa5d1ae87a6e954f2d1fe1d, jxl_bytes: 3322651, jxl_sha256: b21588b8fdc23e6fe9533f36da8dc8a2c44bde4584bc3ef5d3ca4502648f9401}
+  - {index: 18, frame_id: tap-291, name: official_tap-291.jpg, bytes: 4640397, sha256: ccbc604d92780aa187147ea38d0a2355c90c7a9736b7e516db65f72b1386ab02, jxl_bytes: 3797721, jxl_sha256: 2f117fed5144cf1251c190bf2aca7799f3b2fd1198ca1913a8f8dceef5e7fc02}
+  - {index: 19, frame_id: tap-305, name: official_tap-305.jpg, bytes: 3941556, sha256: 24d4a8ce2ae2c16b1b9247838f89c675ddaf642cb99938f28ecd088cbca33e45, jxl_bytes: 3214180, jxl_sha256: 75e4a404f664404e0d84f259da1c28852440b95a58b4607e7f6dd391e896f2aa}
+  - {index: 20, frame_id: tap-319, name: official_tap-319.jpg, bytes: 4069455, sha256: b37c4cff7784c3366173c389d706db546b29b30ac109faee5eef915b1a42085a, jxl_bytes: 3331353, jxl_sha256: a6ac654c811482108cb8f228886683de751141725de809598f6cfe187c4ac44f}
+  - {index: 21, frame_id: tap-349, name: official_tap-349.jpg, bytes: 4065000, sha256: 8c48d4d1a151574b17da0d87aae1c983c6cc6d6439f9e0f758b20e6fb1165ee2, jxl_bytes: 3330902, jxl_sha256: 1dcfe0184067c942c0d1f0a35c808b0af3c08fee00d563163289897c9f95ae1a}
+  - {index: 22, frame_id: tap-360, name: official_tap-360.jpg, bytes: 3998149, sha256: 891229ea4f5e043274e46c133e075efd88c353bc4148051fe06b406816ead82d, jxl_bytes: 3268890, jxl_sha256: 1a0823eb87a6e554e869d37aa0d918c8887f9cc8865610081c50e59e19461007}
+  - {index: 23, frame_id: tap-381, name: official_tap-381.jpg, bytes: 4457677, sha256: a5c332044021c3139b55a52163650a1002ef6ac165235f31fdf9b92b6e528c43, jxl_bytes: 3665003, jxl_sha256: 937eed9d1f06c14c38a44b880eb7f84dbbb1b701b00c5d92fda2223677415b08}
+  - {index: 24, frame_id: tap-398, name: official_tap-398.jpg, bytes: 4476594, sha256: 22876257451763f12e240a374713c4fc35904c6c17d84732ccf64dc47e0ec5a3, jxl_bytes: 3668243, jxl_sha256: c715565d2d06f550b59567b170b824ad8b53168626123252535e825bbcce782f}

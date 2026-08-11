@@ -1,0 +1,21 @@
+{
+ "schema": "pw_install_record_v1",
+ "date": "2026-08-10",
+ "purpose": "P1.1 竞态根治版全压缩上生产(PLY门PASS后,用户预授权)",
+ "build_flags": "enabled=true 全帧编码(无AB逻辑); 收尾批量转码archiveCapture; 首帧锐度自检fail-closed(阈值500); MaximizePowerEfficiency=true",
+ "gates": {
+  "efficiency": "PASS(v3配对,10对,均值-1.90%,CI上界+4.20%)",
+  "photo": "用户肉眼PASS(08-10:肉眼看不出任何差别)",
+  "ply": "PASS(ply-gate-PASS.json,96/96双侧,误差-0.003px,点数+6.3%)"
+ },
+ "fingerprint": {
+  "head": "290ffa38f3d3a58b1c8da055e2747b5d6c7b9f9b",
+  "diff_sha16": "5b592de474c71793",
+  "dirty_files": 368
+ },
+ "device": {
+  "udid": "00008120-00146C4A1AEBC01E",
+  "bundle": "com.kyle.PocketWorld"
+ },
+ "backup": "复用近期备份(小迭代,归档服务自身改动,不触碰采集数据路径)"
+}

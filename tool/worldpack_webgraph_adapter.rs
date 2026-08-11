@@ -12,6 +12,7 @@ use webgraph::traits::{RandomAccessGraph, SequentialLabeling};
 
 const INPUT_MAGIC: &[u8; 8] = b"PWGI1\0\0\0";
 const MAPPING_MAGIC: &[u8; 8] = b"PWGM1\0\0\0";
+const DIRECT_MAPPING_MAGIC: &[u8; 8] = b"PWGD1\0\0\0";
 const INPUT_HEADER_BYTES: usize = 52;
 const INPUT_RECORD_BYTES: usize = 32;
 const MAX_IMAGE_ID: u64 = 2_147_483_647;
@@ -256,6 +257,320 @@ fn decode_mapping(bytes: &[u8]) -> Result<(Vec<(u32, u32)>, Vec<Group>, [u8; 32]
     Ok((features, groups, source_body_sha))
 }
 
+fn zigzag_encode(value: i64) -> u64 {
+    ((value as u64) << 1) ^ ((value >> 63) as u64)
+}
+
+fn zigzag_decode(value: u64) -> i64 {
+    ((value >> 1) as i64) ^ -((value & 1) as i64)
+}
+
+fn encode_direct_mapping(
+    features: &[(u32, u32)],
+    groups: &[Group],
+    arc_sequence: &[usize],
+    unique_arc_count: usize,
+    source_body_sha: &[u8; 32],
+) -> Vec<u8> {
+    let mut output = Vec::new();
+    output.extend_from_slice(DIRECT_MAPPING_MAGIC);
+    append_u64(&mut output, arc_sequence.len() as u64);
+    append_u64(&mut output, features.len() as u64);
+    append_u32(&mut output, groups.len() as u32);
+    append_u64(&mut output, unique_arc_count as u64);
+    output.extend_from_slice(source_body_sha);
+    let mut previous_image = 0_u32;
+    let mut previous_feature = 0_u32;
+    for &(image, feature) in features {
+        let image_delta = image - previous_image;
+        append_varint(&mut output, u64::from(image_delta));
+        if image_delta == 0 {
+            append_varint(&mut output, u64::from(feature - previous_feature));
+        } else {
+            append_varint(&mut output, u64::from(feature));
+        }
+        previous_image = image;
+        previous_feature = feature;
+    }
+    let mut previous_pair = [0_u64; 2];
+    for group in groups {
+        output.push(group.table);
+        append_varint(
+            &mut output,
+            group.pair_id - previous_pair[group.table as usize],
+        );
+        append_varint(&mut output, group.row_count);
+        previous_pair[group.table as usize] = group.pair_id;
+    }
+    let mut previous_arc = 0_i64;
+    for &arc in arc_sequence {
+        let arc = i64::try_from(arc).expect("arc ID exceeds i64");
+        append_varint(&mut output, zigzag_encode(arc - previous_arc));
+        previous_arc = arc;
+    }
+    output
+}
+
+fn decode_direct_mapping(
+    bytes: &[u8],
+) -> Result<(Vec<(u32, u32)>, Vec<Group>, Vec<usize>, usize, [u8; 32]), String> {
+    if bytes.len() < 68 || &bytes[..8] != DIRECT_MAPPING_MAGIC {
+        return Err("invalid direct-edge mapping header".to_string());
+    }
+    let record_count = usize::try_from(read_u64(bytes, 8)?)
+        .map_err(|_| "record count exceeds usize".to_string())?;
+    let feature_count = usize::try_from(read_u64(bytes, 16)?)
+        .map_err(|_| "feature count exceeds usize".to_string())?;
+    let group_count = read_u32(bytes, 24)? as usize;
+    let unique_arc_count = usize::try_from(read_u64(bytes, 28)?)
+        .map_err(|_| "unique arc count exceeds usize".to_string())?;
+    let source_body_sha: [u8; 32] = bytes[36..68].try_into().unwrap();
+    let mut position = 68;
+    let mut features = Vec::with_capacity(feature_count);
+    let mut previous_image = 0_u32;
+    let mut previous_feature = 0_u32;
+    for _ in 0..feature_count {
+        let image_delta = u32::try_from(read_varint(bytes, &mut position)?)
+            .map_err(|_| "image delta exceeds u32".to_string())?;
+        let feature_value = u32::try_from(read_varint(bytes, &mut position)?)
+            .map_err(|_| "feature delta exceeds u32".to_string())?;
+        let image = previous_image
+            .checked_add(image_delta)
+            .ok_or_else(|| "image delta overflow".to_string())?;
+        let feature = if image_delta == 0 {
+            previous_feature
+                .checked_add(feature_value)
+                .ok_or_else(|| "feature delta overflow".to_string())?
+        } else {
+            feature_value
+        };
+        if let Some(previous) = features.last() {
+            if *previous >= (image, feature) {
+                return Err("feature mapping is not strictly sorted".to_string());
+            }
+        }
+        features.push((image, feature));
+        previous_image = image;
+        previous_feature = feature;
+    }
+    let mut previous_pair = [0_u64; 2];
+    let mut groups = Vec::with_capacity(group_count);
+    let mut decoded_record_count = 0_usize;
+    for _ in 0..group_count {
+        let table = *bytes
+            .get(position)
+            .ok_or_else(|| "truncated direct group table".to_string())?;
+        position += 1;
+        if table > 1 {
+            return Err("invalid direct group table".to_string());
+        }
+        let pair_id = previous_pair[table as usize]
+            .checked_add(read_varint(bytes, &mut position)?)
+            .ok_or_else(|| "direct pair delta overflow".to_string())?;
+        let row_count = usize::try_from(read_varint(bytes, &mut position)?)
+            .map_err(|_| "direct row count exceeds usize".to_string())?;
+        if row_count == 0 {
+            return Err("empty direct mapping group".to_string());
+        }
+        groups.push(Group {
+            table,
+            pair_id,
+            row_count: row_count as u64,
+        });
+        previous_pair[table as usize] = pair_id;
+        decoded_record_count += row_count;
+    }
+    if decoded_record_count != record_count {
+        return Err("direct group record count mismatch".to_string());
+    }
+    let mut arc_sequence = Vec::with_capacity(record_count);
+    let mut previous_arc = 0_i64;
+    for _ in 0..record_count {
+        let delta = zigzag_decode(read_varint(bytes, &mut position)?);
+        let arc = previous_arc
+            .checked_add(delta)
+            .ok_or_else(|| "direct arc delta overflow".to_string())?;
+        if arc < 0 || usize::try_from(arc).unwrap() >= unique_arc_count {
+            return Err("direct arc ID is out of range".to_string());
+        }
+        arc_sequence.push(usize::try_from(arc).unwrap());
+        previous_arc = arc;
+    }
+    if position != bytes.len() {
+        return Err("direct mapping has trailing bytes".to_string());
+    }
+    Ok((
+        features,
+        groups,
+        arc_sequence,
+        unique_arc_count,
+        source_body_sha,
+    ))
+}
+
+fn run_direct_unique_edges(
+    input: &[u8],
+    output_dir: &Path,
+    records: &[Record],
+    source_body_sha: &[u8; 32],
+    flags: CompFlags,
+) -> Result<(), String> {
+    let groups = groups_from_records(records)?;
+    let mut feature_set = BTreeSet::new();
+    for record in records {
+        feature_set.insert((record.source_image, record.source_feature));
+        feature_set.insert((record.target_image, record.target_feature));
+    }
+    let features: Vec<(u32, u32)> = feature_set.into_iter().collect();
+    let feature_ids: BTreeMap<(u32, u32), usize> = features
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, value)| (value, index))
+        .collect();
+    let mut unique_arc_set = BTreeSet::new();
+    for record in records {
+        let source = feature_ids[&(record.source_image, record.source_feature)];
+        let target = feature_ids[&(record.target_image, record.target_feature)];
+        if source >= target {
+            return Err("direct feature order does not preserve COLMAP direction".to_string());
+        }
+        unique_arc_set.insert((source, target));
+    }
+    let unique_arcs: Vec<(usize, usize)> = unique_arc_set.into_iter().collect();
+    let arc_ids: BTreeMap<(usize, usize), usize> = unique_arcs
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, arc)| (arc, index))
+        .collect();
+    let arc_sequence: Vec<usize> = records
+        .iter()
+        .map(|record| {
+            arc_ids[&(
+                feature_ids[&(record.source_image, record.source_feature)],
+                feature_ids[&(record.target_image, record.target_feature)],
+            )]
+        })
+        .collect();
+    let graph = VecGraph::from_arcs(unique_arcs.iter().copied());
+    let basename = output_dir.join("worldpack");
+    BvComp::with_basename(&basename)
+        .comp_flags(flags)
+        .comp_graph::<BE>(&graph)
+        .map_err(|error| format!("official direct WebGraph compression: {error:#}"))?;
+    store_ef_with_data(
+        graph.num_nodes(),
+        basename.with_extension("graph"),
+        basename.with_extension("offsets"),
+        basename.with_extension("ef"),
+        &mut no_logging![],
+    )
+    .map_err(|error| format!("official direct Elias-Fano build: {error:#}"))?;
+    fs::remove_file(basename.with_extension("offsets"))
+        .map_err(|error| format!("remove direct build-only offsets: {error}"))?;
+
+    let mapping = encode_direct_mapping(
+        &features,
+        &groups,
+        &arc_sequence,
+        unique_arcs.len(),
+        source_body_sha,
+    );
+    let mapping_path = output_dir.join("mapping.raw");
+    fs::write(&mapping_path, &mapping)
+        .map_err(|error| format!("write direct mapping: {error}"))?;
+    let (decoded_features, decoded_groups, decoded_sequence, decoded_arc_count, decoded_sha) =
+        decode_direct_mapping(&mapping)?;
+    if decoded_features != features
+        || decoded_groups != groups
+        || decoded_sequence != arc_sequence
+        || decoded_arc_count != unique_arcs.len()
+        || decoded_sha != *source_body_sha
+    {
+        return Err("direct mapping round trip mismatch".to_string());
+    }
+    let loaded = BvGraph::with_basename(&basename)
+        .endianness::<BE>()
+        .mode::<LoadMem>()
+        .load()
+        .map_err(|error| format!("direct random-access load without offsets: {error:#}"))?;
+    let mut loaded_arcs = Vec::with_capacity(unique_arcs.len());
+    for source in 0..loaded.num_nodes() {
+        for target in loaded.successors(source) {
+            loaded_arcs.push((source, target));
+        }
+    }
+    if loaded_arcs != unique_arcs {
+        return Err("direct loaded graph differs from unique arcs".to_string());
+    }
+    let mut random_read_indices = BTreeSet::new();
+    for numerator in 0..8 {
+        random_read_indices.insert(numerator * (records.len() - 1) / 7);
+    }
+    for &record_index in &random_read_indices {
+        let (source, target) = loaded_arcs[decoded_sequence[record_index]];
+        if decoded_features[source]
+            != (records[record_index].source_image, records[record_index].source_feature)
+            || decoded_features[target]
+                != (records[record_index].target_image, records[record_index].target_feature)
+        {
+            return Err("direct random-access record mismatch".to_string());
+        }
+    }
+    let mut restored_records = Vec::with_capacity(records.len());
+    let mut record_index = 0_usize;
+    for group in &decoded_groups {
+        let source_image = u32::try_from(group.pair_id / MAX_IMAGE_ID)
+            .map_err(|_| "direct source image exceeds u32".to_string())?;
+        let target_image = u32::try_from(group.pair_id % MAX_IMAGE_ID)
+            .map_err(|_| "direct target image exceeds u32".to_string())?;
+        for row_ordinal in 0..group.row_count {
+            let (source_id, target_id) = loaded_arcs[decoded_sequence[record_index]];
+            let source = decoded_features[source_id];
+            let target = decoded_features[target_id];
+            if source.0 != source_image || target.0 != target_image {
+                return Err("direct arc images do not match pair identity".to_string());
+            }
+            restored_records.push(Record {
+                table: group.table,
+                pair_id: group.pair_id,
+                row_ordinal: u32::try_from(row_ordinal)
+                    .map_err(|_| "direct row ordinal exceeds u32".to_string())?,
+                source_image,
+                source_feature: source.1,
+                target_image,
+                target_feature: target.1,
+            });
+            record_index += 1;
+        }
+    }
+    let restored = canonical_bytes(&restored_records, &decoded_sha);
+    if restored != input {
+        return Err("direct complete canonical restoration mismatch".to_string());
+    }
+    fs::write(output_dir.join("restored.bin"), &restored)
+        .map_err(|error| format!("write direct restored: {error}"))?;
+    let graph_bytes = file_size(&basename.with_extension("graph"))?;
+    let properties_bytes = file_size(&basename.with_extension("properties"))?;
+    let elias_fano_bytes = file_size(&basename.with_extension("ef"))?;
+    let mapping_raw_bytes = file_size(&mapping_path)?;
+    println!(
+        "{{\"revision\":\"{}\",\"records\":{},\"feature_nodes\":{},\"record_nodes\":0,\"graph_arcs\":{},\"duplicate_records\":{},\"graph_bytes\":{},\"properties_bytes\":{},\"elias_fano_bytes\":{},\"mapping_raw_bytes\":{},\"offsets_persisted_bytes\":0,\"random_reads\":{},\"byte_equal\":1}}",
+        REVISION,
+        records.len(),
+        features.len(),
+        unique_arcs.len(),
+        records.len() - unique_arcs.len(),
+        graph_bytes,
+        properties_bytes,
+        elias_fano_bytes,
+        mapping_raw_bytes,
+        random_read_indices.len(),
+    );
+    Ok(())
+}
+
 fn canonical_bytes(records: &[Record], source_body_sha: &[u8; 32]) -> Vec<u8> {
     let mut output = Vec::with_capacity(INPUT_HEADER_BYTES + records.len() * INPUT_RECORD_BYTES);
     output.extend_from_slice(INPUT_MAGIC);
@@ -291,8 +606,8 @@ fn code_from_name(name: &str) -> Result<Codes, String> {
 
 fn run() -> Result<(), String> {
     let arguments: Vec<String> = env::args().collect();
-    if arguments.len() != 7 {
-        return Err("usage: worldpack_webgraph_adapter INPUT OUTPUT_DIR WINDOW MAX_REF MIN_INTERVAL gamma|zeta3".to_string());
+    if arguments.len() != 7 && arguments.len() != 8 {
+        return Err("usage: worldpack_webgraph_adapter INPUT OUTPUT_DIR WINDOW MAX_REF MIN_INTERVAL gamma|zeta3 [record_nodes_v1|direct_unique_edges_v1]".to_string());
     }
     let input_path = PathBuf::from(&arguments[1]);
     let output_dir = PathBuf::from(&arguments[2]);
@@ -307,6 +622,10 @@ fn run() -> Result<(), String> {
         .map_err(|_| "invalid minimum interval length".to_string())?;
     let code_name = arguments[6].as_str();
     let code = code_from_name(code_name)?;
+    let representation = arguments
+        .get(7)
+        .map(String::as_str)
+        .unwrap_or("record_nodes_v1");
     if output_dir.exists() {
         return Err("output directory already exists".to_string());
     }
@@ -314,6 +633,28 @@ fn run() -> Result<(), String> {
 
     let input = fs::read(&input_path).map_err(|error| format!("read input: {error}"))?;
     let (records, source_body_sha) = parse_input(&input)?;
+    let flags = CompFlags {
+        outdegrees: code,
+        references: code,
+        blocks: code,
+        intervals: code,
+        residuals: code,
+        min_interval_length,
+        compression_window,
+        max_ref_count,
+    };
+    if representation == "direct_unique_edges_v1" {
+        return run_direct_unique_edges(
+            &input,
+            &output_dir,
+            &records,
+            &source_body_sha,
+            flags,
+        );
+    }
+    if representation != "record_nodes_v1" {
+        return Err(format!("unsupported representation {representation}"));
+    }
     let groups = groups_from_records(&records)?;
     let mut feature_set = BTreeSet::new();
     for record in &records {
@@ -340,16 +681,6 @@ fn run() -> Result<(), String> {
     }
     let graph = VecGraph::from_arcs(graph_arcs);
     let basename = output_dir.join("worldpack");
-    let flags = CompFlags {
-        outdegrees: code,
-        references: code,
-        blocks: code,
-        intervals: code,
-        residuals: code,
-        min_interval_length,
-        compression_window,
-        max_ref_count,
-    };
     BvComp::with_basename(&basename)
         .comp_flags(flags)
         .comp_graph::<BE>(&graph)

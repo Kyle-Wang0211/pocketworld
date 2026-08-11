@@ -1,0 +1,41 @@
+{
+  "schema": "pw_cross_photo_abc_evidence_v1",
+  "decision": "keep-jxl-exact-baseline",
+  "source_jpeg_bytes": 107649656,
+  "baseline_complete_archive_bytes": 88416344,
+  "arm_a_complete_archive_bytes": 129466593,
+  "arm_b_complete_archive_bytes": 128858517,
+  "arm_c_status": "blocked-license",
+  "hard_gates": {
+    "arm_a_all_25_lengths_equal": true,
+    "arm_a_all_25_bytes_equal": true,
+    "arm_a_all_25_sha256_equal": true,
+    "arm_a_corruption_rejected": true,
+    "arm_b_all_25_lengths_equal": true,
+    "arm_b_all_25_bytes_equal": true,
+    "arm_b_all_25_sha256_equal": true,
+    "arm_b_corruption_rejected": true,
+    "random_read_max_jpegs": 8,
+    "all_persisted_bytes_counted": true
+  },
+  "artifact_sha256": {
+    "baseline_result": "c0f4aa3d7eccf24373804245f2b9a320232cac3affe328c453d8053f9800f0d3",
+    "arm_a_result": "013ecf768e3a91d874a4eb1dbcaa049b281fcb5a75b2b8f447d89fb6be3c80e5",
+    "arm_b_result": "221c4f46861371de246c98afab2d2ee6dc52db60510b7a59d841415fd7cb3ed8"
+  },
+  "failed_hypotheses": [
+    "Dense flow plus a local exact DCT parent forest does not offset expansion from JPEG entropy coding.",
+    "A Faiss global DCT parent forest improves A by only 0.47 percent and remains 45.74 percent larger than JXL.",
+    "Coefficient L1 or L2 similarity is not a sufficient proxy for complete ZPAQ archive size."
+  ],
+  "future_admission_rule": {
+    "minimum_complete_unit_photos": 2,
+    "then_complete_group_photos": 8,
+    "then_full_minimum_bytes": 104857600,
+    "promotion_requires_strict_size_win_and_all_exactness_gates": true
+  },
+  "deviations": [
+    "The original 37-photo temporary input had been removed before execution; a new immutable 25-photo prefix totaling 107649656 source bytes was frozen and used identically by A and B.",
+    "Large input and archive scratch files were deleted after verified result hashes were persisted; no duplicate 100-MiB corpus was added to DVC."
+  ]
+}

@@ -45,6 +45,7 @@ import '../../official_capture/capture_coverage_cloud.dart';
 import '../../official_capture/capture_session.dart';
 import '../../official_capture/colorize_pipeline.dart';
 import '../../official_capture/live_sfm_publish_policy.dart';
+import '../../official_capture/live_cloud_diagnostics.dart';
 import '../../official_capture/manual_capture_queue.dart';
 import '../../official_capture/official_highres_reconstruction_input.dart';
 import '../../official_capture/parallax_banner_gate.dart';
@@ -247,6 +248,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// Capture coverage voxels remain a private guidance signal; the native
   /// renderer receives nothing before V20 and only stable SfM versions after.
   CoverageCloudPacked? _officialSfmArCloud;
+  LiveCloudTelemetryTag? _officialSfmDiagnosticTag;
+  final LiveCloudTelemetrySequencer _liveCloudTelemetry =
+      LiveCloudTelemetrySequencer();
 
   // ─── [ENGINE-DRAFT 2026-08-09 用户签"第1张就要出云"] ─────────────────
   // 引擎草稿云:第 1 张快门后、SfM 云(配对草稿/正式)到达前,把 ARKit VIO
@@ -983,6 +987,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // Fresh take → empty coverage cloud (0 photos ⇒ 0 dots on screen).
       _coverageCloud.reset();
       _officialSfmArCloud = null;
+      _officialSfmDiagnosticTag = null;
       _engineDraftCloud = null;
       _engineDraftLastBuildMs = 0;
       // Fresh take → 卡片边框状态机归零(native 卡片已由 clearPhotoCards
@@ -997,6 +1002,12 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // 补强1:starved 横幅门与覆盖云同时机归零(下方 setState 会重建)。
       _starvedBannerGate.reset();
       _starvedBannerVisible = false;
+      TelemetryWriter.instance.event('live_cloud_diag_build_v1', {
+        'contract': liveCloudDiagnosticContractId,
+        'dart_build_id': liveCloudDiagnosticDartBuildId,
+        'product_manifest_source': liveCloudDiagnosticProductManifestSource,
+        'observation_only': true,
+      });
       // force:新一轮拍摄的归零推送必须落到 native,不能被去重门挡掉。
       unawaited(_pushCoverageCloud(force: true));
       _coverageFeedSub ??= session.sfmFrameStream.listen(_onCoverageKeyframe);
@@ -1163,7 +1174,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// on each publish, so identity is a sound change test.
   CoverageCloudPacked? _pushedArCloud;
 
-  Future<void> _pushCoverageCloud({bool force = false}) async {
+  Future<void> _pushCoverageCloud({
+    bool force = false,
+    LiveCloudTelemetryTag? diagnosticTag,
+  }) async {
     // [ENGINE-DRAFT] 优先级:SfM 云(配对草稿/正式)> 引擎草稿 > 空。
     final packed =
         _officialSfmArCloud ??
@@ -1171,12 +1185,52 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         CoverageCloudPacked(Float32List(0), Uint8List(0));
     if (!force && identical(packed, _pushedArCloud)) return;
     _pushedArCloud = packed;
+    var tag = diagnosticTag;
+    if (tag == null &&
+        _officialSfmArCloud != null &&
+        identical(packed, _officialSfmArCloud)) {
+      tag = _officialSfmDiagnosticTag;
+    }
+    if (tag == null) {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      tag = _liveCloudTelemetry
+          .receive(
+            source:
+                _engineDraftCloud != null &&
+                    identical(packed, _engineDraftCloud)
+                ? 'engine_draft'
+                : 'empty',
+            publishVersion: 0,
+            pointCount: packed.xyz.length ~/ 3,
+            receiveEpochMs: now,
+          )
+          .withComputeDone(now);
+      TelemetryWriter.instance.event('live_cloud_receive_v1', tag.baseFields);
+    }
+    final channel = _liveCloudTelemetry.channelSend(
+      tag,
+      channelSendEpochMs: DateTime.now().millisecondsSinceEpoch,
+    );
+    TelemetryWriter.instance.event(
+      'live_cloud_channel_send_v1',
+      channel.fields,
+    );
     try {
-      await _arKitChannel.invokeMethod<void>(
-        'setCoveragePointCloud',
-        <String, dynamic>{'xyz': packed.xyz, 'rgb': packed.rgb},
-      );
+      await _arKitChannel
+          .invokeMethod<void>('setCoveragePointCloud', <String, dynamic>{
+            'xyz': packed.xyz,
+            'rgb': packed.rgb,
+            ...tag.channelArguments(channelPushSequence: channel.pushSequence),
+          });
+      TelemetryWriter.instance.event('live_cloud_channel_ack_v1', {
+        ...channel.fields,
+        'channel_ack_t': DateTime.now().millisecondsSinceEpoch,
+      });
     } catch (_) {
+      TelemetryWriter.instance.event('live_cloud_channel_error_v1', {
+        ...channel.fields,
+        'channel_error_t': DateTime.now().millisecondsSinceEpoch,
+      });
       // Display-only channel — never let it disturb capture. Forget the
       // payload so the next push retries instead of de-duplicating against a
       // send that never landed.
@@ -1187,7 +1241,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// Atomically replaces the AR overlay with a globally refined official SfM
   /// snapshot. This is display-only: no point is removed or rewritten in the
   /// reconstruction or final PLY.
-  Future<void> _publishOfficialSfmCloudToAr(SfmLiveSnapshot snapshot) async {
+  Future<void> _publishOfficialSfmCloudToAr(
+    SfmLiveSnapshot snapshot,
+    LiveCloudTelemetryTag receiveTag,
+  ) async {
     // [AR-EVERY-FRAME 2026-08-04] 接受两种拍摄期流式 source:检查点的
     // 'streaming_global_ba'(既有),以及每帧的 'streaming_local_ba_live'(实验臂
     // OFFICIAL_AETHER_AR_EVERY_FRAME=1 时才由生产端发出)。env 关时后者永不
@@ -1207,6 +1264,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // 引擎草稿(还有照片时)或空(全删光)。
       if (snapshot.summary['frame_removed'] != null) {
         _officialSfmArCloud = null;
+        _officialSfmDiagnosticTag = null;
         if (_projectPhotos.count < 1) _engineDraftCloud = null;
         _engineDraftLastBuildMs = 0;
         await _pushCoverageCloud(force: true);
@@ -1225,12 +1283,22 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       xyz: snapshot.xyz,
       rgb: rgb,
     ), debugLabel: 'capture_progressive_octree_order');
+    final computeDoneAt = DateTime.now().millisecondsSinceEpoch;
+    TelemetryWriter.instance.event(
+      'live_cloud_compute_done_v1',
+      _liveCloudTelemetry.computeDoneFields(
+        receiveTag,
+        computeDoneEpochMs: computeDoneAt,
+      ),
+    );
     if (!_recording) return;
+    final completedTag = receiveTag.withComputeDone(computeDoneAt);
     _officialSfmArCloud = CoverageCloudPacked(
       displayCloud.xyz,
       displayCloud.rgb,
     );
-    await _pushCoverageCloud();
+    _officialSfmDiagnosticTag = completedTag;
+    await _pushCoverageCloud(diagnosticTag: completedTag);
   }
 
   /// 覆盖云推送合并节流:首次调用立即推(引导反馈不加延迟),400ms 窗口
@@ -1571,11 +1639,25 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // 否则会落进下方 colorize 路径,而那里 'streaming_local_ba'(注意无 _live)
       // 被当作拍完的终态云会提前弹浮层。'_live' 后缀正是为避开该撞名。
       final snapshot = event.snapshot;
+      final source = snapshot.summary['source'] as String;
+      final receiveTag = _liveCloudTelemetry.receive(
+        source: source,
+        publishVersion:
+            (snapshot.summary['publish_version'] as num?)?.toInt() ?? 0,
+        pointCount: snapshot.pointCount,
+        receiveEpochMs: DateTime.now().millisecondsSinceEpoch,
+        sourceReceiveSequence:
+            (snapshot.summary['diag_source_receive_seq'] as num?)?.toInt(),
+      );
+      TelemetryWriter.instance.event(
+        'live_cloud_receive_v1',
+        receiveTag.baseFields,
+      );
       if (snapshot.posesPacked.isNotEmpty) {
         _sfmLatestPoses = snapshot.posesPacked;
         _refreshPhotoCardStates();
       }
-      unawaited(_publishOfficialSfmCloudToAr(snapshot));
+      unawaited(_publishOfficialSfmCloudToAr(snapshot, receiveTag));
       return;
     }
     // 卡片边框连通性(黑→白/红):native 渲染,Flutter 无需 rebuild —
@@ -3152,7 +3234,6 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         blockedMessage: '当前任务正在重建',
         onCaptureTap: _showReconstructionProgress,
         child: MePage(
-          initialShowDrafts: true,
           activeReconstructionCaptureDir: _session?.captureDir,
           activeReconstructionPipelineKind: CapturePipelineKind.official,
           onActiveReconstructionTap: _showReconstructionProgress,

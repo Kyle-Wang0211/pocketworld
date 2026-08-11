@@ -18,6 +18,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../official_capture/sfm_resume.dart';
+import '../sparse_thumbnail.dart';
 import 'sparse_cloud_viewer_page.dart';
 
 class SfmResumeWaitPage extends StatefulWidget {
@@ -25,7 +26,12 @@ class SfmResumeWaitPage extends StatefulWidget {
     super.key,
     required this.captureDir,
     required this.title,
+    @visibleForTesting this.debugResume,
   });
+
+  /// 测试注入:替身 resume(生产恒 null,走 [resumeSingleCapture])。
+  /// 真 resume 会 spawn native worker,widget 测试里跑不了。
+  final Future<bool> Function(String captureDir)? debugResume;
 
   /// 已通过 resolveRecoverableCaptureDir 解析的、当前容器内的 capture 目录。
   final String captureDir;
@@ -47,7 +53,19 @@ class _SfmResumeWaitPageState extends State<SfmResumeWaitPage> {
   void initState() {
     super.initState();
     // 幂等:已在跑就挂到同一 future(绝不起第二个 worker)。
-    resumeSingleCapture(widget.captureDir).then((ok) {
+    (widget.debugResume ?? resumeSingleCapture)(widget.captureDir).then((ok) {
+      // [2026-08-08 用户实机指认"回到草稿页仍显示照片封面"] 点云诞生的那一刻就把
+      // 草稿卡的封面画好 —— 与 live 路径(ar_capture_page 的 persist 现场)同一
+      // 契约。刻意放在 mounted 检查**之前**:用户提前返回、本页已销毁时也要画,
+      // 否则封面又得等草稿页轮询懒补,照片会多显示几秒。
+      if (ok) {
+        unawaited(
+          ensureSparseThumb(
+            captureDir: widget.captureDir,
+            plyPath: '${widget.captureDir}/official_sfm_sparse.ply',
+          ),
+        );
+      }
       if (!mounted) return;
       setState(() {
         _done = true;

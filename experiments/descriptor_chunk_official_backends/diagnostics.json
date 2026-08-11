@@ -1,0 +1,27 @@
+{
+  "schema": "pw_descriptor_chunk_official_backends_diagnostics_v1",
+  "non_comparable_preflight_attempts": [
+    {
+      "id": "openzl-profile-required",
+      "status": "invalid_harness_start",
+      "observed": "No compressor profile or serialized compressor specified.",
+      "resolution": "Explicitly select an official OpenZL profile before training."
+    },
+    {
+      "id": "openzl-u8-ace-real-chunk",
+      "status": "upstream_graph_rejected",
+      "observed": "OpenZL error 30: Graph invalid; selected ACE graph input types were not compatible when overriding the u8 wrapper graph.",
+      "control": "The same pinned u8 ACE trainer completed on a 154624-byte control file, so the build and trainer were functional.",
+      "resolution": "Use the official serial raw-byte profile, whose ACE target directly matches the residual byte stream. The valid measured arm is explicitly named openzl_ace_serial_no_clustering."
+    },
+    {
+      "id": "b2nd-two-dimensional-typesize-mismatch",
+      "status": "invalid_harness_model",
+      "observed": "b2nd_from_cbuffer returned BLOSC2_ERROR_INVALID_PARAM (-12).",
+      "root_cause": "The draft represented both 16384x128 uint8 elements and 128-byte element width, so B2ND expected 256 MiB rather than the actual 2 MiB.",
+      "resolution": "Persist 16384 fixed-width S128 descriptor records. This retains the logical [16384,128] bytes and lets official SHUFFLE plus BYTEDELTA operate on all 128 lanes."
+    }
+  ],
+  "comparable_run": "results/2026-08-02-minimal-chunk.json",
+  "automatic_repeats": 0
+}

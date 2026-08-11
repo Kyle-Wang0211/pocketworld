@@ -1,0 +1,30 @@
+{
+  "schema": "pw_lepton_jxl_iphone_ab_evidence_v1",
+  "experiment_contract": "experiments/lepton_jxl_iphone/experiment-contract.yaml",
+  "result": "experiments/lepton_jxl_iphone/results/2026-08-02-lepton-jxl-iphone-ab.json",
+  "repository_head": "eb269acdd8f8a941a10b55ce2d97f8b77ccc8f0e",
+  "device_udid": "1B290474-D354-5B4C-AAB0-0805AC5DC832",
+  "physical_device": true,
+  "signed_bundle_id": "com.kyle.PocketWorld.LeptonBench",
+  "signed_application_identifier": "26AH7V448L.com.kyle.PocketWorld.LeptonBench",
+  "production_bundle_accessed": false,
+  "production_bundle_updated": false,
+  "run_id": "20260802T134334Z",
+  "input_bytes": 2725495,
+  "input_sha256": "a1cb8de1d3b91edbb7e05233c7930200c46e04554c3651153e267e5abd262138",
+  "lepton_package_version": "0.5.8",
+  "lepton_package_revision": "90fdc27828676892fbb41777cfcc6bad1e470516",
+  "lepton_static_library_sha256": "4440997ed0355690cdde883796460c87cbaa079bea8d84ae3379c24887f141ca",
+  "signed_app_binary_sha256": "31f80762d2e8a2826a6e46e953f1973b85b947e80080cef932dd87db138b5b60",
+  "jxl_archive_bytes": 2215345,
+  "lepton_archive_bytes": 2159731,
+  "lepton_bytes_saved_vs_jxl": 55614,
+  "lepton_percent_smaller_vs_jxl": 2.510399,
+  "jxl_exact": true,
+  "lepton_exact": true,
+  "verdict": "promote_lepton_for_future_photo_archives",
+  "deviations": [],
+  "unresolved_risks": [
+    "Production promotion must retain the legacy JPEG XL decoder and the cold-work interruption contract."
+  ]
+}

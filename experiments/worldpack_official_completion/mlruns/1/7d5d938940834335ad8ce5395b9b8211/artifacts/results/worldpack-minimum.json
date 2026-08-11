@@ -1,0 +1,116 @@
+{
+  "schema": "pw_worldpack_minimum_result_v1",
+  "scope": "minimum",
+  "selection_policy": "minimum_mixed_real_members",
+  "input_manifest_sha256": "46d0621460ffd99dbb6c9da5bd7340a177f8242d86b1bc83b4be70edbd9c2a92",
+  "source_bytes": 6298187,
+  "member_count": 5,
+  "restored_member_count": 5,
+  "complete_persisted_bytes": 5317484,
+  "archive_sha256": "66e2de97959a61aa1e36f001c7d591c706e2e2fb5fffc1a3c0f5a20f68f4acd1",
+  "header_bytes": 64,
+  "chunk_header_bytes": 802,
+  "payload_bytes": 5314163,
+  "index_bytes": 2395,
+  "footer_bytes": 60,
+  "container_overhead_bytes": 3321,
+  "compression_ratio": 1.184429892031645,
+  "reduction_fraction": 0.15571195329703613,
+  "selected_codec_counts": {
+    "lepton_jpeg_0_5_8": 1,
+    "raw": 2,
+    "zpaq_7_15_method5": 2
+  },
+  "database_archive_bytes": 0,
+  "source_unchanged": 1,
+  "source_manifest_reverified": 1,
+  "all_members_byte_equal": 1,
+  "all_members_sha256_equal": 1,
+  "sqlite_integrity_check": "not_in_scope",
+  "random_read_count": 3,
+  "random_reads_exact": 1,
+  "corruption_rejected": 1,
+  "worldpack_implementation_sha256": "e6d9bfb9b46e2d217c4b63b3cd36ed08c821433b67d0fd1aa3283a5185ad4c0a",
+  "lepton_revision": "90fdc27828676892fbb41777cfcc6bad1e470516",
+  "zpaq_revision": "e85ec2529eb0ba22ceaeabd461e55357ef099b80f61c14f377b429ea3d49d418",
+  "similarity_forest_result_sha256": null,
+  "members": [
+    {
+      "path": "photos_highres/official_tap-2032.jpg",
+      "source_bytes": 2794655,
+      "source_sha256": "29aaef47f97b6b41fa3453b321dff030a0fcf3b4abac1d6aece72f11429744a4",
+      "selected_codec": "lepton_jpeg_0_5_8",
+      "persisted_payload_bytes": 2211879,
+      "persisted_payload_sha256": "06be563daea2f448dc4fa47014264549a2cff9f7414b42beccc1649fedaac42a",
+      "candidate_bytes": {
+        "lepton_jpeg_0_5_8": 2211879,
+        "raw": 2794655
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1024.jpg.jxl",
+      "source_bytes": 2229950,
+      "source_sha256": "d36935a3feb9d493fcc180a297dddef272fe4344ff1b805b5844dfb50c0ce5d6",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2229950,
+      "persisted_payload_sha256": "d36935a3feb9d493fcc180a297dddef272fe4344ff1b805b5844dfb50c0ce5d6",
+      "candidate_bytes": {
+        "raw": 2229950
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "official_sfm_sparse.ply",
+      "source_bytes": 1162370,
+      "source_sha256": "ba941c8b1fff4e6bbeb270aed8f4e328a14e570c46647dbd91b48e74c713dd3a",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 857476,
+      "persisted_payload_sha256": "4999f38d9f6253054847156d2d83eb3ed7e259e549a4afe0e4d24732becbf00d",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 857476,
+        "raw": 1162370
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "official_database_archive_policy.json",
+      "source_bytes": 252,
+      "source_sha256": "842dc5b34eca74f88b436fd7d0a5b2270d95f9b70085a990eae317320a9744b8",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 252,
+      "persisted_payload_sha256": "842dc5b34eca74f88b436fd7d0a5b2270d95f9b70085a990eae317320a9744b8",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 484,
+        "raw": 252
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "official_sfm_fed_frames.jsonl",
+      "source_bytes": 110960,
+      "source_sha256": "7d3f9e9dd2a140eed1aa74ca6ccdb118029a9560f4796dcdcb19d149ca96359a",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 14606,
+      "persisted_payload_sha256": "8c98b24811c379127a99c91752fdae2509e3e6cfb129a3159fd02da1bf655f5d",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 14606,
+        "raw": 110960
+      },
+      "rejected_candidates": []
+    }
+  ],
+  "peak_rss_bytes": 168493056,
+  "peak_temp_bytes": 14700116,
+  "wall_seconds": 28.08892011642456,
+  "host": {
+    "platform": "macOS-26.1-arm64-arm-64bit",
+    "machine": "arm64",
+    "python": "3.11.15"
+  },
+  "production_promoted": false,
+  "phone_accessed": false,
+  "conclusion_scope": "worldpack_experiment_only",
+  "mlflow_run_id": "7d5d938940834335ad8ce5395b9b8211",
+  "mlflow_tracking_store": "mlflow.db"
+}

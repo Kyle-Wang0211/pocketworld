@@ -1,0 +1,150 @@
+{
+  "schema": "pw_compression_fidelity_inventory_v1",
+  "audit_date": "2026-08-02",
+  "repository_head": "13d2a4f05d491464c537a9135496eccaa05c2358",
+  "rules": {
+    "missing_evidence_is_failure": false,
+    "partial_mode_can_reject_whole_upstream": false,
+    "host_can_promote_production": false
+  },
+  "schemes": [
+    {
+      "scheme": "jpeg_xl_exact_jpeg",
+      "classification": "faithful_official",
+      "basis": "Production bridge is pinned to libjxl 0.12.0 and uses the official exact-JPEG API: container, JPEG metadata, AddJPEGFrame, and JPEG reconstruction decode events. Durable physical-iPhone runs verified restored JPEG bytes and SHA-256.",
+      "old_claim_disposition": "Retain the existing phone baseline. No host rerun was needed, and no other one-photo host result may replace it."
+    },
+    {
+      "scheme": "brunsli",
+      "classification": "faithful_official",
+      "basis": "Official google/brunsli v0.1 source and its cbrunsli/dbrunsli tools restored one original JPEG byte-for-byte; only a CMake compatibility policy flag was added outside source.",
+      "old_claim_disposition": "Withdraw any earlier claim that Brunsli had already replaced production or had a durable 100 MB result. The new evidence proves one-photo exactness only."
+    },
+    {
+      "scheme": "rust_lepton",
+      "classification": "faithful_official",
+      "basis": "Official Microsoft lepton_jpeg_rust v0.5.8 util encoded and decoded one original JPEG exactly. A temporary workspace target and local dynamic-library compatibility link fixed the host toolchain; codec source was unchanged.",
+      "old_claim_disposition": "Treat earlier build problems as toolchain diagnostics, not codec failure. The new one-photo result is exact but is not a production or corpus winner."
+    },
+    {
+      "scheme": "packjpg",
+      "classification": "faithful_official",
+      "basis": "Original packJPG 2.5j CLI core from the wxPackJPG 1.2.0 source archive restored one JPEG byte-for-byte. The core declares LGPL-3.0-or-later with special-permission language; the wx wrapper MIT file does not relicense the core.",
+      "old_claim_disposition": "Replace the former no-result status with a one-photo exact micro-result. Commercial iOS adoption remains conditional on a separate license/legal review."
+    },
+    {
+      "scheme": "zstd",
+      "classification": "faithful_official",
+      "basis": "Official Zstandard CLI 1.5.7 levels 1, 3, 5, 10, 15, 19, 22 and 22 plus long=31 were run once on one complete descriptor row and all restored exact bytes and SHA-256.",
+      "old_claim_disposition": "Prior phone numbers without a complete durable command identity are not reconstructed. This supplement validates only the listed current CLI modes and minimum input."
+    },
+    {
+      "scheme": "lzma2",
+      "classification": "faithful_official",
+      "basis": "Official XZ Utils 5.8.3 preset 9 and preset 9 extreme with the xz SHA-256 check restored one complete descriptor row exactly.",
+      "old_claim_disposition": "Retain prior phone A/B only where its own durable evidence exists. On this minimum row, extreme was 84 bytes larger than preset 9, so levels are not assumed monotonic."
+    },
+    {
+      "scheme": "zpaq_method5",
+      "classification": "faithful_official",
+      "basis": "Pinned official ZPAQ 7.15 libzpaq source and documented method 5 are used by the bridge. Existing full-DB evidence plus this one-row supplement both restore exact bytes and SHA-256.",
+      "old_claim_disposition": "Retain as the descriptor-row winner for this audit and as the established SQLite backend baseline; no claim of universal optimality."
+    },
+    {
+      "scheme": "libbsc",
+      "classification": "faithful_official",
+      "basis": "Official IlyaGrebnov/libbsc v3.3.12 CLI built unchanged. Documented best-compression mode e2, with and without record reordering, restored one complete descriptor row exactly.",
+      "old_claim_disposition": "Withdraw old undocumented size claims. The new result validates these two official modes only; neither beat ZPAQ on the minimum row."
+    },
+    {
+      "scheme": "kanzi_tpaqx",
+      "classification": "faithful_official",
+      "basis": "Official flanglet/kanzi-cpp 2.5.3 CLI level 8 TPAQ and level 9 TPAQX with x64 checksum restored one complete descriptor row exactly.",
+      "old_claim_disposition": "Withdraw old undocumented size claims. Official documentation does not promise higher level is always smaller; here level 8 beat level 9, and both lost to ZPAQ."
+    },
+    {
+      "scheme": "openzl",
+      "classification": "faithful_subset",
+      "basis": "The old six-member numeric brute-force screen did not reproduce the strongest official parser, clustering, and ACE workflow. The corrected minimum-chunk run pins OpenZL 0.2.0 and uses the official serial raw-byte ACE profile, counts its model, and verifies exact decode and corruption rejection, but still has no domain parser or clustering corpus.",
+      "old_claim_disposition": "Withdraw any whole-project 'OpenZL failed' claim. Preserve only: the old numeric selector and the corrected ACE-serial mode lost to ZPAQ on their measured inputs."
+    },
+    {
+      "scheme": "c_blosc2_b2nd",
+      "classification": "faithful_subset",
+      "basis": "The old screen omitted BYTEDELTA and proper B2ND typing. The corrected minimum-chunk run pins C-Blosc2 3.3.0 and models descriptors as fixed S128 records with official SHUFFLE plus BYTEDELTA and Zstd, with complete output, exact decode, and corruption rejection. It does not search dictionaries or multiple chunk/block shapes.",
+      "old_claim_disposition": "Withdraw any whole-project 'Blosc2 failed' claim. Preserve only the result for the exact official combinations actually measured."
+    },
+    {
+      "scheme": "pcodec",
+      "classification": "faithful_subset",
+      "basis": "Pinned official Pcodec 1.0.2 standalone API level 12 was used for compatible homogeneous numerical members, with decode verification. It improved 66 eligible PWA2 members, but the result was a scoped PWA2 container experiment rather than an all-SQLite codec replacement.",
+      "old_claim_disposition": "Retain the local member-level improvement and PWA2 scoped size. Do not call it a full database or production winner."
+    },
+    {
+      "scheme": "parquet_arrow",
+      "classification": "faithful_subset",
+      "basis": "Pinned PyArrow 25.0.0 wrote and read one exact uint8[8192,128] descriptor row as FIXED_LEN_BYTE_ARRAY(128). Both official BYTE_STREAM_SPLIT and DELTA_BYTE_ARRAY plus Zstd modes restored all 1,048,576 bytes; the best complete file was 841,333 bytes.",
+      "old_claim_disposition": "It is now measured as an exact normalized-descriptor format and loses this minimum unit to 779,453-byte ZPAQ. It still is not a byte-identical old-SQLite file codec."
+    },
+    {
+      "scheme": "orc",
+      "classification": "faithful_subset",
+      "basis": "Pinned PyArrow 25.0.0 wrote and read one descriptor row as an ORC 0.12 binary column with Zstd. The complete 842,852-byte file restored every input byte.",
+      "old_claim_disposition": "It loses this normalized minimum unit to ZPAQ. The result does not claim recovery of an old SQLite file's physical pages."
+    },
+    {
+      "scheme": "tiledb",
+      "classification": "faithful_subset",
+      "basis": "Pinned TileDB-Py 0.36.1 stored one descriptor row as a dense uint8[8192,128] array. Zstd, Delta plus Zstd, and BitShuffle plus Zstd all restored exactly; all four persisted files were counted, with plain Zstd smallest at 841,795 bytes.",
+      "old_claim_disposition": "It loses this normalized minimum unit to ZPAQ. It remains a logical array format rather than an exact old-SQLite serialization codec."
+    },
+    {
+      "scheme": "dwarfs",
+      "classification": "faithful_official",
+      "basis": "Official DwarFS 0.15.6 level 9 archived one JPEG, one descriptor row, and one real sparse PLY. All three files restored byte-for-byte; 4,936,441 raw bytes became 4,533,799 bytes.",
+      "old_claim_disposition": "The measured 8.16% raw reduction loses to per-type archives, and the GPL-3.0 writer conflicts with embedding the encoder in the intended closed iPhone app."
+    },
+    {
+      "scheme": "track_delta_v1",
+      "classification": "validated_internal",
+      "basis": "This is a PocketWorld-owned reversible transform, so there is no external official upstream to reproduce. Its frozen implementation and three complete runs include side data, exact source recovery, SHA-256, and SQLite integrity checks.",
+      "old_claim_disposition": "Retain the 124,401,918-byte complete-archive result as durable local evidence, not as an external algorithm reproduction."
+    },
+    {
+      "scheme": "exact_transform_v2",
+      "classification": "validated_internal",
+      "basis": "This is a PocketWorld-owned reversible transform. Its complete local archive includes transform metadata and passes byte, SHA-256 and SQLite integrity verification.",
+      "old_claim_disposition": "Retain the measured 124,466,073-byte loss against track_delta_v1. It rejects only this local transform, not all columnar preprocessing."
+    },
+    {
+      "scheme": "similarity_forest_v1",
+      "classification": "validated_internal",
+      "basis": "This is a PocketWorld-owned reversible research transform. The complete experiment counts the 3,458,294-byte parent sidecar, validates forest invariants, and restores the source database byte-for-byte with SHA and integrity checks.",
+      "old_claim_disposition": "Retain 116,739,319 bytes as the current same-scope host research baseline only; it has not passed the physical-iPhone production gate."
+    },
+    {
+      "scheme": "pwa2",
+      "classification": "validated_internal",
+      "basis": "The local PWA2 experiments materialized and verified a logical archive, random reads, ordering and SQLite integrity, but tested specific structure/backend combinations rather than every design described in research notes.",
+      "old_claim_disposition": "Retain the measured all-ZPAQ and Pcodec-selected container results. Do not generalize a losing PWA2 variant into failure of all normalized formats."
+    },
+    {
+      "scheme": "cross_photo_collection",
+      "classification": "invalid_reproduction",
+      "basis": "The local group-of-4/8 sequential JPEG prototype omitted the cited paper's global reference tree, hybrid disparity compensation, local DCT-block search and adaptive frequency coding. No official runnable implementation was found for an exact reproduction.",
+      "old_claim_disposition": "The old run rejects only the weak local heuristic. It cannot reject the paper or cross-photo redundancy as a whole; a faithful official reproduction is currently blocked."
+    },
+    {
+      "scheme": "meshoptimizer",
+      "classification": "faithful_subset",
+      "basis": "Pinned meshoptimizer v1.2 used vertex codec version 1 and level 3 without quantization, reordering, or lossy filters. Separate xyz and padded-rgb streams reconstructed the original binary PLY byte-for-byte.",
+      "old_claim_disposition": "The framed codec output plus the same ZPAQ backend is 959,057 bytes, so it loses to direct 857,476-byte ZPAQ on this real sparse cloud."
+    },
+    {
+      "scheme": "fpzip_zfp",
+      "classification": "faithful_subset",
+      "basis": "Pinned fpzip 1.3.0 used full precision (prec=0), and pinned ZFP 1.0.1 used zfp_stream_set_reversible, on the float32 xyz stream of a real 77,475-point PLY. Both restored every float bit and the complete original PLY serialization.",
+      "old_claim_disposition": "fpzip plus ZPAQ is 936,613 bytes and ZFP reversible plus ZPAQ is 1,337,914 bytes; both lose to direct 857,476-byte ZPAQ. Lossy modes remain excluded."
+    }
+  ]
+}

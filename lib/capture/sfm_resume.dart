@@ -47,6 +47,15 @@ final Map<String, Future<bool>> _resumeInFlight = <String, Future<bool>>{};
 bool isResumeInFlight(String captureDir) =>
     _resumeInFlight.containsKey(captureDir);
 
+/// 按目录名(= record id)判断续跑是否在飞 —— 与 official 侧同名函数同理:
+/// record 存的 captureDir 可能是旧容器的绝对路径,精确匹配会漏。
+bool isResumeInFlightForDirName(String dirName) {
+  if (dirName.isEmpty) return false;
+  return _resumeInFlight.keys.any(
+    (d) => d.split('/').where((e) => e.isNotEmpty).last == dirName,
+  );
+}
+
 /// 把 record 存的 captureDir 解析成**当前**磁盘上可恢复的目录:app 容器
 /// UUID 在重装/迁移后会变,存的绝对路径可能已失效 —— 按目录名(= record
 /// id)在当前 Documents/captures 下重建。找不到 sfm_live.db 时返回 null
@@ -436,7 +445,11 @@ Future<void> _filterAndPersist(
     obsFrameIds: Int32List(0),
     obsXY: Float32List(0),
   );
-  await persistSparseSnapshot(captureDir: captureDir, snapshot: fsnap, rgb: frgb);
+  await persistSparseSnapshot(
+    captureDir: captureDir,
+    snapshot: fsnap,
+    rgb: frgb,
+  );
 }
 
 Future<void> _prunePhotosAfterSparse(

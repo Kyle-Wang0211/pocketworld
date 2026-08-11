@@ -1,0 +1,102 @@
+{
+  "schema": "pw_commercial_lossless_candidates_evidence_v1",
+  "status": "supported",
+  "repository": {
+    "path": "/Users/kaidongwang/Developer/pocketworld",
+    "git_head": "13d2a4f05d491464c537a9135496eccaa05c2358",
+    "worktree": "shared_dirty_preserved",
+    "production_changed": false,
+    "phone_accessed": false
+  },
+  "inputs": {
+    "jpeg": {
+      "bytes": 2725495,
+      "sha256": "a1cb8de1d3b91edbb7e05233c7930200c46e04554c3651153e267e5abd262138"
+    },
+    "descriptor_row": {
+      "shape": [
+        8192,
+        128
+      ],
+      "type": "uint8",
+      "bytes": 1048576,
+      "sha256": "2bb4062475c40b877deb7f735d4591df97c22a5d857deb1f6e3b45ff5809c92a"
+    },
+    "point_cloud": {
+      "format": "binary_little_endian PLY; float32 xyz; uint8 rgb",
+      "vertices": 77475,
+      "bytes": 1162370,
+      "sha256": "ba941c8b1fff4e6bbeb270aed8f4e328a14e570c46647dbd91b48e74c713dd3a"
+    }
+  },
+  "environment": {
+    "python_lock": "uv.lock sha256 be68c36e35c42795f75d1e49df63eaf20045e1d7b8c06487d26ab8d70fa5d9fe",
+    "rust_lock": "Cargo.lock sha256 fa630d18f366157193a78f115e1ed457c2c85fb44633cea7b757642c8805d632",
+    "hardware": "Apple arm64 host",
+    "production_decision_limit": "host evidence may nominate but cannot promote a production winner"
+  },
+  "official_sources": {
+    "libjxl": {
+      "revision": "a7a9c787341cf703dede03c2009fa460cae5e5df",
+      "url": "https://github.com/libjxl/libjxl"
+    },
+    "rust_lepton": {
+      "revision": "v0.5.8@90fdc27828676892fbb41777cfcc6bad1e470516",
+      "url": "https://github.com/microsoft/lepton_jpeg_rust/tree/v0.5.8",
+      "license": "Apache-2.0",
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "notice_sha256": "50d7f80a7af7807747f9571a334ad52e1b00f901e025cec4194bc8e557171c1d",
+      "host_binary_sha256": "cd9caf6803a3942bdc4e09e95e3caad8e17284ce1df9d4f76a90ebededa1f6a1",
+      "ios_dependency_tree_sha256": "22fd9cf8df0f7ca3d11af23b6ab6079d76e464d5ff8b095fc24853a977b33e2c",
+      "dependency_license_table_sha256": "a6afff36977f640718c9f4bd1171d79a03eeaed6dfdcfdf3320e47e284dc325b"
+    },
+    "pyarrow": {
+      "revision": "25.0.0",
+      "sdist_sha256": "d2d697008b5ec06d75952ef260c2e9a8a0f6ccfce24266c04c9c8ade927cb3b4",
+      "url": "https://arrow.apache.org/"
+    },
+    "tiledb_py": {
+      "revision": "0.36.1",
+      "sdist_sha256": "f7e1088e277efb8bf868842698b7c2e0c5cc4ad9bb24eb0efd6bb1a499832f40",
+      "url": "https://github.com/TileDB-Inc/TileDB-Py"
+    },
+    "dwarfs": {
+      "revision": "v0.15.6@a566e54d37c323d725fa16574f74218eccf7fa4d",
+      "source_sha256": "087b77c1d6a1f253df896b054f95ef17469c63b00be51f4d081633cc8817481c",
+      "url": "https://github.com/mhx/dwarfs/tree/v0.15.6",
+      "license_sha256": "01aacaeaa55c6d58fe8e78f1bc9904397e3428e9a381b8ca7e3352f85d52c2c7"
+    },
+    "meshoptimizer": {
+      "revision": "v1.2@9d9890c73011d75920af614485296d1e03e95448",
+      "url": "https://github.com/zeux/meshoptimizer/tree/v1.2",
+      "license": "MIT",
+      "license_sha256": "f03037ca7bad1e3eb7f4a63fa6084a8baabd5ba30d3c239a9a7f35705d873e26"
+    },
+    "fpzip": {
+      "revision": "1.3.0@4a539c06d98b1c029b08324a086d4b75689a2b72",
+      "url": "https://github.com/LLNL/fpzip/tree/1.3.0",
+      "license": "BSD-3-Clause",
+      "license_sha256": "d8b65908fb08fcbf2e32caa7144ec4b14361ca0c2d97251db65db2d8a9f9d76f"
+    },
+    "zfp": {
+      "revision": "1.0.1@f40868a6a1c190c802e7d8b5987064f044bf7812",
+      "url": "https://github.com/LLNL/zfp/tree/1.0.1",
+      "license": "BSD-3-Clause",
+      "license_sha256": "3a5eb0afef5c157575ec0cf4207fa8f1007d88aeb79fc59127c38cfbf1a30e2c"
+    }
+  },
+  "audit_limits": {
+    "scancode": "The pinned ScanCode 32.5.0 broker was invoked, but the local Docker daemon was unavailable, so no ScanCode report was produced.",
+    "lepton_manual_dependency_check": "The locked aarch64-apple-ios normal/build tree and each Cargo license expression were inspected. All are permissive choices; required notices still have to be assembled for the shipped binary.",
+    "ios_arm64_build": "Not run because the Homebrew Rust installation has no aarch64-apple-ios standard library target. Installing a new Rust toolchain was outside this host-only micro-screen.",
+    "patents_trademarks": "Open-source copyright licenses, patent grants or absence of grants, and trademarks are separate. Apache-2.0 includes a contributor patent grant and termination clause; no broader patent clearance or trademark permission is claimed.",
+    "legal_note": "This is an engineering license audit, not legal advice."
+  },
+  "artifacts": {
+    "structured_micro_sha256": "ab59390c4b1a043420768ee9e4f797bdc2b1fcb6bd951673f72874fb81eaf2de",
+    "point_cloud_harness_sha256": "07e0dfc9dda6efdc2f105b8da3a7e82499b6cf79f3159369fd8378855e588d2b",
+    "point_cloud_metrics_sha256": "64038c6eb112502ad10a9a22b55b60a6cea75cf8f332f8dd3a881f94a4237ff9",
+    "result": "results/2026-08-02-commercial-candidates-micro.json"
+  },
+  "verdict": "Rust Lepton is the only new same-input minimum-unit size winner and is conditional for commercial advancement. DwarFS writer conflicts with the intended closed-app distribution. All structured descriptor and point-cloud candidates tested here are exact but lose their same-input ZPAQ baseline."
+}

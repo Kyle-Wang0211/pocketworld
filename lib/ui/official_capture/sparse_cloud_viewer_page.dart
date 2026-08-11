@@ -3,6 +3,7 @@
 // long-press menu ("查看点云"). Same SparseCloudView as the capture-time
 // preview, so the experience is identical everywhere.
 
+import 'dart:math' as math;
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
@@ -14,6 +15,7 @@ import '../../l10n/app_localizations.dart';
 
 import '../../official_capture/dense_stage.dart';
 import '../../official_capture/selection_box.dart';
+import 'ruler_scrubber.dart';
 import 'selection_tools_layer.dart';
 import 'sfm_preview_overlay.dart' show SfmBottomActionButton;
 import 'sparse_cloud_view.dart';
@@ -94,6 +96,9 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
   // 不 push 新路由 ⇒ 角度/位置/缩放天然连续。
   bool _editing = false;
 
+  /// 底部滑轨面板是否收起(工具层回报)—— 只用来算手势排除区。
+  bool _rulerCollapsed = false;
+
   // [SEL-PREVIEW 2026-07-30 用户签决] 选区不再是必经步骤,而是可选动作 ⇒ 框必须
   // 在**进页面时**就从磁盘读出来,否则重新打开一个已选区的草稿会显示全量点云。
   // 原先只在 _enterEditing() 里读,浏览态 _box 恒为 null。
@@ -142,14 +147,14 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
   /// 立刻按框裁剪;进编辑态不再需要读盘。
   Future<void> _resolveOpeningBox(SparseCloudData cloud) async {
     final fit = SparseCloudPainter.fitOf(cloud.xyz);
-    final aabb = SparseCloudPainter.sceneAabbOf(cloud.xyz);
-    final fallback = SelectionBox.initialFor(
-      cx: aabb.cx,
-      cy: aabb.cy,
-      cz: aabb.cz,
-      hx: aabb.hx,
-      hy: aabb.hy,
-      hz: aabb.hz,
+    // [2026-08-09 用户签决"严丝合缝"] 初始框 = 全量逐轴包围盒(见
+    // editingFrameOf);编辑态 zoom 让最长边恒为标准屏幕尺寸。
+    final frame = editingFrameOf(cloud.xyz);
+    final fallback = SelectionBox.initialSquareFace(
+      cx: frame.center[0],
+      cy: frame.center[1],
+      cz: frame.center[2],
+      halfExtent: math.max(frame.hx, math.max(frame.hy, frame.hz)),
     );
     final loaded = await SelectionBox.loadFrom(_captureDir);
     final sane =
@@ -233,15 +238,13 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
 
   /// "恢复原始框大小":按当前点云重算初始框(位置/尺寸/朝向全复位)。
   void _resetBoxSize(SparseCloudData cloud) {
-    final aabb = SparseCloudPainter.sceneAabbOf(cloud.xyz);
+    final frame = editingFrameOf(cloud.xyz);
     _onBoxChanged(
-      SelectionBox.initialFor(
-        cx: aabb.cx,
-        cy: aabb.cy,
-        cz: aabb.cz,
-        hx: aabb.hx,
-        hy: aabb.hy,
-        hz: aabb.hz,
+      SelectionBox.initialSquareFace(
+        cx: frame.center[0],
+        cy: frame.center[1],
+        cz: frame.center[2],
+        halfExtent: math.max(frame.hx, math.max(frame.hy, frame.hz)),
       ),
     );
   }
@@ -376,6 +379,10 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
     final finalApplied = entry != null ? _editEntryApplied : _selectionApplied;
     if (finalBox != null) await _persist(finalBox, applied: finalApplied);
     if (!mounted) return;
+    // [2026-08-08 用户签决] "什么都没做直接点取消 ⇒ 恢复到斜上 45 度。"进编辑时
+    // 视角被强制拧成正俯视(手柄要求),取消既然撤回本次编辑,视角也一并还回去。
+    // 注意"完成"(_saveEditing)刻意**不**发这个请求 —— 用户要"保留在当前视角"。
+    _cloudController.requestBrowsePose();
     setState(() {
       _editing = false;
       if (finalBox != null) _box = finalBox;
@@ -548,7 +555,27 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                           sz: 1,
                         ),
                     editing: _editing,
-                    bottomGestureExclusion: _editing ? 200 : 0,
+                    // 滑轨收起后面板只剩把手 ⇒ 排除区跟着缩,否则点云下方留一
+                    // 大片点不动的死区。
+                    bottomGestureExclusion: !_editing
+                        ? 0
+                        : (_rulerCollapsed ? 44 : 200),
+                    // [2026-08-09 用户签决] 编辑态点云在滑轨处及以下全透明,
+                    // 靠近滑轨渐隐。边界用滑轨真实几何(弧顶 = 面板顶 +
+                    // kRulerArcTop),不用上面 200 那个手势手感值 —— 那会让点
+                    // 在弧顶上方 ~70px 就消失,凭空多出一条黑带。
+                    bottomFade: !_editing
+                        ? 0
+                        : (_rulerCollapsed
+                              ? 44
+                              : MediaQuery.of(context).padding.bottom +
+                                    kRulerHeight -
+                                    kRulerArcTop),
+                    // [2026-08-09 用户实机指认] 边界须贴合滑轨的弧线;收起时弧
+                    // 已转出屏幕 ⇒ 0(横线)。
+                    bottomFadeArcRadius: !_editing || _rulerCollapsed
+                        ? 0
+                        : rulerArcRadius(MediaQuery.of(context).size.width),
                   ),
                 ),
                 if (!_editing) ...[
@@ -664,6 +691,8 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                       controller: _cloudController,
                       onExit: () => unawaited(_saveEditing()),
                       onCancel: () => unawaited(_cancelEditing()),
+                      onRulerCollapsedChanged: (c) =>
+                          setState(() => _rulerCollapsed = c),
                       onResetBoxSize: () => _resetBoxSize(cloud),
                     ),
                   ),

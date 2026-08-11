@@ -14,6 +14,62 @@ static unsigned char g_samples[3] = {};
 static int g_width = 0;
 static int g_height = 0;
 static int g_add_frame_calls = 0;
+static unsigned char g_replay_samples[3] = {};
+static int g_replay_width = 0;
+static int g_replay_height = 0;
+static int g_replay_add_calls = 0;
+static int g_replay_destroy_calls = 0;
+
+struct aether_preclamp_phase_b_report_v1 {
+  uint64_t accepted_frames;
+  uint64_t legacy_descriptor_rows_total;
+  uint64_t coverage8192_rows_total;
+  uint64_t canonical8192_rows_total;
+  uint64_t frames_descriptor_gt_8192;
+  double coverage_row_headroom;
+  double canonical_row_headroom;
+};
+
+extern "C" uint32_t aether_preclamp_phase_b_replay_create_v1(
+    const char*, const int64_t*, const char* const*, uint32_t, void** out) {
+  *out = reinterpret_cast<void*>(0x2);
+  return 1;
+}
+
+extern "C" uint32_t aether_preclamp_phase_b_replay_add_gray_v1(
+    void*, const uint8_t* gray, int width, int height, int64_t, const char*,
+    uint32_t, int32_t,
+    int (*extractor)(const uint8_t*, int, int, int, int, float*, uint8_t*, int,
+                     int*)) {
+  ++g_replay_add_calls;
+  g_replay_width = width;
+  g_replay_height = height;
+  g_replay_samples[0] = gray[0];
+  g_replay_samples[1] = gray[(height / 2) * width];
+  g_replay_samples[2] = gray[(height - 1) * width];
+  return extractor == nullptr ? 2 : 1;
+}
+
+extern "C" uint32_t aether_preclamp_phase_b_replay_seal_v1(
+    void*, aether_preclamp_phase_b_report_v1* out) {
+  out->accepted_frames = 1;
+  out->legacy_descriptor_rows_total = 9000;
+  out->coverage8192_rows_total = 8192;
+  out->canonical8192_rows_total = 8192;
+  out->frames_descriptor_gt_8192 = 1;
+  out->coverage_row_headroom = 808.0 / 9000.0;
+  out->canonical_row_headroom = 808.0 / 9000.0;
+  return 7;
+}
+
+extern "C" void aether_preclamp_phase_b_replay_destroy_v1(void*) {
+  ++g_replay_destroy_calls;
+}
+
+extern "C" int aether_dsp_sift_extract_gpu(
+    const uint8_t*, int, int, int, int, float*, uint8_t*, int, int*) {
+  return 0;
+}
 
 extern "C" aether_sfm_result_t pwofficial_add_frame(
     aether_sfm_session_t*,
@@ -159,13 +215,40 @@ int main() {
   const bool preview_rejected =
       preview_rc == AETHER_SFM_ERR_INVALID_ARG && g_add_frame_calls == 1;
 
+  constexpr char kManifest[] =
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  constexpr char kSource[] =
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const int64_t replay_frame_ids[] = {17};
+  const char* replay_sources[] = {kSource};
+  void* replay = nullptr;
+  const uint32_t replay_create = pwofficial_phase_b_replay_create_v1(
+      kManifest, replay_frame_ids, replay_sources, 1, &replay);
+  const uint32_t replay_full = pwofficial_phase_b_replay_add_jpeg_v1(
+      replay, full_path.c_str(), 17, kSource, 1, 2);
+  const uint32_t replay_preview = pwofficial_phase_b_replay_add_jpeg_v1(
+      replay, preview_path.c_str(), 17, kSource, 1, 2);
+  pwofficial_phase_b_report_v1 replay_report{};
+  const uint32_t replay_seal =
+      pwofficial_phase_b_replay_seal_v1(replay, &replay_report);
+  pwofficial_phase_b_replay_destroy_v1(replay);
+  const bool replay_ok =
+      replay_create == 1 && replay_full == 1 && replay_preview == 2 &&
+      g_replay_add_calls == 1 && g_replay_width == 4032 &&
+      g_replay_height == 3024 && g_replay_samples[0] == g_samples[0] &&
+      g_replay_samples[1] == g_samples[1] &&
+      g_replay_samples[2] == g_samples[2] && g_add_frame_calls == 1 &&
+      replay_seal == 7 && replay_report.accepted_frames == 1 &&
+      replay_report.legacy_descriptor_rows_total == 9000 &&
+      g_replay_destroy_calls == 1;
+
   std::remove(full_path.c_str());
   std::remove(preview_path.c_str());
-  if (!full_ok || !preview_rejected) {
+  if (!full_ok || !preview_rejected || !replay_ok) {
     std::fprintf(
         stderr,
         "full_rc=%d calls=%d frame=%d dims=%dx%d rows=%d/%d/%d "
-        "preview_rc=%d\n",
+        "preview_rc=%d replay=%u/%u/%u calls=%d dims=%dx%d destroy=%d\n",
         full_rc,
         g_add_frame_calls,
         frame_id,
@@ -174,11 +257,19 @@ int main() {
         g_samples[0],
         g_samples[1],
         g_samples[2],
-        preview_rc);
+        preview_rc,
+        replay_create,
+        replay_full,
+        replay_preview,
+        g_replay_add_calls,
+        g_replay_width,
+        g_replay_height,
+        g_replay_destroy_calls);
     return 3;
   }
   std::printf(
-      "PASS 4032x3024 raw row order=%d/%d/%d; 1920x1440 rejected\n",
+      "PASS live+replay share 4032x3024 row order=%d/%d/%d; "
+      "1920x1440 rejected before both consumers\n",
       g_samples[0],
       g_samples[1],
       g_samples[2]);

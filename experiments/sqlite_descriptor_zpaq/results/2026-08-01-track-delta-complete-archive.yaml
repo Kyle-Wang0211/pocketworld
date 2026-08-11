@@ -1,0 +1,53 @@
+schema: pw_sqlite_track_delta_complete_archive_result_v1
+completed_at: "2026-08-01T07:58:00Z"
+evidence_role: host-preflight-only
+input:
+  id: cap_1785512421333592
+  bytes: 198983680
+  sha256: 0c12c0dfa76d50cae59929774242282d8236daeb852bdee6ac99c3062d6d08b0
+  sqlite_integrity: ok
+codec:
+  name: zpaq
+  version: "7.15"
+  method: 5
+  revision_sha256: e85ec2529eb0ba22ceaeabd461e55357ef099b80f61c14f377b429ea3d49d418
+repeats: 3
+raw:
+  archive_bytes: [127533074, 127533074, 127533074]
+  archive_sha256:
+    - 662a43b8896082b30fa2e89e464692deed34cab43bffb786439de64879915f34
+    - 662a43b8896082b30fa2e89e464692deed34cab43bffb786439de64879915f34
+    - 662a43b8896082b30fa2e89e464692deed34cab43bffb786439de64879915f34
+track_delta_v1:
+  archive_bytes: [124401918, 124401918, 124401918]
+  archive_sha256:
+    - d3146dfcf9573696e626e286fae9171971055386587436f68e9e1c72d861f19e
+    - d3146dfcf9573696e626e286fae9171971055386587436f68e9e1c72d861f19e
+    - d3146dfcf9573696e626e286fae9171971055386587436f68e9e1c72d861f19e
+  transformed_sha256:
+    - 8908292e79159e21845dcf7907046e82b18f02dfbccfb1b7c760909cb018c2fa
+    - 8908292e79159e21845dcf7907046e82b18f02dfbccfb1b7c760909cb018c2fa
+    - 8908292e79159e21845dcf7907046e82b18f02dfbccfb1b7c760909cb018c2fa
+  verified_match_edges: 386890
+  matched_descriptor_nodes: 306740
+  predicted_descriptor_nodes: 224119
+comparison:
+  saved_bytes: 3131156
+  saved_fraction: 0.02455171746271873
+  saved_percent: 2.455171746271873
+gates:
+  source_unchanged_all_repeats: true
+  restored_byte_equal_all_repeats: true
+  restored_sha256_equal_all_repeats: true
+  sqlite_integrity_ok_all_repeats: true
+  deterministic_archive_all_repeats: true
+  deterministic_transform_all_repeats: true
+verdict: host-preflight-pass
+remaining_gate: physical-iphone-production-pipeline-validation
+deviations:
+  - >-
+    The first raw run's ordinary read-only SQLite integrity probe returned
+    SQLITE_CANTOPEN because the restored WAL-mode database had no sidecars.
+    Byte equality and SHA-256 were already exact; an immutable=1 recheck passed,
+    the verifier was corrected, a WAL-mode regression test was added, and raw
+    repeats 2-3 passed through the corrected harness.

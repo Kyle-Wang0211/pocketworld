@@ -1,0 +1,12 @@
+[project]
+name = "pocketworld-sqlite-descriptor-zpaq-experiment"
+version = "0.1.0"
+description = "Pinned experiment tooling for reversible SQLite descriptor preprocessing"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "dvc==3.67.1",
+  "mlflow==3.14.0",
+]
+
+[tool.uv]
+package = false

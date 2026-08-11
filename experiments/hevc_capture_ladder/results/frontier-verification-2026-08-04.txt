@@ -1,0 +1,264 @@
+{
+  "summary": "Verify no more-advanced deployable alternative exists to hw HEVC burst capture (2026)",
+  "agentCount": 3,
+  "logs": [],
+  "result": {
+    "neural_codecs": {
+      "findings": [
+        {
+          "topic": "1a. DCVC 系列最新压缩效率",
+          "finding": "DCVC-RT (CVPR 2025) 是目前实用性最强的神经视频编解码器:1080p 编/解码 125.2/112.8 fps,比 H.266/VTM 平均省 21% 码率,是首个宣称 4K 实时的 NVC——但这些速度全部在 NVIDIA A100 数据中心 GPU 上测得。前代 DCVC-FM (CVPR 2024) 在同一 A100 上只有 5.0/5.9 fps。最新后继 DCVC-UF (CVPR 2026) 继续对 VTM-17.0 有码率增益(Intra 对 Kodak 约 -10.6%),但官方仓库明确只针对 NVIDIA 2080Ti/4090/A100/H100/B200 做了性能优化,零移动端支持、零 NPU 支持、无跨设备确定性讨论。注意:压缩效率对比基准是 VTM 参考软件,不是 iPhone 上的 VideoToolbox 硬件 HEVC——而 PocketWorld 的 11.8x 是对逐帧 JPEG 的,两个口径没有直接冲突。",
+          "evidence": [
+            "https://arxiv.org/abs/2502.20762",
+            "https://dcvccodec.github.io/",
+            "https://github.com/microsoft/dcvc",
+            "https://openaccess.thecvf.com/content/CVPR2025/papers/Jia_Towards_Practical_Real-Time_Neural_Video_Compression_CVPR_2025_paper.pdf",
+            "https://streaminglearningcenter.com/articles/evaluating-dcvc-rt-a-real-time-neural-video-codec-that-delivers-on-speed-and-compression.html"
+          ],
+          "deployable_on_2026_mobile": "no"
+        },
+        {
+          "topic": "1b. 移动端/NPU 实际部署现状(这是最接近'反例'的证据)",
+          "finding": "确实存在手机 NPU 神经编解码:(a) Qualcomm MobileCodec (2022) / MobileNVC 实现了手机上 1080p 神经解码;(b) 最强反例是 Microsoft MLVC (arXiv 2606.28027, 2026-07 v2):在 Apple/Intel/Qualcomm 三家消费级 NPU 上跑通了端上编码+解码,对视频会议内容宣称对硬件 HEVC (HEVC-QSV) 有 70% BD-rate(MOS 主观) 改善。但其硬指标彻底排除了它威胁 PocketWorld 采集位:720p 才 ~27fps、1080p 仅 ~12fps——PocketWorld 采集帧是 4224x2376 (~10MP),像素率差约 5-40 倍;跨平台约束还让它比 DCVC-RT 损失约 18 个百分点压缩率;且论文自己承认 NPU 无标准化算子、无法位精确(bit-exact)跨平台推理,长预测链浮点误差累积要靠周期性同步帧补码率。结论:'论文存在'成立,'2026 移动端可部署到 10MP 采集编码'不成立,连 1080p30 实时采集编码都未达到。",
+          "evidence": [
+            "https://arxiv.org/html/2606.28027",
+            "https://arxiv.org/pdf/2207.08338",
+            "https://www.neowin.net/news/qualcomm-announces-snapdragon-8-elite-gen-5-with-major-ai-and-video-upgrades/"
+          ],
+          "deployable_on_2026_mobile": "partial"
+        },
+        {
+          "topic": "2. MPEG-AI / JVET 标准化进度与硬件时间表",
+          "finding": "神经编码标准化仍在探索期:JVET 的 NNVC 探索软件到 v7(参考软件 NNVC-16.0 已批准,17.0 计划 2026-05-29 发布),其两个主要工具(NN intra 预测 + in-loop filter)对 VTM-11 最多 ~13% 增益,但复杂度高达 ~477 kMACs/pixel、需高端 GPU——即标准化路线里神经网络只是混合框架内的增强工具,不是端到端神经编解码器。下一代标准 H.267 (Beyond VVC):Call for Proposals 最终稿已批准,提案评审预计 2027-01 JVET 会议,标准定稿预计 2028-07~10,而有意义的硬件部署(手机 SoC 内建解码/编码块)按历史规律被估在 2034-2036。行业评论(Streaming Learning Center)直接判断:完全 AI 原生编解码器'还没准备好,可能还要十年'。也就是说,2-3 年内不存在任何带硬件加速的神经编码标准可替代 VideoToolbox HEVC。",
+          "evidence": [
+            "https://streaminglearningcenter.com/codecs/ai-video-compression-standards-whos-doing-what-and-when.html",
+            "https://www.mpeg.org/150th-meeting-of-mpeg/",
+            "https://ofinno.com/standards-readout/jvet-closes-the-42nd-meeting-with-the-final-draft-call-for-proposals-approved/"
+          ],
+          "deployable_on_2026_mobile": "no"
+        },
+        {
+          "topic": "3. 神经编解码器做采集/归档的固有风险",
+          "finding": "即使性能达标,神经编解码器用在'采集即落盘'场景仍有结构性风险:(a) 解码依赖特定模型权重与推理栈——比特流不自描述,App 更新/模型迭代后旧数据必须永久携带旧权重才能解码(MPEG-AI 甚至有专门专利处理'在码流里传 NN 拓扑与参数'这个问题);(b) 无硬件解码块:手机硬件 HEVC 解码功耗仅 ~113-380mW,而端到端学习编解码复杂度在 100K-1M MACs/pixel 量级,NPU 软解功耗高出一个量级以上,对 PocketWorld 的热稳定硬约束(采集期已满载 SfM+GPU 特征提取)是直接冲突;(c) 跨设备非确定性:MLVC 证实不同 NPU 连 INT8 卷积都可能用 FP16 模拟,无法保证位精确解码——对下游 SfM parity(逐字节等价验收)是致命的,同一份码流在不同设备/系统版本解出的像素可能不同;(d) 神经有损重建会'脑补'纹理,对以 DSP-SIFT 特征匹配为命脉的 SfM 是未经验证的额外风险,而硬件 HEVC 的失真模型是块变换类、已被本项目实测过稀疏 SfM parity。",
+          "evidence": [
+            "https://www.sciencedirect.com/science/article/abs/pii/S1383762121000199",
+            "https://arxiv.org/html/2606.28027",
+            "https://image-ppubs.uspto.gov/dirsearch-public/print/downloadPdf/11818399",
+            "https://arxiv.org/pdf/2504.21445"
+          ],
+          "deployable_on_2026_mobile": "no"
+        },
+        {
+          "topic": "4. 结论:2-3 年内会不会取代手机硬件 HEVC 采集",
+          "finding": "不会。三条独立防线:(1) 性能差距:最好的跨平台 NPU 神经编解码 (MLVC 2026) 在编码端只到 1080p ~12fps,PocketWorld 需要 10MP 帧,差 1-2 个数量级,且 NPU 算力年增速(如 Hexagon +37%/代)填不平这个 gap;(2) 硬件时间表:H.267 定稿 2028、硬件 2034-36,期间 iPhone SoC 不会出现神经编码硬件块,而没有专用硬件就没有采集期的功耗/热预算;(3) 即使可用也不该用:权重依赖破坏归档自解码性、跨设备位不精确破坏 SfM parity 验收。值得设的哨兵(超出 2-3 年窗口的 watch 条件):Microsoft MLVC 路线若发布 4K 实时端上编码版本、Apple 若在 ANE/VideoToolbox 里出现任何神经编解码 API、或 Snapdragon/Apple SoC 宣布神经编码硬件块——出现任一才需要重新评估。当前 VideoToolbox HEVC (GOP=8) 决定在 2026 年是正确且前沿的工程选择,无推倒重来风险。",
+          "evidence": [
+            "https://arxiv.org/html/2606.28027",
+            "https://streaminglearningcenter.com/codecs/ai-video-compression-standards-whos-doing-what-and-when.html",
+            "https://github.com/microsoft/dcvc",
+            "https://www.gizmochina.com/2025/12/24/on-device-ai-snapdragon-8-gen-5-npu-explained/"
+          ],
+          "deployable_on_2026_mobile": "no"
+        }
+      ],
+      "threat_verdict": "NO_THREAT",
+      "summary": "神经视频编解码器对\"VideoToolbox 硬件 HEVC 采集落盘\"决定在 2-3 年内不构成威胁。学术上限确实在涨(DCVC-RT 比 VVC 省 21% 码率、DCVC-UF CVPR 2026 继续推进),但全部锚定在 NVIDIA 数据中心/桌面 GPU;唯一真实的移动端 NPU 部署 (Microsoft MLVC, 2026) 编码端仅 1080p ~12fps 且为跨平台牺牲 ~18pp 压缩率,距离 PocketWorld 的 10MP 采集帧差 1-2 个数量级。标准化侧 H.267 定稿要到 2028、硬件部署估 2034-36,期间手机不会有神经编码硬件块。更根本的是三个固有缺陷使其不适合本项目的采集/归档位:解码依赖模型权重(归档不自描述)、无硬件块导致功耗高出硬件解码器(113-380mW)一个量级以上(撞热稳定硬约束)、NPU 跨设备位不精确(撞 SfM parity 逐字节验收)。唯一需要留意的信号是 MLVC 路线的后续版本和 Apple/Qualcomm 是否宣布神经编码硬件块,但那是 3 年以外的事。"
+    },
+    "next_gen_codecs": {
+      "findings": [
+        {
+          "topic": "VVC/H.266 手机硬件编码器(高通/联发科/三星/苹果逐个确认)",
+          "finding": "2026 年没有任何手机 SoC 提供 VVC 硬件【编码】器,连硬件【解码】都未在任何官方手机 SoC 规格表中出现。逐个确认:(1) 高通:Snapdragon 8 Elite Gen 5(2025-09 发布,当前旗舰)官方产品简报的解码器条目为 'Hardware-accelerated H.265, VP9, AV1 decoder'——无 VVC 编码也无 VVC 解码;高通相机产品管理 VP Judd Heape 曾对 Android Authority 表态'跳过 AV1 编码、看好 VVC',但至今(约三代芯片后)未兑现任何 VVC 硬件,且'无法给出时间和产品'。(2) 联发科:Dimensity 9500 官方页编码为 '8K30 10-bit Video Encode (HEVC/AVC)',解码为 HEVC/AVC/VP9/AV1,无 VVC;联发科的 VVC 解码硬件只出现在 Pentonic 电视芯片上,不在手机线。(3) 三星:Exynos 2600(Galaxy S26)第三方规格库列 HEVC/AV1/VP9/APV,无 VVC。(4) 苹果:A19/A19 Pro、M5 全系无任何 VVC 支持,VideoToolbox 无 VVC 编解码 API。软编方面:Fraunhofer VVenC 最快预设在高性能笔记本(M1 Max / i9-12900H)上也只能 HD 4-25fps、UHD 2-10fps——在手机上对 4224x2376 采集流做实时 VVC 软编在算力和能耗上完全不现实,学界工作集中在'VVC 软【解】码省电'而非移动端实时软编。注意:antmedia 等博客声称 'Snapdragon 8 Elite 加了 VVC 解码',与高通官方产品简报矛盾,应视为不可靠;即使为真也只是解码,不构成对采集端编码决定的威胁。",
+          "evidence": [
+            "https://www.qualcomm.com/content/dam/qcomm-martech/dm-assets/documents/Snapdragon-8-Elite-Gen-5-product-brief.pdf",
+            "https://www.androidauthority.com/qualcomm-av1-encoding-3271556/",
+            "https://www.mediatek.com/products/smartphones/mediatek-dimensity-9500",
+            "https://www.hhi.fraunhofer.de/en/departments/vca/technologies-and-solutions/h266-vvc/fraunhofer-versatile-video-encoder-vvenc.html",
+            "https://arxiv.org/pdf/2107.13385",
+            "https://ieeexplore.ieee.org/document/10181412/"
+          ],
+          "deployable_on_2026_mobile": "no"
+        },
+        {
+          "topic": "AV1 编码:苹果 A19/A19 Pro/M5 与安卓侧现状",
+          "finding": "苹果:A19/A19 Pro/M5/M5 Pro/M5 Max 全部【没有】AV1 硬件编码。苹果官方 MacBook Pro 规格页对 M5/M5 Pro/M5 Max 三档芯片的 Media Engine 均只列 'AV1 decode',编码引擎只覆盖 H.264/HEVC/ProRes;Wikipedia Apple M5 条目同样写 'AV1 decode'(M5 基础版 2025-10-15 发布,M5 Pro/Max 2026-03-03 发布)。网上有第三方文章(videoconverterfactory)声称 M5 Pro/Max 首次支持 AV1 硬编,与苹果官方规格页直接矛盾,判定为讹传。A19/A19 Pro(iPhone 17 系列)延续 A17 Pro 以来的 AV1 解码,官方口径的录制格式仍是 H.264/H.265/ProRes(A19 Pro 独占 ProRes RAW),无 AV1 录制。安卓侧:Google Tensor G5(Pixel 10,2025-08)是第一台真正把 AV1 硬件编码用于用户可见视频录制的手机(采用 Chips&Media WAVE677DV IP,替代此前自研编码器;G3/G4 虽有硬编但从未启用);三星 Exynos 2200 起有 AV1 编解码硬件、Exynos 2600 继续支持(第三方规格库口径);高通 Snapdragon 8 Elite Gen 5 官方简报仍然只有 AV1 解码、无 AV1 编码;联发科 Dimensity 9500 官方页同样只有 AV1 解码。结论:在 iPhone(本项目的部署平台)上 AV1 编码 2026 年不存在,不构成任何威胁;安卓移植时 AV1 硬编只在 Tensor/Exynos 子集可用且碎片化严重,恰好验证'编解码器可替换'架构的必要性。",
+          "evidence": [
+            "https://www.apple.com/macbook-pro/specs/",
+            "https://en.wikipedia.org/wiki/Apple_M5",
+            "https://en.wikipedia.org/wiki/Apple_A19",
+            "https://www.androidauthority.com/pixel-10-video-recording-av1-vp9-3586429/",
+            "https://www.androidpolice.com/google-pixel-10-makes-4k-videos-less-storage-hog/",
+            "https://www.qualcomm.com/content/dam/qcomm-martech/dm-assets/documents/Snapdragon-8-Elite-Gen-5-product-brief.pdf",
+            "https://www.mediatek.com/products/smartphones/mediatek-dimensity-9500"
+          ],
+          "deployable_on_2026_mobile": "partial"
+        },
+        {
+          "topic": "Samsung APV codec 对'利用时域冗余压缩'目标的意义",
+          "finding": "APV(Advanced Professional Video)对本项目的目标【零意义,方向相反】。Wikipedia 与 Samsung 开发者文档明确:APV 是 'intra frame only coding without pixel domain prediction'——纯帧内编码、每帧独立,设计目标是专业采集/后期剪辑的'感知无损'码流,码率高达数 Gbps 级(对标 ProRes),只比现有专业帧内格式省约 20% 存储。它按定义不利用任何时域冗余,而 HEVC GOP=8 方案的 11.8x 收益恰恰来自帧间预测。硬件落地情况(供参考):Snapdragon 8 Elite Gen 5 是'首个能录 APV 的移动平台'(官方简报原文 'The first mobile platform to record in Advanced Professional Video (APV) Codec'),Galaxy S26 Ultra 支持 APV 422 HQ/LQ,Exynos 2600 也带 APV,Android 16 加入了 APV 支持——即它确实在 2026 年安卓旗舰可部署,但它解决的是'专业后期色彩/剪辑'问题,不是'压缩归档'问题。唯一值得记一笔的关联:APV 证明'手机厂商愿意为采集场景上新码流',这反而支持'归档格式与编解码器解耦'的架构判断。",
+          "evidence": [
+            "https://en.wikipedia.org/wiki/Advanced_Professional_Video",
+            "https://developer.samsung.com/mobile/apv.html",
+            "https://www.qualcomm.com/content/dam/qcomm-martech/dm-assets/documents/Snapdragon-8-Elite-Gen-5-product-brief.pdf",
+            "https://root-nation.com/en/articles-en/tech-en/en-samsung-galaxy-s26-ultra-apv-review/",
+            "https://www.sammyfans.com/2025/01/27/android-16-leverages-samsungs-apv-codec-for-videography-boost/"
+          ],
+          "deployable_on_2026_mobile": "yes"
+        },
+        {
+          "topic": "结论:未来 2-3 年编解码器演进会不会推翻'码流+索引+manifest、编解码器可替换'架构",
+          "finding": "不会,且证据显示该架构正是对冲此类演进的正确形态。理由:(1) 编解码器硬件落地节奏极慢——AV1 从 2018 年定稿到 2025 年才有第一台真正用硬编录像的手机(Pixel 10/Tensor G5),苹果至今(2026-03 的 M5 Pro/Max)仍只做 AV1 解码;VVC 2020 年定稿,6 年后没有任何手机 SoC 硬编。任何新码流从'论文/标准存在'到'iPhone 硬件编码可用'历史上需要 5-8 年,且必先经过'解码先行数年'阶段。(2) 项目约束是'采集实时硬编 + 纯本地 + SfM parity',这把候选集限死在'当代 iPhone VideoToolbox 硬编支持的格式'= H.264/HEVC/ProRes,HEVC 是其中唯一兼顾帧间压缩与普及度的选项,2-3 年内无变化风险(苹果下一步若动,方向大概率是 AV1 编码,届时正是'换 codec 不换架构'的教科书场景)。(3) 新出现的码流呈两极分化:APV/ProRes RAW 走高码率帧内专业采集(与压缩目标相反),VVC/AV1/AV2 走分发端效率(编码端手机硬件缺位)——两个方向都不产出'比 HEVC 硬编更好的 iPhone 端实时时域压缩器'。(4) 唯一需要 WATCH 的低烈度事项:安卓移植时在 Tensor G5/Exynos 机型上可把 codec 槽位换成 AV1 硬编(约再省 30% 码率,Android Authority 实测口径),以及苹果未来芯片若加入 AV1 编码——两者都被'可替换'设计天然吸收,不需要推倒重来。'重来'风险只存在于把 HEVC 语义(如 GOP 结构、随机访问点)泄漏进索引/manifest 设计的情况,应保证索引层只依赖'随机访问点+帧号'这类码流无关抽象。",
+          "evidence": [
+            "https://www.apple.com/macbook-pro/specs/",
+            "https://www.androidauthority.com/pixel-10-video-recording-av1-vp9-3586429/",
+            "https://www.androidauthority.com/qualcomm-av1-encoding-3271556/",
+            "https://www.qualcomm.com/content/dam/qcomm-martech/dm-assets/documents/Snapdragon-8-Elite-Gen-5-product-brief.pdf",
+            "https://en.wikipedia.org/wiki/Advanced_Professional_Video",
+            "https://www.hhi.fraunhofer.de/en/departments/vca/technologies-and-solutions/h266-vvc/fraunhofer-versatile-video-encoder-vvenc.html"
+          ],
+          "deployable_on_2026_mobile": "yes"
+        }
+      ],
+      "threat_verdict": "NO_THREAT",
+      "summary": "下一代编解码器对\"VideoToolbox 硬件 HEVC(GOP=8)直写盘\"决定构成零实质威胁。VVC/H.266:2026 年没有任何手机 SoC 有硬件编码器(高通 8 Elite Gen 5 官方简报解码器仅 H.265/VP9/AV1、Dimensity 9500 编码仅 HEVC/AVC、Exynos 与苹果全无 VVC),软编 VVenC 在笔记本上都只有 HD 4-25fps,手机实时 4K 软编不现实;博客所称\"骁龙已有 VVC 解码\"与高通官方规格矛盾。AV1 编码:苹果官方规格确认 A19/A19 Pro/M5/M5 Pro/M5 Max 全部只有 AV1【解码】(M5 Pro/Max 2026-03 发布仍无编码,网传\"M5 Pro/Max 有 AV1 硬编\"系讹传);安卓侧真正可用的 AV1 硬编只有 Tensor G5(Pixel 10,首个启用 AV1 录像)和 Exynos 系,高通/联发科旗舰仍无。Samsung APV:纯帧内(intra-only)专业采集码流、数 Gbps 级码率,按定义不利用时域冗余,与 11.8x 压缩目标方向相反,无意义。架构层:历史节奏显示新码流从定稿到 iPhone 硬编需 5-8 年且解码先行,2-3 年内 iPhone 采集端实时帧间硬编的唯一现实选项就是 HEVC;\"码流+索引+manifest、编解码器可替换\"恰好是吸收未来 AV1/其他演进的正确形态——唯一注意事项是索引层不要泄漏 HEVC 特有语义,保持\"随机访问点+帧号\"的码流无关抽象即可。"
+    },
+    "ecosystem_moves": {
+      "findings": [
+        {
+          "topic": "竞品动向:RealityScan/Polycam/Scaniverse 2025-2026 采集架构",
+          "finding": "没有发现任何主流竞品从'逐帧照片采集'转向'采集期视频编码写盘'后又放弃的反例,也没有发现比 HEVC 写盘更新的采集存储架构。RealityScan Mobile 1.8(2025-11)的三个新拍摄模式(AR Guidance/Object/Standard)全部仍是逐张拍照式采集,更新重点是引导 UI、focus peaking、间隔定时器,与存储格式无关;RealityScan 桌面 2.1(2025-11)重点是 SLAM 数据导入和 CLI/gRPC 自动化。Scaniverse 主打 100% 端上处理(splat 训练 <90s 本地完成),公开资料未披露采集帧落盘格式,更未宣布视频编码写盘。未检索到相关招聘或专利信号(专利需专门 FTO 检索,本轮未覆盖)。",
+          "evidence": [
+            "https://www.cgchannel.com/2025/11/epic-games-releases-realityscan-mobile-1-8/",
+            "https://forums.unrealengine.com/t/realityscan-mobile-1-8-release-notes/2676487",
+            "https://digitalproduction.com/2025/11/27/epic-games-updates-realityscan-2-1-out/",
+            "https://scaniverse.com/about/releasenotes",
+            "https://radiancefields.com/platforms/scaniverse"
+          ],
+          "deployable_on_2026_mobile": "yes"
+        },
+        {
+          "topic": "竞品动向:视频作为采集载体其实早已是主流(反向验证)",
+          "finding": "'视频当采集载体'不是激进新路,而是云端阵营多年的默认路线:Luma 3D Capture 自始就是录视频→云端抽帧→估位姿→训练;KIRI Engine 的 Photo/Featureless/3DGS 三模式都支持录视频上传、服务器逐帧分析。区别在于它们把解码+SfM 放云端,而 PocketWorld 是把同一载体用于纯本地管线。因此该决定方向上与行业一致,创新点只在'端上硬件编码+端上解码喂 SfM'这个组合,不存在'马上被新架构推翻'的信号。",
+          "evidence": [
+            "https://apps.apple.com/us/app/luma-3d-capture/id1615849914",
+            "https://www.thefuture3d.com/software/luma-ai/",
+            "https://www.kiriengine.app/blog/explained/exploring-three-innovative-3d-scanning-methods",
+            "https://www.kiriengine.app/blog/from-2d-video-to-3d-magic"
+          ],
+          "deployable_on_2026_mobile": "yes"
+        },
+        {
+          "topic": "学术界:面向机器/重建的专用采集压缩格式",
+          "finding": "最接近'为重建质量优化的专用压缩'的是 MPEG-AI 两条标准线:VCM(ISO/IEC 23888-2,像素域、面向机器任务的率-精度优化编码,处于最终投票阶段)和 FCM(ISO/IEC 23888-4,特征域编码,时间表为 2025-10 CD / 2026-01 DIS / 2026-07 定稿)。但两者目标任务是检测/分割类机器视觉,不是 SfM 特征匹配;而且是'论文/标准存在'而非'移动端可部署'——2026 年没有任何手机 SoC 提供 VCM/FCM 硬件编码器,软件编码在采集期 4224x2376 实时跑不动。learned image compression for machine perception 也只有论文(如 arXiv 2512.20070 PICM-Net、2512.01788 EO 下游任务研究),无实时 4K 移动端编码器。未发现任何'摄影测量专用采集压缩格式'的提案或标准。经典文献(JPEG 压缩对近景/UAV 摄影测量精度影响的系列研究)反而支持'中等程度有损压缩下 SfM 精度损失可控',与实测 parity 一致。",
+          "evidence": [
+            "https://streaminglearningcenter.com/articles/real-time-feature-coding-for-machines-inside-the-new-mpeg-standard.html",
+            "https://streaminglearningcenter.com/articles/three-paths-to-compression-for-machine-vision-vcm-fcm-and-the-v-nova-wild-card.html",
+            "https://www.mpeg.org/standards/Explorations/34/",
+            "https://arxiv.org/abs/2512.20070",
+            "https://arxiv.org/abs/2512.01788",
+            "https://dergipark.org.tr/en/pub/ijeg/article/287308",
+            "https://pubmed.ncbi.nlm.nih.gov/34460732/"
+          ],
+          "deployable_on_2026_mobile": "no"
+        },
+        {
+          "topic": "3DGS/NeRF 阵营:辐射场当归档、不存源照片",
+          "finding": "存在'splat 即交付物'的产品化趋势:Niantic 的 .spz 格式(2024-10 开源,MIT 协议,自称'3DGS 的 JPG',比 PLY 小约 10x,已迭代到 SPZ 4),Scaniverse 端上训练 splat 且数据默认不出设备。但没有找到任何产品公开宣称'删除源照片、只留辐射场作为唯一归档'——检索不到 Polycam/Scaniverse/Luma 的照片删除政策声明。对 PocketWorld 不适用的原因是结构性的:splat/NeRF 是面向视图合成的有损、不可逆表示,无法从中恢复原像素去重跑改进后的 SfM/MVS、无法做训练数据(与'照片有训练价值必须保源'的产品前提直接冲突);GOP=8 HEVC 保的是近原始像素,splat 保的是渲染外观。这条线压缩的是'模型',不是'采集'(3DGS 压缩研究如 arXiv 2505.22908 也全是模型侧)。",
+          "evidence": [
+            "https://github.com/nianticlabs/spz",
+            "https://dev.scaniverse.com/news/spz-gaussian-splat-open-source-file-format",
+            "https://www.nianticspatial.com/blog/spz4",
+            "https://radiancefields.com/scaniverse-open-sources-spz-compression-for-3dgs",
+            "https://arxiv.org/pdf/2505.22908"
+          ],
+          "deployable_on_2026_mobile": "partial"
+        },
+        {
+          "topic": "苹果:Object Capture 存储格式与采集压缩 API",
+          "finding": "ObjectCaptureSession(WWDC23 起)把采集帧存为 HEIC 静图(可嵌入深度与点云数据,checkpoint 目录用于加速重建),即苹果自家参考设计选的是'逐帧 HEIC 静态压缩'而非视频流——这是唯一的温和反例,但 Object Capture 面向几十到两百张的物体扫描且重建在 Mac/云侧,与 PocketWorld 高帧数场景扫描的存储压力不同量级。WWDC25/iOS 26 的 RealityKit 更新(ARKit 数据直通、Object Manipulation、实例化等)没有任何采集压缩新 API。编码器侧:A19/iPhone 17 只有 AV1 硬件解码,无 AV1 硬件编码,苹果编码侧仍是 HEVC 优先——短期内不存在'新硬件编码器出现导致 HEVC 选型作废'的风险;且届时若 AV1 编码硬件落地,同一 VideoToolbox 架构换 codec 即可,不是推倒重来。",
+          "evidence": [
+            "https://developer.apple.com/videos/play/wwdc2023/10191/",
+            "https://developer.apple.com/forums/thread/732084",
+            "https://developer.apple.com/videos/play/wwdc2025/287/",
+            "https://www.videoconverterfactory.com/multimedia-solution/apple-av1.html",
+            "https://bitmovin.com/blog/apple-av1-support/"
+          ],
+          "deployable_on_2026_mobile": "yes"
+        }
+      ],
+      "threat_verdict": "WATCH",
+      "summary": "结论:VideoToolbox 硬件 HEVC(GOP=8)写盘在 2026 年没有需要推倒重来的架构级威胁,方向上还与行业一致——Luma/KIRI 云端阵营早就用视频当采集载体,只是解码和 SfM 在云端;PocketWorld 的差异化只是把整条链留在端上。四路排查均无实质反例:(1) RealityScan Mobile 1.8(2025-11)仍是逐张拍照采集,无视频写盘动向;(2) 学术/标准界最接近的威胁是 MPEG-AI VCM/FCM(23888-2/-4,2026 年定稿中),但目标任务是检测/分割而非 SfM,且无任何移动硬件编码器,属'论文存在、移动端不可部署';learned compression 同理;(3) 3DGS 阵营的 .spz/'splat 即 JPG' 是模型归档格式而非采集格式,不可逆、不能重跑管线、不能当训练源,与'必须保源'前提结构性不兼容,且没有产品公开宣称删源照片;(4) 苹果 Object Capture 存 HEIC 静图是唯一温和反例(但场景量级不同),iOS 26 无采集压缩新 API,A19 仅 AV1 硬解无硬编、编码侧 HEVC 优先。列 WATCH 而非 NO_THREAT 只因两个低烈度观察项:MPEG-AI FCM/VCM 2026-07 前后定稿后是否出现移动端实现,以及未来苹果 AV1 硬件编码落地(届时也只是同架构换 codec,不是重构)。注意:竞品专利/招聘信号本轮未做专门检索,只能说公开渠道未见。"
+    }
+  },
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Verify"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "verify:neural-codecs",
+      "phaseIndex": 1,
+      "phaseTitle": "Verify",
+      "agentId": "a7fa3044bd6015a83",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1785852462726,
+      "queuedAt": 1785852462713,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "NO_THREAT",
+      "promptPreview": "背景:PocketWorld(iPhone 3D 扫描 App,纯本地处理)已决定:采集时用 VideoToolbox 硬件 HEVC 编码(GOP=8)直接写盘替代逐帧 JPEG,实测 96 帧 4224x2376 达 11.8x 且过稀疏 SfM parity。用户问:这是不是 2026 年最前沿的方案,会不会马上又出新架构要推倒重来。你的任务是替这个决定找反例/威胁。要求:所有结论给出处 URL,版本号/日期不许编造,区分\"论文存在\"与\"移动端可部署\"。用 WebSearch/WebFetch。\n\n你专查【神经视频编解码器】对本决定的威胁:\n1. DCVC 系列(DCVC-DC/DCVC-FM/DCVC-RT 及 2025-2026 后继)的最新压缩效率 vs HEVC/VVC,以及有没有任何移动端/端侧部署(手机 NPU 推理编码的实际产品或 demo)。\n2. MPEG-AI /…",
+      "lastProgressAt": 1785852632883,
+      "tokens": 55425,
+      "toolCalls": 10,
+      "durationMs": 170157,
+      "resultPreview": "{\"findings\":[{\"topic\":\"1a. DCVC 系列最新压缩效率\",\"finding\":\"DCVC-RT (CVPR 2025) 是目前实用性最强的神经视频编解码器:1080p 编/解码 125.2/112.8 fps,比 H.266/VTM 平均省 21% 码率,是首个宣称 4K 实时的 NVC——但这些速度全部在 NVIDIA A100 数据中心 GPU 上测得。前代 DCVC-FM (CVPR 2024) 在同一 A100 上只有 5.0/5.9 fps。最新后继 DCVC-UF (CVPR 2026) 继续对 VTM-17.0 有码率增益(Intra 对 Kodak 约 -10.6%),但官方仓库明确只针对 NVIDIA 2080Ti/4090/A100/H100/B200 做了性能优化,零移动端支持、零 NPU 支持、无跨设备确定性讨论。注意:压缩效率对比基准是 …"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "verify:next-codecs",
+      "phaseIndex": 1,
+      "phaseTitle": "Verify",
+      "agentId": "a60c0955b2780fef1",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1785852462728,
+      "queuedAt": 1785852462713,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "NO_THREAT",
+      "promptPreview": "背景:PocketWorld(iPhone 3D 扫描 App,纯本地处理)已决定:采集时用 VideoToolbox 硬件 HEVC 编码(GOP=8)直接写盘替代逐帧 JPEG,实测 96 帧 4224x2376 达 11.8x 且过稀疏 SfM parity。用户问:这是不是 2026 年最前沿的方案,会不会马上又出新架构要推倒重来。你的任务是替这个决定找反例/威胁。要求:所有结论给出处 URL,版本号/日期不许编造,区分\"论文存在\"与\"移动端可部署\"。用 WebSearch/WebFetch。\n\n你专查【下一代标准编解码器】对本决定的威胁:\n1. VVC/H.266:2026 年有没有任何手机 SoC 硬件编码器(高通/联发科/三星/苹果逐个确认);软编在手机上的能耗现实。\n2. AV1 编码:苹果 A19/A19 Pro/M5 是否新增了 AV1 硬件编码(只认官方或可靠拆解,不…",
+      "lastProgressAt": 1785852732893,
+      "tokens": 68155,
+      "toolCalls": 19,
+      "durationMs": 270165,
+      "resultPreview": "{\"findings\":[{\"topic\":\"VVC/H.266 手机硬件编码器(高通/联发科/三星/苹果逐个确认)\",\"finding\":\"2026 年没有任何手机 SoC 提供 VVC 硬件【编码】器,连硬件【解码】都未在任何官方手机 SoC 规格表中出现。逐个确认:(1) 高通:Snapdragon 8 Elite Gen 5(2025-09 发布,当前旗舰)官方产品简报的解码器条目为 'Hardware-accelerated H.265, VP9, AV1 decoder'——无 VVC 编码也无 VVC 解码;高通相机产品管理 VP Judd Heape 曾对 Android Authority 表态'跳过 AV1 编码、看好 VVC',但至今(约三代芯片后)未兑现任何 VVC 硬件,且'无法给出时间和产品'。(2) 联发科:Dimensity 9500 官方页编码为 '8K3…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 3,
+      "label": "verify:ecosystem-moves",
+      "phaseIndex": 1,
+      "phaseTitle": "Verify",
+      "agentId": "a89c614a390cfe9b1",
+      "model": "claude-fable-5",
+      "state": "done",
+      "startedAt": 1785852462729,
+      "queuedAt": 1785852462713,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "WATCH",
+      "promptPreview": "背景:PocketWorld(iPhone 3D 扫描 App,纯本地处理)已决定:采集时用 VideoToolbox 硬件 HEVC 编码(GOP=8)直接写盘替代逐帧 JPEG,实测 96 帧 4224x2376 达 11.8x 且过稀疏 SfM parity。用户问:这是不是 2026 年最前沿的方案,会不会马上又出新架构要推倒重来。你的任务是替这个决定找反例/威胁。要求:所有结论给出处 URL,版本号/日期不许编造,区分\"论文存在\"与\"移动端可部署\"。用 WebSearch/WebFetch。\n\n你专查【产品与学术界的架构级动向】:\n1. RealityScan/Polycam/Luma/Scaniverse 2025-2026 有没有转向\"采集期视频编码写盘\"的公开动向(更新日志、招聘、专利)。\n2. 学术界有没有\"面向摄影测量/SfM 的专用采集压缩格式\"提案(不是通用视频编码…",
+      "lastProgressAt": 1785852698188,
+      "tokens": 64633,
+      "toolCalls": 18,
+      "durationMs": 235459,
+      "resultPreview": "{\"findings\":[{\"topic\":\"竞品动向:RealityScan/Polycam/Scaniverse 2025-2026 采集架构\",\"finding\":\"没有发现任何主流竞品从'逐帧照片采集'转向'采集期视频编码写盘'后又放弃的反例,也没有发现比 HEVC 写盘更新的采集存储架构。RealityScan Mobile 1.8(2025-11)的三个新拍摄模式(AR Guidance/Object/Standard)全部仍是逐张拍照式采集,更新重点是引导 UI、focus peaking、间隔定时器,与存储格式无关;RealityScan 桌面 2.1(2025-11)重点是 SLAM 数据导入和 CLI/gRPC 自动化。Scaniverse 主打 100% 端上处理(splat 训练 <90s 本地完成),公开资料未披露采集帧落盘格式,更未宣布视频编码写盘。未检索到相关…"
+    }
+  ],
+  "totalTokens": 188213,
+  "totalToolCalls": 47
+}

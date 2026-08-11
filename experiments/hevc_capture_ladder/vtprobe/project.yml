@@ -1,0 +1,17 @@
+name: VTProbe
+options:
+  bundleIdPrefix: com.kyle.PocketWorld
+targets:
+  VTProbe:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources: [Sources]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kyle.PocketWorld.VTProbe
+        DEVELOPMENT_TEAM: 26AH7V448L
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        TARGETED_DEVICE_FAMILY: "1"

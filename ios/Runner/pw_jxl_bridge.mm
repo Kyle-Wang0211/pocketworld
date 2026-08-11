@@ -3,7 +3,9 @@
 #import <Foundation/Foundation.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -22,6 +24,37 @@
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+std::atomic<uint64_t> g_cancellation_generation{0};
+thread_local bool g_cancellation_enabled = false;
+thread_local uint64_t g_operation_generation = 0;
+
+bool IsCancelled(const uint64_t generation) {
+  return g_cancellation_generation.load(std::memory_order_acquire) != generation;
+}
+
+bool CurrentOperationCancelled() {
+  return g_cancellation_enabled && IsCancelled(g_operation_generation);
+}
+
+class ScopedCancellationOperation {
+ public:
+  explicit ScopedCancellationOperation(const uint64_t generation)
+      : previous_enabled_(g_cancellation_enabled),
+        previous_generation_(g_operation_generation) {
+    g_cancellation_enabled = true;
+    g_operation_generation = generation;
+  }
+
+  ~ScopedCancellationOperation() {
+    g_cancellation_enabled = previous_enabled_;
+    g_operation_generation = previous_generation_;
+  }
+
+ private:
+  const bool previous_enabled_;
+  const uint64_t previous_generation_;
+};
 
 struct EncoderDeleter {
   void operator()(JxlEncoder* encoder) const {
@@ -44,6 +77,20 @@ struct RunnerDeleter {
 using EncoderPtr = std::unique_ptr<JxlEncoder, EncoderDeleter>;
 using DecoderPtr = std::unique_ptr<JxlDecoder, DecoderDeleter>;
 using RunnerPtr = std::unique_ptr<void, RunnerDeleter>;
+
+struct RunnerState {
+  RunnerPtr threads;
+  const bool cancellable;
+  const uint64_t generation;
+};
+
+struct CancellableRunContext {
+  void* jpegxl_opaque;
+  JxlParallelRunInit init;
+  JxlParallelRunFunction function;
+  const uint64_t generation;
+  std::atomic<bool> cancelled{false};
+};
 
 void ResetBuffer(PWJXLBuffer* output) {
   if (output != nullptr) {
@@ -72,10 +119,75 @@ int32_t CopyOutput(const std::vector<uint8_t>& source, PWJXLBuffer* output) {
   return PW_JXL_OK;
 }
 
-RunnerPtr CreateRunner() {
+RunnerState CreateRunner() {
   const size_t worker_count =
       JxlThreadParallelRunnerDefaultNumWorkerThreads();
-  return RunnerPtr(JxlThreadParallelRunnerCreate(nullptr, worker_count));
+  return RunnerState{
+      RunnerPtr(JxlThreadParallelRunnerCreate(nullptr, worker_count)),
+      g_cancellation_enabled,
+      g_operation_generation,
+  };
+}
+
+JxlParallelRetCode CancellableRunInit(void* opaque,
+                                      const size_t num_threads) {
+  auto* context = static_cast<CancellableRunContext*>(opaque);
+  if (IsCancelled(context->generation)) {
+    context->cancelled.store(true, std::memory_order_release);
+    return JXL_PARALLEL_RET_RUNNER_ERROR;
+  }
+  return context->init(context->jpegxl_opaque, num_threads);
+}
+
+void CancellableRunFunction(void* opaque,
+                            const uint32_t value,
+                            const size_t thread_id) {
+  auto* context = static_cast<CancellableRunContext*>(opaque);
+  if (IsCancelled(context->generation)) {
+    context->cancelled.store(true, std::memory_order_release);
+    return;
+  }
+  context->function(context->jpegxl_opaque, value, thread_id);
+  if (IsCancelled(context->generation)) {
+    context->cancelled.store(true, std::memory_order_release);
+  }
+}
+
+JxlParallelRetCode CancellableParallelRunner(
+    void* runner_opaque,
+    void* jpegxl_opaque,
+    JxlParallelRunInit init,
+    JxlParallelRunFunction function,
+    const uint32_t start_range,
+    const uint32_t end_range) {
+  auto* runner = static_cast<RunnerState*>(runner_opaque);
+  if (IsCancelled(runner->generation)) {
+    return JXL_PARALLEL_RET_RUNNER_ERROR;
+  }
+  CancellableRunContext context{
+      jpegxl_opaque,
+      init,
+      function,
+      runner->generation,
+  };
+  const JxlParallelRetCode status = JxlThreadParallelRunner(
+      runner->threads.get(), &context, CancellableRunInit,
+      CancellableRunFunction, start_range, end_range);
+  if (context.cancelled.load(std::memory_order_acquire) ||
+      IsCancelled(runner->generation)) {
+    return JXL_PARALLEL_RET_RUNNER_ERROR;
+  }
+  return status;
+}
+
+JxlParallelRunner RunnerFunction(const RunnerState& runner) {
+  return runner.cancellable ? CancellableParallelRunner
+                            : JxlThreadParallelRunner;
+}
+
+void* RunnerOpaque(RunnerState* runner) {
+  return runner->cancellable ? static_cast<void*>(runner)
+                             : runner->threads.get();
 }
 
 bool ReadFile(const char* path, std::vector<uint8_t>* output) {
@@ -169,6 +281,8 @@ const char* pw_jxl_error_message(const int32_t status) {
       return "JXL has no JPEG reconstruction data";
     case PW_JXL_FILE_IO_FAILED:
       return "file input/output failed";
+    case PW_JXL_CANCELLED:
+      return "cancelled for production pipeline";
     default:
       return "unknown libjxl bridge error";
   }
@@ -220,6 +334,100 @@ int32_t pw_jxl_reconstruct_jpeg_file(const char* jxl_path,
   return wrote ? PW_JXL_OK : PW_JXL_FILE_IO_FAILED;
 }
 
+uint64_t pw_jxl_cancellation_generation(void) {
+  return g_cancellation_generation.load(std::memory_order_acquire);
+}
+
+void pw_jxl_request_cancel(void) {
+  g_cancellation_generation.fetch_add(1, std::memory_order_acq_rel);
+}
+
+int32_t pw_jxl_encode_jpeg_file_cancellable(
+    const char* jpeg_path,
+    const char* jxl_path,
+    const int32_t effort,
+    const uint64_t cancellation_generation,
+    uint64_t* elapsed_microseconds) {
+  ScopedCancellationOperation operation(cancellation_generation);
+  if (CurrentOperationCancelled()) {
+    return PW_JXL_CANCELLED;
+  }
+  std::vector<uint8_t> input;
+  if (!ReadFile(jpeg_path, &input)) {
+    return PW_JXL_FILE_IO_FAILED;
+  }
+  if (CurrentOperationCancelled()) {
+    return PW_JXL_CANCELLED;
+  }
+  PWJXLBuffer encoded = {};
+  const int32_t status =
+      pw_jxl_encode_jpeg(input.data(), input.size(), effort, &encoded,
+                         elapsed_microseconds);
+  if (status != PW_JXL_OK) {
+    pw_jxl_buffer_free(&encoded);
+    malloc_zone_pressure_relief(nullptr, 0);
+    return CurrentOperationCancelled() ? PW_JXL_CANCELLED : status;
+  }
+  if (CurrentOperationCancelled()) {
+    pw_jxl_buffer_free(&encoded);
+    malloc_zone_pressure_relief(nullptr, 0);
+    return PW_JXL_CANCELLED;
+  }
+  const bool wrote = WriteFile(jxl_path, encoded.data, encoded.size);
+  pw_jxl_buffer_free(&encoded);
+  malloc_zone_pressure_relief(nullptr, 0);
+  if (CurrentOperationCancelled()) {
+    if (jxl_path != nullptr) {
+      std::remove(jxl_path);
+    }
+    return PW_JXL_CANCELLED;
+  }
+  return wrote ? PW_JXL_OK : PW_JXL_FILE_IO_FAILED;
+}
+
+int32_t pw_jxl_reconstruct_jpeg_file_cancellable(
+    const char* jxl_path,
+    const char* jpeg_path,
+    const uint64_t cancellation_generation,
+    uint64_t* elapsed_microseconds) {
+  ScopedCancellationOperation operation(cancellation_generation);
+  if (CurrentOperationCancelled()) {
+    return PW_JXL_CANCELLED;
+  }
+  std::vector<uint8_t> input;
+  if (!ReadFile(jxl_path, &input)) {
+    return PW_JXL_FILE_IO_FAILED;
+  }
+  if (CurrentOperationCancelled()) {
+    return PW_JXL_CANCELLED;
+  }
+  PWJXLBuffer reconstructed = {};
+  const int32_t status =
+      pw_jxl_reconstruct_jpeg(input.data(), input.size(), &reconstructed,
+                              elapsed_microseconds);
+  if (status != PW_JXL_OK) {
+    pw_jxl_buffer_free(&reconstructed);
+    malloc_zone_pressure_relief(nullptr, 0);
+    return CurrentOperationCancelled() ? PW_JXL_CANCELLED : status;
+  }
+  if (CurrentOperationCancelled()) {
+    pw_jxl_buffer_free(&reconstructed);
+    malloc_zone_pressure_relief(nullptr, 0);
+    return PW_JXL_CANCELLED;
+  }
+  const bool wrote =
+      WriteFile(jpeg_path, reconstructed.data, reconstructed.size);
+  pw_jxl_buffer_free(&reconstructed);
+  malloc_zone_pressure_relief(nullptr, 0);
+  if (CurrentOperationCancelled()) {
+    if (jpeg_path != nullptr) {
+      std::remove(jpeg_path);
+    }
+    return PW_JXL_CANCELLED;
+  }
+  return wrote ? PW_JXL_OK : PW_JXL_FILE_IO_FAILED;
+}
+
 int32_t pw_jxl_encode_jpeg(const uint8_t* jpeg_data,
                            const size_t jpeg_size,
                            const int32_t effort,
@@ -236,11 +444,14 @@ int32_t pw_jxl_encode_jpeg(const uint8_t* jpeg_data,
   if (!encoder) {
     return PW_JXL_ENCODER_CREATE_FAILED;
   }
-  RunnerPtr runner = CreateRunner();
-  if (!runner ||
-      JxlEncoderSetParallelRunner(encoder.get(), JxlThreadParallelRunner,
-                                  runner.get()) != JXL_ENC_SUCCESS) {
+  RunnerState runner = CreateRunner();
+  if (!runner.threads ||
+      JxlEncoderSetParallelRunner(encoder.get(), RunnerFunction(runner),
+                                  RunnerOpaque(&runner)) != JXL_ENC_SUCCESS) {
     return PW_JXL_ENCODER_RUNNER_FAILED;
+  }
+  if (CurrentOperationCancelled()) {
+    return PW_JXL_CANCELLED;
   }
   if (JxlEncoderUseContainer(encoder.get(), JXL_TRUE) != JXL_ENC_SUCCESS ||
       JxlEncoderStoreJPEGMetadata(encoder.get(), JXL_TRUE) != JXL_ENC_SUCCESS) {
@@ -255,7 +466,8 @@ int32_t pw_jxl_encode_jpeg(const uint8_t* jpeg_data,
     return PW_JXL_ENCODER_CONFIG_FAILED;
   }
   if (JxlEncoderAddJPEGFrame(frame, jpeg_data, jpeg_size) != JXL_ENC_SUCCESS) {
-    return PW_JXL_ENCODER_FRAME_FAILED;
+    return CurrentOperationCancelled() ? PW_JXL_CANCELLED
+                                       : PW_JXL_ENCODER_FRAME_FAILED;
   }
   JxlEncoderCloseInput(encoder.get());
 
@@ -266,6 +478,9 @@ int32_t pw_jxl_encode_jpeg(const uint8_t* jpeg_data,
     size_t available = encoded.size() - used;
     const JxlEncoderStatus status =
         JxlEncoderProcessOutput(encoder.get(), &next_output, &available);
+    if (CurrentOperationCancelled()) {
+      return PW_JXL_CANCELLED;
+    }
     used = encoded.size() - available;
     if (status == JXL_ENC_SUCCESS) {
       encoded.resize(used);
@@ -301,11 +516,14 @@ int32_t pw_jxl_reconstruct_jpeg(const uint8_t* jxl_data,
   if (!decoder) {
     return PW_JXL_DECODER_CREATE_FAILED;
   }
-  RunnerPtr runner = CreateRunner();
-  if (!runner ||
-      JxlDecoderSetParallelRunner(decoder.get(), JxlThreadParallelRunner,
-                                  runner.get()) != JXL_DEC_SUCCESS) {
+  RunnerState runner = CreateRunner();
+  if (!runner.threads ||
+      JxlDecoderSetParallelRunner(decoder.get(), RunnerFunction(runner),
+                                  RunnerOpaque(&runner)) != JXL_DEC_SUCCESS) {
     return PW_JXL_DECODER_RUNNER_FAILED;
+  }
+  if (CurrentOperationCancelled()) {
+    return PW_JXL_CANCELLED;
   }
   if (JxlDecoderSubscribeEvents(
           decoder.get(),
@@ -326,6 +544,9 @@ int32_t pw_jxl_reconstruct_jpeg(const uint8_t* jxl_data,
 
   for (;;) {
     const JxlDecoderStatus status = JxlDecoderProcessInput(decoder.get());
+    if (CurrentOperationCancelled()) {
+      return PW_JXL_CANCELLED;
+    }
     if (status == JXL_DEC_JPEG_RECONSTRUCTION) {
       reconstruction_available = true;
       if (JxlDecoderSetJPEGBuffer(decoder.get(), reconstructed.data(),

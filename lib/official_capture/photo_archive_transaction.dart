@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart';
 import 'photo_archive_codec.dart';
 import 'photo_archive_manifest.dart';
 import 'photo_archive_policy.dart';
+import 'pwva_master.dart';
 
 typedef PhotoArchiveCommitHook = Future<void> Function(File sourceJpeg);
 typedef PhotoArchiveContinueCheck = FutureOr<bool> Function();
@@ -30,11 +31,13 @@ class PhotoArchiveRunResult {
 class PhotoArchiveTransaction {
   const PhotoArchiveTransaction({
     required this.codec,
+    this.codecsByName = const <String, PhotoArchiveCodec>{},
     this.afterManifestCommitted,
     this.canStartNext,
   });
 
   final PhotoArchiveCodec codec;
+  final Map<String, PhotoArchiveCodec> codecsByName;
   final PhotoArchiveCommitHook? afterManifestCommitted;
   final PhotoArchiveContinueCheck? canStartNext;
 
@@ -42,15 +45,30 @@ class PhotoArchiveTransaction {
     Directory captureDirectory,
   ) async {
     final policy = await PhotoArchivePolicy.readCompatible(captureDirectory);
-    if (policy == null || !codec.isSupported) {
+    if (policy == null) {
+      return const PhotoArchiveRunResult(eligible: false);
+    }
+    final selectedCodec = codecsByName.isEmpty
+        ? codec
+        : codecsByName[policy.codec];
+    if (selectedCodec == null || !selectedCodec.isSupported) {
       return const PhotoArchiveRunResult(eligible: false);
     }
     final candidates = await PhotoArchiveManifest.loadCandidateNames(
       captureDirectory,
     );
+    final existingManifest = await PhotoArchiveManifest.read(captureDirectory);
+    if (existingManifest != null && !existingManifest.matchesPolicy(policy)) {
+      return const PhotoArchiveRunResult(eligible: false);
+    }
     var manifest =
-        await PhotoArchiveManifest.read(captureDirectory) ??
-        const PhotoArchiveManifest(entries: <String, PhotoArchiveEntry>{});
+        existingManifest ??
+        PhotoArchiveManifest.forPolicy(
+          policy,
+          entries: const <String, PhotoArchiveEntry>{},
+        );
+    // PWVA 主本已接管的帧:源 JPEG 依授权流程删除,Lepton 按 skipped 处理。
+    final pwvaMastered = await PwvaMasterManifest.readNames(captureDirectory);
     final archived = <String>[];
     final skipped = <String>[];
     final failed = <String>[];
@@ -62,12 +80,13 @@ class PhotoArchiveTransaction {
         break;
       }
       final source = File('${captureDirectory.path}/photos_highres/$name');
-      final archive = File('${source.path}.jxl');
+      final archive = File('${source.path}${policy.archiveSuffix}');
       final archiveTemporary = File('${archive.path}.tmp');
       final verificationTemporary = File('${source.path}.verify.tmp');
       try {
         await _deleteIfPresent(archiveTemporary);
         await _deleteIfPresent(verificationTemporary);
+        await _requireCanContinue();
 
         final committed = manifest.entries[name];
         if (committed != null) {
@@ -77,6 +96,8 @@ class PhotoArchiveTransaction {
             archive: archive,
             verificationTemporary: verificationTemporary,
             entry: committed,
+            codec: selectedCodec,
+            archiveRelativePath: 'photos_highres/$name${policy.archiveSuffix}',
           );
           if (reconciled) {
             archived.add(name);
@@ -87,26 +108,33 @@ class PhotoArchiveTransaction {
         }
 
         if (!await source.exists()) {
-          failed.add(name);
+          if (pwvaMastered.contains(name)) {
+            skipped.add(name);
+          } else {
+            failed.add(name);
+          }
           continue;
         }
         final sourceBytes = await source.length();
         final sourceSha256 = await _sha256Of(source);
+        await _requireCanContinue();
 
-        await codec.encodeJpeg(
+        await selectedCodec.encodeJpeg(
           sourceJpeg: source,
           destinationJxl: archiveTemporary,
         );
+        await _requireCanContinue();
         if (!await archiveTemporary.exists()) {
-          throw const FileSystemException('JPEG XL encoder produced no output');
+          throw const FileSystemException('photo encoder produced no output');
         }
-        await codec.reconstructJpeg(
+        await selectedCodec.reconstructJpeg(
           sourceJxl: archiveTemporary,
           destinationJpeg: verificationTemporary,
         );
+        await _requireCanContinue();
         if (!await _filesEqual(source, verificationTemporary)) {
           throw const FileSystemException(
-            'JPEG XL reconstruction differs from source bytes',
+            'photo reconstruction differs from source bytes',
           );
         }
         final archiveBytes = await archiveTemporary.length();
@@ -117,6 +145,7 @@ class PhotoArchiveTransaction {
           continue;
         }
         final archiveSha256 = await _sha256Of(archiveTemporary);
+        await _requireCanContinue();
 
         if (await archive.exists()) {
           await archive.delete();
@@ -126,7 +155,7 @@ class PhotoArchiveTransaction {
           sourceRelativePath: 'photos_highres/$name',
           sourceBytes: sourceBytes,
           sourceSha256: sourceSha256,
-          archiveRelativePath: 'photos_highres/$name.jxl',
+          archiveRelativePath: 'photos_highres/$name${policy.archiveSuffix}',
           archiveBytes: archiveBytes,
           archiveSha256: archiveSha256,
           status: PhotoArchiveEntryStatus.verified,
@@ -135,9 +164,15 @@ class PhotoArchiveTransaction {
         manifest = manifest.withEntry(name, entry);
         await manifest.writeAtomic(captureDirectory);
         await afterManifestCommitted?.call(source);
+        await _requireCanContinue();
         await source.delete();
         await _deleteIfPresent(verificationTemporary);
         archived.add(name);
+      } on PhotoArchiveCancelled {
+        await _deleteIfPresent(archiveTemporary);
+        await _deleteIfPresent(verificationTemporary);
+        paused = true;
+        break;
       } catch (_) {
         await _deleteIfPresent(archiveTemporary);
         await _deleteIfPresent(verificationTemporary);
@@ -153,15 +188,23 @@ class PhotoArchiveTransaction {
     );
   }
 
+  Future<void> _requireCanContinue() async {
+    if (canStartNext != null && !await canStartNext!()) {
+      throw const PhotoArchiveCancelled();
+    }
+  }
+
   Future<bool> _reconcileCommitted({
     required String name,
     required File source,
     required File archive,
     required File verificationTemporary,
     required PhotoArchiveEntry entry,
+    required PhotoArchiveCodec codec,
+    required String archiveRelativePath,
   }) async {
     if (entry.sourceRelativePath != 'photos_highres/$name' ||
-        entry.archiveRelativePath != 'photos_highres/$name.jxl' ||
+        entry.archiveRelativePath != archiveRelativePath ||
         !await archive.exists() ||
         await archive.length() != entry.archiveBytes ||
         await _sha256Of(archive) != entry.archiveSha256) {
@@ -172,6 +215,7 @@ class PhotoArchiveTransaction {
         await _sha256Of(source) != entry.sourceSha256) {
       return false;
     }
+    await _requireCanContinue();
     await codec.reconstructJpeg(
       sourceJxl: archive,
       destinationJpeg: verificationTemporary,
@@ -181,6 +225,7 @@ class PhotoArchiveTransaction {
         await _sha256Of(verificationTemporary) != entry.sourceSha256) {
       return false;
     }
+    await _requireCanContinue();
     await source.delete();
     await _deleteIfPresent(verificationTemporary);
     return true;

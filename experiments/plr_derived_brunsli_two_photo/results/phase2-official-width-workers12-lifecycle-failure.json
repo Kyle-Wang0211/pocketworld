@@ -1,0 +1,24 @@
+{
+  "schema": "pw_plr_phase2_resource_failure_v1",
+  "arm": "official_width",
+  "status": "aborted_data_loader_worker_lifecycle_failure",
+  "started_at_local": "2026-08-04T11:37:51+08:00",
+  "aborted_at_local": "2026-08-04T12:06:00+08:00",
+  "elapsed_seconds_at_diagnosis": 1663,
+  "effective_batch_size": 64,
+  "microbatch_size": 8,
+  "data_loader_workers": 12,
+  "completed_epoch_count": 0,
+  "checkpoint_written": false,
+  "worker_evidence": {
+    "configured_workers": 12,
+    "defunct_workers_observed": 12,
+    "live_data_workers_observed": 0,
+    "parent_sample_state": "blocked_in_select_poll_waiting_for_worker_result"
+  },
+  "decision": "terminate_hung_process_and_validate_lower_worker_count_before_restart",
+  "scientific_result_valid": false,
+  "frozen_pair_accessed": false,
+  "production_promoted": false,
+  "phone_accessed": false
+}

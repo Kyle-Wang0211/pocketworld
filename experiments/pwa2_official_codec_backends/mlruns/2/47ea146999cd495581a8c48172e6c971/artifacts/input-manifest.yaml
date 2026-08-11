@@ -1,0 +1,7 @@
+schema: pw_pwa2_official_codec_backends_input_manifest_v1
+ordered_inputs:
+  - id: cap_1785512421333592
+    path: /private/tmp/pw_portable_sfm_update.6RQ6nt/before/Documents/captures_official/cap_1785512421333592/official_sfm_live.db
+    bytes: 198983680
+    sha256: 0c12c0dfa76d50cae59929774242282d8236daeb852bdee6ac99c3062d6d08b0
+    sqlite_integrity: ok

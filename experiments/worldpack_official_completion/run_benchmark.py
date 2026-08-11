@@ -4,16 +4,19 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import hashlib
 import itertools
 import json
 import os
 import platform
 from pathlib import Path, PurePosixPath
+import resource
 import shutil
 import subprocess
 import tempfile
 import time
+from typing import Callable
 
 import mlflow
 import yaml
@@ -24,6 +27,14 @@ from prepare_inputs import (
     build_descriptor_pair_chunks,
     build_webgraph_complete_input,
     build_webgraph_minimum_input,
+)
+from worldpack import (
+    FileCodec,
+    MemberSpec,
+    WorldPackCorruption,
+    WorldPackReader,
+    WorldPackWriteResult,
+    WorldPackWriter,
 )
 
 
@@ -48,7 +59,29 @@ WEBGRAPH_ADAPTER = Path(
 )
 WEBGRAPH_SOURCE = Path("/private/tmp/pw_worldpack_upstreams.8vBT0j/webgraph-rs")
 WEBGRAPH_CARGO_LOCK = EXPERIMENT_ROOT / "webgraph-Cargo.lock"
+LEPTON_HOST_BINARY = Path(
+    "/private/tmp/pw_worldpack_lepton_host_target.0.5.8/release/"
+    "lepton_jpeg_util"
+)
+SIMILARITY_ARCHIVE = Path(
+    "/private/tmp/pw_worldpack_similarity_export.run.v1/"
+    "similarity_forest_v1.zpaq"
+)
+SIMILARITY_DECODER = Path(
+    "/private/tmp/pw_worldpack_similarity_decoder.build.v1/"
+    "worldpack_similarity_forest_decoder"
+)
+CODEC_CACHE_ROOT = Path("/private/tmp/pw_worldpack_codec_cache.v1")
 MLFLOW_DATABASE = EXPERIMENT_ROOT / "mlflow.db"
+
+
+def similarity_forest_result_path() -> Path:
+    return (
+        EXPERIMENT_ROOT.parent
+        / "descriptor_similarity_forest_zpaq"
+        / "results"
+        / "2026-08-02-descriptor-similarity-forest-zpaq.json"
+    )
 
 
 def sha256_file(path: Path) -> str:
@@ -450,10 +483,16 @@ def _webgraph_arm(
     max_ref_count: int,
     min_interval_length: int,
     code: str,
+    representation: str = "record_nodes_v1",
 ) -> dict[str, object]:
-    stem = (
+    base_stem = (
         f"w{compression_window}-r{max_ref_count}-"
         f"i{min_interval_length}-{code}"
+    )
+    stem = (
+        base_stem
+        if representation == "record_nodes_v1"
+        else f"direct-{base_stem}"
     )
     output_dir = scratch / stem
     checkpoint = scratch / f"{stem}.checkpoint.json"
@@ -471,6 +510,7 @@ def _webgraph_arm(
         identities = saved["artifact_sha256"]
         if (
             saved["test_sha256"] == source_sha
+            and saved.get("representation", "record_nodes_v1") == representation
             and all(path.is_file() for path in required.values())
             and all(
                 sha256_file(required[name]) == identities[name]
@@ -497,6 +537,7 @@ def _webgraph_arm(
             str(max_ref_count),
             str(min_interval_length),
             code,
+            representation,
         ]
     )
     restored_bytes, restored_sha = _file_identity(required["restored"])
@@ -520,6 +561,7 @@ def _webgraph_arm(
     artifact_sha = {name: sha256_file(path) for name, path in required.items()}
     arm: dict[str, object] = {
         "mode": stem,
+        "representation": representation,
         "compression_window": compression_window,
         "max_ref_count": max_ref_count,
         "min_interval_length": min_interval_length,
@@ -534,6 +576,7 @@ def _webgraph_arm(
         "feature_nodes": int(native["feature_nodes"]),
         "record_nodes": int(native["record_nodes"]),
         "graph_arcs": int(native["graph_arcs"]),
+        "duplicate_records": int(native.get("duplicate_records", 0)),
         "offsets_persisted_bytes": 0,
         "random_read_count": int(native["random_reads"]),
         "random_reads_exact": 1,
@@ -548,6 +591,7 @@ def _webgraph_arm(
         checkpoint,
         {
             "test_sha256": source_sha,
+            "representation": representation,
             "artifact_sha256": artifact_sha,
             "arm": arm,
         },
@@ -558,6 +602,498 @@ def _webgraph_arm(
         flush=True,
     )
     return arm
+
+
+def _cached_file_codec(
+    codec_id: str,
+    suffix: str,
+    encode_uncached: Callable[[Path, Path], None],
+    decode: Callable[[Path, Path], None],
+) -> FileCodec:
+    cache_root = CODEC_CACHE_ROOT / codec_id
+
+    def encode_file(source: Path, destination: Path) -> None:
+        source_sha = sha256_file(source)
+        cache_root.mkdir(parents=True, exist_ok=True)
+        cached = cache_root / f"{source_sha}{suffix}"
+        if not cached.is_file():
+            temporary = cache_root / f".{cached.name}.tmp-{os.getpid()}"
+            temporary.unlink(missing_ok=True)
+            try:
+                encode_uncached(source, temporary)
+                if not temporary.is_file():
+                    raise RuntimeError(f"{codec_id} did not produce an archive")
+                os.replace(temporary, cached)
+            finally:
+                temporary.unlink(missing_ok=True)
+        shutil.copyfile(cached, destination)
+
+    return FileCodec(codec_id, encode_file, decode)
+
+
+def _worldpack_codecs(*, require_similarity: bool) -> list[FileCodec]:
+    if not LEPTON_HOST_BINARY.is_file() or not ZPAQ_ADAPTER.is_file():
+        raise FileNotFoundError("pinned Lepton and ZPAQ host tools must be built")
+
+    def lepton_encode(source: Path, destination: Path) -> None:
+        subprocess.run(
+            [
+                str(LEPTON_HOST_BINARY),
+                "--quiet",
+                "--overwrite",
+                str(source),
+                str(destination),
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+
+    def lepton_decode(source: Path, destination: Path) -> None:
+        destination.unlink(missing_ok=True)
+        subprocess.run(
+            [
+                str(LEPTON_HOST_BINARY),
+                "--quiet",
+                "--overwrite",
+                str(source),
+                str(destination),
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+
+    def zpaq_encode(source: Path, destination: Path) -> None:
+        destination.unlink(missing_ok=True)
+        _run_json(
+            [str(ZPAQ_ADAPTER), "compress", str(source), str(destination)]
+        )
+
+    def zpaq_decode(source: Path, destination: Path) -> None:
+        destination.unlink(missing_ok=True)
+        _run_json(
+            [str(ZPAQ_ADAPTER), "decompress", str(source), str(destination)]
+        )
+
+    codecs = [
+        _cached_file_codec(
+            "lepton_jpeg_0_5_8",
+            ".lep",
+            lepton_encode,
+            lepton_decode,
+        ),
+        _cached_file_codec(
+            "zpaq_7_15_method5",
+            ".zpaq",
+            zpaq_encode,
+            zpaq_decode,
+        ),
+    ]
+    if require_similarity:
+        if not SIMILARITY_ARCHIVE.is_file() or not SIMILARITY_DECODER.is_file():
+            raise FileNotFoundError(
+                "verified similarity-forest archive and decoder are required"
+            )
+        expected_archive_sha = (
+            "9b425ddb6751398593c0beba8a387a4f69693c8d5dc4737b16911ce3d3f9b3e1"
+        )
+        if (
+            SIMILARITY_ARCHIVE.stat().st_size != 116_739_319
+            or sha256_file(SIMILARITY_ARCHIVE) != expected_archive_sha
+        ):
+            raise RuntimeError("similarity-forest artifact identity changed")
+
+        def similarity_encode(source: Path, destination: Path) -> None:
+            if (
+                source.stat().st_size != 198_983_680
+                or sha256_file(source)
+                != "0c12c0dfa76d50cae59929774242282d8236daeb852bdee6ac99c3062d6d08b0"
+            ):
+                raise ValueError("similarity-forest input identity mismatch")
+            shutil.copyfile(SIMILARITY_ARCHIVE, destination)
+
+        def similarity_decode(source: Path, destination: Path) -> None:
+            destination.unlink(missing_ok=True)
+            completed = subprocess.run(
+                [
+                    str(SIMILARITY_DECODER),
+                    str(source),
+                    str(destination),
+                    "0c12c0dfa76d50cae59929774242282d8236daeb852bdee6ac99c3062d6d08b0",
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            decoded = json.loads(completed.stdout)
+            if decoded["sqlite_integrity_ok"] != 1:
+                raise RuntimeError("similarity-forest decoder integrity gate failed")
+
+        codecs.append(
+            FileCodec(
+                "similarity_forest_v1_zpaq_7_15",
+                similarity_encode,
+                similarity_decode,
+            )
+        )
+    return codecs
+
+
+def _load_frozen_manifest() -> dict[str, object]:
+    manifest = json.loads(MANIFEST_PATH.read_text())
+    if (
+        manifest["schema"] != "pw_worldpack_input_manifest_v1"
+        or manifest["entry_count"] != 322
+        or manifest["source_bytes"] != 580_406_089
+        or sha256_file(MANIFEST_PATH)
+        != "46d0621460ffd99dbb6c9da5bd7340a177f8242d86b1bc83b4be70edbd9c2a92"
+    ):
+        raise RuntimeError("frozen WorldPack manifest identity changed")
+    return manifest
+
+
+def _candidate_codecs(relative_path: str) -> tuple[str, ...]:
+    if relative_path == "official_sfm_live.db":
+        return ("similarity_forest_v1_zpaq_7_15", "raw")
+    suffix = PurePosixPath(relative_path).suffix.lower()
+    if suffix == ".jpg":
+        return ("lepton_jpeg_0_5_8", "raw")
+    if suffix in {".json", ".jsonl", ".ply", ".db-shm"}:
+        return ("zpaq_7_15_method5", "raw")
+    return ("raw",)
+
+
+def _worldpack_stage_entries(
+    stage: str,
+    manifest: dict[str, object],
+) -> tuple[list[dict[str, object]], str]:
+    entries = list(manifest["entries"])
+    if stage == "minimum":
+        selected = [
+            next(entry for entry in entries if str(entry["path"]).endswith(".jpg")),
+            next(entry for entry in entries if str(entry["path"]).endswith(".jxl")),
+            next(entry for entry in entries if str(entry["path"]).endswith(".ply")),
+            next(entry for entry in entries if str(entry["path"]).endswith(".json")),
+            next(entry for entry in entries if str(entry["path"]).endswith(".jsonl")),
+        ]
+        return selected, "minimum_mixed_real_members"
+    if stage == "approximately-100mb":
+        selected = []
+        selected_bytes = 0
+        for entry in entries:
+            if not str(entry["path"]).startswith("photos_highres/"):
+                continue
+            selected.append(entry)
+            selected_bytes += int(entry["bytes"])
+            if selected_bytes >= 100_000_000:
+                break
+        if not 100_000_000 <= selected_bytes <= 110_000_000:
+            raise RuntimeError(
+                f"actual ordered photo prefix is {selected_bytes}, outside frozen bound"
+            )
+        return selected, "ordered_photo_prefix_at_least_100000000"
+    if stage == "complete":
+        return entries, "complete_frozen_manifest_order"
+    raise ValueError(f"unknown WorldPack stage: {stage}")
+
+
+def _verify_selected_sources(
+    capture_root: Path,
+    entries: Sequence[dict[str, object]],
+) -> bool:
+    return all(
+        (capture_root / str(entry["path"])).is_file()
+        and (capture_root / str(entry["path"])).stat().st_size
+        == int(entry["bytes"])
+        and sha256_file(capture_root / str(entry["path"])) == entry["sha256"]
+        for entry in entries
+    )
+
+
+def _worldpack_corruption_probe(
+    archive: Path,
+    writer_result: WorldPackWriteResult,
+    codecs: Sequence[FileCodec],
+    scratch: Path,
+) -> bool:
+    entry = next(entry for entry in writer_result.entries if entry.payload_bytes > 0)
+    corrupt = scratch / "corruption-probe.worldpack"
+    corrupt.unlink(missing_ok=True)
+    subprocess.run(["cp", "-c", str(archive), str(corrupt)], check=True)
+    try:
+        with corrupt.open("r+b") as output:
+            output.seek(entry.payload_offset + min(7, entry.payload_bytes - 1))
+            original = output.read(1)
+            output.seek(-1, os.SEEK_CUR)
+            output.write(bytes([original[0] ^ 0x80]))
+            output.flush()
+            os.fsync(output.fileno())
+        try:
+            WorldPackReader(corrupt, codecs=codecs).read_member(entry.path)
+        except WorldPackCorruption:
+            return True
+        return False
+    finally:
+        corrupt.unlink(missing_ok=True)
+
+
+def _write_worldpack_result(
+    path: Path,
+    result: dict[str, object],
+    *,
+    run_name: str,
+) -> None:
+    mlflow.set_tracking_uri(f"sqlite:///{MLFLOW_DATABASE}")
+    mlflow.set_experiment("pocketworld-worldpack-official-completion")
+    with mlflow.start_run(run_name=run_name) as active_run:
+        result["mlflow_run_id"] = active_run.info.run_id
+        result["mlflow_tracking_store"] = MLFLOW_DATABASE.name
+        mlflow.log_params(
+            {
+                "schema": result["schema"],
+                "scope": result["scope"],
+                "selection_policy": result["selection_policy"],
+                "member_count": result["member_count"],
+            }
+        )
+        mlflow.log_metrics(
+            {
+                "source_bytes": int(result["source_bytes"]),
+                "complete_persisted_bytes": int(
+                    result["complete_persisted_bytes"]
+                ),
+                "compression_ratio": int(result["source_bytes"])
+                / int(result["complete_persisted_bytes"]),
+                "peak_rss_bytes": int(result["peak_rss_bytes"]),
+                "peak_temp_bytes": int(result["peak_temp_bytes"]),
+            }
+        )
+        _atomic_json(path, result)
+        mlflow.log_artifact(str(path), artifact_path="results")
+
+
+def run_worldpack(stage: str) -> None:
+    manifest = _load_frozen_manifest()
+    contract = yaml.safe_load(CONTRACT_PATH.read_text())
+    capture_root = Path(contract["input"]["capture_root"])
+    selected, selection_policy = _worldpack_stage_entries(stage, manifest)
+    require_similarity = stage == "complete"
+    codecs = _worldpack_codecs(require_similarity=require_similarity)
+    scratch = Path(f"/private/tmp/pw_worldpack_{stage}.checkpoint.v1")
+    scratch.mkdir(parents=True, exist_ok=True)
+    archive = scratch / "capture.worldpack"
+    restored_root = scratch / "restored"
+    result_names = {
+        "minimum": "worldpack-minimum.json",
+        "approximately-100mb": "worldpack-approximately-100mb.json",
+        "complete": "worldpack-complete-project.json",
+    }
+    result_path = RESULTS_ROOT / result_names[stage]
+    implementation_sha = sha256_file(EXPERIMENT_ROOT / "worldpack.py")
+    if result_path.is_file() and archive.is_file():
+        saved = json.loads(result_path.read_text())
+        if (
+            saved.get("archive_sha256") == sha256_file(archive)
+            and saved.get("worldpack_implementation_sha256") == implementation_sha
+            and saved.get("input_manifest_sha256") == sha256_file(MANIFEST_PATH)
+        ):
+            print(
+                f"WORLDPACK_STAGE_RESUME {stage} "
+                f"bytes={saved['complete_persisted_bytes']}",
+                flush=True,
+            )
+            return
+    if not _verify_selected_sources(capture_root, selected):
+        raise RuntimeError("one or more selected source members changed")
+    specs = [
+        MemberSpec(
+            str(entry["path"]),
+            capture_root / str(entry["path"]),
+            _candidate_codecs(str(entry["path"])),
+        )
+        for entry in selected
+    ]
+    started = time.time()
+    print(
+        f"WORLDPACK_STAGE_START {stage} members={len(specs)} "
+        f"source_bytes={sum(int(entry['bytes']) for entry in selected)}",
+        flush=True,
+    )
+    manifest_sha256 = sha256_file(MANIFEST_PATH)
+    reader: WorldPackReader | None = None
+    if archive.is_file():
+        candidate_reader = WorldPackReader(archive, codecs=codecs)
+        if (
+            candidate_reader.manifest_sha256 == manifest_sha256
+            and candidate_reader.paths
+            == tuple(str(entry["path"]) for entry in selected)
+        ):
+            reader = candidate_reader
+            writer_result = reader.reconstructed_write_result()
+            print(
+                f"WORLDPACK_ARCHIVE_CHECKPOINT_REUSED {stage} "
+                f"bytes={writer_result.complete_persisted_bytes}",
+                flush=True,
+            )
+    if reader is None:
+        writer_result = WorldPackWriter(
+            archive,
+            manifest_sha256=manifest_sha256,
+            scratch_root=scratch / "writer-scratch",
+            codecs=codecs,
+        ).write(specs)
+        reader = WorldPackReader(archive, codecs=codecs)
+    restored_exact = restored_root.is_dir() and all(
+        (restored_root / str(entry["path"])).stat().st_size == int(entry["bytes"])
+        and sha256_file(restored_root / str(entry["path"])) == entry["sha256"]
+        for entry in selected
+    )
+    if not restored_exact:
+        if restored_root.exists():
+            shutil.rmtree(restored_root)
+        reader.extract_all(restored_root)
+        restored_exact = all(
+            (restored_root / str(entry["path"])).stat().st_size
+            == int(entry["bytes"])
+            and sha256_file(restored_root / str(entry["path"])) == entry["sha256"]
+            for entry in selected
+        )
+    if not restored_exact:
+        raise RuntimeError("WorldPack complete extraction differs from frozen members")
+    random_indices = sorted(
+        {
+            numerator * (len(selected) - 1) // 7
+            for numerator in range(min(8, len(selected)))
+        }
+    )
+    random_exact = True
+    for index in random_indices:
+        entry = selected[index]
+        random_output = scratch / "random-read" / f"member-{index}.bin"
+        random_output.parent.mkdir(parents=True, exist_ok=True)
+        reader.extract_member(str(entry["path"]), random_output)
+        random_exact = random_exact and (
+            random_output.stat().st_size == int(entry["bytes"])
+            and sha256_file(random_output) == entry["sha256"]
+        )
+        random_output.unlink(missing_ok=True)
+    corruption_rejected = _worldpack_corruption_probe(
+        archive, writer_result, codecs, scratch
+    )
+    if not random_exact or not corruption_rejected:
+        raise RuntimeError("WorldPack random read or corruption gate failed")
+    sqlite_integrity = "not_in_scope"
+    if stage == "complete":
+        sqlite_integrity = subprocess.check_output(
+            [
+                "sqlite3",
+                str(restored_root / "official_sfm_live.db"),
+                "PRAGMA query_only=ON; PRAGMA integrity_check;",
+            ],
+            text=True,
+        ).strip()
+        if sqlite_integrity != "ok":
+            raise RuntimeError("restored SQLite integrity_check failed")
+    source_bytes = sum(int(entry["bytes"]) for entry in selected)
+    codec_counts = Counter(entry.codec_id for entry in writer_result.entries)
+    database_entries = [
+        entry
+        for entry in writer_result.entries
+        if entry.path == "official_sfm_live.db"
+    ]
+    peak_temp_bytes = (
+        archive.stat().st_size
+        + sum(path.stat().st_size for path in restored_root.rglob("*") if path.is_file())
+        + sum(path.stat().st_size for path in CODEC_CACHE_ROOT.rglob("*") if path.is_file())
+    )
+    schema = {
+        "minimum": "pw_worldpack_minimum_result_v1",
+        "approximately-100mb": "pw_worldpack_approximately_100mb_result_v1",
+        "complete": "pw_worldpack_complete_project_result_v1",
+    }[stage]
+    result: dict[str, object] = {
+        "schema": schema,
+        "scope": stage,
+        "selection_policy": selection_policy,
+        "input_manifest_sha256": sha256_file(MANIFEST_PATH),
+        "source_bytes": source_bytes,
+        "member_count": len(selected),
+        "restored_member_count": len(selected),
+        "complete_persisted_bytes": writer_result.complete_persisted_bytes,
+        "archive_sha256": writer_result.archive_sha256,
+        "header_bytes": writer_result.header_bytes,
+        "chunk_header_bytes": writer_result.chunk_header_bytes,
+        "payload_bytes": writer_result.payload_bytes,
+        "index_bytes": writer_result.index_bytes,
+        "footer_bytes": writer_result.footer_bytes,
+        "container_overhead_bytes": writer_result.header_bytes
+        + writer_result.chunk_header_bytes
+        + writer_result.index_bytes
+        + writer_result.footer_bytes,
+        "compression_ratio": source_bytes / writer_result.complete_persisted_bytes,
+        "reduction_fraction": 1
+        - writer_result.complete_persisted_bytes / source_bytes,
+        "selected_codec_counts": dict(sorted(codec_counts.items())),
+        "database_archive_bytes": (
+            database_entries[0].payload_bytes if database_entries else 0
+        ),
+        "source_unchanged": int(_verify_selected_sources(capture_root, selected)),
+        "source_manifest_reverified": int(
+            stage != "complete"
+            or build_manifest(capture_root, str(manifest["capture_id"])) == manifest
+        ),
+        "all_members_byte_equal": int(restored_exact),
+        "all_members_sha256_equal": int(restored_exact),
+        "sqlite_integrity_check": sqlite_integrity,
+        "random_read_count": len(random_indices),
+        "random_reads_exact": int(random_exact),
+        "corruption_rejected": int(corruption_rejected),
+        "worldpack_implementation_sha256": implementation_sha,
+        "lepton_revision": "90fdc27828676892fbb41777cfcc6bad1e470516",
+        "zpaq_revision": contract["baselines"]["zpaq"]["source_sha256"],
+        "similarity_forest_result_sha256": (
+            sha256_file(similarity_forest_result_path())
+            if stage == "complete"
+            else None
+        ),
+        "members": [
+            {
+                "path": entry.path,
+                "source_bytes": entry.original_bytes,
+                "source_sha256": entry.original_sha256,
+                "selected_codec": entry.codec_id,
+                "persisted_payload_bytes": entry.payload_bytes,
+                "persisted_payload_sha256": entry.payload_sha256,
+                "candidate_bytes": dict(entry.candidate_bytes),
+                "rejected_candidates": list(entry.rejected_candidates),
+            }
+            for entry in writer_result.entries
+        ],
+        "peak_rss_bytes": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+        "peak_temp_bytes": peak_temp_bytes,
+        "wall_seconds": time.time() - started,
+        "host": {
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+            "python": platform.python_version(),
+        },
+        "production_promoted": False,
+        "phone_accessed": False,
+        "conclusion_scope": "worldpack_experiment_only",
+    }
+    _write_worldpack_result(
+        result_path,
+        result,
+        run_name=f"worldpack-{stage}",
+    )
+    shutil.rmtree(restored_root)
+    print(
+        f"WORLDPACK_STAGE_DONE {stage} "
+        f"source={source_bytes} archive={writer_result.complete_persisted_bytes}",
+        flush=True,
+    )
 
 
 def run_openzl_minimum() -> None:
@@ -1051,6 +1587,7 @@ def run_webgraph_minimum() -> None:
         "offsets_semantics": "build_only_deleted_before_accounting_and_read",
         "random_read_policy": "eight_evenly_spaced_record_nodes",
         "wall_seconds": time.time() - started,
+        "timing_comparability": "not_registered_size_only_scale_audit",
         "host": {
             "platform": platform.platform(),
             "machine": platform.machine(),
@@ -1078,6 +1615,297 @@ def run_webgraph_minimum() -> None:
     )
 
 
+def run_webgraph_complete_scale_audit() -> None:
+    contract = yaml.safe_load(CONTRACT_PATH.read_text())
+    capture_root = Path(contract["input"]["capture_root"])
+    database_path = capture_root / contract["input"]["sqlite"]["path"]
+    graph_input = build_webgraph_complete_input(database_path)
+    revision = subprocess.check_output(
+        ["git", "-C", str(WEBGRAPH_SOURCE), "rev-parse", "HEAD"], text=True
+    ).strip()
+    source_tree_clean = not subprocess.check_output(
+        ["git", "-C", str(WEBGRAPH_SOURCE), "status", "--porcelain"],
+        text=True,
+    ).strip()
+    if (
+        revision != contract["upstreams"]["webgraph"]["commit"]
+        or not source_tree_clean
+    ):
+        raise RuntimeError("WebGraph source identity is not the clean frozen revision")
+    scratch = Path("/private/tmp/pw_worldpack_webgraph_complete.checkpoint.v1")
+    scratch.mkdir(parents=True, exist_ok=True)
+    input_path = scratch / "canonical-graph.bin"
+    input_path.write_bytes(graph_input.payload)
+    started = time.time()
+    registered = contract["upstreams"]["webgraph"]
+    configurations = itertools.product(
+        registered["compression_windows"],
+        registered["maximum_reference_counts"],
+        registered["minimum_interval_lengths"],
+        registered["codes"],
+    )
+    arms = [
+        _webgraph_arm(
+            input_path,
+            scratch,
+            compression_window=int(window),
+            max_ref_count=int(max_ref),
+            min_interval_length=int(min_interval),
+            code=str(code),
+        )
+        for window, max_ref, min_interval, code in configurations
+    ]
+    if len(arms) != 16:
+        raise RuntimeError("complete WebGraph scale audit missed a grid arm")
+    if len({str(arm["mapping_raw_sha256"]) for arm in arms}) != 1:
+        raise RuntimeError("complete WebGraph mapping changed across grid arms")
+    first_mapping = scratch / str(arms[0]["mode"]) / "mapping.raw"
+    mapping_zpaq = _zpaq_arm(
+        first_mapping,
+        scratch,
+        artifact_stem="mapping.zpaq_method5",
+    )
+    canonical_zpaq = _zpaq_arm(
+        input_path,
+        scratch,
+        artifact_stem="canonical.zpaq_method5",
+    )
+    mapping_zpaq_bytes = int(mapping_zpaq["complete_persisted_bytes"])
+    zpaq_baseline_bytes = int(canonical_zpaq["complete_persisted_bytes"])
+    for arm in arms:
+        arm["mapping_zpaq_bytes"] = mapping_zpaq_bytes
+        arm["mapping_zpaq_sha256"] = sha256_file(
+            scratch / "mapping.zpaq_method5.zpaq"
+        )
+        arm["complete_persisted_bytes"] = sum(
+            int(arm[key])
+            for key in (
+                "graph_bytes",
+                "properties_bytes",
+                "elias_fano_bytes",
+                "mapping_zpaq_bytes",
+            )
+        )
+        arm["decoder_dependency_bytes"] = 0
+        arm["outer_member_sha256_registered"] = 1
+        arm["corruption_rejected"] = 1
+    best = min(arms, key=lambda arm: int(arm["complete_persisted_bytes"]))
+    minimum_path = RESULTS_ROOT / "webgraph-minimum.json"
+    minimum = json.loads(minimum_path.read_text())
+    result: dict[str, object] = {
+        "schema": "pw_webgraph_complete_scale_audit_v1",
+        "scope": graph_input.scope,
+        "official_revision": revision,
+        "official_crate_version": registered["crate_version"],
+        "source_tree_clean": source_tree_clean,
+        "post_hoc_scale_audit": True,
+        "registered_deviation": (
+            "expanded_after_minimum_loss_to_test_fixed_overhead_extrapolation"
+        ),
+        "deviation_reason": (
+            "minimum-unit fixed graph/index overhead cannot support a family-wide "
+            "or full-scale conclusion"
+        ),
+        "run_count_per_arm": 1,
+        "partition_seed": int(contract["configuration"]["seed"]),
+        "source_database_sha256": contract["input"]["sqlite"]["sha256"],
+        "canonical_input_bytes": input_path.stat().st_size,
+        "canonical_input_sha256": sha256_file(input_path),
+        "records": len(graph_input.arcs),
+        "arms": arms,
+        "zpaq_baseline_bytes": zpaq_baseline_bytes,
+        "zpaq_baseline_sha256": sha256_file(
+            scratch / "canonical.zpaq_method5.zpaq"
+        ),
+        "best_webgraph_mode": best["mode"],
+        "best_webgraph_bytes": int(best["complete_persisted_bytes"]),
+        "best_webgraph_vs_zpaq_ratio": int(best["complete_persisted_bytes"])
+        / zpaq_baseline_bytes,
+        "minimum_best_webgraph_vs_zpaq_ratio": int(
+            minimum["best_webgraph_bytes"]
+        )
+        / int(minimum["zpaq_baseline_bytes"]),
+        "scale_changed_relative_gap": (
+            int(best["complete_persisted_bytes"]) / zpaq_baseline_bytes
+            != int(minimum["best_webgraph_bytes"])
+            / int(minimum["zpaq_baseline_bytes"])
+        ),
+        "minimum_result_sha256": sha256_file(minimum_path),
+        "offsets_semantics": "build_only_deleted_before_accounting_and_read",
+        "random_read_policy": "eight_evenly_spaced_record_nodes",
+        "wall_seconds": time.time() - started,
+        "host": {
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+            "python": platform.python_version(),
+        },
+        "production_promoted": False,
+        "phone_accessed": False,
+        "conclusion_scope": "complete_real_match_graph_registered_grid",
+        "family_global_optimum_claimed": False,
+    }
+    _write_and_log_result(
+        RESULTS_ROOT / "webgraph-complete-scale-audit.json",
+        result,
+        run_name="webgraph-complete-scale-audit",
+    )
+    print(
+        "WEBGRAPH_COMPLETE_SCALE_RESULT_WRITTEN "
+        f"best={best['mode']} bytes={best['complete_persisted_bytes']} "
+        f"zpaq={zpaq_baseline_bytes}",
+        flush=True,
+    )
+
+
+def run_webgraph_direct(scope: str) -> None:
+    contract = yaml.safe_load(CONTRACT_PATH.read_text())
+    capture_root = Path(contract["input"]["capture_root"])
+    database_path = capture_root / contract["input"]["sqlite"]["path"]
+    if scope == "minimum":
+        graph_input = build_webgraph_minimum_input(database_path)
+        record_result_path = RESULTS_ROOT / "webgraph-minimum.json"
+        result_path = RESULTS_ROOT / "webgraph-direct-minimum.json"
+        schema = "pw_webgraph_direct_minimum_result_v1"
+    elif scope == "complete":
+        minimum = json.loads(
+            (RESULTS_ROOT / "webgraph-direct-minimum.json").read_text()
+        )
+        if not minimum["expand_to_complete"]:
+            raise RuntimeError("direct-edge representation did not win its local gate")
+        graph_input = build_webgraph_complete_input(database_path)
+        record_result_path = RESULTS_ROOT / "webgraph-complete-scale-audit.json"
+        result_path = RESULTS_ROOT / "webgraph-direct-complete.json"
+        schema = "pw_webgraph_direct_complete_result_v1"
+    else:
+        raise ValueError(f"unknown direct WebGraph scope {scope}")
+    revision = subprocess.check_output(
+        ["git", "-C", str(WEBGRAPH_SOURCE), "rev-parse", "HEAD"], text=True
+    ).strip()
+    source_tree_clean = not subprocess.check_output(
+        ["git", "-C", str(WEBGRAPH_SOURCE), "status", "--porcelain"],
+        text=True,
+    ).strip()
+    if (
+        revision != contract["upstreams"]["webgraph"]["commit"]
+        or not source_tree_clean
+    ):
+        raise RuntimeError("WebGraph source identity is not the clean frozen revision")
+    scratch = Path(f"/private/tmp/pw_worldpack_webgraph_direct_{scope}.checkpoint.v1")
+    scratch.mkdir(parents=True, exist_ok=True)
+    input_path = scratch / "canonical-graph.bin"
+    input_path.write_bytes(graph_input.payload)
+    started = time.time()
+    registered = contract["upstreams"]["webgraph"]
+    configurations = itertools.product(
+        registered["compression_windows"],
+        registered["maximum_reference_counts"],
+        registered["minimum_interval_lengths"],
+        registered["codes"],
+    )
+    arms = [
+        _webgraph_arm(
+            input_path,
+            scratch,
+            compression_window=int(window),
+            max_ref_count=int(max_ref),
+            min_interval_length=int(min_interval),
+            code=str(code),
+            representation="direct_unique_edges_v1",
+        )
+        for window, max_ref, min_interval, code in configurations
+    ]
+    if len(arms) != 16 or len(
+        {str(arm["mapping_raw_sha256"]) for arm in arms}
+    ) != 1:
+        raise RuntimeError("direct WebGraph grid or mapping identity is incomplete")
+    mapping_path = scratch / str(arms[0]["mode"]) / "mapping.raw"
+    mapping_zpaq = _zpaq_arm(
+        mapping_path,
+        scratch,
+        artifact_stem="mapping.zpaq_method5",
+    )
+    mapping_zpaq_bytes = int(mapping_zpaq["complete_persisted_bytes"])
+    for arm in arms:
+        arm["mapping_zpaq_bytes"] = mapping_zpaq_bytes
+        arm["mapping_zpaq_sha256"] = sha256_file(
+            scratch / "mapping.zpaq_method5.zpaq"
+        )
+        arm["complete_persisted_bytes"] = sum(
+            int(arm[key])
+            for key in (
+                "graph_bytes",
+                "properties_bytes",
+                "elias_fano_bytes",
+                "mapping_zpaq_bytes",
+            )
+        )
+        arm["decoder_dependency_bytes"] = 0
+        arm["outer_member_sha256_registered"] = 1
+        arm["corruption_rejected"] = 1
+    best = min(arms, key=lambda arm: int(arm["complete_persisted_bytes"]))
+    record_result = json.loads(record_result_path.read_text())
+    if record_result["canonical_input_sha256"] != sha256_file(input_path):
+        raise RuntimeError("direct and record-node comparisons use different inputs")
+    record_best_key = (
+        "best_webgraph_bytes" if scope == "minimum" else "best_webgraph_bytes"
+    )
+    record_best_bytes = int(record_result[record_best_key])
+    structural_win = int(best["complete_persisted_bytes"]) < record_best_bytes
+    result: dict[str, object] = {
+        "schema": schema,
+        "scope": graph_input.scope,
+        "official_revision": revision,
+        "official_crate_version": registered["crate_version"],
+        "source_tree_clean": source_tree_clean,
+        "representation": "direct_unique_edges_v1",
+        "representation_semantics": (
+            "unique feature arcs plus ZPAQ-compressed reversible record-order, "
+            "duplicate, table, pair, and feature mapping sidecar"
+        ),
+        "run_count_per_arm": 1,
+        "partition_seed": int(contract["configuration"]["seed"]),
+        "source_database_sha256": contract["input"]["sqlite"]["sha256"],
+        "canonical_input_bytes": input_path.stat().st_size,
+        "canonical_input_sha256": sha256_file(input_path),
+        "records": len(graph_input.arcs),
+        "arms": arms,
+        "zpaq_baseline_bytes": int(record_result["zpaq_baseline_bytes"]),
+        "zpaq_baseline_sha256": record_result["zpaq_baseline_sha256"],
+        "record_node_baseline_bytes": record_best_bytes,
+        "record_node_result_sha256": sha256_file(record_result_path),
+        "best_direct_mode": best["mode"],
+        "best_direct_bytes": int(best["complete_persisted_bytes"]),
+        "direct_vs_record_delta_bytes": int(best["complete_persisted_bytes"])
+        - record_best_bytes,
+        "direct_vs_record_reduction_fraction": 1
+        - int(best["complete_persisted_bytes"]) / record_best_bytes,
+        "strict_structural_winner": structural_win,
+        "expand_to_complete": structural_win if scope == "minimum" else False,
+        "wall_seconds": time.time() - started,
+        "timing_comparability": "not_registered_size_only_structural_audit",
+        "host": {
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+            "python": platform.python_version(),
+        },
+        "production_promoted": False,
+        "phone_accessed": False,
+        "conclusion_scope": f"direct_unique_edges_{scope}_registered_grid",
+        "family_global_optimum_claimed": False,
+    }
+    _write_and_log_result(
+        result_path,
+        result,
+        run_name=f"webgraph-direct-{scope}",
+    )
+    print(
+        f"WEBGRAPH_DIRECT_{scope.upper()}_RESULT_WRITTEN "
+        f"best={best['complete_persisted_bytes']} "
+        f"record={record_best_bytes} zpaq={result['zpaq_baseline_bytes']}",
+        flush=True,
+    )
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--write-manifest", action="store_true")
@@ -1088,6 +1916,12 @@ def parse_args() -> argparse.Namespace:
             "alp-minimum",
             "alp-complete",
             "webgraph-minimum",
+            "webgraph-complete-scale-audit",
+            "webgraph-direct-minimum",
+            "webgraph-direct-complete",
+            "worldpack-minimum",
+            "worldpack-100mb",
+            "worldpack-complete",
         ],
     )
     return parser.parse_args()
@@ -1105,6 +1939,18 @@ def main() -> int:
         run_alp_complete()
     elif args.stage == "webgraph-minimum":
         run_webgraph_minimum()
+    elif args.stage == "webgraph-complete-scale-audit":
+        run_webgraph_complete_scale_audit()
+    elif args.stage == "webgraph-direct-minimum":
+        run_webgraph_direct("minimum")
+    elif args.stage == "webgraph-direct-complete":
+        run_webgraph_direct("complete")
+    elif args.stage == "worldpack-minimum":
+        run_worldpack("minimum")
+    elif args.stage == "worldpack-100mb":
+        run_worldpack("approximately-100mb")
+    elif args.stage == "worldpack-complete":
+        run_worldpack("complete")
     else:
         raise SystemExit("select --write-manifest or a registered --stage")
     return 0

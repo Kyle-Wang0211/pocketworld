@@ -1,0 +1,81 @@
+{
+  "schema": "pw_plr_rate_target_derivation_v1",
+  "status": "derived_from_measured_J",
+  "purpose": "Convert the measured JXL baseline into the exact entropy-stream rate each registered model arm must reach, and record the static-model floor that any competent DCT entropy coder should already beat.",
+  "measured_inputs": {
+    "J_bytes": 5012613,
+    "J_evidence": "results/jxl-frozen-pair-baseline.json",
+    "pair_coefficient_count": 30210048,
+    "pair_side_bytes": 1196,
+    "coefficient_evidence": "results/phase1-v0.1.json",
+    "formal_project_photo_count": 96,
+    "formal_scope": "scope2_self_contained_per_project"
+  },
+  "reference_rates_bits_per_coefficient": {
+    "original_jpeg_huffman": 1.6173,
+    "jxl_0_12_0_effort_10": 1.3274,
+    "static_192_histogram_no_network": 1.471,
+    "single_global_gaussian": 8.02,
+    "official_width_training_epoch_2": 11.82
+  },
+  "static_floor_derivation": {
+    "method": "empirical entropy of each (component, frequency-position) group, 3 components x 64 positions = 192 static histograms, measured on frozen photo A",
+    "coefficient_layout": "component-planar, offset 140, int16; Y 157344 blocks, Cb 39336 blocks, Cr 39336 blocks, 64 coefficients per block",
+    "per_component_bits": {"Y": 2.055, "Cb": 0.318, "Cr": 0.289},
+    "weighted_total": 1.471,
+    "note": "This costs a few KB of tables and no network. It already beats the original JPEG by 9.0 percent and sits 10.9 percent above JXL."
+  },
+  "arms": [
+    {
+      "id": "official_width",
+      "N": 192,
+      "M": 288,
+      "model_stored_bytes_raw": 81087824,
+      "pair_model_charge_bytes": 1689330,
+      "entropy_stream_budget_bytes": 3322087,
+      "required_bits_per_coefficient": 0.8797,
+      "required_improvement_over_original_jpeg": 0.456,
+      "required_improvement_over_jxl": 0.337,
+      "required_improvement_over_static_floor": 0.402,
+      "verdict": "outside_published_envelope",
+      "verdict_reason": "The best published learned JPEG recompression result is about 31 percent better than JPEG on its own dataset. This arm needs 45.6 percent at N=96."
+    },
+    {
+      "id": "scope2_compact",
+      "N": 96,
+      "M": 144,
+      "model_stored_bytes_raw": 21984080,
+      "pair_model_charge_bytes": 458002,
+      "entropy_stream_budget_bytes": 4553415,
+      "required_bits_per_coefficient": 1.2058,
+      "required_improvement_over_original_jpeg": 0.254,
+      "required_improvement_over_jxl": 0.092,
+      "required_improvement_over_static_floor": 0.18,
+      "verdict": "inside_published_envelope",
+      "verdict_reason": "25.4 percent required against a published best of about 31 percent. Viable if the model actually trains."
+    }
+  ],
+  "model_budget_ceiling": {
+    "assumption": "candidate reaches the best published result, 31 percent better than original JPEG, i.e. 1.1159 bits per coefficient",
+    "implied_stream_bytes": 4215344,
+    "implied_H_bytes": 797269,
+    "max_model_stored_bytes_at_N96": 38268864,
+    "official_width_over_budget_factor": 2.12,
+    "scope2_compact_within_budget": true,
+    "official_width_N_break_even": 204,
+    "official_width_break_even_reachable_under_approved_scope": true,
+    "official_width_break_even_note": "204 photos is inside the approved 93-300 range but this project has 96, so the arm remains a formal loss here."
+  },
+  "training_state_assessment": {
+    "reported_metric_units": "bits per luma pixel; patch has 98304 coefficients per 65536 luma positions, so divide by 1.5 for bits per coefficient",
+    "epoch_2_reported": 17.73,
+    "epoch_2_bits_per_coefficient": 11.82,
+    "worse_than_single_global_gaussian_by_bits": 3.8,
+    "implied_predicted_scale_inflation_factor": 14,
+    "interpretation": "A model that had learned nothing but the pooled variance would sit at 8.02. Being at 11.82 means predicted scales are systematically about 14x too wide, which is not an early-training level but a conditioning fault.",
+    "suspected_cause": "config coefficient_value_transform = exact_float32_cast_without_normalization, fed to a shared scale head that must span a 2924x per-frequency dynamic range (Y DC std 490.4 to highest-frequency std 0.168)",
+    "aux_optimizer_hypothesis": "refuted; build_optimizers isolates .quantiles into a separate Adam at lr 1e-3 and train_batch steps it every batch"
+  },
+  "phone_accessed": false,
+  "production_touched": false
+}

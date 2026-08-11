@@ -1,0 +1,93 @@
+schema: pw_cross_photo_abc_exact_benchmark_v1
+frozen_at: "2026-08-02T00:00:00+08:00"
+objective: >-
+  Compare three structural, strictly lossless cross-photo JPEG archive arms on
+  one immutable approximately 100 MB production sample and select the smallest
+  complete archive that restores every source JPEG byte-for-byte.
+revision:
+  app_git_head: 13d2a4f05d491464c537a9135496eccaa05c2358
+  production_behavior_modified: false
+toolchain:
+  python: 3.11.15
+  numpy: 2.4.2
+  opencv_python: 4.13.0
+  opencv_module_sha256: 936bd94c5a5debf0212fc751af79d3a163652f3e850259df2159db6aa3ed8ad8
+  faiss_python: 1.14.2
+  faiss_native_module_sha256: 4feda5c5e54841e737d860736b4d67fd584e0b27060e3f79fb2cd86bfa201868
+input:
+  manifest: experiments/cross_photo_abc/input-manifest.yaml
+  source_archive_manifest: >-
+    /private/tmp/pw_portable_sfm_update.6RQ6nt/before/Documents/
+    captures_official/cap_1785301356006181/official_photo_archive.json
+  ordered_jpeg_count: 25
+  ordered_jpeg_bytes: 107649656
+baseline:
+  codec: existing-verified-jpeg-xl-0.11.2-exact-jpeg
+  archive_member_bytes: 88409901
+  complete_archive_bytes_computed_by_runner: true
+  exactness_failures: 0
+arms:
+  order: [a_dense_flow_local_forest, b_faiss_global_forest, c_official_learned_exact]
+  a:
+    group_size: 8
+    image_scale: 0.25
+    flow_grid_spacing_source_pixels: 64
+    local_block_radius: 2
+    opencv_dis_preset: medium
+    backend: zpaq-7.15-method-5
+  b:
+    group_size: 8
+    vector_dimensions: 64
+    faiss_index: IndexIVFFlat
+    nlist: 2048
+    nprobe: 32
+    max_training_vectors: 131072
+    seed: 20260802
+    backend: zpaq-7.15-method-5
+  c:
+    candidate: official-romp-or-official-cvpr-2022-learned-exact-jpeg
+    execute_only_if_code_and_model_are_commercially_licensed: true
+metrics:
+  primary: complete_archive_bytes
+  count_every_persisted_byte: true
+  counted_categories:
+    - group_roots
+    - jpeg_headers_and_side_information
+    - exact_dct_residuals
+    - flow_grids
+    - local_selectors
+    - parent_maps
+    - manifests
+    - indexes_models_tables_and_weights
+  hard_gates:
+    source_jpeg_count_equal: true
+    restored_lengths_equal: true
+    restored_bytes_equal: true
+    restored_sha256_equal: true
+    parent_references_backward_and_group_local: true
+    random_read_decodes_at_most_jpegs: 8
+    corruption_rejected: true
+    complete_input_processed: true
+  early_ratio_stop: disabled
+  winner_rule: smallest_complete_archive_with_all_hard_gates
+future_candidate_admission:
+  minimum_complete_unit_photos: 2
+  minimum_unit_contents: one-exact-jxl-root-plus-one-child-plus-every-side-byte
+  requires_strictly_smaller_than_baseline: true
+  next_gate_photos: 8
+  full_gate_minimum_bytes: 104857600
+  promotion_order: [two-photo-complete, eight-photo-complete, full-sample-complete]
+  exactness_and_corruption_gates_apply_at_every_stage: true
+randomness:
+  seed: 20260802
+  sample_selection: frozen-ordered-manifest
+stop_conditions:
+  - Stop an arm on an exactness, corruption, or reference-integrity failure.
+  - Do not stop merely because an intermediate compression ratio is poor.
+  - Do not execute arm C without explicit commercial permission for code and weights.
+  - Do not modify production code or install a phone bundle.
+  - Future candidates stop at the first admission stage that is not strictly smaller.
+artifacts:
+  results_directory: experiments/cross_photo_abc/results
+  scratch_root: /private/tmp/pw_cross_photo_abc_20260802
+  retain_large_scratch_after_verified_metrics: false

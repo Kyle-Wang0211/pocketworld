@@ -1,0 +1,35 @@
+{
+ "schema": "pw_btrack_derivation_recon_v1",
+ "capture": "cap_1786180051727388",
+ "code_version": "4c99fd7831e00ea6a6a721810c293b1ebc368d45",
+ "artifacts_written_per_run": [
+  12,
+  12,
+  12
+ ],
+ "repair_transient_run1_vs_run2": {
+  "view_graph.json": "changed",
+  "bundle_validation.json": "changed",
+  "stages/capture_audit/arkit_sparse_pointcloud_audit.json": "changed"
+ },
+ "determinism_run2_vs_run3": {
+  "colmap/sparse/0/cameras.txt": true,
+  "colmap/sparse/0/images.txt": true,
+  "colmap/sparse/0/points3D.txt": true,
+  "view_graph.json": false,
+  "bundle_validation.json": false,
+  "stages/capture_audit/arkit_sparse_anchors_world.ply": true,
+  "stages/capture_audit/arkit_camera_path_world.ply": true,
+  "stages/capture_audit/arkit_sparse_pointcloud_audit.json": false,
+  "pointcloud_preflight_plan.json": true,
+  "texture_plan.json": true,
+  "bundle_transport.json": true,
+  "local_policy_bundle.json": true,
+  "official_photo_bundle.json": true
+ },
+ "deterministic": false,
+ "version_fidelity_stored_vs_regen": {
+  "official_photo_bundle.json": "byte_equal"
+ },
+ "grade_verdict": "NON_DETERMINISTIC(降级语义档并查根因)"
+}

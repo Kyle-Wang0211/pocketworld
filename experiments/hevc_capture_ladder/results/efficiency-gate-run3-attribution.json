@@ -1,0 +1,41 @@
+{
+ "schema": "pw_efficiency_gate_run3_and_attribution_v1",
+ "date": "2026-08-10",
+ "run3": {
+  "capture": "cap_1786323693119445",
+  "frames": 73,
+  "encoded": 32,
+  "pairs": [
+   12.9,
+   1.7,
+   5.1,
+   7.8
+  ],
+  "archive": "finalized,无error"
+ },
+ "accumulated_pre_fix": {
+  "pairs": 19,
+  "mean_pct": 7.11,
+  "ci95": [
+   -2.85,
+   17.08
+  ],
+  "gate": "ACCUMULATE"
+ },
+ "attribution": {
+  "pattern": "run2/3(删亮度调速器后)10对全正;run1(调速器在)混合符号均值-2.35%",
+  "stage_localization": {
+   "run1": "extract+1.6% match+3.4%",
+   "run2": "extract+4.3% match+32.3%",
+   "run3": "extract+2.4% match+9.0%"
+  },
+  "mechanism": "满亮度耗尽SoC热余量→B块编码额外功耗触发微降频/带宽争抢→GPU匹配阶段首当其冲;调速器在时余量吸收编码功耗故run1干净",
+  "confidence": "中高——三场分段数据一致,但样本仍小,run2含离群块"
+ },
+ "fix_applied": {
+  "change": "kVTCompressionPropertyKey_MaximizePowerEfficiency=true(VideoToolbox低功耗编码路径,为后台编码设计的官方旋钮)",
+  "cost": "编码耗时或略增——无妨,编码只需跟上~1.2s/帧节奏,余量数倍",
+  "installed": "2026-08-10 09:15 构建"
+ },
+ "evidence_pool_reset": "编码器配置已变=新实验条件;runs1-3的19对归档为pre-fix证据,效率门自本构建起重新累积(协议纪律:不混条件)"
+}

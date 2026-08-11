@@ -14,6 +14,7 @@ import '../../l10n/app_localizations.dart';
 import '../../official_capture/sfm_live_recon.dart';
 import '../../official_capture/selection_box.dart';
 import 'sparse_cloud_view.dart';
+import 'ruler_scrubber.dart';
 
 /// Preview lifecycle the capture page drives.
 enum SfmPreviewPhase {
@@ -38,6 +39,7 @@ class SfmPreviewOverlay extends StatelessWidget {
     required this.onBack,
     required this.onDone,
     this.onNext,
+    this.onEnterEditing,
     this.errorText,
     this.progressText,
     this.onCameraChanged,
@@ -59,6 +61,10 @@ class SfmPreviewOverlay extends StatelessWidget {
   /// [选区 2026-07-27] refined 且非 null 时渲染"保存草稿|下一步"双按钮
   /// (下一步进选区页);error 或调用方未接选区入口时保持单"完成"。
   final VoidCallback? onNext;
+
+  /// [SEL-ENTRY 2026-07-30] 右上角开关的两个方向。选区是**可选**的:不点就
+  /// 直接保存草稿。编辑态该位置变成返回,进出同一个按钮。
+  final VoidCallback? onEnterEditing;
   final String? errorText;
 
   /// Shown under the generating spinner while the disk queue drains and the
@@ -103,11 +109,25 @@ class SfmPreviewOverlay extends StatelessWidget {
                     rgb: snap.rgb,
                     onCameraChanged: onCameraChanged,
                     controller: cloudController,
-                    selectionBox: editing ? selectionBox : null,
+                    // [SEL-PREVIEW 2026-07-30] 浏览态**也要**拿到框:预览呈现
+                    // 的就是选区后的范围(painter 侧 cullOutsideSelection 按
+                    // editing 取反,浏览剔除 / 编辑染红)。此前这里在非编辑态
+                    // 传 null,框在预览里完全不起作用。
+                    selectionBox: selectionBox,
                     onBoxChanged: onBoxChanged,
                     liveBox: selectionBox == null ? null : () => selectionBox!,
                     editing: editing,
                     bottomGestureExclusion: editing ? 200 : 0,
+                    // [2026-08-09 用户签决] 同 sparse_cloud_viewer_page:编辑态
+                    // 点云只在滑轨上方出现。此处无收起状态入口,恒按展开几何。
+                    bottomFade: editing
+                        ? MediaQuery.of(context).padding.bottom +
+                              kRulerHeight -
+                              kRulerArcTop
+                        : 0,
+                    bottomFadeArcRadius: editing
+                        ? rulerArcRadius(MediaQuery.of(context).size.width)
+                        : 0,
                   ),
                 ),
               ),
@@ -144,6 +164,45 @@ class SfmPreviewOverlay extends StatelessWidget {
                 ),
               ),
             ),
+            // ── [SEL-ENTRY 2026-07-30 用户签决] 右上角"选区编辑 ⇄ 返回"开关 ──
+            //
+            // 此前进选区只有底部那个"下一步"按钮,读起来像**必经的下一步**;
+            // 用户要的是"选区是可选的":想选就点右上角进去,不想选直接保存草稿。
+            //
+            // 只在 refined 且真有云可编辑时出现(onEnterEditing 非 null 就是这个
+            // 条件的载体);generating/error 态没有可选的东西,按钮不该占位。
+            //
+            // [2026-07-30] 编辑态**不**在这里出按钮:SelectionToolsLayer 自己
+            // 就在右上角画"保存"、左上角画"返回",这里再画一个会和它重叠。
+            if (phase == SfmPreviewPhase.refined &&
+                !editing &&
+                onEnterEditing != null)
+              Positioned(
+                top: 0,
+                right: 0,
+                child: SafeArea(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(0, 8, 8, 0),
+                    // [2026-07-30 用户签决] 右上角是**文字**不是图标。
+                    child: TextButton(
+                      key: const ValueKey('sfm_preview_enter_editing'),
+                      onPressed: onEnterEditing,
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        minimumSize: const Size(0, 48),
+                      ),
+                      child: Text(
+                        AppL10n.of(context).sfmEditSelection,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 15,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             // ── generating spinner (center, before any snapshot exists)
             if (phase == SfmPreviewPhase.generating)
               Center(
@@ -311,25 +370,28 @@ class SfmBottomActionButton extends StatelessWidget {
   });
 
   final String label;
-  final VoidCallback onTap;
+
+  /// null = 禁用。看起来可点、点下去什么都不发生的按钮比灰按钮更糟。
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     // [2026-07-28 用户签决] 全部实心白胶囊:此前"保存草稿"是深灰底描边款,
     // 黑底上观感像一块半透明背景片,用户点名删除 —— 按钮本体保留、实心。
+    final enabled = onTap != null;
     return GestureDetector(
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 13),
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: enabled ? Colors.white : const Color(0x3DFFFFFF),
           borderRadius: BorderRadius.circular(26),
         ),
         child: Text(
           label,
-          style: const TextStyle(
-            color: Colors.black,
+          style: TextStyle(
+            color: enabled ? Colors.black : const Color(0x8AFFFFFF),
             fontSize: 15,
             fontWeight: FontWeight.w600,
           ),

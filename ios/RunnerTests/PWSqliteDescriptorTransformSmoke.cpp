@@ -67,6 +67,18 @@ bool CreateFixture(const std::string& path) {
            "cols INTEGER NOT NULL,"
            "data BLOB);") &&
       Exec(database,
+           "CREATE TABLE keypoints("
+           "image_id INTEGER PRIMARY KEY NOT NULL,"
+           "rows INTEGER NOT NULL,"
+           "cols INTEGER NOT NULL,"
+           "data BLOB);") &&
+      Exec(database,
+           "CREATE TABLE matches("
+           "pair_id INTEGER PRIMARY KEY NOT NULL,"
+           "rows INTEGER NOT NULL,"
+           "cols INTEGER NOT NULL,"
+           "data BLOB);") &&
+      Exec(database,
            "CREATE TABLE two_view_geometries("
            "pair_id INTEGER PRIMARY KEY NOT NULL,"
            "rows INTEGER NOT NULL,"
@@ -107,6 +119,66 @@ bool CreateFixture(const std::string& path) {
 
   if (insert != nullptr) {
     sqlite3_finalize(insert);
+  }
+
+  sqlite3_stmt* insert_keypoints = nullptr;
+  if (ok) {
+    ok = sqlite3_prepare_v2(
+             database,
+             "INSERT INTO keypoints(image_id,rows,cols,data)"
+             "VALUES(?1,?2,6,?3);",
+             -1, &insert_keypoints, nullptr) == SQLITE_OK;
+  }
+  for (int image = 1; ok && image <= 2; ++image) {
+    const int rows = image == 1 ? 513 : 31;
+    std::vector<uint32_t> keypoints(static_cast<size_t>(rows) * 6u);
+    for (int row = 0; row < rows; ++row) {
+      for (int column = 0; column < 6; ++column) {
+        const uint32_t lane_pattern =
+            (static_cast<uint32_t>(row * 17 + column * 29 + image) & 0xffu) |
+            ((static_cast<uint32_t>(row * 7 + column + image) & 0xffu) << 8) |
+            ((static_cast<uint32_t>(row + column * 11 + image) & 0xffu)
+             << 16) |
+            ((0x3fu + static_cast<uint32_t>((row + column) & 1)) << 24);
+        keypoints[static_cast<size_t>(row) * 6u + column] = lane_pattern;
+      }
+    }
+    sqlite3_bind_int(insert_keypoints, 1, image);
+    sqlite3_bind_int(insert_keypoints, 2, rows);
+    sqlite3_bind_blob(insert_keypoints, 3, keypoints.data(),
+                      static_cast<int>(keypoints.size() * sizeof(uint32_t)),
+                      SQLITE_TRANSIENT);
+    ok = sqlite3_step(insert_keypoints) == SQLITE_DONE;
+    sqlite3_reset(insert_keypoints);
+    sqlite3_clear_bindings(insert_keypoints);
+  }
+  if (insert_keypoints != nullptr) {
+    sqlite3_finalize(insert_keypoints);
+  }
+
+  sqlite3_stmt* insert_raw_matches = nullptr;
+  if (ok) {
+    ok = sqlite3_prepare_v2(
+             database,
+             "INSERT INTO matches(pair_id,rows,cols,data)"
+             "VALUES(?1,17,2,?2);",
+             -1, &insert_raw_matches, nullptr) == SQLITE_OK;
+  }
+  std::vector<uint32_t> raw_matches(17u * 2u);
+  for (uint32_t row = 0; row < 17; ++row) {
+    raw_matches[row * 2] = row == 8 ? 0xffffffffu : row * 3u;
+    raw_matches[row * 2 + 1] = row == 9 ? 0u : row * 5u + 1u;
+  }
+  if (ok) {
+    sqlite3_bind_int64(insert_raw_matches, 1, 2147483649LL);
+    sqlite3_bind_blob(
+        insert_raw_matches, 2, raw_matches.data(),
+        static_cast<int>(raw_matches.size() * sizeof(uint32_t)),
+        SQLITE_TRANSIENT);
+    ok = sqlite3_step(insert_raw_matches) == SQLITE_DONE;
+  }
+  if (insert_raw_matches != nullptr) {
+    sqlite3_finalize(insert_raw_matches);
   }
 
   sqlite3_stmt* insert_matches = nullptr;
@@ -166,9 +238,11 @@ bool IntegrityOk(const std::string& path) {
   return ok;
 }
 
-bool ReadDescriptor(const std::string& path,
-                    const int image_id,
-                    std::vector<unsigned char>* bytes) {
+bool ReadBlob(const std::string& path,
+              const char* table,
+              const char* key,
+              const int64_t identifier,
+              std::vector<unsigned char>* bytes) {
   sqlite3* database = nullptr;
   const std::string immutable_uri = "file:" + path + "?immutable=1";
   if (sqlite3_open_v2(immutable_uri.c_str(), &database,
@@ -180,11 +254,12 @@ bool ReadDescriptor(const std::string& path,
     return false;
   }
   sqlite3_stmt* statement = nullptr;
-  bool ok = sqlite3_prepare_v2(
-                database, "SELECT data FROM descriptors WHERE image_id=?1;",
-                -1, &statement, nullptr) == SQLITE_OK;
+  const std::string query = std::string("SELECT data FROM ") + table +
+                            " WHERE " + key + "=?1;";
+  bool ok = sqlite3_prepare_v2(database, query.c_str(), -1, &statement,
+                               nullptr) == SQLITE_OK;
   if (ok) {
-    sqlite3_bind_int(statement, 1, image_id);
+    sqlite3_bind_int64(statement, 1, identifier);
     ok = sqlite3_step(statement) == SQLITE_ROW;
   }
   if (ok) {
@@ -201,6 +276,12 @@ bool ReadDescriptor(const std::string& path,
   }
   ok = sqlite3_close(database) == SQLITE_OK && ok;
   return ok;
+}
+
+bool ReadDescriptor(const std::string& path,
+                    const int image_id,
+                    std::vector<unsigned char>* bytes) {
+  return ReadBlob(path, "descriptors", "image_id", image_id, bytes);
 }
 
 struct SmallStackTransformArguments {
@@ -406,13 +487,104 @@ int main() {
     std::remove(predicted_restored.c_str());
   }
 
+  const std::string exact_v2 = std::string(directory) + "/exact-v2.db";
+  const std::string exact_v2_repeat = exact_v2 + ".repeat";
+  const std::string exact_v2_restored = exact_v2 + ".restored";
+  PWSQLiteDescriptorTransformStats exact_v2_forward_stats{};
+  PWSQLiteDescriptorTransformStats exact_v2_inverse_stats{};
+  if (result == 0) {
+    const int32_t status = pw_sqlite_descriptor_transform_file(
+        source.c_str(), exact_v2.c_str(), PW_SQLITE_EXACT_TRANSFORM_V2, false,
+        &exact_v2_forward_stats);
+    if (status != PW_SQLITE_DESCRIPTOR_TRANSFORM_OK) {
+      std::fprintf(stderr, "exact v2 forward status=%d detail=%s\n", status,
+                   pw_sqlite_descriptor_transform_last_error());
+      result = Fail("exact v2 forward transform failed");
+    }
+  }
+  if (result == 0) {
+    const int32_t status = pw_sqlite_descriptor_transform_file(
+        source.c_str(), exact_v2_repeat.c_str(),
+        PW_SQLITE_EXACT_TRANSFORM_V2, false, nullptr);
+    if (status != PW_SQLITE_DESCRIPTOR_TRANSFORM_OK) {
+      result = Fail("exact v2 deterministic repeat failed");
+    }
+  }
+  if (result == 0) {
+    const int32_t status = pw_sqlite_descriptor_transform_file(
+        exact_v2.c_str(), exact_v2_restored.c_str(),
+        PW_SQLITE_EXACT_TRANSFORM_V2, true, &exact_v2_inverse_stats);
+    if (status != PW_SQLITE_DESCRIPTOR_TRANSFORM_OK) {
+      std::fprintf(stderr, "exact v2 inverse status=%d detail=%s\n", status,
+                   pw_sqlite_descriptor_transform_last_error());
+      result = Fail("exact v2 inverse transform failed");
+    }
+  }
+
+  std::vector<unsigned char> exact_v2_bytes;
+  std::vector<unsigned char> exact_v2_repeat_bytes;
+  std::vector<unsigned char> exact_v2_restored_bytes;
+  if (result == 0 &&
+      (!ReadFile(exact_v2, &exact_v2_bytes) ||
+       !ReadFile(exact_v2_repeat, &exact_v2_repeat_bytes) ||
+       !ReadFile(exact_v2_restored, &exact_v2_restored_bytes))) {
+    result = Fail("exact v2 output read failed");
+  }
+  if (result == 0 &&
+      (exact_v2_bytes == source_before ||
+       exact_v2_bytes != exact_v2_repeat_bytes ||
+       exact_v2_restored_bytes != source_before || !IntegrityOk(exact_v2) ||
+       !IntegrityOk(exact_v2_restored) ||
+       std::memcmp(&exact_v2_forward_stats, &exact_v2_inverse_stats,
+                   sizeof(exact_v2_forward_stats)) != 0 ||
+       exact_v2_forward_stats.keypoint_records != 2 ||
+       exact_v2_forward_stats.keypoint_bytes != (513u + 31u) * 6u * 4u ||
+       exact_v2_forward_stats.match_records != 1 ||
+       exact_v2_forward_stats.match_bytes != 17u * 2u * 4u ||
+       exact_v2_forward_stats.two_view_records != 1 ||
+       exact_v2_forward_stats.two_view_bytes != 17u * 2u * 4u)) {
+    result = Fail("exact v2 round-trip contract failed");
+  }
+
+  std::vector<unsigned char> source_descriptor;
+  std::vector<unsigned char> v2_descriptor;
+  std::vector<unsigned char> source_keypoints;
+  std::vector<unsigned char> v2_keypoints;
+  std::vector<unsigned char> source_matches;
+  std::vector<unsigned char> v2_matches;
+  std::vector<unsigned char> source_two_view;
+  std::vector<unsigned char> v2_two_view;
+  if (result == 0 &&
+      (!ReadBlob(source, "descriptors", "image_id", 2,
+                 &source_descriptor) ||
+       !ReadBlob(exact_v2, "descriptors", "image_id", 2,
+                 &v2_descriptor) ||
+       !ReadBlob(source, "keypoints", "image_id", 1, &source_keypoints) ||
+       !ReadBlob(exact_v2, "keypoints", "image_id", 1, &v2_keypoints) ||
+       !ReadBlob(source, "matches", "pair_id", 2147483649LL,
+                 &source_matches) ||
+       !ReadBlob(exact_v2, "matches", "pair_id", 2147483649LL,
+                 &v2_matches) ||
+       !ReadBlob(source, "two_view_geometries", "pair_id", 2147483649LL,
+                 &source_two_view) ||
+       !ReadBlob(exact_v2, "two_view_geometries", "pair_id", 2147483649LL,
+                 &v2_two_view))) {
+    result = Fail("exact v2 target BLOB read failed");
+  }
+  if (result == 0 &&
+      (source_descriptor == v2_descriptor ||
+       source_keypoints == v2_keypoints || source_matches == v2_matches ||
+       source_two_view == v2_two_view)) {
+    result = Fail("exact v2 did not transform every targeted table");
+  }
+
   const std::string cancelled = std::string(directory) + "/cancelled.db";
   if (result == 0) {
     const uint64_t generation =
         pw_sqlite_descriptor_transform_cancellation_generation();
     pw_sqlite_descriptor_transform_request_cancel();
     const int32_t status = pw_sqlite_descriptor_transform_file_cancellable(
-        source.c_str(), cancelled.c_str(), PW_SQLITE_DESCRIPTOR_TRACK_DELTA,
+        source.c_str(), cancelled.c_str(), PW_SQLITE_EXACT_TRANSFORM_V2,
         false, generation, nullptr);
     if (status != PW_SQLITE_DESCRIPTOR_TRANSFORM_CANCELLED ||
         access(cancelled.c_str(), F_OK) == 0) {
@@ -424,6 +596,9 @@ int main() {
   std::remove(transformed.c_str());
   std::remove(restored.c_str());
   std::remove(small_stack.c_str());
+  std::remove(exact_v2.c_str());
+  std::remove(exact_v2_repeat.c_str());
+  std::remove(exact_v2_restored.c_str());
   std::remove(cancelled.c_str());
   rmdir(directory);
 

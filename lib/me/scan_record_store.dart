@@ -33,6 +33,7 @@ import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 
+import '../ui/me_page.dart' show sparsePlyFileNameForPipeline;
 import '../ui/scan_record.dart';
 
 Uint8List? _uprightLandscapeThumbnailBytes(String path) {
@@ -281,6 +282,11 @@ class ScanRecordStore {
       // re-scan + re-write.
       await _flush();
     }
+    // 🔴 必须在 _emit() **之前**:UI 第一次读到 records 时"已看过"标记就得在位,
+    // 否则历史项目会先闪一屏"完成"。此前放在草稿页 initState 里 unawaited 调用,
+    // 那时 _records 还是空的 ⇒ 整个迁移空转 ⇒ 用户实机看到"每次更新完 app 所有
+    // 项目都显示完成,还要一个一个点掉"。
+    await _markExistingSparseAsViewed();
     _emit();
   }
 
@@ -476,6 +482,83 @@ class ScanRecordStore {
 
   /// Insert or replace by id. The store keeps records sorted newest-
   /// first so the gallery natural order is "most recent on top".
+  /// 稀疏点云 PLY 的落盘时刻;还没生成出来则 null。
+  ///
+  /// [2026-08-06 用户签决] "正在训练"= 拍完后管线在生成**稀疏点云**,PLY 出来
+  /// 就算完成。所以状态不入库,直接探测文件系统 —— 拍摄链路一行都不用改(它
+  /// 正被另一条线在改),而且断点续跑、App 被杀重启这些情况天然都对。
+  DateTime? sparseReadyAt(ScanRecord r) {
+    final dir = r.captureDir;
+    if (dir == null) return null;
+    try {
+      final f = File('$dir/${sparsePlyFileNameForPipeline(r.pipelineKind)}');
+      final st = f.statSync();
+      if (st.type == FileSystemEntityType.notFound || st.size <= 0) return null;
+      return st.modified;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// [activeReconstructionCaptureDir] = App 当前真的在重建的那个 capture 目录
+  /// (没有则 null)—— 用来区分"生成中"和"未完成"。
+  ScanProcessingBadge badgeOf(
+    ScanRecord r, {
+    String? activeReconstructionCaptureDir,
+  }) => r.badgeFor(
+    sparseReadyAt(r),
+    isActivelyReconstructing:
+        activeReconstructionCaptureDir != null &&
+        r.captureDir != null &&
+        _sameDir(activeReconstructionCaptureDir, r.captureDir!),
+  );
+
+  /// 容器 UUID 会变,所以按**目录名**比而不是整条绝对路径。
+  static bool _sameDir(String a, String b) {
+    String tail(String p) {
+      final parts = p.split('/').where((e) => e.isNotEmpty).toList();
+      return parts.isEmpty ? p : parts.last;
+    }
+
+    return tail(a) == tail(b);
+  }
+
+  /// 用户点进去看过了 ⇒ 胶囊消失。写"当前 PLY 的落盘时刻"而不是 now:
+  /// 若这中间又重新生成过,mtime 会更晚,胶囊仍应重新出现。
+  Future<void> markResultViewed(ScanRecord r) async {
+    final ready = sparseReadyAt(r);
+    if (ready == null) return; // 还在生成中,没有"看过"可言
+    final cur = r.resultViewedAt;
+    if (cur != null && !cur.isBefore(ready)) return; // 已经标过,别白写盘
+    await addOrUpdate(r.copyWith(resultViewedAt: ready));
+  }
+
+  /// 升级迁移:把**已有** PLY 且从没标记过的老记录一次性视为"已看过"。
+  ///
+  /// [2026-08-06 用户签决] "不需要每次更新完 app 所有项目都显示完成,用户还要
+  /// 一个一个点掉。咱们的更新就跟应用商城里一样,不要重置。" —— 升级不该给用户
+  /// 造出一堆待处理提示。
+  ///
+  /// 在 [_load] 的 _emit() 之前 await 调用(时机是关键,见那里的注释)。幂等:
+  /// 靠 record 自身是否已有 resultViewedAt 判断,不需要额外的全局版本标记,所以
+  /// 反复调用也只会标记新出现的那些。
+  Future<void> _markExistingSparseAsViewed() async {
+    var changed = false;
+    for (final r in List<ScanRecord>.from(_records)) {
+      if (r.resultViewedAt != null) continue;
+      final ready = sparseReadyAt(r);
+      if (ready == null) continue;
+      final i = _records.indexWhere((e) => e.id == r.id);
+      if (i < 0) continue;
+      _records[i] = r.copyWith(resultViewedAt: ready);
+      changed = true;
+    }
+    if (changed) await _flush();
+  }
+
+  /// 公开入口(幂等)—— 正常路径由 [_load] 自己调用,这里给测试和兜底用。
+  Future<void> migrateExistingSparseAsViewed() => _markExistingSparseAsViewed();
+
   Future<void> addOrUpdate(ScanRecord r) async {
     await ensureLoaded();
     _ensureWritable();
@@ -517,18 +600,32 @@ class ScanRecordStore {
   /// The opaque tombstone is persisted first so an interrupted delete or a
   /// late reconstruction writer cannot make the project reappear through
   /// orphan recovery. All files in the route-owned capture namespace
-  /// (photos, metadata, databases, point clouds, and caches) are then removed,
-  /// followed by every route-owned scan artifact and finally the record.
+  /// The record is then dropped from the list and the manifest flushed, so the
+  /// card disappears immediately (see the ordering note inside). Only after
+  /// that are the route-owned capture files (photos, metadata, databases,
+  /// point clouds, caches) and scan artifacts removed.
   Future<void> delete(String id) async {
     await ensureLoaded();
     _ensureWritable();
     final record = byId(id);
     if (record == null) return;
     await _addDeletionTombstone(record);
-    await _deleteProjectFiles(record);
+    // [2026-08-08 用户实机指认] "删除一个项目的时候,项目卡片没有直接消失,而且先
+    // 显示了'未完成'状态几秒,然后再消失。我需要直接立刻消失。"
+    //
+    // 🔴 顺序是关键,别改回去:记录必须在**碰文件之前**就从列表里消失。原先是
+    // 先 _deleteProjectFiles 再移除记录 —— 而 `_deleteProjectFiles` 要删掉照片、
+    // 数据库、点云,几百 MB 时能跑好几秒;这段窗口里记录还在列表上,但 PLY 已经
+    // 被删了,于是 badgeOf → sparseReadyAt 返回 null → 胶囊算成红色"未完成"
+    // (草稿页每 2 秒轮询一次,正好把这个中间态显示出来)。
+    //
+    // 提前移除是安全的:墓碑上面已经落盘了,所以即使删文件中途 App 被杀,orphan
+    // recovery 也不会让这个项目复活(见 _addDeletionTombstone 的注释)。先 flush
+    // 清单再删文件,反而让"重启后不复现"更稳。
     _records = _records.where((r) => r.id != id).toList(growable: false);
     _emit();
     await _flush();
+    await _deleteProjectFiles(record);
   }
 
   Future<void> _deleteProjectFiles(ScanRecord record) async {
@@ -780,6 +877,8 @@ class ScanRecordStore {
     'pipeline_kind': r.pipelineKind.wireName,
     if (r.preferredCaptureMode != CaptureMode.local)
       'preferredCaptureMode': r.preferredCaptureMode.name,
+    if (r.resultViewedAt != null)
+      'resultViewedAt': r.resultViewedAt!.toIso8601String(),
     if (r.thumbnailPath != null) 'thumbnailPath': r.thumbnailPath,
     if (r.artifactPath != null) 'artifactPath': r.artifactPath,
     if (r.captureDir != null) 'captureDir': r.captureDir,
@@ -827,6 +926,9 @@ class ScanRecordStore {
               (m) => m.name == captureModeName,
               orElse: () => CaptureMode.local,
             ),
+      resultViewedAt: j['resultViewedAt'] == null
+          ? null
+          : DateTime.tryParse(j['resultViewedAt'] as String),
       thumbnailPath: j['thumbnailPath'] as String?,
       artifactPath: j['artifactPath'] as String?,
       captureDir: j['captureDir'] as String?,

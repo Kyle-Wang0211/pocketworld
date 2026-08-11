@@ -67,26 +67,67 @@ class PhotoArchiveEntry {
 }
 
 class PhotoArchiveManifest {
-  const PhotoArchiveManifest({required this.entries});
+  const PhotoArchiveManifest({
+    required this.entries,
+    this.schema = schemaV1,
+    this.codec = PhotoArchivePolicy.jpegXlCodec,
+    this.codecVersion = PhotoArchivePolicy.pinnedLibjxlVersion,
+    this.codecRevision = PhotoArchivePolicy.pinnedLibjxlRevision,
+  });
 
   static const fileName = 'official_photo_archive.json';
   static const schemaV1 = 'pw_photo_archive_manifest_v1';
+  static const schemaV2 = 'pw_photo_archive_manifest_v2';
 
   final Map<String, PhotoArchiveEntry> entries;
+  final String schema;
+  final String codec;
+  final String codecVersion;
+  final String codecRevision;
+
+  factory PhotoArchiveManifest.forPolicy(
+    PhotoArchivePolicy policy, {
+    required Map<String, PhotoArchiveEntry> entries,
+  }) => PhotoArchiveManifest(
+    entries: entries,
+    schema: policy.schema == PhotoArchivePolicy.schemaV2 ? schemaV2 : schemaV1,
+    codec: policy.codec,
+    codecVersion: policy.codecVersion,
+    codecRevision: policy.codecRevision,
+  );
+
+  bool matchesPolicy(PhotoArchivePolicy policy) =>
+      codec == policy.codec &&
+      codecVersion == policy.codecVersion &&
+      codecRevision == policy.codecRevision &&
+      ((schema == schemaV1 && policy.schema == PhotoArchivePolicy.schemaV1) ||
+          (schema == schemaV2 && policy.schema == PhotoArchivePolicy.schemaV2));
 
   PhotoArchiveManifest withEntry(String name, PhotoArchiveEntry entry) {
     return PhotoArchiveManifest(
       entries: <String, PhotoArchiveEntry>{...entries, name: entry},
+      schema: schema,
+      codec: codec,
+      codecVersion: codecVersion,
+      codecRevision: codecRevision,
     );
   }
 
-  Map<String, Object?> toJson() => <String, Object?>{
-    'schema': schemaV1,
-    'codec': PhotoArchivePolicy.jpegXlCodec,
-    'mode': PhotoArchivePolicy.jpegReconstructionMode,
-    'libjxl_revision': PhotoArchivePolicy.pinnedLibjxlRevision,
-    'entries': entries.map((name, entry) => MapEntry(name, entry.toJson())),
-  };
+  Map<String, Object?> toJson() {
+    final result = <String, Object?>{
+      'schema': schema,
+      'codec': codec,
+      'mode': PhotoArchivePolicy.jpegReconstructionMode,
+      'entries': entries.map((name, entry) => MapEntry(name, entry.toJson())),
+    };
+    if (schema == schemaV1) {
+      result['libjxl_revision'] = codecRevision;
+    } else {
+      result['codec_version'] = codecVersion;
+      result['codec_revision'] = codecRevision;
+    }
+    return result;
+  }
 
   Future<void> writeAtomic(Directory captureDirectory) async {
     final manifest = File('${captureDirectory.path}/$fileName');
@@ -104,11 +145,29 @@ class PhotoArchiveManifest {
       if (!await manifest.exists()) return null;
       final decoded = jsonDecode(await manifest.readAsString());
       if (decoded is! Map<String, dynamic> ||
-          decoded['schema'] != schemaV1 ||
-          decoded['codec'] != PhotoArchivePolicy.jpegXlCodec ||
-          decoded['mode'] != PhotoArchivePolicy.jpegReconstructionMode ||
-          decoded['libjxl_revision'] !=
-              PhotoArchivePolicy.pinnedLibjxlRevision) {
+          decoded['mode'] != PhotoArchivePolicy.jpegReconstructionMode) {
+        return null;
+      }
+      final schema = decoded['schema'] as String? ?? '';
+      final codec = decoded['codec'] as String? ?? '';
+      late final String codecVersion;
+      late final String codecRevision;
+      if (schema == schemaV1) {
+        codecVersion = PhotoArchivePolicy.pinnedLibjxlVersion;
+        codecRevision = decoded['libjxl_revision'] as String? ?? '';
+        if (codec != PhotoArchivePolicy.jpegXlCodec ||
+            codecRevision != PhotoArchivePolicy.pinnedLibjxlRevision) {
+          return null;
+        }
+      } else if (schema == schemaV2) {
+        codecVersion = decoded['codec_version'] as String? ?? '';
+        codecRevision = decoded['codec_revision'] as String? ?? '';
+        if (codec != PhotoArchivePolicy.leptonCodec ||
+            codecVersion != PhotoArchivePolicy.pinnedLeptonVersion ||
+            codecRevision != PhotoArchivePolicy.pinnedLeptonRevision) {
+          return null;
+        }
+      } else {
         return null;
       }
       final rawEntries = decoded['entries'];
@@ -120,7 +179,13 @@ class PhotoArchiveManifest {
         if (entry == null) return null;
         entries[item.key] = entry;
       }
-      return PhotoArchiveManifest(entries: Map.unmodifiable(entries));
+      return PhotoArchiveManifest(
+        entries: Map.unmodifiable(entries),
+        schema: schema,
+        codec: codec,
+        codecVersion: codecVersion,
+        codecRevision: codecRevision,
+      );
     } on FileSystemException {
       return null;
     } on FormatException {

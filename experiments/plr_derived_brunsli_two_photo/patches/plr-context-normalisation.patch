@@ -1,0 +1,143 @@
+--- a/compressai/models/base_eff.py
++++ b/compressai/models/base_eff.py
+@@ -187,6 +187,24 @@
+     def bpp_loss(self, likelihoods):
+         return torch.log(likelihoods).sum()
+ 
++    def _ctx(self, tensor, *, chroma=False):
++        """Return the context view of a coefficient tensor.
++
++        Registered per-frequency context normalisation. Only ever call this on a
++        tensor that flows into a network; a coding target must stay in its raw
++        integer domain or the coded alphabet changes. Every luma context here is
++        either a whole 64-channel sub-band or a prefix of the frequency ordering,
++        so slicing the prior to the tensor's channel count is always aligned.
++
++        A model without the registered buffers returns the tensor unchanged, so
++        the patched file is a behavioural no-op for the control arm.
++        """
++        if not getattr(self, "_context_normalisation", False):
++            return tensor
++        if chroma:
++            return tensor / self._context_chroma_scale
++        return tensor / self._context_luma_scale[:, : tensor.shape[1]]
++
+     def forward(self, Y, Cb, Cr):  # Y b x 32 x 32 x 64
+         bpp_likelihoods_z = 0
+         bpp_likelihoods_y = 0
+@@ -194,7 +212,7 @@
+         Y = Y.permute(0, 3, 1, 2) # b x 64 x 32 x 32
+         Y1, Y2, Y3, Y4 = self.split_Y(Y) # Y1 b x 64 x 16 x 16 
+         CbCr = torch.cat((Cb, Cr), dim=1) # b x 2 x 256 x 128
+-        cbcr_out = self.hyper_cbcr(CbCr)
++        cbcr_out = self.hyper_cbcr(self._ctx(CbCr, chroma=True))
+         z_cbcr_likelihoods = cbcr_out["likelihoods"]["z"]
+         
+         h_cbcr = cbcr_out["params"] # b x 288 x 128 x 64
+@@ -202,11 +220,11 @@
+         cbcr_anchor_out = self.Guassian_cbcr_anchor(CbCr_anchor, h_cbcr)
+         cbcr_anchor_likelihoods = cbcr_anchor_out["likelihoods"]["y"]
+         # cbcr_anchor_hat = cbcr_anchor_out["y_hat"]
+-        cbcr_non_anchor_out = self.Guassian_cbcr_non_anchor(CbCr_non_anchor, torch.cat((h_cbcr, CbCr_anchor), dim=1))
++        cbcr_non_anchor_out = self.Guassian_cbcr_non_anchor(CbCr_non_anchor, torch.cat((h_cbcr, self._ctx(CbCr_anchor, chroma=True)), dim=1))
+         cbcr_non_anchor_likelihoods = cbcr_non_anchor_out["likelihoods"]["y"]
+         # cbcr_non_anchor_hat = cbcr_non_anchor_out["y_hat"]
+ 
+-        y_out = self.hyper_Y(torch.cat((Y1, Y2, Y3, Y4), dim=1))
++        y_out = self.hyper_Y(torch.cat((self._ctx(Y1), self._ctx(Y2), self._ctx(Y3), self._ctx(Y4)), dim=1))
+         z_y_likelihoods = y_out["likelihoods"]["z"]
+         bpp_likelihoods_z += (self.bpp_loss(z_y_likelihoods) + self.bpp_loss(z_cbcr_likelihoods))
+         bpp_likelihoods_cbcr += (self.bpp_loss(cbcr_anchor_likelihoods) + self.bpp_loss(cbcr_non_anchor_likelihoods))
+@@ -217,10 +235,10 @@
+                 y_out = self.Gaussion_Ys[i](Y1_f[i], h_y)
+                 
+             else:
+-                y_out = self.Gaussion_Ys[i](Y1_f[i], torch.cat((h_y, *Y1_f[:i]), dim=1))
++                y_out = self.Gaussion_Ys[i](Y1_f[i], torch.cat((h_y, self._ctx(torch.cat(Y1_f[:i], dim=1))), dim=1))
+             bpp_likelihoods_y += self.bpp_loss(y_out["likelihoods"]["y"])
+ 
+-        prior_input = torch.cat((h_y, Y1), dim=1)  # b x 192+64 x 16 x 16
++        prior_input = torch.cat((h_y, self._ctx(Y1)), dim=1)  # b x 192+64 x 16 x 16
+         prior_output = self.entropy_aprameters_prior(prior_input) # b x 192 x 16 x 16
+         Y2_f = Y2.split(self.frequency, dim=1)
+         Y3_f = Y3.split(self.frequency, dim=1)
+@@ -231,7 +249,7 @@
+                 
+             else:
+                 y_out = self.Gaussion_Ys_234[i](torch.cat((Y2_f[i], Y3_f[i], Y4_f[i]), dim=1), 
+-                                                torch.cat((prior_output, *Y2_f[:i], *Y3_f[:i], *Y4_f[:i]), dim=1))
++                                                torch.cat((prior_output, self._ctx(torch.cat(Y2_f[:i], dim=1)), self._ctx(torch.cat(Y3_f[:i], dim=1)), self._ctx(torch.cat(Y4_f[:i], dim=1))), dim=1))
+             bpp_likelihoods_y += self.bpp_loss(y_out["likelihoods"]["y"])
+ 
+ 
+@@ -243,13 +261,13 @@
+         Y = Y.permute(0, 3, 1, 2) # b x 64 x 32 x 32
+         Y1, Y2, Y3, Y4 = self.split_Y(Y) # Y1 b x 64 x 16 x 16 
+         CbCr = torch.cat((Cb, Cr), dim=1) # b x 2 x 256 x 128
+-        z_cbcr_out = self.hyper_cbcr.compress(CbCr)  # string, shape, params
++        z_cbcr_out = self.hyper_cbcr.compress(self._ctx(CbCr, chroma=True))  # string, shape, params
+         h_cbcr = z_cbcr_out["params"] # b x 288 x 128 x 64
+         CbCr_anchor, CbCr_non_anchor = self.split_CbCr(CbCr) # b x 4 x 128 x 64
+         cbcr_anchor_out = self.Guassian_cbcr_anchor.compress(CbCr_anchor, h_cbcr) # string, shape, y_hat
+-        cbcr_non_anchor_out = self.Guassian_cbcr_non_anchor.compress(CbCr_non_anchor, torch.cat((h_cbcr, CbCr_anchor), dim=1))
++        cbcr_non_anchor_out = self.Guassian_cbcr_non_anchor.compress(CbCr_non_anchor, torch.cat((h_cbcr, self._ctx(CbCr_anchor, chroma=True)), dim=1))
+ 
+-        z_y_out = self.hyper_Y.compress(torch.cat((Y1, Y2, Y3, Y4), dim=1))# string, shape, params
++        z_y_out = self.hyper_Y.compress(torch.cat((self._ctx(Y1), self._ctx(Y2), self._ctx(Y3), self._ctx(Y4)), dim=1))# string, shape, params
+         h_y = z_y_out["params"] # b x 192 x 16 x 16
+         Y1_f = Y1.split(self.frequency, dim=1)
+         y1_outs = []
+@@ -258,10 +276,10 @@
+                 y1_out = self.Gaussion_Ys[i].compress(Y1_f[i], h_y)
+                 
+             else:
+-                y1_out = self.Gaussion_Ys[i].compress(Y1_f[i], torch.cat((h_y, *Y1_f[:i]), dim=1))
++                y1_out = self.Gaussion_Ys[i].compress(Y1_f[i], torch.cat((h_y, self._ctx(torch.cat(Y1_f[:i], dim=1))), dim=1))
+             y1_outs.append(y1_out)
+ 
+-        prior_input = torch.cat((h_y, Y1), dim=1)  # b x 192+64 x 16 x 16
++        prior_input = torch.cat((h_y, self._ctx(Y1)), dim=1)  # b x 192+64 x 16 x 16
+         prior_output = self.entropy_aprameters_prior(prior_input) # b x 192 x 16 x 16
+         Y2_f = Y2.split(self.frequency, dim=1)
+         Y3_f = Y3.split(self.frequency, dim=1)
+@@ -273,7 +291,7 @@
+                 
+             else:
+                 y234_out = self.Gaussion_Ys_234[i].compress(torch.cat((Y2_f[i], Y3_f[i], Y4_f[i]), dim=1), 
+-                                                torch.cat((prior_output, *Y2_f[:i], *Y3_f[:i], *Y4_f[:i]), dim=1))
++                                                torch.cat((prior_output, self._ctx(torch.cat(Y2_f[:i], dim=1)), self._ctx(torch.cat(Y3_f[:i], dim=1)), self._ctx(torch.cat(Y4_f[:i], dim=1))), dim=1))
+             y234_outs.append(y234_out)
+         
+         return {
+@@ -295,7 +313,7 @@
+         z_CbCr = self.hyper_cbcr.decompress(z_cbcr['strings'], z_cbcr['shape'])
+         cbcr_anchor_out = self.Guassian_cbcr_anchor.decompress(cbcr_anchor_out['strings'], cbcr_anchor_out['shape'], z_CbCr['params']) # string, shape, y_hat
+         cbcr_non_anchor_out = self.Guassian_cbcr_non_anchor.decompress(cbcr_non_anchor_out['strings'], cbcr_non_anchor_out['shape'], 
+-                                                                       torch.cat((z_CbCr['params'], cbcr_anchor_out['y_hat']), dim=1))
++                                                                       torch.cat((z_CbCr['params'], self._ctx(cbcr_anchor_out['y_hat'], chroma=True)), dim=1))
+         z_y = self.hyper_Y.decompress(z_y['strings'], z_y['shape'])
+         y1_hats = []
+         for i, f in enumerate(self.frequency):
+@@ -303,11 +321,11 @@
+                 y1_hat = self.Gaussion_Ys[i].decompress(y1_outs[i]['strings'], y1_outs[i]['shape'], z_y['params'])
+                 
+             else:
+-                y1_hat = self.Gaussion_Ys[i].decompress(y1_outs[i]['strings'], y1_outs[i]['shape'], torch.cat((z_y['params'], *y1_hats[:i]), dim=1))
++                y1_hat = self.Gaussion_Ys[i].decompress(y1_outs[i]['strings'], y1_outs[i]['shape'], torch.cat((z_y['params'], self._ctx(torch.cat(y1_hats[:i], dim=1))), dim=1))
+             y1_hats.append(y1_hat['y_hat'])
+ 
+         y1_hats = torch.cat(y1_hats, dim=1)
+-        prior_input = torch.cat((z_y['params'], y1_hats), dim=1)  # b x 192+64 x 16 x 16
++        prior_input = torch.cat((z_y['params'], self._ctx(y1_hats)), dim=1)  # b x 192+64 x 16 x 16
+         prior_output = self.entropy_aprameters_prior(prior_input) # b x 192 x 16 x 16
+         y2_hats = []
+         y3_hats = []
+@@ -322,7 +340,7 @@
+                 
+             else:
+                 y234_hat = self.Gaussion_Ys_234[i].decompress(y234_outs[i]['strings'], y234_outs[i]['shape'], 
+-                                                torch.cat((prior_output, *y2_hats[:i], *y3_hats[:i], *y4_hats[:i]), dim=1))
++                                                torch.cat((prior_output, self._ctx(torch.cat(y2_hats[:i], dim=1)), self._ctx(torch.cat(y3_hats[:i], dim=1)), self._ctx(torch.cat(y4_hats[:i], dim=1))), dim=1))
+                 y2_hat, y3_hat, y4_hat = y234_hat['y_hat'].chunk(3, dim=1)
+                 y2_hats.append(y2_hat)
+                 y3_hats.append(y3_hat)

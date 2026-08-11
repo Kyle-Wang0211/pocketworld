@@ -534,7 +534,7 @@ class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {
     if (manifestFile == null || !manifestFile.existsSync()) return;
     final record = ScanRecord(
       id: captureId,
-      name: '未命名(${store.records.length + 1})',
+      name: nextUntitledScanName(store.records.map((r) => r.name)),
       createdAt: createdAt,
       preferredCaptureMode: CaptureMode.local,
       thumbnailPath: thumbnailPath,

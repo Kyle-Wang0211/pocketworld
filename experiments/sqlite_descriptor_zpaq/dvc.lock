@@ -1,0 +1,30 @@
+schema: '2.0'
+stages:
+  immutable-inputs:
+    cmd: /usr/bin/true
+    deps:
+    - path: 
+        /private/tmp/pw_archive_gate_refresh_20260730_4b0e3dd/before/Documents/captures_official/cap_1785155296535863/official_sfm_live.db
+      hash: md5
+      md5: ce2166cd7a79f89ae1178a55161a616f
+      size: 184393728
+    - path: 
+        /private/tmp/pw_archive_gate_refresh_20260730_4b0e3dd/before/Documents/captures_official/cap_1785293786814535/official_sfm_live.db
+      hash: md5
+      md5: 998d39f19f1818d3d4617aa43352f167
+      size: 208658432
+    - path: 
+        /private/tmp/pw_archive_gate_refresh_20260730_4b0e3dd/before/Documents/captures_official/cap_1785297411166420/official_sfm_live.db
+      hash: md5
+      md5: a75a64f1f4332674885a0a23a7ab046c
+      size: 50008064
+    - path: 
+        /private/tmp/pw_archive_gate_refresh_20260730_4b0e3dd/before/Documents/captures_official/cap_1785301356006181/official_sfm_live.db
+      hash: md5
+      md5: f575dd0ab5bc3cff357526818afd47e0
+      size: 226762752
+    - path: 
+        /private/tmp/pw_archive_gate_refresh_20260730_4b0e3dd/before/Documents/captures_official/cap_1785307939920932/official_sfm_live.db
+      hash: md5
+      md5: c60236dcf3ce49bfde7b9311c65e08c0
+      size: 219262976

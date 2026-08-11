@@ -33,6 +33,7 @@ import 'l10n/app_localizations.dart';
 import 'lifecycle_observer.dart';
 import 'object_transform.dart';
 import 'official_aether_sfm_ffi.dart' show AetherEnvFile;
+import 'official_capture/b1_gate_runner.dart';
 import 'official_capture/photo_archive_runtime.dart';
 import 'official_capture/telemetry_writer.dart' as official_telemetry;
 import 'official_util/device_log.dart' as official_device_log;
@@ -87,6 +88,15 @@ Future<void> main() async {
       print('[AET-SMOKE] inside runZonedGuarded');
       WidgetsFlutterBinding.ensureInitialized();
       await officialArchiveBackgroundRuntime.initialize();
+      // Release-visible container-file log (Documents/pw_device_log.txt) —
+      // print/debugPrint are invisible in release builds on device.
+      unawaited(DeviceLog.init());
+      // The production capture runtime owns a release-visible capture log.
+      // [2026-08-10 时序修正] 这里改成 await:EnvFile 的"applied"收据原先在
+      // 日志文件打开**之前**写,release 下只进不可见的 print —— 实机核验时
+      // 拿不到任何生效证据(08-10 自然停止 A/B 实测踩中)。先开日志再应用
+      // env,启动路径仍在任何拍摄/进 native 之前。
+      await official_device_log.DeviceLog.init();
       // [ENV-FILE 2026-08-10] 诊断 env 直通:必须 await(在任何拍摄/进
       // native 之前生效);文件不存在=零行为。应用结果记进 device log 留证。
       try {
@@ -96,11 +106,6 @@ Future<void> main() async {
           official_device_log.DeviceLog.log('EnvFile', 'applied: $applied');
         }
       } catch (_) {}
-      // Release-visible container-file log (Documents/pw_device_log.txt) —
-      // print/debugPrint are invisible in release builds on device.
-      unawaited(DeviceLog.init());
-      // The production capture runtime owns a release-visible capture log.
-      unawaited(official_device_log.DeviceLog.init());
       // Events queued before this completes are flushed by the writer.
       unawaited(() async {
         try {
@@ -149,6 +154,13 @@ Future<void> main() async {
           } catch (_) {
             // Startup archive recovery is best effort and fails closed.
           }
+        }());
+        // B1 验收门(文件触发,开发侧 devicectl 投放请求;无文件=零行为)。
+        unawaited(() async {
+          try {
+            final documents = await getApplicationDocumentsDirectory();
+            await maybeRunB1Gate(documents.path);
+          } catch (_) {}
         }());
       });
       WidgetsBinding.instance.waitUntilFirstFrameRasterized.then((_) {

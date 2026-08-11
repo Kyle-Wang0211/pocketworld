@@ -1,0 +1,42 @@
+{
+  "schema": "pw_lepton_jxl_iphone_ab_result_v1",
+  "run_id": "20260802T134334Z",
+  "bundle_id": "com.kyle.PocketWorld.LeptonBench",
+  "status": "passed",
+  "platform": "ios",
+  "operating_system_version": "Version 26.5.2 (Build 23F84)",
+  "source_bytes": 2725495,
+  "source_sha256": "a1cb8de1d3b91edbb7e05233c7930200c46e04554c3651153e267e5abd262138",
+  "jxl": {
+    "codec": "jxl",
+    "codec_version": "0.12.0",
+    "codec_revision": "a7a9c787341cf703dede03c2009fa460cae5e5df",
+    "archive_bytes": 2215345,
+    "archive_sha256": "d297da0ed0e400da7e00db7d2142a46a51481cd81ec1dd826e31bba41f0f22a2",
+    "restored_bytes": 2725495,
+    "restored_sha256": "a1cb8de1d3b91edbb7e05233c7930200c46e04554c3651153e267e5abd262138",
+    "byte_equal": true,
+    "sha256_equal": true,
+    "exact": true,
+    "encode_elapsed_us": 4669391,
+    "decode_elapsed_us": 96076
+  },
+  "lepton": {
+    "codec": "lepton",
+    "codec_version": "0.5.8",
+    "codec_revision": "90fdc27828676892fbb41777cfcc6bad1e470516",
+    "archive_bytes": 2159731,
+    "archive_sha256": "1cdb9329ff5179e28d2811c3670b36147633094b69772ee7dd8da80f8a05334e",
+    "restored_bytes": 2725495,
+    "restored_sha256": "a1cb8de1d3b91edbb7e05233c7930200c46e04554c3651153e267e5abd262138",
+    "byte_equal": true,
+    "sha256_equal": true,
+    "exact": true,
+    "encode_elapsed_us": 97518,
+    "decode_elapsed_us": 75983
+  },
+  "winner": "lepton",
+  "lepton_archive_bytes < jxl_archive_bytes": true,
+  "production_eligible": true,
+  "peak_rss_bytes": 459522048
+}

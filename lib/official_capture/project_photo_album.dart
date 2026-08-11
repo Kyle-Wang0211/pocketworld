@@ -35,6 +35,8 @@ class OfficialProjectPhotoAlbum extends ChangeNotifier {
 
   int get count => _photos.length;
 
+  String? get latestPath => _photos.isEmpty ? null : _photos.last.jpegPath;
+
   List<OfficialProjectPhoto> get photos =>
       List<OfficialProjectPhoto>.unmodifiable(_photos);
 

@@ -1,0 +1,63 @@
+{
+  "schema": "pw_plr_jxl_frozen_pair_baseline_v1",
+  "status": "formal_baseline_measured_once",
+  "measured_early_reason": "Phase 2 rate targets are underivable without J; the contract's one-run-once rule is preserved and this result is now permanent.",
+  "rerun_forbidden": true,
+  "codec": {
+    "name": "libjxl",
+    "version": "0.12.0",
+    "revision": "a7a9c787341cf703dede03c2009fa460cae5e5df",
+    "build_evidence": "results/libjxl-host-0.12.0-build.json",
+    "cjxl_sha256": "59056dc32942d0712cfec426f9605a3e54e0c1db8bcd6b228409bad401bfcc71",
+    "djxl_sha256": "6cb97c1b6c1afd6a9f8758ed6df4e6306b64c56402fba45fd18d2ec297ec6118",
+    "encode_command": "cjxl <input>.jpg <output>.jxl -e 10",
+    "decode_command": "djxl <output>.jxl <restored>.jpg",
+    "mode": "implicit_default_lossless_jpeg_transcode",
+    "effort": 10
+  },
+  "inputs": [
+    {
+      "role": "A",
+      "filename": "cell_85_slot_4.jpg",
+      "source_bytes": 2995750,
+      "source_sha256": "ac91faba107c41f891dbce7128f0ecc8e66cb451892e231479d8bf8b738e4be6",
+      "archive_bytes": 2453756,
+      "archive_sha256": "a1f26d5b9822711b1955b38d2d6981eac1fb422f1374ca10c4ee4d4542a18126",
+      "restored_bytes": 2995750,
+      "restored_sha256": "ac91faba107c41f891dbce7128f0ecc8e66cb451892e231479d8bf8b738e4be6",
+      "byte_equal": true,
+      "sha256_equal": true,
+      "reduction_fraction": 0.1809266155
+    },
+    {
+      "role": "B",
+      "filename": "cell_85_slot_5.jpg",
+      "source_bytes": 3112949,
+      "source_sha256": "73ec448d66a2242f5d8a07d3531d9018f604d3a67b219a5689901734fce83e4e",
+      "archive_bytes": 2558857,
+      "archive_sha256": "e7c0104238c430d8b8e5a2e010cd3fe794b14fc8c773d47ab56f1e32092b6d7a",
+      "restored_bytes": 3112949,
+      "restored_sha256": "73ec448d66a2242f5d8a07d3531d9018f604d3a67b219a5689901734fce83e4e",
+      "byte_equal": true,
+      "sha256_equal": true,
+      "reduction_fraction": 0.1779894177
+    }
+  ],
+  "formal_baseline": {
+    "jxl_a_archive_bytes": 2453756,
+    "jxl_b_archive_bytes": 2558857,
+    "J": 5012613,
+    "pair_source_bytes": 6108699,
+    "pair_reduction_fraction": 0.1794312474
+  },
+  "coefficient_reference": {
+    "source": "results/phase1-v0.1.json",
+    "pair_coefficient_count": 30210048,
+    "derivation": "per image 30,210,164 coefficient bytes minus 116 header bytes = 15,105,024 int16 coefficients; 4:2:0 at 4224x2376 = 264*149 MCU * 6 blocks * 64",
+    "pair_side_bytes": 1196,
+    "original_jpeg_bits_per_coefficient": 1.6173,
+    "jxl_bits_per_coefficient": 1.3274
+  },
+  "phone_accessed": false,
+  "production_touched": false
+}

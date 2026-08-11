@@ -1,0 +1,27 @@
+{
+ "schema": "pw_efficiency_gate_run2_v1",
+ "date": "2026-08-10",
+ "capture": "cap_1786296208837926",
+ "frames": 101,
+ "encoded": 48,
+ "archive": "finalized 7,455,754B,无error",
+ "v3_accumulated": {
+  "total_pairs": 15,
+  "mean_pct": 7.18,
+  "ci95_pct": [
+   -5.45,
+   19.81
+  ],
+  "thermal": "2/2",
+  "gate": "ACCUMULATE"
+ },
+ "run2_anomaly_investigation": {
+  "observation": "本场 6 对全正(含两对 +45%),与 run1 混合符号相反",
+  "hypothesis_1_background_lepton": "REFUTED — 审计日志显示归档转换 17:22:03 排空(拍摄前),新场 102 张转换发生于 17:27:06(拍摄后),零重叠",
+  "hypothesis_2_queue_saturation": "REFUTED as differentiator — 两场 queue 均饱和,run1 更甚(尾段中位 18 vs 9.5);分臂 queue 平衡 A=4.0/B=4.0",
+  "hypothesis_3_outlier_blocks": "最符合 — 块2(A,972 异常低)与块5(B,1950 异常高)两个离群块各污染两对;16帧块中位数在重尾分布上的正常抖动",
+  "residual_factor": "本场拍摄节奏快 53%(1.17 vs 1.79 s/帧),不能完全排除快节奏下的真实交互,由累积裁决"
+ },
+ "no_exclusion": "按规则不剔除任何数据(无预登记剔除判据;污染假设已被证据反驳);判决交给累积",
+ "projection": "均值 +7.18% 主要由 run2 两个离群块驱动;再 1-2 场 160 帧级数据(各 +9~10 对)后 CI 有望收口"
+}

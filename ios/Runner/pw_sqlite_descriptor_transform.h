@@ -18,6 +18,7 @@ typedef enum PWSQLiteDescriptorTransform {
   PW_SQLITE_DESCRIPTOR_TRANSPOSE_XOR = 2,
   PW_SQLITE_DESCRIPTOR_TRANSPOSE_DELTA = 3,
   PW_SQLITE_DESCRIPTOR_TRACK_DELTA = 4,
+  PW_SQLITE_EXACT_TRANSFORM_V2 = 5,
 } PWSQLiteDescriptorTransform;
 
 typedef enum PWSQLiteDescriptorTransformStatus {
@@ -39,6 +40,12 @@ typedef struct PWSQLiteDescriptorTransformStats {
   uint64_t verified_match_edges;
   uint64_t matched_descriptor_nodes;
   uint64_t predicted_descriptor_nodes;
+  uint64_t keypoint_records;
+  uint64_t keypoint_bytes;
+  uint64_t match_records;
+  uint64_t match_bytes;
+  uint64_t two_view_records;
+  uint64_t two_view_bytes;
 } PWSQLiteDescriptorTransformStats;
 
 PW_SQLITE_DESCRIPTOR_API const char*

@@ -1,0 +1,32 @@
+{
+ "orig": {
+  "imgs": 96,
+  "feat_mean": 9200.03125,
+  "feat_min": 1307,
+  "pairs_raw": 541,
+  "raw_match_mean": 561.6247689463955,
+  "pairs_verified": 473,
+  "inlier_mean": 561.6976744186046,
+  "inlier_sum": 265683
+ },
+ "q75": {
+  "imgs": 96,
+  "feat_mean": 9136.552083333334,
+  "feat_min": 1365,
+  "pairs_raw": 542,
+  "raw_match_mean": 630.8007380073801,
+  "pairs_verified": 481,
+  "inlier_mean": 629.3950103950104,
+  "inlier_sum": 302739
+ },
+ "q65": {
+  "imgs": 96,
+  "feat_mean": 8308.208333333334,
+  "feat_min": 973,
+  "pairs_raw": 541,
+  "raw_match_mean": 615.4972273567467,
+  "pairs_verified": 483,
+  "inlier_mean": 611.3436853002071,
+  "inlier_sum": 295279
+ }
+}

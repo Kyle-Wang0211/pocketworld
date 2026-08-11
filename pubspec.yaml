@@ -175,6 +175,10 @@ dependencies:
   # calling the production bundle implementation through the original import.
   official_capture_services:
     path: packages/official_capture_services
+  # 采集期 PWVA HEVC 归档 + 严格无损 PLY/sidecar 压缩(纯 Dart+C,零 Swift)。
+  # C 层经 ffiPlugin 静态编入 App;证据链 experiments/hevc_capture_ladder/。
+  pw_hevc:
+    path: packages/pw_hevc
 
 # 2026-07-25 build-env fix: path_provider_foundation 2.6.0 migrated to a pure
 # dart-FFI plugin (no CocoaPods podspec, native_build:false) that fails to bundle

@@ -20,10 +20,11 @@ void main() {
   test('new captures receive a compatible durable policy marker', () async {
     final policy = await PhotoArchivePolicy.writeForNewCapture(tempDir);
 
-    expect(policy.schema, PhotoArchivePolicy.schemaV1);
-    expect(policy.codec, PhotoArchivePolicy.jpegXlCodec);
+    expect(policy.schema, PhotoArchivePolicy.schemaV2);
+    expect(policy.codec, PhotoArchivePolicy.leptonCodec);
     expect(policy.mode, PhotoArchivePolicy.jpegReconstructionMode);
-    expect(policy.libjxlRevision, PhotoArchivePolicy.pinnedLibjxlRevision);
+    expect(policy.codecVersion, PhotoArchivePolicy.pinnedLeptonVersion);
+    expect(policy.codecRevision, PhotoArchivePolicy.pinnedLeptonRevision);
     expect(
       await File('${tempDir.path}/${PhotoArchivePolicy.fileName}').exists(),
       isTrue,

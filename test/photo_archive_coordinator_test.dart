@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -65,12 +66,12 @@ void main() {
 
     final source = File('${capture.path}/photos_highres/frame.jpg');
     expect(await source.exists(), isTrue);
-    expect(await File('${source.path}.jxl').exists(), isFalse);
+    expect(await File('${source.path}.lep').exists(), isFalse);
 
     await recon.close();
 
     expect(await source.exists(), isFalse);
-    expect(await File('${source.path}.jxl').exists(), isTrue);
+    expect(await File('${source.path}.lep').exists(), isTrue);
   });
 
   test(
@@ -83,15 +84,20 @@ void main() {
 
       final recording = coordinator.beginCaptureActivity();
       final reconstruction = coordinator.beginReconstructionActivity(capture);
+      final legacyProcessing = coordinator.beginProcessingActivity();
 
       expect(coordinator.isProductionPipelineActive, isTrue);
-      expect(coordinator.activeProductionPipelineCount, 2);
+      expect(coordinator.activeProductionPipelineCount, 3);
 
       await recording.close();
       expect(coordinator.isProductionPipelineActive, isTrue);
-      expect(coordinator.activeProductionPipelineCount, 1);
+      expect(coordinator.activeProductionPipelineCount, 2);
 
       await reconstruction.close();
+      expect(coordinator.isProductionPipelineActive, isTrue);
+      expect(coordinator.activeProductionPipelineCount, 1);
+
+      await legacyProcessing.close();
       expect(coordinator.isProductionPipelineActive, isFalse);
       expect(coordinator.activeProductionPipelineCount, 0);
     },
@@ -107,52 +113,84 @@ void main() {
     final legacySource = File('${legacy.path}/photos_highres/frame.jpg');
     final futureSource = File('${future.path}/photos_highres/frame.jpg');
     expect(await legacySource.exists(), isTrue);
-    expect(await File('${legacySource.path}.jxl').exists(), isFalse);
+    expect(await File('${legacySource.path}.lep').exists(), isFalse);
     expect(await futureSource.exists(), isFalse);
-    expect(await File('${futureSource.path}.jxl').exists(), isTrue);
+    expect(await File('${futureSource.path}.lep').exists(), isTrue);
     expect(await Directory('${legacy.path}/previews').exists(), isTrue);
     expect(await Directory('${future.path}/previews').exists(), isFalse);
   });
 
-  test('foreground activity pauses between individual files', () async {
-    final capture = await createCompleteCapture(
-      'two-frames',
-      marked: true,
-      photos: const ['one.jpg', 'two.jpg'],
-    );
-    late PhotoArchiveCoordinator coordinator;
-    PhotoArchiveActivityLease? foreground;
-    var encodeCount = 0;
-    final codec = _ZlibCoordinatorCodec(
-      afterEncode: () {
-        encodeCount++;
-        if (encodeCount == 1) {
-          foreground = coordinator.beginCaptureActivity();
-        }
-      },
-    );
-    coordinator = PhotoArchiveCoordinator(codec: codec);
+  test(
+    'foreground activity cancels the in-flight file and later resumes',
+    () async {
+      final capture = await createCompleteCapture(
+        'two-frames',
+        marked: true,
+        photos: const ['one.jpg', 'two.jpg'],
+      );
+      late PhotoArchiveCoordinator coordinator;
+      PhotoArchiveActivityLease? foreground;
+      var encodeCount = 0;
+      final codec = _ZlibCoordinatorCodec(
+        afterEncode: () {
+          encodeCount++;
+          if (encodeCount == 1) {
+            foreground = coordinator.beginCaptureActivity();
+          }
+        },
+      );
+      coordinator = PhotoArchiveCoordinator(codec: codec);
 
-    await coordinator.noteArtifactsPersisted(capture);
+      await coordinator.noteArtifactsPersisted(capture);
 
-    expect(
-      await File('${capture.path}/photos_highres/one.jpg').exists(),
-      isFalse,
-    );
-    expect(
-      await File('${capture.path}/photos_highres/two.jpg').exists(),
-      isTrue,
-    );
-    expect(encodeCount, 1);
+      expect(
+        await File('${capture.path}/photos_highres/one.jpg').exists(),
+        isTrue,
+      );
+      expect(
+        await File('${capture.path}/photos_highres/two.jpg').exists(),
+        isTrue,
+      );
+      expect(encodeCount, 1);
 
-    await foreground!.close();
+      await foreground!.close();
 
-    expect(
-      await File('${capture.path}/photos_highres/two.jpg').exists(),
-      isFalse,
-    );
-    expect(encodeCount, 2);
-  });
+      expect(
+        await File('${capture.path}/photos_highres/one.jpg').exists(),
+        isFalse,
+      );
+      expect(
+        await File('${capture.path}/photos_highres/two.jpg').exists(),
+        isFalse,
+      );
+      expect(encodeCount, 3);
+    },
+  );
+
+  test(
+    'foreground cancellation automatically resumes queued photo work',
+    () async {
+      final capture = await createCompleteCapture(
+        'photo-cancel-release-race',
+        marked: true,
+      );
+      final codec = _BlockingPhotoCodec();
+      final coordinator = PhotoArchiveCoordinator(codec: codec);
+
+      final archiveFuture = coordinator.noteArtifactsPersisted(capture);
+      await codec.started.future;
+      final foreground = coordinator.beginCaptureActivity();
+      final releaseFuture = foreground.close();
+      await Future.wait<void>([archiveFuture, releaseFuture]);
+
+      final source = File('${capture.path}/photos_highres/frame.jpg');
+      expect(codec.cancellationRequests, 1);
+      expect(codec.encodeCalls, 2);
+      expect(await source.exists(), isFalse);
+      expect(await File('${source.path}.lep').exists(), isTrue);
+      expect(coordinator.hasPendingWork, isFalse);
+    },
+  );
 
   test('missing final artifact keeps marked capture pending', () async {
     final capture = await createCompleteCapture('incomplete', marked: true);
@@ -186,51 +224,55 @@ void main() {
     );
   });
 
-  test('system interruption pauses after one file and later resumes', () async {
-    final capture = await createCompleteCapture(
-      'background-expired',
-      marked: true,
-      photos: const ['one.jpg', 'two.jpg'],
-    );
-    final scheduler = _RecordingArchiveBackgroundScheduler();
-    late PhotoArchiveCoordinator coordinator;
-    var encodeCount = 0;
-    final codec = _ZlibCoordinatorCodec(
-      afterEncode: () {
-        encodeCount++;
-        if (encodeCount == 1) {
-          coordinator.requestSystemInterruption();
-        }
-      },
-    );
-    coordinator = PhotoArchiveCoordinator(
-      codec: codec,
-      backgroundScheduler: scheduler,
-    );
+  test(
+    'system interruption cancels the in-flight file and later resumes',
+    () async {
+      final capture = await createCompleteCapture(
+        'background-expired',
+        marked: true,
+        photos: const ['one.jpg', 'two.jpg'],
+      );
+      final scheduler = _RecordingArchiveBackgroundScheduler();
+      late PhotoArchiveCoordinator coordinator;
+      var encodeCount = 0;
+      final codec = _ZlibCoordinatorCodec(
+        afterEncode: () {
+          encodeCount++;
+          if (encodeCount == 1) {
+            coordinator.requestSystemInterruption();
+          }
+        },
+      );
+      coordinator = PhotoArchiveCoordinator(
+        codec: codec,
+        backgroundScheduler: scheduler,
+      );
 
-    await coordinator.noteArtifactsPersisted(capture);
+      await coordinator.noteArtifactsPersisted(capture);
 
-    final first = File('${capture.path}/photos_highres/one.jpg');
-    final second = File('${capture.path}/photos_highres/two.jpg');
-    expect(await first.exists(), isFalse);
-    expect(await second.exists(), isTrue);
-    expect(coordinator.hasPendingWork, isTrue);
-    expect(encodeCount, 1);
+      final first = File('${capture.path}/photos_highres/one.jpg');
+      final second = File('${capture.path}/photos_highres/two.jpg');
+      expect(await first.exists(), isTrue);
+      expect(await second.exists(), isTrue);
+      expect(coordinator.hasPendingWork, isTrue);
+      expect(encodeCount, 1);
 
-    await coordinator.discoverUnderDocuments(documentsDir);
+      await coordinator.discoverUnderDocuments(documentsDir);
 
-    expect(await second.exists(), isFalse);
-    expect(encodeCount, 2);
-    expect(coordinator.hasPendingWork, isFalse);
-    expect(
-      ZLibCodec().decode(await File('${first.path}.jxl').readAsBytes()),
-      List<int>.filled(8192, 1),
-    );
-    expect(
-      ZLibCodec().decode(await File('${second.path}.jxl').readAsBytes()),
-      List<int>.filled(8192, 2),
-    );
-  });
+      expect(await first.exists(), isFalse);
+      expect(await second.exists(), isFalse);
+      expect(encodeCount, 3);
+      expect(coordinator.hasPendingWork, isFalse);
+      expect(
+        ZLibCodec().decode(await File('${first.path}.lep').readAsBytes()),
+        List<int>.filled(8192, 1),
+      );
+      expect(
+        ZLibCodec().decode(await File('${second.path}.lep').readAsBytes()),
+        List<int>.filled(8192, 2),
+      );
+    },
+  );
 
   test('failed work stops current pump and retries later', () async {
     final capture = await createCompleteCapture('retry', marked: true);
@@ -245,7 +287,7 @@ void main() {
 
     final source = File('${capture.path}/photos_highres/frame.jpg');
     expect(await source.exists(), isTrue);
-    expect(await File('${source.path}.jxl').exists(), isFalse);
+    expect(await File('${source.path}.lep').exists(), isFalse);
     expect(codec.encodeCount, 1);
     expect(coordinator.hasPendingWork, isTrue);
 
@@ -253,7 +295,7 @@ void main() {
 
     expect(codec.encodeCount, 2);
     expect(await source.exists(), isFalse);
-    expect(await File('${source.path}.jxl').exists(), isTrue);
+    expect(await File('${source.path}.lep').exists(), isTrue);
     expect(coordinator.hasPendingWork, isFalse);
   });
 
@@ -310,7 +352,7 @@ void main() {
 
     final source = File('${capture.path}/photos_highres/frame.jpg');
     expect(await source.exists(), isFalse);
-    expect(await File('${source.path}.jxl').exists(), isTrue);
+    expect(await File('${source.path}.lep').exists(), isTrue);
     expect(coordinator.hasPendingWork, isFalse);
   });
 }
@@ -361,6 +403,9 @@ class _ZlibCoordinatorCodec implements PhotoArchiveCodec {
       flush: true,
     );
   }
+
+  @override
+  void requestCancellation() {}
 }
 
 class _FailOnceCoordinatorCodec implements PhotoArchiveCodec {
@@ -393,5 +438,52 @@ class _FailOnceCoordinatorCodec implements PhotoArchiveCodec {
       ZLibCodec().decode(await sourceJxl.readAsBytes()),
       flush: true,
     );
+  }
+
+  @override
+  void requestCancellation() {}
+}
+
+final class _BlockingPhotoCodec implements PhotoArchiveCodec {
+  final Completer<void> started = Completer<void>();
+  final Completer<void> _cancelled = Completer<void>();
+  int cancellationRequests = 0;
+  int encodeCalls = 0;
+
+  @override
+  bool get isSupported => true;
+
+  @override
+  Future<void> encodeJpeg({
+    required File sourceJpeg,
+    required File destinationJxl,
+  }) async {
+    encodeCalls++;
+    if (encodeCalls == 1) {
+      started.complete();
+      await _cancelled.future;
+      throw const PhotoArchiveCancelled();
+    }
+    await destinationJxl.writeAsBytes(
+      ZLibCodec().encode(await sourceJpeg.readAsBytes()),
+      flush: true,
+    );
+  }
+
+  @override
+  Future<void> reconstructJpeg({
+    required File sourceJxl,
+    required File destinationJpeg,
+  }) async {
+    await destinationJpeg.writeAsBytes(
+      ZLibCodec().decode(await sourceJxl.readAsBytes()),
+      flush: true,
+    );
+  }
+
+  @override
+  void requestCancellation() {
+    cancellationRequests++;
+    if (!_cancelled.isCompleted) _cancelled.complete();
   }
 }

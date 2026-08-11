@@ -1,0 +1,31 @@
+schema: '2.0'
+stages:
+  immutable-inputs:
+    cmd: /usr/bin/true
+    deps:
+    - path: 
+        /private/tmp/pw_archive_gate_refresh_20260730_4b0e3dd/before/Documents/captures_official/cap_1785155296535863/official_photo_bundle.json
+      hash: md5
+      md5: 9062ad35015bfb408e93d32a78b7d9d7
+      size: 290160
+    - path: 
+        /private/tmp/pw_archive_gate_refresh_20260730_4b0e3dd/before/Documents/captures_official/cap_1785155296535863/official_sfm_fed_frames.jsonl
+      hash: md5
+      md5: 408aa541a9b804ac7410c24f5cd52546
+      size: 90741
+    - path: 
+        /private/tmp/pw_archive_gate_refresh_20260730_4b0e3dd/before/Documents/captures_official/cap_1785155296535863/official_sfm_sparse.ply
+      hash: md5
+      md5: fe79979fcb7caf1cdee30306da265aca
+      size: 1207250
+    - path: 
+        /private/tmp/pw_archive_gate_refresh_20260730_4b0e3dd/before/Documents/captures_official/cap_1785155296535863/official_sfm_sparse_meta.json
+      hash: md5
+      md5: 0238e9a41da05e9eb84de1abd0fb4f20
+      size: 27420
+    - path: 
+        /private/tmp/pw_archive_gate_refresh_20260730_4b0e3dd/before/Documents/captures_official/cap_1785155296535863/photos_highres
+      hash: md5
+      md5: 4e73c2cee78e00e9bfdac74bad5ee7d2.dir
+      size: 398795200
+      nfiles: 282

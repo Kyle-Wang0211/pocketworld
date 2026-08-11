@@ -24,6 +24,56 @@ enum OfficialARKitIdentifiers {
   static let cameraOwner = "official"
 }
 
+struct LiveCloudAnchorDeltaV1 {
+  let translation: SIMD3<Float>
+  let translationMeters: Double
+  let rotation: simd_quatf
+  let rotationDegrees: Double
+}
+
+enum LiveCloudAnchorDiagnostics {
+  static func severity(translationMeters: Double) -> String {
+    if translationMeters >= 0.10 { return "severe" }
+    if translationMeters >= 0.05 { return "warning" }
+    return "normal"
+  }
+
+  static func delta(
+    lock: simd_float4x4,
+    current: simd_float4x4
+  ) -> LiveCloudAnchorDeltaV1 {
+    // ARAnchor.transform is world-from-anchor. Express the current anchor in
+    // the lock-time anchor frame so both translation and rotation are true
+    // lock-relative deltas even when the lock pose itself is not identity.
+    let relative = lock.inverse * current
+    let translation = SIMD3<Float>(
+      relative.columns.3.x,
+      relative.columns.3.y,
+      relative.columns.3.z
+    )
+    let rotation = simd_normalize(simd_quatf(relative))
+    let halfAngle = min(1.0, max(0.0, abs(Double(rotation.real))))
+    return LiveCloudAnchorDeltaV1(
+      translation: translation,
+      translationMeters: Double(simd_length(translation)),
+      rotation: rotation,
+      rotationDegrees: 2.0 * acos(halfAngle) * 180.0 / Double.pi
+    )
+  }
+}
+
+struct LiveCloudRenderMetadataV1 {
+  let contract: String
+  let sourceReceiveSequence: Int
+  let receiveSequence: Int
+  let channelPushSequence: Int
+  let source: String
+  let publishVersion: Int
+  let pointCount: Int
+  let receiveEpochMs: Int64
+  let computeDoneEpochMs: Int64
+}
+
 // AetherARKit — in-Runner-binary ARKit bridge.
 //
 // What it exposes:
@@ -430,24 +480,42 @@ class OfficialAetherARKitPlugin: NSObject {
   static let coverageCloudLock = NSLock()
   static var coverageCloudXyz: [Float] = []
   static var coverageCloudRgb: [UInt8] = []
+  static var coverageCloudMetadata = LiveCloudRenderMetadataV1(
+    contract: "UNSTAMPED",
+    sourceReceiveSequence: 0,
+    receiveSequence: 0,
+    channelPushSequence: 0,
+    source: "unknown",
+    publishVersion: 0,
+    pointCount: 0,
+    receiveEpochMs: 0,
+    computeDoneEpochMs: 0
+  )
   static var coverageCloudDirty = false
 
-  static func setCoverageCloud(xyz: [Float], rgb: [UInt8]) {
+  static func setCoverageCloud(
+    xyz: [Float],
+    rgb: [UInt8],
+    metadata: LiveCloudRenderMetadataV1
+  ) {
     coverageCloudLock.lock()
     coverageCloudXyz = xyz
     coverageCloudRgb = rgb
+    coverageCloudMetadata = metadata
     coverageCloudDirty = true
     coverageCloudLock.unlock()
   }
 
   /// Render-thread side: returns the latest buffers iff they changed since
   /// the last take (nil otherwise, so the render loop skips rebuild work).
-  static func takeCoverageCloudIfDirty() -> (xyz: [Float], rgb: [UInt8])? {
+  static func takeCoverageCloudIfDirty()
+    -> (xyz: [Float], rgb: [UInt8], metadata: LiveCloudRenderMetadataV1)?
+  {
     coverageCloudLock.lock()
     defer { coverageCloudLock.unlock() }
     if !coverageCloudDirty { return nil }
     coverageCloudDirty = false
-    return (coverageCloudXyz, coverageCloudRgb)
+    return (coverageCloudXyz, coverageCloudRgb, coverageCloudMetadata)
   }
 
   // ── Photo-card SfM border states (Dart-owned policy, dumb display) ──
@@ -534,7 +602,12 @@ class OfficialAetherARKitPlugin: NSObject {
   /// metres-scale drift means the anchor sits in a feature-poor region
   /// (mid-air with no nearby texture).
   private var lockTimeOrigin: simd_float3?
+  private var lockTimeAnchorTransform: simd_float4x4?
+  private var lastLoggedAnchorTransform: simd_float4x4?
+  private var lastAnchorSeverity: String?
   private var lastDriftLogTime: TimeInterval = 0
+  private var lastAnchorV2Transform: simd_float4x4?
+  private var lastAnchorV2LogTime: TimeInterval = 0
 
   /// Last time we computed image-quality metrics from an ARFrame. iOS
   /// `ObjectModeV2ARDomeCoordinator.sampleInterval = 1.0 / 6.0` — we
@@ -1153,7 +1226,40 @@ class OfficialAetherARKitPlugin: NSObject {
       if let t = args["rgb"] as? FlutterStandardTypedData {
         rgb = [UInt8](t.data)
       }
-      OfficialAetherARKitPlugin.setCoverageCloud(xyz: xyz, rgb: rgb)
+      let metadata = LiveCloudRenderMetadataV1(
+        contract: args["diagContract"] as? String ?? "UNSTAMPED",
+        sourceReceiveSequence:
+          (args["diagSourceReceiveSeq"] as? NSNumber)?.intValue ?? 0,
+        receiveSequence:
+          (args["diagReceiveSeq"] as? NSNumber)?.intValue ?? 0,
+        channelPushSequence:
+          (args["diagChannelPushSeq"] as? NSNumber)?.intValue ?? 0,
+        source: args["diagSource"] as? String ?? "unknown",
+        publishVersion:
+          (args["diagVersion"] as? NSNumber)?.intValue ?? 0,
+        pointCount:
+          (args["diagPointCount"] as? NSNumber)?.intValue ?? xyz.count / 3,
+        receiveEpochMs:
+          (args["diagReceiveEpochMs"] as? NSNumber)?.int64Value ?? 0,
+        computeDoneEpochMs:
+          (args["diagComputeDoneEpochMs"] as? NSNumber)?.int64Value ?? 0
+      )
+      OfficialAetherARKitPlugin.setCoverageCloud(
+        xyz: xyz,
+        rgb: rgb,
+        metadata: metadata
+      )
+      OfficialPwNativeTelemetry.shared.log("live_cloud_native_receive_v2", [
+        "contract": "PW_LIVE_CLOUD_DIAG_RUNTIME_V2_20260810",
+        "source_receive_seq": metadata.sourceReceiveSequence,
+        "receive_seq": metadata.receiveSequence,
+        "channel_push_seq": metadata.channelPushSequence,
+        "source": metadata.source,
+        "publish_version": metadata.publishVersion,
+        "declared_points": metadata.pointCount,
+        "received_points": xyz.count / 3,
+        "observation_only": true,
+      ])
       result(nil)
     case "setFeaturePointsVisible":
       let visible =
@@ -1173,6 +1279,7 @@ class OfficialAetherARKitPlugin: NSObject {
       // 遥测 F【resource】:拍摄页进入 → 10s 定时资源采样
       // (thermal/footprint/电池/CPU/SceneKit FPS → telemetry_official_native.jsonl)。
       OfficialPwNativeTelemetry.shared.startResourceSampling()
+      OfficialPwNativeTelemetry.shared.logCaptureIdentity()
       // [2026-08-10 签决撤销] 热亮度调速器(原刀②)已删除:拍摄期屏幕保持
       // 用户亮度不变,不随热状态封顶。
       result(nil)
@@ -1453,8 +1560,13 @@ class OfficialAetherARKitPlugin: NSObject {
       worldYaw = 0
       worldSubjectAnchor = nil
       lockTimeOrigin = nil
+      lockTimeAnchorTransform = nil
+      lastLoggedAnchorTransform = nil
+      lastAnchorSeverity = nil
+      lastAnchorV2Transform = nil
     }
     lastDriftLogTime = 0
+    lastAnchorV2LogTime = 0
     lastFrameSnapshot = nil
     recentFrameSnapshots.removeAll()
   }
@@ -1484,7 +1596,12 @@ class OfficialAetherARKitPlugin: NSObject {
     worldYaw = 0
     worldSubjectAnchor = nil
     lockTimeOrigin = nil
+    lockTimeAnchorTransform = nil
+    lastLoggedAnchorTransform = nil
+    lastAnchorSeverity = nil
     lastDriftLogTime = 0
+    lastAnchorV2Transform = nil
+    lastAnchorV2LogTime = 0
     lastFrameSnapshot = nil
     recentFrameSnapshots.removeAll()
   }
@@ -1607,6 +1724,11 @@ class OfficialAetherARKitPlugin: NSObject {
       session.remove(anchor: oldAnchor)
       worldSubjectAnchor = nil
     }
+    lockTimeAnchorTransform = nil
+    lastLoggedAnchorTransform = nil
+    lastAnchorSeverity = nil
+    lastAnchorV2Transform = nil
+    lastAnchorV2LogTime = 0
 
     // Install a single named ARAnchor at the chosen origin. ARKit
     // tracks its transform across world-frame re-alignments;
@@ -1620,6 +1742,10 @@ class OfficialAetherARKitPlugin: NSObject {
                             transform: transform)
       session.add(anchor: anchor)
       worldSubjectAnchor = anchor
+      lockTimeAnchorTransform = transform
+      lastLoggedAnchorTransform = nil
+      lastAnchorSeverity = nil
+      lastAnchorV2Transform = nil
     }
 
     // worldYaw = "camera's relative bearing at lock". Subsequent
@@ -1631,6 +1757,13 @@ class OfficialAetherARKitPlugin: NSObject {
     worldYaw = yaw
     lockTimeOrigin = origin
     lastDriftLogTime = 0  // force first drift log on next broadcast
+    lastAnchorV2LogTime = 0
+    logAnchorObservationV2(
+      frameTimestamp: frame.timestamp,
+      trackingStateName: "normal",
+      currentTransform: lockTimeAnchorTransform,
+      anchorState: "locked"
+    )
 
     NSLog("[OfficialAetherARKit] lockOrigin: SUCCESS via \(positionSource) at "
       + "(\(origin.x), \(origin.y), \(origin.z))")
@@ -2300,6 +2433,71 @@ class OfficialAetherARKitPlugin: NSObject {
     ]
   }
 
+  /// Redundant v2 anchor probe. Unlike the v1 row, this emits an explicit
+  /// unavailable state instead of silently producing no evidence when either
+  /// side of the lock/current pair is absent.
+  private func logAnchorObservationV2(
+    frameTimestamp: TimeInterval,
+    trackingStateName: String,
+    currentTransform: simd_float4x4?,
+    anchorState: String? = nil
+  ) {
+    guard let lockTransform = lockTimeAnchorTransform else {
+      OfficialPwNativeTelemetry.shared.log("arkit_anchor_delta_v2", [
+        "contract": "PW_LIVE_CLOUD_DIAG_RUNTIME_V2_20260810",
+        "frame_t": frameTimestamp,
+        "anchor_state": anchorState ?? "missing_lock",
+        "tracking": trackingStateName,
+        "observation_only": true,
+      ])
+      lastAnchorV2LogTime = frameTimestamp
+      return
+    }
+    guard let currentTransform else {
+      OfficialPwNativeTelemetry.shared.log("arkit_anchor_delta_v2", [
+        "contract": "PW_LIVE_CLOUD_DIAG_RUNTIME_V2_20260810",
+        "frame_t": frameTimestamp,
+        "anchor_state": anchorState ?? "missing_current_anchor",
+        "tracking": trackingStateName,
+        "observation_only": true,
+      ])
+      lastAnchorV2LogTime = frameTimestamp
+      return
+    }
+
+    let absolute = LiveCloudAnchorDiagnostics.delta(
+      lock: lockTransform,
+      current: currentTransform
+    )
+    let step = LiveCloudAnchorDiagnostics.delta(
+      lock: lastAnchorV2Transform ?? lockTransform,
+      current: currentTransform
+    )
+    OfficialPwNativeTelemetry.shared.log("arkit_anchor_delta_v2", [
+      "contract": "PW_LIVE_CLOUD_DIAG_RUNTIME_V2_20260810",
+      "frame_t": frameTimestamp,
+      "anchor_state": anchorState ?? "tracked",
+      "dx_m": Double(absolute.translation.x),
+      "dy_m": Double(absolute.translation.y),
+      "dz_m": Double(absolute.translation.z),
+      "translation_m": absolute.translationMeters,
+      "qx": Double(absolute.rotation.imag.x),
+      "qy": Double(absolute.rotation.imag.y),
+      "qz": Double(absolute.rotation.imag.z),
+      "qw": Double(absolute.rotation.real),
+      "rotation_deg": absolute.rotationDegrees,
+      "step_translation_m": step.translationMeters,
+      "step_rotation_deg": step.rotationDegrees,
+      "severity": LiveCloudAnchorDiagnostics.severity(
+        translationMeters: absolute.translationMeters
+      ),
+      "tracking": trackingStateName,
+      "observation_only": true,
+    ])
+    lastAnchorV2Transform = currentTransform
+    lastAnchorV2LogTime = frameTimestamp
+  }
+
   // MARK: Per-frame broadcast
 
   private func broadcast(frame: ARFrame) {
@@ -2406,19 +2604,59 @@ class OfficialAetherARKitPlugin: NSObject {
       )
     }
 
-    // Diagnostic: 1 Hz drift log against lock-time origin. Tells us
-    // whether the anchor is sitting in a feature-rich region (drift
-    // < 5 cm) or feature-poor mid-air (drift in metres).
-    if let lockTime = lockTimeOrigin, let curr = worldOrigin {
-      if frame.timestamp - lastDriftLogTime > 1.0 {
-        let drift = simd_distance(curr, lockTime)
+    if frame.timestamp - lastAnchorV2LogTime > 1.0 {
+      logAnchorObservationV2(
+        frameTimestamp: frame.timestamp,
+        trackingStateName: trackingStateName,
+        currentTransform: worldSubjectAnchor?.transform
+      )
+    }
+
+    // [LIVE-CLOUD-DIAG V1] Observation only: persist the complete 6DoF
+    // subject-anchor correction. No value below is fed back to ARKit, the
+    // point cloud, or capture policy.
+    if let lockTransform = lockTimeAnchorTransform,
+       let currentTransform = worldSubjectAnchor?.transform {
+      let absolute = LiveCloudAnchorDiagnostics.delta(
+        lock: lockTransform,
+        current: currentTransform
+      )
+      let severity = LiveCloudAnchorDiagnostics.severity(
+        translationMeters: absolute.translationMeters
+      )
+      let severityChanged = severity != lastAnchorSeverity
+      if frame.timestamp - lastDriftLogTime > 1.0 || severityChanged {
+        let step = LiveCloudAnchorDiagnostics.delta(
+          lock: lastLoggedAnchorTransform ?? lockTransform,
+          current: currentTransform
+        )
+        OfficialPwNativeTelemetry.shared.log("arkit_anchor_delta_v1", [
+          "contract": "PW_LIVE_CLOUD_DIAG_V1_20260810",
+          "frame_t": frame.timestamp,
+          "dx_m": Double(absolute.translation.x),
+          "dy_m": Double(absolute.translation.y),
+          "dz_m": Double(absolute.translation.z),
+          "translation_m": absolute.translationMeters,
+          "qx": Double(absolute.rotation.imag.x),
+          "qy": Double(absolute.rotation.imag.y),
+          "qz": Double(absolute.rotation.imag.z),
+          "qw": Double(absolute.rotation.real),
+          "rotation_deg": absolute.rotationDegrees,
+          "step_translation_m": step.translationMeters,
+          "step_rotation_deg": step.rotationDegrees,
+          "severity": severity,
+          "tracking": trackingStateName,
+          "observation_only": true,
+        ])
         NSLog(String(
-          format: "[OfficialAetherARKit] anchor drift: %.3f m from lock origin "
-            + "(curr=(%.3f, %.3f, %.3f) lock=(%.3f, %.3f, %.3f))",
-          drift, curr.x, curr.y, curr.z,
-          lockTime.x, lockTime.y, lockTime.z
+          format: "[OfficialAetherARKit] anchor drift: %.3f m / %.2f deg (%@)",
+          absolute.translationMeters,
+          absolute.rotationDegrees,
+          severity
         ))
         lastDriftLogTime = frame.timestamp
+        lastLoggedAnchorTransform = currentTransform
+        lastAnchorSeverity = severity
       }
     }
 
@@ -3341,6 +3579,7 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
   private var fullPointCloudRgb: [UInt8] = []
   private let pointCloudLod = CapturePointCloudLodController()
   private var renderedPointCount = 0
+  private var liveCloudRenderApplySequence = 0
 
   /// Render-loop tick: apply the latest Dart-pushed cloud when it changed.
   /// Toggled off → tear the node down.
@@ -3351,7 +3590,20 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
         pointCloudNode = nil
       }
       renderedPointCount = 0
-      _ = OfficialAetherARKitPlugin.takeCoverageCloudIfDirty() // drop stale pushes
+      if let dropped = OfficialAetherARKitPlugin.takeCoverageCloudIfDirty() {
+        let m = dropped.metadata
+        OfficialPwNativeTelemetry.shared.log("live_cloud_render_drop_v1", [
+          "contract": m.contract,
+          "source_receive_seq": m.sourceReceiveSequence,
+          "receive_seq": m.receiveSequence,
+          "channel_push_seq": m.channelPushSequence,
+          "source": m.source,
+          "publish_version": m.publishVersion,
+          "points": m.pointCount,
+          "reason": "hidden",
+          "observation_only": true,
+        ])
+      }
       return
     }
     if let cloud = OfficialAetherARKitPlugin.takeCoverageCloudIfDirty() {
@@ -3360,6 +3612,38 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
       let totalPoints = fullPointCloudXyz.count / 3
       renderedPointCount = pointCloudLod.reset(totalPoints: totalPoints)
       rebuildPointCloud(renderCount: renderedPointCount)
+      liveCloudRenderApplySequence += 1
+      let m = cloud.metadata
+      OfficialPwNativeTelemetry.shared.log("live_cloud_render_v1", [
+        "contract": m.contract,
+        "source_receive_seq": m.sourceReceiveSequence,
+        "receive_seq": m.receiveSequence,
+        "channel_push_seq": m.channelPushSequence,
+        "render_apply_seq": liveCloudRenderApplySequence,
+        "source": m.source,
+        "publish_version": m.publishVersion,
+        "declared_points": m.pointCount,
+        "received_points": totalPoints,
+        "rendered_points": renderedPointCount,
+        "receive_t": m.receiveEpochMs,
+        "compute_done_t": m.computeDoneEpochMs,
+        "observation_only": true,
+      ])
+      OfficialPwNativeTelemetry.shared.log("live_cloud_render_v2", [
+        "contract": "PW_LIVE_CLOUD_DIAG_RUNTIME_V2_20260810",
+        "source_receive_seq": m.sourceReceiveSequence,
+        "receive_seq": m.receiveSequence,
+        "channel_push_seq": m.channelPushSequence,
+        "render_apply_seq": liveCloudRenderApplySequence,
+        "source": m.source,
+        "publish_version": m.publishVersion,
+        "declared_points": m.pointCount,
+        "received_points": totalPoints,
+        "rendered_points": renderedPointCount,
+        "receive_t": m.receiveEpochMs,
+        "compute_done_t": m.computeDoneEpochMs,
+        "observation_only": true,
+      ])
     }
     let totalPoints = fullPointCloudXyz.count / 3
     if let nextCount = pointCloudLod.observeFrame(
@@ -3838,6 +4122,18 @@ final class OfficialPwNativeTelemetry {
       ?? "?"
     let build =
       (Bundle.main.infoDictionary?["CFBundleVersion"] as? String) ?? "?"
+    let diagnosticBuildId =
+      (Bundle.main.infoDictionary?["PWLiveCloudDiagnosticBuildId"] as? String)
+      ?? "UNSTAMPED"
+    let productManifest =
+      (Bundle.main.infoDictionary?["PWProductSourceManifestSHA256"] as? String)
+      ?? "UNSTAMPED"
+    let dartAotSHA =
+      (Bundle.main.infoDictionary?["PWDartAOTSHA256"] as? String)
+      ?? "UNSTAMPED"
+    let officialSfmSHA =
+      (Bundle.main.infoDictionary?["PWOfficialSfmSHA256"] as? String)
+      ?? "UNSTAMPED"
     let battery = UIDevice.current.batteryLevel  // -1 = 未知(刚开监控)
     log("session", [
       "build_stamp": buildStamp,
@@ -3849,6 +4145,41 @@ final class OfficialPwNativeTelemetry {
         / 1_048_576.0,
       "cores": ProcessInfo.processInfo.processorCount,
       "thermal": ProcessInfo.processInfo.thermalState.rawValue,
+      "diagnostic_build_id": diagnosticBuildId,
+      "product_manifest": productManifest,
+      "dart_aot_sha256": dartAotSHA,
+      "official_sfm_sha256": officialSfmSHA,
+    ])
+    log("live_cloud_diag_build_v1", [
+      "contract": "PW_LIVE_CLOUD_DIAG_V1_20260810",
+      "diagnostic_build_id": diagnosticBuildId,
+      "product_manifest": productManifest,
+      "dart_aot_sha256": dartAotSHA,
+      "official_sfm_sha256": officialSfmSHA,
+      "app_version": "\(version)(\(build))",
+      "observation_only": true,
+    ])
+  }
+
+  /// Repeat the signed runtime identity at the start of every capture page.
+  /// This makes a later in-place installation or stale process immediately
+  /// visible in the same time window as the take being diagnosed.
+  func logCaptureIdentity() {
+    let info = Bundle.main.infoDictionary
+    log("live_cloud_diag_capture_v2", [
+      "contract": "PW_LIVE_CLOUD_DIAG_RUNTIME_V2_20260810",
+      "diagnostic_build_id":
+        (info?["PWLiveCloudDiagnosticBuildId"] as? String) ?? "UNSTAMPED",
+      "product_manifest":
+        (info?["PWProductSourceManifestSHA256"] as? String) ?? "UNSTAMPED",
+      "dart_aot_sha256":
+        (info?["PWDartAOTSHA256"] as? String) ?? "UNSTAMPED",
+      "official_sfm_sha256":
+        (info?["PWOfficialSfmSHA256"] as? String) ?? "UNSTAMPED",
+      "app_version":
+        "\((info?["CFBundleShortVersionString"] as? String) ?? "?")"
+        + "(\((info?["CFBundleVersion"] as? String) ?? "?"))",
+      "observation_only": true,
     ])
   }
 

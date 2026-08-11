@@ -1,0 +1,1 @@
+{"schema":"pw_pwa2_official_codec_sample_v1","sample_member_count":6,"zpaq_bytes":9454786,"pcodec_bytes":9626111,"openzl_bytes":9771158,"blosc2_none_bytes":9798818,"blosc2_shuffle_bytes":9785537,"blosc2_bitshuffle_bytes":10356281,"pcodec_numeric_member_wins":3,"pcodec_beats_zpaq":0,"openzl_beats_zpaq":0,"blosc2_beats_zpaq":0,"exact":1}

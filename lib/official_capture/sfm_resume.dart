@@ -16,10 +16,10 @@
 // for the next launch, so output is guaranteed as long as the app runs again —
 // it never depends on the user's capture timing or the device staying cool.
 
+import 'package:flutter/foundation.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
@@ -31,6 +31,7 @@ import 'database_archive_resolver.dart';
 import 'photo_archive_coordinator.dart';
 import 'photo_archive_resolver.dart';
 import 'photo_archive_runtime.dart';
+import 'pwva_master.dart';
 import 'representative_color.dart';
 import 'sfm_live_recon.dart';
 import 'sparse_ply.dart';
@@ -48,6 +49,29 @@ final Map<String, Future<bool>> _resumeInFlight = <String, Future<bool>>{};
 /// [resumeSingleCapture] 是否正在为 [captureDir] 跑。
 bool isResumeInFlight(String captureDir) =>
     _resumeInFlight.containsKey(captureDir);
+
+/// 按**目录名**(= record id)判断是否有续跑在飞。
+///
+/// [2026-08-08 用户实机指认"回到草稿页仍显示照片封面和'未完成'"] 草稿页要在
+/// 续跑期间把胶囊显示成"生成中",但 record 里存的 captureDir 可能是旧容器的
+/// 绝对路径(容器 UUID 会变),精确匹配 [isResumeInFlight] 会漏 —— 与
+/// ScanRecordStore._sameDir 同理,按最后一段目录名比。
+bool isResumeInFlightForDirName(String dirName) {
+  if (dirName.isEmpty) return false;
+  return _resumeInFlight.keys.any(
+    (d) => d.split('/').where((e) => e.isNotEmpty).last == dirName,
+  );
+}
+
+/// 测试注入:把 [captureDir] 标记为在飞/落地(生产代码绝不调用)。
+@visibleForTesting
+void debugSetResumeInFlight(String captureDir, {required bool inFlight}) {
+  if (inFlight) {
+    _resumeInFlight[captureDir] = Future<bool>.value(true);
+  } else {
+    _resumeInFlight.remove(captureDir);
+  }
+}
 
 /// 把 record 存的 captureDir 解析成**当前**磁盘上可恢复的目录:app 容器
 /// UUID 在重装/迁移后会变,存的绝对路径可能已失效 —— 按目录名(= record
@@ -242,7 +266,6 @@ Future<void> _resumeOne(
     archiveLease = photoArchiveCoordinator.beginReconstructionActivity(
       Directory(captureDir),
     );
-    await photoArchiveCoordinator.waitForIdle();
     await _umbrella('beginReconUmbrella', captureDir);
     final database = await DatabaseArchiveResolver(
       codec: databaseArchiveCodec,
@@ -543,6 +566,10 @@ Future<Map<int, SfmFedFrameMeta>> _loadFrameMeta(String captureDir) async {
   // 无 ARKit 四元数 → 重力对齐自然跳过(cnt<3 门),行为与旧版一致。
   final dir = Directory(photosDir);
   if (!dir.existsSync()) return map;
+  // PWVA 主本接管后源 JPEG 不在盘;master-manifest 覆盖 = 该帧可物化。
+  final pwvaMastered = await PwvaMasterManifest.readNames(
+    Directory(photosDir).parent,
+  );
   final rows = <({double t, String jpeg, int w, int h})>[];
   for (final f in dir.listSync()) {
     if (!f.path.endsWith('.json')) continue;
@@ -556,7 +583,10 @@ Future<Map<int, SfmFedFrameMeta>> _loadFrameMeta(String captureDir) async {
       final w = (j['image_w'] as num?)?.toInt() ?? 3840;
       final h = (j['image_h'] as num?)?.toInt() ?? 2160;
       final jpeg = f.path.replaceAll(RegExp(r'\.json$'), '.jpg');
-      if (File(jpeg).existsSync() || File('$jpeg.jxl').existsSync()) {
+      if (File(jpeg).existsSync() ||
+          File('$jpeg.jxl').existsSync() ||
+          File('$jpeg.lep').existsSync() ||
+          pwvaMastered.contains(jpeg.split('/').last)) {
         rows.add((t: t, jpeg: jpeg, w: w, h: h));
       }
     } catch (_) {}
@@ -591,7 +621,10 @@ Future<Map<int, SfmFedFrameMeta>> _materializeArchivedJpegs(
   try {
     final captureDirectory = Directory(captureDir);
     final cacheDirectory = await _archiveRestoreCacheDirectory(captureDir);
-    final resolver = PhotoArchiveResolver(codec: photoArchiveCodec);
+    final resolver = PhotoArchiveResolver(
+      codec: photoArchiveCodec,
+      codecsByName: photoArchiveCodecsByName,
+    );
     final resolvedByName = <String, String>{};
     for (final meta in frameMeta.values) {
       final name = meta.jpegPath.split('/').last;

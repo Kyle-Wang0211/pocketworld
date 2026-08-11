@@ -185,6 +185,38 @@ void main() {
     expect(await source.exists(), isFalse);
   });
 
+  test(
+    'production gate closing after manifest commit retains the database',
+    () async {
+      final original = List<int>.filled(8192, 18);
+      final source = await writeReadyDatabase(original);
+      var mayContinue = true;
+
+      final first = await DatabaseArchiveTransaction(
+        codec: _ZlibTestDatabaseCodec(),
+        canContinue: () => mayContinue,
+        afterManifestCommitted: (_) async {
+          mayContinue = false;
+        },
+      ).archiveCapture(captureDir);
+
+      expect(first.interrupted, isTrue);
+      expect(first.failed, isFalse);
+      expect(await source.readAsBytes(), original);
+      expect(await File('${source.path}.zpaq').exists(), isTrue);
+      expect(await DatabaseArchiveManifest.read(captureDir), isNotNull);
+
+      mayContinue = true;
+      final second = await DatabaseArchiveTransaction(
+        codec: _ZlibTestDatabaseCodec(),
+        canContinue: () => mayContinue,
+      ).archiveCapture(captureDir);
+
+      expect(second.archived, isTrue);
+      expect(await source.exists(), isFalse);
+    },
+  );
+
   test('changed restored database replaces stale archive safely', () async {
     final source = await writeReadyDatabase(List<int>.filled(8192, 13));
     final codec = _ZlibTestDatabaseCodec();

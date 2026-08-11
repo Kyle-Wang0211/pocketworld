@@ -7,6 +7,7 @@ trap 'rm -rf "$build_dir"' EXIT HUP INT TERM
 
 xcrun clang++ \
   -std=c++17 \
+  -DPW_SQLITE_EXACT_TRANSFORM_V2_BENCH=1 \
   -Wall \
   -Wextra \
   -Werror \

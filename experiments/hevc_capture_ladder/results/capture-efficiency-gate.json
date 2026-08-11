@@ -1,0 +1,30 @@
+{
+ "schema": "pw_capture_efficiency_gate_v1",
+ "gate_definition": "流式压缩不得降低拍摄期训练管线(流式SfM/特征提取)吞吐",
+ "architecture_argument": {
+  "encoder_silicon": "独立 media engine,不与 CPU(BA/匹配)、GPU(WGSL SIFT)、ANE 竞争执行单元",
+  "cpu_cost_of_encode_wait": "信号量休眠,≈0 CPU 周期;编码在后台线程/isolate,采集线程不阻塞",
+  "true_contention_channels": {
+   "memory_bandwidth": "15MB/帧 ÷ 0.3s ≈ 50MB/s = A16 LPDDR5 带宽(51.2GB/s)的 ~0.1%",
+   "thermal": "亚瓦级 vs 4-5W 整机包络;吞吐仅为 4K30 录像的 13%"
+  }
+ },
+ "mac_interference_ab": {
+  "workload": "COLMAP GPU 特征提取 96 帧全分辨率(SfM 前端同类负载)",
+  "baseline_s": [
+   16.01,
+   14.85
+  ],
+  "with_concurrent_encode_s": 15.33,
+  "encode_cadence": "150ms(生产节奏 300ms 的 2 倍压力)",
+  "encoder_under_load": "p50 36ms p90 45ms,keeps_up=true",
+  "verdict": "干扰不可测出——并行值落在基线噪声区间(14.85-16.01s)内部",
+  "proxy_caveat": "M3 Pro 媒体引擎代理;A16 终验应在生产 App 热压测 harness 内做同型 A/B"
+ },
+ "zero_copy_path": {
+  "api": "pw_vt_encode_cvpb(CVPixelBufferRef 直喂,零 memcpy)",
+  "production_fit": "ARKit captureHighResolutionFrame 输出即 CVPixelBuffer,零拷贝直达编码器",
+  "measured": "编码 p50 35ms p90 45ms max 55ms @300ms 节奏,余量 6-8 倍"
+ },
+ "gate_status": "MAC_PROXY_PASSED — 待 A16 生产管线内终验"
+}

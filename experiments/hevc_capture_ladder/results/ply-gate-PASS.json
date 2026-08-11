@@ -1,0 +1,36 @@
+{
+ "schema": "pw_ply_gate_v1",
+ "date": "2026-08-10",
+ "design": "96帧干净最终JPEG(analysis_cap_1779777762841797, input-manifest顺序) vs 生产同参数(hevc_videotoolbox q65/GOP8)解码帧;双路独立COLMAP(SIFT 8192/max 4224/sequential overlap10/mapper默认);同gauge直出无对齐",
+ "note": "首跑(compare.html 5.8MB)被系统清/tmp丢失,本次为同配方复跑;COLMAP非确定性使数字有小幅抖动,两跑结论一致",
+ "run_lost": {
+  "orig": {
+   "points": 25659,
+   "reg": 96,
+   "err_px": 1.047167,
+   "track": 5.720059
+  },
+  "hevc": {
+   "points": 26274,
+   "reg": 96,
+   "err_px": 1.052094,
+   "track": 5.741303
+  }
+ },
+ "run_final": {
+  "orig": {
+   "points": 24876,
+   "reg": 96,
+   "err_px": 1.062965,
+   "track": 5.801375
+  },
+  "hevc": {
+   "points": 26443,
+   "reg": 96,
+   "err_px": 1.059862,
+   "track": 5.74341
+  }
+ },
+ "verdict": "PASS: 双侧96/96全配准;重投影误差压缩臂反而更低(-0.003px);点数+6.3%(质量带允许正向超出);轨迹长度-1.0%",
+ "artifact": "ply-gate-compare.html(真彩PLY双窗联动+图像并排+100%裁切)"
+}

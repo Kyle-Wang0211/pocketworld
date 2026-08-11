@@ -78,14 +78,19 @@ void main() {
     expect(back!.yawDeg, closeTo(-15, 1e-9));
   });
 
-  test('initialFor = 点云 AABB + 2% 余量(不再是外接球的外接立方)', () {
-    final b = SelectionBox.initialFor(cx: 1, cy: 2, cz: 3, hx: 5, hy: 4, hz: 2);
+  test('initialSquareFace = 三边等长(每个面看到的都是正方形)', () {
+    // [2026-08-09 用户签决(第三轮)] "只需要让用户每个面看到的初始框是正方形
+    // 就行,内部的点云可以自适应大小" —— 三边取调用方传入的最长半边。
+    final b = SelectionBox.initialSquareFace(
+      cx: 1,
+      cy: 2,
+      cz: 3,
+      halfExtent: 5,
+    );
     expect(b.cx, 1);
-    // [2026-07-28] 贴合 AABB:边长 = 2·半边 ×1.02。原先取 2×外接球半径,
-    // 框比相机取景大 40%,整个跑到屏幕外(用户实机指认"3D 框直接消失了")。
-    expect(b.sx, closeTo(10.2, 1e-9));
-    expect(b.sy, closeTo(8.16, 1e-9));
-    expect(b.sz, closeTo(4.08, 1e-9));
+    expect(b.sx, closeTo(10, 1e-9));
+    expect(b.sy, b.sx, reason: '面不是正方形:sy≠sx');
+    expect(b.sz, b.sx, reason: '面不是正方形:sz≠sx');
     expect(b.yawDeg, closeTo(0, 1e-9));
   });
 

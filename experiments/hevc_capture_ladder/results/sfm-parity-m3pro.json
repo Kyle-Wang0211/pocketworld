@@ -1,0 +1,62 @@
+{
+ "schema": "pw_hevc_sfm_parity_v1",
+ "pipeline": "COLMAP (homebrew), SIFT max 8192 feats @ full 4224px, sequential overlap 10, default mapper",
+ "pipeline_caveat": "COLMAP 默认 SIFT 非生产 DSP-SIFT+GPU 管线;方向性结论,生产管线复测在后",
+ "encoder_caveat": "M3 Pro VideoToolbox 代理;A16 真机探针进行中",
+ "sets": {
+  "orig_jpeg": {
+   "registered": "96/96",
+   "points": 25544,
+   "observations": 146610,
+   "mean_track_len": 5.7395,
+   "mean_reproj_px": 1.051425
+  },
+  "hevc_q65_g8_11.8x": {
+   "registered": "96/96",
+   "points": 26104,
+   "observations": 150479,
+   "mean_track_len": 5.7646,
+   "mean_reproj_px": 1.061519
+  },
+  "hevc_q75_g8_4.2x": {
+   "registered": "96/96",
+   "points": 27127,
+   "observations": 155442,
+   "mean_track_len": 5.7302,
+   "mean_reproj_px": 1.053141
+  }
+ },
+ "feature_level": {
+  "orig": {
+   "feat_mean": 9200,
+   "verified_pairs": 473,
+   "inlier_sum": 265683
+  },
+  "q75": {
+   "feat_mean": 9137,
+   "verified_pairs": 481,
+   "inlier_sum": 302739,
+   "vs_orig": "+13.95%"
+  },
+  "q65": {
+   "feat_mean": 8308,
+   "verified_pairs": 483,
+   "inlier_sum": 295279,
+   "vs_orig": "+11.14%"
+  }
+ },
+ "verdict": "PASS_at_sparse_sfm_level",
+ "key_findings": [
+  "11.8x 压缩下 96/96 配准,稀疏点+2.2%,重投影误差仅 +0.010 px(+0.96%)",
+  "特征层验证内点反升 11-14%(HEVC 去块滤波抑制传感器噪声,假特征减少)",
+  "对抗验证者的\"亚像素定位未验证\"疑虑被正面回答:误差移动量 = 百分之一像素",
+  "特征数 q65 降 9.7% 但全部下游指标持平或更好"
+ ],
+ "not_yet_tested": [
+  "生产 DSP-SIFT 管线复测",
+  "MVS 稠密质量",
+  "compare.html 肉眼并排(用户批准制)",
+  "A16 真机编码(探针已装待跑)",
+  "其他场景语料"
+ ]
+}

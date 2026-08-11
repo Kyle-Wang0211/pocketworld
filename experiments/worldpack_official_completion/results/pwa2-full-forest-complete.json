@@ -1,0 +1,40 @@
+{
+  "all_cells_equal": 1,
+  "all_rows_and_order_equal": 1,
+  "all_tables_covered": 1,
+  "archive_sha256": "8d76b1aedb5e9fbe7d7d204c21210446ac0128e69822abf70f8021e442804273",
+  "codec_counts": {
+    "zpaq_7_15_method5": 109
+  },
+  "complete_persisted_bytes": 119418568,
+  "conclusion_scope": "host_semantic_database_candidate_only",
+  "corruption_rejected": 1,
+  "current_exact_database_member_bytes": 116576307,
+  "descriptor_nodes": 1251246,
+  "host": {
+    "machine": "arm64",
+    "platform": "macOS-26.1-arm64-arm-64bit"
+  },
+  "improvement_bytes": -2842261,
+  "manifest_sha256": "a0fe9c0f32ee9953cea43f6936789dea8648865d4c315246fc3c84b12da49c87",
+  "materialized_sqlite_integrity_ok": 1,
+  "member_count": 109,
+  "mlflow_run_id": "3562c8eac36748e186145a2bee1e8ce8",
+  "payload_bytes": 119350895,
+  "phone_accessed": false,
+  "predicted_descriptor_nodes": 1243054,
+  "production_promoted": false,
+  "random_read_maximum_members_touched": 8,
+  "random_reads_exact": 1,
+  "raw_member_bytes": 217481365,
+  "restored_logical_sha256": "5bccf16c529c5030441029f43d1f5efdbd5af6ffd754069de583d2512d798e0f",
+  "root_descriptor_nodes": 8192,
+  "schema": "pw_pwa2_full_forest_complete_result_v1",
+  "source_bytes": 198983680,
+  "source_logical_sha256": "5bccf16c529c5030441029f43d1f5efdbd5af6ffd754069de583d2512d798e0f",
+  "source_sha256": "0c12c0dfa76d50cae59929774242282d8236daeb852bdee6ac99c3062d6d08b0",
+  "source_unchanged": 1,
+  "strictly_smaller_than_current": 0,
+  "unmatched_descriptor_nodes": 0,
+  "wall_seconds": 1889.4313592079998
+}

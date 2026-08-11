@@ -55,12 +55,20 @@ void main() {
     expect(bad.colorFor(1), (255, 82, 47));
   });
 
-  test('capture page consumes the ramp instead of hard thresholds', () {
+  test('拍摄页 live 云全白 —— 不再按 track 长度上三色', () {
+    // [2026-08-09 用户签决] "现在改为全部都是白色,不用根据颜色区分状态。"
+    // 本测试原先钉的是"消费 ramp 而非三段硬阈值";ramp 着色随该签决整体退出
+    // 拍摄页(ramp 类本体保留,他处工具仍引用)。
     final src = File(
       'lib/ui/official_capture/ar_capture_page.dart',
     ).readAsStringSync();
-    expect(src, contains('kCaptureQualityRamp.colorFor(trackLength)'));
-    // 旧的三段硬阈值必须不在了。
+    expect(
+      src,
+      isNot(contains('kCaptureQualityRamp.colorFor')),
+      reason: '三色 ramp 又被接回拍摄页了 —— 用户签决 live 云全白',
+    );
+    expect(src, contains('rgb.fillRange(0, rgb.length, 255)'));
+    // 旧的三段硬阈值也必须不在。
     expect(src, isNot(contains('if (trackLength >= 5) {')));
     expect(src, isNot(contains('} else if (trackLength >= 3) {')));
   });

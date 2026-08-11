@@ -72,3 +72,53 @@ def accounted_validation_bytes(
         total_accounted_bytes=entropy_bytes + model_bytes,
         photo_count=photo_count,
     )
+
+
+#: A 4:2:0 patch carries 1.5 coefficients per luma position, so the registered
+#: ``train_loss_bits_per_pixel`` must be divided by this to compare against a
+#: per-coefficient reference.
+COEFFICIENTS_PER_LUMA_POSITION = 1.5
+
+
+@dataclass(frozen=True)
+class StaticFloorVerdict:
+    bits_per_coefficient: float
+    floor_bits_per_coefficient: float
+    below_floor: bool
+    patience_exhausted: bool
+    should_stop: bool
+
+
+def evaluate_static_floor(
+    *,
+    train_loss_bits_per_pixel: float,
+    epoch: int,
+    floor_bits_per_coefficient: float,
+    patience_epochs: int,
+) -> StaticFloorVerdict:
+    """Decide whether an arm has failed the static-histogram sanity floor.
+
+    A table of 192 static per-(component, frequency-position) histograms reaches
+    1.471 bits per coefficient on real PocketWorld JPEGs while costing under a
+    kilobyte and modelling no context at all. An arm that still sits above that
+    line after its patience window is spending megabytes of model budget to do
+    worse than a free baseline, so there is nothing left to learn from letting it
+    run to the registered epoch limit.
+
+    ``patience_epochs`` is counted from epoch zero, so a value of 20 means the
+    verdict first bites when the epoch-20 record is written.
+    """
+    if floor_bits_per_coefficient <= 0:
+        raise ValueError("static floor must be positive")
+    if patience_epochs < 0:
+        raise ValueError("patience must be non-negative")
+    bits_per_coefficient = train_loss_bits_per_pixel / COEFFICIENTS_PER_LUMA_POSITION
+    below_floor = bits_per_coefficient < floor_bits_per_coefficient
+    patience_exhausted = epoch >= patience_epochs
+    return StaticFloorVerdict(
+        bits_per_coefficient=bits_per_coefficient,
+        floor_bits_per_coefficient=floor_bits_per_coefficient,
+        below_floor=below_floor,
+        patience_exhausted=patience_exhausted,
+        should_stop=patience_exhausted and not below_floor,
+    )

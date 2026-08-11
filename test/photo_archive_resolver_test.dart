@@ -165,4 +165,7 @@ class _CountingZlibCodec implements PhotoArchiveCodec {
       flush: true,
     );
   }
+
+  @override
+  void requestCancellation() {}
 }

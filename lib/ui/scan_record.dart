@@ -272,6 +272,15 @@ class ScanRecord {
   final DateTime? localRawDeletedAt;
   final DateTime? cloudRawDeletedAt;
   final String? cloudUploadFailureMessage;
+
+  /// 用户看过这一轮生成结果的时刻 —— 草稿卡片右上角胶囊的消失条件。
+  ///
+  /// [2026-08-06 用户签决] "正在训练"= 拍摄后管线在生成**稀疏点云**,PLY 落盘
+  /// 就算完成。所以"生成中/完成"两态由 PLY 是否存在直接推导(见
+  /// ScanRecordStore.sparseReadyAt),**不**入库 —— 唯一需要持久化的是"用户看过
+  /// 了没有"。存时刻而不是 bool:重新生成会把 PLY 的 mtime 推后,旧的
+  /// resultViewedAt 自动失效、"完成"胶囊重新出现。
+  final DateTime? resultViewedAt;
   final bool localRawRetainedForDebug;
 
   /// Author display handle. Mock data for the social-feed demo.
@@ -310,6 +319,7 @@ class ScanRecord {
     this.localRawDeletedAt,
     this.cloudRawDeletedAt,
     this.cloudUploadFailureMessage,
+    this.resultViewedAt,
     this.localRawRetainedForDebug = false,
     this.authorHandle,
     this.caption,
@@ -338,6 +348,8 @@ class ScanRecord {
     DateTime? localRawDeletedAt,
     DateTime? cloudRawDeletedAt,
     String? cloudUploadFailureMessage,
+    DateTime? resultViewedAt,
+    bool clearResultViewedAt = false,
     bool clearCloudUploadFailureMessage = false,
     bool? localRawRetainedForDebug,
     String? caption,
@@ -375,10 +387,57 @@ class ScanRecord {
       authorHandle: authorHandle,
       caption: caption ?? this.caption,
       bundledGlbAsset: bundledGlbAsset,
+      resultViewedAt: clearResultViewedAt
+          ? null
+          : (resultViewedAt ?? this.resultViewedAt),
     );
   }
 
   bool get hasCompletedArtifact => artifactPath != null;
+
+  /// 卡片右上角该显示哪个胶囊。
+  ///
+  /// [sparseReadyAt] = 稀疏 PLY 的落盘时刻(null 表示还没生成出来),由
+  /// ScanRecordStore 探测文件系统得到 —— 数据类自己不做 IO。
+  ScanProcessingBadge badgeFor(
+    DateTime? sparseReadyAt, {
+    bool isActivelyReconstructing = false,
+  }) {
+    // 没有拍摄目录 ⇒ 不是"拍完在生成"的卡片(例如云端导入的老记录)。
+    if (captureDir == null) return ScanProcessingBadge.none;
+    if (sparseReadyAt == null) {
+      // [2026-08-06 用户实机指认] 热 GPU 闪退后清后台重进,后台**并没有**在
+      // 跑,却仍显示"生成中" —— 必须区分"真的在跑"和"中断了等你续跑"。
+      // 判据是 App 当前的活跃重建是否就是这个 capture(不是看管线类型:同一
+      // 管线下可以有多个未完成的 capture,那样会全部误报成"生成中")。
+      return isActivelyReconstructing
+          ? ScanProcessingBadge.generating
+          : ScanProcessingBadge.unfinished;
+    }
+    final viewed = resultViewedAt;
+    // 看过的时刻必须不早于这一轮的完成时刻;重新生成把 PLY mtime 推后,旧的
+    // viewedAt 自动失效、胶囊重新出现。
+    if (viewed != null && !viewed.isBefore(sparseReadyAt)) {
+      return ScanProcessingBadge.none;
+    }
+    return ScanProcessingBadge.done;
+  }
+}
+
+/// 草稿卡片右上角的状态胶囊。
+enum ScanProcessingBadge {
+  /// 不显示。
+  none,
+
+  /// 黑底白字"生成中" —— 拍完了,稀疏点云**正在**生成。
+  generating,
+
+  /// 红底白字"未完成" —— 点云没生成出来,而且当前并没有在跑(闪退/被杀/手动
+  /// 中断)。点卡片会弹"继续重建?",可以从中断处续跑、无需重拍。
+  unfinished,
+
+  /// 绿底白字"完成" —— 稀疏点云已出,用户还没点进去看过。
+  done,
 }
 
 /// Locale-aware display-name resolver.
@@ -394,10 +453,45 @@ class ScanRecord {
 /// New unnamed records continue to be stored as "未命名(N)" so old +
 /// new records render the same way under either locale. Cross-locale
 /// switching at runtime is automatic.
+/// The stored default-name shape, in both locales.
+///
+/// Both spellings must be matched everywhere: the store always WRITES the
+/// Chinese form, but records created by older builds — and anything a user
+/// renamed back by hand — can carry the English one, and a numbering scheme
+/// that only sees one spelling will happily mint a duplicate of the other.
+final RegExp kUntitledScanNamePattern = RegExp(r'^(?:未命名|Untitled)\((\d+)\)$');
+
+/// Smallest N ≥ 1 such that neither "未命名(N)" nor "Untitled(N)" is taken.
+///
+/// [WAIT-BUDGET-UNRELATED FIX 2026-07-29] Replaces `records.length + 1`, which
+/// was wrong in both directions:
+///   • DUPLICATES — delete "未命名(2)" out of {1,2,3} and the count drops to 2,
+///     so the next capture is named "未命名(3)" — a name that already exists.
+///     Two records then share a name for their whole lifetime.
+///   • GAPS — the count also ignores renamed records, so {玩具, 未命名(2)}
+///     mints "未命名(3)" and leaves 1 unused forever.
+/// Counting-based naming cannot fix either case; the set of names in use has to
+/// be read. Gaps are filled lowest-first, which is what the user asked for
+/// (with 1 and 3 present, the next one is 2).
+String nextUntitledScanName(Iterable<String> existingNames) {
+  final used = <int>{};
+  for (final name in existingNames) {
+    final m = kUntitledScanNamePattern.firstMatch(name);
+    if (m == null) continue;
+    final n = int.tryParse(m.group(1)!);
+    if (n != null && n > 0) used.add(n);
+  }
+  var next = 1;
+  while (used.contains(next)) {
+    next++;
+  }
+  return '未命名($next)';
+}
+
 extension ScanRecordL10n on ScanRecord {
   String localizedDisplayName(AppL10n l) {
     // "未命名(N)" or "Untitled(N)" → re-render with locale.
-    final m = RegExp(r'^(?:未命名|Untitled)\((\d+)\)$').firstMatch(name);
+    final m = kUntitledScanNamePattern.firstMatch(name);
     if (m != null) {
       return '${l.defaultUntitledScan}(${m.group(1)})';
     }

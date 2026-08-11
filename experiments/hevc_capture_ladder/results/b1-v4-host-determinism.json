@@ -1,0 +1,18 @@
+{
+ "schema": "pw_b1_v4_host_determinism_v1",
+ "date": "2026-08-10",
+ "setup": "sfm_regen_bench_exe(链真产品核libpwofficial_core.a,同ABI): aether_sfm_create→add_frame×96→finalize_async;CPU extract/match,k=12,maxFeatures=8192默认,96帧4224x2376(analysis_cap),位姿=云端COLMAP模型转ARKit相机轴,同输入连跑两遍",
+ "verdict": "SEMI_DETERMINISTIC(语义档坐实,B1按已签降级条款走\"语义档+PLY门抽查\")",
+ "evidence": {
+  "extract_layer": "keypoints+descriptors 内容 SHA 两遍逐字节相同(b99b8f7455e896a3)——DB 80.5%字节的来源层位级确定",
+  "matches_common": "1131 共同对内容 100% 逐字节相同",
+  "matches_delta": "run_a 多 3 对((16,24)/(17,25)/(18,26),55/36/62 匹配,占 0.26%),run_b 无独有对;疑为 finalize enrichment(spatial revisit/starved re-match 与 stage-1 refinement 并行赛跑)的时间预算竞速",
+  "finalize_metrics": "两遍逐位相同: n_registered=96/96, n_points3d=21612, reproj=1.2886px, track_len=3.557;refined 点云快照 14991 vs 14992(差1点)",
+  "db_file": "字节不等(5279bae6 vs 877772a8),同尺寸 36,237,312B;差异全部可归因于上述 3 对"
+ },
+ "timing": {
+  "stream_ms_per_run": "~1.30-1.32M(CPU 慢路,设备 GPU 快得多)",
+  "finalize_ms": "~31.4k"
+ },
+ "note": "V5 质量臂(hevc 解码帧)进行中,另行留底"
+}

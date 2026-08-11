@@ -1,0 +1,55 @@
+{
+ "schema": "pw_efficiency_gate_run1_v1",
+ "date": "2026-08-10",
+ "capture": "cap_1786294229793160",
+ "frames": {
+  "A": 79,
+  "B": 80
+ },
+ "mechanism_health": "交替生效(159指派)/80帧编码=B臂精确一半/finalize成功(纯Dart SHA)/无error——两个bug修复均在生产验证",
+ "archive": "80帧 12,931,615 B(161.6KB/帧,交替档)",
+ "pooled_rule_v2": {
+  "delta_pct": 1.63,
+  "ci95": [
+   -16.91,
+   33.99
+  ],
+  "verdict": "ACCUMULATE",
+  "diagnosis": "块中位数随拍摄单调爬升1177→2228ms(增量SfM地图增长,匹配代价上升)——趋势>>效应,混池CI被趋势撑爆,该规则对本数据结构永远收不拢;与协议写明的\"交错采样消场景方差\"意图不符,属分析器实现偏差"
+ },
+ "paired_rule_v3_proposed": {
+  "design": "相邻A-B块中位数配对(9对),趋势被构造消除",
+  "pair_deltas_pct": [
+   6.9,
+   -2.7,
+   13.7,
+   -21.7,
+   5.9,
+   -10.7,
+   -3.7,
+   -2.1,
+   -6.7
+  ],
+  "mean_pct": -2.34,
+  "se_pct": 3.49,
+  "ci95_pct": [
+   -10.4,
+   5.7
+  ],
+  "reading": "B臂均值-2.35%(略快);CI上界+5.7%,距5%门槛差0.7个百分点"
+ },
+ "tail_evidence": "B臂尾部反而更干净:p90 2363 vs A臂2786,max 2641 vs 5244——最坏帧全部出现在无编码的A块",
+ "thermal": "两臂峰值同为2(fair)",
+ "verdict": "ACCUMULATE — 两种口径均未收门;配对口径差0.7pp,再一场~160帧大概率关门",
+ "protocol_note": "v3配对规则需用户确认后登记(修正分析器以匹配协议既定意图,非事后改判据;方向中性的方差消减)",
+ "v3_formal_rerun": {
+  "signed": "2026-08-10",
+  "mean_pct": -2.35,
+  "ci95_pct": [
+   -10.61,
+   5.91
+  ],
+  "gate": "ACCUMULATE",
+  "distance_to_close_pp": 0.91
+ }
+}

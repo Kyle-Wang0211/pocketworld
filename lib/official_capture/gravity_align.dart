@@ -18,6 +18,101 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+/// [GRAV-DIAG 2026-07-30] 为什么重力对齐这一帧没生效。
+///
+/// 病因(用户实机发现,而不是遥测发现):[gravityAlignQuatWxyz] 返回 null 时
+/// `_gravityAlign` 是 fail-open —— 直接交付**未对齐**的点云,而且不记日志、
+/// 不发遥测。于是"编辑页里的点云是歪的"这种用户可见缺陷在日志里完全无痕,
+/// 只能事后翻 `official_sfm_sparse_meta.json` 的 `gravity_align_quat_wxyz`
+/// 是不是 null 才能知道。
+///
+/// fail-open 本身要保留(交付一朵歪云胜过不交付),但**静默**必须去掉:三个
+/// null 分支的成因完全不同、修法也完全不同,所以诊断必须能区分它们,否则
+/// 下一次仍然只能靠猜。
+class GravityAlignDiagV1 {
+  /// 已注册(有位姿)的帧数。
+  int registeredFrames = 0;
+
+  /// 其中能拿到 ARKit 四元数的帧数。`_fedMeta` 是内存态,resume/重启后为空。
+  int framesWithArkitQuat = 0;
+
+  /// [cnt < 3] 门的阈值,一并落盘,免得日后改了门槛而旧遥测无法解释。
+  int requiredFrames = 3;
+
+  /// null = 对齐成功。否则是下面三个常量之一。
+  String? skipReason;
+
+  /// 一个位姿都没有 —— 通常是空重建。
+  static const String reasonNoPoses = 'no_poses';
+
+  /// 证据不足:拿到 ARKit 四元数的帧 < 3。**resume/重启路径的典型表现。**
+  static const String reasonNotEnoughArkitQuats = 'not_enough_arkit_quats';
+
+  /// 逐帧 R_w 互相抵消,平均四元数退化 —— 位姿或四元数本身可疑。
+  static const String reasonDegenerateAverage = 'degenerate_average';
+
+  Map<String, Object?> toTelemetry() => <String, Object?>{
+    'registered_frames': registeredFrames,
+    'frames_with_arkit_quat': framesWithArkitQuat,
+    'required_frames': requiredFrames,
+    'skip_reason': skipReason,
+  };
+}
+
+/// [SCALE-DIAG 2026-07-30] 为什么米制尺度锚定这一帧没生效。
+///
+/// 与 [GravityAlignDiagV1] 同一个动机,但这里更要紧:SCALE-ANCHOR **已经是生产
+/// 开启的臂**(plugin 里 `OFFICIAL_AETHER_SCALE_ANCHOR=1`),而它有五个 fail-open
+/// 分支,全部静默。也就是说交付物的尺度可能压根没被锚回米制,而没有任何信号。
+///
+/// 五个分支里有一个不是"数据不够",而是**实测到了尺度失配却拒绝施加**
+/// ([reasonOutOfBand],|s−1| > 15%)。已记录的 BA gauge 漂移是 ±4~10.6%,所以
+/// 一次 >15% 的拒绝是真实异常信号,必须带上被拒的 s 值上报,否则等于把测量结果
+/// 丢掉了。
+class ScaleAnchorDiagV1 {
+  /// 已注册(有位姿)的帧数。
+  int registeredFrames = 0;
+
+  /// 其中能配上 ARKit 相机中心的帧数。`_fedMeta` 是内存态。
+  int pairsWithArkitCenter = 0;
+
+  /// 通过退化门(db>1e-6 且 da 有限为正)、真正参与中位数的比值个数。
+  int usableRatios = 0;
+
+  /// 两个 `< 3` 门的阈值,一并落盘,便于日后改门也能解释旧数据。
+  int requiredPairs = 3;
+
+  /// 算出来但被拒绝的 s(仅 [reasonNonFiniteScale] / [reasonOutOfBand] 时非 null)。
+  /// **这是本诊断最有价值的字段** —— 它把"拒绝施加"和"量不出来"彻底分开。
+  double? rejectedFactor;
+
+  /// null = 锚定成功。
+  String? skipReason;
+
+  static const String reasonNoPoses = 'no_poses';
+
+  /// 能配上 ARKit 中心的帧 < 3 —— resume/重启路径的典型表现。
+  static const String reasonNotEnoughPairs = 'not_enough_pairs';
+
+  /// 配对够但比值几乎全退化(相机几乎不动 / 全挤在质心)。
+  static const String reasonNotEnoughRatios = 'not_enough_ratios';
+
+  /// 中位比值非有限或非正。
+  static const String reasonNonFiniteScale = 'non_finite_scale';
+
+  /// |s−1| > 15%:量出来了,但超出信任带,**主动拒绝**而不是失败。
+  static const String reasonOutOfBand = 'scale_out_of_band';
+
+  Map<String, Object?> toTelemetry() => <String, Object?>{
+    'registered_frames': registeredFrames,
+    'pairs_with_arkit_center': pairsWithArkitCenter,
+    'usable_ratios': usableRatios,
+    'required_pairs': requiredPairs,
+    'rejected_factor': rejectedFactor,
+    'skip_reason': skipReason,
+  };
+}
+
 /// 把 [xyz](COLMAP 世界)旋进 ARKit 重力世界(+Y 朝上)。
 ///
 /// [posesPacked] 契约同 SfmLiveSnapshot.posesPacked(9 double/帧:
@@ -52,9 +147,13 @@ Float32List? gravityAlignedPoints({
 List<double>? gravityAlignQuatWxyz({
   required Float64List posesPacked,
   required List<double>? Function(int frameId) arkitQuatWxyzOf,
+  GravityAlignDiagV1? diag,
 }) {
   final poses = posesPacked;
-  if (poses.isEmpty) return null;
+  if (poses.isEmpty) {
+    diag?.skipReason = GravityAlignDiagV1.reasonNoPoses;
+    return null;
+  }
 
   // Hamilton product a*b (w,x,y,z).
   List<double> qmul(List<double> a, List<double> b) => [
@@ -69,6 +168,7 @@ List<double>? gravityAlignQuatWxyz({
   var cnt = 0;
   for (var i = 0; i < poses.length; i += 9) {
     if (poses[i + 1] == 0) continue; // unregistered
+    if (diag != null) diag.registeredFrames++;
     final aq = arkitQuatWxyzOf(poses[i].toInt());
     if (aq == null || aq.length != 4) continue;
     final qCol = [poses[i + 2], poses[i + 3], poses[i + 4], poses[i + 5]];
@@ -95,10 +195,20 @@ List<double>? gravityAlignQuatWxyz({
     az += s * qw[3];
     cnt++;
   }
-  if (cnt < 3) return null; // not enough evidence — don't risk a bad tilt
+  // [GRAV-DIAG] framesWithArkitQuat 记的是**通过了 norm 门、真正参与平均**的
+  // 帧数(cnt),不是"有四元数的帧数" —— 后者会把退化四元数也算进去,让
+  // not_enough 和 degenerate 两种成因混在一个数里。
+  if (diag != null) diag.framesWithArkitQuat = cnt;
+  if (cnt < 3) {
+    diag?.skipReason = GravityAlignDiagV1.reasonNotEnoughArkitQuats;
+    return null; // not enough evidence — don't risk a bad tilt
+  }
 
   final an = math.sqrt(aw * aw + ax * ax + ay * ay + az * az);
-  if (an < 1e-9) return null;
+  if (an < 1e-9) {
+    diag?.skipReason = GravityAlignDiagV1.reasonDegenerateAverage;
+    return null;
+  }
   return [aw / an, ax / an, ay / an, az / an];
 }
 
@@ -121,14 +231,19 @@ List<double>? gravityAlignQuatWxyz({
 double? scaleAnchorFactor({
   required Float64List posesPacked,
   required List<double>? Function(int frameId) arkitCenterWorldOf,
+  ScaleAnchorDiagV1? diag,
 }) {
   final poses = posesPacked;
-  if (poses.isEmpty) return null;
+  if (poses.isEmpty) {
+    diag?.skipReason = ScaleAnchorDiagV1.reasonNoPoses;
+    return null;
+  }
 
   final baC = <List<double>>[];
   final arkC = <List<double>>[];
   for (var i = 0; i < poses.length; i += 9) {
     if (poses[i + 1] == 0) continue; // unregistered
+    if (diag != null) diag.registeredFrames++;
     final ac = arkitCenterWorldOf(poses[i].toInt());
     if (ac == null || ac.length != 3) continue;
     final w = poses[i + 2], x = poses[i + 3], y = poses[i + 4], z = poses[i + 5];
@@ -153,7 +268,13 @@ double? scaleAnchorFactor({
     ]);
     arkC.add(ac);
   }
-  if (baC.length < 3) return null;
+  // [SCALE-DIAG] pairsWithArkitCenter 记的是**通过了全部前置门**(有 ARKit 中心
+  // 且四元数非全零)、真正进入配对集的帧数,不是"有中心的帧数"。
+  if (diag != null) diag.pairsWithArkitCenter = baC.length;
+  if (baC.length < 3) {
+    diag?.skipReason = ScaleAnchorDiagV1.reasonNotEnoughPairs;
+    return null;
+  }
 
   List<double> centroid(List<List<double>> pts) {
     var cx = 0.0, cy = 0.0, cz = 0.0;
@@ -181,11 +302,27 @@ double? scaleAnchorFactor({
     );
     if (db > 1e-6 && da.isFinite && da > 0) ratios.add(da / db);
   }
-  if (ratios.length < 3) return null;
+  if (diag != null) diag.usableRatios = ratios.length;
+  if (ratios.length < 3) {
+    diag?.skipReason = ScaleAnchorDiagV1.reasonNotEnoughRatios;
+    return null;
+  }
   ratios.sort();
   final s = ratios[ratios.length ~/ 2];
-  if (!s.isFinite || s <= 0) return null;
-  if ((s - 1.0).abs() > 0.15) return null; // ARKit 位姿可疑,不冒险
+  if (!s.isFinite || s <= 0) {
+    diag
+      ?..rejectedFactor = s
+      ..skipReason = ScaleAnchorDiagV1.reasonNonFiniteScale;
+    return null;
+  }
+  if ((s - 1.0).abs() > 0.15) {
+    // ARKit 位姿可疑,不冒险 —— 但**把量到的 s 报出去**:已记录的 gauge 漂移是
+    // ±4~10.6%,一次 >15% 的拒绝是真实异常,丢掉这个数就等于丢掉证据。
+    diag
+      ?..rejectedFactor = s
+      ..skipReason = ScaleAnchorDiagV1.reasonOutOfBand;
+    return null;
+  }
   return s;
 }
 

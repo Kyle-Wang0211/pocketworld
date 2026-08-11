@@ -1,0 +1,101 @@
+schema: pw_lepton_jxl_iphone_ab_contract_v1
+date: 2026-08-02
+objective: >-
+  Compare official Rust Lepton 0.5.8 with production JPEG XL effort 10 on one
+  immutable JPEG in an independent physical-iPhone bundle, and permit
+  production work only if Lepton is strictly smaller and both official decode
+  paths restore every source byte.
+repository:
+  path: /Users/kaidongwang/Developer/pocketworld
+  git_head_at_registration: eb269acdd8f8a941a10b55ce2d97f8b77ccc8f0e
+  dirty_diff_sha256_at_registration: 69ea4acfd973399ba424d91caf7806e89c352c537dda057469a7aa3fe4408c2f
+  porcelain_sha256_at_registration: 44bc7f097283a4471c81539deedb6d688b35d64cdfd96d35a5385c2aa0aff9d0
+  worktree_policy: shared_dirty_preserve_all_unrelated_changes
+locks:
+  pubspec_lock_sha256: 3cd62def6e4d8cfd6bed29f386e087e5eaef48208d047f46fbc97e8898ce5ade
+  podfile_lock_sha256: 786e9ae9c62247a90794010fbd9921306e153005959769084217e74a62f4e509
+input:
+  kind: original_capture_jpeg
+  capture_id: cap_1785512421333592
+  relative_path: photos_highres/official_tap-2019.jpg
+  bytes: 2725495
+  sha256: a1cb8de1d3b91edbb7e05233c7930200c46e04554c3651153e267e5abd262138
+  count: 1
+codecs:
+  jxl:
+    implementation: production_libjxl
+    version: 0.12.0
+    revision: a7a9c787341cf703dede03c2009fa460cae5e5df
+    mode: jpeg_reconstruction
+    effort: 10
+  lepton:
+    implementation: microsoft_rust_lepton
+    crate: lepton_jpeg
+    version: 0.5.8
+    revision: 90fdc27828676892fbb41777cfcc6bad1e470516
+    encoder_features: compat_lepton_vector_write
+    decoder_features: compat_lepton_vector_read
+    thread_pool: DEFAULT_THREAD_POOL
+device:
+  udid: 1B290474-D354-5B4C-AAB0-0805AC5DC832
+  required_kind: physical_iphone
+  bundle_id: com.kyle.PocketWorld.LeptonBench
+  forbidden_bundle_id: com.kyle.PocketWorld
+environment:
+  host_arch: arm64
+  macos: 26.1_25B78
+  flutter: 3.41.8_02085feb3f
+  dart: 3.11.5
+  xcode: 26.2_17C52
+  iphoneos_sdk: '26.2'
+  rust: pinned_task_local
+  rust_target: aarch64-apple-ios
+metrics:
+  - source_bytes
+  - source_sha256
+  - archive_bytes
+  - archive_sha256
+  - encode_elapsed_us
+  - decode_elapsed_us
+  - restored_bytes
+  - restored_sha256
+  - byte_equal
+  - peak_rss_bytes
+acceptance:
+  source_identity_required: true
+  jxl_byte_equal_required: true
+  jxl_sha256_equal_required: true
+  lepton_byte_equal_required: true
+  lepton_sha256_equal_required: true
+  strict_size_expression: lepton_archive_bytes < jxl_archive_bytes
+  production_eligible_expression: >-
+    physical_iphone && source_identity && jxl_exact && lepton_exact &&
+    lepton_archive_bytes < jxl_archive_bytes
+exclusions:
+  - host_size_results_cannot_promote_production
+  - simulator_results_cannot_promote_production
+  - elapsed_time_does_not_select_the_winner
+  - thermal_state_does_not_select_the_winner
+run_control:
+  automatic_repeats: 0
+  physical_runs: 1
+  automatic_scale_up: forbidden
+  project_creation: forbidden
+  production_bundle_access: forbidden
+  production_bundle_update: forbidden
+  production_bundle_uninstall: forbidden
+stopping_rules:
+  - reject_input_before_encoding_if_length_or_sha256_differs
+  - stop_after_one_terminal_phone_result
+  - any_exactness_failure_keeps_production_jxl
+  - equal_or_larger_lepton_keeps_production_jxl
+  - build_or_sign_failure_is_not_a_codec_failure
+required_artifacts:
+  - Cargo.lock
+  - lepton_source_package_identity
+  - static_library_sha256
+  - signed_app_binary_sha256
+  - signed_bundle_identity
+  - physical_device_identity
+  - lepton_jxl_benchmark_result.json
+  - host_result_validation_output

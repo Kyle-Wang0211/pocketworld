@@ -7,11 +7,19 @@ import 'database_archive_codec.dart';
 import 'database_archive_ffi_codec.dart';
 import 'database_archive_ffi_preprocessor.dart';
 import 'database_archive_preprocessor.dart';
+import 'lepton_photo_archive_ffi_codec.dart';
 import 'photo_archive_codec.dart';
 import 'photo_archive_coordinator.dart';
 import 'photo_archive_ffi_codec.dart';
+import 'photo_archive_policy.dart';
 
-final PhotoArchiveCodec photoArchiveCodec = JxlFfiPhotoArchiveCodec();
+final PhotoArchiveCodec photoArchiveCodec = LeptonFfiPhotoArchiveCodec();
+final PhotoArchiveCodec legacyJxlPhotoArchiveCodec = JxlFfiPhotoArchiveCodec();
+final Map<String, PhotoArchiveCodec> photoArchiveCodecsByName =
+    <String, PhotoArchiveCodec>{
+      PhotoArchivePolicy.leptonCodec: photoArchiveCodec,
+      PhotoArchivePolicy.jpegXlCodec: legacyJxlPhotoArchiveCodec,
+    };
 final DatabaseArchiveCodec databaseArchiveCodec = ZpaqFfiDatabaseArchiveCodec();
 final DatabaseArchivePreprocessor databaseArchivePreprocessor =
     TrackDeltaFfiDatabaseArchivePreprocessor();
@@ -30,6 +38,7 @@ final OfficialArchiveAuditStore officialArchiveAuditStore =
 
 final PhotoArchiveCoordinator photoArchiveCoordinator = PhotoArchiveCoordinator(
   codec: photoArchiveCodec,
+  codecsByName: photoArchiveCodecsByName,
   databaseCodec: databaseArchiveCodec,
   databasePreprocessor: databaseArchivePreprocessor,
   backgroundScheduler: archiveBackgroundScheduler,

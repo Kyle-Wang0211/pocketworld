@@ -39,3 +39,27 @@
       persistence and retry cleanup only through marker-gated cold discovery
 - [x] 6.4 Run focused service/lifecycle tests, full Flutter tests, analysis,
       OpenSpec validation, and the unsigned iPhoneOS release build
+
+## 7. Foreground capture priority regression
+
+- [x] 7.1 Preserve the physical-phone audit evidence showing capture startup
+      blocked 4–7 seconds behind one old-photo archive transaction
+- [x] 7.2 Restore non-blocking capture startup while retaining cooperative,
+      source-safe archive pause and later retry
+- [ ] 7.3 Run focused archive/capture tests, strict OpenSpec validation, and a
+      physical-phone entry-to-ready regression check
+
+## 8. All-production-work immediate archive preemption
+
+- [x] 8.1 Add typed JPEG XL cancellation and source-retention transaction tests
+- [x] 8.2 Add a production-lease cancellation/release race proving automatic
+      resume only after the final production lease closes
+- [x] 8.3 Add generation-based cancellation to the portable libjxl C ABI and
+      wire it through the Dart photo codec
+- [x] 8.4 Remove cold-archive idle waits from both new capture and resumed
+      reconstruction entry points
+- [x] 8.5 Route resumable legacy reconstruction through the same ref-counted
+      production lease so it also preempts JXL/ZPAQ and releases the gate on
+      startup failure or final disposal
+- [ ] 8.6 Verify focused Dart/native tests, analyzer, strict OpenSpec, and the
+      physical-phone stop/resume behavior without replacing the app container

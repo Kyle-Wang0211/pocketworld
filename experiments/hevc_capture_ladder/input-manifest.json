@@ -1,0 +1,684 @@
+{
+ "schema": "pw_hevc_ladder_input_manifest_v1",
+ "capture_id": "analysis_cap_1779777762841797",
+ "frame_count": 96,
+ "total_jpeg_bytes": 251773820,
+ "avg_jpeg_bytes": 2622643,
+ "trigger_gap_median_s": 0.334,
+ "trigger_gap_p90_s": 1.001,
+ "ordering": "triggerTimestamp ascending",
+ "frames": [
+  {
+   "order": 0,
+   "file": "cell_85_slot_0.jpg",
+   "trigger": 0.919851,
+   "bytes": 2991657,
+   "sha256": "4a72bd81f7332d6418b8c8a2df8ff071a887642401cf042e5b6dd0fe447583f8"
+  },
+  {
+   "order": 1,
+   "file": "cell_85_slot_1.jpg",
+   "trigger": 1.251632,
+   "bytes": 1641889,
+   "sha256": "da1311b9e32c1235de53232849ebaf24cf460cd9f4cfd9579991c4428a9fac83"
+  },
+  {
+   "order": 2,
+   "file": "cell_85_slot_2.jpg",
+   "trigger": 1.584115,
+   "bytes": 3030366,
+   "sha256": "57661721f43b2419ef5fd2a8c7d74329cd1da33e0a3da5c1811a053c77b5b959"
+  },
+  {
+   "order": 3,
+   "file": "cell_85_slot_3.jpg",
+   "trigger": 1.917932,
+   "bytes": 1624173,
+   "sha256": "9e3ab92e794877c97cfcccf4cd07246d9be9f39b365c96faf6dcbddaaadfe62e"
+  },
+  {
+   "order": 4,
+   "file": "cell_85_slot_4.jpg",
+   "trigger": 2.265686,
+   "bytes": 2995750,
+   "sha256": "ac91faba107c41f891dbce7128f0ecc8e66cb451892e231479d8bf8b738e4be6"
+  },
+  {
+   "order": 5,
+   "file": "cell_85_slot_5.jpg",
+   "trigger": 2.584402,
+   "bytes": 3112949,
+   "sha256": "73ec448d66a2242f5d8a07d3531d9018f604d3a67b219a5689901734fce83e4e"
+  },
+  {
+   "order": 6,
+   "file": "cell_85_slot_6.jpg",
+   "trigger": 2.917464,
+   "bytes": 3080865,
+   "sha256": "178386215e03c25561d0258ab03e43a5762aee687489b19bc9ebdd255b715d46"
+  },
+  {
+   "order": 7,
+   "file": "cell_99_slot_0.jpg",
+   "trigger": 3.584197,
+   "bytes": 3150302,
+   "sha256": "b132a3f103cb7b02526e86fee58f4beaee61b7df264115a9b2b514595f5fb972"
+  },
+  {
+   "order": 8,
+   "file": "cell_99_slot_1.jpg",
+   "trigger": 3.91841,
+   "bytes": 1803391,
+   "sha256": "fdd01f9457cabf0795052d7fac11c55387fbaef3f88302363529688206856776"
+  },
+  {
+   "order": 9,
+   "file": "cell_99_slot_2.jpg",
+   "trigger": 4.268694,
+   "bytes": 3214026,
+   "sha256": "e5fbd8b4095346e5f245f4bfedb143c878a7d66b6cdcdf8ce5114b02be120ad4"
+  },
+  {
+   "order": 10,
+   "file": "cell_100_slot_0.jpg",
+   "trigger": 4.750725,
+   "bytes": 3301669,
+   "sha256": "b7aacba008b67b1a1291bdffc273a15a5b513df3949e27fd53df54722e313251"
+  },
+  {
+   "order": 11,
+   "file": "cell_100_slot_1.jpg",
+   "trigger": 5.08448,
+   "bytes": 2915645,
+   "sha256": "64a799391bccd21eded7bb1f20fb199a4fa123397add97cd6777eaa36f0580c0"
+  },
+  {
+   "order": 12,
+   "file": "cell_85_slot_7.jpg",
+   "trigger": 5.418512,
+   "bytes": 1677782,
+   "sha256": "472c83f08cc1b376613dad2dad36189bb08283c50c844c248cf25d4bbc935ec5"
+  },
+  {
+   "order": 13,
+   "file": "cell_85_slot_8.jpg",
+   "trigger": 5.7632,
+   "bytes": 3079105,
+   "sha256": "be046feb8240cc4dec0f9c1e930087794daccb98c69f058f44d3c5ae279f13f4"
+  },
+  {
+   "order": 14,
+   "file": "cell_68_slot_0.jpg",
+   "trigger": 6.084855,
+   "bytes": 1501679,
+   "sha256": "facde083c9386db6e134d9a859cbda01111c0baf0a9a08a4600df8f651eec9f2"
+  },
+  {
+   "order": 15,
+   "file": "cell_68_slot_1.jpg",
+   "trigger": 6.584373,
+   "bytes": 3126459,
+   "sha256": "992c88d2295a3a05356eff2f36f1932e636227bb44c36ea2e2eaab142ffa7d81"
+  },
+  {
+   "order": 16,
+   "file": "cell_68_slot_2.jpg",
+   "trigger": 6.918638,
+   "bytes": 1511143,
+   "sha256": "7366d63fc82551be65104b4015db4695049bb63420c791b22ee30a2e4896f270"
+  },
+  {
+   "order": 17,
+   "file": "cell_69_slot_0.jpg",
+   "trigger": 7.41797,
+   "bytes": 3059932,
+   "sha256": "be2b1ca0c3c66ad4b0a9de290c3b930671f80906e7cf702a67d651945d44b13f"
+  },
+  {
+   "order": 18,
+   "file": "cell_87_slot_0.jpg",
+   "trigger": 9.585585,
+   "bytes": 3179471,
+   "sha256": "6fb537cdf268876b309404645ffec18f1933666e4749492b92420f6f98a4b565"
+  },
+  {
+   "order": 19,
+   "file": "cell_87_slot_1.jpg",
+   "trigger": 9.917825,
+   "bytes": 3178801,
+   "sha256": "b51f574bef3df859247db23dad9128e06130a42daf3a87abc51277f400a284d4"
+  },
+  {
+   "order": 20,
+   "file": "cell_87_slot_2.jpg",
+   "trigger": 10.252587,
+   "bytes": 1638475,
+   "sha256": "ea5ba36beca5ae9ecd21e7a559ba3a42699ea884a72e70f0ef2e3eb9599ff5b4"
+  },
+  {
+   "order": 21,
+   "file": "cell_87_slot_3.jpg",
+   "trigger": 10.584274,
+   "bytes": 3124859,
+   "sha256": "6ca2951903e95144533c20b46038d3a058abee222d35ab74c850200f0c2f61fb"
+  },
+  {
+   "order": 22,
+   "file": "cell_87_slot_4.jpg",
+   "trigger": 11.252228,
+   "bytes": 2940855,
+   "sha256": "006b6c86deef11e3022f867e93d0dabdca9c0d791bc58bc24dcfab4f938828dc"
+  },
+  {
+   "order": 23,
+   "file": "cell_100_slot_2.jpg",
+   "trigger": 12.41926,
+   "bytes": 3055499,
+   "sha256": "c43e98d9b60a7c071793100c423900d5b6115e86c62bd4497ee714a8ab7a4267"
+  },
+  {
+   "order": 24,
+   "file": "cell_111_slot_0.jpg",
+   "trigger": 12.751024,
+   "bytes": 3269726,
+   "sha256": "90f167c013d4f093723bfdb2bdce602b2915da14d8cdb180be94c80ffcaf43d9"
+  },
+  {
+   "order": 25,
+   "file": "cell_111_slot_1.jpg",
+   "trigger": 13.084831,
+   "bytes": 1792197,
+   "sha256": "b79b94b8c3d0826921c97f0fdf75858c2f41b927ccb4f7098f2400a113b4c6e9"
+  },
+  {
+   "order": 26,
+   "file": "cell_100_slot_3.jpg",
+   "trigger": 13.417715,
+   "bytes": 2999388,
+   "sha256": "1eee1c6d37c349832051b996b91e66746458a8db26fba89deed64209425f86b3"
+  },
+  {
+   "order": 27,
+   "file": "cell_110_slot_0.jpg",
+   "trigger": 14.084643,
+   "bytes": 3127287,
+   "sha256": "e8816ee4e765973bcc2e2bb44ec69b8268b27fe3aa9b19a9823cea8949c487c1"
+  },
+  {
+   "order": 28,
+   "file": "cell_99_slot_3.jpg",
+   "trigger": 15.252111,
+   "bytes": 3069251,
+   "sha256": "6e13f3185433c493b83bdc0861fc26ddeb548906be88f24754b80b51708cf184"
+  },
+  {
+   "order": 29,
+   "file": "cell_99_slot_4.jpg",
+   "trigger": 15.584196,
+   "bytes": 3012801,
+   "sha256": "304132a2beef9e35ec5807eff071ce4e2310ffa05af790eceab19092b0ae439b"
+  },
+  {
+   "order": 30,
+   "file": "cell_99_slot_5.jpg",
+   "trigger": 16.08504,
+   "bytes": 1644087,
+   "sha256": "f831d8922353c5a20a03f5fdb56ea97d5f9482f542d6bf9cc8cb129fdd77002c"
+  },
+  {
+   "order": 31,
+   "file": "cell_99_slot_6.jpg",
+   "trigger": 16.417597,
+   "bytes": 3065119,
+   "sha256": "10952118a5c8d2cb4a592e419f38d8777ca7eb370b673ed8c5fb728626fef97a"
+  },
+  {
+   "order": 32,
+   "file": "cell_99_slot_7.jpg",
+   "trigger": 16.75087,
+   "bytes": 3177723,
+   "sha256": "342b1d4f4e47545244fa01cee3fda6366977644bd4d9a8714c98f2717af18bd1"
+  },
+  {
+   "order": 33,
+   "file": "cell_99_slot_8.jpg",
+   "trigger": 17.084142,
+   "bytes": 3022827,
+   "sha256": "dc9c053d36d71002b7abed2e9346e0cc6103e859505606d8585a910381684205"
+  },
+  {
+   "order": 34,
+   "file": "cell_99_slot_9.jpg",
+   "trigger": 17.417443,
+   "bytes": 3111823,
+   "sha256": "af23dd4d9d46087c7a1299be8a8dcc40241fd4a2cbf1291aa77978f9546d9123"
+  },
+  {
+   "order": 35,
+   "file": "cell_99_slot_10.jpg",
+   "trigger": 18.084867,
+   "bytes": 2985185,
+   "sha256": "b91493e7ca18975c5d63ffdbecf584cbd01d5a798c8cc8902edf276fe937b82a"
+  },
+  {
+   "order": 36,
+   "file": "cell_84_slot_0.jpg",
+   "trigger": 18.417514,
+   "bytes": 2889072,
+   "sha256": "b5523c9ccf47c99be32f046f5c944249da9cf62197f24c02a36c4fe8fc80048f"
+  },
+  {
+   "order": 37,
+   "file": "cell_84_slot_1.jpg",
+   "trigger": 18.750985,
+   "bytes": 2941948,
+   "sha256": "283e5f4cd17e3d54131d9f51ed21805b8ebe6eeff92804a96ce8cd447090f6e4"
+  },
+  {
+   "order": 38,
+   "file": "cell_84_slot_2.jpg",
+   "trigger": 19.085136,
+   "bytes": 1431416,
+   "sha256": "f6ed34d7b90911c0a547f2c6b863d2ea90553380a0b1e12b7938858f11b1e3c9"
+  },
+  {
+   "order": 39,
+   "file": "cell_84_slot_3.jpg",
+   "trigger": 19.41766,
+   "bytes": 2943549,
+   "sha256": "28825df82173a957ddb7f71caf5efb64740ed227c2465c4189a40f4f13884a9e"
+  },
+  {
+   "order": 40,
+   "file": "cell_84_slot_4.jpg",
+   "trigger": 19.751347,
+   "bytes": 1392778,
+   "sha256": "d75afa8bedbf24c71d8f52931b72a0cd95f03f83ea67f311ff40d853b8ea54c0"
+  },
+  {
+   "order": 41,
+   "file": "cell_83_slot_0.jpg",
+   "trigger": 20.418,
+   "bytes": 3089861,
+   "sha256": "f3fe67818a89ff22a600c792e11a2837609d34a6598804788866d02df07536ca"
+  },
+  {
+   "order": 42,
+   "file": "cell_83_slot_1.jpg",
+   "trigger": 20.752615,
+   "bytes": 1557999,
+   "sha256": "ba19ab9a8df6d1e4c5e1cf2deae52de853319143c2563ff480a96a13a2668a33"
+  },
+  {
+   "order": 43,
+   "file": "cell_83_slot_2.jpg",
+   "trigger": 21.25109,
+   "bytes": 3111653,
+   "sha256": "a0ee4eeeb23c910812a5307d44864174abbf00fa179f381f410f47e62b0e0f2a"
+  },
+  {
+   "order": 44,
+   "file": "cell_83_slot_3.jpg",
+   "trigger": 21.58556,
+   "bytes": 1563414,
+   "sha256": "87504b6db80f9987ba0a9732b021bbd3fba7a51d4bc91642304e0dac9ebbde2f"
+  },
+  {
+   "order": 45,
+   "file": "cell_98_slot_0.jpg",
+   "trigger": 21.918188,
+   "bytes": 3092434,
+   "sha256": "9a4cbd5231eb4dd8cc64a4ce8f7964106192447f22085e633c966a214bdfa47c"
+  },
+  {
+   "order": 46,
+   "file": "cell_98_slot_1.jpg",
+   "trigger": 22.419295,
+   "bytes": 1596430,
+   "sha256": "2f05c0d8523c5baa91770eaa487dc622cb180f9759deec184cc4b676cf4e5701"
+  },
+  {
+   "order": 47,
+   "file": "cell_98_slot_2.jpg",
+   "trigger": 22.750723,
+   "bytes": 3177948,
+   "sha256": "005fa62f837eaab0115a56be478141c0de91427c95025471bb688c7a978f4d07"
+  },
+  {
+   "order": 48,
+   "file": "cell_97_slot_0.jpg",
+   "trigger": 23.084227,
+   "bytes": 3283836,
+   "sha256": "dfc6c9c84254f1e5f27d0da6495a65001328f302e302c0627db9a5f6c30f334b"
+  },
+  {
+   "order": 49,
+   "file": "cell_97_slot_1.jpg",
+   "trigger": 23.41742,
+   "bytes": 3254557,
+   "sha256": "0203893981d6e63cf20c20f59bb3ceba53254d7d1aaa54af78c5543059d9ee8c"
+  },
+  {
+   "order": 50,
+   "file": "cell_97_slot_2.jpg",
+   "trigger": 23.750806,
+   "bytes": 3268511,
+   "sha256": "578687bd43885f444951050fc300fb38653a0608f2ce7c682e90863010b47153"
+  },
+  {
+   "order": 51,
+   "file": "cell_97_slot_3.jpg",
+   "trigger": 24.084251,
+   "bytes": 3294666,
+   "sha256": "4a2668036536c7d10cc179c3522eec2bb817553c303c1e932ad388914488d0c4"
+  },
+  {
+   "order": 52,
+   "file": "cell_97_slot_4.jpg",
+   "trigger": 24.417527,
+   "bytes": 3247648,
+   "sha256": "406709043324233fc46c520958b58f896f7c65e6d2a63d7cb14f62fb1fd62f7a"
+  },
+  {
+   "order": 53,
+   "file": "cell_109_slot_0.jpg",
+   "trigger": 25.418347,
+   "bytes": 3080822,
+   "sha256": "e39b75222952aede4d90e0f67c6451cebd177207581ba402ff40bf612b471d66"
+  },
+  {
+   "order": 54,
+   "file": "cell_109_slot_1.jpg",
+   "trigger": 25.750846,
+   "bytes": 3102953,
+   "sha256": "eb0bf20e3fad962edb87c58dd2eee89aef07dca0ac294c69f0248b9766f6519d"
+  },
+  {
+   "order": 55,
+   "file": "cell_109_slot_2.jpg",
+   "trigger": 26.084317,
+   "bytes": 2972531,
+   "sha256": "2812e7f0b99943daa730eb1102cf686591ec22a59e7bf6fc06510eb803f5b407"
+  },
+  {
+   "order": 56,
+   "file": "cell_110_slot_1.jpg",
+   "trigger": 27.084905,
+   "bytes": 2865817,
+   "sha256": "7787656167c1a5c3c51f5c5514d4662849d0c07c29e3527d0c1afec8f761a9d8"
+  },
+  {
+   "order": 57,
+   "file": "cell_110_slot_2.jpg",
+   "trigger": 27.918298,
+   "bytes": 3247694,
+   "sha256": "71e1701ca4f074111d4e3720c8d5d2c86d71ce18e9a6b9fbb3bd85a76f16c7ba"
+  },
+  {
+   "order": 58,
+   "file": "cell_110_slot_3.jpg",
+   "trigger": 28.251857,
+   "bytes": 1799003,
+   "sha256": "9d222a91dcd5db4144f01bff53f0e219eca1e030485af96ef11d5ec928732c94"
+  },
+  {
+   "order": 59,
+   "file": "cell_100_slot_4.jpg",
+   "trigger": 28.584687,
+   "bytes": 1880867,
+   "sha256": "981cc97e86d813c4e293fcc1f3375815fc760ce476c220cae761b3069b6ef5e9"
+  },
+  {
+   "order": 60,
+   "file": "cell_100_slot_5.jpg",
+   "trigger": 28.917474,
+   "bytes": 2794281,
+   "sha256": "5ccb655a57d7967b73b157fcf74d08bc39618a6ac88bc57c0a1ed3dfd61f36ef"
+  },
+  {
+   "order": 61,
+   "file": "cell_100_slot_6.jpg",
+   "trigger": 29.251946,
+   "bytes": 1519046,
+   "sha256": "c9f6717a5dee1579cd13fb6468c6794be29df33f522ce17fff04b9de6134fedc"
+  },
+  {
+   "order": 62,
+   "file": "cell_86_slot_0.jpg",
+   "trigger": 29.584228,
+   "bytes": 2828451,
+   "sha256": "daed06a4f180c48559d7acb4dbf07d4fa082a9f5bd27fb2762856ec1a41ae4ee"
+  },
+  {
+   "order": 63,
+   "file": "cell_86_slot_1.jpg",
+   "trigger": 30.251616,
+   "bytes": 2831143,
+   "sha256": "11d62a7f6b710d9747d80ad5129d4bf1f4abf8429d43515c3421ab9217e305e6"
+  },
+  {
+   "order": 64,
+   "file": "cell_86_slot_2.jpg",
+   "trigger": 30.585124,
+   "bytes": 1452128,
+   "sha256": "ad0a525fdae5f60eebad5fcf66c2384327b753f0cdb4c71922995a6911f64be4"
+  },
+  {
+   "order": 65,
+   "file": "cell_51_slot_0.jpg",
+   "trigger": 33.584735,
+   "bytes": 2809690,
+   "sha256": "50494075f539d131804bd5e0a2c6fad297dc5e74eeaebd1ba695dd24b40e20aa"
+  },
+  {
+   "order": 66,
+   "file": "cell_51_slot_1.jpg",
+   "trigger": 33.919258,
+   "bytes": 1241666,
+   "sha256": "c0349df8013e41028b377b7c87e8ed7ba87e482e7e2bc02a005459c1c293b45d"
+  },
+  {
+   "order": 67,
+   "file": "cell_51_slot_2.jpg",
+   "trigger": 36.418786,
+   "bytes": 2859278,
+   "sha256": "bfa1402a1a03ee677c2b719dcc8d72ba0edb73730d62ac1d8aed1f64de718fd1"
+  },
+  {
+   "order": 68,
+   "file": "cell_51_slot_3.jpg",
+   "trigger": 37.084804,
+   "bytes": 1336533,
+   "sha256": "ee4da35b69dfdfdaf5f70a37219eec6ee2c9dc31be6819660b35d1c73e1ca190"
+  },
+  {
+   "order": 69,
+   "file": "cell_51_slot_4.jpg",
+   "trigger": 37.4174,
+   "bytes": 2665027,
+   "sha256": "b0ddb4d4126778727b5790e4b94e95f61123e0e6a61ec841df73febddaca9f6e"
+  },
+  {
+   "order": 70,
+   "file": "cell_69_slot_1.jpg",
+   "trigger": 38.417953,
+   "bytes": 2785022,
+   "sha256": "547f9814db8c6fc7c05cdc834dae1a5dafb3bc25b338319908e050685074be29"
+  },
+  {
+   "order": 71,
+   "file": "cell_69_slot_2.jpg",
+   "trigger": 38.750981,
+   "bytes": 2669421,
+   "sha256": "df7d8fe31abce11c8afeefe3859183818406371d10f03ae77a69281e1c7fd78b"
+  },
+  {
+   "order": 72,
+   "file": "cell_86_slot_3.jpg",
+   "trigger": 39.252184,
+   "bytes": 1378132,
+   "sha256": "a046c0aee252c1269a688bd5b6236b0c0ce88a961d992b826ead670abb30c4fe"
+  },
+  {
+   "order": 73,
+   "file": "cell_69_slot_3.jpg",
+   "trigger": 39.584149,
+   "bytes": 2810617,
+   "sha256": "fc04d45b534f7d131b7b7b349541cdd931bf70edaffb56203955a93e14a59e69"
+  },
+  {
+   "order": 74,
+   "file": "cell_70_slot_0.jpg",
+   "trigger": 39.918168,
+   "bytes": 1373188,
+   "sha256": "6b4f3a05edcc47d8b2aa6a1987444cc283c33b8f8897807d12d878e8a770acbf"
+  },
+  {
+   "order": 75,
+   "file": "cell_70_slot_1.jpg",
+   "trigger": 40.251914,
+   "bytes": 1388362,
+   "sha256": "be53ace9f2c3d75cd4171cd7290c1c88e2b162bf56950180839d1c2476b844dd"
+  },
+  {
+   "order": 76,
+   "file": "cell_70_slot_2.jpg",
+   "trigger": 40.58425,
+   "bytes": 2781301,
+   "sha256": "43ea6e6aaf8c83ab09a13ecb6fb36f51c2fad50f03e92a90bffc86b80472d2f6"
+  },
+  {
+   "order": 77,
+   "file": "cell_88_slot_0.jpg",
+   "trigger": 44.25206,
+   "bytes": 2798251,
+   "sha256": "8ca844683ff4e99fe504e16520295ba024b059b36357e9058604c0f97151c1a1"
+  },
+  {
+   "order": 78,
+   "file": "cell_88_slot_1.jpg",
+   "trigger": 45.084758,
+   "bytes": 3028284,
+   "sha256": "a43d93c027fa19f29d373a5f037ff07d3e02f5076fe4014cd9709d5eb6006432"
+  },
+  {
+   "order": 79,
+   "file": "cell_102_slot_0.jpg",
+   "trigger": 46.918803,
+   "bytes": 2919068,
+   "sha256": "588b090cf55beb04070ff6ee4a9b6dc3949055dd8740408dfa1bde0a077daf90"
+  },
+  {
+   "order": 80,
+   "file": "cell_102_slot_1.jpg",
+   "trigger": 47.252116,
+   "bytes": 1553618,
+   "sha256": "d53e7eba03564fe7398f184c20ddc2cf8a97002df96e32cd4c3adf28d65a84ab"
+  },
+  {
+   "order": 81,
+   "file": "cell_102_slot_2.jpg",
+   "trigger": 47.584343,
+   "bytes": 2822078,
+   "sha256": "8546819f4e96cbae7153fc187a44e88b1dc2cafe24714ed654916a256d7afa7c"
+  },
+  {
+   "order": 82,
+   "file": "cell_102_slot_3.jpg",
+   "trigger": 47.918035,
+   "bytes": 2814529,
+   "sha256": "6bddedf1ba7e018a1f4305563dd9aa7c8b62c2d23afda1cb1bec3844fe0f46a9"
+  },
+  {
+   "order": 83,
+   "file": "cell_102_slot_4.jpg",
+   "trigger": 48.293623,
+   "bytes": 2778979,
+   "sha256": "7476db74403df02c71e8ca297a753ab6b43b66ab800904446cc09620ad2cd229"
+  },
+  {
+   "order": 84,
+   "file": "cell_102_slot_5.jpg",
+   "trigger": 48.584011,
+   "bytes": 2795542,
+   "sha256": "42243e914241459fd6bdea80aade94d22655e0a386cfe114bf6247f30c2a9328"
+  },
+  {
+   "order": 85,
+   "file": "cell_100_slot_7.jpg",
+   "trigger": 49.41862,
+   "bytes": 2972395,
+   "sha256": "1cac5e6e78e20cd244631ae6d9f6f9d3f210e474a82ba226f69618741eedf70c"
+  },
+  {
+   "order": 86,
+   "file": "cell_100_slot_8.jpg",
+   "trigger": 49.750908,
+   "bytes": 2909124,
+   "sha256": "f8b0fd5f5e2dceb261165815782dd8ada5843c6489b107b56a0ea1b1d77d16ae"
+  },
+  {
+   "order": 87,
+   "file": "cell_86_slot_4.jpg",
+   "trigger": 50.751984,
+   "bytes": 2971988,
+   "sha256": "3d0121249c0de1addefbf22228325f647e4c26c3b4376ab6c5e37bcc5ee69fc1"
+  },
+  {
+   "order": 88,
+   "file": "cell_69_slot_4.jpg",
+   "trigger": 51.085227,
+   "bytes": 1552419,
+   "sha256": "fae2da3ca1cf52e6ae2f994e504cbf95e6bcbed1a0e6da4b6251e9fd6ed0d47a"
+  },
+  {
+   "order": 89,
+   "file": "cell_69_slot_6.jpg",
+   "trigger": 51.750931,
+   "bytes": 3039944,
+   "sha256": "20e560b0f95d54e3f297378b2897da6933a4abd63b923ab77fa864782b37352c"
+  },
+  {
+   "order": 90,
+   "file": "cell_69_slot_7.jpg",
+   "trigger": 52.251004,
+   "bytes": 2874956,
+   "sha256": "7df6a5cd8e8759090cc9ca8d7f1b85a9f8dabf0d9e863b6e06788e7a1624da9c"
+  },
+  {
+   "order": 91,
+   "file": "cell_69_slot_9.jpg",
+   "trigger": 52.917495,
+   "bytes": 2835350,
+   "sha256": "e0931d7417afe3cad6e4e271d9a343bd968ed919577939e71d2f6b45662b7a56"
+  },
+  {
+   "order": 92,
+   "file": "cell_69_slot_10.jpg",
+   "trigger": 53.250708,
+   "bytes": 2639679,
+   "sha256": "613a1b7036d259909e685134cd013da565fe4f2708a064fabb3f3ee8b5c8bdc2"
+  },
+  {
+   "order": 93,
+   "file": "cell_69_slot_11.jpg",
+   "trigger": 54.085515,
+   "bytes": 2915461,
+   "sha256": "ca13ea86508c61f39640d644fc99f3c1df29bca5e409d95d0a7fef3a60105f3d"
+  },
+  {
+   "order": 94,
+   "file": "cell_69_slot_8.jpg",
+   "trigger": 54.417351,
+   "bytes": 2942901,
+   "sha256": "5dde719ee09f34e09819a952466176b138eacab3dd178671b6488134b7c07702"
+  },
+  {
+   "order": 95,
+   "file": "cell_69_slot_5.jpg",
+   "trigger": 54.750609,
+   "bytes": 2784405,
+   "sha256": "514515ef58f39e4bb28cf61897827c7034e4dc3787a1c95580b0dc52527e55ef"
+  }
+ ]
+}

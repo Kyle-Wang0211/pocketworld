@@ -6,6 +6,7 @@ upstream:
   tree: 67796f3cfc8ef558d3b2287fcf315a8731ae1f14
   lazy_import_patch_sha256: 96699a4fc3fa10476b784c7ae86b514c74b74609396d4f6a0b4d1f39f18e3f59
   exact_completion_patch_sha256: 307b4a6f5713e3c79845b63b86e1980b3054caef11bc05d9b1286dc5bcc84bf0
+  context_normalisation_patch_sha256: 1221110f821fec69a932760645036610ce53c92638ab5eeb2d93663120a50926
 implementation:
   label: PLR-derived completion
   official_reproduction: false
@@ -32,6 +33,51 @@ implementation:
     - 1
   decoder_sequential_passes: 22
   maximum_decoder_sequential_passes: 24
+  frequency_scale_prior:
+    registered_at: 2026-08-04
+    reason: >-
+      Quantized DCT sigma spans 2964x across the 64 frequency positions, so every
+      scale head had to discover that range from a default initialisation. The
+      epoch-2 official_width state measured 11.82 bits per coefficient, worse
+      than the 8.02 bits a single pooled Gaussian achieves, i.e. predicted scales
+      were systematically inflated. This registers a measured per-frequency prior
+      as the initial bias of the scale half of every entropy-parameter head.
+    module: pw_plr/frequency_prior.py
+    artifact: frequency-prior.json
+    schema: pw_plr_frequency_prior_v1
+    measured_from_split: train
+    measured_sample_count: 48
+    corpus_content_identity_sha256: f0f1c309a4237da178c1e5e752ec8b522e2e5a44195187e32649a066a55e2b75
+    frozen_pair_used: false
+    excluded_capture_ids_asserted_at_measurement: true
+    luma_ordering: PLR_HIGH_TO_LOW_INDICES
+    luma_dc_sigma: 329.16672310413867
+    luma_highest_frequency_sigma: 0.11109110416293924
+    chroma_sigma: 10.772633079635
+    scales_min: 0.11
+    weight_damping: 0.1
+    charged_in_M: true
+    charged_bytes: 768
+    exactness_impact: none
+    exactness_argument: >-
+      GaussianConditionalLatentCodec receives the coding target y untouched; the
+      prior only reaches entropy_parameters, which produces scales and means from
+      context. The coded alphabet, the integer CDF construction and the
+      reconstructed coefficients are unchanged in definition.
+    validated_initial_rate_bits_per_pixel:
+      default_initialisation: 20.01
+      with_prior: 13.37
+      improvement_fraction: 0.332
+      arm: scope2_compact
+      note: >-
+        Measured on four training-split patches with a fixed seed, before any
+        gradient step. The default figure reproduces the observed epoch-0 value
+        of 19.68, so the harness is faithful.
+    context_normalisation_status: >-
+      Wired as of 2026-08-04 via patches/plr-context-normalisation.patch, but
+      only active on the scope2_normalised_context arm. The patched _ctx helper
+      is a behavioural no-op unless attach_context_normalisation has registered
+      the buffers, so the control arm's code path is unchanged.
 model_arms:
   - id: official_width
     N: 192
@@ -39,6 +85,36 @@ model_arms:
   - id: scope2_compact
     N: 96
     M: 144
+    context_normalisation: false
+    role: control
+  - id: scope2_normalised_context
+    N: 96
+    M: 144
+    context_normalisation: true
+    role: treatment
+    design: docs/superpowers/specs/2026-08-04-scope2-normalised-context-arm-design.md
+    control_arm: scope2_compact
+    control_epoch0_train_loss_bits_per_pixel: 13.20177008136971
+    control_stopped_at_epoch: 8
+    control_stop_record: results/phase2-training/scope2_compact/operator-stop.json
+    single_variable: >-
+      Every raw coefficient tensor entering a network is divided by the
+      registered prior; every coding target stays raw. Learning rates, corpus,
+      split, seed, N, M, batch sizes, the prior table, the static floor and the
+      patience are all byte-identical to the control.
+    preregistered_predictions:
+      rate_below_control_epoch0: expected
+      aux_loss_falls_materially_faster_than_control: >-
+        Load-bearing. Control fell 0.357 to 0.674 percent per epoch. If this arm
+        still crawls under 1 percent per epoch, the "latents start far from the
+        quantile initialisation" mechanism is REFUTED and must be recorded as
+        such whatever the rate does.
+      clears_static_floor_before_epoch_20: gate
+    stop_rule: >-
+      If this arm also fails the static floor, stop. Two arms is the evidence
+      budget for the intra-photo learned entropy hypothesis at this scale.
+      Finding a further implementation defect afterwards does not by itself
+      qualify as a materially new structural hypothesis.
 selection:
   uses_frozen_pair: false
   split: validation
@@ -107,8 +183,40 @@ training:
   runs_per_arm: 1
   epochs: 100
   batch_size: 64
-  data_loader_workers: 12
+  microbatch_size: 8
+  data_loader_workers: 4
   prefetch_factor: 2
+  worker_lifecycle_diagnostic:
+    sample_count: 512
+    completed_samples: 512
+    iterator_completed: true
+    ordered_sample_identity_sha256: 36be36e6bd3887e25c85b7d3fc5f17324408da2619839eb65c82d14a3b4d2b76
+    evidence: results/phase2-workers4-lifecycle-diagnostic.json
+  static_floor_early_stop:
+    registered_at: 2026-08-04
+    floor_bits_per_coefficient: 1.471
+    floor_bits_per_pixel_equivalent: 2.2065
+    coefficients_per_luma_position: 1.5
+    patience_epochs: 20
+    metric: train_loss_bits_per_pixel
+    terminal_status: stopped_static_floor_not_reached
+    evidence: results/phase2-training/<arm>/static-floor-stop.json
+    derivation: >-
+      Empirical entropy of 192 static per-(component, frequency-position)
+      histograms measured on frozen photo A: Y 2.055, Cb 0.318, Cr 0.289 bits per
+      coefficient, weighted to 1.471. That table costs under a kilobyte and
+      models no spatial or cross-channel context at all.
+    rationale: >-
+      An arm still above this line after its patience window is spending
+      megabytes of amortised model budget to do worse than a free baseline.
+      Stopping there costs one training window instead of the full registered
+      epoch limit, and the verdict is about the arm, not about learned JPEG
+      recompression as a category.
+    not_an_acceptance_line: >-
+      Clearing the floor proves the arm is worth continuing. It does not pass any
+      gate. The formal gate stays the measured J of 5,012,613 bytes, which for
+      scope2_compact means 1.206 bits per coefficient after its 458,002-byte
+      model charge.
   seed: 20260803
   device: mps_with_cpu_erfc_fallback
   environment:

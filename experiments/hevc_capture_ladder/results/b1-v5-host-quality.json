@@ -1,0 +1,27 @@
+{
+ "schema": "pw_b1_v5_host_quality_v1",
+ "date": "2026-08-11",
+ "setup": "同 V4 台架;唯一变量=输入帧:orig JPEG(4224x2376) vs 生产同参数 q65/GOP8 HEVC 解码帧(PNG);同位姿同内参同配置",
+ "orig": {
+  "registered": "96/96",
+  "n_points3d": 21612,
+  "reproj_px": 1.2886,
+  "track_len": 3.557,
+  "refined_points": 14991
+ },
+ "hevc": {
+  "registered": "96/96",
+  "n_points3d": 21344,
+  "reproj_px": 1.0693,
+  "track_len": 2.464,
+  "refined_points": 14809
+ },
+ "delta": {
+  "points": "-1.2%",
+  "reproj": "-17%(压缩臂更低)",
+  "track_len": "-31%(⚠️唯一显著差异)",
+  "registration": "零差"
+ },
+ "verdict": "FAIL(2026-08-11 用户肉眼否决,撤回此前 PASS_WITH_NOTE): 轨迹-31%+细节区局部密度劣化(体素分析,注意含 gauge 伪影成分)+两臂重建分家;补救网格(K24/ratio0.8)进行中,门=用户并排肉眼",
+ "note": "设备再生走 PWVA→JPEG q95 物化,与本臂(PNG)像素路径略有差异,设备门为准"
+}

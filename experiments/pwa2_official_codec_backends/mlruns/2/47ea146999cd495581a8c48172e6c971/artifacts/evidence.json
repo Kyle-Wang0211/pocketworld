@@ -1,0 +1,47 @@
+{
+  "schema": "pw_pwa2_official_codec_backends_evidence_v1",
+  "recorded_at": "2026-08-02T08:58:00+08:00",
+  "repository_head": "13d2a4f05d491464c537a9135496eccaa05c2358",
+  "evidence_role": "host-rejection-only",
+  "mlflow": {
+    "tracking_database": "../pwa2_structure_zpaq/mlflow.db",
+    "experiment": "pwa2_official_codec_backends",
+    "run_id": "47ea146999cd495581a8c48172e6c971"
+  },
+  "dvc": {
+    "lock_path": "../pwa2_structure_zpaq/dvc.lock",
+    "lock_sha256": "b70ca1876adf9a98754f126df438fa6c803f28618fcf42e230618aa7d67091be",
+    "status": "Data and pipelines are up to date.",
+    "input_md5": "79e1393c61afbf1d7fb45c2c9109f281",
+    "input_bytes": 198983680
+  },
+  "environment": {
+    "uv_lock_path": "../pwa2_structure_zpaq/uv.lock",
+    "uv_lock_sha256": "1002fcaa6f495db63a3878e7b700fd652e489fc8876bed76b905b2502ec94924"
+  },
+  "artifacts": {
+    "screening_sha256": "a98a7371aeb933ff84a87db917395b5ed19d90ae55dfcd781cbe6144ec8c9407",
+    "full_numeric_projection_sha256": "eb9542933d4f05fdb72b0ed6662fff4c2c70401454367d3e46ff513f598e0d3e",
+    "baseline_decision_sha256": "14f7ce4a8d5aca1197587cec36f14bda2e87a850a798726661310616801829d5",
+    "contract_sha256": "28c8f538a2ea991ef5547511643b02f56f18ab673728a846e4a6f52d2bd7aefd",
+    "input_manifest_sha256": "eac826514e8db68855215ab1b29844565b891ad067860dc6b558c6710bbb73d6"
+  },
+  "implementation_hashes": {
+    "tool/pwa2_official_codec_backend.h": "4cf8d44b47b9f51c806a2dea01e7ebdfe9600a3b55c534f5bc6ca58a0876219d",
+    "tool/pwa2_official_codec_backend.cpp": "2063abb513a8cdb5450cde8f0dbdf36f2fad6f8515899f69384e3d3bc5d79b59",
+    "tool/pwa2_official_codec_backend_test.cpp": "defe47cf43023996398746f0b256b996b63732dc34663452e3c74e60f3082df6",
+    "tool/pwa2_official_codec_backends_bench.cpp": "961239af489b6778bd439266b08fa6bf0c0b69362dce5ef17ff26801520812d6",
+    "tool/pwa2_official_codec_sample_bench.cpp": "14c6e627def1c4446fc60ad8a58789c3871ac2e1058ca56569147ddb32fcf8a4",
+    "tool/run_pwa2_official_codec_backend_tests.sh": "6927ef2e0daea5c3c2221d13ba4fcc99855c980e8a96a129054c9b0107418686",
+    "tool/run_pwa2_official_codec_sample_bench.sh": "462d793c0db0bde5aaa92ea1ccf936e26bc988f1d0af51a7ac2466c678d633df",
+    "tool/run_pwa2_official_codec_backends_bench.sh": "aef166e7bb00a5b2d8f09aa1fa1c38c40cc3f8461542854a4c8b411d64fdc910"
+  },
+  "baseline_decision": {
+    "scope": "pwa2_structure",
+    "previous_bytes": 129567942,
+    "new_bytes": 129201499,
+    "status": "accepted",
+    "production_baseline_unchanged": true
+  },
+  "verdict": "accept_pcodec_numeric_zpaq_fallback_as_pwa2_research_baseline; no_production_or_phone_promotion"
+}

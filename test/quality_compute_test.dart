@@ -182,8 +182,11 @@ void main() {
       }
       sw.stop();
       final perCallMs = sw.elapsedMilliseconds / 10.0;
-      expect(perCallMs, lessThan(20.0),
-          reason: 'compute took $perCallMs ms/call — regression?');
+      expect(
+        perCallMs,
+        lessThan(20.0),
+        reason: 'compute took $perCallMs ms/call — regression?',
+      );
     });
   });
 }

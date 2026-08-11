@@ -8,9 +8,11 @@ import 'database_archive_codec.dart';
 import 'database_archive_policy.dart';
 import 'database_archive_preprocessor.dart';
 import 'database_archive_transaction.dart';
+import 'database_recipe_transaction.dart';
 import 'photo_archive_codec.dart';
 import 'photo_archive_policy.dart';
 import 'photo_archive_transaction.dart';
+import 'pwva_master.dart';
 import 'transient_preview_cleanup.dart';
 
 class PhotoArchiveActivityLease {
@@ -26,10 +28,11 @@ class PhotoArchiveActivityLease {
   }
 }
 
-/// Serializes cold JPEG XL archive work across official captures.
+/// Serializes cold photo archive work across official captures.
 class PhotoArchiveCoordinator {
   PhotoArchiveCoordinator({
     required this.codec,
+    this.codecsByName = const <String, PhotoArchiveCodec>{},
     this.databaseCodec,
     this.databasePreprocessor,
     this.auditStore,
@@ -38,6 +41,7 @@ class PhotoArchiveCoordinator {
            backgroundScheduler ?? const NoopArchiveBackgroundScheduler();
 
   final PhotoArchiveCodec codec;
+  final Map<String, PhotoArchiveCodec> codecsByName;
   final DatabaseArchiveCodec? databaseCodec;
   final DatabaseArchivePreprocessor? databasePreprocessor;
   final OfficialArchiveAuditStore? auditStore;
@@ -56,6 +60,7 @@ class PhotoArchiveCoordinator {
 
   void requestSystemInterruption() {
     _interruptionGeneration++;
+    _requestPhotoCancellation();
     databaseCodec?.requestCancellation();
     databasePreprocessor?.requestCancellation();
     unawaited(
@@ -70,6 +75,12 @@ class PhotoArchiveCoordinator {
   PhotoArchiveActivityLease beginCaptureActivity() =>
       _beginProductionActivity();
 
+  /// Pauses cold archive work for a production task that is not tied to an
+  /// archive-eligible official capture directory (for example, resuming a
+  /// legacy reconstruction draft).
+  PhotoArchiveActivityLease beginProcessingActivity() =>
+      _beginProductionActivity();
+
   PhotoArchiveActivityLease beginReconstructionActivity(
     Directory captureDirectory,
   ) => _beginProductionActivity(reconstructionDirectory: captureDirectory);
@@ -81,6 +92,7 @@ class PhotoArchiveCoordinator {
     if (reconstructionDirectory != null) {
       _reconstructionOwners.add(_canonicalKey(reconstructionDirectory));
     }
+    _requestPhotoCancellation();
     databaseCodec?.requestCancellation();
     databasePreprocessor?.requestCancellation();
     return PhotoArchiveActivityLease(
@@ -233,8 +245,32 @@ class PhotoArchiveCoordinator {
         details: const <String, Object?>{'work_remaining': true},
       );
       await removeTransientCapturePreviews(item.value);
+      // PWVA 主本接管(P2 去 JPEG 化)先行:验证通过则删策展 JPEG 原件,
+      // 后续 Lepton 事务对已接管帧按 skipped 处理;任何验证不过 = 不适用,
+      // 一个字节不动,capture 照旧走 Lepton 线。
+      final master = await PwvaMasterTransaction(
+        canContinue: () =>
+            !isProductionPipelineActive &&
+            runGeneration == _interruptionGeneration,
+      ).masterCapture(item.value);
+      if (master.paused || master.failedNames.isNotEmpty) {
+        _pending[item.key] = item.value;
+        _triggerByPath[item.key] = trigger;
+        await _recordAudit(
+          event: master.paused ? 'capture_paused' : 'capture_retry_required',
+          trigger: trigger,
+          captureId: _captureId(item.value),
+          details: <String, Object?>{
+            'photos_pwva_mastered': master.masteredNames.length,
+            'photos_pwva_failed': master.failedNames.length,
+            'work_remaining': true,
+          },
+        );
+        return;
+      }
       final result = await PhotoArchiveTransaction(
         codec: codec,
+        codecsByName: codecsByName,
         canStartNext: () =>
             !isProductionPipelineActive &&
             runGeneration == _interruptionGeneration,
@@ -254,6 +290,14 @@ class PhotoArchiveCoordinator {
         );
         return;
       }
+      // B1 配方化(签决 2026-08-10)先于 ZPAQ:配方提交则 DB 字节按签决删除,
+      // ZPAQ 事务对已配方化 capture 自行 skip;notApplicable 则一切照旧。
+      // DatabaseRecipeTransaction.enabled=false 时恒 no-op(设备门未过)。
+      final recipe = await DatabaseRecipeTransaction(
+        canContinue: () =>
+            !isProductionPipelineActive &&
+            runGeneration == _interruptionGeneration,
+      ).recipeCapture(item.value);
       final database = databaseCodec;
       DatabaseArchiveRunResult? databaseResult;
       if (database != null && !isProductionPipelineActive) {
@@ -294,6 +338,11 @@ class PhotoArchiveCoordinator {
           'photos_archived': result.archivedNames.length,
           'photos_skipped': result.skippedNames.length,
           'photos_failed': result.failedNames.length,
+          if (master.applicable)
+            'photos_pwva_mastered': master.masteredNames.length,
+          if (recipe.applicable) 'database_recipe_committed': recipe.committed,
+          if (recipe.applicable)
+            'database_recipe_deleted_bytes': recipe.deletedBytes,
           if (databaseResult != null)
             'database_archived': databaseResult.archived,
           if (databaseResult != null)
@@ -301,6 +350,15 @@ class PhotoArchiveCoordinator {
           'work_remaining': _pending.isNotEmpty,
         },
       );
+    }
+  }
+
+  void _requestPhotoCancellation() {
+    final codecs = HashSet<PhotoArchiveCodec>.identity()
+      ..add(codec)
+      ..addAll(codecsByName.values);
+    for (final photoCodec in codecs) {
+      photoCodec.requestCancellation();
     }
   }
 

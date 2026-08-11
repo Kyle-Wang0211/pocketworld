@@ -1,0 +1,54 @@
+schema: pw_pwa2_structure_zpaq_contract_v1
+frozen_at: "2026-08-02T00:00:00+08:00"
+evidence_role: host-rejection-only
+objective: >-
+  Compare the frozen track_delta_v1 plus ZPAQ result with a complete PWA2
+  logical structure using the identical pinned ZPAQ backend.
+input:
+  id: cap_1785512421333592
+  path: /private/tmp/pw_portable_sfm_update.6RQ6nt/before/Documents/captures_official/cap_1785512421333592/official_sfm_live.db
+  bytes: 198983680
+  sha256: 0c12c0dfa76d50cae59929774242282d8236daeb852bdee6ac99c3062d6d08b0
+  sqlite_integrity: ok
+baseline:
+  arm: track_delta_v1_zpaq_7_15_method_5
+  archive_bytes: 124401918
+codec:
+  name: zpaq
+  version: "7.15"
+  method: 5
+  revision_sha256: e85ec2529eb0ba22ceaeabd461e55357ef099b80f61c14f377b429ea3d49d418
+structure:
+  schema: pwa2_benchmark_v1
+  descriptor_block_records: 32768
+  descriptor_columns: 128
+  descriptor_transform: verified_track_forest_modulo_256
+  keypoint_layout: column_then_byte_plane
+  match_layout: column_then_byte_plane
+metrics:
+  primary: complete_persisted_bytes
+  secondary:
+    - elapsed_ms
+    - peak_rss_bytes
+    - peak_temp_bytes
+    - member_count
+    - predicted_descriptor_nodes
+    - random_read_members_touched
+acceptance:
+  maximum_complete_persisted_bytes: 111961726
+  source_unchanged: true
+  logical_sha256_equal: true
+  all_cells_equal: true
+  all_rows_and_order_equal: true
+  random_reads_exact: true
+  materialized_sqlite_integrity_ok: true
+  production_changes_allowed: false
+stop_rules:
+  - stop_on_any_exactness_failure
+  - stop_before_phone_when_size_gate_fails
+  - do_not_test_alternative_backends_in_this_run
+exclusions:
+  - sqlite_page_layout
+  - sqlite_freelist_bytes
+  - sqlite_physical_write_history
+  - production_bundle_build_or_install

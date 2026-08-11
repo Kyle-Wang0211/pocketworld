@@ -44,6 +44,9 @@ def test_training_implementation_identity_covers_the_critical_path() -> None:
     assert set(identity["files"]) == {
         "pw_plr/dct_training.py",
         "pw_plr/exact_dataset.py",
+        # The frequency prior initialises every scale head, so a change to it
+        # changes the trained model and must move the identity hash.
+        "pw_plr/frequency_prior.py",
         "pw_plr/trainer.py",
         "pw_plr/training_metrics.py",
         "run_train_phase2.py",

@@ -58,6 +58,7 @@ SRCS=(
   "$A/build/generated/aether/shaders/sift_nonextrema_suppress_wgsl.cpp"
   "$A/build/generated/aether/shaders/sift_affine_shape_wgsl.cpp"
   "$A/build/generated/aether/shaders/sift_orientation_wgsl.cpp"
+  "$A/build/generated/aether/shaders/sift_orientation_atomic_wgsl.cpp"
   "$A/build/generated/aether/shaders/sift_dsp_descriptor_wgsl.cpp"
   "$A/build/generated/aether/shaders/sift_dsp_descriptor_f16_wgsl.cpp"
   "$A/build/generated/aether/shaders/sift_dsp_descriptor_f16_atomic_wgsl.cpp"

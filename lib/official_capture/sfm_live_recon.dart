@@ -460,6 +460,7 @@ class SfmLiveRecon {
   Stream<SfmLiveEvent> get events => _events.stream;
 
   int _seq = 0;
+  int _liveCloudSourceReceiveSequence = 0;
   int _inFlight = 0; // frames sent to the worker but not yet acked
   int _fedOk = 0;
   bool _finalizeRequested = false; // finish tapped — no new frames accepted
@@ -1370,14 +1371,32 @@ class SfmLiveRecon {
         // Preview xyz is already in ARKit's gravity-aligned metric world. It
         // shares the payload shape with local_ready but not its coordinate-space
         // contract, so final alignment must not be run a second time.
-        _events.add(
-          SfmLivePreview(
-            _gravityAlign(
-              _snapshotFromMsg(msg, refined: false),
-              stage: _AlignmentSnapshotStage.preview,
-            ),
-          ),
+        final snapshot = _gravityAlign(
+          _snapshotFromMsg(msg, refined: false),
+          stage: _AlignmentSnapshotStage.preview,
         );
+        final sourceReceiveSeq = ++_liveCloudSourceReceiveSequence;
+        final sourceReceiveAt = DateTime.now().millisecondsSinceEpoch;
+        snapshot.summary['diag_source_receive_seq'] = sourceReceiveSeq;
+        snapshot.summary['diag_source_receive_t'] = sourceReceiveAt;
+        final source = snapshot.summary['source']?.toString() ?? 'unknown';
+        final publishVersion =
+            (snapshot.summary['publish_version'] as num?)?.toInt() ?? 0;
+        TelemetryWriter.instance.event('live_cloud_source_receive_v2', {
+          'contract': 'PW_LIVE_CLOUD_DIAG_RUNTIME_V2_20260810',
+          'source_receive_seq': sourceReceiveSeq,
+          'source_receive_t': sourceReceiveAt,
+          'source': source,
+          'publish_version': publishVersion,
+          'points': snapshot.pointCount,
+          'observation_only': true,
+        });
+        DeviceLog.log(
+          'LIVE_CLOUD_DIAG_V2',
+          'source_receive seq=$sourceReceiveSeq source=$source '
+              'version=$publishVersion points=${snapshot.pointCount}',
+        );
+        _events.add(SfmLivePreview(snapshot));
       case 'live_poses':
         // 拍摄期逐帧连通性(合成 posesPacked,契约见 SfmLiveConnectivity)。
         _events.add(

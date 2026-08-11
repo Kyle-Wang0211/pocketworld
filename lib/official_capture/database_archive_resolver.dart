@@ -5,6 +5,8 @@ import 'database_archive_manifest.dart';
 import 'database_archive_policy.dart';
 import 'database_archive_preprocessor.dart';
 import 'database_archive_transaction.dart';
+import 'database_recipe_transaction.dart';
+import 'sfm_db_regen.dart';
 
 /// Finds or materializes the exact SQLite database used by official recovery.
 class DatabaseArchiveResolver {
@@ -16,6 +18,8 @@ class DatabaseArchiveResolver {
   Future<bool> isRecoverable(Directory captureDirectory) async {
     final source = _sourceFor(captureDirectory);
     if (await source.exists()) return true;
+    // B1 配方化 capture:DB 字节不在盘,但可语义再生。
+    if (await DatabaseRecipeManifest.exists(captureDirectory)) return true;
     if (!codec.isSupported ||
         await DatabaseArchivePolicy.readCompatible(captureDirectory) == null) {
       return false;
@@ -32,6 +36,10 @@ class DatabaseArchiveResolver {
   Future<File?> resolveDatabase(Directory captureDirectory) async {
     final source = _sourceFor(captureDirectory);
     if (await source.exists()) return source;
+    // B1 配方化 capture:语义再生(重放生产管线),分钟级,产物落回源路径。
+    if (await DatabaseRecipeManifest.exists(captureDirectory)) {
+      return _regenerateFromRecipe(captureDirectory, source);
+    }
     if (!codec.isSupported ||
         await DatabaseArchivePolicy.readCompatible(captureDirectory) == null) {
       return null;
@@ -89,6 +97,27 @@ class DatabaseArchiveResolver {
       await _deleteIfPresent(temporary);
       await _deleteIfPresent(preprocessedTemporary);
       return null;
+    }
+  }
+
+  Future<File?> _regenerateFromRecipe(
+      Directory captureDirectory, File source) async {
+    final cache = await Directory.systemTemp
+        .createTemp('pw_db_regen_${captureDirectory.path.split('/').last}_');
+    try {
+      final report = await SfmDbRegen.regenerate(
+        captureDirectory: captureDirectory,
+        targetDbPath: source.path,
+        materializeCache: cache,
+      );
+      if (!report.ok || !await source.exists()) return null;
+      return source;
+    } catch (_) {
+      return null;
+    } finally {
+      try {
+        await cache.delete(recursive: true);
+      } catch (_) {}
     }
   }
 

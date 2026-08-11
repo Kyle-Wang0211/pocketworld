@@ -1,0 +1,1138 @@
+{
+  "schema": "pw_worldpack_approximately_100mb_result_v1",
+  "scope": "approximately-100mb",
+  "selection_policy": "ordered_photo_prefix_at_least_100000000",
+  "input_manifest_sha256": "46d0621460ffd99dbb6c9da5bd7340a177f8242d86b1bc83b4be70edbd9c2a92",
+  "source_bytes": 102244301,
+  "member_count": 87,
+  "restored_member_count": 87,
+  "complete_persisted_bytes": 101920159,
+  "archive_sha256": "3807922c5397742171f1789d3a03b8703065a4cf9ea715afb06bdcbc8898ac0c",
+  "header_bytes": 64,
+  "chunk_header_bytes": 14292,
+  "payload_bytes": 101866341,
+  "index_bytes": 39402,
+  "footer_bytes": 60,
+  "container_overhead_bytes": 53818,
+  "compression_ratio": 1.003180352181358,
+  "reduction_fraction": 0.0031702696074962233,
+  "selected_codec_counts": {
+    "raw": 44,
+    "zpaq_7_15_method5": 43
+  },
+  "database_archive_bytes": 0,
+  "source_unchanged": 1,
+  "source_manifest_reverified": 1,
+  "all_members_byte_equal": 1,
+  "all_members_sha256_equal": 1,
+  "sqlite_integrity_check": "not_in_scope",
+  "random_read_count": 8,
+  "random_reads_exact": 1,
+  "corruption_rejected": 1,
+  "worldpack_implementation_sha256": "202483a39e02a5ef93ed4a5fc5c373fd220bf209a13c5e339b582d2771265893",
+  "lepton_revision": "90fdc27828676892fbb41777cfcc6bad1e470516",
+  "zpaq_revision": "e85ec2529eb0ba22ceaeabd461e55357ef099b80f61c14f377b429ea3d49d418",
+  "similarity_forest_result_sha256": null,
+  "members": [
+    {
+      "path": "photos_highres/official_tap-1024.jpg.jxl",
+      "source_bytes": 2229950,
+      "source_sha256": "d36935a3feb9d493fcc180a297dddef272fe4344ff1b805b5844dfb50c0ce5d6",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2229950,
+      "persisted_payload_sha256": "d36935a3feb9d493fcc180a297dddef272fe4344ff1b805b5844dfb50c0ce5d6",
+      "candidate_bytes": {
+        "raw": 2229950
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1024.json",
+      "source_bytes": 2924,
+      "source_sha256": "37a8bfa890622e4cd6f0d00202bfd6f4bae19d3b8dffd7ad3062d632dbeed946",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 1554,
+      "persisted_payload_sha256": "8c5477dcf69248b4fffa6e3a491bc7741aa6b8a909ba62ad894665c66d053296",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 1554,
+        "raw": 2924
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1035.jpg.jxl",
+      "source_bytes": 2216469,
+      "source_sha256": "e040f393b86b045b8fe300ffa202762e8d17e6b28d5be594d76ca450b3bb8623",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2216469,
+      "persisted_payload_sha256": "e040f393b86b045b8fe300ffa202762e8d17e6b28d5be594d76ca450b3bb8623",
+      "candidate_bytes": {
+        "raw": 2216469
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1035.json",
+      "source_bytes": 5886,
+      "source_sha256": "7cae4a1f4e60b7d812f7ffa2abddd91e1d2dd2ac38fa9b81034e2819959dc15a",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 2654,
+      "persisted_payload_sha256": "6001c1900e68ad8888648dda7873ac72d9269d346c5e992409ef4eb2842995c3",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 2654,
+        "raw": 5886
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1051.jpg.jxl",
+      "source_bytes": 2334879,
+      "source_sha256": "928373d11429da246b74c5aad7a615111d90919b4bc681c2c7110d4475d3a581",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2334879,
+      "persisted_payload_sha256": "928373d11429da246b74c5aad7a615111d90919b4bc681c2c7110d4475d3a581",
+      "candidate_bytes": {
+        "raw": 2334879
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1051.json",
+      "source_bytes": 11317,
+      "source_sha256": "1ab51e3ba6efcbcda52ea2067322f4ab36b13dd2a1d3fd55c19f944d0a7868a5",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 4468,
+      "persisted_payload_sha256": "05d012b76d65a9c9accb1b6bd14109e7147cf9e01eea4f0427c2a78670a4806c",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 4468,
+        "raw": 11317
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1066.jpg.jxl",
+      "source_bytes": 2424742,
+      "source_sha256": "89e6b743c4045a6b7039dbb35e8a4008efa4a7054a96dc091b971c06d455ca56",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2424742,
+      "persisted_payload_sha256": "89e6b743c4045a6b7039dbb35e8a4008efa4a7054a96dc091b971c06d455ca56",
+      "candidate_bytes": {
+        "raw": 2424742
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1066.json",
+      "source_bytes": 8978,
+      "source_sha256": "98d20355b95c44e80121cd6826774d49717b0bfeb95064d4443abe357d15bba6",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 3723,
+      "persisted_payload_sha256": "bcaebea04cc9ff1df8ba287b2c6f99649fff9be3b446da09e18b0cf844918516",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 3723,
+        "raw": 8978
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1085.jpg.jxl",
+      "source_bytes": 2387840,
+      "source_sha256": "d6901bcea6c7f45fffc4e5fb9e60d88a0014e02bf0a1527458375070758bb743",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2387840,
+      "persisted_payload_sha256": "d6901bcea6c7f45fffc4e5fb9e60d88a0014e02bf0a1527458375070758bb743",
+      "candidate_bytes": {
+        "raw": 2387840
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1085.json",
+      "source_bytes": 8537,
+      "source_sha256": "a25f85804e03a6278868cad113b3fff5701aace499be2f26b12786100b98be35",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 3566,
+      "persisted_payload_sha256": "75cdca3646ec6719e671944dbd1a5aed4cdabef90feea5939bf27fd06b35a964",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 3566,
+        "raw": 8537
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-110.jpg.jxl",
+      "source_bytes": 2388187,
+      "source_sha256": "cbb48701cbabe03792e921797c7d6e540a7eef13b761a9d1bbe17b59b7b69d4b",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2388187,
+      "persisted_payload_sha256": "cbb48701cbabe03792e921797c7d6e540a7eef13b761a9d1bbe17b59b7b69d4b",
+      "candidate_bytes": {
+        "raw": 2388187
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-110.json",
+      "source_bytes": 6208,
+      "source_sha256": "6d81036f8a7a511061876479915580b7c801fa45df7b55517514cb4411c5972e",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 2810,
+      "persisted_payload_sha256": "be45c0fb9f4a44c0587d10a4e942ddfe011fbc208ae464133ba0b97ff1460b8b",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 2810,
+        "raw": 6208
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1100.jpg.jxl",
+      "source_bytes": 2293896,
+      "source_sha256": "46cc2daa382d496a573b4fe76aba321ff1a7b690fca324f90c418fa6618aae9d",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2293896,
+      "persisted_payload_sha256": "46cc2daa382d496a573b4fe76aba321ff1a7b690fca324f90c418fa6618aae9d",
+      "candidate_bytes": {
+        "raw": 2293896
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1100.json",
+      "source_bytes": 10308,
+      "source_sha256": "057bedb2abe3052e78374f60d7fd0e2a71d6dce86e3369edbbbd94d83300c44a",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 4107,
+      "persisted_payload_sha256": "104fc4a179003e1f100e065529362ed0223acc37bff9fdd15b64674203df7a6a",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 4107,
+        "raw": 10308
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1113.jpg.jxl",
+      "source_bytes": 2403278,
+      "source_sha256": "e1531f05eb501dd9f0ca272665ed043441961c0baa0ef550b9dceaae576ea46a",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2403278,
+      "persisted_payload_sha256": "e1531f05eb501dd9f0ca272665ed043441961c0baa0ef550b9dceaae576ea46a",
+      "candidate_bytes": {
+        "raw": 2403278
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1113.json",
+      "source_bytes": 3159,
+      "source_sha256": "0b919669c61b2693f4eb75bcafe7d1ef6814a96c373737bf7e485994cba2b50a",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 1638,
+      "persisted_payload_sha256": "8d280084aaa9d85b442d4f123203ac951bfac94e46089741da0a9ad3b5f9069a",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 1638,
+        "raw": 3159
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1127.jpg.jxl",
+      "source_bytes": 2318375,
+      "source_sha256": "05789f333ccafe705fcef21088c9d065e74ca1a4cea83cc7ca43d916e556af3e",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2318375,
+      "persisted_payload_sha256": "05789f333ccafe705fcef21088c9d065e74ca1a4cea83cc7ca43d916e556af3e",
+      "candidate_bytes": {
+        "raw": 2318375
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1127.json",
+      "source_bytes": 11498,
+      "source_sha256": "a13839182867a574f989f5c10365af627aeebc63904263f50b2f2a2a1fe59289",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 4494,
+      "persisted_payload_sha256": "9959a0e456149fa44bf1103cab858ac4f7f8aca038a8cbe03cf82666931ffb8c",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 4494,
+        "raw": 11498
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1150.jpg.jxl",
+      "source_bytes": 2246760,
+      "source_sha256": "e4f67a2970fb6b88c3c6bd118d7bece3a556af993ff7166eda40cc0750c1752f",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2246760,
+      "persisted_payload_sha256": "e4f67a2970fb6b88c3c6bd118d7bece3a556af993ff7166eda40cc0750c1752f",
+      "candidate_bytes": {
+        "raw": 2246760
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1150.json",
+      "source_bytes": 4312,
+      "source_sha256": "98d0545288893ef941cd7ef7b166bd079d216dd516bf0a18282b70d8ea470dda",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 2049,
+      "persisted_payload_sha256": "6dd6cc4248f019b2b9850d92fdae566146abb747d5504229fce27c1005c99598",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 2049,
+        "raw": 4312
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1170.jpg.jxl",
+      "source_bytes": 2490736,
+      "source_sha256": "fa17a77bc1afa5d63134d5288c66198ed1e184ef72e10d05eae1d5e48c686c15",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2490736,
+      "persisted_payload_sha256": "fa17a77bc1afa5d63134d5288c66198ed1e184ef72e10d05eae1d5e48c686c15",
+      "candidate_bytes": {
+        "raw": 2490736
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1170.json",
+      "source_bytes": 29047,
+      "source_sha256": "deb66bf8d512344ccada9e2c26fd137c0523ed365445cee35cf29c995a2ff92a",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 10265,
+      "persisted_payload_sha256": "7978d13315c1afc392e365f7b483fc91d6b89d9d1e52801618c59020256fe72c",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 10265,
+        "raw": 29047
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1180.jpg.jxl",
+      "source_bytes": 2285026,
+      "source_sha256": "31ea103c45e19825a05db149ae905e38616a502613b3cc94dc8570cd536f6e8b",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2285026,
+      "persisted_payload_sha256": "31ea103c45e19825a05db149ae905e38616a502613b3cc94dc8570cd536f6e8b",
+      "candidate_bytes": {
+        "raw": 2285026
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1180.json",
+      "source_bytes": 24977,
+      "source_sha256": "37d2eca314aead6d0c517f39d512cec745df7645fb1d98db0331828bc45b6a4e",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 8990,
+      "persisted_payload_sha256": "7380c3b3245698f7c023cf78baf90a67e1fe1666ed9b6f0dd47c23ab09bbf8aa",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 8990,
+        "raw": 24977
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1196.jpg.jxl",
+      "source_bytes": 2297898,
+      "source_sha256": "fab789230d0b66f0e7bab1eb6598e4a5bd2048f4272503e972ecd4be5a119ac8",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2297898,
+      "persisted_payload_sha256": "fab789230d0b66f0e7bab1eb6598e4a5bd2048f4272503e972ecd4be5a119ac8",
+      "candidate_bytes": {
+        "raw": 2297898
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1196.json",
+      "source_bytes": 16770,
+      "source_sha256": "ae6b649df8aa48a2634f56d7a1ff7e2206268a17529ea076d5dccdc001d0c3c1",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 6284,
+      "persisted_payload_sha256": "b4eead446fab8d31183c57dff8f9f512995ee31f2a62eba820ddcff72e314450",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 6284,
+        "raw": 16770
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-12.jpg.jxl",
+      "source_bytes": 2319472,
+      "source_sha256": "364c452ba446212955b1fc81c7633044c938134efd500c93eb850743f978b252",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2319472,
+      "persisted_payload_sha256": "364c452ba446212955b1fc81c7633044c938134efd500c93eb850743f978b252",
+      "candidate_bytes": {
+        "raw": 2319472
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-12.json",
+      "source_bytes": 9151,
+      "source_sha256": "61e2c7b5eac473030f4e32d6e3ed04e2459e99f0de3bc0a5b594f0ee7f376cbf",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 3844,
+      "persisted_payload_sha256": "9d6eee39910ee2cd0be3a2483bc6fb26376db87938a16f9e55a9c26a62a51607",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 3844,
+        "raw": 9151
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1210.jpg.jxl",
+      "source_bytes": 2304499,
+      "source_sha256": "3ffb37efe2e742fd6327de684e60309e5b9c3925d1748065b4f51887e9573c44",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2304499,
+      "persisted_payload_sha256": "3ffb37efe2e742fd6327de684e60309e5b9c3925d1748065b4f51887e9573c44",
+      "candidate_bytes": {
+        "raw": 2304499
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1210.json",
+      "source_bytes": 19931,
+      "source_sha256": "d1eb5b8aff4d484fffe26db7cbdb7d40a42751756f8a6e9af5b00c960cdaa13b",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 7339,
+      "persisted_payload_sha256": "d771579aabe218afd203d798b863823dea4692f4434a4db0fcdc7ad6c4e77d64",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 7339,
+        "raw": 19931
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1222.jpg.jxl",
+      "source_bytes": 2170263,
+      "source_sha256": "db2681ba73305416fcb4d082482950499baf36fac9a9d52dc322fc8a5b2fc4d9",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2170263,
+      "persisted_payload_sha256": "db2681ba73305416fcb4d082482950499baf36fac9a9d52dc322fc8a5b2fc4d9",
+      "candidate_bytes": {
+        "raw": 2170263
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1222.json",
+      "source_bytes": 23092,
+      "source_sha256": "6551beb104f75b19def9d530a5256bd15cbbeb76e7006204c83f86a0b33e4544",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 8383,
+      "persisted_payload_sha256": "0f8e95b8f1042895ec8809c42f2e44487c6cd9ebebe360e3c8e4c959a743cfdc",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 8383,
+        "raw": 23092
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1230.jpg.jxl",
+      "source_bytes": 2141907,
+      "source_sha256": "d71a875fc8fbf743941c1c61c18fa32d87c1c4164399787d722d1e1bcdf4ca62",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2141907,
+      "persisted_payload_sha256": "d71a875fc8fbf743941c1c61c18fa32d87c1c4164399787d722d1e1bcdf4ca62",
+      "candidate_bytes": {
+        "raw": 2141907
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1230.json",
+      "source_bytes": 31943,
+      "source_sha256": "bf85e73bb82fb23d11dd7c136ff1d0b29f740ce3e0686f58a67e78d86b238e19",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 11203,
+      "persisted_payload_sha256": "f13fcb007e3d28f8e5cbecbea81b4f9be5c967be1f33bc7d31b3111f66096f80",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 11203,
+        "raw": 31943
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1241.jpg.jxl",
+      "source_bytes": 2137210,
+      "source_sha256": "52810aebfc55b08ca8bcdf2e73bb32a4f60818cf07aaaf46272aa1faeb371d64",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2137210,
+      "persisted_payload_sha256": "52810aebfc55b08ca8bcdf2e73bb32a4f60818cf07aaaf46272aa1faeb371d64",
+      "candidate_bytes": {
+        "raw": 2137210
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1241.json",
+      "source_bytes": 28692,
+      "source_sha256": "7b2bd3b832d0add5dad9c216a4ec47fcd7536daafe0a247610497eb2e1575d8f",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 10171,
+      "persisted_payload_sha256": "8e8a9b745d0baa1d650cd1d5db6542ad3e6072e0d0df4ffd0e02e4d0e9bdf6d2",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 10171,
+        "raw": 28692
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1251.jpg.jxl",
+      "source_bytes": 2220226,
+      "source_sha256": "bb4fda76745dc8bc6169ae1c3107bbecd2d75a17e178444d37f18381cc80ecf0",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2220226,
+      "persisted_payload_sha256": "bb4fda76745dc8bc6169ae1c3107bbecd2d75a17e178444d37f18381cc80ecf0",
+      "candidate_bytes": {
+        "raw": 2220226
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1251.json",
+      "source_bytes": 26007,
+      "source_sha256": "62fe9d22bc15bbad3abcdc9155a9f2a3c618841aa12e5a112fe98bead5501dc8",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 9249,
+      "persisted_payload_sha256": "53755a27259bc90853827499f36c08bd59c428dba3b62e8b854918642a424edf",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 9249,
+        "raw": 26007
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1266.jpg.jxl",
+      "source_bytes": 2316576,
+      "source_sha256": "413c57d2270fd59fecaeb3a3cb4ae6821485ac0f02d3e7fc4492355a65814d36",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2316576,
+      "persisted_payload_sha256": "413c57d2270fd59fecaeb3a3cb4ae6821485ac0f02d3e7fc4492355a65814d36",
+      "candidate_bytes": {
+        "raw": 2316576
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1266.json",
+      "source_bytes": 2573,
+      "source_sha256": "1e5c6050afc6360493f1adea4fb4f9733b19c910460ed7042353bbd4f13db6b0",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 1402,
+      "persisted_payload_sha256": "b454fbbddc05f9f90b77eac36e08ed4cbecc194932842f8e12d96b1427d8a9cc",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 1402,
+        "raw": 2573
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1278.jpg.jxl",
+      "source_bytes": 2380435,
+      "source_sha256": "840a1608405f28242053fe2169a1686f7e9eb2fe2b4ac87edfaa763fc342ec7f",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2380435,
+      "persisted_payload_sha256": "840a1608405f28242053fe2169a1686f7e9eb2fe2b4ac87edfaa763fc342ec7f",
+      "candidate_bytes": {
+        "raw": 2380435
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1278.json",
+      "source_bytes": 19277,
+      "source_sha256": "e7906b3092ee107ce7886ab03163f5737f72ab43e43cb834a7fd63fb28ea1350",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 7022,
+      "persisted_payload_sha256": "a6eb5fbfc63a91c903ceb0c12fcba9fcecf941f531f0b30a8879db0a28a169fa",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 7022,
+        "raw": 19277
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1329.jpg.jxl",
+      "source_bytes": 2380403,
+      "source_sha256": "aec2962589e2b382fc74c378581dc5de700a8ab0cfb0cbbea606b59d7ad2729f",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2380403,
+      "persisted_payload_sha256": "aec2962589e2b382fc74c378581dc5de700a8ab0cfb0cbbea606b59d7ad2729f",
+      "candidate_bytes": {
+        "raw": 2380403
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1329.json",
+      "source_bytes": 7177,
+      "source_sha256": "a63ff650ecb8e3e2441840efc1af4acef0c8c6aabd3466f8b95b692b0d0fbde1",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 3126,
+      "persisted_payload_sha256": "ad1e3792579371dd4d6b1306983752cfab68761a8029c6234ef86b9dfc353607",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 3126,
+        "raw": 7177
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-133.jpg.jxl",
+      "source_bytes": 2490635,
+      "source_sha256": "052917a6305349d7e3133d9bd774d7382c27b3493b79d778d2a10c2896325102",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2490635,
+      "persisted_payload_sha256": "052917a6305349d7e3133d9bd774d7382c27b3493b79d778d2a10c2896325102",
+      "candidate_bytes": {
+        "raw": 2490635
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-133.json",
+      "source_bytes": 6459,
+      "source_sha256": "ddc551eec4c456be4fe53ad15a3ce4b7e5e5aa77cc701633899f6fd2580bd93e",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 2883,
+      "persisted_payload_sha256": "50e7c8f73a2a4c202d1e94072883fde0fe3e6ad79a22d2676383784fed8ce6b9",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 2883,
+        "raw": 6459
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1338.jpg.jxl",
+      "source_bytes": 2374811,
+      "source_sha256": "9bb439e89f18d03c2c66a77ebae3a7e5d61c0c1c3d47f22a7f22d59a45a1ebf9",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2374811,
+      "persisted_payload_sha256": "9bb439e89f18d03c2c66a77ebae3a7e5d61c0c1c3d47f22a7f22d59a45a1ebf9",
+      "candidate_bytes": {
+        "raw": 2374811
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1338.json",
+      "source_bytes": 22078,
+      "source_sha256": "675496758a558862c6b00f27bb8e8ce5ee3972f07d0b82d253d2d8edce521cc6",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 8097,
+      "persisted_payload_sha256": "db388866eef1fd5a60653aab9e4c4d2ddc12805c5da7a180d3c9f01f7bf2bfe7",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 8097,
+        "raw": 22078
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1348.jpg.jxl",
+      "source_bytes": 2314565,
+      "source_sha256": "6a667ecb5bfbd31a05a5125d4e29101a39f26b9b341311c7d6b633a0cd684492",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2314565,
+      "persisted_payload_sha256": "6a667ecb5bfbd31a05a5125d4e29101a39f26b9b341311c7d6b633a0cd684492",
+      "candidate_bytes": {
+        "raw": 2314565
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1348.json",
+      "source_bytes": 18547,
+      "source_sha256": "005ab77aca1cebc468d876a9d471c1f371166ef059eb03846a0ed7f44667b9a3",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 6921,
+      "persisted_payload_sha256": "1ffec48175d727181ed194057edb099f7aad7a769f08afd706c73b9edbc6cc70",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 6921,
+        "raw": 18547
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1358.jpg.jxl",
+      "source_bytes": 2311991,
+      "source_sha256": "305b9c92c9b5e91b71e1328af6aa6136e4ed134d433ffe66f8116cd614059d9a",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2311991,
+      "persisted_payload_sha256": "305b9c92c9b5e91b71e1328af6aa6136e4ed134d433ffe66f8116cd614059d9a",
+      "candidate_bytes": {
+        "raw": 2311991
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1358.json",
+      "source_bytes": 21169,
+      "source_sha256": "f2d658d1d2d82bb349a63d305ef6d1d64f68149f4c19fb8529e610618a544848",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 7791,
+      "persisted_payload_sha256": "160ffb11b962089bd9d42d8b3b7a51a42cc0414b829940d49566e56cff398caa",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 7791,
+        "raw": 21169
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1367.jpg.jxl",
+      "source_bytes": 2272293,
+      "source_sha256": "f7067c31479d99fd519e4883f39cb2edf4285f4a8e8eccc7f793df918c86dd6f",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2272293,
+      "persisted_payload_sha256": "f7067c31479d99fd519e4883f39cb2edf4285f4a8e8eccc7f793df918c86dd6f",
+      "candidate_bytes": {
+        "raw": 2272293
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1367.json",
+      "source_bytes": 27751,
+      "source_sha256": "4507c198a4e45231e32622d48c41773d968da0b820cfabd724a22002929d36ea",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 9846,
+      "persisted_payload_sha256": "cec5004d954c0d3e4060433595042773ffa290b1b3457339f3429a70da4df324",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 9846,
+        "raw": 27751
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1412.jpg.jxl",
+      "source_bytes": 2206651,
+      "source_sha256": "688771b4f146273f4863c714442c739c689c363ec5781d811de04e7a3a0a899f",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2206651,
+      "persisted_payload_sha256": "688771b4f146273f4863c714442c739c689c363ec5781d811de04e7a3a0a899f",
+      "candidate_bytes": {
+        "raw": 2206651
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1412.json",
+      "source_bytes": 7880,
+      "source_sha256": "7881693ae1598ab526b527a082c22905c74576731ab7a176d82636d264969ff7",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 3376,
+      "persisted_payload_sha256": "4aab790266f09871aae6711851bb2397b7d454007aef643de49668cb2979c183",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 3376,
+        "raw": 7880
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1433.jpg.jxl",
+      "source_bytes": 2316117,
+      "source_sha256": "42a8c15a640d1f113329b6be73f6bbf3f02d885bc6fd95a9589cd792146ba180",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2316117,
+      "persisted_payload_sha256": "42a8c15a640d1f113329b6be73f6bbf3f02d885bc6fd95a9589cd792146ba180",
+      "candidate_bytes": {
+        "raw": 2316117
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1433.json",
+      "source_bytes": 6125,
+      "source_sha256": "107ae6544cbc2f0c5d0b70ee973b1c3e04f21c43a13f003171c5982afdb2906b",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 2780,
+      "persisted_payload_sha256": "ee80767a828970b74096fbcb779ac36b3bd54104659aa30e4c820ca97b84cb69",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 2780,
+        "raw": 6125
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-148.jpg.jxl",
+      "source_bytes": 2460606,
+      "source_sha256": "5d33b24e45a742c7c9ccdace3d47979537a138fc8d1a1c4b62c58c10515e2473",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2460606,
+      "persisted_payload_sha256": "5d33b24e45a742c7c9ccdace3d47979537a138fc8d1a1c4b62c58c10515e2473",
+      "candidate_bytes": {
+        "raw": 2460606
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-148.json",
+      "source_bytes": 8312,
+      "source_sha256": "140a4b4f8b23762ef22c1198bc0ececbb06a12b3a551c383cdf0a06ae5f0b0b1",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 3555,
+      "persisted_payload_sha256": "27a34113243b2e66c42f4b705e2500e20ecbebb352028de62dfa80963611e8da",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 3555,
+        "raw": 8312
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-166.jpg.jxl",
+      "source_bytes": 2481033,
+      "source_sha256": "266b2f177b795e0b561016c7b538d77d388729db23013a407dd646bcd150ad3f",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2481033,
+      "persisted_payload_sha256": "266b2f177b795e0b561016c7b538d77d388729db23013a407dd646bcd150ad3f",
+      "candidate_bytes": {
+        "raw": 2481033
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-166.json",
+      "source_bytes": 7823,
+      "source_sha256": "6a3d32edfc40d5a115cce9c85ce17efd14edd0b12efe5b773507d8816954abdc",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 3397,
+      "persisted_payload_sha256": "810d0152a3c1bfee790631d6259230df28cb80740d11916e5289d1198f9870d3",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 3397,
+        "raw": 7823
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1714.jpg.jxl",
+      "source_bytes": 2140826,
+      "source_sha256": "c4feb2c5b5d0cfb0054b62dec7b83ebbbbd659686908a59008c18e3621ea5b0b",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2140826,
+      "persisted_payload_sha256": "c4feb2c5b5d0cfb0054b62dec7b83ebbbbd659686908a59008c18e3621ea5b0b",
+      "candidate_bytes": {
+        "raw": 2140826
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1714.json",
+      "source_bytes": 7228,
+      "source_sha256": "569c870ea185be8cadca6ae4aa1c134bc37306ca74e26c0333c0465fca1578a6",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 3144,
+      "persisted_payload_sha256": "608a2d4985da4adae7e62a12cf3bbe11387b828209145b92ba622e1212421eac",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 3144,
+        "raw": 7228
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1730.jpg.jxl",
+      "source_bytes": 2169167,
+      "source_sha256": "ffac9f6613b217db20513ceb744b975b58abdcc7e1b2dfda11a57f6400cf4588",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2169167,
+      "persisted_payload_sha256": "ffac9f6613b217db20513ceb744b975b58abdcc7e1b2dfda11a57f6400cf4588",
+      "candidate_bytes": {
+        "raw": 2169167
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1730.json",
+      "source_bytes": 14577,
+      "source_sha256": "3d1de4b7cf7957289f98e30c0027b9d9c1aaef3776c086d8b3c999f38619b7de",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 5578,
+      "persisted_payload_sha256": "81c400308780755f64e6b920e01f9a311cf51f9847baf3ecb3891f53df9938eb",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 5578,
+        "raw": 14577
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1749.jpg.jxl",
+      "source_bytes": 2267266,
+      "source_sha256": "d07452eebd1e5038f442c65f324c9a5e8ad8e64dc60dc7769fe3f577e7e982ae",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2267266,
+      "persisted_payload_sha256": "d07452eebd1e5038f442c65f324c9a5e8ad8e64dc60dc7769fe3f577e7e982ae",
+      "candidate_bytes": {
+        "raw": 2267266
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1749.json",
+      "source_bytes": 5123,
+      "source_sha256": "e680c8ca21064c8f41acbf5b501e95469c47ed729b6063d9886e2b901107529a",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 2396,
+      "persisted_payload_sha256": "5282c95189d457f6d4865e199e15afaf8079d8f6bde0958b1e20f10175b60d48",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 2396,
+        "raw": 5123
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1761.jpg.jxl",
+      "source_bytes": 2355165,
+      "source_sha256": "509e2c7fdd1fcc70712ab849ed3733ccea3d538fb73705b6b9a68e517bfef887",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2355165,
+      "persisted_payload_sha256": "509e2c7fdd1fcc70712ab849ed3733ccea3d538fb73705b6b9a68e517bfef887",
+      "candidate_bytes": {
+        "raw": 2355165
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1761.json",
+      "source_bytes": 10200,
+      "source_sha256": "5421c6a33563e4304d493e07f8c95ea00a3e6f2338aaad094992dcc25441e6dd",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 4162,
+      "persisted_payload_sha256": "a3831444c71dffb7a59c49164cbe8df5a3cea7c262e4ef3a852e088a7d48dc1f",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 4162,
+        "raw": 10200
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1775.jpg.jxl",
+      "source_bytes": 2250079,
+      "source_sha256": "849bf6f955234daadf97aa6ef5e482dba972adb0c96dd6188fa882abde76ba45",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2250079,
+      "persisted_payload_sha256": "849bf6f955234daadf97aa6ef5e482dba972adb0c96dd6188fa882abde76ba45",
+      "candidate_bytes": {
+        "raw": 2250079
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1775.json",
+      "source_bytes": 13425,
+      "source_sha256": "ae333b12880c64ebf9bd3fdd58506d215dd07454530c8bea7e480de2c3e01899",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 5237,
+      "persisted_payload_sha256": "6daa12844bfd4719d146db755a358a016e6c8bbd50e2d340ed15e459c00124c2",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 5237,
+        "raw": 13425
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-178.jpg.jxl",
+      "source_bytes": 2464465,
+      "source_sha256": "e1b8b896990fe5934fd94d5751bb58e951464b1a71874a2fee85e796a183d222",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2464465,
+      "persisted_payload_sha256": "e1b8b896990fe5934fd94d5751bb58e951464b1a71874a2fee85e796a183d222",
+      "candidate_bytes": {
+        "raw": 2464465
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-178.json",
+      "source_bytes": 15451,
+      "source_sha256": "5e9356bbef833f652eb83738d99272c293674a1e54ecc74f61c7578e8b3b40f8",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 5933,
+      "persisted_payload_sha256": "8b50fa5e2b17ef6c5dd09e73c69b51f3361a741327b0ddc080a204b94405dec4",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 5933,
+        "raw": 15451
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1786.jpg.jxl",
+      "source_bytes": 2267160,
+      "source_sha256": "1e2bfe19fff7c671ad8b14f2922263609f010658a4e76d3e494342d8d0a37235",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2267160,
+      "persisted_payload_sha256": "1e2bfe19fff7c671ad8b14f2922263609f010658a4e76d3e494342d8d0a37235",
+      "candidate_bytes": {
+        "raw": 2267160
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1786.json",
+      "source_bytes": 26825,
+      "source_sha256": "04398cc5fd8ad9f365f6650a99a6786e02d1cf70e51ef89f0ba6e71d0ba439ef",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 9512,
+      "persisted_payload_sha256": "af24a0e25212512fb2321a0e0f45a10f89d27c3311db51ef5fae26a866267f69",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 9512,
+        "raw": 26825
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1799.jpg.jxl",
+      "source_bytes": 2329816,
+      "source_sha256": "1d5afcf23d8ed78c0468dd9a99279aeeec710c2f47f9d9b89004800e875a06f5",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2329816,
+      "persisted_payload_sha256": "1d5afcf23d8ed78c0468dd9a99279aeeec710c2f47f9d9b89004800e875a06f5",
+      "candidate_bytes": {
+        "raw": 2329816
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1799.json",
+      "source_bytes": 18346,
+      "source_sha256": "3be684d46d0984589c571bcff0ef9547f3ac582c849e0280b405b36a3cb4e444",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 6842,
+      "persisted_payload_sha256": "36a7acf31aa9833c4604b3ebc67e8c758d25620a3371618558b5ff48d2c25fa5",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 6842,
+        "raw": 18346
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1815.jpg.jxl",
+      "source_bytes": 2345830,
+      "source_sha256": "1cb9bfab4b2133adf0a2e46456b93efa7e830b5414796afe3f081c1121ccd1ad",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2345830,
+      "persisted_payload_sha256": "1cb9bfab4b2133adf0a2e46456b93efa7e830b5414796afe3f081c1121ccd1ad",
+      "candidate_bytes": {
+        "raw": 2345830
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1815.json",
+      "source_bytes": 9863,
+      "source_sha256": "35c5796a0f780928ae956a91eb0c4ced7607d09107061c1548ce5b4adfaa7b14",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 4047,
+      "persisted_payload_sha256": "8bc28a7740bdc4abc46ec871743325bc53eb5eef1cc314a73d45aafbf536f642",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 4047,
+        "raw": 9863
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1827.jpg.jxl",
+      "source_bytes": 2229333,
+      "source_sha256": "b5801caf5f7ed48cc1aa3687990f884744b091c18cda1bc33243000ab2fb7316",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2229333,
+      "persisted_payload_sha256": "b5801caf5f7ed48cc1aa3687990f884744b091c18cda1bc33243000ab2fb7316",
+      "candidate_bytes": {
+        "raw": 2229333
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1827.json",
+      "source_bytes": 16847,
+      "source_sha256": "820e081d98bc3f8e45a6ac3fd1bd993f6a6292f5fcbc64432cf57a0fee4ea5c8",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 6342,
+      "persisted_payload_sha256": "327eecd9029312d072f76912a6fa162c4bbfa263956855cc35e8d3347cbbf1f4",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 6342,
+        "raw": 16847
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1840.jpg.jxl",
+      "source_bytes": 2295496,
+      "source_sha256": "cc1422d9a69bbfc4b999f9267c4c7ae43e3ba0b60fddef7d7ca9c108ed38e8a3",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2295496,
+      "persisted_payload_sha256": "cc1422d9a69bbfc4b999f9267c4c7ae43e3ba0b60fddef7d7ca9c108ed38e8a3",
+      "candidate_bytes": {
+        "raw": 2295496
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1840.json",
+      "source_bytes": 20812,
+      "source_sha256": "7f0dfb74b181262ff0fecbe27864238f841c3bc3d63037a13fc16d8df9c1a5c6",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 7649,
+      "persisted_payload_sha256": "13cf148071e6c47e60f67dfdbd715b437ee12f4bb14038fde322985793b0f73f",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 7649,
+        "raw": 20812
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1850.jpg.jxl",
+      "source_bytes": 2262083,
+      "source_sha256": "1e4c3730fecb2faa8f2eeb178181e70f4e0cfdef5b845e3dc9938ffcff69642c",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2262083,
+      "persisted_payload_sha256": "1e4c3730fecb2faa8f2eeb178181e70f4e0cfdef5b845e3dc9938ffcff69642c",
+      "candidate_bytes": {
+        "raw": 2262083
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1850.json",
+      "source_bytes": 14871,
+      "source_sha256": "080392534bd0050354fdece61782e24e42a08acdb9bfa13669556335195f4742",
+      "selected_codec": "zpaq_7_15_method5",
+      "persisted_payload_bytes": 5687,
+      "persisted_payload_sha256": "9879e54b43bf2c91071c88d42ca0b9f381e7005b40e9bc1c737e97321a3f6eba",
+      "candidate_bytes": {
+        "zpaq_7_15_method5": 5687,
+        "raw": 14871
+      },
+      "rejected_candidates": []
+    },
+    {
+      "path": "photos_highres/official_tap-1863.jpg.jxl",
+      "source_bytes": 2338410,
+      "source_sha256": "5006282a9ad554e13d4233570094d8a9bc391a12809a7511eca64ca12bb6bd6a",
+      "selected_codec": "raw",
+      "persisted_payload_bytes": 2338410,
+      "persisted_payload_sha256": "5006282a9ad554e13d4233570094d8a9bc391a12809a7511eca64ca12bb6bd6a",
+      "candidate_bytes": {
+        "raw": 2338410
+      },
+      "rejected_candidates": []
+    }
+  ],
+  "peak_rss_bytes": 168411136,
+  "peak_temp_bytes": 207482421,
+  "wall_seconds": 7.694220066070557,
+  "host": {
+    "platform": "macOS-26.1-arm64-arm-64bit",
+    "machine": "arm64",
+    "python": "3.11.15"
+  },
+  "production_promoted": false,
+  "phone_accessed": false,
+  "conclusion_scope": "worldpack_experiment_only",
+  "mlflow_run_id": "9ffee4a3ed474d8b8d6f89f698729c19",
+  "mlflow_tracking_store": "mlflow.db"
+}

@@ -1,0 +1,55 @@
+{
+  "schema": "pw_cross_photo_abc_summary_v1",
+  "input": {
+    "jpeg_count": 25,
+    "source_jpeg_bytes": 107649656,
+    "input_manifest_sha256": "449f187a46e92dd704d5819d77a5ceaabcc2a431afebee3df0acb0d9d766e63b"
+  },
+  "candidates": [
+    {
+      "name": "jxl_exact_baseline",
+      "complete_archive_bytes": 88416344,
+      "ratio": 1.2175311840534822,
+      "exactness_failures": 0,
+      "eligible": true
+    },
+    {
+      "name": "a_dense_flow_local_forest_zpaq",
+      "complete_archive_bytes": 129466593,
+      "ratio": 0.8314859726014416,
+      "exactness_failures": 0,
+      "corruption_rejected": true,
+      "bytes_over_baseline": 41050249,
+      "fraction_over_baseline": 0.46428349265380164,
+      "eligible": false
+    },
+    {
+      "name": "b_faiss_global_forest_zpaq",
+      "complete_archive_bytes": 128858517,
+      "ratio": 0.8354097075321766,
+      "exactness_failures": 0,
+      "corruption_rejected": true,
+      "bytes_smaller_than_a": 608076,
+      "fraction_smaller_than_a": 0.0046967791915247204,
+      "bytes_over_baseline": 40442173,
+      "fraction_over_baseline": 0.45740607641501213,
+      "eligible": false
+    },
+    {
+      "name": "c_official_learned_exact",
+      "complete_archive_bytes": null,
+      "benchmark_status": "blocked-license",
+      "algorithmic_compression_verdict": "not-tested",
+      "eligible": false
+    }
+  ],
+  "winner": "jxl_exact_baseline",
+  "winner_complete_archive_bytes": 88416344,
+  "production_changed": false,
+  "phone_bundle_built_or_installed": false,
+  "future_candidate_funnel": [
+    "two-photo-complete-strict-size-win",
+    "eight-photo-complete-strict-size-win",
+    "approximately-100-MiB-complete"
+  ]
+}

@@ -97,26 +97,24 @@ class SelectionBox {
   static const double kMinHalfSizeFraction = 0.02;
 
   /// 初始盒 = fit 球(SparseCloudPainter.fitOf)的外接立方。
-  /// 初始框 = 点云的轴对齐包围盒(略放一点余量)。
-  ///
-  /// [2026-07-28 用户实机指认] 原先取"外接球的外接立方体"(边长 2·radius),
-  /// 角落落在 1.73·radius —— 比相机取景(按 radius 填满屏幕标定)大 40%,
-  /// 框整个跑到屏幕外,而且屏幕处处都算"框内"导致拖不动视角。
-  factory SelectionBox.initialFor({
+  /// 屏幕标准尺寸系数:最长边的投影 = 此系数 × 取景半径的投影
+  /// (= 半短边的 ~81%)。编辑态 zoom 按最长边反推,保证屏幕尺寸恒定。
+  static const double kInitialBoxRadiusScale = 2.0;
+
+  /// [2026-08-09 用户签决,当日三轮收敛] "只需要让用户每个面看到的初始框
+  /// 是正方形就行,内部的点云可以自适应大小" —— 几何上"每面都是正方形"
+  /// ⟺ 三边等长。边长取**全量最长轴**(调用方传 max(hx,hy,hz)),与全量
+  /// AABB 同心 ⇒ 沿最长轴精确顶住两端的点("严丝合缝顶着最上面和最下面"),
+  /// 其余轴向点云居中留白;屏幕尺寸恒定由编辑态 zoom 保证(editingFrameOf)。
+  factory SelectionBox.initialSquareFace({
     required double cx,
     required double cy,
     required double cz,
-    required double hx,
-    required double hy,
-    required double hz,
-  }) => SelectionBox(
-    cx: cx,
-    cy: cy,
-    cz: cz,
-    sx: hx * 2 * 1.02,
-    sy: hy * 2 * 1.02,
-    sz: hz * 2 * 1.02,
-  );
+    required double halfExtent,
+  }) {
+    final side = math.max(halfExtent, 1e-6) * 2;
+    return SelectionBox(cx: cx, cy: cy, cz: cz, sx: side, sy: side, sz: side);
+  }
 
   bool contains(double wx, double wy, double wz) {
     // 世界 → 局部 = rotᵀ·(p − c)(rot 行主序,其转置的第 i 行 = rot 第 i 列)。
@@ -138,6 +136,30 @@ class SelectionBox {
   /// 框是否仍然可用(旧版本手柄 bug 会把某一维压成纸片,或把框拖到点云
   /// 之外)。不可用时调用方回退到 [initialFor] —— 否则用户进来看到的是
   /// 一个选不中任何点的退化框,且没有任何自救入口。
+  /// [SEL-DISCARD 2026-07-30] 两个框在**产品意义上**是否相同。
+  ///
+  /// 用途:判断"用户这次到底改过选区没有" —— 它直接决定退出时要不要弹
+  /// "编辑记录是否保存"。所以宁可判成"改过"(多弹一次)也不能漏判(静默丢掉
+  /// 用户的编辑)。
+  ///
+  /// 不用 `operator ==`:这是**近似**比较(浮点手势产生的 1e-12 抖动不算修改),
+  /// 而 `==` 必须与 `hashCode` 一致且传递,近似相等两条都不满足。容差取 1e-9,
+  /// 远小于任何手势能产生的位移,也远大于浮点往返噪声。
+  bool sameAs(SelectionBox other, {double eps = 1e-9}) {
+    bool near(double a, double b) => (a - b).abs() <= eps;
+    if (!near(cx, other.cx) || !near(cy, other.cy) || !near(cz, other.cz)) {
+      return false;
+    }
+    if (!near(sx, other.sx) || !near(sy, other.sy) || !near(sz, other.sz)) {
+      return false;
+    }
+    if (rot.length != other.rot.length) return false;
+    for (var i = 0; i < rot.length; i++) {
+      if (!near(rot[i], other.rot[i])) return false;
+    }
+    return true;
+  }
+
   bool isSaneFor({
     required double fitCx,
     required double fitCy,

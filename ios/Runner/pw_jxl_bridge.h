@@ -30,6 +30,7 @@ typedef enum PWJXLStatus {
   PW_JXL_DECODER_OUTPUT_FAILED = 11,
   PW_JXL_NO_JPEG_RECONSTRUCTION = 12,
   PW_JXL_FILE_IO_FAILED = 13,
+  PW_JXL_CANCELLED = 14,
 } PWJXLStatus;
 
 PW_JXL_API const char* pw_jxl_version(void);
@@ -45,6 +46,22 @@ PW_JXL_API int32_t pw_jxl_encode_jpeg_file(
 PW_JXL_API int32_t pw_jxl_reconstruct_jpeg_file(
     const char* jxl_path,
     const char* jpeg_path,
+    uint64_t* elapsed_microseconds);
+
+PW_JXL_API uint64_t pw_jxl_cancellation_generation(void);
+PW_JXL_API void pw_jxl_request_cancel(void);
+
+PW_JXL_API int32_t pw_jxl_encode_jpeg_file_cancellable(
+    const char* jpeg_path,
+    const char* jxl_path,
+    int32_t effort,
+    uint64_t cancellation_generation,
+    uint64_t* elapsed_microseconds);
+
+PW_JXL_API int32_t pw_jxl_reconstruct_jpeg_file_cancellable(
+    const char* jxl_path,
+    const char* jpeg_path,
+    uint64_t cancellation_generation,
     uint64_t* elapsed_microseconds);
 
 PW_JXL_API int32_t pw_jxl_encode_jpeg(const uint8_t* jpeg_data,

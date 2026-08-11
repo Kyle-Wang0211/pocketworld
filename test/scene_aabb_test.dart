@@ -9,6 +9,22 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/official_capture/selection_box.dart';
 import 'package:pocketworld_flutter/ui/official_capture/sparse_cloud_view.dart';
 
+/// [2026-08-09] 生产初始框已换成 initialTight(严丝合缝逐轴贴合,用户签决
+/// "所有初始方框同一个大小同一个位置"),不再由 sceneAabbOf 直接建框。但
+/// sceneAabbOf 仍是**环绕 pivot**(orbitPivotOf)的中心来源,其"密集核心 +
+/// 稀疏外围不误伤"的判据教训(07-29 床架/地板整片误杀)必须继续守 ——
+/// 这里用"贴合 AABB 的手工盒"直接检验判据本身。
+SelectionBox _boxFromAabb(
+  ({double cx, double cy, double cz, double hx, double hy, double hz}) a,
+) => SelectionBox(
+  cx: a.cx,
+  cy: a.cy,
+  cz: a.cz,
+  sx: a.hx * 2 * 1.12,
+  sy: a.hy * 2 * 1.12,
+  sz: a.hz * 2 * 1.12,
+);
+
 /// 中心 1×1×1 均匀密集立方体 + 若干远处飞点。
 Float32List _sceneWithStrays({
   int dense = 4000,
@@ -60,14 +76,7 @@ void main() {
     ];
     final xyz = _sceneWithStrays(strays: strays);
     final aabb = SparseCloudPainter.sceneAabbOf(xyz);
-    final box = SelectionBox.initialFor(
-      cx: aabb.cx,
-      cy: aabb.cy,
-      cz: aabb.cz,
-      hx: aabb.hx,
-      hy: aabb.hy,
-      hz: aabb.hz,
-    );
+    final box = _boxFromAabb(aabb);
     for (final s in strays) {
       expect(box.contains(s[0], s[1], s[2]), isFalse, reason: '飞点 $s 不该在框内');
     }
@@ -82,14 +91,7 @@ void main() {
   test('无飞点时不误伤:框覆盖 ≥97% 的点', () {
     final xyz = _sceneWithStrays(dense: 3000);
     final aabb = SparseCloudPainter.sceneAabbOf(xyz);
-    final box = SelectionBox.initialFor(
-      cx: aabb.cx,
-      cy: aabb.cy,
-      cz: aabb.cz,
-      hx: aabb.hx,
-      hy: aabb.hy,
-      hz: aabb.hz,
-    );
+    final box = _boxFromAabb(aabb);
     var inside = 0;
     for (var i = 0; i < 3000; i++) {
       if (box.contains(xyz[i * 3], xyz[i * 3 + 1], xyz[i * 3 + 2])) inside++;
@@ -122,14 +124,7 @@ void main() {
       xyz[i * 3 + 2] = (rnd.nextDouble() - 0.5) * 3.0;
     }
     final aabb = SparseCloudPainter.sceneAabbOf(xyz);
-    final box = SelectionBox.initialFor(
-      cx: aabb.cx,
-      cy: aabb.cy,
-      cz: aabb.cz,
-      hx: aabb.hx,
-      hy: aabb.hy,
-      hz: aabb.hz,
-    );
+    final box = _boxFromAabb(aabb);
     var inside = 0;
     final total = core + shell;
     for (var i = 0; i < total; i++) {

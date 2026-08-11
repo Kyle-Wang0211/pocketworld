@@ -1,0 +1,43 @@
+{
+ "schema": "pw_compression_library_v1",
+ "scope": "管线现有两产物(拍摄+稀疏点云)的跨端压缩库;Android/鸿蒙实现推迟至有真机",
+ "package": "experiments/hevc_capture_ladder/pw_hevc",
+ "capture_side": {
+  "library": "lib/pwva.dart(平台无关逻辑)+ lib/pwva_apple.dart(FFI 实现)",
+  "api": "PwvaWriter(流式,逐帧 flush,断点安全)/ PwvaReader(随机访问,只解本 GOP)",
+  "platform_seam": "HevcFrameEncoder/HevcFrameDecoder 接口;Android=AMediaCodec NDK C API,鸿蒙=OH_AVCodec C API,均待真机;接口文档中写死软编 HEVC 禁令",
+  "tests": [
+   "GOP 边界验证(帧6只解3个AU)",
+   "截断归档无 finalize 仍可读(断点安全)"
+  ],
+  "measured": "96帧真实采集 11.81x,随机访问逐字节一致(见 streaming-archive-demo.json)"
+ },
+ "sparse_cloud_side": {
+  "library": "lib/pw_ply.dart(纯 Dart,零原生依赖)",
+  "method": "PLY头解析→SoA拆列→每列三候选变换(原样/字节面转置/32位差分+转置)→deflate9 取最小;结构不符回落 whole-file deflate",
+  "strict_lossless": "逐字节+长度+SHA-256;解压端 SHA 强制校验 fail closed",
+  "measured_on": "official_sfm_sparse.ply 77,475点 (SHA ba941c8b…,与冻结合同一致)",
+  "bytes": {
+   "original": 1162370,
+   "pw_ply": 956901,
+   "zpaq_m5_reference": 857476
+  },
+  "reduction": {
+   "pw_ply_pct": 17.68,
+   "zpaq_reference_pct": 26.23,
+   "gap_bytes": 99425
+  },
+  "tradeoff": "纯 Dart 零依赖 vs 差 8.6 个百分点;绝对差距 ~100KB/项目,相对照片层 230MB 的节省可忽略;要 ZPAQ 级可后续 FFI 挂 libzpaq(public domain)",
+  "speed_ms": {
+   "encode": 399,
+   "decode": 22
+  },
+  "tests": 9,
+  "test_highlights": [
+   "NaN/Inf/-0.0/denormal 位模式原样保留",
+   "载荷/SHA/截断三类损坏 fail closed",
+   "ascii 与 list 属性回落模式仍无损"
+  ]
+ },
+ "suite": "11/11 通过"
+}

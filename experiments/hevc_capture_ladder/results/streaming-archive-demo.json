@@ -1,0 +1,70 @@
+{
+ "schema": "pw_streaming_archive_demo_v1",
+ "scope": "压缩算法侧交付;重建质量验收(MVS/生产管线/肉眼)属于管线侧,不在本交付内",
+ "mode": "streaming: 帧到达→编码(40ms)→立刻追加写盘→逐帧索引;磁盘上不存在 JPEG 中间态",
+ "crash_safety": "任意时刻中断,已落盘 (stream,index) 前缀自洽可解;每帧 flush",
+ "archive_format": {
+  "stream": "photos.hevc (Annex-B)",
+  "index": "photos.pwvi (每帧一行 JSON)",
+  "manifest": "manifest.json (SHA-256)"
+ },
+ "demo_on": "analysis_cap_1779777762841797, 96 帧 4224x2376, q=0.65 GOP=8",
+ "bytes": {
+  "jpeg_photos_before": 251773820,
+  "stream": 21312594,
+  "index": 11349,
+  "manifest": 315,
+  "archive_total": 21324258,
+  "photos_layer_ratio": 11.81
+ },
+ "random_access_verified": [
+  {
+   "frame": 0,
+   "aus": 1,
+   "ms": 13,
+   "bit_exact": true
+  },
+  {
+   "frame": 7,
+   "aus": 8,
+   "ms": 44,
+   "bit_exact": true
+  },
+  {
+   "frame": 42,
+   "aus": 3,
+   "ms": 18,
+   "bit_exact": true
+  },
+  {
+   "frame": 88,
+   "aus": 1,
+   "ms": 9,
+   "bit_exact": true
+  },
+  {
+   "frame": 95,
+   "aus": 8,
+   "ms": 36,
+   "bit_exact": true
+  }
+ ],
+ "random_access_guarantee": "HEVC 解码规范级位精确 + 实测:GOP 内定位解码与全量顺序解码逐字节一致",
+ "capture_level_account": {
+  "capture_total_before": 287309824,
+  "note_total": "274MB 目录",
+  "photos": "251.8MB -> 21.3MB (压缩侧交付)",
+  "previews_17MB": "可由照片再生(B轨,需签决)",
+  "depth_15MB": "管线产物(B轨,需签决)",
+  "jsons_0.7MB": "保留",
+  "with_B": "≈22MB ≈ 12.4x",
+  "without_B": "≈54MB ≈ 5.1x"
+ },
+ "bugs_fixed": [
+  "CMBlockBufferCreateWithMemoryBlock blockAllocator=NULL 导致所有权接管+双重释放(SIGABRT);改 kCFAllocatorNull"
+ ],
+ "remaining_compression_scope": [
+  "Android AMediaCodec Dart FFI 绑定",
+  "质量档最终选择等管线侧验收结论"
+ ]
+}

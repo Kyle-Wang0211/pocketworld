@@ -18,7 +18,14 @@ void main() {
     expect(photoMarker, greaterThanOrEqualTo(0));
     expect(databaseMarker, greaterThan(photoMarker));
     expect(publish, greaterThan(databaseMarker));
-    expect(source, contains('await photoArchiveCoordinator.waitForIdle()'));
+    expect(source, contains('photoArchiveCoordinator.beginCaptureActivity()'));
+    // Foreground capture owns priority immediately. The coordinator requests
+    // native cancellation and retains source-safe state; the shutter must not
+    // wait several seconds for that old-file transaction.
+    expect(
+      source,
+      isNot(contains('await photoArchiveCoordinator.waitForIdle()')),
+    );
   });
 
   test(
@@ -36,7 +43,11 @@ void main() {
       expect(runtime, contains('databaseArchiveCodec'));
       expect(resume, contains('DatabaseArchiveResolver'));
       expect(resume, contains('databaseArchiveCodec'));
-      expect(resume, contains('await photoArchiveCoordinator.waitForIdle()'));
+      expect(resume, contains('beginReconstructionActivity('));
+      expect(
+        resume,
+        isNot(contains('await photoArchiveCoordinator.waitForIdle()')),
+      );
       expect(
         mePage,
         contains('official_sfm_resume.resolveRecoverableCaptureDir'),

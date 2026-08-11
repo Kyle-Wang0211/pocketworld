@@ -1,0 +1,67 @@
+schema: pw_descriptor_chunk_official_backends_contract_v1
+experiment_id: descriptor-chunk-official-backends-2026-08-02
+code_revision: 13d2a4f05d491464c537a9135496eccaa05c2358
+scope: host_only_micro_benchmark
+production_promoted: false
+input:
+  sqlite_path: /private/tmp/pw_portable_sfm_update.6RQ6nt/before/Documents/captures_official/cap_1785512421333592/official_sfm_live.db
+  sqlite_bytes: 198983680
+  sqlite_sha256: 0c12c0dfa76d50cae59929774242282d8236daeb852bdee6ac99c3062d6d08b0
+  ordering: descriptors.image_id_ascending_then_blob_row_ascending
+chunk:
+  descriptor_count: 16384
+  dimension: 128
+  raw_bytes: 2097152
+  root_count: 8192
+  predicted_count: 8192
+  structure: similarity_forest_v1
+  seed: 20260802
+  nlist: 2048
+  nprobe: 32
+  nearest_candidates: 1
+b2nd_layout:
+  logical_shape: [16384, 128]
+  physical_shape: [16384]
+  fixed_record_bytes: 128
+  filters: [SHUFFLE, BYTEDELTA_35]
+upstreams:
+  openzl:
+    version: 0.2.0
+    revision: 3dceb64867840201fb8f57a29d179995f700c9b8
+    profile: serial
+    trainer: ACE
+    clustering: disabled
+    rejected_preflight_profile: u8
+    rejected_preflight_reason: selected_ace_graph_type_incompatible_with_u8_wrapper
+  c_blosc2:
+    version: 3.3.0
+    revision: 7265419b23872707b1b52298d5f1469c9ea7b9e7
+  pcodec:
+    version: 1.0.2
+    revision: 2d8555888b21bbaa19326580b740fa24b7da6bd3
+  zpaq:
+    version: 7.15
+    source_sha256: e85ec2529eb0ba22ceaeabd461e55357ef099b80f61c14f377b429ea3d49d418
+metrics:
+  primary: complete_persisted_bytes
+  secondary:
+    - codec_frame_bytes
+    - parent_sidecar_bytes
+    - encode_ms
+    - decode_ms
+gates:
+  - source_unchanged
+  - transformed_bytes_equal
+  - transformed_sha256_equal
+  - parent_sidecar_equal
+  - original_bytes_equal
+  - original_sha256_equal
+  - corruption_rejected
+stopping_rule: one_encode_decode_corruption_cycle_per_arm_then_stop
+forbidden:
+  - production_code_changes
+  - phone_access
+  - app_build_or_install
+  - full_database_benchmark
+  - benchmark_100_mb
+  - lossy_filters

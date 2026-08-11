@@ -58,11 +58,13 @@ Other platforms can provide their own scheduler without changing stored data.
 ### Interruption is generation-based and cooperative
 
 Each coordinator pump captures an interruption generation. System expiration
-increments the generation and requests native ZPAQ cancellation. JPEG work
-finishes at most its current single-file transaction; the next-file gate then
-pauses. ZPAQ observes its existing I/O callback cancellation. The current
-capture is requeued only for interrupted or failed work, avoiding a tight retry
-loop for intentional non-smaller skips.
+or acquisition of any production-pipeline lease closes the cold-work gate and
+requests native JPEG XL and ZPAQ cancellation. Both portable codecs compare an
+operation generation at native work checkpoints. A cancelled transaction
+removes only uncommitted temporary output, retains its authoritative source, and
+is requeued. Work restarts only after the final capture/reconstruction lease
+closes. Intentionally non-smaller skips are not requeued in the same execution
+opportunity, avoiding a tight retry loop.
 
 ### Audit has history and latest state
 

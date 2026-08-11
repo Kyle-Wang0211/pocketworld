@@ -61,3 +61,20 @@ identity. Existing `.jxl` archives remain untouched and resolvable.
 - **Commercial obligations:** Apache-2.0 permits the candidate direction, but
   distribution remains conditional on complete NOTICE and dependency-license
   inclusion and final binary audit.
+
+## Physical-iPhone decision
+
+Run `20260802T134334Z` used the registered 2,725,495-byte JPEG on the physical
+iPhone in `com.kyle.PocketWorld.LeptonBench`. JXL effort 10 produced 2,215,345
+bytes and official Lepton 0.5.8 produced 2,159,731 bytes. Both official
+decoders restored the source byte-for-byte with SHA-256
+`a1cb8de1d3b91edbb7e05233c7930200c46e04554c3651153e267e5abd262138`.
+Lepton was therefore 55,614 bytes (2.510399%) smaller and passed the registered
+strict promotion gate.
+
+Future captures use policy v2 with codec identity `lepton`; policy v1 remains
+pinned to JPEG XL for legacy reads. Native cancellation uses a monotonic
+generation checked at the Rust I/O boundary, so a production or system
+interruption removes any partial destination and leaves the source JPEG
+authoritative. The production binary was link-verified only and was not
+installed by this benchmark task.

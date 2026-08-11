@@ -1,0 +1,28 @@
+{
+  "schema": "pw_cross_photo_arm_c_commercial_gate_v1",
+  "candidate": "official-ROMP-or-official-CVPR-2022-learned-exact-JPEG",
+  "checked_at": "2026-08-02T00:00:00+08:00",
+  "official_romp": {
+    "repository": "https://github.com/xingxu0/ROMP",
+    "revision": "dbc2616a841debfa1df99b30ab66cb200345e974",
+    "license_file_url": "https://raw.githubusercontent.com/xingxu0/ROMP/dbc2616a841debfa1df99b30ab66cb200345e974/LICENSE",
+    "license_file_http_status": 404,
+    "repository_license_grant_found": false,
+    "readme_requires_trained_tables_for_encode_and_decode": true,
+    "official_pretrained_table_identity_found": false
+  },
+  "cvpr_2022_learned_candidate": {
+    "paper": "https://openaccess.thecvf.com/content/CVPR2022/html/Guo_Practical_Learned_Lossless_JPEG_Recompression_With_Multi-Level_Cross-Channel_Entropy_Model_CVPR_2022_paper.html",
+    "paper_claims_lossless_JPEG_recompression": true,
+    "paper_claims_better_than_Lepton_JPEG_XL_and_CMIX": true,
+    "copyright_retained_by_authors_or_other_holders": true,
+    "official_commercially_licensed_encoder_decoder_found": false,
+    "official_commercially_licensed_weights_found": false
+  },
+  "commercial_verdict": "insufficient-evidence",
+  "benchmark_status": "blocked-license",
+  "executed": false,
+  "complete_archive_bytes": null,
+  "algorithmic_compression_verdict": "not-tested",
+  "reason": "No explicit commercial grant was found for the official ROMP code, and no commercially licensed official learned implementation plus weights were found."
+}

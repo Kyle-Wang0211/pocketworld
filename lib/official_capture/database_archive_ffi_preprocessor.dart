@@ -54,6 +54,58 @@ class TrackDeltaFfiDatabaseArchivePreprocessor
   }
 }
 
+/// Benchmark-only exact transform v2 adapter.
+///
+/// Production manifests do not know this transform until the independent
+/// physical-iPhone size and exactness gates admit it.
+class ExactTransformV2FfiBenchmarkPreprocessor {
+  bool? _supported;
+
+  bool get isSupported {
+    if (!Platform.isIOS) return false;
+    return _supported ??= _NativeTrackDeltaBindings.tryLoad() != null;
+  }
+
+  Future<void> transform({
+    required File sourceDatabase,
+    required File destinationDatabase,
+  }) => _runExactV2(sourceDatabase.path, destinationDatabase.path, false);
+
+  Future<void> restore({
+    required File sourceDatabase,
+    required File destinationDatabase,
+  }) => _runExactV2(sourceDatabase.path, destinationDatabase.path, true);
+
+  Future<bool> integrityCheck(File database) {
+    if (!isSupported) return Future<bool>.value(false);
+    final path = database.path;
+    return Isolate.run(() => _integrityCheckFile(path));
+  }
+
+  void requestCancellation() {
+    if (!Platform.isIOS) return;
+    _NativeTrackDeltaBindings.tryLoad()?.requestCancel();
+  }
+}
+
+Future<void> _runExactV2(
+  String sourcePath,
+  String destinationPath,
+  bool inverse,
+) {
+  final bindings = _NativeTrackDeltaBindings.loadRequired();
+  final generation = bindings.cancellationGeneration();
+  return Isolate.run(
+    () => _transformFileWithTransform(
+      sourcePath,
+      destinationPath,
+      inverse,
+      generation,
+      _NativeTrackDeltaBindings.exactTransformV2,
+    ),
+  );
+}
+
 bool _integrityCheckFile(String path) {
   final bindings = _NativeTrackDeltaBindings.loadRequired();
   final nativePath = path.toNativeUtf8(allocator: calloc);
@@ -70,6 +122,22 @@ void _transformFile(
   bool inverse,
   int cancellationGeneration,
 ) {
+  _transformFileWithTransform(
+    sourcePath,
+    destinationPath,
+    inverse,
+    cancellationGeneration,
+    _NativeTrackDeltaBindings.trackDeltaTransform,
+  );
+}
+
+void _transformFileWithTransform(
+  String sourcePath,
+  String destinationPath,
+  bool inverse,
+  int cancellationGeneration,
+  int transform,
+) {
   final bindings = _NativeTrackDeltaBindings.loadRequired();
   final source = sourcePath.toNativeUtf8(allocator: calloc);
   final destination = destinationPath.toNativeUtf8(allocator: calloc);
@@ -78,7 +146,7 @@ void _transformFile(
       bindings.transformFile(
         source,
         destination,
-        _NativeTrackDeltaBindings.trackDeltaTransform,
+        transform,
         inverse ? 1 : 0,
         cancellationGeneration,
         nullptr,
@@ -135,6 +203,7 @@ class _NativeTrackDeltaBindings {
           );
 
   static const trackDeltaTransform = 4;
+  static const exactTransformV2 = 5;
   static const cancelledStatus = 8;
 
   final _DartTransformFile transformFile;

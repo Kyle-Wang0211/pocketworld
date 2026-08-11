@@ -1,0 +1,95 @@
+schema: pw_sqlite_descriptor_zpaq_experiment_v1
+frozen_at: "2026-07-30T00:00:00+08:00"
+objective: >-
+  Determine whether reversible structured preprocessing of descriptors.data can
+  reduce ZPAQ method-5 archive bytes while restoring the original SQLite file
+  byte-for-byte.
+revision:
+  app_git_head: ffc204a3086bfe667c42c455641b995ee67137de
+  shared_dirty_diff_sha256: a7ad3f62e80f0d8944e1a10186790eea31abc2849b97fd45992c3fa559eb79aa
+  official_algorithm_git_head: b930ab185135dfbd172aef7c2bbeed67ef315f75
+  colmap_version: 3.14.0.dev0
+  zpaq_version: "7.15"
+  zpaq_method: 5
+  zpaq_revision_sha256: e85ec2529eb0ba22ceaeabd461e55357ef099b80f61c14f377b429ea3d49d418
+toolchain:
+  host_model: Mac15,6-Apple-M3-Pro-18GB
+  host_os: macOS-26.1-25B78
+  apple_clang: 17.0.0
+  sqlite: 3.51.0
+  uv: 0.11.14
+  dvc: 3.67.1
+  mlflow: 3.14.0
+  openspec: 1.6.0
+  global_research_uv_lock_sha256: 210a0d579fc0d7ffd1b49d33fa880f944de1e4b85dc9423185a774b0244a1aaf
+phone:
+  model: iPhone-14-Pro-iPhone15,2
+  processor: Apple-A16
+  execution_role: production-winner-selection
+inputs:
+  manifest: experiments/sqlite_descriptor_zpaq/input-manifest.yaml
+  order:
+    - cap_1785155296535863
+    - cap_1785293786814535
+    - cap_1785297411166420
+    - cap_1785301356006181
+    - cap_1785307939920932
+arms:
+  - raw
+  - transpose
+  - transpose_xor
+  - transpose_delta
+randomness:
+  property_seed_first: 0
+  property_seed_last: 999
+  benchmark_seed: not-applicable
+metrics:
+  primary: archive_bytes
+  hard_gates:
+    source_unchanged: true
+    restored_length_equal: true
+    restored_byte_equal: true
+    restored_sha256_equal: true
+    sqlite_integrity_ok: true
+    corruption_rejected: true
+    deterministic_transformed_hash: true
+    deterministic_archive_hash: true
+  diagnostics:
+    - source_bytes
+    - transformed_bytes
+    - archive_ratio
+    - raw_delta_fraction
+    - elapsed_ms
+    - peak_rss_bytes
+    - peak_temp_bytes
+thresholds:
+  exactness_failures_allowed: 0
+  per_database_archive_regressions_allowed: 0
+  minimum_phone_median_reduction_vs_raw: 0.10
+  phone_repeat_count: 3
+  property_case_count_per_arm: 1000
+evidence_roles:
+  host: diagnostic-and-rejection-only
+  physical_iphone: production-selection
+stop_conditions:
+  - Stop an arm immediately on any hard-gate failure.
+  - Retain raw ZPAQ if no arm clears both phone compression thresholds.
+  - Do not integrate production behavior in this experiment change.
+artifacts:
+  scratch_root: .context/compound-engineering/ce-optimize/sqlite-descriptor-zpaq
+  experiment_log: .context/compound-engineering/ce-optimize/sqlite-descriptor-zpaq/experiment-log.yaml
+  strategy_digest: .context/compound-engineering/ce-optimize/sqlite-descriptor-zpaq/strategy-digest.md
+  mlflow_tracking_uri: sqlite:///.context/compound-engineering/ce-optimize/sqlite-descriptor-zpaq/mlflow.db
+  large_outputs_retention: hashes-and-metrics-only-after-verification
+deviations:
+  - id: mlflow-filestore-maintenance-mode
+    observed_at: "2026-07-30T15:01:00+08:00"
+    attempted: local-filesystem-tracking-store
+    result: rejected-by-mlflow-3.14-maintenance-mode
+    resolution: local-sqlite-tracking-store
+    data_remote: false
+privacy:
+  production_container_access: prohibited
+  git_database_bytes: prohibited
+  remote_upload: prohibited
+  source_open_for_write: prohibited

@@ -19,6 +19,7 @@ import 'package:flutter/material.dart';
 import '../l10n/app_localizations.dart';
 import 'design_system.dart';
 import 'scan_record.dart';
+import 'sparse_thumbnail.dart';
 
 class ScanRecordCell extends StatelessWidget {
   final ScanRecord record;
@@ -46,6 +47,14 @@ class ScanRecordCell extends StatelessWidget {
   /// public cards stay clean.
   final bool showCompletedBadge;
 
+  /// 稀疏点云生成状态胶囊(草稿页专用)。
+  ///
+  /// [2026-08-06 用户签决] 拍完后管线在生成稀疏点云 ⇒ 黑底白字"生成中";PLY
+  /// 出来且用户还没点进去看过 ⇒ 绿底白字"完成";看过就消失。状态由调用方从
+  /// ScanRecordStore.badgeOf 拿(它探测 PLY 是否落盘),cell 只负责画。
+  /// 它优先于 [showCompletedBadge] 那个常驻的"已完成" —— 同一个角上只能有一个。
+  final ScanProcessingBadge processingBadge;
+
   const ScanRecordCell({
     super.key,
     required this.record,
@@ -55,6 +64,7 @@ class ScanRecordCell extends StatelessWidget {
     this.onLongPress,
     this.minimal = false,
     this.showCompletedBadge = true,
+    this.processingBadge = ScanProcessingBadge.none,
   });
 
   @override
@@ -81,6 +91,7 @@ class ScanRecordCell extends StatelessWidget {
             children: [
               _ThumbnailSection(
                 record: record,
+                processingBadge: processingBadge,
                 imageHeight: imageHeight,
                 showCompletedBadge: showCompletedBadge,
               ),
@@ -99,11 +110,13 @@ class ScanRecordCell extends StatelessWidget {
 
 class _ThumbnailSection extends StatelessWidget {
   final ScanRecord record;
+  final ScanProcessingBadge processingBadge;
   final double? imageHeight;
   final bool showCompletedBadge;
 
   const _ThumbnailSection({
     required this.record,
+    required this.processingBadge,
     required this.imageHeight,
     required this.showCompletedBadge,
   });
@@ -114,7 +127,13 @@ class _ThumbnailSection extends StatelessWidget {
       fit: StackFit.expand,
       children: [
         _ThumbnailImage(record: record),
-        if (showCompletedBadge && record.hasCompletedArtifact)
+        if (processingBadge != ScanProcessingBadge.none)
+          Positioned(
+            top: AetherSpacing.md,
+            right: AetherSpacing.md,
+            child: _ProcessingPill(processingBadge),
+          )
+        else if (showCompletedBadge && record.hasCompletedArtifact)
           const Positioned(
             top: AetherSpacing.md,
             right: AetherSpacing.md,
@@ -143,6 +162,24 @@ class _ThumbnailImage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // [2026-08-07 用户签决,学 Polycam] 卡片展示**稀疏点云**(斜上 45°、真彩、
+    // 纯黑底)而不是照片。点云缩略图是离屏渲染后缓存的 PNG(见
+    // sparse_thumbnail.dart —— 列表里不能实时渲染,热预算受不住);还没生成出来
+    // 时退回照片,再退回占位图。
+    final dir = record.captureDir;
+    if (dir != null) {
+      final cloudThumb = File(sparseThumbPathFor(dir));
+      if (cloudThumb.existsSync() && cloudThumb.lengthSync() > 0) {
+        return Image.file(
+          cloudThumb,
+          fit: BoxFit.cover,
+          // 点云缩略图本身是纯黑底,所以容器也给纯黑 —— 加载那一瞬不会闪白。
+          color: null,
+          errorBuilder: (_, _, _) =>
+              _PlaceholderThumbnail(mode: record.preferredCaptureMode),
+        );
+      }
+    }
     final path = record.thumbnailPath;
     if (path != null && path.isNotEmpty && File(path).existsSync()) {
       return Image.file(
@@ -221,6 +258,51 @@ class _DotPointCloudPainter extends CustomPainter {
 // and the "published to community" globe both required the cloud
 // upload chain that's now gone. Only _CompletedBadge survives — it
 // fires off `artifactPath != null` (W3 produced a viewable GLB).
+
+class _ProcessingPill extends StatelessWidget {
+  const _ProcessingPill(this.badge);
+
+  final ScanProcessingBadge badge;
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppL10n.of(context);
+    // 黑底"生成中" / 红底"未完成" / 绿底"完成",都是白字(用户签决 + 截图)。
+    final (String label, Color bg, String key) = switch (badge) {
+      ScanProcessingBadge.generating => (
+        l.meBadgeGenerating,
+        const Color(0xE6000000),
+        'scan-badge-generating',
+      ),
+      ScanProcessingBadge.unfinished => (
+        l.meBadgeUnfinished,
+        const Color(0xFFFF3B30), // iOS systemRed
+        'scan-badge-unfinished',
+      ),
+      _ => (
+        l.meBadgeDone,
+        const Color(0xFF34C759), // iOS systemGreen
+        'scan-badge-done',
+      ),
+    };
+    return Container(
+      key: ValueKey<String>(key),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(AetherRadii.pill),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+          color: Colors.white,
+        ),
+      ),
+    );
+  }
+}
 
 class _CompletedBadge extends StatelessWidget {
   const _CompletedBadge();

@@ -32,8 +32,16 @@ or reconstruction work is active.
 - **THEN** no candidate is encoded or deleted
 
 #### Scenario: Foreground work becomes active
-- **WHEN** capture or reconstruction activity begins during a multi-file archive
-- **THEN** the system finishes at most the current single-file transaction and pauses before the next candidate
+- **WHEN** capture or reconstruction activity begins during photo encoding, exact-JPEG reconstruction, verification, or database archival
+- **THEN** the system immediately closes the cold-work gate, requests cooperative cancellation of every in-flight codec, removes only uncommitted temporary outputs, and retains every authoritative source
+
+#### Scenario: A new capture starts while one archive file is in flight
+- **WHEN** the user enters capture while a cold archive transaction is encoding an older photo
+- **THEN** capture startup proceeds without waiting for the old transaction, the old transaction stops at its next native cancellation checkpoint, and no new archive work starts while any production lease is active
+
+#### Scenario: Multiple production tasks overlap
+- **WHEN** capture, live reconstruction, resumed reconstruction, or final refinement hold overlapping production leases
+- **THEN** cold archival remains stopped until the final lease closes and then automatically resumes the cancelled source-safe transaction
 
 #### Scenario: Eligible interrupted work after restart
 - **WHEN** the app restarts with no in-process reconstruction owner and discovers a marked capture satisfying the on-disk gates
@@ -99,6 +107,10 @@ pixel equality alone is insufficient.
 #### Scenario: Codec failure
 - **WHEN** the native encoder or reconstructor reports an error
 - **THEN** the system retains the original JPEG and can retry safely later
+
+#### Scenario: Production-priority cancellation
+- **WHEN** a production lease requests cancellation during encoding, exact-JPEG reconstruction, or verification
+- **THEN** the transaction is recorded as paused rather than failed, temporary output is removed, the original JPEG remains byte-identical, and no manifest entry is published
 
 #### Scenario: Archive is not smaller
 - **WHEN** a byte-exact JXL is equal to or larger than its JPEG source

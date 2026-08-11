@@ -55,6 +55,41 @@ void main() {
     expect(album.paths, <String>[first.path, second.path]);
   });
 
+  test('latest path follows commit, delete, and clear in O(1) read state', () {
+    final album = OfficialProjectPhotoAlbum();
+    final first = File('${tempDir.path}/latest-first.jpg')
+      ..writeAsBytesSync(<int>[1]);
+    final second = File('${tempDir.path}/latest-second.jpg')
+      ..writeAsBytesSync(<int>[2]);
+
+    expect(album.latestPath, isNull);
+    expect(
+      album.commitVerified(
+        jpegPath: first.path,
+        captureTimestamp: 10,
+        imageWidth: 4032,
+        imageHeight: 3024,
+      ),
+      isTrue,
+    );
+    expect(album.latestPath, first.path);
+    expect(
+      album.commitVerified(
+        jpegPath: second.path,
+        captureTimestamp: 11,
+        imageWidth: 4032,
+        imageHeight: 3024,
+      ),
+      isTrue,
+    );
+    expect(album.latestPath, second.path);
+
+    expect(album.remove(second.path), isTrue);
+    expect(album.latestPath, first.path);
+    album.clear();
+    expect(album.latestPath, isNull);
+  });
+
   test('never commits a missing or non-12MP file', () {
     final album = OfficialProjectPhotoAlbum();
     final preview = File('${tempDir.path}/preview.jpg')

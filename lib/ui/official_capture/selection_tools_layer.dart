@@ -52,6 +52,7 @@ class SelectionToolsLayer extends StatefulWidget {
     required this.controller,
     required this.onExit,
     required this.onCancel,
+    this.onRulerCollapsedChanged,
     this.onResetBoxSize,
   });
 
@@ -75,6 +76,10 @@ class SelectionToolsLayer extends StatefulWidget {
   /// **真回滚** —— 编辑期改动是去抖自动落盘的,磁盘上早就是新值,"放弃"不能靠
   /// "跳过写盘"。
   final VoidCallback onCancel;
+
+  /// 底部滑轨面板折叠状态变化 —— 页面据此收缩点云的手势排除区,否则收起后
+  /// 点云下方仍有一大片点不动的死区。
+  final ValueChanged<bool>? onRulerCollapsedChanged;
 
   /// "恢复原始框大小":按当前点云重算初始框(位置/尺寸/朝向全复位)。
   /// 由父级实现 —— 它才持有点云数据。null 时不显示该菜单项。
@@ -300,6 +305,10 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
     _slerpAxis = axis;
     _slerpAngle = angle;
     _slerpTarget = target;
+    // [2026-08-09 用户实机指认"框不要突然变大再缩小"] 动画期间矩形按目标姿态
+    // 画,直达终态;点云照常转。结束/被打断时清除(_onSnapTick / stop 处)。
+    final (ty, tp, tr) = decomposeViewMatrix(target);
+    widget.controller.setRectPoseOverride((ty, tp, tr));
     unawaited(_snap.forward(from: 0));
   }
 
@@ -313,6 +322,7 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
             rotationFromAxisAngle(_slerpAxis, _slerpAngle * t),
             _slerpFrom,
           );
+    if (t >= 1.0) widget.controller.setRectPoseOverride(null);
     final (y, p, roll) = decomposeViewMatrix(r);
     widget.controller.moveTo((
       yaw: y,
@@ -371,6 +381,12 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
   /// 拨刻度、转点云(用户签决)。PopupMenuButton 自带全屏 ModalBarrier,会把
   /// 这些手势全吞掉,故不能用它。
   bool _menuOpen = false;
+
+  /// 底部"旋转"滑轨是否收起。
+  ///
+  /// [2026-08-06 用户签决,复刻 RealityScan] "下方控制模型旋转的滑轴可以收起再
+  /// 打开;收起后中间有一个半圆凸起,点击可以拉起滑轴"。
+  bool _rulerCollapsed = false;
 
   /// 关掉 "⋯" 浮层(已关就不 setState —— _onRoll 每帧都会调它)。
   void _closeMenu() {
@@ -488,6 +504,7 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
   /// 菜单项二:相机回到默认取景(点云回到刚进来时的大小)。框不动。
   void _resetZoom() {
     _snap.stop();
+    widget.controller.setRectPoseOverride(null);
     widget.controller.requestReframe();
   }
 
@@ -719,38 +736,29 @@ class _SelectionToolsLayerState extends State<SelectionToolsLayer>
           // SafeArea **外面** —— 包在里面时 home indicator 那条 inset 落在
           // Container 之外,露出下层灰底。现在黑色一直铺到屏幕最底边,内容靠
           // SafeArea 的 inset 自适应避开 indicator。
-          child: Container(
-            color: const Color(0xE60B0B0D),
-            child: SafeArea(
-              top: false,
-              // 底部面板**不**包手势拦截器:外层的 Scale 识别器会和刻度尺的
-              // 水平拖动抢竞技场,把滑轨拖动整个吃掉(实测框纹丝不动)。
-              // 下层点云视图改由 bottomGestureExclusion 按位置忽略该区域 ——
-              // 确定性判定,不依赖竞技场。
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(20, 12, 20, 4),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      l.selectionRotatePointCloud,
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 13,
-                      ),
-                    ),
-                    // [2026-07-30 用户签决] 底部的蓝色"开始处理"按钮删除 ——
-                    // 它只弹一句"敬请期待"的 snackbar,不做任何事;编辑的出口
-                    // 现在是右上"保存"/左上"返回"。
-                    RulerScrubber(
-                      value: _rollDeg,
-                      onChanged: _onRoll,
-                      originDeg: 0,
-                    ),
-                  ],
-                ),
-              ),
+          // [2026-08-07 用户签决,附手绘图] 弧形刻度盘(汽车仪表盘式)。收起/
+          // 展开不再靠半圆把手 —— **整个盘绕弧心转 180°** 就是收起动作(弧心在
+          // 面板下方,转过去后弧线落到屏幕外),点指针或在指针上下滑动切换。
+          // 背景纯黑、所有部件纯白,与三维编辑舱同一套规则。
+          // [2026-08-09 用户签决] "滑轴不需要额外的黑色背景,跟点云浏览共用一个
+          // 背景" —— 原来这里铺纯黑到屏幕底(2026-08-03 是为盖住下层灰底;
+          // 现在画布本身已是纯黑,见 sparse_cloud_view 的 color: Colors.black,
+          // 灰底问题不复存在)。点云不会从滑轨后面穿出来:painter 的
+          // bottomFade 在滑轨处及以下直接不画(sparse_cloud_view.dart)。
+          child: SafeArea(
+            top: false,
+            // 底部面板**不**包手势拦截器:外层的 Scale 识别器会和刻度盘的拖动
+            // 抢竞技场,把拨动整个吃掉(实测框纹丝不动)。下层点云视图改由
+            // bottomGestureExclusion 按位置忽略该区域 —— 确定性判定。
+            child: RulerScrubber(
+              value: _rollDeg,
+              onChanged: _onRoll,
+              originDeg: 0,
+              deployed: !_rulerCollapsed,
+              onDeployedChanged: (up) {
+                setState(() => _rulerCollapsed = !up);
+                widget.onRulerCollapsedChanged?.call(_rulerCollapsed);
+              },
             ),
           ),
         ),

@@ -294,7 +294,7 @@ void main() {
     );
     expect(
       sane(
-        SelectionBox.initialFor(cx: 0, cy: 0, cz: 0, hx: 0.5, hy: 0.5, hz: 0.5),
+        SelectionBox.initialSquareFace(cx: 0, cy: 0, cz: 0, halfExtent: 0.5),
       ),
       isTrue,
     );

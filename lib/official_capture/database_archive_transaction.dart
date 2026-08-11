@@ -7,6 +7,7 @@ import 'database_archive_codec.dart';
 import 'database_archive_manifest.dart';
 import 'database_archive_policy.dart';
 import 'database_archive_preprocessor.dart';
+import 'database_recipe_transaction.dart';
 
 typedef DatabaseArchiveCommitHook = Future<void> Function(File sourceDatabase);
 typedef DatabaseArchiveContinueCheck = FutureOr<bool> Function();
@@ -47,6 +48,10 @@ class DatabaseArchiveTransaction {
     final policy = await DatabaseArchivePolicy.readCompatible(captureDirectory);
     if (policy == null || !codec.isSupported) {
       return const DatabaseArchiveRunResult(eligible: false);
+    }
+    // B1 配方化 capture:DB 字节已按签决流程删除,ZPAQ 线无事可做。
+    if (await DatabaseRecipeManifest.exists(captureDirectory)) {
+      return const DatabaseArchiveRunResult(skipped: true);
     }
     if (!await _hasDurableFinalArtifacts(captureDirectory)) {
       return const DatabaseArchiveRunResult(skipped: true);

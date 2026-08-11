@@ -15,10 +15,10 @@ void main() {
     );
     expect(source, contains('要结束任务，必须至少拍摄20张照片'));
     expect(source, contains('当前已完成'));
-    expect(
-      source,
-      contains('onFinish: _sfmCaptureReady && !_finalizingRecording'),
-    );
+    expect(source, contains('onFinish:'));
+    expect(source, contains('_sfmCaptureReady &&'));
+    expect(source, contains('!_finalizingRecording &&'));
+    expect(source, contains('!_finishTapInProgress'));
   });
 
   // [2026-07-27 UI 签决] 入场提示改为完成门提示:开拍时不再弹任何"20 张"

@@ -97,12 +97,12 @@ void main() {
       isFalse,
     );
     expect(
-      await File('${capture.path}/photos_highres/frame.jpg.jxl').exists(),
+      await File('${capture.path}/photos_highres/frame.jpg.lep').exists(),
       isTrue,
     );
   });
 
-  test('native expiration pauses before the next photo', () async {
+  test('native expiration cancels the in-flight photo', () async {
     final capture = await createCapture(
       'expired',
       photos: const <String>['one.jpg', 'two.jpg'],
@@ -131,9 +131,10 @@ void main() {
     expect(cancelResult['accepted'], isTrue);
     expect(runResult['success'], isTrue);
     expect(runResult['work_remaining'], isTrue);
+    expect(codec.cancellationRequests, 1);
     expect(
       await File('${capture.path}/photos_highres/one.jpg').exists(),
-      isFalse,
+      isTrue,
     );
     expect(
       await File('${capture.path}/photos_highres/two.jpg').exists(),
@@ -190,11 +191,15 @@ class _RuntimeZlibCodec implements PhotoArchiveCodec {
       flush: true,
     );
   }
+
+  @override
+  void requestCancellation() {}
 }
 
 class _BlockingRuntimeCodec extends _RuntimeZlibCodec {
   final Completer<void> encodeStarted = Completer<void>();
   final Completer<void> allowEncode = Completer<void>();
+  int cancellationRequests = 0;
 
   @override
   Future<void> encodeJpeg({
@@ -207,5 +212,10 @@ class _BlockingRuntimeCodec extends _RuntimeZlibCodec {
       sourceJpeg: sourceJpeg,
       destinationJxl: destinationJxl,
     );
+  }
+
+  @override
+  void requestCancellation() {
+    cancellationRequests++;
   }
 }

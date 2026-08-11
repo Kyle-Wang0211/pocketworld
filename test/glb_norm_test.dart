@@ -93,63 +93,71 @@ void main() {
       expect(_glbMagic(input), equals(0x46546C67));
     });
 
-    test('runs end-to-end and either succeeds or surfaces a clean status',
-        () async {
-      GlbNormResult result;
-      try {
-        result = await GlbNormalizer.normalize(input: input);
-      } on GlbNormUnavailable catch (e) {
-        markTestSkipped(
-          'Native aether_glb_norm symbols not resolvable in this test '
-          'host (this is expected for `flutter test` on desktop without '
-          'libaether3d_ffi.dylib next to the runner). Reason: ${e.message}',
-        );
-        return;
-      }
+    test(
+      'runs end-to-end and either succeeds or surfaces a clean status',
+      () async {
+        GlbNormResult result;
+        try {
+          result = await GlbNormalizer.normalize(input: input);
+        } on GlbNormUnavailable catch (e) {
+          markTestSkipped(
+            'Native aether_glb_norm symbols not resolvable in this test '
+            'host (this is expected for `flutter test` on desktop without '
+            'libaether3d_ffi.dylib next to the runner). Reason: ${e.message}',
+          );
+          return;
+        }
 
-      switch (result.status) {
-        case GlbNormStatus.ok:
-          // Real Phase 1+ implementation is live. Validate output is a
-          // GLB by checking the 12-byte header (magic, version, length).
-          expect(result.output, isNotNull);
-          expect(result.output!.length, greaterThan(12));
-          expect(_glbMagic(result.output!), equals(0x46546C67));
-          expect(_glbVersion(result.output!), equals(2));
-          // Stats invariants from the header contract.
-          expect(result.stats.outputPrimitiveCount, 1);
-          expect(result.stats.outputMaterialCount, 1);
-          expect(result.stats.outputFaceCount, greaterThan(0));
-          expect(result.stats.outputAtlasSize, greaterThan(0));
-          break;
-        case GlbNormStatus.unsupported:
-          // Phase 0 stub is in place — FFI bridge is verified end-to-
-          // end, but the algorithm port hasn't landed. Document this
-          // explicitly so a future regression that returns a different
-          // status (e.g. invalidGlb on a known-good Duck.glb) is loud.
-          expect(result.output, isNull);
-          expect(result.error, equals('unsupported'));
-          // ignore: avoid_print
-          print(
-            'NOTE: aether_glb_norm_run returned UNSUPPORTED — FFI '
-            'bridge OK but Phase 1+ algorithm not landed yet.',
-          );
-          break;
-        default:
-          fail(
-            'Unexpected normalize status on Duck.glb fixture: '
-            '${result.status} (${result.error})',
-          );
-      }
-    });
+        switch (result.status) {
+          case GlbNormStatus.ok:
+            // Real Phase 1+ implementation is live. Validate output is a
+            // GLB by checking the 12-byte header (magic, version, length).
+            expect(result.output, isNotNull);
+            expect(result.output!.length, greaterThan(12));
+            expect(_glbMagic(result.output!), equals(0x46546C67));
+            expect(_glbVersion(result.output!), equals(2));
+            // Stats invariants from the header contract.
+            expect(result.stats.outputPrimitiveCount, 1);
+            expect(result.stats.outputMaterialCount, 1);
+            expect(result.stats.outputFaceCount, greaterThan(0));
+            expect(result.stats.outputAtlasSize, greaterThan(0));
+            break;
+          case GlbNormStatus.unsupported:
+            // Phase 0 stub is in place — FFI bridge is verified end-to-
+            // end, but the algorithm port hasn't landed. Document this
+            // explicitly so a future regression that returns a different
+            // status (e.g. invalidGlb on a known-good Duck.glb) is loud.
+            expect(result.output, isNull);
+            expect(result.error, equals('unsupported'));
+            // ignore: avoid_print
+            print(
+              'NOTE: aether_glb_norm_run returned UNSUPPORTED — FFI '
+              'bridge OK but Phase 1+ algorithm not landed yet.',
+            );
+            break;
+          default:
+            fail(
+              'Unexpected normalize status on Duck.glb fixture: '
+              '${result.status} (${result.error})',
+            );
+        }
+      },
+    );
   });
 }
 
 int _glbMagic(Uint8List bytes) {
-  return ByteData.view(bytes.buffer, bytes.offsetInBytes, 4)
-      .getUint32(0, Endian.little);
+  return ByteData.view(
+    bytes.buffer,
+    bytes.offsetInBytes,
+    4,
+  ).getUint32(0, Endian.little);
 }
 
 int _glbVersion(Uint8List bytes) {
-  return ByteData.view(bytes.buffer, bytes.offsetInBytes + 4, 4)
-      .getUint32(0, Endian.little);
+  return ByteData.view(
+    bytes.buffer,
+    bytes.offsetInBytes + 4,
+    4,
+  ).getUint32(0, Endian.little);
 }

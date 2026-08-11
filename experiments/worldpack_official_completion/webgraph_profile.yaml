@@ -24,7 +24,7 @@ build:
     target_sha256: e8f9c65d7aff5633ca09ab643684500df8ff9125acc91f080056f97d85a50aa4
     algorithm_source_changed: false
 adapter:
-  binary_sha256: 091649080861ee7fd827fed0994c406e10f5bcfa93554d3e915714ded1816c03
+  binary_sha256: 8a1b3a8b2d59724a2f39283a9443d72d19c274fabae9363a19984ebf8b0147d3
   graph_writer: webgraph::prelude::BvComp
   graph_reader: webgraph::prelude::BvGraph
   elias_fano_builder: webgraph::prelude::store_ef_with_data
@@ -40,13 +40,14 @@ grid:
 reversible_representation:
   graph_nodes:
     - sorted unique image-and-feature identities
-    - one record node per original match or two-view row
-  graph_arcs: two directed arcs per record node
+  graph_arcs: one directed arc per unique source-feature to target-feature edge
   sidecar:
     - feature identity mapping
     - table identity
     - pair identity
     - per-pair row count
+    - original record-to-unique-arc sequence
+    - duplicate multiplicity and order
     - source body SHA-256
   preserves:
     - every record
@@ -57,18 +58,61 @@ reversible_representation:
 random_access:
   offsets_file: build_only_deleted
   persisted_index: elias_fano
-  verification: eight_evenly_spaced_record_nodes_after_reload_without_offsets
+  verification: eight_evenly_spaced_records_after_reload_without_offsets
 accounting:
   counted:
     - graph
     - properties
     - elias_fano
     - zpaq_compressed_reversible_mapping
+    - zpaq_compressed_official_java_composed_permutation
   excluded:
     - build_only_offsets_deleted_before_random_access_verification
 expansion:
   rule: strictly_smaller_than_same_input_zpaq
-  minimum_result: rejected
-  reason: best_complete_persisted_bytes_26907_vs_zpaq_6542
-result_scope: registered_webgraph_0_6_1_grid_only
+  minimum_result: rejected_due_to_fixed_overhead
+  minimum_bytes: 9178
+  minimum_zpaq_bytes: 6542
+  complete_scale_audit_deviation: >-
+    user requested completion of the official pipeline after the minimum-unit
+    fixed-overhead warning exposed that the earlier family conclusion was too broad
+  complete_result: accepted_local_winner
+  complete_bytes: 1696504
+  complete_zpaq_bytes: 2030945
+  complete_vs_zpaq_reduction_fraction: 0.16467260314779575
+official_llp_pipeline:
+  source: cli/tests/test_llp_pipeline.rs
+  cli_binary_sha256: d89205ea921e4b31b072c41fd71f9cc424c2300e6f788191992e06ce9078f124
+  steps:
+    - build offsets and Elias-Fano
+    - BFS initial permutation
+    - symmetrize without loops using BFS permutation
+    - rebuild offsets byte-for-byte and build Elias-Fano plus DCF
+    - layered label propagation with seed 0
+    - compose BFS and LLP permutations
+    - apply composed permutation to the original directed graph
+    - rebuild offsets byte-for-byte and build final Elias-Fano
+  post_permutation_grid:
+    bvgraphz: [false, true]
+    compression_windows: [3, 7]
+    maximum_reference_counts: [3, 7]
+    minimum_interval_lengths: [2, 4]
+    codes: [gamma, zeta3]
+    total_arms: 32
+  winner: bvz-w7-r7-i4-gamma
+  winner_files:
+    graph: 361720
+    properties: 333
+    elias_fano: 241656
+    zpaq_mapping: 518849
+    zpaq_java_permutation: 573946
+  exactness:
+    canonical_bytes: 27451060
+    canonical_sha256: 1bf49e01aae0c1844d934a9a91f3e2a83826fb39d9be09d8561f64e59e492acf
+    records: 857844
+    duplicates: 386890
+    byte_equal: true
+    sha256_equal: true
+    random_reads_exact: true
+result_scope: official_webgraph_llp_plus_registered_post_permutation_grid
 production_promoted: false

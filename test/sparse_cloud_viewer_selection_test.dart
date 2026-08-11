@@ -93,6 +93,23 @@ double _rotDev(SelectionBox b) {
   return d;
 }
 
+/// 拨滑轨 [deg] 度所需的水平拖动像素。
+///
+/// [2026-08-07] 密度不再是常量,而是由弧半径导出(rulerPxPerDeg)。此前测试里
+/// 写死 -45/-60/-70px 隐含了旧密度 1.1pt/度;密度提到 ≈8.9 后同样的像素只转 5°,
+/// 两条断言"偏离 > 0.1"当场变红。改成按**意图**(转多少度)表达。
+Future<void> _dragRulerDeg(WidgetTester tester, double deg) async {
+  final r = find.byType(RulerScrubber);
+  final px = deg * rulerPxPerDeg(tester.getRect(r).width);
+  await tester.drag(r, Offset(-px, 0));
+  await tester.pumpAndSettle();
+}
+
+/// 浏览态当前 pitch —— initialCamera 为 null 时从视图 State 读。
+double _browsePitchOf(WidgetTester tester) =>
+    ((tester.state(find.byType(SparseCloudView)) as dynamic).debugPitch
+        as double);
+
 void main() {
   Future<(Directory, String)> fixture(WidgetTester tester) async {
     late Directory dir;
@@ -276,15 +293,14 @@ void main() {
     // [2026-07-29 用户实机指认"每次拨回初始刻度角度都不一样"] 转轴此前每次
     // 都拿被转过的框重算,增量不可逆。锁轴后来回等量拨动必须精确抵消。
     final ruler = find.byType(RulerScrubber);
-    await tester.drag(ruler, const Offset(-60, 0));
-    await tester.pumpAndSettle();
+    await _dragRulerDeg(tester, 55);
     var moved = 0.0;
     for (var i = 0; i < 9; i++) {
       moved += (rot()[i] - before[i]).abs();
     }
     expect(moved, greaterThan(0.1), reason: '先要真的转出去');
 
-    await tester.drag(ruler, const Offset(60, 0));
+    await _dragRulerDeg(tester, -55); // 同角度回拨 ⇒ 读数归 0
     await tester.pumpAndSettle();
     for (var i = 0; i < 9; i++) {
       expect(rot()[i], closeTo(before[i], 1e-9), reason: '回到 0 刻度必须复原');
@@ -310,9 +326,10 @@ void main() {
     // [2026-07-29 用户实机指认"转完一圈还是无法回到原点"] 分 50 小段拨满一圈,
     // 中途框会转过很多角度 —— 转轴绝不能因此被重算,否则每段绕的是不同的轴,
     // 累计不闭合。慢速匀速拨(< 甩动阈值),避免惯性多转一截让"整圈"失准。
-    // 一圈的像素宽从 kRulerPxPerDeg 算,不硬编码(2026-08-03 灵敏度 1.1→0.75
+    // 一圈的像素宽从 rulerPxPerDeg(宽) 算,不硬编码(2026-08-03 灵敏度 1.1→0.75
     // 时这里漏改过一次,红在"整圈必须闭合")。
-    const fullTurnPx = 360.0 * kRulerPxPerDeg;
+    final fullTurnPx =
+        360.0 * rulerPxPerDeg(tester.getRect(find.byType(RulerScrubber)).width);
     final step = fullTurnPx / 50;
     final ruler = find.byType(RulerScrubber);
     final g = await tester.startGesture(tester.getCenter(ruler));
@@ -345,8 +362,7 @@ void main() {
     final poseY = cube().viewYaw, poseP = cube().viewPitch;
     final poseR = cube().viewRoll;
     final rot0 = [...box().rot];
-    await tester.drag(find.byType(RulerScrubber), const Offset(-70, 0));
-    await tester.pumpAndSettle();
+    await _dragRulerDeg(tester, 60);
 
     // ① [2026-07-29 横轴翻滚] 框相对点云翻了 ⇒ 框朝向整体偏离基准。
     var dev = 0.0;
@@ -389,8 +405,7 @@ void main() {
     // 归位后该面应重新精确正对相机(primaryViewCubeFace 稳定)。
     expect(cube().viewPitch.abs(), greaterThan(1.2), reason: '初始应为正俯视');
     final target = primaryViewCubeFace(cube().viewYaw, cube().viewPitch);
-    await tester.drag(find.byType(RulerScrubber), const Offset(-37, 0));
-    await tester.pumpAndSettle();
+    await _dragRulerDeg(tester, 34);
     await tester.tapAt(tester.getCenter(find.byType(ViewCube)));
     await tester.pumpAndSettle();
     expect(
@@ -430,8 +445,7 @@ void main() {
     final base = composeViewMatrix(c0.yaw, c0.pitch, c0.roll);
     final cubeBefore = cube();
 
-    await tester.drag(find.byType(RulerScrubber), const Offset(-70, 0));
-    await tester.pumpAndSettle();
+    await _dragRulerDeg(tester, 60);
 
     final c1 = camOf();
     final now = composeViewMatrix(c1.yaw, c1.pitch, c1.roll);
@@ -484,8 +498,7 @@ void main() {
     // 钟表旋转把角度存在**相机 roll** 里(框绕视线反转同角度抵消)。旧
     // _applyPose 为"手动 orbit 不带滚转"把 roll 硬写 0 —— 手动转一下视角就
     // 把滑轨的成果清掉,而框的朝向留着,框与骰子当场歪掉。
-    await tester.drag(find.byType(RulerScrubber), const Offset(-70, 0));
-    await tester.pumpAndSettle();
+    await _dragRulerDeg(tester, 60);
     final rolled = camOf().roll;
     expect(rolled.abs(), greaterThan(0.05), reason: '滑轨应产生滚转');
 
@@ -751,8 +764,7 @@ void main() {
 
       // 拨滑轨:钟表旋转给**相机**注入 roll,框绕视线反转同角度抵消 ⇒ 骰子
       // 显示的面不变。
-      await tester.drag(find.byType(RulerScrubber), const Offset(-70, 0));
-      await tester.pumpAndSettle();
+      await _dragRulerDeg(tester, 60);
       final camRoll = tester
           .widget<SelectionToolsLayer>(find.byType(SelectionToolsLayer))
           .camera
@@ -875,8 +887,7 @@ void main() {
         .selectionBox!;
 
     // 先把框转歪(拨滑轨),再用菜单还原。
-    await tester.drag(find.byType(RulerScrubber), const Offset(-70, 0));
-    await tester.pumpAndSettle();
+    await _dragRulerDeg(tester, 60);
     // 注意:转轴 = 当前正对面的法向,默认视角正对 Front ⇒ 绕世界 Z 转,
     // 绕 Y 的分量(yawDeg)并不会变 —— 断言矩阵整体偏离单位阵才对。
     var moved = 0.0;
@@ -926,8 +937,7 @@ void main() {
 
     // 恢复原始框大小:先拨滑轨改朝向,再复位 —— 框必须回到按点云重算的初始
     // 框(朝向为轴对齐、尺寸等于场景包围盒)。
-    await tester.drag(find.byType(RulerScrubber), const Offset(-50, 0));
-    await tester.pumpAndSettle();
+    await _dragRulerDeg(tester, 45);
     expect(_rotDev(box()), greaterThan(0.1), reason: '先要真的拨歪');
     await tester.tap(find.byKey(const ValueKey('selection-more')));
     await tester.pumpAndSettle();
@@ -938,7 +948,7 @@ void main() {
     }
   });
 
-  testWidgets('⋯ 菜单展开时:仍能拨刻度 / 按箭头换面', (tester) async {
+  testWidgets('⋯ 菜单展开时:下层操作照常生效(那一次手势不被吞)', (tester) async {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));
     await openViewer(tester, ply);
@@ -961,8 +971,7 @@ void main() {
     // [2026-07-29 用户签决] 菜单展开时底下照常可操作 —— PopupMenuButton 的
     // 全屏 ModalBarrier 会把这些手势全吞掉,故改自绘浮层。
     final dev0 = _rotDev(box());
-    await tester.drag(find.byType(RulerScrubber), const Offset(-45, 0));
-    await tester.pumpAndSettle();
+    await _dragRulerDeg(tester, 40);
     expect((_rotDev(box()) - dev0).abs(), greaterThan(0.1), reason: '菜单挡住了刻度');
 
     // [2026-07-30 语义替换] 骰子拖动随"点云只能固定六个面动"删除,换面入口
@@ -980,8 +989,251 @@ void main() {
     }
     expect(poseDev, greaterThan(0.5), reason: '菜单挡住了箭头');
 
-    // 菜单仍然开着(自绘浮层不会因为下层手势自动收起)。
-    expect(find.text('Reset Rotation'), findsOneWidget);
+    // [2026-08-03 语义反转,不是回归] 原断言是"菜单仍然开着(自绘浮层不会因为
+    // 下层手势自动收起)"。用户随后签决"点击屏幕其他区域时弹窗自动消失(跟取消
+    // 的弹窗逻辑一样)"⇒ 操作下层就该顺手关掉菜单。本用例保留的核心是**那一次
+    // 手势不被吞**(上面已断言刻度/箭头确实生效),菜单去留改由新用例
+    // 「⋯ 菜单:点屏幕其他区域自动消失,且不吞掉那一次手势」守。
+    expect(find.text('Reset Rotation'), findsNothing, reason: '操作下层后菜单该收起');
+  });
+
+  testWidgets('底部弧形刻度盘:点指针收起/展开,面板高度不变(整体旋转)', (tester) async {
+    final (dir, ply) = await fixture(tester);
+    addTearDown(() => dir.delete(recursive: true));
+    await openViewer(tester, ply);
+    await tester.tap(find.byKey(const ValueKey('viewer-enter-editing')));
+    await _pumpUntilRealAsyncSettles(
+      tester,
+      () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
+    );
+    await tester.pumpAndSettle();
+
+    // [2026-08-07 语义替换,不是回归] 原用例守的是"半圆把手 + 面板折叠变矮"。
+    // 弧形刻度盘把收起改成**整个盘绕弧心转 180°** —— 弧心在面板下方,转过去后
+    // 弧线落到屏幕外。所以面板高度**恒定不变**,把手也不存在了,入口是指针本身。
+    final pin = find.byKey(const ValueKey('ruler-pin'));
+    final ruler = find.byType(RulerScrubber);
+    expect(ruler, findsOneWidget);
+    expect(pin, findsOneWidget, reason: '指针命中区不在,没有收起入口');
+    expect(
+      tester.widget<RulerScrubber>(ruler).deployed,
+      isTrue,
+      reason: '打开编辑页应默认升起',
+    );
+
+    final panelHeightBefore = tester.getRect(ruler).height;
+
+    await tester.tap(pin);
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<RulerScrubber>(ruler).deployed,
+      isFalse,
+      reason: '点指针没能收起',
+    );
+    // 收起靠旋转,不靠改高度 —— 面板尺寸必须逐像素不变,否则上方点云会跳。
+    expect(
+      tester.getRect(ruler).height,
+      panelHeightBefore,
+      reason: '收起改了面板高度 ⇒ 点云画布会跳一下',
+    );
+    expect(ruler, findsOneWidget, reason: '收起后组件不该从树上消失(要能再点回来)');
+
+    await tester.tap(pin);
+    await tester.pumpAndSettle();
+    expect(tester.widget<RulerScrubber>(ruler).deployed, isTrue);
+    expect(tester.getRect(ruler).height, panelHeightBefore);
+  });
+
+  testWidgets('编辑态不显示右上角 reframe 按钮(浏览态保留)', (tester) async {
+    final (dir, ply) = await fixture(tester);
+    addTearDown(() => dir.delete(recursive: true));
+    await openViewer(tester, ply);
+
+    // [2026-08-07 用户实机指认] 编辑页右上角那个 filter_center_focus 图标"好像没
+    // 有任何作用" —— 它和"⋯"菜单的"回到初始点云大小"是同一个功能,而且 top:10
+    // 压在状态栏边缘、被"完成"按钮挤着,基本点不到。编辑态删掉,浏览态保留
+    // (那里没有 ⋯ 菜单,它是唯一入口)。
+    final reframeBtn = find.byIcon(Icons.filter_center_focus);
+    expect(reframeBtn, findsOneWidget, reason: '浏览态的 reframe 入口不该被删');
+
+    await tester.tap(find.byKey(const ValueKey('viewer-enter-editing')));
+    await _pumpUntilRealAsyncSettles(
+      tester,
+      () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
+    );
+    await tester.pumpAndSettle();
+    expect(reframeBtn, findsNothing, reason: '编辑态还留着那个点不到的图标');
+
+    // 回浏览态 ⇒ 重新出现。
+    await tester.tap(find.byKey(kSelectionCancelKey));
+    await _pumpUntilRealAsyncSettles(
+      tester,
+      () => find.byType(SelectionToolsLayer).evaluate().isEmpty,
+    );
+    await tester.pumpAndSettle();
+    expect(reframeBtn, findsOneWidget, reason: '退出编辑后浏览态的入口没回来');
+  });
+
+  testWidgets('退出编辑的视角:取消 ⇒ 回斜上 45°,完成 ⇒ 保留当前视角', (tester) async {
+    // [2026-08-08 用户签决] "如果用户在编辑页面什么都没做,直接点取消了,那就恢复
+    // 到斜上 45 度。如果用户编辑了点云大小,点击完成后,就保留在当前视角。"
+    final (dir, ply) = await fixture(tester);
+    addTearDown(() => dir.delete(recursive: true));
+    await openViewer(tester, ply);
+
+    Future<void> enterEditing() async {
+      await tester.tap(find.byKey(const ValueKey('viewer-enter-editing')));
+      await _pumpUntilRealAsyncSettles(
+        tester,
+        () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
+      );
+      await tester.pumpAndSettle();
+    }
+
+    // ── 取消(什么都没做)⇒ 恢复斜上 45° ──
+    await enterEditing();
+    // 前提:编辑态确实被拧成了正俯视(否则本用例测不到东西)。
+    expect(_browsePitchOf(tester), closeTo(-math.pi / 2, 0.03));
+
+    await tester.tap(find.byKey(kSelectionCancelKey));
+    await _pumpUntilRealAsyncSettles(
+      tester,
+      () => find.byType(SelectionToolsLayer).evaluate().isEmpty,
+    );
+    await tester.pumpAndSettle();
+    expect(
+      _browsePitchOf(tester),
+      closeTo(-math.pi / 4, 0.03),
+      reason:
+          '取消后没回到斜上 45°(pitch=${_browsePitchOf(tester) * 180 / math.pi}°)'
+          ' ⇒ 用户停在编辑态那个正俯视上',
+    );
+
+    // ── 完成 ⇒ 保留当前视角(不许偷偷跳回 45°) ──
+    await enterEditing();
+    expect(_browsePitchOf(tester), closeTo(-math.pi / 2, 0.03));
+    await tester.tap(find.byKey(const ValueKey('selection-back')));
+    await _pumpUntilRealAsyncSettles(
+      tester,
+      () => find.byType(SelectionToolsLayer).evaluate().isEmpty,
+    );
+    await tester.pumpAndSettle();
+    expect(
+      _browsePitchOf(tester),
+      closeTo(-math.pi / 2, 0.03),
+      reason: '完成后视角被重置了 ⇒ 用户说的"保留在当前视角"没做到',
+    );
+  });
+
+  testWidgets('编辑态绝不出现 45°:进编辑 / 回到初始角度 / 回到初始大小 三条路都是正俯视', (tester) async {
+    final (dir, ply) = await fixture(tester);
+    addTearDown(() => dir.delete(recursive: true));
+    await openViewer(tester, ply);
+
+    // [2026-08-07 用户签决] 浏览态初始视角改成斜上 45°(与草稿卡片缩略图同姿态,
+    // 学 Polycam),但"编辑模式绝对不允许存在这种 45 度的情况" —— 选区的 2D 矩形
+    // 手柄只有正俯视才与盒的投影严格重合。
+    final browse = tester
+        .widget<SparseCloudView>(find.byType(SparseCloudView))
+        .initialCamera;
+    // 浏览态确实是斜的(否则本用例什么都没测到)。
+    expect(
+      browse?.pitch ?? _browsePitchOf(tester),
+      closeTo(-math.pi / 4, 0.05),
+      reason: '浏览态初始视角不是斜上 45°',
+    );
+
+    await tester.tap(find.byKey(const ValueKey('viewer-enter-editing')));
+    await _pumpUntilRealAsyncSettles(
+      tester,
+      () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
+    );
+    await tester.pumpAndSettle();
+
+    double editPitch() => tester
+        .widget<SelectionToolsLayer>(find.byType(SelectionToolsLayer))
+        .camera
+        .value!
+        .pitch;
+
+    // ① 进编辑 ⇒ 正俯视。
+    expect(
+      editPitch(),
+      closeTo(-math.pi / 2, 0.03),
+      reason: '进编辑没转到正上方(pitch=${editPitch() * 180 / math.pi}°)',
+    );
+
+    // ② "回到初始旋转角度" ⇒ 仍是正俯视。
+    await tester.tap(find.byKey(const ValueKey('selection-more')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Reset Rotation'));
+    await tester.pumpAndSettle();
+    expect(
+      editPitch(),
+      closeTo(-math.pi / 2, 0.03),
+      reason: '"回到初始旋转角度"把视角带到了 45°',
+    );
+
+    // ③ "回到初始点云大小"(reframe)⇒ 仍是正俯视。这条是实机指认的真凶:
+    //    _reframe() 原先无条件用浏览态的 _kDefaultPitch(45°)。
+    await tester.tap(find.byKey(const ValueKey('selection-more')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Reset Zoom'));
+    await tester.pumpAndSettle();
+    expect(
+      editPitch(),
+      closeTo(-math.pi / 2, 0.03),
+      reason: '"回到初始点云大小"把视角拽回了 45°(reframe 用了浏览态默认 pitch)',
+    );
+  });
+
+  testWidgets('⋯ 菜单:点屏幕其他区域自动消失,且不吞掉那一次手势', (tester) async {
+    final (dir, ply) = await fixture(tester);
+    addTearDown(() => dir.delete(recursive: true));
+    await openViewer(tester, ply);
+    await tester.tap(find.byKey(const ValueKey('viewer-enter-editing')));
+    await _pumpUntilRealAsyncSettles(
+      tester,
+      () => find.byType(SelectionToolsLayer).evaluate().isNotEmpty,
+    );
+    await tester.pumpAndSettle();
+
+    // [2026-08-03 用户签决] "点击屏幕其他区域时弹窗自动消失(跟取消的弹窗逻辑
+    // 一样)"。但 07-30 那条"拉开 ⋯ 时依然能转立方体/拨刻度/转点云"仍然有效,
+    // 所以这里同时守两件事:空白点击关菜单、并且那一次手势没被吞掉。
+    Future<void> openMenu() async {
+      await tester.tap(find.byKey(const ValueKey('selection-more')));
+      await tester.pumpAndSettle();
+      expect(find.text('Reset Rotation'), findsOneWidget);
+    }
+
+    // ① 点空白 ⇒ 菜单消失。
+    await openMenu();
+    final r = tester.getRect(find.byType(SparseCloudView));
+    await tester.tapAt(Offset(r.center.dx, r.top + r.height * 0.28));
+    await tester.pumpAndSettle();
+    expect(find.text('Reset Rotation'), findsNothing, reason: '点空白没关掉菜单');
+    expect(find.byType(SelectionToolsLayer), findsOneWidget, reason: '不该退出编辑态');
+
+    // ② 菜单开着时按箭头:菜单关掉,而且箭头**照常生效**(手势没被吞)。
+    await openMenu();
+    List<double> pose() {
+      final cam = tester
+          .widget<SelectionToolsLayer>(find.byType(SelectionToolsLayer))
+          .camera
+          .value!;
+      return composeViewMatrix(cam.yaw, cam.pitch, cam.roll);
+    }
+
+    final before = pose();
+    await tester.tap(find.byKey(const ValueKey('cube-down')));
+    await tester.pumpAndSettle();
+    expect(find.text('Reset Rotation'), findsNothing, reason: '按箭头后菜单还开着');
+    var moved = 0.0;
+    for (var i = 0; i < 9; i++) {
+      moved += (pose()[i] - before[i]).abs();
+    }
+    expect(moved, greaterThan(0.1), reason: '菜单把箭头那一次点击吞掉了');
   });
 
   testWidgets('加载失败:无编辑入口', (tester) async {
@@ -1177,7 +1429,7 @@ void main() {
       await seed(
         tester,
         dir,
-        SelectionBox.initialFor(cx: 0, cy: 0, cz: 0, hx: 0.2, hy: 0.2, hz: 0.2),
+        SelectionBox.initialSquareFace(cx: 0, cy: 0, cz: 0, halfExtent: 0.2),
       );
       await openViewer(tester, ply);
 
@@ -1229,8 +1481,7 @@ void main() {
 
     Future<void> editBox(WidgetTester tester) async {
       await enterEditing(tester);
-      await tester.drag(find.byType(RulerScrubber), const Offset(-60, 0));
-      await tester.pumpAndSettle();
+      await _dragRulerDeg(tester, 55);
       expect(_rotDev(boxOf(tester)!), greaterThan(0.1), reason: '滑轨应已转动框');
     }
 
@@ -1288,6 +1539,13 @@ void main() {
     testWidgets('"放弃更改"浮层锚定在左上"取消"下方(苹果相册版式)', (tester) async {
       final (dir, ply) = await fixture(tester);
       addTearDown(() => dir.delete(recursive: true));
+      // ⚠️ 必须注入状态栏 inset:默认测试环境 padding 全 0,SafeArea 不产生任何
+      // 偏移 ⇒ 测不出 showDialog(useSafeArea: true) 把浮层顶下去那个坑(假绿)。
+      // 真机 iPhone 14 Pro 顶部约 59pt × dpr 3 = 177 物理像素。
+      tester.view.padding = const FakeViewPadding(top: 177);
+      tester.view.viewPadding = const FakeViewPadding(top: 177);
+      addTearDown(tester.view.resetPadding);
+      addTearDown(tester.view.resetViewPadding);
       await pushViewer(tester, ply);
       await editBox(tester);
 
@@ -1310,9 +1568,14 @@ void main() {
       );
       expect(
         popRect.top - cancelRect.bottom,
-        lessThan(24),
-        reason: '浮层离"取消"太远,视觉上不像从它弹出来的',
+        lessThan(10),
+        reason:
+            '浮层离"取消"太远(应紧贴其下、盖住"⋯")—— 检查 '
+            'showDialog 的 useSafeArea 是否又打开了',
       );
+      // 宽度:用户要求收窄,别占掉半个屏。
+      final w = tester.view.physicalSize.width / tester.view.devicePixelRatio;
+      expect(popRect.width, lessThan(w * 0.62), reason: '浮层太宽');
       expect(
         (popRect.left - cancelRect.left).abs(),
         lessThan(20),

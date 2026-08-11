@@ -1,0 +1,12 @@
+{
+  "completed_samples": 512,
+  "diagnostic_only": true,
+  "elapsed_seconds": 28.60057587499614,
+  "images_per_second": 17.90173744185384,
+  "iterator_completed": true,
+  "ordered_sample_identity_sha256": "36be36e6bd3887e25c85b7d3fc5f17324408da2619839eb65c82d14a3b4d2b76",
+  "process_exit_proves_workers_reaped": true,
+  "sample_count": 512,
+  "schema": "pw_plr_worker_lifecycle_diagnostic_v1",
+  "workers": 4
+}

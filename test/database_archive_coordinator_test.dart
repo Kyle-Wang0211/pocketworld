@@ -246,6 +246,9 @@ class _ZlibPhotoCodec implements PhotoArchiveCodec {
       flush: true,
     );
   }
+
+  @override
+  void requestCancellation() {}
 }
 
 class _RecordingDatabaseCodec implements DatabaseArchiveCodec {

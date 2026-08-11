@@ -1,9 +1,8 @@
 // [SIGNED 2026-07-27] 采集张数预算 20-300 的契约。
 //
-// 上限不是提示而是硬约束:端上重建的时间/内存曲线只在这个范围验证过,
-// 超出即无保障。所以三处必须同源于 officialCaptureCanShoot —— 相册徽章
-// 的分子/分母(RS 同款)、快门置灰、_onShutterTap 的逻辑兜底。任何一处
-// 被改回"只提示不拦"或写死数字,本测试必须失败。
+// 上限不是提示而是硬约束:端上重建的时间/内存曲线只在这个范围验证过。
+// 快速连点时预算必须计算 已验证 + 在途 + 排队，不能只看相册里已经落盘
+// 的数量，否则同一个事件循环内就能穿透 300 张上限。
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -44,25 +43,47 @@ void main() {
     // 无底色:数字直接压在照片上,靠阴影保可读性。
     expect(page, contains('class _AlbumCountFraction'));
 
-    // 快门置灰 + 逻辑兜底,两处都走同一个判据函数。
-    expect(page, contains('enabled: ready && canShoot'));
-    expect(page, contains('onTap: ready && canShoot ? onShutter : null'));
+    // 快门置灰 + 逻辑兜底,两处都走同一个判据函数，并把队列算进预算。
     expect(
       page,
-      contains(
-        'if (!officialCaptureCanShoot(acceptedFrameCount: '
-        '_projectPhotos.count)) {',
-      ),
+      contains('enabled: ready && shutterQueue.accepting && canShoot'),
+    );
+    expect(
+      page,
+      contains('onTap: ready && shutterQueue.accepting && canShoot'),
+    );
+    expect(
+      page,
+      contains('projectPhotos.count + shutterQueue.outstandingCount'),
+    );
+    expect(
+      page,
+      contains('_shutterQueue.enqueue(verifiedCount: _projectPhotos.count)'),
     );
     expect(
       page,
       contains("ValueKey<String>('official-maximum-photos-dialog')"),
     );
 
-    // 唯一拍照入口仍是 _onShutterTap(卡点覆盖完整的前提)。
+    // 唯一原生拍照入口住在串行 executor；UI tap 只能同步入队。
     expect(
       RegExp(r'await session\.captureSinglePhoto\(\)').allMatches(page).length,
       1,
     );
+    expect(page, contains('Future<void> _executeShutterTicket('));
+    final shutterStart = page.indexOf('void _onShutterTap()');
+    final shutterEnd = page.indexOf(
+      'Future<void> _showMaximumPhotosDialog()',
+      shutterStart,
+    );
+    expect(shutterStart, greaterThanOrEqualTo(0));
+    expect(shutterEnd, greaterThan(shutterStart));
+    final shutterSource = page.substring(shutterStart, shutterEnd);
+    expect(shutterSource, contains('_shutterQueue.enqueue('));
+    expect(shutterSource, isNot(contains('await ')));
+    expect(shutterSource, isNot(contains('captureSinglePhoto')));
+    expect(shutterSource, isNot(contains('TelemetryWriter')));
+    expect(shutterSource, isNot(contains('DeviceLog')));
+    expect(shutterSource, isNot(contains('_recomputeShutterPace')));
   });
 }

@@ -1,0 +1,47 @@
+{
+ "schema": "pw_capture_data_taxonomy_v1",
+ "principle": "三分类:源数据(必存)/派生数据(可再生,B轨)/工作状态(热,不进冷归档)",
+ "measured_on": "analysis_cap_1779777762841797 (274MB)",
+ "types": {
+  "photos_highres_241MB": {
+   "class": "源数据",
+   "treatment": "PWVA HEVC 流式",
+   "measured": "11.81x",
+   "status": "库已交付"
+  },
+  "sparse_ply": {
+   "class": "交付物(保留)",
+   "treatment": "pw_ply 严格无损",
+   "measured": "17.68%削减",
+   "status": "库已交付"
+  },
+  "sidecar_jsons_659KB": {
+   "class": "源数据(位姿/内参/时间戳/决策记录)",
+   "treatment": "pw_sidecar 逐文件deflate+SHA",
+   "measured": "658,898 -> 90,549 B (剩13.7%, 7.3x)",
+   "status": "库已交付,11文件全过SHA"
+  },
+  "previews_17MB": {
+   "class": "派生(照片降采样)",
+   "treatment": "不压缩——从PWVA解码+降采样再生",
+   "needs": "B轨签决"
+  },
+  "photos_depth_15MB": {
+   "class": "派生(DA3模型输出,742x476 JPEG,非传感器/非LiDAR)",
+   "treatment": "不压缩——DA3重跑再生",
+   "needs": "B轨签决"
+  },
+  "streaming_sfm_db": {
+   "class": "工作状态(热)+派生(冷)",
+   "treatment": "热:不动;冷:B轨再生,或按既有实测栈(ZPAQ/WebGraph 41.4%,host侧C++);纯Dart诚实预期仅15-20%",
+   "needs": "B轨签决"
+  }
+ },
+ "capture_level_projection": {
+  "before": 287309824,
+  "source_only_archive": "21.3MB(photos)+0.96MB(ply)+0.09MB(sidecars)≈22.4MB",
+  "ratio_with_B": "≈12.8x",
+  "ratio_without_B(派生也存,原样)": "≈5.2x"
+ },
+ "tests": "15/15"
+}

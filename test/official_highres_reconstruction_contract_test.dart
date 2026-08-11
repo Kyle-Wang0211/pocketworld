@@ -168,7 +168,7 @@ void main() {
   });
 
   test(
-    'official shutter stays locked until its 12MP transaction completes',
+    'official shutter admits immediately while one 12MP transaction drains',
     () {
       final session = File(
         'lib/official_capture/capture_session.dart',
@@ -178,52 +178,198 @@ void main() {
       ).readAsStringSync();
 
       expect(session, contains('highResolutionCompletion'));
+      expect(page, contains('ManualCaptureQueue'));
+      expect(page, contains('_shutterQueue.enqueue('));
+      expect(page, contains('Future<void> _executeShutterTicket('));
       expect(page, contains('await capture.highResolutionCompletion'));
+      expect(page, isNot(contains('if (_capturing) return;')));
+      expect(page, isNot(contains('setState(() => _capturing = true)')));
+      expect(page, isNot(contains('setState(() => _capturing = false)')));
       expect(page, isNot(contains('高分辨率相机正在拍摄，本次未拍摄，请重拍')));
     },
   );
 
-  test(
-    'official shutter transaction retries until one verified 12MP succeeds',
-    () {
-      final session = File(
-        'lib/official_capture/capture_session.dart',
-      ).readAsStringSync();
+  test('official shutter transaction retries but cannot hang forever', () {
+    final session = File(
+      'lib/official_capture/capture_session.dart',
+    ).readAsStringSync();
 
-      expect(session, contains('while (_started && !_disposed)'));
-      expect(session, contains('return input;'));
-      expect(
-        session,
-        contains(
-          'Future<OfficialHighResReconstructionInput> '
-          '_captureOfficialHighResInput',
-        ),
-      );
-    },
-  );
+    expect(session, contains('_manualHighResMaxAttempts'));
+    expect(session, contains('attempt < _manualHighResMaxAttempts'));
+    expect(session, contains('return input;'));
+    expect(session, contains('suspendManualCaptureTransactions'));
+    expect(session, contains('resumeManualCaptureTransactions'));
+    expect(session, contains('await _waitForManualCaptureResume()'));
+    expect(
+      session,
+      contains(
+        'Future<OfficialHighResReconstructionInput> '
+        '_captureOfficialHighResInput',
+      ),
+    );
+  });
 
-  // [SIGNED 2026-07-26] 契约反转:完成键必须随时可点(快门加载回归案,
-  // "用户必须随时可以点完成")。eaf8706 的 capturing 门已回退;在途 12MP
-  // 保存由 finalize 的排队语义等待,不再靠禁用完成键。本测试反向钉死,
-  // 防 eaf8706 形态复发。
-  test('finish stays tappable; in-flight shutter is awaited by finalize', () {
+  test('finish freezes and drains accepted shutter tickets before stop', () {
     final page = File(
       'lib/ui/official_capture/ar_capture_page.dart',
     ).readAsStringSync();
+    final finalizeStart = page.indexOf('Future<void> _finalizeRecording({');
+    final finalizeEnd = page.indexOf(
+      'Future<void> _persistDraft(',
+      finalizeStart,
+    );
+    final finalizeSource = page.substring(finalizeStart, finalizeEnd);
+    final finishStart = page.indexOf('Future<void> _onFinishTap()');
+    final finishEnd = page.indexOf(
+      'Future<void> _finalizeRecording({',
+      finishStart,
+    );
+    final finishSource = page.substring(finishStart, finishEnd);
 
+    expect(page, isNot(contains('_capturing')));
+    expect(page, contains('await _shutterQueue.freezeAndDrain()'));
     expect(
-      page,
-      contains(
-        'if (_finalizingRecording || _lockInProgress || _capturing) return;',
+      finishSource.indexOf('await _shutterQueue.freezeAndDrain()'),
+      lessThan(
+        finishSource.indexOf('final acceptedFrameCount = _projectPhotos.count'),
       ),
     );
+    expect(
+      finalizeSource.indexOf('await _shutterQueue.freezeAndDrain()'),
+      lessThan(finalizeSource.indexOf('await session.stop()')),
+    );
     expect(page, contains('busy: finishing'));
-    expect(page, isNot(contains('busy: finishing || capturing')));
-    expect(page, contains('onTap: paths.isEmpty ? null : onFinish'));
     expect(
       page,
-      isNot(contains('onTap: capturing || paths.isEmpty ? null : onFinish')),
+      contains('projectPhotos.count + shutterQueue.outstandingCount == 0'),
     );
+    expect(page, contains('_shutterQueue.resume()'));
+    expect(page, contains('_shutterQueue.cancelPending()'));
+    expect(finishSource, contains('_finishDrainFailed = false'));
+    expect(finishSource, contains('_finishDrainFailed ||'));
+    expect(finishSource, contains('!_cameraResumeFailed'));
+    final errorStart = page.indexOf('void _onShutterTicketError(');
+    final errorEnd = page.indexOf('void _openAlbum()', errorStart);
+    final errorSource = page.substring(errorStart, errorEnd);
+    expect(errorSource, contains('if (_finishTapInProgress)'));
+    expect(errorSource, contains('_finishDrainFailed = true'));
+    expect(errorSource, contains('_shutterQueue.cancelPending()'));
+  });
+
+  test('pending tickets never dim the white shutter or block safe exit', () {
+    final page = File(
+      'lib/ui/official_capture/ar_capture_page.dart',
+    ).readAsStringSync();
+    final shutterStart = page.indexOf('class _ShutterButton');
+    final shutterEnd = page.indexOf('class _FinishArrowButton', shutterStart);
+    final shutterSource = page.substring(shutterStart, shutterEnd);
+    final closeStart = page.indexOf('Future<void> _onCloseTap()');
+    final closeEnd = page.indexOf('Future<void> _onCenterTap()', closeStart);
+    final closeSource = page.substring(closeStart, closeEnd);
+
+    expect(shutterSource, contains('color: Colors.white'));
+    expect(shutterSource, isNot(contains('busy')));
+    expect(shutterSource, isNot(contains('Colors.white70')));
+    expect(
+      closeSource,
+      isNot(
+        contains(
+          '_finalizingRecording || _finishTapInProgress || _lockInProgress',
+        ),
+      ),
+    );
+    expect(closeSource, contains('_finishCancellationRequested = true'));
+    expect(closeSource, contains('_shutterQueue.cancelPending()'));
+    expect(closeSource, contains('await session.stop()'));
+    expect(closeSource, contains('await _shutterQueue.freezeAndDrain()'));
+    expect(closeSource, contains('await session.discardCurrentCapture()'));
+    expect(
+      closeSource.indexOf('await session.stop()'),
+      lessThan(closeSource.indexOf('await _shutterQueue.freezeAndDrain()')),
+      reason:
+          'discard must stop capture retries before waiting for the active '
+          'native transaction to settle',
+    );
+    expect(
+      closeSource.indexOf('await _shutterQueue.freezeAndDrain()'),
+      lessThan(closeSource.indexOf('await session.discardCurrentCapture()')),
+      reason:
+          'the active native high-resolution transaction must release its '
+          'file before discard recursively deletes the capture directory',
+    );
+    expect(closeSource, contains('_closeTapInProgress = false'));
+    expect(
+      closeSource.lastIndexOf('_closeTapInProgress = false'),
+      greaterThan(closeSource.indexOf('await session.discardCurrentCapture()')),
+      reason: 'close must stay single-flight until destructive teardown ends',
+    );
+  });
+
+  test('background suspends 12MP work and resume explicitly releases it', () {
+    final page = File(
+      'lib/ui/official_capture/ar_capture_page.dart',
+    ).readAsStringSync();
+    final pauseStart = page.indexOf('Future<void> _pauseArForBackground()');
+    final pauseEnd = page.indexOf(
+      'Future<void> _restartArSessionAfterResume()',
+      pauseStart,
+    );
+    final resumeEnd = page.indexOf(
+      'Future<void> _stopRecordingIfRunning()',
+      pauseEnd,
+    );
+    final pauseSource = page.substring(pauseStart, pauseEnd);
+    final resumeSource = page.substring(pauseEnd, resumeEnd);
+
+    expect(pauseSource, contains('suspendManualCaptureTransactions()'));
+    expect(
+      pauseSource.indexOf('suspendManualCaptureTransactions()'),
+      lessThan(pauseSource.indexOf("invokeMethod<void>('stopSession')")),
+    );
+    expect(resumeSource, contains('resumeManualCaptureTransactions()'));
+    expect(resumeSource, contains('failSuspendedManualCaptureTransactions(e)'));
+    expect(resumeSource, contains('_shutterQueue.cancelPending()'));
+    expect(resumeSource, contains('_cameraResumeFailed = true'));
+    expect(resumeSource, contains('_cameraResumeFailed = false'));
+    expect(resumeSource, contains('_shutterQueue.resume()'));
+    expect(
+      resumeSource.indexOf("invokeMethod<void>('startSession'"),
+      lessThan(resumeSource.indexOf('resumeManualCaptureTransactions()')),
+    );
+  });
+
+  test('page disposal releases the active 12MP ticket before its session', () {
+    final page = File(
+      'lib/ui/official_capture/ar_capture_page.dart',
+    ).readAsStringSync();
+    final helperStart = page.indexOf(
+      'Future<void> _disposeCaptureResourcesAfterQueueDrain(',
+    );
+    final helperEnd = page.indexOf('@override\n  void dispose()', helperStart);
+    final helper = page.substring(helperStart, helperEnd);
+    final disposeStart = helperEnd;
+    final disposeEnd = page.indexOf('// ─── Layout', disposeStart);
+    final disposeSource = page.substring(disposeStart, disposeEnd);
+
+    expect(helper, contains('await session?.stop()'));
+    expect(helper, contains('await shutterQueue.freezeAndDrain()'));
+    expect(
+      helper.indexOf('await shutterQueue.freezeAndDrain()'),
+      lessThan(helper.indexOf('shutterQueue.dispose()')),
+    );
+    expect(
+      helper.indexOf('shutterQueue.dispose()'),
+      lessThan(helper.indexOf('await session?.dispose()')),
+    );
+    expect(disposeSource, contains('shutterQueue.cancelPending()'));
+    expect(
+      disposeSource,
+      contains(
+        '_disposeCaptureResourcesAfterQueueDrain(shutterQueue, session)',
+      ),
+    );
+    expect(disposeSource, isNot(contains('_shutterQueue.dispose()')));
+    expect(disposeSource, isNot(contains('_session?.dispose()')));
   });
 
   test('official native route locks preview size and transaction sync', () {

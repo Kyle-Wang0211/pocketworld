@@ -56,6 +56,7 @@ xcodebuild \
   -derivedDataPath "$derived_data" \
   PRODUCT_BUNDLE_IDENTIFIER="$bundle_id" \
   FLUTTER_TARGET=lib/database_archive_benchmark_main.dart \
+  'OTHER_CPLUSPLUSFLAGS=$(inherited) -DPW_SQLITE_EXACT_TRANSFORM_V2_BENCH=1' \
   BUILD_DIR="$build_dir" \
   OBJROOT="$obj_root" \
   CODE_SIGN_ENTITLEMENTS= \
@@ -180,7 +181,8 @@ assert result["source_sha256"] == expected_sha
 assert result["source_integrity_check"] == "ok"
 assert result["deterministic"] is True
 assert result["track_wins_every_repeat"] is True
-assert len(result["runs"]) == 3
+assert result["exact_v2_wins_every_repeat"] is True
+assert len(result["runs"]) == 1
 for run in result["runs"]:
     assert run["selected_preprocess"] == "track_delta_v1"
     assert run["source_sha256"] == run["restored_sha256"] == expected_sha
@@ -189,6 +191,11 @@ for run in result["runs"]:
     assert run["source_deleted_after_commit"] is True
     assert run["temporary_leaks"] == []
     assert run["track_archive_bytes"] < run["raw_archive_bytes"]
+    assert run["exact_v2_archive_bytes"] < run["track_archive_bytes"]
+    assert run["exact_v2_archive_bytes"] < 124401918
+    assert run["exact_v2_restored_sha256"] == expected_sha
+    assert run["exact_v2_byte_equal"] is True
+    assert run["exact_v2_integrity_check"] == "ok"
 print("IPHONE_SQLITE_DUAL_CANDIDATE_OK")
 PY
 

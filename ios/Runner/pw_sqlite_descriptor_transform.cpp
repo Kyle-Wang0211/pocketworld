@@ -29,6 +29,9 @@ constexpr std::array<unsigned char, 16> kSQLiteMagic = {
 constexpr uint64_t kDescriptorColumns = 128;
 constexpr uint64_t kMaxDescriptorBytes = 256ull * 1024ull * 1024ull;
 constexpr uint64_t kMaxTotalDescriptorBytes = 512ull * 1024ull * 1024ull;
+#if defined(PW_SQLITE_EXACT_TRANSFORM_V2_BENCH)
+constexpr uint64_t kMaxNumericBlobBytes = 256ull * 1024ull * 1024ull;
+#endif
 constexpr uint32_t kMaxBtreeDepth = 64;
 constexpr int64_t kColmapMaxImageId = 2147483647ll;
 constexpr uint64_t kNoDescriptorNode =
@@ -78,6 +81,14 @@ struct DescriptorMetadata {
   int64_t bytes = 0;
 };
 
+#if defined(PW_SQLITE_EXACT_TRANSFORM_V2_BENCH)
+struct NumericBlobMetadata {
+  int64_t rows = 0;
+  int64_t columns = 0;
+  int64_t bytes = 0;
+};
+#endif
+
 struct PhysicalSpan {
   uint64_t offset = 0;
   uint64_t length = 0;
@@ -88,6 +99,26 @@ struct DescriptorLocation {
   uint64_t rows = 0;
   std::vector<PhysicalSpan> spans;
 };
+
+#if defined(PW_SQLITE_EXACT_TRANSFORM_V2_BENCH)
+struct NumericBlobLocation {
+  int64_t row_id = 0;
+  uint64_t rows = 0;
+  uint64_t columns = 0;
+  std::vector<PhysicalSpan> spans;
+};
+
+struct NumericTableSpec {
+  const char* name = nullptr;
+  const char* primary_key = nullptr;
+  uint64_t record_columns = 0;
+  uint64_t rows_column = 0;
+  uint64_t columns_column = 0;
+  uint64_t data_column = 0;
+  int64_t required_columns = 0;
+  uint64_t element_bytes = 0;
+};
+#endif
 
 struct DescriptorBuffer {
   const DescriptorLocation* location = nullptr;
@@ -171,6 +202,15 @@ uint32_t ReadLittleEndian32(const unsigned char* bytes) {
          (static_cast<uint32_t>(bytes[2]) << 16) |
          (static_cast<uint32_t>(bytes[3]) << 24);
 }
+
+#if defined(PW_SQLITE_EXACT_TRANSFORM_V2_BENCH)
+void WriteLittleEndian32(unsigned char* bytes, const uint32_t value) {
+  bytes[0] = static_cast<unsigned char>(value & 0xffu);
+  bytes[1] = static_cast<unsigned char>((value >> 8) & 0xffu);
+  bytes[2] = static_cast<unsigned char>((value >> 16) & 0xffu);
+  bytes[3] = static_cast<unsigned char>((value >> 24) & 0xffu);
+}
+#endif
 
 bool AddFits(const uint64_t left,
              const uint64_t right,
@@ -797,6 +837,346 @@ class SQLiteDescriptorParser {
   std::set<int64_t> seen_rows_;
 };
 
+#if defined(PW_SQLITE_EXACT_TRANSFORM_V2_BENCH)
+class SQLiteNumericBlobParser {
+ public:
+  SQLiteNumericBlobParser(
+      RandomAccessFile* file,
+      const uint32_t page_size,
+      const uint32_t reserved_bytes,
+      const uint32_t page_count,
+      const NumericTableSpec& spec,
+      const std::map<int64_t, NumericBlobMetadata>& metadata,
+      uint64_t* record_count,
+      uint64_t* byte_count,
+      PWSQLiteDescriptorTransformStats* stats)
+      : file_(file),
+        page_size_(page_size),
+        usable_size_(page_size - reserved_bytes),
+        page_count_(page_count),
+        spec_(spec),
+        metadata_(metadata),
+        record_count_(record_count),
+        byte_count_(byte_count),
+        stats_(stats) {}
+
+  bool Parse(const uint32_t root_page,
+             std::vector<NumericBlobLocation>* locations) {
+    locations_ = locations;
+    if (!WalkTable(root_page, 0)) {
+      return false;
+    }
+    if (seen_rows_.size() != metadata_.size()) {
+      g_last_error = std::string(spec_.name) +
+                     " b-tree rows do not match SQLite query";
+      return false;
+    }
+    return true;
+  }
+
+ private:
+  bool ReadPage(const uint32_t page_number,
+                std::vector<unsigned char>* page) {
+    if (page_number == 0 || page_number > page_count_) {
+      g_last_error = std::string(spec_.name) + " page number is out of range";
+      return false;
+    }
+    page->resize(page_size_);
+    const uint64_t offset =
+        (static_cast<uint64_t>(page_number) - 1) * page_size_;
+    if (!file_->Read(offset, page->data(), page_size_)) {
+      g_last_error = std::string("could not read ") + spec_.name + " page";
+      return false;
+    }
+    return true;
+  }
+
+  bool WalkTable(const uint32_t page_number, const uint32_t depth) {
+    if (depth > kMaxBtreeDepth) {
+      g_last_error = std::string(spec_.name) +
+                     " b-tree depth exceeds safety limit";
+      return false;
+    }
+    if (!btree_pages_.insert(page_number).second ||
+        overflow_pages_.count(page_number) != 0) {
+      g_last_error = std::string(spec_.name) +
+                     " b-tree page is reused or cyclic";
+      return false;
+    }
+
+    std::vector<unsigned char> page;
+    if (!ReadPage(page_number, &page)) {
+      return false;
+    }
+    const uint32_t header_offset = page_number == 1 ? 100 : 0;
+    if (header_offset + 12 > usable_size_) {
+      g_last_error = std::string(spec_.name) + " page header is truncated";
+      return false;
+    }
+    const unsigned char page_type = page[header_offset];
+    if (page_type != 0x05 && page_type != 0x0d) {
+      g_last_error = std::string(spec_.name) +
+                     " root contains a non-table b-tree page";
+      return false;
+    }
+    const uint32_t header_size = page_type == 0x05 ? 12 : 8;
+    const uint32_t cell_count = ReadBigEndian16(&page[header_offset + 3]);
+    const uint64_t pointer_end =
+        static_cast<uint64_t>(header_offset) + header_size +
+        static_cast<uint64_t>(cell_count) * 2;
+    if (pointer_end > usable_size_) {
+      g_last_error = std::string(spec_.name) +
+                     " cell pointer array is out of bounds";
+      return false;
+    }
+
+    for (uint32_t cell_index = 0; cell_index < cell_count; ++cell_index) {
+      if (!ContinueOperation()) {
+        return false;
+      }
+      const uint32_t pointer_offset =
+          header_offset + header_size + cell_index * 2;
+      const uint32_t cell_offset = ReadBigEndian16(&page[pointer_offset]);
+      if (cell_offset < pointer_end || cell_offset >= usable_size_) {
+        g_last_error = std::string(spec_.name) +
+                       " cell offset is out of bounds";
+        return false;
+      }
+      if (page_type == 0x05) {
+        if (cell_offset + 4 > usable_size_) {
+          g_last_error = std::string(spec_.name) +
+                         " interior cell is truncated";
+          return false;
+        }
+        if (!WalkTable(ReadBigEndian32(&page[cell_offset]), depth + 1)) {
+          return false;
+        }
+      } else if (!ParseLeafCell(page_number, page, cell_offset)) {
+        return false;
+      }
+    }
+
+    if (page_type == 0x05) {
+      const uint32_t right_child = ReadBigEndian32(&page[header_offset + 8]);
+      if (!WalkTable(right_child, depth + 1)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool ParseLeafCell(const uint32_t page_number,
+                     const std::vector<unsigned char>& page,
+                     const uint32_t cell_offset) {
+    uint64_t payload_size = 0;
+    size_t payload_varint_length = 0;
+    if (!DecodeVarint(&page[cell_offset], usable_size_ - cell_offset,
+                      &payload_size, &payload_varint_length)) {
+      g_last_error = std::string(spec_.name) +
+                     " cell payload varint is invalid";
+      return false;
+    }
+    uint64_t row_id_bits = 0;
+    size_t rowid_varint_length = 0;
+    const uint64_t rowid_offset =
+        static_cast<uint64_t>(cell_offset) + payload_varint_length;
+    if (rowid_offset >= usable_size_ ||
+        !DecodeVarint(&page[rowid_offset], usable_size_ - rowid_offset,
+                      &row_id_bits, &rowid_varint_length)) {
+      g_last_error = std::string(spec_.name) + " rowid varint is invalid";
+      return false;
+    }
+    const int64_t row_id = static_cast<int64_t>(row_id_bits);
+    const auto metadata = metadata_.find(row_id);
+    if (metadata == metadata_.end() || !seen_rows_.insert(row_id).second) {
+      g_last_error = std::string(spec_.name) +
+                     " rowid is missing or duplicated";
+      return false;
+    }
+
+    const uint64_t max_local = usable_size_ - 35;
+    const uint64_t min_local =
+        ((static_cast<uint64_t>(usable_size_) - 12) * 32 / 255) - 23;
+    uint64_t local_payload = payload_size;
+    if (payload_size > max_local) {
+      const uint64_t candidate =
+          min_local + ((payload_size - min_local) % (usable_size_ - 4));
+      local_payload = candidate <= max_local ? candidate : min_local;
+    }
+    const uint64_t payload_offset = rowid_offset + rowid_varint_length;
+    const uint64_t overflow_pointer_bytes = payload_size > local_payload ? 4 : 0;
+    if (!AddFits(payload_offset, local_payload + overflow_pointer_bytes,
+                 usable_size_)) {
+      g_last_error = std::string(spec_.name) +
+                     " local payload is out of bounds";
+      return false;
+    }
+
+    std::vector<PhysicalSpan> payload_spans;
+    if (local_payload != 0) {
+      payload_spans.push_back(
+          {(static_cast<uint64_t>(page_number) - 1) * page_size_ +
+               payload_offset,
+           local_payload});
+    }
+    uint64_t remaining = payload_size - local_payload;
+    uint32_t overflow_page = 0;
+    if (remaining != 0) {
+      overflow_page = ReadBigEndian32(&page[payload_offset + local_payload]);
+    }
+    while (remaining != 0) {
+      if (overflow_page == 0 || overflow_page > page_count_ ||
+          btree_pages_.count(overflow_page) != 0 ||
+          !overflow_pages_.insert(overflow_page).second) {
+        g_last_error = std::string(spec_.name) +
+                       " overflow chain is invalid or cyclic";
+        return false;
+      }
+      std::vector<unsigned char> overflow;
+      if (!ReadPage(overflow_page, &overflow)) {
+        return false;
+      }
+      const uint32_t next_page = ReadBigEndian32(overflow.data());
+      const uint64_t chunk =
+          std::min<uint64_t>(remaining, usable_size_ - 4);
+      payload_spans.push_back(
+          {(static_cast<uint64_t>(overflow_page) - 1) * page_size_ + 4,
+           chunk});
+      remaining -= chunk;
+      ++stats_->overflow_pages;
+      if ((remaining == 0 && next_page != 0) ||
+          (remaining != 0 && next_page == 0)) {
+        g_last_error = std::string(spec_.name) +
+                       " overflow chain length does not match payload";
+        return false;
+      }
+      overflow_page = next_page;
+    }
+
+    return ParseRecord(row_id, payload_size, payload_spans, metadata->second);
+  }
+
+  bool ParseRecord(const int64_t row_id,
+                   const uint64_t payload_size,
+                   const std::vector<PhysicalSpan>& payload_spans,
+                   const NumericBlobMetadata& metadata) {
+    PayloadReader payload(file_, &payload_spans, payload_size);
+    uint64_t header_size = 0;
+    size_t header_varint_length = 0;
+    if (!payload.ReadVarint(0, &header_size, &header_varint_length) ||
+        header_size < header_varint_length || header_size > payload_size) {
+      g_last_error = std::string(spec_.name) +
+                     " record header size is invalid";
+      return false;
+    }
+
+    std::vector<uint64_t> serial_types(spec_.record_columns);
+    uint64_t header_offset = header_varint_length;
+    for (uint64_t& serial_type : serial_types) {
+      size_t serial_length = 0;
+      if (!payload.ReadVarint(header_offset, &serial_type, &serial_length) ||
+          !AddFits(header_offset, serial_length, header_size)) {
+        g_last_error = std::string(spec_.name) +
+                       " record serial type is invalid";
+        return false;
+      }
+      header_offset += serial_length;
+    }
+    if (header_offset != header_size || serial_types.empty() ||
+        serial_types[0] != 0 ||
+        spec_.rows_column >= serial_types.size() ||
+        spec_.columns_column >= serial_types.size() ||
+        spec_.data_column >= serial_types.size() ||
+        !IsIntegerSerialType(serial_types[spec_.rows_column]) ||
+        !IsIntegerSerialType(serial_types[spec_.columns_column])) {
+      g_last_error = std::string(spec_.name) +
+                     " record columns are incompatible";
+      return false;
+    }
+
+    std::vector<uint64_t> value_offsets(serial_types.size());
+    std::vector<uint64_t> value_lengths(serial_types.size());
+    uint64_t value_offset = header_size;
+    for (size_t index = 0; index < serial_types.size(); ++index) {
+      bool valid = false;
+      value_lengths[index] = SerialTypeLength(serial_types[index], &valid);
+      value_offsets[index] = value_offset;
+      if (!valid || !AddFits(value_offset, value_lengths[index], payload_size)) {
+        g_last_error = std::string(spec_.name) +
+                       " record value is out of bounds";
+        return false;
+      }
+      value_offset += value_lengths[index];
+    }
+    if (value_offset != payload_size) {
+      g_last_error = std::string(spec_.name) +
+                     " record payload length is inconsistent";
+      return false;
+    }
+
+    int64_t rows = 0;
+    int64_t columns = 0;
+    if (!ReadInteger(payload, value_offsets[spec_.rows_column],
+                     serial_types[spec_.rows_column], &rows) ||
+        !ReadInteger(payload, value_offsets[spec_.columns_column],
+                     serial_types[spec_.columns_column], &columns) ||
+        rows < 0 || columns != spec_.required_columns ||
+        rows != metadata.rows || columns != metadata.columns ||
+        metadata.bytes < 0 ||
+        static_cast<uint64_t>(rows) >
+            std::numeric_limits<uint64_t>::max() /
+                static_cast<uint64_t>(columns) ||
+        static_cast<uint64_t>(rows) * static_cast<uint64_t>(columns) >
+            std::numeric_limits<uint64_t>::max() / spec_.element_bytes ||
+        static_cast<uint64_t>(rows) * static_cast<uint64_t>(columns) *
+                spec_.element_bytes !=
+            static_cast<uint64_t>(metadata.bytes)) {
+      g_last_error = std::string(spec_.name) +
+                     " dimensions are incompatible";
+      return false;
+    }
+
+    const uint64_t blob_bytes = static_cast<uint64_t>(metadata.bytes);
+    const uint64_t blob_serial_type = serial_types[spec_.data_column];
+    const bool empty_null = blob_bytes == 0 && blob_serial_type == 0;
+    const bool blob = blob_serial_type >= 12 && blob_serial_type % 2 == 0;
+    if ((!empty_null && !blob) ||
+        value_lengths[spec_.data_column] != blob_bytes ||
+        blob_bytes > kMaxNumericBlobBytes) {
+      g_last_error = std::string(spec_.name) +
+                     " data is not a supported BLOB";
+      return false;
+    }
+    std::vector<PhysicalSpan> blob_spans =
+        payload.Slice(value_offsets[spec_.data_column], blob_bytes);
+    if (blob_bytes != 0 && blob_spans.empty()) {
+      g_last_error = std::string(spec_.name) + " BLOB span mapping failed";
+      return false;
+    }
+    locations_->push_back({row_id, static_cast<uint64_t>(rows),
+                           static_cast<uint64_t>(columns),
+                           std::move(blob_spans)});
+    ++*record_count_;
+    *byte_count_ += blob_bytes;
+    return true;
+  }
+
+  RandomAccessFile* file_;
+  uint32_t page_size_;
+  uint32_t usable_size_;
+  uint32_t page_count_;
+  const NumericTableSpec& spec_;
+  const std::map<int64_t, NumericBlobMetadata>& metadata_;
+  uint64_t* record_count_;
+  uint64_t* byte_count_;
+  PWSQLiteDescriptorTransformStats* stats_;
+  std::vector<NumericBlobLocation>* locations_ = nullptr;
+  std::set<uint32_t> btree_pages_;
+  std::set<uint32_t> overflow_pages_;
+  std::set<int64_t> seen_rows_;
+};
+#endif
+
 bool ReadSchemaAndMetadata(
     const std::string& path,
     uint32_t* root_page,
@@ -927,6 +1307,157 @@ bool ReadSchemaAndMetadata(
   return true;
 }
 
+#if defined(PW_SQLITE_EXACT_TRANSFORM_V2_BENCH)
+bool ReadNumericSchemaAndMetadata(
+    const std::string& path,
+    const NumericTableSpec& spec,
+    uint32_t* root_page,
+    std::map<int64_t, NumericBlobMetadata>* metadata) {
+  sqlite3* database = nullptr;
+  const std::string immutable_uri = "file:" + path + "?immutable=1";
+  if (sqlite3_open_v2(immutable_uri.c_str(), &database,
+                      SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX |
+                          SQLITE_OPEN_URI,
+                      nullptr) != SQLITE_OK) {
+    g_last_error = database == nullptr
+                       ? std::string("could not open SQLite ") + spec.name
+                       : sqlite3_errmsg(database);
+    if (database != nullptr) {
+      sqlite3_close(database);
+    }
+    return false;
+  }
+
+  std::vector<const char*> expected_names;
+  std::vector<const char*> expected_types;
+  if (std::strcmp(spec.name, "keypoints") == 0) {
+    expected_names = {"image_id", "rows", "cols", "data"};
+    expected_types = {"INTEGER", "INTEGER", "INTEGER", "BLOB"};
+  } else if (std::strcmp(spec.name, "matches") == 0) {
+    expected_names = {"pair_id", "rows", "cols", "data"};
+    expected_types = {"INTEGER", "INTEGER", "INTEGER", "BLOB"};
+  } else if (std::strcmp(spec.name, "two_view_geometries") == 0) {
+    expected_names = {"pair_id", "rows", "cols", "data", "config",
+                      "F",       "E",    "H",    "qvec", "tvec"};
+    expected_types = {"INTEGER", "INTEGER", "INTEGER", "BLOB", "INTEGER",
+                      "BLOB",    "BLOB",    "BLOB",    "BLOB", "BLOB"};
+  } else {
+    g_last_error = "numeric table is not supported";
+    sqlite3_close(database);
+    return false;
+  }
+  if (expected_names.size() != spec.record_columns ||
+      expected_types.size() != spec.record_columns) {
+    g_last_error = std::string(spec.name) + " table contract is inconsistent";
+    sqlite3_close(database);
+    return false;
+  }
+
+  sqlite3_stmt* statement = nullptr;
+  const std::string table_info =
+      std::string("PRAGMA table_info('") + spec.name + "');";
+  bool valid = sqlite3_prepare_v2(database, table_info.c_str(), -1,
+                                  &statement, nullptr) == SQLITE_OK;
+  size_t column = 0;
+  while (valid && sqlite3_step(statement) == SQLITE_ROW) {
+    if (!ContinueOperation() || column >= expected_names.size()) {
+      valid = false;
+      break;
+    }
+    const char* name =
+        reinterpret_cast<const char*>(sqlite3_column_text(statement, 1));
+    const char* type =
+        reinterpret_cast<const char*>(sqlite3_column_text(statement, 2));
+    const int primary_key = sqlite3_column_int(statement, 5);
+    if (name == nullptr || type == nullptr ||
+        std::strcmp(name, expected_names[column]) != 0 ||
+        std::strcmp(type, expected_types[column]) != 0 ||
+        primary_key != (column == 0 ? 1 : 0)) {
+      valid = false;
+      break;
+    }
+    ++column;
+  }
+  if (statement != nullptr) {
+    sqlite3_finalize(statement);
+    statement = nullptr;
+  }
+  if (!valid || column != expected_names.size()) {
+    g_last_error = std::string(spec.name) + " schema is incompatible";
+    sqlite3_close(database);
+    return false;
+  }
+
+  const std::string root_query =
+      std::string("SELECT rootpage FROM sqlite_master WHERE type='table' AND ") +
+      "name='" + spec.name + "';";
+  if (sqlite3_prepare_v2(database, root_query.c_str(), -1, &statement,
+                         nullptr) != SQLITE_OK ||
+      sqlite3_step(statement) != SQLITE_ROW) {
+    g_last_error = std::string(spec.name) + " root page is unavailable";
+    if (statement != nullptr) {
+      sqlite3_finalize(statement);
+    }
+    sqlite3_close(database);
+    return false;
+  }
+  const sqlite3_int64 root = sqlite3_column_int64(statement, 0);
+  sqlite3_finalize(statement);
+  statement = nullptr;
+  if (root <= 0 || root > std::numeric_limits<uint32_t>::max()) {
+    g_last_error = std::string(spec.name) + " root page is invalid";
+    sqlite3_close(database);
+    return false;
+  }
+  *root_page = static_cast<uint32_t>(root);
+
+  const std::string metadata_query =
+      std::string("SELECT ") + spec.primary_key +
+      ",rows,cols,length(data),typeof(data) FROM " + spec.name +
+      " ORDER BY " + spec.primary_key + ";";
+  if (sqlite3_prepare_v2(database, metadata_query.c_str(), -1, &statement,
+                         nullptr) != SQLITE_OK) {
+    g_last_error = std::string(spec.name) + " metadata query failed";
+    sqlite3_close(database);
+    return false;
+  }
+  while (sqlite3_step(statement) == SQLITE_ROW) {
+    if (!ContinueOperation()) {
+      sqlite3_finalize(statement);
+      sqlite3_close(database);
+      return false;
+    }
+    const int64_t row_id = sqlite3_column_int64(statement, 0);
+    NumericBlobMetadata row;
+    row.rows = sqlite3_column_int64(statement, 1);
+    row.columns = sqlite3_column_int64(statement, 2);
+    row.bytes = sqlite3_column_type(statement, 3) == SQLITE_NULL
+                    ? 0
+                    : sqlite3_column_int64(statement, 3);
+    const char* storage = reinterpret_cast<const char*>(
+        sqlite3_column_text(statement, 4));
+    if (row_id <= 0 || row.rows < 0 ||
+        row.columns != spec.required_columns || row.bytes < 0 ||
+        storage == nullptr ||
+        (std::strcmp(storage, "blob") != 0 &&
+         !(row.bytes == 0 && std::strcmp(storage, "null") == 0)) ||
+        !metadata->emplace(row_id, row).second) {
+      g_last_error = std::string(spec.name) + " metadata is incompatible";
+      sqlite3_finalize(statement);
+      sqlite3_close(database);
+      return false;
+    }
+  }
+  sqlite3_finalize(statement);
+  if (sqlite3_close(database) != SQLITE_OK) {
+    g_last_error = std::string("could not close ") + spec.name +
+                   " metadata connection";
+    return false;
+  }
+  return true;
+}
+#endif
+
 bool ReadHeader(RandomAccessFile* file,
                 uint32_t* page_size,
                 uint32_t* reserved_bytes,
@@ -1009,6 +1540,30 @@ bool WriteSpans(RandomAccessFile* file,
   }
   return cursor == bytes.size();
 }
+
+#if defined(PW_SQLITE_EXACT_TRANSFORM_V2_BENCH)
+bool LocateNumericBlobs(
+    const std::string& path,
+    RandomAccessFile* file,
+    const uint32_t page_size,
+    const uint32_t reserved_bytes,
+    const uint32_t page_count,
+    const NumericTableSpec& spec,
+    uint64_t* record_count,
+    uint64_t* byte_count,
+    PWSQLiteDescriptorTransformStats* stats,
+    std::vector<NumericBlobLocation>* locations) {
+  std::map<int64_t, NumericBlobMetadata> metadata;
+  uint32_t root_page = 0;
+  if (!ReadNumericSchemaAndMetadata(path, spec, &root_page, &metadata)) {
+    return false;
+  }
+  SQLiteNumericBlobParser parser(file, page_size, reserved_bytes, page_count,
+                                 spec, metadata, record_count, byte_count,
+                                 stats);
+  return parser.Parse(root_page, locations);
+}
+#endif
 
 bool ReadTrackEdges(const std::string& path,
                     const std::map<int64_t, DescriptorRange>& ranges,
@@ -1379,6 +1934,111 @@ bool TransformTranspose(RandomAccessFile* file,
   return true;
 }
 
+#if defined(PW_SQLITE_EXACT_TRANSFORM_V2_BENCH)
+bool TransformKeypointPlaneXor(
+    RandomAccessFile* file,
+    const std::vector<NumericBlobLocation>& locations,
+    const bool inverse) {
+  for (const NumericBlobLocation& location : locations) {
+    if (!ContinueOperation()) {
+      return false;
+    }
+    std::vector<unsigned char> input;
+    if (!ReadSpans(file, location.spans, &input) ||
+        input.size() != location.rows * location.columns * 4u) {
+      g_last_error = "could not read keypoint BLOB spans";
+      return false;
+    }
+    std::vector<unsigned char> output(input.size());
+    for (uint64_t column = 0; column < location.columns; ++column) {
+      for (uint64_t byte_lane = 0; byte_lane < 4; ++byte_lane) {
+        unsigned char previous = 0;
+        const uint64_t plane = column * 4u + byte_lane;
+        for (uint64_t row = 0; row < location.rows; ++row) {
+          if (!ContinueOperation()) {
+            return false;
+          }
+          const size_t row_major = static_cast<size_t>(
+              (row * location.columns + column) * 4u + byte_lane);
+          const size_t plane_major =
+              static_cast<size_t>(plane * location.rows + row);
+          if (inverse) {
+            const unsigned char encoded = input[plane_major];
+            const unsigned char current =
+                row == 0 ? encoded
+                         : static_cast<unsigned char>(encoded ^ previous);
+            output[row_major] = current;
+            previous = current;
+          } else {
+            const unsigned char current = input[row_major];
+            output[plane_major] =
+                row == 0 ? current
+                         : static_cast<unsigned char>(current ^ previous);
+            previous = current;
+          }
+        }
+      }
+    }
+    if (!WriteSpans(file, location.spans, output)) {
+      g_last_error = "could not write keypoint BLOB spans";
+      return false;
+    }
+  }
+  return true;
+}
+
+bool TransformUint32ColumnDelta(
+    RandomAccessFile* file,
+    const std::vector<NumericBlobLocation>& locations,
+    const bool inverse,
+    const char* table_name) {
+  for (const NumericBlobLocation& location : locations) {
+    if (!ContinueOperation()) {
+      return false;
+    }
+    std::vector<unsigned char> input;
+    if (!ReadSpans(file, location.spans, &input) ||
+        input.size() != location.rows * location.columns * 4u) {
+      g_last_error = std::string("could not read ") + table_name +
+                     " BLOB spans";
+      return false;
+    }
+    std::vector<unsigned char> output(input.size());
+    for (uint64_t column = 0; column < location.columns; ++column) {
+      uint32_t previous = 0;
+      for (uint64_t row = 0; row < location.rows; ++row) {
+        if (!ContinueOperation()) {
+          return false;
+        }
+        const size_t row_major =
+            static_cast<size_t>((row * location.columns + column) * 4u);
+        const size_t column_major =
+            static_cast<size_t>((column * location.rows + row) * 4u);
+        if (inverse) {
+          const uint32_t encoded =
+              ReadLittleEndian32(input.data() + column_major);
+          const uint32_t current = row == 0 ? encoded : encoded + previous;
+          WriteLittleEndian32(output.data() + row_major, current);
+          previous = current;
+        } else {
+          const uint32_t current =
+              ReadLittleEndian32(input.data() + row_major);
+          const uint32_t encoded = row == 0 ? current : current - previous;
+          WriteLittleEndian32(output.data() + column_major, encoded);
+          previous = current;
+        }
+      }
+    }
+    if (!WriteSpans(file, location.spans, output)) {
+      g_last_error = std::string("could not write ") + table_name +
+                     " BLOB spans";
+      return false;
+    }
+  }
+  return true;
+}
+#endif
+
 bool SyncPath(const char* path) {
   const int descriptor = open(path, O_RDONLY);
   if (descriptor < 0) {
@@ -1459,7 +2119,11 @@ int32_t pw_sqlite_descriptor_transform_file(
   if (transform != PW_SQLITE_DESCRIPTOR_TRANSPOSE &&
       transform != PW_SQLITE_DESCRIPTOR_TRANSPOSE_XOR &&
       transform != PW_SQLITE_DESCRIPTOR_TRANSPOSE_DELTA &&
-      transform != PW_SQLITE_DESCRIPTOR_TRACK_DELTA) {
+      transform != PW_SQLITE_DESCRIPTOR_TRACK_DELTA
+#if defined(PW_SQLITE_EXACT_TRANSFORM_V2_BENCH)
+      && transform != PW_SQLITE_EXACT_TRANSFORM_V2
+#endif
+  ) {
     g_last_error = "descriptor transform is not implemented";
     return PW_SQLITE_DESCRIPTOR_TRANSFORM_UNSUPPORTED;
   }
@@ -1504,7 +2168,71 @@ int32_t pw_sqlite_descriptor_transform_file(
                  ? PW_SQLITE_DESCRIPTOR_TRANSFORM_CANCELLED
                  : PW_SQLITE_DESCRIPTOR_TRANSFORM_MALFORMED;
     }
-    if (transform == PW_SQLITE_DESCRIPTOR_TRACK_DELTA) {
+
+#if defined(PW_SQLITE_EXACT_TRANSFORM_V2_BENCH)
+    std::vector<NumericBlobLocation> keypoint_locations;
+    std::vector<NumericBlobLocation> match_locations;
+    std::vector<NumericBlobLocation> two_view_locations;
+    if (transform == PW_SQLITE_EXACT_TRANSFORM_V2) {
+      const NumericTableSpec keypoint_spec{
+          "keypoints", "image_id", 4, 1, 2, 3, 6, 4};
+      const NumericTableSpec match_spec{
+          "matches", "pair_id", 4, 1, 2, 3, 2, 4};
+      const NumericTableSpec two_view_spec{
+          "two_view_geometries", "pair_id", 10, 1, 2, 3, 2, 4};
+      if (!LocateNumericBlobs(
+              output_path, &file, page_size, reserved_bytes, page_count,
+              keypoint_spec, &output_stats->keypoint_records,
+              &output_stats->keypoint_bytes, output_stats,
+              &keypoint_locations) ||
+          !LocateNumericBlobs(
+              output_path, &file, page_size, reserved_bytes, page_count,
+              match_spec, &output_stats->match_records,
+              &output_stats->match_bytes, output_stats, &match_locations) ||
+          !LocateNumericBlobs(
+              output_path, &file, page_size, reserved_bytes, page_count,
+              two_view_spec, &output_stats->two_view_records,
+              &output_stats->two_view_bytes, output_stats,
+              &two_view_locations)) {
+        std::remove(output_path);
+        return CurrentOperationCancelled()
+                   ? PW_SQLITE_DESCRIPTOR_TRANSFORM_CANCELLED
+                   : PW_SQLITE_DESCRIPTOR_TRANSFORM_MALFORMED;
+      }
+    }
+
+    if (transform == PW_SQLITE_EXACT_TRANSFORM_V2) {
+      const bool inverse_transform = inverse != 0;
+      bool transformed = true;
+      if (inverse_transform) {
+        transformed = TransformUint32ColumnDelta(
+                          &file, two_view_locations, true,
+                          "two_view_geometries") &&
+                      TransformUint32ColumnDelta(&file, match_locations, true,
+                                                 "matches") &&
+                      TransformKeypointPlaneXor(&file, keypoint_locations,
+                                                true) &&
+                      TransformTrackDelta(&file, output_path, &locations, true,
+                                          output_stats);
+      } else {
+        transformed =
+            TransformTrackDelta(&file, output_path, &locations, false,
+                                output_stats) &&
+            TransformKeypointPlaneXor(&file, keypoint_locations, false) &&
+            TransformUint32ColumnDelta(&file, match_locations, false,
+                                       "matches") &&
+            TransformUint32ColumnDelta(&file, two_view_locations, false,
+                                       "two_view_geometries");
+      }
+      if (!transformed) {
+        std::remove(output_path);
+        return CurrentOperationCancelled()
+                   ? PW_SQLITE_DESCRIPTOR_TRANSFORM_CANCELLED
+                   : PW_SQLITE_DESCRIPTOR_TRANSFORM_OUTPUT_FAILED;
+      }
+    } else
+#endif
+        if (transform == PW_SQLITE_DESCRIPTOR_TRACK_DELTA) {
       if (!TransformTrackDelta(&file, output_path, &locations, inverse != 0,
                                output_stats)) {
         std::remove(output_path);

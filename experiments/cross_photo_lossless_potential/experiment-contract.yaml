@@ -1,0 +1,99 @@
+schema: pw_cross_photo_lossless_potential_experiment_v1
+frozen_at: "2026-07-30T00:00:00+08:00"
+objective: >-
+  Determine whether an SfM-guided, independently grouped JPEG coefficient
+  archive can reach 2.165x while restoring every original JPEG byte-for-byte.
+revision:
+  app_git_head: fbc3efb5825418b9c4c7581c93f72d3cbc3c459f
+  shared_worktree_status_sha256: a1f65795709a28cf2f5f2199ea02fd579c0c4a81cf999ff9916692fa4cccffd1
+  shared_tracked_diff_sha256: a47a29bf5ab8b5a9963f9b6f4ee9089cd73d6144f219417333e7eb2166fa81db
+  production_behavior_modified: false
+toolchain:
+  host_model: MacBookPro18GB-Mac15,6-Apple-M3-Pro
+  host_os: macOS-26.1-arm64
+  apple_clang: "17.0.0"
+  libjpeg_turbo: "3.1.4.1"
+  jpeg_xl: "0.11.2"
+  xz: "5.8.3"
+  python: "3.11.15"
+  numpy: "2.4.6"
+  uv: "0.11.14"
+  dvc: "3.67.1"
+  mlflow: "3.14.0"
+  openspec: "1.6.0"
+  research_uv_lock_sha256: 210a0d579fc0d7ffd1b49d33fa880f944de1e4b85dc9423185a774b0244a1aaf
+input:
+  manifest: experiments/cross_photo_lossless_potential/input-manifest.yaml
+  source_kind: verified-production-container-backup-copy
+  ordered_jpeg_count: 37
+  ordered_jpeg_bytes: 105908333
+  selection: first-consecutive-bundle-frames-until-at-least-100-MiB
+arms:
+  - jxl_effort_10_exact_baseline
+  - sfm_coeff_group_4_xz9e
+  - sfm_coeff_group_8_xz9e
+randomness:
+  sample_selection: deterministic-prefix
+  random_access_seed: 20260730
+metrics:
+  primary: photo_ratio
+  hard_gates:
+    immutable_input_hashes_equal: true
+    source_unchanged: true
+    restored_lengths_equal: true
+    restored_bytes_equal: true
+    restored_sha256_equal: true
+    group_bound_respected: true
+    one_group_per_random_access: true
+    real_sfm_poses_consumed: true
+    real_sparse_ply_consumed: true
+    valid_sparse_projections_positive: true
+    deterministic_archive_hash: true
+    corruption_rejected: true
+  diagnostics:
+    - source_jpeg_bytes
+    - archive_bytes
+    - photo_ratio
+    - mapped_block_fraction
+    - projected_sparse_pairs
+    - encode_elapsed_ms
+    - decode_elapsed_ms
+    - peak_rss_bytes
+    - peak_temp_bytes
+thresholds:
+  minimum_photo_ratio: 2.165
+  exactness_failures_allowed: 0
+  group_sizes:
+    - 4
+    - 8
+  host_pipeline_time_regression_is_not_an_acceptance_metric: true
+  later_phone_pipeline_regression_max_fraction: 0.03
+  later_phone_ui_stall_max_ms: 100
+evidence_roles:
+  host: feasibility-and-rejection-only
+  physical_iphone: required-for-any-later-production-selection
+stop_conditions:
+  - Stop an arm immediately on any hard-gate failure.
+  - Stop the direction when both verified group arms are below 2.165x.
+  - Do not build a phone bundle unless a verified host arm reaches 2.165x.
+  - Do not modify production code in this experiment.
+artifacts:
+  scratch_root: .context/compound-engineering/ce-optimize/cross-photo-lossless-potential
+  experiment_log: .context/compound-engineering/ce-optimize/cross-photo-lossless-potential/experiment-log.yaml
+  strategy_digest: .context/compound-engineering/ce-optimize/cross-photo-lossless-potential/strategy-digest.md
+  mlflow_tracking_uri: sqlite:///.context/compound-engineering/ce-optimize/cross-photo-lossless-potential/mlflow.db
+  large_outputs_retention: hashes-and-metrics-only-after-verification
+deviations:
+  - id: shared-dirty-main-no-worktree
+    reason: >-
+      User requires the primary agent to work in the shared checkout and forbids
+      subagents; experiment files have a new disjoint write scope.
+  - id: no-optimization-branch
+    reason: >-
+      This is one bounded rejection experiment, not a production optimization
+      branch, and the shared worktree must not be switched under other edits.
+privacy:
+  production_container_access: prohibited
+  remote_upload: prohibited
+  source_open_for_write: prohibited
+  image_bytes_in_git: prohibited

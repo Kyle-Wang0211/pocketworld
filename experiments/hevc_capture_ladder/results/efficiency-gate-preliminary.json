@@ -1,0 +1,25 @@
+{
+ "schema": "pw_efficiency_gate_preliminary_v1",
+ "date": "2026-08-09",
+ "design_note": "非交替对照(跨场景),定位=初步方向证据;正式≤5%判决由已装机的交替构建在下一次自然拍摄中被动完成,用户无需为测量拍摄",
+ "arms": {
+  "baseline_no_encode": "8月6-8日 13场大采集(>100帧),n=2292 帧",
+  "full_encode_worst_case": "8月9日 4场(abPeriod意外=0,逐帧全编码=比交替更狠的最坏情形),n=316 帧"
+ },
+ "pooled": {
+  "baseline": {
+   "proc_ms_p50": 2483,
+   "proc_ms_p90": 5109
+  },
+  "full_encode": {
+   "proc_ms_p50": 1423,
+   "proc_ms_p90": 4601
+  },
+  "delta": "编码臂 p50 -42.7%, p90 -9.9%(更快=场景差异所致,非编码功劳)"
+ },
+ "thermal": "两臂峰值同为 2(fair),编码臂无任何额外热升级",
+ "per_session_check": "编码臂 4/4 会话的 proc_p50 落在基线 13 场的分布范围内或以下",
+ "baseline_scene_spread": "基线自身 p50 跨 1556-4776(3x)——重申跨场景噪声>>效应,交替仍是唯一精密仪器",
+ "preliminary_verdict": "NO_SLOWDOWN_SIGNAL — 全帧编码(最坏情形)未见任何管线劣化迹象",
+ "formal_gate": "待下一次自然拍摄(交替构建已装机,被动收集)"
+}

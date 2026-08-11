@@ -1,0 +1,90 @@
+{
+  "schema": "pw_lepton_jxl_iphone_ab_completion_evidence_v1",
+  "experiment_contract": "experiments/lepton_jxl_iphone/experiment-contract.yaml",
+  "repository_head_at_phone_run": "eb269acdd8f8a941a10b55ce2d97f8b77ccc8f0e",
+  "phone_result": {
+    "run_id": "20260802T134334Z",
+    "device_udid": "1B290474-D354-5B4C-AAB0-0805AC5DC832",
+    "operating_system_version": "Version 26.5.2 (Build 23F84)",
+    "physical_device": true,
+    "bundle_id": "com.kyle.PocketWorld.LeptonBench",
+    "signed_application_identifier": "26AH7V448L.com.kyle.PocketWorld.LeptonBench",
+    "production_bundle_accessed": false,
+    "production_bundle_updated": false,
+    "result_sha256": "f10c5e2235fd2f985e05efc44c263c9993d59c10de7054f419c39d2498e83786",
+    "signed_app_binary_sha256": "31f80762d2e8a2826a6e46e953f1973b85b947e80080cef932dd87db138b5b60"
+  },
+  "input": {
+    "bytes": 2725495,
+    "sha256": "a1cb8de1d3b91edbb7e05233c7930200c46e04554c3651153e267e5abd262138"
+  },
+  "jxl": {
+    "version": "0.12.0",
+    "effort": 10,
+    "archive_bytes": 2215345,
+    "archive_sha256": "d297da0ed0e400da7e00db7d2142a46a51481cd81ec1dd826e31bba41f0f22a2",
+    "restored_sha256": "a1cb8de1d3b91edbb7e05233c7930200c46e04554c3651153e267e5abd262138",
+    "byte_equal": true,
+    "encode_elapsed_us": 4669391,
+    "decode_elapsed_us": 96076
+  },
+  "lepton": {
+    "version": "0.5.8",
+    "revision": "90fdc27828676892fbb41777cfcc6bad1e470516",
+    "archive_bytes": 2159731,
+    "archive_sha256": "1cdb9329ff5179e28d2811c3670b36147633094b69772ee7dd8da80f8a05334e",
+    "restored_sha256": "a1cb8de1d3b91edbb7e05233c7930200c46e04554c3651153e267e5abd262138",
+    "byte_equal": true,
+    "encode_elapsed_us": 97518,
+    "decode_elapsed_us": 75983,
+    "benchmark_static_library_sha256": "4440997ed0355690cdde883796460c87cbaa079bea8d84ae3379c24887f141ca",
+    "production_cancellable_static_library_sha256": "8bd6d5b8d1245f9c1322c7dd7b3a2b87d695e16b2cafb9a5913d31f186190547"
+  },
+  "comparison": {
+    "winner": "lepton",
+    "bytes_saved_vs_jxl": 55614,
+    "percent_smaller_vs_jxl": 2.510399,
+    "production_eligible": true
+  },
+  "production_link_verification": {
+    "installed": false,
+    "bundle_id": "com.kyle.PocketWorld",
+    "platform": "iphoneos-arm64",
+    "unsigned_binary_sha256": "9c8f65c1119fe6b8059b2e86773305f055a92b7fca6cdb1aa92c01d4dadc714d",
+    "required_lepton_symbols_present": 7,
+    "legacy_jxl_reader_retained": true,
+    "new_policy": "pw_photo_archive_policy_v2",
+    "new_codec": "lepton",
+    "legacy_policy": "pw_photo_archive_policy_v1",
+    "legacy_codec": "jpeg_xl"
+  },
+  "reproducibility": {
+    "rust": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "cargo": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)",
+    "target": "aarch64-apple-ios",
+    "cargo_lock_sha256": "60b54cdd23fe1bd1bf321dfd3a3d561c74e451ad467e67285bd0b6a47e57be9c",
+    "rebuild_matches_vendored_archive": true
+  },
+  "licensing": {
+    "status": "conditional",
+    "condition": "Preserve the bundled Apache-2.0, Microsoft/Dropbox/Libwebp/uncmpJPG NOTICE, Cargo dependency notices, and Rust standard-library copyright file in distributed apps.",
+    "lepton_license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "lepton_notice_sha256": "50d7f80a7af7807747f9571a334ad52e1b00f901e025cec4194bc8e557171c1d",
+    "crate_notices_sha256": "b9d7d2bf53a5ff0e9a0c570c7c4f94297107cd345c62bf3f946be378493b8c4c",
+    "rust_standard_library_copyright_sha256": "90567e2718bf7fd65a71a3a43c5596488e80e5f51ed02bfea6fec54458b5f3d1"
+  },
+  "verification": {
+    "rust_tests": "3 passed",
+    "focused_background_runtime_tests": "2 passed",
+    "full_flutter_tests": "451 passed",
+    "flutter_analyze_baseline_issues": 13,
+    "new_analyze_issues": 0,
+    "openspec_strict": "valid"
+  },
+  "verdict": "promote_lepton_for_future_photo_archives",
+  "deviations": [],
+  "unresolved_risks": [
+    "Production iPhone installation was intentionally not performed by this benchmark task.",
+    "This license inventory is engineering evidence and not legal advice."
+  ]
+}

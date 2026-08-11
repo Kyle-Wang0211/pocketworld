@@ -29,11 +29,18 @@ void main() {
       'pw_jxl_revision',
       'pw_jxl_encode_jpeg_file',
       'pw_jxl_reconstruct_jpeg_file',
+      'pw_jxl_cancellation_generation',
+      'pw_jxl_request_cancel',
+      'pw_jxl_encode_jpeg_file_cancellable',
+      'pw_jxl_reconstruct_jpeg_file_cancellable',
     ]) {
       expect(header, contains(symbol));
       expect(implementation, contains(symbol));
       expect(dart, contains(symbol));
     }
+    expect(header, contains('PW_JXL_CANCELLED'));
+    expect(implementation, contains('std::atomic<uint64_t>'));
+    expect(dart, contains('PhotoArchiveCancelled'));
     expect(implementation, contains('JxlEncoderUseContainer'));
     expect(implementation, contains('JxlEncoderStoreJPEGMetadata'));
     expect(implementation, contains('JXL_DEC_JPEG_RECONSTRUCTION'));
@@ -55,8 +62,16 @@ void main() {
       '-lbrotlicommon',
       '-Wl,-u,_pw_jxl_encode_jpeg_file',
       '-Wl,-u,_pw_jxl_reconstruct_jpeg_file',
+      '-Wl,-u,_pw_jxl_cancellation_generation',
+      '-Wl,-u,_pw_jxl_request_cancel',
+      '-Wl,-u,_pw_jxl_encode_jpeg_file_cancellable',
+      '-Wl,-u,_pw_jxl_reconstruct_jpeg_file_cancellable',
     ]) {
-      expect(project, contains(linkerFlag));
+      expect(
+        '"$linkerFlag",'.allMatches(project).length,
+        3,
+        reason: '$linkerFlag must be retained in Profile, Debug, and Release',
+      );
     }
   });
 

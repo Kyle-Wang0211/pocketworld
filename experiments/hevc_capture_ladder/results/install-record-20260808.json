@@ -1,0 +1,14 @@
+{
+ "schema": "pw_install_record_v1",
+ "date": "2026-08-08",
+ "purpose": "PWVA 效率门测量构建(abPeriod=16)",
+ "head": "4c99fd7831e00ea6a6a721810c293b1ebc368d45",
+ "uncommitted_diff_sha256": "ad08751b68ba87670a5702c24a500d40006142269cd9be421f196a0d839e7750",
+ "dirty_files": 349,
+ "variable_note": "共享脏树含他人未提交改动;A/B 判决在构建内部按块交替,树内其他变更对两臂等同作用,单变量纪律由交替设计保证",
+ "build_flags": [
+  "--release",
+  "--dart-define=PW_AB_PERIOD=16"
+ ],
+ "device": "iPhone15,2 (00008120-00146C4A1AEBC01E)"
+}

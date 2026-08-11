@@ -246,8 +246,37 @@ DIRTY_GHOST_MASK_SHA256 = (
 # earlier TVG estimation shifts the RANSAC stream — 1375-1556 of ~2000
 # two_view_geometries rows differ, both arms individually deterministic)
 # and bought zero net finalize time; it stays disabled.
+# [RE-BLESSED 2026-07-29 用户签决] 95ea7fb6… → 12eefda9…
+#
+# 为什么这次是"更新钉死值"而不是"改回去":本文件顶部的契约是「官方拷贝只能在
+# 命名上与自研拷贝不同」,它守的是"两条采集路线并存"时期的等价性。**那个前提
+# 已经不成立**:线上只剩一条采集路由(ar_capture_page.dart:2593 的 UI 签决注释
+# 记录了另一条 lib/ui/capture/ar_capture_page.dart 早已删除),且逐帧遥测
+# frame_split 的字符串只存在于官方框架二进制里、自研的 libglomap_core.a 里为 0
+# —— 出货跑的是官方路线,自研路线不再是需要保持镜像的对象。
+#
+# 本次真实差异(LIVE-LBA-THREADS + AETHER-T2,均在 official_aether_sfm_c.cc):
+#   • 拍摄期 local BA 的 num_threads 由上游默认 -1 改为 LiveBaThreads()(A16→4),
+#     多线程门槛 50000→6000。host 四臂对照几何逐位相同,local BA −20%。
+#   • 逐帧 local BA 内部计时计数器(纯观测,不改控制流、不消耗 PRNG)。
+# 其余闸仍然全绿:ABI 签名 26/26 一致、边界 27 导出 TWOLEVEL/NOUNDEFS 隔离。
+#
+# ⚠️ 这道闸本身保留:它继续监测**今后**的意外漂移,只是基线换成了新值。
+# [GPU-TIMESTAMP-PROBE V1 2026-07-30] The independently accepted algorithm
+# actual writer now serializes the private, consume-once GPU timestamp probe
+# into the existing frame_split sidecar. This is observation-only and keeps
+# product Dart/Swift plus the stable framework ABI unchanged. Pin the complete
+# normalized endpoint at the accepted 71d0e0b1… identity; do not relax the gate.
 OFFICIAL_PRODUCTION_ENDPOINT_SHA256 = (
-    "95ea7fb6622c6edb81ea6749d4fe651f519a1393b634e688af61e70919f646d3"
+    "71d0e0b1da2c4d2caf09da33900e5abd0c193033f10f4c8197c6a18f8504ec6d"
+)
+# [PORTABLE-CANONICAL-SELECTOR V1 2026-07-31] The official and bench GPU-SIFT
+# ABI sources remain byte-identical after adding the default-off canonical
+# selector policy, fail-closed canonical status 2, Stable-ID validation, and
+# the existing caller-thread timestamp handoff. Pin the reviewed complete
+# source; absent/invalid policy values still execute the legacy route.
+OFFICIAL_DSP_SIFT_GPU_SHA256 = (
+    "c602cb53286a7a1666cf092d8a0ee3587122ded90769e1cd4e59edbe046eb9b0"
 )
 # [BA-RING 2026-07-26] Pin for src/official_bundle_adjustment_ceres.cc (see
 # the reviewed-delta comment at its branch in main()).
@@ -402,6 +431,18 @@ def main() -> None:
             print(
                 "PASS source src/official_aether_sfm_c.cc "
                 "(pinned per-image PINHOLE + official BA/filter endpoint)"
+            )
+            continue
+        if official_relative == "src/official_dsp_sift_gpu_c.cc":
+            actual_hash = sha256(actual)
+            if actual_hash != OFFICIAL_DSP_SIFT_GPU_SHA256:
+                fail(
+                    "official GPU-SIFT ABI source identity changed: "
+                    f"{actual_hash}"
+                )
+            print(
+                "PASS source src/official_dsp_sift_gpu_c.cc "
+                "(pinned consume-once timestamp handoff)"
             )
             continue
         # 2026-07-26 reviewed delta (BA-RING, signed): the solver wrapper

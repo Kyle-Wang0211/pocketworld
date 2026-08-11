@@ -1,0 +1,8 @@
+{
+  "archive_bytes": 467413773,
+  "archive_sha256": "d9647d713100a75bd78edc564ae52cf5d6925ebec6710251ad22e878bb4861cd",
+  "logical_manifest_sha256": "2373b1e9f6ff43b6bb6a06dd1876f2be83bc29b0b88977b7cc346c76ba3c8365",
+  "mlflow_run_id": "15fc27e0eb7e4aba8af3f537174a6cc9",
+  "result_sha256": "9176979cca45d4286db41b8a1247d0f00c4184e3175c9a4c9a794bbc73a20661",
+  "schema": "pw_worldpack_lepton_normalized_mlflow_link_v1"
+}

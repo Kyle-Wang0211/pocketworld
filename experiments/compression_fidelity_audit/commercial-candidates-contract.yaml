@@ -1,0 +1,67 @@
+schema: pw_commercial_lossless_candidates_contract_v1
+scope: host_only_commercial_candidate_micro
+date: 2026-08-02
+repository:
+  git_head: 13d2a4f05d491464c537a9135496eccaa05c2358
+  worktree: shared_dirty_preserve_all_unrelated_changes
+limits:
+  maximum_jpeg_count: 1
+  maximum_descriptor_bytes: 1048576
+  maximum_point_cloud_files: 1
+  automatic_repeats: 0
+  automatic_scale_up: forbidden
+  production_changes: forbidden
+  phone_access: forbidden
+inputs:
+  production_jxl_photo:
+    capture: cap_1785512421333592
+    source_relative_path: photos_highres/official_tap-2019.jpg
+    source_bytes: 2725495
+    source_sha256: a1cb8de1d3b91edbb7e05233c7930200c46e04554c3651153e267e5abd262138
+    jxl_archive_bytes: 2215345
+    jxl_archive_sha256: d297da0ed0e400da7e00db7d2142a46a51481cd81ec1dd826e31bba41f0f22a2
+    libjxl_revision: a7a9c787341cf703dede03c2009fa460cae5e5df
+    production_effort: 10
+  descriptor_row:
+    source_database_bytes: 198983680
+    source_database_sha256: 0c12c0dfa76d50cae59929774242282d8236daeb852bdee6ac99c3062d6d08b0
+    image_id: 1
+    rows: 8192
+    columns: 128
+    bytes: 1048576
+    sha256: 2bb4062475c40b877deb7f735d4591df97c22a5d857deb1f6e3b45ff5809c92a
+candidates:
+  photo:
+    - jpeg_xl_exact_jpeg
+    - rust_lepton
+  structured_descriptor:
+    - parquet_arrow
+    - orc
+    - tiledb
+  whole_archive:
+    - dwarfs
+  point_cloud:
+    - meshoptimizer
+    - fpzip
+    - zfp_reversible
+acceptance:
+  exactness:
+    - official_decoder
+    - byte_equal
+    - sha256_equal
+    - complete_persisted_bytes_counted
+  commercial_verdicts:
+    - allow
+    - conditional
+    - conflict
+    - block
+    - insufficient-evidence
+  promotion:
+    - only_allow_or_conditional_candidates_can_advance
+    - minimum_unit_must_beat_current_same_input_baseline
+    - host_result_cannot_change_production
+stopping_rules:
+  - a_build_failure_is_not_a_codec_failure
+  - a_semantically_incompatible_format_is_not_forced_into_the_wrong_scope
+  - a_minimum_unit_loss_stops_that_arm_without_larger_runs
+  - every_unrun_candidate_receives_an_explicit_status

@@ -1,0 +1,50 @@
+schema: pw_compression_fidelity_audit_contract_v1
+scope: host_only_micro_supplements
+date: 2026-08-02
+repository:
+  path: /Users/kaidongwang/Developer/pocketworld
+  git_head: 13d2a4f05d491464c537a9135496eccaa05c2358
+  worktree: shared_dirty_preserve_all_unrelated_changes
+limits:
+  maximum_descriptor_bytes: 1048576
+  maximum_jpeg_count: 1
+  automatic_repeats: 0
+  automatic_scale_up: forbidden
+  full_database_benchmark: forbidden
+  phone_access: forbidden
+  production_changes: forbidden
+inputs:
+  descriptor_row:
+    source_database_bytes: 198983680
+    source_database_sha256: 0c12c0dfa76d50cae59929774242282d8236daeb852bdee6ac99c3062d6d08b0
+    image_id: 1
+    rows: 8192
+    columns: 128
+    bytes: 1048576
+    sha256: 2bb4062475c40b877deb7f735d4591df97c22a5d857deb1f6e3b45ff5809c92a
+  original_jpeg:
+    capture: cap_1785512421333592
+    file: photos_highres/official_tap-2032.jpg
+    bytes: 2794655
+    sha256: 29aaef47f97b6b41fa3453b321dff030a0fcf3b4abac1d6aece72f11429744a4
+classifications:
+  - faithful_official
+  - faithful_subset
+  - invalid_reproduction
+  - evidence_missing
+  - mentioned_not_run
+  - blocked_no_official_route
+  - validated_internal
+acceptance:
+  - pin_official_revision_or_release_archive
+  - record_official_entry_point_and_exact_parameters
+  - count_complete_persisted_output
+  - decode_with_official_decoder
+  - require_byte_equality
+  - require_sha256_equality
+  - state_the_narrowest_supported_conclusion
+stopping_rules:
+  - a_build_failure_is_a_toolchain_diagnostic_not_a_codec_failure
+  - a_minimum_unit_loss_blocks_automatic_scale_up_only_for_that_mode_and_input
+  - missing_evidence_is_not_a_failure
+  - host_results_cannot_promote_production

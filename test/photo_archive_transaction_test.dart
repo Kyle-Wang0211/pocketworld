@@ -85,7 +85,7 @@ void main() {
 
     expect(result.archivedNames, ['frame.jpg']);
     expect(await source.exists(), isFalse);
-    final archive = File('${source.path}.jxl');
+    final archive = File('${source.path}.lep');
     expect(await archive.exists(), isTrue);
     expect(await archive.length(), lessThan(original.length));
     final reconstructed = File('${captureDir.path}/roundtrip.jpg');
@@ -121,8 +121,8 @@ void main() {
 
       expect(result.failedNames, ['mismatch.jpg']);
       expect(await source.readAsBytes(), original);
-      expect(await File('${source.path}.jxl').exists(), isFalse);
-      expect(await File('${source.path}.jxl.tmp').exists(), isFalse);
+      expect(await File('${source.path}.lep').exists(), isFalse);
+      expect(await File('${source.path}.lep.tmp').exists(), isFalse);
       expect(await File('${source.path}.verify.tmp').exists(), isFalse);
       expect(await PhotoArchiveManifest.read(captureDir), isNull);
     },
@@ -142,7 +142,29 @@ void main() {
 
     expect(result.failedNames, ['failure.jpg']);
     expect(await source.readAsBytes(), original);
-    expect(await File('${source.path}.jxl').exists(), isFalse);
+    expect(await File('${source.path}.lep').exists(), isFalse);
+  });
+
+  test('codec cancellation pauses and retains the exact source', () async {
+    final source = File('${highresDir.path}/cancelled.jpg');
+    final original = List<int>.filled(4096, 13);
+    await source.writeAsBytes(original, flush: true);
+    await writeBundle([
+      {'highresFilename': 'cancelled.jpg'},
+    ]);
+
+    final result = await PhotoArchiveTransaction(
+      codec: _CancelledPhotoCodec(),
+    ).archiveCapture(captureDir);
+
+    expect(result.paused, isTrue);
+    expect(result.failedNames, isEmpty);
+    expect(result.archivedNames, isEmpty);
+    expect(await source.readAsBytes(), original);
+    expect(await File('${source.path}.lep').exists(), isFalse);
+    expect(await File('${source.path}.lep.tmp').exists(), isFalse);
+    expect(await File('${source.path}.verify.tmp').exists(), isFalse);
+    expect(await PhotoArchiveManifest.read(captureDir), isNull);
   });
 
   test('non-smaller exact archive keeps the JPEG', () async {
@@ -159,7 +181,7 @@ void main() {
 
     expect(result.skippedNames, ['larger.jpg']);
     expect(await source.readAsBytes(), original);
-    expect(await File('${source.path}.jxl').exists(), isFalse);
+    expect(await File('${source.path}.lep').exists(), isFalse);
     expect(await PhotoArchiveManifest.read(captureDir), isNull);
   });
 
@@ -182,7 +204,7 @@ void main() {
 
       expect(first.failedNames, ['crash.jpg']);
       expect(await source.readAsBytes(), original);
-      expect(await File('${source.path}.jxl').exists(), isTrue);
+      expect(await File('${source.path}.lep').exists(), isTrue);
       expect(
         (await PhotoArchiveManifest.read(
           captureDir,
@@ -196,7 +218,43 @@ void main() {
 
       expect(second.archivedNames, ['crash.jpg']);
       expect(await source.exists(), isFalse);
-      expect(await File('${source.path}.jxl').exists(), isTrue);
+      expect(await File('${source.path}.lep').exists(), isTrue);
+    },
+  );
+
+  test(
+    'production gate closing after manifest commit retains the source',
+    () async {
+      final source = File('${highresDir.path}/commit-race.jpg');
+      final original = List<int>.filled(8192, 17);
+      await source.writeAsBytes(original, flush: true);
+      await writeBundle([
+        {'highresFilename': 'commit-race.jpg'},
+      ]);
+      var mayContinue = true;
+
+      final first = await PhotoArchiveTransaction(
+        codec: _ZlibTestCodec(),
+        canStartNext: () => mayContinue,
+        afterManifestCommitted: (_) async {
+          mayContinue = false;
+        },
+      ).archiveCapture(captureDir);
+
+      expect(first.paused, isTrue);
+      expect(first.failedNames, isEmpty);
+      expect(await source.readAsBytes(), original);
+      expect(await File('${source.path}.lep').exists(), isTrue);
+      expect(await PhotoArchiveManifest.read(captureDir), isNotNull);
+
+      mayContinue = true;
+      final second = await PhotoArchiveTransaction(
+        codec: _ZlibTestCodec(),
+        canStartNext: () => mayContinue,
+      ).archiveCapture(captureDir);
+
+      expect(second.archivedNames, ['commit-race.jpg']);
+      expect(await source.exists(), isFalse);
     },
   );
 }
@@ -222,6 +280,9 @@ class _ZlibTestCodec implements PhotoArchiveCodec {
     final decoded = ZLibCodec().decode(await sourceJxl.readAsBytes());
     await destinationJpeg.writeAsBytes(decoded, flush: true);
   }
+
+  @override
+  void requestCancellation() {}
 }
 
 class _MismatchTestCodec extends _ZlibTestCodec {
@@ -250,6 +311,17 @@ class _FailingTestCodec extends _ZlibTestCodec {
   }
 }
 
+final class _CancelledPhotoCodec extends _ZlibTestCodec {
+  @override
+  Future<void> encodeJpeg({
+    required File sourceJpeg,
+    required File destinationJxl,
+  }) async {
+    await destinationJxl.writeAsBytes(const <int>[1], flush: true);
+    throw const PhotoArchiveCancelled();
+  }
+}
+
 class _LargerExactTestCodec implements PhotoArchiveCodec {
   @override
   bool get isSupported => true;
@@ -271,4 +343,7 @@ class _LargerExactTestCodec implements PhotoArchiveCodec {
     final archive = await sourceJxl.readAsBytes();
     await destinationJpeg.writeAsBytes(archive.sublist(1), flush: true);
   }
+
+  @override
+  void requestCancellation() {}
 }

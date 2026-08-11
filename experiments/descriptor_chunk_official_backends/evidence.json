@@ -1,0 +1,65 @@
+{
+  "schema": "pw_descriptor_chunk_official_backends_evidence_v1",
+  "status": "confirmed",
+  "objective": "Compare OpenZL ACE, B2ND BYTEDELTA, and existing official backends on one complete exact-lossless descriptor chunk.",
+  "revision": {
+    "git_head": "13d2a4f05d491464c537a9135496eccaa05c2358",
+    "worktree_state": "shared_dirty_worktree; evidence files are identified by SHA-256 below"
+  },
+  "input": {
+    "source_bytes": 198983680,
+    "source_sha256": "0c12c0dfa76d50cae59929774242282d8236daeb852bdee6ac99c3062d6d08b0",
+    "descriptor_count": 16384,
+    "dimension": 128,
+    "measured_raw_bytes": 2097152,
+    "original_chunk_sha256": "82f260391df8f2710e67349fd16b24b94ac8cba44c69703adbbfa5071432cb4a",
+    "transformed_chunk_sha256": "4677b806693fd8e302bf5f3747314b8e716e13256e58a483b59ceef63e657066"
+  },
+  "environment": {
+    "os": "macOS 26.1 build 25B78",
+    "architecture": "arm64",
+    "compiler": "Apple clang 17.0.0 (clang-1700.6.3.2)",
+    "faiss": "1.14.0",
+    "hardware_role": "host diagnostic and micro-screen only"
+  },
+  "command": "PW_DESCRIPTOR_BACKENDS_SRC=/private/tmp/pw-descriptor-backends-src.7GacAd PW_DESCRIPTOR_BACKENDS_BUILD=/private/tmp/pw-descriptor-backends-build.1mnUoG bash tool/run_descriptor_chunk_official_backends_bench.sh",
+  "stopping_rule": "one valid encode/decode/corruption cycle per arm on one complete chunk; no automatic repeat, no larger corpus",
+  "result": {
+    "artifact": "results/2026-08-02-minimal-chunk.json",
+    "artifact_sha256": "d8f4b929d9b283d3ef4f32f8345612cbb8e4e5043f1ea57670ca45b9fbb1f1ce",
+    "winner": "zpaq_method5",
+    "winner_complete_persisted_bytes": 1512434,
+    "winner_ratio_from_raw": 1.3866072833591416,
+    "winner_percent_of_raw": 72.11847305297852,
+    "openzl_ace_complete_persisted_bytes": 1586032,
+    "b2nd_bytedelta_complete_persisted_bytes": 1736906,
+    "all_eight_arms_exact": true,
+    "all_eight_arms_corruption_rejected": true,
+    "source_unchanged": true,
+    "production_promoted": false
+  },
+  "mlflow": {
+    "experiment": "descriptor_chunk_official_backends",
+    "run_id": "a64b06c2f227441389a403c044311b23",
+    "tracking_db": "experiments/pwa2_structure_zpaq/mlflow.db"
+  },
+  "file_sha256": {
+    "docs/superpowers/specs/2026-08-02-descriptor-chunk-official-backends-design.md": "9a5fb6ff705aa387e098706ffc62d1b0e9c5e5503b2b80077232b07e11d8f4b2",
+    "docs/superpowers/plans/2026-08-02-descriptor-chunk-official-backends.md": "86c94fc1907a28716ad742a8cdcb1381e02a162ff9afe09d989f082484d62ba3",
+    "experiments/descriptor_chunk_official_backends/experiment-contract.yaml": "c76840daaa1ccfaef63f1d140369b2cc6da3f5d4bac0f93923e09ad4bc9a5519",
+    "experiments/descriptor_chunk_official_backends/input-manifest.yaml": "a0c69114eb8b7517ba364254f499ebcd01de876acc2dd61009e2a534c0f6bbcd",
+    "experiments/descriptor_chunk_official_backends/record_mlflow.py": "9c2ac64914e68e06ac9365cbccd61bdf68430a3471d97df533349f7fb786c40c",
+    "test/descriptor_chunk_official_backends_contract_test.dart": "b29311b0fafdad87db65b336d7c787a01c8821761e8b77cb54a3ac6f2459e762",
+    "tool/descriptor_chunk_archive.h": "623af005f01f5afeed5ab5f8a97eee145b62f5bc343df298b958188c86d664d1",
+    "tool/descriptor_chunk_archive.cpp": "171c83484e0f67c329c5699ff546e9043d9089a027b39cd8ed395aef4b28597f",
+    "tool/descriptor_chunk_archive_test.cpp": "573cd37edfbe8913957adfcaeb57eea1a41b644ed15a0303aec3ce595d0cca3a",
+    "tool/run_descriptor_chunk_archive_tests.sh": "07abf9776c19d802c068f2abde9120f2d805fceb2e993c81cfa0ad7ae3809776",
+    "tool/descriptor_chunk_official_backends_bench.cpp": "965388d81098c91e5c6e544e142a09fbe7c36c666fdb0f58f3a8b81955e6ec28",
+    "tool/run_descriptor_chunk_official_backends_bench.sh": "2fed917ae04f973e757129aee551c06a379cff05f01f32f3c9fb4ecd816cbe48"
+  },
+  "deviations": [
+    "The draft OpenZL u8 profile was rejected on the real chunk by upstream graph type validation; the final measured arm uses the official serial raw-byte ACE profile.",
+    "The draft B2ND two-dimensional uint8 plus 128-byte typesize model double-counted the element width; the final measured arm uses exact fixed-width S128 records so the requested SHUFFLE and BYTEDELTA filters operate correctly."
+  ],
+  "verdict": "Neither new arm beats the existing ZPAQ method 5 backend on this complete minimum chunk. Do not expand either new arm to 100 MB or production from this evidence."
+}

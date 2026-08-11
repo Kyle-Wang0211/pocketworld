@@ -1,0 +1,61 @@
+schema: pw_cross_photo_lossless_potential_inputs_v1
+frozen_at: "2026-07-30T00:00:00+08:00"
+source_kind: verified-production-container-backup-copy
+source_root: /private/tmp/pw_archive_gate_refresh_20260730_4b0e3dd/before/Documents/captures_official/cap_1785155296535863
+original_device_data_mutable: false
+selection:
+  rule: first-consecutive-bundle-frames-until-at-least-100-MiB
+  minimum_bytes: 104857600
+  selected_count: 37
+  selected_bytes: 105908333
+sidecars:
+  - name: official_photo_bundle.json
+    bytes: 290160
+    sha256: ee8b7a1ac4f23e1701eb7c86350bc1bd4bef2fd56d1627119d45168894d1f36f
+  - name: official_sfm_fed_frames.jsonl
+    bytes: 90741
+    sha256: 7004072b076d0adaeb7fff9a291f10eb32c3ba789ad2529b9ff05b5e0d025fdf
+  - name: official_sfm_sparse.ply
+    bytes: 1207250
+    sha256: 0a0e1e16f6216a77b697967dcdd81c2a5050665ac403117a0d8144401a4e8246
+  - name: official_sfm_sparse_meta.json
+    bytes: 27420
+    sha256: 131093b927d6fb33224d09c2284987318d1bb2b6487d5b28be8965d52ce8538d
+photos:
+  - {index: 0, frame_id: tap-24, name: official_tap-24.jpg, bytes: 2834964, sha256: 247e6b356d1159dae00e87583751c6745b0c713aa0904ffb6111a84326aa84f1}
+  - {index: 1, frame_id: tap-39, name: official_tap-39.jpg, bytes: 2816757, sha256: 13f57def9b25f8e5c3d3921f09eb915e97a68216b7af4ae7df4b9c824cb8a4a5}
+  - {index: 2, frame_id: tap-64, name: official_tap-64.jpg, bytes: 2831304, sha256: 00046a462f2288929d49b949cd17c8f6388b1d2eb60a5a638c8bb0427354ab83}
+  - {index: 3, frame_id: tap-85, name: official_tap-85.jpg, bytes: 2955788, sha256: f7d4d023e3d49579d0724c274e386bf36af7a956ac71ccc7802cd71b3e1faf9c}
+  - {index: 4, frame_id: tap-100, name: official_tap-100.jpg, bytes: 2900037, sha256: 8417c6aa0a8c4935cf07090f52b7a615b615f23778b69547e760566359d3828e}
+  - {index: 5, frame_id: tap-113, name: official_tap-113.jpg, bytes: 2819572, sha256: cf39119bff4f8dd9493cf18148667c6d9fc60d7eafd3ab93baf0b31f47055289}
+  - {index: 6, frame_id: tap-130, name: official_tap-130.jpg, bytes: 2803798, sha256: a3efe22a1d3cab0d95d7ee03c0afde81b8a9497abf6e9ebf674976db65b2f991}
+  - {index: 7, frame_id: tap-159, name: official_tap-159.jpg, bytes: 2834500, sha256: f1eaa7e5f35a02435432529133168110361b02fde274b633b60bc61a0e80367d}
+  - {index: 8, frame_id: tap-202, name: official_tap-202.jpg, bytes: 2918462, sha256: 323324ecbbfec5e2a94811f579553f7e0bcb37e76be6507b4e2852e9b738bd9d}
+  - {index: 9, frame_id: tap-221, name: official_tap-221.jpg, bytes: 2883467, sha256: 4183d92ed2cbd6b884769f7d484fb85cd3fa4a927c2c1dca388135e9999b5608}
+  - {index: 10, frame_id: tap-241, name: official_tap-241.jpg, bytes: 2983404, sha256: 1bcf10e953ba7feae4d5d410bc45a035827e805e2ade2767ed554e7dff077530}
+  - {index: 11, frame_id: tap-275, name: official_tap-275.jpg, bytes: 3086991, sha256: d82ce427fd159f5a289cc84ca8e4b0bcab46cd6c1a5f47132b9f213dcae840f9}
+  - {index: 12, frame_id: tap-330, name: official_tap-330.jpg, bytes: 2852822, sha256: 3ffaec2dbbf77e887b1739e62ed35503bf590fa8f091b9e47628f25c74d5fa8b}
+  - {index: 13, frame_id: tap-353, name: official_tap-353.jpg, bytes: 2858872, sha256: 64fe46d6028175e41f8858d9c8525ca2a450a08ae1b072f088b0e80d0b191018}
+  - {index: 14, frame_id: tap-391, name: official_tap-391.jpg, bytes: 2740468, sha256: a06b9c8cfbdbdad56310d21a17488cdfd38072d37b4edd0cc62f7b71cb28724e}
+  - {index: 15, frame_id: tap-409, name: official_tap-409.jpg, bytes: 2842051, sha256: 8bad8421ec209952a2a08a009a0c6e74a14de0f42cb6202afc1a3a1c9ffa6cc7}
+  - {index: 16, frame_id: tap-426, name: official_tap-426.jpg, bytes: 2742052, sha256: 9b1b3c59e51b995acef24da6cac6534cf31fecb5b9504993bfdd49c151a6a590}
+  - {index: 17, frame_id: tap-438, name: official_tap-438.jpg, bytes: 2796270, sha256: 53045693f00138d657bcbec5b9e5f48c4e84f87755cacbd9c361bc09a4ee645c}
+  - {index: 18, frame_id: tap-450, name: official_tap-450.jpg, bytes: 2684294, sha256: 5b2676bf0753b1509345ca76dec3775e40a27ea970612f792127e49155944d70}
+  - {index: 19, frame_id: tap-464, name: official_tap-464.jpg, bytes: 2844242, sha256: 361ddb435ba4f9f13df5105d1b670349169882bbf614b45aff620513c393e19f}
+  - {index: 20, frame_id: tap-513, name: official_tap-513.jpg, bytes: 2910003, sha256: 85b69ee2a7b7af2c005f1757d97d227953d7d37e34dd43d785eeef10d6bd6f62}
+  - {index: 21, frame_id: tap-535, name: official_tap-535.jpg, bytes: 2931212, sha256: a2ea7eee7a2454ac083015a2a0a604c9cc38df45ef17a84e69f8005944530a04}
+  - {index: 22, frame_id: tap-560, name: official_tap-560.jpg, bytes: 2981008, sha256: 02d910f4f1f36c7aaccb724248cabdc06e6a19487827125431d45c02c3266f6c}
+  - {index: 23, frame_id: tap-575, name: official_tap-575.jpg, bytes: 2865836, sha256: 27efb1d6b31d3b397bf8ab4243a241f52b8ef0ee9255516e40baabd4ad7e9ad1}
+  - {index: 24, frame_id: tap-584, name: official_tap-584.jpg, bytes: 2894977, sha256: a9e847fcd53ffa3df647978f30e40850619782dab53dfbf1b51140004d12dd04}
+  - {index: 25, frame_id: tap-596, name: official_tap-596.jpg, bytes: 2783241, sha256: 1ec0ce69c1d34bea23a15697126afcbae4d288fac0310baf59bf6706e04aed74}
+  - {index: 26, frame_id: tap-610, name: official_tap-610.jpg, bytes: 2823907, sha256: 6566e4b00ce3745d6ee6e5fb6e67060720e37c767075db36d9cd40ab8a0fa453}
+  - {index: 27, frame_id: tap-621, name: official_tap-621.jpg, bytes: 2725227, sha256: dee94e61ab7599949b69590467c0a27244d8c7a7915bf82cd60e9a8be02c16c7}
+  - {index: 28, frame_id: tap-629, name: official_tap-629.jpg, bytes: 2731278, sha256: 55a29e636d353aa2bb1dab19adc93c4c6f073da9a9754622b3f640156a968956}
+  - {index: 29, frame_id: tap-639, name: official_tap-639.jpg, bytes: 2791605, sha256: 6adcdb2efa3bdb4e4f9bb1d03c3ee080bc957e32902cc1fd2527a93a62fedf99}
+  - {index: 30, frame_id: tap-649, name: official_tap-649.jpg, bytes: 2937063, sha256: eaff382f713ec64addc17e3f5790cd1d949aa7dcf866b526e40e5f791c520618}
+  - {index: 31, frame_id: tap-660, name: official_tap-660.jpg, bytes: 2888376, sha256: dbdca6e503671d333ccdbf78cae4527bafb25f3ee3d07cdefbfa958b306bda6d}
+  - {index: 32, frame_id: tap-673, name: official_tap-673.jpg, bytes: 2850797, sha256: 474f153b5be26d1e7cc200fd68602218750b09714f25812f75303352c247dc3e}
+  - {index: 33, frame_id: tap-683, name: official_tap-683.jpg, bytes: 2933124, sha256: f555ddb0ccc78a6a6d0a3364a58a76ab19ebe9455525df0b1a9136456272b9f1}
+  - {index: 34, frame_id: tap-691, name: official_tap-691.jpg, bytes: 2992177, sha256: ce7dd0ab96755955a07520d401df5e1d81ad8e99963ffea3f35a3bb492973196}
+  - {index: 35, frame_id: tap-702, name: official_tap-702.jpg, bytes: 2978290, sha256: 3bbf72f484a34e5b6cac3ba7576bf02b366ccd1a3fb1405d5e92ba732f6ae224}
+  - {index: 36, frame_id: tap-712, name: official_tap-712.jpg, bytes: 2860097, sha256: 487599f6f9da7ff274865ab4b51398275ad767994c09133c54fc0814d73f0bad}

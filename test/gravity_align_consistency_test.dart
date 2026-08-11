@@ -101,9 +101,7 @@ void main() {
   });
 
   test('persist writes the aligned/raw/quat triple (schema v2)', () {
-    final src = File(
-      'lib/official_capture/sparse_ply.dart',
-    ).readAsStringSync();
+    final src = File('lib/official_capture/sparse_ply.dart').readAsStringSync();
     expect(src, contains("'schema': 'pw_sfm_sparse_meta_v2'"));
     expect(src, contains("'gravity_align_quat_wxyz'"));
     expect(src, contains("'poses_raw_colmap'"));
@@ -212,9 +210,7 @@ void scaleAnchorTests() {
   });
 
   test('persist writes scale_anchor_factor and the arm is env-gated', () {
-    final ply = File(
-      'lib/official_capture/sparse_ply.dart',
-    ).readAsStringSync();
+    final ply = File('lib/official_capture/sparse_ply.dart').readAsStringSync();
     expect(ply, contains("'scale_anchor_factor': snapshot.scaleAnchorFactor"));
     final live = File(
       'lib/official_capture/sfm_live_recon.dart',

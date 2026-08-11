@@ -1,0 +1,66 @@
+schema: pw_descriptor_similarity_forest_zpaq_contract_v1
+frozen_at: "2026-08-02T00:00:00+08:00"
+objective: >-
+  Isolate the complete archive-byte effect of expanding descriptor prediction
+  from verified COLMAP tracks to an almost-full content-similarity forest.
+revision:
+  app_git_head: 13d2a4f05d491464c537a9135496eccaa05c2358
+  tracked_dirty_diff_sha256_excluding_native_archives: 635ac6416e070c434086b56fedf021049f0c1325fbeac403b6ec46aa09b728e4
+input:
+  bytes: 198983680
+  sha256: 0c12c0dfa76d50cae59929774242282d8236daeb852bdee6ac99c3062d6d08b0
+  sqlite_integrity_check: ok
+backend:
+  zpaq_version: "7.15"
+  zpaq_method: 5
+  zpaq_revision_sha256: e85ec2529eb0ba22ceaeabd461e55357ef099b80f61c14f377b429ea3d49d418
+  faiss_version: 1.14.0
+  faiss_library_sha256: cbd11b958ff233d4cc1dc0fe010890b4677ef81c2e0a039ff4567d365946e473
+  faiss_role: encoder_only
+arms:
+  a: verified_track_forest_common_container_zpaq
+  b: full_similarity_forest_common_container_zpaq
+faiss_parameters:
+  dimension: 128
+  metric: squared_l2
+  seed: 20260802
+  nlist: 2048
+  nprobe: 32
+  block_descriptors: 8192
+  maximum_training_descriptors: 131072
+  nearest_candidates: 1
+metrics:
+  primary: complete_archive_bytes
+  diagnostics:
+    - parent_sidecar_bytes
+    - predicted_descriptor_nodes
+    - predicted_descriptor_fraction
+    - elapsed_ms
+    - peak_rss_bytes
+    - peak_temp_bytes
+hard_gates:
+  source_unchanged: true
+  restored_length_equal: true
+  restored_byte_equal: true
+  restored_sha256_equal: true
+  sqlite_integrity_ok: true
+  parent_forest_valid: true
+  sidecar_round_trip: true
+threshold:
+  local_research_baseline: b_archive_bytes_strictly_less_than_a_archive_bytes
+execution:
+  complete_repeats_per_arm: 1
+  automatic_extra_repeats: 0
+  host_role: diagnostic_and_local_research_baseline_only
+  production_promotion_requires_physical_iphone: true
+stop_conditions:
+  - Stop immediately on any hard-gate failure.
+  - Do not start another round after one complete A/B.
+  - Do not modify or install production code.
+artifacts:
+  large_outputs: delete_after_hash_and_metrics
+  result_directory: experiments/descriptor_similarity_forest_zpaq/results
+  python_lock: ../pwa2_structure_zpaq/uv.lock
+  dvc_identity: ../pwa2_structure_zpaq/dvc.lock
+  mlflow_tracking_database: ../pwa2_structure_zpaq/mlflow.db
+

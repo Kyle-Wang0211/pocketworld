@@ -30,6 +30,13 @@ void main() {
     expect(recon, contains('_photoArchiveActivityLease.close()'));
   });
 
+  test('legacy draft reconstruction also preempts cold archive work', () {
+    final recon = File('lib/capture/sfm_live_recon.dart').readAsStringSync();
+
+    expect(recon, contains('beginProcessingActivity()'));
+    expect(recon, contains('_photoArchiveActivityLease.close()'));
+  });
+
   test(
     'startup discovery is post-frame and marker-filtered by coordinator',
     () {
@@ -50,6 +57,12 @@ void main() {
       'lib/official_capture/sfm_resume.dart',
     ).readAsStringSync();
 
+    expect(resume, contains('beginReconstructionActivity('));
+    expect(
+      resume,
+      isNot(contains('await photoArchiveCoordinator.waitForIdle()')),
+      reason: 'resumed reconstruction must preempt cold archive immediately',
+    );
     expect(resume, contains('PhotoArchiveResolver'));
     expect(resume, contains('photoArchiveCodec'));
     expect(

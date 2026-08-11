@@ -176,13 +176,6 @@ class _ARAlbumPageState extends State<ARAlbumPage> {
                   : () => setState(() => _selecting = true),
               child: const Text('选择', style: TextStyle(color: Colors.white)),
             ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text(
-              '返回补拍',
-              style: TextStyle(color: Color(0xFFF5B821)),
-            ),
-          ),
         ],
       ),
       body: SafeArea(

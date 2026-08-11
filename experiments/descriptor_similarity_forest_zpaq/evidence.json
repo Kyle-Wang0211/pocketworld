@@ -1,0 +1,75 @@
+{
+  "schema": "pw_descriptor_similarity_forest_zpaq_evidence_v1",
+  "experiment_contract": "experiment-contract.yaml",
+  "input_manifest": "input-manifest.yaml",
+  "result": {
+    "path": "results/2026-08-02-descriptor-similarity-forest-zpaq.json",
+    "sha256": "d9b052552f9a65df384b108037eff33301454cad631ca4b40c6c9d6b07bc394f"
+  },
+  "mlflow": {
+    "tracking_database": "../pwa2_structure_zpaq/mlflow.db",
+    "experiment": "descriptor_similarity_forest_zpaq",
+    "run_id": "b2e0bc76e26248e69c5fc6137efe0f28"
+  },
+  "dvc": {
+    "lock_path": "../pwa2_structure_zpaq/dvc.lock",
+    "immutable_input_md5": "79e1393c61afbf1d7fb45c2c9109f281",
+    "immutable_input_bytes": 198983680
+  },
+  "source_identity": {
+    "bytes": 198983680,
+    "sha256_before_and_after": "0c12c0dfa76d50cae59929774242282d8236daeb852bdee6ac99c3062d6d08b0",
+    "sqlite_integrity_check": "ok"
+  },
+  "code_sha256": {
+    "tool/descriptor_similarity_forest.h": "d328d0cf6bbd110a9e10aed2e685a9f18b2764463edf3e27d074a4417eb25b57",
+    "tool/descriptor_similarity_forest.cpp": "f263ce6ace772c68404a6326c1c959cac8893e2190e45c2b0a3e36ad0cca77d2",
+    "tool/descriptor_similarity_forest_test.cpp": "8da94de03c0c132a4df53862727891f90194349908791f37042e22622029a9fb",
+    "tool/run_descriptor_similarity_forest_tests.sh": "510581984830d8d38ae32a0846425896a91891bdbd023ba73340f2df38170bda",
+    "tool/sqlite_descriptor_similarity_forest_zpaq_bench.cpp": "3d4d4d6775b9db46c759a44fd855b474e4cf4789d4d7c5531f1ae69563c1ed2e",
+    "tool/run_sqlite_descriptor_similarity_forest_zpaq_bench.sh": "cd6579438fad0fd850bcdbe7c8951d74d9fdcfee667c84329632f57e42349680",
+    "test/descriptor_similarity_forest_zpaq_contract_test.dart": "d4a4cb1bb606a86f2e5baf02a953bd355e40f6ad137459acb6158d2b4fa32d51"
+  },
+  "verification": [
+    {
+      "command": "sh tool/run_descriptor_similarity_forest_tests.sh",
+      "status": "pass",
+      "output_marker": "PW_DESCRIPTOR_SIMILARITY_FOREST_TEST_OK"
+    },
+    {
+      "command": "sh tool/run_sqlite_descriptor_similarity_forest_zpaq_bench.sh --compile-only",
+      "status": "pass",
+      "output_marker": "{\"compile_ok\":1}"
+    },
+    {
+      "command": "flutter test test/descriptor_similarity_forest_zpaq_contract_test.dart",
+      "status": "pass",
+      "tests": 1
+    },
+    {
+      "command": "openspec validate benchmark-descriptor-similarity-forest-zpaq --strict",
+      "status": "pass"
+    },
+    {
+      "command": "sh tool/run_sqlite_descriptor_similarity_forest_zpaq_bench.sh",
+      "status": "pass",
+      "complete_repeats_per_arm": 1,
+      "automatic_extra_repeats": 0
+    }
+  ],
+  "comparison": {
+    "arm_a_archive_bytes": 124402632,
+    "arm_b_archive_bytes": 116739319,
+    "b_minus_a_bytes": -7663313,
+    "b_minus_a_fraction": -0.0616008912094,
+    "arm_a_predicted_fraction": 0.17911665651678407,
+    "arm_b_predicted_fraction": 0.9934529261232403,
+    "arm_b_parent_sidecar_bytes": 3458294,
+    "all_exactness_gates_passed": true
+  },
+  "cleanup": {
+    "large_build_and_run_artifacts_deleted": true,
+    "remaining_experiment_directory_bytes_approx": 12288
+  },
+  "verdict": "accept similarity_forest_v1 plus identical ZPAQ as the same-scope host research baseline; no production or phone promotion"
+}

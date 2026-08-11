@@ -1,0 +1,38 @@
+{
+ "schema": "pw_efficiency_gate_final_verdict_v1",
+ "date": "2026-08-10",
+ "gate": "PASS",
+ "rule": "v3_adjacent_block_pairing(用户签决 2026-08-10)",
+ "post_fix_pool": {
+  "captures": [
+   "cap_1786328116016857",
+   "cap_1786329744506493"
+  ],
+  "pairs": 10,
+  "pair_deltas_pct": [
+   5.7,
+   -3.6,
+   -2.9,
+   3.2,
+   3.5,
+   -9.0,
+   -4.7,
+   -19.2,
+   10.5,
+   -2.6
+  ],
+  "mean_pct": -1.9,
+  "ci95_pct": [
+   -7.99,
+   4.2
+  ],
+  "thermal": "2/2 全臂一致"
+ },
+ "criterion": "流式压缩不影响拍摄期训练管线效率(≤5%,用户定义) — 满足",
+ "fix_that_closed_it": "MaximizePowerEfficiency 低功耗编码路径(热余量归因,干预验证:match惩罚 +32%→+2%)",
+ "evidence_chain": [
+  "pre-fix 19对(+7.11%,归档为归因证据)",
+  "post-fix 10对(-1.90%,PASS)"
+ ],
+ "next": "abPeriod 16→0 生产构建装机;质量档验收(compare.html,用户批准制)与 B轨(SfM DB)签决仍独立在后"
+}

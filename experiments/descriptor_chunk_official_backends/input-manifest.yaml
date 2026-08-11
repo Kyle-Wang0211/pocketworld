@@ -1,0 +1,11 @@
+schema: pw_descriptor_chunk_official_backends_input_v1
+source:
+  path: /private/tmp/pw_portable_sfm_update.6RQ6nt/before/Documents/captures_official/cap_1785512421333592/official_sfm_live.db
+  bytes: 198983680
+  sha256: 0c12c0dfa76d50cae59929774242282d8236daeb852bdee6ac99c3062d6d08b0
+selection:
+  sql: SELECT image_id, rows, cols, data FROM descriptors ORDER BY image_id
+  descriptor_count: 16384
+  dimension: 128
+  raw_bytes: 2097152
+  note: Stop immediately after the first 16,384 complete descriptor vectors.

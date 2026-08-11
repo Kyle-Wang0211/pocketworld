@@ -13,6 +13,7 @@ import 'official_capture/database_archive_resolver.dart';
 import 'official_capture/database_archive_transaction.dart';
 
 const repeatCount = 1;
+const trackDeltaV1HostBaselineBytes = 124401918;
 const _resultFileName = 'database_archive_benchmark_result.json';
 const _runId = String.fromEnvironment(
   'PW_BENCH_RUN_ID',
@@ -57,7 +58,7 @@ class _BenchmarkAppState extends State<_BenchmarkApp> {
       await _writeJsonAtomic(
         File('${documents.path}/$_resultFileName'),
         <String, Object?>{
-          'schema': 'pw_sqlite_dual_candidate_iphone_benchmark_v1',
+          'schema': 'pw_sqlite_exact_transform_v2_iphone_benchmark_v1',
           'run_id': _runId,
           'status': 'failed',
           'error': '$error',
@@ -101,7 +102,7 @@ Future<Map<String, Object?>> runDatabaseArchiveBenchmark({
   final resultFile = File('${documents.path}/$_resultFileName');
   if (!await input.exists()) {
     final waiting = <String, Object?>{
-      'schema': 'pw_sqlite_dual_candidate_iphone_benchmark_v1',
+      'schema': 'pw_sqlite_exact_transform_v2_iphone_benchmark_v1',
       'run_id': _runId,
       'status': 'waiting_for_input',
       'expected_input': 'benchmark_input.db',
@@ -113,8 +114,9 @@ Future<Map<String, Object?>> runDatabaseArchiveBenchmark({
 
   final codec = ZpaqFfiDatabaseArchiveCodec();
   final preprocessor = TrackDeltaFfiDatabaseArchivePreprocessor();
-  if (!codec.isSupported || !preprocessor.isSupported) {
-    throw StateError('production ZPAQ or track-delta FFI is unavailable');
+  final exactV2 = ExactTransformV2FfiBenchmarkPreprocessor();
+  if (!codec.isSupported || !preprocessor.isSupported || !exactV2.isSupported) {
+    throw StateError('ZPAQ, track-delta, or exact v2 FFI is unavailable');
   }
 
   final sourceBytes = await input.length();
@@ -152,6 +154,14 @@ Future<Map<String, Object?>> runDatabaseArchiveBenchmark({
       await input.copy(source.path);
 
       final stopwatch = Stopwatch()..start();
+      final exactV2Result = await _runExactV2Candidate(
+        input: input,
+        workDirectory: Directory('${capture.path}/exact_transform_v2'),
+        codec: codec,
+        preprocessor: exactV2,
+        sourceBytes: sourceBytes,
+        sourceSha256: sourceSha256,
+      );
       final transaction = await DatabaseArchiveTransaction(
         codec: codec,
         preprocessor: preprocessor,
@@ -202,6 +212,13 @@ Future<Map<String, Object?>> runDatabaseArchiveBenchmark({
         'archive_sha256': await databaseArchiveSha256(archive),
         'raw_archive_bytes': manifest.rawArchiveBytes,
         'track_archive_bytes': manifest.trackArchiveBytes,
+        'exact_v2_archive_bytes': exactV2Result['archive_bytes'],
+        'exact_v2_archive_sha256': exactV2Result['archive_sha256'],
+        'exact_v2_transformed_sha256': exactV2Result['transformed_sha256'],
+        'exact_v2_restored_sha256': exactV2Result['restored_sha256'],
+        'exact_v2_byte_equal': exactV2Result['byte_equal'],
+        'exact_v2_integrity_check': exactV2Result['integrity_check'],
+        'exact_v2_elapsed_ms': exactV2Result['elapsed_ms'],
         'source_deleted_after_commit': sourceDeletedAfterCommit,
         'byte_equal': byteEqual,
         'integrity_check': integrityOk ? 'ok' : 'failed',
@@ -211,7 +228,7 @@ Future<Map<String, Object?>> runDatabaseArchiveBenchmark({
       await capture.delete(recursive: true);
 
       await _writeJsonAtomic(resultFile, <String, Object?>{
-        'schema': 'pw_sqlite_dual_candidate_iphone_benchmark_v1',
+        'schema': 'pw_sqlite_exact_transform_v2_iphone_benchmark_v1',
         'run_id': _runId,
         'status': 'running',
         'completed_repeats': runs.length,
@@ -229,8 +246,12 @@ Future<Map<String, Object?>> runDatabaseArchiveBenchmark({
   final selected = runs.map((run) => run['selected_preprocess']).toSet();
   final rawSizes = runs.map((run) => run['raw_archive_bytes']).toSet();
   final trackSizes = runs.map((run) => run['track_archive_bytes']).toSet();
+  final exactV2Sizes = runs.map((run) => run['exact_v2_archive_bytes']).toSet();
   final deterministic =
-      selected.length == 1 && rawSizes.length == 1 && trackSizes.length == 1;
+      selected.length == 1 &&
+      rawSizes.length == 1 &&
+      trackSizes.length == 1 &&
+      exactV2Sizes.length == 1;
   final trackWinsEveryRepeat = runs.every((run) {
     final raw = run['raw_archive_bytes'] as int?;
     final track = run['track_archive_bytes'] as int?;
@@ -239,9 +260,20 @@ Future<Map<String, Object?>> runDatabaseArchiveBenchmark({
         track != null &&
         track < raw;
   });
-  final passed = deterministic && trackWinsEveryRepeat;
+  final exactV2WinsEveryRepeat = runs.every((run) {
+    final track = run['track_archive_bytes'] as int?;
+    final exactV2Bytes = run['exact_v2_archive_bytes'] as int?;
+    return track != null &&
+        exactV2Bytes != null &&
+        exactV2Bytes < track &&
+        exactV2Bytes < trackDeltaV1HostBaselineBytes &&
+        run['exact_v2_byte_equal'] == true &&
+        run['exact_v2_integrity_check'] == 'ok';
+  });
+  final passed =
+      deterministic && trackWinsEveryRepeat && exactV2WinsEveryRepeat;
   final result = <String, Object?>{
-    'schema': 'pw_sqlite_dual_candidate_iphone_benchmark_v1',
+    'schema': 'pw_sqlite_exact_transform_v2_iphone_benchmark_v1',
     'run_id': _runId,
     'status': passed ? 'passed' : 'failed',
     'bundle_id': 'com.kyle.PocketWorld.ArchiveBench',
@@ -251,11 +283,77 @@ Future<Map<String, Object?>> runDatabaseArchiveBenchmark({
     'source_integrity_check': sourceIntegrity ? 'ok' : 'failed',
     'deterministic': deterministic,
     'track_wins_every_repeat': trackWinsEveryRepeat,
+    'exact_v2_wins_every_repeat': exactV2WinsEveryRepeat,
     'peak_rss_bytes': peakRssBytes,
     'runs': runs,
   };
   await _writeJsonAtomic(resultFile, result);
   return result;
+}
+
+Future<Map<String, Object?>> _runExactV2Candidate({
+  required File input,
+  required Directory workDirectory,
+  required ZpaqFfiDatabaseArchiveCodec codec,
+  required ExactTransformV2FfiBenchmarkPreprocessor preprocessor,
+  required int sourceBytes,
+  required String sourceSha256,
+}) async {
+  if (await workDirectory.exists()) {
+    await workDirectory.delete(recursive: true);
+  }
+  await workDirectory.create(recursive: true);
+  final transformed = File('${workDirectory.path}/transformed.db');
+  final archive = File('${workDirectory.path}/archive.zpaq');
+  final decoded = File('${workDirectory.path}/decoded.db');
+  final restored = File('${workDirectory.path}/restored.db');
+  final stopwatch = Stopwatch()..start();
+  try {
+    await preprocessor.transform(
+      sourceDatabase: input,
+      destinationDatabase: transformed,
+    );
+    if (!await preprocessor.integrityCheck(transformed)) {
+      throw StateError('exact_transform_v2 transformed integrity failed');
+    }
+    await codec.compress(
+      sourceDatabase: transformed,
+      destinationArchive: archive,
+    );
+    await codec.decompress(
+      sourceArchive: archive,
+      destinationDatabase: decoded,
+    );
+    await preprocessor.restore(
+      sourceDatabase: decoded,
+      destinationDatabase: restored,
+    );
+    stopwatch.stop();
+
+    final restoredSha256 = await databaseArchiveSha256(restored);
+    final byteEqual =
+        await restored.length() == sourceBytes &&
+        restoredSha256 == sourceSha256 &&
+        await databaseArchiveFilesEqual(input, restored);
+    final integrityOk = await preprocessor.integrityCheck(restored);
+    if (!byteEqual || !integrityOk) {
+      throw StateError('exact_transform_v2 exactness failed');
+    }
+    return <String, Object?>{
+      'arm': 'exact_transform_v2',
+      'archive_bytes': await archive.length(),
+      'archive_sha256': await databaseArchiveSha256(archive),
+      'transformed_sha256': await databaseArchiveSha256(transformed),
+      'restored_sha256': restoredSha256,
+      'byte_equal': byteEqual,
+      'integrity_check': integrityOk ? 'ok' : 'failed',
+      'elapsed_ms': stopwatch.elapsedMilliseconds,
+    };
+  } finally {
+    if (await workDirectory.exists()) {
+      await workDirectory.delete(recursive: true);
+    }
+  }
 }
 
 Future<void> _writeJsonAtomic(File output, Map<String, Object?> value) async {

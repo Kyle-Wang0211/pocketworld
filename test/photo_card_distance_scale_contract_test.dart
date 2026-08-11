@@ -71,8 +71,7 @@ void main() {
 
     // Apparent (screen) size relative to the size at capture, where the card
     // fills the viewport: nodeScale(d) * captureDistance / d.
-    double apparentScale(double dM) =>
-        nodeScale(dM) * captureDistanceM / dM;
+    double apparentScale(double dM) => nodeScale(dM) * captureDistanceM / dM;
 
     // Up close the card is a plain world object: pure 1/d perspective. This
     // continuous shrink as the user pulls back IS the fly-out effect.
@@ -89,7 +88,10 @@ void main() {
     // Past the 1 m anchor the beta compensation halves the falloff rate:
     // apparent size goes as d^(beta-1) = d^-0.5 instead of d^-1.
     expect(apparentScale(1.0), closeTo(0.05, 1e-9));
-    expect(apparentScale(4.0), closeTo(0.025, 1e-9)); // d^-0.5: half, not quarter
+    expect(
+      apparentScale(4.0),
+      closeTo(0.025, 1e-9),
+    ); // d^-0.5: half, not quarter
     // Still monotonically shrinking — no screen-space minimum, no billboard.
     expect(apparentScale(4.0), lessThan(apparentScale(1.0)));
     expect(apparentScale(100.0), lessThan(apparentScale(4.0)));

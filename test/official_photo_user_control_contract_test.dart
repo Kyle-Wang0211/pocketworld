@@ -1,6 +1,9 @@
 import 'dart:io';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pocketworld_flutter/official_capture/project_photo_album.dart';
+import 'package:pocketworld_flutter/ui/official_capture/ar_album_page.dart';
 
 void main() {
   final captureSource = File(
@@ -12,6 +15,23 @@ void main() {
   final liveSource = File(
     'lib/official_capture/sfm_live_recon.dart',
   ).readAsStringSync();
+
+  testWidgets('official album app bar has a single return control', (
+    tester,
+  ) async {
+    final projectPhotos = OfficialProjectPhotoAlbum();
+    addTearDown(projectPhotos.dispose);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: ARAlbumPage(projectPhotos: projectPhotos, onDelete: (_) async {}),
+      ),
+    );
+
+    expect(find.byIcon(Icons.arrow_back_rounded), findsOneWidget);
+    expect(find.text('选择'), findsOneWidget);
+    expect(find.text('返回补拍'), findsNothing);
+  });
 
   test(
     'official album exposes analysis states and explicit user selection',

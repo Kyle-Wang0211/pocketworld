@@ -1,0 +1,12 @@
+[project]
+name = "pocketworld-compression-commercial-candidates"
+version = "0.1.0"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "numpy==2.3.5",
+  "pyarrow==25.0.0",
+  "tiledb==0.36.1",
+]
+
+[tool.uv]
+package = false

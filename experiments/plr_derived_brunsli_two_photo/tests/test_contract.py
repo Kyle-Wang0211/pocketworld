@@ -120,7 +120,17 @@ def test_phase2_model_arms_and_selection_rule_are_frozen_before_training() -> No
     )
     assert config["training"]["epochs"] == 100
     assert config["training"]["batch_size"] == 64
-    assert config["training"]["data_loader_workers"] == 12
+    assert config["training"]["microbatch_size"] == 8
+    assert config["training"]["data_loader_workers"] == 4
+    assert config["training"]["worker_lifecycle_diagnostic"] == {
+        "sample_count": 512,
+        "completed_samples": 512,
+        "iterator_completed": True,
+        "ordered_sample_identity_sha256": (
+            "36be36e6bd3887e25c85b7d3fc5f17324408da2619839eb65c82d14a3b4d2b76"
+        ),
+        "evidence": "results/phase2-workers4-lifecycle-diagnostic.json",
+    }
     assert config["corpus"]["public_candidate_reserve_count"] == 35000
     assert config["corpus"]["reserve_basis"]["strict_4_2_0_count"] == 394
     assert config["corpus"]["combined_manifest"] == (

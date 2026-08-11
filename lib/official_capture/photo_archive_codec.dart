@@ -16,4 +16,12 @@ abstract interface class PhotoArchiveCodec {
     required File sourceJxl,
     required File destinationJpeg,
   });
+
+  /// Requests cooperative interruption of an in-flight native operation.
+  void requestCancellation();
+}
+
+/// Raised when cold photo work stopped because production work took priority.
+final class PhotoArchiveCancelled implements Exception {
+  const PhotoArchiveCancelled();
 }

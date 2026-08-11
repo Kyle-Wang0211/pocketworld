@@ -1,0 +1,16 @@
+{
+  "schema": "pw_plr_phase2_resource_failure_v1",
+  "arm": "official_width",
+  "mlflow_run_id": "436b0dae76794bfbba6f3b16071ba7d7",
+  "registered_effective_batch_size": 64,
+  "execution_microbatch_size": 64,
+  "elapsed_before_stop_seconds": 2070,
+  "completed_epochs": 0,
+  "host_memory_gib": 18,
+  "process_physical_footprint_gib": 12.8,
+  "process_peak_physical_footprint_gib": 22.5,
+  "sampled_stack": "MPS optimizer tensor operation waiting on Metal command-buffer capacity",
+  "root_cause": "official-width batch 64 exceeded unified-memory capacity and entered memory-pressure paging",
+  "termination": "killed_preserved_invalid_resource_configuration",
+  "replacement_contract": "effective batch 64 via gradient accumulation over execution microbatches; model, corpus, seed, loss, optimizer and acceptance gates unchanged"
+}

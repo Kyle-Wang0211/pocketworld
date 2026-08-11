@@ -1,0 +1,114 @@
+{
+ "schema": "pw_hevc_ladder_v1",
+ "encoder": "hevc_videotoolbox (M3 Pro media engine, macOS proxy for A-series)",
+ "proxy_caveat": "M3 Pro RD/兼容性是 iPhone 硬编的代理;真机 A16 探针与真机编码另测",
+ "input": {
+  "capture_id": "analysis_cap_1779777762841797",
+  "frames": 96,
+  "jpeg_total_bytes": 251773820,
+  "resolution": "4224x2376",
+  "ordering": "triggerTimestamp",
+  "median_gap_s": 0.334
+ },
+ "level6_accepted_on_m3pro": true,
+ "color_range": "full/pc preserved",
+ "fps": "10/3",
+ "rungs": [
+  {
+   "rung": "q45_g1",
+   "quality": 45,
+   "gop": 1,
+   "bytes": 5801949,
+   "ratio_vs_jpeg": 43.39,
+   "bpp": 0.0482
+  },
+  {
+   "rung": "q45_g8",
+   "quality": 45,
+   "gop": 8,
+   "bytes": 4569273,
+   "ratio_vs_jpeg": 55.1,
+   "bpp": 0.0379
+  },
+  {
+   "rung": "q55_g1",
+   "quality": 55,
+   "gop": 1,
+   "bytes": 12702612,
+   "ratio_vs_jpeg": 19.82,
+   "bpp": 0.1055
+  },
+  {
+   "rung": "q55_g8",
+   "quality": 55,
+   "gop": 8,
+   "bytes": 9717815,
+   "ratio_vs_jpeg": 25.91,
+   "bpp": 0.0807,
+   "y_psnr_avg": 37.76,
+   "y_psnr_min": 35.03
+  },
+  {
+   "rung": "q65_g1",
+   "quality": 65,
+   "gop": 1,
+   "bytes": 26753483,
+   "ratio_vs_jpeg": 9.41,
+   "bpp": 0.2221,
+   "y_psnr_avg": 39.48,
+   "y_psnr_min": 37.21
+  },
+  {
+   "rung": "q65_g8",
+   "quality": 65,
+   "gop": 8,
+   "bytes": 21313102,
+   "ratio_vs_jpeg": 11.81,
+   "bpp": 0.177,
+   "y_psnr_avg": 39.03,
+   "y_psnr_min": 36.62
+  },
+  {
+   "rung": "q75_g1",
+   "quality": 75,
+   "gop": 1,
+   "bytes": 67728446,
+   "ratio_vs_jpeg": 3.72,
+   "bpp": 0.5624
+  },
+  {
+   "rung": "q75_g8",
+   "quality": 75,
+   "gop": 8,
+   "bytes": 59485501,
+   "ratio_vs_jpeg": 4.23,
+   "bpp": 0.4939,
+   "y_psnr_avg": 41.55,
+   "y_psnr_min": 39.77
+  },
+  {
+   "rung": "q85_g1",
+   "quality": 85,
+   "gop": 1,
+   "bytes": 161299573,
+   "ratio_vs_jpeg": 1.56,
+   "bpp": 1.3393
+  },
+  {
+   "rung": "q85_g8",
+   "quality": 85,
+   "gop": 8,
+   "bytes": 152977530,
+   "ratio_vs_jpeg": 1.65,
+   "bpp": 1.2702,
+   "y_psnr_avg": 46.17,
+   "y_psnr_min": 45.06
+  }
+ ],
+ "observations": [
+  "GOP=8 相对 intra-only 只增益 5-25%,与对抗验证的 MV-HEVC 15-20% 预测一致;主杠杆是质量档",
+  "q65_g8: 11.81x + Y-PSNR 39.0 dB(min 36.6),高于文献 keypoint 危险区(~35-36dB)",
+  "q75_g8: 4.23x + 41.6 dB;q85_g8: 1.65x + 46.2 dB(接近视觉透明)",
+  "9.2x 目标落在 q65-q75 之间,待特征 parity 与全管线 parity 裁决"
+ ]
+}

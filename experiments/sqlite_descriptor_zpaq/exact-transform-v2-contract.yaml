@@ -1,0 +1,69 @@
+schema: pw_sqlite_exact_transform_v2_experiment_v1
+frozen_at: "2026-08-01T22:30:00+08:00"
+objective: >-
+  Determine whether page-preserving reversible transforms of keypoints and
+  match-index BLOBs improve the existing track_delta_v1 plus ZPAQ method-5
+  complete SQLite archive.
+revision:
+  app_git_head: 13d2a4f05d491464c537a9135496eccaa05c2358
+  owned_dirty_diff_sha256: 10b915857d1f9ba5c22f854710075783d069bad0ee4f7b1b18766ccb19c7168d
+  zpaq_version: "7.15"
+  zpaq_method: 5
+  zpaq_revision_sha256: e85ec2529eb0ba22ceaeabd461e55357ef099b80f61c14f377b429ea3d49d418
+input:
+  id: cap_1785512421333592
+  path: /private/tmp/pw_portable_sfm_update.6RQ6nt/before/Documents/captures_official/cap_1785512421333592/official_sfm_live.db
+  bytes: 198983680
+  sha256: 0c12c0dfa76d50cae59929774242282d8236daeb852bdee6ac99c3062d6d08b0
+  sqlite_integrity: ok
+  ordered_manifest_identity: single-immutable-file
+baseline:
+  raw_v1_archive_bytes: 127533074
+  track_delta_v1_archive_bytes: 124401918
+  track_delta_v1_archive_sha256: d3146dfcf9573696e626e286fae9171971055386587436f68e9e1c72d861f19e
+arm:
+  name: exact_transform_v2
+  composition:
+    - descriptor_track_delta_v1
+    - keypoint_float32_byte_plane_xor
+    - matches_uint32_column_delta
+    - two_view_uint32_column_delta
+metrics:
+  primary: archive_bytes
+  hard_gates:
+    source_unchanged: true
+    restored_length_equal: true
+    restored_byte_equal: true
+    restored_sha256_equal: true
+    sqlite_integrity_ok: true
+    deterministic_transform: true
+    no_temporary_leaks: true
+  diagnostics:
+    - elapsed_ms
+    - peak_rss_bytes
+    - peak_temp_bytes
+    - targeted_records
+    - targeted_bytes
+thresholds:
+  host_archive_bytes_strictly_less_than: 124401918
+  exactness_failures_allowed: 0
+  host_repeat_count: 1
+  phone_repeat_count: 1
+stop_conditions:
+  - Stop immediately on any exactness or source-identity failure.
+  - Stop before phone work if archive bytes are not strictly below 124401918.
+  - Do not modify production selection in this experiment.
+execution:
+  host_role: diagnostic-and-rejection-only
+  phone_role: production-winner-selection
+  phone_model: iPhone-14-Pro-iPhone15,2
+  phone_processor: Apple-A16
+  phone_bundle_id: com.kyle.PocketWorld.ArchiveBench
+privacy:
+  production_container_access: prohibited
+  remote_upload: prohibited
+  source_open_for_write: prohibited
+artifacts:
+  large_outputs_root: /private/tmp
+  retain: hashes-and-metrics-only
+  result: experiments/sqlite_descriptor_zpaq/results/2026-08-01-exact-transform-v2.yaml

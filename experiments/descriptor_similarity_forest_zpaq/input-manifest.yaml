@@ -1,0 +1,10 @@
+schema: pw_descriptor_similarity_forest_zpaq_input_manifest_v1
+ordered_inputs:
+  - logical_id: cap_1785512421333592_official_sfm_live_db
+    bytes: 198983680
+    sha256: 0c12c0dfa76d50cae59929774242282d8236daeb852bdee6ac99c3062d6d08b0
+    sqlite_integrity_check: ok
+    local_path_is_not_portable: true
+source_open_for_write: prohibited
+remote_upload: prohibited
+

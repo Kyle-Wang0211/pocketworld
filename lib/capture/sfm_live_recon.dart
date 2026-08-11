@@ -36,11 +36,12 @@ import 'dart:isolate';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:flutter/services.dart' show MethodChannel;
 import 'package:vector_math/vector_math_64.dart' as vm;
 
 import '../aether_sfm_ffi.dart';
 import '../dome/ar_pose.dart' show SfmFrameFeed;
+import '../official_capture/photo_archive_coordinator.dart';
+import '../official_capture/photo_archive_runtime.dart';
 import '../reconstruction_lease.dart';
 import '../util/device_log.dart';
 import 'gravity_align.dart';
@@ -479,6 +480,7 @@ class SfmLiveRecon {
     this._sub,
     this._dbPath,
     this._leaseOwner,
+    this._photoArchiveActivityLease,
   );
 
   final SendPort _toWorker;
@@ -487,6 +489,7 @@ class SfmLiveRecon {
   final StreamSubscription<dynamic> _sub;
   final String _dbPath;
   final Object _leaseOwner;
+  final PhotoArchiveActivityLease _photoArchiveActivityLease;
 
   final _events = StreamController<SfmLiveEvent>.broadcast();
   Stream<SfmLiveEvent> get events => _events.stream;
@@ -558,6 +561,8 @@ class SfmLiveRecon {
       owner: leaseOwner,
       pipeline: ReconstructionPipeline.selfDeveloped,
     );
+    final photoArchiveActivityLease = photoArchiveCoordinator
+        .beginProcessingActivity();
     final fromWorker = ReceivePort();
     Isolate? isolate;
     StreamSubscription<dynamic>? sub;
@@ -609,6 +614,7 @@ class SfmLiveRecon {
         sub,
         dbPath,
         leaseOwner,
+        photoArchiveActivityLease,
       );
       handedOff = true;
       DeviceLog.log('SfmLive', 'worker up (db=$dbPath)');
@@ -628,6 +634,7 @@ class SfmLiveRecon {
           isolate?.kill(priority: Isolate.immediate);
         } finally {
           reconstructionLease.release(leaseOwner);
+          await photoArchiveActivityLease.close();
         }
       }
     }
@@ -938,6 +945,7 @@ class SfmLiveRecon {
         await _events.close();
       } finally {
         reconstructionLease.release(_leaseOwner);
+        unawaited(_photoArchiveActivityLease.close());
       }
     }
   }
@@ -1091,26 +1099,26 @@ class SfmLiveRecon {
             msg['ms'] as int,
           ),
         );
-        // [E25-B 2026-07-20] 鬼层 L1 推理链**已停用** —— 用户签决删除 L1/L2。
-        //
-        // 停用理由(四重,任一独立成立):
-        //   ① 认证 'o' 管线里没有任何 L1/L2 等价物 → 违「参数全抄认证配置,
-        //      不自创」铁律;
-        //   ② L1 的 parity Python 参考已丢失,其参数(cell 20cm / gap≥1.2cm /
-        //      slab 8cm / 1.5cm 带宽)不可复核、不可重跑 parity;
-        //   ③ **零消费者**:rescue 位(bit5)的读者只有 ghost_view_filter
-        //      (已于同批次默认关闭)与 aether_mirror_cull(默认关/未装机/
-        //      产品侧零引用);
-        //   ④ 完整机制在 2026-07-20 的公开先例检索(学术+正式会刊+专利+
-        //      商业产品+社区工具)下未找到先例。
-        //
-        // 实测代价:每次采集 CoreML fp32 × 4 参考帧 ≈ **10.7 秒**,产出一个
-        // 没人读的位;并制造「预览先出 N 点、10.7s 后再弹出救援点」的 UX 缺陷。
-        //
-        // 这是**唯一入口** —— 不调用即整条链(runCasDiffMVSL1 → worker
-        // 'arbitrate' → arbitrate_done → ghost_view_mask 重算)全部不可达。
-        // 编排代码暂留作死代码,由后续增量 D 统一清除。
-        // 回滚:恢复本行 `unawaited(_maybeRunL1Arbitration());` 即可。
+      // [E25-B 2026-07-20] 鬼层 L1 推理链**已停用** —— 用户签决删除 L1/L2。
+      //
+      // 停用理由(四重,任一独立成立):
+      //   ① 认证 'o' 管线里没有任何 L1/L2 等价物 → 违「参数全抄认证配置,
+      //      不自创」铁律;
+      //   ② L1 的 parity Python 参考已丢失,其参数(cell 20cm / gap≥1.2cm /
+      //      slab 8cm / 1.5cm 带宽)不可复核、不可重跑 parity;
+      //   ③ **零消费者**:rescue 位(bit5)的读者只有 ghost_view_filter
+      //      (已于同批次默认关闭)与 aether_mirror_cull(默认关/未装机/
+      //      产品侧零引用);
+      //   ④ 完整机制在 2026-07-20 的公开先例检索(学术+正式会刊+专利+
+      //      商业产品+社区工具)下未找到先例。
+      //
+      // 实测代价:每次采集 CoreML fp32 × 4 参考帧 ≈ **10.7 秒**,产出一个
+      // 没人读的位;并制造「预览先出 N 点、10.7s 后再弹出救援点」的 UX 缺陷。
+      //
+      // 这是**唯一入口** —— 不调用即整条链(runCasDiffMVSL1 → worker
+      // 'arbitrate' → arbitrate_done → ghost_view_mask 重算)全部不可达。
+      // 编排代码暂留作死代码,由后续增量 D 统一清除。
+      // 回滚:恢复本行 `unawaited(_maybeRunL1Arbitration());` 即可。
       case 'arbitrate_done':
         DeviceLog.log(
           'SfmLive',
@@ -1141,7 +1149,6 @@ class SfmLiveRecon {
         _disposeAck?.complete();
     }
   }
-
 
   /// Rotates the reconstruction upright using the ARKit gravity frame.
   ///
@@ -1245,7 +1252,11 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
   /// TelemetryWriter 单写手(见 facade 的 'telem' case)。发送即完成,
   /// 不等写盘 —— worker 的重算路径零阻塞。
   void telem(String type, Map<String, Object?> data) {
-    boot.reply.send(<String, Object?>{'evt': 'telem', 'type': type, 'data': data});
+    boot.reply.send(<String, Object?>{
+      'evt': 'telem',
+      'type': type,
+      'data': data,
+    });
   }
 
   /// 连通性合成 poses(契约见 SfmLiveConnectivity):[obsFrameIds] 里出现
@@ -1881,8 +1892,7 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
                 telem('finalize_segments', {
                   ...segs,
                   if (telP2 != null) 'thermal': telP2.thermalState,
-                  if (telP2 != null)
-                    'mem_mb': telP2.physFootprintMb.round(),
+                  if (telP2 != null) 'mem_mb': telP2.physFootprintMb.round(),
                 });
               } else {
                 wlog(
@@ -1966,7 +1976,10 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
               // 遥测【geom】几何自检:点级三角化角分布(worker 后台线程,
               // 不卡 UI;>1 万点自动跨步采样)。
               try {
-                final g = _triAngleTelemetry(s.pointsTracked(), s.posesPacked());
+                final g = _triAngleTelemetry(
+                  s.pointsTracked(),
+                  s.posesPacked(),
+                );
                 if (g != null) {
                   telem('geom', {
                     ...g,
@@ -2056,9 +2069,11 @@ Map<String, Object?>? _triAngleTelemetry(
   final cams = <List<double>>[];
   for (var i = 0; i < n; i += stride) {
     cams.clear();
-    for (var j = offs[i];
-        j < offs[i + 1] && cams.length < maxObsPerPoint;
-        j++) {
+    for (
+      var j = offs[i];
+      j < offs[i + 1] && cams.length < maxObsPerPoint;
+      j++
+    ) {
       final c = centers[fids[j]];
       if (c != null) cams.add(c);
     }
@@ -2075,8 +2090,10 @@ Map<String, Object?>? _triAngleTelemetry(
         final bx = cams[b][0] - px, by = cams[b][1] - py, bz = cams[b][2] - pz;
         final bn = math.sqrt(bx * bx + by * by + bz * bz);
         if (bn < 1e-12) continue;
-        final cosAng =
-            ((ax * bx + ay * by + az * bz) / (an * bn)).clamp(-1.0, 1.0);
+        final cosAng = ((ax * bx + ay * by + az * bz) / (an * bn)).clamp(
+          -1.0,
+          1.0,
+        );
         final ang = math.acos(cosAng);
         if (ang > best) best = ang;
       }

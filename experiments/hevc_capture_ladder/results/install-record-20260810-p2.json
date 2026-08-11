@@ -1,0 +1,20 @@
+{
+ "schema": "pw_install_record_v1",
+ "date": "2026-08-10",
+ "purpose": "P2 去JPEG化上生产:PWVA码流接管照片主本,策展JPEG经全验证后删除",
+ "design": {
+  "authorization_point": "冷归档协调器durably-ready闸后(稀疏PLY落盘),PwvaMasterTransaction先于Lepton事务",
+  "all_or_nothing": "逐帧source_sha256对账+码流长度/SHA对账+全帧逐GOP解码自检,任一不过=notApplicable回落Lepton线,零删除",
+  "commit_order": "master-manifest原子落盘在先,删源在后;崩溃后reconcile按sha核验收尾",
+  "materialize": "resolver PWVA回退:解码GOP→pw_nv12_to_jpeg_file(纯C,ImageIO)重编JPEG入缓存;sfm_resume存在性回退加master感知",
+  "lepton_compat": "已接管帧Lepton按skipped处理;旧capture(.lep已删源)master不适用,照旧Lepton线"
+ },
+ "tests": "新pwva_master 6/6(真VT全链:接管/篡改防护/码流损坏/reconcile两式/物化)+归档机件回归33/33+pw_hevc 15/15",
+ "traps_hit": "podspec改动未触发pod install(Ruby4 CocoaPods雷,LANG=en_US.UTF-8修复);符号级校验抓到pw_nv12_to_jpeg_file被dead-strip,重pod后nm确认1",
+ "fingerprint": {
+  "head": "290ffa38f3d3a58b1c8da055e2747b5d6c7b9f9b",
+  "diff_sha16": "bc252b848af3e828"
+ },
+ "preinstall_check": "遥测最后事件08:33UTC,装机09:33UTC,无拍摄窗口",
+ "postinstall": "app在册1.0.0/归档状态74采集在册/抽查旧采集150帧可读"
+}

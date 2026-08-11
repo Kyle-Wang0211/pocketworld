@@ -1,0 +1,10 @@
+schema: '2.0'
+stages:
+  immutable-input:
+    cmd: /usr/bin/true
+    deps:
+    - path: 
+        /private/tmp/pw_portable_sfm_update.6RQ6nt/before/Documents/captures_official/cap_1785512421333592/official_sfm_live.db
+      hash: md5
+      md5: 79e1393c61afbf1d7fb45c2c9109f281
+      size: 198983680

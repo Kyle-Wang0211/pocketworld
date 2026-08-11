@@ -1,0 +1,45 @@
+schema: pw_sqlite_descriptor_zpaq_inputs_v1
+frozen_at: "2026-07-30T00:00:00+08:00"
+source_kind: verified-production-container-backup-copy
+original_device_data_mutable: false
+inputs:
+  - id: cap_1785155296535863
+    path: /private/tmp/pw_archive_gate_refresh_20260730_4b0e3dd/before/Documents/captures_official/cap_1785155296535863/official_sfm_live.db
+    bytes: 184393728
+    sha256: 285b4851abaffa2d30ee4778a529418bd34886101df08de36fc2ab6213d596d0
+    page_size: 4096
+    descriptors_rows: 142
+    descriptor_vectors: 1149574
+    descriptor_bytes: 147145472
+  - id: cap_1785293786814535
+    path: /private/tmp/pw_archive_gate_refresh_20260730_4b0e3dd/before/Documents/captures_official/cap_1785293786814535/official_sfm_live.db
+    bytes: 208658432
+    sha256: a07243be9003590a5769ab747e8cd184025bff9a65753d1fd8e1427393fde1b0
+    page_size: 4096
+    descriptors_rows: 153
+    descriptor_vectors: 1246270
+    descriptor_bytes: 159522560
+  - id: cap_1785297411166420
+    path: /private/tmp/pw_archive_gate_refresh_20260730_4b0e3dd/before/Documents/captures_official/cap_1785297411166420/official_sfm_live.db
+    bytes: 50008064
+    sha256: d71b3c54843ae3b25cb2269e723a0c33612a4a2bade08ff97f85a6108ce0bfe7
+    page_size: 4096
+    descriptors_rows: 37
+    descriptor_vectors: 303104
+    descriptor_bytes: 38797312
+  - id: cap_1785301356006181
+    path: /private/tmp/pw_archive_gate_refresh_20260730_4b0e3dd/before/Documents/captures_official/cap_1785301356006181/official_sfm_live.db
+    bytes: 226762752
+    sha256: 552beb45a1b185b004818060eb86f72b91626f7d621bb1742e2513e7a9b4ce25
+    page_size: 4096
+    descriptors_rows: 170
+    descriptor_vectors: 1385595
+    descriptor_bytes: 177356160
+  - id: cap_1785307939920932
+    path: /private/tmp/pw_archive_gate_refresh_20260730_4b0e3dd/before/Documents/captures_official/cap_1785307939920932/official_sfm_live.db
+    bytes: 219262976
+    sha256: 8be4d8afde016e9f03022cd2a2d22523511c06af5643c96b72c1bcf2792767da
+    page_size: 4096
+    descriptors_rows: 160
+    descriptor_vectors: 1310720
+    descriptor_bytes: 167772160

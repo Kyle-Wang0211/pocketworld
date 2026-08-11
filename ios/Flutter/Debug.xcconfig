@@ -1,2 +1,3 @@
 #include? "Pods/Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"
 #include "Generated.xcconfig"
+OTHER_LDFLAGS[sdk=iphoneos*] = $(inherited) "$(PROJECT_DIR)/../vendor/lepton_jpeg/libs/ios-arm64/libpw_lepton_jpeg_ffi.a" -Wl,-u,_pw_lepton_version -Wl,-u,_pw_lepton_revision -Wl,-u,_pw_lepton_error_message -Wl,-u,_pw_lepton_cancellation_generation -Wl,-u,_pw_lepton_request_cancel -Wl,-u,_pw_lepton_encode_jpeg_file_cancellable -Wl,-u,_pw_lepton_reconstruct_jpeg_file_cancellable

@@ -23,14 +23,20 @@ from torch.utils.data import DataLoader
 import yaml
 
 from pw_plr.exact_dataset import ExactJpegPatchDataset
+from pw_plr.frequency_prior import (
+    FrequencyPrior,
+    apply_frequency_prior,
+    attach_context_normalisation,
+)
 from pw_plr.trainer import (
     build_optimizers,
     equal_tile_batches,
-    train_batch,
-    validation_patch_bits,
+    train_accumulated_batch,
+    validation_patch_bits_microbatched,
 )
 from pw_plr.training_metrics import (
     accounted_validation_bytes,
+    evaluate_static_floor,
     raw_state_dict_bytes,
 )
 
@@ -43,6 +49,7 @@ def _implementation_identity(root: Path) -> dict[str, object]:
     paths = (
         "pw_plr/dct_training.py",
         "pw_plr/exact_dataset.py",
+        "pw_plr/frequency_prior.py",
         "pw_plr/trainer.py",
         "pw_plr/training_metrics.py",
         "run_train_phase2.py",
@@ -76,6 +83,7 @@ def _verify_runtime_identity(
     for field, filename in (
         ("lazy_import_patch_sha256", "plr-lazy-import.patch"),
         ("exact_completion_patch_sha256", "plr-exact-22-stage.patch"),
+        ("context_normalisation_patch_sha256", "plr-context-normalisation.patch"),
     ):
         patch_path = root / "patches" / filename
         if _sha256(patch_path) != upstream_config[field]:
@@ -198,6 +206,9 @@ def main() -> None:
         int(config["selection"]["entropy_estimator"]["validation_patch_epoch"])
     )
     batch_size = int(config["training"]["batch_size"])
+    microbatch_size = int(config["training"]["microbatch_size"])
+    if microbatch_size <= 0 or microbatch_size > batch_size:
+        raise ValueError("registered microbatch_size is outside effective batch")
     workers = int(config["training"]["data_loader_workers"])
     prefetch = int(config["training"]["prefetch_factor"])
     validation_batches = equal_tile_batches(
@@ -210,7 +221,30 @@ def main() -> None:
         N=int(arm["N"]),
         M=int(arm["M"]),
         chunk=tuple(config["implementation"]["chunks"]),
-    ).to(device)
+    )
+    floor_config = config["training"].get("static_floor_early_stop")
+    prior_config = config["implementation"].get("frequency_scale_prior")
+    prior_report = None
+    if prior_config is not None:
+        prior_path = Path(str(prior_config["artifact"]))
+        prior = FrequencyPrior.read(prior_path)
+        if prior.corpus_content_identity_sha256 != str(
+            prior_config["corpus_content_identity_sha256"]
+        ):
+            raise ValueError("frequency prior was measured against a different corpus")
+        prior_report = apply_frequency_prior(
+            model,
+            prior,
+            weight_damping=float(prior_config["weight_damping"]),
+        )
+        print(f"applied registered frequency scale prior: {prior_report}", flush=True)
+        if bool(arm.get("context_normalisation", False)):
+            context_report = attach_context_normalisation(model, prior)
+            prior_report = {**prior_report, **context_report}
+            print(f"attached registered context normalisation: {context_report}", flush=True)
+        elif getattr(model, "_context_normalisation", False):
+            raise ValueError("control arm must not carry context normalisation buffers")
+    model = model.to(device)
     main_optimizer, auxiliary_optimizer = build_optimizers(
         model,
         main_learning_rate=float(config["training"]["main_learning_rate"]),
@@ -269,12 +303,14 @@ def main() -> None:
                     "seed": seed,
                     "epochs": int(config["training"]["epochs"]),
                     "batch_size": batch_size,
+                    "microbatch_size": microbatch_size,
                     "scheduler": scheduler_config["name"],
                     "scheduler_mode": scheduler_config["mode"],
                     "scheduler_factor": float(scheduler_config["factor"]),
                     "scheduler_patience": int(scheduler_config["patience"]),
                     "corpus_sha256": hashlib.sha256(corpus_bytes).hexdigest(),
                     "config_sha256": hashlib.sha256(config_bytes).hexdigest(),
+                    "frequency_scale_prior": json.dumps(prior_report, sort_keys=True),
                     "upstream_commit": config["upstream"]["commit"],
                     "repository_head": repository_head,
                     "implementation_identity_sha256": (
@@ -300,11 +336,12 @@ def main() -> None:
             auxiliary_loss_sum = 0.0
             gradient_norm_max = 0.0
             for batch in training_loader:
-                metrics = train_batch(
+                metrics = train_accumulated_batch(
                     model,
                     batch,
                     main_optimizer,
                     auxiliary_optimizer,
+                    microbatch_size=microbatch_size,
                     gradient_clip_max_norm=float(
                         config["training"]["gradient_clip_max_norm"]
                     ),
@@ -343,7 +380,9 @@ def main() -> None:
                 )
                 group["total_patch_bits"] = float(
                     group["total_patch_bits"]
-                ) + validation_patch_bits(model, batch)
+                ) + validation_patch_bits_microbatched(
+                    model, batch, microbatch_size=microbatch_size
+                )
             accounting = accounted_validation_bytes(
                 groups=validation_groups.values(),
                 raw_model_bytes=model_bytes.complete_tensor_bytes,
@@ -399,6 +438,41 @@ def main() -> None:
                 step=epoch,
             )
             print(json.dumps(metric, sort_keys=True), flush=True)
+
+            if floor_config is not None:
+                verdict = evaluate_static_floor(
+                    train_loss_bits_per_pixel=metric["train_loss_bits_per_pixel"],
+                    epoch=epoch,
+                    floor_bits_per_coefficient=float(
+                        floor_config["floor_bits_per_coefficient"]
+                    ),
+                    patience_epochs=int(floor_config["patience_epochs"]),
+                )
+                if verdict.should_stop:
+                    stop_record = {
+                        "schema": "pw_plr_phase2_static_floor_stop_v1",
+                        "status": "stopped_static_floor_not_reached",
+                        "arm": arguments.arm,
+                        "epoch": epoch,
+                        "train_bits_per_coefficient": verdict.bits_per_coefficient,
+                        "floor_bits_per_coefficient": (
+                            verdict.floor_bits_per_coefficient
+                        ),
+                        "patience_epochs": int(floor_config["patience_epochs"]),
+                        "interpretation": (
+                            "192 static per-frequency histograms reach the floor "
+                            "for under a kilobyte and model no context at all. An "
+                            "arm above it after its patience window is worth less "
+                            "than a free baseline."
+                        ),
+                        "mlflow_run_id": active_run.info.run_id,
+                    }
+                    (run_directory / "static-floor-stop.json").write_text(
+                        json.dumps(stop_record, indent=2, sort_keys=True) + "\n"
+                    )
+                    mlflow.set_tag("terminal_status", "stopped_static_floor_not_reached")
+                    print(json.dumps(stop_record, sort_keys=True), flush=True)
+                    break
 
 
 if __name__ == "__main__":

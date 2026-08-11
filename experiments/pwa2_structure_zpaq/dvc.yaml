@@ -1,0 +1,5 @@
+stages:
+  immutable-input:
+    cmd: /usr/bin/true
+    deps:
+      - /private/tmp/pw_portable_sfm_update.6RQ6nt/before/Documents/captures_official/cap_1785512421333592/official_sfm_live.db

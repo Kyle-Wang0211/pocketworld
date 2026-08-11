@@ -1,0 +1,115 @@
+{
+  "schema": "pw_compression_fidelity_audit_evidence_v1",
+  "status": "confirmed",
+  "repository": {
+    "path": "/Users/kaidongwang/Developer/pocketworld",
+    "git_head": "13d2a4f05d491464c537a9135496eccaa05c2358",
+    "worktree": "shared_dirty; no reset, stash, clean, stage, commit, production build, phone access, or app install"
+  },
+  "inputs": {
+    "database_bytes": 198983680,
+    "database_sha256": "0c12c0dfa76d50cae59929774242282d8236daeb852bdee6ac99c3062d6d08b0",
+    "descriptor_row_bytes": 1048576,
+    "descriptor_row_sha256": "2bb4062475c40b877deb7f735d4591df97c22a5d857deb1f6e3b45ff5809c92a",
+    "jpeg_bytes": 2794655,
+    "jpeg_sha256": "29aaef47f97b6b41fa3453b321dff030a0fcf3b4abac1d6aece72f11429744a4"
+  },
+  "official_tools": {
+    "zstd": {
+      "revision": "1.5.7",
+      "binary_sha256": "aff8169fb421bb925fb16c44a7e0143fa2c7a941dc45cce76b15062a2ce54917"
+    },
+    "xz": {
+      "revision": "XZ Utils 5.8.3 / liblzma 5.8.3",
+      "binary_sha256": "995c8e2f72446f0d0e3a29f6c3d52286cfecedfc4ffb2b42d25c3ce1ad77034c"
+    },
+    "zpaq": {
+      "revision": "7.15 source archive sha256 e85ec2529eb0ba22ceaeabd461e55357ef099b80f61c14f377b429ea3d49d418",
+      "audit_binary_sha256": "6836e3f4572b6e5191a9b1e2b3115988687cdc8518579efc080655b2aa923189"
+    },
+    "libbsc": {
+      "revision": "v3.3.12@5e5c2ef0fb1298626936b091f6e4ae539e5b0071",
+      "binary_sha256": "7c1a811588775e1d7c753b94b06c4f060cd327200e41e05959c02731a78a8f72",
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    "kanzi": {
+      "revision": "2.5.3@6eea1658897019ab3107df2806d5e534ef0798df",
+      "binary_sha256": "e218a86e3b10a82359aef8f43df4f2343df6eee31fd1aa8f2093c7de4d3b0a5a",
+      "license_sha256": "8e470b9b0957ad974660bdc624c0cf93805e6c97f73efe7d9a9e4efa96a8877e"
+    },
+    "brunsli": {
+      "revision": "v0.1@8a0e9b8ca2e3e089731c95a1da7ce8a3180e667c",
+      "encoder_binary_sha256": "af900245f5510710384cc5d0f48eb03103de7685e1a3392f090a64cd66fdef09",
+      "decoder_binary_sha256": "7fcc9f2aa08b252ed0b20dbf1469c6c1cf18d1e5875823ef8f4e8b0881f0e2e0",
+      "license_sha256": "b4e611efee1cc5b4ad1f347098f2d7c72c6a1f20ab69dc12e303ba2e203250fa"
+    },
+    "rust_lepton": {
+      "revision": "v0.5.8@90fdc27828676892fbb41777cfcc6bad1e470516",
+      "source_identity": "immutable official git commit; a newly fetched GitHub-generated tarball did not match the stale prior digest and was not used as identity evidence",
+      "binary_sha256": "cd9caf6803a3942bdc4e09e95e3caad8e17284ce1df9d4f76a90ebededa1f6a1",
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    "packjpg": {
+      "revision": "packJPG core 2.5j in wxPackJPG 1.2.0 source",
+      "source_archive_sha256": "f866a1399227411678f5f797a166597f1a28b554e987622ec2fdfa88fa2fa52d",
+      "binary_sha256": "1115734b093d3aedc41ac1cca961ca97a817f008c12db2117d530e16df92bdbc",
+      "license_note": "wx wrapper has an MIT license file; core packjpg.cpp declares LGPL v3 or later and mentions separately granted special permission"
+    }
+  },
+  "commands": [
+    "zstd --no-progress -LEVEL descriptor-row-1.bin -o descriptor.zstd-LEVEL.zst; zstd -d; cmp; shasum -a 256",
+    "xz -k -9|-9e -C sha256 descriptor-row-1.bin; xz -d; cmp; shasum -a 256",
+    "zpaq_file_tool compress descriptor-row-1.bin descriptor.zpaq 5; zpaq_file_tool decompress; cmp; shasum -a 256",
+    "bsc e descriptor-row-1.bin descriptor.libbsc-e2.bsc -b1048576 -e2 [-r]; bsc d; cmp; shasum -a 256",
+    "kanzi -c -i descriptor-row-1.bin -o descriptor.kanzi-l8|l9.knz -l 8|9 -j 1 -x64; kanzi -d; cmp; shasum -a 256",
+    "cbrunsli original.jpg original.brn; dbrunsli original.brn restored.jpg; cmp; shasum -a 256",
+    "cargo build --release --locked -p lepton_jpeg_util; lepton_jpeg_util original.jpg original.lep; lepton_jpeg_util original.lep restored.jpg; cmp; shasum -a 256",
+    "packJPG original.jpg; packJPG original.pjg; cmp immutable-original restored-original; shasum -a 256"
+  ],
+  "deviations": [
+    "Brunsli source was unchanged; CMake needed -DCMAKE_POLICY_VERSION_MINIMUM=3.5 with the current host CMake.",
+    "Rust Lepton codec, utility, and Cargo manifests were unchanged. A temporary dynamic-library compatibility link was needed because local Homebrew libgit2 expected llhttp 9.3 while llhttp 9.4.1 was installed.",
+    "PackJPG official core was compiled directly from the wxPackJPG source archive because the GUI wrapper is unrelated to codec fidelity; compiler deprecation warnings did not alter source or output.",
+    "OpenZL ACE and B2ND BYTEDELTA were not rerun here; their corrected minimum-chunk evidence is retained under experiments/descriptor_chunk_official_backends."
+  ],
+  "verification": [
+    {
+      "command": "openspec validate audit-compression-experiment-fidelity",
+      "result": "valid"
+    },
+    {
+      "command": "flutter analyze --no-pub test/compression_fidelity_audit_contract_test.dart",
+      "result": "no issues"
+    },
+    {
+      "command": "flutter test --no-pub test/compression_fidelity_audit_contract_test.dart",
+      "result": "3 passed"
+    },
+    {
+      "command": "flutter test --no-pub",
+      "result": "443 passed"
+    },
+    {
+      "command": "flutter analyze --no-pub lib/ test/",
+      "result": "13 existing/shared-worktree issues; audit-owned test has none; untracked test/dense_stage_boundary_test.dart contributes two warnings"
+    }
+  ],
+  "file_sha256": {
+    "audit-contract.yaml": "fe1d2285137affed55c9508b9c2d44a77d9627a41baf8f6ced45cccfb6293aaf",
+    "commercial-candidates-contract.yaml": "204171221547739f66456d74126f5ac58ceb8e5f553474f96f72ff646b8d8946",
+    "commercial-candidates-evidence.json": "4ae484fffaa7a274a3648fc2dc8dc9c347571a6f67f368bf052795ec6850d764",
+    "inventory.json": "5fc44a7955596dffdf3b250be58e06ea3a829450b31493507a35569021a012e7",
+    "results/2026-08-02-minimum-units.json": "3cbf449fc774a0aa9b8564b22b799307dd7553e2aec371b15277ef1b35d1786b",
+    "results/2026-08-02-commercial-candidates-micro.json": "c104273a4335629464079debf23fb910e3a8e09e33544a425a23c4f5fc5f6fac",
+    "point_cloud_micro_bench.cpp": "07e0dfc9dda6efdc2f105b8da3a7e82499b6cf79f3159369fd8378855e588d2b",
+    "uv.lock": "be68c36e35c42795f75d1e49df63eaf20045e1d7b8c06487d26ab8d70fa5d9fe",
+    "docs/research/2026-08-02-compression-official-fidelity-audit.md": "25a0048919f6e770313bed19eae1b3582decad86b63efc645bb53e0e2281fcfa",
+    "docs/superpowers/plans/2026-08-02-compression-fidelity-audit.md": "71632143b7df807849dced651dfe6d1cc8dad75ec79f9e027348f6d68fd52fbe",
+    "openspec/changes/audit-compression-experiment-fidelity/proposal.md": "718b2655a887a50f46eeac48749c7ce9e4d0a6ed560b0683e306bf050df77091",
+    "openspec/changes/audit-compression-experiment-fidelity/specs/compression-experiment-fidelity/spec.md": "7594a5d870989378df10eb50e5e7359963df4cece3f86338b10be9d0d5d7d01a",
+    "openspec/changes/audit-compression-experiment-fidelity/tasks.md": "21f5209b3e69fef0301b438cdc544de56cdb5a118f253735e7ff76c06d237b37",
+    "test/compression_fidelity_audit_contract_test.dart": "5a51aef6ff651b0853b2475f7f4729af47619b3bd1598e7984b415d3e3ea68f9"
+  },
+  "result_artifact": "results/2026-08-02-commercial-candidates-micro.json",
+  "verdict": "Every previously unrun commercial candidate now has a measured exact result or license disposition. ZPAQ method 5 remains smallest on the descriptor row and real PLY; Rust Lepton is 2.510399% smaller than production JXL on the identical one-JPEG input. This host result nominates Lepton for isolated iOS and physical-phone validation but does not promote production."
+}

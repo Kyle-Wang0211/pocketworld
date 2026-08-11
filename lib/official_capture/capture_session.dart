@@ -63,6 +63,7 @@ import 'official_highres_reconstruction_input.dart';
 import 'photo_archive_coordinator.dart';
 import 'photo_archive_policy.dart';
 import 'photo_archive_runtime.dart';
+import 'capture_archive_service.dart';
 import 'photo_slot_naming.dart';
 import 'telemetry_writer.dart';
 import 'pose_drift_tracker.dart';
@@ -236,6 +237,10 @@ class CaptureSession {
   /// motion/dome auto-ingest + auto-save path; photos are taken only via
   /// [captureSinglePhoto]. Set per-session by [start].
   bool _manualCaptureMode = false;
+  static const int _manualHighResMaxAttempts = 6;
+  bool _manualCaptureSuspended = false;
+  Completer<void>? _manualCaptureResumeCompleter;
+  Object? _manualCaptureResumeFailure;
   // Diagnostics
   int _diagArkitPoses = 0;
   int _diagImuPoses = 0;
@@ -430,6 +435,11 @@ class CaptureSession {
         'photoBundleOwner': 'flutter_dart',
       },
     );
+    // PWVA 批量归档(P1.1):bundle 已写完,所有 JPEG 已最终化,此刻转码无竞态。
+    // [2026-08-10] fire-and-forget:85 帧实测转码 27s,不许串行阻塞"完成"
+    // 路径(拍完等待预算 ≤30s 已被 finalize BA 吃满)。归档在独立 isolate
+    // 跑完写 archive-report;中途 app 被杀=无 report=master 不接管,零风险。
+    unawaited(CaptureArchiveService.instance.archiveCapture(root));
     return File('$root/official_photo_bundle.json');
   }
 
@@ -471,6 +481,8 @@ class CaptureSession {
         'selectionPolicy': 'all_user_retained_project_photos',
       },
     );
+    // PWVA 批量归档(P1.1,本路径的 manifest 写入器);fire-and-forget 同上。
+    unawaited(CaptureArchiveService.instance.archiveCapture(root));
     return File('$root/official_photo_bundle.json');
   }
 
@@ -578,6 +590,48 @@ class CaptureSession {
 
   bool get isRunning => _started;
   bool get isAttached => _attached;
+  bool get manualCaptureTransactionsSuspended => _manualCaptureSuspended;
+
+  /// Prevent a queued manual ticket from issuing another native 12MP request
+  /// while ARKit is stopped in the background. The active request is allowed
+  /// to unwind; its ticket waits here and resumes in FIFO order later.
+  void suspendManualCaptureTransactions() {
+    if (_disposed || _manualCaptureSuspended) return;
+    _manualCaptureSuspended = true;
+    _manualCaptureResumeFailure = null;
+    _manualCaptureResumeCompleter = Completer<void>();
+  }
+
+  void resumeManualCaptureTransactions() {
+    _manualCaptureResumeFailure = null;
+    if (!_manualCaptureSuspended) return;
+    _manualCaptureSuspended = false;
+    final completer = _manualCaptureResumeCompleter;
+    _manualCaptureResumeCompleter = null;
+    if (completer != null && !completer.isCompleted) completer.complete();
+  }
+
+  void failSuspendedManualCaptureTransactions(Object error) {
+    _manualCaptureResumeFailure = error;
+    _manualCaptureSuspended = false;
+    final completer = _manualCaptureResumeCompleter;
+    _manualCaptureResumeCompleter = null;
+    if (completer != null && !completer.isCompleted) completer.complete();
+  }
+
+  Future<void> _waitForManualCaptureResume() async {
+    while (_manualCaptureSuspended && _started && !_disposed) {
+      final completer = _manualCaptureResumeCompleter ??= Completer<void>();
+      await completer.future;
+    }
+    final failure = _manualCaptureResumeFailure;
+    if (failure != null) {
+      _manualCaptureResumeFailure = null;
+      throw StateError(
+        'ARKit resume failed while a shutter ticket waited: $failure',
+      );
+    }
+  }
 
   /// Pre-warm the AR session: start the platform pose provider so
   /// ARKit's tracking can settle into `.normal` while the user frames
@@ -806,7 +860,6 @@ class CaptureSession {
     if (_started) return;
     if (!_attached) await attach();
     _photoArchiveCaptureLease = photoArchiveCoordinator.beginCaptureActivity();
-    await photoArchiveCoordinator.waitForIdle();
 
     targetPoints.reset();
     guidance.beginRecording();
@@ -949,6 +1002,7 @@ class CaptureSession {
   Future<void> stop() async {
     if (!_started) return;
     _started = false;
+    resumeManualCaptureTransactions();
     _clock.stop();
     guidance.endRecording();
     final imuRatio = (_diagArkitPoses + _diagImuPoses) == 0
@@ -1002,6 +1056,14 @@ class CaptureSession {
         '[CaptureSession] waitForPendingPhotoSaves timed out after '
         '${timeout.inMilliseconds}ms; continuing with files already written',
       );
+    } catch (error) {
+      // A bounded manual 12MP transaction reports its own explicit failure.
+      // Teardown must still release bookkeeping and may then delete/discard
+      // the bundle; never let an already-reported save error strand the page.
+      // ignore: avoid_print
+      print(
+        '[CaptureSession] pending photo save failed during teardown: $error',
+      );
     } finally {
       _pendingPhotoSaves.removeWhere((f) => pending.contains(f));
     }
@@ -1053,6 +1115,7 @@ class CaptureSession {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    resumeManualCaptureTransactions();
     final archiveLease = _photoArchiveCaptureLease;
     _photoArchiveCaptureLease = null;
     if (archiveLease != null) unawaited(archiveLease.close());
@@ -1374,6 +1437,11 @@ class CaptureSession {
                 }
                 _stillByPath[jpegPath] = effectiveStill;
                 _qualityByPath[jpegPath] = quality;
+                // PWVA 采集期归档(独立 isolate,采集线程只做一次 send)。
+                CaptureArchiveService.instance.enqueueHighresStill(
+                  jpegPath,
+                  triggerTimestamp: sample.timestamp,
+                );
                 targetPoints.stampJpegPath(
                   cellIdx: admit.cellIdx,
                   slotIdx: admit.slotIdx,
@@ -1399,6 +1467,11 @@ class CaptureSession {
               );
               if (fallbackStill != null) {
                 _stillByPath[jpegPath] = fallbackStill;
+                // PWVA 采集期归档(fallback 路径)。
+                CaptureArchiveService.instance.enqueueHighresStill(
+                  jpegPath,
+                  triggerTimestamp: sample.timestamp,
+                );
               }
               _qualityByPath[jpegPath] = _qualityFromSample(sample);
               targetPoints.stampJpegPath(
@@ -1577,7 +1650,9 @@ class CaptureSession {
     _highResCaptureInFlight = true;
     var attempt = 0;
     try {
-      while (_started && !_disposed) {
+      while (_started && !_disposed && attempt < _manualHighResMaxAttempts) {
+        await _waitForManualCaptureResume();
+        if (!_started || _disposed) break;
         attempt++;
         _hiresStillStarted++;
         final sw = Stopwatch()..start();
@@ -1616,6 +1691,11 @@ class CaptureSession {
               final input = validation.input!;
               _hiresStillOk++;
               _stillByPath[input.jpegPath] = still;
+              // PWVA 采集期归档(official tap 路径,当前生产主路)。
+              CaptureArchiveService.instance.enqueueHighresStill(
+                input.jpegPath,
+                triggerTimestamp: still.requestTimestamp,
+              );
               _qualityByPath[input.jpegPath] = _qualityFromSample(sample);
               _sampleByPath[input.jpegPath] = sample.withJpegPath(
                 input.jpegPath,
@@ -1648,6 +1728,15 @@ class CaptureSession {
           failure = OfficialHighResInputFailure.captureFailed;
         }
 
+        if (_manualCaptureSuspended) {
+          // Backgrounding can make the native in-flight request fail. It is
+          // not a real retry attempt: hold this same ticket until ARKit has
+          // successfully resumed, without churning the stopped camera.
+          attempt--;
+          await _waitForManualCaptureResume();
+          continue;
+        }
+
         _hiresStillFailed++;
         outcome = '${failure.name}_retry';
         _noteStillFailure(failure.name);
@@ -1661,22 +1750,27 @@ class CaptureSession {
           'failed': _hiresStillFailed,
           'dropped': _hiresStillDropped,
         });
-        // A shutter tap is not allowed to finish as a failed project photo.
-        // Keep the same UI transaction locked and retry a fresh ARKit 12MP
-        // frame after a short camera-recovery yield.
+        // Retry a fresh ARKit 12MP frame after a short recovery yield. The
+        // bound prevents Finish from hanging forever on a permanently failed
+        // camera; the page reports the failed ticket and continues safely.
         await Future<void>.delayed(
           Duration(milliseconds: math.min(350, 80 + (attempt - 1) * 40)),
         );
       }
 
-      // Only explicit capture/session teardown can terminate the retry loop.
-      // Surface that cancellation so callers cannot mistake it for a photo.
+      // Surface cancellation/exhaustion so callers cannot mistake it for a
+      // verified photo. Queue admission remains exact; failure is explicit.
       _reportHighResFailure(
         sample.frameId,
         evidenceSaveSpec.jpegPath,
         OfficialHighResInputFailure.captureFailed,
       );
-      throw StateError('12MP shutter transaction cancelled before success');
+      throw StateError(
+        _started && !_disposed
+            ? '12MP shutter transaction failed after '
+                  '$_manualHighResMaxAttempts attempts'
+            : '12MP shutter transaction cancelled before success',
+      );
     } finally {
       _highResCaptureInFlight = false;
     }

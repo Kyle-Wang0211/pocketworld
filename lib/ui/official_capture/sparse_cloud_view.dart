@@ -19,6 +19,7 @@ import 'package:flutter/material.dart';
 
 import '../../official_capture/selection_box.dart';
 import '../../point_cloud_display/progressive_octree_order.dart';
+import '../sparse_thumbnail.dart' show kSparseThumbPitch, kSparseThumbYaw;
 import 'cloud_camera.dart';
 import 'selection_rect_handles.dart';
 
@@ -130,7 +131,87 @@ class CloudViewController extends ChangeNotifier {
     _reframe = false;
     return r;
   }
+
+  /// 视角吸附动画期间,选区矩形按**目标**姿态画(不跟中间帧)。
+  ///
+  /// [2026-08-09 用户实机指认] "切换视角,框不要每次突然变大再缩小,直接变成
+  /// 对应角度的大小" —— 立方体在中间角度的投影支撑矩形必然鼓一下,锁定目标
+  /// 姿态后矩形直达终态,点云照常转。
+  (double yaw, double pitch, double roll)? rectPoseOverride;
+
+  void setRectPoseOverride((double, double, double)? pose) {
+    rectPoseOverride = pose;
+    notifyListeners();
+  }
+
+  bool _browsePose = false;
+
+  /// 请求把**朝向**恢复成浏览态的斜上 45°(退出编辑用)。
+  ///
+  /// [2026-08-08 用户签决] "如果用户在编辑页面什么都没做,直接点取消了,那就恢复
+  /// 到斜上 45 度。如果用户编辑了点云大小,点击完成后,就保留在当前视角。" ——
+  /// 所以这个请求只由"取消"发出,"完成"什么都不做。
+  ///
+  /// 只动朝向,不动 zoom/pan:用户说的是"恢复到斜上 45 度"(角度),把缩放一起
+  /// 重置会顺手丢掉他在编辑期捏的远近。要连取景一起回,用 [requestReframe]。
+  void requestBrowsePose() {
+    _browsePose = true;
+    notifyListeners();
+  }
+
+  bool takeBrowsePose() {
+    final r = _browsePose;
+    _browsePose = false;
+    return r;
+  }
 }
+
+/// 环绕 pivot:点云**范围中心**(P0.5–P99.5 中点,与初始 3D 框同源
+/// sceneAabbOf),不是 fitOf 的密度中心(median±8MAD 内点均值)。
+///
+/// [2026-08-09 用户实机指认] "点云模型不是一直都是绕中心点旋转吗,为什么
+/// 未命名(2)是围绕着最边的一个点转?转180度,整体在右了。" —— 低视差拍摄
+/// 的云沿深度拖出不对称长尾:密度中心贴着密集端,可见整体的中点却在尾巴
+/// 中段。绕密度中心转 180°,实测(该 PLY)可见团横跳自身宽度的 61%;绕
+/// 范围中心是 0%(转盘感)。fitOf 本体不动 —— 它的 radius(取景)与桌面
+/// viewer 逐字对齐,只有"绕哪转"换源。
+List<double> orbitPivotOf(Float32List xyz) {
+  final a = SparseCloudPainter.sceneAabbOf(xyz);
+  return [a.cx, a.cy, a.cz];
+}
+
+/// 编辑态取景:初始框每个面看上去都是正方形,点云自适应缩放、沿最长轴
+/// 严丝合缝顶住框的两端。
+///
+/// [2026-08-09 用户签决,当日三轮收敛] "我不需要'正立方体',只需要让用户
+/// 每个面看到的初始框是正方形就行。内部的点云可以自适应大小" + "严丝合缝
+/// 顶着最上面和最下面的那个点云" + "初始框大小不变,在屏幕中心" ——
+/// 几何上"每个面都看着是正方形"⟺ 三边等长,所以:
+///   center = 全量 AABB 中心(与框同心 ⇒ 框恒居中于屏幕);
+///   框边长 = 2 × max(hx,hy,hz)(全量最长轴,精确贴住该轴两端的点 ——
+///            "顶着最上面和最下面";其余轴向点云居中留白);
+///   zoom  = fit.radius / 最长半边 ⇒ 框投影恒为标准尺寸,点云自适应缩放。
+({List<double> center, double hx, double hy, double hz, double zoom})
+editingFrameOf(Float32List xyz) {
+  final a = SparseCloudPainter.fullAabbOf(xyz);
+  final fit = SparseCloudPainter.fitOf(xyz);
+  final hMax = math.max(a.hx, math.max(a.hy, a.hz));
+  return (
+    center: [a.cx, a.cy, a.cz],
+    hx: a.hx,
+    hy: a.hy,
+    hz: a.hz,
+    zoom: fit.radius / math.max(hMax, 1e-6),
+  );
+}
+
+/// 渐隐带高度:点从"边界上方这么多 px"开始变淡,到边界处为全透明。
+/// [2026-08-09 用户实机指认"渐隐的范围x2,现在跟立刻消失没什么区别"] 120 → 240。
+const double kCloudBottomFadeBand = 240.0;
+
+/// [2026-08-09 用户实机指认] "点云应该在离滑轴更远一点的距离消失" ——
+/// 全透明边界抬到滑轨弧线**上方**这么多 px,不再贴着弧线。
+const double kCloudBottomFadeGap = 28.0;
 
 /// 点云视图的投影模式 —— 浏览与编辑**共用**这一个值。
 ///
@@ -155,12 +236,20 @@ class SparseCloudView extends StatefulWidget {
     this.editing = false,
     this.controller,
     this.bottomGestureExclusion = 0,
+    this.bottomFade = 0,
+    this.bottomFadeArcRadius = 0,
   });
 
   /// 底部这么高的区域不接受相机手势 —— 编辑态工具面板压在全屏点云视图
   /// 之上(视图保持全屏才不会在切换时跳),而手势竞技场拦不住:实测拨
   /// 刻度尺时下层仍吃到 8px 位移并把视角转走。位置判定是确定性的。
   final double bottomGestureExclusion;
+
+  /// 屏幕底部渐隐保留带(px),透传给 painter(见 SparseCloudPainter.bottomFade)。
+  final double bottomFade;
+
+  /// 渐隐边界的弧半径,透传给 painter(见 SparseCloudPainter.bottomFadeArcRadius)。
+  final double bottomFadeArcRadius;
 
   /// 见 [CloudViewController]。
 
@@ -205,11 +294,23 @@ class SparseCloudView extends StatefulWidget {
   State<SparseCloudView> createState() => _SparseCloudViewState();
 }
 
-// [2026-07-29 用户签决] 所有点云的初始视角 = 骰子"顶"的**正面**(文字朝上)。
-// 正俯视下 yaw 是屏幕内旋转:探针实测 yaw=π 时"顶"标签才正立(yaw=0 是
-// 倒置)。与 kOrientationPresets['Top'].yaw 同值,点"顶"归位到同一姿态。
-const double _kDefaultYaw = math.pi;
-const double _kDefaultPitch = -math.pi / 2;
+// [2026-08-07 用户签决,学 Polycam] 浏览态初始视角 = **斜上 45°**,与草稿卡片
+// 缩略图同一姿态 —— 卡片放大成详情页时角度连续、不跳。
+//
+// 进**编辑页**时才转到正上方(见 SelectionToolsLayer._alignToTopOnce):选区框
+// 的 2D 手柄要求正俯视才与盒的投影严格重合。两者是不同用途的两个视角,不冲突。
+//
+// yaw 仍取 π(与 kOrientationPresets['Top'] 同侧):探针实测正俯视下 yaw=π 时
+// "顶"标签才正立;取同值,45° → 正上方是同一条经线上的连续俯仰,不会横向甩。
+const double _kDefaultYaw = kSparseThumbYaw;
+const double _kDefaultPitch = kSparseThumbPitch;
+
+/// 编辑态的视角:**正俯视**,与 kOrientationPresets['Top'] 同值。
+///
+/// [2026-08-07 用户签决] "编辑模式绝对不允许存在这种 45 度的情况" —— 选区的
+/// 2D 矩形手柄依赖正交 + 正俯视才与盒的投影严格重合,斜视角下手柄和框会错位。
+/// 所以编辑态的初始视角、以及"回到初始"的目标,都必须是这个值。
+const double _kEditingPitch = -math.pi / 2;
 // Near-full pitch: reach straight-up/down (±90°) minus a hair to dodge the
 // exact pole singularity. Was clamped to ±1.35 (±77°) — the head-on
 // "can't see the top/bottom" dead zone the competitor audit flagged.
@@ -270,7 +371,7 @@ class _SparseCloudViewState extends State<SparseCloudView>
     _buildSprite();
     final fit = SparseCloudPainter.fitOf(widget.xyz);
     _fitRadius = fit.radius;
-    _pivot = [fit.cx, fit.cy, fit.cz];
+    _pivot = orbitPivotOf(widget.xyz);
     widget.controller?.addListener(_onControllerTarget);
     final cam = widget.initialCamera;
     if (cam != null) {
@@ -291,6 +392,57 @@ class _SparseCloudViewState extends State<SparseCloudView>
     });
   }
 
+  /// 当前俯仰 —— 守门断言"编辑态绝不出现 45°"。
+  @visibleForTesting
+  double get debugPitch => _pitch;
+
+  /// 当前环绕 pivot —— 守门断言"绕范围中心转,不绕密度中心"。
+  @visibleForTesting
+  List<double> get debugPivot => List.of(_pivot);
+
+  /// 完整相机快照 —— 守门断言"reframe 保持视角只复位取景"。
+  @visibleForTesting
+  CloudViewCamera get debugCamera => (
+    yaw: _yaw,
+    pitch: _pitch,
+    roll: _roll,
+    zoom: _zoom,
+    panX: _panX,
+    panY: _panY,
+    pivotX: _pivot[0],
+    pivotY: _pivot[1],
+    pivotZ: _pivot[2],
+  );
+
+  @override
+  void didUpdateWidget(SparseCloudView old) {
+    super.didUpdateWidget(old);
+    // 浏览 → 编辑:立刻把视角拉回正俯视。
+    //
+    // [2026-08-07 用户签决] "编辑模式绝对不允许存在这种 45 度的情况"。
+    // ⚠️ 这是**冗余防御**:实测单独去掉它守门仍绿 —— 工具层的 _alignToTopOnce
+    // 已经覆盖了进编辑这条路。保留的理由是它不依赖相机通知的时序(_alignToTopOnce
+    // 要等 camera notifier 有值、而且只跑一次)。真凶在 _reframe():那里原先无条件
+    // 用浏览态的 _kDefaultPitch,所以"回到初始点云大小"会把视角拽回 45°(退回旧
+    // 写法守门立刻红在 −45°)。
+    if (widget.editing && !old.editing) {
+      _tween.stop(); // 别让进编辑前的取景动画把视角又拽回 45°
+      setState(() {
+        _pitch = _kEditingPitch;
+        // [2026-08-09 用户签决"所有的点云必须在初始框内…可以缩小点云"]
+        // 编辑取景:zoom 缩到全部点都落进固定尺寸的初始框,云居中。
+        final frame = editingFrameOf(widget.xyz);
+        _zoom = frame.zoom;
+        _panX = 0;
+        _panY = 0;
+        // pivot = 全量 AABB 中心(与框同心)⇒ 框投影恒在屏幕中心。
+        _pivot = frame.center;
+        _roll = 0;
+      });
+      _emitCamera();
+    }
+  }
+
   @override
   void dispose() {
     widget.controller?.removeListener(_onControllerTarget);
@@ -302,6 +454,26 @@ class _SparseCloudViewState extends State<SparseCloudView>
   RectHandle? _activeHandle;
   _BoxDrag _boxMode = _BoxDrag.none;
   SelectionBox? _gestureBox;
+
+  /// 选区矩形专用投影:吸附动画期间锁定目标姿态(见
+  /// CloudViewController.rectPoseOverride),其余与 [_projectionFor] 一致。
+  CloudProjection _projectionForRect(Size size) {
+    final o = widget.controller?.rectPoseOverride;
+    if (o == null) return _projectionFor(size);
+    return CloudCamera(
+      yaw: o.$1,
+      pitch: o.$2,
+      roll: o.$3,
+      zoom: _zoom,
+      panX: _panX,
+      panY: _panY,
+      pivotX: _pivot[0],
+      pivotY: _pivot[1],
+      pivotZ: _pivot[2],
+      radius: _fitRadius,
+      orthographic: kCloudOrthographic,
+    ).projectionFor(size);
+  }
 
   CloudProjection _projectionFor(Size size) => CloudCamera(
     yaw: _yaw,
@@ -386,6 +558,10 @@ class _SparseCloudViewState extends State<SparseCloudView>
   void _onControllerTarget() {
     if (widget.controller?.takeReframe() ?? false) {
       if (mounted) _reframe();
+      return;
+    }
+    if (widget.controller?.takeBrowsePose() ?? false) {
+      if (mounted) _restoreBrowsePose();
       return;
     }
     final t = widget.controller?.takeTarget();
@@ -486,13 +662,52 @@ class _SparseCloudViewState extends State<SparseCloudView>
   /// to the opening angle. Mandatory once free pan + movable pivot exist
   /// (model-viewer's warning: give the user a way back to the framing).
   void _reframe() {
-    final fit = SparseCloudPainter.fitOf(widget.xyz);
+    if (widget.editing) {
+      // [2026-08-09 用户签决] "点击'回到初始点云大小',视角保持不变,不需要
+      // 回到顶部视角" —— 只复位 pivot/pan/zoom(zoom 回编辑取景 = 全含),
+      // yaw/pitch/roll 原样保留。
+      final frame = editingFrameOf(widget.xyz);
+      _animateTo(
+        _CamState(
+          pivot: frame.center,
+          panX: 0,
+          panY: 0,
+          zoom: frame.zoom,
+          yaw: _yaw,
+          pitch: _pitch,
+        ),
+      );
+      return;
+    }
     _animateTo(
       _CamState(
-        pivot: [fit.cx, fit.cy, fit.cz],
+        pivot: orbitPivotOf(widget.xyz),
         panX: 0,
         panY: 0,
         zoom: 1.0,
+        yaw: _kDefaultYaw,
+        // [2026-08-07 用户实机指认"点击返回初始角度没回到正上方,编辑模式绝对
+        // 不允许存在这种 45 度的情况"] 浏览态的默认取景是斜上 45°(与草稿卡片
+        // 缩略图同姿态),但**编辑态的默认取景必须是正上方** —— 选区的 2D 手柄
+        // 只有正俯视才与盒的投影严格重合。此前这里无条件用 _kDefaultPitch,
+        // 于是"回到初始点云大小"会把编辑态的视角一起拽回 45°。
+        pitch: _kDefaultPitch,
+      ),
+    );
+  }
+
+  /// 把朝向转回浏览态的斜上 45°(zoom/pan/pivot 原样保留)。
+  ///
+  /// [2026-08-08 用户签决] 见 [CloudViewController.requestBrowsePose]。走
+  /// [_animateTo] 而不是直接 setState,是为了让"退出编辑"那一下是转过去的 ——
+  /// 从正俯视瞬切到 45° 会像画面跳了一帧。
+  void _restoreBrowsePose() {
+    _animateTo(
+      _CamState(
+        pivot: _pivot,
+        panX: _panX,
+        panY: _panY,
+        zoom: _zoom,
         yaw: _kDefaultYaw,
         pitch: _kDefaultPitch,
       ),
@@ -571,7 +786,10 @@ class _SparseCloudViewState extends State<SparseCloudView>
                 onDoubleTapDown: (d) => _focusAt(d.localPosition),
                 child: RepaintBoundary(
                   child: Container(
-                    color: const Color(0xFF1A1A1A), // scene.background
+                    // [2026-08-07 用户签决] "整个屏幕背景统一一个颜色,纯黑!
+                    // 不需要再为仪表盘位置单独设计一个背景" —— 此前画布是
+                    // #1A1A1A 而底部面板是纯黑,实机能看出一条色差带。
+                    color: Colors.black,
                     child: Stack(
                       children: [
                         Positioned.fill(
@@ -603,6 +821,8 @@ class _SparseCloudViewState extends State<SparseCloudView>
                               // 重合(RS 观感)。
                               drawSelectionWireframe: false,
                               orthographic: kCloudOrthographic,
+                              bottomFade: widget.bottomFade,
+                              bottomFadeArcRadius: widget.bottomFadeArcRadius,
                             ),
                             size: Size.infinite,
                           ),
@@ -613,7 +833,7 @@ class _SparseCloudViewState extends State<SparseCloudView>
                               painter: RectHandlesPainter(
                                 rect: selectionScreenRect(
                                   boxScreenBasis(
-                                    _projectionFor(_viewSize),
+                                    _projectionForRect(_viewSize),
                                     widget.selectionBox!,
                                   ),
                                   widget.selectionBox!,
@@ -622,15 +842,22 @@ class _SparseCloudViewState extends State<SparseCloudView>
                               size: Size.infinite,
                             ),
                           ),
-                        // Reframe safety net (top-right).
-                        Positioned(
-                          top: 10,
-                          right: 10,
-                          child: _RoundIconButton(
-                            icon: Icons.filter_center_focus,
-                            onTap: _reframe,
+                        // 右上角的 reframe 兜底按钮 —— **只在浏览态**。
+                        //
+                        // [2026-08-07 用户实机指认"编辑页面右上角的 icon 好像没有
+                        // 任何作用,可以删了"] 编辑态里它和"⋯"菜单的"回到初始点云
+                        // 大小"是同一个功能,而且 top:10 压在状态栏/灵动岛边缘、
+                        // 又被上方的"完成"按钮挤着,基本点不到 —— 所以它看起来
+                        // "没作用"。浏览态保留:那里没有 ⋯ 菜单,这是唯一入口。
+                        if (!widget.editing)
+                          Positioned(
+                            top: 10,
+                            right: 10,
+                            child: _RoundIconButton(
+                              icon: Icons.filter_center_focus,
+                              onTap: _reframe,
+                            ),
                           ),
-                        ),
                       ],
                     ),
                   ),
@@ -671,6 +898,8 @@ class SparseCloudPainter extends CustomPainter {
     this.drawSelectionWireframe = true,
     this.orthographic = false,
     this.roll = 0,
+    this.bottomFade = 0,
+    this.bottomFadeArcRadius = 0,
   });
 
   final Float32List xyz;
@@ -696,6 +925,20 @@ class SparseCloudPainter extends CustomPainter {
 
   /// 只读选区回显(见 SparseCloudView 同名字段):null = 无选区,不改渲染。
   final SelectionBox? selectionBox;
+
+  /// [2026-08-09 用户签决] "点云要是靠近滑轴就自动慢慢变淡,在滑轴处和下方
+  /// 都直接变透明(点云只在滑轴的上方出现)。"
+  ///
+  /// bottomFade = 屏幕底部保留带的高度(px):点的屏幕 y 落在
+  /// `size.height - bottomFade` 以下不画;其上 [kCloudBottomFadeBand] px 内
+  /// alpha 线性渐隐。0 = 关闭(缩略图/浏览态照旧)。只动显示 alpha —— 点
+  /// 一个都不删,交付无损。
+  final double bottomFade;
+
+  /// [2026-08-09 用户实机指认] "边界需要是贴合滑轴的曲线而不是横线" ——
+  /// 渐隐边界的圆弧半径(= rulerArcRadius(屏宽),圆心在弧顶正下方)。
+  /// 0 = 退回水平直线(滑轨收起时弧已转出屏幕,以及非滑轨场景)。
+  final double bottomFadeArcRadius;
 
   /// [SEL-PREVIEW 2026-07-30] 框外点是**剔除**还是**染红**。
   ///
@@ -956,6 +1199,40 @@ class SparseCloudPainter extends CustomPainter {
   ) {
     _ensureFit(xyz);
     return (cx: _cx, cy: _cy, cz: _cz, radius: _radius);
+  }
+
+  /// 点云**全量**轴对齐包围盒(逐点 min/max,一个点都不排除)。
+  ///
+  /// [2026-08-09 用户签决] "框选点云的初始范围必须包含全部点云" —— 初始框
+  /// 从此用这个,不再用 [sceneAabbOf] 的分位盒(那会把最外 1% 留在框外)。
+  /// sceneAabbOf 本体保留:环绕 pivot(orbitPivotOf)仍用分位中心,飞点不
+  /// 该拽歪旋转中心。
+  static ({double cx, double cy, double cz, double hx, double hy, double hz})
+  fullAabbOf(Float32List xyz) {
+    final n = xyz.length ~/ 3;
+    if (n == 0) {
+      return (cx: 0, cy: 0, cz: 0, hx: 0.5, hy: 0.5, hz: 0.5);
+    }
+    var x0 = xyz[0], x1 = xyz[0];
+    var y0 = xyz[1], y1 = xyz[1];
+    var z0 = xyz[2], z1 = xyz[2];
+    for (var i = 1; i < n; i++) {
+      final x = xyz[i * 3], y = xyz[i * 3 + 1], z = xyz[i * 3 + 2];
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+      if (z < z0) z0 = z;
+      if (z > z1) z1 = z;
+    }
+    return (
+      cx: (x0 + x1) / 2,
+      cy: (y0 + y1) / 2,
+      cz: (z0 + z1) / 2,
+      hx: math.max((x1 - x0) / 2, 1e-6),
+      hy: math.max((y1 - y0) / 2, 1e-6),
+      hz: math.max((z1 - z0) / 2, 1e-6),
+    );
   }
 
   /// 旧名。行为已随 [sceneAabbOf] 升级(飞点不再撑大框)—— 保留别名是为了
@@ -1259,6 +1536,30 @@ class SparseCloudPainter extends CustomPainter {
           vy > size.height + 24) {
         continue;
       }
+      // 滑轨上方渐隐(见 bottomFade/bottomFadeArcRadius 字段注释)。放在
+      // roll 之后:判的是最终屏幕位置。边界 = 滑轨弧线抬高 kCloudBottomFadeGap。
+      var fade = 1.0;
+      if (bottomFade > 0) {
+        final crest = size.height - bottomFade - kCloudBottomFadeGap;
+        if (bottomFadeArcRadius > 0) {
+          // 弧顶上方一个渐隐带以外的点占大多数 —— 先用纯 y 快速放行,
+          // 只有靠近边界的才算距离(每帧十几万点,sqrt 不能人人都跑)。
+          if (vy > crest - kCloudBottomFadeBand) {
+            final dxc = vx - size.width / 2;
+            final dyc = (crest + bottomFadeArcRadius) - vy;
+            final above =
+                math.sqrt(dxc * dxc + dyc * dyc) - bottomFadeArcRadius;
+            if (above <= 0) continue; // 边界弧及以下:不画
+            if (above < kCloudBottomFadeBand) {
+              fade = above / kCloudBottomFadeBand;
+            }
+          }
+        } else {
+          if (vy >= crest) continue;
+          final d = crest - vy;
+          if (d < kCloudBottomFadeBand) fade = d / kCloudBottomFadeBand;
+        }
+      }
       vxA[m] = vx;
       vyA[m] = vy;
       // sizeAttenuation: point radius scales with 1/depth (unit size at
@@ -1268,6 +1569,10 @@ class SparseCloudPainter extends CustomPainter {
       var argb = displayColors[i];
       if (outsideSelection) {
         argb = kSelectionOutColor; // 编辑态:框外 → 红(点不消失)
+      }
+      if (fade < 1.0) {
+        final a = ((argb >>> 24) & 0xff) * fade;
+        argb = (argb & 0x00ffffff) | (a.round() << 24);
       }
       colorA[m] = argb;
       m++;

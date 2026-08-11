@@ -1,0 +1,103 @@
+{
+  "schema": "pw_webgraph_outer_zpaq_complete_winner_v1",
+  "experiment_class": "exploratory_structure_and_parameter_optimization",
+  "scope": "complete_real_sqlite_match_columns",
+  "input": {
+    "sqlite_bytes": 198983680,
+    "sqlite_sha256": "0c12c0dfa76d50cae59929774242282d8236daeb852bdee6ac99c3062d6d08b0",
+    "canonical_match_bytes": 27451060,
+    "canonical_match_sha256": "1bf49e01aae0c1844d934a9a91f3e2a83826fb39d9be09d8561f64e59e492acf",
+    "match_records": 857844,
+    "covered_sqlite_rows": 3557
+  },
+  "candidate": {
+    "representation": "official LLP-permuted WebGraph plus reversible mapping and permutation, one sidecar-first outer ZPAQ archive",
+    "archive_bytes": 1443354,
+    "archive_sha256": "78b0f0039b7122949127a9c3a7e1a2a5b53141d724f5b26ad2d535a47024ad5d",
+    "member_order": [
+      "mapping.raw",
+      "permutation.java",
+      "winner.graph",
+      "winner.properties",
+      "winner.ef"
+    ],
+    "members": [
+      {
+        "name": "mapping.raw",
+        "bytes": 1636797,
+        "sha256": "ba06d5ed34002c0d1c3c81122cefbd04248c3c913a30d6d535270aa6016e6725"
+      },
+      {
+        "name": "permutation.java",
+        "bytes": 2940808,
+        "sha256": "5da29474388a9222592f69501c99a17f8ae1486de7aeee8b04f51b7b93c72458"
+      },
+      {
+        "name": "winner.graph",
+        "bytes": 309592,
+        "sha256": "b79d45d8fc8a45453464e9af8da2956532bc1a868fa5709619f8087de3f8d78a"
+      },
+      {
+        "name": "winner.properties",
+        "bytes": 341,
+        "sha256": "35f8108475185ab8e9698048608c06000627b4562a57b27aa6ea3f46cd5ed14f"
+      },
+      {
+        "name": "winner.ef",
+        "bytes": 228624,
+        "sha256": "d5a392c8e70d2fc810be294dab69a1e65d6352dca838cf29fda45bd9a31e4411"
+      }
+    ],
+    "webgraph": {
+      "revision": "f8698a7bdda2c4e171017548307179cd5c7a3166",
+      "cli_version": "0.4.1",
+      "binary_sha256": "d89205ea921e4b31b072c41fd71f9cc424c2300e6f788191992e06ce9078f124",
+      "compression_window": 31,
+      "maximum_reference_count": 7,
+      "minimum_interval_length": 0,
+      "outdegrees": "unary",
+      "references": "unary",
+      "blocks": "unary",
+      "residuals": "omega",
+      "bvgraphz": true,
+      "chunk_size": 10000
+    },
+    "outer_codec": {
+      "name": "ZPAQ",
+      "version": "7.15",
+      "method": 5,
+      "adapter_binary_sha256": "6002dceb1877b24adc2de674732f0f5dc12ecc6dde80a61a08b3350600c78326"
+    }
+  },
+  "comparison": {
+    "parent_without_match_blobs_bytes": 115130088,
+    "previous_complete_database_baseline_bytes": 116739319,
+    "new_complete_database_bytes": 116573442,
+    "improvement_bytes": 165877,
+    "improvement_fraction": 0.0014209180027853208,
+    "strictly_smaller": true
+  },
+  "exactness": {
+    "canonical_match_sha256_equal": true,
+    "all_counts_and_order_equal": true,
+    "restored_sqlite_bytes": 198983680,
+    "restored_sqlite_sha256": "0c12c0dfa76d50cae59929774242282d8236daeb852bdee6ac99c3062d6d08b0",
+    "restored_sqlite_byte_equal": true,
+    "sqlite_integrity_check": "ok",
+    "corruption_rejected": true
+  },
+  "screened_non_winners": {
+    "direct_match_columns_pcodec_bytes": 1712894,
+    "webgraph_separate_best_before_outer_zpaq_bytes": 1631352,
+    "webgraph_outer_zpaq_graph_first_bytes": 1448503,
+    "webgraph_outer_zpaq_binary_adjacent_bytes": 1443408,
+    "unpermuted_direct_webgraph_outer_zpaq_bytes": 1872598
+  },
+  "commercial_use_audit": {
+    "webgraph": "previously pinned and audited; exact revision retained",
+    "zpaq": "existing vendored production dependency; exact adapter binary retained",
+    "pcodec_v1_0_2_screening": "conditional: Apache-2.0 notice and attribution obligations; ScanCode 32.5.0 found only Apache-2.0 detections in the pinned source tree"
+  },
+  "production_promoted": false,
+  "phone_accessed": false
+}

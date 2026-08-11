@@ -1,0 +1,197 @@
+{
+  "schema": "pw_compression_fidelity_minimum_units_result_v1",
+  "scope": "host_only_micro_supplements",
+  "production_promoted": false,
+  "phone_accessed": false,
+  "automatic_repeats": 0,
+  "descriptor_input_bytes": 1048576,
+  "descriptor_input_sha256": "2bb4062475c40b877deb7f735d4591df97c22a5d857deb1f6e3b45ff5809c92a",
+  "jpeg_input_count": 1,
+  "jpeg_input_bytes": 2794655,
+  "jpeg_input_sha256": "29aaef47f97b6b41fa3453b321dff030a0fcf3b4abac1d6aece72f11429744a4",
+  "arms": [
+    {
+      "name": "zstd_level_1",
+      "input_kind": "descriptor_row_u8_8192x128",
+      "official_revision": "zstd-cli-1.5.7",
+      "parameters": "-1 --no-progress",
+      "complete_persisted_bytes": 842501,
+      "archive_sha256": "843fd2c682c28f8b881bc345b67ad14352059c77effb4173776c04affdad6bfe",
+      "byte_equal": 1,
+      "sha256_equal": 1
+    },
+    {
+      "name": "zstd_level_3",
+      "input_kind": "descriptor_row_u8_8192x128",
+      "official_revision": "zstd-cli-1.5.7",
+      "parameters": "-3 --no-progress",
+      "complete_persisted_bytes": 842632,
+      "archive_sha256": "34fb998ef976301cb83ff719587e0e2b6f1e21995581f1a202628c82b109a2b9",
+      "byte_equal": 1,
+      "sha256_equal": 1
+    },
+    {
+      "name": "zstd_level_5",
+      "input_kind": "descriptor_row_u8_8192x128",
+      "official_revision": "zstd-cli-1.5.7",
+      "parameters": "-5 --no-progress",
+      "complete_persisted_bytes": 842632,
+      "archive_sha256": "34fb998ef976301cb83ff719587e0e2b6f1e21995581f1a202628c82b109a2b9",
+      "byte_equal": 1,
+      "sha256_equal": 1
+    },
+    {
+      "name": "zstd_level_10",
+      "input_kind": "descriptor_row_u8_8192x128",
+      "official_revision": "zstd-cli-1.5.7",
+      "parameters": "-10 --no-progress",
+      "complete_persisted_bytes": 842629,
+      "archive_sha256": "80aec3a3630f9c99c0a25dd5382723d7efe07a5cbb8be585f7023a01fc7f9a40",
+      "byte_equal": 1,
+      "sha256_equal": 1
+    },
+    {
+      "name": "zstd_level_15",
+      "input_kind": "descriptor_row_u8_8192x128",
+      "official_revision": "zstd-cli-1.5.7",
+      "parameters": "-15 --no-progress",
+      "complete_persisted_bytes": 837019,
+      "archive_sha256": "066c74cc28bf64722aab3793b28bad7aecb83069fde82f2152e9b5f80d161c43",
+      "byte_equal": 1,
+      "sha256_equal": 1
+    },
+    {
+      "name": "zstd_level_19",
+      "input_kind": "descriptor_row_u8_8192x128",
+      "official_revision": "zstd-cli-1.5.7",
+      "parameters": "-19 --no-progress",
+      "complete_persisted_bytes": 835970,
+      "archive_sha256": "8b3630d28a9e02b3f85bd3fe2413d8a0a3083f7432b6fdeb5270df1074acfb07",
+      "byte_equal": 1,
+      "sha256_equal": 1
+    },
+    {
+      "name": "zstd_level_22",
+      "input_kind": "descriptor_row_u8_8192x128",
+      "official_revision": "zstd-cli-1.5.7",
+      "parameters": "-22 --no-progress",
+      "complete_persisted_bytes": 835970,
+      "archive_sha256": "8b3630d28a9e02b3f85bd3fe2413d8a0a3083f7432b6fdeb5270df1074acfb07",
+      "byte_equal": 1,
+      "sha256_equal": 1
+    },
+    {
+      "name": "zstd_level_22_long_31",
+      "input_kind": "descriptor_row_u8_8192x128",
+      "official_revision": "zstd-cli-1.5.7",
+      "parameters": "-22 --long=31 --no-progress",
+      "complete_persisted_bytes": 835970,
+      "archive_sha256": "8b3630d28a9e02b3f85bd3fe2413d8a0a3083f7432b6fdeb5270df1074acfb07",
+      "byte_equal": 1,
+      "sha256_equal": 1
+    },
+    {
+      "name": "lzma2_preset_9",
+      "input_kind": "descriptor_row_u8_8192x128",
+      "official_revision": "xz-utils-5.8.3",
+      "parameters": "xz -9 -C sha256",
+      "complete_persisted_bytes": 817056,
+      "archive_sha256": "41593f8b511222cf0a409dd825912a9768bbeeb47ec8844c13bf88c282ca8f1b",
+      "byte_equal": 1,
+      "sha256_equal": 1
+    },
+    {
+      "name": "lzma2_preset_9_extreme",
+      "input_kind": "descriptor_row_u8_8192x128",
+      "official_revision": "xz-utils-5.8.3",
+      "parameters": "xz -9e -C sha256",
+      "complete_persisted_bytes": 817140,
+      "archive_sha256": "d2f757d0ac7c6e8d38dc0b06c148b50ace086e8b4bf52c2b8e58205e419b2daf",
+      "byte_equal": 1,
+      "sha256_equal": 1
+    },
+    {
+      "name": "zpaq_method_5",
+      "input_kind": "descriptor_row_u8_8192x128",
+      "official_revision": "zpaq-7.15-source-sha256-e85ec2529eb0ba22ceaeabd461e55357ef099b80f61c14f377b429ea3d49d418",
+      "parameters": "libzpaq method 5",
+      "complete_persisted_bytes": 779453,
+      "archive_sha256": "5a9cf23a6359a5aaf7a24401927bfc7b1279ffacf56ca803e90377e9cf560801",
+      "byte_equal": 1,
+      "sha256_equal": 1
+    },
+    {
+      "name": "libbsc_e2",
+      "input_kind": "descriptor_row_u8_8192x128",
+      "official_revision": "libbsc-v3.3.12@5e5c2ef0fb1298626936b091f6e4ae539e5b0071",
+      "parameters": "-b1048576 -e2",
+      "complete_persisted_bytes": 803530,
+      "archive_sha256": "48cbeae0f041ac0de113aec67f95e18c8537f38f83b803c93849d28e4379f74a",
+      "byte_equal": 1,
+      "sha256_equal": 1
+    },
+    {
+      "name": "libbsc_e2_reordering",
+      "input_kind": "descriptor_row_u8_8192x128",
+      "official_revision": "libbsc-v3.3.12@5e5c2ef0fb1298626936b091f6e4ae539e5b0071",
+      "parameters": "-b1048576 -e2 -r",
+      "complete_persisted_bytes": 803530,
+      "archive_sha256": "48cbeae0f041ac0de113aec67f95e18c8537f38f83b803c93849d28e4379f74a",
+      "byte_equal": 1,
+      "sha256_equal": 1
+    },
+    {
+      "name": "kanzi_level_8_tpaq",
+      "input_kind": "descriptor_row_u8_8192x128",
+      "official_revision": "kanzi-cpp-2.5.3@6eea1658897019ab3107df2806d5e534ef0798df",
+      "parameters": "-l 8 -j 1 -x64",
+      "complete_persisted_bytes": 787000,
+      "archive_sha256": "97ed70fd8b31ddcb08fdd2c625ff53331ea464a3721f58b922b576de26db11e5",
+      "byte_equal": 1,
+      "sha256_equal": 1
+    },
+    {
+      "name": "kanzi_level_9_tpaqx",
+      "input_kind": "descriptor_row_u8_8192x128",
+      "official_revision": "kanzi-cpp-2.5.3@6eea1658897019ab3107df2806d5e534ef0798df",
+      "parameters": "-l 9 -j 1 -x64",
+      "complete_persisted_bytes": 795976,
+      "archive_sha256": "8e5510e63f38e66a2530b05d57f4a442a514a05e27d6106e9ac617ecf9a80ad7",
+      "byte_equal": 1,
+      "sha256_equal": 1
+    },
+    {
+      "name": "brunsli_default",
+      "input_kind": "one_original_jpeg",
+      "official_revision": "brunsli-v0.1@8a0e9b8ca2e3e089731c95a1da7ce8a3180e667c",
+      "parameters": "official cbrunsli default",
+      "complete_persisted_bytes": 2212076,
+      "archive_sha256": "0c4ffb45f0ef21389b28e935704247a34257076faa24201c86ed923c01266742",
+      "byte_equal": 1,
+      "sha256_equal": 1
+    },
+    {
+      "name": "microsoft_rust_lepton_default",
+      "input_kind": "one_original_jpeg",
+      "official_revision": "lepton-jpeg-rust-v0.5.8@90fdc27828676892fbb41777cfcc6bad1e470516",
+      "parameters": "official lepton_jpeg_util default",
+      "complete_persisted_bytes": 2197039,
+      "archive_sha256": "edcca6229be42d20c98126a1f3feb9a1771d009bfa2feaf6946e762f6a96d254",
+      "byte_equal": 1,
+      "sha256_equal": 1
+    },
+    {
+      "name": "packjpg_2_5j_default",
+      "input_kind": "one_original_jpeg",
+      "official_revision": "packjpg-core-2.5j-in-wxpackjpg-1.2.0-source-sha256-f866a1399227411678f5f797a166597f1a28b554e987622ec2fdfa88fa2fa52d",
+      "parameters": "official packJPG default",
+      "complete_persisted_bytes": 2202227,
+      "archive_sha256": "90886cd48eecda757cfd35cff0025fb8ddecdb6067699bfe8438118cf0b117f4",
+      "byte_equal": 1,
+      "sha256_equal": 1
+    }
+  ],
+  "descriptor_winner_for_this_minimum_unit": "zpaq_method_5",
+  "jpeg_winner_for_this_one_photo_only": "microsoft_rust_lepton_default",
+  "narrow_verdict": "The measured official modes restore their minimum-unit inputs exactly. These host micro-results do not replace existing phone baselines or authorize production changes."
+}

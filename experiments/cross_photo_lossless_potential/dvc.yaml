@@ -1,0 +1,9 @@
+stages:
+  immutable-inputs:
+    cmd: /usr/bin/true
+    deps:
+      - /private/tmp/pw_archive_gate_refresh_20260730_4b0e3dd/before/Documents/captures_official/cap_1785155296535863/photos_highres
+      - /private/tmp/pw_archive_gate_refresh_20260730_4b0e3dd/before/Documents/captures_official/cap_1785155296535863/official_photo_bundle.json
+      - /private/tmp/pw_archive_gate_refresh_20260730_4b0e3dd/before/Documents/captures_official/cap_1785155296535863/official_sfm_fed_frames.jsonl
+      - /private/tmp/pw_archive_gate_refresh_20260730_4b0e3dd/before/Documents/captures_official/cap_1785155296535863/official_sfm_sparse.ply
+      - /private/tmp/pw_archive_gate_refresh_20260730_4b0e3dd/before/Documents/captures_official/cap_1785155296535863/official_sfm_sparse_meta.json

@@ -1,0 +1,42 @@
+{
+ "schema": "pw_btrack_mac_recon_v1",
+ "date": "2026-08-08",
+ "step1_regeneration_reconciliation": {
+  "derivation_artifacts_current_app": {
+   "test": "手机拉回的新采集 cap_1786180051727388(150张,8月版app),deriveDirectory 连跑3遍",
+   "raw_determinism": "10/13 逐字节一致;3 个不一致(view_graph/bundle_validation/sparse_audit)",
+   "root_cause": "全部为 createdAt 类墙钟字段;去时间戳后 3/3 差异行=0",
+   "verdict": "规范形(去墙钟字段)下 13/13 位级可再生",
+   "bonus": "official_photo_bundle.json 与手机版逐字节一致(无 repair 触发,跨机稳定)",
+   "note": "核心几何(colmap 三件套/两个 PLY)原生逐字节确定,连时间戳问题都没有"
+  },
+  "previews_legacy_only": {
+   "test": "旧5月capture,lanczos 1024x576 再生 vs 库存,6样本",
+   "psnr_avg_db": 35.33,
+   "verdict": "语义档(位级不可行:JPEG编码器代次不同);且新版app已不落盘previews,仅旧数据涉及"
+  },
+  "photos_depth_legacy_only": {
+   "verdict": "新版app已不落盘;旧数据按旧项目规则处理,不进B轨"
+  },
+  "sfm_db": {
+   "status": "未测(重活)",
+   "note": "新采集全部带 196-267MB DB,是B轨最大标的;再生=重跑提取+匹配,需管线侧harness,位级依据=GPU matcher 15/15 位级一致先例;此项测试需单独安排"
+  }
+ },
+ "step2_version_lock": {
+  "measured": "跨版本保真意外良好:5月手机写的 manifest 与8月代码再生 = byte_equal",
+  "requirement": "B轨manifest必须钉:git HEAD + 派生服务包版本 + (DB再生时)提取器binary SHA + seeds",
+  "canonicalization_rule": "对账比较在规范形上做:排除 createdAt/validatedAt 类墙钟字段;或改服务接受注入时间戳"
+ },
+ "taxonomy_update_from_phone_inventory": {
+  "finding": "8月版app采集结构已精简:previews/photos_depth/view_graph 均不再落盘(derivation service 按需再生=B轨哲学已部分产品化)",
+  "current_capture_composition": "照片(600-800MB)+SfM DB(196-267MB)+稀疏PLY+JSONs",
+  "b_track_remaining_targets": "实质只剩 SfM DB 一项(previews/depth 已被产品自然消化)"
+ },
+ "phone_status": {
+  "app": "PocketWorld 1.0.0 build 1",
+  "vtprobe": "已被删除",
+  "photos_hevc": "所有采集均无(集成未装机,一致)",
+  "recent_captures": "5个(8月6-8日),150-201张/次"
+ }
+}
