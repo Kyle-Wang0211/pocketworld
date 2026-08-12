@@ -1,26 +1,28 @@
-/// B1 设备验收门执行器(pw_b1_gate)
+/// B1 无损形态设备验收门(pw_b1_gate)
 ///
-/// 文件触发(与 AetherEnvFile 同款模式,零 UI):启动时若存在
-/// `Documents/pw_b1_gate_request.json` 则删除请求文件并在后台执行
-/// 再生验收:对指定 capture 连跑 N 遍 [SfmDbRegen.regenerate](输出到
-/// `Documents/pw_b1_gate/<capture_id>/run_<i>/`,不触碰 capture 目录),
-/// 进度与结果写 `Documents/pw_b1_gate_report.json`。
+/// 文件触发(与 AetherEnvFile 同款,零 UI):启动时若存在
+/// `Documents/pw_b1_gate_request.json`,删除请求文件并在后台对指定 capture
+/// 跑两臂重建对照,结果写 `Documents/pw_b1_gate_report.json`:
+///   A 臂(对照):DB 原样副本 → resume 重建
+///   B 臂(裁剪):副本裁掉 descriptors + 重新盖章侧车 → resume 重建
+/// 判据:B 臂成功且交付点数/配准与 A 臂同带 → 形态在真机成立。
 ///
-/// 用途:V4 确定性(两遍 db 的 SHA-256/体积对比;不等时把两份 db 拉回
-/// Mac 做表级规范 diff)与 V5 质量(finalize 指标 vs 原采集 sparse meta)。
-/// 请求文件由开发侧经 devicectl 投放;正常用户永远不会触发。
+/// **绝不触碰 capture 目录**:一切在 `Documents/pw_b1_gate/<id>/` 内的副本上
+/// 进行;源 DB 只读。请求文件由开发侧投放,正常用户永远不会触发。
 ///
-/// ⚠️ 再生持有 reconstructionLease:执行期间用户开拍会 start 失败。
-/// 只在确认设备空闲时投放请求文件。
+/// ⚠️ 重建持有 reconstructionLease:执行期间用户开拍会失败。只在设备空闲
+/// 且亮屏时投放(钩子挂首帧回调,锁屏不跑)。
 library;
 
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:crypto/crypto.dart';
+import 'database_prune_ffi.dart';
+import 'database_recipe_transaction.dart';
+import 'sfm_live_recon.dart';
 
-import 'sfm_db_regen.dart';
+const _poseSidecarSuffix = '.arkit_pose_v1';
 
 Future<void> maybeRunB1Gate(String documentsPath) async {
   final request = File('$documentsPath/pw_b1_gate_request.json');
@@ -38,81 +40,152 @@ Future<void> maybeRunB1Gate(String documentsPath) async {
     } catch (_) {}
     return;
   }
-  // 请求文件立刻删除:一次投放只跑一次,崩溃也不会开机循环。
+  // 请求立刻消费:一次投放只跑一次,崩溃也不会开机循环。
   try {
     await request.delete();
   } catch (_) {}
 
   final captureId = req['capture_id'] as String?;
-  final runs = (req['runs'] as num?)?.toInt() ?? 2;
   if (captureId == null || captureId.isEmpty) return;
-  final captureDir =
-      Directory('$documentsPath/captures_official/$captureId');
+  final captureDir = Directory('$documentsPath/captures_official/$captureId');
   final gateDir = Directory('$documentsPath/pw_b1_gate/$captureId');
   final report = File('$documentsPath/pw_b1_gate_report.json');
+  final result = <String, Object?>{
+    'schema': 'pw_b1_prune_gate_report_v1',
+    'capture_id': captureId,
+  };
 
-  final results = <Map<String, Object?>>[];
-  Future<void> writeReport(String stage) async {
+  Future<void> flush(String stage) async {
+    result['stage'] = stage;
+    result['updated_at'] = DateTime.now().toUtc().toIso8601String();
     try {
-      await report.writeAsString(jsonEncode({
-        'schema': 'pw_b1_gate_report_v1',
-        'capture_id': captureId,
-        'stage': stage,
-        'runs_requested': runs,
-        'runs': results,
-        'updated_at': DateTime.now().toUtc().toIso8601String(),
-      }));
+      await report.writeAsString(jsonEncode(result));
     } catch (_) {}
   }
 
-  await writeReport('starting');
+  await flush('starting');
   try {
-    if (!await captureDir.exists()) {
-      await writeReport('capture_missing');
+    final source = File('${captureDir.path}/official_sfm_live.db');
+    final sidecar = File('${source.path}$_poseSidecarSuffix');
+    if (!await source.exists() || !await sidecar.exists()) {
+      result['error'] = 'source db or pose sidecar missing '
+          '(db=${await source.exists()} sidecar=${await sidecar.exists()})';
+      await flush('inputs_missing');
       return;
     }
     if (await gateDir.exists()) await gateDir.delete(recursive: true);
-    for (var i = 0; i < runs; i++) {
-      final runDir = Directory('${gateDir.path}/run_$i');
-      await runDir.create(recursive: true);
-      final cache = Directory('${runDir.path}/cache');
-      await cache.create(recursive: true);
-      await writeReport('run_${i}_in_progress');
-      final r = await SfmDbRegen.regenerate(
-        captureDirectory: captureDir,
-        targetDbPath: '${runDir.path}/official_sfm_live.db',
-        materializeCache: cache,
-      );
-      final entry = <String, Object?>{'run': i, ...r.toJson()};
-      final db = File('${runDir.path}/official_sfm_live.db');
-      if (await db.exists()) {
-        entry['db_bytes'] = await db.length();
-        entry['db_sha256'] =
-            (await sha256.bind(db.openRead()).first).toString();
-      }
-      results.add(entry);
-      // 物化缓存即刻清掉(12MP JPEG × 帧数,不留盘)。
-      try {
-        await cache.delete(recursive: true);
-      } catch (_) {}
-      await writeReport('run_${i}_done');
-      if (!r.ok) break;
+    await gateDir.create(recursive: true);
+
+    // A 臂:原样副本。
+    final armA = Directory('${gateDir.path}/arm_full')..createSync();
+    final dbA = File('${armA.path}/official_sfm_live.db');
+    await source.copy(dbA.path);
+    await sidecar.copy('${dbA.path}$_poseSidecarSuffix');
+    result['source_db_bytes'] = await source.length();
+
+    // B 臂:裁剪 + 重新盖章(复用生产事务的门模式,不动 capture)。
+    final armB = Directory('${gateDir.path}/arm_pruned')..createSync();
+    final dbB = File('${armB.path}/official_sfm_live.db');
+    await source.copy(dbB.path);
+    await sidecar.copy('${dbB.path}$_poseSidecarSuffix');
+    final prune = await const DatabaseRecipeTransaction()
+        .pruneCapture(armB, outputDbPath: '${armB.path}/pruned.db');
+    result['prune'] = {
+      'applicable': prune.applicable,
+      'reason': prune.reason,
+      'deleted_bytes': prune.deletedBytes,
+    };
+    if (!prune.applicable) {
+      await flush('prune_failed');
+      return;
     }
-    final shas = results
-        .map((r) => r['db_sha256'])
-        .whereType<String>()
-        .toSet();
-    final allOk = results.isNotEmpty &&
-        results.length == runs &&
-        results.every((r) => r['ok'] == true);
-    if (allOk) {
-      await writeReport(
-          shas.length == 1 ? 'done_bit_identical' : 'done_semantic_only');
-    } else {
-      await writeReport('done_with_failures');
+    // 裁后副本就位(pruneCapture 已把盖章侧车写在 pruned.db 旁)。
+    await File(dbB.path).delete();
+    await File('${dbB.path}$_poseSidecarSuffix').delete();
+    await File('${armB.path}/pruned.db').rename(dbB.path);
+    await File('${armB.path}/pruned.db$_poseSidecarSuffix')
+        .rename('${dbB.path}$_poseSidecarSuffix');
+    result['pruned_db_bytes'] = await dbB.length();
+
+    // 保全表逐字节对账(裁前 vs 裁后)。
+    final tables = <String, Object?>{};
+    var tablesOk = true;
+    for (final t in DatabaseRecipeManifest.preservedTables) {
+      final a = await tableContentSha256(dbA.path, t);
+      final b = await tableContentSha256(dbB.path, t);
+      final same = a != null && a == b;
+      tables[t] = same ? 'identical' : 'MISMATCH';
+      tablesOk &= same;
+    }
+    result['preserved_tables'] = tables;
+    result['preserved_tables_ok'] = tablesOk;
+    await flush('pruned');
+
+    // 两臂重建(产品 resume 路径,串行——lease 独占)。
+    for (final arm in <List<Object>>[
+      ['full', dbA],
+      ['pruned', dbB],
+    ]) {
+      final name = arm[0] as String;
+      final db = arm[1] as File;
+      await flush('rebuild_${name}_in_progress');
+      result['rebuild_$name'] = await _rebuild(db.path);
+      await flush('rebuild_${name}_done');
+    }
+
+    final a = result['rebuild_full'] as Map<String, Object?>?;
+    final b = result['rebuild_pruned'] as Map<String, Object?>?;
+    final ok = tablesOk &&
+        a?['ok'] == true &&
+        b?['ok'] == true &&
+        (b?['registered'] as int? ?? -1) == (a?['registered'] as int? ?? -2);
+    await flush(ok ? 'done_pass' : 'done_fail');
+  } catch (e, st) {
+    result['error'] = '$e';
+    result['stack'] = '$st';
+    await flush('exception');
+  }
+}
+
+/// 走产品 resume 路径重建一次,返回指标。
+Future<Map<String, Object?>> _rebuild(String dbPath) async {
+  final started = DateTime.now();
+  SfmLiveRecon? recon;
+  try {
+    recon = await SfmLiveRecon.start(dbPath: dbPath);
+    if (recon == null) {
+      return {'ok': false, 'error': 'start failed (lease busy?)'};
+    }
+    final done = Completer<Map<String, Object?>>();
+    final sub = recon.events.listen((e) {
+      if (e is SfmLiveRefined && !done.isCompleted) {
+        done.complete({
+          'ok': true,
+          'registered': e.snapshot.registeredCount,
+          'delivered_points': e.snapshot.xyz.length ~/ 3,
+          'summary': e.snapshot.summary,
+          'refine_ms': e.refineMs,
+        });
+      } else if (e is SfmLiveFailed && !done.isCompleted) {
+        done.complete({'ok': false, 'error': '${e.stage}: ${e.message}'});
+      }
+    });
+    try {
+      recon.resumeFromDb(imageWidth: 4032, imageHeight: 3024);
+      final out = await done.future.timeout(
+        const Duration(minutes: 25),
+        onTimeout: () => {'ok': false, 'error': 'timeout'},
+      );
+      out['elapsed_ms'] = DateTime.now().difference(started).inMilliseconds;
+      return out;
+    } finally {
+      await sub.cancel();
     }
   } catch (e) {
-    results.add({'error': '$e'});
-    await writeReport('exception');
+    return {'ok': false, 'error': '$e'};
+  } finally {
+    try {
+      await recon?.dispose();
+    } catch (_) {}
   }
 }

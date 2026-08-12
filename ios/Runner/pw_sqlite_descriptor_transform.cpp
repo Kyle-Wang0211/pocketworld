@@ -2294,3 +2294,418 @@ int32_t pw_sqlite_descriptor_transform_file_cancellable(
   return pw_sqlite_descriptor_transform_file(source_path, output_path,
                                              transform, inverse, stats);
 }
+
+// ── B1 无损形态(2026-08-11):删描述子保匹配图 ────────────────────────
+#include <CommonCrypto/CommonDigest.h>
+
+namespace {
+
+bool PruneCopyFile(const char* src, const char* dst) {
+  std::FILE* in = std::fopen(src, "rb");
+  if (in == nullptr) return false;
+  std::remove(dst);
+  std::FILE* out = std::fopen(dst, "wb");
+  if (out == nullptr) {
+    std::fclose(in);
+    return false;
+  }
+  std::vector<unsigned char> buffer(4u * 1024u * 1024u);
+  bool ok = true;
+  while (true) {
+    const size_t got = std::fread(buffer.data(), 1, buffer.size(), in);
+    if (got == 0) {
+      ok = std::feof(in) != 0;
+      break;
+    }
+    if (std::fwrite(buffer.data(), 1, got, out) != got) {
+      ok = false;
+      break;
+    }
+  }
+  std::fclose(in);
+  if (std::fclose(out) != 0) ok = false;
+  if (!ok) std::remove(dst);
+  return ok;
+}
+
+}  // namespace
+
+int32_t pw_sqlite_prune_descriptors_file(const char* source_path,
+                                         const char* output_path) {
+  if (source_path == nullptr || output_path == nullptr) {
+    g_last_error = "prune: null path";
+    return PW_SQLITE_DESCRIPTOR_TRANSFORM_INVALID_ARGUMENT;
+  }
+  if (!PruneCopyFile(source_path, output_path)) {
+    g_last_error = "prune: copy failed";
+    return PW_SQLITE_DESCRIPTOR_TRANSFORM_INPUT_FAILED;
+  }
+  sqlite3* db = nullptr;
+  if (sqlite3_open_v2(output_path, &db, SQLITE_OPEN_READWRITE, nullptr) !=
+      SQLITE_OK) {
+    if (db != nullptr) sqlite3_close(db);
+    std::remove(output_path);
+    g_last_error = "prune: open failed";
+    return PW_SQLITE_DESCRIPTOR_TRANSFORM_OUTPUT_FAILED;
+  }
+  int32_t status = PW_SQLITE_DESCRIPTOR_TRANSFORM_OK;
+  // checkpoint(TRUNCATE) 保证 WAL 内容全部折进主文件,收尾删伴生文件才安全。
+  for (const char* sql : {"DELETE FROM descriptors;", "VACUUM;",
+                          "PRAGMA wal_checkpoint(TRUNCATE);",
+                          "PRAGMA integrity_check;"}) {
+    char* err = nullptr;
+    if (sqlite3_exec(db, sql, nullptr, nullptr, &err) != SQLITE_OK) {
+      g_last_error = "prune: statement failed";
+      if (err != nullptr) sqlite3_free(err);
+      status = PW_SQLITE_DESCRIPTOR_TRANSFORM_OUTPUT_FAILED;
+      break;
+    }
+  }
+  sqlite3_close(db);
+  if (status != PW_SQLITE_DESCRIPTOR_TRANSFORM_OK) std::remove(output_path);
+  return status;
+}
+
+int32_t pw_sqlite_table_content_sha256(const char* database_path,
+                                       const char* table_name,
+                                       char* out_hex,
+                                       int32_t out_capacity) {
+  if (database_path == nullptr || table_name == nullptr || out_hex == nullptr ||
+      out_capacity < 65) {
+    g_last_error = "digest: bad args";
+    return PW_SQLITE_DESCRIPTOR_TRANSFORM_INVALID_ARGUMENT;
+  }
+  // 表名只许 [A-Za-z0-9_](防注入;调用方是我们自己,仍设防)。
+  for (const char* p = table_name; *p != '\0'; ++p) {
+    const char c = *p;
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+          (c >= '0' && c <= '9') || c == '_')) {
+      g_last_error = "digest: bad table name";
+      return PW_SQLITE_DESCRIPTOR_TRANSFORM_INVALID_ARGUMENT;
+    }
+  }
+  // WAL 模式的 db 只读打开会在 prepare 阶段失败(需要 -shm 伴生文件,只读
+  // 连接无权创建;真机 cold db 正是这种状态——设备门 pre_digest_failed 的
+  // 根因)。先按读写打开(允许 SQLite 建 -shm / 折叠 WAL,干净关闭时自动
+  // 清除伴生文件),失败再退回只读(例如只读介质)。本函数只执行 SELECT。
+  sqlite3* db = nullptr;
+  if (sqlite3_open_v2(database_path, &db, SQLITE_OPEN_READWRITE, nullptr) !=
+      SQLITE_OK) {
+    if (db != nullptr) sqlite3_close(db);
+    db = nullptr;
+    if (sqlite3_open_v2(database_path, &db, SQLITE_OPEN_READONLY, nullptr) !=
+        SQLITE_OK) {
+      if (db != nullptr) sqlite3_close(db);
+      g_last_error = "digest: open failed";
+      return PW_SQLITE_DESCRIPTOR_TRANSFORM_INPUT_FAILED;
+    }
+  }
+  std::string sql = std::string("SELECT * FROM \"") + table_name +
+                    "\" ORDER BY rowid;";
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+    sqlite3_close(db);
+    g_last_error = "digest: prepare failed";
+    return PW_SQLITE_DESCRIPTOR_TRANSFORM_SCHEMA_FAILED;
+  }
+  CC_SHA256_CTX ctx;
+  CC_SHA256_Init(&ctx);
+  int rc;
+  while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+    const int cols = sqlite3_column_count(stmt);
+    for (int i = 0; i < cols; ++i) {
+      const int type = sqlite3_column_type(stmt, i);
+      const unsigned char tag = static_cast<unsigned char>(type);
+      CC_SHA256_Update(&ctx, &tag, 1);
+      switch (type) {
+        case SQLITE_INTEGER: {
+          const sqlite3_int64 v = sqlite3_column_int64(stmt, i);
+          CC_SHA256_Update(&ctx, &v, sizeof(v));
+          break;
+        }
+        case SQLITE_FLOAT: {
+          const double v = sqlite3_column_double(stmt, i);
+          CC_SHA256_Update(&ctx, &v, sizeof(v));
+          break;
+        }
+        case SQLITE_TEXT:
+        case SQLITE_BLOB: {
+          const int n = sqlite3_column_bytes(stmt, i);
+          const void* p = type == SQLITE_TEXT
+                              ? static_cast<const void*>(
+                                    sqlite3_column_text(stmt, i))
+                              : sqlite3_column_blob(stmt, i);
+          CC_SHA256_Update(&ctx, &n, sizeof(n));
+          if (n > 0 && p != nullptr) {
+            CC_SHA256_Update(&ctx, p, static_cast<CC_LONG>(n));
+          }
+          break;
+        }
+        default:
+          break;  // SQLITE_NULL:只有 tag。
+      }
+    }
+  }
+  sqlite3_finalize(stmt);
+  sqlite3_close(db);
+  if (rc != SQLITE_DONE) {
+    g_last_error = "digest: step failed";
+    return PW_SQLITE_DESCRIPTOR_TRANSFORM_MALFORMED;
+  }
+  unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+  CC_SHA256_Final(digest, &ctx);
+  static const char* hex = "0123456789abcdef";
+  for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; ++i) {
+    out_hex[i * 2] = hex[digest[i] >> 4];
+    out_hex[i * 2 + 1] = hex[digest[i] & 0xf];
+  }
+  out_hex[64] = '\0';
+  return PW_SQLITE_DESCRIPTOR_TRANSFORM_OK;
+}
+
+// ── ARKPOS1 侧车重新盖章(裁描述子后的身份链修复) ────────────────────
+namespace {
+
+constexpr size_t kArkposHeaderBytes = 32;
+constexpr size_t kArkposRecordBytes = 104;
+constexpr size_t kArkposDigestOffset = 16;  // frame_id,image_id,active,reserved
+
+inline void MixByte(uint64_t* hash, const uint8_t byte) {
+  *hash ^= byte;
+  *hash *= UINT64_C(1099511628211);
+}
+
+inline void MixU64(uint64_t* hash, const uint64_t value) {
+  for (int shift = 0; shift < 64; shift += 8) {
+    MixByte(hash, static_cast<uint8_t>((value >> shift) & 0xff));
+  }
+}
+
+inline void MixDouble(uint64_t* hash, const double value) {
+  uint64_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  MixU64(hash, bits);
+}
+
+uint64_t ArkposFnv1a(const uint8_t* data, const size_t size) {
+  uint64_t hash = UINT64_C(1469598103934665603);
+  for (size_t i = 0; i < size; ++i) {
+    hash ^= data[i];
+    hash *= UINT64_C(1099511628211);
+  }
+  return hash;
+}
+
+uint32_t ArkposReadU32(const uint8_t* p) {
+  uint32_t v = 0;
+  for (int shift = 0; shift < 32; shift += 8) {
+    v |= static_cast<uint32_t>(*p++) << shift;
+  }
+  return v;
+}
+
+uint64_t ArkposReadU64(const uint8_t* p) {
+  uint64_t v = 0;
+  for (int shift = 0; shift < 64; shift += 8) {
+    v |= static_cast<uint64_t>(*p++) << shift;
+  }
+  return v;
+}
+
+void ArkposWriteU64(uint8_t* p, const uint64_t value) {
+  for (int shift = 0; shift < 64; shift += 8) {
+    *p++ = static_cast<uint8_t>((value >> shift) & 0xff);
+  }
+}
+
+}  // namespace
+
+int32_t pw_sqlite_reseal_arkit_pose_digests(const char* database_path,
+                                            const char* sidecar_path) {
+  if (database_path == nullptr || sidecar_path == nullptr) {
+    g_last_error = "reseal: null path";
+    return PW_SQLITE_DESCRIPTOR_TRANSFORM_INVALID_ARGUMENT;
+  }
+  // ── 侧车读入与校验 ──
+  std::vector<uint8_t> file;
+  {
+    std::FILE* f = std::fopen(sidecar_path, "rb");
+    if (f == nullptr) {
+      g_last_error = "reseal: sidecar missing";
+      return PW_SQLITE_DESCRIPTOR_TRANSFORM_INPUT_FAILED;
+    }
+    std::fseek(f, 0, SEEK_END);
+    const long size = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (size < static_cast<long>(kArkposHeaderBytes)) {
+      std::fclose(f);
+      g_last_error = "reseal: sidecar too small";
+      return PW_SQLITE_DESCRIPTOR_TRANSFORM_MALFORMED;
+    }
+    file.resize(static_cast<size_t>(size));
+    const size_t got = std::fread(file.data(), 1, file.size(), f);
+    std::fclose(f);
+    if (got != file.size()) {
+      g_last_error = "reseal: sidecar read failed";
+      return PW_SQLITE_DESCRIPTOR_TRANSFORM_INPUT_FAILED;
+    }
+  }
+  static const char kMagic[8] = {'A', 'R', 'K', 'P', 'O', 'S', '1', '\0'};
+  if (std::memcmp(file.data(), kMagic, sizeof(kMagic)) != 0 ||
+      ArkposReadU32(file.data() + 8) != 1u) {
+    g_last_error = "reseal: bad magic/version";
+    return PW_SQLITE_DESCRIPTOR_TRANSFORM_MALFORMED;
+  }
+  const uint32_t count = ArkposReadU32(file.data() + 12);
+  const uint64_t payload_bytes = ArkposReadU64(file.data() + 16);
+  const uint64_t stored_checksum = ArkposReadU64(file.data() + 24);
+  if (payload_bytes != static_cast<uint64_t>(count) * kArkposRecordBytes ||
+      file.size() != kArkposHeaderBytes + payload_bytes) {
+    g_last_error = "reseal: sidecar size mismatch";
+    return PW_SQLITE_DESCRIPTOR_TRANSFORM_MALFORMED;
+  }
+  uint8_t* payload = file.data() + kArkposHeaderBytes;
+  if (ArkposFnv1a(payload, static_cast<size_t>(payload_bytes)) !=
+      stored_checksum) {
+    g_last_error = "reseal: sidecar checksum mismatch";
+    return PW_SQLITE_DESCRIPTOR_TRANSFORM_MALFORMED;
+  }
+
+  // ── DB 读入(必须已裁剪) ──
+  sqlite3* db = nullptr;  // WAL 需可写连接建 -shm,同 digest。
+  if (sqlite3_open_v2(database_path, &db, SQLITE_OPEN_READWRITE, nullptr) !=
+      SQLITE_OK) {
+    if (db != nullptr) sqlite3_close(db);
+    db = nullptr;
+    if (sqlite3_open_v2(database_path, &db, SQLITE_OPEN_READONLY, nullptr) !=
+        SQLITE_OK) {
+      if (db != nullptr) sqlite3_close(db);
+      g_last_error = "reseal: db open failed";
+      return PW_SQLITE_DESCRIPTOR_TRANSFORM_INPUT_FAILED;
+    }
+  }
+  int32_t status = PW_SQLITE_DESCRIPTOR_TRANSFORM_OK;
+  {
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM descriptors;", -1, &stmt,
+                           nullptr) != SQLITE_OK ||
+        sqlite3_step(stmt) != SQLITE_ROW ||
+        sqlite3_column_int64(stmt, 0) != 0) {
+      sqlite3_finalize(stmt);
+      sqlite3_close(db);
+      g_last_error = "reseal: descriptors table is not empty";
+      return PW_SQLITE_DESCRIPTOR_TRANSFORM_INVALID_ARGUMENT;
+    }
+    sqlite3_finalize(stmt);
+  }
+
+  const char* kQuery =
+      "SELECT i.image_id, i.name, c.model, c.width, c.height, c.params, "
+      "k.data FROM images i JOIN cameras c ON c.camera_id = i.camera_id "
+      "LEFT JOIN keypoints k ON k.image_id = i.image_id "
+      "ORDER BY i.image_id;";
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db, kQuery, -1, &stmt, nullptr) != SQLITE_OK) {
+    sqlite3_close(db);
+    g_last_error = "reseal: query prepare failed";
+    return PW_SQLITE_DESCRIPTOR_TRANSFORM_SCHEMA_FAILED;
+  }
+  uint32_t index = 0;
+  int rc;
+  while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+    if (index >= count) {
+      status = PW_SQLITE_DESCRIPTOR_TRANSFORM_MALFORMED;
+      g_last_error = "reseal: db has more images than sidecar records";
+      break;
+    }
+    uint8_t* record = payload + static_cast<size_t>(index) * kArkposRecordBytes;
+    const uint32_t record_frame_id = ArkposReadU32(record);
+    const uint32_t record_image_id = ArkposReadU32(record + 4);
+    const int64_t image_id = sqlite3_column_int64(stmt, 0);
+    if (record_frame_id != index ||
+        record_image_id != static_cast<uint32_t>(image_id)) {
+      status = PW_SQLITE_DESCRIPTOR_TRANSFORM_MALFORMED;
+      g_last_error = "reseal: sidecar/db identity mismatch";
+      break;
+    }
+    uint64_t hash = UINT64_C(1469598103934665603);
+    const unsigned char* name = sqlite3_column_text(stmt, 1);
+    if (name != nullptr) {
+      for (const unsigned char* p = name; *p != '\0'; ++p) MixByte(&hash, *p);
+    }
+    MixByte(&hash, 0);
+    MixU64(&hash, static_cast<uint64_t>(sqlite3_column_int64(stmt, 2)));
+    MixU64(&hash, static_cast<uint64_t>(sqlite3_column_int64(stmt, 3)));
+    MixU64(&hash, static_cast<uint64_t>(sqlite3_column_int64(stmt, 4)));
+    const int params_bytes = sqlite3_column_bytes(stmt, 5);
+    const void* params_blob = sqlite3_column_blob(stmt, 5);
+    const size_t params_count = static_cast<size_t>(params_bytes) / sizeof(double);
+    MixU64(&hash, params_count);
+    for (size_t i = 0; i < params_count; ++i) {
+      double value = 0;
+      std::memcpy(&value,
+                  static_cast<const uint8_t*>(params_blob) + i * sizeof(double),
+                  sizeof(double));
+      MixDouble(&hash, value);
+    }
+    // keypoints blob: rows × cols float32,前两列为 x,y(核经
+    // FeatureKeypointsToPointsVector 取 float→double)。
+    const int kp_bytes = sqlite3_column_bytes(stmt, 6);
+    const void* kp_blob = sqlite3_column_blob(stmt, 6);
+    size_t point_count = 0;
+    const int kColumns = 6;
+    if (kp_blob != nullptr && kp_bytes > 0) {
+      point_count = static_cast<size_t>(kp_bytes) /
+                    (sizeof(float) * static_cast<size_t>(kColumns));
+    }
+    MixU64(&hash, point_count);
+    for (size_t i = 0; i < point_count; ++i) {
+      float xy[2] = {0.f, 0.f};
+      std::memcpy(xy,
+                  static_cast<const uint8_t*>(kp_blob) +
+                      i * sizeof(float) * static_cast<size_t>(kColumns),
+                  sizeof(xy));
+      MixDouble(&hash, static_cast<double>(xy[0]));
+      MixDouble(&hash, static_cast<double>(xy[1]));
+    }
+    MixU64(&hash, 0);  // descriptors.size() == 0(已裁剪)
+    if (hash == 0) hash = 1;
+    ArkposWriteU64(record + kArkposDigestOffset, hash);
+    index++;
+  }
+  sqlite3_finalize(stmt);
+  sqlite3_close(db);
+  if (status != PW_SQLITE_DESCRIPTOR_TRANSFORM_OK) return status;
+  if (rc != SQLITE_DONE) {
+    g_last_error = "reseal: db step failed";
+    return PW_SQLITE_DESCRIPTOR_TRANSFORM_MALFORMED;
+  }
+  if (index != count) {
+    g_last_error = "reseal: sidecar record count != db image count";
+    return PW_SQLITE_DESCRIPTOR_TRANSFORM_MALFORMED;
+  }
+
+  // ── 原子重写(tmp → rename) ──
+  ArkposWriteU64(file.data() + 24,
+                 ArkposFnv1a(payload, static_cast<size_t>(payload_bytes)));
+  const std::string tmp = std::string(sidecar_path) + ".reseal.tmp";
+  std::FILE* out = std::fopen(tmp.c_str(), "wb");
+  if (out == nullptr) {
+    g_last_error = "reseal: tmp open failed";
+    return PW_SQLITE_DESCRIPTOR_TRANSFORM_OUTPUT_FAILED;
+  }
+  const bool wrote = std::fwrite(file.data(), 1, file.size(), out) == file.size();
+  const bool flushed = std::fflush(out) == 0;
+  const bool closed = std::fclose(out) == 0;
+  if (!wrote || !flushed || !closed) {
+    std::remove(tmp.c_str());
+    g_last_error = "reseal: tmp write failed";
+    return PW_SQLITE_DESCRIPTOR_TRANSFORM_OUTPUT_FAILED;
+  }
+  if (std::rename(tmp.c_str(), sidecar_path) != 0) {
+    std::remove(tmp.c_str());
+    g_last_error = "reseal: rename failed";
+    return PW_SQLITE_DESCRIPTOR_TRANSFORM_OUTPUT_FAILED;
+  }
+  return PW_SQLITE_DESCRIPTOR_TRANSFORM_OK;
+}

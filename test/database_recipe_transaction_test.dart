@@ -1,100 +1,69 @@
-// B1 配方化的机件测试(不含真再生——那属于设备门 pw_b1_gate)。
+// B1 无损形态(删描述子保匹配图)的机件测试。
+//
+// 裁剪/盖章本体依赖 iOS 静态链接的 native 符号,单测无法执行——那部分由
+// host 台架(b1-prune-form-host.json:五表逐字节相同、裁后重建指标逐位相同)
+// 与设备门(pw_b1_gate)把关。此处只钉住不依赖 native 的合同。
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pocketworld_flutter/official_capture/database_archive_codec.dart';
-import 'package:pocketworld_flutter/official_capture/database_archive_policy.dart';
-import 'package:pocketworld_flutter/official_capture/database_archive_resolver.dart';
-import 'package:pocketworld_flutter/official_capture/database_archive_transaction.dart';
 import 'package:pocketworld_flutter/official_capture/database_recipe_transaction.dart';
-
-class _NoopDbCodec implements DatabaseArchiveCodec {
-  @override
-  bool get isSupported => true;
-
-  @override
-  Future<void> compress(
-          {required File sourceDatabase, required File destinationArchive}) =>
-      throw UnsupportedError('must not run for recipe captures');
-
-  @override
-  Future<void> decompress(
-          {required File sourceArchive, required File destinationDatabase}) =>
-      throw UnsupportedError('not used');
-
-  @override
-  void requestCancellation() {}
-}
 
 void main() {
   late Directory captureDir;
 
   setUp(() async {
-    captureDir = await Directory.systemTemp.createTemp('pw_recipe_');
-    await DatabaseArchivePolicy.writeForNewCapture(captureDir);
+    captureDir = await Directory.systemTemp.createTemp('pw_prune_');
   });
 
   tearDown(() async {
     if (await captureDir.exists()) await captureDir.delete(recursive: true);
   });
 
-  Future<void> writeRecipe() async {
-    await File('${captureDir.path}/${DatabaseRecipeManifest.fileName}')
-        .writeAsString(jsonEncode({
-      'schema': DatabaseRecipeManifest.schema,
-      'grade': 'semantic',
-      'frame_count': 1,
-      'frames': [
-        {'name': 'a.jpg', 'sidecar_sha256': 'x'},
-      ],
-    }));
-  }
+  test('生产总闸已开(设备门 PASS 后用户签决 2026-08-11)', () {
+    expect(DatabaseRecipeTransaction.enabled, isTrue,
+        reason: '依据 b1-prune-device-gate-PASS.json;回退把它改回 false');
+  });
 
-  test('生产总闸关闭:recipeCapture 恒不适用,不删任何字节', () async {
-    final db = File(
-        '${captureDir.path}/${DatabaseArchivePolicy.sourceFileName}');
+  test('闸开着也不许在非 iOS 上动字节(native 符号只在 Runner)', () async {
+    final db = File('${captureDir.path}/official_sfm_live.db');
     await db.writeAsBytes(List.filled(4096, 1));
-    final r = await const DatabaseRecipeTransaction()
-        .recipeCapture(captureDir);
-    expect(DatabaseRecipeTransaction.enabled, isFalse,
-        reason: '设备 V4/V5 门未过前禁止翻闸');
-    expect(r.applicable, isFalse);
-    expect(r.reason, 'gate_closed');
+    final r = await const DatabaseRecipeTransaction().recipeCapture(captureDir);
+    expect(r.applicable, Platform.isIOS ? anything : isFalse);
+    if (!Platform.isIOS) expect(r.reason, 'platform');
     expect(await db.exists(), isTrue);
+    expect(await db.length(), 4096, reason: '未过验证链绝不动源字节');
   });
 
-  test('recipe manifest 读写与 schema 门', () async {
+  test('非 iOS 平台裁剪本体不适用(native 符号只在 Runner 里)', () async {
+    final r = await const DatabaseRecipeTransaction().pruneCapture(captureDir);
+    expect(r.applicable, isFalse);
+    expect(r.reason, Platform.isIOS ? isNot('platform') : 'platform');
+  });
+
+  test('保全表清单=匹配图三件套+相机+图像(变更须升 schema)', () {
+    expect(DatabaseRecipeManifest.preservedTables, <String>[
+      'cameras',
+      'images',
+      'keypoints',
+      'matches',
+      'two_view_geometries',
+    ]);
+    expect(DatabaseRecipeManifest.preservedTables, isNot(contains('descriptors')));
+  });
+
+  test('prune manifest 读写与 schema 门', () async {
     expect(await DatabaseRecipeManifest.exists(captureDir), isFalse);
-    await writeRecipe();
+    final f = File('${captureDir.path}/${DatabaseRecipeManifest.fileName}');
+    await f.writeAsString(jsonEncode({
+      'schema': DatabaseRecipeManifest.schema,
+      'pruned_db_bytes': 10932224,
+      'preserved_table_sha256': {'keypoints': 'abc'},
+    }));
     expect(await DatabaseRecipeManifest.exists(captureDir), isTrue);
-    final json = await DatabaseRecipeManifest.read(captureDir);
-    expect(json!['grade'], 'semantic');
-    // 错 schema 一律判 null。
-    await File('${captureDir.path}/${DatabaseRecipeManifest.fileName}')
-        .writeAsString(jsonEncode({'schema': 'wrong'}));
+    expect((await DatabaseRecipeManifest.read(captureDir))!['pruned_db_bytes'],
+        10932224);
+    await f.writeAsString(jsonEncode({'schema': 'wrong'}));
     expect(await DatabaseRecipeManifest.read(captureDir), isNull);
-  });
-
-  test('ZPAQ 事务对已配方化 capture 直接 skip(不触碰 codec)', () async {
-    await writeRecipe();
-    // durable artifacts 齐全也必须 skip 在 recipe 检查这一步。
-    for (final rel in [
-      'official_photo_bundle.json',
-      'official_sfm_sparse.ply',
-      'official_sfm_sparse_meta.json',
-    ]) {
-      await File('${captureDir.path}/$rel').writeAsBytes([1, 2, 3]);
-    }
-    final result = await DatabaseArchiveTransaction(codec: _NoopDbCodec())
-        .archiveCapture(captureDir);
-    expect(result.skipped, isTrue);
-    expect(result.failed, isFalse);
-  });
-
-  test('resolver 认得配方化 capture:isRecoverable=true', () async {
-    await writeRecipe();
-    final resolver = DatabaseArchiveResolver(codec: _NoopDbCodec());
-    expect(await resolver.isRecoverable(captureDir), isTrue);
   });
 }

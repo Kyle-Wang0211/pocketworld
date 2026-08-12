@@ -1,22 +1,19 @@
-/// DatabaseRecipeTransaction — B1 全配方化:DB 字节不存,存再生配方
+/// DatabaseRecipeTransaction — B1 无损形态(2026-08-11 用户签决):
+/// **删描述子、保匹配图**。
 ///
-/// 用户签决(2026-08-10,B1 签决文档四项全签):冷归档合同"不删可再生模块"
-/// 修订为"可证明再生 + 抽查校验";DB 从位级档降为语义档(P2 后位级已
-/// 结构性不可能)。
-///
-/// 语义:capture 的照片主本可完整物化(PWVA master 或 Lepton 全覆盖)且
-/// 逐帧 AR sidecar 完整时,写 official_database_recipe.json(再生所需的
-/// 全部指针与校验),然后删除 DB 字节(official_sfm_live.db 与/或
-/// .zpaq+manifest)。需要 DB 时 [DatabaseArchiveResolver] 走
-/// [SfmDbRegen.regenerate] 语义再生。
-///
-/// 删除纪律(与 Lepton/PWVA master 同款):
-/// - 只在冷归档协调器 durably-ready 闸后运行;
-/// - 全有或全无:任一帧无法物化/sidecar 不完整 → notApplicable,零删除,
-///   capture 照旧走 ZPAQ 线;
-/// - recipe 原子落盘在先,删除在后;
-/// - 🔴 gate: [enabled] 默认 false —— 设备侧 V4/V5 门(pw_b1_gate 钩子)
-///   过门前绝不在生产删除任何 DB 字节。
+/// 天花板实验(b1-regen-ceiling-PROVEN.json)证明:匹配图无法从 q65 压缩帧
+/// 再生(穷举匹配轨迹仍 −24%,信息物理损失),而 descriptors(DB 80.5% 字节)
+/// 是匹配期的中间物——匹配已完成,重建("重新重建点云"= mapper 回放
+/// keypoints+matches+TVG)不读它。删除纪律:
+/// - 删掉的东西要么可再生(descriptors 可从归档帧重提,语义档,SfmDbRegen
+///   留作深度兜底)要么不影响交付;匹配图不可再生 → 必须保留;
+/// - 裁剪到副本 → 逐表内容 SHA(cameras/images/keypoints/matches/TVG)
+///   与原版**逐字节等同**验证 + descriptors 空表 + integrity_check,
+///   任一不过 = 零改动(全有或全无);
+/// - prune manifest 原子落盘在先,原 DB 替换在后;
+/// - 裁后 DB 交给下游既有 ZPAQ 线做逐字节归档,resolver 物化照旧;
+/// - 🔴 [enabled] 默认 false:设备门(裁后重建 vs 库存点云,用户肉眼)
+///   过门前不动生产。
 library;
 
 import 'dart:async';
@@ -25,10 +22,8 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 
-import 'database_archive_manifest.dart';
 import 'database_archive_policy.dart';
-import 'photo_archive_manifest.dart';
-import 'pwva_master.dart';
+import 'database_prune_ffi.dart';
 
 typedef DatabaseRecipeContinueCheck = FutureOr<bool> Function();
 
@@ -43,26 +38,25 @@ class DatabaseRecipeResult {
 
   final bool applicable;
   final bool committed;
+
+  /// 裁掉的字节数(原 DB − 裁后 DB)。
   final int deletedBytes;
   final bool paused;
   final String? reason;
 }
 
 class DatabaseRecipeManifest {
-  static const schema = 'pw_database_recipe_v1';
-  static const fileName = 'official_database_recipe.json';
+  static const schema = 'pw_database_prune_v1';
+  static const fileName = 'official_database_prune.json';
 
-  /// 会话配置钉死(与拍摄期一致;变更须升 schema)。
-  static const sessionConfig = <String, Object?>{
-    'image_width': 4032,
-    'image_height': 3024,
-    'max_features': 8192,
-    'k_neighbors': 12,
-    'match_max_ratio': 0.8,
-    'use_gpu_match': 1,
-    'use_gpu_extract': 1,
-    'feed': 'pwofficial_add_jpeg_frame(sidecar t/extrinsic/intrinsics)',
-  };
+  /// 裁剪保全的表(与验证清单一致;变更须升 schema)。
+  static const preservedTables = <String>[
+    'cameras',
+    'images',
+    'keypoints',
+    'matches',
+    'two_view_geometries',
+  ];
 
   static Future<bool> exists(Directory captureDirectory) =>
       File('${captureDirectory.path}/$fileName').exists();
@@ -83,164 +77,240 @@ class DatabaseRecipeManifest {
 class DatabaseRecipeTransaction {
   const DatabaseRecipeTransaction({this.canContinue});
 
-  /// 🔴 生产删除总闸。设备 V4/V5 门 PASS 后才许翻 true(硬编码,
-  /// dart-define 在本工程不生效)。false 时本事务恒 notApplicable。
-  static const bool enabled = false;
+  /// 🔴 生产总闸。**已于 2026-08-11 经用户签决翻开**——依据:
+  /// - 设备门 PASS(b1-prune-device-gate-PASS.json,真机 100 帧作品:
+  ///   125.2MB→24.2MB;五张保全表逐字节相同;两臂配准/点数/误差/轨迹
+  ///   逐位相同,交付点数 −0.10%,重建反快 12%);
+  /// - host 台架同结论(b1-prune-form-host.json)+ 天花板证明匹配图不可
+  ///   从压缩帧再生(b1-regen-ceiling-PROVEN.json),故只删描述子。
+  /// 回退:改回 false 即刻停止任何新的裁剪(已裁 capture 不受影响)。
+  static const bool enabled = true;
 
   final DatabaseRecipeContinueCheck? canContinue;
 
   Future<DatabaseRecipeResult> recipeCapture(Directory captureDirectory) async {
     if (!enabled) return const DatabaseRecipeResult(reason: 'gate_closed');
-    if (!Platform.isIOS) return const DatabaseRecipeResult(reason: 'platform');
+    return pruneCapture(captureDirectory);
+  }
+
+  /// 裁剪本体(设备门经由 b1_gate 直接调用,绕过生产总闸但不落生产目录)。
+  Future<DatabaseRecipeResult> pruneCapture(
+    Directory captureDirectory, {
+    String? outputDbPath,
+  }) async {
+    if (!databasePruneSupported) {
+      return const DatabaseRecipeResult(reason: 'platform');
+    }
     try {
-      if (await DatabaseRecipeManifest.exists(captureDirectory)) {
-        // 已配方化:清理可能残留的 DB 字节(崩溃后收尾)。
-        return _reconcile(captureDirectory);
-      }
-      final candidates =
-          await PhotoArchiveManifest.loadCandidateNames(captureDirectory);
-      if (candidates.isEmpty) {
-        return const DatabaseRecipeResult(reason: 'no_candidates');
-      }
-
-      // 照片可物化性:每帧要么源 .jpg 在,要么 Lepton manifest 覆盖,
-      // 要么 PWVA master 覆盖。
-      final lepton = await PhotoArchiveManifest.read(captureDirectory);
-      final pwva = await PwvaMasterManifest.read(captureDirectory);
-      for (final name in candidates) {
-        final jpg =
-            File('${captureDirectory.path}/photos_highres/$name');
-        final covered = await jpg.exists() ||
-            (lepton?.entries.containsKey(name) ?? false) ||
-            (pwva?.entries.containsKey(name) ?? false);
-        if (!covered) {
-          return const DatabaseRecipeResult(reason: 'photo_not_materializable');
-        }
-        final sidecar = File(
-            '${captureDirectory.path}/photos_highres/${name.replaceAll(RegExp(r'\.jpe?g$'), '.json')}');
-        if (!await _sidecarComplete(sidecar)) {
-          return const DatabaseRecipeResult(reason: 'sidecar_incomplete');
-        }
-      }
-
-      // DB 字节现状(至少一种在,否则无从删起=已经没有字节负担)。
       final source = File(
           '${captureDirectory.path}/${DatabaseArchivePolicy.sourceFileName}');
-      final archive = File(
-          '${captureDirectory.path}/${DatabaseArchiveManifest.archiveFileName}');
-      final archiveManifest =
-          File('${captureDirectory.path}/official_database_archive.json');
-      final hasSource = await source.exists();
-      final hasArchive = await archive.exists();
-      if (!hasSource && !hasArchive) {
-        return const DatabaseRecipeResult(reason: 'no_db_bytes');
+      if (!await source.exists()) {
+        return const DatabaseRecipeResult(reason: 'no_source_db');
+      }
+      final manifestExists =
+          await DatabaseRecipeManifest.exists(captureDirectory);
+      if (manifestExists && outputDbPath == null) {
+        // 幂等收尾:manifest 已提交,若源 DB 的 descriptors 已空=完成;
+        // 否则(替换前崩了)继续走一遍裁剪+验证+替换。
+        final desc = await tableContentSha256(source.path, 'descriptors');
+        // 这次检查以读写方式打开了源库,会重建 -wal/-shm;不清掉的话下游
+        // ZPAQ 事务会一直判 db_not_cold 而永远跳过(真机 2026-08-11 实证)。
+        await _dropStaleSiblings(source);
+        if (desc == _sha256OfNothing) {
+          return const DatabaseRecipeResult(
+              applicable: true, committed: true, reason: 'already_pruned');
+        }
+      }
+      // 冷库判定。[2026-08-11 真机实证] 采集结束后 db 旁常年残留
+      // `-wal`(0 字节=已全部 checkpoint)与 `-shm`(共享内存索引)——既有
+      // ZPAQ 事务因此一直判 db_not_cold 永久跳过,数据库才会堆到 125-267MB。
+      // 真正危险的只有**非空 -wal**(有未落主文件的数据,字节拷贝会丢);
+      // 0 字节 -wal + -shm 是已 checkpoint 的安全态,按冷库处理,并在提交后
+      // 清掉这两个陈旧伴生(顺带解封 ZPAQ 线)。
+      if (await File('${source.path}-journal').exists()) {
+        return const DatabaseRecipeResult(reason: 'db_not_cold_journal');
+      }
+      final wal = File('${source.path}-wal');
+      if (await wal.exists() && await wal.length() != 0) {
+        return const DatabaseRecipeResult(reason: 'db_not_cold_wal');
       }
       if (!await _canContinueNow()) {
         return const DatabaseRecipeResult(paused: true);
       }
 
-      // 记录被删 DB 的账目(体积/SHA),供抽查校验对照。
-      final provenance = <String, Object?>{};
-      if (hasSource) {
-        provenance['source_bytes'] = await source.length();
-        provenance['source_sha256'] = await _sha256Of(source);
+      final sourceBytes = await source.length();
+      final sourceSha = await _sha256Of(source);
+
+      // 工作副本:SQLite 打开 WAL 模式的 db 需要可写连接(建 -shm),而残留的
+      // -wal/-shm 会让既有 ZPAQ 归档事务判 db_not_cold 而永远跳过。因此
+      // **源文件全程只做字节读取**,一切打开都发生在副本上。
+      final work = File('${source.path}.work.tmp');
+      await _deleteWithSiblings(work);
+      await source.copy(work.path);
+
+      // 裁剪前逐表摘要(在副本上,内容与源逐字节相同)。
+      final pre = <String, String>{};
+      for (final t in DatabaseRecipeManifest.preservedTables) {
+        final d = await tableContentSha256(work.path, t);
+        if (d == null) {
+          await _deleteWithSiblings(work);
+          return const DatabaseRecipeResult(reason: 'pre_digest_failed');
+        }
+        pre[t] = d;
       }
-      final dbManifest = await DatabaseArchiveManifest.read(captureDirectory);
-      if (dbManifest != null) {
-        provenance['archived_source_bytes'] = dbManifest.sourceBytes;
-        provenance['archived_source_sha256'] = dbManifest.sourceSha256;
+      if (!await _canContinueNow()) {
+        await _deleteWithSiblings(work);
+        return const DatabaseRecipeResult(paused: true);
       }
 
-      final sidecarShas = <String, String>{};
-      for (final name in candidates) {
-        final sidecar = File(
-            '${captureDirectory.path}/photos_highres/${name.replaceAll(RegExp(r'\.jpe?g$'), '.json')}');
-        sidecarShas[name] = await _sha256Of(sidecar);
+      final pruned = File(outputDbPath ?? '${source.path}.pruned.tmp');
+      await _deleteWithSiblings(pruned);
+      final rc = await pruneDescriptorsFile(work.path, pruned.path);
+      if (rc != 0 || !await pruned.exists()) {
+        await _deleteWithSiblings(work);
+        await _deleteWithSiblings(pruned);
+        return DatabaseRecipeResult(reason: 'prune_failed_rc$rc');
       }
 
-      final recipe = <String, Object?>{
+      // 裁剪后验证:保全表逐字节等同 + descriptors 空表。
+      for (final t in DatabaseRecipeManifest.preservedTables) {
+        final d = await tableContentSha256(pruned.path, t);
+        if (d == null || d != pre[t]) {
+          await _deleteWithSiblings(work);
+          await _deleteWithSiblings(pruned);
+          return DatabaseRecipeResult(reason: 'post_digest_mismatch_$t');
+        }
+      }
+      final emptyDescriptors =
+          await tableContentSha256(pruned.path, 'descriptors');
+      if (emptyDescriptors != _sha256OfNothing) {
+        await _deleteWithSiblings(work);
+        await _deleteWithSiblings(pruned);
+        return const DatabaseRecipeResult(reason: 'descriptors_not_empty');
+      }
+      final prunedBytes = await pruned.length();
+
+      // 身份链修复:核 resume 用 FrameIdentityDigestV1(含描述子)核对侧车,
+      // 不重新盖章则重建必然 ERR_NOT_REGISTERED(host 实测 rc=5)。
+      final sidecar = File('${source.path}$_poseSidecarSuffix');
+      if (!await sidecar.exists()) {
+        await _deleteWithSiblings(work);
+        await _deleteWithSiblings(pruned);
+        return const DatabaseRecipeResult(reason: 'pose_sidecar_missing');
+      }
+      final prunedSidecar = File('${pruned.path}$_poseSidecarSuffix');
+      await sidecar.copy(prunedSidecar.path);
+      final resealRc =
+          await resealArkitPoseDigests(pruned.path, prunedSidecar.path);
+      if (resealRc != 0) {
+        await _deleteWithSiblings(work);
+        await _deleteWithSiblings(pruned);
+        await _deleteIfPresent(prunedSidecar);
+        return DatabaseRecipeResult(reason: 'reseal_failed_rc$resealRc');
+      }
+
+      // 工作副本使命完成;裁后 db 的伴生文件也必须清掉(留着会让 ZPAQ
+      // 事务判 db_not_cold 而永远跳过这个 capture)。prune 内已
+      // checkpoint(TRUNCATE),主文件自洽。
+      await _deleteWithSiblings(work);
+      await _deleteSiblingsOnly(pruned);
+      if (outputDbPath != null) {
+        // 门模式:只产出裁后副本(含已盖章侧车),不动 capture。
+        return DatabaseRecipeResult(
+          applicable: true,
+          committed: false,
+          deletedBytes: sourceBytes - prunedBytes,
+        );
+      }
+
+      // 提交:manifest 原子落盘在先,替换原 DB 在后。
+      final manifest = <String, Object?>{
         'schema': DatabaseRecipeManifest.schema,
         'created_at': DateTime.now().toUtc().toIso8601String(),
-        'grade': 'semantic',
-        'session_config': DatabaseRecipeManifest.sessionConfig,
-        'frame_count': candidates.length,
-        'frames': [
-          for (final name in candidates)
-            {'name': name, 'sidecar_sha256': sidecarShas[name]},
-        ],
-        'photo_master': pwva != null
-            ? {'kind': 'pwva', 'stream_sha256': pwva.streamSha256}
-            : {'kind': 'lepton_or_source'},
-        'deleted_db_provenance': provenance,
+        'original_db_bytes': sourceBytes,
+        'original_db_sha256': sourceSha,
+        'pruned_db_bytes': prunedBytes,
+        'preserved_table_sha256': pre,
+        'deleted': 'descriptors(匹配中间物;可从归档帧重提,语义档)',
+        'rationale':
+            'b1-regen-ceiling-PROVEN: 匹配图不可从 q65 帧再生(轨迹-24%),必须保留',
       };
-      final recipeFile = File(
+      final manifestFile = File(
           '${captureDirectory.path}/${DatabaseRecipeManifest.fileName}');
-      final tmp = File('${recipeFile.path}.tmp');
-      await tmp.writeAsString(
-          const JsonEncoder.withIndent(' ').convert(recipe));
-      await tmp.rename(recipeFile.path);
-
-      var deleted = 0;
+      if (!manifestExists) {
+        final tmp = File('${manifestFile.path}.tmp');
+        await tmp.writeAsString(
+            const JsonEncoder.withIndent(' ').convert(manifest));
+        await tmp.rename(manifestFile.path);
+      }
       if (!await _canContinueNow()) {
-        return const DatabaseRecipeResult(
-            applicable: true, committed: true, paused: true);
+        // manifest 已提交但未替换:重跑时 already_pruned 不成立(源仍带
+        // descriptors)——重新验证再替换即可,幂等。这里直接完成替换,
+        // 替换是单个 rename,不可中断出坏态。
       }
-      if (hasSource) {
-        deleted += await source.length();
-        await source.delete();
-      }
-      if (hasArchive) {
-        deleted += await archive.length();
-        await archive.delete();
-      }
-      if (await archiveManifest.exists()) await archiveManifest.delete();
+      // 侧车先就位(盖章版覆盖原版),再换 DB —— 两者必须成对。
+      await File('${pruned.path}$_poseSidecarSuffix')
+          .rename('${source.path}$_poseSidecarSuffix');
+      await pruned.rename(source.path);
+      // 陈旧伴生清除:裁后 db 自洽(prune 内已 checkpoint TRUNCATE),留着只会
+      // 让下游 ZPAQ 事务继续判 db_not_cold。
+      await _dropStaleSiblings(source);
       return DatabaseRecipeResult(
-          applicable: true, committed: true, deletedBytes: deleted);
+        applicable: true,
+        committed: true,
+        deletedBytes: sourceBytes - prunedBytes,
+      );
     } catch (e) {
       return DatabaseRecipeResult(reason: 'exception:$e');
     }
-  }
-
-  Future<DatabaseRecipeResult> _reconcile(Directory captureDirectory) async {
-    var deleted = 0;
-    for (final rel in [
-      DatabaseArchivePolicy.sourceFileName,
-      DatabaseArchiveManifest.archiveFileName,
-      'official_database_archive.json',
-    ]) {
-      final f = File('${captureDirectory.path}/$rel');
-      if (await f.exists()) {
-        deleted += await f.length();
-        await f.delete();
-      }
-    }
-    return DatabaseRecipeResult(
-        applicable: true, committed: true, deletedBytes: deleted);
   }
 
   Future<bool> _canContinueNow() async =>
       canContinue == null || await canContinue!();
 }
 
-Future<bool> _sidecarComplete(File sidecar) async {
-  try {
-    if (!await sidecar.exists()) return false;
-    final j = jsonDecode(await sidecar.readAsString()) as Map<String, dynamic>;
-    final ex = j['extrinsic'];
-    final intr = j['intrinsics_fxfycxcy'];
-    return (j['t'] as num?)?.isFinite == true &&
-        (j['image_w'] as num?)?.toInt() == 4032 &&
-        (j['image_h'] as num?)?.toInt() == 3024 &&
-        ex is List &&
-        ex.length == 16 &&
-        intr is List &&
-        intr.length >= 4;
-  } catch (_) {
-    return false;
-  }
-}
+/// 核的 ARKit 位姿侧车后缀(ArkitPoseStorePath: `<db>`.arkit_pose_v1)。
+const _poseSidecarSuffix = '.arkit_pose_v1';
+
+/// 空表的内容摘要=空输入 SHA-256(e3b0c442…)。
+const _sha256OfNothing =
+    'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
 
 Future<String> _sha256Of(File file) async {
   final digest = await sha256.bind(file.openRead()).first;
   return digest.toString();
+}
+
+/// 只在安全时(无 -journal 且 -wal 为空)清除陈旧伴生:它们是刚才只读式
+/// 访问留下的空壳,留着会让既有 ZPAQ 事务永久判 db_not_cold。
+Future<void> _dropStaleSiblings(File db) async {
+  try {
+    if (await File('${db.path}-journal').exists()) return;
+    final wal = File('${db.path}-wal');
+    if (await wal.exists() && await wal.length() != 0) return;
+    await _deleteIfPresent(wal);
+    await _deleteIfPresent(File('${db.path}-shm'));
+  } on FileSystemException {
+    // 清不掉只是错过一次 ZPAQ,不影响正确性。
+  }
+}
+
+/// 删除 db 与其 -wal/-shm/-journal 伴生文件。
+Future<void> _deleteWithSiblings(File db) async {
+  await _deleteIfPresent(db);
+  await _deleteSiblingsOnly(db);
+}
+
+Future<void> _deleteSiblingsOnly(File db) async {
+  for (final suffix in const <String>['-wal', '-shm', '-journal']) {
+    await _deleteIfPresent(File('${db.path}$suffix'));
+  }
+}
+
+Future<void> _deleteIfPresent(File file) async {
+  try {
+    if (await file.exists()) await file.delete();
+  } on FileSystemException {
+    // 失败时上层已 fail closed。
+  }
 }

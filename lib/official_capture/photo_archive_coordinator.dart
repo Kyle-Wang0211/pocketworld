@@ -343,6 +343,9 @@ class PhotoArchiveCoordinator {
           if (recipe.applicable) 'database_recipe_committed': recipe.committed,
           if (recipe.applicable)
             'database_recipe_deleted_bytes': recipe.deletedBytes,
+          // 不适用时也记原因:今晚就因为没记而查了半天(诊断盲区)。
+          if (!recipe.applicable && recipe.reason != null)
+            'database_recipe_skip_reason': recipe.reason,
           if (databaseResult != null)
             'database_archived': databaseResult.archived,
           if (databaseResult != null)

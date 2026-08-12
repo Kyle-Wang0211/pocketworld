@@ -76,6 +76,35 @@ pw_sqlite_descriptor_transform_file_cancellable(
     uint64_t cancellation_generation,
     PWSQLiteDescriptorTransformStats* stats);
 
+// ── B1 无损形态(2026-08-11 用户签决):删描述子保匹配图 ──────────────
+// 把 source 复制到 output,在副本上 DELETE FROM descriptors + VACUUM。
+// source 只读不动;output 已存在则先删。返回 transform 状态码。
+PW_SQLITE_DESCRIPTOR_API int32_t pw_sqlite_prune_descriptors_file(
+    const char* source_path,
+    const char* output_path);
+
+// 单表内容摘要:按 rowid 序对所有列(带类型标记)做 SHA-256,写 65 字节
+// hex 到 out_hex(含结尾 NUL)。用于裁剪前后逐表等同验证(全有或全无)。
+PW_SQLITE_DESCRIPTOR_API int32_t pw_sqlite_table_content_sha256(
+    const char* database_path,
+    const char* table_name,
+    char* out_hex,
+    int32_t out_capacity);
+
+// 裁剪后重新盖章 ARKPOS1 侧车的 frame_identity_digest。
+//
+// 核在 resume 时用 FrameIdentityDigestV1(name,camera,keypoints,descriptors)
+// 重算指纹与侧车比对(official_aether_sfm_c.cc:5383)。描述子被合法裁掉后
+// 指纹必然不符 → resume 拒绝重建。本函数按**裁后 DB 的真实内容**重算并
+// 重写侧车(FNV-1a 载荷校验一并更新):校验面仍覆盖 帧名/相机内参/关键点/
+// 记录顺序与 image_id 对应,只是不再覆盖已被合法删除的描述子字节。
+//
+// 只允许在 descriptors 表为空(即已裁剪)的 DB 上运行,防止被误用来给
+// 任意改动过的 DB 洗白身份。
+PW_SQLITE_DESCRIPTOR_API int32_t pw_sqlite_reseal_arkit_pose_digests(
+    const char* database_path,
+    const char* sidecar_path);
+
 #if defined(__cplusplus)
 }  // extern "C"
 #endif

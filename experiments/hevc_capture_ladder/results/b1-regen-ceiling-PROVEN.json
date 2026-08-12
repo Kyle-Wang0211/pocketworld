@@ -1,0 +1,16 @@
+{
+ "schema": "pw_b1_regen_ceiling_v1",
+ "date": "2026-08-11",
+ "question": "压缩帧再生的匹配图质量差距(轨迹-31%)能否用离线匹配预算补回",
+ "grid": {
+  "orig_k12": 3.557,
+  "orig_k96_exhaustive": 3.601,
+  "hevc_k12": 2.464,
+  "hevc_k24": 2.725,
+  "hevc_k96_exhaustive": 2.743,
+  "ratio_control": "ratio=0.8与默认逐位相同(默认即0.8),排除台架不公"
+ },
+ "verdict": "CEILING_PROVEN: K=24后完全平台,穷举(4560对)仍-24%;差距=q65量化的信息物理损失,任何匹配预算不可恢复;纯B1(匹配图靠再生)质量上限低于用户肉眼门(用户已否决K=12版)",
+ "implication": "质量无损的DB缩减路径=保留原版匹配图(keypoints+matches+TVG,19%字节),只删descriptors(80.5%);再生机器降级为深度兜底(需重新匹配时,语义档,轨迹-24%入档)",
+ "context": "V5改判FAIL记录见 b1-v5-host-quality.json;用户签决方向待定"
+}

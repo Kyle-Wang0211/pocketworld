@@ -1,0 +1,37 @@
+{
+ "schema": "pw_b1_prune_form_v1",
+ "date": "2026-08-11",
+ "form": "B1 无损形态(用户签决 2026-08-11):删 descriptors 保匹配图(keypoints+matches+two_view_geometries)",
+ "blocker_found_and_solved": {
+  "blocker": "核 resume 路径 RebuildFrameRecordsForResume(official_aether_sfm_c.cc:5383) 用 FrameIdentityDigestV1(name,camera,points,descriptors) 与 .arkit_pose_v1 侧车比对,描述子删掉后指纹不符 → finalize_async 返回 ERR_NOT_REGISTERED(实测 rc=5)",
+  "solution": "裁剪后按裁后 DB 真实内容重新盖章侧车指纹(pw_sqlite_reseal_arkit_pose_digests,纯 C 在既有 Runner 文件内);零核改动、零 xcframework 重编",
+  "why_safe": "核对空描述子已全面设防(matchable=!descriptors.empty();enrichment 配对 a/b.descriptors.empty() 即跳过);撤回帧本来就走清空描述子路径"
+ },
+ "host_evidence": {
+  "prune": "36,237,312 → 10,932,224 B (30.2%);保全五表内容 SHA 逐字节相同;descriptors 空表;integrity_check ok",
+  "rebuild_full_run1": {
+   "registered": 96,
+   "n_points3d": 20482,
+   "reproj_px": 5.2257,
+   "track_len": 4.633,
+   "delivered": 13090,
+   "finalize_ms": 31599
+  },
+  "rebuild_full_run2_control": {
+   "delivered": 13090,
+   "finalize_ms": 31707,
+   "note": "确定性对照:逐点复现"
+  },
+  "rebuild_pruned": {
+   "registered": 96,
+   "n_points3d": 20482,
+   "reproj_px": 5.2257,
+   "track_len": 4.633,
+   "delivered": 13128,
+   "finalize_ms": 2782
+  },
+  "reading": "phase-1 指标逐位相同;交付点数 +0.29%(13128 vs 13090);finalize 快 11.4×(裁后无描述子→finish-time enrichment 跳过,匹配图已含首轮 enrichment 结果)"
+ },
+ "verdict": "数字初筛通过;质量判决待用户并排肉眼(b1-prune-form-compare.html)",
+ "pending": "用户肉眼 → 设备门(真机裁剪+重建) → 翻 DatabaseRecipeTransaction.enabled"
+}

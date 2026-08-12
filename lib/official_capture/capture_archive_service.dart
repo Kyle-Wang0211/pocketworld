@@ -36,9 +36,6 @@ class CaptureArchiveService {
   static const int _gop = 8;
   static const double _quality = 0.65;
 
-  /// 首帧锐度自检阈值:真实照片 ~2 万,模糊占位 ~20。
-  static const double _minLaplacianVariance = 500;
-
   /// P1.1 起帧落地不再触发编码(竞态根治);保留为无操作挂点,
   /// P2(相机像素直编)将重新启用。
   void enqueueHighresStill(String jpegPath, {double? triggerTimestamp}) {}
@@ -123,10 +120,12 @@ Future<Map<String, Object?>> _archive(String root, Directory outDir) async {
   final writer = PwvaWriter(encoder, outDir,
       width: size.width, height: size.height, gop: CaptureArchiveService._gop);
   var done = 0;
+  final recordedSha = <String, String>{};
   for (final f in frames) {
     final name = f['highresFilename'] as String;
     final path = '$root/photos_highres/$name';
     final sha = sha256.convert(await File(path).readAsBytes()).toString();
+    recordedSha[name] = sha;
     final encoded =
         encoder.encodeJpegFile(path, ptsMs: done * 300, durationMs: 300);
     writer.addEncodedFrame(encoded,
@@ -138,29 +137,45 @@ Future<Map<String, Object?>> _archive(String root, Directory outDir) async {
   await writer.finalize(
       captureId: root.split('/').last, extra: 'p1_1_finalize_batch_curated');
 
-  // 锐度自检(fail closed):抽首/中/末三帧,全部低于阈值才判失败。
-  // [2026-08-10 误杀修正] 单帧阈值把"用户第一张恰好糊"(cap_1786369569928171
-  // 首帧方差 46,但 85/85 帧 SHA 与最终版 JPEG 逐帧相等)误杀;要防的是
-  // P1.0 那种**全体**占位帧的系统性竞态,不是个别真实糊帧——改多数帧投票。
-  final probes = <int>{0, done ~/ 2, done - 1}.toList()..sort();
-  final sharpnessByFrame = <String, double>{};
-  var maxSharpness = 0.0;
-  for (final frame in probes) {
-    final v = _frameLaplacian(outDir, size.width, size.height, frame);
-    sharpnessByFrame['$frame'] = v;
-    if (v > maxSharpness) maxSharpness = v;
+  // ── 自检(fail closed)──
+  // [2026-08-11 阈值判死] 原先的拉普拉斯锐度阈值(500)与代码里真正使用的
+  // ±1 像素核不同源:真机真实清晰帧只有 8~88 分,于是**每一个作品都被误判
+  // 失败**,照片主本接管从未发生(cap_1786369569928171/1786414194441541/
+  // 1786454344261285 全中)。锐度本来就不是要防的东西——P1.0 的病是
+  // **源文件在编码后又被改写**(占位先写、终版后写)。故改为直接验它:
+  //   1) 逐帧重读源 JPEG 再算一次 SHA-256,与编码时记录的比对——任何一帧
+  //      在编码期间/之后被改写都会当场暴露,零魔法阈值;
+  //   2) 解一帧做码流可解性冒烟(不设阈值,只要求解得开)。
+  final changed = <String>[];
+  for (final entry in recordedSha.entries) {
+    final file = File('$root/photos_highres/${entry.key}');
+    if (!file.existsSync()) {
+      changed.add('${entry.key}:missing');
+      continue;
+    }
+    final now = sha256.convert(await file.readAsBytes()).toString();
+    if (now != entry.value) changed.add(entry.key);
   }
-  if (maxSharpness < CaptureArchiveService._minLaplacianVariance) {
+  var decodeOk = true;
+  Object? decodeError;
+  try {
+    _decodeSmokeTest(outDir, size.width, size.height);
+  } catch (e) {
+    decodeOk = false;
+    decodeError = e;
+  }
+  if (changed.isNotEmpty || !decodeOk) {
     File('${outDir.path}/archive-error.json').writeAsStringSync(jsonEncode({
       'schema': 'pw_capture_archive_error_v1',
-      'error': 'sharpness_self_check_failed',
-      'laplacian_by_frame': sharpnessByFrame,
-      'threshold': CaptureArchiveService._minLaplacianVariance,
+      'error': changed.isNotEmpty ? 'source_changed_during_encode' : 'undecodable',
+      'changed_frames': changed.take(10).toList(),
+      'changed_count': changed.length,
+      if (decodeError != null) 'decode_error': '$decodeError',
     }));
     return {
-      'status': 'failed_sharpness_check',
+      'status': changed.isNotEmpty ? 'failed_source_changed' : 'failed_undecodable',
       'frames': done,
-      'laplacian_by_frame': sharpnessByFrame,
+      'changed_count': changed.length,
     };
   }
   final manifest =
@@ -171,27 +186,16 @@ Future<Map<String, Object?>> _archive(String root, Directory outDir) async {
     'frames': done,
     'stream_bytes': manifest['stream_bytes'],
     'stream_sha256': manifest['stream_sha256'],
-    'laplacian_by_frame': sharpnessByFrame,
+    'verified_frames': done,
   };
 }
 
-double _frameLaplacian(Directory outDir, int w, int h, int frameIndex) {
+/// 码流可解性冒烟:解首帧(必要时含其 GOP 前缀),解不开即抛。
+void _decodeSmokeTest(Directory outDir, int w, int h) {
   final reader = PwvaReader(
       outDir, (au) => AppleHevcDecoder(width: w, height: h, keyframeAu: au));
-  final frame = reader.readFrameNv12(frameIndex);
-  final y = frame.y;
-  // 4 倍下采样网格,4032x3024 只需 ~76 万点。
-  var sum = 0.0, sumSq = 0.0;
-  var n = 0;
-  for (var r = 4; r < h - 4; r += 4) {
-    for (var c = 4; c < w - 4; c += 4) {
-      final i = r * w + c;
-      final lap = 4 * y[i] - y[i - w] - y[i + w] - y[i - 1] - y[i + 1];
-      sum += lap;
-      sumSq += lap * lap;
-      n++;
-    }
+  final frame = reader.readFrameNv12(0);
+  if (frame.y.length != w * h) {
+    throw StateError('decoded plane size mismatch');
   }
-  final mean = sum / n;
-  return sumSq / n - mean * mean;
 }

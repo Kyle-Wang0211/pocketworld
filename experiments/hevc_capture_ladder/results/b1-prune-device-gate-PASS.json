@@ -1,0 +1,37 @@
+{
+ "schema": "pw_b1_prune_device_gate_v1",
+ "date": "2026-08-11",
+ "device": "iPhone 14 Pro (A16)",
+ "capture": "cap_1786414194441541(未命名(3),100帧,今晨真机采集)",
+ "verdict": "PASS",
+ "prune": {
+  "source_db_bytes": 125227008,
+  "pruned_db_bytes": 24190976,
+  "deleted_bytes": 101036032,
+  "ratio": "19.3%(5.18× 缩减)",
+  "preserved_tables": "cameras/images/keypoints/matches/two_view_geometries 全部 identical"
+ },
+ "rebuild_full": {
+  "registered": 98,
+  "n_points3d": 64342,
+  "reproj_px": 7.5407,
+  "track_len": 2.919,
+  "delivered": 50290,
+  "elapsed_ms": 8769
+ },
+ "rebuild_pruned": {
+  "registered": 98,
+  "n_points3d": 64342,
+  "reproj_px": 7.5407,
+  "track_len": 2.919,
+  "delivered": 50241,
+  "elapsed_ms": 7719
+ },
+ "reading": "配准逐帧相同;n_points3d/reproj/track 逐位相同;交付点数 −49(−0.10%);重建更快 12%",
+ "bugs_found_and_fixed_by_this_gate": [
+  "只读打开 WAL 冷库失败(缺 -shm,只读连接无权创建)→ 改可写打开+只读回退;host 因先前手动 checkpoint 而看不见",
+  "⚠️可写打开残留 -wal/-shm 会让既有 ZPAQ 事务永久判 db_not_cold 跳过该 capture → 改全程工作副本(源只做字节读)+裁剪内 checkpoint(TRUNCATE)+收尾清伴生"
+ ],
+ "host_counterpart": "b1-prune-form-host.json(同结论:五表逐字节相同,phase-1 指标逐位相同,交付 +0.29%)",
+ "pending": "用户签决翻 DatabaseRecipeTransaction.enabled=true"
+}
