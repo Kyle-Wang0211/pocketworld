@@ -7,6 +7,7 @@ import 'database_archive_codec.dart';
 import 'database_archive_manifest.dart';
 import 'database_archive_policy.dart';
 import 'database_archive_preprocessor.dart';
+import 'database_recipe_transaction.dart';
 
 typedef DatabaseArchiveCommitHook = Future<void> Function(File sourceDatabase);
 typedef DatabaseArchiveContinueCheck = FutureOr<bool> Function();
@@ -135,15 +136,28 @@ class DatabaseArchiveTransaction {
         sourceBytes: sourceBytes,
         sourceSha256: sourceSha256,
       );
-      final trackCandidate = await _tryBuildTrackCandidate(
-        source: source,
-        transformedTemporary: trackDatabaseTemporary,
-        archiveTemporary: trackArchiveTemporary,
-        decodedTemporary: decodedTemporary,
-        verificationTemporary: verificationTemporary,
-        sourceBytes: sourceBytes,
-        sourceSha256: sourceSha256,
+      // [2026-08-12] 裁剪过的 capture 跳过 track_delta 候选。
+      // track_delta 的机制是"沿 two_view_geometries 的已验证匹配边建生成
+      // 森林,把子描述子写成对父的残差"——**它压的就是描述子**。B1 裁剪把
+      // descriptors 整表删空后,这个候选注定跑不出优势,却要付出
+      // 预处理+压缩+解压+还原+逐字节比对的全额代价(实测占本事务约一半
+      // 时间,是冷归档队列积压的主因)。
+      // 判据用裁剪清单的存在性:零成本,且不打开源库(打开会重建 -wal/-shm,
+      // 那正是把这条线卡死过的雷)。
+      final prunedNoDescriptors = await DatabaseRecipeManifest.exists(
+        captureDirectory,
       );
+      final trackCandidate = prunedNoDescriptors
+          ? null
+          : await _tryBuildTrackCandidate(
+              source: source,
+              transformedTemporary: trackDatabaseTemporary,
+              archiveTemporary: trackArchiveTemporary,
+              decodedTemporary: decodedTemporary,
+              verificationTemporary: verificationTemporary,
+              sourceBytes: sourceBytes,
+              sourceSha256: sourceSha256,
+            );
       if (!await databaseArchiveFileMatches(
         source,
         length: sourceBytes,

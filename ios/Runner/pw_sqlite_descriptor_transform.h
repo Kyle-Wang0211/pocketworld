@@ -81,7 +81,20 @@ pw_sqlite_descriptor_transform_file_cancellable(
 // source 只读不动;output 已存在则先删。返回 transform 状态码。
 PW_SQLITE_DESCRIPTOR_API int32_t pw_sqlite_prune_descriptors_file(
     const char* source_path,
-    const char* output_path);
+    const char* output_path,
+    // 1 = 同时把 keypoints 的仿射形状列(a11,a12,a21,a22)裁掉,只留 x,y
+    //     (cols 6/4 → 2)。仿射是匹配期的形状信息,重建只读 x,y
+    //     (核 FeatureKeypointsToPointsVector);COLMAP 原生支持 cols=2。
+    //     身份指纹只混 x,y,故此裁剪**不改变指纹**。
+    int32_t strip_keypoint_affine);
+
+// keypoints 的 x,y 等价摘要:按 image_id 序混入 (image_id, rows, 每点 x,y),
+// **忽略 cols 与仿射列**。裁仿射前后用它证明"几何输入逐点相同"——裁后
+// keypoints 表的字节必然变化,不能再用整表字节摘要做判据。
+PW_SQLITE_DESCRIPTOR_API int32_t pw_sqlite_keypoints_xy_sha256(
+    const char* database_path,
+    char* out_hex,
+    int32_t out_capacity);
 
 // 单表内容摘要:按 rowid 序对所有列(带类型标记)做 SHA-256,写 65 字节
 // hex 到 out_hex(含结尾 NUL)。用于裁剪前后逐表等同验证(全有或全无)。

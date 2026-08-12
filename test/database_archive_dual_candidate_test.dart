@@ -88,6 +88,26 @@ void main() {
     },
   );
 
+  test('裁剪过的 capture 跳过 track_delta 候选(不再为空描述子白烧)', () async {
+    final original = List<int>.filled(8192, 0x11);
+    await writeReadyDatabase(original);
+    // B1 裁剪清单存在 = descriptors 已空 ⇒ track_delta 无标的。
+    await File('${captureDirectory.path}/official_database_prune.json')
+        .writeAsString('{"schema":"pw_database_prune_v2"}');
+    final preprocessor = _CountingPreprocessor();
+
+    final result = await DatabaseArchiveTransaction(
+      codec: _SizedExactCodec(rawPadding: 40, trackPadding: 10),
+      preprocessor: preprocessor,
+    ).archiveCapture(captureDirectory);
+
+    expect(result.archived, isTrue);
+    expect(preprocessor.transformCalls, 0, reason: 'track 候选必须完全没跑');
+    final manifest = await DatabaseArchiveManifest.read(captureDirectory);
+    expect(manifest?.preprocess, DatabaseArchivePreprocess.rawV1);
+    expect(manifest?.trackArchiveBytes, isNull);
+  });
+
   test('track failure falls back to verified raw candidate', () async {
     final original = List<int>.filled(8192, 0x11);
     await writeReadyDatabase(original);
@@ -274,6 +294,38 @@ class _SizedExactCodec implements DatabaseArchiveCodec {
     await destinationDatabase.writeAsBytes(
       ZLibCodec().decode(archive.sublist(4, 4 + compressedLength)),
       flush: true,
+    );
+  }
+
+  @override
+  void requestCancellation() {}
+}
+
+/// 只为断言"没被调用"而存在:任何一次 transform 都会被计数。
+class _CountingPreprocessor implements DatabaseArchivePreprocessor {
+  int transformCalls = 0;
+
+  @override
+  bool get isSupported => true;
+
+  @override
+  Future<void> transformTrackDelta({
+    required File sourceDatabase,
+    required File destinationDatabase,
+  }) async {
+    transformCalls++;
+    await destinationDatabase.writeAsBytes(
+      await sourceDatabase.readAsBytes(),
+    );
+  }
+
+  @override
+  Future<void> restoreTrackDelta({
+    required File sourceDatabase,
+    required File destinationDatabase,
+  }) async {
+    await destinationDatabase.writeAsBytes(
+      await sourceDatabase.readAsBytes(),
     );
   }
 

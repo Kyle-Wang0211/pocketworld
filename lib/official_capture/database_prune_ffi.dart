@@ -9,8 +9,12 @@ import 'dart:isolate';
 
 import 'package:ffi/ffi.dart';
 
-typedef _PruneC = Int32 Function(Pointer<Utf8>, Pointer<Utf8>);
-typedef _PruneD = int Function(Pointer<Utf8>, Pointer<Utf8>);
+typedef _PruneC = Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Int32);
+typedef _PruneD = int Function(Pointer<Utf8>, Pointer<Utf8>, int);
+typedef _ResealC = Int32 Function(Pointer<Utf8>, Pointer<Utf8>);
+typedef _ResealD = int Function(Pointer<Utf8>, Pointer<Utf8>);
+typedef _XyC = Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Int32);
+typedef _XyD = int Function(Pointer<Utf8>, Pointer<Utf8>, int);
 typedef _DigestC = Int32 Function(
     Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>, Int32);
 typedef _DigestD = int Function(
@@ -18,8 +22,10 @@ typedef _DigestD = int Function(
 
 bool get databasePruneSupported => Platform.isIOS;
 
-/// 复制+删 descriptors+VACUUM+integrity_check;src 只读。0=成功。
-Future<int> pruneDescriptorsFile(String source, String output) =>
+/// 复制 + 删 descriptors + (默认)裁 keypoints 仿射列 + VACUUM +
+/// checkpoint + integrity_check;src 只读。0=成功。
+Future<int> pruneDescriptorsFile(String source, String output,
+        {bool stripKeypointAffine = true}) =>
     Isolate.run(() {
       final lib = DynamicLibrary.process();
       final fn = lib.lookupFunction<_PruneC, _PruneD>(
@@ -27,10 +33,26 @@ Future<int> pruneDescriptorsFile(String source, String output) =>
       final s = source.toNativeUtf8();
       final o = output.toNativeUtf8();
       try {
-        return fn(s, o);
+        return fn(s, o, stripKeypointAffine ? 1 : 0);
       } finally {
         calloc.free(s);
         calloc.free(o);
+      }
+    });
+
+/// keypoints 的 x,y 等价摘要(忽略 cols 与仿射列)。裁仿射前后必须相同——
+/// 这是"几何输入逐点未变"的判据。失败返回 null。
+Future<String?> keypointsXySha256(String databasePath) => Isolate.run(() {
+      final lib = DynamicLibrary.process();
+      final fn = lib.lookupFunction<_XyC, _XyD>('pw_sqlite_keypoints_xy_sha256');
+      final p = databasePath.toNativeUtf8();
+      final out = calloc<Uint8>(65);
+      try {
+        if (fn(p, out.cast<Utf8>(), 65) != 0) return null;
+        return out.cast<Utf8>().toDartString();
+      } finally {
+        calloc.free(p);
+        calloc.free(out);
       }
     });
 
@@ -39,7 +61,7 @@ Future<int> pruneDescriptorsFile(String source, String output) =>
 Future<int> resealArkitPoseDigests(String databasePath, String sidecarPath) =>
     Isolate.run(() {
       final lib = DynamicLibrary.process();
-      final fn = lib.lookupFunction<_PruneC, _PruneD>(
+      final fn = lib.lookupFunction<_ResealC, _ResealD>(
           'pw_sqlite_reseal_arkit_pose_digests');
       final d = databasePath.toNativeUtf8();
       final s = sidecarPath.toNativeUtf8();

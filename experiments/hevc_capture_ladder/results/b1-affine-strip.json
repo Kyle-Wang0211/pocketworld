@@ -1,0 +1,40 @@
+{
+ "schema": "pw_b1_affine_strip_v1",
+ "date": "2026-08-12",
+ "step": "B1 第二级:裁 keypoints 仿射形状列(a11,a12,a21,a22),cols 6→2",
+ "rationale": "仿射形状是 DSP-SIFT 供匹配器用的形状信息;重建只读 x,y(核 RebuildFrameRecordsForResume → FeatureKeypointsToPointsVector)。COLMAP 原生支持 cols=2/4/6。与删描述子同一论证:匹配已完成,脚手架可弃。",
+ "key_property": "核的身份指纹 FrameIdentityDigestV1 只混 name/camera/x,y/descriptors.size —— **不含仿射**,故此裁剪不改变指纹",
+ "landmine_defused": "pw_sqlite_reseal_arkit_pose_digests 早先把 keypoints 列数硬编码为 6;不改则 cols=2 后指纹算错 → resume 拒绝重建。已改为读每行真实 cols。",
+ "host_validation": {
+  "fixture": "合成 COLMAP 库 4帧×500点(6列)+描述子+matches+TVG",
+  "four_tables_byte_identical": true,
+  "keypoints_xy_digest_identical": true,
+  "cols_after": 2,
+  "descriptors_rows_after": 0,
+  "bytes": "348,160 → 53,248",
+  "digest_cross_check": "用独立 Python 实现重写核的 FNV-1a FrameIdentityDigestV1,与 C 盖章结果逐位一致(cols=2 情形),侧车 FNV 载荷校验和已重算"
+ },
+ "new_verification_contract": {
+  "byte_identical_tables": [
+   "cameras",
+   "images",
+   "matches",
+   "two_view_geometries"
+  ],
+  "keypoints": "改用 pw_sqlite_keypoints_xy_sha256(忽略 cols/仿射,只混 image_id/rows/每点 x,y)证明几何输入逐点未变——整表字节必然变化,不能再用整表摘要",
+  "manifest_schema": "pw_database_prune_v2(v1→v2 自动升级路径)"
+ },
+ "device_first_landing": {
+  "capture": "cap_1786369569928171(未命名(1),85帧)",
+  "original": 115000000,
+  "after_v1_descriptors": 25788416,
+  "after_v2_affine": 14700000,
+  "note": "累计 ~7.8×;仿射列单独砍掉 11.1MB(43%)"
+ },
+ "own_bug_found_and_fixed": "升级路径的溯源沿用读旧清单时带了 schema 闸(旧版恒判 null),导致 original_db_bytes 退化成\"上一轮裁后大小\";已加 readAnyVersion 专供沿用。⚠️cap_1786369569928171 的清单因此丢了 115.0MB 那一段,真实原始值记录在此。",
+ "true_originals": {
+  "cap_1786369569928171": 115000000,
+  "cap_1786414194441541": 125227008
+ },
+ "pending": "其余作品升级/裁剪落地;下一级候选=删未被任何匹配引用的关键点(需重映射索引,会改指纹,靠已有盖章工具)"
+}

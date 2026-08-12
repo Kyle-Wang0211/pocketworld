@@ -244,6 +244,26 @@ class PhotoArchiveCoordinator {
         captureId: _captureId(item.value),
         details: const <String, Object?>{'work_remaining': true},
       );
+      // [2026-08-12] PWVA 转码在飞:让主本接管拿到第一手机会。
+      // 采集结束→稀疏 PLY 落盘→本队列被触发,而收尾转码要几十秒。若此刻
+      // 放行,PwvaMasterTransaction 会因"归档还没写完"放弃,紧接着 Lepton
+      // 就把 JPEG 归档成 .lep —— 接管机会**永久**丢失(照片于是两份都存)。
+      // 有界:归档收尾会写 archive-report(成功/失败都写),报告一出即放行;
+      // 码流 10 分钟没动静(isolate 被杀)也放行,绝不把 capture 永久卡住。
+      if (await _pwvaTranscodeInFlight(item.value)) {
+        _pending[item.key] = item.value;
+        _triggerByPath[item.key] = trigger;
+        await _recordAudit(
+          event: 'capture_not_ready',
+          trigger: trigger,
+          captureId: _captureId(item.value),
+          details: const <String, Object?>{
+            'reason': 'pwva_transcode_in_flight',
+            'work_remaining': true,
+          },
+        );
+        continue;
+      }
       await removeTransientCapturePreviews(item.value);
       // PWVA 主本接管(P2 去 JPEG 化)先行:验证通过则删策展 JPEG 原件,
       // 后续 Lepton 事务对已接管帧按 skipped 处理;任何验证不过 = 不适用,
@@ -362,6 +382,22 @@ class PhotoArchiveCoordinator {
       ..addAll(codecsByName.values);
     for (final photoCodec in codecs) {
       photoCodec.requestCancellation();
+    }
+  }
+
+  /// 归档转码是否仍在进行(码流已开写、收尾报告未落、且近期仍有写入)。
+  Future<bool> _pwvaTranscodeInFlight(Directory captureDirectory) async {
+    try {
+      final stream =
+          File('${captureDirectory.path}/photos_hevc/photos.hevc');
+      if (!await stream.exists()) return false;
+      final report =
+          File('${captureDirectory.path}/photos_hevc/archive-report.json');
+      if (await report.exists()) return false;
+      final age = DateTime.now().difference(await stream.lastModified());
+      return age < const Duration(minutes: 10);
+    } on FileSystemException {
+      return false;
     }
   }
 

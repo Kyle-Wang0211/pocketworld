@@ -2330,8 +2330,157 @@ bool PruneCopyFile(const char* src, const char* dst) {
 
 }  // namespace
 
+namespace {
+
+// 把 keypoints 的 cols>2 行改写为只含 x,y 的 2 列。COLMAP 的
+// FeatureKeypointsFromBlob 原生识别 cols=2/4/6,故裁后仍是合法 COLMAP 库。
+int32_t StripKeypointAffine(sqlite3* db) {
+  struct Row {
+    int64_t image_id;
+    int32_t rows;
+    std::vector<float> xy;
+  };
+  std::vector<Row> rewritten;
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(db,
+                         "SELECT image_id, rows, cols, data FROM keypoints "
+                         "WHERE cols > 2;",
+                         -1, &stmt, nullptr) != SQLITE_OK) {
+    g_last_error = "strip: select prepare failed";
+    return PW_SQLITE_DESCRIPTOR_TRANSFORM_SCHEMA_FAILED;
+  }
+  int rc;
+  while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+    Row row;
+    row.image_id = sqlite3_column_int64(stmt, 0);
+    row.rows = sqlite3_column_int(stmt, 1);
+    const int cols = sqlite3_column_int(stmt, 2);
+    const int bytes = sqlite3_column_bytes(stmt, 3);
+    const void* blob = sqlite3_column_blob(stmt, 3);
+    if (row.rows < 0 || cols <= 2 ||
+        static_cast<size_t>(bytes) !=
+            static_cast<size_t>(row.rows) * static_cast<size_t>(cols) *
+                sizeof(float)) {
+      sqlite3_finalize(stmt);
+      g_last_error = "strip: keypoint blob size mismatch";
+      return PW_SQLITE_DESCRIPTOR_TRANSFORM_MALFORMED;
+    }
+    row.xy.resize(static_cast<size_t>(row.rows) * 2);
+    for (int i = 0; i < row.rows; ++i) {
+      std::memcpy(&row.xy[static_cast<size_t>(i) * 2],
+                  static_cast<const uint8_t*>(blob) +
+                      static_cast<size_t>(i) * static_cast<size_t>(cols) *
+                          sizeof(float),
+                  sizeof(float) * 2);
+    }
+    rewritten.push_back(std::move(row));
+  }
+  sqlite3_finalize(stmt);
+  if (rc != SQLITE_DONE) {
+    g_last_error = "strip: select step failed";
+    return PW_SQLITE_DESCRIPTOR_TRANSFORM_MALFORMED;
+  }
+  for (const Row& row : rewritten) {
+    sqlite3_stmt* up = nullptr;
+    if (sqlite3_prepare_v2(
+            db, "UPDATE keypoints SET cols = 2, data = ? WHERE image_id = ?;",
+            -1, &up, nullptr) != SQLITE_OK) {
+      g_last_error = "strip: update prepare failed";
+      return PW_SQLITE_DESCRIPTOR_TRANSFORM_OUTPUT_FAILED;
+    }
+    sqlite3_bind_blob(up, 1, row.xy.data(),
+                      static_cast<int>(row.xy.size() * sizeof(float)),
+                      SQLITE_STATIC);
+    sqlite3_bind_int64(up, 2, row.image_id);
+    const int step = sqlite3_step(up);
+    sqlite3_finalize(up);
+    if (step != SQLITE_DONE) {
+      g_last_error = "strip: update failed";
+      return PW_SQLITE_DESCRIPTOR_TRANSFORM_OUTPUT_FAILED;
+    }
+  }
+  return PW_SQLITE_DESCRIPTOR_TRANSFORM_OK;
+}
+
+}  // namespace
+
+int32_t pw_sqlite_keypoints_xy_sha256(const char* database_path,
+                                      char* out_hex,
+                                      int32_t out_capacity) {
+  if (database_path == nullptr || out_hex == nullptr || out_capacity < 65) {
+    g_last_error = "xy digest: bad args";
+    return PW_SQLITE_DESCRIPTOR_TRANSFORM_INVALID_ARGUMENT;
+  }
+  sqlite3* db = nullptr;
+  if (sqlite3_open_v2(database_path, &db, SQLITE_OPEN_READWRITE, nullptr) !=
+      SQLITE_OK) {
+    if (db != nullptr) sqlite3_close(db);
+    db = nullptr;
+    if (sqlite3_open_v2(database_path, &db, SQLITE_OPEN_READONLY, nullptr) !=
+        SQLITE_OK) {
+      if (db != nullptr) sqlite3_close(db);
+      g_last_error = "xy digest: open failed";
+      return PW_SQLITE_DESCRIPTOR_TRANSFORM_INPUT_FAILED;
+    }
+  }
+  sqlite3_stmt* stmt = nullptr;
+  if (sqlite3_prepare_v2(
+          db, "SELECT image_id, rows, cols, data FROM keypoints ORDER BY image_id;",
+          -1, &stmt, nullptr) != SQLITE_OK) {
+    sqlite3_close(db);
+    g_last_error = "xy digest: prepare failed";
+    return PW_SQLITE_DESCRIPTOR_TRANSFORM_SCHEMA_FAILED;
+  }
+  CC_SHA256_CTX ctx;
+  CC_SHA256_Init(&ctx);
+  int rc;
+  while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+    const int64_t image_id = sqlite3_column_int64(stmt, 0);
+    const int32_t rows = sqlite3_column_int(stmt, 1);
+    const int cols = sqlite3_column_int(stmt, 2);
+    const int bytes = sqlite3_column_bytes(stmt, 3);
+    const void* blob = sqlite3_column_blob(stmt, 3);
+    if (cols < 2 || rows < 0 ||
+        static_cast<size_t>(bytes) != static_cast<size_t>(rows) *
+                                          static_cast<size_t>(cols) *
+                                          sizeof(float)) {
+      sqlite3_finalize(stmt);
+      sqlite3_close(db);
+      g_last_error = "xy digest: blob size mismatch";
+      return PW_SQLITE_DESCRIPTOR_TRANSFORM_MALFORMED;
+    }
+    CC_SHA256_Update(&ctx, &image_id, sizeof(image_id));
+    CC_SHA256_Update(&ctx, &rows, sizeof(rows));
+    for (int i = 0; i < rows; ++i) {
+      float xy[2];
+      std::memcpy(xy,
+                  static_cast<const uint8_t*>(blob) +
+                      static_cast<size_t>(i) * static_cast<size_t>(cols) *
+                          sizeof(float),
+                  sizeof(xy));
+      CC_SHA256_Update(&ctx, xy, sizeof(xy));
+    }
+  }
+  sqlite3_finalize(stmt);
+  sqlite3_close(db);
+  if (rc != SQLITE_DONE) {
+    g_last_error = "xy digest: step failed";
+    return PW_SQLITE_DESCRIPTOR_TRANSFORM_MALFORMED;
+  }
+  unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+  CC_SHA256_Final(digest, &ctx);
+  static const char* hex = "0123456789abcdef";
+  for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; ++i) {
+    out_hex[i * 2] = hex[digest[i] >> 4];
+    out_hex[i * 2 + 1] = hex[digest[i] & 0xf];
+  }
+  out_hex[64] = '\0';
+  return PW_SQLITE_DESCRIPTOR_TRANSFORM_OK;
+}
+
 int32_t pw_sqlite_prune_descriptors_file(const char* source_path,
-                                         const char* output_path) {
+                                         const char* output_path,
+                                         const int32_t strip_keypoint_affine) {
   if (source_path == nullptr || output_path == nullptr) {
     g_last_error = "prune: null path";
     return PW_SQLITE_DESCRIPTOR_TRANSFORM_INVALID_ARGUMENT;
@@ -2349,8 +2498,27 @@ int32_t pw_sqlite_prune_descriptors_file(const char* source_path,
     return PW_SQLITE_DESCRIPTOR_TRANSFORM_OUTPUT_FAILED;
   }
   int32_t status = PW_SQLITE_DESCRIPTOR_TRANSFORM_OK;
+  {
+    char* err = nullptr;
+    if (sqlite3_exec(db, "DELETE FROM descriptors;", nullptr, nullptr, &err) !=
+        SQLITE_OK) {
+      if (err != nullptr) sqlite3_free(err);
+      sqlite3_close(db);
+      std::remove(output_path);
+      g_last_error = "prune: delete descriptors failed";
+      return PW_SQLITE_DESCRIPTOR_TRANSFORM_OUTPUT_FAILED;
+    }
+  }
+  if (strip_keypoint_affine != 0) {
+    const int32_t strip = StripKeypointAffine(db);
+    if (strip != PW_SQLITE_DESCRIPTOR_TRANSFORM_OK) {
+      sqlite3_close(db);
+      std::remove(output_path);
+      return strip;
+    }
+  }
   // checkpoint(TRUNCATE) 保证 WAL 内容全部折进主文件,收尾删伴生文件才安全。
-  for (const char* sql : {"DELETE FROM descriptors;", "VACUUM;",
+  for (const char* sql : {"VACUUM;",
                           "PRAGMA wal_checkpoint(TRUNCATE);",
                           "PRAGMA integrity_check;"}) {
     char* err = nullptr;
@@ -2601,7 +2769,7 @@ int32_t pw_sqlite_reseal_arkit_pose_digests(const char* database_path,
 
   const char* kQuery =
       "SELECT i.image_id, i.name, c.model, c.width, c.height, c.params, "
-      "k.data FROM images i JOIN cameras c ON c.camera_id = i.camera_id "
+      "k.data, k.cols FROM images i JOIN cameras c ON c.camera_id = i.camera_id "
       "LEFT JOIN keypoints k ON k.image_id = i.image_id "
       "ORDER BY i.image_id;";
   sqlite3_stmt* stmt = nullptr;
@@ -2653,8 +2821,12 @@ int32_t pw_sqlite_reseal_arkit_pose_digests(const char* database_path,
     const int kp_bytes = sqlite3_column_bytes(stmt, 6);
     const void* kp_blob = sqlite3_column_blob(stmt, 6);
     size_t point_count = 0;
-    const int kColumns = 6;
-    if (kp_blob != nullptr && kp_bytes > 0) {
+    // [2026-08-12 拆雷] 列数必须读真实值:早先硬编码 6,一旦裁掉仿射列
+    // (cols=2)指纹就会算错 → resume 拒绝重建。
+    const int kColumns = sqlite3_column_type(stmt, 7) == SQLITE_NULL
+                             ? 0
+                             : sqlite3_column_int(stmt, 7);
+    if (kp_blob != nullptr && kp_bytes > 0 && kColumns >= 2) {
       point_count = static_cast<size_t>(kp_bytes) /
                     (sizeof(float) * static_cast<size_t>(kColumns));
     }

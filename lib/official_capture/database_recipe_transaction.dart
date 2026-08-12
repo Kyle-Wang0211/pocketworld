@@ -1,5 +1,10 @@
 /// DatabaseRecipeTransaction — B1 无损形态(2026-08-11 用户签决):
-/// **删描述子、保匹配图**。
+/// **删匹配期脚手架、保匹配图**。两级:
+///   ① descriptors 整表(原 DB 80.5% 字节)
+///   ② keypoints 的仿射形状列 a11/a12/a21/a22(裁后表的 2/3;cols 6→2)
+/// 二者都只服务"匹配"这一步,重建("重新重建点云")只读 keypoints 的 x,y
+/// 与 matches/two_view_geometries。COLMAP 原生支持 cols=2;核的身份指纹
+/// 只混 x,y 与描述子长度,故 ② **不改变指纹**。
 ///
 /// 天花板实验(b1-regen-ceiling-PROVEN.json)证明:匹配图无法从 q65 压缩帧
 /// 再生(穷举匹配轨迹仍 −24%,信息物理损失),而 descriptors(DB 80.5% 字节)
@@ -46,20 +51,37 @@ class DatabaseRecipeResult {
 }
 
 class DatabaseRecipeManifest {
-  static const schema = 'pw_database_prune_v1';
+  static const schema = 'pw_database_prune_v2';
   static const fileName = 'official_database_prune.json';
 
-  /// 裁剪保全的表(与验证清单一致;变更须升 schema)。
+  /// 逐字节保全的表(变更须升 schema)。
+  /// ⚠️keypoints 不在此列:裁掉仿射形状列后它的字节必然变化,改用
+  /// [keypointsXySha256] 证明"每点 x,y 逐点相同"——那才是重建读的东西。
   static const preservedTables = <String>[
     'cameras',
     'images',
-    'keypoints',
     'matches',
     'two_view_geometries',
   ];
 
   static Future<bool> exists(Directory captureDirectory) =>
       File('${captureDirectory.path}/$fileName').exists();
+
+  /// 不过 schema 闸的原始读取:**只用于溯源字段沿用**。
+  /// [read] 故意只认当前 schema(旧版=需要升级),因此不能拿它做沿用来源——
+  /// 否则 v1→v2 升级时 original_db_bytes 会退化成"上一轮裁后的大小"
+  /// (2026-08-12 真机实证:cap_…928171 的 115.0MB 溯源就是这样丢的)。
+  static Future<Map<String, dynamic>?> readAnyVersion(
+      Directory captureDirectory) async {
+    try {
+      final f = File('${captureDirectory.path}/$fileName');
+      if (!await f.exists()) return null;
+      final json = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
+      return json['schema'] is String ? json : null;
+    } catch (_) {
+      return null;
+    }
+  }
 
   static Future<Map<String, dynamic>?> read(Directory captureDirectory) async {
     try {
@@ -109,17 +131,24 @@ class DatabaseRecipeTransaction {
       }
       final manifestExists =
           await DatabaseRecipeManifest.exists(captureDirectory);
+      Map<String, dynamic>? priorManifest;
       if (manifestExists && outputDbPath == null) {
-        // 幂等收尾:manifest 已提交,若源 DB 的 descriptors 已空=完成;
-        // 否则(替换前崩了)继续走一遍裁剪+验证+替换。
+        // read() 只认当前 schema:v1(只删了描述子)会返回 null ⇒ 该 capture
+        // 需要**升级**(补裁仿射列),不能被"已裁过"挡住。
+        priorManifest = await DatabaseRecipeManifest.readAnyVersion(
+            captureDirectory);
+        final currentSchema = priorManifest?['schema'] ==
+            DatabaseRecipeManifest.schema;
         final desc = await tableContentSha256(source.path, 'descriptors');
         // 这次检查以读写方式打开了源库,会重建 -wal/-shm;不清掉的话下游
         // ZPAQ 事务会一直判 db_not_cold 而永远跳过(真机 2026-08-11 实证)。
         await _dropStaleSiblings(source);
-        if (desc == _sha256OfNothing) {
+        if (currentSchema && desc == _sha256OfNothing) {
           return const DatabaseRecipeResult(
               applicable: true, committed: true, reason: 'already_pruned');
         }
+        // 落到这里:要么 manifest 是旧版(补裁),要么替换前崩了(重做)。
+        // 两种都再走一遍完整的裁剪+验证+替换,幂等。
       }
       // 冷库判定。[2026-08-11 真机实证] 采集结束后 db 旁常年残留
       // `-wal`(0 字节=已全部 checkpoint)与 `-shm`(共享内存索引)——既有
@@ -158,6 +187,12 @@ class DatabaseRecipeTransaction {
         }
         pre[t] = d;
       }
+      // keypoints 走 x,y 等价摘要(裁仿射后整表字节必然变化)。
+      final preXy = await keypointsXySha256(work.path);
+      if (preXy == null) {
+        await _deleteWithSiblings(work);
+        return const DatabaseRecipeResult(reason: 'pre_xy_digest_failed');
+      }
       if (!await _canContinueNow()) {
         await _deleteWithSiblings(work);
         return const DatabaseRecipeResult(paused: true);
@@ -180,6 +215,12 @@ class DatabaseRecipeTransaction {
           await _deleteWithSiblings(pruned);
           return DatabaseRecipeResult(reason: 'post_digest_mismatch_$t');
         }
+      }
+      final postXy = await keypointsXySha256(pruned.path);
+      if (postXy == null || postXy != preXy) {
+        await _deleteWithSiblings(work);
+        await _deleteWithSiblings(pruned);
+        return const DatabaseRecipeResult(reason: 'keypoint_xy_mismatch');
       }
       final emptyDescriptors =
           await tableContentSha256(pruned.path, 'descriptors');
@@ -224,20 +265,29 @@ class DatabaseRecipeTransaction {
       }
 
       // 提交:manifest 原子落盘在先,替换原 DB 在后。
+      // 升级路径(v1→v2)必须沿用**最初**的原始体积/SHA,否则 provenance 会
+      // 退化成"上一轮裁后的大小"。
+      final priorOriginalBytes = priorManifest?['original_db_bytes'];
+      final priorOriginalSha = priorManifest?['original_db_sha256'];
+      final upgraded = manifestExists;
       final manifest = <String, Object?>{
         'schema': DatabaseRecipeManifest.schema,
         'created_at': DateTime.now().toUtc().toIso8601String(),
-        'original_db_bytes': sourceBytes,
-        'original_db_sha256': sourceSha,
+        'original_db_bytes': priorOriginalBytes ?? sourceBytes,
+        'original_db_sha256': priorOriginalSha ?? sourceSha,
+        if (upgraded) 'upgraded_from_bytes': sourceBytes,
         'pruned_db_bytes': prunedBytes,
         'preserved_table_sha256': pre,
-        'deleted': 'descriptors(匹配中间物;可从归档帧重提,语义档)',
+        'keypoints_xy_sha256': preXy,
+        'deleted': 'descriptors(匹配中间物;可从归档帧重提,语义档) + '
+            'keypoints 仿射形状列 a11/a12/a21/a22(匹配期形状信息,重建只读 x,y)',
         'rationale':
             'b1-regen-ceiling-PROVEN: 匹配图不可从 q65 帧再生(轨迹-24%),必须保留',
       };
       final manifestFile = File(
           '${captureDirectory.path}/${DatabaseRecipeManifest.fileName}');
-      if (!manifestExists) {
+      {
+        // 总是原子重写(升级路径要换 schema/补字段;崩溃重做时内容等价)。
         final tmp = File('${manifestFile.path}.tmp');
         await tmp.writeAsString(
             const JsonEncoder.withIndent(' ').convert(manifest));
@@ -258,7 +308,7 @@ class DatabaseRecipeTransaction {
       return DatabaseRecipeResult(
         applicable: true,
         committed: true,
-        deletedBytes: sourceBytes - prunedBytes,
+        deletedBytes: sourceBytes - prunedBytes, // 本轮省下(升级轮=仿射列)
       );
     } catch (e) {
       return DatabaseRecipeResult(reason: 'exception:$e');

@@ -41,15 +41,19 @@ void main() {
     expect(r.reason, Platform.isIOS ? isNot('platform') : 'platform');
   });
 
-  test('保全表清单=匹配图三件套+相机+图像(变更须升 schema)', () {
+  test('逐字节保全表=相机+图像+匹配图两件套(变更须升 schema)', () {
     expect(DatabaseRecipeManifest.preservedTables, <String>[
       'cameras',
       'images',
-      'keypoints',
       'matches',
       'two_view_geometries',
     ]);
-    expect(DatabaseRecipeManifest.preservedTables, isNot(contains('descriptors')));
+    // descriptors 整表与 keypoints 仿射列都是匹配期脚手架:前者删表,后者
+    // 裁列(字节必变,故不在逐字节清单里,改由 x,y 等价摘要把关)。
+    expect(DatabaseRecipeManifest.preservedTables,
+        isNot(contains('descriptors')));
+    expect(DatabaseRecipeManifest.preservedTables, isNot(contains('keypoints')));
+    expect(DatabaseRecipeManifest.schema, 'pw_database_prune_v2');
   });
 
   test('prune manifest 读写与 schema 门', () async {
