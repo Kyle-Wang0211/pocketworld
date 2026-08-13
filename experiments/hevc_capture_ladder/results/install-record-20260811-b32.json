@@ -1,0 +1,21 @@
+{
+ "schema": "pw_install_record_v1",
+ "date": "2026-08-11",
+ "batch": 32,
+ "purpose": "finalize提速研究载体:ENRICH-TVG-FARM+BA迭代帽旋钮+enrich_split插桩,全默认关,装机零行为变化;真机A/B全走env单变量",
+ "changes": {
+  "core": "official_aether_sfm_c.cc +308行(aether 3e29f8de):OFFICIAL_AETHER_ENRICH_TVG_THREADS(TVG RANSAC N工位,GPU匹配与db写单线程,per-pair播种N1≡N3)/OFFICIAL_AETHER_BA_GLOBAL_MAX_ITERS/OFFICIAL_AETHER_BA_S1_MAX_ITERS/enrich_split观测jsonl",
+  "rebuild": "build_ios_core.sh重编core.a→stage_b封印三对象从b31原件ar合并(源未变,单变量)→build_xcframework.sh重链(dawn/ceres/glog SHA钉住全符)→ABI 35导出逐名同b31"
+ },
+ "host_verify": "off/N1/N3三臂rematch(13/420,39/2073)与quad(21,136)written/inliers逐位相同;b31交付36446三臂同;迭代帽四场矩阵g35/s1o25质量带内,g25判死",
+ "fingerprint": {
+  "head": "19075e9a96ede0ed53e923d2221b9ef6acd8204c",
+  "diff_sha16": "501d3a3a6610ee36",
+  "dirty": 11,
+  "core_a_sha256_prefix": "bace6c52+stage_b合并"
+ },
+ "traps_hit": "设备名册available但真实不可达两次(休眠假在线,install error 1011/4000)→改双探活+install三重试;xcframework脚本要求out父目录先存在、依赖路径禁symlink(dist软链→真路径)",
+ "preinstall_check": "双探活通过即装(用户唤醒手机配合);遥测窗口检查因首两次拉取失败降级为探活文件读取",
+ "postinstall": "install输出App installed/app在册/归档状态可读/launch --terminate-existing确认拉起",
+ "contamination_declared": "⚠️装机包含他人未提交实验[POSE-DIRECT-E]+[GUIDED-CHAIN](ARKit位姿自举引导匹配,官核同文件):我重编core时未先diff工作树快照,违反单变量合同。核实=两旋钮OFFICIAL_AETHER_POSE_DIRECT_E/_GUIDED_TEMPORAL均须=='1'才开,设备无official_env.json⇒全默认⇒默认路径逐字节等同不含它们的二进制,实际行为零影响。用户08-11签:接受现状继续推进,不重做干净版。"
+}

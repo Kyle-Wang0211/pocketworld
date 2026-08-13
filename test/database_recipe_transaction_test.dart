@@ -42,18 +42,25 @@ void main() {
   });
 
   test('逐字节保全表=相机+图像+匹配图两件套(变更须升 schema)', () {
-    expect(DatabaseRecipeManifest.preservedTables, <String>[
+    expect(DatabaseRecipeManifest.preservedTablesAlways, <String>[
       'cameras',
       'images',
-      'matches',
       'two_view_geometries',
     ]);
+    // matches 按第三级开关动态进出:关=逐字节保全,开=必须被清空。
+    expect(DatabaseRecipeManifest.preservedTablesFor(dropRawMatches: false),
+        contains('matches'));
+    expect(DatabaseRecipeManifest.preservedTablesFor(dropRawMatches: true),
+        isNot(contains('matches')));
     // descriptors 整表与 keypoints 仿射列都是匹配期脚手架:前者删表,后者
     // 裁列(字节必变,故不在逐字节清单里,改由 x,y 等价摘要把关)。
-    expect(DatabaseRecipeManifest.preservedTables,
+    expect(DatabaseRecipeManifest.preservedTablesAlways,
         isNot(contains('descriptors')));
-    expect(DatabaseRecipeManifest.preservedTables, isNot(contains('keypoints')));
-    expect(DatabaseRecipeManifest.schema, 'pw_database_prune_v2');
+    expect(DatabaseRecipeManifest.preservedTablesAlways,
+        isNot(contains('keypoints')));
+    expect(DatabaseRecipeManifest.schema, 'pw_database_prune_v3');
+    expect(DatabaseRecipeTransaction.dropRawMatches, isTrue,
+        reason: '设备门 2026-08-13 PASS(两臂重建 59/59 帧、20196/20196 点完全一致)');
   });
 
   test('prune manifest 读写与 schema 门', () async {

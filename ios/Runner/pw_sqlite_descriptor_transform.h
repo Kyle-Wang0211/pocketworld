@@ -86,7 +86,11 @@ PW_SQLITE_DESCRIPTOR_API int32_t pw_sqlite_prune_descriptors_file(
     //     (cols 6/4 → 2)。仿射是匹配期的形状信息,重建只读 x,y
     //     (核 FeatureKeypointsToPointsVector);COLMAP 原生支持 cols=2。
     //     身份指纹只混 x,y,故此裁剪**不改变指纹**。
-    int32_t strip_keypoint_affine);
+    int32_t strip_keypoint_affine,
+    // 1 = 同时清空 matches 原始匹配表(只保留 two_view_geometries)。
+    //     几何验证已把原始匹配蒸馏成 TVG 内点;COLMAP 建图缓存
+    //     (database_cache.cc: DatabaseCache::Load)只读 TVG,不读 matches。
+    int32_t drop_raw_matches);
 
 // keypoints 的 x,y 等价摘要:按 image_id 序混入 (image_id, rows, 每点 x,y),
 // **忽略 cols 与仿射列**。裁仿射前后用它证明"几何输入逐点相同"——裁后

@@ -18,8 +18,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'database_archive_manifest.dart';
+import 'database_archive_resolver.dart';
 import 'database_prune_ffi.dart';
 import 'database_recipe_transaction.dart';
+import 'photo_archive_runtime.dart';
 import 'sfm_live_recon.dart';
 
 const _poseSidecarSuffix = '.arkit_pose_v1';
@@ -65,18 +68,54 @@ Future<void> maybeRunB1Gate(String documentsPath) async {
 
   await flush('starting');
   try {
-    final source = File('${captureDir.path}/official_sfm_live.db');
+    var source = File('${captureDir.path}/official_sfm_live.db');
     final sidecar = File('${source.path}$_poseSidecarSuffix');
-    if (!await source.exists() || !await sidecar.exists()) {
-      result['error'] = 'source db or pose sidecar missing '
-          '(db=${await source.exists()} sidecar=${await sidecar.exists()})';
+    if (!await sidecar.exists()) {
+      result['error'] = 'pose sidecar missing';
       await flush('inputs_missing');
       return;
     }
     if (await gateDir.exists()) await gateDir.delete(recursive: true);
     await gateDir.create(recursive: true);
 
-    // A 臂:原样副本。
+    // 源 DB 已被 ZPAQ 归档掉时,把归档三件套复制进门目录再物化 —— capture
+    // 目录**一个字节不动**。此时的"对照臂"= 当前生产态(已裁描述子/仿射),
+    // 正好是验证下一级增量所需要的基准。
+    if (!await source.exists()) {
+      final src = Directory('${gateDir.path}/arm_src')..createSync();
+      var ok = true;
+      for (final rel in <String>[
+        'official_database_archive_policy.json',
+        DatabaseArchiveManifest.fileName,
+        DatabaseArchiveManifest.archiveFileName,
+      ]) {
+        final f = File('${captureDir.path}/$rel');
+        if (!await f.exists()) {
+          ok = false;
+          break;
+        }
+        await f.copy('${src.path}/$rel');
+      }
+      if (ok) {
+        final resolved = await DatabaseArchiveResolver(
+          codec: databaseArchiveCodec,
+          preprocessor: databaseArchivePreprocessor,
+        ).resolveDatabase(src);
+        if (resolved != null) {
+          source = resolved;
+          result['materialized_from_archive'] = true;
+        } else {
+          ok = false;
+        }
+      }
+      if (!ok) {
+        result['error'] = 'db absent and archive materialization failed';
+        await flush('inputs_missing');
+        return;
+      }
+    }
+
+    // A 臂:对照副本(源 DB 或从归档物化出的当前生产态)。
     final armA = Directory('${gateDir.path}/arm_full')..createSync();
     final dbA = File('${armA.path}/official_sfm_live.db');
     await source.copy(dbA.path);
@@ -88,8 +127,12 @@ Future<void> maybeRunB1Gate(String documentsPath) async {
     final dbB = File('${armB.path}/official_sfm_live.db');
     await source.copy(dbB.path);
     await sidecar.copy('${dbB.path}$_poseSidecarSuffix');
-    final prune = await const DatabaseRecipeTransaction()
-        .pruneCapture(armB, outputDbPath: '${armB.path}/pruned.db');
+    // 门里强制试跑**当前最深一级**(含第三级 drop matches),即使生产常量
+    // 还没翻 —— 门的意义就是先验证再翻闸。
+    const gateDropsMatches = true;
+    final prune = await const DatabaseRecipeTransaction().pruneCapture(armB,
+        outputDbPath: '${armB.path}/pruned.db',
+        dropRawMatchesOverride: gateDropsMatches);
     result['prune'] = {
       'applicable': prune.applicable,
       'reason': prune.reason,
@@ -110,7 +153,8 @@ Future<void> maybeRunB1Gate(String documentsPath) async {
     // 保全表逐字节对账(裁前 vs 裁后)。
     final tables = <String, Object?>{};
     var tablesOk = true;
-    for (final t in DatabaseRecipeManifest.preservedTables) {
+    for (final t in DatabaseRecipeManifest.preservedTablesFor(
+        dropRawMatches: gateDropsMatches)) {
       final a = await tableContentSha256(dbA.path, t);
       final b = await tableContentSha256(dbB.path, t);
       final same = a != null && a == b;

@@ -51,18 +51,25 @@ class DatabaseRecipeResult {
 }
 
 class DatabaseRecipeManifest {
-  static const schema = 'pw_database_prune_v2';
+  static const schema = 'pw_database_prune_v3';
   static const fileName = 'official_database_prune.json';
 
   /// 逐字节保全的表(变更须升 schema)。
   /// ⚠️keypoints 不在此列:裁掉仿射形状列后它的字节必然变化,改用
   /// [keypointsXySha256] 证明"每点 x,y 逐点相同"——那才是重建读的东西。
-  static const preservedTables = <String>[
+  /// ⚠️matches 在 [DatabaseRecipeTransaction.dropRawMatches] 打开后也会被
+  /// 清空(几何验证已蒸馏成 TVG 内点;COLMAP DatabaseCache::Load 只读 TVG),
+  /// 故它按开关动态进出本清单。
+  static const preservedTablesAlways = <String>[
     'cameras',
     'images',
-    'matches',
     'two_view_geometries',
   ];
+
+  static List<String> preservedTablesFor({required bool dropRawMatches}) => [
+        ...preservedTablesAlways,
+        if (!dropRawMatches) 'matches',
+      ];
 
   static Future<bool> exists(Directory captureDirectory) =>
       File('${captureDirectory.path}/$fileName').exists();
@@ -99,6 +106,16 @@ class DatabaseRecipeManifest {
 class DatabaseRecipeTransaction {
   const DatabaseRecipeTransaction({this.canContinue});
 
+  /// 🔴 第三级:清空原始 matches 表(只留 two_view_geometries)。
+  /// 依据:几何验证已把原始匹配蒸馏成 TVG 内点,COLMAP 建图缓存
+  /// (database_cache.cc:137 DatabaseCache::Load)**只读 TVG**;核里唯一读
+  /// matches 的地方在收尾增强的配对验证,而增强在描述子被删后已失效。
+  /// **已于 2026-08-13 经设备门 PASS 后翻开**:未命名(6) 从归档物化的
+  /// 6.6MB 库 → 4.9MB(−26%),cameras/images/two_view_geometries 逐字节相同,
+  /// 两臂 resume 重建 **配准 59=59、交付点数 20196=20196 完全一致**。
+  /// 回退:改回 false(已裁 capture 不受影响)。
+  static const bool dropRawMatches = true;
+
   /// 🔴 生产总闸。**已于 2026-08-11 经用户签决翻开**——依据:
   /// - 设备门 PASS(b1-prune-device-gate-PASS.json,真机 100 帧作品:
   ///   125.2MB→24.2MB;五张保全表逐字节相同;两臂配准/点数/误差/轨迹
@@ -119,7 +136,10 @@ class DatabaseRecipeTransaction {
   Future<DatabaseRecipeResult> pruneCapture(
     Directory captureDirectory, {
     String? outputDbPath,
+    /// 设备门用:在总闸翻开前强制试跑第三级。生产路径不传 = 用常量。
+    bool? dropRawMatchesOverride,
   }) async {
+    final dropMatches = dropRawMatchesOverride ?? dropRawMatches;
     if (!databasePruneSupported) {
       return const DatabaseRecipeResult(reason: 'platform');
     }
@@ -178,8 +198,10 @@ class DatabaseRecipeTransaction {
       await source.copy(work.path);
 
       // 裁剪前逐表摘要(在副本上,内容与源逐字节相同)。
+      final tables = DatabaseRecipeManifest.preservedTablesFor(
+          dropRawMatches: dropMatches);
       final pre = <String, String>{};
-      for (final t in DatabaseRecipeManifest.preservedTables) {
+      for (final t in tables) {
         final d = await tableContentSha256(work.path, t);
         if (d == null) {
           await _deleteWithSiblings(work);
@@ -200,7 +222,8 @@ class DatabaseRecipeTransaction {
 
       final pruned = File(outputDbPath ?? '${source.path}.pruned.tmp');
       await _deleteWithSiblings(pruned);
-      final rc = await pruneDescriptorsFile(work.path, pruned.path);
+      final rc = await pruneDescriptorsFile(work.path, pruned.path,
+          dropRawMatches: dropMatches);
       if (rc != 0 || !await pruned.exists()) {
         await _deleteWithSiblings(work);
         await _deleteWithSiblings(pruned);
@@ -208,7 +231,7 @@ class DatabaseRecipeTransaction {
       }
 
       // 裁剪后验证:保全表逐字节等同 + descriptors 空表。
-      for (final t in DatabaseRecipeManifest.preservedTables) {
+      for (final t in tables) {
         final d = await tableContentSha256(pruned.path, t);
         if (d == null || d != pre[t]) {
           await _deleteWithSiblings(work);
@@ -221,6 +244,14 @@ class DatabaseRecipeTransaction {
         await _deleteWithSiblings(work);
         await _deleteWithSiblings(pruned);
         return const DatabaseRecipeResult(reason: 'keypoint_xy_mismatch');
+      }
+      if (dropMatches) {
+        final m = await tableContentSha256(pruned.path, 'matches');
+        if (m != _sha256OfNothing) {
+          await _deleteWithSiblings(work);
+          await _deleteWithSiblings(pruned);
+          return const DatabaseRecipeResult(reason: 'matches_not_empty');
+        }
       }
       final emptyDescriptors =
           await tableContentSha256(pruned.path, 'descriptors');
@@ -280,7 +311,9 @@ class DatabaseRecipeTransaction {
         'preserved_table_sha256': pre,
         'keypoints_xy_sha256': preXy,
         'deleted': 'descriptors(匹配中间物;可从归档帧重提,语义档) + '
-            'keypoints 仿射形状列 a11/a12/a21/a22(匹配期形状信息,重建只读 x,y)',
+            'keypoints 仿射形状列 a11/a12/a21/a22(匹配期形状信息,重建只读 x,y)'
+            '${dropMatches ? ' + matches 原始匹配表(已蒸馏成 TVG 内点)' : ''}',
+        'drop_raw_matches': dropMatches,
         'rationale':
             'b1-regen-ceiling-PROVEN: 匹配图不可从 q65 帧再生(轨迹-24%),必须保留',
       };

@@ -2480,7 +2480,8 @@ int32_t pw_sqlite_keypoints_xy_sha256(const char* database_path,
 
 int32_t pw_sqlite_prune_descriptors_file(const char* source_path,
                                          const char* output_path,
-                                         const int32_t strip_keypoint_affine) {
+                                         const int32_t strip_keypoint_affine,
+                                         const int32_t drop_raw_matches) {
   if (source_path == nullptr || output_path == nullptr) {
     g_last_error = "prune: null path";
     return PW_SQLITE_DESCRIPTOR_TRANSFORM_INVALID_ARGUMENT;
@@ -2515,6 +2516,17 @@ int32_t pw_sqlite_prune_descriptors_file(const char* source_path,
       sqlite3_close(db);
       std::remove(output_path);
       return strip;
+    }
+  }
+  if (drop_raw_matches != 0) {
+    char* err = nullptr;
+    if (sqlite3_exec(db, "DELETE FROM matches;", nullptr, nullptr, &err) !=
+        SQLITE_OK) {
+      if (err != nullptr) sqlite3_free(err);
+      sqlite3_close(db);
+      std::remove(output_path);
+      g_last_error = "prune: delete matches failed";
+      return PW_SQLITE_DESCRIPTOR_TRANSFORM_OUTPUT_FAILED;
     }
   }
   // checkpoint(TRUNCATE) 保证 WAL 内容全部折进主文件,收尾删伴生文件才安全。

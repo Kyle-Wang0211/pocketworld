@@ -1,0 +1,23 @@
+{
+ "schema": "pw_power_efficiency_probe_v1",
+ "date": "2026-08-13",
+ "device": "iPhone 14 Pro (A16), iOS 26.6",
+ "verdict": "DEAD_END — A16 上 MaximizePowerEfficiency 对输出字节零影响(逐字节相同),照片侧无损杠杆全部出清",
+ "setup": "未命名(4) 码流取 60 帧(4032×3024)单解码会话顺序解出 NV12,两臂输入逐位相同;q65/GOP8/AllowFrameReordering=false;唯一变量=MaximizePowerEfficiency",
+ "result": {
+  "pe_on_bytes": 11627589,
+  "pe_off_bytes": 11627589,
+  "delta_bytes": 0,
+  "delta_pct": "0.00",
+  "elapsed_ms": 9609
+ },
+ "reading": "两臂**完全相同的 11,627,589 B** —— 不是接近,是逐字节一致。说明 A16 的硬件编码器与 M3 Pro 一样,该属性不参与率失真决策(很可能只影响调度/时钟策略,不改编码搜索)。",
+ "implication": "当初为热余量而开的这个开关**没有付出任何字节代价**,可以放心保留(生产维持 power_efficient=1)。同时它也不是可榨取的空间。",
+ "photo_levers_all_dead": {
+  "gop_8_to_32": "-2.2%",
+  "b_frames": "+0.5%(且需改格式)",
+  "similarity_reorder": "-0.1%(此前-26%为素材污染假象)",
+  "power_efficiency": "0.00%(本次真机)"
+ },
+ "photo_floor_reason": "帧间预测总贡献 -20.3%(GOP1→GOP8)且在 GOP=8 饱和;摄影测量刻意要求宽基线,相邻帧在图像空间必然相距很远 ⇒ 时域冗余本就稀薄,已被现有配置吃尽。再往下只剩画质预算(用户明令不动)。"
+}

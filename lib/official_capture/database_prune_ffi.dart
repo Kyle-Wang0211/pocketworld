@@ -9,8 +9,8 @@ import 'dart:isolate';
 
 import 'package:ffi/ffi.dart';
 
-typedef _PruneC = Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Int32);
-typedef _PruneD = int Function(Pointer<Utf8>, Pointer<Utf8>, int);
+typedef _PruneC = Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Int32, Int32);
+typedef _PruneD = int Function(Pointer<Utf8>, Pointer<Utf8>, int, int);
 typedef _ResealC = Int32 Function(Pointer<Utf8>, Pointer<Utf8>);
 typedef _ResealD = int Function(Pointer<Utf8>, Pointer<Utf8>);
 typedef _XyC = Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Int32);
@@ -25,7 +25,7 @@ bool get databasePruneSupported => Platform.isIOS;
 /// 复制 + 删 descriptors + (默认)裁 keypoints 仿射列 + VACUUM +
 /// checkpoint + integrity_check;src 只读。0=成功。
 Future<int> pruneDescriptorsFile(String source, String output,
-        {bool stripKeypointAffine = true}) =>
+        {bool stripKeypointAffine = true, bool dropRawMatches = false}) =>
     Isolate.run(() {
       final lib = DynamicLibrary.process();
       final fn = lib.lookupFunction<_PruneC, _PruneD>(
@@ -33,7 +33,7 @@ Future<int> pruneDescriptorsFile(String source, String output,
       final s = source.toNativeUtf8();
       final o = output.toNativeUtf8();
       try {
-        return fn(s, o, stripKeypointAffine ? 1 : 0);
+        return fn(s, o, stripKeypointAffine ? 1 : 0, dropRawMatches ? 1 : 0);
       } finally {
         calloc.free(s);
         calloc.free(o);
