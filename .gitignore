@@ -65,3 +65,14 @@ ios/Runner/Models/.hf_cache/
 macos/Flutter/ephemeral*/
 ios/Flutter/Generated.xcconfig
 ios/Flutter/flutter_export_environment.sh
+
+# 本地静态库回滚快照:重编前 cp 一份留退路,单个 100MB+ 且随时可重编,
+# 绝不该进 git(vendor/.../*.a.bak_<epoch>)。
+*.a.bak_*
+
+# MLflow 本地实验记录(纯本地追踪,结论以 experiments/**/results/*.json 为准)
+/mlruns/
+
+# 训练语料本体(591MB 的解压素材;可复现的清单与来源 yaml 仍然入库,
+# 见同目录 phase2-training-corpus-manifest.json / -sources.yaml)
+/experiments/plr_derived_brunsli_two_photo/results/phase2-training/

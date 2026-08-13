@@ -2486,20 +2486,19 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
                   'db-rerun fallback (segments telemetry unavailable)',
                 );
               }
-              // 遥测【finalize/phase2】:后台全局 BA wall + 配置回显
-              // (RefineGlobalBA 的 popts,native out_json 不回传这些,
-              // source=config_echo;phase2 无独立 reproj 输出,最终
-              // reproj 见 geom 事件的重算不可得 → 沿用 phase1 字段)。
-              // wall 分段字段 + 实测 solver 从 segments 透传(native 实测,
-              // 非 config_echo)。
+              // 遥测【finalize/phase2】:后台全局 BA wall + 配置回显。
+              // ⚠️ [PHASE2-CONFIG-ECHO 2026-08-12] 这里原先把 gftol/gref/giter
+              // 写成**硬编码字面量**却标 source=config_echo:gref 停在早已改成
+              // 3 的旧值 5,gftol 更是无视 env 覆盖恒报 1e-6 —— 08-11 夜里核验
+              // BA-FTOL 旋钮时,它差点让"env 其实已生效"被误判成"没生效"。
+              // 现在三个值全部由 native 在**所有 env 覆盖与 AB 选臂之后**落进
+              // segments,Dart 只透传;segments 缺失(旧包/db-rerun 回退)时
+              // 字段直接不出,绝不再编造。
               telem('finalize_phase2', {
                 'wall_ms': ms,
                 'loss_global': 'cauchy@1.0',
                 'solver': 'dense_schur_override',
-                'gftol': 1e-6,
-                'gref': 5,
-                'giter': 50,
-                'source': 'config_echo',
+                'source': 'native_segments',
                 if (telP2 != null) 'mem_mb': telP2.physFootprintMb.round(),
                 if (telP2 != null) 'thermal': telP2.thermalState,
                 if (segs != null) ...{
@@ -2514,6 +2513,12 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
                   'total_native_ms': segs['total_ms'],
                   'solver_used': segs['solver_used'],
                   'sparse_backend': segs['sparse_backend'],
+                  // phase-2 全局 BA 真实生效配置(native 落盘,非字面量)。
+                  // ftol_ab_arm:-1=逐场交替关闭,0=base 臂,1=变体臂。
+                  'gftol': segs['gftol_used'],
+                  'gref': segs['gref_used'],
+                  'giter': segs['giter_used'],
+                  'ftol_ab_arm': segs['ftol_ab_arm'],
                   'mixed': segs['mixed'],
                   'threads': segs['threads'],
                 },
