@@ -13,8 +13,10 @@ import 'package:ffi/ffi.dart';
 
 import 'pwva.dart';
 
-typedef _EncCreateC = Pointer<Void> Function(Int32, Int32, Int32, Double, Int64);
-typedef _EncCreateD = Pointer<Void> Function(int, int, int, double, int);
+typedef _EncCreateExC = Pointer<Void> Function(
+    Int32, Int32, Int32, Double, Int64, Int32);
+typedef _EncCreateExD = Pointer<Void> Function(
+    int, int, int, double, int, int);
 typedef _EncodeC = Int32 Function(Pointer<Void>, Pointer<Uint8>, Pointer<Uint8>,
     Int64, Int64, Pointer<Pointer<Uint8>>, Pointer<Int64>, Pointer<Int32>);
 typedef _EncodeD = int Function(Pointer<Void>, Pointer<Uint8>, Pointer<Uint8>,
@@ -112,15 +114,21 @@ class AppleHevcEncoder implements HevcFrameEncoder {
   final Pointer<Int64> _len;
   final Pointer<Int32> _key;
 
+  /// [powerEfficient] 默认 true = 生产现状(低功耗编码路径,2026-08-10 为热
+  /// 余量归因而启用)。转码已改为拍摄结束后的批量收尾,该热约束是否仍必要
+  /// 由真机 A/B 决定;探针用 false 走高效率路径。
   factory AppleHevcEncoder(
       {required int width,
       required int height,
       required int gop,
       double quality = 0.65,
-      int averageBitrate = 0}) {
+      int averageBitrate = 0,
+      bool powerEfficient = true}) {
     final lib = _open('pw_vt_encoder');
-    final create = lib.lookupFunction<_EncCreateC, _EncCreateD>('pw_vt_create');
-    final handle = create(width, height, gop, quality, averageBitrate);
+    final createEx =
+        lib.lookupFunction<_EncCreateExC, _EncCreateExD>('pw_vt_create_ex');
+    final handle = createEx(width, height, gop, quality, averageBitrate,
+        powerEfficient ? 1 : 0);
     if (handle == nullptr) {
       throw StateError('VideoToolbox HEVC 编码器创建失败 (${width}x$height)');
     }

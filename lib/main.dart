@@ -34,6 +34,7 @@ import 'lifecycle_observer.dart';
 import 'object_transform.dart';
 import 'official_aether_sfm_ffi.dart' show AetherEnvFile;
 import 'official_capture/b1_gate_runner.dart';
+import 'official_capture/encoder_probe.dart';
 import 'official_capture/photo_archive_runtime.dart';
 import 'official_capture/telemetry_writer.dart' as official_telemetry;
 import 'official_util/device_log.dart' as official_device_log;
@@ -160,6 +161,13 @@ Future<void> main() async {
           try {
             final documents = await getApplicationDocumentsDirectory();
             await maybeRunB1Gate(documents.path);
+          } catch (_) {}
+        }());
+        // 编码器旋钮探针(同款文件触发;无文件=零行为)。
+        unawaited(() async {
+          try {
+            final documents = await getApplicationDocumentsDirectory();
+            await maybeRunEncoderProbe(documents.path);
           } catch (_) {}
         }());
       });

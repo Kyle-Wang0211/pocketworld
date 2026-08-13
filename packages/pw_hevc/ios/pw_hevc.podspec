@@ -15,5 +15,5 @@ Pod::Spec.new do |s|
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }
   # Release 的 -dead_strip 会剥掉只经 DynamicLibrary.process()/dlsym 访问的
   # 符号(aether_ffi 的 finalize_async 事故同款)。显式标记为 needed。
-  s.user_target_xcconfig = { 'OTHER_LDFLAGS' => '-Wl,-u,_pw_vt_create -Wl,-u,_pw_vt_encode_nv12 -Wl,-u,_pw_vt_encode_cvpb -Wl,-u,_pw_vt_flush -Wl,-u,_pw_vt_free -Wl,-u,_pw_vt_destroy -Wl,-u,_pw_vt_dec_create -Wl,-u,_pw_vt_dec_decode -Wl,-u,_pw_vt_dec_destroy -Wl,-u,_pw_jpeg_to_bgra_cvpb -Wl,-u,_pw_nv12_to_jpeg_file -Wl,-u,_pw_cvpb_release' }
+  s.user_target_xcconfig = { 'OTHER_LDFLAGS' => '-Wl,-u,_pw_vt_create -Wl,-u,_pw_vt_create_ex -Wl,-u,_pw_vt_encode_nv12 -Wl,-u,_pw_vt_encode_cvpb -Wl,-u,_pw_vt_flush -Wl,-u,_pw_vt_free -Wl,-u,_pw_vt_destroy -Wl,-u,_pw_vt_dec_create -Wl,-u,_pw_vt_dec_decode -Wl,-u,_pw_vt_dec_destroy -Wl,-u,_pw_jpeg_to_bgra_cvpb -Wl,-u,_pw_nv12_to_jpeg_file -Wl,-u,_pw_cvpb_release' }
 end

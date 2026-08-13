@@ -106,8 +106,20 @@ static void output_callback(void *refcon, void *frame_refcon, OSStatus status,
     dispatch_semaphore_signal(enc->done);
 }
 
+// [2026-08-12] 省电模式 A/B 探针用:多一个显式旋钮,生产入口 pw_vt_create
+// 原样委托 power_efficient=1(现状),行为零变化。
+PwVtEncoder *pw_vt_create_ex(int32_t width, int32_t height, int32_t gop,
+                             double quality, int64_t avg_bitrate,
+                             int32_t power_efficient);
+
 PwVtEncoder *pw_vt_create(int32_t width, int32_t height, int32_t gop,
                           double quality, int64_t avg_bitrate) {
+    return pw_vt_create_ex(width, height, gop, quality, avg_bitrate, 1);
+}
+
+PwVtEncoder *pw_vt_create_ex(int32_t width, int32_t height, int32_t gop,
+                             double quality, int64_t avg_bitrate,
+                             int32_t power_efficient) {
     PwVtEncoder *enc = calloc(1, sizeof(PwVtEncoder));
     enc->done = dispatch_semaphore_create(0);
     enc->width = width;
@@ -126,7 +138,7 @@ PwVtEncoder *pw_vt_create(int32_t width, int32_t height, int32_t gop,
     // 用略慢的编码换零 DVFS 压力——编码本来就只需跟上 ~1.2s/帧 的节奏。
     VTSessionSetProperty(enc->session,
                          kVTCompressionPropertyKey_MaximizePowerEfficiency,
-                         kCFBooleanTrue);
+                         power_efficient ? kCFBooleanTrue : kCFBooleanFalse);
     VTSessionSetProperty(enc->session, kVTCompressionPropertyKey_AllowFrameReordering,
                          kCFBooleanFalse);
     CFNumberRef g = CFNumberCreate(NULL, kCFNumberSInt32Type, &gop);

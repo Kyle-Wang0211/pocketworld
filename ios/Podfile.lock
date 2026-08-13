@@ -163,7 +163,7 @@ SPEC CHECKSUMS:
   onnxruntime-c: ebdcfd8650bcbd10121c125262f99dea681b92a3
   onnxruntime-objc: ae7acec7a3d03eaf072d340afed7a35635c1c2a6
   path_provider_foundation: bb55f6dbba17d0dccd6737fe6f7f34fbd0376880
-  pw_hevc: d5a21b40d3aa5ab0d5753b0ac602bd9eb4ff0ae3
+  pw_hevc: 7941a4ca5a244a6bb3eac4bc5f7031ae2c85c91a
   SDWebImage: e9fc87c1aab89a8ab1bbd74eba378c6f53be8abf
   sensors_plus: 6a11ed0c2e1d0bd0b20b4029d3bad27d96e0c65b
   shared_preferences_foundation: 7036424c3d8ec98dfe75ff1667cb0cd531ec82bb
