@@ -80,28 +80,44 @@ class _WorkDetailPageState extends State<WorkDetailPage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            ListTile(
-              leading: const Icon(Icons.flag_outlined,
-                  color: AetherColors.textPrimary),
-              title: Text(l.reportAction, style: AetherTextStyles.body),
-              onTap: () {
-                Navigator.of(sheetCtx).pop();
-                _showReportSheet();
-              },
-            ),
-            ListTile(
-              leading:
-                  const Icon(Icons.block_rounded, color: AetherColors.danger),
-              title: Text(
-                l.blockAction,
-                style: AetherTextStyles.body
-                    .copyWith(color: AetherColors.danger),
+            if (_isMine)
+              ListTile(
+                leading: const Icon(Icons.delete_outline_rounded,
+                    color: AetherColors.danger),
+                title: Text(
+                  l.workDeleteAction,
+                  style: AetherTextStyles.body
+                      .copyWith(color: AetherColors.danger),
+                ),
+                onTap: () {
+                  Navigator.of(sheetCtx).pop();
+                  _confirmDelete();
+                },
+              )
+            else ...[
+              ListTile(
+                leading: const Icon(Icons.flag_outlined,
+                    color: AetherColors.textPrimary),
+                title: Text(l.reportAction, style: AetherTextStyles.body),
+                onTap: () {
+                  Navigator.of(sheetCtx).pop();
+                  _showReportSheet();
+                },
               ),
-              onTap: () {
-                Navigator.of(sheetCtx).pop();
-                _confirmBlock();
-              },
-            ),
+              ListTile(
+                leading:
+                    const Icon(Icons.block_rounded, color: AetherColors.danger),
+                title: Text(
+                  l.blockAction,
+                  style: AetherTextStyles.body
+                      .copyWith(color: AetherColors.danger),
+                ),
+                onTap: () {
+                  Navigator.of(sheetCtx).pop();
+                  _confirmBlock();
+                },
+              ),
+            ],
             const SizedBox(height: AetherSpacing.sm),
           ],
         ),
@@ -128,6 +144,53 @@ class _WorkDetailPageState extends State<WorkDetailPage> {
       final l = AppL10n.of(context);
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text(l.reportSubmitted)));
+    }
+  }
+
+  /// "Immediately remove posts from the feed" — the extra requirement
+  /// Apple adds to Guideline 1.2 for UGC apps. Deletes the row AND the
+  /// storage objects server-side; deleting only the row would leave the
+  /// file publicly downloadable (public bucket ⇒ RLS bypassed).
+  Future<void> _confirmDelete() async {
+    final l = AppL10n.of(context);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: AetherColors.bgCanvas,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AetherRadii.lg),
+        ),
+        title: Text(l.workDeleteDialogTitle, style: AetherTextStyles.h2),
+        content: Text(l.workDeleteDialogBody, style: AetherTextStyles.body),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: Text(l.commonCancel),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: TextButton.styleFrom(foregroundColor: AetherColors.danger),
+            child: Text(
+              l.workDeleteConfirm,
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    try {
+      await widget.service.deleteMyWork(widget.work.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(l.workDeleteDone)));
+      // The work no longer exists; leave the page. The feed refetches on
+      // its next load, and pull-to-refresh is right there.
+      Navigator.of(context).maybePop();
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(l.workDeleteFailed)));
     }
   }
 
@@ -331,16 +394,20 @@ class _WorkDetailPageState extends State<WorkDetailPage> {
         ),
         actions: [
           // Guideline 1.2 wants a report mechanism AND a way to block
-          // abusive users. Both tables have existed since April but had
-          // no client entry point — and this AppBar had no `actions:` at
-          // all, so there was nowhere to put one. Own works are excluded:
-          // reporting or blocking yourself is meaningless.
-          if (!_isMine)
-            IconButton(
-              icon: const Icon(Icons.more_horiz_rounded, color: Colors.white),
-              tooltip: AppL10n.of(context).workMoreActions,
-              onPressed: _showMoreActions,
-            ),
+          // abusive users; Apple's UGC rejection letters additionally ask
+          // for a way for authors to immediately remove their own posts
+          // from the feed. All three tables have existed since April but
+          // had no client entry point — and this AppBar had no `actions:`
+          // at all, so there was nowhere to put one.
+          //
+          // The menu contents flip by ownership: reporting or blocking
+          // yourself is meaningless, and deleting someone else's work
+          // isn't yours to do.
+          IconButton(
+            icon: const Icon(Icons.more_horiz_rounded, color: Colors.white),
+            tooltip: AppL10n.of(context).workMoreActions,
+            onPressed: _showMoreActions,
+          ),
         ],
         title: Text(
           widget.work.title,

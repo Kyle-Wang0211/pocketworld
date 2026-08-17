@@ -207,6 +207,37 @@ class CommunityService {
   /// Supabase client itself (the feed UI otherwise never touches it).
   String? get currentUserId => _client.auth.currentUser?.id;
 
+  /// Remove one of the caller's own published works from the community,
+  /// including its storage objects.
+  ///
+  /// Apple's UGC rejections ask for "a mechanism for users to immediately
+  /// remove posts from the feed". `works_delete_own` would let us delete
+  /// the row straight from here, but that is not actually a removal: the
+  /// `works` bucket is public and a public bucket bypasses RLS on
+  /// /object/public/ reads, so the file would stay downloadable — and
+  /// storage objects can't be deleted from SQL at all. Hence the
+  /// server-side delete-work function, which removes the files first and
+  /// re-checks ownership against the row.
+  ///
+  /// Throws on failure so the UI can say so instead of pretending the
+  /// work is gone while it is still in everyone's feed.
+  Future<void> deleteMyWork(String workId) async {
+    if (_client.auth.currentUser == null) {
+      throw StateError('Cannot delete — no signed-in user.');
+    }
+    final res = await _client.functions.invoke(
+      'delete-work',
+      body: {'work_id': workId},
+    );
+    if (res.status != 200) {
+      final data = res.data;
+      final code = data is Map ? data['error']?.toString() : null;
+      throw StateError(
+        'delete-work failed (${res.status}${code == null ? '' : ': $code'})',
+      );
+    }
+  }
+
   /// Report a work. App Store Guideline 1.2 requires "a mechanism to
   /// report offensive content and timely responses to concerns" — the
   /// `reports` table has existed since 20260429020005 but had no client

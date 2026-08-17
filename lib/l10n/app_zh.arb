@@ -223,5 +223,11 @@
   "blockDialogBody": "屏蔽后你将不再看到该用户的作品，你们之间的关注关系也会取消。",
   "blockConfirm": "屏蔽",
   "blockDone": "已屏蔽，该用户的作品不再显示",
-  "blockFailed": "操作失败，请稍后重试"
+  "blockFailed": "操作失败，请稍后重试",
+  "workDeleteAction": "从社区删除",
+  "workDeleteDialogTitle": "从社区删除这个作品？",
+  "workDeleteDialogBody": "该作品将从社区移除，云端文件一并删除，无法恢复。本机的原始拍摄项目不受影响，之后仍可重新发布。",
+  "workDeleteConfirm": "删除",
+  "workDeleteDone": "已从社区删除",
+  "workDeleteFailed": "删除失败，请稍后重试"
 }

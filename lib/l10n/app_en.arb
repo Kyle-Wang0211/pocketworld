@@ -368,5 +368,11 @@
   "blockDialogBody": "You won't see their works anymore, and any follow relationship between you will be removed.",
   "blockConfirm": "Block",
   "blockDone": "Blocked. Their works will no longer appear.",
-  "blockFailed": "Action failed. Please try again later."
+  "blockFailed": "Action failed. Please try again later.",
+  "workDeleteAction": "Remove from community",
+  "workDeleteDialogTitle": "Remove this work from the community?",
+  "workDeleteDialogBody": "The work will be removed from the community and its cloud files deleted. This cannot be undone. Your original capture on this device is unaffected and can be published again later.",
+  "workDeleteConfirm": "Remove",
+  "workDeleteDone": "Removed from the community",
+  "workDeleteFailed": "Removal failed. Please try again later."
 }
