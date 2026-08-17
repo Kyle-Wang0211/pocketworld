@@ -31,6 +31,17 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<!-- Export compliance. false = the app uses no non-exempt encryption.
+	     All of our crypto is either HTTPS through the OS networking stack
+	     (Supabase over URLSession) or hashing (SHA-256 via the Dart
+	     `crypto` package, used for content addressing and OTP digests) —
+	     encryption built into the operating system, plus hashing, is
+	     exempt from export documentation. We ship no proprietary cipher.
+	     Declaring it here rather than answering the App Store Connect
+	     questionnaire on every upload also stops builds from getting
+	     stuck in "Missing Compliance". -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>LSRequiresIPhoneOS</key>

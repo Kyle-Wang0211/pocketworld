@@ -32,6 +32,7 @@
 		C80000030000000000000003 /* PWZpaqBridgeTests.mm in Sources */ = {isa = PBXBuildFile; fileRef = C80000150000000000000005 /* PWZpaqBridgeTests.mm */; };
 		C80000040000000000000004 /* Zpaq-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = C80000160000000000000006 /* Zpaq-LICENSE.txt */; };
 		D90000010000000000000001 /* Lepton-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = D90000110000000000000001 /* Lepton-LICENSE.txt */; };
+		D90000060000000000000006 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = D90000050000000000000005 /* PrivacyInfo.xcprivacy */; };
 		D90000020000000000000002 /* Lepton-NOTICE.txt in Resources */ = {isa = PBXBuildFile; fileRef = D90000120000000000000002 /* Lepton-NOTICE.txt */; };
 		D90000030000000000000003 /* Rust-Crate-THIRD-PARTY-NOTICES.txt in Resources */ = {isa = PBXBuildFile; fileRef = D90000140000000000000004 /* Rust-Crate-THIRD-PARTY-NOTICES.txt */; };
 		D90000040000000000000004 /* Rust-Standard-Library-COPYRIGHT.html in Resources */ = {isa = PBXBuildFile; fileRef = D90000150000000000000005 /* Rust-Standard-Library-COPYRIGHT.html */; };
@@ -89,6 +90,7 @@
 		97C146EE1CF9000F007C117D /* Runner.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Runner.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		97C146FB1CF9000F007C117D /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
 		97C146FD1CF9000F007C117D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		D90000050000000000000005 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		97C147001CF9000F007C117D /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		97C147021CF9000F007C117D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A1B2C3D4E5F60000DEAD0008 /* test_scene.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; name = test_scene.jpg; path = TestFixtures/test_scene.jpg; sourceTree = "<group>"; };
@@ -194,6 +196,7 @@
 			children = (
 				97C146FA1CF9000F007C117D /* Main.storyboard */,
 				97C146FD1CF9000F007C117D /* Assets.xcassets */,
+				D90000050000000000000005 /* PrivacyInfo.xcprivacy */,
 				97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */,
 				97C147021CF9000F007C117D /* Info.plist */,
 				1498D2321E8E86230040F4C2 /* GeneratedPluginRegistrant.h */,
@@ -340,6 +343,7 @@
 				97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */,
 				3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */,
 				97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */,
+				D90000060000000000000006 /* PrivacyInfo.xcprivacy in Resources */,
 				97C146FC1CF9000F007C117D /* Main.storyboard in Resources */,
 				A1B2C3D4E5F60000DEAD0007 /* test_scene.jpg in Resources */,
 				C80000040000000000000004 /* Zpaq-LICENSE.txt in Resources */,

@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Privacy manifest for the PocketWorld app target.
+
+  Required since 2024-05-01: App Store Connect will not accept an app
+  that uses a "required reason API" without describing that use here.
+  Without this file the upload is rejected with ITMS-91053 (Missing API
+  Declaration) — that is an upload-time rejection, so the build never
+  even reaches review.
+
+  Scope note: this file declares ONLY what the app's own code does.
+  Third-party SDKs must ship their own manifests — Apple: "Your
+  third-party SDK can't rely on the privacy manifest files for apps that
+  link the third-party SDK". Verified locally: 8 of the 13 Flutter
+  plugins already bundle one (shared_preferences_foundation,
+  path_provider_foundation, camera_avfoundation, file_picker,
+  sensors_plus, url_launcher_ios, background_downloader, app_links);
+  integration_test is test-only and never ships; onnxruntime,
+  thermion_flutter and video_thumbnail were checked and touch no
+  required-reason API; pw_hevc is ours and carries its own manifest.
+
+  Deliberately NOT copied from a blog boilerplate. A privacy manifest is
+  an attestation to Apple about what this app actually does, so every
+  entry below corresponds to a verified call site.
+-->
+<plist version="1.0">
+<dict>
+  <!-- No tracking, no ad networks, no third-party analytics or crash SDK.
+       Verified by audit: the repo contains no Sentry/Firebase/Crashlytics/
+       Mixpanel/Amplitude/Segment integration, and the native iOS code has
+       zero network egress. -->
+  <key>NSPrivacyTracking</key>
+  <false/>
+  <key>NSPrivacyTrackingDomains</key>
+  <array/>
+
+  <key>NSPrivacyAccessedAPITypes</key>
+  <array>
+    <dict>
+      <!-- Call site: OfficialAetherARKitPlugin.swift reads the app
+           executable's own modification date to derive a build stamp for
+           on-device diagnostics. C617.1 covers metadata of files inside
+           the app's own container.
+           TODO: this API use is avoidable — injecting the build stamp
+           into Info.plist at build time removes the call entirely, after
+           which this whole entry can be deleted. Deferred because that
+           Swift file is being actively modified on another branch. -->
+      <key>NSPrivacyAccessedAPIType</key>
+      <string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+      <key>NSPrivacyAccessedAPITypeReasons</key>
+      <array>
+        <string>C617.1</string>
+      </array>
+    </dict>
+  </array>
+
+  <key>NSPrivacyCollectedDataTypes</key>
+  <array>
+    <dict>
+      <!-- Email is collected for account creation / sign-in only, and is
+           linked to the account by definition. Not used for tracking. -->
+      <key>NSPrivacyCollectedDataType</key>
+      <string>NSPrivacyCollectedDataTypeEmailAddress</string>
+      <key>NSPrivacyCollectedDataTypeLinked</key>
+      <true/>
+      <key>NSPrivacyCollectedDataTypeTracking</key>
+      <false/>
+      <key>NSPrivacyCollectedDataTypePurposes</key>
+      <array>
+        <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+      </array>
+    </dict>
+    <dict>
+      <!-- Published works: the sparse point cloud plus its thumbnail.
+           Source photos stay on device and are never uploaded, which is
+           why PhotosorVideos is NOT declared — declaring it would
+           misstate what leaves the device. -->
+      <key>NSPrivacyCollectedDataType</key>
+      <string>NSPrivacyCollectedDataTypeOtherUserContent</string>
+      <key>NSPrivacyCollectedDataTypeLinked</key>
+      <true/>
+      <key>NSPrivacyCollectedDataTypeTracking</key>
+      <false/>
+      <key>NSPrivacyCollectedDataTypePurposes</key>
+      <array>
+        <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>
