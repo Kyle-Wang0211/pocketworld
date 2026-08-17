@@ -55,6 +55,8 @@ class MeSettingsPage extends StatelessWidget {
             ),
             const SizedBox(height: AetherSpacing.xl),
             const _SignOutButton(),
+            const SizedBox(height: AetherSpacing.md),
+            const _DeleteAccountButton(),
           ],
         ),
       ),
@@ -316,6 +318,125 @@ class _SettingsRow extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// App Store Guideline 5.1.1(v): an app that supports account creation
+/// "must also offer account deletion within the app". Apple is explicit
+/// that a deactivate-only flow does not satisfy this, and that apps
+/// outside highly-regulated industries must not make people "make a phone
+/// call, send an email, or go through other support flows" — so the
+/// contact address on this same page does NOT cover this requirement.
+/// That is why this is a real in-app button, not a mailto link.
+///
+/// Styled a step heavier than sign-out (filled, not outlined) because it
+/// is irreversible: it removes the account, every published work, and all
+/// cloud assets. Local captures on this device are untouched, which the
+/// dialog says explicitly so nobody deletes their account fearing they
+/// will lose their scans.
+class _DeleteAccountButton extends StatefulWidget {
+  const _DeleteAccountButton();
+
+  @override
+  State<_DeleteAccountButton> createState() => _DeleteAccountButtonState();
+}
+
+class _DeleteAccountButtonState extends State<_DeleteAccountButton> {
+  bool _busy = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppL10n.of(context);
+    return GestureDetector(
+      onTap: _busy
+          ? null
+          : () async {
+              final currentUser = AuthScope.read(context);
+              final confirmed = await showDialog<bool>(
+                context: context,
+                builder: (_) => AlertDialog(
+                  backgroundColor: AetherColors.bgCanvas,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(AetherRadii.lg),
+                  ),
+                  title: Text(
+                    l.meDeleteAccountDialogTitle,
+                    style: AetherTextStyles.h2,
+                  ),
+                  content: Text(
+                    l.meDeleteAccountDialogBody,
+                    style: AetherTextStyles.body,
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pop(false),
+                      child: Text(l.commonCancel),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pop(true),
+                      style: TextButton.styleFrom(
+                        foregroundColor: AetherColors.danger,
+                      ),
+                      child: Text(
+                        l.meDeleteAccountConfirm,
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+              if (confirmed != true) return;
+              if (!context.mounted) return;
+
+              setState(() => _busy = true);
+              final ok = await currentUser.deleteAccount();
+              if (!context.mounted) return;
+              setState(() => _busy = false);
+
+              if (!ok) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text(l.meDeleteAccountFailed)),
+                );
+                return;
+              }
+              // Same trap as sign-out: deleteAccount() flips CurrentUser
+              // to SignedOut so _AuthGate swaps the root body, but this
+              // page was pushed on top of HomeScreen and Navigator routes
+              // survive that swap. Without popping back to the root the
+              // user is left staring at a settings page floating over a
+              // dead stack.
+              Navigator.of(
+                context,
+                rootNavigator: true,
+              ).popUntil((route) => route.isFirst);
+            },
+      child: Container(
+        height: 52,
+        decoration: BoxDecoration(
+          color: _busy ? AetherColors.danger.withValues(alpha: 0.5)
+                       : AetherColors.danger,
+          borderRadius: BorderRadius.circular(AetherRadii.lg),
+        ),
+        alignment: Alignment.center,
+        child: _busy
+            ? const SizedBox(
+                height: 18,
+                width: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                ),
+              )
+            : Text(
+                l.meDeleteAccount,
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.white,
+                ),
+              ),
       ),
     );
   }

@@ -157,35 +157,58 @@ class CommunityService {
 
   /// Record a view on the given work. The schema's unique index dedups
   /// (work_id, viewer_id, hour-bucket), so calling this on every detail-
-  /// page open is safe — the same viewer reopening within the hour
-  /// silently 23505s and the counter is not double-incremented.
+  /// page open is safe — the same viewer reopening within the hour is
+  /// silently ignored and the counter is not double-incremented.
+  ///
+  /// Goes through the record_work_view RPC, not a client-side upsert:
+  /// the dedup target uq_work_views_dedup is an *expression* index and
+  /// PostgREST's on_conflict only accepts plain column lists, so the
+  /// old direct upsert was rejected with 400 on every call (and the
+  /// catch below ate it — views_count sat at 0 forever). Server-side
+  /// ON CONFLICT DO NOTHING matches expression indexes fine.
   ///
   /// Returns the new total views_count if the bump was effective, or
-  /// the prior value if this hour already counted. Errors (network,
-  /// auth) are swallowed so the viewer never breaks; views are a
-  /// nice-to-have, not load-bearing.
+  /// the prior value if this hour already counted, or null when the
+  /// work isn't visible to the caller. Errors (network, auth) are
+  /// swallowed so the viewer never breaks; views are a nice-to-have,
+  /// not load-bearing.
   Future<int?> recordView(String workId) async {
     try {
-      final myId = _client.auth.currentUser?.id;
-      // upsert with ignoreDuplicates so the dedup index does its job
-      // without raising 23505.
-      await _client
-          .from('work_views')
-          .upsert(
-            <String, dynamic>{'work_id': workId, 'viewer_id': ?myId},
-            onConflict:
-                'work_id, coalesce(viewer_id::text, \'anon\'), view_bucket',
-            ignoreDuplicates: true,
-          );
-      // Re-read views_count so the UI can show the bumped number
-      // immediately. Cheap query, public read.
+      final result = await _client.rpc(
+        'record_work_view',
+        params: {'p_work_id': workId},
+      );
+      return result as int?;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Server-side moderation state of one of the caller's own works, or
+  /// null if it can't be determined (signed out, network error, or the
+  /// row is gone).
+  ///
+  /// Why this exists: a published work is stamped locally with
+  /// `cloudWorkId` and from then on the drafts UI calls it "已发布"
+  /// forever — it has no idea the server may since have taken it down.
+  /// An author would see their work vanish from the feed with no
+  /// explanation. `works_select_visible` lets an owner read their own row
+  /// in ANY moderation state (that is deliberate), so the owner can
+  /// always learn the truth even when the public can't see the row.
+  ///
+  /// Returns one of 'ok' | 'under_review' | 'removed'.
+  Future<String?> fetchMyWorkModerationStatus(String workId) async {
+    try {
+      if (_client.auth.currentUser == null) return null;
       final row = await _client
           .from('works')
-          .select('views_count')
+          .select('moderation_status')
           .eq('id', workId)
           .maybeSingle();
-      return (row?['views_count'] as int?);
+      return row?['moderation_status'] as String?;
     } catch (_) {
+      // Non-load-bearing: on failure the UI keeps showing the plain
+      // "published" state rather than blocking the page.
       return null;
     }
   }

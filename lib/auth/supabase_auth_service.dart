@@ -353,17 +353,41 @@ class SupabaseAuthServiceImpl implements AuthService {
       throw const AuthException(AuthErrorKind.notSignedIn);
     }
     try {
-      // Supabase doesn't expose user-self-delete from anon-key client
-      // by default. Production should call an Edge Function with
-      // service_role privileges to admin-delete the user. For now we
-      // sign out and surface a TODO so callers know it didn't actually
-      // remove the row server-side.
-      await _client.auth.signOut();
-      throw const AuthException(
-        AuthErrorKind.providerUnavailable,
-        'Account deletion not yet wired — needs a server-side Edge Function '
-        'with service_role to call admin.deleteUser. Local session cleared.',
+      // App Store Guideline 5.1.1(v) requires deletion to be initiable
+      // from inside the app, and to actually remove the account plus its
+      // personal data — deactivating is explicitly not enough, and Apple
+      // forbids routing users through an email/support flow for this.
+      //
+      // The anon-key client can't self-delete, so this calls the
+      // delete-account Edge Function, which runs as service_role. It
+      // enumerates every storage object the user owns (including orphans
+      // found by prefix sweep, and quarantined assets from any taken-down
+      // works) BEFORE deleting auth.users — the delete cascades across
+      // every business table, after which those paths would be
+      // unrecoverable. See supabase/functions/delete-account/index.ts.
+      //
+      // `confirm: true` is required by the function so a stray call can't
+      // destroy an account; the UI gates on its own confirmation dialog
+      // before we ever get here.
+      final res = await _client.functions.invoke(
+        'delete-account',
+        body: const {'confirm': true},
       );
+      if (res.status != 200) {
+        final data = res.data;
+        final code = data is Map ? data['error']?.toString() : null;
+        throw AuthException(
+          AuthErrorKind.providerUnavailable,
+          'Account deletion failed (${res.status}${code == null ? '' : ': $code'}).',
+        );
+      }
+      // The account is gone server-side; drop the local session too.
+      // signOut() may itself fail now that the user no longer exists —
+      // that must not turn a successful deletion into a reported
+      // failure, so it is best-effort.
+      try {
+        await _client.auth.signOut();
+      } catch (_) {/* user already deleted; local state cleared by caller */}
     } on AuthException {
       rethrow;
     } catch (e) {
