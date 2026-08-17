@@ -21,6 +21,30 @@ import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:path_provider/path_provider.dart';
 
+import '../official_util/device_log.dart';
+
+/// Hard ceiling on a single community download.
+///
+/// Set just above the `works` bucket's own 500 MB limit rather than at
+/// some tidy small number, on purpose: B2B large-scene captures and future
+/// mesh outputs have no established size bound yet, and the bucket cap was
+/// deliberately left at 500 MB for that reason. A client cap below what the
+/// server accepts would silently break legitimate uploads later. What this
+/// value must do is bound the damage a hostile or corrupt asset can cause,
+/// and it does — combined with streaming to disk, an oversized asset costs
+/// bandwidth and a cancelled request, not an OOM.
+const int kMaxDownloadBytes = 512 * 1024 * 1024;
+
+/// Ceiling for assets that must be materialised as a `Uint8List`
+/// (thermion's `loadGltfFromBuffer` takes bytes, not a path).
+///
+/// Much stricter than [kMaxDownloadBytes] because this one really does sit
+/// in RAM. Today's sparse clouds are ~1.4 MB and the largest GLB sample in
+/// use is ~17 MB, so 128 MB is generous while staying far from an OOM on
+/// the oldest supported device. Assets above this are still usable through
+/// [GlbCache.fetchPath], which never loads them into memory.
+const int kMaxInMemoryBytes = 128 * 1024 * 1024;
+
 class GlbCache {
   GlbCache._();
   static final GlbCache instance = GlbCache._();
@@ -38,6 +62,10 @@ class GlbCache {
 
   final Map<String, Uint8List> _mem = <String, Uint8List>{};
   final Map<String, Future<Uint8List>> _inflight = <String, Future<Uint8List>>{};
+
+  /// De-dupes concurrent [fetchPath] downloads. Separate from [_inflight]
+  /// because that one is keyed to in-memory byte futures.
+  final Map<String, Future<String>> _inflightPaths = <String, Future<String>>{};
 
   Future<Uint8List> fetch(String url) {
     final cached = _mem[url];
@@ -73,24 +101,26 @@ class GlbCache {
     if (url.startsWith('file://')) {
       return Uri.parse(url).toFilePath();
     }
-    // Force a fetch so the bytes are guaranteed to have been written
-    // to disk by _persist(). _persist is fire-and-forget though, so
-    // we ALSO check existence + write synchronously here if needed —
-    // a race where fetch returned bytes but _persist hasn't completed
-    // yet would otherwise hand cgltf an empty file.
-    await fetch(url);
     final file = await _diskFile(url);
-    if (!await file.exists()) {
-      // _persist hasn't finished; do it synchronously so cgltf finds
-      // the file on its first fopen call.
-      final bytes = _mem[url];
-      if (bytes == null) {
-        throw StateError('GlbCache.fetchPath: bytes vanished mid-fetch');
-      }
-      await file.parent.create(recursive: true);
-      await file.writeAsBytes(bytes, flush: true);
+    if (await file.exists() && await file.length() > 0) {
+      return file.path;
     }
-    return file.path;
+    // Download straight to disk. This path deliberately does NOT go
+    // through fetch(): cgltf wants a file, so materialising the bytes in
+    // memory first would double peak memory for nothing — and it is what
+    // made a large asset able to OOM the app before it was ever parsed.
+    // It also means an asset between kMaxInMemoryBytes and
+    // kMaxDownloadBytes is perfectly usable here.
+    //
+    // Downloads are de-duplicated per URL so two cards racing for the
+    // same model don't fetch it twice.
+    final pending = _inflightPaths[url];
+    if (pending != null) return pending;
+    final future = _downloadToFile(url, file, maxBytes: kMaxDownloadBytes)
+        .then((_) => file.path);
+    _inflightPaths[url] = future;
+    future.whenComplete(() => _inflightPaths.remove(url)).ignore();
+    return future;
   }
 
   Future<Uint8List> _load(String url) async {
@@ -120,15 +150,113 @@ class GlbCache {
         }
       } catch (_) {/* corrupt cache → fall through to redownload */}
     }
-    final res = await _dio.get<List<int>>(url);
-    final bytes = Uint8List.fromList(res.data ?? const <int>[]);
-    if (bytes.isEmpty) {
+    // Stream to disk with a hard byte ceiling, then read back. Reasons:
+    //
+    //  1. DoS: a community work is downloaded AUTOMATICALLY when its card
+    //     scrolls into the feed. Before this, any publisher could upload a
+    //     huge (or malformed) file and OOM every viewer who scrolled past
+    //     it. The bucket-level size cap that would have been the cheapest
+    //     first gate was deliberately NOT lowered — B2B large-scene and
+    //     future mesh outputs have no known size bound yet — so the
+    //     client-side guard is the ONLY defence and has to be real.
+    //
+    //  2. Memory: the old path built the whole body in memory and then
+    //     wrote a second copy to disk, peaking at ~2x file size. Streaming
+    //     to disk first drops the download peak to one chunk.
+    //
+    // Note: Dio has no `maxContentLength` (that is an axios concept) — the
+    // only real guard is counting bytes as they arrive and cancelling.
+    // The Content-Length precheck below is a bandwidth optimisation, not a
+    // security boundary: it is absent under chunked encoding and a hostile
+    // server can simply lie.
+    await _downloadToFile(url, file, maxBytes: kMaxDownloadBytes);
+
+    final size = await file.length();
+    if (size == 0) {
+      await _safeDelete(file);
       throw StateError('Empty .glb response for $url');
     }
+    // Only now does anything enter memory. fetchPath() callers (cgltf,
+    // which needs a real file) never reach this line.
+    if (size > kMaxInMemoryBytes) {
+      throw StateError(
+        'Asset too large to load in memory: $size bytes '
+        '(limit $kMaxInMemoryBytes). Use fetchPath() for a disk-backed load.',
+      );
+    }
+    final bytes = await file.readAsBytes();
     _mem[url] = bytes;
-    // Persist async — failure to write disk cache must not break load.
-    unawaited(_persist(file, bytes));
     return bytes;
+  }
+
+  /// Streams [url] into [dest], aborting if more than [maxBytes] arrive.
+  /// Writes to a `.part` file and renames on success so a cancelled or
+  /// failed download can never be mistaken for a valid cache entry.
+  Future<void> _downloadToFile(
+    String url,
+    File dest, {
+    required int maxBytes,
+  }) async {
+    await dest.parent.create(recursive: true);
+    final part = File('${dest.path}.part');
+    final cancelToken = CancelToken();
+    IOSink? sink;
+    var received = 0;
+    var exceeded = false;
+    try {
+      final res = await _dio.get<ResponseBody>(
+        url,
+        options: Options(responseType: ResponseType.stream),
+        cancelToken: cancelToken,
+      );
+      final declared =
+          int.tryParse(res.headers.value(Headers.contentLengthHeader) ?? '');
+      if (declared != null && declared > maxBytes) {
+        exceeded = true;
+        cancelToken.cancel('declared size $declared exceeds $maxBytes');
+        throw StateError(
+          'Asset declares $declared bytes, over the $maxBytes limit: $url',
+        );
+      }
+
+      sink = part.openWrite();
+      await for (final chunk in res.data!.stream) {
+        received += chunk.length;
+        if (received > maxBytes) {
+          exceeded = true;
+          // Stop pulling bytes immediately; do not wait for the body to
+          // finish just to reject it afterwards.
+          cancelToken.cancel('received $received exceeds $maxBytes');
+          throw StateError(
+            'Asset exceeded the $maxBytes byte limit while downloading: $url',
+          );
+        }
+        sink.add(chunk);
+      }
+      await sink.flush();
+      await sink.close();
+      sink = null;
+      if (await dest.exists()) await _safeDelete(dest);
+      await part.rename(dest.path);
+    } catch (_) {
+      if (sink != null) {
+        try {
+          await sink.close();
+        } catch (_) {/* already broken */}
+      }
+      await _safeDelete(part);
+      if (exceeded) {
+        DeviceLog.log('GlbCache',
+            '拒绝超限资源($received/$maxBytes bytes): $url');
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> _safeDelete(File f) async {
+    try {
+      if (await f.exists()) await f.delete();
+    } catch (_) {/* best-effort */}
   }
 
   Future<File> _diskFile(String url) async {
@@ -162,10 +290,8 @@ class GlbCache {
     return '.glb';
   }
 
-  Future<void> _persist(File file, Uint8List bytes) async {
-    try {
-      await file.parent.create(recursive: true);
-      await file.writeAsBytes(bytes, flush: false);
-    } catch (_) {/* best-effort */}
-  }
+  // _persist() was removed with the streaming rewrite: downloads now land
+  // on disk directly (via a .part file + rename), so there is no longer a
+  // separate "write the in-memory copy out" step, and no window where
+  // fetch() has bytes that fetchPath() can't find on disk.
 }
