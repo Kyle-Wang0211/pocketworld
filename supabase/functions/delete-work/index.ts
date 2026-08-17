@@ -155,6 +155,8 @@ Deno.serve(async (req) => {
     action: 'work.deleted_by_author',
     target_type: 'work',
     target_id: workId,
+    ip_address: firstIp(req.headers.get('x-forwarded-for')),
+    user_agent: (req.headers.get('user-agent') ?? '').slice(0, 500) || null,
     metadata: {
       storage_objects_found: assets.length,
       storage_objects_deleted: deleted,
@@ -223,4 +225,12 @@ function normalizeStoragePath(raw: unknown, bucket: string): string | null {
 function isUuid(v: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
     .test(v);
+}
+
+/// x-forwarded-for may be a chain; the first entry is the original client.
+/// Returns null when unparseable — attribution must never fail the delete.
+function firstIp(raw: string | null): string | null {
+  if (!raw) return null;
+  const first = raw.split(',')[0]?.trim();
+  return first && first.length > 0 ? first : null;
 }

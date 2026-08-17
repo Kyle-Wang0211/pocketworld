@@ -179,10 +179,20 @@ Deno.serve(async (req) => {
   }
 
   // ── flip DB state (also writes the audit row, in one transaction) ────
+  // Attribution: the service_role key is a bearer secret, not an identity,
+  // so there is no auth.uid() to record here. `operator` is whatever the
+  // caller declares itself to be — useful for telling tooling apart, but
+  // self-reported and therefore not non-repudiable. The IP and user agent
+  // are the objective part of the trail.
   const { error: rpcErr } = await supabase.rpc('admin_set_work_moderation', {
     p_work_id: workId,
     p_status: status,
     p_reason: reason,
+    p_operator: typeof body.operator === 'string'
+      ? body.operator.trim().slice(0, 120)
+      : null,
+    p_ip: req.headers.get('x-forwarded-for'),
+    p_user_agent: req.headers.get('user-agent'),
   });
   if (rpcErr) {
     return jsonResponse({
@@ -197,13 +207,20 @@ Deno.serve(async (req) => {
   // Record exactly which objects moved, so an appeal/restore is possible
   // and so the takedown is provable after the fact.
   await supabase.from('audit_logs').insert({
+    // Same attribution caveat as the RPC above: no user identity behind a
+    // service_role call, so IP/UA carry the objective part.
     actor_id: null,
     action: takingDown ? 'admin.work_assets_quarantined' : 'admin.work_assets_restored',
     target_type: 'work',
     target_id: workId,
+    ip_address: firstIp(req.headers.get('x-forwarded-for')),
+    user_agent: (req.headers.get('user-agent') ?? '').slice(0, 500) || null,
     metadata: {
       status,
       reason,
+      operator: typeof body.operator === 'string'
+        ? body.operator.trim().slice(0, 120)
+        : null,
       assets: moves.map((m) => ({
         bucket: m.asset.bucket,
         path: m.asset.path,
@@ -255,4 +272,14 @@ function timingSafeEqual(a: string, b: string): boolean {
     diff |= (ab[i] ?? 0) ^ (bb[i] ?? 0);
   }
   return diff === 0;
+}
+
+/// x-forwarded-for may be a comma-separated chain; the first entry is the
+/// original client. Returns null for anything unparseable so a malformed
+/// header can never fail the insert (attribution matters less than the
+/// action being recorded at all).
+function firstIp(raw: string | null): string | null {
+  if (!raw) return null;
+  const first = raw.split(',')[0]?.trim();
+  return first && first.length > 0 ? first : null;
 }

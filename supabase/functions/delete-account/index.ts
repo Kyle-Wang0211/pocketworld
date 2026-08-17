@@ -199,10 +199,15 @@ Deno.serve(async (req) => {
   // display name — so the record is anonymised by construction while
   // still supporting "was this erasure actually performed?".
   await admin.from('audit_logs').insert({
-    actor_id: null,
+    // Self-serve deletion has a real identity behind it — record it. Only
+    // a service_role-initiated erasure (an out-of-band GDPR/PIPL request)
+    // genuinely has no user to attribute to.
+    actor_id: viaServiceRole ? null : targetUserId,
     action: 'user.account_deleted',
     target_type: 'user',
     target_id: targetUserId,
+    ip_address: firstIp(req.headers.get('x-forwarded-for')),
+    user_agent: (req.headers.get('user-agent') ?? '').slice(0, 500) || null,
     metadata: {
       via: viaServiceRole ? 'service_role' : 'self_serve',
       storage_objects_found: assets.length,
@@ -310,4 +315,12 @@ function timingSafeEqual(a: string, b: string): boolean {
   const n = Math.max(ab.length, bb.length);
   for (let i = 0; i < n; i++) diff |= (ab[i] ?? 0) ^ (bb[i] ?? 0);
   return diff === 0;
+}
+
+/// x-forwarded-for may be a chain; the first entry is the original client.
+/// Returns null when unparseable — attribution must never fail the erasure.
+function firstIp(raw: string | null): string | null {
+  if (!raw) return null;
+  const first = raw.split(',')[0]?.trim();
+  return first && first.length > 0 ? first : null;
 }
