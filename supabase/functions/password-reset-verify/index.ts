@@ -53,34 +53,43 @@ Deno.serve(async (req) => {
     { auth: { persistSession: false } },
   );
 
-  const { data: pending, error: fetchErr } = await supabase
-    .from('pending_password_resets')
-    .select('*')
-    .eq('email', email)
+  // Consume one attempt ATOMICALLY, before comparing anything. The old
+  // code read the row, checked the cap, then wrote back attempts+1 from
+  // the value it had read — so N concurrent guesses all saw attempts=0,
+  // all passed the cap, and all wrote 1. The cap never advanced and the
+  // OTP was brute-forceable (= account takeover). The RPC does the test
+  // and the increment in one UPDATE ... WHERE attempts < cap RETURNING,
+  // so concurrent callers serialise on the row lock.
+  const { data: consumed, error: consumeErr } = await supabase
+    .rpc('consume_reset_otp_attempt', {
+      p_email: email,
+      p_max_attempts: MAX_ATTEMPTS,
+    })
     .maybeSingle();
 
-  if (fetchErr) {
+  if (consumeErr) {
     return jsonResponse(
-      { error: 'db_error', detail: fetchErr.message },
+      { error: 'db_error', detail: consumeErr.message },
       500,
     );
   }
-  if (!pending) {
+  if (!consumed) {
     return jsonResponse({ error: 'not_found' }, 404);
   }
-  if (new Date(pending.expires_at).getTime() < Date.now()) {
-    return jsonResponse({ error: 'expired' }, 410);
-  }
-  if (pending.attempts >= MAX_ATTEMPTS) {
-    return jsonResponse({ error: 'too_many_attempts' }, 429);
+  switch (consumed.status) {
+    case 'ok':
+      break;
+    case 'expired':
+      return jsonResponse({ error: 'expired' }, 410);
+    case 'too_many_attempts':
+      return jsonResponse({ error: 'too_many_attempts' }, 429);
+    default:
+      return jsonResponse({ error: 'not_found' }, 404);
   }
 
   const inputHash = await sha256Hex(otp);
-  if (inputHash !== pending.otp_hash) {
-    await supabase
-      .from('pending_password_resets')
-      .update({ attempts: pending.attempts + 1 })
-      .eq('email', email);
+  if (inputHash !== consumed.otp_hash) {
+    // The attempt was already consumed above — nothing to bump here.
     return jsonResponse({ error: 'invalid_code' }, 401);
   }
 

@@ -25,7 +25,13 @@
 //   • PW_EMAIL_FROM (optional, default 'PocketWorld <noreply@pocketworld.io>')
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
-import { corsHeaders, jsonResponse, sha256Hex } from '../_shared/cors.ts';
+import {
+  consumeRateLimit,
+  corsHeaders,
+  generateOtp,
+  jsonResponse,
+  sha256Hex,
+} from '../_shared/cors.ts';
 
 const OTP_TTL_SECONDS = 600; // 10 minutes — matches the email body copy.
 
@@ -64,6 +70,24 @@ Deno.serve(async (req) => {
     auth: { persistSession: false },
   });
 
+  // Rate limit BEFORE doing any work. Deployed with --no-verify-jwt, so
+  // no credential is needed to reach it: uncapped, this sent one Resend
+  // email per call to any address the caller named (mail bombing of
+  // third parties + our bill), and rotated the OTP + reset the attempt
+  // counter, which is what made brute-force reloadable.
+  //
+  // Throttled calls return the same 200 {ok:true} as the happy path so
+  // this cannot become another account-enumeration oracle.
+  const clientIp = req.headers.get('x-forwarded-for')?.split(',')[0].trim() ??
+    'unknown';
+  const [emailOk, ipOk] = await Promise.all([
+    consumeRateLimit(supabase, `signup:email:${email}`, 3, 900),
+    consumeRateLimit(supabase, `signup:ip:${clientIp}`, 20, 3600),
+  ]);
+  if (!emailOk || !ipOk) {
+    return jsonResponse({ ok: true });
+  }
+
   // Refuse if a real (confirmed or unconfirmed) auth.users row already
   // exists for this email. listUsers paginates; this is fine for the
   // small project sizes PocketWorld is targeting at launch.
@@ -86,11 +110,11 @@ Deno.serve(async (req) => {
     );
   }
 
-  // Generate a 6-digit OTP. Math.random is cryptographically weak but
-  // the OTP is one-shot, 10-min TTL, server-side rate limited (5
-  // attempts max), and sent only to the email owner — brute-force
-  // surface is tiny. If a future audit objects, swap to crypto.getRandomValues.
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  // 6-digit OTP from the CSPRNG. The previous Math.random version was
+  // justified by "server-side rate limited (5 attempts max)" — that cap
+  // turned out to be racy and unenforced, so the justification did not
+  // hold. Both halves are fixed now; this is the cheap half.
+  const otp = generateOtp();
   const otpHash = await sha256Hex(otp);
   const expiresAt = new Date(Date.now() + OTP_TTL_SECONDS * 1000).toISOString();
 

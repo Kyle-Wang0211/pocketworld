@@ -20,7 +20,13 @@
 //   • PW_EMAIL_FROM (optional)
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
-import { corsHeaders, jsonResponse, sha256Hex } from '../_shared/cors.ts';
+import {
+  consumeRateLimit,
+  corsHeaders,
+  generateOtp,
+  jsonResponse,
+  sha256Hex,
+} from '../_shared/cors.ts';
 
 const OTP_TTL_SECONDS = 600;
 
@@ -52,6 +58,25 @@ Deno.serve(async (req) => {
     { auth: { persistSession: false } },
   );
 
+  // Rate limit BEFORE doing any work. This endpoint is deployed with
+  // --no-verify-jwt, so it needs no credential at all: uncapped it was
+  // both a free mail cannon (one Resend send per call, billed to us) and
+  // the reload lever for OTP brute-force, since every call rotates the
+  // code and resets the attempt counter.
+  //
+  // A throttled call returns the same 200 {ok:true} as the happy path —
+  // any distinguishable response would just become another account
+  // enumeration oracle.
+  const clientIp = req.headers.get('x-forwarded-for')?.split(',')[0].trim() ??
+    'unknown';
+  const [emailOk, ipOk] = await Promise.all([
+    consumeRateLimit(supabase, `reset:email:${email}`, 3, 900),
+    consumeRateLimit(supabase, `reset:ip:${clientIp}`, 20, 3600),
+  ]);
+  if (!emailOk || !ipOk) {
+    return jsonResponse({ ok: true });
+  }
+
   // Check if a real auth.users row exists. If not, return 200 silently
   // — Supabase Auth's built-in recover endpoint does the same. We don't
   // want to leak which emails are registered.
@@ -80,7 +105,7 @@ Deno.serve(async (req) => {
   }
 
   // Generate + hash OTP, upsert pending row, send email.
-  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  const otp = generateOtp();
   const otpHash = await sha256Hex(otp);
   const expiresAt = new Date(Date.now() + OTP_TTL_SECONDS * 1000).toISOString();
 

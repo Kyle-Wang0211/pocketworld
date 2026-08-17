@@ -270,9 +270,26 @@ async function validateThumbnailUpload(
       'Unsupported thumbnail upload role.',
     );
   }
-  requireContentType(request, 'image/jpeg');
+  // PublishService ships the capture route's official_sparse_thumb.png
+  // verbatim (image/png) since 2026-08-16; bake-style callers still send
+  // JPEG. Accept exactly those two, and pin the path extension to the
+  // declared content type so the stored object never lies about its
+  // bytes. (jpeg-only here silently killed every published thumbnail:
+  // the client's catch ate the 415 and publish still reported success.)
+  const thumbnailExtByContentType: Record<string, string> = {
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+  };
+  const thumbnailExt = thumbnailExtByContentType[request.contentType];
+  if (!thumbnailExt) {
+    throw new RequestError(
+      415,
+      'unsupported_content_type',
+      'Expected image/jpeg or image/png.',
+    );
+  }
   requireMaxBytes(request, 10 * 1024 * 1024);
-  if (request.path !== `${userId}/${workId}.jpg`) {
+  if (request.path !== `${userId}/${workId}.${thumbnailExt}`) {
     throw new RequestError(
       403,
       'path_not_owned',

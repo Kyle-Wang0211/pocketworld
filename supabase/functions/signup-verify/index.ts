@@ -50,50 +50,56 @@ Deno.serve(async (req) => {
     { auth: { persistSession: false } },
   );
 
-  const { data: pending, error: fetchErr } = await supabase
-    .from('pending_signups')
-    .select('*')
-    .eq('email', email)
+  // Consume one attempt ATOMICALLY, before comparing anything. The old
+  // read-check-write sequence let N concurrent guesses all read
+  // attempts=0 and all write back 1, so the 5-attempt cap never actually
+  // advanced. See consume_signup_otp_attempt for the single-statement
+  // test-and-increment that replaces it.
+  const { data: consumed, error: consumeErr } = await supabase
+    .rpc('consume_signup_otp_attempt', {
+      p_email: email,
+      p_max_attempts: MAX_ATTEMPTS,
+    })
     .maybeSingle();
 
-  if (fetchErr) {
+  if (consumeErr) {
     return jsonResponse(
-      { error: 'db_error', detail: fetchErr.message },
+      { error: 'db_error', detail: consumeErr.message },
       500,
     );
   }
-  if (!pending) {
+  if (!consumed) {
     return jsonResponse({ error: 'not_found' }, 404);
   }
-  if (new Date(pending.expires_at).getTime() < Date.now()) {
-    // Cron will reap this eventually; we just refuse here.
-    return jsonResponse({ error: 'expired' }, 410);
-  }
-  if (pending.attempts >= MAX_ATTEMPTS) {
-    return jsonResponse({ error: 'too_many_attempts' }, 429);
+  switch (consumed.status) {
+    case 'ok':
+      break;
+    case 'expired':
+      // Cron will reap this eventually; we just refuse here.
+      return jsonResponse({ error: 'expired' }, 410);
+    case 'too_many_attempts':
+      return jsonResponse({ error: 'too_many_attempts' }, 429);
+    default:
+      return jsonResponse({ error: 'not_found' }, 404);
   }
 
   const inputHash = await sha256Hex(otp);
-  if (inputHash !== pending.otp_hash) {
-    // Bump attempts so brute force has a hard cap.
-    await supabase
-      .from('pending_signups')
-      .update({ attempts: pending.attempts + 1 })
-      .eq('email', email);
+  if (inputHash !== consumed.otp_hash) {
+    // The attempt was already consumed above — nothing to bump here.
     return jsonResponse({ error: 'invalid_code' }, 401);
   }
 
   // OTP good — create the real user, pre-confirmed.
   const { data: created, error: createErr } = await supabase.auth.admin
     .createUser({
-      email: pending.email,
-      password: pending.password,
+      email,
+      password: consumed.password,
       email_confirm: true,
       user_metadata: {
-        ...(pending.display_name
-          ? { display_name: pending.display_name }
+        ...(consumed.display_name
+          ? { display_name: consumed.display_name }
           : {}),
-        locale: pending.locale,
+        locale: consumed.locale,
       },
     });
   if (createErr || !created.user) {
