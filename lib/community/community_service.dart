@@ -71,8 +71,26 @@ class CommunityService {
             .order('published_at', ascending: false),
     };
     final worksRes = await transformed.range(offset, offset + limit - 1);
-    final works = (worksRes as List).cast<Map<String, dynamic>>();
+    var works = (worksRes as List).cast<Map<String, dynamic>>();
     if (works.isEmpty) return const [];
+
+    // Guideline 1.2 "ability to block abusive users": the blocks table has
+    // existed since 20260429020002 but the feed never consulted it, so
+    // blocking had no visible effect. Filtered here rather than in RLS
+    // because works_select_visible has no notion of the *viewer*, and
+    // OR-ing a per-viewer subquery into it would run for every row.
+    //
+    // Trade-off accepted: filtering after .range() means a page can come
+    // back short when a blocked author is on it. That is better than
+    // showing content the user explicitly blocked, and the pager keeps
+    // advancing by `works.length` so nothing is skipped or repeated.
+    final blocked = await fetchBlockedUserIds();
+    if (blocked.isNotEmpty) {
+      works = works
+          .where((w) => !blocked.contains(w['user_id'] as String))
+          .toList();
+      if (works.isEmpty) return const [];
+    }
 
     // 2) Profiles for the unique authors.
     final userIds = works.map((w) => w['user_id'] as String).toSet().toList();
@@ -181,6 +199,100 @@ class CommunityService {
       return result as int?;
     } catch (_) {
       return null;
+    }
+  }
+
+  /// Id of the signed-in user, or null when signed out. Exposed so UI can
+  /// tell "my own work" from someone else's without reaching for the
+  /// Supabase client itself (the feed UI otherwise never touches it).
+  String? get currentUserId => _client.auth.currentUser?.id;
+
+  /// Report a work. App Store Guideline 1.2 requires "a mechanism to
+  /// report offensive content and timely responses to concerns" — the
+  /// `reports` table has existed since 20260429020005 but had no client
+  /// entry point at all, which is the gap this closes.
+  ///
+  /// `reason` must be one of the schema's CHECK values:
+  /// spam | harassment | hate_speech | sexual_content | violence |
+  /// copyright | misinformation | other.
+  ///
+  /// RLS (`reports_insert_self`) pins reporter_id to auth.uid() and
+  /// requires status='pending' with the admin fields blank, so a client
+  /// cannot forge a report from someone else or pre-resolve one.
+  /// Throws on failure so the UI can tell the user it didn't go through —
+  /// a silently dropped report would be worse than no report button.
+  Future<void> reportWork({
+    required String workId,
+    required String reason,
+    String? detail,
+  }) async {
+    final myId = _client.auth.currentUser?.id;
+    if (myId == null) {
+      throw StateError('Cannot report — no signed-in user.');
+    }
+    await _client.from('reports').insert({
+      'reporter_id': myId,
+      'target_type': 'work',
+      'target_id': workId,
+      'reason': reason,
+      if (detail != null && detail.trim().isNotEmpty)
+        'detail': detail.trim(),
+    });
+  }
+
+  /// Block a user. Guideline 1.2 requires "the ability to block abusive
+  /// users from the service".
+  ///
+  /// The schema does the heavy lifting: `blocks` has a
+  /// `blocker_id <> blocked_id` CHECK, and a trigger
+  /// (`cascade_block_unfollow`) tears down any follow relationship in
+  /// both directions. Blocking is idempotent via the composite PK.
+  Future<void> blockUser(String blockedUserId) async {
+    final myId = _client.auth.currentUser?.id;
+    if (myId == null) {
+      throw StateError('Cannot block — no signed-in user.');
+    }
+    if (myId == blockedUserId) {
+      throw ArgumentError('Cannot block yourself.');
+    }
+    await _client.from('blocks').upsert(
+      {'blocker_id': myId, 'blocked_id': blockedUserId},
+      onConflict: 'blocker_id,blocked_id',
+      ignoreDuplicates: true,
+    );
+  }
+
+  /// Undo [blockUser].
+  Future<void> unblockUser(String blockedUserId) async {
+    final myId = _client.auth.currentUser?.id;
+    if (myId == null) return;
+    await _client
+        .from('blocks')
+        .delete()
+        .eq('blocker_id', myId)
+        .eq('blocked_id', blockedUserId);
+  }
+
+  /// User ids the current user has blocked. Empty when signed out.
+  ///
+  /// Used to filter the feed client-side: RLS cannot do it for us because
+  /// `works_select_visible` has no notion of the *viewer's* block list,
+  /// and adding one would make every feed row run a correlated subquery.
+  Future<Set<String>> fetchBlockedUserIds() async {
+    final myId = _client.auth.currentUser?.id;
+    if (myId == null) return const <String>{};
+    try {
+      final rows = await _client
+          .from('blocks')
+          .select('blocked_id')
+          .eq('blocker_id', myId);
+      return {
+        for (final r in (rows as List).cast<Map<String, dynamic>>())
+          r['blocked_id'] as String,
+      };
+    } catch (_) {
+      // Fail open: a blocks lookup failure must not blank the feed.
+      return const <String>{};
     }
   }
 
