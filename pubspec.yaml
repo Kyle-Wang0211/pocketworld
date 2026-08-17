@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+1
+version: 1.0.0+20
 
 environment:
   sdk: ^3.11.5
@@ -56,6 +56,16 @@ dependencies:
   # the UI layer is provider-agnostic — Firebase services / options /
   # GoogleService-Info.plist all removed.
   supabase_flutter: ^2.8.0
+
+  # 会话令牌安全存储。supabase_flutter 默认把 session(含长效 refresh_token)
+  # 明文写进 iOS UserDefaults —— 不进 Keychain,且会被未加密的 iTunes/iCloud
+  # 备份整份带走,越狱或取证可直接提取并离线冒充登录。改用 Keychain 后端。
+  #
+  # 🔒 精确锁版本,不用 ^:这个包在 10.0.0 → 10.1.0 之间出过一次回归,
+  # 让全体 iOS 用户的 keychain 读取返回空 => 集体被登出(upstream issue #1158)。
+  # 对认证存储来说,版本漂移的代价是用户掉登录,所以升级必须是显式动作 +
+  # 真机验证,不能靠 caret 自动跟随。
+  flutter_secure_storage: 10.3.1
 
   # Pipeline / upload broker HTTP client.
   dio: ^5.7.0
@@ -224,6 +234,11 @@ flutter:
     - assets/models/WaterBottle.glb
     - ios/Vendor/JXL/licenses/
     - ios/Vendor/Zpaq/Zpaq-LICENSE.txt
+    # Native reconstruction core (COLMAP/Ceres/Eigen/Dawn/…) license texts.
+    # BSD-3 requires shipping the copyright notice with binary distribution;
+    # these are the texts THIRD_PARTY_NOTICES points at.
+    - ios/Vendor/NativeCore/licenses/
+    - vendor/lepton_jpeg/licenses/
     - assets/models/Duck.glb
     - assets/models/Lantern.glb
     # Neutral image-based light for the community viewer.

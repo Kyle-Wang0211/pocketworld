@@ -27,7 +27,9 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'auth/auth_scope.dart';
 import 'auth/current_user.dart';
 import 'auth/mock_auth_service.dart';
+import 'auth/secure_session_storage.dart';
 import 'auth/supabase_auth_service.dart';
+import 'config/endpoint_config.dart';
 import 'i18n/locale_notifier.dart';
 import 'l10n/app_localizations.dart';
 import 'lifecycle_observer.dart';
@@ -39,7 +41,7 @@ import 'official_capture/photo_archive_runtime.dart';
 import 'official_capture/telemetry_writer.dart' as official_telemetry;
 import 'official_util/device_log.dart' as official_device_log;
 import 'orbit_controls.dart';
-import 'ui/me_root_page.dart';
+import 'ui/app_shell.dart';
 import 'ui/auth/auth_root_view.dart';
 import 'ui/design_system.dart';
 import 'ui/splash_overlay.dart';
@@ -177,18 +179,22 @@ Future<void> main() async {
       });
 
       unawaited(() async {
-        // Initialize Supabase with the published anon key + project URL
-        // for our PocketWorld dev project. The anon key is intentionally
-        // public — RLS policies on each table do the actual access
-        // control. Replace with --dart-define overrides for prod.
-        const supabaseUrl = String.fromEnvironment(
-          'SUPABASE_URL',
-          defaultValue: 'https://tzvwkqmgaourwqrmxbyb.supabase.co',
-        );
-        const supabaseAnonKey = String.fromEnvironment(
-          'SUPABASE_ANON_KEY',
-          defaultValue: 'sb_publishable_ur4tTV2iXSV4NsL3YYttyw_SIjFAMST',
-        );
+        // Backend address is resolved at RUNTIME — see
+        // lib/config/endpoint_config.dart. It used to be read straight from
+        // `String.fromEnvironment` here, but `--dart-define` does not reach
+        // this project's iOS xcconfig chain (verified on device
+        // 2026-08-09), so the defaults were the shipped values: the backend
+        // host was effectively compiled into the binary, and moving it
+        // meant cutting a release and waiting for adoption. The resolver
+        // falls back to those same constants, so with no config endpoint
+        // set this is byte-for-byte the previous behaviour.
+        //
+        // The anon key is intentionally public — RLS policies on each
+        // table do the actual access control.
+        final endpoint = await EndpointConfigResolver.resolve();
+        debugPrint('[main] backend endpoint resolved: $endpoint');
+        final supabaseUrl = endpoint.supabaseUrl;
+        final supabaseAnonKey = endpoint.supabaseAnonKey;
         const initTimeout = Duration(seconds: 10);
         bool supabaseReady = false;
         try {
@@ -196,6 +202,16 @@ Future<void> main() async {
             url: supabaseUrl,
             anonKey: supabaseAnonKey,
             debug: false,
+            // Keychain instead of the default plaintext UserDefaults. The
+            // default leaves the long-lived refresh_token readable in the
+            // preferences plist and carries it into unencrypted backups;
+            // see lib/auth/secure_session_storage.dart for why the key
+            // derivation and accessibility level are what they are.
+            // initialize() performs the one-time migration before
+            // recoverSession() runs, so existing sessions survive.
+            authOptions: FlutterAuthClientOptions(
+              localStorage: SecureSessionStorage(supabaseUrl: supabaseUrl),
+            ),
           ).timeout(initTimeout);
           supabaseReady = true;
         } catch (e) {
@@ -674,10 +690,15 @@ class _HomeScreenState extends State<HomeScreen> {
     // ported capture flow will reattach to.
     return Stack(
       children: [
-        // V1 (工具阶段): personal page + capture FAB only. The two-tab shell
-        // (AetherAppShell, with the community feed) is kept for V2 but not
-        // routed to here.
-        const MeRootPage(),
+        // 2026-08-16 — the two-tab shell is routed to again. It was
+        // swapped for MeRootPage in cf68313 ("V1 IA") when the community
+        // feed had no way to be fed: the publish chain had been deleted
+        // in Plan G W2, so the tab could only ever show an empty list.
+        // PublishService is back and points to the sparse cloud the
+        // capture route actually produces, so 社区 has content and earns
+        // its tab. MeRootPage stays in the tree — flipping this one line
+        // back is how we ship a community-less build if we ever need to.
+        const AetherAppShell(),
         Positioned.fill(
           child: AetherSplashOverlay(
             visible: _splashVisible,
