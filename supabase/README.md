@@ -417,7 +417,20 @@ zsh ../tool/verify_supply_chain.sh
 
 1. Write a new SQL file in `supabase/migrations/<UTC_TIMESTAMP>_<name>.sql`
 2. `supabase db push` — applies only the new file
-3. If the migration adds a new Edge Function, `supabase functions deploy <name> --no-verify-jwt`
+3. If the migration adds a new Edge Function, deploy it **without**
+   `--no-verify-jwt`. That flag is not the default it once looked like: it
+   lets a request with no `Authorization` header at all reach your code.
+   Only add it when the function authenticates by inspecting the raw bearer
+   token itself — today that is `admin-moderate-work` alone, which compares
+   the token against the service_role key.
+
+   ```bash
+   supabase functions deploy <name> --project-ref <REF>
+   ```
+
+4. If the function imports a new dependency, pin the **full** version
+   (`jsr:@supabase/supabase-js@2.112.3`, never `@2`) and run
+   `zsh tool/verify_supply_chain.sh`.
 
 ---
 
