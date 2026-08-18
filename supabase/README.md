@@ -256,12 +256,27 @@ users can read public work files but not private ones.
 
 ## Edge Functions
 
-All four are **deployed with `--no-verify-jwt`**: the project uses
-the new `sb_publishable_*` API key format, which Supabase Edge
-Functions' default JWT verification doesn't recognize. Since these
-endpoints are intentionally public (anonymous users hit signup/reset),
-disabling JWT verify is correct — the function does its own input
-validation + per-email rate limits via `pending_*` tables.
+### Auth functions (public)
+
+These four are reachable by anonymous users (someone signing up has no
+session yet), so they cannot require a user JWT.
+
+**Deployment flag — read this before redeploying.** They were originally
+deployed with `--no-verify-jwt`, which allows a request carrying *no*
+`Authorization` header at all. As of 2026-08-18 they were redeployed
+**without** that flag, so the platform now rejects header-less requests
+before they reach the function.
+
+This is a tightening, not a break, and it was verified rather than
+assumed: the app calls them through `supabase_flutter`, whose
+`functions.invoke()` always attaches the publishable key, and the signup
+path was tested end-to-end after the change (`{"ok":true}`, 200). The
+function's own auth logic is unaffected either way.
+
+⚠️ Consequence: a bare `curl` with no `Authorization` header now gets
+`401 UNAUTHORIZED_NO_AUTH_HEADER` from the platform. Pass
+`-H "Authorization: Bearer <publishable key>"` when testing by hand. To
+restore the older, looser behaviour, redeploy with `--no-verify-jwt`.
 
 | Function              | Purpose                                                                                         |
 |-----------------------|-------------------------------------------------------------------------------------------------|
@@ -269,6 +284,54 @@ validation + per-email rate limits via `pending_*` tables.
 | signup-verify         | Validate OTP, call admin.createUser with email_confirm:true, delete pending row                 |
 | password-reset-start  | Same pattern for password reset (silent on missing email for security)                          |
 | password-reset-verify | Validate OTP, admin.updateUserById to set new password, delete pending row                      |
+
+### Rate limiting — corrected 2026-08-18
+
+An earlier version of this section claimed these endpoints had
+"per-email rate limits via `pending_*` tables". **That was never true.**
+The `pending_*` tables only ever carried an `attempts` counter that the
+*verify* side incremented, while the *start* side reset it to 0 — there
+was no cooldown anywhere, and the endpoints could be called without
+limit.
+
+What exists now (migration `20260817010000`):
+
+- `edge_rate_limits` table + `consume_rate_limit(key, limit, window)`, a
+  fixed-window counter implemented as a single atomic upsert.
+- signup / password-reset **start**: 3 per email per 15 min, 20 per IP
+  per hour. A throttled call returns a response **identical to the happy
+  path** — returning a distinguishable error would turn the limiter into
+  an account-enumeration oracle.
+- OTP attempt caps are enforced by `consume_*_otp_attempt`, which spends
+  the quota **before** comparing the hash, so a correct guess and a wrong
+  guess cost the same. (The previous read-then-write counter could be
+  defeated by issuing attempts concurrently.)
+
+All limiters are fail-open: if the limiter itself errors, the request
+proceeds. A broken limiter must not be what stops someone from signing
+up — and since it is one atomic upsert, "broken" implies the database is
+already in trouble.
+
+### Server-side functions (service_role or user JWT)
+
+| Function            | Auth                    | Purpose                                                        |
+|---------------------|-------------------------|----------------------------------------------------------------|
+| storage-sign-upload | user JWT                | Mints one-shot signed upload tokens after ownership checks      |
+| delete-account      | user JWT, or service_role + `target_user_id` | Real account deletion (Guideline 5.1.1(v)) — enumerates every storage object *before* the `auth.users` cascade, since the cascade destroys the paths |
+| delete-work         | user JWT                | Author removes their own published work, files included. Refuses while the work is under moderation |
+| admin-moderate-work | service_role **only**   | Takedown/restore. Moves assets into the private `quarantine` bucket — deleting the DB row is not enough because a public bucket bypasses RLS, and storage objects cannot be deleted from SQL |
+
+`admin-moderate-work` **must** be deployed with `--no-verify-jwt` so the
+service_role key arrives as a plain bearer token instead of being
+pre-validated as a user JWT.
+
+### Dependency pinning
+
+All functions import `jsr:@supabase/supabase-js@2.112.3` — a full
+version, never a bare `@2`. `@2` is a semver *range*: it re-resolves on
+every deploy, which makes deploys non-reproducible and leaves a window
+for a compromised upstream release. `tool/verify_supply_chain.sh`
+enforces this and checks the version is identical across functions.
 
 ### Required secrets
 
@@ -321,18 +384,33 @@ supabase link --project-ref <YOUR_PROJECT_REF>
 cd pocketworld_flutter
 supabase db push
 
-# 4. Deploy Edge Functions (--no-verify-jwt is critical for sb_publishable_* keys)
-supabase functions deploy signup-start          --no-verify-jwt --project-ref <REF>
-supabase functions deploy signup-verify         --no-verify-jwt --project-ref <REF>
-supabase functions deploy password-reset-start  --no-verify-jwt --project-ref <REF>
-supabase functions deploy password-reset-verify --no-verify-jwt --project-ref <REF>
+# 4. Deploy Edge Functions — ALL EIGHT.
+#    An earlier version of this list had only the four auth functions, which
+#    silently produced a project whose thumbnail upload path 404s.
+supabase functions deploy signup-start          --project-ref <REF>
+supabase functions deploy signup-verify         --project-ref <REF>
+supabase functions deploy password-reset-start  --project-ref <REF>
+supabase functions deploy password-reset-verify --project-ref <REF>
+supabase functions deploy storage-sign-upload   --project-ref <REF>
+supabase functions deploy delete-account        --project-ref <REF>
+supabase functions deploy delete-work           --project-ref <REF>
+
+# admin-moderate-work is the one function that REQUIRES --no-verify-jwt:
+# it authenticates by comparing the bearer token against the service_role
+# key itself, so the token must reach the function unvalidated rather than
+# being pre-checked as a user JWT.
+supabase functions deploy admin-moderate-work   --no-verify-jwt --project-ref <REF>
 
 # 5. Set RESEND_API_KEY secret via dashboard (NOT via CLI / chat)
 #    https://supabase.com/dashboard/project/<REF>/functions/secrets
 
 # 6. Verify
 supabase db push --dry-run     # should print "Remote database is up to date"
-supabase functions list        # should show 4 ACTIVE
+supabase functions list        # should show 8 ACTIVE
+supabase db advisors --type security --linked   # triage before going live
+
+# 7. Supply chain (no CI in this repo — run it by hand before shipping)
+zsh ../tool/verify_supply_chain.sh
 ```
 
 ### Incremental migration (adding a new feature)
