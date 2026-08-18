@@ -24,7 +24,7 @@
 //                                         in Auth → Email → SMTP)
 //   • PW_EMAIL_FROM (optional, default 'PocketWorld <noreply@pocketworld.io>')
 
-import { createClient } from 'jsr:@supabase/supabase-js@2';
+import { createClient } from 'jsr:@supabase/supabase-js@2.112.3';
 import {
   consumeRateLimit,
   corsHeaders,

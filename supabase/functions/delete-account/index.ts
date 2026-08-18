@@ -32,7 +32,7 @@
 //   block that forever would be a worse failure than a leftover file.
 //   Every failure is recorded in audit_logs for manual sweeping.
 
-import { createClient } from 'jsr:@supabase/supabase-js@2';
+import { createClient } from 'jsr:@supabase/supabase-js@2.112.3';
 import { corsHeaders, jsonResponse, consumeRateLimit } from '../_shared/cors.ts';
 
 // Buckets whose layout is `{user_id}/...` and can be swept by prefix.

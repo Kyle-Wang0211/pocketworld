@@ -31,7 +31,7 @@
 // Deploy with --no-verify-jwt so the service_role key reaches us as a
 // plain bearer token instead of being pre-validated as a user JWT.
 
-import { createClient } from 'jsr:@supabase/supabase-js@2';
+import { createClient } from 'jsr:@supabase/supabase-js@2.112.3';
 import { corsHeaders, jsonResponse, consumeRateLimit } from '../_shared/cors.ts';
 
 const QUARANTINE_BUCKET = 'quarantine';

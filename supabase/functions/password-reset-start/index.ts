@@ -19,7 +19,7 @@
 //   • RESEND_API_KEY                     (your Resend API key)
 //   • PW_EMAIL_FROM (optional)
 
-import { createClient } from 'jsr:@supabase/supabase-js@2';
+import { createClient } from 'jsr:@supabase/supabase-js@2.112.3';
 import {
   consumeRateLimit,
   corsHeaders,

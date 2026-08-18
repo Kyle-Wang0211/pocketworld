@@ -30,7 +30,7 @@
 // verified — moving a target under a test in progress. Fold them together
 // once that verification lands.
 
-import { createClient } from 'jsr:@supabase/supabase-js@2';
+import { createClient } from 'jsr:@supabase/supabase-js@2.112.3';
 import { corsHeaders, jsonResponse, consumeRateLimit } from '../_shared/cors.ts';
 
 type AssetRef = { bucket: string; path: string };

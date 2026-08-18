@@ -18,7 +18,7 @@
 //   • SUPABASE_URL                       (auto)
 //   • SUPABASE_SERVICE_ROLE_KEY          (auto)
 
-import { createClient } from 'jsr:@supabase/supabase-js@2';
+import { createClient } from 'jsr:@supabase/supabase-js@2.112.3';
 import { corsHeaders, jsonResponse, sha256Hex } from '../_shared/cors.ts';
 
 const MAX_ATTEMPTS = 5;

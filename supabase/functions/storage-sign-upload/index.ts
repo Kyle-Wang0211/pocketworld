@@ -9,7 +9,7 @@
 // token. Storage insert/update RLS for brokered buckets can therefore be
 // closed to clients while the app still uploads raw captures efficiently.
 
-import { createClient } from 'jsr:@supabase/supabase-js@2';
+import { createClient } from 'jsr:@supabase/supabase-js@2.112.3';
 import { corsHeaders, jsonResponse } from '../_shared/cors.ts';
 
 const EXPIRES_IN_SECONDS = 60;
