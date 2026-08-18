@@ -1,0 +1,28 @@
+# Dependabot — scoped deliberately narrow.
+# ---------------------------------------------------------------------
+# Only github-actions, and that is the point.
+#
+# Pinning every action to a full commit SHA (see workflows/security.yml)
+# buys immutability at the cost of staleness: a pinned SHA never picks up
+# the upstream's own security fixes, and nothing will tell you. Dependabot
+# is the counterweight — it watches the pinned SHAs and opens a PR when the
+# upstream moves, keeping the SHA comment (# v7.0.1) accurate.
+#
+# Deliberately NOT enabled for pub/Dart:
+#   osv-scanner already scans pubspec.lock on every push and weekly on a
+#   schedule, which covers the thing that matters (known CVEs). Dependabot
+#   would instead open version-bump PRs for 141 packages — noise for a
+#   single-developer repo, and every merged bump invalidates the lockfile
+#   verification that `--enforce-lockfile` exists to provide.
+#   Detection here, upgrades on purpose.
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: 'chore(ci)'
+    labels: [security, dependencies]

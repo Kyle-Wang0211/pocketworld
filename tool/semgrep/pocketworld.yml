@@ -1,0 +1,88 @@
+# PocketWorld project-specific security rules
+# =====================================================================
+# NOT a general SAST ruleset. Semgrep's free rules were measured against
+# this codebase on 2026-08-18 and found nearly useless for it: of three
+# planted Dart vulnerabilities (disabled TLS verification, non-crypto RNG,
+# hardcoded key) it caught only the hardcoded key — via a generic secret
+# rule that gitleaks already covers better. 239 real Dart files produced
+# zero findings. Installing p/default here would buy a green check and no
+# security.
+#
+# What IS worth encoding is regression protection for the specific fixes
+# made during the 2026-08-17/18 hardening, each of which is a silent,
+# one-line revert away from being undone — and none of which any generic
+# ruleset knows about.
+
+rules:
+  # ── 1. TLS verification ────────────────────────────────────────────
+  - id: pw-disabled-cert-validation
+    languages: [dart]
+    severity: ERROR
+    message: >
+      badCertificateCallback returning true disables TLS certificate
+      validation entirely, making every HTTPS call trivially
+      machine-in-the-middle-able. There is no legitimate production use.
+    patterns:
+      - pattern-either:
+          - pattern: $C.badCertificateCallback = (...) => true;
+          - pattern: |
+              $C.badCertificateCallback = (...) { ... return true; ... };
+
+  # ── 2. Session tokens must stay in the Keychain ────────────────────
+  # 358ba6e moved Supabase session storage from SharedPreferences (plain
+  # text, included in unencrypted device backups) to the Keychain with
+  # first_unlock_this_device. SharedPreferences is still the correct home
+  # for ordinary settings, so this rule fires only on auth-shaped keys.
+  - id: pw-session-token-in-shared-prefs
+    languages: [dart]
+    severity: ERROR
+    message: >
+      Auth/session material must go through SecureSessionStorage
+      (Keychain), never SharedPreferences — the latter is plain text on
+      disk and lands in unencrypted backups. See lib/auth/secure_session_storage.dart.
+    patterns:
+      - pattern-either:
+          - pattern: $P.setString("=~/.*(auth|session|token|refresh|sb-).*/i", ...)
+          - pattern: $P.setString($K, ...)
+      - metavariable-regex:
+          metavariable: $K
+          regex: (?i).*(auth[_-]?token|session|refresh[_-]?token|sb-.*-auth).*
+
+  # ── 3. service_role key must never leave the server ────────────────
+  - id: pw-service-role-in-response
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >
+      The service_role key bypasses RLS completely. It must never be put
+      into a response body, a log line, or anything a client can read.
+    patterns:
+      - pattern-either:
+          - pattern: |
+              jsonResponse({..., $K: Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"), ...}, ...)
+          - pattern: |
+              console.$M(..., Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"), ...)
+          - pattern: |
+              return new Response(Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"), ...)
+
+  # ── 4. SECURITY DEFINER without pg_temp ────────────────────────────
+  # The real bug found on 2026-08-17: 11 SECURITY DEFINER functions were
+  # written `set search_path = public`. pg_temp is searched FIRST by
+  # default and is world-writable, so an attacker creates a temp table or
+  # function shadowing one the body references and it executes as the
+  # definer. record_work_view is granted to anon, making it reachable
+  # pre-auth. Every SECURITY DEFINER function needs pg_temp pinned last.
+  - id: pw-security-definer-missing-pg-temp
+    languages: [generic]
+    paths:
+      include: ['*.sql']
+    severity: ERROR
+    message: >
+      SECURITY DEFINER function whose search_path omits pg_temp. pg_temp is
+      searched first and is world-writable — an unprivileged user can
+      shadow a referenced object and have it run as the definer. Use
+      `set search_path = public, pg_temp`.
+    patterns:
+      - pattern: |
+          security definer
+          ...
+          set search_path = public;

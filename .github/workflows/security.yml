@@ -128,3 +128,24 @@ jobs:
 
       - name: Pinned-version check
         run: sh tool/verify_supply_chain.sh --edge-only
+
+  regressions:
+    name: security regression rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Semgrep's own free ruleset is deliberately NOT used. Measured
+      # against this codebase 2026-08-18: of three planted Dart
+      # vulnerabilities it caught one, via a generic secret rule gitleaks
+      # already covers better; 239 real Dart files gave zero findings.
+      # Running p/default here would produce a green check that means
+      # nothing. What runs instead is four project-specific rules guarding
+      # the 08-17/18 fixes, each verified to fire on a crafted sample.
+      - name: Install semgrep (pinned)
+        run: pipx install semgrep==1.173.0
+
+      - name: Regression rules
+        run: semgrep --config=tool/semgrep/pocketworld.yml --metrics=off --error lib/ supabase/
