@@ -71,11 +71,28 @@ class EndpointConfig {
   /// reverse-proxies the same paths.
   final String? assetCdnBase;
 
+  /// Largest object the backend will accept, in bytes. NULL = unknown,
+  /// in which case the client does not pre-check and simply relies on the
+  /// server's 413.
+  ///
+  /// This mirrors the project's **Global file size limit** (Storage
+  /// Settings), which is a dashboard value, not a code constant — Free
+  /// projects cap at 50 MB, paid plans can raise it. Hardcoding it would
+  /// guarantee drift the day the plan or the setting changes, and the
+  /// drift would be silent in the dangerous direction (client thinks a
+  /// file is fine, server rejects it after uploading tens of MB).
+  ///
+  /// It exists only to fail FAST and to say something TRUE. It is not a
+  /// security control — the real limit is enforced server-side, and a
+  /// tampered client just gets the 413 it would have gotten anyway.
+  final int? maxUploadBytes;
+
   const EndpointConfig({
     required this.supabaseUrl,
     required this.supabaseAnonKey,
     required this.source,
     this.assetCdnBase,
+    this.maxUploadBytes,
   });
 
   /// Rewrite a Supabase-issued public storage URL to go through the CDN.
@@ -145,6 +162,7 @@ class EndpointConfigResolver {
   static const String _kKey = 'endpoint_config.supabase_anon_key';
   static const String _kAt = 'endpoint_config.fetched_at_ms';
   static const String _kCdn = 'endpoint_config.asset_cdn_base';
+  static const String _kMaxUp = 'endpoint_config.max_upload_bytes';
 
   /// The config the app actually booted with. Set once by [resolve] so
   /// consumers that are constructed later (services, widgets) can read the
@@ -199,6 +217,7 @@ class EndpointConfigResolver {
       final url = await prefs.getString(_kUrl);
       final key = await prefs.getString(_kKey);
       final cdn = await prefs.getString(_kCdn);
+      final maxUp = await prefs.getInt(_kMaxUp);
       fetchedAt = await prefs.getInt(_kAt);
       if (url != null && key != null && _isAcceptable(url, key)) {
         cached = EndpointConfig(
@@ -207,6 +226,7 @@ class EndpointConfigResolver {
           // A cached CDN base is re-validated on read, not trusted because
           // it was trusted once — the allowlist may have tightened since.
           assetCdnBase: (cdn != null && _isAcceptableCdn(cdn)) ? cdn : null,
+          maxUploadBytes: maxUp != null && maxUp > 0 ? maxUp : null,
           source: EndpointConfigSource.cache,
         );
       }
@@ -294,10 +314,14 @@ class EndpointConfigResolver {
             );
           }
         }
+        final rawMax = decoded['max_upload_bytes'];
+        final maxBytes = (rawMax is int && rawMax > 0) ? rawMax : null;
+
         return EndpointConfig(
           supabaseUrl: url,
           supabaseAnonKey: key,
           assetCdnBase: cdn,
+          maxUploadBytes: maxBytes,
           source: EndpointConfigSource.remote,
         );
       } catch (_) {
@@ -318,6 +342,13 @@ class EndpointConfigResolver {
         await prefs.setString(_kCdn, cdn);
       } else {
         await prefs.remove(_kCdn);
+      await prefs.remove(_kMaxUp);
+      }
+      final maxUp = cfg.maxUploadBytes;
+      if (maxUp != null && maxUp > 0) {
+        await prefs.setInt(_kMaxUp, maxUp);
+      } else {
+        await prefs.remove(_kMaxUp);
       }
     } catch (_) {
       // Cache write failure only costs us a refetch next launch.

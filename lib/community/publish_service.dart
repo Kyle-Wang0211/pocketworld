@@ -43,6 +43,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../ui/scan_record.dart';
 import '../util/file_signature.dart';
+import '../config/endpoint_config.dart';
 import '../ui/sparse_thumbnail.dart' show kSparseThumbFileName;
 import 'community_service.dart';
 
@@ -132,8 +133,20 @@ class PublishResult {
 
 /// Thrown on any non-recoverable publish failure. [phase] says where it
 /// died so the UI can be specific.
+/// 服务端是否因体积超限而拒绝。
+///
+/// Supabase Storage 的口径:错误码 `EntityTooLarge`,HTTP **413**。
+/// 三种形态都匹配,因为这个错误会经过 SDK 包装,不同路径下暴露出来的
+/// 字段不一样 —— 只认其中一种就会在另一条路径上漏判。
+bool _isTooLargeError(Object e) {
+  final s = e.toString().toLowerCase();
+  return s.contains('entitytoolarge') ||
+      s.contains('payload too large') ||
+      s.contains('413');
+}
+
 class PublishException implements Exception {
-  /// 'reading' | 'uploading' | 'inserting'
+  /// 'reading' | 'validating' | 'too_large' | 'uploading' | 'inserting'
   final String phase;
   final String message;
   const PublishException(this.phase, this.message);
@@ -290,11 +303,41 @@ class PublishService {
       );
     }
 
+    // 3c) 体积预检 —— 只为快速失败,不是安全控制。
+    //
+    // 服务端的 Global file size limit 是 dashboard 配置(Free 封顶 50MB,
+    // 付费可调高),不是代码常量。所以这里读的是运行时下发的值,而不是
+    // 硬编码 —— 硬编码必然在改计划/改设置的那天悄悄漂移,且漂移方向危险:
+    // 客户端以为没问题,服务端在传完几十 MB 之后才拒。
+    //
+    // 值缺失时不预检,直接依赖服务端的 413(见下)。宁可多传一次,
+    // 也不要因为配置没下发就把用户挡在门外。
+    final maxBytes = EndpointConfigResolver.current?.maxUploadBytes;
+    if (maxBytes != null && bytes.length > maxBytes) {
+      throw PublishException(
+        'too_large',
+        '${(bytes.length / 1048576).toStringAsFixed(1)}MB / '
+        '${(maxBytes / 1048576).toStringAsFixed(0)}MB',
+      );
+    }
+
     // 4) Upload. NO works row exists yet → nothing can be orphaned.
     emit('uploading', 0.10);
     try {
       await _uploadModel(path: storagePath, bytes: bytes);
     } catch (e) {
+      // 服务端超限返回 EntityTooLarge / HTTP 413。必须与网络故障区分开:
+      // 网络故障重试会成功,超限重试**永远**不会成功 —— 而原来两者共用
+      // 同一句"请检查网络后重试",会让用户一直重试到放弃。
+      //
+      // 这一道是兜底,不是替代预检:预检用的配置值可能滞后于服务端实际
+      // 设置,只有服务端自己的拒绝是当下为真的。
+      if (_isTooLargeError(e)) {
+        throw PublishException(
+          'too_large',
+          '${(bytes.length / 1048576).toStringAsFixed(1)}MB',
+        );
+      }
       throw PublishException('uploading', e.toString());
     }
 

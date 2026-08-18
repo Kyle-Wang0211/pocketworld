@@ -12,6 +12,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/community/publish_service.dart';
 import 'package:pocketworld_flutter/ui/scan_record.dart';
+import 'package:pocketworld_flutter/config/endpoint_config.dart';
 
 /// Records what the fake collaborators were asked to do.
 class _Spy implements CommunityServiceLike {
@@ -101,6 +102,56 @@ void main() {
   Future<void> writeThumb() => File(
     '${tmp.path}/official_sparse_thumb.png',
   ).writeAsBytes(Uint8List.fromList(List<int>.filled(64, 7)));
+
+  group('体积上限 — 两道防线各自独立生效', () {
+    tearDown(() => EndpointConfigResolver.current = null);
+
+    test('预检:超过配置上限时,连传都不传(不浪费流量)', () async {
+      await writePly();
+      EndpointConfigResolver.current = const EndpointConfig(
+        supabaseUrl: 'https://x.supabase.co',
+        supabaseAnonKey: 'k',
+        maxUploadBytes: 10, // 比 fixture 小,必然触发
+        source: EndpointConfigSource.builtin,
+      );
+      await expectLater(
+        service().publish(record: record(), title: 'T'),
+        throwsA(isA<PublishException>()
+            .having((e) => e.phase, 'phase', 'too_large')),
+      );
+      expect(spy.uploads, isEmpty,
+          reason: '预检的全部意义就是别把几十MB传完才被拒');
+      expect(spy.inserts, isEmpty);
+    });
+
+    test('未配置上限时不预检 —— 配置没下发不该把用户挡在门外', () async {
+      await writePly();
+      EndpointConfigResolver.current = null;
+      await service().publish(record: record(), title: 'T');
+      expect(spy.uploads, hasLength(1));
+    });
+
+    test('兜底:服务端返回 413/EntityTooLarge 时归入 too_large 而非 uploading', () async {
+      await writePly();
+      spy.uploadThrows = StateError('StorageException: EntityTooLarge (413)');
+      await expectLater(
+        service().publish(record: record(), title: 'T'),
+        throwsA(isA<PublishException>()
+            .having((e) => e.phase, 'phase', 'too_large')),
+      );
+      expect(spy.inserts, isEmpty);
+    });
+
+    test('🔑 普通网络错误仍是 uploading —— 否则会误导用户放弃重试', () async {
+      await writePly();
+      spy.uploadThrows = StateError('Connection closed before full header');
+      await expectLater(
+        service().publish(record: record(), title: 'T'),
+        throwsA(isA<PublishException>()
+            .having((e) => e.phase, 'phase', 'uploading')),
+      );
+    });
+  });
 
   group('内容签名校验 — 内容与声明不符时不得上传', () {
     test('PNG 伪装成 .ply 被拦下,且没有任何上传或插入', () async {

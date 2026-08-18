@@ -483,4 +483,185 @@ class AppL10nEn extends AppL10n {
 
   @override
   String get selectionResetBoxSize => 'Reset Box Size';
+
+  @override
+  String get publishAction => 'Publish to Community';
+
+  @override
+  String get publishNotReady => 'Available after reconstruction';
+
+  @override
+  String get publishAlreadyDone => 'Published';
+
+  @override
+  String get publishSheetSubtitle =>
+      'Once published, anyone can see this work in the community.';
+
+  @override
+  String get publishFieldTitle => 'Title';
+
+  @override
+  String get publishFieldDescription => 'Description (optional)';
+
+  @override
+  String get publishConfirm => 'Publish';
+
+  @override
+  String get publishInProgress => 'Publishing';
+
+  @override
+  String get publishSuccess => 'Published to community';
+
+  @override
+  String get publishErrSignedOut => 'Sign in before publishing';
+
+  @override
+  String get publishErrAlreadyPublished => 'This work is already published';
+
+  @override
+  String get publishErrReading => 'Could not read the point cloud';
+
+  @override
+  String get publishErrUploading =>
+      'Upload failed — check your connection and retry';
+
+  @override
+  String get publishErrTooLarge =>
+      'This scan exceeds the upload size limit — retrying will not help. '
+      'Please capture a smaller area and regenerate.';
+
+  @override
+  String get publishErrInserting =>
+      'Could not save the publication, please retry';
+
+  @override
+  String get publishErrGeneric => 'Publish failed';
+
+  @override
+  String get communityCloudLoadFailed => 'Could not load the point cloud';
+
+  @override
+  String get communityRetry => 'Retry';
+
+  @override
+  String get communityFormatUnsupported =>
+      'This format cannot be previewed in this version';
+
+  @override
+  String get communityPointsSuffix => 'points';
+
+  @override
+  String get meDeleteAccount => 'Delete account';
+
+  @override
+  String get meDeleteAccountDialogTitle => 'Permanently delete your account?';
+
+  @override
+  String get meDeleteAccountDialogBody =>
+      'Your account, published works and all cloud data will be permanently deleted. This cannot be undone. Captures stored on this device are not affected.';
+
+  @override
+  String get meDeleteAccountConfirm => 'Delete permanently';
+
+  @override
+  String get meDeleteAccountFailed =>
+      'Deletion failed. Please try again later.';
+
+  @override
+  String get publishModerationUnderReview => 'Under review';
+
+  @override
+  String get publishModerationRemoved => 'Removed';
+
+  @override
+  String get publishModerationRemovedHint =>
+      'This work was removed for violating the community guidelines and is not visible to others. To appeal, use the contact details on the Settings page.';
+
+  @override
+  String get workMoreActions => 'More';
+
+  @override
+  String get reportAction => 'Report';
+
+  @override
+  String get reportSheetTitle => 'Report this work';
+
+  @override
+  String get reportSheetSubtitle =>
+      'Pick a reason and we\'ll review it promptly.';
+
+  @override
+  String get reportReasonSpam => 'Spam or advertising';
+
+  @override
+  String get reportReasonHarassment => 'Harassment or bullying';
+
+  @override
+  String get reportReasonHateSpeech => 'Hate speech';
+
+  @override
+  String get reportReasonSexualContent => 'Sexual content';
+
+  @override
+  String get reportReasonViolence => 'Violence or gore';
+
+  @override
+  String get reportReasonCopyright => 'Copyright infringement';
+
+  @override
+  String get reportReasonMisinformation => 'Misinformation';
+
+  @override
+  String get reportReasonOther => 'Other';
+
+  @override
+  String get reportDetailHint => 'Additional details (optional)';
+
+  @override
+  String get reportSubmit => 'Submit report';
+
+  @override
+  String get reportSubmitted => 'Report submitted. We\'ll review it promptly.';
+
+  @override
+  String get reportFailed =>
+      'Couldn\'t submit the report. Please try again later.';
+
+  @override
+  String get blockAction => 'Block this user';
+
+  @override
+  String get blockDialogTitle => 'Block this user?';
+
+  @override
+  String get blockDialogBody =>
+      'You won\'t see their works anymore, and any follow relationship between you will be removed.';
+
+  @override
+  String get blockConfirm => 'Block';
+
+  @override
+  String get blockDone => 'Blocked. Their works will no longer appear.';
+
+  @override
+  String get blockFailed => 'Action failed. Please try again later.';
+
+  @override
+  String get workDeleteAction => 'Remove from community';
+
+  @override
+  String get workDeleteDialogTitle => 'Remove this work from the community?';
+
+  @override
+  String get workDeleteDialogBody =>
+      'The work will be removed from the community and its cloud files deleted. This cannot be undone. Your original capture on this device is unaffected and can be published again later.';
+
+  @override
+  String get workDeleteConfirm => 'Remove';
+
+  @override
+  String get workDeleteDone => 'Removed from the community';
+
+  @override
+  String get workDeleteFailed => 'Removal failed. Please try again later.';
 }

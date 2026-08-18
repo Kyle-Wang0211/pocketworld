@@ -475,4 +475,178 @@ class AppL10nZh extends AppL10n {
 
   @override
   String get selectionResetBoxSize => '恢复原始框大小';
+
+  @override
+  String get publishAction => '发布到社区';
+
+  @override
+  String get publishNotReady => '重建完成后可发布';
+
+  @override
+  String get publishAlreadyDone => '已发布到社区';
+
+  @override
+  String get publishSheetSubtitle => '发布后,任何人都能在社区看到这个作品。';
+
+  @override
+  String get publishFieldTitle => '标题';
+
+  @override
+  String get publishFieldDescription => '描述(选填)';
+
+  @override
+  String get publishConfirm => '确认发布';
+
+  @override
+  String get publishInProgress => '正在发布';
+
+  @override
+  String get publishSuccess => '已发布到社区';
+
+  @override
+  String get publishErrSignedOut => '请先登录再发布';
+
+  @override
+  String get publishErrAlreadyPublished => '这个作品已经发布过了';
+
+  @override
+  String get publishErrReading => '读取点云失败';
+
+  @override
+  String get publishErrUploading => '上传失败,请检查网络后重试';
+
+  @override
+  // 刻意不写"请检查网络" —— 体积超限时检查网络毫无用处,那句话会把用户
+  // 引向一条永远走不通的路。这里给出可行动的信息:是什么问题、多大、
+  // 以及唯一能解决它的动作。
+  String get publishErrTooLarge => '这个扫描太大,超出了上传上限,重试不会成功。请缩小扫描范围后重新生成。';
+
+  @override
+  String get publishErrInserting => '发布信息写入失败,请稍后重试';
+
+  @override
+  String get publishErrGeneric => '发布失败';
+
+  @override
+  String get communityCloudLoadFailed => '点云加载失败';
+
+  @override
+  String get communityRetry => '重试';
+
+  @override
+  String get communityFormatUnsupported => '当前版本无法预览这种格式';
+
+  @override
+  String get communityPointsSuffix => '点';
+
+  @override
+  String get meDeleteAccount => '删除账号';
+
+  @override
+  String get meDeleteAccountDialogTitle => '永久删除账号？';
+
+  @override
+  String get meDeleteAccountDialogBody =>
+      '你的账号、已发布的作品和全部云端数据将被永久删除，此操作无法撤销。本机已拍摄的项目不受影响。';
+
+  @override
+  String get meDeleteAccountConfirm => '永久删除';
+
+  @override
+  String get meDeleteAccountFailed => '删除失败，请稍后重试';
+
+  @override
+  String get publishModerationUnderReview => '审核中';
+
+  @override
+  String get publishModerationRemoved => '已下架';
+
+  @override
+  String get publishModerationRemovedHint =>
+      '该作品因违反社区规范已被下架，其他人无法看到。如有疑问请通过设置页的联系方式申诉。';
+
+  @override
+  String get workMoreActions => '更多';
+
+  @override
+  String get reportAction => '举报';
+
+  @override
+  String get reportSheetTitle => '举报这个作品';
+
+  @override
+  String get reportSheetSubtitle => '请选择原因，我们会尽快处理。';
+
+  @override
+  String get reportReasonSpam => '垃圾信息或广告';
+
+  @override
+  String get reportReasonHarassment => '骚扰或霸凌';
+
+  @override
+  String get reportReasonHateSpeech => '仇恨言论';
+
+  @override
+  String get reportReasonSexualContent => '色情内容';
+
+  @override
+  String get reportReasonViolence => '暴力或血腥';
+
+  @override
+  String get reportReasonCopyright => '侵犯版权';
+
+  @override
+  String get reportReasonMisinformation => '虚假信息';
+
+  @override
+  String get reportReasonOther => '其他';
+
+  @override
+  String get reportDetailHint => '补充说明（可选）';
+
+  @override
+  String get reportSubmit => '提交举报';
+
+  @override
+  String get reportSubmitted => '举报已提交，我们会尽快处理';
+
+  @override
+  String get reportFailed => '举报提交失败，请稍后重试';
+
+  @override
+  String get blockAction => '屏蔽此用户';
+
+  @override
+  String get blockDialogTitle => '屏蔽这个用户？';
+
+  @override
+  String get blockDialogBody => '屏蔽后你将不再看到该用户的作品，你们之间的关注关系也会取消。';
+
+  @override
+  String get blockConfirm => '屏蔽';
+
+  @override
+  String get blockDone => '已屏蔽，该用户的作品不再显示';
+
+  @override
+  String get blockFailed => '操作失败，请稍后重试';
+
+  @override
+  String get workDeleteAction => '从社区删除';
+
+  @override
+  String get workDeleteDialogTitle => '从社区删除这个作品？';
+
+  @override
+  String get workDeleteDialogBody =>
+      '该作品将从社区移除，云端文件一并删除，无法恢复。本机的原始拍摄项目不受影响，之后仍可重新发布。';
+
+  @override
+  String get workDeleteConfirm => '删除';
+
+  @override
+  String get workDeleteDone => '已从社区删除';
+
+  @override
+  String get workDeleteFailed => '删除失败，请稍后重试';
 }

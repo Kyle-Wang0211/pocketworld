@@ -936,6 +936,342 @@ abstract class AppL10n {
   /// In en, this message translates to:
   /// **'Reset Box Size'**
   String get selectionResetBoxSize;
+
+  /// No description provided for @publishAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Publish to Community'**
+  String get publishAction;
+
+  /// No description provided for @publishNotReady.
+  ///
+  /// In en, this message translates to:
+  /// **'Available after reconstruction'**
+  String get publishNotReady;
+
+  /// No description provided for @publishAlreadyDone.
+  ///
+  /// In en, this message translates to:
+  /// **'Published'**
+  String get publishAlreadyDone;
+
+  /// No description provided for @publishSheetSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Once published, anyone can see this work in the community.'**
+  String get publishSheetSubtitle;
+
+  /// No description provided for @publishFieldTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Title'**
+  String get publishFieldTitle;
+
+  /// No description provided for @publishFieldDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Description (optional)'**
+  String get publishFieldDescription;
+
+  /// No description provided for @publishConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Publish'**
+  String get publishConfirm;
+
+  /// No description provided for @publishInProgress.
+  ///
+  /// In en, this message translates to:
+  /// **'Publishing'**
+  String get publishInProgress;
+
+  /// No description provided for @publishSuccess.
+  ///
+  /// In en, this message translates to:
+  /// **'Published to community'**
+  String get publishSuccess;
+
+  /// No description provided for @publishErrSignedOut.
+  ///
+  /// In en, this message translates to:
+  /// **'Sign in before publishing'**
+  String get publishErrSignedOut;
+
+  /// No description provided for @publishErrAlreadyPublished.
+  ///
+  /// In en, this message translates to:
+  /// **'This work is already published'**
+  String get publishErrAlreadyPublished;
+
+  /// No description provided for @publishErrReading.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not read the point cloud'**
+  String get publishErrReading;
+
+  /// No description provided for @publishErrUploading.
+  ///
+  /// In en, this message translates to:
+  /// **'Upload failed — check your connection and retry'**
+  String get publishErrUploading;
+
+  /// No description provided for @publishErrTooLarge.
+  ///
+  /// In en, this message translates to:
+  /// **'This scan is too large to publish'**
+  String get publishErrTooLarge;
+
+  /// No description provided for @publishErrInserting.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not save the publication, please retry'**
+  String get publishErrInserting;
+
+  /// No description provided for @publishErrGeneric.
+  ///
+  /// In en, this message translates to:
+  /// **'Publish failed'**
+  String get publishErrGeneric;
+
+  /// No description provided for @communityCloudLoadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Could not load the point cloud'**
+  String get communityCloudLoadFailed;
+
+  /// No description provided for @communityRetry.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry'**
+  String get communityRetry;
+
+  /// No description provided for @communityFormatUnsupported.
+  ///
+  /// In en, this message translates to:
+  /// **'This format cannot be previewed in this version'**
+  String get communityFormatUnsupported;
+
+  /// No description provided for @communityPointsSuffix.
+  ///
+  /// In en, this message translates to:
+  /// **'points'**
+  String get communityPointsSuffix;
+
+  /// No description provided for @meDeleteAccount.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete account'**
+  String get meDeleteAccount;
+
+  /// No description provided for @meDeleteAccountDialogTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Permanently delete your account?'**
+  String get meDeleteAccountDialogTitle;
+
+  /// No description provided for @meDeleteAccountDialogBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Your account, published works and all cloud data will be permanently deleted. This cannot be undone. Captures stored on this device are not affected.'**
+  String get meDeleteAccountDialogBody;
+
+  /// No description provided for @meDeleteAccountConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete permanently'**
+  String get meDeleteAccountConfirm;
+
+  /// No description provided for @meDeleteAccountFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Deletion failed. Please try again later.'**
+  String get meDeleteAccountFailed;
+
+  /// No description provided for @publishModerationUnderReview.
+  ///
+  /// In en, this message translates to:
+  /// **'Under review'**
+  String get publishModerationUnderReview;
+
+  /// No description provided for @publishModerationRemoved.
+  ///
+  /// In en, this message translates to:
+  /// **'Removed'**
+  String get publishModerationRemoved;
+
+  /// No description provided for @publishModerationRemovedHint.
+  ///
+  /// In en, this message translates to:
+  /// **'This work was removed for violating the community guidelines and is not visible to others. To appeal, use the contact details on the Settings page.'**
+  String get publishModerationRemovedHint;
+
+  /// No description provided for @workMoreActions.
+  ///
+  /// In en, this message translates to:
+  /// **'More'**
+  String get workMoreActions;
+
+  /// No description provided for @reportAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Report'**
+  String get reportAction;
+
+  /// No description provided for @reportSheetTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Report this work'**
+  String get reportSheetTitle;
+
+  /// No description provided for @reportSheetSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Pick a reason and we\'ll review it promptly.'**
+  String get reportSheetSubtitle;
+
+  /// No description provided for @reportReasonSpam.
+  ///
+  /// In en, this message translates to:
+  /// **'Spam or advertising'**
+  String get reportReasonSpam;
+
+  /// No description provided for @reportReasonHarassment.
+  ///
+  /// In en, this message translates to:
+  /// **'Harassment or bullying'**
+  String get reportReasonHarassment;
+
+  /// No description provided for @reportReasonHateSpeech.
+  ///
+  /// In en, this message translates to:
+  /// **'Hate speech'**
+  String get reportReasonHateSpeech;
+
+  /// No description provided for @reportReasonSexualContent.
+  ///
+  /// In en, this message translates to:
+  /// **'Sexual content'**
+  String get reportReasonSexualContent;
+
+  /// No description provided for @reportReasonViolence.
+  ///
+  /// In en, this message translates to:
+  /// **'Violence or gore'**
+  String get reportReasonViolence;
+
+  /// No description provided for @reportReasonCopyright.
+  ///
+  /// In en, this message translates to:
+  /// **'Copyright infringement'**
+  String get reportReasonCopyright;
+
+  /// No description provided for @reportReasonMisinformation.
+  ///
+  /// In en, this message translates to:
+  /// **'Misinformation'**
+  String get reportReasonMisinformation;
+
+  /// No description provided for @reportReasonOther.
+  ///
+  /// In en, this message translates to:
+  /// **'Other'**
+  String get reportReasonOther;
+
+  /// No description provided for @reportDetailHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Additional details (optional)'**
+  String get reportDetailHint;
+
+  /// No description provided for @reportSubmit.
+  ///
+  /// In en, this message translates to:
+  /// **'Submit report'**
+  String get reportSubmit;
+
+  /// No description provided for @reportSubmitted.
+  ///
+  /// In en, this message translates to:
+  /// **'Report submitted. We\'ll review it promptly.'**
+  String get reportSubmitted;
+
+  /// No description provided for @reportFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t submit the report. Please try again later.'**
+  String get reportFailed;
+
+  /// No description provided for @blockAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Block this user'**
+  String get blockAction;
+
+  /// No description provided for @blockDialogTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Block this user?'**
+  String get blockDialogTitle;
+
+  /// No description provided for @blockDialogBody.
+  ///
+  /// In en, this message translates to:
+  /// **'You won\'t see their works anymore, and any follow relationship between you will be removed.'**
+  String get blockDialogBody;
+
+  /// No description provided for @blockConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Block'**
+  String get blockConfirm;
+
+  /// No description provided for @blockDone.
+  ///
+  /// In en, this message translates to:
+  /// **'Blocked. Their works will no longer appear.'**
+  String get blockDone;
+
+  /// No description provided for @blockFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Action failed. Please try again later.'**
+  String get blockFailed;
+
+  /// No description provided for @workDeleteAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove from community'**
+  String get workDeleteAction;
+
+  /// No description provided for @workDeleteDialogTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove this work from the community?'**
+  String get workDeleteDialogTitle;
+
+  /// No description provided for @workDeleteDialogBody.
+  ///
+  /// In en, this message translates to:
+  /// **'The work will be removed from the community and its cloud files deleted. This cannot be undone. Your original capture on this device is unaffected and can be published again later.'**
+  String get workDeleteDialogBody;
+
+  /// No description provided for @workDeleteConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Remove'**
+  String get workDeleteConfirm;
+
+  /// No description provided for @workDeleteDone.
+  ///
+  /// In en, this message translates to:
+  /// **'Removed from the community'**
+  String get workDeleteDone;
+
+  /// No description provided for @workDeleteFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Removal failed. Please try again later.'**
+  String get workDeleteFailed;
 }
 
 class _AppL10nDelegate extends LocalizationsDelegate<AppL10n> {
