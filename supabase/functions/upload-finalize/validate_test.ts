@@ -5,7 +5,7 @@
 //
 // 跑:deno test --allow-none supabase/functions/upload-finalize/validate_test.ts
 
-import { assertEquals } from 'jsr:@std/assert@1';
+import { assertEquals } from 'jsr:@std/assert@1.0.19';
 import { validate } from './index.ts';
 
 const b = (...n: number[]) => new Uint8Array(n);
