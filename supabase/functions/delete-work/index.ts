@@ -31,7 +31,7 @@
 // once that verification lands.
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
-import { corsHeaders, jsonResponse } from '../_shared/cors.ts';
+import { corsHeaders, jsonResponse, consumeRateLimit } from '../_shared/cors.ts';
 
 type AssetRef = { bucket: string; path: string };
 
@@ -69,6 +69,21 @@ Deno.serve(async (req) => {
   }
   const workId = typeof body.work_id === 'string' ? body.work_id.trim() : '';
   if (!isUuid(workId)) return jsonResponse({ error: 'invalid_work_id' }, 400);
+
+  // Rate limit. Supabase rate-limits its Auth endpoints but has NO built-in
+  // limiting on the Data API or on Edge Functions, so every write endpoint
+  // has to bring its own. 20/hour is far above any human deletion pattern
+  // while still bounding a compromised session or a runaway client loop.
+  //
+  // fail-open, matching the auth endpoints: a broken limiter must not make
+  // content undeletable. The limiter itself is a single atomic upsert, so
+  // "broken" here means the DB is already in trouble.
+  if (!await consumeRateLimit(admin, `delete-work:${user.id}`, 20, 3600)) {
+    return jsonResponse({
+      error: 'rate_limited',
+      message: 'Too many deletions in a short period. Try again later.',
+    }, 429);
+  }
 
   // Ownership from the ROW, not the request. Also fetches the paths we
   // need before anything is deleted.

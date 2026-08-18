@@ -32,7 +32,7 @@
 // plain bearer token instead of being pre-validated as a user JWT.
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
-import { corsHeaders, jsonResponse } from '../_shared/cors.ts';
+import { corsHeaders, jsonResponse, consumeRateLimit } from '../_shared/cors.ts';
 
 const QUARANTINE_BUCKET = 'quarantine';
 
@@ -82,6 +82,22 @@ Deno.serve(async (req) => {
   const supabase = createClient(supabaseUrl, serviceKey, {
     auth: { persistSession: false },
   });
+
+  // Rate limit even though the caller already holds the service_role key.
+  // The key is a bearer secret with no identity behind it — if it ever
+  // leaks, this is the difference between "someone quietly took down every
+  // work in the catalogue" and "someone got 200 takedowns in before it
+  // tripped". Keyed by operator when declared so one tool misbehaving
+  // doesn't starve the others.
+  const rlOperator = typeof body.operator === 'string' && body.operator.trim()
+    ? body.operator.trim().slice(0, 60)
+    : 'unknown';
+  if (!await consumeRateLimit(supabase, `moderate:${rlOperator}`, 200, 3600)) {
+    return jsonResponse({
+      error: 'rate_limited',
+      message: 'Moderation rate limit hit. If this is legitimate bulk work, raise the cap deliberately.',
+    }, 429);
+  }
 
   // ── collect every storage object this work owns ─────────────────────
   // works: model + thumbnail + preview video

@@ -33,7 +33,7 @@
 //   Every failure is recorded in audit_logs for manual sweeping.
 
 import { createClient } from 'jsr:@supabase/supabase-js@2';
-import { corsHeaders, jsonResponse } from '../_shared/cors.ts';
+import { corsHeaders, jsonResponse, consumeRateLimit } from '../_shared/cors.ts';
 
 // Buckets whose layout is `{user_id}/...` and can be swept by prefix.
 const USER_PREFIXED_BUCKETS = ['avatars', 'works', 'thumbnails', 'scans'];
@@ -98,6 +98,20 @@ Deno.serve(async (req) => {
         message: 'Send {"confirm": true} to proceed. This is irreversible.',
       }, 400);
     }
+  }
+
+  // Rate limit. Deleting an account is a once-in-a-lifetime action, so 3/day
+  // is pure retry headroom. It bounds the damage of a stolen token being
+  // used to hammer the (expensive) enumeration path, and of a client bug
+  // looping on failure.
+  //
+  // fail-open on purpose: Apple 5.1.1(v) makes account deletion mandatory,
+  // so a broken limiter must never be what stops someone from leaving.
+  if (!await consumeRateLimit(admin, `delete-account:${targetUserId}`, 3, 86400)) {
+    return jsonResponse({
+      error: 'rate_limited',
+      message: 'Too many deletion attempts today. Try again tomorrow.',
+    }, 429);
   }
 
   // ── 1. enumerate EVERY storage object, before touching the user ─────
