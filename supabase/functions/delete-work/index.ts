@@ -74,7 +74,7 @@ Deno.serve(async (req) => {
   // need before anything is deleted.
   const { data: work, error: workErr } = await admin
     .from('works')
-    .select('id, user_id, model_storage_path, thumbnail_storage_path, preview_video_path')
+    .select('id, user_id, moderation_status, deleted_at, model_storage_path, thumbnail_storage_path, preview_video_path')
     .eq('id', workId)
     .maybeSingle();
   if (workErr) {
@@ -85,6 +85,35 @@ Deno.serve(async (req) => {
     // Deliberately 404, not 403: a 403 would confirm the work exists to
     // someone probing ids that aren't theirs.
     return jsonResponse({ error: 'work_not_found' }, 404);
+  }
+
+  // 🔒 A work under moderation is NOT the author's to delete.
+  //
+  // 20260817011000 added the `guard_work_moderation_delete` trigger for
+  // exactly this — stopping an author from hard-deleting a moderated row to
+  // resurrect the content and destroy the audit trail. But that trigger
+  // keys on `current_user in ('anon','authenticated')`, and this function
+  // runs as service_role, so the trigger never fires here. Without the
+  // check below, this endpoint silently reopens the side door that
+  // migration was written to close — and worse, it would also wipe the
+  // quarantined forensic copy (see the quarantine sweep further down),
+  // which 20260817020000 deliberately keeps for appeals and DSA Art.17.
+  //
+  // The author is the party most motivated to destroy that evidence, so the
+  // moderation state is re-checked here in the service_role path rather
+  // than relied upon at the DB layer.
+  //
+  // Their legitimate "remove it from the feed" interest is already
+  // satisfied: a removed work is not in the feed. What is refused is the
+  // destruction of the record.
+  if (work.moderation_status !== 'ok' || work.deleted_at !== null) {
+    return jsonResponse({
+      error: 'work_under_moderation',
+      message:
+        'This work is under moderation and cannot be deleted. ' +
+        'If you believe this is a mistake, use the appeal contact.',
+      moderation_status: work.moderation_status,
+    }, 409);
   }
 
   // ── enumerate assets BEFORE deleting the row ────────────────────────

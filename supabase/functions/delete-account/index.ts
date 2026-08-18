@@ -115,7 +115,7 @@ Deno.serve(async (req) => {
   // 1a. rows that name their own paths
   const { data: works } = await admin
     .from('works')
-    .select('id, model_storage_path, thumbnail_storage_path, preview_video_path')
+    .select('id, moderation_status, deleted_at, model_storage_path, thumbnail_storage_path, preview_video_path')
     .eq('user_id', targetUserId);
   for (const w of works ?? []) {
     push('works', w.model_storage_path);
@@ -164,8 +164,25 @@ Deno.serve(async (req) => {
 
   // 1c. quarantine bucket is keyed by {work_id}/{bucket}/{path}, NOT by
   // user id — so it must be swept per work, which is only possible while
-  // the works rows still exist. Includes already-removed works.
+  // the works rows still exist.
+  //
+  // 🔒 BUT: quarantined assets of MODERATED works are deliberately NOT
+  // swept. 20260817020000 keeps them as the forensic copy behind appeals
+  // and DSA Art.17, and the account holder is precisely the party most
+  // motivated to erase them. Unlike delete-work — which can simply refuse —
+  // this function must not refuse: Apple 5.1.1(v) makes account deletion
+  // mandatory, so the account goes regardless. The balance struck is:
+  // the account and all ordinary data are erased, while evidence tied to
+  // an enforcement action survives. That distinction is also what GDPR
+  // Art.17(3) contemplates when erasure meets a legal-claims / legal-obligation
+  // carve-out.
+  const moderatedWorkIds = new Set(
+    (works ?? [])
+      .filter((w) => w.moderation_status !== 'ok' || w.deleted_at !== null)
+      .map((w) => w.id as string),
+  );
   for (const wid of workIds) {
+    if (moderatedWorkIds.has(wid)) continue;
     for (const p of await listAllUnder(admin, 'quarantine', wid)) {
       push('quarantine', p);
     }
@@ -214,6 +231,8 @@ Deno.serve(async (req) => {
       storage_objects_deleted: deletedCount,
       storage_failures: failures,
       works_count: workIds.length,
+      // Retained on purpose; see the quarantine note above.
+      moderated_works_evidence_retained: moderatedWorkIds.size,
       // Fail-open on storage is deliberate; see the header comment.
       note: failures.length > 0
         ? 'Account deleted despite storage failures — sweep these manually.'
