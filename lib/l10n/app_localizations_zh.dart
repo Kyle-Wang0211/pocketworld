@@ -522,6 +522,10 @@ class AppL10nZh extends AppL10n {
   String get publishErrTooLarge => '这个扫描太大,超出了上传上限,重试不会成功。请缩小扫描范围后重新生成。';
 
   @override
+  // 同样不写"请重试" —— 同一份文件重试永远不会通过。
+  String get publishErrRejected => '文件未通过服务端校验,可能已损坏。请重新生成这个扫描。';
+
+  @override
   String get publishErrInserting => '发布信息写入失败,请稍后重试';
 
   @override

@@ -183,6 +183,8 @@ class _MyWorkDetailPageState extends State<MyWorkDetailPage> {
     switch (e.phase) {
       case 'reading':
         return '${l.publishErrReading}: ${e.message}';
+      case 'rejected':
+        return '${l.publishErrRejected}(${e.message})';
       case 'too_large':
         // e.message 形如 "62.4MB / 50MB",附在文案后面,让用户看到具体数字
         // 而不只是"太大了"。

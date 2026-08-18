@@ -1021,6 +1021,12 @@ abstract class AppL10n {
   /// **'This scan is too large to publish'**
   String get publishErrTooLarge;
 
+  /// No description provided for @publishErrRejected.
+  ///
+  /// In en, this message translates to:
+  /// **'This file failed server-side validation'**
+  String get publishErrRejected;
+
   /// No description provided for @publishErrInserting.
   ///
   /// In en, this message translates to:

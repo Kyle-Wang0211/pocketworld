@@ -146,7 +146,7 @@ bool _isTooLargeError(Object e) {
 }
 
 class PublishException implements Exception {
-  /// 'reading' | 'validating' | 'too_large' | 'uploading' | 'inserting'
+  /// 'reading' | 'validating' | 'too_large' | 'rejected' | 'uploading' | 'inserting'
   final String phase;
   final String message;
   const PublishException(this.phase, this.message);
@@ -179,20 +179,41 @@ class PublishService {
       uid: () => c.auth.currentUser?.id,
       community: _CommunityAdapter(comm),
       uploadModel: ({required path, required bytes}) async {
-        // Direct owner-write to the `works` bucket (works_insert_self /
-        // works_update_self survived the 2026-05-22 broker hardening).
-        // upsert dedups a content-addressed re-publish.
-        return c.storage
-            .from('works')
-            .uploadBinary(
+        // 两阶段上传(2026-08-18)。此前是直传 `works` 公开桶,那条路上
+        // **服务端侧没有任何内容校验**:桶的 MIME 白名单匹配的是客户端
+        // 自己声明的 header(storage 源码 uploader.ts 里 mimeType 直接取自
+        // 请求头,从不看字节),而 works 白名单含 application/octet-stream
+        // 这个万能通配 ⇒ 等于不设防;storage-sign-upload broker 只覆盖
+        // scans/thumbnails 两个桶,够不着 works;RLS 只能约束路径与归属,
+        // 看不到内容。
+        //
+        // 现在:先传进**私有** staging 桶,再由 upload-finalize 用 Range
+        // 读头部校验,通过才由服务端 move 进 works。客户端全程没有 works
+        // 桶的写入位置决定权。
+        //
+        // 跳过 finalize 的后果是对象留在私有桶、永远拿不到公开 URL ——
+        // 所以这一步不是信任边界,只是触发器。
+        await c.storage.from('staging').uploadBinary(
               path,
               bytes,
               fileOptions: const FileOptions(
                 contentType: 'application/octet-stream',
                 upsert: true,
-                cacheControl: '604800', // 7 days — content-addressed.
+                cacheControl: '604800',
               ),
             );
+
+        final res = await c.functions.invoke(
+          'upload-finalize',
+          body: <String, dynamic>{'staging_path': path},
+        );
+        final data = res.data;
+        if (data is Map && data['ok'] == true) {
+          return (data['path'] as String?) ?? path;
+        }
+        // 校验失败时服务端已把对象搬进 quarantine,staging 不会留下残留。
+        final reason = (data is Map ? data['reason'] : null) ?? 'unknown';
+        throw StateError('upload_validation_failed:$reason');
       },
       insertWork: ({required row}) async {
         final inserted = await c
@@ -336,6 +357,15 @@ class PublishService {
         throw PublishException(
           'too_large',
           '${(bytes.length / 1048576).toStringAsFixed(1)}MB',
+        );
+      }
+      // 服务端内容校验拒绝 —— 与网络故障同样必须区分开:重试同一份文件
+      // 永远不会通过,让用户反复重试是在说假话(与 too_large 同理)。
+      final msg = e.toString();
+      if (msg.contains('upload_validation_failed')) {
+        throw PublishException(
+          'rejected',
+          msg.split('upload_validation_failed:').last.split(RegExp(r'[\s)]')).first,
         );
       }
       throw PublishException('uploading', e.toString());

@@ -103,6 +103,34 @@ void main() {
     '${tmp.path}/official_sparse_thumb.png',
   ).writeAsBytes(Uint8List.fromList(List<int>.filled(64, 7)));
 
+  group('校验拒绝 — 服务端拒绝必须与网络故障区分', () {
+    // ⚠️ 覆盖范围说明:这些用例注入假 uploadModel,验的是 publish() 对
+    // 「服务端拒绝」这一信号的**处理**。真正的 staging→finalize 往返
+    // 需要真机 + 真实用户 JWT,不在单测覆盖内。
+    test('upload_validation_failed 归入 rejected,而非 uploading', () async {
+      await writePly();
+      spy.uploadThrows = StateError('upload_validation_failed:exe_mz');
+      await expectLater(
+        service().publish(record: record(), title: 'T'),
+        throwsA(isA<PublishException>()
+            .having((e) => e.phase, 'phase', 'rejected')
+            .having((e) => e.message, 'reason', contains('exe_mz'))),
+      );
+      expect(spy.inserts, isEmpty,
+          reason: '被拒的文件绝不能留下 works 行');
+    });
+
+    test('🔑 网络错误仍是 uploading —— 证明没把所有失败都归成拒绝', () async {
+      await writePly();
+      spy.uploadThrows = StateError('SocketException: connection reset');
+      await expectLater(
+        service().publish(record: record(), title: 'T'),
+        throwsA(isA<PublishException>()
+            .having((e) => e.phase, 'phase', 'uploading')),
+      );
+    });
+  });
+
   group('体积上限 — 两道防线各自独立生效', () {
     tearDown(() => EndpointConfigResolver.current = null);
 

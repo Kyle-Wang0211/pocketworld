@@ -531,6 +531,11 @@ class AppL10nEn extends AppL10n {
       'Please capture a smaller area and regenerate.';
 
   @override
+  String get publishErrRejected =>
+      'This file failed server-side validation and may be corrupted. '
+      'Please regenerate the scan.';
+
+  @override
   String get publishErrInserting =>
       'Could not save the publication, please retry';
 
