@@ -132,6 +132,10 @@ Deno.serve(async (req) => {
       }`,
       {
         headers: {
+          // apikey 与 Authorization **两个都要**。supabase-js SDK 会自动带上
+          // apikey,手写 fetch 不会 —— 少了它 Storage 网关直接 400,而错误
+          // 信息只说 "not_found",很容易误判成"对象不存在"或"RLS 拒绝"。
+          apikey: serviceKey,
           Authorization: `Bearer ${serviceKey}`,
           Range: `bytes=0-${PROBE_BYTES - 1}`,
         },
