@@ -15,6 +15,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../config/endpoint_config.dart';
 import '../storage/signed_upload_broker.dart';
 import 'feed_models.dart';
 
@@ -28,11 +29,20 @@ class CommunityService {
   final SupabaseClient _client;
   final SignedUploadBroker _uploadBroker;
 
-  CommunityService({SupabaseClient? client, SignedUploadBroker? uploadBroker})
-    : _client = client ?? Supabase.instance.client,
-      _uploadBroker =
-          uploadBroker ??
-          SignedUploadBroker(client: client ?? Supabase.instance.client);
+  /// Test seam only. Production leaves this null and reads the live
+  /// config, so a background refresh is picked up without rebuilding
+  /// the service.
+  final EndpointConfig? _endpointOverride;
+
+  CommunityService({
+    SupabaseClient? client,
+    SignedUploadBroker? uploadBroker,
+    @visibleForTesting EndpointConfig? endpointOverride,
+  })  : _client = client ?? Supabase.instance.client,
+        _endpointOverride = endpointOverride,
+        _uploadBroker =
+            uploadBroker ??
+            SignedUploadBroker(client: client ?? Supabase.instance.client);
 
   /// Public works joined with profile (display_name + avatar_url) and the
   /// current user's like state.
@@ -52,7 +62,7 @@ class CommunityService {
         .select(
           'id, user_id, title, description, format, '
           'model_storage_path, thumbnail_storage_path, '
-          'likes_count, views_count, published_at',
+          'file_size_bytes, likes_count, views_count, published_at',
         )
         .eq('visibility', 'public')
         .not('published_at', 'is', null);
@@ -129,6 +139,7 @@ class CommunityService {
         format: (w['format'] as String?) ?? 'glb',
         modelStoragePath: w['model_storage_path'] as String?,
         thumbnailStoragePath: w['thumbnail_storage_path'] as String?,
+        fileSizeBytes: (w['file_size_bytes'] as num?)?.toInt(),
         likesCount: (w['likes_count'] as int?) ?? 0,
         viewsCount: (w['views_count'] as int?) ?? 0,
         publishedAt: publishedAtStr == null
@@ -359,9 +370,23 @@ class CommunityService {
   /// Public URL for a thumbnails/-bucket asset path. Thumbnails are a
   /// public bucket (RLS allows anon SELECT), so getPublicUrl returns a
   /// stable URL with no token.
+  ///
+  /// Routed through [_cdn] so the bytes can be served from an edge cache
+  /// instead of hitting Supabase egress on every feed scroll.
   String thumbnailUrlFor(String path) {
-    return _client.storage.from('thumbnails').getPublicUrl(path);
+    return _cdn(_client.storage.from('thumbnails').getPublicUrl(path));
   }
+
+  /// Swap the asset origin for the configured CDN, when one is configured.
+  ///
+  /// Resolved per call rather than captured at construction: a background
+  /// config refresh can change the origin mid-session, and a service built
+  /// at launch would otherwise pin the old one for the whole process.
+  /// Falls back to the untouched URL whenever no CDN is set, so the
+  /// default path is byte-for-byte what it was before.
+  String _cdn(String url) =>
+      (_endpointOverride ?? EndpointConfigResolver.current)?.cdnRewrite(url) ??
+      url;
 
   /// Returns a URL the client can use to fetch the model file.
   ///
@@ -370,7 +395,7 @@ class CommunityService {
   /// private works we'd need createSignedUrl. Feed only shows public
   /// works so the public path is correct here.
   String modelUrlFor(String path) {
-    return _client.storage.from('works').getPublicUrl(path);
+    return _cdn(_client.storage.from('works').getPublicUrl(path));
   }
 
   /// Phase 6.4f.10 — bake-and-publish a thumbnail JPG for a work that
@@ -397,9 +422,21 @@ class CommunityService {
   /// the [PublishService] convention `<uid>/<record_id>.jpg` and
   /// satisfies the standard storage RLS policy. Bucket is public so
   /// feed readers (any auth state, including anon) still get the JPG.
+  ///
+  /// Phase B (2026-08-16) — generalised beyond JPEG, and the "first
+  /// qualified viewer bakes it" mechanic described above is retired. The
+  /// official capture route already renders `official_sparse_thumb.png`
+  /// beside each PLY (lib/ui/sparse_thumbnail.dart), so [PublishService]
+  /// uploads that file at publish time rather than re-encoding it: a work
+  /// carries its thumbnail from the moment it enters the feed, and it is
+  /// the same image the drafts grid shows. The old ThumbBaker lost its
+  /// last caller and was deleted; [contentType]/[extension] still default
+  /// to JPEG so this stays a drop-in for any future bake-style caller.
   Future<String?> uploadAndSetThumbnail({
     required String workId,
-    required Uint8List jpegBytes,
+    required Uint8List bytes,
+    String contentType = 'image/jpeg',
+    String extension = 'jpg',
   }) async {
     try {
       final uid = _client.auth.currentUser?.id;
@@ -410,30 +447,30 @@ class CommunityService {
         );
         return null;
       }
-      // Phase 6.4f.10.2: path = <uid>/<work_id>.jpg, NOT <work_id>/auto.jpg.
+      // Phase 6.4f.10.2: path = <uid>/<work_id>.<ext>, NOT <work_id>/auto.*.
       // Required by the standard supabase storage RLS policy that pins
       // the first folder segment to auth.uid().
-      final storagePath = '$uid/$workId.jpg';
+      final storagePath = '$uid/$workId.$extension';
       final storage = _client.storage.from('thumbnails');
       final credential = await _uploadBroker.createCredential(
         bucket: 'thumbnails',
         path: storagePath,
-        contentType: 'image/jpeg',
-        bytes: jpegBytes.lengthInBytes,
+        contentType: contentType,
+        bytes: bytes.lengthInBytes,
         role: 'auto_thumbnail',
         workId: workId,
       );
       await storage.uploadBinaryToSignedUrl(
         storagePath,
         credential.token,
-        jpegBytes,
-        const FileOptions(
-          contentType: 'image/jpeg',
+        bytes,
+        FileOptions(
+          contentType: contentType,
           upsert: true,
-          cacheControl: '604800', // 7 days — JPG is content-addressed
-          // by work id; if a re-bake replaces it, supabase + CDN
-          // will rev the URL via the upsert.
-          metadata: <String, String>{
+          cacheControl: '604800', // 7 days — content-addressed by work id;
+          // if a re-bake replaces it, supabase + CDN rev the URL via
+          // the upsert.
+          metadata: const <String, String>{
             'role': 'auto_thumbnail',
             'upload_credential_strategy': 'edge_broker_signed_upload_url_v1',
           },
@@ -450,7 +487,7 @@ class CommunityService {
           .eq('id', workId);
       debugPrint(
         '[CommunityService] thumbnail baked for $workId → $storagePath '
-        '(${(jpegBytes.lengthInBytes / 1024).toStringAsFixed(1)} KB)',
+        '(${(bytes.lengthInBytes / 1024).toStringAsFixed(1)} KB, $contentType)',
       );
       return storagePath;
     } catch (e, s) {
