@@ -35,6 +35,7 @@ import '../../l10n/app_localizations.dart';
 import '../../me/scan_record_store.dart';
 import '../../official_quality/guidance_engine.dart' show GuidanceSnapshot;
 import '../scan_record.dart';
+import '../../util/image_sanitize.dart';
 
 class CapturePage extends StatefulWidget {
   const CapturePage({super.key});
@@ -68,7 +69,9 @@ Uint8List? _buildCaptureCardThumbnailBytes(String sourcePath) {
     );
   }
 
-  return Uint8List.fromList(img.encodeJpg(image, quality: 88));
+  // EXIF 剥离:实测确认元数据会穿过 resize/rotate 链路(见
+  // util/image_sanitize.dart 与 test/image_sanitize_test.dart)。
+  return encodeSanitizedJpg(image, quality: 88);
 }
 
 class _CapturePageState extends State<CapturePage> with WidgetsBindingObserver {

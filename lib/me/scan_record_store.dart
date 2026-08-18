@@ -35,6 +35,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../ui/me_page.dart' show sparsePlyFileNameForPipeline;
 import '../ui/scan_record.dart';
+import '../util/image_sanitize.dart';
 
 Uint8List? _uprightLandscapeThumbnailBytes(String path) {
   final decoded = img.decodeImage(File(path).readAsBytesSync());
@@ -54,7 +55,9 @@ Uint8List? _uprightLandscapeThumbnailBytes(String path) {
       interpolation: img.Interpolation.average,
     );
   }
-  return Uint8List.fromList(img.encodeJpg(image, quality: 88));
+  // EXIF 剥离:实测确认元数据会穿过 resize/rotate 链路(见
+  // util/image_sanitize.dart 与 test/image_sanitize_test.dart)。
+  return encodeSanitizedJpg(image, quality: 88);
 }
 
 class ScanRecordStore {

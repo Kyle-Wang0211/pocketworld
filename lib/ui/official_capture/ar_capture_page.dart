@@ -52,8 +52,9 @@ import '../../official_capture/parallax_banner_gate.dart';
 import '../../official_capture/photo_card_state.dart';
 import '../../official_capture/project_photo_album.dart';
 import '../../official_aether_sfm_ffi.dart'
-    show AetherMatchFlags; // [YIELD-FPS-LINK]
+    show AetherMatchFlags, AetherEnvFile; // [YIELD-FPS-LINK] + [RS-CORRECT-COLORS]
 import '../../official_capture/pw_telemetry.dart';
+import '../../official_capture/multiband_color.dart';
 import '../../official_capture/representative_color.dart';
 import '../../official_capture/shutter_backpressure_gate.dart';
 import '../../official_capture/sparse_ply.dart';
@@ -86,6 +87,7 @@ import 'capture_exit_dialog.dart';
 import 'official_gallery_routes.dart';
 import 'sfm_preview_overlay.dart';
 import '../sparse_thumbnail.dart';
+import '../../util/image_sanitize.dart';
 
 class OfficialARCapturePage extends StatefulWidget {
   const OfficialARCapturePage({super.key});
@@ -125,7 +127,9 @@ Uint8List? _buildCaptureCardThumbnailBytes(String sourcePath) {
     );
   }
 
-  return Uint8List.fromList(img.encodeJpg(image, quality: 88));
+  // EXIF 剥离:实测确认元数据会穿过 resize/rotate 链路(见
+  // util/image_sanitize.dart 与 test/image_sanitize_test.dart)。
+  return encodeSanitizedJpg(image, quality: 88);
 }
 
 class _OfficialARCapturePageState extends State<OfficialARCapturePage>
@@ -1900,14 +1904,61 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
 
     final rgb = Uint8List(n * 3);
     var colored = 0;
-    // 遥测【colorize】取色统计(归约处顺手算,几乎零成本):每点样本数
-    // 直方图 [1,2,3-4,5-8,9+]、样本对代表色的均方差(混色嫌疑信号)。
+    var gainMs = 0;
+    // [RS-CORRECT-COLORS 2026-08-14] 复刻 RealityScan 的 `Correct colors`:
+    // 先估每帧三通道增益(用已采到的样本,零额外解码),再在**校正后**的
+    // 亮度上选代表样本。不校正时"两个观测取更暗的那个"有 81% 的概率取到的
+    // 是"自动曝光收得更紧的那一帧"而非"没吃到高光的角度"(s4 实测),
+    // 相邻点因此各挑各的帧 ⇒ 整片云出斑块。
+    // 档位(official_env.json,Dart 直读;Platform.environment 读不到 setenv):
+    //   0/缺省 = 关,逐位等同旧实现;1 = 只用于选择;2 = 同时应用到输出(RS 忠实形态)
+    final ccMode = AetherEnvFile.intOf('OFFICIAL_AETHER_COLOR_CORRECT', 0);
+    FrameColorGains? gains;
+    if (ccMode > 0 && jobs.isNotEmpty) {
+      final gsw = Stopwatch()..start();
+      gains = samples.estimateFrameGains(jobs.length);
+      gsw.stop();
+      gainMs = gsw.elapsedMilliseconds;
+    }
+    // [RS-MULTIBAND 2026-08-14] 复刻 RS 的 Multi-band 顶点上色:低频(颜色/
+    // 亮度)在邻域内线性融合 → 协调;高频(细节)仍来自单一真实观测 → 不糊。
+    // 只改 RGB,不增删/修补任何点(遵守"Dart 阶段不得 delete/repair/enrich"
+    // 的既有铁律)。默认关。
+    final mbMode = AetherEnvFile.intOf('OFFICIAL_AETHER_COLOR_MULTIBAND', 0);
+    var mbMs = 0;
+    if (mbMode > 0) {
+      final msw = Stopwatch()..start();
+      final selF = Float32List(n * 3);
+      final linF = Float32List(n * 3);
+      for (var i = 0; i < n; i++) {
+        if (!samples.selectIntoFloat(i, selF,
+            gains: gains, applyToOutput: ccMode >= 2)) {
+          selF[i * 3] = 185;
+          selF[i * 3 + 1] = 185;
+          selF[i * 3 + 2] = 190;
+        }
+        if (!samples.meanIntoFloat(i, linF, gains: gains)) {
+          linF[i * 3] = selF[i * 3];
+          linF[i * 3 + 1] = selF[i * 3 + 1];
+          linF[i * 3 + 2] = selF[i * 3 + 2];
+        }
+      }
+      final blended =
+          multiBandBlend(xyz: snap.xyz, selected: selF, linear: linF);
+      rgb.setAll(0, blended);
+      msw.stop();
+      mbMs = msw.elapsedMilliseconds;
+    }
     final obsHist = List<int>.filled(5, 0);
     final rmsList = <double>[];
     var rmsGt40 = 0;
     for (var i = 0; i < n; i++) {
       // 代表色归约:选亮度中位的真实观测样本,不合成新颜色。
-      if (samples.selectInto(i, rgb)) {
+      // multi-band 已写好 rgb 时,这里只补统计,不覆盖颜色。
+      if (mbMode > 0
+          ? samples.hitCount(i) > 0
+          : samples.selectInto(i, rgb,
+              gains: gains, applyToOutput: ccMode >= 2)) {
         colored++;
         final hc = samples.hitCount(i);
         obsHist[obsHistBucket(hc)]++;
@@ -1947,6 +1998,15 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         'frames': byFrame.length,
         'decoded': decoded,
         'decode_fail': decodeFail,
+        // [RS-CORRECT-COLORS] 档位与实测增益跨度;cc_mode=0 时后三项恒为
+        // 默认值,可据此确认"这一场没开校正"。
+        'cc_mode': ccMode,
+        'cc_ms': gainMs,
+        'cc_gain_lo': gains?.span[0],
+        'cc_gain_hi': gains?.span[1],
+        'cc_banned': gains?.bannedCount,
+        'mb_mode': mbMode,
+        'mb_ms': mbMs,
         // 07-12 并行化新增:真实 native 解码次数(按 jpegPath 去重)与
         // 并行窗口;frames-decode_unique = 去重省下的解码次数。
         'decode_unique': dstats.uniqueDecodes,
