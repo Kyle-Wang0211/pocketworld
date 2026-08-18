@@ -1,0 +1,130 @@
+# PocketWorld security gate
+# =====================================================================
+# Threat model for THIS repo (single developer, private, Flutter + Supabase):
+#
+#   1. A credential reaches git history.  ← has nearly happened once
+#   2. A dependency ships a known CVE.
+#   3. A dependency is swapped under a version we already pinned.
+#   4. This workflow itself becomes the attack.   ← see hardening below
+#
+# (4) is not hypothetical. In March 2026 the "Team PCP" campaign
+# exfiltrated 78,330 secrets from 2,186 organisations' CI in five days,
+# and roughly 71% of repositories pin no action to a SHA. A security
+# workflow that is itself soft is a net loss. So:
+#
+#   • every action pinned to a full commit SHA, never a tag (@v4 is
+#     mutable — the maintainer, or whoever takes over the account, can
+#     move it under you);
+#   • `permissions` set to the minimum at file scope (the default is
+#     read/write on every scope);
+#   • `persist-credentials: false` — checkout otherwise leaves the job
+#     token in .git/config where every later step can read it;
+#   • no `secrets` referenced anywhere in this file, so a compromised
+#     step has nothing to steal;
+#   • `pull_request`, never `pull_request_target` (the latter runs with
+#     write permissions and the base repo's secrets, against untrusted
+#     code — the single most abused trigger in GitHub Actions);
+#   • tools installed as verified binaries rather than as actions: an
+#     action executes arbitrary code in the job, a binary is merely run.
+
+name: security
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  schedule:
+    # Weekly: catches CVEs published against dependencies we never touched.
+    - cron: '17 4 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GITLEAKS_VERSION: '8.30.1'
+  GITLEAKS_SHA256: '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb'
+  OSV_VERSION: '2.5.1'
+  OSV_SHA256: 'f9f25499a2c8cc367b3af45df2ea7eeca7fbccceab9c35079968f4b3652194be'
+
+jobs:
+  secrets:
+    name: secret scan (full history)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0          # full history — a secret 200 commits back is still a secret
+          persist-credentials: false
+
+      - name: Install gitleaks (checksum-verified)
+        run: |
+          set -euo pipefail
+          curl -sSfL -o gl.tgz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gl.tgz" | sha256sum -c -
+          tar xzf gl.tgz gitleaks
+          ./gitleaks version
+
+      - name: Scan
+        run: ./gitleaks git --no-banner --redact -v -c .gitleaks.toml .
+
+  dependencies:
+    name: dependency CVEs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install osv-scanner (checksum-verified)
+        run: |
+          set -euo pipefail
+          curl -sSfL -o osv-scanner \
+            "https://github.com/google/osv-scanner/releases/download/v${OSV_VERSION}/osv-scanner_linux_amd64"
+          echo "${OSV_SHA256}  osv-scanner" | sha256sum -c -
+          chmod +x osv-scanner
+
+      - name: Scan Flutter/Dart dependencies
+        run: ./osv-scanner scan source --lockfile=pubspec.lock
+        # NOTE: CocoaPods is NOT covered — osv-scanner has no extractor for
+        # Podfile.lock (verified 2026-08-18: "could not determine extractor
+        # suitable to this file"). iOS pod CVEs are an open blind spot;
+        # do not read a green check here as "all dependencies are clean".
+
+  edge-deps-integrity:
+    name: edge function dependency integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.x
+
+      # Pinning `@2.112.3` in the import stops the version drifting, but it
+      # does NOT stop that version's CONTENT being republished. The lock
+      # carries a hash per package, so a swapped artifact fails here.
+      #
+      # It also widens what we can see: one `jsr:@supabase/supabase-js`
+      # import expands to 9 hashed packages (5 npm transitive deps plus
+      # tslib, iceberg-js, phoenix). The version-string check in
+      # tool/verify_supply_chain.sh is blind to all 8 of those.
+      #
+      # SCOPE, honestly stated: this is DETECTION, not enforcement.
+      # Supabase Edge Functions only accept Deno lockfile v4, and Deno 2.9
+      # emits v5 — so the lock deliberately lives in tool/ and is not
+      # shipped with the functions. It proves the dependencies we build
+      # against are unchanged; it does not constrain what Supabase resolves
+      # at deploy time.
+      - name: Verify Edge Function dependency hashes
+        working-directory: supabase/functions
+        run: deno cache --lock=../../tool/edge-deps.lock --frozen */index.ts _shared/*.ts
+
+      - name: Pinned-version check
+        run: sh tool/verify_supply_chain.sh --edge-only

@@ -1,0 +1,49 @@
+# PocketWorld secret-scanning config
+# ---------------------------------------------------------------------
+# Extends the upstream default ruleset rather than replacing it — the
+# defaults already cover this project's four real credential types, which
+# was verified rather than assumed (2026-08-18):
+#
+#   AWS access key id ......... aws-access-token     ✅
+#   AWS secret access key ..... generic-api-key      ✅
+#   Supabase service_role JWT . jwt                  ✅   ← the crown jewel
+#   Resend API key ............ generic-api-key      ✅
+#
+# Method note: the first run of that check used AWS's documented example
+# key (AKIAIOSFODNN7EXAMPLE) and reported a MISS. That was the test being
+# wrong, not the tool — gitleaks ships an allowlist for well-known doc
+# samples. Re-running with a non-example key detected it immediately.
+# Any future "gitleaks doesn't catch X" claim must rule this out first.
+
+[extend]
+useDefault = true
+
+# ── allowlist ────────────────────────────────────────────────────────
+# Scoped as narrowly as possible. A broad allowlist is how scanners quietly
+# stop working: every path excluded here is a path where a real secret
+# would now go unnoticed.
+
+[[rules]]
+id = "generic-api-key"
+[rules.allowlist]
+regexTarget = "line"
+regexes = [
+  # C++/Dart equality chains read as high-entropy strings to the generic
+  # rule. Anchored on `==`/`!=` so it only ever forgives a comparison,
+  # never an assignment — `foo = "<secret>"` is still caught.
+  '''(==|!=)\s*[A-Za-z_][A-Za-z0-9_]*\s*(\|\||&&|\)|;|$)''',
+]
+
+[allowlist]
+description = "Paths that cannot contain live credentials"
+paths = [
+  # Generated/vendored — not authored here.
+  '''(^|/)(build|\.dart_tool|Pods|\.symlinks)/''',
+  '''(^|/)(pubspec\.lock|Podfile\.lock)$''',
+  '''THIRD_PARTY_NOTICES''',
+  # Experiment result dumps: numeric telemetry, megabytes of it, and a
+  # frequent source of entropy false positives.
+  '''^experiments/.*\.(json|csv|ndjson)$''',
+  # Worktrees are copies of tracked content; scanning them double-reports.
+  '''^\.claude/worktrees/''',
+]
