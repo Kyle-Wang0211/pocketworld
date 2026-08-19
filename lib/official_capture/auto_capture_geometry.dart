@@ -11,6 +11,7 @@ import 'dart:math' as math;
 import 'package:vector_math/vector_math_64.dart';
 
 import '../official_dome/ar_pose.dart';
+import 'photo_card_state.dart' show medianOf;
 
 /// 估计场景中位深度所需的最少特征点数。低于此数认为深度不可信。
 /// 与 capture_session 的 `_minScaleAlignAnchorsForPersistedFrame` 同量级。
@@ -32,10 +33,7 @@ double? medianSceneDepthM({
     if (d > 0 && d.isFinite) depths.add(d);
   }
   if (depths.length < kAutoCaptureMinDepthAnchors) return null;
-  depths.sort();
-  final mid = depths.length ~/ 2;
-  if (depths.length.isOdd) return depths[mid];
-  return (depths[mid - 1] + depths[mid]) / 2;
+  return medianOf(depths);
 }
 
 /// 两个相机中心在 [target] 处张开的夹角(度)= 视差角。
@@ -68,13 +66,22 @@ double viewAxisTurnDeg({
   return math.acos(cos) * _radToDeg;
 }
 
-/// [target] 投影到当前帧后,偏离画面中心的归一化距离
-/// (按各自轴的画面尺寸归一,取两轴较大者)。
+/// [target] 投影到当前帧后的**面积重叠损失**:
 ///
-/// `s >= 0.30` ⇔ 与基准帧重叠 ≤ 70%。侧移让 `s = d / W_scene`、
-/// 纯旋转让 `s ≈ φ / HFOV` —— 一个式子涵盖平移、旋转及其组合。
-/// 目标跑到相机背后或深度非正时返回 [double.infinity]。
-double normalizedCenterShift({
+///     sx = |u| / imageWidth,  sy = |v| / imageHeight
+///     s  = sx + sy - sx*sy    ( = 1 - (1-sx)(1-sy) )
+///
+/// `s >= 0.30` 即与基准帧的**面积**重叠 <= 70%。
+///
+/// 两轴的重叠损失是**相乘**的,不是取大的。早先用 `max(sx, sy)` 只看更差的
+/// 那一轴、把另一轴的损失整个丢掉,于是斜向运动被系统性低估、R2 被系统性
+/// 推迟:45 度斜向要到真实面积重叠掉到 49% 才触发,比 RealityScan 官方下限
+/// 60% 还低。而"绕物平移的同时抬高/压低手机"正是这种轨迹。
+/// 面积口径在纯横移时退化成 sx、纯纵移时退化成 sy,标定数字逐位不变。
+///
+/// 目标跑到相机背后或深度非正时返回 [double.infinity];
+/// 内参/画幅不可用时返回 **null**(见下)。
+double? normalizedCenterShift({
   required Vector3 target,
   required Vector3 currentCamera,
   required Quaternion currentOrientation,
@@ -84,7 +91,10 @@ double normalizedCenterShift({
   required int imageHeight,
 }) {
   if (fx <= 0 || fy <= 0 || imageWidth <= 0 || imageHeight <= 0) {
-    return double.infinity;
+    // ⚠️ 返回 null 而不是 +inf。+inf >= 0.30,会被上层的 R2 读成"立刻拍" ——
+    // 那等于把"不知道"编码成"马上开火"。null 让调用方走 spec §7 的降级路径
+    // (只用下限判据),与"拿不到场景深度"同一套路。
+    return null;
   }
   // 世界系 → 当前相机系
   final rel = target - currentCamera;
@@ -95,5 +105,5 @@ double normalizedCenterShift({
   final vPx = fy * (cam.y / depth);
   final sx = uPx.abs() / imageWidth;
   final sy = vPx.abs() / imageHeight;
-  return math.max(sx, sy);
+  return sx + sy - sx * sy;
 }
