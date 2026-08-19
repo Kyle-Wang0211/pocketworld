@@ -315,4 +315,134 @@ void main() {
     final b = Vector3(2 * math.cos(60 * math.pi / 180), 2 * math.sin(60 * math.pi / 180), 0);
     expect(viewAxisTurnDeg(baseForward: a, currentForward: b), closeTo(60.0, 1e-9));
   });
+
+  // Round-2 mutation tests — 7 surviving mutations, one pattern each
+  test('normalizedCenterShift takes the magnitude on the vertical axis too', () {
+    // 目标在画面中心线【下方】(y 为负)。绝对值口径下结果与 y 为正时相同。
+    // 若 sy 少了 .abs(),这里会得到 0.02 - 0.40 + 0.008 = -0.372。
+    // 19 个既有用例的 cam.y 不是 0 就是正,所以纵轴的 .abs() 此前零覆盖 ——
+    // 而横轴的同款变异会被 4 条测试当场抓死。
+    expect(
+      normalizedCenterShift(
+        target: Vector3(0.02, -0.40, -1),
+        currentCamera: Vector3.zero(),
+        currentOrientation: Quaternion.identity(),
+        fx: 1000,
+        fy: 1000,
+        imageWidth: 1000,
+        imageHeight: 1000,
+      ),
+      closeTo(0.412, 1e-12),
+    );
+  });
+
+  test('medianSceneDepthM ignores behind-camera points even when they outnumber', () {
+    // 8 个正深度 + 12 个负深度。守卫生效时只有 8 个有效点 => 中位数 1.0。
+    // 若 `d > 0` 被放宽成 `d != 0`,20 个点的中位数会变成 -5.0。
+    // 既有的同名测试用 8 正 + 4 负,负值是少数派、推不动中位数,抓不住这个变异。
+    expect(
+      medianSceneDepthM(
+        cameraPosition: Vector3.zero(),
+        forward: Vector3(0, 0, -1),
+        points: <ARPreviewPoint>[
+          for (var i = 0; i < 8; i++) _pt(0, 0, -1.0),
+          for (var i = 0; i < 12; i++) _pt(0, 0, 5.0),
+        ],
+      )!,
+      closeTo(1.0, 1e-12),
+    );
+  });
+
+  test('parallaxAngleDeg clamps the acos domain edge too', () {
+    // 同一个病态向量:v·v/(|v||v|) = 1.00000000000000022204。
+    // 让两个相机中心相对 target 完全同向,cos 就会踩到 acos 的定义域边界。
+    // 删掉 parallaxAngleDeg 的 .clamp(-1.0, 1.0) 时这里会变成 NaN。
+    final v = Vector3(
+      -0.8436825206056198,
+      0.6901161031643888,
+      0.37529772468339395,
+    );
+    final deg = parallaxAngleDeg(
+      baseCamera: v,
+      currentCamera: v.clone(),
+      target: Vector3.zero(),
+    );
+    expect(deg.isNaN, isFalse);
+    expect(deg, closeTo(0.0, 1e-12));
+  });
+
+  test('normalizedCenterShift guards near-zero depth, not just negative depth', () {
+    double? at(Vector3 target) => normalizedCenterShift(
+          target: target,
+          currentCamera: Vector3.zero(),
+          currentOrientation: Quaternion.identity(),
+          fx: 1000,
+          fy: 1000,
+          imageWidth: 1000,
+          imageHeight: 1000,
+        );
+
+    // 深度恰为 0:守卫被削成 `depth < 0` 时会走到 0/0 = NaN。
+    expect(at(Vector3.zero()), double.infinity);
+    // 深度为极小正值:守卫被削弱时会得到 5e8 这种有限但荒谬的值。
+    expect(at(Vector3(0.5, 0, -1e-9)), double.infinity);
+  });
+
+  test('medianSceneDepthM anchor floor is pinned on both sides', () {
+    List<ARPreviewPoint> n(int count) =>
+        <ARPreviewPoint>[for (var i = 0; i < count; i++) _pt(0, 0, -1.0)];
+    double? depthFor(int count) => medianSceneDepthM(
+          cameraPosition: Vector3.zero(),
+          forward: Vector3(0, 0, -1),
+          points: n(count),
+        );
+
+    // 差一即拒:7 个不够,8 个刚好够。此前只测了 2 个点,任何 >=3 的阈值都能过。
+    expect(depthFor(7), isNull);
+    expect(depthFor(8), closeTo(1.0, 1e-12));
+  });
+
+  test('medianSceneDepthM normalises a non-unit forward', () {
+    // forward 长度为 2。归一化生效时深度是 1..9 => 中位数 5.0;
+    // 删掉 .normalized() 则深度变成 2..18 => 中位数 10.0。
+    expect(
+      medianSceneDepthM(
+        cameraPosition: Vector3.zero(),
+        forward: Vector3(0, 0, -2),
+        points: <ARPreviewPoint>[
+          for (var i = 1; i <= 9; i++) _pt(0, 0, -i.toDouble()),
+        ],
+      )!,
+      closeTo(5.0, 1e-9),
+    );
+  });
+
+  test('non-finite inputs are rejected by both guards', () {
+    // (a) 无穷远的特征点必须被丢掉,否则它们会污染中位数。
+    expect(
+      medianSceneDepthM(
+        cameraPosition: Vector3.zero(),
+        forward: Vector3(0, 0, -1),
+        points: <ARPreviewPoint>[
+          for (var i = 0; i < 8; i++) _pt(0, 0, -1.0),
+          for (var i = 0; i < 12; i++) _pt(0, 0, double.negativeInfinity),
+        ],
+      )!,
+      closeTo(1.0, 1e-12),
+    );
+
+    // (b) 无穷深度必须走 +inf 分支;删掉 !depth.isFinite 时会得到 0.0。
+    expect(
+      normalizedCenterShift(
+        target: Vector3(0, 0, double.negativeInfinity),
+        currentCamera: Vector3.zero(),
+        currentOrientation: Quaternion.identity(),
+        fx: 1000,
+        fy: 1000,
+        imageWidth: 1000,
+        imageHeight: 1000,
+      ),
+      double.infinity,
+    );
+  });
 }
