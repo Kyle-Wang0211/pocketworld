@@ -44,6 +44,7 @@ import '../../point_cloud_display/progressive_octree_order.dart';
 import '../../official_capture/auto_capture_controller.dart';
 import '../../official_capture/auto_capture_governor.dart';
 import '../../official_capture/auto_capture_mode.dart';
+import '../../official_capture/auto_capture_telemetry.dart';
 import '../../official_capture/capture_coverage_cloud.dart';
 import '../../official_capture/capture_session.dart';
 import '../../official_capture/colorize_pipeline.dart';
@@ -188,6 +189,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     paceProvider: () => _shutterPace,
     capturedCountProvider: _autoCaptureAcceptedFrameCount,
   );
+
+  /// 自动采集的遥测聚合(spec §11 的待实测项)。**在内存里聚合**,按 5 秒
+  /// 取一份累计快照走 [_emitAutoTelemetry] 落进既有的 JSONL —— pose 流
+  /// 20–60 Hz,逐判定落盘就是 60 行/秒。判定逻辑一行都不在它里面。
+  final AutoCaptureTelemetry _autoTelemetry = AutoCaptureTelemetry();
 
   /// controller 对**最近一帧**的判定,只用来驱动指示器的视觉状态。
   /// ⚠️ 绝不拿它反推"在不在跑":停机时 onPose 返回的就是 skipNotMoved,
@@ -2754,10 +2760,33 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     }
     if (!_autoCapture.isRunning) return;
     final decision = _autoCapture.onPose(pose);
+    // 遥测【auto_capture】:**每个**判定都记(spec §11)。
+    //
+    // ⚠️ 位置必须在下面那条提前 return **之前**:稳定态判定
+    // (skipPaced / skipNotMoved)占绝大多数,而它们正好全都走那条 return
+    // ——记在后面等于一条都采不到,偏偏 skipNotMoved 的占比正是这套遥测
+    // 存在的理由(spec §9 差异1:视差下限到底有没有用)。
+    //
+    // 时钟用 pose.timestamp(ARFrame 时间轴,与 controller 同一条);
+    // 档位用 _shutterPace —— 与 controller 的 paceProvider **同一个字段**,
+    // 换个来源就会与 governor 实际用的 tick 间隔对不上。
+    _autoTelemetry.recordDecision(
+      decision,
+      tSec: pose.timestamp,
+      pace: _shutterPace,
+    );
     // isRunning 由 true 翻 false = controller 自停(撞 300 张或 5 分钟)。
     // 这里读的是 isRunning 而不是 decision:停机后 onPose 恒返回
     // skipNotMoved,与"你还没动够"逐字相同(见 autoCaptureIndicatorFor)。
     final running = _autoCapture.isRunning;
+    if (running) {
+      _emitAutoTelemetry(_autoTelemetry.snapshotIfDue(pose.timestamp));
+    } else {
+      // 自停这条路**不经过** _stopAutoCapture(它开头就 `if (!isRunning)
+      // return;`)。不在这里收口,恰恰是最该被记下来的那两种收场
+      //(撞 300 张 / 撞 5 分钟上限)一行都写不出来。
+      _emitAutoTelemetry(_autoTelemetry.recordSessionEnd());
+    }
     final fired = decision == AutoCaptureDecision.fire;
     if (fired) _autoFirePulseToken++;
     if (!fired &&
@@ -2772,8 +2801,25 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     if (mounted) setState(() {});
   }
 
+  /// 自动采集遥测的**唯一**落盘出口:走既有的 TelemetryWriter →
+  /// App 容器 `Documents/telemetry_official_dart.jsonl`,与 frame /
+  /// queue_drain / shutter_pace 同一个文件,真机拔线跑完 `devicectl copy`
+  /// 一次拉走。**不另起遥测通道**(多一条出口就多一处会漏采的地方),
+  /// 也不 print —— print 只到 stdout,拔线测试后根本取不回来。
+  ///
+  /// [snap] 为 null 意为"这一刻没有该写的行"(没到 5 秒节流点,或会话
+  /// 根本没开着)—— 节流与幂等都收在 AutoCaptureTelemetry 里,这里只负责写。
+  void _emitAutoTelemetry(Map<String, Object>? snap) {
+    if (snap == null) return;
+    TelemetryWriter.instance.event('auto_capture', snap);
+  }
+
   void _startAutoCapture(ARPose seed) {
     if (_autoCapture.isRunning) return;
+    // 遥测起点取**起跑那一帧**的 ARFrame 时间戳(与 controller.start(seed)
+    // 收到的是同一个 pose)。本页别处用的 DateTime.now() 是另一个纪元,
+    // 混进来什么都不会抛,只会把时长与节流一起静默算错。
+    _autoTelemetry.recordSessionStart(seed.timestamp);
     setState(() {
       _lastAutoDecision = AutoCaptureDecision.skipNotMoved;
       _autoCapture.start(seed);
@@ -2785,6 +2831,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     _autoStartPending = false;
     if (!_autoCapture.isRunning) return;
     _autoCapture.stop();
+    // 用户停 / 切模式 / 退后台 / 完成 —— 这一轮到此为止,写终态行。
+    _emitAutoTelemetry(_autoTelemetry.recordSessionEnd());
     _autoRunningLastSeen = false;
     if (mounted) setState(() {});
   }
@@ -2830,8 +2878,13 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// 干净,所以一律按"没入队"处理 —— 基准帧因此不动,下一 tick 自然重试。
   bool _onAutoCaptureFire() {
     try {
-      return _enqueueShutterCapture();
+      final enqueued = _enqueueShutterCapture();
+      // spec §7「入队失败 ⇒ 基准帧不更新 + **记遥测**」。这里是全链路唯一
+      // 拿得到真实入队结果的地方 —— 判定层只知道"开了一枪"。
+      _autoTelemetry.recordFireOutcome(enqueued: enqueued);
+      return enqueued;
     } catch (e) {
+      _autoTelemetry.recordFireOutcome(enqueued: false);
       DeviceLog.log('OfficialARCapturePage', 'auto capture enqueue failed: $e');
       return false;
     }
@@ -3471,6 +3524,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     final session = _session;
     _session = null;
     // 自动拍与快门队列同生共死:队列一停收,它就只剩空转。
+    // 关页面时把还开着的那一轮收口 —— 幂等,已经收过就什么都不写。
+    _emitAutoTelemetry(_autoTelemetry.recordSessionEnd());
     _autoCapture.stop();
     shutterQueue.cancelPending();
     unawaited(_disposeCaptureResourcesAfterQueueDrain(shutterQueue, session));

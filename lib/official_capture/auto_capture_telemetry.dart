@@ -1,0 +1,205 @@
+// auto_capture_telemetry.dart — 自动采集的**聚合**遥测(纯 Dart,零 Flutter 依赖)。
+//
+// 存在的唯一理由是回答 spec §11「待标定 / 待实测清单」里那几个**文档判不了、
+// 只能真机实测**的问题:
+//
+//   · 视差下限到底有没有用 —— RS / Polycam / KIRI / Scaniverse 四家都没有
+//     「移动太少就别拍」这道门,只讲重叠上限。我们有,依据是自家 coverage
+//     cloud 把低视差判成双墙成因。但同行不设下限也可能是因为手持绕物时它
+//     根本很少触发 —— 若如此,这道门无害但也无用。`skipNotMoved` 的占比
+//     就是它的实际拦截率(spec §9 差异1 / §11)。
+//   · 一轮采集实际跑多长 vs 已签决的 5 分钟上限(spec §11)。
+//   · ShutterPace 三档各停留多久 = 积压到底有多严重(spec §11)。
+//   · 入队失败有没有真的发生 —— spec §7「入队失败 ⇒ 基准帧不更新 + **记遥测**」。
+//
+// **不写每帧一行。** pose 流是逐 ARFrame 的 20–60 Hz(spec §5.4),逐判定落盘
+// 就是 60 行/秒。这里只在内存里聚合,由采集页按 [kAutoCaptureTelemetryFlushSec]
+// 取一份**累计**快照写进既有的 TelemetryWriter —— 与 frame / queue_drain /
+// shutter_pace 同一个 `Documents/telemetry_official_dart.jsonl`,拔线跑完
+// `devicectl` 一次拉走。**不另起遥测通道**:多一条出口就多一处会漏采的地方。
+//
+// 每条 roll-up 行都是**自会话起点起的累计量**(不是窗口增量),所以最后一行
+// 就是全部真相;App 被杀 / 用户强退时,最后一条 roll-up 仍是一份可用的
+// 部分结果,`closed=false` 说明它不是终态。
+//
+// 时钟一律是 **ARPose.timestamp**(ARFrame 时间轴 = CACurrentMediaTime),
+// 与 AutoCaptureController 同一条。本文件既不自己取时间、也没有任何 API 收
+// `DateTime.now()` 那个纪元的值 —— 混纪元什么都不会抛,只会把时长静默算错。
+//
+// 设计见 docs/superpowers/specs/2026-08-19-auto-capture-design.md §7 / §9 / §11。
+
+import 'auto_capture_governor.dart';
+import 'shutter_backpressure_gate.dart' show ShutterPace;
+
+/// 累计快照的落盘节流(秒)。与采集页既有的 5 秒诊断轮次同一个量级:
+/// 一轮采集上限 5 分钟 ⇒ 至多 ~60 行,可忽略;而丢失窗口至多 5 秒。
+const double kAutoCaptureTelemetryFlushSec = 5.0;
+
+/// 一轮自动采集的判定/开火/档位聚合。**只做加法**,不做任何判定 ——
+/// "要不要拍"全在 auto_capture_governor.dart。
+class AutoCaptureTelemetry {
+  final Map<AutoCaptureDecision, int> _counts = <AutoCaptureDecision, int>{
+    for (final d in AutoCaptureDecision.values) d: 0,
+  };
+
+  /// 三档各停留多久(秒)。区间按**左端点**归属:t0→t1 这段时间记在 t0
+  /// 那一刻观测到的档上 —— 那才是这段时间里 governor 实际用的 tick 间隔。
+  final Map<ShutterPace, double> _paceSec = <ShutterPace, double>{
+    for (final p in ShutterPace.values) p: 0.0,
+  };
+
+  /// 会话是否开着。关掉之后到达的判定一律丢弃 —— 那一行早就写出去了,
+  /// 事后再改它的比例只会让两行互相矛盾。
+  bool _open = false;
+
+  /// 起跑时间戳;null = 这个对象从来没跑过一轮。
+  double? _startSec;
+  double? _lastDecisionSec;
+  ShutterPace? _lastPace;
+
+  /// 上一次开火的时间戳。null 时以 [_startSec] 为参照 —— controller 的
+  /// `_lastTickSec` 在 `start()` 那一帧就被置成起跑时间戳,这里必须同口径,
+  /// 否则第一发的归因就是错的。
+  double? _lastFireSec;
+
+  double _lastEmitSec = 0;
+  int _fireEnqueued = 0;
+  int _fireEnqueueFailed = 0;
+  int _fireBeforeTick = 0;
+
+  /// 开一轮。[tSec] 必须是起跑那一帧的 `ARPose.timestamp`(与
+  /// `AutoCaptureController.start()` 收到的是同一个 pose)。
+  ///
+  /// **全清**:一次采集里用户可以停了再开,第二轮带着第一轮的计数会让
+  /// 两轮的比例都变成错的,而且从数据上看不出来。
+  void recordSessionStart(double tSec) {
+    _open = true;
+    _startSec = tSec;
+    _lastDecisionSec = null;
+    _lastPace = null;
+    _lastFireSec = null;
+    // 节流从起跑时刻起算,不是从 0 —— ARFrame 时钟是开机以来的秒数,
+    // 开机跑几小时后它是个几万的数,从 0 起算的话第一帧就"到点"⇒ 每帧一行。
+    _lastEmitSec = tSec;
+    _fireEnqueued = 0;
+    _fireEnqueueFailed = 0;
+    _fireBeforeTick = 0;
+    for (final d in AutoCaptureDecision.values) {
+      _counts[d] = 0;
+    }
+    for (final p in ShutterPace.values) {
+      _paceSec[p] = 0.0;
+    }
+  }
+
+  /// 记一次判定。**每个 pose 都要记**,不是只记 fire —— `skipNotMoved` 的
+  /// 占比才是视差下限那道门的实际拦截率(spec §9 差异1)。
+  ///
+  /// [tSec] = 该帧的 `ARPose.timestamp`;[pace] = 该帧 controller 的
+  /// `paceProvider` 读到的同一个档位(采集页的 `_shutterPace`)。
+  ///
+  /// ⚠️ 占比是**按判定数**算的,而判定是按 pose 来的(20–60 Hz),不是按
+  /// tick 来的。所以 `skipNotMoved / decisions` 读作"下限门把快门**按住的
+  /// 时间**占比",不是"拦掉了多少张"。这正是我们想知道的那个量:
+  /// 它 ≈ 0 就说明这道门在真实手持绕物里几乎不触发。
+  void recordDecision(
+    AutoCaptureDecision d, {
+    required double tSec,
+    required ShutterPace pace,
+  }) {
+    if (!_open) return;
+    _counts[d] = (_counts[d] ?? 0) + 1;
+
+    final prevSec = _lastDecisionSec;
+    final prevPace = _lastPace;
+    if (prevSec != null && prevPace != null && tSec > prevSec) {
+      // 时间只许往前加。ARFrame 时钟本来就是单调的,倒退只可能是接线
+      // 出了错 —— 那时把负数加进直方图会**同时**弄脏两档。
+      _paceSec[prevPace] = (_paceSec[prevPace] ?? 0) + (tSec - prevSec);
+    }
+    _lastDecisionSec = tSec;
+    _lastPace = pace;
+
+    if (d == AutoCaptureDecision.fire) {
+      // 距上一次开火**严格短于**当前档的 tick 间隔 ⇒ 这一发只可能是 R2
+      // (重叠上限)打的:governor 里的 tick 闸就是
+      // `sinceLastTickSec < tickIntervalSec -> skipPaced`,而 controller
+      // 只在开火时重置那个时钟。等于间隔时 tick 闸已放行,归因不唯一,
+      // 那一发不算 ⇒ 本计数是 R2 占比的**下界**,不是精确值(见报告)。
+      final since = tSec - (_lastFireSec ?? _startSec ?? tSec);
+      // 间隔取自 governor 同一个函数,不新造常数,也不写死 1.0。
+      final intervalSec = autoCaptureTickInterval(pace).inMilliseconds / 1000.0;
+      if (since < intervalSec) _fireBeforeTick++;
+      _lastFireSec = tSec;
+    }
+  }
+
+  /// 记一次开火的**真实**入队结果(spec §7:入队失败要记遥测)。
+  /// 由采集页的 onFire 钩子在拿到 `_enqueueShutterCapture()` 返回值处调用,
+  /// 那是全链路唯一能把"拍成了"与"没拍成"分开的地方。
+  void recordFireOutcome({required bool enqueued}) {
+    if (!_open) return;
+    if (enqueued) {
+      _fireEnqueued++;
+    } else {
+      _fireEnqueueFailed++;
+    }
+  }
+
+  /// 关一轮,返回**终态**快照(`closed=true`)供调用方落盘。
+  ///
+  /// **幂等**:没有开着的会话(从没开过、或已经关过)时返回 null。
+  /// 页面有三条会互相重叠的收场路径 —— 用户点停、controller 撞上限自停、
+  /// dispose —— 幂等是它们能各自无脑调用一次的前提。
+  Map<String, Object>? recordSessionEnd() {
+    if (!_open) return null;
+    _open = false;
+    return snapshot();
+  }
+
+  /// 到点就返回一份累计快照并记账,没到点(或没有开着的会话)返回 null。
+  ///
+  /// **节流收在这一个调用里**:拆成 `isDue()` + `markFlushed()` 两步的话,
+  /// 调用方漏掉第二步就是 60 行/秒 —— 而那种漏法不会报错,只会在事后
+  /// 发现日志涨到几百 MB。
+  Map<String, Object>? snapshotIfDue(double tSec) {
+    if (!_open) return null;
+    if (tSec - _lastEmitSec < kAutoCaptureTelemetryFlushSec) return null;
+    _lastEmitSec = tSec;
+    return snapshot();
+  }
+
+  /// 自会话起点起的累计量。字段少而准 —— 拉回来的人不用再自己推导。
+  Map<String, Object> snapshot() {
+    final start = _startSec;
+    // 时长以**最近一次判定**为终点,而不是"关会话时才有数":中途 roll-up
+    // 行必须带当时的已跑时长,否则 App 被杀 / 用户强退时,唯一能拿回来的
+    // 那一行恰好为 0。判定与 pose 同频,误差 ≤ 一帧(17–50 ms)。
+    final end = _lastDecisionSec ?? start;
+    final duration = (start == null || end == null) ? 0.0 : end - start;
+    return <String, Object>{
+      // 这一行是不是终态。中途拉日志 / 崩溃时靠它区分"没跑完"与"跑完了"。
+      'closed': start != null && !_open,
+      // spec §11:采集时长 vs 5 分钟上限。
+      'session_duration_sec': _round3(duration),
+      // 六档之和,占比的分母(读者不用自己加六个数)。
+      'decisions': _counts.values.fold<int>(0, (a, b) => a + b),
+      // spec §11:视差下限触发率 = decision_counts.skipNotMoved / decisions。
+      'decision_counts': <String, int>{
+        for (final e in _counts.entries) e.key.name: e.value,
+      },
+      // spec §7:开火 ≠ 拍成。两者分开记。
+      'fire_enqueued': _fireEnqueued,
+      'fire_enqueue_failed': _fireEnqueueFailed,
+      // R2(重叠上限)提前触发的**下界**,见 recordDecision 里的推导。
+      'fire_before_tick': _fireBeforeTick,
+      // spec §11:ShutterPace 三档各停留多久(秒)= 积压严重程度。
+      'pace_sec': <String, double>{
+        for (final e in _paceSec.entries) e.key.name: _round3(e.value),
+      },
+    };
+  }
+
+  /// 秒取到毫秒。JSONL 是给人读的,`65.50000000000001` 只会碍事。
+  static double _round3(double v) => (v * 1000).roundToDouble() / 1000;
+}
