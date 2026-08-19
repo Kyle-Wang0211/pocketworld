@@ -930,7 +930,20 @@ class AutoCaptureController {
 
     final tickInterval = autoCaptureTickInterval(_paceProvider());
     final decision = autoCaptureDecide(
-      trackingNormal: (pose.trackingStateName ?? 'normal') == 'normal',
+      // 〔2026-08-19 T3 评审改正〕**两路 tracking 信号都要正常才算正常**
+      // (spec §7「tracking 丢失 / limited」)。
+      //
+      // 早先这里只查字符串,是一个 fail-open 缺陷:
+      //   · ar_pose.dart:242 `trackingStateName: isTracking ? 'normal' : null`
+      //     —— 合成 / mock / 非 ARKit 后端在**丢跟踪**时该字段就是 null,
+      //     被 `?? 'normal'` 翻成"正常" ⇒ 明说"我没在跟踪"的 pose 被放行。
+      //   · 反过来只查 isTracking 也会漏:ar_pose.dart:204-211 明确写着
+      //     hybrid pose **刻意不**从 isTracking 反推字符串,而
+      //     capture_session.dart:835 在 IMU 推算锚定时把 isTracking 强行掰回
+      //     true,字符串仍留着 limited_* 的真实原因。
+      // 两个都查,才两头都堵上。
+      trackingNormal:
+          pose.isTracking && (pose.trackingStateName ?? 'normal') == 'normal',
       capturedCount: _capturedCountProvider(),
       elapsedSec: pose.timestamp - _startedAtSec,
       sinceLastTickSec: pose.timestamp - _lastTickSec,
