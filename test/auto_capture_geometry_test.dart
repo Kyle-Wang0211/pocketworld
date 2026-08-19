@@ -273,6 +273,71 @@ void main() {
     );
   });
 
+  // ————————————————————————————————————————————————————————————————
+  // 〔2026-08-19 全分支评审〕成对覆盖漏了三个零长度守卫分支。
+  //
+  // 每一个都是"删掉这半边守卫,`a.dot(b)/(la*lb)` = 0/0 = NaN;Dart 的
+  // clamp 对 NaN 原样返回,acos(NaN) = NaN,而 NaN 在上层的 `>= 5.0` /
+  // `>= 10.0` 里**恒为 false** ⇒ 闸门静默地永不触发,不报错不崩溃"。
+  // 上面那两条 acos-clamp 测试守的正是同一族失效的另一半。
+  // ————————————————————————————————————————————————————————————————
+
+  test('parallaxAngleDeg returns 0 when the CURRENT camera coincides with the '
+      'target (the lb half of the guard)', () {
+    expect(
+      parallaxAngleDeg(
+        baseCamera: Vector3(1, 0, 0),
+        currentCamera: Vector3(0, 0, -1),
+        target: Vector3(0, 0, -1),
+      ),
+      0.0,
+    );
+  });
+
+  test('viewAxisTurnDeg returns 0 on a zero-length BASE forward', () {
+    expect(
+      viewAxisTurnDeg(
+        baseForward: Vector3.zero(),
+        currentForward: Vector3(0, 0, -1),
+      ),
+      0.0,
+    );
+  });
+
+  test('viewAxisTurnDeg returns 0 on a zero-length CURRENT forward', () {
+    expect(
+      viewAxisTurnDeg(
+        baseForward: Vector3(0, 0, -1),
+        currentForward: Vector3.zero(),
+      ),
+      0.0,
+    );
+  });
+
+  test('medianSceneDepthM drops a point sitting exactly ON the camera '
+      'centre (d == 0, not just d < 0)', () {
+    // `d > 0` 放宽成 `d >= 0` 时,深度恰为 0 的点会进中位数、把基准帧的
+    // target 拉近,视差与重叠两个判据一起被系统性放大。同文件
+    // normalizedCenterShift 的 depth 守卫已经用 0 与 1e-9 两个点钉死了 ——
+    // 两条守卫同形,此前只护住了一条。
+    final depth = medianSceneDepthM(
+      cameraPosition: Vector3.zero(),
+      forward: Vector3(0, 0, -1),
+      points: <ARPreviewPoint>[
+        // 8 个正深度,中位数 4.5。
+        for (var i = 1; i <= 8; i++) _pt(0, 0, -i.toDouble()),
+        // 4 个恰好落在相机中心的点(投影深度 == 0)。
+        for (var i = 0; i < 4; i++) _pt(i * 0.001, 0, 0),
+      ],
+    );
+    expect(depth, isNotNull);
+    expect(
+      depth!,
+      closeTo(4.5, 1e-9),
+      reason: 'd == 0 must be dropped, or the median gets dragged down',
+    );
+  });
+
   test('medianSceneDepthM averages the two middle values', () {
     // 深度 1,1,1,2,3,4,4,4 => 两中值 2 与 3 => 2.5
     final depths = <double>[1, 1, 1, 2, 3, 4, 4, 4];
