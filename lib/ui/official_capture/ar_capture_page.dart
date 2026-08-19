@@ -3566,10 +3566,13 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           ),
 
           // ─── [spec §8.1] 顶部说明条(按 RealityScan 实机截图复刻)。
-          // 常驻、随模式换文案。它占用顶部第一档(60),下面四条**瞬态**
-          // 横幅因此整体下移一档(66→110 / 60→104 / 104→148 / 148→192 /
-          // 192→236),相对间距一格未动 —— 一条常驻文案与一条警告叠在同一
-          // 档上,谁都读不了。
+          //
+          // **瞬态**,不是常驻:只在进采集页与切换模式时露一次,3 秒后自动
+          // 淡出。[2026-07-27 UI 签决] 删掉入场提示的理由正是"每次进拍摄都
+          // 挡一次取景框",并要求下面四档横幅**回到各自的固定档位**;一条
+          // 常驻文案会把这两条一起推翻。所以四档一格没动(66/60/104/148/192),
+          // 本条与硬拒 toast 共用第 60 档 —— 它排在 Stack 里更靠前,真撞上时
+          // 警告盖在它上面,由警告赢。
           if (_session != null && _sfmPhase == null)
             Positioned(
               top: 0,
@@ -3578,13 +3581,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               child: SafeArea(
                 child: Padding(
                   padding: const EdgeInsets.only(top: 60),
-                  child: Center(
-                    child: IgnorePointer(
-                      child: _IdleHintPill(
-                        text: autoCaptureTopHintText(_captureMode),
-                      ),
-                    ),
-                  ),
+                  child: Center(child: _CaptureModeTopHint(mode: _captureMode)),
                 ),
               ),
             ),
@@ -3599,7 +3596,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               right: 16,
               child: SafeArea(
                 child: Padding(
-                  padding: const EdgeInsets.only(top: 110),
+                  padding: const EdgeInsets.only(top: 66),
                   child: Container(
                     key: const ValueKey<String>(
                       'sfm-start-failure-banner-official',
@@ -3677,7 +3674,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               right: 0,
               child: SafeArea(
                 child: Padding(
-                  padding: const EdgeInsets.only(top: 104),
+                  padding: const EdgeInsets.only(top: 60),
                   child: Center(
                     child: _HardRejectToast(stream: _session!.guidanceStream),
                   ),
@@ -3695,7 +3692,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               right: 0,
               child: SafeArea(
                 child: Padding(
-                  padding: const EdgeInsets.only(top: 148),
+                  padding: const EdgeInsets.only(top: 104),
                   child: Center(
                     child: _MotionSpeedToast(stream: _session!.motionStream),
                   ),
@@ -3715,7 +3712,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               right: 0,
               child: SafeArea(
                 child: Padding(
-                  padding: const EdgeInsets.only(top: 192),
+                  padding: const EdgeInsets.only(top: 148),
                   child: Center(
                     child: _ParallaxStarvedBanner(
                       visible: _starvedBannerVisible,
@@ -3735,7 +3732,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               right: 18,
               child: SafeArea(
                 child: Padding(
-                  padding: const EdgeInsets.only(top: 236),
+                  padding: const EdgeInsets.only(top: 192),
                   child: AnimatedBuilder(
                     animation: _projectPhotos,
                     builder: (context, _) => _DisconnectedPhotoBanner(
@@ -5341,6 +5338,73 @@ class _AutoRecordButtonState extends State<_AutoRecordButton>
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// [spec §8.1] 顶部说明条 —— **一次性**,不是常驻。
+///
+/// 露出时机只有两个:挂上(= 进采集页,本组件只在 AR 会话建起来后才存在)、
+/// 以及 [mode] 变化(= 用户切了模式)。之后 3 秒自动淡出。
+///
+/// 为什么必须是瞬态:[2026-07-27 UI 签决] 删掉的那条入场提示,理由原文是
+/// "每次进拍摄都挡一次取景框、说的又是用户还没到的事",并且要求下面四档
+/// 横幅**回到各自的固定档位**。一条常驻文案会把这两条一起推翻。
+///
+/// 停留时长与 [_HardRejectToast] 同源(3 秒)——顶部这一档上的东西共用一个
+/// 节奏,不新造常数。
+class _CaptureModeTopHint extends StatefulWidget {
+  const _CaptureModeTopHint({required this.mode});
+
+  final OfficialCaptureMode mode;
+
+  @override
+  State<_CaptureModeTopHint> createState() => _CaptureModeTopHintState();
+}
+
+class _CaptureModeTopHintState extends State<_CaptureModeTopHint> {
+  Timer? _fadeTimer;
+  bool _visible = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // 首帧就可见,不能在 initState 里 setState。
+    _visible = true;
+    _armDismiss();
+  }
+
+  @override
+  void didUpdateWidget(_CaptureModeTopHint oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // ⚠️ 这个早退是必需的:父级每帧都可能重建(pose 流 20–60 Hz),没有它
+    // 每次重建都会把提示重新点亮 —— 那就等于常驻,只是绕了个圈。
+    if (widget.mode == oldWidget.mode) return;
+    setState(() => _visible = true);
+    _armDismiss();
+  }
+
+  void _armDismiss() {
+    _fadeTimer?.cancel();
+    _fadeTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) setState(() => _visible = false);
+    });
+  }
+
+  @override
+  void dispose() {
+    _fadeTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: AnimatedOpacity(
+        opacity: _visible ? 1.0 : 0.0,
+        duration: const Duration(milliseconds: 250),
+        child: _IdleHintPill(text: autoCaptureTopHintText(widget.mode)),
       ),
     );
   }

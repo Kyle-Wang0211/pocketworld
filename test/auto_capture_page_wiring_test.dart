@@ -136,6 +136,19 @@ String _section(String source, String open, String close) {
   return source.substring(start, end);
 }
 
+/// 回读 [anchor] 在 build 里**自己**那条 `only(top: N)` 的 N。
+///
+/// 不数字面量出现次数:那种断言换个位置就骗过去了。
+int _bandOf(String source, String anchor) {
+  final at = source.indexOf(anchor);
+  expect(at, greaterThanOrEqualTo(0), reason: 'anchor not found: $anchor');
+  final before = RegExp(
+    r'only\(top: (\d+)\)',
+  ).allMatches(source.substring(0, at));
+  expect(before, isNotEmpty, reason: 'no band above $anchor');
+  return int.parse(before.last.group(1)!);
+}
+
 void main() {
   // ─── ① 纯映射 ────────────────────────────────────────────────────────
 
@@ -705,13 +718,62 @@ void main() {
         final page = _pageSource();
         expect(page, contains('autoCaptureTopHintText('));
         expect(page, contains('autoCaptureShutterHintText('));
-        // 顶部第一档(60)归常驻说明条独占。四条瞬态横幅都下移了一档 ——
-        // 谁搬回来,一条常驻文案就会和一条警告叠在一起,两个都读不了。
-        expect(RegExp(r'only\(top: 60\)').allMatches(page).length, 1);
         expect(page, contains('kAutoCaptureOnToastText'));
         // 文案只有一个出处:页面里不许再写一份中文常量。
         expect(page, isNot(contains('自动拍摄已开启')));
         expect(page, isNot(contains('绕物成圈拍摄')));
+      },
+    );
+
+    test('the four transient banners are back at their signed bands', () {
+      // [2026-07-27 UI 签决] 删掉常驻入场提示时,同一条签决要求"下面几档顶部
+      // 横幅回到各自的固定档位,不再有让位入场提示的偏移"。这里逐条回读每个
+      // 横幅**自己**那条 padding,而不是数字面量出现次数 —— 后者换个位置就
+      // 骗过去了。
+      final page = _pageSource();
+      expect(_bandOf(page, "'sfm-start-failure-banner-official'"), 66);
+      expect(_bandOf(page, '_HardRejectToast(stream:'), 60);
+      expect(_bandOf(page, '_MotionSpeedToast(stream:'), 104);
+      expect(_bandOf(page, '_ParallaxStarvedBanner('), 148);
+      expect(_bandOf(page, '_DisconnectedPhotoBanner('), 192);
+      // 说明条与硬拒 toast 共用第 60 档。真撞上时由**警告赢** —— 靠 Stack
+      // 顺序:说明条排在前面,警告画在它上面。
+      expect(_bandOf(page, '_CaptureModeTopHint(mode:'), 60);
+      expect(
+        page.indexOf('_CaptureModeTopHint(mode:'),
+        lessThan(page.indexOf('_HardRejectToast(stream:')),
+      );
+    });
+
+    test(
+      'the top hint is transient: shown on mount and on mode change only',
+      () {
+        final page = _pageSource();
+        final hint = _section(
+          page,
+          'class _CaptureModeTopHintState',
+          'class _AutoCaptureOnToast',
+        );
+        // 挂上时露一次 = 进采集页(这个组件只在 AR 会话建起来之后才存在)。
+        expect(hint, contains('void initState()'));
+        expect(hint, contains('_visible = true;'));
+        // 之后只有模式真的变了才再露。父级每帧都可能重建(pose 流 20–60 Hz),
+        // 没有这条早退,"瞬态"会退化成常驻,只是绕了个圈。
+        expect(hint, contains('if (widget.mode == oldWidget.mode) return;'));
+        // 自动淡出,且沿用 _HardRejectToast 那条 3 秒,不新造常数。
+        expect(hint, contains('Timer(const Duration(seconds: 3)'));
+        // ⚠️ 断言的是**淡出那一句**,不是字段初值 `bool _visible = false;`
+        // —— 后者在"永不淡出"的改法下依然在,数它等于没数。
+        expect(hint, contains('setState(() => _visible = false)'));
+        expect(hint, contains('_fadeTimer?.cancel()'));
+        final rejectToast = _section(
+          page,
+          'class _HardRejectToastState',
+          'class _ParallaxStarvedBanner',
+        );
+        expect(rejectToast, contains('Duration(seconds: 3)'));
+        // 页面里没有第二处常驻的顶部说明条了。
+        expect(RegExp(r'_IdleHintPill\(').allMatches(page).length, 3);
       },
     );
 
