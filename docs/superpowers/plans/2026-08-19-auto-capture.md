@@ -4,7 +4,7 @@
 
 **Goal:** 给采集页加「自动 / 手动」模式;自动模式下按"定时 tick + 姿态位移闸"替用户按快门,原地不动时不拍。
 
-**Architecture:** 三层。① 纯几何函数(视差角、视线转角、归一化中心偏移、HFOV、场景中位深度)② 纯决策谓词(给定几何量与状态,输出拍/不拍+原因)③ 有状态编排(挂 6Hz pose 流,维护基准帧与 tick,决定 fire 就调**现有** `_onShutterTap()`)。自动拍**不新开捕获路径**,因此 300 张上限、in-flight 守卫、12MP 静照、落盘、SfM 喂帧全部自动继承。
+**Architecture:** 三层。① 纯几何函数(视差角、视线转角、归一化中心偏移、HFOV、场景中位深度)② 纯决策谓词(给定几何量与状态,输出拍/不拍+原因)③ 有状态编排(挂 20–60 Hz pose 流,维护基准帧与 tick,决定 fire 就调**现有** `_onShutterTap()`)。自动拍**不新开捕获路径**,因此 300 张上限、in-flight 守卫、12MP 静照、落盘、SfM 喂帧全部自动继承。
 
 **Tech Stack:** Dart / Flutter(`flutter_test`)、`vector_math/vector_math_64.dart`。**零 native 改动** —— 相机内参与特征点已由 `ARPose` 送到 Dart。
 
@@ -692,7 +692,7 @@ void main() {
     final h = _Harness();
     h.controller.start(_pose(t: 0));
     for (var i = 1; i <= 360; i++) {
-      h.controller.onPose(_pose(t: i / 6.0)); // 6 Hz, 60 s
+      h.controller.onPose(_pose(t: i / 6.0)); // 20–60 Hz, 60 s
     }
     expect(h.fires, 0);
   });
@@ -701,7 +701,7 @@ void main() {
       () {
     final h = _Harness();
     h.controller.start(_pose(t: 0));
-    // Creep forward 1 cm per 6 Hz frame for 10 s: 60 cm of travel, ~0 parallax.
+    // Creep forward 1 cm per 20–60 Hz frame for 10 s: 60 cm of travel, ~0 parallax.
     for (var i = 1; i <= 60; i++) {
       h.controller.onPose(
         _pose(t: i / 6.0, pos: Vector3(0, 0, -i * 0.01)),
@@ -805,7 +805,7 @@ Expected: FAIL —— 无法解析 `auto_capture_controller.dart`
 ```dart
 // auto_capture_controller.dart — 自动采集的有状态编排。
 //
-// 挂在现成的 6 Hz pose 流上,维护基准帧与 tick 计时,判定 fire 就回调
+// 挂在现成的 20–60 Hz pose 流上,维护基准帧与 tick 计时,判定 fire 就回调
 // 宿主的快门入口。**不自建捕获路径** —— onFire 回调里必须是现有的
 // `_onShutterTap()` 等价物,这样 300 张上限、in-flight 守卫、12MP 静照、
 // 落盘、SfM 喂帧全部自动继承。
@@ -1326,7 +1326,7 @@ printf '%s\n' \
   '守卫、12MP 静照、落盘、SfM 喂帧全部自动继承,无一需要重新实现。' \
   '' \
   '判定逻辑一行都没进这个文件(它已 4830 行),只做接线:模式状态、' \
-  '把 controller 挂到已有的 6Hz pose 订阅、启停与生命周期。' \
+  '把 controller 挂到已有的 20–60 Hz pose 订阅、启停与生命周期。' \
   '不新起 Timer.periodic——pose 事件自带时间戳。' \
   '' \
   '模式命名避开"录像":KIRI/Polycam 的 Video 模式是真录视频并从视频建模,' \

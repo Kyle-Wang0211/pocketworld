@@ -80,7 +80,7 @@
 | 单元 | 职责 | 依赖 |
 |---|---|---|
 | `lib/official_capture/auto_capture_governor.dart` | **纯函数**。输入(当前 pose、基准帧 pose、场景中位深度、HFOV、队列深度、热态、已拍张数、已采集时长、tracking 状态),输出**拍 / 不拍 + 不拍的原因**。含全部阈值常量。 | 无(零 Flutter 依赖) |
-| `lib/official_capture/auto_capture_controller.dart` | **有状态编排**。挂在现成 6Hz pose 流上,维护 tick 计时与基准帧,决定 fire 就调快门入口回调。管模式启停。 | governor + 快门入口回调 |
+| `lib/official_capture/auto_capture_controller.dart` | **有状态编排**。挂在现成 pose 流上(**20–60 Hz**,见 §5.4),维护 tick 计时与基准帧,决定 fire 就调快门入口回调。管模式启停。 | governor + 快门入口回调 |
 | `lib/ui/official_capture/` 内的模式切换 UI | 自动 / 手动 两态切换 + 自动态指示器 | controller |
 
 纯谓词 + 有状态编排分离,是仓里现成写法(`shutter_backpressure_gate.dart`、
@@ -162,6 +162,32 @@ s = sx + sy - sx*sy          ( = 1 - (1-sx)(1-sy) )
 契约成立;调用方**不得**把预览/显示(竖向)尺寸传进来,否则 sx/sy 会整体错一个
 宽高比。〔2026-08-19 评审提出、控制器核实 native 侧后确认契约成立〕
 
+### 5.4 ⚠️ pose 流不是 6 Hz,特征点是 8 Hz(2026-08-19 T3 评审核实,原文写错)
+
+早先本文档与计划多处写「6 Hz pose 流」——**这是错的**,我把画质块的节流频率
+当成了 pose 的频率。逐条核实 `ios/Runner/OfficialAetherARKitPlugin.swift`:
+
+| 量 | 真实值 | 出处 |
+|---|---|---|
+| **pose 事件** | **逐 ARFrame,20–60 Hz** | `sessionDelegate.onFrame = { broadcast(frame:) }`(:779),**无节流**;注释原文「ARFrames (~17-50 ms)」(:642) |
+| 画质块(gray128) | 6 Hz | `qualityInterval = 1.0/6.0`(:617) ← **6 Hz 出自这里,与 pose 无关** |
+| **特征点 previewPoints** | **8 Hz** | `previewPointInterval = 1.0/8.0`(:624),在 :2685 独立判定后才并进 payload |
+
+**推论:30 fps 时约 3/4 的 pose 帧不带特征点。**
+
+这直接影响基准帧:`medianSceneDepthM` 吃的是**当前帧**的 previewPoints,
+拿不到就 `depthTrusted=false`。而基准帧在 `start()` 与**每次成功入队**时重算 ——
+两者都有约 3/4 的概率落在不带特征点的帧上。
+
+配合 §7 的重播种规则,功能不会死锁,但会有一个**系统性偏置**:
+基准帧被推迟到"入队后第一个带特征点的帧"才落定,最多晚 125 ms。
+按 1 m/s 步行 = **12.5 cm**,与 §5.3 的平移下限(1 m 物距处 8.8 cm)同量级
+—— 是偏置,不是噪声。
+
+⇒ 控制器须记住**最近一次可信深度**:当前帧拿不到特征点时沿用它并保持
+`depthTrusted=true`(场景深度在 125 ms 内不会突变,这比退回写死的兜底深度诚实),
+使基准帧能锚在**真正入队的那一帧**上。
+
 ### 5.3 阈值汇总
 
 | 量 | 取值 | 出处 |
@@ -193,7 +219,7 @@ R1(每 tick,间隔由 ShutterPace 决定):
     AND (视差角 >= 5°  OR  视线转角 >= 10°)      ← §5.1 下限
     -> fire
 
-R2(每个 pose 事件,6Hz,不等 tick):
+R2(每个 pose 事件,**20–60 Hz**,不等 tick):
     s >= 0.30                                     ← §5.2 上限
     -> 立刻 fire
 ```
