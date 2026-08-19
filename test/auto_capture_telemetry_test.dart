@@ -356,7 +356,7 @@ void main() {
     });
 
     test('the interval comes from the pace, not a hardcoded 1s', () {
-      // soft 档 tick = 2s(autoCaptureTickInterval)。1.5s 的间隔在 normal 档
+      // soft 档 tick = 2s(autoCaptureTickIntervalSec)。1.5s 的间隔在 normal 档
       // 不算早,在 soft 档就是早 —— 写死 1.0 会把这一发漏掉。
       expect(_int(fireAt(1.5), 'fire_before_tick'), 0);
       expect(_int(fireAt(1.5, pace: ShutterPace.soft), 'fire_before_tick'), 1);

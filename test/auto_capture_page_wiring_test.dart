@@ -1025,6 +1025,11 @@ void main() {
         final secondArm = hint.indexOf('_armDismiss();', firstArm + 1);
         expect(initStateAt, greaterThanOrEqualTo(0));
         expect(didUpdateAt, greaterThan(initStateAt));
+        // ⚠️ earlyReturnAt 必须先钉住"找得到"。这一句被改写(哪怕只是把
+        // `oldWidget.mode` 换个写法)时 indexOf 返回 -1，下面那条
+        // `secondArm > earlyReturnAt` 就退化成 `secondArm > -1` —— 恒真，
+        // 等于把"第二处 _armDismiss 在早退之后"这个断言整条静默丢掉。
+        expect(earlyReturnAt, greaterThanOrEqualTo(0));
         // 第一处在 initState 里(挂上就露一次,3 秒后自消)。
         expect(firstArm, greaterThan(initStateAt));
         expect(firstArm, lessThan(didUpdateAt));

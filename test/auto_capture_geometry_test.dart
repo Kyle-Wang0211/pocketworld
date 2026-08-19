@@ -262,7 +262,59 @@ void main() {
     expect(par, lessThan(0.001));
   });
 
-  test('parallaxAngleDeg returns 0 when a camera coincides with the target', () {
+  // ————————————————————————————————————————————————————————————————
+  // 〔2026-08-19 全分支评审 / 08-20 变异复核〕零长度守卫的四个半边。
+  //
+  // ⚠️ 先把一句写反了的话扳正。它同时写在 51228d1 的提交信息里，提交信息
+  // 改不了，所以这里是唯一能把记录留正的地方：
+  //
+  //   〔错〕「删掉这半边守卫 ⇒ `a.dot(b)/(la*lb)` = 0/0 = NaN；Dart 的
+  //          clamp 对 NaN 原样返回，acos(NaN) = NaN ⇒ 上层 `>= 5.0` 恒为
+  //          false ⇒ 闸门静默地永不触发」
+  //
+  // 实测：`double.nan.clamp(-1.0, 1.0)` 返回的是 **1.0**，不是 NaN。
+  // (num.clamp 用 compareTo 比较，而 double.compareTo 把 NaN 排在所有数
+  //  之后 ⇒ 命中 `> upperLimit` 那一支，返回上限。) 于是 acos(1.0) = **0.0**
+  // —— 恰恰就是断言期望的那个 0.0。守卫在与不在，观测值逐位相同，
+  // 「零长度 ⇒ 期望 0.0」这种写法因此**一个变异都咬不住**。
+  //
+  // 这里是**两个不同的机制**，不能混为一谈：
+  //
+  //  (1) cos 轻微越界(实测 v 与自身：dot/(|v||v|) = 1.0000000000000002)。
+  //      NaN 是 acos 在 clamp **之后**产生的，`.clamp` 正是拦它的那道墙：
+  //      删掉 `.clamp` ⇒ acos 返回 NaN ⇒ `NaN >= 5.0` 恒为 false ⇒ 闸门
+  //      静默地永不触发。上面两条 acos-domain 测试守的就是这一条，
+  //      它们**确实咬得住**(删 `.clamp` 当场变红)。
+  //
+  //  (2) 零长度向量。NaN 是 0/0 在 clamp **之前**就产生的，clamp 把它折成
+  //      1.0、acos 再折成 0.0。所以零长度守卫拦的**不是 NaN 外泄**，而是
+  //      一个**有限但错误的答案** —— 那才是下面四条要钉住的东西。
+  //
+  // 钉法：喂**接近零但非零**的长度(1e-12，仍在 1e-9 阈值之下)。除法此时
+  // 完全合法，守卫在 = 0.0，守卫删掉 = **90.0**(实测逐位精确)。90 同时
+  // 越过 kAutoCaptureParallaxMinDeg(5°)与 kAutoCaptureTurnMinDeg(10°)
+  // 两条下限 ⇒ 变异体会凭空开一枪。这才是这几条测试值得存在的理由：
+  // 守的不是「不崩溃」，是「不误拍」。
+  //
+  // 每条只让**一个**半边落到近零、另一半保持单位长 ⇒ 四个半边逐一独立钉死
+  // (把 `la < 1e-9 ||` 或 `|| lb < 1e-9` 单独删掉，也只有对应那一条变红)。
+  // ————————————————————————————————————————————————————————————————
+
+  test('parallaxAngleDeg returns 0 when the BASE camera all but coincides '
+      'with the target (the la half of the guard)', () {
+    // a = base - target = (1e-12, 0, 0) ⇒ la = 1e-12 < 1e-9，踩 la 半边；
+    // b = current - target = (0, 0, 1) ⇒ lb = 1，另一半不参与。
+    // a·b = 0 ⇒ cos = 0 / (1e-12 · 1) = 0 ⇒ acos(0) = π/2 ⇒ 90.0。
+    expect(
+      parallaxAngleDeg(
+        baseCamera: Vector3(1e-12, 0, -1),
+        currentCamera: Vector3.zero(),
+        target: Vector3(0, 0, -1),
+      ),
+      0.0,
+    );
+    // 真·重合(la 恰为 0)也必须是 0 —— 契约的另一端。但这一行**咬不住**
+    // 变异体，见上面表头 (2)：这正是 f12d429 那条测试此前唯一断言的形状。
     expect(
       parallaxAngleDeg(
         baseCamera: Vector3(0, 0, -1),
@@ -273,17 +325,20 @@ void main() {
     );
   });
 
-  // ————————————————————————————————————————————————————————————————
-  // 〔2026-08-19 全分支评审〕成对覆盖漏了三个零长度守卫分支。
-  //
-  // 每一个都是"删掉这半边守卫,`a.dot(b)/(la*lb)` = 0/0 = NaN;Dart 的
-  // clamp 对 NaN 原样返回,acos(NaN) = NaN,而 NaN 在上层的 `>= 5.0` /
-  // `>= 10.0` 里**恒为 false** ⇒ 闸门静默地永不触发,不报错不崩溃"。
-  // 上面那两条 acos-clamp 测试守的正是同一族失效的另一半。
-  // ————————————————————————————————————————————————————————————————
-
-  test('parallaxAngleDeg returns 0 when the CURRENT camera coincides with the '
-      'target (the lb half of the guard)', () {
+  test('parallaxAngleDeg returns 0 when the CURRENT camera all but coincides '
+      'with the target (the lb half of the guard)', () {
+    // a = base - target = (0, 0, 1) ⇒ la = 1；
+    // b = current - target = (1e-12, 0, 0) ⇒ lb = 1e-12 < 1e-9，踩 lb 半边。
+    // a·b = 0 ⇒ cos = 0 / (1 · 1e-12) = 0 ⇒ acos(0) = π/2 ⇒ 90.0。
+    expect(
+      parallaxAngleDeg(
+        baseCamera: Vector3.zero(),
+        currentCamera: Vector3(1e-12, 0, -1),
+        target: Vector3(0, 0, -1),
+      ),
+      0.0,
+    );
+    // 契约的另一端(lb 恰为 0)，同样不咬变异体。
     expect(
       parallaxAngleDeg(
         baseCamera: Vector3(1, 0, 0),
@@ -294,7 +349,19 @@ void main() {
     );
   });
 
-  test('viewAxisTurnDeg returns 0 on a zero-length BASE forward', () {
+  test('viewAxisTurnDeg returns 0 on a near-zero BASE forward '
+      '(the la half of the guard)', () {
+    // la = |(1e-12, 0, 0)| = 1e-12 < 1e-9；lb = |(0, 0, -1)| = 1。
+    // dot = 0 ⇒ cos = 0 / (1e-12 · 1) = 0 ⇒ acos(0) = π/2 ⇒ 90.0，
+    // 而 90 ≥ kAutoCaptureTurnMinDeg(10) ⇒ 变异体在原地不动时也会开火。
+    expect(
+      viewAxisTurnDeg(
+        baseForward: Vector3(1e-12, 0, 0),
+        currentForward: Vector3(0, 0, -1),
+      ),
+      0.0,
+    );
+    // 契约的另一端(恰为零向量)，不咬变异体。
     expect(
       viewAxisTurnDeg(
         baseForward: Vector3.zero(),
@@ -304,7 +371,17 @@ void main() {
     );
   });
 
-  test('viewAxisTurnDeg returns 0 on a zero-length CURRENT forward', () {
+  test('viewAxisTurnDeg returns 0 on a near-zero CURRENT forward '
+      '(the lb half of the guard)', () {
+    // la = 1；lb = 1e-12 < 1e-9。dot = 0 ⇒ cos = 0 ⇒ 90.0。
+    expect(
+      viewAxisTurnDeg(
+        baseForward: Vector3(0, 0, -1),
+        currentForward: Vector3(1e-12, 0, 0),
+      ),
+      0.0,
+    );
+    // 契约的另一端(恰为零向量)，不咬变异体。
     expect(
       viewAxisTurnDeg(
         baseForward: Vector3(0, 0, -1),
