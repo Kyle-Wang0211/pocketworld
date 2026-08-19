@@ -96,7 +96,15 @@ class AutoCaptureTelemetry {
   /// 占比才是视差下限那道门的实际拦截率(spec §9 差异1)。
   ///
   /// [tSec] = 该帧的 `ARPose.timestamp`;[pace] = 该帧 controller 的
-  /// `paceProvider` 读到的同一个档位(采集页的 `_shutterPace`)。
+  /// `paceProvider` 读到的同一个档位(采集页的 `_shutterPace`);
+  /// [thermalState] = 同一帧的 thermal 桶(0..3,<0 未知按冷)。
+  ///
+  /// ⚠️ [thermalState] 有默认值 **只是为了**让本文件的纯聚合测试不必逐条
+  /// 关心热态;**生产调用点必须显式传**(采集页的 `_lastThermalState`,与
+  /// controller 的 `thermalStateProvider` 同一个字段),否则 `fire_before_tick`
+  /// 用的间隔会与 governor 实际用的对不上 —— 热态下 governor 的间隔更长,
+  /// 而这里若按 0 算就会把本该记进 R2 的发数漏掉。这条由
+  /// auto_capture_telemetry_test 的源码契约钉住。
   ///
   /// ⚠️ 占比是**按判定数**算的,而判定是按 pose 来的(20–60 Hz),不是按
   /// tick 来的。所以 `skipNotMoved / decisions` 读作"下限门把快门**按住的
@@ -106,6 +114,7 @@ class AutoCaptureTelemetry {
     AutoCaptureDecision d, {
     required double tSec,
     required ShutterPace pace,
+    int thermalState = 0,
   }) {
     if (!_open) return;
     _counts[d] = (_counts[d] ?? 0) + 1;
@@ -127,8 +136,13 @@ class AutoCaptureTelemetry {
       // 只在开火时重置那个时钟。等于间隔时 tick 闸已放行,归因不唯一,
       // 那一发不算 ⇒ 本计数是 R2 占比的**下界**,不是精确值(见报告)。
       final since = tSec - (_lastFireSec ?? _startSec ?? tSec);
-      // 间隔取自 governor 同一个函数,不新造常数,也不写死 1.0。
-      final intervalSec = autoCaptureTickInterval(pace).inMilliseconds / 1000.0;
+      // 间隔取自 governor 同一个函数,不新造常数,也不写死 1.0 ——
+      // 连热态下限也是同一个函数算的,否则热机时这里会用一个比 governor
+      // 实际用的更短的间隔,把本该记进 R2 的发数算漏。
+      final intervalSec = autoCaptureTickIntervalSec(
+        pace: pace,
+        thermalState: thermalState,
+      );
       if (since < intervalSec) _fireBeforeTick++;
       _lastFireSec = tSec;
     }

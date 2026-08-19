@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/official_capture/auto_capture_controller.dart';
+import 'package:pocketworld_flutter/official_capture/auto_capture_geometry.dart';
 import 'package:pocketworld_flutter/official_capture/auto_capture_governor.dart';
 import 'package:pocketworld_flutter/official_capture/shutter_backpressure_gate.dart';
 import 'package:pocketworld_flutter/official_dome/ar_pose.dart';
@@ -70,20 +71,41 @@ ARPose _pose({
 
 class _Harness {
   int fires = 0;
+  int fireAttempts = 0;
   bool enqueueSucceeds = true;
   ShutterPace pace = ShutterPace.normal;
+
+  /// thermal 桶(0 nominal · 1 fair · 2 serious · 3 critical;-1 未知按冷)。
+  /// 默认 0 = 不热 ⇒ 既有用例的 tick 间隔一个字节不变。
+  int thermal = 0;
   int captured = 0;
+
+  /// 每次**成功**入队的那一帧 —— §10 ②③ 的"相邻捕获帧"不变量只能沿轨迹
+  /// 回算,单步断言看不见它。
+  final List<ARPose> firedPoses = <ARPose>[];
+  ARPose? _nextFirePose;
 
   late final AutoCaptureController controller = AutoCaptureController(
     onFire: () {
+      fireAttempts++;
       if (!enqueueSucceeds) return false;
       fires++;
       captured++;
+      final p = _nextFirePose;
+      if (p != null) firedPoses.add(p);
       return true;
     },
     paceProvider: () => pace,
     capturedCountProvider: () => captured,
+    thermalStateProvider: () => thermal,
   );
+
+  /// 喂一帧并同步记下"开火的是哪一帧"(onFire 是在 onPose 里同步跑完的,
+  /// 所以先设后喂就能把真正入队的那一帧捞出来)。
+  AutoCaptureDecision feed(ARPose pose) {
+    _nextFirePose = pose;
+    return controller.onPose(pose);
+  }
 }
 
 void main() {
@@ -1142,8 +1164,247 @@ void main() {
 
     expect(control, lessThan(120),
         reason: 'the parallax floor, not the 1 s tick, is pacing this arm');
-    expect(control, 109);
+    // 〔2026-08-19 评审改正〕原来这里写死 `expect(control, 109)`。109 是由
+    // kAutoCaptureParallaxMinDeg=5°、tick=1 s、v=0.16 m/s、depth=2 m 联合推出
+    // 来的一个实现参数,而 spec §11 明写这些阈值**必须真机标定** —— 标定一
+    // 落地它就无谓变红,而这条测试真正要守的不变式是下一行(与点频无关)。
+    // 上一行的 `lessThan(120)` 已经把"是视差在配速、不是 tick"这个前提守住了。
+    expect(control, inInclusiveRange(100, 119));
     expect(mixed, control,
         reason: 'the point rate must not change the capture cadence at all');
+  });
+
+  // ————————————————————————————————————————————————————————————————
+  // 〔2026-08-19 全分支评审〕入队失败的重试节奏:「下 tick 重试」必须对
+  // R1 与 R2 一律成立。R2(重叠上限)排在 tick 闸**之前**(那个顺序是
+  // spec §6 的优先级本身,不能动),所以只靠 _lastTickSec 管不到它。
+  // ————————————————————————————————————————————————————————————————
+
+  group('a failed enqueue retries on the next TICK — R2 included', () {
+    /// 30 个 pose = 1 秒 @ 30 Hz。返回**开火尝试**次数(不是成功数):
+    /// 每一次尝试都对应一次入队、一行 fire_enqueue_failed 遥测、一次整页
+    /// setState、一次脉冲动画重启 —— 这才是失控时真正被放大的那个量。
+    int attemptsInOneSecond({
+      required double lateralM,
+      required bool enqueueOk,
+    }) {
+      final h = _Harness()..enqueueSucceeds = enqueueOk;
+      h.controller.start(_pose(t: 0));
+      for (var i = 1; i <= 30; i++) {
+        h.feed(_pose(t: i / 30.0, pos: Vector3(lateralM, 0, 0)));
+      }
+      return h.fireAttempts;
+    }
+
+    test('R2 path + failing enqueue fires once, not once per frame', () {
+      // 侧移 0.35 m @ 深度 1 m ⇒ s = 0.35 >= 0.30 ⇒ 走 R2。
+      // 入队失败时基准帧按设计不动 ⇒ s 不归零 ⇒ 修复前这里是 **30**。
+      expect(attemptsInOneSecond(lateralM: 0.35, enqueueOk: false), 1);
+    });
+
+    test('control arm: the same motion with a successful enqueue', () {
+      // 单变量对照 —— 唯一的差别是入队成不成功。
+      expect(attemptsInOneSecond(lateralM: 0.35, enqueueOk: true), 1);
+    });
+
+    test('control arm: the same failure through R1', () {
+      // 侧移 0.10 m ⇒ s = 0.10 < 0.30 ⇒ 走 R1(视差 5.7°),过 tick 闸,
+      // 修复前后都是 1。两条对照一起把病灶钉死在「R2 × 入队失败」那一格。
+      expect(attemptsInOneSecond(lateralM: 0.10, enqueueOk: false), 1);
+    });
+
+    test('the retry does happen — it waits a tick, it does not give up', () {
+      // 负向对照:别把"下 tick 重试"修成"永不重试"。
+      final h = _Harness()..enqueueSucceeds = false;
+      h.controller.start(_pose(t: 0));
+      for (var i = 1; i <= 60; i++) {
+        h.feed(_pose(t: i / 30.0, pos: Vector3(0.35, 0, 0)));
+      }
+      expect(h.fireAttempts, 2, reason: '2 秒 = 2 次重试机会');
+    });
+
+    test('the cooldown lifts as soon as one enqueue succeeds', () {
+      final h = _Harness()..enqueueSucceeds = false;
+      h.controller.start(_pose(t: 0));
+      h.feed(_pose(t: 0.1, pos: Vector3(0.35, 0, 0)));
+      expect(h.fireAttempts, 1);
+      h.enqueueSucceeds = true;
+      // 还在冷却里 —— 队列恢复了也要等满一个 tick。
+      h.feed(_pose(t: 0.5, pos: Vector3(0.40, 0, 0)));
+      expect(h.fires, 0);
+      h.feed(_pose(t: 1.2, pos: Vector3(0.40, 0, 0)));
+      expect(h.fires, 1);
+      // 成功那一发把冷却清掉:此后 R2 立刻恢复原速(见下一条)。
+      h.feed(_pose(t: 1.3, pos: Vector3(0.80, 0, 0)));
+      expect(h.fires, 2, reason: 'a success must not leave a stale cooldown');
+    });
+
+    test('genuinely fast motion is NOT throttled — R2 keeps its cadence', () {
+      // 别把这条修成一个通用限流器。spec §5.3.1:用户真的走得快时
+      // R2 每帧开火**是正确行为**(那是 70% 重叠的保证),只是那不是常态。
+      final h = _Harness();
+      h.controller.start(_pose(t: 0));
+      for (var i = 1; i <= 30; i++) {
+        h.feed(_pose(t: i / 30.0, pos: Vector3(i * 0.35, 0, 0)));
+      }
+      expect(h.fires, 30, reason: 'every frame crosses the 0.30 bound afresh');
+    });
+  });
+
+  // ————————————————————————————————————————————————————————————————
+  // 〔2026-08-19 D8 改正〕5 分钟是**整场累积**的热天花板,不是每轮一份。
+  // ————————————————————————————————————————————————————————————————
+
+  group('the time limit is per SCAN, not per auto-run (D8)', () {
+    test('stopping and restarting does not refund the elapsed budget', () {
+      final h = _Harness();
+      h.controller.start(_pose(t: 0));
+      for (var i = 1; i <= 240; i++) {
+        h.feed(_pose(t: i.toDouble()));
+      }
+      expect(h.controller.isRunning, isTrue);
+      h.controller.stop();
+      expect(h.controller.sessionElapsedSec, closeTo(240.0, 1e-9));
+
+      // 用户切了一次模式(或点停又点开)。时钟是新的,预算不是 ——
+      // 修复前这里整个清零,切一次模式就能无限续杯。
+      h.controller.start(_pose(t: 10000.0));
+      expect(
+        h.feed(_pose(t: 10059.0)),
+        isNot(AutoCaptureDecision.skipTimeLimit),
+        reason: '240 + 59 = 299 s,还差一秒',
+      );
+      expect(h.feed(_pose(t: 10060.0)), AutoCaptureDecision.skipTimeLimit);
+      expect(h.controller.isRunning, isFalse);
+    });
+
+    test('time spent stopped is free — it is auto-capture time that counts',
+        () {
+      // 累的是"自动拍真正在跑的时长",不是从进采集页起算的墙钟:停着的
+      // 那段一张都没拍,不该由它买单(手动模式那段由 300 张那条天花板管)。
+      final h = _Harness();
+      h.controller.start(_pose(t: 0));
+      h.feed(_pose(t: 10.0));
+      h.controller.stop();
+      // 停了整整一个钟头。
+      h.controller.start(_pose(t: 3600.0));
+      expect(h.controller.sessionElapsedSec, closeTo(10.0, 1e-9));
+      expect(
+        h.feed(_pose(t: 3601.0)),
+        isNot(AutoCaptureDecision.skipTimeLimit),
+      );
+    });
+
+    test('a self-stop at the limit settles the budget exactly once', () {
+      // 自停这条路**不经过** stop()(宿主的 _stopAutoCapture 开头就
+      // `if (!isRunning) return;`),所以结算必须在自停那一支里也做一次;
+      // 而 dispose 又会再调一次 stop() —— 结算必须幂等。
+      final h = _Harness();
+      h.controller.start(_pose(t: 0));
+      expect(h.feed(_pose(t: 300.0)), AutoCaptureDecision.skipTimeLimit);
+      expect(h.controller.sessionElapsedSec, closeTo(300.0, 1e-9));
+      h.controller.stop();
+      expect(h.controller.sessionElapsedSec, closeTo(300.0, 1e-9));
+    });
+  });
+
+  // ————————————————————————————————————————————————————————————————
+  // 〔2026-08-19 全分支评审〕spec §10 ②③ 的"相邻捕获帧"不变量。
+  // 既有测试全是"这一步会不会开火";§10 要的是沿轨迹回算**连续两张成功
+  // 入队**之间的视差与重叠 —— 那才是整个设计存在的理由(RS 官方警告的
+  // 「断裂成不相连的组件」),也是唯一一条把判据接回产品保证的断言。
+  // ————————————————————————————————————————————————————————————————
+
+  group('adjacent captures keep the promised geometry (spec §10 ②③)', () {
+    Vector3 fwd(ARPose p) => p.orientation.rotated(Vector3(0, 0, -1));
+
+    /// 回算相邻两张成功入队照片之间的(视差角, 面积重叠损失 s)。
+    /// 口径与 controller 逐字相同:target 是**前一张**那一帧的虚拟目标点。
+    List<(double, double)> pairs(_Harness h) {
+      final out = <(double, double)>[];
+      for (var i = 1; i < h.firedPoses.length; i++) {
+        final a = h.firedPoses[i - 1];
+        final b = h.firedPoses[i];
+        final depth = medianSceneDepthM(
+          cameraPosition: a.position,
+          forward: fwd(a),
+          points: a.previewPoints,
+        );
+        expect(depth, isNotNull);
+        final target = a.position + fwd(a) * depth!;
+        final par = parallaxAngleDeg(
+          baseCamera: a.position,
+          currentCamera: b.position,
+          target: target,
+        );
+        final s = normalizedCenterShift(
+          target: target,
+          currentCamera: b.position,
+          currentOrientation: b.orientation,
+          fx: a.intrinsicFxFyCxCy[0],
+          fy: a.intrinsicFxFyCxCy[1],
+          imageWidth: a.imageWidth,
+          imageHeight: a.imageHeight,
+        );
+        expect(s, isNotNull);
+        out.add((par, s!));
+      }
+      return out;
+    }
+
+    test('a steady orbit: every adjacent pair clears 5 deg and stays under '
+        '0.30 overlap loss', () {
+      // 2 m 物距、0.3 m/s 切向绕行(= 8.59 deg/s)、30 fps、30 s。
+      const radius = 2.0;
+      const omegaDegPerSec = 0.15 * 180 / math.pi; // v/r = 0.15 rad/s
+      final h = _Harness();
+      ARPose at(double t) {
+        final phi = omegaDegPerSec * t;
+        final r = phi * math.pi / 180;
+        // ⚠️ yaw 取 **-phi**:_pose 里 axisAngle(+Y, yaw) 把 (0,0,-1) 转成
+        // (sin yaw, 0, -cos yaw),而绕物时光轴必须指回圆心 = (-sinφ,0,-cosφ)。
+        // 号反了的话镜头是背对物体的,target 会落到圆外,这条测试就白测了。
+        return _pose(
+          t: t,
+          pos: Vector3(radius * math.sin(r), 0, radius * math.cos(r)),
+          yawDeg: -phi,
+          depthM: radius,
+        );
+      }
+
+      h.controller.start(at(0));
+      for (var i = 1; i <= 900; i++) {
+        h.feed(at(i / 30.0));
+      }
+      expect(h.firedPoses.length, greaterThan(20),
+          reason: '30 s of orbiting must produce a real sequence');
+      for (final (par, s) in pairs(h)) {
+        expect(par, greaterThanOrEqualTo(kAutoCaptureParallaxMinDeg));
+        expect(s, lessThan(kAutoCaptureMaxCenterShift));
+      }
+    });
+
+    test('a fast straight strafe: R2 holds the overlap bound, with only the '
+        'discrete-sampling overshoot', () {
+      // §10 ③。1.5 m/s 侧移、2 m 物距、30 fps ⇒ 每帧 s 走 0.025,
+      // 所以 R2 只能在跨过 0.30 的**下一帧**抓到它 —— 超调量是采样的,
+      // 不是判据松了。这个上界以前没人量过,也没有任何测试会在它变坏时变红。
+      final h = _Harness();
+      ARPose at(double t) =>
+          _pose(t: t, pos: Vector3(1.5 * t, 0, 0), depthM: 2.0);
+      h.controller.start(at(0));
+      for (var i = 1; i <= 300; i++) {
+        h.feed(at(i / 30.0));
+      }
+      expect(h.firedPoses.length, greaterThan(20));
+      var worst = 0.0;
+      for (final (par, s) in pairs(h)) {
+        expect(par, greaterThanOrEqualTo(kAutoCaptureParallaxMinDeg));
+        if (s > worst) worst = s;
+      }
+      // 0.30 是**判据**;下面这个数是离散采样的超调上界(实测钉死)。
+      expect(worst, greaterThanOrEqualTo(kAutoCaptureMaxCenterShift));
+      expect(worst, lessThan(0.33));
+    });
   });
 }

@@ -188,6 +188,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     onFire: _onAutoCaptureFire,
     paceProvider: () => _shutterPace,
     capturedCountProvider: _autoCaptureAcceptedFrameCount,
+    // spec §7「热态 critical 只拉长间隔、不停止」。取的是 _recomputeShutterPace
+    // 已经采好的那一份,不新起采样(见 _lastThermalState 的注释)。
+    thermalStateProvider: () => _lastThermalState,
   );
 
   /// 自动采集的遥测聚合(spec §11 的待实测项)。**在内存里聚合**,按 5 秒
@@ -502,6 +505,19 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   // thermal → normal/soft/hard 三级),转换时记一行 `shutter_pace` 遥测便于
   // 事后画积压曲线;绝不 gate 快门、不置灰、不弹横幅。
   ShutterPace _shutterPace = ShutterPace.normal;
+
+  /// 最近一次采到的 thermal 桶(0 nominal · 1 fair · 2 serious · 3 critical;
+  /// **-1 = 未知**,与 `_recomputeShutterPace` 里的降级口径同源)。
+  ///
+  /// 只喂**自动拍**的 tick 间隔(spec §7「热态 critical 只拉长间隔、不停止」,
+  /// 兑现在 `autoCaptureTickIntervalSec`)。手动快门一个字节不受影响 ——
+  /// 07-12 签决的「快门彻底不限流」不变。
+  ///
+  /// 为什么缓存而不是每个 pose 现采:`PwTelemetry.sample()` 是一次 FFI +
+  /// 三个 native 指针的分配/释放,而 pose 流是 20–60 Hz;
+  /// [_recomputeShutterPace] 本来就在每次高清照落地与每次 SfM 队列事件上
+  /// 采一次(自动拍跑起来至少 1 Hz),而机温是分钟级的量,这个刷新率足够。
+  int _lastThermalState = -1;
 
   /// 遥测【WAIT-BUDGET 2026-07-29】上一次快门的 epoch ms。
   ///
@@ -1184,6 +1200,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   void _recomputeShutterPace({bool inSetState = false}) {
     final queue = _sfmRecon?.remainingCount ?? 0;
     final thermal = PwTelemetry.sample()?.thermalState ?? -1;
+    // ⚠️ 记在**早退之前**:档位没翻转时这个函数就 return 了,而热态自己
+    // 是会变的 —— 记在后面等于只在档位翻转的那几帧更新机温。
+    // 这一行对手动快门是纯 no-op(没有任何手动路径读它)。
+    _lastThermalState = thermal;
     final next = shutterPaceNext(
       previous: _shutterPace,
       queueDepth: queue,
@@ -1469,6 +1489,13 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         '点云重建服务出错，最近的照片没有进入重建。'
         '照片已保留，但继续拍摄不会改善——请结束本次拍摄后重试。';
     if (_sfmStartFailureText == text || !mounted) return;
+    // ⚠️ 这一句翻的是 `_sfmCaptureReady`,而它一假,`_admitShutterCapture`
+    // 就**恒**被拒 —— 自动拍从此每次开火都入队失败。基准帧按设计不动,
+    // 于是它会一路空转到 5 分钟上限才停,期间一张都拍不出来。
+    // 与其余四条会让入队失效的路径(退后台 / 退出弹窗 / 完成 / finalize)
+    // 同源:让入队失效的人负责停自动拍。
+    // (幂等:_stopAutoCapture 开头就 `if (!isRunning) return;`。)
+    _stopAutoCapture();
     setState(() => _sfmStartFailureText = text);
   }
 
@@ -1559,6 +1586,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   void _markSfmStartFailure(String detail) {
     DeviceLog.log('OfficialARCapturePage', 'sfm: startup blocked: $detail');
     if (!mounted) return;
+    // 与 _noteSfmInternalFailure 同源:凡是翻 _sfmCaptureReady 的地方都要停
+    // 自动拍,否则它会对着一扇永远关着的门每 tick 撞一次。
+    _stopAutoCapture();
     setState(() {
       _sfmStarting = false;
       _sfmStartFailureText = '点云重建未能启动（$detail）。请退出后重试；此次拍摄不会保存。';
@@ -2759,6 +2789,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       return; // 起跑帧只播种,不判定。
     }
     if (!_autoCapture.isRunning) return;
+    // 开火钩子在 onPose **内部**同步跑完,并且只在**真的入队成功**时把这个
+    // 令牌 +1(见 _onAutoCaptureFire)。所以前后一比就知道这一帧到底落没落。
+    final pulseBefore = _autoFirePulseToken;
     final decision = _autoCapture.onPose(pose);
     // 遥测【auto_capture】:**每个**判定都记(spec §11)。
     //
@@ -2774,6 +2807,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       decision,
       tSec: pose.timestamp,
       pace: _shutterPace,
+      // 与 controller 的 thermalStateProvider **同一个字段** —— fire_before_tick
+      // 用的间隔必须与 governor 实际用的逐位相同,否则热机时会算漏。
+      thermalState: _lastThermalState,
     );
     // isRunning 由 true 翻 false = controller 自停(撞 300 张或 5 分钟)。
     // 这里读的是 isRunning 而不是 decision:停机后 onPose 恒返回
@@ -2787,9 +2823,17 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       //(撞 300 张 / 撞 5 分钟上限)一行都写不出来。
       _emitAutoTelemetry(_autoTelemetry.recordSessionEnd());
     }
-    final fired = decision == AutoCaptureDecision.fire;
-    if (fired) _autoFirePulseToken++;
-    if (!fired &&
+    // ⚠️ 判据是「令牌变了 = **真的落了一帧**」,不是 `decision == fire`
+    // 〔2026-08-19 评审改正〕。两处理由:
+    //   ① 开火 ≠ 拍成(spec §7,遥测层正是为此把 fire_enqueued /
+    //      fire_enqueue_failed 分开记);拿 fire 当"落帧"会在入队失败时
+    //      给用户一个**假的正反馈** —— 红键脉冲一下、N/300 一动不动,
+    //      而自动模式下那颗红键的脉冲是"到底拍上没有"的唯一反馈。
+    //   ② `fired == true` 会跳过这条短路。入队持续失败时(SfM 内部故障)
+    //      判定会连着好几帧是 fire,于是这个 4800 行的页面被每帧重建一次
+    //      —— 正是这段注释自己要避免的那个热源。
+    final landed = _autoFirePulseToken != pulseBefore;
+    if (!landed &&
         decision == _lastAutoDecision &&
         running == _autoRunningLastSeen) {
       // pose 流是 20–60 Hz。没有任何变化时不重建整页 —— 每帧 setState
@@ -2882,6 +2926,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // spec §7「入队失败 ⇒ 基准帧不更新 + **记遥测**」。这里是全链路唯一
       // 拿得到真实入队结果的地方 —— 判定层只知道"开了一枪"。
       _autoTelemetry.recordFireOutcome(enqueued: enqueued);
+      // spec §8「**落帧**时 → 指示器脉冲一次」。脉冲与 fire_enqueued 在
+      // **同一处**记账,屏幕与遥测因此不可能说两套话
+      //〔2026-08-19 评审改正:此前脉冲挂在 `decision == fire` 上,
+      // 入队失败也照样脉冲〕。
+      if (enqueued) _autoFirePulseToken++;
       return enqueued;
     } catch (e) {
       _autoTelemetry.recordFireOutcome(enqueued: false);

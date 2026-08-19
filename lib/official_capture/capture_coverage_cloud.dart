@@ -32,7 +32,8 @@ import 'package:vector_math/vector_math_64.dart' as vm;
 
 import '../official_dome/ar_pose.dart' show ARPose, SfmFrameFeed;
 import 'photo_card_state.dart' show medianOf;
-import 'true_parallax.dart' show coverageVoxelKeyFor, kCoverageVoxelSizeM;
+import 'true_parallax.dart'
+    show coverageVoxelKeyFor, kCaptureParallaxMinDeg, kCoverageVoxelSizeM;
 
 /// Packed render payload for the platform's dumb point renderer.
 class CoverageCloudPacked {
@@ -67,7 +68,7 @@ class CaptureCoverageCloud {
     this.voxelSizeM = kCoverageVoxelSizeM,
     this.maxVoxels = 65000,
     this.coverageSaturation = 5,
-    this.parallaxMinDeg = 5.0,
+    this.parallaxMinDeg = kCaptureParallaxMinDeg,
   });
 
   /// Single-scale voxel edge — coarse enough to stay cheap, fine enough to

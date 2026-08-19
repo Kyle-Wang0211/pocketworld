@@ -1,6 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/official_capture/auto_capture_governor.dart';
+import 'package:pocketworld_flutter/official_capture/capture_coverage_cloud.dart';
 import 'package:pocketworld_flutter/official_capture/shutter_backpressure_gate.dart';
+import 'package:pocketworld_flutter/official_capture/true_parallax.dart';
 
 /// 默认参数 = "一切正常、刚到 tick、完全没动"。各测试只覆盖它关心的那一项。
 AutoCaptureDecision decide({
@@ -84,10 +86,22 @@ void main() {
         AutoCaptureDecision.fire);
   });
 
+  test('the parallax floor really is the calibrated one, not a copy', () {
+    // governor 的注释宣称"与 capture_coverage_cloud 的 parallaxMinDeg 同源
+    // 同值 …… 不新造常数"。〔2026-08-19 评审改正〕此前两边各写死一个 5.0,
+    // 那句话不是代码保证的事实 —— 下一次真机重标定只会改到其中一个,而
+    // 注释会让改的人以为另一处会跟着走。现在两边都引同一个 const。
+    expect(kAutoCaptureParallaxMinDeg, kCaptureParallaxMinDeg);
+    expect(CaptureCoverageCloud().parallaxMinDeg, kCaptureParallaxMinDeg);
+  });
+
   test('tick interval stretches with shutter pace', () {
-    expect(autoCaptureTickInterval(ShutterPace.normal).inMilliseconds, 1000);
-    expect(autoCaptureTickInterval(ShutterPace.soft).inMilliseconds, 2000);
-    expect(autoCaptureTickInterval(ShutterPace.hard).inMilliseconds, 3000);
+    // thermalState: 0 = nominal ⇒ 热态下限不参与,单看队列这条杠杆。
+    double at(ShutterPace p) =>
+        autoCaptureTickIntervalSec(pace: p, thermalState: 0);
+    expect(at(ShutterPace.normal), 1.0);
+    expect(at(ShutterPace.soft), 2.0);
+    expect(at(ShutterPace.hard), 3.0);
   });
 
   // ————————————————————————————————————————————————————————————————
@@ -209,14 +223,17 @@ void main() {
 
   test('a stretched shutter pace really does stretch the gate the governor '
       'applies', () {
-    // 把 autoCaptureTickInterval 的输出真的喂回 autoCaptureDecide ——
+    // 把 autoCaptureTickIntervalSec 的输出真的喂回 autoCaptureDecide ——
     // spec §10 的第 6 条(队列深 → 间隔 1s→2s→3s)只有这样才算被验到。
     for (final (pace, seconds) in <(ShutterPace, double)>[
       (ShutterPace.normal, 1.0),
       (ShutterPace.soft, 2.0),
       (ShutterPace.hard, 3.0),
     ]) {
-      final interval = autoCaptureTickInterval(pace).inMilliseconds / 1000.0;
+      final interval = autoCaptureTickIntervalSec(
+        pace: pace,
+        thermalState: 0,
+      );
       expect(interval, seconds, reason: '$pace');
       expect(
         decide(

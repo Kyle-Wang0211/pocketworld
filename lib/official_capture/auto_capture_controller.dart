@@ -49,9 +49,11 @@ class AutoCaptureController {
     required bool Function() onFire,
     required ShutterPace Function() paceProvider,
     required int Function() capturedCountProvider,
+    required int Function() thermalStateProvider,
   }) : _onFire = onFire,
        _paceProvider = paceProvider,
-       _capturedCountProvider = capturedCountProvider;
+       _capturedCountProvider = capturedCountProvider,
+       _thermalStateProvider = thermalStateProvider;
 
   /// 触发快门。**返回 true 表示入队成功** —— 只有 true 才更新基准帧。
   final bool Function() _onFire;
@@ -63,10 +65,68 @@ class AutoCaptureController {
   /// 同上:张数由宿主队列现问。自动拍跑着的时候手动快门也可能在加张数。
   final int Function() _capturedCountProvider;
 
+  /// thermal 桶(0..3,<0 = 未知按冷处理)。同样每帧现问 —— 热是跑着变的,
+  /// 缓存在 `start()` 等于拿起跑那一刻的机温决定整轮节奏。
+  ///
+  /// spec §7「热态 critical **只拉长间隔**、不停止」在这一层兑现:
+  /// 见 [autoCaptureTickIntervalSec] 里那段"为什么不去改 shutterPaceNext"。
+  final int Function() _thermalStateProvider;
+
   bool _running = false;
   _Baseline? _baseline;
+
+  /// 本轮起点(ARFrame 时间轴)。**注意本轮 ≠ 整场**:时间上限按整场累积,
+  /// 见 [_elapsedBeforeRunSec]。
   double _startedAtSec = 0;
+
+  /// 本轮**之前**各轮已经跑掉的自动拍时长(秒),整场累积。
+  ///
+  /// 〔2026-08-19 D8 改正〕此前 `start()` 把起点置成本帧时间戳、不带任何
+  /// 累积,于是用户点停再点开就把 5 分钟预算整个清零。而 D8 那两条上限
+  /// (300 张 / 5 分钟)**都是防过热的独立天花板,热是整场累积的**;300 张
+  /// 那条本来就跨轮累计(宿主的 capturedCountProvider 读的是整场张数),
+  /// 时间这条逐轮清零等于把自己架空 —— 切一次模式就能无限续杯。
+  ///
+  /// 累的是**自动拍真正在跑的时长**,不是从进采集页起算的墙钟:停着的那段
+  /// 不进预算(那段自动拍一张都没拍,不该由它买单),而手动模式下的时长
+  /// 由 300 张那条天花板管。controller 实例是**每次采集一个**(采集页 State
+  /// 的 `late final` 字段),所以"本对象累计"就是"整场累计",不需要额外的
+  /// 会话标识。
+  double _elapsedBeforeRunSec = 0;
+
+  /// 本轮最近一帧的时间戳,收尾时用来把本轮时长结算进 [_elapsedBeforeRunSec]。
+  double _lastPoseSec = 0;
+
   double _lastTickSec = 0;
+
+  /// 上一次**开火但没能入队**的时刻;null = 本轮还没失败过(或上一发成功了)。
+  ///
+  /// 为什么单独一个字段、而不是靠 [_lastTickSec] 顺带覆盖
+  /// 〔2026-08-19 评审改正,实测复现〕:
+  ///
+  /// `_lastTickSec` 只喂 governor 的 **tick 闸**,而 R2(重叠上限)刻意排在
+  /// tick 闸**之前**(那个顺序是有意的,并被 governor 的测试钉住)。入队失败时
+  /// 基准帧按设计**不动** ⇒ `shift` 不会归零、只会继续变大 ⇒ 下一个 pose 仍然
+  /// `>= 0.30` ⇒ 又是 fire。于是 spec §7 承诺的「下 tick 重试」在 R2 这条路上
+  /// 退化成「**下一帧**重试」,频率就是 pose 流的 20–60 Hz。
+  ///
+  /// 实测(30 Hz 跑 1 秒 = 30 帧,单变量):
+  ///
+  /// | 臂 | 开火次数 |
+  /// |---|---|
+  /// | R2 路径(侧移 0.35 m)+ 入队**失败** | **30** —— 每一帧 |
+  /// | 同样的运动,入队成功 | 1 |
+  /// | R1 路径(侧移 0.10 m)+ 入队失败 | 1 |
+  ///
+  /// 后果在接线层放大:每帧一次入队尝试、每帧一次 `fire_enqueue_failed`
+  /// (遥测读数变成 150–300/5 s 而不是 ~5)、每帧一次整页 setState、脉冲动画
+  /// 每帧从 t≈0 重启。而且**可达**:`_noteSfmInternalFailure` 连续 3 次
+  /// native errInternal 就让入队恒被拒,那条路此前没有停自动拍。
+  ///
+  /// ⇒ 把「下 tick 重试」做成对 **R1 / R2 一律成立**的不变量:一次失败的开火
+  /// 照样吃掉一次 tick 预算,`tickIntervalSec` 之内不再返回 fire。
+  /// **不靠调换 governor 的判定顺序** —— 那个顺序是 spec §6 的优先级本身。
+  double? _lastFailedFireSec;
 
   /// 本轮最近一次**可信**的场景中位深度(米);本轮从未测到过则为 null。
   ///
@@ -96,7 +156,21 @@ class AutoCaptureController {
 
   bool get isRunning => _running;
 
-  /// 基准帧的场景深度,null 表示尚未起跑。供遥测与测试断言基准是否更新。
+  /// 整场已经跑掉的自动拍时长(秒)。用于测试断言"停/开不清零"这条不变量
+  /// (D8,见 [_elapsedBeforeRunSec])。
+  double get sessionElapsedSec => _elapsedBeforeRunSec;
+
+  /// 基准帧的场景深度,null 表示尚未起跑。
+  ///
+  /// **测试接缝** —— 用来断言基准帧有没有被更新。〔2026-08-19 评审改正〕
+  /// 此前这句写的是"供遥测与测试断言",但 `auto_capture_telemetry.dart` 没有
+  /// 任何入口收深度,接线层也从不读它;把一个不存在的消费者写成事实,只会
+  /// 让下一个人去找一条根本没有的遥测线。
+  ///
+  /// ⚠️ 它是 `|target - camera|` 这个**有损**投影:同深度的两个基准分不出来,
+  /// 而且本轮从未测到深度时返回的 1.0 是 [kAutoCaptureFallbackDepthM] 这个
+  /// 兜底值,与"真的量到了 1 米"读数相同。断言时要么配合位置一起钉,要么
+  /// 只把它当"变没变"的粗信号。
   double? get baselineDepthM {
     final b = _baseline;
     if (b == null) return null;
@@ -106,7 +180,12 @@ class AutoCaptureController {
   void start(ARPose pose) {
     _running = true;
     _startedAtSec = pose.timestamp;
+    _lastPoseSec = pose.timestamp;
     _lastTickSec = pose.timestamp;
+    // 失败重试的冷却是**本轮**的账,新一轮不继承。
+    _lastFailedFireSec = null;
+    // ⚠️ [_elapsedBeforeRunSec] **刻意不清** —— D8:5 分钟是整场累积的热
+    // 天花板,不是每轮自动拍各发一份。清它就等于"点停再点开"能无限续杯。
     // 新一轮 = 可能是另一个场景。**先清空**上一轮的深度记忆,再由本帧重建 ——
     // 顺序不能反,否则起跑帧没特征点时会拿上一轮的深度当"可信"。
     // 清在这里而不是只清在 stop() 里:连着调两次 start() 不经 stop() 也算新一轮。
@@ -119,14 +198,27 @@ class AutoCaptureController {
   }
 
   void stop() {
+    // 先结算本轮时长再翻 _running:整场预算按"自动拍真正在跑的时间"累积。
+    _settleElapsed(_lastPoseSec);
     _running = false;
     _baseline = null;
+    _lastFailedFireSec = null;
     // 深度记忆是**这一轮这个场景**的测量,绝不能被下一轮继承。
     _lastTrustedDepthM = null;
   }
 
+  /// 把 `[_startedAtSec, tSec]` 这段并进整场累计,并把本轮起点推到 [tSec]。
+  /// **幂等**:连着调两次(用户停 + dispose 各调一次)第二次加的是 0。
+  void _settleElapsed(double tSec) {
+    final run = tSec - _startedAtSec;
+    if (run > 0) _elapsedBeforeRunSec += run;
+    _startedAtSec = tSec;
+  }
+
   AutoCaptureDecision onPose(ARPose pose) {
     if (!_running) return AutoCaptureDecision.skipNotMoved;
+    // 本轮最后一帧 —— stop() 用它把本轮时长结算进整场累计(D8)。
+    _lastPoseSec = pose.timestamp;
     final base = _baseline;
     final trackingOk = _trackingNormal(pose);
 
@@ -206,22 +298,43 @@ class AutoCaptureController {
           )
         : null;
 
-    final tickInterval = autoCaptureTickInterval(_paceProvider());
-    final decision = autoCaptureDecide(
+    // 档位与热态都**每帧现问**:两者都是跑着变的(见各自 provider 的注释)。
+    final tickIntervalSec = autoCaptureTickIntervalSec(
+      pace: _paceProvider(),
+      thermalState: _thermalStateProvider(),
+    );
+    var decision = autoCaptureDecide(
       trackingNormal: trackingOk,
       capturedCount: _capturedCountProvider(),
-      elapsedSec: pose.timestamp - _startedAtSec,
+      // 整场累积(D8):本轮已跑 + 之前各轮已跑。
+      elapsedSec: _elapsedBeforeRunSec + (pose.timestamp - _startedAtSec),
       sinceLastTickSec: pose.timestamp - _lastTickSec,
-      tickIntervalSec: tickInterval.inMilliseconds / 1000.0,
+      tickIntervalSec: tickIntervalSec,
       parallaxDeg: parallax,
       turnDeg: turn,
       centerShift: shift,
     );
 
+    // spec §7「入队失败 ⇒ 基准帧不更新 + **下 tick 重试**」——
+    // 对 R1 / R2 一律成立的不变量,见 [_lastFailedFireSec] 的注释。
+    //
+    // 降级成 skipPaced 而不是新造一个枚举值:语义逐字对得上(「本 tick 未到」),
+    // 而且这样它自然走下面 skipPaced 那条分支 —— 需要重播种时照样重播种,
+    // 遥测也不会把一次根本没发出去的开火计进 fire_enqueue_failed。
+    final failedAt = _lastFailedFireSec;
+    if (decision == AutoCaptureDecision.fire &&
+        failedAt != null &&
+        pose.timestamp - failedAt < tickIntervalSec) {
+      decision = AutoCaptureDecision.skipPaced;
+    }
+
     switch (decision) {
       case AutoCaptureDecision.skipCapped:
       case AutoCaptureDecision.skipTimeLimit:
-        // 到顶就停,不再每帧撞一次墙。
+        // 到顶就停,不再每帧撞一次墙。先结算本轮时长(与 stop() 同一条路,
+        // 自停这条路根本不经过 stop() —— 宿主的 _stopAutoCapture 开头就
+        // `if (!isRunning) return;`)。
+        _settleElapsed(pose.timestamp);
         _running = false;
         return decision;
       case AutoCaptureDecision.skipTracking:
@@ -246,11 +359,16 @@ class AutoCaptureController {
         return decision;
       case AutoCaptureDecision.fire:
         // tick 先记账:入队失败按 spec §7「下 tick 重试」,不是下一帧重试。
+        // ⚠️ 只有这一句管得住 R1(它本来就过 tick 闸);R2 绕过 tick 闸,
+        // 由上面那条 _lastFailedFireSec 冷却兜住 —— 两句缺一不可。
         _lastTickSec = pose.timestamp;
         // 入队失败时基准帧**不动** —— 否则下一 tick 会拿一个根本没拍成
         // 的位置当基准,位移闸直接漏判。
         if (_onFire()) {
+          _lastFailedFireSec = null;
           _baseline = _baselineFrom(pose);
+        } else {
+          _lastFailedFireSec = pose.timestamp;
         }
         return decision;
     }

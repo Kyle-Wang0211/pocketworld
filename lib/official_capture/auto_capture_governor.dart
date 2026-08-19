@@ -6,10 +6,15 @@
 
 import 'live_sfm_publish_policy.dart' show kOfficialMaximumCaptureFrames;
 import 'shutter_backpressure_gate.dart' show ShutterPace;
+import 'true_parallax.dart' show kCaptureParallaxMinDeg;
 
-/// 视差下限(度)。与 capture_coverage_cloud.dart 的 `parallaxMinDeg`
-/// **同源同值** —— 那个值 2026-07-11 真机标定过,这里不新造常数。
-const double kAutoCaptureParallaxMinDeg = 5.0;
+/// 视差下限(度)。与 `CaptureCoverageCloud.parallaxMinDeg` **同源同值** ——
+/// 那个值 2026-07-11 真机标定过,这里不新造常数。
+///
+/// 〔2026-08-19 评审改正〕此前这一行是一个各自写死的 `5.0`,而注释已经在
+/// 宣称"同源同值"—— 两个数今天相等,但没有任何东西保证下一次重标定会同时
+/// 改到两处。现在两边都引 [kCaptureParallaxMinDeg],那句话才是代码保证的事实。
+const double kAutoCaptureParallaxMinDeg = kCaptureParallaxMinDeg;
 
 /// 视线转角下限(度)。⚠️ 无外部依据(RS / Polycam / KIRI / Apple 均未公开
 /// 自动拍阈值),这是比视差门放宽一倍取的保守起点,**必须真机标定**。
@@ -32,17 +37,62 @@ enum AutoCaptureDecision {
   skipTimeLimit,
 }
 
-/// tick 间隔随背压分级拉长。**只作用于自动拍** —— 手动快门"无论多热、
-/// 队列多深都立即可拍"那条铁律不受影响。
-Duration autoCaptureTickInterval(ShutterPace pace) {
+/// thermal 桶(ProcessInfo 四档:0 nominal · 1 fair · 2 serious · 3 critical;
+/// **<0 = 未知,按冷处理** —— 与 `shutterPaceNext` 的降级口径逐字相同)。
+/// 阈值 2 与既有的 `kPaceSoftQueueHot`(那里的"热"也是 `thermalState >= 2`)
+/// 同源,不新造分界。
+const int kAutoCaptureThermalSerious = 2;
+const int kAutoCaptureThermalCritical = 3;
+
+double _paceIntervalSec(ShutterPace pace) {
   switch (pace) {
     case ShutterPace.normal:
-      return const Duration(seconds: 1);
+      return 1.0;
     case ShutterPace.soft:
-      return const Duration(seconds: 2);
+      return 2.0;
     case ShutterPace.hard:
-      return const Duration(seconds: 3);
+      return 3.0;
   }
+}
+
+/// 自动拍的 tick 间隔(秒)= **背压档位**与**热态下限**取更长的那个。
+/// **只作用于自动拍** —— 手动快门"无论多热、队列多深都立即可拍"那条铁律
+/// 不受影响。
+///
+/// 返回**秒**而不是 Duration:两个调用点(controller、telemetry)拿到 Duration
+/// 后做的第一件事都是 `.inMilliseconds / 1000.0` 拆回秒,而 governor 自己的
+/// 参数就叫 `tickIntervalSec`、类型就是 double;自动拍刻意不起 Timer(时钟一律
+/// 取 ARPose.timestamp),没有任何消费者需要 Duration。
+///
+/// ### 为什么热态在这里查,而不是去改 `shutterPaceNext`〔2026-08-19 评审改正〕
+///
+/// spec §7 写的是「热态 critical **只拉长间隔**、不停止」,但 tick 间隔此前
+/// 唯一的输入是 [ShutterPace],而 `shutterPaceNext` 对热态的全部处理只是把
+/// soft 的**队列**阈值从 6 降到 4(`kPaceSoftQueueHot`)。队列浅的时候 ——
+/// 自动拍的常态 —— **任何热档都不会改变 pace**,于是那条承诺在实现里根本
+/// 不存在,而自动拍本身就是热源(1 Hz 的 12MP 静照 + 喂帧)。
+///
+/// 不去改 `shutter_backpressure_gate.dart` 的理由:那是**手动快门也在用**的
+/// 既有生产代码,它的输出直接写进 `shutter_pace` 遥测;在那里加一条热态分支
+/// 会连手动采集的遥测口径一起改掉,而本次改动的范围只有自动拍。
+/// 所以分工是:`shutterPaceNext` 继续只回答"队列有多堵"(两条路共用),
+/// 热态对**间隔**的影响收在这一个自动拍独有的函数里。
+double autoCaptureTickIntervalSec({
+  required ShutterPace pace,
+  required int thermalState,
+}) {
+  final byPace = _paceIntervalSec(pace);
+  // 热态下限:serious ⇒ 至少 soft 档,critical ⇒ 至少 hard 档。
+  // 档位不新造数字,直接取 soft / hard 那两档的间隔。
+  final double byThermal;
+  if (thermalState >= kAutoCaptureThermalCritical) {
+    byThermal = _paceIntervalSec(ShutterPace.hard);
+  } else if (thermalState >= kAutoCaptureThermalSerious) {
+    byThermal = _paceIntervalSec(ShutterPace.soft);
+  } else {
+    byThermal = 0.0;
+  }
+  return byPace > byThermal ? byPace : byThermal;
 }
 
 /// 判定顺序即优先级,不可随意调换:

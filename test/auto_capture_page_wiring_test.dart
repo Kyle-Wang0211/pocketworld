@@ -20,6 +20,7 @@ import 'package:pocketworld_flutter/official_capture/auto_capture_governor.dart'
 import 'package:pocketworld_flutter/official_capture/auto_capture_mode.dart';
 import 'package:pocketworld_flutter/official_capture/live_sfm_publish_policy.dart'
     show kOfficialMaximumCaptureFrames;
+import 'package:pocketworld_flutter/official_capture/auto_capture_telemetry.dart';
 import 'package:pocketworld_flutter/official_capture/manual_capture_queue.dart';
 import 'package:pocketworld_flutter/official_capture/shutter_backpressure_gate.dart';
 import 'package:pocketworld_flutter/official_dome/ar_pose.dart';
@@ -79,6 +80,7 @@ class _WiredHost {
   _WiredHost({
     required this.reportRealEnqueueResult,
     required this.countsInFlight,
+    this.telemetry,
   }) {
     queue = ManualCaptureQueue(
       maxTickets: kOfficialMaximumCaptureFrames,
@@ -98,6 +100,10 @@ class _WiredHost {
   /// false = 少算在途票的那条歪路,只报已落库张数。
   final bool countsInFlight;
 
+  /// 挂上就把**真实**入队结果喂给它 —— 与页面的 onFire 钩子同一个位置
+  /// (全链路唯一分得开"开了一枪"与"拍成了"的地方)。null = 不记遥测。
+  final AutoCaptureTelemetry? telemetry;
+
   late final ManualCaptureQueue queue;
   final List<ManualCaptureTicket> heldForever = <ManualCaptureTicket>[];
 
@@ -111,11 +117,13 @@ class _WiredHost {
       fireAttempts++;
       final ticket = queue.enqueue(verifiedCount: verified);
       if (ticket != null) admitted++;
+      telemetry?.recordFireOutcome(enqueued: ticket != null);
       return reportRealEnqueueResult ? ticket != null : true;
     },
     paceProvider: () => ShutterPace.normal,
     capturedCountProvider: () =>
         countsInFlight ? verified + queue.outstandingCount : verified,
+    thermalStateProvider: () => 0, // nominal:接线口径的对照与热态无关
   );
 }
 
@@ -369,11 +377,83 @@ void main() {
     });
   });
 
-  test('autoCaptureTickInterval covers every ShutterPace value', () {
+  test('autoCaptureTickIntervalSec covers every ShutterPace value', () {
     // 若将来给 ShutterPace 加档,governor 里的 switch 未覆盖会编译失败。
     for (final p in ShutterPace.values) {
-      expect(autoCaptureTickInterval(p).inMilliseconds, greaterThan(0));
+      expect(
+        autoCaptureTickIntervalSec(pace: p, thermalState: 0),
+        greaterThan(0),
+      );
     }
+  });
+
+  group('thermal alone must stretch the tick (spec §7)', () {
+    // spec §7:「热态 critical **只拉长间隔**、不停止」。此前 tick 间隔唯一的
+    // 输入是 ShutterPace,而 shutterPaceNext 对热态的全部处理只是把 soft 的
+    // **队列**阈值从 6 降到 4 —— 队列浅时(自动拍的常态)任何热档都不改档位,
+    // 于是那条承诺在实现里根本不存在。
+    test('a shallow queue still slows down when the device is hot', () {
+      // 队列浅 ⇒ pace 恒 normal(这正是 shutterPaceNext 的真实输出)。
+      const cold = ShutterPace.normal;
+      expect(autoCaptureTickIntervalSec(pace: cold, thermalState: 0), 1.0);
+      expect(autoCaptureTickIntervalSec(pace: cold, thermalState: 1), 1.0);
+      expect(
+        autoCaptureTickIntervalSec(pace: cold, thermalState: 2),
+        2.0,
+        reason: 'serious ⇒ 至少 soft 档',
+      );
+      expect(
+        autoCaptureTickIntervalSec(pace: cold, thermalState: 3),
+        3.0,
+        reason: 'critical ⇒ 至少 hard 档',
+      );
+    });
+
+    test('unknown thermal (-1) is treated as cold, like shutterPaceNext', () {
+      expect(
+        autoCaptureTickIntervalSec(
+          pace: ShutterPace.normal,
+          thermalState: -1,
+        ),
+        1.0,
+      );
+    });
+
+    test('the two levers take the longer interval, never the shorter', () {
+      // 队列很堵 + 机器不热 ⇒ 队列说了算(热态下限不能把它缩回去)。
+      expect(
+        autoCaptureTickIntervalSec(pace: ShutterPace.hard, thermalState: 0),
+        3.0,
+      );
+      // 队列不堵 + critical ⇒ 热态说了算。
+      expect(
+        autoCaptureTickIntervalSec(pace: ShutterPace.normal, thermalState: 3),
+        3.0,
+      );
+      // 两边都到顶也还是 3 s,不叠加。
+      expect(
+        autoCaptureTickIntervalSec(pace: ShutterPace.hard, thermalState: 3),
+        3.0,
+      );
+    });
+
+    test('manual capture is untouched: shutterPaceNext keeps its own answer',
+        () {
+      // 铁律:手动快门"无论多热、队列多深都立即可拍"。热态那条下限只加在
+      // 自动拍**自己**的 tick 间隔上,shutterPaceNext 一个字节没动 ——
+      // 队列浅时它对任何热档都还是 normal(这正是它记进 shutter_pace 遥测的
+      // 那个标签,改它会把手动采集的遥测口径一起改掉)。
+      for (final thermal in <int>[0, 1, 2, 3]) {
+        expect(
+          shutterPaceNext(
+            previous: ShutterPace.normal,
+            queueDepth: 0,
+            thermalState: thermal,
+          ),
+          ShutterPace.normal,
+        );
+      }
+    });
   });
 
   // ─── ② 行为:两根接线,各带一条错误口径对照 ──────────────────────────
@@ -399,7 +479,13 @@ void main() {
       }
       expect(h.admitted, 0, reason: 'the queue was closed the whole time');
       h.queue.resume();
+      // spec §7「入队失败 ⇒ **下 tick 重试**」:失败那一发照样吃掉一次 tick
+      // 预算,所以恢复后的下一帧还轮不到 —— R2 也不例外。
       h.controller.onPose(_pose(t: t + 0.1, pos: Vector3(0.37, 0, 0)));
+      expect(h.admitted, 0, reason: 'the retry waits for the next tick');
+      // 一个 tick 之后补上,而且是相对**原始**基准判的(0.37 > 0.30)——
+      // 基准帧从头到尾没动过,那 32 cm 没有白走。
+      h.controller.onPose(_pose(t: t + 1.1, pos: Vector3(0.37, 0, 0)));
       expect(h.admitted, 1);
     });
 
@@ -419,11 +505,81 @@ void main() {
       expect(h.admitted, 0);
       h.queue.resume();
       h.controller.onPose(_pose(t: t + 0.1, pos: Vector3(0.37, 0, 0)));
+      // 与上一条同样的两拍,证明差别不是"等得不够久"而是基准帧被推走了。
+      h.controller.onPose(_pose(t: t + 1.1, pos: Vector3(0.37, 0, 0)));
       expect(
         h.admitted,
         0,
         reason: 'baseline was advanced to a position where no photo exists',
       );
+    });
+  });
+
+  group('the telemetry aggregator driven by the REAL controller', () {
+    // telemetry 单元的 42 条全部喂**手写**序列,于是两层之间的口径一致
+    // ——(a)controller 的 _lastTickSec 与 telemetry 的 _lastFireSec 同口径,
+    //(b)页面的真实调用序是"onPose 内部先 recordFireOutcome、返回后再
+    //     recordDecision"—— 此前完全靠人肉对齐,没有任何测试会在它们分叉
+    //     时变红。这一条把真 controller、真队列、真聚合器串起来跑一遍。
+    test('the self-check invariant survives a real trajectory', () {
+      final tel = AutoCaptureTelemetry();
+      final h = _WiredHost(
+        reportRealEnqueueResult: true,
+        countsInFlight: true,
+        telemetry: tel,
+      );
+      final fireTimes = <double>[];
+      void drive(ARPose p) {
+        final d = h.controller.onPose(p);
+        tel.recordDecision(
+          d,
+          tSec: p.timestamp,
+          pace: ShutterPace.normal,
+          thermalState: 0,
+        );
+        if (d == AutoCaptureDecision.fire) fireTimes.add(p.timestamp);
+      }
+
+      tel.recordSessionStart(0);
+      h.controller.start(_pose(t: 0));
+      // 3 秒匀速横移 @30 Hz(每帧 2 cm,深度 1 m ⇒ 每 0.5 s 跨一次 0.30)。
+      for (var i = 1; i <= 90; i++) {
+        drive(_pose(t: i / 30.0, pos: Vector3(i * 0.02, 0, 0)));
+      }
+      // 队列停收 1 秒 —— 收尾 freezeAndDrain / cancelPending 的真实形态。
+      h.queue.cancelPending();
+      for (var i = 91; i <= 120; i++) {
+        drive(_pose(t: i / 30.0, pos: Vector3(i * 0.02, 0, 0)));
+      }
+      h.queue.resume();
+      for (var i = 121; i <= 180; i++) {
+        drive(_pose(t: i / 30.0, pos: Vector3(i * 0.02, 0, 0)));
+      }
+      final snap = tel.recordSessionEnd()!;
+
+      final counts = snap['decision_counts']! as Map<String, int>;
+      expect(counts['fire'], greaterThan(0));
+      expect(
+        snap['fire_enqueue_failed'],
+        greaterThan(0),
+        reason: 'the frozen stretch must really have failed to enqueue',
+      );
+      // 自检不变式:开火数 = 拍成的 + 没拍成的。真序列上也必须成立。
+      expect(
+        (snap['fire_enqueued']! as int) + (snap['fire_enqueue_failed']! as int),
+        counts['fire'],
+      );
+      // fire_before_tick = 相邻两发间隔 < 当档 tick 的发数,第一发以起跑
+      // 时刻为参照(telemetry 的 _lastFireSec 与 controller 的 _lastTickSec
+      // 就是这个口径 —— 两边一旦分叉,这条断言立刻红)。
+      var expected = 0;
+      var prev = 0.0;
+      for (final t in fireTimes) {
+        if (t - prev < 1.0) expected++;
+        prev = t;
+      }
+      expect(snap['fire_before_tick'], expected);
+      expect(expected, greaterThan(0), reason: 'R2 really did fire early here');
     });
   });
 
@@ -463,7 +619,14 @@ void main() {
       expect(
         h.fireAttempts,
         greaterThan(kOfficialMaximumCaptureFrames),
-        reason: 'it keeps banging on a closed door every frame',
+        reason: 'it keeps banging on a door that is already closed',
+      );
+      // …但只按 tick 的节奏撞,不是每帧撞一次:失败的开火照样吃掉一次 tick
+      // 预算(spec §7)。50 帧 × 0.05 s = 2.5 s ⇒ 至多 3 次重试。
+      expect(
+        h.fireAttempts - kOfficialMaximumCaptureFrames,
+        lessThanOrEqualTo(3),
+        reason: 'a failed fire consumes the tick budget, R2 included',
       );
     });
 
@@ -626,6 +789,87 @@ void main() {
       // 指示器映射不许在页面里被就地重写。
       expect(page, isNot(contains('_lastAutoDecision == AutoCaptureDecision')));
     });
+
+    test('the waiting indicator is actually CONSUMED, not just computed', () {
+      // 〔2026-08-19 评审改正〕此前页面侧只断言 `autoCaptureIndicatorFor(` 出现
+      // 过 —— 把 _AutoRecordButton 里唯一真正读它的那一句连同它控制的视觉
+      // 一起删掉,映射照样被计算、照样被当参数传下去,全套测试无一变红。
+      // 而 spec §8 明写 waiting 是**必需**态:「站着不动一张都不拍,不给
+      // 反馈用户一定以为坏了」。
+      final page = _pageSource();
+      final record = _section(
+        page,
+        'class _AutoRecordButton',
+        'class _CaptureModeTopHint',
+      );
+      expect(record, contains('AutoCaptureIndicator.waiting'));
+      // 暗环是这一态唯一的表达 —— 断言它真的改了透明度,而不是算完就扔。
+      expect(record, contains('ringAlpha'));
+      // 脉冲走的是另一条通道(令牌),不是 indicator。
+      expect(record, contains('widget.pulseToken != oldWidget.pulseToken'));
+    });
+
+    test('the record-button pulse fires on a real enqueue, not on a decision',
+        () {
+      // spec §8「**落帧**时 → 指示器脉冲一次」,而 spec §7 把"开火"与"拍成"
+      // 分得很清楚(遥测层就是为此拆成 fire_enqueued / fire_enqueue_failed)。
+      // 〔2026-08-19 评审改正〕此前 `if (fired) _autoFirePulseToken++;` 读的是
+      // governor 的判定 —— 入队失败时红键照样脉冲、N/300 一动不动,而自动
+      // 模式下那颗红键的脉冲是"到底拍上没有"的**唯一**反馈。
+      final page = _pageSource();
+      final fire = _section(
+        page,
+        'bool _onAutoCaptureFire()',
+        'void _onShutterTap()',
+      );
+      // 脉冲与 fire_enqueued 在同一处记账,只有一处 ++。
+      expect(fire, contains('if (enqueued) _autoFirePulseToken++;'));
+      expect(RegExp(r'_autoFirePulseToken\+\+').allMatches(page).length, 1);
+      final drive = _section(
+        page,
+        'void _driveAutoCapture(ARPose pose)',
+        'void _emitAutoTelemetry(',
+      );
+      // 判定层不许再自增,也不许拿 `decision == fire` 当"落帧"用。
+      expect(drive, isNot(contains('_autoFirePulseToken++')));
+      // 短路早退也得跟着改口径:`fired == true` 会跳过它,而入队持续失败时
+      // 判定会连着好几帧是 fire ⇒ 4800 行的页面被每帧重建一次。
+      expect(drive, contains('final pulseBefore = _autoFirePulseToken;'));
+      expect(drive, contains('_autoFirePulseToken != pulseBefore'));
+    });
+
+    test('everything that invalidates enqueue also stops auto capture', () {
+      // 〔2026-08-19 评审改正〕_noteSfmInternalFailure 连续 3 次 native
+      // errInternal 就把 _sfmStartFailureText 置非空 ⇒ _sfmCaptureReady 翻
+      // false ⇒ _admitShutterCapture 恒 blocked。这条路此前**没有**停自动拍,
+      // 而其余四条(退后台 / 退出弹窗 / 完成 / finalize)都停了 —— 于是自动拍
+      // 会对着一扇永远关着的门一路空转到 5 分钟上限。
+      final page = _pageSource();
+      final note = _section(
+        page,
+        'void _noteSfmInternalFailure(String reason)',
+        'void _markPhotoDisconnected(',
+      );
+      expect(note, contains('_stopAutoCapture()'));
+      // 停在**真的置了标志**的那条路上,不是在早退之前(早退时标志没变,
+      // 停了反而是无谓的副作用)。
+      expect(
+        note.indexOf('_stopAutoCapture()'),
+        greaterThan(note.indexOf('if (_sfmStartFailureText == text')),
+      );
+      final mark = _section(
+        page,
+        'void _markSfmStartFailure(String detail)',
+        'Future<void> _startSfmLiveRecon(',
+      );
+      expect(mark, contains('_stopAutoCapture()'));
+      // 全页只有这一处 getter 定义 —— 上面两段之外没有第三条会翻它的路。
+      expect(
+        RegExp(r'_sfmStartFailureText = ').allMatches(page).length,
+        3,
+        reason: '两处置错 + 一处清空;新增第四处就必须一并接上 _stopAutoCapture',
+      );
+    });
   });
 
   group('ar_capture_page UI (spec §8.1)', () {
@@ -766,6 +1010,26 @@ void main() {
         // —— 后者在"永不淡出"的改法下依然在,数它等于没数。
         expect(hint, contains('setState(() => _visible = false)'));
         expect(hint, contains('_fadeTimer?.cancel()'));
+        // ⚠️〔2026-08-19 评审改正〕上面六条全部落在 _armDismiss 的**定义体**
+        // 与字段赋值上,没有一条钉住它被**调用**:把 initState 与
+        // didUpdateWidget 里那两句 `_armDismiss();` 一起删掉,说明条就永不
+        // 淡出、退化成常驻(= 52ceff1 + b1d6f63 两次提交和 07-27 UI 签决
+        // 专门推翻的那个状态),而这条测试此前仍然逐字全绿。
+        expect(RegExp(r'_armDismiss\(\);').allMatches(hint).length, 2);
+        final initStateAt = hint.indexOf('void initState()');
+        final didUpdateAt = hint.indexOf('void didUpdateWidget(');
+        final earlyReturnAt = hint.indexOf(
+          'if (widget.mode == oldWidget.mode) return;',
+        );
+        final firstArm = hint.indexOf('_armDismiss();');
+        final secondArm = hint.indexOf('_armDismiss();', firstArm + 1);
+        expect(initStateAt, greaterThanOrEqualTo(0));
+        expect(didUpdateAt, greaterThan(initStateAt));
+        // 第一处在 initState 里(挂上就露一次,3 秒后自消)。
+        expect(firstArm, greaterThan(initStateAt));
+        expect(firstArm, lessThan(didUpdateAt));
+        // 第二处在 didUpdateWidget 的早退**之后**(模式真的变了才重新计时)。
+        expect(secondArm, greaterThan(earlyReturnAt));
         final rejectToast = _section(
           page,
           'class _HardRejectToastState',

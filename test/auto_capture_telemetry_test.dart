@@ -611,8 +611,53 @@ void main() {
         'void _driveAutoCapture(ARPose pose)',
         'void _emitAutoTelemetry(',
       );
-      expect(drive, contains('_autoTelemetry.recordSessionEnd()'));
-      expect(drive, contains('_autoTelemetry.snapshotIfDue('));
+      // ⚠️ 断言的是**整个表达式**,不是那句调用〔2026-08-19 评审改正〕:
+      // `_autoTelemetry.recordSessionEnd();`(裸调用、丢掉返回值)同样满足
+      // `contains('_autoTelemetry.recordSessionEnd()')` —— 而返回值才是终态
+      // 快照,_emitAutoTelemetry 是全页唯一的写盘口。丢掉它时会话照样正确
+      // 关闭、幂等照样成立、控制台一声不吭,只是 closed=true 那一行**一条
+      // 都写不出来**,恰恰是这几条测试自己说"最该被记下来的收场"。
+      expect(
+        drive,
+        contains('_emitAutoTelemetry(_autoTelemetry.recordSessionEnd())'),
+      );
+      expect(
+        drive,
+        contains('_emitAutoTelemetry(_autoTelemetry.snapshotIfDue('),
+      );
+    });
+
+    test('the final frame is counted before the session is closed', () {
+      // 会话一关,之后到达的判定一律丢弃(本文件 :146 已把这条机制证明得
+      // 很清楚)。所以 recordDecision **必须**排在 recordSessionEnd 之前 ——
+      // 否则终结那一轮的 skipCapped / skipTimeLimit 永远计数为 0,而这两个
+      // 数正是 spec §11 要回答的"到底是撞张数还是撞时间收场"。
+      // 此前这个先后是纯约定,没有任何断言钉住它。
+      final page = _pageSource();
+      final drive = _section(
+        page,
+        'void _driveAutoCapture(ARPose pose)',
+        'void _emitAutoTelemetry(',
+      );
+      final rec = drive.indexOf('_autoTelemetry.recordDecision(');
+      final end = drive.indexOf('_autoTelemetry.recordSessionEnd(');
+      expect(rec, greaterThanOrEqualTo(0));
+      expect(end, greaterThan(rec), reason: '打点必须在收口之前');
+    });
+
+    test('the tick interval telemetry uses is the one the governor used', () {
+      // fire_before_tick 的间隔取自 governor 同一个函数,**含热态下限** ——
+      // 少传 thermalState 就会在热机时用一个比 governor 实际用的更短的间隔,
+      // 把本该记进 R2 的发数算漏,而且不会有任何东西报错。
+      final page = _pageSource();
+      final drive = _section(
+        page,
+        'void _driveAutoCapture(ARPose pose)',
+        'void _emitAutoTelemetry(',
+      );
+      expect(drive, contains('thermalState: _lastThermalState'));
+      // 与 controller 的 thermalStateProvider 同一个字段,不是第二份口径。
+      expect(page, contains('thermalStateProvider: () => _lastThermalState'));
     });
 
     test('the user-stop and teardown paths close the session too', () {
@@ -622,9 +667,21 @@ void main() {
         'void _stopAutoCapture()',
         'void _setCaptureMode(',
       );
-      expect(stop, contains('_autoTelemetry.recordSessionEnd()'));
+      // 同上:钉整个表达式,裸调用丢掉返回值不算数。
+      expect(
+        stop,
+        contains('_emitAutoTelemetry(_autoTelemetry.recordSessionEnd())'),
+      );
       final dispose = _section(page, 'void dispose() {', 'Widget build(');
-      expect(dispose, contains('_autoTelemetry.recordSessionEnd()'));
+      expect(
+        dispose,
+        contains('_emitAutoTelemetry(_autoTelemetry.recordSessionEnd())'),
+      );
+      // 收场只有这三条路 —— 多一条就是多一处会写出重复终态行的地方。
+      expect(
+        RegExp(r'_autoTelemetry\.recordSessionEnd\(\)').allMatches(page).length,
+        3,
+      );
     });
 
     test('the session starts on the seed pose timestamp', () {

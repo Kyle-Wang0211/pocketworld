@@ -31,6 +31,15 @@ import 'photo_card_state.dart' show medianOf;
 /// 体素聚合共用这一常量 —— 两边的 voxel key 必须逐位一致才能对上。
 const double kCoverageVoxelSizeM = 0.04;
 
+/// 视差下限(度)。2026-07-11 真机标定:低于此角的观测是"低视差深度噪声壳"
+/// (双墙)的成因,不算有效双视角。
+///
+/// **单一出处**。此前 `CaptureCoverageCloud.parallaxMinDeg` 的构造默认值与
+/// `kAutoCaptureParallaxMinDeg` 是两个各自写死的 `5.0`,而后者的注释宣称
+/// 「同源同值……不新造常数」—— 那句话当时不是代码保证的事实,下一次重标定
+/// 只会改到其中一个。〔2026-08-19 评审改正〕
+const double kCaptureParallaxMinDeg = 5.0;
+
 /// 覆盖云 voxel key(与 CaptureCoverageCloud._key 同一函数,后者委托到
 /// 这里):21-bit 车道 + 0x100000 偏移容负数(±42 km @ 4 cm,远超任何
 /// 拍摄空间)。
