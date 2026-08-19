@@ -886,6 +886,10 @@ class AutoCaptureController {
     final intr = pose.intrinsicFxFyCxCy;
     final hasIntrinsics = intr.length >= 2 && intr[0] > 0 && intr[1] > 0;
 
+    // 注意这里与下面的 shift **刻意不同**:parallax 退化成 0.0 是对的。
+    // 它喂的是**下限**判据(`parallaxDeg >= 5.0`),0.0 是该判据的中性/保守值
+    // ——"没动够",不会误触发。而 shift 喂的是**上限**判据,那里 0.0 会变成
+    // 一句"目标正在正中"的正向断言,所以必须用 null。
     final parallax = base.depthTrusted
         ? parallaxAngleDeg(
             baseCamera: base.camera,
@@ -899,7 +903,20 @@ class AutoCaptureController {
       currentForward: _forwardOf(pose),
     );
 
-    final shift = (base.depthTrusted && hasIntrinsics)
+    // 〔2026-08-19 T2 评审改正〕拿不到深度或内参时传 **null**,不是 0.0。
+    //
+    // 0.0 是一句**正向断言**——"目标正在画面正中"——而我们此刻恰恰不知道。
+    // null 才是"无法求值":governor 收到它会跳过上限判据 R2、只用下限判据
+    // (spec §7 "只用下限判据决定")。
+    //
+    // governor 的 centerShift 参数就是 `double?`,**直接传穿,不要用 `?? 0.0`
+    // 之类去翻译** —— 翻译权收在类型里,调用方就没有译错的机会;
+    // 若误译成 `?? double.infinity`,R2 会每帧判"立刻拍",快门失控。
+    //
+    // ⚠️ 早先这里写的是 `: 0.0`,而 `normalizedCenterShift` 返回 `double?`,
+    // 三元的静态类型因此是 `double?` —— 对着当时非空的参数**根本编译不过**。
+    // 这是 T2 评审静态复现出来的,不是推测。
+    final double? shift = (base.depthTrusted && hasIntrinsics)
         ? normalizedCenterShift(
             target: base.target,
             currentCamera: pose.position,
@@ -909,7 +926,7 @@ class AutoCaptureController {
             imageWidth: pose.imageWidth,
             imageHeight: pose.imageHeight,
           )
-        : 0.0;
+        : null;
 
     final tickInterval = autoCaptureTickInterval(_paceProvider());
     final decision = autoCaptureDecide(
