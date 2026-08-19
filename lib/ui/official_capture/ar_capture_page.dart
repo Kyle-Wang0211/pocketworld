@@ -41,6 +41,9 @@ import 'package:image/image.dart' as img;
 import 'package:vector_math/vector_math_64.dart' show Quaternion, Vector3;
 
 import '../../point_cloud_display/progressive_octree_order.dart';
+import '../../official_capture/auto_capture_controller.dart';
+import '../../official_capture/auto_capture_governor.dart';
+import '../../official_capture/auto_capture_mode.dart';
 import '../../official_capture/capture_coverage_cloud.dart';
 import '../../official_capture/capture_session.dart';
 import '../../official_capture/colorize_pipeline.dart';
@@ -52,7 +55,9 @@ import '../../official_capture/parallax_banner_gate.dart';
 import '../../official_capture/photo_card_state.dart';
 import '../../official_capture/project_photo_album.dart';
 import '../../official_aether_sfm_ffi.dart'
-    show AetherMatchFlags, AetherEnvFile; // [YIELD-FPS-LINK] + [RS-CORRECT-COLORS]
+    show
+        AetherMatchFlags,
+        AetherEnvFile; // [YIELD-FPS-LINK] + [RS-CORRECT-COLORS]
 import '../../official_capture/pw_telemetry.dart';
 import '../../official_capture/multiband_color.dart';
 import '../../official_capture/representative_color.dart';
@@ -88,6 +93,11 @@ import 'official_gallery_routes.dart';
 import 'sfm_preview_overlay.dart';
 import '../sparse_thumbnail.dart';
 import '../../util/image_sanitize.dart';
+
+/// 一次快门入队的三种结果。手动与自动**共用同一条入队路径**,但对"没入队"
+/// 的反馈不同:手动到上限要弹对话框,自动模式绝不弹(每个 tick 撞一次会
+/// 刷屏)。把两者的差别收在这个返回值里,守卫就只需要写一份。
+enum _ShutterAdmission { admitted, blocked, budgetExhausted }
 
 class OfficialARCapturePage extends StatefulWidget {
   const OfficialARCapturePage({super.key});
@@ -160,6 +170,49 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   bool _cameraResumeFailed = false;
   bool _maximumPhotosDialogOpen = false;
   String? _captureQueueFailureText;
+
+  // ─── 自动采集(auto capture)────────────────────────────────────────
+  // **判定逻辑一行都不在本文件**:几何在 auto_capture_geometry.dart、判据在
+  // auto_capture_governor.dart、状态编排在 auto_capture_controller.dart、
+  // 表示层映射在 auto_capture_mode.dart。这里只有接线 —— 模式、启停、生命
+  // 周期,以及把 controller 挂到**已有的** pose 订阅上。
+  // 设计见 docs/superpowers/specs/2026-08-19-auto-capture-design.md。
+
+  /// [SIGNED D9 2026-08-19] **默认自动**。用户调研原话:没有 C 端用户愿意
+  /// 点几十上百次快门;RealityScan 官方默认亦为 auto-capture enabled。
+  /// ⚠️ 默认自动 **≠ 一进页面就开拍** —— 仍需用户点一次录制键(spec §7/§8.1)。
+  OfficialCaptureMode _captureMode = OfficialCaptureMode.auto;
+
+  late final AutoCaptureController _autoCapture = AutoCaptureController(
+    onFire: _onAutoCaptureFire,
+    paceProvider: () => _shutterPace,
+    capturedCountProvider: _autoCaptureAcceptedFrameCount,
+  );
+
+  /// controller 对**最近一帧**的判定,只用来驱动指示器的视觉状态。
+  /// ⚠️ 绝不拿它反推"在不在跑":停机时 onPose 返回的就是 skipNotMoved,
+  /// 与"你还没动够"逐字相同(见 [autoCaptureIndicatorFor] 的注释)。
+  AutoCaptureDecision _lastAutoDecision = AutoCaptureDecision.skipNotMoved;
+
+  /// 上一次已反映到 UI 的 `_autoCapture.isRunning`,**只用于**判断要不要
+  /// setState —— pose 流是 20–60 Hz,每帧无条件 setState 会把整页重建成热源。
+  bool _autoRunningLastSeen = false;
+
+  /// 用户点了录制键、但还没等到下一帧 pose。
+  ///
+  /// 起跑帧**必须**是 pose 回调里的那一帧本身,不能用缓存的"最近一帧":
+  /// `start()` 把 `pose.timestamp` 记成本轮起点,而 ARPose.timestamp 是
+  /// ARFrame 时间轴(CACurrentMediaTime),与本页别处用的 DateTime.now()
+  /// 根本不是一个纪元。缓存帧若因丢跟踪/暂停而陈旧,起点就落在过去,
+  /// 5 分钟上限会被立刻判超。代价只是至多晚一帧(17–50 ms)起跑。
+  bool _autoStartPending = false;
+
+  /// 每落一帧 +1,驱动录制键脉冲一次(spec §8:落帧脉冲,不出文案)。
+  int _autoFirePulseToken = 0;
+
+  /// 每次**用户主动**切到自动模式 +1,居中浮出一条 [kAutoCaptureOnToastText]
+  /// (RS 的 "Auto Capture On")。进页面时的默认自动不算 —— 那不是一次切换。
+  int _autoModeToastToken = 0;
 
   // ─── Capture-time streaming SfM (live sparse reconstruction) ──────
   // Worker handle + event plumbing. All heavy calls live in the worker
@@ -624,6 +677,12 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           _telemLastTrackingState = tsName;
         }
         _checkArWarmup(p);
+        // ─── 自动采集(spec §5.4)。**唯一**的驱动源就是这条 pose 流。
+        // 不新起 Timer:elapsedSec / sinceLastTickSec 都是 ARPose.timestamp
+        // 的差(ARFrame 时间轴 = CACurrentMediaTime,自开机秒数),而本页
+        // 别处用的是 DateTime.now().microsecondsSinceEpoch —— 两个纪元混用
+        // 什么都不会抛,只会把 tick 与时间上限的时钟静默算错。
+        _driveAutoCapture(p);
       });
       await session.attach();
       // [ADAPTIVE-FPS] 策略时钟(5s 轮询,页面生命周期内)。
@@ -728,6 +787,13 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // photos intact) so the album survives a background round-trip.
       // `inactive` is TRANSIENT (screenshot, control center, notification) and
       // must NOT release/finalize, or the album resets on a screenshot.
+      //
+      // 自动拍在这里**停止,而不是暂停**(spec §7)。下面 resumed 分支走的
+      // _restartArSessionAfterResume → native startSession{'resume': true} →
+      // session.run(configuration),ARKit **可能重定位世界原点**;一个活过
+      // 后台的基准帧此后指向的是一个不再存在的坐标系,回来第一帧就会拿垃圾
+      // 开火。resumed 分支**刻意不自动重开** —— 由用户再点一次录制键。
+      _stopAutoCapture();
       _pauseArForBackground();
     } else if (state == AppLifecycleState.resumed) {
       // Only re-open the camera if a capture is still ACTIVE. Once the finish
@@ -829,6 +895,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     try {
       // [2026-08-09 用户签决,附截图] 黑白弹窗 + 滑轴:左=退出并保存照片,
       // 右=退出并不保存照片;第二行"继续拍摄";点弹窗外自动返回拍摄。
+      // 弹窗是模态的:不先停,自动拍会在弹窗背后继续落帧。
+      _stopAutoCapture();
       final choice = await showCaptureExitDialog(context);
       if (!mounted || choice == null) return;
 
@@ -1931,8 +1999,12 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       final selF = Float32List(n * 3);
       final linF = Float32List(n * 3);
       for (var i = 0; i < n; i++) {
-        if (!samples.selectIntoFloat(i, selF,
-            gains: gains, applyToOutput: ccMode >= 2)) {
+        if (!samples.selectIntoFloat(
+          i,
+          selF,
+          gains: gains,
+          applyToOutput: ccMode >= 2,
+        )) {
           selF[i * 3] = 185;
           selF[i * 3 + 1] = 185;
           selF[i * 3 + 2] = 190;
@@ -1943,8 +2015,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           linF[i * 3 + 2] = selF[i * 3 + 2];
         }
       }
-      final blended =
-          multiBandBlend(xyz: snap.xyz, selected: selF, linear: linF);
+      final blended = multiBandBlend(
+        xyz: snap.xyz,
+        selected: selF,
+        linear: linF,
+      );
       rgb.setAll(0, blended);
       msw.stop();
       mbMs = msw.elapsedMilliseconds;
@@ -1957,8 +2032,12 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // multi-band 已写好 rgb 时,这里只补统计,不覆盖颜色。
       if (mbMode > 0
           ? samples.hitCount(i) > 0
-          : samples.selectInto(i, rgb,
-              gains: gains, applyToOutput: ccMode >= 2)) {
+          : samples.selectInto(
+              i,
+              rgb,
+              gains: gains,
+              applyToOutput: ccMode >= 2,
+            )) {
         colored++;
         final hc = samples.hitCount(i);
         obsHist[obsHistBucket(hc)]++;
@@ -2632,17 +2711,157 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     });
   }
 
+  // ─── 自动采集接线 ──────────────────────────────────────────────────
+  // 只有接线。任何"要不要拍"的判断都在 auto_capture_governor.dart。
+
+  /// 自动拍看到的"已拍张数"。
+  ///
+  /// 必须与队列的 admission 口径**逐字一致**:ManualCaptureQueue 收人的条件
+  /// 是 `verifiedCount + outstandingCount < 300`(manual_capture_queue.dart),
+  /// 而 governor 停在 `capturedCount >= 300`。只报 `_projectPhotos.count`
+  /// 会少算在途票(一秒一张时常有 1–3 张),两边就永远对不上 —— controller
+  /// 等不到那个该让它停的数,只会每帧撞一次已经关上的门。
+  /// 与 [_ManualCaptureBar] 里 officialCaptureCanShoot 用的是同一个表达式。
+  int _autoCaptureAcceptedFrameCount() =>
+      _projectPhotos.count + _shutterQueue.outstandingCount;
+
+  /// 能不能起跑。前三条与手动快门的置灰判据同源(自动拍走的就是同一条入队
+  /// 路径,它不该在手动快门已被判死时还能开火);第四条是"AR 会话在,pose
+  /// 确实在流"—— 退后台时我们已经把自动拍停掉了,所以这一条足够。
+  bool get _autoCaptureCanStart => autoCaptureCanStart(
+    captureReady: _sfmCaptureReady,
+    queueAccepting: _shutterQueue.accepting,
+    withinFrameBudget: officialCaptureCanShoot(
+      acceptedFrameCount: _autoCaptureAcceptedFrameCount(),
+    ),
+    posesFlowing: _session != null,
+  );
+
+  /// 把一帧 pose 喂给 controller,并把结果映射成 UI 状态。
+  ///
+  /// **判定一行都不在这里** —— 全在 AutoCaptureController / Governor。
+  void _driveAutoCapture(ARPose pose) {
+    if (_captureMode != OfficialCaptureMode.auto) {
+      // 模式已经切走,挂起的起跑作废 —— 否则切回自动时会莫名其妙自己开拍。
+      _autoStartPending = false;
+      return;
+    }
+    if (_autoStartPending) {
+      _autoStartPending = false;
+      // 用**这一帧**起跑,不用缓存的"最近一帧":见 _autoStartPending 的注释。
+      _startAutoCapture(pose);
+      return; // 起跑帧只播种,不判定。
+    }
+    if (!_autoCapture.isRunning) return;
+    final decision = _autoCapture.onPose(pose);
+    // isRunning 由 true 翻 false = controller 自停(撞 300 张或 5 分钟)。
+    // 这里读的是 isRunning 而不是 decision:停机后 onPose 恒返回
+    // skipNotMoved,与"你还没动够"逐字相同(见 autoCaptureIndicatorFor)。
+    final running = _autoCapture.isRunning;
+    final fired = decision == AutoCaptureDecision.fire;
+    if (fired) _autoFirePulseToken++;
+    if (!fired &&
+        decision == _lastAutoDecision &&
+        running == _autoRunningLastSeen) {
+      // pose 流是 20–60 Hz。没有任何变化时不重建整页 —— 每帧 setState
+      // 会把这个 4800 行的页面变成一个热源。
+      return;
+    }
+    _lastAutoDecision = decision;
+    _autoRunningLastSeen = running;
+    if (mounted) setState(() {});
+  }
+
+  void _startAutoCapture(ARPose seed) {
+    if (_autoCapture.isRunning) return;
+    setState(() {
+      _lastAutoDecision = AutoCaptureDecision.skipNotMoved;
+      _autoCapture.start(seed);
+      _autoRunningLastSeen = _autoCapture.isRunning;
+    });
+  }
+
+  void _stopAutoCapture() {
+    _autoStartPending = false;
+    if (!_autoCapture.isRunning) return;
+    _autoCapture.stop();
+    _autoRunningLastSeen = false;
+    if (mounted) setState(() {});
+  }
+
+  void _setCaptureMode(OfficialCaptureMode mode) {
+    if (_captureMode == mode) return;
+    // 切走自动 ⇒ 自动拍立即停。**已拍帧全部保留**、队列继续消化
+    // (spec §7 第一条:切模式是 UI 行为,不该动数据)。
+    if (mode != OfficialCaptureMode.auto) _stopAutoCapture();
+    setState(() {
+      _captureMode = mode;
+      // 切到自动**不开拍**(spec §7 / §8.1),只浮一条提示说明模式变了。
+      if (mode == OfficialCaptureMode.auto) _autoModeToastToken++;
+    });
+  }
+
+  void _toggleAutoRun() {
+    if (_autoStartPending) {
+      // 起跑还没落到帧上,再点一下就是取消。
+      setState(() => _autoStartPending = false);
+      return;
+    }
+    if (_autoCapture.isRunning) {
+      _stopAutoCapture();
+      return;
+    }
+    if (!_autoCaptureCanStart) return;
+    // 这里**不**直接 start():起跑帧必须是 pose 回调里的那一帧本身,
+    // 见 _autoStartPending 的注释。代价至多一帧(17–50 ms)。
+    setState(() => _autoStartPending = true);
+  }
+
+  /// 自动拍的触发口。**返回 true = 真的入队成功** —— controller 据此决定
+  /// 要不要把基准帧推到这一帧上。报假的 true 会把基准帧钉在一个**根本没有
+  /// 照片**的位置上,此后位移闸系统性欠触发,正是 T3 要防的那件事。
+  ///
+  /// 与 [_onShutterTap] 的唯一区别:到 300 张时**不弹对话框** —— 自动模式
+  /// 每个 tick 撞一次,弹窗会刷屏。到顶由 controller 自停(它的
+  /// capturedCountProvider 与队列同口径,见 [_autoCaptureAcceptedFrameCount])。
+  ///
+  /// **契约:绝不抛。** 异常穿出去会打断整条 pose 回调(覆盖云、预警横幅、
+  /// 暖机判定都挂在上面)。入队路径里有平台通道与磁盘工作,不能假设它永远
+  /// 干净,所以一律按"没入队"处理 —— 基准帧因此不动,下一 tick 自然重试。
+  bool _onAutoCaptureFire() {
+    try {
+      return _enqueueShutterCapture();
+    } catch (e) {
+      DeviceLog.log('OfficialARCapturePage', 'auto capture enqueue failed: $e');
+      return false;
+    }
+  }
+
   /// O(1) UI admission only. Camera, JPEG, disk, and SfM work are serialized
   /// by [_shutterQueue] after this callback has already returned.
   void _onShutterTap() {
-    if (_session == null || !_sfmCaptureReady || !_shutterQueue.accepting) {
-      return;
-    }
-    final ticket = _shutterQueue.enqueue(verifiedCount: _projectPhotos.count);
-    if (ticket == null) {
+    if (_admitShutterCapture() == _ShutterAdmission.budgetExhausted) {
       unawaited(_showMaximumPhotosDialog());
     }
   }
+
+  /// 快门的**唯一**入队路径:手动 tap 与自动拍都走这里。
+  ///
+  /// 三道守卫与 300 张上限判据因此只有一份。给自动拍抄第二份守卫迟早会漏掉
+  /// 其中一条 —— 尤其是 `_shutterQueue.accepting`,它只在收尾流程
+  /// (freezeAndDrain / cancelPending)期间为 false,平时测不出来。
+  _ShutterAdmission _admitShutterCapture() {
+    if (_session == null || !_sfmCaptureReady || !_shutterQueue.accepting) {
+      return _ShutterAdmission.blocked;
+    }
+    return _shutterQueue.enqueue(verifiedCount: _projectPhotos.count) == null
+        ? _ShutterAdmission.budgetExhausted
+        : _ShutterAdmission.admitted;
+  }
+
+  /// [_admitShutterCapture] 的布尔视图,给 [AutoCaptureController.onFire]。
+  bool _enqueueShutterCapture() =>
+      _admitShutterCapture() == _ShutterAdmission.admitted;
 
   Future<void> _showMaximumPhotosDialog() async {
     if (!mounted || _maximumPhotosDialogOpen) return;
@@ -2786,6 +3005,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     }
     _finishCancellationRequested = false;
     _finishDrainFailed = false;
+    // 收尾第一件事就是停自动拍:下面 freezeAndDrain 之后队列不再收人,
+    // 自动拍会每个 tick 撞一次关着的门(还撞不出任何反馈)。
+    _stopAutoCapture();
     setState(() => _finishTapInProgress = true);
     try {
       await _shutterQueue.freezeAndDrain();
@@ -2887,6 +3109,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     if (session == null || !_sfmCaptureReady) return;
     if (_finalizingRecording) return;
     _finalizingRecording = true;
+    _stopAutoCapture();
     _stopGuidanceTelemetry(); // 拍摄结束,【guidance】采样停止
     try {
       await _shutterQueue.freezeAndDrain();
@@ -3247,6 +3470,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     final shutterQueue = _shutterQueue;
     final session = _session;
     _session = null;
+    // 自动拍与快门队列同生共死:队列一停收,它就只剩空转。
+    _autoCapture.stop();
     shutterQueue.cancelPending();
     unawaited(_disposeCaptureResourcesAfterQueueDrain(shutterQueue, session));
     final sfmRecon = _sfmRecon;
@@ -3340,6 +3565,30 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
             ),
           ),
 
+          // ─── [spec §8.1] 顶部说明条(按 RealityScan 实机截图复刻)。
+          // 常驻、随模式换文案。它占用顶部第一档(60),下面四条**瞬态**
+          // 横幅因此整体下移一档(66→110 / 60→104 / 104→148 / 148→192 /
+          // 192→236),相对间距一格未动 —— 一条常驻文案与一条警告叠在同一
+          // 档上,谁都读不了。
+          if (_session != null && _sfmPhase == null)
+            Positioned(
+              top: 0,
+              left: 16,
+              right: 16,
+              child: SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 60),
+                  child: Center(
+                    child: IgnorePointer(
+                      child: _IdleHintPill(
+                        text: autoCaptureTopHintText(_captureMode),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
           // A live-SfM worker is mandatory for this product route. Keep the
           // failure on screen (rather than a transient snackbar) and leave X
           // available so the user can discard the invalid take and retry.
@@ -3350,7 +3599,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               right: 16,
               child: SafeArea(
                 child: Padding(
-                  padding: const EdgeInsets.only(top: 66),
+                  padding: const EdgeInsets.only(top: 110),
                   child: Container(
                     key: const ValueKey<String>(
                       'sfm-start-failure-banner-official',
@@ -3428,7 +3677,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               right: 0,
               child: SafeArea(
                 child: Padding(
-                  padding: const EdgeInsets.only(top: 60),
+                  padding: const EdgeInsets.only(top: 104),
                   child: Center(
                     child: _HardRejectToast(stream: _session!.guidanceStream),
                   ),
@@ -3446,7 +3695,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               right: 0,
               child: SafeArea(
                 child: Padding(
-                  padding: const EdgeInsets.only(top: 104),
+                  padding: const EdgeInsets.only(top: 148),
                   child: Center(
                     child: _MotionSpeedToast(stream: _session!.motionStream),
                   ),
@@ -3466,7 +3715,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               right: 0,
               child: SafeArea(
                 child: Padding(
-                  padding: const EdgeInsets.only(top: 148),
+                  padding: const EdgeInsets.only(top: 192),
                   child: Center(
                     child: _ParallaxStarvedBanner(
                       visible: _starvedBannerVisible,
@@ -3486,7 +3735,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               right: 18,
               child: SafeArea(
                 child: Padding(
-                  padding: const EdgeInsets.only(top: 192),
+                  padding: const EdgeInsets.only(top: 236),
                   child: AnimatedBuilder(
                     animation: _projectPhotos,
                     builder: (context, _) => _DisconnectedPhotoBanner(
@@ -3521,6 +3770,24 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    // [spec §8.1] 快门上方的提示行(RS 同款)。自动模式**开拍
+                    // 之后换成停止语义** —— 否则那颗红键跑起来以后,没有任何
+                    // 地方告诉用户它现在是"停"。它浮在取景画面底部之上,不进
+                    // 常驻控件条的高度账(capture_preview_rect 的三个常量一个
+                    // 没动),所以取景矩形的几何守门测试不受影响。
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Center(
+                        child: IgnorePointer(
+                          child: _IdleHintPill(
+                            text: autoCaptureShutterHintText(
+                              mode: _captureMode,
+                              running: _autoCapture.isRunning,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                     // 快门上方的两个显示开关(左:AR 照片卡片;右:覆盖点)。
                     // [2026-07-27 UI 签决] 收起功能(chevron)已删除:预览改为
                     // 在这条控件条上方(见 CapturePreviewRect),完整 4:3 画面
@@ -3580,7 +3847,23 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                       // 绝不因队列深度/热态置灰(积压走磁盘 spool 队列,不回压快门)。
                       ready: _sfmCaptureReady,
                       finishing: _finalizingRecording || _finishTapInProgress,
+                      mode: _captureMode,
+                      // ⚠️ 运行态取自 controller 本身,**不从最近一帧的判定
+                      // 反推** —— 停机时 onPose 返回的就是 skipNotMoved,与
+                      // "你还没动够"逐字相同,照返回值画会永远显示"在等你动"。
+                      autoRunning: _autoCapture.isRunning,
+                      autoIndicator: autoCaptureIndicatorFor(
+                        running: _autoCapture.isRunning,
+                        decision: _lastAutoDecision,
+                      ),
+                      autoPulseToken: _autoFirePulseToken,
                       onShutter: _onShutterTap,
+                      onToggleMode: () => _setCaptureMode(
+                        _captureMode == OfficialCaptureMode.auto
+                            ? OfficialCaptureMode.manual
+                            : OfficialCaptureMode.auto,
+                      ),
+                      onToggleAutoRun: _toggleAutoRun,
                       onOpenAlbum: _openAlbum,
                       // 补强2:完成前先过 starved 把关门(_onFinishTap),
                       // 通过后才走原 _finalizeRecording,原流程一个字不改。
@@ -3592,6 +3875,18 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                           : null,
                     ),
                   ],
+                ),
+              ),
+            ),
+
+          // [spec §8.1] 切到自动模式时居中浮出的短提示(RS 的 "Auto Capture
+          // On")。只在**用户主动切换**时出现 —— 进页面时的默认自动不算一次
+          // 切换,那会变成每次进采集页都弹一下的噪音。
+          if (_session != null && _sfmPhase == null)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: Center(
+                  child: _AutoCaptureOnToast(token: _autoModeToastToken),
                 ),
               ),
             ),
@@ -4233,7 +4528,13 @@ class _ManualCaptureBar extends StatelessWidget {
     required this.processedCount,
     required this.ready,
     required this.finishing,
+    required this.mode,
+    required this.autoRunning,
+    required this.autoIndicator,
+    required this.autoPulseToken,
     required this.onShutter,
+    required this.onToggleMode,
+    required this.onToggleAutoRun,
     required this.onOpenAlbum,
     required this.onFinish,
   });
@@ -4248,7 +4549,19 @@ class _ManualCaptureBar extends StatelessWidget {
   final int processedCount;
   final bool ready;
   final bool finishing;
+
+  /// [spec §8.1] 手动 = 白快门;自动 = 红录制键。两态共用同一排,只换中间
+  /// 那一颗 —— **自动模式下没有第二颗手动快门**(RS 同款):要手动补拍就
+  /// 切回手动模式。
+  final OfficialCaptureMode mode;
+  final bool autoRunning;
+  final AutoCaptureIndicator autoIndicator;
+
+  /// 每落一帧 +1,驱动录制键脉冲一次。
+  final int autoPulseToken;
   final VoidCallback onShutter;
+  final VoidCallback onToggleMode;
+  final VoidCallback onToggleAutoRun;
   final VoidCallback onOpenAlbum;
   final VoidCallback? onFinish;
 
@@ -4290,22 +4603,57 @@ class _ManualCaptureBar extends StatelessWidget {
                   onTap: onOpenAlbum,
                 ),
               ),
+              // [spec §8.1] 模式 toggle 坐在相册与快门**之间**(RS 同款)。
+              // FittedBox 兜底:iPhone SE Display Zoom(320pt)这类声明支持
+              // 的窄机型上宁可整体缩一点,也不许 RenderFlex 溢出。
               Expanded(
-                child: Center(
-                  child: _ShutterButton(
-                    // [SIGNED 2026-07-27] 300 张上限:唯一置灰理由(与
-                    // _onShutterTap 的兜底同源 officialCaptureCanShoot)。
-                    // 07-12 的"快门永不因队列/热态置灰"铁律不受影响 ——
-                    // 这不是限流,是任务预算用尽。
-                    enabled: ready && shutterQueue.accepting && canShoot,
-                    // 在途/排队期间继续接收点击；只有 admission 已冻结、会话
-                    // 未就绪或预算用尽才禁用。
-                    onTap: ready && shutterQueue.accepting && canShoot
-                        ? onShutter
-                        : null,
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerRight,
+                    child: Padding(
+                      padding: const EdgeInsets.only(right: 4),
+                      child: _CaptureModeToggle(
+                        mode: mode,
+                        // 采集中也允许切走(spec §7 第一条):切模式是 UI
+                        // 行为,已拍帧全保留、队列继续消化。只有收尾流程里
+                        // 才锁住 —— 那时整条采集已经在关门了。
+                        onTap: finishing ? null : onToggleMode,
+                      ),
+                    ),
                   ),
                 ),
               ),
+              if (mode == OfficialCaptureMode.auto)
+                _AutoRecordButton(
+                  // 在跑时**恒可点**:哪怕预算刚好用尽、队列刚好停收,
+                  // 用户也必须能按停(autoCaptureRecordButtonEnabled)。
+                  enabled: autoCaptureRecordButtonEnabled(
+                    running: autoRunning,
+                    canStart: ready && shutterQueue.accepting && canShoot,
+                  ),
+                  running: autoRunning,
+                  indicator: autoIndicator,
+                  pulseToken: autoPulseToken,
+                  onTap: onToggleAutoRun,
+                )
+              else
+                _ShutterButton(
+                  // [SIGNED 2026-07-27] 300 张上限:唯一置灰理由(与
+                  // _onShutterTap 的兜底同源 officialCaptureCanShoot)。
+                  // 07-12 的"快门永不因队列/热态置灰"铁律不受影响 ——
+                  // 这不是限流,是任务预算用尽。
+                  enabled: ready && shutterQueue.accepting && canShoot,
+                  // 在途/排队期间继续接收点击；只有 admission 已冻结、会话
+                  // 未就绪或预算用尽才禁用。
+                  onTap: ready && shutterQueue.accepting && canShoot
+                      ? onShutter
+                      : null,
+                ),
+              // 与左侧 toggle 槽对称的留白 —— 两个等权 Expanded 才能让快门
+              // 停在整排的正中,而不是被 toggle 顶偏。
+              const Expanded(child: SizedBox.shrink()),
               SizedBox(
                 width: 72,
                 child: Align(
@@ -4827,4 +5175,229 @@ class _WhiteRingPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _WhiteRingPainter oldDelegate) => false;
+}
+
+// ─── [spec §8.1] 自动采集的三件 UI:模式 toggle / 红录制键 / 开启提示 ──
+//
+// 三个类都放在文件**最末尾**,刻意避开 _ManualCaptureBar→_AlbumThumbButton
+// 与 _ShutterButton→_FinishArrowButton 这两段被既有契约测试逐字盯着的区间
+// (official_capture_frame_budget / manual_capture_bar_io /
+// official_highres_reconstruction),免得新代码误闯进别人的守门里。
+
+/// 手动 / 自动 模式切换键。RS 同款:快门**左侧**的一颗胶囊,手动灰、自动蓝,
+/// 图标都是摄像机。
+///
+/// ⚠️ 图标是摄像机,但模式名刻意避开"录像" —— 见 [OfficialCaptureMode]。
+class _CaptureModeToggle extends StatelessWidget {
+  const _CaptureModeToggle({required this.mode, required this.onTap});
+
+  final OfficialCaptureMode mode;
+
+  /// null = 置灰不可点(只在收尾流程里)。
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final auto = mode == OfficialCaptureMode.auto;
+    return Opacity(
+      opacity: onTap == null ? 0.4 : 1.0,
+      child: GestureDetector(
+        key: const ValueKey<String>('official-capture-mode-toggle'),
+        onTap: onTap,
+        behavior: HitTestBehavior.opaque,
+        child: Container(
+          // 高度取既有的开关按钮常量:快门(76)仍是行内最高子项,
+          // kCaptureShutterRowHeight 的不变式一寸没动。
+          width: 50,
+          height: kCaptureToggleButtonSize,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: auto
+                ? const Color(0xFF0A84FF) // RS 的蓝 = iOS system blue
+                : const Color(0x38FFFFFF),
+            borderRadius: BorderRadius.circular(kCaptureToggleButtonSize / 2),
+          ),
+          child: const Icon(
+            Icons.videocam_rounded,
+            size: 24,
+            color: Colors.white,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 自动模式的红色录制键 —— 它**就是**开始/停止键(RS 同款),自动模式下
+/// 没有另一颗手动快门。外形与 [_ShutterButton] 同尺寸同白环,只是芯是红的:
+/// 未开拍 = 红圆,开拍中 = 红圆角方(录制→停止的通用语)。
+///
+/// 指示器(spec §8)全部走**视觉状态**,一个字的说教都不上:
+///   · 落帧      → 白环向外脉冲一次([pulseToken] 每落一帧 +1)
+///   · 位移不够  → 白环转暗、静止(表达"在等你动")
+///   · 节奏拉长  → 不额外表达,脉冲之间自然变稀
+class _AutoRecordButton extends StatefulWidget {
+  const _AutoRecordButton({
+    required this.enabled,
+    required this.running,
+    required this.indicator,
+    required this.pulseToken,
+    required this.onTap,
+  });
+
+  final bool enabled;
+  final bool running;
+  final AutoCaptureIndicator indicator;
+  final int pulseToken;
+  final VoidCallback onTap;
+
+  @override
+  State<_AutoRecordButton> createState() => _AutoRecordButtonState();
+}
+
+class _AutoRecordButtonState extends State<_AutoRecordButton>
+    with SingleTickerProviderStateMixin {
+  // ⚠️ 这是**纯显示**动画钟。它永远不回喂 AutoCaptureController ——
+  // controller 的唯一时钟是 ARPose.timestamp(ARFrame 时间轴)。
+  late final AnimationController _pulse = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 420),
+  );
+
+  @override
+  void didUpdateWidget(_AutoRecordButton oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.pulseToken != oldWidget.pulseToken) _pulse.forward(from: 0);
+  }
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final waiting = widget.indicator == AutoCaptureIndicator.waiting;
+    final ringAlpha = waiting ? 0.38 : 1.0;
+    const red = Color(0xFFFF3B30);
+    // 白环 4 + 内缩 5,与 _ShutterButton 的芯同尺寸。
+    const core = kCaptureShutterDiameter - 18;
+    return Opacity(
+      opacity: widget.enabled ? 1.0 : 0.4,
+      child: GestureDetector(
+        key: const ValueKey<String>('official-auto-capture-record-button'),
+        onTap: widget.enabled ? widget.onTap : null,
+        behavior: HitTestBehavior.opaque,
+        child: SizedBox(
+          width: kCaptureShutterDiameter,
+          height: kCaptureShutterDiameter,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              AnimatedBuilder(
+                animation: _pulse,
+                builder: (context, _) {
+                  final t = _pulse.value;
+                  if (t <= 0 || t >= 1) return const SizedBox.shrink();
+                  final d = kCaptureShutterDiameter * (1 + 0.30 * t);
+                  return Container(
+                    width: d,
+                    height: d,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: (1 - t) * 0.85),
+                        width: 3,
+                      ),
+                    ),
+                  );
+                },
+              ),
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                width: kCaptureShutterDiameter,
+                height: kCaptureShutterDiameter,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: ringAlpha),
+                    width: 4,
+                  ),
+                ),
+              ),
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                curve: Curves.easeOut,
+                width: widget.running ? 28 : core,
+                height: widget.running ? 28 : core,
+                decoration: BoxDecoration(
+                  color: red,
+                  borderRadius: BorderRadius.circular(
+                    widget.running ? 6 : core / 2,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 切到自动模式时居中浮出的一条短提示(RS 的 "Auto Capture On")。
+/// [token] 变一次就浮一次;进页面时的默认自动不算切换,所以 token 初值不触发。
+class _AutoCaptureOnToast extends StatefulWidget {
+  const _AutoCaptureOnToast({required this.token});
+
+  final int token;
+
+  @override
+  State<_AutoCaptureOnToast> createState() => _AutoCaptureOnToastState();
+}
+
+class _AutoCaptureOnToastState extends State<_AutoCaptureOnToast> {
+  Timer? _fadeTimer;
+  bool _visible = false;
+
+  @override
+  void didUpdateWidget(_AutoCaptureOnToast oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.token == oldWidget.token) return;
+    setState(() => _visible = true);
+    _fadeTimer?.cancel();
+    _fadeTimer = Timer(const Duration(milliseconds: 1500), () {
+      if (mounted) setState(() => _visible = false);
+    });
+  }
+
+  @override
+  void dispose() {
+    _fadeTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedOpacity(
+      opacity: _visible ? 1.0 : 0.0,
+      duration: const Duration(milliseconds: 220),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.68),
+          borderRadius: BorderRadius.circular(22),
+        ),
+        child: const Text(
+          kAutoCaptureOnToastText,
+          style: TextStyle(
+            color: Colors.white,
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ),
+    );
+  }
 }
