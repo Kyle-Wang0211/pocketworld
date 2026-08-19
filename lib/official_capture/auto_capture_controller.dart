@@ -1,6 +1,8 @@
 // auto_capture_controller.dart — 自动采集的有状态编排。
 //
-// 挂在现成的 6 Hz pose 流上,维护基准帧与 tick 计时,判定 fire 就回调
+// 挂在现成的 pose 流上(**逐 ARFrame,20–60 Hz,不是 6 Hz** —— 6 Hz 是画质块
+// 的节流频率,与 pose 无关;特征点另按 8 Hz 节流,见 spec §5.4 与
+// _lastTrustedDepthM 的注释),维护基准帧与 tick 计时,判定 fire 就回调
 // 宿主的快门入口。**不自建捕获路径** —— onFire 回调里必须是现有的
 // `_onShutterTap()` 等价物,这样 300 张上限、in-flight 守卫、12MP 静照、
 // 落盘、SfM 喂帧全部自动继承。
@@ -19,8 +21,13 @@ import 'auto_capture_geometry.dart';
 import 'auto_capture_governor.dart';
 import 'shutter_backpressure_gate.dart' show ShutterPace;
 
-/// 特征点不足以估深度时的兜底深度(米)。此时平移判据不可信,
-/// 由 [_Baseline.depthTrusted] 关掉视差路径,只留视线转角路径。
+/// **本轮从头到尾一次可信深度都没测到过**时的兜底深度(米)。此时平移判据
+/// 不可信,由 [_Baseline.depthTrusted] 关掉视差路径,只留视线转角路径。
+///
+/// ⚠️ 这不是"当前帧没特征点"时走的路 —— 那种情况沿用
+/// [AutoCaptureController._lastTrustedDepthM],见那里的注释。本常数只在
+/// 「这一轮里从来没有过任何一帧能估出深度」时才用得上,它是一句
+/// **没人量过的断言**,所以配 `depthTrusted=false` 一起用。
 const double kAutoCaptureFallbackDepthM = 1.0;
 
 class _Baseline {
@@ -61,6 +68,32 @@ class AutoCaptureController {
   double _startedAtSec = 0;
   double _lastTickSec = 0;
 
+  /// 本轮最近一次**可信**的场景中位深度(米);本轮从未测到过则为 null。
+  ///
+  /// 为什么需要它(spec §5.4,核实自 `OfficialAetherARKitPlugin.swift`):
+  /// pose 事件是**逐 ARFrame** 广播的(`sessionDelegate.onFrame`,无节流,
+  /// 20–60 Hz),而特征点 `previewPoints` 单独按 `previewPointInterval = 1/8`
+  /// 节流 —— 30 fps 下约 **3/4 的 pose 帧根本不带特征点**
+  /// (Dart 侧 `_decodePreviewPoints` 对缺字段返回**空列表**,不是沿用上一帧)。
+  /// 而基准帧只在 `start()` 与**每次成功入队**时重算,两者都有约 3/4 的概率
+  /// 落在空帧上。
+  ///
+  /// 没有这份记忆,基准帧就会被推迟到"入队后第一个带特征点的帧"才落定,
+  /// 最多晚 125 ms;按 1 m/s 步行 = **12.5 cm**,与 1 m 物距处的平移下限
+  /// 8.8 cm 同量级,且**方向恒定** —— 是系统性偏置,不是噪声。
+  ///
+  /// 沿用它时 `depthTrusted` **保持 true**:场景深度在 125 ms 内不会突变,
+  /// 而它是这一轮里对**这个场景**的真实测量;相比之下退回
+  /// [kAutoCaptureFallbackDepthM] 是断言一个没人量过的深度,还会把视差与
+  /// 重叠两条路一起关掉(即 §7 那条死锁的成因)。
+  ///
+  /// **轮内不设过期时限,轮的边界就是唯一的过期边界**:`stop()` 与 `start()`
+  /// 都清空它(见那里)。理由:一轮之内按定义是同一个场景,而跨轮可能换了场景;
+  /// 且"过期"之后唯一能退到的状态(兜底深度 + 两条路全关)在任何时刻都比
+  /// 一个偏了的深度更差 —— 过期只会把用户送回死锁那一侧。真要设时限,
+  /// 依据得来自真机标定(spec §11),不能在这里凭空取一个数。
+  double? _lastTrustedDepthM;
+
   bool get isRunning => _running;
 
   /// 基准帧的场景深度,null 表示尚未起跑。供遥测与测试断言基准是否更新。
@@ -74,21 +107,42 @@ class AutoCaptureController {
     _running = true;
     _startedAtSec = pose.timestamp;
     _lastTickSec = pose.timestamp;
+    // 新一轮 = 可能是另一个场景。**先清空**上一轮的深度记忆,再由本帧重建 ——
+    // 顺序不能反,否则起跑帧没特征点时会拿上一轮的深度当"可信"。
+    // 清在这里而不是只清在 stop() 里:连着调两次 start() 不经 stop() 也算新一轮。
+    _lastTrustedDepthM = null;
     // spec §7「tracking 丢失 / limited ⇒ 暂停触发,**且基准帧不更新**」是无条件的,
     // 起跑那一帧也算。丢跟踪时的位置估计不可信,拿它当基准会毒化整轮的位移判据。
     // 播种推迟到 onPose 里第一帧正常的位姿(见那里的补播种/回滚入口)。
+    // ⇒ 起跑帧 tracking 异常时深度记忆也不建立(_baselineFrom 才刷新记忆)。
     _baseline = _trackingNormal(pose) ? _baselineFrom(pose) : null;
   }
 
   void stop() {
     _running = false;
     _baseline = null;
+    // 深度记忆是**这一轮这个场景**的测量,绝不能被下一轮继承。
+    _lastTrustedDepthM = null;
   }
 
   AutoCaptureDecision onPose(ARPose pose) {
     if (!_running) return AutoCaptureDecision.skipNotMoved;
     final base = _baseline;
     final trackingOk = _trackingNormal(pose);
+
+    // 逐帧收下场景深度(spec §5.4 要的是"**最近一次**可信深度")。
+    //
+    // 为什么不只在 _baselineFrom 里刷新:_baselineFrom 只在 start()、开火后、
+    // 重播种时被调用 —— 至多约 1 次/秒。只在那里刷新的话,这个字段实际记的是
+    // "上一次成功播种那一帧的深度",在连续多次开火都落在空帧上时可以陈旧到
+    // **分钟**级,而不是文档承诺的 125 ms。8 Hz 的特征点每一帧都送到手边,
+    // 空帧上 medianSceneDepthM 的循环体一次都不进(点列表为空)、直接返回 null,
+    // 逐帧收下它的代价可忽略。
+    //
+    // 只从 tracking 正常的帧取:与"丢跟踪期间不播种"(spec §7)同一条纪律 ——
+    // 深度是拿相机位姿与特征点算出来的,位姿不可信时算出来的深度也不可信,
+    // 而它会直接进下一个基准帧。
+    if (trackingOk) _refreshDepthMemory(pose);
 
     // 需要(重)播种的两种情形,共用下面 switch 里的一个入口:
     //  · base == null —— start() 那帧 tracking 不正常,没敢播种;
@@ -215,19 +269,35 @@ class AutoCaptureController {
   static Vector3 _forwardOf(ARPose pose) =>
       pose.orientation.rotated(Vector3(0, 0, -1));
 
-  static _Baseline _baselineFrom(ARPose pose) {
-    final forward = _forwardOf(pose);
-    final depth = medianSceneDepthM(
+  /// 当前帧能估出深度就记下来。**幂等**:同一个 pose 算两次结果相同
+  /// (medianSceneDepthM 是 pose 的纯函数),所以重复调用无副作用。
+  void _refreshDepthMemory(ARPose pose) {
+    final measured = medianSceneDepthM(
       cameraPosition: pose.position,
-      forward: forward,
+      forward: _forwardOf(pose),
       points: pose.previewPoints,
     );
-    final d = depth ?? kAutoCaptureFallbackDepthM;
+    // 估不出来时**不覆盖**:空帧不该抹掉 125 ms 前的真实测量。
+    if (measured != null) _lastTrustedDepthM = measured;
+  }
+
+  _Baseline _baselineFrom(ARPose pose) {
+    // 自足:任何新增的调用点都不必记得"先刷新记忆"。幂等,所以与 onPose
+    // 开头那次刷新重复调用也没有副作用(每秒至多多算一次中位数)。
+    _refreshDepthMemory(pose);
+    final forward = _forwardOf(pose);
+    // 当前帧没特征点时沿用最近一次可信深度,并**保持 depthTrusted=true**:
+    // 30 fps 下约 3/4 的帧不带特征点(spec §5.4),而基准帧必须锚在**真正
+    // 入队的那一帧**上,不能推迟到之后第一个带特征点的帧 —— 那是一个方向
+    // 恒定的系统性偏置。字段注释里有完整理由,包括为什么轮内不设过期时限。
+    final remembered = _lastTrustedDepthM;
+    final d = remembered ?? kAutoCaptureFallbackDepthM;
     return _Baseline(
       camera: pose.position.clone(),
       forward: forward,
       target: pose.position + forward * d,
-      depthTrusted: depth != null,
+      // 本轮从未测到过深度时才是"不可信" —— 那时 d 是没人量过的兜底值。
+      depthTrusted: remembered != null,
     );
   }
 }

@@ -883,4 +883,267 @@ void main() {
     );
     expect(h.fires, 1);
   });
+
+  // ==========================================================================
+  // 深度记忆(spec §5.4):pose 逐 ARFrame 20–60 Hz,特征点单独按 8 Hz 节流
+  // ⇒ 30 fps 下约 3/4 的 pose 帧带的是**空**点列表(Dart 侧 _decodePreviewPoints
+  // 对缺字段返回 const <ARPreviewPoint>[],不沿用上一帧)。基准帧只在 start()
+  // 与每次成功入队时重算,两者都有约 3/4 的概率落在空帧上。
+  // ==========================================================================
+
+  test('a capture landing on a frame with no feature points keeps the last '
+      'measured scene depth instead of the hardcoded fallback', () {
+    final h = _Harness();
+    h.controller.start(_pose(t: 0, depthM: 2.0));
+    expect(h.controller.baselineDepthM, closeTo(2.0, 1e-9));
+
+    // The frame that actually gets shot carries no feature points — the
+    // common case at 30 fps, not an edge case.
+    expect(
+      h.controller.onPose(
+        _pose(t: 1.0, pos: Vector3(0.2, 0, 0), depthM: 2.0, pointCount: 0),
+      ),
+      AutoCaptureDecision.fire,
+    );
+    expect(h.fires, 1);
+    // 2.0 m is a depth somebody measured 1 s ago on this very scene.
+    // 1.0 m — the fallback — is a depth nobody ever measured.
+    expect(h.controller.baselineDepthM, closeTo(2.0, 1e-9),
+        reason: 'the remembered depth, not kAutoCaptureFallbackDepthM');
+  });
+
+  test('a capture landing on a frame with no feature points anchors the '
+      'baseline at that frame, not at the next frame that has points', () {
+    // This is the whole point of remembering the depth. Without the memory
+    // the shot frame yields depthTrusted=false, which makes needsSeed true,
+    // which hands the baseline to the NEXT textured frame — up to 125 ms and
+    // (at 1 m/s) 12.5 cm downrange of the photo that was actually taken.
+    // Always in the same direction: bias, not noise.
+    final h = _Harness();
+    h.controller.start(_pose(t: 0, depthM: 2.0));
+
+    expect(
+      h.controller.onPose(
+        _pose(t: 1.0, pos: Vector3(0.20, 0, 0), depthM: 2.0, pointCount: 0),
+      ),
+      AutoCaptureDecision.fire,
+    );
+    expect(h.fires, 1);
+
+    // 100 ms later the 8 Hz feature-point payload arrives. It must NOT move
+    // the baseline: this frame is not the one that was photographed.
+    // (A deferred baseline would re-seed here and report skipNotMoved.)
+    expect(
+      h.controller.onPose(
+        _pose(t: 1.1, pos: Vector3(0.25, 0, 0), depthM: 2.0),
+      ),
+      AutoCaptureDecision.skipPaced,
+    );
+
+    // 0.18 m past the frame that was shot = 5.14 deg of parallax at 2 m:
+    // just over the 5 deg floor. Measured from the deferred baseline at
+    // x = 0.25 it would be only 3.72 deg and would not fire.
+    expect(
+      h.controller.onPose(
+        _pose(t: 2.2, pos: Vector3(0.38, 0, 0), depthM: 2.0, pointCount: 0),
+      ),
+      AutoCaptureDecision.fire,
+    );
+    expect(h.fires, 2);
+  });
+
+  test('the depth memory is refreshed by frames that never become a baseline',
+      () {
+    // _baselineFrom runs at most ~1/s (start, fire, re-seed). If the memory
+    // were only written there, "the most recent trusted depth" would really
+    // mean "the depth at the last frame that happened to seed" — minutes
+    // stale in a run where every capture lands on an empty frame. The 8 Hz
+    // points are in hand on every pose; take them there.
+    final h = _Harness();
+    h.controller.start(_pose(t: 0, depthM: 2.0));
+
+    // Mid-tick, standing still: no fire, no re-seed (the baseline is already
+    // trusted), so this frame never reaches _baselineFrom. The scene has
+    // moved to 6 m — a doorway opening onto a larger room.
+    expect(
+      h.controller.onPose(_pose(t: 0.5, depthM: 6.0)),
+      AutoCaptureDecision.skipPaced,
+    );
+
+    // The capture lands on an empty frame and must use 6.0, not 2.0.
+    expect(
+      h.controller.onPose(
+        _pose(t: 1.0, pos: Vector3(0.2, 0, 0), pointCount: 0),
+      ),
+      AutoCaptureDecision.fire,
+    );
+    expect(h.controller.baselineDepthM, closeTo(6.0, 1e-9));
+  });
+
+  test('bad-tracking frames do not refresh the depth memory', () {
+    // Symmetric twin of the test above. Depth is computed FROM the camera
+    // pose; while tracking is limited the pose is exactly what is not
+    // trustworthy, and this number goes straight into the next baseline.
+    // Same discipline as spec section 7's "no seeding during tracking loss".
+    final h = _Harness();
+    h.controller.start(_pose(t: 0, depthM: 2.0));
+
+    expect(
+      h.controller.onPose(
+        _pose(t: 0.5, depthM: 9.0, tracking: 'limited_relocalizing'),
+      ),
+      AutoCaptureDecision.skipTracking,
+    );
+
+    expect(
+      h.controller.onPose(
+        _pose(t: 1.0, pos: Vector3(0.2, 0, 0), pointCount: 0),
+      ),
+      AutoCaptureDecision.fire,
+    );
+    expect(h.controller.baselineDepthM, closeTo(2.0, 1e-9),
+        reason: 'the 9 m reading arrived on a frame we do not trust');
+  });
+
+  test('a run that has never measured a depth still degrades to an untrusted '
+      'baseline — the deadlock regression stays meaningful', () {
+    // The memory must not paper over the genuine "no depth at all" case:
+    // there the fallback really is an unmeasured assertion, and both the
+    // parallax gate and the overlap gate must stay off (spec section 7).
+    final h = _Harness();
+    h.controller.start(_pose(t: 0, pointCount: 0));
+    expect(h.controller.baselineDepthM, closeTo(1.0, 1e-9));
+
+    // 0.5 m sideways: 26.6 deg of parallax and s = 0.5 if the fallback depth
+    // were real. Neither gate may act on a depth nobody measured.
+    expect(
+      h.controller.onPose(
+        _pose(t: 0.2, pos: Vector3(0.5, 0, 0), pointCount: 0),
+      ),
+      AutoCaptureDecision.skipPaced,
+    );
+    expect(
+      h.controller.onPose(
+        _pose(t: 1.0, pos: Vector3(0.5, 0, 0), pointCount: 0),
+      ),
+      AutoCaptureDecision.skipNotMoved,
+    );
+    expect(h.fires, 0);
+    expect(h.controller.baselineDepthM, closeTo(1.0, 1e-9));
+  });
+
+  test('stop() clears the depth memory, so a new run never inherits the '
+      'previous scene', () {
+    final h = _Harness();
+    // Run A: a 3 m scene.
+    h.controller.start(_pose(t: 0, depthM: 3.0));
+    h.controller.onPose(_pose(t: 0.5, depthM: 3.0));
+    h.controller.stop();
+
+    // Poses keep arriving between runs; a stopped controller must not be
+    // learning from them either.
+    h.controller.onPose(_pose(t: 5.0, depthM: 7.0));
+
+    // Run B: the user has walked somewhere else and starts on a textureless
+    // surface. Nothing measured in run A is admissible here.
+    h.controller.start(_pose(t: 10.0, pointCount: 0));
+    expect(h.controller.baselineDepthM, closeTo(1.0, 1e-9),
+        reason: 'neither run A\'s 3 m nor the 7 m seen while stopped');
+
+    // And it is untrusted, not just numerically different: 0.5 m sideways
+    // would be 9.5 deg of parallax at run A's 3 m depth.
+    expect(
+      h.controller.onPose(
+        _pose(t: 11.0, pos: Vector3(0.5, 0, 0), pointCount: 0),
+      ),
+      AutoCaptureDecision.skipNotMoved,
+    );
+    expect(h.fires, 0);
+  });
+
+  test('a second start() without a stop() also clears the depth memory', () {
+    // Symmetric twin: stop() is not the only way a run ends. Task 4 owns the
+    // lifecycle wiring, so the controller must not depend on it being polite.
+    final h = _Harness();
+    h.controller.start(_pose(t: 0, depthM: 3.0));
+    expect(h.controller.baselineDepthM, closeTo(3.0, 1e-9));
+
+    h.controller.start(_pose(t: 10.0, pointCount: 0));
+    expect(h.controller.baselineDepthM, closeTo(1.0, 1e-9));
+    expect(
+      h.controller.onPose(
+        _pose(t: 11.0, pos: Vector3(0.5, 0, 0), pointCount: 0),
+      ),
+      AutoCaptureDecision.skipNotMoved,
+    );
+    expect(h.fires, 0);
+  });
+
+  test('the depth memory never expires inside a run — the run boundary is the '
+      'only staleness bound', () {
+    // Deliberate design decision, pinned here so nobody adds a timeout
+    // without arguing for it. Expiring the memory has exactly one fallback:
+    // the unmeasured 1 m constant WITH both gates switched off — i.e. the
+    // spec section 7 deadlock. A stale depth mis-scales a threshold; an
+    // expired one removes the threshold. Any cutoff would also be a number
+    // with no source, and this file already carries one such (turnMinDeg,
+    // flagged "must be calibrated on device").
+    //
+    // Three points, spread across the whole admissible range: comfortably
+    // fresh, a minute stale, and just under the 300 s run limit. All three
+    // must behave identically.
+    for (final gapSec in <double>[1.0, 60.0, 290.0]) {
+      final h = _Harness();
+      h.controller.start(_pose(t: 0, depthM: 2.0));
+      // Nothing but empty frames from here on.
+      final d = h.controller.onPose(
+        _pose(t: gapSec, pos: Vector3(0.2, 0, 0), pointCount: 0),
+      );
+      expect(d, AutoCaptureDecision.fire, reason: 'gap = $gapSec s');
+      expect(h.fires, 1, reason: 'gap = $gapSec s');
+      expect(h.controller.baselineDepthM, closeTo(2.0, 1e-9),
+          reason: 'gap = $gapSec s');
+    }
+  });
+
+  test('feature points on one frame in four leave the capture cadence '
+      'unchanged — the 8 Hz points vs the 30 fps pose stream', () {
+    // The regression that would have caught the bias. Single variable: the
+    // two arms differ ONLY in which frames carry feature points.
+    //
+    // 2 m scene, 0.16 m/s sideways => the 5 deg parallax floor needs 0.175 m
+    // = 1.09 s, just past the 1 s tick, so the PARALLAX gate is what paces
+    // this run (a tick-bound arm would sit at 120 and hide everything).
+    //
+    // Before the fix: control 109, mixed 100 — 8 % of the captures lost to a
+    // baseline that kept being handed to the next frame with points.
+    int runArm({required bool everyFrameHasPoints}) {
+      final h = _Harness();
+      const fps = 30.0;
+      const v = 0.16;
+      h.controller.start(_pose(t: 0, depthM: 2.0));
+      for (var i = 1; i <= 3600; i++) {
+        final t = i / fps;
+        h.controller.onPose(
+          _pose(
+            t: t,
+            pos: Vector3(v * t, 0, 0),
+            depthM: 2.0,
+            // 8 Hz points on a 30 fps pose stream: roughly one in four.
+            pointCount: (everyFrameHasPoints || i % 4 == 0) ? 12 : 0,
+          ),
+        );
+      }
+      return h.fires;
+    }
+
+    final control = runArm(everyFrameHasPoints: true);
+    final mixed = runArm(everyFrameHasPoints: false);
+
+    expect(control, lessThan(120),
+        reason: 'the parallax floor, not the 1 s tick, is pacing this arm');
+    expect(control, 109);
+    expect(mixed, control,
+        reason: 'the point rate must not change the capture cadence at all');
+  });
 }
