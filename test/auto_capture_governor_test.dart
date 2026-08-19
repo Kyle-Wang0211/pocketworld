@@ -11,7 +11,7 @@ AutoCaptureDecision decide({
   double tickIntervalSec = 1.0,
   double parallaxDeg = 0,
   double turnDeg = 0,
-  double centerShift = 0,
+  double? centerShift = 0,
 }) {
   return autoCaptureDecide(
     trackingNormal: trackingNormal,
@@ -65,7 +65,7 @@ void main() {
     );
   });
 
-  test('the 300-frame cap wins over everything', () {
+  test('the 300-frame cap beats the overlap bound, and 299 still fires', () {
     expect(
       decide(capturedCount: 300, centerShift: 10.0),
       AutoCaptureDecision.skipCapped,
@@ -74,7 +74,8 @@ void main() {
         AutoCaptureDecision.fire);
   });
 
-  test('the five-minute limit wins over everything but the cap', () {
+  test('the five-minute limit beats the overlap bound, and 299.9 s still '
+      'fires', () {
     expect(
       decide(elapsedSec: 300.0, centerShift: 10.0),
       AutoCaptureDecision.skipTimeLimit,
@@ -279,10 +280,10 @@ void main() {
     );
   });
 
-  test('a shift of 0 (unusable intrinsics) leaves the decision to the lower '
-      'bound alone', () {
-    // 几何层拿不到内参时返回 null,调用方按 spec §7 降级传 0 ——
-    // 于是上限判据整条让位,只剩 R1 说话。**不是**"立刻拍"。
+  test('a shift of 0 is an ordinary small shift and short-circuits nothing',
+      () {
+    // 0 只是"目标还在画面正中",没有任何特殊含义:上限判据不成立,
+    // 于是照常由 tick 闸与下限判据接手。
     expect(
       decide(centerShift: 0.0, sinceLastTickSec: 0.01),
       AutoCaptureDecision.skipPaced,
@@ -307,6 +308,58 @@ void main() {
     expect(
       decide(parallaxDeg: 4.99, turnDeg: 9.99),
       AutoCaptureDecision.skipNotMoved,
+    );
+  });
+
+  // —— 上限判据求不出来时(centerShift == null)——
+  // T1 刻意让 normalizedCenterShift 在内参/画幅不可用时返回 **null** 而不是
+  // +inf,就是为了不让"不知道"被读成"马上开火"。这一层必须把那个区分守住:
+  // null ⇒ **跳过** R2,由下限判据决定(spec §7 最后一行"只用下限判据决定")。
+
+  test('an unavailable upper bound (null) is skipped, leaving the lower bound '
+      'in charge', () {
+    expect(decide(centerShift: null), AutoCaptureDecision.skipNotMoved);
+    expect(
+      decide(centerShift: null, sinceLastTickSec: 0.01),
+      AutoCaptureDecision.skipPaced,
+    );
+    // spec §7:"只用下限判据决定" —— 两个下限判据都还得管用。
+    expect(
+      decide(centerShift: null, parallaxDeg: 5.0),
+      AutoCaptureDecision.fire,
+    );
+    expect(decide(centerShift: null, turnDeg: 10.0), AutoCaptureDecision.fire);
+    expect(
+      decide(centerShift: null, parallaxDeg: 4.99, turnDeg: 9.99),
+      AutoCaptureDecision.skipNotMoved,
+    );
+  });
+
+  test('null and infinity are opposite verdicts, never the same one', () {
+    // 同一个"还没到 tick"的情形:不知道 ⇒ 不拍;确定越过上限 ⇒ 立刻拍。
+    expect(
+      decide(centerShift: null, sinceLastTickSec: 0.01),
+      AutoCaptureDecision.skipPaced,
+    );
+    expect(
+      decide(centerShift: double.infinity, sinceLastTickSec: 0.01),
+      AutoCaptureDecision.fire,
+    );
+  });
+
+  test('an unavailable upper bound does not leak past the gates above it', () {
+    // null 只免掉 R2 这一道,不改变它上面三道的优先级。
+    expect(
+      decide(centerShift: null, capturedCount: 300),
+      AutoCaptureDecision.skipCapped,
+    );
+    expect(
+      decide(centerShift: null, elapsedSec: 300.0),
+      AutoCaptureDecision.skipTimeLimit,
+    );
+    expect(
+      decide(centerShift: null, trackingNormal: false),
+      AutoCaptureDecision.skipTracking,
     );
   });
 }

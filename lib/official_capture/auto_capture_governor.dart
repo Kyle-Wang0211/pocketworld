@@ -51,12 +51,11 @@ Duration autoCaptureTickInterval(ShutterPace pace) {
 /// 重叠上限排在 tick 闸**之前**,是因为它治的是"走得快,1 秒已跨过重叠下限"
 /// —— 那种情况按 1s 节奏拍会拍出 RealityScan 官方警告的断裂组件。
 ///
-/// [centerShift] 是 `normalizedCenterShift` 的**已解包**结果:
-/// 几何层拿不到可用内参时返回 null(spec §7),调用方须按"上限判据不可评估"
-/// 降级,即传 **0.0**(任何 < [kAutoCaptureMaxCenterShift] 的值等效),
-/// 于是只剩下限判据 R1 决定。**绝不可把 null 翻译成 `double.infinity`** ——
-/// 那等于把"不知道"编码成"马上开火"。目标真跑到相机背后时几何层返回的
-/// +inf 才是"确实越过了上限",照直传即可。
+/// [centerShift] 直接收 `normalizedCenterShift` 的返回值,**不必解包**:
+/// null 意为"上限判据求不出来"(内参/画幅不可用,spec §7),此时跳过 R2、
+/// 只用下限判据决定;`double.infinity` 意为"确定越过了上限"(目标已跑到
+/// 相机背后),立刻拍。T1 刻意把这两件事分成两个值,这一层就得原样守住 ——
+/// 把"不知道"折成"马上开火"正是那条裁定要防的事。
 AutoCaptureDecision autoCaptureDecide({
   required bool trackingNormal,
   required int capturedCount,
@@ -65,7 +64,7 @@ AutoCaptureDecision autoCaptureDecide({
   required double tickIntervalSec,
   required double parallaxDeg,
   required double turnDeg,
-  required double centerShift,
+  required double? centerShift,
 }) {
   if (capturedCount >= kOfficialMaximumCaptureFrames) {
     return AutoCaptureDecision.skipCapped;
@@ -74,7 +73,12 @@ AutoCaptureDecision autoCaptureDecide({
     return AutoCaptureDecision.skipTimeLimit;
   }
   if (!trackingNormal) return AutoCaptureDecision.skipTracking;
-  if (centerShift >= kAutoCaptureMaxCenterShift) {
+  // null = 上限判据无法求值(内参/画幅不可用,见 spec §7)。此时**跳过** R2,
+  // 只用下限判据决定 —— 绝不能当成"立刻拍"。+inf 与 null 是刻意区分的两件事:
+  // +inf 意为"确定越过上限"(目标已跑到相机背后),null 意为"不知道"。
+  // 把"不知道"编码成"马上开火"正是这道判断存在的理由。
+  final shift = centerShift;
+  if (shift != null && shift >= kAutoCaptureMaxCenterShift) {
     return AutoCaptureDecision.fire;
   }
   if (sinceLastTickSec < tickIntervalSec) return AutoCaptureDecision.skipPaced;
