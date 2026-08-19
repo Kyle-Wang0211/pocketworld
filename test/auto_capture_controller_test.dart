@@ -27,6 +27,7 @@ ARPose _pose({
   double fx = _fx,
   double? fy,
   bool withIntrinsics = true,
+  List<double>? intrinsics,
   int width = _w,
   int height = _h,
 }) {
@@ -48,9 +49,10 @@ ARPose _pose({
     // extrinsic4x4 与 intrinsicFxFyCxCy 都是 ARPose 的 required 参数。
     // 本判据不消费 extrinsic,给空列表即可(mock 路径的合法取值)。
     extrinsic4x4: const <double>[],
-    intrinsicFxFyCxCy: withIntrinsics
-        ? <double>[fx, fy ?? fx, width / 2, height / 2]
-        : const <double>[],
+    intrinsicFxFyCxCy: intrinsics ??
+        (withIntrinsics
+            ? <double>[fx, fy ?? fx, width / 2, height / 2]
+            : const <double>[]),
     imageWidth: width,
     imageHeight: height,
     previewPoints: <ARPreviewPoint>[
@@ -671,6 +673,214 @@ void main() {
     // camera, so the overlap bound is +inf — which is a fire, not a null.
     final d = h.controller.onPose(_pose(t: 0.2, pos: Vector3(0, 0, -1.5)));
     expect(d, AutoCaptureDecision.fire);
+    expect(h.fires, 1);
+  });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // 修复轮 1:降级必须可逆(spec §7「⚠️ 死锁」)+ 两个变异幸存者。
+  // ──────────────────────────────────────────────────────────────────────
+
+  test('a start() frame with too few feature points does not deadlock the '
+      'run — the textureless-surface case', () {
+    // 单变量:两臂只有 start() 那一帧的特征点数不同,其后 180 帧逐字相同。
+    // 修好之前,饥饿臂 30 秒横移产出 0 张,而且永远不会有 —— 基准帧的
+    // depthTrusted=false 同时关掉视差与上限两条路,只剩转角;纯横移转角恒 0
+    // ⇒ 永不开火 ⇒ 永不重播种 ⇒ 回到起点。
+    int runArm({required int startPoints}) {
+      final h = _Harness();
+      h.controller.start(_pose(t: 0, pointCount: startPoints));
+      for (var i = 1; i <= 180; i++) {
+        h.controller.onPose(_pose(t: i / 6.0, pos: Vector3(i * 0.02, 0, 0)));
+      }
+      return h.fires;
+    }
+
+    expect(runArm(startPoints: 12), 30, reason: '30 s of walking at a 1 s tick');
+    expect(runArm(startPoints: 0), 30,
+        reason: 'the starved arm re-seeds on the first textured frame');
+  });
+
+  test('a re-seed does not reset the tick clock', () {
+    final h = _Harness();
+    h.controller.start(_pose(t: 0, pointCount: 0));
+
+    // 0.9 s in, the first textured frame rolls the degradation back.
+    expect(h.controller.onPose(_pose(t: 0.9)), AutoCaptureDecision.skipNotMoved);
+
+    // 0.1 s later the tick is due. A re-seed is not a capture and must not
+    // have spent the pacing budget, or every rollback costs a full interval.
+    expect(
+      h.controller.onPose(_pose(t: 1.0, pos: Vector3(0.1, 0, 0))),
+      AutoCaptureDecision.fire,
+    );
+    expect(h.fires, 1);
+  });
+
+  test('an untrusted candidate does not replace an untrusted baseline, so the '
+      'turn path keeps measuring from the original frame', () {
+    final h = _Harness();
+    h.controller.start(_pose(t: 0, pointCount: 0));
+
+    // Still textureless at 12° of yaw: no re-seed is possible here. Were the
+    // baseline to follow this frame anyway, the turn would reset to 0 every
+    // frame and nothing would ever fire — the deadlock in another costume.
+    expect(
+      h.controller.onPose(_pose(t: 0.5, yawDeg: 12, pointCount: 0)),
+      AutoCaptureDecision.skipPaced,
+    );
+    expect(
+      h.controller.onPose(_pose(t: 1.0, yawDeg: 12, pointCount: 0)),
+      AutoCaptureDecision.fire,
+    );
+    expect(h.fires, 1);
+  });
+
+  test('start() on a bad-tracking pose seeds nothing, and the first normal '
+      'frame becomes the baseline', () {
+    final h = _Harness();
+    h.controller.start(
+      _pose(t: 0, tracking: 'limited_relocalizing', depthM: 2.5),
+    );
+    expect(h.controller.baselineDepthM, isNull);
+
+    // The first healthy frame seeds — with ITS scene depth, at ITS position.
+    expect(
+      h.controller.onPose(_pose(t: 0.5, pos: Vector3(1, 0, 0), depthM: 4.0)),
+      AutoCaptureDecision.skipNotMoved,
+    );
+    expect(h.controller.baselineDepthM, closeTo(4.0, 1e-9));
+
+    // Displacement is now measured from x = 1. Measured from the start()
+    // frame at the origin this would be 21° of parallax and would fire.
+    expect(
+      h.controller.onPose(_pose(t: 1.5, pos: Vector3(1, 0, 0), depthM: 4.0)),
+      AutoCaptureDecision.skipNotMoved,
+    );
+    expect(h.fires, 0);
+  });
+
+  test('start() on bad tracking followed by only bad-tracking frames never '
+      'seeds and never fires', () {
+    final h = _Harness();
+    h.controller.start(_pose(t: 0, tracking: 'limited_relocalizing'));
+    for (var i = 1; i <= 60; i++) {
+      expect(
+        h.controller.onPose(
+          _pose(
+            t: i / 6.0,
+            pos: Vector3(i * 0.05, 0, 0),
+            tracking: 'limited_relocalizing',
+          ),
+        ),
+        AutoCaptureDecision.skipTracking,
+      );
+    }
+    expect(h.controller.baselineDepthM, isNull);
+    expect(h.fires, 0);
+  });
+
+  test('a textureless first frame is still seeded, so the turn path works '
+      'from the very beginning', () {
+    // Seeding an UNTRUSTED baseline is better than seeding none: with no
+    // baseline at all there is no reference optical axis either, so the turn
+    // path is dead too and the run does nothing until texture shows up.
+    final h = _Harness();
+    h.controller.start(_pose(t: 0, tracking: 'limited_relocalizing'));
+    expect(
+      h.controller.onPose(_pose(t: 0.5, pointCount: 0)),
+      AutoCaptureDecision.skipNotMoved,
+    );
+    expect(h.controller.baselineDepthM, closeTo(1.0, 1e-9));
+
+    final d = h.controller.onPose(_pose(t: 1.5, yawDeg: 12, pointCount: 0));
+    expect(d, AutoCaptureDecision.fire);
+    expect(h.fires, 1);
+  });
+
+  test('the time limit still ends a run that never managed to seed a baseline',
+      () {
+    // 张数/时间上限排在 tracking 之前(governor 的既定优先级)。补播种入口
+    // 若抢在判定之前 return,这两道闸就永远轮不到 —— 跟丢的一轮会一直
+    // isRunning=true 挂着,五分钟上限形同虚设。
+    final h = _Harness();
+    h.controller.start(_pose(t: 0, tracking: 'limited_relocalizing'));
+    expect(h.controller.baselineDepthM, isNull);
+
+    final d = h.controller.onPose(
+      _pose(t: 300.0, pos: Vector3(0.5, 0, 0), tracking: 'limited_relocalizing'),
+    );
+    expect(d, AutoCaptureDecision.skipTimeLimit);
+    expect(h.controller.isRunning, isFalse);
+  });
+
+  test('the frame cap still ends a run that never managed to seed a baseline',
+      () {
+    final h = _Harness()..captured = 300;
+    h.controller.start(_pose(t: 0, tracking: 'limited_relocalizing'));
+
+    final d = h.controller.onPose(
+      _pose(t: 1.0, tracking: 'limited_relocalizing'),
+    );
+    expect(d, AutoCaptureDecision.skipCapped);
+    expect(h.controller.isRunning, isFalse);
+  });
+
+  test('a tracking-loss frame does not consume the tick clock', () {
+    // ARKit ships limited_* frames in bursts at 6 Hz. If each one spent the
+    // pacing budget, every hiccup would push the next capture out by a full
+    // interval — up to 3 s on ShutterPace.hard — and a stuttering tracker
+    // could starve the whole run while isRunning stays true.
+    final h = _Harness();
+    h.controller.start(_pose(t: 0));
+    expect(
+      h.controller.onPose(
+        _pose(
+          t: 0.5,
+          pos: Vector3(0.1, 0, 0),
+          tracking: 'limited_excessive_motion',
+        ),
+      ),
+      AutoCaptureDecision.skipTracking,
+    );
+    // Recovered, 0.2 m sideways = 11° of parallax, and the tick is due at
+    // 1.0 s measured from start() — not from the hiccup at 0.5 s.
+    expect(
+      h.controller.onPose(_pose(t: 1.0, pos: Vector3(0.2, 0, 0))),
+      AutoCaptureDecision.fire,
+    );
+    expect(h.fires, 1);
+  });
+
+  test('a one-element intrinsics list is rejected instead of read past its '
+      'end', () {
+    // Defensive: no producer in lib/ ships a length-1 list today, but the
+    // guard is what stops `fy: intr[1]` from throwing RangeError on the
+    // 6 Hz pose stream.
+    final h = _Harness();
+    h.controller.start(_pose(t: 0, intrinsics: const <double>[1000]));
+    // The overlap bound is unevaluable — "unknown", not "fire now".
+    expect(
+      h.controller.onPose(
+        _pose(
+          t: 0.2,
+          pos: Vector3(0.5, 0, 0),
+          intrinsics: const <double>[1000],
+        ),
+      ),
+      AutoCaptureDecision.skipPaced,
+    );
+    expect(h.fires, 0);
+    // The lower bound is unaffected.
+    expect(
+      h.controller.onPose(
+        _pose(
+          t: 1.0,
+          pos: Vector3(0.5, 0, 0),
+          intrinsics: const <double>[1000],
+        ),
+      ),
+      AutoCaptureDecision.fire,
+    );
     expect(h.fires, 1);
   });
 }
