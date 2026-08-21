@@ -21,12 +21,46 @@ const double kCaptureToggleButtonSize = 44;
 const double kCaptureIconPanelHeight =
     kCaptureIconPanelPadV * 2 + kCaptureToggleButtonSize;
 
+/// 模式切换胶囊(手动 / 自动)的宽度。
+///
+/// [2026-08-21] 从 50 的单图标胶囊改成"两图标 + 滑块"的分段控件,必须变宽。
+/// 68 不是随手取的:快门行两端各一个 [kCaptureShutterRowSideSlot] 槽、中间
+/// 快门 [kCaptureShutterDiameter],剩下的空间被两个等权 Expanded 平分,
+/// 左半再让出 4pt 右内边距 —— 14 Pro(393)剩 78.5,SE 2/3(375)剩 69.5。
+/// 取 68 是"两台主力机型上都不触发 FittedBox 缩放"的最大整数,高度因此
+/// 恒等于 [kCaptureToggleButtonSize],不会被缩成 40。
+const double kCaptureModeToggleWidth = 68;
+
 // 快门行:Row 的高度由最高子项决定,快门是三者里最高的那个。
 // (kCaptureShutterRowHeight 必须 == 三者最大值,有测试盯着。)
 const double kCaptureShutterDiameter = 76;
-const double kCaptureAlbumThumbSize = 60;
+
+/// 相册徽章整体等比缩放系数。
+///
+/// [2026-08-21 用户] "等比例缩小" —— 所以徽章里**每一个**尺寸都由它乘出来:
+/// 外框、圆角、描边、进度环线宽与起笔、两级字号、斜杠长度与粗细、以及数字
+/// 的锚点内边距。单独压外框会把版式撑破,而且下次改比例又要重挑一遍数字。
+const double kCaptureAlbumThumbScale = 0.8;
+const double kCaptureAlbumThumbBaseSize = 60;
+const double kCaptureAlbumThumbSize =
+    kCaptureAlbumThumbBaseSize * kCaptureAlbumThumbScale;
+
+/// 徽章圆角。进度环沿的就是这条圆角矩形边框,所以两处必须同源
+/// —— 环的起笔偏移也是这个半径。
+const double kCaptureAlbumThumbRadius = 14 * kCaptureAlbumThumbScale;
+
 const double kCaptureFinishButtonSize = 56;
 const double kCaptureShutterRowHeight = kCaptureShutterDiameter;
+
+/// 快门行**两端等宽**的槽位:左槽装相册徽章、右槽装完成键。
+///
+/// 两槽必须等宽,否则中间那两个等权 Expanded 撑出来的快门就不在整排正中。
+/// 取两者里更大的那个 —— 槽只需刚好装下自己的按钮,多出来的宽度是白白从
+/// 模式切换胶囊嘴里抢走的空间(旧值写死 72,把胶囊的可用宽压到 62.5)。
+const double kCaptureShutterRowSideSlot =
+    kCaptureAlbumThumbSize > kCaptureFinishButtonSize
+    ? kCaptureAlbumThumbSize
+    : kCaptureFinishButtonSize;
 
 /// 快门行下沿到屏幕物理底边的**最小总余量**。
 ///

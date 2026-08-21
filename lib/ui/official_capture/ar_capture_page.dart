@@ -4695,18 +4695,30 @@ class _ManualCaptureBar extends StatelessWidget {
           ),
           child: Row(
             children: [
+              // ⚠️ 槽是 SizedBox 给的**紧**宽度约束,徽章自己的 Container
+              // 逃不掉(BoxConstraints.enforce 会把 48 顶回槽宽)—— 少这层
+              // Align,徽章就会被拉成槽宽 × kCaptureAlbumThumbSize 的扁矩形。
+              // 右端的完成键一直有这层 Align,相册这边是漏的。
               SizedBox(
-                width: 72,
-                child: _AlbumThumbButton(
-                  latestPath: latest,
-                  count: projectPhotos.count,
-                  processed: processedCount,
-                  onTap: onOpenAlbum,
+                width: kCaptureShutterRowSideSlot,
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: _AlbumThumbButton(
+                    latestPath: latest,
+                    count: projectPhotos.count,
+                    processed: processedCount,
+                    onTap: onOpenAlbum,
+                  ),
                 ),
               ),
               // [spec §8.1] 模式 toggle 坐在相册与快门**之间**(RS 同款)。
               // FittedBox 兜底:iPhone SE Display Zoom(320pt)这类声明支持
               // 的窄机型上宁可整体缩一点,也不许 RenderFlex 溢出。
+              // ⚠️ 兜底只该在 320pt 那一档生效:胶囊加宽到
+              // kCaptureModeToggleWidth 后,14 Pro(393)剩 78.5、
+              // SE 2/3(375)剩 69.5,两台都装得下 68 —— 高度因此仍是实打实
+              // 的 44,没被 scaleDown 顺手压矮。这条余量是靠把两端槽位从写死
+              // 的 72 收到 kCaptureShutterRowSideSlot 让出来的。
               Expanded(
                 child: Align(
                   alignment: Alignment.centerRight,
@@ -4756,7 +4768,7 @@ class _ManualCaptureBar extends StatelessWidget {
               // 停在整排的正中,而不是被 toggle 顶偏。
               const Expanded(child: SizedBox.shrink()),
               SizedBox(
-                width: 72,
+                width: kCaptureShutterRowSideSlot,
                 child: Align(
                   alignment: Alignment.centerRight,
                   child: _FinishArrowButton(
@@ -4812,11 +4824,13 @@ class _AlbumThumbButton extends StatelessWidget {
           height: kCaptureAlbumThumbSize,
           decoration: BoxDecoration(
             color: Colors.black.withValues(alpha: 0.44),
-            borderRadius: BorderRadius.circular(14),
+            // [2026-08-21 等比缩小] 圆角/描边都乘 kCaptureAlbumThumbScale,
+            // 不是照抄原来的 14 / 1.5 —— 缩了外框不缩圆角,方框会变成药丸。
+            borderRadius: BorderRadius.circular(kCaptureAlbumThumbRadius),
             // [RS-RING] 原 0.5α 静态白边即进度环的"轨道";实心白弧压其上。
             border: Border.all(
               color: Colors.white.withValues(alpha: 0.5),
-              width: 1.5,
+              width: 1.5 * kCaptureAlbumThumbScale,
             ),
           ),
           clipBehavior: Clip.antiAlias,
@@ -4844,14 +4858,14 @@ class _AlbumRingPainter extends CustomPainter {
     if (progress <= 0) return;
     final rrect = RRect.fromRectAndRadius(
       Offset.zero & size,
-      const Radius.circular(14),
+      const Radius.circular(kCaptureAlbumThumbRadius),
     );
     final path = Path()..addRRect(rrect);
     final metric = path.computeMetrics().first;
     final total = metric.length;
     final paint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 3
+      ..strokeWidth = 3 * kCaptureAlbumThumbScale
       ..strokeCap = StrokeCap.round
       ..color = Colors.white;
     if (progress >= 1) {
@@ -4860,7 +4874,7 @@ class _AlbumRingPainter extends CustomPainter {
     }
     // addRRect 的路径起点在左上圆角后的顶边起点;把起笔挪到顶边正中,
     // 环从 12 点方向顺时针生长(与 RS 一致)。
-    final start = (size.width / 2 - 14).clamp(0.0, total);
+    final start = (size.width / 2 - kCaptureAlbumThumbRadius).clamp(0.0, total);
     final sweep = total * progress;
     final end = start + sweep;
     if (end <= total) {
@@ -4894,7 +4908,7 @@ class _AlbumCountFraction extends StatelessWidget {
         : const Color(0xFFFFC24D);
     final style = TextStyle(
       color: tint,
-      fontSize: 15,
+      fontSize: 15 * kCaptureAlbumThumbScale,
       height: 1.05,
       fontWeight: FontWeight.w700,
       shadows: _shadows,
@@ -4905,9 +4919,17 @@ class _AlbumCountFraction extends StatelessWidget {
     // [2026-08-10 二稿] 斜杠恒 45°,且到两个数字的距离相等 —— 用 TextPainter
     // 实测两段文字的包围盒,把斜杠中心放在"分子右下角 ↔ 分母左上角"连线的
     // 中点上;位数变化(字宽变化)时自动保持等距,不靠写死坐标。
-    final bigSize = count >= 100 ? 19.0 : 22.0;
+    //
+    // [2026-08-21 等比缩小] 两级字号、斜杠、锚点内边距全部乘同一个
+    // kCaptureAlbumThumbScale。分子 22→17.6(三位数 19→15.2)、分母 10→8:
+    // 分子仍是徽章里最抢眼的那一段,分母作为次要信息在 Retina 上仍可读 ——
+    // 这是"缩到还看得清"的下限,再往下(0.7 ⇒ 分母 7)就糊了。
+    final bigSize = (count >= 100 ? 19.0 : 22.0) * kCaptureAlbumThumbScale;
     final bigStyle = style.copyWith(fontSize: bigSize, height: 1.0);
-    final smallStyle = style.copyWith(fontSize: 10, height: 1.0);
+    final smallStyle = style.copyWith(
+      fontSize: 10 * kCaptureAlbumThumbScale,
+      height: 1.0,
+    );
     final bigTp = TextPainter(
       text: TextSpan(text: '$count', style: bigStyle),
       textDirection: TextDirection.ltr,
@@ -4916,28 +4938,44 @@ class _AlbumCountFraction extends StatelessWidget {
       text: TextSpan(text: '$kOfficialMaximumCaptureFrames', style: smallStyle),
       textDirection: TextDirection.ltr,
     )..layout();
-    const slashLen = 24.0;
+    const slashLen = 24.0 * kCaptureAlbumThumbScale;
+    // 分子/分母的锚点内边距也随比例走,否则小徽章里两个数字会往中间挤。
+    const anchorBigL = 7.0 * kCaptureAlbumThumbScale;
+    const anchorBigT = 5.0 * kCaptureAlbumThumbScale;
+    const anchorSmallR = 6.0 * kCaptureAlbumThumbScale;
+    const anchorSmallB = 4.0 * kCaptureAlbumThumbScale;
     return LayoutBuilder(
       builder: (context, c) {
         final w = c.maxWidth, h = c.maxHeight;
-        // 分子锚在 (7,5),分母锚在 right:6/bottom:4(与 Positioned 一致)。
-        final bigBR = Offset(7 + bigTp.width, 5 + bigTp.height);
-        final smallTL = Offset(w - 6 - smallTp.width, h - 4 - smallTp.height);
+        // 分子锚在 (anchorBigL, anchorBigT),分母锚在
+        // right:anchorSmallR / bottom:anchorSmallB(与 Positioned 一致)。
+        final bigBR = Offset(
+          anchorBigL + bigTp.width,
+          anchorBigT + bigTp.height,
+        );
+        final smallTL = Offset(
+          w - anchorSmallR - smallTp.width,
+          h - anchorSmallB - smallTp.height,
+        );
         final mid = Offset(
           (bigBR.dx + smallTL.dx) / 2,
           (bigBR.dy + smallTL.dy) / 2,
         );
         return Stack(
           children: [
-            Positioned(left: 7, top: 5, child: Text('$count', style: bigStyle)),
+            Positioned(
+              left: anchorBigL,
+              top: anchorBigT,
+              child: Text('$count', style: bigStyle),
+            ),
             // 斜杠:竖线顺时针转 45° = "/",中心 = 两数字近角连线中点。
             Positioned(
-              left: mid.dx - 0.75,
+              left: mid.dx - 0.75 * kCaptureAlbumThumbScale,
               top: mid.dy - slashLen / 2,
               child: Transform.rotate(
                 angle: math.pi / 4,
                 child: Container(
-                  width: 1.5,
+                  width: 1.5 * kCaptureAlbumThumbScale,
                   height: slashLen,
                   decoration: BoxDecoration(
                     color: tint,
@@ -4949,8 +4987,8 @@ class _AlbumCountFraction extends StatelessWidget {
               ),
             ),
             Positioned(
-              right: 6,
-              bottom: 4,
+              right: anchorSmallR,
+              bottom: anchorSmallB,
               child: Text('$kOfficialMaximumCaptureFrames', style: smallStyle),
             ),
           ],
@@ -5285,8 +5323,14 @@ class _WhiteRingPainter extends CustomPainter {
 // (official_capture_frame_budget / manual_capture_bar_io /
 // official_highres_reconstruction),免得新代码误闯进别人的守门里。
 
-/// 手动 / 自动 模式切换键。RS 同款:快门**左侧**的一颗胶囊,手动灰、自动蓝,
-/// 图标都是摄像机。
+/// 手动 / 自动 模式切换键。RS 同款:快门**左侧**的一颗胶囊。
+///
+/// [2026-08-21 用户签决] 旧版是一颗 50×44 的单图标胶囊,点一下只换底色
+/// (手动灰 / 自动蓝)—— 用户原话「现在只是单纯的点击后变色」:静止时它
+/// 根本不说明"有两个模式",更不说明"另一个是什么"。现在是真正的分段开关:
+/// 相机 / 摄像机两个图标并排常驻,一颗高亮滑块**滑**到当前那一侧。
+///
+/// 颜色语义没动:滑块在自动侧时是 RS 的蓝(0xFF0A84FF),手动侧是浅灰。
 ///
 /// ⚠️ 图标是摄像机,但模式名刻意避开"录像" —— 见 [OfficialCaptureMode]。
 class _CaptureModeToggle extends StatelessWidget {
@@ -5296,6 +5340,19 @@ class _CaptureModeToggle extends StatelessWidget {
 
   /// null = 置灰不可点(只在收尾流程里)。
   final VoidCallback? onTap;
+
+  /// 滑块的滑行动画。**沿用本页既有的那一档**(180ms / easeOut,红录制键
+  /// 「圆 ↔ 圆角方」的形变用的就是它)—— 同一排控件的直接操作反馈是同一种
+  /// 手感,不为这一颗另起一组数字。
+  static const Duration _slideDuration = Duration(milliseconds: 180);
+  static const Curve _slideCurve = Curves.easeOut;
+
+  /// 滑块相对胶囊的内缩。半格宽 34 - 2×3 = 28,滑块中心因此正落在图标中心
+  /// (左 17 / 右 51),不会差半格。
+  static const double _knobInset = 3;
+  static const double _knobHeight = kCaptureToggleButtonSize - _knobInset * 2;
+  static const double _knobWidth =
+      kCaptureModeToggleWidth / 2 - _knobInset * 2;
 
   @override
   Widget build(BuildContext context) {
@@ -5307,22 +5364,76 @@ class _CaptureModeToggle extends StatelessWidget {
         onTap: onTap,
         behavior: HitTestBehavior.opaque,
         child: Container(
-          // 高度取既有的开关按钮常量:快门(76)仍是行内最高子项,
-          // kCaptureShutterRowHeight 的不变式一寸没动。
-          width: 50,
+          // 高度仍取既有的开关按钮常量:快门(76)仍是行内最高子项,
+          // kCaptureShutterRowHeight 的不变式一寸没动。只有宽度变了。
+          width: kCaptureModeToggleWidth,
           height: kCaptureToggleButtonSize,
-          alignment: Alignment.center,
           decoration: BoxDecoration(
-            color: auto
-                ? const Color(0xFF0A84FF) // RS 的蓝 = iOS system blue
-                : const Color(0x38FFFFFF),
+            // 槽恒为半透明白;"当前是哪个模式"由滑块表达,不再靠整颗变色。
+            color: const Color(0x38FFFFFF),
             borderRadius: BorderRadius.circular(kCaptureToggleButtonSize / 2),
           ),
-          child: const Icon(
-            Icons.videocam_rounded,
-            size: 24,
-            color: Colors.white,
+          child: Stack(
+            children: [
+              // 高亮滑块:滑过去,不是瞬移。
+              AnimatedAlign(
+                duration: _slideDuration,
+                curve: _slideCurve,
+                alignment: auto ? Alignment.centerRight : Alignment.centerLeft,
+                child: Padding(
+                  padding: const EdgeInsets.all(_knobInset),
+                  child: AnimatedContainer(
+                    duration: _slideDuration,
+                    curve: _slideCurve,
+                    width: _knobWidth,
+                    height: _knobHeight,
+                    decoration: BoxDecoration(
+                      color: auto
+                          ? const Color(0xFF0A84FF) // RS 的蓝 = iOS system blue
+                          : const Color(0x59FFFFFF),
+                      borderRadius: BorderRadius.circular(_knobHeight / 2),
+                    ),
+                  ),
+                ),
+              ),
+              // 两个图标常驻,压在滑块之上 —— 静止时也看得见"另一个模式"。
+              Row(
+                children: <Widget>[
+                  _CaptureModeToggleIcon(
+                    icon: Icons.photo_camera_rounded,
+                    selected: !auto,
+                  ),
+                  _CaptureModeToggleIcon(
+                    icon: Icons.videocam_rounded,
+                    selected: auto,
+                  ),
+                ],
+              ),
+            ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 分段开关里的一枚图标。占半格宽,选中侧全白、未选中侧半透明 —— 淡入淡出
+/// 与滑块同一档节奏,免得滑块已经到位了颜色还在原地跳。
+class _CaptureModeToggleIcon extends StatelessWidget {
+  const _CaptureModeToggleIcon({required this.icon, required this.selected});
+
+  final IconData icon;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Center(
+        child: AnimatedOpacity(
+          duration: _CaptureModeToggle._slideDuration,
+          curve: _CaptureModeToggle._slideCurve,
+          opacity: selected ? 1.0 : 0.5,
+          child: Icon(icon, size: 20, color: Colors.white),
         ),
       ),
     );
