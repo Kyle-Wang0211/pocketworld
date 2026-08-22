@@ -443,8 +443,10 @@ enum ScanProcessingBadge {
 /// Locale-aware display-name resolver.
 ///
 /// Storage layer hardcodes the default name in Chinese for legacy
-/// reasons ("未命名(N)" from upload_coordinator, "导入的模型" from
-/// import_glb_coordinator). Migrating every old stored record is
+/// reasons ("未命名(N)" from upload_coordinator, "导入的模型" from the old
+/// import_glb_coordinator — deleted 2026-08-22, but records it named are
+/// still on disk, so this resolver must keep handling them).
+/// Migrating every old stored record is
 /// risky; instead we detect those exact default patterns at display
 /// time and substitute the locale-appropriate string. A user who
 /// explicitly renames the record (e.g. "玩具" / "Yoda" / anything that

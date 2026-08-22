@@ -276,8 +276,11 @@ class _MyWorkDetailPageState extends State<MyWorkDetailPage> {
         ),
       );
     }
-    // Legacy path — a GLB brought in through ImportGlbCoordinator, which
-    // is the only thing that sets artifactPath.
+    // Legacy path — a GLB brought in through the old import flow, which was
+    // the only thing that ever set artifactPath. That flow (its entry in
+    // app_shell and lib/me/import_glb_coordinator.dart) was removed on
+    // 2026-08-22; records created before then keep the field, so this branch
+    // stays. It reads persisted state only — nothing here needs the deleted code.
     final url = r.artifactPath;
     if (url != null) {
       return AetherCppCardDemo(

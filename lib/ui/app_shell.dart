@@ -105,9 +105,12 @@ class _AetherAppShellState extends State<AetherAppShell> {
   /// 那条腿(GLB 导入,`_importGlb` → [ImportGlbCoordinator])连同选单一起
   /// 撤掉了 —— 创作只有拍摄一条路,少一次点击。
   ///
-  /// ⚠️ 撤的是**入口**,不是读路径:历史上导入过的 GLB 作品照旧要能打开,
-  /// `lib/ui/me/my_work_detail_page.dart` 的 legacy 分支和
-  /// `lib/me/import_glb_coordinator.dart` 都原样留着。
+  /// ⚠️ 撤的是**入口**,不是读路径:历史上导入过的 GLB 作品照旧要能打开 ——
+  /// `lib/ui/me/my_work_detail_page.dart` 的 legacy 分支原样留着,它读的是
+  /// 记录里已持久化的 `artifactPath`,不依赖任何运行时协调器。
+  ///
+  /// [2026-08-22] `lib/me/import_glb_coordinator.dart` 已删除:入口撤掉后它
+  /// 的调用点归零,而它只是当初**写入** artifactPath 的人,读路径不经过它。
   Future<void> _openCapture() async {
     // CapturePage returns `true` when the user tapped Stop and the
     // upload kicked off — that's our cue to flip the bottom nav to
