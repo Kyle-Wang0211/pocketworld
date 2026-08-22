@@ -64,6 +64,19 @@ class AetherProcessEnv {
 /// 的旋钮有意义的前提是本函数必须在首次进 native 之前跑完 —— 由 main()
 /// await 保证。
 class AetherEnvFile {
+  /// [RS-CORRECT-COLORS 2026-08-14] 已应用的键值留一份给 **Dart 侧**读。
+  /// 必要性:`AetherProcessEnv.set` 走的是 native `setenv`,而 Dart 的
+  /// `Platform.environment` 是**进程启动时的快照**,读不到 setenv 之后的值
+  /// (08-05 实测踩过)。所以 Dart 侧的诊断旋钮只能从这里取。
+  static final Map<String, String> applied = <String, String>{};
+
+  /// 取整数旗标;缺省/非法 → [fallback]。
+  static int intOf(String key, int fallback) {
+    final v = applied[key];
+    if (v == null || v.isEmpty) return fallback;
+    return int.tryParse(v) ?? fallback;
+  }
+
   static Future<List<String>> applyFrom(String documentsPath) async {
     final applied = <String>[];
     try {
@@ -77,9 +90,11 @@ class AetherEnvFile {
         if (v is! String) continue;
         if (v.isEmpty) {
           AetherProcessEnv.unset(e.key);
+          AetherEnvFile.applied.remove(e.key); // Dart 侧同步:空串 = unset
           applied.add('${e.key}=<unset>');
         } else {
           AetherProcessEnv.set(e.key, v);
+          AetherEnvFile.applied[e.key] = v; // Dart 侧留档(见 applied 注释)
           applied.add('${e.key}=$v');
         }
       }

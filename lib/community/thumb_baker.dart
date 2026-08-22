@@ -25,6 +25,7 @@ import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../ui/community/viewer_impl.dart';
+import '../util/device_log.dart';
 import 'community_service.dart';
 import 'feed_models.dart';
 
@@ -96,16 +97,14 @@ class ThumbBaker {
       return null;
     }
     if (myId != work.userId) {
-      debugPrint(
-          '[ThumbBaker] SKIP work=${work.id} — caller=$myId is not owner '
-          '(owner=${work.userId}); only owner can update '
-          'thumbnail_storage_path under current RLS');
+      DeviceLog.log('ThumbBaker',
+          '跳过 work=${work.id} — 当前用户 $myId 不是作者 ${work.userId},'
+          'RLS 只允许作者写 thumbnail_storage_path');
       return null;
     }
 
-    debugPrint(
-        '[ThumbBaker] BAKING work=${work.id} — gates passed, '
-        'capturing in 100ms');
+    DeviceLog.log('ThumbBaker',
+        '开始烘焙 work=${work.id}(门槛全过,100ms 后截图)');
     _inFlight.add(work.id);
     try {
       // Tiny delay so the viewer's first push frame fully settles
@@ -116,8 +115,8 @@ class ThumbBaker {
 
       final bytes = await viewer.captureThumb(quality: 0.85);
       if (bytes == null || bytes.isEmpty) {
-        debugPrint(
-            '[ThumbBaker] FAIL work=${work.id} — captureThumb returned empty '
+        DeviceLog.log('ThumbBaker',
+            '🔴 失败 work=${work.id} — captureThumb 返回空 '
             '(textureId=${viewer.textureId ?? "<null>"})');
         return null;
       }
@@ -125,22 +124,23 @@ class ThumbBaker {
           '[ThumbBaker] captured ${(bytes.length / 1024).toStringAsFixed(1)} KB '
           'for work=${work.id}, uploading...');
 
+      // [2026-08-17] 参数名从 jpegBytes 改成了 bytes(CommunityService 侧
+      // 加了 contentType/extension 后统一的),ThumbBaker 被删期间没跟上。
       final storagePath = await _service.uploadAndSetThumbnail(
         workId: work.id,
-        jpegBytes: bytes,
+        bytes: bytes,
       );
       if (storagePath != null) {
         _completed.add(work.id);
-        debugPrint(
-            '[ThumbBaker] SUCCESS work=${work.id} → $storagePath');
+        DeviceLog.log('ThumbBaker', '✅ 成功 work=${work.id} → $storagePath');
       } else {
-        debugPrint(
-            '[ThumbBaker] FAIL work=${work.id} — uploadAndSetThumbnail '
-            'returned null (likely RLS reject; see CommunityService log)');
+        DeviceLog.log('ThumbBaker',
+            '🔴 失败 work=${work.id} — 上传返回 null(多半是 RLS 拒绝)');
       }
       return storagePath;
     } catch (e, s) {
-      debugPrint('[ThumbBaker] FAIL work=${work.id}: $e\n$s');
+      DeviceLog.log('ThumbBaker', '🔴 异常 work=${work.id}: $e');
+      debugPrint('[ThumbBaker] $s');
       return null;
     } finally {
       _inFlight.remove(work.id);

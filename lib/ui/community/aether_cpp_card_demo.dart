@@ -97,11 +97,26 @@ class AetherCppCardDemo extends StatefulWidget {
   /// AFTER [onFirstFrameReady]. Wrapped in try/catch the same way.
   final void Function(AetherCppViewerImpl viewer)? onViewerReady;
 
+  /// interactive 模式下也自转,直到用户第一次上手。
+  ///
+  /// 五月的详情页期望是"静止,等用户来转"(见 _load 里那段注释),所以
+  /// `isFocused && !interactive` 是硬互斥。但 2026-08-17 用户要的是"打开就
+  /// 自己转",同时详情页又该能手势 —— 这两件事本来就不冲突,冲突的是把
+  /// 它们绑在同一个开关上。默认 false = 老行为不变。
+  final bool autoRotateUntilTouched;
+
+  /// 显式指定质量档。null = 沿用老规矩(interactive ? full : feedThumbnail)。
+  /// 详情页要"自转 + 全质量"时必须显式传 [ViewerQuality.full] —— 那条路
+  /// interactive 是 false,不传就会掉进 feed 档。
+  final ViewerQuality? quality;
+
   const AetherCppCardDemo({
     super.key,
     required this.modelUrl,
     this.isFocused = false,
     this.interactive = false,
+    this.quality,
+    this.autoRotateUntilTouched = false,
     this.autoRotateSpeed = 0.6,
     this.background = Colors.white,
     this.fallbackCameraDistance = 5.5,
@@ -302,11 +317,18 @@ class _AetherCppCardDemoState extends State<AetherCppCardDemo>
       // Phase 6.4f hotfix: feed cards (interactive=false) cap splat
       // memory to ~3 MB / scene by dropping higher-order SH and
       // subsampling. Detail page (interactive=true) keeps full quality.
+      //
+      // [2026-08-17] `quality` 提成可选参数,因为"全质量"和"可手势"本来是
+      // 两件事,却被 interactive 一个开关绑死了:详情页要**自转 + 全质量**时
+      // (isFocused=true / interactive=false)会掉进 feedThumbnail 档。默认值
+      // null 保持原行为,所有既有调用点零影响。
+      // 契约:kViewerSocialPolicyContract.detailQuality = 'full'。
       final bounds = await impl.load(
         widget.modelUrl,
-        quality: widget.interactive
-            ? ViewerQuality.full
-            : ViewerQuality.feedThumbnail,
+        quality: widget.quality ??
+            (widget.interactive
+                ? ViewerQuality.full
+                : ViewerQuality.feedThumbnail),
         overrides: widget.splatOverrides,
       );
       if (_disposedFlag || !mounted) return;
@@ -399,7 +421,8 @@ class _AetherCppCardDemoState extends State<AetherCppCardDemo>
       // the user moves a finger (in _applyOrbit). Skipping the ticker
       // also keeps the model still until first touch, matching the
       // detail-page expectation.
-      if (widget.isFocused && !widget.interactive) {
+      if (widget.isFocused &&
+          (!widget.interactive || widget.autoRotateUntilTouched)) {
         _ticker = createTicker(_onTick)..start();
       }
       // Even in interactive mode the first frame should reflect the
@@ -478,7 +501,17 @@ class _AetherCppCardDemoState extends State<AetherCppCardDemo>
   // _applyOrbit triplet, ported on 2026-05-02 when the detail page
   // migrated from LiveModelView (thermion) to AetherCppCardDemo.
 
+  /// 用户第一次上手 → 自转永久让位,手势接管(interactive 照常工作)。
+  void _yieldAutoRotate() {
+    if (!widget.autoRotateUntilTouched) return;
+    if (_ticker == null) return;
+    _ticker!.stop();
+    _ticker!.dispose();
+    _ticker = null;
+  }
+
   void _onScaleStart(ScaleStartDetails d) {
+    _yieldAutoRotate();
     _pinchStartRadius = _orbitRadius;
   }
 
