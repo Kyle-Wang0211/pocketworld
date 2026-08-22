@@ -173,6 +173,9 @@ class _CaptureExitDialogState extends State<CaptureExitDialog> {
             child: Padding(
               padding: const EdgeInsets.all(_knobInset),
               child: Container(
+                // 有 key 才能在测试里量到滑纽的**真实位置**:轨道颜色和滑纽
+                // 位置是这颗开关仅有的两个信号,两个都必须钉住。
+                key: const ValueKey<String>('capture-exit-save-knob'),
                 width: _knobD,
                 height: _knobD,
                 decoration: const BoxDecoration(
