@@ -4,10 +4,13 @@
 // (默认)= 黑底白字"退出并保存照片",右 = 红底白字"退出并不保存照片";点文字
 // 区执行当前动作。第二行"继续拍摄"。
 //
-// [2026-08-22 用户签决,本次改版] 现版:标题居中;第一行 =
-// "是否保存照片,方便下次补拍" + 右侧小开关(开/绿 = 保存,默认;关/红 =
-// 不保存);第二行 = "确定"(白底黑边黑字)/ "取消"(黑底白字)。点弹窗外仍
-// 自动返回拍摄。
+// [2026-08-22 用户签决,同日第二次改动] 开关**去掉绿/红,改单色 + 开/关字样**:
+// 开(默认)= 黑底白字「开」= 保存;关 = 浅灰底黑字「关」= 不保存。破坏性信号
+// 从颜色移到了「关」这个字上,所以本文件里**字样和配色一样是必钉项**。
+//
+// [2026-08-22 用户签决] 标题居中;第一行 = "是否保存照片,方便下次补拍" + 右侧
+// 小开关;第二行 = "确定"(白底黑边黑字)/ "取消"(黑底白字)。点弹窗外仍自动
+// 返回拍摄。
 //
 // ⚠️ 本文件里最重要的一条是"破坏性出路需要两个刻意动作":默认态下**任何单次
 // 手势**都不能拿到 discardExit —— 见 `单次手势拿不到 discardExit` 一例。
@@ -25,6 +28,29 @@ Finder get cancelBtn =>
 
 Finder get saveKnob =>
     find.byKey(const ValueKey<String>('capture-exit-save-knob'));
+Finder get saveWord =>
+    find.byKey(const ValueKey<String>('capture-exit-save-word'));
+
+/// 开关上当前显示的字(开 / 关)。
+String wordText(WidgetTester tester) => tester.widget<Text>(saveWord).data!;
+
+/// 滑纽**画出来的**颜色(同样读 render object,不读动画目标值)。
+Color? knobColor(WidgetTester tester) {
+  final box = tester.renderObject<RenderDecoratedBox>(
+    find.descendant(of: saveKnob, matching: find.byType(DecoratedBox)).first,
+  );
+  return (box.decoration as BoxDecoration?)?.color;
+}
+
+/// 开关上那个字**画出来的**颜色。
+Color? wordColor(WidgetTester tester) =>
+    (tester.renderObject(
+              find.descendant(of: saveWord, matching: find.byType(RichText)),
+            )
+            as RenderParagraph)
+        .text
+        .style
+        ?.color;
 
 /// 弹窗**卡片**的矩形。⚠️ 不能用 `find.byType(CaptureExitDialog)` —— 它的
 /// RenderBox 是整屏(0..393),拿它当边界等于没做断言。真卡片是 Dialog 里那层
@@ -73,7 +99,7 @@ Future<void> openDialog(WidgetTester tester) async {
 }
 
 void main() {
-  testWidgets('默认态:标题居中,开关为绿(保存)', (tester) async {
+  testWidgets('默认态:标题居中,开关为黑底「开」(保存)', (tester) async {
     await pumpHost(tester, (_) {});
     await openDialog(tester);
 
@@ -94,9 +120,12 @@ void main() {
 
     expect(
       toggleTrackColor(tester),
-      kCaptureExitSaveGreen,
-      reason: '默认必须是"保存"(绿)—— 与文案"方便下次补拍"一致',
+      Colors.black,
+      reason: '默认必须是"保存" = 开 = 黑底(单色开关里深色 = 开)',
     );
+    expect(wordText(tester), '开', reason: '默认必须显示「开」');
+    expect(find.text('关'), findsNothing, reason: '两个字不能同时出现');
+    expect(wordColor(tester), Colors.white, reason: '黑底上必须是白字');
   });
 
   testWidgets('默认态点"确定" ⇒ saveExit', (tester) async {
@@ -113,7 +142,9 @@ void main() {
     expect(result, CaptureExitChoice.saveExit);
   });
 
-  testWidgets('拨开关 ⇒ 变红且弹窗不关;再点"确定" ⇒ discardExit', (tester) async {
+  testWidgets('拨开关 ⇒ 变浅灰「关」且弹窗不关;再点"确定" ⇒ discardExit', (
+    tester,
+  ) async {
     CaptureExitChoice? result;
     await pumpHost(tester, (r) => result = r);
     await openDialog(tester);
@@ -122,9 +153,13 @@ void main() {
     await tester.pumpAndSettle();
     expect(
       toggleTrackColor(tester),
-      kCaptureExitDangerRed,
-      reason: '关 = 不保存,必须是破坏性红',
+      kCaptureExitToggleOffTrack,
+      reason: '关 = 不保存,必须是浅灰底(浅色 = 关)',
     );
+    // 破坏性信号已经从颜色搬到了字上,所以这个字是**必钉**的。
+    expect(wordText(tester), '关', reason: '不保存态必须显示「关」');
+    expect(find.text('开'), findsNothing);
+    expect(wordColor(tester), Colors.black, reason: '浅灰底上必须是黑字');
     // 拨开关本身不执行 —— 弹窗还在。
     expect(find.byType(CaptureExitDialog), findsOneWidget);
     expect(result, isNull);
@@ -134,17 +169,19 @@ void main() {
     expect(result, CaptureExitChoice.discardExit);
   });
 
-  testWidgets('开关可以拨回来:红 → 绿 ⇒ 又是 saveExit', (tester) async {
+  testWidgets('开关可以拨回来:关 → 开 ⇒ 又是 saveExit', (tester) async {
     CaptureExitChoice? result;
     await pumpHost(tester, (r) => result = r);
     await openDialog(tester);
 
     await tester.tap(saveToggle);
     await tester.pumpAndSettle();
-    expect(toggleTrackColor(tester), kCaptureExitDangerRed);
+    expect(toggleTrackColor(tester), kCaptureExitToggleOffTrack);
+    expect(wordText(tester), '关');
     await tester.tap(saveToggle);
     await tester.pumpAndSettle();
-    expect(toggleTrackColor(tester), kCaptureExitSaveGreen);
+    expect(toggleTrackColor(tester), Colors.black);
+    expect(wordText(tester), '开');
 
     await tester.tap(confirmBtn);
     await tester.pumpAndSettle();
@@ -167,7 +204,7 @@ void main() {
     expect(result, isNull, reason: '点弹窗外应自动返回拍摄(null)');
   });
 
-  testWidgets('拨到红之后点"取消" ⇒ 仍是 null,不会误丢照片', (tester) async {
+  testWidgets('拨到「关」之后点"取消" ⇒ 仍是 null,不会误丢照片', (tester) async {
     CaptureExitChoice? result = CaptureExitChoice.saveExit;
     await pumpHost(tester, (r) => result = r);
     await openDialog(tester);
@@ -287,11 +324,15 @@ void main() {
     final rightEnd = track.right - 15.5;
     final leftEnd = track.left + 15.5;
     expect(tester.getRect(saveKnob).center.dx, closeTo(rightEnd, 0.01));
+    // 字也是滑过去的:它和滑纽是同一对孪生项(两个 AnimatedAlign),
+    // 只钉滑纽那个,把字那个的 duration 改成 zero 照样全绿 —— 实测过。
+    final wordStart = tester.getRect(saveWord).center.dx;
 
     await tester.tap(saveToggle);
     await tester.pump(); // 起帧
     await tester.pump(const Duration(milliseconds: 30)); // 180ms 里的早期一帧
     final midX = tester.getRect(saveKnob).center.dx;
+    final wordMid = tester.getRect(saveWord).center.dx;
     expect(
       midX,
       lessThan(rightEnd - 0.5),
@@ -303,21 +344,139 @@ void main() {
       reason: '30ms 就已经抵达左停靠位 = 根本没有动画(要求滑过去,不是 snap)',
     );
     // 位置和颜色是同一对双生子:滑纽在滑,轨道颜色也必须在渐变,不能一边滑
-    // 一边瞬间变色。中途色必须既不是纯绿也不是纯红。
+    // 一边瞬间变色。中途色必须既不是纯黑也不是终点浅灰。
     final midColor = toggleTrackColor(tester);
     expect(
       midColor,
-      isNot(kCaptureExitSaveGreen),
-      reason: '轨道颜色在动画中途还停在绿 = 颜色没跟着动',
+      isNot(Colors.black),
+      reason: '轨道颜色在动画中途还停在黑 = 颜色没跟着动',
     );
     expect(
       midColor,
-      isNot(kCaptureExitDangerRed),
-      reason: '轨道颜色在动画中途已经是纯红 = 颜色是瞬间跳的,不是渐变',
+      isNot(kCaptureExitToggleOffTrack),
+      reason: '轨道颜色在动画中途已经到终点灰 = 颜色是瞬间跳的,不是渐变',
+    );
+    // 滑纽颜色是轨道颜色的孪生项,同样不许瞬间跳。
+    final midKnob = knobColor(tester);
+    expect(
+      midKnob,
+      isNot(Colors.white),
+      reason: '滑纽颜色在动画中途还停在白 = 没跟着动',
+    );
+    expect(
+      midKnob,
+      isNot(Colors.black),
+      reason: '滑纽颜色在动画中途已经到终点黑 = 瞬间跳,不是渐变',
+    );
+
+    // 字这一帧必须已经离开起点、又还没到终点。
+    final wordEndExpected = track.left + track.right - wordStart; // 镜像位置
+    expect(
+      wordMid,
+      greaterThan(wordStart + 0.5),
+      reason: '30ms 时「开/关」还钉在原位 = 字没有跟着滑',
+    );
+    expect(
+      wordMid,
+      lessThan(wordEndExpected - 0.5),
+      reason: '30ms 时字已经到终点 = 字是瞬间跳过去的,和滑纽不同步',
     );
 
     await tester.pumpAndSettle();
     expect(tester.getRect(saveKnob).center.dx, closeTo(leftEnd, 0.01));
+    expect(
+      tester.getRect(saveWord).center.dx,
+      closeTo(wordEndExpected, 0.01),
+      reason: '字最终应落在镜像位置(滑纽换边,字也换边)',
+    );
+  });
+
+  // 字是破坏性动作现在**唯一**的信号,所以它自己的三件事都要钉:显示哪个字、
+  // 压不压到滑纽、在各自底色上看不看得清。
+  testWidgets('开/关字样:不压滑纽,且与底色高对比', (tester) async {
+    await pumpHost(tester, (_) {});
+    await openDialog(tester);
+
+    // 开:字在左半、滑纽在右半,互不重叠。
+    var word = tester.getRect(saveWord);
+    var knob = tester.getRect(saveKnob);
+    final track = tester.getRect(saveToggle);
+    expect(wordText(tester), '开');
+    expect(
+      word.right,
+      lessThanOrEqualTo(knob.left + 0.01),
+      reason: '「开」必须在滑纽左边,不能压上去',
+    );
+    expect(word.left, greaterThanOrEqualTo(track.left - 0.01));
+    expect(word.width, greaterThan(0));
+    // 白字压黑轨,白纽压黑轨。
+    expect(wordColor(tester), Colors.white);
+    expect(toggleTrackColor(tester), Colors.black);
+    expect(
+      knobColor(tester),
+      Colors.white,
+      reason: '黑轨上滑纽必须是白的,否则看不见',
+    );
+
+    // 关:整个镜像过来。
+    await tester.tap(saveToggle);
+    await tester.pumpAndSettle();
+    word = tester.getRect(saveWord);
+    knob = tester.getRect(saveKnob);
+    expect(wordText(tester), '关');
+    expect(
+      word.left,
+      greaterThanOrEqualTo(knob.right - 0.01),
+      reason: '「关」必须在滑纽右边,不能压上去',
+    );
+    expect(word.right, lessThanOrEqualTo(track.right + 0.01));
+    // 黑字压浅灰轨,黑纽压浅灰轨。
+    expect(wordColor(tester), Colors.black);
+    expect(toggleTrackColor(tester), kCaptureExitToggleOffTrack);
+    expect(
+      knobColor(tester),
+      Colors.black,
+      reason: '浅灰轨上滑纽必须是黑的 —— 白纽压 #E4E4E4 只有 1.2:1,等于没有',
+    );
+
+    // 字色、滑纽色都必须和底色拉开 —— 任何一个跟底色同色就是看不见。
+    expect(wordColor(tester), isNot(toggleTrackColor(tester)));
+    expect(knobColor(tester), isNot(toggleTrackColor(tester)));
+  });
+
+  // 系统字号放大不能把这颗定宽胶囊里的字挤爆(它不是正文,是控件刻字)。
+  testWidgets('字号 1.6× 下开关仍是 60 宽,字仍不压滑纽', (tester) async {
+    tester.view.physicalSize = const Size(393 * 3, 852 * 3);
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(
+      MaterialApp(
+        builder: (ctx, child) => MediaQuery.withClampedTextScaling(
+          minScaleFactor: 1.6,
+          maxScaleFactor: 1.6,
+          child: child!,
+        ),
+        home: Builder(
+          builder: (ctx) => Scaffold(
+            body: Center(
+              child: ElevatedButton(
+                key: const ValueKey<String>('open'),
+                onPressed: () => showCaptureExitDialog(ctx),
+                child: const Text('open'),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await openDialog(tester);
+    expect(tester.getRect(saveToggle).width, 60.0);
+    expect(
+      tester.getRect(saveWord).right,
+      lessThanOrEqualTo(tester.getRect(saveKnob).left + 0.01),
+      reason: '放大字号把「开」撑到压住滑纽了',
+    );
+    expect(tester.takeException(), isNull);
   });
 
   // ⚠️ 同一条双生子铁律,一层之上:"确定 / 取消"也是一对。用户**特意**把视觉
@@ -401,18 +560,43 @@ void main() {
       lessThanOrEqualTo(card.right - 20 + 0.01),
       reason: '开关必须留在卡片 20pt 内边距里(内容右边界 333)',
     );
-    expect(toggle.width, 51.0, reason: '开关不许被压扁');
+    expect(toggle.width, 60.0, reason: '开关不许被压扁(塞了字之后 60)');
     expect(
       label.right,
       lessThanOrEqualTo(toggle.left + 0.01),
       reason: '标签不能压到开关',
     );
-    // 默认字号下这一行必须是**单行**(13 个汉字 @15pt ≈ 195pt,可用 210pt —— 
-    // 只剩 15pt 余量,确实紧,但放得下)。行高 1.3 ⇒ 单行约 20pt。
+    // 默认字号下这一行必须是**单行**。行高 1.3 ⇒ 单行约 20pt。
     expect(
       label.height,
       lessThan(30.0),
       reason: '默认字号下标签应单行显示(高度 ~20);超过 30 说明已经折行了',
+    );
+    // ⚠️ 余量已经很薄:开关为了塞下「开/关」从 51 加宽到 60,标签可用宽度
+    // 273 - 12 - 60 = 201,而它自己要 198.3 —— **只剩 2.8pt**(改版前是
+    // 11.7pt)。这里把余量本身钉住:再有谁把开关加宽 3pt 或给标签多加一个字,
+    // 这条会先红,而不是等到真机上才发现折了行。
+    final para =
+        tester.renderObject(
+              find.descendant(
+                of: find.text('是否保存照片，方便下次补拍'),
+                matching: find.byType(RichText),
+              ),
+            )
+            as RenderParagraph;
+    final need = para.getMaxIntrinsicWidth(double.infinity);
+    expect(
+      need,
+      lessThanOrEqualTo(label.width),
+      reason:
+          '标签需要 ${need.toStringAsFixed(1)}pt,只有 ${label.width}pt —— 会折行',
+    );
+    expect(
+      label.width - need,
+      lessThan(8.0),
+      reason:
+          '余量变宽了(${(label.width - need).toStringAsFixed(1)}pt)。不是坏事,'
+          '但说明布局被改过,请顺手更新这条注释里的数字',
     );
     expect(tester.takeException(), isNull);
   });
@@ -463,7 +647,7 @@ void main() {
       lessThanOrEqualTo(card.right - 20 + 0.01),
       reason: '放大字号也不能把开关挤出卡片',
     );
-    expect(toggle.width, 51.0, reason: '开关不许被压扁');
+    expect(toggle.width, 60.0, reason: '开关不许被压扁(塞了字之后 60)');
     expect(label.right, lessThanOrEqualTo(toggle.left + 0.01));
     expect(tester.takeException(), isNull);
   });

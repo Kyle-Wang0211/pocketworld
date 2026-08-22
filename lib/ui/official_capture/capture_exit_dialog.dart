@@ -23,6 +23,20 @@
 //     主导项(用户明确要求,不是笔误)。
 //   • 点弹窗外任意处 = 仍然自动返回拍摄(barrierDismissible 不变)。
 //
+// [2026-08-22 用户签决,同日第二次改动] 开关**去掉绿/红,改成单色 + 开/关字样**:
+//   • 开(默认)= 黑底白字「开」= 保存照片;
+//   • 关        = 浅灰底黑字「关」= 不保存照片。
+//   行标签问的是"是否保存照片",开/关正好是这句问话的答案,比颜色直白。
+//
+// ⚠️ 这条改动动了 08-09 定下的一条原则。原则原文是「颜色黑白(与设计册一致,
+// 红色仅用于破坏性状态)」—— 那时破坏性状态是**靠红色**表达的。现在整颗开关
+// 单色化,**破坏性信号从颜色移到了「关」这个字上**:不保存这条路不再有任何
+// 红色提示,全靠字。这被认为是改进(字是明确的,颜色不是;而且这颗控件因此
+// 回到了设计册的灰阶体系),但它确实是对签决原则的修改,不是漂移。
+//
+// [kCaptureExitDangerRed] 因此在本弹窗里**不再被使用**。常量予以保留(见其
+// 文档注释),没有删除。
+//
 // ⚠️ 保留自 08-09 的安全性质:破坏性出路仍需**两个刻意动作**。原来是
 // "滑过去 + 点文字区",现在是"拨开关 + 点确定" —— 默认态(开关绿)下任何
 // **单次**手势都到不了 discardExit:点确定 = saveExit,点取消/点外面 = null。
@@ -38,16 +52,23 @@ enum CaptureExitChoice {
 }
 
 /// 破坏性红(与草稿卡"未完成"胶囊同一支 iOS systemRed)。
+///
+/// ⚠️ 2026-08-22 开关单色化之后,**本弹窗已不再使用这支红** —— 破坏性信号改由
+/// 「关」字承担。常量保留而非删除:它是 08-09 签决留下的公开符号,主干里除本
+/// 文件与其测试外无人 import(已 grep 核实),留着零成本,删掉则是一次没被要求
+/// 的公开 API 变更。要清理请单独提。
 const Color kCaptureExitDangerRed = Color(0xFFFF3B30);
 
-/// 保存态绿。取自 scan_record_cell.dart 的"完成"胶囊(iOS systemGreen)——
-/// 那里的"未完成"胶囊正是本文件的 [kCaptureExitDangerRed],红绿本来就是
-/// 同一对签决过的系统色,不另造一支。
+/// 「关」(不保存)态的轨道浅灰。
 ///
-/// (设计册 `AetherColors.success` 是 0xFF111111 近黑 —— 那是刻意的灰阶
-/// "成功",不能拿来当"绿";`inspCustomizable` 的绿是开发期 inspector 覆盖层
-/// 专用,也不进产品 UI。)
-const Color kCaptureExitSaveGreen = Color(0xFF34C759);
+/// 取自设计册 `AetherColors.border`(0xFFE4E4E4,发丝级分隔线灰)。这里写字面
+/// 值而不 import design_system:`lib/ui/official_capture/` 整棵树**没有任何一个
+/// 文件** import 设计册(刻意的隔离),本文件既有做法也是"写字面值 + 标注出处"。
+///
+/// 为什么不用更深的灰(如 `textTertiary` 0xFF9B9B9B)配白字:白字压在 #9B9B9B
+/// 上对比度只有约 2.5:1,而「关」现在是破坏性动作**唯一**的信号,不能不清楚。
+/// 浅灰底 + 黑字约 12:1。
+const Color kCaptureExitToggleOffTrack = Color(0xFFE4E4E4);
 
 Future<CaptureExitChoice?> showCaptureExitDialog(BuildContext context) {
   return showDialog<CaptureExitChoice>(
@@ -77,8 +98,13 @@ class _CaptureExitDialogState extends State<CaptureExitDialog> {
   static const Duration _toggleDuration = Duration(milliseconds: 180);
   static const Curve _toggleCurve = Curves.easeOut;
 
-  static const double _switchW = 51;
+  /// 塞进一个汉字之后的宽度。51 → 60:滑纽 27 + 两侧内缩 4 之外还剩 29,
+  /// 「开/关」13pt 字 + 左右各 8pt 内边距 = 29,正好不压到滑纽。
+  /// (这一行的余量见 393pt 布局用例 —— 加宽 9pt 之后仍然单行放得下。)
+  static const double _switchW = 60;
   static const double _switchH = 31;
+  static const double _wordSize = 13;
+  static const double _wordPad = 8;
   static const double _knobInset = 2;
   static const double _knobD = _switchH - _knobInset * 2;
 
@@ -163,27 +189,62 @@ class _CaptureExitDialogState extends State<CaptureExitDialog> {
           width: _switchW,
           height: _switchH,
           decoration: BoxDecoration(
-            color: _save ? kCaptureExitSaveGreen : kCaptureExitDangerRed,
+            // 单色:开 = 黑(本弹窗一路在用的那支黑,标题/取消底/确定描边同源),
+            // 关 = 浅灰。深色 = 开,是单色开关的通行读法。
+            color: _save ? Colors.black : kCaptureExitToggleOffTrack,
             borderRadius: BorderRadius.circular(_switchH / 2),
           ),
-          child: AnimatedAlign(
-            duration: _toggleDuration,
-            curve: _toggleCurve,
-            alignment: _save ? Alignment.centerRight : Alignment.centerLeft,
-            child: Padding(
-              padding: const EdgeInsets.all(_knobInset),
-              child: Container(
-                // 有 key 才能在测试里量到滑纽的**真实位置**:轨道颜色和滑纽
-                // 位置是这颗开关仅有的两个信号,两个都必须钉住。
-                key: const ValueKey<String>('capture-exit-save-knob'),
-                width: _knobD,
-                height: _knobD,
-                decoration: const BoxDecoration(
-                  color: Colors.white,
-                  shape: BoxShape.circle,
+          child: Stack(
+            children: <Widget>[
+              // 字放在滑纽不在的那半边(沿用 08-09 滑轴的老做法)。
+              AnimatedAlign(
+                duration: _toggleDuration,
+                curve: _toggleCurve,
+                alignment: _save ? Alignment.centerLeft : Alignment.centerRight,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: _wordPad),
+                  child: Text(
+                    _save ? '开' : '关',
+                    key: const ValueKey<String>('capture-exit-save-word'),
+                    maxLines: 1,
+                    // 这个字是"要不要保存"唯一的文字答案,不允许被系统字号
+                    // 放大挤变形 —— 它在一颗定宽胶囊里。
+                    textScaler: TextScaler.noScaling,
+                    style: TextStyle(
+                      color: _save ? Colors.white : Colors.black,
+                      fontSize: _wordSize,
+                      fontWeight: FontWeight.w600,
+                      height: 1.0,
+                    ),
+                  ),
                 ),
               ),
-            ),
+              AnimatedAlign(
+                duration: _toggleDuration,
+                curve: _toggleCurve,
+                alignment: _save
+                    ? Alignment.centerRight
+                    : Alignment.centerLeft,
+                child: Padding(
+                  padding: const EdgeInsets.all(_knobInset),
+                  child: AnimatedContainer(
+                    duration: _toggleDuration,
+                    curve: _toggleCurve,
+                    // 有 key 才能在测试里量到滑纽的**真实位置**:轨道深浅、
+                    // 滑纽位置、开/关字样,三个信号都必须钉住。
+                    key: const ValueKey<String>('capture-exit-save-knob'),
+                    width: _knobD,
+                    height: _knobD,
+                    decoration: BoxDecoration(
+                      // 滑纽跟着轨道反相,两个状态都是高对比:白纽压黑轨,
+                      // 黑纽压浅灰轨。白纽压 #E4E4E4 只有 1.2:1,看不见。
+                      color: _save ? Colors.white : Colors.black,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),
