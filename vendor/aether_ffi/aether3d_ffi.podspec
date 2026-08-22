@@ -31,7 +31,7 @@ Pod::Spec.new do |s|
   s.license          = { :type => 'Proprietary', :text => 'See aether_cpp/LICENSE' }
   s.author           = { 'Kyle Wang' => 'wkd20040211@gmail.com' }
   s.source           = { :path => '.' }
-  s.platform         = :ios, '14.0'
+  s.platform         = :ios, '15.0'
 
   # Public C headers (local copies, kept in lock-step with
   # aether_cpp/include — aether_sfm_c.h here is the finalize_async revision)

@@ -31,8 +31,8 @@ patched=0
 for dir in "${directories[@]}"; do
     plist_path="$dir/Info.plist"
     if [[ -f "$plist_path" ]]; then
-        /usr/libexec/PlistBuddy -c "Set :MinimumOSVersion 13.0" "$plist_path"
-        echo "  patched $plist_path → MinimumOSVersion=13.0"
+        /usr/libexec/PlistBuddy -c "Set :MinimumOSVersion 15.0" "$plist_path"
+        echo "  patched $plist_path → MinimumOSVersion=15.0"
         patched=$((patched + 1))
     fi
 done

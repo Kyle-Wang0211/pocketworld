@@ -1,5 +1,5 @@
 # Uncomment this line to define a global platform for your project
-platform :ios, '14.0'
+platform :ios, '15.0'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
@@ -79,15 +79,16 @@ post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
 
-    # Thermion's native framework needs iOS 13+. CocoaPods sometimes
-    # downgrades IPHONEOS_DEPLOYMENT_TARGET back to Flutter's stock
-    # 12.0 in the generated per-pod xcconfig; force it back so the
-    # framework's Info.plist matches our LSMinimumSystemVersion=13.0
-    # in Runner/Info.plist.
+    # [2026-08-22 Flutter 3.47 升级] 阈值 13.0 → 15.0。
+    # Flutter 3.47 的 Flutter.podspec 声明 deployment_target 15.0,
+    # flutter_additional_ios_build_settings 会把各 pod 设成 15.0,届时
+    # 本守卫不会触发(15.0 < 15.0 为假);它只兜住 deployment target 为
+    # nil 的 pod —— 那种情况下必须给到 15.0,否则 Swift 模块与
+    # Flutter.framework 的最低版本不匹配会直接编译失败。
     target.build_configurations.each do |config|
       current = config.build_settings['IPHONEOS_DEPLOYMENT_TARGET']
-      if current.nil? || current.to_f < 13.0
-        config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
+      if current.nil? || current.to_f < 15.0
+        config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
       end
     end
   end

@@ -10,7 +10,7 @@ Pod::Spec.new do |s|
   s.author           = { 'PocketWorld' => 'dev@pocketworld.invalid' }
   s.source           = { :path => '.' }
   s.source_files     = 'Classes/**/*'
-  s.platform         = :ios, '13.0'
+  s.platform         = :ios, '15.0'
   s.frameworks       = 'VideoToolbox', 'CoreMedia', 'CoreVideo', 'ImageIO', 'CoreGraphics', 'CoreFoundation'
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }
   # Release 的 -dead_strip 会剥掉只经 DynamicLibrary.process()/dlsym 访问的
