@@ -12,10 +12,12 @@
   Scope note: this file declares ONLY what the app's own code does.
   Third-party SDKs must ship their own manifests — Apple: "Your
   third-party SDK can't rely on the privacy manifest files for apps that
-  link the third-party SDK". Verified locally: 8 of the 13 Flutter
+  link the third-party SDK". Verified locally: 7 of the 12 Flutter
   plugins already bundle one (shared_preferences_foundation,
-  path_provider_foundation, camera_avfoundation, file_picker,
+  path_provider_foundation, camera_avfoundation,
   sensors_plus, url_launcher_ios, background_downloader, app_links);
+  [2026-08-22] file_picker 已从 pubspec 移除(「+」的上传入口在 f41f676
+  删除后它的调用点归零),故不再计入 —— 原文为 "8 of the 13";
   integration_test is test-only and never ships; onnxruntime,
   thermion_flutter and video_thumbnail were checked and touch no
   required-reason API; pw_hevc is ours and carries its own manifest.

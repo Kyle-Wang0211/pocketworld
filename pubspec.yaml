@@ -148,12 +148,6 @@ dependencies:
   # into a `compute()` isolate so the UI thread stays at 60fps.
   camera: ^0.12.0
 
-  # Phase 6: lets the user pick a .glb / .gltf from device storage to
-  # feed into ImportGlbCoordinator. Backed by UIDocumentPickerViewController
-  # on iOS (Files / iCloud Drive / third-party providers; no Photos
-  # permission needed) and SAF / ACTION_OPEN_DOCUMENT on Android.
-  file_picker: ^8.1.2
-
   # Task 3: on-device subject masking via MobileSAM (Apache-2.0). Two
   # ONNX sessions (encoder ~28 MB + decoder ~16 MB) bundled under
   # assets/models/edgesam/ are loaded by lib/capture/sam/mobile_sam_inference.dart
