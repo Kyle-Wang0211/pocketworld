@@ -267,6 +267,42 @@ DIRTY_GHOST_MASK_SHA256 = (
 # into the existing frame_split sidecar. This is observation-only and keeps
 # product Dart/Swift plus the stable framework ABI unchanged. Pin the complete
 # normalized endpoint at the accepted 71d0e0b1… identity; do not relax the gate.
+# 2026-08-07 reviewed delta (IDLE-PREPAY, signed): when the official quadratic
+# prepay finds no debt, the same capture-idle window now pays the starved-window
+# debt instead of returning 0. Gate: IdlePrepayEnabled(), default ON, killed by
+# OFFICIAL_AETHER_IDLE_PREPAY=0. Rationale: two device telemetry runs showed
+# idle_prepay_ticks=0 / repay_calls=0 — the official channel never fired on a
+# real capture because the user keeps tapping the shutter, so disconnected
+# frames were only repaired at finalize, by which time the user has left the
+# scene and what gets repaired is pairs, not observations.
+#
+# 2026-08-08 reviewed delta (TVG-SPLIT, signed 2026-08-22): the official route's
+# two-view geometry is split into TWO independent RANSACs per pair —
+#   • POSE  ← aether::sfm::EstimateUprightRelativePoseV1 (gravity-constrained
+#             upright relative pose, mandatory_gravity_tvg_v1.cc:125). This
+#             REPLACES colmap::EstimateTwoViewGeometry for everything that gets
+#             persisted; a pair with no usable ARKit gravity is dropped outright.
+#   • LABEL ← colmap::EstimateTwoViewGeometry with force_H_use
+#             (mandatory_gravity_tvg_v1.cc:143), kept only to classify planar
+#             degeneracy. This half is unchanged official semantics.
+# ⚠️ NO kill switch: all 14 call sites of EstimateMandatoryFrameTwoViewGeometry
+# route through it unconditionally. Recorded here because the ledger is the only
+# audit surface for an un-gated replacement of an official estimator.
+# Contract test: test/official_per_image_pinhole_contract_test.dart pins both
+# halves and asserts this ledger entry exists.
+#
+# 2026-08-14 reviewed delta (STARVED-ALWAYS, 用户签): capture-period repair of
+# disconnected frames no longer waits for an idle window and no longer backs off
+# on thermals. Original design required ">2000ms since the previous frame
+# finished + thermal < serious"; on a real capture that window is never reached.
+# Gates kept: OFFICIAL_AETHER_STARVED_ALWAYS (rollback) and
+# OFFICIAL_AETHER_STARVED_THERMAL_STOP (thermal cutoff), plus
+# OFFICIAL_AETHER_PROBE_DEBT_GROW_LIVE for the on-the-spot track growth
+# (GrowLiveTracksFromTvgInliers writes live_recon in place — the leg the
+# finalize-time variant does not have). GROW_MERGE / GROW_OBS stay default OFF
+# (cap201: merge cost −1.54% delivered points).
+# Contract test: test/official_stop_production_contract_test.dart pins all
+# three gates plus the live_recon entry-point count.
 OFFICIAL_PRODUCTION_ENDPOINT_SHA256 = (
     "71d0e0b1da2c4d2caf09da33900e5abd0c193033f10f4c8197c6a18f8504ec6d"
 )
