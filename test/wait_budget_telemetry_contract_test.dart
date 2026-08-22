@@ -117,6 +117,59 @@ void main() {
     // 用户签决 2026-07-29:点径保持 6。它不是变慢的原因(真凶见上),但用户
     // 决定不再动它。⚠️ 代价已知:饱和色标当初与点径 12 同批判,停在 6 会让 AR
     // 分层偏"椒盐";要拿回读感须走"减少 AR 绘制点数",不是把上限调回 12。
-    expect(src, contains('setenv("OFFICIAL_AETHER_AR_SPLAT_MAX_PX", "6", 1)'));
+    //
+    // [2026-08-22] 原断言写死 overwrite=1,而 c1f193b(08-10 DEVICE-AB-UNBLOCK)
+    // 把 register() 内的 setenv 整块 1→0 以放行真机 A/B,于是长期红。
+    // 改为语义断言,并把**读取端**一起钉死 —— 只钉写入端时,读取端的兜底
+    // 被改成 12 是没人会响的。
+    //
+    // 逐行判活:注释里留有该 setenv 的回滚原文,纯 contains 会误命中。
+    final live = src
+        .split('\n')
+        .map((l) => l.trim())
+        .where((l) => !l.startsWith('//'))
+        .where((l) => l.contains('OFFICIAL_AETHER_AR_SPLAT_MAX_PX'))
+        .toList();
+
+    // 1) 出货默认 = 6。overwrite 位刻意不锁(见上,c1f193b 的既定语义)。
+    expect(
+      live.singleWhere((l) => l.startsWith('setenv(')),
+      matches(
+        RegExp(r'^setenv\("OFFICIAL_AETHER_AR_SPLAT_MAX_PX", "6", [01]\)$'),
+      ),
+      reason: '签决点径=6;历史上 aca2142 改成 12,实测 queue_drain 23s→208s→451s',
+    );
+
+    // 2) 读取端兜底也必须是 6 —— static let 惰性求值可能早于 register()。
+    expect(src, contains('return 6\n  }()'));
+
+    // 3) clamp 区间不得放宽(唯一挡住 20/50 档重演回归的闸)。
+    expect(src, contains('v >= 2, v <= 200'));
+  });
+
+  test('no shipped config presets the AR splat radius', () {
+    // [2026-08-22] c1f193b 把 overwrite 改成 0 之后,"出货点径 = 6"就只剩
+    // 这一道护栏了:release 版 main.dart 无条件跑 AetherEnvFile.applyFrom,
+    // 对任意 OFFICIAL_ 前缀键以 overwrite=1 注入,而 Info.plist 开着
+    // UIFileSharingEnabled ⇒ Documents/official_env.json 是**出货可达**的注入面。
+    // 仓库内任何随包配置都不得预置本键。
+    //
+    // (2026-08-22 实测真机 Documents:无 env 文件,该注入面当前未被使用。)
+    for (final p in const [
+      'ios/Runner/Info.plist',
+      'ios/Runner.xcodeproj/project.pbxproj',
+    ]) {
+      final f = File(p);
+      if (!f.existsSync()) continue;
+      expect(
+        f.readAsStringSync(),
+        isNot(contains('OFFICIAL_AETHER_AR_SPLAT_MAX_PX')),
+        reason: p,
+      );
+    }
+    expect(
+      File('ios/Runner/Info.plist').readAsStringSync(),
+      isNot(contains('LSEnvironment')),
+    );
   });
 }

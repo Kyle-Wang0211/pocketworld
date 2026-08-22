@@ -47,7 +47,16 @@ void main() {
       prev = c;
     }
     expect(maxStep, lessThan(80), reason: '单步色差应远小于旧的 128 阶跳变');
-  });
+  }, skip:
+      '[2026-08-22 用户签决:挂起] 133 不是 bug,是当前锚色下的数学下界。'
+      '着色是红→黄→绿分段插值,t>0.5 段要在 span/2 个整数步里扫完红分量 199 阶,'
+      '故最大单步 ≈ 398/span。出货配置 satAt=5 ⇒ span=3 ⇒ 下界 133。'
+      '而 133 > 旧实现的 128 —— 该模块在出货配置下已无法兑现它自己的立项目的'
+      '(它就是为打败那个 128 阶跳变而做的)。'
+      '⇒ satAt=5 与"整数粒度无硬台阶"数学上互斥,这是产品缺陷不是测试挂错旋钮。'
+      'satAt 调回 8~10 的路被 capture_quality_ramp.dart:66-85 的三方证据判死。'
+      '出路只有两条:重调锚色/插值路径,或整体删除该模块(自 08-09 全白签决后'
+      '它在 lib/ 已零调用)。在做出选择前不假装修好,也不让红灯淹掉其它测试。');
 
   test('degenerate ramp config cannot divide by zero', () {
     const bad = CaptureQualityRamp(floor: 5, satAt: 5);
@@ -66,6 +75,23 @@ void main() {
       src,
       isNot(contains('kCaptureQualityRamp.colorFor')),
       reason: '三色 ramp 又被接回拍摄页了 —— 用户签决 live 云全白',
+    );
+
+    // [2026-08-22] 上面那条只盯单文件的精确子串,`final r = kCaptureQualityRamp;
+    // r.colorFor(t)` 或在别的文件接入都绕得过去。升级为全 lib/ 树扫描:
+    // 任何地方调 .colorFor( 都算 ramp 被接回。(实测当前 lib/ 零命中。)
+    final offenders = <String>[];
+    for (final f in Directory('lib').listSync(recursive: true)) {
+      if (f is! File || !f.path.endsWith('.dart')) continue;
+      if (f.path.endsWith('official_capture/capture_quality_ramp.dart')) {
+        continue; // 定义处本身不算消费者
+      }
+      if (f.readAsStringSync().contains('.colorFor(')) offenders.add(f.path);
+    }
+    expect(
+      offenders,
+      isEmpty,
+      reason: 'ramp 着色被重新接入了这些文件 —— 用户签决 live 云全白:$offenders',
     );
     expect(src, contains('rgb.fillRange(0, rgb.length, 255)'));
     // 旧的三段硬阈值也必须不在。
