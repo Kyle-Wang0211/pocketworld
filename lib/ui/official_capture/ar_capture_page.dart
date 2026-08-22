@@ -915,8 +915,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     if (_finishTapInProgress) _finishCancellationRequested = true;
     _closeTapInProgress = true;
     try {
-      // [2026-08-09 用户签决,附截图] 黑白弹窗 + 滑轴:左=退出并保存照片,
-      // 右=退出并不保存照片;第二行"继续拍摄";点弹窗外自动返回拍摄。
+      // [2026-08-22 用户签决] 黑白弹窗 + 开关:"是否保存照片,方便下次补拍"
+      // 的小开关(默认开=绿=保存,关=红=不保存)+ "确定"/"取消" 两颗按钮。
+      // (取代 2026-08-09 那版滑轴 —— 见 capture_exit_dialog.dart 文件头。)
+      // 返回值语义不变:saveExit / discardExit / null=回拍摄。
       // 弹窗是模态的:不先停,自动拍会在弹窗背后继续落帧。
       _stopAutoCapture();
       final choice = await showCaptureExitDialog(context);
