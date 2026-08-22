@@ -10,16 +10,12 @@
 // Cross-platform: pure Flutter widgets, no native code. Bottom nav is
 // the same 76 px tall on iOS / Android / HarmonyOS / Web.
 
-import 'dart:io';
-
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
-import '../l10n/app_localizations.dart';
-import '../me/import_glb_coordinator.dart';
 import 'design_system.dart';
 import 'me_page.dart';
 import 'official_capture/ar_capture_page.dart';
+import 'official_capture/official_gallery_routes.dart';
 import 'vault_page.dart';
 
 // 2026-04-28 IA reshape: bottom nav simplified to two tabs — Community
@@ -79,66 +75,39 @@ class _AetherAppShellState extends State<AetherAppShell> {
         index: AetherRootTab.values.indexOf(_tab),
         children: [
           const VaultPage(),
-          MePage(showDraftsSignal: _showDraftsSignal),
+          // [2026-08-17 实机] 这两条路由**必须**传,否则「我的」页里所有
+          // 官方采集的作品点下去都毫无反应:
+          //   MePage → dispatchSparseCloudViewerForPipeline
+          //     case official: if (openOfficial == null) return false;  ← 静默
+          //
+          // 漏接的来历:MeRootPage(V1 工具阶段的 root)传了这两条,而它头上
+          // 写着"两 tab shell (AetherAppShell) 留给 V2 但不再被路由到"。产品
+          // 回到两 tab 形态后,MeRootPage 变成没人用的死代码,它接的线也就跟着
+          // 断了 —— AetherAppShell 这边从来没补上。
+          MePage(
+            showDraftsSignal: _showDraftsSignal,
+            officialResumeRoute: pushOfficialResumeRoute,
+            officialViewerRoute: pushOfficialViewerRoute,
+          ),
         ],
       ),
       bottomNavigationBar: _BottomTabBar(
         current: _tab,
         onChange: (t) => setState(() => _tab = t),
-        onCreate: _openCreate,
+        onCreate: _openCapture,
       ),
     );
   }
 
-  /// Polycam-style "+" entry point: pops a bottom sheet with two
-  /// side-by-side options — 拍摄 (push CapturePage) and 上传 (pick a
-  /// .glb / .gltf and hand it to ImportGlbCoordinator). Both paths
-  /// flip the bottom nav to Me afterwards so the new card is visible.
+  /// 底部栏的「+」**直接**进采集页。
   ///
-  /// Phase 6 originally lived as a `+` icon in the Me-tab header;
-  /// merged here so all "create work" entries share one entry point
-  /// and the Me header stays clean.
-  Future<void> _openCreate() async {
-    final l = AppL10n.of(context);
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: AetherColors.bgCanvas,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (ctx) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
-          child: Row(
-            children: [
-              Expanded(
-                child: _CreateOption(
-                  icon: Icons.photo_camera_outlined,
-                  label: l.createOptionCapture,
-                  onTap: () => Navigator.of(ctx).pop('capture'),
-                ),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: _CreateOption(
-                  icon: Icons.cloud_upload_outlined,
-                  label: l.createOptionUpload,
-                  onTap: () => Navigator.of(ctx).pop('upload'),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-    if (!mounted || action == null) return;
-    if (action == 'capture') {
-      await _openCapture();
-    } else if (action == 'upload') {
-      await _importGlb();
-    }
-  }
-
+  /// [2026-08-21 用户签决] 原先「+」先弹一张 拍摄 / 上传 的底部选单;上传
+  /// 那条腿(GLB 导入,`_importGlb` → [ImportGlbCoordinator])连同选单一起
+  /// 撤掉了 —— 创作只有拍摄一条路,少一次点击。
+  ///
+  /// ⚠️ 撤的是**入口**,不是读路径:历史上导入过的 GLB 作品照旧要能打开,
+  /// `lib/ui/me/my_work_detail_page.dart` 的 legacy 分支和
+  /// `lib/me/import_glb_coordinator.dart` 都原样留着。
   Future<void> _openCapture() async {
     // CapturePage returns `true` when the user tapped Stop and the
     // upload kicked off — that's our cue to flip the bottom nav to
@@ -153,106 +122,6 @@ class _AetherAppShellState extends State<AetherAppShell> {
       }
       _showDraftsSignal.value += 1;
     }
-  }
-
-  /// GLB import — moved here from MePage in 2026-05-06 redesign so the
-  /// bottom-bar '+' is the single create entry point. Logic kept
-  /// identical: pick file → ImportGlbCoordinator.start (which owns
-  /// the worker isolate + persists a placeholder ScanRecord) → flip
-  /// to Me tab so the user sees the importing card.
-  Future<void> _importGlb() async {
-    final messenger = ScaffoldMessenger.of(context);
-    final l = AppL10n.of(context);
-    FilePickerResult? picked;
-    try {
-      picked = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: const ['glb', 'gltf'],
-      );
-    } catch (e) {
-      if (!mounted) return;
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(l.createImportPickerFailed(e.toString())),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      return;
-    }
-    if (picked == null || picked.files.isEmpty) return;
-    final pickedFile = picked.files.single;
-    final path = pickedFile.path;
-    if (path == null || path.isEmpty) {
-      if (!mounted) return;
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(l.createImportFileUnreadable),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      return;
-    }
-    final fileName = pickedFile.name;
-    final bareName = fileName.contains('.')
-        ? fileName.substring(0, fileName.lastIndexOf('.'))
-        : fileName;
-    ImportGlbCoordinator.instance.start(glbFile: File(path), name: bareName);
-    if (!mounted) return;
-    messenger.showSnackBar(
-      SnackBar(
-        content: Text(l.createImportingGlb),
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 2),
-      ),
-    );
-    if (_tab != AetherRootTab.me) {
-      setState(() => _tab = AetherRootTab.me);
-    }
-  }
-}
-
-/// Square card used inside the bottom-sheet create menu — icon stacked
-/// over a label, matching the Polycam-style "two big choices" pattern.
-class _CreateOption extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-
-  const _CreateOption({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(16),
-      child: Container(
-        padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 12),
-        decoration: BoxDecoration(
-          color: AetherColors.bg,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AetherColors.border, width: 0.5),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 36, color: AetherColors.primary),
-            const SizedBox(height: 12),
-            Text(
-              label,
-              style: const TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-                color: AetherColors.textPrimary,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
   }
 }
 
