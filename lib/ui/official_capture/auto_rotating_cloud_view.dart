@@ -22,7 +22,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 
-import '../../util/device_log.dart';
+import '../../official_util/device_log.dart';
 import '../community/card_live_governor.dart';
 import 'sparse_cloud_view.dart';
 

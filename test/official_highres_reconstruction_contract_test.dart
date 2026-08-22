@@ -266,6 +266,17 @@ void main() {
     final closeStart = page.indexOf('Future<void> _onCloseTap()');
     final closeEnd = page.indexOf('Future<void> _onCenterTap()', closeStart);
     final closeSource = page.substring(closeStart, closeEnd);
+    // _onCloseTap 里两条退出分支的 stop / freeze 次序是**有意相反**的:
+    //   saveExit —— freezeAndDrain 先、stop 后。在途快门必须全部落地才停会话,
+    //               否则排队中的票会打在已停的会话上 = 永久丢帧(无损铁律)。
+    //   discard  —— stop 先、freeze 后。先掐掉重试,再等原生事务放开文件句柄,
+    //               最后才递归删目录。
+    // 因此下面按次序断言时**不能**在整个 closeSource 上用 indexOf ——
+    // 它取首次出现,会落到 saveExit 那条上,断言必假。cancelPending() 只在
+    // discard 分支出现(saveExit 明确注释了"不 cancelPending"),用它切窗。
+    final discardSource = closeSource.substring(
+      closeSource.indexOf('_shutterQueue.cancelPending()'),
+    );
 
     expect(shutterSource, contains('color: Colors.white'));
     expect(shutterSource, isNot(contains('busy')));
@@ -284,18 +295,32 @@ void main() {
     expect(closeSource, contains('await _shutterQueue.freezeAndDrain()'));
     expect(closeSource, contains('await session.discardCurrentCapture()'));
     expect(
-      closeSource.indexOf('await session.stop()'),
-      lessThan(closeSource.indexOf('await _shutterQueue.freezeAndDrain()')),
+      discardSource.indexOf('await session.stop()'),
+      lessThan(discardSource.indexOf('await _shutterQueue.freezeAndDrain()')),
       reason:
           'discard must stop capture retries before waiting for the active '
           'native transaction to settle',
     );
     expect(
-      closeSource.indexOf('await _shutterQueue.freezeAndDrain()'),
-      lessThan(closeSource.indexOf('await session.discardCurrentCapture()')),
+      discardSource.indexOf('await _shutterQueue.freezeAndDrain()'),
+      lessThan(discardSource.indexOf('await session.discardCurrentCapture()')),
       reason:
           'the active native high-resolution transaction must release its '
           'file before discard recursively deletes the capture directory',
+    );
+    // saveExit 分支的**反向**次序同样要钉死:freeze 必须先于 stop。
+    // 这条此前无人守 —— 若被改成 stop 先,排队中的快门票会打在已停会话上,
+    // 静默丢帧且测试全绿。
+    final saveExitSource = closeSource.substring(
+      closeSource.indexOf('choice == CaptureExitChoice.saveExit'),
+      closeSource.indexOf('_shutterQueue.cancelPending()'),
+    );
+    expect(
+      saveExitSource.indexOf('await _shutterQueue.freezeAndDrain()'),
+      lessThan(saveExitSource.indexOf('await session.stop()')),
+      reason:
+          'save-and-exit must drain in-flight shutters before stopping the '
+          'session — stopping first would strand queued tickets (frame loss)',
     );
     expect(closeSource, contains('_closeTapInProgress = false'));
     expect(
