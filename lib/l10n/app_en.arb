@@ -333,6 +333,8 @@
   "publishErrAlreadyPublished": "This work is already published",
   "publishErrReading": "Could not read the point cloud",
   "publishErrUploading": "Upload failed — check your connection and retry",
+  "publishErrTooLarge": "This scan exceeds the upload size limit — retrying will not help. Please capture a smaller area and regenerate.",
+  "publishErrRejected": "This file failed server-side validation and may be corrupted. Please regenerate the scan.",
   "publishErrInserting": "Could not save the publication, please retry",
   "publishErrGeneric": "Publish failed",
   "communityCloudLoadFailed": "Could not load the point cloud",
