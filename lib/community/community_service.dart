@@ -113,7 +113,7 @@ class CommunityService {
     final userIds = works.map((w) => w['user_id'] as String).toSet().toList();
     final profilesRes = await _client
         .from('profiles')
-        .select('id, display_name, avatar_url')
+        .select('id, display_name, avatar_url, handle')
         .inFilter('id', userIds);
     final profilesById = {
       for (final p in (profilesRes as List).cast<Map<String, dynamic>>())
@@ -153,6 +153,8 @@ class CommunityService {
             ? null
             : DateTime.parse(publishedAtStr),
         authorDisplayName: (profile['display_name'] as String?) ?? 'unknown',
+        // 唯一 ID。null = 用户还没设 —— 卡片据此决定要不要显示 `@`。
+        authorHandle: profile['handle'] as String?,
         authorAvatarUrl: profile['avatar_url'] as String?,
         likedByMe: myLikes.contains(w['id'] as String),
       );

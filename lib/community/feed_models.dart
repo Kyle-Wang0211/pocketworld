@@ -31,6 +31,17 @@ class FeedWork {
   final String authorDisplayName;
   final String? authorAvatarUrl;
 
+  /// profiles.handle —— 全局唯一的 ID(小写 ASCII,迁移 20260823010000)。
+  ///
+  /// 与 [authorDisplayName] 是**两轨**,别混:昵称可重复、可中文可 emoji;
+  /// handle 唯一、纯 ASCII。抖音号/小红书号/微信号都是这个结构。
+  ///
+  /// null = 该用户还没设置过 handle(建表时允许 NULL 且不自动生成 ——
+  /// GitHub 的教训是自动分配 + 旧名释放会被抢注冒充)。
+  /// ⚠️ UI 里的 `@` 只能跟 handle。跟在昵称后面等于告诉用户"这是唯一标识",
+  ///    而昵称可以有无数个同名 —— 那是在说假话。
+  final String? authorHandle;
+
   // Mutable per-user state — whether the *current* user has liked this
   // work. Filled in by CommunityService.fetchPublicFeed via a bulk
   // work_likes lookup so the heart icon can render without a per-card
@@ -52,6 +63,7 @@ class FeedWork {
     required this.authorAvatarUrl,
     required this.likedByMe,
     this.fileSizeBytes,
+    this.authorHandle,
   });
 
   /// Point count implied by [fileSizeBytes], or null when it cannot be
@@ -97,6 +109,7 @@ class FeedWork {
       authorAvatarUrl: authorAvatarUrl,
       likedByMe: likedByMe ?? this.likedByMe,
       fileSizeBytes: fileSizeBytes,
+      authorHandle: authorHandle,
     );
   }
 }

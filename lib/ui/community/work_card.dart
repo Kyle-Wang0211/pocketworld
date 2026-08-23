@@ -445,7 +445,30 @@ class _WorkCardState extends State<WorkCard> {
                                     // 后者会把整行的命中区抢走,连带压掉卡片本身的
                                     // onTap(整张卡是可点的)。
                                     TextSpan(
-                                      text: '@${_work.authorDisplayName}',
+                                      // [HANDLE-SEMANTICS 2026-08-23]
+                                      // `@` 只跟唯一 ID,不跟昵称。
+                                      //
+                                      // 迁移 20260823010000 把命名做成双轨:
+                                      //   display_name 可重复(中文/emoji 都行)
+                                      //   handle       全局唯一(小写 ASCII)
+                                      // 抖音号 / 小红书号 / 微信号都是这个结构。
+                                      //
+                                      // 在此之前这里渲染的是 '@${'$'}{authorDisplayName}' ——
+                                      // `@` 在 Twitter/Instagram/GitHub/Discord 里
+                                      // 都专指唯一标识,跟在一个**可以有无数同名**的
+                                      // 昵称后面,等于告诉用户"这是唯一的",而它不是。
+                                      //
+                                      // 没设 handle 的用户显示昵称且**不带 @** ——
+                                      // 诚实地反映"这个人还没有 ID",而不是拿昵称冒充。
+                                      // 点击过滤仍然按 userId 走(见 onAuthorTap),
+                                      // 所以行为不受影响,变的只是那串字符说了什么。
+                                      // 判空串而不只判 null:DB 的 CHECK 保证
+                                      // handle 是 2-32 字符,但渲染层不该依赖
+                                      // 上游的约束 —— 一个空串会渲染成孤零零的
+                                      // '@'。(这条边界是被测试当场抓到的。)
+                                      text: (_work.authorHandle?.isNotEmpty ?? false)
+                                          ? '@${_work.authorHandle}'
+                                          : _work.authorDisplayName,
                                       recognizer: _authorTapRecognizer,
                                       style: widget.onAuthorTap == null
                                           ? null
