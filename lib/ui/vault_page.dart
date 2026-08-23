@@ -5,33 +5,51 @@
 //     发现). Tapping a tab refetches the feed with a different sort key;
 //     "附近 / Nearby" is a coming-soon stub since profiles.location is
 //     plain text and we have no geo schema yet.
-//   • Below: the same vertical PostCard list as before, sourced from
+//   • Below: a vertical list of WorkCards, sourced from
 //     CommunityService.fetchPublicFeed(sortBy, query).
+//
+// 2026-08-16 — 卡片是缩略图,**最居中的那一张**除外:它真渲点云并自转。
+//
+// [用户拍板] "直接做真实时渲染"、"那就想办法优化呀,不让手机热呀"。旧
+// PostCard 每张卡挂一个真渲染器、还留着约两屏不卸载,那是 GLB 时代的设计,
+// 确实该死;但 08-07 那条"在列表里铺实时点云是往火上加油"的签决(见
+// sparse_thumbnail.dart)管的是**一屏 4-6 张**同时渲,而 PostCard 的自转
+// 本来就只开焦点那一张 —— 拿前者当理由把后者一起砍掉是过度解释。
+//
+// 所以焦点追踪回来了(下面的 _visibilityByWorkId / _recomputeFocus,阈值和
+// 旧实现一致),但这一次它前面挡着七道压热闸:
+//
+//   闸 1 全 App 同时只允许 1 个 live 卡 —— _liveWorkId 是单值,不是集合
+//   闸 2 八叉树 LOD 降到 2.5 万点     —— live_card_cloud.dart
+//   闸 3 自转封顶 24fps               ┐
+//   闸 4 thermalState 自适应/serious 停 ├ card_live_governor.dart
+//   闸 5 滚动中不转,静止 300ms 才起  │
+//   闸 7 内存告警即释放               ┘
+//   闸 6 离焦立即**卸载**(不是隐藏)  —— work_card.dart 的 if (isLive)
+//
+// cacheExtent 保持默认:2000 那个值当年是为了让屏外的 live 渲染器别被卸载
+// (重挂 AetherCppCardDemo 即使缓存命中也要 ~500 ms)。现在屏外卡片就是一张
+// 图,重建等于一次缓存查表,而把屏外卡片留在树上恰恰是闸 1/6 要避免的。
 //
 // Cross-platform: pure Flutter widgets + supabase_flutter. No native
 // code, no platform conditionals — same UI on iOS / Android / HarmonyOS
-// / Web.
+// / Web.(live 层同样是纯 Dart:SparseCloudView 是 CustomPaint。)
 
 import 'dart:async';
+import 'dart:typed_data';
 
-import 'package:flutter/material.dart' hide View;
-// thermion_flutter re-declares `VoidCallback` as an ffi pointer typedef,
-// which clashes with Flutter's `void Function()` typedef of the same
-// name. We don't use thermion's version here, so hide it.
-import 'package:thermion_flutter/thermion_flutter.dart' hide VoidCallback;
-import 'package:vector_math/vector_math_64.dart' as v64;
+import 'package:flutter/material.dart';
 
-import '../community/anchor_viewer.dart';
 import '../community/community_service.dart';
-import '../community/feed_models.dart';
-import '../community/glb_asset_cache.dart';
 import '../community/glb_cache.dart';
+import '../community/feed_models.dart';
 import '../l10n/app_localizations.dart';
-import 'community/post_card.dart';
+import '../util/device_log.dart';
+import 'community/card_live_governor.dart';
+import 'community/skeleton_shimmer.dart';
+import 'community/work_card.dart';
 import 'community/work_detail_page.dart';
 import 'design_system.dart';
-
-enum _CommunityTab { hot, nearby, discover }
 
 class VaultPage extends StatefulWidget {
   const VaultPage({super.key});
@@ -44,124 +62,210 @@ class _VaultPageState extends State<VaultPage> {
   final CommunityService _service = CommunityService();
   final TextEditingController _searchController = TextEditingController();
   late Future<List<FeedWork>> _feed;
-  _CommunityTab _tab = _CommunityTab.discover;
   String _query = '';
 
-  // Per-card visibility tracking. PostCards report their visibility
-  // fraction via onVisibilityChanged; we pick the highest-visibility
-  // work as the "focused" one (Polycam-style — the most-centered card
-  // is the one whose 3D model auto-rotates).
+  /// [D7 2026-08-23 用户签决] 流内"只看这个人的作品"过滤。
+  ///
+  /// **明确不做**:头像大图、简介、关注按钮、任何计数(粉丝/关注/作品数)。
+  /// 什么时候升级成真正的个人主页 —— **用信号不用时间**:出现 ≥3 个
+  /// 非创始人创作者、且各自作品 ≥3 件时再做。
+  String? _authorFilterId;
+  String? _authorFilterName;
+
+  /// Feed 分页(offset 翻页)。此前只拉一次 limit:20 且没有加载更多,第 21
+  /// 个作品对所有人永久不可见。_hasMore=false 表示服务端给不满一页了。
+  static const int _pageSize = 20;
+  bool _loadingMore = false;
+  bool _hasMore = true;
+
+  /// 闸 3/4/5/7 的总闸门 —— 它说不行,就一张 live 卡都没有。
+  final CardLiveGovernor _governor = CardLiveGovernor();
+
+  /// 每张卡的可见比例(VisibilityDetector 上报),用来挑焦点卡。
   final Map<String, double> _visibilityByWorkId = {};
   String? _focusedWorkId;
+
+  /// 焦点卡必须**明显**是焦点才算数。等大的正方形卡片里,可见度最高的那张
+  /// 就是最居中的那张;0.55 这个门槛保证换焦点时不会在两张各露一半的卡之间
+  /// 来回横跳(每次横跳 = 一轮卸载 + 重下载解析降点)。沿用旧 PostCard 的值。
   static const double _focusThreshold = 0.55;
+
+  /// 闸 1:全 App 同时只有这一张卡是 live 的。null = 现在一张都没有。
+  String? get _liveWorkId => _governor.liveAllowed ? _focusedWorkId : null;
 
   @override
   void initState() {
     super.initState();
     _feed = _loadFeed();
+    _governor.addListener(_onGovernorChanged);
   }
 
   @override
   void dispose() {
+    _governor.removeListener(_onGovernorChanged);
+    _governor.dispose();
     _searchController.dispose();
     super.dispose();
   }
 
-  Future<List<FeedWork>> _loadFeed() {
-    if (_tab == _CommunityTab.nearby) {
-      // Geo schema isn't in place yet; return empty so the coming-soon
-      // state takes over without burning a query.
-      return Future.value(const <FeedWork>[]);
-    }
-    return _service.fetchPublicFeed(
-      limit: 20,
-      sortBy: _tab == _CommunityTab.hot ? FeedSort.hot : FeedSort.recent,
-      query: _query.isEmpty ? null : _query,
-    );
+  void _onGovernorChanged() {
+    if (mounted) setState(() {});
   }
 
-  Future<void> _refresh() async {
-    final next = _loadFeed();
-    setState(() {
-      _feed = next;
-      _visibilityByWorkId.clear();
-      _focusedWorkId = null;
-    });
-    await next;
+  /// 换 tab / 换搜索词 / 下拉刷新 —— 列表整个换了,旧的可见度读数全作废。
+  void _resetFocus() {
+    _visibilityByWorkId.clear();
+    _focusedWorkId = null;
   }
 
-  void _onTabChanged(_CommunityTab next) {
-    if (next == _tab) return;
-    setState(() {
-      _tab = next;
-      _feed = _loadFeed();
-      _visibilityByWorkId.clear();
-      _focusedWorkId = null;
-    });
-  }
-
-  void _onQuerySubmitted(String value) {
-    final trimmed = value.trim();
-    if (trimmed == _query) return;
-    setState(() {
-      _query = trimmed;
-      _feed = _loadFeed();
-      _visibilityByWorkId.clear();
-      _focusedWorkId = null;
-    });
-  }
-
-  void _onClearQuery() {
-    if (_query.isEmpty && _searchController.text.isEmpty) return;
-    _searchController.clear();
-    setState(() {
-      _query = '';
-      _feed = _loadFeed();
-      _visibilityByWorkId.clear();
-      _focusedWorkId = null;
-    });
-  }
-
-  /// Recompute which card should rotate. Picks the card with the highest
-  /// visibility fraction above the focus threshold.
+  /// 挑焦点卡:可见度最高、且过 [_focusThreshold] 的那张。
   void _recomputeFocus() {
     String? next;
-    double bestVisibility = _focusThreshold;
+    var best = _focusThreshold;
     for (final entry in _visibilityByWorkId.entries) {
-      if (entry.value > bestVisibility) {
-        bestVisibility = entry.value;
+      if (entry.value > best) {
+        best = entry.value;
         next = entry.key;
       }
     }
-    if (next != _focusedWorkId) {
+    if (next != _focusedWorkId && mounted) {
+      // 闸 1/6 的现场证据:换焦点 = 旧 live 卡卸载 + 新的挂上。真机验收看这
+      // 条能确认"同时只有一张"没被破坏(不该出现两条连续的挂载而无卸载)。
+      DeviceLog.log(
+        'FeedLive',
+        '焦点卡:${_focusedWorkId ?? "无"} → ${next ?? "无"} '
+            '(可见度 ${best.toStringAsFixed(2)})',
+      );
       setState(() => _focusedWorkId = next);
     }
   }
+
+  /// 卡片本地状态(点赞)变化的回传口。见调用点注释 —— 与五月一致,暂空。
+  void _onWorkUpdated(String workId, FeedWork updated) {}
 
   void _onCardVisibilityChanged(String workId, double fraction) {
     _visibilityByWorkId[workId] = fraction;
     _recomputeFocus();
   }
 
-  void _onWorkUpdated(int index, FeedWork updated) {
-    // PostCard already keeps its own copy in State so the parent doesn't
-    // need to rebuild on a like toggle. Hook left in for the day we
-    // hoist feed state into a ChangeNotifier.
-  }
-
-  /// Fire-and-forget bytes-only prefetch for an upcoming card. We
-  /// dedupe via GlbCache.fetch's in-flight + memory + disk layers, so
-  /// calling this on every visibility change is cheap once a URL has
-  /// been seen. catchError swallows network blips so they don't bubble
-  /// up — we'll just naturally re-attempt when the user actually
-  /// scrolls there.
+  /// 给下一张卡的**只下字节**预取,发完不管(Reels / TikTok 那套)。
+  ///
+  /// 去重交给 GlbCache.fetch 自己的 in-flight + 内存 + 磁盘三层,所以每次
+  /// 可见度变化都调一次也很便宜。catchError 吞掉网络抖动 —— 用户真滚到那里
+  /// 时自然会再试一次。
+  ///
+  /// **只下字节是刻意的**:走 GlbAssetCache.getOrLoad 会连 GPU 资源一起建,
+  /// 而用户可能一划就过去了,那份 GPU 分配纯属浪费。
+  ///
+  /// [2026-08-17] 我 08-16 在 work_card 的注释里写"No predictive prefetch:
+  /// 替用户可能根本不会打开的作品掏流量是拿'也许'换真钱",把这条否掉了 ——
+  /// 但五月早就权衡过:只下字节、且只预取紧邻的 1-2 张,换来的是滚到下一张时
+  /// 模型已经在磁盘上、零可感等待。这正是 feed 顺滑的来源之一。
   void _kickPrefetch(FeedWork work) {
     final path = work.modelStoragePath;
-    if (path == null) return;
+    if (path == null || path.isEmpty) return;
     final url = _service.modelUrlFor(path);
     unawaited(GlbCache.instance.fetch(url).catchError((Object _) {
       return Uint8List(0);
     }));
+  }
+
+  Future<List<FeedWork>> _loadFeed() {
+    _hasMore = true;
+    _loadingMore = false;
+    return _service.fetchPublicFeed(
+      limit: _pageSize,
+      // 标签砍掉后定死 recent。原默认 tab 是 discover,本就映射到 recent,
+      // 所以这是**行为不变**的改法,不是换默认值。
+      sortBy: FeedSort.recent,
+      authorUserId: _authorFilterId,
+      query: _query.isEmpty ? null : _query,
+    );
+  }
+
+  /// 快滚到底时补下一页,静默追加(风格同 _kickPrefetch:发完不管)。
+  /// offset 翻页 + 按 id 去重 —— 两页之间有新作品发布时,offset 会把上一页
+  /// 的尾行再发一遍,去重后追加不闪不跳。失败不提示:用户继续滚会再触发。
+  Future<void> _maybeLoadMore(List<FeedWork> current) async {
+    if (_loadingMore || !_hasMore) return;
+    _loadingMore = true;
+    final feedAtStart = _feed;
+    try {
+      final next = await _service.fetchPublicFeed(
+        limit: _pageSize,
+        offset: current.length,
+        sortBy: FeedSort.recent,
+        authorUserId: _authorFilterId,
+        query: _query.isEmpty ? null : _query,
+      );
+      // tab / 搜索 / 下拉刷新已经换了整个列表 → 这批结果作废。
+      if (!mounted || !identical(_feed, feedAtStart)) return;
+      if (next.length < _pageSize) _hasMore = false;
+      final seen = current.map((w) => w.id).toSet();
+      final fresh = next.where((w) => !seen.contains(w.id)).toList();
+      if (fresh.isEmpty) return;
+      setState(() {
+        _feed = Future.value(<FeedWork>[...current, ...fresh]);
+      });
+    } catch (_) {
+      // 网络抖动:静默,滚动会重试。
+    } finally {
+      _loadingMore = false;
+    }
+  }
+
+  Future<void> _refresh() async {
+    final next = _loadFeed();
+    setState(() {
+      _resetFocus();
+      _feed = next;
+    });
+    await next;
+  }
+
+
+  // ignore: unused_element  —— [D2] 搜索代码按用户要求保留,只是不渲染。
+  void _onQuerySubmitted(String value) {
+    final trimmed = value.trim();
+    if (trimmed == _query) return;
+    setState(() {
+      _resetFocus();
+      _query = trimmed;
+      _feed = _loadFeed();
+    });
+  }
+
+  // ignore: unused_element  —— [D2] 搜索代码按用户要求保留,只是不渲染。
+  void _onAuthorTap(FeedWork work) {
+    if (_authorFilterId == work.userId) return;
+    setState(() {
+      _authorFilterId = work.userId;
+      _authorFilterName = work.authorDisplayName;
+      _hasMore = true;
+      _feed = _loadFeed();
+    });
+    _resetFocus();
+  }
+
+  void _clearAuthorFilter() {
+    setState(() {
+      _authorFilterId = null;
+      _authorFilterName = null;
+      _hasMore = true;
+      _feed = _loadFeed();
+    });
+    _resetFocus();
+  }
+
+  // ignore: unused_element  —— [D2] 搜索代码按用户要求保留,只是不渲染。
+  void _onClearQuery() {
+    if (_query.isEmpty && _searchController.text.isEmpty) return;
+    _searchController.clear();
+    setState(() {
+      _resetFocus();
+      _query = '';
+      _feed = _loadFeed();
+    });
   }
 
   @override
@@ -174,32 +278,46 @@ class _VaultPageState extends State<VaultPage> {
           children: [
             Column(
               children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(
-                    AetherSpacing.lg,
-                    AetherSpacing.md,
-                    AetherSpacing.lg,
-                    AetherSpacing.sm,
+                // [D1/D2/D3 2026-08-23 用户签决] 冷启动期社区首页 = **单信息流**。
+                //
+                // 砍掉的两样:
+                //   · 三个标签(热门/附近/发现)—— 公开作品个位数,空标签比没有
+                //     更伤。且实测「热门」与「发现」本就是同一个流的两个排序键,
+                //     合并零信息损失。「附近」的文案是"敬请期待"——**一句没兑现
+                //     的承诺比一个空标签更糟**。
+                //   · 顶部搜索框 —— 几件作品搜什么。
+                //
+                // ⚠️ 搜索的**代码全部保留**(_SearchBar / _searchController /
+                // _query / _onQuerySubmitted / _onClearQuery / service 的 query
+                // 参数),只是不渲染。用户明确要求"先留着别删"。
+                // 恢复 = 把下面这个 Padding 的注释解开。
+                //
+                // if (false) Padding(
+                //   padding: const EdgeInsets.fromLTRB(AetherSpacing.lg,
+                //       AetherSpacing.md, AetherSpacing.lg, AetherSpacing.sm),
+                //   child: _SearchBar(
+                //     controller: _searchController,
+                //     hasQuery: _query.isNotEmpty,
+                //     onSubmitted: _onQuerySubmitted,
+                //     onClear: _onClearQuery,
+                //   ),
+                // ),
+                // [D7] 作者过滤条 —— 只在过滤生效时占位,平时零高度。
+                // 它就是"只看这个人"这个状态的**唯一** UI:没有头像、没有简介、
+                // 没有关注、没有任何计数。
+                if (_authorFilterId != null)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(
+                      AetherSpacing.lg,
+                      AetherSpacing.md,
+                      AetherSpacing.lg,
+                      AetherSpacing.sm,
+                    ),
+                    child: _AuthorFilterBar(
+                      name: _authorFilterName ?? '',
+                      onClear: _clearAuthorFilter,
+                    ),
                   ),
-                  child: _SearchBar(
-                    controller: _searchController,
-                    hasQuery: _query.isNotEmpty,
-                    onSubmitted: _onQuerySubmitted,
-                    onClear: _onClearQuery,
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(
-                    AetherSpacing.lg,
-                    0,
-                    AetherSpacing.lg,
-                    AetherSpacing.sm,
-                  ),
-                  child: _CommunityTabBar(
-                    selected: _tab,
-                    onChanged: _onTabChanged,
-                  ),
-                ),
                 Expanded(
                   child: RefreshIndicator(
                     onRefresh: _refresh,
@@ -208,28 +326,23 @@ class _VaultPageState extends State<VaultPage> {
                 ),
               ],
             ),
-            // 1×1 invisible "anchor" Filament viewer. Stays mounted for
-            // the lifetime of VaultPage; every shared .glb asset is
-            // loaded through it (lib/community/glb_asset_cache.dart).
-            const Positioned(
-              left: 0,
-              top: 0,
-              width: 1,
-              height: 1,
-              child: IgnorePointer(child: _AnchorHost()),
-            ),
           ],
         ),
       ),
     );
   }
 
+  /// 主题卡只在**没有作者过滤**时出现 —— 「本周精选」是策展,
+  /// 在"只看某个人"的视图里没有意义。
+  bool get _showTopicCard =>
+      kShowCommunityTopicCard && _authorFilterId == null;
+
   Widget _buildFeed() {
     return FutureBuilder<List<FeedWork>>(
       future: _feed,
       builder: (context, snap) {
         if (snap.connectionState != ConnectionState.done) {
-          return const _LoadingState();
+          return _LoadingState(animate: _governor.liveAllowed);
         }
         if (snap.hasError) {
           return _ErrorState(
@@ -238,78 +351,107 @@ class _VaultPageState extends State<VaultPage> {
           );
         }
         final works = snap.data ?? const <FeedWork>[];
-        if (_tab == _CommunityTab.nearby) {
-          return const _NearbyComingSoonState();
-        }
         if (works.isEmpty) {
           return const _EmptyState();
         }
-        return ListView.separated(
-          physics: const AlwaysScrollableScrollPhysics(
-            parent: BouncingScrollPhysics(),
-          ),
-          padding: const EdgeInsets.fromLTRB(
-            AetherSpacing.lg,
-            AetherSpacing.md,
-            AetherSpacing.lg,
-            140,
-          ),
-          // Phase 6.4f hotfix — keep ~2 screens of off-screen cards
-          // mounted so fast back-scroll doesn't re-mount the
-          // AetherCppCardDemo (which runs initState → createTexture →
-          // load → fit → first-render, ~500 ms even with caches hit).
-          // Default cacheExtent is ~250 logical px; 2000 covers ~3
-          // cards above and below the visible region. The memory
-          // warning LRU on the native side will still dispose
-          // non-focused textures under pressure, but they'll quickly
-          // recover from the SplatDataCache + DecodedSplatCache hits
-          // instead of paying the full SPZ decode again.
-          cacheExtent: 2000,
-          itemCount: works.length,
-          separatorBuilder: (_, _) =>
-              const SizedBox(height: AetherSpacing.lg),
-          itemBuilder: (ctx, i) {
-            final w = works[i];
-            return PostCard(
-              work: w,
-              service: _service,
-              isFocused: _focusedWorkId == w.id,
-              onVisibilityChanged: (fraction) {
-                _onCardVisibilityChanged(w.id, fraction);
-                // Predictive byte-prefetch (Reels / TikTok pattern):
-                // as soon as a card peeks in, kick off bytes-only
-                // downloads for the next 1–2 cards through the same
-                // GlbCache the actual viewer will read from. By the
-                // time the user scrolls there, the GLB is already on
-                // disk — no perceptible load wait. Bytes-only is
-                // intentional: GlbAssetCache.getOrLoad would also
-                // allocate Filament GPU resources, which is wasteful
-                // for cards the user may swipe past without ever
-                // looking at.
-                if (fraction > 0.05) {
-                  for (int j = 1; j <= 2; j++) {
-                    final nextIdx = i + j;
-                    if (nextIdx < works.length) {
-                      _kickPrefetch(works[nextIdx]);
+        final liveId = _liveWorkId;
+        // 闸 5:滚动中不转,停下静止 300ms 才起转。判定放在这里而不是卡片里
+        // —— 只有列表看得见滚动,卡片看不见。
+        return NotificationListener<ScrollNotification>(
+          onNotification: (n) {
+            if (n is ScrollStartNotification) {
+              _governor.onScrollStart();
+            } else if (n is ScrollEndNotification) {
+              _governor.onScrollEnd();
+            }
+            // 距底不足 1200px(约三张卡)就补下一页;去重和竞态在
+            // _maybeLoadMore 里兜着,这里只管触发。
+            if (n.metrics.extentAfter < 1200) {
+              unawaited(_maybeLoadMore(works));
+            }
+            return false; // 别拦,RefreshIndicator 还要用这些通知
+          },
+          child: ListView.separated(
+            physics: const AlwaysScrollableScrollPhysics(
+              parent: BouncingScrollPhysics(),
+            ),
+            padding: const EdgeInsets.fromLTRB(
+              AetherSpacing.lg,
+              AetherSpacing.md,
+              AetherSpacing.lg,
+              140,
+            ),
+            // 留住约两屏的屏外卡片,让快速回滚不必重挂 AetherCppCardDemo
+            // (initState → createTexture → load → fit → 首帧,即使缓存全中
+            // 也要 ~500 ms)。默认 cacheExtent 约 250 逻辑像素,2000 覆盖可视
+            // 区上下各约 3 张,正好配 _LiveInstanceRegistry 的 cap=3。
+            //
+            // [2026-08-17] 我 08-16 把这行删了,理由是"卡片就是一张图,重建
+            // 等于查表"。mesh viewer 一接回来,这个理由就失效了 —— 更要命的是
+            // WorkCard 的 sticky-unmount(5 分钟)**依赖卡片留在树上**:
+            // ListView 一把屏外卡片回收,dispose 直接 unregister,sticky 形同
+            // 虚设,于是回滚必重挂。这是五月早就付过学费的那条。
+            cacheExtent: 2000,
+            // [D5 2026-08-23 用户签决] 主题卡 = **流内第一张卡**,与作品卡
+            // 同宽同层、可滑走 —— 不做压在流上方的独立横幅层。
+            // 依据:Roblox 的 Today's Picks 官方定位是 "a sort on Home";
+            // Behance 把 Best of Behance 做成与 For You 平级的 chip。
+            // 三家都没做独立横幅层。
+            //
+            // 落法是**同一个 ListView 里做下标偏移**(不换 CustomScrollView):
+            // itemCount 多 1,index 0 是主题卡,其余 works[i - offset]。
+            itemCount: works.length + (_showTopicCard ? 1 : 0),
+            separatorBuilder: (_, _) =>
+                const SizedBox(height: AetherSpacing.lg),
+            itemBuilder: (ctx, rawIndex) {
+              if (_showTopicCard && rawIndex == 0) {
+                return const TopicCard();
+              }
+              final i = rawIndex - (_showTopicCard ? 1 : 0);
+              final w = works[i];
+              // VisibilityDetector 在 WorkCard **内部** —— 它自己要用可见度跑
+              // sticky-mount / debounce / LRU 三层(五月的架构),顺带把读数
+              // 冒泡上来给这里算焦点。外面再套一个是重复劳动。
+              return WorkCard(
+                work: w,
+                service: _service,
+                isFocused: liveId == w.id,
+                rotationAllowed: _governor.liveAllowed,
+                // 五月留的口子。卡片的乐观点赞状态回传到这里,让父级有机会
+                // 把它并回 feed 列表 —— 目前和五月一样是空实现(WorkCard 自己
+                // 在 State 里保着,didUpdateWidget 负责不被冲掉),等 feed 状态
+                // 提成 ChangeNotifier 时这里才有事做。接上是为了不让调用方
+                // 以为"卡片改了状态父级收不到"。
+                onWorkUpdated: (updated) => _onWorkUpdated(w.id, updated),
+                onAuthorTap: _onAuthorTap,
+                onVisibilityChanged: (f) {
+                  _onCardVisibilityChanged(w.id, f);
+                  // 卡片刚露头就为后面 1-2 张预下字节,等用户滚到那里时
+                  // 模型已经在磁盘上。见 _kickPrefetch 的注释。
+                  if (f > 0.05) {
+                    for (var j = 1; j <= 2; j++) {
+                      final nextIdx = i + j;
+                      if (nextIdx < works.length) {
+                        _kickPrefetch(works[nextIdx]);
+                      }
                     }
                   }
-                }
-              },
-              onWorkUpdated: (updated) => _onWorkUpdated(i, updated),
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute<void>(
-                  builder: (_) =>
-                      WorkDetailPage(work: w, service: _service),
+                },
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => WorkDetailPage(work: w, service: _service),
+                  ),
                 ),
-              ),
-            );
-          },
+              );
+            },
+          ),
         );
       },
     );
   }
 }
 
+// ignore: unused_element  —— [D2] 搜索代码按用户要求保留,只是不渲染。
 class _SearchBar extends StatelessWidget {
   final TextEditingController controller;
   final bool hasQuery;
@@ -382,128 +524,11 @@ class _SearchBar extends StatelessWidget {
   }
 }
 
-class _CommunityTabBar extends StatelessWidget {
-  final _CommunityTab selected;
-  final ValueChanged<_CommunityTab> onChanged;
-
-  const _CommunityTabBar({required this.selected, required this.onChanged});
-
-  @override
-  Widget build(BuildContext context) {
-    final l = AppL10n.of(context);
-    final tabs = <(_CommunityTab, String)>[
-      (_CommunityTab.hot, l.communityTabHot),
-      (_CommunityTab.nearby, l.communityTabNearby),
-      (_CommunityTab.discover, l.communityTabDiscover),
-    ];
-    return Row(
-      children: [
-        for (int i = 0; i < tabs.length; i++) ...[
-          Expanded(
-            child: _CommunityTabPill(
-              label: tabs[i].$2,
-              selected: tabs[i].$1 == selected,
-              onTap: () => onChanged(tabs[i].$1),
-            ),
-          ),
-          if (i < tabs.length - 1) const SizedBox(width: AetherSpacing.sm),
-        ],
-      ],
-    );
-  }
-}
-
-class _CommunityTabPill extends StatelessWidget {
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-
-  const _CommunityTabPill({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      behavior: HitTestBehavior.opaque,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 140),
-        height: 36,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: selected ? AetherColors.primary : AetherColors.bgElevated,
-          borderRadius: BorderRadius.circular(AetherRadii.pill),
-          border: Border.all(
-            color: selected ? AetherColors.primary : AetherColors.border,
-          ),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-            color: selected
-                ? AetherColors.bgCanvas
-                : AetherColors.textPrimary,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// Mounts the long-lived "anchor" Filament viewer that owns every shared
-/// .glb asset in this session. Its ViewerWidget is sized 1×1 inside an
-/// IgnorePointer in VaultPage's Stack, so it doesn't show or steal hit
-/// tests, but the underlying Filament viewer stays alive for as long as
-/// the community feed page is on the route stack.
-class _AnchorHost extends StatefulWidget {
-  const _AnchorHost();
-
-  @override
-  State<_AnchorHost> createState() => _AnchorHostState();
-}
-
-class _AnchorHostState extends State<_AnchorHost> {
-  @override
-  Widget build(BuildContext context) {
-    return ViewerWidget(
-      initial: const SizedBox.shrink(),
-      background: const Color(0x00000000),
-      manipulatorType: ManipulatorType.NONE,
-      transformToUnitCube: false,
-      postProcessing: false,
-      destroyEngineOnUnload: false,
-      initialCameraPosition: v64.Vector3(0, 0, 5),
-      onViewerAvailable: (v) async {
-        AnchorViewer.set(v);
-      },
-    );
-  }
-
-  @override
-  void dispose() {
-    // The ViewerWidget below us tears down its Filament viewer on
-    // unmount. Two singletons hold references that survive that
-    // tear-down and would point at freed Filament objects on the next
-    // mount (typically: user signs out → AuthGate swaps HomeScreen for
-    // AuthRootView → VaultPage unmounts → THIS dispose runs → user
-    // signs back in → fresh HomeScreen → fresh per-card LiveModelView
-    // calls GlbAssetCache.getOrLoad → cache returns the cached asset
-    // whose Filament pointers are stale → addToScene() crashes the
-    // RenderThread with "Object doesn't exist (double free?)").
-    // Reset both so the next sign-in starts clean.
-    GlbAssetCache.instance.clear();
-    AnchorViewer.clear();
-    super.dispose();
-  }
-}
-
 class _LoadingState extends StatelessWidget {
-  const _LoadingState();
+  /// [§4] 热闸接到 CardLiveGovernor.liveAllowed —— **一屏跑多个骨架卡是真实的
+  /// 发热面**,它说不行就一个都不转(退化成静态灰块,不是继续转着看不见)。
+  final bool animate;
+  const _LoadingState({this.animate = true});
 
   @override
   Widget build(BuildContext context) {
@@ -511,18 +536,22 @@ class _LoadingState extends StatelessWidget {
       // Has to be scrollable so RefreshIndicator works above an empty
       // initial state.
       physics: const AlwaysScrollableScrollPhysics(),
-      children: const [
-        SizedBox(height: 200),
-        Center(
-          child: SizedBox(
-            width: 28,
-            height: 28,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              valueColor: AlwaysStoppedAnimation<Color>(AetherColors.primary),
-            ),
-          ),
-        ),
+      padding: const EdgeInsets.fromLTRB(
+        AetherSpacing.lg,
+        AetherSpacing.md,
+        AetherSpacing.lg,
+        140,
+      ),
+      children: [
+        // [§4 2026-08-23] 原本是一个 28×28 的 CircularProgressIndicator ——
+        // 首屏最大的一块视觉空白只放了个转圈。换成 2 张与作品卡同形的骨架:
+        // 用户一眼知道"要来的是卡片",而不是"这页在忙什么"。
+        //
+        // 只放 2 张不放 3 张:首屏可视区本来就放不下第三张,多画一张纯属
+        // 白给的重绘面积。
+        SkeletonWorkCard(animate: animate),
+        const SizedBox(height: AetherSpacing.lg),
+        SkeletonWorkCard(animate: animate),
       ],
     );
   }
@@ -549,41 +578,6 @@ class _EmptyState extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 40),
             child: Text(
               l.communityEmptyTitle,
-              textAlign: TextAlign.center,
-              style: const TextStyle(
-                fontSize: 14,
-                color: AetherColors.textSecondary,
-                height: 1.5,
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _NearbyComingSoonState extends StatelessWidget {
-  const _NearbyComingSoonState();
-
-  @override
-  Widget build(BuildContext context) {
-    final l = AppL10n.of(context);
-    return ListView(
-      physics: const AlwaysScrollableScrollPhysics(),
-      children: [
-        const SizedBox(height: 160),
-        const Icon(
-          Icons.near_me_outlined,
-          size: 56,
-          color: AetherColors.textTertiary,
-        ),
-        const SizedBox(height: AetherSpacing.lg),
-        Center(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 40),
-            child: Text(
-              l.communityNearbyComingSoon,
               textAlign: TextAlign.center,
               style: const TextStyle(
                 fontSize: 14,
@@ -631,6 +625,136 @@ class _ErrorState extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+
+/// [D9(a) 2026-08-23] 主题卡的内容**客户端硬编码**,不建表、不发请求。
+///
+/// 三选一里选 (a) 的理由:D6 已定为**常青人工精选**(不是限时活动),换得不频繁;
+/// 冷启动期最贵的是工时不是发版。等真需要按周换,再升到独立的 topics 表。
+///
+/// 顺带解决了 D10(判定时机):没有请求 ⇒ 不存在"跟首屏一起请求拖慢首屏"
+/// 还是"独立异步请求导致置顶卡晚于列表出现"的取舍。
+///
+/// **关掉它 = 把这里改成 false**,列表会自动退回纯作品流(itemCount 不再 +1)。
+const bool kShowCommunityTopicCard = true;
+
+/// 流内第一张卡:常青人工精选。
+///
+/// 与作品卡**同宽同层**,跟着一起滚、可以滑走 —— 这是 D5 的核心:
+/// 它是"流里的一张卡",不是"压在流上面的一层"。
+///
+/// 文案走 l10n(communityTopicTitle / communityTopicBody),中英各一份。
+/// ⚠️ 公开(而非 `_TopicCard`)是为了让 widget 测试能直接 pump 它。
+/// 它本来也是个正经的可复用卡片,没有私有的理由 —— 本文件其余
+/// `_LoadingState` / `_EmptyState` 之类仍是私有,因为没人从外面用。
+class TopicCard extends StatelessWidget {
+  const TopicCard({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppL10n.of(context);
+    return Container(
+      padding: const EdgeInsets.all(AetherSpacing.lg),
+      decoration: BoxDecoration(
+        color: AetherColors.bgElevated,
+        borderRadius: BorderRadius.circular(AetherRadii.lg),
+        border: Border.all(color: AetherColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              const Icon(
+                Icons.auto_awesome_rounded,
+                size: 18,
+                color: AetherColors.textPrimary,
+              ),
+              const SizedBox(width: AetherSpacing.sm),
+              Text(
+                l.communityTopicTitle,
+                style: AetherTextStyles.body.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: AetherColors.textPrimary,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: AetherSpacing.sm),
+          Text(
+            l.communityTopicBody,
+            style: AetherTextStyles.body.copyWith(
+              fontSize: 13,
+              color: AetherColors.textSecondary,
+              height: 1.4,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+
+/// [D7] 作者过滤条。整个"只看这个人的作品"就只有这一条 —— 刻意到此为止。
+///
+/// 明确不做:头像大图、简介、关注按钮、粉丝/关注/作品数。
+/// 依据见方案 §6:早做个人主页的三家(Roblox ~250 账号 / pixiv 三周破万 /
+/// Instagram 首日 2.5 万)规模不可类比;与我们最像的 Sketchfab 是上线约
+/// 7 个月后才有个人主页 URL 的,且**初期卡片连作者名都没有**。
+class _AuthorFilterBar extends StatelessWidget {
+  final String name;
+  final VoidCallback onClear;
+
+  const _AuthorFilterBar({required this.name, required this.onClear});
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppL10n.of(context);
+    return Container(
+      height: 40,
+      padding: const EdgeInsets.symmetric(horizontal: AetherSpacing.md),
+      decoration: BoxDecoration(
+        color: AetherColors.bgElevated,
+        borderRadius: BorderRadius.circular(AetherRadii.pill),
+        border: Border.all(color: AetherColors.border),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              l.communityOnlyAuthor(name),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: AetherTextStyles.body.copyWith(
+                fontWeight: FontWeight.w600,
+                color: AetherColors.textPrimary,
+              ),
+            ),
+          ),
+          GestureDetector(
+            onTap: onClear,
+            behavior: HitTestBehavior.opaque,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: AetherSpacing.sm,
+                vertical: AetherSpacing.xs,
+              ),
+              child: Text(
+                l.communityClearAuthorFilter,
+                style: AetherTextStyles.body.copyWith(
+                  fontSize: 13,
+                  color: AetherColors.textSecondary,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

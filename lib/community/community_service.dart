@@ -53,6 +53,10 @@ class CommunityService {
     int offset = 0,
     FeedSort sortBy = FeedSort.recent,
     String? query,
+    /// [D7 2026-08-23 用户签决] 只看某个作者的作品 —— 流内过滤,**不是**
+    /// 个人主页。后端本就 100% 就绪:profiles 六字段齐、FeedWork 已带 userId,
+    /// 过滤就是下面这一句 .eq('user_id', ...)。
+    String? authorUserId,
   }) async {
     // 1) Public works. Visibility filter belongs in code even though RLS
     // would already enforce it — public clients should never get a row
@@ -66,6 +70,9 @@ class CommunityService {
         )
         .eq('visibility', 'public')
         .not('published_at', 'is', null);
+    if (authorUserId != null && authorUserId.isNotEmpty) {
+      filter = filter.eq('user_id', authorUserId);
+    }
     final trimmedQuery = query?.trim();
     if (trimmedQuery != null && trimmedQuery.isNotEmpty) {
       // ilike is parameterized — pattern is sent as-is and matches as a
