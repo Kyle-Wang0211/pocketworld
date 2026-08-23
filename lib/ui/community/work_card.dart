@@ -152,6 +152,12 @@ class _WorkCardState extends State<WorkCard> {
   double _visibility = 0;
   bool _isLive = false;
   bool _viewerFirstFrameReady = false;
+
+  /// 缩略图是否已经画出第一帧。
+  ///
+  /// [2026-08-23] 与 [_viewerFirstFrameReady] 一起构成**唯一的就绪闸**。
+  /// 在此之前整张卡被骨架盖住 —— 见 build 里 `ready` 的注释。
+  bool _thumbReady = false;
   /// [D7] @handle 的点击识别器。
   ///
   /// ⚠️ TapGestureRecognizer **必须 dispose**,否则每张卡漏一个 —— feed 滚起来
@@ -345,6 +351,24 @@ class _WorkCardState extends State<WorkCard> {
     final canMountLiveViewer =
         _isLive && modelUrl != null && !isPointCloudFormat;
 
+    // [2026-08-23 用户签决] **卡片只有两种状态:灰色闪烁的骨架,和完成态。**
+    //
+    // 在此之前这里漏出至少三种中间态(真机截图为证):
+    //   ① feed 级 _LoadingState —— 2 张骨架卡,连主题卡都还没有
+    //   ② 黑底 + **无条件画出来的玻璃板** —— 文字浮在纯黑上几乎看不见,
+    //      因为玻璃板那一层不等缩略图、也不等 viewer 出第一帧
+    //   ③ 完成态
+    // ② 是最难看的一种:它既不是"在加载"也不是"好了",是个幽灵。
+    //
+    // 现在收成一个闸:内容真的能看了才算 ready,在那之前骨架**盖住整张卡**
+    // (包括玻璃板)。三种情形:
+    //   · 焦点卡要挂 viewer  → 等 viewer 的第一帧
+    //   · 只有缩略图         → 等图的第一帧(图挂了也放行,见 errorBuilder)
+    //   · 两者都没有         → 立刻 ready,否则骨架会永远盖着
+    final ready = canMountLiveViewer
+        ? _viewerFirstFrameReady
+        : (thumbUrl == null ? true : _thumbReady);
+
     return VisibilityDetector(
       key: Key('work-card-${_work.id}'),
       onVisibilityChanged: _onVisibilityChanged,
@@ -369,12 +393,30 @@ class _WorkCardState extends State<WorkCard> {
                   fit: BoxFit.cover,
                   cacheWidth: cacheWidth,
                   gaplessPlayback: true,
-                  loadingBuilder: (ctx, child, progress) =>
-                      progress == null ? child : _CardPlaceholder(animate: widget.rotationAllowed),
-                  errorBuilder: (ctx, _, _) => _CardPlaceholder(animate: widget.rotationAllowed),
-                )
-              else
-                _CardPlaceholder(animate: widget.rotationAllowed),
+                  // [2026-08-23] 首帧画出来才算就绪。
+                  // frameBuilder 在 build 期间被调,不能直接 setState。
+                  frameBuilder: (ctx, child, frame, wasSync) {
+                    if ((frame != null || wasSync) && !_thumbReady) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (mounted && !_thumbReady) {
+                          setState(() => _thumbReady = true);
+                        }
+                      });
+                    }
+                    return child;
+                  },
+                  // 图挂了也要放行 —— 否则骨架会永远盖着,那是第三种状态。
+                  errorBuilder: (ctx, _, _) {
+                    if (!_thumbReady) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (mounted && !_thumbReady) {
+                          setState(() => _thumbReady = true);
+                        }
+                      });
+                    }
+                    return const SizedBox.shrink();
+                  },
+                ),
               // 焦点卡的 live 层 —— 叠在缩略图之上、玻璃板之下。
               //
               // 闸 6「离开焦点立即回落静态图,不留后台渲染」在这里是**卸载**
@@ -421,11 +463,14 @@ class _WorkCardState extends State<WorkCard> {
               //   • "更厚"          → thickness 20→50 (overshot)
               //   • "更透明 + 太厚了" → thickness 50→20, α 0x14→0x08,
               //                        refractiveIndex 1.45→1.20
-              Positioned(
-                left: AetherSpacing.md,
-                right: AetherSpacing.md,
-                bottom: AetherSpacing.md,
-                child: LiquidGlassLayer(
+              // [2026-08-23] 加闸:没就绪就不画。此前它是**无条件**的,
+              // 于是在黑底上浮出一块几乎看不见文字的玻璃板 —— 那是中间态 ②。
+              if (ready)
+                Positioned(
+                  left: AetherSpacing.md,
+                  right: AetherSpacing.md,
+                  bottom: AetherSpacing.md,
+                  child: LiquidGlassLayer(
                   settings: const LiquidGlassSettings(
                     thickness: 20,
                     blur: 4,
@@ -559,6 +604,29 @@ class _WorkCardState extends State<WorkCard> {
                         ],
                       ),
                     ),
+                  ),
+                ),
+              ),
+              // ── 加载态:骨架**盖在最上层**,盖住黑底、缩略图、玻璃板全部。
+              //
+              // [2026-08-23 用户签决]「我就要两个状态:灰色闪烁的加载状态,
+              // 和最终的完成状态。」所以这里不是"某一层的占位",而是一整块
+              // 幕布 —— 在 ready 之前,用户看到的就只有灰色骨架。
+              //
+              // 用 IgnorePointer 让点击穿透到下面的卡片手势(加载中点一下也该
+              // 能进详情页,而不是被幕布吞掉)。
+              //
+              // 200ms 淡出与 viewer 的淡入同时长,两者交叉过渡,不会出现
+              // "骨架已经没了但内容还没上来"的第三帧。
+              IgnorePointer(
+                ignoring: ready,
+                child: AnimatedOpacity(
+                  opacity: ready ? 0.0 : 1.0,
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.easeOut,
+                  child: SkeletonWorkCard(
+                    fill: true,
+                    animate: widget.rotationAllowed,
                   ),
                 ),
               ),
@@ -716,18 +784,3 @@ class _ViewsChip extends StatelessWidget {
   }
 }
 
-/// Shown while the thumbnail loads, and for works that have none — a
-/// published work normally carries its thumbnail from the first moment
-/// (PublishService uploads it), so this is the rare path.
-class _CardPlaceholder extends StatelessWidget {
-  /// [§4] 与 _LoadingState 同一道热闸:调用方传 rotationAllowed 下来。
-  final bool animate;
-  const _CardPlaceholder({this.animate = true});
-
-  @override
-  Widget build(BuildContext context) {
-    // [§4 2026-08-23] 原本是静态暗色渐变 + blur_on 图标 —— 它没告诉用户
-    // "在加载",看起来像"这张卡就长这样"。换成会轻微呼吸的骨架。
-    return SkeletonBox(animate: animate, borderRadius: BorderRadius.zero);
-  }
-}

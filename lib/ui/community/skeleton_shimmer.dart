@@ -136,15 +136,29 @@ class _SkeletonBoxState extends State<SkeletonBox>
 /// 尺寸刻意贴着 WorkCard 的真实布局,避免真数据到位那一刻整页跳动。
 class SkeletonWorkCard extends StatelessWidget {
   final bool animate;
-  const SkeletonWorkCard({super.key, this.animate = true});
+
+  /// 铺满父级(用在已经被 ClipRRect + AspectRatio 包住的卡片 Stack 里),
+  /// 而不是自带一套圆角与方形约束。
+  final bool fill;
+
+  const SkeletonWorkCard({
+    super.key,
+    this.animate = true,
+    this.fill = false,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final inner = _content(context);
+    if (fill) return inner;
     return ClipRRect(
       borderRadius: BorderRadius.circular(20),
-      child: AspectRatio(
-        aspectRatio: 1,
-        child: Stack(
+      child: AspectRatio(aspectRatio: 1, child: inner),
+    );
+  }
+
+  Widget _content(BuildContext context) {
+    return Stack(
           fit: StackFit.expand,
           children: [
             SkeletonBox(
@@ -165,9 +179,7 @@ class SkeletonWorkCard extends StatelessWidget {
                 ],
               ),
             ),
-          ],
-        ),
-      ),
+      ],
     );
   }
 }

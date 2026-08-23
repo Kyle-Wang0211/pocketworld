@@ -359,7 +359,12 @@ class _VaultPageState extends State<VaultPage> {
       future: _feed,
       builder: (context, snap) {
         if (snap.connectionState != ConnectionState.done) {
-          return _LoadingState(animate: _governor.liveAllowed);
+          return _LoadingState(
+            animate: _governor.liveAllowed,
+            // 主题卡是硬编码的,不等任何请求 —— 加载态就该画上,
+            // 否则 feed 到达时整列往下跳一格,那是第三种可见状态。
+            showTopicCard: _showTopicCard,
+          );
         }
         if (snap.hasError) {
           return _ErrorState(
@@ -545,7 +550,12 @@ class _LoadingState extends StatelessWidget {
   /// [§4] 热闸接到 CardLiveGovernor.liveAllowed —— **一屏跑多个骨架卡是真实的
   /// 发热面**,它说不行就一个都不转(退化成静态灰块,不是继续转着看不见)。
   final bool animate;
-  const _LoadingState({this.animate = true});
+
+  /// [2026-08-23] 加载态也画主题卡。它硬编码、不等请求,画上去 feed 到达时
+  /// 就不会整列跳一格 —— 用户签决"只要两个状态",布局跳动就是第三种。
+  final bool showTopicCard;
+
+  const _LoadingState({this.animate = true, this.showTopicCard = false});
 
   @override
   Widget build(BuildContext context) {
@@ -560,6 +570,10 @@ class _LoadingState extends StatelessWidget {
         140,
       ),
       children: [
+        if (showTopicCard) ...[
+          const TopicCard(),
+          const SizedBox(height: AetherSpacing.lg),
+        ],
         // [§4 2026-08-23] 原本是一个 28×28 的 CircularProgressIndicator ——
         // 首屏最大的一块视觉空白只放了个转圈。换成 2 张与作品卡同形的骨架:
         // 用户一眼知道"要来的是卡片",而不是"这页在忙什么"。

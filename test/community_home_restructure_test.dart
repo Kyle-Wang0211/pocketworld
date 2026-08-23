@@ -139,8 +139,21 @@ void main() {
     });
 
     test('热闸接到 CardLiveGovernor —— 一屏多个骨架卡是真实发热面', () {
-      expect(code, contains('_LoadingState(animate: _governor.liveAllowed)'));
-      expect(card, contains('_CardPlaceholder(animate: widget.rotationAllowed)'));
+      // [2026-08-23 更新] 接法变了,但闸还在:
+      //   · feed 层仍从 _governor.liveAllowed 取(只是拆成多行传参了)
+      //   · 卡片层原来是 _CardPlaceholder(逐层占位),现在改成一整块骨架幕布
+      //     (用户签决"只要两个状态"),热闸同样从 widget.rotationAllowed 取
+      expect(code, contains('animate: _governor.liveAllowed'));
+      expect(
+        card,
+        contains('animate: widget.rotationAllowed'),
+        reason: '骨架幕布必须受热闸管 —— 一屏多个骨架卡是真实发热面',
+      );
+      expect(
+        card,
+        contains('SkeletonWorkCard('),
+        reason: '幕布本体',
+      );
     });
 
     testWidgets('animate=false → 静态,不挂 AnimatedBuilder', (t) async {
