@@ -76,3 +76,7 @@ ios/Flutter/flutter_export_environment.sh
 # 训练语料本体(591MB 的解压素材;可复现的清单与来源 yaml 仍然入库,
 # 见同目录 phase2-training-corpus-manifest.json / -sources.yaml)
 /experiments/plr_derived_brunsli_two_photo/results/phase2-training/
+
+# [SNAPSHOT 2026-08-23] Supabase 数据快照:含 auth.users 的 bcrypt 密码哈希与邮箱,
+# 绝不进版本库。schema.sql / roles.sql 是纯结构,可以提交。
+tool/backups/snapshot_*/data.sql
