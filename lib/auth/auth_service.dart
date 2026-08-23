@@ -75,4 +75,18 @@ abstract class AuthService {
   /// state without a re-sign-in. Throws AuthException on failure
   /// (network / not signed in / provider error).
   Future<AuthenticatedUser> updateDisplayName(String displayName);
+
+  /// Set the signed-in user's unique handle (the "@" style identifier).
+  ///
+  /// Two-track naming, mirroring Discord / WeChat:
+  ///   · displayName — repeatable, Chinese/emoji allowed, shown everywhere
+  ///   · handle      — globally unique, lowercase ASCII, lets people find you
+  ///
+  /// Returns nothing: handle does not live on [AuthenticatedUser] (which is
+  /// built from the auth session's metadata, and handle lives in
+  /// public.profiles). Read it back through MeStatsViewModel.
+  ///
+  /// Throws AuthException on failure — including the ones only the server can
+  /// decide: handle already taken, reserved name, rename cooldown.
+  Future<void> updateHandle(String handle);
 }

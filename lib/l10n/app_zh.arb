@@ -12,6 +12,11 @@
   "communityTabHot": "热门",
   "communityTabNearby": "附近",
   "communityTabDiscover": "发现",
+  "communityOnlyAuthor": "只看 @{name} 的作品",
+  "@communityOnlyAuthor": { "placeholders": { "name": {"type": "String"} } },
+  "communityClearAuthorFilter": "看全部",
+  "communityTopicTitle": "本周精选",
+  "communityTopicBody": "编辑挑出的空间。想上这里，就把你扫的地方发出来。",
   "communityNearbyComingSoon": "附近功能即将上线，敬请期待。",
   "meMyWorksEmpty": "还没有作品 —— 点右下角的相机开始第一次扫描。",
   "scanLifecycleCompleted": "已完成",
@@ -120,12 +125,26 @@
   "meBadgeDone": "完成",
   "meTabDrafts": "草稿",
   "defaultImportedScan": "导入的模型",
-  "meDisplayName": "用户名",
-  "meDisplayNameDialogTitle": "修改用户名",
-  "meDisplayNameDialogHint": "新用户名(1-40 字)",
-  "meDisplayNameUpdated": "用户名已更新",
+  "meDisplayName": "昵称",
+  "meDisplayNameDialogTitle": "修改昵称",
+  "meDisplayNameDialogHint": "新昵称(最多 20 字)",
+  "meDisplayNameUpdated": "昵称已更新",
   "meDisplayNameUpdateFailed": "更新失败:{error}",
   "@meDisplayNameUpdateFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "meHandle": "ID",
+  "meHandleNotSet": "未设置",
+  "meHandleDialogTitle": "设置 ID",
+  "meHandleDialogHint": "小写字母、数字、点、下划线,2-32 位",
+  "meHandleDialogNote": "ID 全站唯一,用来让别人找到你。设置后 3 天内不能再改。",
+  "meHandleUpdated": "ID 已更新",
+  "meHandleUpdateFailed": "ID 更新失败:{error}",
+  "@meHandleUpdateFailed": {
     "placeholders": {
       "error": {
         "type": "String"

@@ -45,6 +45,21 @@ class AppL10nEn extends AppL10n {
   String get communityTabDiscover => 'Discover';
 
   @override
+  String communityOnlyAuthor(String name) {
+    return 'Only @$name';
+  }
+
+  @override
+  String get communityClearAuthorFilter => 'Show all';
+
+  @override
+  String get communityTopicTitle => 'Editors\' Picks';
+
+  @override
+  String get communityTopicBody =>
+      'Spaces we picked by hand. Want to be here? Publish what you scanned.';
+
+  @override
   String get communityNearbyComingSoon => 'Nearby is coming soon — stay tuned.';
 
   @override
@@ -319,7 +334,7 @@ class AppL10nEn extends AppL10n {
   String get meDisplayNameDialogTitle => 'Edit display name';
 
   @override
-  String get meDisplayNameDialogHint => 'New display name (1-40 chars)';
+  String get meDisplayNameDialogHint => 'New display name (up to 20 chars)';
 
   @override
   String get meDisplayNameUpdated => 'Display name updated';
@@ -327,6 +342,30 @@ class AppL10nEn extends AppL10n {
   @override
   String meDisplayNameUpdateFailed(String error) {
     return 'Update failed: $error';
+  }
+
+  @override
+  String get meHandle => 'Username';
+
+  @override
+  String get meHandleNotSet => 'Not set';
+
+  @override
+  String get meHandleDialogTitle => 'Set username';
+
+  @override
+  String get meHandleDialogHint => 'Lowercase letters, numbers, . and _ (2-32)';
+
+  @override
+  String get meHandleDialogNote =>
+      'Your username is unique and lets people find you. It can only be changed once every 3 days.';
+
+  @override
+  String get meHandleUpdated => 'Username updated';
+
+  @override
+  String meHandleUpdateFailed(String error) {
+    return 'Username update failed: $error';
   }
 
   @override
@@ -527,13 +566,11 @@ class AppL10nEn extends AppL10n {
 
   @override
   String get publishErrTooLarge =>
-      'This scan exceeds the upload size limit — retrying will not help. '
-      'Please capture a smaller area and regenerate.';
+      'This scan exceeds the upload size limit — retrying will not help. Please capture a smaller area and regenerate.';
 
   @override
   String get publishErrRejected =>
-      'This file failed server-side validation and may be corrupted. '
-      'Please regenerate the scan.';
+      'This file failed server-side validation and may be corrupted. Please regenerate the scan.';
 
   @override
   String get publishErrInserting =>

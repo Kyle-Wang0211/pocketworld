@@ -17,9 +17,14 @@ class MeStatsViewModel extends ChangeNotifier {
 
   bool? _notificationsEnabled;
   bool? _isPrivate;
+  String? _handle;
 
   bool? get notificationsEnabled => _notificationsEnabled;
   bool? get isPrivate => _isPrivate;
+
+  /// 唯一 handle。null = 尚未设置(迁移 20260823010000 允许 handle 为 NULL,
+  /// 不自动生成 —— GitHub 的教训是自动分配 + 旧名释放会被抢注冒充)。
+  String? get handle => _handle;
 
   Future<void> load() => _loadRemote();
 
@@ -33,12 +38,15 @@ class MeStatsViewModel extends ChangeNotifier {
       // (e.g. RLS denies the read in tests).
       final profile = await client
           .from('profiles')
-          .select('is_private')
+          .select('is_private, handle')
           .eq('id', uid)
           .maybeSingle();
       if (_disposed) return;
       if (profile != null && profile['is_private'] is bool) {
         _isPrivate = profile['is_private'] as bool;
+      }
+      if (profile != null) {
+        _handle = profile['handle'] as String?;
       }
       // notification_settings — the row is created lazily the first time
       // the user touches notification preferences, so a null here means
@@ -57,6 +65,10 @@ class MeStatsViewModel extends ChangeNotifier {
       debugPrint('[MeStats] remote load failed: $e\n$s');
     }
   }
+
+  /// 改完 handle 后重新拉一次。handle 不在 AuthenticatedUser 上
+  /// (它存在 public.profiles 而不是 auth metadata),所以设置页要靠这个回读。
+  Future<void> refresh() => _loadRemote();
 
   @override
   void dispose() {

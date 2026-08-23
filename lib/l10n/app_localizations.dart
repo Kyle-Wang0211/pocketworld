@@ -169,6 +169,30 @@ abstract class AppL10n {
   /// **'Discover'**
   String get communityTabDiscover;
 
+  /// No description provided for @communityOnlyAuthor.
+  ///
+  /// In en, this message translates to:
+  /// **'Only @{name}'**
+  String communityOnlyAuthor(String name);
+
+  /// No description provided for @communityClearAuthorFilter.
+  ///
+  /// In en, this message translates to:
+  /// **'Show all'**
+  String get communityClearAuthorFilter;
+
+  /// No description provided for @communityTopicTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Editors\' Picks'**
+  String get communityTopicTitle;
+
+  /// No description provided for @communityTopicBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Spaces we picked by hand. Want to be here? Publish what you scanned.'**
+  String get communityTopicBody;
+
   /// No description provided for @communityNearbyComingSoon.
   ///
   /// In en, this message translates to:
@@ -664,7 +688,7 @@ abstract class AppL10n {
   /// No description provided for @meDisplayNameDialogHint.
   ///
   /// In en, this message translates to:
-  /// **'New display name (1-40 chars)'**
+  /// **'New display name (up to 20 chars)'**
   String get meDisplayNameDialogHint;
 
   /// No description provided for @meDisplayNameUpdated.
@@ -678,6 +702,48 @@ abstract class AppL10n {
   /// In en, this message translates to:
   /// **'Update failed: {error}'**
   String meDisplayNameUpdateFailed(String error);
+
+  /// No description provided for @meHandle.
+  ///
+  /// In en, this message translates to:
+  /// **'Username'**
+  String get meHandle;
+
+  /// No description provided for @meHandleNotSet.
+  ///
+  /// In en, this message translates to:
+  /// **'Not set'**
+  String get meHandleNotSet;
+
+  /// No description provided for @meHandleDialogTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Set username'**
+  String get meHandleDialogTitle;
+
+  /// No description provided for @meHandleDialogHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Lowercase letters, numbers, . and _ (2-32)'**
+  String get meHandleDialogHint;
+
+  /// No description provided for @meHandleDialogNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Your username is unique and lets people find you. It can only be changed once every 3 days.'**
+  String get meHandleDialogNote;
+
+  /// No description provided for @meHandleUpdated.
+  ///
+  /// In en, this message translates to:
+  /// **'Username updated'**
+  String get meHandleUpdated;
+
+  /// No description provided for @meHandleUpdateFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Username update failed: {error}'**
+  String meHandleUpdateFailed(String error);
 
   /// No description provided for @sfmSaveDraft.
   ///
@@ -1018,13 +1084,13 @@ abstract class AppL10n {
   /// No description provided for @publishErrTooLarge.
   ///
   /// In en, this message translates to:
-  /// **'This scan is too large to publish'**
+  /// **'This scan exceeds the upload size limit — retrying will not help. Please capture a smaller area and regenerate.'**
   String get publishErrTooLarge;
 
   /// No description provided for @publishErrRejected.
   ///
   /// In en, this message translates to:
-  /// **'This file failed server-side validation'**
+  /// **'This file failed server-side validation and may be corrupted. Please regenerate the scan.'**
   String get publishErrRejected;
 
   /// No description provided for @publishErrInserting.

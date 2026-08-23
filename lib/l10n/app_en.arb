@@ -15,6 +15,11 @@
   "communityTabHot": "Hot",
   "communityTabNearby": "Nearby",
   "communityTabDiscover": "Discover",
+  "communityOnlyAuthor": "Only @{name}",
+  "@communityOnlyAuthor": { "placeholders": { "name": {"type": "String"} } },
+  "communityClearAuthorFilter": "Show all",
+  "communityTopicTitle": "Editors' Picks",
+  "communityTopicBody": "Spaces we picked by hand. Want to be here? Publish what you scanned.",
   "communityNearbyComingSoon": "Nearby is coming soon — stay tuned.",
   "meMyWorksEmpty": "No works yet — tap the camera to start your first capture.",
   "scanLifecycleCompleted": "Completed",
@@ -181,10 +186,24 @@
   "defaultImportedScan": "Imported model",
   "meDisplayName": "Display name",
   "meDisplayNameDialogTitle": "Edit display name",
-  "meDisplayNameDialogHint": "New display name (1-40 chars)",
+  "meDisplayNameDialogHint": "New display name (up to 20 chars)",
   "meDisplayNameUpdated": "Display name updated",
   "meDisplayNameUpdateFailed": "Update failed: {error}",
   "@meDisplayNameUpdateFailed": {
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+  "meHandle": "Username",
+  "meHandleNotSet": "Not set",
+  "meHandleDialogTitle": "Set username",
+  "meHandleDialogHint": "Lowercase letters, numbers, . and _ (2-32)",
+  "meHandleDialogNote": "Your username is unique and lets people find you. It can only be changed once every 3 days.",
+  "meHandleUpdated": "Username updated",
+  "meHandleUpdateFailed": "Username update failed: {error}",
+  "@meHandleUpdateFailed": {
     "placeholders": {
       "error": {
         "type": "String"

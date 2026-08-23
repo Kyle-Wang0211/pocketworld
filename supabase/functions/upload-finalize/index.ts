@@ -35,6 +35,7 @@
 
 import { createClient } from 'jsr:@supabase/supabase-js@2.112.3';
 import { corsHeaders, jsonResponse, consumeRateLimit } from '../_shared/cors.ts';
+import { validate } from './validate.ts';
 
 const STAGING = 'staging';
 const QUARANTINE = 'quarantine';
@@ -43,7 +44,6 @@ const QUARANTINE = 'quarantine';
 /// PLY 的 ASCII header 通常几百字节内结束。8KB 留足余量且远低于任何预算。
 const PROBE_BYTES = 8192;
 
-export type Verdict = { ok: true; kind: string } | { ok: false; reason: string };
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -219,58 +219,6 @@ Deno.serve(async (req) => {
 
   return jsonResponse({ ok: true, path: targetPath, kind: verdict.kind });
 });
-
-// ── 校验规则 ─────────────────────────────────────────────────────────
-// 与客户端 lib/util/file_signature.dart **同一套规则**,刻意保持一致:
-// 客户端那份挡误操作,这份是强制点。两端标准不一致会造成"客户端说行、
-// 服务端说不行"的困惑,反之则是安全洞。
-export function validate(head: Uint8Array, size: number, path: string): Verdict {
-  if (head.length < 4) return { ok: false, reason: 'too_short' };
-
-  // ② 可执行体特征优先判 —— 命中即拒,不再往下看。
-  if (startsWith(head, [0x4d, 0x5a])) return { ok: false, reason: 'exe_mz' };
-  if (startsWith(head, [0x7f, 0x45, 0x4c, 0x46])) return { ok: false, reason: 'exe_elf' };
-  if (startsWith(head, [0x23, 0x21])) return { ok: false, reason: 'shebang' };
-  if (startsWith(head, [0x50, 0x4b, 0x03, 0x04])) return { ok: false, reason: 'zip' };
-  if (startsWith(head, [0xca, 0xfe, 0xba, 0xbe])) return { ok: false, reason: 'macho_fat' };
-
-  const ext = path.toLowerCase().slice(path.lastIndexOf('.') + 1);
-
-  // ① 正向白名单:只放行明确认识的类型。
-  if (ext === 'ply') {
-    if (!startsWithAscii(head, 'ply')) return { ok: false, reason: 'not_ply' };
-    return { ok: true, kind: 'ply' };
-  }
-
-  if (ext === 'glb') {
-    if (!startsWithAscii(head, 'glTF')) return { ok: false, reason: 'not_glb' };
-    // ③ 容器自洽性:GLB 头第 8-11 字节是小端 uint32 总长,必须等于实际大小。
-    // 这是挡 polyglot 的那一道 —— 光看魔数挡不住"合法头 + 尾部附加载荷"。
-    if (head.length >= 12 && size > 0) {
-      const declared = head[8] | (head[9] << 8) | (head[10] << 16) | (head[11] << 24);
-      if (declared >>> 0 !== size) {
-        return { ok: false, reason: `glb_length_mismatch:${declared >>> 0}!=${size}` };
-      }
-    }
-    return { ok: true, kind: 'glb' };
-  }
-
-  // 未知后缀一律拒绝,而不是放行。
-  return { ok: false, reason: `unsupported_ext:${ext}` };
-}
-
-function startsWith(b: Uint8Array, magic: number[]): boolean {
-  if (b.length < magic.length) return false;
-  return magic.every((m, i) => b[i] === m);
-}
-
-function startsWithAscii(b: Uint8Array, s: string): boolean {
-  if (b.length < s.length) return false;
-  for (let i = 0; i < s.length; i++) {
-    if (b[i] !== s.charCodeAt(i)) return false;
-  }
-  return true;
-}
 
 function firstIp(raw: string | null): string | null {
   if (!raw) return null;

@@ -45,6 +45,20 @@ class AppL10nZh extends AppL10n {
   String get communityTabDiscover => '发现';
 
   @override
+  String communityOnlyAuthor(String name) {
+    return '只看 @$name 的作品';
+  }
+
+  @override
+  String get communityClearAuthorFilter => '看全部';
+
+  @override
+  String get communityTopicTitle => '本周精选';
+
+  @override
+  String get communityTopicBody => '编辑挑出的空间。想上这里，就把你扫的地方发出来。';
+
+  @override
   String get communityNearbyComingSoon => '附近功能即将上线，敬请期待。';
 
   @override
@@ -309,20 +323,43 @@ class AppL10nZh extends AppL10n {
   String get defaultImportedScan => '导入的模型';
 
   @override
-  String get meDisplayName => '用户名';
+  String get meDisplayName => '昵称';
 
   @override
-  String get meDisplayNameDialogTitle => '修改用户名';
+  String get meDisplayNameDialogTitle => '修改昵称';
 
   @override
-  String get meDisplayNameDialogHint => '新用户名(1-40 字)';
+  String get meDisplayNameDialogHint => '新昵称(最多 20 字)';
 
   @override
-  String get meDisplayNameUpdated => '用户名已更新';
+  String get meDisplayNameUpdated => '昵称已更新';
 
   @override
   String meDisplayNameUpdateFailed(String error) {
     return '更新失败:$error';
+  }
+
+  @override
+  String get meHandle => 'ID';
+
+  @override
+  String get meHandleNotSet => '未设置';
+
+  @override
+  String get meHandleDialogTitle => '设置 ID';
+
+  @override
+  String get meHandleDialogHint => '小写字母、数字、点、下划线,2-32 位';
+
+  @override
+  String get meHandleDialogNote => 'ID 全站唯一,用来让别人找到你。设置后 3 天内不能再改。';
+
+  @override
+  String get meHandleUpdated => 'ID 已更新';
+
+  @override
+  String meHandleUpdateFailed(String error) {
+    return 'ID 更新失败:$error';
   }
 
   @override
@@ -516,13 +553,9 @@ class AppL10nZh extends AppL10n {
   String get publishErrUploading => '上传失败,请检查网络后重试';
 
   @override
-  // 刻意不写"请检查网络" —— 体积超限时检查网络毫无用处,那句话会把用户
-  // 引向一条永远走不通的路。这里给出可行动的信息:是什么问题、多大、
-  // 以及唯一能解决它的动作。
   String get publishErrTooLarge => '这个扫描太大,超出了上传上限,重试不会成功。请缩小扫描范围后重新生成。';
 
   @override
-  // 同样不写"请重试" —— 同一份文件重试永远不会通过。
   String get publishErrRejected => '文件未通过服务端校验,可能已损坏。请重新生成这个扫描。';
 
   @override

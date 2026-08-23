@@ -549,11 +549,18 @@ class _PublishFormState extends State<_PublishForm> {
               ),
             ),
             const SizedBox(height: AetherSpacing.sm),
+            // [UGC-SURFACE 2026-08-23] 描述从 5000 字收到 30 字。
+            // 理由不是 UI,是风险面:标题 100 字 + 描述 30 字是本产品仅有的
+            // 两个自由文本入口(昵称走白名单池、评论/私信冷启动不开放),
+            // 收窄后二者同量级,一次审核预算覆盖两者。
+            // ⚠️ 这是客户端软限制,可绕过 —— `works_insert_own` 策略仍允许
+            //    authenticated 直接 insert public.works,DB 侧 CHECK 才是
+            //    真边界。见 supabase/migrations/*_tighten_description_length。
             TextField(
               controller: _desc,
-              maxLength: 5000,
-              maxLines: 3,
-              minLines: 2,
+              maxLength: 30,
+              maxLines: 2,
+              minLines: 1,
               decoration: InputDecoration(
                 labelText: l.publishFieldDescription,
                 border: const OutlineInputBorder(),

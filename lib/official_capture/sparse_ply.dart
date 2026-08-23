@@ -34,6 +34,26 @@ Future<void> persistSparseSnapshot({
         'ply\n'
         'format binary_little_endian 1.0\n'
         'comment PocketWorld capture-time sparse reconstruction (full set)\n'
+        // [DEEPSYN-MARK 2026-08-23] 《互联网信息服务深度合成管理规定》第十六条:
+        // "采取技术措施添加不影响用户使用的标识"。PLY comment 是 Stanford PLY
+        // 格式标准的一部分,且本文件上面那行 comment 已经在生产里跑了很久 ——
+        // 三个 parser(ui/sparse_thumbnail.dart、ui/*/sparse_cloud_viewer_page.dart、
+        // aether_view/format_detect.dart)全部按 `end_header` 标记定位 + 正则取
+        // `element vertex`,不依赖行号,所以加行安全。
+        //
+        // method 显式记 photogrammetry-sfm:该规定第二十三条把"三维重建"列为
+        // 深度合成技术,但限定语是"生成或者编辑数字人物、**虚拟场景**";这条管线
+        // 是从真实照片测量重建真实场景。把方法写进产物本身,是可验证的立场声明。
+        //
+        // ⚠️ 禁止在此写入时间戳或任何每次变化的值:发布路径是 {uid}/{sha1}.ply,
+        //    sha1 对 PLY 全字节计算,可变 comment 会让同一份点云每次得到不同的
+        //    storage path。时间信息已在 official_sfm_sparse_meta.json 的
+        //    `written_at`(schema pw_sfm_sparse_meta_v2)。
+        // ⚠️ header 总长必须 < 4096B —— ui/sparse_thumbnail.dart 的扫描循环
+        //    写死了 `i < 4096`,超出会导致缩略图静默加载失败。
+        'comment generator=PocketWorld\n'
+        'comment method=photogrammetry-sfm\n'
+        'comment synthetic-content-marker=v1\n'
         'element vertex $n\n'
         'property float x\n'
         'property float y\n'

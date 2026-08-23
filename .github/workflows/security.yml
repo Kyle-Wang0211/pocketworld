@@ -126,6 +126,27 @@ jobs:
         working-directory: supabase/functions
         run: deno cache --lock=../../tool/edge-deps.lock --frozen */index.ts _shared/*.ts
 
+      # [EDGE-TESTS 2026-08-23] 在此之前,supabase/functions 下的测试是**装饰**:
+      #
+      #   1. CI 从来不跑它们(这个 job 只有 deno cache,全仓 workflows 没有
+      #      任何 `deno test`);
+      #   2. 更糟的是本地也跑不了 —— upload-finalize/validate_test.ts 曾
+      #      `import { validate } from './index.ts'`,而 index.ts 顶层是
+      #      `Deno.serve(...)`,import 即启 HTTP 服务,deno test 直接报
+      #      "This error was not caught from a test ... top-level code" 而整体失败。
+      #      那 12 个用例(可执行体特征、polyglot GLB、带 XML 序言的 SVG…)
+      #      从未真正执行过。
+      #
+      # 修法是把纯函数抽进 upload-finalize/validate.ts,index.ts 与测试都从
+      # 那里 import。这条 step 让它们从此在 CI 里真的跑。
+      #
+      # ⚠️ 测试文件的 jsr specifier 必须与 tool/edge-deps.lock 里的**逐字一致**
+      #    (当前是 jsr:@std/assert@1.0.19)。写成 @1 这类范围会让上一条
+      #    `deno cache --frozen` 判 lockfile out of date,整个 job 挂掉。
+      - name: Run Edge Function unit tests
+        working-directory: supabase/functions
+        run: deno test --lock=../../tool/edge-deps.lock
+
       - name: Pinned-version check
         run: sh tool/verify_supply_chain.sh --edge-only
 

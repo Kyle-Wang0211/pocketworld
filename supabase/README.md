@@ -384,9 +384,21 @@ supabase link --project-ref <YOUR_PROJECT_REF>
 cd pocketworld_flutter
 supabase db push
 
-# 4. Deploy Edge Functions — ALL EIGHT.
+# 4. Deploy Edge Functions — ALL TEN.
 #    An earlier version of this list had only the four auth functions, which
 #    silently produced a project whose thumbnail upload path 404s.
+#
+#    2026-08-23: the list had drifted again and was WORSE than that — it said
+#    "ALL EIGHT" while the repo carried ten functions. The two missing ones
+#    were upload-finalize and set-profile-name, and both fail *silently*:
+#      · upload-finalize missing  ⇒ client uploads land in `staging` and are
+#        never promoted; the invoke fails non-2xx and (before the 2026-08-23
+#        fix) the client swallowed it as "network error, please retry", so the
+#        user re-uploads tens of MB forever with no diagnosable symptom.
+#      · set-profile-name missing ⇒ display-name changes fail; since migration
+#        20260823010000 there is NO other write path to profiles.display_name,
+#        so renaming is simply dead.
+#    Keep this list in sync with `ls supabase/functions/` (minus _shared).
 supabase functions deploy signup-start          --project-ref <REF>
 supabase functions deploy signup-verify         --project-ref <REF>
 supabase functions deploy password-reset-start  --project-ref <REF>
@@ -394,6 +406,8 @@ supabase functions deploy password-reset-verify --project-ref <REF>
 supabase functions deploy storage-sign-upload   --project-ref <REF>
 supabase functions deploy delete-account        --project-ref <REF>
 supabase functions deploy delete-work           --project-ref <REF>
+supabase functions deploy upload-finalize       --project-ref <REF>
+supabase functions deploy set-profile-name      --project-ref <REF>
 
 # admin-moderate-work is the one function that REQUIRES --no-verify-jwt:
 # it authenticates by comparing the bearer token against the service_role
@@ -406,10 +420,13 @@ supabase functions deploy admin-moderate-work   --no-verify-jwt --project-ref <R
 
 # 6. Verify
 supabase db push --dry-run     # should print "Remote database is up to date"
-supabase functions list        # should show 8 ACTIVE
+supabase functions list        # should show 10 ACTIVE
 supabase db advisors --type security --linked   # triage before going live
 
-# 7. Supply chain (no CI in this repo — run it by hand before shipping)
+# 7. Supply chain. CI does run this now (.github/workflows/security.yml,
+#    job `edge-deps-integrity`, which since 2026-08-23 also runs
+#    `deno test` over supabase/functions). Running it by hand before
+#    shipping is still worthwhile — CI only covers what is committed.
 zsh ../tool/verify_supply_chain.sh
 ```
 

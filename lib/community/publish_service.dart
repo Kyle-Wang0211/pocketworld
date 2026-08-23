@@ -203,14 +203,58 @@ class PublishService {
               ),
             );
 
-        final res = await c.functions.invoke(
-          'upload-finalize',
-          body: <String, dynamic>{'staging_path': path},
-        );
+        // [FINALIZE-ERR 2026-08-23] 这里以前是死代码,而且是双重锁死的:
+        //
+        //   1. functions_client 对**任何非 2xx** 直接 `throw FunctionException`
+        //      (functions_client-2.5.0/lib/src/functions_client.dart:183-190),
+        //      永远不会把失败体交给下面的 `res.data` 分支;
+        //   2. 而 upload-finalize 的**所有**失败出口都是非 2xx,两个 2xx 出口
+        //      又都带 ok:true ⇒ 原来那两行解析 reason 的代码结构性不可达。
+        //   3. 就算异常消息里带上了响应体,外层匹配的字面量是
+        //      `upload_validation_failed`,而服务端 422 体里写的是
+        //      `validation_failed`(index.ts:187)——**少了 upload_ 前缀**,
+        //      contains() 也不可能命中。
+        //
+        // 后果:用户上传了一个被服务端判违规的文件,却被告知"网络故障请重试",
+        // 于是反复重传几十 MB 的 PLY。收口后把文本审核也放进 finalize,这个洞
+        // 会从"文件格式被拒"放大到"标题/描述被拒",更常见也更伤。
+        //
+        // ⚠️ `upload_validation_failed:` 是**客户端内部约定**的信号前缀,不是
+        //    服务端字符串。外层 catch(见 _publishInner 的异常分类)按它把错误
+        //    归入 'rejected' 而非 'uploading' —— 二者的区别是"重试永远不会成功"
+        //    与"重试可能成功",对用户是完全不同的话。改这里时不要顺手去改服务端。
+        final FunctionResponse res;
+        try {
+          res = await c.functions.invoke(
+            'upload-finalize',
+            body: <String, dynamic>{'staging_path': path},
+          );
+        } on FunctionException catch (e) {
+          // details 可能是 Map(JSON 体)也可能是 String —— 照抄
+          // supabase_auth_service._mapFunctionException 的既有处理。
+          final d = e.details;
+          String reason = '';
+          if (d is Map) {
+            reason = (d['reason'] ?? d['error'] ?? '').toString();
+          } else if (d is String) {
+            reason = d;
+          }
+          if (reason.isEmpty) reason = 'http_${e.status}';
+          // 422 = 服务端内容校验拒绝,重试同一份字节永远不会通过 ⇒ 'rejected'。
+          // 其余(401/403/404/429/500/502)要么是瞬时故障要么是环境问题,
+          // 重试有意义 ⇒ 交给外层归入 'uploading'。
+          if (e.status == 422) {
+            throw StateError('upload_validation_failed:$reason');
+          }
+          throw StateError('upload-finalize http_${e.status}: $reason');
+        }
         final data = res.data;
         if (data is Map && data['ok'] == true) {
           return (data['path'] as String?) ?? path;
         }
+        // 2xx 却没有 ok:true。服务端目前只有两个 2xx 出口且都带 ok:true,
+        // 走到这里说明协议被破坏(例如函数被换成了别的版本),按拒绝处理而不是
+        // 按网络故障处理 —— 放行一个协议不明的响应比报错危险。
         // 校验失败时服务端已把对象搬进 quarantine,staging 不会留下残留。
         final reason = (data is Map ? data['reason'] : null) ?? 'unknown';
         throw StateError('upload_validation_failed:$reason');

@@ -401,52 +401,126 @@ class SupabaseAuthServiceImpl implements AuthService {
     if (current == null) {
       throw const AuthException(AuthErrorKind.notSignedIn);
     }
+    // [NAME-CHOKEPOINT 2026-08-23] 改名从"客户端直写"改为"只调 Edge Function"。
+    //
+    // 之前这里做两件事,两件都已经不成立:
+    //   1. `auth.updateUser({display_name})` —— 写 auth.users.raw_user_meta_data。
+    //      这条路 RLS 关不掉(是 Supabase Auth 的内置能力),原先靠迁移
+    //      20260510000000 的 SECURITY DEFINER 触发器把它同步进 profiles,
+    //      于是任何客户端都能绕过全部校验把任意字符串送进 feed 展示的那一列。
+    //      迁移 20260823010000 已删掉那个触发器。
+    //   2. `from('profiles').update({display_name})` —— 同一迁移加的列级守卫
+    //      guard_profile_identity_columns 会对 authenticated 角色抛 42501。
+    //      而旧代码把这一步的异常 catch 成 non-fatal 只 print 一行 ⇒ 用户会看到
+    //      "改名成功"而 feed 纹丝不动。这正是必须同批替换掉它的原因。
+    //
+    // 现在唯一入口是 set-profile-name(service_role),它按固定顺序做:
+    //   RFC 8266 enforce → 字素簇长度 → 保留词 → 改名冷却 → 写 profiles
+    //   → 同步 auth metadata → 审计
     try {
-      // Supabase persists this into auth.users.raw_user_meta_data
-      // (JSONB). The same `display_name` key is what `_wrap` already
-      // reads at sign-in time, so subsequent sessions / reloads pick up
-      // the new value without a separate cache.
-      final res = await _client.auth.updateUser(
-        UserAttributes(data: {'display_name': displayName}),
+      final res = await _client.functions.invoke(
+        'set-profile-name',
+        body: <String, dynamic>{'display_name': displayName},
       );
-      final user = res.user;
-      if (user == null) {
-        throw const AuthException(
-          AuthErrorKind.unknown,
-          'updateUser returned no user after display-name update',
-        );
-      }
-      // Phase 5: mirror into public.profiles so the community feed
-      // (which JOINs works → profiles for the author handle) shows
-      // the new name immediately for all this user's previously-
-      // published works. Without this mirror, profiles.display_name
-      // stays at the signup-time value until the SQL trigger from
-      // migration 20260510000000 fires server-side. RLS policy
-      // `profiles_update_self` (migration 20260429020000:78) allows
-      // the signed-in user to update their own row.
-      // Non-fatal: if this UPDATE fails (RLS misconfig / network
-      // blip), we still surface success because auth.users is the
-      // canonical store; the server-side UPDATE trigger acts as
-      // backup.
-      try {
-        await _client
-            .from('profiles')
-            .update({'display_name': displayName})
-            .eq('id', user.id);
-      } catch (e) {
-        // ignore: avoid_print
-        print(
-          '[SupabaseAuthService] profiles display_name mirror '
-          'update failed (non-fatal): $e',
-        );
-      }
-      return _wrap(user);
-    } on AuthApiException catch (e) {
-      throw AuthException(_mapAuthApi(e), e.message);
+      final data = res.data;
+      final newName = (data is Map ? data['display_name'] as String? : null);
+      // CurrentUser.updateDisplayName 直接拿这个返回值当新的本地状态
+      // (current_user.dart:357 `_state = CurrentUserSignedIn(updated)`),
+      // 所以不需要 refreshSession —— 服务端返回的就是权威值。
+      return AuthenticatedUser(
+        id: InternalUserID(current.id),
+        email: current.email,
+        phone: current.phone,
+        displayName: newName ?? displayName,
+      );
+    } on FunctionException catch (e) {
+      throw _mapSetProfileName(e);
     } on AuthException {
       rethrow;
     } catch (e) {
       throw AuthException(AuthErrorKind.unknown, e.toString());
+    }
+  }
+
+  @override
+  Future<void> updateHandle(String handle) async {
+    final current = _client.auth.currentUser;
+    if (current == null) {
+      throw const AuthException(AuthErrorKind.notSignedIn);
+    }
+    try {
+      await _client.functions.invoke(
+        'set-profile-name',
+        body: <String, dynamic>{'handle': handle},
+      );
+    } on FunctionException catch (e) {
+      throw _mapSetProfileName(e);
+    } on AuthException {
+      rethrow;
+    } catch (e) {
+      throw AuthException(AuthErrorKind.unknown, e.toString());
+    }
+  }
+
+  /// 把 set-profile-name 的非 2xx 响应翻译成 UI 能直接显示的话。
+  ///
+  /// UI 走的是 `l.meDisplayNameUpdateFailed(err)`,err 取自
+  /// AuthException.message —— 所以这里的文案会原样出现在用户眼前。
+  ///
+  /// ⚠️ 文案暂时硬编码在这一层。正确的位置是 l10n,但 app_zh.arb /
+  ///    app_en.arb 及其生成物当前有未提交改动(属于另一条工作线),
+  ///    不能碰。等那条线落地后把这些串搬进 l10n。
+  AuthException _mapSetProfileName(FunctionException e) {
+    final d = e.details;
+    final code = (d is Map ? d['error']?.toString() : null) ?? '';
+    final reason = (d is Map ? d['reason']?.toString() : null) ?? '';
+    switch (code) {
+      case 'cooldown':
+        final ms = (d is Map ? d['retry_after_ms'] : null);
+        final days = ms is num ? (ms / 86400000).ceil() : 3;
+        return AuthException(
+          AuthErrorKind.rateLimited,
+          '改名太频繁,请 $days 天后再试',
+        );
+      case 'rate_limited':
+        return const AuthException(
+          AuthErrorKind.rateLimited,
+          '操作过于频繁,请稍后再试',
+        );
+      case 'reserved_name':
+        final kind = (d is Map ? d['kind']?.toString() : null) ?? '';
+        return AuthException(
+          AuthErrorKind.unknown,
+          kind == 'impersonation' ? '该名称可能被误认为官方身份' : '该名称需要进一步核验',
+        );
+      case 'invalid_display_name':
+        return AuthException(AuthErrorKind.unknown, switch (reason) {
+          'too_long' => '名字太长了',
+          'empty_after_enforcement' => '名字不能为空',
+          'control_character' ||
+          'ignorable_character' ||
+          'unassigned_or_surrogate' => '名字含有不可见或非法字符',
+          _ => '名字格式不正确',
+        });
+      case 'invalid_handle':
+        return AuthException(AuthErrorKind.unknown, switch (reason) {
+          'too_short' => 'ID 太短了',
+          'too_long' => 'ID 太长了',
+          'bad_charset' => 'ID 只能用小写字母、数字、点和下划线',
+          'bad_edge' => 'ID 不能以点或下划线开头/结尾',
+          'repeated_punct' => 'ID 不能有连续的点或下划线',
+          'looks_like_file' => 'ID 不能像文件名',
+          _ => 'ID 格式不正确',
+        });
+      case 'handle_taken':
+        return const AuthException(AuthErrorKind.unknown, '该 ID 已被使用');
+      case 'profile_not_found':
+        return const AuthException(AuthErrorKind.unknown, '找不到你的资料');
+      default:
+        return AuthException(
+          AuthErrorKind.unknown,
+          code.isEmpty ? 'http_${e.status}' : code,
+        );
     }
   }
 

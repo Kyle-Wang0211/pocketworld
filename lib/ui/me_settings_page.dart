@@ -91,6 +91,12 @@ class _SettingsSection extends StatelessWidget {
         onTap: () => _showDisplayNameDialog(context, user),
       ),
       _SettingsRowSpec(
+        icon: Icons.alternate_email_rounded,
+        title: l.meHandle,
+        trailing: stats.handle ?? l.meHandleNotSet,
+        onTap: () => _showHandleDialog(context, stats),
+      ),
+      _SettingsRowSpec(
         icon: Icons.notifications_none_rounded,
         title: l.meNotifications,
         trailing: notificationsTrailing,
@@ -208,6 +214,98 @@ class _SettingsSection extends StatelessWidget {
     return '—';
   }
 
+  /// Dialog: 设置唯一 handle。
+  ///
+  /// 与昵称对话框的三点不同,每一点都有来由:
+  ///   · maxLength 32 —— Discord 口径;昵称是 20 个**字素簇**(在服务端按
+  ///     UAX #29 判),这里是 32 个 ASCII 字符,两条规则本来就不同源。
+  ///   · 多一条说明(meHandleDialogNote)—— handle 唯一且有 3 天冷却,
+  ///     不先说清楚,用户会在提交后才发现改不回来。
+  ///   · 成功后调 stats.refresh() —— handle 不在 AuthenticatedUser 上
+  ///     (它存 public.profiles,不是 auth metadata),所以 CurrentUser 的
+  ///     notifyListeners 刷不出新值,必须显式回读。
+  ///
+  /// 客户端**不做**唯一性预检:那需要一个查询接口,既多一个限流面和 handle
+  /// 枚举面,又躲不开 TOCTOU(查完到提交之间别人可能抢注)。唯一性由
+  /// uq_profiles_handle_key 索引裁决,冲突以 409 handle_taken 回来。
+  static Future<void> _showHandleDialog(
+    BuildContext context,
+    MeStatsViewModel stats,
+  ) async {
+    final l = AppL10n.of(context);
+    final currentUser = AuthScope.read(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final current = stats.handle ?? '';
+    final controller = TextEditingController(text: current);
+    final next = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AetherColors.bgCanvas,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AetherRadii.lg),
+        ),
+        title: Text(l.meHandleDialogTitle, style: AetherTextStyles.h2),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: controller,
+              autofocus: true,
+              maxLength: 32,
+              autocorrect: false,
+              enableSuggestions: false,
+              textCapitalization: TextCapitalization.none,
+              decoration: InputDecoration(
+                hintText: l.meHandleDialogHint,
+                border: const OutlineInputBorder(),
+                counterText: '',
+              ),
+              onSubmitted: (v) => Navigator.of(ctx).pop(v.trim()),
+            ),
+            const SizedBox(height: AetherSpacing.sm),
+            Text(
+              l.meHandleDialogNote,
+              style: const TextStyle(
+                fontSize: 12,
+                color: AetherColors.textSecondary,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: Text(l.commonCancel),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
+            child: Text(l.meActionSave),
+          ),
+        ],
+      ),
+    );
+    if (next == null || next.isEmpty || next == current) return;
+    final ok = await currentUser.updateHandle(next);
+    if (ok) {
+      await stats.refresh();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(l.meHandleUpdated),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } else {
+      final err = currentUser.lastError?.message ?? 'error';
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(l.meHandleUpdateFailed(err)),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
   /// Dialog: edit the display name. Persists via CurrentUser →
   /// AuthService.updateDisplayName → Supabase user_metadata. On success,
   /// CurrentUser fires notifyListeners and this page rebuilds with the
@@ -232,7 +330,11 @@ class _SettingsSection extends StatelessWidget {
         content: TextField(
           controller: controller,
           autofocus: true,
-          maxLength: 40,
+          // 20 = 服务端 DISPLAY_NAME_MAX_GRAPHEMES。⚠️ 口径不同:这里数的是
+          // UTF-16 code unit,服务端数的是**字素簇**。一个 ZWJ emoji 在这里
+          // 算 8、在服务端算 1 ⇒ 客户端更严。这是有意的保守方向:客户端拦下
+          // 的一定会被服务端接受,反过来则会出现"输得下却被拒"。
+          maxLength: 20,
           decoration: InputDecoration(
             hintText: l.meDisplayNameDialogHint,
             border: const OutlineInputBorder(),

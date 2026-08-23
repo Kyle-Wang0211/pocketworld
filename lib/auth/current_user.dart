@@ -368,6 +368,33 @@ class CurrentUser extends ChangeNotifier {
     }
   }
 
+  /// Set the unique handle. Returns true on success; false on failure
+  /// (caller reads [lastError]: "该 ID 已被使用" / "改名太频繁,请 N 天后再试" /
+  /// "该名称可能被误认为官方身份" 都从这条路上来).
+  ///
+  /// 与 [updateDisplayName] 不同,这里不刷新本地状态 —— handle 不属于
+  /// AuthenticatedUser(后者由 auth session 的 metadata 构造,而 handle 存在
+  /// public.profiles)。设置页在成功后重新走 MeStatsViewModel 读回。
+  Future<bool> updateHandle(String handle) async {
+    if (signedInUser == null) return false;
+    _isPerformingAuthAction = true;
+    _lastError = null;
+    notifyListeners();
+    try {
+      await _service.updateHandle(handle);
+      return true;
+    } on AuthException catch (e) {
+      _lastError = e;
+      return false;
+    } catch (e) {
+      _lastError = AuthException(AuthErrorKind.unknown, e.toString());
+      return false;
+    } finally {
+      _isPerformingAuthAction = false;
+      notifyListeners();
+    }
+  }
+
   // ─── Helpers ────────────────────────────────────────────────────
 
   Future<void> _runAuthAction(

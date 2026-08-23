@@ -3,10 +3,10 @@
 // 这是**服务端强制点**的核心,必须逐条覆盖伪装场景 —— 客户端那份
 // (lib/util/file_signature.dart)只挡误操作,这份挡攻击者。
 //
-// 跑:deno test --allow-none supabase/functions/upload-finalize/validate_test.ts
+// 跑:deno test supabase/functions/upload-finalize/validate_test.ts
 
 import { assertEquals } from 'jsr:@std/assert@1.0.19';
-import { validate } from './index.ts';
+import { validate } from './validate.ts';
 
 const b = (...n: number[]) => new Uint8Array(n);
 const ascii = (s: string, pad = 0) =>

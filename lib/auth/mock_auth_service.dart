@@ -133,6 +133,16 @@ class MockAuthServiceImpl implements AuthService {
     return updated;
   }
 
+  @override
+  Future<void> updateHandle(String handle) async {
+    if (_cached == null) {
+      throw const AuthException(AuthErrorKind.notSignedIn);
+    }
+    // Mock 只覆盖"未登录"这一条。唯一性、保留词、改名冷却三件事**只有服务端
+    // 能决定**(唯一性靠 uq_profiles_handle_key 索引裁决,不是靠先查后判)。
+    // 在这里假装判定,会让测试通过而生产失败 —— 那比没有 mock 更糟。
+  }
+
   static String _slug(String input) {
     final buf = StringBuffer();
     for (final c in input.toLowerCase().runes) {
