@@ -340,6 +340,9 @@ class AppL10nZh extends AppL10n {
   }
 
   @override
+  String get mePlatformRules => '平台公约';
+
+  @override
   String get meHandle => 'ID';
 
   @override

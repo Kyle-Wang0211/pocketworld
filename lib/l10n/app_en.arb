@@ -196,6 +196,7 @@
       }
     }
   },
+  "mePlatformRules": "Platform Rules",
   "meHandle": "Username",
   "meHandleNotSet": "Not set",
   "meHandleDialogTitle": "Set username",

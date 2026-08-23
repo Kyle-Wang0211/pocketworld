@@ -13,6 +13,7 @@ import '../i18n/locale_notifier.dart';
 import '../l10n/app_localizations.dart';
 import 'design_system.dart';
 import 'me_stats_view_model.dart';
+import 'legal/platform_rules_page.dart';
 
 class MeSettingsPage extends StatelessWidget {
   final MeStatsViewModel stats;
@@ -113,6 +114,15 @@ class _SettingsSection extends StatelessWidget {
         title: l.meLanguage,
         trailing: isZh ? l.meLanguageZh : l.meLanguageEn,
         onTap: () => _showLanguageDialog(context, localeNotifier),
+      ),
+      // [RULES-PUBLIC 2026-08-23] 网信办令第10号第六条与《深度合成规定》第八条
+      // 都要求"制定**和公开**"管理规则与平台公约。此前只有注册页一句不可点的
+      // 纯文本,没有任何页面承载内容 —— 那不构成"公开"。
+      _SettingsRowSpec(
+        icon: Icons.gavel_rounded,
+        title: l.mePlatformRules,
+        trailing: '',
+        onTap: () => PlatformRulesPage.open(context),
       ),
       _SettingsRowSpec(
         icon: Icons.info_outline_rounded,

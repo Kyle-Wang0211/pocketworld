@@ -703,6 +703,12 @@ abstract class AppL10n {
   /// **'Update failed: {error}'**
   String meDisplayNameUpdateFailed(String error);
 
+  /// No description provided for @mePlatformRules.
+  ///
+  /// In en, this message translates to:
+  /// **'Platform Rules'**
+  String get mePlatformRules;
+
   /// No description provided for @meHandle.
   ///
   /// In en, this message translates to:

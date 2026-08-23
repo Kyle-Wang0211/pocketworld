@@ -137,6 +137,7 @@
       }
     }
   },
+  "mePlatformRules": "平台公约",
   "meHandle": "ID",
   "meHandleNotSet": "未设置",
   "meHandleDialogTitle": "设置 ID",

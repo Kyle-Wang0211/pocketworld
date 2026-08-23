@@ -345,6 +345,9 @@ class AppL10nEn extends AppL10n {
   }
 
   @override
+  String get mePlatformRules => 'Platform Rules';
+
+  @override
   String get meHandle => 'Username';
 
   @override

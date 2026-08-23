@@ -19,6 +19,7 @@ import '../../auth/auth_models.dart';
 import '../../auth/current_user.dart';
 import '../../l10n/app_localizations.dart';
 import '../design_system.dart';
+import '../legal/platform_rules_page.dart';
 import 'auth_minimal_widgets.dart';
 import 'otp_verification_view.dart';
 
@@ -173,17 +174,25 @@ class _EmailSignUpPageState extends State<EmailSignUpPage> {
                         onTap: _submit,
                       ),
                       const SizedBox(height: AetherSpacing.xxl),
-                      // Tiny terms / privacy reminder. Plain (not link)
-                      // for now — when we ship a real privacy policy
-                      // page, this can become two MinimalLinks.
-                      Text(
-                        l.authTermsAcceptance,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          fontSize: 11,
-                          color: AetherColors.textTertiary,
-                          height: 1.5,
-                          letterSpacing: 0.3,
+                      // [RULES-PUBLIC 2026-08-23] 原来这里是纯文本,原注释自陈
+                      // "Plain (not link) for now"。但第六条要求的是"制定**和
+                      // 公开**"管理规则与平台公约 —— 显示一句"你已同意"却让人
+                      // 看不到内容,不构成公开。现在它可点,指向 PlatformRulesPage。
+                      // ⚠️ 服务协议与隐私政策是另外两份文件,需法务准备,
+                      //    见 legal/platform_rules_content.dart 文末 TODO。
+                      GestureDetector(
+                        onTap: () => PlatformRulesPage.open(context),
+                        behavior: HitTestBehavior.opaque,
+                        child: Text(
+                          l.authTermsAcceptance,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: AetherColors.textSecondary,
+                            height: 1.5,
+                            letterSpacing: 0.3,
+                            decoration: TextDecoration.underline,
+                          ),
                         ),
                       ),
                       const SizedBox(height: AetherSpacing.xl),
