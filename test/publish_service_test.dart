@@ -16,28 +16,33 @@ import 'package:pocketworld_flutter/config/endpoint_config.dart';
 
 /// Records what the fake collaborators were asked to do.
 class _Spy implements CommunityServiceLike {
-  final List<({String path, int bytes})> uploads = [];
-  final List<Map<String, dynamic>> inserts = [];
+  final List<({String path, int bytes, String title, String? description})>
+      uploads = [];
   final List<({String workId, int bytes, String contentType})> thumbs = [];
 
   Object? uploadThrows;
-  Object? insertThrows;
   Object? thumbThrows;
   String? thumbReturns = 'uid/work-1.png';
 
-  Future<String> upload({
+  Future<UploadFinalizeResult> upload({
     required String path,
     required Uint8List bytes,
+    required String title,
+    String? description,
   }) async {
     if (uploadThrows != null) throw uploadThrows!;
-    uploads.add((path: path, bytes: bytes.length));
-    return path;
-  }
-
-  Future<String> insert({required Map<String, dynamic> row}) async {
-    if (insertThrows != null) throw insertThrows!;
-    inserts.add(row);
-    return 'work-1';
+    uploads.add((
+      path: path,
+      bytes: bytes.length,
+      title: title,
+      description: description,
+    ));
+    // 收口后 works 行由服务端在 finalize 里创建并回传 id。
+    return const UploadFinalizeResult(
+      path: 'uid/work-1.ply',
+      workId: 'work-1',
+      moderationStatus: 'under_review',
+    );
   }
 
   @override
@@ -93,7 +98,6 @@ void main() {
     uid: () => uid,
     community: spy,
     uploadModel: spy.upload,
-    insertWork: spy.insert,
   );
 
   Future<void> writePly() =>
@@ -116,8 +120,10 @@ void main() {
             .having((e) => e.phase, 'phase', 'rejected')
             .having((e) => e.message, 'reason', contains('exe_mz'))),
       );
-      expect(spy.inserts, isEmpty,
-          reason: '被拒的文件绝不能留下 works 行');
+      // 收口后 works 行只能由 finalize 创建,客户端已无从断言"有没有行"。
+      // 换成更强也更直接的判据:流程在被拒后**中止**了,没有继续到缩略图。
+      expect(spy.thumbs, isEmpty,
+          reason: '被拒之后不该再走缩略图,那意味着流程没有中止');
     });
 
     test('🔑 网络错误仍是 uploading —— 证明没把所有失败都归成拒绝', () async {
@@ -149,7 +155,7 @@ void main() {
       );
       expect(spy.uploads, isEmpty,
           reason: '预检的全部意义就是别把几十MB传完才被拒');
-      expect(spy.inserts, isEmpty);
+      expect(spy.uploads, isEmpty);
     });
 
     test('未配置上限时不预检 —— 配置没下发不该把用户挡在门外', () async {
@@ -167,7 +173,7 @@ void main() {
         throwsA(isA<PublishException>()
             .having((e) => e.phase, 'phase', 'too_large')),
       );
-      expect(spy.inserts, isEmpty);
+      expect(spy.uploads, isEmpty);
     });
 
     test('🔑 普通网络错误仍是 uploading —— 否则会误导用户放弃重试', () async {
@@ -197,7 +203,7 @@ void main() {
       );
       expect(spy.uploads, isEmpty,
           reason: '校验必须发生在上传之前,否则字节已经落进公开桶了');
-      expect(spy.inserts, isEmpty);
+      expect(spy.uploads, isEmpty);
     });
 
     test('合法 PLY 正常放行(证明拦截不是把所有东西都挡了)', () async {
@@ -218,7 +224,7 @@ void main() {
         ),
       );
       expect(spy.uploads, isEmpty);
-      expect(spy.inserts, isEmpty);
+      expect(spy.uploads, isEmpty);
     });
 
     test('already published', () async {
@@ -293,21 +299,20 @@ void main() {
       expect(res.modelStoragePath, 'uid/$hash.ply');
       expect(spy.uploads.single.path, res.modelStoragePath);
 
-      final row = spy.inserts.single;
-      expect(row['format'], 'ply');
-      expect(row['visibility'], 'public');
-      expect(row['user_id'], 'uid');
-      expect(row['title'], 'My Scan'); // trimmed
-      expect(row['description'], 'hello'); // trimmed
-      expect(row['model_storage_path'], res.modelStoragePath);
-      expect(row['file_size_bytes'], plyBytes.length);
-      expect(row['published_at'], isNotNull);
+      // 收口后客户端**只**发送 title / description。
+      // format / visibility / user_id / model_storage_path / file_size_bytes
+      // / published_at 全部由服务端自己算 —— 客户端连伪造的机会都没有,
+      // 所以这里没有它们可断言,这正是收口的目的。
+      final up = spy.uploads.single;
+      expect(up.title, 'My Scan'); // trimmed
+      expect(up.description, 'hello'); // trimmed
+      expect(res.workId, 'work-1'); // 服务端回传的 id
     });
 
     test('empty description is stored as null, not an empty string', () async {
       await writePly();
       await service().publish(record: record(), title: 'T', description: '   ');
-      expect(spy.inserts.single['description'], isNull);
+      expect(spy.uploads.single.description, isNull);
     });
 
     test('emits monotonic progress ending at done/1.0', () async {
@@ -342,16 +347,18 @@ void main() {
           isA<PublishException>().having((e) => e.phase, 'phase', 'uploading'),
         ),
       );
+      // 同上:行由服务端建,客户端断言不到。改为断言流程确实中止。
       expect(
-        spy.inserts,
+        spy.thumbs,
         isEmpty,
-        reason: 'a row here would point at a file that was never stored',
+        reason: '上传失败后不该再走缩略图 —— 那会留下指向不存在文件的痕迹',
       );
     });
 
-    test('insert failure surfaces as the inserting phase', () async {
+    test('服务端建行失败仍归入 inserting phase(行为不变,只是换了台机器做)', () async {
       await writePly();
-      spy.insertThrows = StateError('rls denied');
+      // 收口后建行在 upload-finalize 里,失败以 500 insert_failed 回来。
+      spy.uploadThrows = StateError('upload-finalize http_500: insert_failed');
       await expectLater(
         service().publish(record: record(), title: 'T'),
         throwsA(

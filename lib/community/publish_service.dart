@@ -50,17 +50,35 @@ import 'community_service.dart';
 /// File the official capture route leaves in `captureDir`.
 const String kOfficialSparsePlyName = 'official_sfm_sparse.ply';
 
-/// Storage upload seam. Real impl calls
-/// `client.storage.from('works').uploadBinary(...)`. Injectable so the
-/// orchestration test never touches a live Supabase.
-typedef UploadModelFn =
-    Future<String> Function({required String path, required Uint8List bytes});
+/// upload-finalize 的返回。
+///
+/// [workId] 由**服务端**创建并回传 —— 迁移 20260823020000 撤销了
+/// works_insert_own 并加了 RESTRICTIVE 守卫,客户端已经无法自己 INSERT。
+/// [moderationStatus] 目前恒为 'under_review':作品落库即待审,对任何人
+/// (包括作者的 feed)都不可见,由人工放行后才写 published_at。
+class UploadFinalizeResult {
+  final String path;
+  final String workId;
+  final String moderationStatus;
+  const UploadFinalizeResult({
+    required this.path,
+    required this.workId,
+    required this.moderationStatus,
+  });
+}
 
-/// `works` row insert seam. Real impl calls
-/// `client.from('works').insert(row).select('id').single()` and returns
-/// the read-back id.
-typedef InsertWorkFn = Future<String> Function({
-  required Map<String, dynamic> row,
+/// staging 上传 + finalize 的接缝。Real impl 走
+/// `staging.uploadBinary(...)` → `functions.invoke('upload-finalize')`。
+/// Injectable so the orchestration test never touches a live Supabase.
+///
+/// ⚠️ title/description 从这里传进去是**收口的一部分**:它们要由服务端
+/// 校验后写库。客户端不再构造 works row —— user_id / model_storage_path /
+/// file_size_bytes / format 一律由服务端自己算,连伪造的机会都没有。
+typedef UploadModelFn = Future<UploadFinalizeResult> Function({
+  required String path,
+  required Uint8List bytes,
+  required String title,
+  String? description,
 });
 
 /// Narrow view of [CommunityService] — just the thumbnail broker. Lets
@@ -159,17 +177,14 @@ class PublishService {
   final String? Function() _uid;
   final CommunityServiceLike _community;
   final UploadModelFn _uploadModel;
-  final InsertWorkFn _insertWork;
 
   PublishService._({
     required String? Function() uid,
     required CommunityServiceLike community,
     required UploadModelFn uploadModel,
-    required InsertWorkFn insertWork,
   }) : _uid = uid,
        _community = community,
-       _uploadModel = uploadModel,
-       _insertWork = insertWork;
+       _uploadModel = uploadModel;
 
   /// Production constructor.
   factory PublishService({SupabaseClient? client, CommunityService? community}) {
@@ -178,7 +193,7 @@ class PublishService {
     return PublishService._(
       uid: () => c.auth.currentUser?.id,
       community: _CommunityAdapter(comm),
-      uploadModel: ({required path, required bytes}) async {
+      uploadModel: ({required path, required bytes, required title, description}) async {
         // 两阶段上传(2026-08-18)。此前是直传 `works` 公开桶,那条路上
         // **服务端侧没有任何内容校验**:桶的 MIME 白名单匹配的是客户端
         // 自己声明的 header(storage 源码 uploader.ts 里 mimeType 直接取自
@@ -227,7 +242,12 @@ class PublishService {
         try {
           res = await c.functions.invoke(
             'upload-finalize',
-            body: <String, dynamic>{'staging_path': path},
+            body: <String, dynamic>{
+              'staging_path': path,
+              'title': title,
+              if (description != null && description.isNotEmpty)
+                'description': description,
+            },
           );
         } on FunctionException catch (e) {
           // details 可能是 Map(JSON 体)也可能是 String —— 照抄
@@ -250,7 +270,18 @@ class PublishService {
         }
         final data = res.data;
         if (data is Map && data['ok'] == true) {
-          return (data['path'] as String?) ?? path;
+          final wid = data['work_id'] as String?;
+          if (wid == null || wid.isEmpty) {
+            // 2xx + ok:true 却没有 work_id ⇒ 部署的是收口前的旧版函数。
+            // 这种情况下作品的行根本没被创建过,当成失败比当成成功安全。
+            throw StateError('upload-finalize stale_version: work_id missing');
+          }
+          return UploadFinalizeResult(
+            path: (data['path'] as String?) ?? path,
+            workId: wid,
+            moderationStatus:
+                (data['moderation_status'] as String?) ?? 'under_review',
+          );
         }
         // 2xx 却没有 ok:true。服务端目前只有两个 2xx 出口且都带 ok:true,
         // 走到这里说明协议被破坏(例如函数被换成了别的版本),按拒绝处理而不是
@@ -258,14 +289,6 @@ class PublishService {
         // 校验失败时服务端已把对象搬进 quarantine,staging 不会留下残留。
         final reason = (data is Map ? data['reason'] : null) ?? 'unknown';
         throw StateError('upload_validation_failed:$reason');
-      },
-      insertWork: ({required row}) async {
-        final inserted = await c
-            .from('works')
-            .insert(row)
-            .select('id')
-            .single();
-        return inserted['id'] as String;
       },
     );
   }
@@ -276,12 +299,10 @@ class PublishService {
     required String? Function() uid,
     required CommunityServiceLike community,
     required UploadModelFn uploadModel,
-    required InsertWorkFn insertWork,
   }) => PublishService._(
     uid: uid,
     community: community,
     uploadModel: uploadModel,
-    insertWork: insertWork,
   );
 
   /// Resolve the PLY a record would publish, or null when the record has
@@ -325,7 +346,9 @@ class PublishService {
       throw const PublishException('reading', 'title must be 1..100 chars');
     }
     final trimmedDesc = description?.trim();
-    if (trimmedDesc != null && trimmedDesc.length > 5000) {
+    // 30 = works.description 的 DB CHECK 上限(20260823000000 从 5000 收窄)。
+    // 客户端先拦一道只是为了早点给出可读反馈;真正的边界在服务端与 DB。
+    if (trimmedDesc != null && trimmedDesc.length > 30) {
       throw const PublishException('reading', 'description exceeds 5000 chars');
     }
 
@@ -386,10 +409,22 @@ class PublishService {
       );
     }
 
-    // 4) Upload. NO works row exists yet → nothing can be orphaned.
+    // 4) Upload + finalize。works 行由**服务端**在 finalize 里创建 ——
+    //    迁移 20260823020000 撤销了 works_insert_own 并加了 RESTRICTIVE 守卫,
+    //    客户端已经无法自己 INSERT。这一步失败就没有任何行留下。
     emit('uploading', 0.10);
+    final UploadFinalizeResult finalized;
     try {
-      await _uploadModel(path: storagePath, bytes: bytes);
+      finalized = await _uploadModel(
+        path: storagePath,
+        bytes: bytes,
+        title: trimmedTitle,
+        // 空串在这里就归一成 null,而不是留给下游各自判断。
+        // 接缝的契约因此是明确的:null = 没有描述。
+        description: (trimmedDesc == null || trimmedDesc.isEmpty)
+            ? null
+            : trimmedDesc,
+      );
     } catch (e) {
       // 服务端超限返回 EntityTooLarge / HTTP 413。必须与网络故障区分开:
       // 网络故障重试会成功,超限重试**永远**不会成功 —— 而原来两者共用
@@ -412,29 +447,34 @@ class PublishService {
           msg.split('upload_validation_failed:').last.split(RegExp(r'[\s)]')).first,
         );
       }
+      // 收口后建行发生在服务端,所以"建行失败"也从这条路回来。保留
+      // 'inserting' 这个 phase —— UI 的文案分支与用户的心智模型都不用改,
+      // 变的只是这件事在哪台机器上做。
+      if (msg.contains('insert_failed') ||
+          msg.contains('insert_conflict_unresolved')) {
+        throw PublishException('inserting', e.toString());
+      }
+      // 运营把 uploads 开关关了。与网络故障区分:重试同样不会成功,
+      // 但和内容被拒也不同 —— 过一阵可能就好了。
+      // 服务端说客户端版本太旧(426)。这不是网络问题也不是内容问题,
+      // 重试多少次都一样 —— 必须让用户看到"去更新"。
+      if (msg.contains('stale_client')) {
+        throw PublishException('rejected', '请更新 App 后再发布');
+      }
+      if (msg.contains('uploads_disabled')) {
+        throw PublishException('uploading', '上传功能暂时关闭');
+      }
+      if (msg.contains('invalid_title') || msg.contains('invalid_description')) {
+        throw PublishException('rejected', msg);
+      }
       throw PublishException('uploading', e.toString());
     }
 
-    // 5) Insert the public works row, read back the id.
+    // 5) 行已由服务端创建,这里只是把进度推到同一个位置,保持 UI 观感不变。
+    //    作品此刻是 moderation_status='under_review' + published_at=null,
+    //    对所有人不可见(含作者自己的 feed),等人工放行。
     emit('inserting', 0.80);
-    final row = <String, dynamic>{
-      'user_id': uid,
-      'title': trimmedTitle,
-      'description': (trimmedDesc == null || trimmedDesc.isEmpty)
-          ? null
-          : trimmedDesc,
-      'format': 'ply',
-      'model_storage_path': storagePath,
-      'file_size_bytes': bytes.length,
-      'visibility': 'public',
-      'published_at': DateTime.now().toUtc().toIso8601String(),
-    };
-    final String workId;
-    try {
-      workId = await _insertWork(row: row);
-    } catch (e) {
-      throw PublishException('inserting', e.toString());
-    }
+    final workId = finalized.workId;
 
     // 6) Thumbnail — best effort, NEVER throws. We reuse the PNG the
     // drafts grid already rendered, so a published card looks identical

@@ -104,6 +104,54 @@ Deno.serve(async (req) => {
     }, 429);
   }
 
+  // ── kill switch ─────────────────────────────────────────────────────
+  // 🔴 为什么必须在这里显式查:收口后 works 的 INSERT 由 service_role 执行,
+  //    而 service_role **绕过 RLS** ⇒ kill_switch_works_write
+  //    (RESTRICTIVE, for insert to authenticated)对这条新路径完全不生效。
+  //    不补这一查,等于把运营手里的刹车拆了 —— 关掉 'uploads' 开关将不再能
+  //    阻止新作品创建。
+  //
+  // ⚠️ 与 consumeRateLimit 相反,这里 **fail-closed**:查不到开关状态就当作
+  //    关闭。限流器故障不该让人发不了作品,但"刹车状态未知"必须停车。
+  {
+    const { data: enabled, error: swErr } = await admin.rpc('uploads_enabled');
+    if (swErr || enabled !== true) {
+      return jsonResponse({
+        error: 'uploads_disabled',
+        message: '上传功能暂时关闭,请稍后再试。',
+      }, 503);
+    }
+  }
+
+  // ── 内容字段 ────────────────────────────────────────────────────────
+  // 收口后 works 行由本函数创建,所以标题/描述从这里进来并在这里校验。
+  // 其余字段(user_id / model_storage_path / file_size_bytes / format)
+  // **一律由服务端自己算**,不接受客户端提供 —— 客户端连伪造的机会都没有。
+  //
+  // 上下限与 DB CHECK 保持一致:title 1..100、description <= 30
+  // (20260823000000 把 description 从 5000 收到 30)。这里先拦是为了给出
+  // 可读的拒绝理由,而不是让 23514 从数据库里冒出来。
+  // 旧客户端(收口前的版本)根本不发 title —— 它自己 INSERT works。
+  // 把这种情况与"标题写得不合法"分开报,否则线上会看到一堆 invalid_title,
+  // 而真正的原因是装了旧包。旧客户端此刻已经无路可走:迁移 20260823020000
+  // 撤了 works_insert_own,它的直写也会被 RLS 拒。
+  if (body.title === undefined) {
+    return jsonResponse({
+      error: 'stale_client',
+      message: '请更新 App 后再发布。',
+    }, 426); // 426 Upgrade Required
+  }
+  const title = typeof body.title === 'string' ? body.title.trim() : '';
+  if (title.length < 1 || title.length > 100) {
+    return jsonResponse({ error: 'invalid_title', reason: 'length' }, 422);
+  }
+  const rawDesc = typeof body.description === 'string' ? body.description.trim() : '';
+  if (rawDesc.length > 30) {
+    return jsonResponse({ error: 'invalid_description', reason: 'too_long', max: 30 }, 422);
+  }
+  const description = rawDesc.length > 0 ? rawDesc : null;
+  const visibility = body.visibility === 'private' ? 'private' : 'public';
+
   // ── 取对象元数据(拿真实大小,用于容器自洽性校验) ──────────────────
   const dir = stagingPath.slice(0, stagingPath.lastIndexOf('/'));
   const base = stagingPath.slice(stagingPath.lastIndexOf('/') + 1);
@@ -190,10 +238,71 @@ Deno.serve(async (req) => {
     }, 422);
   }
 
-  // ── 提升进公开桶 ──────────────────────────────────────────────────
   // 目标路径由**服务端**决定,不接受客户端指定 —— 否则等于把公开桶的写入
   // 位置交还给客户端,前面的隔离就白做了。沿用内容寻址的既有约定。
   const targetPath = stagingPath;
+
+  // ── 建 works 行(先于搬文件)─────────────────────────────────────────
+  // 顺序为什么是"先建行、后搬文件",与直觉相反:
+  //   通常的担心是"行先出现会在 feed 里生成指向缺失文件的卡片"。但这里落库的
+  //   是 moderation_status='under_review' + published_at=null 的行,它被**三层**
+  //   挡住,任何人都看不见:
+  //     · works_select_visible 要求 visibility='public' AND moderation_status='ok'
+  //     · feed 查询带 .not('published_at','is',null)(挡住作者自己)
+  //     · storage 的 works_select_public 策略 JOIN works 检查 moderation_status='ok'
+  //       ⇒ 连公开桶里的字节都读不到
+  //   反过来"先搬后建"才是危险的:INSERT 失败时对象已经在公开桶、staging 已被
+  //   搬空,既回不去也没有行指向它 —— 孤儿对象,而 delete-work 只按 works 行删,
+  //   没有任何清扫路径能发现它。
+  //
+  // 🔴 moderation_status 必须**显式**写 'under_review'。该列的 default 是 'ok'
+  //    (20260817000000),漏写就是默认放行 —— 这是最容易犯的静默安全洞。
+  //    published_at 同理留 null,由审核通过那一刻再补写。
+  const workRow = {
+    user_id: user.id,
+    title,
+    description,
+    format: verdict.kind,
+    model_storage_path: targetPath,
+    file_size_bytes: actualSize,
+    visibility,
+    moderation_status: 'under_review',
+    published_at: null,
+  };
+
+  let workId: string | null = null;
+  // 区分"本次新建"与"23505 回读到的既有行":move 失败要回滚时,只能删前者。
+  // 回读到的那行可能对应一次历史上成功的发布,删掉就是误伤。
+  let createdNow = false;
+  const { data: inserted, error: insErr } = await admin
+    .from('works')
+    .insert(workRow)
+    .select('id')
+    .single();
+
+  if (insErr) {
+    // 幂等靠 uq_works_user_model_path 唯一索引裁决,而**不是**先 SELECT 再
+    // INSERT —— 后者是 TOCTOU 竞态,两个并发请求会同时通过检查。
+    if ((insErr as { code?: string }).code === '23505') {
+      const { data: existing } = await admin
+        .from('works')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('model_storage_path', workRow.model_storage_path)
+        .maybeSingle();
+      workId = (existing?.id as string | undefined) ?? null;
+      if (!workId) {
+        return jsonResponse({ error: 'insert_conflict_unresolved' }, 500);
+      }
+    } else {
+      return jsonResponse({ error: 'insert_failed', detail: insErr.message }, 500);
+    }
+  } else {
+    workId = inserted.id as string;
+    createdNow = true;
+  }
+
+  // ── 提升进公开桶 ──────────────────────────────────────────────────
   const { error: moveErr } = await admin.storage
     .from(STAGING)
     .move(stagingPath, targetPath, { destinationBucket: 'works' });
@@ -201,8 +310,26 @@ Deno.serve(async (req) => {
   if (moveErr) {
     const msg = moveErr.message ?? String(moveErr);
     // 幂等:重复调用时对象已在 works,视为成功而非失败。
+    // ⚠️ 这个分支也必须带上 work_id 与 moderation_status:它是重试路径,
+    //    漏带会让客户端把"已存在"当成没有审核状态,进而误判为放行。
     if (/exists|duplicate/i.test(msg)) {
-      return jsonResponse({ ok: true, path: targetPath, already: true });
+      return jsonResponse({
+        ok: true,
+        path: targetPath,
+        already: true,
+        work_id: workId,
+        moderation_status: 'under_review',
+      });
+    }
+    // 回滚:文件没能进公开桶,那行就不该留下。只删本次新建的。
+    // service_role 执行 delete ⇒ current_user='service_role' ⇒
+    // guard_work_moderation_delete 不触发(它只拦 anon/authenticated),
+    // 所以 under_review 的行在这里删得掉。
+    if (createdNow && workId) {
+      const { error: rbErr } = await admin.from('works').delete().eq('id', workId);
+      if (rbErr) {
+        console.error('[upload-finalize] rollback delete failed:', rbErr.message);
+      }
     }
     return jsonResponse({ error: 'promote_failed', detail: msg }, 502);
   }
@@ -214,10 +341,18 @@ Deno.serve(async (req) => {
     target_id: null,
     ip_address: firstIp(req.headers.get('x-forwarded-for')),
     user_agent: (req.headers.get('user-agent') ?? '').slice(0, 500) || null,
-    metadata: { path: targetPath, kind: verdict.kind, size: actualSize },
+    metadata: { path: targetPath, kind: verdict.kind, size: actualSize, work_id: workId },
   });
 
-  return jsonResponse({ ok: true, path: targetPath, kind: verdict.kind });
+  return jsonResponse({
+    ok: true,
+    path: targetPath,
+    kind: verdict.kind,
+    work_id: workId,
+    // 客户端据此提示"审核中"。作品此刻对任何人都不可见 —— 包括作者自己的
+    // feed(published_at=null 被 .not('published_at','is',null) 挡住)。
+    moderation_status: 'under_review',
+  });
 });
 
 function firstIp(raw: string | null): string | null {
