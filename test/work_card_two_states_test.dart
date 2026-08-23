@@ -115,9 +115,15 @@ void main() {
         .join('\n');
 
     test('只有一个就绪闸,三种情形都覆盖', () {
-      expect(code, contains('final ready = canMountLiveViewer'));
+      // [2026-08-24 更名] ready → contentReady:卡片自己算的那个现在只是
+      // "内容能看了",揭不揭幕布由页面统一决定(见 reveal_together_test)。
+      expect(code, contains('final contentReady = canMountLiveViewer'));
       expect(code, contains('? _viewerFirstFrameReady'));
       expect(code, contains(': (thumbUrl == null ? true : _thumbReady)'));
+    });
+
+    test('自己好了也要等页面统一揭幕', () {
+      expect(code, contains('final ready = contentReady && widget.revealed;'));
     });
 
     test('玻璃板被 ready 挡住', () {

@@ -46,6 +46,7 @@ import '../community/feed_models.dart';
 import '../l10n/app_localizations.dart';
 import '../util/device_log.dart';
 import 'community/card_live_governor.dart';
+import 'community/reveal_gate.dart';
 import 'community/skeleton_shimmer.dart';
 import 'community/work_card.dart';
 import 'community/work_detail_page.dart';
@@ -93,15 +94,32 @@ class _VaultPageState extends State<VaultPage> {
   /// 闸 1:全 App 同时只有这一张卡是 live 的。null = 现在一张都没有。
   String? get _liveWorkId => _governor.liveAllowed ? _focusedWorkId : null;
 
+  // ── 页面级统一揭幕 ───────────────────────────────────────────────
+  //
+  // [2026-08-24 用户签决]「需要置顶栏和任务卡片一起加载成功」。
+  // 判决逻辑全在 [RevealGate] 里 —— 抽出去是为了能真把时间推过去验超时兜底,
+  // 留在这里就只能写源码文本断言,而那种断言被变异测试当场证明挡不住东西。
+  final RevealGate _revealGate = RevealGate();
+
+  bool get _revealed => _revealGate.revealed;
+
+  void _onRevealChanged() {
+    if (mounted) setState(() {});
+  }
+
+
   @override
   void initState() {
     super.initState();
     _feed = _loadFeed();
     _governor.addListener(_onGovernorChanged);
+    _revealGate.addListener(_onRevealChanged);
   }
 
   @override
   void dispose() {
+    _revealGate.removeListener(_onRevealChanged);
+    _revealGate.dispose();
     _governor.removeListener(_onGovernorChanged);
     _governor.dispose();
     _searchController.dispose();
@@ -373,6 +391,9 @@ class _VaultPageState extends State<VaultPage> {
           );
         }
         final works = snap.data ?? const <FeedWork>[];
+        // 新的一批 feed 到手就重定"一起揭幕"这一组。放在这里而不是 _loadFeed
+        // 里,是因为 works 只存在于 FutureBuilder 的 snapshot 里,没进 state。
+        _revealGate.setWorks(works.map((w) => w.id).toList());
         if (works.isEmpty) {
           return const _EmptyState();
         }
@@ -427,7 +448,10 @@ class _VaultPageState extends State<VaultPage> {
                 const SizedBox(height: AetherSpacing.lg),
             itemBuilder: (ctx, rawIndex) {
               if (_showTopicCard && rawIndex == 0) {
-                return const TopicCard();
+                // 与作品卡同一个闸 —— 一起灰,一起完成。
+                return _revealed
+                    ? const TopicCard()
+                    : _SkeletonTopicCard(animate: _governor.liveAllowed);
               }
               final i = rawIndex - (_showTopicCard ? 1 : 0);
               final w = works[i];
@@ -439,6 +463,8 @@ class _VaultPageState extends State<VaultPage> {
                 service: _service,
                 isFocused: liveId == w.id,
                 rotationAllowed: _governor.liveAllowed,
+                revealed: _revealed,
+                onContentReady: () => _revealGate.markReady(w.id),
                 // 五月留的口子。卡片的乐观点赞状态回传到这里,让父级有机会
                 // 把它并回 feed 列表 —— 目前和五月一样是空实现(WorkCard 自己
                 // 在 State 里保着,didUpdateWidget 负责不被冲掉),等 feed 状态
@@ -692,7 +718,13 @@ class TopicCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: AetherColors.bgElevated,
         borderRadius: BorderRadius.circular(AetherRadii.lg),
-        border: Border.all(color: AetherColors.border),
+        // [2026-08-24] 去掉原来那圈 1px 描边。
+        //
+        // 用户说「置顶栏需要变宽」,但实测两者**逐像素同宽**(768.0 vs 768.0,
+        // 见 test/reveal_together_test.dart)—— 它们本来就在同一个 ListView、
+        // 同一份 padding 下,拿的是同一个约束。看起来窄的是视觉重量:描边把
+        // 边界画在填充内侧,而作品卡是实心块直接铺到边。去掉后可见边完全对齐,
+        // 也正好对上 D5「与作品卡同宽同层」的签决。
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

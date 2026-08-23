@@ -65,10 +65,16 @@ const Duration kSkeletonPulsePeriod = Duration(milliseconds: 1800);
 /// 现在直接绑到令牌上,不再自造色值:
 ///   · base      = AetherColors.border   #E4E4E4 —— 页面上真实存在的灰
 ///   · highlight = AetherColors.bg       #FAFAFA —— 页面底色本身
-/// 峰值时骨架"融"回页面底色,这正是呼吸感的来源;两端差 22/255 ≈ 8.6%,
-/// 在一整张卡这么大的面积上足够看清,又不至于变成扫光带。
-const Color kSkeletonBase = AetherColors.border;
-const Color kSkeletonHighlight = AetherColors.bg;
+/// [2026-08-24 又一次被真机推翻] 上面那版取 border(#E4E4E4)→bg(#FAFAFA),
+/// 两端只差 22/255 ≈ 8.6%,用户原话「灰色,没有任何呼吸闪烁」。设备日志证明
+/// 动画**一直在跑**(`live_allowed=true`),看不见纯粹是幅度不够 —— 也就是说
+/// 上一版我只修对了"是不是黑的",没修对"看不看得出在动"。
+/// 现在两端各往外拉一档,仍然全是既有令牌:
+///   · base      = AetherColors.borderStrong  #CCCCCC
+///   · highlight = AetherColors.bgElevated    #F3F3F2
+/// 两端差 39/255 ≈ 15%,相对亮度差 ~0.30,一整张卡的面积上明确看得见在呼吸。
+const Color kSkeletonBase = AetherColors.borderStrong;
+const Color kSkeletonHighlight = AetherColors.bgElevated;
 
 /// 一块会轻微呼吸的灰色骨头。
 ///
@@ -167,7 +173,7 @@ class SkeletonWorkCard extends StatelessWidget {
     final inner = _content(context);
     if (fill) return inner;
     return ClipRRect(
-      borderRadius: BorderRadius.circular(20),
+      borderRadius: BorderRadius.circular(AetherRadii.lg),
       child: AspectRatio(aspectRatio: 1, child: inner),
     );
   }
@@ -178,7 +184,10 @@ class SkeletonWorkCard extends StatelessWidget {
           children: [
             SkeletonBox(
               animate: animate,
-              borderRadius: BorderRadius.circular(20),
+              // [2026-08-24] 原来是自造值 20,而 WorkCard 的 ClipRRect 用的是
+              // AetherRadii.lg=24 —— 幕布的角比卡片的角更紧,揭幕那一刻角上会
+              // 跳一下。全仓统一走令牌。
+              borderRadius: BorderRadius.circular(AetherRadii.lg),
             ),
             Positioned(
               left: 12,

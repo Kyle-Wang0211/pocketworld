@@ -72,6 +72,16 @@ class WorkCard extends StatefulWidget {
   /// 只是接到过滤而不是主页。
   final ValueChanged<FeedWork>? onAuthorTap;
 
+  /// [2026-08-24 用户签决] **置顶栏和作品卡一起加载成功**,不许各揭各的。
+  ///
+  /// 卡片自己算得出"内容能看了"(见 build 里的 contentReady),但它只**上报**
+  /// 这件事;揭不揭幕布由页面统一决定 —— 页面等首屏那几张全就绪(或超时兜底)
+  /// 才一起放行。默认 true 是为了让"单独用一张卡"的场景不受影响。
+  final bool revealed;
+
+  /// 内容第一次可看时上报给页面。只报一次。
+  final VoidCallback? onContentReady;
+
   const WorkCard({
     super.key,
     required this.work,
@@ -82,6 +92,8 @@ class WorkCard extends StatefulWidget {
     this.rotationAllowed = true,
     this.onWorkUpdated,
     this.onAuthorTap,
+    this.revealed = true,
+    this.onContentReady,
   });
 
   @override
@@ -152,6 +164,9 @@ class _WorkCardState extends State<WorkCard> {
   double _visibility = 0;
   bool _isLive = false;
   bool _viewerFirstFrameReady = false;
+
+  /// onContentReady 只报一次 —— 每帧都报会把页面拖进重建风暴。
+  bool _reportedReady = false;
 
   /// 缩略图是否已经画出第一帧。
   ///
@@ -229,6 +244,9 @@ class _WorkCardState extends State<WorkCard> {
       // 每次挂/卸都重置首帧标志。挂:缩略图 backdrop 盖着,直到 viewer 报出
       // 第一帧。卸:Texture 本来就没了,backdrop 是唯一可见层。
       _viewerFirstFrameReady = false;
+      // ⚠️ _reportedReady **不跟着重置**。它的语义是"这张卡至少可看过一次",
+      // 是给页面揭幕闸的一次性信号;viewer 因 LRU 被挤掉再挂回来,不该让页面
+      // 重新收到一次就绪上报。
     });
   }
 
@@ -365,9 +383,20 @@ class _WorkCardState extends State<WorkCard> {
     //   · 焦点卡要挂 viewer  → 等 viewer 的第一帧
     //   · 只有缩略图         → 等图的第一帧(图挂了也放行,见 errorBuilder)
     //   · 两者都没有         → 立刻 ready,否则骨架会永远盖着
-    final ready = canMountLiveViewer
+    final contentReady = canMountLiveViewer
         ? _viewerFirstFrameReady
         : (thumbUrl == null ? true : _thumbReady);
+
+    // 上报给页面。build 期间不能直接回调(会在布局中触发父级 setState),排到帧后。
+    if (contentReady && !_reportedReady) {
+      _reportedReady = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.onContentReady?.call();
+      });
+    }
+
+    // [2026-08-24] 幕布归**页面**统一揭:自己好了也要等同批的其他卡。
+    final ready = contentReady && widget.revealed;
 
     return VisibilityDetector(
       key: Key('work-card-${_work.id}'),
