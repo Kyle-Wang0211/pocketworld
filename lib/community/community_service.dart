@@ -25,6 +25,25 @@ import 'feed_models.dart';
 ///               (the "热门 / Hot" tab).
 enum FeedSort { recent, hot }
 
+/// [KEYSET-PAGINATION 2026-08-23] 构造 keyset 游标的 PostgREST 过滤串。
+///
+/// PostgreSQL 的元组比较 `(published_at, id) < (T, I)` 等价于
+///   `published_at < T  OR  (published_at = T AND id < I)`
+/// PostgREST **没有**原生元组比较,所以只能发上面这条展开式。
+///
+/// 抽成纯函数是为了能脱离数据库测 —— 展开式写错(比如漏掉 `AND id < I`
+/// 那一半)在真机上表现为"边界处漏一条",极难察觉。
+///
+/// ⚠️ 值不做转义:ISO8601 时间戳与 uuid 都不含 `,` 与括号,
+/// 不会破坏 `or=(...)` 的语法。换成别的列类型前先确认这一点仍成立。
+String buildFeedKeysetFilter({
+  required DateTime afterPublishedAt,
+  required String afterId,
+}) {
+  final t = afterPublishedAt.toUtc().toIso8601String();
+  return 'published_at.lt.$t,and(published_at.eq.$t,id.lt.$afterId)';
+}
+
 class CommunityService {
   final SupabaseClient _client;
   final SignedUploadBroker _uploadBroker;
@@ -57,6 +76,20 @@ class CommunityService {
     /// 个人主页。后端本就 100% 就绪:profiles 六字段齐、FeedWork 已带 userId,
     /// 过滤就是下面这一句 .eq('user_id', ...)。
     String? authorUserId,
+
+    /// [KEYSET-PAGINATION 2026-08-23] 上一页最后一条的 (published_at, id)。
+    ///
+    /// 传了就走 keyset(seek),`offset` 被忽略;不传就是首页。
+    ///
+    /// 为什么必须改掉 offset:offset 分页在"边翻页边有新内容插到顶部"时
+    /// **静默漏项** —— 整列下移一位,原本在 offset 处的那条挪到 offset+1,
+    /// 第二页从下一条开始,中间那条对该用户永远不出现。
+    /// 客户端按 id 去重只挡得住**重复**,挡不住**漏**。
+    ///
+    /// ⚠️ 两个参数必须**成对**传 —— 只传时间戳会退化成不唯一的排序键,
+    /// 边界上同一时刻发布的行会被跳过或重复。
+    DateTime? afterPublishedAt,
+    String? afterId,
   }) async {
     // 1) Public works. Visibility filter belongs in code even though RLS
     // would already enforce it — public clients should never get a row
@@ -80,14 +113,39 @@ class CommunityService {
       // collapse to literals on the wire (PostgREST escapes them).
       filter = filter.ilike('title', '%$trimmedQuery%');
     }
+    // [KEYSET-PAGINATION 2026-08-23] 游标 —— 等价于 PostgreSQL 的元组比较
+    //   (published_at, id) < (T, I)
+    // ≡ published_at < T  OR  (published_at = T AND id < I)
+    // PostgREST 没有原生元组比较,用上面这条展开式。
+    // ISO8601 时间戳与 uuid 都不含 `,` 与括号,不会破坏 or=(...) 的语法。
+    final useKeyset = afterPublishedAt != null && afterId != null;
+    if (useKeyset) {
+      filter = filter.or(
+        buildFeedKeysetFilter(
+          afterPublishedAt: afterPublishedAt,
+          afterId: afterId,
+        ),
+      );
+    }
+
     final transformed = switch (sortBy) {
-      FeedSort.recent => filter.order('published_at', ascending: false),
+      // 次级键 id 是 keyset 的硬性前提:排序键必须唯一确定一个位置,
+      // 否则边界上 published_at 相同的行会被跳过或重复。
+      FeedSort.recent => filter
+          .order('published_at', ascending: false)
+          .order('id', ascending: false),
+      // ⚠️ hot 仍走 offset。它自 2026-08-23 砍掉标签后已无生产调用点
+      // (vault_page 定死 FeedSort.recent),不值得为它再补一套三键游标
+      // (likes_count, published_at, id)。若哪天复活,照 recent 的样子加。
       FeedSort.hot =>
         filter
             .order('likes_count', ascending: false)
-            .order('published_at', ascending: false),
+            .order('published_at', ascending: false)
+            .order('id', ascending: false),
     };
-    final worksRes = await transformed.range(offset, offset + limit - 1);
+    final worksRes = useKeyset
+        ? await transformed.limit(limit)
+        : await transformed.range(offset, offset + limit - 1);
     var works = (worksRes as List).cast<Map<String, dynamic>>();
     if (works.isEmpty) return const [];
 

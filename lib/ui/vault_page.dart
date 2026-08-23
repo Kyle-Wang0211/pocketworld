@@ -191,16 +191,33 @@ class _VaultPageState extends State<VaultPage> {
     _loadingMore = true;
     final feedAtStart = _feed;
     try {
+      // [KEYSET-PAGINATION 2026-08-23] 用上一页最后一条的 (published_at, id)
+      // 作游标,不再用 offset。
+      //
+      // offset 的病:边翻页边有新作品插到顶部时,整列下移一位,原本在 offset
+      // 处的那条挪到 offset+1,第二页从下一条开始 —— **中间那条对该用户永远
+      // 不出现**。下面的 id 去重挡得住重复,挡不住漏。
+      //
+      // 本仓修过一次同类(此前只拉一次 limit:20 且无加载更多,第 21 个作品
+      // 对所有人永久不可见);这是它更隐蔽的变体。
+      final last = current.isEmpty ? null : current.last;
+      final cursorAt = last?.publishedAt;
       final next = await _service.fetchPublicFeed(
         limit: _pageSize,
-        offset: current.length,
+        // 游标可用就不传 offset;查询里 published_at is not null 已经保证
+        // 返回的每一条都有时间戳,这里的 null 兜底只是防御。
+        offset: cursorAt == null ? current.length : 0,
         sortBy: FeedSort.recent,
         authorUserId: _authorFilterId,
         query: _query.isEmpty ? null : _query,
+        afterPublishedAt: cursorAt,
+        afterId: cursorAt == null ? null : last!.id,
       );
       // tab / 搜索 / 下拉刷新已经换了整个列表 → 这批结果作废。
       if (!mounted || !identical(_feed, feedAtStart)) return;
       if (next.length < _pageSize) _hasMore = false;
+      // 去重保留:keyset 之后重复已不该发生,但它零成本、且能兜住
+      // "刷新与加载更多竞态"这类边角。**它挡不住漏项 —— 那是 keyset 修的。**
       final seen = current.map((w) => w.id).toSet();
       final fresh = next.where((w) => !seen.contains(w.id)).toList();
       if (fresh.isEmpty) return;
