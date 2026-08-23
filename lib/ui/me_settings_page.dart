@@ -97,6 +97,17 @@ class _SettingsSection extends StatelessWidget {
         trailing: stats.handle ?? l.meHandleNotSet,
         onTap: () => _showHandleDialog(context, stats),
       ),
+      // [IP-REGION 2026-08-24]《互联网用户账号信息管理规定》第十二条:
+      // "应当在互联网用户账号信息页面展示……IP 地址归属地信息"。
+      // 这一行**不可点、不可改** —— 属地是服务端事实,不是用户偏好。
+      // 未解析出时显示占位而非隐藏:法条要求"应当展示",藏起来会让人
+      // 以为我们没做。(作品卡片上则相反,少一行小字不会有这个误解。)
+      _SettingsRowSpec(
+        icon: Icons.location_on_outlined,
+        title: l.meIpRegion,
+        trailing: stats.lastRegion ?? l.meIpRegionUnknown,
+        onTap: null,
+      ),
       _SettingsRowSpec(
         icon: Icons.notifications_none_rounded,
         title: l.meNotifications,

@@ -4,10 +4,15 @@
 //   1) country code + national number → provider issues verificationID
 //   2) enter 6-digit code → sign in / sign up
 //
-// Not surfaced by AuthRootView today (intent line 75 in Swift: "Phone
-// sign-in is intentionally not surfaced here"), but retained so MFA
-// can be re-enabled by flipping a flag in auth_root_view.dart without
-// re-scaffolding.
+// [PHONE-AUTH 2026-08-23] 这一页此前从未被接入(原注释:"Not surfaced by
+// AuthRootView today"),所以里面的文案一直是硬编码中文。现已接上 —— 依据是
+// 《互联网用户账号信息管理规定》第九条:真实身份认证必须"基于**移动电话号码**、
+// 身份证件号码或者统一社会信用代码等方式",**邮箱不在这个列举里**,
+// 而且"用户不提供真实身份信息的,不得为其提供相关服务"。
+//
+// ⚠️ 服务端已完备(signInWithOtp + verifyOTP,注册路径一次成型),但要真正发出
+//    短信还需要:①Dashboard 启用 Phone provider ②配置 Send SMS Hook 指向
+//    supabase/functions/send-sms-hook ③给该函数配阿里云短信的 4 个 secret。
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -15,6 +20,7 @@ import 'package:flutter/services.dart';
 import '../../auth/auth_models.dart';
 import '../../auth/current_user.dart';
 import '../design_system.dart';
+import '../../l10n/app_localizations.dart';
 import 'auth_shared_widgets.dart';
 
 enum PhoneIntent { signIn, signUp }
@@ -95,14 +101,15 @@ class _PhoneSignInViewState extends State<PhoneSignInView> {
 
   @override
   Widget build(BuildContext context) {
+    final l = AppL10n.of(context);
     final working = widget.currentUser.isPerformingAuthAction;
     if (_challenge != null) {
-      return _codeEntryStep(working);
+      return _codeEntryStep(l, working);
     }
-    return _phoneEntryStep(working);
+    return _phoneEntryStep(l, working);
   }
 
-  Widget _phoneEntryStep(bool working) {
+  Widget _phoneEntryStep(AppL10n l, bool working) {
     return Column(
       children: [
         Row(
@@ -120,7 +127,7 @@ class _PhoneSignInViewState extends State<PhoneSignInView> {
             const SizedBox(width: AetherSpacing.sm),
             Expanded(
               child: AuthField(
-                title: '手机号（不含国际区号）',
+                title: l.authPhoneNumberHint,
                 controller: _nationalNumber,
                 keyboard: AuthFieldKeyboard.phone,
                 inputFormatters: [
@@ -134,20 +141,20 @@ class _PhoneSignInViewState extends State<PhoneSignInView> {
         if (widget.intent == PhoneIntent.signUp) ...[
           const SizedBox(height: AetherSpacing.md),
           AuthField(
-            title: '昵称（可选）',
+            title: l.authPhoneDisplayNameHint,
             controller: _displayName,
           ),
         ],
         const SizedBox(height: AetherSpacing.lg),
         AuthPrimaryButton(
-          title: '发送验证码',
+          title: l.authPhoneSendCode,
           isWorking: working,
           isEnabled: _canStart,
           onTap: _startVerification,
         ),
         const SizedBox(height: AetherSpacing.md),
         Text(
-          '我们会发送一次性验证码到 ${_e164.isEmpty ? '你的手机号' : _e164}。标准短信费可能适用。',
+          l.authPhoneWillSend(_e164.isEmpty ? l.authPhoneYourNumber : _e164),
           textAlign: TextAlign.center,
           style: const TextStyle(
             fontSize: 12,
@@ -159,12 +166,12 @@ class _PhoneSignInViewState extends State<PhoneSignInView> {
     );
   }
 
-  Widget _codeEntryStep(bool working) {
+  Widget _codeEntryStep(AppL10n l, bool working) {
     final ch = _challenge!;
     return Column(
       children: [
         Text(
-          '验证码已发送到 ${ch.phoneNumber}',
+          l.authPhoneCodeSentTo(ch.phoneNumber),
           textAlign: TextAlign.center,
           style: const TextStyle(
             fontSize: 14,
@@ -173,7 +180,7 @@ class _PhoneSignInViewState extends State<PhoneSignInView> {
         ),
         const SizedBox(height: AetherSpacing.md),
         AuthField(
-          title: '6 位验证码',
+          title: l.authPhoneCodeHint,
           controller: _code,
           keyboard: AuthFieldKeyboard.number,
           inputFormatters: [
@@ -185,7 +192,7 @@ class _PhoneSignInViewState extends State<PhoneSignInView> {
         ),
         const SizedBox(height: AetherSpacing.lg),
         AuthPrimaryButton(
-          title: widget.intent == PhoneIntent.signIn ? '登录' : '完成注册',
+          title: widget.intent == PhoneIntent.signIn ? l.authPhoneSubmitSignIn : l.authPhoneSubmitSignUp,
           isWorking: working,
           isEnabled: _code.text.length >= 6,
           onTap: _submitCode,
@@ -198,9 +205,9 @@ class _PhoneSignInViewState extends State<PhoneSignInView> {
                     _challenge = null;
                     _code.clear();
                   }),
-          child: const Text(
-            '换个手机号',
-            style: TextStyle(
+          child: Text(
+            l.authPhoneChangeNumber,
+            style: const TextStyle(
               fontSize: 14,
               color: AetherColors.textSecondary,
               decoration: TextDecoration.underline,

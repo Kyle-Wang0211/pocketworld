@@ -343,6 +343,54 @@ class AppL10nZh extends AppL10n {
   String get mePlatformRules => '平台公约';
 
   @override
+  String get meIpRegion => 'IP 属地';
+
+  @override
+  String get meIpRegionUnknown => '未知';
+
+  @override
+  String ipRegionLabel(String region) {
+    return 'IP属地:$region';
+  }
+
+  @override
+  String get authPhoneEntry => '用手机号登录';
+
+  @override
+  String get authPhoneNumberHint => '手机号(不含国际区号)';
+
+  @override
+  String get authPhoneDisplayNameHint => '昵称(可选)';
+
+  @override
+  String get authPhoneSendCode => '发送验证码';
+
+  @override
+  String authPhoneWillSend(String target) {
+    return '我们会发送一次性验证码到 $target。标准短信费可能适用。';
+  }
+
+  @override
+  String authPhoneCodeSentTo(String phone) {
+    return '验证码已发送到 $phone';
+  }
+
+  @override
+  String get authPhoneCodeHint => '6 位验证码';
+
+  @override
+  String get authPhoneSubmitSignIn => '登录';
+
+  @override
+  String get authPhoneSubmitSignUp => '完成注册';
+
+  @override
+  String get authPhoneChangeNumber => '换个手机号';
+
+  @override
+  String get authPhoneYourNumber => '你的手机号';
+
+  @override
   String get meHandle => 'ID';
 
   @override

@@ -709,6 +709,90 @@ abstract class AppL10n {
   /// **'Platform Rules'**
   String get mePlatformRules;
 
+  /// No description provided for @meIpRegion.
+  ///
+  /// In en, this message translates to:
+  /// **'IP location'**
+  String get meIpRegion;
+
+  /// No description provided for @meIpRegionUnknown.
+  ///
+  /// In en, this message translates to:
+  /// **'Unknown'**
+  String get meIpRegionUnknown;
+
+  /// No description provided for @ipRegionLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'IP location: {region}'**
+  String ipRegionLabel(String region);
+
+  /// No description provided for @authPhoneEntry.
+  ///
+  /// In en, this message translates to:
+  /// **'Sign in with phone'**
+  String get authPhoneEntry;
+
+  /// No description provided for @authPhoneNumberHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Phone number (no country code)'**
+  String get authPhoneNumberHint;
+
+  /// No description provided for @authPhoneDisplayNameHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Display name (optional)'**
+  String get authPhoneDisplayNameHint;
+
+  /// No description provided for @authPhoneSendCode.
+  ///
+  /// In en, this message translates to:
+  /// **'Send code'**
+  String get authPhoneSendCode;
+
+  /// No description provided for @authPhoneWillSend.
+  ///
+  /// In en, this message translates to:
+  /// **'We\'ll send a one-time code to {target}. Standard SMS rates may apply.'**
+  String authPhoneWillSend(String target);
+
+  /// No description provided for @authPhoneCodeSentTo.
+  ///
+  /// In en, this message translates to:
+  /// **'Code sent to {phone}'**
+  String authPhoneCodeSentTo(String phone);
+
+  /// No description provided for @authPhoneCodeHint.
+  ///
+  /// In en, this message translates to:
+  /// **'6-digit code'**
+  String get authPhoneCodeHint;
+
+  /// No description provided for @authPhoneSubmitSignIn.
+  ///
+  /// In en, this message translates to:
+  /// **'Sign in'**
+  String get authPhoneSubmitSignIn;
+
+  /// No description provided for @authPhoneSubmitSignUp.
+  ///
+  /// In en, this message translates to:
+  /// **'Complete sign up'**
+  String get authPhoneSubmitSignUp;
+
+  /// No description provided for @authPhoneChangeNumber.
+  ///
+  /// In en, this message translates to:
+  /// **'Use another number'**
+  String get authPhoneChangeNumber;
+
+  /// No description provided for @authPhoneYourNumber.
+  ///
+  /// In en, this message translates to:
+  /// **'your phone'**
+  String get authPhoneYourNumber;
+
   /// No description provided for @meHandle.
   ///
   /// In en, this message translates to:

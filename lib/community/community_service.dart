@@ -99,7 +99,8 @@ class CommunityService {
         .select(
           'id, user_id, title, description, format, '
           'model_storage_path, thumbnail_storage_path, '
-          'file_size_bytes, likes_count, views_count, published_at',
+          'file_size_bytes, likes_count, views_count, published_at, '
+          'publish_region',
         )
         .eq('visibility', 'public')
         .not('published_at', 'is', null);
@@ -215,6 +216,10 @@ class CommunityService {
         authorHandle: profile['handle'] as String?,
         authorAvatarUrl: profile['avatar_url'] as String?,
         likedByMe: myLikes.contains(w['id'] as String),
+        // [IP-REGION 2026-08-24] 第十二条。服务端判定,客户端只读。
+        publishRegion: (w['publish_region'] as String?)?.trim().isEmpty ?? true
+            ? null
+            : w['publish_region'] as String?,
       );
     }).toList();
   }

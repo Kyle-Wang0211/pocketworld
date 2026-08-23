@@ -28,6 +28,7 @@ import 'package:visibility_detector/visibility_detector.dart';
 
 import '../../community/community_service.dart';
 import '../../community/feed_models.dart';
+import '../../l10n/app_localizations.dart';
 import '../design_system.dart';
 import '../viewer_social_contract.dart';
 import 'aether_cpp_card_demo.dart';
@@ -576,7 +577,13 @@ class _GlassInfoPlate extends StatelessWidget {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      '@${work.authorDisplayName}',
+                      // 🔴 `@` 后面只能跟 handle。跟在昵称后面等于告诉用户
+                      // "这是唯一标识",而昵称可以有无数个同名 —— 那是在说
+                      // 假话,也正是冒充的入口(迁移 20260823010000 立的双轨:
+                      // 昵称可重复,handle 唯一)。没设 handle 就只显示昵称。
+                      work.authorHandle != null
+                          ? '@${work.authorHandle}'
+                          : work.authorDisplayName,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -585,6 +592,21 @@ class _GlassInfoPlate extends StatelessWidget {
                         color: AetherColors.textSecondary,
                       ),
                     ),
+                    // [IP-REGION 2026-08-24] 第十二条:内容上展示发布时属地。
+                    // 解析不出来就整行不出现(而不是显示"未知")。
+                    if (work.publishRegion != null) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        AppL10n.of(context).ipRegionLabel(work.publishRegion!),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w400,
+                          color: AetherColors.textTertiary,
+                        ),
+                      ),
+                    ],
                     if (work.description != null &&
                         work.description!.isNotEmpty) ...[
                       const SizedBox(height: 4),

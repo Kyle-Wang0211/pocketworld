@@ -348,6 +348,54 @@ class AppL10nEn extends AppL10n {
   String get mePlatformRules => 'Platform Rules';
 
   @override
+  String get meIpRegion => 'IP location';
+
+  @override
+  String get meIpRegionUnknown => 'Unknown';
+
+  @override
+  String ipRegionLabel(String region) {
+    return 'IP location: $region';
+  }
+
+  @override
+  String get authPhoneEntry => 'Sign in with phone';
+
+  @override
+  String get authPhoneNumberHint => 'Phone number (no country code)';
+
+  @override
+  String get authPhoneDisplayNameHint => 'Display name (optional)';
+
+  @override
+  String get authPhoneSendCode => 'Send code';
+
+  @override
+  String authPhoneWillSend(String target) {
+    return 'We\'ll send a one-time code to $target. Standard SMS rates may apply.';
+  }
+
+  @override
+  String authPhoneCodeSentTo(String phone) {
+    return 'Code sent to $phone';
+  }
+
+  @override
+  String get authPhoneCodeHint => '6-digit code';
+
+  @override
+  String get authPhoneSubmitSignIn => 'Sign in';
+
+  @override
+  String get authPhoneSubmitSignUp => 'Complete sign up';
+
+  @override
+  String get authPhoneChangeNumber => 'Use another number';
+
+  @override
+  String get authPhoneYourNumber => 'your phone';
+
+  @override
   String get meHandle => 'Username';
 
   @override

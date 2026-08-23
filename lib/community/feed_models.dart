@@ -27,6 +27,18 @@ class FeedWork {
   final int viewsCount;
   final DateTime? publishedAt;
 
+  /// works.publish_region —— **发布那一刻**的 IP 属地(如 '广东'/'美国'),
+  /// 《互联网用户账号信息管理规定》第十二条。
+  ///
+  /// 🔑 是发布时属地,不是作者当前属地 —— 同行(微博/抖音)在内容上展示的
+  /// 就是这个,历史内容的属地不该因为作者今天出差而改变。作者**当前**的
+  /// 属地在 profiles.last_region 上,只出现在账号信息页面。
+  ///
+  /// 服务端 upload-finalize 从 x-forwarded-for 判定后写入,客户端只读。
+  /// null = 没解析出来(内网/IP 库未覆盖/IP 库尚未导入)⇒ **不展示这一行**,
+  /// 而不是展示"未知"。
+  final String? publishRegion;
+
   // Joined from profiles.
   final String authorDisplayName;
   final String? authorAvatarUrl;
@@ -64,6 +76,7 @@ class FeedWork {
     required this.likedByMe,
     this.fileSizeBytes,
     this.authorHandle,
+    this.publishRegion,
   });
 
   /// Point count implied by [fileSizeBytes], or null when it cannot be
@@ -110,6 +123,7 @@ class FeedWork {
       likedByMe: likedByMe ?? this.likedByMe,
       fileSizeBytes: fileSizeBytes,
       authorHandle: authorHandle,
+      publishRegion: publishRegion,
     );
   }
 }

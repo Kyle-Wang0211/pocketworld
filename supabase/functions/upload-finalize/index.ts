@@ -35,6 +35,7 @@
 
 import { createClient } from 'jsr:@supabase/supabase-js@2.112.3';
 import { corsHeaders, jsonResponse, consumeRateLimit } from '../_shared/cors.ts';
+import { resolveClientRegion } from '../_shared/client_region.ts';
 import { validate } from './validate.ts';
 
 const STAGING = 'staging';
@@ -293,6 +294,12 @@ Deno.serve(async (req) => {
   //   ⚠️ **第三步会改变作品的可见性时序**,属于《具有舆论属性或社会动员能力的
   //      互联网信息服务安全评估规定》第三条的"重大变更",要重新做安全评估并
   //      报送,商店那边也要重新提交平台状态截图。那一步**不能当成纯技术优化**排期。
+  // [IP-REGION 2026-08-24] 第十二条。发布那一刻的属地,写死不再变 ——
+  // 同行(微博/抖音)在内容上展示的就是发布时属地,不是作者当前属地;
+  // 历史内容的属地不该因为作者今天出差而改变。
+  // 解析失败返回 null,前端就不展示那一行 —— 不阻断发布。
+  const publishRegion = await resolveClientRegion(admin, req);
+
   const workRow = {
     user_id: user.id,
     title,
@@ -303,6 +310,7 @@ Deno.serve(async (req) => {
     visibility,
     moderation_status: 'under_review',
     published_at: null,
+    publish_region: publishRegion,
   };
 
   let workId: string | null = null;

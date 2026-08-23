@@ -17,7 +17,7 @@ understand why something is the way it is — start here.
 3. [RLS philosophy](#rls-philosophy)
 4. [Schema overview (26 tables)](#schema-overview)
 5. [Storage buckets (4)](#storage-buckets)
-6. [Edge Functions (4)](#edge-functions)
+6. [Edge Functions (13)](#edge-functions)
 7. [pg_cron jobs](#pg_cron-jobs)
 8. [Deployment](#deployment)
 9. [Migrating off Supabase](#migrating-off-supabase)
@@ -384,7 +384,7 @@ supabase link --project-ref <YOUR_PROJECT_REF>
 cd pocketworld_flutter
 supabase db push
 
-# 4. Deploy Edge Functions — ALL ELEVEN.
+# 4. Deploy Edge Functions — ALL THIRTEEN.
 #    An earlier version of this list had only the four auth functions, which
 #    silently produced a project whose thumbnail upload path 404s.
 #
@@ -418,6 +418,17 @@ supabase functions deploy admin-moderate-work   --no-verify-jwt --project-ref <R
 # admin-approve-work 是"先审后发"的放行端(under_review → ok + 补 published_at)。
 # 与 admin-moderate-work 同样按 service secret 鉴权,所以同样需要 --no-verify-jwt。
 supabase functions deploy admin-approve-work    --no-verify-jwt --project-ref <REF>
+
+# report-region 写 profiles.last_region(第十二条 IP 属地)。普通用户 JWT 鉴权,
+# 不需要 --no-verify-jwt。
+supabase functions deploy report-region         --project-ref <REF>
+
+# send-sms-hook 是 Supabase 的 **Send SMS Hook**,由 GoTrue 服务端回调,
+# 带的是 Standard Webhooks 签名而不是用户 JWT ⇒ 必须 --no-verify-jwt,
+# 否则平台会在函数拿到请求前就把它 401 掉。
+#   ⚠️ 部署完还要在 Dashboard → Authentication → Hooks 里把它设为 Send SMS Hook,
+#      并配 4 个 secret(见下面「阿里云短信」一节)。不配 = 手机号登录发不出短信。
+supabase functions deploy send-sms-hook         --no-verify-jwt --project-ref <REF>
 
 # 4b. 调用管理端(admin-*)需要 **service secret**,不是 CLI 给的 service_role JWT。
 #     2026-08-23 实测:本项目 Edge Function env 里的 SUPABASE_SERVICE_ROLE_KEY
@@ -550,3 +561,100 @@ supabase db push --dry-run
 # Inspect cron jobs
 supabase db query --linked "select jobid, schedule, jobname from cron.job"
 ```
+
+
+---
+
+## 待配置项(代码已就绪,等外部配置)
+
+这两块的**代码、schema、UI 都已经写完并合入**,但要真正生效还需要在
+Supabase Dashboard / 阿里云控制台做配置,或者跑一次数据导入。
+在配置完成之前,它们的表现是**优雅降级**而不是报错:短信发不出去、
+属地那一行显示"未知"。两者都不会阻断任何已有功能。
+
+### 1. 阿里云短信(手机号登录)
+
+法条:《互联网用户账号信息管理规定》第九条要求真实身份认证"基于**移动电话
+号码**、身份证件号码或者统一社会信用代码等方式",**邮箱不在这个列举里**,
+而且"用户不提供真实身份信息的,不得为其提供相关服务"。所以手机号登录不是
+可选项。
+
+已就绪:
+
+| 层 | 位置 | 状态 |
+|----|------|------|
+| 服务层 | `lib/auth/supabase_auth_service.dart:66` `SignInRequestPhone` → `verifyOTP(type: OtpType.sms)`;`:180` `signInWithOtp(phone:)` | ✅ 早已写好 |
+| UI | `lib/ui/auth/phone_sign_in_view.dart` | ✅ 已 l10n 化(此前 8 处硬编码中文,因为这一页从未被接入过) |
+| 入口 | `lib/ui/auth/auth_root_view.dart` "用手机号登录" | ✅ 2026-08-24 接上 |
+| 短信通道 | `supabase/functions/send-sms-hook/index.ts` | ⚠️ 已写完并通过 `deno check`,但**从未真正发过一条短信** |
+
+还需要你做(按顺序):
+
+1. **阿里云**:开通短信服务 → 申请签名 → 申请模板(内容形如
+   `您的验证码是 ${code},5 分钟内有效。`)→ 建一个只有
+   `AliyunDysmsFullAccess` 的 RAM 子账号拿 AccessKey。
+   签名和模板都要审核,**通常 1-2 个工作日**,别排在提交前一天。
+2. **Supabase Dashboard → Authentication → Providers**:启用 Phone。
+3. **Dashboard → Authentication → Hooks**:把 Send SMS Hook 指向
+   `https://<REF>.supabase.co/functions/v1/send-sms-hook`,复制它生成的
+   `v1,whsec_...` 密钥。
+4. **Edge Functions → Secrets** 配 4 个:
+   `SEND_SMS_HOOK_SECRET`(上一步那个 whsec)、`ALIYUN_ACCESS_KEY_ID`、
+   `ALIYUN_ACCESS_KEY_SECRET`、`ALIYUN_SMS_SIGN_NAME`、`ALIYUN_SMS_TEMPLATE_CODE`。
+   🔴 `SEND_SMS_HOOK_SECRET` 缺失时函数 **fail-closed**(拒绝所有请求)——
+   一个不验签的短信端点等于把发短信的能力开放给任何人,那是直接的资金损失。
+
+⚠️ 第一次真机联调若拿到 `SignatureDoesNotMatch`,按这个顺序查(RPC V2 签名
+最常踩的四个坑,`index.ts` 顶部也抄了一份):
+① `AccessKeySecret` 后面那个**尾随 `&`** 有没有丢;
+② 参数是否按**字典序**排序后再拼;
+③ 百分号编码是否把 `+`→`%20`、`*`→`%2A`、`%7E`→`~` 三处都换了;
+④ `SignatureNonce` 是否每次都新生成。
+
+### 2. IP 属地库导入
+
+法条:《互联网用户账号信息管理规定》第十二条 —— "应当在互联网用户账号信息
+页面展示合理范围内的……IP 地址归属地信息"。
+
+已就绪:
+
+| 层 | 位置 | 状态 |
+|----|------|------|
+| Schema | 迁移 `20260824000000_ip_region.sql`:`ip_region_ranges` 表 + `resolve_ip_region()` + `works.publish_region` + `profiles.last_region` | ✅ |
+| 写入(内容) | `upload-finalize` 发布时写 `publish_region` | ✅ |
+| 写入(账号) | `report-region` Edge Function 写 `profiles.last_region` | ✅ |
+| 读取 | `community_service` → `FeedWork.publishRegion`;`MeStatsViewModel.lastRegion` | ✅ |
+| 展示 | 作品卡片 `post_card.dart`;账号信息页 `me_settings_page.dart` | ✅ |
+| **IP 库数据** | `public.ip_region_ranges` | ⚠️ **空表** —— 导入前所有属地都是 null |
+
+还需要你做:
+
+```bash
+# 先只生成 CSV 看一眼(不联库)
+node tool/import_ip2region.mjs --csv-only
+
+# 真正导入(会先清空整张表再全量重建)
+SUPABASE_URL=https://<REF>.supabase.co \
+SUPABASE_SERVICE_ROLE_KEY=<service secret> \
+node tool/import_ip2region.mjs
+```
+
+磁盘预算(Supabase 免费档只有 500MB):
+
+| 范围 | 区间数 | CSV | 表+索引估算 |
+|------|--------|-----|-------------|
+| 仅 IPv4(`--skip-v6`) | 518,282 | 18.4 MB | ~45 MB |
+| IPv4 + IPv6(默认) | 1,189,014 | 62.2 MB | ~140 MB |
+
+🔴 建议**不要**用 `--skip-v6`。中国移动网络的 IPv6 占比已经很高,只导 IPv4
+等于对一大批真实用户显示不出属地 —— 那正是第十二条要求展示的那一项。
+
+数据源是 ip2region(Apache-2.0,可商用)。区间边界会随上游版本变动,
+增量合并没有意义,所以脚本是**全量重建**;想更新就整个重跑一次。
+
+⚠️ **迁到阿里云时必须单独验一件事**:属地的可信度完全建立在
+`x-forwarded-for` 的第一项上。自建网关(SLB / Nginx)必须配
+`proxy_set_header X-Forwarded-For $remote_addr`(**覆写**),
+而不是 `$proxy_add_x_forwarded_for`(追加)—— 后者会把客户端自己塞的值
+留在第一位,属地就能被任意伪造,这个展示也就等于没做。
+细节见 `supabase/functions/_shared/client_region.ts` 的注释。

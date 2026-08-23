@@ -26,6 +26,7 @@ import '../../l10n/app_localizations.dart';
 import '../design_system.dart';
 import 'auth_minimal_widgets.dart';
 import 'email_sign_in_view.dart';
+import 'phone_sign_in_view.dart';
 import 'reset_password_view.dart';
 
 class AuthRootView extends StatefulWidget {
@@ -183,6 +184,25 @@ class _AuthRootViewState extends State<AuthRootView> {
                         title: l.authSignUp,
                         emphasis: MinimalLinkEmphasis.medium,
                         onTap: working ? null : _pushSignUp,
+                      ),
+                      const SizedBox(height: AetherSpacing.xl),
+                      // [PHONE-AUTH 2026-08-23] 第九条要求真实身份认证基于
+                      // **移动电话号码**/身份证件号码/统一社会信用代码,邮箱不在其中。
+                      // PhoneSignInView 早就写好了,只是一直没被接入。
+                      // ⚠️ 点进去能走完 UI,但短信要等 Send SMS Hook 配好才发得出。
+                      MinimalLink(
+                        title: l.authPhoneEntry,
+                        emphasis: MinimalLinkEmphasis.medium,
+                        onTap: working
+                            ? null
+                            : () => Navigator.of(context).push(
+                                  MaterialPageRoute<void>(
+                                    builder: (_) => PhoneSignInView(
+                                      currentUser: widget.currentUser,
+                                      intent: PhoneIntent.signIn,
+                                    ),
+                                  ),
+                                ),
                       ),
                       const SizedBox(height: AetherSpacing.xl),
                       MinimalLink(
