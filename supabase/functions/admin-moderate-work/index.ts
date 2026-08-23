@@ -33,6 +33,7 @@
 
 import { createClient } from 'jsr:@supabase/supabase-js@2.112.3';
 import { corsHeaders, jsonResponse, consumeRateLimit } from '../_shared/cors.ts';
+import { isAdminRequest } from '../_shared/admin_auth.ts';
 
 const QUARANTINE_BUCKET = 'quarantine';
 
@@ -54,10 +55,11 @@ Deno.serve(async (req) => {
 
   // Gate: the bearer token must BE the service_role key. Compared with a
   // constant-time-ish check to avoid leaking prefix length via timing.
-  const bearer = (req.headers.get('Authorization') ?? '')
-    .replace(/^Bearer\s+/i, '')
-    .trim();
-  if (!bearer || !timingSafeEqual(bearer, serviceKey)) {
+  // [ADMIN-AUTH-FIX 2026-08-23] 原来这里是 timingSafeEqual(bearer, serviceKey)。
+  // 实测本项目 env 里的 SUPABASE_SERVICE_ROLE_KEY 已是 41 字符的新格式 secret,
+  // 而调用方手上的是 CLI 给的 219 字符 legacy JWT ⇒ 永不匹配。
+  // 也就是说**下架功能一直调不通**,只是没人真正调过。详见 _shared/admin_auth.ts。
+  if (!isAdminRequest(req)) {
     return jsonResponse({ error: 'forbidden' }, 403);
   }
 
@@ -278,17 +280,6 @@ function baseOf(p: string): string {
 
 /// Length-independent comparison so a wrong key can't be probed by
 /// measuring how early the comparison bails out.
-function timingSafeEqual(a: string, b: string): boolean {
-  const enc = new TextEncoder();
-  const ab = enc.encode(a);
-  const bb = enc.encode(b);
-  let diff = ab.length ^ bb.length;
-  const n = Math.max(ab.length, bb.length);
-  for (let i = 0; i < n; i++) {
-    diff |= (ab[i] ?? 0) ^ (bb[i] ?? 0);
-  }
-  return diff === 0;
-}
 
 /// x-forwarded-for may be a comma-separated chain; the first entry is the
 /// original client. Returns null for anything unparseable so a malformed

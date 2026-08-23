@@ -384,7 +384,7 @@ supabase link --project-ref <YOUR_PROJECT_REF>
 cd pocketworld_flutter
 supabase db push
 
-# 4. Deploy Edge Functions — ALL TEN.
+# 4. Deploy Edge Functions — ALL ELEVEN.
 #    An earlier version of this list had only the four auth functions, which
 #    silently produced a project whose thumbnail upload path 404s.
 #
@@ -415,12 +415,25 @@ supabase functions deploy set-profile-name      --project-ref <REF>
 # being pre-checked as a user JWT.
 supabase functions deploy admin-moderate-work   --no-verify-jwt --project-ref <REF>
 
+# admin-approve-work 是"先审后发"的放行端(under_review → ok + 补 published_at)。
+# 与 admin-moderate-work 同样按 service secret 鉴权,所以同样需要 --no-verify-jwt。
+supabase functions deploy admin-approve-work    --no-verify-jwt --project-ref <REF>
+
+# 4b. 调用管理端(admin-*)需要 **service secret**,不是 CLI 给的 service_role JWT。
+#     2026-08-23 实测:本项目 Edge Function env 里的 SUPABASE_SERVICE_ROLE_KEY
+#     已经是 41 字符的新格式 secret(sb_secret_*),而
+#     `supabase projects api-keys` 返回的 service_role 是 219 字符的 legacy JWT
+#     —— 两者不是同一个值,拿后者去调管理端一律 403。
+#     CLI 对那个 secret 是 masked 的(--output json 里 masked=true),拿不到全文。
+#     取法:Dashboard → Project Settings → API Keys → Secret keys → 复制 `default`。
+#     (函数侧已同时接受两种,见 supabase/functions/_shared/admin_auth.ts。)
+
 # 5. Set RESEND_API_KEY secret via dashboard (NOT via CLI / chat)
 #    https://supabase.com/dashboard/project/<REF>/functions/secrets
 
 # 6. Verify
 supabase db push --dry-run     # should print "Remote database is up to date"
-supabase functions list        # should show 10 ACTIVE
+supabase functions list        # should show 11 ACTIVE
 supabase db advisors --type security --linked   # triage before going live
 
 # 7. Supply chain. CI does run this now (.github/workflows/security.yml,
