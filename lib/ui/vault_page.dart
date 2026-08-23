@@ -571,7 +571,7 @@ class _LoadingState extends StatelessWidget {
       ),
       children: [
         if (showTopicCard) ...[
-          const TopicCard(),
+          _SkeletonTopicCard(animate: animate),
           const SizedBox(height: AetherSpacing.lg),
         ],
         // [§4 2026-08-23] 原本是一个 28×28 的 CircularProgressIndicator ——
@@ -726,6 +726,42 @@ class TopicCard extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// 主题卡的骨架版。
+///
+/// [2026-08-23] 原来加载态直接画真 [TopicCard] —— 理由是"它硬编码、不等请求,
+/// 画上去就不会跳格"。真机上看下来这条是错的:一张已经完成的卡压在两块加载中的
+/// 卡上面,本身就是第三种状态。用户原话:「最上方的置顶栏也没灰色状态的闪烁加载」。
+///
+/// 但"不跳格"那个约束仍然成立,所以这里**不手算高度**——拿真卡当不可见的尺寸模板,
+/// 骨架 Positioned.fill 盖在上面。真卡到位那一刻高度逐像素相同,不可能跳。
+class _SkeletonTopicCard extends StatelessWidget {
+  final bool animate;
+
+  const _SkeletonTopicCard({this.animate = true});
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        // 尺寸模板:参与布局、不画出来。
+        const Visibility(
+          visible: false,
+          maintainSize: true,
+          maintainAnimation: true,
+          maintainState: true,
+          child: TopicCard(),
+        ),
+        Positioned.fill(
+          child: SkeletonBox(
+            animate: animate,
+            borderRadius: BorderRadius.circular(AetherRadii.lg),
+          ),
+        ),
+      ],
     );
   }
 }

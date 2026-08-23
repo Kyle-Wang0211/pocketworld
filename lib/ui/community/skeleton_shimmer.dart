@@ -48,12 +48,27 @@
 
 import 'package:flutter/material.dart';
 
+import '../design_system.dart';
+
 /// 闪动一轮的时长。与 splash_overlay 的 pulse 同值,观感一致。
 const Duration kSkeletonPulsePeriod = Duration(milliseconds: 1800);
 
-/// 灰阶两端。差值刻意小 —— 方案要求"轻微闪动",不是扫光带。
-const Color kSkeletonBase = Color(0xFF1B1B1F);
-const Color kSkeletonHighlight = Color(0xFF26262B);
+/// 灰阶两端。
+///
+/// [2026-08-23 真机推翻] 这两个值原本是 0xFF1B1B1F / 0xFF26262B —— 我从
+/// lib/ui/splash_overlay.dart 抄范式时**把它的底色语境一起抄了过来**:
+/// 启动页是深色的,社区页不是。AetherColors 全套是浅色系(bg #FAFAFA、
+/// bgElevated #F3F3F2、border #E4E4E4),于是骨架在真机上就是两块纯黑板,
+/// 而且两端只差 11/255 ≈ 4%,呼吸也看不出来。用户原话:「为什么没有灰色
+/// 状态的闪烁加载,而是完全黑屏」。
+///
+/// 现在直接绑到令牌上,不再自造色值:
+///   · base      = AetherColors.border   #E4E4E4 —— 页面上真实存在的灰
+///   · highlight = AetherColors.bg       #FAFAFA —— 页面底色本身
+/// 峰值时骨架"融"回页面底色,这正是呼吸感的来源;两端差 22/255 ≈ 8.6%,
+/// 在一整张卡这么大的面积上足够看清,又不至于变成扫光带。
+const Color kSkeletonBase = AetherColors.border;
+const Color kSkeletonHighlight = AetherColors.bg;
 
 /// 一块会轻微呼吸的灰色骨头。
 ///
