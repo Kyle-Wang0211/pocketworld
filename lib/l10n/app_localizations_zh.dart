@@ -59,6 +59,18 @@ class AppL10nZh extends AppL10n {
   String get communityTopicBody => '编辑挑出的空间。想上这里，就把你扫的地方发出来。';
 
   @override
+  String get communityTopicCaptureTitle => '怎么扫得更好';
+
+  @override
+  String get communityTopicCaptureBody => '绕着走,慢一点,别只站在一个位置。覆盖够了,模型才不会破。';
+
+  @override
+  String get communityTopicViewerTitle => '点开就能转';
+
+  @override
+  String get communityTopicViewerBody => '这里每一件都是真的三维。拖一下,换个角度再看一遍。';
+
+  @override
   String get communityNearbyComingSoon => '附近功能即将上线，敬请期待。';
 
   @override

@@ -60,6 +60,20 @@ class AppL10nEn extends AppL10n {
       'Spaces we picked by hand. Want to be here? Publish what you scanned.';
 
   @override
+  String get communityTopicCaptureTitle => 'Scan it better';
+
+  @override
+  String get communityTopicCaptureBody =>
+      'Walk around it, go slow, don\'t shoot from one spot. Full coverage is what keeps the model from breaking up.';
+
+  @override
+  String get communityTopicViewerTitle => 'Tap to turn it';
+
+  @override
+  String get communityTopicViewerBody =>
+      'Everything here is real 3D. Drag it and look again from another angle.';
+
+  @override
   String get communityNearbyComingSoon => 'Nearby is coming soon — stay tuned.';
 
   @override

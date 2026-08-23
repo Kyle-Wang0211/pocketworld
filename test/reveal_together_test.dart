@@ -142,7 +142,11 @@ void main() {
     final code = File('lib/ui/vault_page.dart').readAsStringSync();
 
     test('主题卡跟着 _revealed 走,不再无条件画真卡', () {
-      expect(code, contains('? const TopicCard()'));
+      expect(
+        code,
+        contains('? TopicCard(autoPlay: _governor.liveAllowed)'),
+        reason: '自动翻页是叠在 live viewer 之上的第二个常驻 ticker,必须接热闸',
+      );
       expect(code, contains('_SkeletonTopicCard(animate: _governor.liveAllowed)'));
     });
 

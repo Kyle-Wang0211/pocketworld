@@ -128,16 +128,25 @@ void main() {
       );
     });
 
-    test('骨架高度靠真卡当模板得来,不是手算的', () {
+    test('骨架与真卡共用同一个比例常量,不是各写各的高度', () {
+      // [2026-08-24 更新] 原来的做法是拿一张不可见的真 TopicCard 当尺寸模板
+      // (Visibility(maintainSize: true))。TopicCard 变成有状态的轮播之后这招
+      // 不能用了 —— 那个隐形实例会真的建 PageController、真的跑自动翻页 Timer。
+      // 现在两边都读 kTopicCardAspect,这就是"不会走散"的新保证。
       final sk = _slice(code, 'class _SkeletonTopicCard');
       expect(
         sk,
-        contains('maintainSize: true'),
-        reason: '拿真 TopicCard 当不可见尺寸模板 —— 手算高度迟早跟真卡走散,'
-            '走散就会在真卡到位那一刻跳格',
+        contains('aspectRatio: kTopicCardAspect'),
+        reason: '手算高度迟早跟真卡走散,走散就会在真卡到位那一刻跳格',
       );
-      expect(sk, contains('child: TopicCard()'));
-      expect(sk, contains('Positioned.fill('));
+      expect(
+        sk,
+        isNot(contains('child: TopicCard()')),
+        reason: '隐形的真卡会跑一个看不见的自动翻页 Timer',
+      );
+      // 真卡那一侧读的必须是同一个常量。
+      final card = _slice(code, 'class _TopicCardState');
+      expect(card, contains('aspectRatio: kTopicCardAspect'));
     });
   });
 }

@@ -450,7 +450,7 @@ class _VaultPageState extends State<VaultPage> {
               if (_showTopicCard && rawIndex == 0) {
                 // 与作品卡同一个闸 —— 一起灰,一起完成。
                 return _revealed
-                    ? const TopicCard()
+                    ? TopicCard(autoPlay: _governor.liveAllowed)
                     : _SkeletonTopicCard(animate: _governor.liveAllowed);
               }
               final i = rawIndex - (_showTopicCard ? 1 : 0);
@@ -707,57 +707,230 @@ const bool kShowCommunityTopicCard = true;
 /// ⚠️ 公开(而非 `_TopicCard`)是为了让 widget 测试能直接 pump 它。
 /// 它本来也是个正经的可复用卡片,没有私有的理由 —— 本文件其余
 /// `_LoadingState` / `_EmptyState` 之类仍是私有,因为没人从外面用。
-class TopicCard extends StatelessWidget {
-  const TopicCard({super.key});
+/// 置顶栏的高宽比。
+///
+/// [2026-08-24 用户签决] **2.5:1**,即移动端 banner 的主流出稿尺寸 750×300。
+///
+/// 定这个数走了两步,中间被用户自己推翻过一次,值得留着:
+///   ① 用户圈出想要的大小并说「至少达到我画红圈的大小」,还点名「去看看
+///      网易云音乐或者其他 app 的置顶栏」。红框实测约 840×450 px ≈ 1.87:1,
+///      **比行业主流的 2.5:1 高得多**。按"至少"这个字面,我取了 16:9。
+///   ② 于是把 2.5:1 / 16:9 / 3:2 / 4:3 四个候选按 361pt 的真实卡片宽度画成
+///      一页,让用户在**手机上按真实大小**看。看完他选了 2.5:1 ——
+///      比自己圈的那块还矮 49pt。
+///
+/// 也就是说「至少达到红框」是隔着截图估出来的意向,不是看到实物后的判断;
+/// 真实尺寸摆在眼前时判断变了。**以 ② 为准**,别再拿 ① 的那条线当地板。
+///
+/// 原来是内容自适应高度(361pt 宽下约 99pt),2.5:1 给到 144pt。
+const double kTopicCardAspect = 2.5;
+
+/// 自动翻页间隔。网易云那类 banner 的常规节奏。
+const Duration kTopicAutoPlayInterval = Duration(seconds: 5);
+
+/// 流内第一张卡:常青人工精选,**可翻页**。
+///
+/// 与作品卡**同宽同层**,跟着一起滚、可以滑走 —— 这是 D5 的核心:
+/// 它是"流里的一张卡",不是"压在流上面的一层"。做成轮播不违反 D5:
+/// 它照样在流里、照样滑得走,只是自己内部多了几页。
+///
+/// 文案走 l10n,中英各一份。
+/// ⚠️ 公开(而非 `_TopicCard`)是为了让 widget 测试能直接 pump 它。
+class TopicCard extends StatefulWidget {
+  /// 自动翻页。
+  ///
+  /// ⚠️ **默认 false**,由调用方接热闸传 true(与 [SkeletonBox.animate] 一个
+  /// 路子)。两个理由:
+  ///   ① 一屏已经跑着 live 3D viewer,自动轮播是叠上去的第二个常驻 ticker,
+  ///     热是本项目的硬约束,不该由一个卡片自己决定开不开;
+  ///   ② 默认开会让所有直接 pump 这张卡的 widget 测试在 pumpAndSettle 上挂死
+  ///     —— 周期性 Timer 永远 settle 不了。默认关就没有这个陷阱。
+  final bool autoPlay;
+
+  const TopicCard({super.key, this.autoPlay = false});
+
+  @override
+  State<TopicCard> createState() => _TopicCardState();
+}
+
+class _TopicSlide {
+  final IconData icon;
+  final String title;
+  final String body;
+  const _TopicSlide(this.icon, this.title, this.body);
+}
+
+class _TopicCardState extends State<TopicCard> {
+  final PageController _pc = PageController();
+  Timer? _auto;
+  int _page = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _syncAutoPlay();
+  }
+
+  @override
+  void didUpdateWidget(covariant TopicCard old) {
+    super.didUpdateWidget(old);
+    if (widget.autoPlay != old.autoPlay) _syncAutoPlay();
+  }
+
+  void _syncAutoPlay() {
+    _auto?.cancel();
+    if (!widget.autoPlay) return;
+    _auto = Timer.periodic(kTopicAutoPlayInterval, (_) {
+      if (!mounted || !_pc.hasClients) return;
+      final n = _slides(context).length;
+      if (n < 2) return;
+      _pc.animateToPage(
+        (_page + 1) % n,
+        duration: const Duration(milliseconds: 320),
+        curve: Curves.easeOutCubic,
+      );
+    });
+  }
+
+  @override
+  void dispose() {
+    _auto?.cancel();
+    _pc.dispose();
+    super.dispose();
+  }
+
+  List<_TopicSlide> _slides(BuildContext context) {
+    final l = AppL10n.of(context);
+    return [
+      _TopicSlide(
+        Icons.auto_awesome_rounded,
+        l.communityTopicTitle,
+        l.communityTopicBody,
+      ),
+      _TopicSlide(
+        Icons.camera_alt_rounded,
+        l.communityTopicCaptureTitle,
+        l.communityTopicCaptureBody,
+      ),
+      _TopicSlide(
+        Icons.threed_rotation_rounded,
+        l.communityTopicViewerTitle,
+        l.communityTopicViewerBody,
+      ),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
-    final l = AppL10n.of(context);
-    return Container(
-      padding: const EdgeInsets.all(AetherSpacing.lg),
-      decoration: BoxDecoration(
-        color: AetherColors.bgElevated,
-        borderRadius: BorderRadius.circular(AetherRadii.lg),
-        // [2026-08-24] 去掉原来那圈 1px 描边。
-        //
-        // 用户说「置顶栏需要变宽」,但实测两者**逐像素同宽**(768.0 vs 768.0,
-        // 见 test/reveal_together_test.dart)—— 它们本来就在同一个 ListView、
-        // 同一份 padding 下,拿的是同一个约束。看起来窄的是视觉重量:描边把
-        // 边界画在填充内侧,而作品卡是实心块直接铺到边。去掉后可见边完全对齐,
-        // 也正好对上 D5「与作品卡同宽同层」的签决。
+    final slides = _slides(context);
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(AetherRadii.lg),
+      child: AspectRatio(
+        aspectRatio: kTopicCardAspect,
+        child: ColoredBox(
+          color: AetherColors.bgElevated,
+          child: Stack(
+            children: [
+              PageView.builder(
+                controller: _pc,
+                itemCount: slides.length,
+                onPageChanged: (i) => setState(() => _page = i),
+                itemBuilder: (_, i) => _TopicSlideView(slide: slides[i]),
+              ),
+              if (slides.length > 1)
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: AetherSpacing.lg,
+                  child: _TopicDots(count: slides.length, index: _page),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TopicSlideView extends StatelessWidget {
+  final _TopicSlide slide;
+
+  const _TopicSlideView({required this.slide});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      // 底部留出圆点的位置,否则正文会压在圆点上。
+      padding: const EdgeInsets.fromLTRB(
+        AetherSpacing.lg,
+        AetherSpacing.lg,
+        AetherSpacing.lg,
+        AetherSpacing.xxl,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Row(
             children: [
-              const Icon(
-                Icons.auto_awesome_rounded,
-                size: 18,
-                color: AetherColors.textPrimary,
-              ),
+              Icon(slide.icon, size: 18, color: AetherColors.textPrimary),
               const SizedBox(width: AetherSpacing.sm),
-              Text(
-                l.communityTopicTitle,
-                style: AetherTextStyles.body.copyWith(
-                  fontWeight: FontWeight.w700,
-                  color: AetherColors.textPrimary,
+              Flexible(
+                child: Text(
+                  slide.title,
+                  style: AetherTextStyles.body.copyWith(
+                    fontWeight: FontWeight.w700,
+                    color: AetherColors.textPrimary,
+                  ),
                 ),
               ),
             ],
           ),
           const SizedBox(height: AetherSpacing.sm),
-          Text(
-            l.communityTopicBody,
-            style: AetherTextStyles.body.copyWith(
-              fontSize: 13,
-              color: AetherColors.textSecondary,
-              height: 1.4,
+          // 2.5:1 在 361pt 宽下只有 144pt 高,扣掉上下 padding 与圆点区,正文
+          // 只剩三行的余地。英文那几条明显更长(中文 28 字 vs 英文 106 字符),
+          // 溢出在固定高度的盒子里就是那条黄黑斜纹。Flexible + ellipsis 兜住。
+          Flexible(
+            child: Text(
+              slide.body,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              style: AetherTextStyles.body.copyWith(
+                fontSize: 13,
+                color: AetherColors.textSecondary,
+                height: 1.4,
+              ),
             ),
           ),
         ],
       ),
+    );
+  }
+}
+
+class _TopicDots extends StatelessWidget {
+  final int count;
+  final int index;
+
+  const _TopicDots({required this.count, required this.index});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: List.generate(count, (i) {
+        final on = i == index;
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          margin: const EdgeInsets.symmetric(horizontal: 3),
+          width: on ? 16 : 6,
+          height: 6,
+          decoration: BoxDecoration(
+            color: on ? AetherColors.textPrimary : AetherColors.borderStrong,
+            borderRadius: BorderRadius.circular(3),
+          ),
+        );
+      }),
     );
   }
 }
@@ -777,23 +950,15 @@ class _SkeletonTopicCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      children: [
-        // 尺寸模板:参与布局、不画出来。
-        const Visibility(
-          visible: false,
-          maintainSize: true,
-          maintainAnimation: true,
-          maintainState: true,
-          child: TopicCard(),
-        ),
-        Positioned.fill(
-          child: SkeletonBox(
-            animate: animate,
-            borderRadius: BorderRadius.circular(AetherRadii.lg),
-          ),
-        ),
-      ],
+    // [2026-08-24] 原来拿一张不可见的真 TopicCard 当尺寸模板。TopicCard 变成
+    // 有状态的轮播之后这招不能用了 —— 那个隐形实例会真的建 PageController、
+    // 真的跑自动翻页 Timer。现在高度由**同一个比例常量**决定,两边不可能走散。
+    return AspectRatio(
+      aspectRatio: kTopicCardAspect,
+      child: SkeletonBox(
+        animate: animate,
+        borderRadius: BorderRadius.circular(AetherRadii.lg),
+      ),
     );
   }
 }

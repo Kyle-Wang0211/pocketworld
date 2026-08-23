@@ -193,6 +193,30 @@ abstract class AppL10n {
   /// **'Spaces we picked by hand. Want to be here? Publish what you scanned.'**
   String get communityTopicBody;
 
+  /// No description provided for @communityTopicCaptureTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Scan it better'**
+  String get communityTopicCaptureTitle;
+
+  /// No description provided for @communityTopicCaptureBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Walk around it, go slow, don\'t shoot from one spot. Full coverage is what keeps the model from breaking up.'**
+  String get communityTopicCaptureBody;
+
+  /// No description provided for @communityTopicViewerTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap to turn it'**
+  String get communityTopicViewerTitle;
+
+  /// No description provided for @communityTopicViewerBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Everything here is real 3D. Drag it and look again from another angle.'**
+  String get communityTopicViewerBody;
+
   /// No description provided for @communityNearbyComingSoon.
   ///
   /// In en, this message translates to:
