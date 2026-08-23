@@ -132,3 +132,37 @@ Deno.test('大小写疑难字符:钉住 JS 侧行为供跨实现对拍', () => {
   assertEquals(compareKey(cp(0x03c2)), cp(0x03c2));          // final sigma 不归并
   assertEquals(equivalent(cp(0x03a3), cp(0x03c2)), false);
 });
+
+// ── RFC 8266 §3 的 10 个官方示例向量 ────────────────────────────────
+// 这是规范自带的一致性测试集,比任何自造用例都权威。
+//
+// 🔑 它抓到了本实现最初的一个真缺陷:§2.1 要求"反复应用规则直到输出稳定,
+//    首次之后再 3 次仍不稳定则拒绝",而第一版是**单次应用** ——
+//    对拍结果 9 passed / 1 failed,失败的正是 RFC 自己标注有幂等性问题的例 8。
+//    补上收敛循环后 10/10。教训:自造用例只能证明"我以为的"是对的。
+Deno.test('RFC 8266 §3 官方示例向量(10 条)', () => {
+  const c = String.fromCodePoint;
+  const vectors: Array<[string, string, string]> = [
+    ['Foo', 'foo', '#1'],
+    ['foo', 'foo', '#2'],
+    ['Foo Bar', 'foo bar', '#3'],
+    ['foo bar', 'foo bar', '#4'],
+    [c(0x03a3), c(0x03c3), '#5 Sigma -> sigma'],
+    [c(0x03c3), c(0x03c3), '#6 sigma -> sigma'],
+    [c(0x03c2), c(0x03c2), '#7 final sigma 不归并'],
+    [c(0x03d4), c(0x03cb), '#8 需要收敛循环才能得到此值'],
+    [c(0x221e), c(0x221e), '#9 INFINITY 原样'],
+    ['Richard ' + c(0x2163), 'richard iv', '#10 罗马数字 NFKC'],
+  ];
+  for (const [input, want, label] of vectors) {
+    assertEquals(compareKey(input), want, label);
+  }
+});
+
+Deno.test('§2.1 收敛:comparison 的输出再跑一次必须不变', () => {
+  const c = String.fromCodePoint;
+  for (const s of ['Foo Bar', c(0x03d4), c(0x03a3), 'Richard ' + c(0x2163), '张三']) {
+    const once = compareKey(s);
+    assertEquals(compareKey(once), once, `不幂等: ${JSON.stringify(s)}`);
+  }
+});

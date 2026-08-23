@@ -40,6 +40,7 @@ export const RFC8266_COMPARISON_ORDER = [
 
 export type NicknameError =
   | 'empty_after_enforcement'  // §2.3 的 MUST:归一化后不得为零长度
+  | 'not_idempotent'           // §2.1:反复应用 3 次仍不收敛 ⇒ 必须拒绝
   | 'control_character'
   | 'unassigned_or_surrogate'
   | 'ignorable_character';
@@ -106,6 +107,31 @@ export function prepare(input: string, opts: PrepareOptions = {}): void {
   }
 }
 
+// ── §2.1 的收敛要求(这条最容易抄漏)────────────────────────────────────
+// RFC 8266 §2.1 原文要求:**反复应用规则直到输出字符串稳定**;若在首次应用之后
+// 再重复 3 次仍未稳定,实现者 MUST 终止并**拒绝**该输入。
+//
+// 为什么必须有这个循环 —— RFC §3 的例 8 就是活例子:
+//   输入 ϔ (U+03D4 GREEK UPSILON WITH DIARESIS AND HOOK SYMBOL)
+//   第 1 遍:toLowerCase 不变 → NFKC 得 Ϋ (U+03AB,**大写**)
+//   第 2 遍:toLowerCase 得 ϋ (U+03CB,小写) → NFKC 不变 ⇒ 收敛
+//   RFC §3 表格里给的期望值正是 U+03CB —— 也就是**跑到稳定之后**的值。
+//   只跑一遍会停在 U+03AB,与官方示例表对不上。
+//   (2026-08-23:本实现最初就是单次应用,是拿 RFC §3 的 10 个官方向量对拍
+//    才发现漏了这条 —— 9 passed / 1 failed,失败的正是例 8。)
+//
+// 拒绝不收敛的输入也有安全价值:同一个字符串在不同实现、不同 Unicode 版本下
+// 可能收敛到不同结果,放行它等于放行一个"看谁先算"的歧义标识。
+function untilStable(input: string, step: (x: string) => string): string {
+  let cur = step(input);
+  for (let i = 0; i < 3; i++) {
+    const next = step(cur);
+    if (next === cur) return cur;
+    cur = next;
+  }
+  throw new NicknameRejected('not_idempotent');
+}
+
 // ── Enforcement(RFC 8266 §2.3)────────────────────────────────────────
 // 顺序:1 Additional Mapping → 2 Normalization(NFKC)。**不折大小写**。
 // 末尾那条 MUST:"the entity MUST ensure that the nickname is not zero bytes
@@ -113,7 +139,7 @@ export function prepare(input: string, opts: PrepareOptions = {}): void {
 // 否则 '   '(纯空格)会先通过 char_length>=1 再变成空串。
 export function enforce(input: string, opts: PrepareOptions = {}): string {
   prepare(input, opts);
-  const out = additionalMapping(input).normalize('NFKC');
+  const out = untilStable(input, (x) => additionalMapping(x).normalize('NFKC'));
   if (out.length === 0) throw new NicknameRejected('empty_after_enforcement');
   return out;
 }
@@ -123,7 +149,10 @@ export function enforce(input: string, opts: PrepareOptions = {}): string {
 // ⚠️ toLowerCase() 在 NFKC **之前**,这是 RFC 写死的顺序,不要图省事调换。
 export function compareKey(input: string, opts: PrepareOptions = {}): string {
   prepare(input, opts);
-  const out = additionalMapping(input).toLowerCase().normalize('NFKC');
+  const out = untilStable(
+    input,
+    (x) => additionalMapping(x).toLowerCase().normalize('NFKC'),
+  );
   if (out.length === 0) throw new NicknameRejected('empty_after_enforcement');
   return out;
 }
