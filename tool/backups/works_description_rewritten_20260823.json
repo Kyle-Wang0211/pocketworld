@@ -1,0 +1,67 @@
+{
+  "_note": [
+    "2026-08-23:迁移 20260823000000 把 works.description 收到 30 字,",
+    "这 6 行(全部是 4 月底导入的 CC0 种子数据,非用户作品)被截断,随后由人工重写。",
+    "这份文件是唯一的版本记录 —— 仓库里没有 seed 脚本维护这批数据,",
+    "它们当初是手工插入生产库的。重建或还原都以本文件为准。",
+    "长度口径:Postgres char_length 数码点,Python len() 同样数码点,两边一致。"
+  ],
+  "migration": "20260823000000_tighten_description_length.sql",
+  "constraint": "works_description_len_30 (char_length <= 30)",
+  "rows": [
+    {
+      "id": "1fba8bdf-560b-4107-a8a1-73d25266a1fb",
+      "title": "A Beautiful Game",
+      "description_original": "Khronos PBR sample (CC0). Mid-game chess set on a wooden board — multi-material scene.",
+      "description_original_len": 86,
+      "description_rewritten": "Khronos 官方样本 · 木质棋盘上的残局,多材质场景",
+      "description_rewritten_len": 29,
+      "source": "Khronos glTF-Sample-Models (CC0)"
+    },
+    {
+      "id": "7efdb467-686a-4da7-92a4-c7f7bb64f7bb",
+      "title": "Antique Camera",
+      "description_original": "Khronos PBR sample (CC0). Vintage folding camera — leather, brass, glass lens detail.",
+      "description_original_len": 85,
+      "description_rewritten": "Khronos 官方样本 · 复古折叠相机,皮革与黄铜",
+      "description_rewritten_len": 27,
+      "source": "Khronos glTF-Sample-Models (CC0)"
+    },
+    {
+      "id": "7f214fea-99ad-4d77-ac69-3c6c13dad5c9",
+      "title": "Corset",
+      "description_original": "Khronos PBR sample (CC0). Lacework + sheer fabric — translucent material reference.",
+      "description_original_len": 83,
+      "description_rewritten": "Khronos 官方样本 · 蕾丝与半透明织物",
+      "description_rewritten_len": 23,
+      "source": "Khronos glTF-Sample-Models (CC0)"
+    },
+    {
+      "id": "4dc30e20-5d2e-4eb5-8e9b-224b4adfc1d9",
+      "title": "Damaged Helmet · Battle Worn",
+      "description_original": "PBR sample · scratched plate metal, baked AO, IBL specular. Dawn + Filament reference.",
+      "description_original_len": 86,
+      "description_rewritten": "PBR 参考样本 · 战损金属头盔,划痕与 IBL 高光",
+      "description_rewritten_len": 28,
+      "source": "Khronos glTF-Sample-Models (CC0)"
+    },
+    {
+      "id": "3b66f49e-ad20-4442-882e-8d6e12a26ad7",
+      "title": "Horned Lizard",
+      "description_original": "Niantic SPZ test sample (CC0). 17MB compressed Gaussian splat. Phase 6.4f end-to-end verification.",
+      "description_original_len": 98,
+      "description_rewritten": "Niantic SPZ 样本 · 17MB 压缩高斯泼溅",
+      "description_rewritten_len": 28,
+      "source": "Niantic SPZ sample (CC0)"
+    },
+    {
+      "id": "05dd780a-3af2-4286-a9b1-210e6c68b16f",
+      "title": "Toy Car",
+      "description_original": "Khronos PBR sample (CC0). Diecast toy car — metallic paint, glass canopy, baked AO.",
+      "description_original_len": 83,
+      "description_rewritten": "Khronos 官方样本 · 压铸玩具车,金属漆与玻璃罩",
+      "description_rewritten_len": 28,
+      "source": "Khronos glTF-Sample-Models (CC0)"
+    }
+  ]
+}
