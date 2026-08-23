@@ -1372,7 +1372,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       return;
     }
     // [2026-08-09 用户签决] 拍摄期 AR live 云**全白**,不再按质量分绿/黄/红。
-    // 原先每个点按 track 长度过 kCaptureQualityRamp 上色(2=红 3=橙 4=黄绿
+    // 原先每个点按 track 长度过质量色标上色(2=红 3=橙 4=黄绿
+    // [2026-08-23] 该色标模块(capture_quality_ramp.dart)已整体删除 ——
+    // 08-09 全白签决后它零调用点,且出货配置下最大单步 133 > 它要取代的
+    // 旧硬阈值 128。契约见 test/live_cloud_all_white_test.dart。
     // ≥5=绿),用户裁掉:"不用根据颜色区分状态"。ramp 本体与它的引导横幅
     // ("对黄色区域…",挂的是覆盖体素统计,另一套系统)不在本刀范围。
     final rgb = Uint8List(snapshot.pointCount * 3);
