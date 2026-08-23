@@ -298,12 +298,30 @@ class _PostCardState extends State<PostCard> {
         : widget.service.modelUrlFor(modelPath);
 
     // Phase 6.4f.9 — point-cloud-class formats (SPZ, gsplat, PLY) are
-    // ~1 GB unified memory each on iOS, which OOMs iPhone 12 if more
-    // than 1 mounts simultaneously. Polycam handles this the same way:
-    // their pointcloud projects show static thumbnails in the feed,
-    // live render only on detail-page tap. Force feed cards into
-    // backdrop-only mode for these formats; the work_detail_page path
-    // (interactive=true) still spins up the live viewer.
+    // Point-cloud formats (SPZ / gsplat / PLY) get a **static thumbnail only**
+    // in the feed; live rendering happens on the detail page.
+    //
+    // ⚠️ [2026-08-23 verified] The rule stands, but both original reasons were
+    // REFUTED:
+    //
+    //   ✗ "~1 GB unified memory each, OOMs iPhone 12 with 2 mounted" —
+    //     contradicted by this repo's own measurement: a sparse cloud is
+    //     ~1.4 MB, and after the octree budget only 300 KB xyz + 75 KB rgb.
+    //     Three orders of magnitude off. (Uncompressed 3DGS is ~236-248 B per
+    //     splat; MetalSplatter is ~68 B at SH0 / ~158 B at SH3 — filling 1 GB
+    //     would take ~6.6M splats.)
+    //
+    //   ✗ "Polycam handles it the same way" — the subject does not exist.
+    //     Polycam has no "point cloud" capture type: its modes are Space /
+    //     Object / Floorplan / AI Capture / 360, and point clouds are an
+    //     EXPORT FORMAT of Space mode, never a library item.
+    //
+    // ✓ The reason that does hold (nothing to do with memory):
+    //   **the final deliverable is a mesh; a point cloud is an intermediate.**
+    //   Showing an intermediate in the feed contradicts the product definition.
+    //
+    // See work_card.dart for the full write-up and the budget formula to use
+    // if this is ever reopened.
     final fmt = _work.format.toLowerCase();
     final isPointCloudFormat = fmt == 'spz' || fmt == 'gsplat' || fmt == 'ply';
     final canMountLiveViewer =

@@ -20,7 +20,7 @@
 // 旧实现一致),但这一次它前面挡着七道压热闸:
 //
 //   闸 1 全 App 同时只允许 1 个 live 卡 —— _liveWorkId 是单值,不是集合
-//   闸 2 八叉树 LOD 降到 2.5 万点     —— live_card_cloud.dart
+//   闸 2 (已随 live_card_cloud.dart 于 2026-08-23 删除:点云不在 feed 里 live)
 //   闸 3 自转封顶 24fps               ┐
 //   闸 4 thermalState 自适应/serious 停 ├ card_live_governor.dart
 //   闸 5 滚动中不转,静止 300ms 才起  │

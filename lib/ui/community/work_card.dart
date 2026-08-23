@@ -6,7 +6,8 @@
 // (斜上 45°, 真彩, 黑底),所以已发布作品看上去和它的草稿一模一样,一张
 // 普通卡片只花一次图片解码。
 //
-// **最居中的那一张**卡额外叠一层 LiveCardCloud:真渲点云、自转 24fps。
+// **最居中的那一张**卡额外叠一层实时 mesh viewer(AetherCppCardDemo):真渲、
+// 自转 24fps。点云类格式不走这条路(见 build 里 isPointCloudFormat 那段)。
 // [2026-08-16 用户拍板] "直接做真实时渲染" —— 08-07 那条"在列表里铺实时点云
 // 是往火上加油"的签决管的是**一屏 4-6 张**同时渲(见 sparse_thumbnail.dart),
 // 不是一张;旧 PostCard 的自转本来也只开焦点那一张。把前者当后者砍掉是过度
@@ -310,13 +311,34 @@ class _WorkCardState extends State<WorkCard> {
         ? null
         : widget.service.modelUrlFor(modelPath);
 
-    // 点云类格式(SPZ / gsplat / PLY)在 iOS 上每个约 1 GB unified memory,
-    // 同时挂两个就能把 iPhone 12 打到 OOM。**Polycam 就是这么处理的:点云
-    // 项目在 feed 里只给静态缩略图,live 渲染只发生在点进详情页之后。**
-    // 所以这类格式在 feed 卡里强制 backdrop-only;详情页那条路照常 live。
+    // 点云类格式(SPZ / gsplat / PLY)在 feed 卡里**只给静态缩略图**,
+    // live 渲染只发生在详情页。
     //
-    // 这段逐字来自五月的 PostCard。我 08-16 造 LiveCardCloud(在 feed 里渲
-    // 点云)时把它推翻了,而它正是"1:1 复刻 Polycam"里被复刻的那一条。
+    // ⚠️ [2026-08-23 核实] 这条规则**保留**,但原来的两条理由**都被推翻了**:
+    //
+    //   ✗ 「每个约 1 GB unified memory,同时挂两个就把 iPhone 12 打到 OOM」
+    //     —— 被本文件自己的第 20 行推翻:「一朵稀疏点云 ~1.4 MB」。
+    //     闸 2 降到 2.5 万点后更只有 300 KB xyz + 75 KB rgb。**差三个数量级。**
+    //     外部换算也对不上:未压缩 3DGS 约 236–248 B/splat,移动端渲染器
+    //     MetalSplatter 逐字段是 SH0≈68 B / SH3≈158 B —— 吃满 1 GB 要 ~660 万 splat。
+    //
+    //   ✗ 「Polycam 就是这么处理的」—— 主语不存在。Polycam app 里没有"点云"
+    //     这种作品类型:官方捕获模式只有 Space / Object / Floorplan / AI Capture / 360,
+    //     点云是 Space 模式的**导出格式**(ply/las/xyz/pts/dxf),不会作为条目出现在
+    //     库列表里。官方对 app 列表的唯一描述是"对所有类型统一的缩略图网格 + 类型角标",
+    //     全文不出现 3D / point cloud / mesh / splat 任何一词。
+    //
+    // ✓ 真正成立的理由(与内存无关):
+    //   **最终交付物是 mesh,点云只是中间物。** 在 feed 里把中间物渲给用户看,
+    //   本身就违反产品定义。项目另有独立判定"点云肉眼不可接受"(鬼墙 / 浮点战役)。
+    //   顺带印证:Khronos KHR_gaussian_splatting 的降级条款写着
+    //   "implementations are expected to … render the splat primitive as a point cloud"
+    //   —— **退化成点云是全行业的兜底态,不是特性。**
+    //
+    // 将来若要放开(比如上 splat),判据应该是**能算的预算**而不是格式黑名单:
+    //   预算 ≈ N × (32 B 位置/协方差 + SH 阶带来的 0/18/48/90 B + 36 B 排序开销)
+    // 且**必须先用 Instruments 实测一次** —— 公开资料给不出 iOS 上渲染 N splat
+    // 的实测 RSS,这个数只能自己量。
     final fmt = _work.format.toLowerCase();
     final isPointCloudFormat =
         fmt == 'spz' || fmt == 'gsplat' || fmt == 'ply';
@@ -356,7 +378,7 @@ class _WorkCardState extends State<WorkCard> {
               // 焦点卡的 live 层 —— 叠在缩略图之上、玻璃板之下。
               //
               // 闸 6「离开焦点立即回落静态图,不留后台渲染」在这里是**卸载**
-              // 而不是隐藏:isLive 转 false,LiveCardCloud 整个从树上消失,
+              // 而不是隐藏:isLive 转 false,viewer 整个从树上消失,
               // ticker 停、点云引用断开。隐藏的 widget 还会 build/paint,那不
               // 叫停。
               //

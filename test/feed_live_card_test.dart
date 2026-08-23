@@ -5,7 +5,9 @@
 //   • 闸 4 的滞回(停在 serious、恢复要回 nominal)—— 写成同阈值就会横跳
 //   • 闸 5 的 settle(滚动停下 300ms 才放行)—— 忘了作废旧定时器就会提前起转
 //
-// 闸 2 的降点直接跑真实的 loadCardCloud:它是 compute 的 isolate 入口,一个
+// [2026-08-23] 闸 2(八叉树降点)那组用例随 live_card_cloud.dart 一起删除 ——
+// 那个文件是死代码:gate `!isPointCloudFormat` 从未被撤,所以它从未被实例化过。
+// 详见该次提交的说明。本文件保留的是**真在跑**的那几道闸:
 // 下标算错就会把 rgb 和 xyz 错位,而那在真机上表现为"颜色乱了",很难倒查。
 
 import 'dart:io';
@@ -15,97 +17,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/ui/community/card_live_governor.dart';
 import 'package:pocketworld_flutter/ui/official_capture/sparse_cloud_view.dart';
-import 'package:pocketworld_flutter/ui/community/live_card_cloud.dart';
 import 'package:pocketworld_flutter/ui/official_capture/auto_rotating_cloud_view.dart';
 
-/// 写一个最小的 binary_little_endian PLY(x,y,z float32 + r,g,b uchar = 15B/点)。
-/// 第 i 个点坐标 (i, i, i),颜色 (i%256, (i*2)%256, (i*3)%256) —— 坐标和颜色
-/// 一一对应,所以错位一定测得出来。
-File _writePly(Directory dir, int n) {
-  final f = File('${dir.path}/cloud_$n.ply');
-  final header =
-      'ply\n'
-      'format binary_little_endian 1.0\n'
-      'element vertex $n\n'
-      'property float x\n'
-      'property float y\n'
-      'property float z\n'
-      'property uchar red\n'
-      'property uchar green\n'
-      'property uchar blue\n'
-      'end_header\n';
-  final body = Uint8List(n * 15);
-  final bd = ByteData.sublistView(body);
-  for (var i = 0; i < n; i++) {
-    final o = i * 15;
-    bd.setFloat32(o, i.toDouble(), Endian.little);
-    bd.setFloat32(o + 4, i.toDouble(), Endian.little);
-    bd.setFloat32(o + 8, i.toDouble(), Endian.little);
-    body[o + 12] = i % 256;
-    body[o + 13] = (i * 2) % 256;
-    body[o + 14] = (i * 3) % 256;
-  }
-  f.writeAsBytesSync([...header.codeUnits, ...body]);
-  return f;
-}
 
 void main() {
-  group('闸 2 — 八叉树 LOD 降点', () {
-    late Directory tmp;
-    setUp(() => tmp = Directory.systemTemp.createTempSync('feed_live_card'));
-    tearDown(() => tmp.deleteSync(recursive: true));
-
-    test('超预算的云被裁到预算,并记住原始点数', () {
-      final f = _writePly(tmp, 5000);
-      final c = loadCardCloud((f.path, 1000))!;
-      expect(c.pointCount, 1000);
-      expect(c.sourcePointCount, 5000);
-      expect(c.xyz.length, 1000 * 3);
-      expect(c.rgb.length, 1000 * 3);
-    });
-
-    test('没超预算的云原样通过,不白跑一趟八叉树', () {
-      final f = _writePly(tmp, 300);
-      final c = loadCardCloud((f.path, 1000))!;
-      expect(c.pointCount, 300);
-      expect(c.sourcePointCount, 300);
-    });
-
-    test('降点后 xyz 与 rgb 仍然逐点对应(错位会让真机上颜色乱掉)', () {
-      final f = _writePly(tmp, 5000);
-      final c = loadCardCloud((f.path, 400))!;
-      for (var k = 0; k < c.pointCount; k++) {
-        // 合成数据里 x == y == z == 原始下标。
-        final i = c.xyz[k * 3].round();
-        expect(c.xyz[k * 3 + 1], i.toDouble());
-        expect(c.xyz[k * 3 + 2], i.toDouble());
-        expect(c.rgb[k * 3], i % 256, reason: '点 $k(原始 $i)的 R 错位');
-        expect(c.rgb[k * 3 + 1], (i * 2) % 256);
-        expect(c.rgb[k * 3 + 2], (i * 3) % 256);
-      }
-    });
-
-    test('取的是空间均布的八叉树前缀,不是"前 N 个"', () {
-      // 合成云沿对角线均匀铺开,所以一个空间均布的子集必然横跨整条线;
-      // 而朴素的 sublist(0, N) 只会取到最前面那一小段。
-      final f = _writePly(tmp, 5000);
-      final c = loadCardCloud((f.path, 400))!;
-      var maxIndex = 0;
-      for (var k = 0; k < c.pointCount; k++) {
-        final i = c.xyz[k * 3].round();
-        if (i > maxIndex) maxIndex = i;
-      }
-      expect(maxIndex, greaterThan(400),
-          reason: '若等于 399 就说明退化成了朴素截断');
-    });
-
-    test('点数为 0 / 文件不是 PLY → null(卡片静默留在缩略图上)', () {
-      expect(loadCardCloud((_writePly(tmp, 0).path, 1000)), isNull);
-      final junk = File('${tmp.path}/not.ply')..writeAsStringSync('nope');
-      expect(loadCardCloud((junk.path, 1000)), isNull);
-    });
-  });
-
   group('闸 4 — thermalState 滞回', () {
     test('nominal / fair 不停转', () {
       expect(cardThermalStopFor(thermal: 0, stopped: false), isFalse);
@@ -283,7 +198,8 @@ void main() {
       final st = tester.state(find.byType(SparseCloudView)) as dynamic;
       final base = st.debugCamera as CloudViewCamera;
 
-      // 照 LiveCardCloud._onTick 的样子跑 24 帧 = 1 秒 @24fps。
+      // 按 24 帧 = 1 秒 @24fps 推进(原文照 LiveCardCloud._onTick 写,
+      // 该类已于 2026-08-23 删除;这里测的是 CloudViewController 本身)。
       const step = kCardRotateRadPerSec / kCardFpsNominal;
       var yaw = base.yaw;
       for (var f = 0; f < kCardFpsNominal; f++) {
@@ -433,6 +349,68 @@ void _autoRotateTests() {
       }
       expect(yawOf(tester), closeTo(atTakeover, 1e-9),
           reason: '用户上手后自转还在推 yaw —— 他想看的角度会被拽走');
+    });
+  });
+
+  group('点云不在 feed 里 live —— 规则守卫', () {
+    test('live_card_cloud.dart 已删除,且无人再引用', () {
+      expect(
+        File('lib/ui/community/live_card_cloud.dart').existsSync(),
+        isFalse,
+        reason: '它 2026-08-23 被删:gate !isPointCloudFormat 从未被撤,'
+            '所以那 299 行从未被任何代码路径执行过',
+      );
+      for (final f in Directory('lib').listSync(recursive: true)) {
+        if (f is! File || !f.path.endsWith('.dart')) continue;
+        final src = f.readAsStringSync();
+        // 只看代码行 —— 注释里说明"它已被删"是允许的。
+        final code = src
+            .split('\n')
+            .where((l) => !l.trimLeft().startsWith('//'))
+            .join('\n');
+        expect(
+          code,
+          isNot(contains('LiveCardCloud')),
+          reason: '${f.path} 又引用了它',
+        );
+      }
+    });
+
+    test('点云格式仍被挡在 feed 的 live 之外', () {
+      final card = File('lib/ui/community/work_card.dart').readAsStringSync();
+      expect(card, contains("fmt == 'spz' || fmt == 'gsplat' || fmt == 'ply'"));
+      expect(card, contains('&& !isPointCloudFormat'));
+    });
+
+    test('那两条已被推翻的理由不许作为当前理由回来', () {
+      // 钉的是**原句本身**,不是模糊关键词 —— 上一版按"含 1 GB 就算违规"写,
+      // 结果把"吃满 1 GB 要 660 万 splat"这种解释性提及也误判了。
+      //
+      // ✗ 「每个约 1 GB」被本仓自己量的 1.4 MB 推翻(差三个数量级)
+      // ✗ 「Polycam 就是这么处理的」—— Polycam 根本没有"点云"这种作品类型
+      const refuted = [
+        '在 iOS 上每个约 1 GB unified memory',
+        '~1 GB unified memory each on iOS',
+        'Polycam 就是这么处理的',
+        'Polycam handles this the same way',
+      ];
+      for (final path in const [
+        'lib/ui/community/work_card.dart',
+        'lib/ui/community/post_card.dart',
+      ]) {
+        final src = File(path).readAsStringSync();
+        for (final claim in refuted) {
+          // 允许出现在标了 ✗ / REFUTED 的行里(那是在记录"它被推翻了")
+          for (final line in src.split('\n')) {
+            if (!line.contains(claim)) continue;
+            expect(
+              line.contains('✗') || line.contains('REFUTED'),
+              isTrue,
+              reason: '$path 又把已推翻的断言当理由写了:${line.trim()}',
+            );
+          }
+        }
+      }
     });
   });
 }
