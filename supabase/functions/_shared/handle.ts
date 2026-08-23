@@ -15,6 +15,35 @@
 //   代价是中文用户的 handle 只能是英文。这与微信号一致,是有先例的取舍。
 //   真正给中文用户看的是 display_name,那一轨走 RFC 8266,中文/emoji 都放行。
 //
+// ── 关于 UTS #39 confusables:查过了,**本产品结构性不需要**(2026-08-23)──
+//   不是"以后再做",是"做了也没有意义"。留此记录以免下一个人重新纠结。
+//
+//   UTS #39 的 Restriction Level 官方定义(unicode.org/reports/tr39):
+//     ASCII-Only            全部字符在 ASCII 范围
+//     Single Script         ASCII-Only,或单一 script
+//     Highly Restrictive    Single Script,或被以下之一**覆盖**:
+//                             Latin+Han+Hiragana+Katakana (Latn+Jpan)
+//                             Latin+Han+Bopomofo          (Latn+Hanb)
+//                             Latin+Han+Hangul            (Latn+Kore)
+//     Moderately Restrictive  Highly Restrictive,或 Latin + 任一推荐 script
+//                             (**除 Cyrillic、Greek**)
+//   注意 "covered by" 是**子集**关系,所以 'Amy的婚礼'(Latin+Han)⊆
+//   {Latin,Han,Bopomofo} ⇒ 满足 Highly Restrictive,中英混排不会被误伤;
+//   而 'аdmin'(西里尔 а)会被挡。UTS #39 本身**不推荐**任何一档,
+//   原文说"取决于应用安全需求"。
+//
+//   那为什么不做:confusables 检测解决的是"两个视觉相同的字符串指向不同的人"。
+//     · handle       纯小写 ASCII ⇒ 已经是最严的 ASCII-Only 档,
+//                    同形字在**字符集层面**就不存在,没有可检测的对象
+//     · display_name **可重复** ⇒ 连精确重名都允许,"视觉相似"更不构成问题
+//   换句话说双轨制不是"解决"了 confusables,是把这个问题**取消**了。
+//
+//   唯一还成立的用途是防 zalgo / 多 script 混排造视觉噪音 —— 那属于内容质量
+//   而非冒充,且对 display_name 加 script 限制会误伤日文名、外语引用等合法用例。
+//   那一层由 reserved_names.ts 与下游的敏感词审核覆盖。
+//   ⚠️ 若将来 handle 放宽到非 ASCII,这段结论**立即失效**,必须回来实现
+//      UTS #39 skeleton + confusables.txt(Unicode License,可商用)。
+//
 // ⚠️ 与 display_name 的分工:
 //     handle       唯一、可改但有冷却、用于"找得到人"
 //     display_name 可重复、随时可改(仍受冷却)、用于展示
