@@ -1,0 +1,20 @@
+00:00 +0: loading /Users/kaidongwang/Developer/pocketworld-flutter347/test/capture_quality_ramp_test.dart
+00:00 +0: saturates: at/above satAt the colour stops changing
+00:00 +1: floor and below is pure red (old anchor colour kept)
+00:00 +2: monotone and continuous: no hard steps between floor and satAt
+00:00 +2 -1: monotone and continuous: no hard steps between floor and satAt [E]
+  Expected: a value less than <80>
+    Actual: <133>
+     Which: is not a value less than <80>
+  单步色差应远小于旧的 128 阶跳变
+  
+  package:matcher                                     expect
+  package:flutter_test/src/widget_tester.dart 473:18  expect
+  test/capture_quality_ramp_test.dart 49:5            main.<fn>
+  
+00:00 +2 -1: degenerate ramp config cannot divide by zero
+00:00 +3 -1: 拍摄页 live 云全白 —— 不再按 track 长度上三色
+00:00 +4 -1: Some tests failed.
+
+Failing tests:
+  /Users/kaidongwang/Developer/pocketworld-flutter347/test/capture_quality_ramp_test.dart: monotone and continuous: no hard steps between floor and satAt

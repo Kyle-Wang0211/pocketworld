@@ -1,0 +1,5 @@
+---
+triple:          'arm64-apple-darwin'
+binary-path:     '/Users/kaidongwang/Documents/progecttwo/xrslam_capi_tests/pw_api_test'
+relocations:     []
+...

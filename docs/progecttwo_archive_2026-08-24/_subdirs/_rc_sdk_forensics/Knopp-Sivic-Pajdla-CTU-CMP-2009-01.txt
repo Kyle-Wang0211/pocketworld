@@ -1,0 +1,600 @@
+         CENTER FOR
+MACHINE PERCEPTION
+                                           Location recognition using large
+                                            vocabularies and fast spatial
+                                                      matching
+  CZECH TECHNICAL
+UNIVERSITY IN PRAGUE
+                                                 Jan Knopp, Josef Šivic and Tomáš Pajdla
+
+
+                                           INRIA, WILLOW project, Departement d’Informatique, Ecole Normale
+                                                                  Superieure, Paris
+
+
+
+                                                               CTU–CMP–2009–01
+
+                                                                  February 2, 2009
+
+
+
+
+  RESEARCH REPORT
+                                                                        Available at
+                                           ftp://cmp.felk.cvut.cz/pub/cmp/articles/knopp/Knopp-TR-2009-01.pdf
+
+                                               This work has been supported by grants EU FP6-IST-027787
+                                              DIRAC, MSM6840770038 DMCM III and INRIA foreign student
+                                                                    internship grant.
+
+                                       Research Reports of CMP, Czech Technical University in Prague, No. 1, 2009
+                                                                       Published by
+
+
+
+                      ISSN 1213-2365
+                                                 Center for Machine Perception, Department of Cybernetics
+                                                Faculty of Electrical Engineering, Czech Technical University
+                                                        Technická 2, 166 27 Prague 6, Czech Republic
+                                         fax +420 2 2435 7385, phone +420 2 2435 7637, www: http://cmp.felk.cvut.cz
+Location recognition using large vocabularies and fast
+                  spatial matching∗
+                                    1                 2                         1
+                      Jan Knopp , Josef Sivic , and Tomas Pa jdla
+        1 Center for Machine Perception, K13133 FEE Czech Technical University in Prague
+
+  2 INRIA, WILLOW project, Département d'Informatique, Ecole Normale Supérieure, Paris
+
+
+                                Research report CTUCMP200901
+                  First draft: September 30th, 2008; Updated: February 2nd 2009
+
+
+
+
+                                             Abstract
+             We seek to recognize the location of a query image given a dataset of images
+         labelled with geo-location information. This is a challenging task as the imaged
+         appearance of the query image can be very dierent from the appearance of im-
+         ages in the database due to changes in viewpoint, lighting, and partial occlusion by
+         other objects. We employ for this task the bag-of-visual-words approach with large
+         vocabularies and fast spatial matching previously used for object retrieval in large
+         image collections. We compare location recognition performance of several invariant
+         feature detectors and investigate various design and parameter choices for building
+         large visual vocabularies. Finally, we show that visual query expansion improves lo-
+         cation recognition performance. Location recognition results are shown on a dataset
+         of more than 1,300 geotagged omnidirectional images of Prague using a query test
+         set of 25 omnidirectional and perspective images.
+
+
+1 Introduction
+We seek to recognize the location of a query image given a dataset of images labelled
+with geo-location information [11]. This is a challenging task as the imaged appearance
+of the query image can be very dierent from the appearance of images in the database
+due to changes in viewpoint, lighting, and partial occlusion by other objects. In addition,
+the query image might be captured at a dierent time of the day, dierent season or in a
+dierent year altogether.
+       We investigate employing for this task the bag-of-visual-words approach with large
+vocabularies and fast spatial matching previously used for object retrieval in large image
+
+   This work was carried out during a two month internship of J.K. in the Willow team at ENS in Paris.
+   ∗
+
+The internship was supported by the INRIA foreign student internship grant.
+
+
+
+                                                  1
+                                     Omnidirectional-Prague Perspective-Prague
+                     # of images               13K                      14K
+               original resolution          2048 × 2048          typically 1024 × 768
+                  used resolution            800 × 800                not resized
+                  # of sequences                 2                       N/A
+
+                                     Table 1: Summary of datasets.
+
+
+
+
+Figure 1: Example images from the Prague datasets. The rst row shows omnidirectional images
+and the second row shows perspective images crawled from Flickr.
+
+
+
+collections [5, 10]. Experiments are performed on a dataset of more than 1,300 geotagged
+omnidirectional images of Prague using a test set of 25 omnidirectional and perspective
+images with manually obtained ground truth.
+
+    The report is structured as follows:         First, in section 2 we introduce our location
+recognition datasets.      In section 3 we compare performance of various local invariant
+feature detectors on the location recognition task and in section 4 we investigate dierent
+parameter and design choices for building large visual vocabularies. Finally, in section 5 we
+show that spatial verication and visual query expansion [5] improve location recognition
+performance.
+
+
+
+
+2 Image Datasets
+We have two datasets (collected in the Center for Machine Perception in Prague) of
+Prague outdoor images.        The rst one consists of about 13,000 omnidirectional images
+(two sequences: Castle1 of 7,657 images and Castle2 of 5,761 images) and was manually
+captured in Prague. The second one consists of about 14,000 perspective images crawled
+from Flickr.    Example images are shown in gure 1.          The datasets are summarized in
+table 1.
+
+
+
+
+2
+Figure 2: Top: Omnidirectional query (left) and examples of training geotagged omnidirectional
+images depicting the same location (the rest of the row). Bottom: Perspective query (left) and
+examples of training geotagged omnidirectional images depicting the same location (the rest of
+the row).
+
+
+                                        Omnidirectional      Perspective
+                        # of images        102 + 329              30
+                  original resolution     2048 × 2048     typically 1024 × 768
+                     used resolution       800 × 800           not resized
+                     # of sequences            2                  N/A
+
+                           Table 2: Summary of the query test sets.
+
+
+Training set     The geotagged training set consists of every 10th image from the two
+omnidirectional sequences, i.e. a total of about 1,300 images.
+
+
+
+Test set    Separately, we have collected a test set of 403 omnidirectional images (two
+sequences of 102 and 329 images). In addition, we select a subset of 30 perspective Flickr
+images as a test set. The Flickr test images were manually selected to have visual overlap
+(i.e. contain the same scene structure) with some images in the training set. The test
+data is summarized in table 2.
+
+
+
+Manually labelled ground truth             So far, only a portion of the test set (25 images,
+11 omnidirectional and 14 perspective) was manually labelled with ground truth location
+matches. These images are used for quantitative evaluation throughout the report. The
+number of test query images is relatively small, compared to e.g. 55 queries of 11 dierent
+landmarks used in [10]. As a result, our conclusions are only preliminary and we plan to
+annotate more images in future.
+
+   For each test image we labelled all training omnidirectional images with some visual
+overlap (i.e. containing the same scene structure). Table 3 shows the summary of the test
+data with manually labelled ground truth matches. Examples of images from the same
+
+
+
+
+                                                                                            3
+                                            Omnidirectional      Perspective
+                            # of images            11                 14
+                      original resolution     2048 × 2048     typically 1024 × 768
+                         used resolution       800 × 800           not resized
+
+Table 3: Summary of the portion of the test set with manually labelled ground truth matches in
+the training set of omnidirectional images.
+
+
+location are shown in gure 2 and illustrate the diculty of the location recognition task.
+
+
+
+Performance measure              For each query test image the goal is to nd/match all training
+images labelled in the ground truth as depicting the same location. Similar to evaluation
+in object retrieval [10], we measure performance using the precision-recall curve. For each
+query image we report average precision (AP), which is the area under the precision-recall
+curve. To report a single number performance measure for the entire test set we compute
+the mean average precision (mAP), which is the arithmetic mean of average precisions
+across all queries.
+    Note that a perfect performance (average precision of 1) is obtained when all database
+images that have a visual scene overlap with the query are matched (and ranked top).
+This might seem unnecessary strict for the location recognition task where only the best
+matching image needs to be correct. However, this stricter measure allows us to better
+assess the fall-o in matching performance between dierent variations of the location
+recognition algorithm.
+
+
+
+
+3 Comparison of local feature detectors and descriptors
+In this section we compare dierent feature detectors and descriptors for the task of
+location recognition. For each considered combination of a region detector and a descriptor
+                                      17
+(see table 4) a visual vocabulary of 2   = 131, 072 visual words is built from the training
+geotagged database of about 1,300 images using the approximate k-means algorithm [10].
+The k-means algorithm is run for 20 iterations from three random initializations and
+result with the smallest distortion is taken. Both the query and database images are then
+represented using tf-idf weighted visual word vectors and the similarity between the query
+and each database vector is measured using the normalized scalar product [10, 12]. Note
+that spatial re-ranking is not applied in this experiment. Table 5 shows a comparison of
+running times for the dierent detectors and descriptors on an example image.
+    Tables 6 and 7 show the location recognition performance for omnidirectional and per-
+spective test query images respectively. The SURF [3] features followed by the Dierence
+of Gaussian (DoG) keypoints [6] perform best on our data. We hypothesize that this is
+due to to the restricted degree of invariance (similarity) of the SURF and DoG detectors
+compared to the ane invariant detectors in the benchmark (HessA, MSER), which
+might be benecial on our data. We note, however, that the third similarity invariant de-
+tector evaluated in our benchmark (HessLap) does not perform very well. This might be
+
+
+
+
+4
+ Short name                    Detector Descriptor                                     Implementation # of desc.
+       MSER                MSER [7]                SIFT [6]               CMP Prague (in-house)                          1.53M
+  HessACMP        Hessian Ane [8]                SIFT [6]               CMP Prague (in-house)                          2.34M
+         DoG                DoG [6]                SIFT [6]               CMP Prague (in-house)                          3.55M
+        SURF               SURF [3]               SURF [3]                        ETH/Leuven [2]                         1.92M
+      HessLap     Hessian Laplace [8]              SIFT [6]                              Oxford [1]                      4.77M
+   HessAOx1       Hessian Ane [8]                SIFT [6]                              Oxford [1]                      4.46M
+   HessAOx2       Hessian Ane [8]                SIFT [6]      Oxford (J. Philbin, in-house) [10]                      2.57M
+
+Table 4: Local invariant feature detectors and descriptors in our benchmark. The last column
+shows the number of detected features on the training set of about 1,300 images.
+
+
+                         # of features Detection [s] Description [s] Det.+Descr. [s]
+            MSER                         1231               0.16                           4.8                    4.96
+       HessACMP                          978               3.96                           5.4                    9.36
+              DoG                        2605                3.1                           3.1                     6.2
+             SURF                        2034               0.93                          0.41                    1.34
+           HessLap                       1874               N/A                           N/A                     1.82
+        HessAOx1                        1773               N/A                           N/A                     3.44
+        HessAOx2                        2689               2.16                          6.11                    8.27
+
+Table 5: Comparison of running times on an example image for dierent feature detectors and
+descriptors. With the exception of the SURF detector, which uses its own SURF descriptor,
+all extracted features are described using the SIFT descriptor. Dierent implementations of the
+SIFT descriptor have, however, dierent running times.
+
+
+                     1           2         3       4       5          Avg.
+                                                                        6          8        9       10      11
+         SURF       0.42      0.51 0.33
+                                0.74         0.41 0.44 0.45
+                                                          0.95        0.55                         0.38    0.57
+          DoG       0.45      0.20 0.10 0.96 0.29 0.31 0.37 0.51 0.63 0.44
+                                0.29
+    HessAOx2       0.23 0.81 0.20 0.25 0.89 0.15 0.10 0.39 0.32 0.54 0.41
+        MSER        0.45 0.55 0.23 0.13 0.79 0.31 0.09 0.03 0.19 0.56 0.36
+    HessAOx1       0.05 0.05 0.06 0.02 0.50 0.29 0.29 0.38 0.03 0.58 0.27
+   HessACMP        0.06 0.36 0.09 0.02 0.81 0.23 0.03 0.20 0.03 0.43 0.24
+       HessLap      0.05 0.08 0.18 0.08 0.45 0.08 0.10 0.03 0.03 0.10 0.14
+
+Table 6: Location recognition performance measured by average precision for 14 omnidirectional
+query test images and dierent local feature detectors/descriptors.
+
+
+            1       2      3        4       5       6     7        8         9      10       11     12     13      14     Avg.
+
+    SURF   0.03   0.21   0.04     0.66     0.14   0.29   0.55    0.68       0.53   0.14     0.07   0.18   0.18    0.76    0.32
+     DoG   0.02   0.40   0.03     0.75     0.06   0.39   0.60    0.44       0.57   0.03     0.05   0.05   0.03    0.79    0.30
+    HLap   0.03   0.04   0.03     0.28    0.16    0.39   0.11    0.39       0.46   0.17     0.02   0.73   0.04    0.46    0.24
+  HAOx2   0.05   0.05   0.03     0.28     0.05   0.35   0.28    0.39       0.22   0.08     0.04   0.23   0.02    0.37    0.17
+ HACMP    0.02   0.03   0.01     0.19     0.02   0.06   0.40    0.02       0.34   0.04     0.12   0.02   0.01    0.02    0.09
+  HAOx1   0.02   0.04   0.02     0.08     0.03   0.07   0.06    0.03       0.02   0.03     0.01   0.03   0.03    0.02    0.04
+
+
+
+Table 7: Location recognition performance measured by average precision for 14 perspective
+query test images and dierent local feature detectors/descriptors.
+
+
+
+
+                                                                                                                                 5
+     Algorithm       1    2    3     4     5      6     7      8      9     10      11   Avg.
+     FLANN [9]      0.60 0.75 0.52 0.39 0.95 0.47      0.51
+                                                       0.81           0.61 0.58
+                                                                    0.43   0.37
+    KD-trees [10]   0.42 0.74 0.51 0.33 0.95 0.41 0.84 0.44 0.45 0.38 0.57 0.55
+
+Table 8: Comparison of approximate nearest neighbour algorithms for vocabulary building.
+Performance is measured by average precision on 11 omnidirectional test queries.
+
+
+due to the choice of parameters (detection threshold, the size of the measurement region),
+which were not tuned to our dataset. Thanks to its good overall performance (measured
+by mean average precision) we will use the SURF features for further experiments in
+this report. However, we note that for particular queries the ranking of detectors diers,
+e.g. for omnidirectional query 10 (table 6) the DoG detector performs best. This is an
+interesting eect suggesting that combining dierent detectors can be benecial.
+
+
+
+
+4 Visual vocabulary investigation
+In this section we investigate several design and parameter choices for building visual
+vocabularies.
+
+
+
+4.1       Comparison of approximate nearest neighbor search methods
+
+Here we compare two approximate nearest neighbour search methods used in the approx-
+imate k-means algorithm for building large visual vocabularies. The rst method is based
+on a randomized forest of kd-trees and has been previously used in [10].          The second
+method is based on a hierarchical k-means tree and is implemented in the recently de-
+veloped "Fast Library for Approximate Nearest Neighbor Matching (FLANN)" [9]. Note
+that both methods are approximate and have logarithmic complexity in the number of
+searched data points. The FLANN library includes an algorithm selection and parame-
+ter conguration step with the goal of achieving the highest percentage of true nearest
+neighbours found on a training dataset of descriptors [9]. The result of this optimization
+procedure on our training data was selection of the hierarchical k-means algorithm with 1
+tree, branching factor of 32 and 15 iterations at each level of the tree. Using both methods
+we build a vocabulary of 131,072 visual words from a set of 1.92M training SURF descrip-
+tors. The goal of this experiment is to test the recently developed FLANN software and
+evaluate benets of its algorithm conguration procedure. Table 8 shows the performance
+comparison of the two methods. The optimized hierarchical k-means tree performs better
+on 7 out 11 queries and has slightly better overall performance.
+
+
+
+4.2       Vocabulary size
+
+Figure 3 shows the location recognition performance, measured by mean average precision,
+for dierent vocabulary sizes. Similar to [10] we observe a peak in performance at around
+1M visual words. Intuitively, when the number of clusters is too small, the resulting visual
+
+
+
+
+6
+          Figure 3: Location recognition performance for dierent vocabulary sizes.
+
+
+
+words are non-discriminative generating many false positive matches. On the other hand,
+when the number of clusters is too large, descriptors from the same object/scene region
+in dierent images can be assigned (due to e.g. noise) to dierent clusters generating false
+negative (missed) matches. All vocabularies are built from 1.92M SURF descriptors and
+the approximate k-means algorithm is run for 20 iteration from a random initialization.
+
+
+
+4.3    How many k-means iterations?
+
+In this section we investigate location recognition performance with respect to the number
+of k-means iterations. Figure 4 shows the average precision as a function of the number
+of k-means iterations for six location test queries and gure 5 shows the mean average
+precision over all test queries. Note that the average precision seems to level-o at around
+20 iterations.
+
+
+
+
+5 Spatial verication and query expansion
+In this section we investigate the use of spatial verication [10] and visual query expan-
+sion [5] for location recognition.
+
+   The spatial verication is applied to the top 50 images ranked by tf-idf scoring. Im-
+ages are re-ranked based on the number of inliers to a homography. Similar to [10], the
+homography is estimated using locally optimized RANSAC [4], where a similarity trans-
+formation hypothesis is provided by a single (SURF) region to region correspondence. For
+the top scoring hypotheses a full projective transformation is re-estimated from the re-
+gion centroids of inlying matches. The procedure of computing geometric transformations
+between two omnidirectional images, and an omnidirectional and an perspective image
+
+
+
+
+                                                                                          7
+                (a)                            (b)                             (c)
+
+
+
+
+                (d)                            (e)                             (f)
+
+Figure 4: Average precision as a function of the number of k-means iterations on a subset of six
+test queries. Each plot shows average precision (red) and the k-means distortion (blue). Note
+that the distortion steadily decreases with a small level of noise due to the occasional inaccuracy
+of the approximate nearest neighbour search.
+
+
+
+
+Figure 5: Mean average precision (taken over all test queries) as a function of the number of
+k-means iterations.
+
+
+
+
+8
+                         1          2       3           4          5           6           7           8        9       10     11    Avg.
+
+      (a) before QE     0.42    0.74      0.51     0.33        0.95           0.41        0.84        0.44     0.45    0.38   0.57    0.55
+       (b) after QE     0.82   0.86       0.53     0.57       0.95        0.56            0.91        0.53     0.38    0.81   0.61   0.69
+
+
+
+Table 9: Average precision for 11 omnidirectional query test images before (a) and after (b)
+spatial verication and query expansion.
+
+                   1     2      3         4       5          6          7           8           9        10      11     12     13     14     Avg.
+
+ (a) before QE   0.03   0.21   0.04      0.66    0.14       0.29       0.55        0.68        0.53     0.14    0.07   0.18   0.18   0.76    0.32
+  (b) after QE   0.03   0.71   0.01     0.89     0.03       0.88       0.67        0.78        0.90    0.47     0.13   0.01   0.02   0.98    0.47
+
+
+
+Table 10: Average precision for 14 perspective query test images before (a) and after (b) spatial
+verication and query expansion.
+
+
+is given in detail in [13].             Figure 6 shows an example of geometric verication between
+a query perspective image and an omnidirectional image retrieved from the geotagged
+database.
+    Spatially veried returned images can then be used to expand the initial query. Here
+we investigate the use of average query expansion described in [5]. A new visual word
+query vector is formed as an average of the original query and spatially veried returns.
+In addition, features from veried images are back-projected to the query image using
+estimated homographies.                 Figure 7 shows an example location query before and after
+spatial verication and query expansion. The benets of spatial verication and query
+expansion for location recognition are shown in tables 9 Finally, gure 8 shows an example
+location recognition query.
+    Overall, query expansion signicantly improves location recognition performance. The
+mean average precision increases from 0.55 to 0.69 and from 0.32 to 0.47 for omnidirec-
+tional and perspective queries respectively. However, in the case of four perspective queries
+the expansion resulted in a decrease in performance. Currently, all visual words from each
+veried returned image are back-projected to the query, which might result in transfer-
+ring non-relevant objects such as pavement or trees.                                             These highly textured objects in
+turn pollute the query with non-relevant visual words. We plan to address this issue by
+transferring only visual words within the spatially veried region of the image.
+
+
+
+
+                                                                                                                                                9
+                            (a)                                (b)
+
+
+
+
+                            (c)                                (d)
+
+
+
+
+                            (e)                                (f)
+
+Figure 6: Geometric verication. The query image (a) and an omnidirectional image (b)
+retrieved from the geotagged database with detected SURF features overlaid. (c,d) Matches ob-
+tained by quantization into visual words. Features with the same visual word label are indicated
+by the same color and marker. (e,f) Inliers for the estimated homography shown by yellow/black
+squares.
+
+
+
+
+10
+                       (a)                                            (b)
+
+
+
+
+                       (c)                                            (d)
+
+Figure 7: (a) Query image. (b) Precision-recall curve before (green) and after (blue) spatial
+verication and query expansion. (c) Matching score (scalar product of tf-idf vectors) between the
+query image and images in the geotagged database. Images from the same location, which should
+be matched according to manually obtained ground truth, are shown in green and indicated on
+the x-axis by a black mark (around image 800). (d) Matching scores after query expansion. In
+this example, the original query is expanded with one spatially veried image. This image in
+turn receives a much higher score (around 0.36) than the rest of the images in the database as
+it is included in the expanded query. The matching score for nearby images is also increased,
+which results in a signicantly better precision-recall curve (shown in (b)).
+
+
+
+
+                                                                                               11
+                          (a)                                 (b)
+
+
+
+
+                                               (c)
+
+Figure 8: Location recognition query. (a) The query image. (b) The top matched image
+(correct) from the geotagged database after spatial verication and query expansion. (c) Position
+of the top matched image shown by a yellow cross on the map.
+
+
+
+
+6 Conclusions
+We have implemented and tested the state-of-the-art bag-of-visual-word model with large
+vocabularies and fast spatial matching [10] for location recognition on a database of more
+than 1,300 geotagged omnidirectional images of Prague.              Using a manually obtained
+ground truth for 25 query images we have benchmarked several local invariant feature
+detectors and found the SURF features [3] to perform best on our data. In addition, we
+have found that the hierarchical k-means tree approximate nearest neighbour search [9]
+outperforms in the randomized forest of kd-trees [10] for building large visual vocabu-
+laries using the approximate k-means algorithm. We have also investigated the eect of
+the number of iterations of approximate k-means on the location recognition performance
+and found 20 iterations to be a good compromise between the vocabulary building time
+
+
+
+
+12
+and recognition performance. Finally, we have shown that spatial verication and query
+expansion [5] can signicantly improve location recognition performance.
+
+
+
+
+7 Acknowledgment
+We would like to thank O. Chum for providing an initial version of the query expansion
+code and O. Chum, M. Havlena, M. Perdoch and A. Torii for discussions about this work.
+J.K. would like to thank members of the Willow team for creating a friendly working
+environment.
+
+
+
+
+References
+ [1] http://www.robots.ox.ac.uk/∼vgg/research/ane.
+
+
+ [2] http://www.vision.ee.ethz.ch/∼surf.
+
+
+ [3] H. Bay, T. Tuytelaars, and L. Van Gool.    SURF: Speeded up robust features.    In
+    Proc. ECCV, 2006.
+
+ [4] O. Chum, J. Matas, and S. Obdrºálek. Enhancing RANSAC by generalized model
+    optimization. In Proc. ACCV, 2004.
+
+
+ [5] O. Chum, J. Philbin, J. Sivic, M. Isard, and A. Zisserman. Total recall: Automatic
+    query expansion with a generative feature model for object retrieval. In Proc. ICCV,
+    2007.
+
+
+ [6] D. Lowe. Distinctive image features from scale-invariant keypoints. IJCV, 60(2):91
+    110, 2004.
+
+
+ [7] J. Matas, O. Chum, M. Urban, and T. Pajdla.      Robust wide baseline stereo from
+    maximally stable extremal regions. In Proc. BMVC., pages 384393, 2002.
+
+
+ [8] K. Mikolajczyk, T. Tuytelaars, C. Schmid, A. Zisserman, J. Matas, F. Schaalitzky,
+    T. Kadir, and L. Van Gool. A comparison of ane region detectors. IJCV, 2005.
+
+
+ [9] M. Muja and D. Lowe.    Fast approximate nearest neighbors with automatic algo-
+    rithm conguration. In International Conference on Computer Vision Theory and
+    Applications (VISAPP), 2009.
+
+[10] J. Philbin, O. Chum, M. Isard, J. Sivic, and A. Zisserman.   Object retrieval with
+    large vocabularies and fast spatial matching. In Proc. CVPR, 2007.
+
+
+[11] G. Schindler, M. Brown, and R. Szeliski. City-scale location recognition. In Proc.
+    CVPR, 2007.
+
+
+
+
+                                                                                     13
+[12] J. Sivic and A. Zisserman. Video Google: A text retrieval approach to object match-
+     ing in videos. In Proc. ICCV, Oct 2003.
+
+
+[13] A. Torii, O. Chum, and T. Pajdla. Computing homography between omnidirectional
+     and perspective images.   Technical Report CMP, Center for Machine Perception,
+     K13133 FEE Czech Technical University in Prague, 2009. to appear.
+
+
+
+
+14
+

@@ -1,0 +1,1426 @@
+!This program cannot be run in DOS mode.
+Rich
+.text
+`.rdata
+@.data
+.pdata
+@.rsrc
+@.reloc
+D$`A
+T$0H
+T$(H
+T$ I
+)D$`
+UWAVH
+E L;
+u H+
+U H;
+} I+
+\$`I
+A^_]
+GH@KL
+)t$@
+)|$0D
+)D$ D
+(t$@D
+(D$ 
+(|$0H
+\$@H
+T$PH
+L$PH
+UVWH
+\$pH
+l$ L
+@_^]
+D$ H
+L$ H
+D$0H
+T$8H
+L$0D
+D$(H
+T$,H
+T$@H
+D$\H
+D$@H;
+L$ D
+@USVWATAVAWH
+t$8L
+D$83
+t$03
+A87t
+L$8H
+T$ E
+A_A^A\_^[]
+@SUVWAV
+\$0L
+D$03
+L$0H
+A^_^][
+L$ SVWH
+t$ L
+0_^[
+USVWAVAWH
+D$@A
+L$@L
+\$8A
+D$0fE
+XU(f
+Y\$0
+X]0f
+X}8f
+(L$ 
+)L$ D
+YL$8
+YD$0
+Yl$0
+Yd$8
+Xu(f
+(\$ 
+)\$ D
+L$@H
+A_A^_^[]
+@USVWATAUAVAWH
+L$H3
+t$0I
+T$0I
+L$0L
+L$DL
+\$HI
+t$pL
+D$8I
+t$0H
+D$ L
+L$`M
+t$(H
+t$ E3
+A_A^A]A\_^[]
+d$Tf
+d$`f
+d$pL
+d$8L
+L$8L
+D$PI
+d$(L
+d$ E3
+@UVWATAVAWH
+A_A^A\_^]
+)t$`
+)|$PE
+(t$`
+(|$PE
+Yb`D
+($$H
+Y@`A
+)l$ D
+YH0E
+(l$ 
+USVWH
+L$`L
+D$`I
+L$`H
+T$(@
+|$ L
+L$XD
+t$PA
+T$pA
+l$XA
+N$fA
+F(fA
+_^[]
+d$HL
+d$@L
+d$0H
+D$HH
+D$ E3
+D$@H
+D$8H
+D$PH
+T$HH
+L$HH
+@UVWATAUAVAWH
+D$PL
+D$`3
+\$HH
+\$8H
+E8@KL
+D$XH
+D$pH
+D$xH
+\$0E
+L$0M
+T$pH
+L$PL
+D$0I
+\$0H
+A_A^A]A\_^]
+)l$`D
+)t$PD
+)|$@H
+D$0D
+)\$ 
+(%+#
+W=r#
+(|$ 
+L$0H3
+(t$PD
+(|$@I
+D$`H
+D$ @
+L$`H3
+D$HM
+d$`L
+d$XL
+d$PL
+d$HH
+D$xL
+t$HL
+|$PH
+D$pL
+D$hH
+L$@E3
+D$hf
+T$xH
+|$(H
+T$`H
+L$XH
+D$@3
+t$hH
+t$XL
+|$pH
+T$0D
+d$(H
+fD94Au
+D$@p
+D$D@
+t$HH
+|$XH
+D$`L
+t$xH
+t$8H
+@UWAVH
+t$@L
+t$XH
+zZuXH
+t$@H
+t$0tjH
+ z@u>H
+L$PH3
+(|$pE
+VWAVH
+t$(v
+l$,w
+D$(A
+t$0tNH
+L$8H3
+\$hH
+l$pH
+@A^_^
+VWATAVAWH
+)t$@H
+D$0L
+D$ D
+D|(H
+|$,H
+t$ fD
+|$$I
+zYuWH
+\$PI
+(t$@I
+A_A^A\_^
+l$$v
+t$&w
+D$$H
+D$$A
+t$(tTH
+DL$f9
+Ju*H
+l$0w
+D$@L
+L$PtiH
+L$XH3
+A^_^
+l$@v
+t$Aw
+t$BtkL
+D$@L+
+l$PH
+ A^_^
+UVWAWI
+o-n*
+fF9TE
+A__^]
+\$`H
+\$pI
+L$ E3
+D$P3
+\$Pf
+|$8H
+|$0H
+L$PE3
+L$\H
+t$`D
+|$xH
+\$xH
+|$hH
+D$X$
+L$PM
+|$pL
+l$ H
+L$hH
+|$ E3
+E0;Xp
+L$pH
+PpA;
+t$`H
+L$xH
+UVWATAUAVAWH
+\$`f
+L$`E3
+t$xL
+T$XH
+P0E3
+D9|$P
+zCuAH
+zMuKH
+\$pA
+zDuBH
+ zJuHH
+D;|$PH
+D$LH
+D$LD
+L$0H;
+l$HH
+\$XH
+l$`A
+0A^_^
+~,fff
+~%ff
+t$PH
+|$PI
+D$XL
+@SVWAVH
+l$hH
+)t$ D
+t[McF
+t/McF
+tQMcF
+tBMcF
+t'McF
+tAMcF
+t$McF
+(t$ H
+8A^_^[
+tZMcF
+tMMcF
+t.McF
+tNMcF
+L$pE3
+EPD9pp
+L$xI
+t$(L
+EP;Xp
+T$`3
+D$XE
+L$hL
+D$ A
+zAu?H
+zGuEH
+zPuNH
+zBu@H
+tCMcD$
+t!McD$
+IcD$
+D;l$XH
+}`E3
+|$@L
+|$HH
+D9|$Hu
+d$0L
+L$@A
+D$x$
+D9xp
+L$pM
+|$PL
+t$ H
+|$(L
+D$pI
+L$pL
+M`E3
+D$H$
+D$HL
+L$lH
+@VWAVH
+)t$ 
+l$pL
+d$8H
+|$0D
+tKMcF
+t3McF
+tOMcF
+t6McF
+fD9<H
+tCMcF
+t(McF
+tEMcF
+tJMcF
+t+McF
+\$hL
+L$(H
+l$PD
+|$8L
+D$8L
+|$0L
+t$`M
+t$0L
+D$ M
+T$ L
+|$ H
+t$`E3
+D$xA
+D$hA
+L$xL
+D$`9C$
+T$`9
+;L$`tiH
+EpD;h
+d$`H
+t$XK
+d$`E3
+d$hH
+PHE3
+d$`D;e
+@UVWAVAWH
+|$@D
+A_A^_^]
+\$ WH
+uNH;Q
+l$0H;y
+l$0H
+UATAUAVAWH
+A_A^A]A\]H
+t!eH
+l$8H
+\$PH
+uyHc
+uTL+
+x AVH
+SVWAVH
+|$`H
+WAVAWH
+\$(H;
+A_A^_
+|$ AVH
+D$@@
+cAMD
+enti
+AuthD
+ineI
+ntelD
+Genu
+t(=`
+t!=p
+ w$H
+D$0$
+\$83
+l$@H
+L$ 3
+D$H3
+@SVWH
+T$`L
+L$(3
+@_^[
+\$ UH
+M H1E
+ H3E H3E
+8csm
+{9A683749-4AAE-4B91-A3C1-32E16794EDA1}
+{155c0fa5-0075-5100-c5f0-5ac70d03ce02}
+onerror
+{2C22DF75-DCF0-4F09-9EE3-375CE1B62B18}
+In Browse For License 
+LICENSE KEY: 
+System successfully activated.
+The license is valid for this computer until %d/%d/%d.
+The license activation expires in %d days.
+License renewed and activated successfully. 
+Failed to renew the license. Error code: 0x%x.
+%.16e
+Begin section %i, sectionFactor %f
+End section ( hr: %i ) 
+Creating online licensing manager ... 
+Unlocking model ... 
+Opening browser ... 
+Unlocking model: Waiting for a user response ... 
+In Open Browser 
+*************************************** 
+COPY AND PASTE THIS URL IN YOUR BROWSER 
+RC_USE_QT_BROWSER
+from PySide2 import QtWebEngineWidgets, QtWidgets;dialog = QtWidgets.QDialog();import hou;webview = QtWebEngineWidgets.QWebEngineView();webview.setUrl('%s');layout = QtWidgets.QHBoxLayout();layout.add
+Widget(webview);hou.session.foo=dialog;dialog.setLayout(layout);dialog.exec_()
+Calculating camera parameters
+Unlocking sfm ... 
+Unlocking sfm: Waiting for a user response ... 
+    name        parameters
+parm
+name    "cook_button"      // Internal parameter name
+label   "Align Images" // Descriptive parameter name for user interface
+type    button
+joinnext
+name    "manual_mode"
+label   "Manual Mode"
+type    toggle
+default { "1" }
+help "Runs the Node in Manual Mode, where you have to hit the Cook button to recook it"
+groupsimple
+    name
+"basic_options"
+    label
+"Basic Options"
+name    "downscale_amt"      // Internal parameter name
+label   "Image Downscale Factor" // Descriptive parameter name for user interface
+type    integer
+default { "1" }     // Default for this parameter on new nodes
+range   { 0! 10 }   // The value is prevented from going below 2 at all.
+// The UI slider goes up to 50, but the value can go higher.
+export  all         // This makes the parameter show up in the toolbox
+// above the viewport when it's in the node's state.
+help "scale down your images in order to speed up processing times. 1 will not scale, 2 will half the image, 3 will quarter it, so on and so forth"
+name    "image_overlap"
+label   "Images Overlap"
+type    ordinal
+default { "1" }     // Default to first entry in menu, "xy"
+menu    {
+100    "Low"
+60    "Medium"
+30    "High"
+help "defines how much of the image space is covered with the same part of the object, when talking about neighboring images"
+    parm
+    name    "draft_mode"
+label   "Draft Mode"
+default { "0" }
+help "Run the alignment with hardcoded lower settings"
+"advanced_options"
+"Advanced Options"
+name    "max_features"      // Internal parameter name
+label   "Max Features Per Image" // Descriptive parameter name for user interface
+default { "40000" }     // Default for this parameter on new nodes
+range   { 0! 100000 }   // The value is prevented from going below 2 at all.
+help "defines the absolute limit to features used per image, More features mean lower speed but may result in fewer components."
+name    "preselector_features"      // Internal parameter name
+label   "Preselector Features" // Descriptive parameter name for user interface
+default { "10000" }     // Default for this parameter on new nodes
+range   { 0! 5000 }   // The value is prevented from going below 2 at all.
+help "This is the number of features that will be used in alignment from the detected ones. Optimally, set it to 1/4-1/2 of the detected features"
+name    "detector_sensitivity"
+label   "Detector Sensitivity"
+500    "Low"
+200    "Medium"
+100    "High"
+20    "Ultra"
+help "The natural feature detector focuses on places in an image which can be easily noticed and tend to be stable under various image and geometry transformations - e.g. changing the view point or ch
+anging lighting conditions. With this setting you can control how the detector looks at the stability. Setting it to ultra will detect more feature points in places with weak texture. This will also a
+dd points, which might have texture due to noise in the image. Setting this value to low will, on the other hand, throw away feature points which could be used for image registration."
+name    "cache_file"
+label   "Cache File"
+type    file
+default
+{ $HIP/cache/${HIPNAME}_${OS}_reconstruction.rca }
+help "Internal path for Caching"
+name    "getlicense_button"      // Internal parameter name
+label   "Get License" // Descriptive parameter name for user interface
+downscale_amt
+max_features
+image_overlap
+preselector_features
+detector_sensitivity
+draft_mode
+manual_mode
+cache_file
+SOP_RC_AlignImages.C
+getlicense_button
+cook_button
+Aligned %d / %d cameras
+Building Meshes
+Failed to load license
+images
+Starting Cook
+Detail attribute not found. Nothing to do.
+reconstruction_path
+hbatch
+hython
+hython2.7
+RC Plugin is disabled on command line houdini.
+RC Plugin is disabled on command line houdini
+$HIP/temp
+RC_TEMP_PATH
+Creating Hierarchical Sfm Pipeline
+Loading Reconstruction
+Button Pressed 
+camera_id
+side
+forward
+Setting Up
+label   "Texture Model" // Descriptive parameter name for user interface
+groupsimple {
+"texturing_options"
+"Texturing Options"
+parm {
+name    "model_export_path"
+label   "Model Path"
+parmtag
+{ filechooser_pattern *.obj *.ply }
+{ filechooser_mode write }
+{ $HIP/${HIPNAME}_textured.obj }
+name    "max_texture_res"      // Internal parameter name
+label   "Max Texture Resolution" // Descriptive parameter name for user interface
+default { "4" }     // Default to first entry in menu, "xy"
+0    "512x512"
+1   "1024x1024"
+2   "2048x2048"
+3   "4096x4096"
+4   "8192x8192"
+5  "16384x16384"
+6  "32768x32768"
+name    "texturing_style"      // Internal parameter name
+label   "Style" // Descriptive parameter name for user interface
+0    "Photo Consistency Based"
+1    "Visibility Based"
+max_texture_res
+texturing_style
+model_export_path
+SOP_RC_TextureModel.C
+Failed to activate license!
+Detail attribute images is invalid!
+attrib_name
+model_cache_path
+Loading Model
+Generating Texture
+Exporting Model and Texture
+?Image Downscale Factor
+Max Features Per Image
+Images Overlap
+Preselector Features
+Detector Sensitivity
+Detail Decimation Factor
+Draft Mode
+Sensitivity
+sensitivity
+Colorize Model
+Generate Triangles
+Texture Model Path
+Temp Path
+*.obj *.ply
+Medium
+High
+Ultra
+label   "Create Model" // Descriptive parameter name for user interface
+"model_options"
+"Model Options"
+name    "detail_decimation_factor"      // Internal parameter name
+label   "Detail Decimation Factor" // Descriptive parameter name for user interface
+type    float
+range   { 0! 5 }   // The value is prevented from going below 2 at all.
+help "Preferred Level of Detail, use higher numbers for lower number of triangles"
+name    "simplify"
+label   ""
+nolabel
+name    "max_polycount"      // Internal parameter name
+label   "Max PolyCount" // Descriptive parameter name for user interface
+default { "250000000" }     // Default for this parameter on new nodes
+range   { 0! 50000000! }   // The value is prevented from going below 2 at all.
+disablewhen "{ simplify == 0 }"
+help "Max Number of Polygons to be generated, helps Houdini from running out of memory"
+            
+name    "colorize_model"
+label   "Colorize Model"
+name    "generate_triangles"
+label   "Generate Triangles"
+name    "use_input_model"
+label   "Use Input's Model Data"
+help "Don't recreate the model, use the input's model data"
+name    "limit_display_polycount"
+name    "max_display_polycount"      // Internal parameter name
+label   "Max Display Polycount" // Descriptive parameter name for user interface
+default { "25000000" }     // Default for this parameter on new nodes
+disablewhen "{ limit_display_polycount == 0 }"
+name    "export_raw"
+name    "raw_path"
+label   "Export Raw RC Model"
+{ $HIP/${HIPNAME}_${OS}_raw.ply }
+disablewhen "{ export_raw == 0 }"
+{ $HIP/cache/${HIPNAME}_${OS}_rc_model_cache.dat }
+export_path
+detail_decimation_factor
+colorize_model
+generate_triangles
+temp_path
+raw_path
+export_raw
+limit_display_polycount
+max_display_polycount
+simplify
+max_polycount
+use_input_model
+17.5
+3262197cbf3f683d0d8128a9751ab5d91865e1dfff6fe9fd6bd5cc6e760abfd265f40285d1773b751703e9a828942b1c2dbcbc108081ad4441033de96ff095ba41ac52a0ed82588d89
+RC Align Images
+rc_alignimages
+RC Create Model
+rc_createmodel
+RC Extract Cameras
+rc_extractcameras
+RC Texture Model Core
+Sop/rc_texture_model::rc_texturemodel_core
+Reality Capture
+SOP_RealityCapture.C
+RC Model Has %d Triangles
+RC Align Node
+Optional Bounding Box To Limit Computation
+Invalid Source
+noiseFactor
+partIndex
+Creating Model
+CreateModel failed!
+Colorizing Model
+Simplifying Model
+Simplifying Model To Stay Within Poly Limit
+Building Mesh
+MbP?
+?q<G
+a7B_
+InitializeConditionVariable
+SleepConditionVariableCS
+WakeAllConditionVariable
+Unknown exception
+bad allocation
+bad array new length
+.text$di
+.text$mn
+.text$mn$00
+.text$x
+.text$yd
+.idata$5
+.00cfg
+.CRT$XCA
+.CRT$XCL
+.CRT$XCU
+.CRT$XCZ
+.CRT$XIA
+.CRT$XIC
+.CRT$XIZ
+.CRT$XLA
+.CRT$XLZ
+.CRT$XPA
+.CRT$XPZ
+.CRT$XTA
+.CRT$XTZ
+.rdata
+.rdata$T
+.rdata$r
+.rdata$zzzdbg
+.rtc$IAA
+.rtc$IZZ
+.rtc$TAA
+.rtc$TZZ
+.tls
+.tls$
+.tls$ZZZ
+.xdata
+.xdata$x
+.edata
+.idata$2
+.idata$3
+.idata$4
+.idata$6
+.data
+.data$r
+.bss
+.rsrc$01
+.rsrc$02
+RealityCapture_SOP.dll
+HoudiniCompilerVersion
+HoudiniDSOVersion
+HoudiniGetTagInfo
+newSopOperator
+?Unlock@ImageCodecPack@CapturingReality@@YAJPEBD0PEAUIUnknown@@@Z
+CapturingReality.ImageCodecPack.dll
+?Unlock@ImportExport@CapturingReality@@YAJPEBD0PEAUIUnknown@@@Z
+?CreateReconstructionExporterObj@ImportExport@CapturingReality@@YAJPEB_W00PEAUXmlModelExportParams@ModelExport@2@PEAPEAUIReconstructionExporter@42@@Z
+?CreateReconstructionExporterPly@ImportExport@CapturingReality@@YAJPEB_W0PEAUXmlModelExportParams@ModelExport@2@PEAPEAUIReconstructionExporter@42@@Z
+?LayerIndexToTypeOrdinal@ImportExport@CapturingReality@@YAJPEAUITexturesProvider@Mvs@2@IPEAW4TextureLayerType@42@PEAI@Z
+CapturingReality.ImportExport.dll
+?CreateSfmReconstructionFromFile@Sfm@CapturingReality@@YAJPEB_WPEAPEAUISfmReconstruction@12@@Z
+?CreateOnlineLicensingManager@RealityCaptureServices@CapturingReality@@YAJPEAUServiceConnectionContext@12@PEAUIEventListener@2@PEAPEAUIOnlineLicensingManager@12@@Z
+?Unlock@RealityCaptureEngine@CapturingReality@@YAJPEBD0PEAPEAUIUnknown@@@Z
+?GetLicenseExpirationDate@RealityCaptureEngine@CapturingReality@@YAJPEAI00@Z
+?CreateExportTransformationsProvider@ModelTools@CapturingReality@@YAJPEAUExportTransformationSettings@CalibrationExport@2@PEAPEAUIExportTransformationsProvider@42@@Z
+?InitializeXmlModelExportParamsDefaults@ModelTools@CapturingReality@@YAJPEAUXmlModelExportParams@ModelExport@2@@Z
+?ExportModel@ModelTools@CapturingReality@@YAJPEAUIReconstructionExporter@ModelExport@2@PEAUIMvsModel@Mvs@2@PEAUIExportTransformationsProvider@CalibrationExport@2@PEAUICameraExportInformationProvider@8
+2@PEAUIImageUndistortExporter@82@PEAUIProgressReportCallback@2@@Z
+?CreateSfmAutoReconstructionBox@Sfm@CapturingReality@@YAJPEAUIStructureFromMotion@12@PEAUISfmReconstruction@12@PEAPEAUISfmReconstructionBox@12@@Z
+?CreateUndistortedImageProvider@Mvs@CapturingReality@@YAJPEAUIStructureFromMotion@Sfm@2@PEAUISfmReconstruction@42@PEAUIResourceCache@2@PEAUIUnknown@@PEAPEAUIImageProvider@2@@Z
+?CreateDistortedImageProvider@Mvs@CapturingReality@@YAJW4SfmImageInputLayer@Sfm@2@PEAUIStructureFromMotion@42@PEAUISfmReconstruction@42@PEAUIUnknown@@PEAPEAUIImageProvider@2@@Z
+?CreateSceneStructure@Mvs@CapturingReality@@YAJPEAUISfmReconstruction@Sfm@2@PEAPEAUISceneStructure@2@@Z
+?CreateCameraList@Mvs@CapturingReality@@YAJPEAUCoordinateSystemResidual@2@PEAUIStructureFromMotion@Sfm@2@PEAUISfmReconstruction@52@PEAUIUnknown@@PEAPEAUICameraList@Depthmaps@12@@Z
+?CreateCameraListContext@Mvs@CapturingReality@@YAJPEAUICameraList@Depthmaps@12@PEAUISceneStructure@2@PEAPEAUICameraListContext@412@@Z
+?ColorMvsModel@Mvs@CapturingReality@@YAJPEAUColoringAlgorithmSettings@12@PEAUIImageProvider@2@PEAUICameraListContext@Depthmaps@12@PEAUISceneStructure@2@PEAUIMvsModel@12@PEAUIProgressReportCallback@2@@
+?CreateMvsModelMultiPart@Mvs@CapturingReality@@YAJPEAUCreateMvsModelParameters@12@PEAUIConfig@2@PEAPEAUIMvsModel@12@PEAJ@Z
+?CreateMvsModelSfm@Mvs@CapturingReality@@YAJPEAUISfmReconstruction@Sfm@2@PEAUCreateMvsModelParameters@12@PEAUIConfig@2@PEAPEAUIMvsModel@12@@Z
+?Simplify@ModelTools@CapturingReality@@YAJPEAUIMvsModel@Mvs@2@PEAUModelSimplificationParams@ModelPostProcess@2@PEAUIProgressReportCallback@2@PEAPEAU342@PEAI@Z
+?CalculateAverageEdgeLength@ModelTools@CapturingReality@@YAJPEAUIMvsModel@Mvs@2@PEAUIProgressReportCallback@2@PEAN@Z
+?CalculateCubeUnwrappedSurfaceArea@ModelTools@CapturingReality@@YAJMPEAUIMvsModel@Mvs@2@PEAUIProgressReportCallback@2@PEAN@Z
+?EstimateDetail@ModelTools@CapturingReality@@YAJPEAUICameraList@Depthmaps@Mvs@2@PEAUISceneStructure@2@PEAUGlobalReconstructionVolume@Geometry@2@PEAM@Z
+?UnwrapModelLegacy@ModelTools@CapturingReality@@YAJPEAUUnwrapParameters@Unwrap@Texturing@2@PEAUIProgressReportCallback@2@PEAUIMvsModel@Mvs@2@PEAUISfmReconstruction@Sfm@2@PEAUICameraList@Depthmaps@82@P
+EAN5@Z
+?TextureModel@ModelTools@CapturingReality@@YAJPEAUTexturingAlgorithmSettings@Mvs@2@PEAUIImageProvider@2@1PEAUICameraListContext@Depthmaps@42@PEAUISceneStructure@2@PEAUIMvsModel@42@PEAUIProgressReportC
+allback@2@@Z
+?CreateInputsLicensingManager@RealityCaptureServices@CapturingReality@@YAJPEAPEAUIInputsLicensingManager@12@@Z
+?CreateSfmSensorDatabase@Sfm@CapturingReality@@YAJPEB_WPEAPEAUISfmSensorDatabase@12@@Z
+?CreateSfmPipeline@Sfm@CapturingReality@@YAJPEAUIConfig@2@PEAUICoordinateSystemTable@CoordinateSystems@2@PEAUIControlPoints@12@PEAUIResourceCache@2@PEAUISfmSensorDatabase@12@PEAUISfmMetadataCache@12@P
+EAPEAUIStructureFromMotion@12@@Z
+?CreateResourceCache@Utilities@CapturingReality@@YAJW4ResourceCacheLocation@2@PEB_WPEAPEAUIResourceCache@2@@Z
+?CreateConfig@Utilities@CapturingReality@@YAJPEAPEAUIConfig@2@@Z
+?GetLicenseType@RealityCaptureEngine@CapturingReality@@YAJPEAI@Z
+?LoadModel@ModelTools@CapturingReality@@YAJPEB_W0PEAUIResourceCache@2@PEAPEAUIMvsModel@Mvs@2@@Z
+?SaveModel@ModelTools@CapturingReality@@YAJPEB_W0PEAUIResourceCache@2@PEAUIMvsModel@Mvs@2@@Z
+CapturingReality.RealityCaptureEngine.dll
+?evalInt@OP_Parameters@@QEBA_JAEBVUT_StringRef@@HN@Z
+?evalString@OP_Parameters@@QEBAXAEAVUT_String@@AEBVUT_StringRef@@HN@Z
+??1OP_AutoLockInputs@@QEAA@XZ
+?lock@OP_AutoLockInputs@@QEAA?AW4UT_ErrorSeverity@@AEAVOP_Context@@@Z
+?addExtraInput@OP_Node@@UEAAXPEAV1@W4OP_InterestType@@@Z
+?addNode@OP_Network@@MEAAXPEAVOP_Node@@HH@Z
+?addOrRemoveMultiparmInstance@OP_Parameters@@UEAAXXZ
+?allowConsolidatingInput@OP_Node@@UEAA_NH@Z
+?allowInputEditorInputDelete@OP_Node@@UEAA_NXZ
+?allowInputEditorInputParm@OP_Node@@UEAA_NXZ
+?beginLoadingInNetwork@OP_Network@@MEAAXXZ
+?beginVopCodeGeneratorUpdate@OP_Node@@UEAAHXZ
+?buildOpDependencies@OP_Network@@MEAAXXZ
+?buildParmDependency@OP_Node@@MEAAXH@Z
+?buildVexScript@OP_Node@@UEAAXAEAVUT_String@@NPEAV1@PEAV?$UT_Map@H_NU?$hash@H@hboost@@U?$equal_to@H@std@@@@@Z
+?buildVexScript@OP_Node@@UEAAXAEAVUT_String@@NPEAVDEP_MicroNode@@PEAV?$UT_Map@H_NU?$hash@H@hboost@@U?$equal_to@H@std@@@@@Z
+?bumpSourceCount@OP_Node@@MEAAHH@Z
+?bundleChanged@OP_Node@@UEAA_NPEBVOP_Bundle@@@Z
+?canCreateNewOpType@OP_Node@@UEBA_NXZ
+?canDestroyNode@OP_Network@@MEAA_NXZ
+?castToDOPParent@OP_Node@@UEAAPEAVDOP_Parent@@XZ
+?castToDOPParent@OP_Node@@UEBAPEBVDOP_Parent@@XZ
+?castToOPNode@OP_Node@@UEAAPEAV1@XZ
+?castToOPNode@OP_Node@@UEBAPEBV1@XZ
+?changeParmTemplate@OP_Network@@UEAAXPEAVPRM_Template@@@Z
+?changeSpareParms@OP_Node@@UEAA_NAEAVUT_IStream@@AEAVUT_String@@@Z
+?changeString@OP_Node@@UEAAHPEBD0_N@Z
+?checkChannelDependencies@OP_Node@@MEAAXPEAVCH_Channel@@W4CH_CHANGE_TYPE@@@Z
+?checkContextOptionDependencies@OP_Node@@MEAAXH@Z
+?checkTimeDependencies@OP_Node@@MEAAXHHH@Z
+?childDeleted@OP_Network@@UEAAXPEAVOP_Node@@@Z
+?childFlagChange@OP_Network@@UEAAXPEAVOP_Node@@@Z
+?clearInterrupted@OP_Node@@UEAAXXZ
+?clearParmDependency@OP_Node@@UEAAXH@Z
+?clearUndoFlags@OP_Network@@UEAAXXZ
+?clearUnreferencedInputs@OP_Network@@UEAAXXZ
+?cloneFromProxyRefNode@OP_Network@@MEAAXPEAV1@@Z
+?cloneToProxyRefNode@OP_Network@@MEAAPEAV1@XZ
+?convertOpdefToAbsolutePath@OP_Node@@MEBAXAEAVUT_String@@@Z
+?cook@OP_Node@@UEAA_NAEAVOP_Context@@@Z
+?cookDataForAnyOutput@OP_Node@@MEBA_NXZ
+?cookInputGroups@OP_Node@@MEAA?AW4UT_ErrorSeverity@@AEAVOP_Context@@H@Z
+?cookedDataNeedsErrors@OP_Node@@MEBA_NXZ
+?cookedDataUsesAllParameters@OP_Node@@MEBA_NXZ
+?cookedInputIndex@OP_Node@@UEBAHXZ
+?createGalleryEntry@OP_Node@@UEAAXAEAVOP_GalleryEntry@@@Z
+?createObsoleteParmList@OP_Node@@UEAAPEAVPRM_ParmList@@XZ
+?createParmMicroNodes@OP_Node@@EEBAPEAVPRM_ParmMicroNode@@AEAVPRM_Parm@@@Z
+?createProxyRefNode@OP_Network@@UEAAPEAV1@PEBD@Z
+?createSpareParameterFromChannel@OP_Parameters@@MEAA_NPEBD@Z
+?createSpareParametersFromChannels@OP_Parameters@@MEAA_NAEAVUT_BitArray@@AEBV?$UT_ValArray@PEAVCH_Channel@@@@@Z
+?dataBlockChanged@OP_Node@@UEAAXAEBVUT_StringHolder@@@Z
+?dataMicroNodeConst@OP_Node@@UEBAAEBVOP_DataMicroNode@@XZ
+?destroySingleNode@OP_Network@@MEAAXPEAVOP_Node@@@Z
+?disableParms@OP_Parameters@@MEAAIXZ
+?doDeleteInput@OP_Node@@MEAAXH@Z
+?doDeleteRewire@OP_Node@@UEBAHXZ
+?doGetFullPath@OP_Node@@MEBAXAEAVUT_WorkBuffer@@@Z
+?doOverridePostCook@OP_Node@@MEAAXXZ
+?doOverridePreCook@OP_Node@@MEAAXXZ
+?dumpDependencies@OP_Network@@UEAAXAEAV?$basic_ostream@DU?$char_traits@D@std@@@std@@@Z
+?dumpMicroNodes@OP_Node@@MEBAXAEAV?$basic_ostream@DU?$char_traits@D@std@@@std@@_NH@Z
+?editCallback@OP_Node@@UEAAHPEAVCL_Track@@NN@Z
+?endLoadingInNetwork@OP_Network@@MEAAXXZ
+?endVopCodeGeneratorUpdate@OP_Node@@UEAAXH@Z
+?ensureErrorsAreUpdatedSubclass@OP_Parameters@@MEAAXXZ
+?ensureInputsAndOutputsAreValid@OP_Node@@UEAAXXZ
+?ensureSpareParmsAreUpdatedSubclass@OP_Parameters@@MEAAXXZ
+?error@OP_Parameters@@UEAA?AW4UT_ErrorSeverity@@AEAVOP_Context@@@Z
+?error@OP_Parameters@@UEAA?AW4UT_ErrorSeverity@@XZ
+?evaluateBatchParms@OP_Node@@UEAAXAEAVPRM_BatchList@@N@Z
+?evaluateDisableExpression@OP_Node@@MEBA?AVUT_StringHolder@@AEBVPRM_Parm@@AEBVUT_StringRef@@@Z
+?evaluateTransformTracks@OP_Node@@UEAA_NAEAVOP_Context@@AEAVOP_EvaluateTransformTracksArgs@@@Z
+?executeCommand@OP_Node@@UEBAXPEBDPEAV?$basic_ostream@DU?$char_traits@D@std@@@std@@1@Z
+?fillInfoTreeChildSpecific@OP_Node@@UEAA_NAEAVUT_InfoTree@@AEBVOP_NodeInfoTreeParms@@PEAV1@@Z
+?findDot@OP_Network@@UEAAPEAVOP_Dot@@PEBD@Z
+?findItem@OP_Network@@UEAAPEAVOP_NetworkBoxItem@@PEBDI@Z
+?findNetworkBox@OP_Network@@UEAAPEAVOP_NetworkBox@@PEBD@Z
+?findParametersOrProperties@OP_Parameters@@UEAAHNAEAVOP_PropertyLookupList@@@Z
+?findParentInput@OP_Network@@UEAAPEAVOP_SubnetIndirectInput@@PEBD@Z
+?findParmFromTrack@OP_Node@@UEAA_NAEBVOP_FollowChanRefsOptions@@PEBDAEAV?$UT_CycleDetect@UOP_NodeParmRef@@@@AEAPEAV1@AEAPEAVPRM_Parm@@AEAH@Z
+?findPostItNote@OP_Network@@UEAAPEAVOP_PostIt@@PEBD@Z
+?findString@OP_Node@@UEBAHPEBD_N1@Z
+?finishedLoadingChildOrder@OP_Network@@MEAAXXZ
+?finishedLoadingNetwork@OP_Network@@MEAAX_N@Z
+?forceRecook@OP_Node@@UEAAX_N@Z
+?getActiveLayerContribution@OP_Node@@UEAA_NAEBVUT_String@@NAEAN1@Z
+?getActiveOperatorsDefinedByOTL@OP_Network@@UEBAXAEAV?$UT_Set@PEAVOP_Operator@@U?$hash@PEAVOP_Operator@@@hboost@@U?$equal_to@PEAVOP_Operator@@@std@@@@@Z
+?getAdditionalUndoNodes@OP_Network@@MEAAXAEBV?$UT_ValArray@PEAVOP_Node@@@@AEAV2@@Z
+?getAllowSavingChild@OP_Network@@MEAA_NPEAVOP_Node@@AEBVOP_SaveFlags@@@Z
+?getArrayForLoadedInputNames@OP_Node@@UEAAPEAVUT_StringArray@@XZ
+?getArrayForLoadedOutputNames@OP_Node@@UEAAPEAVUT_StringArray@@XZ
+?getAudio@OP_Node@@UEBAHXZ
+?getAudioNodePtr@OP_Network@@UEAAPEAVCHOP_Node@@XZ
+?getAudioNodeRef@OP_Network@@MEAAPEAPEAVCHOP_Node@@XZ
+?getAuxInput@OP_Node@@UEBAHXZ
+?getAuxInputName@OP_Node@@UEAAXAEAVOP_ConnectorId@@@Z
+?getChild@OP_Network@@UEBAPEAVOP_Node@@H@Z
+?getChild@OP_Network@@UEBAPEAVOP_Node@@PEBDPEAH@Z
+?getChildIndex@OP_Network@@UEBAHPEBVOP_Node@@@Z
+?getClip@OP_Node@@UEAAPEBVCL_Clip@@PEAVOP_Context@@@Z
+?getColor@OP_Node@@UEBA?AVUT_Color@@XZ
+?getCookTimerLabel@OP_Node@@MEBAPEBDAEBVOP_Context@@@Z
+?getDandROpsEqual@OP_Network@@UEAAHXZ
+?getDataClass@OP_Node@@UEBAHXZ
+?getDataFileExtension@OP_Node@@MEBAPEBDH@Z
+?getDebug@OP_Node@@UEBAHXZ
+?getDefaultState@OP_Node@@UEAAXAEAVUT_String@@@Z
+?getDescriptiveParmName@OP_Node@@MEBAXAEAVUT_String@@@Z
+?getDisplayNodePtr@OP_Network@@UEAAPEAVOP_Node@@XZ
+?getDisplayOrigin@OP_Node@@UEBAHXZ
+?getEditPicked@OP_Node@@UEBAHXZ
+?getErrorSeverity@OP_Network@@UEAA?AW4UT_ErrorSeverity@@XZ
+?getExport@OP_Node@@UEBAHXZ
+?getExprLanguage@OP_Parameters@@UEBA?AW4CH_ExprLanguage@@XZ
+?getExtraNodesForCopyOrDelete@OP_Node@@UEBAXAEAV?$UT_ValArray@PEAVOP_Node@@@@@Z
+?getFlag@OP_Node@@UEBAHD@Z
+?getHDASubType@OP_Node@@UEAAPEBDXZ
+?getHasTakeData@OP_Node@@UEBAHXZ
+?getIWorldTransform@OP_Node@@UEAA_NAEAV?$UT_Matrix4T@N@@AEAVOP_Context@@@Z
+?getInputDataDefault@OP_Node@@UEBA?AVUT_Options@@H@Z
+?getInputEditorInputLabel@OP_Node@@UEAA_NAEAVUT_String@@H@Z
+?getInputEditorInputs@OP_Node@@UEAAHXZ
+?getInputFromName@OP_Node@@UEBAHAEBVUT_String@@@Z
+?getInputName@OP_Node@@UEBAXAEAVUT_String@@H@Z
+?getInputReference@OP_Node@@UEAAPEAVOP_Input@@I_N@Z
+?getInputReferenceConst@OP_Node@@UEBAPEAVOP_Input@@I@Z
+?getInputRes@OP_Node@@UEAAXHNAEBVOP_Context@@AEAV2@@Z
+?getInputToHash@OP_Node@@UEAAPEAV1@H@Z
+?getInternalOpTable@OP_Node@@UEBAPEBDXZ
+?getInternalOperator@OP_Node@@UEBAPEAVOP_Operator@@XZ
+?getIsInputVisibleDefault@OP_Node@@UEAA_NH@Z
+?getItemExpose@OP_Node@@UEBA_NXZ
+?getItemName@OP_Node@@UEBAAEBVUT_String@@XZ
+?getItemType@OP_Node@@UEBA?AW4OP_ItemType@@XZ
+?getItemUniqueId@OP_Node@@UEBA_JXZ
+?getMapping@OP_Node@@UEBAHHAEAPEBD@Z
+?getMaterialIconAllowRegenerateFlag@OP_Node@@UEAA_NXZ
+?getMaterialIconFilename@OP_Node@@UEAAPEAVUT_String@@XZ
+?getMaterialIconImage@OP_Node@@UEAAPEAVIMG_Raster@@XZ
+?getMyExternalReferences@OP_Node@@MEAAXAEAVUT_StringArray@@PEAV2@_N22@Z
+?getNchildren@OP_Network@@UEBAHXZ
+?getNumInputsToHash@OP_Node@@UEAAHXZ
+?getNumVisibleInputs@OP_Node@@UEBAIXZ
+?getNumVisibleOutputs@OP_Node@@UEBAIXZ
+?getOperatorFilter@OP_Network@@UEAAPEAVOP_OperatorFilter@@XZ
+?getOutputFromName@OP_Node@@UEBAHAEBVUT_String@@@Z
+?getOutputName@OP_Node@@UEBAXAEAVUT_String@@H@Z
+?getOutputNodePtrs@OP_Network@@UEBAAEBV?$UT_ValArray@PEAVOP_Node@@@@XZ
+?getOwnedMicroNodes@OP_Node@@UEAAXAEAV?$UT_Array@PEAVDEP_MicroNode@@@@@Z
+?getParallelInputs@OP_Node@@UEBAXAEAVOP_Context@@AEAV?$UT_ValArray@PEAVOP_Node@@@@@Z
+?getParameterOrProperty@OP_Parameters@@UEAA_NAEBVUT_StringRef@@NAEAPEAVOP_Node@@AEAPEAVPRM_Parm@@_NPEAVPRM_ParmList@@@Z
+?getParameterOrPropertyByChannel@OP_Parameters@@UEAA_NAEBVUT_StringRef@@NAEAPEAVOP_Node@@AEAPEAVPRM_Parm@@AEAHPEAVPRM_ParmList@@@Z
+?getParentNetwork@OP_Node@@UEBAPEAVOP_Network@@XZ
+?getParmHashCode@OP_Node@@UEAAAEAVUT_TokenString@@AEAVOP_Context@@H@Z
+?getPassThroughNode@OP_Node@@UEAAPEAV1@N_N@Z
+?getPathWithSubnet@OP_Node@@UEBAXAEAVUT_String@@@Z
+?getPickable@OP_Node@@UEAAHXZ
+?getPicked@OP_Node@@UEBAHXZ
+?getPostParmSaveFlagsString@OP_Node@@UEBAXAEAVUT_String@@@Z
+?getPreParmSaveFlagsString@OP_Node@@UEBAXAEAVUT_String@@@Z
+?getRamp@OP_Node@@UEAAPEAVUT_Ramp@@XZ
+?getRawErrors@OP_Network@@UEAAXAEAV?$UT_Array@VUT_Error@@@@_N@Z
+?getRelativeCaptureTransform@OP_Node@@UEAAHAEAV1@AEAV?$UT_Matrix4T@M@@AEAVOP_Context@@@Z
+?getRelativeCaptureTransform@OP_Node@@UEAAHAEAV1@AEAV?$UT_Matrix4T@N@@AEAVOP_Context@@@Z
+?getRelativeTransform@OP_Node@@UEAAHAEAV1@AEAV?$UT_Matrix4T@M@@AEAVOP_Context@@@Z
+?getRelativeTransform@OP_Node@@UEAAHAEAV1@AEAV?$UT_Matrix4T@N@@AEAVOP_Context@@@Z
+?getRenderNodePtr@OP_Network@@UEAAPEAVOP_Node@@XZ
+?getSaveFlagsString@OP_Node@@UEBAXAEAVUT_String@@PEBD_N@Z
+?getSaveWithVopnets@OP_Network@@UEAA_NXZ
+?getScriptDirectory@OP_Network@@UEAAPEBDXZ
+?getScriptMaterialInfo@OP_Node@@UEAA_NAEAVUT_String@@PEAVVOP_ScriptMaterialCodeMapper@@@Z
+?getShaderParmTemplates@OP_Node@@UEAAPEBVPRM_Template@@XZ
+?getTimeTransform@OP_Node@@UEAANHN@Z
+?getTrackChannel@OP_Node@@UEAAPEAVCH_Channel@@PEBD@Z
+?getTransform@OP_Node@@UEAA_NW4TransformMode@1@AEAV?$UT_Matrix4T@N@@AEAVOP_Context@@@Z
+?getTranslateParmIndex@OP_Node@@UEAAHXZ
+?getUseBypassLook@OP_Node@@UEBA_NAEBVOP_EditorContext@@@Z
+?getVariableString@OP_Parameters@@UEAAXHAEAVUT_String@@H@Z
+?getVariableValue@OP_Parameters@@UEAAMHH@Z
+?getViewSetting@OP_Network@@UEBAPEBDXZ
+?getVisible@OP_Node@@UEBA_NXZ
+?getVopAutoCodeGenerator@OP_Node@@UEAAPEAVVOP_CodeGenerator@@XZ
+?getVopCodeGenerator@OP_Node@@UEAAPEAVVOP_CodeGenerator@@XZ
+?getVopExportedParmsManager@OP_Node@@UEAAPEAVVOP_ExportedParmsManager@@_N@Z
+?getWorldTransform@OP_Node@@UEAA_NAEAV?$UT_Matrix4T@N@@AEAVOP_Context@@@Z
+?getX@OP_Node@@UEBANXZ
+?getXformOrder@OP_Node@@UEBAXAEAVUT_XformOrder@@PEBVCH_Channel@@@Z
+?getY@OP_Node@@UEBANXZ
+?globNetworkBoxes@OP_Network@@UEAAXPEBDPEAVUT_String@@PEAV?$UT_ValArray@PEAVOP_NetworkBox@@@@PEAVOP_GlobContext@@0@Z
+?globPostIts@OP_Network@@UEAAXPEBDPEAVUT_String@@PEAV?$UT_ValArray@PEAVOP_PostIt@@@@PEAVOP_GlobContext@@0@Z
+?handleOTLIndexFileCleared@OP_Node@@UEAAXXZ
+?handleOpDependency@OP_Node@@MEAAXHAEBVOP_Dependency@@W4OP_InterestType@@AEA_NPEBD33@Z
+?handleTimeChange@OP_Node@@UEAA_NN@Z
+?hasDifferentMultiInputs@OP_Node@@UEBA_NXZ
+?hasProxyRefNodes@OP_Network@@MEBAHXZ
+?hasTransformTracks@OP_Node@@UEBA_NXZ
+?hasVexShaderParameter@OP_Node@@UEAA_NPEBD@Z
+?initMultiparmInstance@OP_Parameters@@UEAAXAEAV?$UT_ValArray@PEAVPRM_Parm@@@@@Z
+?inputConnectorLabel@OP_Node@@UEAAPEBDI@Z
+?inputLabel@OP_Node@@UEBAPEBDI@Z
+?isInSubNetwork@OP_Node@@UEBAHXZ
+?isInputConnectedInsideSubnet@OP_Node@@MEBA_NH@Z
+?isInvalidName@OP_Network@@UEAAHPEBD@Z
+?isManagementNode@OP_Node@@UEBAHXZ
+?isManager@OP_Node@@UEBAHXZ
+?isNamedInputConnectedInsideSubnet@OP_Node@@MEBA_NAEBVOP_ConnectorId@@@Z
+?isNetwork@OP_Network@@UEBAHXZ
+?isOrderedInput@OP_Node@@UEBA_NAEBVOP_ConnectorId@@@Z
+?isOutputNode@OP_Node@@UEBA_NXZ
+?isParmPendingOverride@OP_Node@@UEBA_NPEBDH@Z
+?isRefInput@OP_Node@@UEBAHI@Z
+?isSubNetwork@OP_Node@@UEBAH_N@Z
+?isVex@OP_Node@@UEBAHXZ
+?loadFinished@OP_Node@@MEAAXXZ
+?loadPresetContents@OP_Parameters@@UEAA_NPEBDAEAVUT_IStream@@@Z
+?loadRamp@OP_Node@@UEAA_NAEAVUT_IStream@@PEBD@Z
+?loadStart@OP_Node@@MEAAXXZ
+?matchChild@OP_Node@@UEBAPEAV1@PEBDPEAV1@0H@Z
+?matchChildBackwards@OP_Node@@UEBAPEAV1@PEBDPEAV1@0H@Z
+?matchOTLDefinition@OP_Node@@UEAAXXZ
+?maxInputs@OP_Node@@UEBAIXZ
+?maxOutputs@OP_Node@@UEBAIXZ
+?minInputs@OP_Node@@UEBAIXZ
+?moveChildIndex@OP_Network@@UEAAXHH@Z
+?moveDependencies@OP_Network@@MEAAXPEAVOP_Node@@@Z
+?moveInput@OP_Node@@UEAAXHH_N@Z
+?movePickedNodes@OP_Network@@UEAA_NPEAV1@PEAV?$UT_ValArray@PEAVOP_Node@@@@1@Z
+?moveProxyRefNodes@OP_Network@@MEAAXPEAV1@@Z
+?nInputs@OP_Node@@UEBAIXZ
+?needToCook@OP_Node@@UEAAIAEAVOP_Context@@_N@Z
+?nodeDeleted@OP_Node@@MEAAXPEAV1@H@Z
+?nodeUnlocked@OP_Network@@MEAAXXZ
+?notifyParmRenameDependents@OP_Node@@UEAAXAEBVUT_String@@0@Z
+?notifyRenameDependents@OP_Network@@MEAAXAEBVUT_String@@AEAV?$UT_ValArray@PEAVOP_Node@@@@@Z
+?notifyRenameReferences@OP_Network@@MEAAXAEBVUT_String@@AEAV?$UT_ValArray@PEAVOP_Node@@@@@Z
+?onCreated@OP_Node@@UEAAXXZ
+?onInputAllocated@OP_Node@@MEAAXPEAVOP_Input@@H@Z
+?opShouldHandleChange@OP_Network@@UEAA_NW4OP_EventType@@@Z
+?orderedInputs@OP_Node@@UEBAIXZ
+?outputCode@OP_Node@@UEAAHAEAVOP_OutputCodeParms@@AEAVOP_Context@@@Z
+?outputLabel@OP_Node@@UEBAPEBDI@Z
+?parmListMicroNodeConst@OP_Node@@UEBAAEBVOP_DataMicroNode@@XZ
+?permissionError@OP_Node@@MEAAXPEBD@Z
+?preDelete@OP_Node@@UEAAXXZ
+?prmCookOverrides@OP_Node@@UEAA?AW4UT_ErrorSeverity@@NHPEBDH@Z
+?propagateEndBlockModify@OP_Node@@UEAAXXZ
+?propagateModification@OP_Network@@MEAAHPEAVOP_Node@@W4OP_EventType@@HAEAVOP_PropagateData@@@Z
+?pushAsPwdAndRunPython@OP_Node@@UEBAXAEAVPY_CompiledCode@@W4Type@PY_Result@@AEAV4@PEAVPY_EvaluationContext@@@Z
+?rampCommand@OP_Node@@UEAA?AW4RampError@1@_NNQEAM@Z
+?rebuildOpDependents@OP_Network@@MEAAX_N@Z
+?rebuildParmDependency@OP_Node@@UEAAXH@Z
+?referenceAllParameters@OP_Node@@UEAAIPEAVOP_Parameters@@_N@Z
+?referenceSingleParameter@OP_Parameters@@UEAA_NPEAV1@HPEBD@Z
+?referencedParmChanged@OP_Node@@UEAAXH@Z
+?refreshRepresentativeNode@OP_Node@@MEAAXAEAV1@@Z
+?reloadExternalFiles@OP_Node@@UEAAXXZ
+?reloadNewFiles@OP_Parameters@@UEAAHN@Z
+?removeInputFromMapping@OP_Node@@EEAAXH@Z
+?removeOpDependent@OP_Node@@MEAAHHAEBVPRM_RefId@@W4OP_InterestType@@@Z
+?removeOpDependent@OP_Node@@MEAAHHW4OP_InterestType@@@Z
+?removeOverrideDestination@OP_Node@@UEAAXPEAV1@@Z
+?removeOverrideDestination@OP_Node@@UEAAXPEAV1@H@Z
+?rename@OP_Parameters@@MEAAHPEBD@Z
+?renameNode@OP_Network@@UEAAHPEAVOP_Node@@PEBDW4OP_RenameAction@@@Z
+?resolveAndDeleteObsoleteParmList@OP_Node@@UEAAXAEAPEAVPRM_ParmList@@@Z
+?resolveExport@OP_Node@@UEAA_NPEBVPRM_Parm@@HAEAVCH_ChannelRef@@@Z
+?resolveObsoleteParms@OP_Parameters@@UEAAXPEAVPRM_ParmList@@@Z
+?runCreateScript@OP_Node@@UEAA_NXZ
+?runDelScript@OP_Network@@UEAAXXZ
+?saveCommand@OP_Node@@UEAA?AW4UT_ErrorSeverity@@AEAV?$basic_ostream@DU?$char_traits@D@std@@@std@@PEBDNN1AEBUOP_SaveCommandOptions@@@Z
+?saveDialogScriptExtraInfo@OP_Node@@UEAAXAEAV?$basic_ostream@DU?$char_traits@D@std@@@std@@@Z
+?saveFlagsForUndo@OP_Node@@MEAAXXZ
+?saveIntrinsicCommand@OP_Node@@UEAAXAEAV?$basic_ostream@DU?$char_traits@D@std@@@std@@PEBD@Z
+?saveKeyFrameForUndo@OP_Parameters@@UEAAXPEAVCH_Channel@@N@Z
+?saveParmsForUndo@OP_Parameters@@UEAAX_NPEAVCH_Collection@@@Z
+?savePresetContents@OP_Parameters@@UEAA_NAEAV?$basic_ostream@DU?$char_traits@D@std@@@std@@@Z
+?scopedChannelsDirty@OP_Node@@UEAA_NXZ
+?setAnyUndoFlag@OP_Node@@UEAAXXZ
+?setAudio@OP_Node@@UEAAHH@Z
+?setChannelScope@OP_Node@@UEAAXPEBDW4OP_ScopeOp@@AEBVOP_ScopeOptions@@@Z
+?setColor@OP_Node@@UEAA_NAEBVUT_Color@@@Z
+?setCookingRender@OP_Node@@UEAAXH@Z
+?setDebug@OP_Node@@UEAAHH@Z
+?setDisplayOrigin@OP_Node@@UEAAHH@Z
+?setExport@OP_Node@@UEAAHH@Z
+?setFlag@OP_Node@@UEAAHDH@Z
+?setIndirectInput@OP_Node@@UEAA?AW4UT_ErrorSeverity@@IPEAVOP_IndirectInput@@@Z
+?setInput@OP_Node@@UEAA?AW4UT_ErrorSeverity@@IPEAV1@I@Z
+?setInputReference@OP_Node@@UEAA?AW4UT_ErrorSeverity@@IPEBDHI@Z
+?setItemExpose@OP_Node@@UEAAX_N@Z
+?setItemName@OP_Node@@UEAA_NAEBVUT_String@@@Z
+?setMapping@OP_Node@@UEAAXHHPEBD@Z
+?setMaterialIconAllowRegenerateFlag@OP_Node@@UEAAX_N@Z
+?setMaterialIconFilename@OP_Node@@UEAAXPEBD@Z
+?setNamedIndirectInput@OP_Node@@UEAA?AW4UT_ErrorSeverity@@AEBVOP_ConnectorId@@PEAVOP_IndirectInput@@@Z
+?setNamedInput@OP_Node@@UEAA?AW4UT_ErrorSeverity@@AEBVOP_ConnectorId@@PEAV1@PEBV3@@Z
+?setNamedInputReference@OP_Node@@UEAA?AW4UT_ErrorSeverity@@AEBVOP_ConnectorId@@PEBDHPEBV3@@Z
+?setPickable@OP_Node@@UEAAHH@Z
+?setPicked@OP_Node@@UEAAHH_N@Z
+?setViewSetting@OP_Network@@UEAAXPEBD@Z
+?setVisible@OP_Node@@UEAA_NH@Z
+?setXY@OP_Node@@UEAAXNN@Z
+?setupConnectorsAfterLoad@OP_Node@@MEAAXXZ
+?spareParmRemoved@OP_Node@@UEAAXPEBD@Z
+?syncContents@OP_Network@@MEAA_NAEAVUT_IStream@@@Z
+?syncNodeVersion@OP_Node@@UEAAXPEBD0PEA_N@Z
+?takeAutoActivateParm@OP_Parameters@@UEAAXPEAVPRM_Parm@@@Z
+?traverseRef@OP_Node@@UEBAPEBVPRM_Parm@@PEAHNHH@Z
+?traverseScope@OP_Network@@MEAAXPEBDW4OP_ScopeOp@@AEBVOP_ScopeOptions@@@Z
+?triggerParmCallback@OP_Node@@UEAA_NPEAVPRM_Parm@@NHPEAXPEBVUT_Options@@@Z
+?undisplayChannels@OP_Network@@UEAAX_N@Z
+?unmatchOTLDefinition@OP_Node@@UEAAXXZ
+?unpinChannels@OP_Network@@UEAAX_N@Z
+?unscopeChannels@OP_Network@@UEAAX_N@Z
+?updateDandROpsEqual@OP_Network@@UEAAHH@Z
+?updateExtraFlagPtrs@OP_Network@@MEAAXXZ
+?updateParmsFlags@OP_Parameters@@MEAA_NXZ
+?userDataChanged@OP_Node@@UEAAXAEBVUT_StringHolder@@@Z
+?whichOutputNode@OP_Node@@UEBAHXZ
+?willAutoconvertInputType@OP_Node@@UEAA_NH@Z
+?willAutoconvertNamedInputType@OP_Node@@UEAA_NAEBVOP_ConnectorId@@@Z
+?getDescriptiveName@OP_Node@@MEBAXAEAVUT_String@@@Z
+?evalFloat@OP_Parameters@@QEBANAEBVUT_StringRef@@HN@Z
+?isParmDirty@OP_Parameters@@QEAA_NPEBDN@Z
+??0OP_Operator@@QEAA@PEBD0P6APEAVOP_Node@@PEAVOP_Network@@0PEAV0@@ZPEAVPRM_Template@@IIPEAVCH_LocalVariable@@IPEAPEBDH0@Z
+??1OP_Operator@@UEAA@XZ
+?setOpTabSubMenuPath@OP_Operator@@QEAAXPEBD@Z
+?addOperator@OP_OperatorTable@@QEAA_NPEAVOP_Operator@@PEAV?$basic_ostream@DU?$char_traits@D@std@@@std@@@Z
+?allowsInputNameEditing@OP_Operator@@UEBA_NXZ
+?clearOTLIndexFile@OP_Operator@@UEAAXXZ
+?compareOperator@OP_Operator@@UEBAHPEBV1@H@Z
+?fillInfoTreeOperatorSpecific@OP_Operator@@UEAAXAEAVUT_InfoTree@@AEBVOP_NodeInfoTreeParms@@@Z
+?forceUpdateParmTemplates@OP_Operator@@UEAAXXZ
+?getBaseParmTemplates@OP_Operator@@UEAAPEBVPRM_Template@@XZ
+?getHDKHelp@OP_Operator@@UEBA_NAEAVUT_String@@@Z
+?getObsoleteTemplates@OP_Operator@@UEAAPEAVPRM_Template@@XZ
+?getOpHelpURL@OP_Operator@@UEAA_NAEAVUT_String@@@Z
+?getOpSpecificData@OP_Operator@@UEAAPEAVOP_SpecificData@@XZ
+?getOpSpecificData@OP_Operator@@UEBAPEBVOP_SpecificData@@XZ
+?getOpTabSubMenuPath@OP_Operator@@UEAA_NAEAVUT_String@@@Z
+?getOperatorShortHelpString@OP_Operator@@UEAAPEBDXZ
+?getOperatorSpecificInfoText@OP_Operator@@UEAAXHAEAVUT_WorkBuffer@@@Z
+?getRefreshPICommands@OP_Operator@@UEAAXPEAVOP_Node@@AEAV?$basic_ostream@DU?$char_traits@D@std@@@std@@@Z
+?getVersion@OP_Operator@@UEAA_NAEAVUT_String@@@Z
+?hasLoadedParmTemplates@OP_Operator@@UEBA_NXZ
+?loadParmTemplatesSubclass@OP_Operator@@MEAA_NXZ
+?maxOutputs@OP_Operator@@UEAAIXZ
+?setName@OP_Operator@@UEAAXPEBD@Z
+?updateParmTemplates@OP_Operator@@UEAAHXZ
+?wantsInputEditor@OP_Operator@@UEBA_NXZ
+?wantsOutputNameEditor@OP_Operator@@UEBA_NXZ
+?wantsParametersAnimatable@OP_Operator@@UEBA_NXZ
+?wantsParentInputs@OP_Operator@@UEBA_NXZ
+?wantsParmOrderEditor@OP_Operator@@UEBA_NXZ
+libOP.dll
+??0PRM_TemplateBuilder@@QEAA@AEBVUT_StringHolder@@PEBD@Z
+??1PRM_TemplateBuilder@@QEAA@XZ
+?setCallback@PRM_TemplateBuilder@@QEAAXAEBVUT_StringRef@@VPRM_Callback@@@Z
+?justBuilt@PRM_TemplateBuilder@@QEAA_NXZ
+?createSpareParametersForLoad@PRM_ParmOwner@@UEAA_NAEAVUT_StringArray@@AEAVPRM_ParmNameMap@@AEAVUT_String@@@Z
+?PRM_LIST_TERMINATOR@@3VPRM_Type@@B
+??0PRM_Template@@QEAA@VPRM_Type@@HPEAVPRM_Name@@PEAVPRM_Default@@PEAVPRM_ChoiceList@@PEAVPRM_Range@@VPRM_Callback@@PEAVPRM_SpareData@@HPEBDPEAVPRM_ConditionalBase@@@Z
+??1PRM_Template@@QEAA@XZ
+??0PRM_Name@@QEAA@PEBD0H@Z
+??1PRM_Name@@QEAA@XZ
+??0PRM_Default@@QEAA@NPEBDW4CH_StringMeaning@@@Z
+??0PRM_ChoiceList@@QEAA@W4PRM_ChoiceListType@@PEAVPRM_Name@@@Z
+??1PRM_ChoiceList@@QEAA@XZ
+??0PRM_SpareData@@QEAA@AEBV?$UT_VariadicT@V?$UT_Pair@PEBDPEBD@@@@@Z
+??1PRM_SpareData@@QEAA@XZ
+?getFileChooserPatternToken@PRM_SpareData@@SAPEBDXZ
+?getFileChooserModeToken@PRM_SpareData@@SAPEBDXZ
+?getFileChooserModeValWrite@PRM_SpareData@@SAPEBDXZ
+libPRM.dll
+??0theTmpDirLockStaticInit@@QEAA@XZ
+??1theTmpDirLockStaticInit@@QEAA@XZ
+??1UT_String@@QEAA@XZ
+??1UT_WorkBuffer@@QEAA@XZ
+-?sprintf@UT_WorkBuffer@@QEAAHPEBDZZ
+??0UT_String@@QEAA@AEBV0@@Z
+?harden@UT_String@@QEAAXPEBDH@Z
+??4UT_String@@QEAAAEAV0@PEBD@Z
+??4UT_String@@QEAAAEAV0@AEBVUT_StringHolder@@@Z
+?expandVariables@UT_String@@QEAAXXZ
+#?matchProgramName@UT_String@@SA_NPEBD0_N@Z
+??0UT_BitArray@@QEAA@XZ
+?build@Holder@UT_StringRef@@SAPEAV12@PEBDW4StorageMode@2@@Z
+?incref@Holder@UT_StringRef@@QEAAXXZ
+?decref@Holder@UT_StringRef@@QEAAXXZ
+??1UT_StringRef@@QEAA@XZ
+)?reference@UT_StringRef@@QEAAXPEBD@Z
+??1UT_StringHolder@@QEAA@XZ
+?UTcreateDirectoryForFile@@YA_NPEBD@Z
+&?opStart@UT_Interrupt@@QEAAHPEBDHHPEAH@Z
+?UTgetInterrupt@@YAPEAVUT_Interrupt@@XZ
+??1UT_AutoInterrupt@@QEAA@XZ
+1?wasInterrupted@UT_AutoInterrupt@@QEAA_NXZ
+??4UT_String@@QEAAAEAV0@$$QEAV0@@Z
+?append@UT_String@@QEAAXPEBD_J@Z
+'?pathUpToExtension@UT_String@@QEBA?AV1@XZ
+-?splitPath@UT_String@@QEBAXAEAV1@0@Z
+0?ut_ArrayImplFree@@YAXPEAX@Z
+?center@?$UT_BoundingBoxT@M@@QEBA?AV?$UT_Vector3T@M@@XZ
+libUT.dll
+?convert@fpreal16@@CAFH@Z
+?_toFloat@fpreal16@@1PEBTuif@1@EB
+?_eLut@fpreal16@@1PEBGEB
+libSYS.dll
+?HoudiniGetenv@@YAPEBDPEBD@Z
+libtools.dll
+?system_category@system@hboost@@YAAEBVerror_category@12@XZ
+?generic_category@system@hboost@@YAAEBVerror_category@12@XZ
+hboost_system-mt.dll
+??1PY_Result@@QEAA@XZ
+?PYrunPythonStatements@@YA?AVPY_Result@@PEBDPEAVPY_EvaluationContext@@@Z
+libPY.dll
+?onlyConsolidatePoints@GU_Detail@@QEAA_JNPEBVGA_PointGroup@@_N1W4OnlyConsGroupPropagateType@1@1@Z
+?cleanData@GU_Detail@@QEAA_JPEBVGA_PrimitiveGroup@@_NM111@Z
+?build@GU_PrimPoly@@SAPEAV1@PEAVGA_Detail@@HHH@Z
+libGU.dll
+?clearAndDestroy@GEO_Detail@@QEAAXXZ
+?addFloatTuple@GEO_Detail@@QEAAPEAVGA_Attribute@@W4GA_AttributeOwner@@W4GA_AttributeScope@@AEBVUT_StringHolder@@HAEBVGA_Defaults@@PEBVUT_Options@@PEBVGA_AttributeOptions@@W4GA_Storage@@AEBVGA_ReuseStr
+ategy@@@Z
+?addStringTuple@GEO_Detail@@QEAAPEAVGA_Attribute@@W4GA_AttributeOwner@@W4GA_AttributeScope@@AEBVUT_StringHolder@@HPEBVUT_Options@@PEBVGA_AttributeOptions@@AEBVGA_ReuseStrategy@@@Z
+?addIntTuple@GEO_Detail@@QEAAPEAVGA_Attribute@@W4GA_AttributeOwner@@W4GA_AttributeScope@@AEBVUT_StringHolder@@HAEBVGA_Defaults@@PEBVUT_Options@@PEBVGA_AttributeOptions@@W4GA_Storage@@AEBVGA_ReuseStrat
+egy@@@Z
+?normal@GEO_Detail@@QEAAPEAVGA_Attribute@@_NPEBVGA_PrimitiveGroup@@@Z
+?getBBox@GEO_Detail@@QEBAHPEAV?$UT_BoundingBoxT@M@@PEBVGA_PrimitiveGroup@@@Z
+libGEO.dll
+?addElementBlock@GA_IndexMap@@QEAA_J_J@Z
+??0GA_Defaults@@QEAA@N@Z
+??1GA_Defaults@@QEAA@XZ
+??1GA_ReuseStrategy@@QEAA@XZ
+?findAttribute@GA_AttributeSet@@QEBAPEBVGA_Attribute@@W4GA_AttributeScope@@AEBVUT_StringRef@@QEBW4GA_AttributeOwner@@H@Z
+?getTupleSize@GA_ATINumeric@@QEBAHXZ
+?getString@GA_ATIString@@QEBAAEBVUT_StringHolder@@_JH@Z
+A"?setString@GA_ATIString@@QEAAX_JAEBVUT_StringHolder@@H@Z
+??0GA_ROHandleS@@QEAA@PEBVGA_Detail@@W4GA_AttributeOwner@@AEBVUT_StringRef@@H@Z
+ ?rwAttrib@GA_RWHandleS@@IEBAPEAVGA_ATIString@@XZ
+#?theAttributeType@GA_ATINumeric@@1PEBVGA_AttributeType@@EB
+#?theAttributeType@GA_ATIString@@0PEBVGA_AttributeType@@EB
+??0GA_Defaults@@QEAA@H@Z
+libGA.dll
+??0SOP_Node@@IEAA@PEAVOP_Network@@PEBDPEAVOP_Operator@@@Z
+??1SOP_Node@@MEAA@XZ
+?addError@SOP_Node@@QEAAXHPEBD@Z
+?duplicateSource@SOP_Node@@IEAA?AW4UT_ErrorSeverity@@IAEAVOP_Context@@PEAVGU_Detail@@_N@Z
+?acceptDragDrop@SOP_Node@@MEAAHAEAVDD_Source@@PEBD@Z
+?addOrMoveVisualizerToOutput@SOP_Node@@UEAA_NH@Z
+?buildLocalVarNames@SOP_Node@@MEAAXAEAVUT_StringArray@@@Z
+?bypassMe@SOP_Node@@MEAA?AW4UT_ErrorSeverity@@AEAVOP_Context@@AEAH@Z
+?clearAndDestroy@SOP_Node@@EEAAXXZ
+?clearCache@SOP_Node@@EEAAXXZ
+?clearUniqueId@SOP_Node@@MEAAXXZ
+?cookInputAllGroups@SOP_Node@@MEAA?AW4UT_ErrorSeverity@@AEAVOP_Context@@AEAPEBVGA_Group@@AEAVGU_DetailGroupPair@@H_NHHH333PEAVGU_Detail@@@Z
+?cookInputEdgeGroups@SOP_Node@@MEAA?AW4UT_ErrorSeverity@@AEAVOP_Context@@AEAPEBVGA_EdgeGroup@@AEAVGU_DetailGroupPair@@H_NHHH33PEAVGU_Detail@@@Z
+?cookInputPointGroups@SOP_Node@@MEAA?AW4UT_ErrorSeverity@@AEAVOP_Context@@AEAPEBVGA_PointGroup@@AEAVGU_DetailGroupPair@@H_NHHH33PEAVGU_Detail@@@Z
+?cookInputPrimitiveGroups@SOP_Node@@MEAA?AW4UT_ErrorSeverity@@AEAVOP_Context@@AEAPEBVGA_PrimitiveGroup@@AEAVGU_DetailGroupPair@@H_NHHH33PEAVGU_Detail@@@Z
+?cookMe@SOP_Node@@MEAA?AW4UT_ErrorSeverity@@AEAVOP_Context@@@Z
+?cookMyGuide1@SOP_Node@@MEAA?AW4UT_ErrorSeverity@@AEAVOP_Context@@@Z
+?cookMyGuide2@SOP_Node@@MEAA?AW4UT_ErrorSeverity@@AEAVOP_Context@@@Z
+?cookMyGuide@SOP_Node@@MEAA?AVGU_DetailHandle@@HAEAVOP_Context@@@Z
+?cookMySopOutput@SOP_Node@@MEAA?AVGU_DetailHandle@@AEAVOP_Context@@HPEAV1@@Z
+?cookVerb@SOP_Node@@UEBAPEBVSOP_NodeVerb@@XZ
+?deleteCookedData@SOP_Node@@MEAAXXZ
+?deleteNodeData@SOP_Node@@MEAAHPEAX@Z
+?evalVariableValue@SOP_Node@@UEAA_NAEANHH@Z
+?evalVariableValue@SOP_Node@@UEAA_NAEAVUT_String@@HH@Z
+?fillInfoTreeNodeSpecific@SOP_Node@@UEAAXAEAVUT_InfoTree@@AEBVOP_NodeInfoTreeParms@@@Z
+?getBoundingBox@SOP_Node@@UEAA_NAEAV?$UT_BoundingBoxT@M@@AEAVOP_Context@@@Z
+?getChildType@SOP_Node@@UEBAPEBDXZ
+?getChildTypeID@SOP_Node@@UEBA?AW4OP_OpTypeId@@XZ
+?getCookedData@SOP_Node@@UEAAPEAXAEAVOP_Context@@@Z
+?getCookedDataType@SOP_Node@@UEBA?AW4OP_DataType@@XZ
+?getDefaultSelectedInfoTreeBranchName@SOP_Node@@UEBAPEBDXZ
+?getDragDropChoice@SOP_Node@@MEAAXAEAVDD_Source@@AEAVDD_ChoiceList@@@Z
+ ?getFileExtension@SOP_Node@@EEBAPEBDH@Z
+ ?getGroupCentroid@SOP_Node@@MEAA_NAEAVOP_Context@@AEAV?$UT_Vector3T@M@@@Z
+S!?getGuideListType@SOP_Node@@UEBA?AW4GOP_GuideListType@@XZ
+X!?getGuideType@SOP_Node@@UEAA?AW4GuideType@1@H@Z
+]!?getH@SOP_Node@@UEBANXZ
+="?getLoadedMemoryUsage@SOP_Node@@UEBA_JXZ
+"?getMemoryUsage@SOP_Node@@UEBA_J_N@Z
+"?getNetOverviewColor@SOP_Node@@UEAAHAEAVUT_Color@@@Z
+#?getNodeSpecificInfoText@SOP_Node@@UEAAXAEAVOP_Context@@AEAVOP_NodeInfoParms@@@Z
+7#?getNumGuides@SOP_Node@@UEAAHXZ
+#?getObjectAppearance@SOP_Node@@UEAA?AV?$UT_IntrusivePtr@VSOP_ObjectAppearance@@@@XZ
+#?getOpType@SOP_Node@@UEBAPEBDXZ
+#?getOpTypeID@SOP_Node@@UEBA?AW4OP_OpTypeId@@XZ
+1?getW@SOP_Node@@UEBANXZ
+1?inputConnectChanged@SOP_Node@@MEAAXH@Z
+2?isCookingRender@SOP_Node@@UEBAHXZ
+2?isLoaded@SOP_Node@@UEBA_NXZ
+3?isSelectionOwnerType@SOP_Node@@UEBA_NXZ
+3?load@SOP_Node@@MEAA_NAEAVUT_IStream@@PEBD1@Z
+3?loadCookedData@SOP_Node@@EEAA_NAEAVUT_IStream@@PEBD@Z
+=?loadPacket@SOP_Node@@EEAA_NAEAVUT_IStream@@FFPEBD@Z
+=?loadPacket@SOP_Node@@EEAA_NAEAVUT_IStream@@PEBD1@Z
+=?lockInput@SOP_Node@@UEAA?AW4UT_ErrorSeverity@@IAEAVOP_Context@@@Z
+=?lockInputs@SOP_Node@@UEAA?AW4UT_ErrorSeverity@@AEAVOP_Context@@@Z
+A?opChanged@SOP_Node@@UEAAXW4OP_EventType@@PEAX@Z
+J?pubCookInputGroups@SOP_Node@@MEAA?AW4UT_ErrorSeverity@@AEAVOP_Context@@H@Z
+J?resetSimulation@SOP_Node@@UEAAXXZ
+J?resolveExtraVariableForSyntaxHighlight@SOP_Node@@UEAAPEBVCH_LocalVariable@@PEBD@Z
+J?resolveVariable@SOP_Node@@UEAAPEBVCH_LocalVariable@@PEBD@Z
+ZK?save@SOP_Node@@MEAA?AW4UT_ErrorSeverity@@AEAV?$basic_ostream@DU?$char_traits@D@std@@@std@@AEBVOP_SaveFlags@@PEBDAEBVUT_String@@@Z
+K?saveCookedData@SOP_Node@@EEAAHAEAV?$basic_ostream@DU?$char_traits@D@std@@@std@@AEAVOP_Context@@H@Z
+K?saveCookedData@SOP_Node@@EEAAHPEBDAEAVOP_Context@@@Z
+S?saveIntrinsic@SOP_Node@@EEAA?AW4UT_ErrorSeverity@@AEAV?$basic_ostream@DU?$char_traits@D@std@@@std@@AEBVOP_SaveFlags@@@Z
+&V?setForceCapture@SOP_Node@@UEAAXH@Z
+^X?setModelLock@SOP_Node@@UEAAHHPEAXHPEAVUT_Undo@@@Z
+Gc?setUniqueId@SOP_Node@@MEAAXH@Z
+2d?setVisualization@SOP_Node@@UEAAXH@Z
+d?shouldResetGeoToEmpty@SOP_Node@@MEBA_NXZ
+d?testDragDrop@SOP_Node@@MEAAHAEAVDD_Source@@@Z
+Me?unloadData@SOP_Node@@UEAA_NXZ
+Re?unloadDataHack@SOP_Node@@UEAAXXZ
+Te?unlockInput@SOP_Node@@UEAAXI@Z
+Ue?unlockInputs@SOP_Node@@UEAAXXZ
++f?usesFootprint@SOP_Node@@UEBA_NXZ
+1?inputGeo@SOP_Node@@IEBAPEBVGU_Detail@@H@Z
+libSOP.dll
+GetLastError
+InitializeCriticalSectionAndSpinCount
+DeleteCriticalSection
+Sleep
+GlobalMemoryStatusEx
+WaitForSingleObject
+GetModuleFileNameA
+KERNEL32.dll
+ShellExecuteExW
+SHELL32.dll
+SHCreateStreamOnFileW
+PathFileExistsW
+SHLWAPI.dll
+__std_terminate
+__CxxFrameHandler3
+memset
+memcpy
+__C_specific_handler
+__std_exception_copy
+__std_exception_destroy
+_CxxThrowException
+__std_type_info_destroy_list
+VCRUNTIME140.dll
+free
+mbstowcs_s
+sqrt
+strcpy_s
+__acrt_iob_func
+_wremove
+__stdio_common_vfprintf
+_localtime64_s
+_mktime64
+_time64
+wcscpy_s
+cosf
+sinf
+wcstombs_s
+_wfopen_s
+fclose
+fgets
+fputs
+malloc
+realloc
+_seh_filter_dll
+_configure_narrow_argv
+_initialize_narrow_environment
+_initialize_onexit_table
+_register_onexit_function
+_execute_onexit_table
+_crt_atexit
+_cexit
+_callnewh
+terminate
+_initterm
+_initterm_e
+api-ms-win-crt-heap-l1-1-0.dll
+api-ms-win-crt-convert-l1-1-0.dll
+api-ms-win-crt-math-l1-1-0.dll
+api-ms-win-crt-string-l1-1-0.dll
+api-ms-win-crt-stdio-l1-1-0.dll
+api-ms-win-crt-filesystem-l1-1-0.dll
+api-ms-win-crt-time-l1-1-0.dll
+api-ms-win-crt-runtime-l1-1-0.dll
+IsDebuggerPresent
+OutputDebugStringW
+EnterCriticalSection
+LeaveCriticalSection
+CloseHandle
+SetEvent
+ResetEvent
+WaitForSingleObjectEx
+CreateEventW
+GetModuleHandleW
+GetProcAddress
+RtlCaptureContext
+RtlLookupFunctionEntry
+RtlVirtualUnwind
+UnhandledExceptionFilter
+SetUnhandledExceptionFilter
+IsProcessorFeaturePresent
+GetCurrentProcess
+TerminateProcess
+QueryPerformanceCounter
+GetCurrentProcessId
+GetCurrentThreadId
+GetSystemTimeAsFileTime
+DisableThreadLibraryCalls
+InitializeSListHead
+.?AUIUnknown@@
+.?AVMockupProgressReportCallback@@
+.?AUIProgressReportCallback@CapturingReality@@
+.?AVSOP_RC_AlignImages@SOP_RealityCapture@@
+.?AVSOP_Node@@
+.?AVOP_Network@@
+.?AVOP_Node@@
+.?AVOP_Parameters@@
+.?AVPRM_ParmOwner@@
+.?AVOP_NetworkBoxItem@@
+.?AUUT_NonCopyable@UT_NonCopyableNS@@
+.?AVSOP_RC_ExtractCameras@SOP_RealityCapture@@
+.?AVSOP_RC_TextureModel@SOP_RealityCapture@@
+.?AVOP_Operator@@
+.?AVSOP_RC_CreateModel@SOP_RealityCapture@@
+.?AVtype_info@@
+.?AVbad_alloc@std@@
+.?AVexception@std@@
+.?AVbad_array_new_length@std@@
+<?xml version='1.0' encoding='UTF-8' standalone='yes'?>
+<assembly xmlns='urn:schemas-microsoft-com:asm.v1' manifestVersion='1.0'>
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level='asInvoker' uiAccess='false' />
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+</assembly>

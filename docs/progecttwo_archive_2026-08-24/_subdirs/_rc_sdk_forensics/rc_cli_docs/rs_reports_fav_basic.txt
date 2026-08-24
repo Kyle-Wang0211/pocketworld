@@ -1,0 +1,1007 @@
+Global Vars and Project info (Functions and Variables Available in the Reports) - RealityScan Help
+Global Vars and Project info (Functions and Variables Available in the Reports)
+As you have read in the previous part of this tutorial, there are some variables and functions that are substituted. Below follows a list of global variables and functions,
+            in the next parts also specific ones, which carry information on points, coordinates, color, numbers, components etc.
+Global Variables
+dateTime
+- outputs the current date and time
+fileName
+- a name of a report file
+appVersion
+- a version of RealityScan
+appLanguage
+- language tag (code) for the selected UI language of RealityScan
+programDataLangPackFolder
+- a path to the folder that containt the language pack
+attachmentPath
+- the relative path between fileName and the report's attachments folder. All files, except the main file, are automatically saved in the attachments folder. Use attachmentPath to address attachments from the main file.
+cameraCount
+- the number of all / selected cameras registered in a selected component
+pointCount
+- the number of registered points in a selected component
+measurementCount
+- the number of measurements in a selected component
+commonWidth
+- the width of an undistorted image
+commonHeight
+- the height of an undistorted image
+isGeoreferenced
+- outputs 1 if a selected component is geo-referenced, 0 if it is not
+units
+- outputs the measurement unit of a selected component, e.g. meter
+unitsShort
+- outputs the short name of the measurement unit, e.g. m
+coordSystemName
+- name of the output coordinate system if a selected component is geo-referenced (isGeoreferenced variable has value 1), otherwise it outputs "Grid Plane"
+isCoordSystemLatLon
+- true if the output coordinate system is Geographic, false if it is Cartesian
+coordSystemUnit2Meter
+- value need to change the coordinate system units to meters
+displayScale
+- recommended size of one unit for rendering
+true
+- the BOOL value "true"
+false
+- the BOOL value "false"
+Component Anchor Variables
+In order to maximize the accuracy of the calculations, the components are calculated in coordinates that are kept close to zero. Anchor (rotation + translation) transforms such a local scene into a global Euclidean space.
+EuclideanX = anchor.Rotation * X + anchor
+  EuclideanY = anchor.Rotation * Y + anchor
+  EuclideanZ = anchor.Rotation * Z + anchor
+anchorX
+- the X coordinate of the anchor
+anchorY
+- the Y coordinate of the anchor
+anchorZ
+- the Z coordinate of the anchor
+anchorR00
+- an element of the anchor rotation matrix w.r.t. to the anchor coordinate system
+anchorR01
+- an element of the anchor rotation matrix w.r.t. to the anchor coordinate system
+anchorR02
+- an element of the anchor rotation matrix w.r.t. to the anchor coordinate system
+anchorR10
+- an element of the anchor rotation matrix w.r.t. to the anchor coordinate system
+anchorR11
+- an element of the anchor rotation matrix w.r.t. to the anchor coordinate system
+anchorR12
+- an element of the anchor rotation matrix w.r.t. to the anchor coordinate system
+anchorR20
+- an element of the anchor rotation matrix w.r.t. to the anchor coordinate system
+anchorR21
+- an element of the anchor rotation matrix w.r.t. to the anchor coordinate system
+anchorR22
+- an element of the anchor rotation matrix w.r.t. to the anchor coordinate system
+anchorYaw
+- the yaw value of the anchor
+anchorPitch
+- the pitch value of the anchor
+anchorRoll
+- the roll value of the anchor
+Project Info
+ExportProjectInfo
+- this function has several variables that can be used to output basic information on the project.
+Syntax:
+$ExportProjectInfo( noParametersJustAnyText )
+Available variables:
+projectName
+- a name of the project
+projectPath
+- the project location
+changeCount
+- the number of all changes (actions) done in the project
+imageCount
+- the number of inputs
+componentCount
+- the number of components
+actualComponentGUID
+- a GUID of a selected component
+actualModelGUID
+- a GUID of a selected model
+projectGUID
+- a GUID of the project
+imagesWithGps
+- the number of images with the GPS information
+Example:
+$ExportProjectInfo(
+    Project name: $(projectName)
+    Project location: $(projectPath)
+    Number of inputs: $(imageCount)
+    Number of components: $(componentCount)
+    GUID of the selected component: $(actualComponentGUID)
+    GUID of the selected model: $(actualModelGUID)
+  )
+Arithmetic Functions
+It is possible to use arithmetic functions in the expressions. Available arithmetic functions are:
+Sqrt(x)
+- returns square root of the value in brackets
+Abs(x)
+- creates an absolute value of a value in brackets
+Floor(x)
+- returns an integer less than or equal to the value in brackets
+Ceil(x)
+- returns an integer that is bigger than or equal to the value in brackets
+Log(x)
+- returns a natural logarithm of the value in the brackets.
+Log10(x)
+- returns a logarithm of 10 of the value in the brackets.
+Pow(base, exponent)
+- returns a value equal to the base to the power of the exponent.
+Min(a,b,c,d…)
+- chooses the smallest value out of the values in the brackets
+Max(a,b,c,d…)
+- chooses the largest value out of the values in the brackets
+Sum(a,b,c,d…)
+- returns a summation of all values in the brackets
+Prod(a,b,c,d…)
+- returns a multiplication of all values in the brackets
+Mean(a,b,c,d…)
+- calculates the sum of all values in the brackets and returns a mean value
+StdDevS(a,b,c,d…)
+- returns a sampled standard deviation based on the values in brackets
+StdDevP(a,b,c,d…)
+- returns a population standard deviation based on the values in brackets
+Basic Functions
+If
+- this function outputs the desired text only if the condition is fulfilled.
+Syntax:
+$If( expression operator expression, anyText )
+Parameter:
+expression operator expression
+- the condition; the operator can be: ≤ < ≥ > == !=
+It is possible to use logical operators to create more complex expressions:
+!
+- negation operator
+!true == false
+!false == true
+- logical disjunction
+true
+true == true
+false
+true == true
+true
+false == true
+false
+false == false
+&&
+- logical conjunction
+true && true == true
+false && true == false
+true && false == false
+false && false == false
+When using logical operators, it is necessary to take into the consideration that they have different weight: logical conjunction > logical disjunction > equals.
+Examples
+(note that isGeoreferenced and units are global variables)
+:
+$If( 1 > 0, One is more than zero. )
+  $If( 1, One is more than zero. )
+  $If( isGeoreferenced == 1, The selected component is geo-referenced. )
+  $If( "$(units)" == "meter", The measurement unit of the selected component is meter. )
+Declare
+- this function can be used to declare a new variable.
+Syntax:
+$Declare( "variable", value )
+Parameters:
+variable
+- a name of a new variable
+value
+- the value of the new variable
+Examples:
+$Declare( "myVariable1", 0 )
+  $Declare( "myVariable2", "test" )
+Ifdef
+- this function outputs the desired text only if the input variable is defined.
+Syntax:
+$Ifdef( variable, anyText )
+Parameter:
+variable
+Example:
+$Ifdef( dateTime, $(dateTime) )
+Ifndef
+- this function outputs the desired text only if the input variable is not defined.
+Syntax:
+$Ifndef( variable, anyText )
+Parameter:
+variable
+Example:
+$Ifndef( dateTime, dateTime variable is not defined )
+Set
+- this function can be used to set a new value to the variable.
+Syntax:
+$Set( "variable", value )
+Parameters:
+variable
+- a name of the variable
+value
+- a new value for the variable
+Example
+(the
+Set
+function will save value 2 into the myVariable)
+:
+$Declare( "myVariable", 1 )
+  $Set( "myVariable", myVariable + 1 )
+Sum
+- this function makes a sum from the given values.
+Syntax:
+$Sum( "outputVar", var1, var2, ..., varN )
+Parameters:
+outputVar
+- a name of the variable where the result will be saved
+var1, ..., varN
+- any number of variables or values separated by commas that will be used to make a sum
+Example
+(the
+Sum
+function will save value 3 into the variable sum)
+:
+$Declare( "sum", 0 )
+  $Sum( "sum", 1, 2 )
+Prod
+- this function multiplies the given values.
+Syntax:
+$Prod( "outputVar", var1, var2, ..., varN )
+Parameters:
+outputVar
+- a name of the variable where the result will be saved
+var1, ..., varN
+- any number of variables or values separated by commas that will be used to make a product
+Example
+(the
+Prod
+function will save value 2 into the variable prod)
+:
+$Declare( "prod", 0 )
+  $Prod( "prod", 1, 2 )
+Append
+- this function concatenates the given strings.
+Syntax:
+$Append( "variable", var1, var2, ..., varN )
+Parameters:
+variable
+- a name of the variable to which the rest of parameters should be appended
+var1, ..., varN
+- any number of variables or values separated by commas that will be concatenated
+Example
+(the
+Append
+function will save a text like: "The measurement unit of the selected component is meter." into the variable text)
+:
+$Declare( "text", "The measurement unit" )
+  $Declare( "text2", " of the selected component is " )
+  $Append( "text", text2, "$(units)", "." )
+Using
+- use to include a function set. If used, only the function sets that are included with this function will be available in the report. If it is not used, all function sets will be available, but at the cost of the performance and the report size.
+Syntax:
+$Using(RealityScan.Report.functionSet)
+Function sets:
+CameraErrorsExportFunctionSet
+- information about the camera errors
+ComponentFunctionSet
+- returns information about the component
+ConfigExportFunctionSet
+- functions used with the variables in the settings
+ContoursFunctionSet
+- use to get information about the contours
+ControlPointsExportFunctionSet
+- export information about the control points and their measurements
+DistanceConstraintsExportFunctionSet
+- export information about the distance constraints
+HelperFunctionSet
+- import auxiliary helping functions
+ImageExportFunctionSet
+- save an image or gets its information
+InputsFunctionSet
+- get basic information about images and cameras
+IteratorsFunctionSet
+- iterate through various elements in the project
+LocalizationExportFunctionSet
+- use to get localized text
+MapExportFunctionSet
+- export map and its information
+MisalignmentFunctionSet
+- export misaligned points and cameras
+ModelExportFunctionSet
+- get information about the model and its textures
+OrthoMeasurementFunctionSet
+- get information about the ortho measurements and projection's boundary values
+OrthoProjectionFunctionSet
+- export informaiton about ortho projections
+ProjectInformationExportFunctionSet
+- general information about the project
+RelativeCameraUncertaintyFunctionSet
+- information about the relative camera uncertainty (position precision between cameras)
+SfmExportFunctionSet
+- get information about the cameras, images and points of a component
+SfmHistogramExportFunctionSet
+- create histograms
+EditorFunctionSetGroup
+- import all function sets
+Example:
+$Using(RealityScan.Report.EditorFunctionSetGroup)
+NOTE: It is possible to use all arithmetic functions, some of the global variables (
+dateTime
+,
+fileName
+,
+appVersion
+and
+attachmentPath
+), and most of the basic functions (all except
+ToDMS
+,
+ToGpsLat
+,
+ToGpsLon
+,
+FormatTime
+, and the expression functions).
+WriteFile
+- this function saves a specified text into a file. If the file does not exist yet, it will be created.
+Syntax:
+$WriteFile( "filePath", anyText )
+Parameter:
+filePath
+- a path to the file
+CopyFile
+- this function copies a file to a specified filePath.
+Syntax:
+$CopyFile( "srcFilePath", "dstFilePath" )
+Parameters:
+srcFilePath
+- a path to the source file within the attachments folder
+dstFilePath
+- a destination path within the attachments folder
+ImportFile
+- this function copies a file to a specified filePath.
+Syntax:
+$ImportFile( "srcFilePath", "dstFilePath" )
+Parameters:
+srcFilePath
+- a path to the source file, which can be anywhere on the user disk
+dstFilePath
+- a destination path valid in attachments folder
+Include
+- this function outputs the content of a specified file.
+Syntax:
+$Include( "filePath" )
+Parameter:
+filePath
+- a path to the file
+Example:
+$Include( "Reports\style.css" )
+For
+- this function allows code to be executed repeatedly.
+Syntax:
+$For( "iteratorVariable", start, step, end, anyText )
+Parameters:
+iteratorVariable
+- a variable that will hold the current iteration index
+start
+- the starting value of the
+iteratorVariable
+step
+- the
+iteratorVariable
+value will be incremented/decremented by a value of the
+step
+parameter in each loop of the for cycle
+end
+- the for cycle will stop when the
+iteratorVariable
+will reach a value of the
+end
+parameter
+NOTE: "iteratorVariable" comes from the right-open interval [start,end) with a step defined in "step".
+Example
+(note that cameraCount is a global variable)
+:
+$For( "cameraIndex", 0, 1, cameraCount,
+    cameraIndex: $(cameraIndex),
+  )
+Min
+- this function finds and saves the minimal value from the given values.
+Syntax:
+$Min( "outputVar", var1, var2, ..., varN )
+Parameters:
+outputVar
+- a name of the variable where the result will be saved
+var1, ..., varN
+- any number of variables or values separated by commas that will be used to find the minimal value
+Example
+(The
+Min
+function will save value 1 into the variable min)
+:
+$Declare( "min", 0 )
+  $Min( "min", 1, 2 )
+Max
+- this function finds and saves the maximal value from the given values.
+Syntax:
+$Max( "outputVar", var1, var2, ..., varN )
+Parameters:
+outputVar
+- a name of the variable where the result will be saved
+var1, ..., varN
+- any number of variables or values separated by commas that will be used to find the maximal value
+Example
+(The
+Max
+function will save value 2 into the variable max)
+:
+$Declare( "max", 0 )
+  $Max( "max", 1, 2 )
+Sqrt
+- this function calculates the square root of the absolute value of the variable.
+Syntax:
+$Sqrt( "outputVar", var )
+Parameters:
+outputVar
+- a name of the variable where the result will be saved
+var
+- any number or a numeral variable
+Example
+(value 5 will be saved into the variable sqrtVar)
+:
+$Declare( "sqrtVar", 0)
+  $Sqrt( "sqrtVar",  25)
+Abs
+- returns the absolute value of the variable.
+Syntax:
+$Abs( "outputVar", var )
+Parameters:
+outputVar
+- a name of the variable where the result will be saved
+var
+- any number or a numeral variable
+Example
+(value 12 will be saved into the variable absVar)
+:
+$Declare( "absVar", 0)
+  $Abs( "absVar",  -12)
+Floor
+- returns the largest lower integer.
+Syntax:
+$Floor( "outputVar", var )
+Parameters:
+outputVar
+- a name of the variable where the result will be saved
+var
+- any number or a numeral variable
+Example
+(value 2 will be saved into the variable floorVar)
+:
+$Declare( "floorVar", 0)
+  $Abs( "floorVar",  2.6)
+Ceil
+- returns the largest higher integer.
+Syntax:
+$Ceil( "outputVar", var )
+Parameters:
+outputVar
+- a name of the variable where the result will be saved
+var
+- any number or a numeral variable
+Example
+(value 3 will be saved into the variable ceilVar)
+:
+$Declare( "ceilVar", 0)
+  $Abs( "ceilVar",  2.6)
+Log
+- returns the natural logarithmic value of the variable.
+Syntax:
+$Log( "outputVar", var )
+Parameters:
+outputVar
+- a name of the variable where the result will be saved
+var
+- any number or a numeral variable
+Example
+(value 2.302585092994046 will be saved into the variable logVar)
+:
+$Declare( "logVar", 0)
+  $Log( "logVar",  2.6)
+Log10
+- returns the natural logarithm of 10 value of the variable.
+Syntax:
+$Logt( "outputVar", var )
+Parameters:
+outputVar
+- a name of the variable where the result will be saved
+var
+- any number or a numeral variable
+Example
+(value 2 will be saved into the variable logtVar)
+:
+$Declare( "logtVar", 0)
+  $Log10( "logtVar",  100)
+Pow
+- returns the power of a number.
+Syntax:
+$Pow( "outputVar", base , exponent )
+Parameters:
+outputVar
+- a name of the variable where the result will be saved
+base
+- any number or a numeral variable
+exponent
+- any number or a numeral variable
+Example
+(value 64 will be saved into the variable powVar)
+:
+$Declare( "powVar", 0)
+  $Pow( "powVar",  4 , 3)
+Mean
+- this function finds and saves the mean value from the given values.
+Syntax:
+$Mean( "outputVar", var1, var2, ..., varN )
+Parameters:
+outputVar
+- a name of the variable where the result will be saved
+var1, ..., varN
+- any number of variables or values separated by commas that will be used to find the mean value
+Example
+(value 2 will be saved into the variable mean)
+:
+$Declare( "mean", 0 )
+  $Mean( "mean", 1, 2, 3)
+StdDevS
+- this function calculates the sample standard deviation. Use this function when the range of values represents a sample of values, rather than all of them.
+Syntax:
+$StdDevS( "outputVar", var1, var2, ..., varN )
+Parameters:
+outputVar
+- a name of the variable where the result will be saved
+var1, ..., varN
+- any number of variables or values separated by commas that will be used to find the sample standard deviation
+Example
+(value 1.290994448735806 will be saved into the variable stddevs)
+:
+$Declare( "stddevs", 0 )
+  $StdDevS( "stddevs", 1, 2, 3 ,4)
+StdDevP
+- this function calculates the population standard deviation. Use this function when the range of values represents all values.
+Syntax:
+$StdDevP( "outputVar", var1, var2, ..., varN )
+Parameters:
+outputVar
+- a name of the variable where the result will be saved
+var1, ..., varN
+- any number of variables or values separated by commas that will be used to find the population standard deviation
+Example
+(value 1.118033988749895 will be saved into the variable stddevp)
+:
+$Declare( "stddevp", 0 )
+  $StdDevP( "stddevp", 1, 2, 3)
+Map
+- a function that compares all variables to the expression and returns only the one most suitable to the comparison. Comparison is done as follows:
+Return R[i] if: t[i] <= expression < t[i+1]; return R0 if expression < t1; return Rn if expression > tn
+Syntax:
+$Map( expression, "R0", t1, "R1", t2, R2, ..., tn, "Rn" )
+Parameters:
+expression
+- a name of the variable where the result will be saved
+R1, ..., RN
+- any value that may be returned after the comparison
+t1, ..., tN
+- any value (or an expression) that will be compared to the defined expression parameter
+Example
+(value #ff1040 will be returned)
+:
+$Declare( "lvl1", 1 )   $Declare( "lvl1Color", "#fff040" )
+$Declare( "lvl2", 1.5 ) $Declare( "lvl2Color", "#ff8040" )
+$Declare( "lvl3", 2 )   $Declare( "lvl3Color", "#ff1040" )
+$Declare("cpxStd", 3)
+$Declare("cpxMeanAcc", 1.5)
+"$Map(Abs(cpxStd),"",lvl1*cpxMeanAcc,"$(lvl1Color)",lvl2*cpxMeanAcc,"$(lvl2Color)",lvl3*cpxMeanAcc,"$(lvl3Color)")"
+Replace
+- this function can be used to make a replacement in a text.
+Syntax:
+$Replace( "search", "replace", subject )
+Parameters:
+search
+- a string to be found
+replace
+- a replacement string that will replace the found
+search
+string(s)
+subject
+- a text to be searched and replaced in
+Example
+(it will output: Hello my friend!)
+:
+$Replace( "world", "my friend", Hello world! )
+EscapeBackslashes
+- this function replaces "\" with "\\".
+Syntax:
+$EscapeBackslashes( noParametersJustAnyText )
+Example
+(it will output: test\\test)
+:
+$EscapeBackslashes( test\test )
+EscapeSpaces
+- this function replaces " " with "_".
+Syntax:
+$EscapeSpaces( noParametersJustAnyText )
+Example
+(it will output: test_test)
+:
+$EscapeSpaces( test test )
+ToDMS
+- this function can be used to convert an input value in degrees to degrees, minutes and seconds.
+Syntax:
+$ToDMS( inputDegrees, anyText )
+Parameter:
+inputDegrees
+- a value in degrees (integer or double)
+Available variables:
+degrees
+- use $(degrees:.6) to output the whole degrees' count
+minutes
+- use $(minutes:.6) to output the whole minutes' count
+seconds
+- use $(seconds:.6) to output seconds
+positiveHemisphere
+- true if the
+inputDegrees
+value is positive, otherwise false
+Example:
+$ExportControlPoints(
+    $If( "$(inputCSIsLatLon)" == "true",
+      lat: $ToDMS( actualLat, $(degrees:.6)° $(minutes:.6)' $(seconds:.6)'' $If( positiveHemisphere, N ) $If( positiveHemisphere == false, S ) )
+      lon: $ToDMS( actualLon, $(degrees:.6)° $(minutes:.6)' $(seconds:.6)'' $If( positiveHemisphere, E ) $If( positiveHemisphere == false, W ) )
+      alt: $(actualAlt) $(unitsShort)
+    )
+  )
+ToGpsLat
+- this function outputs the latitude coordinate as a value in degrees to degrees, minutes and seconds.
+Syntax:
+$ToGpsLat( decimalDegrees )
+Parameter:
+decimalDegrees
+- a value in degrees (integer or double)
+Example:
+$ToGpsLat( 45.333333 )
+ToGpsLon
+- this function outputs the longitude coordinate as a value in degrees to degrees, minutes and seconds.
+Syntax:
+$ToGpsLon( decimalDegrees )
+Parameter:
+decimalDegrees
+- a value in degrees (integer or double)
+Example:
+$ToGpsLon( 45.333333 )
+FormatTime
+- outputs time in format "dd hh:mm:ss".
+Syntax:
+$FormatTime( seconds )
+Parameter:
+seconds
+- time in seconds
+Example:
+$FormatTime( 50000 )
+ProgressSection
+- when using this function in templates, RealityScan can estimate the finish time of the report generation. Find functions that take the longest time to be executed and wrap them into the ProgressSection function. You can also nest the ProgressSection functions. The sum of
+fractionOfOne
+parameters of all ProgressSection functions used in one nesting level should give one.
+Syntax:
+$ProgressSection( fractionOfOne, anyText )
+Parameter:
+fractionOfOne
+- a decimal number between zero and one
+Example:
+$ProgressSection( 0.3,
+    call some function that takes long time to execute, e.g. IterateOrthoMapTiles
+  )
+  $ProgressSection( 0.7,
+    $ProgressSection( 0.2,
+      call another function that takes long time to execute
+    )
+    $ProgressSection( 0.3,
+      call another function
+    )
+    $ProgressSection( 0.5,
+      call some function
+    )
+  )
+IfFileExists
+- write out a text or execute a function if the defined file exists.
+Syntax:
+$IfFileExists( "filePath", anyText)
+Parameter:
+filePath
+- a path to the file. The existence of this file will be tested.
+anyText
+- any text, expression, or function.
+Example
+(this will return value 4 if the defined file exists)
+:
+$Declare("Var", 0)
+$IfFileExists("D:\Test\file.xml", $Max("var", 1, 4, 3))
+IfFileNotExists
+- write out a text or execute a function if the defined file does not exist.
+Syntax:
+$IfFileNotExists( "filePath", anyText)
+Parameter:
+filePath
+- a path to the file. The existence of this file will be tested.
+anyText
+- any text, expression, or function.
+Example
+(this will return value 4 if the defined file does not exist)
+:
+$Declare("Var", 0)
+$IfFileNotExists("D:\Test\file.xml", $Max("var", 1, 4, 3))
+Echo
+- parameters of this function are going to be represented in a report.
+Syntax:
+$Echo( anyDeclaration )
+Example:
+$Echo( 
+    $Declare( "lvl1", 0.025 ) $Declare( "lvl1Color", "#fff040") 
+    $Declare( "lvl1ColorBright", "#fff0a0") 
+   )
+EchoOff
+- parameters of this function are not going to be represented in a report.
+Syntax:
+$EchoOff( anyDeclaration )
+Example:
+$EchoOff( 
+    $Declare( "lvl1", 0.025 ) $Declare( "lvl1Color", "#fff040")
+    $Declare( "lvl1ColorBright", "#fff0a0")
+   )
+Sleep
+- used to create a pause. Parameter of this function is the length of the pause in milliseconds.
+Syntax:
+$Sleep( timeMsec )
+Strip
+- remove the last characters from the output.
+Syntax:
+$Strip( Count )
+Parameters:
+Count
+- number of characters that will be removed.
+Nop
+- content that will be ignored.
+Syntax:
+$Nop(anytext)
+WriteInterleaved
+- write expansion block data interleaved with defined stride.
+Syntax:
+$WriteInterleaved( stride, anyText)
+ShellExecute
+- function used to execute a launch of an external software.
+Syntax:
+$ShellExecute( "filePath" )
+  or
+  $ShellExecute( "filePath", "arguments" )
+  or
+  $ShellExecute( "filePath", "arguments", "workDir" )
+ParentFolder
+- returns the name of the parent folder, that is, the string located between the second-to-last and the last \ or / in the path.
+Syntax:
+$ParentFolder( path )
+ParentFolder
+- returns the file name from the given path, if present.
+Syntax:
+$FileName( path )
+ParentFolder
+- returns the file format extension from the given path, if present.
+Syntax:
+$FileExt( path )
+Available expression functions
+ToPseudoMercatorLat
+- result is euclidean y coordinate in pseudo mercator.
+Syntax:
+ToPseudoMercatorLat(latitude_decimal_degrees)
+Parameters:
+latitude_decimal_degrees
+- the latitude coordinate in decimal degrees
+ToPseudoMercatorLon
+- result is euclidean x coordinate in pseudo mercator.
+Syntax:
+ToPseudoMercatorLon(latitude_decimal_degrees)
+Parameters:
+latitude_decimal_degrees
+- the longitude coordinate in decimal degrees
+Configuration Functions
+These functions can be used to output, or manipulate with the RealityScan configuratio.
+Available functions:
+GetProperty
+- it outputs the value of the variable in the configuration. If the variable does not exist then it outputs the default value. The second parameter is optional.
+Syntax:
+$GetProperty( "variable", "string_default"/numeral_default)
+SetProperty
+- it sets the value of the variable in the configuration.
+Syntax:
+$SetProperty( "variable", "string_default"/numeral_default)
+ResetProperty
+- it erases variable from the configuration.
+Syntax:
+$ResetProperty( "variable" )
+Formatting
+Formatting is used for expressions and they always start with the character "
+:
+".
+Syntax:
+[FORM][FILLER][LENGTH].[PRECISION][FORMAT]
+Parameters:
+Form
+options:
+b
+- enable binary mode
+-
+- align to the left
++
+- write out a plus sign (works only with numbers)
+Filler
+can be "
+0
+" or " " (space), but space is the default. Works only if the form is not binary.
+Length
+is defined with a positive number, and it defines the overall length of the value that is being formatted. Works only if the form is not binary.
+Precision
+works only for floating point numbers (FLOAT or DOUBLE) and if the chosen
+format
+is
+f
+,
+e
+, or
+g
+. If format
+f
+is chosen, precision is the number of decimal places. If formats
+e
+or
+g
+are chosen, then it is a number of shown digits.
+Format
+defines the value. Available formats are:
+c
+- byte in the binary system
+d
+- integer in the decimal system
+x
+- integer in the hexadecimal system
+f
+- a floating point number in the normal decimal float (32 bit)
+e
+- a floating point number in the exponential format
+g
+- chooses between the normal decimal form and the exponential form of a floating point number. Decision is based on which form uses fewer digits.
+Example:
+$(cpxMean/coordSystemUnit2Meter:.3f)
+All parts of the formatting string are optional.
+Modes
+Modes are used to format the output content of an report. Once they are used, content behind them will be formed based on their function.
+Syntax:
+$[mode]
+Available modes:
+a
+- start a mode that outputs white characters (empty rows, spaces, tabs). This mode is set by default.
+b
+- this mode removes all white characters
+n
+- moves to the beginning of the next line
+r
+- moves to the beginning of the current line
+s
+- creates a space character
+t
+- creates a tab character
+#comment
+- creates a comment that is being ignored in the output. It has to start with the character
+#
+.
+Histograms
+Create histograms and gather information about them.
+CreateHistogram
+- this function can be used to output a histogram. It creates steps or bins. Every bin has its own interval with size "1/((maxValue-minValue)*steps)". Every bin has 0 elements in it.
+Syntax:
+$CreateHistogram(minValue, steps, maxValue, anyText)
+Parameters:
+minValue
+- the minimal value of a histogram
+steps
+- a size of a step, i.e. bin size
+minValue
+- the maximal value of a histogram
+Available functions:
+AddData
+- this functions finds interval for every number and increases the number of elements in it. If the number is lower than minValue, then it will be counted in the first bin. Similarly, if the number is bigger than maxValue, it will be counted in the last bin.
+Syntax:
+$AddData( num1, num2, ..., numN )
+Parameters:
+num
+- numerical values
+IterateHistogramBins
+- iterate through histogram bins.
+Syntax:
+$IterateHistogramBins( noParametersJustAnyText )
+Available variables:
+histTotalSum
+- a sum of values in all bins
+histMaxCount
+- the maximal
+histCount
+among all steps (it is the same in all steps)
+histMinValue
+- the minimal value of the histogram (vertical axis)
+histMaxValue
+- the maximal value of the histogram (vertical axis)
+histStepCount
+- a number of steps that was defined
+histIndex
+- an index of the current step
+histCount
+- a number of values in the interval: (
+histValue
+-
+steps size
+,
+histValue
+)
+histValue
+- the upper bound of the current interval
+histCumsum
+- a cumulative sum of this and all previous
+histCount
+s, it will be equal to
+histTotalSum
+no later than in the last step
+GetHistogramStats
+- iterate through histogram bins.
+Syntax:
+$GetHistogramStats( noParametersJustAnyText )
+Available variables:
+histTotalSum
+- a sum of values in all bins
+histMaxCount
+- the maximal
+histCount
+among all steps (it is the same in all steps)
+histMinValue
+- the minimal value of the histogram (vertical axis)
+histMaxValue
+- the maximal value of the histogram (vertical axis)
+histStepCount
+- a number of steps that was defined
+Localization Functions
+These function can be used for text localization.
+SetLocalization
+- sets path to the file with localized strings (localization file).
+Syntax:
+$SetLocalization( "filePath" )
+Parameters:
+filePath
+-  global path or relative to work directory
+Localize
+- it searches for a string mapped to the string ID in a localization file. It outputs the found string, if it exists. Otherwise it outputs default text.
+Syntax:
+$Localize( "STRING_ID", "defaultText" )
+Parameters:
+STRING_ID
+-  the string ID from the localization file
+defaultText
+-  the default text
+Scripting Report Basics
+Learn how to create custom report templates
+Function Sets
+Functions sets and their functions, expressions and variables
+Images Scope
+Learn how to export information about project images
+Components Scope
+Component export functions and variables
+Camera Scope
+Learn how to get information about cameras
+Scene Structure Scope
+Learn how to add custom point statics to reports
+Control Points and Constraints Scope
+Check the list of control points and constraints functionalities
+Models Scope
+Learn how to generate model reports
+Ortho Projection Scope
+See the list of ortho projection export functions
+Map Scope
+See the list of map export functions

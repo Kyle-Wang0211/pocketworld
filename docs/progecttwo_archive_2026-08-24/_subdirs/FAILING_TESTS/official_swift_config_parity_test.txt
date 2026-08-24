@@ -1,0 +1,14 @@
+00:00 +0: loading /Users/kaidongwang/Developer/pocketworld-flutter347/test/official_swift_config_parity_test.dart
+00:00 +0: production Swift plugin uses only the official runtime namespace
+00:00 +0 -1: production Swift plugin uses only the official runtime namespace [E]
+  Expected: non-empty
+    Actual: []
+  
+  package:matcher                                     expect
+  package:flutter_test/src/widget_tester.dart 473:18  expect
+  test/official_swift_config_parity_test.dart 19:5    main.<fn>
+  
+00:00 +0 -1: Some tests failed.
+
+Failing tests:
+  /Users/kaidongwang/Developer/pocketworld-flutter347/test/official_swift_config_parity_test.dart: production Swift plugin uses only the official runtime namespace

@@ -1,0 +1,30 @@
+00:00 +0: loading /Users/kaidongwang/Developer/pocketworld-flutter347/test/official_highres_reconstruction_contract_test.dart
+00:00 +0: accepts a transaction-bound 4032x3024 JPEG with same-frame AR data
+00:00 +1: rejects preview resolution instead of silently feeding it
+00:00 +2: accepts the single native completion even after sensor latency
+00:00 +3: accepts ARKit clock phase skew on the transaction-bound completion
+00:00 +4: rejects non-finite request or capture timestamps
+00:00 +5: rejects missing same-frame pose or intrinsics
+00:00 +6: official pipeline consumes a JPEG path at the native SfM boundary
+00:00 +7: official manual capture has no 2 second queue or preview fallback
+00:00 +8: official shutter admits immediately while one 12MP transaction drains
+00:00 +9: official shutter transaction retries but cannot hang forever
+00:00 +10: finish freezes and drains accepted shutter tickets before stop
+00:00 +11: pending tickets never dim the white shutter or block safe exit
+00:00 +11 -1: pending tickets never dim the white shutter or block safe exit [E]
+  Expected: a value less than <1033>
+    Actual: <1112>
+     Which: is not a value less than <1033>
+  discard must stop capture retries before waiting for the active native transaction to settle
+  
+  package:matcher                                                expect
+  package:flutter_test/src/widget_tester.dart 473:18             expect
+  test/official_highres_reconstruction_contract_test.dart 286:5  main.<fn>
+  
+00:00 +11 -1: background suspends 12MP work and resume explicitly releases it
+00:00 +12 -1: page disposal releases the active 12MP ticket before its session
+00:00 +13 -1: official native route locks preview size and transaction sync
+00:01 +14 -1: Some tests failed.
+
+Failing tests:
+  /Users/kaidongwang/Developer/pocketworld-flutter347/test/official_highres_reconstruction_contract_test.dart: pending tickets never dim the white shutter or block safe exit

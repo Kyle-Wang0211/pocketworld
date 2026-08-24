@@ -1,0 +1,1030 @@
+List of All CLI Commands - RealityScan Help
+List of All CLI Commands
+Use CLI commands to automate your workflow and make iterative processing easier.
+Project and Images
+Add images to your project or change the project/instance settings.
+Command Name
+Required Parameter
+Optional Parameter
+Description
+headless
+Hides user interface. Find more about this command
+here
+.
+hideUI
+Hide user interface. Unlike
+headless
+, this command doesn't need to be run at startup and does not suppress actions that require user interaction.
+showUI
+Shows hidden user interface. Unlike
+headless
+, this command doesn't need to be run at startup.
+newScene
+Create a new empty scene.
+load
+MyProject.rsproj
+recoverAutosave
+deleteAutosave
+Load an existing project from the MyProject.rsproj file. Use optional parameters to define the action if there is an autosaved file present for this project. Using
+recoverAutosave
+will open the autosaved project, while
+deleteAutosave
+will delete the autosaved project and load the original one.
+                            More information about the Autosave feature can be found
+here
+.
+To set the preference globally for all projects, use
+set
+command with
+appAutoSaveCliHandling
+key.
+                            Find more information in the section
+CLI Settings Keys & Values
+.
+save
+MyProject.rsproj
+Save the current project to its original location or save as MyProject.rsproj.
+start
+Run the processes configured for the
+Start
+button. Adjust these settings in the
+Start button
+settings which can be accesed from the
+Start
+button dropdown menu.
+unlockPPIProject
+myProject.rcproj
+Save and unlock your PPI projects to make them compatible for use with the latest RealityScan versions. Use the whole path with the project's name and extension where you want to store the unlocked project.
+add
+imageName
+Import one or more images from a specified file path or from an image list. The image list is a text file with the .imagelist extension, containing full paths to the images, each on a separate line.
+addFolder
+folderName
+Add all images to the specified folder. To include subdirectories, use the command
+set
+with a key
+appIncSubdirs
+as follows:
+-set "appIncSubdirs=true"
+.
+                            Find more information in the section
+CLI Settings Keys & Values
+.
+importVideo
+videoFileName
+extractedVideoFramesLocation
+jumpsLength
+Import frames extracted from a video (videoFileName including the path).
+                            The frames are extracted into a folder (extractedVideoFramesLocation) using an interval between frames defined by the jumpsLength (in seconds).
+importLeicaBlk3D
+fileName
+Import image sequence with .cmi extension (fileName including path) captured by Leica BLK3D.
+importLaserScan
+laserscanName
+params.xml
+Add a LiDAR scan or a LiDAR scan list using the current settings or the settings from the params.xml file (optional parameter).
+                            You can export these settings from the application in the
+LiDAR Scan Import
+dialog.
+importLaserScanFolder
+folderName
+params.xml
+Add all LiDAR scans in the specified folder using settings from the params.xml file. You can export these settings from the application in the
+LiDAR Scan Import
+dialog.
+importHDRimages
+fileName
+folderName
+imageList
+params.xml
+Import HDR image (imageName), list of images (imageList) or all images from a folder (folderName) using the current settings or the settings from params.xml.
+                            You can export these settings from the application in the
+16-bit/HDR Images Import
+dialog.
+addImageWithCalibration
+fileName
+xmpFileName
+Import an image as well as the corresponding XMP file. Use whole paths to the files.
+importImageSelection
+fileName
+Select some scene images and/or LiDAR scans listed in a file (filename including the path).
+selectImage
+imagePath
+regexp
+set
+union
+sub
+intersect
+toggle
+Select a specified image (imagePath) or images defined by regular expression (regexp). See below
+examples
+. One of the optional parameters may be used to more select images with more flexibility.
+selectAllImages
+Select all images in the project.
+deselectAllImages
+Deselect all images in the project.
+invertImageSelection
+Invert the current image selection.
+removeCalibrationGroups
+Clear all inputs from their calibration groups.
+generateAIMasks
+Use AI Masking to generate masks by isolating the object of interest in your images.
+exportMasks
+folderPath params.xml
+Export the mask images currently used in the project. Specify the output folder and, optionally, the full path to the XML file with export parameters (this file can be exported from the
+Export Mask Images
+dialog).
+setImageLayer
+index pathImage layerType
+Set the layer from the image defined with the
+pathImage
+parameter (path to the layer image) to the image defined with the
+index
+parameter. The index corresponds to the image order in the
+1Ds
+view, starting at 0 (zero). The
+layerType
+parameter defines which layer to set onto the chosen image (e.g., mask, texture).
+setImagesLayer
+pathImage layerType
+Set the layer from the image defined with the
+pathImage
+parameter (path to the layer image) to the selection of images. The
+layerType
+parameter defines which layer to set onto the selected images (e.g., mask, texture).
+removeImageLayer
+layerType
+Remove the layers corresponding to the
+layerType
+parameter (e.g. mask, texture) from the selected images.
+importCache
+folderName
+Import resource cache data from a specified folder.
+clearCache
+Clear the application cache. You must save the project before clearing the application cache.
+execRSCMD
+Commands.rscmd
+Execute commands from an .rscmd (or .rccmd file), optionally using report parameters. The file format and syntax are described in the
+Commands Outside Command Prompt
+section. You can define up to nine arguments, acting as variables, by listing them after the path to the .rscmd file. Inside the file, reference these variables using $(arg1)–$(arg9).
+quit
+Quit the application.
+Commands for Selected Images
+The following ones enable you to set some preferences for further processing of images.
+Command Name
+Required Parameter
+Optional Parameter
+Description
+setFeatureSource
+0
+1
+2
+Define a feature source mode for the selected images:
+0 – Merge using overlaps,
+1 – Use component features,
+2 – Use all image features.
+enableAlignment
+true
+false
+Enable/disable selected images in the registration process.
+enableMeshing
+true
+false
+Enable/disable selected images in the model computation/meshing.
+enableTexturingAndColoring
+true
+false
+Enable/disable selected images during the coloring and texture calculation.
+setWeightInTexturing
+<0,1>
+Set weight for selected images during the coloring and texture calculation.
+enableColorNormalizationReference
+true
+false
+Set selected images as color references in the color normalization process. The colors for these images will not be changed.
+enableColorNormalization
+true
+false
+Enable or disable selected images in the color normalization process.
+setDownscaleForDepthMaps
+integer
+Set a downscale factor for depth-map computation for the selected images.
+enableInComponent
+true
+false
+Enable selected images in meshing and continue. Applicable only for the registered images.
+setCalibrationGroupByExif
+Set the calibration group of all inputs based on their Exif.
+setConstantCalibrationGroups
+Group all selected inputs into a single calibration group.
+lockPoseForContinue
+true
+false
+Set relative camera pose unchanged for the selected images during the next registration. Applicable only for the registered images.
+setPriorCalibrationGroup
+number
+Set a prior calibration group for the selected images:
+-1 - do not group,
+another number - group into the same calibration group.
+setPriorLensGroup
+number
+Set a prior lens group for the selected images. Using -1 means do not group; any other number means to group the selected images into the same distortion group.
+editInputSelection
+"key=value"
+Edit the settings of the selected inputs based on the value in the
+Selected inputs
+panel or its key. More information can be found
+here
+.
+Delegate commands
+You can use these commands to delegate actions to a certain RealityScan instance. You can find out more about the delegation of commands
+here
+.
+Command Name
+Required Parameter
+Optional Parameter
+Description
+setInstanceName
+instanceName
+Assign a name to a RealityScan instance.
+delegateTo
+instanceName
+*
+Delegate a command or a sequence of commands to a specific instance of RealityScan (instanceName) or to the first available instance (using the * symbol as a parameter).
+waitCompleted
+instanceName
+*
+Pause execution of other commands until the current process is finished in a specified instance of RealityScan (instanceName) or in the first available instance (using the * as a parameter).
+getStatus
+instanceName
+*
+Return the progress status of a running process in a specified instance of RealityScan (instanceName) or in the first available instance (using the * symbol as a parameter).
+pauseInstance
+instanceName
+*
+Pause a currently running process in a specified instance of RealityScan (instanceName) or in the first available instance (using the * symbol as a parameter).
+unpauseInstance
+instanceName
+*
+Unpause a currently paused process in a specified instance of RealityScan (instanceName) or in the first available instance (using the * symbol as a parameter).
+abortInstance
+instanceName
+*
+Abort a currently running process in a specified instance of RealityScan (instanceName) or in the first available instance (using the * symbol as a parameter). If processing is done using the CLI commands, all processes after the running process will also be aborted.
+execRSCMDIndirect
+instanceName
+* commands.rscmd
+Execute commands listed in the .rscmd (or .rccmd) file in the specified instance, optionally using report parameters. The file format and syntax are described in the
+Commands Outside Command Prompt
+section. You can define up to nine arguments, acting as variables, by listing them after the path to the .rscmd file. Inside the file, reference these variables using $(arg1)–$(arg9).
+Alignment
+The following commands can be used to calculate camera poses and calibration and to handle components and control points.
+Command Name
+Required Parameter
+Optional Parameter
+Description
+align
+Align images using the current settings.
+draft
+Align images in the draft mode using the current settings.
+update
+Update all components and models by a rigid transformation to fit the actual constraints and control points.
+detectFeatures
+Run feature detection according to the alignment settings. Detected features will be saved in the application cache.
+mergeComponents
+Merge already created components. When using this command, no new images are added to the existing components.
+exportXMP
+params.xml
+Export camera metadata of components created in the last alignment in the XMP format using the current settings or the settings from params.xml file (optional parameter).
+                            You can export this file from the
+XMP metadata export
+dialog. The components must fulfill the condition defined by the command setMinComponentSize.
+NOTE: XMP files are stored in the same folder as the respective images.
+exportXMPForSelectedComponent
+Export camera metadata of a selected component in XMP format using the current settings. An example is available in the paragraph "Metadata (XMP) Export Settings" below.
+NOTE: XMP files are stored in the same folder as the respective images.
+importComponent
+component.rsalign
+Import a component from the component.rsalign file.
+importBundler
+filePath
+params.xml
+Import a Bundler project. The command requires the path to the Bundler file and, optionally, a configuration file that defines the scene transformation settings saved from the import dialog. The configuration file can be used to adjust the coordinate system or apply custom transformations during import.
+importColmap
+filePath
+params.xml
+Import a COLMAP project. The command requires the path to the COLMAP file (any of the three text files) and, optionally, a configuration file that defines the scene transformation settings saved from the import dialog. The configuration file can be used to adjust the coordinate system or apply custom transformations during import.
+exportLatestComponents
+folderName
+Export components created in the last alignment as RealityScan Alignment Components (.rsalign) into a specified folder.
+                            The components must fulfill the condition defined by the command setMinComponentSize.
+setMinComponentSize
+size
+Specify the minimal component size for export when using the exportLatestComponents and exportXMP commands. The default value is 5.
+exportSelectedComponentDir
+folderName
+Export the selected component into a folder (folderName including the path) as a RealityScan Alignment Component (.rsalign).
+exportSelectedComponentFile
+fileName
+Export the selected component into a RealityScan Alignment Component file.
+exportRegistration
+fileName
+params.xml
+Export registration to a specified file using the current settings or the settings from the params.xml file (optional parameter).
+                            You can export these settings from the application in the
+Export Registration
+dialog.
+exportUndistortedImages
+folderName
+params.xml
+Export undistorted images into a specified folder using the current settings or the settings from the params.xml file (optional parameter).
+                            You can export these settings from the application in the
+Export Registration
+dialog.
+exportSTMap
+folderName params.xml
+Export ST maps for the selected images. If folderName and params.xml are not specified, results are stored along with the original images using the current settings.
+                            You can export the settings file from the application in the
+Export Registration
+dialog.
+exportSparsePointCloud
+fileName
+params.xml
+Export 3D tie points (a sparse point cloud) into a specified file (fileName including the path and format extension) using the current settings or the settings from the params.xml file (optional parameter).
+                            You can export these settings from the application within the
+Export Point Cloud
+dialog.
+selectComponent
+componentName
+Select a component with the specified name (componentName) for further processing.
+selectMaximalComponent
+Select the largest component for further processing.
+selectComponentWithLeastReprojectionError
+Select the component with the smallest reprojection error, based on the calculated Mean error [pixels], for further processing.
+renameSelectedComponent
+newComponentName
+Rename the currently selected component.
+deleteSelectedComponent
+Delete the currently selected component.
+deleteComponent
+index
+Delete a component based on the chosen index. Keep in mind that index numbers start at 0 (zero).
+deleteAllComponents
+Delete all components.
+importFlightLog
+flFileName
+params.xml
+Import a trajectory file using the current settings or the settings from the params.xml file (optional parameter).
+                            You can export these settings from the application in the
+Import Trajectory
+dialog.
+importGroundControlPoints
+gcpFileName
+params.xml
+Import ground control points using the current settings or the settings from the params.xml file (optional parameter).
+                            You can export these settings from the application in the
+Export Ground Control Points
+dialog.
+importControlPointsMeasurements
+cpmFileName
+params.xml
+Import measurements of control points (CPs) using the current settings or the settings from the params.xml file (optional parameter).
+                            You can export these settings from the application in the
+Export Control Points Measurements
+dialog.
+editControlPointSelection
+"key=value"
+Edit the settings/parameters of the selected control points based on the value in the
+Selected control point(s)
+panel or its key. More information can be found
+here
+.
+listControlPoints
+fileName
+Export a list of control points to the specified file path, including the file name and extension (fileName paramater). Each control point will be listed with its index.
+selectControlPoint
+controlPointName
+Select a control point by its name.
+invertControlPointSelection
+Invert the control point selection. If no control points are selected, all will be selected.
+renameControlPoint
+controlPointName newName
+Rename a control point. Specify control point by its current name (controlPointName) and the new name you want to assign (newName).
+renameSelectedControlPoint
+newName
+Rename the selected control point to the specified new name (newName).
+deleteControlPoint
+index
+Delete a selected control point. If an optional parameter index is used, a control point with a corresponding index will be removed. Index numbers start at 0 (zero) and follow the order of control points in the
+1Ds
+view.
+selectMeasurementByError
+errorValue
+controlPointName
+Select any measurement with a position error (in pixels) equal to or greater than the specified errorValue (float value). If no control point is specified (controlPointName), the selection applies to all measurements regardless of their assigned control point.
+selectMeasurementByIndex
+controlPointName index
+Select a control point measurement by its index within the specified control point.
+deleteControlPointMeasurement
+Remove selected control point measurements (images assigned to a control point). Images have to be selected in the
+1Ds
+view under the corresponding control point.
+exportGroundControlPoints
+gcpFileName
+params.xml
+Export ground control points using the current settings or the settings from the params.xml file (optional parameter).
+                            You can export these settings from the application in the
+Export Ground Control
+dialog.
+exportControlPointsMeasurements
+cpmFileName
+params.xml
+Export measurements of control points using the current settings or the settings from the params.xml file (optional parameter).
+                            You can export these settings from the application in the
+Export Control Points Measurements
+dialog
+                            when pressing the Shift key together with the button
+Control Points
+in the Export part of the
+Alignment
+tab.
+defineDistance
+PointNameA PointNameB distance
+constraintName
+Define a distance constraint between two control points. If constraintName is not defined, the distance name is created automatically.
+                            Alternatively, you can load distance constraints from a file (see below).
+defineDistance
+fileName
+params.xml
+Import a distance constraint from a file (filename including path) using the current settings or the settings from the params.xml file (optional parameter).
+                            You can export these settings from the application in the
+Import Distance Definitions
+dialog.
+                            The list of supported formats distancedefinitions.xml can be found in the installation folder.
+editConstraintSelection
+"key=value"
+Edit the settings/parameters of the selected constraints based on the value in the
+Selected constraint(s)
+panel or its key. More information can be found
+here
+.
+deleteConstraint
+index
+Remove the selected distance constraints. The constraints must be selected in the
+1Ds
+view. You can use an index as an optional parameter to specify which constraint to remove. Indexes start at 0 and follow the order of constraints in the
+1Ds
+view.
+detectMarkers
+params.xml
+Detect markers in images using the current settings or the settings from the params.xml file (optional parameter).
+                            You can export these settings from the
+Detect Markers
+tool in the application.
+setCamerasGravityDirection
+componentID
+If the image's XMP file contains gravity information (xcr:Gravity), the component will be rotated so the -z vector is in the direction of the gravity vector. This does not apply to the dense point cloud (mesh/model), only to the sparse point cloud (alignment). Will apply to the selected component or to the component defined with the optional parameters (component ID).
+Reconstruction
+These commands can be used to calculate models and perform coloring and texturing.
+Command Name
+Required Parameter
+Optional Parameter
+Description
+resetGround
+Set the ground plane back to its original orientation and position.
+setGroundPlaneFromReconstructionRegion
+Automatically center a model using a reconstruction region into the middle of the grid, adjusting both rotation and transformation.
+setReconstructionRegionAuto
+Set a reconstruction region automatically.
+setReconstructionRegion
+box.rsbox
+Import a reconstruction region from the box.rsbox file.
+setReconstructionRegionOnCPs
+controlPoint
+controlPoint
+controlPoint
+controlPoint
+heightValue
+Set a reconstruction region on existing control points. Three control points define the base of the region, and the height of the region is defined by the fourth control point or by entering the height value. 
+                        You can find more about this command in the examples
+here
+.
+setReconstructionRegionByDensity
+Set the reconstruction region to the part of the sparse point cloud with the highest density.
+scaleReconstructionRegion
+scaleX
+scaleY
+scaleZ
+origin
+center absolute
+factor
+Scale the reconstruction region in each axis (
+scaleX
+,
+scaleY
+, and
+scaleZ
+). Scale parameters can be treated either as absolute values (
+absolute
+)
+                        or scale factors (
+factor
+) from the center of the region (
+center
+) or its origin (
+origin
+) defined 
+                        by the first control point when using
+setReconstructionRegionOnCPs
+command. Default values are "absolute" and "center". You can find more about this command in the examples
+here
+.
+moveReconstructionRegion
+moveX
+moveY
+moveZ
+Move the reconstruction region along the region's axes. The values are in the coordinate system’s units. You can find more about this command in the examples
+here
+.
+rotateReconstructionRegion
+rotateX
+rotateY
+rotateZ
+Rotate the reconstruction region around its axes. All values are in degrees. You can find more about this command in the examples
+here
+.
+offsetReconstructionRegion
+offsetX
+offsetY
+offsetZ
+Offset the reconstruction region on its axes by the values of its dimensions.  You can find more about this command in the examples
+here
+.
+exportReconstructionRegion
+box.rsbox
+Export a reconstruction region to the box.rsbox file.
+calculatePreviewModel
+Calculate 3D mesh in the preview quality.
+calculateNormalModel
+Calculate 3D mesh in the normal quality.
+calculateHighModel
+Calculate 3D mesh in the highest quality.
+continueModelCalculation
+If the model calculation was paused or if there was a crash, it is possible to continue the calculation using this command. 
+                        Find more about this command
+here
+.
+Model Tools
+When you have successfully created a model, you can use these tools to process it further by means of the command line.
+Command Name
+Required Parameter
+Optional Parameter
+Description
+selectModel
+modelName
+Select a model with the specified name (modelName).
+deleteSelectedModel
+Delete the currently selected model.
+duplicateSelectedModel
+Duplicate the selected model (including textures).
+renameSelectedModel
+newModelName
+Rename the currently selected model.
+correctColors
+layerName
+Run color correction for all layers or a specified layer (layerName) in the selected component.
+unwrap
+params.xml
+Calculate the unwrap of a model using the current settings or the settings from the params.xml (optional parameter).
+                            You can export these settings from the
+Unwrap
+tool in the application.
+calculateTexture
+params.xml
+Calculate texture using the current settings or the settings from the params.xml file (optional parameter). You can export these settings from the
+Color and Texture Settings
+panel in the application.
+calculateQualityTexture
+Calculate texture using mesh quality values which can be calculated using the
+Quality Analysis
+tool. The values don't have to be calculated prior to using this command.
+reprojectTexture
+sourceModel resultModel
+params.xml
+Reproject texture from a textured model (sourceModel) to an unwrapped model (resultModel) using the current settings or the settings from the params.xml file (optional parameter).
+                            sourceModel and resultModel are model names from the application.
+                            You can export these settings from the
+Texture Reprojection
+tool in the application.
+calculateVertexColors
+Calculate coloring using the current settings.
+calculatePreviewVertexColors
+Calculate draft coloring using the current settings.
+calculateQualityColors
+Calculate vertex colors using mesh quality values which can be calculated using the
+Quality Analysis
+tool. The values don't have to be calculated prior to using this command.
+simplify
+targetTriangleCount or params.xml
+Simplify a selected model using the current settings (use it without any parameters) to the selected triangle count (targetTriangleCount) or using the settings from the params.xml file.
+                            You can export these settings from the
+Simplify
+tool in the application.
+smooth
+params.xml
+Smooth a selected model using the current settings or the settings from the params.xml file.
+                            You can export these settings from the
+Smooth
+tool in the application.
+closeHoles
+maxEdgesCount
+Close model holes using the current settings or a specified maximal number of edges (maxEdgesCount).
+cleanModel
+Clean the selected model: remove non-manifold edges and vertices, close small holes, etc.
+selectTrianglesInsideReconReg
+Select triangles inside the reconstruction region.
+selectTrianglesOutsideReconReg
+Select triangles outside the reconstruction region.
+selectMarginalTriangles
+Select triangles that enclose the volume but are not part of the current reconstruction.
+selectLargeTrianglesAbs
+edgeSizeThreshold
+Select triangles with edge lengths larger than the threshold (edgeSizeThreshold).
+selectLargeTrianglesRel
+edgeSizeThreshold
+Select triangles with an edge length larger than the threshold (edgeSizeThreshold) multiplied by the average edge length.
+selectLargestModelComponent
+Select triangles that belong to the largest connected component of the model.
+invertTrianglesSelection
+Invert a selection of triangles.
+deselectModelTriangles
+Deselect all model triangles.
+removeSelectedTriangles
+Create a new model with selected triangles left out (the same behavior as achieved with the
+Filter Selection
+tool).
+cutByBox
+inner
+outer
+fillHoles
+Filter out the triangles inside or outside of the reconstruction region. The required parameter defines which triangles will be filtered out, and the optional parameter
+fillHoles
+determines if the cut holes will be filled (can be set to
+true
+or
+false
+, corresponding to the
+Yes
+and
+No
+values). If the optional parameter is not chosen, the default value will be used (
+Yes
+).  This tool creates a new model.
+undercut
+Undercut the selected model so that each part contains geometry just in its cluster box.
+-->
+exportModel
+modelName fileName
+params.xml
+Export a model (modelName from the project) as a file (fileName including path and file extension) using the current settings or the settings from the params.xml (optional parameter). 
+                            You can export the file from the
+Export model
+dialog.
+exportSelectedModel
+fileName
+params.xml
+Export the selected model as a file (fileName including path and file extension) using the current settings or the settings from the params.xml (optional parameter).
+                            You can export the file from the
+Export model
+dialog.
+exportModelToZip
+filePath
+modelFormat
+Export the selected model into a compressed archive. Specify the path where the archive will be saved and the name of the exported file. Including the file extension for the archive format is optional. Additionally, you can specify the model format (e.g., .obj or .fbx) as an optional parameter.
+importModel
+fileName
+params.xml
+Import a model from a file. Specify the full path to the model, as well as its name and format extension. Additionally, use the settings file (exported from the import dialog) to adjust the import settings.
+calculateOrthoProjection
+rsorthoFile rsboxFile
+Calculate an orthographic projection using the current settings. You can optionally use a projection parameters file (.rsortho) to define the calculation settings. This file can be exported together with an ortho projection, and its structure is described
+here
+. An additional optional parameter, the exported reconstruction region file (.rsbox), can be used to specify the area included in the ortho projection.
+selectOrthoProjection
+orthoName
+Select an orthographic projection with the specified name (orthoName).
+editOrthoProjectionSelection
+"key=value"
+Edit the settings/parameters of the selected ortho projections based on the value in the
+Selected ortho photo(s)
+panel or its key. More information can be found
+here
+.
+exportOrthoProjection
+orthoName fullPath params.xml
+Export the orthographic projection (orthophoto, DSM, or DTM) using settings from the
+params.xml
+file, which can be exported from the corresponding export dialog. The command can be written in three ways, depending on which parameters are used. The
+params.xml
+file defines the export settings;
+orthoName
+is the name of the projection as it appears in the project;
+fullPath
+specifies the complete path to the exported file;
+folderPath
+defines the directory where the file will be saved; and
+exportName
+sets the name of the exported file. For
+fullPath
+and
+exportName
+, the format extension is optional—if omitted, a TIFF file is created.
+orthoName folderPath exportName params.xml
+fullPath params.xml
+calculateCrossSections
+step axis
+Calculate Cross Sections either using current settings or by setting the axis (local axis of reconstruction region) and the step between each cross section.
+exportCrossSections
+fileName
+params.xml
+Export selected cross sections as a file (fileName including path and file extension) using the current settings or the settings from the params.xml (optional parameter).
+                            You can export the file from the
+Export Cross Sections
+dialog.
+renameCrossSections
+crossSectionsName
+Rename selected cross sections.
+selectCrossSections
+crossSectionsName
+Select cross sections by name.
+computeContours
+params.xml
+Compute contours for the selected Ortho using the current settings or the settings from the params.xml file (optional parameter).
+                            You can export these settings from the
+Contours Tool
+in the application.
+exportContours
+fileName
+params.xml
+Export selected contours as a file (fileName including path and file extension) using the current settings or the settings from the params.xml (optional parameter).
+                            You can export the file from the
+Export Contours
+dialog.
+renameContours
+contoursName
+Rename selected contours.
+selectContours
+contoursName
+Select contours by name.
+exportShapes
+fileName
+params.xml
+Export selected shapes as a file (fileName including path and file extension .json) using the current settings or the settings from the params.xml (optional parameter).
+                            You can export the file from the
+Export Shapes
+dialog.
+importShapesToSelectedOrtho
+fileName mosaicing
+measurements
+Import shapes from a file (fileName including path and file extension) to the selected ortho. Their type will be defined based on which shape-creating tool is activated:
+Measure
+or
+Enhance Mosaic
+.
+importShapesToOrtho
+fileName orthoProjectionName mosaicing
+measurements
+Import shapes from a file (fileName including path and file extension) to ortho (orthoProjectionName). Their type will be defined based on which shape-creating tool is activated:
+Measure
+or
+Enhance Mosaic
+.
+selectShape
+shapeName
+Select shape by name
+addShapeToSelection
+shapeName
+Add a shape to the current selection by name.
+exportReport
+outputFileName templateFileName
+true
+false
+Export a report into a file (outputFileName including the path and the .html extension) using a template (templateFileName including the path).
+                            The default templates are stored in the installation folder\Reports. Use the optional boolean paramater (true or false) to export a file with reports found in the specified template.
+printReport
+reportString
+Write out report texts in the Command Prompt. This command can be used when RealityScan is run with a batch file. It does not work with delegation. Learn more about report customization
+here
+.
+generateMaskFromMesh
+Generate mask images out of the existing camera views (images) and selected model. Everything around the model as seen from the camera will be masked out.
+exportMapsAndMask
+folderName params.xml
+Export masks generated from the camera view over the model, along with depth and normal maps for the selected images. If folderName and params.xml are not specified, the results are saved alongside the original images using the current settings. The parameters file can be exported from the export dialog for maps and masks.
+exportLod
+fileName
+params.xml
+Export the selected model as a linear Level-of-Detail model into a file (fileName including path and file extension) using the current settings or the settings from the params.xml (optional parameter). 
+                            You can export the file from the
+Export LoD
+dialog. For export to Cesium 3D Tiles (.json) file format, use the command
+export3dTiles
+.
+export3dTiles
+fileName
+params.xml
+Export the selected model as a hierarchical Level-of-Detail model into a .json file (fileName including path and file extension) using the current settings or the settings from the params.xml (optional parameter). 
+                            You can export the file from the
+Export LoD
+dialog after selecting Cesium 3D Tiles (.json) file format.
+exportCameraSnapshots
+folderName
+params.xml
+Render images of a model from the camera positions using all images if none or just one is selected, or using only the selected images. Specify the path of a folder where images will be stored, and use the optional file with parameters to use settings from the export dialog.
+exportSelectedCamerasSnapshots
+folderName fileFormat
+params.xml
+Render images of a model from the selected camera positions. Specify the path of a folder where images will be stored and the file format of the exported images (e.g. jpg or png). Use the optional file with parameters to use settings from the export dialog.
+renderMeshFromCustomPositionYPR
+fileName params.xml
+fileName width height focalLength x y z yaw pitch roll
+Export a render of the model from a camera position with the viewpoint defined by yaw, pitch, and roll orientation.
+Example for a render from above of a model at 0,0,0 in local Euclidean space:
+RealityScan.exe -renderMeshFromCustomPositionYPR "D:/Project/render.png" 1280 720 100 0 0 150 0 0 0
+renderMeshFromCustomPositionLookAt
+fileName params.xml
+fileName width height focalLength x y z atX atY atZ
+upX upY upZ
+Export a render of a model from a camera position, which looks at another defined position, with an option to specify the vertical axis.
+Example for a side view of a model at 0,0,0 in local Euclidean space while defining the vertical axis going up the Z axis:
+RealityScan.exe -renderMeshFromCustomPositionLookAt "D:/Project/render.png" 1280 720 50 0 -100 0 0 0 10 0 0 1
+renderMeshFromCustomGridPositionYPR
+fileName params.xml
+fileName width height focalLength x y z yaw pitch roll
+Export a render of the model from a custom grid position, with the viewpoint defined by yaw, pitch, and roll orientation.
+renderMeshFromCustomGridPositionLookAt
+fileName params.xml
+fileName width height focalLength x y z atX atY atZ
+upX upY upZ
+Export a model render from a custom grid position, with the viewpoint directed toward a defined target, and the option to specify the vertical axis.
+uploadToSketchfab
+APIToken
+Upload your model to Sketchfab. The required parameter is the Sketchfab API token and it can be found in the account settings of your Sketchfab account.
+Classification Commands
+Use these settings to create and adjust classifications.
+Command Name
+Required Parameter
+Optional Parameter
+Description
+dtmClassify
+params.xml
+Classify vertices of the selected model into pre-defined classes using the current settings or the settings from the params.xml file (optional parameter).
+                            You can export these settings from the
+Classify
+tool in the application.
+selectClassification
+classificationName
+Select a classification using its specified name (classificationName parameter).
+renameSelectedClassification
+newClassificationName
+Rename the selected classification to the specified new name (newClassificationName).
+transferClassification
+params.xml
+Transfer classification from the labels layer images. A file with parameters exported from the
+AI Classify tool
+panel can be used as an optional parameter.
+exportClassificationSettings
+XMLfilePath
+Export settings from the
+AI Classify tool
+panel. For the required parameter (XMLfilePath) specify the full path for export, including the file name and format extension (.xml).
+importClassificationSettings
+XMLfilePath
+Import settings to the
+AI Classify tool
+panel. For the required parameter (XMLfilePath) specify the full path for import, including the file name and format extension (.xml).
+overrideSelectedVertices
+className
+Override the selected vertices and change their class to the currently selected class, or to the class specified by name (optional).
+selectClass
+className
+Select a class from the selected classification using the specified class name.
+deselectClass
+Deselect all selected classes.
+renameSelectedClass
+newClassName
+Change the name of the selected class to the specified new class name (newClassName).
+setSelectedClassAsGroundForDTM
+true OR false
+Change the
+Use as ground for DTM
+setting in the
+Selected Class
+panel for the selected class. Set to
+true
+to use it as ground for DTM, or
+false
+to exclude it.
+setSelectedClassAsGroundForExport
+Change the
+Export class LAS
+setting in the
+Selected Class
+panel to
+Ground (2)
+.
+setSelectedClassLasFormat
+0 - 12
+Change the
+Export class LAS
+setting to a value corresponding to a number from 0 to 12.
+selectVerticesOfSelectedClass
+Select model vertices based on the selected class.
+selectClassificationFormat
+classificationFormatName
+Select the classification format based on the specified classification format name.
+renameSelectedClassificationFormat
+newClassificationFormatName
+Rename the selected classification format to the specified new classification format name.
+exportSelectedClassificationFormat
+filePath
+Export the selected classification format by specifying the full path, including the file name and the .cfd extension.
+exportClassificationFormat
+classificationFormatName filePath
+Export the classification format by specifying its name and the output file path, including the file name and the .cfd extension.
+importClassificationFormat
+filePath
+Import the classification format by specifying its full path and name, including the .cfd extension.
+colorModelBySelectedClassification
+Colorize the model according to the classes in the selected classification.
+deleteSelectedClassification
+Delete the selected classification.
+Settings' and Error-handling Commands
+You can use these commands to alter the settings and behavior of the application.
+Command Name
+Required Parameter
+Optional Parameter
+Description
+set
+"key=value"
+Change an application setting. Learn more about how to use this command
+here
+.
+preset
+"key=value"
+Change an application setting during the setup phase. Ideal for changes that require a reset of the application. Learn more about how to use this command
+here
+.
+reset
+ui
+cfg
+cfgui
+all
+Reset the user interface, settings, or both. It is also possible to make RealityScan like a clean install. This command works only when used in a batch file, and it won't work with delegation commands. What is going to be reset is determined by the chosen parameter:
+ui
+- reset user interface,
+cfg
+- reset application settings,
+cfgui
+- reset both interface and settings,
+all
+- make it like a clean install.
+silent
+crashReportPath
+Suppress warning dialogs and uploading of the crash reports. The application will store reports in the specified location instead of showing the upload wizard. This command has to be used at the startup.
+writeProgress
+fileName
+timeout
+Write any new progress change into a specified file (fileName including the path). Optional timeout parameter will also output during a defined period of time (timeout in seconds). 
+                        More about the file structure can be found in the section
+Error-handling Commands
+.
+printProgress
+timeout
+Print progress change into the Windows Command Prompt for any new change. Optional timeout parameter will also output during a defined period of time (timeout in seconds).
+tag
+Writes out a tag into the Windows Command Prompt. It respects the order of the used commands and will be run after the process ran before it finishes.
+stdConsole
+Enables console redirection to the application standard output. When used, you will see the application console content mirrored also in the standard Windows console. This also enables further redirections for CLI purposes.
+disableOnlineCommunication
+Disable any online communication.
+importGlobalSettings
+settings.rcconfig
+Import application global settings from the settings.rcconfig file.
+exportGlobalSettings
+settings.rcconfig
+Export application global settings to the settings.rcconfig file.
+setProjectCoordinateSystem
+authority:id
+Set a project coordinate system defined by an authority, and its ID (can be found in a specific database, e.g. epsg.xml and local.xml).
+                        An example can be found
+here
+.
+setOutputCoordinateSystem
+authority:id
+Set an output coordinate system defined by an authority, and its ID (can be found in a specific database, e.g. epsg.xml and local.xml).
+                        An example can be found
+here
+.
+More about the CLI
+See the tutorial on the command-line interface

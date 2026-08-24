@@ -1,0 +1,449 @@
+{
+  "schema": "pw.vio.diagnostics/1",
+  "startedAtMillis": 1787473195468,
+  "generatedAtMillis": 1787473215538,
+  "running": true,
+  "poll": {
+    "intervalMs": 2000,
+    "ok": 10,
+    "fail": 0
+  },
+  "ring": {
+    "capacity": 900,
+    "timebaseKept": 10,
+    "timebaseDropped": 0,
+    "thermalKept": 10,
+    "thermalDropped": 0
+  },
+  "xrslamSmoke": {
+    "ok": true,
+    "symbolFound": true,
+    "probeRc": 0,
+    "probeRcName": "OK",
+    "neededChars": 13,
+    "fetchRc": 0,
+    "fetchRcName": "OK",
+    "version": "xrslam v0.5.0",
+    "error": null,
+    "createRc": 1,
+    "createOk": true,
+    "destroyed": true,
+    "configProvenance": {
+      "cam0.intrinsics": "device-api",
+      "cam0.resolution": "device-api",
+      "cam0.extrinsic": "PLACEHOLDER",
+      "cam0.time_offset": "PLACEHOLDER",
+      "imu.noise": "shared-default"
+    }
+  },
+  "slamFeed": {
+    "inspectionCompiledOut": 0,
+    "maxAbsCamImuDelta": 0.0808957921108231,
+    "imuSamplesLastFrame": 3,
+    "healthOverall": 1,
+    "landmarksPublished": 0,
+    "baselineCamImuDelta": -0.04224633413832635,
+    "running": true,
+    "lastPushRc": 0,
+    "gyroPushed": 1404,
+    "coreImuSamplesIntegrated": 3,
+    "domainMismatchActive": 0,
+    "latestPoseDegenerate": 1,
+    "poseRc": 2,
+    "detectedKeypoints": 1004,
+    "runCalls": 808,
+    "runHz": 0,
+    "slamState": 0,
+    "lastRunSpanMs": 0.0029802322387695312,
+    "trackedKeypoints": 1001,
+    "lastFrameMs": 0.002542,
+    "healthRc": 0,
+    "mappedLandmarks": -1,
+    "threadingEnabled": 1,
+    "imagesPushed": 808,
+    "imagesRejected": 0,
+    "accPushed": 1404,
+    "inlierKeypoints": 1004,
+    "landmarksUsable": 0,
+    "landmarksRejectedUntriangulated": 0,
+    "lastCamImuDelta": -0.03134458407294005,
+    "frameIntervalMs": 32.820406456824635,
+    "dutyCycle": 0.0001519420034568063,
+    "behindStreak": 0,
+    "landmarksRejectedNonFinite": 0,
+    "behindMax": 0
+  },
+  "errors": [
+    "intrinsics: 拿不到(ARKit 未跑帧或值不合理)⇒ 落 PLACEHOLDER",
+    "xrslam smoke: XRSLAM FFI OK — version=\"xrslam v0.5.0\" (needed=13 chars)",
+    "intrinsics 就位: fx=1337.71 fy=1337.71 cx=956.64 cy=720.10 @1920x1440",
+    "slamStart rc=1 (1=成功) feedStarted=true"
+  ],
+  "timebase": [
+    {
+      "wallMillis": 1787473195537,
+      "uptimeRawSeconds": 718709.431648937,
+      "monotonicSeconds": 940871.625451,
+      "accumulatedSleepSeconds": 222162.193802063,
+      "sessionSleepDeltaSeconds": 0.0,
+      "clockPairReadCostSeconds": 2.0791776478290558e-7,
+      "baseDiscriminable": true,
+      "verdicts": {},
+      "offsets": {}
+    },
+    {
+      "wallMillis": 1787473197536,
+      "uptimeRawSeconds": 718711.4325400621,
+      "monotonicSeconds": 940873.626319,
+      "accumulatedSleepSeconds": 222162.19377893792,
+      "sessionSleepDeltaSeconds": -0.0000338749960064888,
+      "clockPairReadCostSeconds": 4.202593117952347e-8,
+      "baseDiscriminable": true,
+      "verdicts": {
+        "coreMotion": "uptimeRaw"
+      },
+      "offsets": {
+        "coreMotion": {
+          "toUptimeRaw": 0.0009855830576270819,
+          "toMonotonic": 222162.19476425007
+        }
+      }
+    },
+    {
+      "wallMillis": 1787473199537,
+      "uptimeRawSeconds": 718713.432826083,
+      "monotonicSeconds": 940875.626582,
+      "accumulatedSleepSeconds": 222162.19375591702,
+      "sessionSleepDeltaSeconds": -0.000055958633311092854,
+      "clockPairReadCostSeconds": 1.6600824892520905e-7,
+      "baseDiscriminable": true,
+      "verdicts": {
+        "arFrame": "uptimeRaw",
+        "coreMotion": "uptimeRaw"
+      },
+      "offsets": {
+        "arFrame": {
+          "toUptimeRaw": 0.03377062501385808,
+          "toMonotonic": 222162.227537042
+        },
+        "coreMotion": {
+          "toUptimeRaw": 0.0008359785424545407,
+          "toMonotonic": 222162.19461374998
+        }
+      }
+    },
+    {
+      "wallMillis": 1787473201538,
+      "uptimeRawSeconds": 718715.432867208,
+      "monotonicSeconds": 940877.6266010001,
+      "accumulatedSleepSeconds": 222162.19373379205,
+      "sessionSleepDeltaSeconds": -0.000078729004599154,
+      "clockPairReadCostSeconds": 8.405186235904694e-8,
+      "baseDiscriminable": true,
+      "verdicts": {
+        "coreMotion": "uptimeRaw",
+        "arFrame": "uptimeRaw"
+      },
+      "offsets": {
+        "coreMotion": {
+          "toUptimeRaw": 0.0008359785424545407,
+          "toMonotonic": 222162.19461374998
+        },
+        "arFrame": {
+          "toUptimeRaw": 0.03377062501385808,
+          "toMonotonic": 222162.227537042
+        }
+      }
+    },
+    {
+      "wallMillis": 1787473203538,
+      "uptimeRawSeconds": 718717.4338708541,
+      "monotonicSeconds": 940879.6275810001,
+      "accumulatedSleepSeconds": 222162.193710146,
+      "sessionSleepDeltaSeconds": -0.00010168750304728746,
+      "clockPairReadCostSeconds": 4.202593117952347e-8,
+      "baseDiscriminable": true,
+      "verdicts": {
+        "coreMotion": "uptimeRaw",
+        "arFrame": "uptimeRaw"
+      },
+      "offsets": {
+        "coreMotion": {
+          "toUptimeRaw": 0.0008527080062776804,
+          "toMonotonic": 222162.19457000005
+        },
+        "arFrame": {
+          "toUptimeRaw": 0.050046270596794784,
+          "toMonotonic": 222162.24375825014
+        }
+      }
+    },
+    {
+      "wallMillis": 1787473205537,
+      "uptimeRawSeconds": 718719.4328718747,
+      "monotonicSeconds": 940881.62656,
+      "accumulatedSleepSeconds": 222162.19368812535,
+      "sessionSleepDeltaSeconds": -0.00012535403948277235,
+      "clockPairReadCostSeconds": 8.300412446260452e-8,
+      "baseDiscriminable": true,
+      "verdicts": {
+        "coreMotion": "uptimeRaw",
+        "arFrame": "uptimeRaw"
+      },
+      "offsets": {
+        "coreMotion": {
+          "toUptimeRaw": 0.0008527080062776804,
+          "toMonotonic": 222162.19457000005
+        },
+        "arFrame": {
+          "toUptimeRaw": 0.049873771029524505,
+          "toMonotonic": 222162.24356166704
+        }
+      }
+    },
+    {
+      "wallMillis": 1787473207537,
+      "uptimeRawSeconds": 718721.4329490415,
+      "monotonicSeconds": 940883.6266140001,
+      "accumulatedSleepSeconds": 222162.19366495858,
+      "sessionSleepDeltaSeconds": -0.00014810450375080109,
+      "clockPairReadCostSeconds": 1.6705598682165146e-7,
+      "baseDiscriminable": true,
+      "verdicts": {
+        "coreMotion": "uptimeRaw",
+        "arFrame": "uptimeRaw"
+      },
+      "offsets": {
+        "coreMotion": {
+          "toUptimeRaw": 0.0008607914205640554,
+          "toMonotonic": 222162.19454712502
+        },
+        "arFrame": {
+          "toUptimeRaw": 0.049734874977730215,
+          "toMonotonic": 222162.2434011671
+        }
+      }
+    },
+    {
+      "wallMillis": 1787473209536,
+      "uptimeRawSeconds": 718723.432283604,
+      "monotonicSeconds": 940885.6259250001,
+      "accumulatedSleepSeconds": 222162.193641396,
+      "sessionSleepDeltaSeconds": -0.000170187558978796,
+      "clockPairReadCostSeconds": 4.190951585769653e-8,
+      "baseDiscriminable": true,
+      "verdicts": {
+        "arFrame": "uptimeRaw",
+        "coreMotion": "uptimeRaw"
+      },
+      "offsets": {
+        "arFrame": {
+          "toUptimeRaw": 0.049575000535696745,
+          "toMonotonic": 222162.24321733403
+        },
+        "coreMotion": {
+          "toUptimeRaw": 0.0008377288468182087,
+          "toMonotonic": 222162.19450070837
+        }
+      }
+    },
+    {
+      "wallMillis": 1787473211537,
+      "uptimeRawSeconds": 718725.433167937,
+      "monotonicSeconds": 940887.6267870001,
+      "accumulatedSleepSeconds": 222162.19361906312,
+      "sessionSleepDeltaSeconds": -0.00019372894894331694,
+      "clockPairReadCostSeconds": 4.202593117952347e-8,
+      "baseDiscriminable": true,
+      "verdicts": {
+        "arFrame": "uptimeRaw",
+        "coreMotion": "uptimeRaw"
+      },
+      "offsets": {
+        "arFrame": {
+          "toUptimeRaw": 0.04944193747360259,
+          "toMonotonic": 222162.24306200002
+        },
+        "coreMotion": {
+          "toUptimeRaw": 0.0008377288468182087,
+          "toMonotonic": 222162.19447925
+        }
+      }
+    },
+    {
+      "wallMillis": 1787473213537,
+      "uptimeRawSeconds": 718727.4333164371,
+      "monotonicSeconds": 940889.626913,
+      "accumulatedSleepSeconds": 222162.19359656295,
+      "sessionSleepDeltaSeconds": -0.0002168335486203432,
+      "clockPairReadCostSeconds": 4.202593117952347e-8,
+      "baseDiscriminable": true,
+      "verdicts": {
+        "arFrame": "uptimeRaw",
+        "coreMotion": "uptimeRaw"
+      },
+      "offsets": {
+        "arFrame": {
+          "toUptimeRaw": 0.03264297917485237,
+          "toMonotonic": 222162.2262399171
+        },
+        "coreMotion": {
+          "toUptimeRaw": 0.0008442704565823078,
+          "toMonotonic": 222162.19447925
+        }
+      }
+    }
+  ],
+  "thermal": [
+    {
+      "wallMillis": 1787473195538,
+      "timestampUs": 718709433932,
+      "tier": "fair",
+      "rawStatus": 1,
+      "statusReadable": true,
+      "headroom": null,
+      "lowPowerMode": false,
+      "cameraStream": "unknown",
+      "cameraCutBySystemPressure": false,
+      "interruptionReason": null,
+      "systemPressureLevel": null,
+      "activeProcessorCount": 6,
+      "cpuCurFreqKhz": []
+    },
+    {
+      "wallMillis": 1787473197537,
+      "timestampUs": 718711432718,
+      "tier": "fair",
+      "rawStatus": 1,
+      "statusReadable": true,
+      "headroom": null,
+      "lowPowerMode": false,
+      "cameraStream": "unknown",
+      "cameraCutBySystemPressure": false,
+      "interruptionReason": null,
+      "systemPressureLevel": null,
+      "activeProcessorCount": 6,
+      "cpuCurFreqKhz": []
+    },
+    {
+      "wallMillis": 1787473199545,
+      "timestampUs": 718713441624,
+      "tier": "fair",
+      "rawStatus": 1,
+      "statusReadable": true,
+      "headroom": null,
+      "lowPowerMode": false,
+      "cameraStream": "unknown",
+      "cameraCutBySystemPressure": false,
+      "interruptionReason": null,
+      "systemPressureLevel": null,
+      "activeProcessorCount": 6,
+      "cpuCurFreqKhz": []
+    },
+    {
+      "wallMillis": 1787473201538,
+      "timestampUs": 718715434484,
+      "tier": "fair",
+      "rawStatus": 1,
+      "statusReadable": true,
+      "headroom": null,
+      "lowPowerMode": false,
+      "cameraStream": "unknown",
+      "cameraCutBySystemPressure": false,
+      "interruptionReason": null,
+      "systemPressureLevel": null,
+      "activeProcessorCount": 6,
+      "cpuCurFreqKhz": []
+    },
+    {
+      "wallMillis": 1787473203538,
+      "timestampUs": 718717434083,
+      "tier": "fair",
+      "rawStatus": 1,
+      "statusReadable": true,
+      "headroom": null,
+      "lowPowerMode": false,
+      "cameraStream": "unknown",
+      "cameraCutBySystemPressure": false,
+      "interruptionReason": null,
+      "systemPressureLevel": null,
+      "activeProcessorCount": 6,
+      "cpuCurFreqKhz": []
+    },
+    {
+      "wallMillis": 1787473205537,
+      "timestampUs": 718719433069,
+      "tier": "fair",
+      "rawStatus": 1,
+      "statusReadable": true,
+      "headroom": null,
+      "lowPowerMode": false,
+      "cameraStream": "unknown",
+      "cameraCutBySystemPressure": false,
+      "interruptionReason": null,
+      "systemPressureLevel": null,
+      "activeProcessorCount": 6,
+      "cpuCurFreqKhz": []
+    },
+    {
+      "wallMillis": 1787473207537,
+      "timestampUs": 718721433358,
+      "tier": "fair",
+      "rawStatus": 1,
+      "statusReadable": true,
+      "headroom": null,
+      "lowPowerMode": false,
+      "cameraStream": "unknown",
+      "cameraCutBySystemPressure": false,
+      "interruptionReason": null,
+      "systemPressureLevel": null,
+      "activeProcessorCount": 6,
+      "cpuCurFreqKhz": []
+    },
+    {
+      "wallMillis": 1787473209536,
+      "timestampUs": 718723432739,
+      "tier": "fair",
+      "rawStatus": 1,
+      "statusReadable": true,
+      "headroom": null,
+      "lowPowerMode": false,
+      "cameraStream": "unknown",
+      "cameraCutBySystemPressure": false,
+      "interruptionReason": null,
+      "systemPressureLevel": null,
+      "activeProcessorCount": 6,
+      "cpuCurFreqKhz": []
+    },
+    {
+      "wallMillis": 1787473211537,
+      "timestampUs": 718725433384,
+      "tier": "fair",
+      "rawStatus": 1,
+      "statusReadable": true,
+      "headroom": null,
+      "lowPowerMode": false,
+      "cameraStream": "unknown",
+      "cameraCutBySystemPressure": false,
+      "interruptionReason": null,
+      "systemPressureLevel": null,
+      "activeProcessorCount": 6,
+      "cpuCurFreqKhz": []
+    },
+    {
+      "wallMillis": 1787473213537,
+      "timestampUs": 718727433568,
+      "tier": "fair",
+      "rawStatus": 1,
+      "statusReadable": true,
+      "headroom": null,
+      "lowPowerMode": false,
+      "cameraStream": "unknown",
+      "cameraCutBySystemPressure": false,
+      "interruptionReason": null,
+      "systemPressureLevel": null,
+      "activeProcessorCount": 6,
+      "cpuCurFreqKhz": []
+    }
+  ]
+}

@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+    <head>
+	    <script>
+            window._epicEnableCookieGuard = true;
+            window._epicTrackingCookieDomainId = "7c727b26-cedc-4409-87d1-5077acb3298b";
+            window.__tracking_base = "https://tracking.epicgames.com";
+        </script>
+        <script src="https://tracking.epicgames.com/tracking.js" async=""></script>
+		<script type="module" crossorigin="anonymous" src="https://components.unrealengine.com/navigation/realitycapture-navigation.mjs"></script>
+        <script src="https://components.unrealengine.com/footer/realitycapture-footer.mjs" async="true" type="module" crossorigin="anonymous" data-nscript="afterInteractive"></script>
+        <title>Alignment Settings - RealityScan Help</title>
+        <meta charset="UTF-8"/>
+        <meta name="author" content="Epic Games Slovakia s.r.o."/>
+        <meta http-equiv="X-UA-Compatible" content="IE=10"/>
+        <link type="text/css" rel="stylesheet" href="../../styles/style.css"/>
+        <link type="text/css" rel="stylesheet" href="../../styles/colors.css"/>
+        <link type="text/css" rel="stylesheet" href="../../styles/flagStyles.css"/>
+        <script src="../scripts/textVars.js" type="text/javascript"></script>
+        <script src="../../scripts/localization.js" type="text/javascript"></script>
+        <script src="../../scripts/main.js" type="text/javascript"></script>
+    </head>
+    <body>
+        <realitycapture-navigation id="header" disableLocale="true" disableSearch="true" displayName="" isLoggedIn="false" domain="https://www.realityscan.com" locale="en-US" signinlinkhref="https://www.capturingreality.com/my" signoutlinkhref="https://www.capturingreality.com/auth.sign.out"></realitycapture-navigation>
+
+        <div data-id="div_cs" class="content_slide">
+
+            <script type="text/javascript">RenderToolNavigation();</script>
+
+            <div data-id="div_head" class="head">
+
+                <h1 data-id="h1" data-vn="1">Alignment Settings</h1>
+
+                <p data-id="p_h1_1" data-vn="2">
+                    Alignment is the process of registering cameras by matching images based on their common features and poses. Registered cameras are grouped into components. You can adjust the alignment process in the <span class="apppanel">Alignment Settings</span>, located in the <span class="apppanel">Registration</span> section of the <span class="appribbon">ALIGNMENT</span> tab.
+                </p>
+
+                <img src="images/alignsettings.png" alt="alignsettings" class="autoimg" onerror="this.onerror=null;this.src='../../en-US/appbasics/images/alignsettings.png';">
+            </div>
+
+            <div data-id="div_sb_settings" class="slideblock">
+
+                <p data-id="p_div_sb_settings_1" data-vn="2">
+                    <span class="appproperty">Feature detection quality</span> Choose the quality level for detecting features in images. Setting it to <span class="appproperty">High</span> improves feature detection, resulting in a more precise alignment process, but increases processing time and RAM usage.<br/>               
+                    <span class="appproperty">Max features per mpx</span> Set the maximum number of features per megapixel for the feature detector to extract during alignment. Using more features may slow processing but can result in less components.<br/>
+                    <span class="appproperty">Max features per image</span> Set the maximum number of features per image. Similar to <span class="appproperty">Max features per mpx</span> setting.<br/>
+                    <span class="appproperty">Image overlap</span> Defines how much of the image space is covered with the same part of the object, when talking about neighboring images. The red area in the figure below shows common physical space projected to images. 
+                        The larger common area, the easier it is to calculate camera poses. Set Low when image overlap is below 20%. 
+                        For the best quality, the neighboring images should have overlap greater than 60%. 
+                        Bigger overlap improves speed while a smaller overlap may cause disconnected components if there are not enough photographs.<br/>
+                </p>
+                <img src="../../images/img-overlap.jpg" alt="img-overlap" class="autoimg"/>
+                <br/>
+                <p data-id="p_div_sb_settings_2" data-vn="2">
+                    <span class="appproperty">Image downscale factor</span> A multiplier by which the size of an image is reduced before feature detection. In order to get the best precision, use full image resolution (downscale factor 1).<br/>
+                    <span class="appproperty">Max feature reprojection error</span> Internal precision level used during alignment. We recommend you to set it maximum to 3px and keep the errors at most in this extent.<br/>
+                </p>
+
+                <br/>
+
+            </div>
+
+            <div data-id="div_sb_priors" class="slideblock">
+
+                <h2 data-id="h2_priors" data-vn="1">Camera Priors</h2>
+
+                <p data-id="p_prio" data-vn="2">Define the accuracy of initial camera positions and rotations, and their hardness—how strongly they influence the alignment.</p>
+
+                <img src="images/alignsettings-4.png" alt="alignsettings-4" class="autoimg" onerror="this.onerror=null;this.src='../../en-US/appbasics/images/alignsettings-4.png';"/>
+                <br/><br/>
+
+                <ul class="apppanelitems">
+                    <li class="apppanelitem" data-id="li_prio_settings_use" data-vn="2"><span class="appproperty">Use camera priors for georeferencing</span> When set to Yes, prior positions for the images are used in the alignment process and for georeferencing the scene.</li>
+                    <li class="apppanelitem" data-id="li_prio_settings_posacc" data-vn="1"><span class="appproperty">Position accuracy</span> Specify the accuracy of the cameras' prior positions. It defines the range, in which the calculated positions are going to be considered as equal to the prior values.</li>
+                    <li class="apppanelitem" data-id="li_prio_settings_units" data-vn="1"><span class="appproperty">Units</span> The units of the coordinate system in which the cameras' priors and their accuracies are displayed.</li>
+                    <li class="apppanelitem" data-id="li_prio_settings_poprha" data-vn="1"><span class="appproperty">Position prior hardness</span> A value that defines the closeness of the calculated positions to the prior positions. The greater the value, the closer the calculated positions are going to be to the prior positions.
+                    This may change the visual connections between cameras.</li>
+                    <li class="apppanelitem" data-id="li_prio_settings_ypr" data-vn="1"><span class="appproperty">Yaw/Pitch/Roll accuracy </span> Specify the accuracy of the cameras' prior orientations. It defines the range, in which the calculated orientations are going to be considered as equal to the prior values.</li>
+                    <li class="apppanelitem" data-id="li_prio_settings_orprha" data-vn="1"><span class="appproperty">Orientation prior hardness</span> A value that defines the closeness of the calculated orientations to the prior orientations. The greater the value, the closer the calculated orientations are going to 
+                    be to the prior orientations. This may change the visual connections between cameras.</li>
+                </ul>
+
+            </div>
+            
+            <div class="clear splitSpacing">
+                <!-- clear -->
+            </div>
+
+            <div class="slideblock">
+
+                <h2 data-id="h2_cppriors" data-vn="1">Control Point Prior Settings</h2>
+
+                <p data-id="p_cp_priors" data-vn="1">Define the accuracy of control points and ground control points positions.</p>
+
+                <img src="images/alignsettings-5.png" alt="alignsettings-5" class="autoimg" onerror="this.onerror=null;this.src='../../en-US/appbasics/images/alignsettings-5.png';"/>
+                <br/><br/>
+
+                <ul class="apppanelitems">
+                    <li class="apppanelitem" data-id="li_cpprio_settings_immeac" data-vn="1"><span class="appproperty">Image measurements accuracy [px]</span> A value that defines the deviations' range of the manually placed control points in the images.</li>
+                    <li class="apppanelitem" data-id="li_cpprio_settings_posacc" data-vn="1"><span class="appproperty">Position accuracy</span> Specify the accuracy of the ground control points’ position for each coordinate.</li>
+                    <li class="apppanelitem" data-id="li_cpprio_settings_dediac" data-vn="1"><span class="appproperty">Defined distance accuracy</span> Set the value of the usual accuracy of distance constraint.</li>
+                    <li class="apppanelitem" data-id="li_cpprio_settings_units" data-vn="1"><span class="appproperty">Units</span> The units of the coordinate system in which the control points' priors and their accuracies are displayed.</li>
+                </ul>
+
+            </div>            
+
+            <div class="clear splitSpacing">
+                <!-- clear -->
+            </div>
+
+            <div data-id="div_sb_draft" class="slideblock">
+
+                <h2 data-id="h2_draft" data-vn="1">Draft</h2>
+
+                <p data-id="p_draft" data-vn="2">These settings are applied when running the <span class="apptool">Draft</span> alignment.</p>
+
+                <img src="images/alignsettings-3.png" alt="alignsettings-3" class="autoimg" onerror="this.onerror=null;this.src='../../en-US/appbasics/images/alignsettings-3.png';"/>
+                <br/><br/>
+
+                <p data-id="p_draft_settings" data-vn="2">
+                    <span class="appproperty">Image overlap</span> Defines how many common features are expected between images. Can be set to Low, Medium, or High, where Low indicates minimal overlap and High indicates the greatest overlap.<br/>
+                    <span class="appproperty">Image downscale factor</span> A multiplier that reduces the size of the images during the <span class="apptool">Draft</span> alignment.<br/>
+                    <span class="appproperty">Final model optimization</span> When set to Yes, a final bundle adjustment is performed to optimize camera registration.<br/>
+                </p>
+
+            </div>
+
+            <br/>
+
+            <div data-id="div_sb_advanced" class="slideblock">
+
+                <h2 data-id="h2_advanced" data-vn="1">Advanced Settings</h2>
+                <p data-id="p_advanced" data-vn="2">Advanced settings are intended for users familiar with structure-from-motion processing. Do not change these settings unless you understand their impact.</p>
+
+                <img src="images/alignsettings-2.png" alt="alignsettings-2" class="autoimg" onerror="this.onerror=null;this.src='../../en-US/appbasics/images/alignsettings-2.png';"/>
+                <br/><br/>
+
+                <ul class="apppanelitems">
+                    <li data-id="li_advset_gpuac" data-vn="1" class="apppanelitem">
+                        <span class="appproperty">GPU acceleration</span> Enable GPU usage to speed up the alignment process.
+                    </li>
+                    <li data-id="li_advset_adrr" data-vn="1" class="apppanelitem">
+                        <span class="appproperty">Add a reconstruction region after alignment</span> Setting this to Yes will secure an automatic creation of the reconstruction region once the alignment has been finished.
+                    </li>
+                    <li data-id="li_advset_enms" data-vn="2" class="apppanelitem"><span class="appproperty">
+                        Enable measurement suggestions</span> Here you can enable suggestions of image measurement in the <span class="appaspecttype">3Ds</span> view when placing control points.
+                    </li>
+                    <li data-id="li_advset_focr" data-vn="2" class="apppanelitem">
+                        <span class="appproperty">Force component rematch</span> When set to Yes, the application realigns images and cameras to find better connections. It uses existing camera poses to search for new matches, potentially improving the quality of the final alignment.
+                    </li>
+                    <li data-id="li_advset_bfdt" data-vn="1" class="apppanelitem">
+                        <span class="appproperty">Background feature detection</span> Choose whether you want the system to automatically detect feature points in the background with a low priority of the processor. 
+                        This can be useful, for example, when you want to place control points. Your computer will pre-process images and, in turn, save your time.
+                    </li>
+                    <li data-id="li_advset_bthp" data-vn="2" class="apppanelitem">
+                        <span class="appproperty">Background thread priority</span> Priority of the background detection. You have the possibility to choose from low and normal.
+                    </li>
+                    <li data-id="li_advset_prft" data-vn="1" class="apppanelitem">
+                        <span class="appproperty">Preselector features</span> This is the number of features that will be used in alignment from the detected ones. Optimally, set it to 1/4-1/2 of the detected features.
+                    </li>
+                    <li data-id="li_advset_dese" data-vn="2" class="apppanelitem">
+                        <span class="appproperty">Detector sensitivity</span> Controls how the feature detector evaluates the stability of points in an image under different conditions, such as changes in viewpoint or lighting. Higher sensitivity, like Ultra, allows detection of more features, even in areas with weak texture, but may also include less reliable points caused by image noise. Lower sensitivity, like Low, is more selective and ignores weaker features, which can reduce noise but may discard useful data for image registration.
+                    </li>
+                    <li data-id="li_advset_megc" data-vn="2" class="apppanelitem">
+                        <span class="appproperty">Merge georeferenced components</span> When multiple components are created and each is georeferenced, enabling this setting allows them to be merged even without visual overlap.
+                    </li>
+                    <li data-id="li_advset_dimo" data-vn="1" class="apppanelitem">
+                        <span class="appproperty">Distortion model</span> Define which distortion model you would like to use - continue to the next topic.
+                    </li>
+                    <li data-id="li_advset_prfr" data-vn="2" class="apppanelitem">
+                        <span class="appproperty">Prefer images as feature during import</span> Set to Yes to import .zfprj mosaic images and use them as feature source during the alignment process. 
+                        This might help to register the unregistered scans or to automatically find the same features when merging LiDAR scans with images. Applies only for the Z+F scans.
+                    </li>
+                </ul>
+
+            </div>
+
+            <br/>
+
+            <div data-id="div_bc" class="blocksContainer">
+
+                <a href="settings_distortion_models.htm">
+                    <div class="block TileColor2">
+                        <h2 data-id="h2_bc_lens" data-vn="1">Lens Distortion Models</h2>
+                        <p data-id="p2_bc_lens" data-vn="1">Learn more about lens distortion models</p>
+                    </div>
+                </a>
+
+                <script type="text/javascript">RenderBackToStartTile();</script>
+
+            </div>
+
+            <div class="clear">
+                <!-- clear -->
+            </div>
+
+            <div data-id="div_sa" class="rowblock">
+                <h3 data-id="h3_div_sa" data-vn="1">See also:</h3>
+                <ul class="intend">
+                    <li data-id="li_div_sa_appsettings" data-vn="1">Application settings <a href="appsettings.htm">click here</a></li>
+                    <li data-id="li_div_sa_modelsettings" data-vn="1">Model and reconstruction settings <a href="modelsettings.htm">click here</a></li>
+                </ul>
+                <div class="clear">
+                    <!-- clear -->
+                </div>
+            </div>
+
+            <!-- content slide end -->
+
+        </div>
+
+        <script type="text/javascript">RenderCopyrightText();</script>
+
+        <script type="text/javascript">
+            InitializeHelpSlide();
+        </script>
+
+    
+		<realitycapture-footer domain="https://www.realityscan.com" locale="" countryCode="" class="epicgames-footer"></realitycapture-footer>
+    </body>
+</html>

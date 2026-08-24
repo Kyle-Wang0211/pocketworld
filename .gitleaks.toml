@@ -32,6 +32,10 @@ regexes = [
   # rule. Anchored on `==`/`!=` so it only ever forgives a comparison,
   # never an assignment — `foo = "<secret>"` is still caught.
   '''(==|!=)\s*[A-Za-z_][A-Za-z0-9_]*\s*(\|\||&&|\)|;|$)''',
+    # Content digests, not credentials. Anchored on a field name ending
+    # in `sha256` plus an exactly-64-hex value, so it only ever forgives a
+    # named digest -- a real key in any other field is still caught.
+    '''"[A-Za-z_]*sha256"\s*:\s*"[0-9a-f]{64}"''',
 ]
 
 [allowlist]

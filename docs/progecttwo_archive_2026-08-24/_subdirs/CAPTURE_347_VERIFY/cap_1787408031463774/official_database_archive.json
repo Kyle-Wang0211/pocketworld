@@ -1,0 +1,18 @@
+{
+  "schema": "pw_official_database_archive_manifest_v2",
+  "source_file": "official_sfm_live.db",
+  "archive_file": "official_sfm_live.db.zpaq",
+  "codec": "zpaq",
+  "version": "7.15",
+  "revision": "e85ec2529eb0ba22ceaeabd461e55357ef099b80f61c14f377b429ea3d49d418",
+  "method": 5,
+  "source_bytes": 1929216,
+  "source_sha256": "31063ce7aa9279fcc43a97e5942cbc4b74006db6952c7943ab9ee515a75208fe",
+  "archive_bytes": 970072,
+  "archive_sha256": "ad8a781517e1fcf1e2b73ec367d89f12f06454df175bd289daa20bb5e903a595",
+  "preprocess": "raw_v1",
+  "candidate_bytes": {
+    "raw_v1": 970072
+  },
+  "verified_at": "2026-08-22T14:15:03.587891Z"
+}

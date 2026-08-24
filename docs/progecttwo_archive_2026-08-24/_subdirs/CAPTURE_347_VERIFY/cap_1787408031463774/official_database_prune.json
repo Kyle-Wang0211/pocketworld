@@ -1,0 +1,16 @@
+{
+ "schema": "pw_database_prune_v3",
+ "created_at": "2026-08-22T14:14:48.104851Z",
+ "original_db_bytes": 26161152,
+ "original_db_sha256": "c9fd63c18541532d48962c2612da7f83ba1f28a349b69ab3c98de07936f11166",
+ "pruned_db_bytes": 1929216,
+ "preserved_table_sha256": {
+  "cameras": "51f494a63e8aa437ba71fcdbb58c0a82ca15284f1fd2457179c8c0582726afc9",
+  "images": "aab9ae4dd52e30312108636344e30899839644e20f34be9d7b06eb03800d76b9",
+  "two_view_geometries": "b8416f8968a993811901b2ba659dfbee00f9cb76bfe81ffe5d32ba1784eddd6e"
+ },
+ "keypoints_xy_sha256": "b3baa00f1ffb73b75cdffdf33a164acd7d94746b202c95058afb76b23da2bb92",
+ "deleted": "descriptors(匹配中间物;可从归档帧重提,语义档) + keypoints 仿射形状列 a11/a12/a21/a22(匹配期形状信息,重建只读 x,y) + matches 原始匹配表(已蒸馏成 TVG 内点)",
+ "drop_raw_matches": true,
+ "rationale": "b1-regen-ceiling-PROVEN: 匹配图不可从 q65 帧再生(轨迹-24%),必须保留"
+}

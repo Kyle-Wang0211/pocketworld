@@ -1,0 +1,474 @@
+?AddCamerasToModel@ModelTools@CapturingReality@@YAJPEAUIMvsModel@Mvs@2@PEAUICameraList@Depthmaps@42@IPEAIIIPEAUIImageProvider@2@PEAUIProgressReportCallback@2@PEAPEAU342@@Z
+    -> long __cdecl CapturingReality::ModelTools::AddCamerasToModel(struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::Mvs::Depthmaps::ICameraList *, unsigned int, unsigned int *, unsigned int, unsigned int, struct CapturingReality::IImageProvider *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::Mvs::IMvsModel * *)
+
+?CalculateAverageEdgeLength@ModelTools@CapturingReality@@YAJPEAUIMvsModel@Mvs@2@PEAUIProgressReportCallback@2@PEAN@Z
+    -> long __cdecl CapturingReality::ModelTools::CalculateAverageEdgeLength(struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IProgressReportCallback *, double *)
+
+?CalculateCubeUnwrappedSurfaceArea@ModelTools@CapturingReality@@YAJMPEAUIMvsModel@Mvs@2@PEAUIProgressReportCallback@2@PEAN@Z
+    -> long __cdecl CapturingReality::ModelTools::CalculateCubeUnwrappedSurfaceArea(float, struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IProgressReportCallback *, double *)
+
+?CalculateOrthoProjectionMatrix@ModelTools@CapturingReality@@YAXPEAUCoordinateSystemPoint@2@PEANIINN1@Z
+    -> void __cdecl CapturingReality::ModelTools::CalculateOrthoProjectionMatrix(struct CapturingReality::CoordinateSystemPoint *, double *, unsigned int, unsigned int, double, double, double *)
+
+?CleanModel@ModelTools@CapturingReality@@YAJIPEAUIMvsModel@Mvs@2@PEAUIProgressReportCallback@2@PEAI@Z
+    -> long __cdecl CapturingReality::ModelTools::CleanModel(unsigned int, struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IProgressReportCallback *, unsigned int *)
+
+?CleanToNewModel@ModelTools@CapturingReality@@YAJIPEAUIMvsModel@Mvs@2@PEAUIProgressReportCallback@2@PEAPEAU342@PEAI@Z
+    -> long __cdecl CapturingReality::ModelTools::CleanToNewModel(unsigned int, struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::Mvs::IMvsModel * *, unsigned int *)
+
+?CloseHoles@ModelTools@CapturingReality@@YAJIPEAUIMvsModel@Mvs@2@PEAUIItemSelection@2@PEAUIProgressReportCallback@2@PEAPEAU342@PEAI@Z
+    -> long __cdecl CapturingReality::ModelTools::CloseHoles(unsigned int, struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IItemSelection *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::Mvs::IMvsModel * *, unsigned int *)
+
+?ColorMvsModel@Mvs@CapturingReality@@YAJPEAUColoringAlgorithmSettings@12@PEAUIImageProvider@2@PEAUICameraListContext@Depthmaps@12@PEAUISceneStructure@2@PEAUIMvsModel@12@PEAUIProgressReportCallback@2@@Z
+    -> long __cdecl CapturingReality::Mvs::ColorMvsModel(struct CapturingReality::Mvs::ColoringAlgorithmSettings *, struct CapturingReality::IImageProvider *, struct CapturingReality::Mvs::Depthmaps::ICameraListContext *, struct CapturingReality::ISceneStructure *, struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IProgressReportCallback *)
+
+?ColorizeByConnectedComponents@ModelTools@CapturingReality@@YAJPEAUIMvsModel@Mvs@2@PEAUIConnectedComponentsMetadata@ModelPostProcess@2@PEAUIProgressReportCallback@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::ColorizeByConnectedComponents(struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::ModelPostProcess::IConnectedComponentsMetadata *, struct CapturingReality::IProgressReportCallback *)
+
+?ColorizeByVisibility@ModelTools@CapturingReality@@YAJIIPEAUIMvsModel@Mvs@2@PEAUIUnknown@@PEAUIProgressReportCallback@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::ColorizeByVisibility(unsigned int, unsigned int, struct CapturingReality::Mvs::IMvsModel *, struct IUnknown *, struct CapturingReality::IProgressReportCallback *)
+
+?ColorizeModelFromTexturing@ModelTools@CapturingReality@@YAJI_NPEAUIMvsModel@Mvs@2@PEAUIProgressReportCallback@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::ColorizeModelFromTexturing(unsigned int, bool, struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IProgressReportCallback *)
+
+?ComputeMosaicing@ModelTools@CapturingReality@@YAJ_K0IPEAUICameraList@Depthmaps@Mvs@2@PEAUIMvsModel@52@PEAUIUnknown@@PEAUIProgressReportCallback@2@PEAPEAU7@@Z
+    -> long __cdecl CapturingReality::ModelTools::ComputeMosaicing(unsigned __int64, unsigned __int64, unsigned int, struct CapturingReality::Mvs::Depthmaps::ICameraList *, struct CapturingReality::Mvs::IMvsModel *, struct IUnknown *, struct CapturingReality::IProgressReportCallback *, struct IUnknown * *)
+
+?ComputeOrthoMosaic@ModelTools@CapturingReality@@YAJPEAUIImageProvider@2@PEAUICameraListContext@Depthmaps@Mvs@2@PEAUISceneStructure@2@PEAUCoordinateSystemResidual@2@PEAUIProgressReportCallback@2@PEAUIOrthographicProjection@OrthoProjection@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::ComputeOrthoMosaic(struct CapturingReality::IImageProvider *, struct CapturingReality::Mvs::Depthmaps::ICameraListContext *, struct CapturingReality::ISceneStructure *, struct CapturingReality::CoordinateSystemResidual *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::OrthoProjection::IOrthographicProjection *)
+
+?ComputeOrthoMosaicing@ModelTools@CapturingReality@@YAJW4OrthoMosaicingStyle@ModelPostProcess@2@PEAUCoordinateSystemPoint@2@1_K2PEAUICameraList@Depthmaps@Mvs@2@PEAUIMvsModel@82@PEAUIUnknown@@PEAUIProgressReportCallback@2@PEAPEAUIUnknown@@@Z
+    -> long __cdecl CapturingReality::ModelTools::ComputeOrthoMosaicing(enum CapturingReality::ModelPostProcess::OrthoMosaicingStyle, struct CapturingReality::CoordinateSystemPoint *, struct CapturingReality::CoordinateSystemPoint *, unsigned __int64, unsigned __int64, struct CapturingReality::Mvs::Depthmaps::ICameraList *, struct CapturingReality::Mvs::IMvsModel *, struct IUnknown *, struct CapturingReality::IProgressReportCallback *, struct IUnknown * *)
+
+?ConvertPointCloudToLsp@ModelTools@CapturingReality@@YAJPEB_W0_K0PEAULaserscanImportSettings@Importers@2@PEAUIPointCloudNoiseProfile@42@PEAUIProgressReportCallback@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::ConvertPointCloudToLsp(const wchar_t *, const wchar_t *, unsigned __int64, const wchar_t *, struct CapturingReality::Importers::LaserscanImportSettings *, struct CapturingReality::Importers::IPointCloudNoiseProfile *, struct CapturingReality::IProgressReportCallback *)
+
+?ConvertSelectionToModelExactSelection@ModelTools@CapturingReality@@YAJPEAUIMvsModel@Mvs@2@PEAUIItemSelection@2@PEAUIProgressReportCallback@2@PEAPEAU52@@Z
+    -> long __cdecl CapturingReality::ModelTools::ConvertSelectionToModelExactSelection(struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IItemSelection *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::IItemSelection * *)
+
+?CopyStream@Utilities@CapturingReality@@YAJPEAUIStream@@0PEAUIProgressReportCallback@2@@Z
+    -> long __cdecl CapturingReality::Utilities::CopyStream(struct IStream *, struct IStream *, struct CapturingReality::IProgressReportCallback *)
+
+?CreateAsyncQueueScheduler@Utilities@CapturingReality@@YAJ_KIPEAUIProgressReportCallback@2@PEAPEAUIAsyncQueueScheduler@2@@Z
+    -> long __cdecl CapturingReality::Utilities::CreateAsyncQueueScheduler(unsigned __int64, unsigned int, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::IAsyncQueueScheduler * *)
+
+?CreateAsyncWorkScheduler@Utilities@CapturingReality@@YAJ_KIPEAUIProgressReportCallback@2@PEAPEAUIAsyncWorkScheduler@2@@Z
+    -> long __cdecl CapturingReality::Utilities::CreateAsyncWorkScheduler(unsigned __int64, unsigned int, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::IAsyncWorkScheduler * *)
+
+?CreateBalancedResourceCache@Utilities@CapturingReality@@YAJIPEAUIResourceCache@2@IPEAUIProgressReportCallback@2@PEAPEAU32@@Z
+    -> long __cdecl CapturingReality::Utilities::CreateBalancedResourceCache(unsigned int, struct CapturingReality::IResourceCache *, unsigned int, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::IResourceCache * *)
+
+?CreateCameraList@Mvs@CapturingReality@@YAJPEAUCoordinateSystemResidual@2@PEAUIStructureFromMotion@Sfm@2@PEAUISfmReconstruction@52@PEAUIUnknown@@PEAPEAUICameraList@Depthmaps@12@@Z
+    -> long __cdecl CapturingReality::Mvs::CreateCameraList(struct CapturingReality::CoordinateSystemResidual *, struct CapturingReality::Sfm::IStructureFromMotion *, struct CapturingReality::Sfm::ISfmReconstruction *, struct IUnknown *, struct CapturingReality::Mvs::Depthmaps::ICameraList * *)
+
+?CreateCameraListContext@Mvs@CapturingReality@@YAJPEAUICameraList@Depthmaps@12@PEAUISceneStructure@2@PEAPEAUICameraListContext@412@@Z
+    -> long __cdecl CapturingReality::Mvs::CreateCameraListContext(struct CapturingReality::Mvs::Depthmaps::ICameraList *, struct CapturingReality::ISceneStructure *, struct CapturingReality::Mvs::Depthmaps::ICameraListContext * *)
+
+?CreateCameraModel@Sfm@CapturingReality@@YAJW4SfmImageModel@2@PEAPEAUISfmCameraModel@12@@Z
+    -> long __cdecl CapturingReality::Sfm::CreateCameraModel(enum CapturingReality::SfmImageModel, struct CapturingReality::Sfm::ISfmCameraModel * *)
+
+?CreateCameraOptimizer@SparseBundleAdjustment@Sfm@CapturingReality@@YAJPEAPEAUIBundleAdjustmentCamera@123@@Z
+    -> long __cdecl CapturingReality::Sfm::SparseBundleAdjustment::CreateCameraOptimizer(struct CapturingReality::Sfm::SparseBundleAdjustment::IBundleAdjustmentCamera * *)
+
+?CreateConfig@Utilities@CapturingReality@@YAJPEAPEAUIConfig@2@@Z
+    -> long __cdecl CapturingReality::Utilities::CreateConfig(struct CapturingReality::IConfig * *)
+
+?CreateConfig@Utilities@CapturingReality@@YAJPEAPEAUIConfigEx@12@@Z
+    -> long __cdecl CapturingReality::Utilities::CreateConfig(struct CapturingReality::Utilities::IConfigEx * *)
+
+?CreateConfig@Utilities@CapturingReality@@YAJPEAUIStream@@PEAPEAUIConfigEx@12@@Z
+    -> long __cdecl CapturingReality::Utilities::CreateConfig(struct IStream *, struct CapturingReality::Utilities::IConfigEx * *)
+
+?CreateConnectedComponentsMetadata@ModelTools@CapturingReality@@YAJPEAUIMvsModel@Mvs@2@PEAUIProgressReportCallback@2@PEAPEAUIConnectedComponentsMetadata@ModelPostProcess@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::CreateConnectedComponentsMetadata(struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::ModelPostProcess::IConnectedComponentsMetadata * *)
+
+?CreateControlPointTriangulator@Sfm@CapturingReality@@YAJPEAUISfmReconstruction@12@PEAUIStructureFromMotion@12@PEAPEAUIControlPointTriangulator@12@@Z
+    -> long __cdecl CapturingReality::Sfm::CreateControlPointTriangulator(struct CapturingReality::Sfm::ISfmReconstruction *, struct CapturingReality::Sfm::IStructureFromMotion *, struct CapturingReality::Sfm::IControlPointTriangulator * *)
+
+?CreateDigitalSurfaceModelDataProvider@ModelTools@CapturingReality@@YAJPEAUIOrthographicProjection@OrthoProjection@2@PEAUIProgressReportCallback@2@PEAPEAUIOrthoProjectionDataProvider@42@@Z
+    -> long __cdecl CapturingReality::ModelTools::CreateDigitalSurfaceModelDataProvider(struct CapturingReality::OrthoProjection::IOrthographicProjection *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::OrthoProjection::IOrthoProjectionDataProvider * *)
+
+?CreateDirectFileResource@Utilities@CapturingReality@@YAJPEAUIStringBuffer@@PEAPEAUINamedResource@2@@Z
+    -> long __cdecl CapturingReality::Utilities::CreateDirectFileResource(struct IStringBuffer *, struct CapturingReality::INamedResource * *)
+
+?CreateDirectFileResource@Utilities@CapturingReality@@YAJPEB_WPEAPEAUINamedResource@2@@Z
+    -> long __cdecl CapturingReality::Utilities::CreateDirectFileResource(const wchar_t *, struct CapturingReality::INamedResource * *)
+
+?CreateDistortedImageProvider@Mvs@CapturingReality@@YAJW4SfmImageInputLayer@Sfm@2@PEAUIStructureFromMotion@42@PEAUISfmReconstruction@42@PEAUIUnknown@@PEAPEAUIImageProvider@2@@Z
+    -> long __cdecl CapturingReality::Mvs::CreateDistortedImageProvider(enum CapturingReality::Sfm::SfmImageInputLayer, struct CapturingReality::Sfm::IStructureFromMotion *, struct CapturingReality::Sfm::ISfmReconstruction *, struct IUnknown *, struct CapturingReality::IImageProvider * *)
+
+?CreateEngineOnlineServices@RealityCaptureServices@CapturingReality@@YAJPEAUServiceConnectionContext@12@PEAPEAUIEngineOnlineServices@12@@Z
+    -> long __cdecl CapturingReality::RealityCaptureServices::CreateEngineOnlineServices(struct CapturingReality::RealityCaptureServices::ServiceConnectionContext *, struct CapturingReality::RealityCaptureServices::IEngineOnlineServices * *)
+
+?CreateExportTransformationsProvider@ModelTools@CapturingReality@@YAJPEAUExportTransformationSettings@CalibrationExport@2@PEAPEAUIExportTransformationsProvider@42@@Z
+    -> long __cdecl CapturingReality::ModelTools::CreateExportTransformationsProvider(struct CapturingReality::CalibrationExport::ExportTransformationSettings *, struct CapturingReality::CalibrationExport::IExportTransformationsProvider * *)
+
+?CreateExternalTriangles@ModelTools@CapturingReality@@YAJPEAUCreateExternalTrianglesParams@ModelPostProcess@2@W4CreateExternalTrianglesStrategy@42@PEAUIMvsModel@Mvs@2@PEAUIProgressReportCallback@2@PEAPEAU672@PEAI@Z
+    -> long __cdecl CapturingReality::ModelTools::CreateExternalTriangles(struct CapturingReality::ModelPostProcess::CreateExternalTrianglesParams *, enum CapturingReality::ModelPostProcess::CreateExternalTrianglesStrategy, struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::Mvs::IMvsModel * *, unsigned int *)
+
+?CreateFeatureDetector@FeatureDetector@Sfm@CapturingReality@@YAJW4FeatureDetectorType@123@PEAUIFeatureDescriptorSink@123@PEAPEAUIFeatureDetector@123@@Z
+    -> long __cdecl CapturingReality::Sfm::FeatureDetector::CreateFeatureDetector(enum CapturingReality::Sfm::FeatureDetector::FeatureDetectorType, struct CapturingReality::Sfm::FeatureDetector::IFeatureDescriptorSink *, struct CapturingReality::Sfm::FeatureDetector::IFeatureDetector * *)
+
+?CreateGeneralizedCameraOptimizer@SparseBundleAdjustment@Sfm@CapturingReality@@YAJW4BundleGeneralizedCameraModel@123@AEBUBundleOptimizationContext@123@PEAPEAUIBundleAdjustmentGeneralizedCamera@123@@Z
+    -> long __cdecl CapturingReality::Sfm::SparseBundleAdjustment::CreateGeneralizedCameraOptimizer(enum CapturingReality::Sfm::SparseBundleAdjustment::BundleGeneralizedCameraModel, const struct CapturingReality::Sfm::SparseBundleAdjustment::BundleOptimizationContext &, struct CapturingReality::Sfm::SparseBundleAdjustment::IBundleAdjustmentGeneralizedCamera * *)
+
+?CreateInputsLicensingManager@RealityCaptureServices@CapturingReality@@YAJPEAPEAUIInputsLicensingManager@12@@Z
+    -> long __cdecl CapturingReality::RealityCaptureServices::CreateInputsLicensingManager(struct CapturingReality::RealityCaptureServices::IInputsLicensingManager * *)
+
+?CreateModelIntegrity@ModelTools@CapturingReality@@YAJPEAUIMvsModel@Mvs@2@PEAUColoringByNormalParams@42@PEAUIProgressReportCallback@2@PEAPEAUIModelIntegrity@ModelPostProcess@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::CreateModelIntegrity(struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::Mvs::ColoringByNormalParams *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::ModelPostProcess::IModelIntegrity * *)
+
+?CreateModelVerticesExactSelection@ModelTools@CapturingReality@@YAJPEAUIMvsModel@Mvs@2@PEAPEAUIItemSelection@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::CreateModelVerticesExactSelection(struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IItemSelection * *)
+
+?CreateModelVisibility@Mvs@CapturingReality@@YAJPEAUVisibilityAlgorithmParameters@12@PEAUIMvsModel@12@PEAUICameraListContext@Depthmaps@12@PEAUIImageProvider@2@PEAUISceneStructure@2@PEAUIProgressReportCallback@2@PEAPEAUIModelVisibility@12@PEAPEAUIUnknown@@@Z
+    -> long __cdecl CapturingReality::Mvs::CreateModelVisibility(struct CapturingReality::Mvs::VisibilityAlgorithmParameters *, struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::Mvs::Depthmaps::ICameraListContext *, struct CapturingReality::IImageProvider *, struct CapturingReality::ISceneStructure *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::Mvs::IModelVisibility * *, struct IUnknown * *)
+
+?CreateMosaicingDataProvider@ModelTools@CapturingReality@@YAJIPEAUIOrthographicProjection@OrthoProjection@2@PEAUIProgressReportCallback@2@PEAPEAUIOrthoProjectionDataProvider@42@@Z
+    -> long __cdecl CapturingReality::ModelTools::CreateMosaicingDataProvider(unsigned int, struct CapturingReality::OrthoProjection::IOrthographicProjection *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::OrthoProjection::IOrthoProjectionDataProvider * *)
+
+?CreateMvsModelFromStream@Mvs@CapturingReality@@YAJPEAUIStream@@PEAUIResourceCache@2@PEAPEAUIMvsModel@12@@Z
+    -> long __cdecl CapturingReality::Mvs::CreateMvsModelFromStream(struct IStream *, struct CapturingReality::IResourceCache *, struct CapturingReality::Mvs::IMvsModel * *)
+
+?CreateMvsModelMultiPart@Mvs@CapturingReality@@YAJPEAUCreateMvsModelParameters@12@PEAUIConfig@2@PEAPEAUIMvsModel@12@PEAJ@Z
+    -> long __cdecl CapturingReality::Mvs::CreateMvsModelMultiPart(struct CapturingReality::Mvs::CreateMvsModelParameters *, struct CapturingReality::IConfig *, struct CapturingReality::Mvs::IMvsModel * *, long *)
+
+?CreateMvsModelRenderData@ModelTools@CapturingReality@@YAJIIPEAUIMvsModel@Mvs@2@PEAUIProgressReportCallback@2@PEAPEAUIMvsModelRenderData@ModelPostProcess@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::CreateMvsModelRenderData(unsigned int, unsigned int, struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::ModelPostProcess::IMvsModelRenderData * *)
+
+?CreateMvsModelRenderDataFromStream@ModelTools@CapturingReality@@YAJPEAUIStream@@PEAPEAUIMvsModelRenderData@ModelPostProcess@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::CreateMvsModelRenderDataFromStream(struct IStream *, struct CapturingReality::ModelPostProcess::IMvsModelRenderData * *)
+
+?CreateMvsModelSfm@Mvs@CapturingReality@@YAJPEAUISfmReconstruction@Sfm@2@PEAUCreateMvsModelParameters@12@PEAUIConfig@2@PEAPEAUIMvsModel@12@@Z
+    -> long __cdecl CapturingReality::Mvs::CreateMvsModelSfm(struct CapturingReality::Sfm::ISfmReconstruction *, struct CapturingReality::Mvs::CreateMvsModelParameters *, struct CapturingReality::IConfig *, struct CapturingReality::Mvs::IMvsModel * *)
+
+?CreateMvsModelSinglePart@Mvs@CapturingReality@@YAJPEAIPEAUCreateMvsModelParameters@12@PEAUIConfig@2@PEAPEAUIMvsModel@12@@Z
+    -> long __cdecl CapturingReality::Mvs::CreateMvsModelSinglePart(unsigned int *, struct CapturingReality::Mvs::CreateMvsModelParameters *, struct CapturingReality::IConfig *, struct CapturingReality::Mvs::IMvsModel * *)
+
+?CreateOnlineLicensingManager@RealityCaptureServices@CapturingReality@@YAJPEAUServiceConnectionContext@12@PEAUIEventListener@2@PEAPEAUIOnlineLicensingManager@12@@Z
+    -> long __cdecl CapturingReality::RealityCaptureServices::CreateOnlineLicensingManager(struct CapturingReality::RealityCaptureServices::ServiceConnectionContext *, struct CapturingReality::IEventListener *, struct CapturingReality::RealityCaptureServices::IOnlineLicensingManager * *)
+
+?CreateOrthoCsConversion@ModelTools@CapturingReality@@YAJPEAUIOrthographicProjection@OrthoProjection@2@PEAPEAUIOrthoCsConversion@42@@Z
+    -> long __cdecl CapturingReality::ModelTools::CreateOrthoCsConversion(struct CapturingReality::OrthoProjection::IOrthographicProjection *, struct CapturingReality::OrthoProjection::IOrthoCsConversion * *)
+
+?CreateOrthoPhotoDataProvider@ModelTools@CapturingReality@@YAJPEAUIOrthographicProjection@OrthoProjection@2@PEAUIProgressReportCallback@2@PEAPEAUIOrthoProjectionDataProvider@42@@Z
+    -> long __cdecl CapturingReality::ModelTools::CreateOrthoPhotoDataProvider(struct CapturingReality::OrthoProjection::IOrthographicProjection *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::OrthoProjection::IOrthoProjectionDataProvider * *)
+
+?CreateOrthoProjectionFromModel@ModelTools@CapturingReality@@YAJPEAUCreateOrthoProjectionParameters@OrthoProjection@2@PEAUIMvsModel@Mvs@2@PEAUIUnknown@@PEAUIResourceCache@2@PEAUIProgressReportCallback@2@PEAPEAUIOrthographicProjection@42@@Z
+    -> long __cdecl CapturingReality::ModelTools::CreateOrthoProjectionFromModel(struct CapturingReality::OrthoProjection::CreateOrthoProjectionParameters *, struct CapturingReality::Mvs::IMvsModel *, struct IUnknown *, struct CapturingReality::IResourceCache *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::OrthoProjection::IOrthographicProjection * *)
+
+?CreateOrthoProjectionFromStream@ModelTools@CapturingReality@@YAJPEAUIStream@@PEAUIResourceCache@2@PEAPEAUIOrthographicProjection@OrthoProjection@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::CreateOrthoProjectionFromStream(struct IStream *, struct CapturingReality::IResourceCache *, struct CapturingReality::OrthoProjection::IOrthographicProjection * *)
+
+?CreateParallelSparseBundleAdjustment@SparseBundleAdjustment@Sfm@CapturingReality@@YAJPEAPEAUIBundleAdjustment@123@@Z
+    -> long __cdecl CapturingReality::Sfm::SparseBundleAdjustment::CreateParallelSparseBundleAdjustment(struct CapturingReality::Sfm::SparseBundleAdjustment::IBundleAdjustment * *)
+
+?CreatePointCloudNoiseProfile@ModelTools@CapturingReality@@YAJPEAUPointCloudNoiseProfileInfo@2@PEAPEAUIPointCloudNoiseProfile@Importers@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::CreatePointCloudNoiseProfile(struct CapturingReality::PointCloudNoiseProfileInfo *, struct CapturingReality::Importers::IPointCloudNoiseProfile * *)
+
+?CreatePointCloudNoiseProfileDatabase@ModelTools@CapturingReality@@YAJPEAUIStream@@PEAPEAUIPointCloudNoiseProfileDatabase@Importers@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::CreatePointCloudNoiseProfileDatabase(struct IStream *, struct CapturingReality::Importers::IPointCloudNoiseProfileDatabase * *)
+
+?CreatePointOptimizer@SparseBundleAdjustment@Sfm@CapturingReality@@YAJIW4BundleRobustifier@123@PEAUCameraCostFunctionContext@123@PEAPEAUIBundleAdjustmentPoint@123@@Z
+    -> long __cdecl CapturingReality::Sfm::SparseBundleAdjustment::CreatePointOptimizer(unsigned int, enum CapturingReality::Sfm::SparseBundleAdjustment::BundleRobustifier, struct CapturingReality::Sfm::SparseBundleAdjustment::CameraCostFunctionContext *, struct CapturingReality::Sfm::SparseBundleAdjustment::IBundleAdjustmentPoint * *)
+
+?CreateResourceCache@Utilities@CapturingReality@@YAJW4ResourceCacheLocation@2@PEB_WPEAPEAUIResourceCache@2@@Z
+    -> long __cdecl CapturingReality::Utilities::CreateResourceCache(enum CapturingReality::ResourceCacheLocation, const wchar_t *, struct CapturingReality::IResourceCache * *)
+
+?CreateRig@Sfm@CapturingReality@@YAJAEBU_GUID@@IPEAPEAUISfmRig@12@@Z
+    -> long __cdecl CapturingReality::Sfm::CreateRig(const struct _GUID &, unsigned int, struct CapturingReality::Sfm::ISfmRig * *)
+
+?CreateRigInstance@Sfm@CapturingReality@@YAJAEBU_GUID@@0PEAPEAUISfmRigInstance@12@@Z
+    -> long __cdecl CapturingReality::Sfm::CreateRigInstance(const struct _GUID &, const struct _GUID &, struct CapturingReality::Sfm::ISfmRigInstance * *)
+
+?CreateSceneStructure@Mvs@CapturingReality@@YAJPEAUISfmReconstruction@Sfm@2@PEAPEAUISceneStructure@2@@Z
+    -> long __cdecl CapturingReality::Mvs::CreateSceneStructure(struct CapturingReality::Sfm::ISfmReconstruction *, struct CapturingReality::ISceneStructure * *)
+
+?CreateSceneStructureInModelCs@Mvs@CapturingReality@@YAJPEAUISfmReconstruction@Sfm@2@PEAUCoordinateSystemResidual@2@PEANPEAPEAUISceneStructure@2@@Z
+    -> long __cdecl CapturingReality::Mvs::CreateSceneStructureInModelCs(struct CapturingReality::Sfm::ISfmReconstruction *, struct CapturingReality::CoordinateSystemResidual *, double *, struct CapturingReality::ISceneStructure * *)
+
+?CreateSceneTriangulation@Mvs@CapturingReality@@YAJPEAUCoordinateSystemAnchor@2@PEAUSceneTriangulationPointsStructureInfo@Geometry@2@PEAUSceneTriangulationTrianglesStructureInfo@52@IIPEAPEAUISceneTriangulation@52@@Z
+    -> long __cdecl CapturingReality::Mvs::CreateSceneTriangulation(struct CapturingReality::CoordinateSystemAnchor *, struct CapturingReality::Geometry::SceneTriangulationPointsStructureInfo *, struct CapturingReality::Geometry::SceneTriangulationTrianglesStructureInfo *, unsigned int, unsigned int, struct CapturingReality::Geometry::ISceneTriangulation * *)
+
+?CreateSfmAlignmentReport@Sfm@CapturingReality@@YAJPEAUSfmAlignmentReportData@12@PEAPEAUISfmAlignmentReport@12@@Z
+    -> long __cdecl CapturingReality::Sfm::CreateSfmAlignmentReport(struct CapturingReality::Sfm::SfmAlignmentReportData *, struct CapturingReality::Sfm::ISfmAlignmentReport * *)
+
+?CreateSfmAutoReconstructionBox@Sfm@CapturingReality@@YAJPEAUIStructureFromMotion@12@PEAUISfmReconstruction@12@PEAPEAUISfmReconstructionBox@12@@Z
+    -> long __cdecl CapturingReality::Sfm::CreateSfmAutoReconstructionBox(struct CapturingReality::Sfm::IStructureFromMotion *, struct CapturingReality::Sfm::ISfmReconstruction *, struct CapturingReality::Sfm::ISfmReconstructionBox * *)
+
+?CreateSfmComponentStats@Sfm@CapturingReality@@YAJPEAUIStructureFromMotion@12@PEAUISfmReconstruction@12@PEAUSfmComponentStatistics@12@@Z
+    -> long __cdecl CapturingReality::Sfm::CreateSfmComponentStats(struct CapturingReality::Sfm::IStructureFromMotion *, struct CapturingReality::Sfm::ISfmReconstruction *, struct CapturingReality::Sfm::SfmComponentStatistics *)
+
+?CreateSfmComponentStats@Sfm@CapturingReality@@YAJPEAUIStructureFromMotion@12@PEAUSfmComponentStatistics@12@@Z
+    -> long __cdecl CapturingReality::Sfm::CreateSfmComponentStats(struct CapturingReality::Sfm::IStructureFromMotion *, struct CapturingReality::Sfm::SfmComponentStatistics *)
+
+?CreateSfmImage@Sfm@CapturingReality@@YAJPEB_WIPEAUIStream@@PEAUISfmSensorDatabase@12@PEAUIWICMetadataQueryReader@@IPEAUICoordinateSystemTable@CoordinateSystems@2@PEAUISfmMetadataCache@12@PEAPEAUISfmStreamInput@12@@Z
+    -> long __cdecl CapturingReality::Sfm::CreateSfmImage(const wchar_t *, unsigned int, struct IStream *, struct CapturingReality::Sfm::ISfmSensorDatabase *, struct IWICMetadataQueryReader *, unsigned int, struct CapturingReality::CoordinateSystems::ICoordinateSystemTable *, struct CapturingReality::Sfm::ISfmMetadataCache *, struct CapturingReality::Sfm::ISfmStreamInput * *)
+
+?CreateSfmMetadataCache@Sfm@CapturingReality@@YAJPEAPEAUISfmMetadataCache@12@@Z
+    -> long __cdecl CapturingReality::Sfm::CreateSfmMetadataCache(struct CapturingReality::Sfm::ISfmMetadataCache * *)
+
+?CreateSfmPipeline@Sfm@CapturingReality@@YAJPEAUIConfig@2@PEAUICoordinateSystemTable@CoordinateSystems@2@PEAUIControlPoints@12@PEAUIResourceCache@2@PEAUISfmSensorDatabase@12@PEAUISfmMetadataCache@12@PEAPEAUIStructureFromMotion@12@@Z
+    -> long __cdecl CapturingReality::Sfm::CreateSfmPipeline(struct CapturingReality::IConfig *, struct CapturingReality::CoordinateSystems::ICoordinateSystemTable *, struct CapturingReality::Sfm::IControlPoints *, struct CapturingReality::IResourceCache *, struct CapturingReality::Sfm::ISfmSensorDatabase *, struct CapturingReality::Sfm::ISfmMetadataCache *, struct CapturingReality::Sfm::IStructureFromMotion * *)
+
+?CreateSfmPointCloudImage@Sfm@CapturingReality@@YAJPEB_WIPEAUIStructureFromMotion@12@PEAUIPointCloud@2@PEAUICoordinateSystemTable@CoordinateSystems@2@PEAUISfmMetadataCache@12@PEAPEAUISfmStreamInput@12@@Z
+    -> long __cdecl CapturingReality::Sfm::CreateSfmPointCloudImage(const wchar_t *, unsigned int, struct CapturingReality::Sfm::IStructureFromMotion *, struct CapturingReality::IPointCloud *, struct CapturingReality::CoordinateSystems::ICoordinateSystemTable *, struct CapturingReality::Sfm::ISfmMetadataCache *, struct CapturingReality::Sfm::ISfmStreamInput * *)
+
+?CreateSfmReconstruction@Sfm@CapturingReality@@YAJAEBU_GUID@@W4SfmImageModel@2@IIIIPEAUISfmAlignmentReport@12@PEAPEAUISfmReconstruction@12@@Z
+    -> long __cdecl CapturingReality::Sfm::CreateSfmReconstruction(const struct _GUID &, enum CapturingReality::SfmImageModel, unsigned int, unsigned int, unsigned int, unsigned int, struct CapturingReality::Sfm::ISfmAlignmentReport *, struct CapturingReality::Sfm::ISfmReconstruction * *)
+
+?CreateSfmReconstruction@Sfm@CapturingReality@@YAJPEAPEAUISfmReconstruction@12@@Z
+    -> long __cdecl CapturingReality::Sfm::CreateSfmReconstruction(struct CapturingReality::Sfm::ISfmReconstruction * *)
+
+?CreateSfmReconstructionAligner@Sfm@CapturingReality@@YAJPEAUIStructureFromMotion@12@PEAUISfmReconstruction@12@PEAPEAUISfmReconstructionAligner@12@@Z
+    -> long __cdecl CapturingReality::Sfm::CreateSfmReconstructionAligner(struct CapturingReality::Sfm::IStructureFromMotion *, struct CapturingReality::Sfm::ISfmReconstruction *, struct CapturingReality::Sfm::ISfmReconstructionAligner * *)
+
+?CreateSfmReconstructionDescriptorsFromStream@Sfm@CapturingReality@@YAJPEAUIStream@@PEAPEAUISfmReconstructionDescriptors@12@@Z
+    -> long __cdecl CapturingReality::Sfm::CreateSfmReconstructionDescriptorsFromStream(struct IStream *, struct CapturingReality::Sfm::ISfmReconstructionDescriptors * *)
+
+?CreateSfmReconstructionExported@Sfm@CapturingReality@@YAJPEAPEAUISfmReconstructionExported@12@@Z
+    -> long __cdecl CapturingReality::Sfm::CreateSfmReconstructionExported(struct CapturingReality::Sfm::ISfmReconstructionExported * *)
+
+?CreateSfmReconstructionExported@Sfm@CapturingReality@@YAJW4SfmImageModel@2@IIIIIIIPEAUISfmAlignmentReport@12@PEAPEAUISfmReconstructionExported@12@@Z
+    -> long __cdecl CapturingReality::Sfm::CreateSfmReconstructionExported(enum CapturingReality::SfmImageModel, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, unsigned int, struct CapturingReality::Sfm::ISfmAlignmentReport *, struct CapturingReality::Sfm::ISfmReconstructionExported * *)
+
+?CreateSfmReconstructionFromFile@Sfm@CapturingReality@@YAJPEB_WPEAPEAUISfmReconstruction@12@@Z
+    -> long __cdecl CapturingReality::Sfm::CreateSfmReconstructionFromFile(const wchar_t *, struct CapturingReality::Sfm::ISfmReconstruction * *)
+
+?CreateSfmReconstructionImporter@Sfm@CapturingReality@@YAJPEB_WPEAPEAUISfmReconstructionExported@12@@Z
+    -> long __cdecl CapturingReality::Sfm::CreateSfmReconstructionImporter(const wchar_t *, struct CapturingReality::Sfm::ISfmReconstructionExported * *)
+
+?CreateSfmSensorDatabase@Sfm@CapturingReality@@YAJPEB_WPEAPEAUISfmSensorDatabase@12@@Z
+    -> long __cdecl CapturingReality::Sfm::CreateSfmSensorDatabase(const wchar_t *, struct CapturingReality::Sfm::ISfmSensorDatabase * *)
+
+?CreateStreamBalancer@Utilities@CapturingReality@@YAJIPEAUIProgressReportCallback@2@PEAPEAUIStreamBalancer@12@@Z
+    -> long __cdecl CapturingReality::Utilities::CreateStreamBalancer(unsigned int, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::Utilities::IStreamBalancer * *)
+
+?CreateTexturesCache@Mvs@CapturingReality@@YAJAEBU_GUID@@IPEAUIMvsModel@12@MPEAPEAUITexturesCache@12@@Z
+    -> long __cdecl CapturingReality::Mvs::CreateTexturesCache(const struct _GUID &, unsigned int, struct CapturingReality::Mvs::IMvsModel *, float, struct CapturingReality::Mvs::ITexturesCache * *)
+
+?CreateTriangulationColoring@Mvs@CapturingReality@@YAJIPEAPEAUITriangulationColoring@12@@Z
+    -> long __cdecl CapturingReality::Mvs::CreateTriangulationColoring(unsigned int, struct CapturingReality::Mvs::ITriangulationColoring * *)
+
+?CreateTriangulationColoring@Mvs@CapturingReality@@YAJIPEAT__m128@@PEAPEAUITriangulationColoring@12@@Z
+    -> long __cdecl CapturingReality::Mvs::CreateTriangulationColoring(unsigned int, union __m128 *, struct CapturingReality::Mvs::ITriangulationColoring * *)
+
+?CreateUndistortedImageProvider@Mvs@CapturingReality@@YAJPEAUIStructureFromMotion@Sfm@2@PEAUISfmReconstruction@42@PEAUIResourceCache@2@PEAUIUnknown@@PEAPEAUIImageProvider@2@@Z
+    -> long __cdecl CapturingReality::Mvs::CreateUndistortedImageProvider(struct CapturingReality::Sfm::IStructureFromMotion *, struct CapturingReality::Sfm::ISfmReconstruction *, struct CapturingReality::IResourceCache *, struct IUnknown *, struct CapturingReality::IImageProvider * *)
+
+?CreateXmlModelExport@ModelTools@CapturingReality@@YAJPEAUXmlModelExportParams@ModelExport@2@PEAUCalibrationExportSettings@CalibrationExport@2@PEAPEAUIXmlModelExport@42@@Z
+    -> long __cdecl CapturingReality::ModelTools::CreateXmlModelExport(struct CapturingReality::ModelExport::XmlModelExportParams *, struct CapturingReality::CalibrationExport::CalibrationExportSettings *, struct CapturingReality::ModelExport::IXmlModelExport * *)
+
+?CreateXmlModelExportFromFile@ModelTools@CapturingReality@@YAJPEB_WPEAPEAUIXmlModelExport@ModelExport@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::CreateXmlModelExportFromFile(const wchar_t *, struct CapturingReality::ModelExport::IXmlModelExport * *)
+
+?DecomposeModel@ModelTools@CapturingReality@@YAJIPEAUICameraListContext@Depthmaps@Mvs@2@PEAUIMvsModel@52@PEAUIProgressReportCallback@2@PEAPEAU652@@Z
+    -> long __cdecl CapturingReality::ModelTools::DecomposeModel(unsigned int, struct CapturingReality::Mvs::Depthmaps::ICameraListContext *, struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::Mvs::IMvsModel * *)
+
+?DeleteMvsModel@ModelTools@CapturingReality@@YAJPEAUIMvsModel@Mvs@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::DeleteMvsModel(struct CapturingReality::Mvs::IMvsModel *)
+
+?DuplicateModel@ModelTools@CapturingReality@@YAJPEAUIMvsModel@Mvs@2@PEAUIProgressReportCallback@2@PEAPEAU342@PEAI@Z
+    -> long __cdecl CapturingReality::ModelTools::DuplicateModel(struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::Mvs::IMvsModel * *, unsigned int *)
+
+?EstimateDetail@ModelTools@CapturingReality@@YAJPEAUICameraList@Depthmaps@Mvs@2@PEAUISceneStructure@2@PEAUGlobalReconstructionVolume@Geometry@2@PEAM@Z
+    -> long __cdecl CapturingReality::ModelTools::EstimateDetail(struct CapturingReality::Mvs::Depthmaps::ICameraList *, struct CapturingReality::ISceneStructure *, struct CapturingReality::Geometry::GlobalReconstructionVolume *, float *)
+
+?ExpandConnectedComponentsSelection@ModelTools@CapturingReality@@YAJPEAUIMvsModel@Mvs@2@PEAUIConnectedComponentsMetadata@ModelPostProcess@2@PEAUIItemSelection@2@PEAUIProgressReportCallback@2@PEAPEAU72@@Z
+    -> long __cdecl CapturingReality::ModelTools::ExpandConnectedComponentsSelection(struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::ModelPostProcess::IConnectedComponentsMetadata *, struct CapturingReality::IItemSelection *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::IItemSelection * *)
+
+?ExportImageToKml@ModelTools@CapturingReality@@YAJPEAUOrthoImageExportParameters@OrthoProjection@2@PEAUCsBbox@42@PEAUIWICBitmapSource@@PEAUIProgressReportCallback@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::ExportImageToKml(struct CapturingReality::OrthoProjection::OrthoImageExportParameters *, struct CapturingReality::OrthoProjection::CsBbox *, struct IWICBitmapSource *, struct CapturingReality::IProgressReportCallback *)
+
+?ExportModel@ModelTools@CapturingReality@@YAJPEAUIReconstructionExporter@ModelExport@2@PEAUIMvsModel@Mvs@2@PEAUIExportTransformationsProvider@CalibrationExport@2@PEAUICameraExportInformationProvider@82@PEAUIImageUndistortExporter@82@PEAUIProgressReportCallback@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::ExportModel(struct CapturingReality::ModelExport::IReconstructionExporter *, struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::CalibrationExport::IExportTransformationsProvider *, struct CapturingReality::CalibrationExport::ICameraExportInformationProvider *, struct CapturingReality::CalibrationExport::IImageUndistortExporter *, struct CapturingReality::IProgressReportCallback *)
+
+?ExportModelPart@ModelTools@CapturingReality@@YAJPEAUIReconstructionExporter@ModelExport@2@IPEAUIMvsModel@Mvs@2@PEAUIExportTransformationsProvider@CalibrationExport@2@PEAUICameraExportInformationProvider@82@PEAUIImageUndistortExporter@82@PEAUIProgressReportCallback@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::ExportModelPart(struct CapturingReality::ModelExport::IReconstructionExporter *, unsigned int, struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::CalibrationExport::IExportTransformationsProvider *, struct CapturingReality::CalibrationExport::ICameraExportInformationProvider *, struct CapturingReality::CalibrationExport::IImageUndistortExporter *, struct CapturingReality::IProgressReportCallback *)
+
+?ExportOrthoPhotoToKml@ModelTools@CapturingReality@@YAJPEAUOrthoImageExportParameters@OrthoProjection@2@PEAUIOrthoProjectionDataProvider@42@PEAUIWICBitmapSource@@PEAUIProgressReportCallback@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::ExportOrthoPhotoToKml(struct CapturingReality::OrthoProjection::OrthoImageExportParameters *, struct CapturingReality::OrthoProjection::IOrthoProjectionDataProvider *, struct IWICBitmapSource *, struct CapturingReality::IProgressReportCallback *)
+
+?ExportOrthoProjectionToGeoTiff@ModelTools@CapturingReality@@YAJW4WorldCoordSystemCentreType@OrthoProjection@2@W4WorldCoordSystemAxesType@42@W4OrthoPixelType@42@W4CompressionType@42@PEAUIOrthoProjectionDataProvider@42@PEB_W_NPEAUIProgressReportCallback@2@PEA_N@Z
+    -> long __cdecl CapturingReality::ModelTools::ExportOrthoProjectionToGeoTiff(enum CapturingReality::OrthoProjection::WorldCoordSystemCentreType, enum CapturingReality::OrthoProjection::WorldCoordSystemAxesType, enum CapturingReality::OrthoProjection::OrthoPixelType, enum CapturingReality::OrthoProjection::CompressionType, struct CapturingReality::OrthoProjection::IOrthoProjectionDataProvider *, const wchar_t *, bool, struct CapturingReality::IProgressReportCallback *, bool *)
+
+?ExportSfmReconstructionExported@Sfm@CapturingReality@@YAJPEB_WPEAUISfmReconstructionExported@12@@Z
+    -> long __cdecl CapturingReality::Sfm::ExportSfmReconstructionExported(const wchar_t *, struct CapturingReality::Sfm::ISfmReconstructionExported *)
+
+?FillTexturesByCharts@ModelTools@CapturingReality@@YAJPEAUIMvsModel@Mvs@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::FillTexturesByCharts(struct CapturingReality::Mvs::IMvsModel *)
+
+?FillTexturesWithCheckerBoard@ModelTools@CapturingReality@@YAJIPEAUIMvsModel@Mvs@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::FillTexturesWithCheckerBoard(unsigned int, struct CapturingReality::Mvs::IMvsModel *)
+
+?GetCameraModelHandle@SparseBundleAdjustment@Sfm@CapturingReality@@YAPEBXI@Z
+    -> const void * __cdecl CapturingReality::Sfm::SparseBundleAdjustment::GetCameraModelHandle(unsigned int)
+
+?GetCudaDeviceName@Depthmaps@Mvs@CapturingReality@@YAJHIPEAD@Z
+    -> long __cdecl CapturingReality::Mvs::Depthmaps::GetCudaDeviceName(int, unsigned int, char *)
+
+?GetCudaDeviceNameUtils@Mvs@CapturingReality@@YAJHIPEAD@Z
+    -> long __cdecl CapturingReality::Mvs::GetCudaDeviceNameUtils(int, unsigned int, char *)
+
+?GetEngineVersion@RealityCaptureEngine@CapturingReality@@YAXPEAI000@Z
+    -> void __cdecl CapturingReality::RealityCaptureEngine::GetEngineVersion(unsigned int *, unsigned int *, unsigned int *, unsigned int *)
+
+?GetHardExpirationDate@RealityCaptureEngine@CapturingReality@@YAJPEAI00@Z
+    -> long __cdecl CapturingReality::RealityCaptureEngine::GetHardExpirationDate(unsigned int *, unsigned int *, unsigned int *)
+
+?GetIndexesOfUsableCudaDevices@Depthmaps@Mvs@CapturingReality@@YAJPEAH0@Z
+    -> long __cdecl CapturingReality::Mvs::Depthmaps::GetIndexesOfUsableCudaDevices(int *, int *)
+
+?GetIndexesOfUsableCudaDevicesUtils@Mvs@CapturingReality@@YAJPEAH0@Z
+    -> long __cdecl CapturingReality::Mvs::GetIndexesOfUsableCudaDevicesUtils(int *, int *)
+
+?GetLicenseExpirationDate@RealityCaptureEngine@CapturingReality@@YAJPEAI00@Z
+    -> long __cdecl CapturingReality::RealityCaptureEngine::GetLicenseExpirationDate(unsigned int *, unsigned int *, unsigned int *)
+
+?GetLicenseType@RealityCaptureEngine@CapturingReality@@YAJPEAI@Z
+    -> long __cdecl CapturingReality::RealityCaptureEngine::GetLicenseType(unsigned int *)
+
+?GetWorldFileData@ModelTools@CapturingReality@@YAJPEAUIOrthoCsConversion@OrthoProjection@2@W4WorldCoordSystemCentreType@42@W4WorldCoordSystemAxesType@42@PEAUWordFileData@42@@Z
+    -> long __cdecl CapturingReality::ModelTools::GetWorldFileData(struct CapturingReality::OrthoProjection::IOrthoCsConversion *, enum CapturingReality::OrthoProjection::WorldCoordSystemCentreType, enum CapturingReality::OrthoProjection::WorldCoordSystemAxesType, struct CapturingReality::OrthoProjection::WordFileData *)
+
+?Import@ModelTools@CapturingReality@@YAJPEB_WPEAUColoringByNormalParams@Mvs@2@IPEAUIStructureFromMotion@Sfm@2@PEAUISfmReconstruction@62@PEAUIResourceCache@2@PEAUExportTransformationSettings@CalibrationExport@2@PEAUIProgressReportCallback@2@PEAPEAUIMvsModel@42@PEAN@Z
+    -> long __cdecl CapturingReality::ModelTools::Import(const wchar_t *, struct CapturingReality::Mvs::ColoringByNormalParams *, unsigned int, struct CapturingReality::Sfm::IStructureFromMotion *, struct CapturingReality::Sfm::ISfmReconstruction *, struct CapturingReality::IResourceCache *, struct CapturingReality::CalibrationExport::ExportTransformationSettings *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::Mvs::IMvsModel * *, double *)
+
+?InflateUndercutUnwrapClusters@ModelTools@CapturingReality@@YAJM_NIMMPEAUISfmReconstruction@Sfm@2@PEAUICameraList@Depthmaps@Mvs@2@PEAUIMvsModel@72@PEAUIProgressReportCallback@2@PEAPEAU872@@Z
+    -> long __cdecl CapturingReality::ModelTools::InflateUndercutUnwrapClusters(float, bool, unsigned int, float, float, struct CapturingReality::Sfm::ISfmReconstruction *, struct CapturingReality::Mvs::Depthmaps::ICameraList *, struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::Mvs::IMvsModel * *)
+
+?InflateUndercutUnwrapClustersEx@ModelTools@CapturingReality@@YAJM_NIMMPEAUISfmReconstruction@Sfm@2@PEAUICameraList@Depthmaps@Mvs@2@PEAUIMvsModel@72@PEAUIProgressReportCallback@2@PEAPEAU872@@Z
+    -> long __cdecl CapturingReality::ModelTools::InflateUndercutUnwrapClustersEx(float, bool, unsigned int, float, float, struct CapturingReality::Sfm::ISfmReconstruction *, struct CapturingReality::Mvs::Depthmaps::ICameraList *, struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::Mvs::IMvsModel * *)
+
+?InitializeXmlModelExportParamsDefaults@ModelTools@CapturingReality@@YAJPEAUXmlModelExportParams@ModelExport@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::InitializeXmlModelExportParamsDefaults(struct CapturingReality::ModelExport::XmlModelExportParams *)
+
+?InspectModelTopology@ModelTools@CapturingReality@@YAJPEAUIMvsModel@Mvs@2@PEAUIProgressReportCallback@2@PEAUModelTopologyInspectionReport@ModelPostProcess@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::InspectModelTopology(struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::ModelPostProcess::ModelTopologyInspectionReport *)
+
+?InvertExactSelection@ModelTools@CapturingReality@@YAJPEAUIItemSelection@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::InvertExactSelection(struct CapturingReality::IItemSelection *)
+
+?IsEnoughMemoryForSimplification@ModelTools@CapturingReality@@YAJPEAUIMvsModel@Mvs@2@_KPEA_NPEAI@Z
+    -> long __cdecl CapturingReality::ModelTools::IsEnoughMemoryForSimplification(struct CapturingReality::Mvs::IMvsModel *, unsigned __int64, bool *, unsigned int *)
+
+?LoadModel@ModelTools@CapturingReality@@YAJPEB_W0PEAUIResourceCache@2@PEAPEAUIMvsModel@Mvs@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::LoadModel(const wchar_t *, const wchar_t *, struct CapturingReality::IResourceCache *, struct CapturingReality::Mvs::IMvsModel * *)
+
+?MergePartPairs@ModelTools@CapturingReality@@YAJIPEBUModelPartPair@ModelPostProcess@2@PEAUIMvsModel@Mvs@2@PEAUIProgressReportCallback@2@IPEAIPEAPEAU562@@Z
+    -> long __cdecl CapturingReality::ModelTools::MergePartPairs(unsigned int, const struct CapturingReality::ModelPostProcess::ModelPartPair *, struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IProgressReportCallback *, unsigned int, unsigned int *, struct CapturingReality::Mvs::IMvsModel * *)
+
+?MergePartSets@ModelTools@CapturingReality@@YAJIPEAIIPEBUAssociatesData@2@PEAUIMvsModel@Mvs@2@_NPEAUIProgressReportCallback@2@I0PEAPEAU452@@Z
+    -> long __cdecl CapturingReality::ModelTools::MergePartSets(unsigned int, unsigned int *, unsigned int, const struct CapturingReality::AssociatesData *, struct CapturingReality::Mvs::IMvsModel *, bool, struct CapturingReality::IProgressReportCallback *, unsigned int, unsigned int *, struct CapturingReality::Mvs::IMvsModel * *)
+
+?PreComputeDepthMaps@Mvs@CapturingReality@@YAJPEAUCreateMvsModelParameters@12@PEAUIConfig@2@@Z
+    -> long __cdecl CapturingReality::Mvs::PreComputeDepthMaps(struct CapturingReality::Mvs::CreateMvsModelParameters *, struct CapturingReality::IConfig *)
+
+?PreComputeMvsDepthMap@Mvs@CapturingReality@@YAJIPEAUCreateMvsModelParameters@12@_N@Z
+    -> long __cdecl CapturingReality::Mvs::PreComputeMvsDepthMap(unsigned int, struct CapturingReality::Mvs::CreateMvsModelParameters *, bool)
+
+?ProcessWorkItemsByQueuePriorityAscAsync@Utilities@CapturingReality@@YAJ_KPEAUIAsyncWorkItems@2@PEAUIProgressReportCallback@2@@Z
+    -> long __cdecl CapturingReality::Utilities::ProcessWorkItemsByQueuePriorityAscAsync(unsigned __int64, struct CapturingReality::IAsyncWorkItems *, struct CapturingReality::IProgressReportCallback *)
+
+?ProcessWorkItemsByQueuePriorityDescAsync@Utilities@CapturingReality@@YAJ_KPEAUIAsyncWorkItems@2@PEAUIProgressReportCallback@2@@Z
+    -> long __cdecl CapturingReality::Utilities::ProcessWorkItemsByQueuePriorityDescAsync(unsigned __int64, struct CapturingReality::IAsyncWorkItems *, struct CapturingReality::IProgressReportCallback *)
+
+?RemoveUnselectedTriangles@ModelTools@CapturingReality@@YAJPEAUIMvsModel@Mvs@2@PEAUIItemSelection@2@PEAUIProgressReportCallback@2@PEAPEAU342@@Z
+    -> long __cdecl CapturingReality::ModelTools::RemoveUnselectedTriangles(struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IItemSelection *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::Mvs::IMvsModel * *)
+
+?ResetCuda@Depthmaps@Mvs@CapturingReality@@YAJXZ
+    -> long __cdecl CapturingReality::Mvs::Depthmaps::ResetCuda(void)
+
+?ResolveDirectFileResourceStream@Utilities@CapturingReality@@YAJPEB_WPEAUIResourceCache@2@W4ResourceItemAccessMode@2@PEAPEAUIStream@@@Z
+    -> long __cdecl CapturingReality::Utilities::ResolveDirectFileResourceStream(const wchar_t *, struct CapturingReality::IResourceCache *, enum CapturingReality::ResourceItemAccessMode, struct IStream * *)
+
+?SaveModel@ModelTools@CapturingReality@@YAJPEB_W0PEAUIResourceCache@2@PEAUIMvsModel@Mvs@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::SaveModel(const wchar_t *, const wchar_t *, struct CapturingReality::IResourceCache *, struct CapturingReality::Mvs::IMvsModel *)
+
+?SelectMarginalTriangles@ModelTools@CapturingReality@@YAJPEAUIMvsModel@Mvs@2@PEAUIProgressReportCallback@2@PEAPEAUIItemSelection@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::SelectMarginalTriangles(struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::IItemSelection * *)
+
+?SelectMaximalConnectedComponent@ModelTools@CapturingReality@@YAJPEAUIMvsModel@Mvs@2@PEAUIConnectedComponentsMetadata@ModelPostProcess@2@PEAUIProgressReportCallback@2@PEAPEAUIItemSelection@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::SelectMaximalConnectedComponent(struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::ModelPostProcess::IConnectedComponentsMetadata *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::IItemSelection * *)
+
+?SelectTrianglesByEdgeSize@ModelTools@CapturingReality@@YAJNW4SelectTrianglesByEdgeSizeType@ModelPostProcess@2@PEAUIMvsModel@Mvs@2@PEAUIProgressReportCallback@2@PEAPEAUIItemSelection@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::SelectTrianglesByEdgeSize(double, enum CapturingReality::ModelPostProcess::SelectTrianglesByEdgeSizeType, struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::IItemSelection * *)
+
+?SetupBundleOptimizerContext@SparseBundleAdjustment@Sfm@CapturingReality@@YAXW4BundleRobustifier@123@MPEAUBundleOptimizationContext@123@@Z
+    -> void __cdecl CapturingReality::Sfm::SparseBundleAdjustment::SetupBundleOptimizerContext(enum CapturingReality::Sfm::SparseBundleAdjustment::BundleRobustifier, float, struct CapturingReality::Sfm::SparseBundleAdjustment::BundleOptimizationContext *)
+
+?SetupCameraCostContext@SparseBundleAdjustment@Sfm@CapturingReality@@YAXW4BundleRobustifier@123@MPEAUCameraCostFunctionContext@123@@Z
+    -> void __cdecl CapturingReality::Sfm::SparseBundleAdjustment::SetupCameraCostContext(enum CapturingReality::Sfm::SparseBundleAdjustment::BundleRobustifier, float, struct CapturingReality::Sfm::SparseBundleAdjustment::CameraCostFunctionContext *)
+
+?Simplify@ModelTools@CapturingReality@@YAJPEAUIMvsModel@Mvs@2@PEAUModelSimplificationParams@ModelPostProcess@2@PEAUIProgressReportCallback@2@PEAPEAU342@PEAI@Z
+    -> long __cdecl CapturingReality::ModelTools::Simplify(struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::ModelPostProcess::ModelSimplificationParams *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::Mvs::IMvsModel * *, unsigned int *)
+
+?SimplifySelection@ModelTools@CapturingReality@@YAJPEAUIMvsModel@Mvs@2@PEAUModelSimplificationParams@ModelPostProcess@2@PEAUIItemSelection@2@PEAUIProgressReportCallback@2@PEAPEAU342@PEAI@Z
+    -> long __cdecl CapturingReality::ModelTools::SimplifySelection(struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::ModelPostProcess::ModelSimplificationParams *, struct CapturingReality::IItemSelection *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::Mvs::IMvsModel * *, unsigned int *)
+
+?Smooth@ModelTools@CapturingReality@@YAJPEAUIMvsModel@Mvs@2@PEAUModelSmoothingParams@ModelPostProcess@2@PEAUIItemSelection@2@PEAUISfmReconstruction@Sfm@2@PEAUICameraList@Depthmaps@42@PEAUIProgressReportCallback@2@PEAPEAU342@@Z
+    -> long __cdecl CapturingReality::ModelTools::Smooth(struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::ModelPostProcess::ModelSmoothingParams *, struct CapturingReality::IItemSelection *, struct CapturingReality::Sfm::ISfmReconstruction *, struct CapturingReality::Mvs::Depthmaps::ICameraList *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::Mvs::IMvsModel * *)
+
+?TestCudaCapableDeviceAvailability@Depthmaps@Mvs@CapturingReality@@YAJPEAI00@Z
+    -> long __cdecl CapturingReality::Mvs::Depthmaps::TestCudaCapableDeviceAvailability(unsigned int *, unsigned int *, unsigned int *)
+
+?TestCudaVersions@Depthmaps@Mvs@CapturingReality@@YAJPEAH0@Z
+    -> long __cdecl CapturingReality::Mvs::Depthmaps::TestCudaVersions(int *, int *)
+
+?TestUnwrapSelfIntersection@ModelTools@CapturingReality@@YAJPEAUIMvsModel@Mvs@2@PEAUUnwrapSelfIntersectionTest@Unwrap@Texturing@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::TestUnwrapSelfIntersection(struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::Texturing::Unwrap::UnwrapSelfIntersectionTest *)
+
+?TextureModel@ModelTools@CapturingReality@@YAJPEAUTexturingAlgorithmSettings@Mvs@2@PEAUIImageProvider@2@1PEAUICameraListContext@Depthmaps@42@PEAUISceneStructure@2@PEAUIMvsModel@42@PEAUIProgressReportCallback@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::TextureModel(struct CapturingReality::Mvs::TexturingAlgorithmSettings *, struct CapturingReality::IImageProvider *, struct CapturingReality::IImageProvider *, struct CapturingReality::Mvs::Depthmaps::ICameraListContext *, struct CapturingReality::ISceneStructure *, struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IProgressReportCallback *)
+
+?TransformDigitalSurfaceModel@ModelTools@CapturingReality@@YAJPEANIIMPEAUIOrthographicProjection@OrthoProjection@2@PEAPEAUIWICBitmapSource@@@Z
+    -> long __cdecl CapturingReality::ModelTools::TransformDigitalSurfaceModel(double *, unsigned int, unsigned int, float, struct CapturingReality::OrthoProjection::IOrthographicProjection *, struct IWICBitmapSource * *)
+
+?TransformOrthoPhoto@ModelTools@CapturingReality@@YAJPEANIIIPEAUIOrthographicProjection@OrthoProjection@2@PEAPEAUIWICBitmapSource@@@Z
+    -> long __cdecl CapturingReality::ModelTools::TransformOrthoPhoto(double *, unsigned int, unsigned int, unsigned int, struct CapturingReality::OrthoProjection::IOrthographicProjection *, struct IWICBitmapSource * *)
+
+?UndercutByClusteringOutOfCore@ModelTools@CapturingReality@@YAJPEAUIMvsModel@Mvs@2@PEAUIProgressReportCallback@2@PEAPEAU342@PEAI@Z
+    -> long __cdecl CapturingReality::ModelTools::UndercutByClusteringOutOfCore(struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::Mvs::IMvsModel * *, unsigned int *)
+
+?Unlock@ImageCodecPack@CapturingReality@@YAJPEBD0PEAUIUnknown@@@Z
+    -> long __cdecl CapturingReality::ImageCodecPack::Unlock(const char *, const char *, struct IUnknown *)
+
+?Unlock@ModelTools@CapturingReality@@YAJPEBD0PEAUIUnknown@@@Z
+    -> long __cdecl CapturingReality::ModelTools::Unlock(const char *, const char *, struct IUnknown *)
+
+?Unlock@Mvs@CapturingReality@@YAJPEBD0PEAUIUnknown@@@Z
+    -> long __cdecl CapturingReality::Mvs::Unlock(const char *, const char *, struct IUnknown *)
+
+?Unlock@RealityCaptureEngine@CapturingReality@@YAJPEBD0PEAPEAUIUnknown@@@Z
+    -> long __cdecl CapturingReality::RealityCaptureEngine::Unlock(const char *, const char *, struct IUnknown * *)
+
+?Unlock@Sfm@CapturingReality@@YAJPEBD0PEAUIUnknown@@@Z
+    -> long __cdecl CapturingReality::Sfm::Unlock(const char *, const char *, struct IUnknown *)
+
+?Unlock@Utilities@CapturingReality@@YAJPEBD0PEAUIUnknown@@@Z
+    -> long __cdecl CapturingReality::Utilities::Unlock(const char *, const char *, struct IUnknown *)
+
+?UnwrapModel@ModelTools@CapturingReality@@YAJPEAUUnwrapParameters@Unwrap@Texturing@2@PEAUISfmReconstruction@Sfm@2@PEAUICameraList@Depthmaps@Mvs@2@PEAUIMvsModel@Mvs@2@PEAUIProgressReportCallback@2@PEAUModelUnwrapTextureUtilization@452@@Z
+    -> long __cdecl CapturingReality::ModelTools::UnwrapModel(struct CapturingReality::Texturing::Unwrap::UnwrapParameters *, struct CapturingReality::Sfm::ISfmReconstruction *, struct CapturingReality::Mvs::Depthmaps::ICameraList *, struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::Texturing::Unwrap::ModelUnwrapTextureUtilization *)
+
+?UnwrapModelEx@ModelTools@CapturingReality@@YAJIPEAUISfmReconstruction@Sfm@2@PEAUICameraList@Depthmaps@Mvs@2@PEAUIMvsModel@72@PEAUIProgressReportCallback@2@PEAUUnwrapParameters@Unwrap@Texturing@2@PEAUModelUnwrapTextureUtilization@Unwrap@Texturing@2@@Z
+    -> long __cdecl CapturingReality::ModelTools::UnwrapModelEx(unsigned int, struct CapturingReality::Sfm::ISfmReconstruction *, struct CapturingReality::Mvs::Depthmaps::ICameraList *, struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::Texturing::Unwrap::UnwrapParameters *, struct CapturingReality::Texturing::Unwrap::ModelUnwrapTextureUtilization *)
+
+?UnwrapModelLegacy@ModelTools@CapturingReality@@YAJPEAUUnwrapParameters@Unwrap@Texturing@2@PEAUIProgressReportCallback@2@PEAUIMvsModel@Mvs@2@PEAUISfmReconstruction@Sfm@2@PEAUICameraList@Depthmaps@82@PEAN5@Z
+    -> long __cdecl CapturingReality::ModelTools::UnwrapModelLegacy(struct CapturingReality::Texturing::Unwrap::UnwrapParameters *, struct CapturingReality::IProgressReportCallback *, struct CapturingReality::Mvs::IMvsModel *, struct CapturingReality::Sfm::ISfmReconstruction *, struct CapturingReality::Mvs::Depthmaps::ICameraList *, double *, double *)
+
+NvOptimusEnablementCuda
+    -> [unmangled C/data export]
+
+?Unlock@ImportExport@CapturingReality@@YAJPEBD0PEAUIUnknown@@@Z
+    -> long __cdecl CapturingReality::ImportExport::Unlock(const char *, const char *, struct IUnknown *)
+
+?CreateReconstructionExporterObj@ImportExport@CapturingReality@@YAJPEB_W00PEAUXmlModelExportParams@ModelExport@2@PEAPEAUIReconstructionExporter@42@@Z
+    -> long __cdecl CapturingReality::ImportExport::CreateReconstructionExporterObj(const wchar_t *, const wchar_t *, const wchar_t *, struct CapturingReality::ModelExport::XmlModelExportParams *, struct CapturingReality::ModelExport::IReconstructionExporter * *)
+
+?CreateReconstructionExporterPly@ImportExport@CapturingReality@@YAJPEB_W0PEAUXmlModelExportParams@ModelExport@2@PEAPEAUIReconstructionExporter@42@@Z
+    -> long __cdecl CapturingReality::ImportExport::CreateReconstructionExporterPly(const wchar_t *, const wchar_t *, struct CapturingReality::ModelExport::XmlModelExportParams *, struct CapturingReality::ModelExport::IReconstructionExporter * *)
+
+?LayerIndexToTypeOrdinal@ImportExport@CapturingReality@@YAJPEAUITexturesProvider@Mvs@2@IPEAW4TextureLayerType@42@PEAI@Z
+    -> long __cdecl CapturingReality::ImportExport::LayerIndexToTypeOrdinal(struct CapturingReality::Mvs::ITexturesProvider *, unsigned int, enum CapturingReality::Mvs::TextureLayerType *, unsigned int *)
+

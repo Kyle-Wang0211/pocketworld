@@ -1,0 +1,12 @@
+{
+ "schema": "pw_video_archive_v1",
+ "capture_id": "cap_1787408031463774",
+ "codec": "hevc",
+ "resolution": "4032x3024",
+ "frame_count": 20,
+ "gop": 8,
+ "stream_bytes": 3937391,
+ "stream_sha256": "126e89264b3b6242682ae544d0e32a655e6c6d4b7209d5080e1fe2ec5b75ec83",
+ "index": "photos.pwvi",
+ "extra": "p1_1_finalize_batch_curated"
+}

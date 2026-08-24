@@ -1,0 +1,568 @@
+     3D reconstruction from image collections with a single known focal length
+
+             Martin Bujnak                          Zuzana Kukelova                              Tomas Pajdla
+           Bzovicka 24, 85107                     CMP, Czech Technical                       CMP, Czech Technical
+           Bratislava, Slovakia                    University in Prague                       University in Prague
+        martinb@dataexpert.sk                 kukelova@cmp.felk.cvut.cz                    pajdla@cmp.felk.cvut.cz
+
+
+
+                         Abstract
+In this paper we aim at reconstructing 3D scenes from im-
+ages with unknown focal lengths downloaded from photo-
+sharing websites such as Flickr. First we provide a minimal
+solution to finding the relative pose between a completely
+calibrated camera and a camera with an unknown focal
+length given six point correspondences. We show that this
+problem has up to nine solutions in general and present two
+efficient solvers to the problem. They are based on Gröbner
+basis, resp. on generalized eigenvalues, computation. We
+demonstrate by experiments with synthetic and real data
+that both solvers are correct, fast, numerically stable and
+work well even in some situations when the classical 6-point               Figure 1. A 3D reconstruction of the Fountain di Trevi.
+algorithm fails, e.g. when optical axes of the cameras are
+parallel or intersecting. Based on this solution we present a
+                                                                      e.g. [27], are mainly based on the 5-pt algorithm [26, 30].
+new efficient method for large-scale structure from motion
+                                                                      They are reliable and robust but they need completely cal-
+from unordered data sets downloaded from the Internet. We
+                                                                      ibrated cameras. Information about the calibration, i.e. the
+show that this method can be effectively used to reconstruct
+                                                                      focal length, is in these pipelines usually extracted from the
+3D scenes from collection of images with very few (in prin-
+                                                                      jpeg-exif headers. Unfortunately many images downloaded
+ciple single) images with known focal lengths 1 .
+                                                                      from photo-sharing websites do not contain the jpeg-exif
+                                                                      header, the header is corrupted or the included focal length
+                                                                      is not correct, e.g. due to the image cropping.
+1. Introduction
+                                                                          The 6-pt algorithm [28], which in principle could exploit
+Estimating relative camera pose [13] from image correspon-            cameras with unknown constant focal length, is rarely used
+dences is an important computer vision problem. Although              in reality due to problems with degeneracies, e.g. when op-
+it is an old well studied problem [18, 9], new efficient solu-        tical axes of cameras are parallel or intersecting.
+tions for different camera configuration appeared recently:               In this paper we provide an efficient and robust float-
+the 5-pt relative pose problem [26, 30] for a pair of cali-           ing point solution to the configuration with one completely
+brated cameras, the 6-pt focal length problem [28] for cam-           calibrated camera and one camera with an unknown focal
+era pair with unknown but constant focal length, the 6-pt             length. We show that this solution can cope with most un-
+generalized camera problem [29], the 9-pt problem for es-             pleasant degeneracies and can be effectively used to recon-
+timating para-catadioptric fundamental matrices [12], the             struct 3D scenes from collections of images with very few
+minimal problems of estimating epipolar geometry and a                (in principle single) images with known focal lengths.
+radial distortion parameter [19, 6].                                      Although this problem looks inferior to the well known
+    The main application of these problems is in 3D recon-            6-pt problem [28] for two cameras with unknown but equal
+struction. Existing structure from motion (SfM) pipelines             focal length, it has several nice and useful properties which
+  1 This work has been supported by EC project FP7-SPACE-218814       standard 6-pt algorithm does not have. The most interesting
+PRoVisG and by Czech Government under the research program            is its resistance to several critical motions which are com-
+MSM6840770038.                                                        mon in real situations, e.g. when optical axes are parallel
+
+                                                                  1
+or intersecting. These configurations are important since       vector X contains nine elements of F and M contains image
+they appear frequently when moving around an object and         measurements from 6 image matches. Next, a three dimen-
+taking its pictures or taking pictures while walking or from    sional basis F1 , F2 , F3 of the null space of M is computed and
+a moving car. Although these configurations are degener-        F is expressed as a linear combination of the basis
+ate for the standard 6-pt problem setting [28] they become
+tractable when one of the two cameras is fully calibrated.                         F = x F1 + y F2 + F3 .                   (5)
+    This problem of finding relative pose between a com-
+pletely calibrated camera and a camera with unknown fo-            The rank (2) and trace (4) constraints on E are used
+cal length was previously studied in [31] where a non-          with (3) to determine the coefficients x, y. In this case this
+minimal solution was proposed. After using the 7-pt algo-       brings ten third and fourth order polynomial equations in
+rithm for computing the fundamental matrix, the unknown         three unknowns x, y, and w = f −2 in 20 monomials.
+focal length was estimated in a closed-form solution using         Next we describe how to solve this system of equations
+Kruppa equations.                                               using the generalized eigenvalues and eigenvectors and us-
+    Here we provide two new minimal solvers for this prob-      ing the Gröbner basis method.
+lem from six point correspondences and compare them with
+the existing non-minimal solution [31]. Compared to [31],       3. Polynomial eigenvalue method
+our minimal solution has two advantages. 1) It needs 6 in-
+stead of 7 points, which is important for RANSAC, 2) it is      Polynomial eigenvalue solvers were used previously for
+more accurate in presence of noise. Our solvers are based       solving the problem of autocalibration of one-parameter
+on the Gröbner basis, resp. on the generalized eigenval-       radial distortion from nine point correspondences [10] or
+ues computation. Computational complexity of these algo-        to estimate paracatadioptric camera model from image
+rithms is smaller than for the 6-pt problem [28].               matches [24]. In [20], a simpler, faster and numerically
+    We show that these algorithms are useful and practical      more stable solution to the 6-pt focal length problem [28]
+when combining calibrated images, e.g. taken by a known         has been presented. Following the approach [20], we found
+camera, with images from the Internet. Based on our al-         a solution to our problem by computing generalized eigen-
+gorithms we propose a new efficient method for large-scale      values of certain matrices.
+SfM from unordered data sets downloaded from the Internet          Polynomial eigenvalue problems are problems of the
+e.g. from the Flickr database [11], see Figure 1.               form
+                                                                                        A (λ) v = 0,                   (6)
+2. Problem formulation                                          where A (λ) is a square matrix, where each element is a
+Consider a camera pair where the first camera is calibrated     polynomial in λ. We can expand A (λ) into
+up to an unknown focal length and the second camera is
+completely calibrated. The constraints on corresponding                 A (λ) ≡ λl Cl + λl−1 Cl−1 + · · · + λC1 + C0 ,      (7)
+image points can be written down as [13]
+                                                                in which the Cj are square coefficient n by n matrices.
+                       x
+                        j F xj = 0,                       (1)      Our problem can be formulated as the simplest “linear”
+                                                                eigenvalue problem
+where F is a 3 × 3 rank-2 fundamental matrix satisfying
+                                                                                      (λ B − A) v = 0,                      (8)
+                     det(F) = 0.                          (2)
+                                                                which can be directly rewritten into the generalized eigen-
+Since the first camera is calibrated up to an unknown focal
+                                                                value problem (GEP) [1]
+length and the second camera is fully calibrated, the essen-
+tial matrix [13]
+                                                                                         A v = λ B v.                       (9)
+                        E =     FK,                       (3)
+                                                                   Generalized eigenvalue problems (9) are well stud-
+where K ≃ diag([f f 1]) is a diagonal calibration matrix of     ied problems and there are efficient numerical algorithms
+the first camera, containing the unknown focal length f . It    for solving them [1]. MATLAB provides the function
+is known [13] that:                                             eig(A, B) which solves the problem (8).
+
+            2 E EE − trace(E E ) E    = 0.              (4)   3.1. Polynomial eigenvalue solution
+  The standard way [28] of computing the fundamental            The polynomial eigenvalue solver of our problem starts
+matrix F starts with rewriting (1) as M X = 0, where the        with 10 equations in three unknowns x, y and w = f −2
+as described in Section 2. The system can be rewritten into                19, 5]. In [21] an automatic generator of polynomial equa-
+the following matrix form                                                  tions solvers based on this Gröbner basis method has been
+                                                                           proposed.
+                              M X = 0,                            (10)
+
+where M is a 10 × 20 coefficient matrix and X =
+                                                                           4.1. Gröbner basis solver
+(wx3 , wyx2 , wy 2 x, wy 3 , x3 , yx2 , y 2 x, y 3 , wx2 , wyx, wy 2 ,     The Gröbner basis solver of our problem starts with 10
+x2 , yx, y 2 , wx, wy, x, y, w, 1) is a vector of 20 monomi-              equations in three unknowns as described in Section 2.
+als.                                                                           To create the action matrix, we use the method described
+    Unknowns x and y appear in degree three but w appears                  in [19, 21]. Using this method we have found that obtaining
+only in degree one. Therefore, we can select λ = w and                     all necessary polynomials for crating the action matrix calls
+rewrite these ten equations as                                             for generating all monomial multiples of the initial ten poly-
+                                                                           nomial equations up to the total degree five. This means that
+                        (w C1 + C0 ) v = 0,                       (11)     we need to multiply our 4th degree polynomial equations
+where v         =      (x3 , yx2 , y 2 x, y 3 , x2 , yx, y 2 , x, y, 1)   with all 1st degree monomials and our 3rd degree polyno-
+is a 10 × 1 vector of monomials and C1 , C0                                mial equations with all 2nd degree monomials.
+are 10 × 10 coefficient matrices such that C1 ≡                                In this way we generated 36 new polynomials which,
+(m1 m2 m3 m4 m9 m10 m11 m15 m16 m19 ),                                     together with the initial ten polynomial equations, form a
+C0 ≡ (m5 m6 m7 m8 m12 m13 m14 m17 m18 m20 ),                               system of 46 polynomials in 56 monomials. Then, we re-
+where mj is the j th column from the corresponding                         moved all unnecessary polynomials by the procedure de-
+coefficient matrix M.                                                      scribed in [4] and obtain 21 equations in 56 monomials.
+    The formulation (11) is a generalized eigenvalue prob-                     After rewriting these polynomials in the matrix form and
+lem which can be solved by MATLAB eig(−C0 , C1 ). Af-                      performing the Gauss-Jordan (G-J) elimination of the corre-
+ter solving (11), we obtain 10 eigenvalues, solutions for                  sponding coefficient matrix M, we obtained all polynomials
+w = f −2 and 10 corresponding eigenvectors v from which                    which we need for constructing the action matrix.
+we extract solutions for x and y. We do this by dividing v by                  Before the G-J elimination we can remove columns of
+its last coordinate which gives x = v(8), y = v(9). Then                   the matrix M corresponding to the monomials that do not
+we use (5) to get solutions for the fundamental matrix F.                  have impact on our solution (they do not appear in the action
+    Note that this solver delivers a relaxed solution to the               matrix). In this way we obtained 21 × 30 matrix M.
+original problem. The solution contains v’s that automati-                     The online solver then does only one G-J elimination of
+cally (within limits of numerical accuracy) satisfy the con-               the 21 × 30 coefficient matrix M. This matrix contains co-
+straints induced by the problem, i.e. v(1) = v(8)3 , and ad-               efficients which arise from concrete image measurements.
+ditional v’s that do not satisfy them. However, such v’s can               After G-J elimination of M the action matrix can be created
+be eliminated by verifying the monomial dependences. No-                   from rows of M. The solutions to x, y, w = f −2 can be
+tice also that solutions satisfying the monomial constraints               found from eigenvectors of this action matrix.
+on v will be obtained for exact as well as noisy data. This is                 This online solver is exactly what can be obtained using
+because we are solving a minimal problem and noisy data                    the automatic generator from [21].
+can be viewed as perfect input for a different camera con-
+figuration. Hence, we again obtain a solution satisfying the               5. Critical motions
+monomial constraints on v.
+                                                                              It is known that Euclidean structure can always be re-
+                                                                           covered from a pair of images acquired by a moving cali-
+4. Gröbner basis method
+                                                                           brated camera [16]. This is not the case if the cameras are
+    The Gröbner basis method is based on polynomial ideal                 calibrated only up to an unknown focal length as critical
+theory and multivariate polynomial division and generates                  configurations with constant and varying focal lengths start
+special bases of these ideals, called Gröbner bases [8] .                 appearing [16]. The critical motions for a camera pair with
+    These bases can be used to construct special action ma-                varying focal length appear (1) when the principal points are
+trices, which can be viewed as a generalization of a com-                  in epipolar correspondence, i.e. the optical axes intersect,
+panion matrix used in solving one polynomial equation in                   (2) whenever the epipolar planes or optical axes are orthog-
+one unknown. The solutions to the system of polynomial                     onal. If either principal point coincides with an epipole,
+equations can be easily obtained from the eigenvalues and                  both (1) and (2) apply. Having constant focal length pro-
+eigenvectors of this action matrix.                                        vides another useful constraint and hence there are less crit-
+    More on Gröbner basis methods can be found in [7, 8],                 ical motions. Some of them remain however. For example,
+and on their applications in computer vision in, e.g. in [28,              (3) arbitrary planar motions when the optical axes lie in the
+plane (e.g. a driving car with a forwards-pointing camera),         6.2. Seed reconstruction
+(4) “turntable rotations” about the intersection point of the
+                                                                       From the previous step we get the essential matrices be-
+two optical axes, when these do not lie in a plane.
+                                                                    tween the seed images and some of the remaining images
+   In [31] authors demonstrated that none out of (1), (2) and
+                                                                    and the focal lengths of these images. Not all estimated
+(4) results in degenerated configuration for a fully calibrated
+                                                                    essential matrices and focal lengths are correct. Hence, un-
+and an up to focal length calibrated camera pair. Configura-
+                                                                    reliable geometries need to be removed. We treat each seed
+tion (3) works too except for the configuration in which the
+                                                                    image separately. Fixing a seed image first, we calibrate all
+two optical axes are coincident, i.e. pure forward motion. It
+                                                                    images where a focal length was estimated. We do this also
+is possible to prove these results using methods from [16]
+                                                                    for cameras where camera calibration is known from the
+but we omit this proof here due to the lack of space.
+                                                                    jpeg-exif header. For such images we compare estimated fo-
+   Since in [31] these critical motions were not studied in         cal length and the focal length from the jpeg-exif header. If
+experiments, in Section 7 we show performance and com-              the focal lengths difference is below a certain threshold we
+parison of our algorithms with existing ones in these con-          increase votes indicating correctness of the jpeg-exif value
+figurations.                                                        of both the seed image and the tested image. This threshold
+                                                                    depends on the absolute focal length and the expected noise
+6. Reconstruction pipeline                                          level. The acceptable difference is smaller for smaller focal
+                                                                    lengths and greater for bigger focal lengths. We estimated
+   This section presents an SfM algorithm based on our              these thresholds experimentally by observing deviation of
+novel minimal solvers. This SFM algorithm assumes exis-             estimated focal lengths from the ground truth in synthetic
+tence of very few (in principle single) cameras with known          experiments using one pixel noise level. Next we filter un-
+internal calibration. In Section 7 we show that assuming            reliable essential matrices. We are using a method similar
+zero skew, aspect ratio equal to one, the principal point in        to [22], i.e. we test if rotation matrices between triplets of
+the image center and the focal length extracted from the            cameras obey transitivity.
+jpeg-exif header is sufficient.                                        First, we extract all rotations between seed images and
+                                                                    the remaining images using the essential matrices [13].
+6.1. Robust matching                                                Since the rotation between the ith and the j th image is miss-
+                                                                    ing we need to calculate it. Common image features be-
+    Given an unordered set of images with feature points            tween the seed, the ith and the j th images (common TC) are
+and feature descriptors, the algorithm first locates all im-        extracted and robust matching estimator is used to find com-
+ages with available calibration information - image seeds.          mon corresponding points and the essential matrix. Since
+Then, each image seed is matched to the images in the im-           both the ith and the j th images are already calibrated we
+age set using the robust matching method described below.           can run calibrated 5-pt [26] solver instead of our 6-pt solver.
+    We implemented our minimal solver using the DEGEN-              However, we use our 6-pt since it returns focal length too.
+SAC algorithm [14]. The DEGENSAC algorithm samples                  The focal is expected to be close to one since images are cal-
+6-tuples from the set of tentative correspondences (TC),            ibrated. Hence we compare these focal lengths as described
+evaluates the focal length, the essential matrix and calcu-         above to detect possible inconsistences. If everything goes
+lates the number of inliers for the estimated model in a usual      well and the number of inliers is greater than 80% of com-
+way [13]. When a “better” hypothesis is sampled a degen-            mon TC between the ith and the j th image, we extract the
+eracy test is evaluated, i.e. test if 5 or 6 points from the sam-   corresponding rotation matrix. Now, rotations must obey
+ple are on a plane. Then the plane is used to split tentative       transitivity:
+correspondences into points on and off the plane. In DE-                                           T
+                                                                                       Rseed,j Rseed,i  ∼ Ri,j ,              (12)
+GENSAC [14], only two points off-the-plane are sampled
+and the fundamental matrix is calculated using the plane-           where Rseed,∗ is the rotation between the seed and the ith
+plus-parallax algorithm [13]. The existing off-online algo-         resp. j th image, Ri,j is the rotation between the ith and the
+rithm [31] can be used here to extract the focal length. How-       j th image and R1 ∼ R2 means that the rotation R1 R2−1 is
+ever, we observed better results when we used clustered ten-        small. We allow at most 5 deg rotation error. If the rotation
+tative correspondences and applied the local optimization           is consistent, we increase votes (reliability score) for both
+algorithm [15] using our minimal solver with 3 off and 3 on         cameras. We observed, that images with at least two votes
+the plane points. This way we get a more accurate solution          were reliable enough, but usually this number was either
+or a solution with more inliers. Since DEGENSAC [14] is             zero or more than six.
+capable of detecting dominant planes, it can robustly detect            After unreliable geometries were detected we extract
+when images form a panorama or observe a planar scene.              camera pairs between the seed and the ith image and trian-
+We remove such degenerate pairs from further computation.           gulate 3D structure [13]. Each two-view reconstruction is
+               150                                                         150
+                                                                                                           newEig                                                0.4
+                                                                                                           newGb
+                                                                                                           7pt off−on                                                      newEig
+
+
+
+
+                                                                                                                               relative error of focal length
+               100                                                         100
+                                                                                                                                                                0.35       newGb
+   Frequency                                                   Frequency
+                                                                                                           peig6pt
+                                                                                                           7pt
+                                                                                                           8pt                                                             7pt on−off
+               50                                                          50
+                                                                                                                                                                 0.3       peig6pt
+                                                                                                                                                                           7pt
+                                                                                                                                                                0.25       8pt
+                 0                                                           0
+                −20         −15            −10            −5                −20         −15            −10            −5
+                      Log
+                        10
+                           relative error of focal length                         Log
+                                                                                    10
+                                                                                       relative error of focal length                                            0.2
+Figure 2. Left: Focal length estimation of the solvers on noise free                                                                                            0.15
+data set for general motions (solid line), turntable rotation (dash-
+dot line), pure sideways translation (dashed line) and a forward                                                                                                 0.1
+                                                                                                                                                    10
+translation with small sideway motion (dotted line). The general-                                                              Log                              0.05
+ized eigenvalue solver is shown in red and the Gröbner basis solver
+                                                                                                                                                                  0
+in green. Right: Comparison of the solvers on the general scene,                                                                                                       0      0.01       0.05      0.1    0.5   1
+see text.                                                                                                                                                                               noise in pixels
+
+                                                                                                                           Figure 3. Performance of our solvers for general motions with
+                                                                                                                           growing noise level, see text.
+determined up to a scale only, thus we use common 2D-3D
+correspondences to fix these scales. We fix the scale accord-
+ing to the reconstruction between the seed and the camera                                                                  etc.). Then, Gaussian noise with standard deviation σ was
+with the highest reliability score. A bundle adjustment [13]                                                               added to each image point assuming a 1000 × 1000 pixel
+can be used to improve the quality of the reconstruction.                                                                  image.
+However, we omitted bundle adjustment in scenes recon-
+structed in Section 7.                                                                                                     7.2. Numerical stability
+6.3. Seeds registration                                                                                                    In this synthetic experiment we study numerical stability
+                                                                                                                           of our solvers in various configurations and compare them
+After all seeds were reconstructed as described in previous                                                                with other solvers. We focus on focal length estimation be-
+section we register them together. First we identify two                                                                   cause rotation and translation is usually good once we have
+seeds with the highest number of common images. If more                                                                    a good focal length estimate. Figure 2 shows the perfor-
+possibilities exist, we select among them the two seeds with                                                               mance of our solver on synthetic noise free scenes in (i) gen-
+the highest number of registered images. We transform the                                                                  eral motion, (ii) turntable configuration, (iii) pure sideways
+seed with less registered images to the coordinate system of                                                               translation and (iv) forward translation with small sideway
+the seed with the higher number of registered images. Ro-                                                                  motion of cameras such that their optical axes are not coin-
+tations and translations of common cameras are “averaged”                                                                  cident. We know from the previous section that (ii), (iii)
+similarly as in the linear method described in [22].                                                                       and (iv) are critical configurations for camera pairs with
+    When all possible seeds were merged we can run a bun-                                                                  constant or varying focal length i.e. for the 6-pt [28] and
+dle adjustment [13]. Then, cameras corresponding to the                                                                    7-pt [13] algorithms followed by a focal length extraction.
+registered images with higher reliability score can be de-                                                                     Figure 2 (left) shows that these configurations are not
+clared as calibrated and the algorithm can start again with                                                                critical for fully calibrated and up to f calibrated camera
+new image seeds.                                                                                                           pairs. Focal lengths estimated in “critical configurations”
+                                                                                                                           are equally good as those in a general configuration.
+7. Experiments                                                                                                                 Figure 2 (right) shows the stability of the algorithms in
+                                                                                                                           general configurations. We compare here both our solvers
+In this section we evaluate both the generalized eigenvalue
+                                                                                                                           (newEig, newGB) with the non-minimal off-online solver
+solution and the Gröbner basis solution of the problem and
+                                                                                                                           (7pt on-off) [31] and the polyeig solver of classical 6-pt
+compare them to the existing non-minimal solution [31].
+                                                                                                                           problem (peig6pt) [20], the 7-pt (7pt) and the normalized
+We study critical motions and compare the numerical sta-
+                                                                                                                           8-pt (8pt) algorithms [13]. For the 7-pt and 8-pt algorithms
+bility and computational complexity of both solvers.
+                                                                                                                           we first calculated fundamental matrices and then extracted
+                                                                                                                           focal lengths using Bougnoux method [3]. In case of the
+7.1. Synthetic data set
+                                                                                                                           8-pt algorithm, we used all image measurements to calcu-
+We study the performance of our methods on synthetically                                                                   late epipolar geometry. Figure 2 (right) shows that our gen-
+generated ground-truth 3D scenes. These scenes were gen-                                                                   eralized eigenvalue and the non-minimal off-online algo-
+erated as random points in a 3D cube. Each 3D point                                                                        rithm [31] give best estimates of f but all methods perform
+was projected by a camera with random parameters or pa-                                                                    almost equally.
+rameters testing degenerate configurations (pure translation,                                                                  We have also made a comparison of our algorithms with
+                                                          General motion                                                          Turntable motion
+
+
+
+
+   Log10 relative error of focal length
+                                                                                 relative error of focal length
+                                           0.1                                                                     0.1
+                                                     newEig                                                                  newEig
+                                                     newGb                                                                   newGb
+                                          0.08                                                                    0.08
+                                                     7pt on−off                                                              7pt on−off
+                                          0.06                                                                    0.06
+
+                                          0.04                                                                    0.04
+
+                                          0.02                                                                    0.02
+                                                                                                      10
+                                            0                                    Log                                0
+                                                 0     0.01 0.05 0.1 0.5     1                                           0     0.01 0.05 0.1 0.5         1
+                                                           noise in pixels                                                         noise in pixels
+                                                            Side motion                                                      Forward + small side motion
+
+
+
+
+   Log10 relative error of focal length
+                                                                                 relative error of focal length
+                                           0.1                                                                     0.1
+                                                     newEig                                                                  newEig
+                                                     newGb                                                                   newGb
+                                          0.08                                                                    0.08
+                                                     7pt on−off                                                              7pt on−off
+                                          0.06                                                                    0.06
+
+                                          0.04                                                                    0.04
+
+                                          0.02                                                                    0.02
+                                                                                                      10
+                                            0                                    Log                                0
+                                                 0     0.01 0.05 0.1 0.5     1                                           0     0.01 0.05 0.1 0.5        1
+                                                           noise in pixels                                                         noise in pixels
+                                                                                                                                                             Figure 5. Correct 3D reconstruction of cameras in a “turntable con-
+Figure 4. Performance of our solvers in the 4 studied special con-                                                                                           figuration” by our method. This is a degenerate configuration for
+figurations. See text.                                                                                                                                       general 6-pt algorithms which often occurs with causal photogra-
+                                                                                                                                                             phers taking pictures of 3D objects.
+
+the non-minimal off-online algorithm for all “critical con-                                                                                                                             700
+                                                                                                                                                                                                                      ground                                  120   ground
+figurations” like in Figure 2 (left). The results of the non-                                                                                                                           600                           new6pt                                        new6pt
+
+
+
+
+                                                                                                                                                               estimated focal length                                                estimated focal length
+                                                                                                                                                                                                                                                              100
+                                                                                                                                                                                                                      peig6pt                                       peig6pt
+minimal algorithm for all configurations where almost the                                                                                                                               500                           7pt f1                                  80    7pt f1
+                                                                                                                                                                                        400                           7pt f2                                        7pt f2
+same as the results of our generalized eigenvalue solver and                                                                                                                            300
+                                                                                                                                                                                                                                                              60
+
+therefore we didn’t print them here.                                                                                                                                                    200
+                                                                                                                                                                                                                                                              40
+
+                                                                                                                                                                                                                                                              20
+   In the experiment not shown here we found that the sta-                                                                                                                              100
+                                                                                                                                                                                                                                                               0
+bility of both our solvers is almost independent from the                                                                                                                                 1   3   5     7    9
+                                                                                                                                                                                                      image pair
+                                                                                                                                                                                                                 11    13       15                              1      3          5
+                                                                                                                                                                                                                                                                              image pair
+                                                                                                                                                                                                                                                                                           7   9
+
+
+true focal length. The results for all reasonable focal lengths                                                                                              Figure 6. Estimated focal length using different algorithms for turn
+from 25mm to 300mm were similar to the result from Fig-                                                                                                      table sequence (left) and side motion sequence (right). For 7-pt
+ure 2 (right) which was made for the focal length 36mm.                                                                                                      algorithm we extract two focal lengths - 7pt f1 (solid line) and 7pt
+   Next experiment shows the quality of the focal length                                                                                                     f2 (dashed line)
+estimation for general camera configurations when adding
+noise to image measurements. First, we fixed the focal
+                                                                                                                                                             non-minimal algorithm were similar to the results of our
+lengths of the first camera to 30mm and of the second cam-
+                                                                                                                                                             algorithms for smaller noise levels and all configurations
+era to 50mm. Then we generated 1000 random camera
+                                                                                                                                                             similar and for larger noise levels the performance of our
+poses for each tested noise. Results for the general cam-
+                                                                                                                                                             algorithms was slightly better.
+era motion are shown in Figure 3. Our solvers (newEig,
+newGb) give almost the same results here and they are per-
+                                                                                                                                                             7.3. Real experiments - critical motion
+forming very well even with one pixel noise level. The
+results of the non-minimal algorithm (7pt on-off) were for                                                                                                      In the real data experiments we have aimed at the criti-
+smaller noise levels similar to the results of our algorithms,                                                                                               cal motions described in Section 7.2. We captured a set of
+however for larger noise levels the performance of our al-                                                                                                   images of a non-planar scene in a “turntable” configuration
+gorithms was slightly better.                                                                                                                                and with a sideways moving camera. Figure 5 shows a re-
+   The previous experiment has shown results for a general                                                                                                   construction using our autocalibration method described in
+camera motion. A different situation occurs when we are                                                                                                      Section 6, without any additional numerical improvements.
+testing these solvers in their critical configurations. Adding                                                                                                  Figure 6 (left) shows estimated focal lengths using differ-
+a small perturbation to the image measurements helps re-                                                                                                     ent algorithms. Note that this is a critical configuration for
+moving the degeneracy and lets solvers find an approximate                                                                                                   the standard 6-pt an 7-pt algorithms. We obtained results for
+solution. However, the experiments show that the classical                                                                                                   these solvers since image correspondences are not measured
+6-pt [28], 7-pt [13] and 8-pt [13] solvers failed to deliver                                                                                                 perfectly what helped finding solution which were close to
+any real solution in more than 90% of all tests. Hence Fig-                                                                                                  the critical configuration. However, it can be seen from the
+ure 4 shows plots only for our solvers and the non-minimal                                                                                                   Figure 6 (left), that estimated focal lengths are far from the
+off-online solver in turntable motion, side motion and for-                                                                                                  ground truth.
+ward translation with small side motion and non-coincident                                                                                                      Results for the sideways motion configuration are simi-
+optical axes. Our solvers failed to deliver real solutions in                                                                                                lar to those obtained for the “turntable” configuration. Es-
+less than 2 cases in 1000 calls. Again the results of the                                                                                                    timated focal lengths are in Figure 6 (right). Results of the
+                                                                                             80
+                                                                                                             calib fl                                                          side motion
+                                                                                                             unk fl                              1.15                          turn table
+                                                                                                             unk fl / calib fl
+
+
+
+
+                                                                         focal length [mm]
+                                                                                             60
+
+
+
+                                                                                                                                 solver result
+                                                                                                             critical f                           1.1
+                                                                                                             general f
+                                                                                             40                                                  1.05
+
+                                                                                                                                                   1
+                                                                                             20
+                                                                                                                                                 0.95
+
+                                                                                             0                                                    0.9
+                                                                                              0   100       200          300                            40     50   60    70     80   90
+                                                                                                    measurement                                              sampled focal lenth [mm]
+
+                                                                     Figure 8. Left: True focal length of the calibrated camera (calib
+                                                                     fl) is increasing. Focal length of the second camera is unknown
+                                                                     but constant (unk fl). We have found that estimated focal lengths
+                                                                     for critical motion (critical f) is identical to the ratio of the ground
+                                                                     truth focal lengths (unk fl/calib fl). General motion (general f)
+                                                                     configuration is shown in blue. Right: The “sampling” experiment
+                                                                     on the real data sets with constant focal length camera. Graphs
+                                                                     show the ratio of the estimated and sampled focal lengths. The
+Figure 7. Single seed reconstructions on the top, full reconstruc-   ground truth ratio is equal to one.
+tion on the bottom.
+
+                                                                     and the full reconstructions in Figure 7 (bottom). We pro-
+non-minimal algorithm were similar to the results of our
+                                                                     cessed 4000 Flickr photos in less than a day.
+solvers (new6pt) and therefore are not showed in the figure.
+   Note that the standard 6-pt algorithm uses the same focal         7.5. Interesting questions
+length in both cameras. Since the difference between esti-
+mated focal length and the ground value is high, one cannot          Here we try to answer questions you may ask yourself:
+get the correct Euclidean reconstruction. Hence, building
+                                                                     • Does the method work when all six point correspon-
+structure from motion using such partial reconstructions is
+                                                                       dences are projections of the points from a plane in the
+a hard problem and it is not possible to obtain a good re-
+                                                                       3D space? No, this is a degenerated configuration [16].
+construction, e.g., by using bundle adjustment methods [13]
+without specifying additional constraints, e.g., constant fo-        • What happens if the calibration of the calibrated cam-
+cal length in the whole sequence. We failed to reconstruct             era is inaccurate or even unknown?
+our “turntable” sequence even with a robust state of the art
+                                                                        Figure 8 (left) tries to answer this question. We have gen-
+systems such as PhotoSynth [23].
+                                                                        erated synthetic scenes and used our solver to find an un-
+                                                                        known focal length (unk fl) without doing any calibration
+7.4. Real experiments – images from the Internet
+                                                                        of the first camera. We were interested in the relation be-
+In this experiment we tried to use the previous approach                tween the evaluated and the ground truth focal lengths.
+on a set of images downloaded from the Internet. We have                We found that results for general configurations are al-
+downloaded 2550 images of Fountain di Trevi and 4000 im-                most random. However, the experiment has shown that
+ages of Notre Dame de Paris from Flickr [11] database. In               the estimated focal length is actually the ratio of the two
+such a huge database of images, it is not a problem to find             ground truth focal lengths for cameras in critical con-
+an image with focal stored in the jpeg-exif and use it as a             figurations. This experiment shows why “sampling” ap-
+seed.                                                                   proach does not help finding absolute focal length given
+    We extracted SURF [2] feature points and descriptors of             the ratio ρ of the lengths in the critical configuration. Ba-
+all images and used [17] to obtain image matches. For the               sically, one gets ρf for every sampled focal f . In case of
+best 50 images for each seed we extracted tentative corre-              the “turntable” and sideways motion sequence from our
+spondences as points where the best descriptor dominates                real data set, where cameras have constant focal lengths,
+by 20% over the second best descriptor [25]. Then we used               we obtained results corresponding to a ratio close to one,
+our reconstruction pipeline from Section 6 to register im-              Figure 8(right).
+ages. We did not generate additional seeds and did not use
+bundle adjustment in this step.                                      • Given a ratio of focal lengths, can we emulate the pop-
+    The Fountain dataset contained about 10%(239) seed im-             ular 6-pt algorithm [28] and avoid degenerated config-
+ages with 35mm equivalent focal length in the jpeg-exif.               urations ? Using this algorithm we can emulate the six
+About 14% of them did not contain Fountain scene and 11%               point problem by sampling the calibrated focal length and
+were rejected as wrongly calibrated. Numbers for the Notre             testing if the ratio of estimated and sampled focal lengths
+Dame sequence were similar. A 3D reconstruction of both                is close to the given ratio. As expected, such algorithm
+dataset from a single seed image are shown in Figure 7 (top)           will not work for critical motions as shown above.
+7.6. Computational complexity                                        [8] D. Cox, J. Little, and D. O’Shea. Ideals, Varieties, and Al-
+                                                                         gorithms. Springer Verlag 2007.
+    The most expensive part of both solvers is in calculat-
+                                                                     [9] O. Faugeras and S. Maybank. Motion from Point Matches:
+ing eigenvectors. The Gröbner basis solver has to perform               Multiplicity of Solutions. IJCV 4(3):225-246, 1990.
+single G-J elimination of 21 × 30 matrix in order to build          [10] A. Fitzgibbon. Simultaneous linear estimation of multiple
+the action matrix. We take sparseness of the matrix into ac-             view geometry and lens distortion. CVPR 2001.
+count and hence elimination time is negligible comparing            [11] Flickr. http://www.flickr.com/
+to the eigenvector computation. The generalized eigenvalue          [12] C. Geyer and H. Stewenius. A 9-point algorithm for estimat-
+solver does not have to perform any elimination but has to               ing paracatadioptric fund. matrices. CVPR 2007.
+calculate generalized eigenvectors. Still, this involves cal-       [13] R. Hartley and A. Zisserman. Multiple View Geometry in
+culation of eigenvectors of 10 × 10 matrix. Running time of              Computer Vision. Cambridge Univ. Press, 2003.
+both solvers is less than 1ms on 3Ghz AMD Sempron mo-               [14] O. Chum, T. Werner, and J. Matas. Two-View Geometry
+bile. Comparing the two algorithms, the generalized eigen-               Estimation Unaffected by a Dominant Plane. CVPR 2005.
+value solver is both faster and numerically more stable.            [15] O. Chum, J. Matas., and J. Kittler. Locally Optimized
+                                                                         RANSAC. DAGM 2003.
+8. Conclusions                                                      [16] F. Kahl and B. Triggs. Critical Motions in Euclidean Struc-
+                                                                         ture from Motion. CVPR 1999.
+   We have presented a minimal solution to finding the rel-         [17] J. Knopp, J. Šivic, and T. Pajdla. Location recognition us-
+ative pose between a completely calibrated camera and a                  ing large vocabularies and fast spatial matching. Research
+camera with an unknown focal length given six point corre-               Report, CTU–CMP–2009–01, 2009
+spondences. We presented two efficient solvers to the prob-         [18] E. Kruppa, Zur Ermittlung eines Objektes aus zwei Perspek-
+lem based on the Gröbner basis, resp. on the generalized                tiven mit Innerer Orientierung, Sitz.-Ber. Akad.Wiss.,Wien,
+eigenvalues. Both algorithms are fast, numerically stable                Math. Naturw. Kl., Abt. IIa., 122:1939-1948, 1918.
+and in case of the generalized eigenvalue solver extremely          [19] Z. Kukelova and T. Pajdla. A minimal solution to the auto-
+simple to implement. The source codes to both solvers can                calibration of radial distortion. CVPR 2007.
+be found at http:/cmp.felk.cvut.cz/minimal.                         [20] Z. Kukelova, M. Bujnak and T. Pajdla. Polynomial eigen-
+   We have demonstrated that our solvers produce very sta-               value solutions to the 5-pt and 6-pt relative pose problems.
+                                                                         BMVC 2008.
+ble results for both synthetic and the real scenes with or
+                                                                    [21] Z. Kukelova, M. Bujnak and T. Pajdla. Automatic Generator
+without noise and even for critical motions of the state of the
+                                                                         of Minimal Problem Solvers. ECCV 2008.
+art algorithms. Since it is often easy to get a single image
+                                                                    [22] D. Martinec and T. Pajdla. Robust Rotation and Translation
+from a calibrated camera, our algorithm is practical when                Estimation in Multiview Reconstruction In CVPR 2007.
+working with unknown images, e.g., downloaded from the              [23] MS PhotoSynth. http://www.photosynth.net
+Internet. We have show this in experiments and presented a          [24] B. Micusik and T. Pajdla. Estimation of omnidirectional
+new efficient method for large-scale structure from motion               camera model from epipolar geometry. CVPR 2003.
+from unordered data sets downloaded from the Internet.              [25] M. Muja, and D. Lowe. Fast Approximate Nearest Neigh-
+                                                                         bors with Automatic Algorithm Configuration. Preprint,
+References                                                               University of British Columbia, 2008.
+                                                                    [26] D. Nister. An efficient solution to the five-point relative pose.
+ [1] Z. Bai., J. Demmel, J. Dongorra, A. Ruhe, and
+                                                                         IEEE PAMI, 26(6):756–770, 2004.
+     H. van der Vorst. Templates for the solution of algebraic
+     eigenvalue problems. SIAM 2000.                                [27] N. Snavely, S. Seitz, and R. Szeliski. Photo tourism: Explor-
+                                                                         ing image collections in 3D. SigGraph 2006.
+ [2] H. Bay, A. Ess, T. Tuytelaars, and L. Van Gool. Speeded-Up
+     Robust Features (SURF). CVIU, 110:346–359, 2008                [28] H. Stewenius, D. Nister, F. Kahl, and F. Schaffalitzky. A min-
+ [3] S. Bougnoux. From projective to Euclid. space under a prac-         imal solution for relative pose with unknown focal length.
+     tical situation, a criticism of self-calibration. ICCV 1998.        CVPR 2005.
+ [4] M. Bujnak, Z. Kukelova, and T. Pajdla. A general solution      [29] H. Stewenius, D. Nister, M. Oskarsson, and K. Astrom. So-
+     to the P4P problem for camera with unknown focal length.            lutions to minimal generalized relative pose problems. OM-
+     CVPR 2008.                                                          NIVIS 2005.
+ [5] M. Byröd, K. Josephson, and K. Åström. Improving numer-     [30] H. Stewenius, C. Engels, and D. Nister. Recent develop-
+     ical accuracy of Gröbner basis polynomial equation solver.         ments on direct relative orientation. ISPRS J. of Photogram.
+     ICCV 2007.                                                          and Rem. Sens., 60:284–294, 2006.
+ [6] M. Byröd, Z. Kukelova, K. Josephson, T. Pajdla, and           [31] M. Urbanek, R. Horaud, and P. Sturm. Combining Off- and
+     K. Åström. Fast and robust numerical solutions to minimal         On-line Calibration of a Digital Camera. Third Int. Conf. on
+     problems for cameras with radial distortion. CVPR 2008.             3-D Digital Imaging and Modeling, 2001.
+ [7] D. Cox, J. Little, and D. O’Shea. Using Algebraic Geometry.
+     Springer Verlag 2005.
+
