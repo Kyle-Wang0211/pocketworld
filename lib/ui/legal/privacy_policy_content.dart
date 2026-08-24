@@ -71,7 +71,7 @@ const List<LegalSection> kPrivacyPolicyZh = [
         '如果您不同意本政策,请不要注册或使用本产品。基于法律法规规定必须处理的信息(如 IP 属地展示)不因您的不同意而免除。'),
   ]),
   LegalSection('一、我们收集哪些个人信息,用来做什么', [
-    LegalParagraph('我们只在下列四个场景收集个人信息。每一项都标注了目的、方式与保存期限;'
+    LegalParagraph('我们只在下列五个场景收集个人信息。每一项都标注了目的、方式与保存期限;'
         '除手机号外,其余各项均为可选,拒绝提供不影响您使用其余功能。'),
     LegalParagraph('(一)账号注册与登录'),
     LegalParagraph(
