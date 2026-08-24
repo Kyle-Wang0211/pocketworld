@@ -7,14 +7,14 @@ BUCKET="${2:-pw-backup}"   # bucket 名
 
 echo "▸ 上传 blobs(1878 个唯一对象,约 2.0 GB)"
 rclone copy "$B/blobs" "$REMOTE:$BUCKET/blobs" \
-  --transfers 16 --checkers 32 --progress --no-traverse
+  --s3-no-check-bucket --no-traverse --transfers 24 --checkers 32 --progress
 
 echo "▸ 上传清单"
-rclone copy "$B/manifest.tsv" "$REMOTE:$BUCKET/"
-rclone copy "$B/restore.sh"   "$REMOTE:$BUCKET/"
-rclone copy "$B/README.md"    "$REMOTE:$BUCKET/"
+rclone copy "$B/manifest.tsv" "$REMOTE:$BUCKET/" --s3-no-check-bucket --no-traverse
+rclone copy "$B/restore.sh"   "$REMOTE:$BUCKET/" --s3-no-check-bucket --no-traverse
+rclone copy "$B/README.md"    "$REMOTE:$BUCKET/" --s3-no-check-bucket --no-traverse
 
 echo "▸ 校验:远端对象数应为 1878"
-n=$(rclone size "$REMOTE:$BUCKET/blobs" --json | python3 -c 'import sys,json;print(json.load(sys.stdin)["count"])')
+n=$(rclone size "$REMOTE:$BUCKET/blobs" --s3-no-check-bucket --json | python3 -c 'import sys,json;print(json.load(sys.stdin)["count"])')
 echo "  远端 blob 数: $n"
 [ "$n" = "1878" ] && echo "  ✅ 一致" || { echo "  🔴 不一致,重跑 upload.sh"; exit 1; }

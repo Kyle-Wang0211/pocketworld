@@ -54,3 +54,16 @@
 - 本地 `blobs/` 是**硬链接**,新增磁盘占用为 0
 - `manifest.tsv` 四列:`sha256 · 字节数 · root · 相对路径`,
   用相对路径以便在别的机器上还原
+
+## ⚠️ 必须带 `--s3-no-check-bucket`
+
+R2 token 收窄到「只对 `pw-backup` 有 Object Read & Write」后,rclone 默认会先
+`CreateBucket` 探测,直接 **403 AccessDenied** 且 0 个对象上传。
+`--s3-no-check-bucket` 跳过该探测。`rclone lsd r2:`(ListBuckets)同样会 403 ——
+这是权限收窄正确的证据,不是故障。
+
+## 上传实况(2026-08-24)
+
+1,878 对象 / 2,007 MB,零错误,经 Astrill 台湾出口约 3.1 MB/s。
+回环验证:随机抽 25 个 blob 下载复算 sha256,25/25 名实相符;
+清单覆盖 1878/1878 ⇒ 11,456 个文件全部可还原。

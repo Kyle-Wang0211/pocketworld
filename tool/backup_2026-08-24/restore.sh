@@ -5,7 +5,7 @@ B="$(cd "$(dirname "$0")" && pwd)"
 REMOTE="${1:-r2}"; BUCKET="${2:-pw-backup}"; DEST="${3:?用法: restore.sh <remote> <bucket> <还原到的目录>}"
 
 echo "▸ 拉取 blobs"
-rclone copy "$REMOTE:$BUCKET/blobs" "$B/blobs" --transfers 16 --progress
+rclone copy "$REMOTE:$BUCKET/blobs" "$B/blobs" --s3-no-check-bucket --no-traverse --transfers 24 --progress
 
 echo "▸ 按清单重建目录树 → $DEST"
 n=0; bad=0
