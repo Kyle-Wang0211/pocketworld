@@ -352,6 +352,15 @@ class AppL10nZh extends AppL10n {
   }
 
   @override
+  String get meAnalyticsTitle => '帮助改进产品';
+
+  @override
+  String get meToggleOn => '已开启';
+
+  @override
+  String get meToggleOff => '已关闭';
+
+  @override
   String get legalUserAgreement => '用户协议';
 
   @override

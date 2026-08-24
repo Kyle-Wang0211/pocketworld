@@ -727,6 +727,24 @@ abstract class AppL10n {
   /// **'Update failed: {error}'**
   String meDisplayNameUpdateFailed(String error);
 
+  /// No description provided for @meAnalyticsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Help improve the app'**
+  String get meAnalyticsTitle;
+
+  /// No description provided for @meToggleOn.
+  ///
+  /// In en, this message translates to:
+  /// **'On'**
+  String get meToggleOn;
+
+  /// No description provided for @meToggleOff.
+  ///
+  /// In en, this message translates to:
+  /// **'Off'**
+  String get meToggleOff;
+
   /// No description provided for @legalUserAgreement.
   ///
   /// In en, this message translates to:

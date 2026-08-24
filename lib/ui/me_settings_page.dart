@@ -15,6 +15,7 @@ import 'design_system.dart';
 import 'me_stats_view_model.dart';
 import 'legal/platform_rules_page.dart';
 import 'legal/legal_doc_page.dart';
+import '../analytics/pw_analytics.dart';
 
 class MeSettingsPage extends StatelessWidget {
   final MeStatsViewModel stats;
@@ -135,6 +136,18 @@ class _SettingsSection extends StatelessWidget {
         title: l.mePlatformRules,
         trailing: '',
         onTap: () => PlatformRulesPage.open(context),
+      ),
+      // [ANALYTICS 2026-08-24] 第一方统计开关。统计属非必要信息,
+      // 监管口径(认定方法四)下必须可拒绝;关闭 = 停收 + 清空本地队列。
+      // 隐私政策第一章(五)引用了这个入口位置,挪动时同步改政策。
+      _SettingsRowSpec(
+        icon: Icons.insights_outlined,
+        title: l.meAnalyticsTitle,
+        trailing: PwAnalytics.instance.enabled ? l.meToggleOn : l.meToggleOff,
+        onTap: () async {
+          await PwAnalytics.instance.setEnabled(!PwAnalytics.instance.enabled);
+          if (context.mounted) (context as Element).markNeedsBuild();
+        },
       ),
       // [LEGAL-DOCS 2026-08-24] 三件套的另外两份。隐私政策入口从主界面起
       // 不得超过 4 次点击(《认定方法》一(3)项)——这里是 设置 1 击 + 本行

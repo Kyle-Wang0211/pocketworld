@@ -144,6 +144,17 @@ void main() {
         expect(agreementAll, contains(kw), reason: '缺口回填丢失: $kw');
       }
     });
+    test('统计(自建埋点)三处口径一致:政策/开关/清单', () {
+      expect(privacyAll, contains('产品改进与统计分析'));
+      expect(privacyAll, contains('帮助改进产品'));
+      expect(privacyAll, contains('统计事件 180 天'));
+      expect(privacyAll, contains('不经任何第三方统计组件'));
+      final xc = File('ios/Runner/PrivacyInfo.xcprivacy').readAsStringSync();
+      expect(xc, contains('NSPrivacyCollectedDataTypeCrashData'));
+      expect(xc, contains('NSPrivacyCollectedDataTypePurposeAnalytics'));
+      expect(_code('lib/ui/me_settings_page.dart'), contains('setEnabled'));
+    });
+
     test('政策:Cookie/本地存储与无间接获取', () {
       expect(privacyAll, contains('不使用 Cookie'));
       expect(privacyAll, contains('不从任何第三方间接获取'));

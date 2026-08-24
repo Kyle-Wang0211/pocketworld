@@ -359,6 +359,15 @@ class AppL10nEn extends AppL10n {
   }
 
   @override
+  String get meAnalyticsTitle => 'Help improve the app';
+
+  @override
+  String get meToggleOn => 'On';
+
+  @override
+  String get meToggleOff => 'Off';
+
+  @override
   String get legalUserAgreement => 'User Agreement';
 
   @override

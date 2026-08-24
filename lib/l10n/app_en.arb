@@ -200,6 +200,9 @@
       }
     }
   },
+  "meAnalyticsTitle": "Help improve the app",
+  "meToggleOn": "On",
+  "meToggleOff": "Off",
   "legalUserAgreement": "User Agreement",
   "legalPrivacyPolicy": "Privacy Policy",
   "authTermsAcceptancePrefix": "By signing up you agree to:",

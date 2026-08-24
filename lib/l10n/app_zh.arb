@@ -141,6 +141,9 @@
       }
     }
   },
+  "meAnalyticsTitle": "帮助改进产品",
+  "meToggleOn": "已开启",
+  "meToggleOff": "已关闭",
   "legalUserAgreement": "用户协议",
   "legalPrivacyPolicy": "隐私政策",
   "authTermsAcceptancePrefix": "注册即表示你同意:",

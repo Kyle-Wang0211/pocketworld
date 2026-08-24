@@ -9,6 +9,9 @@
 // 30-day idle sign-out timestamp mirrors the Swift impl exactly so the
 // SharedPreferences key can be shared cross-platform later.
 
+import 'dart:async';
+
+import '../analytics/pw_analytics.dart';
 import 'package:flutter/foundation.dart';
 
 import '../aether_prefs.dart';
@@ -95,6 +98,13 @@ class CurrentUser extends ChangeNotifier {
   /// Called once at app launch. Reads the persisted session and jumps
   /// to signedIn / signedOut. Force-signs-out if idle.
   Future<void> bootstrap() async {
+    // [ANALYTICS 2026-08-24] 第一方统计初始化(队列/定时器/生命周期钩子)。
+    // init 本身不发任何事件;track 在未登录时是 no-op ⇒ 登录墙即同意门,
+    // 注册(同意协议与隐私政策)之前不会有任何统计数据离开设备。
+    // 错误钩子链式接管,原 handler 照常执行。
+    unawaited(PwAnalytics.instance.init().then((_) {
+      PwAnalytics.instance.installErrorHandlers();
+    }));
     try {
       final user = await _service.currentUser();
       // ignore: avoid_print

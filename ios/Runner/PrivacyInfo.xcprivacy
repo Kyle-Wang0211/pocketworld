@@ -181,6 +181,26 @@
       <key>NSPrivacyCollectedDataTypePurposes</key>
       <array>
         <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+        <!-- [2026-08-24] First-party analytics (pw_analytics.dart ->
+             own analytics_events table, zero third-party SDKs). -->
+        <string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+      </array>
+    </dict>
+    <dict>
+      <!-- [2026-08-24] Self-built crash/error capture: pw_analytics.dart
+           installErrorHandlers() chains FlutterError.onError and
+           PlatformDispatcher.onError into app_error events (truncated
+           message + 12 stack frames, no user content). First-party only;
+           retention 180 days server-side. -->
+      <key>NSPrivacyCollectedDataType</key>
+      <string>NSPrivacyCollectedDataTypeCrashData</string>
+      <key>NSPrivacyCollectedDataTypeLinked</key>
+      <true/>
+      <key>NSPrivacyCollectedDataTypeTracking</key>
+      <false/>
+      <key>NSPrivacyCollectedDataTypePurposes</key>
+      <array>
+        <string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
       </array>
     </dict>
   </array>

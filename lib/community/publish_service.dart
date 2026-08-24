@@ -37,6 +37,8 @@
 
 import 'dart:io';
 
+import '../analytics/pw_analytics.dart';
+
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -323,6 +325,33 @@ class PublishService {
   /// not already published. This service never touches ScanRecordStore —
   /// the CALLER marks `cloudWorkId` after a successful result.
   Future<PublishResult> publish({
+    required ScanRecord record,
+    required String title,
+    String? description,
+    void Function(PublishProgress)? onProgress,
+  }) async {
+    // [ANALYTICS 2026-08-24] 发布漏斗三事件。包装而非侵入内部各阶段:
+    // PublishException.phase 已经携带失败阶段,够用了。
+    PwAnalytics.instance.track('publish_started');
+    try {
+      final r = await _publishInner(
+        record: record,
+        title: title,
+        description: description,
+        onProgress: onProgress,
+      );
+      PwAnalytics.instance.track('publish_succeeded');
+      return r;
+    } on PublishException catch (e) {
+      PwAnalytics.instance.track('publish_failed', {'phase': e.phase});
+      rethrow;
+    } catch (_) {
+      PwAnalytics.instance.track('publish_failed', {'phase': 'unknown'});
+      rethrow;
+    }
+  }
+
+  Future<PublishResult> _publishInner({
     required ScanRecord record,
     required String title,
     String? description,
