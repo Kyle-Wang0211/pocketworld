@@ -47,10 +47,26 @@ void main() {
           reason: '⚠️ 生效前提:Supabase→阿里云迁移完成(境内存储那句话才为真)、'
               '邮件服务商换境内、首启同意弹窗落地 —— 见 supabase/README.md 上线门槛');
     });
-    test('🔴 作品授权条款占位 —— 产品负责人明确要求专项讨论后定稿', () {
-      expect(agreementAll, contains('作品授权条款待定稿'),
-          reason: '定稿后:删除占位段,写入定稿条款(必须 emphasized),'
-              '并把本断言改成断言许可范围关键词(存储/分发/展示)存在');
+    test('✅ 作品授权条款已定稿(2026-08-24 拍板),关键要素齐全且加粗', () {
+      expect(agreementAll, isNot(contains('待定稿')));
+      // 四项拍板逐一钉住:版权归作者已在 6.2;这里钉许可条款的要素
+      for (final kw in [
+        '非独占', // 许可性质
+        '科学研究', // 研究用途(深度合成14条/生成式AI办法7条(三)的同意载体)
+        '训练', // 模型训练明示
+        '云端存储', // 范围含未来云储(拍板②)
+        '匿名化', // 对外边界(拍板③)
+        '单独同意', // 可识别形式对外的前提
+        '已训练完成的模型不受影响', // 删除的物理现实,不写就与删除承诺打架
+      ]) {
+        expect(agreementAll, contains(kw), reason: '授权条款缺要素: $kw');
+      }
+      // 权利许可条款必须加粗(民法典 496 条)
+      expect(agreement.any((p) => p.text.contains('非独占') && p.emphasized),
+          isTrue, reason: '许可条款没有加粗');
+      // 隐私政策侧的研究用途告知也必须在且加粗(两文件口径一致)
+      expect(privacy.any((p) => p.text.contains('科学研究') && p.emphasized),
+          isTrue, reason: '隐私政策缺研究用途的显著告知');
     });
   });
 
