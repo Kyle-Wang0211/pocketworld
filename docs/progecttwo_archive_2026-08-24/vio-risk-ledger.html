@@ -1,0 +1,578 @@
+<title>跨端 VIO 风险台账</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<style>
+  :root {
+    --ground:#F1F4F5; --surface:#FFFFFF; --surface-2:#E9EEF0;
+    --line:#D2DBDE; --line-soft:#E2E9EB;
+    --ink:#10161B; --ink-2:#3B4750; --ink-mute:#66727C;
+    --accent:#0D6577; --accent-soft:#E0EEF1;
+    --sev-block:#9E2119; --sev-block-bg:#F8E7E5;
+    --sev-high:#8A5A05;  --sev-high-bg:#FAEEDC;
+    --sev-med:#495662;   --sev-med-bg:#E7EBEE;
+    --ok:#14655A;        --ok-bg:#DFEFEB;
+    --shadow:0 1px 2px rgba(16,22,27,.05), 0 6px 20px -12px rgba(16,22,27,.22);
+    --f-display:"Archivo","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --f-body:"IBM Plex Sans","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    --f-mono:"IBM Plex Mono","PingFang SC",ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:#0D1114; --surface:#151A1F; --surface-2:#1C2228;
+      --line:#2A333A; --line-soft:#222A31;
+      --ink:#DCE3E7; --ink-2:#A8B4BC; --ink-mute:#78858E;
+      --accent:#4EAEC0; --accent-soft:#12333A;
+      --sev-block:#E8776C; --sev-block-bg:#331A17;
+      --sev-high:#D19B3E;  --sev-high-bg:#2F2413;
+      --sev-med:#9AA7B2;   --sev-med-bg:#212930;
+      --ok:#5CBFAC;        --ok-bg:#12302B;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 6px 20px -12px rgba(0,0,0,.7);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#0D1114; --surface:#151A1F; --surface-2:#1C2228;
+    --line:#2A333A; --line-soft:#222A31;
+    --ink:#DCE3E7; --ink-2:#A8B4BC; --ink-mute:#78858E;
+    --accent:#4EAEC0; --accent-soft:#12333A;
+    --sev-block:#E8776C; --sev-block-bg:#331A17;
+    --sev-high:#D19B3E;  --sev-high-bg:#2F2413;
+    --sev-med:#9AA7B2;   --sev-med-bg:#212930;
+    --ok:#5CBFAC;        --ok-bg:#12302B;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 6px 20px -12px rgba(0,0,0,.7);
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--ground); color:var(--ink);
+         font-family:var(--f-body); font-size:15.5px; line-height:1.62;
+         -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:1080px; margin:0 auto; padding:0 28px 96px; }
+
+  .mast { padding:52px 0 28px; border-bottom:1px solid var(--line); }
+  .eyebrow { font-family:var(--f-mono); font-size:11.5px; font-weight:500;
+             letter-spacing:.13em; text-transform:uppercase; color:var(--accent);
+             display:flex; gap:14px; flex-wrap:wrap; align-items:baseline; }
+  .eyebrow .sep { color:var(--line); }
+  h1 { font-family:var(--f-display); font-weight:800;
+       font-size:clamp(32px,5.4vw,52px); line-height:1.06;
+       letter-spacing:-.021em; margin:16px 0 0; text-wrap:balance; }
+  .standfirst { margin:16px 0 0; max-width:64ch; font-size:17px;
+                color:var(--ink-2); line-height:1.58; }
+  .standfirst strong { color:var(--ink); font-weight:600; }
+
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(124px,1fr));
+           gap:1px; background:var(--line); border:1px solid var(--line);
+           margin:30px 0 0; border-radius:3px; overflow:hidden; }
+  .stat { background:var(--surface); padding:16px 18px 14px; }
+  .stat .n { font-family:var(--f-display); font-weight:700; font-size:32px;
+             line-height:1; font-variant-numeric:tabular-nums; letter-spacing:-.02em; }
+  .stat .l { font-family:var(--f-mono); font-size:10.5px; letter-spacing:.09em;
+             text-transform:uppercase; color:var(--ink-mute); margin-top:8px; }
+  .stat.is-ok .n { color:var(--ok); }
+  .stat.is-part .n { color:var(--sev-high); }
+  .stat.is-open .n { color:var(--sev-block); }
+
+  .thesis { margin:36px 0 0; padding:24px 26px; border-radius:3px;
+            background:var(--surface); border:1px solid var(--line);
+            border-left:3px solid var(--sev-block); box-shadow:var(--shadow); }
+  .thesis.new { border-left-color:var(--accent); }
+  .thesis h2 { font-family:var(--f-display); font-weight:700; font-size:20px;
+               margin:0 0 10px; letter-spacing:-.012em; }
+  .thesis p { margin:0; color:var(--ink-2); max-width:68ch; }
+  .thesis p + p { margin-top:11px; }
+
+  section { margin-top:56px; }
+  .sec-head { display:flex; align-items:baseline; gap:14px; padding-bottom:12px;
+              border-bottom:2px solid var(--ink); flex-wrap:wrap; }
+  h2.sec { font-family:var(--f-display); font-weight:700; font-size:24px;
+           margin:0; letter-spacing:-.015em; }
+  .sec-note { font-family:var(--f-mono); font-size:11.5px; color:var(--ink-mute);
+              letter-spacing:.04em; margin-left:auto; }
+  .sec-lede { margin:16px 0 0; color:var(--ink-2); max-width:68ch; }
+
+  .find { margin-top:18px; background:var(--surface); border:1px solid var(--line);
+          border-radius:3px; box-shadow:var(--shadow); overflow:hidden; }
+  .find > .bar { height:3px; }
+  .find.done    > .bar { background:var(--ok); }
+  .find.partial > .bar { background:var(--sev-high); }
+  .find.open    > .bar { background:var(--sev-block); }
+  .find-in { padding:18px 24px 20px; }
+
+  .chips { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:11px; }
+  .chip { font-family:var(--f-mono); font-size:10.5px; font-weight:600;
+          letter-spacing:.09em; text-transform:uppercase; padding:3px 8px;
+          border-radius:2px; white-space:nowrap; }
+  .chip.blocker { background:var(--sev-block-bg); color:var(--sev-block); }
+  .chip.high    { background:var(--sev-high-bg);  color:var(--sev-high); }
+  .chip.med     { background:var(--sev-med-bg);   color:var(--sev-med); }
+  .chip.done    { background:var(--ok-bg);        color:var(--ok); }
+  .chip.partial { background:var(--sev-high-bg);  color:var(--sev-high); }
+  .chip.open    { background:transparent; color:var(--sev-block);
+                  border:1px dashed var(--sev-block); }
+  .chip.silent  { background:transparent; color:var(--ink-2);
+                  border:1px dashed var(--ink-mute); }
+  .chip.id      { background:transparent; color:var(--ink-mute);
+                  border:1px solid var(--line); font-variant-numeric:tabular-nums; }
+
+  h3.find-t { font-family:var(--f-body); font-weight:600; font-size:17px;
+              line-height:1.42; margin:0 0 11px; letter-spacing:-.004em;
+              text-wrap:balance; }
+
+  .rows { display:grid; gap:13px; }
+  .row { display:grid; grid-template-columns:74px 1fr; gap:16px; align-items:start; }
+  .row > .k { font-family:var(--f-mono); font-size:10.5px; font-weight:600;
+              letter-spacing:.09em; text-transform:uppercase;
+              color:var(--ink-mute); padding-top:4px; }
+  .row > .v { color:var(--ink-2); font-size:14.6px; line-height:1.6; min-width:0; }
+  .row > .v > :first-child { margin-top:0; }
+  .row > .v > :last-child  { margin-bottom:0; }
+  .row.fixed > .k { color:var(--ok); }
+  .row.left  > .k { color:var(--sev-block); }
+
+  code { font-family:var(--f-mono); font-size:.875em; background:var(--surface-2);
+         padding:1px 5px; border-radius:2px; color:var(--ink); word-break:break-word; }
+  strong { color:var(--ink); font-weight:600; }
+
+  .quote { margin:10px 0; padding:9px 14px; border-left:2px solid var(--accent);
+           background:var(--accent-soft); border-radius:0 2px 2px 0;
+           font-size:14px; color:var(--ink-2); }
+  .quote .lang { font-family:var(--f-mono); font-size:10px; letter-spacing:.1em;
+                 text-transform:uppercase; color:var(--accent);
+                 display:block; margin-bottom:3px; }
+
+  ol.steps { margin:6px 0 0; padding-left:0; list-style:none; counter-reset:s; }
+  ol.steps > li { counter-increment:s; position:relative; padding-left:26px; margin-bottom:7px; }
+  ol.steps > li::before { content:counter(s); position:absolute; left:0; top:1px;
+    font-family:var(--f-mono); font-size:10.5px; font-weight:600;
+    color:var(--accent); background:var(--accent-soft);
+    width:18px; height:18px; border-radius:2px; display:grid; place-items:center;
+    font-variant-numeric:tabular-nums; }
+
+  ul.compact { padding:0; margin-top:18px; display:grid; gap:1px;
+               background:var(--line); border:1px solid var(--line);
+               border-radius:3px; overflow:hidden; }
+  ul.compact > li { background:var(--surface); padding:14px 20px; list-style:none;
+                    font-size:14.6px; color:var(--ink-2); }
+  ul.compact > li .t { color:var(--ink); font-weight:600; display:block; margin-bottom:3px; }
+
+  .tw { overflow-x:auto; margin-top:16px; border:1px solid var(--line); border-radius:3px; }
+  table { border-collapse:collapse; width:100%; min-width:520px; background:var(--surface); }
+  th, td { text-align:left; padding:10px 15px; border-bottom:1px solid var(--line-soft);
+           font-size:14px; vertical-align:top; }
+  th { font-family:var(--f-mono); font-size:10.5px; letter-spacing:.09em;
+       text-transform:uppercase; color:var(--ink-mute); background:var(--surface-2);
+       border-bottom:1px solid var(--line); white-space:nowrap; }
+  td { color:var(--ink-2); }
+  td.num { font-family:var(--f-mono); font-variant-numeric:tabular-nums;
+           color:var(--ink); white-space:nowrap; }
+  td.ok  { color:var(--ok); font-weight:600; }
+  tr:last-child td { border-bottom:0; }
+
+  .foot { margin-top:64px; padding-top:22px; border-top:1px solid var(--line);
+          font-size:13.5px; color:var(--ink-mute); }
+  a { color:var(--accent); }
+  a:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+  @media (max-width:620px) {
+    .wrap { padding:0 18px 72px; }
+    .row { grid-template-columns:1fr; gap:5px; }
+    .row > .k { padding-top:0; }
+    .find-in { padding:16px 18px 18px; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <div class="eyebrow">
+      <span>更新 2026-08-23</span><span class="sep">/</span>
+      <span>调查 13 agent · 修复 19 agent</span><span class="sep">/</span>
+      <span>路径 A — XRSLAM</span>
+    </div>
+    <h1>跨端 VIO 风险台账</h1>
+    <p class="standfirst">
+      七语种全球调查找出 18 条未规避风险,随后两批并行修复。
+      本页是<strong>带修复状态的版本</strong> —— 每条都标了已修 / 部分 / 未修,
+      以及判据是什么。<strong>凡是没有二进制或测试判据的,一律记作未修。</strong>
+    </p>
+
+    <div class="stats">
+      <div class="stat is-ok"><div class="n">9</div><div class="l">已修</div></div>
+      <div class="stat is-part"><div class="n">7</div><div class="l">部分</div></div>
+      <div class="stat is-open"><div class="n">2</div><div class="l">未修</div></div>
+      <div class="stat"><div class="n">221</div><div class="l">测试全绿</div></div>
+      <div class="stat"><div class="n">0</div><div class="l">真机验证</div></div>
+    </div>
+  </header>
+
+  <div class="thesis new">
+    <h2>本轮最重要的发现:iOS 也有休眠陷阱</h2>
+    <p>
+      调查阶段我判断「iOS 上 ARKit 和 CoreMotion 都在同一个 <code>mach_absolute_time</code> 域,拿来即用」。
+      <strong>这句话没有 Apple 文档支持。</strong>
+      <code>man 3 clock_gettime</code> 原文:<code>CLOCK_UPTIME_RAW</code> —— “does not increment while the system is asleep …
+      identical to the result of <code>mach_absolute_time()</code>”;<code>CLOCK_MONOTONIC</code> —— “will continue to increment while the system is asleep”。
+      而 <code>CMLogItem.timestamp</code> 全文只有一句 “the amount of time in seconds since the device booted” ——
+      <strong>“since the device booted” 在 Darwin 上有两个互不相同的钟,Apple 从没说是哪个。</strong>
+    </p>
+    <p>
+      更糟:<code>ARFrame.timestamp</code> 全文只有一句 “The time at which the frame was captured.” —— 无域、无原点、无 Discussion;
+      且 ARKit 不交出 <code>CMSampleBuffer</code>,<code>synchronizationClock</code> 那条换算桥<strong>在这条链上用不了</strong>,只能纯测量。
+      ⇒ 真机第一测必须<strong>同时测到两个基准的偏置</strong>,一眼看出 CoreMotion 贴哪个钟。
+    </p>
+  </div>
+
+  <div class="thesis">
+    <h2>还有一条:修复过程自己造了一个新的静默失效</h2>
+    <p>
+      <code>runtime_assert</code> 由 <code>XRSLAM_DEBUG</code>(默认 ON,两种口径都 ON)控制而非 <code>NDEBUG</code>,
+      新加的内存钳位排在断言<strong>之前</strong> ⇒ <strong>把一个活的 <code>abort()</code> 变成了静默钳位</strong>。
+      整份台账的主题就是静默失效,而修它的过程制造了一个新的。
+      这条记在「未修」里,不粉饰。
+    </p>
+  </div>
+
+  <!-- ============ 已修 ============ -->
+  <section>
+    <div class="sec-head">
+      <h2 class="sec">已修 — 九条</h2>
+      <span class="sec-note">每条都有二进制或测试判据</span>
+    </div>
+    <p class="sec-lede">
+      判定标准:<strong>必须有可复跑的硬判据</strong>(符号表、编译命令行、测试 + 负向对照),
+      「代码写完了」不算。对抗验收 agent 自己重跑了测试、自己另做了变异,其中一个做了 15 个负向对照,比被审方还多一个。
+    </p>
+
+    <article class="find done"><div class="bar"></div><div class="find-in">
+      <div class="chips"><span class="chip id">02</span><span class="chip done">已修</span><span class="chip blocker">原 Blocker</span></div>
+      <h3 class="find-t">符号可见性 —— 导出面从 6552 收到 18,iOS 静态库路径也收口了</h3>
+      <div class="rows"><div class="row fixed"><div class="k">判据</div><div class="v">
+        <div class="tw"><table>
+          <thead><tr><th>Android <code>libxrslam.so</code></th><th class="num">修前</th><th class="num">修后</th></tr></thead>
+          <tbody>
+            <tr><td><code>.dynsym</code> 总数</td><td class="num">6783</td><td class="num">196</td></tr>
+            <tr><td>DEFINED</td><td class="num">6552</td><td class="num ok">18</td></tr>
+            <tr><td>非 API 导出</td><td class="num">6538</td><td class="num ok">0</td></tr>
+            <tr><td><code>_Znwm</code>/<code>_ZdlPv</code>/<code>__cxa_throw</code></td><td class="num">EXPORTED</td><td class="num ok">absent</td></tr>
+            <tr><td><code>cv::</code> / <code>tbb::</code> / <code>spdlog::</code> / <code>std::__ndk1</code></td><td class="num">1308/436/456/960</td><td class="num ok">0/0/0/0</td></tr>
+          </tbody>
+        </table></div>
+        <p style="margin-top:11px">三个独立工具互证(自写 ELF 解析器 + NDK <code>llvm-readelf</code> + <code>nm</code>),对抗方自建三个 build 目录复现,并做了 <code>dlopen + dlsym</code> 真调用。
+        平台分叉是真的:Apple 侧只有 <code>-exported_symbols_list</code>,Android 侧只有 <code>--version-script</code>,没有在 macOS 上误用 GNU ld 选项。</p>
+        <p><strong>iOS 静态库路径</strong>(没有我们控制的链接步骤,只有编译期可见性有效):加 <code>XRSLAM_API</code> 宏 + 18 个声明加前缀 + 打开 <code>XRSLAM_HIDE_INTERFACE_TU</code>。
+        <strong>决定性判据:开了 <code>-fvisibility=hidden</code> 之后导出仍是 18</strong> —— 宏漏标就会掉到 0(实测过)。</p>
+      </div></div></div>
+    </div></article>
+
+    <article class="find done"><div class="bar"></div><div class="find-in">
+      <div class="chips"><span class="chip id">05</span><span class="chip done">已修</span><span class="chip silent">原静默</span></div>
+      <h3 class="find-t">landmark 的 ±Inf 与相机背后垃圾点</h3>
+      <div class="rows"><div class="row fixed"><div class="k">判据</div><div class="v">
+        透传 <code>triangulated</code> flag + <code>isfinite</code> 三分量过滤,被过滤的计数单独返回(<strong>不静默丢</strong>)。LM 测试 29/29 两种口径都过。
+        <p>额外:对抗方抓到 <code>XRSLAMGetLandmarksEx</code> <strong>破了自己写的出参契约</strong> —— <code>out_flags!=NULL && out_xyz==NULL</code> 时提前 return,<code>*io_point_count</code> 一个字节没写(实测保持 <code>0xABABABAB</code>)。已修:在该 return 之前先清零。</p>
+      </div></div></div>
+    </div></article>
+
+    <article class="find done"><div class="bar"></div><div class="find-in">
+      <div class="chips"><span class="chip id">06</span><span class="chip done">已修</span></div>
+      <h3 class="find-t">dart:ffi 的 API 形状 —— 改成拉取式,不做每帧回调</h3>
+      <div class="rows"><div class="row fixed"><div class="k">判据</div><div class="v">
+        <code>XRSLAMTryGetLatestPose(double* out7, double* out_ts)</code>。位姿读取由 <code>detail.h</code> 的 <code>latest_mutex_</code> 保护,
+        写方同锁,<code>git show HEAD</code> 证实该锁是上游自带、本地 diff 未动 ⇒ <strong>THREADING=ON 下无撕裂读</strong>(对抗方独立确认)。
+        <p>原因:<code>NativeCallable.isolateLocal</code> 注释原文 “It will abort the process if invoked on any other thread” ⇒ 从 tracker 线程回调 = <strong>硬 abort</strong>;<code>listener</code> 只支持 void 且异步投递,30Hz 遇 UI 卡顿会堆成延迟队列。</p>
+      </div></div></div>
+    </div></article>
+
+    <article class="find done"><div class="bar"></div><div class="find-in">
+      <div class="chips"><span class="chip id">07</span><span class="chip done">已修</span><span class="chip high">原 High</span></div>
+      <h3 class="find-t">热治理 —— 采纳 ARCore 的答案:视觉降到 ~10Hz + IMU 高频传播</h3>
+      <div class="rows"><div class="row fixed"><div class="k">判据</div><div class="v">
+        <code>lib/vio/thermal/</code> 8 个 Dart 文件 + <code>PwVioThermal.swift</code> 352 行 + <code>PwVioThermalPlugin.kt</code> 189 行,<strong>40 个测试全绿,<code>flutter analyze</code> 零问题</strong>。
+        对抗方自己做了 <strong>15 个变异全部变红</strong>(含一个被审方没做的),并展开确认 RED 是真断言失败而非编译错。
+        <p>Apple API 逐条对 <code>iPhoneOS26.2.sdk</code> 头文件核过:<code>...DueToSystemPressure = 5</code> <code>ios(11.1)</code> ✓、<code>thermalState</code> <code>ios(11.0)</code> ✓。<strong>零编造。</strong></p>
+        <p>降级策略是<strong>降关键帧率而不是丢帧</strong>,符合无损铁律 —— 有测试 <code>M1 skip() 不计数</code> 专门钉这条。</p>
+      </div></div></div>
+    </div></article>
+
+    <article class="find done"><div class="bar"></div><div class="find-in">
+      <div class="chips"><span class="chip id">08</span><span class="chip done">已修</span><span class="chip silent">原静默</span></div>
+      <h3 class="find-t">IMU 的 dt 改成实测 + 成簇上报检测器</h3>
+      <div class="rows"><div class="row fixed"><div class="k">判据</div><div class="v">
+        核内加 <code>ImuTimingMonitor</code>,用实测相邻时间戳 Δ 的中位数生成离散共分散,而不是信 yaml 的标称频率。
+        成簇上报按 Δ 直方图双峰判定。两种口径强制重编(删 <code>.o</code> 逼真编,不吃 “no work to do”)均 rc=0 零 error。
+      </div></div></div>
+    </article>
+
+    <article class="find done"><div class="bar"></div><div class="find-in">
+      <div class="chips"><span class="chip id">10</span><span class="chip done">已修</span><span class="chip silent">原静默</span></div>
+      <h3 class="find-t">白墙 / 无纹理场景 + 初始化窗口</h3>
+      <div class="rows"><div class="row fixed"><div class="k">判据</div><div class="v">
+        <code>texture_sufficiency.dart</code>(GFTT 检出数 + <strong>分布熵</strong>,均匀分布 vs 挤在一角是两回事)22 个测试;
+        <code>initialization_window.dart</code> 把「初始化窗口内的点云不进交付、只做视觉反馈」做成产品级约定,10 个测试。
+        <p>这条对我们尤其贵:产品形态是 C_journal 渐进预览,用户按下开始就要看到点云,<strong>而那段恰恰是纯 IMU 外推、精度最差的窗口</strong>。</p>
+      </div></div></div>
+    </article>
+
+    <article class="find done"><div class="bar"></div><div class="find-in">
+      <div class="chips"><span class="chip id">11</span><span class="chip done">已修</span><span class="chip blocker">打在商业理由上</span></div>
+      <h3 class="find-t">尺度可观测性 —— 匀速与平移激励不足</h3>
+      <div class="rows"><div class="row fixed"><div class="k">判据</div><div class="v">
+        <code>scale_observability.dart</code>(27KB)+ <code>scale_observability_ledger.dart</code> + <code>world_frame_accel.dart</code>,29 个测试。
+        用日文一手那条<strong>已验证过的可操作判据:基线长/物距 ≥ 0.3</strong>(不满足时实测 173cm 量成 136cm = 21% 偏差;满足时 172.6cm = &lt;1%)。
+        <p>「匀速段」标记进会话元数据,<strong>交付层可据此拒绝报绝对尺寸</strong>。</p>
+      </div></div></div>
+    </article>
+
+    <article class="find done"><div class="bar"></div><div class="find-in">
+      <div class="chips"><span class="chip id">14</span><span class="chip done">已修</span></div>
+      <h3 class="find-t">平台位姿只做初值/尺度,不做 fixed constraint</h3>
+      <div class="rows"><div class="row fixed"><div class="k">判据</div><div class="v">
+        <code>lib/vio/platform_pose/</code>,31 个测试 + <strong>一条 CI 断言</strong>(<code>extrinsics_contract_ci_test.dart</code>)专门防上游 PR#70 那个双重外参 bug 回归 ——
+        任何从旧 commit / 旧机型 yaml 抄配置的动作都会被它拦住。
+        <p>接口上把平台位姿与自研核位姿的<strong>不确定度显式区分</strong>,手机端降级路径与眼镜端共用同一条,不是两套架构。</p>
+      </div></div></div>
+    </article>
+
+    <article class="find done"><div class="bar"></div><div class="find-in">
+      <div class="chips"><span class="chip id">15</span><span class="chip done">已修</span></div>
+      <h3 class="find-t">MEMS 温度滞回的标定协议 + 离线分析</h3>
+      <div class="rows"><div class="row fixed"><div class="k">判据</div><div class="v">
+        在既有 <code>fit_accel_ellipsoid.py</code> 基础上扩(没重写),加温度协变量、拟合升/降温两支、量化滞回幅度。<strong>14 项测试全 PASS</strong>。
+        <p>对抗方做了一个<strong>更狠的负向对照</strong>:在 WLS 之后静默把 h 系数减半 ⇒ ĥ=+0.15073% vs 真值 +0.30000%,判决从 <code>not_negligible</code> <strong>翻转</strong>成 <code>undetermined</code>。
+        这证明判据能抓到 2 倍的隐蔽偏置,不是空过。</p>
+      </div></div></div>
+    </article>
+
+    <article class="find done"><div class="bar"></div><div class="find-in">
+      <div class="chips"><span class="chip id">16</span><span class="chip done">已修</span></div>
+      <h3 class="find-t">健康状态机 <code>XRSLAMGetHealth</code></h3>
+      <div class="rows"><div class="row fixed"><div class="k">判据</div><div class="v">
+        <code>HEALTHY / DEGRADED_NO_IMU / DEGRADED_LOW_TEXTURE / LOST</code> + IMU/视觉/时间戳三侧计数。
+        纯 C 侧独立复算布局(不引用 C++ <code>static_assert</code>):<code>sizeof(XRSLAMHealth)=288</code>、<code>overall@184</code>、尾部无隐式 padding,全部与断言一致。
+        <strong>API 测试 105/105 两种口径都过。</strong>
+      </div></div></div>
+    </article>
+  </section>
+
+  <!-- ============ 部分 ============ -->
+  <section>
+    <div class="sec-head">
+      <h2 class="sec">部分修复 — 七条</h2>
+      <span class="sec-note">机制建好了,但核心缺口还在</span>
+    </div>
+
+    <article class="find partial"><div class="bar"></div><div class="find-in">
+      <div class="chips"><span class="chip id">01</span><span class="chip partial">部分</span><span class="chip blocker">原 Blocker</span><span class="chip silent">静默</span></div>
+      <h3 class="find-t">时钟域错配 —— 采集侧建好了,核内只降级不阻断,td 仍不在状态量</h3>
+      <div class="rows">
+        <div class="row fixed"><div class="k">已修</div><div class="v">
+          <ul style="margin:0;padding-left:18px">
+            <li><code>lib/vio/timebase/</code> 7 个 Dart 文件 1852 行 + <code>PwVioTimebase.swift</code> 528 行,<strong>35 个测试全绿</strong></li>
+            <li>偏置估计用 <strong>min-filter</strong>(NTP/PTP 的做法):投递延迟 <code>d≥0</code> 是单边非负讨厌变量,<code>mean</code>/<code>median</code> 都偏高且随负载漂,只有 <code>min</code> 的偏差随 n 单调趋于下确界。<strong>取在滑动时间窗上而非全历史</strong> —— 全历史 min 在有漂移时永远追不上</li>
+            <li>阈值不是拍脑袋:<code>jitter := p50(δ) − min(δ)</code> 直接当不确定度,漂移判据是 <code>|drift| &gt; jitter/Δt</code>,<strong>可证伪</strong></li>
+            <li>域错配用<strong>两个互相独立</strong>的检测器(绝对偏斜 + preintegration 窗口覆盖),任一响即阻断。实测拆掉第一个后第二个仍接住 60s 与 IMU 停死两个用例</li>
+            <li><strong>裁决集合里没有 <code>drop</code></strong>:只有 <code>accept</code>/<code>defer</code>(调用方必须保留样本重投)/<code>fault</code>,有测试钉死这三个值</li>
+          </ul>
+        </div></div>
+        <div class="row left"><div class="k">还缺</div><div class="v">
+          <p><strong>核内实测 <code>t_cam − t_imu = 3600s</code> 时帧被放行</strong>:<code>image_accepted=1, image_rejected=0</code>,
+          只有 <code>domain_mismatch_active=1</code> + 一次 stderr 警告 + <code>Health.overall=DEGRADED_NO_IMU</code>。
+          调查任务书里写的原话是「只计数不阻断就等于没修」—— 核内就是只做了统计,阻断在 Dart 侧。</p>
+          <p><strong><code>state.h: ES_SIZE = 15</code>,td 仍不是状态量。</strong>
+          <code>camera_time_offset</code> 依旧只解析只打印、<code>xrslam/src</code> 里零消费。改造方案已出(<code>HANDOFF_td_state_extension.md</code>,34.9KB),
+          带 tripwire:<code>ES_SIZE=15</code> 干净、改成 16 触发 8 行 Eigen 静态断言 —— 即扩一维的波及面是可量的。</p>
+        </div></div>
+      </div>
+    </div></article>
+
+    <article class="find partial"><div class="bar"></div><div class="find-in">
+      <div class="chips"><span class="chip id">03</span><span class="chip partial">部分</span><span class="chip blocker">原 Blocker</span></div>
+      <h3 class="find-t">两端 OpenCV —— 自编完成且实测收敛,但 iOS 产品链未切换</h3>
+      <div class="rows">
+        <div class="row fixed"><div class="k">已修</div><div class="v">
+          <p><code>-ffp-contract=off</code> 三个配置 <strong>218/218 条编译命令全带</strong>,distinct 值只有 <code>{off}</code>;
+          <code>-ffast-math</code> 计数 0 并加了 configure 期 FATAL 守卫。</p>
+          <p>两端从同一 tag 自编,反汇编对拍收敛:</p>
+          <div class="tw"><table>
+            <thead><tr><th><code>epnp.o</code></th><th class="num">FMA</th><th class="num">fmul</th></tr></thead>
+            <tbody>
+              <tr><td>官方预编译(修前)iOS 4.11.0 / Android 5.0.0</td><td class="num">0 / 253</td><td class="num">367 / 132</td></tr>
+              <tr><td><strong>自编(修后)iOS / Android</strong></td><td class="num ok">4 / 4</td><td class="num ok">463 / 458</td></tr>
+            </tbody>
+          </table></div>
+          <p style="margin-top:10px">对抗方做了<strong>双向</strong>对照证明判据既会红也会绿:同 TU 的 off vs fast → FAIL(delta 0.6149);ios off vs and off → PASS。</p>
+        </div></div>
+        <div class="row left"><div class="k">还缺</div><div class="v">
+          iOS 产品链仍在用那个 vendored 的 <strong>4.11.0 pod</strong>(Target <strong>iOS 9.0</strong> + <code>-fembed-bitcode</code> + C++11,与我们刚立的 minos 14.0 直接冲突;
+          <code>otool -L</code> 干净是因为那些 <code>.o</code> 没被拉进来 —— <strong>是运气不是设计</strong>)。切换需要动 podspec 与打包链。
+        </div></div>
+      </div>
+    </div></article>
+
+    <article class="find partial"><div class="bar"></div><div class="find-in">
+      <div class="chips"><span class="chip id">04</span><span class="chip partial">部分</span><span class="chip blocker">原 Blocker</span><span class="chip silent">静默</span></div>
+      <h3 class="find-t">逐机型 yaml —— 探测器与系统 API 读取建好了,内参进状态量未做</h3>
+      <div class="rows">
+        <div class="row fixed"><div class="k">已修</div><div class="v">
+          <p><code>lib/vio/capability/</code> 5 个 Dart + 1 个 Kotlin,2062 行,<strong>42 个测试全绿</strong>。
+          输出明确判定 <code>SELF_CORE_OK</code> / <code>DEGRADE_TO_PLATFORM_POSE</code> / <code>UNUSABLE</code> 并给原因 ——
+          <strong>白名单换成运行期自证</strong>,手机端与眼镜端共用同一条降级路径。</p>
+          <p>内参从系统 API 读已实现。头文件一手依据:<code>cameraIntrinsicMatrixDeliveryEnabled</code> 原文写明「if video stabilization is enabled … camera intrinsic matrix delivery is <strong>not</strong> supported」+「must be set before the session starts running」⇒ <strong>先关防抖再开内参、且必须在 <code>startRunning</code> 前</strong>,不是抄来的样板。</p>
+        </div></div>
+        <div class="row left"><div class="k">还缺</div><div class="v">
+          第二层(<strong>内参 / 外参进滤波器状态量自标定</strong>)未做 —— 这是给第一层拿不到内参的机器兜底的,与 td 是同一类改造。
+          <strong>Android 侧 <code>LENS_INTRINSIC_CALIBRATION</code> 的实际可得率仍是零数据</strong>,它是 optional 字段,国行机大面积可能没有。
+        </div></div>
+      </div>
+    </div></article>
+
+    <article class="find partial"><div class="bar"></div><div class="find-in">
+      <div class="chips"><span class="chip id">09</span><span class="chip partial">部分</span><span class="chip silent">静默</span></div>
+      <h3 class="find-t">卷帘快门 —— 契约写死了,建模没做</h3>
+      <div class="rows">
+        <div class="row fixed"><div class="k">已修</div><div class="v">
+          帧时间戳语义写进 C API 头文件成显式契约。曝光中心用 <strong>minimax 解</strong>:Apple 没说 PTS 是曝光起点还是中心,
+          两个假设下 <code>f=0.0</code> 与 <code>f=0.5</code> 最坏都是 <code>0.50D</code>,而 <strong><code>f=0.25</code> 最坏 <code>0.25D</code></strong> ⇒ 默认取 0.25 并把 ±0.25D 如实计进不确定度。
+          <p>量级挂钩:1/60s 曝光 ⇒ 0.25D = <strong>4.2ms</strong>;手持 1m/s ⇒ <strong>4.2mm</strong> —— 正好吃掉「进 1%」的米制预算。</p>
+        </div></div>
+        <div class="row left"><div class="k">还缺</div><div class="v">
+          卷帘本身<strong>仍未建模</strong>(<code>grep rolling|shutter|readout</code> 在 <code>xrslam/src</code> 零命中)。
+          整帧单戳时物理正确的锚点是中间行<strong>读出</strong>时刻,与曝光中心不是一回事 —— 现在只在 <code>rollingShutterReadoutSeconds</code> 非零时把 ±0.5×readout 计进不确定度,<strong>没假装能修</strong>。
+        </div></div>
+      </div>
+    </div></article>
+
+    <article class="find partial"><div class="bar"></div><div class="find-in">
+      <div class="chips"><span class="chip id">12</span><span class="chip partial">部分</span></div>
+      <h3 class="find-t">降频归因 —— 遥测建好了,没有真机数据</h3>
+      <div class="rows">
+        <div class="row fixed"><div class="k">已修</div><div class="v">
+          <code>slowdown_attribution.dart</code> + <code>proc_cpu_probe.dart</code>:上报每帧实际处理耗时 + CPU 亲和/频率,
+          让「被降频」和「算法发散」在日志上<strong>可分离</strong>。负向对照 <code>M6 归因用 wallMs 代 cpuMs</code>、<code>M8 小核簇取最高频</code> 都变红。
+        </div></div>
+        <div class="row left"><div class="k">还缺</div><div class="v">没有 Android 设备,这条一次都没在真机上跑过。</div></div>
+      </div>
+    </div></article>
+
+    <article class="find partial"><div class="bar"></div><div class="find-in">
+      <div class="chips"><span class="chip id">13</span><span class="chip partial">部分</span><span class="chip open">基线不可用</span></div>
+      <h3 class="find-t">回归基线 —— 工具能跑,但 mobile 基线的噪声地板大于要测的效应</h3>
+      <div class="rows">
+        <div class="row fixed"><div class="k">已修</div><div class="v">
+          <code>pw_tools/regression/</code> 能跑,不是骨架:<code>freeze_arm.py</code> 实测 rc=0,能读出 <code>threading_enabled=0/1</code> 并做断言,负向对照 <code>MISMATCH</code> 正确报错。
+        </div></div>
+        <div class="row left"><div class="k">还缺</div><div class="v">
+          🔴 <strong><code>synth160_mobile</code> 在同一二进制、同一 meta 上连续两次判 <code>DIFFERENT</code>/exit 2。</strong>
+          和你 08-08 那条「噪声地板 18% &gt; 效应」是同一个病。<strong>这个基线不能进 CI</strong>,进了就是每次都红。
+          要么把 baseline 换成跨多批次的更大组让 session 级漂移进入零分布,要么 mobile 口径只保留结构性指标。
+        </div></div>
+      </div>
+    </div></article>
+
+    <article class="find partial"><div class="bar"></div><div class="find-in">
+      <div class="chips"><span class="chip id">18</span><span class="chip partial">部分</span></div>
+      <h3 class="find-t">16KB 页对齐 —— 前两层做完,第三层在 App 侧</h3>
+      <div class="rows">
+        <div class="row fixed"><div class="k">已修</div><div class="v">
+          第一层:硬编码 <code>PAGE_SIZE</code> 全树审计,我们自己的代码零命中(3 处 4096 全是队列容量,不是页大小语义);
+          vendored 树按<strong>实际编进 <code>.so</code> 的 194 个 TU</strong> 范围查,唯一命中是 fmt 的一个从未链入的声明。
+          第二层:<code>PT_LOAD p_align</code> 全 <code>0x4000</code>,已进 <code>--assert</code> 闸门。
+          <p>判据方向是<strong>读 NDK 源码定出来的</strong>:<code>flags.cmake:35-44</code> 显示只有「<code>DEFINED</code> 且 <code>NOT</code>」时才追加 4096 ⇒ 判据是「有没有被关掉」而不是「有没有打开」。</p>
+        </div></div>
+        <div class="row left"><div class="k">还缺</div><div class="v">
+          第三层(<code>extractNativeLibs=false</code> / <code>zipalign -P 16</code> / AGP ≥8.5.1)在 Flutter App 侧,本仓碰不到。
+          脚本已备在 <code>android_ready/scripts/verify_16kb.sh</code>,<strong>但没有 <code>android/</code> 工程可跑</strong>。
+        </div></div>
+      </div>
+    </div></article>
+  </section>
+
+  <!-- ============ 未修 ============ -->
+  <section>
+    <div class="sec-head">
+      <h2 class="sec">未修 — 两条</h2>
+      <span class="sec-note">其中一条是修复过程新造的</span>
+    </div>
+
+    <article class="find open"><div class="bar"></div><div class="find-in">
+      <div class="chips"><span class="chip id">新</span><span class="chip open">未修</span><span class="chip silent">静默</span><span class="chip blocker">自造</span></div>
+      <h3 class="find-t"><code>runtime_assert</code> 被内存钳位盖住 —— 活的 <code>abort()</code> 变成了静默钳位</h3>
+      <div class="rows"><div class="row left"><div class="k">状况</div><div class="v">
+        <code>runtime_assert</code> 由 <strong><code>XRSLAM_DEBUG</code>(默认 ON,两种口径都 ON)</strong>控制,不是 <code>NDEBUG</code>。
+        新加的钳位排在断言<strong>之前</strong>,于是把一个会 <code>abort()</code> 的条件变成了静默钳位。
+        <p>现在是<strong>既没 abort 也没关开关的中间态</strong>。二选一:把钳位块移到 <code>runtime_assert</code> 之后,
+        或者显式签决「出货不 abort」并在 CMake 里对移动端口径关掉 <code>XRSLAM_DEBUG</code>。</p>
+      </div></div></div>
+    </div></article>
+
+    <article class="find open"><div class="bar"></div><div class="find-in">
+      <div class="chips"><span class="chip id">17</span><span class="chip open">未修</span><span class="chip blocker">违反铁律</span></div>
+      <h3 class="find-t">三条默认开启的上限会丢真数据</h3>
+      <div class="rows"><div class="row left"><div class="k">状况</div><div class="v">
+        <div class="tw"><table>
+          <thead><tr><th>上限</th><th class="num">默认</th><th>丢了会怎样</th></tr></thead>
+          <tbody>
+            <tr><td><code>runtime_max_pending_imu</code></td><td class="num">4096</td><td>丢最老 ⇒ 某一帧的预积分缺掉最早一段</td></tr>
+            <tr><td><code>runtime_max_pending_frame_ids</code></td><td class="num">256</td><td><strong>丢掉的帧永不进后端</strong></td></tr>
+            <tr><td>跟踪图绝对上限</td><td class="num">256</td><td><code>erase_frame(0)</code> 绕过 <code>latest_optimized_frame_id</code> 保护</td></tr>
+            <tr><td><code>runtime_max_pending_camera_frames</code></td><td class="num ok">0</td><td class="ok">✓ 相机帧这条是对的,不丢</td></tr>
+          </tbody>
+        </table></div>
+        <p style="margin-top:11px">与「<strong>fail-safe 只许推迟不许丢数据</strong>」冲突。正确解法是<strong>背压</strong>(阻塞生产者)而不是丢弃,但那是更大的工程。
+        待签决:要不要先把这三条默认改成「不丢 + 高水位告警」,把失效模式从「数据静默消失」变成「内存涨了我们看得见」——
+        代价是 Android 17 那条<strong>静默 OOM kill</strong> 的风险上升。</p>
+        <p>注:跟踪图那条其实写得不错(会自己上调到工作集之上并告警),问题只在 <code>erase_frame(0)</code> 那个绕过。</p>
+      </div></div></div>
+    </div></article>
+  </section>
+
+  <!-- ============ 交付 ============ -->
+  <section>
+    <div class="sec-head">
+      <h2 class="sec">这两批到底产出了什么</h2>
+      <span class="sec-note">可复跑的数字</span>
+    </div>
+    <div class="tw"><table>
+      <thead><tr><th>产出</th><th class="num">规模</th><th>验证</th></tr></thead>
+      <tbody>
+        <tr><td><code>lib/vio/</code> 五个模块</td><td class="num">30 文件 / 8,215 行</td><td class="ok">221 测试全绿,analyze 0 error</td></tr>
+        <tr><td>iOS 原生</td><td class="num">3 文件 / 56KB</td><td class="ok"><code>swiftc -typecheck -target arm64-apple-ios15.0</code> 通过</td></tr>
+        <tr><td><code>android_ready/</code></td><td class="num">Kotlin + gradle + 17KB README</td><td>⚠️ <strong>从未编译过</strong>(没有 <code>android/</code> 工程)</td></tr>
+        <tr><td><code>xrslam</code> 改动</td><td class="num">39 文件</td><td class="ok">两种口径零 error,导出 18/0</td></tr>
+        <tr><td>越界改动</td><td class="num ok">0</td><td class="ok">「只创建新文件」纪律全程守住</td></tr>
+        <tr><td><strong>真机验证</strong></td><td class="num" style="color:var(--sev-block)">0</td><td style="color:var(--sev-block)"><strong>一次都没有</strong></td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <!-- ============ 真机 ============ -->
+  <section>
+    <div class="sec-head">
+      <h2 class="sec">真机第一测</h2>
+      <span class="sec-note">iPhone 14 Pro 已连,available / paired</span>
+    </div>
+    <p class="sec-lede">
+      设备 <code>1B290474-D354-5B4C-AAB0-0805AC5DC832</code>。
+      ⚠️ <strong>装机必须用 <code>devicectl device install app</code>,不能用 <code>flutter install</code></strong> ——
+      后者会<strong>先卸载</strong>,08-18 就是这么永久删掉 8 个采集会话的。装机前先查手机是否在采集中。
+    </p>
+    <ol class="steps" style="margin-top:20px;font-size:15.5px">
+      <li style="margin-bottom:13px"><strong>接线。</strong> 算法都写好了但没接进 <code>capture_session.dart</code>(纪律要求只创建新文件),各 agent 都给了精确的 wiring patch。</li>
+      <li style="margin-bottom:13px"><strong>测 CoreMotion 到底贴哪个钟。</strong> 同时测 <code>CLOCK_UPTIME_RAW</code> 与 <code>CLOCK_MONOTONIC</code> 两个基准的偏置。
+        ⚠️ <strong>有一个退化条件</strong>:手机开机以来没真正睡过时,两个候选基准数值完全重合,判据无法区分 —— 此时任何结论都是自欺,代码会返回 <code>indeterminate</code>。
+        <strong>所以测之前要让手机真的息屏待机一段时间。</strong></li>
+      <li style="margin-bottom:13px"><strong>IMU 时间戳 Δ 直方图。</strong> 只记录事实(实测间隔与方差),不是记录你请求的频率。</li>
+      <li style="margin-bottom:13px"><strong>热曲线。</strong> 固定场景连跑 20 分钟,每 10s 记 <code>thermalState</code> + 实际 VIO 更新率 + 帧耗时。<strong>这条曲线公开世界查不到,只能自己测。</strong></li>
+      <li><strong>然后才是 SLAM 精度。</strong> 同一段序列同时录 ARKit 位姿和 XRSLAM 位姿,SE3 / Sim3 / scale 三口径对比。
+        ⚠️ 判据用<strong>「连跑 2000 帧无异常」而不是「能出位姿」</strong> —— <code>opencv_dart#415</code> 那个内存损坏是 800+ 帧才炸的。</li>
+    </ol>
+  </section>
+
+  <footer class="foot">
+    <p>调查:13 agent / 7 语种 / 197 万 token。修复:19 agent / 371 万 token / 1303 次工具调用。
+    代码位置引用对应 <code>~/Developer/xrslam</code> 分支 <code>pw/vio</code>(HEAD <code>d052dc3</code>)与 <code>~/Developer/pocketworld</code> 分支 <code>main</code>。</p>
+    <p style="margin-top:10px">判定纪律:<strong>「编译通过」不算「问题解决」,「代码写完」不算「已修」</strong>。
+    凡是没有二进制判据或测试 + 负向对照的,一律记作未修。三批对抗验收 agent 均以 <code>refuted=true</code> 为默认立场进场。</p>
+  </footer>
+
+</div>

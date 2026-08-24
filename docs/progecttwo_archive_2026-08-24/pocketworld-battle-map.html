@@ -1,0 +1,352 @@
+<title>Pocketworld 作战图</title>
+<style>
+  :root {
+    --ink:#14181f; --ink-soft:#39424f; --slate:#5a6472; --slate-dim:#8b93a1;
+    --paper:#f6f7f9; --card:#ffffff; --rule:#dfe3e9; --rule-soft:#eceff3;
+    --indigo:#2f4b7c; --indigo-dim:#6d84ad; --indigo-wash:#eef1f7;
+    --cyan:#1b7a8c; --cyan-wash:#e8f2f4; --copper:#b25a26; --copper-wash:#fbf0e8;
+    --good:#2c6e49; --warn:#9a6b12; --crit:#a33224;
+    --shadow: 0 1px 2px rgba(20,24,31,.05), 0 8px 24px -16px rgba(20,24,31,.18);
+    --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "Cascadia Mono", "Noto Sans Mono CJK SC", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink:#eef1f5; --ink-soft:#c3cad4; --slate:#98a1af; --slate-dim:#6c7684;
+      --paper:#101318; --card:#171b22; --rule:#2a3038; --rule-soft:#21262d;
+      --indigo:#8fa9d6; --indigo-dim:#5d729a; --indigo-wash:#1a2130;
+      --cyan:#64bccb; --cyan-wash:#132328; --copper:#e08a51; --copper-wash:#241812;
+      --good:#6cb98c; --warn:#d6a844; --crit:#e2796a;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 28px -18px rgba(0,0,0,.7);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink:#eef1f5; --ink-soft:#c3cad4; --slate:#98a1af; --slate-dim:#6c7684;
+    --paper:#101318; --card:#171b22; --rule:#2a3038; --rule-soft:#21262d;
+    --indigo:#8fa9d6; --indigo-dim:#5d729a; --indigo-wash:#1a2130;
+    --cyan:#64bccb; --cyan-wash:#132328; --copper:#e08a51; --copper-wash:#241812;
+    --good:#6cb98c; --warn:#d6a844; --crit:#e2796a;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 28px -18px rgba(0,0,0,.7);
+  }
+  body { background: var(--paper); color: var(--ink); font-family: var(--sans); font-size:16px; line-height:1.7; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:60rem; margin:0 auto; padding:4rem 1.5rem 6rem; display:flex; flex-direction:column; gap:3.5rem; }
+  .mast { display:flex; flex-direction:column; gap:.9rem; }
+  .mast .kicker { font-family:var(--mono); font-size:.7rem; letter-spacing:.16em; text-transform:uppercase; color:var(--cyan); }
+  .mast h1 { font-size:clamp(2rem,5vw,2.9rem); line-height:1.12; font-weight:680; letter-spacing:-.02em; text-wrap:balance; margin:0; }
+  .mast .standfirst { font-size:1.06rem; color:var(--ink-soft); max-width:44ch; margin:0; }
+  .mast .meta { font-family:var(--mono); font-size:.74rem; color:var(--slate-dim); padding-top:.7rem; border-top:1px solid var(--rule); }
+  section { display:flex; flex-direction:column; gap:1.25rem; }
+  .shead { display:flex; flex-direction:column; gap:.35rem; }
+  .shead .n { font-family:var(--mono); font-size:.7rem; letter-spacing:.14em; color:var(--indigo-dim); }
+  .shead h2 { font-size:1.4rem; font-weight:640; letter-spacing:-.012em; margin:0; text-wrap:balance; }
+  .shead p { margin:0; color:var(--slate); font-size:.95rem; max-width:62ch; }
+  .verdicts { display:flex; flex-direction:column; gap:.55rem; }
+  .v { display:grid; grid-template-columns:8.5rem 1fr; gap:.35rem 1.1rem; background:var(--card); border:1px solid var(--rule); border-left:3px solid var(--indigo); border-radius:3px; padding:.9rem 1.1rem; box-shadow:var(--shadow); }
+  .v dt { font-family:var(--mono); font-size:.72rem; letter-spacing:.06em; text-transform:uppercase; color:var(--indigo); padding-top:.18rem; }
+  .v dd { margin:0; font-size:.95rem; }
+  .v dd .why { display:block; color:var(--slate); font-size:.86rem; margin-top:.2rem; }
+  @media (max-width:640px){ .v{ grid-template-columns:1fr; gap:.3rem; } }
+  code { font-family:var(--mono); font-size:.88em; background:var(--indigo-wash); padding:.05em .3em; border-radius:2px; }
+  .phases { display:flex; flex-direction:column; gap:0; }
+  .ph { display:grid; grid-template-columns:3.4rem 1fr; gap:1.2rem; padding:1.4rem 0; border-top:1px solid var(--rule); }
+  .ph:last-child { border-bottom:1px solid var(--rule); }
+  .ph .idx { font-family:var(--mono); font-size:1.5rem; font-weight:500; color:var(--indigo-dim); line-height:1; font-variant-numeric:tabular-nums; }
+  .ph h3 { margin:0 0 .1rem; font-size:1.06rem; font-weight:640; }
+  .ph .when { font-family:var(--mono); font-size:.72rem; color:var(--cyan); letter-spacing:.05em; }
+  .ph ul { margin:.6rem 0 0; padding-left:1.1rem; display:flex; flex-direction:column; gap:.3rem; }
+  .ph li { font-size:.93rem; color:var(--ink-soft); }
+  .ph .gate { margin-top:.7rem; font-size:.87rem; background:var(--cyan-wash); border-radius:3px; padding:.5rem .7rem; color:var(--ink-soft); }
+  .ph .gate b { color:var(--cyan); font-weight:620; }
+  .now { background:var(--copper-wash); border:1px solid var(--copper); border-radius:4px; padding:1.3rem 1.4rem; display:flex; flex-direction:column; gap:.8rem; }
+  .now h2 { margin:0; font-size:1.16rem; font-weight:660; color:var(--copper); }
+  .now ol { margin:0; padding-left:1.3rem; display:flex; flex-direction:column; gap:.45rem; }
+  .now li { font-size:.95rem; }
+  .now .tail { margin:0; font-size:.88rem; color:var(--ink-soft); }
+  .scroll { overflow-x:auto; border:1px solid var(--rule); border-radius:4px; background:var(--card); }
+  table { border-collapse:collapse; width:100%; min-width:40rem; font-size:.89rem; }
+  th, td { text-align:left; padding:.7rem .9rem; border-bottom:1px solid var(--rule-soft); vertical-align:top; }
+  thead th { font-family:var(--mono); font-size:.69rem; letter-spacing:.09em; text-transform:uppercase; color:var(--slate); background:var(--indigo-wash); border-bottom:1px solid var(--rule); white-space:nowrap; }
+  tbody tr:last-child td { border-bottom:none; }
+  td.name { font-weight:620; white-space:nowrap; }
+  td .sub { display:block; color:var(--slate); font-size:.82rem; }
+  .risks { display:grid; grid-template-columns:repeat(auto-fit,minmax(16rem,1fr)); gap:.8rem; }
+  .risk { background:var(--card); border:1px solid var(--rule); border-radius:4px; padding:1rem 1.1rem; display:flex; flex-direction:column; gap:.45rem; }
+  .risk .sev { font-family:var(--mono); font-size:.66rem; letter-spacing:.1em; text-transform:uppercase; align-self:flex-start; padding:.12rem .45rem; border-radius:2px; border:1px solid currentColor; }
+  .risk.hi .sev{color:var(--crit);} .risk.mid .sev{color:var(--warn);} .risk.lo .sev{color:var(--good);}
+  .risk h4 { margin:0; font-size:.98rem; font-weight:640; }
+  .risk p { margin:0; font-size:.88rem; color:var(--ink-soft); }
+  .risk .fix { font-size:.86rem; color:var(--slate); }
+  .risk .fix b { color:var(--ink); font-weight:620; }
+  .ladder { display:flex; flex-direction:column; gap:.5rem; }
+  .rung { display:grid; grid-template-columns:2rem 1fr; gap:1rem; align-items:start; background:var(--card); border:1px solid var(--rule); border-radius:3px; padding:.85rem 1rem; }
+  .rung .lv { font-family:var(--mono); font-size:.8rem; color:var(--cyan); font-variant-numeric:tabular-nums; padding-top:.12rem; }
+  .rung span { display:block; color:var(--slate); font-size:.87rem; }
+  .open { border:1px solid var(--rule); border-left:3px solid var(--copper); background:var(--card); border-radius:3px; padding:1.2rem 1.3rem; display:flex; flex-direction:column; gap:.6rem; }
+  .open h3 { margin:0; font-size:1.05rem; font-weight:650; }
+  .open p { margin:0; font-size:.93rem; color:var(--ink-soft); }
+  .open .lead { color:var(--copper); font-family:var(--mono); font-size:.7rem; letter-spacing:.12em; text-transform:uppercase; }
+  .figs { display:grid; grid-template-columns:repeat(auto-fit,minmax(11rem,1fr)); gap:.7rem; }
+  .fig { background:var(--card); border:1px solid var(--rule); border-radius:3px; padding:.85rem .95rem; display:flex; flex-direction:column; gap:.15rem; }
+  .fig .val { font-family:var(--mono); font-size:1.32rem; font-weight:520; color:var(--indigo); font-variant-numeric:tabular-nums; letter-spacing:-.02em; }
+  .fig .lbl { font-size:.84rem; color:var(--ink-soft); }
+  .fig .src { font-size:.74rem; color:var(--slate-dim); font-family:var(--mono); }
+  footer { border-top:1px solid var(--rule); padding-top:1.2rem; font-size:.84rem; color:var(--slate); display:flex; flex-direction:column; gap:.4rem; }
+  footer b { color:var(--ink-soft); font-weight:620; }
+  a { color:var(--indigo); text-decoration-thickness:1px; text-underline-offset:2px; }
+  a:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
+  @media (prefers-reduced-motion: reduce){ *{animation:none!important;transition:none!important;} }
+</style>
+
+<div class="wrap">
+
+  <header class="mast">
+    <div class="kicker">空间内容平台 · 一次性时刻</div>
+    <h1>Pocketworld 作战图</h1>
+    <p class="standfirst">从定位到首发的执行台账。已定的决策、技术验证进展、冷启动打法、竞品枷锁,以及一个还没有答案的问题。</p>
+    <div class="meta">2026-08-22 结论快照 · 一个人做了八个月 · 每完成一项直接在本文件上勾掉改写</div>
+  </header>
+
+  <section>
+    <div class="shead">
+      <div class="n">已定 / LOCKED</div>
+      <h2>八条不再重新讨论的决策</h2>
+      <p>这些已经收敛。后面所有动作从这里推导,改动它们要重新推一遍下游。</p>
+    </div>
+    <div class="verdicts">
+      <dl class="v"><dt>公司形态</dt><dd>空间内容平台,靠 C 端流量。<span class="why">对标 Roblox——重创作工具 + 零门槛消费端 + UGC 经济。抖音小红书能成是因为足够轻,Polycam 是把轻的东西做重,所以长不出社区。Roblox 渲染也跑在用户设备上,与"算力全在端上"同构。</span></dd></dl>
+      <dl class="v"><dt>生意类型</dt><dd><b>内容生意,少做工具生意。</b><span class="why">工具生意(商家付费、终端免费)降级为<b>纯现金流工具</b>,不给战略地位。判断标准:它有没有在消耗做内容那条线的时间。</span></dd></dl>
+      <dl class="v"><dt>内容主轴</dt><dd><b>一次性的时刻。</b><span class="why">场地可重拍,"当天"不能。这是唯一一类<b>先发优势随时间累积、后来者永远补不回来</b>的资产——Matterport 有 1400 万个空间,但没有"某场婚礼的那一天"。</span></dd></dl>
+      <dl class="v"><dt>发布方式</dt><dd>工具与平台同日上线。<span class="why">入口型工具单独发是浪费。闭门期的产出就是首发那天平台上的内容库——平台首发不能是空的。</span></dd></dl>
+      <dl class="v"><dt>算力位置</dt><dd>全部在端上,不租不买显卡。<span class="why">结构性优势:边际成本趋近于零,云端对手成本随规模线性涨。全球显卡供不应求,不跟巨头抢。也是技术平权。</span></dd></dl>
+      <dl class="v"><dt>厂商合作</dt><dd>不做。不依赖任何一家的硬件或生态。<span class="why">Remy 被锁死在鸿蒙上就是代价。而 08-22 的 B1 实验已经证明:厂商中立在几何上基本是免费的。</span></dd></dl>
+      <dl class="v"><dt>地理数据</dt><dd>场景只挂地址文本,绝不挂经纬度。<span class="why">不构成地理信息系统,把测绘资质问题合法推后到 preA。这条纪律换来的是时间,免费且不影响体验。</span></dd></dl>
+      <dl class="v"><dt>跨端原则</dt><dd>同一核心、同一 schema、同一验收门。<span class="why">不同算力可以有声明过的 kernel/量化/资源配置,<b>但不得按品牌分叉估计逻辑</b>。"国行机型逐个实测"绝不允许发生。</span></dd></dl>
+    </div>
+  </section>
+
+  <div class="now">
+    <h2>本周就要动的三件事</h2>
+    <ol>
+      <li><b>frame59 最小独立分诊</b> —— 不重跑 SfM、不改 solver、不改阈值,只离线重做 matching + geometry verification。判定是"live 尾帧 flush 问题"还是"内容重叠退化",<b>跑之前不许预设答案</b>。</li>
+      <li><b>启动域名 + ICP 备案</b> —— 有审核周期,是最容易卡死首发日期的一件事,而且不占开发时间。</li>
+      <li><b>软著登记 + 外观专利在发布前报掉</b> —— 公开即丧失新颖性,这条不可逆。</li>
+    </ol>
+    <p class="tail">后两件不需要写一行代码。第一件是整条技术主线的地基。</p>
+  </div>
+
+  <section>
+    <div class="shead">
+      <div class="n">技术验证 / 08-21 至 08-22 实测</div>
+      <h2>厂商中立已有毫米级证据</h2>
+      <p>A(ARKit known-pose)vs B1(solver pose-off),一条 60 帧真机 capture,两轮重复。A 是参考,不是 GT。</p>
+    </div>
+    <div class="figs">
+      <div class="fig"><span class="val">0.137°</span><span class="lbl">旋转中位差</span><span class="src">P90 0.475°</span></div>
+      <div class="fig"><span class="val">2.14 mm</span><span class="lbl">相机中心中位差</span><span class="src">P90 5.67 mm</span></div>
+      <div class="fig"><span class="val">3.92 mm</span><span class="lbl">稀疏云 Chamfer-L1</span><span class="src">对称</span></div>
+      <div class="fig"><span class="val">95.16%</span><span class="lbl">F-score @1cm</span><span class="src">@2.5cm 98.94% · @5cm 99.76%</span></div>
+    </div>
+    <div class="verdicts">
+      <dl class="v"><dt>核心结论</dt><dd>求解器完全看不到 ARKit sidecar / pose_priors / gravity registry 时,<b>能重复收敛到 57/60</b>。<span class="why">共同注册部分没有整体崩坏,主要回归集中在帧覆盖。<b>这把"通用位姿层"从"要不要冒险"变成"已有证据支持"</b>——直接降低 Android 风险、改写融资叙事、并证明"不逐个机型适配"是可达的。</span></dd></dl>
+      <dl class="v"><dt>A 的 60/60 是虚的</dt><dd><code>frame_000059</code>:1547 keypoints,但 <b>0 matches / 0 TVG edges / 0 observations</b>。<span class="why">ARKit 能把它当 pose-only 相机带进模型,<b>但造不出几何</b>;最终 <code>FilterFrames</code>(min_num_observations=1)把零观测相机注销。⇒ <b>A 的最终几何 coverage 也是 59/60,真实差距只有 2 帧。</b></span></dd></dl>
+      <dl class="v"><dt>那 2 帧是门槛</dt><dd>frame38/40 可见 3D 点仅 15/16 个,未达 absolute-pose 最少 <b>30 inliers</b>,从未进入 PnP。<span class="why">是阈值门槛,不是算法失效。处置方向已定:<b>先补时间邻接、回看匹配、弱段候选,不先降 30-inlier 门槛</b>——手上正好有 track 延长那把刀,只差十几个点正是它擅长补的。⚠️ off-by-one:日志 <code>Registering image #38/#40</code> 是 DB IDs,对应 frame_000037/039。</span></dd></dl>
+      <dl class="v"><dt>时间代价</dt><dd>反事实端到端 ≈ <b>+34.5%</b>(11.58s → 15.57s,多约 4 秒)。<span class="why"><b>在"拍完 30 秒出云"的预算内 ⇒ 厂商中立的时间成本付得起。</b> ⚠️ 但这是 counterfactual 加法不是实测:A/B1 用不同公共入口,A comparator 的 35.96s 被 rematch enrichment 污染。<b>严格 slowdown 仍 unresolved,绝不能对外宣传任何提速倍数。</b></span></dd></dl>
+      <dl class="v"><dt>正确命名</dt><dd><b>B1 solver pose-off / gross convergence smoke</b>。<span class="why">不是端到端 ARKit-off、不是 vendor-neutral 完成、不是 B2、不是跨端核心已验证。残留泄漏:frozen 565-edge TVG 来自采集期 mandatory-gravity estimator;keyframe/pairing/TVG 内点仍有厂商 provenance;capture 时仍启动了 ARKit session。</span></dd></dl>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <div class="n">路线 / 实验臂分层,不要混</div>
+      <h2>到跨端的五步</h2>
+    </div>
+    <div class="phases">
+      <article class="ph"><div class="idx">B1</div><div>
+        <h3>solver pose-off <span class="when">✅ 已完成</span></h3>
+        <ul><li>求解器不读 <code>.arkit_pose_v1</code>,pose_priors=0,position/gravity registry 清空,gravity_hits=0</li>
+        <li>上游关键帧、候选配对、TVG 保持冻结</li>
+        <li>只回答"当前 visual mapper 能否独立收敛",不证明端到端厂商中立</li></ul>
+      </div></article>
+      <article class="ph"><div class="idx">B2</div><div>
+        <h3>端到端 pose-independent 前端</h3>
+        <div class="when">下一技术主线</div>
+        <ul>
+          <li>关键帧选择、mask、候选配对、TVG/RANSAC、初始化、PnP、BA 均不读厂商 pose/gravity 或其派生资产</li>
+          <li>frame38/40/59 作为第一组回归 fixture;输出逐帧 graph degree、inliers、NumVisiblePoints3D、PnP gate 原因</li>
+          <li>成功门:connectivity · coverage · 逐帧失败原因 · Sim(3) 后几何 · 重复运行噪声地板 · <b>机器可验证的"不读厂商资产"gate</b></li>
+        </ul>
+        <div class="gate"><b>建议加一条成功门</b> <b>米制尺度 provenance</b>,与 connectivity/coverage 并列——见下方风险卡。</div>
+      </div></article>
+      <article class="ph"><div class="idx">B3</div><div>
+        <h3>采集期彻底关闭厂商 AR</h3>
+        <ul><li>生产 target 不链接、不启动、不调用厂商 AR session,只用公开相机 / 原始 IMU API</li>
+        <li>B2 过门后单独做,<b>避免把算法变化和相机/曝光/热/调度变化混成一个实验</b></li></ul>
+      </div></article>
+      <article class="ph"><div class="idx">X</div><div>
+        <h3>跨端一致性</h3>
+        <ul><li>iOS / Android / 鸿蒙 / 未来眼镜与机器人走同一核心、schema、模型族和验收门</li>
+        <li>最小输入契约:<b>图像 + 内参 + IMU</b>(所有设备都有);平台位姿降级为<b>可选先验</b></li>
+        <li><b>关键转变:把位姿从"输入"变成"输出"</b>——新设备接入成本 = 提供数据,不是适配 SDK</li></ul>
+      </div></article>
+      <article class="ph"><div class="idx">!</div><div>
+        <h3>另做:严格 slowdown 实验</h3>
+        <ul><li>不要和 B2 第一轮混在一起。同一 code path、同一输入、同一上游,<b>只切 pose constraint mode</b></li>
+        <li>同设备背靠背重复,预注册 wall / RAM / 功耗 / 温度 / 降频,失败 run 全保留</li></ul>
+      </div></article>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <div class="n">冷启动 / 用户自己提的方案</div>
+      <h2>征集"全国最乱的房间"</h2>
+      <p>比我给过的任何冷启动方案都好,好在四个地方。</p>
+    </div>
+    <div class="verdicts">
+      <dl class="v"><dt>为什么成立</dt><dd>它把隐私抗拒<b>反转</b>成了参与动机。<span class="why">① "乱"不是隐私是笑点,展示不是暴露是自嘲 ② <b>消灭 UGC 头号杀手</b>——门槛不是降低而是反向,越糟越好 ③ <b>3D 在这里是必需而非装饰</b>:乱是空间性的(层叠、无处下脚、门后还有一堆),2D 照片根本拍不出来 ④ 排名/对比/嘲笑是现成的传播燃料。</span></dd></dl>
+      <dl class="v"><dt>变现设计</dt><dd>DDL 后点赞第一名获"人民的选择 + 官方认证",该作品 <b>0.99 元卖门票</b>,同时开启创作者分成。<span class="why">第二三名及其他全免费 ⇒ 传播不受损,<b>付费墙本身变成传播素材</b>。但要清楚:这一步的产出是<b>叙事资产不是财务资产</b>——"3D 内容能卖钱"这个证明值钱,那几百块不值钱。</span></dd></dl>
+      <dl class="v"><dt>必须配套</dt><dd>参赛必须用自家工具,产出留在平台可检索;<b>埋 before/after</b>。<span class="why">"收拾完再扫一次"一个动作同时做到:产生第二次创作、before/after 自带二次传播、<b>而且它天然是"一次性时刻"</b>——把猎奇冷启动和内容战略接上,不然是两张皮。⚠️ 提防用户属性错配:看热闹的人不会为"我的婚礼"付费,很多平台死在靠猎奇起量后转不了型。</span></dd></dl>
+      <dl class="v"><dt>隐藏的大价值</dt><dd>乱房间是三维重建的<b>地狱难度场景</b>。<span class="why">严重遮挡、小物件密集、杂乱重复纹理、狭窄空间小视差、光照差——B2 需要的 10 类恶劣场景它天然覆盖大半,而且样本是用户自愿送上门的。<b>⇒ 这场比赛可以当 B2 的大规模回归验证集,不只是市场活动。</b>建议内置失败上报,单开"连算法都放弃了"奖项——把技术失败变成内容笑点,拿到最珍贵的负样本还不掉口碑。</span></dd></dl>
+      <dl class="v"><dt>必须验证的假设</dt><dd>"愿意分享私人空间"的前提是<b>匿名</b>。<span class="why">要匿名参赛 + 默认剥离一切位置信息——正好与那条地理数据红线一致,同一个设计既合规又提升参与率。⚠️ 审核压力陡增:乱房间里会扫到证件、药盒、别人的脸,而用户自己都不会细看。上传前的自动模糊/提醒是必需品。</span></dd></dl>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <div class="n">留存 / 爆款 ≠ 留存,这是两件事</div>
+      <h2>让老内容重新值得看</h2>
+      <p>真实生产/消费比是 1.5:1 到 3:1(物体 30s 扫 / 10–15s 看;房间 3–5min 扫 / 2–3min 看;单次扫描上限 300 帧或 5 分钟)。但真问题是:<b>1% 创作者要养 99% 消费者,而 3D 场景的重复消费率接近零。</b></p>
+    </div>
+    <div class="ladder">
+      <div class="rung"><div class="lv">01</div><div><b>周期性主题 —— 开发成本零</b><span>本周书桌 / 下周冰箱 / 再下周车后备箱。把一次爆款变成心跳。抖音的挑战赛就是这个机制:不是一次,是永不停的一串。同时解决供给——每周给一个再扫一次的理由。</span></div></div>
+      <div class="rung"><div class="lv">02</div><div><b>访客反馈回流给创作者 —— 成本极低</b><span>"37 人看过你的房间,平均停留 1 分 12 秒,最多人停在你的书架前"。后端本来就在记,只是给创作者看一眼。<b>对内容平台,创作者留存比消费者留存更值钱</b>——而创作者要的是反馈,不是内容。抖音的核心留存从来是"我发的东西有多少人看"。</span></div></div>
+      <div class="rung"><div class="lv">03</div><div><b>同一空间的时间线 —— 比想象的便宜</b><span>空间有限,时间无限。我的房间一年前 vs 现在;装修中的房子每周一扫;孩子的房间从三岁到八岁。DB 里本来就有 <code>created_at</code>,这是排序展示问题不是新数据结构。<b>而且每一次扫描天然是那一刻的唯一记录</b>,与"一次性时刻"是同一件事。</span></div></div>
+      <div class="rung"><div class="lv">04</div><div><b>空间内锚点留言 —— 真的贵,往后排</b><span>3D 锚点 + 输入 + 审核 + 通知。⚠️ 但"文字会让服务器爆炸"是虚惊:一条 100 字中文 ≈ 300 字节,100 万条 ≈ 300MB ≈ 12 个 SPZ 场景。文字是最轻的,轻两三个量级。真正该盯的是 CDN 流量(一个场景 25MB × 播放次数)。</span></div></div>
+    </div>
+    <div class="verdicts">
+      <dl class="v"><dt>不管用的</dt><dd>收藏 / 点赞 / 排行榜。<span class="why">它们是留存的<b>装饰</b>不是引擎。没有前三条,加再多社交按钮也留不住人——很多产品在这上面浪费半年。</span></dd></dl>
+      <dl class="v"><dt>一个被埋没的机会</dt><dd><b>物体是"刷",房间是"访问"。</b><span class="why">物体档(30s 扫 / 10–15s 看)最接近短视频比例,而且<b>可批量</b>——一个人一下午能扫二十个。门槛最低、隐私风险最小、审核最容易。<b>比赛负责引爆,日常留存可能得靠物体流。</b></span></dd></dl>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <div class="n">营收 / 内容生意的三层</div>
+      <h2>钱从哪来,顺序不能倒</h2>
+    </div>
+    <div class="ladder">
+      <div class="rung"><div class="lv">01</div><div><b>现金流工具(现在,不给战略地位)</b><span>接 B 端拍摄/制作单子养活自己和买时间。<b>你不是中间商是总承包</b>——外包交付一堆文件,你交付一个能用的东西(微信适配、访客统计、多场地管理、随时更新),这段差距就是定价空间。⚠️ 设时间占比红线(如 30%),否则变成外包吃掉全部时间,这是 bootstrap 最常见的死法。</span></div></div>
+      <div class="rung"><div class="lv">02</div><div><b>内容付费(比赛验证)</b><span>冠军作品门票 / pay-what-you-wish 支持创作者 / 创作者分成。博物馆的数据说明:<b>能收上钱的从来不是"静态可自由浏览的场景",而是多了点东西的</b>——有人(讲解、陪同)或进不去(私人档案、幕后)。<b>随意付可能比固定价更赚钱且不劝退观众。</b></span></div></div>
+      <div class="rung"><div class="lv">03</div><div><b>平台变现(有流量之后)</b><span>撮合、推荐位、订阅。当用户开始主动来平台<em>比较</em>,谈判地位才反转——"比较"是单个创作者永远给不了的东西,这才是天然不可绕过的。<b>早期强行截流 = 在最需要传播的时候关掉水龙头。</b></span></div></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead"><div class="n">资产 / 这一条决定紧迫感</div><h2>起跑资产 vs 护城河资产</h2></div>
+    <div class="verdicts">
+      <dl class="v"><dt>你有的</dt><dd><b>起跑资产:100%</b> — 产品级端上管线、跨端先手(现已有毫米级证据)、判死的能力、验收能力、一个人的决策速度、零成本结构。<span class="why">"产品级端上管线 + 零成本结构 + 一人决策速度"这个组合是稀缺的:大公司决策慢成本重,有钱的团队会选云端从而永远失去零边际成本,一个人的团队通常做不出产品级管线。三个顶点上的人都到不了这儿。</span></dd></dl>
+      <dl class="v"><dt>你没有的</dt><dd><b>护城河资产:0%</b> — 用户、内容库、在外流传的链接、创作者关系。<span class="why">零外部用户、零收入、尚未发布。</span></dd></dl>
+      <dl class="v"><dt>为什么急</dt><dd><b>起跑资产会贬值,护城河资产会增值。</b><span class="why">技术会被追上或被 feed-forward 绕过;用户和内容越多越值钱,而且是复利。<b>你手上全是会贬值的东西,一样会增值的都没有</b>——这才是紧迫感的真身,比"被抄"真实且更快到来。唯一的兑换窗口是发布。</span></dd></dl>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead"><div class="n">风险 / 按会不会杀死你排序</div><h2>七个已识别的风险</h2></div>
+    <div class="risks">
+
+      <article class="risk hi"><span class="sev">高 · 产品前提</span><h4>米制尺度</h4>
+        <p><b>单目 B1 不原生提供米制尺度。</b> 而核心商业差异化是"如视是 360 全景没有真实几何,我们能量尺寸、能排座位、能做布置方案"。<b>没有米制尺度 = 不能量尺寸 = 那条差异化不存在。</b></p>
+        <p class="fix"><b>处置</b> 把"米制尺度 provenance"写进 B2 成功门,与 connectivity/coverage 并列。路径判据已有:<b>深度/尺度先验只许四端皆有来源(IMU)</b>——IMU 预积分是唯一四端全有的解。不然 B2 过了产品还是缺一条腿。</p></article>
+
+      <article class="risk hi"><span class="sev">高 · 产品</span><h4>3D 内容的消费时长</h4>
+        <p>Roblox 一个游戏能玩几百小时。一个 3D 场景看完就完,重复消费率接近零。留不住人的平台不是平台,是画廊。Remy 加"实景特效视频模板"就是因为它们知道 3D 本身留不住人。</p>
+        <p class="fix"><b>处置</b> 留存机制那一节的前三条必须进第一版,尤其周期主题和访客反馈——它们是画廊和场所的分野线,且成本极低。</p></article>
+
+      <article class="risk hi"><span class="sev">高 · 合规</span><h4>测绘与众源地理信息</h4>
+        <p>"基础地理信息数据的采集、存储、传输、处理需在具有测绘资质单位内部形成闭环"。监管在收紧。备案(事后登记)与资质(事前审批,要人员、设备、质量体系)是两件事。</p>
+        <p class="fix"><b>处置</b> 只挂地址文本不挂经纬度,不构成地理信息系统,合法推后到 preA。真要走 UGC 平台,这块必须找专业的人正式过一遍。</p></article>
+
+      <article class="risk mid"><span class="sev">中 · 商业模式</span><h4>IAP 分叉尚未决</h4>
+        <p><b>App 里能不能刷别人的内容?</b> 能刷 ⇒ 数字内容必须走 IAP,中国区实收 68–69%;不能刷 ⇒ 消费与付费全在网页,微信支付一分不抽(抖音自己就用网页版充值绕苹果税:iOS 1元=7抖币 vs 安卓 1元=10抖币)。</p>
+        <p class="fix"><b>处置</b> 这条与"物体流可刷"的留存设计直接冲突,必须在动手做比赛前拍板。建议先保持 App 纯采集——初期收入本就是叙事资产,<b>被拒审的代价远大于那 31%</b>。App 内不能有任何指向网页付费的按钮、链接或文字暗示。</p></article>
+
+      <article class="risk mid"><span class="sev">中 · 分发</span><h4>微信禁止 H5 唤起 App</h4>
+        <p>URL Scheme 在微信、微博、QQ 浏览器、手机百度中均被禁用。提示"请在浏览器打开"的流失是灾难级。Android 还不支持直接识别 Scheme。</p>
+        <p class="fix"><b>处置</b> 别设计"网页跳 App"那一跳。生产者(创作者)有强动机主动下载,消费者根本不需要 App。Universal Link 在微信的实际放行必须真机实测,不听任何转述。</p></article>
+
+      <article class="risk mid"><span class="sev">中 · 责任</span><h4>数据责任转移 + UGC 审核</h4>
+        <p>现在纯本地,数据丢了是用户自己的事。一旦平台托管,丢了就是你的事故。而扫描真实空间会带进别人的脸、别人的家、证件药盒。</p>
+        <p class="fix"><b>处置</b> 备份恢复进第一版。审核用"渲染多视角 2D 图 → 送现成内容安全 API"(《3D4ALL》列的四大难点对你四条全不成立,你的产物就是真实场景照片,现成 API 原生适配)。<b>上传时必须勾选并记录"已获同意",带时间戳存档。</b>删除必须给具体理由——不是道德要求是留存要求。</p></article>
+
+      <article class="risk lo"><span class="sev">低 · 组织</span><h4>股权定价可能反了</h4>
+        <p>投资方可以入股,员工要满三年——给钱的人门槛低,一起扛的人门槛高。而钱哪里都有,那个人不一定有。</p>
+        <p class="fix"><b>处置</b> 四年 vesting + 一年 cliff 就是为"信任需要时间"设计的:满 12 个月一次性兑 1/4,之后每月 1/48,不满一年走人一股不带。<b>一年就够,不用等三年。</b>先给 5%,写清里程碑后追加。</p></article>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="shead">
+      <div class="n">格局 / 谁在场上</div>
+      <h2>竞品与它们各自的枷锁</h2>
+      <p>每一家的弱点都是结构性的,不是他们没想到。</p>
+    </div>
+    <div class="scroll"><table>
+      <thead><tr><th>玩家</th><th>是什么</th><th>结构性枷锁</th><th>对你的含义</th></tr></thead>
+      <tbody>
+        <tr><td class="name">如视 Realsee<span class="sub">贝壳子公司,内生非收购</span></td><td>九大行业、47 国 1400+ 品牌,已打通美团大众点评"VR 体验—线上预订"全链路</td><td>360 全景,<b>没有真实几何</b>。技术为贝壳看房而生,原生场景是封闭室内房间</td><td>它做不了"在场地里量尺寸、排座位、放东西"——<b>但这个优势以你解决米制尺度为前提</b></td></tr>
+        <tr><td class="name">Remy<span class="sub">华为 × KIRI 麒砺创新</span></td><td>3DGS 端上约 5 分钟,上线十分钟登顶鸿蒙下载榜,有人为它买华为手机。2026-02 加房间扫描;内置特效模板转 2D 发社交平台</td><td><b>鸿蒙独占</b>。KIRI Engine 本身跨 iOS/Android ⇒ 独占是商业选择不是技术限制,代价是只能活在华为生态里</td><td>C 端通用扫描这扇门已被带着分发的人进去;但 iOS 侧仍空,且它做的是生活记忆不是一次性时刻</td></tr>
+        <tr><td class="name">Polycam</td><td>100 万+ 下载,移动 3D 扫描类目领先</td><td>把轻的东西做重——用抖音小红书的社区模型套在高门槛创作上,社区长不出来</td><td>百万级是没有平台分发时纯工具的真实天花板</td></tr>
+        <tr><td class="name">Scaniverse<span class="sub">Niantic Spatial</span></td><td>SPZ 格式(MIT,90% 压缩)开源方,已跨 iOS/Android,不依赖 LiDAR</td><td>不是靠 C 端赚钱的产品,是 VPS 空间地图的采集漏斗</td><td>它的"消费者"是机器不是人——这一刀绕开了 UGC 双边冷启动,值得学</td></tr>
+        <tr><td class="name">Matterport<span class="sub">CoStar,2025-02 完成收购</span></td><td>1400 万个空间、500 亿平方英尺、177 国</td><td>依赖专业相机与专业流程,服务头部而非长尾</td><td>累积资产复制不了——<b>但它没有"某一天"。一次性时刻是它买不回来的</b></td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <div class="open">
+    <div class="lead">唯一还没有答案的问题</div>
+    <h3>通用 C 端创作者,凭什么给你做内容?</h3>
+    <p>Roblox 有海量优质 UGC,因为创作者能赚到钱——那是个真实的经济体,不是情怀。放大到通用 UGC 之后,创作者赚不到钱就得靠虚荣心,而虚荣心需要先有观众,观众又需要先有内容。</p>
+    <p><b>但"一次性时刻"这条线可能已经回答了一半:创作者的动机不是赚钱,是不想失去。</b>我的婚礼、我去的那场演出、孩子的毕业典礼——他不是在给平台供内容,是在给自己留东西,平台只是顺带得到了它。<b>剩下没答的是:这个动机能不能撑起持续的、而不是一次性的创作。</b></p>
+  </div>
+
+  <section>
+    <div class="shead"><div class="n">技术栈 / 已确认的事实</div><h2>四条不用再犹豫的技术判断</h2></div>
+    <div class="verdicts">
+      <dl class="v"><dt>跨端</dt><dd>Android 是编译目标,不是重写工程;<b>且已有 B1 的几何证据背书</b>。<span class="why">Flutter/Dart 是应用层,WGSL 跑在 Dawn 上,Dawn 本来就把 WGSL 分发到 Metal / Vulkan / D3D12。ARKit 依赖高度集中在一个文件(<code>ios/Runner/OfficialAetherARKitPlugin.swift</code>,4336 行,全仓唯一 import ARKit),且暴露给 Dart 的 20 个 method channel 本身就是抽象契约。</span></dd></dl>
+      <dl class="v"><dt>位姿层</dt><dd><b>把位姿从"输入"变成"输出"。</b><span class="why">最小输入契约 = 图像 + 内参 + IMU(手机/眼镜/机器人全有);平台位姿(ARKit/ARCore/眼镜SDK)降级为<b>可选先验</b>。这样新设备接入成本 = 提供数据,国行白名单问题自动消失。⚠️ 开源 VIO 分两个阵营:ORB-SLAM3 / VINS-Mono / OpenVINS 是 <b>GPLv3(上不了 App Store)</b>;Kimera-VIO 和 Basalt 是 <b>BSD 可商用</b>,但都是 stereo-inertial 且为桌面写的。</span></dd></dl>
+      <dl class="v"><dt>压缩</dt><dd>Draco 走点云/mesh,SPZ 走高斯泼溅。<span class="why">Draco 核心是 C++,官方带 iOS 工具链,原生 FFI 零拷贝解码比 WASM+Worker 更快——不需要"移植"。注意 Draco 为压缩率打乱顶点顺序会拖慢 GPU 渲染,网页端访客等不了,<b>首帧时间常比压缩率值钱</b>。渐进加载(先低模、停留超几秒再拉细节)的收益可能比再压 30% 体积还大。</span></dd></dl>
+      <dl class="v"><dt>双层架构</dt><dd>采集端 App,消费端网页。<span class="why">Scaniverse 就是 App 采集 + SPZ 格式 + web 端查看编辑。WebGL 覆盖 95%+ 设备。"工具是 App"和"链接在微信里能打开"是同一个产品的两端。<b>这个架构同时也是绕开苹果 IAP 的合规路径。</b></span></dd></dl>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead"><div class="n">知识产权 / 四层分工,不是二选一</div><h2>专利与商业秘密怎么切</h2>
+      <p>唯一判据:产品上市后别人能不能看出来。一看就懂的东西,"保密"在法律上根本不成立。</p></div>
+    <div class="verdicts">
+      <dl class="v"><dt>UI / 交互</dt><dd><b>外观专利 + 商标</b>。<span class="why">⚠️ <b>公开即丧失新颖性,必须在发布前申请</b>,TestFlight 算不算公开要专业确认。按<b>视觉相似度</b>分组报(不是按界面、不是按功能类别),一件最多装 10 项相似设计。产品名称:<code>用于手机的三维扫描引导动态图形用户界面</code>——必须带载体和用途,动态的要有"动态"字样、不少于三帧、标注触发条件。<b>GUI 不用六视图</b>,一幅主视图即可;美国 2026-03-13 新指南已取消"必须画显示面板"的要求。⚠️ 外观设计巴黎优先权只有 <b>6 个月</b>(不是 12),过期不可逆。</span></dd></dl>
+      <dl class="v"><dt>算法改进</dt><dd>报 1–2 件<b>发明专利,但不为防御</b>。<span class="why">审查 2–3 年,保护的是两年前的做法。真实用途:高企 Ⅰ 类那 7–8 分、融资尽调的资产计数、被收购时的定价筹码。</span></dd></dl>
+      <dl class="v"><dt>参数 / SOP</dt><dd><b>商业秘密</b>,缺的是第三个要件。<span class="why">三要件是秘密性、价值性、<b>保密措施</b>。要动作:核心参数与 SOP 单独存放标密级、协作者签保密协议、分模块交付(<code>.a</code> 隔离已是雏形)、访问留痕。<b>举证责任倒置</b>——你只需先证明采取了保密措施。</span></dd></dl>
+      <dl class="v"><dt>中美与高企</dt><dd>中国全报,美国只挑 1–2 件核心走 6 个月优先权。<span class="why">单件全包:中国 ≈2,000–3,000 元 / 美国 ≈$1,500–5,000(micro entity + 线上渠道 + 自己出图可压到 ≈$1,400)。美国 pendency 21.5 个月(加速 7.7),驳回率仅 17%,<b>且不需要维持费</b>。高企:数量只占 8/30 分,先进性+关联性 16 分是数量的两倍且你天然占优——<b>软著做到 5 项就到顶,别堆数量</b>;网上"15–18 件"是代办机构口径不是政策。</span></dd></dl>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead"><div class="n">冷启动打法 / 抖音小红书史料,只留可迁移的</div><h2>五条不花钱的机制</h2></div>
+    <div class="verdicts">
+      <dl class="v"><dt>种子人群</dt><dd>精准且自带圈层。<span class="why">抖音第一批种子是<b>各大艺术院校的时尚年轻人,不是明星</b>——爱表现、有审美、同伴圈层紧密,来一个带一群。</span></dd></dl>
+      <dl class="v"><dt>最硬的激励</dt><dd>曝光的确定性,不是钱。<span class="why">抖音赢快手靠的是<b>中心化分发——新人也能爆</b>。钱花完就走,曝光让人留下。</span></dd></dl>
+      <dl class="v"><dt>降低门槛</dt><dd>给模板,不是喊人创作。<span class="why">挑战赛的本质是"不用你想创意,跟着这个做";抖音连爆款音乐都替创作者打磨好。对你:给拍摄 SOP、给模板、前期甚至替他们拍。</span></dd></dl>
+      <dl class="v"><dt>用排除定义</dt><dd>小红书早期<b>明确不欢迎代购</b>。<span class="why">你不收什么,比你收什么更能定义你是谁。比如只收真实拍摄、<b>不收效果图和渲染图</b>——在一堆 PS 精修图里立刻有辨识度,成本为零。</span></dd></dl>
+      <dl class="v"><dt>微视的教训</dt><dd>腾讯有钱有流量有算法有专利,砸巨额补贴仍输。<span class="why">复盘原话:<b>"内容型社区的核心体验没法靠策划功能、砸钱买资源实现——用户要的不是功能不是官方内容,是其他用户的 UGC"</b>。失败主因是达人不足、定位反复、错过时间窗口、赛马失效——<b>没有一条跟算法有关</b>。</span></dd></dl>
+    </div>
+  </section>
+
+  <footer>
+    <div><b>权威文件</b>:技术接管 <code>progecttwo/HANDOFF_STARTUP_CONTEXT_2026-08-22.md</code>(1100 行,SHA-256 <code>ddf3282…2797c</code>,已核对);实验根目录 <code>progecttwo/experiments/arkit_pose_ab_20260821</code>,<b>任何实验前先 <code>shasum -a 256 -c results/artifact-sha256.txt</code>,预期 54 项全 OK</b>。</div>
+    <div><b>还没定的事</b>:IAP 分叉(App 能不能刷内容)· 冷启动选哪个城市 · Android 完整适配的时机。</div>
+    <div><b>证据强度提醒</b>:B1 只有一条 60 帧 capture,<b>不能外推到跨场景非劣</b>;A 是参考不是 GT,毫米数不是对真实世界的真值误差;严格 slowdown 仍 unresolved。测绘合规、高企评分、GUI 申请分组只做了公开检索,<b>不足以作为合规或申请结论</b>,以官方文件与专业人士为准。厂商 3D 影像合作那条是"公开信息里没有",不等于"确定空白"。</div>
+    <div>本文件是讨论结论的快照,不是计划书。每完成一项直接改写,别另存新版。</div>
+  </footer>
+
+</div>
