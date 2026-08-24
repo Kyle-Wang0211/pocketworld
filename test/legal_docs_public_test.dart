@@ -127,6 +127,39 @@ void main() {
     });
   });
 
+  group('同行缺口回填(2026-08-24 四家逐字清查)', () {
+    test('协议:此前完全缺失的条款已补', () {
+      for (final kw in [
+        '视为送达', // 通知送达(微博10章/抖音15.2)—— 此前整个缺失
+        '垃圾信息', // 商业垃圾/营销信息禁令(微博4.6/抖音4.6)
+        '视为您本人的行为', // 账号项下行为归属(微博1.2.2/B站2.2)
+        '临时冻结', // 被盗处理(微博4.7/抖音3.6)
+        '保证或背书', // 审核不构成背书(抖音14.4 先审后发适配)
+        '误差、缺失或失真', // AI 局限(抖音14.8适配)
+        '算法与模型参数', // 衍生数据归属(抖音10.6 收窄适配,排除内容本身)
+        '注意周围环境与自身及他人安全', // 拍摄安全(本产品特有)
+        '间接性、后果性、惩罚性', // 间接损失排除(抖音14.7)
+        '大陆地区用户提供', // 服务地域(中美合规定案:上中国区)
+      ]) {
+        expect(agreementAll, contains(kw), reason: '缺口回填丢失: $kw');
+      }
+    });
+    test('政策:Cookie/本地存储与无间接获取', () {
+      expect(privacyAll, contains('不使用 Cookie'));
+      expect(privacyAll, contains('不从任何第三方间接获取'));
+      // 交叉引用修复:联系方式在第九章,不许再写成第八章
+      expect(privacyAll, isNot(contains('第八章的联系方式')));
+      expect(privacyAll, isNot(contains('第八章联系方式')));
+    });
+    test('明确不抄的同行条款没被抄进来', () {
+      // 微博1.3(禁止用户自行授权第三方使用自己的内容,2017年被全网批评)
+      expect(agreementAll, isNot(contains('不得自行授权任何第三方')));
+      // 微博3.4/抖音3.12(闲置回收)、B站2.9(无需通知收回账号)
+      expect(agreementAll, isNot(contains('未实际使用')));
+      expect(agreementAll, isNot(contains('收回账号')));
+    });
+  });
+
   group('入口 —— 少一个就不算公开', () {
     test('设置页两份文件入口', () {
       final code = _code('lib/ui/me_settings_page.dart');
