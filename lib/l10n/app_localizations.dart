@@ -727,6 +727,24 @@ abstract class AppL10n {
   /// **'Update failed: {error}'**
   String meDisplayNameUpdateFailed(String error);
 
+  /// No description provided for @legalUserAgreement.
+  ///
+  /// In en, this message translates to:
+  /// **'User Agreement'**
+  String get legalUserAgreement;
+
+  /// No description provided for @legalPrivacyPolicy.
+  ///
+  /// In en, this message translates to:
+  /// **'Privacy Policy'**
+  String get legalPrivacyPolicy;
+
+  /// No description provided for @authTermsAcceptancePrefix.
+  ///
+  /// In en, this message translates to:
+  /// **'By signing up you agree to:'**
+  String get authTermsAcceptancePrefix;
+
   /// No description provided for @mePlatformRules.
   ///
   /// In en, this message translates to:
@@ -924,6 +942,12 @@ abstract class AppL10n {
   /// In en, this message translates to:
   /// **'Generating final point cloud…'**
   String get sfmGeneratingFinalCloud;
+
+  /// No description provided for @captureFinishing.
+  ///
+  /// In en, this message translates to:
+  /// **'Wrapping up capture…'**
+  String get captureFinishing;
 
   /// No description provided for @sfmReconFailedKeptFrames.
   ///

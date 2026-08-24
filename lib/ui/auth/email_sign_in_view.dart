@@ -20,6 +20,7 @@ import '../../auth/current_user.dart';
 import '../../l10n/app_localizations.dart';
 import '../design_system.dart';
 import '../legal/platform_rules_page.dart';
+import '../legal/legal_doc_links_row.dart';
 import 'auth_minimal_widgets.dart';
 import 'otp_verification_view.dart';
 
@@ -180,21 +181,13 @@ class _EmailSignUpPageState extends State<EmailSignUpPage> {
                       // 看不到内容,不构成公开。现在它可点,指向 PlatformRulesPage。
                       // ⚠️ 服务协议与隐私政策是另外两份文件,需法务准备,
                       //    见 legal/platform_rules_content.dart 文末 TODO。
-                      GestureDetector(
-                        onTap: () => PlatformRulesPage.open(context),
-                        behavior: HitTestBehavior.opaque,
-                        child: Text(
-                          l.authTermsAcceptance,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color: AetherColors.textSecondary,
-                            height: 1.5,
-                            letterSpacing: 0.3,
-                            decoration: TextDecoration.underline,
-                          ),
-                        ),
-                      ),
+                      // [LEGAL-DOCS 2026-08-24] 原来整句指向平台公约一份文件。
+                      // 现在三件套齐了,三份分别可点 —— "你已同意 X"却看不到 X,
+                      // 不构成公开;只能看到三份中的一份,同样不构成。
+                      // ⚠️ 这仍是"默示同意"文案,不是勾选框。首启弹窗 + 不默认
+                      //    勾选的同意机制在上线门槛清单里(supabase/README.md),
+                      //    属于产品行为改造,不在本次文档交付范围。
+                      LegalDocLinksRow(prefix: l.authTermsAcceptancePrefix),
                       const SizedBox(height: AetherSpacing.xl),
                     ],
                   ),

@@ -48,9 +48,14 @@ void main() {
       expect(_code('lib/ui/me_settings_page.dart'),
           contains('PlatformRulesPage.open'),
           reason: '设置页没有公约入口');
+      // [2026-08-24] 注册页从单链接换成 LegalDocLinksRow(三件套各自可点,
+      // 其中含平台公约链接)—— 入口仍在,只是间接了一层。
       expect(_code('lib/ui/auth/email_sign_in_view.dart'),
-          contains('PlatformRulesPage.open'),
+          contains('LegalDocLinksRow'),
           reason: '注册页那句"即表示同意"仍然点不开');
+      expect(_code('lib/ui/legal/legal_doc_links_row.dart'),
+          contains('PlatformRulesPage.open'),
+          reason: 'LegalDocLinksRow 里丢了平台公约链接 ⇒ 注册页开不到公约');
       expect(File('lib/ui/legal/platform_rules_page.dart').existsSync(), isTrue,
           reason: '承载正文的页面不存在');
     });

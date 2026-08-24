@@ -14,6 +14,7 @@ import '../l10n/app_localizations.dart';
 import 'design_system.dart';
 import 'me_stats_view_model.dart';
 import 'legal/platform_rules_page.dart';
+import 'legal/legal_doc_page.dart';
 
 class MeSettingsPage extends StatelessWidget {
   final MeStatsViewModel stats;
@@ -134,6 +135,21 @@ class _SettingsSection extends StatelessWidget {
         title: l.mePlatformRules,
         trailing: '',
         onTap: () => PlatformRulesPage.open(context),
+      ),
+      // [LEGAL-DOCS 2026-08-24] 三件套的另外两份。隐私政策入口从主界面起
+      // 不得超过 4 次点击(《认定方法》一(3)项)——这里是 设置 1 击 + 本行
+      // 1 击 = 2 击,留有余量。
+      _SettingsRowSpec(
+        icon: Icons.description_outlined,
+        title: l.legalUserAgreement,
+        trailing: '',
+        onTap: () => UserAgreementPage.open(context),
+      ),
+      _SettingsRowSpec(
+        icon: Icons.privacy_tip_outlined,
+        title: l.legalPrivacyPolicy,
+        trailing: '',
+        onTap: () => PrivacyPolicyPage.open(context),
       ),
       _SettingsRowSpec(
         icon: Icons.info_outline_rounded,

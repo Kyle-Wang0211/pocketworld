@@ -51,7 +51,7 @@
 	<key>NSCameraUsageDescription</key>
 	<string>方寸间需要使用相机来扫描你的物体并生成 3D 模型。</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Aether3D 使用本地网络以便和云端服务（登录、同步、上传训练任务）进行快速连接。</string>
+	<string>仅开发调试版本使用本地网络与开发工具通信；正式版本不访问本地网络。</string>
 	<key>NSMotionUsageDescription</key>
 	<string>方寸间使用运动传感器在拍摄时实时引导你绕物体一圈。</string>
 	<key>PWBuildExperimentMarker</key>

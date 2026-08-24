@@ -21,6 +21,7 @@ import '../../auth/auth_models.dart';
 import '../../auth/current_user.dart';
 import '../design_system.dart';
 import '../../l10n/app_localizations.dart';
+import '../legal/legal_doc_links_row.dart';
 import 'auth_shared_widgets.dart';
 
 enum PhoneIntent { signIn, signUp }
@@ -152,6 +153,10 @@ class _PhoneSignInViewState extends State<PhoneSignInView> {
           isEnabled: _canStart,
           onTap: _startVerification,
         ),
+        const SizedBox(height: AetherSpacing.md),
+        // [LEGAL-DOCS 2026-08-24] 手机号注册与邮箱注册是并列的注册路径,
+        // 法律文件的可达性必须两条路径都有。
+        LegalDocLinksRow(prefix: l.authTermsAcceptancePrefix),
         const SizedBox(height: AetherSpacing.md),
         Text(
           l.authPhoneWillSend(_e164.isEmpty ? l.authPhoneYourNumber : _e164),

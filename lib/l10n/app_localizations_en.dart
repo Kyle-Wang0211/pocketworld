@@ -359,6 +359,15 @@ class AppL10nEn extends AppL10n {
   }
 
   @override
+  String get legalUserAgreement => 'User Agreement';
+
+  @override
+  String get legalPrivacyPolicy => 'Privacy Policy';
+
+  @override
+  String get authTermsAcceptancePrefix => 'By signing up you agree to:';
+
+  @override
   String get mePlatformRules => 'Platform Rules';
 
   @override
@@ -466,6 +475,9 @@ class AppL10nEn extends AppL10n {
 
   @override
   String get sfmGeneratingFinalCloud => 'Generating final point cloud…';
+
+  @override
+  String get captureFinishing => 'Wrapping up capture…';
 
   @override
   String get sfmReconFailedKeptFrames =>

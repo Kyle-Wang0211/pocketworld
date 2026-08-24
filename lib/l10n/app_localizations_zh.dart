@@ -352,6 +352,15 @@ class AppL10nZh extends AppL10n {
   }
 
   @override
+  String get legalUserAgreement => '用户协议';
+
+  @override
+  String get legalPrivacyPolicy => '隐私政策';
+
+  @override
+  String get authTermsAcceptancePrefix => '注册即表示你同意:';
+
+  @override
   String get mePlatformRules => '平台公约';
 
   @override
@@ -457,6 +466,9 @@ class AppL10nZh extends AppL10n {
 
   @override
   String get sfmGeneratingFinalCloud => '正在生成最终点云…';
+
+  @override
+  String get captureFinishing => '正在收尾拍摄…';
 
   @override
   String get sfmReconFailedKeptFrames => '本次未能重建,已保留素材';

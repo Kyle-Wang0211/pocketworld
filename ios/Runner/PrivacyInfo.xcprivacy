@@ -74,12 +74,98 @@
       </array>
     </dict>
     <dict>
-      <!-- Published works: the sparse point cloud plus its thumbnail.
+      <!-- Published works: title, description, bio, report text.
            Source photos stay on device and are never uploaded, which is
            why PhotosorVideos is NOT declared — declaring it would
-           misstate what leaves the device. -->
+           misstate what leaves the device. (There is also no avatar
+           upload feature: profiles.avatar_url exists as a column but no
+           client write path — verified 2026-08-24.) -->
       <key>NSPrivacyCollectedDataType</key>
       <string>NSPrivacyCollectedDataTypeOtherUserContent</string>
+      <key>NSPrivacyCollectedDataTypeLinked</key>
+      <true/>
+      <key>NSPrivacyCollectedDataTypeTracking</key>
+      <false/>
+      <key>NSPrivacyCollectedDataTypePurposes</key>
+      <array>
+        <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+      </array>
+    </dict>
+    <dict>
+      <!-- [2026-08-24] Phone-number sign-in is wired
+           (phone_sign_in_view.dart -> signInWithOtp/verifyOTP; the
+           number lands in auth.users.phone). Apple: hashed still counts. -->
+      <key>NSPrivacyCollectedDataType</key>
+      <string>NSPrivacyCollectedDataTypePhoneNumber</string>
+      <key>NSPrivacyCollectedDataTypeLinked</key>
+      <true/>
+      <key>NSPrivacyCollectedDataTypeTracking</key>
+      <false/>
+      <key>NSPrivacyCollectedDataTypePurposes</key>
+      <array>
+        <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+      </array>
+    </dict>
+    <dict>
+      <!-- [2026-08-24] Apple's User ID definition names "screen name,
+           handle, account ID" verbatim — profiles.display_name/handle
+           plus the account UUID are exactly this. This was a PRE-EXISTING
+           gap, not introduced by today's features. -->
+      <key>NSPrivacyCollectedDataType</key>
+      <string>NSPrivacyCollectedDataTypeUserID</string>
+      <key>NSPrivacyCollectedDataTypeLinked</key>
+      <true/>
+      <key>NSPrivacyCollectedDataTypeTracking</key>
+      <false/>
+      <key>NSPrivacyCollectedDataTypePurposes</key>
+      <array>
+        <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+      </array>
+    </dict>
+    <dict>
+      <!-- [2026-08-24] IP-derived province-level region, stored
+           (works.publish_region / profiles.last_region) and publicly
+           displayed. Apple's guidance: when you collect and store an IP,
+           declare per its use — coarse location here. Coarse Location is
+           defined by resolution (below 3-decimal lat/long), not by
+           source, so IP-derived qualifies. The raw IP kept in
+           audit_logs is part of the same collection event and serves
+           security — no separate Diagnostics declaration, since no
+           diagnostics SDK exists and the policy states both uses. -->
+      <key>NSPrivacyCollectedDataType</key>
+      <string>NSPrivacyCollectedDataTypeCoarseLocation</string>
+      <key>NSPrivacyCollectedDataTypeLinked</key>
+      <true/>
+      <key>NSPrivacyCollectedDataTypeTracking</key>
+      <false/>
+      <key>NSPrivacyCollectedDataTypePurposes</key>
+      <array>
+        <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+      </array>
+    </dict>
+    <dict>
+      <!-- [2026-08-24] The published point cloud is literally a scan of
+           the user's surroundings — Apple's Environment Scanning
+           ("mesh, planes, scene classification, and/or image detection
+           of the user's surroundings") fits it better than
+           OtherUserContent alone. Declared alongside, not instead. -->
+      <key>NSPrivacyCollectedDataType</key>
+      <string>NSPrivacyCollectedDataTypeEnvironmentScanning</string>
+      <key>NSPrivacyCollectedDataTypeLinked</key>
+      <true/>
+      <key>NSPrivacyCollectedDataTypeTracking</key>
+      <false/>
+      <key>NSPrivacyCollectedDataTypePurposes</key>
+      <array>
+        <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+      </array>
+    </dict>
+    <dict>
+      <!-- [2026-08-24] Likes and view counts are stored server-side
+           (work_likes / work_views) — Product Interaction. No analytics
+           SDK involved; server-side app data still counts as collected. -->
+      <key>NSPrivacyCollectedDataType</key>
+      <string>NSPrivacyCollectedDataTypeProductInteraction</string>
       <key>NSPrivacyCollectedDataTypeLinked</key>
       <true/>
       <key>NSPrivacyCollectedDataTypeTracking</key>

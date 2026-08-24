@@ -141,6 +141,9 @@
       }
     }
   },
+  "legalUserAgreement": "用户协议",
+  "legalPrivacyPolicy": "隐私政策",
+  "authTermsAcceptancePrefix": "注册即表示你同意:",
   "mePlatformRules": "平台公约",
   "meIpRegion": "IP 属地",
   "meIpRegionUnknown": "未知",
@@ -184,6 +187,7 @@
   "sfmSelectionSaveDiscard": "不保存",
   "sfmSelectionSaveCancel": "取消",
   "sfmGeneratingFinalCloud": "正在生成最终点云…",
+  "captureFinishing": "正在收尾拍摄…",
   "sfmReconFailedKeptFrames": "本次未能重建,已保留素材",
   "sfmChipFinalRecon": "最终重建",
   "sfmChipReconstructing": "重建中 · {count} 点…",

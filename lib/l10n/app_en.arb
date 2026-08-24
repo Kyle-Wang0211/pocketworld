@@ -200,6 +200,9 @@
       }
     }
   },
+  "legalUserAgreement": "User Agreement",
+  "legalPrivacyPolicy": "Privacy Policy",
+  "authTermsAcceptancePrefix": "By signing up you agree to:",
   "mePlatformRules": "Platform Rules",
   "meIpRegion": "IP location",
   "meIpRegionUnknown": "Unknown",
@@ -243,6 +246,7 @@
   "sfmSelectionSaveDiscard": "Discard",
   "sfmSelectionSaveCancel": "Cancel",
   "sfmGeneratingFinalCloud": "Generating final point cloud…",
+  "captureFinishing": "Wrapping up capture…",
   "sfmReconFailedKeptFrames": "Reconstruction failed — captures kept",
   "sfmChipFinalRecon": "Final reconstruction",
   "sfmChipReconstructing": "Reconstructing · {count} pts…",
