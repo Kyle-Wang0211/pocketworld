@@ -1,0 +1,11 @@
+[project]
+name = "pw-official-structured-codecs"
+version = "0.1.0"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "numpy==2.4.2",
+  "pyarrow==24.0.0",
+]
+
+[tool.uv]
+package = false

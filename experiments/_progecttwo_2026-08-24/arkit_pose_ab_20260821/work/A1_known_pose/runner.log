@@ -1,0 +1,2 @@
+official_pose_solver_ab_runner: solve failed with API rc=5
+RESULT mode=known-pose registered=0 raw_points=0 track3plus=0 observations=0 gravity_hits=0 wall_ms=4.758 reproj=0.000000 api_rc=5 dump_rc=6

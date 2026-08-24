@@ -1,0 +1,70 @@
+WARNING: Logging before InitGoogleLogging() is written to STDERR
+I20260821 14:07:20.567787 0x1fac32080 database_cache.cc:72] Loading rigs...
+I20260821 14:07:20.568075 0x1fac32080 database_cache.cc:82]  0 in 0.000s
+I20260821 14:07:20.568082 0x1fac32080 database_cache.cc:90] Loading cameras...
+I20260821 14:07:20.568103 0x1fac32080 database_cache.cc:108]  60 in 0.000s
+I20260821 14:07:20.568110 0x1fac32080 database_cache.cc:116] Loading frames...
+I20260821 14:07:20.568117 0x1fac32080 database_cache.cc:126]  0 in 0.000s
+I20260821 14:07:20.568122 0x1fac32080 database_cache.cc:134] Loading matches...
+I20260821 14:07:20.569080 0x1fac32080 database_cache.cc:139]  565 in 0.001s
+I20260821 14:07:20.569087 0x1fac32080 database_cache.cc:147] Loading images...
+I20260821 14:07:20.573358 0x1fac32080 database_cache.cc:236]  60 in 0.004s (loaded all 60)
+I20260821 14:07:20.573381 0x1fac32080 database_cache.cc:255] Loading pose priors...
+I20260821 14:07:20.573396 0x1fac32080 database_cache.cc:263]  0 in 0.000s
+I20260821 14:07:20.573401 0x1fac32080 database_cache.cc:271] Building correspondence graph...
+I20260821 14:07:20.584187 0x1fac32080 database_cache.cc:300]  in 0.011s (ignored 0)
+I20260821 14:07:20.734130 0x1fac32080 database_cache.cc:72] Loading rigs...
+I20260821 14:07:20.734156 0x1fac32080 database_cache.cc:82]  0 in 0.000s
+I20260821 14:07:20.734161 0x1fac32080 database_cache.cc:90] Loading cameras...
+I20260821 14:07:20.734181 0x1fac32080 database_cache.cc:108]  60 in 0.000s
+I20260821 14:07:20.734186 0x1fac32080 database_cache.cc:116] Loading frames...
+I20260821 14:07:20.734193 0x1fac32080 database_cache.cc:126]  0 in 0.000s
+I20260821 14:07:20.734197 0x1fac32080 database_cache.cc:134] Loading matches...
+I20260821 14:07:20.734701 0x1fac32080 database_cache.cc:139]  565 in 0.001s
+I20260821 14:07:20.734708 0x1fac32080 database_cache.cc:147] Loading images...
+I20260821 14:07:20.738378 0x1fac32080 database_cache.cc:236]  60 in 0.004s (loaded all 60)
+I20260821 14:07:20.738401 0x1fac32080 database_cache.cc:255] Loading pose priors...
+I20260821 14:07:20.738411 0x1fac32080 database_cache.cc:263]  0 in 0.000s
+I20260821 14:07:20.738416 0x1fac32080 database_cache.cc:271] Building correspondence graph...
+I20260821 14:07:20.748266 0x1fac32080 database_cache.cc:300]  in 0.010s (ignored 0)
+I20260821 14:07:20.749256 0x16f25f000 sift.cc:1565] Creating SIFT CPU feature matcher
+I20260821 14:07:20.802937 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 58/59 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 14:07:21.664826 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 14:07:21.722544 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 58/59 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 14:07:22.452117 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 14:07:22.502270 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 58/59 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 14:07:23.264482 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 14:07:23.309903 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 58/59 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 14:07:23.914678 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 14:07:23.959212 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 58/59 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 14:07:24.472108 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 14:07:29.406263 0x16f25f000 sift.cc:1565] Creating SIFT CPU feature matcher
+I20260821 14:07:34.829983 0x16f25f000 sift.cc:1565] Creating SIFT CPU feature matcher
+I20260821 14:07:42.652290 0x16f25f000 sift.cc:1565] Creating SIFT CPU feature matcher
+I20260821 14:07:50.449172 0x16f25f000 sift.cc:1565] Creating SIFT CPU feature matcher
+W20260821 14:07:56.066429 0x16f25f000 official_aether_sfm_c.cc:5980] [aether_sfm] finalize re-match stopped by the enrichment time budget: 107 of 112 candidate pairs left unattempted
+W20260821 14:07:56.066476 0x16f25f000 official_aether_sfm_c.cc:6091] [aether_sfm] finalize re-match: starved_frames=6 candidates=112 attempted=5 written=0 inliers=0 failed=0 gpu_fail_capture=0 probe_debt_repaid=0 probe_debt_left=0
+W20260821 14:07:56.069751 0x16f25f000 official_aether_sfm_c.cc:6478] [aether_sfm] official quadratic overlap stopped by the enrichment time budget: 128 of 128 candidate pairs left unattempted
+W20260821 14:07:56.069769 0x16f25f000 official_aether_sfm_c.cc:6532] [aether_sfm] official quadratic overlap: overlap=10 candidates=128 written=0 in 1.44808 ms
+I20260821 14:07:56.071572 0x1fac32080 official_incremental_pipeline.cc:320] Loading database
+I20260821 14:07:56.071598 0x1fac32080 database_cache.cc:72] Loading rigs...
+I20260821 14:07:56.071606 0x1fac32080 database_cache.cc:82]  0 in 0.000s
+I20260821 14:07:56.071610 0x1fac32080 database_cache.cc:90] Loading cameras...
+I20260821 14:07:56.071630 0x1fac32080 database_cache.cc:108]  60 in 0.000s
+I20260821 14:07:56.071634 0x1fac32080 database_cache.cc:116] Loading frames...
+I20260821 14:07:56.071640 0x1fac32080 database_cache.cc:126]  0 in 0.000s
+I20260821 14:07:56.071644 0x1fac32080 database_cache.cc:134] Loading matches...
+I20260821 14:07:56.072502 0x1fac32080 database_cache.cc:139]  565 in 0.001s
+I20260821 14:07:56.072507 0x1fac32080 database_cache.cc:147] Loading images...
+I20260821 14:07:56.077052 0x1fac32080 database_cache.cc:236]  60 in 0.005s (loaded all 60)
+I20260821 14:07:56.077068 0x1fac32080 database_cache.cc:255] Loading pose priors...
+I20260821 14:07:56.077079 0x1fac32080 database_cache.cc:263]  0 in 0.000s
+I20260821 14:07:56.077083 0x1fac32080 database_cache.cc:271] Building correspondence graph...
+I20260821 14:07:56.087934 0x1fac32080 database_cache.cc:300]  in 0.011s (ignored 0)
+I20260821 14:07:56.087964 0x1fac32080 timer.cc:90] Elapsed time: 0.000 [minutes]
+I20260821 14:07:56.134291 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 58/59 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 14:07:56.491707 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+W20260821 14:07:56.512002 0x1fac32080 official_aether_sfm_c.cc:8381] [frame-loss] before=60 after=59 lost_zero_obs=1 lost_with_obs=0 | frame_000059.jpg(obs=0)
+W20260821 14:07:56.512497 0x1fac32080 official_aether_sfm_c.cc:8447] [aether_sfm] finalize worker: cache_pre=14ms enrich=35322ms stage1=3746ms (ok, rounds=5) stage2=441ms (rounds<=1) temporal=0ms upgrade=0ms total=35778ms
+W20260821 14:07:56.512846 0x1fac32080 official_aether_sfm_c.cc:8476] [aether_sfm] delivered-point provenance: live-created=18975 official-retriangulated=1432 live-dropped-by-official-filtering=6919 (live model had 25894; capture-time official TriangulateImage added 0 obs)
+RESULT mode=known-pose registered=59 raw_points=20407 track3plus=7376 observations=65328 gravity_hits=60 wall_ms=36030.760 reproj=1.099154 api_rc=0 dump_rc=0

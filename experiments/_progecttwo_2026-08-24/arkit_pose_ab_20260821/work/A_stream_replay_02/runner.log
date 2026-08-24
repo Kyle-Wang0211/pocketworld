@@ -1,0 +1,297 @@
+REPLAY src_db=/Users/kaidongwang/Documents/progecttwo/experiments/arkit_pose_ab_20260821/work/A_stream_replay_02/source.db poses=/Users/kaidongwang/Documents/progecttwo/_host_experiments/live_lba_three_arms_20260810/input/cap_1786546115077820/official_sfm_fed_frames.jsonl out=/Users/kaidongwang/Documents/progecttwo/experiments/arkit_pose_ab_20260821/work/A_stream_replay_02 k=12 max_frames=60 ratio_arg=-1.000 AETHER_INCREMENTAL_GLOBAL_BA=(unset)
+SOURCE n_images=60 n_poses=60
+RATIO effective=0.800 source=core-default
+I20260821 13:58:11.368496 0x1fac32080 database_cache.cc:72] Loading rigs...
+I20260821 13:58:11.368513 0x1fac32080 database_cache.cc:82]  0 in 0.000s
+I20260821 13:58:11.368520 0x1fac32080 database_cache.cc:90] Loading cameras...
+I20260821 13:58:11.368530 0x1fac32080 database_cache.cc:108]  2 in 0.000s
+I20260821 13:58:11.368535 0x1fac32080 database_cache.cc:116] Loading frames...
+I20260821 13:58:11.368541 0x1fac32080 database_cache.cc:126]  0 in 0.000s
+I20260821 13:58:11.368545 0x1fac32080 database_cache.cc:134] Loading matches...
+I20260821 13:58:11.368554 0x1fac32080 database_cache.cc:139]  1 in 0.000s
+I20260821 13:58:11.368558 0x1fac32080 database_cache.cc:147] Loading images...
+I20260821 13:58:11.368767 0x1fac32080 database_cache.cc:236]  2 in 0.000s (loaded all 2)
+I20260821 13:58:11.368774 0x1fac32080 database_cache.cc:255] Loading pose priors...
+I20260821 13:58:11.368784 0x1fac32080 database_cache.cc:263]  0 in 0.000s
+I20260821 13:58:11.368789 0x1fac32080 database_cache.cc:271] Building correspondence graph...
+I20260821 13:58:11.368862 0x1fac32080 database_cache.cc:300]  in 0.000s (ignored 0)
+I20260821 13:58:11.411398 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 3/3 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:11.442562 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:11.444301 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 3/3 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:11.458339 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:11.524039 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 4/4 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:11.579175 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:11.582376 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 4/4 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:11.606512 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:11.675358 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 5/5 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:11.750513 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:11.754529 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 5/5 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:11.767177 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:11.833853 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:11.920525 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:11.925484 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:11.940824 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:11.992294 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:12.047228 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:12.051903 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:12.061993 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:12.126412 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:12.181584 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:12.186967 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:12.200058 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:12.267804 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:12.328856 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:12.333616 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:12.346788 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:12.435680 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:12.485961 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:12.490521 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:12.497337 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:12.578079 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:12.635574 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:12.640735 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:12.650651 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:12.734890 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:12.776260 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:12.780769 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:12.789423 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:12.903018 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:12.981632 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:12.988843 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:13.006766 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:13.116011 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:13.183294 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:13.190352 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:13.204527 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:13.289171 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:13.355827 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:13.361657 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 4/4 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:13.374578 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:13.471905 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:13.530224 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:13.536132 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 5/5 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:13.551450 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:13.638795 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:13.697762 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:13.702490 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 5/5 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:13.714525 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:13.797569 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:13.859387 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:13.864140 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:13.879261 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:13.952602 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:14.003598 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:14.007947 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:14.016331 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:14.113487 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:14.170236 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:14.175224 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:14.186707 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:14.303823 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:14.351842 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:14.360504 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:14.370221 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:14.496107 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:14.554761 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:14.563377 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:14.573847 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:14.692586 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:14.760423 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:14.768347 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:14.780248 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:14.875914 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:14.933353 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:14.941533 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:14.956175 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:15.046604 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:15.080846 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:15.086665 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:15.092274 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+  fed 25/60 frames (last n_kp=8192)
+I20260821 13:58:15.170136 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:15.201971 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:15.206508 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:15.213030 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:15.296110 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:15.330636 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:15.336305 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:15.341950 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:15.441223 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:15.493883 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:15.501453 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:15.510144 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:15.625531 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:15.678185 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:15.684781 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:15.692987 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:15.840167 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:15.889491 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:15.895273 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 4/4 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:15.903200 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:16.010392 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:16.051829 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:16.058965 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:16.066496 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:16.160497 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:16.200651 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:16.206908 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:16.214425 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:16.298422 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:16.331788 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:16.337549 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:16.345716 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:16.436246 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:16.473167 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:16.478905 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:16.484849 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:16.614945 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:16.651313 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:16.656194 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:16.662665 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:16.749311 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:16.782877 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:16.787461 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:16.794793 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:16.890467 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:16.931612 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:16.936503 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:16.944889 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:17.018469 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:17.053161 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:17.059910 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:17.065988 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:17.143679 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 4/4 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:17.164401 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:17.167396 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 3/3 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:17.169382 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=1
+I20260821 13:58:17.271505 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:17.334454 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:17.342432 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 5/5 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:17.350930 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:17.399567 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 5/5 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:17.447284 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:17.453095 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 4/4 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:17.460348 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:17.521578 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:17.574186 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:17.582045 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:17.590546 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:17.676094 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:17.732986 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:17.741871 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:17.759895 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:17.856545 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:17.894595 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:17.900245 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:17.904800 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:18.011697 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:18.040325 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:18.045022 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 4/4 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:18.049692 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:18.134672 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:18.160381 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:18.164480 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 5/5 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:18.176460 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:18.244417 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:18.262619 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:18.266306 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 5/5 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:18.274518 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:18.366183 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:18.385450 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:18.388369 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 5/5 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:18.392655 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=1
+I20260821 13:58:18.436125 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 5/5 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:18.448883 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=1
+I20260821 13:58:18.450955 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 5/5 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:18.454615 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=1
+I20260821 13:58:18.541349 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 4/4 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:18.550443 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=1
+I20260821 13:58:18.553141 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 4/4 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:18.555394 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=1
+  fed 50/60 frames (last n_kp=7315)
+I20260821 13:58:18.602163 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:18.622377 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=1
+I20260821 13:58:18.626046 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:18.630605 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=1
+I20260821 13:58:18.689522 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 5/5 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:18.711228 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=1
+I20260821 13:58:18.714103 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 5/5 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:18.718841 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=1
+I20260821 13:58:18.783697 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:18.818801 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:18.823068 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:18.831941 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:18.906159 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:18.933251 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:18.937394 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:18.942137 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:19.108469 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:19.134893 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:19.138537 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:19.143015 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:19.236085 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:19.256448 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:19.259538 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:19.263826 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=1
+I20260821 13:58:19.331064 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:19.346863 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=1
+I20260821 13:58:19.349362 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:19.353434 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=1
+I20260821 13:58:19.423022 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:19.444610 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:19.449140 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:19.454312 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:19.516391 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:19.531805 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:19.535689 0x1fac32080 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 6/6 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:19.539925 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=1
+STREAMED fed=60 missing_pose=0 stream_ms=8301.8
+FINALIZE_ASYNC phase1={"solve_ms":1.4,"n_models":1,"n_registered":60,"n_points3d":26959,"reproj_px":1.0482,"track_len":2.206,"phase1":"live_reuse"}
+I20260821 13:58:19.594151 0x16f44f000 database_cache.cc:72] Loading rigs...
+I20260821 13:58:19.594170 0x16f44f000 database_cache.cc:82]  0 in 0.000s
+I20260821 13:58:19.594174 0x16f44f000 database_cache.cc:90] Loading cameras...
+I20260821 13:58:19.594196 0x16f44f000 database_cache.cc:108]  60 in 0.000s
+I20260821 13:58:19.594200 0x16f44f000 database_cache.cc:116] Loading frames...
+I20260821 13:58:19.594207 0x16f44f000 database_cache.cc:126]  0 in 0.000s
+I20260821 13:58:19.594210 0x16f44f000 database_cache.cc:134] Loading matches...
+I20260821 13:58:19.599629 0x16f44f000 database_cache.cc:139]  555 in 0.005s
+I20260821 13:58:19.599635 0x16f44f000 database_cache.cc:147] Loading images...
+I20260821 13:58:19.617332 0x16f44f000 database_cache.cc:236]  60 in 0.018s (loaded all 60)
+I20260821 13:58:19.617348 0x16f44f000 database_cache.cc:255] Loading pose priors...
+I20260821 13:58:19.617355 0x16f44f000 database_cache.cc:263]  0 in 0.000s
+I20260821 13:58:19.617359 0x16f44f000 database_cache.cc:271] Building correspondence graph...
+I20260821 13:58:19.628594 0x16f44f000 database_cache.cc:300]  in 0.011s (ignored 0)
+I20260821 13:58:19.705846 0x16f44f000 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 58/59 roll/pitch anchors, sigma_rad=0.00872665
+W20260821 13:58:20.073882 0x16f4db000 official_aether_sfm_c.cc:6091] [aether_sfm] finalize re-match: starved_frames=7 candidates=128 attempted=128 written=10 inliers=337 failed=0 gpu_fail_capture=0 probe_debt_repaid=0 probe_debt_left=0
+I20260821 13:58:20.351593 0x16f44f000 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:20.419070 0x16f44f000 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 58/59 roll/pitch anchors, sigma_rad=0.00872665
+W20260821 13:58:20.567731 0x16f4db000 official_aether_sfm_c.cc:6532] [aether_sfm] official quadratic overlap: overlap=10 candidates=128 written=54 in 493.268 ms
+I20260821 13:58:21.067196 0x16f44f000 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:21.097416 0x16f44f000 official_incremental_pipeline.cc:320] Loading database
+I20260821 13:58:21.097451 0x16f44f000 database_cache.cc:72] Loading rigs...
+I20260821 13:58:21.097458 0x16f44f000 database_cache.cc:82]  0 in 0.000s
+I20260821 13:58:21.097462 0x16f44f000 database_cache.cc:90] Loading cameras...
+I20260821 13:58:21.097480 0x16f44f000 database_cache.cc:108]  60 in 0.000s
+I20260821 13:58:21.097484 0x16f44f000 database_cache.cc:116] Loading frames...
+I20260821 13:58:21.097489 0x16f44f000 database_cache.cc:126]  0 in 0.000s
+I20260821 13:58:21.097492 0x16f44f000 database_cache.cc:134] Loading matches...
+I20260821 13:58:21.099093 0x16f44f000 database_cache.cc:139]  619 in 0.002s
+I20260821 13:58:21.099098 0x16f44f000 database_cache.cc:147] Loading images...
+I20260821 13:58:21.103763 0x16f44f000 database_cache.cc:236]  60 in 0.005s (loaded all 60)
+I20260821 13:58:21.103778 0x16f44f000 database_cache.cc:255] Loading pose priors...
+I20260821 13:58:21.103789 0x16f44f000 database_cache.cc:263]  0 in 0.000s
+I20260821 13:58:21.103793 0x16f44f000 database_cache.cc:271] Building correspondence graph...
+I20260821 13:58:21.116409 0x16f44f000 database_cache.cc:300]  in 0.013s (ignored 0)
+I20260821 13:58:21.116430 0x16f44f000 timer.cc:90] Elapsed time: 0.000 [minutes]
+I20260821 13:58:21.168956 0x16f44f000 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 58/59 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:21.762908 0x16f44f000 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:21.810579 0x16f44f000 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 58/59 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:22.343082 0x16f44f000 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:58:22.391329 0x16f44f000 official_bundle_adjustment_ceres.cc:1535] [AETHER gravity] injected 58/59 roll/pitch anchors, sigma_rad=0.00872665
+I20260821 13:58:22.821321 0x16f44f000 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+W20260821 13:58:22.844692 0x16f44f000 official_aether_sfm_c.cc:8381] [frame-loss] before=60 after=59 lost_zero_obs=1 lost_with_obs=0 | frame_000059.jpg(obs=0)
+W20260821 13:58:22.845117 0x16f44f000 official_aether_sfm_c.cc:8447] [aether_sfm] finalize worker: cache_pre=34ms enrich=944ms stage1=1466ms (ok, rounds=2) stage2=1748ms (rounds<=3) temporal=0ms upgrade=0ms total=3251ms
+W20260821 13:58:22.845487 0x16f44f000 official_aether_sfm_c.cc:8476] [aether_sfm] delivered-point provenance: live-created=17261 official-retriangulated=4364 live-dropped-by-official-filtering=9698 (live model had 26959; capture-time official TriangulateImage added 0 obs)
+REFINED finalize_ms=3263.3
+W20260821 13:58:22.919942 0x1fac32080 official_aether_sfm_c.cc:11309] [aether_sfm] deliver-filter(get_points): kept 21225/21625 (min_tri_angle=3deg, mirror_ghost=0, isolated_floater=36, killed_union=36)
+RESULT incr=off n_reg=59 n_points=21625 track3plus=6883 n_obs=65905 mean_reproj_px=1.0583 stream_ms=8301.8 finalize_ms=3263.3 total_ms=11565.1

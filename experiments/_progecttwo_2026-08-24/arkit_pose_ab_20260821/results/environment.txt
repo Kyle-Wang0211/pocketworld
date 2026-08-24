@@ -1,0 +1,15 @@
+Captured: 2026-08-21, Asia/Shanghai
+OS: macOS 26.1 (Build 25B78)
+Kernel: Darwin 25.1.0 RELEASE_ARM64_T6030 arm64
+CPU: Apple M3 Pro
+Memory bytes: 19327352832
+COLMAP: 4.1.1, without CUDA
+Python: 3.11.15
+pycolmap: 4.0.4
+SciPy: 1.17.1
+Compiler: Apple clang 17.0.0 (clang-1700.6.3.2), arm64
+Solver log: DENSE_SCHUR, Eigen sparse/dense backends, 6 threads
+GPU feature extraction: not used; all arms consume precomputed features
+Random seed: no public seed was exposed by the frozen runner/core
+Repeat policy: serial; repeat variance preserved, not averaged away
+

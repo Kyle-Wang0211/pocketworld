@@ -1,0 +1,278 @@
+WARNING: Logging before InitGoogleLogging() is written to STDERR
+I20260821 13:57:49.418804 0x1fac32080 official_incremental_pipeline.cc:320] Loading database
+I20260821 13:57:49.419103 0x1fac32080 database_cache.cc:72] Loading rigs...
+I20260821 13:57:49.419172 0x1fac32080 database_cache.cc:82]  0 in 0.000s
+I20260821 13:57:49.419186 0x1fac32080 database_cache.cc:90] Loading cameras...
+I20260821 13:57:49.419415 0x1fac32080 database_cache.cc:108]  60 in 0.000s
+I20260821 13:57:49.419422 0x1fac32080 database_cache.cc:116] Loading frames...
+I20260821 13:57:49.419430 0x1fac32080 database_cache.cc:126]  0 in 0.000s
+I20260821 13:57:49.419435 0x1fac32080 database_cache.cc:134] Loading matches...
+I20260821 13:57:49.420367 0x1fac32080 database_cache.cc:139]  565 in 0.001s
+I20260821 13:57:49.420376 0x1fac32080 database_cache.cc:147] Loading images...
+I20260821 13:57:49.425439 0x1fac32080 database_cache.cc:241]  60 in 0.005s (connected 59, loaded 59)
+I20260821 13:57:49.425469 0x1fac32080 database_cache.cc:255] Loading pose priors...
+I20260821 13:57:49.425483 0x1fac32080 database_cache.cc:263]  0 in 0.000s
+I20260821 13:57:49.425490 0x1fac32080 database_cache.cc:271] Building correspondence graph...
+I20260821 13:57:49.436602 0x1fac32080 database_cache.cc:300]  in 0.011s (ignored 0)
+I20260821 13:57:49.436632 0x1fac32080 timer.cc:90] Elapsed time: 0.000 [minutes]
+I20260821 13:57:49.439813 0x1fac32080 official_incremental_pipeline.cc:432] Finding good initial image pair
+I20260821 13:57:49.496769 0x1fac32080 official_incremental_pipeline.cc:456] Registering initial image pair #2 and #21
+I20260821 13:57:49.499277 0x1fac32080 official_incremental_pipeline.cc:474] Global bundle adjustment
+I20260821 13:57:49.507540 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=1
+I20260821 13:57:49.507794 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #3 (num_reg_frames=2)
+I20260821 13:57:49.507800 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 192 / 3116 points
+I20260821 13:57:49.536158 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:49.559034 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:49.561221 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #4 (num_reg_frames=3)
+I20260821 13:57:49.561236 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 859 / 3075 points
+I20260821 13:57:49.607244 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:49.647219 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:49.649719 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #43 (num_reg_frames=4)
+I20260821 13:57:49.649728 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 639 / 1424 points
+I20260821 13:57:49.698309 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:49.742126 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:49.744277 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #13 (num_reg_frames=5)
+I20260821 13:57:49.744287 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 1076 / 2852 points
+I20260821 13:57:49.804871 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:49.858465 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:49.861993 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #5 (num_reg_frames=6)
+I20260821 13:57:49.862004 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 1252 / 2872 points
+I20260821 13:57:49.930358 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:49.992396 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:49.996704 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #14 (num_reg_frames=7)
+I20260821 13:57:49.996717 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 1181 / 2425 points
+I20260821 13:57:50.066643 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:50.129463 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:50.133933 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #15 (num_reg_frames=8)
+I20260821 13:57:50.133949 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 891 / 1797 points
+I20260821 13:57:50.189718 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:50.243306 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:50.247404 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #6 (num_reg_frames=9)
+I20260821 13:57:50.247418 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 1142 / 2311 points
+I20260821 13:57:50.314541 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:50.376852 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:50.382190 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #22 (num_reg_frames=10)
+I20260821 13:57:50.382206 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 1283 / 2543 points
+I20260821 13:57:50.448483 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:50.507074 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:50.512747 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #1 (num_reg_frames=11)
+I20260821 13:57:50.512763 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 655 / 1372 points
+I20260821 13:57:50.562330 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:50.606656 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:50.610994 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #20 (num_reg_frames=12)
+I20260821 13:57:50.611013 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 1036 / 2655 points
+I20260821 13:57:50.669609 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:50.720890 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:50.726304 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #16 (num_reg_frames=13)
+I20260821 13:57:50.726322 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 899 / 1649 points
+I20260821 13:57:50.780158 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:50.831300 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:50.836041 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #7 (num_reg_frames=14)
+I20260821 13:57:50.836078 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 950 / 1743 points
+I20260821 13:57:50.894210 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:50.950261 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:50.955780 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #8 (num_reg_frames=15)
+I20260821 13:57:50.955801 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 866 / 1751 points
+I20260821 13:57:51.003250 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:51.047958 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:51.052779 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #10 (num_reg_frames=16)
+I20260821 13:57:51.052794 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 827 / 2141 points
+I20260821 13:57:51.100199 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:51.141959 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:51.146635 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #11 (num_reg_frames=17)
+I20260821 13:57:51.146654 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 1046 / 2336 points
+I20260821 13:57:51.199648 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:51.246987 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:51.252314 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #9 (num_reg_frames=18)
+I20260821 13:57:51.252330 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 982 / 1663 points
+I20260821 13:57:51.298720 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:51.338759 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:51.343649 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #29 (num_reg_frames=19)
+I20260821 13:57:51.343664 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 956 / 2060 points
+I20260821 13:57:51.393439 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:51.436541 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:51.441186 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #12 (num_reg_frames=20)
+I20260821 13:57:51.441205 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 1009 / 1662 points
+I20260821 13:57:51.492949 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:51.536651 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:51.541244 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #30 (num_reg_frames=21)
+I20260821 13:57:51.541263 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 945 / 1766 points
+I20260821 13:57:51.594401 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:51.641472 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:51.646252 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #28 (num_reg_frames=22)
+I20260821 13:57:51.646264 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 1126 / 2167 points
+I20260821 13:57:51.701709 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:51.752957 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:51.759234 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #27 (num_reg_frames=23)
+I20260821 13:57:51.759253 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 954 / 1819 points
+I20260821 13:57:51.807779 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:51.851717 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:51.857161 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #23 (num_reg_frames=24)
+I20260821 13:57:51.857183 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 872 / 1509 points
+I20260821 13:57:51.912032 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:51.961404 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:51.967000 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #34 (num_reg_frames=25)
+I20260821 13:57:51.967018 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 734 / 1749 points
+I20260821 13:57:52.009871 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.050508 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.055302 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #32 (num_reg_frames=26)
+I20260821 13:57:52.055319 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 660 / 1382 points
+I20260821 13:57:52.097089 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.133953 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.138150 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #31 (num_reg_frames=27)
+I20260821 13:57:52.138166 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 900 / 1597 points
+I20260821 13:57:52.186763 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.221958 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.226673 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #33 (num_reg_frames=28)
+I20260821 13:57:52.226692 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 672 / 1211 points
+I20260821 13:57:52.263031 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.299276 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.304265 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #26 (num_reg_frames=29)
+I20260821 13:57:52.304280 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 778 / 1326 points
+I20260821 13:57:52.345449 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.378465 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.383505 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #35 (num_reg_frames=30)
+I20260821 13:57:52.383521 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 619 / 1569 points
+I20260821 13:57:52.423743 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.460628 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.465206 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #25 (num_reg_frames=31)
+I20260821 13:57:52.465222 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 796 / 1247 points
+I20260821 13:57:52.522102 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.556571 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.561592 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #17 (num_reg_frames=32)
+I20260821 13:57:52.561607 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 564 / 1341 points
+I20260821 13:57:52.602674 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.640754 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.644710 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #44 (num_reg_frames=33)
+I20260821 13:57:52.644724 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 432 / 718 points
+I20260821 13:57:52.677168 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.705354 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.708815 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #36 (num_reg_frames=34)
+I20260821 13:57:52.708829 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 575 / 1389 points
+I20260821 13:57:52.742152 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.770504 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.774302 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #37 (num_reg_frames=35)
+I20260821 13:57:52.774317 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 635 / 1230 points
+I20260821 13:57:52.812039 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.843869 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.847078 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #53 (num_reg_frames=36)
+I20260821 13:57:52.847093 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 409 / 815 points
+I20260821 13:57:52.876920 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.904658 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.907080 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #54 (num_reg_frames=37)
+I20260821 13:57:52.907093 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 410 / 715 points
+I20260821 13:57:52.936291 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.955202 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:52.957621 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #18 (num_reg_frames=38)
+I20260821 13:57:52.957632 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 546 / 1258 points
+I20260821 13:57:52.996309 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.027742 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.031530 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #45 (num_reg_frames=39)
+I20260821 13:57:53.031543 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 397 / 719 points
+I20260821 13:57:53.061274 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.088270 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.091751 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #42 (num_reg_frames=40)
+I20260821 13:57:53.091765 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 432 / 632 points
+I20260821 13:57:53.125205 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.159648 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.163796 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #46 (num_reg_frames=41)
+I20260821 13:57:53.163812 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 466 / 871 points
+I20260821 13:57:53.193099 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.219276 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.222313 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #19 (num_reg_frames=42)
+I20260821 13:57:53.222326 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 405 / 684 points
+I20260821 13:57:53.258379 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.290080 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.292887 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #24 (num_reg_frames=43)
+I20260821 13:57:53.292901 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 533 / 719 points
+I20260821 13:57:53.326085 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.354720 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.359648 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #47 (num_reg_frames=44)
+I20260821 13:57:53.359670 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 306 / 567 points
+I20260821 13:57:53.384171 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.405690 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.408247 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #58 (num_reg_frames=45)
+I20260821 13:57:53.408259 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 229 / 676 points
+I20260821 13:57:53.434613 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.456965 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.460259 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #55 (num_reg_frames=46)
+I20260821 13:57:53.460271 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 177 / 811 points
+I20260821 13:57:53.479646 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.496882 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.498426 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #57 (num_reg_frames=47)
+I20260821 13:57:53.498438 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 256 / 655 points
+I20260821 13:57:53.518910 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.535379 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.536897 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #56 (num_reg_frames=48)
+I20260821 13:57:53.536909 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 224 / 574 points
+I20260821 13:57:53.559062 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.576900 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.578455 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #59 (num_reg_frames=49)
+I20260821 13:57:53.578465 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 125 / 334 points
+I20260821 13:57:53.593574 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.610487 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.612722 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #38 (num_reg_frames=50)
+I20260821 13:57:53.612733 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 61 / 218 points
+I20260821 13:57:53.635928 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.655568 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.658218 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #48 (num_reg_frames=51)
+I20260821 13:57:53.658229 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 88 / 461 points
+I20260821 13:57:53.675419 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.689810 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.691103 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #40 (num_reg_frames=52)
+I20260821 13:57:53.691113 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 42 / 168 points
+I20260821 13:57:53.691532 0x1fac32080 official_incremental_pipeline.cc:605] => Could not register, trying another image.
+I20260821 13:57:53.691537 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #49 (num_reg_frames=52)
+I20260821 13:57:53.691540 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 53 / 523 points
+I20260821 13:57:53.706341 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.721327 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.722767 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #51 (num_reg_frames=53)
+I20260821 13:57:53.722778 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 93 / 971 points
+I20260821 13:57:53.737266 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.749656 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.750859 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #50 (num_reg_frames=54)
+I20260821 13:57:53.750868 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 150 / 665 points
+I20260821 13:57:53.769906 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.786090 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=1
+I20260821 13:57:53.787125 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #52 (num_reg_frames=55)
+I20260821 13:57:53.787132 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 237 / 679 points
+I20260821 13:57:53.811042 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.832692 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.833900 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #40 (num_reg_frames=56)
+I20260821 13:57:53.833909 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 42 / 168 points
+I20260821 13:57:53.834376 0x1fac32080 official_incremental_pipeline.cc:605] => Could not register, trying another image.
+I20260821 13:57:53.834384 0x1fac32080 official_incremental_pipeline.cc:579] Registering image #40 (num_reg_frames=56)
+I20260821 13:57:53.834387 0x1fac32080 official_incremental_pipeline.cc:582] => Image sees 42 / 168 points
+I20260821 13:57:53.834390 0x1fac32080 official_incremental_pipeline.cc:588] Registering image with structure-less fallback
+I20260821 13:57:53.834393 0x1fac32080 official_incremental_pipeline.cc:590] => Image sees 120 / 210 correspondences
+I20260821 13:57:53.911378 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=1
+I20260821 13:57:53.945957 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.968778 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:53.971979 0x1fac32080 official_incremental_pipeline.cc:81] Retriangulation and Global bundle adjustment
+I20260821 13:57:54.692641 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:55.455480 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:55.996107 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:56.268930 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:56.672004 0x1fac32080 official_bundle_adjustment_ceres.cc:1016] [AETHER] solver_used=DENSE_SCHUR sparse_backend=EIGEN_SPARSE dense_backend=EIGEN mixed=0 threads=6
+I20260821 13:57:56.692660 0x1fac32080 official_incremental_pipeline.cc:769] Keeping successful reconstruction
+I20260821 13:57:56.693795 0x1fac32080 official_incremental_pipeline.cc:432] Finding good initial image pair
+I20260821 13:57:56.693990 0x1fac32080 official_incremental_pipeline.cc:436] => No good initial image pair found.
+I20260821 13:57:56.694004 0x1fac32080 official_incremental_pipeline.cc:743] Discarding reconstruction due to no initial pair
+I20260821 13:57:56.694058 0x1fac32080 official_incremental_pipeline.cc:396] => Relaxing the initialization constraints.
+I20260821 13:57:56.694577 0x1fac32080 official_incremental_pipeline.cc:432] Finding good initial image pair
+I20260821 13:57:56.694715 0x1fac32080 official_incremental_pipeline.cc:436] => No good initial image pair found.
+I20260821 13:57:56.694740 0x1fac32080 official_incremental_pipeline.cc:743] Discarding reconstruction due to no initial pair
+I20260821 13:57:56.694789 0x1fac32080 official_incremental_pipeline.cc:409] => Relaxing the initialization constraints.
+I20260821 13:57:56.695242 0x1fac32080 official_incremental_pipeline.cc:432] Finding good initial image pair
+I20260821 13:57:56.695354 0x1fac32080 official_incremental_pipeline.cc:436] => No good initial image pair found.
+I20260821 13:57:56.695365 0x1fac32080 official_incremental_pipeline.cc:743] Discarding reconstruction due to no initial pair
+I20260821 13:57:56.695409 0x1fac32080 official_incremental_pipeline.cc:396] => Relaxing the initialization constraints.
+I20260821 13:57:56.695875 0x1fac32080 official_incremental_pipeline.cc:432] Finding good initial image pair
+I20260821 13:57:56.696015 0x1fac32080 official_incremental_pipeline.cc:436] => No good initial image pair found.
+I20260821 13:57:56.696022 0x1fac32080 official_incremental_pipeline.cc:743] Discarding reconstruction due to no initial pair
+I20260821 13:57:56.696065 0x1fac32080 official_incremental_pipeline.cc:409] => Relaxing the initialization constraints.
+I20260821 13:57:56.696494 0x1fac32080 official_incremental_pipeline.cc:432] Finding good initial image pair
+I20260821 13:57:56.696611 0x1fac32080 official_incremental_pipeline.cc:436] => No good initial image pair found.
+I20260821 13:57:56.696617 0x1fac32080 official_incremental_pipeline.cc:743] Discarding reconstruction due to no initial pair
+I20260821 13:57:56.696663 0x1fac32080 timer.cc:90] Elapsed time: 0.121 [minutes]
+RESULT mode=visual registered=57 raw_points=20355 track3plus=7023 observations=65788 gravity_hits=0 wall_ms=7281.598 reproj=1.091572 api_rc=0 dump_rc=0

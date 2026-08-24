@@ -1,0 +1,73 @@
+schema: pw_experiment_protocol_deviation_v1
+experiment_id: arkit_pose_solver_input_ab_20260821_host_smoke_v2
+recorded_at: "2026-08-21T14:10:00+08:00"
+status: post_run_disclosure_not_preregistration
+
+frozen_parent:
+  path: contract-amendment-01.yaml
+  sha256: 6a6b98958d524a9d95a084baa41fbabc6bb258b86718adb5d25fbdd634142e53
+
+deviations:
+  - id: D01_run_order
+    planned: [A1, B1_1, B1_2, A2]
+    actual_initial_sequence:
+      - B1_contract_smoke_01
+      - A_stream_replay_01
+      - B1_contract_smoke_02
+      - A_stream_replay_02
+    reason: >-
+      The B1 batch entry was runnable first. The archived A sidecar later failed
+      current-core identity validation, so the official replay path was used to
+      establish a valid current A and to generate a current-format sidecar.
+    impact: >-
+      Convergence and output comparisons remain usable. Timing is reported per
+      stage and as diagnostic only; the planned order cannot be claimed.
+
+  - id: D02_archived_sidecar_incompatible
+    attempted_run: work/A1_known_pose
+    observed_api_rc: 5
+    exact_failure: >-
+      All 60 archived sidecar frame_identity_digest values disagree with the
+      current FrameIdentityDigestV1 recomputation. Frame 0 stored
+      0x80d35179dbd5523d but current recomputation is 0xccd0cd1dc5fcfa2d.
+    unaffected_fields:
+      quaternion_max_abs_difference_vs_current_sidecar: 2.22e-16
+      translation_max_abs_difference_vs_current_sidecar: 0.0
+      gravity_max_abs_difference_vs_current_sidecar: 4.996e-16
+    impact: >-
+      This is an identity-version incompatibility, not a failed known-pose
+      reconstruction. The failed artifact is preserved and excluded from
+      quality/timing reducers.
+
+  - id: D03_current_sidecar_same_graph_quality_arm
+    status: post_hoc_recovery_arm
+    source_sidecar: work/A_stream_replay_01/session.db.arkit_pose_v1
+    source_sidecar_sha256: 1f4e30395cacb787617d27eb512a2c47efe3fa99da39243c5517d9176edaec1d
+    justification: >-
+      Current replay sidecars from A01 and A02 are byte-identical, match all 60
+      current frame identities, and contain poses numerically identical to the
+      archived sidecar. Each recovered A arm starts from a fresh copy of the
+      exact original full database used by B1.
+    limitation: >-
+      The current known-pose restore/finalize API performs a large CPU rematch
+      budget that the visual batch API does not. This arm is the cleanest
+      same-input-graph quality comparison but not a strict runtime ablation.
+
+  - id: D04_post_hoc_diagnostics
+    diagnostics:
+      - COLMAP model_comparer camera-center Sim3 alignment
+      - sparse-cloud nearest-neighbor Chamfer and F-score against A
+      - B1 rerun over each A-enriched final match graph
+    preregistered_gate: false
+    impact: >-
+      These values explain the result and are never used to retroactively pass
+      a gate. A is a comparison reference, not geometric ground truth.
+
+validity_after_deviations:
+  b1_gross_convergence: valid
+  solver_received_no_vendor_pose: valid
+  same_initial_graph_output_comparison: directional_and_repeatable
+  strict_identical_code_path_causality: not_established
+  strict_end_to_end_slowdown: unresolved
+  end_to_end_vendor_neutrality: not_tested
+

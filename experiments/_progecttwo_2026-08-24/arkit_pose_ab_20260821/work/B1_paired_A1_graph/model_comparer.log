@@ -1,0 +1,31 @@
+I20260821 14:02:05.568369 0x1fac32080 model.cc:583] === Reconstruction 1 ===
+I20260821 14:02:05.568483 0x1fac32080 model.cc:584] Frames: 57
+I20260821 14:02:05.568485 0x1fac32080 model.cc:585] Images: 57
+I20260821 14:02:05.568487 0x1fac32080 model.cc:586] Points: 20390
+I20260821 14:02:05.568488 0x1fac32080 model.cc:588] === Reconstruction 2 ===
+I20260821 14:02:05.568490 0x1fac32080 model.cc:589] Frames: 59
+I20260821 14:02:05.568491 0x1fac32080 model.cc:590] Images: 59
+I20260821 14:02:05.568492 0x1fac32080 model.cc:591] Points: 21625
+I20260821 14:02:05.568493 0x1fac32080 model.cc:593] === Comparing reconstructed image poses ===
+I20260821 14:02:05.568503 0x1fac32080 model.cc:596] Common images: 57
+I20260821 14:02:05.571069 0x1fac32080 model.cc:622] Computed alignment transform:
+-0.00523741   -0.159108  0.00823953    0.201729
+  -0.139931 0.000652272   -0.076351  -0.0594355
+   0.076174  -0.0097414    -0.13969   -0.158578
+I20260821 14:02:05.571267 0x1fac32080 model.cc:627] --- Image alignment error summary ---
+
+Rotation errors (degrees)
+Min:    0.0864188
+Max:    0.955231
+Mean:   0.235934
+Median: 0.159227
+P90:    0.470099
+P99:    0.913113
+
+Projection center errors
+Min:    0.000822176
+Max:    0.0158731
+Mean:   0.00309192
+Median: 0.00246757
+P90:    0.00542205
+P99:    0.0131362

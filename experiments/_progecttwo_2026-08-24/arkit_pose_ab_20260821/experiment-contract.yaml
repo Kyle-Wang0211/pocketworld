@@ -1,0 +1,110 @@
+schema: pw_experiment_contract_v1
+experiment_id: arkit_pose_solver_input_ab_20260821_host_smoke_v1
+created_at: "2026-08-21T11:50:00+08:00"
+objective: >-
+  在同一 60 帧手机采集包、同一已提取特征、同一帧序、同一 matcher、同一
+  SfM 配置和同一 host 硬件上，只改变 add_frame_features 是否接收逐帧
+  ARKit CamFromWorld，比较 A 与 B1 的收敛、覆盖、几何内部质量和耗时。
+
+scope:
+  classification: B1_solver_input_ablation
+  proves:
+    - 现有求解链在固定上游资产下能否在不读取逐帧厂商 pose 时收敛
+    - host 上 B1 相对 A 的时间倍率与注册覆盖变化
+  does_not_prove:
+    - B2 端到端上游资产不依赖 ARKit
+    - B3 采集期不启动 ARKit
+    - iPhone 真机绝对耗时、能耗或热稳定
+    - 纯视觉原生米制尺度
+
+frozen_code:
+  pocketworld_repo: /Users/kaidongwang/Developer/pocketworld
+  pocketworld_head: 0a90110a83e6923fd415b0b255bce4cee596f8b0
+  pocketworld_tracked_diff_sha256: 7939dce999c9387d02f351c937f27a58b5a2059d28624641d6e1e522c493b597
+  pocketworld_status_manifest_sha256: 0fffefe78b683bfd4cee8d8d29fa2879f141b2ff8184692fc811038da6bf06cd
+  native_core_source: /Users/kaidongwang/Developer/Aether3D-cross/aether_cpp/official_pipeline/src/official_aether_sfm_c.cc
+  native_core_source_sha256: 9e254f4d52860d4cfd48bdaf0ca8df74a500d85794c19de44cd1390ecbb1d16c
+  replay_driver_source: /Users/kaidongwang/Developer/Aether3D-cross/aether_cpp/third_party/glomap_vendor/bench/sfm_replay_bench.cc
+  replay_driver_source_sha256: fccebe4e0f082900122f5c3f6a6034def8da55c5e6c6783c18caea1507914a45
+  build_rule: >-
+    cmake --build /Users/kaidongwang/Developer/Aether3D-cross/aether_cpp/third_party/glomap_vendor/build-host-fullbench
+    --target official_replay_bench_exe -j 6
+
+controlled_arms:
+  A:
+    pose_input: frozen official_sfm_fed_frames.jsonl
+  B1:
+    pose_input: pose_off.jsonl
+    expected_pose_records: 0
+  invariant_args:
+    k: 12
+    max_frames: 60
+    ratio: core_default
+    feed_order: source_database_image_id_ascending
+    incremental_global_ba: unset
+
+metrics:
+  hard:
+    - exit_code
+    - fed_frames
+    - missing_pose_frames
+    - registered_frames
+    - delivered_points
+    - track3plus
+    - observations
+    - mean_reprojection_px
+    - stream_ms
+    - finalize_ms
+    - total_ms
+  derived:
+    - registered_fraction
+    - registered_fraction_delta_vs_A
+    - reprojection_ratio_vs_A
+    - total_time_ratio_vs_A
+    - posthoc_sim3_pose_error
+    - posthoc_sim3_cloud_distance
+
+preregistered_gates:
+  validity:
+    - source hashes must match input-manifest.yaml
+    - A and B1 must use the freshly built identical executable hash
+    - A must report fed_frames=60 and missing_pose_frames=0
+    - B1 must report fed_frames=60 and missing_pose_frames=60
+    - no arm may mutate the frozen source database or source pose log
+  A_baseline:
+    - registered_frames >= 57
+    - exit_code == 0
+  B1_gross_convergence:
+    - registered_frames >= 48
+    - exit_code == 0
+  B1_candidate_noninferiority:
+    - registered_frames >= 57
+    - registered_fraction_delta_vs_A >= -0.10
+    - reprojection_ratio_vs_A <= 1.25
+  runtime:
+    - host runtime is diagnostic only; report total_time_ratio_vs_A without a pass threshold
+  gauge:
+    - compare trajectories and clouds only after frozen post-hoc Sim3 alignment
+    - do not score missing native metric scale as non-convergence
+
+execution:
+  phase_0_smoke_order: [A1, B1_1]
+  repeat_if_both_exit_zero: [B1_2, A2]
+  max_concurrent: 1
+  new_dependencies: forbidden
+  source_inputs_read_only: true
+
+stop_conditions:
+  - any frozen input hash mismatch
+  - fresh build failure
+  - A baseline exit_code is nonzero or registered_frames < 57
+  - source input changes after either arm
+  - B1 crashes or returns corrupt output; preserve failure artifacts and stop before tuning
+
+artifacts:
+  root: /Users/kaidongwang/Documents/progecttwo/experiments/arkit_pose_ab_20260821
+  append_only_log: results/experiment-log.ndjson
+  run_directories: work/<run_id>
+  summary: results/summary.json
+  evidence: results/evidence.md
+

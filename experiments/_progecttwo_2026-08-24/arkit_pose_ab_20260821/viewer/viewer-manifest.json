@@ -1,0 +1,98 @@
+{
+  "arms": {
+    "A": {
+      "ply": "data/A_raw_same_graph.ply",
+      "ply_sha256": "f1f8e452ae8e152abd6cb609c0a697374db7e2a30cedf172c19b6344464f0eb6",
+      "registered_images": 59,
+      "source_cameras_sha256": "8be3194a4cd0c3fbbf3cc1648e6cdc7bee357276215cb132ebbfda8f5e32b41d",
+      "source_images_sha256": "1f202254fa69641bd2b99b78e1a861ab5facdd7effad74563c9f79955889f8fd",
+      "source_model": "work/A_current_sidecar_01/model",
+      "source_model_rgb_all_zero": true,
+      "source_points3D_sha256": "6ac680e8f84a9109eb21543de627b6f87568893b3d30b348af72291d2a900132",
+      "true_color_nonblack_vertices": 20407,
+      "true_color_unique_rgb": 14726,
+      "vertices": 20407
+    },
+    "B1": {
+      "ply": "data/B1_raw_aligned_to_A.ply",
+      "ply_sha256": "cead6cf781cfae27b68e3fef854176137bf2ec86fbf63191c025b849bdbfb207",
+      "registered_images": 57,
+      "source_cameras_sha256": "b84472bbba9736c25a2d42b953eb785db18ed1cb6e2fa04f68b58a3337caab8f",
+      "source_images_sha256": "1ae4aa9e368a1bb48a2bec611a3e4963f34bfcbf4e97cf8c3d60e9b3a769d4cd",
+      "source_model": "work/B1_contract_smoke_01/model",
+      "source_model_rgb_all_zero": true,
+      "source_points3D_sha256": "dc0a2c7d0a1e0877f0cba01833c833917a3bc3d1354e3fa6cef1bf4a7a50fea8",
+      "true_color_nonblack_vertices": 20348,
+      "true_color_unique_rgb": 14577,
+      "vertices": 20348
+    }
+  },
+  "b1_transform": "camera_center_sim3_to_A",
+  "color_source": {
+    "archive_first_frame": "official_tap-12.jpg",
+    "archive_last_frame": "official_tap-724.jpg",
+    "capture_id": "cap_1786546115077820",
+    "decode": "ffmpeg_9.0.1_hevc_to_lossless_png_payload",
+    "extraction": "pycolmap_extract_colors_for_all_images_mean",
+    "fed_frames_sha256": "4769b6e0e8e3a27985c89d49e4c4e9988a08113a31bf563e65d398967f13432e",
+    "frame_count": 60,
+    "hevc_manifest_sha256": "50a97f12a34384b73383d2c75bc9bb9b4c7038a0fc14ed1ee33ed6a823e357e3",
+    "hevc_sha256": "d3254c0868fd09a772cd22477d14b431bb047a6dada7787f8c870bddd33c7512",
+    "master_manifest_sha256": "b68612fcab2d54fb8ae3f0d29ef5b5f0d86fd878c34e4afbe3d10f66df7b7fb0",
+    "photo_bundle_sha256": "e423ebcd601207607cb8abe4b4beee7f9c51b53e45e898b802d9681b0ac8cd5d",
+    "resolution": [
+      4032,
+      3024
+    ]
+  },
+  "diagnostic_metrics_not_ground_truth": {
+    "camera_center_median_m": 0.00213900309323,
+    "rotation_median_deg": 0.137239179963404,
+    "sparse_fscore_2_5cm": 0.989365979428217
+  },
+  "experiment_id": "arkit_pose_solver_input_ab_20260821_host_smoke_v2",
+  "filtering": false,
+  "plotly_js": "3.6.0_inline_from_plotly_python_6.8.0",
+  "ply_rgb": "capture_hevc_mean_over_track_observations",
+  "ranges": {
+    "x": [
+      -1.8855915900120161,
+      2.2745079295259485
+    ],
+    "y": [
+      -3.282471026157433,
+      0.8776284933805314
+    ],
+    "z": [
+      -3.6635909698344316,
+      0.49650854970353264
+    ]
+  },
+  "schema": "pw_ab_true_color_ply_viewer_v2",
+  "sim3": {
+    "common_cameras": 57,
+    "matrix_3x4": [
+      [
+        -0.005718096224782622,
+        -0.1671077157287344,
+        0.00750887071354695,
+        0.21855137085149579
+      ],
+      [
+        -0.14681616768080746,
+        0.001413018261147615,
+        -0.08035598737380331,
+        -0.06131793799670872
+      ],
+      [
+        0.0801647347840015,
+        -0.009331834933296843,
+        -0.14663083091114418,
+        -0.16626984001146447
+      ]
+    ],
+    "max_proj_center_error_argument": 0.1,
+    "scale": 0.16737403747267415
+  },
+  "synthetic_colors": false
+}

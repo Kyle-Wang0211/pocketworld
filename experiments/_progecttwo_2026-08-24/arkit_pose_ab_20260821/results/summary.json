@@ -1,0 +1,129 @@
+{
+  "schema": "pw_pose_solver_ab_result_v1",
+  "experiment_id": "arkit_pose_solver_input_ab_20260821_host_smoke_v2",
+  "recorded_at": "2026-08-21T14:10:00+08:00",
+  "verdict": {
+    "b1_converged": true,
+    "b1_gross_gate": "pass",
+    "quality_noninferiority": "not_formally_established",
+    "coverage_regression": true,
+    "strict_total_slowdown": "unresolved",
+    "vendor_neutral_t0_complete": false,
+    "short": "B1 converges with near-A geometry but loses two additional weak frames."
+  },
+  "frozen_identity": {
+    "capture_id": "cap_1786546115077820",
+    "input_database_sha256": "6b7ec9ed765645e95c95df69d304c4e73321b0eac538e223463851fc9c5dcaf2",
+    "input_frames": 60,
+    "official_core_sha256": "9e254f4d52860d4cfd48bdaf0ca8df74a500d85794c19de44cd1390ecbb1d16c",
+    "host_core_archive_sha256": "3f356211a80fee5f02a776a99fb04907bbd4b18f6bd88a03bd162e47d1eb4f07",
+    "ab_runner_sha256": "d63188d925dc61f808ed6574ccd6d1f5cc655eaa4c335c606fe788474a830f07",
+    "ab_executable_sha256": "7567870bb6308e46841f3288ec3292b713306adcb8f9477f55d539ab543e6745",
+    "current_compatible_sidecar_sha256": "1f4e30395cacb787617d27eb512a2c47efe3fa99da39243c5517d9176edaec1d"
+  },
+  "main_same_initial_graph": {
+    "scope": "same cameras, images, keypoints, descriptors and 565-edge TVG; different supported solver APIs",
+    "A_known_pose_repeats": [
+      {
+        "run": "A_current_sidecar_01",
+        "registered": 59,
+        "raw_points": 20407,
+        "track3plus": 7376,
+        "observations": 65328,
+        "reprojection_px": 1.099154,
+        "wall_ms": 35890.297
+      },
+      {
+        "run": "A_current_sidecar_02",
+        "registered": 59,
+        "raw_points": 20407,
+        "track3plus": 7376,
+        "observations": 65328,
+        "reprojection_px": 1.099154,
+        "wall_ms": 36030.760
+      }
+    ],
+    "B1_visual_repeats": [
+      {
+        "run": "B1_contract_smoke_01",
+        "registered": 57,
+        "raw_points": 20348,
+        "track3plus": 7034,
+        "observations": 65749,
+        "reprojection_px": 1.091523,
+        "wall_ms": 7244.661,
+        "gravity_hits": 0
+      },
+      {
+        "run": "B1_contract_smoke_02",
+        "registered": 57,
+        "raw_points": 20355,
+        "track3plus": 7023,
+        "observations": 65788,
+        "reprojection_px": 1.091572,
+        "wall_ms": 7281.598,
+        "gravity_hits": 0
+      }
+    ],
+    "median_comparison_B1_vs_A": {
+      "registered_A_fraction": 0.9833333333,
+      "registered_B1_fraction": 0.95,
+      "registered_delta_percentage_points": -3.3333333333,
+      "raw_points_delta_percent": -0.271966,
+      "track3plus_delta_percent": -4.711226,
+      "observations_delta_percent": 0.674290,
+      "reprojection_delta_percent": -0.692032,
+      "B1_wall_ms": 7263.1295,
+      "A_restore_wall_ms": 35960.5285,
+      "runtime_warning": "A restore wall time is dominated by an unmatched 35-second CPU enrichment budget and is not a clean pose-on solver clock."
+    }
+  },
+  "sim3_diagnostics_against_A_not_ground_truth": {
+    "common_images": 57,
+    "rotation_median_degrees_median_of_runs": 0.1372392,
+    "rotation_p90_degrees_median_of_runs": 0.4746764,
+    "projection_center_median_m_median_of_runs": 0.002139,
+    "projection_center_p90_m_median_of_runs": 0.00566733,
+    "sparse_cloud_symmetric_chamfer_l1_m_median_of_runs": 0.003916755523,
+    "sparse_cloud_fscore_1cm_median_of_runs": 0.951556512831,
+    "sparse_cloud_fscore_2_5cm_median_of_runs": 0.989365979429,
+    "sparse_cloud_fscore_5cm_median_of_runs": 0.997607651303,
+    "status": "post_hoc_diagnostic"
+  },
+  "missing_frames": {
+    "A": ["frame_000059.jpg"],
+    "B1": ["frame_000038.jpg", "frame_000040.jpg", "frame_000059.jpg"],
+    "graph_evidence": {
+      "frame_000038.jpg": {"tvg_edges": 4, "total_inliers": 92, "max_edge_inliers": 44},
+      "frame_000040.jpg": {"tvg_edges": 3, "total_inliers": 82, "max_edge_inliers": 46},
+      "frame_000059.jpg": {"tvg_edges": 0, "total_inliers": 0, "max_edge_inliers": 0}
+    }
+  },
+  "production_A_and_time_accounting": {
+    "A_official_replay_median": {
+      "registered": 59,
+      "raw_points": 21625,
+      "stream_ms": 8304.85,
+      "finalize_ms": 3271.85,
+      "total_ms": 11576.75
+    },
+    "B1_visual_solver_median_ms": 7263.1295,
+    "B1_solver_over_A_finalize_ratio": 2.219884622,
+    "B1_solver_extra_vs_A_finalize_ms": 3991.2795,
+    "counterfactual_same_upstream_total_ms": 15567.9795,
+    "counterfactual_total_ratio_vs_A": 1.344762520,
+    "counterfactual_not_measured": true
+  },
+  "pose_off_checks": {
+    "sidecar_absent_before_and_after_B1": true,
+    "pose_priors_rows": 0,
+    "gravity_registry_hits": 0,
+    "empty_image_path": true,
+    "final_contract_verification": "pass"
+  },
+  "residual_vendor_leakage": [
+    "The 565-edge TVG inlier graph was created by the capture-time mandatory-gravity pipeline.",
+    "This is B1 solver pose-off, not B2 pose-independent front-end and not B3 ARKit-session-off capture."
+  ],
+  "next_decision": "Proceed to B2: make keyframe selection, pairing and TVG pose-independent, first targeting low-connectivity frames 38 and 40; keep A frozen as the comparison baseline."
+}

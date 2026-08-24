@@ -1,0 +1,136 @@
+schema: pw_experiment_contract_amendment_v1
+amends_sha256: c0e9e37b24a835a74abaf254f2d532d74c071af6e5cd8c1c41e4d030c44ea625
+experiment_id: arkit_pose_solver_input_ab_20260821_host_smoke_v2
+created_at: "2026-08-21T13:20:00+08:00"
+
+reason:
+  verdict_on_v1: invalid_before_execution
+  blockers:
+    - >-
+      The frozen streaming API rejects null pose before writing a frame, so
+      pose_off.jsonl would test an ABI guard rather than visual SfM convergence.
+    - >-
+      The archived database is pw_database_prune_v2 and has zero descriptors;
+      the v1 replay driver therefore skips all 60 frames in both arms.
+  preserved_evidence:
+    - v1 files and hashes remain immutable
+    - no v1 arm result may be reported as an SfM convergence result
+
+question: >-
+  On the same frozen cameras, images, keypoints and two-view inlier graph, does
+  the current official visual mapper converge without reading per-frame ARKit
+  pose or gravity, and how does its output compare with the current known-pose
+  restore/refine path?
+
+scope:
+  classification: B1_solver_pose_off_smoke
+  proves_if_successful:
+    - current official visual mapper can register this 60-frame graph without absolute vendor pose
+    - raw reconstruction quality and host diagnostic runtime for both supported solver paths
+  does_not_prove:
+    - identical streaming-call single-variable causality
+    - strict A/B runtime ratio against the archived device run
+    - B2 pose-independent keyframe selection, pairing, or TVG estimation
+    - B3 capture with the ARKit session disabled
+    - native metric scale from monocular vision
+  residual_vendor_leakage:
+    - the frozen TVG inlier graph was produced by the capture-time mandatory-gravity estimator
+
+frozen_inputs:
+  capture_id: cap_1786546115077820
+  full_db_source_path: /Users/kaidongwang/Documents/progecttwo/_host_experiments/live_lba_three_arms_20260810/input/cap_1786546115077820/official_sfm_live.db
+  full_db_bytes: 67506176
+  full_db_sha256: 6b7ec9ed765645e95c95df69d304c4e73321b0eac538e223463851fc9c5dcaf2
+  compressed_db_sha256: 7926d1410cce15312dd66a8eac2955ce2da35517fcd92467c695a9ea9e6c7bc0
+  archived_pruned_db_sha256: 616dada6aea306a0557e1597b1e39b7294efacd62a4a897bfaf9ebc448aa160d
+  initial_db_sha256: 6b7ec9ed765645e95c95df69d304c4e73321b0eac538e223463851fc9c5dcaf2
+  pose_sidecar_sha256: 69cae7a047a084e483f48a6d6231a51e03163505230361e6614e64dc799dbd76
+  prune_manifest_sha256: 27f2786235f580c3be1a70c83d974d69eff70c68ef6d267b7d3d9ed50bb4bab9
+  archived_A_meta_sha256: 469098c44f1f42149a65610090aea01569da15e7c5fb5a43e2b738d55d21ab0c
+  archived_A_ply_sha256: e8be1c84bece7da31660aedea4238352194fcd0842876382516864aa9050a047
+
+frozen_code:
+  official_core_sha256: 9e254f4d52860d4cfd48bdaf0ca8df74a500d85794c19de44cd1390ecbb1d16c
+  official_header_sha256: 3dd3fde274a7c6860924168d796cd8b0f5c3b0fd94c5a606021567ca1186c6d4
+  official_ba_sha256: 495ebb906c818ca00900392f3edd1a79402319d3de35ba45de139808dab65d36
+  cmake_sha256: 0a7f1e00d94a6016b16f6f96c43c570b34ea8de378539f1ebdb374ee179fa11c
+  host_core_archive_sha256: 3f356211a80fee5f02a776a99fb04907bbd4b18f6bd88a03bd162e47d1eb4f07
+  host_runner: tools/official_pose_solver_ab_runner.cc
+  host_runner_sha256: d63188d925dc61f808ed6574ccd6d1f5cc655eaa4c335c606fe788474a830f07
+  executable_sha256: 7567870bb6308e46841f3288ec3292b713306adcb8f9477f55d539ab543e6745
+  contract_test_sha256: c20a008c68d323305e6a4eb2ea8822f21c8c07d92b9fac32a86ddb0275327376
+
+arms:
+  A:
+    label: known_pose_restore_refine
+    initial_db: independent byte-identical copy
+    pose_sidecar: required at <db>.arkit_pose_v1
+    api: aether_sfm_create_then_aether_sfm_finalize
+  B1:
+    label: visual_incremental_mapper
+    initial_db: independent byte-identical copy
+    pose_sidecar: forbidden
+    pose_priors_rows: 0
+    api: aether_sfm_run_with_empty_image_path
+    gravity_registry_hits_after_run: 0
+
+preflight:
+  database:
+    images: 60
+    keypoint_images: 60
+    keypoint_rows: 422190
+    keypoint_cols: 6
+    descriptor_images: 60
+    descriptor_rows: 422190
+    descriptor_cols: 128
+    matches: 565
+    two_view_geometries: 565
+    pose_priors: 0
+    integrity_check: ok
+  source_is_immutable: true
+  each_arm_uses_a_fresh_unique_directory: true
+  environment: /usr/bin/env_-i_allowlist_only
+
+primary_metrics:
+  - exit_code
+  - registered_images
+  - raw_points3d
+  - raw_track3plus
+  - raw_observations
+  - mean_reprojection_px
+  - solver_wall_ms
+  - gravity_registry_hits
+  - raw_model_artifact_integrity
+
+gates:
+  A_valid:
+    - exit_code == 0
+    - registered_images >= 57
+    - raw_points3d > 0
+  B1_gross_convergence:
+    - exit_code == 0
+    - registered_images >= 48
+    - raw_points3d > 0
+    - gravity_registry_hits == 0
+    - no pose sidecar exists before or after the run
+  interpretation:
+    - reprojection error is internal consistency, not ground-truth accuracy
+    - pose/cloud comparison requires camera-derived Sim3 alignment
+    - runtime is diagnostic until a full-descriptor capture enables strict repeated pairing
+
+execution:
+  order: [A1, B1_1, B1_2, A2]
+  proceed_to_repeats_only_if: A1_and_B1_1_pass_their_validity_gates
+  reducer: report_each_run_and_the_median_per_arm
+  inconsistent_repeats: unstable_inconclusive
+  max_concurrent: 1
+
+stop_conditions:
+  - any frozen input or code hash mismatch
+  - database preflight mismatch
+  - runner RED test does not fail before implementation
+  - runner build fails or changes the official core source
+  - A1 fails its validity gate
+  - B1 creates or requires an ARKit sidecar
+  - B1 records any gravity registry hit
+  - any exported model file is absent, empty, or unreadable by COLMAP model_analyzer

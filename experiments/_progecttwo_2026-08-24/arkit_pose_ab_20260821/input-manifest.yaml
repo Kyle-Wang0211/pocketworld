@@ -1,0 +1,29 @@
+schema: pw_input_manifest_v1
+capture_id: cap_1786546115077820
+source_root: /Users/kaidongwang/pw_device_backups/20260817_pre_install/Documents/captures_official/cap_1786546115077820
+ordered_frames: 60
+image_geometry: 4032x3024
+files:
+  - role: compressed_source_database
+    path: official_sfm_live.db.zpaq
+    sha256: 7926d1410cce15312dd66a8eac2955ce2da35517fcd92467c695a9ea9e6c7bc0
+  - role: uncompressed_source_database_expected
+    path: official_sfm_live.db
+    sha256: 616dada6aea306a0557e1597b1e39b7294efacd62a4a897bfaf9ebc448aa160d
+  - role: A_pose_input
+    path: official_sfm_fed_frames.jsonl
+    sha256: 4769b6e0e8e3a27985c89d49e4c4e9988a08113a31bf563e65d398967f13432e
+  - role: archived_pose_sidecar
+    path: official_sfm_live.db.arkit_pose_v1
+    sha256: 69cae7a047a084e483f48a6d6231a51e03163505230361e6614e64dc799dbd76
+  - role: prior_A_result_metadata
+    path: official_sfm_sparse_meta.json
+    sha256: 469098c44f1f42149a65610090aea01569da15e7c5fb5a43e2b738d55d21ab0c
+prior_A_result:
+  refined: true
+  n_registered: 60
+  n_points3d: 21573
+  delivered_points: 19574
+  reproj_px: 1.2351
+  track_len: 3.277
+
