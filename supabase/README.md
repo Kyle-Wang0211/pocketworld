@@ -17,7 +17,7 @@ understand why something is the way it is — start here.
 3. [RLS philosophy](#rls-philosophy)
 4. [Schema overview (26 tables)](#schema-overview)
 5. [Storage buckets (4)](#storage-buckets)
-6. [Edge Functions (13)](#edge-functions)
+6. [Edge Functions (14)](#edge-functions)
 7. [pg_cron jobs](#pg_cron-jobs)
 8. [Deployment](#deployment)
 9. [Migrating off Supabase](#migrating-off-supabase)
@@ -384,7 +384,7 @@ supabase link --project-ref <YOUR_PROJECT_REF>
 cd pocketworld_flutter
 supabase db push
 
-# 4. Deploy Edge Functions — ALL THIRTEEN.
+# 4. Deploy Edge Functions — ALL FOURTEEN.
 #    An earlier version of this list had only the four auth functions, which
 #    silently produced a project whose thumbnail upload path 404s.
 #
@@ -418,6 +418,11 @@ supabase functions deploy admin-moderate-work   --no-verify-jwt --project-ref <R
 # admin-approve-work 是"先审后发"的放行端(under_review → ok + 补 published_at)。
 # 与 admin-moderate-work 同样按 service secret 鉴权,所以同样需要 --no-verify-jwt。
 supabase functions deploy admin-approve-work    --no-verify-jwt --project-ref <REF>
+
+# admin-reports 是举报的**受理端**(第九条)。在它之前 reports 表有行、App 里
+# 有举报入口,但**没有任何路径读它** —— 举报等于扔进黑洞。
+# 同样按 service secret 鉴权,同样需要 --no-verify-jwt。
+supabase functions deploy admin-reports         --no-verify-jwt --project-ref <REF>
 
 # report-region 写 profiles.last_region(第十二条 IP 属地)。普通用户 JWT 鉴权,
 # 不需要 --no-verify-jwt。
@@ -658,3 +663,63 @@ node tool/import_ip2region.mjs
 而不是 `$proxy_add_x_forwarded_for`(追加)—— 后者会把客户端自己塞的值
 留在第一位,属地就能被任意伪造,这个展示也就等于没做。
 细节见 `supabase/functions/_shared/client_region.ts` 的注释。
+
+
+---
+
+## 审核台(tool/moderation_console.html)
+
+先审后发的**人这一端**。双击那个 html 用浏览器打开即可,`file://` 就行 ——
+Edge Function 的 CORS 是 `Allow-Origin: *`,不需要起服务器。
+
+### 🔴 为什么它不是 App 里的一个页面
+
+`admin-approve-work` / `admin-moderate-work` / `admin-reports` 三个端都用
+**service secret** 鉴权,那把钥匙绕过所有 RLS,能读写整个数据库。
+放进 Flutter 客户端 = 把数据库钥匙发给每一个用户 —— 哪怕藏在隐藏入口后面,
+App 二进制里的字符串是能被 dump 出来的。审核台必须留在你自己的机器上。
+
+### 🔴 密钥从哪来 —— CLI 给不了
+
+`supabase projects api-keys` 返回的 `sb_secret_*` 是**打过码的**:
+2026-08-24 实测,它是 `sb_secret_hk1s-` 后面跟 26 个 U+00B7 中点(共 41 字符、
+67 字节)。`masked` 字段现在**不出现**在 JSON 里,所以按字段判断会以为它没打码
+—— 要看值本身。CLI 的 219 字符 legacy service_role JWT 能通过平台网关、
+但过不了 `isAdminRequest`(本项目环境里的 `SUPABASE_SERVICE_ROLE_KEY`
+已经是新格式 secret),实测返回 `{"error":"forbidden"}`。
+
+⇒ 真正的密钥只能从 Dashboard 拿:
+**Project Settings → API Keys → Secret keys → 复制 `default`**
+
+密钥只存这个标签页的 `sessionStorage`,关掉就没了。
+**不要把它写进那个 html —— 那个文件是进 git 的。**
+
+### 两个队列
+
+| Tab | 数据源 | 动作 |
+|-----|--------|------|
+| 待审队列 | `admin-approve-work` `{action:'list'}` | 通过 → `approve`;驳回 → `admin-moderate-work` `status:'removed'` |
+| 举报队列 | `admin-reports` `{action:'list'}` | 下架并结案(两次调用);驳回举报 → `resolve` `status:'dismissed'` |
+
+驳回和驳回举报都**强制要求写理由** —— 它进 `audit_logs`,是第九条"受理"义务的
+证据,也是作者申诉时的依据。
+
+「下架并结案」刻意是**两次调用**而不是一个原子操作:下架会搬文件、可能部分
+失败,和结案绑在一个事务里只会产生"结案了但文件没搬走"这种没人发现的中间态。
+顺序是先下架(会动文件的那一步),成功了再结案。
+
+### ⚠️ 已知局限
+
+审核台只给一张**缩略图**加一个模型下载链接。审的是 3D 内容,单一视角的缩略图
+不足以判断整个点云里有什么 —— 拿不准的必须下载下来用查看器打开。
+在浏览器里内联渲染 PLY 是下一步的事,不要因为"有缩略图了"就当成看过了。
+
+### 验证状态
+
+已验证:三个端都能部署;错 secret → 403;legacy JWT → 403(证明鉴权确实在拦);
+`decorate()` / `attachTargets()` 里的每一条查询都用探针数据在生产库跑通
+(列名、`profiles` 的 `in` 查询、两个桶的签名 URL 各自成功,探针已删干净)。
+
+⚠️ **未验证**:带正确 secret 的完整端到端调用 —— 那个 secret 只在 Dashboard 里,
+我拿不到。你第一次打开审核台粘贴密钥的那一刻就是这个测试。
+如果 403,先看上面「密钥从哪来」那一节,别去改代码。

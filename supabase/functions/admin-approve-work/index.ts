@@ -62,7 +62,10 @@ Deno.serve(async (req) => {
   if (action === 'list') {
     const { data, error } = await admin
       .from('works')
-      .select('id, user_id, title, description, format, file_size_bytes, created_at')
+      .select(
+        'id, user_id, title, description, format, file_size_bytes, created_at, ' +
+        'visibility, publish_region, model_storage_path, thumbnail_storage_path',
+      )
       .eq('moderation_status', 'under_review')
       .is('published_at', null)
       .order('created_at', { ascending: true })
@@ -70,7 +73,14 @@ Deno.serve(async (req) => {
     if (error) {
       return jsonResponse({ error: 'list_failed', detail: error.message }, 500);
     }
-    return jsonResponse({ ok: true, pending: data ?? [], count: data?.length ?? 0 });
+    // supabase-js 的 select 返回类型是联合(成功行 | GenericStringError),
+    // 上面已经 return 掉了 error 分支,这里断言收窄。
+    const rows = (data ?? []) as unknown as Record<string, unknown>[];
+    return jsonResponse({
+      ok: true,
+      pending: await decorate(admin, rows),
+      count: rows.length,
+    });
   }
 
   if (action !== 'approve') {
@@ -156,4 +166,73 @@ function firstIp(raw: string | null): string | null {
   if (!raw) return null;
   const first = raw.split(',')[0]?.trim();
   return first && first.length > 0 ? first : null;
+}
+
+
+/// 给待审行补上"人要看的东西":作者身份 + 可打开的缩略图/模型链接。
+///
+/// 🔴 模型链接**必须**服务端签名:`works` 是私有桶(public=false),而且
+///    20260817011000 之后它的读策略还要求 moderation_status 干净 ——
+///    待审作品**按定义**过不了那一关(那正是"先审后发"在生效的证据)。
+///    公开 URL 对待审模型必然读不到,签名 URL 走 service_role 绕开 RLS,
+///    这是审核台唯一能看见待审内容的方式。
+///
+/// ⚠️ 缩略图是另一回事,别把上面那套理由套过去:`thumbnails` 是公开桶,
+///    策略就一句 `using (bucket_id = 'thumbnails')` —— **没有任何审核门**。
+///    所以待审作品的缩略图用公开 URL 其实读得到。这里仍然签名,纯粹是为了
+///    两条链路走同一套代码,不是为了绕权限。
+///    (2026-08-24 实测:对一个 ok 作品的缩略图走 /object/public/ 返回 200。
+///     路径是 `{uid}/{work_id}.{ext}` 两个 uuid,不可枚举,而且客户端拿不到
+///     待审行也就拿不到路径 —— 所以不是可利用的洞,只是一句要说准的话。
+///     另外查过:下架时 admin-moderate-work **会**把 thumbnails 一起搬进
+///     quarantine,所以"下架后封面还公开挂着"那个洞不存在。)
+///
+/// 签名有效期 1 小时:够审完一批,又不会变成长期外泄的链接。
+async function decorate(
+  // deno-lint-ignore no-explicit-any
+  admin: any,
+  rows: Record<string, unknown>[],
+): Promise<Record<string, unknown>[]> {
+  if (rows.length === 0) return [];
+
+  // 作者身份。单独一次 in 查询,不用 PostgREST 的嵌套 select ——
+  // works 到 profiles 没有声明外键关系,嵌套语法会直接报错。
+  const ids = [...new Set(rows.map((r) => r.user_id as string))];
+  const { data: profiles } = await admin
+    .from('profiles')
+    .select('id, display_name, handle, last_region')
+    .in('id', ids);
+  const byId = new Map<string, Record<string, unknown>>(
+    (profiles ?? []).map((p: Record<string, unknown>) => [p.id as string, p]),
+  );
+
+  const sign = async (bucket: string, path: unknown): Promise<string | null> => {
+    if (typeof path !== 'string' || path.length === 0) return null;
+    try {
+      const { data, error } = await admin.storage
+        .from(bucket)
+        .createSignedUrl(path, 3600);
+      if (error) {
+        // 文件不在(缩略图是 best-effort 上传,可能压根没传成)不是错误。
+        console.warn(`[decorate] sign ${bucket}/${path} failed:`, error.message);
+        return null;
+      }
+      return data?.signedUrl ?? null;
+    } catch (e) {
+      console.warn(`[decorate] sign ${bucket}/${path} threw:`, String(e));
+      return null;
+    }
+  };
+
+  return await Promise.all(rows.map(async (r) => {
+    const p = byId.get(r.user_id as string);
+    return {
+      ...r,
+      author_display_name: p?.display_name ?? null,
+      author_handle: p?.handle ?? null,
+      author_region: p?.last_region ?? null,
+      thumb_url: await sign('thumbnails', r.thumbnail_storage_path),
+      model_url: await sign('works', r.model_storage_path),
+    };
+  }));
 }

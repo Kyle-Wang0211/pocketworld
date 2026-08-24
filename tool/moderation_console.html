@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>方寸间 · 审核台</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!--
+  方寸间审核台 —— 只在你自己机器上跑的本地页面。
+  ===================================================================
+  用法:双击本文件用浏览器打开(file:// 即可,不需要起服务器 ——
+        Edge Function 的 CORS 是 Allow-Origin: *)。
+
+  🔴 为什么这不是 App 里的一个页面
+     admin-approve-work / admin-moderate-work / admin-reports 三个端都用
+     **service secret** 鉴权,那把钥匙绕过所有 RLS,能读写整个数据库。
+     把它放进 Flutter 客户端 = 把数据库钥匙发给每一个用户 —— 哪怕藏在
+     隐藏入口后面,App 二进制里的字符串是能被 dump 出来的。
+     所以审核台必须留在你自己的机器上。
+
+  🔴 secret 存 sessionStorage,不是 localStorage
+     关掉标签页就没了。localStorage 会一直留在磁盘上,而这台机器上还跑着
+     浏览器扩展、别的标签页。**永远不要把 secret 写进这个文件再提交。**
+
+  🔴 全部用 textContent / createElement 渲染,一处 innerHTML 都没有
+     这不是洁癖:审核台渲染的正是**敌意用户提交的文本**(标题、描述、
+     举报详情),而这个页面手里握着 service secret。一次 innerHTML 就是
+     "把数据库钥匙交给被举报的那个人"。审核台是全项目最不能用 innerHTML
+     的地方。
+-->
+<style>
+  :root {
+    --bg:#f6f6f7; --card:#fff; --fg:#1a1a1c; --dim:#6b6b70; --line:#e3e3e6;
+    --accent:#2563eb; --ok:#15803d; --danger:#b91c1c; --warn:#a16207;
+    --chip:#f0f0f2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#151517; --card:#1e1e21; --fg:#eaeaec; --dim:#9b9ba1; --line:#313136;
+      --accent:#60a5fa; --ok:#4ade80; --danger:#f87171; --warn:#fbbf24;
+      --chip:#2a2a2f;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font:14px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",sans-serif}
+  header{position:sticky;top:0;z-index:10;background:var(--card);
+    border-bottom:1px solid var(--line);padding:12px 20px}
+  h1{margin:0 0 8px;font-size:16px;font-weight:700}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  input,button,textarea{font:inherit;color:var(--fg);background:var(--card);
+    border:1px solid var(--line);border-radius:8px;padding:7px 11px}
+  input{min-width:240px}
+  input:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
+  button{cursor:pointer;background:var(--chip);border-color:transparent;font-weight:600}
+  button:hover:not(:disabled){filter:brightness(1.08)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  button.primary{background:var(--accent);color:#fff}
+  button.ok{background:var(--ok);color:#fff}
+  button.danger{background:var(--danger);color:#fff}
+  .tabs{display:flex;gap:4px;margin-top:10px}
+  .tabs button{border-radius:8px 8px 0 0;background:transparent;
+    border-bottom:2px solid transparent;padding:7px 14px}
+  .tabs button[aria-selected=true]{border-bottom-color:var(--accent);color:var(--accent)}
+  main{padding:20px;max-width:1100px;margin:0 auto}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+    padding:14px;margin-bottom:14px;display:flex;gap:14px}
+  .thumb{width:132px;height:132px;flex:0 0 132px;border-radius:8px;
+    background:var(--chip);object-fit:cover;display:block}
+  .thumb.empty{display:flex;align-items:center;justify-content:center;
+    color:var(--dim);font-size:12px;text-align:center;padding:8px}
+  .body{flex:1;min-width:0}
+  .title{font-size:15px;font-weight:700;margin:0 0 3px;word-break:break-word}
+  .desc{color:var(--dim);margin:6px 0;white-space:pre-wrap;word-break:break-word}
+  .meta{color:var(--dim);font-size:12px;display:flex;gap:6px;flex-wrap:wrap;
+    margin:6px 0}
+  .chip{background:var(--chip);border-radius:5px;padding:1px 7px;
+    font-variant-numeric:tabular-nums}
+  .acts{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center}
+  .acts textarea{flex:1;min-width:200px;min-height:34px;height:34px;resize:vertical}
+  .empty-state,.msg{color:var(--dim);padding:28px;text-align:center}
+  .msg.err{color:var(--danger)}
+  .banner{background:var(--chip);border-left:3px solid var(--warn);
+    border-radius:0 8px 8px 0;padding:10px 14px;margin-bottom:16px;
+    color:var(--dim);font-size:13px}
+  a{color:var(--accent)}
+  code{background:var(--chip);border-radius:4px;padding:1px 5px;font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>方寸间 · 审核台 <span style="font-weight:400;color:var(--dim);font-size:13px">本地工具，切勿部署</span></h1>
+  <div class="row">
+    <input id="url" placeholder="https://<ref>.supabase.co" autocomplete="off">
+    <input id="secret" type="password" placeholder="service secret（sb_secret_…）" autocomplete="off">
+    <button class="primary" id="load">载入</button>
+    <button id="forget">忘掉密钥</button>
+    <span id="status" style="color:var(--dim);font-size:12px"></span>
+  </div>
+  <div class="tabs" role="tablist">
+    <button role="tab" id="tab-pending" aria-selected="true">待审队列</button>
+    <button role="tab" id="tab-reports" aria-selected="false">举报队列</button>
+  </div>
+</header>
+<main>
+  <div class="banner">
+    密钥只存在这个标签页的 sessionStorage 里，关掉就没了。
+    在 Dashboard → Project Settings → API Keys → Secret keys 复制 <code>default</code>。
+    <b>不要把它写进这个文件</b>——这个文件是进 git 的。
+  </div>
+  <div id="list"></div>
+</main>
+<script>
+'use strict';
+
+const DEFAULT_URL = 'https://tzvwkqmgaourwqrmxbyb.supabase.co';
+const $ = (id) => document.getElementById(id);
+const state = { tab: 'pending', busy: false };
+
+// ── 密钥:只进 sessionStorage ────────────────────────────────────────
+const SS = window.sessionStorage;
+$('url').value = SS.getItem('pw_url') || DEFAULT_URL;
+$('secret').value = SS.getItem('pw_secret') || '';
+
+function creds() {
+  const url = $('url').value.trim().replace(/\/+$/, '');
+  const secret = $('secret').value.trim();
+  if (url) SS.setItem('pw_url', url);
+  if (secret) SS.setItem('pw_secret', secret);
+  return { url, secret };
+}
+
+$('forget').onclick = () => {
+  SS.removeItem('pw_secret');
+  $('secret').value = '';
+  setStatus('密钥已清除');
+};
+
+function setStatus(text, isErr) {
+  const el = $('status');
+  el.textContent = text;                        // textContent,不是 innerHTML
+  el.style.color = isErr ? 'var(--danger)' : 'var(--dim)';
+}
+
+/// 调管理端。所有三个端都是 POST + Bearer <secret> + JSON body。
+async function call(fn, payload) {
+  const { url, secret } = creds();
+  if (!url || !secret) throw new Error('先填 URL 和 secret');
+  const res = await fetch(`${url}/functions/v1/${fn}`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${secret}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  let json = null;
+  try { json = await res.json(); } catch { /* 非 JSON 响应,下面按状态码报错 */ }
+  if (!res.ok) {
+    // 403 几乎总是同一个原因,直接把答案写出来,别让人去猜。
+    const hint = res.status === 403
+      ? '(403 = secret 不对。CLI 的 service_role JWT 不是这个值，'
+        + '要去 Dashboard → API Keys → Secret keys 复制 default)'
+      : '';
+    throw new Error(`${fn} ${res.status} ${json?.error || ''} ${hint}`.trim());
+  }
+  return json;
+}
+
+// ── 渲染助手 ────────────────────────────────────────────────────────
+// 🔴 el() 只接受 textContent。整个文件没有一处 innerHTML —— 见文件头注释:
+//    这个页面渲染敌意文本,同时握着 service secret。
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = String(text);
+  return n;
+}
+function chips(parent, pairs) {
+  const m = el('div', 'meta');
+  for (const [k, v] of pairs) {
+    if (v == null || v === '') continue;
+    m.appendChild(el('span', 'chip', `${k} ${v}`));
+  }
+  parent.appendChild(m);
+  return m;
+}
+function thumb(url, alt) {
+  if (!url) return el('div', 'thumb empty', '无缩略图');
+  const img = document.createElement('img');
+  img.className = 'thumb';
+  img.src = url;                 // 签名 URL,由服务端生成
+  img.alt = alt || '';
+  img.loading = 'lazy';
+  img.onerror = () => img.replaceWith(el('div', 'thumb empty', '缩略图加载失败'));
+  return img;
+}
+function mb(bytes) {
+  const n = Number(bytes);
+  return Number.isFinite(n) && n > 0 ? `${(n / 1e6).toFixed(1)} MB` : null;
+}
+function when(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? null : d.toLocaleString('zh-CN');
+}
+function modelLink(url) {
+  if (!url) return null;
+  const a = el('a', null, '下载模型文件');
+  a.href = url;
+  a.target = '_blank';
+  a.rel = 'noopener noreferrer';
+  a.style.fontSize = '12px';
+  return a;
+}
+
+function render(nodes) {
+  const list = $('list');
+  list.textContent = '';
+  if (nodes.length === 0) {
+    list.appendChild(el('div', 'empty-state', '队列是空的。'));
+    return;
+  }
+  for (const n of nodes) list.appendChild(n);
+}
+function showMsg(text, isErr) {
+  const list = $('list');
+  list.textContent = '';
+  list.appendChild(el('div', isErr ? 'msg err' : 'msg', text));
+}
+
+// ── 待审队列 ────────────────────────────────────────────────────────
+async function loadPending() {
+  showMsg('载入中…');
+  const r = await call('admin-approve-work', { action: 'list' });
+  setStatus(`待审 ${r.count} 件`);
+  render((r.pending || []).map(pendingCard));
+}
+
+function pendingCard(w) {
+  const card = el('div', 'card');
+  card.appendChild(thumb(w.thumb_url, w.title));
+
+  const body = el('div', 'body');
+  body.appendChild(el('h2', 'title', w.title || '(无标题)'));
+  if (w.description) body.appendChild(el('div', 'desc', w.description));
+
+  chips(body, [
+    ['作者', w.author_handle ? '@' + w.author_handle : (w.author_display_name || w.user_id)],
+    ['属地', w.publish_region],
+    ['格式', w.format],
+    ['大小', mb(w.file_size_bytes)],
+    ['可见性', w.visibility],
+    ['提交于', when(w.created_at)],
+  ]);
+
+  const acts = el('div', 'acts');
+  const reason = el('textarea');
+  reason.placeholder = '驳回理由（通过时忽略）';
+
+  const pass = el('button', 'ok', '通过');
+  const reject = el('button', 'danger', '驳回并下架');
+
+  pass.onclick = () => act(card, [pass, reject], async () => {
+    const r = await call('admin-approve-work', { action: 'approve', work_id: w.id });
+    return r.already ? '已是非待审状态，未改动' : '已通过，作品已进入 feed';
+  });
+
+  reject.onclick = () => act(card, [pass, reject], async () => {
+    const why = reason.value.trim();
+    if (!why) throw new Error('驳回必须写理由 —— 它会进审计记录，也是申诉时的依据');
+    // 驳回走 admin-moderate-work:它会把文件搬进 quarantine 桶。
+    // admin-approve-work 只翻 DB,不动文件,用它驳回会留下能下载的文件。
+    await call('admin-moderate-work', {
+      work_id: w.id, status: 'removed', reason: why, operator: 'console',
+    });
+    return '已驳回，文件已搬入 quarantine';
+  });
+
+  acts.append(pass, reject, reason);
+  const link = modelLink(w.model_url);
+  if (link) acts.appendChild(link);
+  body.appendChild(acts);
+  card.appendChild(body);
+  return card;
+}
+
+// ── 举报队列 ────────────────────────────────────────────────────────
+const REASON_ZH = {
+  spam: '垃圾信息', harassment: '骚扰', hate_speech: '仇恨言论',
+  sexual_content: '色情内容', violence: '暴力', copyright: '侵权',
+  misinformation: '虚假信息', other: '其他',
+};
+
+async function loadReports() {
+  showMsg('载入中…');
+  const r = await call('admin-reports', { action: 'list', status: 'pending' });
+  setStatus(`待办举报 ${r.count} 条`);
+  render((r.reports || []).map(reportCard));
+}
+
+function reportCard(rep) {
+  const t = rep.target;
+  const card = el('div', 'card');
+  card.appendChild(thumb(t && t.thumb_url, t && t.title));
+
+  const body = el('div', 'body');
+  body.appendChild(el('h2', 'title',
+    `${REASON_ZH[rep.reason] || rep.reason} · ${t ? (t.title || '(无标题)') : rep.target_type}`));
+  if (rep.detail) body.appendChild(el('div', 'desc', rep.detail));
+
+  chips(body, [
+    ['举报人', rep.reporter_handle ? '@' + rep.reporter_handle
+      : (rep.reporter_display_name || rep.reporter_id)],
+    ['举报于', when(rep.created_at)],
+    ['被举报', rep.target_type],
+  ]);
+
+  if (t) {
+    chips(body, [
+      ['作者', t.author_handle ? '@' + t.author_handle : (t.author_display_name || t.user_id)],
+      ['当前状态', t.moderation_status],
+      ['属地', t.publish_region],
+      ['已删除', t.deleted_at ? '是' : null],
+    ]);
+  } else if (rep.target_type === 'work') {
+    // 作品行已经不在了(作者自己删了)。这不是错误,但结案时要知道
+    // "下架"已经无从谈起,只能 dismissed 或 actioned + 备注。
+    body.appendChild(el('div', 'desc', '⚠️ 被举报的作品已不存在（作者已删除）。'));
+  }
+
+  const acts = el('div', 'acts');
+  const notes = el('textarea');
+  notes.placeholder = '处置备注（进审计记录）';
+
+  const takedown = el('button', 'danger', '下架并结案');
+  const dismiss = el('button', null, '驳回举报');
+
+  // 🔑 两次调用,不合成一个原子操作。下架会搬文件、可能部分失败;
+  //    把它和结案绑死只会产生"结案了但文件没搬走"这种没人发现的中间态。
+  //    所以顺序是:先下架(会动文件的那一步),成功了再结案。
+  takedown.onclick = () => act(card, [takedown, dismiss], async () => {
+    if (!t) throw new Error('作品已不存在，无法下架 —— 请用「驳回举报」并写明。');
+    const why = notes.value.trim() || `举报处置：${REASON_ZH[rep.reason] || rep.reason}`;
+    await call('admin-moderate-work', {
+      work_id: t.id, status: 'removed', reason: why, operator: 'console',
+    });
+    await call('admin-reports', {
+      action: 'resolve', report_id: rep.id, status: 'actioned',
+      admin_notes: why, operator: 'console',
+    });
+    return '已下架并结案';
+  });
+
+  dismiss.onclick = () => act(card, [takedown, dismiss], async () => {
+    const why = notes.value.trim();
+    if (!why) throw new Error('驳回举报必须写理由 —— 第九条要求的是「受理」，要留痕');
+    const r = await call('admin-reports', {
+      action: 'resolve', report_id: rep.id, status: 'dismissed',
+      admin_notes: why, operator: 'console',
+    });
+    return r.already ? '该举报已结案，未改动' : '已驳回举报';
+  });
+
+  acts.append(takedown, dismiss, notes);
+  const link = t && modelLink(t.model_url);
+  if (link) acts.appendChild(link);
+  body.appendChild(acts);
+  card.appendChild(body);
+  return card;
+}
+
+// ── 单条卡片的操作:禁用按钮 → 执行 → 就地报结果 ─────────────────────
+async function act(card, buttons, fn) {
+  buttons.forEach((b) => b.disabled = true);
+  const out = el('div', 'meta');
+  card.querySelector('.body').appendChild(out);
+  try {
+    const msg = await fn();
+    out.appendChild(el('span', 'chip', '✓ ' + msg));
+    card.style.opacity = '.5';
+  } catch (e) {
+    out.appendChild(el('span', 'chip', '✗ ' + e.message));
+    out.style.color = 'var(--danger)';
+    buttons.forEach((b) => b.disabled = false);
+  }
+}
+
+// ── 载入 ────────────────────────────────────────────────────────────
+async function reload() {
+  if (state.busy) return;
+  state.busy = true;
+  try {
+    await (state.tab === 'pending' ? loadPending() : loadReports());
+  } catch (e) {
+    setStatus('失败', true);
+    showMsg(e.message, true);
+  } finally {
+    state.busy = false;
+  }
+}
+
+function selectTab(tab) {
+  state.tab = tab;
+  $('tab-pending').setAttribute('aria-selected', String(tab === 'pending'));
+  $('tab-reports').setAttribute('aria-selected', String(tab === 'reports'));
+  reload();
+}
+
+$('load').onclick = reload;
+$('tab-pending').onclick = () => selectTab('pending');
+$('tab-reports').onclick = () => selectTab('reports');
+$('secret').addEventListener('keydown', (e) => { if (e.key === 'Enter') reload(); });
+
+if (SS.getItem('pw_secret')) reload();
+else showMsg('填入 service secret 后点「载入」。');
+</script>
+</body>
+</html>
