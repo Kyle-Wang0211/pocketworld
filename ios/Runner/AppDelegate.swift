@@ -22,6 +22,23 @@ import UIKit
     } else {
       NSLog("[AppDelegate] registrar(forPlugin: AetherTexturePlugin) nil — texture widget will be blank")
     }
+
+    // [pw][vio] Blocker 01 采集侧:时基测量。只测不判 —— 偏置/漂移/域判决全在
+    //   Dart lib/vio/timebase/ 里做,与 Android 共用同一份实现。
+    //   必须在采集开始前注册,否则域错配无法被检出(而域错配是静默的)。
+    if let registrar = self.registrar(forPlugin: "PwVioTimebasePlugin") {
+      PwVioTimebasePlugin.register(with: registrar)
+    } else {
+      NSLog("[AppDelegate] registrar(forPlugin: PwVioTimebasePlugin) nil — VIO 时基无法测量,采集侧将无法判定域错配")
+    }
+
+    // [pw][vio] 条目 07:热/降频信号采集。同样只上报原始值,判档在
+    //   Dart lib/vio/thermal/ 里做(两端共用)。
+    if let registrar = self.registrar(forPlugin: "PwVioThermalPlugin") {
+      PwVioThermalPlugin.register(with: registrar)
+    } else {
+      NSLog("[AppDelegate] registrar(forPlugin: PwVioThermalPlugin) nil — VIO thermal telemetry unavailable")
+    }
     if #available(iOS 11.0, *) {
       if let registrar = self.registrar(
         forPlugin: "OfficialAetherARKitPlugin"

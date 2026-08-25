@@ -1,0 +1,34 @@
+schema: pw_global_ptol_candidate_identity_v1
+captured_at_utc: 2026-08-25T06:28:00Z
+repository: /Users/kaidongwang/Developer/pocketworld
+branch: codex/ptol-phone-ab-20260825
+head: a8b94ca0e35158c8aca7c2e3f66f11269fa385f6
+source_manifest_sha256: e89bcbcf2f2301986865a55625907d65821b3ee8f1715f6c1d4514c13740d5d1
+source_manifest_scope: >-
+  All tracked and non-ignored untracked files in the product repository,
+  excluding the self-referential device runner, this identity receipt, and
+  transient .superpowers/brainstorm preview-server state that is not a product
+  or build input.
+runner_sha256: 4cdc320a51218805e9faabc554f04f0ff04c4fbb8f54e925354d9ef4919274cb
+files:
+  experiment_contract_sha256: fd728d3d765f08a6d46418a4dc6fce915857d1e1a465984af071c84ff100a106
+  input_manifest_sha256: 0668caff11c8ab4e7a9d54f835515d504b9ce73b2d53f9fee1dbbd2a98424e9d
+  preimplementation_source_receipt_sha256: 613a9a0c4f0963e9e3ece9bcbd163feb2908c69da6ce7ba48c67365b2ab6cb5f
+  implementation_plan_sha256: 4b97391e2a646f241741bfc5213ab0c647553ba10b13372b77c4d48e49b2d7f3
+  phone_entrypoint_sha256: 4650bac40a4021193871ffa45a362a238c82a41dc75fce4e97b263e363cf6a55
+  gate_sha256: 9e0141342b3c7dfda0b9198ac6891af073a1f1c8114e531f20ce859bfcd6ae2f
+  contract_test_sha256: 9862e63c1722470227cfaeccf5fcb9953bab9683da2e07a4dd6dc3007ef51d39
+native_framework_sha256: bd1220f12b84b6de06319bda28e2902d375b59b9150d3dd947bc1d04afc34062
+input_archive_sha256: 9114ec5e078f1730fe4f399789e26994bd26cbaacecb4f6c19f3c3120f2fc3f4
+toolchain:
+  flutter: 3.47.1
+  dart: 3.13.1
+semantic_boundary:
+  experiment_class: diagnostic_mechanical_screen
+  pose_source: frozen_production_arkit_sidecar
+  excluded_shadow_pose_source: xrslam_vio
+  production_eligible: false
+runtime_receipts: >-
+  The runner writes complete git status, staged/unstaged binary diffs, content
+  manifest, device details, signed artifact hashes, result, and pulled output
+  identities under its unique /private/tmp task root.

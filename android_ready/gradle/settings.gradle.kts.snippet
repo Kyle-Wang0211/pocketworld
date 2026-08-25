@@ -1,0 +1,14 @@
+// PocketWorld Android capture — AGP version floor.
+// SNIPPET for android/settings.gradle.kts.
+//
+// AGP 8.5.1 is the documented floor for 16 KB zip alignment of uncompressed
+// shared libraries. Anything older produces an APK that builds, installs and
+// runs on a 4 KB device, and fails only on 16 KB hardware and at Play review.
+
+pluginManagement {
+    plugins {
+        id("com.android.application") version "8.5.1" apply false
+        // Keep in step with the Kotlin the Flutter toolchain ships.
+        id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+    }
+}

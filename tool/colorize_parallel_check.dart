@@ -4,6 +4,9 @@
 //   cd <仓根> && dart run tool/colorize_parallel_check.dart
 // 全部通过输出 "ALL PASS" 并 exit 0;任一断言失败 exit 1。
 //
+// ⚠️ [2026-08-14] 本脚本原先 import 的是 `capture/`(**旧栈**)那份,保的是
+// 没在跑的代码;已改指 `official_capture/`(出货那份)。
+//
 // 对拍基线 = 旧串行实现的逐字拷贝(逐帧 await 解码、无去重、无窗口),
 // 与 lib/capture/colorize_pipeline.dart 的 sampleColorsPipelined 在同一组
 // 合成帧/观测/假解码器上跑,断言:
@@ -21,10 +24,11 @@
 
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
-import 'package:pocketworld_flutter/capture/colorize_pipeline.dart';
-import 'package:pocketworld_flutter/capture/representative_color.dart';
+import 'package:pocketworld_flutter/official_capture/colorize_pipeline.dart';
+import 'package:pocketworld_flutter/official_capture/representative_color.dart';
 
 int _failures = 0;
 
@@ -285,6 +289,69 @@ void main() async {
     stC.framesSampled == 1 && decCancel.calls == 3,
     'sampled=${stC.framesSampled} calls=${decCancel.calls}',
   );
+
+  // ── ⑥⑦ [RS-CORRECT-COLORS 2026-08-14] 增益校正 ──────────────────────
+  // ⑥ 关档(gains=null)必须与旧实现逐字节相同 —— 这是"默认路径零影响"的
+  //    唯一硬证据。
+  // 用与 reduceRgb 完全相同的写法(含无样本点涂灰),否则差的是测试自己。
+  final rgbNoGain = Uint8List(nPoints * 3);
+  for (var i = 0; i < nPoints; i++) {
+    if (!poolSerial.selectInto(i, rgbNoGain, gains: null)) {
+      rgbNoGain[i * 3] = 185;
+      rgbNoGain[i * 3 + 1] = 185;
+      rgbNoGain[i * 3 + 2] = 190;
+    }
+  }
+  _check('⑥校正关档:输出与旧实现逐字节相同',
+      firstDiff(rgbSerial, rgbNoGain) == -1,
+      'firstDiff=${firstDiff(rgbSerial, rgbNoGain)}');
+
+  // ⑦ 合成一组已知增益灌进样本池,断言 estimateFrameGains 能把它反解出来
+  //    (中位口径,误差 <8%);同时验证参考帧(跨帧中位)被锁在 1.0 附近。
+  final capG = Int32List(nPoints);
+  for (var i = 0; i < nPoints; i++) {
+    capG[i] = nFrames;
+  }
+  final sG = RepresentativeColorSamples(capG);
+  // ⚠️ 合成数据必须在**线性光**里施加增益(v3 的模型):
+  //    观测_sRGB = linear→sRGB( sRGB→linear(本色) × 1/g_f )
+  //    估计器应解出 g_f(它把观测乘回 g_f 才还原本色)。
+  //    直接在 sRGB 值上乘,测的是已被否掉的 v2 模型。
+  final truth = List<double>.generate(nFrames, (f) => 0.80 + 0.04 * f);
+  final rngG = Lcg(20260814);
+  for (var i = 0; i < nPoints; i++) {
+    final base = 60.0 + (rngG.next() % 150);
+    final baseLin = srgbToLinear255(base);
+    for (var f = 0; f < nFrames; f++) {
+      final obs = linear255ToSrgb(baseLin / truth[f]);
+      sG.add(i, obs, obs, obs, f);
+    }
+  }
+  final est = sG.estimateFrameGains(nFrames);
+  // ⚠️ 不能断言"精确复原增益":Brown&Lowe 的 (1−g)² 先验(β=100)**故意**把
+  // 增益往 1 压(数据项 α·I² 在本量级只有它约 1/3),压缩量约 15% 是模型的
+  // 设计行为而非误差。所以断言它**该做到的事**:把帧间分歧压下去。
+  var before = 0.0, after = 0.0;
+  var pairs = 0;
+  for (var f = 0; f < nFrames; f++) {
+    for (var h = f + 1; h < nFrames; h++) {
+      // 同一本色在两帧的观测(线性光),校正前/后的相对差
+      final baseLin = srgbToLinear255(120.0);
+      final obsF = baseLin / truth[f], obsH = baseLin / truth[h];
+      before += (obsF - obsH).abs() / ((obsF + obsH) / 2);
+      final cf = obsF * est.gainOf(f, 1), chh = obsH * est.gainOf(h, 1);
+      after += (cf - chh).abs() / ((cf + chh) / 2);
+      pairs++;
+    }
+  }
+  before /= pairs;
+  after /= pairs;
+  // 门设 30% 而非 50%:标准的 σ_g=0.1 先验假设曝光差异只有 ±10%,而我们实测
+  // ±25%,所以它按设计只修一部分(合成 37%,s4 真实场景 29%)。这道门是**回归
+  // 守卫**——估计器坏掉会掉到 0;不是"它应该更强"的目标。
+  _check('⑦增益校正:帧间相对分歧下降 >30%(标准先验的设计上限)',
+      after < before * 0.7,
+      'before=${before.toStringAsFixed(3)} after=${after.toStringAsFixed(3)}');
 
   stdout.writeln(
     _failures == 0

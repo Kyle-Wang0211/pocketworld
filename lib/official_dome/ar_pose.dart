@@ -11,6 +11,22 @@ import 'dart:typed_data';
 
 import 'package:vector_math/vector_math_64.dart';
 
+/// The platform transports [cameraToWorld] quaternions (ARKit, ARCore and
+/// xrslam use the same pose contract).  `vector_math`'s `rotated()` evaluates
+/// `conjugate(q) * v * q`, so its call direction is the inverse of the usual
+/// camera-to-world matrix notation.  Keep that convention correction in one
+/// place instead of open-coding conjugates throughout capture code.
+Vector3 cameraLocalVectorToWorld(
+  Quaternion cameraToWorld,
+  Vector3 cameraVector,
+) => cameraToWorld.inverted().rotated(cameraVector);
+
+Vector3 worldVectorToCamera(Quaternion cameraToWorld, Vector3 worldVector) =>
+    cameraToWorld.rotated(worldVector);
+
+Vector3 cameraForwardInWorld(Quaternion cameraToWorld) =>
+    cameraLocalVectorToWorld(cameraToWorld, Vector3(0, 0, -1));
+
 /// Thin cross-platform preview point emitted by native AR executors.
 ///
 /// This is capture-time guidance data only. The point position comes
@@ -41,8 +57,9 @@ class ARPose {
   /// Camera position in world space, meters.
   final Vector3 position;
 
-  /// Camera orientation (unit quaternion). `rotate(Vector3(0, 0, -1))`
-  /// is the camera's forward axis — ARKit / ARCore convention.
+  /// Camera-to-world orientation (unit quaternion), as transported by ARKit,
+  /// ARCore and xrslam. Use [cameraForwardInWorld] for the optical -Z axis;
+  /// calling vector_math's `rotated()` directly applies the inverse direction.
   final Quaternion orientation;
 
   /// Position-based azimuth in radians, relative to `worldYaw`.
@@ -144,6 +161,11 @@ class ARPose {
   /// Dart owns all voxel hashing, quality coloring, minimap, and policy.
   final List<ARPreviewPoint> previewPoints;
 
+  /// 屏幕中心分级 raycast 的深度(米,0.5s 节流,2.5m 封顶),null = 未命中
+  /// 或后端不支持。自动拍位移阈值的**冷启动**深度源(活体 SfM 云长出来之前
+  /// 的头几秒);策略与 lockOrigin 的选点同款,出处见 native 插件注释。
+  final double? centerRayDepthM;
+
   const ARPose({
     required this.position,
     required this.orientation,
@@ -168,6 +190,7 @@ class ARPose {
     this.quality,
     this.trackingStateName,
     this.previewPoints = const <ARPreviewPoint>[],
+    this.centerRayDepthM,
   });
 
   /// Override a subset of fields. Used by [CaptureSession] to build a
@@ -201,6 +224,7 @@ class ARPose {
       exposureTargetOffset: exposureTargetOffset,
       quality: quality,
       previewPoints: previewPoints,
+      centerRayDepthM: centerRayDepthM,
       // Note: deliberately NOT remapping `trackingStateName` from the
       // hybrid `isTracking` boolean. The string is the raw native AR
       // signal from the provider; CaptureSession's IMU-substituted
@@ -221,7 +245,7 @@ class ARPose {
     required double timestamp,
     bool isTracking = true,
   }) {
-    final forward = orientation.rotated(Vector3(0, 0, -1));
+    final forward = cameraForwardInWorld(orientation);
     final azimuth = math.atan2(forward.x, forward.z);
     final elevation = math.asin(forward.y.clamp(-1.0, 1.0));
     return ARPose(

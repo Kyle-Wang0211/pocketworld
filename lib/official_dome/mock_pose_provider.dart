@@ -79,7 +79,7 @@ class MockARPoseProvider implements ARPoseProvider {
       _worldYaw = 0;
       _hasOrigin = true;
     } else {
-      final forward = last.orientation.rotated(Vector3(0, 0, -1));
+      final forward = cameraForwardInWorld(last.orientation);
       _worldOrigin = last.position + forward.normalized() * distanceMeters;
       final relInitial = last.position - _worldOrigin;
       _worldYaw = math.atan2(relInitial.z, relInitial.x);

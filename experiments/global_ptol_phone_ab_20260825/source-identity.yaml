@@ -1,0 +1,14 @@
+schema: pw_preimplementation_source_identity_v1
+captured_at_utc: 2026-08-25T05:30:08Z
+repository: /Users/kaidongwang/Developer/pocketworld
+branch: codex/ptol-phone-ab-20260825
+head: a8b94ca0e35158c8aca7c2e3f66f11269fa385f6
+working_tree:
+  status_porcelain_sha256: 9f6199e10bf1bf76df251b39bb2c8d4868b3ae4f85e715bae12580ada1ffe725
+  unstaged_binary_diff_sha256: 4fc0e965a2638b422f53fd590b5d465469c6532ca8ef4e3fb01c36d7e9f86838
+  staged_binary_diff_sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+  tracked_and_relevant_untracked_content_manifest_sha256: e32d28497dccbb01681ffc91260321dcccb70f9667f237a57e914e6ef9c1ef91
+note: >-
+  This receipt freezes the exact pre-implementation dirty product state. The
+  full live tree remains preserved; no reset, clean, or historical checkout is
+  authorized.

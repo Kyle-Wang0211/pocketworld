@@ -185,6 +185,7 @@ Future<ColorizeDecodeStats> sampleColorsPipelined({
             w01 * rgbP[o01 + 2] +
             w10 * rgbP[o10 + 2] +
             w11 * rgbP[o11 + 2],
+        k, // [RS-CORRECT-COLORS] 样本来自第 k 帧(jobs 下标)
       );
     }
   }

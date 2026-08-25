@@ -621,6 +621,16 @@ class OfficialAetherARKitPlugin: NSObject {
   /// rawFeaturePoints and samples camera color; Dart owns voxel hashing,
   /// minimap, quality coloring, and all product policy.
   private var lastPreviewPointPayloadTime: TimeInterval = 0
+
+  /// 自动拍位移阈值的冷启动深度(活体 SfM 云长出来之前的头几秒):屏幕中心
+  /// 一束**分级 raycast**,与 lockOrigin 的选点策略同款(estimatedPlane/.any
+  /// → existingPlaneInfinite/.horizontal,2.5m 封顶 —— 那套在真机上修过
+  /// "深度错了"的战史,见下方 lock 代码的注释)。0.5s 节流;未命中/超封顶
+  /// 时保持 -1,Dart 侧读成"没有" —— "不知道"绝不编成一个数
+  /// (rawFeaturePoints 中位数撒谎 8 倍的教训,2026-08-24)。
+  private var lastCenterRayDepthM: Float = -1
+  private var lastCenterRayAt: TimeInterval = 0
+  private static let centerRayInterval: TimeInterval = 0.5
   private static let previewPointInterval: TimeInterval = 1.0 / 8.0
   private static let previewPointMaxCount: Int = 220
 
@@ -2500,6 +2510,40 @@ class OfficialAetherARKitPlugin: NSObject {
 
   // MARK: Per-frame broadcast
 
+  /// 屏幕中心的分级 raycast 深度(米)。与 lockOrigin 的选点策略同款
+  /// (那段代码在下方 ~1651 行,带完整理由注释),但只要**距离**不要位置;
+  /// 两级都未命中、贴脸(<5cm)或超 2.5m 封顶时返回 nil。
+  private func centerRayDepthM(cameraTransform t: simd_float4x4) -> Float? {
+    guard let session = arSession else { return nil }
+    let camPos = simd_float3(t.columns.3.x, t.columns.3.y, t.columns.3.z)
+    let forward = simd_normalize(
+      -simd_float3(t.columns.2.x, t.columns.2.y, t.columns.2.z)
+    )
+    var hits: [ARRaycastResult] = []
+    if #available(iOS 13.0, *) {
+      hits = session.raycast(ARRaycastQuery(
+        origin: camPos, direction: forward,
+        allowing: .estimatedPlane, alignment: .any
+      ))
+      if hits.isEmpty {
+        hits = session.raycast(ARRaycastQuery(
+          origin: camPos, direction: forward,
+          allowing: .existingPlaneInfinite, alignment: .horizontal
+        ))
+      }
+    }
+    guard let hit = hits.first else { return nil }
+    let d = simd_distance(
+      camPos,
+      simd_float3(
+        hit.worldTransform.columns.3.x,
+        hit.worldTransform.columns.3.y,
+        hit.worldTransform.columns.3.z
+      )
+    )
+    return (d > 0.05 && d <= 2.5) ? d : nil
+  }
+
   private func broadcast(frame: ARFrame) {
     // Plan G W2 photos-on-disk arch (replaces the deleted AVAssetWriter
     // pipeline 2026-05-16): keep a short timestamp-addressable snapshot
@@ -2663,7 +2707,16 @@ class OfficialAetherARKitPlugin: NSObject {
     // Quaternion (x, y, z, w) from rotation submatrix.
     let q = simd_quaternion(cameraTransform)
 
+    // 冷启动深度:0.5s 节流的中心分级 raycast(见属性注释)。raycast 是
+    // 对当前帧状态的纯几何查询,2Hz 的成本可忽略 —— 与"回调里逐帧搬
+    // 兆级数据"不是一类事。
+    if frame.timestamp - lastCenterRayAt >= Self.centerRayInterval {
+      lastCenterRayAt = frame.timestamp
+      lastCenterRayDepthM = centerRayDepthM(cameraTransform: cameraTransform) ?? -1
+    }
+
     var payload: [String: Any] = [
+      "centerRayDepthM": lastCenterRayDepthM,
       "tx": cameraTransform.columns.3.x,
       "ty": cameraTransform.columns.3.y,
       "tz": cameraTransform.columns.3.z,
@@ -3339,6 +3392,15 @@ private class OfficialARSessionForwarder: NSObject, ARSessionDelegate {
   }
 
   func session(_ session: ARSession, didUpdate frame: ARFrame) {
+    // [pw][vio] 必须是本方法的第一行:晚一行就多一行固定投递延迟,而 min-filter
+    //   只能吃掉抖动,吃不掉你自己加进去的固定延迟。
+    //   ⚠️ ARFrame.timestamp 的时钟域 Apple 全文未文档化(只有一句 "The time at
+    //   which the frame was captured."),且 ARKit 不交出 CMSampleBuffer,
+    //   synchronizationClock 那条换算桥在这条链上用不了 ⇒ 只能纯测量。
+    PwVioTimebase.shared.noteARFrame(frame)
+    // [pw][vio] 喂 XRSLAM。零拷贝:直接指向 CVPixelBuffer 的亮度平面。
+    //   feeder 未 start 时是空操作,不影响现有采集链。
+    PwVioSlamFeeder.shared.feed(frame: frame)
     if !loggedFirstFrame {
       loggedFirstFrame = true
       NSLog("[OfficialAetherARKit] first ARFrame received")

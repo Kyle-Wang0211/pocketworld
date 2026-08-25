@@ -18,6 +18,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../capture/sfm_resume.dart';
+import '../../me/scan_record_store.dart';
 import 'sparse_cloud_viewer_page.dart';
 
 class SfmResumeWaitPage extends StatefulWidget {
@@ -72,6 +73,11 @@ class _SfmResumeWaitPageState extends State<SfmResumeWaitPage> {
   }
 
   void _openCloud() {
+    // [2026-08-24] 点"查看点云"就算看过 —— 否则回到"我的"页,卡片右上角的
+    // 绿"完成"胶囊仍会挂着(续跑场景点卡片时 PLY 还没出,那次标记是 no-op)。
+    unawaited(
+      ScanRecordStore.instance.markResultViewedByCaptureDir(widget.captureDir),
+    );
     Navigator.of(context).pushReplacement(
       MaterialPageRoute<void>(
         builder: (_) => SparseCloudViewerPage(

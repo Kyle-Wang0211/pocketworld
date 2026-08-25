@@ -16,8 +16,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'aux_archive_resolver.dart';
 import 'official_highres_reconstruction_input.dart';
 import 'photo_archive_ffi_codec.dart';
+import 'photo_archive_runtime.dart';
 import 'photo_archive_manifest.dart';
 import 'photo_archive_resolver.dart';
 import 'lepton_photo_archive_ffi_codec.dart';
@@ -88,27 +90,36 @@ class SfmDbRegen {
         'jpeg-xl': JxlFfiPhotoArchiveCodec(),
       },
     );
+    // 侧车可能已被附属物归档收走(pw_aux_archive_v1),走 resolver 拿目录:
+    // 没归档时它就是 photos_highres 本身,归档后是校验过的临时物化目录。
+    final sidecars = await AuxArchiveResolver(codec: databaseArchiveCodec)
+        .openSidecars(captureDirectory);
+    if (sidecars == null) return fail('sidecar', 'cannot resolve sidecars');
     final feeds = <({String jpegPath, Map<String, dynamic> sidecar})>[];
-    for (final name in candidates) {
-      final sidecarFile = File(
-          '${captureDirectory.path}/photos_highres/${name.replaceAll(RegExp(r'\.jpe?g$'), '.json')}');
-      if (!await sidecarFile.exists()) {
-        return fail('sidecar', 'missing sidecar for $name');
+    try {
+      for (final name in candidates) {
+        final sidecarFile = File(
+            '${sidecars.directory.path}/${name.replaceAll(RegExp(r'\.jpe?g$'), '.json')}');
+        if (!await sidecarFile.exists()) {
+          return fail('sidecar', 'missing sidecar for $name');
+        }
+        Map<String, dynamic> sidecar;
+        try {
+          sidecar = jsonDecode(await sidecarFile.readAsString())
+              as Map<String, dynamic>;
+        } catch (e) {
+          return fail('sidecar', 'bad sidecar for $name: $e');
+        }
+        final jpeg = await resolver.resolveJpeg(
+          captureDirectory: captureDirectory,
+          highresFilename: name,
+          cacheDirectory: materializeCache,
+        );
+        if (jpeg == null) return fail('materialize', 'cannot resolve $name');
+        feeds.add((jpegPath: jpeg.path, sidecar: sidecar));
       }
-      Map<String, dynamic> sidecar;
-      try {
-        sidecar = jsonDecode(await sidecarFile.readAsString())
-            as Map<String, dynamic>;
-      } catch (e) {
-        return fail('sidecar', 'bad sidecar for $name: $e');
-      }
-      final jpeg = await resolver.resolveJpeg(
-        captureDirectory: captureDirectory,
-        highresFilename: name,
-        cacheDirectory: materializeCache,
-      );
-      if (jpeg == null) return fail('materialize', 'cannot resolve $name');
-      feeds.add((jpegPath: jpeg.path, sidecar: sidecar));
+    } finally {
+      await sidecars.dispose();
     }
 
     // 输出 db 落在临时名,成功才 rename 到位(不留半成品)。

@@ -1,0 +1,18 @@
+name: pw_android_capture_flutter
+description: Flutter platform-channel bridge for the PocketWorld Android capture layer. Marshalling only; all judgement lives in pw_android_capture.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+  flutter: ">=3.22.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  pw_android_capture:
+    path: ../pw_android_capture
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter

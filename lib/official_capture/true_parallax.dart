@@ -32,12 +32,11 @@ import 'photo_card_state.dart' show medianOf;
 const double kCoverageVoxelSizeM = 0.04;
 
 /// 视差下限(度)。2026-07-11 真机标定:低于此角的观测是"低视差深度噪声壳"
-/// (双墙)的成因,不算有效双视角。
+/// (双墙)的成因,不算有效双视角。覆盖云(CaptureCoverageCloud)的判黄线。
 ///
-/// **单一出处**。此前 `CaptureCoverageCloud.parallaxMinDeg` 的构造默认值与
-/// `kAutoCaptureParallaxMinDeg` 是两个各自写死的 `5.0`,而后者的注释宣称
-/// 「同源同值……不新造常数」—— 那句话当时不是代码保证的事实,下一次重标定
-/// 只会改到其中一个。〔2026-08-19 评审改正〕
+/// 〔2026-08-24〕自动拍触发已整体换成绝对位移/转角量纲,**不含任何视差
+/// 判据**(经过与撤销理由见 auto_capture_governor.dart 文件头)。本常数只
+/// 回答"该不该报警/判黄",覆盖云仍以它为准。
 const double kCaptureParallaxMinDeg = 5.0;
 
 /// 覆盖云 voxel key(与 CaptureCoverageCloud._key 同一函数,后者委托到

@@ -3,39 +3,60 @@
 // 设计见 docs/superpowers/specs/2026-08-19-auto-capture-design.md。
 // 几何量由 auto_capture_geometry.dart 算好后传进来;编排在
 // auto_capture_controller.dart。本文件不持有任何状态。
+//
+// 生产入口只有 [autoCaptureDecideMotion]：距离、固定 0.28×深度和“位移 OR
+// 转角”旧判据已经删除，避免迁移完成后被误接回去。
 
 import 'live_sfm_publish_policy.dart' show kOfficialMaximumCaptureFrames;
+import 'auto_capture_geometry.dart' show AutoCaptureMotionMetrics;
 import 'shutter_backpressure_gate.dart' show ShutterPace;
-import 'true_parallax.dart' show kCaptureParallaxMinDeg;
-
-/// 视差下限(度)。与 `CaptureCoverageCloud.parallaxMinDeg` **同源同值** ——
-/// 那个值 2026-07-11 真机标定过,这里不新造常数。
-///
-/// 〔2026-08-19 评审改正〕此前这一行是一个各自写死的 `5.0`,而注释已经在
-/// 宣称"同源同值"—— 两个数今天相等,但没有任何东西保证下一次重标定会同时
-/// 改到两处。现在两边都引 [kCaptureParallaxMinDeg],那句话才是代码保证的事实。
-const double kAutoCaptureParallaxMinDeg = kCaptureParallaxMinDeg;
-
-/// 视线转角下限(度)。⚠️ 无外部依据(RS / Polycam / KIRI / Apple 均未公开
-/// 自动拍阈值),这是比视差门放宽一倍取的保守起点,**必须真机标定**。
-const double kAutoCaptureTurnMinDeg = 10.0;
-
-/// 归一化中心偏移上限。0.30 ⇔ 与基准帧重叠 70%。
-/// 依据:KIRI 官方 70%、Polycam Object Mode 70–75%、RealityScan >60%。
-const double kAutoCaptureMaxCenterShift = 0.30;
 
 /// 单次自动采集的时间上限(秒)。依据两条独立吻合:Scaniverse 官方
-/// 每次扫描硬上限 5 分钟;且 1 张/秒 × 300 张 = 5 分钟。
+/// 每次扫描硬上限 5 分钟；它与照片间隔是独立的热天花板。
 const double kAutoCaptureTimeLimitSec = 300.0;
 
 enum AutoCaptureDecision {
   fire,
   skipNotMoved,
   skipPaced,
+
+  /// 运动已够格开火,但**当前画面比本段的典型锐度糊**——缓一拍,等下一个
+  /// 更锐的瞬间再拍。
+  ///
+  /// 〔2026-08-25,抄单第 2 项,跨端版〕判据 = 当前锐度 < **本段锐度中位**:
+  ///   · 锐度来自 FrameQualityReport(128 灰度缩略图上的纯 Dart Laplacian,
+  ///     设计初衷就是"四端一份实现",iOS/Android/Web/HarmonyOS 同一段代码
+  ///     —— 见 ar_pose.dart 该字段的注释原文);**不用任何平台私有信号**;
+  ///   · "本段" = 距上一次开火以来 —— 正是 AliceVision KeyframeSelection
+  ///     的 subsequence 概念(两个关键帧之间),它的择优也是段内**相对**排序、
+  ///     无绝对阈值(源码注释在案),中位数是本仓一贯的稳健尺;
+  ///   · Apple ObjectCaptureSession 同语义:"automatically select image
+  ///     shots with **good sharpness**, clarity, and exposure";
+  ///   · 我们的 12MP 主图是开火瞬间才拍的,没有事后可挑的 12MP 流(高分
+  ///     静照是一次性请求,连拍的热/时间成本不可行)——但**判断**只需要
+  ///     缩略图流,所以"事后挑流"翻译成"事前缓到段内下一个达标瞬间",
+  ///     用户视角仍是实时拍摄。
+  /// 缓拍上限 [kAutoCaptureBlurDeferMaxSec]:覆盖(无损铁律)压过锐度,
+  /// 一直糊就照拍,绝不为锐度丢覆盖。
+  skipBlurry,
   skipTracking,
   skipCapped,
   skipTimeLimit,
 }
+
+/// 画质缓拍的上限(秒)。复用去抖地板的量级(0.25s,3DSeen 先例)而非新造
+/// 数:缓拍语义上就是"再等一拍",一拍的长度系统里已有定义。
+const double kAutoCaptureBlurDeferMaxSec = 0.25;
+
+/// 正常档只保留防重复触发的 250 ms 去抖，不把秒数冒充摄影测量参数。
+/// RealityScan 与 Polycam 的公开口径都是“按检测到的运动拍”；Meshroom 的
+/// 视频关键帧窗口也按帧数而非固定秒数表达。是否值得拍由几何/重叠决定，
+/// 真实吞吐上限继续交给现役 ShutterPace 背压。
+const double kAutoCaptureNormalIntervalSec = 0.25;
+
+/// 所有角色共同守住的 250 ms 防连击地板；重叠安全帧只绕过 soft/hard
+/// 背压的加长节奏，不能绕过这条地板。
+const double kAutoCaptureSafetyDebounceSec = 0.25;
 
 /// thermal 桶(ProcessInfo 四档:0 nominal · 1 fair · 2 serious · 3 critical;
 /// **<0 = 未知,按冷处理** —— 与 `shutterPaceNext` 的降级口径逐字相同)。
@@ -47,7 +68,7 @@ const int kAutoCaptureThermalCritical = 3;
 double _paceIntervalSec(ShutterPace pace) {
   switch (pace) {
     case ShutterPace.normal:
-      return 1.0;
+      return kAutoCaptureNormalIntervalSec;
     case ShutterPace.soft:
       return 2.0;
     case ShutterPace.hard:
@@ -55,7 +76,44 @@ double _paceIntervalSec(ShutterPace pace) {
   }
 }
 
-/// 自动拍的 tick 间隔(秒)= **背压档位**与**热态下限**取更长的那个。
+/// 四类运动判据的唯一决策门。
+AutoCaptureDecision autoCaptureDecideMotion({
+  required bool trackingNormal,
+  required int capturedCount,
+  required double elapsedSec,
+  required double sinceLastTickSec,
+  required double tickIntervalSec,
+  required AutoCaptureMotionMetrics motion,
+  bool blurry = false,
+  double blurDeferredSec = 0,
+}) {
+  if (capturedCount >= kOfficialMaximumCaptureFrames) {
+    return AutoCaptureDecision.skipCapped;
+  }
+  if (elapsedSec >= kAutoCaptureTimeLimitSec) {
+    return AutoCaptureDecision.skipTimeLimit;
+  }
+  if (!trackingNormal) return AutoCaptureDecision.skipTracking;
+  if (!motion.shouldCapture) return AutoCaptureDecision.skipNotMoved;
+
+  if (sinceLastTickSec < kAutoCaptureSafetyDebounceSec) {
+    return AutoCaptureDecision.skipPaced;
+  }
+  if (!motion.isOverlapSafety && sinceLastTickSec < tickIntervalSec) {
+    return AutoCaptureDecision.skipPaced;
+  }
+
+  // 覆盖即将断开时不能为了等清晰帧而丢掉连接；其它三类仍可在 250 ms 内
+  // 等待段内更锐的一帧。
+  if (!motion.isOverlapSafety &&
+      blurry &&
+      blurDeferredSec < kAutoCaptureBlurDeferMaxSec) {
+    return AutoCaptureDecision.skipBlurry;
+  }
+  return AutoCaptureDecision.fire;
+}
+
+/// 自动拍两次开火之间的最小间隔(秒)= **背压档位**与**热态下限**取更长的。
 /// **只作用于自动拍** —— 手动快门"无论多热、队列多深都立即可拍"那条铁律
 /// 不受影响。
 ///
@@ -70,13 +128,13 @@ double _paceIntervalSec(ShutterPace pace) {
 /// 唯一的输入是 [ShutterPace],而 `shutterPaceNext` 对热态的全部处理只是把
 /// soft 的**队列**阈值从 6 降到 4(`kPaceSoftQueueHot`)。队列浅的时候 ——
 /// 自动拍的常态 —— **任何热档都不会改变 pace**,于是那条承诺在实现里根本
-/// 不存在,而自动拍本身就是热源(1 Hz 的 12MP 静照 + 喂帧)。
+/// 不存在,而自动拍本身就是热源(12MP 静照 + 喂帧)。
 ///
 /// 不去改 `shutter_backpressure_gate.dart` 的理由:那是**手动快门也在用**的
 /// 既有生产代码,它的输出直接写进 `shutter_pace` 遥测;在那里加一条热态分支
-/// 会连手动采集的遥测口径一起改掉,而本次改动的范围只有自动拍。
-/// 所以分工是:`shutterPaceNext` 继续只回答"队列有多堵"(两条路共用),
-/// 热态对**间隔**的影响收在这一个自动拍独有的函数里。
+/// 会连手动采集的遥测口径一起改掉。所以分工是:`shutterPaceNext` 继续只回答
+/// "队列有多堵"(两条路共用),热态对**间隔**的影响收在这一个自动拍独有的
+/// 函数里。
 double autoCaptureTickIntervalSec({
   required ShutterPace pace,
   required int thermalState,
@@ -93,48 +151,4 @@ double autoCaptureTickIntervalSec({
     byThermal = 0.0;
   }
   return byPace > byThermal ? byPace : byThermal;
-}
-
-/// 判定顺序即优先级,不可随意调换:
-///   张数上限 > 时间上限 > tracking > 重叠上限(R2) > tick 闸 > 位移下限(R1)
-///
-/// 重叠上限排在 tick 闸**之前**,是因为它治的是"走得快,1 秒已跨过重叠下限"
-/// —— 那种情况按 1s 节奏拍会拍出 RealityScan 官方警告的断裂组件。
-///
-/// [centerShift] 直接收 `normalizedCenterShift` 的返回值,**不必解包**:
-/// null 意为"上限判据求不出来"(内参/画幅不可用,spec §7),此时跳过 R2、
-/// 只用下限判据决定;`double.infinity` 意为"确定越过了上限"(目标已跑到
-/// 相机背后),立刻拍。T1 刻意把这两件事分成两个值,这一层就得原样守住 ——
-/// 把"不知道"折成"马上开火"正是那条裁定要防的事。
-AutoCaptureDecision autoCaptureDecide({
-  required bool trackingNormal,
-  required int capturedCount,
-  required double elapsedSec,
-  required double sinceLastTickSec,
-  required double tickIntervalSec,
-  required double parallaxDeg,
-  required double turnDeg,
-  required double? centerShift,
-}) {
-  if (capturedCount >= kOfficialMaximumCaptureFrames) {
-    return AutoCaptureDecision.skipCapped;
-  }
-  if (elapsedSec >= kAutoCaptureTimeLimitSec) {
-    return AutoCaptureDecision.skipTimeLimit;
-  }
-  if (!trackingNormal) return AutoCaptureDecision.skipTracking;
-  // null = 上限判据无法求值(内参/画幅不可用,见 spec §7)。此时**跳过** R2,
-  // 只用下限判据决定 —— 绝不能当成"立刻拍"。+inf 与 null 是刻意区分的两件事:
-  // +inf 意为"确定越过上限"(目标已跑到相机背后),null 意为"不知道"。
-  // 把"不知道"编码成"马上开火"正是这道判断存在的理由。
-  final shift = centerShift;
-  if (shift != null && shift >= kAutoCaptureMaxCenterShift) {
-    return AutoCaptureDecision.fire;
-  }
-  if (sinceLastTickSec < tickIntervalSec) return AutoCaptureDecision.skipPaced;
-  if (parallaxDeg >= kAutoCaptureParallaxMinDeg ||
-      turnDeg >= kAutoCaptureTurnMinDeg) {
-    return AutoCaptureDecision.fire;
-  }
-  return AutoCaptureDecision.skipNotMoved;
 }

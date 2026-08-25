@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/official_capture/auto_capture_geometry.dart';
@@ -134,9 +135,9 @@ void main() {
 
   // New tests from fix round 1
   test('normalizedCenterShift distinguishes world→camera from its inverse', () {
-    // 期望值由相机基向量点积独立推导(right/up/forward = q.rotated(局部轴)),
-    // 不是从实现公式反推。若 `.inverted()` 被删掉(变换方向写反),
-    // 这里会得到 0.115085853250 —— 落在 0.30 阈值的另一侧。
+    // 期望值由 camera-to-world 矩阵的转置独立推导，不从实现公式反推。
+    // 若把 vector_math.rotated() 再反一次，结果会得到 1.056179114050 ——
+    // 落在 0.30 阈值的另一侧。
     final q = Quaternion.axisAngle(Vector3(0, 1, 0), 20 * math.pi / 180);
     expect(
       normalizedCenterShift(
@@ -148,7 +149,7 @@ void main() {
         imageWidth: 1000,
         imageHeight: 1000,
       ),
-      closeTo(1.056179114050, 1e-9),
+      closeTo(0.115085853250, 1e-9),
     );
   });
 
@@ -262,6 +263,186 @@ void main() {
     expect(par, lessThan(0.001));
   });
 
+  group('cross-platform motion roles', () {
+    const intrinsics = AutoCaptureIntrinsics(
+      fx: 1000,
+      fy: 1000,
+      cx: 500,
+      cy: 500,
+      imageWidth: 1000,
+      imageHeight: 1000,
+    );
+    final target = Vector3(0, 0, -1);
+
+    AutoCaptureGeometryFrame frame(
+      Vector3 camera, {
+      Quaternion? orientation,
+    }) => AutoCaptureGeometryFrame(
+      camera: camera,
+      orientation: orientation ?? Quaternion.identity(),
+      intrinsics: intrinsics,
+    );
+
+    test('camera-to-world quaternion projects its optical axis in front', () {
+      // ARKit/ARCore transport camera-to-world rotations.  vector_math's
+      // Quaternion.rotated() applies the inverse rotation, so this catches the
+      // exact convention mismatch that made a locked subject unprojectable.
+      final c2w = Matrix3.rotationY(20 * math.pi / 180);
+      final orientation = Quaternion.fromRotation(c2w)..normalize();
+      final expectedForward = c2w.transform(Vector3(0, 0, -1));
+      final rotated = frame(Vector3.zero(), orientation: orientation);
+      final target = expectedForward * 2;
+
+      expect(rotated.forward.x, closeTo(expectedForward.x, 1e-12));
+      expect(rotated.forward.y, closeTo(expectedForward.y, 1e-12));
+      expect(rotated.forward.z, closeTo(expectedForward.z, 1e-12));
+      expect(
+        autoCaptureTargetOverlapFraction(
+          base: rotated,
+          current: rotated,
+          target: target,
+        ),
+        closeTo(1.0, 1e-12),
+      );
+    });
+
+    test('an unprojectable target is unknown, not zero overlap', () {
+      final base = frame(Vector3.zero());
+      expect(
+        autoCaptureTargetOverlapFraction(
+          base: base,
+          current: base,
+          target: Vector3(0, 0, 1),
+        ),
+        isNull,
+      );
+    });
+
+    test('portable track retention selects 10, 12, or 15 degrees', () {
+      expect(
+        autoCaptureGeometryAngleDeg(
+          const PortableTrackHealth(
+            retentionRatio: 0.74,
+            distributionHealthy: true,
+          ),
+        ),
+        kAutoCaptureGeometryWeakDeg,
+      );
+      expect(autoCaptureGeometryAngleDeg(null), kAutoCaptureGeometryNormalDeg);
+      expect(
+        autoCaptureGeometryAngleDeg(
+          const PortableTrackHealth(
+            retentionRatio: 0.90,
+            distributionHealthy: false,
+          ),
+        ),
+        kAutoCaptureGeometryNormalDeg,
+      );
+      expect(
+        autoCaptureGeometryAngleDeg(
+          const PortableTrackHealth(
+            retentionRatio: 0.90,
+            distributionHealthy: true,
+          ),
+        ),
+        kAutoCaptureGeometryStrongDeg,
+      );
+    });
+
+    test('horizontal and vertical travel both become formal geometry', () {
+      final base = frame(Vector3.zero());
+      final lateral = math.tan(12 * math.pi / 180);
+
+      final horizontal = classifyAutoCaptureMotion(
+        geometryBaseline: base,
+        captureBaseline: base,
+        current: frame(Vector3(lateral, 0, 0)),
+        target: target,
+      );
+      expect(horizontal.role, AutoCaptureMotionRole.geometry);
+      expect(horizontal.horizontalBaselineM, closeTo(lateral, 1e-9));
+      expect(horizontal.verticalBaselineM, closeTo(0, 1e-9));
+      expect(horizontal.advancesGeometryBaseline, isTrue);
+
+      final vertical = classifyAutoCaptureMotion(
+        geometryBaseline: base,
+        captureBaseline: base,
+        current: frame(Vector3(0, lateral, 0)),
+        target: target,
+      );
+      expect(vertical.role, AutoCaptureMotionRole.geometry);
+      expect(vertical.verticalBaselineM, closeTo(lateral, 1e-9));
+      expect(vertical.horizontalBaselineM, closeTo(0, 1e-9));
+      expect(vertical.advancesGeometryBaseline, isTrue);
+    });
+
+    test('forward-only 1.2x scale change is a bridge, never geometry', () {
+      final base = frame(Vector3.zero());
+      final result = classifyAutoCaptureMotion(
+        geometryBaseline: base,
+        captureBaseline: base,
+        current: frame(Vector3(0, 0, -0.2)),
+        target: target,
+      );
+      expect(result.geometryParallaxDeg, closeTo(0, 1e-9));
+      expect(result.depthScaleRatio, closeTo(1.25, 1e-9));
+      expect(result.role, AutoCaptureMotionRole.radialBridge);
+      expect(result.advancesGeometryBaseline, isFalse);
+    });
+
+    test('in-place 12 degree turn is a coverage candidate, not geometry', () {
+      final base = frame(Vector3.zero());
+      final result = classifyAutoCaptureMotion(
+        geometryBaseline: base,
+        captureBaseline: base,
+        current: frame(
+          Vector3.zero(),
+          orientation: Quaternion.axisAngle(
+            Vector3(0, 1, 0),
+            12 * math.pi / 180,
+          ),
+        ),
+        target: target,
+      );
+      expect(result.geometryParallaxDeg, 0);
+      expect(result.viewTurnDeg, closeTo(12, 1e-9));
+      expect(result.role, AutoCaptureMotionRole.rotationCoverage);
+      expect(result.advancesGeometryBaseline, isFalse);
+    });
+
+    test('diagonal area overlap reaching 70 percent becomes safety capture', () {
+      final base = frame(Vector3.zero());
+      final result = classifyAutoCaptureMotion(
+        geometryBaseline: base,
+        captureBaseline: base,
+        current: frame(Vector3(-0.17, -0.17, 0)),
+        target: target,
+      );
+      expect(result.overlapFraction, closeTo(0.6889, 1e-9));
+      expect(result.role, AutoCaptureMotionRole.overlapSafety);
+      expect(result.shouldPromptSlowDown, isTrue);
+    });
+
+    test('1.5 degrees separates stable parallax from rotation-only motion', () {
+      final base = frame(Vector3.zero());
+      final current = frame(
+        Vector3(math.tan(1.49 * math.pi / 180), 0, 0),
+        orientation: Quaternion.axisAngle(
+          Vector3(0, 1, 0),
+          12 * math.pi / 180,
+        ),
+      );
+      final result = classifyAutoCaptureMotion(
+        geometryBaseline: base,
+        captureBaseline: base,
+        current: current,
+        target: target,
+      );
+      expect(result.geometryParallaxDeg, closeTo(1.49, 1e-9));
+      expect(result.role, AutoCaptureMotionRole.rotationCoverage);
+    });
+  });
+
   // ————————————————————————————————————————————————————————————————
   // 〔2026-08-19 全分支评审 / 08-20 变异复核〕零长度守卫的四个半边。
   //
@@ -291,9 +472,10 @@ void main() {
   //      一个**有限但错误的答案** —— 那才是下面四条要钉住的东西。
   //
   // 钉法：喂**接近零但非零**的长度(1e-12，仍在 1e-9 阈值之下)。除法此时
-  // 完全合法，守卫在 = 0.0，守卫删掉 = **90.0**(实测逐位精确)。90 同时
-  // 越过 kAutoCaptureParallaxMinDeg(5°)与 kAutoCaptureTurnMinDeg(10°)
-  // 两条下限 ⇒ 变异体会凭空开一枪。这才是这几条测试值得存在的理由：
+  // 完全合法，守卫在 = 0.0，守卫删掉 = **90.0**(实测逐位精确)。90 远超
+  // kAutoCaptureTurnMinDeg(10°)的转角开火线 ⇒ 变异体会凭空开一枪
+  // (视差版函数已退出触发链,只进遥测,但同一守卫仍防它输出错误读数)。
+  // 这才是这几条测试值得存在的理由：
   // 守的不是「不崩溃」，是「不误拍」。
   //
   // 每条只让**一个**半边落到近零、另一半保持单位长 ⇒ 四个半边逐一独立钉死
@@ -586,5 +768,103 @@ void main() {
       ),
       double.infinity,
     );
+  });
+
+  // ── medianDepthFromCloudXyz:触发层唯一合法的深度来源(2026-08-24)──
+
+  group('medianDepthFromCloudXyz (live-SfM depth, the only legal source)', () {
+    Float32List cloudAt(List<double> depths) {
+      // 相机在原点看 -Z:深度 d 的点 = (抖动的x, 抖动的y, -d)。
+      final xyz = Float32List(depths.length * 3);
+      for (var i = 0; i < depths.length; i++) {
+        xyz[i * 3] = (i % 7) * 0.01;
+        xyz[i * 3 + 1] = (i % 5) * 0.01;
+        xyz[i * 3 + 2] = -depths[i];
+      }
+      return xyz;
+    }
+
+    test('returns the median depth along the view axis', () {
+      final depths = List<double>.generate(100, (i) => 1.0 + i * 0.01);
+      expect(
+        medianDepthFromCloudXyz(
+          xyz: cloudAt(depths),
+          cameraPosition: Vector3.zero(),
+          forward: Vector3(0, 0, -1),
+          sampleStride: 1,
+        ),
+        closeTo(1.495, 0.01),
+      );
+    });
+
+    test('points behind the camera or nearer than 5 cm are ignored', () {
+      // 贴脸噪点门(>0.05m)与验尸脚本同一条;负深度 = 相机背后。
+      final depths = <double>[
+        ...List<double>.filled(20, 0.01), // 贴脸
+        ...List<double>.filled(20, -1.0), // 背后
+        ...List<double>.filled(21, 1.3), // 真场景
+      ];
+      expect(
+        medianDepthFromCloudXyz(
+          xyz: cloudAt(depths),
+          cameraPosition: Vector3.zero(),
+          forward: Vector3(0, 0, -1),
+          sampleStride: 1,
+        ),
+        closeTo(1.3, 1e-6),
+      );
+    });
+
+    test('too few valid points yields null, never a made-up depth', () {
+      // 「不知道」必须编码成 null —— 上层拿 null 走兜底位移,而不是拿一个
+      // 少数点凑出来的数去缩放阈值(rawFeaturePoints 就是这么撒谎的)。
+      expect(
+        medianDepthFromCloudXyz(
+          xyz: cloudAt(List<double>.filled(kAutoCaptureMinDepthAnchors - 1, 1.0)),
+          cameraPosition: Vector3.zero(),
+          forward: Vector3(0, 0, -1),
+          sampleStride: 1,
+        ),
+        isNull,
+      );
+      expect(
+        medianDepthFromCloudXyz(
+          xyz: Float32List(0),
+          cameraPosition: Vector3.zero(),
+          forward: Vector3(0, 0, -1),
+        ),
+        isNull,
+      );
+    });
+
+    test('sampling stride keeps the median stable on a dense cloud', () {
+      final depths = List<double>.generate(20000, (i) => 1.0 + (i % 100) * 0.01);
+      final full = medianDepthFromCloudXyz(
+        xyz: cloudAt(depths),
+        cameraPosition: Vector3.zero(),
+        forward: Vector3(0, 0, -1),
+        sampleStride: 1,
+      )!;
+      final sampled = medianDepthFromCloudXyz(
+        xyz: cloudAt(depths),
+        cameraPosition: Vector3.zero(),
+        forward: Vector3(0, 0, -1),
+      )!;
+      expect(sampled, closeTo(full, 0.05));
+    });
+
+    test('the camera pose matters — a translated camera reads a different '
+        'depth', () {
+      final depths = List<double>.filled(50, 2.0);
+      expect(
+        medianDepthFromCloudXyz(
+          xyz: cloudAt(depths),
+          cameraPosition: Vector3(0, 0, -1.0), // 前移 1m
+          forward: Vector3(0, 0, -1),
+          sampleStride: 1,
+        ),
+        closeTo(1.0, 1e-6),
+      );
+    });
   });
 }

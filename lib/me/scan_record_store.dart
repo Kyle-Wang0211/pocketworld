@@ -536,6 +536,24 @@ class ScanRecordStore {
     await addOrUpdate(r.copyWith(resultViewedAt: ready));
   }
 
+  /// 按 capture 目录标记"看过" —— 给拍摄等待页/续跑等待页用:它们手里只有
+  /// captureDir,没有 ScanRecord。按**目录名**匹配(与 [_sameDir] 同一口径,
+  /// 容器 UUID 会变,整条绝对路径比不得)。找不到对应记录就静默 no-op。
+  ///
+  /// [2026-08-24 修] 用户在拍摄等待页看完 refined 点云退出后,"我的"页卡片
+  /// 右上角的绿色"完成"胶囊仍然挂着 —— 因为 markResultViewed 此前只挂在
+  /// 卡片点击入口上。凡是把稀疏点云真正呈现给用户的路径都该算"看过"。
+  Future<void> markResultViewedByCaptureDir(String captureDir) async {
+    await ensureLoaded();
+    for (final r in List<ScanRecord>.from(_records)) {
+      final dir = r.captureDir;
+      if (dir != null && _sameDir(dir, captureDir)) {
+        await markResultViewed(r);
+        return;
+      }
+    }
+  }
+
   /// 升级迁移:把**已有** PLY 且从没标记过的老记录一次性视为"已看过"。
   ///
   /// [2026-08-06 用户签决] "不需要每次更新完 app 所有项目都显示完成,用户还要

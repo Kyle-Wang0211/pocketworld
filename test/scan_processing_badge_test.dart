@@ -209,4 +209,66 @@ void main() {
       expect(second.records.single.resultViewedAt, marked, reason: '标记被重写了');
     });
   });
+
+  group('等待页按目录标记"看过"(markResultViewedByCaptureDir)', () {
+    // [2026-08-24 修] 用户在拍摄等待页/续跑等待页看完点云,回到"我的"页
+    // 卡片仍显示绿"完成" —— 这些页面手里只有 captureDir,没有 ScanRecord,
+    // 此前根本没有可用的标记入口。
+    late Directory docs;
+    late ScanRecordStore store;
+
+    setUp(() async {
+      docs = await Directory.systemTemp.createTemp('badge_bydir_');
+      store = ScanRecordStore.forTesting(documentsDirectory: docs);
+      await store.ensureLoaded();
+    });
+    tearDown(() async {
+      if (await docs.exists()) await docs.delete(recursive: true);
+    });
+
+    Future<Directory> seedRecord(String id) async {
+      final capture = Directory('${docs.path}/captures_official/$id');
+      await capture.create(recursive: true);
+      await store.addOrUpdate(
+        ScanRecord(
+          id: id,
+          name: id,
+          createdAt: DateTime(2026, 8, 24),
+          pipelineKind: CapturePipelineKind.official,
+          captureDir: capture.path,
+        ),
+      );
+      return capture;
+    }
+
+    test('PLY 加载后才落盘 ⇒ 完成;按**别的容器前缀**同名目录标记 ⇒ 消失', () async {
+      final capture = await seedRecord('cap_wait');
+      // 拍摄等待页场景:store 加载完之后 PLY 才出(所以没被迁移误标)。
+      await File(
+        '${capture.path}/official_sfm_sparse.ply',
+      ).writeAsString('ply\ncontent\n');
+      expect(store.badgeOf(store.records.single), ScanProcessingBadge.done);
+
+      // 等待页拿到的 captureDir 可能是旧容器 UUID 的绝对路径 ⇒ 必须按目录名比。
+      await store.markResultViewedByCaptureDir('/other/container/cap_wait');
+      final r = store.records.single;
+      expect(r.resultViewedAt, isNotNull, reason: '等待页看过没被记下来');
+      expect(store.badgeOf(r), ScanProcessingBadge.none);
+    });
+
+    test('PLY 还没出 ⇒ no-op(续跑前点卡片那次标记不算)', () async {
+      final capture = await seedRecord('cap_pending');
+      await store.markResultViewedByCaptureDir(capture.path);
+      expect(store.records.single.resultViewedAt, isNull);
+      expect(
+        store.badgeOf(store.records.single),
+        ScanProcessingBadge.unfinished,
+      );
+    });
+
+    test('找不到对应记录 ⇒ 静默 no-op', () async {
+      await store.markResultViewedByCaptureDir('/x/cap_unknown');
+      expect(store.records, isEmpty);
+    });
+  });
 }

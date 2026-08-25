@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'archive_audit_store.dart';
 import 'archive_background_scheduler.dart';
+import 'aux_archive_transaction.dart';
 import 'database_archive_codec.dart';
 import 'database_archive_policy.dart';
 import 'database_archive_preprocessor.dart';
@@ -350,6 +351,19 @@ class PhotoArchiveCoordinator {
           return;
         }
       }
+      // 附属物归档排在最后:侧车与诊断日志既不参与 PWVA/Lepton 事务,也不
+      // 是 ZPAQ 的伴生文件,放在末尾就不会跟前面任何一条线抢文件。失败只
+      // 影响这一项(源字节原样留着),不把整个 capture 打回重来。
+      AuxArchiveRunResult? aux;
+      final auxCodec = databaseCodec;
+      if (auxCodec != null && !isProductionPipelineActive) {
+        aux = await AuxArchiveTransaction(
+          codec: auxCodec,
+          canContinue: () =>
+              !isProductionPipelineActive &&
+              runGeneration == _interruptionGeneration,
+        ).archiveCapture(item.value);
+      }
       await _recordAudit(
         event: 'capture_completed',
         trigger: trigger,
@@ -370,6 +384,14 @@ class PhotoArchiveCoordinator {
             'database_archived': databaseResult.archived,
           if (databaseResult != null)
             'database_skipped': databaseResult.skipped,
+          if (aux != null && aux.committedBundles.isNotEmpty)
+            'aux_bundles': aux.committedBundles,
+          if (aux != null && aux.committedBundles.isNotEmpty)
+            'aux_deleted_bytes': aux.deletedBytes,
+          if (aux != null && aux.committedBundles.isNotEmpty)
+            'aux_archive_bytes': aux.archiveBytes,
+          if (aux != null && (aux.failed || !aux.applicable))
+            'aux_skip_reason': aux.failed ? 'failed' : aux.reason,
           'work_remaining': _pending.isNotEmpty,
         },
       );

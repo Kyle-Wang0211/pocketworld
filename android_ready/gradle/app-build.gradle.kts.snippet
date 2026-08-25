@@ -1,0 +1,78 @@
+// PocketWorld Android capture — Gradle additions for android/app/build.gradle.kts.
+// SNIPPET. Merge into the existing android { } block; do not use as a file.
+//
+// =============================================================================
+// 16 KB PAGE SIZE
+// =============================================================================
+// Verified against https://developer.android.com/guide/practices/page-sizes:
+//
+//   Deadline, verbatim: "Starting February 1, 2027, if your app updates don't
+//   support 16 KB memory page sizes, you won't be able to release these
+//   updates."  (Applies to apps targeting Android 15 / API 35+ on 64-bit
+//   devices.)  This is the real date. The widely repeated 2025-11-01 was an
+//   earlier, narrower milestone and is not the one that governs us.
+//
+//   Toolchain, verbatim: "you need to upgrade to Android Gradle Plugin (AGP)
+//   version 8.5.1 or higher", and "If you update your tools to the latest
+//   versions (AGP version 8.5.1 or higher and NDK version r28 or higher) and
+//   use 16 KB-compatible prebuilt dependencies, then your app is 16 KB
+//   compatible by default".
+//
+// Three things must all hold, and only the third is actually checkable:
+//   1. AGP >= 8.5.1        -> zip alignment of uncompressed .so at 16 KB
+//   2. NDK >= r28          -> ELF segment alignment at 16 KB in what WE build
+//   3. every prebuilt .so  -> including xrslam's, and anything Flutter plugins
+//                             drag in. A single 4 KB-aligned prebuilt fails the
+//                             whole APK, and nothing in the build warns you.
+//      -> android_ready/scripts/verify_16kb.sh is the check for (2) and (3).
+
+android {
+    // API 35+ is what puts us under the 16 KB requirement in the first place.
+    compileSdk = 35
+
+    defaultConfig {
+        // 24 is the floor for the capture layer as written:
+        //   ApplicationExitInfo      API 30  (guarded at runtime)
+        //   PowerManager thermal     API 29/30 (guarded at runtime)
+        //   DISTORTION_CORRECTION    API 28  (guarded at runtime)
+        //   TYPE_ACCELEROMETER_UNCALIBRATED  API 26
+        //   registerListener(..., maxReportLatencyUs, handler)  API 19
+        // Everything above 24 is behind an explicit SDK_INT check, so 24 is a
+        // real floor rather than a hopeful one.
+        minSdk = 24
+        targetSdk = 35
+
+        ndk {
+            // xrslam ships arm64 only. Do not add armeabi-v7a: 16 KB pages are
+            // a 64-bit concern and a 32-bit ABI would add an untested target.
+            abiFilters += listOf("arm64-v8a")
+        }
+
+        externalNativeBuild {
+            cmake {
+                // Belt and braces: r28+ does this by default, but an older NDK
+                // silently produces 4 KB-aligned segments and the APK still
+                // builds. Making it explicit means a toolchain downgrade shows
+                // up as a link flag, not as a field crash.
+                arguments += listOf("-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON")
+                cppFlags += listOf("-DPW_ANDROID_CAPTURE=1")
+            }
+        }
+    }
+
+    packaging {
+        jniLibs {
+            // Must stay true. Compressed .so cannot be mapped directly, which
+            // is the whole point of the 16 KB alignment work.
+            useLegacyPackaging = false
+        }
+    }
+
+    ndkVersion = "28.0.12674087" // r28. Pin it: an unpinned NDK is a silent
+                                 // 16 KB regression waiting to happen.
+}
+
+dependencies {
+    // No new runtime dependency. The capture layer uses only platform APIs and
+    // the Flutter embedding that is already on the classpath.
+}

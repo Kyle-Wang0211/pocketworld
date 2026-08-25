@@ -42,6 +42,8 @@ import 'package:vector_math/vector_math_64.dart' show Quaternion, Vector3;
 
 import '../../point_cloud_display/progressive_octree_order.dart';
 import '../../official_capture/auto_capture_controller.dart';
+import '../../official_capture/auto_capture_geometry.dart'
+    show medianDepthFromCloudXyz;
 import '../../official_capture/auto_capture_governor.dart';
 import '../../official_capture/auto_capture_mode.dart';
 import '../../official_capture/auto_capture_telemetry.dart';
@@ -191,7 +193,41 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // spec §7「热态 critical 只拉长间隔、不停止」。取的是 _recomputeShutterPace
     // 已经采好的那一份,不新起采样(见 _lastThermalState 的注释)。
     thermalStateProvider: () => _lastThermalState,
+    // 只给无锁定目标的极端冷启动兜底使用；纯 SfM、四端同口径，不再把
+    // iOS centerRayDepthM/raycast 接进自动选帧。
+    liveDepthProvider: _liveCloudMedianDepthFor,
   );
+
+  /// 最新一份**拍摄期流式**快照的点云(与 ARKit 同一重力世界系;带重力
+  /// 旋转的 finalize 快照不进来 —— 那时自动拍早已结束)。开火位移阈值的
+  /// 场景缩放只吃它,绝不吃 ARKit rawFeaturePoints(2026-08-24 定罪,见
+  /// auto_capture_governor.dart 文件头)。
+  Float32List? _liveCloudXyz;
+
+  /// [_liveCloudMedianDepthFor] 的 1Hz 记忆化(场景中位深度秒级不突变,而 pose 流
+  /// 是 20–60Hz —— 逐帧对几千点取中位数纯属浪费)。
+  double? _liveSfmDepthMemo;
+  Float32List? _liveSfmDepthMemoCloud;
+  double _liveSfmDepthMemoAtSec = -1e9;
+
+  /// 第一级:活体 SfM 云的中位深度。快照没到 / 点太少时返回 null。
+  double? _liveCloudMedianDepthFor(ARPose pose) {
+    final xyz = _liveCloudXyz;
+    if (xyz == null) return null;
+    if (identical(xyz, _liveSfmDepthMemoCloud) &&
+        pose.timestamp - _liveSfmDepthMemoAtSec < 1.0) {
+      return _liveSfmDepthMemo;
+    }
+    final forward = cameraForwardInWorld(pose.orientation);
+    _liveSfmDepthMemo = medianDepthFromCloudXyz(
+      xyz: xyz,
+      cameraPosition: pose.position,
+      forward: forward,
+    );
+    _liveSfmDepthMemoCloud = xyz;
+    _liveSfmDepthMemoAtSec = pose.timestamp;
+    return _liveSfmDepthMemo;
+  }
 
   /// 自动采集的遥测聚合(spec §11 的待实测项)。**在内存里聚合**,按 5 秒
   /// 取一份累计快照走 [_emitAutoTelemetry] 落进既有的 JSONL —— pose 流
@@ -1092,6 +1128,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       _photoCaptureEpochMs.clear();
       _failedEvidenceJpegPaths.clear();
       _sfmLatestPoses = Float64List(0);
+      // Fresh take → 上一场的活体云深度不许被下一场继承(换场景了)。
+      _liveCloudXyz = null;
+      _liveSfmDepthMemo = null;
+      _liveSfmDepthMemoCloud = null;
       _trueFrameParallaxDeg.clear();
       _frameBelowEnterStreak.clear();
       _trueParallaxComputeMs = -1;
@@ -1770,6 +1810,14 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         _sfmLatestPoses = snapshot.posesPacked;
         _refreshPhotoCardStates();
       }
+      // 自动拍位移阈值的场景深度输入(2026-08-24 二拍验证补修):拍摄期的
+      // 流式快照**只走这条早退分支**,下方 colorize switch 里的同款钩子在
+      // 拍摄期根本执行不到 —— 未命名(7) 整场 fire_live_depth_m 为空就是
+      // 这么来的。流式云与 ARKit 同一世界系(posesPacked 为合成零四元数
+      // ⇒ _gravityAlign 恒 no-op ⇒ quat 为 null),守卫条件与下方同款。
+      if (snapshot.gravityAlignQuatWxyz == null && snapshot.xyz.isNotEmpty) {
+        _liveCloudXyz = snapshot.xyz;
+      }
       unawaited(_publishOfficialSfmCloudToAr(snapshot, receiveTag));
       return;
     }
@@ -1887,6 +1935,16 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               _sfmSnapshot = localFallback;
               _sfmPhase = SfmPreviewPhase.refined; // show the done chip + cloud
               _pendingLocalColored = null;
+              // [2026-08-24] LOCAL 兜底云也是真呈现 —— 同 refined 主路径,
+              // 在屏上就算"看过"(PLY 没落盘时 store 侧自然 no-op)。
+              final viewedDir = _session?.captureDir;
+              if (!_showDraftsWhileReconstructing && viewedDir != null) {
+                unawaited(
+                  ScanRecordStore.instance.markResultViewedByCaptureDir(
+                    viewedDir,
+                  ),
+                );
+              }
             } else {
               _sfmPhase = SfmPreviewPhase.error;
               _sfmErrorText = '$stage: $message';
@@ -1917,6 +1975,12 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         if (snapshot.posesPacked.isNotEmpty) {
           _sfmLatestPoses = snapshot.posesPacked;
           _refreshPhotoCardStates();
+        }
+        // 拍摄期流式快照(未做重力旋转 ⇒ 与 ARKit 同一世界系)→ 更新
+        // 自动拍位移阈值的场景深度输入。带旋转的 finalize 快照不进:
+        // 坐标系已不同,且那时自动拍早已结束。
+        if (snapshot.gravityAlignQuatWxyz == null && snapshot.xyz.isNotEmpty) {
+          _liveCloudXyz = snapshot.xyz;
         }
         // 修1:finalize 快照到达 → 阶段 3(提取色彩)。拍摄期的流式
         // preview(_sfmPhase == null)不进阶段流。
@@ -2255,6 +2319,14 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           _sfmPhase = SfmPreviewPhase.refined;
           _pendingLocalColored = null;
         });
+        // [2026-08-24] 终态点云在这里第一次呈现给用户 —— 预览页真的在屏幕上
+        // (没退到草稿视图)就算"看过",草稿卡右上角的绿"完成"胶囊不再出现。
+        // 退到草稿视图时终态会走自动退出,用户没看到点云,不标。
+        if (!_showDraftsWhileReconstructing && captureDir != null) {
+          unawaited(
+            ScanRecordStore.instance.markResultViewedByCaptureDir(captureDir),
+          );
+        }
       } else {
         // Defer: do NOT show the noisier phase-1 (local) cloud — wait for the
         // refined one. Hold it as the refine-failure fallback; the generating
@@ -2815,6 +2887,20 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // 与 controller 的 thermalStateProvider **同一个字段** —— fire_before_tick
       // 用的间隔必须与 governor 实际用的逐位相同,否则热机时会算漏。
       thermalState: _lastThermalState,
+      // 开火那一刻的位移/阈值/转角/活体深度 —— 见 recordDecision 里的理由。
+      // 全部取自 controller 判定时用的那份状态(或其同帧记忆化),不重算:
+      // 重算 = 又造一个可能与判定不一致的数。
+      movedM: _autoCapture.lastMovedM,
+      fireDistM: _autoCapture.lastFireDistM,
+      turnDeg: _autoCapture.lastTurnDeg,
+      // 锐度缓拍门疗效对(开火帧锐度 vs 段中位),取自 controller 判定
+      // 时的同一份状态,不重算。
+      sharpness: _autoCapture.lastSharpness,
+      segMedianSharpness: _autoCapture.lastSegmentMedianSharpness,
+      motionRole: _autoCapture.lastMotionRole,
+      geometryParallaxDeg: _autoCapture.lastGeometryParallaxDeg,
+      overlapFraction: _autoCapture.lastOverlapFraction,
+      depthScaleRatio: _autoCapture.lastDepthScaleRatio,
     );
     // isRunning 由 true 翻 false = controller 自停(撞 300 张或 5 分钟)。
     // 这里读的是 isRunning 而不是 decision:停机后 onPose 恒返回
@@ -3115,6 +3201,45 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // 收尾第一件事就是停自动拍:下面 freezeAndDrain 之后队列不再收人,
     // 自动拍会每个 tick 撞一次关着的门(还撞不出任何反馈)。
     _stopAutoCapture();
+
+    // [pw] 2026-08-24 真机报的 bug:点完成之后**还在继续拍**。
+    //
+    // 用户的观察字面上就是对的 —— 它确实还在拍,不是"在处理已拍的照片"。
+    // 队列的入队方法只是排一张**票**,真正的 12MP 拍照发生在
+    // `_pump()` 里(见 manual_capture_queue.dart)。所以 pending 的票
+    // = **还没拍、但排着队要拍的照片**,
+    // 而 `freezeAndDrain()` 会把它们**全部拍完**才返回。
+    //
+    // 为什么手动模式完全没有这个现象:手动是点一下拍一张,点完成时
+    // `outstandingCount == 0`,`freezeAndDrain` 那句
+    // `if (outstandingCount == 0) return Future.value();` 直接命中 ⇒ 秒结束。
+    // 自动是 1 秒 1 张压着,而 pump 是串行的(`await _execute(ticket)`),
+    // 单张只要慢过 1 秒队列就一直涨 ⇒ 点完成后要把那一摞全拍完。
+    //
+    // 丢掉未拍的票**不违反无损铁律**:无损管的是**已采集的数据**,而这些票
+    // 一张照片都还没拍。用户按了结束还补拍,那不是无损,是没听指令。
+    // 屏幕上的 N/300 读的是 `_projectPhotos.count`(已落盘张数),不含
+    // outstanding ⇒ 计数不会倒退。
+    //
+    // `cancelPending() + freezeAndDrain()` 是本文件既有的「立即停」惯用法
+    // (放弃拍摄那条路就是这么写的);而"保存并退出"那条刻意不 cancel,
+    // 注释写着「无损:先把在途快门全部落地」—— 两者语义本来就该不同,
+    // 完成键此前错用了后者。
+    //
+    // 在飞的那一张仍然等它落地(cancelPending 只清 _pending,不动 _active)。
+    final cancelledTickets = _shutterQueue.pendingCount;
+    _shutterQueue.cancelPending();
+    if (cancelledTickets > 0) {
+      // 丢了多少必须可见 —— 静默丢弃就又是一个静默失效。
+      TelemetryWriter.instance.event('finish_cancel_pending', <String, Object>{
+        'cancelled_tickets': cancelledTickets,
+        'mode': _captureMode.name,
+      });
+      DeviceLog.log(
+        'OfficialARCapturePage',
+        'finish: 丢弃 $cancelledTickets 张未拍的排队票(模式 ${_captureMode.name})',
+      );
+    }
     setState(() => _finishTapInProgress = true);
     try {
       await _shutterQueue.freezeAndDrain();
@@ -3997,6 +4122,24 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               ),
             ),
 
+          // [pw] 2026-08-24:这里曾经加过一个黑底转圈的「收尾遮罩」。**按同行调研撤掉了。**
+          //
+          // 调研五家(RealityScan / Polycam / Scaniverse / KIRI / Apple
+          // ObjectCaptureSession)的结论:
+          //   • 「点完成后弹一个黑底 spinner」**零家在做**,一份文档都没有;
+          //   • Apple 自己的 GuidedCapture 示例在 `.finishing` 期间**保持相机
+          //     视图**,直到 session 走到 `.completed` 才切重建页;
+          //   • RealityScan 点「Next step」进的是**可交互的点云 Review 屏**,
+          //     而且能「Take More Pictures」倒回去。
+          //
+          // 而遮罩存在的理由本来就是"drain 要花时间",那个理由已经被
+          // `cancelPending()` 消掉了 —— 现在只等在飞的那一张,遮罩只会闪一下,
+          // 闪一下的黑屏比不闪更难受。
+          //
+          // 真正对齐同行的方向是 RealityScan 那条:把上传/对齐前置到拍摄过程中
+          // ("Images will start uploading the moment you begin capturing them"),
+          // 结束时已经没有活要干,所以才能"点结束就真结束"。那是架构级改动。
+
           // ─── Post-capture final reconstruction (topmost). It owns navigation
           // until the queue drains and the final colored sparse cloud lands.
           if (_sfmPhase != null)
@@ -4484,9 +4627,8 @@ _ScreenProjection? _projectCameraSampleToScreen(
   required ARPose pose,
   required Size size,
 }) {
-  final invOrientation = pose.orientation.conjugated();
   final rel = worldPosition - pose.position;
-  final cam = invOrientation.rotated(rel);
+  final cam = worldVectorToCamera(pose.orientation, rel);
   final depth = -cam.z;
   if (depth <= 0.12 || depth > 12.0) return null;
   final focal = size.shortestSide * 0.72;
@@ -4499,7 +4641,7 @@ _ScreenProjection? _projectCameraSampleToScreen(
 }
 
 double _cameraYawFromOrientation(Quaternion orientation) {
-  final forward = orientation.rotated(Vector3(0, 0, -1));
+  final forward = cameraForwardInWorld(orientation);
   return math.atan2(forward.x, forward.z);
 }
 
@@ -5356,8 +5498,7 @@ class _CaptureModeToggle extends StatelessWidget {
   /// (左 17 / 右 51),不会差半格。
   static const double _knobInset = 3;
   static const double _knobHeight = kCaptureToggleButtonSize - _knobInset * 2;
-  static const double _knobWidth =
-      kCaptureModeToggleWidth / 2 - _knobInset * 2;
+  static const double _knobWidth = kCaptureModeToggleWidth / 2 - _knobInset * 2;
 
   @override
   Widget build(BuildContext context) {

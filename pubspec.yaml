@@ -206,6 +206,9 @@ dev_dependencies:
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
 
+  # [pw][vio] XRSLAM C ABI 的 Dart 绑定生成器。只在开发期用,不进包。
+  ffigen: ^20.1.1
+
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 

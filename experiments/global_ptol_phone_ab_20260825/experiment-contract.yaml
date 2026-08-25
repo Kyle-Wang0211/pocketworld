@@ -1,0 +1,74 @@
+schema: pw_phone_algorithm_ab_contract_v1
+experiment_id: global_ptol_phone_ab_20260825
+objective: >-
+  Measure whether the existing native global-BA parameter-tolerance hook at
+  Ceres' official 1e-8 default is faster than the current explicit 0 on the
+  physical production iPhone pipeline without changing geometry or any other
+  variable.
+source:
+  repository: /Users/kaidongwang/Developer/pocketworld
+  branch: codex/ptol-phone-ab-20260825
+  head: a8b94ca0e35158c8aca7c2e3f66f11269fa385f6
+  baseline_dirty_identity_receipt: source-identity.yaml
+  candidate_identity_receipt: candidate-identity.yaml
+native:
+  framework: PWOfficialSfm.xcframework/ios-arm64/PWOfficialSfm.framework/PWOfficialSfm
+  sha256: bd1220f12b84b6de06319bda28e2902d375b59b9150d3dd947bc1d04afc34062
+  control_parameter_tolerance: '0'
+  candidate_parameter_tolerance: '1e-8'
+input:
+  capture_id: cap_1787545807521946
+  source_directory: /Users/kaidongwang/pw_device_backups/20260825T043900Z-splash-solving-orb-v1/post/Documents/captures_official/cap_1787545807521946
+  archive_bytes: 7286278
+  archive_sha256: 9114ec5e078f1730fe4f399789e26994bd26cbaacecb4f6c19f3c3120f2fc3f4
+  archive_manifest_bytes: 638
+  archive_manifest_sha256: 3e0757b9f3ae3a9e69c087c9a2f7c5d7c0ad0fc47f2e59531634ba8d19874f7e
+  pose_sidecar_bytes: 14176
+  pose_sidecar_sha256: d4f6d3c079cf9993cee9dceb7b5e3445ac990f1f2626986b95acbdcb35b615c1
+  fed_frames_bytes: 97133
+  fed_frames_sha256: 659e4ac8d4bf4f976956e71b801c74ea0b68a87348734f66c9ddb62067f24f61
+  archive_policy_bytes: 252
+  archive_policy_sha256: b381512431f6416bf11fbe667c77e4d027dc60ad48a1ea276a39ee1096dead03
+  materialized_sqlite_bytes: 15839232
+  materialized_sqlite_sha256: f829c281aea6ed7956e3afb134959b663cf35cfee633956029c09d3b2af3290d
+execution:
+  platform: physical_iPhone_only
+  device_model: iPhone 14 Pro
+  coredevice_id: 1B290474-D354-5B4C-AAB0-0805AC5DC832
+  udid: 00008120-00146C4A1AEBC01E
+  backend: physical_iPhone_PWOfficialSfm_frozen_database_resume
+  production_pose_source: frozen_ARKit_sidecar_from_build32_capture
+  excluded_shadow_pose_source: XRSLAM_VIO
+  benchmark_bundle_id: com.kyle.PocketWorld.PtolBench
+  forbidden_production_bundle_id: com.kyle.PocketWorld
+  arm_order:
+    - {name: A1, parameter_tolerance: '0'}
+    - {name: B1, parameter_tolerance: '1e-8'}
+    - {name: A2, parameter_tolerance: '0'}
+    - {name: B2, parameter_tolerance: '1e-8'}
+  random_seeds: compiled_deterministic_native_sampling_no_override
+metrics:
+  primary: elapsed_ms
+  supporting: [refine_ms, registered, delivered_points, reproj_px, ply_sha256]
+thresholds:
+  registered_delta: 0
+  point_count_relative_regression_max: 0.01
+  reprojection_px_regression_max: 0.01
+  within_family_elapsed_spread_max: 0.10
+  minimum_speedup: 0.05
+winner_rule: >-
+  Both B arms pass quality; B median is faster; and relative speedup exceeds
+  max(0.05, observed A/B within-family timing noise). Passing advances only
+  to a later full end-to-end physical-phone candidate experiment.
+stopping_rules:
+  - wrong bundle, device, input, native hash, or arm order
+  - any device command targets com.kyle.PocketWorld
+  - any arm fails, times out, or lacks a non-empty PLY
+  - signing or codesign validation fails
+known_limitation: >-
+  The current registered native framework does not expose Ceres final cost.
+  No numerical-equivalence claim may be made from summary reprojection alone.
+  This diagnostic replay starts from a frozen production SQLite database, so
+  it does not rerun capture-time ARKit ingestion or the Metal feature/matcher
+  path and can never approve a production parameter by itself. XRSLAM remains
+  a separate shadow cross-platform VIO route and is excluded from every arm.

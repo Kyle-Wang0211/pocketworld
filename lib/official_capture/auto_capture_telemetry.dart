@@ -29,6 +29,7 @@
 // 设计见 docs/superpowers/specs/2026-08-19-auto-capture-design.md §7 / §9 / §11。
 
 import 'auto_capture_governor.dart';
+import 'auto_capture_geometry.dart' show AutoCaptureMotionRole;
 import 'shutter_backpressure_gate.dart' show ShutterPace;
 
 /// 累计快照的落盘节流(秒)。与采集页既有的 5 秒诊断轮次同一个量级:
@@ -47,6 +48,11 @@ class AutoCaptureTelemetry {
   final Map<ShutterPace, double> _paceSec = <ShutterPace, double>{
     for (final p in ShutterPace.values) p: 0.0,
   };
+
+  final Map<AutoCaptureMotionRole, int> _fireRoleCounts =
+      <AutoCaptureMotionRole, int>{
+        for (final role in AutoCaptureMotionRole.values) role: 0,
+      };
 
   /// 会话是否开着。关掉之后到达的判定一律丢弃 —— 那一行早就写出去了,
   /// 事后再改它的比例只会让两行互相矛盾。
@@ -84,11 +90,23 @@ class AutoCaptureTelemetry {
     _fireEnqueued = 0;
     _fireEnqueueFailed = 0;
     _fireBeforeTick = 0;
+    _fireMovedM.clear();
+    _fireDistM.clear();
+    _fireTurnDeg.clear();
+    _fireLiveDepthM.clear();
+    _fireSharpness.clear();
+    _fireSegMedian.clear();
+    _fireGeometryParallaxDeg.clear();
+    _fireOverlapFraction.clear();
+    _fireDepthScaleRatio.clear();
     for (final d in AutoCaptureDecision.values) {
       _counts[d] = 0;
     }
     for (final p in ShutterPace.values) {
       _paceSec[p] = 0.0;
+    }
+    for (final role in AutoCaptureMotionRole.values) {
+      _fireRoleCounts[role] = 0;
     }
   }
 
@@ -115,9 +133,45 @@ class AutoCaptureTelemetry {
     required double tSec,
     required ShutterPace pace,
     int thermalState = 0,
+    double? movedM,
+    double? fireDistM,
+    double? turnDeg,
+    double? liveDepthM,
+    double? sharpness,
+    double? segMedianSharpness,
+    AutoCaptureMotionRole? motionRole,
+    double? geometryParallaxDeg,
+    double? overlapFraction,
+    double? depthScaleRatio,
   }) {
     if (!_open) return;
     _counts[d] = (_counts[d] ?? 0) + 1;
+
+    // [pw] 2026-08-24 触发层换血后的开火快照:位移 / 生效阈值 / 转角 /
+    // 活体 SfM 深度。首/中/末三点(见 _triple)——上一版靠 fire_depth_m
+    // 抓到了"深度整场撒谎 8 倍"的真凶,这一版同样要能一眼看出:
+    //   · moved ≥ dist 还是 turn 开的火(moved < dist 的开火 = 转角路);
+    //   · dist 有没有被活体深度缩放(= fallback 0.28 还是别的值);
+    //   · liveDepth 与事后 SfM 验尸值是否一致(再有撒谎的立刻现形)。
+    if (d == AutoCaptureDecision.fire) {
+      void keep(List<double> into, double? v) {
+        if (v != null && v.isFinite) into.add(v);
+      }
+
+      keep(_fireMovedM, movedM);
+      keep(_fireDistM, fireDistM);
+      keep(_fireTurnDeg, turnDeg);
+      keep(_fireLiveDepthM, liveDepthM);
+      // 锐度缓拍门的疗效对:开火帧锐度 vs 当时的段中位。
+      keep(_fireSharpness, sharpness);
+      keep(_fireSegMedian, segMedianSharpness);
+      keep(_fireGeometryParallaxDeg, geometryParallaxDeg);
+      keep(_fireOverlapFraction, overlapFraction);
+      keep(_fireDepthScaleRatio, depthScaleRatio);
+      if (motionRole != null) {
+        _fireRoleCounts[motionRole] = (_fireRoleCounts[motionRole] ?? 0) + 1;
+      }
+    }
 
     final prevSec = _lastDecisionSec;
     final prevPace = _lastPace;
@@ -207,6 +261,30 @@ class AutoCaptureTelemetry {
       'fire_enqueue_failed': _fireEnqueueFailed,
       // R2(重叠上限)提前触发的**下界**,见 recordDecision 里的推导。
       'fire_before_tick': _fireBeforeTick,
+      'fire_role_counts': <String, int>{
+        for (final e in _fireRoleCounts.entries) e.key.name: e.value,
+      },
+      // 开火时刻的位移/阈值/转角/活体深度。**首/中/末三点**而不是均值 ——
+      // 要抓的是趋势(上一版就是靠这个形状抓到深度整场撒谎的)。
+      //
+      // 一条也没采到时**整个键不出现**,而不是给 null 或 0:
+      // 0 会被读成一句没人测过的断言,null 又进不了 Map<String, Object>。
+      // 键的有无本身就是"这一轮有没有开过火"的信号。
+      if (_triple(_fireMovedM) case final List<double> v) 'fire_moved_m': v,
+      if (_triple(_fireDistM) case final List<double> v) 'fire_dist_m': v,
+      if (_triple(_fireTurnDeg) case final List<double> v) 'fire_turn_deg': v,
+      if (_triple(_fireLiveDepthM) case final List<double> v)
+        'fire_live_depth_m': v,
+      if (_triple(_fireSharpness) case final List<double> v)
+        'fire_sharpness': v,
+      if (_triple(_fireSegMedian) case final List<double> v)
+        'fire_seg_median_sharpness': v,
+      if (_triple(_fireGeometryParallaxDeg) case final List<double> v)
+        'fire_geometry_parallax_deg': v,
+      if (_triple(_fireOverlapFraction) case final List<double> v)
+        'fire_overlap_fraction': v,
+      if (_triple(_fireDepthScaleRatio) case final List<double> v)
+        'fire_depth_scale_ratio': v,
       // spec §11:ShutterPace 三档各停留多久(秒)= 积压严重程度。
       'pace_sec': <String, double>{
         for (final e in _paceSec.entries) e.key.name: _round3(e.value),
@@ -216,4 +294,28 @@ class AutoCaptureTelemetry {
 
   /// 秒取到毫秒。JSONL 是给人读的,`65.50000000000001` 只会碍事。
   static double _round3(double v) => (v * 1000).roundToDouble() / 1000;
+
+  final List<double> _fireMovedM = <double>[];
+  final List<double> _fireDistM = <double>[];
+  final List<double> _fireTurnDeg = <double>[];
+  final List<double> _fireLiveDepthM = <double>[];
+  final List<double> _fireSharpness = <double>[];
+  final List<double> _fireSegMedian = <double>[];
+  final List<double> _fireGeometryParallaxDeg = <double>[];
+  final List<double> _fireOverlapFraction = <double>[];
+  final List<double> _fireDepthScaleRatio = <double>[];
+
+  /// 序列的**首 / 中 / 末**三个值(按发生顺序,不排序)。
+  ///
+  /// 刻意不给均值或分位:要抓的是「轮内单调走低」,那是一个**趋势**,
+  /// 任何把顺序抹掉的统计量都看不见它。空序列给 null,不给 0 ——
+  /// 0 会被读成"深度是 0",那是一句没人测过的断言。
+  static List<double>? _triple(List<double> xs) {
+    if (xs.isEmpty) return null;
+    return <double>[
+      _round3(xs.first),
+      _round3(xs[xs.length ~/ 2]),
+      _round3(xs.last),
+    ];
+  }
 }

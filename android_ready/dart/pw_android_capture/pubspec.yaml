@@ -1,0 +1,10 @@
+name: pw_android_capture
+description: Pure-Dart algorithm core for the PocketWorld Android capture layer (clock normalisation, IMU delivery auditing, thermal policy, exit-info triage). No Flutter/Android dependency so it is unit-testable on any host.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dev_dependencies:
+  test: ^1.25.0

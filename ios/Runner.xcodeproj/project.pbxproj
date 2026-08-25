@@ -11,6 +11,10 @@
 		0F1C1A100000000000000011 /* OfficialAetherARKitPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A100000000000000001 /* OfficialAetherARKitPlugin.swift */; };
 		0F1C1A100000000000000012 /* OfficialReconUmbrella.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A100000000000000002 /* OfficialReconUmbrella.swift */; };
 		0F1C1A100000000000000013 /* PwARCameraLease.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A100000000000000003 /* PwARCameraLease.swift */; };
+		0F1C1A10000000000000A010 /* PwVioTimebase.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A10000000000000A000 /* PwVioTimebase.swift */; };
+		0F1C1A10000000000000A013 /* PwVioSlamFeeder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A10000000000000A003 /* PwVioSlamFeeder.swift */; };
+		0F1C1A10000000000000A011 /* PwVioCapability.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A10000000000000A001 /* PwVioCapability.swift */; };
+		0F1C1A10000000000000A012 /* PwVioThermal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A10000000000000A002 /* PwVioThermal.swift */; };
 		0F1C1A200000000000000014 /* OfficialArchiveBackgroundTask.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A200000000000000004 /* OfficialArchiveBackgroundTask.swift */; };
 		0F1C1A300000000000000015 /* PWJSONSafety.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A300000000000000005 /* PWJSONSafety.swift */; };
 		1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */ = {isa = PBXBuildFile; fileRef = 1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */; };
@@ -67,6 +71,10 @@
 		0F1C1A100000000000000001 /* OfficialAetherARKitPlugin.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OfficialAetherARKitPlugin.swift; sourceTree = "<group>"; };
 		0F1C1A100000000000000002 /* OfficialReconUmbrella.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OfficialReconUmbrella.swift; sourceTree = "<group>"; };
 		0F1C1A100000000000000003 /* PwARCameraLease.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PwARCameraLease.swift; sourceTree = "<group>"; };
+		0F1C1A10000000000000A000 /* PwVioTimebase.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PwVioTimebase.swift; sourceTree = "<group>"; };
+		0F1C1A10000000000000A003 /* PwVioSlamFeeder.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PwVioSlamFeeder.swift; sourceTree = "<group>"; };
+		0F1C1A10000000000000A001 /* PwVioCapability.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PwVioCapability.swift; sourceTree = "<group>"; };
+		0F1C1A10000000000000A002 /* PwVioThermal.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PwVioThermal.swift; sourceTree = "<group>"; };
 		0F1C1A200000000000000004 /* OfficialArchiveBackgroundTask.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OfficialArchiveBackgroundTask.swift; sourceTree = "<group>"; };
 		0F1C1A300000000000000005 /* PWJSONSafety.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PWJSONSafety.swift; sourceTree = "<group>"; };
 		1498D2321E8E86230040F4C2 /* GeneratedPluginRegistrant.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GeneratedPluginRegistrant.h; sourceTree = "<group>"; };
@@ -193,6 +201,10 @@
 				0F1C1A100000000000000001 /* OfficialAetherARKitPlugin.swift */,
 				0F1C1A100000000000000002 /* OfficialReconUmbrella.swift */,
 				0F1C1A100000000000000003 /* PwARCameraLease.swift */,
+				0F1C1A10000000000000A000 /* PwVioTimebase.swift */,
+				0F1C1A10000000000000A003 /* PwVioSlamFeeder.swift */,
+				0F1C1A10000000000000A001 /* PwVioCapability.swift */,
+				0F1C1A10000000000000A002 /* PwVioThermal.swift */,
 				0F1C1A200000000000000004 /* OfficialArchiveBackgroundTask.swift */,
 				0F1C1A300000000000000005 /* PWJSONSafety.swift */,
 				16019E67BE3B581AE0E2152F /* MetalRenderer.swift */,
@@ -508,6 +520,10 @@
 				0F1C1A100000000000000011 /* OfficialAetherARKitPlugin.swift in Sources */,
 				0F1C1A100000000000000012 /* OfficialReconUmbrella.swift in Sources */,
 				0F1C1A100000000000000013 /* PwARCameraLease.swift in Sources */,
+				0F1C1A10000000000000A010 /* PwVioTimebase.swift in Sources */,
+				0F1C1A10000000000000A013 /* PwVioSlamFeeder.swift in Sources */,
+				0F1C1A10000000000000A011 /* PwVioCapability.swift in Sources */,
+				0F1C1A10000000000000A012 /* PwVioThermal.swift in Sources */,
 				0F1C1A200000000000000014 /* OfficialArchiveBackgroundTask.swift in Sources */,
 				0F1C1A300000000000000015 /* PWJSONSafety.swift in Sources */,
 				03D62ABCFE668FE66D5CD107 /* MetalRenderer.swift in Sources */,

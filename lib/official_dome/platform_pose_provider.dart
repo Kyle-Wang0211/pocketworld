@@ -175,6 +175,12 @@ class PlatformARPoseProvider implements ARPoseProvider {
       // backends without a tracker classification don't poison the
       // health stats.
       trackingStateName: map['trackingStateName'] as String?,
+      // 中心 raycast 深度(冷启动用)。native 用 -1 表示"未命中/没有",
+      // 这里收窄成 null —— 非法值绝不带着往下走(2026-08-24 的教训)。
+      centerRayDepthM: switch ((map['centerRayDepthM'] as num?)?.toDouble()) {
+        final d? when d > 0.05 && d <= 2.5 && d.isFinite => d,
+        _ => null,
+      },
     );
     _lastPose = pose;
     if (!_controller.isClosed) _controller.add(pose);

@@ -1,0 +1,27 @@
+{
+  "date": "2026-08-17",
+  "purpose": "社区三bug修复装机:feed分页(vault_page加载更多)+recordView改走record_work_view RPC;缩略图修复在Edge Function侧不随包。附带NOTICE合规资产(ios/Vendor/NativeCore/licenses/随包)。",
+  "head": "c9c0cab51a0f7a3d49d965d72daaaccc1f43441a",
+  "uncommitted_diff_sha256": "38048c9cd6030af36864c43720f722ca8b3e35e9d7ae6d5a6c0ef00a6474bbb3",
+  "dirty_files": 46,
+  "build_cmd": "LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 flutter build ios --release --no-pub",
+  "device": "iPhone15,2 / 1B290474-D354-5B4C-AAB0-0805AC5DC832",
+  "backup": "~/pw_device_backups/20260817_pre_install (612 files, SHA256SUMS.pre_install.txt, 漏拉0, HEVC采集6/6 finalized+计数一致, lep采集100/100/100)",
+  "changes_in_this_build": [
+    "lib/ui/vault_page.dart: feed offset翻页 _maybeLoadMore(按id去重+identical竞态闸)",
+    "lib/community/community_service.dart: recordView改rpc('record_work_view')",
+    "pubspec.yaml: assets加ios/Vendor/NativeCore/licenses/与vendor/lepton_jpeg/licenses/",
+    "THIRD_PARTY_NOTICES扩写+ios/Vendor/NativeCore/licenses/新目录(12个许可文本)"
+  ],
+  "not_in_this_build": [
+    "Edge Function storage-sign-upload PNG修复(已单独deploy 2026-08-17)",
+    "migrations 20260817000000/001000(已db push 2026-08-17)"
+  ],
+  "effectiveness_criteria": [
+    "翻页: 社区feed滚到底部能继续加载第21个及以后的作品(需feed里>20个作品才可见)",
+    "recordView: 打开一个作品详情页后,works.views_count从0开始增长(服务端可查)",
+    "缩略图(服务端): 下一次发布的作品thumbnail_storage_path非NULL且feed卡片显示图"
+  ],
+  "no_native_changes": true,
+  "no_podspec_changes": true
+}

@@ -15,6 +15,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pocketworld_flutter/official_capture/auto_capture_geometry.dart';
 import 'package:pocketworld_flutter/official_capture/auto_capture_governor.dart';
 import 'package:pocketworld_flutter/official_capture/auto_capture_telemetry.dart';
 import 'package:pocketworld_flutter/official_capture/shutter_backpressure_gate.dart';
@@ -70,6 +71,30 @@ AutoCaptureTelemetry _openWith(AutoCaptureDecision d, int n) {
 
 void main() {
   // ─── ① 聚合器本体 ───────────────────────────────────────────────────
+
+  test(
+    'fire telemetry preserves the cross-platform motion role and geometry',
+    () {
+      final t = AutoCaptureTelemetry()..recordSessionStart(0);
+      t.recordDecision(
+        AutoCaptureDecision.fire,
+        tSec: 0.25,
+        pace: ShutterPace.normal,
+        motionRole: AutoCaptureMotionRole.radialBridge,
+        geometryParallaxDeg: 0.4,
+        overlapFraction: 0.86,
+        depthScaleRatio: 1.21,
+      );
+      final snap = t.snapshot();
+      expect(
+        snap['fire_role_counts'],
+        containsPair(AutoCaptureMotionRole.radialBridge.name, 1),
+      );
+      expect(snap['fire_geometry_parallax_deg'], <double>[0.4, 0.4, 0.4]);
+      expect(snap['fire_overlap_fraction'], <double>[0.86, 0.86, 0.86]);
+      expect(snap['fire_depth_scale_ratio'], <double>[1.21, 1.21, 1.21]);
+    },
+  );
 
   group('decision counts (spec §11「视差下限触发率」)', () {
     test('counts each kind and leaves untouched kinds at zero', () {
@@ -212,11 +237,11 @@ void main() {
       expect(t.snapshot()['closed'], isFalse);
 
       // 第二轮的**第一发**必须以第二轮的起跑为参照。上一轮的开火时刻若
-      // 留着,这一发的间隔会被算成 97.4 秒 —— 计数错了,而两轮的数字
-      // 各自看上去都很正常。
+      // 留着,这一发的间隔会被算成 97 秒级 —— 计数错了,而两轮的数字
+      // 各自看上去都很正常。(0.1s < 0.25s 去抖间隔 ⇒ 记早。)
       t.recordDecision(
         AutoCaptureDecision.fire,
-        tSec: 100.4,
+        tSec: 100.1,
         pace: ShutterPace.normal,
       );
       expect(_int(t, 'fire_before_tick'), 1);
@@ -282,11 +307,11 @@ void main() {
     });
   });
 
-  group('fire_before_tick (R2 上限判据的提前触发)', () {
-    // 判据:开火时距上一次开火 **严格短于**当前档的 tick 间隔 ⇒ 只可能是
-    // R2(重叠上限)打的,因为 tick 闸在 governor 里就是
-    // `sinceLastTickSec < tickIntervalSec -> skipPaced`。等于间隔时 tick 闸
-    // 已经放行,归因就不唯一了 —— 那一发不算。
+  group('fire_before_tick (早于去抖间隔的开火 —— 新判据下应恒为 0,自检用)', () {
+    // 判据:开火时距上一次开火 **严格短于**当前档的间隔。〔2026-08-24〕
+    // 触发层换血后没有任何路径能绕过去抖闸,这个计数在真机上应恒为 0 ——
+    // 它变成一条自检线:>0 说明 controller 与 governor 的时钟接线出了错。
+    // 等于间隔时闸已放行,归因不唯一 —— 那一发不算。normal 档间隔 = 0.25s。
     AutoCaptureTelemetry fireAt(
       double t, {
       ShutterPace pace = ShutterPace.normal,
@@ -296,16 +321,16 @@ void main() {
       return tel;
     }
 
-    test('just below the tick interval counts as early', () {
-      expect(_int(fireAt(0.999), 'fire_before_tick'), 1);
+    test('just below the debounce interval counts as early', () {
+      expect(_int(fireAt(0.249), 'fire_before_tick'), 1);
     });
 
-    test('exactly at the tick interval does not count', () {
-      expect(_int(fireAt(1.0), 'fire_before_tick'), 0);
+    test('exactly at the debounce interval does not count', () {
+      expect(_int(fireAt(0.25), 'fire_before_tick'), 0);
     });
 
-    test('after the tick interval does not count', () {
-      expect(_int(fireAt(1.001), 'fire_before_tick'), 0);
+    test('after the debounce interval does not count', () {
+      expect(_int(fireAt(0.251), 'fire_before_tick'), 0);
     });
 
     test('the first fire is measured from the session start', () {
@@ -314,7 +339,7 @@ void main() {
       final t = AutoCaptureTelemetry()..recordSessionStart(100.0);
       t.recordDecision(
         AutoCaptureDecision.fire,
-        tSec: 100.4,
+        tSec: 100.1,
         pace: ShutterPace.normal,
       );
       expect(_int(t, 'fire_before_tick'), 1);
@@ -328,11 +353,11 @@ void main() {
         tSec: 1.5,
         pace: ShutterPace.normal,
       );
-      // 2.0s:距**上一发**只有 0.5s ⇒ 早。若参照点错记成起跑(2.0s),
+      // 1.6s:距**上一发**只有 0.1s ⇒ 早。若参照点错记成起跑(1.6s ≥ 0.25s),
       // 这一发会被漏掉。
       t.recordDecision(
         AutoCaptureDecision.fire,
-        tSec: 2.0,
+        tSec: 1.6,
         pace: ShutterPace.normal,
       );
       expect(_int(t, 'fire_before_tick'), 1);
@@ -511,7 +536,7 @@ void main() {
   });
 
   group('snapshot shape', () {
-    test('exactly the eight documented keys, nothing more', () {
+    test('base snapshot includes the documented role counts', () {
       // 「少而准」是本任务的显式要求。多一个字段就多一份要维护的口径,
       // 而 JSONL 的读者只会读文档里写了的那几个。
       final t = _openWith(AutoCaptureDecision.fire, 1);
@@ -523,8 +548,48 @@ void main() {
         'fire_enqueued',
         'fire_enqueue_failed',
         'fire_before_tick',
+        'fire_role_counts',
         'pace_sec',
       });
+    });
+
+    test('fire samples appear as first/mid/last triples when provided', () {
+      // 〔2026-08-24〕换血后的开火快照:位移/生效阈值/转角/活体 SfM 深度。
+      // 上一版靠同形状的 fire_depth_m 抓到"深度整场撒谎 8 倍"的真凶 ——
+      // 键名换了,首/中/末的趋势形状必须原样保留。
+      final t = AutoCaptureTelemetry()..recordSessionStart(0);
+      for (var i = 1; i <= 3; i++) {
+        t.recordDecision(
+          AutoCaptureDecision.fire,
+          tSec: i.toDouble(),
+          pace: ShutterPace.normal,
+          movedM: 0.10 * i,
+          fireDistM: 0.10,
+          turnDeg: 2.0 * i,
+          liveDepthM: 1.0 + i,
+        );
+      }
+      final snap = t.snapshot();
+      expect(snap['fire_moved_m'], <double>[0.1, 0.2, 0.3]);
+      expect(snap['fire_dist_m'], <double>[0.1, 0.1, 0.1]);
+      expect(snap['fire_turn_deg'], <double>[2.0, 4.0, 6.0]);
+      expect(snap['fire_live_depth_m'], <double>[2.0, 3.0, 4.0]);
+    });
+
+    test('fire sharpness pairs record the blur-gate treatment effect', () {
+      // 疗效指标:开火帧锐度 vs 当时段中位 —— 门在干活时前者应系统性
+      // 不低于后者。两列成对记,事后一除就是占比。
+      final t = AutoCaptureTelemetry()..recordSessionStart(0);
+      t.recordDecision(
+        AutoCaptureDecision.fire,
+        tSec: 1,
+        pace: ShutterPace.normal,
+        sharpness: 120,
+        segMedianSharpness: 100,
+      );
+      final snap = t.snapshot();
+      expect(snap['fire_sharpness'], <double>[120.0, 120.0, 120.0]);
+      expect(snap['fire_seg_median_sharpness'], <double>[100.0, 100.0, 100.0]);
     });
 
     test('seconds are rounded to milliseconds, not truncated', () {

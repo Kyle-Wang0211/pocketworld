@@ -1,0 +1,72 @@
+<!--
+  PocketWorld Android capture — manifest additions.
+
+  Merge these into android/app/src/main/AndroidManifest.xml. This file is a
+  SNIPPET, not a manifest: it will not build on its own.
+
+  ============================================================================
+  PERMISSIONS
+  ============================================================================
+  CAMERA
+    Runtime (dangerous). Must be requested at run time, not just declared.
+
+  HIGH_SAMPLING_RATE_SENSORS   (API 31, Android 12)
+    NORMAL protection level: install-time, no runtime request, no user prompt,
+    no permission dialog to design around. Without it, an app whose targetSdk
+    is 31+ is hard-capped at 200 Hz on accelerometer / gyroscope / magnetometer
+    no matter what samplingPeriodUs it passes.
+
+    Declaring it does NOT guarantee a higher rate. The platform is explicit
+    that samplingPeriodUs is a suggestion, and there is no API that reports the
+    achieved rate — SensorDeliveryMonitor reconstructs it from timestamps.
+    Google Play's HighSamplingRate lint also flags this permission, so the
+    listing needs a justification for a rate above 200 Hz.
+
+  ACCESS_FINE_LOCATION / ACCESS_COARSE_LOCATION
+    NOT declared. The capture pipeline does not use GNSS.
+
+  Deliberately absent: nothing here requests LiDAR/ToF depth, by policy.
+
+  ============================================================================
+  APPLICATION ATTRIBUTES
+  ============================================================================
+  android:extractNativeLibs="false"
+    Required for the 16 KB page-size work: the .so files must ship uncompressed
+    and 16 KB aligned inside the APK, and be mapped directly rather than
+    unpacked. AGP sets this by default for modern namespaces, but Flutter
+    projects frequently carry an inherited "true" — set it explicitly so the
+    value is visible rather than inherited.
+
+  android:largeHeap
+    NOT set. On Android 17 the memory limiter accounts anonymous/swap memory
+    and largeHeap does not raise that cap; it would only make the managed heap
+    larger while the native VIO map is what actually gets us killed.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- Lifts the Android 12+ 200 Hz motion-sensor cap. Normal permission. -->
+    <uses-permission android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS" />
+
+    <!-- Camera2 manual control. required=false so the listing is not narrowed
+         further than necessary; the code already degrades when a control is
+         unavailable instead of failing the capture. -->
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="true" />
+    <uses-feature
+        android:name="android.hardware.camera.level.full"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.sensor.gyroscope"
+        android:required="true" />
+    <uses-feature
+        android:name="android.hardware.sensor.accelerometer"
+        android:required="true" />
+
+    <application android:extractNativeLibs="false">
+        <!-- MainActivity etc. unchanged. -->
+    </application>
+
+</manifest>

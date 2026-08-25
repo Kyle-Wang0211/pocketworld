@@ -49,6 +49,7 @@ PODS:
   - video_thumbnail (0.0.1):
     - Flutter
     - libwebp
+  - xrslam (0.1.0)
 
 DEPENDENCIES:
   - aether3d_ffi (from `../vendor/aether_ffi`)
@@ -67,6 +68,7 @@ DEPENDENCIES:
   - thermion_flutter (from `.symlinks/plugins/thermion_flutter/ios`)
   - url_launcher_ios (from `.symlinks/plugins/url_launcher_ios/ios`)
   - video_thumbnail (from `.symlinks/plugins/video_thumbnail/ios`)
+  - xrslam (from `../vendor/xrslam`)
 
 SPEC REPOS:
   trunk:
@@ -107,9 +109,11 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/url_launcher_ios/ios"
   video_thumbnail:
     :path: ".symlinks/plugins/video_thumbnail/ios"
+  xrslam:
+    :path: "../vendor/xrslam"
 
 SPEC CHECKSUMS:
-  aether3d_ffi: f446811a035c1ced5db8bab4118f32feb86e6a9a
+  aether3d_ffi: 82f221d9de5604a25f48b883ae27cfe781bbcc20
   app_links: a754cbec3c255bd4bbb4d236ecc06f28cd9a7ce8
   background_downloader: 50e91d979067b82081aba359d7d916b3ba5fadad
   camera_avfoundation: 968a9a5323c79a99c166ad9d7866bfd2047b5a9b
@@ -128,7 +132,8 @@ SPEC CHECKSUMS:
   thermion_flutter: d0c4adbb1de69e5ecc244d70bbde81d8497246b2
   url_launcher_ios: 7a95fa5b60cc718a708b8f2966718e93db0cef1b
   video_thumbnail: b637e0ad5f588ca9945f6e2c927f73a69a661140
+  xrslam: afa092c5ea756086210844295ee1ffdbcbe01757
 
-PODFILE CHECKSUM: 93ec8e20c7a8d976dcf0ef689f3f0c993903644f
+PODFILE CHECKSUM: a6326b74c51fe4a310ea58c0bb4f7c8ba1340981
 
 COCOAPODS: 1.16.2

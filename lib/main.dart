@@ -46,6 +46,7 @@ import 'ui/auth/auth_root_view.dart';
 import 'ui/design_system.dart';
 import 'ui/splash_overlay.dart';
 import 'util/device_log.dart';
+import 'vio/diagnostics/vio_diagnostics_recorder.dart';
 
 /// Global ScaffoldMessenger key. Wired onto [MaterialApp.scaffoldMessengerKey]
 /// so any code path can show a snackbar that survives:
@@ -121,6 +122,29 @@ Future<void> main() async {
           );
         } catch (_) {}
       }());
+      // [pw][vio] 采集侧诊断记录器。被动测量,不改变任何采集行为:
+      //   ① CoreMotion / ARFrame 各贴哪个时钟基准(iOS 也有休眠陷阱 ——
+      //      man 3 clock_gettime:UPTIME_RAW 休眠停走、MONOTONIC 继续走,
+      //      而 CMLogItem.timestamp 只说 "since the device booted",没说是哪个)
+      //   ② IMU 实际到达间隔  ③ 热档位曲线
+      // 报告落 Documents/vio_diagnostics/latest.json,用 devicectl 拉。
+      // unawaited:诊断绝不能拖慢启动路径,失败也只记 error 不影响 App。
+      // 单变量开关。默认 on = 保持现状(加开关本身不改行为);
+      // off 则整条影子链都不启动 —— 包括 CoreMotion 喂帧与逐帧 3× 降采样。
+      const String vioShadow =
+          String.fromEnvironment('PW_VIO_SHADOW', defaultValue: 'on');
+      if (vioShadow == 'off') {
+        official_device_log.DeviceLog.log(
+            'VioDiag', 'PW_VIO_SHADOW=off ⇒ 影子喂帧未启动(单变量对照组)');
+      } else {
+        unawaited(() async {
+          try {
+            await VioDiagnosticsRecorder.instance.start();
+          } catch (e) {
+            official_device_log.DeviceLog.log('VioDiag', 'start failed: $e');
+          }
+        }());
+      }
       // ignore: avoid_print
       print('[AET-SMOKE] ensureInitialized done, about to runApp');
 
@@ -703,6 +727,7 @@ class _HomeScreenState extends State<HomeScreen> {
           child: AetherSplashOverlay(
             visible: _splashVisible,
             progressMessage: _splashMessage(context),
+            exitStyle: SplashExitStyle.directLineDoor,
           ),
         ),
       ],

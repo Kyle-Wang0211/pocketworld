@@ -1,0 +1,56 @@
+# ffigen_xrslam.yaml — XRSLAM C ABI 的 Dart 绑定。
+#
+# 前提(今天为这一步专门做的):XRSLAM.h 已经是**纯 C11 + -Wstrict-prototypes 零告警**。
+# ffigen 走 libclang 解析 C 头,任何 C++ 残留(默认参数、引用、std::vector)都会
+# 让它直接失败 —— 上游原版 XRSLAMFeatures 就是 extern "C" 里塞 std::vector,
+# 已经回退成纯 C struct。
+#
+# 生成:dart run ffigen --config ffigen_xrslam.yaml
+name: XrslamBindings
+description: |
+  XRSLAM C ABI (OpenXRLab / RD-VIO),pocketworld fork。
+  ⚠️ 生成物不要手改 —— 头文件变了就重新生成。
+output: 'lib/vio/ffi/xrslam_bindings.dart'
+
+headers:
+  entry-points:
+    - '/Users/kaidongwang/Developer/xrslam/xrslam-interface/include/XRSLAM.h'
+  include-directives:
+    # 只生成这个头里的东西,不要把 stdint.h 等系统头的符号也拖进来
+    - '**/XRSLAM.h'
+
+compiler-opts:
+  - '-std=c11'
+  - '-I/Users/kaidongwang/Developer/xrslam/xrslam-interface/include'
+
+# 只导出 XRSLAM* 前缀 —— 与我们在 .so/.a 上做的符号裁剪口径一致
+functions:
+  include:
+    - 'XRSLAM.*'
+structs:
+  include:
+    - 'XRSLAM.*'
+enums:
+  include:
+    - 'XRSLAM.*'
+macros:
+  include:
+    - 'XRSLAM_.*'
+  exclude:
+    # [pw] ffigen 的宏求值器吃不下强制转换表达式,而**一个失败会让整批宏都不生成**
+    #   (实测:9 个宏全灭,只留下文档注释里的名字提及)。这个 flag 位在 Dart 侧
+    #   用 `1` 就够,不值得为它牺牲七个错误码常量。
+    - 'XRSLAM_LANDMARK_FLAG_TRIANGULATED'
+
+preamble: |
+  // GENERATED — 由 `dart run ffigen --config ffigen_xrslam.yaml` 生成,请勿手改。
+  //
+  // ⚠️ ABI 契约提醒(改头文件时必须同步想清楚):
+  //   • XRSLAMImage / XRSLAMHealth 等是 **caller-allocates** 结构体,
+  //     追加字段会改 sizeof。Dart 侧用 calloc 天然清零,是最安全的一侧;
+  //     但**旧头编译的原生调用方配新库**没有自描述前缀可救,只能同版本发布。
+  //   • 出参契约:非 NULL 时库会**无条件先清零**,所以拿到错误码时出参也是已定义的。
+  //   • 双调用惯用法:出参传 NULL 时返回所需容量;容量不足返回 XRSLAM_INCOMPLETE。
+  //   • ⚠️ XRSLAMCreate 是上游遗留约定 **1=成功 / 0=失败**,与其余 API 的
+  //     0=OK / 负数=错误 **正好相反**。封装层必须用统一的 check 辅助函数。
+  // ignore_for_file: always_specify_types, camel_case_types, non_constant_identifier_names

@@ -712,6 +712,9 @@ class _MyWorksSectionState extends State<_MyWorksSection>
   }
 
   Future<void> _openSparseCloud(ScanRecord record, String plyPath) async {
+    // [2026-08-24] 长按菜单"查看点云"不经过 _onTap,此前漏标"看过" ——
+    // 打开查看器的动作本身就该算看过(与卡片点击入口同一契约,幂等)。
+    unawaited(ScanRecordStore.instance.markResultViewed(record));
     final officialRoute = widget.officialViewerRoute;
     await dispatchSparseCloudViewerForPipeline(
       pipelineKind: record.pipelineKind,

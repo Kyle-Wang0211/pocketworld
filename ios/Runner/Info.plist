@@ -4,6 +4,8 @@
 <dict>
 	<key>AetherExperimentMarker</key>
 	<string>ar_every_frame_20260805</string>
+	<key>PWSplashExperimentMarker</key>
+	<string>direct-line-door-20260825-v1</string>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>com.kyle.PocketWorld.official.archive</string>

@@ -85,3 +85,128 @@ The exact official source files and their SHA-256 values are recorded in
 ios/Vendor/Zpaq/SHA256SUMS. The complete upstream license text is shipped as a
 Flutter asset and an iOS Runner resource. This inventory records engineering
 provenance and is not legal advice.
+
+Native reconstruction core (statically linked C/C++ libraries)
+==============================================================
+
+Use in PocketWorld: the on-device streaming-SfM reconstruction core
+(libglomap_core.a, PWOfficialSfm.xcframework, libaether3d_ffi.a,
+libwebgpu_dawn.a), vendored from the Aether3D repository as prebuilt static
+libraries. Bundled license texts live in ios/Vendor/NativeCore/licenses/ and
+ship as Flutter assets. Revisions are recorded only where the vendored tree
+carries verifiable evidence.
+
+COLMAP (vendored subset)
+Source: https://github.com/colmap/colmap
+Revision: vendored tree git HEAD 9820ff3d5f362cccb15d2b7cf05bd9ffe4a65113
+License: BSD-3-Clause (Copyright (c), ETH Zurich and UNC Chapel Hill)
+Bundled license: ios/Vendor/NativeCore/licenses/colmap-LICENSE
+
+VLFeat (vendored inside COLMAP; DSP-SIFT CPU extraction)
+Source: https://www.vlfeat.org/
+License: BSD-2-Clause (Copyright (C) 2007-11 Andrea Vedaldi and Brian
+Fulkerson; Copyright (C) 2012-13 The VLFeat Team)
+Bundled license: ios/Vendor/NativeCore/licenses/vlfeat-LICENSE
+
+PoseLib
+Source: https://github.com/PoseLib/PoseLib
+License: BSD-3-Clause (Copyright (c) 2021, Viktor Larsson)
+Bundled license: ios/Vendor/NativeCore/licenses/poselib-LICENSE
+
+Ceres Solver 2.2.0
+Source: http://ceres-solver.org/
+License: BSD-3-Clause (Copyright 2023 Google Inc.)
+Bundled license: ios/Vendor/NativeCore/licenses/ceres-LICENSE
+
+glog 0.7.1
+Source: https://github.com/google/glog
+License: BSD-3-Clause (Copyright (c) 2024, Google Inc.)
+Bundled license: ios/Vendor/NativeCore/licenses/glog-COPYING
+
+Eigen 3.4.0
+Source: https://gitlab.com/libeigen/eigen
+License: MPL-2.0. All builds define EIGEN_MPL2_ONLY, so no LGPL-licensed
+Eigen components are compiled into any shipped binary. MPL-2.0
+source-availability obligation: the corresponding, unmodified Eigen 3.4.0
+sources are publicly available at https://eigen.tuxfamily.org/ and
+https://gitlab.com/libeigen/eigen; on request we will provide a copy of the
+Eigen sources used in this product.
+Bundled license: ios/Vendor/NativeCore/licenses/eigen-COPYING.MPL2
+
+Dawn and Tint (WebGPU implementation)
+Source: https://dawn.googlesource.com/dawn
+Revision: vendored tree git HEAD 12ee391c7411285895f4289a3d889a182c093014
+License: BSD-3-Clause (Copyright 2017-2023 The Dawn & Tint Authors)
+Bundled license: ios/Vendor/NativeCore/licenses/dawn-LICENSE
+
+Abseil (abseil-cpp; statically embedded inside libwebgpu_dawn.a)
+Source: https://github.com/abseil/abseil-cpp
+License: Apache-2.0 (Copyright The Abseil Authors)
+Bundled license: ios/Vendor/NativeCore/licenses/abseil-LICENSE
+
+libjpeg-turbo 3.1.3
+Source: https://github.com/libjpeg-turbo/libjpeg-turbo
+Revision: af9c1c268520a29adf98cad5138dafe612b3d318
+License: IJG License + Modified (3-clause) BSD License + zlib License
+(Copyright (C)2009-2025 D. R. Commander; Copyright (C)2015 Viktor Szathmáry).
+This software is based in part on the work of the Independent JPEG Group.
+Bundled license: ios/Vendor/NativeCore/licenses/libjpeg-turbo-LICENSE
+
+stb_image v2.30 (single-header, inside libaether3d_ffi.a)
+Source: https://github.com/nothings/stb
+License: MIT or public domain, at your option (Copyright (c) 2017 Sean
+Barrett)
+Bundled license: ios/Vendor/NativeCore/licenses/stb-LICENSE
+
+cgltf 1.14 (single-header glTF 2.0 parser, inside libaether3d_ffi.a)
+Source: https://github.com/jkuhlmann/cgltf
+License: MIT (Copyright (c) 2018-2024 Johannes Kuhlmann)
+Bundled license: ios/Vendor/NativeCore/licenses/cgltf-LICENSE
+
+meshoptimizer (inside libaether3d_ffi.a)
+Source: https://github.com/zeux/meshoptimizer
+License: MIT (Copyright (c) 2016-2024 Arseny Kapoulkine)
+Bundled license: ios/Vendor/NativeCore/licenses/meshoptimizer-LICENSE
+
+System libraries: SQLite (OS libsqlite3, public domain), zlib (OS libz, zlib
+License), and Apple's Accelerate framework provide the remaining linked
+functionality; none carries a binary attribution requirement.
+
+Lepton JPEG (Rust) archive stack
+================================
+
+Use in PocketWorld: byte-exact JPEG recompression for official-capture photo
+archives (libpw_lepton_jpeg_ffi.a, built from native/lepton_jpeg_ffi).
+
+lepton_jpeg 0.5.8
+Source: https://github.com/microsoft/lepton_jpeg_rust
+License: Apache-2.0 (Copyright (c) Microsoft Corporation)
+Bundled licenses: vendor/lepton_jpeg/licenses/Lepton-LICENSE.txt,
+vendor/lepton_jpeg/licenses/Lepton-NOTICE.txt,
+vendor/lepton_jpeg/licenses/Rust-Crate-THIRD-PARTY-NOTICES.txt, and
+vendor/lepton_jpeg/licenses/Rust-Standard-Library-COPYRIGHT.html
+(all shipped as Flutter assets).
+
+Swift package layer
+===================
+
+swift-crypto (and its transitive dependency swift-asn1)
+Source: https://github.com/apple/swift-crypto
+License: Apache-2.0 (Copyright (c) 2019-2025 Apple Inc. and the
+SwiftCrypto / SwiftASN1 project authors)
+
+Flutter Thinking Orbs — solving renderer (source-derived Dart subset)
+=====================================================================
+
+Use in PocketWorld: realtime dotted solving orb on the Flutter startup overlay.
+Source: https://github.com/iamEtornam/thinking-orbs
+Version: 0.1.0
+Revision: 24115f7fe39da85a85b1eeb638dcfc7becaa7022
+License: MIT
+Copyright (c) 2026 Bright Sunu
+
+This is a Flutter port of "thinking-orbs"
+(https://github.com/Jakubantalik/thinking-orbs) by Jakub Antalik, used under
+the MIT License. The orb animation algorithms and tunings originate from that
+project. The MIT copyright and permission notice are retained in
+lib/ui/splash_solving_orb.dart.
