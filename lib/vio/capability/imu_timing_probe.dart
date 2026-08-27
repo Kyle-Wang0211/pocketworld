@@ -6,14 +6,14 @@
 //   Android: registerListener(l, s, samplingPeriodUs, maxReportLatencyUs) 的
 //            samplingPeriodUs 只是**建议**;Android 12(API 31)起所有 sensor 被硬压到
 //            200Hz,除非应用持有 HIGH_SAMPLING_RATE_SENSORS。没有 API 返回达成率。
-//   iOS:     CMMotionManager.deviceMotionUpdateInterval 同样是请求值,
-//            实际下发速率只能从 CMDeviceMotion.timestamp 反推。
+//   iOS:     CMMotionManager 的独立 accelerometer/gyro updateInterval 同样只是请求值,
+//            实际下发速率必须分别从 CMAccelerometerData/CMGyroData.timestamp 反推。
 // 所以速率、抖动、成簇与否,全部从时间戳反推。
 //
 // ── 两个时钟,两个问题 ──────────────────────────────────────────────────
 // 每个样本带两个戳:
 //   sampleTsNs   —— 传感器说「这一帧数据是那一刻采的」(Android SensorEvent.timestamp;
-//                   iOS CMDeviceMotion.timestamp)。**这是给 VIO 用的那个。**
+//                   iOS 原始 accel/gyro 的 CMLogItem.timestamp)。**这是给 VIO 用的那个。**
 //   deliveryTsNs —— 回调里当场读的宿主时钟(Android elapsedRealtimeNanos();
 //                   iOS ProcessInfo.processInfo.systemUptime)。**这是暴露成簇的那个。**
 //
@@ -103,12 +103,12 @@ class ImuTimingFacts {
   });
 
   const ImuTimingFacts.unmeasured()
-      : sampleCount = 0,
-        medianSamplePeriodNs = null,
-        relativeJitter = null,
-        burstMassFraction = 0.0,
-        maxSampleGapNs = null,
-        flags = const <ImuTimingFlag>{};
+    : sampleCount = 0,
+      medianSamplePeriodNs = null,
+      relativeJitter = null,
+      burstMassFraction = 0.0,
+      maxSampleGapNs = null,
+      flags = const <ImuTimingFlag>{};
 
   final int sampleCount;
 
@@ -143,7 +143,8 @@ class ImuTimingFacts {
   }
 
   @override
-  String toString() => 'ImuTimingFacts(n=$sampleCount, '
+  String toString() =>
+      'ImuTimingFacts(n=$sampleCount, '
       '${hz?.toStringAsFixed(1) ?? "?"}Hz, '
       'jitter=${relativeJitter?.toStringAsFixed(3) ?? "?"}, '
       'burst=${estimatedBurstSize.toStringAsFixed(2)}, '
@@ -200,8 +201,9 @@ class ImuTimingProbe {
       sampleDeltas.add(d);
     }
     // 倒流的样本**不丢**,只是不参与周期统计(否则中位数被负数污染)。
-    final List<int> positiveSampleDeltas =
-        sampleDeltas.where((int d) => d > 0).toList(growable: false);
+    final List<int> positiveSampleDeltas = sampleDeltas
+        .where((int d) => d > 0)
+        .toList(growable: false);
     if (positiveSampleDeltas.isEmpty) {
       return ImuTimingFacts(
         sampleCount: n,
@@ -215,7 +217,8 @@ class ImuTimingProbe {
 
     final int medianPeriod = _median(positiveSampleDeltas);
     final double relJitter = medianPeriod > 0
-        ? _medianAbsoluteDeviation(positiveSampleDeltas, medianPeriod) / medianPeriod
+        ? _medianAbsoluteDeviation(positiveSampleDeltas, medianPeriod) /
+              medianPeriod
         : double.infinity;
 
     final int maxGap = positiveSampleDeltas.reduce(math.max);
@@ -231,13 +234,16 @@ class ImuTimingProbe {
     }
 
     double burstMass = 0.0;
-    if (deliveryDeltas.length >= kMinSamplesForTiming ~/ 2 && medianPeriod > 0) {
+    if (deliveryDeltas.length >= kMinSamplesForTiming ~/ 2 &&
+        medianPeriod > 0) {
       final _Split split = _otsuSplit(deliveryDeltas);
       if (split.valid) {
-        final List<int> low =
-            deliveryDeltas.where((int d) => d <= split.threshold).toList(growable: false);
-        final List<int> high =
-            deliveryDeltas.where((int d) => d > split.threshold).toList(growable: false);
+        final List<int> low = deliveryDeltas
+            .where((int d) => d <= split.threshold)
+            .toList(growable: false);
+        final List<int> high = deliveryDeltas
+            .where((int d) => d > split.threshold)
+            .toList(growable: false);
         if (low.isNotEmpty && high.isNotEmpty) {
           burstMass = low.length / deliveryDeltas.length;
           final int lowMedian = _median(low);
@@ -278,8 +284,9 @@ class ImuTimingProbe {
   }
 
   static double _medianAbsoluteDeviation(List<int> xs, int center) {
-    final List<int> dev =
-        xs.map((int x) => (x - center).abs()).toList(growable: false);
+    final List<int> dev = xs
+        .map((int x) => (x - center).abs())
+        .toList(growable: false);
     return _median(dev).toDouble();
   }
 
@@ -323,11 +330,11 @@ class ImuTimingProbe {
 
 class _Split {
   const _Split({required this.threshold, required this.betweenClassVariance})
-      : valid = true;
+    : valid = true;
   const _Split.invalid()
-      : threshold = 0,
-        betweenClassVariance = 0.0,
-        valid = false;
+    : threshold = 0,
+      betweenClassVariance = 0.0,
+      valid = false;
 
   final int threshold;
   final double betweenClassVariance;

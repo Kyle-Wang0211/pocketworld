@@ -13,6 +13,7 @@
 
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/official_capture/auto_capture_controller.dart';
@@ -29,6 +30,24 @@ import 'package:vector_math/vector_math_64.dart';
 const int _w = 1000;
 const int _h = 1000;
 const double _fx = 1000;
+
+FrameQualityReport _quality(double t) => FrameQualityReport(
+  sharpness: 300,
+  roiSharpness: 300,
+  multiScaleSharpness252: 300,
+  multiScaleSharpness512: 300,
+  edgeBlockSharpness: 300,
+  backgroundSharpness: 300,
+  subjectVsBackgroundSharpnessDelta: 0,
+  sharpnessConsensus: 300,
+  meanBrightness: 128,
+  globalVariance: 100,
+  signature: Uint8List.fromList(<int>[
+    for (var i = 0; i < 256; i++) ((t * 1000003).round() + i * 73) & 0xff,
+  ]),
+  signatureWidth: 16,
+  signatureHeight: 16,
+);
 
 /// 相机在 [pos],朝向由绕 Y 轴的 [yawDeg] 决定(0 = 看向 -Z)。
 ///
@@ -60,6 +79,7 @@ ARPose _pose({
     intrinsicFxFyCxCy: const <double>[_fx, _fx, _w / 2, _h / 2],
     imageWidth: _w,
     imageHeight: _h,
+    quality: _quality(t),
     previewPoints: <ARPreviewPoint>[
       for (var i = 0; i < 12; i++)
         ARPreviewPoint(
@@ -113,6 +133,7 @@ class _WiredHost {
   int fireAttempts = 0;
 
   late final AutoCaptureController controller = AutoCaptureController(
+    onStartAnchor: () => true,
     onFire: () {
       fireAttempts++;
       final ticket = queue.enqueue(verifiedCount: verified);
@@ -358,6 +379,15 @@ void main() {
       expect(running, contains('停止'));
     });
 
+    test('low-overlap warning asks the user to slow down', () {
+      final warning = autoCaptureShutterHintText(
+        mode: OfficialCaptureMode.auto,
+        running: true,
+        shouldPromptSlowDown: true,
+      );
+      expect(warning, contains('减速'));
+    });
+
     test(
       'manual shutter hint ignores running — there is no auto run in manual',
       () {
@@ -389,61 +419,23 @@ void main() {
     }
   });
 
-  group('thermal alone must stretch the tick (spec §7)', () {
-    // spec §7:「热态 critical **只拉长间隔**、不停止」。此前 tick 间隔唯一的
-    // 输入是 ShutterPace,而 shutterPaceNext 对热态的全部处理只是把 soft 的
-    // **队列**阈值从 6 降到 4 —— 队列浅时(自动拍的常态)任何热档都不改档位,
-    // 于是那条承诺在实现里根本不存在。
-    test('a shallow queue still slows down when the device is hot', () {
-      // 队列浅 ⇒ pace 恒 normal(这正是 shutterPaceNext 的真实输出)。
-      // 〔2026-08-24〕normal 地板 1.0 → 0.25(去抖,3DSeen 先例;见 governor)。
-      const cold = ShutterPace.normal;
-      expect(autoCaptureTickIntervalSec(pace: cold, thermalState: 0), 0.25);
-      expect(autoCaptureTickIntervalSec(pace: cold, thermalState: 1), 0.25);
-      expect(
-        autoCaptureTickIntervalSec(pace: cold, thermalState: 2),
-        2.0,
-        reason: 'serious ⇒ 至少 soft 档',
-      );
-      expect(
-        autoCaptureTickIntervalSec(pace: cold, thermalState: 3),
-        3.0,
-        reason: 'critical ⇒ 至少 hard 档',
-      );
-    });
-
-    test('unknown thermal (-1) is treated as cold, like shutterPaceNext', () {
-      expect(
-        autoCaptureTickIntervalSec(pace: ShutterPace.normal, thermalState: -1),
-        0.25,
-      );
-    });
-
-    test('the two levers take the longer interval, never the shorter', () {
-      // 队列很堵 + 机器不热 ⇒ 队列说了算(热态下限不能把它缩回去)。
-      expect(
-        autoCaptureTickIntervalSec(pace: ShutterPace.hard, thermalState: 0),
-        3.0,
-      );
-      // 队列不堵 + critical ⇒ 热态说了算。
-      expect(
-        autoCaptureTickIntervalSec(pace: ShutterPace.normal, thermalState: 3),
-        3.0,
-      );
-      // 两边都到顶也还是 3 s,不叠加。
-      expect(
-        autoCaptureTickIntervalSec(pace: ShutterPace.hard, thermalState: 3),
-        3.0,
-      );
+  group('pressure and thermal are telemetry-only', () {
+    test('every pressure/thermal combination keeps the 250ms floor', () {
+      for (final pace in ShutterPace.values) {
+        for (final thermal in <int>[-1, 0, 1, 2, 3]) {
+          expect(
+            autoCaptureTickIntervalSec(pace: pace, thermalState: thermal),
+            kAutoCaptureSafetyDebounceSec,
+          );
+        }
+      }
     });
 
     test(
       'manual capture is untouched: shutterPaceNext keeps its own answer',
       () {
-        // 铁律:手动快门"无论多热、队列多深都立即可拍"。热态那条下限只加在
-        // 自动拍**自己**的 tick 间隔上,shutterPaceNext 一个字节没动 ——
-        // 队列浅时它对任何热档都还是 normal(这正是它记进 shutter_pace 遥测的
-        // 那个标签,改它会把手动采集的遥测口径一起改掉)。
+        // 手动/自动快门都不因队列或热态改变准入；这个函数只产生
+        // 遥测标签，队列浅时任何热档都仍是 normal。
         for (final thermal in <int>[0, 1, 2, 3]) {
           expect(
             shutterPaceNext(
@@ -538,6 +530,7 @@ void main() {
           tSec: p.timestamp,
           pace: ShutterPace.normal,
           thermalState: 0,
+          motion: h.controller.lastMotionMetrics,
         );
         if (d == AutoCaptureDecision.fire) fireTimes.add(p.timestamp);
       }
@@ -591,13 +584,14 @@ void main() {
     // 队列收人的条件是 `verified + outstanding < 300`;governor 停在
     // `capturedCount >= 300`。少算在途票,两者就永远对不上。
     //
-    // 输入:每帧横移 35 cm(≥ 0.10 m 兜底开火位移)、帧距 0.05s ⇒ 每 5 帧
-    // (0.25s 去抖)开一火。执行体永不推进 ⇒ verified 恒 0,票全挂在
+    // 输入:每帧转 12°、帧距 0.05s ⇒ 每 5 帧(0.25s 去抖)开一火。
+    // 这是明确的 rotationCoverage，不依赖“低重叠警告本身是否值得花照片”
+    // 的产品策略。执行体永不推进 ⇒ verified 恒 0,票全挂在
     // 队列上 = 满编的在途。admit 满 300 需要 300×5 帧。
     void drive(_WiredHost h, int poses) {
       h.controller.start(_pose(t: 0));
       for (var i = 1; i <= poses; i++) {
-        h.controller.onPose(_pose(t: i * 0.05, pos: Vector3(i * 0.35, 0, 0)));
+        h.controller.onPose(_pose(t: i * 0.05, yawDeg: i * 12.0));
       }
     }
 
@@ -675,7 +669,12 @@ void main() {
         ).allMatches(page).length,
         1,
       );
-      expect(page, contains('bool _enqueueShutterCapture()'));
+      expect(
+        page,
+        contains(
+          'bool _enqueueShutterCapture({bool automaticSelection = false})',
+        ),
+      );
     });
 
     test('the auto fire hook returns the enqueue result, not a constant', () {
@@ -685,7 +684,10 @@ void main() {
         'bool _onAutoCaptureFire()',
         'void _onShutterTap()',
       );
-      expect(fire, contains('_enqueueShutterCapture()'));
+      expect(
+        fire,
+        contains('_enqueueShutterCapture(automaticSelection: true)'),
+      );
       expect(fire, isNot(contains('return true;')));
       // 到 300 张时自动模式**不弹对话框** —— 每秒撞一次会刷屏。
       expect(fire, isNot(contains('_showMaximumPhotosDialog')));
@@ -879,9 +881,16 @@ void main() {
           'bool _onAutoCaptureFire()',
           'void _onShutterTap()',
         );
-        // 脉冲与 fire_enqueued 在同一处记账,只有一处 ++。
+        // 四角色开火与起跑锚点各有一处真实入队脉冲；两者都只在 admitted
+        // 后自增，不能回到 decision 驱动。
         expect(fire, contains('if (enqueued) _autoFirePulseToken++;'));
-        expect(RegExp(r'_autoFirePulseToken\+\+').allMatches(page).length, 1);
+        final anchor = _section(
+          page,
+          'bool _onAutoCaptureStartAnchor()',
+          'bool _onAutoCaptureFire()',
+        );
+        expect(anchor, contains('if (enqueued) _autoFirePulseToken++;'));
+        expect(RegExp(r'_autoFirePulseToken\+\+').allMatches(page).length, 2);
         final drive = _section(
           page,
           'void _driveAutoCapture(ARPose pose)',
@@ -1026,6 +1035,14 @@ void main() {
         expect(page, isNot(contains('绕物成圈拍摄')));
       },
     );
+
+    test('slow-down guidance participates in the throttled UI state', () {
+      final page = _pageSource();
+      expect(page, contains('final promptSlowDown ='));
+      expect(page, contains('promptSlowDown == _autoPromptSlowDown'));
+      expect(page, contains('_autoPromptSlowDown = promptSlowDown'));
+      expect(page, contains('shouldPromptSlowDown: _autoPromptSlowDown'));
+    });
 
     test('the four transient banners are back at their signed bands', () {
       // [2026-07-27 UI 签决] 删掉常驻入场提示时,同一条签决要求"下面几档顶部

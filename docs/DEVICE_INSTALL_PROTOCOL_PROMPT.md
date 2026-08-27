@@ -20,6 +20,26 @@ BUNDLE=com.kyle.PocketWorld
 DEVLOG=Documents/official_pw_device_log.txt        # App 数据容器内的管线日志
 ```
 
+### 执行环境与唯一安装锁(2026-08-26 双 Build 43 覆盖事故)
+
+- **禁止打开、激活或堆叠 macOS Terminal 窗口。** 用户已明确要求更新全程后台执行;
+  若当前执行环境不能可靠使用 CoreDevice/签名,立即中止并报告,不得弹 Terminal
+  兜底。历史文字中“正常 Terminal 会话”的建议不再授权 GUI 弹窗。
+- 同一台生产手机同时只允许一个更新任务。构建开始前必须原子取得
+  `/private/tmp/pw-production-device-install.lock`;锁已存在就中止,不得等待着偷偷
+  接管。锁内记录 PID、bundle、目标 build、候选诊断身份,完成或失败后释放。
+- install 前最后一刻除活动检查外,还必须确认不存在其他
+  `devicectl device install app` 进程。发现一个就中止。本次事故中,正确 OFF 包
+  18:14:15 装完后,另一遗留任务在 18:14:37 用同号 Build 43 覆盖,正是因为
+  没有这把锁。
+- **Build 号不是代码身份。** 构建后必须冻结并核验:source manifest、唯一
+  `DART_DEFINES`(实验臂必须逐字等于目标值)、Dart AOT SHA-256、签名
+  `PWLiveCloudDiagnosticBuildId`、Runner arm64 LC_UUID。任一不符即中止。
+- 安装完成仍不由 agent launch。用户手动打开后,若任务要求核验手机实际运行
+  二进制,后台 LLDB 只读 attach,读取运行中 Runner image UUID 后立即 detach;
+  必须与候选 LC_UUID 相同。不能用 build 号、安装成功输出或本地产物 UUID
+  冒充“手机实际运行 UUID”。
+
 ### 血债清单(为什么是这个流程)
 
 - **08-18 事故**:`flutter install` 会**先卸载再安装**,一次删掉 8 个采集会话。
@@ -122,6 +142,9 @@ xcrun devicectl device info apps --device $UDID | grep -i pocketworld
 5. 装完验 build 号,不 launch;
 6. build 号只许 +1,不捏造;
 7. env 文件读-改-写。
+8. 全程后台,禁止 Terminal GUI 弹窗;
+9. 一机一锁、禁止并行 install;身份看 manifest/AOT/marker/UUID,不只看 build;
+10. 要求实际 UUID 时,用户手动启动后只读 attach 验运行中 image UUID。
 
 ---
 

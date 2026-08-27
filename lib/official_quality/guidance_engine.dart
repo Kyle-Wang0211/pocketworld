@@ -28,6 +28,7 @@ import 'dart:typed_data';
 import 'dart:ui' show Offset, Rect;
 
 import 'frame_quality_constants.dart';
+import 'frame_signature_similarity.dart';
 
 class GuidanceSnapshot {
   final int acceptedFrames;
@@ -244,11 +245,13 @@ class GuidanceEngine {
     final occupancyScore = _clamp01(
       targetMetrics.textureScore * 0.55 + targetMetrics.contrastScore * 0.45,
     );
-    final noveltyScore = _novelty(
-      current: sample.signature,
-      previous: _lastAcceptedSignature,
-    );
-    final similarityScore = _clamp01(1 - noveltyScore);
+    final similarityScore =
+        aetherFrameSignatureSimilarity(
+          current: sample.signature,
+          previous: _lastAcceptedSignature,
+        ) ??
+        0.0;
+    final noveltyScore = _clamp01(1 - similarityScore);
     final targetSignal =
         targetMetrics.textureScore * 0.55 + targetMetrics.contrastScore * 0.45;
     final qualityScore = _clamp01(
@@ -416,16 +419,6 @@ class GuidanceEngine {
       return math.max(0, 1 - overflow / math.max(1, 255 - bright));
     }
     return 1;
-  }
-
-  double _novelty({required Uint8List current, required Uint8List previous}) {
-    if (previous.isEmpty || previous.length != current.length) return 1.0;
-    if (current.isEmpty) return 0.0;
-    double difference = 0.0;
-    for (int i = 0; i < current.length; i++) {
-      difference += (current[i] - previous[i]).abs() / 255.0;
-    }
-    return difference / current.length;
   }
 
   _TargetZoneMetrics _targetZoneMetrics(

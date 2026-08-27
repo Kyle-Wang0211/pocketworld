@@ -132,8 +132,8 @@ SPEC CHECKSUMS:
   thermion_flutter: d0c4adbb1de69e5ecc244d70bbde81d8497246b2
   url_launcher_ios: 7a95fa5b60cc718a708b8f2966718e93db0cef1b
   video_thumbnail: b637e0ad5f588ca9945f6e2c927f73a69a661140
-  xrslam: afa092c5ea756086210844295ee1ffdbcbe01757
+  xrslam: 4a3a232508740dd5fc98b9cbc7aa793ed1c7b8ab
 
-PODFILE CHECKSUM: a6326b74c51fe4a310ea58c0bb4f7c8ba1340981
+PODFILE CHECKSUM: 0eb3cdbb21e774c055c909f67d9c6456865b27b7
 
 COCOAPODS: 1.16.2

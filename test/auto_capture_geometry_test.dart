@@ -64,17 +64,19 @@ void main() {
     );
   });
 
-  test('parallaxAngleDeg is ~0 for pure forward motion — the double-wall case',
-      () {
-    // Walking straight at the object: base, current and target are collinear.
-    final target = Vector3(0, 0, -1);
-    final deg = parallaxAngleDeg(
-      baseCamera: Vector3.zero(),
-      currentCamera: Vector3(0, 0, -0.5),
-      target: target,
-    );
-    expect(deg, lessThan(0.001));
-  });
+  test(
+    'parallaxAngleDeg is ~0 for pure forward motion — the double-wall case',
+    () {
+      // Walking straight at the object: base, current and target are collinear.
+      final target = Vector3(0, 0, -1);
+      final deg = parallaxAngleDeg(
+        baseCamera: Vector3.zero(),
+        currentCamera: Vector3(0, 0, -0.5),
+        target: target,
+      );
+      expect(deg, lessThan(0.001));
+    },
+  );
 
   test('viewAxisTurnDeg measures the angle between optical axes', () {
     expect(
@@ -190,14 +192,14 @@ void main() {
 
   test('normalizedCenterShift combines both axes as area overlap loss', () {
     double? shiftAt(double d) => normalizedCenterShift(
-          target: Vector3(0, 0, -1),
-          currentCamera: Vector3(-d, -d, 0),
-          currentOrientation: Quaternion.identity(),
-          fx: 1000,
-          fy: 1000,
-          imageWidth: 1000,
-          imageHeight: 1000,
-        );
+      target: Vector3(0, 0, -1),
+      currentCamera: Vector3(-d, -d, 0),
+      currentOrientation: Quaternion.identity(),
+      fx: 1000,
+      fy: 1000,
+      imageWidth: 1000,
+      imageHeight: 1000,
+    );
 
     // 45 度斜向,两轴各 0.30:面积损失 0.51,即重叠只剩 49%。
     // 旧的 max(sx, sy) 在这里只给 0.30 —— 正好卡在阈值上,于是斜向运动
@@ -274,14 +276,12 @@ void main() {
     );
     final target = Vector3(0, 0, -1);
 
-    AutoCaptureGeometryFrame frame(
-      Vector3 camera, {
-      Quaternion? orientation,
-    }) => AutoCaptureGeometryFrame(
-      camera: camera,
-      orientation: orientation ?? Quaternion.identity(),
-      intrinsics: intrinsics,
-    );
+    AutoCaptureGeometryFrame frame(Vector3 camera, {Quaternion? orientation}) =>
+        AutoCaptureGeometryFrame(
+          camera: camera,
+          orientation: orientation ?? Quaternion.identity(),
+          intrinsics: intrinsics,
+        );
 
     test('camera-to-world quaternion projects its optical axis in front', () {
       // ARKit/ARCore transport camera-to-world rotations.  vector_math's
@@ -410,27 +410,49 @@ void main() {
       expect(result.advancesGeometryBaseline, isFalse);
     });
 
-    test('diagonal area overlap reaching 70 percent becomes safety capture', () {
+    test(
+      'diagonal low overlap alone asks to slow without spending a photo',
+      () {
+        final base = frame(Vector3.zero());
+        final result = classifyAutoCaptureMotion(
+          geometryBaseline: base,
+          captureBaseline: base,
+          current: frame(Vector3(-0.17, -0.17, 0)),
+          target: target,
+          trackHealth: const PortableTrackHealth(
+            retentionRatio: 0.90,
+            distributionHealthy: true,
+          ),
+        );
+        expect(result.overlapFraction, closeTo(0.6889, 1e-9));
+        expect(result.role, AutoCaptureMotionRole.none);
+        expect(result.shouldPromptSlowDown, isTrue);
+        expect(result.geometryEligible, isFalse);
+        expect(result.rotationCoverageEligible, isFalse);
+        expect(result.radialBridgeEligible, isFalse);
+        expect(result.shouldCapture, isFalse);
+      },
+    );
+
+    test('low overlap still captures when a spatial role is also eligible', () {
       final base = frame(Vector3.zero());
       final result = classifyAutoCaptureMotion(
         geometryBaseline: base,
         captureBaseline: base,
-        current: frame(Vector3(-0.17, -0.17, 0)),
+        current: frame(Vector3(-0.76, 0, 0)),
         target: target,
       );
-      expect(result.overlapFraction, closeTo(0.6889, 1e-9));
-      expect(result.role, AutoCaptureMotionRole.overlapSafety);
+      expect(result.role, AutoCaptureMotionRole.geometry);
       expect(result.shouldPromptSlowDown, isTrue);
+      expect(result.geometryEligible, isTrue);
+      expect(result.shouldCapture, isTrue);
     });
 
     test('1.5 degrees separates stable parallax from rotation-only motion', () {
       final base = frame(Vector3.zero());
       final current = frame(
         Vector3(math.tan(1.49 * math.pi / 180), 0, 0),
-        orientation: Quaternion.axisAngle(
-          Vector3(0, 1, 0),
-          12 * math.pi / 180,
-        ),
+        orientation: Quaternion.axisAngle(Vector3(0, 1, 0), 12 * math.pi / 180),
       );
       final result = classifyAutoCaptureMotion(
         geometryBaseline: base,
@@ -441,6 +463,36 @@ void main() {
       expect(result.geometryParallaxDeg, closeTo(1.49, 1e-9));
       expect(result.role, AutoCaptureMotionRole.rotationCoverage);
     });
+
+    test(
+      'rotation coverage wins when turn and radial predicates are both true',
+      () {
+        final base = frame(Vector3.zero());
+        final result = classifyAutoCaptureMotion(
+          geometryBaseline: base,
+          captureBaseline: base,
+          current: frame(
+            Vector3(0, 0, -0.2),
+            orientation: Quaternion.axisAngle(
+              Vector3(0, 1, 0),
+              12 * math.pi / 180,
+            ),
+          ),
+          target: target,
+        );
+
+        expect(result.viewTurnDeg, closeTo(12, 1e-9));
+        expect(
+          result.geometryParallaxDeg,
+          lessThan(kAutoCaptureStableParallaxFloorDeg),
+        );
+        expect(
+          result.depthScaleRatio,
+          greaterThanOrEqualTo(kAutoCaptureRadialScaleStep),
+        );
+        expect(result.role, AutoCaptureMotionRole.rotationCoverage);
+      },
+    );
   });
 
   // ————————————————————————————————————————————————————————————————
@@ -636,46 +688,59 @@ void main() {
     // 两条共面向量,长度分别为 5 和 2,夹角 60 度。
     // 若归一化除法被删掉,dot=5 会让 acos 直接超出定义域。
     final a = Vector3(5, 0, 0);
-    final b = Vector3(2 * math.cos(60 * math.pi / 180), 2 * math.sin(60 * math.pi / 180), 0);
-    expect(viewAxisTurnDeg(baseForward: a, currentForward: b), closeTo(60.0, 1e-9));
+    final b = Vector3(
+      2 * math.cos(60 * math.pi / 180),
+      2 * math.sin(60 * math.pi / 180),
+      0,
+    );
+    expect(
+      viewAxisTurnDeg(baseForward: a, currentForward: b),
+      closeTo(60.0, 1e-9),
+    );
   });
 
   // Round-2 mutation tests — 7 surviving mutations, one pattern each
-  test('normalizedCenterShift takes the magnitude on the vertical axis too', () {
-    // 目标在画面中心线【下方】(y 为负)。绝对值口径下结果与 y 为正时相同。
-    // 若 sy 少了 .abs(),这里会得到 0.02 - 0.40 + 0.008 = -0.372。
-    // 19 个既有用例的 cam.y 不是 0 就是正,所以纵轴的 .abs() 此前零覆盖 ——
-    // 而横轴的同款变异会被 4 条测试当场抓死。
-    expect(
-      normalizedCenterShift(
-        target: Vector3(0.02, -0.40, -1),
-        currentCamera: Vector3.zero(),
-        currentOrientation: Quaternion.identity(),
-        fx: 1000,
-        fy: 1000,
-        imageWidth: 1000,
-        imageHeight: 1000,
-      ),
-      closeTo(0.412, 1e-12),
-    );
-  });
+  test(
+    'normalizedCenterShift takes the magnitude on the vertical axis too',
+    () {
+      // 目标在画面中心线【下方】(y 为负)。绝对值口径下结果与 y 为正时相同。
+      // 若 sy 少了 .abs(),这里会得到 0.02 - 0.40 + 0.008 = -0.372。
+      // 19 个既有用例的 cam.y 不是 0 就是正,所以纵轴的 .abs() 此前零覆盖 ——
+      // 而横轴的同款变异会被 4 条测试当场抓死。
+      expect(
+        normalizedCenterShift(
+          target: Vector3(0.02, -0.40, -1),
+          currentCamera: Vector3.zero(),
+          currentOrientation: Quaternion.identity(),
+          fx: 1000,
+          fy: 1000,
+          imageWidth: 1000,
+          imageHeight: 1000,
+        ),
+        closeTo(0.412, 1e-12),
+      );
+    },
+  );
 
-  test('medianSceneDepthM ignores behind-camera points even when they outnumber', () {
-    // 8 个正深度 + 12 个负深度。守卫生效时只有 8 个有效点 => 中位数 1.0。
-    // 若 `d > 0` 被放宽成 `d != 0`,20 个点的中位数会变成 -5.0。
-    // 既有的同名测试用 8 正 + 4 负,负值是少数派、推不动中位数,抓不住这个变异。
-    expect(
-      medianSceneDepthM(
-        cameraPosition: Vector3.zero(),
-        forward: Vector3(0, 0, -1),
-        points: <ARPreviewPoint>[
-          for (var i = 0; i < 8; i++) _pt(0, 0, -1.0),
-          for (var i = 0; i < 12; i++) _pt(0, 0, 5.0),
-        ],
-      )!,
-      closeTo(1.0, 1e-12),
-    );
-  });
+  test(
+    'medianSceneDepthM ignores behind-camera points even when they outnumber',
+    () {
+      // 8 个正深度 + 12 个负深度。守卫生效时只有 8 个有效点 => 中位数 1.0。
+      // 若 `d > 0` 被放宽成 `d != 0`,20 个点的中位数会变成 -5.0。
+      // 既有的同名测试用 8 正 + 4 负,负值是少数派、推不动中位数,抓不住这个变异。
+      expect(
+        medianSceneDepthM(
+          cameraPosition: Vector3.zero(),
+          forward: Vector3(0, 0, -1),
+          points: <ARPreviewPoint>[
+            for (var i = 0; i < 8; i++) _pt(0, 0, -1.0),
+            for (var i = 0; i < 12; i++) _pt(0, 0, 5.0),
+          ],
+        )!,
+        closeTo(1.0, 1e-12),
+      );
+    },
+  );
 
   test('parallaxAngleDeg clamps the acos domain edge too', () {
     // 同一个病态向量:v·v/(|v||v|) = 1.00000000000000022204。
@@ -695,31 +760,35 @@ void main() {
     expect(deg, closeTo(0.0, 1e-12));
   });
 
-  test('normalizedCenterShift guards near-zero depth, not just negative depth', () {
-    double? at(Vector3 target) => normalizedCenterShift(
-          target: target,
-          currentCamera: Vector3.zero(),
-          currentOrientation: Quaternion.identity(),
-          fx: 1000,
-          fy: 1000,
-          imageWidth: 1000,
-          imageHeight: 1000,
-        );
+  test(
+    'normalizedCenterShift guards near-zero depth, not just negative depth',
+    () {
+      double? at(Vector3 target) => normalizedCenterShift(
+        target: target,
+        currentCamera: Vector3.zero(),
+        currentOrientation: Quaternion.identity(),
+        fx: 1000,
+        fy: 1000,
+        imageWidth: 1000,
+        imageHeight: 1000,
+      );
 
-    // 深度恰为 0:守卫被削成 `depth < 0` 时会走到 0/0 = NaN。
-    expect(at(Vector3.zero()), double.infinity);
-    // 深度为极小正值:守卫被削弱时会得到 5e8 这种有限但荒谬的值。
-    expect(at(Vector3(0.5, 0, -1e-9)), double.infinity);
-  });
+      // 深度恰为 0:守卫被削成 `depth < 0` 时会走到 0/0 = NaN。
+      expect(at(Vector3.zero()), double.infinity);
+      // 深度为极小正值:守卫被削弱时会得到 5e8 这种有限但荒谬的值。
+      expect(at(Vector3(0.5, 0, -1e-9)), double.infinity);
+    },
+  );
 
   test('medianSceneDepthM anchor floor is pinned on both sides', () {
-    List<ARPreviewPoint> n(int count) =>
-        <ARPreviewPoint>[for (var i = 0; i < count; i++) _pt(0, 0, -1.0)];
+    List<ARPreviewPoint> n(int count) => <ARPreviewPoint>[
+      for (var i = 0; i < count; i++) _pt(0, 0, -1.0),
+    ];
     double? depthFor(int count) => medianSceneDepthM(
-          cameraPosition: Vector3.zero(),
-          forward: Vector3(0, 0, -1),
-          points: n(count),
-        );
+      cameraPosition: Vector3.zero(),
+      forward: Vector3(0, 0, -1),
+      points: n(count),
+    );
 
     // 差一即拒:7 个不够,8 个刚好够。此前只测了 2 个点,任何 >=3 的阈值都能过。
     expect(depthFor(7), isNull);
@@ -820,7 +889,9 @@ void main() {
       // 少数点凑出来的数去缩放阈值(rawFeaturePoints 就是这么撒谎的)。
       expect(
         medianDepthFromCloudXyz(
-          xyz: cloudAt(List<double>.filled(kAutoCaptureMinDepthAnchors - 1, 1.0)),
+          xyz: cloudAt(
+            List<double>.filled(kAutoCaptureMinDepthAnchors - 1, 1.0),
+          ),
           cameraPosition: Vector3.zero(),
           forward: Vector3(0, 0, -1),
           sampleStride: 1,
@@ -838,7 +909,10 @@ void main() {
     });
 
     test('sampling stride keeps the median stable on a dense cloud', () {
-      final depths = List<double>.generate(20000, (i) => 1.0 + (i % 100) * 0.01);
+      final depths = List<double>.generate(
+        20000,
+        (i) => 1.0 + (i % 100) * 0.01,
+      );
       final full = medianDepthFromCloudXyz(
         xyz: cloudAt(depths),
         cameraPosition: Vector3.zero(),

@@ -74,7 +74,12 @@ const int kQualitySignatureSide = 16;
 /// verified by feeding identical thumbnails through both paths and
 /// comparing — `sharpness` and `meanBrightness` match to within
 /// floating-point representation; signature bytes match exactly.
-FrameQualityReport computeFrameQualityFromGray128(Uint8List gray128) {
+FrameQualityReport computeFrameQualityFromGray128(
+  Uint8List gray128, {
+  double? sourceTimestamp,
+  double? sourceFocalX,
+  double? sourceFocalY,
+}) {
   const tw = kQualityGraySide;
   const th = kQualityGraySide;
   const expected = tw * th;
@@ -202,6 +207,10 @@ FrameQualityReport computeFrameQualityFromGray128(Uint8List gray128) {
     signature: signature,
     signatureWidth: sw,
     signatureHeight: sw,
+    rawGray128: Uint8List.fromList(gray128),
+    sourceTimestamp: sourceTimestamp,
+    sourceFocalX: sourceFocalX,
+    sourceFocalY: sourceFocalY,
   );
 }
 

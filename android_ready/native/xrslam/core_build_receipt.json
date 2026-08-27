@@ -1,0 +1,52 @@
+{
+  "schema": "pw.xrslam.generic-core-build-receipt/2",
+  "artifact": "libs/arm64-v8a/libxrslam_generic_4beb1a9.so",
+  "sha256": "083220bb6ecbaa161c0f0bae9bf007da5c59ed010455cf6f2e3b600bb0eaf8f4",
+  "elfBuildIdSha1": "fd4d280c8f92e30855f20cf4b87d642ca736f5b7",
+  "xrslamRevision": "4beb1a942f33da9afbfae2d70e2c641cfc2bb675",
+  "xrslamPatchSha256": "b98ed6aa689c9edaaac6da707d97592217d3f6caccc6df8c4d6961e2ee751de0",
+  "opencvRevision": "c9ad5779f2803dcc91a9938142209128d30b22d1",
+  "opencvPatchSha256": "4041a1ac34b397679a04b733aa78bb1c37a25fcaf6a19c32e9563b0fd9159136",
+  "ceresRevision": "e809cf0c2879f521078b4c9e6329390b42ecf722",
+  "ceresVersion": "1.14.0",
+  "eigenVersion": "3.3.7",
+  "eigenRevision": "cf794d3b741a6278df169e58461f8529f43bce5d",
+  "spdlogVersion": "v1.3.1",
+  "spdlogRevision": "a7148b718ea2fabb8387cb90aee9bf448da63e65",
+  "spdlogPatchSha256": "1afb69176857159ad29e69d0abf3359576ebc091104278fee5fdeeff08e21adb",
+  "yamlCppVersion": "yaml-cpp-0.7.0",
+  "yamlCppRevision": "0579ae3d976091d7d664aa9d2527e0d0cff25763",
+  "xrslamIos": false,
+  "threading": false,
+  "compileFlags": [
+    "-ffp-contract=off",
+    "-fno-fast-math",
+    "-fchar8_t",
+    "-Dceres=pw_xrslam_ceres_1_14"
+  ],
+  "androidAbi": "arm64-v8a",
+  "androidApi": 24,
+  "androidNdkRevision": "29.0.14206865",
+  "cmakeVersion": "4.2.3",
+  "ninjaVersion": "1.13.2",
+  "clangRevision": "5e96669f06077099aa41290cdb4c5e6fa0f59349",
+  "rebuildRecipeSourceDateEpoch": 1700000000,
+  "rebuildRecipePathPrefixMap": "/pwbuild",
+  "rebuildRecipeDebugInfo": "stripped",
+  "artifactProvenanceStatus": "pending_deterministic_rebuild",
+  "minimumLoadAlignmentBytes": 16384,
+  "officialExports": [
+    "XRSLAMCreate",
+    "XRSLAMPushSensorData",
+    "XRSLAMRunOneFrame",
+    "XRSLAMGetResult",
+    "XRSLAMDestroy"
+  ],
+  "dynamicDependencies": [
+    "libz.so",
+    "libdl.so",
+    "libm.so",
+    "liblog.so",
+    "libc.so"
+  ]
+}

@@ -16,28 +16,39 @@
 // 几何在 auto_capture_geometry.dart,决策谓词在 auto_capture_governor.dart;
 // 本文件只做"状态 + 接线",不新造任何阈值。
 
+import 'dart:typed_data';
+
 import 'package:vector_math/vector_math_64.dart';
 
 import '../official_dome/ar_pose.dart';
+import '../official_quality/frame_quality_constants.dart';
+import '../official_quality/frame_signature_similarity.dart';
 import 'auto_capture_geometry.dart';
 import 'auto_capture_governor.dart';
+import 'continuous_feature_tracks.dart';
 import 'photo_card_state.dart' show medianOf;
 import 'shutter_backpressure_gate.dart' show ShutterPace;
 
 class AutoCaptureController {
   AutoCaptureController({
+    required bool Function() onStartAnchor,
     required bool Function() onFire,
     required ShutterPace Function() paceProvider,
     required int Function() capturedCountProvider,
     required int Function() thermalStateProvider,
     required double? Function(ARPose pose) liveDepthProvider,
     PortableTrackHealth? Function(ARPose pose)? trackHealthProvider,
-  }) : _onFire = onFire,
+  }) : _onStartAnchor = onStartAnchor,
+       _onFire = onFire,
        _paceProvider = paceProvider,
        _capturedCountProvider = capturedCountProvider,
        _thermalStateProvider = thermalStateProvider,
        _liveDepthProvider = liveDepthProvider,
        _trackHealthProvider = trackHealthProvider;
+
+  /// 自动模式起跑锚点。它不是四类运动角色中的任何一种；只有真实入队成功
+  /// 才能建立 capture/geometry baseline。
+  final bool Function() _onStartAnchor;
 
   /// 触发快门。**返回 true 表示入队成功** —— 只有 true 才更新基准帧。
   final bool Function() _onFire;
@@ -66,6 +77,14 @@ class AutoCaptureController {
   AutoCaptureGeometryFrame? _captureBaseline;
   AutoCaptureGeometryFrame? _geometryBaseline;
   Vector3? _activeTarget;
+  Uint8List? _capturedSignature;
+  Uint8List? _capturedGray128;
+  double? _capturedGrayFocalX;
+  double? _capturedGrayFocalY;
+  double? _capturedGraySourceTimestamp;
+  final ContinuousFeatureTracks _continuousTracks = ContinuousFeatureTracks();
+  double? _lastTrackedGraySourceTimestamp;
+  static const double _kMaximumGraySourceAgeSec = 1.0 / 6.0;
 
   /// 本轮起点(ARFrame 时间轴)。**注意本轮 ≠ 整场**:时间上限按整场累积,
   /// 见 [_elapsedBeforeRunSec]。
@@ -94,25 +113,23 @@ class AutoCaptureController {
   /// 这一个时钟就够了)。
   double _lastTickSec = 0;
 
-  /// 画质缓拍的起点(该拍但当前帧比段内中位糊的第一帧);null = 没在缓。
-  /// 缓拍**不消耗**去抖时钟 —— 画面一变锐立刻开火,不用再等一整拍。
-  double? _blurDeferStartSec;
+  /// 最近一次真实的启动锚点入队尝试。null 表示还没试过；这种情况下第一
+  /// 帧恢复正常 tracking 后必须立刻拍，250ms 地板只约束一次真实拒绝后的
+  /// 重试，不能惩罚算法尚未获得健康姿态的冷启动阶段。
+  double? _lastStartAnchorAttemptSec;
 
   /// 本段(距上一次开火以来)的锐度样本(roiSharpness,6Hz 随 pose 到达)。
-  /// = AliceVision 的 subsequence:开火即清段。上限只防长时间站桩膨胀。
+  /// 只保留给遥测观察，不参与硬拒绝。AliceVision 的段内锐度是候选排序，
+  /// 不能把“低于段中位”偷换成“客观模糊”。
   final List<double> _segmentSharpness = <double>[];
   static const int _kSegmentSharpnessCap = 64;
   static const int _kSharpnessMedianMinSamples = 3;
 
-  /// 当前帧是否"比本段典型锐度糊":最新样本 < 段内中位。样本少于三帧时
-  /// fail-open = 不糊 —— 覆盖压过锐度。
-  bool get _currentlyBlurry {
-    if (_segmentSharpness.length < _kSharpnessMedianMinSamples) {
-      return false;
-    }
-    final m = medianOf(_segmentSharpness);
-    return m != null && _segmentSharpness.last < m;
-  }
+  /// Aether3D 的原版帧级硬门：全图 Laplacian variance < 200 即拒收。
+  /// 这是跨端同一份 128×128 灰度计算，不读取平台私有质量枚举。
+  static bool _objectivelyBlurry(FrameQualityReport? quality) =>
+      quality != null &&
+      quality.sharpness < FrameQualityConstants.blurThresholdLaplacian;
 
   bool get isRunning => _running;
 
@@ -139,6 +156,13 @@ class AutoCaptureController {
   double? get lastGeometryParallaxDeg => _lastMotion?.geometryParallaxDeg;
   double? get lastOverlapFraction => _lastMotion?.overlapFraction;
   double? get lastDepthScaleRatio => _lastMotion?.depthScaleRatio;
+  double? get lastVisualSimilarity => _lastVisualSimilarity;
+  double? _lastVisualSimilarity;
+  FrameTrackEvidence? get lastTrackEvidence => _lastTrackEvidence;
+  FrameTrackEvidence? _lastTrackEvidence;
+  double? get lastVisualSourceAgeSec => _lastVisualSourceAgeSec;
+  double? _lastVisualSourceAgeSec;
+  AutoCaptureMotionMetrics? get lastMotionMetrics => _lastMotion;
   bool get shouldPromptSlowDown => _lastMotion?.shouldPromptSlowDown ?? false;
   AutoCaptureMotionMetrics? _lastMotion;
 
@@ -158,20 +182,31 @@ class AutoCaptureController {
     _startedAtSec = pose.timestamp;
     _lastPoseSec = pose.timestamp;
     _lastTickSec = pose.timestamp;
+    _lastStartAnchorAttemptSec = null;
     // ⚠️ [_elapsedBeforeRunSec] **刻意不清** —— D8:5 分钟是整场累积的热
     // 天花板,不是每轮自动拍各发一份。清它就等于"点停再点开"能无限续杯。
-    // 新一轮 = 新场景:锐度段与缓拍状态不跨轮继承。
+    // 新一轮 = 新场景:锐度遥测段不跨轮继承。
     _segmentSharpness.clear();
-    _blurDeferStartSec = null;
     // spec §7「tracking 丢失 / limited ⇒ 暂停触发,**且基准帧不更新**」是
     // 无条件的,起跑那一帧也算:丢跟踪时的位置估计不可信,拿它当基准会
     // 毒化整轮的位移判据。播种推迟到 onPose 里第一帧正常的位姿。
+    _captureBaseline = null;
+    _geometryBaseline = null;
+    _activeTarget = null;
+    _capturedSignature = null;
+    _capturedGray128 = null;
+    _capturedGrayFocalX = null;
+    _capturedGrayFocalY = null;
+    _capturedGraySourceTimestamp = null;
+    _lastTrackedGraySourceTimestamp = null;
+    _continuousTracks.clear();
+    _lastVisualSimilarity = null;
     if (_trackingNormal(pose)) {
-      _seedBaselines(pose);
-    } else {
-      _captureBaseline = null;
-      _geometryBaseline = null;
-      _activeTarget = null;
+      _lastStartAnchorAttemptSec = pose.timestamp;
+      if (_onStartAnchor()) {
+        _seedBaselines(pose);
+        _commitSignature(pose);
+      }
     }
   }
 
@@ -182,8 +217,16 @@ class AutoCaptureController {
     _captureBaseline = null;
     _geometryBaseline = null;
     _activeTarget = null;
+    _capturedSignature = null;
+    _capturedGray128 = null;
+    _capturedGrayFocalX = null;
+    _capturedGrayFocalY = null;
+    _capturedGraySourceTimestamp = null;
+    _lastTrackedGraySourceTimestamp = null;
+    _continuousTracks.clear();
+    _lastVisualSimilarity = null;
+    _lastStartAnchorAttemptSec = null;
     _segmentSharpness.clear();
-    _blurDeferStartSec = null;
   }
 
   /// 把 `[_startedAtSec, tSec]` 这段并进整场累计,并把本轮起点推到 [tSec]。
@@ -210,6 +253,67 @@ class AutoCaptureController {
     final geometryBase = _geometryBaseline;
     final trackingOk = _trackingNormal(pose);
     final current = _frameFrom(pose);
+    final currentSignature = _signatureFrom(pose);
+    // The start anchor can land on one of the pose-only ticks between the
+    // 6 Hz grayscale samples. The first real visual sample becomes its
+    // conservative comparison baseline; that same sample therefore cannot
+    // immediately spend another photo.
+    if (_capturedSignature == null &&
+        captureBase != null &&
+        currentSignature != null) {
+      _capturedSignature = Uint8List.fromList(currentSignature);
+    }
+    if (_capturedGray128 == null && captureBase != null && q != null) {
+      _commitTrackSource(q);
+    }
+    final capturedSignature = _capturedSignature;
+    final visualSimilarity =
+        currentSignature == null || capturedSignature == null
+        ? null
+        : aetherFrameSignatureSimilarity(
+            current: currentSignature,
+            previous: capturedSignature,
+          );
+    final currentGray = q?.rawGray128;
+    final currentFocalX = q?.sourceFocalX;
+    final currentFocalY = q?.sourceFocalY;
+    final previousSourceTimestamp = _lastTrackedGraySourceTimestamp;
+    final sourceTimestamp = q?.sourceTimestamp;
+    final sourceAgeSec = sourceTimestamp == null
+        ? null
+        : pose.timestamp - sourceTimestamp;
+    final sourceBound =
+        sourceAgeSec != null &&
+        sourceAgeSec.isFinite &&
+        sourceAgeSec >= 0 &&
+        sourceAgeSec <= _kMaximumGraySourceAgeSec;
+    final sourceOrderValid =
+        sourceTimestamp != null &&
+        (previousSourceTimestamp == null ||
+            sourceTimestamp > previousSourceTimestamp);
+    final trackEvidenceRequired = currentGray != null;
+    final trackEvidence =
+        !sourceBound ||
+            !sourceOrderValid ||
+            currentGray == null ||
+            currentFocalX == null ||
+            currentFocalY == null ||
+            currentGray.length != 128 * 128
+        ? null
+        : _continuousTracks.advance(
+            gray: currentGray,
+            width: 128,
+            height: 128,
+            focalXPixels: _capturedGrayFocalX == null
+                ? currentFocalX
+                : (_capturedGrayFocalX! + currentFocalX) * 0.5,
+            focalYPixels: _capturedGrayFocalY == null
+                ? currentFocalY
+                : (_capturedGrayFocalY! + currentFocalY) * 0.5,
+          );
+    if (trackEvidence != null && sourceTimestamp != null) {
+      _lastTrackedGraySourceTimestamp = sourceTimestamp;
+    }
     final target = _activeTarget ?? _targetFrom(pose);
     final effectiveCaptureBase = captureBase ?? current;
     final effectiveGeometryBase = geometryBase ?? effectiveCaptureBase;
@@ -238,15 +342,18 @@ class AutoCaptureController {
       sinceLastTickSec: pose.timestamp - _lastTickSec,
       tickIntervalSec: tickIntervalSec,
       motion: motion,
-      blurry: _currentlyBlurry,
-      blurDeferredSec: _blurDeferStartSec == null
-          ? 0
-          : pose.timestamp - _blurDeferStartSec!,
+      visualSimilarity: visualSimilarity,
+      trackEvidence: trackEvidence,
+      trackEvidenceRequired: trackEvidenceRequired,
+      blurry: _objectivelyBlurry(q),
     );
     _lastMovedM = movedM;
     _lastTurnDeg = motion.viewTurnDeg;
     _lastFireDistM = null;
     _lastMotion = motion;
+    _lastVisualSimilarity = visualSimilarity;
+    _lastTrackEvidence = trackEvidence;
+    _lastVisualSourceAgeSec = sourceAgeSec;
     // 锐度快照必须在 fire 分支清段**之前**落下(见 getter 注释)。
     _lastSharpness = _segmentSharpness.isEmpty ? null : _segmentSharpness.last;
     _lastSegMedianSharpness =
@@ -265,25 +372,37 @@ class AutoCaptureController {
         return decision;
       case AutoCaptureDecision.skipTracking:
         // 丢跟踪期间**不播种**:位置估计不可信(spec §7)。
-        _blurDeferStartSec = null;
+        return decision;
+      case AutoCaptureDecision.skipNoVisualEvidence:
+      case AutoCaptureDecision.skipRedundant:
         return decision;
       case AutoCaptureDecision.skipBlurry:
-        // 缓拍开始计时;基准与去抖时钟都不动 —— 画面一变锐下一帧就开火。
-        _blurDeferStartSec ??= pose.timestamp;
+        // 客观模糊是硬拒绝；基准与去抖时钟都不动。下一份清晰视觉样本
+        // 仍可立即开火，但等待多久都不会把糊片强行放入队列。
         return decision;
       case AutoCaptureDecision.skipNotMoved:
       case AutoCaptureDecision.skipPaced:
-        _blurDeferStartSec = null;
-        // 起跑帧 tracking 异常时基准是空的 —— 第一帧正常位姿补播种。
-        // 本帧只播种、不判定:相对新基准的位移必然为 0。
-        // 去抖时钟**不重置** —— 播种不是一次拍摄,不该消耗节奏预算。
+        // 起跑锚点没入队或起跑帧 tracking 异常时，基准保持为空；后续只在
+        // tracking 恢复后的第一帧立即尝试；只有真实入队被拒后，才等共同
+        // 250 ms 地板再重试。绝不能把一帧没拍下来的 pose 偷偷播成
+        // “上一张照片”。
         if (captureBase == null || geometryBase == null) {
-          _seedBaselines(pose);
+          final lastAttemptSec = _lastStartAnchorAttemptSec;
+          if (trackingOk &&
+              (lastAttemptSec == null ||
+                  pose.timestamp - lastAttemptSec >=
+                      kAutoCaptureSafetyDebounceSec)) {
+            _lastStartAnchorAttemptSec = pose.timestamp;
+            _lastTickSec = pose.timestamp;
+            if (_onStartAnchor()) {
+              _seedBaselines(pose);
+              _commitSignature(pose);
+            }
+          }
           return AutoCaptureDecision.skipNotMoved;
         }
         return decision;
       case AutoCaptureDecision.fire:
-        _blurDeferStartSec = null;
         // 去抖先记账:入队失败按 spec §7「下 tick 重试」,不是下一帧重试 ——
         // 失败的开火照样吃掉一次节奏预算,tickIntervalSec 之内不再返回 fire。
         _lastTickSec = pose.timestamp;
@@ -294,6 +413,8 @@ class AutoCaptureController {
           if (motion.advancesGeometryBaseline) {
             _geometryBaseline = current;
           }
+          _capturedSignature = Uint8List.fromList(currentSignature!);
+          if (q != null) _commitTrackSource(q);
           // 开火 = 本段结束,锐度段清零(subsequence 语义)。
           _segmentSharpness.clear();
         }
@@ -342,5 +463,48 @@ class AutoCaptureController {
     _captureBaseline = frame;
     _geometryBaseline = frame;
     _activeTarget = _targetFrom(pose);
+  }
+
+  static Uint8List? _signatureFrom(ARPose pose) {
+    final quality = pose.quality;
+    if (quality == null ||
+        quality.signatureWidth <= 0 ||
+        quality.signatureHeight <= 0 ||
+        quality.signature.length !=
+            quality.signatureWidth * quality.signatureHeight) {
+      return null;
+    }
+    return quality.signature;
+  }
+
+  void _commitSignature(ARPose pose) {
+    final signature = _signatureFrom(pose);
+    if (signature != null) {
+      _capturedSignature = Uint8List.fromList(signature);
+    }
+    final quality = pose.quality;
+    if (quality != null) _commitTrackSource(quality);
+  }
+
+  void _commitTrackSource(FrameQualityReport quality) {
+    final gray = quality.rawGray128;
+    final focalX = quality.sourceFocalX;
+    final focalY = quality.sourceFocalY;
+    if (gray == null ||
+        gray.length != 128 * 128 ||
+        focalX == null ||
+        focalY == null ||
+        !focalX.isFinite ||
+        !focalY.isFinite ||
+        focalX <= 0 ||
+        focalY <= 0) {
+      return;
+    }
+    _capturedGray128 = Uint8List.fromList(gray);
+    _capturedGrayFocalX = focalX;
+    _capturedGrayFocalY = focalY;
+    _capturedGraySourceTimestamp = quality.sourceTimestamp;
+    _lastTrackedGraySourceTimestamp = quality.sourceTimestamp;
+    _continuousTracks.setReference(gray: gray, width: 128, height: 128);
   }
 }

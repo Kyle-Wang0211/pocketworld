@@ -96,6 +96,8 @@ import 'official_gallery_routes.dart';
 import 'sfm_preview_overlay.dart';
 import '../sparse_thumbnail.dart';
 import '../../util/image_sanitize.dart';
+import '../../vio/diagnostics/vio_diagnostics_recorder.dart';
+import '../../vio/diagnostics/vio_shadow_switch.dart';
 
 /// 一次快门入队的三种结果。手动与自动**共用同一条入队路径**,但对"没入队"
 /// 的反馈不同:手动到上限要弹对话框,自动模式绝不弹(每个 tick 撞一次会
@@ -187,6 +189,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   OfficialCaptureMode _captureMode = OfficialCaptureMode.auto;
 
   late final AutoCaptureController _autoCapture = AutoCaptureController(
+    onStartAnchor: _onAutoCaptureStartAnchor,
     onFire: _onAutoCaptureFire,
     paceProvider: () => _shutterPace,
     capturedCountProvider: _autoCaptureAcceptedFrameCount,
@@ -238,6 +241,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// ⚠️ 绝不拿它反推"在不在跑":停机时 onPose 返回的就是 skipNotMoved,
   /// 与"你还没动够"逐字相同(见 [autoCaptureIndicatorFor] 的注释)。
   AutoCaptureDecision _lastAutoDecision = AutoCaptureDecision.skipNotMoved;
+
+  /// 低重叠警告的可见 UI 状态。单列出来参与 setState 节流，否则连续的
+  /// skipNotMoved 会把“请减速”变化误判成无变化而永远不刷新到屏幕。
+  bool _autoPromptSlowDown = false;
 
   /// 上一次已反映到 UI 的 `_autoCapture.isRunning`,**只用于**判断要不要
   /// setState —— pose 流是 20–60 Hz,每帧无条件 setState 会把整页重建成热源。
@@ -330,6 +337,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// Keeping the route mounted is what keeps the worker, queue and final
   /// snapshot alive for a later task-card tap.
   bool _showDraftsWhileReconstructing = false;
+  bool _draftRecordActionInProgress = false;
   bool _draftTerminalExitScheduled = false;
   final ReconstructionRouteReleaseGate _routeReleaseGate =
       ReconstructionRouteReleaseGate();
@@ -834,6 +842,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     if (state == AppLifecycleState.resumed &&
         _sfmPhase != null &&
         _showDraftsWhileReconstructing &&
+        !_draftRecordActionInProgress &&
         mounted) {
       setState(() => _showDraftsWhileReconstructing = false);
     }
@@ -957,7 +966,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // 返回值语义不变:saveExit / discardExit / null=回拍摄。
       // 弹窗是模态的:不先停,自动拍会在弹窗背后继续落帧。
       _stopAutoCapture();
-      final choice = await showCaptureExitDialog(context);
+      final hasAcceptedPhotos =
+          _projectPhotos.count + _shutterQueue.outstandingCount > 0;
+      final choice = hasAcceptedPhotos
+          ? await showCaptureExitDialog(context)
+          : CaptureExitChoice.discardExit;
       if (!mounted || choice == null) return;
 
       if (choice == CaptureExitChoice.saveExit) {
@@ -969,6 +982,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         await _shutterQueue.freezeAndDrain();
         if (session != null) {
           await session.stop();
+          await _stopVioShadowForCapture();
           await session.waitForPendingPhotoSaves();
         }
         final recon = _sfmRecon;
@@ -997,6 +1011,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       _shutterQueue.cancelPending();
       final session = _session;
       if (session != null) await session.stop();
+      await _stopVioShadowForCapture();
       await _shutterQueue.freezeAndDrain();
       if (session != null) {
         await session.discardCurrentCapture();
@@ -1055,6 +1070,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // Lock succeeded; proceed to recording (skip auto-retry loop).
       try {
         await session.start(autoLock: false);
+        _startVioShadowForCapture();
         if (!mounted) return;
         _previewModel.reset();
         setState(() {
@@ -1098,6 +1114,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     if (session == null || _recording || !mounted) return;
     try {
       await session.start(autoLock: true, manualCapture: true);
+      _startVioShadowForCapture();
       if (!mounted) return;
       // Fresh take → clear any anchored AR cards left from a previous session.
       try {
@@ -1169,6 +1186,27 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // ignore: avoid_print
       print('[OfficialARCapturePage] manual capture start failed: $e');
     }
+  }
+
+  void _startVioShadowForCapture() {
+    if (!kVioShadowEnabled) {
+      DeviceLog.log('VioDiag', 'PW_VIO_SHADOW=off ⇒ 本场影子 VIO 不启动（单变量对照组）');
+      return;
+    }
+    unawaited(() async {
+      try {
+        await VioDiagnosticsRecorder.instance.start();
+        DeviceLog.log('VioDiag', 'capture shadow lifecycle started');
+      } catch (e) {
+        DeviceLog.log('VioDiag', 'capture shadow start failed: $e');
+      }
+    }());
+  }
+
+  Future<void> _stopVioShadowForCapture() async {
+    if (!kVioShadowEnabled) return;
+    await VioDiagnosticsRecorder.instance.stop();
+    DeviceLog.log('VioDiag', 'capture shadow terminal receipt flushed');
   }
 
   /// Per committed shutter: frustum-mark the coverage cloud with the
@@ -1701,6 +1739,12 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         '本张 ARKit 相机数据不完整，未进入重建，请重拍',
       OfficialHighResInputFailure.captureFailed ||
       OfficialHighResInputFailure.missingJpeg => '高分辨率照片拍摄失败，本张未进入重建，请重拍',
+      OfficialHighResInputFailure.actualStillMissingEvidence =>
+        '高分辨率照片缺少实际图像校验，本张未进入重建，请重拍',
+      OfficialHighResInputFailure.actualStillQualityRejected =>
+        '高分辨率照片不够清晰，本张未进入重建，请重拍',
+      OfficialHighResInputFailure.actualStillDuplicate =>
+        '高分辨率照片与上一张重复，本张未进入重建，请继续移动',
     };
     _markPhotoCardFailed(event.evidenceJpegPath, message);
   }
@@ -2795,6 +2839,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     setState(() => _showDraftsWhileReconstructing = false);
   }
 
+  void _setDraftRecordActionInProgress(bool active) {
+    if (!mounted || _draftRecordActionInProgress == active) return;
+    setState(() => _draftRecordActionInProgress = active);
+  }
+
   void _scheduleDraftTerminalExitIfNeeded() {
     final terminal =
         _sfmPhase == SfmPreviewPhase.refined ||
@@ -2803,6 +2852,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         !shouldAutoExitReconstructionDrafts(
           showingDrafts: _showDraftsWhileReconstructing,
           reconstructionTerminal: terminal,
+          recordActionInProgress: _draftRecordActionInProgress,
         )) {
       return;
     }
@@ -2816,6 +2866,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       if (!shouldAutoExitReconstructionDrafts(
         showingDrafts: _showDraftsWhileReconstructing,
         reconstructionTerminal: stillTerminal,
+        recordActionInProgress: _draftRecordActionInProgress,
       )) {
         return;
       }
@@ -2897,10 +2948,17 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // 时的同一份状态,不重算。
       sharpness: _autoCapture.lastSharpness,
       segMedianSharpness: _autoCapture.lastSegmentMedianSharpness,
+      motion: _autoCapture.lastMotionMetrics,
       motionRole: _autoCapture.lastMotionRole,
       geometryParallaxDeg: _autoCapture.lastGeometryParallaxDeg,
       overlapFraction: _autoCapture.lastOverlapFraction,
       depthScaleRatio: _autoCapture.lastDepthScaleRatio,
+      visualSimilarity: _autoCapture.lastVisualSimilarity,
+      trackCommonCount: _autoCapture.lastTrackEvidence?.commonTrackCount,
+      trackCommonFraction: _autoCapture.lastTrackEvidence?.commonTrackFraction,
+      trackMedianNormalizedDisplacement:
+          _autoCapture.lastTrackEvidence?.medianNormalizedDisplacement,
+      visualSourceAgeSec: _autoCapture.lastVisualSourceAgeSec,
     );
     // isRunning 由 true 翻 false = controller 自停(撞 300 张或 5 分钟)。
     // 这里读的是 isRunning 而不是 decision:停机后 onPose 恒返回
@@ -2924,15 +2982,18 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     //      判定会连着好几帧是 fire,于是这个 4800 行的页面被每帧重建一次
     //      —— 正是这段注释自己要避免的那个热源。
     final landed = _autoFirePulseToken != pulseBefore;
+    final promptSlowDown = _autoCapture.shouldPromptSlowDown;
     if (!landed &&
         decision == _lastAutoDecision &&
-        running == _autoRunningLastSeen) {
+        running == _autoRunningLastSeen &&
+        promptSlowDown == _autoPromptSlowDown) {
       // pose 流是 20–60 Hz。没有任何变化时不重建整页 —— 每帧 setState
       // 会把这个 4800 行的页面变成一个热源。
       return;
     }
     _lastAutoDecision = decision;
     _autoRunningLastSeen = running;
+    _autoPromptSlowDown = promptSlowDown;
     if (mounted) setState(() {});
   }
 
@@ -2955,11 +3016,12 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // 收到的是同一个 pose)。本页别处用的 DateTime.now() 是另一个纪元,
     // 混进来什么都不会抛,只会把时长与节流一起静默算错。
     _autoTelemetry.recordSessionStart(seed.timestamp);
-    setState(() {
-      _lastAutoDecision = AutoCaptureDecision.skipNotMoved;
-      _autoCapture.start(seed);
-      _autoRunningLastSeen = _autoCapture.isRunning;
-    });
+    _lastAutoDecision = AutoCaptureDecision.skipNotMoved;
+    _autoPromptSlowDown = false;
+    // start() 会同步尝试首张锚点入队；队列 admission 不能藏在 setState 回调里。
+    _autoCapture.start(seed);
+    _autoRunningLastSeen = _autoCapture.isRunning;
+    if (mounted) setState(() {});
   }
 
   void _stopAutoCapture() {
@@ -2969,6 +3031,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // 用户停 / 切模式 / 退后台 / 完成 —— 这一轮到此为止,写终态行。
     _emitAutoTelemetry(_autoTelemetry.recordSessionEnd());
     _autoRunningLastSeen = false;
+    _autoPromptSlowDown = false;
     if (mounted) setState(() {});
   }
 
@@ -3000,6 +3063,17 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     setState(() => _autoStartPending = true);
   }
 
+  void _triggerShutterHaptic() {
+    unawaited(
+      HapticFeedback.heavyImpact().catchError((
+        Object error,
+        StackTrace stackTrace,
+      ) {
+        DeviceLog.log('OfficialARCapturePage', 'shutter haptic failed: $error');
+      }),
+    );
+  }
+
   /// 自动拍的触发口。**返回 true = 真的入队成功** —— controller 据此决定
   /// 要不要把基准帧推到这一帧上。报假的 true 会把基准帧钉在一个**根本没有
   /// 照片**的位置上,此后位移闸系统性欠触发,正是 T3 要防的那件事。
@@ -3011,9 +3085,25 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// **契约:绝不抛。** 异常穿出去会打断整条 pose 回调(覆盖云、预警横幅、
   /// 暖机判定都挂在上面)。入队路径里有平台通道与磁盘工作,不能假设它永远
   /// 干净,所以一律按"没入队"处理 —— 基准帧因此不动,下一 tick 自然重试。
+  bool _onAutoCaptureStartAnchor() {
+    try {
+      final enqueued = _enqueueShutterCapture(automaticSelection: true);
+      _autoTelemetry.recordStartAnchorOutcome(enqueued: enqueued);
+      if (enqueued) _autoFirePulseToken++;
+      return enqueued;
+    } catch (e) {
+      _autoTelemetry.recordStartAnchorOutcome(enqueued: false);
+      DeviceLog.log(
+        'OfficialARCapturePage',
+        'auto capture start anchor enqueue failed: $e',
+      );
+      return false;
+    }
+  }
+
   bool _onAutoCaptureFire() {
     try {
-      final enqueued = _enqueueShutterCapture();
+      final enqueued = _enqueueShutterCapture(automaticSelection: true);
       // spec §7「入队失败 ⇒ 基准帧不更新 + **记遥测**」。这里是全链路唯一
       // 拿得到真实入队结果的地方 —— 判定层只知道"开了一枪"。
       _autoTelemetry.recordFireOutcome(enqueued: enqueued);
@@ -3043,18 +3133,23 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// 三道守卫与 300 张上限判据因此只有一份。给自动拍抄第二份守卫迟早会漏掉
   /// 其中一条 —— 尤其是 `_shutterQueue.accepting`,它只在收尾流程
   /// (freezeAndDrain / cancelPending)期间为 false,平时测不出来。
-  _ShutterAdmission _admitShutterCapture() {
+  _ShutterAdmission _admitShutterCapture({bool automaticSelection = false}) {
     if (_session == null || !_sfmCaptureReady || !_shutterQueue.accepting) {
       return _ShutterAdmission.blocked;
     }
-    return _shutterQueue.enqueue(verifiedCount: _projectPhotos.count) == null
-        ? _ShutterAdmission.budgetExhausted
-        : _ShutterAdmission.admitted;
+    final ticket = _shutterQueue.enqueue(
+      verifiedCount: _projectPhotos.count,
+      automaticSelection: automaticSelection,
+    );
+    if (ticket == null) return _ShutterAdmission.budgetExhausted;
+    _triggerShutterHaptic();
+    return _ShutterAdmission.admitted;
   }
 
   /// [_admitShutterCapture] 的布尔视图,给 [AutoCaptureController.onFire]。
-  bool _enqueueShutterCapture() =>
-      _admitShutterCapture() == _ShutterAdmission.admitted;
+  bool _enqueueShutterCapture({bool automaticSelection = false}) =>
+      _admitShutterCapture(automaticSelection: automaticSelection) ==
+      _ShutterAdmission.admitted;
 
   Future<void> _showMaximumPhotosDialog() async {
     if (!mounted || _maximumPhotosDialogOpen) return;
@@ -3095,7 +3190,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     final gapMs = _lastShutterMs > 0 ? tapMs - _lastShutterMs : -1;
     _lastShutterMs = tapMs;
     final shutterSw = Stopwatch()..start();
-    final capture = await session.captureSinglePhoto();
+    final capture = await session.captureSinglePhoto(
+      automaticSelection: ticket.automaticSelection,
+    );
     if (capture == null) {
       throw StateError('accepted shutter ticket could not start');
     }
@@ -3109,9 +3206,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       'ticket_id': ticket.id,
       'tap_timestamp_us': ticket.tapTimestampMicros,
       'queue_wait_us': queueWaitMicros,
+      'automatic_selection': ticket.automaticSelection,
       'verified_at_start': _projectPhotos.count,
       'outstanding_at_start': _shutterQueue.outstandingCount,
     });
+    final input = await capture.highResolutionCompletion;
     if (mounted &&
         !_failedEvidenceJpegPaths.contains(capture.evidenceJpegPath)) {
       unawaited(
@@ -3126,12 +3225,12 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
             }),
       );
     }
-    final input = await capture.highResolutionCompletion;
     _recomputeShutterPace();
     TelemetryWriter.instance.event('shutter', {
       'ticket_id': ticket.id,
       'tap_timestamp_us': ticket.tapTimestampMicros,
       'queue_wait_us': queueWaitMicros,
+      'automatic_selection': ticket.automaticSelection,
       'wait_ms': shutterSw.elapsedMilliseconds,
       'gap_ms': gapMs,
       'transaction_ms': shutterSw.elapsedMilliseconds,
@@ -3349,6 +3448,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // under `<captureDir>/photos_highres/`; stop freezes curation and
       // writes the shared photo_bundle contract.
       await session.stop();
+      await _stopVioShadowForCapture();
       // T6: tear down the live sparse cloud when the take ends.
       try {
         await _arKitChannel.invokeMethod<void>(
@@ -3757,6 +3857,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           activeReconstructionPipelineKind: CapturePipelineKind.official,
           onActiveReconstructionTap: _showReconstructionProgress,
           onActiveReconstructionDelete: _permanentlyDeleteActiveReconstruction,
+          onRecordActionActivityChanged: _setDraftRecordActionInProgress,
           officialResumeRoute: pushOfficialResumeRoute,
           officialViewerRoute: pushOfficialViewerRoute,
         ),
@@ -4014,6 +4115,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                             text: autoCaptureShutterHintText(
                               mode: _captureMode,
                               running: _autoCapture.isRunning,
+                              shouldPromptSlowDown: _autoPromptSlowDown,
                             ),
                           ),
                         ),

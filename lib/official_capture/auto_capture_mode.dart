@@ -72,6 +72,8 @@ AutoCaptureIndicator autoCaptureIndicatorFor({
     // 取舍 —— skipPaced 也不表达)。
     case AutoCaptureDecision.skipBlurry:
     case AutoCaptureDecision.skipPaced:
+    case AutoCaptureDecision.skipNoVisualEvidence:
+    case AutoCaptureDecision.skipRedundant:
     case AutoCaptureDecision.skipTracking:
     case AutoCaptureDecision.skipCapped:
     case AutoCaptureDecision.skipTimeLimit:
@@ -117,12 +119,15 @@ String autoCaptureTopHintText(OfficialCaptureMode mode) {
 String autoCaptureShutterHintText({
   required OfficialCaptureMode mode,
   required bool running,
+  bool shouldPromptSlowDown = false,
 }) {
   switch (mode) {
     case OfficialCaptureMode.manual:
       return '持续按快门拍摄';
     case OfficialCaptureMode.auto:
-      return running ? '拍摄中，再点一下录制键停止' : '点一下录制键开始自动拍摄';
+      if (!running) return '点一下录制键开始自动拍摄';
+      if (shouldPromptSlowDown) return '重叠正在降低，请减速并保持物体在画面内';
+      return '拍摄中，再点一下录制键停止';
   }
 }
 

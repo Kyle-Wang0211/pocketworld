@@ -1,50 +1,14 @@
-// PwVioCapability.kt — Blocker 04 的 Android 侧(ready-to-drop)。
+// PwVioCapability.kt — Android Camera2/Core clock raw transport adapter.
 //
-// ⚠️ 放置位置:这个文件**暂时**放在 lib/vio/capability/android/ 里,只是因为
-//    /Users/kaidongwang/Developer/pocketworld 目前**没有 android/ 目录**
-//    (Android 应用根本不存在)。等 Android 壳建起来后原样搬到
-//        android/app/src/main/kotlin/com/pocketworld/vio/PwVioCapability.kt
-//    并改掉 package 行。除 package 行外不需要任何改动。
+// This file intentionally contains no VIO eligibility, calibration usability,
+// timebase-relation, stabilization-state, or rolling-shutter policy. It copies
+// bounded platform facts to Dart, where the cross-platform decisions live.
 //
-// 🔴 **本文件从未被编译过。** 这台机器上没有 Android SDK
-//    (~/Library/Android 不存在,找不到 android.jar),没有设备,没有 Gradle 工程。
-//    下面每一个 API 名与它的可得条件都是从 AOSP 源码逐条核对的(见每处引文),
-//    但"名字对"不等于"编得过"。第一次 assembleDebug 之前它一律按未验证对待。
-//
-// ─────────────────────────────────────────────────────────────────────────
-// 与 iOS 侧的**结构性差异**(这正是不能用一套逐机型 yaml 的原因):
-//
-//                      iOS                          Android
-//   EIS 可关?          可(preferredVideo-          可(CONTROL_VIDEO_STABILIZATION_
-//                      StabilizationMode=.off)      MODE=OFF;"OFF will always be listed",
-//                                                   该 characteristic"available on all devices")
-//   OIS 可关?          🔴 **不可**。整个 SDK 里     可(LENS_OPTICAL_STABILIZATION_MODE
-//                      没有任何公开 OIS 符号        =OFF),但受 LENS_INFO_AVAILABLE_
-//                      (已用 swiftc 负向对照证明)  OPTICAL_STABILIZATION 约束,且是 Optional
-//   逐帧内参?          有(CMSampleBuffer           **无**。Android 的内参是静态
-//                      attachment)                  characteristic,不随帧下发
-//   静态内参表?        无                           有(LENS_INTRINSIC_CALIBRATION),
-//                                                   但 Optional,可能为 null
-//   卷帘读出时间?      **无对应 API**               有(SENSOR_ROLLING_SHUTTER_SKEW),
-//                                                   Optional / LIMITED 级以上
-//   相机-陀螺外参?     无                           有(LENS_POSE_TRANSLATION/ROTATION),
-//                                                   Optional,且见下面的 UNDEFINED 陷阱
-//
-// 两端能拿到的东西**完全不同**,所以判定必须建在"这次会话实际拿到了什么"上,
-// 而不是建在机型表上。判定逻辑统一在 Dart 侧
-// (lib/vio/capability/capability_probe.dart),本文件只负责如实上报。
-//
-// ─────────────────────────────────────────────────────────────────────────
-// 🔴 最容易踩的一个坑:**非 null 不等于有意义。**
-// AOSP 对 LENS_POSE_REFERENCE == UNDEFINED 的定义:
-//   poseTranslation: "this position cannot be accurately represented by the camera
-//                     device, and will be represented as (0, 0, 0)"
-//   poseRotation:    "the quaternion rotation cannot be accurately represented ...
-//                     and will be represented by default values matching its default facing"
-// ⇒ UNDEFINED 时这两个 key **照样返回非 null 的数组**,但里面是编造的默认值。
-//   直接拿去当 p_bc 用,会得到一个"看起来标定过"的错外参 —— 比缺失更危险。
-//   本文件因此只在 poseReference ∈ {PRIMARY_CAMERA, GYROSCOPE} 时才上报外参。
-//   (GYROSCOPE 是我们真正想要的那档:原点就是陀螺仪中心。)
+// The product does not yet contain an Android Gradle application. This draft
+// has therefore not passed assembleDebug and must remain marked uncompiled
+// until it is moved into a real Android module and compiled against its pinned
+// SDK. The guards below state the runtime API boundary; they are not a claim of
+// binary validation on Android hardware.
 
 package com.pocketworld.vio
 
@@ -53,316 +17,285 @@ import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.os.Build
+import android.os.SystemClock
 
-/** 与 Dart 侧 capability_evidence.dart 的 enum name 一一对应。 */
-object PwVioWire {
-    const val STAB_OFF = "off"
-    const val STAB_ON = "on"
-    const val STAB_UNKNOWN = "unknown"
-    const val STAB_ABSENT = "absent"
-
-    const val SRC_NONE = "none"
-    const val SRC_FOV = "fieldOfViewFallback"
-    const val SRC_STATIC = "staticCharacteristics"
-    const val SRC_PLATFORM = "platformTracker"
-    const val SRC_PER_FRAME = "perFrameAttachment"
-
-    const val TB_UNIFIED = "unified"
-    const val TB_OFFSET_MEASURED = "offsetMeasured"
-    const val TB_UNRELATED = "unrelatedUnmeasured"
+private object PwVioIntrinsicsSource {
+    const val NONE = "none"
+    const val STATIC_CHARACTERISTICS = "staticCharacteristics"
 }
 
 object PwVioCapability {
-
-    // ─────────────────────────────────────────────────────────────────────
-    // 时间基
-    // ─────────────────────────────────────────────────────────────────────
-    //
-    // AOSP 对 SENSOR_INFO_TIMESTAMP_SOURCE 的说明:「This key is available on all
-    // devices.」 —— 这是本文件里**唯一**一个保证存在的 key,其余全是 Optional。
-    //   REALTIME → CaptureResult.SENSOR_TIMESTAMP 与 SensorEvent.timestamp 同为
-    //              BOOTTIME ⇒ 直接可比 ⇒ unified。
-    //   UNKNOWN  → 相机戳落在另一个单调基(实践中是 CLOCK_MONOTONIC),必须先测出
-    //              BOOTTIME−MONOTONIC 偏移才能融合。偏移测量已由
-    //              android_ready/dart/pw_android_capture/lib/src/clock_offset.dart
-    //              实现(Cristian 最小往返法),这里只负责报告要不要用它。
     /**
-     * @param measuredOffsetUncertaintyNs ClockOffset 测出来的**硬误差界**;
-     *        没测出来传 null —— 传 0 会让 Dart 侧以为时间是完美对齐的。
+     * Copies the Camera2 timestamp-source integer and one tight
+     * CLOCK_MONOTONIC/CLOCK_BOOTTIME/CLOCK_MONOTONIC sandwich.
+     * Offset, uncertainty, and clock-domain relation are derived in Dart.
      */
     @JvmStatic
-    fun timebaseWire(
-        characteristics: CameraCharacteristics,
-        measuredOffsetUncertaintyNs: Long?
-    ): Map<String, Any?> {
-        val source = characteristics.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE)
-        if (source == CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME) {
-            return mapOf(
-                "relation" to PwVioWire.TB_UNIFIED,
-                "offsetUncertaintyNs" to 0L
-            )
-        }
-        // UNKNOWN(或 null,极老设备)。没测出偏移就如实说不可用。
-        return if (measuredOffsetUncertaintyNs != null) {
-            mapOf(
-                "relation" to PwVioWire.TB_OFFSET_MEASURED,
-                "offsetUncertaintyNs" to measuredOffsetUncertaintyNs
-            )
+    fun timebaseWire(characteristics: CameraCharacteristics): Map<String, Any?> {
+        val timestampSource = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
+            characteristics.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE)
         } else {
-            mapOf(
-                "relation" to PwVioWire.TB_UNRELATED,
-                "offsetUncertaintyNs" to null
-            )
+            null
         }
+        val monotonicBeforeNanos = System.nanoTime()
+        val bootRealtimeNanos = if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1
+        ) {
+            SystemClock.elapsedRealtimeNanos()
+        } else {
+            null
+        }
+        val monotonicAfterNanos = System.nanoTime()
+        return mapOf(
+            "schema" to "pw.vio.android.timebase-raw/1",
+            "timestampSource" to timestampSource,
+            "monotonicBeforeNanos" to monotonicBeforeNanos,
+            "bootRealtimeNanos" to bootRealtimeNanos,
+            "monotonicAfterNanos" to monotonicAfterNanos,
+        )
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // 内参(第一层:静态标定表)
-    // ─────────────────────────────────────────────────────────────────────
-    //
-    // AOSP:LENS_INTRINSIC_CALIBRATION = [f_x, f_y, c_x, c_y, s],
-    // 「Units: Pixels in the android.sensor.info.preCorrectionActiveArraySize
-    //  coordinate system.」 + 「Optional - The value for this key may be null on
-    //  some devices.」
-    //
-    // 🔴 参考分辨率必须用 **preCorrectionActiveArraySize**,不是 activeArraySize,
-    //    也不是输出流尺寸。三者在多数机型上都不一样。拿错了,内参数值本身没错,
-    //    但配错了参考系 ⇒ 主点偏移几十像素而且完全静默。Dart 侧的
-    //    IntrinsicsFacts.remap 负责把它搬到实际出图口径,前提是这里带对参考系。
+    /**
+     * Existing static-intrinsics transport. The platform arrays are widened
+     * from Float to Double because Flutter's StandardMessageCodec has no Float
+     * scalar wire type. No focal-length or remapping math runs here.
+     */
     @JvmStatic
     fun intrinsicsWire(characteristics: CameraCharacteristics): Map<String, Any?> {
-        val k = characteristics.get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION)
-        val pre = characteristics.get(
-            CameraCharacteristics.SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return absentIntrinsicsWire()
+        }
+        val intrinsics =
+            characteristics.get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION)
+        val reference = characteristics.get(
+            CameraCharacteristics.SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE,
         )
-        if (k == null || k.size < 5 || pre == null) {
-            return mapOf(
-                "source" to PwVioWire.SRC_NONE,
-                "fx" to 0.0, "fy" to 0.0, "cx" to 0.0, "cy" to 0.0, "skew" to 0.0,
-                "referenceWidth" to 0, "referenceHeight" to 0
-            )
+        if (intrinsics == null || intrinsics.size < 5 || reference == null) {
+            return absentIntrinsicsWire()
         }
         return mapOf(
-            "source" to PwVioWire.SRC_STATIC,
-            "fx" to k[0].toDouble(),
-            "fy" to k[1].toDouble(),
-            "cx" to k[2].toDouble(),
-            "cy" to k[3].toDouble(),
-            "skew" to k[4].toDouble(),
-            "referenceWidth" to pre.width(),
-            "referenceHeight" to pre.height()
+            "source" to PwVioIntrinsicsSource.STATIC_CHARACTERISTICS,
+            "fx" to intrinsics[0].toDouble(),
+            "fy" to intrinsics[1].toDouble(),
+            "cx" to intrinsics[2].toDouble(),
+            "cy" to intrinsics[3].toDouble(),
+            "skew" to intrinsics[4].toDouble(),
+            "referenceWidth" to reference.width(),
+            "referenceHeight" to reference.height(),
         )
     }
 
-    /**
-     * 畸变系数。AOSP:LENS_DISTORTION = [kappa_1..kappa_5],Brown-Conrady,
-     * 「Replaces the deprecated android.lens.radialDistortion field, which was
-     *  inconsistently defined.」⇒ **永远不要读 LENS_RADIAL_DISTORTION**,
-     * 它的定义与这个不一致,混用会得到错的去畸变。
-     */
+    private fun absentIntrinsicsWire(): Map<String, Any?> = mapOf(
+        "source" to PwVioIntrinsicsSource.NONE,
+        "fx" to 0.0,
+        "fy" to 0.0,
+        "cx" to 0.0,
+        "cy" to 0.0,
+        "skew" to 0.0,
+        "referenceWidth" to 0,
+        "referenceHeight" to 0,
+    )
+
+    /** Copies the optional Android distortion array without fitting a model. */
     @JvmStatic
     fun distortionWire(characteristics: CameraCharacteristics): Map<String, Any?> {
-        val d = characteristics.get(CameraCharacteristics.LENS_DISTORTION)
-        if (d == null || d.size < 5) return mapOf("available" to false)
-        return mapOf(
-            "available" to true,
-            "model" to "brown_conrady",
-            "k" to listOf(
-                d[0].toDouble(), d[1].toDouble(), d[2].toDouble(),
-                d[3].toDouble(), d[4].toDouble()
-            )
-        )
-    }
-
-    // ─────────────────────────────────────────────────────────────────────
-    // 相机 ↔ 陀螺 外参(xrapi 里 p_bc 差 12mm 的那一项)
-    // ─────────────────────────────────────────────────────────────────────
-    //
-    // 见文件头的 UNDEFINED 陷阱:只有 poseReference ∈ {PRIMARY_CAMERA, GYROSCOPE}
-    // 时数值才是真的。GYROSCOPE 是我们要的那档。
-    @JvmStatic
-    fun extrinsicsWire(characteristics: CameraCharacteristics): Map<String, Any?> {
-        val ref = characteristics.get(CameraCharacteristics.LENS_POSE_REFERENCE)
-        val usable = ref == CameraCharacteristics.LENS_POSE_REFERENCE_GYROSCOPE ||
-                ref == CameraCharacteristics.LENS_POSE_REFERENCE_PRIMARY_CAMERA
-        if (!usable) {
-            return mapOf(
-                "available" to false,
-                "reason" to "LENS_POSE_REFERENCE=$ref; AOSP states the pose values are " +
-                        "filled with defaults when it is UNDEFINED, so a non-null array " +
-                        "here would be fabricated, not calibrated."
-            )
+        val coefficients = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            characteristics.get(CameraCharacteristics.LENS_DISTORTION)
+                ?.takeIf { it.size >= 5 }
+                ?.map { it.toDouble() }
+        } else {
+            null
         }
-        val t = characteristics.get(CameraCharacteristics.LENS_POSE_TRANSLATION)
-        val r = characteristics.get(CameraCharacteristics.LENS_POSE_ROTATION)
-        if (t == null || t.size < 3 || r == null || r.size < 4) {
-            return mapOf("available" to false, "reason" to "pose keys null (Optional)")
-        }
-        return mapOf(
-            "available" to true,
-            // GYROSCOPE 时原点就是陀螺仪中心 —— 这正是 VIO 需要的 p_bc 参考点。
-            "referenceIsGyroscope" to
-                    (ref == CameraCharacteristics.LENS_POSE_REFERENCE_GYROSCOPE),
-            // 单位:米。AOSP 提醒「for many computer vision applications, the position
-            // needs to be negated to convert it to a translation from the camera to
-            // the origin」—— 取负在消费侧做,这里保持 AOSP 原始约定不动。
-            "translationMeters" to listOf(t[0].toDouble(), t[1].toDouble(), t[2].toDouble()),
-            // 四元数系数顺序是 (x, y, z, w)。
-            "rotationXyzw" to listOf(
-                r[0].toDouble(), r[1].toDouble(), r[2].toDouble(), r[3].toDouble()
-            )
-        )
+        return mapOf("coefficients" to coefficients)
     }
-
-    // ─────────────────────────────────────────────────────────────────────
-    // 防抖:请求 + 读回
-    // ─────────────────────────────────────────────────────────────────────
 
     /**
-     * 在 CaptureRequest.Builder 上显式关掉两路防抖。
-     *
-     * AOSP 明确警告了两条:
-     *   1. 「If a camera device supports both this mode and OIS ..., turning both modes
-     *       on may produce undesirable interaction」
-     *   2. 「If video stabilization is set to "PREVIEW_STABILIZATION",
-     *       android.lens.opticalStabilizationMode is **overridden**」
-     *      ⇒ 只要 EIS 不是 OFF,我们对 OIS 的设置就可能被无视。所以必须先把
-     *        EIS 打到 OFF,而且**两路都要在 CaptureResult 里读回确认**。
-     *
-     * 另:AOSP 建议把它当 session parameter 提前给
-     * (「strongly recommended to call SessionConfiguration#setSessionParameters with
-     *   the desired video stabilization mode before creating the capture session」),
-     * 否则首帧前会有一次重配置。调用方应当同时在 SessionConfiguration 里设一遍。
+     * Copies the optional Camera2 pose reference and arrays. In particular,
+     * Kotlin does not decide whether a reference is suitable for camera/gyro
+     * calibration; Dart interprets the raw reference integer.
      */
     @JvmStatic
-    fun requestStabilizationOff(
-        builder: CaptureRequest.Builder,
-        characteristics: CameraCharacteristics
-    ) {
-        // EIS:CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES「available on all devices」
-        // 且「OFF will always be listed」⇒ 无条件可关。
-        builder.set(
-            CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
-            CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF
+    fun extrinsicsWire(characteristics: CameraCharacteristics): Map<String, Any?> {
+        val poseReference = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            characteristics.get(CameraCharacteristics.LENS_POSE_REFERENCE)
+        } else {
+            null
+        }
+        val translation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            characteristics.get(CameraCharacteristics.LENS_POSE_TRANSLATION)
+                ?.takeIf { it.size == 3 }
+                ?.let {
+                    listOf(it[0].toDouble(), it[1].toDouble(), it[2].toDouble())
+                }
+        } else {
+            null
+        }
+        val rotation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            characteristics.get(CameraCharacteristics.LENS_POSE_ROTATION)
+                ?.takeIf { it.size == 4 }
+                ?.let {
+                    listOf(
+                        it[0].toDouble(),
+                        it[1].toDouble(),
+                        it[2].toDouble(),
+                        it[3].toDouble(),
+                    )
+                }
+        } else {
+            null
+        }
+        return mapOf(
+            "schema" to "pw.vio.android.extrinsics-raw/1",
+            "poseReference" to poseReference,
+            "translationMeters" to translation,
+            "rotationXyzw" to rotation,
         )
-        // OIS:必须先确认 OFF 在可用列表里。列表本身是 Optional。
-        val oisModes =
-            characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION)
-        if (oisModes != null &&
-            oisModes.contains(CameraCharacteristics.LENS_OPTICAL_STABILIZATION_MODE_OFF)
-        ) {
+    }
+
+    /**
+     * Applies the two raw Camera2 mode integers selected by Dart. A null value
+     * means “do not set this request key”; Kotlin supplies no fallback target.
+     */
+    @JvmStatic
+    fun applyStabilizationModes(
+        builder: CaptureRequest.Builder,
+        requestedElectronicMode: Int?,
+        requestedOpticalMode: Int?,
+    ) {
+        if (requestedElectronicMode != null) {
+            builder.set(
+                CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
+                requestedElectronicMode,
+            )
+        }
+        if (requestedOpticalMode != null) {
             builder.set(
                 CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
-                CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF
+                requestedOpticalMode,
             )
         }
     }
 
     /**
-     * 从 **CaptureResult** 读回实际生效的状态。
-     * 只看我们请求了什么是没有意义的 —— 请求只是请求。
+     * Echoes availability, Dart's request, and the platform readback as raw
+     * integers. Classification of modes is exclusively a Dart concern.
      */
     @JvmStatic
     fun stabilizationWire(
         characteristics: CameraCharacteristics,
-        result: TotalCaptureResult
-    ): Map<String, Any?> {
-        val availableEis =
-            characteristics.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES)
-        val oisModes =
-            characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION)
+        result: TotalCaptureResult,
+        requestedElectronicMode: Int?,
+        requestedOpticalMode: Int?,
+    ): Map<String, Any?> = mapOf(
+        "schema" to "pw.vio.android.stabilization-raw/1",
+        "availableElectronicModes" to characteristics.get(
+            CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES,
+        )?.toList(),
+        "availableOpticalModes" to characteristics.get(
+            CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION,
+        )?.toList(),
+        "requestedElectronicMode" to requestedElectronicMode,
+        "requestedOpticalMode" to requestedOpticalMode,
+        "actualElectronicMode" to result.get(
+            CaptureResult.CONTROL_VIDEO_STABILIZATION_MODE,
+        ),
+        "actualOpticalMode" to result.get(
+            CaptureResult.LENS_OPTICAL_STABILIZATION_MODE,
+        ),
+    )
 
-        val eisActual = result.get(CaptureResult.CONTROL_VIDEO_STABILIZATION_MODE)
-        val oisActual = result.get(CaptureResult.LENS_OPTICAL_STABILIZATION_MODE)
-
-        val eisState = when {
-            eisActual == null -> PwVioWire.STAB_UNKNOWN
-            eisActual == CaptureResult.CONTROL_VIDEO_STABILIZATION_MODE_OFF -> PwVioWire.STAB_OFF
-            else -> PwVioWire.STAB_ON
-        }
-        // OIS 硬件不存在时,AOSP 保证列表「will contain only OFF」⇒ 记 absent 而非 off,
-        // 这样 Dart 侧能区分"没有这东西"和"关掉了"。
-        val oisHardwareAbsent = oisModes != null && oisModes.size == 1 &&
-                oisModes[0] == CameraCharacteristics.LENS_OPTICAL_STABILIZATION_MODE_OFF
-        val oisState = when {
-            oisHardwareAbsent -> PwVioWire.STAB_ABSENT
-            oisActual == null -> PwVioWire.STAB_UNKNOWN
-            oisActual == CaptureResult.LENS_OPTICAL_STABILIZATION_MODE_OFF -> PwVioWire.STAB_OFF
-            else -> PwVioWire.STAB_ON
-        }
-
-        return mapOf(
-            "electronic" to eisState,
-            "optical" to oisState,
-            "electronicControllable" to (availableEis != null && availableEis.isNotEmpty()),
-            "opticalControllable" to (
-                    oisModes != null &&
-                            oisModes.contains(
-                                CameraCharacteristics.LENS_OPTICAL_STABILIZATION_MODE_OFF
-                            ) && !oisHardwareAbsent
-                    )
-        )
-    }
-
-    // ─────────────────────────────────────────────────────────────────────
-    // 卷帘读出
-    // ─────────────────────────────────────────────────────────────────────
-    //
-    // AOSP:「Optional」,「Limited capability - Present on all camera devices that
-    // report being at least HARDWARE_LEVEL_LIMITED」。
-    // 而且必须按实际读出的行数缩放:「if your output covers N rows of the active array
-    // of height H, scale this value by N/H」。不缩放的话,在 binning/crop 模式下
-    // 报出来的是**整阵列**的读出时间,会显著偏大。
+    /**
+     * Copies full-array skew and both row counts without scaling, clamping, or
+     * substituting a missing output-row count. Dart owns the conversion.
+     */
     @JvmStatic
     fun rollingShutterWire(
         characteristics: CameraCharacteristics,
         result: TotalCaptureResult,
-        outputRowsCoveringActiveArray: Int? = null
+        outputRowsCoveringActiveArray: Int?,
     ): Map<String, Any?> {
-        val skew = result.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW)
-            ?: return mapOf("readoutNs" to null)
-        val active = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
-        val h = active?.height() ?: 0
-        val n = outputRowsCoveringActiveArray ?: h
-        val scaled = if (h > 0 && n in 1..h) skew * n / h else skew
-        return mapOf("readoutNs" to scaled)
+        val activeArrayHeight = characteristics.get(
+            CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE,
+        )?.height()
+        return mapOf(
+            "schema" to "pw.vio.android.rolling-shutter-raw/1",
+            "skewNs" to result.get(CaptureResult.SENSOR_ROLLING_SHUTTER_SKEW),
+            "activeArrayHeight" to activeArrayHeight,
+            "outputRowsCoveringActiveArray" to outputRowsCoveringActiveArray,
+        )
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // 硬件等级(用来解释为什么某些 key 是 null,而不是当判据)
-    // ─────────────────────────────────────────────────────────────────────
+    /** Copies Camera2's hardware-level integer without naming or ranking it. */
     @JvmStatic
-    fun hardwareLevelName(characteristics: CameraCharacteristics): String {
-        return when (characteristics.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL)) {
-            CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY -> "LEGACY"
-            CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED -> "LIMITED"
-            CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_FULL -> "FULL"
-            CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_3 -> "LEVEL_3"
-            CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_EXTERNAL -> "EXTERNAL"
-            else -> "UNKNOWN"
+    fun hardwareLevelWire(characteristics: CameraCharacteristics): Map<String, Any?> = mapOf(
+        "schema" to "pw.vio.android.hardware-level-raw/1",
+        "hardwareLevel" to characteristics.get(
+            CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL,
+        ),
+    )
+}
+
+/** One unmodified SensorEvent.timestamp/delivery-clock pair. */
+private data class PwVioImuArrival(
+    val sampleTsNs: Long,
+    val deliveryTsNs: Long,
+)
+
+/**
+ * Fixed-capacity transport storage for raw IMU arrival pairs.
+ *
+ * The ring reports exact attempted/retained/overwritten accounting. It does
+ * not infer sampling rate, batching, permission relevance, or health.
+ */
+class PwVioImuArrivalRing(private val capacity: Int = 4096) {
+    init {
+        require(capacity > 0) { "capacity must be positive" }
+    }
+
+    private val arrivals = arrayOfNulls<PwVioImuArrival>(capacity)
+    private var writeIndex = 0
+    private var retainedCount = 0
+    private var attemptedCount = 0L
+
+    @Synchronized
+    fun append(sampleTsNs: Long, deliveryTsNs: Long) {
+        attemptedCount += 1L
+        arrivals[writeIndex] = PwVioImuArrival(sampleTsNs, deliveryTsNs)
+        writeIndex = (writeIndex + 1) % capacity
+        if (retainedCount < capacity) {
+            retainedCount += 1
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────
-    // IMU:只搬运,不判定
-    // ─────────────────────────────────────────────────────────────────────
-    //
-    // 采样率/抖动/成簇的判定在 Dart 侧的 ImuTimingProbe(Otsu),两端共用一份实现
-    // 与一套单测。Kotlin 侧只负责把 (SensorEvent.timestamp, elapsedRealtimeNanos())
-    // 二元组原样交上去 —— 绝不抽稀、绝不重排。
-    //
-    // ⚠️ registerListener 的 samplingPeriodUs 只是**建议**;Android 12(API 31)起
-    //    所有 sensor 被硬压到 200Hz,除非应用持有 HIGH_SAMPLING_RATE_SENSORS。
-    //    没有任何 API 返回达成率 —— 这正是必须实测的原因。
-    //    maxReportLatencyUs 必须传 0(要求不批),但那同样只是要求,仍需实测确认。
-    @JvmStatic
-    fun highSamplingRatePermissionRelevant(): Boolean =
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    @Synchronized
+    fun wire(available: Boolean): Map<String, Any?> {
+        val oldestIndex = if (retainedCount == capacity) writeIndex else 0
+        val sampleTsNs = ArrayList<Long>(retainedCount)
+        val deliveryTsNs = ArrayList<Long>(retainedCount)
+        for (offset in 0 until retainedCount) {
+            val index = (oldestIndex + offset) % capacity
+            val arrival = checkNotNull(arrivals[index])
+            sampleTsNs.add(arrival.sampleTsNs)
+            deliveryTsNs.add(arrival.deliveryTsNs)
+        }
+        val overwrittenCount = attemptedCount - retainedCount.toLong()
+        return mapOf(
+            "schema" to "pw.vio.imu-arrivals.raw.v1",
+            "available" to available,
+            "sampleTsNs" to sampleTsNs,
+            "deliveryTsNs" to deliveryTsNs,
+            "attemptedCount" to attemptedCount,
+            "retainedCount" to retainedCount,
+            "overwrittenCount" to overwrittenCount,
+            "capacity" to capacity,
+        )
+    }
 
-    @JvmStatic
-    fun imuWire(sampleTsNs: LongArray, deliveryTsNs: LongArray): Map<String, Any?> = mapOf(
-        "available" to (sampleTsNs.isNotEmpty()),
-        "sampleTsNs" to sampleTsNs.toList(),
-        "deliveryTsNs" to deliveryTsNs.toList()
-    )
+    @Synchronized
+    fun reset() {
+        arrivals.fill(null)
+        writeIndex = 0
+        retainedCount = 0
+        attemptedCount = 0L
+    }
 }

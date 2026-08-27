@@ -74,8 +74,8 @@ target 'Runner' do
   # exports only pwofficial_*; it cannot fall back to the self-route pwsfm_* ABI.
   pod 'official_sfm', :path => '../vendor/official_sfm'
 
-  # [pw][vio] XRSLAM (RD-VIO) C ABI。自包含 ceres/yaml-cpp/spdlog;
-  #   OpenCV 单独链(自编 5.0.0,minos 14.0,与 Android 同 tag)。
+  # [pw][vio] XRSLAM (RD-VIO) 官方五函数 C ABI。Dart 统一配置与判决；
+  #   两端固定 OpenCV 4.0.1 / Ceres 1.14 和同一 generic 编译契约。
   pod 'xrslam', :path => '../vendor/xrslam'
 end
 
@@ -203,7 +203,7 @@ post_install do |installer|
     File.write(xcconfig, appended) if appended != contents
   end
 
-  # ── xrslam force_load (RD-VIO via dart:ffi) ──────────────────────────
+  # ── XRSLAM official RD-VIO core ──────────────────────────────────────
   #
   # 和上面 onnxruntime 同一个问题、同一条路:Dart 侧用
   # DynamicLibrary.process().lookup('XRSLAMCreate') 取符号,静态链接器看不到
@@ -215,21 +215,24 @@ post_install do |installer|
   #   整个 -Wl,-u 列表在设备构建里全部消失(去掉 xrslam 立刻恢复)。
   #   不会编译报错,只会静默丢符号 —— 与本文件上方 onnxruntime 那段同类。
   #
-  # libxrslam_all.a 已自包含 ceres/yaml-cpp/spdlog(实测 ceres 真缺符号 = 0);
-  # OpenCV 单独链,用的是自编 5.0.0(minos 14.0),与 Android 同 tag 同
-  # -ffp-contract=off,不是那份 Target iOS 9.0 的旧 4.11 包。
+  # Algorithm authority is the unmodified OpenXRLab generic C++ core built from
+  # 4beb1a942f33da9afbfae2d70e2c641cfc2bb675 with XRSLAM_IOS and internal
+  # threading both off. iOS/Android share Ceres 1.14 and OpenCV 4.0.1.
+  # official calls but must not add or replace algorithm entry points.
   xrslam_dir = '$(PODS_ROOT)/../../vendor/xrslam/libs/ios-arm64'
-  xrslam_marker = 'libxrslam_all.a'
+  xrslam_marker = 'libxrslam_generic_4beb1a9.a'
   xrslam_syms = %w[
     XRSLAMCreate XRSLAMDestroy XRSLAMRunOneFrame
-    XRSLAMPushSensorData XRSLAMPushSensorDataChecked
-    XRSLAMGetResult XRSLAMGetBodyPose XRSLAMGetCameraPose XRSLAMGetState
-    XRSLAMGetBias XRSLAMGetIntrinsics XRSLAMGetVersion
-    XRSLAMGetLandmarks XRSLAMGetLandmarksEx XRSLAMGetHealth
-    XRSLAMSetHealthThresholds XRSLAMTryGetLatestPose XRSLAMGetDepthFusionStats
+    XRSLAMPushSensorData XRSLAMGetResult
   ].map { |n| "-Wl,-u,_#{n}" }.join(' ')
-  xrslam_flags = "-force_load \"#{xrslam_dir}/libxrslam_all.a\" " \
-                 "\"#{xrslam_dir}/libopencv_world.a\" #{xrslam_syms}"
+  xrslam_exports = %w[
+    XRSLAMCreate XRSLAMDestroy XRSLAMRunOneFrame
+    XRSLAMPushSensorData XRSLAMGetResult
+  ].map { |n| "-Wl,-exported_symbol,_#{n}" }.join(' ')
+  xrslam_flags = "-force_load \"#{xrslam_dir}/libxrslam_generic_4beb1a9.a\" " \
+                 "\"#{xrslam_dir}/libceres_official_1_14.a\" " \
+                 "\"#{xrslam_dir}/libopencv_generic_4_0_1.a\" " \
+                 "#{xrslam_syms} #{xrslam_exports}"
 
   Dir[File.join(installer.config.installation_root, 'Pods/Target Support Files/Pods-Runner/*.xcconfig')].each do |xcconfig|
     contents = File.read(xcconfig)

@@ -1,0 +1,3 @@
+pwofficial_match_set_capture_active
+pwofficial_match_set_preview_fps30
+pwofficial_prefetch_frame

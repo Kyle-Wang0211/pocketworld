@@ -5,6 +5,9 @@ enum OfficialHighResInputFailure {
   missingPose,
   missingIntrinsics,
   missingJpeg,
+  actualStillMissingEvidence,
+  actualStillQualityRejected,
+  actualStillDuplicate,
 }
 
 class OfficialHighResInputValidation {

@@ -11,6 +11,17 @@ Future<void> _flushAsyncWork() async {
 }
 
 void main() {
+  test('ticket preserves whether admission came from automatic capture', () {
+    final queue = ManualCaptureQueue(maxTickets: 2, execute: (_) async {});
+    expect(
+      queue
+          .enqueue(verifiedCount: 0, automaticSelection: true)!
+          .automaticSelection,
+      isTrue,
+    );
+    expect(queue.enqueue(verifiedCount: 0)!.automaticSelection, isFalse);
+  });
+
   test(
     'runs 100 synchronous admissions one at a time in strict FIFO order',
     () async {
@@ -402,7 +413,11 @@ void main() {
       r'^\s*final\s+([^;]+);$',
       multiLine: true,
     ).allMatches(ticketSource).map((match) => match.group(1)).toList();
-    expect(fields, <String>['int id', 'int tapTimestampMicros']);
+    expect(fields, <String>[
+      'int id',
+      'int tapTimestampMicros',
+      'bool automaticSelection',
+    ]);
     expect(
       source,
       contains(

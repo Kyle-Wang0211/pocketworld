@@ -8,10 +8,12 @@ class ManualCaptureTicket {
   const ManualCaptureTicket({
     required this.id,
     required this.tapTimestampMicros,
+    this.automaticSelection = false,
   });
 
   final int id;
   final int tapTimestampMicros;
+  final bool automaticSelection;
 }
 
 typedef ManualCaptureExecutor =
@@ -66,12 +68,16 @@ class ManualCaptureQueue extends ChangeNotifier {
     return accepting && verifiedCount + outstandingCount < _maxTickets;
   }
 
-  ManualCaptureTicket? enqueue({required int verifiedCount}) {
+  ManualCaptureTicket? enqueue({
+    required int verifiedCount,
+    bool automaticSelection = false,
+  }) {
     if (!canEnqueue(verifiedCount: verifiedCount)) return null;
 
     final ticket = ManualCaptureTicket(
       id: _nextId,
       tapTimestampMicros: _nowMicros(),
+      automaticSelection: automaticSelection,
     );
     _nextId += 1;
     _pending.addLast(ticket);

@@ -56,10 +56,7 @@ void main() {
       page,
       contains('projectPhotos.count + shutterQueue.outstandingCount'),
     );
-    expect(
-      page,
-      contains('_shutterQueue.enqueue(verifiedCount: _projectPhotos.count)'),
-    );
+    expect(page, contains('verifiedCount: _projectPhotos.count'));
     expect(
       page,
       contains("ValueKey<String>('official-maximum-photos-dialog')"),
@@ -67,7 +64,7 @@ void main() {
 
     // 唯一原生拍照入口住在串行 executor；UI tap 只能同步入队。
     expect(
-      RegExp(r'await session\.captureSinglePhoto\(\)').allMatches(page).length,
+      RegExp(r'await session\.captureSinglePhoto\(').allMatches(page).length,
       1,
     );
     expect(page, contains('Future<void> _executeShutterTicket('));

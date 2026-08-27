@@ -59,6 +59,7 @@ import 'dome/dome_config.dart';
 import 'dome/dome_target_points.dart';
 import 'database_archive_policy.dart';
 import 'orientation_tracker.dart';
+import 'official_actual_photo_gate.dart';
 import 'official_highres_reconstruction_input.dart';
 import 'photo_archive_coordinator.dart';
 import 'photo_archive_policy.dart';
@@ -357,6 +358,8 @@ class CaptureSession {
   static const Duration _motionEmitInterval = Duration(milliseconds: 150);
   final PhotoBundleQualityService _photoQuality =
       const PhotoBundleQualityService();
+  final OfficialActualPhotoGate _automaticActualPhotoGate =
+      OfficialActualPhotoGate();
   final PhotoBundleManifestService _photoBundleManifest =
       const PhotoBundleManifestService();
   final Map<String, HighResolutionStillCapture> _stillByPath =
@@ -875,6 +878,7 @@ class CaptureSession {
     _stillByPath.clear();
     _qualityByPath.clear();
     _sampleByPath.clear();
+    _automaticActualPhotoGate.reset();
     _diagArkitPoses = 0;
     _diagImuPoses = 0;
     _originSettleStartedAtSec = null;
@@ -1517,7 +1521,9 @@ class CaptureSession {
   /// success/failure is reported asynchronously and never falls back.
   ///
   /// Only meaningful when the session was started with `manualCapture: true`.
-  Future<OfficialManualCaptureResult?> captureSinglePhoto() async {
+  Future<OfficialManualCaptureResult?> captureSinglePhoto({
+    bool automaticSelection = false,
+  }) async {
     if (!_started || _disposed) return null;
     final pose = _lastPose;
     final photosDir = _photosDir;
@@ -1600,6 +1606,7 @@ class CaptureSession {
       sample: sample,
       evidenceSaveSpec: evidenceSaveSpec,
       previewPath: '$previewDir/${photoBase}_highres_preview.jpg',
+      automaticSelection: automaticSelection,
     );
     _pendingPhotoSaves.add(highResFuture);
     unawaited(highResFuture);
@@ -1640,6 +1647,7 @@ class CaptureSession {
     required CapturedFrameSample sample,
     required ARFrameSaveSpec evidenceSaveSpec,
     required String previewPath,
+    bool automaticSelection = false,
   }) async {
     if (_highResCaptureInFlight) {
       _hiresStillDropped++;
@@ -1649,6 +1657,7 @@ class CaptureSession {
     }
     _highResCaptureInFlight = true;
     var attempt = 0;
+    var lastFailure = OfficialHighResInputFailure.captureFailed;
     try {
       while (_started && !_disposed && attempt < _manualHighResMaxAttempts) {
         await _waitForManualCaptureResume();
@@ -1669,7 +1678,7 @@ class CaptureSession {
             previewPath: previewPath,
             triggerTimestamp: evidenceSaveSpec.targetTimestamp,
             saveSpec: evidenceSaveSpec,
-            deriveAuxiliary: false,
+            deriveAuxiliary: automaticSelection,
           );
           if (still == null) {
             failure = OfficialHighResInputFailure.captureFailed;
@@ -1689,39 +1698,106 @@ class CaptureSession {
                   validation.failure ?? OfficialHighResInputFailure.missingJpeg;
             } else {
               final input = validation.input!;
-              _hiresStillOk++;
-              _stillByPath[input.jpegPath] = still;
-              // PWVA 采集期归档(official tap 路径,当前生产主路)。
-              CaptureArchiveService.instance.enqueueHighresStill(
-                input.jpegPath,
-                triggerTimestamp: still.requestTimestamp,
-              );
-              _qualityByPath[input.jpegPath] = _qualityFromSample(sample);
-              _sampleByPath[input.jpegPath] = sample.withJpegPath(
-                input.jpegPath,
-              );
-              final admit = targetPoints.forceAdmit(sample);
-              if (admit != null) {
-                targetPoints.stampJpegPath(
-                  cellIdx: admit.cellIdx,
-                  slotIdx: admit.slotIdx,
-                  jpegPath: input.jpegPath,
+              final actualQuality = _evaluateReturnedStill(still, sample);
+              if (automaticSelection) {
+                final actualGate = _automaticActualPhotoGate.evaluate(
+                  gray128: still.gray128,
+                  imageWidth: still.imageWidth,
+                  imageHeight: still.imageHeight,
+                  intrinsics: still.intrinsics,
+                  qualityAccepted: actualQuality.accepted,
                 );
+                TelemetryWriter.instance.event('actual_photo_gate', {
+                  'decision': actualGate.decision.name,
+                  'capture_timestamp': still.timestamp,
+                  'request_timestamp': still.requestTimestamp,
+                  'actual_track_common':
+                      actualGate.trackEvidence?.commonTrackCount,
+                  'actual_track_common_fraction':
+                      actualGate.trackEvidence?.commonTrackFraction,
+                  'actual_track_median_normalized':
+                      actualGate.trackEvidence?.medianNormalizedDisplacement,
+                  'actual_laplacian_variance': actualQuality.laplacianVariance,
+                  'actual_quality_reasons': actualQuality.rejectReasons,
+                });
+                if (!actualGate.accepted) {
+                  failure = switch (actualGate.decision) {
+                    OfficialActualPhotoDecision.rejectMissingEvidence =>
+                      OfficialHighResInputFailure.actualStillMissingEvidence,
+                    OfficialActualPhotoDecision.rejectQuality =>
+                      OfficialHighResInputFailure.actualStillQualityRejected,
+                    OfficialActualPhotoDecision.rejectDuplicate =>
+                      OfficialHighResInputFailure.actualStillDuplicate,
+                    OfficialActualPhotoDecision.accept =>
+                      OfficialHighResInputFailure.captureFailed,
+                  };
+                } else {
+                  _hiresStillOk++;
+                  _stillByPath[input.jpegPath] = still;
+                  // PWVA 采集期归档(official tap 路径,当前生产主路)。
+                  CaptureArchiveService.instance.enqueueHighresStill(
+                    input.jpegPath,
+                    triggerTimestamp: still.requestTimestamp,
+                  );
+                  _qualityByPath[input.jpegPath] = actualQuality;
+                  _sampleByPath[input.jpegPath] = sample.withJpegPath(
+                    input.jpegPath,
+                  );
+                  final admit = targetPoints.forceAdmit(sample);
+                  if (admit != null) {
+                    targetPoints.stampJpegPath(
+                      cellIdx: admit.cellIdx,
+                      slotIdx: admit.slotIdx,
+                      jpegPath: input.jpegPath,
+                    );
+                  }
+                  if (!_sfmFrameCtrl.isClosed) {
+                    _sfmFrameCtrl.add(input);
+                  }
+                  TelemetryWriter.instance.event('hires_still', {
+                    'outcome': outcome,
+                    'attempt': attempt,
+                    'ms': sw.elapsedMilliseconds,
+                    'queue_depth': 0,
+                    'started': _hiresStillStarted,
+                    'ok': _hiresStillOk,
+                    'failed': _hiresStillFailed,
+                    'dropped': _hiresStillDropped,
+                  });
+                  return input;
+                }
+              } else {
+                _hiresStillOk++;
+                _stillByPath[input.jpegPath] = still;
+                CaptureArchiveService.instance.enqueueHighresStill(
+                  input.jpegPath,
+                  triggerTimestamp: still.requestTimestamp,
+                );
+                _qualityByPath[input.jpegPath] = actualQuality;
+                _sampleByPath[input.jpegPath] = sample.withJpegPath(
+                  input.jpegPath,
+                );
+                final admit = targetPoints.forceAdmit(sample);
+                if (admit != null) {
+                  targetPoints.stampJpegPath(
+                    cellIdx: admit.cellIdx,
+                    slotIdx: admit.slotIdx,
+                    jpegPath: input.jpegPath,
+                  );
+                }
+                if (!_sfmFrameCtrl.isClosed) _sfmFrameCtrl.add(input);
+                TelemetryWriter.instance.event('hires_still', {
+                  'outcome': outcome,
+                  'attempt': attempt,
+                  'ms': sw.elapsedMilliseconds,
+                  'queue_depth': 0,
+                  'started': _hiresStillStarted,
+                  'ok': _hiresStillOk,
+                  'failed': _hiresStillFailed,
+                  'dropped': _hiresStillDropped,
+                });
+                return input;
               }
-              if (!_sfmFrameCtrl.isClosed) {
-                _sfmFrameCtrl.add(input);
-              }
-              TelemetryWriter.instance.event('hires_still', {
-                'outcome': outcome,
-                'attempt': attempt,
-                'ms': sw.elapsedMilliseconds,
-                'queue_depth': 0,
-                'started': _hiresStillStarted,
-                'ok': _hiresStillOk,
-                'failed': _hiresStillFailed,
-                'dropped': _hiresStillDropped,
-              });
-              return input;
             }
           }
         } catch (_) {
@@ -1738,6 +1814,7 @@ class CaptureSession {
         }
 
         _hiresStillFailed++;
+        lastFailure = failure;
         outcome = '${failure.name}_retry';
         _noteStillFailure(failure.name);
         TelemetryWriter.instance.event('hires_still', {
@@ -1763,7 +1840,7 @@ class CaptureSession {
       _reportHighResFailure(
         sample.frameId,
         evidenceSaveSpec.jpegPath,
-        OfficialHighResInputFailure.captureFailed,
+        lastFailure,
       );
       throw StateError(
         _started && !_disposed

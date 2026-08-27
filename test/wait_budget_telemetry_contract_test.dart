@@ -38,7 +38,7 @@ void main() {
       );
       expect(
         executor.indexOf('final tapMs = ticket.tapTimestampMicros ~/ 1000'),
-        lessThan(executor.indexOf('await session.captureSinglePhoto()')),
+        lessThan(executor.indexOf('await session.captureSinglePhoto(')),
         reason: 'gap must be admission-time, not queue execution-time',
       );
     },

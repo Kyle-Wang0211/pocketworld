@@ -16,14 +16,54 @@ SHALL NOT rebuild, install, uninstall, or substitute an older application.
 ### Requirement: PTOL is the only experimental variable
 
 The control arm SHALL preserve global `parameter_tolerance=0.0`, and the
-candidate arm SHALL set only `OFFICIAL_AETHER_GLOBAL_PTOL=1e-8`. AR-every-frame
-and every other production option SHALL remain identical.
+candidate arm SHALL set only `OFFICIAL_AETHER_GLOBAL_PTOL=1e-8`. Both arms
+SHALL preserve local `parameter_tolerance=0.0`. AR-every-frame and every other
+production option SHALL remain identical.
 
 #### Scenario: Shared environment file contains other keys
 
 - **WHEN** an arm is prepared on the phone
 - **THEN** the harness reads and merges the existing JSON
 - **AND** changes only `OFFICIAL_AETHER_GLOBAL_PTOL`
+
+#### Scenario: A local tolerance input is present
+
+- **WHEN** the harness or native boundary observes a nonzero local tolerance
+- **THEN** the arm is invalid
+- **AND** the run emits no PTOL verdict
+
+### Requirement: Native effective values are the authority
+
+Every arm SHALL emit a native effective-options receipt after solver-option
+construction and before reconstruction begins. The receipt SHALL contain its
+run and arm IDs, stamped application/source/Dart/native identities, and the
+effective global and local `parameter_tolerance` values. An environment receipt
+alone SHALL NOT prove the effective values.
+
+#### Scenario: Candidate native options are effective
+
+- **WHEN** the candidate arm is ready to start native work
+- **THEN** its native receipt reports global `parameter_tolerance=1e-8`
+- **AND** it reports local `parameter_tolerance=0.0`
+
+#### Scenario: Control native options are effective
+
+- **WHEN** the control arm is ready to start native work
+- **THEN** its native receipt reports global `parameter_tolerance=0.0`
+- **AND** it reports local `parameter_tolerance=0.0`
+
+#### Scenario: A native identity is unstamped or contradictory
+
+- **WHEN** a required identity is absent, empty, equals `UNSTAMPED`, or differs
+  from the registered run identity
+- **THEN** the arm is invalid before reconstruction
+- **AND** no timing or quality result from that arm enters the comparison
+
+#### Scenario: Requested and effective values disagree
+
+- **WHEN** the environment receipt and native effective-options receipt differ
+- **THEN** the native receipt exposes the mismatch
+- **AND** the arm is invalid rather than being relabeled by its requested value
 
 ### Requirement: Same source capture is replayed without mutation
 
@@ -38,9 +78,10 @@ capture archive and sidecar. The source capture SHALL remain byte-identical.
 
 ### Requirement: Phone evidence precedes a PTOL verdict
 
-Each arm SHALL persist its environment receipt, gate report, finalize segments,
-BA-round telemetry, thermal evidence, binary/input identities, and raw numeric
-quality metrics before the next arm starts.
+Each arm SHALL persist its requested-value environment receipt, native
+effective-options receipt, gate report, finalize segments, BA-round telemetry,
+thermal evidence, binary/input identities, and raw numeric quality metrics
+before the next arm starts.
 
 #### Scenario: One arm lacks an effective-value receipt
 

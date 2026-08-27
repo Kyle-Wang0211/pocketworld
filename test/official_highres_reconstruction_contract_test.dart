@@ -164,7 +164,10 @@ void main() {
     expect(source, isNot(contains('sfmFeed.withJpegPath(jpegPath)')));
     expect(source, isNot(contains('stillFuture.timeout(')));
     expect(source, contains('includeSfmFeed: false'));
-    expect(source, contains('deriveAuxiliary: false'));
+    expect(source, contains('deriveAuxiliary: automaticSelection'));
+    expect(source, contains('_automaticActualPhotoGate.evaluate('));
+    expect(source, contains('if (automaticSelection)'));
+    expect(source, contains('bool automaticSelection = false'));
   });
 
   test(
@@ -327,6 +330,40 @@ void main() {
       closeSource.lastIndexOf('_closeTapInProgress = false'),
       greaterThan(closeSource.indexOf('await session.discardCurrentCapture()')),
       reason: 'close must stay single-flight until destructive teardown ends',
+    );
+  });
+
+  test('zero accepted photos bypass the exit dialog and reuse safe discard', () {
+    final page = File(
+      'lib/ui/official_capture/ar_capture_page.dart',
+    ).readAsStringSync();
+    final closeStart = page.indexOf('Future<void> _onCloseTap()');
+    final closeEnd = page.indexOf('Future<void> _onCenterTap()', closeStart);
+    final closeSource = page.substring(closeStart, closeEnd);
+
+    final stopAuto = closeSource.indexOf('_stopAutoCapture();');
+    final acceptedPredicate = closeSource.indexOf('final hasAcceptedPhotos =');
+    final dialog = closeSource.indexOf('showCaptureExitDialog(context)');
+
+    expect(acceptedPredicate, greaterThan(stopAuto));
+    expect(dialog, greaterThan(acceptedPredicate));
+    expect(
+      closeSource,
+      contains('_projectPhotos.count + _shutterQueue.outstandingCount > 0'),
+      reason:
+          'queued or in-flight shutters must prevent a false zero-photo exit',
+    );
+    expect(
+      closeSource,
+      contains(': CaptureExitChoice.discardExit;'),
+      reason:
+          'true zero must skip the dialog and enter the existing discard path',
+    );
+    expect(
+      closeSource.indexOf('_shutterQueue.cancelPending()'),
+      greaterThan(dialog),
+      reason:
+          'zero-photo bypass must retain the existing safe teardown sequence',
     );
   });
 

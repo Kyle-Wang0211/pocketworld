@@ -62,29 +62,6 @@ class _CamState {
   final double panX, panY, zoom, yaw, pitch;
 }
 
-/// Translucent round icon button (reframe control).
-class _RoundIconButton extends StatelessWidget {
-  const _RoundIconButton({required this.icon, required this.onTap});
-  final IconData icon;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: const Color(0x552A2A2A),
-      shape: const CircleBorder(),
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.all(9),
-          child: Icon(icon, size: 20, color: Colors.white70),
-        ),
-      ),
-    );
-  }
-}
-
 /// 点云查看相机快照 —— 预览页 ⇄ 选区编辑页之间"原样继承"的载体。
 /// [2026-07-28 用户签决] 进编辑页时大小/角度/位置直接继承,不再重置到
 /// 固定俯视预设。
@@ -840,22 +817,6 @@ class _SparseCloudViewState extends State<SparseCloudView>
                                 ),
                               ),
                               size: Size.infinite,
-                            ),
-                          ),
-                        // 右上角的 reframe 兜底按钮 —— **只在浏览态**。
-                        //
-                        // [2026-08-07 用户实机指认"编辑页面右上角的 icon 好像没有
-                        // 任何作用,可以删了"] 编辑态里它和"⋯"菜单的"回到初始点云
-                        // 大小"是同一个功能,而且 top:10 压在状态栏/灵动岛边缘、
-                        // 又被上方的"完成"按钮挤着,基本点不到 —— 所以它看起来
-                        // "没作用"。浏览态保留:那里没有 ⋯ 菜单,这是唯一入口。
-                        if (!widget.editing)
-                          Positioned(
-                            top: 10,
-                            right: 10,
-                            child: _RoundIconButton(
-                              icon: Icons.filter_center_focus,
-                              onTap: _reframe,
                             ),
                           ),
                       ],

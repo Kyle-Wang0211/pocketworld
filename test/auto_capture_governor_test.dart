@@ -1,22 +1,32 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/official_capture/auto_capture_geometry.dart';
 import 'package:pocketworld_flutter/official_capture/auto_capture_governor.dart';
+import 'package:pocketworld_flutter/official_capture/continuous_feature_tracks.dart';
 import 'package:pocketworld_flutter/official_capture/shutter_backpressure_gate.dart';
 
-AutoCaptureMotionMetrics _motion(AutoCaptureMotionRole role) =>
-    AutoCaptureMotionMetrics(
-      role: role,
-      geometryParallaxDeg: role == AutoCaptureMotionRole.geometry ? 12 : 0,
-      geometryThresholdDeg: 12,
-      horizontalBaselineM: 0,
-      verticalBaselineM: 0,
-      radialTravelM: 0,
-      depthScaleRatio: 1,
-      viewTurnDeg: 0,
-      overlapFraction: role == AutoCaptureMotionRole.overlapSafety ? 0.69 : 0.9,
-      advancesGeometryBaseline: role == AutoCaptureMotionRole.geometry,
-      shouldPromptSlowDown: role == AutoCaptureMotionRole.overlapSafety,
-    );
+AutoCaptureMotionMetrics _motion(
+  AutoCaptureMotionRole role, {
+  bool geometryEligible = false,
+  bool rotationCoverageEligible = false,
+  bool radialBridgeEligible = false,
+  bool overlapSafetyEligible = false,
+}) => AutoCaptureMotionMetrics(
+  role: role,
+  geometryParallaxDeg: role == AutoCaptureMotionRole.geometry ? 12 : 0,
+  geometryThresholdDeg: 12,
+  horizontalBaselineM: 0,
+  verticalBaselineM: 0,
+  radialTravelM: 0,
+  depthScaleRatio: 1,
+  viewTurnDeg: 0,
+  overlapFraction: overlapSafetyEligible ? 0.69 : 0.9,
+  advancesGeometryBaseline: role == AutoCaptureMotionRole.geometry,
+  shouldPromptSlowDown: overlapSafetyEligible,
+  overlapSafetyEligible: overlapSafetyEligible,
+  geometryEligible: geometryEligible,
+  rotationCoverageEligible: rotationCoverageEligible,
+  radialBridgeEligible: radialBridgeEligible,
+);
 
 AutoCaptureDecision _decide({
   AutoCaptureMotionRole role = AutoCaptureMotionRole.none,
@@ -26,16 +36,30 @@ AutoCaptureDecision _decide({
   double sinceLastTickSec = 1,
   double tickIntervalSec = kAutoCaptureNormalIntervalSec,
   bool blurry = false,
-  double blurDeferredSec = 0,
+  bool geometryEligible = false,
+  bool rotationCoverageEligible = false,
+  bool radialBridgeEligible = false,
+  bool overlapSafetyEligible = false,
+  double? visualSimilarity = 0.0,
+  FrameTrackEvidence? trackEvidence,
+  bool trackEvidenceRequired = false,
 }) => autoCaptureDecideMotion(
   trackingNormal: trackingNormal,
   capturedCount: capturedCount,
   elapsedSec: elapsedSec,
   sinceLastTickSec: sinceLastTickSec,
   tickIntervalSec: tickIntervalSec,
-  motion: _motion(role),
+  motion: _motion(
+    role,
+    geometryEligible: geometryEligible,
+    rotationCoverageEligible: rotationCoverageEligible,
+    radialBridgeEligible: radialBridgeEligible,
+    overlapSafetyEligible: overlapSafetyEligible,
+  ),
+  visualSimilarity: visualSimilarity,
+  trackEvidence: trackEvidence,
+  trackEvidenceRequired: trackEvidenceRequired,
   blurry: blurry,
-  blurDeferredSec: blurDeferredSec,
 );
 
 void main() {
@@ -56,33 +80,49 @@ void main() {
     }
   });
 
-  test('overlap safety bypasses stretched pace but not 250 ms debounce', () {
+  test('overlap warning alone prompts but does not spend a photo', () {
     expect(
-      _decide(
-        role: AutoCaptureMotionRole.overlapSafety,
-        sinceLastTickSec: 0.249,
-        tickIntervalSec: 3,
-      ),
-      AutoCaptureDecision.skipPaced,
-    );
-    expect(
-      _decide(
-        role: AutoCaptureMotionRole.overlapSafety,
-        sinceLastTickSec: 0.25,
-        tickIntervalSec: 3,
-      ),
-      AutoCaptureDecision.fire,
+      _decide(overlapSafetyEligible: true, sinceLastTickSec: 1),
+      AutoCaptureDecision.skipNotMoved,
     );
   });
 
-  test('overlap safety wins over blur deferral', () {
+  test(
+    'overlap warning never bypasses stretched pace even with spatial value',
+    () {
+      expect(
+        _decide(
+          role: AutoCaptureMotionRole.geometry,
+          overlapSafetyEligible: true,
+          sinceLastTickSec: 0.249,
+          tickIntervalSec: 3,
+          geometryEligible: true,
+        ),
+        AutoCaptureDecision.skipPaced,
+      );
+      expect(
+        _decide(
+          role: AutoCaptureMotionRole.geometry,
+          overlapSafetyEligible: true,
+          sinceLastTickSec: 0.25,
+          tickIntervalSec: 3,
+          geometryEligible: true,
+        ),
+        AutoCaptureDecision.skipPaced,
+      );
+    },
+  );
+
+  test('overlap warning never bypasses blur deferral', () {
     expect(
       _decide(
-        role: AutoCaptureMotionRole.overlapSafety,
+        role: AutoCaptureMotionRole.radialBridge,
+        overlapSafetyEligible: true,
         sinceLastTickSec: 0.25,
         blurry: true,
+        radialBridgeEligible: true,
       ),
-      AutoCaptureDecision.fire,
+      AutoCaptureDecision.skipBlurry,
     );
     expect(
       _decide(role: AutoCaptureMotionRole.geometry, blurry: true),
@@ -90,15 +130,88 @@ void main() {
     );
   });
 
-  test('blur defer is bounded and never labels a non-candidate', () {
-    expect(_decide(blurry: true), AutoCaptureDecision.skipNotMoved);
+  test('spatial candidate needs fresh visual evidence', () {
+    expect(
+      _decide(role: AutoCaptureMotionRole.geometry, visualSimilarity: null),
+      AutoCaptureDecision.skipNoVisualEvidence,
+    );
+  });
+
+  test(
+    'official under-20 track loss becomes a keyframe instead of deadlock',
+    () {
+      const lostTracks = FrameTrackEvidence(
+        seedTrackCount: 114,
+        commonTrackCount: 19,
+        commonTrackFraction: 19 / 114,
+        medianPixelDisplacement: 26.8,
+        medianNormalizedDisplacement: 0.21,
+      );
+      expect(
+        _decide(
+          role: AutoCaptureMotionRole.geometry,
+          trackEvidenceRequired: true,
+          trackEvidence: lostTracks,
+        ),
+        AutoCaptureDecision.fire,
+      );
+      expect(
+        _decide(
+          role: AutoCaptureMotionRole.geometry,
+          trackEvidenceRequired: true,
+          trackEvidence: lostTracks,
+          blurry: true,
+        ),
+        AutoCaptureDecision.skipBlurry,
+      );
+    },
+  );
+
+  test('missing or never-healthy tracks still fail closed', () {
+    const noTracks = FrameTrackEvidence(
+      seedTrackCount: 0,
+      commonTrackCount: 0,
+      commonTrackFraction: 0,
+      medianPixelDisplacement: double.nan,
+      medianNormalizedDisplacement: double.nan,
+    );
     expect(
       _decide(
         role: AutoCaptureMotionRole.geometry,
-        blurry: true,
-        blurDeferredSec: kAutoCaptureBlurDeferMaxSec,
+        trackEvidenceRequired: true,
+        trackEvidence: null,
       ),
+      AutoCaptureDecision.skipNoVisualEvidence,
+    );
+    expect(
+      _decide(
+        role: AutoCaptureMotionRole.geometry,
+        trackEvidenceRequired: true,
+        trackEvidence: noTracks,
+      ),
+      AutoCaptureDecision.skipNoVisualEvidence,
+    );
+  });
+
+  test('Aether similarity above 0.92 hard-rejects a redundant candidate', () {
+    expect(
+      _decide(
+        role: AutoCaptureMotionRole.geometry,
+        visualSimilarity: 0.9200001,
+      ),
+      AutoCaptureDecision.skipRedundant,
+    );
+    expect(
+      _decide(role: AutoCaptureMotionRole.geometry, visualSimilarity: 0.92),
       AutoCaptureDecision.fire,
+    );
+  });
+
+  test('objective blur is a hard reject and never labels a non-candidate', () {
+    expect(_decide(blurry: true), AutoCaptureDecision.skipNotMoved);
+    expect(
+      _decide(role: AutoCaptureMotionRole.geometry, blurry: true),
+      AutoCaptureDecision.skipBlurry,
     );
   });
 
@@ -127,16 +240,25 @@ void main() {
     expect(_decide(), AutoCaptureDecision.skipNotMoved);
   });
 
-  test('normal pace is debounce-only; pressure and thermal stretch it', () {
+  test('pressure and thermal are telemetry-only and never stretch capture', () {
     double at(ShutterPace pace, int thermal) =>
         autoCaptureTickIntervalSec(pace: pace, thermalState: thermal);
 
     expect(at(ShutterPace.normal, 0), kAutoCaptureSafetyDebounceSec);
-    expect(at(ShutterPace.soft, 0), 2);
-    expect(at(ShutterPace.hard, 0), 3);
-    expect(at(ShutterPace.normal, kAutoCaptureThermalSerious), 2);
-    expect(at(ShutterPace.normal, kAutoCaptureThermalCritical), 3);
+    expect(at(ShutterPace.soft, 0), kAutoCaptureSafetyDebounceSec);
+    expect(at(ShutterPace.hard, 0), kAutoCaptureSafetyDebounceSec);
+    expect(
+      at(ShutterPace.normal, kAutoCaptureThermalSerious),
+      kAutoCaptureSafetyDebounceSec,
+    );
+    expect(
+      at(ShutterPace.normal, kAutoCaptureThermalCritical),
+      kAutoCaptureSafetyDebounceSec,
+    );
     expect(at(ShutterPace.normal, -1), kAutoCaptureSafetyDebounceSec);
-    expect(at(ShutterPace.hard, kAutoCaptureThermalSerious), 3);
+    expect(
+      at(ShutterPace.hard, kAutoCaptureThermalSerious),
+      kAutoCaptureSafetyDebounceSec,
+    );
   });
 }

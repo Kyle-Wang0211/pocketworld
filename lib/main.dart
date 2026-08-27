@@ -25,6 +25,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'auth/auth_scope.dart';
+import 'auth/cold_start_session_gate.dart';
 import 'auth/current_user.dart';
 import 'auth/mock_auth_service.dart';
 import 'auth/secure_session_storage.dart';
@@ -46,7 +47,6 @@ import 'ui/auth/auth_root_view.dart';
 import 'ui/design_system.dart';
 import 'ui/splash_overlay.dart';
 import 'util/device_log.dart';
-import 'vio/diagnostics/vio_diagnostics_recorder.dart';
 
 /// Global ScaffoldMessenger key. Wired onto [MaterialApp.scaffoldMessengerKey]
 /// so any code path can show a snackbar that survives:
@@ -122,29 +122,6 @@ Future<void> main() async {
           );
         } catch (_) {}
       }());
-      // [pw][vio] 采集侧诊断记录器。被动测量,不改变任何采集行为:
-      //   ① CoreMotion / ARFrame 各贴哪个时钟基准(iOS 也有休眠陷阱 ——
-      //      man 3 clock_gettime:UPTIME_RAW 休眠停走、MONOTONIC 继续走,
-      //      而 CMLogItem.timestamp 只说 "since the device booted",没说是哪个)
-      //   ② IMU 实际到达间隔  ③ 热档位曲线
-      // 报告落 Documents/vio_diagnostics/latest.json,用 devicectl 拉。
-      // unawaited:诊断绝不能拖慢启动路径,失败也只记 error 不影响 App。
-      // 单变量开关。默认 on = 保持现状(加开关本身不改行为);
-      // off 则整条影子链都不启动 —— 包括 CoreMotion 喂帧与逐帧 3× 降采样。
-      const String vioShadow =
-          String.fromEnvironment('PW_VIO_SHADOW', defaultValue: 'on');
-      if (vioShadow == 'off') {
-        official_device_log.DeviceLog.log(
-            'VioDiag', 'PW_VIO_SHADOW=off ⇒ 影子喂帧未启动(单变量对照组)');
-      } else {
-        unawaited(() async {
-          try {
-            await VioDiagnosticsRecorder.instance.start();
-          } catch (e) {
-            official_device_log.DeviceLog.log('VioDiag', 'start failed: $e');
-          }
-        }());
-      }
       // ignore: avoid_print
       print('[AET-SMOKE] ensureInitialized done, about to runApp');
 
@@ -245,6 +222,24 @@ Future<void> main() async {
           );
         }
         if (supabaseReady) {
+          final auth = Supabase.instance.client.auth;
+          final restoredSession = auth.currentSession;
+          final gateResult = await waitForColdStartSession(
+            hasSession: restoredSession != null,
+            isExpired: restoredSession?.isExpired ?? false,
+            authEvents: auth.onAuthStateChange.map((state) {
+              return switch (state.event) {
+                AuthChangeEvent.tokenRefreshed =>
+                  ColdStartAuthEvent.tokenRefreshed,
+                AuthChangeEvent.signedOut => ColdStartAuthEvent.signedOut,
+                _ => ColdStartAuthEvent.other,
+              };
+            }),
+            fallbackRefresh: () async {
+              await auth.refreshSession();
+            },
+          );
+          DeviceLog.log('AuthStartup', 'session gate=$gateResult');
           // ignore: avoid_print
           print(
             '[AUTH-DEBUG] Supabase.initialize done. '
@@ -258,26 +253,6 @@ Future<void> main() async {
           );
         }
         await currentUser.bootstrap();
-        // Belt-and-braces: kick a session refresh on cold start. Even
-        // though supabase_flutter has autoRefreshToken=true and runs a
-        // proactive ~10s-before-expiry refresh in the foreground, that
-        // timer doesn't help if the app just woke from being killed and
-        // the persisted access_token is already past its exp. Refresh
-        // here saves the first community-feed request from triggering
-        // the auto-refresh dance and avoids spurious 401s on launch.
-        // Failure is silent — refreshSession throws if the refresh
-        // token's also dead, and that's the same "session_expired" path
-        // the rest of the code handles already.
-        if (supabaseReady) {
-          unawaited(
-            Supabase.instance.client.auth
-                .refreshSession()
-                .then<void>((_) {})
-                .catchError((Object e) {
-                  debugPrint('[main] cold-start refreshSession skipped: $e');
-                }),
-          );
-        }
         // Plan G W2 全本地 (2026-05-16): no cloud upload, no job-status
         // poll. Captures live entirely on-device — JobStatusWatcher
         // deleted along with the rest of the cloud upload chain.

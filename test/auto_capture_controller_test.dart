@@ -8,7 +8,7 @@ import 'dart:typed_data';
 //   · 新增:位移/转角双阈值、0.25s 去抖、活体 SfM 深度缩放(liveDepthProvider)
 //     的接线与契约;
 //   · 保留(适配后):生命周期、D8 整场预算、tracking 双信号门、入队失败
-//     "下 tick 重试"、pace/热态拉伸、相邻捕获几何契约。
+//     "下 tick 重试"、pace/热态只记账、相邻捕获几何契约。
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/official_capture/auto_capture_controller.dart';
@@ -26,7 +26,36 @@ const double _fx = 1000;
 /// previewPoints 仍然铺在前方 [depthM] 处 —— controller 已**不再消费**它们
 /// (rawFeaturePoints 已定罪,见 governor 文件头),留着是为了钉住
 /// "特征点无论怎么给都不影响判定"这条新不变量。
-FrameQualityReport _quality(double s) => FrameQualityReport(
+Uint8List _signatureFor(double timestamp) {
+  var x = ((timestamp * 1000000).round() ^ 0x6d2b79f5) & 0x7fffffff;
+  return Uint8List.fromList(<int>[
+    for (var i = 0; i < 256; i++)
+      ((x = (1103515245 * x + 12345) & 0x7fffffff) >> 16) & 0xff,
+  ]);
+}
+
+Uint8List _trackGray(int shiftX) {
+  const side = 128;
+  final out = Uint8List(side * side);
+  for (var y = 0; y < side; y++) {
+    for (var x = 0; x < side; x++) {
+      final sx = x - shiftX;
+      if (sx < 0 || sx >= side) continue;
+      final checker = (((sx ~/ 8) + (y ~/ 8)) & 1) == 0 ? 35 : 220;
+      final detail = ((sx * 17 + y * 29 + (sx * y) % 31) & 31) - 15;
+      out[y * side + x] = (checker + detail).clamp(0, 255);
+    }
+  }
+  return out;
+}
+
+FrameQualityReport _quality(
+  double s,
+  double timestamp, {
+  int? signatureByte,
+  int? grayShiftX,
+  double? graySourceTimestamp,
+}) => FrameQualityReport(
   sharpness: s,
   roiSharpness: s,
   multiScaleSharpness252: s,
@@ -37,9 +66,17 @@ FrameQualityReport _quality(double s) => FrameQualityReport(
   sharpnessConsensus: s,
   meanBrightness: 128,
   globalVariance: 100,
-  signature: Uint8List(0),
-  signatureWidth: 0,
-  signatureHeight: 0,
+  signature: signatureByte == null
+      ? _signatureFor(timestamp)
+      : (Uint8List(256)..fillRange(0, 256, signatureByte)),
+  signatureWidth: 16,
+  signatureHeight: 16,
+  rawGray128: grayShiftX == null ? null : _trackGray(grayShiftX),
+  sourceTimestamp: grayShiftX == null
+      ? null
+      : (graySourceTimestamp ?? timestamp),
+  sourceFocalX: grayShiftX == null ? null : 128,
+  sourceFocalY: grayShiftX == null ? null : 128,
 );
 
 ARPose _pose({
@@ -54,7 +91,10 @@ ARPose _pose({
   bool withIntrinsics = true,
   int width = _w,
   int height = _h,
-  double? sharpness,
+  double? sharpness = 1000,
+  int? signatureByte,
+  int? grayShiftX,
+  double? graySourceTimestamp,
   Vector3? worldOrigin,
   bool hasOrigin = true,
 }) {
@@ -79,7 +119,15 @@ ARPose _pose({
         : const <double>[],
     imageWidth: width,
     imageHeight: height,
-    quality: sharpness == null ? null : _quality(sharpness),
+    quality: sharpness == null
+        ? null
+        : _quality(
+            sharpness,
+            t,
+            signatureByte: signatureByte,
+            grayShiftX: grayShiftX,
+            graySourceTimestamp: graySourceTimestamp,
+          ),
     previewPoints: <ARPreviewPoint>[
       for (var i = 0; i < pointCount; i++)
         ARPreviewPoint(
@@ -116,6 +164,7 @@ class _Harness {
   ARPose? _nextFirePose;
 
   late final AutoCaptureController controller = AutoCaptureController(
+    onStartAnchor: () => true,
     onFire: () {
       fireAttempts++;
       if (!enqueueSucceeds) return false;
@@ -210,6 +259,67 @@ void main() {
       expect(h.controller.lastMotionRole, AutoCaptureMotionRole.radialBridge);
     }
     expect(h.fires, 4);
+  });
+
+  test(
+    'radial bridge cannot let a stale geometry baseline authorize an adjacent photo',
+    () {
+      final h = _Harness();
+      h.controller.start(_pose(t: 0, signatureByte: 0, grayShiftX: 0));
+
+      // Relative to the original geometry baseline this first candidate stays
+      // below the formal parallax threshold, while the 1.25x depth change makes
+      // it a radial bridge. It becomes the most recent *actual* photo.
+      expect(
+        h.feed(
+          _pose(
+            t: 1,
+            pos: Vector3(0.16, 0, -0.20),
+            signatureByte: 100,
+            grayShiftX: 4,
+          ),
+        ),
+        AutoCaptureDecision.fire,
+      );
+      expect(h.controller.lastMotionRole, AutoCaptureMotionRole.radialBridge);
+
+      // 666 ms later the old geometry baseline has accumulated >12 degrees,
+      // but the camera moved only 4.4 cm from the photo just taken. The byte
+      // signature similarity is 1 - 21/255 = 0.917647..., reproducing the
+      // Build 47 .917-vs-.92 escape without tuning either boundary.
+      expect(
+        h.feed(
+          _pose(
+            t: 1.666,
+            pos: Vector3(0.204, 0, -0.20),
+            signatureByte: 121,
+            grayShiftX: 5,
+          ),
+        ),
+        AutoCaptureDecision.skipRedundant,
+      );
+      expect(h.controller.lastMotionRole, AutoCaptureMotionRole.geometry);
+      expect(h.fires, 1);
+      expect(h.controller.geometryBaselinePosition, Vector3.zero());
+    },
+  );
+
+  test('a stale asynchronous gray source cannot authorize a shutter', () {
+    final h = _Harness();
+    h.controller.start(_pose(t: 0, grayShiftX: 0));
+    expect(
+      h.feed(
+        _pose(
+          t: 1,
+          pos: Vector3(0.30, 0, 0),
+          grayShiftX: 4,
+          graySourceTimestamp: 0.7,
+        ),
+      ),
+      AutoCaptureDecision.skipNoVisualEvidence,
+    );
+    expect(h.fires, 0);
+    expect(h.controller.lastVisualSourceAgeSec, closeTo(0.3, 1e-12));
   });
 
   test('pure rotation fires via the turn threshold — rotation pans new '
@@ -509,41 +619,87 @@ void main() {
     },
   );
 
-  // ── pace / 热态拉伸 ──
-
-  test('shutter pace stretches the debounce interval', () {
+  test('a spatial candidate with the same Aether signature is redundant', () {
     final h = _Harness();
-    h.pace = ShutterPace.soft; // 2.0 s
-    h.controller.start(_pose(t: 0));
-    // 空间达到 0.28 后会按热态无损保底放行；用转角路径隔离节奏语义。
-    expect(h.feed(_pose(t: 1.5, yawDeg: 12.1)), AutoCaptureDecision.skipPaced);
-    expect(h.feed(_pose(t: 2.0, yawDeg: 12.1)), AutoCaptureDecision.fire);
+    h.controller.start(_pose(t: 0, signatureByte: 80));
+
+    expect(
+      h.feed(_pose(t: 1, pos: Vector3(0.22, 0, 0), signatureByte: 80)),
+      AutoCaptureDecision.skipRedundant,
+    );
+    expect(h.fires, 0);
+    expect(h.controller.lastVisualSimilarity, 1.0);
+    expect(h.controller.baselinePosition, Vector3.zero());
   });
 
-  test('the shutter pace is read on every pose, so slowing down mid-run '
-      'takes effect immediately', () {
+  test('a successful photo advances the visual baseline', () {
+    final h = _Harness();
+    h.controller.start(_pose(t: 0, signatureByte: 0));
+
+    expect(
+      h.feed(_pose(t: 1, pos: Vector3(0.22, 0, 0), signatureByte: 255)),
+      AutoCaptureDecision.fire,
+    );
+    expect(
+      h.feed(_pose(t: 2, pos: Vector3(0.50, 0, 0), signatureByte: 255)),
+      AutoCaptureDecision.skipRedundant,
+    );
+    expect(h.fires, 1);
+  });
+
+  test('a failed enqueue does not advance the visual baseline', () {
+    final h = _Harness()..enqueueSucceeds = false;
+    h.controller.start(_pose(t: 0, signatureByte: 0));
+
+    expect(
+      h.feed(_pose(t: 1, pos: Vector3(0.22, 0, 0), signatureByte: 255)),
+      AutoCaptureDecision.fire,
+    );
+    h.enqueueSucceeds = true;
+    expect(
+      h.feed(_pose(t: 2, pos: Vector3(0.22, 0, 0), signatureByte: 255)),
+      AutoCaptureDecision.fire,
+      reason: '255 must still be compared with the last real photo at 0',
+    );
+    expect(h.fires, 1);
+  });
+
+  test('pose-only candidates wait for the next grayscale sample', () {
+    final h = _Harness();
+    h.controller.start(_pose(t: 0, signatureByte: 0));
+    expect(
+      h.feed(_pose(t: 1, pos: Vector3(0.22, 0, 0), sharpness: null)),
+      AutoCaptureDecision.skipNoVisualEvidence,
+    );
+    expect(h.fires, 0);
+  });
+
+  // ── pace / 热态只记账，不影响快门 ──
+
+  test('shutter pressure does not stretch the spatial capture interval', () {
+    final h = _Harness();
+    h.pace = ShutterPace.soft;
+    h.controller.start(_pose(t: 0));
+    expect(h.feed(_pose(t: 0.25, yawDeg: 12.1)), AutoCaptureDecision.fire);
+  });
+
+  test('changing the telemetry pace mid-run never changes admission', () {
     final h = _Harness();
     h.controller.start(_pose(t: 0));
     h.feed(_pose(t: 0.30, pos: Vector3(0.30, 0, 0)));
     expect(h.fires, 1);
-    h.pace = ShutterPace.hard; // 3.0 s
-    // 基准已推进；用转角隔离 hard pace，避免空间保底提前放行。
+    h.pace = ShutterPace.hard;
     expect(
-      h.feed(_pose(t: 1.0, pos: Vector3(0.30, 0, 0), yawDeg: 12.1)),
-      AutoCaptureDecision.skipPaced,
-    );
-    expect(
-      h.feed(_pose(t: 3.30, pos: Vector3(0.30, 0, 0), yawDeg: 12.1)),
+      h.feed(_pose(t: 0.55, pos: Vector3(0.30, 0, 0), yawDeg: 12.1)),
       AutoCaptureDecision.fire,
     );
   });
 
-  test('serious thermal stretches the interval at normal pace', () {
+  test('serious thermal does not stretch the spatial capture interval', () {
     final h = _Harness();
-    h.thermal = kAutoCaptureThermalSerious; // ≥ soft 档 = 2.0 s
+    h.thermal = kAutoCaptureThermalSerious;
     h.controller.start(_pose(t: 0));
-    expect(h.feed(_pose(t: 1.0, yawDeg: 12.1)), AutoCaptureDecision.skipPaced);
-    expect(h.feed(_pose(t: 2.0, yawDeg: 12.1)), AutoCaptureDecision.fire);
+    expect(h.feed(_pose(t: 0.25, yawDeg: 12.1)), AutoCaptureDecision.fire);
   });
 
   // ── 上限与生命周期 ──
@@ -664,17 +820,16 @@ void main() {
 
   // ── 节奏契约:换血后的新常态 ──
 
-  test('continuous fast motion fires at the 0.25 s debounce ceiling, '
-      'not at the old 1 s tick', () {
+  test('continuous fast motion stays spatially driven, not on a 1s clock', () {
     final h = _Harness();
     h.controller.start(_pose(t: 0));
     // 1 m/s 横移、30 fps、跑 3 s:位移 0.28m 约需 0.28s，仍显著快于旧 1 Hz。
-    // 封顶 ⇒ 约 3.7 发/秒(帧量化到 0.27s),必须显著多于旧 1 Hz。
+    // 开火仍由空间角色决定；纯低重叠警告只提示，不额外花照片。
     for (var i = 1; i <= 90; i++) {
       final t = i / 30.0;
       h.feed(_pose(t: t, pos: Vector3(t * 1.0, 0, 0)));
     }
-    expect(h.fires, greaterThan(8)); // 旧 1s tick 下只有 ~3
+    expect(h.fires, greaterThan(3)); // 仍不是旧 1s 定时拍
     expect(h.fires, lessThanOrEqualTo(10));
     // 相邻开火间隔全部 ≥ 0.25s(允许一帧量化误差)。
     for (var i = 1; i < h.firedPoses.length; i++) {
@@ -685,72 +840,69 @@ void main() {
     }
   });
 
-  // ── 画质缓拍(抄单第2项,跨端版):段内锐度中位当尺,纯 Dart 信号 ──
+  // ── 画质硬门:复刻 Aether 原版 Laplacian variance < 200 拒收 ──
 
-  test('a blur dip at fire time defers, and the next sharp frame fires', () {
+  test(
+    'an objectively blurry frame is rejected and the next sharp frame fires',
+    () {
+      final h = _Harness();
+      h.controller.start(_pose(t: 0, sharpness: 1000));
+      h.feed(_pose(t: 0.05, sharpness: 1000));
+      h.feed(_pose(t: 0.10, sharpness: 1000));
+      // Aether 的绝对硬门为 200；低于它时不拍，基准与去抖时钟都不动。
+      expect(
+        h.feed(_pose(t: 0.30, pos: Vector3(0.22, 0, 0), sharpness: 100)),
+        AutoCaptureDecision.skipBlurry,
+      );
+      expect(h.fires, 0);
+      // 画面重新通过绝对门 ⇒ 立刻开火，不需要等待人为超时。
+      expect(
+        h.feed(_pose(t: 0.35, pos: Vector3(0.22, 0, 0), sharpness: 1000)),
+        AutoCaptureDecision.fire,
+      );
+      expect(h.fires, 1);
+    },
+  );
+
+  test('persistent objective blur never fires merely because time elapsed', () {
     final h = _Harness();
-    h.controller.start(_pose(t: 0, sharpness: 100));
-    // 建立段内锐度分布(≥3 个样本才有中位可比)。
-    h.feed(_pose(t: 0.05, sharpness: 100));
-    h.feed(_pose(t: 0.10, sharpness: 100));
-    // 运动够了,但这一帧明显比段内中位糊 ⇒ 缓拍,基准与去抖时钟都不动。
+    h.controller.start(_pose(t: 0, sharpness: 1000));
+    h.feed(_pose(t: 0.05, sharpness: 1000));
+    h.feed(_pose(t: 0.10, sharpness: 1000));
     expect(
-      h.feed(_pose(t: 0.30, pos: Vector3(0.22, 0, 0), sharpness: 10)),
+      h.feed(_pose(t: 0.30, pos: Vector3(0.22, 0, 0), sharpness: 100)),
+      AutoCaptureDecision.skipBlurry,
+    );
+    expect(
+      h.feed(_pose(t: 60.0, pos: Vector3(0.22, 0, 0), sharpness: 100)),
       AutoCaptureDecision.skipBlurry,
     );
     expect(h.fires, 0);
-    // 画面回锐 ⇒ 立刻开火,不用再等一整拍。
-    expect(
-      h.feed(_pose(t: 0.35, pos: Vector3(0.22, 0, 0), sharpness: 100)),
-      AutoCaptureDecision.fire,
-    );
-    expect(h.fires, 1);
   });
 
-  test('the blur defer is bounded — persistent blur still fires', () {
-    // 覆盖(无损铁律)压过锐度:一直糊(比如光线就这样)就照拍。
+  test('a sharp frame below the segment median is not mislabeled blurry', () {
     final h = _Harness();
-    h.controller.start(_pose(t: 0, sharpness: 100));
-    h.feed(_pose(t: 0.05, sharpness: 100));
-    h.feed(_pose(t: 0.10, sharpness: 100));
+    h.controller.start(_pose(t: 0, sharpness: 1200));
+    h.feed(_pose(t: 0.05, sharpness: 1100));
+    h.feed(_pose(t: 0.10, sharpness: 1000));
+    // 800 低于本段中位数，但远高于 Aether 的 200 硬门，必须允许开火。
     expect(
-      h.feed(_pose(t: 0.30, pos: Vector3(0.22, 0, 0), sharpness: 10)),
-      AutoCaptureDecision.skipBlurry,
-    );
-    expect(
-      h.feed(
-        _pose(
-          t: 0.30 + kAutoCaptureBlurDeferMaxSec,
-          pos: Vector3(0.22, 0, 0),
-          sharpness: 10,
-        ),
-      ),
-      AutoCaptureDecision.fire,
-    );
-    expect(h.fires, 1);
-  });
-
-  test('with too few sharpness samples the gate fails open — never defers', () {
-    // 样本不足判不了"相对糊",宁可拍:锐度是锦上添花,覆盖是铁律。
-    final h = _Harness();
-    h.controller.start(_pose(t: 0));
-    expect(
-      h.feed(_pose(t: 0.30, pos: Vector3(0.22, 0, 0), sharpness: 1)),
+      h.feed(_pose(t: 0.30, pos: Vector3(0.22, 0, 0), sharpness: 800)),
       AutoCaptureDecision.fire,
     );
   });
 
-  test('firing resets the sharpness segment — subsequence semantics', () {
+  test('firing resets the sharpness telemetry segment', () {
     final h = _Harness();
-    h.controller.start(_pose(t: 0, sharpness: 100));
-    h.feed(_pose(t: 0.05, sharpness: 100));
-    h.feed(_pose(t: 0.10, sharpness: 100));
-    h.feed(_pose(t: 0.30, pos: Vector3(0.22, 0, 0), sharpness: 100));
+    h.controller.start(_pose(t: 0, sharpness: 1000));
+    h.feed(_pose(t: 0.05, sharpness: 1000));
+    h.feed(_pose(t: 0.10, sharpness: 1000));
+    h.feed(_pose(t: 0.30, pos: Vector3(0.22, 0, 0), sharpness: 1000));
     expect(h.fires, 1);
-    // 新段只有 1 个样本(开火帧之后的),低锐度也判不出"相对糊" ⇒ 直接拍。
-    h.feed(_pose(t: 0.40, pos: Vector3(0.46, 0, 0), sharpness: 5));
+    // 新段只保留开火后的样本；500 仍高于 Aether 的客观硬门。
+    h.feed(_pose(t: 0.40, pos: Vector3(0.46, 0, 0), sharpness: 500));
     expect(
-      h.feed(_pose(t: 0.60, pos: Vector3(0.46, 0, 0), sharpness: 5)),
+      h.feed(_pose(t: 0.60, pos: Vector3(0.46, 0, 0), sharpness: 500)),
       AutoCaptureDecision.fire,
     );
   });
@@ -760,15 +912,15 @@ void main() {
     // 开火清段(subsequence)发生在页面读遥测之前;快照字段必须在清段前
     // 落下,否则 fire_sharpness 恒 None(b29 真机实证)。
     final h = _Harness();
-    h.controller.start(_pose(t: 0, sharpness: 100));
-    h.feed(_pose(t: 0.05, sharpness: 100));
-    h.feed(_pose(t: 0.10, sharpness: 100));
+    h.controller.start(_pose(t: 0, sharpness: 1000));
+    h.feed(_pose(t: 0.05, sharpness: 1000));
+    h.feed(_pose(t: 0.10, sharpness: 1000));
     expect(
-      h.feed(_pose(t: 0.30, pos: Vector3(0.22, 0, 0), sharpness: 100)),
+      h.feed(_pose(t: 0.30, pos: Vector3(0.22, 0, 0), sharpness: 1000)),
       AutoCaptureDecision.fire,
     );
     // onPose 已返回、段已清空 —— 快照仍在。
-    expect(h.controller.lastSharpness, closeTo(100, 1e-9));
+    expect(h.controller.lastSharpness, closeTo(1000, 1e-9));
     expect(h.controller.lastSegmentMedianSharpness, isNotNull);
   });
 

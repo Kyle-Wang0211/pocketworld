@@ -321,6 +321,20 @@ class FrameQualityReport {
   final int signatureWidth;
   final int signatureHeight;
 
+  /// Exact 128x128 source image used for this report. Production automatic
+  /// capture uses it for common feature tracks; the 16x16 block means are not
+  /// the sole admission evidence when this source is present.
+  final Uint8List? rawGray128;
+
+  /// Camera timestamp of [rawGray128], not the later pose event on which an
+  /// asynchronous platform extraction happened to be delivered.
+  final double? sourceTimestamp;
+
+  /// Intrinsics scaled into the 128x128 source image. Optical-flow motion is
+  /// divided by these values so its threshold is device/focal independent.
+  final double? sourceFocalX;
+  final double? sourceFocalY;
+
   const FrameQualityReport({
     required this.sharpness,
     required this.roiSharpness,
@@ -335,6 +349,10 @@ class FrameQualityReport {
     required this.signature,
     required this.signatureWidth,
     required this.signatureHeight,
+    this.rawGray128,
+    this.sourceTimestamp,
+    this.sourceFocalX,
+    this.sourceFocalY,
   });
 }
 
