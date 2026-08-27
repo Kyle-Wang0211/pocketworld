@@ -35,21 +35,28 @@ void main() {
     },
   );
 
-  test('official camera and IMU ingress share the main serial queue', () {
+  test('camera and IMU ingress share one non-UI serial queue', () {
     final String pluginSource = plugin.readAsStringSync();
     final String timebaseSource = timebase.readAsStringSync();
     expect(
       pluginSource,
       contains(
-        'session.delegateQueue = .main\n'
+        'session.delegateQueue = PwVioSensorIngress.dispatchQueue\n'
         '    session.delegate = sessionDelegate',
       ),
-      reason: 'XRSLAM upstream Camera.swift defaults camera delivery to .main',
+      reason: 'camera transport must share the XRSLAM sensor ingress queue',
     );
     expect(
       timebaseSource,
-      contains('private let motionQueue: OperationQueue = .main'),
-      reason: 'XRSLAM upstream Motion.swift defaults IMU delivery to .main',
+      contains('private let motionQueue = PwVioSensorIngress.operationQueue'),
+      reason: 'IMU transport must share the XRSLAM sensor ingress queue',
+    );
+    expect(timebaseSource, contains('queue.maxConcurrentOperationCount = 1'));
+    expect(timebaseSource, contains('queue.underlyingQueue = dispatchQueue'));
+    expect(pluginSource, isNot(contains('session.delegateQueue = .main')));
+    expect(
+      timebaseSource,
+      isNot(contains('motionQueue: OperationQueue = .main')),
     );
   });
 

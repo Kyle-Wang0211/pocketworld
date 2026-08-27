@@ -105,6 +105,26 @@ import simd
   import Flutter
 #endif
 
+/// One ordered transport ingress for raw camera and IMU observations.
+/// XRSLAM's sample uses the main queue because its demo has no concurrent
+/// Flutter high-resolution shutter transaction. The product preserves the
+/// sample's single-serial-order invariant on a dedicated queue so sensor
+/// transport cannot block the UI/main camera-control path.
+public enum PwVioSensorIngress {
+  public static let dispatchQueue = DispatchQueue(
+    label: "pw.vio.sensor-ingress",
+    qos: .userInteractive
+  )
+  public static let operationQueue: OperationQueue = {
+    let queue = OperationQueue()
+    queue.name = "pw.vio.sensor-ingress"
+    queue.maxConcurrentOperationCount = 1
+    queue.qualityOfService = .userInteractive
+    queue.underlyingQueue = dispatchQueue
+    return queue
+  }()
+}
+
 // MARK: - 通道名(必须与 Dart 侧一致)
 
 public enum PwVioTimebaseIdentifiers {
@@ -678,10 +698,9 @@ public final class PwVioTimebase {
     label: "pw.vio.timebase.motion-failure",
     qos: .utility
   )
-  // Frozen upstream Motion() and Camera() both default to .main. Keeping both
-  // producers on the same serial queue preserves their delivery order and
-  // removes the cross-queue try-lock losses introduced by our shadow adapter.
-  private let motionQueue: OperationQueue = .main
+  // Frozen upstream Motion() and Camera() share one serial ingress. Keep that
+  // order without occupying Flutter's UI/main camera-control path.
+  private let motionQueue = PwVioSensorIngress.operationQueue
 
   /// 启动两路独立原始 IMU 投喂。频率是 Dart 显式选择的请求值,
   /// 平台层只校验和执行,不做配对、重采样或融合。

@@ -92,10 +92,16 @@ Native may echo the applied values as an outcome receipt; Dart never reads
 those echoes as the source of policy.
 
 On iOS, the frozen upstream sample delivers both `Camera.swift` and
-`Motion.swift` callbacks on the main serial queue. The product's ARSession
-delegate and CoreMotion producers SHALL use that same main queue before the
-bounded native admission layer. At the comparison wire boundary, the raw
-XRSLAM pose SHALL use the upstream sample's exact SceneKit adapter: position
+`Motion.swift` callbacks through one serial queue. The product SHALL preserve
+that single ordered ingress before the bounded native admission layer, but it
+uses a dedicated serial dispatch queue rather than Flutter's UI/main queue;
+CoreMotion receives a single-operation `OperationQueue` backed by that same
+serial dispatch queue.
+This is a transport-only adaptation required because the production app also
+runs a high-resolution shutter transaction on the main path; Build 51 device
+evidence showed a 3.501-second first-shutter transaction and a 2.719-second
+AR-frame gap after the whole ARSession delegate was moved to main. At the
+comparison wire boundary, the raw XRSLAM pose SHALL use the upstream sample's exact SceneKit adapter: position
 `(-py,-px,-pz)` and quaternion `(-qy,-qx,-qz,qw)`. This is a mechanical
 platform-coordinate conversion only; Dart continues to own world alignment,
 residuals, validity, and promotion.
