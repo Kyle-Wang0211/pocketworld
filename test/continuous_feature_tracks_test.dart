@@ -40,22 +40,19 @@ void main() {
     expect(evidence.hasEnoughNovelty, isTrue);
   });
 
-  test(
-    'loss of once-healthy capture tracks is an official keyframe signal',
-    () {
-      const evidence = FrameTrackEvidence(
-        seedTrackCount: 114,
-        commonTrackCount: 19,
-        commonTrackFraction: 19 / 114,
-        medianPixelDisplacement: 26.8,
-        medianNormalizedDisplacement: 0.21,
-      );
+  test('VINS track loss is not a consumer shutter authorization', () {
+    const evidence = FrameTrackEvidence(
+      seedTrackCount: 114,
+      commonTrackCount: 19,
+      commonTrackFraction: 19 / 114,
+      medianPixelDisplacement: 26.8,
+      medianNormalizedDisplacement: 0.21,
+    );
 
-      expect(evidence.comparable, isFalse);
-      expect(evidence.lostTrackedOverlap, isTrue);
-      expect(evidence.isKeyframeCandidate, isTrue);
-    },
-  );
+    expect(evidence.comparable, isFalse);
+    expect(evidence.lostTrackedOverlap, isTrue);
+    expect(evidence.isKeyframeCandidate, isFalse);
+  });
 
   test('featureless frames do not masquerade as track-loss keyframes', () {
     const evidence = FrameTrackEvidence(

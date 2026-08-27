@@ -43,6 +43,7 @@ AutoCaptureDecision _decide({
   double? visualSimilarity = 0.0,
   FrameTrackEvidence? trackEvidence,
   bool trackEvidenceRequired = false,
+  bool smartSelectionMotionReady = true,
 }) => autoCaptureDecideMotion(
   trackingNormal: trackingNormal,
   capturedCount: capturedCount,
@@ -59,6 +60,7 @@ AutoCaptureDecision _decide({
   visualSimilarity: visualSimilarity,
   trackEvidence: trackEvidence,
   trackEvidenceRequired: trackEvidenceRequired,
+  smartSelectionMotionReady: smartSelectionMotionReady,
   blurry: blurry,
 );
 
@@ -137,35 +139,61 @@ void main() {
     );
   });
 
-  test(
-    'official under-20 track loss becomes a keyframe instead of deadlock',
-    () {
-      const lostTracks = FrameTrackEvidence(
-        seedTrackCount: 114,
-        commonTrackCount: 19,
-        commonTrackFraction: 19 / 114,
-        medianPixelDisplacement: 26.8,
-        medianNormalizedDisplacement: 0.21,
-      );
-      expect(
-        _decide(
-          role: AutoCaptureMotionRole.geometry,
-          trackEvidenceRequired: true,
-          trackEvidence: lostTracks,
-        ),
-        AutoCaptureDecision.fire,
-      );
-      expect(
-        _decide(
-          role: AutoCaptureMotionRole.geometry,
-          trackEvidenceRequired: true,
-          trackEvidence: lostTracks,
-          blurry: true,
-        ),
-        AutoCaptureDecision.skipBlurry,
-      );
-    },
-  );
+  test('VINS under-20 track loss waits for reseeded visual evidence', () {
+    const lostTracks = FrameTrackEvidence(
+      seedTrackCount: 114,
+      commonTrackCount: 19,
+      commonTrackFraction: 19 / 114,
+      medianPixelDisplacement: 26.8,
+      medianNormalizedDisplacement: 0.21,
+    );
+    expect(
+      _decide(
+        role: AutoCaptureMotionRole.geometry,
+        trackEvidenceRequired: true,
+        trackEvidence: lostTracks,
+      ),
+      AutoCaptureDecision.skipNoVisualEvidence,
+    );
+    expect(
+      _decide(
+        role: AutoCaptureMotionRole.geometry,
+        trackEvidenceRequired: true,
+        trackEvidence: lostTracks,
+        blurry: true,
+      ),
+      AutoCaptureDecision.skipNoVisualEvidence,
+    );
+  });
+
+  test('VINS parallax alone cannot bypass the smart motion segment', () {
+    const vinsCandidate = FrameTrackEvidence(
+      seedTrackCount: 114,
+      commonTrackCount: 80,
+      commonTrackFraction: 80 / 114,
+      medianPixelDisplacement: 4,
+      medianNormalizedDisplacement: 4 / 128,
+    );
+    expect(vinsCandidate.hasEnoughNovelty, isTrue);
+    expect(
+      _decide(
+        role: AutoCaptureMotionRole.geometry,
+        trackEvidenceRequired: true,
+        trackEvidence: vinsCandidate,
+        smartSelectionMotionReady: false,
+      ),
+      AutoCaptureDecision.skipRedundant,
+    );
+    expect(
+      _decide(
+        role: AutoCaptureMotionRole.geometry,
+        trackEvidenceRequired: true,
+        trackEvidence: vinsCandidate,
+        smartSelectionMotionReady: true,
+      ),
+      AutoCaptureDecision.fire,
+    );
+  });
 
   test('missing or never-healthy tracks still fail closed', () {
     const noTracks = FrameTrackEvidence(

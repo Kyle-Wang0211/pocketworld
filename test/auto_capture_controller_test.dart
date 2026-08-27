@@ -267,6 +267,15 @@ void main() {
       final h = _Harness();
       h.controller.start(_pose(t: 0, signatureByte: 0, grayShiftX: 0));
 
+      // Accumulate the official smart-selection motion subsequence on preview
+      // samples without spending a photo.
+      for (final sample in <(double, int)>[(0.25, 4), (0.50, 8), (0.75, 12)]) {
+        expect(
+          h.feed(_pose(t: sample.$1, signatureByte: 0, grayShiftX: sample.$2)),
+          AutoCaptureDecision.skipNotMoved,
+        );
+      }
+
       // Relative to the original geometry baseline this first candidate stays
       // below the formal parallax threshold, while the 1.25x depth change makes
       // it a radial bridge. It becomes the most recent *actual* photo.
@@ -276,7 +285,7 @@ void main() {
             t: 1,
             pos: Vector3(0.16, 0, -0.20),
             signatureByte: 100,
-            grayShiftX: 4,
+            grayShiftX: 16,
           ),
         ),
         AutoCaptureDecision.fire,
@@ -293,7 +302,7 @@ void main() {
             t: 1.666,
             pos: Vector3(0.204, 0, -0.20),
             signatureByte: 121,
-            grayShiftX: 5,
+            grayShiftX: 17,
           ),
         ),
         AutoCaptureDecision.skipRedundant,
@@ -646,6 +655,36 @@ void main() {
     );
     expect(h.fires, 1);
   });
+
+  test(
+    'post-anchor photos wait for the official accumulated-flow subsequence',
+    () {
+      final h = _Harness();
+      h.controller.start(_pose(t: 0, grayShiftX: 0));
+
+      for (final sample in <(double, int)>[(0.25, 4), (0.50, 8), (0.75, 12)]) {
+        expect(
+          h.feed(
+            _pose(
+              t: sample.$1,
+              pos: Vector3(0.22, 0, 0),
+              grayShiftX: sample.$2,
+            ),
+          ),
+          AutoCaptureDecision.skipRedundant,
+        );
+      }
+      expect(h.fires, 0);
+      expect(h.controller.lastSegmentMotionPx, lessThan(12.8));
+      expect(
+        h.feed(_pose(t: 1.0, pos: Vector3(0.22, 0, 0), grayShiftX: 16)),
+        AutoCaptureDecision.fire,
+      );
+      expect(h.fires, 1);
+      expect(h.controller.lastSegmentMotionPx, greaterThanOrEqualTo(12.8));
+      expect(h.controller.segmentMotionThresholdPx, 12.8);
+    },
+  );
 
   test('a failed enqueue does not advance the visual baseline', () {
     final h = _Harness()..enqueueSucceeds = false;

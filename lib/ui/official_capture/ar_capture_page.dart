@@ -2958,6 +2958,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       trackCommonFraction: _autoCapture.lastTrackEvidence?.commonTrackFraction,
       trackMedianNormalizedDisplacement:
           _autoCapture.lastTrackEvidence?.medianNormalizedDisplacement,
+      trackMedianStepPixelDisplacement:
+          _autoCapture.lastTrackEvidence?.medianStepPixelDisplacement,
+      segmentMotionPx: _autoCapture.lastSegmentMotionPx,
+      segmentMotionThresholdPx: _autoCapture.segmentMotionThresholdPx,
       visualSourceAgeSec: _autoCapture.lastVisualSourceAgeSec,
     );
     // isRunning 由 true 翻 false = controller 自停(撞 300 张或 5 分钟)。

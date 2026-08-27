@@ -70,6 +70,7 @@ AutoCaptureDecision autoCaptureDecideMotion({
   required double? visualSimilarity,
   FrameTrackEvidence? trackEvidence,
   bool trackEvidenceRequired = false,
+  bool smartSelectionMotionReady = false,
   bool blurry = false,
 }) {
   if (capturedCount >= kOfficialMaximumCaptureFrames) {
@@ -90,10 +91,10 @@ AutoCaptureDecision autoCaptureDecideMotion({
     if (trackEvidence == null) {
       return AutoCaptureDecision.skipNoVisualEvidence;
     }
-    if (!trackEvidence.isKeyframeCandidate) {
-      if (!trackEvidence.comparable) {
-        return AutoCaptureDecision.skipNoVisualEvidence;
-      }
+    if (!trackEvidence.comparable) {
+      return AutoCaptureDecision.skipNoVisualEvidence;
+    }
+    if (!smartSelectionMotionReady) {
       return AutoCaptureDecision.skipRedundant;
     }
   } else {

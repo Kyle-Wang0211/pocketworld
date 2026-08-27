@@ -43,8 +43,17 @@ never reconstructed later from sampled geometry.
 
 Normal decisions obey the 250 ms duplicate debounce; a fixed one-second
 interval has no upstream photogrammetric basis. After a spatial candidate is
-found, its current 16×16 grayscale signature is compared with the last
-successfully admitted photo using the existing Aether3D formula and 0.92
-maximum similarity. Missing visual evidence waits; similarity above 0.92 is
-redundant. Overlap warnings bypass nothing. Existing frame/time/tracking/blur
-guards and the existing shutter queue remain authoritative.
+found, post-anchor capture follows AliceVision smart selection's motion-section
+semantics: median optical-flow motion is accumulated across consecutive preview
+frames until it reaches the official default step of 10% of the shorter image
+edge. The first startup anchor is outside this rule and remains immediate.
+VINS-Mono's normalized parallax and under-20-track rules remain estimator
+evidence; neither independently authorizes a consumer shutter. Track loss waits
+and reseeds the preview tracker. A comparable, motion-ready and objectively
+clear frame may fire immediately regardless of wall-clock speed or queue load.
+The returned high-resolution still is then checked against the last accepted
+actual photo; missing or lost correspondence fails closed and never masquerades
+as novelty. Telemetry records the accumulated motion, official threshold, and
+per-frame median step flow for fired and redundant candidates. Overlap warnings
+bypass nothing. Existing frame/time/tracking/blur guards and the existing
+shutter queue remain authoritative.

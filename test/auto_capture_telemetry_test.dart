@@ -914,6 +914,9 @@ void main() {
           fireDistM: 0.10,
           turnDeg: 2.0 * i,
           liveDepthM: 1.0 + i,
+          segmentMotionPx: 12.8 + i,
+          segmentMotionThresholdPx: 12.8,
+          trackMedianStepPixelDisplacement: 4.0 + i,
         );
       }
       final snap = t.snapshot();
@@ -921,6 +924,9 @@ void main() {
       expect(snap['fire_dist_m'], <double>[0.1, 0.1, 0.1]);
       expect(snap['fire_turn_deg'], <double>[2.0, 4.0, 6.0]);
       expect(snap['fire_live_depth_m'], <double>[2.0, 3.0, 4.0]);
+      expect(snap['fire_segment_motion_px'], <double>[13.8, 14.8, 15.8]);
+      expect(snap['segment_motion_threshold_px'], 12.8);
+      expect(snap['fire_track_median_step_px'], <double>[5.0, 6.0, 7.0]);
     });
 
     test('fire sharpness pairs record the blur-gate treatment effect', () {

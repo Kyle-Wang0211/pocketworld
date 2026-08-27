@@ -8,14 +8,12 @@
 //   * Shi-Tomasi corners use the OpenCV goodFeaturesToTrack defaults that
 //     matter here: qualityLevel=.01 and minDistance=7.
 //   * Tracks use coarse-to-fine Lucas-Kanade refinement.
-//   * The admission boundary is VINS-Mono's published/configured normalized
-//     parallax 10/460, not a phone-specific pixel threshold.
+//   * VINS-Mono's normalized parallax remains diagnostic estimator evidence.
+//     It is not, by itself, authorization to press a consumer shutter.
 //   * Tracks are propagated frame-to-frame, while displacement remains measured
 //     against the last photo that actually entered the shutter queue.
-//   * VINS-Mono's keyframe rule is preserved: after a healthy reference had at
-//     least 20 tracks, falling below 20 is a keyframe signal rather than a
-//     permanent wait state. A reference that never had 20 tracks still fails
-//     closed and cannot masquerade as novelty.
+//   * VINS-Mono's under-20 rule is exposed as diagnostic evidence only. That
+//     rule manages its estimator window; track loss is not photo novelty.
 
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -30,6 +28,7 @@ class FrameTrackEvidence {
     required this.commonTrackFraction,
     required this.medianPixelDisplacement,
     required this.medianNormalizedDisplacement,
+    this.medianStepPixelDisplacement = double.nan,
   });
 
   final int seedTrackCount;
@@ -37,6 +36,7 @@ class FrameTrackEvidence {
   final double commonTrackFraction;
   final double medianPixelDisplacement;
   final double medianNormalizedDisplacement;
+  final double medianStepPixelDisplacement;
 
   bool get comparable =>
       commonTrackCount >= kOfficialMinimumCommonTracks &&
@@ -54,7 +54,7 @@ class FrameTrackEvidence {
       seedTrackCount >= kOfficialMinimumCommonTracks &&
       commonTrackCount < kOfficialMinimumCommonTracks;
 
-  bool get isKeyframeCandidate => hasEnoughNovelty || lostTrackedOverlap;
+  bool get isKeyframeCandidate => hasEnoughNovelty;
 }
 
 class _Point {
@@ -151,6 +151,7 @@ class ContinuousFeatureTracks {
     final survivors = <_ContinuousTrack>[];
     final displacements = <double>[];
     final normalizedDisplacements = <double>[];
+    final stepDisplacements = <double>[];
     for (final track in _tracks) {
       final point = _trackPyramidal(
         previousPyramid,
@@ -160,21 +161,30 @@ class ContinuousFeatureTracks {
       if (point == null) continue;
       final dx = point.x - track.anchor.x;
       final dy = point.y - track.anchor.y;
+      final stepDx = point.x - track.current.x;
+      final stepDy = point.y - track.current.y;
       final displacement = math.sqrt(dx * dx + dy * dy);
+      final stepDisplacement = math.sqrt(stepDx * stepDx + stepDy * stepDy);
       final normalized = math.sqrt(
         (dx / focalXPixels) * (dx / focalXPixels) +
             (dy / focalYPixels) * (dy / focalYPixels),
       );
-      if (!displacement.isFinite || !normalized.isFinite) continue;
+      if (!displacement.isFinite ||
+          !stepDisplacement.isFinite ||
+          !normalized.isFinite) {
+        continue;
+      }
       survivors.add(_ContinuousTrack(anchor: track.anchor, current: point));
       displacements.add(displacement);
       normalizedDisplacements.add(normalized);
+      stepDisplacements.add(stepDisplacement);
     }
 
     _previous = current;
     _tracks = survivors;
     displacements.sort();
     normalizedDisplacements.sort();
+    stepDisplacements.sort();
     final common = survivors.length;
     return FrameTrackEvidence(
       seedTrackCount: _referenceSeedCount,
@@ -184,6 +194,7 @@ class ContinuousFeatureTracks {
           : common / _referenceSeedCount,
       medianPixelDisplacement: _median(displacements),
       medianNormalizedDisplacement: _median(normalizedDisplacements),
+      medianStepPixelDisplacement: _median(stepDisplacements),
     );
   }
 
@@ -278,6 +289,7 @@ FrameTrackEvidence trackFrameNovelty({
     commonTrackFraction: common / seeds.length,
     medianPixelDisplacement: median,
     medianNormalizedDisplacement: normalizedMedian,
+    medianStepPixelDisplacement: median,
   );
 }
 

@@ -51,6 +51,11 @@ void main() {
       intrinsics: intrinsics,
       qualityAccepted: true,
     );
+    expect(novel.trackEvidence, isNotNull);
+    expect(
+      novel.trackEvidence!.commonTrackCount,
+      greaterThanOrEqualTo(kOfficialMinimumCommonTracks),
+    );
     expect(novel.decision, OfficialActualPhotoDecision.accept);
     expect(gate.acceptedCount, 2);
   });
@@ -84,7 +89,7 @@ void main() {
     expect(gate.acceptedCount, 0);
   });
 
-  test('an actual still that loses a healthy track set is a keyframe', () {
+  test('an actual still that loses tracks is not admitted as novelty', () {
     const evidence = FrameTrackEvidence(
       seedTrackCount: 114,
       commonTrackCount: 19,
@@ -93,6 +98,6 @@ void main() {
       medianNormalizedDisplacement: 0.21,
     );
 
-    expect(officialActualPhotoTrackAccepted(evidence), isTrue);
+    expect(officialActualPhotoTrackAccepted(evidence), isFalse);
   });
 }

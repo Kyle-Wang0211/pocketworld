@@ -198,6 +198,11 @@ class AutoCaptureTelemetry {
     _redundantVisualSimilarity.clear();
     _fireTrackMedianNormalized.clear();
     _redundantTrackMedianNormalized.clear();
+    _fireTrackMedianStepPx.clear();
+    _redundantTrackMedianStepPx.clear();
+    _fireSegmentMotionPx.clear();
+    _redundantSegmentMotionPx.clear();
+    _segmentMotionThresholdPx = null;
     _trackCommonFraction.clear();
     _trackCommonCount.clear();
     _visualSourceAgeSec.clear();
@@ -267,6 +272,9 @@ class AutoCaptureTelemetry {
     int? trackCommonCount,
     double? trackCommonFraction,
     double? trackMedianNormalizedDisplacement,
+    double? trackMedianStepPixelDisplacement,
+    double? segmentMotionPx,
+    double? segmentMotionThresholdPx,
     double? visualSourceAgeSec,
   }) {
     if (!_open) return;
@@ -361,6 +369,9 @@ class AutoCaptureTelemetry {
     if (visualSourceAgeSec != null && visualSourceAgeSec.isFinite) {
       _visualSourceAgeSec.add(visualSourceAgeSec);
     }
+    if (segmentMotionThresholdPx != null && segmentMotionThresholdPx.isFinite) {
+      _segmentMotionThresholdPx ??= segmentMotionThresholdPx;
+    }
 
     // [pw] 2026-08-24 触发层换血后的开火快照:位移 / 生效阈值 / 转角 /
     // 活体 SfM 深度。首/中/末三点(见 _triple)——上一版靠 fire_depth_m
@@ -388,6 +399,8 @@ class AutoCaptureTelemetry {
       keep(_fireDepthScaleRatio, motion?.depthScaleRatio ?? depthScaleRatio);
       keep(_fireVisualSimilarity, visualSimilarity);
       keep(_fireTrackMedianNormalized, trackMedianNormalizedDisplacement);
+      keep(_fireTrackMedianStepPx, trackMedianStepPixelDisplacement);
+      keep(_fireSegmentMotionPx, segmentMotionPx);
       _fireRoleCounts[winner] = _fireRoleCounts[winner]! + 1;
     } else if (d == AutoCaptureDecision.skipRedundant) {
       if (visualSimilarity != null && visualSimilarity.isFinite) {
@@ -396,6 +409,13 @@ class AutoCaptureTelemetry {
       if (trackMedianNormalizedDisplacement != null &&
           trackMedianNormalizedDisplacement.isFinite) {
         _redundantTrackMedianNormalized.add(trackMedianNormalizedDisplacement);
+      }
+      if (trackMedianStepPixelDisplacement != null &&
+          trackMedianStepPixelDisplacement.isFinite) {
+        _redundantTrackMedianStepPx.add(trackMedianStepPixelDisplacement);
+      }
+      if (segmentMotionPx != null && segmentMotionPx.isFinite) {
+        _redundantSegmentMotionPx.add(segmentMotionPx);
       }
     }
 
@@ -566,6 +586,16 @@ class AutoCaptureTelemetry {
         'fire_track_median_normalized_displacement': v,
       if (_triple(_redundantTrackMedianNormalized) case final List<double> v)
         'redundant_track_median_normalized_displacement': v,
+      if (_triple(_fireTrackMedianStepPx) case final List<double> v)
+        'fire_track_median_step_px': v,
+      if (_triple(_redundantTrackMedianStepPx) case final List<double> v)
+        'redundant_track_median_step_px': v,
+      if (_triple(_fireSegmentMotionPx) case final List<double> v)
+        'fire_segment_motion_px': v,
+      if (_triple(_redundantSegmentMotionPx) case final List<double> v)
+        'redundant_segment_motion_px': v,
+      if (_segmentMotionThresholdPx case final double v)
+        'segment_motion_threshold_px': _round3(v),
       if (_triple(_trackCommonFraction) case final List<double> v)
         'track_common_fraction': v,
       if (_triple(_trackCommonCount) case final List<double> v)
@@ -595,6 +625,11 @@ class AutoCaptureTelemetry {
   final List<double> _redundantVisualSimilarity = <double>[];
   final List<double> _fireTrackMedianNormalized = <double>[];
   final List<double> _redundantTrackMedianNormalized = <double>[];
+  final List<double> _fireTrackMedianStepPx = <double>[];
+  final List<double> _redundantTrackMedianStepPx = <double>[];
+  final List<double> _fireSegmentMotionPx = <double>[];
+  final List<double> _redundantSegmentMotionPx = <double>[];
+  double? _segmentMotionThresholdPx;
   final List<double> _trackCommonFraction = <double>[];
   final List<double> _trackCommonCount = <double>[];
   final List<double> _visualSourceAgeSec = <double>[];

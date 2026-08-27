@@ -25,6 +25,7 @@ import '../official_quality/frame_quality_constants.dart';
 import '../official_quality/frame_signature_similarity.dart';
 import 'auto_capture_geometry.dart';
 import 'auto_capture_governor.dart';
+import 'alicevision_motion_segment.dart';
 import 'continuous_feature_tracks.dart';
 import 'photo_card_state.dart' show medianOf;
 import 'shutter_backpressure_gate.dart' show ShutterPace;
@@ -83,6 +84,10 @@ class AutoCaptureController {
   double? _capturedGrayFocalY;
   double? _capturedGraySourceTimestamp;
   final ContinuousFeatureTracks _continuousTracks = ContinuousFeatureTracks();
+  final AliceVisionMotionSegment _smartMotionSegment = AliceVisionMotionSegment(
+    width: 128,
+    height: 128,
+  );
   double? _lastTrackedGraySourceTimestamp;
   static const double _kMaximumGraySourceAgeSec = 1.0 / 6.0;
 
@@ -176,6 +181,10 @@ class AutoCaptureController {
   double? _lastSharpness;
   double? get lastSegmentMedianSharpness => _lastSegMedianSharpness;
   double? _lastSegMedianSharpness;
+  double? get lastSegmentMotionPx => _lastSegmentMotionPx;
+  double? _lastSegmentMotionPx;
+  double get segmentMotionThresholdPx =>
+      _smartMotionSegment.thresholdPixelMotion;
 
   void start(ARPose pose) {
     _running = true;
@@ -200,6 +209,7 @@ class AutoCaptureController {
     _capturedGraySourceTimestamp = null;
     _lastTrackedGraySourceTimestamp = null;
     _continuousTracks.clear();
+    _smartMotionSegment.reset();
     _lastVisualSimilarity = null;
     if (_trackingNormal(pose)) {
       _lastStartAnchorAttemptSec = pose.timestamp;
@@ -224,6 +234,7 @@ class AutoCaptureController {
     _capturedGraySourceTimestamp = null;
     _lastTrackedGraySourceTimestamp = null;
     _continuousTracks.clear();
+    _smartMotionSegment.reset();
     _lastVisualSimilarity = null;
     _lastStartAnchorAttemptSec = null;
     _segmentSharpness.clear();
@@ -313,6 +324,17 @@ class AutoCaptureController {
           );
     if (trackEvidence != null && sourceTimestamp != null) {
       _lastTrackedGraySourceTimestamp = sourceTimestamp;
+      _smartMotionSegment.add(trackEvidence);
+      // VINS uses track loss to manage its estimator window. A camera shutter
+      // cannot treat missing correspondences as new content, so reseed the
+      // preview tracker and keep waiting for comparable accumulated flow.
+      if (!trackEvidence.comparable && currentGray != null) {
+        _continuousTracks.setReference(
+          gray: currentGray,
+          width: 128,
+          height: 128,
+        );
+      }
     }
     final target = _activeTarget ?? _targetFrom(pose);
     final effectiveCaptureBase = captureBase ?? current;
@@ -345,6 +367,7 @@ class AutoCaptureController {
       visualSimilarity: visualSimilarity,
       trackEvidence: trackEvidence,
       trackEvidenceRequired: trackEvidenceRequired,
+      smartSelectionMotionReady: _smartMotionSegment.ready,
       blurry: _objectivelyBlurry(q),
     );
     _lastMovedM = movedM;
@@ -360,6 +383,7 @@ class AutoCaptureController {
         _segmentSharpness.length < _kSharpnessMedianMinSamples
         ? null
         : medianOf(_segmentSharpness);
+    _lastSegmentMotionPx = _smartMotionSegment.accumulatedPixelMotion;
 
     switch (decision) {
       case AutoCaptureDecision.skipCapped:
@@ -417,6 +441,7 @@ class AutoCaptureController {
           if (q != null) _commitTrackSource(q);
           // 开火 = 本段结束,锐度段清零(subsequence 语义)。
           _segmentSharpness.clear();
+          _smartMotionSegment.reset();
         }
         return decision;
     }
@@ -506,5 +531,6 @@ class AutoCaptureController {
     _capturedGraySourceTimestamp = quality.sourceTimestamp;
     _lastTrackedGraySourceTimestamp = quality.sourceTimestamp;
     _continuousTracks.setReference(gray: gray, width: 128, height: 128);
+    _smartMotionSegment.reset();
   }
 }
