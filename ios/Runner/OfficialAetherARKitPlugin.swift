@@ -1600,6 +1600,10 @@ class OfficialAetherARKitPlugin: NSObject {
     }
 
     let session = arSession ?? ARSession()
+    // XRSLAM upstream delivers both Camera.swift and Motion.swift callbacks on
+    // the main serial queue by default. Keep ARKit camera ingress on that same
+    // queue as CoreMotion so their ordering matches the official iOS sample.
+    session.delegateQueue = .main
     session.delegate = sessionDelegate
     if resetWorld {
       // Fresh start: clean reference frame, drop all anchors + the locked origin.

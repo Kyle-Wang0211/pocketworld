@@ -35,6 +35,24 @@ void main() {
     },
   );
 
+  test('official camera and IMU ingress share the main serial queue', () {
+    final String pluginSource = plugin.readAsStringSync();
+    final String timebaseSource = timebase.readAsStringSync();
+    expect(
+      pluginSource,
+      contains(
+        'session.delegateQueue = .main\n'
+        '    session.delegate = sessionDelegate',
+      ),
+      reason: 'XRSLAM upstream Camera.swift defaults camera delivery to .main',
+    );
+    expect(
+      timebaseSource,
+      contains('private let motionQueue: OperationQueue = .main'),
+      reason: 'XRSLAM upstream Motion.swift defaults IMU delivery to .main',
+    );
+  });
+
   test(
     'shadow feeder is fixed-bounded and pressure never paces production',
     () {

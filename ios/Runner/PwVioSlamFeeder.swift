@@ -1655,15 +1655,18 @@ public final class PwVioSlamFeeder {
       Double(t.columns.3.z), Double(t.columns.3.w),
     ]
     observation["referenceWorldFromCamera"] = referenceWorldFromCamera
+    // Exact XRSLAM iOS sample -> SceneKit camera convention:
+    // position (-py, -px, -pz), rotation (-qy, -qx, -qz, qw).
     let xrslamWorldFromCamera: [String: Any] = [
-      "qx": finiteWireValue(rawPose.quaternion.0),
-      "qy": finiteWireValue(rawPose.quaternion.1),
-      "qz": finiteWireValue(rawPose.quaternion.2),
+      "qx": finiteWireValue(-rawPose.quaternion.1),
+      "qy": finiteWireValue(-rawPose.quaternion.0),
+      "qz": finiteWireValue(-rawPose.quaternion.2),
       "qw": finiteWireValue(rawPose.quaternion.3),
-      "tx": finiteWireValue(rawPose.translation.0),
-      "ty": finiteWireValue(rawPose.translation.1),
-      "tz": finiteWireValue(rawPose.translation.2),
+      "tx": finiteWireValue(-rawPose.translation.1),
+      "ty": finiteWireValue(-rawPose.translation.0),
+      "tz": finiteWireValue(-rawPose.translation.2),
     ]
+    observation["xrslamPoseCoordinateConvention"] = "official_scene_kit_ios"
     observation["xrslamWorldFromCamera"] = xrslamWorldFromCamera
 
     lock.lock()

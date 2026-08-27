@@ -91,6 +91,15 @@ sampling, unit-scale, pairing, resampling, or image-scale policy of its own.
 Native may echo the applied values as an outcome receipt; Dart never reads
 those echoes as the source of policy.
 
+On iOS, the frozen upstream sample delivers both `Camera.swift` and
+`Motion.swift` callbacks on the main serial queue. The product's ARSession
+delegate and CoreMotion producers SHALL use that same main queue before the
+bounded native admission layer. At the comparison wire boundary, the raw
+XRSLAM pose SHALL use the upstream sample's exact SceneKit adapter: position
+`(-py,-px,-pz)` and quaternion `(-qy,-qx,-qz,qw)`. This is a mechanical
+platform-coordinate conversion only; Dart continues to own world alignment,
+residuals, validity, and promotion.
+
 The pixel loop stays beside the native `CVPixelBuffer` to avoid copying a full
 luma plane through Flutter. Dart nevertheless owns the complete versioned
 operation identity: factor plus `box-nxn-half-up-v1` kernel/rounding formula.

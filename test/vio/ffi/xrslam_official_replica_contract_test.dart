@@ -99,6 +99,27 @@ void main() {
     expect(source, isNot(contains('rawCameraPoseRc')));
   });
 
+  test('iOS wire pose applies the official SceneKit axis and sign mapping', () {
+    final String source = File(
+      'ios/Runner/PwVioSlamFeeder.swift',
+    ).readAsStringSync();
+
+    expect(source, contains('"qx": finiteWireValue(-rawPose.quaternion.1)'));
+    expect(source, contains('"qy": finiteWireValue(-rawPose.quaternion.0)'));
+    expect(source, contains('"qz": finiteWireValue(-rawPose.quaternion.2)'));
+    expect(source, contains('"qw": finiteWireValue(rawPose.quaternion.3)'));
+    expect(source, contains('"tx": finiteWireValue(-rawPose.translation.1)'));
+    expect(source, contains('"ty": finiteWireValue(-rawPose.translation.0)'));
+    expect(source, contains('"tz": finiteWireValue(-rawPose.translation.2)'));
+    expect(
+      source,
+      contains(
+        'observation["xrslamPoseCoordinateConvention"] = '
+        '"official_scene_kit_ios"',
+      ),
+    );
+  });
+
   test(
     'shadow admission is fixed-bounded and never pressure-throttles capture',
     () {
@@ -126,74 +147,71 @@ void main() {
     expect(script, contains('4beb1a942f33da9afbfae2d70e2c641cfc2bb675'));
   });
 
-  test(
-    'iOS generic artifact is a truthful frozen full-target rebuild',
-    () {
-      final File candidate = File(
-        'vendor/xrslam/libs/ios-arm64/libxrslam_generic_4beb1a9.a',
-      );
-      final Map<String, Object?> receipt =
-          jsonDecode(
-                File(
-                  'vendor/xrslam/libs/ios-arm64/'
-                  'libxrslam_generic_4beb1a9.receipt.json',
-                ).readAsStringSync(),
-              )
-              as Map<String, Object?>;
+  test('iOS generic artifact is a truthful frozen full-target rebuild', () {
+    final File candidate = File(
+      'vendor/xrslam/libs/ios-arm64/libxrslam_generic_4beb1a9.a',
+    );
+    final Map<String, Object?> receipt =
+        jsonDecode(
+              File(
+                'vendor/xrslam/libs/ios-arm64/'
+                'libxrslam_generic_4beb1a9.receipt.json',
+              ).readAsStringSync(),
+            )
+            as Map<String, Object?>;
 
-      expect(receipt['schema'], 'pw.xrslam.ios-generic-full-build/2');
-      expect(receipt['build_mode'], 'full_target_from_frozen_upstream');
-      expect(receipt['full_target_rebuild'], true);
-      expect(receipt['source_tree_clean_before_declared_patches'], true);
-      expect(receipt['xrslam_ios'], false);
-      expect(receipt['threading'], false);
-      expect(receipt['opencv_version'], '4.0.1');
-      expect(
-        receipt['opencv_headers_revision'],
-        'c9ad5779f2803dcc91a9938142209128d30b22d1',
-      );
-      expect(receipt, isNot(contains('changed_object')));
-      expect(receipt, isNot(contains('changed_objects')));
-      expect(
-        receipt['artifact_sha256'],
-        sha256.convert(candidate.readAsBytesSync()).toString(),
-      );
+    expect(receipt['schema'], 'pw.xrslam.ios-generic-full-build/2');
+    expect(receipt['build_mode'], 'full_target_from_frozen_upstream');
+    expect(receipt['full_target_rebuild'], true);
+    expect(receipt['source_tree_clean_before_declared_patches'], true);
+    expect(receipt['xrslam_ios'], false);
+    expect(receipt['threading'], false);
+    expect(receipt['opencv_version'], '4.0.1');
+    expect(
+      receipt['opencv_headers_revision'],
+      'c9ad5779f2803dcc91a9938142209128d30b22d1',
+    );
+    expect(receipt, isNot(contains('changed_object')));
+    expect(receipt, isNot(contains('changed_objects')));
+    expect(
+      receipt['artifact_sha256'],
+      sha256.convert(candidate.readAsBytesSync()).toString(),
+    );
 
-      Map<String, String> memberHashes(File archive) {
-        final directory = Directory.systemTemp.createTempSync('pw-xrslam-ar-');
-        addTearDown(() => directory.deleteSync(recursive: true));
-        final extract = Process.runSync('xcrun', <String>[
-          'ar',
-          '-x',
-          archive.absolute.path,
-        ], workingDirectory: directory.path);
-        expect(extract.exitCode, 0, reason: '${extract.stderr}');
-        return <String, String>{
-          for (final file in directory.listSync().whereType<File>())
-            file.uri.pathSegments.last: sha256
-                .convert(file.readAsBytesSync())
-                .toString(),
-        };
-      }
+    Map<String, String> memberHashes(File archive) {
+      final directory = Directory.systemTemp.createTempSync('pw-xrslam-ar-');
+      addTearDown(() => directory.deleteSync(recursive: true));
+      final extract = Process.runSync('xcrun', <String>[
+        'ar',
+        '-x',
+        archive.absolute.path,
+      ], workingDirectory: directory.path);
+      expect(extract.exitCode, 0, reason: '${extract.stderr}');
+      return <String, String>{
+        for (final file in directory.listSync().whereType<File>())
+          file.uri.pathSegments.last: sha256
+              .convert(file.readAsBytesSync())
+              .toString(),
+      };
+    }
 
-      final candidateMembers = memberHashes(candidate);
-      expect(candidateMembers.length, receipt['archive_member_count']);
-      expect(candidateMembers.keys, contains('XRSLAMManager.cpp.o'));
-      expect(candidateMembers.keys, contains('worker.cpp.o'));
+    final candidateMembers = memberHashes(candidate);
+    expect(candidateMembers.length, receipt['archive_member_count']);
+    expect(candidateMembers.keys, contains('XRSLAMManager.cpp.o'));
+    expect(candidateMembers.keys, contains('worker.cpp.o'));
 
-      final symbols = Process.runSync('nm', <String>[
-        '-arch',
-        'arm64',
-        '-u',
-        candidate.absolute.path,
-      ]);
-      expect(symbols.exitCode, 0, reason: '${symbols.stderr}');
-      final undefined = '${symbols.stdout}';
-      expect(undefined, isNot(contains('AlgorithmHint')));
-      expect(undefined, isNot(contains('thread::join')));
-      expect(undefined, isNot(contains('condition_variable::wait')));
-    },
-  );
+    final symbols = Process.runSync('nm', <String>[
+      '-arch',
+      'arm64',
+      '-u',
+      candidate.absolute.path,
+    ]);
+    expect(symbols.exitCode, 0, reason: '${symbols.stderr}');
+    final undefined = '${symbols.stdout}';
+    expect(undefined, isNot(contains('AlgorithmHint')));
+    expect(undefined, isNot(contains('thread::join')));
+    expect(undefined, isNot(contains('condition_variable::wait')));
+  });
 
   test('official Destroy ABI reaches the upstream Detail destructor', () {
     final File patch = File(
