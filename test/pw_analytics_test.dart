@@ -16,8 +16,11 @@ void main() {
     final a = PwAnalytics.instance;
     await a.setEnabled(false);
     final p = await SharedPreferences.getInstance();
-    expect(p.getStringList('pw.analytics.queue'), isNull,
-        reason: '统计属非必要信息,拒绝后设备上不该留尚未上报的数据');
+    expect(
+      p.getStringList('pw.analytics.queue'),
+      isNull,
+      reason: '统计属非必要信息,拒绝后设备上不该留尚未上报的数据',
+    );
     expect(p.getBool('pw.analytics.enabled'), isFalse);
     await a.setEnabled(true); // 复位,避免污染其他测试
   });

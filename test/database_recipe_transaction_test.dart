@@ -21,8 +21,11 @@ void main() {
   });
 
   test('生产总闸已开(设备门 PASS 后用户签决 2026-08-11)', () {
-    expect(DatabaseRecipeTransaction.enabled, isTrue,
-        reason: '依据 b1-prune-device-gate-PASS.json;回退把它改回 false');
+    expect(
+      DatabaseRecipeTransaction.enabled,
+      isTrue,
+      reason: '依据 b1-prune-device-gate-PASS.json;回退把它改回 false',
+    );
   });
 
   test('闸开着也不许在非 iOS 上动字节(native 符号只在 Runner)', () async {
@@ -48,32 +51,47 @@ void main() {
       'two_view_geometries',
     ]);
     // matches 按第三级开关动态进出:关=逐字节保全,开=必须被清空。
-    expect(DatabaseRecipeManifest.preservedTablesFor(dropRawMatches: false),
-        contains('matches'));
-    expect(DatabaseRecipeManifest.preservedTablesFor(dropRawMatches: true),
-        isNot(contains('matches')));
+    expect(
+      DatabaseRecipeManifest.preservedTablesFor(dropRawMatches: false),
+      contains('matches'),
+    );
+    expect(
+      DatabaseRecipeManifest.preservedTablesFor(dropRawMatches: true),
+      isNot(contains('matches')),
+    );
     // descriptors 整表与 keypoints 仿射列都是匹配期脚手架:前者删表,后者
     // 裁列(字节必变,故不在逐字节清单里,改由 x,y 等价摘要把关)。
-    expect(DatabaseRecipeManifest.preservedTablesAlways,
-        isNot(contains('descriptors')));
-    expect(DatabaseRecipeManifest.preservedTablesAlways,
-        isNot(contains('keypoints')));
+    expect(
+      DatabaseRecipeManifest.preservedTablesAlways,
+      isNot(contains('descriptors')),
+    );
+    expect(
+      DatabaseRecipeManifest.preservedTablesAlways,
+      isNot(contains('keypoints')),
+    );
     expect(DatabaseRecipeManifest.schema, 'pw_database_prune_v3');
-    expect(DatabaseRecipeTransaction.dropRawMatches, isTrue,
-        reason: '设备门 2026-08-13 PASS(两臂重建 59/59 帧、20196/20196 点完全一致)');
+    expect(
+      DatabaseRecipeTransaction.dropRawMatches,
+      isTrue,
+      reason: '设备门 2026-08-13 PASS(两臂重建 59/59 帧、20196/20196 点完全一致)',
+    );
   });
 
   test('prune manifest 读写与 schema 门', () async {
     expect(await DatabaseRecipeManifest.exists(captureDir), isFalse);
     final f = File('${captureDir.path}/${DatabaseRecipeManifest.fileName}');
-    await f.writeAsString(jsonEncode({
-      'schema': DatabaseRecipeManifest.schema,
-      'pruned_db_bytes': 10932224,
-      'preserved_table_sha256': {'keypoints': 'abc'},
-    }));
+    await f.writeAsString(
+      jsonEncode({
+        'schema': DatabaseRecipeManifest.schema,
+        'pruned_db_bytes': 10932224,
+        'preserved_table_sha256': {'keypoints': 'abc'},
+      }),
+    );
     expect(await DatabaseRecipeManifest.exists(captureDir), isTrue);
-    expect((await DatabaseRecipeManifest.read(captureDir))!['pruned_db_bytes'],
-        10932224);
+    expect(
+      (await DatabaseRecipeManifest.read(captureDir))!['pruned_db_bytes'],
+      10932224,
+    );
     await f.writeAsString(jsonEncode({'schema': 'wrong'}));
     expect(await DatabaseRecipeManifest.read(captureDir), isNull);
   });

@@ -48,40 +48,39 @@ void main() {
       // 有整整一项恒为 0 —— 把它的符号改反,测试照样全绿(M10 实测)。
       // 这条用一般四元数补上:q=(0.5,0.5,0.5,0.5) ⇒ x→y→z→x,三个分量全被用到。
       const q = <double>[0.5, 0.5, 0.5, 0.5];
-      List<double> rot(double x, double y, double z) => rotateDeviceToWorld(
-        x,
-        y,
-        z,
-        qw: q[0],
-        qx: q[1],
-        qy: q[2],
-        qz: q[3],
-      );
+      List<double> rot(double x, double y, double z) =>
+          rotateDeviceToWorld(x, y, z, qw: q[0], qx: q[1], qy: q[2], qz: q[3]);
       final ex = rot(1, 0, 0), ey = rot(0, 1, 0), ez = rot(0, 0, 1);
       for (final pair in <List<Object>>[
-        [ex, <double>[0, 1, 0]],
-        [ey, <double>[0, 0, 1]],
-        [ez, <double>[1, 0, 0]],
+        [
+          ex,
+          <double>[0, 1, 0],
+        ],
+        [
+          ey,
+          <double>[0, 0, 1],
+        ],
+        [
+          ez,
+          <double>[1, 0, 0],
+        ],
       ]) {
         final got = pair[0] as List<double>;
         final want = pair[1] as List<double>;
         for (var i = 0; i < 3; i++) {
-          expect(got[i], closeTo(want[i], 1e-12), reason: 'got=$got want=$want');
+          expect(
+            got[i],
+            closeTo(want[i], 1e-12),
+            reason: 'got=$got want=$want',
+          );
         }
       }
     });
 
     test('旋转后的三个基向量仍是右手正交标架(通用符号错误都会挂在这)', () {
       const q = <double>[0.6, 0.4, -0.5, 0.48]; // 任意非轴对齐
-      List<double> rot(double x, double y, double z) => rotateDeviceToWorld(
-        x,
-        y,
-        z,
-        qw: q[0],
-        qx: q[1],
-        qy: q[2],
-        qz: q[3],
-      );
+      List<double> rot(double x, double y, double z) =>
+          rotateDeviceToWorld(x, y, z, qw: q[0], qx: q[1], qy: q[2], qz: q[3]);
       final a = rot(1, 0, 0), b = rot(0, 1, 0), c = rot(0, 0, 1);
       double dot(List<double> u, List<double> v) =>
           u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
@@ -120,7 +119,10 @@ void main() {
 
     test('非单位四元数被归一化(AHRS 漂出单位模长时不缩放幅值)', () {
       final v = rotateDeviceToWorld(1, 0, 0, qw: 2, qx: 0, qy: 0, qz: 0);
-      expect(math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]), closeTo(1, 1e-12));
+      expect(
+        math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]),
+        closeTo(1, 1e-12),
+      );
     });
 
     test('退化四元数不崩,原样返回', () {
@@ -186,8 +188,14 @@ void main() {
         est.addLinearAccel(t, w[0], w[1], w[2]);
       }
       for (var i = 0; i < 60; i++) {
-        est.addPose(i / 30.0, 0, 0, 0, medianLandmarkDepth: 2.0,
-            rotationDeltaDeg: 6.0);
+        est.addPose(
+          i / 30.0,
+          0,
+          0,
+          0,
+          medianLandmarkDepth: 2.0,
+          rotationDeltaDeg: 6.0,
+        );
       }
       final s = est.evaluate();
       expect(s.excitationOk, isFalse);

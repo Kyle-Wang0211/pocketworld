@@ -146,6 +146,7 @@ void main() {
       commonTrackFraction: 19 / 114,
       medianPixelDisplacement: 26.8,
       medianNormalizedDisplacement: 0.21,
+      meanNormalizedDisplacement: 0.21,
     );
     expect(
       _decide(
@@ -173,6 +174,7 @@ void main() {
       commonTrackFraction: 80 / 114,
       medianPixelDisplacement: 4,
       medianNormalizedDisplacement: 4 / 128,
+      meanNormalizedDisplacement: 4 / 128,
     );
     expect(vinsCandidate.hasEnoughNovelty, isTrue);
     expect(
@@ -202,6 +204,7 @@ void main() {
       commonTrackFraction: 0,
       medianPixelDisplacement: double.nan,
       medianNormalizedDisplacement: double.nan,
+      meanNormalizedDisplacement: double.nan,
     );
     expect(
       _decide(

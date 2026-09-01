@@ -8,6 +8,7 @@ FrameTrackEvidence _step(double pixels) => FrameTrackEvidence(
   commonTrackFraction: 0.8,
   medianPixelDisplacement: pixels,
   medianNormalizedDisplacement: pixels / 128,
+  meanNormalizedDisplacement: pixels / 128,
   medianStepPixelDisplacement: pixels,
 );
 
@@ -31,6 +32,7 @@ void main() {
       commonTrackFraction: 0.1,
       medianPixelDisplacement: 30,
       medianNormalizedDisplacement: 0.2,
+      meanNormalizedDisplacement: 0.2,
       medianStepPixelDisplacement: double.nan,
     );
 

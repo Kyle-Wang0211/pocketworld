@@ -142,9 +142,7 @@ void main() {
     expect(result, CaptureExitChoice.saveExit);
   });
 
-  testWidgets('拨开关 ⇒ 变浅灰「关」且弹窗不关;再点"确定" ⇒ discardExit', (
-    tester,
-  ) async {
+  testWidgets('拨开关 ⇒ 变浅灰「关」且弹窗不关;再点"确定" ⇒ discardExit', (tester) async {
     CaptureExitChoice? result;
     await pumpHost(tester, (r) => result = r);
     await openDialog(tester);
@@ -292,11 +290,7 @@ void main() {
     await tester.tap(saveToggle);
     await tester.pumpAndSettle();
     knob = tester.getRect(saveKnob);
-    expect(
-      knob.center.dx,
-      lessThan(track.center.dx),
-      reason: '不保存态滑纽必须在轨道左半边',
-    );
+    expect(knob.center.dx, lessThan(track.center.dx), reason: '不保存态滑纽必须在轨道左半边');
     expect(
       knob.left - track.left,
       closeTo(2.0, 0.01),
@@ -314,9 +308,7 @@ void main() {
   // ⚠️ 阈值必须卡在**两个停靠位之间**,不能拿滑纽中心去比轨道边沿:滑纽中心
   // 在最左位也有 track.left + 15.5,永远大于 track.left + 2 —— 负向对照实测,
   // 把 duration 改成 Duration.zero 那版断言照样全绿。
-  testWidgets('滑纽是滑过去的,不是瞬间跳(动画中途严格在两个停靠位之间)', (
-    tester,
-  ) async {
+  testWidgets('滑纽是滑过去的,不是瞬间跳(动画中途严格在两个停靠位之间)', (tester) async {
     await pumpHost(tester, (_) {});
     await openDialog(tester);
     final track = tester.getRect(saveToggle);
@@ -333,11 +325,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 30)); // 180ms 里的早期一帧
     final midX = tester.getRect(saveKnob).center.dx;
     final wordMid = tester.getRect(saveWord).center.dx;
-    expect(
-      midX,
-      lessThan(rightEnd - 0.5),
-      reason: '30ms 时应该已经离开右停靠位',
-    );
+    expect(midX, lessThan(rightEnd - 0.5), reason: '30ms 时应该已经离开右停靠位');
     expect(
       midX,
       greaterThan(leftEnd + 0.5),
@@ -346,11 +334,7 @@ void main() {
     // 位置和颜色是同一对双生子:滑纽在滑,轨道颜色也必须在渐变,不能一边滑
     // 一边瞬间变色。中途色必须既不是纯黑也不是终点浅灰。
     final midColor = toggleTrackColor(tester);
-    expect(
-      midColor,
-      isNot(Colors.black),
-      reason: '轨道颜色在动画中途还停在黑 = 颜色没跟着动',
-    );
+    expect(midColor, isNot(Colors.black), reason: '轨道颜色在动画中途还停在黑 = 颜色没跟着动');
     expect(
       midColor,
       isNot(kCaptureExitToggleOffTrack),
@@ -358,16 +342,8 @@ void main() {
     );
     // 滑纽颜色是轨道颜色的孪生项,同样不许瞬间跳。
     final midKnob = knobColor(tester);
-    expect(
-      midKnob,
-      isNot(Colors.white),
-      reason: '滑纽颜色在动画中途还停在白 = 没跟着动',
-    );
-    expect(
-      midKnob,
-      isNot(Colors.black),
-      reason: '滑纽颜色在动画中途已经到终点黑 = 瞬间跳,不是渐变',
-    );
+    expect(midKnob, isNot(Colors.white), reason: '滑纽颜色在动画中途还停在白 = 没跟着动');
+    expect(midKnob, isNot(Colors.black), reason: '滑纽颜色在动画中途已经到终点黑 = 瞬间跳,不是渐变');
 
     // 字这一帧必须已经离开起点、又还没到终点。
     final wordEndExpected = track.left + track.right - wordStart; // 镜像位置
@@ -412,11 +388,7 @@ void main() {
     // 白字压黑轨,白纽压黑轨。
     expect(wordColor(tester), Colors.white);
     expect(toggleTrackColor(tester), Colors.black);
-    expect(
-      knobColor(tester),
-      Colors.white,
-      reason: '黑轨上滑纽必须是白的,否则看不见',
-    );
+    expect(knobColor(tester), Colors.white, reason: '黑轨上滑纽必须是白的,否则看不见');
 
     // 关:整个镜像过来。
     await tester.tap(saveToggle);
@@ -588,8 +560,7 @@ void main() {
     expect(
       need,
       lessThanOrEqualTo(label.width),
-      reason:
-          '标签需要 ${need.toStringAsFixed(1)}pt,只有 ${label.width}pt —— 会折行',
+      reason: '标签需要 ${need.toStringAsFixed(1)}pt,只有 ${label.width}pt —— 会折行',
     );
     expect(
       label.width - need,

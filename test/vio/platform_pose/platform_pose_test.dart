@@ -122,17 +122,14 @@ void main() {
     });
 
     test('旋转 / 重力 / 尺度 σ 低于下限同样被拒', () {
-      PoseUncertainty build({
-        double? rot,
-        double? grav,
-        double? scale,
-      }) => PoseUncertainty(
-        provenance: PoseProvenance.platform,
-        rotationSigmaRad: rot ?? kPlatformRotationSigmaFloorRad,
-        gravitySigmaRad: grav ?? kPlatformRotationSigmaFloorRad,
-        translationSigmaM: kPlatformTranslationSigmaFloorM,
-        scaleSigmaRel: scale ?? kPlatformScaleSigmaFloorRel,
-      );
+      PoseUncertainty build({double? rot, double? grav, double? scale}) =>
+          PoseUncertainty(
+            provenance: PoseProvenance.platform,
+            rotationSigmaRad: rot ?? kPlatformRotationSigmaFloorRad,
+            gravitySigmaRad: grav ?? kPlatformRotationSigmaFloorRad,
+            translationSigmaM: kPlatformTranslationSigmaFloorM,
+            scaleSigmaRel: scale ?? kPlatformScaleSigmaFloorRel,
+          );
       expect(
         () => build(rot: kPlatformRotationSigmaFloorRad * 0.5),
         throwsArgumentError,
@@ -197,8 +194,12 @@ void main() {
   group('相机中心换算与既有管线逐位一致', () {
     test('cameraCenterWorld == 既有 cameraCenterFromCamFromWorld', () {
       // 非平凡四元数(绕 (1,2,3) 归一轴转 ~1rad)与非平凡平移。
-      final q = [0.8775825618903728, 0.1281319011658407, 0.2562638023316814,
-        0.3843957034975221];
+      final q = [
+        0.8775825618903728,
+        0.1281319011658407,
+        0.2562638023316814,
+        0.3843957034975221,
+      ];
       final t = [0.31, -0.72, 1.44];
       final mine = _sample(0, quat: q, trans: t).cameraCenterWorld()!;
       final theirs = cameraCenterFromCamFromWorld(q, t)!;
@@ -343,7 +344,11 @@ void main() {
     test('scaleCenterLookupOf 喂进既有 scaleAnchorFactor,尺度被找回', () {
       final src = _FakeSource({
         for (var i = 0; i < n; i++)
-          i: _sample(i, quat: [1, 0, 0, 0], trans: arkCenters[i]!.map((v) => -v).toList()),
+          i: _sample(
+            i,
+            quat: [1, 0, 0, 0],
+            trans: arkCenters[i]!.map((v) => -v).toList(),
+          ),
       });
       final s = scaleAnchorFactor(
         posesPacked: poses,
@@ -376,10 +381,9 @@ void main() {
       );
       expect(s, isNull, reason: 'fail-open:不缩放,保持现状交付');
       expect(rejects.length, n - 2);
-      expect(
-        rejects.values.toSet(),
-        {PlatformPoseGate.reasonTrackingNotNormal},
-      );
+      expect(rejects.values.toSet(), {
+        PlatformPoseGate.reasonTrackingNotNormal,
+      });
     });
 
     test('gravityQuatLookupOf 喂进既有 gravityAlignQuatWxyz 能出解', () {
@@ -526,10 +530,14 @@ int XRSLAMManager::GetCameraPose(XRSLAMPose *pose) const {
     return XRSLAM_OK;
 }
 ''';
-      expect(interfaceAppliesCall(onlyInComment, 'camera_to_body_rotation'),
-          isFalse);
-      expect(interfaceAppliesCall(onlyInComment, 'camera_to_body_translation'),
-          isFalse);
+      expect(
+        interfaceAppliesCall(onlyInComment, 'camera_to_body_rotation'),
+        isFalse,
+      );
+      expect(
+        interfaceAppliesCall(onlyInComment, 'camera_to_body_translation'),
+        isFalse,
+      );
       // 对照:不剥注释就会误判 —— 证明剥注释这一步是真在起作用,不是摆设。
       expect(
         RegExp(r'camera_to_body_rotation\s*\(').hasMatch(onlyInComment),

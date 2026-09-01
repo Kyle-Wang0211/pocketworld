@@ -62,22 +62,30 @@ void main() {
     final src = File('lib/community/community_service.dart').readAsStringSync();
     final code = src
         .split('\n')
-        .where((l) => !l.trimLeft().startsWith('//') && !l.trimLeft().startsWith('///'))
+        .where(
+          (l) =>
+              !l.trimLeft().startsWith('//') && !l.trimLeft().startsWith('///'),
+        )
         .join('\n');
 
     test('recent 排序必须带 id 次级键', () {
       expect(
         code,
-        contains("FeedSort.recent => filter\n"
-            "          .order('published_at', ascending: false)\n"
-            "          .order('id', ascending: false)"),
+        contains(
+          "FeedSort.recent => filter\n"
+          "          .order('published_at', ascending: false)\n"
+          "          .order('id', ascending: false)",
+        ),
         reason: 'keyset 的硬性前提:排序键必须唯一确定一个位置',
       );
     });
 
     test('有游标时走 limit,没游标才用 range(offset)', () {
       expect(code, contains('? await transformed.limit(limit)'));
-      expect(code, contains(': await transformed.range(offset, offset + limit - 1)'));
+      expect(
+        code,
+        contains(': await transformed.range(offset, offset + limit - 1)'),
+      );
     });
 
     test('游标两个参数必须成对判定', () {
@@ -93,7 +101,10 @@ void main() {
     final vault = File('lib/ui/vault_page.dart').readAsStringSync();
 
     test('加载更多用上一页最后一条作游标,不再用 current.length 当 offset', () {
-      expect(vault, contains('final last = current.isEmpty ? null : current.last;'));
+      expect(
+        vault,
+        contains('final last = current.isEmpty ? null : current.last;'),
+      );
       expect(vault, contains('afterPublishedAt: cursorAt'));
       expect(
         vault,
