@@ -1719,8 +1719,31 @@ class CaptureSession {
                       actualGate.trackEvidence?.medianNormalizedDisplacement,
                   'actual_laplacian_variance': actualQuality.laplacianVariance,
                   'actual_quality_reasons': actualQuality.rejectReasons,
+                  // 保留但未验证新颖 —— 用来对账「快门数 = 成片数」。
+                  'retained_as_non_novel':
+                      actualGate.decision ==
+                      OfficialActualPhotoDecision.rejectDuplicate,
                 });
-                if (!actualGate.accepted) {
+                // 重复判决**不是**丢弃判决。上游 VINS 的
+                // FeatureManager::addFeatureCheckParallax() 返回这个布尔是用来
+                // 选边缘化策略的,它的 false 分支(MARGIN_SECOND_NEW)仍然保留
+                // 新帧,只是把被挤掉那帧的 IMU 前推合并。把这个布尔接到删除
+                // 路径上,是本次复刻偏离上游的地方,也把一个无损开关变成了
+                // 有损开关。
+                //
+                // 实测 2026-09-01(build-75,08-27 基线):一次会话 23 次快门
+                // 触发了 45 次 12MP 原生取图,`rejectDuplicate` 25 次,只活下来
+                // 20 张 —— 违反「交付绝对无损」。改回保留之后,同一次快门只做
+                // 一次取图(重试消失),每张成本只会更低。
+                //
+                // 判据基线不受影响:OfficialActualPhotoGate.evaluate() 只在
+                // accept 分支调 _commit,rejectDuplicate 本来就不推进基线。
+                // 这一点是这一刀成立的前提 —— 基线若被非新颖照片推进,慢速平移
+                // 会永远攒不够位移。
+                final retainedAsNonNovel =
+                    actualGate.decision ==
+                    OfficialActualPhotoDecision.rejectDuplicate;
+                if (!actualGate.accepted && !retainedAsNonNovel) {
                   failure = switch (actualGate.decision) {
                     OfficialActualPhotoDecision.rejectMissingEvidence =>
                       OfficialHighResInputFailure.actualStillMissingEvidence,
