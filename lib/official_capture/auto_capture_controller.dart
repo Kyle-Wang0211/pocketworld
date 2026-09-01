@@ -136,6 +136,12 @@ class AutoCaptureController {
       quality != null &&
       quality.sharpness < FrameQualityConstants.blurThresholdLaplacian;
 
+  /// Apple 两级光照的 tooDark 档(见 governor 的 skipTooDark 注释)。
+  /// 预览报告缺失时不判暗 —— 宁可放行,与 physFootprintMB 失败不刹车同一条
+  /// 「读数失败不误伤拍照」纪律。
+  static bool _tooDark(FrameQualityReport? quality) =>
+      quality != null && quality.meanBrightness < kAutoCaptureTooDarkMeanLuma;
+
   bool get isRunning => _running;
 
   /// 整场已经跑掉的自动拍时长(秒)。用于测试断言"停/开不清零"这条不变量
@@ -369,6 +375,7 @@ class AutoCaptureController {
       trackEvidenceRequired: trackEvidenceRequired,
       smartSelectionMotionReady: _smartMotionSegment.ready,
       blurry: _objectivelyBlurry(q),
+      tooDark: _tooDark(q),
     );
     _lastMovedM = movedM;
     _lastTurnDeg = motion.viewTurnDeg;
@@ -400,6 +407,7 @@ class AutoCaptureController {
       case AutoCaptureDecision.skipNoVisualEvidence:
       case AutoCaptureDecision.skipRedundant:
         return decision;
+      case AutoCaptureDecision.skipTooDark:
       case AutoCaptureDecision.skipBlurry:
         // 客观模糊是硬拒绝；基准与去抖时钟都不动。下一份清晰视觉样本
         // 仍可立即开火，但等待多久都不会把糊片强行放入队列。

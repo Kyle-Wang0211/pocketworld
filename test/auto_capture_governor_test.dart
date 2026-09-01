@@ -65,6 +65,8 @@ AutoCaptureDecision _decide({
 );
 
 void main() {
+  _twoTierLightContract();
+
   test('geometry, radial, and rotation roles obey only duplicate debounce', () {
     for (final role in <AutoCaptureMotionRole>[
       AutoCaptureMotionRole.geometry,
@@ -291,5 +293,46 @@ void main() {
       at(ShutterPace.hard, kAutoCaptureThermalSerious),
       kAutoCaptureSafetyDebounceSec,
     );
+  });
+}
+
+// ── Apple 两级光照:tooDark 硬停选帧(skipTooDark),lowLight 不设闸 ──────
+// ObjectCaptureSession API docs 逐字:
+//   .environmentTooDark:  "…too dark to proceed. Auto-capture will stop…"
+//   .environmentLowLight: "…Auto-capture still proceeds but reconstruction
+//                          quality may suffer."
+void _twoTierLightContract() {
+  test('tooDark → skipTooDark,先于运动判据(遥测要显示真实原因)', () {
+    final d = autoCaptureDecideMotion(
+      trackingNormal: true,
+      capturedCount: 1,
+      elapsedSec: 10,
+      sinceLastTickSec: 10,
+      tickIntervalSec: 0.25,
+      motion: _motion(AutoCaptureMotionRole.geometry, geometryEligible: true),
+      visualSimilarity: 0.1,
+      blurry: false,
+      tooDark: true,
+    );
+    expect(
+      d,
+      AutoCaptureDecision.skipTooDark,
+      reason: 'Apple: tooDark 时自动拍停止选帧 —— 拍都不拍,没有快门声',
+    );
+  });
+
+  test('lowLight(不 tooDark)不拦截 —— 照拍', () {
+    final d = autoCaptureDecideMotion(
+      trackingNormal: true,
+      capturedCount: 1,
+      elapsedSec: 10,
+      sinceLastTickSec: 10,
+      tickIntervalSec: 0.25,
+      motion: _motion(AutoCaptureMotionRole.geometry, geometryEligible: true),
+      visualSimilarity: 0.1,
+      blurry: false,
+      tooDark: false,
+    );
+    expect(d, AutoCaptureDecision.fire);
   });
 }

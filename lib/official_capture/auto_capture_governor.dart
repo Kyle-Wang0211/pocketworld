@@ -40,6 +40,14 @@ enum AutoCaptureDecision {
   skipTracking,
   skipCapped,
   skipTimeLimit,
+
+  /// 环境过暗,自动拍停止选帧(拍都不拍,所以没有快门声、没有销毁)。
+  /// 复刻 Apple ObjectCaptureSession 的文档口径(API docs,逐字):
+  ///   .environmentTooDark:  "…too dark to proceed. Auto-capture will stop…"
+  ///   .environmentLowLight: "…Auto-capture still proceeds but reconstruction
+  ///                          quality may suffer."
+  /// 两级:lowLight 不设闸(照拍,质量理由只记遥测);tooDark 才停在这里。
+  skipTooDark,
 }
 
 /// 正常档只保留防重复触发的 250 ms 去抖，不把秒数冒充摄影测量参数。
@@ -51,6 +59,12 @@ const double kAutoCaptureNormalIntervalSec = 0.25;
 /// 所有角色共同守住的 250 ms 防连击地板。队列压力与热态只记遥测，
 /// 不得改变这个值；否则是用后台吞吐能力代替摄影测量取帧判定。
 const double kAutoCaptureSafetyDebounceSec = 0.25;
+
+/// tooDark 档的亮度下界。不是新造的数:与质量策略的 minMeanLuma
+/// (photo_bundle_quality_service.dart,60.0)和 TargetPoints 的亮度带
+/// (60–200)同一常数 —— 预览均亮低于它,连质量策略自己都会判
+/// mean_luma_dark,拍了也是废片,不如不选。
+const double kAutoCaptureTooDarkMeanLuma = 60.0;
 
 /// thermal 桶(ProcessInfo 四档:0 nominal · 1 fair · 2 serious · 3 critical;
 /// **<0 = 未知,按冷处理** —— 与 `shutterPaceNext` 的降级口径逐字相同)。
@@ -72,6 +86,7 @@ AutoCaptureDecision autoCaptureDecideMotion({
   bool trackEvidenceRequired = false,
   bool smartSelectionMotionReady = false,
   bool blurry = false,
+  bool tooDark = false,
 }) {
   if (capturedCount >= kOfficialMaximumCaptureFrames) {
     return AutoCaptureDecision.skipCapped;
@@ -80,6 +95,9 @@ AutoCaptureDecision autoCaptureDecideMotion({
     return AutoCaptureDecision.skipTimeLimit;
   }
   if (!trackingNormal) return AutoCaptureDecision.skipTracking;
+  // Apple 口径里 tooDark 是环境级硬停("Auto-capture will stop"),放在运动
+  // 判据之前 —— 遥测里显示真实原因,而不是被 skipNotMoved 盖住。
+  if (tooDark) return AutoCaptureDecision.skipTooDark;
   if (!motion.shouldCapture) return AutoCaptureDecision.skipNotMoved;
   if (sinceLastTickSec < kAutoCaptureSafetyDebounceSec) {
     return AutoCaptureDecision.skipPaced;

@@ -55,7 +55,9 @@ enum DenseStageStatus {
 class DenseStageResult {
   const DenseStageResult(this.status, {this.message});
 
-  const DenseStageResult.started() : status = DenseStageStatus.started, message = null;
+  const DenseStageResult.started()
+    : status = DenseStageStatus.started,
+      message = null;
 
   final DenseStageStatus status;
   final String? message;

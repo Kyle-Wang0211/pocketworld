@@ -246,7 +246,10 @@ double? scaleAnchorFactor({
     if (diag != null) diag.registeredFrames++;
     final ac = arkitCenterWorldOf(poses[i].toInt());
     if (ac == null || ac.length != 3) continue;
-    final w = poses[i + 2], x = poses[i + 3], y = poses[i + 4], z = poses[i + 5];
+    final w = poses[i + 2],
+        x = poses[i + 3],
+        y = poses[i + 4],
+        z = poses[i + 5];
     final n2 = w * w + x * x + y * y + z * z;
     if (n2 < 1e-12) continue; // synthetic all-zero quat (connectivity)
     // center = -R^T·t for CamFromWorld (R from quat, t = poses[i+6..8]).

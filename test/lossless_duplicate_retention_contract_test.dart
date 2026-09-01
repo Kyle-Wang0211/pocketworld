@@ -58,13 +58,16 @@ void main() {
         .join('\n')
         .replaceAll(RegExp(r'\s+'), ' ');
 
+    // 2026-09-02 更新:守卫扩展为「重复 或 质量」都保留(Apple 拍前选帧、
+    // 不拍后销毁的口径)。本断言随语义更新 —— 旧字面是只含 rejectDuplicate。
     expect(
       source,
       contains(
         'final retainedAsNonNovel = actualGate.decision == '
-        'OfficialActualPhotoDecision.rejectDuplicate;',
+        'OfficialActualPhotoDecision.rejectDuplicate || actualGate.decision == '
+        'OfficialActualPhotoDecision.rejectQuality;',
       ),
-      reason: '重复判决必须被单独标出来,而不是和其他拒绝混在一起',
+      reason: '重复与质量判决都必须只标记、不销毁',
     );
     expect(
       source,
@@ -72,6 +75,45 @@ void main() {
       reason:
           '删除路径必须把 retainedAsNonNovel 排除在外 —— '
           '去掉这个守卫就等于恢复毁片行为',
+    );
+  });
+
+  // ── 2026-09-02:拍后不销毁扩展到 rejectQuality + 票内重试废除 ────────────
+  // Apple Object Capture 的文档化架构:拍前选帧,绝不拍后销毁
+  // (.environmentLowLight: "Auto-capture still proceeds but reconstruction
+  // quality may suffer");极暗由治理器 skipTooDark 预闸负责(拍都不拍)。
+  // 实测暴行(build-86,ISO 2500):5 张 blur_laplacian 160–195 擦线糊被销毁
+  // 并重拍 → 26 声快门 / 相册 21 张,违反「选中/拍摄/震动/相框 1:1」铁律。
+  test('rejectQuality 不得流进删除路径', () {
+    final source = File('lib/official_capture/capture_session.dart')
+        .readAsLinesSync()
+        .where((line) => !line.trimLeft().startsWith('//'))
+        .join('\n')
+        .replaceAll(RegExp(r'\s+'), ' ');
+    expect(
+      source,
+      contains('OfficialActualPhotoDecision.rejectQuality;'),
+      reason: 'rejectQuality 必须在 retainedAsNonNovel 里',
+    );
+    expect(
+      source,
+      contains(
+        'actualGate.decision == OfficialActualPhotoDecision.rejectDuplicate || '
+        'actualGate.decision == OfficialActualPhotoDecision.rejectQuality;',
+      ),
+      reason: '重复与质量两种判决都只标记、不销毁 —— 只有 accept 推进基线',
+    );
+  });
+
+  test('一张票据至多一次原生取图(快门声 1:1)', () {
+    final source = File('lib/official_capture/capture_session.dart')
+        .readAsLinesSync()
+        .where((line) => !line.trimLeft().startsWith('//'))
+        .join('\n');
+    expect(
+      source,
+      contains('_manualHighResMaxAttempts = 1;'),
+      reason: '票内重试会造出快门声多于相册张数(实测 26 声/21 张)',
     );
   });
 }

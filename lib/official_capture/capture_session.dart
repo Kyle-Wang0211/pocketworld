@@ -238,7 +238,13 @@ class CaptureSession {
   /// motion/dome auto-ingest + auto-save path; photos are taken only via
   /// [captureSinglePhoto]. Set per-session by [start].
   bool _manualCaptureMode = false;
-  static const int _manualHighResMaxAttempts = 6;
+
+  /// 一张票据 = 至多一次原生取图 = 至多一声快门。2026-09-02 由 6 改 1:
+  /// 票内重试会造出「快门声 > 相册张数」(实测 26 声/21 张),违反用户铁律
+  /// 「选中、拍摄、震动、相框必须一致」。Apple Object Capture 同样从不对
+  /// 单次选择重拍。拍失败(原生错误/坏内参)= 本票据作废,治理器按自己的
+  /// 判据重新选帧 —— 那是新的一次「选中」,有自己的一声快门,1:1 仍成立。
+  static const int _manualHighResMaxAttempts = 1;
   bool _manualCaptureSuspended = false;
   Completer<void>? _manualCaptureResumeCompleter;
   Object? _manualCaptureResumeFailure;
@@ -1744,9 +1750,21 @@ class CaptureSession {
                 // accept 分支调 _commit,rejectDuplicate 本来就不推进基线。
                 // 这一点是这一刀成立的前提 —— 基线若被非新颖照片推进,慢速平移
                 // 会永远攒不够位移。
+                // 2026-09-02 扩展:rejectQuality 也保留。Apple Object Capture
+                // 的文档化架构是**拍前选帧、绝不拍后销毁**:
+                //   .environmentLowLight: "Auto-capture still proceeds but
+                //    reconstruction quality may suffer."
+                // 极暗的"停"由治理器的 skipTooDark 预闸负责(拍都不拍),
+                // 拍下来的一律入库。实测(build-86,ISO 2500):一场 5 张
+                // blur_laplacian 160–195 对阈值 200 的"擦线糊"被销毁并重拍,
+                // 用户听到 26 声快门、相册只有 21 张 —— 违反「选中/拍摄/震动/
+                // 相框必须 1:1」。质量理由照记(actual_quality_reasons),
+                // 基线照旧只被 accept 推进。
                 final retainedAsNonNovel =
                     actualGate.decision ==
-                    OfficialActualPhotoDecision.rejectDuplicate;
+                        OfficialActualPhotoDecision.rejectDuplicate ||
+                    actualGate.decision ==
+                        OfficialActualPhotoDecision.rejectQuality;
                 if (!actualGate.accepted && !retainedAsNonNovel) {
                   failure = switch (actualGate.decision) {
                     OfficialActualPhotoDecision.rejectMissingEvidence =>

@@ -70,6 +70,7 @@ AutoCaptureIndicator autoCaptureIndicatorFor({
       return AutoCaptureIndicator.waiting;
     // 画质缓拍归 steady:节奏自然慢一拍即可,不额外表达(spec §8 同款
     // 取舍 —— skipPaced 也不表达)。
+    case AutoCaptureDecision.skipTooDark:
     case AutoCaptureDecision.skipBlurry:
     case AutoCaptureDecision.skipPaced:
     case AutoCaptureDecision.skipNoVisualEvidence:

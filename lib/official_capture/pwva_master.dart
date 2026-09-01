@@ -52,7 +52,7 @@ class PwvaMasterManifest {
 
   /// name → {frame, source_bytes, source_sha256}
   final Map<String, ({int frame, int sourceBytes, String sourceSha256})>
-      entries;
+  entries;
 
   static Future<PwvaMasterManifest?> read(Directory captureDirectory) async {
     try {
@@ -98,12 +98,15 @@ class PwvaMasterTransaction {
       final hevcDir = Directory('${captureDirectory.path}/photos_hevc');
       final manifest = await _readArchiveManifest(hevcDir);
       if (manifest == null) return const PwvaMasterResult();
-      final report = await _readJson(File('${hevcDir.path}/archive-report.json'));
+      final report = await _readJson(
+        File('${hevcDir.path}/archive-report.json'),
+      );
       if (report == null || report['status'] != 'finalized') {
         return const PwvaMasterResult();
       }
-      final candidates =
-          await PhotoArchiveManifest.loadCandidateNames(captureDirectory);
+      final candidates = await PhotoArchiveManifest.loadCandidateNames(
+        captureDirectory,
+      );
       if (candidates.isEmpty) return const PwvaMasterResult();
 
       final entries = _readIndex(hevcDir);
@@ -127,8 +130,8 @@ class PwvaMasterTransaction {
       // 全部候选 JPEG 必须在盘(Lepton 已先行归档的旧 capture → 不适用)。
       for (final name in candidates) {
         if (!await File(
-                '${captureDirectory.path}/photos_highres/$name')
-            .exists()) {
+          '${captureDirectory.path}/photos_highres/$name',
+        ).exists()) {
           return const PwvaMasterResult();
         }
       }
@@ -149,10 +152,11 @@ class PwvaMasterTransaction {
           return const PwvaMasterResult(paused: true);
         }
         final batch = candidates.sublist(
-            start,
-            start + _shaBatch > candidates.length
-                ? candidates.length
-                : start + _shaBatch);
+          start,
+          start + _shaBatch > candidates.length
+              ? candidates.length
+              : start + _shaBatch,
+        );
         final root = captureDirectory.path;
         final checked = await Isolate.run(() {
           final out = <({int bytes, String sha})>[];
@@ -186,11 +190,13 @@ class PwvaMasterTransaction {
         final ok = await Isolate.run(() {
           try {
             final reader = PwvaReader(
-                Directory(hevcPath),
-                (au) => AppleHevcDecoder(
-                    width: _manifestWidth(hevcPath),
-                    height: _manifestHeight(hevcPath),
-                    keyframeAu: au));
+              Directory(hevcPath),
+              (au) => AppleHevcDecoder(
+                width: _manifestWidth(hevcPath),
+                height: _manifestHeight(hevcPath),
+                keyframeAu: au,
+              ),
+            );
             reader.readFrameNv12(last);
             return true;
           } catch (_) {
@@ -209,16 +215,19 @@ class PwvaMasterTransaction {
           'source_sha256': entries[i].sourceSha256,
         };
       }
-      final masterFile =
-          File('${captureDirectory.path}/${PwvaMasterManifest.relativePath}');
+      final masterFile = File(
+        '${captureDirectory.path}/${PwvaMasterManifest.relativePath}',
+      );
       final tmp = File('${masterFile.path}.tmp');
-      await tmp.writeAsString(const JsonEncoder.withIndent(' ').convert({
-        'schema': PwvaMasterManifest.schema,
-        'stream_sha256': manifest.streamSha256,
-        'frame_count': entries.length,
-        'verified_at': DateTime.now().toUtc().toIso8601String(),
-        'entries': entryJson,
-      }));
+      await tmp.writeAsString(
+        const JsonEncoder.withIndent(' ').convert({
+          'schema': PwvaMasterManifest.schema,
+          'stream_sha256': manifest.streamSha256,
+          'frame_count': entries.length,
+          'verified_at': DateTime.now().toUtc().toIso8601String(),
+          'entries': entryJson,
+        }),
+      );
       await tmp.rename(masterFile.path);
 
       final mastered = <String>[];
@@ -245,7 +254,9 @@ class PwvaMasterTransaction {
   /// master-manifest 已存在(上次删到一半崩了/被暂停):
   /// 逐帧核 sha 后删除剩余源;sha 不符绝不删,记 failed。
   Future<PwvaMasterResult> _reconcile(
-      Directory captureDirectory, PwvaMasterManifest committed) async {
+    Directory captureDirectory,
+    PwvaMasterManifest committed,
+  ) async {
     final mastered = <String>[];
     final failed = <String>[];
     var paused = false;
@@ -254,8 +265,7 @@ class PwvaMasterTransaction {
         paused = true;
         break;
       }
-      final source =
-          File('${captureDirectory.path}/photos_highres/${e.key}');
+      final source = File('${captureDirectory.path}/photos_highres/${e.key}');
       if (!await source.exists()) {
         mastered.add(e.key);
         continue;

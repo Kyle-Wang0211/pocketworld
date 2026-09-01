@@ -63,6 +63,7 @@ class _RoleCounts {
   int blockedCap = 0;
   int blockedTimeLimit = 0;
   int blockedNotMoved = 0;
+  int blockedTooDark = 0;
 
   void clear() {
     evaluated = 0;
@@ -78,6 +79,7 @@ class _RoleCounts {
     blockedCap = 0;
     blockedTimeLimit = 0;
     blockedNotMoved = 0;
+    blockedTooDark = 0;
   }
 
   Map<String, int> snapshot() => <String, int>{
@@ -87,6 +89,7 @@ class _RoleCounts {
     'fired': fired,
     'masked_by_priority': maskedByPriority,
     'blocked_blur': blockedBlur,
+    'blocked_too_dark': blockedTooDark,
     'blocked_pace': blockedPace,
     'blocked_no_visual_evidence': blockedNoVisualEvidence,
     'blocked_redundant': blockedRedundant,
@@ -336,6 +339,9 @@ class AutoCaptureTelemetry {
           break;
         case AutoCaptureDecision.skipNotMoved:
           winnerRow.blockedNotMoved++;
+          break;
+        case AutoCaptureDecision.skipTooDark:
+          winnerRow.blockedTooDark++;
           break;
       }
     }
