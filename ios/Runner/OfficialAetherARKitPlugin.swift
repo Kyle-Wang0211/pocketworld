@@ -2133,6 +2133,45 @@ class OfficialAetherARKitPlugin: NSObject {
         let pixelBuffer = frame.capturedImage
         let timestamp = frame.timestamp
         let requestToCaptureDelta = timestamp - requestFrameTimestamp
+
+        // [曝光遥测 2026-09-01] 纯观测。09-01 那天有 7 次同物体会话,照片清晰度
+        // (Laplacian 中位)从 846 掉到 341、上限从 ~1400 塌到 ~465,而每帧几何
+        // 验证过的匹配对数随之从 4431 掉到 554(rho +0.96),最终点数跟着掉 3.5 倍。
+        // 节奏被会话内对照否掉了(相关符号都不一致),构建变化也被否掉了
+        // (均值那刀实测 0/21 判决分歧)。剩下最可能的是曝光/光照,而我们**一个
+        // 字段都没有**,只能靠猜 —— 当天我因此编了一次"天黑了",被用户当场否掉。
+        //
+        // 成本:`exifData` 在高清帧送达时已经在那儿了,这里只是字典查找,
+        // 每张照片一次(约 1.5 秒一次)。**不新增任何计算。**
+        //
+        // 明确不做的事:不重开 `configuration.isLightEstimationEnabled`。
+        // ARLightEstimate.ambientIntensity 正是想要的量,但它是**每帧**跑的
+        // CPU/ISP 税,已在 2026-07-12 热战役刀① 里签决关闭。EXIF 的
+        // BrightnessValue 在同一个免费字典里,够用。
+        //
+        // 读点在 completion 里、异步编码跳转**之前** —— 不把 ARFrame 带进闭包
+        // (WWDC22:持有 ARFrame 会耗空相机缓冲池、掉帧、tracking 降到 limited)。
+        if #available(iOS 16.0, *) {
+          let exif = frame.exifData
+          func num(_ key: CFString) -> Double? {
+            (exif[key as String] as? NSNumber)?.doubleValue
+          }
+          var row: [String: Any] = [
+            // 用文件名当关联键 —— 可与 hires_still / frame 的 jpeg 字段对上。
+            "jpeg": URL(fileURLWithPath: highresPath).lastPathComponent,
+            "frame_t": timestamp,
+          ]
+          if let v = num(kCGImagePropertyExifExposureTime) { row["exposure_sec"] = v }
+          if let v = num(kCGImagePropertyExifBrightnessValue) { row["brightness_ev"] = v }
+          if let arr = exif[kCGImagePropertyExifISOSpeedRatings as String] as? [NSNumber],
+             let first = arr.first {
+            row["iso"] = first.doubleValue
+          }
+          if let v = num(kCGImagePropertyExifFNumber) { row["f_number"] = v }
+          // 只有真的读到东西才发 —— 静默出口纪律:字段缺失时留痕,不是不发。
+          row["fields"] = row.count - 2
+          OfficialPwNativeTelemetry.shared.log("highres_exif", row)
+        }
         // The completion belongs to this exact captureHighResolutionFrame
         // invocation. Its image, pose, intrinsics and timestamp are one ARFrame
         // transaction. Request-to-capture delay is sensor/ISP latency, not a
