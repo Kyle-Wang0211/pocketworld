@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -20,6 +21,7 @@ Uint8List _texturedFrame({int shiftX = 0}) {
 
 void main() {
   _meanNotMedianContract();
+  _openCvLkSemanticsContract();
 
   test('continuous LK carries capture tracks across small frame steps', () {
     final tracks = ContinuousFeatureTracks();
@@ -182,4 +184,83 @@ void _meanNotMedianContract() {
     );
     expect(inverted.hasEnoughNovelty, isFalse);
   });
+}
+
+// ── 复刻:OpenCV lkpyramid.cpp 的边界与终止语义(2026-09-02 回源)────────
+// 四处对齐:REFLECT_101 采样(金字塔按 winSize 填充的等价);「界外」只指
+// 完全飞出填充区;边界/退化只在第 0 层判死(粗层 continue);无位移上限;
+// ε 比的是平方范数(0.01,即 |δ|≤0.1)+ 振荡早停退半步。
+// 修复前:1px 平移在真实照片上存活率只有 60%(该是 ~100%),主凶是顶层
+// 32×32 的窗口检查把离边 20px 内的角点全部误杀(可跟踪面积 47%)。
+void _openCvLkSemanticsContract() {
+  test('1px 平移:存活率必须接近满分(修复前 ~50%)', () {
+    final t = ContinuousFeatureTracks();
+    t.setReference(gray: _blobField(3), width: 128, height: 128);
+    final e = t.advance(
+      gray: _blobField(3, shiftX: 1),
+      width: 128,
+      height: 128,
+      focalXPixels: 101.6,
+      focalYPixels: 101.6,
+    );
+    expect(e, isNotNull);
+    expect(
+      e!.commonTrackCount / e.seedTrackCount,
+      greaterThan(0.9),
+      reason: '纯 1px 平移没有任何理由丢点 —— 掉回 0.5 就是边界误杀回来了',
+    );
+  });
+
+  test('大位移(10px)不再被每层位移上限判死', () {
+    final t = ContinuousFeatureTracks();
+    t.setReference(gray: _blobField(3), width: 128, height: 128);
+    final e = t.advance(
+      gray: _blobField(3, shiftX: 10),
+      width: 128,
+      height: 128,
+      focalXPixels: 101.6,
+      focalYPixels: 101.6,
+    );
+    expect(e, isNotNull);
+    expect(e!.commonTrackCount, greaterThanOrEqualTo(20));
+    expect(
+      e.medianPixelDisplacement,
+      closeTo(10, 1.5),
+      reason: 'OpenCV 对总位移没有上限;旧实现的 |δ|>radius 判拒是自加的',
+    );
+  });
+}
+
+/// 平滑斑点场:确定性伪随机中心 + 高斯斑,LK 友好(接近真实画面的低频结构)。
+/// 高频条纹类夹具是 LK 毒药(混叠),会伪造出跟踪缺陷 —— 见当日 88 个假
+/// "新点"的教训。
+Uint8List _blobField(int seed, {int shiftX = 0}) {
+  const side = 128;
+  final out = Uint8List(side * side);
+  final pts = <List<int>>[];
+  var state = seed * 2654435761 + 97;
+  while (pts.length < 24) {
+    state = (state * 1103515245 + 12345) & 0x7fffffff;
+    final x = 8 + (state >> 8) % (side - 16);
+    state = (state * 1103515245 + 12345) & 0x7fffffff;
+    final y = 8 + (state >> 8) % (side - 16);
+    if (pts.every(
+      (p) => (p[0] - x) * (p[0] - x) + (p[1] - y) * (p[1] - y) >= 144,
+    )) {
+      pts.add([x, y]);
+    }
+  }
+  for (var y = 0; y < side; y++) {
+    for (var x = 0; x < side; x++) {
+      var v = 24.0;
+      for (final c in pts) {
+        final dx = x - c[0] - shiftX;
+        final dy = y - c[1];
+        final d2 = dx * dx + dy * dy;
+        if (d2 < 100) v += 200.0 * math.exp(-d2 / 18.0);
+      }
+      out[y * side + x] = v.clamp(0, 255).toInt();
+    }
+  }
+  return out;
 }
