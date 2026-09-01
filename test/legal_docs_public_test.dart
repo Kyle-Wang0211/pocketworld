@@ -28,37 +28,24 @@ void main() {
   group('占位符 —— 上线前必须替换,替换后改写断言而不是删掉', () {
     test('公司名称占位(两份文件都要)', () {
       expect(privacyAll, contains('公司名称待注册后填写'));
-      expect(
-        agreementAll,
-        contains('公司名称待注册后填写'),
-        reason: '若已填真实公司名,把本断言改成两份文件公司名一致的断言',
-      );
+      expect(agreementAll, contains('公司名称待注册后填写'),
+          reason: '若已填真实公司名,把本断言改成两份文件公司名一致的断言');
     });
     test('注册地占位(隐私政策联系章 + 协议管辖条款)', () {
       expect(privacyAll, contains('公司注册地待定后填写'));
-      expect(
-        agreementAll,
-        contains('公司注册地待定后填写'),
-        reason: '若已填,改成断言管辖条款包含具体城市名',
-      );
+      expect(agreementAll, contains('公司注册地待定后填写'),
+          reason: '若已填,改成断言管辖条款包含具体城市名');
     });
     test('联系邮箱占位 —— 与平台公约页同一口径"待填写"', () {
       expect(privacyAll, contains('待填写'));
-      expect(
-        agreementAll,
-        contains('待填写'),
-        reason: '若已填,改成断言邮箱格式且三份文件(含平台公约)是同一个邮箱',
-      );
+      expect(agreementAll, contains('待填写'),
+          reason: '若已填,改成断言邮箱格式且三份文件(含平台公约)是同一个邮箱');
     });
     test('生效日期占位', () {
       expect(kPrivacyPolicyEffectiveDate, contains('待上线前填写'));
-      expect(
-        kUserAgreementEffectiveDate,
-        contains('待上线前填写'),
-        reason:
-            '⚠️ 生效前提:Supabase→阿里云迁移完成(境内存储那句话才为真)、'
-            '邮件服务商换境内、首启同意弹窗落地 —— 见 supabase/README.md 上线门槛',
-      );
+      expect(kUserAgreementEffectiveDate, contains('待上线前填写'),
+          reason: '⚠️ 生效前提:Supabase→阿里云迁移完成(境内存储那句话才为真)、'
+              '邮件服务商换境内、首启同意弹窗落地 —— 见 supabase/README.md 上线门槛');
     });
     test('✅ 作品授权条款已定稿(2026-08-24 拍板),关键要素齐全且加粗', () {
       expect(agreementAll, isNot(contains('待定稿')));
@@ -83,17 +70,11 @@ void main() {
       //    且被消费者权益媒体点名批评过)
       expect(agreementAll, isNot(contains('不可撤销')));
       // 权利许可条款必须加粗(民法典 496 条)
-      expect(
-        agreement.any((p) => p.text.contains('非独家') && p.emphasized),
-        isTrue,
-        reason: '许可条款没有加粗',
-      );
+      expect(agreement.any((p) => p.text.contains('非独家') && p.emphasized),
+          isTrue, reason: '许可条款没有加粗');
       // 隐私政策侧的研究用途告知也必须在且加粗(两文件口径一致)
-      expect(
-        privacy.any((p) => p.text.contains('科学研究') && p.emphasized),
-        isTrue,
-        reason: '隐私政策缺研究用途的显著告知',
-      );
+      expect(privacy.any((p) => p.text.contains('科学研究') && p.emphasized),
+          isTrue, reason: '隐私政策缺研究用途的显著告知');
     });
   });
 
@@ -130,16 +111,11 @@ void main() {
     });
     test('协议:修改公示 7 日 + 无"最终解释权"红线', () {
       expect(agreementAll, contains('7 日'));
-      expect(
-        agreementAll,
-        isNot(contains('最终解释权')),
-        reason: '消保法 26 条/民法典 497 条的无效条款,也是格式条款执法最常见靶子',
-      );
+      expect(agreementAll, isNot(contains('最终解释权')),
+          reason: '消保法 26 条/民法典 497 条的无效条款,也是格式条款执法最常见靶子');
     });
     test('深度合成显著提示(第八条)必须是加粗段', () {
-      final hit = agreement.where(
-        (p) => p.text.contains('深度合成') && p.emphasized,
-      );
+      final hit = agreement.where((p) => p.text.contains('深度合成') && p.emphasized);
       expect(hit, isNotEmpty, reason: '第八条要求"以显著方式提示"——不加粗不算显著');
     });
     test('民法典 496 条:免责/限责/管辖条款必须加粗', () {
@@ -202,14 +178,10 @@ void main() {
       expect(code, contains('UserAgreementPage.open'));
     });
     test('邮箱注册页与手机号注册页都有三链接行', () {
-      expect(
-        _code('lib/ui/auth/email_sign_in_view.dart'),
-        contains('LegalDocLinksRow'),
-      );
-      expect(
-        _code('lib/ui/auth/phone_sign_in_view.dart'),
-        contains('LegalDocLinksRow'),
-      );
+      expect(_code('lib/ui/auth/email_sign_in_view.dart'),
+          contains('LegalDocLinksRow'));
+      expect(_code('lib/ui/auth/phone_sign_in_view.dart'),
+          contains('LegalDocLinksRow'));
     });
   });
 
@@ -228,11 +200,8 @@ void main() {
         expect(xc, contains('<string>$c</string>'), reason: '缺申报: $c');
       }
       // 源照片不上传 + 无头像上传 ⇒ 不得申报 Photos(申报了反而失实)
-      expect(
-        xc,
-        isNot(contains('NSPrivacyCollectedDataTypePhotosorVideos')),
-        reason: '若上线了头像照片上传,先改隐私政策再来申报这一项',
-      );
+      expect(xc, isNot(contains('NSPrivacyCollectedDataTypePhotosorVideos')),
+          reason: '若上线了头像照片上传,先改隐私政策再来申报这一项');
       // ⚠️ 第一版谓词写成了"<true/> 后面跟 Tracking 键",匹配到的其实是
       //    上一行 Linked=true —— 判据匹配错对象。正确判据:每个 Tracking
       //    键的**值**都必须是 false。
@@ -240,11 +209,8 @@ void main() {
         r'NSPrivacyCollectedDataTypeTracking</key>\s*<(true|false)/>',
       ).allMatches(xc).map((m) => m.group(1)).toList();
       expect(trackingValues, isNotEmpty);
-      expect(
-        trackingValues.every((v) => v == 'false'),
-        isTrue,
-        reason: '任何一项 Tracking=true 都意味着要走 ATT,本产品不追踪',
-      );
+      expect(trackingValues.every((v) => v == 'false'), isTrue,
+          reason: '任何一项 Tracking=true 都意味着要走 ATT,本产品不追踪');
     });
   });
 }

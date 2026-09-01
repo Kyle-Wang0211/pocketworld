@@ -92,9 +92,8 @@ void main() {
     final original = List<int>.filled(8192, 0x11);
     await writeReadyDatabase(original);
     // B1 裁剪清单存在 = descriptors 已空 ⇒ track_delta 无标的。
-    await File(
-      '${captureDirectory.path}/official_database_prune.json',
-    ).writeAsString('{"schema":"pw_database_prune_v2"}');
+    await File('${captureDirectory.path}/official_database_prune.json')
+        .writeAsString('{"schema":"pw_database_prune_v2"}');
     final preprocessor = _CountingPreprocessor();
 
     final result = await DatabaseArchiveTransaction(
@@ -315,7 +314,9 @@ class _CountingPreprocessor implements DatabaseArchivePreprocessor {
     required File destinationDatabase,
   }) async {
     transformCalls++;
-    await destinationDatabase.writeAsBytes(await sourceDatabase.readAsBytes());
+    await destinationDatabase.writeAsBytes(
+      await sourceDatabase.readAsBytes(),
+    );
   }
 
   @override
@@ -323,7 +324,9 @@ class _CountingPreprocessor implements DatabaseArchivePreprocessor {
     required File sourceDatabase,
     required File destinationDatabase,
   }) async {
-    await destinationDatabase.writeAsBytes(await sourceDatabase.readAsBytes());
+    await destinationDatabase.writeAsBytes(
+      await sourceDatabase.readAsBytes(),
+    );
   }
 
   @override

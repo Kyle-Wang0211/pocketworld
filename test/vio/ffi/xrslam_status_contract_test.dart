@@ -63,17 +63,15 @@ void main() {
         expect(
           Platform.environment['XRSLAM_SKIP_CONTRACT'],
           '1',
-          reason:
-              '找不到 XRSLAM.h。设 XRSLAM_ROOT 指向 xrslam 仓库,'
+          reason: '找不到 XRSLAM.h。设 XRSLAM_ROOT 指向 xrslam 仓库,'
               '或显式设 XRSLAM_SKIP_CONTRACT=1 才允许跳过。'
               'CI 上静默 skip 等于这条契约没人守。',
         );
         return;
       }
 
-      final Map<String, int> fromHeader = parseHeaderMacros(
-        header.readAsStringSync(),
-      );
+      final Map<String, int> fromHeader =
+          parseHeaderMacros(header.readAsStringSync());
 
       expect(fromHeader, isNotEmpty, reason: '解析 C 头没拿到任何宏 —— 解析器坏了');
 
@@ -97,11 +95,8 @@ void main() {
         }
       }
 
-      expect(
-        mismatches,
-        isEmpty,
-        reason: '返回码漂了:\n  ${mismatches.join("\n  ")}',
-      );
+      expect(mismatches, isEmpty,
+          reason: '返回码漂了:\n  ${mismatches.join("\n  ")}');
     });
 
     test('XRSLAMCreate 的反向约定不能用 xrslamSucceeded 判', () {

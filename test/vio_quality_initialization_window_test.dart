@@ -23,7 +23,11 @@ TextureSample _texture({required bool good, int seed = 5}) {
     xy[i * 2] = r.nextDouble() * kW * side;
     xy[i * 2 + 1] = r.nextDouble() * kH * side;
   }
-  final s = evaluateTextureSufficiency(xy: xy, imageWidth: kW, imageHeight: kH);
+  final s = evaluateTextureSufficiency(
+    xy: xy,
+    imageWidth: kW,
+    imageHeight: kH,
+  );
   // 夹具自检。用 throw 而不是 expect —— 这个函数会在 group 体里被调用,
   // 那里还没有活跃的 test,expect 会抛 OutsideTestException。
   if (s.isSufficient != good) {

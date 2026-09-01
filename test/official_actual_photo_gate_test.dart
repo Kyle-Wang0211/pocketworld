@@ -96,7 +96,6 @@ void main() {
       commonTrackFraction: 19 / 114,
       medianPixelDisplacement: 26.8,
       medianNormalizedDisplacement: 0.21,
-      meanNormalizedDisplacement: 0.21,
     );
 
     expect(officialActualPhotoTrackAccepted(evidence), isFalse);

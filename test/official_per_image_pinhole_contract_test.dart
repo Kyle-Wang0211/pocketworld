@@ -62,9 +62,7 @@ void main() {
     // ② 数量护栏:14 个调用点(源文件共 15 次命中 = 1 处顶格定义 + 14 处调用)。
     //    新增调用点必须显式过审 —— 数字变了就红。
     expect(
-      RegExp(
-        r'EstimateMandatoryFrameTwoViewGeometry\(',
-      ).allMatches(source).length,
+      RegExp(r'EstimateMandatoryFrameTwoViewGeometry\(').allMatches(source).length,
       15,
       reason: '两视几何调用点数变化必须显式过审(1 定义 + 14 调用)',
     );

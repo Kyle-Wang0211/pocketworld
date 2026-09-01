@@ -33,8 +33,7 @@ void main() {
       expect(
         code.contains("from('works')"),
         isFalse,
-        reason:
-            '发布链路必须只经由 upload-finalize 建行。'
+        reason: '发布链路必须只经由 upload-finalize 建行。'
             '迁移 20260823020000 撤销了 works_insert_own 并加了 RESTRICTIVE 守卫,'
             '客户端直写会在运行时被 RLS 拒掉 —— 但那是上线后才发现,这里要提前拦住。',
       );
@@ -42,15 +41,12 @@ void main() {
 
     test('整个 lib/ 里不存在 works 表的 insert 调用', () {
       final offenders = <String>[];
-      for (final f
-          in Directory('lib')
-              .listSync(recursive: true)
-              .whereType<File>()
-              .where((f) => f.path.endsWith('.dart'))) {
+      for (final f in Directory('lib')
+          .listSync(recursive: true)
+          .whereType<File>()
+          .where((f) => f.path.endsWith('.dart'))) {
         // 折成单行再匹配:真实写法是 .from('works')\n  .insert(...) 跨行的。
-        final flat = _codeOnly(
-          f.readAsStringSync(),
-        ).replaceAll(RegExp(r'\s+'), '');
+        final flat = _codeOnly(f.readAsStringSync()).replaceAll(RegExp(r'\s+'), '');
         if (flat.contains(".from('works').insert(")) {
           offenders.add(f.path);
         }
@@ -58,16 +54,14 @@ void main() {
       expect(
         offenders,
         isEmpty,
-        reason:
-            'works 行只能由 upload-finalize(service_role)创建。'
+        reason: 'works 行只能由 upload-finalize(service_role)创建。'
             '这些文件在直接 INSERT:$offenders',
       );
     });
 
     test('upload-finalize 显式写入 under_review —— 漏写就是默认放行', () {
-      final src = File(
-        'supabase/functions/upload-finalize/index.ts',
-      ).readAsStringSync();
+      final src =
+          File('supabase/functions/upload-finalize/index.ts').readAsStringSync();
       // moderation_status 的 DB default 是 'ok'(20260817000000)。
       // 建行时不显式写 under_review,新作品就直接可见 —— 静默的安全洞。
       expect(
@@ -78,21 +72,18 @@ void main() {
       expect(
         src.contains('published_at: null'),
         isTrue,
-        reason:
-            'published_at 必须留空,否则作者自己的 feed 会看到待审作品'
+        reason: 'published_at 必须留空,否则作者自己的 feed 会看到待审作品'
             '(feed 查询靠 .not(published_at, is, null) 过滤)',
       );
     });
 
     test('upload-finalize 显式查 kill switch —— service_role 绕过 RLS', () {
-      final src = File(
-        'supabase/functions/upload-finalize/index.ts',
-      ).readAsStringSync();
+      final src =
+          File('supabase/functions/upload-finalize/index.ts').readAsStringSync();
       expect(
         src.contains("rpc('uploads_enabled')"),
         isTrue,
-        reason:
-            'kill_switch_works_write 是 for insert to authenticated,'
+        reason: 'kill_switch_works_write 是 for insert to authenticated,'
             '收口后 INSERT 由 service_role 执行会绕过它。'
             '不显式查开关,等于把运营手里的刹车拆了。',
       );

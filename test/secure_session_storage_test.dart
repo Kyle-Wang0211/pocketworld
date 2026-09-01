@@ -29,13 +29,12 @@ void main() {
   });
 
   test('key 只取 host 的第一段(不含 .supabase.co)', () {
-    expect(
-      supabaseSessionKeyFor('https://abcdefgh.supabase.co'),
-      'sb-abcdefgh-auth-token',
-    );
+    expect(supabaseSessionKeyFor('https://abcdefgh.supabase.co'),
+        'sb-abcdefgh-auth-token');
   });
 
-  test('迁移:明文 SharedPreferences 里的 session 被搬进安全存储,且旧值清掉', () async {
+  test('迁移:明文 SharedPreferences 里的 session 被搬进安全存储,且旧值清掉',
+      () async {
     SharedPreferences.setMockInitialValues({expectedKey: fakeSession});
 
     final storage = SecureSessionStorage(supabaseUrl: url);
@@ -47,7 +46,8 @@ void main() {
 
     // 旧的明文值必须已被清除,否则令牌仍留在会进备份的地方。
     final prefs = await SharedPreferences.getInstance();
-    expect(prefs.getString(expectedKey), isNull, reason: '迁移后明文副本必须删除,否则等于没修');
+    expect(prefs.getString(expectedKey), isNull,
+        reason: '迁移后明文副本必须删除,否则等于没修');
   });
 
   test('迁移是幂等的:安全存储已有值时不覆盖、也不再读明文', () async {

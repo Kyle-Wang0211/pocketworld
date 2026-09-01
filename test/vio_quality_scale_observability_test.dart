@@ -243,7 +243,11 @@ void main() {
         bandLimitToPoseRate: false,
       );
       final raw = _run(config: noBand, accelZ: vib);
-      expect(raw.excitationOk, isTrue, reason: '证明带限就是把带外振动挡下来的那一件东西');
+      expect(
+        raw.excitationOk,
+        isTrue,
+        reason: '证明带限就是把带外振动挡下来的那一件东西',
+      );
       expect(raw.verdict, ScaleObservabilityVerdict.sufficient);
     });
   });
@@ -255,7 +259,13 @@ void main() {
       for (var i = 0; i < n; i++) {
         final t = i / kPoseHz;
         final a = 2 * math.pi * i / n;
-        est.addPose(t, math.cos(a), math.sin(a), 0.0, medianLandmarkDepth: 5.0);
+        est.addPose(
+          t,
+          math.cos(a),
+          math.sin(a),
+          0.0,
+          medianLandmarkDepth: 5.0,
+        );
       }
       for (var i = 0; i < 600; i++) {
         est.addLinearAccel(i / kImuHz, 0, 0, 0);
@@ -358,10 +368,7 @@ void main() {
       final r = led.report();
       expect(led.observedSamples, n, reason: '喂进去多少条就记多少条,一条不少');
       // 区间是注释:总时长必须精确等于会话跨度,不许有"被删掉的洞"。
-      final covered = r.intervals.fold<double>(
-        0,
-        (a, iv) => a + iv.durationSec,
-      );
+      final covered = r.intervals.fold<double>(0, (a, iv) => a + iv.durationSec);
       expect(covered, closeTo((n - 1) / 30.0, 1e-9));
       expect(r.totalSeconds, closeTo((n - 1) / 30.0, 1e-9));
     });

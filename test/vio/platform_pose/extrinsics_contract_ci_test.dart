@@ -35,10 +35,8 @@ Directory _locateXrslamRoot() {
   if (env != null && env.isNotEmpty) {
     final d = Directory(env);
     if (!d.existsSync()) {
-      throw StateError(
-        'XRSLAM_ROOT is set to "$env" but that path does not '
-        'exist; refusing to silently fall back',
-      );
+      throw StateError('XRSLAM_ROOT is set to "$env" but that path does not '
+          'exist; refusing to silently fall back');
     }
     return d;
   }
@@ -97,10 +95,8 @@ void main() {
 
     // 非空转的**可见**证据:把实际扫到的东西打进日志。
     // ignore: avoid_print
-    print(
-      '[extrinsics-contract] root=${root.resolveSymbolicLinksSync()} '
-      'slamYamls=${yamls.length} ${(yamls.keys.toList()..sort())}',
-    );
+    print('[extrinsics-contract] root=${root.resolveSymbolicLinksSync()} '
+        'slamYamls=${yamls.length} ${(yamls.keys.toList()..sort())}');
 
     final result = auditExtrinsicsSingleApplication(
       slamYamlSources: yamls,

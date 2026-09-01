@@ -19,17 +19,10 @@ final _mzExe = _bytes([0x4D, 0x5A, 0x90, 0x00, 0, 0, 0, 0]); // Windows PE
 
 void main() {
   group('正确识别各格式', () {
-    test(
-      'PLY',
-      () => expect(
-        detectAssetKind(_ascii('ply\nformat ascii 1.0')),
-        AssetKind.ply,
-      ),
-    );
-    test(
-      'GLB',
-      () => expect(detectAssetKind(_ascii('glTF', pad: 8)), AssetKind.glb),
-    );
+    test('PLY', () => expect(detectAssetKind(_ascii('ply\nformat ascii 1.0')),
+        AssetKind.ply));
+    test('GLB', () => expect(detectAssetKind(_ascii('glTF', pad: 8)),
+        AssetKind.glb));
     test('JPEG', () => expect(detectAssetKind(_jpeg), AssetKind.jpeg));
     test('PNG', () => expect(detectAssetKind(_png), AssetKind.png));
   });
@@ -37,10 +30,7 @@ void main() {
   group('不认识的内容一律返回 null(默认拒绝)', () {
     test('Linux 可执行体', () => expect(detectAssetKind(_elf), isNull));
     test('Windows PE', () => expect(detectAssetKind(_mzExe), isNull));
-    test(
-      'HTML',
-      () => expect(detectAssetKind(_ascii('<html><script>')), isNull),
-    );
+    test('HTML', () => expect(detectAssetKind(_ascii('<html><script>')), isNull));
     test('空内容', () => expect(detectAssetKind(_bytes([])), isNull));
     test('短于任何签名', () => expect(detectAssetKind(_bytes([0xFF])), isNull));
   });
@@ -56,19 +46,14 @@ void main() {
 
     test('HTML 伪装成 .jpg 被识破(XSS/钓鱼向量)', () {
       expect(
-        matchesDeclaredExtension(
-          _ascii('<html><script>x</script>'),
-          'uid/w.jpg',
-        ),
-        isFalse,
-      );
+          matchesDeclaredExtension(_ascii('<html><script>x</script>'),
+              'uid/w.jpg'),
+          isFalse);
     });
 
     test('名副其实的文件通过', () {
-      expect(
-        matchesDeclaredExtension(_ascii('ply\nformat'), 'uid/h.ply'),
-        isTrue,
-      );
+      expect(matchesDeclaredExtension(_ascii('ply\nformat'), 'uid/h.ply'),
+          isTrue);
       expect(matchesDeclaredExtension(_jpeg, 'uid/w.jpeg'), isTrue);
       expect(matchesDeclaredExtension(_png, 'uid/w.png'), isTrue);
     });

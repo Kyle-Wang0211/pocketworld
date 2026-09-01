@@ -28,31 +28,27 @@ void main() {
   );
 
   FeedWork work({String? handle}) => FeedWork(
-    id: 'w1',
-    userId: 'u1',
-    title: '未命名(1)',
-    description: null,
-    format: 'ply',
-    modelStoragePath: null,
-    fileSizeBytes: null,
-    thumbnailStoragePath: null,
-    likesCount: 0,
-    viewsCount: 0,
-    publishedAt: DateTime.utc(2026, 8, 21),
-    authorDisplayName: '张三',
-    authorAvatarUrl: null,
-    likedByMe: false,
-    authorHandle: handle,
-  );
+        id: 'w1',
+        userId: 'u1',
+        title: '未命名(1)',
+        description: null,
+        format: 'ply',
+        modelStoragePath: null,
+        fileSizeBytes: null,
+        thumbnailStoragePath: null,
+        likesCount: 0,
+        viewsCount: 0,
+        publishedAt: DateTime.utc(2026, 8, 21),
+        authorDisplayName: '张三',
+        authorAvatarUrl: null,
+        likedByMe: false,
+        authorHandle: handle,
+      );
 
   Future<void> pump(WidgetTester t, FeedWork w) async {
-    await t.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: WorkCard(work: w, service: service, onTap: () {}),
-        ),
-      ),
-    );
+    await t.pumpWidget(MaterialApp(
+      home: Scaffold(body: WorkCard(work: w, service: service, onTap: () {})),
+    ));
     await t.pump();
   }
 
@@ -73,8 +69,7 @@ void main() {
     expect(
       line.contains('张三'),
       isFalse,
-      reason:
-          '同时显示昵称与 ID 会让用户不知道哪个是唯一的;'
+      reason: '同时显示昵称与 ID 会让用户不知道哪个是唯一的;'
           '有 ID 时以 ID 为准',
     );
   });
@@ -86,8 +81,7 @@ void main() {
     expect(
       line.contains('@'),
       isFalse,
-      reason:
-          '@ 跟着可重复的昵称,是在宣称一个不存在的唯一性。'
+      reason: '@ 跟着可重复的昵称,是在宣称一个不存在的唯一性。'
           '没有 ID 就诚实地不显示 @',
     );
   });

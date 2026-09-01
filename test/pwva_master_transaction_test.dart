@@ -52,9 +52,8 @@ void main() {
   Future<void> buildCapture() async {
     for (var i = 0; i < _frames; i++) {
       _writeTestJpeg('${highresDir.path}/${names[i]}', i);
-      await File(
-        '${highresDir.path}/official_tap-$i.json',
-      ).writeAsString(jsonEncode({'t': i * 0.3, 'image_w': _w, 'image_h': _h}));
+      await File('${highresDir.path}/official_tap-$i.json')
+          .writeAsString(jsonEncode({'t': i * 0.3, 'image_w': _w, 'image_h': _h}));
     }
     await File('${captureDir.path}/official_photo_bundle.json').writeAsString(
       jsonEncode({
@@ -66,27 +65,20 @@ void main() {
       }),
     );
     // P1.1 同构:批量转码 + 逐帧源 sha + finalize + report。
-    final encoder = AppleHevcEncoder(
-      width: _w,
-      height: _h,
-      gop: 8,
-      quality: 0.65,
-    );
-    final writer = PwvaWriter(encoder, hevcDir, width: _w, height: _h, gop: 8);
+    final encoder =
+        AppleHevcEncoder(width: _w, height: _h, gop: 8, quality: 0.65);
+    final writer =
+        PwvaWriter(encoder, hevcDir, width: _w, height: _h, gop: 8);
     for (var i = 0; i < _frames; i++) {
       final path = '${highresDir.path}/${names[i]}';
       final sha = sha256.convert(File(path).readAsBytesSync()).toString();
-      final encoded = encoder.encodeJpegFile(
-        path,
-        ptsMs: i * 300,
-        durationMs: 300,
-      );
+      final encoded =
+          encoder.encodeJpegFile(path, ptsMs: i * 300, durationMs: 300);
       writer.addEncodedFrame(encoded, source: names[i], sourceSha256: sha);
     }
     await writer.finalize(captureId: 'cap_test', extra: 'test');
-    await File(
-      '${hevcDir.path}/archive-report.json',
-    ).writeAsString(jsonEncode({'status': 'finalized', 'frames': _frames}));
+    await File('${hevcDir.path}/archive-report.json')
+        .writeAsString(jsonEncode({'status': 'finalized', 'frames': _frames}));
   }
 
   setUp(() async {
@@ -103,9 +95,8 @@ void main() {
   });
 
   test('全验证通过才接管:删策展 JPEG,留 sidecar,写 master-manifest', () async {
-    final result = await const PwvaMasterTransaction().masterCapture(
-      captureDir,
-    );
+    final result =
+        await const PwvaMasterTransaction().masterCapture(captureDir);
     expect(result.applicable, isTrue);
     expect(result.masteredNames, names);
     expect(result.failedNames, isEmpty);
@@ -113,11 +104,9 @@ void main() {
     for (final n in names) {
       expect(File('${highresDir.path}/$n').existsSync(), isFalse);
       expect(
-        File(
-          '${highresDir.path}/${n.replaceAll('.jpg', '.json')}',
-        ).existsSync(),
-        isTrue,
-      );
+          File('${highresDir.path}/${n.replaceAll('.jpg', '.json')}')
+              .existsSync(),
+          isTrue);
     }
     final master = await PwvaMasterManifest.read(captureDir);
     expect(master, isNotNull);
@@ -126,13 +115,10 @@ void main() {
 
   test('任一源 JPEG 被篡改 → 不适用,一个字节不删', () async {
     final victim = File('${highresDir.path}/${names[5]}');
-    await victim.writeAsBytes([
-      ...await victim.readAsBytes(),
-      0x00,
-    ], flush: true);
-    final result = await const PwvaMasterTransaction().masterCapture(
-      captureDir,
-    );
+    await victim.writeAsBytes(
+        [...await victim.readAsBytes(), 0x00], flush: true);
+    final result =
+        await const PwvaMasterTransaction().masterCapture(captureDir);
     expect(result.applicable, isFalse);
     for (final n in names) {
       expect(File('${highresDir.path}/$n').existsSync(), isTrue);
@@ -145,9 +131,8 @@ void main() {
     final bytes = await stream.readAsBytes();
     bytes[bytes.length ~/ 2] ^= 0xff;
     await stream.writeAsBytes(bytes, flush: true);
-    final result = await const PwvaMasterTransaction().masterCapture(
-      captureDir,
-    );
+    final result =
+        await const PwvaMasterTransaction().masterCapture(captureDir);
     expect(result.applicable, isFalse);
     for (final n in names) {
       expect(File('${highresDir.path}/$n').existsSync(), isTrue);
@@ -159,7 +144,8 @@ void main() {
     // 模拟"删到一半崩了":重建两个源(字节与 manifest 记录一致)。
     _writeTestJpeg('${highresDir.path}/${names[0]}', 0);
     _writeTestJpeg('${highresDir.path}/${names[1]}', 1);
-    final again = await const PwvaMasterTransaction().masterCapture(captureDir);
+    final again =
+        await const PwvaMasterTransaction().masterCapture(captureDir);
     expect(again.applicable, isTrue);
     expect(again.failedNames, isEmpty);
     expect(File('${highresDir.path}/${names[0]}').existsSync(), isFalse);
@@ -170,7 +156,8 @@ void main() {
     await const PwvaMasterTransaction().masterCapture(captureDir);
     final rogue = File('${highresDir.path}/${names[3]}');
     await rogue.writeAsBytes([1, 2, 3], flush: true);
-    final again = await const PwvaMasterTransaction().masterCapture(captureDir);
+    final again =
+        await const PwvaMasterTransaction().masterCapture(captureDir);
     expect(again.failedNames, [names[3]]);
     expect(rogue.existsSync(), isTrue);
   });
@@ -206,16 +193,14 @@ class _NeverCodec implements PhotoArchiveCodec {
   bool get isSupported => false;
 
   @override
-  Future<void> encodeJpeg({
-    required File sourceJpeg,
-    required File destinationJxl,
-  }) => throw UnsupportedError('not used');
+  Future<void> encodeJpeg(
+          {required File sourceJpeg, required File destinationJxl}) =>
+      throw UnsupportedError('not used');
 
   @override
-  Future<void> reconstructJpeg({
-    required File sourceJxl,
-    required File destinationJpeg,
-  }) => throw UnsupportedError('not used');
+  Future<void> reconstructJpeg(
+          {required File sourceJxl, required File destinationJpeg}) =>
+      throw UnsupportedError('not used');
 
   @override
   void requestCancellation() {}

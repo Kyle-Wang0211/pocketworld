@@ -36,69 +36,67 @@ void main() {
   );
 
   FeedWork work(String id) => FeedWork(
-    id: id,
-    userId: 'u1',
-    title: '未命名($id)',
-    description: null,
-    format: 'glb',
-    modelStoragePath: null,
-    fileSizeBytes: null,
-    thumbnailStoragePath: null, // 无图 ⇒ contentReady 立刻为真
-    likesCount: 0,
-    viewsCount: 0,
-    publishedAt: DateTime.utc(2026, 8, 21),
-    authorDisplayName: 'kyle',
-    authorHandle: 'kyle',
-    authorAvatarUrl: null,
-    likedByMe: false,
-  );
+        id: id,
+        userId: 'u1',
+        title: '未命名($id)',
+        description: null,
+        format: 'glb',
+        modelStoragePath: null,
+        fileSizeBytes: null,
+        thumbnailStoragePath: null, // 无图 ⇒ contentReady 立刻为真
+        likesCount: 0,
+        viewsCount: 0,
+        publishedAt: DateTime.utc(2026, 8, 21),
+        authorDisplayName: 'kyle',
+        authorHandle: 'kyle',
+        authorAvatarUrl: null,
+        likedByMe: false,
+      );
 
   group('揭幕权归页面', () {
     testWidgets('内容早就好了,但 revealed=false ⇒ 幕布仍然盖着', (t) async {
-      await t.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: WorkCard(
-              work: work('a'),
-              service: service,
-              onTap: () {},
-              revealed: false,
-            ),
+      await t.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: WorkCard(
+            work: work('a'),
+            service: service,
+            onTap: () {},
+            revealed: false,
           ),
         ),
-      );
+      ));
       await t.pump(const Duration(milliseconds: 32));
 
-      expect(curtainOpacity(t), 1.0, reason: '自己好了也要等同批的其他卡 —— 否则又变成各揭各的');
+      expect(
+        curtainOpacity(t),
+        1.0,
+        reason: '自己好了也要等同批的其他卡 —— 否则又变成各揭各的',
+      );
     });
 
     testWidgets('revealed=true ⇒ 揭幕', (t) async {
-      await t.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: WorkCard(work: work('a'), service: service, onTap: () {}),
-          ),
+      await t.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: WorkCard(work: work('a'), service: service, onTap: () {}),
         ),
-      );
+      ));
       await t.pump(const Duration(milliseconds: 32));
       expect(curtainOpacity(t), 0.0);
     });
 
     testWidgets('内容就绪要上报给页面,且只报一次', (t) async {
       var n = 0;
-      await t.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: WorkCard(
-              work: work('a'),
-              service: service,
-              onTap: () {},
-              revealed: false,
-              onContentReady: () => n++,
-            ),
+      await t.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: WorkCard(
+            work: work('a'),
+            service: service,
+            onTap: () {},
+            revealed: false,
+            onContentReady: () => n++,
           ),
         ),
-      );
+      ));
       for (var i = 0; i < 5; i++) {
         await t.pump(const Duration(milliseconds: 32));
       }
@@ -108,23 +106,23 @@ void main() {
 
   group('置顶栏与作品卡同宽 —— 量出来,不靠看截图', () {
     testWidgets('两者在同一 ListView 同一 padding 下宽度逐像素相同', (t) async {
-      await t.pumpWidget(
-        MaterialApp(
-          locale: const Locale('zh'),
-          // 生成物自带的这一份**含 Cupertino delegate** —— 手写三件套会漏它。
-          localizationsDelegates: AppL10n.localizationsDelegates,
-          supportedLocales: AppL10n.supportedLocales,
-          home: Scaffold(
-            body: ListView(
-              padding: const EdgeInsets.symmetric(horizontal: AetherSpacing.lg),
-              children: [
-                const TopicCard(),
-                WorkCard(work: work('a'), service: service, onTap: () {}),
-              ],
+      await t.pumpWidget(MaterialApp(
+        locale: const Locale('zh'),
+        // 生成物自带的这一份**含 Cupertino delegate** —— 手写三件套会漏它。
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
+        home: Scaffold(
+          body: ListView(
+            padding: const EdgeInsets.symmetric(
+              horizontal: AetherSpacing.lg,
             ),
+            children: [
+              const TopicCard(),
+              WorkCard(work: work('a'), service: service, onTap: () {}),
+            ],
           ),
         ),
-      );
+      ));
       await t.pump(const Duration(milliseconds: 32));
 
       final topic = t.getSize(find.byType(TopicCard)).width;
@@ -134,8 +132,7 @@ void main() {
       expect(
         topic,
         card,
-        reason:
-            'D5 签决就是"与作品卡同宽同层"。两者拿的是同一份约束,'
+        reason: 'D5 签决就是"与作品卡同宽同层"。两者拿的是同一份约束,'
             '看起来窄是别的原因(圆角/描边/填充对比度),不是宽度',
       );
     });
@@ -150,18 +147,12 @@ void main() {
         contains('? TopicCard(autoPlay: _governor.liveAllowed)'),
         reason: '自动翻页是叠在 live viewer 之上的第二个常驻 ticker,必须接热闸',
       );
-      expect(
-        code,
-        contains('_SkeletonTopicCard(animate: _governor.liveAllowed)'),
-      );
+      expect(code, contains('_SkeletonTopicCard(animate: _governor.liveAllowed)'));
     });
 
     test('作品卡接上 revealed / onContentReady', () {
       expect(code, contains('revealed: _revealed,'));
-      expect(
-        code,
-        contains('onContentReady: () => _revealGate.markReady(w.id),'),
-      );
+      expect(code, contains('onContentReady: () => _revealGate.markReady(w.id),'));
     });
 
     // [2026-08-24] 超时兜底与"同一组不重定"两条**不在这里测**。

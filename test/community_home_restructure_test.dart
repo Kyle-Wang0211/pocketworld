@@ -72,10 +72,7 @@ void main() {
     test('D5:做成流内第一张卡,靠下标偏移,不换 CustomScrollView', () {
       // 注:偏移条件后来从 kShowCommunityTopicCard 换成 _showTopicCard ——
       // 因为主题卡还要与 D7 的作者过滤联动(过滤时隐藏)。
-      expect(
-        code,
-        contains('itemCount: works.length + (_showTopicCard ? 1 : 0)'),
-      );
+      expect(code, contains('itemCount: works.length + (_showTopicCard ? 1 : 0)'));
       expect(code, contains('if (_showTopicCard && rawIndex == 0)'));
       expect(code, contains('final i = rawIndex - (_showTopicCard ? 1 : 0);'));
       expect(
@@ -97,16 +94,14 @@ void main() {
 
   group('§5 主题卡渲染', () {
     Future<void> pump(WidgetTester t, Locale locale) async {
-      await t.pumpWidget(
-        MaterialApp(
-          locale: locale,
-          // 生成物自带的这一份**含 Cupertino delegate**;手写三件套会漏它,
-          // zh 下报 "A CupertinoLocalizations delegate ... was not found"。
-          localizationsDelegates: AppL10n.localizationsDelegates,
-          supportedLocales: AppL10n.supportedLocales,
-          home: const Scaffold(body: TopicCard()),
-        ),
-      );
+      await t.pumpWidget(MaterialApp(
+        locale: locale,
+        // 生成物自带的这一份**含 Cupertino delegate**;手写三件套会漏它,
+        // zh 下报 "A CupertinoLocalizations delegate ... was not found"。
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
+        home: const Scaffold(body: TopicCard()),
+      ));
       await t.pumpAndSettle();
     }
 
@@ -130,20 +125,13 @@ void main() {
     test('D4:不引入任何骨架屏包', () {
       // shimmer 判死的理由与 Flutter 版本无关:issue #64「40-60% CPU /
       // iOS 过热」开了三年未关,正对本项目的热软肋。
-      for (final pkg in [
-        'shimmer',
-        'skeletonizer',
-        'skeleton_loader',
-        'skeletons',
-      ]) {
+      for (final pkg in ['shimmer', 'skeletonizer', 'skeleton_loader', 'skeletons']) {
         expect(pubspec, isNot(contains('\n  $pkg:')), reason: '不该引入 $pkg');
       }
     });
 
     test('抄了 splash_overlay 的坑:不可见时必须 stop,不是转着看不见', () {
-      final sk = File(
-        'lib/ui/community/skeleton_shimmer.dart',
-      ).readAsStringSync();
+      final sk = File('lib/ui/community/skeleton_shimmer.dart').readAsStringSync();
       expect(sk, contains('_c.stop()'));
       // animate=false 时不能还挂着 AnimatedBuilder —— 那就是持续重绘。
       expect(sk, contains('if (!widget.animate)'));
@@ -161,17 +149,17 @@ void main() {
         contains('animate: widget.rotationAllowed'),
         reason: '骨架幕布必须受热闸管 —— 一屏多个骨架卡是真实发热面',
       );
-      expect(card, contains('SkeletonWorkCard('), reason: '幕布本体');
+      expect(
+        card,
+        contains('SkeletonWorkCard('),
+        reason: '幕布本体',
+      );
     });
 
     testWidgets('animate=false → 静态,不挂 AnimatedBuilder', (t) async {
-      await t.pumpWidget(
-        const MaterialApp(
-          home: Scaffold(
-            body: SkeletonBox(animate: false, width: 40, height: 8),
-          ),
-        ),
-      );
+      await t.pumpWidget(const MaterialApp(
+        home: Scaffold(body: SkeletonBox(animate: false, width: 40, height: 8)),
+      ));
       // ⚠️ 不能用裸的 find.byType(AnimatedBuilder) —— MaterialApp 自己内部就有
       // 一个(listenable: ValueNotifier<String?>),会误报。只在 SkeletonBox
       // 的子树里找。
@@ -185,11 +173,9 @@ void main() {
     });
 
     testWidgets('animate=true → 挂 AnimatedBuilder', (t) async {
-      await t.pumpWidget(
-        const MaterialApp(
-          home: Scaffold(body: SkeletonBox(width: 40, height: 8)),
-        ),
-      );
+      await t.pumpWidget(const MaterialApp(
+        home: Scaffold(body: SkeletonBox(width: 40, height: 8)),
+      ));
       expect(
         find.descendant(
           of: find.byType(SkeletonBox),
@@ -214,14 +200,8 @@ void main() {
       expect(code, contains('void _onAuthorTap(FeedWork work)'));
       expect(code, contains('_authorFilterId = work.userId'));
       // 明确不做的东西,一样都不许冒出来
-      for (final forbidden in [
-        'ProfilePage',
-        'FollowButton',
-        'followersCount',
-        'followingCount',
-        'avatarUrl:',
-        'bio',
-      ]) {
+      for (final forbidden in ['ProfilePage', 'FollowButton', 'followersCount',
+                               'followingCount', 'avatarUrl:', 'bio']) {
         expect(code, isNot(contains(forbidden)), reason: 'D7 明确不做:$forbidden');
       }
     });
@@ -231,10 +211,7 @@ void main() {
     });
 
     test('过滤生效时主题卡隐藏 —— 策展卡在"只看某人"里没有意义', () {
-      expect(
-        code,
-        contains('kShowCommunityTopicCard && _authorFilterId == null'),
-      );
+      expect(code, contains('kShowCommunityTopicCard && _authorFilterId == null'));
     });
   });
 }

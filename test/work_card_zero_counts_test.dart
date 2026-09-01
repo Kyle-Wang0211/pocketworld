@@ -32,30 +32,28 @@ void main() {
   );
 
   FeedWork work({required int likes, required int views}) => FeedWork(
-    id: 'w1',
-    userId: 'u1',
-    title: '未命名(1)',
-    description: null,
-    format: 'ply',
-    modelStoragePath: null,
-    fileSizeBytes: null,
-    thumbnailStoragePath: null,
-    likesCount: likes,
-    viewsCount: views,
-    publishedAt: DateTime.utc(2026, 8, 21),
-    authorDisplayName: 'kyle',
-    authorAvatarUrl: null,
-    likedByMe: false,
-  );
+        id: 'w1',
+        userId: 'u1',
+        title: '未命名(1)',
+        description: null,
+        format: 'ply',
+        modelStoragePath: null,
+        fileSizeBytes: null,
+        thumbnailStoragePath: null,
+        likesCount: likes,
+        viewsCount: views,
+        publishedAt: DateTime.utc(2026, 8, 21),
+        authorDisplayName: 'kyle',
+        authorAvatarUrl: null,
+        likedByMe: false,
+      );
 
   Future<void> pump(WidgetTester t, FeedWork w) async {
-    await t.pumpWidget(
-      MaterialApp(
-        home: Scaffold(
-          body: WorkCard(work: w, service: service, onTap: () {}),
-        ),
+    await t.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: WorkCard(work: w, service: service, onTap: () {}),
       ),
-    );
+    ));
     await t.pump();
   }
 

@@ -38,8 +38,7 @@ void main() {
         expect(
           c.computeLuminance(),
           greaterThan(0.5),
-          reason:
-              '$name 必须是浅灰 —— 深色值是从深色启动页误抄过来的,'
+          reason: '$name 必须是浅灰 —— 深色值是从深色启动页误抄过来的,'
               '在 ${bg.toARGB32().toRadixString(16)} 的页面上会变成黑板',
         );
       }
@@ -47,15 +46,22 @@ void main() {
 
     test('骨架与页面底色可分辨 —— 否则它就"消失"在页面里', () {
       final c = contrast(kSkeletonBase, AetherColors.bg);
-      expect(c, greaterThan(1.05), reason: '基色与页面底色至少要有一点对比,不然看不出这里有块占位');
-      expect(c, lessThan(3.0), reason: '骨架不是内容,对比度过高会喧宾夺主');
+      expect(
+        c,
+        greaterThan(1.05),
+        reason: '基色与页面底色至少要有一点对比,不然看不出这里有块占位',
+      );
+      expect(
+        c,
+        lessThan(3.0),
+        reason: '骨架不是内容,对比度过高会喧宾夺主',
+      );
     });
 
     test('呼吸的幅度要看得出来 —— 阈值由两次真机判决钉死', () {
-      final d =
-          (kSkeletonHighlight.computeLuminance() -
-                  kSkeletonBase.computeLuminance())
-              .abs();
+      final d = (kSkeletonHighlight.computeLuminance() -
+              kSkeletonBase.computeLuminance())
+          .abs();
       // 这个 0.20 不是我拍的,是两次真机判决夹出来的:
       //   · #1B1B1F → #26262B   Δ≈0.004  用户:「完全黑屏」
       //   · #E4E4E4 → #FAFAFA   Δ≈0.165  用户:「灰色,没有任何呼吸闪烁」
@@ -64,7 +70,11 @@ void main() {
       //   · #CCCCCC → #F3F3F2   Δ≈0.30   当前值
       // 门槛必须落在 0.165 与 0.30 之间,否则第二次那版会重新溜过去 ——
       // 我第一版写的 0.03 就正是这么漏的。
-      expect(d, greaterThan(0.20), reason: '真机实测:Δ=0.165 时用户报「没有任何呼吸闪烁」');
+      expect(
+        d,
+        greaterThan(0.20),
+        reason: '真机实测:Δ=0.165 时用户报「没有任何呼吸闪烁」',
+      );
     });
   });
 

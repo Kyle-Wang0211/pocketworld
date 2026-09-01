@@ -78,9 +78,7 @@ void main() {
     // (删光 gate 只留注释照样绿),一律不用。
     expect(
       source,
-      contains(
-        'int aether_sfm_live_repay(aether_sfm_session_t* s, int max_pairs) {',
-      ),
+      contains('int aether_sfm_live_repay(aether_sfm_session_t* s, int max_pairs) {'),
     );
     // 次序:官方 quadratic 仍然先试,有产出就直接返回,不落到自研腿。
     expect(
@@ -95,24 +93,12 @@ void main() {
     expect(source, contains('std::getenv("OFFICIAL_AETHER_IDLE_PREPAY")'));
     // 二号闸:STARVED-ALWAYS 可回滚,且热档仍能叫停。
     expect(source, contains('std::getenv("OFFICIAL_AETHER_STARVED_ALWAYS")'));
-    expect(
-      source,
-      contains('std::getenv("OFFICIAL_AETHER_STARVED_THERMAL_STOP")'),
-    );
+    expect(source, contains('std::getenv("OFFICIAL_AETHER_STARVED_THERMAL_STOP")'));
     // 三号闸:当场长云可回滚;merge / obs 两条腿必须保持默认关
     // (cap201 实测 merge 开启交付点 −1.54%)。
-    expect(
-      source,
-      contains('std::getenv("OFFICIAL_AETHER_PROBE_DEBT_GROW_LIVE")'),
-    );
-    expect(
-      source,
-      contains('std::getenv("OFFICIAL_AETHER_PROBE_DEBT_GROW_MERGE")'),
-    );
-    expect(
-      source,
-      contains('std::getenv("OFFICIAL_AETHER_PROBE_DEBT_GROW_OBS")'),
-    );
+    expect(source, contains('std::getenv("OFFICIAL_AETHER_PROBE_DEBT_GROW_LIVE")'));
+    expect(source, contains('std::getenv("OFFICIAL_AETHER_PROBE_DEBT_GROW_MERGE")'));
+    expect(source, contains('std::getenv("OFFICIAL_AETHER_PROBE_DEBT_GROW_OBS")'));
     // 交付面:改写 live_recon 的入口 = 1 处定义 + 3 处调用。多出第四处 ⇒ 红。
     expect(
       RegExp(r'GrowLiveTracksFromTvgInliers\(\n').allMatches(source).length,

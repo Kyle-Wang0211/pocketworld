@@ -103,10 +103,10 @@ void main() {
       final two = encodeAuxContainer(<AuxContainerEntry>[b, a]);
       expect(one, two, reason: '同一批文件必须生成逐字节相同的容器');
       final decoded = decodeAuxContainer(one);
-      expect(decoded.map((e) => e.relativePath), <String>[
-        'a/first.json',
-        'b/second.json',
-      ]);
+      expect(
+        decoded.map((e) => e.relativePath),
+        <String>['a/first.json', 'b/second.json'],
+      );
       expect(decoded[1].bytes, a.bytes);
     });
 
@@ -124,12 +124,13 @@ void main() {
       final badMagic = Uint8List.fromList(good)..[0] = 0;
       expect(() => decodeAuxContainer(badMagic), throwsA(isA<Exception>()));
       expect(
-        () =>
-            decodeAuxContainer(Uint8List.sublistView(good, 0, good.length - 1)),
+        () => decodeAuxContainer(Uint8List.sublistView(good, 0, good.length - 1)),
         throwsA(isA<Exception>()),
       );
       expect(
-        () => decodeAuxContainer(Uint8List.fromList(<int>[...good, 0])),
+        () => decodeAuxContainer(
+          Uint8List.fromList(<int>[...good, 0]),
+        ),
         throwsA(isA<Exception>()),
       );
     });
@@ -159,14 +160,14 @@ void main() {
       // 清单里的逐文件摘要必须等于归档前的真实摘要。
       for (final file in bundle.files) {
         final original = before.entries
-            .firstWhere(
-              (e) => e.key.endsWith(file.relativePath.split('/').last),
-            )
+            .firstWhere((e) => e.key.endsWith(file.relativePath.split('/').last))
             .value;
         expect(file.sha256, original);
       }
       expect(
-        await File('${captureDir.path}/$kAuxSidecarArchiveFileName').exists(),
+        await File(
+          '${captureDir.path}/$kAuxSidecarArchiveFileName',
+        ).exists(),
         isTrue,
       );
     });

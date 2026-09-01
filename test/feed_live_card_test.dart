@@ -19,6 +19,7 @@ import 'package:pocketworld_flutter/ui/community/card_live_governor.dart';
 import 'package:pocketworld_flutter/ui/official_capture/sparse_cloud_view.dart';
 import 'package:pocketworld_flutter/ui/official_capture/auto_rotating_cloud_view.dart';
 
+
 void main() {
   group('闸 4 — thermalState 滞回', () {
     test('nominal / fair 不停转', () {
@@ -101,16 +102,12 @@ void main() {
       expect(g.liveAllowed, isTrue);
       g.didHaveMemoryPressure();
       expect(g.liveAllowed, isTrue, reason: '内存告警不该停自转');
-      expect(
-        CardViewerRegistry.cap,
-        capBefore,
-        reason: 'cap 被动了 —— 收紧到小于可见卡数就是在制造 mount/evict 循环',
-      );
+      expect(CardViewerRegistry.cap, capBefore,
+          reason: 'cap 被动了 —— 收紧到小于可见卡数就是在制造 mount/evict 循环');
       expect(CardViewerRegistry.cap, CardViewerRegistry.normalCap);
       // 走完去重退避,免得留 pending timer。
-      await tester.pump(
-        CardLiveGovernor.memoryBackoff + const Duration(seconds: 1),
-      );
+      await tester.pump(CardLiveGovernor.memoryBackoff +
+          const Duration(seconds: 1));
     });
 
     test('实例上限:要装得下滚动范围内的整个 feed,让 3D 持久存在', () {
@@ -124,11 +121,8 @@ void main() {
       // 真相:evict 之后 GPU 资源不立即回收,**卸载-重载循环本身就是内存增长
       // 的来源**。卡片一直挂着反而是稳态开销。所以要大到装得下用户滚动范围
       // 内的全部卡片。
-      expect(
-        CardViewerRegistry.normalCap,
-        greaterThanOrEqualTo(5),
-        reason: '小于 feed 卡片数 ⇒ 同一张卡被反复加载,内存只会更高',
-      );
+      expect(CardViewerRegistry.normalCap, greaterThanOrEqualTo(5),
+          reason: '小于 feed 卡片数 ⇒ 同一张卡被反复加载,内存只会更高');
     });
 
     test('releaseAll:进详情页时清空,计数归零', () {
@@ -137,11 +131,8 @@ void main() {
       }
       expect(CardViewerRegistry.aliveCount, greaterThan(0));
       CardViewerRegistry.releaseAll('测试');
-      expect(
-        CardViewerRegistry.aliveCount,
-        0,
-        reason: '详情页开全质量 viewer 时,feed 这两份必须先放掉',
-      );
+      expect(CardViewerRegistry.aliveCount, 0,
+          reason: '详情页开全质量 viewer 时,feed 这两份必须先放掉');
     });
 
     test('后台不转', () {
@@ -186,25 +177,23 @@ void main() {
     }
 
     /// 当前挂在树上的 painter —— 它的 yaw 是"真的会被画出来"的那个值。
-    SparseCloudPainter painterOf(WidgetTester t) => t
-        .widgetList<CustomPaint>(find.byType(CustomPaint))
-        .map((c) => c.painter)
-        .whereType<SparseCloudPainter>()
-        .first;
+    SparseCloudPainter painterOf(WidgetTester t) =>
+        t.widgetList<CustomPaint>(find.byType(CustomPaint))
+            .map((c) => c.painter)
+            .whereType<SparseCloudPainter>()
+            .first;
 
     testWidgets('连续 moveTo 累加的 yaw 不会被 re-target 缓动吞掉', (tester) async {
       final (xyz, rgb) = cube();
       final controller = CloudViewController();
-      await tester.pumpWidget(
-        MaterialApp(
-          home: SparseCloudView(
-            xyz: xyz,
-            rgb: rgb,
-            controller: controller,
-            showControls: false,
-          ),
+      await tester.pumpWidget(MaterialApp(
+        home: SparseCloudView(
+          xyz: xyz,
+          rgb: rgb,
+          controller: controller,
+          showControls: false,
         ),
-      );
+      ));
       await tester.pump();
       final st = tester.state(find.byType(SparseCloudView)) as dynamic;
       final base = st.debugCamera as CloudViewCamera;
@@ -233,8 +222,7 @@ void main() {
       expect(
         after.yaw - base.yaw,
         closeTo(kCardRotateRadPerSec, 1e-6),
-        reason:
-            '1 秒该正好转过 kCardRotateRadPerSec;差很多就说明 moveTo '
+        reason: '1 秒该正好转过 kCardRotateRadPerSec;差很多就说明 moveTo '
             '走了缓动(每帧重启 280ms tween,永远到不了目标)',
       );
     });
@@ -242,16 +230,14 @@ void main() {
     testWidgets('yaw 一路传到 painter —— 画面真的会变,不是只改了 State', (tester) async {
       final (xyz, rgb) = cube();
       final controller = CloudViewController();
-      await tester.pumpWidget(
-        MaterialApp(
-          home: SparseCloudView(
-            xyz: xyz,
-            rgb: rgb,
-            controller: controller,
-            showControls: false,
-          ),
+      await tester.pumpWidget(MaterialApp(
+        home: SparseCloudView(
+          xyz: xyz,
+          rgb: rgb,
+          controller: controller,
+          showControls: false,
         ),
-      );
+      ));
       await tester.pump();
       final st = tester.state(find.byType(SparseCloudView)) as dynamic;
       final base = st.debugCamera as CloudViewCamera;
@@ -272,16 +258,10 @@ void main() {
       await tester.pump();
 
       final after = painterOf(tester);
-      expect(
-        after.yaw,
-        closeTo(yawBefore + 1.0, 1e-6),
-        reason: 'painter 还拿着旧 yaw ⇒ 相机动了但画面不会重绘',
-      );
-      expect(
-        after.shouldRepaint(before),
-        isTrue,
-        reason: 'shouldRepaint 说不用重画 ⇒ 屏幕上什么都不会发生',
-      );
+      expect(after.yaw, closeTo(yawBefore + 1.0, 1e-6),
+          reason: 'painter 还拿着旧 yaw ⇒ 相机动了但画面不会重绘');
+      expect(after.shouldRepaint(before), isTrue,
+          reason: 'shouldRepaint 说不用重画 ⇒ 屏幕上什么都不会发生');
     });
   });
 
@@ -293,10 +273,9 @@ void main() {
       final at24 = turn / kCardRotateRadPerSec;
       expect(at24, closeTo(15.0, 0.001), reason: '15 秒一圈');
       // 降级只改帧数,不改角速度:同样 15 秒,只是步进从 1/24 变成 1/15。
-      expect(
-        kCardRotateRadPerSec * (1 / kCardFpsNominal) * kCardFpsNominal,
-        closeTo(kCardRotateRadPerSec * (1 / kCardFpsFair) * kCardFpsFair, 1e-9),
-      );
+      expect(kCardRotateRadPerSec * (1 / kCardFpsNominal) * kCardFpsNominal,
+          closeTo(kCardRotateRadPerSec * (1 / kCardFpsFair) * kCardFpsFair,
+              1e-9));
     });
   });
 }
@@ -334,11 +313,9 @@ void _autoRotateTests() {
   group('详情页 viewer 自转', () {
     testWidgets('挂上去就自己转,不用碰它', (tester) async {
       final (xyz, rgb) = cube();
-      await tester.pumpWidget(
-        MaterialApp(
-          home: AutoRotatingCloudView(xyz: xyz, rgb: rgb, showControls: false),
-        ),
-      );
+      await tester.pumpWidget(MaterialApp(
+        home: AutoRotatingCloudView(xyz: xyz, rgb: rgb, showControls: false),
+      ));
       await tester.pump();
       final start = yawOf(tester);
       for (var f = 0; f < 24; f++) {
@@ -347,27 +324,18 @@ void _autoRotateTests() {
       final after = yawOf(tester);
       // 下限只用来分辨"根本没动";精度交给下面的 closeTo。
       // (写成 >0.5 会比应有的 2π/15≈0.42 还大,永远失败 —— 第一版就是这么错的。)
-      expect(
-        after - start,
-        greaterThan(0.1),
-        reason:
-            '1 秒该转过约 ${kCardRotateRadPerSec.toStringAsFixed(2)} rad;'
-            '纹丝不动就是 ticker 没跑或 moveTo 没置位',
-      );
-      expect(
-        after - start,
-        closeTo(kCardRotateRadPerSec, 0.15),
-        reason: '转速该是 15 秒一圈',
-      );
+      expect(after - start, greaterThan(0.1),
+          reason: '1 秒该转过约 ${kCardRotateRadPerSec.toStringAsFixed(2)} rad;'
+              '纹丝不动就是 ticker 没跑或 moveTo 没置位');
+      expect(after - start, closeTo(kCardRotateRadPerSec, 0.15),
+          reason: '转速该是 15 秒一圈');
     });
 
     testWidgets('用户一碰就永久让位,不再被拽走', (tester) async {
       final (xyz, rgb) = cube();
-      await tester.pumpWidget(
-        MaterialApp(
-          home: AutoRotatingCloudView(xyz: xyz, rgb: rgb, showControls: false),
-        ),
-      );
+      await tester.pumpWidget(MaterialApp(
+        home: AutoRotatingCloudView(xyz: xyz, rgb: rgb, showControls: false),
+      ));
       await tester.pump();
       for (var f = 0; f < 6; f++) {
         await tester.pump(const Duration(milliseconds: 42));
@@ -379,11 +347,8 @@ void _autoRotateTests() {
       for (var f = 0; f < 24; f++) {
         await tester.pump(const Duration(milliseconds: 42));
       }
-      expect(
-        yawOf(tester),
-        closeTo(atTakeover, 1e-9),
-        reason: '用户上手后自转还在推 yaw —— 他想看的角度会被拽走',
-      );
+      expect(yawOf(tester), closeTo(atTakeover, 1e-9),
+          reason: '用户上手后自转还在推 yaw —— 他想看的角度会被拽走');
     });
   });
 
@@ -392,8 +357,7 @@ void _autoRotateTests() {
       expect(
         File('lib/ui/community/live_card_cloud.dart').existsSync(),
         isFalse,
-        reason:
-            '它 2026-08-23 被删:gate !isPointCloudFormat 从未被撤,'
+        reason: '它 2026-08-23 被删:gate !isPointCloudFormat 从未被撤,'
             '所以那 299 行从未被任何代码路径执行过',
       );
       for (final f in Directory('lib').listSync(recursive: true)) {

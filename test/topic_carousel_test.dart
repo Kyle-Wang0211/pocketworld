@@ -28,23 +28,21 @@ void main() {
   });
 
   Future<void> pump(WidgetTester t, {bool autoPlay = false}) async {
-    await t.pumpWidget(
-      MaterialApp(
-        locale: const Locale('zh'),
-        localizationsDelegates: AppL10n.localizationsDelegates,
-        supportedLocales: AppL10n.supportedLocales,
-        home: Scaffold(
-          body: Align(
-            alignment: Alignment.topCenter,
-            // 复刻真实列表:整宽减去 ListView 左右各 16。
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: AetherSpacing.lg),
-              child: TopicCard(autoPlay: autoPlay),
-            ),
+    await t.pumpWidget(MaterialApp(
+      locale: const Locale('zh'),
+      localizationsDelegates: AppL10n.localizationsDelegates,
+      supportedLocales: AppL10n.supportedLocales,
+      home: Scaffold(
+        body: Align(
+          alignment: Alignment.topCenter,
+          // 复刻真实列表:整宽减去 ListView 左右各 16。
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: AetherSpacing.lg),
+            child: TopicCard(autoPlay: autoPlay),
           ),
         ),
       ),
-    );
+    ));
     await t.pump(const Duration(milliseconds: 32));
   }
 
@@ -82,22 +80,20 @@ void main() {
   group('144pt 的盒子装得下三页文案(中英都要)', () {
     for (final loc in ['zh', 'en']) {
       testWidgets('$loc:三页逐页翻过去,一次溢出都不许有', (t) async {
-        await t.pumpWidget(
-          MaterialApp(
-            locale: Locale(loc),
-            localizationsDelegates: AppL10n.localizationsDelegates,
-            supportedLocales: AppL10n.supportedLocales,
-            home: const Scaffold(
-              body: Align(
-                alignment: Alignment.topCenter,
-                child: Padding(
-                  padding: EdgeInsets.symmetric(horizontal: AetherSpacing.lg),
-                  child: TopicCard(),
-                ),
+        await t.pumpWidget(MaterialApp(
+          locale: Locale(loc),
+          localizationsDelegates: AppL10n.localizationsDelegates,
+          supportedLocales: AppL10n.supportedLocales,
+          home: const Scaffold(
+            body: Align(
+              alignment: Alignment.topCenter,
+              child: Padding(
+                padding: EdgeInsets.symmetric(horizontal: AetherSpacing.lg),
+                child: TopicCard(),
               ),
             ),
           ),
-        );
+        ));
         await t.pump(const Duration(milliseconds: 32));
 
         for (var i = 0; i < 3; i++) {
@@ -142,12 +138,10 @@ void main() {
     testWidgets('当前页的圆点被拉长 —— 不然看不出在第几页', (t) async {
       await pump(t);
       List<double> widths() => t
-          .widgetList<AnimatedContainer>(
-            find.descendant(
-              of: find.byType(TopicCard),
-              matching: find.byType(AnimatedContainer),
-            ),
-          )
+          .widgetList<AnimatedContainer>(find.descendant(
+            of: find.byType(TopicCard),
+            matching: find.byType(AnimatedContainer),
+          ))
           .map((c) => c.constraints!.maxWidth)
           .toList();
 
@@ -171,30 +165,27 @@ void main() {
       // ⚠️ 这里**不能用 pump() 辅助函数** —— 它总是显式传 autoPlay:,
       // 构造器的默认值就永远走不到。变异测试证明过:把默认改成 true,
       // 走 pump() 的版本照样全绿。测默认值就必须真的不传这个参数。
-      await t.pumpWidget(
-        MaterialApp(
-          locale: const Locale('zh'),
-          localizationsDelegates: AppL10n.localizationsDelegates,
-          supportedLocales: AppL10n.supportedLocales,
-          home: const Scaffold(
-            body: Align(
-              alignment: Alignment.topCenter,
-              child: Padding(
-                padding: EdgeInsets.symmetric(horizontal: AetherSpacing.lg),
-                child: TopicCard(), // ← 不传 autoPlay
-              ),
+      await t.pumpWidget(MaterialApp(
+        locale: const Locale('zh'),
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
+        home: const Scaffold(
+          body: Align(
+            alignment: Alignment.topCenter,
+            child: Padding(
+              padding: EdgeInsets.symmetric(horizontal: AetherSpacing.lg),
+              child: TopicCard(), // ← 不传 autoPlay
             ),
           ),
         ),
-      );
+      ));
       await t.pump(const Duration(milliseconds: 32));
       await t.pump(kTopicAutoPlayInterval * 2);
       await t.pump(const Duration(milliseconds: 400));
       expect(
         find.text('本周精选'),
         findsOneWidget,
-        reason:
-            '默认不该自己翻 —— 自动轮播是叠在 live viewer 之上的第二个'
+        reason: '默认不该自己翻 —— 自动轮播是叠在 live viewer 之上的第二个'
             '常驻 ticker,开不开必须由调用方接热闸决定',
       );
     });

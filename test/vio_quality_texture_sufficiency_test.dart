@@ -80,11 +80,7 @@ void main() {
         }
         final mc = acc / trials;
         final analytic = expectedUniformEntropy(n, k.toDouble());
-        expect(
-          analytic,
-          closeTo(mc, 0.01),
-          reason: 'MC=$mc analytic=$analytic',
-        );
+        expect(analytic, closeTo(mc, 0.01), reason: 'MC=$mc analytic=$analytic');
       });
     }
   });

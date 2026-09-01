@@ -35,7 +35,11 @@ void main() {
     g.markReady('a');
     g.markReady('b');
     g.markReady('c');
-    expect(g.revealed, isTrue, reason: 'd/e 用户此刻根本看不到,等它们只会让整页白等');
+    expect(
+      g.revealed,
+      isTrue,
+      reason: 'd/e 用户此刻根本看不到,等它们只会让整页白等',
+    );
   });
 
   testWidgets('一张卡永远起不来 ⇒ 到点无条件放行', (t) async {

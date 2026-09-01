@@ -33,11 +33,8 @@ void main() {
     final back = img.decodeJpg(raw)!;
     // 注意类型:image 包返回 IfdValueAscii 而非 String,直接与字符串比较
     // 会失败得像'功能坏了',实则只是断言写法不对。
-    expect(
-      back.exif.imageIfd['Make']?.toString(),
-      'ProbeCam',
-      reason: 'image 包若不写 EXIF,剥离就是多余的 —— 这条断言守住前提',
-    );
+    expect(back.exif.imageIfd['Make']?.toString(), 'ProbeCam',
+        reason: 'image 包若不写 EXIF,剥离就是多余的 —— 这条断言守住前提');
   });
 
   test('encodeSanitizedJpg 产物不含 Make/Model/Software', () {
