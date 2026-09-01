@@ -77,6 +77,9 @@
     font-variant-numeric:tabular-nums}
   .acts{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center}
   .acts textarea{flex:1;min-width:200px;min-height:34px;height:34px;resize:vertical}
+  .evidence{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .evidence a{display:block;border-radius:8px;overflow:hidden;border:1px solid var(--line)}
+  .evidence img{width:132px;height:132px;object-fit:cover;display:block;background:var(--chip)}
   .empty-state,.msg{color:var(--dim);padding:28px;text-align:center}
   .msg.err{color:var(--danger)}
   .banner{background:var(--chip);border-left:3px solid var(--warn);
@@ -283,9 +286,15 @@ function pendingCard(w) {
 
 // ── 举报队列 ────────────────────────────────────────────────────────
 const REASON_ZH = {
-  spam: '垃圾信息', harassment: '骚扰', hate_speech: '仇恨言论',
-  sexual_content: '色情内容', violence: '暴力', copyright: '侵权',
-  misinformation: '虚假信息', other: '其他',
+  impersonation: '冒充他人或账号资料虚假',
+  harassment_threat: '骚扰、网络暴力或人身威胁',
+  spam_fraud: '诈骗、广告骚扰或异常账号行为',
+  minor_safety: '涉及未成年人安全',
+  sexual_content: '色情低俗',
+  violence_illegal: '暴力、自伤、仇恨、极端或其他违法有害信息',
+  misinformation: '虚假不实或误导性信息',
+  privacy_ip: '隐私、人肉搜索、肖像或知识产权',
+  other: '其他 / 不确定',
 };
 
 async function loadReports() {
@@ -297,12 +306,17 @@ async function loadReports() {
 
 function reportCard(rep) {
   const t = rep.target;
+  const isUser = rep.target_type === 'user';
   const card = el('div', 'card');
-  card.appendChild(thumb(t && t.thumb_url, t && t.title));
+  card.appendChild(thumb(t && t.thumb_url, t && (t.title || t.display_name)));
 
   const body = el('div', 'body');
   body.appendChild(el('h2', 'title',
-    `${REASON_ZH[rep.reason] || rep.reason} · ${t ? (t.title || '(无标题)') : rep.target_type}`));
+    `${REASON_ZH[rep.reason] || rep.reason} · ${t
+      ? (isUser
+        ? (t.display_name || (t.handle ? '@' + t.handle : rep.target_id))
+        : (t.title || '(无标题)'))
+      : rep.target_type}`));
   if (rep.detail) body.appendChild(el('div', 'desc', rep.detail));
 
   chips(body, [
@@ -313,39 +327,110 @@ function reportCard(rep) {
   ]);
 
   if (t) {
-    chips(body, [
-      ['作者', t.author_handle ? '@' + t.author_handle : (t.author_display_name || t.user_id)],
-      ['当前状态', t.moderation_status],
-      ['属地', t.publish_region],
-      ['已删除', t.deleted_at ? '是' : null],
-    ]);
+    if (isUser) {
+      chips(body, [
+        ['被举报账号', t.handle ? '@' + t.handle : (t.display_name || rep.target_id)],
+        ['属地', t.last_region],
+        ['作品', t.works_count],
+        ['粉丝', t.followers_count],
+      ]);
+      if (t.bio) body.appendChild(el('div', 'desc', `账号简介：${t.bio}`));
+    } else {
+      chips(body, [
+        ['作者', t.author_handle ? '@' + t.author_handle : (t.author_display_name || t.user_id)],
+        ['当前状态', t.moderation_status],
+        ['属地', t.publish_region],
+        ['已删除', t.deleted_at ? '是' : null],
+      ]);
+    }
   } else if (rep.target_type === 'work') {
     // 作品行已经不在了(作者自己删了)。这不是错误,但结案时要知道
     // "下架"已经无从谈起,只能 dismissed 或 actioned + 备注。
     body.appendChild(el('div', 'desc', '⚠️ 被举报的作品已不存在（作者已删除）。'));
   }
 
+  if (rep.source_work) {
+    chips(body, [['举报时关联作品', rep.source_work.title || rep.source_work.id]]);
+    if (rep.source_work.description) {
+      body.appendChild(el('div', 'desc', `举报时作品说明：${rep.source_work.description}`));
+    }
+  }
+  if (rep.source_work_live) {
+    chips(body, [
+      ['当前作品状态', rep.source_work_live.moderation_status],
+      ['当前标题', rep.source_work_live.title],
+    ]);
+  }
+
+  if (rep.preservation_state && rep.preservation_state !== 'not_required') {
+    chips(body, [['平台保全', rep.preservation_state]]);
+  }
+
+  if (Array.isArray(rep.source_assets) && rep.source_assets.length > 0) {
+    body.appendChild(el('div', 'desc', `平台保全件（${rep.source_assets.length} 个，链接 5 分钟失效）`));
+    const preserved = el('div', 'evidence');
+    for (const asset of rep.source_assets) {
+      if (!asset.signed_url) continue;
+      const link = document.createElement('a');
+      link.href = asset.signed_url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      if ((asset.content_type || '').startsWith('image/')) {
+        const image = document.createElement('img');
+        image.src = asset.signed_url;
+        image.alt = `平台保全件 ${Number(asset.ordinal) + 1}`;
+        image.loading = 'lazy';
+        link.appendChild(image);
+      } else {
+        link.appendChild(el('span', null, `打开保全件 ${Number(asset.ordinal) + 1}`));
+      }
+      preserved.appendChild(link);
+    }
+    body.appendChild(preserved);
+  }
+
+  if (Array.isArray(rep.evidence) && rep.evidence.length > 0) {
+    body.appendChild(el('div', 'desc', `用户补充证据（${rep.evidence.length} 张，链接 5 分钟失效）`));
+    const gallery = el('div', 'evidence');
+    for (const evidence of rep.evidence) {
+      if (!evidence.signed_url) continue;
+      const link = document.createElement('a');
+      link.href = evidence.signed_url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      const image = document.createElement('img');
+      image.src = evidence.signed_url;
+      image.alt = `举报证据 ${Number(evidence.ordinal) + 1}`;
+      image.loading = 'lazy';
+      link.appendChild(image);
+      gallery.appendChild(link);
+    }
+    body.appendChild(gallery);
+  }
+
   const acts = el('div', 'acts');
   const notes = el('textarea');
   notes.placeholder = '处置备注（进审计记录）';
 
-  const takedown = el('button', 'danger', '下架并结案');
+  const takedown = el('button', 'danger', isUser ? '确认违规并结案' : '下架并结案');
   const dismiss = el('button', null, '驳回举报');
 
   // 🔑 两次调用,不合成一个原子操作。下架会搬文件、可能部分失败;
   //    把它和结案绑死只会产生"结案了但文件没搬走"这种没人发现的中间态。
   //    所以顺序是:先下架(会动文件的那一步),成功了再结案。
   takedown.onclick = () => act(card, [takedown, dismiss], async () => {
-    if (!t) throw new Error('作品已不存在，无法下架 —— 请用「驳回举报」并写明。');
     const why = notes.value.trim() || `举报处置：${REASON_ZH[rep.reason] || rep.reason}`;
-    await call('admin-moderate-work', {
-      work_id: t.id, status: 'removed', reason: why, operator: 'console',
-    });
+    if (!isUser) {
+      if (!t) throw new Error('作品已不存在，无法下架 —— 请用「驳回举报」并写明。');
+      await call('admin-moderate-work', {
+        work_id: t.id, status: 'removed', reason: why, operator: 'console',
+      });
+    }
     await call('admin-reports', {
       action: 'resolve', report_id: rep.id, status: 'actioned',
       admin_notes: why, operator: 'console',
     });
-    return '已下架并结案';
+    return isUser ? '已确认账号举报并结案（未自动封号）' : '已下架并结案';
   });
 
   dismiss.onclick = () => act(card, [takedown, dismiss], async () => {

@@ -15,6 +15,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../auth/data_api_readiness_gate.dart';
 import '../config/endpoint_config.dart';
 import '../storage/signed_upload_broker.dart';
 import 'feed_models.dart';
@@ -57,11 +58,11 @@ class CommunityService {
     SupabaseClient? client,
     SignedUploadBroker? uploadBroker,
     @visibleForTesting EndpointConfig? endpointOverride,
-  })  : _client = client ?? Supabase.instance.client,
-        _endpointOverride = endpointOverride,
-        _uploadBroker =
-            uploadBroker ??
-            SignedUploadBroker(client: client ?? Supabase.instance.client);
+  }) : _client = client ?? Supabase.instance.client,
+       _endpointOverride = endpointOverride,
+       _uploadBroker =
+           uploadBroker ??
+           SignedUploadBroker(client: client ?? Supabase.instance.client);
 
   /// Public works joined with profile (display_name + avatar_url) and the
   /// current user's like state.
@@ -72,6 +73,7 @@ class CommunityService {
     int offset = 0,
     FeedSort sortBy = FeedSort.recent,
     String? query,
+
     /// [D7 2026-08-23 用户签决] 只看某个作者的作品 —— 流内过滤,**不是**
     /// 个人主页。后端本就 100% 就绪:profiles 六字段齐、FeedWork 已带 userId,
     /// 过滤就是下面这一句 .eq('user_id', ...)。
@@ -90,6 +92,38 @@ class CommunityService {
     /// 边界上同一时刻发布的行会被跳过或重复。
     DateTime? afterPublishedAt,
     String? afterId,
+  }) {
+    // Freeze one auth identity for this logical feed transaction. Supabase's
+    // auth HTTP wrapper otherwise reads currentSession again for every request,
+    // so a background refresh could silently replace the JWT between a
+    // PGRST303 failure and its retry.
+    final pinnedAccessToken = _client.auth.currentSession?.accessToken;
+    final pinnedViewerId = _client.auth.currentUser?.id;
+    return dataApiReadinessGate.run<List<FeedWork>>(
+      () => _fetchPublicFeedOnce(
+        limit: limit,
+        offset: offset,
+        sortBy: sortBy,
+        query: query,
+        authorUserId: authorUserId,
+        afterPublishedAt: afterPublishedAt,
+        afterId: afterId,
+        pinnedAccessToken: pinnedAccessToken,
+        pinnedViewerId: pinnedViewerId,
+      ),
+    );
+  }
+
+  Future<List<FeedWork>> _fetchPublicFeedOnce({
+    required int limit,
+    required int offset,
+    required FeedSort sortBy,
+    String? query,
+    String? authorUserId,
+    DateTime? afterPublishedAt,
+    String? afterId,
+    String? pinnedAccessToken,
+    String? pinnedViewerId,
   }) async {
     // 1) Public works. Visibility filter belongs in code even though RLS
     // would already enforce it — public clients should never get a row
@@ -103,6 +137,8 @@ class CommunityService {
           'publish_region',
         )
         .eq('visibility', 'public')
+        .eq('moderation_status', 'ok')
+        .isFilter('deleted_at', null)
         .not('published_at', 'is', null);
     if (authorUserId != null && authorUserId.isNotEmpty) {
       filter = filter.eq('user_id', authorUserId);
@@ -132,9 +168,10 @@ class CommunityService {
     final transformed = switch (sortBy) {
       // 次级键 id 是 keyset 的硬性前提:排序键必须唯一确定一个位置,
       // 否则边界上 published_at 相同的行会被跳过或重复。
-      FeedSort.recent => filter
-          .order('published_at', ascending: false)
-          .order('id', ascending: false),
+      FeedSort.recent =>
+        filter
+            .order('published_at', ascending: false)
+            .order('id', ascending: false),
       // ⚠️ hot 仍走 offset。它自 2026-08-23 砍掉标签后已无生产调用点
       // (vault_page 定死 FeedSort.recent),不值得为它再补一套三键游标
       // (likes_count, published_at, id)。若哪天复活,照 recent 的样子加。
@@ -144,9 +181,12 @@ class CommunityService {
             .order('published_at', ascending: false)
             .order('id', ascending: false),
     };
-    final worksRes = useKeyset
-        ? await transformed.limit(limit)
-        : await transformed.range(offset, offset + limit - 1);
+    final worksRequest = useKeyset
+        ? transformed.limit(limit)
+        : transformed.range(offset, offset + limit - 1);
+    final worksRes = await (pinnedAccessToken == null
+        ? worksRequest
+        : worksRequest.setHeader('Authorization', 'Bearer $pinnedAccessToken'));
     var works = (worksRes as List).cast<Map<String, dynamic>>();
     if (works.isEmpty) return const [];
 
@@ -160,7 +200,10 @@ class CommunityService {
     // back short when a blocked author is on it. That is better than
     // showing content the user explicitly blocked, and the pager keeps
     // advancing by `works.length` so nothing is skipped or repeated.
-    final blocked = await fetchBlockedUserIds();
+    final blocked = await fetchBlockedUserIds(
+      pinnedAccessToken: pinnedAccessToken,
+      pinnedViewerId: pinnedViewerId,
+    );
     if (blocked.isNotEmpty) {
       works = works
           .where((w) => !blocked.contains(w['user_id'] as String))
@@ -170,25 +213,39 @@ class CommunityService {
 
     // 2) Profiles for the unique authors.
     final userIds = works.map((w) => w['user_id'] as String).toSet().toList();
-    final profilesRes = await _client
+    var profilesRequest = _client
         .from('profiles')
         .select('id, display_name, avatar_url, handle')
         .inFilter('id', userIds);
+    if (pinnedAccessToken != null) {
+      profilesRequest = profilesRequest.setHeader(
+        'Authorization',
+        'Bearer $pinnedAccessToken',
+      );
+    }
+    final profilesRes = await profilesRequest;
     final profilesById = {
       for (final p in (profilesRes as List).cast<Map<String, dynamic>>())
         p['id'] as String: p,
     };
 
     // 3) Current user's likes for these works (one round trip, not N).
-    final myId = _client.auth.currentUser?.id;
+    final myId = pinnedViewerId;
     final myLikes = <String>{};
     if (myId != null) {
       final workIds = works.map((w) => w['id'] as String).toList();
-      final likesRes = await _client
+      var likesRequest = _client
           .from('work_likes')
           .select('work_id')
           .eq('user_id', myId)
           .inFilter('work_id', workIds);
+      if (pinnedAccessToken != null) {
+        likesRequest = likesRequest.setHeader(
+          'Authorization',
+          'Bearer $pinnedAccessToken',
+        );
+      }
+      final likesRes = await likesRequest;
       for (final r in (likesRes as List).cast<Map<String, dynamic>>()) {
         myLikes.add(r['work_id'] as String);
       }
@@ -349,8 +406,7 @@ class CommunityService {
       'target_type': 'work',
       'target_id': workId,
       'reason': reason,
-      if (detail != null && detail.trim().isNotEmpty)
-        'detail': detail.trim(),
+      if (detail != null && detail.trim().isNotEmpty) 'detail': detail.trim(),
     });
   }
 
@@ -369,11 +425,13 @@ class CommunityService {
     if (myId == blockedUserId) {
       throw ArgumentError('Cannot block yourself.');
     }
-    await _client.from('blocks').upsert(
-      {'blocker_id': myId, 'blocked_id': blockedUserId},
-      onConflict: 'blocker_id,blocked_id',
-      ignoreDuplicates: true,
-    );
+    await _client
+        .from('blocks')
+        .upsert(
+          {'blocker_id': myId, 'blocked_id': blockedUserId},
+          onConflict: 'blocker_id,blocked_id',
+          ignoreDuplicates: true,
+        );
   }
 
   /// Undo [blockUser].
@@ -392,19 +450,32 @@ class CommunityService {
   /// Used to filter the feed client-side: RLS cannot do it for us because
   /// `works_select_visible` has no notion of the *viewer's* block list,
   /// and adding one would make every feed row run a correlated subquery.
-  Future<Set<String>> fetchBlockedUserIds() async {
-    final myId = _client.auth.currentUser?.id;
+  Future<Set<String>> fetchBlockedUserIds({
+    String? pinnedAccessToken,
+    String? pinnedViewerId,
+  }) async {
+    final myId = pinnedViewerId ?? _client.auth.currentUser?.id;
     if (myId == null) return const <String>{};
     try {
-      final rows = await _client
+      var request = _client
           .from('blocks')
           .select('blocked_id')
           .eq('blocker_id', myId);
+      if (pinnedAccessToken != null) {
+        request = request.setHeader(
+          'Authorization',
+          'Bearer $pinnedAccessToken',
+        );
+      }
+      final rows = await request;
       return {
         for (final r in (rows as List).cast<Map<String, dynamic>>())
           r['blocked_id'] as String,
       };
-    } catch (_) {
+    } catch (error) {
+      // This exact error means the whole logical feed transaction is not yet
+      // dataApiReady. Let the outer gate retry every query with the same JWT.
+      if (DataApiReadinessGate.isFutureIssuedJwt(error)) rethrow;
       // Fail open: a blocks lookup failure must not blank the feed.
       return const <String>{};
     }

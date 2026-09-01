@@ -45,6 +45,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:official_capture_services/official_capture_services.dart';
 import 'package:flutter/widgets.dart' show Offset;
@@ -54,9 +55,12 @@ import '../official_dome/ar_pose.dart';
 import '../official_dome/platform_pose_provider.dart';
 import '../official_quality/frame_quality_constants.dart';
 import '../official_quality/guidance_engine.dart';
+import 'accepted_photo_record_store.dart';
+import 'accepted_photo_transaction.dart';
 import 'dome/captured_frame_sample.dart';
 import 'dome/dome_config.dart';
 import 'dome/dome_target_points.dart';
+import 'highres_capture_watchdog.dart';
 import 'database_archive_policy.dart';
 import 'orientation_tracker.dart';
 import 'official_actual_photo_gate.dart';
@@ -86,13 +90,17 @@ class CaptureMotionSnapshot {
 class OfficialHighResCaptureFailureEvent {
   const OfficialHighResCaptureFailureEvent({
     required this.frameId,
+    required this.transactionId,
     required this.evidenceJpegPath,
     required this.failure,
+    required this.automaticSelection,
   });
 
   final String frameId;
+  final String transactionId;
   final String evidenceJpegPath;
   final OfficialHighResInputFailure failure;
+  final bool automaticSelection;
 }
 
 class OfficialManualCaptureResult {
@@ -100,16 +108,42 @@ class OfficialManualCaptureResult {
     required this.previewJpegPath,
     required this.evidenceJpegPath,
     required this.highResolutionCompletion,
+    required this.previewCompletion,
+    required this.transaction,
   });
 
   final String previewJpegPath;
   final String evidenceJpegPath;
   final Future<OfficialHighResReconstructionInput> highResolutionCompletion;
+
+  /// Completes only after the preview writer has terminated. Rejection cleanup
+  /// waits for this receipt, so a late preview callback cannot recreate a file
+  /// that the rejected transaction already deleted.
+  final Future<void> previewCompletion;
+
+  /// Data and presentation have independent exactly-once terminal outcomes.
+  final AcceptedPhotoTransaction transaction;
+
+  String get transactionId => transaction.id;
+}
+
+/// Read-only admission receipt available before [captureSinglePhoto] returns.
+class OfficialActivePhotoTransaction {
+  const OfficialActivePhotoTransaction({
+    required this.transaction,
+    required this.evidenceJpegPath,
+  });
+
+  final AcceptedPhotoTransaction transaction;
+  final String evidenceJpegPath;
+
+  String get transactionId => transaction.id;
 }
 
 class CaptureSession {
   final ARPoseProvider poseProvider;
   final GuidanceEngine guidance;
+  final Future<Directory> Function()? _captureDirectoryFactory;
 
   /// Sole coverage signal — visual = data, 1:1. Each visible target
   /// point owns its own [RingBufferCell] with v1's strict 5-gate
@@ -142,6 +176,22 @@ class CaptureSession {
   Stream<OfficialHighResCaptureFailureEvent> get highResFailureStream =>
       _highResFailureCtrl.stream;
 
+  /// Canonical membership commits, emitted only after the immutable record was
+  /// atomically published. This controller is intentionally asynchronous so a
+  /// page callback cannot re-enter the commit stack before internal outbox
+  /// bookkeeping is established.
+  Stream<AcceptedPhotoRecord> get canonicalPhotoCommitStream =>
+      _canonicalPhotoCommitCtrl.stream;
+
+  /// Durable membership snapshot. JPEG presence, album state and worker state
+  /// are not membership authorities.
+  List<AcceptedPhotoRecord> get canonicalPhotoSnapshot =>
+      _acceptedPhotoStore?.snapshot ?? const <AcceptedPhotoRecord>[];
+
+  /// Typed, durable projection failures awaiting idempotent replay.
+  List<AcceptedPhotoReplayDebt> get canonicalPhotoReplayDebtSnapshot =>
+      _acceptedPhotoStore?.debtSnapshot ?? const <AcceptedPhotoReplayDebt>[];
+
   final StreamController<ARPose> _poseCtrl =
       StreamController<ARPose>.broadcast();
   final StreamController<GuidanceSnapshot> _guidanceCtrl =
@@ -150,6 +200,8 @@ class CaptureSession {
       StreamController<CaptureMotionSnapshot>.broadcast();
   final StreamController<OfficialHighResReconstructionInput> _sfmFrameCtrl =
       StreamController<OfficialHighResReconstructionInput>.broadcast();
+  final StreamController<AcceptedPhotoRecord> _canonicalPhotoCommitCtrl =
+      StreamController<AcceptedPhotoRecord>.broadcast();
   final StreamController<OfficialHighResCaptureFailureEvent>
   _highResFailureCtrl =
       StreamController<OfficialHighResCaptureFailureEvent>.broadcast();
@@ -238,7 +290,6 @@ class CaptureSession {
   /// motion/dome auto-ingest + auto-save path; photos are taken only via
   /// [captureSinglePhoto]. Set per-session by [start].
   bool _manualCaptureMode = false;
-  static const int _manualHighResMaxAttempts = 6;
   bool _manualCaptureSuspended = false;
   Completer<void>? _manualCaptureResumeCompleter;
   Object? _manualCaptureResumeFailure;
@@ -360,6 +411,16 @@ class CaptureSession {
       const PhotoBundleQualityService();
   final OfficialActualPhotoGate _automaticActualPhotoGate =
       OfficialActualPhotoGate();
+  final AcceptedPhotoTransactionCoordinator _photoTransactions =
+      AcceptedPhotoTransactionCoordinator();
+  AcceptedPhotoRecordStore? _acceptedPhotoStore;
+  bool _captureAdmissionSealed = false;
+  final Set<Future<void>> _canonicalPublicationsInFlight = <Future<void>>{};
+  final Set<String> _sfmInputProjectionTransactions = <String>{};
+  OfficialActivePhotoTransaction? _activePhotoTransaction;
+
+  OfficialActivePhotoTransaction? get activePhotoTransaction =>
+      _activePhotoTransaction;
   final PhotoBundleManifestService _photoBundleManifest =
       const PhotoBundleManifestService();
   final Map<String, HighResolutionStillCapture> _stillByPath =
@@ -446,33 +507,73 @@ class CaptureSession {
     return File('$root/official_photo_bundle.json');
   }
 
-  /// Writes the official route's authoritative manifest from the user's photo
-  /// album, not from internal coverage curation or current SfM registration.
-  ///
-  /// Every path here has already passed the same-frame 4032×3024 JPEG + ARKit
-  /// metadata contract. Pending/disconnected/low-parallax states deliberately
-  /// do not affect membership. A path disappears only after the user explicitly
-  /// removes it from the project album.
+  /// Writes the official route's authoritative manifest from the immutable
+  /// durable accepted-photo snapshot. The path argument is compatibility input
+  /// from the page album and must match that snapshot exactly; it cannot add,
+  /// remove or reorder membership.
   Future<File?> writeProjectPhotoBundleManifest(
     List<String> projectPhotoPaths,
   ) async {
+    if (!_captureAdmissionSealed) return null;
+    await _drainCanonicalPublications();
     final root = _captureDir;
-    if (root == null) return null;
+    final highresRoot = _photosHighresDir;
+    final store = _acceptedPhotoStore;
+    if (root == null || highresRoot == null || store == null) return null;
+    final records = store.snapshot;
+    final canonicalPaths = records
+        .map((record) => record.jpegPath)
+        .toList(growable: false);
+    if (!_sameStrings(projectPhotoPaths, canonicalPaths)) {
+      return null;
+    }
     final frames = <PhotoBundleFrameDraft>[];
-    for (var index = 0; index < projectPhotoPaths.length; index++) {
-      final path = projectPhotoPaths[index];
-      if (!File(path).existsSync()) continue;
-      final sample = _sampleByPath[path];
-      final still = _stillByPath[path];
-      if (sample == null || still == null) continue;
+    for (var index = 0; index < records.length; index++) {
+      final record = records[index];
+      final path = record.jpegPath;
+      final canonicalPath = await _isCanonicalProjectPhotoPath(
+        path,
+        highresRoot,
+      );
+      if (!canonicalPath ||
+          record.imageWidth !=
+              OfficialHighResReconstructionInput.requiredWidth ||
+          record.imageHeight !=
+              OfficialHighResReconstructionInput.requiredHeight) {
+        return null;
+      }
+      final file = File(path);
+      try {
+        if (!await file.exists() || await file.length() <= 0) return null;
+      } on FileSystemException {
+        return null;
+      }
+      final sample = _sampleFromCanonicalRecord(record);
       frames.add(
         _photoBundleFrameDraft(
           sample: sample,
           path: path,
           radiusShellId: 'project',
           cellId: 'project:$index',
+          canonicalStill: _stillFromCanonicalRecord(record),
+          canonicalQuality: _qualityFromCanonicalRecord(record),
         ),
       );
+    }
+    if (frames.length != records.length) return null;
+    // Revalidate the complete snapshot synchronously after the per-path async
+    // checks. A delete interleaved while a later symlink was resolving must
+    // fail the whole snapshot instead of producing a smaller/stale manifest.
+    try {
+      for (final record in records) {
+        final file = File(record.jpegPath);
+        if (!file.existsSync() || file.lengthSync() <= 0) return null;
+        if (store.recordForTransaction(record.transactionId) != record) {
+          return null;
+        }
+      }
+    } on FileSystemException {
+      return null;
     }
     await _photoBundleManifest.writeManifest(
       bundleDirectory: Directory(root),
@@ -489,14 +590,40 @@ class CaptureSession {
     return File('$root/official_photo_bundle.json');
   }
 
+  static Future<bool> _isCanonicalProjectPhotoPath(
+    String path,
+    String highresRoot,
+  ) async {
+    final lower = path.toLowerCase();
+    if (!lower.endsWith('.jpg') && !lower.endsWith('.jpeg')) return false;
+    final lexicalRoot = Directory(highresRoot).absolute.uri.normalizePath();
+    final lexicalCandidate = File(path).absolute.uri.normalizePath();
+    final lexicalRootPrefix = lexicalRoot.path.endsWith('/')
+        ? lexicalRoot.path
+        : '${lexicalRoot.path}/';
+    if (!lexicalCandidate.path.startsWith(lexicalRootPrefix)) return false;
+    try {
+      final canonicalRoot = await Directory(highresRoot).resolveSymbolicLinks();
+      final canonicalCandidate = await File(path).resolveSymbolicLinks();
+      return canonicalCandidate.startsWith(
+        '$canonicalRoot${Platform.pathSeparator}',
+      );
+    } on FileSystemException {
+      return false;
+    }
+  }
+
   PhotoBundleFrameDraft _photoBundleFrameDraft({
     required CapturedFrameSample sample,
     required String path,
     required String radiusShellId,
     required String cellId,
+    HighResolutionStillCapture? canonicalStill,
+    PhotoBundleStillQuality? canonicalQuality,
   }) {
-    final still = _stillByPath[path];
-    final quality = _qualityByPath[path] ?? _qualityFromSample(sample);
+    final still = canonicalStill ?? _stillByPath[path];
+    final quality =
+        canonicalQuality ?? _qualityByPath[path] ?? _qualityFromSample(sample);
     final highresFilename = _basename(path);
     return PhotoBundleFrameDraft(
       id: sample.frameId,
@@ -551,15 +678,6 @@ class CaptureSession {
     HighResolutionStillCapture still,
     CapturedFrameSample sample,
   ) {
-    final gray1024 = still.gray1024;
-    if (gray1024 != null && gray1024.length == 1024 * 1024) {
-      return _photoQuality.evaluateLumaPlane(
-        luma: gray1024,
-        width: 1024,
-        height: 1024,
-        rowStride: 1024,
-      );
-    }
     final gray = still.gray128;
     if (gray != null && gray.length == 128 * 128) {
       return _photoQuality.evaluateLumaPlane(
@@ -567,6 +685,15 @@ class CaptureSession {
         width: 128,
         height: 128,
         rowStride: 128,
+      );
+    }
+    final gray1024 = still.gray1024;
+    if (gray1024 != null && gray1024.length == 1024 * 1024) {
+      return _photoQuality.evaluateLumaPlane(
+        luma: gray1024,
+        width: 1024,
+        height: 1024,
+        rowStride: 1024,
       );
     }
     return _qualityFromSample(sample);
@@ -580,12 +707,14 @@ class CaptureSession {
     ARPoseProvider? poseProvider,
     GuidanceEngine? guidance,
     DomeTargetPoints? targetPoints,
+    Future<Directory> Function()? captureDirectoryFactory,
     DomePointConfig pointConfig = DomePointConfig.defaults,
     this.targetZoneAnchor = const Offset(0.5, 0.5),
     this.targetZoneMode = TargetZoneMode.subject,
   }) : poseProvider = poseProvider ?? PlatformARPoseProvider(),
        guidance = guidance ?? GuidanceEngine(),
-       targetPoints = targetPoints ?? DomeTargetPoints(config: pointConfig) {
+       targetPoints = targetPoints ?? DomeTargetPoints(config: pointConfig),
+       _captureDirectoryFactory = captureDirectoryFactory {
     this.guidance.onUpdate = (snap) {
       if (!_guidanceCtrl.isClosed) _guidanceCtrl.add(snap);
     };
@@ -594,6 +723,169 @@ class CaptureSession {
   bool get isRunning => _started;
   bool get isAttached => _attached;
   bool get manualCaptureTransactionsSuspended => _manualCaptureSuspended;
+  bool _cameraTransportStopped = false;
+
+  /// Synchronous Finish boundary for every Dart-owned capture admission path.
+  ///
+  /// This does not stop ARKit and does not await disk, FFI, worker or preview
+  /// work. Calls that have not reached the atomic record-rename linearization
+  /// point can no longer publish. Pose ingest, pose/frame streams, new shutter
+  /// transactions and downstream projection publication all stop immediately.
+  void sealCaptureAdmission() {
+    if (_captureAdmissionSealed) return;
+    _captureAdmissionSealed = true;
+    // Release any ticket already parked behind a background transport pause;
+    // its post-await seal check returns null. Leaving this completer pending
+    // would make Finish's queue drain wait forever.
+    _manualCaptureResumeFailure = null;
+    _manualCaptureSuspended = false;
+    final resumeCompleter = _manualCaptureResumeCompleter;
+    _manualCaptureResumeCompleter = null;
+    if (resumeCompleter != null && !resumeCompleter.isCompleted) {
+      resumeCompleter.complete();
+    }
+    _photoTransactions.sealAdmission();
+  }
+
+  /// Applies one page-owned projection with a durable idempotency receipt or
+  /// typed replay debt. The canonical data outcome is never rolled back.
+  Future<AcceptedPhotoProjectionResult> projectCanonicalPhoto({
+    required String transactionId,
+    required AcceptedPhotoProjection projection,
+    required AcceptedPhotoProjectionHandler apply,
+  }) async {
+    final store = _acceptedPhotoStore;
+    if (store == null) {
+      throw StateError('No accepted-photo ledger is open');
+    }
+    return store.project(
+      transactionId: transactionId,
+      projection: projection,
+      apply: apply,
+    );
+  }
+
+  /// Commits the irreversible membership tombstone before removing any JPEG
+  /// or rebuilding derived in-memory projections. A failed tombstone leaves
+  /// every artifact untouched and visible through the canonical ledger.
+  Future<AcceptedPhotoRecord?> tombstoneCanonicalPhoto(String jpegPath) async {
+    final store = _acceptedPhotoStore;
+    if (store == null) return null;
+    AcceptedPhotoRecord? record;
+    for (final candidate in store.snapshot) {
+      if (candidate.jpegPath == jpegPath) {
+        record = candidate;
+        break;
+      }
+    }
+    if (record == null || !await store.tombstone(record.transactionId)) {
+      return null;
+    }
+    await _rebuildCanonicalInMemoryProjections();
+    await _deleteCanonicalPhotoArtifacts(record);
+    return record;
+  }
+
+  Future<void> _rebuildCanonicalInMemoryProjections() async {
+    final store = _acceptedPhotoStore;
+    if (store == null) return;
+    targetPoints.reset();
+    _automaticActualPhotoGate.reset();
+    _stillByPath.clear();
+    _qualityByPath.clear();
+    _sampleByPath.clear();
+    _sfmInputProjectionTransactions.clear();
+    final handlers = _internalCanonicalProjectionHandlers();
+    for (final record in store.snapshot) {
+      for (final projection in const <AcceptedPhotoProjection>[
+        AcceptedPhotoProjection.capture,
+        AcceptedPhotoProjection.actualPhotoGate,
+        AcceptedPhotoProjection.geometry,
+        AcceptedPhotoProjection.coverage,
+      ]) {
+        await handlers[projection]!(record);
+      }
+    }
+  }
+
+  static Future<void> _deleteCanonicalPhotoArtifacts(
+    AcceptedPhotoRecord record,
+  ) async {
+    final evidence = record.jpegPath;
+    final dot = evidence.lastIndexOf('.');
+    final stem = dot < 0 ? evidence : evidence.substring(0, dot);
+    final candidates = <String>{
+      evidence,
+      record.previewPath,
+      '$stem.json',
+      '${stem}_hr.jpg',
+      '${stem}_hr.json',
+    };
+    for (final path in candidates) {
+      try {
+        final file = File(path);
+        if (await file.exists()) await file.delete();
+      } on FileSystemException {
+        // Membership is already tombstoned. Artifact cleanup is safely
+        // retryable and must never resurrect the canonical record.
+      }
+    }
+  }
+
+  /// Replays durable projection debt. Page-owned handlers (normally
+  /// [AcceptedPhotoProjection.controller]) override internal handlers.
+  Future<AcceptedPhotoReplayReport> replayCanonicalPhotoProjections({
+    Map<AcceptedPhotoProjection, AcceptedPhotoProjectionHandler> handlers =
+        const <AcceptedPhotoProjection, AcceptedPhotoProjectionHandler>{},
+  }) async {
+    final store = _acceptedPhotoStore;
+    if (store == null) {
+      return const AcceptedPhotoReplayReport(
+        attempted: 0,
+        applied: 0,
+        remaining: 0,
+      );
+    }
+    return store.replay(
+      handlers: <AcceptedPhotoProjection, AcceptedPhotoProjectionHandler>{
+        ..._internalCanonicalProjectionHandlers(),
+        ...handlers,
+      },
+    );
+  }
+
+  Future<void> suspendCameraTransport() async {
+    if (_disposed || _cameraTransportStopped) return;
+    suspendManualCaptureTransactions();
+    try {
+      final provider = poseProvider;
+      if (provider is ARPoseTransportLifecycle) {
+        await (provider as ARPoseTransportLifecycle).suspendTransport();
+      } else {
+        await provider.stop();
+      }
+    } catch (error) {
+      resumeManualCaptureTransactions();
+      rethrow;
+    }
+  }
+
+  Future<void> resumeCameraTransport() async {
+    if (_disposed || _cameraTransportStopped) return;
+    final provider = poseProvider;
+    if (provider is ARPoseTransportLifecycle) {
+      await (provider as ARPoseTransportLifecycle).resumeTransport();
+    } else {
+      provider.start();
+    }
+    resumeManualCaptureTransactions();
+  }
+
+  Future<void> stopCameraTransport() async {
+    if (_cameraTransportStopped) return;
+    _cameraTransportStopped = true;
+    await poseProvider.stop();
+  }
 
   /// Prevent a queued manual ticket from issuing another native 12MP request
   /// while ARKit is stopped in the background. The active request is allowed
@@ -654,6 +946,7 @@ class CaptureSession {
     }
     if (_attached) return;
     _attached = true;
+    _cameraTransportStopped = false;
 
     // Start the IMU stream alongside ARKit. OrientationTracker is safe
     // to start even when sensor APIs aren't available (sensors_plus
@@ -674,7 +967,7 @@ class CaptureSession {
       // because IMU dead-reckoning paints over the underlying issue.
       // Only feed events while a recording is active; the warm-up
       // period before `start()` doesn't count toward session health.
-      if (_started) {
+      if (_started && !_captureAdmissionSealed) {
         _driftTracker.onPose(rawPose);
       }
 
@@ -704,6 +997,8 @@ class CaptureSession {
           'brightness=${rawPose.quality!.meanBrightness.toStringAsFixed(0)})',
         );
       }
+
+      if (_captureAdmissionSealed) return;
 
       // Resolve hybrid pose. Subscribers (dome view, ingest pipeline)
       // see the resolved pose, never the raw ARPose. The raw pose can
@@ -879,6 +1174,7 @@ class CaptureSession {
     _qualityByPath.clear();
     _sampleByPath.clear();
     _automaticActualPhotoGate.reset();
+    _sfmInputProjectionTransactions.clear();
     _diagArkitPoses = 0;
     _diagImuPoses = 0;
     _originSettleStartedAtSec = null;
@@ -886,6 +1182,10 @@ class CaptureSession {
     // capture's cell-admitted JPEGs. Wiped + recreated each start so a
     // stale prior session can't leak into the new cells.
     await _setupPhotosDirectory();
+    final captureRoot = _captureDir;
+    _acceptedPhotoStore = captureRoot == null
+        ? null
+        : await AcceptedPhotoRecordStore.open(Directory(captureRoot));
     // Clear hybrid anchor: a new recording means a new world origin
     // is about to be locked, so any IMU↔ARKit offset learned from
     // the previous session is stale.
@@ -903,6 +1203,16 @@ class CaptureSession {
     // by default (industry convention). Subject extraction is a future
     // post-export tool, not part of capture-during runtime.
 
+    final previousActive = _activePhotoTransaction;
+    if (previousActive != null) {
+      _photoTransactions.resolvePresentation(
+        previousActive.transaction,
+        AcceptedPhotoPresentationOutcome.suppressed,
+      );
+      _activePhotoTransaction = null;
+    }
+    _photoTransactions.openNextGeneration();
+    _captureAdmissionSealed = false;
     _started = true;
 
     if (autoLock) {
@@ -915,9 +1225,7 @@ class CaptureSession {
   /// the resulting path is exposed via [photosDir].
   Future<void> _setupPhotosDirectory() async {
     try {
-      final docs = await getApplicationDocumentsDirectory();
-      final captureId = 'cap_${DateTime.now().microsecondsSinceEpoch}';
-      final root = Directory('${docs.path}/captures_official/$captureId');
+      final root = await _newCaptureDirectory();
       if (await root.exists()) {
         await root.delete(recursive: true);
       }
@@ -943,6 +1251,14 @@ class CaptureSession {
     }
   }
 
+  Future<Directory> _newCaptureDirectory() async {
+    final factory = _captureDirectoryFactory;
+    if (factory != null) return factory();
+    final docs = await getApplicationDocumentsDirectory();
+    final captureId = 'cap_${DateTime.now().microsecondsSinceEpoch}';
+    return Directory('${docs.path}/captures_official/$captureId');
+  }
+
   /// Place the world origin in front of the camera and capture
   /// worldYaw. Default 1.0 m matches the typical "stand 1-1.5 m from
   /// the subject" capture posture (chair, paper bag, figurine on a
@@ -964,7 +1280,7 @@ class CaptureSession {
     // Now we wait for ARKit to be ready however long that takes; the
     // user's stop-recording tap is the actual upper bound.
     int attempts = 0;
-    while (_started) {
+    while (_started && !_captureAdmissionSealed) {
       attempts++;
       final result = await poseProvider.lockOrigin(
         distanceMeters: distanceMeters,
@@ -1005,6 +1321,9 @@ class CaptureSession {
   /// capture page is destroyed.
   Future<void> stop() async {
     if (!_started) return;
+    sealCaptureAdmission();
+    await _drainCanonicalPublications();
+    _photoTransactions.sealCurrentGeneration();
     _started = false;
     resumeManualCaptureTransactions();
     _clock.stop();
@@ -1097,12 +1416,17 @@ class CaptureSession {
     _stillByPath.clear();
     _qualityByPath.clear();
     _sampleByPath.clear();
+    _acceptedPhotoStore = null;
     _photosDir = null;
     _photosHighresDir = null;
     _previewsDir = null;
     _captureDir = null;
 
     if (dirPath == null) return;
+    AcceptedPhotoRecordRegistry.replaceScope(
+      '$dirPath#discarded',
+      const <AcceptedPhotoRecord>[],
+    );
     final dir = Directory(dirPath);
     if (!await dir.exists()) return;
     try {
@@ -1118,6 +1442,8 @@ class CaptureSession {
 
   Future<void> dispose() async {
     if (_disposed) return;
+    sealCaptureAdmission();
+    await _drainCanonicalPublications();
     _disposed = true;
     resumeManualCaptureTransactions();
     final archiveLease = _photoArchiveCaptureLease;
@@ -1130,9 +1456,11 @@ class CaptureSession {
     }
     await _poseSub?.cancel();
     _poseSub = null;
-    if (_attached) {
+    if (_attached && !_cameraTransportStopped) {
       _attached = false;
       await poseProvider.stop();
+    } else {
+      _attached = false;
     }
     if (_orientationStarted) {
       _orientation.dispose();
@@ -1142,6 +1470,9 @@ class CaptureSession {
     if (!_guidanceCtrl.isClosed) await _guidanceCtrl.close();
     if (!_motionCtrl.isClosed) await _motionCtrl.close();
     if (!_sfmFrameCtrl.isClosed) await _sfmFrameCtrl.close();
+    if (!_canonicalPhotoCommitCtrl.isClosed) {
+      await _canonicalPhotoCommitCtrl.close();
+    }
     if (!_highResFailureCtrl.isClosed) await _highResFailureCtrl.close();
   }
 
@@ -1187,7 +1518,7 @@ class CaptureSession {
   /// we get exactly one ingest per ~167 ms — same as iOS's
   /// `visualSampleInterval`.
   void _onPoseTick(ARPose pose) {
-    if (!_started) return;
+    if (!_started || _captureAdmissionSealed) return;
     final report = pose.quality;
     if (report == null) return; // throttled-out frame, no quality data
     if (!pose.hasOrigin) return;
@@ -1524,7 +1855,14 @@ class CaptureSession {
   Future<OfficialManualCaptureResult?> captureSinglePhoto({
     bool automaticSelection = false,
   }) async {
-    if (!_started || _disposed) return null;
+    if (!_started || _disposed || _captureAdmissionSealed) return null;
+    await _waitForManualCaptureResume();
+    if (!_started ||
+        _disposed ||
+        _captureAdmissionSealed ||
+        !_photoTransactions.hasOpenGeneration) {
+      return null;
+    }
     final pose = _lastPose;
     final photosDir = _photosDir;
     if (pose == null || photosDir == null) return null;
@@ -1579,6 +1917,16 @@ class CaptureSession {
     final previewDir = _previewsDir ?? photosDir;
     final previewJpegPath = '$previewDir/$photoBase.jpg';
     final previewMetadataPath = '$previewDir/$photoBase.json';
+    final highResolutionPreviewPath =
+        '$previewDir/${photoBase}_highres_preview.jpg';
+    final transaction = _photoTransactions.begin(
+      '${_basename(_captureDir ?? photosDir)}-'
+      'g${_photoTransactions.currentGeneration}-${sample.frameId}',
+    );
+    _activePhotoTransaction = OfficialActivePhotoTransaction(
+      transaction: transaction,
+      evidenceJpegPath: evidenceJpegPath,
+    );
     final evidenceSaveSpec = ARFrameSaveSpec(
       frameID: sample.frameId,
       cellIndex: -1,
@@ -1600,13 +1948,26 @@ class CaptureSession {
       includeSfmFeed: false,
     );
 
-    // Start the 12MP request first, at tap time. The preview save below is a
-    // separate 1920×1440 display path and is never eligible for SfM.
+    final artifactPaths = <String>[
+      evidenceJpegPath,
+      evidenceMetadataPath,
+      highResolutionPreviewPath,
+      previewJpegPath,
+      previewMetadataPath,
+    ];
+    final previewTerminal = Completer<void>();
+
+    // Start exactly one 12MP native request first, at tap time. The preview
+    // save below is a separate 1920×1440 display path and is never SfM input.
     final highResFuture = _captureOfficialHighResInput(
       sample: sample,
       evidenceSaveSpec: evidenceSaveSpec,
-      previewPath: '$previewDir/${photoBase}_highres_preview.jpg',
+      previewPath: highResolutionPreviewPath,
+      cardTexturePath: previewJpegPath,
       automaticSelection: automaticSelection,
+      transaction: transaction,
+      previewCompletion: previewTerminal.future,
+      artifactPaths: artifactPaths,
     );
     _pendingPhotoSaves.add(highResFuture);
     unawaited(highResFuture);
@@ -1617,7 +1978,21 @@ class CaptureSession {
         final previewSave = await poseProvider.saveCurrentFrame(
           previewSaveSpec,
         );
-        if (!previewSave.saved || !await File(previewJpegPath).exists()) {
+        if (!_photoTransactions.isOpen(transaction) &&
+            transaction.dataOutcome != AcceptedPhotoDataOutcome.accepted &&
+            !transaction.dataPublicationSubmitted) {
+          await _deleteAutomaticCandidateArtifacts(artifactPaths);
+          return;
+        }
+        final previewExists =
+            previewSave.saved && await File(previewJpegPath).exists();
+        if (!_photoTransactions.isOpen(transaction) &&
+            transaction.dataOutcome != AcceptedPhotoDataOutcome.accepted &&
+            !transaction.dataPublicationSubmitted) {
+          await _deleteAutomaticCandidateArtifacts(artifactPaths);
+          return;
+        }
+        if (!previewExists) {
           // ignore: avoid_print
           print(
             '[CaptureSession] manual preview NOT saved: $previewJpegPath '
@@ -1629,6 +2004,7 @@ class CaptureSession {
         print('[CaptureSession] manual preview save failed: $e\n$st');
       } finally {
         _pendingPhotoSaveCount = math.max(0, _pendingPhotoSaveCount - 1);
+        if (!previewTerminal.isCompleted) previewTerminal.complete();
       }
     }();
     _pendingPhotoSaves.add(previewFuture);
@@ -1640,6 +2016,8 @@ class CaptureSession {
       previewJpegPath: previewJpegPath,
       evidenceJpegPath: evidenceJpegPath,
       highResolutionCompletion: highResFuture,
+      previewCompletion: previewFuture,
+      transaction: transaction,
     );
   }
 
@@ -1647,21 +2025,36 @@ class CaptureSession {
     required CapturedFrameSample sample,
     required ARFrameSaveSpec evidenceSaveSpec,
     required String previewPath,
+    required String cardTexturePath,
+    required AcceptedPhotoTransaction transaction,
+    required Future<void> previewCompletion,
+    required List<String> artifactPaths,
     bool automaticSelection = false,
   }) async {
     if (_highResCaptureInFlight) {
       _hiresStillDropped++;
-      throw StateError(
-        'A verified 12MP shutter transaction is already in flight',
+      _photoTransactions.rejectData(transaction);
+      await _cleanupRejectedPhotoTransaction(
+        previewCompletion: previewCompletion,
+        artifactPaths: artifactPaths,
+      );
+      _photoTransactions.resolvePresentation(
+        transaction,
+        AcceptedPhotoPresentationOutcome.suppressed,
+      );
+      _clearActivePhotoTransaction(transaction);
+      throw const OfficialHighResCaptureException(
+        OfficialHighResInputFailure.captureFailed,
+        message: 'A verified 12MP shutter transaction is already in flight',
       );
     }
     _highResCaptureInFlight = true;
     var attempt = 0;
+    const maxAttempts = 1;
     var lastFailure = OfficialHighResInputFailure.captureFailed;
+    OfficialHighResReconstructionInput? lastRejectedInput;
     try {
-      while (_started && !_disposed && attempt < _manualHighResMaxAttempts) {
-        await _waitForManualCaptureResume();
-        if (!_started || _disposed) break;
+      while (_photoTransactions.isOpen(transaction) && attempt < maxAttempts) {
         attempt++;
         _hiresStillStarted++;
         final sw = Stopwatch()..start();
@@ -1669,31 +2062,61 @@ class CaptureSession {
         OfficialHighResInputFailure failure =
             OfficialHighResInputFailure.captureFailed;
         try {
-          // Every retry is a new direct ARKit
-          // captureHighResolutionFrame transaction. It never reuses a queued
-          // preview frame: the accepted JPEG, pose, intrinsics, and timestamp
-          // all come from that one returned high-resolution ARFrame.
-          final still = await poseProvider.captureHighResolutionStill(
-            highresPath: evidenceSaveSpec.jpegPath,
-            previewPath: previewPath,
-            triggerTimestamp: evidenceSaveSpec.targetTimestamp,
-            saveSpec: evidenceSaveSpec,
-            deriveAuxiliary: automaticSelection,
+          // One admitted shutter owns one native request and one set of unique
+          // artifact paths. There is no retry that can race a late terminal
+          // callback for ownership of the same canonical JPEG.
+          final still = await awaitOfficialHighResTerminal(
+            poseProvider.captureHighResolutionStill(
+              highresPath: evidenceSaveSpec.jpegPath,
+              previewPath: previewPath,
+              triggerTimestamp: evidenceSaveSpec.targetTimestamp,
+              saveSpec: evidenceSaveSpec,
+              deriveAuxiliary: automaticSelection,
+              stagePhotoFeedback: true,
+              transactionId: transaction.id,
+              cardTexturePath: cardTexturePath,
+            ),
+            onLateCompletion: (lateStill) async {
+              if (lateStill == null) return;
+              await _cleanupRejectedPhotoTransaction(
+                previewCompletion: previewCompletion,
+                artifactPaths: <String>{
+                  ...artifactPaths,
+                  lateStill.highresPath,
+                  lateStill.previewPath,
+                },
+              );
+              TelemetryWriter.instance.event('late_hires_terminal', {
+                'outcome': 'discarded_after_timeout',
+                'jpeg': _basename(lateStill.highresPath),
+                'automatic_selection': automaticSelection,
+              });
+            },
           );
-          if (still == null) {
+          if (!_photoTransactions.isOpen(transaction)) {
+            failure = OfficialHighResInputFailure.captureFailed;
+          } else if (still == null) {
             failure = OfficialHighResInputFailure.captureFailed;
           } else {
             final validation = OfficialHighResReconstructionInput.validate(
+              expectedTransactionId: transaction.id,
+              transactionId: still.transactionId,
               jpegPath: still.highresPath,
               imageWidth: still.imageWidth,
               imageHeight: still.imageHeight,
               triggerTimestamp: still.requestTimestamp,
               captureTimestamp: still.timestamp,
-              cameraTransform: still.cameraTransform,
+              requestPose: still.requestPose,
+              evidencePose: still.evidencePose,
+              cardPose: still.cardPose,
               intrinsics: still.intrinsics,
+              gray128: still.gray128,
             );
-            if (!validation.isAccepted ||
-                !await File(still.highresPath).exists()) {
+            final jpegExists =
+                validation.isAccepted && await File(still.highresPath).exists();
+            if (!_photoTransactions.isOpen(transaction)) {
+              failure = OfficialHighResInputFailure.captureFailed;
+            } else if (!validation.isAccepted || !jpegExists) {
               failure =
                   validation.failure ?? OfficialHighResInputFailure.missingJpeg;
             } else {
@@ -1717,10 +2140,43 @@ class CaptureSession {
                       actualGate.trackEvidence?.commonTrackFraction,
                   'actual_track_median_normalized':
                       actualGate.trackEvidence?.medianNormalizedDisplacement,
+                  'actual_track_median_px':
+                      actualGate.trackEvidence?.medianPixelDisplacement,
+                  'actual_vins_tracked':
+                      actualGate.trackEvidence?.vinsTrackedCount,
+                  'actual_vins_active':
+                      actualGate.trackEvidence?.vinsActiveTrackCount,
+                  'actual_vins_longest_age':
+                      actualGate.trackEvidence?.vinsLongestTrackAge,
+                  'actual_vins_geometric_input':
+                      actualGate.trackEvidence?.vinsGeometricInputCount,
+                  'actual_vins_geometric_inliers':
+                      actualGate.trackEvidence?.vinsGeometricInlierCount,
+                  'actual_vins_geometric_inlier_fraction':
+                      actualGate.trackEvidence?.vinsGeometricInlierFraction,
+                  'actual_vins_grid_fraction':
+                      actualGate.trackEvidence?.vinsOccupiedGridFraction,
+                  'actual_vins_clahe':
+                      actualGate.trackEvidence?.vinsClaheApplied,
                   'actual_laplacian_variance': actualQuality.laplacianVariance,
                   'actual_quality_reasons': actualQuality.rejectReasons,
                 });
-                if (!actualGate.accepted) {
+                // A duplicate verdict is NOT a discard verdict. Upstream
+                // VINS-Mono's FeatureManager::addFeatureCheckParallax() returns
+                // this boolean to pick a marginalization strategy, and its
+                // false branch (MARGIN_SECOND_NEW) still keeps the new frame,
+                // merging the dropped frame's IMU forward in
+                // Estimator::slideWindow. Wiring that boolean to a delete was
+                // where this replication diverged from upstream, and it turned
+                // a lossless switch into a lossy one: 22 of 120 twelve-megapixel
+                // photos were being destroyed (measured 2026-08-30), several
+                // less than 1 px under the bar. Record the photo, mark it, and
+                // let only the gate's own baseline decline to advance.
+                final retainedAsNonNovel =
+                    actualGate.decision ==
+                    OfficialActualPhotoDecision.rejectDuplicate;
+                if (!actualGate.accepted && !retainedAsNonNovel) {
+                  lastRejectedInput = input;
                   failure = switch (actualGate.decision) {
                     OfficialActualPhotoDecision.rejectMissingEvidence =>
                       OfficialHighResInputFailure.actualStillMissingEvidence,
@@ -1731,29 +2187,45 @@ class CaptureSession {
                     OfficialActualPhotoDecision.accept =>
                       OfficialHighResInputFailure.captureFailed,
                   };
+                  _photoTransactions.rejectData(transaction);
                 } else {
-                  _hiresStillOk++;
-                  _stillByPath[input.jpegPath] = still;
-                  // PWVA 采集期归档(official tap 路径,当前生产主路)。
-                  CaptureArchiveService.instance.enqueueHighresStill(
-                    input.jpegPath,
-                    triggerTimestamp: still.requestTimestamp,
+                  final committed = await _commitCanonicalAcceptedPhoto(
+                    input: input,
+                    still: still,
+                    quality: actualQuality,
+                    sample: sample.withJpegPath(input.jpegPath),
+                    transaction: transaction,
+                    automaticSelection: true,
+                    noveltyVerified: actualGate.accepted,
                   );
-                  _qualityByPath[input.jpegPath] = actualQuality;
-                  _sampleByPath[input.jpegPath] = sample.withJpegPath(
-                    input.jpegPath,
-                  );
-                  final admit = targetPoints.forceAdmit(sample);
-                  if (admit != null) {
-                    targetPoints.stampJpegPath(
-                      cellIdx: admit.cellIdx,
-                      slotIdx: admit.slotIdx,
-                      jpegPath: input.jpegPath,
-                    );
+                  if (committed) {
+                    TelemetryWriter.instance.event('hires_still', {
+                      'outcome': 'canonical_committed',
+                      'attempt': attempt,
+                      'ms': sw.elapsedMilliseconds,
+                      'queue_depth': 0,
+                      'started': _hiresStillStarted,
+                      'ok': _hiresStillOk,
+                      'failed': _hiresStillFailed,
+                      'dropped': _hiresStillDropped,
+                    });
+                    return input;
                   }
-                  if (!_sfmFrameCtrl.isClosed) {
-                    _sfmFrameCtrl.add(input);
-                  }
+                  failure = OfficialHighResInputFailure.captureFailed;
+                }
+              } else {
+                final committed = await _commitCanonicalAcceptedPhoto(
+                  input: input,
+                  still: still,
+                  quality: actualQuality,
+                  sample: sample.withJpegPath(input.jpegPath),
+                  transaction: transaction,
+                  automaticSelection: false,
+                  // A manual shutter is user intent; there is no novelty gate
+                  // on this path and none is implied.
+                  noveltyVerified: true,
+                );
+                if (committed) {
                   TelemetryWriter.instance.event('hires_still', {
                     'outcome': outcome,
                     'attempt': attempt,
@@ -1766,56 +2238,19 @@ class CaptureSession {
                   });
                   return input;
                 }
-              } else {
-                _hiresStillOk++;
-                _stillByPath[input.jpegPath] = still;
-                CaptureArchiveService.instance.enqueueHighresStill(
-                  input.jpegPath,
-                  triggerTimestamp: still.requestTimestamp,
-                );
-                _qualityByPath[input.jpegPath] = actualQuality;
-                _sampleByPath[input.jpegPath] = sample.withJpegPath(
-                  input.jpegPath,
-                );
-                final admit = targetPoints.forceAdmit(sample);
-                if (admit != null) {
-                  targetPoints.stampJpegPath(
-                    cellIdx: admit.cellIdx,
-                    slotIdx: admit.slotIdx,
-                    jpegPath: input.jpegPath,
-                  );
-                }
-                if (!_sfmFrameCtrl.isClosed) _sfmFrameCtrl.add(input);
-                TelemetryWriter.instance.event('hires_still', {
-                  'outcome': outcome,
-                  'attempt': attempt,
-                  'ms': sw.elapsedMilliseconds,
-                  'queue_depth': 0,
-                  'started': _hiresStillStarted,
-                  'ok': _hiresStillOk,
-                  'failed': _hiresStillFailed,
-                  'dropped': _hiresStillDropped,
-                });
-                return input;
+                failure = OfficialHighResInputFailure.captureFailed;
               }
             }
           }
+        } on OfficialHighResCaptureException catch (error) {
+          failure = error.failure;
         } catch (_) {
           failure = OfficialHighResInputFailure.captureFailed;
         }
 
-        if (_manualCaptureSuspended) {
-          // Backgrounding can make the native in-flight request fail. It is
-          // not a real retry attempt: hold this same ticket until ARKit has
-          // successfully resumed, without churning the stopped camera.
-          attempt--;
-          await _waitForManualCaptureResume();
-          continue;
-        }
-
         _hiresStillFailed++;
         lastFailure = failure;
-        outcome = '${failure.name}_retry';
+        outcome = failure.name;
         _noteStillFailure(failure.name);
         TelemetryWriter.instance.event('hires_still', {
           'outcome': outcome,
@@ -1827,39 +2262,435 @@ class CaptureSession {
           'failed': _hiresStillFailed,
           'dropped': _hiresStillDropped,
         });
-        // Retry a fresh ARKit 12MP frame after a short recovery yield. The
-        // bound prevents Finish from hanging forever on a permanently failed
-        // camera; the page reports the failed ticket and continues safely.
-        await Future<void>.delayed(
-          Duration(milliseconds: math.min(350, 80 + (attempt - 1) * 40)),
-        );
       }
 
-      // Surface cancellation/exhaustion so callers cannot mistake it for a
-      // verified photo. Queue admission remains exact; failure is explicit.
+      _photoTransactions.rejectData(transaction);
+      await _cleanupRejectedPhotoTransaction(
+        previewCompletion: previewCompletion,
+        artifactPaths: artifactPaths,
+      );
+      _photoTransactions.resolvePresentation(
+        transaction,
+        AcceptedPhotoPresentationOutcome.suppressed,
+      );
+      _clearActivePhotoTransaction(transaction);
+
+      // Surface the single native request's terminal result so callers cannot
+      // mistake cancellation or rejection for a verified photo.
       _reportHighResFailure(
         sample.frameId,
+        transaction.id,
         evidenceSaveSpec.jpegPath,
         lastFailure,
+        automaticSelection: automaticSelection,
       );
-      throw StateError(
-        _started && !_disposed
-            ? '12MP shutter transaction failed after '
-                  '$_manualHighResMaxAttempts attempts'
+      throw OfficialHighResCaptureException(
+        lastFailure,
+        message: _photoTransactions.isOpen(transaction)
+            ? '12MP shutter transaction failed'
             : '12MP shutter transaction cancelled before success',
+        rejectedInput: automaticSelection ? lastRejectedInput : null,
       );
     } finally {
       _highResCaptureInFlight = false;
     }
   }
 
+  Future<bool> _commitCanonicalAcceptedPhoto({
+    required OfficialHighResReconstructionInput input,
+    required HighResolutionStillCapture still,
+    required PhotoBundleStillQuality quality,
+    required CapturedFrameSample sample,
+    required AcceptedPhotoTransaction transaction,
+    required bool automaticSelection,
+    required bool noveltyVerified,
+  }) async {
+    final store = _acceptedPhotoStore;
+    if (store == null || !_photoTransactions.isOpen(transaction)) {
+      return false;
+    }
+
+    final record = AcceptedPhotoRecord(
+      transactionId: transaction.id,
+      generation: transaction.generation,
+      frameId: sample.frameId,
+      jpegPath: input.jpegPath,
+      previewPath: still.previewPath,
+      automaticSelection: automaticSelection,
+      imageWidth: input.imageWidth,
+      imageHeight: input.imageHeight,
+      triggerTimestamp: input.triggerTimestamp,
+      captureTimestamp: input.captureTimestamp,
+      requestPose: input.requestPose,
+      evidencePose: input.evidencePose,
+      cardPose: input.cardPose,
+      intrinsics: input.intrinsics,
+      captureKind: still.captureKind,
+      poseSyncQuality: still.poseSyncQuality,
+      trackingStateName: still.trackingStateName,
+      gray128Base64: input.gray128 == null
+          ? null
+          : base64Encode(input.gray128!),
+      sample: _sampleToCanonicalJson(sample.withJpegPath(input.jpegPath)),
+      quality: quality.toJson(),
+      noveltyVerified: noveltyVerified,
+    );
+
+    final publicationTerminal = Completer<void>();
+    final publicationFuture = publicationTerminal.future;
+    _canonicalPublicationsInFlight.add(publicationFuture);
+    var durablyCommitted = false;
+    try {
+      final publication = await store.publish(
+        record,
+        canPublish: () => _photoTransactions.beginDataPublication(transaction),
+      );
+      if (publication.status == AcceptedPhotoPublishStatus.aborted) {
+        return false;
+      }
+      durablyCommitted = true;
+      if (transaction.dataOutcome != AcceptedPhotoDataOutcome.accepted &&
+          !_photoTransactions.acceptData(transaction)) {
+        throw StateError(
+          'canonical record published without an accepted data receipt',
+        );
+      }
+      _hiresStillOk++;
+
+      // This is the authoritative event boundary: durable membership exists
+      // before any page, coverage, archive, SfM or controller projection can
+      // observe the record.
+      if (!_canonicalPhotoCommitCtrl.isClosed) {
+        _canonicalPhotoCommitCtrl.add(record);
+      }
+      await _fanOutCanonicalRecord(record);
+      return true;
+    } catch (error) {
+      if (!durablyCommitted) {
+        _photoTransactions.failDataPublication(transaction);
+      }
+      TelemetryWriter.instance.event('accepted_photo_publish', {
+        'transaction_id': transaction.id,
+        'outcome': durablyCommitted
+            ? 'projection_outbox_failed'
+            : 'publication_failed',
+        'error': '$error',
+      });
+      // Once the immutable record exists, no presentation/projection/outbox
+      // failure may send the caller down rejected cleanup and delete its JPEG.
+      return durablyCommitted;
+    } finally {
+      if (!publicationTerminal.isCompleted) publicationTerminal.complete();
+      _canonicalPublicationsInFlight.remove(publicationFuture);
+    }
+  }
+
+  Future<void> _fanOutCanonicalRecord(AcceptedPhotoRecord record) async {
+    final store = _acceptedPhotoStore;
+    if (store == null) return;
+    final handlers = _internalCanonicalProjectionHandlers();
+    for (final projection in AcceptedPhotoProjection.values) {
+      final handler = handlers[projection];
+      if (handler == null) continue;
+      await store.project(
+        transactionId: record.transactionId,
+        projection: projection,
+        apply: handler,
+      );
+    }
+  }
+
+  Map<AcceptedPhotoProjection, AcceptedPhotoProjectionHandler>
+  _internalCanonicalProjectionHandlers() =>
+      <AcceptedPhotoProjection, AcceptedPhotoProjectionHandler>{
+        AcceptedPhotoProjection.album: (record) {
+          if (AcceptedPhotoRecordRegistry.byJpegPath(record.jpegPath) !=
+              record) {
+            throw const AcceptedPhotoProjectionException(
+              code: 'album_registry_missing',
+              message: 'durable record is absent from the album read cache',
+            );
+          }
+        },
+        AcceptedPhotoProjection.capture: (record) {
+          _stillByPath[record.jpegPath] = _stillFromCanonicalRecord(record);
+          _qualityByPath[record.jpegPath] = _qualityFromCanonicalRecord(record);
+          _sampleByPath[record.jpegPath] = _sampleFromCanonicalRecord(record);
+        },
+        AcceptedPhotoProjection.actualPhotoGate: (record) {
+          // The baseline advances only on a verified-novel photo. This is the
+          // hysteresis that lets a slow pan accumulate past the displacement
+          // bar: advancing on every retained photo would reset the measurement
+          // each shutter and the bar could never be reached. A non-novel photo
+          // is still a full member everywhere else — album, coverage, geometry,
+          // archive — it just does not become the thing novelty is measured
+          // against. See AcceptedPhotoRecord.noveltyVerified for provenance.
+          if (!record.noveltyVerified) return;
+          final gray = _gray128FromCanonicalRecord(record);
+          if (gray == null) return;
+          _automaticActualPhotoGate.commitAccepted(
+            transactionId: record.transactionId,
+            gray128: gray,
+            imageWidth: record.imageWidth,
+            imageHeight: record.imageHeight,
+            intrinsics: record.intrinsics,
+          );
+        },
+        AcceptedPhotoProjection.geometry: (record) {
+          final sample = _sampleFromCanonicalRecord(record);
+          targetPoints.forceAdmitCanonical(record.transactionId, sample);
+        },
+        AcceptedPhotoProjection.coverage: (record) {
+          final sample = _sampleFromCanonicalRecord(record);
+          final admit = targetPoints.forceAdmitCanonical(
+            record.transactionId,
+            sample,
+          );
+          if (admit != null) {
+            targetPoints.stampJpegPath(
+              cellIdx: admit.cellIdx,
+              slotIdx: admit.slotIdx,
+              jpegPath: record.jpegPath,
+            );
+          }
+        },
+        AcceptedPhotoProjection.archive: (record) {
+          CaptureArchiveService.instance.enqueueHighresStill(
+            record.jpegPath,
+            triggerTimestamp: record.triggerTimestamp,
+          );
+        },
+        AcceptedPhotoProjection.sfmInput: (record) {
+          if (_sfmInputProjectionTransactions.add(record.transactionId) &&
+              !_sfmFrameCtrl.isClosed &&
+              _sfmFrameCtrl.hasListener) {
+            _sfmFrameCtrl.add(_inputFromCanonicalRecord(record));
+          }
+        },
+        AcceptedPhotoProjection.controller: (_) {
+          throw const AcceptedPhotoProjectionException(
+            code: 'controller_receipt_required',
+            message:
+                'the page controller must apply this projection and record '
+                'its transaction receipt',
+          );
+        },
+      };
+
+  Future<void> _drainCanonicalPublications() async {
+    while (_canonicalPublicationsInFlight.isNotEmpty) {
+      await Future.wait<void>(
+        _canonicalPublicationsInFlight.toList(growable: false),
+      );
+    }
+  }
+
+  static Map<String, Object?> _sampleToCanonicalJson(
+    CapturedFrameSample sample,
+  ) => <String, Object?>{
+    'timestamp': sample.timestamp,
+    'azimuth': sample.azimuth,
+    'elevation': sample.elevation,
+    'sharpness': sample.sharpness,
+    'cameraRadiusM': sample.cameraRadiusM,
+    'subjectFootprintRatio': sample.subjectFootprintRatio,
+    'roiSharpness': sample.roiSharpness,
+    'multiScaleSharpness252': sample.multiScaleSharpness252,
+    'multiScaleSharpness512': sample.multiScaleSharpness512,
+    'edgeBlockSharpness': sample.edgeBlockSharpness,
+    'subjectVsBackgroundSharpnessDelta':
+        sample.subjectVsBackgroundSharpnessDelta,
+    'sharpnessConsensus': sample.sharpnessConsensus,
+    'motionScore': sample.motionScore,
+    'angularVelocityRadPerSec': sample.angularVelocityRadPerSec,
+    'exposureScore': sample.exposureScore,
+    'meanBrightness': sample.meanBrightness,
+    'focusStable': sample.focusStable,
+    'isAdjustingFocus': sample.isAdjustingFocus,
+    'isAdjustingExposure': sample.isAdjustingExposure,
+    'lensPosition': sample.lensPosition,
+    'exposureTargetOffset': sample.exposureTargetOffset,
+    'trackingStateName': sample.trackingStateName,
+    'frameId': sample.frameId,
+    'cameraExtrinsic4x4': sample.cameraExtrinsic4x4,
+    'cameraIntrinsicFxFyCxCy': sample.cameraIntrinsicFxFyCxCy,
+    'scaleAlignAnchorCount': sample.scaleAlignAnchorCount,
+    'scaleAlignDepthSpanM': sample.scaleAlignDepthSpanM,
+    'scaleAlignReliabilityPrior': sample.scaleAlignReliabilityPrior,
+    'poseSource': sample.poseSource,
+    'jpegPath': sample.jpegPath,
+  };
+
+  static CapturedFrameSample _sampleFromCanonicalRecord(
+    AcceptedPhotoRecord record,
+  ) {
+    final sample = record.sample;
+    return CapturedFrameSample(
+      timestamp: _canonicalDouble(sample['timestamp'], record.triggerTimestamp),
+      azimuth: _canonicalDouble(sample['azimuth']),
+      elevation: _canonicalDouble(sample['elevation']),
+      sharpness: _canonicalDouble(sample['sharpness']),
+      cameraRadiusM: _canonicalDouble(sample['cameraRadiusM']),
+      subjectFootprintRatio: _canonicalDouble(sample['subjectFootprintRatio']),
+      roiSharpness: _canonicalDouble(sample['roiSharpness']),
+      multiScaleSharpness252: _canonicalDouble(
+        sample['multiScaleSharpness252'],
+      ),
+      multiScaleSharpness512: _canonicalDouble(
+        sample['multiScaleSharpness512'],
+      ),
+      edgeBlockSharpness: _canonicalDouble(sample['edgeBlockSharpness']),
+      subjectVsBackgroundSharpnessDelta: _canonicalDouble(
+        sample['subjectVsBackgroundSharpnessDelta'],
+      ),
+      sharpnessConsensus: _canonicalDouble(sample['sharpnessConsensus']),
+      motionScore: _canonicalDouble(sample['motionScore']),
+      angularVelocityRadPerSec: _canonicalDouble(
+        sample['angularVelocityRadPerSec'],
+      ),
+      exposureScore: _canonicalDouble(sample['exposureScore'], 1),
+      meanBrightness: _canonicalDouble(sample['meanBrightness'], 128),
+      focusStable: sample['focusStable'] != false,
+      isAdjustingFocus: sample['isAdjustingFocus'] == true,
+      isAdjustingExposure: sample['isAdjustingExposure'] == true,
+      lensPosition: _canonicalDouble(sample['lensPosition']),
+      exposureTargetOffset: _canonicalDouble(sample['exposureTargetOffset']),
+      trackingStateName: sample['trackingStateName'] as String?,
+      frameId: record.frameId,
+      cameraExtrinsic4x4: record.cameraTransform,
+      cameraIntrinsicFxFyCxCy: record.intrinsics,
+      scaleAlignAnchorCount: _canonicalInt(sample['scaleAlignAnchorCount']),
+      scaleAlignDepthSpanM: _canonicalDouble(sample['scaleAlignDepthSpanM']),
+      scaleAlignReliabilityPrior: _canonicalDouble(
+        sample['scaleAlignReliabilityPrior'],
+      ),
+      poseSource: sample['poseSource'] is String
+          ? sample['poseSource']! as String
+          : 'arkit',
+      jpegPath: record.jpegPath,
+    );
+  }
+
+  static PhotoBundleStillQuality _qualityFromCanonicalRecord(
+    AcceptedPhotoRecord record,
+  ) {
+    final quality = record.quality;
+    return PhotoBundleStillQuality(
+      accepted: quality['accepted'] == true,
+      score: _canonicalDouble(quality['score']),
+      laplacianVariance: _canonicalDouble(quality['laplacianVariance']),
+      meanLuma: _canonicalDouble(quality['meanLuma']),
+      underexposedRatio: _canonicalDouble(quality['underexposedRatio']),
+      overexposedRatio: _canonicalDouble(quality['overexposedRatio']),
+      textureCellRatio: _canonicalDouble(quality['textureCellRatio']),
+      rejectReasons:
+          (quality['rejectReasons'] as List?)?.whereType<String>().toList(
+            growable: false,
+          ) ??
+          const <String>[],
+      tenengradMean: _canonicalDouble(quality['tenengradMean']),
+      sobelMean: _canonicalDouble(quality['sobelMean']),
+      localContrast: _canonicalDouble(quality['localContrast']),
+      saturationRatio: _canonicalDouble(quality['saturationRatio']),
+      centerRoiLaplacianVariance: _canonicalDouble(
+        quality['centerRoiLaplacianVariance'],
+      ),
+      centerRoiTenengrad: _canonicalDouble(quality['centerRoiTenengrad']),
+      centerRoiContrast: _canonicalDouble(quality['centerRoiContrast']),
+      multiscaleSharpness: _canonicalDouble(quality['multiscaleSharpness']),
+      viewGraphWeight: _canonicalDouble(quality['viewGraphWeight']),
+      kWindowWeight: _canonicalDouble(quality['kWindowWeight']),
+      textureBestViewWeight: _canonicalDouble(quality['textureBestViewWeight']),
+      qualityPlaneWidth: _canonicalInt(quality['qualityPlaneWidth']),
+      qualityPlaneHeight: _canonicalInt(quality['qualityPlaneHeight']),
+    );
+  }
+
+  static HighResolutionStillCapture _stillFromCanonicalRecord(
+    AcceptedPhotoRecord record,
+  ) => HighResolutionStillCapture(
+    transactionId: record.transactionId,
+    highresPath: record.jpegPath,
+    previewPath: record.previewPath,
+    requestTimestamp: record.triggerTimestamp,
+    timestamp: record.captureTimestamp,
+    timestampDelta: (record.captureTimestamp - record.triggerTimestamp).abs(),
+    imageWidth: record.imageWidth,
+    imageHeight: record.imageHeight,
+    requestPose: record.requestPose,
+    evidencePose: record.evidencePose,
+    cardPose: record.cardPose,
+    intrinsics: record.intrinsics,
+    gray128: _gray128FromCanonicalRecord(record),
+    captureKind: record.captureKind,
+    poseSyncQuality: record.poseSyncQuality,
+    trackingStateName: record.trackingStateName,
+  );
+
+  static OfficialHighResReconstructionInput _inputFromCanonicalRecord(
+    AcceptedPhotoRecord record,
+  ) {
+    final validation = OfficialHighResReconstructionInput.validate(
+      expectedTransactionId: record.transactionId,
+      transactionId: record.transactionId,
+      jpegPath: record.jpegPath,
+      imageWidth: record.imageWidth,
+      imageHeight: record.imageHeight,
+      triggerTimestamp: record.triggerTimestamp,
+      captureTimestamp: record.captureTimestamp,
+      requestPose: record.requestPose,
+      evidencePose: record.evidencePose,
+      cardPose: record.cardPose,
+      intrinsics: record.intrinsics,
+      gray128: _gray128FromCanonicalRecord(record),
+    );
+    final input = validation.input;
+    if (input == null) {
+      throw const AcceptedPhotoProjectionException(
+        code: 'canonical_input_invalid',
+        message: 'durable record could not reconstruct the SfM input',
+      );
+    }
+    return input;
+  }
+
+  static Uint8List? _gray128FromCanonicalRecord(AcceptedPhotoRecord record) {
+    final encoded = record.gray128Base64;
+    return encoded == null ? null : base64Decode(encoded);
+  }
+
+  static double _canonicalDouble(Object? value, [double fallback = 0]) =>
+      value is num ? value.toDouble() : fallback;
+
+  static int _canonicalInt(Object? value, [int fallback = 0]) =>
+      value is num ? value.toInt() : fallback;
+
+  static bool _sameStrings(List<String> left, List<String> right) {
+    if (left.length != right.length) return false;
+    for (var index = 0; index < left.length; index++) {
+      if (left[index] != right[index]) return false;
+    }
+    return true;
+  }
+
+  static bool _sameDoubles(List<double> left, List<double> right) {
+    if (left.length != right.length) return false;
+    for (var index = 0; index < left.length; index++) {
+      if (left[index] != right[index]) return false;
+    }
+    return true;
+  }
+
   void _reportHighResFailure(
     String frameId,
+    String transactionId,
     String evidenceJpegPath,
-    OfficialHighResInputFailure failure,
-  ) {
+    OfficialHighResInputFailure failure, {
+    required bool automaticSelection,
+  }) {
     TelemetryWriter.instance.event('official_highres_failure', {
       'frame_id': frameId,
+      'transaction_id': transactionId,
       'jpeg': evidenceJpegPath.split('/').last,
       'failure': failure.name,
       'fallback_used': false,
@@ -1868,8 +2699,10 @@ class CaptureSession {
       _highResFailureCtrl.add(
         OfficialHighResCaptureFailureEvent(
           frameId: frameId,
+          transactionId: transactionId,
           evidenceJpegPath: evidenceJpegPath,
           failure: failure,
+          automaticSelection: automaticSelection,
         ),
       );
     }
@@ -1878,6 +2711,83 @@ class CaptureSession {
   /// 记一次静照失败的原因码 —— 上一轮就是因为没记,只能靠猜死因。
   void _noteStillFailure(String code) {
     _hiresStillFailReasons[code] = (_hiresStillFailReasons[code] ?? 0) + 1;
+  }
+
+  /// Compatibility confirmation for the old two-phase page call site.
+  ///
+  /// Automatic and manual captures now share the durable owner before
+  /// `highResolutionCompletion` returns. This method does not mutate a gate,
+  /// ledger, coverage map, archive or worker stream; it only confirms that the
+  /// exact input is already canonical and is therefore idempotently true.
+  bool commitAutomaticActualPhoto(OfficialHighResReconstructionInput input) {
+    final record = AcceptedPhotoRecordRegistry.byJpegPath(input.jpegPath);
+    return record != null &&
+        record.automaticSelection &&
+        record.imageWidth == input.imageWidth &&
+        record.imageHeight == input.imageHeight &&
+        record.triggerTimestamp == input.triggerTimestamp &&
+        record.captureTimestamp == input.captureTimestamp &&
+        _sameDoubles(record.requestPose, input.requestPose) &&
+        _sameDoubles(record.evidencePose, input.evidencePose) &&
+        _sameDoubles(record.cardPose, input.cardPose) &&
+        _sameDoubles(record.intrinsics, input.intrinsics);
+  }
+
+  /// An already canonical input cannot be rejected. Pre-publication automatic
+  /// failures are rejected and cleaned inside the transaction owner before an
+  /// input is returned, so this compatibility method has no mutable candidate.
+  bool rejectAutomaticActualPhoto(OfficialHighResReconstructionInput input) {
+    return false;
+  }
+
+  /// Resolves native card/haptic feedback without changing the data receipt.
+  /// An accepted photo remains accepted even if presentation fails.
+  bool resolvePhotoPresentation(
+    AcceptedPhotoTransaction transaction,
+    AcceptedPhotoPresentationOutcome outcome,
+  ) {
+    final resolved = _photoTransactions.resolvePresentation(
+      transaction,
+      outcome,
+    );
+    if (resolved) _clearActivePhotoTransaction(transaction);
+    return resolved;
+  }
+
+  Future<void> _cleanupRejectedPhotoTransaction({
+    required Future<void> previewCompletion,
+    required Iterable<String> artifactPaths,
+  }) async {
+    try {
+      await previewCompletion;
+    } catch (_) {
+      // Preview failure is terminal too; all known paths are still removed.
+    }
+    await _deleteAutomaticCandidateArtifacts(artifactPaths);
+  }
+
+  void _clearActivePhotoTransaction(AcceptedPhotoTransaction transaction) {
+    if (identical(_activePhotoTransaction?.transaction, transaction)) {
+      _activePhotoTransaction = null;
+    }
+  }
+
+  Future<void> _deleteAutomaticCandidateArtifacts(
+    Iterable<String> paths,
+  ) async {
+    for (final path in paths.toSet()) {
+      if (path.isEmpty) continue;
+      try {
+        final file = File(path);
+        if (await file.exists()) await file.delete();
+      } catch (error) {
+        TelemetryWriter.instance.event('automatic_candidate_cleanup', {
+          'file': _basename(path),
+          'outcome': 'delete_failed',
+          'error': '$error',
+        });
+      }
+    }
   }
 
   Future<bool> _hasCompleteArFrameSidecar(String metadataPath) async {

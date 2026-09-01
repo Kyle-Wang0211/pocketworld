@@ -1,5 +1,8 @@
+import 'dart:typed_data';
+
 enum OfficialHighResInputFailure {
   captureFailed,
+  captureTimedOut,
   unexpectedDimensions,
   outOfSync,
   missingPose,
@@ -8,6 +11,26 @@ enum OfficialHighResInputFailure {
   actualStillMissingEvidence,
   actualStillQualityRejected,
   actualStillDuplicate,
+  transactionMismatch,
+}
+
+/// Typed terminal receipt for a shutter ticket that was admitted but did not
+/// produce an accepted reconstruction photo. Callers can log the exact
+/// cross-platform failure enum instead of scraping a generic StateError.
+class OfficialHighResCaptureException implements Exception {
+  const OfficialHighResCaptureException(
+    this.failure, {
+    required this.message,
+    this.rejectedInput,
+  });
+
+  final OfficialHighResInputFailure failure;
+  final String message;
+  final OfficialHighResReconstructionInput? rejectedInput;
+
+  @override
+  String toString() =>
+      'OfficialHighResCaptureException(${failure.name}): $message';
 }
 
 class OfficialHighResInputValidation {
@@ -23,38 +46,64 @@ class OfficialHighResInputValidation {
 
 class OfficialHighResReconstructionInput {
   const OfficialHighResReconstructionInput._({
+    required this.transactionId,
     required this.jpegPath,
     required this.imageWidth,
     required this.imageHeight,
     required this.triggerTimestamp,
     required this.captureTimestamp,
-    required this.cameraTransform,
+    required this.requestPose,
+    required this.evidencePose,
+    required this.cardPose,
     required this.intrinsics,
+    required this.gray128,
   });
 
   static const int requiredWidth = 4032;
   static const int requiredHeight = 3024;
 
+  final String transactionId;
   final String jpegPath;
   final int imageWidth;
   final int imageHeight;
   final double triggerTimestamp;
   final double captureTimestamp;
-  final List<double> cameraTransform;
+  final List<double> requestPose;
+  final List<double> evidencePose;
+  final List<double> cardPose;
+
+  /// Compatibility view for consumers not yet migrated to the explicit
+  /// evidence-pose name. New transaction code must use [evidencePose].
+  List<double> get cameraTransform => evidencePose;
   final List<double> intrinsics;
+  final Uint8List? gray128;
 
   double get timestampDeltaSeconds =>
       (captureTimestamp - triggerTimestamp).abs();
 
   static OfficialHighResInputValidation validate({
+    String? expectedTransactionId,
+    String? transactionId,
     required String jpegPath,
     required int imageWidth,
     required int imageHeight,
     required double triggerTimestamp,
     required double captureTimestamp,
-    required List<double> cameraTransform,
+    List<double>? requestPose,
+    List<double>? evidencePose,
+    List<double>? cardPose,
+    List<double>? cameraTransform,
     required List<double> intrinsics,
+    Uint8List? gray128,
   }) {
+    final resolvedTransactionId = transactionId ?? expectedTransactionId ?? '';
+    if (expectedTransactionId != null &&
+        (expectedTransactionId.isEmpty ||
+            resolvedTransactionId != expectedTransactionId)) {
+      return const OfficialHighResInputValidation.rejected(
+        OfficialHighResInputFailure.transactionMismatch,
+      );
+    }
     if (jpegPath.isEmpty ||
         !(jpegPath.toLowerCase().endsWith('.jpg') ||
             jpegPath.toLowerCase().endsWith('.jpeg'))) {
@@ -78,8 +127,15 @@ class OfficialHighResReconstructionInput {
         OfficialHighResInputFailure.outOfSync,
       );
     }
-    if (cameraTransform.length != 16 ||
-        cameraTransform.any((value) => !value.isFinite)) {
+    final resolvedEvidencePose = evidencePose ?? cameraTransform ?? const [];
+    final resolvedRequestPose = requestPose ?? resolvedEvidencePose;
+    final resolvedCardPose = cardPose ?? resolvedRequestPose;
+    if (resolvedRequestPose.length != 16 ||
+        resolvedRequestPose.any((value) => !value.isFinite) ||
+        resolvedEvidencePose.length != 16 ||
+        resolvedEvidencePose.any((value) => !value.isFinite) ||
+        resolvedCardPose.length != 16 ||
+        resolvedCardPose.any((value) => !value.isFinite)) {
       return const OfficialHighResInputValidation.rejected(
         OfficialHighResInputFailure.missingPose,
       );
@@ -92,13 +148,17 @@ class OfficialHighResReconstructionInput {
     }
     return OfficialHighResInputValidation.accepted(
       OfficialHighResReconstructionInput._(
+        transactionId: resolvedTransactionId,
         jpegPath: jpegPath,
         imageWidth: imageWidth,
         imageHeight: imageHeight,
         triggerTimestamp: triggerTimestamp,
         captureTimestamp: captureTimestamp,
-        cameraTransform: List<double>.unmodifiable(cameraTransform),
+        requestPose: List<double>.unmodifiable(resolvedRequestPose),
+        evidencePose: List<double>.unmodifiable(resolvedEvidencePose),
+        cardPose: List<double>.unmodifiable(resolvedCardPose),
         intrinsics: List<double>.unmodifiable(intrinsics.take(4)),
+        gray128: gray128 == null ? null : Uint8List.fromList(gray128),
       ),
     );
   }

@@ -11,6 +11,7 @@
 //     见报告),widget test 起不来,所以页面里那部分只能靠源码断言钉住。
 //     这一层的每一条都对应评审点出的一个静默失效路径。
 
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -104,10 +105,11 @@ class _WiredHost {
   }) {
     queue = ManualCaptureQueue(
       maxTickets: kOfficialMaximumCaptureFrames,
-      // 执行体永不推进:同步的测试体里 microtask 不会被抽干,所以票会一直
-      // 挂在队列上 —— 这正是"在途票"的真实形态。
       execute: (ManualCaptureTicket t) async {
         heldForever.add(t);
+        final completion = Completer<void>();
+        activeCompletion = completion;
+        await completion.future;
       },
     );
   }
@@ -126,6 +128,14 @@ class _WiredHost {
 
   late final ManualCaptureQueue queue;
   final List<ManualCaptureTicket> heldForever = <ManualCaptureTicket>[];
+  Completer<void>? activeCompletion;
+
+  Future<void> completeActive() async {
+    final completion = activeCompletion;
+    activeCompletion = null;
+    if (completion != null && !completion.isCompleted) completion.complete();
+    await Future<void>.delayed(Duration.zero);
+  }
 
   /// 已落库张数(= 页面的 `_projectPhotos.count`)。执行体不推进,所以恒 0。
   int verified = 0;
@@ -133,12 +143,12 @@ class _WiredHost {
   int fireAttempts = 0;
 
   late final AutoCaptureController controller = AutoCaptureController(
-    onStartAnchor: () => true,
-    onFire: () {
+    onStartAnchor: (_) => true,
+    onFire: (_) {
       fireAttempts++;
       final ticket = queue.enqueue(verifiedCount: verified);
       if (ticket != null) admitted++;
-      telemetry?.recordFireOutcome(enqueued: ticket != null);
+      telemetry?.recordFireOutcome(admitted: ticket != null);
       return reportRealEnqueueResult ? ticket != null : true;
     },
     paceProvider: () => ShutterPace.normal,
@@ -147,6 +157,8 @@ class _WiredHost {
     thermalStateProvider: () => 0, // nominal:接线口径的对照与热态无关
     // 接线口径与活体深度无关:null ⇒ 兜底位移 0.10m(governor 的常数)。
     liveDepthProvider: (_) => null,
+    testOnlyAllowLegacySignatureEvidence: true,
+    synchronousReceiptProvider: () => true,
   );
 }
 
@@ -379,13 +391,13 @@ void main() {
       expect(running, contains('停止'));
     });
 
-    test('low-overlap warning asks the user to slow down', () {
+    test('low-overlap telemetry never turns into a user speed command', () {
       final warning = autoCaptureShutterHintText(
         mode: OfficialCaptureMode.auto,
         running: true,
         shouldPromptSlowDown: true,
       );
-      expect(warning, contains('减速'));
+      expect(warning, '拍摄中，再点一下录制键停止');
     });
 
     test(
@@ -515,7 +527,7 @@ void main() {
     //(b)页面的真实调用序是"onPose 内部先 recordFireOutcome、返回后再
     //     recordDecision"—— 此前完全靠人肉对齐,没有任何测试会在它们分叉
     //     时变红。这一条把真 controller、真队列、真聚合器串起来跑一遍。
-    test('the self-check invariant survives a real trajectory', () {
+    test('the self-check invariant survives a real trajectory', () async {
       final tel = AutoCaptureTelemetry();
       final h = _WiredHost(
         reportRealEnqueueResult: true,
@@ -541,6 +553,7 @@ void main() {
       for (var i = 1; i <= 90; i++) {
         drive(_pose(t: i / 30.0, pos: Vector3(i * 0.02, 0, 0)));
       }
+      await h.completeActive();
       // 队列停收 1 秒 —— 收尾 freezeAndDrain / cancelPending 的真实形态。
       h.queue.cancelPending();
       for (var i = 91; i <= 120; i++) {
@@ -555,13 +568,14 @@ void main() {
       final counts = snap['decision_counts']! as Map<String, int>;
       expect(counts['fire'], greaterThan(0));
       expect(
-        snap['fire_enqueue_failed'],
+        snap['fire_busy_not_admitted'],
         greaterThan(0),
         reason: 'the frozen stretch must really have failed to enqueue',
       );
       // 自检不变式:开火数 = 拍成的 + 没拍成的。真序列上也必须成立。
       expect(
-        (snap['fire_enqueued']! as int) + (snap['fire_enqueue_failed']! as int),
+        (snap['fire_admitted']! as int) +
+            (snap['fire_busy_not_admitted']! as int),
         counts['fire'],
       );
       // fire_before_tick = 相邻两发间隔 < 当档间隔(normal=0.25s)的发数,
@@ -580,14 +594,7 @@ void main() {
     });
   });
 
-  group('capturedCountProvider must include in-flight tickets', () {
-    // 队列收人的条件是 `verified + outstanding < 300`;governor 停在
-    // `capturedCount >= 300`。少算在途票,两者就永远对不上。
-    //
-    // 输入:每帧转 12°、帧距 0.05s ⇒ 每 5 帧(0.25s 去抖)开一火。
-    // 这是明确的 rotationCoverage，不依赖“低重叠警告本身是否值得花照片”
-    // 的产品策略。执行体永不推进 ⇒ verified 恒 0,票全挂在
-    // 队列上 = 满编的在途。admit 满 300 需要 300×5 帧。
+  group('shared high-resolution coordinator is single-flight', () {
     void drive(_WiredHost h, int poses) {
       h.controller.start(_pose(t: 0));
       for (var i = 1; i <= poses; i++) {
@@ -595,50 +602,32 @@ void main() {
       }
     }
 
-    const framesToCap = kOfficialMaximumCaptureFrames * 5;
-
-    test('with in-flight counted, the controller stops itself at the cap', () {
+    test('a long eligible trajectory owns at most one active ticket', () {
       final h = _WiredHost(reportRealEnqueueResult: true, countsInFlight: true);
-      drive(h, framesToCap + 50);
-      expect(h.admitted, kOfficialMaximumCaptureFrames);
-      expect(h.controller.isRunning, isFalse);
+      drive(h, 500);
+      expect(h.admitted, 1);
+      expect(h.queue.outstandingCount, 1);
+      expect(h.fireAttempts, greaterThan(1));
+      expect(h.controller.isRunning, isTrue);
     });
 
-    test('counting only verified photos, the controller never stops', () {
-      // 与上一条**唯一**的差别是 countsInFlight。
-      final h = _WiredHost(
-        reportRealEnqueueResult: true,
-        countsInFlight: false,
-      );
-      drive(h, framesToCap + 50);
-      expect(h.admitted, kOfficialMaximumCaptureFrames);
-      expect(
-        h.controller.isRunning,
-        isTrue,
-        reason: 'the governor never saw the cap it was supposed to stop at',
-      );
-      expect(
-        h.fireAttempts,
-        greaterThan(kOfficialMaximumCaptureFrames),
-        reason: 'it keeps banging on a door that is already closed',
-      );
-      // …但只按去抖的节奏撞,不是每帧撞一次:失败的开火照样吃掉一次预算
-      // (spec §7)。50 帧 × 0.05 s = 2.5 s ⇒ 至多 ⌈2.5/0.25⌉+1 = 11 次重试
-      // (每帧撞的话是 50 次)。
-      expect(
-        h.fireAttempts - kOfficialMaximumCaptureFrames,
-        lessThanOrEqualTo(11),
-        reason: 'a failed fire consumes the debounce budget',
-      );
-    });
-
-    test('the queue admits exactly the cap, in-flight included', () {
-      // 把上面两条依赖的队列语义单独钉住:在途票**算进**预算。
-      final h = _WiredHost(reportRealEnqueueResult: true, countsInFlight: true);
-      drive(h, framesToCap + 50);
-      expect(h.queue.outstandingCount, kOfficialMaximumCaptureFrames);
-      expect(h.verified, 0);
-    });
+    test(
+      'the next eligible frame may admit only after the receipt terminal',
+      () async {
+        final h = _WiredHost(
+          reportRealEnqueueResult: true,
+          countsInFlight: true,
+        );
+        drive(h, 50);
+        expect(h.admitted, 1);
+        await h.completeActive();
+        for (var i = 51; i <= 100; i++) {
+          h.controller.onPose(_pose(t: i * 0.05, yawDeg: i * 12.0));
+        }
+        expect(h.admitted, 2);
+        expect(h.queue.outstandingCount, 1);
+      },
+    );
   });
 
   test(
@@ -665,29 +654,21 @@ void main() {
       expect(RegExp(r'_shutterQueue\.enqueue\(').allMatches(page).length, 1);
       expect(
         RegExp(
-          r'_session == null \|\| !_sfmCaptureReady \|\| !_shutterQueue\.accepting',
+          r'_session == null\s*\|\|\s*!_captureAdmissionOpen\s*\|\|\s*!_shutterQueue\.accepting',
         ).allMatches(page).length,
         1,
       );
-      expect(
-        page,
-        contains(
-          'bool _enqueueShutterCapture({bool automaticSelection = false})',
-        ),
-      );
+      expect(page, contains('bool _enqueueShutterCapture({'));
     });
 
     test('the auto fire hook returns the enqueue result, not a constant', () {
       final page = _pageSource();
       final fire = _section(
         page,
-        'bool _onAutoCaptureFire()',
+        'bool _onAutoCaptureFire(',
         'void _onShutterTap()',
       );
-      expect(
-        fire,
-        contains('_enqueueShutterCapture(automaticSelection: true)'),
-      );
+      expect(fire, contains('automaticSelection: true,'));
       expect(fire, isNot(contains('return true;')));
       // 到 300 张时自动模式**不弹对话框** —— 每秒撞一次会刷屏。
       expect(fire, isNot(contains('_showMaximumPhotosDialog')));
@@ -703,6 +684,32 @@ void main() {
         'Future<void> _showMaximumPhotosDialog()',
       );
       expect(tap, contains('_showMaximumPhotosDialog()'));
+      expect(tap, contains('_ShutterAdmission.busyNotAdmitted'));
+      expect(tap, contains('_showManualShutterBusyFeedback()'));
+    });
+
+    test('no capture mode queues behind an active high-resolution shutter', () {
+      final page = _pageSource();
+      final admission = _section(
+        page,
+        '_ShutterAdmission _admitShutterCapture({',
+        'bool _enqueueShutterCapture({',
+      );
+      final singleFlightGuard = admission.indexOf(
+        'if (_shutterQueue.outstandingCount > 0)',
+      );
+      final enqueue = admission.indexOf(
+        'final ticket = _shutterQueue.enqueue(',
+      );
+
+      expect(singleFlightGuard, greaterThanOrEqualTo(0));
+      expect(
+        singleFlightGuard,
+        lessThan(enqueue),
+        reason:
+            'manual and automatic selection must remain candidates while one '
+            '12MP transaction is active; neither may become a delayed shutter',
+      );
     });
 
     test('captured count reuses the bar\'s in-flight-inclusive expression', () {
@@ -766,7 +773,7 @@ void main() {
       final colorizeSwitch = _section(
         page,
         'case SfmLivePreview(:final snapshot):',
-        'Future<void> _colorizeSnapshot(',
+        'Future<bool> _colorizeSnapshot(',
       );
       expect(colorizeSwitch, contains('_liveCloudXyz = snapshot.xyz'));
     });
@@ -831,7 +838,11 @@ void main() {
         'Future<void> _onFinishTap()',
         'Future<void> _finalizeRecording(',
       );
-      expect(finish, contains('_stopAutoCapture()'));
+      expect(
+        finish,
+        isNot(contains('_stopAutoCapture()')),
+        reason: 'confirmation gates must not mutate capture before commit',
+      );
       final finalize = _section(
         page,
         'Future<void> _finalizeRecording(',
@@ -868,29 +879,34 @@ void main() {
     });
 
     test(
-      'the record-button pulse fires on a real enqueue, not on a decision',
+      'the record-button pulse fires on an accepted 12MP receipt, not admission',
       () {
         // spec §8「**落帧**时 → 指示器脉冲一次」,而 spec §7 把"开火"与"拍成"
-        // 分得很清楚(遥测层就是为此拆成 fire_enqueued / fire_enqueue_failed)。
+        // 分得很清楚(遥测层为此拆成 admitted / busy-not-admitted)。
         // 〔2026-08-19 评审改正〕此前 `if (fired) _autoFirePulseToken++;` 读的是
         // governor 的判定 —— 入队失败时红键照样脉冲、N/300 一动不动,而自动
         // 模式下那颗红键的脉冲是"到底拍上没有"的**唯一**反馈。
         final page = _pageSource();
         final fire = _section(
           page,
-          'bool _onAutoCaptureFire()',
+          'bool _onAutoCaptureFire(',
           'void _onShutterTap()',
         );
-        // 四角色开火与起跑锚点各有一处真实入队脉冲；两者都只在 admitted
-        // 后自增，不能回到 decision 驱动。
-        expect(fire, contains('if (enqueued) _autoFirePulseToken++;'));
+        expect(fire, isNot(contains('_autoFirePulseToken++')));
         final anchor = _section(
           page,
-          'bool _onAutoCaptureStartAnchor()',
-          'bool _onAutoCaptureFire()',
+          'bool _onAutoCaptureStartAnchor(',
+          'bool _onAutoCaptureFire(',
         );
-        expect(anchor, contains('if (enqueued) _autoFirePulseToken++;'));
-        expect(RegExp(r'_autoFirePulseToken\+\+').allMatches(page).length, 2);
+        expect(anchor, isNot(contains('_autoFirePulseToken++')));
+        final execute = _section(
+          page,
+          'Future<void> _executeShutterTicket(',
+          'void _onShutterTicketError(',
+        );
+        expect(execute, contains('await capture.highResolutionCompletion'));
+        expect(execute, contains('_autoFirePulseToken++'));
+        expect(RegExp(r'_autoFirePulseToken\+\+').allMatches(page).length, 1);
         final drive = _section(
           page,
           'void _driveAutoCapture(ARPose pose)',
@@ -905,37 +921,22 @@ void main() {
       },
     );
 
-    test('everything that invalidates enqueue also stops auto capture', () {
-      // 〔2026-08-19 评审改正〕_noteSfmInternalFailure 连续 3 次 native
-      // errInternal 就把 _sfmStartFailureText 置非空 ⇒ _sfmCaptureReady 翻
-      // false ⇒ _admitShutterCapture 恒 blocked。这条路此前**没有**停自动拍,
-      // 而其余四条(退后台 / 退出弹窗 / 完成 / finalize)都停了 —— 于是自动拍
-      // 会对着一扇永远关着的门一路空转到 5 分钟上限。
+    test('live SfM degradation never invalidates camera admission', () {
       final page = _pageSource();
       final note = _section(
         page,
         'void _noteSfmInternalFailure(String reason)',
         'void _markPhotoDisconnected(',
       );
-      expect(note, contains('_stopAutoCapture()'));
-      // 停在**真的置了标志**的那条路上,不是在早退之前(早退时标志没变,
-      // 停了反而是无谓的副作用)。
-      expect(
-        note.indexOf('_stopAutoCapture()'),
-        greaterThan(note.indexOf('if (_sfmStartFailureText == text')),
-      );
+      expect(note, isNot(contains('_stopAutoCapture()')));
       final mark = _section(
         page,
         'void _markSfmStartFailure(String detail)',
         'Future<void> _startSfmLiveRecon(',
       );
-      expect(mark, contains('_stopAutoCapture()'));
-      // 全页只有这一处 getter 定义 —— 上面两段之外没有第三条会翻它的路。
-      expect(
-        RegExp(r'_sfmStartFailureText = ').allMatches(page).length,
-        3,
-        reason: '两处置错 + 一处清空;新增第四处就必须一并接上 _stopAutoCapture',
-      );
+      expect(mark, isNot(contains('_stopAutoCapture()')));
+      expect(page, contains('bool get _captureAdmissionOpen =>'));
+      expect(page, contains('bool get _liveReconReady =>'));
     });
   });
 
@@ -1036,32 +1037,26 @@ void main() {
       },
     );
 
-    test('slow-down guidance participates in the throttled UI state', () {
-      final page = _pageSource();
-      expect(page, contains('final promptSlowDown ='));
-      expect(page, contains('promptSlowDown == _autoPromptSlowDown'));
-      expect(page, contains('_autoPromptSlowDown = promptSlowDown'));
-      expect(page, contains('shouldPromptSlowDown: _autoPromptSlowDown'));
-    });
+    test(
+      'overlap telemetry is not wired into the capture instruction copy',
+      () {
+        final page = _pageSource();
+        expect(
+          page,
+          isNot(contains('shouldPromptSlowDown: _autoPromptSlowDown')),
+        );
+      },
+    );
 
-    test('the four transient banners are back at their signed bands', () {
-      // [2026-07-27 UI 签决] 删掉常驻入场提示时,同一条签决要求"下面几档顶部
-      // 横幅回到各自的固定档位,不再有让位入场提示的偏移"。这里逐条回读每个
-      // 横幅**自己**那条 padding,而不是数字面量出现次数 —— 后者换个位置就
-      // 骗过去了。
+    test('private quality and SfM evidence render no capture warning', () {
       final page = _pageSource();
-      expect(_bandOf(page, "'sfm-start-failure-banner-official'"), 66);
-      expect(_bandOf(page, '_HardRejectToast(stream:'), 60);
-      expect(_bandOf(page, '_MotionSpeedToast(stream:'), 104);
-      expect(_bandOf(page, '_ParallaxStarvedBanner('), 148);
-      expect(_bandOf(page, '_DisconnectedPhotoBanner('), 192);
-      // 说明条与硬拒 toast 共用第 60 档。真撞上时由**警告赢** —— 靠 Stack
-      // 顺序:说明条排在前面,警告画在它上面。
       expect(_bandOf(page, '_CaptureModeTopHint(mode:'), 60);
-      expect(
-        page.indexOf('_CaptureModeTopHint(mode:'),
-        lessThan(page.indexOf('_HardRejectToast(stream:')),
-      );
+      expect(page, isNot(contains('class _HardRejectToast')));
+      expect(page, isNot(contains('class _MotionSpeedToast')));
+      expect(page, isNot(contains('class _ParallaxStarvedBanner')));
+      expect(page, isNot(contains('class _DisconnectedPhotoBanner')));
+      expect(page, isNot(contains('移动太快，慢一点')));
+      expect(page, isNot(contains('张照片未连接')));
     });
 
     test(
@@ -1079,7 +1074,7 @@ void main() {
         // 之后只有模式真的变了才再露。父级每帧都可能重建(pose 流 20–60 Hz),
         // 没有这条早退,"瞬态"会退化成常驻,只是绕了个圈。
         expect(hint, contains('if (widget.mode == oldWidget.mode) return;'));
-        // 自动淡出,且沿用 _HardRejectToast 那条 3 秒,不新造常数。
+        // 自动淡出。
         expect(hint, contains('Timer(const Duration(seconds: 3)'));
         // ⚠️ 断言的是**淡出那一句**,不是字段初值 `bool _visible = false;`
         // —— 后者在"永不淡出"的改法下依然在,数它等于没数。
@@ -1110,12 +1105,6 @@ void main() {
         expect(firstArm, lessThan(didUpdateAt));
         // 第二处在 didUpdateWidget 的早退**之后**(模式真的变了才重新计时)。
         expect(secondArm, greaterThan(earlyReturnAt));
-        final rejectToast = _section(
-          page,
-          'class _HardRejectToastState',
-          'class _ParallaxStarvedBanner',
-        );
-        expect(rejectToast, contains('Duration(seconds: 3)'));
         // 页面里没有第二处常驻的顶部说明条了。
         expect(RegExp(r'_IdleHintPill\(').allMatches(page).length, 3);
       },
@@ -1133,53 +1122,28 @@ void main() {
     });
   });
 
-  // [pw] 2026-08-24:原来这里有一条守「收尾遮罩」的测试,随遮罩一起撤掉。
-  // 撤的依据是同行调研:黑底 spinner 零家在做,Apple 示例在 .finishing 期间
-  // 保持相机视图。理由写在 ar_capture_page.dart 对应位置。
-
-  // [pw] 2026-08-24 真因:点完成后**还在拍**,而且手动模式完全没有。
-  //
-  // enqueue() 只排一张票,真正的 12MP 拍照在 _pump() 里 ⇒ pending 的票是
-  // **还没拍的照片**,而 freezeAndDrain() 会把它们全拍完才返回。
-  // 手动点一下拍一张,点完成时 outstandingCount==0 ⇒ 直接返回 ⇒ 秒结束;
-  // 自动 1 秒 1 张压着,pump 串行,队列一直涨 ⇒ 结束后还要补拍一摞。
-  test('点完成先丢掉未拍的排队票,而不是把它们全拍完', () {
+  test('确认门通过后才原子封闭单飞快门并切入 Finish', () {
     final src = _pageSource();
     final finish = _section(
       src,
       'Future<void> _onFinishTap() async {',
-      'setState(() => _finishTapInProgress = true);',
+      'Future<void> _finalizeRecording({',
+    );
+    final finalize = _section(
+      src,
+      'Future<void> _finalizeRecording({',
+      'void _showFinishCoordinatorFailure(',
     );
 
-    expect(finish.contains('_stopAutoCapture();'), isTrue);
+    expect(finish, isNot(contains('_shutterQueue.cancelPending();')));
+    expect(finish, isNot(contains('_stopAutoCapture();')));
+    expect(finalize, contains('_finishCoordinator.beginFinish('));
+    expect(finalize, contains('_stopAutoCapture();'));
+    expect(finalize, contains('_shutterQueue.cancelPending();'));
+    expect(finalize, contains('_suppressActivePhotoPresentationForFinish'));
     expect(
-      finish.contains('_shutterQueue.cancelPending();'),
-      isTrue,
-      reason: '不 cancel 就等于按了结束还要把排队的票全部拍完',
-    );
-
-    // 顺序:必须先 cancel 再 drain。反过来 drain 会先把票拍光,cancel 就成了
-    // 一句空操作 —— 这是最容易在后续重构里被悄悄改坏的一处。
-    final iCancel = finish.indexOf('_shutterQueue.cancelPending();');
-    final iDrainAll = src.indexOf(
-      'await _shutterQueue.freezeAndDrain();',
-      src.indexOf('Future<void> _onFinishTap() async {'),
-    );
-    expect(iCancel, greaterThanOrEqualTo(0));
-    expect(
-      src.indexOf(
-        '_shutterQueue.cancelPending();',
-        src.indexOf('Future<void> _onFinishTap() async {'),
-      ),
-      lessThan(iDrainAll),
-      reason: 'cancel 必须排在 drain 之前,否则票已经被拍光了',
-    );
-
-    // 丢了多少必须可见 —— 静默丢弃是本仓库反复踩过的那类失效。
-    expect(
-      finish.contains('finish_cancel_pending'),
-      isTrue,
-      reason: '丢弃张数必须进遥测',
+      finalize.indexOf('_shutterQueue.cancelPending();'),
+      lessThan(finalize.indexOf('await _shutterQueue.freezeAndDrain();')),
     );
 
     // 负向:别把"丢未拍的票"扩大成"丢已拍的数据"。
@@ -1189,33 +1153,32 @@ void main() {
       '_projectPhotos.clear',
     ]) {
       expect(
-        finish.contains(banned),
+        finalize.contains(banned),
         isFalse,
         reason: '完成键出现 $banned = 从"取消未拍"越界成"删已拍"',
       );
     }
   });
 
-  // 对照:放弃拍摄本来就是 cancel + drain;保存并退出刻意**不** cancel。
-  // 三条路的语义必须各自不同,任何一条被抄成另一条都是行为回归。
-  test('三条收尾路径的语义各自不同,不许互相抄', () {
+  test('三条收尾路径共用事务边界但保留各自数据语义', () {
     final src = _pageSource();
-    // ⚠️ _section **包含**起始锚点本身,所以锚点里不能出现要断言"不存在"的
-    //    那个词 —— 否则断言的是自己的锚点(这条上一版就踩了)。
-    final saveExit = _section(
+    final close = _section(
       src,
-      '_discardingCapture = true;\n        final session = _session;',
-      'await _persistDraft(showSnackBar: false);',
+      'Future<void> _onCloseTap() async {',
+      'Future<void> _onCenterTap() async {',
     );
-    expect(
-      saveExit.contains('cancelPending'),
-      isFalse,
-      reason: '保存并退出是无损路径:在途快门要全部落地',
+    final commit = _section(
+      src,
+      'Future<void> _commitCaptureExit({',
+      'Future<void> _continueCommittedReconstruction({',
     );
-    expect(
-      saveExit.contains('freezeAndDrain'),
-      isTrue,
-      reason: '负向对照:这段确实是收尾路径,不是抓了个空串',
-    );
+
+    expect(close, contains('_CommittedCaptureExit.saveDraft'));
+    expect(close, contains('_CommittedCaptureExit.discard'));
+    expect(commit, contains('_finishCoordinator.beginFinish('));
+    expect(commit, contains('await _shutterQueue.freezeAndDrain();'));
+    expect(commit, contains('await _persistDraft(showSnackBar: false)'));
+    expect(commit, contains('await session.discardCurrentCapture()'));
+    expect(commit, contains('_continueCommittedReconstruction('));
   });
 }

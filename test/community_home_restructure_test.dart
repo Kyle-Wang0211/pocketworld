@@ -70,8 +70,7 @@ void main() {
 
   group('§5 主题卡', () {
     test('D5:做成流内第一张卡,靠下标偏移,不换 CustomScrollView', () {
-      // 注:偏移条件后来从 kShowCommunityTopicCard 换成 _showTopicCard ——
-      // 因为主题卡还要与 D7 的作者过滤联动(过滤时隐藏)。
+      // 保留 _showTopicCard 这个单一开关,列表偏移不与作者导航耦合。
       expect(code, contains('itemCount: works.length + (_showTopicCard ? 1 : 0)'));
       expect(code, contains('if (_showTopicCard && rawIndex == 0)'));
       expect(code, contains('final i = rawIndex - (_showTopicCard ? 1 : 0);'));
@@ -186,7 +185,7 @@ void main() {
     });
   });
 
-  group('§6 @handle 流内过滤', () {
+  group('§6 @handle 作者主页导航', () {
     final card = File('lib/ui/community/work_card.dart').readAsStringSync();
     final svc = File('lib/community/community_service.dart').readAsStringSync();
 
@@ -195,14 +194,37 @@ void main() {
       expect(svc, contains(".eq('user_id', authorUserId)"));
     });
 
-    test('D7:点 @handle 走过滤,**不做个人主页**', () {
+    test('点 @handle 导航到作者主页,并传入当前作品作为 seed', () {
       expect(card, contains('onAuthorTap'));
       expect(code, contains('void _onAuthorTap(FeedWork work)'));
-      expect(code, contains('_authorFilterId = work.userId'));
-      // 明确不做的东西,一样都不许冒出来
-      for (final forbidden in ['ProfilePage', 'FollowButton', 'followersCount',
-                               'followingCount', 'avatarUrl:', 'bio']) {
-        expect(code, isNot(contains(forbidden)), reason: 'D7 明确不做:$forbidden');
+      expect(code, contains('onAuthorTap: _onAuthorTap'));
+
+      final handlerStart = code.indexOf('void _onAuthorTap(FeedWork work)');
+      final handlerEnd = code.indexOf('void _onClearQuery()', handlerStart);
+      final handler = code.substring(handlerStart, handlerEnd);
+      for (final navigationStep in [
+        'Navigator.of(context).push(',
+        'MaterialPageRoute<void>',
+        'UserProfilePage(',
+        'userId: work.userId',
+        'seedWork: work',
+      ]) {
+        expect(
+          handler,
+          contains(navigationStep),
+          reason: '作者点击回调必须完整导航:$navigationStep',
+        );
+      }
+    });
+
+    test('旧的作者过滤状态、清除路径和过滤条已删除', () {
+      for (final removed in [
+        '_authorFilterId',
+        '_authorFilterName',
+        '_clearAuthorFilter',
+        '_AuthorFilterBar',
+      ]) {
+        expect(code, isNot(contains(removed)), reason: '旧过滤路径应删除:$removed');
       }
     });
 
@@ -210,8 +232,8 @@ void main() {
       expect(card, contains('_authorTapRecognizer.dispose()'));
     });
 
-    test('过滤生效时主题卡隐藏 —— 策展卡在"只看某人"里没有意义', () {
-      expect(code, contains('kShowCommunityTopicCard && _authorFilterId == null'));
+    test('主题卡只受社区主题卡开关控制', () {
+      expect(code, contains('bool get _showTopicCard => kShowCommunityTopicCard;'));
     });
   });
 }

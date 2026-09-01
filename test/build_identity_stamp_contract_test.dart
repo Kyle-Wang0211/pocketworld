@@ -116,6 +116,7 @@ void main() {
     expect(script, contains('PWXrslamSHA256'));
     expect(script, contains('PWXrslamBuildPatchSHA256'));
     expect(script, contains('PWXrslamDestroyLifecyclePatchSHA256'));
+    expect(script, contains('PWXrslamZeroInlierMaskPatchSHA256'));
     expect(script, contains('PWXrslamAlgorithmBranch'));
     expect(script, contains('PWOpenCVSHA256'));
     expect(script, contains('PWCeresSHA256'));

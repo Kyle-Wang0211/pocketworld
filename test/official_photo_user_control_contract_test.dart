@@ -46,10 +46,14 @@ void main() {
     },
   );
 
-  test('red photo warning is driven by the project-photo ledger', () {
-    expect(captureSource, contains('shouldWarnDisconnected'));
-    expect(captureSource, contains('照片未连接'));
-    expect(captureSource, contains('请在红色照片附近补拍连接画面'));
+  test('disconnected count and red state are driven by the project ledger', () {
+    expect(albumSource, contains('projectPhotos.disconnectedCount'));
+    expect(albumSource, contains('未连接'));
+    expect(albumSource, contains('PhotoCardSfmState.disconnected'));
+    expect(
+      File('lib/official_capture/project_photo_album.dart').readAsStringSync(),
+      contains('shouldWarnDisconnected'),
+    );
   });
 
   test('SfM rejection marks the retained photo red instead of removing it', () {
@@ -90,7 +94,11 @@ void main() {
     final deleteSource = captureSource.substring(deleteStart, deleteEnd);
 
     expect(deleteSource, contains('await recon.removePhoto('));
-    expect(deleteSource, contains('_projectPhotos.remove(path)'));
+    expect(
+      deleteSource,
+      contains('await session.tombstoneCanonicalPhoto(path)'),
+    );
+    expect(deleteSource, isNot(contains('_projectPhotos.remove(path)')));
     expect(liveSource, contains('Future<bool> removePhoto(String jpegPath)'));
     expect(liveSource, contains("'cmd': 'remove_frame'"));
     expect(liveSource, contains('session!.removeFrame(frameId)'));

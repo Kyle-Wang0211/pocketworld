@@ -128,8 +128,8 @@ void main() {
       ).readAsStringSync();
 
       expect(source, contains('private static let maxQueuedWork = 256'));
-      expect(source, contains('private static let maxRetainedImages = 2'));
-      expect(source, contains('guard lock.try() else'));
+      expect(source, contains('private static let maxRetainedImages = 30'));
+      expect(source, isNot(contains('guard lock.try() else')));
       expect(source, contains('reason: .cameraFull'));
       expect(source, contains('reason: .queueFull'));
       expect(source, contains('pendingWork[pendingTail] = work'));
@@ -145,6 +145,7 @@ void main() {
     expect(script, contains('libxrslam_generic_4beb1a9.a'));
     expect(script, contains('PWXrslamUpstreamRevision'));
     expect(script, contains('4beb1a942f33da9afbfae2d70e2c641cfc2bb675'));
+    expect(script, contains('PWXrslamZeroInlierMaskPatchSHA256'));
   });
 
   test('iOS generic artifact is a truthful frozen full-target rebuild', () {
@@ -232,6 +233,46 @@ void main() {
       'lib/vio/ffi/xrslam_build_contract.dart',
     ).readAsStringSync();
     expect(contract, contains('destroyLifecyclePatchSha256'));
+    expect(contract, contains('zeroInlierMaskPatchSha256'));
+  });
+
+  test('zero-inlier XRSLAM RANSAC always returns an indexable mask', () {
+    final File patch = File(
+      'vendor/xrslam/patches/xrslam_zero_inlier_mask.patch',
+    );
+    expect(
+      patch.existsSync(),
+      isTrue,
+      reason: 'the production static core must carry the zero-inlier fix',
+    );
+    final String source = patch.readAsStringSync();
+    expect(source, contains('std::vector<char> zero(size, 0);'));
+    expect(source, contains('inlier_mask.swap(zero);'));
+    expect(
+      source.indexOf('inlier_mask.swap(zero);'),
+      lessThan(source.indexOf('if (size < ModelDoF)')),
+      reason: 'every RANSAC return path must preserve mask.size == input size',
+    );
+
+    final Map<String, Object?> receipt =
+        jsonDecode(
+              File(
+                'vendor/xrslam/libs/ios-arm64/'
+                'libxrslam_generic_4beb1a9.receipt.json',
+              ).readAsStringSync(),
+            )
+            as Map<String, Object?>;
+    expect(
+      receipt['zero_inlier_mask_patch_sha256'],
+      sha256.convert(patch.readAsBytesSync()).toString(),
+      reason: 'the installed archive receipt must bind the exact crash patch',
+    );
+
+    final String androidBuild = File(
+      'android_ready/native/xrslam/build_generic_core.sh',
+    ).readAsStringSync();
+    expect(androidBuild, contains('xrslam_zero_inlier_mask.patch'));
+    expect(androidBuild, contains('zero_inlier_mask_patch_sha256'));
   });
 
   test('both platforms declare one generic build contract', () {

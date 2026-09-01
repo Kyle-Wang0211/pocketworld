@@ -162,6 +162,8 @@ class DomeTargetPoints extends ChangeNotifier {
 
   int _validFrameCount = 0;
   int? _currentPointIndex;
+  final Map<String, ({int cellIdx, int slotIdx})> _canonicalAdmissions =
+      <String, ({int cellIdx, int slotIdx})>{};
 
   /// Wall-clock elapsed since last `reset()`. Reset starts the clock,
   /// every state-transition log line prefixes the elapsed seconds so
@@ -396,6 +398,7 @@ class DomeTargetPoints extends ChangeNotifier {
     }
     _validFrameCount = 0;
     _currentPointIndex = null;
+    _canonicalAdmissions.clear();
     _lastRejectReason = null;
     _consecutiveSameRejectCount = 0;
     _acceptedRadiiM.clear();
@@ -759,6 +762,20 @@ class DomeTargetPoints extends ChangeNotifier {
     // live count + AR cards all observe this notifier and must refresh.
     notifyListeners();
     return (cellIdx: bestIdx, slotIdx: slotIdx);
+  }
+
+  /// Replay-safe canonical projection. Reapplying one transaction returns its
+  /// original placement without appending another frame or incrementing
+  /// coverage counters.
+  ({int cellIdx, int slotIdx})? forceAdmitCanonical(
+    String transactionId,
+    CapturedFrameSample sample,
+  ) {
+    final existing = _canonicalAdmissions[transactionId];
+    if (existing != null) return existing;
+    final admitted = forceAdmit(sample);
+    if (admitted != null) _canonicalAdmissions[transactionId] = admitted;
+    return admitted;
   }
 
   // ─── Upload curation (verbatim port from old DomeCoverageMap, but

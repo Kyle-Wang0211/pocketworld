@@ -134,7 +134,24 @@ void main() {
     });
 
     test('返回草稿走裁决入口,不再直接显现草稿层', () {
-      expect(page, contains('onBack: () => unawaited(_onSfmPreviewBack())'));
+      // 〔2026-08-30 锚点迁移〕原来断言的是逐字字符串
+      //   'onBack: () => unawaited(_onSfmPreviewBack())'
+      // 页面重构后 onBack 变成条件式(只在 refined/error 相位可返回),
+      // 逐字锚点因此失效。**契约本身没变**:返回必须经过 _onSfmPreviewBack
+      // 这个裁决入口,不能直接显现草稿层。
+      //
+      // 新写法改成"取出 onBack 这一段再断言",对格式与条件表达式都免疫 ——
+      // 逐字锚点正是这次失效的原因,不该再用第二次。
+      final backStart = page.indexOf('onBack:');
+      expect(backStart, greaterThanOrEqualTo(0), reason: 'onBack 不见了');
+      final backEnd = page.indexOf('onDone:', backStart);
+      expect(backEnd, greaterThan(backStart), reason: 'onDone 锚点不见了');
+      final backSection = page.substring(backStart, backEnd);
+      expect(backSection, contains('_onSfmPreviewBack()'),
+          reason: '返回必须走裁决入口 _onSfmPreviewBack,不能直接 pop 到草稿层');
+      // 负向:这一段里不许出现绕过裁决的直接返回。
+      expect(backSection, isNot(contains('Navigator.of(context).pop(')),
+          reason: 'onBack 里直接 pop = 绕过了未保存选区的裁决');
       expect(page, contains('_confirmLeaveWithSelectionEdits'));
     });
 

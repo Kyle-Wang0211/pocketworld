@@ -1500,6 +1500,282 @@ abstract class AppL10n {
   /// In en, this message translates to:
   /// **'Removal failed. Please try again later.'**
   String get workDeleteFailed;
+
+  /// No description provided for @socialActionFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Action failed. Please try again later.'**
+  String get socialActionFailed;
+
+  /// No description provided for @socialFollowingTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Following'**
+  String get socialFollowingTitle;
+
+  /// No description provided for @socialFollowingLoadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t load your following list'**
+  String get socialFollowingLoadFailed;
+
+  /// No description provided for @socialFollowingEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'You aren\'t following anyone yet'**
+  String get socialFollowingEmpty;
+
+  /// No description provided for @socialFollow.
+  ///
+  /// In en, this message translates to:
+  /// **'Follow'**
+  String get socialFollow;
+
+  /// No description provided for @socialFollowing.
+  ///
+  /// In en, this message translates to:
+  /// **'Following'**
+  String get socialFollowing;
+
+  /// No description provided for @socialWorks.
+  ///
+  /// In en, this message translates to:
+  /// **'Works'**
+  String get socialWorks;
+
+  /// No description provided for @socialFollowers.
+  ///
+  /// In en, this message translates to:
+  /// **'Followers'**
+  String get socialFollowers;
+
+  /// No description provided for @profileLoadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t load this profile'**
+  String get profileLoadFailed;
+
+  /// No description provided for @profileBack.
+  ///
+  /// In en, this message translates to:
+  /// **'Back'**
+  String get profileBack;
+
+  /// No description provided for @profileMore.
+  ///
+  /// In en, this message translates to:
+  /// **'More'**
+  String get profileMore;
+
+  /// No description provided for @profileReportUser.
+  ///
+  /// In en, this message translates to:
+  /// **'Report this user'**
+  String get profileReportUser;
+
+  /// No description provided for @profileBlockUser.
+  ///
+  /// In en, this message translates to:
+  /// **'Block this user'**
+  String get profileBlockUser;
+
+  /// No description provided for @profileBlockTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Block this user?'**
+  String get profileBlockTitle;
+
+  /// No description provided for @profileBlockBody.
+  ///
+  /// In en, this message translates to:
+  /// **'While signed in to PocketWorld with this account, you won\'t see this person in Community, search, following lists, or profiles. Any follow relationship between you will be removed and neither account can follow the other. They won\'t be notified. Public links, signed-out visitors, or other accounts may still see their public content.'**
+  String get profileBlockBody;
+
+  /// No description provided for @profileBlockConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Block'**
+  String get profileBlockConfirm;
+
+  /// No description provided for @profileBlockFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t block this user. Please try again later.'**
+  String get profileBlockFailed;
+
+  /// No description provided for @reportUserTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Report this user'**
+  String get reportUserTitle;
+
+  /// No description provided for @reportAdditionalInfoTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Additional information'**
+  String get reportAdditionalInfoTitle;
+
+  /// No description provided for @reportImageProcessFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t process that image. Choose a JPG or PNG.'**
+  String get reportImageProcessFailed;
+
+  /// No description provided for @reportUserSubmitted.
+  ///
+  /// In en, this message translates to:
+  /// **'Report submitted'**
+  String get reportUserSubmitted;
+
+  /// No description provided for @reportSubmittedPartial.
+  ///
+  /// In en, this message translates to:
+  /// **'Report submitted, but some images weren\'t uploaded'**
+  String get reportSubmittedPartial;
+
+  /// No description provided for @reportDetailUserHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Describe what happened (optional)'**
+  String get reportDetailUserHint;
+
+  /// No description provided for @reportSourceWork.
+  ///
+  /// In en, this message translates to:
+  /// **'Related work: {workId}'**
+  String reportSourceWork(String workId);
+
+  /// No description provided for @reportAddEvidence.
+  ///
+  /// In en, this message translates to:
+  /// **'Add screenshots or photos (up to 3)'**
+  String get reportAddEvidence;
+
+  /// No description provided for @reportSensitiveEvidenceWarning.
+  ///
+  /// In en, this message translates to:
+  /// **'Don\'t re-upload or redistribute sensitive material. The platform will preserve linked in-app content for review.'**
+  String get reportSensitiveEvidenceWarning;
+
+  /// No description provided for @reportSubmitting.
+  ///
+  /// In en, this message translates to:
+  /// **'Submitting…'**
+  String get reportSubmitting;
+
+  /// No description provided for @reportSubmitUser.
+  ///
+  /// In en, this message translates to:
+  /// **'Submit report'**
+  String get reportSubmitUser;
+
+  /// No description provided for @reportReasonImpersonation.
+  ///
+  /// In en, this message translates to:
+  /// **'Impersonation or false account information'**
+  String get reportReasonImpersonation;
+
+  /// No description provided for @reportReasonHarassmentThreat.
+  ///
+  /// In en, this message translates to:
+  /// **'Harassment, bullying, or threats'**
+  String get reportReasonHarassmentThreat;
+
+  /// No description provided for @reportReasonSpamFraud.
+  ///
+  /// In en, this message translates to:
+  /// **'Fraud, spam, or suspicious account activity'**
+  String get reportReasonSpamFraud;
+
+  /// No description provided for @reportReasonMinorSafety.
+  ///
+  /// In en, this message translates to:
+  /// **'Minor safety'**
+  String get reportReasonMinorSafety;
+
+  /// No description provided for @reportReasonSexualLowQuality.
+  ///
+  /// In en, this message translates to:
+  /// **'Sexual or explicit content'**
+  String get reportReasonSexualLowQuality;
+
+  /// No description provided for @reportReasonViolenceIllegal.
+  ///
+  /// In en, this message translates to:
+  /// **'Violence, self-harm, hate, extremism, or other illegal harmful content'**
+  String get reportReasonViolenceIllegal;
+
+  /// No description provided for @reportReasonMisleading.
+  ///
+  /// In en, this message translates to:
+  /// **'False or misleading information'**
+  String get reportReasonMisleading;
+
+  /// No description provided for @reportReasonPrivacyIp.
+  ///
+  /// In en, this message translates to:
+  /// **'Privacy, doxxing, portrait, or intellectual property'**
+  String get reportReasonPrivacyIp;
+
+  /// No description provided for @reportReasonOtherUncertain.
+  ///
+  /// In en, this message translates to:
+  /// **'Other / not sure'**
+  String get reportReasonOtherUncertain;
+
+  /// No description provided for @blockedUsersTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Blocked users'**
+  String get blockedUsersTitle;
+
+  /// No description provided for @blockedUsersLoadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t load blocked users'**
+  String get blockedUsersLoadFailed;
+
+  /// No description provided for @blockedUsersEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'You haven\'t blocked anyone'**
+  String get blockedUsersEmpty;
+
+  /// No description provided for @unblockTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Unblock this user?'**
+  String get unblockTitle;
+
+  /// No description provided for @unblockBody.
+  ///
+  /// In en, this message translates to:
+  /// **'You\'ll be able to see their public content again. Previous follow relationships won\'t be restored automatically.'**
+  String get unblockBody;
+
+  /// No description provided for @unblockAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Unblock'**
+  String get unblockAction;
+
+  /// No description provided for @unblockFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t unblock this user. Please try again later.'**
+  String get unblockFailed;
+
+  /// No description provided for @meBlockedUsers.
+  ///
+  /// In en, this message translates to:
+  /// **'Blocked users'**
+  String get meBlockedUsers;
+
+  /// No description provided for @meSocialLoadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t load social profile'**
+  String get meSocialLoadFailed;
 }
 
 class _AppL10nDelegate extends LocalizationsDelegate<AppL10n> {

@@ -1,4 +1,5 @@
 import ARKit
+import Accelerate
 @preconcurrency import AVFoundation
 import CoreImage
 import CoreMedia
@@ -7,15 +8,6 @@ import Foundation
 import ImageIO
 import simd
 import UIKit
-
-// [SPRINT-MODE 2026-07-26] Direct binding to the Metal matcher's
-// capture-active flag (pwofficial_gpu_match.mm, linked into this binary via
-// the official_sfm pod). 1 = camera live → yield-to-camera pacing (thermal
-// duty gaps, small hot chunks); 0 = camera stopped → full-speed matching for
-// the queued-frame drain and finalize enrichment. Scheduling only — the
-// match set is bit-identical either way.
-@_silgen_name("aether_gpu_match_set_capture_active")
-func aether_gpu_match_set_capture_active(_ active: Int32)
 
 enum OfficialARKitIdentifiers {
   static let methodChannel = "pocketworld_official_arkit"
@@ -141,6 +133,13 @@ class OfficialAetherARKitPlugin: NSObject {
     return sharedInstance?.arSession
   }
 
+  /// SceneKit calls this only after a staged photo card participated in a
+  /// rendered frame. Emit the request-time haptic and, if Dart has committed
+  /// the evidence, finish the held Flutter transaction on the main thread.
+  static func completePhotoFeedbackAfterRender(name: String) {
+    sharedInstance?.completePhotoFeedbackAfterRender(name: name)
+  }
+
   static func register(with registrar: FlutterPluginRegistrar) {
     // ⛔ [SPATIAL-CAND 真机判负 2026-07-29] kill switch 恢复。**这次是干净的单变量
     // 实验**,与上午那次被混淆的回滚不同:提取器库已回滚且本次未动、配对数完全
@@ -198,6 +197,46 @@ class OfficialAetherARKitPlugin: NSObject {
     // ⚠️ 内存天花板 2GB —— 由 **iPhone 11(4GB 机型)** 决定,不是 14 Pro(jetsam 4.1GB)。
     // 当前 peak 约 1058MB,+400MB 仍有余量;若真机 OOM 先回退本行。
     setenv("OFFICIAL_AETHER_DESCRIPTOR_RESIDENCY_BYTES", "419430400", 0)  // 400 MiB
+
+    // [FINALIZE 两刀合璧 2026-08-31 上机验证] 08-11 法医定案的两把刀,
+    // 造好后一直没上过机("验过没上机"清单里的一条)。
+    //
+    // 真账(cap_1786414194441541,101 帧):拍完等待 28.9s 里
+    //   stage1_ba 21.5s(2 solve × 51 iters 全打满,term=NO_CONVERGENCE)
+    //   + s2_ba 5.7s = **94%**。enrich 只有 279ms 的 gate wait,是并行线程。
+    //
+    // ⚠️ 两刀**必须成对**,单刀真机近零收益 —— 结构原因:enrich AUTO 门有
+    // 30s 地板(kEnrichAutoFloorMs),stage1 砍短后 enrich 变成长杆;而
+    // stage1 的 rounds 又自适应 enrich 窗口、轮余额流给 s2,所以只砍一边
+    // 等于把轮次挪个地方。预估合璧后 0.2+10.5+5.7 ≈ **16.4s(−43%)**。
+    //
+    // 逐位安全性:TVG-FARM 只把 RANSAC 外包到 N 工位,GPU 匹配与 db 写仍
+    // 单线程按 todo 序提交,每对 SetPRNGSeed(mix(img1,img2)) ⇒ N1≡N3 逐位、
+    // 复跑逐位;host 已验 off/N1/N3 的 written/inliers 完全相同。
+    // 迭代帽是**上限**不是目标,host 四场矩阵 g35/s1only25 质量全带内。
+    //
+    // overwrite=0(遵本块 DEVICE-AB-UNBLOCK 约定):启动 env 可逐档覆盖,
+    // 不必为换一档重编装机。回退 = 删这两行。
+    setenv("OFFICIAL_AETHER_BA_S1_MAX_ITERS", "25", 0)
+    // ⛔ OFFICIAL_AETHER_ENRICH_TVG_THREADS 已撤回(build 72 → 73),**不要再开**,
+    //    除非先解决下面这个调用图问题。
+    //
+    //    我 2026-08-31 开了 =3,以为它只在 finalize 跑。**读错了调用图**:
+    //    `AddOfficialQuadraticPairs` 有两个调用方 —— finalize,以及
+    //    `PrepayQuadraticTick`,而后者经 `aether_sfm_live_repay` 在**采集期**
+    //    触发(官核第 898 行注释写明)。于是那 3 个 RANSAC 工位跑进了采集期。
+    //
+    //    而 prepay 的"空闲"判据是 `spool 空 + inFlight=0` —— 那是**队列空闲,
+    //    不是 GPU 空闲**。两次快门之间队列确实空,但 ARKit 追踪与渲染正在用
+    //    GPU。真机代价(build 71 → 72,相隔 42 分钟、长度相近):
+    //      提取中位 544 → 892ms(+64%)、匹配 264 → 492ms(+86%)
+    //      seq=9 提取即翻倍(彼时仍 thermal=fair)⇒ **是慢导致热,不是热导致慢**
+    //      12MP 捕获失败 1/32(3%) → 7/27(26%),全部 intrinsics 全 NaN
+    //      追踪丢失 1 → 8 次;每帧内点对 1184 → 867(同为傍晚,−27%)
+    //
+    //    ⚠️ host 验证为什么没抓到:host 上没有 ARKit 与相机竞争,
+    //    off/N1/N3 逐位一致验的是**结果**,不是**代价**。
+    //    要重开,先让 prepay 的空闲判据包含 GPU/热,而不只是队列深度。
     // [K20 2026-08-05] 空间序放开后实测 `cand=12` 仍恒定、`spatial-first=858 /
     // temporal-fallback=0` —— 即**空间选择确实在工作,但 K 被外层截断到 12**:
     // 候选上限 base_k 取自 `s->options.k_neighbors`(Dart 侧传 12),而不是
@@ -438,19 +477,82 @@ class OfficialAetherARKitPlugin: NSObject {
   /// the capture pose => glued to the world by ARKit, no drift. `height` (meters)
   /// is the card's physical size, sized from the intrinsics to fill the viewport.
   struct PhotoCardSpec {
+    let transactionId: String
     let texturePath: String
     let evidencePath: String
     let localCorners: [SCNVector3]  // 4 quad corners [TL,TR,BR,BL] in anchor-local space
     let captureDistance: Float      // camera→card distance at capture
     let worldCentroid: simd_float3  // anchor world position AT PLACEMENT (drift baseline)
     let captureCamPos: simd_float3  // camera world position AT CAPTURE (shrink reference)
+    let requestWorldFromCamera: [Float]
+    let cardWorldTransform: [Float]
+    /// Card texture derived at shutter time from the pixel buffer we already
+    /// hold, so the render loop never reads texturePath from disk. texturePath
+    /// stays authoritative for identity and for the disk fallback.
+    let thumbnail: UIImage?
   }
-  static var photoCardSpecs: [String: PhotoCardSpec] = [:]
-  // [瞬时快门 2026-07-19] 卡片缩略图解码重试计数:photo43 下 12MP 静照后台
-  // 落盘,didAdd 建卡时文件可能还没写完;每 150ms 重试直到落盘(最多~4.5s)。
-  static var photoCardThumbRetries: [String: Int] = [:]
+  struct PhotoCardPlacement {
+    let texturePath: String
+    let localCorners: [SCNVector3]
+    let captureDistance: Float
+    let worldCentroid: simd_float3
+    let captureCamPos: simd_float3
+    let requestWorldFromCamera: [Float]
+    let cardWorldTransform: [Float]
+    let thumbnail: UIImage?
+  }
+
+  /// All cross-thread card metadata is owned by one serial queue. Renderers
+  /// receive immutable value snapshots and never touch transaction containers.
+  private final class PhotoCardSpecRegistry {
+    private let queue = DispatchQueue(
+      label: "com.pocketworld.official.photo-feedback-registry"
+    )
+    private var specs: [String: PhotoCardSpec] = [:]
+
+    func insert(_ spec: PhotoCardSpec, for name: String) {
+      queue.sync { specs[name] = spec }
+    }
+
+    func snapshot(for name: String) -> PhotoCardSpec? {
+      queue.sync { specs[name] }
+    }
+
+    func contains(_ name: String) -> Bool {
+      queue.sync { specs[name] != nil }
+    }
+
+    func names(transactionId: String?, evidencePath: String?) -> Set<String> {
+      queue.sync {
+        Set(specs.compactMap { name, spec in
+          if let transactionId, spec.transactionId != transactionId { return nil }
+          if let evidencePath, spec.evidencePath != evidencePath { return nil }
+          return name
+        })
+      }
+    }
+
+    @discardableResult
+    func remove(_ name: String) -> PhotoCardSpec? {
+      queue.sync { specs.removeValue(forKey: name) }
+    }
+
+    func removeAll() {
+      queue.sync { specs.removeAll() }
+    }
+  }
+
+  private static let photoCardSpecRegistry = PhotoCardSpecRegistry()
   private static var photoCardAnchors: [ARAnchor] = []
   private static var photoCardCounter = 0
+
+  static func photoCardSpecSnapshot(for name: String) -> PhotoCardSpec? {
+    Self.photoCardSpecRegistry.snapshot(for: name)
+  }
+
+  static func hasPhotoCardSpec(for name: String) -> Bool {
+    Self.photoCardSpecRegistry.contains(name)
+  }
 
   /// T6 — live sparse feature-point overlay toggle. Read by the render loop in
   /// OfficialAetherARKitPreviewView (the separate class that owns the ARSCNView), set via
@@ -591,6 +693,164 @@ class OfficialAetherARKitPlugin: NSObject {
   /// (deliberately VERY low-res / blurry AR card, RS-style).
   static let photoCardThumbMaxPx = 96
 
+  /// vImage YpCbCr→ARGB conversions, generated once per range. Generating one
+  /// is pure setup work; doing it per capture would put it on the shutter path.
+  private static let photoCardYuvFullRange: vImage_YpCbCrToARGB? =
+    OfficialAetherARKitPlugin.makePhotoCardYuvConversion(fullRange: true)
+  private static let photoCardYuvVideoRange: vImage_YpCbCrToARGB? =
+    OfficialAetherARKitPlugin.makePhotoCardYuvConversion(fullRange: false)
+
+  private static func makePhotoCardYuvConversion(
+    fullRange: Bool
+  ) -> vImage_YpCbCrToARGB? {
+    guard let matrix = kvImage_YpCbCrToARGBMatrix_ITU_R_601_4 else { return nil }
+    var range = fullRange
+      ? vImage_YpCbCrPixelRange(
+          Yp_bias: 0, CbCr_bias: 128, YpRangeMax: 255, CbCrRangeMax: 255,
+          YpMax: 255, YpMin: 0, CbCrMax: 255, CbCrMin: 0)
+      : vImage_YpCbCrPixelRange(
+          Yp_bias: 16, CbCr_bias: 128, YpRangeMax: 235, CbCrRangeMax: 240,
+          YpMax: 235, YpMin: 16, CbCrMax: 240, CbCrMin: 16)
+    var info = vImage_YpCbCrToARGB()
+    let err = vImageConvert_YpCbCrToARGB_GenerateConversion(
+      matrix, &range, &info, kvImage420Yp8_CbCr8, kvImageARGB8888,
+      vImage_Flags(kvImageNoFlags))
+    return err == kvImageNoError ? info : nil
+  }
+
+  /// Build the AR photo card's texture from the ARFrame pixel buffer we already
+  /// hold at shutter time, instead of round-tripping the preview JPEG through
+  /// disk.  This consumes camera pixels only — no ARKit pose, tracking or
+  /// geometry — so it survives a pose-source replacement unchanged.
+  ///
+  /// Measured 2026-08-30, same 1920×1440 input, M-series host, 15 runs each:
+  /// the disk route (`CGImageSourceCreateThumbnailAtIndex` with the production
+  /// options in loadPhotoCardTextureWhenReady) costs 14.58 ms median and runs
+  /// on the SceneKit render thread; this route costs 4.63 ms and runs once, at
+  /// staging.  Peak footprint 0.28 MB → 0.02 MB.
+  ///
+  /// Scaling both planes BEFORE the colour conversion is what holds the
+  /// transient at 0.02 MB.  Converting the full frame first and then scaling
+  /// measured 8.66 ms and allocates a whole 1920×1440 ARGB frame per card.
+  ///
+  /// The rotation constant 3 is NOT derived by reasoning.  It was pinned by
+  /// pixel-comparing this output against the production disk route, whose JPEG
+  /// carries `kCGImagePropertyOrientation .right` (encodeCVPixelBufferAsJpeg)
+  /// and whose thumbnail options set `kCGImageSourceCreateThumbnailWithTransform`.
+  /// Constant 3 → mean |diff| 0.83/255; constant 1 → 23.58/255.  Both produce a
+  /// 72×96 image, so size alone does not catch the wrong one.
+  private static func photoCardThumbnail(
+    from pixelBuffer: CVPixelBuffer
+  ) -> UIImage? {
+    let conversion: vImage_YpCbCrToARGB?
+    switch CVPixelBufferGetPixelFormatType(pixelBuffer) {
+    case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange:
+      conversion = photoCardYuvFullRange
+    case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange:
+      conversion = photoCardYuvVideoRange
+    default:
+      return nil
+    }
+    guard var info = conversion,
+          CVPixelBufferGetPlaneCount(pixelBuffer) == 2 else { return nil }
+    let srcW = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
+    let srcH = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
+    guard srcW > 0, srcH > 0 else { return nil }
+
+    // Long edge of the DISPLAYED (rotated) card, matching the disk route's
+    // kCGImageSourceThumbnailMaxPixelSize. 4:2:0 chroma needs even extents.
+    var tw = photoCardThumbMaxPx
+    var th = Int((Double(photoCardThumbMaxPx) * Double(srcH) / Double(srcW))
+      .rounded())
+    tw -= tw % 2
+    th -= th % 2
+    guard tw >= 2, th >= 2 else { return nil }
+
+    CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+    guard let srcYBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0),
+          let srcUVBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1)
+    else { return nil }
+
+    let yScratch = UnsafeMutablePointer<UInt8>.allocate(capacity: tw * th)
+    defer { yScratch.deallocate() }
+    let uvScratch = UnsafeMutablePointer<UInt8>.allocate(capacity: tw * (th / 2))
+    defer { uvScratch.deallocate() }
+    let argbScratch = UnsafeMutablePointer<UInt8>.allocate(capacity: tw * th * 4)
+    defer { argbScratch.deallocate() }
+
+    var srcY = vImage_Buffer(
+      data: srcYBase, height: vImagePixelCount(srcH),
+      width: vImagePixelCount(srcW),
+      rowBytes: CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0))
+    var dstY = vImage_Buffer(
+      data: yScratch, height: vImagePixelCount(th),
+      width: vImagePixelCount(tw), rowBytes: tw)
+    guard vImageScale_Planar8(&srcY, &dstY, nil, vImage_Flags(kvImageNoFlags))
+            == kvImageNoError else { return nil }
+
+    // CbCr is interleaved: width counts pairs, rowBytes counts bytes.
+    var srcUV = vImage_Buffer(
+      data: srcUVBase,
+      height: vImagePixelCount(CVPixelBufferGetHeightOfPlane(pixelBuffer, 1)),
+      width: vImagePixelCount(CVPixelBufferGetWidthOfPlane(pixelBuffer, 1)),
+      rowBytes: CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1))
+    var dstUV = vImage_Buffer(
+      data: uvScratch, height: vImagePixelCount(th / 2),
+      width: vImagePixelCount(tw / 2), rowBytes: tw)
+    guard vImageScale_CbCr8(&srcUV, &dstUV, nil, vImage_Flags(kvImageNoFlags))
+            == kvImageNoError else { return nil }
+
+    var argb = vImage_Buffer(
+      data: argbScratch, height: vImagePixelCount(th),
+      width: vImagePixelCount(tw), rowBytes: tw * 4)
+    guard vImageConvert_420Yp8_CbCr8ToARGB8888(
+            &dstY, &dstUV, &argb, &info, nil, 255,
+            vImage_Flags(kvImageNoFlags)) == kvImageNoError else { return nil }
+
+    // Sensor landscape → portrait card. Constant provenance is in the note above.
+    let rotW = th, rotH = tw
+    let rotated = UnsafeMutablePointer<UInt8>.allocate(capacity: rotW * rotH * 4)
+    defer { rotated.deallocate() }
+    var rotBuf = vImage_Buffer(
+      data: rotated, height: vImagePixelCount(rotH),
+      width: vImagePixelCount(rotW), rowBytes: rotW * 4)
+    var background: [UInt8] = [0, 0, 0, 0]
+    guard vImageRotate90_ARGB8888(
+            &argb, &rotBuf, 3, &background,
+            vImage_Flags(kvImageNoFlags)) == kvImageNoError else { return nil }
+
+    // ARGB → RGBA to match the CGImage bitmap layout below.
+    let rgba = UnsafeMutablePointer<UInt8>.allocate(capacity: rotW * rotH * 4)
+    var rgbaBuf = vImage_Buffer(
+      data: rgba, height: vImagePixelCount(rotH),
+      width: vImagePixelCount(rotW), rowBytes: rotW * 4)
+    var permute: [UInt8] = [1, 2, 3, 0]
+    guard vImagePermuteChannels_ARGB8888(
+            &rotBuf, &rgbaBuf, &permute,
+            vImage_Flags(kvImageNoFlags)) == kvImageNoError else {
+      rgba.deallocate()
+      return nil
+    }
+    // The provider owns rgba from here; it must not also be freed on this path.
+    guard let provider = CGDataProvider(
+            dataInfo: rgba, data: rgba, size: rotW * rotH * 4,
+            releaseData: { owned, _, _ in
+              owned?.assumingMemoryBound(to: UInt8.self).deallocate()
+            }) else {
+      rgba.deallocate()
+      return nil
+    }
+    guard let cg = CGImage(
+            width: rotW, height: rotH, bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: rotW * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(
+              rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: true,
+            intent: .defaultIntent) else { return nil }
+    return UIImage(cgImage: cg)
+  }
+
   // MARK: Channels
 
   private let methodChannel: FlutterMethodChannel
@@ -601,6 +861,34 @@ class OfficialAetherARKitPlugin: NSObject {
 
   private var arSession: ARSession?
   private let sessionDelegate = OfficialARSessionForwarder()
+  private struct PhotoFeedbackTransaction {
+    let transactionId: String
+    let evidencePath: String
+    let name: String
+    let placement: PhotoCardPlacement
+    let anchor: ARAnchor
+    var rendered = false
+    var committed = false
+    var haptic: UIImpactFeedbackGenerator?
+    var commitResults: [FlutterResult] = []
+    var timeout: DispatchWorkItem?
+  }
+
+  private struct PhotoFeedbackTerminal {
+    let transactionId: String
+    let evidencePath: String
+    let receipt: [String: Any]
+  }
+
+  /// Main-queue-owned transaction state. SceneKit never reads these containers;
+  /// it consumes immutable PhotoCardSpec snapshots from photoCardSpecRegistry.
+  private var photoFeedbackTransactionsById: [String: PhotoFeedbackTransaction] = [:]
+  private var photoFeedbackIdByEvidence: [String: String] = [:]
+  private var photoFeedbackIdByCard: [String: String] = [:]
+  private var terminalPhotoFeedbackById: [String: PhotoFeedbackTerminal] = [:]
+  private var terminalPhotoFeedbackIdByEvidence: [String: String] = [:]
+  private var terminalPhotoFeedbackOrder: [String] = []
+  private static let terminalPhotoFeedbackLimit = 512
 
   /// `worldOrigin` is the user-locked center of the captured object,
   /// recomputed every broadcast frame from `worldSubjectAnchor.transform`.
@@ -688,6 +976,8 @@ class OfficialAetherARKitPlugin: NSObject {
   private var pendingGraySourceTimestamp: TimeInterval?
   private var pendingGraySourceFocalX: Double?
   private var pendingGraySourceFocalY: Double?
+  private var pendingGraySourcePrincipalX: Double?
+  private var pendingGraySourcePrincipalY: Double?
   /// True iff a quality compute is already in flight; used to skip
   /// firing another one before the previous finishes (defensive — the
   /// timer-based throttle should already prevent overlap, but guards
@@ -962,6 +1252,19 @@ class OfficialAetherARKitPlugin: NSObject {
       let feedSfm = (args["feedSfm"] as? NSNumber)?.boolValue ?? false
       let deriveAuxiliary =
         (args["deriveAuxiliary"] as? NSNumber)?.boolValue ?? true
+      let stagePhotoFeedback =
+        (args["stagePhotoFeedback"] as? NSNumber)?.boolValue ?? false
+      let transactionId = args["transactionId"] as? String
+      let cardTexturePath = args["cardTexturePath"] as? String
+      if stagePhotoFeedback,
+         transactionId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+        result(FlutterError(
+          code: "photo_feedback_bad_args",
+          message: "staged high-resolution capture requires transactionId",
+          details: nil
+        ))
+        return
+      }
       captureHighResolutionStill(
         highresPath: highresPath,
         previewPath: previewPath,
@@ -971,7 +1274,10 @@ class OfficialAetherARKitPlugin: NSObject {
         metadataSchemaVersion: metadataSchemaVersion,
         dartSaveContract: dartSaveContract,
         feedSfm: feedSfm,
-        deriveAuxiliary: deriveAuxiliary
+        deriveAuxiliary: deriveAuxiliary,
+        stagePhotoFeedback: stagePhotoFeedback,
+        transactionId: transactionId,
+        cardTexturePath: cardTexturePath
       ) { payload, error in
         if let error = error {
           let nsError = error as NSError
@@ -1055,96 +1361,54 @@ class OfficialAetherARKitPlugin: NSObject {
         guard let self = self else { mainResult(nil); return }
         self.handleDecodeJpegForColor(call: call, result: mainResult)
       }
-    case "addPhotoCard":
-      // Anchor a RealityScan-style photo thumbnail at the CURRENT camera pose
-      // (called immediately after a manual capture, so it == the capture pose).
-      // The ARAnchor keeps the card glued to the world — no projection, no drift.
+    case "commitAcceptedPhotoFeedback":
       guard let args = call.arguments as? [String: Any],
-            let texturePath = args["textureJpegPath"] as? String,
+            let transactionId = args["transactionId"] as? String,
             let evidencePath = args["evidenceJpegPath"] as? String else {
         result(FlutterError(
-          code: "bad_args",
-          message: "addPhotoCard requires textureJpegPath and evidenceJpegPath",
-          details: nil))
+          code: "photo_feedback_bad_args",
+          message: "commitAcceptedPhotoFeedback requires transactionId and evidenceJpegPath",
+          details: nil
+        ))
         return
       }
-      guard let session = arSession,
-            let frame = session.currentFrame else {
+      commitAcceptedPhotoFeedback(
+        transactionId: transactionId,
+        evidencePath: evidencePath,
+        result: result
+      )
+    case "discardPhotoFeedback":
+      guard let args = call.arguments as? [String: Any],
+            let transactionId = args["transactionId"] as? String,
+            let evidencePath = args["evidenceJpegPath"] as? String else {
         result(FlutterError(
-          code: "ar_no_frame", message: "addPhotoCard: no current ARFrame",
-          details: nil))
+          code: "photo_feedback_bad_args",
+          message: "discardPhotoFeedback requires transactionId and evidenceJpegPath",
+          details: nil
+        ))
         return
       }
-      let camera = frame.camera
-      // RS MODEL (verified by user against RealityScan): the card appears CLOSE in
-      // front of the lens (~photoCardCloseZ, not on the subject surface), filling
-      // the viewport at capture, then shrinks FAST as you pull back — because a
-      // CLOSE anchor's apparent size falls off steeply with distance (back off 15 cm
-      // from 5 cm away → ~4× smaller from perspective alone, ×the (d0/d)^n scale →
-      // tiny almost immediately). Close + fast-shrink is ALSO what makes it read as
-      // stable: the card becomes a small chip before any VIO drift grows visible.
-      // (Replaces the surface raycast, which placed the card far → big & slow to
-      // shrink → drift very visible. RS does NOT anchor on the surface.)
-      let camT = camera.transform
-      let camPos = simd_make_float3(camT.columns.3)
-      let z: Float = Self.photoCardCloseZ
-      NSLog("[PHOTOCARD] addPhotoCard close-anchor z=%.3f", z)
-      // SCREEN-ALIGNED quad built at depth z (the surface distance): the 4 viewport
-      // corners via ARKit's PORTRAIT view+projection matrices. The `.portrait`
-      // orientation handles the sensor→screen 90° rotation internally; at depth z
-      // the viewport edges (NDC ±1) sit at ±halfX/±halfY in view space (half =
-      // z/projectionScale), so the quad EXACTLY fills the viewport at capture
-      // regardless of z, and world-anchored on the surface it peels off the lens.
-      // [WYSIWYG 第二步 2026-07-19] 卡片视口 = 预览 letterbox 视口。photo43
-      // 下 Flutter 把预览 letterbox 成 3:4(满宽、高=宽×4/3、顶底黑边),所以
-      // 卡片按这个 3:4 视口算 → 卡片恰好填满预览、且是照片 4:3 画幅,不再是
-      // 屏幕形状裁切。4k 回退保持全屏视口。
-      let screenSize = UIScreen.main.bounds.size
-      let viewportSize: CGSize =
-        OfficialAetherARKitPlugin.videoFormatMode == "hires43"
-          ? CGSize(width: screenSize.width, height: screenSize.width * 4.0 / 3.0)
-          : screenSize
-      let proj = camera.projectionMatrix(for: .portrait,
-                                         viewportSize: viewportSize,
-                                         zNear: 0.001, zFar: 1000)
-      let invView = camera.viewMatrix(for: .portrait).inverse
-      // View space: +X right, +Y up, -Z forward. halfX/halfY 都按同一 3:4
-      // 视口投影算 —— 一致(上次坏在 halfX 全屏、halfY 却强设 3:4 错配)。
-      let halfX = z / proj.columns.0.x
-      let halfY = z / proj.columns.1.y
-      NSLog("[PHOTOCARD] addPhotoCard viewport=%.0fx%.0f z=%.2f halfX=%.3f halfY=%.3f",
-            viewportSize.width, viewportSize.height, z, halfX, halfY)
-      // Screen order TL, TR, BR, BL (matches texUVs in the renderer).
-      let viewCornersV: [simd_float4] = [
-        simd_float4(-halfX,  halfY, -z, 1),   // TL
-        simd_float4( halfX,  halfY, -z, 1),   // TR
-        simd_float4( halfX, -halfY, -z, 1),   // BR
-        simd_float4(-halfX, -halfY, -z, 1),   // BL
-      ]
-      let worldCorners: [simd_float3] = viewCornersV.map {
-        simd_make_float3(invView * $0)
+      discardStagedPhotoFeedback(
+        transactionId: transactionId,
+        evidencePath: evidencePath,
+        result: result
+      )
+    case "suppressPhotoFeedbackPresentation":
+      guard let args = call.arguments as? [String: Any],
+            let transactionId = args["transactionId"] as? String,
+            let evidencePath = args["evidenceJpegPath"] as? String else {
+        result(FlutterError(
+          code: "photo_feedback_bad_args",
+          message: "suppressPhotoFeedbackPresentation requires transactionId and evidenceJpegPath",
+          details: nil
+        ))
+        return
       }
-      let centroid = (worldCorners[0] + worldCorners[1]
-                      + worldCorners[2] + worldCorners[3]) / 4
-      let localCorners = worldCorners.map {
-        SCNVector3($0.x - centroid.x, $0.y - centroid.y, $0.z - centroid.z)
-      }
-      // Texture orientation + aspect-fill UVs are computed deterministically in
-      // the renderer (uprightPortrait + screen-aspect crop); the spec only needs
-      // the world-aligned quad corners.
-      let cardName = "official_photo_card_\(OfficialAetherARKitPlugin.photoCardCounter)"
-      OfficialAetherARKitPlugin.photoCardCounter += 1
-      OfficialAetherARKitPlugin.photoCardSpecs[cardName] =
-        PhotoCardSpec(texturePath: texturePath,
-                      evidencePath: evidencePath,
-                      localCorners: localCorners,
-                      captureDistance: z, worldCentroid: centroid, captureCamPos: camPos)
-      var anchorT = matrix_identity_float4x4
-      anchorT.columns.3 = simd_float4(centroid, 1)
-      let cardAnchor = ARAnchor(name: cardName, transform: anchorT)
-      OfficialAetherARKitPlugin.photoCardAnchors.append(cardAnchor)
-      session.add(anchor: cardAnchor)
-      result(nil)
+      suppressPhotoFeedbackPresentation(
+        transactionId: transactionId,
+        evidencePath: evidencePath,
+        result: result
+      )
     // [AF-SELFHEAL 2026-08-10 用户签] 自动对焦自愈的薄原语(无 UI、无手势,
     // 手动对焦已按用户指示删除)。病灶:失焦死锁 —— 糊掉的低纹理画面既无
     // 相位信号也无反差梯度,连续 AF 收不到"失焦证据"不触发扫描(健身房
@@ -1219,19 +1483,20 @@ class OfficialAetherARKitPlugin: NSObject {
       result(nil)
     case "removePhotoCard":
       guard let args = call.arguments as? [String: Any],
+            let transactionId = args["transactionId"] as? String,
             let evidencePath = args["evidenceJpegPath"] as? String else {
         result(FlutterError(
           code: "bad_args",
-          message: "removePhotoCard requires evidenceJpegPath",
+          message: "removePhotoCard requires transactionId and evidenceJpegPath",
           details: nil
         ))
         return
       }
-      OfficialAetherARKitPlugin.removePhotoCard(
+      removePhotoCard(
+        transactionId: transactionId,
         evidencePath: evidencePath,
-        from: arSession
+        result: result
       )
-      result(nil)
     case "setPhotoCardStates":
       // Dart-owned four-state border policy pushes {jpegPath: state} DIFFS
       // here (0 black/pending, 1 white/registered, 2 red/disconnected,
@@ -1361,46 +1626,553 @@ class OfficialAetherARKitPlugin: NSObject {
 
   // MARK: Session lifecycle
 
+  private struct PhotoFeedbackStageReceipt {
+    let requestWorldFromCamera: [Float]
+    let cardWorldTransform: [Float]
+  }
+
+  /// Freeze request-time render geometry. This pose authorizes the UX only;
+  /// the later high-resolution result owns independent evidence pose metadata.
+  /// Takes plain matrices rather than an `ARCamera` so that the card's world
+  /// placement is expressed in terms every pose source can supply. The caller
+  /// still asks ARKit for them today; this is the seam a replacement plugs
+  /// into, and it deliberately changes no arithmetic.
+  private func stagePhotoCardPlacement(
+    transactionId: String,
+    evidencePath: String,
+    texturePath: String,
+    worldFromCamera: simd_float4x4,
+    projection: simd_float4x4,
+    viewMatrix: simd_float4x4,
+    sourcePixelBuffer: CVPixelBuffer?
+  ) throws -> PhotoFeedbackStageReceipt {
+    dispatchPrecondition(condition: .onQueue(.main))
+    guard terminalPhotoFeedbackById[transactionId] == nil,
+          photoFeedbackTransactionsById[transactionId] == nil else {
+      throw NSError(
+        domain: "OfficialAetherARKit",
+        code: 217,
+        userInfo: [NSLocalizedDescriptionKey:
+          "photo feedback transaction was already authorized: \(transactionId)"]
+      )
+    }
+    guard photoFeedbackIdByEvidence[evidencePath] == nil,
+          terminalPhotoFeedbackIdByEvidence[evidencePath] == nil else {
+      throw NSError(
+        domain: "OfficialAetherARKit",
+        code: 218,
+        userInfo: [NSLocalizedDescriptionKey:
+          "photo feedback evidence path already belongs to another transaction"]
+      )
+    }
+    guard let session = arSession else {
+      throw NSError(
+        domain: "OfficialAetherARKit",
+        code: 219,
+        userInfo: [NSLocalizedDescriptionKey:
+          "photo feedback requires a running AR session"]
+      )
+    }
+    let camT = worldFromCamera
+    let camPos = simd_make_float3(camT.columns.3)
+    let z: Float = Self.photoCardCloseZ
+    let proj = projection
+    let invView = viewMatrix.inverse
+    let halfX = z / proj.columns.0.x
+    let halfY = z / proj.columns.1.y
+    let viewCorners: [simd_float4] = [
+      simd_float4(-halfX,  halfY, -z, 1),
+      simd_float4( halfX,  halfY, -z, 1),
+      simd_float4( halfX, -halfY, -z, 1),
+      simd_float4(-halfX, -halfY, -z, 1),
+    ]
+    let worldCorners = viewCorners.map { simd_make_float3(invView * $0) }
+    let centroid = (
+      worldCorners[0] + worldCorners[1] +
+      worldCorners[2] + worldCorners[3]
+    ) / 4
+    var anchorTransform = matrix_identity_float4x4
+    anchorTransform.columns.3 = simd_float4(centroid, 1)
+    let requestWorldFromCamera = Self.floatArray(camT)
+    let cardWorldTransform = Self.floatArray(anchorTransform)
+    // Card texture from the frame already in hand, not from a JPEG that has not
+    // been written yet. photoCardThumbnail carries the measured cost and the
+    // rotation-constant provenance. A nil result falls back to the disk route.
+    let thumbnail = sourcePixelBuffer.flatMap(Self.photoCardThumbnail(from:))
+    let placement = PhotoCardPlacement(
+      texturePath: texturePath,
+      localCorners: worldCorners.map {
+        SCNVector3($0.x - centroid.x, $0.y - centroid.y, $0.z - centroid.z)
+      },
+      captureDistance: z,
+      worldCentroid: centroid,
+      captureCamPos: camPos,
+      requestWorldFromCamera: requestWorldFromCamera,
+      cardWorldTransform: cardWorldTransform,
+      thumbnail: thumbnail
+    )
+    publishProvisionalPhotoFeedback(
+      transactionId: transactionId,
+      placement: placement,
+      evidencePath: evidencePath,
+      session: session
+    )
+    return PhotoFeedbackStageReceipt(
+      requestWorldFromCamera: requestWorldFromCamera,
+      cardWorldTransform: cardWorldTransform
+    )
+  }
+
+  /// Publish the feedback at the authorized request boundary. The asynchronous
+  /// 12 MP result, JPEG write, and Dart quality gate continue afterward. A
+  /// rejected candidate removes this provisional anchor; an accepted candidate
+  /// merely commits the already-visible transaction.
+  private func publishProvisionalPhotoFeedback(
+    transactionId: String,
+    placement: PhotoCardPlacement,
+    evidencePath: String,
+    session: ARSession
+  ) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    let name = "official_photo_card_\(Self.photoCardCounter)"
+    Self.photoCardCounter += 1
+    let spec = PhotoCardSpec(
+      transactionId: transactionId,
+      texturePath: placement.texturePath,
+      evidencePath: evidencePath,
+      localCorners: placement.localCorners,
+      captureDistance: placement.captureDistance,
+      worldCentroid: placement.worldCentroid,
+      captureCamPos: placement.captureCamPos,
+      requestWorldFromCamera: placement.requestWorldFromCamera,
+      cardWorldTransform: placement.cardWorldTransform,
+      thumbnail: placement.thumbnail
+    )
+    Self.photoCardSpecRegistry.insert(spec, for: name)
+    var anchorTransform = matrix_identity_float4x4
+    anchorTransform.columns.3 = simd_float4(placement.worldCentroid, 1)
+    let anchor = ARAnchor(name: name, transform: anchorTransform)
+    Self.photoCardAnchors.append(anchor)
+
+    let haptic = UIImpactFeedbackGenerator(style: .heavy)
+    haptic.prepare()
+    photoFeedbackTransactionsById[transactionId] = PhotoFeedbackTransaction(
+      transactionId: transactionId,
+      evidencePath: evidencePath,
+      name: name,
+      placement: placement,
+      anchor: anchor,
+      haptic: haptic
+    )
+    photoFeedbackIdByEvidence[evidencePath] = transactionId
+    photoFeedbackIdByCard[name] = transactionId
+    OfficialPwNativeTelemetry.shared.log("photo_feedback_provisional", [
+      "phase": "authorized_highres_request",
+      "transactionId": transactionId,
+      "card": name,
+      "evidence": URL(fileURLWithPath: evidencePath).lastPathComponent,
+      "requestWorldFromCamera": placement.requestWorldFromCamera,
+      "cardWorldTransform": placement.cardWorldTransform,
+      "requestPoseSemantics": "authorization_request_frame",
+      "cardPoseSemantics": "request_frame_world_anchor",
+    ])
+    session.add(anchor: anchor)
+  }
+
+  private func completePhotoFeedbackAfterRender(name: String) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    guard let transactionId = photoFeedbackIdByCard[name],
+          var transaction = photoFeedbackTransactionsById[transactionId],
+          !transaction.rendered else { return }
+    transaction.rendered = true
+    let haptic = transaction.haptic
+    transaction.haptic = nil
+    photoFeedbackTransactionsById[transactionId] = transaction
+    // didRenderScene has completed the first frame containing the black card.
+    // Haptic and frame therefore share the authorized request transaction
+    // instead of waiting for image processing and Dart validation.
+    haptic?.impactOccurred()
+    OfficialPwNativeTelemetry.shared.log("photo_feedback_presented", [
+      "transactionId": transactionId,
+      "card": name,
+      "haptic": haptic != nil,
+    ])
+    guard transaction.committed else { return }
+    _ = finishPhotoFeedbackTransaction(
+      transactionId: transactionId,
+      outcome: "accepted_presented",
+      rendered: true,
+      suppressed: false,
+      removePresentation: false
+    )
+  }
+
+  private func commitAcceptedPhotoFeedback(
+    transactionId: String,
+    evidencePath: String,
+    result: @escaping FlutterResult
+  ) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    if let terminal = terminalPhotoFeedbackById[transactionId] {
+      guard terminal.evidencePath == evidencePath else {
+        result(Self.photoFeedbackError(
+          code: "photo_feedback_identity_conflict",
+          message: "transactionId and evidenceJpegPath identify different photos"
+        ))
+        return
+      }
+      result(terminal.receipt)
+      return
+    }
+    guard var transaction = photoFeedbackTransactionsById[transactionId],
+          transaction.evidencePath == evidencePath,
+          FileManager.default.fileExists(atPath: evidencePath),
+          Self.photoCardSpecRegistry.contains(transaction.name) else {
+      failPhotoFeedbackGuard(
+        transactionId: transactionId,
+        code: "photo_feedback_not_staged",
+        message: "accepted 12MP photo has no matching request-time feedback transaction",
+        result: result
+      )
+      return
+    }
+    transaction.committed = true
+    transaction.commitResults.append(result)
+    photoFeedbackTransactionsById[transactionId] = transaction
+    if transaction.rendered {
+      _ = finishPhotoFeedbackTransaction(
+        transactionId: transactionId,
+        outcome: "accepted_presented",
+        rendered: true,
+        suppressed: false,
+        removePresentation: false
+      )
+      return
+    }
+    guard transaction.timeout == nil else { return }
+    let timeout = DispatchWorkItem { [weak self] in
+      self?.failPhotoFeedbackTransaction(
+        transactionId: transactionId,
+        code: "photo_feedback_not_rendered",
+        message: "black photo frame was not rendered before the deadline"
+      )
+    }
+    transaction.timeout = timeout
+    photoFeedbackTransactionsById[transactionId] = transaction
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: timeout)
+  }
+
+  private func suppressPhotoFeedbackPresentation(
+    transactionId: String,
+    evidencePath: String,
+    result: @escaping FlutterResult
+  ) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    if let terminal = terminalPhotoFeedbackById[transactionId] {
+      guard terminal.evidencePath == evidencePath else {
+        result(Self.photoFeedbackError(
+          code: "photo_feedback_identity_conflict",
+          message: "transactionId and evidenceJpegPath identify different photos"
+        ))
+        return
+      }
+      removePhotoCardPresentation(
+        transactionId: transactionId,
+        evidencePath: evidencePath
+      )
+      result(terminal.receipt)
+      return
+    }
+    guard let transaction = photoFeedbackTransactionsById[transactionId],
+          transaction.evidencePath == evidencePath else {
+      result(Self.photoFeedbackError(
+        code: "photo_feedback_not_staged",
+        message: "no matching feedback transaction to suppress"
+      ))
+      return
+    }
+    let receipt = finishPhotoFeedbackTransaction(
+      transactionId: transactionId,
+      outcome: "accepted_suppressed",
+      rendered: false,
+      suppressed: true,
+      removePresentation: true
+    ) ?? [
+      "transactionId": transactionId,
+      "rendered": false,
+      "suppressed": true,
+    ]
+    result(receipt)
+  }
+
+  private func discardStagedPhotoFeedback(
+    transactionId: String,
+    evidencePath: String,
+    result: @escaping FlutterResult
+  ) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    if let terminal = terminalPhotoFeedbackById[transactionId] {
+      guard terminal.evidencePath == evidencePath else {
+        result(Self.photoFeedbackError(
+          code: "photo_feedback_identity_conflict",
+          message: "transactionId and evidenceJpegPath identify different photos"
+        ))
+        return
+      }
+      result(nil)
+      return
+    }
+    guard let transaction = photoFeedbackTransactionsById[transactionId],
+          transaction.evidencePath == evidencePath else {
+      result(nil)
+      return
+    }
+    _ = finishPhotoFeedbackTransaction(
+      transactionId: transactionId,
+      outcome: "discarded",
+      rendered: transaction.rendered,
+      suppressed: true,
+      error: Self.photoFeedbackError(
+        code: "photo_feedback_discarded",
+        message: "photo candidate discarded"
+      ),
+      removePresentation: true
+    )
+    result(nil)
+  }
+
+  private func failPhotoFeedbackGuard(
+    transactionId: String,
+    code: String,
+    message: String,
+    result: @escaping FlutterResult
+  ) {
+    let error = Self.photoFeedbackError(code: code, message: message)
+    if var transaction = photoFeedbackTransactionsById[transactionId] {
+      transaction.commitResults.append(result)
+      photoFeedbackTransactionsById[transactionId] = transaction
+      _ = finishPhotoFeedbackTransaction(
+        transactionId: transactionId,
+        outcome: "failed",
+        rendered: transaction.rendered,
+        suppressed: true,
+        error: error,
+        removePresentation: true
+      )
+    } else {
+      result(error)
+    }
+  }
+
+  /// Codes for which a spent shutter yielded no photo, and which are therefore
+  /// worth recording. Allowlist, never a denylist, so that a code added later
+  /// stays out of the signal until someone puts it in on purpose.
+  ///
+  /// `photo_feedback_cleared` must never join it: that one fires once per
+  /// in-flight card when the session is torn down or resumed, which is a
+  /// deliberate clear rather than a lost capture, and admitting it would bury
+  /// the real events under a burst of noise every time the user presses stop.
+  private static let photoFeedbackRetractionCodes: Set<String> = [
+    "photo_feedback_capture_failed",
+  ]
+
+  private func failPhotoFeedbackTransaction(
+    transactionId: String,
+    code: String,
+    message: String
+  ) {
+    guard let transaction = photoFeedbackTransactionsById[transactionId] else { return }
+    // A shutter the user already felt, for a photo that never arrived. It is
+    // recorded and nothing else: no haptic, no visual, no banner, no
+    // interruption. `automaticShutterFailureIsUserVisible` stays false and this
+    // does not carve an exception out of it.
+    //
+    // A retraction haptic was written here on 2026-08-31 and removed the same
+    // day. ROS REP-117's principle — propagate an erroneous measurement as an
+    // explicit invalid marker rather than dropping it silently — has a
+    // CONSUMER, and that consumer is downstream code that would otherwise
+    // mistake absence for non-attempt. This log line is that consumer. The
+    // person holding the phone is not: they are not counting shutters, and
+    // there is no action for them to take, because auto-capture already
+    // recovers on its own (measured: the next shutter succeeded 627 ms and
+    // 511 ms after the two occurrences on record).
+    //
+    // The confusing symptom this was reaching for — a card that appears and
+    // vanishes — was ~18% of shutters while a duplicate verdict still discarded
+    // its photo (22 of 120, 2026-08-30). That cause is gone. What is left is
+    // the malformed-camera case, twice in 1,230 captures, and a new haptic
+    // vocabulary is not worth teaching for one shutter in six hundred.
+    if transaction.rendered,
+       Self.photoFeedbackRetractionCodes.contains(code) {
+      OfficialPwNativeTelemetry.shared.log("photo_feedback_retracted", [
+        "transactionId": transactionId,
+        "card": transaction.name,
+        "code": code,
+      ])
+    }
+    _ = finishPhotoFeedbackTransaction(
+      transactionId: transactionId,
+      outcome: "failed",
+      rendered: transaction.rendered,
+      suppressed: true,
+      error: Self.photoFeedbackError(code: code, message: message),
+      removePresentation: true
+    )
+  }
+
+  @discardableResult
+  private func finishPhotoFeedbackTransaction(
+    transactionId: String,
+    outcome: String,
+    rendered: Bool,
+    suppressed: Bool,
+    error: FlutterError? = nil,
+    removePresentation: Bool
+  ) -> [String: Any]? {
+    dispatchPrecondition(condition: .onQueue(.main))
+    if let terminal = terminalPhotoFeedbackById[transactionId] {
+      return terminal.receipt
+    }
+    guard let transaction = photoFeedbackTransactionsById.removeValue(
+      forKey: transactionId
+    ) else { return nil }
+    transaction.timeout?.cancel()
+    photoFeedbackIdByEvidence.removeValue(forKey: transaction.evidencePath)
+    photoFeedbackIdByCard.removeValue(forKey: transaction.name)
+    if removePresentation {
+      removePhotoCardPresentation(
+        transactionId: transactionId,
+        evidencePath: transaction.evidencePath
+      )
+    }
+    let receipt: [String: Any] = [
+      "transactionId": transactionId,
+      "cardName": transaction.name,
+      "outcome": outcome,
+      "rendered": rendered,
+      "suppressed": suppressed,
+    ]
+    let terminal = PhotoFeedbackTerminal(
+      transactionId: transactionId,
+      evidencePath: transaction.evidencePath,
+      receipt: receipt
+    )
+    terminalPhotoFeedbackById[transactionId] = terminal
+    terminalPhotoFeedbackIdByEvidence[transaction.evidencePath] = transactionId
+    terminalPhotoFeedbackOrder.append(transactionId)
+    if terminalPhotoFeedbackOrder.count > Self.terminalPhotoFeedbackLimit {
+      let evictedId = terminalPhotoFeedbackOrder.removeFirst()
+      if let evicted = terminalPhotoFeedbackById.removeValue(forKey: evictedId) {
+        terminalPhotoFeedbackIdByEvidence.removeValue(forKey: evicted.evidencePath)
+      }
+    }
+    for waiter in transaction.commitResults {
+      if let error { waiter(error) } else { waiter(receipt) }
+    }
+    OfficialPwNativeTelemetry.shared.log("photo_feedback_terminal", receipt)
+    return receipt
+  }
+
+  private static func photoFeedbackError(code: String, message: String) -> FlutterError {
+    FlutterError(code: code, message: message, details: nil)
+  }
+
+  private func removePhotoCardPresentation(
+    transactionId: String?,
+    evidencePath: String?
+  ) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    let names = Self.photoCardSpecRegistry.names(
+      transactionId: transactionId,
+      evidencePath: evidencePath
+    )
+    guard !names.isEmpty else { return }
+    let anchors = Self.photoCardAnchors.filter { anchor in
+      guard let name = anchor.name else { return false }
+      return names.contains(name)
+    }
+    for anchor in anchors { arSession?.remove(anchor: anchor) }
+    Self.photoCardAnchors.removeAll { anchor in
+      guard let name = anchor.name else { return false }
+      return names.contains(name)
+    }
+    for name in names { Self.photoCardSpecRegistry.remove(name) }
+  }
+
+  private func removePhotoCard(
+    transactionId: String,
+    evidencePath: String,
+    result: @escaping FlutterResult
+  ) {
+    dispatchPrecondition(condition: .onQueue(.main))
+    if let transaction = photoFeedbackTransactionsById[transactionId] {
+      guard transaction.evidencePath == evidencePath else {
+        result(Self.photoFeedbackError(
+          code: "photo_feedback_identity_conflict",
+          message: "transactionId and evidenceJpegPath identify different photos"
+        ))
+        return
+      }
+      _ = finishPhotoFeedbackTransaction(
+        transactionId: transactionId,
+        outcome: "removed",
+        rendered: transaction.rendered,
+        suppressed: true,
+        error: Self.photoFeedbackError(
+          code: "photo_feedback_removed",
+          message: "photo feedback presentation removed"
+        ),
+        removePresentation: true
+      )
+    } else if let terminal = terminalPhotoFeedbackById[transactionId] {
+      guard terminal.evidencePath == evidencePath else {
+        result(Self.photoFeedbackError(
+          code: "photo_feedback_identity_conflict",
+          message: "transactionId and evidenceJpegPath identify different photos"
+        ))
+        return
+      }
+      removePhotoCardPresentation(
+        transactionId: transactionId,
+        evidencePath: evidencePath
+      )
+    } else {
+      removePhotoCardPresentation(
+        transactionId: transactionId,
+        evidencePath: evidencePath
+      )
+    }
+    result(nil)
+  }
+
+  private func discardAllPhotoFeedback() {
+    dispatchPrecondition(condition: .onQueue(.main))
+    for transactionId in Array(photoFeedbackTransactionsById.keys) {
+      failPhotoFeedbackTransaction(
+        transactionId: transactionId,
+        code: "photo_feedback_cleared",
+        message: "AR photo feedback cleared"
+      )
+    }
+  }
+
   /// Remove all AR photo-card anchors + specs (the SceneKit nodes go via ARKit's
   /// didRemove). The album JPEGs + pose sidecars on disk are NOT touched — only the
   /// in-AR markers. Used on resume (RS behaviour: a resume relocalization shifts the
   /// world frame, so the old cards are unreliable — clear them; the user keeps
   /// capturing and the album keeps every shot).
   static func clearPhotoCards(in session: ARSession?) {
+    sharedInstance?.discardAllPhotoFeedback()
     if let session = session {
       for a in photoCardAnchors { session.remove(anchor: a) }
     }
     photoCardAnchors.removeAll()
-    photoCardSpecs.removeAll()
+    photoCardSpecRegistry.removeAll()
     // 卡片没了,四态边框状态一并清(新一轮拍摄由 Dart 重新推送)。
     photoCardStateLock.lock()
     photoCardStates.removeAll()
     photoCardStatesDirty = false
     photoCardStateLock.unlock()
-  }
-
-  static func removePhotoCard(evidencePath: String, from session: ARSession?) {
-    let names = Set(
-      photoCardSpecs.compactMap { name, spec in
-        spec.evidencePath == evidencePath ? name : nil
-      }
-    )
-    guard !names.isEmpty else { return }
-    let removedAnchors = photoCardAnchors.filter {
-      guard let name = $0.name else { return false }
-      return names.contains(name)
-    }
-    if let session {
-      for anchor in removedAnchors { session.remove(anchor: anchor) }
-    }
-    photoCardAnchors.removeAll {
-      guard let name = $0.name else { return false }
-      return names.contains(name)
-    }
-    for name in names {
-      photoCardSpecs.removeValue(forKey: name)
-      photoCardThumbRetries.removeValue(forKey: name)
-    }
   }
 
   private func startSession(resetWorld: Bool = true) throws {
@@ -1600,9 +2372,11 @@ class OfficialAetherARKitPlugin: NSObject {
     }
 
     let session = arSession ?? ARSession()
-    // Preserve XRSLAM's single ordered camera/IMU ingress without putting the
-    // production AR frame callback on Flutter's UI/main shutter-control path.
-    session.delegateQueue = PwVioSensorIngress.dispatchQueue
+    // Production AR state has one proven owner: the main queue.  The shadow
+    // XRSLAM camera copy is split onto PwVioSensorIngress in didUpdate so it
+    // remains ordered with IMU without making the production frame/snapshot
+    // ring cross-thread mutable.
+    session.delegateQueue = .main
     session.delegate = sessionDelegate
     if resetWorld {
       // Fresh start: clean reference frame, drop all anchors + the locked origin.
@@ -1618,12 +2392,6 @@ class OfficialAetherARKitPlugin: NSObject {
       OfficialAetherARKitPlugin.clearPhotoCards(in: session)
     }
     arSession = session
-    // Resume only an already-configured xrslam shadow. This is native sensor
-    // glue; pose comparison and quality decisions remain in shared Dart code.
-    PwVioTimebase.shared.resumeShadowPipeline()
-    // [SPRINT-MODE 2026-07-26] Camera is live again → matcher back to
-    // yield-to-camera pacing (thermal duty gaps + small hot chunks).
-    aether_gpu_match_set_capture_active(1)
     if #available(iOS 16.0, *) {
       restoreContinuousExposureFocus(
         reason: resetWorld ? "session start" : "session resume")
@@ -1645,7 +2413,6 @@ class OfficialAetherARKitPlugin: NSObject {
   }
 
   private func stopSession() {
-    PwVioTimebase.shared.suspendShadowPipeline()
     defer {
       PwARCameraLease.shared.release(
         owner: OfficialARKitIdentifiers.cameraOwner
@@ -1657,15 +2424,14 @@ class OfficialAetherARKitPlugin: NSObject {
     if let anchor = worldSubjectAnchor {
       arSession?.remove(anchor: anchor)
     }
+    // A stopped renderer cannot produce the first-frame receipt. Terminalize
+    // every staged/committed feedback transaction before pausing so Finish and
+    // teardown never wait for the render timeout, and no placement survives
+    // into the next AR world.
+    OfficialAetherARKitPlugin.clearPhotoCards(in: arSession)
     // 案③:主动停 → 帧停是预期,解除 stall 看门狗(下一帧到达自动重武装)。
     sessionDelegate.disarmStallWatchdog()
     arSession?.pause()
-    // [SPRINT-MODE 2026-07-26] Camera stopped → nothing to yield to. The
-    // queued-frame drain + finalize enrichment (full quadratic) now run at
-    // full matcher speed: duty gaps off, cool-size chunks. Pure scheduling,
-    // match set bit-identical; this is what keeps "全程 K12 + 全量
-    // quadratic" from ADDING post-capture wait.
-    aether_gpu_match_set_capture_active(0)
     worldOrigin = nil
     worldYaw = 0
     worldSubjectAnchor = nil
@@ -1924,6 +2690,7 @@ class OfficialAetherARKitPlugin: NSObject {
     delta: TimeInterval?,
     errorMessage: String?
   ) {
+    dispatchPrecondition(condition: .onQueue(.main))
     guard let targetTimestamp else {
       return (lastFrameSnapshot, nil, nil)
     }
@@ -2074,6 +2841,9 @@ class OfficialAetherARKitPlugin: NSObject {
     dartSaveContract: [String: Any]? = nil,
     feedSfm: Bool = false,
     deriveAuxiliary: Bool = true,
+    stagePhotoFeedback: Bool = false,
+    transactionId: String? = nil,
+    cardTexturePath: String? = nil,
     completion: @escaping ([String: Any]?, Error?) -> Void
   ) {
     guard let session = arSession else {
@@ -2088,7 +2858,7 @@ class OfficialAetherARKitPlugin: NSObject {
     // at native request receipt. Dart's latest pose sample is diagnostic only:
     // it may be sampled at a lower rate and must never authorize a delayed
     // high-resolution frame.
-    guard let requestFrameTimestamp = session.currentFrame?.timestamp else {
+    guard let requestFrame = session.currentFrame else {
       completion(nil, NSError(
         domain: "OfficialAetherARKit", code: 214,
         userInfo: [NSLocalizedDescriptionKey:
@@ -2096,6 +2866,22 @@ class OfficialAetherARKitPlugin: NSObject {
       ))
       return
     }
+    let requestFrameTimestamp = requestFrame.timestamp
+    // [ARFrame 保有 2026-09-01] requestFrame 是 session.currentFrame —— 实时
+    // 相机池里的一帧。Apple 的 ARKit 工程师在开发者论坛 thread 695404 里说明
+    // 了机制:相机投递用一个 CVPixelBuffer 池,客户端持有会把池耗空,CoreMedia
+    // 随即开始丢相机帧(超过 10 帧告警,15–20 帧开始丢)。
+    //
+    // 下面的 JPEG 编码闭包原本直接引用 requestFrame.camera.transform(三处),
+    // 于是**整个 ARFrame 被扣到编码写盘结束**——实测那一段现在超过一秒,而
+    // 快门间隔只有两秒。先在这里把需要的值取成普通 [Float],此后没有任何闭包
+    // 捕获 ARFrame 本身。
+    //
+    // 注意:这不等于已经定罪。按帧数算我们平均只持有约 0.5 帧,离 10–20 那个
+    // 阈值还远;定罪需要设备系统日志里的 "is retaining N ARFrames" 告警,那
+    // 需要 root,当时拿不到。这一刀是「Apple 明令禁止且免费可修」,不是
+    // 「已证明的元凶」。
+    let requestWorldFromCameraFloats = Self.floatArray(requestFrame.camera.transform)
     // [内存刹车 2026-07-19] app 有 increased-memory entitlement,上限约 4GB。
     // 刹车按*预测峰值*判,不按当前值:12MP 捕获瞬时 +~900MB,等 footprint 自己
     // 到 4GB 再刹已经晚了(那一帧会冲到 4.9GB 过 jetsam)。所以门 = 天花板 4000
@@ -2114,15 +2900,74 @@ class OfficialAetherARKitPlugin: NSObject {
       ))
       return
     }
+    let screenSize = UIScreen.main.bounds.size
+    let photoFeedbackViewportSize: CGSize =
+      Self.videoFormatMode == "hires43"
+        ? CGSize(width: screenSize.width, height: screenSize.width * 4.0 / 3.0)
+        : screenSize
+    var feedbackStageReceipt: PhotoFeedbackStageReceipt?
+    if stagePhotoFeedback {
+      guard let transactionId,
+            let cardTexturePath,
+            !cardTexturePath.isEmpty else {
+        completion(nil, NSError(
+          domain: "OfficialAetherARKit", code: 220,
+          userInfo: [NSLocalizedDescriptionKey:
+            "staged high-resolution capture requires transactionId and cardTexturePath"]
+        ))
+        return
+      }
+      do {
+        // ARKit still supplies the geometry today; the callee no longer knows
+        // that. capturedImage is camera pixels only and is consumed inside this
+        // call.
+        //
+        // 这里原本写着「the ARFrame is never retained past it」——那是假的。
+        // 三屏之下的 JPEG 编码闭包引用了 requestFrame.camera.transform,整帧
+        // 被扣到编码结束。2026-09-01 已把那三处换成预先取好的普通数组;这句
+        // 断言到今天才成立。
+        feedbackStageReceipt = try stagePhotoCardPlacement(
+          transactionId: transactionId,
+          evidencePath: highresPath,
+          texturePath: cardTexturePath,
+          worldFromCamera: requestFrame.camera.transform,
+          projection: requestFrame.camera.projectionMatrix(
+            for: .portrait,
+            viewportSize: photoFeedbackViewportSize,
+            zNear: 0.001,
+            zFar: 1000
+          ),
+          viewMatrix: requestFrame.camera.viewMatrix(for: .portrait),
+          sourcePixelBuffer: requestFrame.capturedImage
+        )
+      } catch {
+        completion(nil, error)
+        return
+      }
+    }
+    let stagedFeedback = feedbackStageReceipt
+    let failCapture: (Error) -> Void = { [weak self] error in
+      let deliver = {
+        if let self, let transactionId {
+          self.failPhotoFeedbackTransaction(
+            transactionId: transactionId,
+            code: "photo_feedback_capture_failed",
+            message: error.localizedDescription
+          )
+        }
+        completion(nil, error)
+      }
+      if Thread.isMainThread { deliver() } else { DispatchQueue.main.async(execute: deliver) }
+    }
     if #available(iOS 16.0, *) {
       session.captureHighResolutionFrame { [weak self] frame, error in
         guard let self else { return }
         if let error {
-          completion(nil, error)
+          failCapture(error)
           return
         }
         guard let frame else {
-          completion(nil, NSError(
+          failCapture(NSError(
             domain: "OfficialAetherARKit", code: 211,
             userInfo: [NSLocalizedDescriptionKey:
               "captureHighResolutionStill: ARKit returned no frame"]
@@ -2141,7 +2986,7 @@ class OfficialAetherARKitPlugin: NSObject {
         let imageWidth = CVPixelBufferGetWidth(pixelBuffer)
         let imageHeight = CVPixelBufferGetHeight(pixelBuffer)
         guard imageWidth == 4032, imageHeight == 3024 else {
-          completion(nil, NSError(
+          failCapture(NSError(
             domain: "OfficialAetherARKit", code: 216,
             userInfo: [NSLocalizedDescriptionKey:
               "captureHighResolutionStill: expected 4032x3024, got \(imageWidth)x\(imageHeight)"]
@@ -2200,7 +3045,70 @@ class OfficialAetherARKitPlugin: NSObject {
             field: "intrinsics_fxfycxcy"
           )
         } catch {
-          completion(nil, error)
+          // Record the scene of the crime. Until 2026-08-31 this path emitted
+          // only "contains a non-finite number" and nothing else: not which of
+          // fx/fy/cx/cy was bad, not whether it was NaN or Inf, not the value,
+          // not the tracking state, not the extrinsic. Eight occurrences in
+          // 1,332 captures across three days and every one of them was
+          // undiagnosable after the fact, which is why the cause is still
+          // unknown. Everything below is already in scope — it cost nothing to
+          // capture and it was simply never written down.
+          let names = ["fx", "fy", "cx", "cy"]
+          var badFields: [String] = []
+          var values: [String] = []
+          for (i, v) in intrinsicFxFyCxCy.enumerated() {
+            values.append("\(names[i])=\(v)")
+            if !v.isFinite {
+              badFields.append(
+                "\(names[i]):\(v.isNaN ? "nan" : (v > 0 ? "+inf" : "-inf"))"
+              )
+            }
+          }
+          let extrinsicFinite = cameraTransform.allSatisfy { $0.isFinite }
+          // ⚠️ 每个数值都转成字符串。遥测通道对整条记录做
+          // `JSONSerialization.isValidJSONObject` 校验,**不合法就整条静默
+          // 丢弃**(见 OfficialPwNativeTelemetry.log 的 guard)。而 NaN/Inf
+          // 恰恰是 JSON 非法值 —— build 69 的第一版直接把 Float 塞进去,结果
+          // 2026-08-31 15:15 那两次坏内参**一条都没记下来**:为了诊断"值是
+          // 什么"而记录那个值,那个值本身让整条日志消失了。
+          OfficialPwNativeTelemetry.shared.log("highres_intrinsics_invalid", [
+            "bad_fields": badFields.joined(separator: ","),
+            "values": values.joined(separator: " "),
+            "extrinsic_finite": extrinsicFinite ? "yes" : "no",
+            "tracking_state": trackingStateName,
+            "is_tracking": isTracking ? "yes" : "no",
+            "request_to_capture_dt": "\(requestToCaptureDelta)",
+            "capture_t": "\(timestamp)",
+            "request_frame_t": "\(requestFrameTimestamp)",
+          ])
+          // DO NOT add a retry here. It was written, then removed after the
+          // question was actually researched (2026-08-31), and the answer was
+          // unanimous: OpenVINS, ORB-SLAM3, VINS-Mono/Fusion, COLMAP, openMVG
+          // and AliceVision all DROP a bad measurement and continue; not one of
+          // them re-acquires it. ROS REP-117 goes further and assigns NaN the
+          // MEANING "erroneous detection". Apple's own Object Capture sample
+          // answers .invalidSample / .skippedSample with a bare `continue`.
+          //
+          // Our own auto-capture already recovers this way, measured: on both
+          // occurrences on record (2026-08-26 and 2026-08-30, twice in 1,230
+          // captures) the next shutter succeeded 627 ms and 511 ms later. No
+          // viewpoint was ever lost — only the shutter feedback was left
+          // unaccounted for, which is answered by making the drop legible
+          // (failPhotoFeedbackTransaction) rather than by re-shooting.
+          //
+          // The one published rule that would endorse a single immediate retry
+          // is Azure's transient-fault guidance — a distributed-systems source,
+          // where the same request genuinely can be re-issued. Borrowing it for
+          // a camera would be an invention wearing a citation.
+          //
+          // Context worth keeping: ARKit is alone in having no failure channel
+          // here. AVFoundation omits the intrinsics attachment, AVDepthData
+          // returns nil, Unity returns a bool, ARCore documents a validity
+          // condition, RealityKit makes the whole camera Optional — but
+          // `ARCamera.intrinsics` is a non-Optional `simd_float3x3` with no
+          // documented state in which it is undefined. It can only ever hand
+          // us a value, valid or not, so this gate has to exist.
+          failCapture(error)
           return
         }
         let scaleAlignPremetrics = Self.computeScaleAlignPremetrics(
@@ -2212,12 +3120,6 @@ class OfficialAetherARKitPlugin: NSObject {
 
         self.jpegEncodeQueue.async {
           do {
-            let gray1024 = deriveAuxiliary
-              ? Self.extractGray(
-                  pixelBuffer,
-                  targetSide: Self.highResQualityDownsampleSide
-                )
-              : nil
             let gray128 = deriveAuxiliary
               ? Self.extractGray128(pixelBuffer)
               : nil
@@ -2262,6 +3164,13 @@ class OfficialAetherARKitPlugin: NSObject {
                 "image_w": imageWidth,
                 "image_h": imageHeight,
                 "extrinsic": cameraTransform,
+                "requestWorldFromCamera": stagedFeedback?.requestWorldFromCamera
+                  ?? requestWorldFromCameraFloats,
+                "evidenceWorldFromCamera": cameraTransform,
+                "cardWorldTransform": stagedFeedback?.cardWorldTransform ?? [Float](),
+                "requestPoseSemantics": "authorization_request_frame",
+                "evidencePoseSemantics": "high_resolution_result_frame",
+                "cardPoseSemantics": "request_frame_world_anchor",
                 "intrinsics_fxfycxcy": intrinsicFxFyCxCy,
                 "trackingStateName": trackingStateName,
                 "tracking_state": trackingStateName,
@@ -2297,7 +3206,13 @@ class OfficialAetherARKitPlugin: NSObject {
               "timestampDelta": requestToCaptureDelta,
               "imageWidth": imageWidth,
               "imageHeight": imageHeight,
-              "cameraTransform": cameraTransform,
+              "requestWorldFromCamera": stagedFeedback?.requestWorldFromCamera
+                ?? requestWorldFromCameraFloats,
+              "evidenceWorldFromCamera": cameraTransform,
+              "cardWorldTransform": stagedFeedback?.cardWorldTransform ?? [Float](),
+              "requestPoseSemantics": "authorization_request_frame",
+              "evidencePoseSemantics": "high_resolution_result_frame",
+              "cardPoseSemantics": "request_frame_world_anchor",
               "intrinsics": intrinsicFxFyCxCy,
               "trackingStateName": trackingStateName,
               "isTracking": isTracking,
@@ -2308,13 +3223,19 @@ class OfficialAetherARKitPlugin: NSObject {
               "poseSyncQuality": "ar_session_high_res_frame",
               "nativeRole": "thin_arkit_high_res_still_executor",
             ]
+            if let transactionId { payload["transactionId"] = transactionId }
+            OfficialPwNativeTelemetry.shared.log("highres_capture_pose_pair", [
+              "transactionId": transactionId ?? "none",
+              "requestWorldFromCamera": stagedFeedback?.requestWorldFromCamera
+                ?? requestWorldFromCameraFloats,
+              "evidenceWorldFromCamera": cameraTransform,
+              "cardWorldTransform": stagedFeedback?.cardWorldTransform ?? [Float](),
+              "requestPoseSemantics": "authorization_request_frame",
+              "evidencePoseSemantics": "high_resolution_result_frame",
+              "cardPoseSemantics": "request_frame_world_anchor",
+            ])
             if let dartSaveContract {
               payload["dartSaveContract"] = dartSaveContract
-            }
-            if let gray1024 {
-              payload["q_gray1024"] = FlutterStandardTypedData(bytes: gray1024)
-              payload["q_gray1024W"] = Self.highResQualityDownsampleSide
-              payload["q_gray1024H"] = Self.highResQualityDownsampleSide
             }
             if let gray128 {
               payload["q_gray128"] = FlutterStandardTypedData(bytes: gray128)
@@ -2332,12 +3253,12 @@ class OfficialAetherARKitPlugin: NSObject {
             }
             DispatchQueue.main.async { completion(payload, nil) }
           } catch {
-            DispatchQueue.main.async { completion(nil, error) }
+            failCapture(error)
           }
         }
       }
     } else {
-      completion(nil, NSError(
+      failCapture(NSError(
         domain: "OfficialAetherARKit", code: 212,
         userInfo: [NSLocalizedDescriptionKey:
           "captureHighResolutionStill requires iOS 16 or newer"]
@@ -2612,6 +3533,7 @@ class OfficialAetherARKitPlugin: NSObject {
   }
 
   private func broadcast(frame: ARFrame) {
+    dispatchPrecondition(condition: .onQueue(.main))
     // Plan G W2 photos-on-disk arch (replaces the deleted AVAssetWriter
     // pipeline 2026-05-16): keep a short timestamp-addressable snapshot
     // ring so Dart can ask for the ARFrame that actually produced the
@@ -2848,6 +3770,10 @@ class OfficialAetherARKitPlugin: NSObject {
           * Double(Self.downsampleSide) / graySourceWidth
         let graySourceFocalY = Double(cameraIntrinsics.columns.1.y)
           * Double(Self.downsampleSide) / graySourceHeight
+        let graySourcePrincipalX = Double(cameraIntrinsics.columns.2.x)
+          * Double(Self.downsampleSide) / graySourceWidth
+        let graySourcePrincipalY = Double(cameraIntrinsics.columns.2.y)
+          * Double(Self.downsampleSide) / graySourceHeight
         let computeStart = CACurrentMediaTime()
         qualityQueue.async { [weak self] in
           let g = OfficialAetherARKitPlugin.extractGray128(pixelBuffer)
@@ -2858,6 +3784,8 @@ class OfficialAetherARKitPlugin: NSObject {
             self.pendingGraySourceTimestamp = graySourceTimestamp
             self.pendingGraySourceFocalX = graySourceFocalX
             self.pendingGraySourceFocalY = graySourceFocalY
+            self.pendingGraySourcePrincipalX = graySourcePrincipalX
+            self.pendingGraySourcePrincipalY = graySourcePrincipalY
             self.qualityComputeInFlight = false
             self.qDiagFires += 1
             self.qDiagElapsedMsSum += elapsedMs
@@ -2882,10 +3810,18 @@ class OfficialAetherARKitPlugin: NSObject {
       if let sourceFocalY = pendingGraySourceFocalY {
         payload["q_graySourceFocalY"] = sourceFocalY
       }
+      if let sourcePrincipalX = pendingGraySourcePrincipalX {
+        payload["q_graySourcePrincipalX"] = sourcePrincipalX
+      }
+      if let sourcePrincipalY = pendingGraySourcePrincipalY {
+        payload["q_graySourcePrincipalY"] = sourcePrincipalY
+      }
       pendingGray128 = nil
       pendingGraySourceTimestamp = nil
       pendingGraySourceFocalX = nil
       pendingGraySourceFocalY = nil
+      pendingGraySourcePrincipalX = nil
+      pendingGraySourcePrincipalY = nil
       qDiagAttached += 1
     }
     // 5s window aggregate log so we can sanity-check:
@@ -2938,7 +3874,6 @@ extension OfficialAetherARKitPlugin {
   /// Output edge length of `extractGray128`. Must match
   /// `kQualityGraySide` in lib/quality/quality_compute.dart.
   static let downsampleSide = 128
-  static let highResQualityDownsampleSide = 1024
 
   /// Long-edge target for the streaming-SfM grayscale feed attached to the
   /// `saveCurrentFrameAsJpeg` reply. Aspect-preserving (unlike the square
@@ -3491,10 +4426,16 @@ private class OfficialARSessionForwarder: NSObject, ARSessionDelegate {
     //   ⚠️ ARFrame.timestamp 的时钟域 Apple 全文未文档化(只有一句 "The time at
     //   which the frame was captured."),且 ARKit 不交出 CMSampleBuffer,
     //   synchronizationClock 那条换算桥在这条链上用不了 ⇒ 只能纯测量。
-    PwVioTimebase.shared.noteARFrame(frame)
-    // [pw][vio] 只把 CVPixelBuffer 引用放进有界 shadow 队列;降采样和
-    //   XRSLAM 调用在 worker 上完成。feeder 未 start 时是空操作。
-    _ = PwVioSlamFeeder.shared.enqueue(frame: frame)
+    // Reserve every bounded shadow carrier before crossing a queue. The closure
+    // retains only the fixed permit (including its CVPixelBuffer), never ARFrame;
+    // a rejected offer drops only shadow input and production delivery continues.
+    let shadowFeeder = PwVioSlamFeeder.shared
+    if let permit = shadowFeeder.tryOfferFrame(frame: frame) {
+      PwVioTimebase.shared.noteARFrame(frame)
+      PwVioSensorIngress.dispatchQueue.async {
+        _ = shadowFeeder.consume(permit: permit)
+      }
+    }
     if !loggedFirstFrame {
       loggedFirstFrame = true
       NSLog("[OfficialAetherARKit] first ARFrame received")
@@ -3528,7 +4469,6 @@ private class OfficialARSessionForwarder: NSObject, ARSessionDelegate {
   }
 
   func session(_ session: ARSession, didFailWithError error: Error) {
-    PwVioTimebase.shared.suspendShadowPipeline()
     NSLog("[OfficialAetherARKit] ARSession failed: \(error.localizedDescription)")
     OfficialPwNativeTelemetry.shared.log("ar_session_failed", [
       "error": error.localizedDescription,
@@ -3538,7 +4478,6 @@ private class OfficialARSessionForwarder: NSObject, ARSessionDelegate {
   }
 
   func sessionWasInterrupted(_ session: ARSession) {
-    PwVioTimebase.shared.suspendShadowPipeline()
     NSLog("[OfficialAetherARKit] ARSession interrupted")
     stallLock.lock()
     interrupted = true
@@ -3556,7 +4495,6 @@ private class OfficialARSessionForwarder: NSObject, ARSessionDelegate {
     OfficialPwNativeTelemetry.shared.log("ar_interruption_ended", [
       "thermal": ProcessInfo.processInfo.thermalState.rawValue,
     ])
-    PwVioTimebase.shared.resumeShadowPipeline()
   }
 
   deinit {
@@ -3705,6 +4643,20 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
   // ── 照片卡距离补偿缩放 ────────────────────────────────────────
   // photoCardNodes holds the per-card CONTAINER node we scale.
   private var photoCardNodes: [String: SCNNode] = [:]
+  private var photoCardTextureReady: Set<String> = []
+  private struct PhotoCardTextureRetry {
+    let spec: OfficialAetherARKitPlugin.PhotoCardSpec
+    let container: SCNNode
+    let attempt: Int
+    let nextAttemptAt: CFTimeInterval
+  }
+  /// SceneKit-render-thread-only retry state. No main-queue closure touches
+  /// render-owned nodes or containers.
+  private var photoCardTextureRetries: [String: PhotoCardTextureRetry] = [:]
+  /// Render-thread-only set. A name enters after its complete card node exists
+  /// and leaves in didRenderScene, proving the white frame was presented in a
+  /// real SceneKit frame before the haptic/result transaction completes.
+  private var photoFeedbackAwaitingFirstRender: Set<String> = []
   /// 距离锚点 d0:d ≤ d0 时卡片就是一块世界里的实体板(scale=1,纯透视,
   /// 视觉大小 ∝ 1/d);d > d0 才开始按 β 衰减补偿。
   private static let photoCardDistanceAnchorM: Float = 1.0
@@ -3945,121 +4897,38 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
   /// the parent SCNNode for us; we attach a child sphere if this is OUR
   /// subject anchor (filtered by name to ignore plane anchors that
   /// `planeDetection = [.horizontal]` adds automatically).
-  func renderer(_ renderer: SCNSceneRenderer, didAdd node: SCNNode, for anchor: ARAnchor) {
-    // Subject-origin anchor: no visible marker.
-    // Photo-card anchors: build a CUSTOM QUAD whose 4 corners are the unprojected
-    // viewport corners (so it pixel-aligns with the live view at capture). The
-    // texture is normalized to upright portrait (uprightPortrait) then aspect-
-    // filled with top-left-origin UVs. World-anchored, it "peels off the lens"
-    // as the camera moves. No orientation/size tuning.
-    guard let name = anchor.name, name.hasPrefix("official_photo_card_") else { return }
-    NSLog("[PHOTOCARD] renderer didAdd %@", name)
-    guard let spec = OfficialAetherARKitPlugin.photoCardSpecs[name] else {
-      NSLog("[PHOTOCARD] renderer: spec MISSING for %@", name)
-      return
-    }
-    // LOW-RES AR texture (RS-style memory saver). Decode a small thumbnail
-    // DIRECTLY from the 4K JPEG via ImageIO — it never decodes the full frame,
-    // so each floating card holds a ~1 MB texture instead of ~33 MB and hundreds
-    // of cards won't OOM. The album + DA3/SfM still read the full-res 4K JPEG on
-    // disk; only the AR card is downscaled. kCGImageSource…WithTransform bakes the
-    // EXIF orientation → upright portrait (replaces the manual uprightPortrait).
-    let thumbOpts: [CFString: Any] = [
-      kCGImageSourceCreateThumbnailFromImageAlways: true,
-      kCGImageSourceCreateThumbnailWithTransform: true,
-      kCGImageSourceThumbnailMaxPixelSize: OfficialAetherARKitPlugin.photoCardThumbMaxPx,
-    ]
-    guard let imgSrc = CGImageSourceCreateWithURL(
-            URL(fileURLWithPath: spec.texturePath) as CFURL, nil),
-          let thumbCG = CGImageSourceCreateThumbnailAtIndex(
-            imgSrc, 0, thumbOpts as CFDictionary) else {
-      // [瞬时快门] 12MP 静照后台落盘,文件可能还没写完 → 解码读空。卡片
-      // 锚点/几何已建好(贴镜头),只差纹理;每 150ms 重试直到落盘(最多
-      // 30 次~4.5s)。位姿/几何在 spec 里,重试不动位姿。
-      let tries = OfficialAetherARKitPlugin.photoCardThumbRetries[name, default: 0]
-      if tries < 30 {
-        OfficialAetherARKitPlugin.photoCardThumbRetries[name] = tries + 1
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak node] in
-          guard let self, let node else { return }
-          self.renderer(renderer, didAdd: node, for: anchor)
-        }
-      } else {
-        NSLog("[PHOTOCARD] renderer: thumbnail decode FAILED (gave up) for %@", name)
-        OfficialAetherARKitPlugin.photoCardThumbRetries.removeValue(forKey: name)
-      }
-      return
-    }
-    OfficialAetherARKitPlugin.photoCardThumbRetries.removeValue(forKey: name)
-    let image = UIImage(cgImage: thumbCG)   // upright portrait, ~thumb px long edge
-    NSLog("[PHOTOCARD] renderer building quad for %@ (%d corners) thumb=%dx%d",
-          name, spec.localCorners.count, thumbCG.width, thumbCG.height)
-    let c = spec.localCorners
-    let quadW = CGFloat(simd_length(simd_float3(
-      c[1].x - c[0].x, c[1].y - c[0].y, c[1].z - c[0].z)))   // TL->TR
-    let quadH = CGFloat(simd_length(simd_float3(
-      c[3].x - c[0].x, c[3].y - c[0].y, c[3].z - c[0].z)))   // TL->BL
-    let texAspect = image.size.height > 0
-      ? image.size.width / image.size.height : 0.75
-    let quadAspect = quadH > 0 ? quadW / quadH : 0.46
-    var u0: CGFloat = 0, u1: CGFloat = 1, v0: CGFloat = 0, v1: CGFloat = 1
-    if texAspect > quadAspect {            // texture relatively wider → crop width
-      let f = quadAspect / texAspect; u0 = (1 - f) / 2; u1 = 1 - u0
-    } else {                               // texture relatively taller → crop height
-      let f = texAspect / quadAspect; v0 = (1 - f) / 2; v1 = 1 - v0
-    }
-    let texUVs = [CGPoint(x: u0, y: v0), CGPoint(x: u1, y: v0),
-                  CGPoint(x: u1, y: v1), CGPoint(x: u0, y: v1)]   // TL,TR,BR,BL
-    NSLog("[PHOTOCARD] tex thumb=%.0fx%.0f texAsp=%.3f quadAsp=%.3f",
-          image.size.width, image.size.height, texAspect, quadAspect)
-
+  /// Build the visible black border/back immediately.  This deliberately has
+  /// no file dependency: the 12 MP JPEG and its thumbnail are still being
+  /// written when the request-time authorization callback arrives.
+  private func buildPhotoCardFrame(
+    spec: OfficialAetherARKitPlugin.PhotoCardSpec
+  ) -> (container: SCNNode, stateMaterials: [SCNMaterial]) {
     let positionSource = SCNGeometrySource(vertices: spec.localCorners)
-    let texSource = SCNGeometrySource(textureCoordinates: texUVs)
-    let element = SCNGeometryElement(indices: [Int32]([0, 1, 2, 0, 2, 3]),
-                                     primitiveType: .triangles)
-    let geometry = SCNGeometry(sources: [positionSource, texSource],
-                               elements: [element])
-    let mat = SCNMaterial()
-    mat.diffuse.contents = image
-    mat.isDoubleSided = false            // photo on the CAPTURE-FACING side only
-    mat.cullMode = .front                // = the exact face the double-sided card
-                                         // showed toward the camera (unchanged view)
-    mat.lightingModel = .constant       // unlit — show the photo as captured
-    mat.transparency = 0.7              // RS-style translucent (more see-through)
-    mat.writesToDepthBuffer = false
-    mat.diffuse.wrapS = .clamp
-    mat.diffuse.wrapT = .clamp
-    geometry.materials = [mat]
-
-    // OPAQUE BACK: same quad, rendered only from the AWAY side (cullMode
-    // .back = the face opposite the photo), so orbiting behind the card shows a
-    // solid panel instead of the see-through/mirrored photo. Colour follows the
-    // border's four-state rule (black→white/red/yellow via setPhotoCardStates).
+    let element = SCNGeometryElement(
+      indices: [Int32]([0, 1, 2, 0, 2, 3]),
+      primitiveType: .triangles
+    )
     let backGeo = SCNGeometry(sources: [positionSource], elements: [element])
     let backMat = SCNMaterial()
     backMat.diffuse.contents = UIColor.black
     backMat.isDoubleSided = false
-    backMat.cullMode = .back             // the face opposite the photo (away side)
+    backMat.cullMode = .back
     backMat.lightingModel = .constant
-    backMat.transparency = 1.0           // opaque
+    backMat.transparency = 1.0
     backMat.writesToDepthBuffer = false
     backGeo.materials = [backMat]
 
-    // RS-style FRAME: the four-state border RING around the photo. Starts
-    // BLACK (= SfM pending); Dart's judgement (photo_card_state.dart) flips it
-    // white (registered) / red (disconnected) / yellow (low parallax) via the
-    // setPhotoCardStates channel — applied in applyPhotoCardStatesIfDirty.
-    // Built as a hollow ring (inner edge == photo edge, outer == +12%) so
-    // it never overlaps the photo (no z-fight, no darkening of the image).
     let inner = spec.localCorners
-    let outer = inner.map { SCNVector3($0.x * 1.12, $0.y * 1.12, $0.z * 1.12) }  // 4× the original 3% — 边框加粗一倍(签决:四态颜色要醒目)
-    let frameVerts = inner + outer                       // 0-3 inner, 4-7 outer
-    let frameIdx: [Int32] = [4, 5, 1, 4, 1, 0,           // top edge
-                             5, 6, 2, 5, 2, 1,           // right edge
-                             6, 7, 3, 6, 3, 2,           // bottom edge
-                             7, 4, 0, 7, 0, 3]           // left edge
+    let outer = inner.map { SCNVector3($0.x * 1.12, $0.y * 1.12, $0.z * 1.12) }
+    let frameVerts = inner + outer
+    let frameIdx: [Int32] = [4, 5, 1, 4, 1, 0,
+                             5, 6, 2, 5, 2, 1,
+                             6, 7, 3, 6, 3, 2,
+                             7, 4, 0, 7, 0, 3]
     let frameGeo = SCNGeometry(
       sources: [SCNGeometrySource(vertices: frameVerts)],
-      elements: [SCNGeometryElement(indices: frameIdx, primitiveType: .triangles)])
+      elements: [SCNGeometryElement(indices: frameIdx, primitiveType: .triangles)]
+    )
     let frameMat = SCNMaterial()
     frameMat.diffuse.contents = UIColor.black
     frameMat.isDoubleSided = true
@@ -4068,25 +4937,191 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
     frameMat.writesToDepthBuffer = false
     frameGeo.materials = [frameMat]
 
-    // Wrap border + photo in a CONTAINER we scale per-frame (renderer:updateAtTime)
-    // for the deliberate distance shrink. Container origin == anchor centroid, so
-    // scaling shrinks the card toward its own centre without moving it.
     let container = SCNNode()
-    container.addChildNode(SCNNode(geometry: frameGeo))   // border behind/around
-    container.addChildNode(SCNNode(geometry: backGeo))    // opaque back panel
-    container.addChildNode(SCNNode(geometry: geometry))   // photo on the front
-    node.addChildNode(container)
-    photoCardNodes[name] = container
-    // 四态边框:登记环+背板材质,并立刻套用 Dart 已推过的状态(卡片
-    // 节点可能晚于状态到达 —— didAdd 是异步回调)。
-    photoCardStateMats[name] = [frameMat, backMat]
+    container.addChildNode(SCNNode(geometry: frameGeo))
+    container.addChildNode(SCNNode(geometry: backGeo))
+    return (container, [frameMat, backMat])
+  }
+
+  /// Fill the already-rendered frame with its low-memory thumbnail whenever
+  /// the background writer finishes.  Retry affects only texture decoration;
+  /// it can never delay the black frame or haptic transaction.
+  private func loadPhotoCardTextureWhenReady(
+    name: String,
+    spec: OfficialAetherARKitPlugin.PhotoCardSpec,
+    container: SCNNode
+  ) {
+    // Observation only; no behaviour changes in this function. Until
+    // 2026-08-31 every exit below returned in silence while only SUCCESS was
+    // logged, so a card that stayed black left nothing behind at all.
+    // official_photo_card_16 was lost that way on 2026-08-31 (1 of 20) and
+    // could not be attributed to any of the four exits after the fact.
+    if photoCardTextureReady.contains(name) {
+      photoCardTextureRetries.removeValue(forKey: name)
+      return
+    }
+    guard photoCardNodes[name] === container else {
+      photoCardTextureRetries.removeValue(forKey: name)
+      OfficialPwNativeTelemetry.shared.log("photo_feedback_texture_abandoned", [
+        "card": name,
+        "reason": "node_replaced",
+      ])
+      return
+    }
+    guard OfficialAetherARKitPlugin.hasPhotoCardSpec(for: name) else {
+      photoCardTextureRetries.removeValue(forKey: name)
+      OfficialPwNativeTelemetry.shared.log("photo_feedback_texture_abandoned", [
+        "card": name,
+        "reason": "spec_missing",
+      ])
+      return
+    }
+    let image: UIImage
+    let retryCount: Int
+    let textureSource: String
+    if let staged = spec.thumbnail {
+      // Built at shutter time from the pixel buffer we already held. No file
+      // write, no existence poll, no JPEG decode on the render thread.
+      image = staged
+      retryCount = photoCardTextureRetries.removeValue(forKey: name)?.attempt ?? 0
+      textureSource = "staged_pixel_buffer"
+    } else {
+      // Fallback only, for a card whose staging thumbnail could not be built
+      // (an unexpected pixel format). Retained as a net so such a card ends up
+      // decorated late rather than staying black forever.
+      let thumbOpts: [CFString: Any] = [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceThumbnailMaxPixelSize: OfficialAetherARKitPlugin.photoCardThumbMaxPx,
+      ]
+      guard let imgSrc = CGImageSourceCreateWithURL(
+              URL(fileURLWithPath: spec.texturePath) as CFURL, nil),
+            let thumbCG = CGImageSourceCreateThumbnailAtIndex(
+              imgSrc, 0, thumbOpts as CFDictionary) else {
+        let tries = photoCardTextureRetries[name]?.attempt ?? 0
+        if tries < 30 {
+          photoCardTextureRetries[name] = PhotoCardTextureRetry(
+            spec: spec,
+            container: container,
+            attempt: tries + 1,
+            nextAttemptAt: CACurrentMediaTime() + 0.15
+          )
+        } else {
+          NSLog("[PHOTOCARD] thumbnail decode FAILED (black frame retained) for %@", name)
+          photoCardTextureRetries.removeValue(forKey: name)
+          OfficialPwNativeTelemetry.shared.log("photo_feedback_texture_abandoned", [
+            "card": name,
+            "reason": "disk_decode_failed",
+            "attempts": tries,
+          ])
+        }
+        return
+      }
+      retryCount = photoCardTextureRetries.removeValue(forKey: name)?.attempt ?? 0
+      image = UIImage(cgImage: thumbCG)
+      textureSource = "disk_jpeg"
+    }
+    let c = spec.localCorners
+    let quadW = CGFloat(simd_length(simd_float3(
+      c[1].x - c[0].x, c[1].y - c[0].y, c[1].z - c[0].z)))
+    let quadH = CGFloat(simd_length(simd_float3(
+      c[3].x - c[0].x, c[3].y - c[0].y, c[3].z - c[0].z)))
+    let texAspect = image.size.height > 0
+      ? image.size.width / image.size.height : 0.75
+    let quadAspect = quadH > 0 ? quadW / quadH : 0.46
+    var u0: CGFloat = 0, u1: CGFloat = 1, v0: CGFloat = 0, v1: CGFloat = 1
+    if texAspect > quadAspect {
+      let f = quadAspect / texAspect; u0 = (1 - f) / 2; u1 = 1 - u0
+    } else {
+      let f = texAspect / quadAspect; v0 = (1 - f) / 2; v1 = 1 - v0
+    }
+    let texUVs = [CGPoint(x: u0, y: v0), CGPoint(x: u1, y: v0),
+                  CGPoint(x: u1, y: v1), CGPoint(x: u0, y: v1)]
+    let positionSource = SCNGeometrySource(vertices: spec.localCorners)
+    let texSource = SCNGeometrySource(textureCoordinates: texUVs)
+    let element = SCNGeometryElement(
+      indices: [Int32]([0, 1, 2, 0, 2, 3]),
+      primitiveType: .triangles
+    )
+    let geometry = SCNGeometry(
+      sources: [positionSource, texSource],
+      elements: [element]
+    )
+    let material = SCNMaterial()
+    material.diffuse.contents = image
+    material.isDoubleSided = false
+    material.cullMode = .front
+    material.lightingModel = .constant
+    material.transparency = 0.7
+    material.writesToDepthBuffer = false
+    material.diffuse.wrapS = .clamp
+    material.diffuse.wrapT = .clamp
+    geometry.materials = [material]
+    container.addChildNode(SCNNode(geometry: geometry))
+    photoCardTextureReady.insert(name)
+    // texture_source is the on-device proof of which route actually ran. A
+    // build that installs but silently keeps falling back to disk_jpeg would
+    // otherwise be indistinguishable from one that took effect.
+    OfficialPwNativeTelemetry.shared.log("photo_feedback_texture_ready", [
+      "card": name,
+      "thumbnail_retry_count": retryCount,
+      "texture_source": textureSource,
+    ])
+  }
+
+  func renderer(_ renderer: SCNSceneRenderer, didAdd node: SCNNode, for anchor: ARAnchor) {
+    guard let name = anchor.name, name.hasPrefix("official_photo_card_") else { return }
+    NSLog("[PHOTOCARD] renderer didAdd %@", name)
+    // NSLog goes to the system log, which needs root and a connected Mac to
+    // retrieve, so in the field those 40 call sites are write-only. The one
+    // channel that survives a devicectl pull is native telemetry. This event
+    // is what tells a later reader that the anchor reached the renderer at
+    // all: a staged card with no photo_feedback_anchor_rendered is a failure
+    // BEFORE this point, not a texture failure.
+    OfficialPwNativeTelemetry.shared.log("photo_feedback_anchor_rendered", [
+      "card": name,
+    ])
+    guard let spec = OfficialAetherARKitPlugin.photoCardSpecSnapshot(for: name) else {
+      NSLog("[PHOTOCARD] renderer: spec MISSING for %@", name)
+      OfficialPwNativeTelemetry.shared.log("photo_feedback_texture_abandoned", [
+        "card": name,
+        "reason": "spec_snapshot_missing_at_didadd",
+      ])
+      return
+    }
+    let built = buildPhotoCardFrame(spec: spec)
+    node.addChildNode(built.container)
+    photoCardNodes[name] = built.container
+    photoCardStateMats[name] = built.stateMaterials
     let initialState = OfficialAetherARKitPlugin.photoCardState(
       forPath: spec.evidencePath
     )
     if initialState != 0 {
-      let c = Self.photoCardStateColor(initialState)
-      frameMat.diffuse.contents = c
-      backMat.diffuse.contents = c
+      let color = Self.photoCardStateColor(initialState)
+      for material in built.stateMaterials {
+        material.diffuse.contents = color
+      }
+    }
+    photoFeedbackAwaitingFirstRender.insert(name)
+    loadPhotoCardTextureWhenReady(
+      name: name,
+      spec: spec,
+      container: built.container
+    )
+  }
+
+  func renderer(
+    _ renderer: SCNSceneRenderer,
+    didRenderScene scene: SCNScene,
+    atTime time: TimeInterval
+  ) {
+    guard !photoFeedbackAwaitingFirstRender.isEmpty else { return }
+    let renderedNames = Array(photoFeedbackAwaitingFirstRender)
+    photoFeedbackAwaitingFirstRender.removeAll()
+    DispatchQueue.main.async {
+      for name in renderedNames {
+        OfficialAetherARKitPlugin.completePhotoFeedbackAfterRender(name: name)
+      }
     }
   }
 
@@ -4096,6 +5131,7 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
   /// thread.
   func renderer(_ renderer: SCNSceneRenderer, updateAtTime time: TimeInterval) {
     OfficialPwNativeTelemetry.shared.noteRenderFrame()  // 遥测 F:FPS 计帧(纳秒级)
+    retryPendingPhotoCardTextures()
     updateFeaturePointOverlay(at: time) // stable dynamic LOD; independent of cards
     applyPhotoCardStatesIfDirty()  // 四态边框:消费 Dart 推来的状态差量
     guard !photoCardNodes.isEmpty, let cam = renderer.pointOfView else { return }
@@ -4125,6 +5161,18 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
     }
   }
 
+  private func retryPendingPhotoCardTextures() {
+    let now = CACurrentMediaTime()
+    let ready = photoCardTextureRetries.filter { $0.value.nextAttemptAt <= now }
+    for (name, retry) in ready {
+      loadPhotoCardTextureWhenReady(
+        name: name,
+        spec: retry.spec,
+        container: retry.container
+      )
+    }
+  }
+
   /// Render-thread consumer of the Dart-pushed four-state border states:
   /// recolours every card's ring + back-panel materials when the merged dict
   /// changed (dirty flag). Cards added AFTER a push pick their state up in
@@ -4137,8 +5185,8 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
     // 遥测 G【cardpush】:渲染线程应用耗时(>1ms 才落行,防刷屏)。
     let t0 = CACurrentMediaTime()
     for (name, mats) in photoCardStateMats {
-      guard let path =
-        OfficialAetherARKitPlugin.photoCardSpecs[name]?.evidencePath else {
+      guard let path = OfficialAetherARKitPlugin
+        .photoCardSpecSnapshot(for: name)?.evidencePath else {
         continue
       }
       let color = Self.photoCardStateColor(states[path] ?? 0)
@@ -4163,6 +5211,9 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
       }
       photoCardNodes.removeValue(forKey: name)
       photoCardStateMats.removeValue(forKey: name)
+      photoCardTextureReady.remove(name)
+      photoCardTextureRetries.removeValue(forKey: name)
+      photoFeedbackAwaitingFirstRender.remove(name)
     }
     guard anchor.name == Self.subjectAnchorName else { return }
     NSLog("[OfficialAetherARKitPreview] subject anchor removed; marker went with it")

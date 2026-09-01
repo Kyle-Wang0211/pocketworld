@@ -5,8 +5,6 @@
 // authoritative colored cloud is ready. Rendering uses the shared
 // SparseCloudView, identical to the drafts 查看点云 page.
 
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
 
 import '../../l10n/app_localizations.dart';
@@ -36,7 +34,7 @@ class SfmPreviewOverlay extends StatelessWidget {
     super.key,
     required this.phase,
     required this.snapshot,
-    required this.onBack,
+    this.onBack,
     required this.onDone,
     this.onNext,
     this.onEnterEditing,
@@ -55,7 +53,9 @@ class SfmPreviewOverlay extends StatelessWidget {
 
   /// L2 渲染门可见性(ghost_view_filter.dart;与 [snapshot] 点序逐位对齐,
   /// null = 全显示)。RENDER-ONLY,只透传给 SparseCloudView。
-  final VoidCallback onBack;
+  /// Null while reconstruction is committed and non-terminal. The opaque
+  /// processing surface then owns the route and exposes no escape back to AR.
+  final VoidCallback? onBack;
   final VoidCallback onDone;
 
   /// [选区 2026-07-27] refined 且非 null 时渲染"保存草稿|下一步"双按钮
@@ -147,23 +147,24 @@ class SfmPreviewOverlay extends StatelessWidget {
             // Leaving this screen only reveals Drafts. The capture route and
             // its reconstruction worker stay mounted so progress can be
             // reopened from the active task card.
-            Positioned(
-              top: 0,
-              left: 0,
-              child: SafeArea(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(8, 8, 0, 0),
-                  child: IconButton(
-                    key: const ValueKey('sfm_preview_back'),
-                    onPressed: onBack,
-                    tooltip: AppL10n.of(context).sfmBackToDrafts,
-                    icon: const Icon(Icons.arrow_back_ios_new_rounded),
-                    color: Colors.white,
-                    iconSize: 22,
+            if (onBack != null)
+              Positioned(
+                top: 0,
+                left: 0,
+                child: SafeArea(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(8, 8, 0, 0),
+                    child: IconButton(
+                      key: const ValueKey('sfm_preview_back'),
+                      onPressed: onBack,
+                      tooltip: AppL10n.of(context).sfmBackToDrafts,
+                      icon: const Icon(Icons.arrow_back_ios_new_rounded),
+                      color: Colors.white,
+                      iconSize: 22,
+                    ),
                   ),
                 ),
               ),
-            ),
             // ── [SEL-ENTRY 2026-07-30 用户签决] 右上角"选区编辑 ⇄ 返回"开关 ──
             //
             // 此前进选区只有底部那个"下一步"按钮,读起来像**必经的下一步**;

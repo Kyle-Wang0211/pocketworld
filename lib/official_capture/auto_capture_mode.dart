@@ -29,7 +29,7 @@ enum AutoCaptureIndicator {
   ///
   /// ⚠️ **它不是脉冲动画的驱动源,不要把它接成驱动源。** 脉冲走的是采集页
   /// 的 `_autoFirePulseToken`,而那个令牌只在**真的入队成功**时才 +1
-  /// (与 `fire_enqueued` 同一处记账)。理由见 spec §7/§8:开火 ≠ 拍成,
+  /// (与 `fire_admitted` 同一处记账)。理由见 spec §7/§8:开火 ≠ 拍成,
   /// 拿判定驱动脉冲会在入队失败时给用户一个假的正反馈 —— 红键脉冲一下、
   /// `N/300` 一动不动,而自动模式下那颗红键的脉冲是「到底拍上没有」的
   /// **唯一**反馈。〔2026-08-19 评审改正:此前就是这么接的。〕
@@ -71,6 +71,7 @@ AutoCaptureIndicator autoCaptureIndicatorFor({
     // 画质缓拍归 steady:节奏自然慢一拍即可,不额外表达(spec §8 同款
     // 取舍 —— skipPaced 也不表达)。
     case AutoCaptureDecision.skipBlurry:
+    case AutoCaptureDecision.skipQuality:
     case AutoCaptureDecision.skipPaced:
     case AutoCaptureDecision.skipNoVisualEvidence:
     case AutoCaptureDecision.skipRedundant:
@@ -126,7 +127,6 @@ String autoCaptureShutterHintText({
       return '持续按快门拍摄';
     case OfficialCaptureMode.auto:
       if (!running) return '点一下录制键开始自动拍摄';
-      if (shouldPromptSlowDown) return '重叠正在降低，请减速并保持物体在画面内';
       return '拍摄中，再点一下录制键停止';
   }
 }

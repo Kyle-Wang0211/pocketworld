@@ -1,0 +1,44 @@
+{
+  "schema": "pw.xrslam.research-profile-build-evidence/1",
+  "recorded_at": "2026-08-28",
+  "upstream_revision": "4beb1a942f33da9afbfae2d70e2c641cfc2bb675",
+  "upstream_tree": "8dc778aa6e748f1b34c9c96ef083311eab580265",
+  "product_selection_changed": false,
+  "device_touched": false,
+  "probes": {
+    "official_ios_semantics": {
+      "status": "blocked",
+      "verified_before_block": [
+        "exact upstream commit and tree",
+        "aggregate target source manifest SHA-256",
+        "unmodified upstream iOS toolchain SHA-256",
+        "Xcode 26.2 and iPhoneOS SDK 26.2 accepted",
+        "iOS deployment target 14.0 accepted",
+        "XRSLAM_IOS=true and threading=true requested",
+        "official Release floating-point flags originate from the unmodified upstream toolchain"
+      ],
+      "blocker_stage": "cmake_fetchcontent_dependency_materialization",
+      "blocker": "The exact Eigen 3.3.7 Git dependency clone made no byte progress for 4 minutes 37 seconds in the local network environment. The probe was stopped without substituting a dependency.",
+      "work_root": "/private/tmp/pw-xrslam-profile-ios-official-20260828a",
+      "artifact": null,
+      "artifact_sha256": null,
+      "receipt_emitted": false
+    },
+    "android_official_ios_semantics_port": {
+      "status": "blocked",
+      "verified_before_block": [
+        "exact upstream commit and tree",
+        "exact Eigen, Ceres, spdlog, and yaml-cpp revisions materialized from local Git object mirrors",
+        "build-route-only patch applies without algorithm source changes",
+        "XRSLAM_IOS=true and threading=true port contract",
+        "official -O3 and -ffast-math floating-point contract"
+      ],
+      "blocker_stage": "opencv_dependency_gate_before_configure",
+      "blocker": "The available Android OpenCV CMake package is 5.0.0, not the pinned 4.0.1 dependency. The builder rejected it before configuration; no cross-platform buildability claim is made.",
+      "work_root": "/private/tmp/pw-xrslam-profile-android-official-probe-20260828a",
+      "artifact": null,
+      "artifact_sha256": null,
+      "receipt_emitted": false
+    }
+  }
+}

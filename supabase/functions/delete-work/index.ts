@@ -30,45 +30,49 @@
 // verified — moving a target under a test in progress. Fold them together
 // once that verification lands.
 
-import { createClient } from 'jsr:@supabase/supabase-js@2.112.3';
-import { corsHeaders, jsonResponse, consumeRateLimit } from '../_shared/cors.ts';
+import { createClient } from "jsr:@supabase/supabase-js@2.112.3";
+import {
+  consumeRateLimit,
+  corsHeaders,
+  jsonResponse,
+} from "../_shared/cors.ts";
 
 type AssetRef = { bucket: string; path: string };
 
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
   }
-  if (req.method !== 'POST') {
-    return jsonResponse({ error: 'method_not_allowed' }, 405);
+  if (req.method !== "POST") {
+    return jsonResponse({ error: "method_not_allowed" }, 405);
   }
 
-  const supabaseUrl = Deno.env.get('SUPABASE_URL');
-  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!supabaseUrl || !serviceKey) {
-    return jsonResponse({ error: 'server_misconfigured' }, 500);
+    return jsonResponse({ error: "server_misconfigured" }, 500);
   }
   const admin = createClient(supabaseUrl, serviceKey, {
     auth: { persistSession: false },
   });
 
-  const bearer = (req.headers.get('Authorization') ?? '')
-    .replace(/^Bearer\s+/i, '')
+  const bearer = (req.headers.get("Authorization") ?? "")
+    .replace(/^Bearer\s+/i, "")
     .trim();
-  if (!bearer) return jsonResponse({ error: 'missing_authorization' }, 401);
+  if (!bearer) return jsonResponse({ error: "missing_authorization" }, 401);
 
   const { data: userData, error: userErr } = await admin.auth.getUser(bearer);
   const user = userData?.user;
-  if (userErr || !user) return jsonResponse({ error: 'unauthorized' }, 401);
+  if (userErr || !user) return jsonResponse({ error: "unauthorized" }, 401);
 
   let body: Record<string, unknown>;
   try {
     body = await req.json();
   } catch {
-    return jsonResponse({ error: 'invalid_json' }, 400);
+    return jsonResponse({ error: "invalid_json" }, 400);
   }
-  const workId = typeof body.work_id === 'string' ? body.work_id.trim() : '';
-  if (!isUuid(workId)) return jsonResponse({ error: 'invalid_work_id' }, 400);
+  const workId = typeof body.work_id === "string" ? body.work_id.trim() : "";
+  if (!isUuid(workId)) return jsonResponse({ error: "invalid_work_id" }, 400);
 
   // Rate limit. Supabase rate-limits its Auth endpoints but has NO built-in
   // limiting on the Data API or on Edge Functions, so every write endpoint
@@ -80,26 +84,31 @@ Deno.serve(async (req) => {
   // "broken" here means the DB is already in trouble.
   if (!await consumeRateLimit(admin, `delete-work:${user.id}`, 20, 3600)) {
     return jsonResponse({
-      error: 'rate_limited',
-      message: 'Too many deletions in a short period. Try again later.',
+      error: "rate_limited",
+      message: "Too many deletions in a short period. Try again later.",
     }, 429);
   }
 
   // Ownership from the ROW, not the request. Also fetches the paths we
   // need before anything is deleted.
   const { data: work, error: workErr } = await admin
-    .from('works')
-    .select('id, user_id, moderation_status, deleted_at, model_storage_path, thumbnail_storage_path, preview_video_path')
-    .eq('id', workId)
+    .from("works")
+    .select(
+      "id, user_id, moderation_status, deleted_at, model_storage_path, thumbnail_storage_path, preview_video_path",
+    )
+    .eq("id", workId)
     .maybeSingle();
   if (workErr) {
-    return jsonResponse({ error: 'work_lookup_failed', detail: workErr.message }, 500);
+    return jsonResponse({
+      error: "work_lookup_failed",
+      detail: workErr.message,
+    }, 500);
   }
-  if (!work) return jsonResponse({ error: 'work_not_found' }, 404);
+  if (!work) return jsonResponse({ error: "work_not_found" }, 404);
   if (work.user_id !== user.id) {
     // Deliberately 404, not 403: a 403 would confirm the work exists to
     // someone probing ids that aren't theirs.
-    return jsonResponse({ error: 'work_not_found' }, 404);
+    return jsonResponse({ error: "work_not_found" }, 404);
   }
 
   // 🔒 A work under moderation is NOT the author's to delete.
@@ -121,13 +130,29 @@ Deno.serve(async (req) => {
   // Their legitimate "remove it from the feed" interest is already
   // satisfied: a removed work is not in the feed. What is refused is the
   // destruction of the record.
-  if (work.moderation_status !== 'ok' || work.deleted_at !== null) {
+  if (work.moderation_status !== "ok" || work.deleted_at !== null) {
     return jsonResponse({
-      error: 'work_under_moderation',
-      message:
-        'This work is under moderation and cannot be deleted. ' +
-        'If you believe this is a mistake, use the appeal contact.',
+      error: "work_under_moderation",
+      message: "This work is under moderation and cannot be deleted. " +
+        "If you believe this is a mistake, use the appeal contact.",
       moderation_status: work.moderation_status,
+    }, 409);
+  }
+
+  // Atomically claim the work before touching Storage. Sensitive report
+  // submission locks the same row and cannot race between this check and the
+  // later object deletion.
+  const { data: claimed, error: claimError } = await admin.rpc(
+    "claim_work_deletion",
+    { p_work_id: workId, p_user_id: user.id },
+  );
+  if (claimError) {
+    return jsonResponse({ error: "work_delete_claim_failed" }, 500);
+  }
+  if (claimed !== true) {
+    return jsonResponse({
+      error: "work_preservation_in_progress",
+      message: "This work is currently required for a safety review.",
     }, 409);
   }
 
@@ -144,23 +169,23 @@ Deno.serve(async (req) => {
     seen.add(k);
     assets.push({ bucket, path });
   };
-  push('works', work.model_storage_path);
-  push('thumbnails', work.thumbnail_storage_path);
-  push('works', work.preview_video_path);
+  push("works", work.model_storage_path);
+  push("thumbnails", work.thumbnail_storage_path);
+  push("works", work.preview_video_path);
 
   const { data: versions } = await admin
-    .from('work_versions')
-    .select('model_storage_path, thumbnail_storage_path')
-    .eq('work_id', workId);
+    .from("work_versions")
+    .select("model_storage_path, thumbnail_storage_path")
+    .eq("work_id", workId);
   for (const v of versions ?? []) {
-    push('works', v.model_storage_path);
-    push('thumbnails', v.thumbnail_storage_path);
+    push("works", v.model_storage_path);
+    push("thumbnails", v.thumbnail_storage_path);
   }
 
   // If this work was previously taken down and later restored, or is
   // quarantined right now, its bytes may live under quarantine/{work_id}/.
-  for (const p of await listAllUnder(admin, 'quarantine', workId)) {
-    push('quarantine', p);
+  for (const p of await listAllUnder(admin, "quarantine", workId)) {
+    push("quarantine", p);
   }
 
   // ── delete files (batched per bucket) ───────────────────────────────
@@ -185,28 +210,28 @@ Deno.serve(async (req) => {
   }
 
   // ── delete the row (cascades comments / likes / versions / tags) ────
-  const { error: delErr } = await admin.from('works').delete().eq('id', workId);
+  const { error: delErr } = await admin.from("works").delete().eq("id", workId);
   if (delErr) {
     return jsonResponse({
-      error: 'work_delete_failed',
+      error: "work_delete_failed",
       detail: delErr.message,
       storage_objects_deleted: deleted,
     }, 500);
   }
 
-  await admin.from('audit_logs').insert({
+  await admin.from("audit_logs").insert({
     actor_id: user.id,
-    action: 'work.deleted_by_author',
-    target_type: 'work',
+    action: "work.deleted_by_author",
+    target_type: "work",
     target_id: workId,
-    ip_address: firstIp(req.headers.get('x-forwarded-for')),
-    user_agent: (req.headers.get('user-agent') ?? '').slice(0, 500) || null,
+    ip_address: firstIp(req.headers.get("x-forwarded-for")),
+    user_agent: (req.headers.get("user-agent") ?? "").slice(0, 500) || null,
     metadata: {
       storage_objects_found: assets.length,
       storage_objects_deleted: deleted,
       storage_failures: failures,
       note: failures.length > 0
-        ? 'Work row deleted despite storage failures — sweep these manually.'
+        ? "Work row deleted despite storage failures — sweep these manually."
         : null,
     },
   });
@@ -222,7 +247,8 @@ Deno.serve(async (req) => {
 });
 
 async function listAllUnder(
-  admin: ReturnType<typeof createClient>,
+  // deno-lint-ignore no-explicit-any
+  admin: any,
   bucket: string,
   prefix: string,
 ): Promise<string[]> {
@@ -251,12 +277,14 @@ async function listAllUnder(
 }
 
 function normalizeStoragePath(raw: unknown, bucket: string): string | null {
-  if (typeof raw !== 'string') return null;
+  if (typeof raw !== "string") return null;
   const s = raw.trim();
   if (s.length === 0) return null;
-  if (!s.startsWith('http')) return s.replace(/^\/+/, '');
+  if (!s.startsWith("http")) return s.replace(/^\/+/, "");
   const m = s.match(
-    new RegExp(`/storage/v1/object/(?:public|sign|authenticated)/${bucket}/(.+?)(?:\\?|$)`),
+    new RegExp(
+      `/storage/v1/object/(?:public|sign|authenticated)/${bucket}/(.+?)(?:\\?|$)`,
+    ),
   );
   if (!m) return null;
   try {
@@ -275,6 +303,6 @@ function isUuid(v: string): boolean {
 /// Returns null when unparseable — attribution must never fail the delete.
 function firstIp(raw: string | null): string | null {
   if (!raw) return null;
-  const first = raw.split(',')[0]?.trim();
+  const first = raw.split(",")[0]?.trim();
   return first && first.length > 0 ? first : null;
 }

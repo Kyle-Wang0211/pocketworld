@@ -770,4 +770,146 @@ class AppL10nZh extends AppL10n {
 
   @override
   String get workDeleteFailed => '删除失败，请稍后重试';
+
+  @override
+  String get socialActionFailed => '操作失败，请稍后重试';
+
+  @override
+  String get socialFollowingTitle => '我的关注';
+
+  @override
+  String get socialFollowingLoadFailed => '暂时无法加载关注列表';
+
+  @override
+  String get socialFollowingEmpty => '还没有关注任何人';
+
+  @override
+  String get socialFollow => '关注';
+
+  @override
+  String get socialFollowing => '已关注';
+
+  @override
+  String get socialWorks => '作品';
+
+  @override
+  String get socialFollowers => '粉丝';
+
+  @override
+  String get profileLoadFailed => '暂时无法加载个人主页';
+
+  @override
+  String get profileBack => '返回';
+
+  @override
+  String get profileMore => '更多';
+
+  @override
+  String get profileReportUser => '举报该用户';
+
+  @override
+  String get profileBlockUser => '拉黑该用户';
+
+  @override
+  String get profileBlockTitle => '拉黑该用户？';
+
+  @override
+  String get profileBlockBody =>
+      '使用当前账号登录 PocketWorld 时，你将不再在社区、搜索、关注列表和个人主页看到对方；双方关注关系会立即解除，也不能再次关注。对方不会收到通知。公开链接、未登录访问或其他账号仍可能看到其公开内容。';
+
+  @override
+  String get profileBlockConfirm => '确认拉黑';
+
+  @override
+  String get profileBlockFailed => '拉黑失败，请稍后重试';
+
+  @override
+  String get reportUserTitle => '举报该用户';
+
+  @override
+  String get reportAdditionalInfoTitle => '补充信息';
+
+  @override
+  String get reportImageProcessFailed => '无法处理这张图片，请选择 JPG 或 PNG';
+
+  @override
+  String get reportUserSubmitted => '举报已提交';
+
+  @override
+  String get reportSubmittedPartial => '举报已提交，部分图片未上传';
+
+  @override
+  String get reportDetailUserHint => '可补充说明具体情况';
+
+  @override
+  String reportSourceWork(String workId) {
+    return '关联作品：$workId';
+  }
+
+  @override
+  String get reportAddEvidence => '添加截图或照片（最多 3 张）';
+
+  @override
+  String get reportSensitiveEvidenceWarning =>
+      '请不要重新上传或传播敏感材料。平台会保全关联的站内内容并交由审核处理。';
+
+  @override
+  String get reportSubmitting => '提交中…';
+
+  @override
+  String get reportSubmitUser => '提交举报';
+
+  @override
+  String get reportReasonImpersonation => '冒充他人或账号资料虚假';
+
+  @override
+  String get reportReasonHarassmentThreat => '骚扰、网络暴力或人身威胁';
+
+  @override
+  String get reportReasonSpamFraud => '诈骗、广告骚扰或异常账号行为';
+
+  @override
+  String get reportReasonMinorSafety => '涉及未成年人安全';
+
+  @override
+  String get reportReasonSexualLowQuality => '色情低俗';
+
+  @override
+  String get reportReasonViolenceIllegal => '暴力、自伤、仇恨、极端或其他违法有害信息';
+
+  @override
+  String get reportReasonMisleading => '虚假不实或误导性信息';
+
+  @override
+  String get reportReasonPrivacyIp => '隐私、人肉搜索、肖像或知识产权';
+
+  @override
+  String get reportReasonOtherUncertain => '其他 / 不确定';
+
+  @override
+  String get blockedUsersTitle => '已拉黑用户';
+
+  @override
+  String get blockedUsersLoadFailed => '暂时无法加载拉黑名单';
+
+  @override
+  String get blockedUsersEmpty => '没有已拉黑的用户';
+
+  @override
+  String get unblockTitle => '解除拉黑？';
+
+  @override
+  String get unblockBody => '解除后可以重新看到对方的公开内容，但不会自动恢复双方原来的关注关系。';
+
+  @override
+  String get unblockAction => '解除拉黑';
+
+  @override
+  String get unblockFailed => '解除拉黑失败，请稍后重试';
+
+  @override
+  String get meBlockedUsers => '已拉黑用户';
+
+  @override
+  String get meSocialLoadFailed => '暂时无法加载社交资料';
 }

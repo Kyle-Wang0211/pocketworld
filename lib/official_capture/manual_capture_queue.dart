@@ -1,7 +1,8 @@
 import 'dart:async';
-import 'dart:collection';
 
 import 'package:flutter/foundation.dart';
+
+import 'auto_capture_controller.dart';
 
 @immutable
 class ManualCaptureTicket {
@@ -9,11 +10,13 @@ class ManualCaptureTicket {
     required this.id,
     required this.tapTimestampMicros,
     this.automaticSelection = false,
+    this.automaticStillTicket,
   });
 
   final int id;
   final int tapTimestampMicros;
   final bool automaticSelection;
+  final AutomaticStillTicket? automaticStillTicket;
 }
 
 typedef ManualCaptureExecutor =
@@ -25,6 +28,11 @@ typedef ManualCaptureErrorHandler =
       StackTrace stackTrace,
     );
 
+/// A single-flight shutter receipt latch.
+///
+/// Admission activates one ticket and invokes its executor immediately. While
+/// that receipt is unresolved, later admissions are rejected rather than
+/// retained for a camera pose that may already be stale.
 class ManualCaptureQueue extends ChangeNotifier {
   ManualCaptureQueue({
     required ManualCaptureExecutor execute,
@@ -44,18 +52,18 @@ class ManualCaptureQueue extends ChangeNotifier {
   final int _maxTickets;
   final int Function() _nowMicros;
   final ManualCaptureErrorHandler? _onError;
-  final Queue<ManualCaptureTicket> _pending = Queue<ManualCaptureTicket>();
 
   ManualCaptureTicket? _active;
   Completer<void>? _drainCompleter;
   var _accepting = true;
   var _disposed = false;
   var _notificationScheduled = false;
-  var _pumpScheduled = false;
-  var _pumping = false;
   var _nextId = 1;
 
-  int get pendingCount => _pending.length;
+  /// Retained for callers that expose queue diagnostics. A single-flight
+  /// capture never owns a pending ticket: an accepted ticket becomes active
+  /// before [enqueue] returns, and a busy admission is rejected.
+  int get pendingCount => 0;
 
   int get inFlightCount => _active == null ? 0 : 1;
 
@@ -65,24 +73,42 @@ class ManualCaptureQueue extends ChangeNotifier {
 
   bool canEnqueue({required int verifiedCount}) {
     _validateVerifiedCount(verifiedCount);
-    return accepting && verifiedCount + outstandingCount < _maxTickets;
+    return accepting &&
+        _active == null &&
+        verifiedCount + outstandingCount < _maxTickets;
   }
 
   ManualCaptureTicket? enqueue({
     required int verifiedCount,
     bool automaticSelection = false,
+    AutomaticStillTicket? automaticStillTicket,
   }) {
+    if (automaticSelection != (automaticStillTicket != null)) {
+      throw ArgumentError(
+        'automaticSelection and automaticStillTicket must be supplied together',
+      );
+    }
     if (!canEnqueue(verifiedCount: verifiedCount)) return null;
 
     final ticket = ManualCaptureTicket(
       id: _nextId,
       tapTimestampMicros: _nowMicros(),
       automaticSelection: automaticSelection,
+      automaticStillTicket: automaticStillTicket,
     );
     _nextId += 1;
-    _pending.addLast(ticket);
-    _schedulePump();
+    _active = ticket;
     _scheduleNotification();
+
+    // Invoke directly rather than through a microtask. This makes admission
+    // and the executor's synchronous prefix one transaction: a second shutter
+    // in this Dart turn observes [_active] and cannot become stale backlog.
+    try {
+      final execution = _execute(ticket);
+      unawaited(_awaitExecution(ticket, execution));
+    } catch (error, stackTrace) {
+      _finishExecution(ticket, error: error, stackTrace: stackTrace);
+    }
     return ticket;
   }
 
@@ -98,8 +124,7 @@ class ManualCaptureQueue extends ChangeNotifier {
   void resume() {
     if (_disposed) return;
     if (_accepting) return;
-    final drainCompleter = _drainCompleter;
-    if (drainCompleter != null && !drainCompleter.isCompleted) {
+    if (_active != null) {
       throw StateError('Cannot resume before the current drain completes.');
     }
     _accepting = true;
@@ -108,51 +133,36 @@ class ManualCaptureQueue extends ChangeNotifier {
 
   void cancelPending() {
     if (_disposed) return;
-    final changed = _accepting || _pending.isNotEmpty;
+    final changed = _accepting;
     _accepting = false;
-    _pending.clear();
     if (changed) _scheduleNotification();
     _completeDrainIfIdle();
   }
 
-  Future<void> _pump() async {
-    if (_disposed || _pumping) return;
-    _pumping = true;
+  Future<void> _awaitExecution(
+    ManualCaptureTicket ticket,
+    Future<void> execution,
+  ) async {
     try {
-      while (!_disposed && _pending.isNotEmpty) {
-        final ticket = _pending.removeFirst();
-        _active = ticket;
-        _scheduleNotification();
-        try {
-          await _execute(ticket);
-        } catch (error, stackTrace) {
-          if (!_disposed) {
-            _reportExecutorError(ticket, error, stackTrace);
-          }
-        } finally {
-          _active = null;
-          _scheduleNotification();
-          _completeDrainIfIdle();
-        }
-      }
-    } finally {
-      _pumping = false;
-      _completeDrainIfIdle();
-      if (!_disposed && _pending.isNotEmpty) _schedulePump();
+      await execution;
+      _finishExecution(ticket);
+    } catch (error, stackTrace) {
+      _finishExecution(ticket, error: error, stackTrace: stackTrace);
     }
   }
 
-  void _schedulePump() {
-    if (_disposed || _pumping || _pumpScheduled) return;
-    _pumpScheduled = true;
-    scheduleMicrotask(() {
-      _pumpScheduled = false;
-      if (_disposed || _pumping || _pending.isEmpty) {
-        _completeDrainIfIdle();
-        return;
-      }
-      unawaited(_pump());
-    });
+  void _finishExecution(
+    ManualCaptureTicket ticket, {
+    Object? error,
+    StackTrace? stackTrace,
+  }) {
+    if (!identical(_active, ticket)) return;
+    if (error != null && !_disposed) {
+      _reportExecutorError(ticket, error, stackTrace ?? StackTrace.current);
+    }
+    _active = null;
+    _scheduleNotification();
+    _completeDrainIfIdle();
   }
 
   void _scheduleNotification() {
@@ -229,7 +239,6 @@ class ManualCaptureQueue extends ChangeNotifier {
     if (_disposed) return;
     _disposed = true;
     _accepting = false;
-    _pending.clear();
     _completeDrainIfIdle();
     super.dispose();
   }

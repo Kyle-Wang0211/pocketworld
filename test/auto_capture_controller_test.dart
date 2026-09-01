@@ -14,6 +14,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/official_capture/auto_capture_controller.dart';
 import 'package:pocketworld_flutter/official_capture/auto_capture_geometry.dart';
 import 'package:pocketworld_flutter/official_capture/auto_capture_governor.dart';
+import 'package:pocketworld_flutter/official_capture/continuous_feature_tracks.dart';
 import 'package:pocketworld_flutter/official_capture/shutter_backpressure_gate.dart';
 import 'package:pocketworld_flutter/official_dome/ar_pose.dart';
 import 'package:vector_math/vector_math_64.dart';
@@ -54,7 +55,9 @@ FrameQualityReport _quality(
   double timestamp, {
   int? signatureByte,
   int? grayShiftX,
+  Uint8List? rawGray,
   double? graySourceTimestamp,
+  double meanBrightness = 128,
 }) => FrameQualityReport(
   sharpness: s,
   roiSharpness: s,
@@ -64,20 +67,27 @@ FrameQualityReport _quality(
   backgroundSharpness: s,
   subjectVsBackgroundSharpnessDelta: 0,
   sharpnessConsensus: s,
-  meanBrightness: 128,
+  meanBrightness: meanBrightness,
   globalVariance: 100,
   signature: signatureByte == null
       ? _signatureFor(timestamp)
       : (Uint8List(256)..fillRange(0, 256, signatureByte)),
   signatureWidth: 16,
   signatureHeight: 16,
-  rawGray128: grayShiftX == null ? null : _trackGray(grayShiftX),
-  sourceTimestamp: grayShiftX == null
+  rawGray128: rawGray ?? (grayShiftX == null ? null : _trackGray(grayShiftX)),
+  sourceTimestamp: grayShiftX == null && rawGray == null
       ? null
       : (graySourceTimestamp ?? timestamp),
-  sourceFocalX: grayShiftX == null ? null : 128,
-  sourceFocalY: grayShiftX == null ? null : 128,
+  sourceFocalX: grayShiftX == null && rawGray == null ? null : 128,
+  sourceFocalY: grayShiftX == null && rawGray == null ? null : 128,
+  sourcePrincipalX: grayShiftX == null && rawGray == null ? null : 64,
+  sourcePrincipalY: grayShiftX == null && rawGray == null ? null : 64,
 );
+
+/// 开火时刻:必须跨过节奏地板,否则测试构造的场景根本开不出火。写死的
+/// t: 0.30 会在地板变动时静默失效 —— 相对常数表达,以后调地板不必重改时间轴。
+final _fireT = kAutoCaptureSafetyDebounceSec + 0.05;
+final _fireT2 = _fireT + kAutoCaptureSafetyDebounceSec + 0.01;
 
 ARPose _pose({
   required double t,
@@ -94,11 +104,14 @@ ARPose _pose({
   double? sharpness = 1000,
   int? signatureByte,
   int? grayShiftX,
+  Uint8List? rawGray,
   double? graySourceTimestamp,
+  double meanBrightness = 128,
   Vector3? worldOrigin,
   bool hasOrigin = true,
 }) {
   final p = pos ?? Vector3.zero();
+  final effectiveGrayShiftX = grayShiftX;
   final q = Quaternion.axisAngle(Vector3(0, 1, 0), yawDeg * math.pi / 180);
   final forward = q.rotated(Vector3(0, 0, -1));
   final target = p + forward * depthM;
@@ -125,8 +138,10 @@ ARPose _pose({
             sharpness,
             t,
             signatureByte: signatureByte,
-            grayShiftX: grayShiftX,
+            grayShiftX: effectiveGrayShiftX,
+            rawGray: rawGray,
             graySourceTimestamp: graySourceTimestamp,
+            meanBrightness: meanBrightness,
           ),
     previewPoints: <ARPreviewPoint>[
       for (var i = 0; i < pointCount; i++)
@@ -164,8 +179,8 @@ class _Harness {
   ARPose? _nextFirePose;
 
   late final AutoCaptureController controller = AutoCaptureController(
-    onStartAnchor: () => true,
-    onFire: () {
+    onStartAnchor: (_) => true,
+    onFire: (_) {
       fireAttempts++;
       if (!enqueueSucceeds) return false;
       fires++;
@@ -181,6 +196,8 @@ class _Harness {
       depthProbeTimestamps.add(pose.timestamp);
       return liveDepth;
     },
+    synchronousReceiptProvider: () => true,
+    testOnlyAllowLegacySignatureEvidence: true,
   );
 
   AutoCaptureDecision feed(ARPose pose) {
@@ -195,6 +212,34 @@ class _Harness {
 }
 
 void main() {
+  test(
+    'production never lets a 16x16 signature replace exact track evidence',
+    () {
+      var fires = 0;
+      final controller = AutoCaptureController(
+        onStartAnchor: (_) => true,
+        onFire: (_) {
+          fires++;
+          return true;
+        },
+        paceProvider: () => ShutterPace.normal,
+        capturedCountProvider: () => 0,
+        thermalStateProvider: () => 0,
+        liveDepthProvider: (_) => null,
+        synchronousReceiptProvider: () => true,
+      );
+      controller.start(_pose(t: 0, signatureByte: 0));
+
+      expect(
+        controller.onPose(
+          _pose(t: 1, pos: Vector3(0.30, 0, 0), signatureByte: 255),
+        ),
+        AutoCaptureDecision.skipNoVisualEvidence,
+      );
+      expect(fires, 0);
+    },
+  );
+
   test('a stopped controller never fires', () {
     final h = _Harness();
     for (var i = 0; i < 60; i++) {
@@ -226,6 +271,11 @@ void main() {
     expect(
       h.feed(_pose(t: 0.3, pos: Vector3(0.30, 0, 0))),
       AutoCaptureDecision.fire,
+      reason:
+          'motion=${h.controller.lastTrackEvidence?.medianPixelDisplacement} '
+          'common=${h.controller.lastTrackEvidence?.commonTrackCount} '
+          'fraction=${h.controller.lastTrackEvidence?.commonTrackFraction} '
+          'inliers=${h.controller.lastTrackEvidence?.vinsGeometricInlierFraction}',
     );
     expect(h.fires, 1);
   });
@@ -242,6 +292,30 @@ void main() {
       expect(h.fires, 0);
     },
   );
+
+  test('portable VINS evidence selects the weak 10 degree geometry tier', () {
+    final h = _Harness();
+    h.controller.start(_pose(t: 0, grayShiftX: 0));
+    final partlyOccluded = _trackGray(13);
+    for (var y = 72; y < 128; y++) {
+      partlyOccluded.fillRange(y * 128, (y + 1) * 128, 128);
+    }
+
+    final decision = h.feed(
+      _pose(
+        t: 1,
+        pos: Vector3(math.tan(11 * math.pi / 180), 0, 0),
+        rawGray: partlyOccluded,
+      ),
+    );
+
+    expect(decision, AutoCaptureDecision.skipRedundant);
+    expect(h.controller.lastMotionRole, AutoCaptureMotionRole.geometry);
+    expect(
+      h.controller.lastMotionMetrics?.geometryThresholdDeg,
+      kAutoCaptureGeometryWeakDeg,
+    );
+  });
 
   test('walking straight keeps sparse 1.2x radial bridge frames', () {
     final h = _Harness();
@@ -283,31 +357,32 @@ void main() {
         h.feed(
           _pose(
             t: 1,
-            pos: Vector3(0.16, 0, -0.20),
+            pos: Vector3(0.12, 0, -0.20),
             signatureByte: 100,
             grayShiftX: 16,
           ),
         ),
         AutoCaptureDecision.fire,
+        reason: 'the 12MP request must be backed by verified track novelty',
       );
       expect(h.controller.lastMotionRole, AutoCaptureMotionRole.radialBridge);
 
-      // 666 ms later the old geometry baseline has accumulated >12 degrees,
-      // but the camera moved only 4.4 cm from the photo just taken. The byte
-      // signature similarity is 1 - 21/255 = 0.917647..., reproducing the
-      // Build 47 .917-vs-.92 escape without tuning either boundary.
+      // 666 ms later the old geometry baseline has accumulated >10 degrees,
+      // but the camera moved only 4.4 cm from the photo just taken. Healthy
+      // VINS evidence selects the 15-degree tier, so this stale baseline no
+      // longer authorizes a candidate at all.
       expect(
         h.feed(
           _pose(
             t: 1.666,
-            pos: Vector3(0.204, 0, -0.20),
+            pos: Vector3(0.164, 0, -0.20),
             signatureByte: 121,
             grayShiftX: 17,
           ),
         ),
-        AutoCaptureDecision.skipRedundant,
+        AutoCaptureDecision.skipNotMoved,
       );
-      expect(h.controller.lastMotionRole, AutoCaptureMotionRole.geometry);
+      expect(h.controller.lastMotionRole, AutoCaptureMotionRole.none);
       expect(h.fires, 1);
       expect(h.controller.geometryBaselinePosition, Vector3.zero());
     },
@@ -566,18 +641,19 @@ void main() {
   test('a tracking-loss frame does not consume the debounce clock', () {
     final h = _Harness();
     h.controller.start(_pose(t: 0));
-    h.feed(_pose(t: 0.30, pos: Vector3(0.30, 0, 0))); // fire,时钟=0.30
+    h.feed(_pose(t: _fireT, pos: Vector3(0.30, 0, 0))); // fire,时钟=_fireT
     expect(h.fires, 1);
     h.feed(
       _pose(
-        t: 0.40,
+        t: _fireT + 0.1,
         pos: Vector3(0.60, 0, 0),
         tracking: 'limited_excessive_motion',
       ),
     );
-    // 0.56 距上次开火 0.26s ≥ 0.25 ⇒ 丢跟踪帧没偷走节奏预算。
+    // 距上次开火刚过一个地板 ⇒ 丢跟踪帧没偷走节奏预算。若它偷走了,这一帧
+    // 会被判成 skipPaced。
     expect(
-      h.feed(_pose(t: 0.56, pos: Vector3(0.60, 0, 0))),
+      h.feed(_pose(t: _fireT2, pos: Vector3(0.60, 0, 0))),
       AutoCaptureDecision.fire,
     );
   });
@@ -590,7 +666,7 @@ void main() {
     h.controller.start(_pose(t: 0));
     h.enqueueSucceeds = false;
     expect(
-      h.feed(_pose(t: 0.30, pos: Vector3(0.30, 0, 0))),
+      h.feed(_pose(t: _fireT, pos: Vector3(0.30, 0, 0))),
       AutoCaptureDecision.fire,
     );
     expect(h.fireAttempts, 1);
@@ -598,7 +674,7 @@ void main() {
     // 30 Hz 连喂 0.2s:全部 skipPaced,不许每帧重试。
     for (var i = 1; i <= 6; i++) {
       expect(
-        h.feed(_pose(t: 0.30 + i / 30.0, pos: Vector3(0.30, 0, 0))),
+        h.feed(_pose(t: _fireT + i / 30.0, pos: Vector3(0.30, 0, 0))),
         AutoCaptureDecision.skipPaced,
       );
     }
@@ -606,7 +682,7 @@ void main() {
     // 一个完整间隔后重试;成功即更新基准。
     h.enqueueSucceeds = true;
     expect(
-      h.feed(_pose(t: 0.56, pos: Vector3(0.30, 0, 0))),
+      h.feed(_pose(t: _fireT2, pos: Vector3(0.30, 0, 0))),
       AutoCaptureDecision.fire,
     );
     expect(h.fires, 1);
@@ -618,7 +694,7 @@ void main() {
     () {
       final h = _Harness();
       h.controller.start(_pose(t: 0));
-      h.feed(_pose(t: 0.30, pos: Vector3(0.30, 0, 0)));
+      h.feed(_pose(t: _fireT, pos: Vector3(0.30, 0, 0)));
       expect(h.controller.baselinePosition, Vector3(0.30, 0, 0));
       // 相对新基准 0.05m ⇒ 不开火。
       expect(
@@ -628,63 +704,213 @@ void main() {
     },
   );
 
-  test('a spatial candidate with the same Aether signature is redundant', () {
+  test('a spatial candidate with the same actual still is redundant', () {
     final h = _Harness();
-    h.controller.start(_pose(t: 0, signatureByte: 80));
+    h.controller.start(_pose(t: 0, grayShiftX: 0));
 
     expect(
-      h.feed(_pose(t: 1, pos: Vector3(0.22, 0, 0), signatureByte: 80)),
+      h.feed(_pose(t: 1, pos: Vector3(0.28, 0, 0), grayShiftX: 0)),
       AutoCaptureDecision.skipRedundant,
     );
     expect(h.fires, 0);
-    expect(h.controller.lastVisualSimilarity, 1.0);
+    expect(h.controller.lastTrackEvidence, isNotNull);
+    expect(
+      h.controller.lastTrackEvidence!.medianPixelDisplacement,
+      lessThan(kOfficialCaptureMotionStepFraction * 128),
+    );
     expect(h.controller.baselinePosition, Vector3.zero());
   });
 
   test('a successful photo advances the visual baseline', () {
     final h = _Harness();
-    h.controller.start(_pose(t: 0, signatureByte: 0));
+    h.controller.start(_pose(t: 0, grayShiftX: 0));
 
+    // 这三拍验的是**内容递进**(grayShiftX 4→8→12 仍判重复)。每一拍都必须
+    // 落在地板之外,否则拿到的是 skipPaced —— 节奏闸排在内容判据之前,时刻
+    // 留在地板内就验不到这条测试真正要验的东西。
+    var t = 0.0;
+    for (final shift in <int>[4, 8, 12]) {
+      t += kAutoCaptureSafetyDebounceSec + 0.05;
+      expect(
+        h.feed(_pose(t: t, pos: Vector3(0.28, 0, 0), grayShiftX: shift)),
+        AutoCaptureDecision.skipRedundant,
+      );
+    }
+    t += kAutoCaptureSafetyDebounceSec + 0.05;
     expect(
-      h.feed(_pose(t: 1, pos: Vector3(0.22, 0, 0), signatureByte: 255)),
+      h.feed(_pose(t: t, pos: Vector3(0.28, 0, 0), grayShiftX: 16)),
       AutoCaptureDecision.fire,
     );
+    t += kAutoCaptureSafetyDebounceSec + 0.05;
     expect(
-      h.feed(_pose(t: 2, pos: Vector3(0.50, 0, 0), signatureByte: 255)),
+      h.feed(_pose(t: t, pos: Vector3(0.60, 0, 0), grayShiftX: 16)),
       AutoCaptureDecision.skipRedundant,
     );
     expect(h.fires, 1);
   });
 
   test(
-    'post-anchor photos wait for the official accumulated-flow subsequence',
+    'a rejected actual 12MP frame blocks retries until that same feature gate sees new content',
     () {
-      final h = _Harness();
-      h.controller.start(_pose(t: 0, grayShiftX: 0));
+      final tickets = <AutomaticStillTicket>[];
+      var fires = 0;
+      final controller = AutoCaptureController(
+        onStartAnchor: (ticket) {
+          tickets.add(ticket);
+          return true;
+        },
+        onFire: (ticket) {
+          tickets.add(ticket);
+          fires++;
+          return true;
+        },
+        paceProvider: () => ShutterPace.normal,
+        capturedCountProvider: () => fires,
+        thermalStateProvider: () => 0,
+        liveDepthProvider: (_) => null,
+      );
+      final start = _pose(t: 0, grayShiftX: 0);
+      controller.start(start);
+      expect(tickets, hasLength(1));
+      expect(
+        controller.resolveAutomaticStill(
+          ticket: tickets.single,
+          accepted: true,
+          acceptedStill: AcceptedAutomaticStill(
+            frame: AutoCaptureGeometryFrame(
+              camera: start.position,
+              orientation: start.orientation,
+              intrinsics: const AutoCaptureIntrinsics(
+                fx: _fx,
+                fy: _fx,
+                cx: _w / 2,
+                cy: _h / 2,
+                imageWidth: _w,
+                imageHeight: _h,
+              ),
+            ),
+            captureTimestamp: 0,
+            gray128: _trackGray(0),
+          ),
+        ),
+        isTrue,
+      );
 
       for (final sample in <(double, int)>[(0.25, 4), (0.50, 8), (0.75, 12)]) {
         expect(
-          h.feed(
+          controller.onPose(
             _pose(
               t: sample.$1,
-              pos: Vector3(0.22, 0, 0),
+              pos: Vector3(0.28, 0, 0),
               grayShiftX: sample.$2,
             ),
           ),
           AutoCaptureDecision.skipRedundant,
         );
       }
-      expect(h.fires, 0);
-      expect(h.controller.lastSegmentMotionPx, lessThan(12.8));
       expect(
-        h.feed(_pose(t: 1.0, pos: Vector3(0.22, 0, 0), grayShiftX: 16)),
+        controller.onPose(
+          _pose(t: 1, pos: Vector3(0.28, 0, 0), grayShiftX: 16),
+        ),
         AutoCaptureDecision.fire,
       );
-      expect(h.fires, 1);
-      expect(h.controller.lastSegmentMotionPx, greaterThanOrEqualTo(12.8));
-      expect(h.controller.segmentMotionThresholdPx, 12.8);
+      final rejectedTicket = tickets.last;
+      expect(
+        controller.resolveAutomaticStill(
+          ticket: rejectedTicket,
+          accepted: false,
+          rejectedStill: RejectedAutomaticStillEvidence(
+            gray128: _trackGray(8),
+            intrinsics: const AutoCaptureIntrinsics(
+              fx: _fx,
+              fy: _fx,
+              cx: _w / 2,
+              cy: _h / 2,
+              imageWidth: _w,
+              imageHeight: _h,
+            ),
+          ),
+        ),
+        isTrue,
+      );
+
+      expect(
+        controller.onPose(
+          _pose(
+            t: 1.30,
+            pos: Vector3(0.28, 0, 0),
+            grayShiftX: 20,
+            signatureByte: 255,
+          ),
+        ),
+        AutoCaptureDecision.skipRedundant,
+        reason:
+            'a changed 16x16 brightness signature cannot bypass the rejected actual-still feature evidence',
+      );
+      expect(fires, 1);
+      final sufficientlyNovelShift = List<int>.generate(112, (i) => i + 9)
+          .firstWhere((shift) {
+            final evidence = trackFrameNovelty(
+              previousGray: _trackGray(8),
+              currentGray: _trackGray(shift),
+              width: 128,
+              height: 128,
+              focalXPixels: 128,
+              focalYPixels: 128,
+              principalXPixels: 64,
+              principalYPixels: 64,
+            );
+            return evidence.isCaptureNoveltyVerified ||
+                evidence.lostTrackedOverlap;
+          });
+      expect(
+        controller.onPose(
+          _pose(
+            t: 1.60,
+            pos: Vector3(0.28, 0, 0),
+            grayShiftX: sufficientlyNovelShift,
+            signatureByte: 255,
+          ),
+        ),
+        AutoCaptureDecision.fire,
+        reason:
+            'the retry re-arms only after the same actual-photo novelty gate sees enough motion; '
+            'shift=$sufficientlyNovelShift '
+            'main=${controller.lastTrackEvidence?.medianPixelDisplacement}/'
+            '${controller.lastTrackEvidence?.commonTrackCount} '
+            'rejected=${controller.lastRejectedActualTrackEvidence?.medianPixelDisplacement}/'
+            '${controller.lastRejectedActualTrackEvidence?.commonTrackCount}',
+      );
+      expect(fires, 2);
     },
   );
+
+  test('post-anchor photos wait for the official accumulated-flow subsequence', () {
+    final h = _Harness();
+    h.controller.start(_pose(t: 0, grayShiftX: 0));
+
+    for (final sample in <(double, int)>[(0.25, 4), (0.50, 8), (0.75, 12)]) {
+      expect(
+        h.feed(
+          _pose(t: sample.$1, pos: Vector3(0.22, 0, 0), grayShiftX: sample.$2),
+        ),
+        AutoCaptureDecision.skipRedundant,
+        reason:
+            'shift=${sample.$2} common=${h.controller.lastTrackEvidence?.commonTrackCount} '
+            'motion=${h.controller.lastTrackEvidence?.medianPixelDisplacement} '
+            'active=${h.controller.lastTrackEvidence?.vinsActiveTrackCount}',
+      );
+    }
+    expect(h.fires, 0);
+    expect(h.controller.lastTrackEvidence?.isCaptureNoveltyVerified, isFalse);
+    expect(
+      h.feed(_pose(t: 1.0, pos: Vector3(0.22, 0, 0), grayShiftX: 16)),
+      AutoCaptureDecision.fire,
+      reason: 'the capture-anchor displacement crossed 10% of short edge',
+    );
+    expect(h.fires, 1);
+    expect(h.controller.lastTrackEvidence?.isCaptureNoveltyVerified, isTrue);
+  });
 
   test('a failed enqueue does not advance the visual baseline', () {
     final h = _Harness()..enqueueSucceeds = false;
@@ -693,6 +919,10 @@ void main() {
     expect(
       h.feed(_pose(t: 1, pos: Vector3(0.22, 0, 0), signatureByte: 255)),
       AutoCaptureDecision.fire,
+      reason:
+          'track=${h.controller.lastTrackEvidence?.medianPixelDisplacement} '
+          'common=${h.controller.lastTrackEvidence?.commonTrackCount} '
+          'f=${h.controller.lastTrackEvidence?.vinsGeometricInlierFraction}',
     );
     h.enqueueSucceeds = true;
     expect(
@@ -725,7 +955,7 @@ void main() {
   test('changing the telemetry pace mid-run never changes admission', () {
     final h = _Harness();
     h.controller.start(_pose(t: 0));
-    h.feed(_pose(t: 0.30, pos: Vector3(0.30, 0, 0)));
+    h.feed(_pose(t: _fireT, pos: Vector3(0.30, 0, 0)));
     expect(h.fires, 1);
     h.pace = ShutterPace.hard;
     expect(
@@ -890,13 +1120,15 @@ void main() {
       h.feed(_pose(t: 0.10, sharpness: 1000));
       // Aether 的绝对硬门为 200；低于它时不拍，基准与去抖时钟都不动。
       expect(
-        h.feed(_pose(t: 0.30, pos: Vector3(0.22, 0, 0), sharpness: 100)),
+        h.feed(_pose(t: _fireT, pos: Vector3(0.22, 0, 0), sharpness: 100)),
         AutoCaptureDecision.skipBlurry,
       );
       expect(h.fires, 0);
       // 画面重新通过绝对门 ⇒ 立刻开火，不需要等待人为超时。
       expect(
-        h.feed(_pose(t: 0.35, pos: Vector3(0.22, 0, 0), sharpness: 1000)),
+        h.feed(
+          _pose(t: _fireT + 0.05, pos: Vector3(0.22, 0, 0), sharpness: 1000),
+        ),
         AutoCaptureDecision.fire,
       );
       expect(h.fires, 1);
@@ -919,6 +1151,34 @@ void main() {
     expect(h.fires, 0);
   });
 
+  test('bad exposure waits silently for the next usable frame', () {
+    final h = _Harness();
+    h.controller.start(_pose(t: 0, sharpness: 1000));
+    expect(
+      h.feed(
+        _pose(
+          t: _fireT,
+          pos: Vector3(0.22, 0, 0),
+          sharpness: 1000,
+          meanBrightness: 30,
+        ),
+      ),
+      AutoCaptureDecision.skipQuality,
+    );
+    expect(h.fires, 0);
+    expect(
+      h.feed(
+        _pose(
+          t: _fireT + 0.05,
+          pos: Vector3(0.22, 0, 0),
+          sharpness: 1000,
+          meanBrightness: 128,
+        ),
+      ),
+      AutoCaptureDecision.fire,
+    );
+  });
+
   test('a sharp frame below the segment median is not mislabeled blurry', () {
     final h = _Harness();
     h.controller.start(_pose(t: 0, sharpness: 1200));
@@ -926,7 +1186,7 @@ void main() {
     h.feed(_pose(t: 0.10, sharpness: 1000));
     // 800 低于本段中位数，但远高于 Aether 的 200 硬门，必须允许开火。
     expect(
-      h.feed(_pose(t: 0.30, pos: Vector3(0.22, 0, 0), sharpness: 800)),
+      h.feed(_pose(t: _fireT, pos: Vector3(0.22, 0, 0), sharpness: 800)),
       AutoCaptureDecision.fire,
     );
   });
@@ -936,7 +1196,7 @@ void main() {
     h.controller.start(_pose(t: 0, sharpness: 1000));
     h.feed(_pose(t: 0.05, sharpness: 1000));
     h.feed(_pose(t: 0.10, sharpness: 1000));
-    h.feed(_pose(t: 0.30, pos: Vector3(0.22, 0, 0), sharpness: 1000));
+    h.feed(_pose(t: _fireT, pos: Vector3(0.22, 0, 0), sharpness: 1000));
     expect(h.fires, 1);
     // 新段只保留开火后的样本；500 仍高于 Aether 的客观硬门。
     h.feed(_pose(t: 0.40, pos: Vector3(0.46, 0, 0), sharpness: 500));

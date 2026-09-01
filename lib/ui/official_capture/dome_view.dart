@@ -60,6 +60,7 @@ import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:vector_math/vector_math_64.dart' as v64;
 
 import '../../official_capture/dome/dome_config.dart';
+import '../../official_capture/telemetry_writer.dart';
 import '../../official_capture/dome/dome_target_points.dart';
 import 'dome_painter.dart';
 
@@ -350,6 +351,25 @@ class _DomeViewState extends State<DomeView>
     // Light tactile tick per visit. `selectionClick` is the lightest
     // iOS haptic; iOS's haptic engine self-throttles when called in
     // rapid succession, so multi-visit bursts don't cause buzz.
+    //
+    // That throttling claim covers repeated calls on THIS generator. It says
+    // nothing about this tick landing on top of the shutter's own haptic,
+    // which is a different channel entirely: the shutter fires
+    // UIImpactFeedbackGenerator(.heavy) natively, inside the SceneKit render
+    // callback for the black card's first frame. The two are independent, so
+    // nothing stops them coinciding — a user reported feeling two buzzes
+    // almost simultaneously on 2026-08-31 during a session whose shutter
+    // haptics were 1473 ms apart at their closest, which the shutter timeline
+    // alone cannot explain.
+    //
+    // Observation only: this event exists so the interval between a dome tick
+    // and a shutter haptic can be MEASURED rather than inferred. Correlate
+    // against photo_feedback_presented, which is the moment the shutter
+    // haptic fires. Nothing here changes when or whether the tick plays.
+    TelemetryWriter.instance.event('dome_haptic_tick', {
+      'point_index': idx,
+      'visited_in_window': _diagPointsVisited,
+    });
     HapticFeedback.selectionClick();
   }
 

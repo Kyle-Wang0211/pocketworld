@@ -24,15 +24,19 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../auth/auth_scope.dart';
 import '../capture/sfm_resume.dart';
+import '../community/social_profile_models.dart';
+import '../community/social_profile_repository.dart';
 import '../l10n/app_localizations.dart';
 import '../me/draft_card_action.dart';
 import '../me/scan_record_store.dart';
 import '../official_capture/sfm_resume.dart' as official_sfm_resume;
 import 'capture/sfm_resume_wait_page.dart';
 import 'capture/sparse_cloud_viewer_page.dart';
+import 'community/following_list_page.dart';
 import 'design_system.dart';
 import 'home_view_model.dart';
 import 'me/my_work_detail_page.dart';
@@ -154,6 +158,7 @@ class MePage extends StatefulWidget {
     this.onRecordActionActivityChanged,
     this.officialResumeRoute,
     this.officialViewerRoute,
+    this.socialProfileRepository,
   });
 
   final ValueListenable<int>? showDraftsSignal;
@@ -177,6 +182,7 @@ class MePage extends StatefulWidget {
   /// self-developed `SfmResumeWaitPage`.
   final OfficialScanResumeRoute? officialResumeRoute;
   final OfficialScanViewerRoute? officialViewerRoute;
+  final SocialProfileRepository? socialProfileRepository;
 
   @override
   State<MePage> createState() => _MePageState();
@@ -187,6 +193,11 @@ class _MePageState extends State<MePage> {
   // doesn't have to re-fetch profiles / notification_settings every time
   // it's pushed.
   final MeStatsViewModel _stats = MeStatsViewModel();
+  SocialProfileRepository? _socialRepository;
+  SocialProfile? _socialProfile;
+  String? _socialProfileUserId;
+  Object? _socialProfileError;
+  bool _socialProfileLoading = false;
 
   // Phase 6.4f.13.1 — direct handle to MePage's local ScaffoldMessenger.
   // Holding a GlobalKey to the local messenger lets us route SnackBars
@@ -236,14 +247,61 @@ class _MePageState extends State<MePage> {
 
   void _openSettings() {
     Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => MeSettingsPage(stats: _stats)),
+      MaterialPageRoute<void>(
+        builder: (_) => MeSettingsPage(
+          stats: _stats,
+          socialRepository: _socialProfileRepository(),
+        ),
+      ),
     );
   }
 
   Future<void> _onRefresh() async {
     // Plan G W2 全本地: no cloud sync. Pull-to-refresh just re-reads
     // the local store stats so a draft created since last view shows up.
-    await _stats.load();
+    await Future.wait<void>([
+      _stats.load(),
+      if (_socialProfileUserId != null)
+        _loadSocialProfile(_socialProfileUserId!),
+    ]);
+  }
+
+  SocialProfileRepository _socialProfileRepository() {
+    return _socialRepository ??=
+        widget.socialProfileRepository ??
+        SupabaseSocialProfileRepository(client: Supabase.instance.client);
+  }
+
+  Future<void> _loadSocialProfile(String userId) async {
+    if (_socialProfileLoading) return;
+    setState(() {
+      _socialProfileLoading = true;
+      _socialProfileError = null;
+      _socialProfileUserId = userId;
+    });
+    try {
+      final profile = await _socialProfileRepository().fetchProfile(userId);
+      if (!mounted || _socialProfileUserId != userId) return;
+      setState(() => _socialProfile = profile);
+    } catch (error) {
+      if (!mounted || _socialProfileUserId != userId) return;
+      setState(() => _socialProfileError = error);
+    } finally {
+      if (mounted && _socialProfileUserId == userId) {
+        setState(() => _socialProfileLoading = false);
+      }
+    }
+  }
+
+  Future<void> _openFollowing(String userId) async {
+    final repository = _socialProfileRepository();
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            FollowingListPage(userId: userId, repository: repository),
+      ),
+    );
+    if (mounted) await _loadSocialProfile(userId);
   }
 
   @override
@@ -270,6 +328,12 @@ class _MePageState extends State<MePage> {
           ),
         ),
       );
+    }
+    final socialUserId = user.id.rawValue;
+    if (_socialProfileUserId != socialUserId && !_socialProfileLoading) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _loadSocialProfile(socialUserId);
+      });
     }
     return ScaffoldMessenger(
       key: _messengerKey,
@@ -305,6 +369,14 @@ class _MePageState extends State<MePage> {
                   ),
                 ),
                 const SizedBox(height: AetherSpacing.lg),
+                _MeSocialSummary(
+                  profile: _socialProfile,
+                  loading: _socialProfileLoading,
+                  hasError: _socialProfileError != null,
+                  onRetry: () => _loadSocialProfile(socialUserId),
+                  onFollowingTap: () => _openFollowing(socialUserId),
+                ),
+                const SizedBox(height: AetherSpacing.xl),
                 _MyWorksSection(
                   activeReconstructionCaptureDir:
                       widget.activeReconstructionCaptureDir,
@@ -320,6 +392,120 @@ class _MePageState extends State<MePage> {
                 ),
               ],
             ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MeSocialSummary extends StatelessWidget {
+  const _MeSocialSummary({
+    required this.profile,
+    required this.loading,
+    required this.hasError,
+    required this.onRetry,
+    required this.onFollowingTap,
+  });
+
+  final SocialProfile? profile;
+  final bool loading;
+  final bool hasError;
+  final VoidCallback onRetry;
+  final VoidCallback onFollowingTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final value = profile;
+    if (value == null && loading) {
+      return const SizedBox(
+        height: 104,
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+    if (value == null && hasError) {
+      return Container(
+        padding: const EdgeInsets.all(AetherSpacing.lg),
+        decoration: BoxDecoration(
+          color: AetherColors.bgCanvas,
+          borderRadius: BorderRadius.circular(AetherRadii.md),
+        ),
+        child: Row(
+          children: [
+            Expanded(child: Text(AppL10n.of(context).meSocialLoadFailed)),
+            TextButton(
+              onPressed: onRetry,
+              child: Text(AppL10n.of(context).communityRetry),
+            ),
+          ],
+        ),
+      );
+    }
+    if (value == null) return const SizedBox.shrink();
+
+    final identity = <String>[
+      if (value.handle != null) '@${value.handle}',
+      if (value.lastRegion != null) value.lastRegion!,
+    ].join(' · ');
+    return Container(
+      padding: const EdgeInsets.all(AetherSpacing.lg),
+      decoration: BoxDecoration(
+        color: AetherColors.bgCanvas,
+        borderRadius: BorderRadius.circular(AetherRadii.md),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(value.displayName, style: AetherTextStyles.h2),
+          if (identity.isNotEmpty) ...[
+            const SizedBox(height: AetherSpacing.xs),
+            Text(identity, style: AetherTextStyles.bodySm),
+          ],
+          const SizedBox(height: AetherSpacing.lg),
+          Row(
+            children: [
+              _MeSocialCount(
+                value: value.publicWorksCount,
+                label: AppL10n.of(context).socialWorks,
+              ),
+              _MeSocialCount(
+                value: value.followersCount,
+                label: AppL10n.of(context).socialFollowers,
+              ),
+              _MeSocialCount(
+                value: value.followingCount,
+                label: AppL10n.of(context).socialFollow,
+                onTap: onFollowingTap,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MeSocialCount extends StatelessWidget {
+  const _MeSocialCount({required this.value, required this.label, this.onTap});
+
+  final int value;
+  final String label;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(AetherRadii.sm),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: AetherSpacing.sm),
+          child: Column(
+            children: [
+              Text('$value', style: AetherTextStyles.h3),
+              const SizedBox(height: AetherSpacing.xs),
+              Text(label, style: AetherTextStyles.bodySm),
+            ],
           ),
         ),
       ),

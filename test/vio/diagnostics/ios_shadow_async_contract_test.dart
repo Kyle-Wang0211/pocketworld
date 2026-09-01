@@ -11,61 +11,139 @@ void main() {
     'lib/vio/diagnostics/vio_diagnostics_recorder.dart',
   );
 
-  test(
-    'ARSession shadow hook is enqueue-only and production broadcast is independent',
-    () {
-      final String source = plugin.readAsStringSync();
-      final RegExpMatch? callback = RegExp(
-        r'func session\(_ session: ARSession, didUpdate frame: ARFrame\) \{([\s\S]*?)\n  \}',
-      ).firstMatch(source);
+  test('ARSession retains only a fully reserved permit across its queue', () {
+    final String source = plugin.readAsStringSync();
+    final RegExpMatch? callback = RegExp(
+      r'func session\(_ session: ARSession, didUpdate frame: ARFrame\) \{([\s\S]*?)\n  \}',
+    ).firstMatch(source);
 
-      expect(callback, isNotNull);
-      final String body = callback!.group(1)!;
-      expect(body, contains('PwVioSlamFeeder.shared.enqueue(frame: frame)'));
+    expect(callback, isNotNull);
+    final String body = callback!.group(1)!;
+    expect(
+      body,
+      contains(
+        'let shadowFeeder = PwVioSlamFeeder.shared\n'
+        '    if let permit = shadowFeeder.tryOfferFrame(frame: frame) {\n'
+        '      PwVioTimebase.shared.noteARFrame(frame)\n'
+        '      PwVioSensorIngress.dispatchQueue.async {\n'
+        '        _ = shadowFeeder.consume(permit: permit)\n'
+        '      }\n'
+        '    }',
+      ),
+      reason:
+          'a rejected O(1) offer must not create an escaping ARFrame closure',
+    );
+    expect(body, isNot(contains('XRSLAMRunOneFrame')));
+    expect(body, isNot(contains('downsampleBox')));
+    final int offer = body.indexOf('shadowFeeder.tryOfferFrame(frame: frame)');
+    final int timebaseNote = body.indexOf(
+      'PwVioTimebase.shared.noteARFrame(frame)',
+    );
+    final int escapingClosure = body.indexOf(
+      'PwVioSensorIngress.dispatchQueue.async {',
+    );
+    final int consume = body.indexOf('shadowFeeder.consume(permit: permit)');
+    final int productionBroadcast = body.indexOf('onFrame?(frame)');
+    expect(offer, greaterThanOrEqualTo(0));
+    expect(offer, lessThan(timebaseNote));
+    expect(timebaseNote, lessThan(escapingClosure));
+    expect(escapingClosure, lessThan(consume));
+    final int closureEnd = body.indexOf('\n      }', escapingClosure);
+    expect(closureEnd, greaterThan(escapingClosure));
+    expect(
+      body.substring(escapingClosure, closureEnd),
+      isNot(contains('frame')),
+      reason: 'the escaping closure may retain only the fully reserved permit',
+    );
+    expect(
+      consume,
+      lessThan(productionBroadcast),
+      reason:
+          'production broadcast remains outside the rejectable shadow branch',
+    );
+  });
+
+  test(
+    'camera shadow and IMU share one serial queue without moving production state off main',
+    () {
+      final String pluginSource = plugin.readAsStringSync();
+      final String timebaseSource = timebase.readAsStringSync();
       expect(
-        body,
-        isNot(contains('PwVioSlamFeeder.shared.feed(frame: frame)')),
+        pluginSource,
+        contains(
+          'session.delegateQueue = .main\n'
+          '    session.delegate = sessionDelegate',
+        ),
+        reason:
+            'production ARKit state must stay on its proven main-thread owner',
       );
-      expect(body, isNot(contains('XRSLAMRunOneFrame')));
-      expect(body, isNot(contains('downsampleBox')));
       expect(
-        body.indexOf('PwVioSlamFeeder.shared.enqueue(frame: frame)'),
-        lessThan(body.indexOf('onFrame?(frame)')),
+        timebaseSource,
+        contains('private let motionQueue = PwVioSensorIngress.operationQueue'),
+        reason: 'IMU transport must share the XRSLAM sensor ingress queue',
+      );
+      expect(timebaseSource, contains('queue.maxConcurrentOperationCount = 1'));
+      expect(timebaseSource, contains('queue.underlyingQueue = dispatchQueue'));
+      expect(
+        pluginSource,
+        contains('PwVioSensorIngress.dispatchQueue.async {'),
+        reason:
+            'only the shadow camera copy belongs on the XRSLAM ingress queue',
+      );
+      final int offer = pluginSource.indexOf(
+        'shadowFeeder.tryOfferFrame(frame: frame)',
+      );
+      final int timebaseNote = pluginSource.indexOf(
+        'PwVioTimebase.shared.noteARFrame(frame)',
+        offer,
+      );
+      final int cameraQueue = pluginSource.indexOf(
+        'PwVioSensorIngress.dispatchQueue.async {',
+        timebaseNote,
+      );
+      final int consume = pluginSource.indexOf(
+        'shadowFeeder.consume(permit: permit)',
+        cameraQueue,
+      );
+      final int productionBroadcast = pluginSource.indexOf(
+        'onFrame?(frame)',
+        consume,
+      );
+      expect(offer, greaterThanOrEqualTo(0));
+      expect(offer, lessThan(timebaseNote));
+      expect(timebaseNote, lessThan(cameraQueue));
+      expect(cameraQueue, lessThan(consume));
+      expect(consume, lessThan(productionBroadcast));
+      expect(
+        'dispatchPrecondition(condition: .onQueue(.main))'.allMatches(
+          pluginSource,
+        ),
+        hasLength(greaterThanOrEqualTo(2)),
+        reason: 'snapshot selection and production broadcast must fail closed',
+      );
+      expect(
+        pluginSource,
+        isNot(
+          contains('session.delegateQueue = PwVioSensorIngress.dispatchQueue'),
+        ),
+      );
+      expect(
+        timebaseSource,
+        isNot(contains('motionQueue: OperationQueue = .main')),
       );
     },
   );
-
-  test('camera and IMU ingress share one non-UI serial queue', () {
-    final String pluginSource = plugin.readAsStringSync();
-    final String timebaseSource = timebase.readAsStringSync();
-    expect(
-      pluginSource,
-      contains(
-        'session.delegateQueue = PwVioSensorIngress.dispatchQueue\n'
-        '    session.delegate = sessionDelegate',
-      ),
-      reason: 'camera transport must share the XRSLAM sensor ingress queue',
-    );
-    expect(
-      timebaseSource,
-      contains('private let motionQueue = PwVioSensorIngress.operationQueue'),
-      reason: 'IMU transport must share the XRSLAM sensor ingress queue',
-    );
-    expect(timebaseSource, contains('queue.maxConcurrentOperationCount = 1'));
-    expect(timebaseSource, contains('queue.underlyingQueue = dispatchQueue'));
-    expect(pluginSource, isNot(contains('session.delegateQueue = .main')));
-    expect(
-      timebaseSource,
-      isNot(contains('motionQueue: OperationQueue = .main')),
-    );
-  });
 
   test(
     'shadow feeder is fixed-bounded and pressure never paces production',
     () {
       final String source = feeder.readAsStringSync();
       expect(source, contains('private static let maxQueuedWork = 256'));
-      expect(source, contains('private static let maxRetainedImages = 2'));
+      expect(source, contains('private static let maxRetainedImages = 30'));
+      expect(source, contains('private final class GrayFramePool'));
+      expect(source, contains('PWXrslamTransportPrepareGrayBoxNxN('));
+      expect(source, contains('fileprivate let pixelBuffer: CVPixelBuffer'));
+      expect(source, contains('private let workSlotLimiter = AtomicLimiter('));
       expect(
         source,
         matches(
@@ -76,14 +154,9 @@ void main() {
         ),
       );
       expect(source, isNot(contains('pendingWork.append(work)')));
-      expect(source, contains('guard lock.try() else'));
+      expect(source, isNot(contains('guard lock.try() else')));
       expect(source, contains('pendingCount < Self.maxQueuedWork'));
-      expect(
-        source,
-        contains(
-          'pendingImageCount + inFlightImageCount < Self.maxRetainedImages',
-        ),
-      );
+      expect(source, contains('grayFramePool.tryAcquire()'));
       expect(source, contains('private var inFlightImageCount = 0'));
       expect(source, contains('"retainedImageCount"'));
       expect(source, contains('"maxRetainedImageCount"'));
@@ -106,7 +179,7 @@ void main() {
       var invalid = false;
       for (var i = 0; i < offered; i += 1) {
         final bool image = i.isEven;
-        if (pending >= 256 || (image && retainedImages >= 2)) {
+        if (pending >= 256 || (image && retainedImages >= 30)) {
           rejected += 1;
           invalid = true;
           continue;
@@ -115,29 +188,54 @@ void main() {
         if (image) retainedImages += 1;
       }
       expect(pending, lessThanOrEqualTo(256));
-      expect(retainedImages, lessThanOrEqualTo(2));
+      expect(retainedImages, lessThanOrEqualTo(30));
       expect(rejected, greaterThan(0));
       expect(invalid, isTrue);
     },
   );
 
-  test('production callbacks use admit-or-reject paths without waiting', () {
+  test('production admission is O(1) and every sensor carries generation order', () {
     final String source = feeder.readAsStringSync();
+    final RegExpMatch? frameOffer = RegExp(
+      r'public func tryOfferFrame\(frame: ARFrame\) -> FrameIngressPermit\? \{([\s\S]*?)\n  \}',
+    ).firstMatch(source);
+    expect(frameOffer, isNotNull);
+    final String frameOfferBody = frameOffer!.group(1)!;
+    expect(frameOfferBody, contains('admissionGate.enter()'));
+    expect(frameOfferBody, contains('cameraIngressLimiter.tryAcquire()'));
+    expect(frameOfferBody, contains('workSlotLimiter.tryAcquire()'));
+    expect(frameOfferBody, contains('grayFramePool.tryAcquire()'));
+    expect(frameOfferBody, contains('ingressSequence.incrementAndValue('));
+    expect(frameOfferBody, contains('generation: lease.generation'));
+    expect(frameOfferBody, contains('return FrameIngressPermit('));
+    expect(frameOfferBody, isNot(contains('lock.lock()')));
+    expect(frameOfferBody, contains('let pixelBuffer = frame.capturedImage'));
+    expect(frameOfferBody, isNot(contains('.sync')));
+    expect(frameOfferBody, isNot(contains('.wait()')));
+
+    final RegExpMatch? frameConsume = RegExp(
+      r'public func consume\(permit: FrameIngressPermit\) -> Bool \{([\s\S]*?)\n  \}',
+    ).firstMatch(source);
+    expect(frameConsume, isNotNull);
+    expect(frameConsume!.group(1), contains('guard permit.claim()'));
+    expect(frameConsume.group(1), contains('permit.timestamp.isFinite'));
+    expect(frameConsume.group(1), contains('ingressSequence: permit.sequence'));
+
     for (final RegExp callbackPattern in <RegExp>[
       RegExp(
-        r'public func enqueue\(frame: ARFrame\) -> Bool \{([\s\S]*?)\n  \}',
+        r'public func enqueue\(\s*acceleration sample: CMAccelerometerData,\s*expectedGeneration: Int\? = nil\s*\) -> Bool \{([\s\S]*?)\n  \}',
       ),
       RegExp(
-        r'public func enqueue\(acceleration sample: CMAccelerometerData\) -> Bool \{([\s\S]*?)\n  \}',
-      ),
-      RegExp(
-        r'public func enqueue\(gyroscope sample: CMGyroData\) -> Bool \{([\s\S]*?)\n  \}',
+        r'public func enqueue\(\s*gyroscope sample: CMGyroData,\s*expectedGeneration: Int\? = nil\s*\) -> Bool \{([\s\S]*?)\n  \}',
       ),
     ]) {
       final RegExpMatch? callback = callbackPattern.firstMatch(source);
       expect(callback, isNotNull);
       final String body = callback!.group(1)!;
-      expect(body, contains('admissionGate.enter()'));
+      expect(body, contains('admissionGate.enter('));
+      expect(body, contains('expectedGeneration: expectedGeneration'));
+      expect(body, contains('ingressSequence.incrementAndValue('));
+      expect(body, contains('generation: lease.generation'));
       expect(body, contains('admit('));
       expect(body, isNot(contains('lock.lock()')));
       expect(body, isNot(contains('.sync')));
@@ -202,12 +300,13 @@ void main() {
           ),
         ),
       );
-      final RegExpMatch? stopDrop = RegExp(
-        r'private func rejectPendingOnStopLocked\(\) \{([\s\S]*?)\n  \}',
-      ).firstMatch(source);
-      expect(stopDrop, isNotNull);
-      expect(stopDrop!.group(1), contains('droppedOnStop += 1'));
-      expect(stopDrop.group(1), isNot(contains('terminalRejected += 1')));
+      expect(source, isNot(contains('rejectPendingOnStopLocked()')));
+      expect(source, isNot(contains('droppedOnStop += 1')));
+      expect(
+        source,
+        contains('state == .running || state == .stopping'),
+        reason: 'sealed stop must drain every already-admitted item',
+      );
       expect(source, contains('private func processFrameOnCore'));
       expect(source, contains('private func processAccelerationOnCore'));
       expect(source, contains('private func processGyroscopeOnCore'));
@@ -216,89 +315,118 @@ void main() {
     },
   );
 
-  test(
-    'slamStop completion carries the immutable old-generation terminal receipt',
-    () {
-      final String channelSource = timebase.readAsStringSync();
-      final String pluginSource = plugin.readAsStringSync();
-      final String feederSource = feeder.readAsStringSync();
-      expect(channelSource, contains('public func shutdownShadowPipeline('));
-      expect(channelSource, contains('stopRawCoreMotionFeedLocked()'));
-      expect(
-        channelSource,
-        contains('PwVioSlamFeeder.shared.stop { receipt in'),
-      );
-      expect(channelSource, contains('join.receive(receipt: receipt)'));
-      expect(
-        channelSource,
-        contains(
-          'case "slamStop":\n'
-          '        PwVioTimebase.shared.shutdownShadowPipeline { receipt in\n'
-          '          result(receipt)',
+  test('slamStop completion carries the immutable old-generation terminal receipt', () {
+    final String channelSource = timebase.readAsStringSync();
+    final String pluginSource = plugin.readAsStringSync();
+    final String feederSource = feeder.readAsStringSync();
+    expect(channelSource, contains('public func shutdownShadowPipeline('));
+    expect(channelSource, contains('stopRawCoreMotionFeedLocked()'));
+    expect(channelSource, contains('PwVioSlamFeeder.shared.stop { receipt in'));
+    expect(channelSource, contains('join.receive(receipt: receipt)'));
+    expect(
+      channelSource,
+      contains(
+        'case "slamStop":\n'
+        '        PwVioTimebase.shared.shutdownShadowPipeline { receipt in\n'
+        '          result(receipt)',
+      ),
+    );
+    final RegExpMatch? finishStop = RegExp(
+      r'private func finishSealedStopOnCoreQueue\(generation: Int\) \{([\s\S]*?)\n  \}',
+    ).firstMatch(feederSource);
+    expect(finishStop, isNotNull);
+    final String finishBody = finishStop!.group(1)!;
+    expect(
+      finishBody,
+      contains('PWXrslamTransportDestroyWithReceipt(&destroyReceipt)'),
+    );
+    expect(finishBody, contains('var terminalReceipt'));
+    expect(finishBody, contains('makeWireSnapshotLocked'));
+    expect(
+      finishBody,
+      contains('assert(pendingCount == 0 && inFlightCount == 0)'),
+    );
+    expect(
+      finishBody,
+      contains('assert(pendingImageCount == 0 && inFlightImageCount == 0)'),
+    );
+    expect(feederSource, contains('"terminalReceiptComplete"'));
+    expect(feederSource, contains('"workConserved"'));
+    expect(finishBody, contains('completion(terminalReceipt)'));
+    expect(
+      finishBody.indexOf('terminalReceipt = makeWireSnapshotLocked'),
+      lessThan(finishBody.indexOf('beginStartLocked')),
+      reason: 'restart must not reset the generation before receipt freeze',
+    );
+    expect(
+      finishBody,
+      contains('if pendingRestart == nil { lastStartRequest = nil }'),
+      reason: 'explicit shutdown must not retain a restartable old config',
+    );
+    expect(
+      finishBody.indexOf('terminalReceipt = makeWireSnapshotLocked'),
+      lessThan(
+        finishBody.indexOf(
+          'if pendingRestart == nil { lastStartRequest = nil }',
         ),
-      );
-      final RegExpMatch? finishStop = RegExp(
-        r'private func finishSealedStopOnCoreQueue\(generation: Int\) \{([\s\S]*?)\n  \}',
-      ).firstMatch(feederSource);
-      expect(finishStop, isNotNull);
-      final String finishBody = finishStop!.group(1)!;
-      expect(
-        finishBody,
-        contains('PWXrslamTransportDestroyWithReceipt(&destroyReceipt)'),
-      );
-      expect(finishBody, contains('var terminalReceipt'));
-      expect(finishBody, contains('makeWireSnapshotLocked'));
-      expect(
-        finishBody,
-        contains('assert(pendingCount == 0 && inFlightCount == 0)'),
-      );
-      expect(
-        finishBody,
-        contains('assert(pendingImageCount == 0 && inFlightImageCount == 0)'),
-      );
-      expect(feederSource, contains('"terminalReceiptComplete"'));
-      expect(feederSource, contains('"workConserved"'));
-      expect(finishBody, contains('completion(terminalReceipt)'));
-      expect(
-        finishBody.indexOf('terminalReceipt = makeWireSnapshotLocked'),
-        lessThan(finishBody.indexOf('beginStartLocked')),
-        reason: 'restart must not reset the generation before receipt freeze',
-      );
-      expect(
-        finishBody,
-        contains('if pendingRestart == nil { lastStartRequest = nil }'),
-        reason: 'explicit shutdown must not retain a restartable old config',
-      );
-      expect(
-        finishBody.indexOf('terminalReceipt = makeWireSnapshotLocked'),
-        lessThan(
-          finishBody.indexOf(
-            'if pendingRestart == nil { lastStartRequest = nil }',
-          ),
-        ),
-        reason: 'clear only after the immutable receipt has captured identity',
-      );
-      expect(finishBody, contains('DispatchQueue.main.async'));
-      expect(
-        finishBody.indexOf('PWXrslamTransportDestroyWithReceipt('),
-        lessThan(finishBody.indexOf('DispatchQueue.main.async')),
-      );
-      expect(
-        pluginSource,
-        contains('PwVioTimebase.shared.suspendShadowPipeline()'),
-      );
-      expect(feederSource, contains('pendingRestart'));
-      expect(feederSource, contains('startCompletions'));
-      expect(channelSource, contains('shadowLifecycleGeneration'));
-      expect(channelSource, contains('shadowMotionDesired'));
-      expect(
-        feederSource,
-        contains('"schema": "pw.vio.shadow-terminal-unavailable/1"'),
-        reason: 'a second stop may be idempotent but cannot redeliver evidence',
-      );
-      expect(feederSource, contains('stopCompletions.removeAll'));
-    },
-  );
+      ),
+      reason: 'clear only after the immutable receipt has captured identity',
+    );
+    expect(finishBody, contains('DispatchQueue.main.async'));
+    expect(
+      finishBody.indexOf('PWXrslamTransportDestroyWithReceipt('),
+      lessThan(finishBody.indexOf('DispatchQueue.main.async')),
+    );
+    final RegExpMatch? closeMarker = RegExp(
+      r'private func closeIngressForStop\(generation: Int\) \{([\s\S]*?)\n  \}',
+    ).firstMatch(feederSource);
+    expect(closeMarker, isNotNull);
+    final String closeBody = closeMarker!.group(1)!;
+    expect(
+      closeBody,
+      contains('admissionGate.sealWhenQuiescent(generation: generation)'),
+    );
+    expect(closeBody, contains('self.coreQueue.async'));
+    expect(closeBody, contains('self.ingressClosed = true'));
+    expect(closeBody, contains('self.terminalIngressSequence = UInt64('));
+    expect(closeBody, contains('self.terminalIngressCompleted = UInt64('));
+    expect(
+      closeBody.indexOf('self.terminalIngressSequence = UInt64('),
+      lessThan(closeBody.indexOf('self.drain(epoch: generation)')),
+      reason: 'the close marker must freeze the admitted tail before drain',
+    );
+    expect(
+      finishBody,
+      contains('guard sessionGeneration == generation, state == .stopping,'),
+    );
+    expect(finishBody, contains('ingressClosed else'));
+    expect(finishBody, contains('"receiptAvailable": shouldDestroy'));
+    expect(
+      finishBody,
+      contains(
+        'destroyReceipt.lifecycle_generation != nativeStartLifecycleGeneration',
+      ),
+    );
+    final RegExpMatch? frameCallback = RegExp(
+      r'func session\(_ session: ARSession, didUpdate frame: ARFrame\) \{([\s\S]*?)\n  \}',
+    ).firstMatch(pluginSource);
+    expect(frameCallback, isNotNull);
+    expect(
+      frameCallback!.group(1),
+      isNot(contains('shutdownShadowPipeline')),
+      reason: 'production frame delivery must not own shadow teardown',
+    );
+    expect(feederSource, contains('pendingRestart'));
+    expect(feederSource, contains('startCompletions'));
+    expect(channelSource, contains('shadowLifecycleGeneration'));
+    expect(channelSource, contains('shadowMotionDesired'));
+    expect(
+      feederSource,
+      contains('"schema": "pw.vio.shadow-terminal-unavailable/1"'),
+      reason: 'a second stop may be idempotent but cannot redeliver evidence',
+    );
+    expect(feederSource, contains('stopCompletions.removeAll'));
+  });
 
   test('slamStart returns a direct immutable generation receipt', () {
     final String feederSource = feeder.readAsStringSync();
@@ -354,6 +482,8 @@ void main() {
       ]) {
         expect(source, contains('"$field"'));
       }
+      expect(source, contains('PWXrslamTransportGetCounters(&counters)'));
+      expect(source, contains('"coreHealthSource": "transport_core_counters"'));
     },
   );
 
@@ -448,14 +578,18 @@ void main() {
     expect(source, contains('completeSealIfReady()'));
     expect(source, contains('guard sealLock.try() else { return }'));
     expect(source, contains('finishSealedStopOnCoreQueue(generation:'));
+    final RegExpMatch? closeMarker = RegExp(
+      r'private func closeIngressForStop\(generation: Int\) \{([\s\S]*?)\n  \}',
+    ).firstMatch(source);
+    expect(closeMarker, isNotNull);
+    final String closeBody = closeMarker!.group(1)!;
     expect(
-      source,
-      isNot(
-        contains(
-          'coreQueue.async { [weak self] in self?.finishStopOnCoreQueue() }',
-        ),
-      ),
+      'self.coreQueue.async'.allMatches(closeBody),
+      hasLength(1),
+      reason: 'one sealed marker enters coreQueue; it never polls or resubmits',
     );
+    expect(closeBody, isNot(contains('asyncAfter')));
+    expect(closeBody, contains('self.drain(epoch: generation)'));
     expect(
       source,
       contains('bitPattern: Phase.sealed.rawValue << Self.phaseShift'),
@@ -474,7 +608,12 @@ void main() {
       expect(source, contains('struct SensorFacts'));
       expect(
         source,
-        contains('func wire(lockContention: Int, stopRejections: Int)'),
+        contains(
+          'func wire(\n'
+          '      lockContention: Int,\n'
+          '      stopRejections: Int,\n'
+          '      queueFullRejections: Int = 0',
+        ),
       );
       expect(
         source,
@@ -488,6 +627,14 @@ void main() {
         source,
         contains('attempted + lockContention'),
         reason: 'one atomic contention event must contribute to both sides',
+      );
+      expect(
+        source,
+        contains(
+          'attempted + lockContention + stopRejections + '
+          'queueFullRejections',
+        ),
+        reason: 'pre-ring capacity rejection remains an unaccepted offer',
       );
       expect(source, contains('rejected + lockContention'));
     },
@@ -639,10 +786,8 @@ void main() {
     expect(source, contains('"poseObservationsOffered"'));
     expect(source, contains('"poseObservationsDropped"'));
     expect(source, contains('state == .running'));
-    expect(finish.group(1), contains('scratch?.update(repeating: 0'));
-    expect(finish.group(1), contains('scratch?.deallocate()'));
-    expect(finish.group(1), contains('scratch = nil'));
-    expect(finish.group(1), contains('scratchCapacity = 0'));
+    expect(source, contains('private final class GrayFramePool'));
+    expect(source, isNot(contains('private var scratch:')));
     expect(finish.group(1), contains('vioWidth = 0'));
     expect(finish.group(1), contains('vioHeight = 0'));
   });
@@ -670,19 +815,18 @@ void main() {
       );
       expect(
         resume.group(1),
-        contains('guard PwVioSlamFeeder.shared.isRunning'),
+        contains(
+          'guard let feederGeneration = '
+          'PwVioSlamFeeder.shared.runningGeneration else',
+        ),
       );
+      expect(resume.group(1), contains('feederGeneration: feederGeneration'));
       expect(
         source,
         contains(
           'case "slamStop":\n        '
           'PwVioTimebase.shared.shutdownShadowPipeline',
         ),
-      );
-      expect(
-        source,
-        contains('public func suspendShadowPipeline()'),
-        reason: 'AR interruption and Dart shutdown must be distinct',
       );
       expect(source, isNot(contains('submitAuthorizedResumeLocked')));
       expect(source, isNot(contains('restartLastConfiguration')));
@@ -700,7 +844,7 @@ void main() {
   );
 
   test(
-    'Dart selects every downsample factor and formula while native only applies the exact contract',
+    'Dart selects downsampling while requested camera rate is evidence only',
     () {
       final String dartSource = channel.readAsStringSync();
       final String feederSource = feeder.readAsStringSync();
@@ -749,16 +893,30 @@ void main() {
       );
       expect(feederSource, contains('downsampleFactor: downsampleFactor'));
       expect(feederSource, contains('downsampleFormula: downsampleFormula'));
-      expect(feederSource, contains('let n = downsampleFactor'));
+      expect(feederSource, contains('PWXrslamTransportPrepareGrayBoxNxN('));
       expect(feederSource, contains('"vioDownsampleFactor":'));
       expect(feederSource, contains('"downsampleFactor":'));
       expect(feederSource, contains('"downsampleFormula":'));
       expect(feederSource, contains('"requestedCameraHz":'));
+      final RegExpMatch? frameIngress = RegExp(
+        r'public func consume\(permit: FrameIngressPermit\) -> Bool \{([\s\S]*?)\n  \}',
+      ).firstMatch(feederSource);
+      expect(frameIngress, isNotNull);
+      expect(frameIngress!.group(1), isNot(contains('requestedCameraHz')));
+      expect(frameIngress.group(1), isNot(contains('cameraPeriod')));
       expect(
         feederSource,
-        contains('frame.timestamp - lastAdmittedCameraTimestamp'),
+        isNot(contains('lastAdmittedCameraTimestamp')),
         reason:
-            'official iOS input is fixed at 30 fps; shadow must not feed 60 Hz',
+            'every capacity-admitted ARFrame must reach FIFO ingress without native cadence sampling',
+      );
+      expect(feederSource, isNot(contains('cameraRateSampledOut')));
+      expect(
+        feederSource,
+        contains(
+          '"cameraAdmissionPolicy": '
+          '"bounded-permit-no-cadence-sampling"',
+        ),
       );
       expect(
         feederSource,
@@ -786,68 +944,83 @@ void main() {
     },
   );
 
-  test(
-    'camera timestamps fail closed before pixel work or the XRSLAM C ABI',
-    () {
-      final String source = feeder.readAsStringSync();
-      final RegExpMatch? frameProcessor = RegExp(
-        r'private func processFrameOnCore\([\s\S]*?\n  \}',
-      ).firstMatch(source);
-      expect(frameProcessor, isNotNull);
-      final String body = frameProcessor!.group(0)!;
-      final int finiteGuard = body.indexOf(
-        'guard pending.timestamp.isFinite else',
-      );
-      final int pixelLock = body.indexOf('CVPixelBufferLockBaseAddress');
-      final int nativePush = body.indexOf(
-        'PWXrslamTransportPushCameraAndRunRaw(',
-      );
-      expect(finiteGuard, greaterThanOrEqualTo(0));
-      expect(finiteGuard, lessThan(pixelLock));
-      expect(finiteGuard, lessThan(nativePush));
-      expect(
-        body.substring(finiteGuard, pixelLock),
-        allOf(
-          contains('imageFacts.reject(.invalidInput)'),
-          contains('return .invalidInput'),
-        ),
-      );
-      expect(body, contains('pending.timestamp,'));
-      expect(body, contains('lastImageT = pending.timestamp'));
-      expect(body, isNot(contains('pending.timestamp > lastImageT')));
-      expect(source, isNot(contains('pending.timestamp > lastAccT')));
-      expect(source, isNot(contains('pending.timestamp > lastGyroT')));
-      expect(
-        source,
-        contains('rc == Int32(PW_XRSLAM_ERR_NON_MONOTONIC.rawValue)'),
-      );
-      expect(
-        source,
-        contains('accRc == Int32(PW_XRSLAM_ERR_NON_MONOTONIC.rawValue)'),
-      );
-      expect(
-        source,
-        contains('gyroRc == Int32(PW_XRSLAM_ERR_NON_MONOTONIC.rawValue)'),
-      );
-      expect(source, contains('case nonMonotonic = "non_monotonic"'));
-    },
-  );
+  test('camera timestamps fail closed before pixel work or the XRSLAM C ABI', () {
+    final String source = feeder.readAsStringSync();
+    final RegExpMatch? frameOffer = RegExp(
+      r'public func tryOfferFrame\(frame: ARFrame\) -> FrameIngressPermit\? \{([\s\S]*?)\n  \}',
+    ).firstMatch(source);
+    final RegExpMatch? frameIngress = RegExp(
+      r'public func consume\(permit: FrameIngressPermit\) -> Bool \{([\s\S]*?)\n  \}',
+    ).firstMatch(source);
+    expect(frameOffer, isNotNull);
+    expect(frameIngress, isNotNull);
+    final String offerBody = frameOffer!.group(0)!;
+    final String ingressBody = frameIngress!.group(0)!;
+    final int offerFiniteGuard = offerBody.indexOf(
+      'guard frame.timestamp.isFinite else',
+    );
+    final int admission = offerBody.indexOf('admissionGate.enter()');
+    final int finiteGuard = ingressBody.indexOf(
+      'guard permit.timestamp.isFinite',
+    );
+    final int pixelLock = ingressBody.indexOf('CVPixelBufferLockBaseAddress');
+    final int nativePush = source.indexOf(
+      'PWXrslamTransportPushCameraAndRunRaw(',
+    );
+    expect(offerFiniteGuard, greaterThanOrEqualTo(0));
+    expect(offerFiniteGuard, lessThan(admission));
+    expect(
+      offerBody.indexOf('grayFramePool.tryAcquire()'),
+      lessThan(offerBody.indexOf('let pixelBuffer = frame.capturedImage')),
+    );
+    expect(finiteGuard, greaterThanOrEqualTo(0));
+    expect(finiteGuard, lessThan(pixelLock));
+    expect(
+      source.indexOf('guard frame.timestamp.isFinite else'),
+      lessThan(nativePush),
+    );
+    expect(
+      ingressBody.substring(finiteGuard, pixelLock),
+      allOf(
+        contains('rejectPreparedImage(reason: .invalidInput)'),
+        contains('return false'),
+      ),
+    );
+    expect(source, contains('pending.timestamp,'));
+    expect(source, contains('lastImageT = pending.timestamp'));
+    expect(source, isNot(contains('pending.timestamp > lastImageT')));
+    expect(source, isNot(contains('pending.timestamp > lastAccT')));
+    expect(source, isNot(contains('pending.timestamp > lastGyroT')));
+    expect(
+      source,
+      contains('rc == Int32(PW_XRSLAM_ERR_NON_MONOTONIC.rawValue)'),
+    );
+    expect(
+      source,
+      contains('accRc == Int32(PW_XRSLAM_ERR_NON_MONOTONIC.rawValue)'),
+    );
+    expect(
+      source,
+      contains('gyroRc == Int32(PW_XRSLAM_ERR_NON_MONOTONIC.rawValue)'),
+    );
+    expect(source, contains('case nonMonotonic = "non_monotonic"'));
+  });
 
   test('pixel-buffer lock failure rejects without reading or unlocking', () {
     final String source = feeder.readAsStringSync();
-    final RegExpMatch? frameProcessor = RegExp(
-      r'private func processFrameOnCore\([\s\S]*?\n  \}',
+    final RegExpMatch? frameIngress = RegExp(
+      r'public func consume\(permit: FrameIngressPermit\) -> Bool \{([\s\S]*?)\n  \}',
     ).firstMatch(source);
-    expect(frameProcessor, isNotNull);
-    final String body = frameProcessor!.group(0)!;
+    expect(frameIngress, isNotNull);
+    final String body = frameIngress!.group(0)!;
     final int lockCall = body.indexOf(
-      'let pixelLockStatus = CVPixelBufferLockBaseAddress(pb, .readOnly)',
+      'let pixelLockStatus = CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)',
     );
     final int lockGuard = body.indexOf(
       'guard pixelLockStatus == kCVReturnSuccess else',
     );
     final int unlock = body.indexOf(
-      'defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }',
+      'defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }',
     );
     final int baseRead = body.indexOf('CVPixelBufferGetBaseAddressOfPlane');
     expect(lockCall, greaterThanOrEqualTo(0));
@@ -857,8 +1030,8 @@ void main() {
     expect(
       body.substring(lockGuard, unlock),
       allOf(
-        contains('imageFacts.reject(.invalidInput)'),
-        contains('return .invalidInput'),
+        contains('rejectPreparedImage(reason: .invalidInput)'),
+        contains('return false'),
       ),
     );
   });
@@ -872,7 +1045,11 @@ void main() {
         source,
         contains('admissionGate.beginRejecting(generation: epoch)'),
       );
-      expect(source, contains('finishStopOnCoreQueue()'));
+      expect(source, contains('closeIngressForStop(generation: epoch)'));
+      expect(
+        source,
+        contains('finishSealedStopOnCoreQueue(generation: epoch)'),
+      );
       expect(
         source,
         contains('shouldCloseFailedCreate = self.closeFailedCreateGeneration('),
@@ -881,7 +1058,7 @@ void main() {
         source,
         contains(
           'if shouldCloseFailedCreate {\n'
-          '        self.finishStopOnCoreQueue()',
+          '        self.closeIngressForStop(generation: epoch)',
         ),
       );
       expect(source, isNot(contains('completionRc')));
@@ -889,7 +1066,12 @@ void main() {
         r'private final class AdmissionGate \{([\s\S]*?)\n  \}\n\n  private let admissionGate',
       ).firstMatch(source);
       expect(gate, isNotNull);
-      expect(gate!.group(1), contains('guard old & Self.activeMask == 0 else'));
+      expect(gate!.group(1), contains('guard old & Self.activeMask == 0,'));
+      expect(
+        gate.group(1),
+        contains('Phase.sealed.rawValue else'),
+        reason: 'start may prepare only after the old generation is sealed',
+      );
       expect(
         gate.group(1),
         isNot(contains('Self.replace(&packed, with: token)')),
@@ -906,6 +1088,16 @@ void main() {
         isNot(contains('transitionLocked(to: .stopped)')),
         reason: 'only the sealed terminal path may expose stopped',
       );
+      final RegExpMatch? closeMarker = RegExp(
+        r'private func closeIngressForStop\(generation: Int\) \{([\s\S]*?)\n  \}',
+      ).firstMatch(source);
+      expect(closeMarker, isNotNull);
+      expect(
+        closeMarker!.group(1),
+        contains('admissionGate.sealWhenQuiescent(generation: generation)'),
+      );
+      expect(closeMarker.group(1), contains('self.coreQueue.async'));
+      expect(closeMarker.group(1), contains('self.ingressClosed = true'));
     },
   );
 
@@ -974,6 +1166,7 @@ void main() {
         'xrslamUpstreamRevision',
         'xrslamBuildPatchSha256',
         'xrslamDestroyLifecyclePatchSha256',
+        'xrslamZeroInlierMaskPatchSha256',
         'xrslamAlgorithmBranch',
         'xrslamIosEnabled',
         'xrslamThreadingEnabled',

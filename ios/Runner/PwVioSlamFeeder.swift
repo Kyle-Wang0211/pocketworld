@@ -2,7 +2,7 @@
 //
 // 为什么在原生侧喂:ARFrame 本来就在原生。从 Dart 喂意味着每帧把像素缓冲跨
 // FFI 边界拷一次 —— 1920×1440 灰度 = 2.7 MB/帧,30fps 就是 83 MB/s 的桥接拷贝。
-// 原生侧保留 CVPixelBuffer,在 worker 上直接读亮度平面并只写一次降采样 scratch;
+// 原生入口把亮度平面写进预分配 640×480 灰度池,worker 只消费池槽;
 // Dart 侧只传配置、读位姿和健康状态,避免把整帧像素穿过平台通道。
 //
 // 跨端边界:
@@ -22,13 +22,84 @@ public final class PwVioSlamFeeder {
   public static let shared = PwVioSlamFeeder()
   private init() {}
 
+  /// ARFrame itself never escapes the production callback. Its full-resolution
+  /// CVPixelBuffer may escape only inside one of these generation-bound permits;
+  /// release is exactly-once even when a caller never consumes the permit.
+  public final class FrameIngressPermit {
+    public let generation: Int
+    public let sequence: UInt64
+    public let timestamp: TimeInterval
+    fileprivate let pixelBuffer: CVPixelBuffer
+    fileprivate let cameraTransform: simd_float4x4
+    fileprivate let referenceTrackingState: String
+    fileprivate let referenceTrackingReason: String
+    fileprivate let graySlot: Int
+    fileprivate let grayBuffer: UnsafeMutablePointer<UInt8>
+
+    private var state: Int32 = 0 // 0=offered, 1=consuming, 2=released
+    private let releaseBody: (
+      _ abandoned: Bool,
+      _ reservationsTransferred: Bool
+    ) -> Void
+
+    fileprivate init(
+      generation: UInt32,
+      sequence: UInt64,
+      timestamp: TimeInterval,
+      pixelBuffer: CVPixelBuffer,
+      cameraTransform: simd_float4x4,
+      referenceTrackingState: String,
+      referenceTrackingReason: String,
+      graySlot: Int,
+      grayBuffer: UnsafeMutablePointer<UInt8>,
+      release: @escaping (
+        _ abandoned: Bool,
+        _ reservationsTransferred: Bool
+      ) -> Void
+    ) {
+      self.generation = Int(generation)
+      self.sequence = sequence
+      self.timestamp = timestamp
+      self.pixelBuffer = pixelBuffer
+      self.cameraTransform = cameraTransform
+      self.referenceTrackingState = referenceTrackingState
+      self.referenceTrackingReason = referenceTrackingReason
+      self.graySlot = graySlot
+      self.grayBuffer = grayBuffer
+      releaseBody = release
+    }
+
+    fileprivate func claim() -> Bool {
+      OSAtomicCompareAndSwap32Barrier(0, 1, &state)
+    }
+
+    fileprivate func finish(reservationsTransferred: Bool) {
+      if OSAtomicCompareAndSwap32Barrier(1, 2, &state) {
+        releaseBody(false, reservationsTransferred)
+      }
+    }
+
+    deinit {
+      if OSAtomicCompareAndSwap32Barrier(0, 2, &state) {
+        releaseBody(true, false)
+      } else if OSAtomicCompareAndSwap32Barrier(1, 2, &state) {
+        releaseBody(false, false)
+      }
+    }
+  }
+
   private enum ShadowState: String {
     case stopped, starting, running, stopping
   }
 
   private struct PendingFrame {
-    let pixelBuffer: CVPixelBuffer
+    let graySlot: Int
+    let grayBuffer: UnsafeMutablePointer<UInt8>
+    let grayWidth: Int
+    let grayHeight: Int
+    let grayStride: Int
     let timestamp: Double
+    let ingressSequence: UInt64
     let arkitWorldFromCamera: simd_float4x4
     // Raw ARKit enum facts only. Dart owns the cross-platform usable/rejected
     // decision and all quality policy.
@@ -37,8 +108,123 @@ public final class PwVioSlamFeeder {
     let enqueuedAt: CFTimeInterval
   }
 
+  /// Fixed 30-slot gray carrier. A slot is reserved with lock-free CAS before
+  /// a CVPixelBuffer can escape the ARSession callback, then transferred to the
+  /// FIFO work item or returned by the permit's exactly-once release path.
+  private final class GrayFramePool {
+    struct Reservation {
+      let slot: Int
+      let buffer: UnsafeMutablePointer<UInt8>
+      let activeCount: Int
+    }
+
+    private let slotCount: Int
+    private var storage: UnsafeMutablePointer<UInt8>?
+    private let slotByteCount: Int
+    private let validMask: UInt64
+    private var occupiedBits: Int64 = 0
+
+    init(slotCount: Int, slotByteCount: Int) {
+      precondition(slotCount > 0 && slotCount <= 63 && slotByteCount > 0)
+      self.slotCount = slotCount
+      self.slotByteCount = slotByteCount
+      validMask = (UInt64(1) << UInt64(slotCount)) - 1
+      storage = nil
+    }
+
+    deinit { storage?.deallocate() }
+
+    /// Runs on coreQueue before admission is opened. This keeps the one-time
+    /// 9.2 MB allocation and zero-fill off ARSession's production callback.
+    func prepare() {
+      guard storage == nil else {
+        assert(activeCount == 0)
+        return
+      }
+      let prepared = UnsafeMutablePointer<UInt8>.allocate(
+        capacity: slotCount * slotByteCount
+      )
+      prepared.initialize(repeating: 0, count: slotCount * slotByteCount)
+      storage = prepared
+    }
+
+    func tryAcquire() -> Reservation? {
+      guard let storage else { return nil }
+      while true {
+        let oldRaw = OSAtomicAdd64Barrier(0, &occupiedBits)
+        let old = UInt64(bitPattern: oldRaw)
+        let available = (~old) & validMask
+        guard available != 0 else { return nil }
+        let slot = available.trailingZeroBitCount
+        let next = old | (UInt64(1) << UInt64(slot))
+        if OSAtomicCompareAndSwap64Barrier(
+          oldRaw,
+          Int64(bitPattern: next),
+          &occupiedBits
+        ) {
+          return Reservation(
+            slot: slot,
+            buffer: storage + slot * slotByteCount,
+            activeCount: next.nonzeroBitCount
+          )
+        }
+      }
+    }
+
+    func release(_ slot: Int) {
+      let bit = UInt64(1) << UInt64(slot)
+      while true {
+        let oldRaw = OSAtomicAdd64Barrier(0, &occupiedBits)
+        let old = UInt64(bitPattern: oldRaw)
+        assert(old & bit != 0)
+        let next = old & ~bit
+        if OSAtomicCompareAndSwap64Barrier(
+          oldRaw,
+          Int64(bitPattern: next),
+          &occupiedBits
+        ) { return }
+      }
+    }
+
+    var activeCount: Int {
+      UInt64(
+        bitPattern: OSAtomicAdd64Barrier(0, &occupiedBits)
+      ).nonzeroBitCount
+    }
+  }
+
+  /// Fixed storage with FIFO wire order. Caller owns synchronization.
+  private struct PoseObservationRing {
+    private var storage: [[String: Any]?]
+    private var head = 0
+    private(set) var count = 0
+
+    init(capacity: Int) {
+      precondition(capacity > 0)
+      storage = Array(repeating: nil, count: capacity)
+    }
+
+    mutating func append(_ observation: [String: Any]) -> Bool {
+      guard count < storage.count else { return false }
+      storage[(head + count) % storage.count] = observation
+      count += 1
+      return true
+    }
+
+    func values() -> [[String: Any]] {
+      (0..<count).compactMap { storage[(head + $0) % storage.count] }
+    }
+
+    mutating func removeAll() {
+      for index in storage.indices { storage[index] = nil }
+      head = 0
+      count = 0
+    }
+  }
+
   private struct PendingAcceleration {
     let timestamp: Double
+    let ingressSequence: UInt64
     let x: Double
     let y: Double
     let z: Double
@@ -46,6 +232,7 @@ public final class PwVioSlamFeeder {
 
   private struct PendingGyroscope {
     let timestamp: Double
+    let ingressSequence: UInt64
     let x: Double
     let y: Double
     let z: Double
@@ -80,15 +267,37 @@ public final class PwVioSlamFeeder {
       if case .image = stream { return true }
       return false
     }
+
+    var ingressSequence: UInt64 {
+      switch self {
+      case .image(let frame, _): return frame.ingressSequence
+      case .acceleration(let sample, _): return sample.ingressSequence
+      case .gyroscope(let sample, _): return sample.ingressSequence
+      }
+    }
   }
 
   private static let maxStateTransitions = 16
   private static let maxQueuedWork = 256
-  private static let maxRetainedImages = 2
+  /// This is the only bound that counts full-resolution ARFrame references.
+  /// Gray pool slots below are 640x480 copies and have a separate capacity.
+  private static let maxOutstandingCameraIngress = 2
+  // One official 30 Hz camera envelope. The shared sensor ingress queue owns
+  // admission ordering; this bound absorbs one second without sampling out or
+  // replacing accepted camera input.
+  private static let maxRetainedImages = 30
+  private static let grayWidth = 640
+  private static let grayHeight = 480
+  private static let grayFrameBytes = grayWidth * grayHeight
+  private static let maxPoseObservations = 128
   // Transport-only bound. Every processed image offers one raw pose/health
   // observation; Dart owns polling cadence and every semantic classification.
 
   private let lock = NSLock()
+  private let grayFramePool = GrayFramePool(
+    slotCount: PwVioSlamFeeder.maxRetainedImages,
+    slotByteCount: PwVioSlamFeeder.grayFrameBytes
+  )
   private let coreQueue = DispatchQueue(
     label: "com.pocketworld.vio.shadow.core",
     qos: .utility
@@ -154,6 +363,10 @@ public final class PwVioSlamFeeder {
   private var created = false
   private var shutdownDrops = 0
   private var nativeDestroyReceipt: [String: Any] = [:]
+  private var nativeStartLifecycleGeneration: UInt64 = 0
+  private var ingressClosed = false
+  private var terminalIngressSequence: UInt64 = 0
+  private var terminalIngressCompleted: UInt64 = 0
 
   // Generation and count share one CAS word. A callback that captured an old
   // generation can never increment a newly reset counter, even if reset lands
@@ -184,19 +397,23 @@ public final class PwVioSlamFeeder {
 
     @discardableResult
     func increment(generation: UInt32) -> Bool {
+      incrementAndValue(generation: generation) != nil
+    }
+
+    func incrementAndValue(generation: UInt32) -> UInt64? {
       while true {
         let old = Self.load(&packed)
         guard UInt32(truncatingIfNeeded: old >> 32) == generation else {
-          return false
+          return nil
         }
         let count = old & Self.countMask
-        guard count < Self.countMask else { return false }
+        guard count < Self.countMask else { return nil }
         let next = (UInt64(generation) << 32) | (count + 1)
         if OSAtomicCompareAndSwap64Barrier(
           Int64(bitPattern: old),
           Int64(bitPattern: next),
           &packed
-        ) { return true }
+        ) { return count + 1 }
       }
     }
 
@@ -230,9 +447,36 @@ public final class PwVioSlamFeeder {
     var value: Int { Int(OSAtomicAdd64Barrier(0, &storage)) }
   }
 
+  private final class AtomicLimiter {
+    private let capacity: Int64
+    private var active: Int64 = 0
+
+    init(capacity: Int) {
+      precondition(capacity > 0)
+      self.capacity = Int64(capacity)
+    }
+
+    func tryAcquire() -> Bool {
+      while true {
+        let old = OSAtomicAdd64Barrier(0, &active)
+        guard old < capacity else { return false }
+        if OSAtomicCompareAndSwap64Barrier(old, old + 1, &active) {
+          return true
+        }
+      }
+    }
+
+    func release() {
+      let next = OSAtomicDecrement64Barrier(&active)
+      assert(next >= 0)
+    }
+
+    var value: Int { Int(OSAtomicAdd64Barrier(0, &active)) }
+  }
+
   private final class AdmissionGate {
     enum Phase: UInt64 { case open = 0, rejecting = 1, sealed = 2 }
-    struct Entry { let generation: UInt32; let phase: Phase }
+    struct Entry { let generation: UInt32 }
     private static let activeMask: UInt64 = 0x3fff_ffff
     private static let phaseShift: UInt64 = 30
     // Generation zero begins sealed. Before the first Dart-authorized start,
@@ -253,14 +497,18 @@ public final class PwVioSlamFeeder {
     }
 
     @discardableResult
-    func begin(generation: Int) -> Bool {
-      let next = UInt64(UInt32(truncatingIfNeeded: generation)) << 32
+    func prepare(generation: Int) -> Bool {
+      let next = (UInt64(UInt32(truncatingIfNeeded: generation)) << 32) |
+        (Phase.sealed.rawValue << Self.phaseShift)
       while true {
         let old = load()
         // A new session must never erase a callback lease from the previous
         // generation. Correct lifecycle closure seals that generation first;
         // a violation fails the start safely instead of corrupting accounting.
-        guard old & Self.activeMask == 0 else { return false }
+        guard old & Self.activeMask == 0,
+              (old >> Self.phaseShift) & 0x3 == Phase.sealed.rawValue else {
+          return false
+        }
         if OSAtomicCompareAndSwap64Barrier(
           Int64(bitPattern: old), Int64(bitPattern: next), &packed
         ) {
@@ -273,11 +521,32 @@ public final class PwVioSlamFeeder {
       }
     }
 
-    func enter() -> Entry? {
+    func open(generation: Int) -> Bool {
+      let expected = UInt32(truncatingIfNeeded: generation)
+      while true {
+        let old = load()
+        guard UInt32(truncatingIfNeeded: old >> 32) == expected,
+              old & Self.activeMask == 0,
+              (old >> Self.phaseShift) & 0x3 == Phase.sealed.rawValue else {
+          return false
+        }
+        let next = old & ~(UInt64(0x3) << Self.phaseShift)
+        if OSAtomicCompareAndSwap64Barrier(
+          Int64(bitPattern: old), Int64(bitPattern: next), &packed
+        ) { return true }
+      }
+    }
+
+    func enter(expectedGeneration: Int? = nil) -> Entry? {
       while true {
         let old = load()
         let phaseRaw = (old >> Self.phaseShift) & 0x3
-        guard let phase = Phase(rawValue: phaseRaw), phase != .sealed else {
+        guard phaseRaw == Phase.open.rawValue else {
+          return nil
+        }
+        let generation = UInt32(truncatingIfNeeded: old >> 32)
+        if let expectedGeneration,
+           generation != UInt32(truncatingIfNeeded: expectedGeneration) {
           return nil
         }
         let active = old & Self.activeMask
@@ -286,10 +555,7 @@ public final class PwVioSlamFeeder {
         if OSAtomicCompareAndSwap64Barrier(
           Int64(bitPattern: old), Int64(bitPattern: next), &packed
         ) {
-          return Entry(
-            generation: UInt32(truncatingIfNeeded: old >> 32),
-            phase: phase
-          )
+          return Entry(generation: generation)
         }
       }
     }
@@ -348,6 +614,17 @@ public final class PwVioSlamFeeder {
       generation: Int,
       completion: @escaping () -> Void
     ) {
+      beginRejecting(generation: generation)
+      let bits = load()
+      guard UInt32(truncatingIfNeeded: bits >> 32) ==
+              UInt32(truncatingIfNeeded: generation) else {
+        completion()
+        return
+      }
+      if (bits >> Self.phaseShift) & 0x3 == Phase.sealed.rawValue {
+        completion()
+        return
+      }
       sealLock.lock()
       guard sealCompletion == nil else {
         sealLock.unlock()
@@ -381,6 +658,21 @@ public final class PwVioSlamFeeder {
   }
 
   private let admissionGate = AdmissionGate()
+  private let cameraIngressLimiter = AtomicLimiter(
+    capacity: PwVioSlamFeeder.maxOutstandingCameraIngress
+  )
+  private let workSlotLimiter = AtomicLimiter(
+    capacity: PwVioSlamFeeder.maxQueuedWork
+  )
+  private let ingressSequence = GenerationCounter()
+  private let ingressCompleted = GenerationCounter()
+  private let cameraIngressCapacityRejections = GenerationCounter()
+  private let cameraFullFrameCapacityRejections = GenerationCounter()
+  private let cameraWorkRingCapacityRejections = GenerationCounter()
+  private let cameraGrayPoolCapacityRejections = GenerationCounter()
+  private let accelerationWorkCapacityRejections = GenerationCounter()
+  private let gyroscopeWorkCapacityRejections = GenerationCounter()
+  private let abandonedCameraIngress = GenerationCounter()
   private let imageLockContention = GenerationCounter()
   private let accelerationLockContention = GenerationCounter()
   private let gyroscopeLockContention = GenerationCounter()
@@ -396,6 +688,10 @@ public final class PwVioSlamFeeder {
   private var sealedImageStopRejections: Int?
   private var sealedAccelerationStopRejections: Int?
   private var sealedGyroscopeStopRejections: Int?
+
+  private enum CameraCapacityRejection {
+    case fullFrame, workRing, grayPool
+  }
 
   private enum SensorRejectionReason: String, CaseIterable {
     case notRunning = "not_running"
@@ -425,7 +721,11 @@ public final class PwVioSlamFeeder {
       reasons[reason, default: 0] += 1
     }
 
-    func wire(lockContention: Int, stopRejections: Int) ->
+    func wire(
+      lockContention: Int,
+      stopRejections: Int,
+      queueFullRejections: Int = 0
+    ) ->
       (attempted: Int, submitted: Int, rejected: Int, reasons: [String: Int]) {
       var wireReasons = Dictionary(uniqueKeysWithValues: reasons.map {
         ($0.key.rawValue, $0.value)
@@ -434,10 +734,12 @@ public final class PwVioSlamFeeder {
         lockContention
       wireReasons[SensorRejectionReason.lateAfterSeal.rawValue, default: 0] +=
         stopRejections
+      wireReasons[SensorRejectionReason.queueFull.rawValue, default: 0] +=
+        queueFullRejections
       return (
-        attempted + lockContention + stopRejections,
+        attempted + lockContention + stopRejections + queueFullRejections,
         submitted,
-        rejected + lockContention + stopRejections,
+        rejected + lockContention + stopRejections + queueFullRejections,
         wireReasons
       )
     }
@@ -464,45 +766,7 @@ public final class PwVioSlamFeeder {
   // formulas or dimensions that cannot represent it.
   private static let downsampleFormulaBoxNxnHalfUpV1 =
     "box-nxn-half-up-v1"
-  private var scratch: UnsafeMutablePointer<UInt8>?
-  private var scratchCapacity = 0
   private var vioWidth = 0, vioHeight = 0
-
-  /// N×N 盒式降采样。返回 nil 表示尺寸不是 N 的整数倍(不猜,直接拒绝)。
-  private func downsampleBox(src: UnsafePointer<UInt8>, srcW: Int, srcH: Int,
-                             srcStride: Int, downsampleFactor: Int,
-                             downsampleFormula: String) ->
-    (UnsafeMutablePointer<UInt8>, Int, Int)? {
-    guard downsampleFormula == Self.downsampleFormulaBoxNxnHalfUpV1 else {
-      return nil
-    }
-    let n = downsampleFactor
-    guard n >= 1, n <= srcW, n <= srcH,
-          srcW % n == 0, srcH % n == 0 else { return nil }
-    let dw = srcW / n, dh = srcH / n
-    let need = dw * dh
-    if scratchCapacity < need {
-      scratch?.deallocate()
-      scratch = UnsafeMutablePointer<UInt8>.allocate(capacity: need)
-      scratchCapacity = need
-    }
-    guard let dst = scratch else { return nil }
-    let area = n * n
-    let half = area / 2          // 四舍五入的偏置
-    for y in 0..<dh {
-      let orow = dst + y * dw
-      for x in 0..<dw {
-        var sum = 0
-        for dy in 0..<n {
-          let row = src + (y * n + dy) * srcStride + x * n
-          for dx in 0..<n { sum += Int(row[dx]) }
-        }
-        orow[x] = UInt8((sum + half) / area)
-      }
-    }
-    vioWidth = dw; vioHeight = dh
-    return (dst, dw, dh)
-  }
 
   /// XRSLAM 是全局单例(C API 没有句柄参数),全部入口只允许 coreQueue 调用。
   private var lastImageT: Double = 0
@@ -533,15 +797,11 @@ public final class PwVioSlamFeeder {
   private var poseObservationSequence = 0
   private var poseObservationsOffered = 0
   private var poseObservationsDropped = 0
-  private var poseObservations: [[String: Any]] = []
+  private var poseObservations = PoseObservationRing(
+    capacity: PwVioSlamFeeder.maxPoseObservations
+  )
 
   private var lastStartRequest: StartRequest?
-  // Only the ARSession delegate callback reads/writes these two values. The
-  // generation stamp makes the first frame of every native run pass without
-  // a cross-thread reset. Dart selects the rate; Swift only applies it.
-  private var lastAdmittedCameraTimestamp = -Double.infinity
-  private var lastAdmittedCameraGeneration: UInt32 = 0
-  private var cameraRateSampledOut = 0
 
   // MARK: - 生命周期
 
@@ -555,6 +815,9 @@ public final class PwVioSlamFeeder {
   }
 
   private func resetSessionMetricsLocked(generation: Int) {
+    assert(cameraIngressLimiter.value == 0)
+    assert(workSlotLimiter.value == 0)
+    assert(grayFramePool.activeCount == 0)
     pendingWork = Array<PendingWork?>(
       repeating: nil,
       count: Self.maxQueuedWork
@@ -582,6 +845,10 @@ public final class PwVioSlamFeeder {
     stateTransitions.removeAll(keepingCapacity: true)
     shutdownDrops = 0
     nativeDestroyReceipt.removeAll(keepingCapacity: true)
+    nativeStartLifecycleGeneration = 0
+    ingressClosed = false
+    terminalIngressSequence = 0
+    terminalIngressCompleted = 0
     imageFacts = SensorFacts()
     accFacts = SensorFacts()
     gyroFacts = SensorFacts()
@@ -598,6 +865,15 @@ public final class PwVioSlamFeeder {
     imageStopRejections.beginGeneration(generation)
     accelerationStopRejections.beginGeneration(generation)
     gyroscopeStopRejections.beginGeneration(generation)
+    ingressSequence.beginGeneration(generation)
+    ingressCompleted.beginGeneration(generation)
+    cameraIngressCapacityRejections.beginGeneration(generation)
+    cameraFullFrameCapacityRejections.beginGeneration(generation)
+    cameraWorkRingCapacityRejections.beginGeneration(generation)
+    cameraGrayPoolCapacityRejections.beginGeneration(generation)
+    accelerationWorkCapacityRejections.beginGeneration(generation)
+    gyroscopeWorkCapacityRejections.beginGeneration(generation)
+    abandonedCameraIngress.beginGeneration(generation)
     lastImageT = 0
     lastImuT = 0
     accSumX = 0
@@ -620,8 +896,7 @@ public final class PwVioSlamFeeder {
     poseObservationSequence = 0
     poseObservationsOffered = 0
     poseObservationsDropped = 0
-    cameraRateSampledOut = 0
-    poseObservations.removeAll(keepingCapacity: true)
+    poseObservations.removeAll()
     cachedSnapshot = makeCoreSnapshotLocked()
   }
 
@@ -629,12 +904,12 @@ public final class PwVioSlamFeeder {
     _ request: StartRequest,
     completions: [(Int32, Int) -> Void]
   ) -> Int? {
-    sessionGeneration += 1
-    let epoch = sessionGeneration
+    let epoch = sessionGeneration + 1
+    // Prepare a sealed generation first. Camera/IMU admission is published
+    // only by the successful Create completion on coreQueue.
+    guard admissionGate.prepare(generation: epoch) else { return nil }
+    sessionGeneration = epoch
     resetSessionMetricsLocked(generation: epoch)
-    // Publish only after every generation-scoped counter has reset. `begin`
-    // refuses to overwrite any live lease from the prior generation.
-    guard admissionGate.begin(generation: epoch) else { return nil }
     lastStartRequest = request
     startCompletions.append(contentsOf: completions)
     transitionLocked(to: .starting)
@@ -650,7 +925,6 @@ public final class PwVioSlamFeeder {
     created = false
     transitionLocked(to: .stopping)
     admissionGate.beginRejecting(generation: epoch)
-    rejectPendingOnStopLocked()
     cachedSnapshot = makeCoreSnapshotLocked()
     return true
   }
@@ -667,6 +941,10 @@ public final class PwVioSlamFeeder {
           )
         }
       }
+      var startCounters = PWXrslamTransportCounters()
+      let startCountersRc: Int32 = rc == 1
+        ? PWXrslamTransportGetCounters(&startCounters) : -1
+      if rc == 1 { self.grayFramePool.prepare() }
 
       var completed: [(Int32, Int) -> Void] = []
       var destroyOrphan = false
@@ -674,10 +952,27 @@ public final class PwVioSlamFeeder {
       self.lock.lock()
       if self.sessionGeneration == epoch {
         self.created = (rc == 1)
+        self.nativeStartLifecycleGeneration = startCountersRc == 0
+          ? startCounters.lifecycle_generation : 0
         if self.state == .starting, self.created {
-          self.transitionLocked(to: .running)
-          completed = self.startCompletions
-          self.startCompletions.removeAll(keepingCapacity: true)
+          if startCountersRc == 0,
+             startCounters.lifecycle_generation > 0 {
+            if self.admissionGate.open(generation: epoch) {
+              self.transitionLocked(to: .running)
+              completed = self.startCompletions
+              self.startCompletions.removeAll(keepingCapacity: true)
+            } else {
+              self.invalidateRunLocked(reason: "ingress_open_failed")
+              self.transitionLocked(to: .stopping)
+              shouldCloseFailedCreate = true
+            }
+          } else {
+            // Create without a readable lifecycle receipt cannot publish
+            // admission: there would be nothing exact for Destroy to match.
+            self.invalidateRunLocked(reason: "native_start_receipt_unavailable")
+            self.transitionLocked(to: .stopping)
+            shouldCloseFailedCreate = true
+          }
         } else if self.state == .starting {
           shouldCloseFailedCreate = self.closeFailedCreateGeneration(
             epoch: epoch
@@ -697,7 +992,7 @@ public final class PwVioSlamFeeder {
 
       if destroyOrphan { PWXrslamTransportDestroy() }
       if shouldCloseFailedCreate {
-        self.finishStopOnCoreQueue()
+        self.closeIngressForStop(generation: epoch)
       }
 
       if !completed.isEmpty {
@@ -808,32 +1103,8 @@ public final class PwVioSlamFeeder {
     }
   }
 
-  private func rejectPendingOnStopLocked() {
-    while pendingCount > 0 {
-      guard let item = pendingWork[pendingHead] else {
-        terminalInternal += 1
-        invalidateRunLocked(reason: "internal_empty_queue_slot")
-        pendingHead = (pendingHead + 1) % Self.maxQueuedWork
-        pendingCount -= 1
-        continue
-      }
-      pendingWork[pendingHead] = nil
-      pendingHead = (pendingHead + 1) % Self.maxQueuedWork
-      pendingCount -= 1
-      if item.isImage {
-        pendingImageCount -= 1
-      }
-      droppedOnStop += 1
-      shutdownDrops += 1
-      rejectSensorLocked(stream: item.stream, reason: .droppedOnStop)
-      invalidateRunLocked(reason: SensorRejectionReason.droppedOnStop.rawValue)
-    }
-    pendingHead = 0
-    pendingTail = 0
-  }
-
-  /// Stop closes admission immediately, accounts every pending item, and then
-  /// queues Destroy behind any in-flight native call. It never waits/syncs.
+  /// Stop seals new admission, drains and publishes every already-admitted
+  /// item in timestamp order, and queues Destroy last. It never waits/syncs.
   public func stop(
     completion: @escaping ([String: Any]) -> Void = { _ in }
   ) {
@@ -866,19 +1137,19 @@ public final class PwVioSlamFeeder {
     stopCompletions.append(completion)
     transitionLocked(to: .stopping)
     admissionGate.beginRejecting(generation: sessionGeneration)
-    rejectPendingOnStopLocked()
     let epoch = sessionGeneration
-    let shouldSchedule = !drainScheduled
-    if shouldSchedule { drainScheduled = true }
     lock.unlock()
-    if shouldSchedule {
-      coreQueue.async { [weak self] in self?.drain(epoch: epoch) }
-    }
+    closeIngressForStop(generation: epoch)
   }
 
   public var isRunning: Bool {
     lock.lock(); defer { lock.unlock() }
     return state == .running && created
+  }
+
+  public var runningGeneration: Int? {
+    lock.lock(); defer { lock.unlock() }
+    return state == .running && created ? sessionGeneration : nil
   }
 
   /// Freezes the running facts only for the exact Create completion epoch.
@@ -963,22 +1234,77 @@ public final class PwVioSlamFeeder {
     rejectSensorLocked(stream: stream, reason: sensorReason)
   }
 
-  /// Nonblocking bounded admission. A callback that cannot acquire the short
-  /// ledger lock or fit inside either hard capacity returns immediately and
-  /// invalidates the shadow run; it never paces production capture.
+  private func rejectPreparedImage(
+    reason: SensorRejectionReason,
+    overflow: Bool = false
+  ) {
+    lock.lock()
+    imageFacts.offer()
+    imageFacts.reject(reason)
+    if overflow { overflowBase += 1 }
+    invalidateRunLocked(reason: reason.rawValue)
+    lock.unlock()
+  }
+
+  private func recordCameraCapacityRejection(
+    _ reason: CameraCapacityRejection,
+    generation: UInt32
+  ) {
+    let aggregateRecorded = cameraIngressCapacityRejections.increment(
+      generation: generation
+    )
+    let reasonRecorded: Bool
+    switch reason {
+    case .fullFrame:
+      reasonRecorded = cameraFullFrameCapacityRejections.increment(
+        generation: generation
+      )
+    case .workRing:
+      reasonRecorded = cameraWorkRingCapacityRejections.increment(
+        generation: generation
+      )
+    case .grayPool:
+      reasonRecorded = cameraGrayPoolCapacityRejections.increment(
+        generation: generation
+      )
+    }
+    if !aggregateRecorded || !reasonRecorded {
+      outOfSessionImageOffers.increment()
+    }
+  }
+
+  private func recordImuWorkCapacityRejection(
+    stream: SensorStream,
+    generation: UInt32
+  ) {
+    let recorded: Bool
+    switch stream {
+    case .acceleration:
+      recorded = accelerationWorkCapacityRejections.increment(
+        generation: generation
+      )
+    case .gyroscope:
+      recorded = gyroscopeWorkCapacityRejections.increment(
+        generation: generation
+      )
+    case .image:
+      recorded = false
+    }
+    if !recorded { noteOutOfSessionOffer(stream: stream) }
+  }
+
+  /// Loss-intolerant bounded admission. Camera and IMU producers already run
+  /// on PwVioSensorIngress's one serial queue, so lock contention is not an
+  /// input-rejection policy. The lock only publishes the ring mutation to the
+  /// core consumer/snapshot reader; capacity remains explicit and bounded.
   private func admit(
     _ unscopedWork: PendingWork,
-    lease: AdmissionGate.Entry
+    generation offeredGeneration: UInt32
   ) -> Bool {
-    guard lock.try() else {
-      noteLockContention(
-        stream: unscopedWork.stream,
-        generation: lease.generation
-      )
-      return false
-    }
+    lock.lock()
     offerSensorLocked(stream: unscopedWork.stream)
-    guard state == .running && created else {
+    guard (state == .running || (state == .stopping && !ingressClosed)),
+          created else {
       rejectUnadmittedLocked(
         stream: unscopedWork.stream,
         reason: .notRunning
@@ -987,7 +1313,7 @@ public final class PwVioSlamFeeder {
       return false
     }
     let generation = UInt32(truncatingIfNeeded: sessionGeneration)
-    guard lease.generation == generation else {
+    guard offeredGeneration == generation else {
       rejectUnadmittedLocked(
         stream: unscopedWork.stream,
         reason: .staleEpoch
@@ -995,6 +1321,11 @@ public final class PwVioSlamFeeder {
       lock.unlock()
       return false
     }
+    // `ingressSequence` is immutable offer evidence, not a scheduling key.
+    // Camera permits are issued in ARKit's callback before their closure is
+    // appended to PwVioSensorIngress; an already-queued IMU operation can thus
+    // legitimately be admitted first with a numerically later offer sequence.
+    // The shared serial ingress queue is the sole work-order authority.
     let epoch = sessionGeneration
     let work: PendingWork
     switch unscopedWork {
@@ -1045,33 +1376,49 @@ public final class PwVioSlamFeeder {
 
   // MARK: - 喂帧
 
-  /// ARKit hot path: retain at most one bounded pixel-buffer reference and
-  /// return. No downsample, native call, wait, or synchronous dispatch occurs.
-  @discardableResult
-  public func enqueue(frame: ARFrame) -> Bool {
+  /// O(1) production-callback boundary. Before retaining the pixel buffer this
+  /// atomically reserves the generation lease, full-frame carrier, shared FIFO
+  /// work slot, and gray-pool slot. The caller may move only the returned permit
+  /// across a queue; a rejected offer never creates an escaping ARFrame closure.
+  public func tryOfferFrame(frame: ARFrame) -> FrameIngressPermit? {
+    guard frame.timestamp.isFinite else {
+      outOfSessionImageOffers.increment()
+      return nil
+    }
     guard let lease = admissionGate.enter() else {
       outOfSessionImageOffers.increment()
-      return false
+      return nil
     }
-    defer { admissionGate.leave(lease) }
-    guard lease.phase == .open else {
-      if !imageStopRejections.increment(generation: lease.generation) {
-        outOfSessionImageOffers.increment()
-      }
-      return false
+    guard cameraIngressLimiter.tryAcquire() else {
+      recordCameraCapacityRejection(.fullFrame, generation: lease.generation)
+      admissionGate.leave(lease)
+      return nil
     }
-    let requestedCameraHz = lastStartRequest?.requestedCameraHz ?? 0
-    guard requestedCameraHz.isFinite, requestedCameraHz > 0 else {
-      return false
+    guard workSlotLimiter.tryAcquire() else {
+      recordCameraCapacityRejection(.workRing, generation: lease.generation)
+      cameraIngressLimiter.release()
+      admissionGate.leave(lease)
+      return nil
     }
-    let cameraPeriod = 1.0 / requestedCameraHz
-    if lastAdmittedCameraGeneration == lease.generation,
-       frame.timestamp - lastAdmittedCameraTimestamp < cameraPeriod {
-      cameraRateSampledOut += 1
-      return false
+    guard let grayReservation = grayFramePool.tryAcquire() else {
+      recordCameraCapacityRejection(.grayPool, generation: lease.generation)
+      workSlotLimiter.release()
+      cameraIngressLimiter.release()
+      admissionGate.leave(lease)
+      return nil
     }
-    lastAdmittedCameraGeneration = lease.generation
-    lastAdmittedCameraTimestamp = frame.timestamp
+    guard let sequence = ingressSequence.incrementAndValue(
+      generation: lease.generation
+    ) else {
+      grayFramePool.release(grayReservation.slot)
+      workSlotLimiter.release()
+      cameraIngressLimiter.release()
+      admissionGate.leave(lease)
+      outOfSessionImageOffers.increment()
+      return nil
+    }
+    let pixelBuffer = frame.capturedImage
+    let cameraTransform = frame.camera.transform
     let tracking: (state: String, reason: String)
     switch frame.camera.trackingState {
     case .normal:
@@ -1091,15 +1438,142 @@ public final class PwVioSlamFeeder {
     @unknown default:
       tracking = ("unknown", "unknown")
     }
-    let pending = PendingFrame(
-      pixelBuffer: frame.capturedImage,
+    let gate = admissionGate
+    let cameraLimiter = cameraIngressLimiter
+    let workLimiter = workSlotLimiter
+    let grayPool = grayFramePool
+    let completed = ingressCompleted
+    let abandoned = abandonedCameraIngress
+    return FrameIngressPermit(
+      generation: lease.generation,
+      sequence: sequence,
       timestamp: frame.timestamp,
-      arkitWorldFromCamera: frame.camera.transform,
+      pixelBuffer: pixelBuffer,
+      cameraTransform: cameraTransform,
       referenceTrackingState: tracking.state,
       referenceTrackingReason: tracking.reason,
+      graySlot: grayReservation.slot,
+      grayBuffer: grayReservation.buffer
+    ) { wasAbandoned, reservationsTransferred in
+      if wasAbandoned {
+        _ = abandoned.increment(generation: lease.generation)
+      }
+      if !reservationsTransferred {
+        grayPool.release(grayReservation.slot)
+        workLimiter.release()
+      }
+      _ = completed.increment(generation: lease.generation)
+      cameraLimiter.release()
+      gate.leave(lease)
+    }
+  }
+
+  /// Compatibility for non-production callers. Production ARKit must acquire
+  /// the permit before it creates its escaping closure and call `consume`.
+  @discardableResult
+  public func enqueue(frame: ARFrame) -> Bool {
+    guard let permit = tryOfferFrame(frame: frame) else {
+      return false
+    }
+    return consume(permit: permit)
+  }
+
+  /// Shadow-ingress work. This may copy/downsample, so it belongs only on
+  /// PwVioSensorIngress after production has already returned from its callback.
+  @discardableResult
+  public func consume(permit: FrameIngressPermit) -> Bool {
+    guard permit.claim() else { return false }
+    var reservationsTransferred = false
+    defer {
+      permit.finish(
+        reservationsTransferred: reservationsTransferred
+      )
+    }
+    let generation = UInt32(truncatingIfNeeded: permit.generation)
+    guard permit.timestamp.isFinite else {
+      rejectPreparedImage(reason: .invalidInput)
+      return false
+    }
+
+    let factor: Int
+    lock.lock()
+    guard UInt32(truncatingIfNeeded: sessionGeneration) == generation,
+          (state == .running || (state == .stopping && !ingressClosed)),
+          created,
+          let request = lastStartRequest,
+          request.downsampleFormula == Self.downsampleFormulaBoxNxnHalfUpV1,
+          request.downsampleFactor > 0 else {
+      lock.unlock()
+      rejectPreparedImage(reason: .staleEpoch)
+      return false
+    }
+    factor = request.downsampleFactor
+    lock.unlock()
+
+    let pixelBuffer = permit.pixelBuffer
+    guard CVPixelBufferGetPlaneCount(pixelBuffer) >= 1 else {
+      rejectPreparedImage(reason: .invalidInput)
+      return false
+    }
+    let pixelLockStatus = CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+    guard pixelLockStatus == kCVReturnSuccess else {
+      rejectPreparedImage(reason: .invalidInput)
+      return false
+    }
+    defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+    guard let source = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0) else {
+      rejectPreparedImage(reason: .invalidInput)
+      return false
+    }
+    let sourceWidth = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
+    let sourceHeight = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
+    let sourceStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
+    var outputWidth: Int32 = 0
+    var outputHeight: Int32 = 0
+    let prepareRc = PWXrslamTransportPrepareGrayBoxNxN(
+      source.assumingMemoryBound(to: UInt8.self),
+      Int32(sourceWidth),
+      Int32(sourceHeight),
+      Int32(sourceStride),
+      Int32(factor),
+      permit.grayBuffer,
+      Int32(Self.grayFrameBytes),
+      &outputWidth,
+      &outputHeight
+    )
+    guard prepareRc == 0,
+          outputWidth == Int32(Self.grayWidth),
+          outputHeight == Int32(Self.grayHeight) else {
+      rejectPreparedImage(reason: .invalidInput)
+      return false
+    }
+    let pending = PendingFrame(
+      graySlot: permit.graySlot,
+      grayBuffer: permit.grayBuffer,
+      grayWidth: Int(outputWidth),
+      grayHeight: Int(outputHeight),
+      grayStride: Int(outputWidth),
+      timestamp: permit.timestamp,
+      ingressSequence: permit.sequence,
+      arkitWorldFromCamera: permit.cameraTransform,
+      referenceTrackingState: permit.referenceTrackingState,
+      referenceTrackingReason: permit.referenceTrackingReason,
       enqueuedAt: CACurrentMediaTime()
     )
-    return admit(.image(pending, epoch: 0), lease: lease)
+    let admitted = admit(
+      .image(pending, epoch: 0),
+      generation: generation
+    )
+    reservationsTransferred = admitted
+    if admitted { publishVioShape(width: Int(outputWidth), height: Int(outputHeight)) }
+    return admitted
+  }
+
+  private func publishVioShape(width: Int, height: Int) {
+    lock.lock()
+    vioWidth = width
+    vioHeight = height
+    lock.unlock()
   }
 
   private func processFrameOnCore(
@@ -1108,6 +1582,7 @@ public final class PwVioSlamFeeder {
     downsampleFactor: Int,
     downsampleFormula: String
   ) -> ProcessingOutcome {
+    defer { grayFramePool.release(pending.graySlot) }
     let workerStartedAt = CACurrentMediaTime()
     defer {
       let workerMs = (CACurrentMediaTime() - workerStartedAt) * 1000.0
@@ -1125,39 +1600,11 @@ public final class PwVioSlamFeeder {
       lock.lock(); imageFacts.reject(.invalidInput); lock.unlock()
       return .invalidInput
     }
-    let pb = pending.pixelBuffer
-    guard CVPixelBufferGetPlaneCount(pb) >= 1 else {
-      lock.lock(); imageFacts.reject(.invalidInput); lock.unlock()
-      return .invalidInput
-    }
-
-    let pixelLockStatus = CVPixelBufferLockBaseAddress(pb, .readOnly)
-    guard pixelLockStatus == kCVReturnSuccess else {
-      lock.lock(); imageFacts.reject(.invalidInput); lock.unlock()
-      return .invalidInput
-    }
-    defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
-    guard let base = CVPixelBufferGetBaseAddressOfPlane(pb, 0) else {
-      lock.lock(); imageFacts.reject(.invalidInput); lock.unlock()
-      return .invalidInput
-    }
-
-    let w = CVPixelBufferGetWidthOfPlane(pb, 0)
-    let h = CVPixelBufferGetHeightOfPlane(pb, 0)
-    let stride = CVPixelBufferGetBytesPerRowOfPlane(pb, 0)
-
-    // 降采样。失败(尺寸不是倍数的整数倍)就**拒绝这一帧并计数**,
-    // 不退回全分辨率 —— 那正是撑崩 App 的那条路。
-    let srcPtr = base.assumingMemoryBound(to: UInt8.self)
-    guard let (small, sw, _) =
-            downsampleBox(
-              src: srcPtr,
-              srcW: w,
-              srcH: h,
-              srcStride: stride,
-              downsampleFactor: downsampleFactor,
-              downsampleFormula: downsampleFormula
-            ) else {
+    guard downsampleFormula == Self.downsampleFormulaBoxNxnHalfUpV1,
+          downsampleFactor > 0,
+          pending.grayWidth == Self.grayWidth,
+          pending.grayHeight == Self.grayHeight,
+          pending.grayStride == Self.grayWidth else {
       lock.lock(); imageFacts.reject(.invalidInput); lock.unlock()
       return .invalidInput
     }
@@ -1166,9 +1613,9 @@ public final class PwVioSlamFeeder {
     var rawPose = PWXrslamRawPose()
     let t0 = CACurrentMediaTime()
     let rc = PWXrslamTransportPushCameraAndRunRaw(
-      small,
+      pending.grayBuffer,
       pending.timestamp,
-      Int32(sw),
+      Int32(pending.grayStride),
       0,
       1,
       &rawState,
@@ -1211,48 +1658,100 @@ public final class PwVioSlamFeeder {
   /// 运输一个原始加速度计样本。此处只拷贝 G 单位原值;
   /// Dart 选择的单位/符号换算在 serial coreQueue 上执行。
   @discardableResult
-  public func enqueue(acceleration sample: CMAccelerometerData) -> Bool {
-    guard let lease = admissionGate.enter() else {
+  public func enqueue(
+    acceleration sample: CMAccelerometerData,
+    expectedGeneration: Int? = nil
+  ) -> Bool {
+    guard let lease = admissionGate.enter(
+      expectedGeneration: expectedGeneration
+    ) else {
       outOfSessionAccelerationOffers.increment()
       return false
     }
-    defer { admissionGate.leave(lease) }
-    guard lease.phase == .open else {
-      if !accelerationStopRejections.increment(generation: lease.generation) {
-        outOfSessionAccelerationOffers.increment()
-      }
+    guard workSlotLimiter.tryAcquire() else {
+      recordImuWorkCapacityRejection(
+        stream: .acceleration,
+        generation: lease.generation
+      )
+      admissionGate.leave(lease)
       return false
+    }
+    guard let sequence = ingressSequence.incrementAndValue(
+      generation: lease.generation
+    ) else {
+      workSlotLimiter.release()
+      admissionGate.leave(lease)
+      outOfSessionAccelerationOffers.increment()
+      return false
+    }
+    var reservationsTransferred = false
+    defer {
+      if !reservationsTransferred { workSlotLimiter.release() }
+      _ = ingressCompleted.increment(generation: lease.generation)
+      admissionGate.leave(lease)
     }
     let pending = PendingAcceleration(
       timestamp: sample.timestamp,
+      ingressSequence: sequence,
       x: sample.acceleration.x,
       y: sample.acceleration.y,
       z: sample.acceleration.z
     )
-    return admit(.acceleration(pending, epoch: 0), lease: lease)
+    let admitted = admit(
+      .acceleration(pending, epoch: 0),
+      generation: lease.generation
+    )
+    reservationsTransferred = admitted
+    return admitted
   }
 
   /// 运输一个原始陀螺仪样本,rad/s 原值不改。
   @discardableResult
-  public func enqueue(gyroscope sample: CMGyroData) -> Bool {
-    guard let lease = admissionGate.enter() else {
+  public func enqueue(
+    gyroscope sample: CMGyroData,
+    expectedGeneration: Int? = nil
+  ) -> Bool {
+    guard let lease = admissionGate.enter(
+      expectedGeneration: expectedGeneration
+    ) else {
       outOfSessionGyroscopeOffers.increment()
       return false
     }
-    defer { admissionGate.leave(lease) }
-    guard lease.phase == .open else {
-      if !gyroscopeStopRejections.increment(generation: lease.generation) {
-        outOfSessionGyroscopeOffers.increment()
-      }
+    guard workSlotLimiter.tryAcquire() else {
+      recordImuWorkCapacityRejection(
+        stream: .gyroscope,
+        generation: lease.generation
+      )
+      admissionGate.leave(lease)
       return false
+    }
+    guard let sequence = ingressSequence.incrementAndValue(
+      generation: lease.generation
+    ) else {
+      workSlotLimiter.release()
+      admissionGate.leave(lease)
+      outOfSessionGyroscopeOffers.increment()
+      return false
+    }
+    var reservationsTransferred = false
+    defer {
+      if !reservationsTransferred { workSlotLimiter.release() }
+      _ = ingressCompleted.increment(generation: lease.generation)
+      admissionGate.leave(lease)
     }
     let pending = PendingGyroscope(
       timestamp: sample.timestamp,
+      ingressSequence: sequence,
       x: sample.rotationRate.x,
       y: sample.rotationRate.y,
       z: sample.rotationRate.z
     )
-    return admit(.gyroscope(pending, epoch: 0), lease: lease)
+    let admitted = admit(
+      .gyroscope(pending, epoch: 0),
+      generation: lease.generation
+    )
+    reservationsTransferred = admitted
+    return admitted
   }
 
   private func processAccelerationOnCore(
@@ -1339,8 +1838,14 @@ public final class PwVioSlamFeeder {
         pendingHead = 0
         pendingTail = 0
         if state == .stopping {
+          guard ingressClosed else {
+            drainScheduled = false
+            cachedSnapshot = makeCoreSnapshotLocked()
+            lock.unlock()
+            return
+          }
           lock.unlock()
-          finishStopOnCoreQueue()
+          finishSealedStopOnCoreQueue(generation: epoch)
           return
         }
         drainScheduled = false
@@ -1357,6 +1862,7 @@ public final class PwVioSlamFeeder {
         invalidateRunLocked(reason: "internal_empty_queue_slot")
         cachedSnapshot = makeCoreSnapshotLocked()
         lock.unlock()
+        workSlotLimiter.release()
         continue
       }
       pendingWork[pendingHead] = nil
@@ -1370,18 +1876,23 @@ public final class PwVioSlamFeeder {
 
       let selectedStartRequest = lastStartRequest
       let current = item.epoch == epoch &&
-        item.epoch == sessionGeneration && state == .running && created &&
+        item.epoch == sessionGeneration &&
+        (state == .running || state == .stopping) && created &&
         selectedStartRequest != nil
       lock.unlock()
 
       guard current,
             let selectedStartRequest = selectedStartRequest else {
         let staleStream = item.stream
-        // Release any CVPixelBuffer before publishing inFlightImageCount=0.
-        // The logical ceiling and the actual ARC strong-reference ceiling are
-        // therefore the same hard bound.
+        if case .image(let staleFrame, _) = item {
+          grayFramePool.release(staleFrame.graySlot)
+        }
+        // Release the copied gray slot before publishing inFlightImageCount=0.
         item = .gyroscope(
-          PendingGyroscope(timestamp: 0, x: 0, y: 0, z: 0),
+          PendingGyroscope(
+            timestamp: 0, ingressSequence: item.ingressSequence,
+            x: 0, y: 0, z: 0
+          ),
           epoch: item.epoch
         )
         lock.lock()
@@ -1393,6 +1904,7 @@ public final class PwVioSlamFeeder {
         inFlightImageCount = 0
         cachedSnapshot = makeCoreSnapshotLocked()
         lock.unlock()
+        workSlotLimiter.release()
         continue
       }
 
@@ -1417,7 +1929,10 @@ public final class PwVioSlamFeeder {
       // Drop the local PendingFrame (and its CVPixelBuffer) before admission
       // can observe an empty in-flight slot.
       item = .gyroscope(
-        PendingGyroscope(timestamp: 0, x: 0, y: 0, z: 0),
+        PendingGyroscope(
+          timestamp: 0, ingressSequence: item.ingressSequence,
+          x: 0, y: 0, z: 0
+        ),
         epoch: item.epoch
       )
 
@@ -1448,27 +1963,54 @@ public final class PwVioSlamFeeder {
       )
       cachedSnapshot = makeCoreSnapshotLocked()
       lock.unlock()
+      workSlotLimiter.release()
     }
   }
 
-  private func finishStopOnCoreQueue() {
-    lock.lock()
-    let generation = sessionGeneration
-    lock.unlock()
+  /// The close marker is armed after producer admission flips to rejecting.
+  /// Its completion means every already-issued permit has either been consumed
+  /// or abandoned. Only then may coreQueue observe the terminal boundary.
+  private func closeIngressForStop(generation: Int) {
     admissionGate.sealWhenQuiescent(generation: generation) { [weak self] in
       guard let self else { return }
       self.coreQueue.async { [weak self] in
-        self?.finishSealedStopOnCoreQueue(generation: generation)
+        guard let self else { return }
+        self.lock.lock()
+        guard self.sessionGeneration == generation,
+              self.state == .stopping else {
+          self.lock.unlock()
+          return
+        }
+        self.ingressClosed = true
+        self.terminalIngressSequence = UInt64(
+          self.ingressSequence.value(generation: generation) ?? 0
+        )
+        self.terminalIngressCompleted = UInt64(
+          self.ingressCompleted.value(generation: generation) ?? 0
+        )
+        self.drainScheduled = true
+        self.lock.unlock()
+        self.drain(epoch: generation)
       }
     }
   }
 
   private func finishSealedStopOnCoreQueue(generation: Int) {
     lock.lock()
-    guard sessionGeneration == generation, state == .stopping else {
+    guard sessionGeneration == generation, state == .stopping,
+          ingressClosed else {
       lock.unlock()
       return
     }
+    let terminalReservationsReleased =
+      terminalIngressSequence == terminalIngressCompleted &&
+      cameraIngressLimiter.value == 0 &&
+      workSlotLimiter.value == 0 &&
+      grayFramePool.activeCount == 0
+    if !terminalReservationsReleased {
+      invalidateRunLocked(reason: "ingress_close_incomplete")
+    }
+    assert(terminalReservationsReleased)
     let shouldDestroy = created
     lock.unlock()
     var destroyReceipt = PWXrslamDestroyReceipt()
@@ -1486,6 +2028,7 @@ public final class PwVioSlamFeeder {
     var terminalReceipt: [String: Any] = [:]
     lock.lock()
     nativeDestroyReceipt = [
+      "receiptAvailable": shouldDestroy,
       "nativeDestroyRc": Int(destroyRc),
       "nativeDestroyAcknowledged": Int(
         destroyReceipt.destroy_acknowledged
@@ -1504,6 +2047,21 @@ public final class PwVioSlamFeeder {
     if shouldDestroy &&
        (destroyRc != 0 || destroyReceipt.destroy_acknowledged != 1) {
       invalidateRunLocked(reason: "native_destroy_unacknowledged")
+    }
+    if shouldDestroy &&
+       (nativeStartLifecycleGeneration == 0 ||
+        destroyReceipt.lifecycle_generation != nativeStartLifecycleGeneration) {
+      invalidateRunLocked(reason: "native_lifecycle_generation_mismatch")
+    }
+    if shouldDestroy &&
+       (destroyReceipt.camera_submitted != UInt64(imageFacts.submitted) ||
+        destroyReceipt.camera_run_calls != UInt64(runCalls) ||
+        destroyReceipt.acceleration_submitted != UInt64(accFacts.submitted) ||
+        destroyReceipt.gyroscope_submitted != UInt64(gyroFacts.submitted)) {
+      invalidateRunLocked(reason: "native_counter_mismatch")
+    }
+    if !terminalReservationsReleased {
+      invalidateRunLocked(reason: "ingress_close_incomplete")
     }
     sealedImageLockContention = imageLockContention.seal(
       generation: generation
@@ -1527,16 +2085,8 @@ public final class PwVioSlamFeeder {
     inFlightCount = 0
     inFlightImageCount = 0
     drainScheduled = false
-    // This executes on coreQueue after every in-flight native call. No later
-    // observation from the stopped epoch can append after this terminal clear.
-    poseObservationsDropped += poseObservations.count
-    poseObservations.removeAll(keepingCapacity: true)
-    if scratchCapacity > 0 {
-      scratch?.update(repeating: 0, count: scratchCapacity)
-    }
-    scratch?.deallocate()
-    scratch = nil
-    scratchCapacity = 0
+    // This executes on coreQueue after every admitted native call. Freeze all
+    // unpolled poses into the terminal receipt before clearing their ring.
     vioWidth = 0
     vioHeight = 0
     if state != .stopped { transitionLocked(to: .stopped) }
@@ -1555,7 +2105,8 @@ public final class PwVioSlamFeeder {
         terminalRejected
     )
     // Freeze the old generation before a queued restart resets any field.
-    terminalReceipt = makeWireSnapshotLocked(includeRaw: false)
+    terminalReceipt = makeWireSnapshotLocked(includeRaw: true)
+    poseObservations.removeAll()
     if pendingRestart == nil { lastStartRequest = nil }
     if let pendingRestart {
       restartRequest = pendingRestart
@@ -1589,16 +2140,31 @@ public final class PwVioSlamFeeder {
     lock.lock()
     let frameSequence = runCalls
     lock.unlock()
+    var counters = PWXrslamTransportCounters()
+    let countersRc = PWXrslamTransportGetCounters(&counters)
+    let countersAvailable = countersRc == 0
+    let submittedImuSamples = countersAvailable
+      ? Int(counters.acceleration_submitted + counters.gyroscope_submitted)
+      : 0
     let wire: [String: Any] = [
-      "healthOverall": 0,
       "slamState": Int(rawState),
       "lastFrameMs": frameMs,
-      "coreHealthAvailable": 0,
+      "coreHealthAvailable": countersAvailable,
+      "coreHealthSource": "transport_core_counters",
+      "coreLifecycleGeneration": Int(counters.lifecycle_generation),
+      "coreImuSamples": submittedImuSamples,
+      "coreCameraSubmitted": Int(counters.camera_submitted),
+      "coreCameraRunCalls": Int(counters.camera_run_calls),
+      "coreAccelerationSubmitted": Int(counters.acceleration_submitted),
+      "coreGyroscopeSubmitted": Int(counters.gyroscope_submitted),
+      "coreRejectedInvalidArgument": Int(counters.rejected_invalid_argument),
+      "coreRejectedNonMonotonic": Int(counters.rejected_non_monotonic),
+      "coreRejectedNotRunning": Int(counters.rejected_not_running),
       "officialStateAvailable": 1,
       "coreFrameSeq": frameSequence,
     ]
     lock.lock()
-    lastHealthRc = 0
+    lastHealthRc = countersRc
     cachedHealth = wire
     lock.unlock()
   }
@@ -1671,7 +2237,7 @@ public final class PwVioSlamFeeder {
 
     lock.lock()
     poseObservationsOffered += 1
-    guard state == .running,
+    guard (state == .running || state == .stopping),
           UInt32(truncatingIfNeeded: sessionGeneration) == generation else {
       poseObservationsDropped += 1
       lock.unlock()
@@ -1679,7 +2245,12 @@ public final class PwVioSlamFeeder {
     }
     poseObservationSequence += 1
     observation["seq"] = poseObservationSequence
-    poseObservations.append(observation)
+    guard poseObservations.append(observation) else {
+      poseObservationsDropped += 1
+      invalidateRunLocked(reason: "pose_observation_full")
+      lock.unlock()
+      return
+    }
     lock.unlock()
   }
 
@@ -1713,7 +2284,9 @@ public final class PwVioSlamFeeder {
       "epoch": sessionGeneration,
       "queueCapacity": Self.maxQueuedWork,
       "cameraCapacity": Self.maxRetainedImages,
-      "poseObservationCapacity": "loss-intolerant-dynamic",
+      "fullFrameIngressCapacity": Self.maxOutstandingCameraIngress,
+      "cameraAdmissionPolicy": "bounded-permit-no-cadence-sampling",
+      "poseObservationCapacity": Self.maxPoseObservations,
       "dropPolicy": "invalidate-on-overflow",
       "appVersion": stampedInfo("CFBundleShortVersionString"),
       "appBuild": stampedInfo("CFBundleVersion"),
@@ -1729,6 +2302,9 @@ public final class PwVioSlamFeeder {
       "xrslamBuildPatchSha256": stampedInfo("PWXrslamBuildPatchSHA256"),
       "xrslamDestroyLifecyclePatchSha256": stampedInfo(
         "PWXrslamDestroyLifecyclePatchSHA256"
+      ),
+      "xrslamZeroInlierMaskPatchSha256": stampedInfo(
+        "PWXrslamZeroInlierMaskPatchSHA256"
       ),
       "xrslamAlgorithmBranch": stampedInfo("PWXrslamAlgorithmBranch"),
       "xrslamIosEnabled": stampedInfo("PWXrslamIosEnabled"),
@@ -1766,6 +2342,7 @@ public final class PwVioSlamFeeder {
       "xrslamSha256": stampedInfo("PWXrslamSHA256"),
       "running": state == .running && created,
       "sessionGeneration": sessionGeneration,
+      "nativeStartLifecycleGeneration": nativeStartLifecycleGeneration,
       "state": state.rawValue,
       "runCalls": runCalls,
       "lastImageRc": Int(lastImageRc),
@@ -1794,7 +2371,6 @@ public final class PwVioSlamFeeder {
       "healthRc": Int(lastHealthRc),
       "poseObservationsOffered": poseObservationsOffered,
       "poseObservationsDropped": poseObservationsDropped,
-      "cameraRateSampledOut": cameraRateSampledOut,
     ]
     for (key, value) in cachedHealth { out[key] = value }
     return out
@@ -1831,17 +2407,25 @@ public final class PwVioSlamFeeder {
       gyroscopeStopRejections,
       sealed: sealedGyroscopeStopRejections
     )
+    let accelerationWorkFull = accelerationWorkCapacityRejections.value(
+      generation: sessionGeneration
+    ) ?? 0
+    let gyroscopeWorkFull = gyroscopeWorkCapacityRejections.value(
+      generation: sessionGeneration
+    ) ?? 0
     let images = imageFacts.wire(
       lockContention: imageLock,
       stopRejections: imageStop
     )
     let acc = accFacts.wire(
       lockContention: accelerationLock,
-      stopRejections: accelerationStop
+      stopRejections: accelerationStop,
+      queueFullRejections: accelerationWorkFull
     )
     let gyro = gyroFacts.wire(
       lockContention: gyroscopeLock,
-      stopRejections: gyroscopeStop
+      stopRejections: gyroscopeStop,
+      queueFullRejections: gyroscopeWorkFull
     )
     var invalidationReasons = runInvalidationReasons
     let lockContentionTotal = imageLock + accelerationLock + gyroscopeLock
@@ -1858,8 +2442,39 @@ public final class PwVioSlamFeeder {
         default: 0
       ] += lateAfterSealTotal
     }
+    let imuWorkFull = accelerationWorkFull + gyroscopeWorkFull
+    if imuWorkFull > 0 {
+      invalidationReasons[
+        SensorRejectionReason.queueFull.rawValue,
+        default: 0
+      ] += imuWorkFull
+    }
+    let cameraIngressFull = cameraIngressCapacityRejections.value(
+      generation: sessionGeneration
+    ) ?? 0
+    let cameraFullFrame = cameraFullFrameCapacityRejections.value(
+      generation: sessionGeneration
+    ) ?? 0
+    let cameraWorkRing = cameraWorkRingCapacityRejections.value(
+      generation: sessionGeneration
+    ) ?? 0
+    let cameraGrayPool = cameraGrayPoolCapacityRejections.value(
+      generation: sessionGeneration
+    ) ?? 0
+    let cameraIngressAbandoned = abandonedCameraIngress.value(
+      generation: sessionGeneration
+    ) ?? 0
+    if cameraIngressFull > 0 {
+      invalidationReasons["camera_ingress_full", default: 0] += cameraIngressFull
+    }
+    if cameraIngressAbandoned > 0 {
+      invalidationReasons["camera_ingress_abandoned", default: 0] +=
+        cameraIngressAbandoned
+    }
     let transportValid = !shadowRunInvalidated &&
-      lockContentionTotal == 0 && lateAfterSealTotal == 0
+      lockContentionTotal == 0 && lateAfterSealTotal == 0 &&
+      imuWorkFull == 0 && cameraIngressFull == 0 &&
+      cameraIngressAbandoned == 0
     out["identity"] = runIdentityLocked()
     for (key, value) in nativeDestroyReceipt { out[key] = value }
     out["queueAdmitted"] = queueAccepted
@@ -1876,16 +2491,41 @@ public final class PwVioSlamFeeder {
     out["transportValid"] = transportValid
     out["shadowRunInvalidated"] = !transportValid
     out["runInvalidationReasons"] = invalidationReasons
+    let currentIngressSequence = UInt64(
+      ingressSequence.value(generation: sessionGeneration) ?? 0
+    )
+    let currentIngressCompleted = UInt64(
+      ingressCompleted.value(generation: sessionGeneration) ?? 0
+    )
+    out["ingressClosed"] = ingressClosed
+    out["ingressOffered"] = state == .stopped
+      ? terminalIngressSequence : currentIngressSequence
+    out["ingressCompleted"] = state == .stopped
+      ? terminalIngressCompleted : currentIngressCompleted
+    out["terminalIngressSequence"] = terminalIngressSequence
+    out["outstandingCameraIngress"] = cameraIngressLimiter.value
+    out["outstandingWorkReservations"] = workSlotLimiter.value
+    out["reservedGrayFrameSlots"] = grayFramePool.activeCount
+    out["cameraIngressCapacityRejections"] = cameraIngressFull
+    out["cameraIngressCapacityReasons"] = [
+      "full_frame": cameraFullFrame,
+      "work_ring": cameraWorkRing,
+      "gray_pool": cameraGrayPool,
+    ]
+    out["abandonedCameraIngress"] = cameraIngressAbandoned
     out["workConserved"] = queueAccepted == queueProcessedSuccess +
       droppedOnStop + terminalRejected + pendingCount + inFlightCount
     out["terminalReceiptComplete"] = state == .stopped &&
+      ingressClosed && terminalIngressSequence == terminalIngressCompleted &&
+      cameraIngressLimiter.value == 0 &&
+      workSlotLimiter.value == 0 && grayFramePool.activeCount == 0 &&
       pendingCount == 0 && inFlightCount == 0 &&
       pendingImageCount == 0 && inFlightImageCount == 0
     out["shutdownDrops"] = shutdownDrops
     out["stateTransitions"] = stateTransitions
     out["poseObservationsOffered"] = poseObservationsOffered
     out["poseObservationsDropped"] = poseObservationsDropped
-    out["poseObservations"] = includeRaw ? poseObservations : []
+    out["poseObservations"] = includeRaw ? poseObservations.values() : []
     out["imagesAttempted"] = images.attempted
     out["imagesSubmitted"] = images.submitted
     out["imagesAccepted"] = images.submitted
@@ -1899,7 +2539,8 @@ public final class PwVioSlamFeeder {
     out["gyroAccepted"] = gyro.submitted
     out["gyroRejected"] = gyro.rejected
     out["acceptedCompatibilitySemantics"] = "submitted_to_void_c_api"
-    out["shadowOverflowDrops"] = overflowBase + lockContentionTotal
+    out["shadowOverflowDrops"] = overflowBase + lockContentionTotal +
+      imuWorkFull + cameraIngressFull
     out["outOfSessionImageOffers"] = outOfSessionImageOffers.value
     out["outOfSessionAccelerationOffers"] =
       outOfSessionAccelerationOffers.value
@@ -1926,7 +2567,7 @@ public final class PwVioSlamFeeder {
     let out = makeWireSnapshotLocked(includeRaw: true)
     // Deliver-and-clear: raw absolute poses exist only in this reply. Dart
     // consumes them in memory and persists aggregate status/residuals only.
-    poseObservations.removeAll(keepingCapacity: true)
+    poseObservations.removeAll()
     lock.unlock()
     return out
   }

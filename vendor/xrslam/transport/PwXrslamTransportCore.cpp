@@ -62,6 +62,21 @@ void FillDestroyReceipt(bool acknowledged, PWXrslamDestroyReceipt *receipt) {
   receipt->destroy_acknowledged = acknowledged ? 1 : 0;
 }
 
+void FillCounters(PWXrslamTransportCounters *counters) {
+  if (counters == nullptr)
+    return;
+  *counters = {};
+  counters->lifecycle_generation = g_lifecycle_generation;
+  counters->camera_submitted = g_counters.camera_submitted;
+  counters->camera_run_calls = g_counters.camera_run_calls;
+  counters->acceleration_submitted = g_counters.acceleration_submitted;
+  counters->gyroscope_submitted = g_counters.gyroscope_submitted;
+  counters->rejected_invalid_argument = g_counters.rejected_invalid_argument;
+  counters->rejected_non_monotonic = g_counters.rejected_non_monotonic;
+  counters->rejected_not_running = g_counters.rejected_not_running;
+  counters->running = g_running ? 1 : 0;
+}
+
 void RecordTrace(int32_t stream, int32_t status, double raw_timestamp,
                  double offset, double effective_timestamp) {
   StreamState &state = g_streams[stream];
@@ -276,6 +291,54 @@ PWXrslamTransportGetPoseMetadata(PWXrslamPoseMetadata *metadata) {
     return PW_XRSLAM_ERR_INVALID_ARGUMENT;
   metadata->transform_semantics = PW_XRSLAM_T_WORLD_CAMERA;
   metadata->quaternion_order = PW_XRSLAM_QUATERNION_XYZW;
+  return PW_XRSLAM_OK;
+}
+
+extern "C" int32_t
+PWXrslamTransportGetCounters(PWXrslamTransportCounters *counters) {
+  if (counters == nullptr)
+    return PW_XRSLAM_ERR_INVALID_ARGUMENT;
+  std::lock_guard<std::mutex> lock(g_core_mutex);
+  FillCounters(counters);
+  return PW_XRSLAM_OK;
+}
+
+extern "C" int32_t PWXrslamTransportPrepareGrayBoxNxN(
+    const uint8_t *source, int32_t source_width, int32_t source_height,
+    int32_t source_stride, int32_t factor, uint8_t *destination,
+    int32_t destination_capacity, int32_t *destination_width,
+    int32_t *destination_height) {
+  if (source == nullptr || destination == nullptr ||
+      destination_width == nullptr || destination_height == nullptr ||
+      source_width <= 0 || source_height <= 0 ||
+      source_stride < source_width || factor <= 0 ||
+      source_width % factor != 0 || source_height % factor != 0) {
+    return PW_XRSLAM_ERR_INVALID_ARGUMENT;
+  }
+  const int32_t output_width = source_width / factor;
+  const int32_t output_height = source_height / factor;
+  const int64_t output_size =
+      static_cast<int64_t>(output_width) * output_height;
+  if (output_size <= 0 || output_size > destination_capacity) {
+    return PW_XRSLAM_ERR_INVALID_ARGUMENT;
+  }
+  const int32_t area = factor * factor;
+  const int32_t half = area / 2;
+  for (int32_t y = 0; y < output_height; ++y) {
+    uint8_t *output_row = destination + y * output_width;
+    for (int32_t x = 0; x < output_width; ++x) {
+      int32_t sum = 0;
+      for (int32_t dy = 0; dy < factor; ++dy) {
+        const uint8_t *input = source +
+            (y * factor + dy) * source_stride + x * factor;
+        for (int32_t dx = 0; dx < factor; ++dx)
+          sum += input[dx];
+      }
+      output_row[x] = static_cast<uint8_t>((sum + half) / area);
+    }
+  }
+  *destination_width = output_width;
+  *destination_height = output_height;
   return PW_XRSLAM_OK;
 }
 

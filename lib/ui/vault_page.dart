@@ -48,6 +48,7 @@ import '../util/device_log.dart';
 import 'community/card_live_governor.dart';
 import 'community/reveal_gate.dart';
 import 'community/skeleton_shimmer.dart';
+import 'community/user_profile_page.dart';
 import 'community/work_card.dart';
 import 'community/work_detail_page.dart';
 import 'design_system.dart';
@@ -64,14 +65,6 @@ class _VaultPageState extends State<VaultPage> {
   final TextEditingController _searchController = TextEditingController();
   late Future<List<FeedWork>> _feed;
   String _query = '';
-
-  /// [D7 2026-08-23 用户签决] 流内"只看这个人的作品"过滤。
-  ///
-  /// **明确不做**:头像大图、简介、关注按钮、任何计数(粉丝/关注/作品数)。
-  /// 什么时候升级成真正的个人主页 —— **用信号不用时间**:出现 ≥3 个
-  /// 非创始人创作者、且各自作品 ≥3 件时再做。
-  String? _authorFilterId;
-  String? _authorFilterName;
 
   /// Feed 分页(offset 翻页)。此前只拉一次 limit:20 且没有加载更多,第 21
   /// 个作品对所有人永久不可见。_hasMore=false 表示服务端给不满一页了。
@@ -106,7 +99,6 @@ class _VaultPageState extends State<VaultPage> {
   void _onRevealChanged() {
     if (mounted) setState(() {});
   }
-
 
   @override
   void initState() {
@@ -183,9 +175,11 @@ class _VaultPageState extends State<VaultPage> {
     final path = work.modelStoragePath;
     if (path == null || path.isEmpty) return;
     final url = _service.modelUrlFor(path);
-    unawaited(GlbCache.instance.fetch(url).catchError((Object _) {
-      return Uint8List(0);
-    }));
+    unawaited(
+      GlbCache.instance.fetch(url).catchError((Object _) {
+        return Uint8List(0);
+      }),
+    );
   }
 
   Future<List<FeedWork>> _loadFeed() {
@@ -196,7 +190,6 @@ class _VaultPageState extends State<VaultPage> {
       // 标签砍掉后定死 recent。原默认 tab 是 discover,本就映射到 recent,
       // 所以这是**行为不变**的改法,不是换默认值。
       sortBy: FeedSort.recent,
-      authorUserId: _authorFilterId,
       query: _query.isEmpty ? null : _query,
     );
   }
@@ -226,7 +219,6 @@ class _VaultPageState extends State<VaultPage> {
         // 返回的每一条都有时间戳,这里的 null 兜底只是防御。
         offset: cursorAt == null ? current.length : 0,
         sortBy: FeedSort.recent,
-        authorUserId: _authorFilterId,
         query: _query.isEmpty ? null : _query,
         afterPublishedAt: cursorAt,
         afterId: cursorAt == null ? null : last!.id,
@@ -258,7 +250,6 @@ class _VaultPageState extends State<VaultPage> {
     await next;
   }
 
-
   // ignore: unused_element  —— [D2] 搜索代码按用户要求保留,只是不渲染。
   void _onQuerySubmitted(String value) {
     final trimmed = value.trim();
@@ -270,26 +261,15 @@ class _VaultPageState extends State<VaultPage> {
     });
   }
 
-  // ignore: unused_element  —— [D2] 搜索代码按用户要求保留,只是不渲染。
   void _onAuthorTap(FeedWork work) {
-    if (_authorFilterId == work.userId) return;
-    setState(() {
-      _authorFilterId = work.userId;
-      _authorFilterName = work.authorDisplayName;
-      _hasMore = true;
-      _feed = _loadFeed();
-    });
-    _resetFocus();
-  }
-
-  void _clearAuthorFilter() {
-    setState(() {
-      _authorFilterId = null;
-      _authorFilterName = null;
-      _hasMore = true;
-      _feed = _loadFeed();
-    });
-    _resetFocus();
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => UserProfilePage(
+          userId: work.userId,
+          seedWork: work,
+        ),
+      ),
+    );
   }
 
   // ignore: unused_element  —— [D2] 搜索代码按用户要求保留,只是不渲染。
@@ -337,22 +317,6 @@ class _VaultPageState extends State<VaultPage> {
                 //     onClear: _onClearQuery,
                 //   ),
                 // ),
-                // [D7] 作者过滤条 —— 只在过滤生效时占位,平时零高度。
-                // 它就是"只看这个人"这个状态的**唯一** UI:没有头像、没有简介、
-                // 没有关注、没有任何计数。
-                if (_authorFilterId != null)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(
-                      AetherSpacing.lg,
-                      AetherSpacing.md,
-                      AetherSpacing.lg,
-                      AetherSpacing.sm,
-                    ),
-                    child: _AuthorFilterBar(
-                      name: _authorFilterName ?? '',
-                      onClear: _clearAuthorFilter,
-                    ),
-                  ),
                 Expanded(
                   child: RefreshIndicator(
                     onRefresh: _refresh,
@@ -367,10 +331,7 @@ class _VaultPageState extends State<VaultPage> {
     );
   }
 
-  /// 主题卡只在**没有作者过滤**时出现 —— 「本周精选」是策展,
-  /// 在"只看某个人"的视图里没有意义。
-  bool get _showTopicCard =>
-      kShowCommunityTopicCard && _authorFilterId == null;
+  bool get _showTopicCard => kShowCommunityTopicCard;
 
   Widget _buildFeed() {
     return FutureBuilder<List<FeedWork>>(
@@ -386,7 +347,11 @@ class _VaultPageState extends State<VaultPage> {
         }
         if (snap.hasError) {
           return _ErrorState(
-            message: snap.error.toString(),
+            // Backend/auth implementation details (JWT, PostgREST codes) are
+            // diagnostics, not product copy. Transient future-issued JWTs are
+            // already retried by DataApiReadinessGate; persistent failures get
+            // one stable, actionable state here.
+            message: '内容暂时无法加载，请稍后重试',
             onRetry: _refresh,
           );
         }
@@ -554,9 +519,7 @@ class _SearchBar extends StatelessWidget {
               onTap: onClear,
               behavior: HitTestBehavior.opaque,
               child: const Padding(
-                padding: EdgeInsets.symmetric(
-                  horizontal: AetherSpacing.md,
-                ),
+                padding: EdgeInsets.symmetric(horizontal: AetherSpacing.md),
                 child: Icon(
                   Icons.close_rounded,
                   size: 18,
@@ -660,8 +623,11 @@ class _ErrorState extends StatelessWidget {
       physics: const AlwaysScrollableScrollPhysics(),
       children: [
         const SizedBox(height: 160),
-        const Icon(Icons.error_outline_rounded,
-            size: 48, color: AetherColors.danger),
+        const Icon(
+          Icons.error_outline_rounded,
+          size: 48,
+          color: AetherColors.danger,
+        ),
         const SizedBox(height: AetherSpacing.md),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 32),
@@ -676,16 +642,12 @@ class _ErrorState extends StatelessWidget {
         ),
         const SizedBox(height: AetherSpacing.lg),
         Center(
-          child: TextButton(
-            onPressed: onRetry,
-            child: const Text('Retry'),
-          ),
+          child: TextButton(onPressed: onRetry, child: const Text('Retry')),
         ),
       ],
     );
   }
 }
-
 
 /// [D9(a) 2026-08-23] 主题卡的内容**客户端硬编码**,不建表、不发请求。
 ///
@@ -958,66 +920,6 @@ class _SkeletonTopicCard extends StatelessWidget {
       child: SkeletonBox(
         animate: animate,
         borderRadius: BorderRadius.circular(AetherRadii.lg),
-      ),
-    );
-  }
-}
-
-
-/// [D7] 作者过滤条。整个"只看这个人的作品"就只有这一条 —— 刻意到此为止。
-///
-/// 明确不做:头像大图、简介、关注按钮、粉丝/关注/作品数。
-/// 依据见方案 §6:早做个人主页的三家(Roblox ~250 账号 / pixiv 三周破万 /
-/// Instagram 首日 2.5 万)规模不可类比;与我们最像的 Sketchfab 是上线约
-/// 7 个月后才有个人主页 URL 的,且**初期卡片连作者名都没有**。
-class _AuthorFilterBar extends StatelessWidget {
-  final String name;
-  final VoidCallback onClear;
-
-  const _AuthorFilterBar({required this.name, required this.onClear});
-
-  @override
-  Widget build(BuildContext context) {
-    final l = AppL10n.of(context);
-    return Container(
-      height: 40,
-      padding: const EdgeInsets.symmetric(horizontal: AetherSpacing.md),
-      decoration: BoxDecoration(
-        color: AetherColors.bgElevated,
-        borderRadius: BorderRadius.circular(AetherRadii.pill),
-        border: Border.all(color: AetherColors.border),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              l.communityOnlyAuthor(name),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: AetherTextStyles.body.copyWith(
-                fontWeight: FontWeight.w600,
-                color: AetherColors.textPrimary,
-              ),
-            ),
-          ),
-          GestureDetector(
-            onTap: onClear,
-            behavior: HitTestBehavior.opaque,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: AetherSpacing.sm,
-                vertical: AetherSpacing.xs,
-              ),
-              child: Text(
-                l.communityClearAuthorFilter,
-                style: AetherTextStyles.body.copyWith(
-                  fontSize: 13,
-                  color: AetherColors.textSecondary,
-                ),
-              ),
-            ),
-          ),
-        ],
       ),
     );
   }

@@ -24,5 +24,13 @@
 - CoreML 锁 **CPU+GPU,绝不 ANE**(苹果专属+跑坏 3D-conv)。
 - 取色问题 = observation RGB 算术平均缺陷,与双墙独立,单独修。
 
+## 上游算法复刻铁律(用户 2026-08-27 再次签决)
+- 公开可复现且商业许可兼容的成熟上游算法,默认先完整复刻;难、耗时或本地直觉不构成省略理由,不得假设自研优于专业上游。
+- 每个算法先冻结 revision/license,再逐项建立方法地图:`exact_upstream`/`semantic_port`/`product_adapter`/`not_implemented`;存在后两项就禁止称“完整/官方/faithful/equivalent 复刻”。
+- 上游完整性只由 pinned 源码、官方 fixture/vector 与端到端对照证明;本地注释、本地 spec 和只测本地实现的测试不能给自己作证。
+- 不同阶段的成熟算法默认按职责互补;同一 consensus/LO/状态所有权的方案先明确组合语义并做单变量验收,禁止盲叠、混变量或用一个算法的数值套另一个算法的统计量。
+- 许可阻止直接抄码时走 clean-room 语义复刻并保留 provenance 测试;不得违法抄码,也不得借许可问题偷偷换成自创规则。
+- 详细长期学习见 `docs/solutions/workflow-issues/upstream-algorithm-reproduction-before-product-adaptation.md`;涉及算法实现或审计时先查 `docs/solutions/` 与对应 OpenSpec。
+
 ## 流程
 - 沾边 skill 先调 skill;大改动/有损取舍用 AskUserQuestion 签决;git 提交用 `commit -F 文件 </dev/null` + `GIT_TERMINAL_PROMPT=0`,共享分支默认不 push。

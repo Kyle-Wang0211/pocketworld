@@ -25,34 +25,120 @@ import '../official_quality/frame_quality_constants.dart';
 import '../official_quality/frame_signature_similarity.dart';
 import 'auto_capture_geometry.dart';
 import 'auto_capture_governor.dart';
-import 'alicevision_motion_segment.dart';
 import 'continuous_feature_tracks.dart';
+import 'official_actual_photo_gate.dart' show officialActualPhotoTrackAccepted;
 import 'photo_card_state.dart' show medianOf;
 import 'shutter_backpressure_gate.dart' show ShutterPace;
 
+/// Stable identity for one automatic high-resolution transaction.
+///
+/// [runGeneration] changes every time automatic capture starts. [ticketId]
+/// never repeats during the controller lifetime. A terminal receipt must
+/// match both values, so a result from a stopped run cannot settle a candidate
+/// admitted after restart.
+class AutomaticStillTicket {
+  const AutomaticStillTicket({
+    required this.runGeneration,
+    required this.ticketId,
+  });
+
+  final int runGeneration;
+  final int ticketId;
+
+  @override
+  bool operator ==(Object other) =>
+      other is AutomaticStillTicket &&
+      other.runGeneration == runGeneration &&
+      other.ticketId == ticketId;
+
+  @override
+  int get hashCode => Object.hash(runGeneration, ticketId);
+
+  @override
+  String toString() =>
+      'AutomaticStillTicket(run=$runGeneration, ticket=$ticketId)';
+}
+
+/// Evidence from the exact high-resolution frame returned by the native
+/// camera transaction. Preview candidates are never allowed to populate this
+/// type.
+class AcceptedAutomaticStill {
+  AcceptedAutomaticStill({
+    required this.frame,
+    required this.captureTimestamp,
+    required Uint8List gray128,
+  }) : gray128 = Uint8List.fromList(gray128) {
+    if (!captureTimestamp.isFinite) {
+      throw ArgumentError.value(
+        captureTimestamp,
+        'captureTimestamp',
+        'must be finite',
+      );
+    }
+    if (gray128.length != 128 * 128) {
+      throw ArgumentError.value(
+        gray128.length,
+        'gray128.length',
+        'must be 128x128',
+      );
+    }
+  }
+
+  final AutoCaptureGeometryFrame frame;
+  final double captureTimestamp;
+  final Uint8List gray128;
+}
+
+/// Image evidence from a real 12 MP transaction that the final gate rejected.
+/// It is not a photo baseline and cannot advance coverage. It only prevents the
+/// preview selector from immediately requesting the same rejected view again
+/// using a weaker 16x16 brightness signature.
+class RejectedAutomaticStillEvidence {
+  RejectedAutomaticStillEvidence({
+    required Uint8List gray128,
+    required this.intrinsics,
+  }) : gray128 = Uint8List.fromList(gray128) {
+    if (gray128.length != 128 * 128) {
+      throw ArgumentError.value(
+        gray128.length,
+        'gray128.length',
+        'must be 128x128',
+      );
+    }
+  }
+
+  final Uint8List gray128;
+  final AutoCaptureIntrinsics intrinsics;
+}
+
 class AutoCaptureController {
   AutoCaptureController({
-    required bool Function() onStartAnchor,
-    required bool Function() onFire,
+    required bool Function(AutomaticStillTicket ticket) onStartAnchor,
+    required bool Function(AutomaticStillTicket ticket) onFire,
     required ShutterPace Function() paceProvider,
     required int Function() capturedCountProvider,
     required int Function() thermalStateProvider,
     required double? Function(ARPose pose) liveDepthProvider,
     PortableTrackHealth? Function(ARPose pose)? trackHealthProvider,
+    bool? Function()? synchronousReceiptProvider,
+    bool testOnlyAllowLegacySignatureEvidence = false,
   }) : _onStartAnchor = onStartAnchor,
        _onFire = onFire,
        _paceProvider = paceProvider,
        _capturedCountProvider = capturedCountProvider,
        _thermalStateProvider = thermalStateProvider,
        _liveDepthProvider = liveDepthProvider,
-       _trackHealthProvider = trackHealthProvider;
+       _trackHealthProvider = trackHealthProvider,
+       _synchronousReceiptProvider = synchronousReceiptProvider,
+       _testOnlyAllowLegacySignatureEvidence =
+           testOnlyAllowLegacySignatureEvidence;
 
   /// 自动模式起跑锚点。它不是四类运动角色中的任何一种；只有真实入队成功
   /// 才能建立 capture/geometry baseline。
-  final bool Function() _onStartAnchor;
+  final bool Function(AutomaticStillTicket ticket) _onStartAnchor;
 
   /// 触发快门。**返回 true 表示入队成功** —— 只有 true 才更新基准帧。
-  final bool Function() _onFire;
+  final bool Function(AutomaticStillTicket ticket) _onFire;
 
   /// 每个 pose 现问一次,不在 start() 缓存 —— 背压分级本来就是跑着变的,
   /// 缓存等于把一次采集的节奏钉死在起跑那一刻的队列深度上。
@@ -74,20 +160,75 @@ class AutoCaptureController {
   /// 不读取 ARKit trackingStateName、Vision 或任何平台私有质量枚举。
   final PortableTrackHealth? Function(ARPose pose)? _trackHealthProvider;
 
+  /// Deterministic host/test adapter. Production leaves this null because its
+  /// 12 MP receipt is asynchronous and arrives through [resolveAutomaticStill].
+  final bool? Function()? _synchronousReceiptProvider;
+
+  /// Unit-test seam for older geometry/state-machine fixtures that deliberately
+  /// isolate themselves from the visual front end. Production never sets this;
+  /// the page source contract forbids it. With the default false, missing exact
+  /// grayscale/intrinsics evidence always fails closed.
+  final bool _testOnlyAllowLegacySignatureEvidence;
+
   bool _running = false;
+  int _runGeneration = 0;
+  int _nextAutomaticTicketId = 1;
   AutoCaptureGeometryFrame? _captureBaseline;
   AutoCaptureGeometryFrame? _geometryBaseline;
   Vector3? _activeTarget;
   Uint8List? _capturedSignature;
+  Uint8List? _rejectedCandidateSignature;
+
+  /// How often a failed automatic candidate could NOT arm the retry-suppression
+  /// signature, because the candidate had none.
+  ///
+  /// The comment below the failure branch promises this controller "does not
+  /// blindly retry the camera a few milliseconds later against the same scene."
+  /// On 2026-08-31 it did exactly that: a 12 MP capture failed on malformed
+  /// intrinsics and a second shutter fired 125 ms later on the same scene, two
+  /// haptics 167 ms apart. The suppression signature is only armed when the
+  /// pending candidate HAS a signature, and signatures come from the 6 Hz
+  /// grayscale sampler while firing happens on the 60 Hz pose tick — a
+  /// candidate born between two samples carries none, and the branch that would
+  /// have armed the guard is skipped in silence.
+  ///
+  /// Counters only: nothing here changes when the controller fires. They exist
+  /// so the next occurrence proves or refutes that explanation instead of
+  /// leaving it an inference.
+  /// Pose fallback for the retry-suppression guard, used ONLY when the failed
+  /// candidate had no signature.
+  ///
+  /// The guard below ("does not blindly retry the camera a few milliseconds
+  /// later against the same scene") is armed from `_pendingSignature`, and a
+  /// signature can be absent: signatures come from the 6 Hz grayscale sampler
+  /// while firing happens on the 60 Hz pose tick, so a candidate born between
+  /// two samples carries none. A native capture failure — malformed intrinsics,
+  /// which fails before the 12 MP frame exists — also arrives with no rejected
+  /// evidence at all, so it lands on exactly that branch. With no signature the
+  /// branch was skipped in silence and nothing suppressed the retry: measured
+  /// 2026-08-31, two haptics 167 ms apart, and 458 ms on another session.
+  ///
+  /// Content is the better signal and stays primary — a stationary user whose
+  /// SCENE changed must still be able to shoot, which is what
+  /// `blocks retries until that same feature gate sees new content` pins. This
+  /// is only the floor for when content is unavailable, and it uses the same
+  /// motion classifier and the same thresholds as the photo gate rather than
+  /// inventing a second number.
+  AutoCaptureGeometryFrame? _rejectedCandidatePose;
+  int _failedCandidatesWithoutSignature = 0;
+  int _failedCandidatesWithSignature = 0;
+  int _suppressedRepeatOfRejected = 0;
+  Uint8List? _rejectedActualGray128;
+  double? _rejectedActualFocalX;
+  double? _rejectedActualFocalY;
+  double? _rejectedActualPrincipalX;
+  double? _rejectedActualPrincipalY;
   Uint8List? _capturedGray128;
   double? _capturedGrayFocalX;
   double? _capturedGrayFocalY;
-  double? _capturedGraySourceTimestamp;
+  double? _capturedGrayPrincipalX;
+  double? _capturedGrayPrincipalY;
   final ContinuousFeatureTracks _continuousTracks = ContinuousFeatureTracks();
-  final AliceVisionMotionSegment _smartMotionSegment = AliceVisionMotionSegment(
-    width: 128,
-    height: 128,
-  );
   double? _lastTrackedGraySourceTimestamp;
   static const double _kMaximumGraySourceAgeSec = 1.0 / 6.0;
 
@@ -124,8 +265,8 @@ class AutoCaptureController {
   double? _lastStartAnchorAttemptSec;
 
   /// 本段(距上一次开火以来)的锐度样本(roiSharpness,6Hz 随 pose 到达)。
-  /// 只保留给遥测观察，不参与硬拒绝。AliceVision 的段内锐度是候选排序，
-  /// 不能把“低于段中位”偷换成“客观模糊”。
+  /// 只保留给遥测观察，不参与快门授权或硬拒绝。AliceVision 的离线段内
+  /// 排序不能被伪装成可回溯的实时 12 MP 选择。
   final List<double> _segmentSharpness = <double>[];
   static const int _kSegmentSharpnessCap = 64;
   static const int _kSharpnessMedianMinSamples = 3;
@@ -135,6 +276,12 @@ class AutoCaptureController {
   static bool _objectivelyBlurry(FrameQualityReport? quality) =>
       quality != null &&
       quality.sharpness < FrameQualityConstants.blurThresholdLaplacian;
+
+  static bool _objectivelyBadExposure(FrameQualityReport? quality) =>
+      quality != null &&
+      (quality.meanBrightness < FrameQualityConstants.darkThresholdBrightness ||
+          quality.meanBrightness >
+              FrameQualityConstants.brightThresholdBrightness);
 
   bool get isRunning => _running;
 
@@ -165,11 +312,35 @@ class AutoCaptureController {
   double? _lastVisualSimilarity;
   FrameTrackEvidence? get lastTrackEvidence => _lastTrackEvidence;
   FrameTrackEvidence? _lastTrackEvidence;
+  FrameTrackEvidence? get lastRejectedActualTrackEvidence =>
+      _lastRejectedActualTrackEvidence;
+  FrameTrackEvidence? _lastRejectedActualTrackEvidence;
   double? get lastVisualSourceAgeSec => _lastVisualSourceAgeSec;
   double? _lastVisualSourceAgeSec;
   AutoCaptureMotionMetrics? get lastMotionMetrics => _lastMotion;
   bool get shouldPromptSlowDown => _lastMotion?.shouldPromptSlowDown ?? false;
   AutoCaptureMotionMetrics? _lastMotion;
+  bool _automaticStillPending = false;
+  AutomaticStillTicket? _pendingAutomaticStillTicket;
+  AutoCaptureGeometryFrame? _pendingCaptureFrame;
+  AutoCaptureMotionMetrics? _pendingMotion;
+  Uint8List? _pendingSignature;
+  FrameQualityReport? _pendingQuality;
+  double? _pendingCandidateTimestamp;
+  bool _pendingIsStartAnchor = false;
+  Vector3? _pendingTarget;
+
+  bool get hasPendingAutomaticStill => _automaticStillPending;
+
+  /// See [_failedCandidatesWithoutSignature]. Surfaced so the page can fold
+  /// these into the periodic auto_capture telemetry it already writes.
+  int get failedCandidatesWithoutSignature => _failedCandidatesWithoutSignature;
+  int get failedCandidatesWithSignature => _failedCandidatesWithSignature;
+  int get suppressedRepeatOfRejected => _suppressedRepeatOfRejected;
+  AutomaticStillTicket? get pendingAutomaticStillTicket =>
+      _pendingAutomaticStillTicket;
+  double? get lastAcceptedStillTimestamp => _lastAcceptedStillTimestamp;
+  double? _lastAcceptedStillTimestamp;
 
   /// 最新锐度样本与本段中位(只给遥测):开火帧锐度 ≥ 段中位的占比
   /// 就是锐度缓拍门的疗效指标 —— 门在干活,开火帧应系统性不低于中位。
@@ -181,12 +352,8 @@ class AutoCaptureController {
   double? _lastSharpness;
   double? get lastSegmentMedianSharpness => _lastSegMedianSharpness;
   double? _lastSegMedianSharpness;
-  double? get lastSegmentMotionPx => _lastSegmentMotionPx;
-  double? _lastSegmentMotionPx;
-  double get segmentMotionThresholdPx =>
-      _smartMotionSegment.thresholdPixelMotion;
-
   void start(ARPose pose) {
+    _runGeneration += 1;
     _running = true;
     _startedAtSec = pose.timestamp;
     _lastPoseSec = pose.timestamp;
@@ -203,20 +370,22 @@ class AutoCaptureController {
     _geometryBaseline = null;
     _activeTarget = null;
     _capturedSignature = null;
+    _rejectedCandidateSignature = null;
+    _clearRejectedActualEvidence();
     _capturedGray128 = null;
     _capturedGrayFocalX = null;
     _capturedGrayFocalY = null;
-    _capturedGraySourceTimestamp = null;
+    _capturedGrayPrincipalX = null;
+    _capturedGrayPrincipalY = null;
     _lastTrackedGraySourceTimestamp = null;
     _continuousTracks.clear();
-    _smartMotionSegment.reset();
     _lastVisualSimilarity = null;
-    if (_trackingNormal(pose)) {
+    // A previously admitted automatic 12 MP transaction survives a quick
+    // stop/restart until its terminal receipt arrives. Starting a new run must
+    // not enqueue a second automatic transaction beside it.
+    if (_trackingNormal(pose) && !_automaticStillPending) {
       _lastStartAnchorAttemptSec = pose.timestamp;
-      if (_onStartAnchor()) {
-        _seedBaselines(pose);
-        _commitSignature(pose);
-      }
+      _requestStartAnchor(pose);
     }
   }
 
@@ -228,16 +397,91 @@ class AutoCaptureController {
     _geometryBaseline = null;
     _activeTarget = null;
     _capturedSignature = null;
+    _rejectedCandidateSignature = null;
+    _clearRejectedActualEvidence();
     _capturedGray128 = null;
     _capturedGrayFocalX = null;
     _capturedGrayFocalY = null;
-    _capturedGraySourceTimestamp = null;
+    _capturedGrayPrincipalX = null;
+    _capturedGrayPrincipalY = null;
     _lastTrackedGraySourceTimestamp = null;
     _continuousTracks.clear();
-    _smartMotionSegment.reset();
     _lastVisualSimilarity = null;
     _lastStartAnchorAttemptSec = null;
     _segmentSharpness.clear();
+  }
+
+  /// Terminal receipt from the canonical 4032×3024 transaction. Admission to
+  /// the shutter queue is not a photograph and therefore cannot advance any
+  /// spatial baseline.
+  bool resolveAutomaticStill({
+    required AutomaticStillTicket ticket,
+    required bool accepted,
+    AcceptedAutomaticStill? acceptedStill,
+    RejectedAutomaticStillEvidence? rejectedStill,
+  }) {
+    if (!_automaticStillPending || ticket != _pendingAutomaticStillTicket) {
+      return false;
+    }
+    // A receipt from an admitted ticket must still be consumed after stop, but
+    // it belongs to neither the stopped run nor a subsequently restarted run.
+    // Clearing it re-arms the new run without letting an old frame advance any
+    // capture, geometry, or visual baseline.
+    if (!_running || ticket.runGeneration != _runGeneration) {
+      _clearPendingAutomaticStill();
+      return true;
+    }
+    if (accepted) {
+      if (acceptedStill == null) {
+        throw ArgumentError.notNull('acceptedStill');
+      }
+      final frame = acceptedStill.frame;
+      _captureBaseline = frame;
+      if (_pendingIsStartAnchor ||
+          (_pendingMotion?.advancesGeometryBaseline ?? false)) {
+        _geometryBaseline = frame;
+      }
+      if (_pendingIsStartAnchor && _pendingTarget != null) {
+        _activeTarget = _pendingTarget!.clone();
+      }
+      _commitAcceptedStill(acceptedStill);
+      _rejectedCandidateSignature = null;
+      _rejectedCandidatePose = null;
+      _clearRejectedActualEvidence();
+    } else if (rejectedStill != null) {
+      _rememberRejectedActualEvidence(rejectedStill);
+      _rejectedCandidateSignature = null;
+      _rejectedCandidatePose = null;
+    } else if (_pendingSignature != null) {
+      // A failed automatic candidate is not a photo baseline, but requesting
+      // the same preview content again is a blind retry. Keep only a retry-
+      // suppression signature; spatial/geometry baselines remain untouched.
+      _failedCandidatesWithSignature++;
+      _rejectedCandidateSignature = Uint8List.fromList(_pendingSignature!);
+      _rejectedCandidatePose = null;
+    } else {
+      // No signature to arm the content guard, so fall back to the pose the
+      // failed candidate was shot from. See [_rejectedCandidatePose].
+      _failedCandidatesWithoutSignature++;
+      _rejectedCandidatePose = _pendingCaptureFrame;
+    }
+    // A rejected 12 MP frame re-arms spatial selection. It does not blindly
+    // retry the camera a few milliseconds later against the same scene.
+    _segmentSharpness.clear();
+    _clearPendingAutomaticStill();
+    return true;
+  }
+
+  void _clearPendingAutomaticStill() {
+    _automaticStillPending = false;
+    _pendingAutomaticStillTicket = null;
+    _pendingCaptureFrame = null;
+    _pendingMotion = null;
+    _pendingSignature = null;
+    _pendingQuality = null;
+    _pendingCandidateTimestamp = null;
+    _pendingIsStartAnchor = false;
+    _pendingTarget = null;
   }
 
   /// 把 `[_startedAtSec, tSec]` 这段并进整场累计,并把本轮起点推到 [tSec]。
@@ -265,6 +509,21 @@ class AutoCaptureController {
     final trackingOk = _trackingNormal(pose);
     final current = _frameFrom(pose);
     final currentSignature = _signatureFrom(pose);
+    final rejectedCandidateSignature = _rejectedCandidateSignature;
+    final rejectedCandidateSimilarity =
+        currentSignature == null || rejectedCandidateSignature == null
+        ? null
+        : aetherFrameSignatureSimilarity(
+            current: currentSignature,
+            previous: rejectedCandidateSignature,
+          );
+    final repeatsRejectedCandidate =
+        rejectedCandidateSimilarity != null &&
+        rejectedCandidateSimilarity > FrameQualityConstants.maxFrameSimilarity;
+    if (repeatsRejectedCandidate) _suppressedRepeatOfRejected++;
+    if (!repeatsRejectedCandidate && currentSignature != null) {
+      _rejectedCandidateSignature = null;
+    }
     // The start anchor can land on one of the pose-only ticks between the
     // 6 Hz grayscale samples. The first real visual sample becomes its
     // conservative comparison baseline; that same sample therefore cannot
@@ -288,6 +547,42 @@ class AutoCaptureController {
     final currentGray = q?.rawGray128;
     final currentFocalX = q?.sourceFocalX;
     final currentFocalY = q?.sourceFocalY;
+    final currentPrincipalX = q?.sourcePrincipalX;
+    final currentPrincipalY = q?.sourcePrincipalY;
+    final rejectedActualGray = _rejectedActualGray128;
+    final rejectedActualTrackEvidence =
+        rejectedActualGray == null ||
+            currentGray == null ||
+            currentGray.length != 128 * 128 ||
+            currentFocalX == null ||
+            currentFocalY == null ||
+            currentPrincipalX == null ||
+            currentPrincipalY == null ||
+            _rejectedActualFocalX == null ||
+            _rejectedActualFocalY == null ||
+            _rejectedActualPrincipalX == null ||
+            _rejectedActualPrincipalY == null
+        ? null
+        : trackFrameNovelty(
+            previousGray: rejectedActualGray,
+            currentGray: currentGray,
+            width: 128,
+            height: 128,
+            focalXPixels: (_rejectedActualFocalX! + currentFocalX) * 0.5,
+            focalYPixels: (_rejectedActualFocalY! + currentFocalY) * 0.5,
+            principalXPixels:
+                (_rejectedActualPrincipalX! + currentPrincipalX) * 0.5,
+            principalYPixels:
+                (_rejectedActualPrincipalY! + currentPrincipalY) * 0.5,
+          );
+    final rejectedActualStillBlocksRetry =
+        rejectedActualGray != null &&
+        (rejectedActualTrackEvidence == null ||
+            !officialActualPhotoTrackAccepted(rejectedActualTrackEvidence));
+    _lastRejectedActualTrackEvidence = rejectedActualTrackEvidence;
+    if (rejectedActualGray != null && !rejectedActualStillBlocksRetry) {
+      _clearRejectedActualEvidence();
+    }
     final previousSourceTimestamp = _lastTrackedGraySourceTimestamp;
     final sourceTimestamp = q?.sourceTimestamp;
     final sourceAgeSec = sourceTimestamp == null
@@ -302,13 +597,20 @@ class AutoCaptureController {
         sourceTimestamp != null &&
         (previousSourceTimestamp == null ||
             sourceTimestamp > previousSourceTimestamp);
-    final trackEvidenceRequired = currentGray != null;
+    // Every post-anchor candidate must carry the exact portable grayscale and
+    // intrinsics receipt. The legacy 16x16 block signature is diagnostics and
+    // retry suppression only; it must never become platform-dependent shutter
+    // authority when a bridge omits the feature-tracking source.
+    final trackEvidenceRequired =
+        !_testOnlyAllowLegacySignatureEvidence || currentGray != null;
     final trackEvidence =
         !sourceBound ||
             !sourceOrderValid ||
             currentGray == null ||
             currentFocalX == null ||
             currentFocalY == null ||
+            currentPrincipalX == null ||
+            currentPrincipalY == null ||
             currentGray.length != 128 * 128
         ? null
         : _continuousTracks.advance(
@@ -321,21 +623,30 @@ class AutoCaptureController {
             focalYPixels: _capturedGrayFocalY == null
                 ? currentFocalY
                 : (_capturedGrayFocalY! + currentFocalY) * 0.5,
+            principalXPixels: _capturedGrayPrincipalX == null
+                ? currentPrincipalX
+                : (_capturedGrayPrincipalX! + currentPrincipalX) * 0.5,
+            principalYPixels: _capturedGrayPrincipalY == null
+                ? currentPrincipalY
+                : (_capturedGrayPrincipalY! + currentPrincipalY) * 0.5,
           );
     if (trackEvidence != null && sourceTimestamp != null) {
       _lastTrackedGraySourceTimestamp = sourceTimestamp;
-      _smartMotionSegment.add(trackEvidence);
-      // VINS uses track loss to manage its estimator window. A camera shutter
-      // cannot treat missing correspondences as new content, so reseed the
-      // preview tracker and keep waiting for comparable accumulated flow.
-      if (!trackEvidence.comparable && currentGray != null) {
-        _continuousTracks.setReference(
-          gray: currentGray,
-          width: 128,
-          height: 128,
-        );
-      }
     }
+    final evidenceRetention = trackEvidence?.commonTrackFraction;
+    final evidenceDistribution = trackEvidence?.vinsOccupiedGridFraction;
+    final portableTrackHealth =
+        evidenceRetention != null &&
+            evidenceRetention.isFinite &&
+            evidenceRetention >= 0 &&
+            evidenceRetention <= 1 &&
+            evidenceDistribution != null &&
+            evidenceDistribution.isFinite
+        ? PortableTrackHealth(
+            retentionRatio: evidenceRetention,
+            distributionHealthy: evidenceDistribution >= 0.5,
+          )
+        : _trackHealthProvider?.call(pose);
     final target = _activeTarget ?? _targetFrom(pose);
     final effectiveCaptureBase = captureBase ?? current;
     final effectiveGeometryBase = geometryBase ?? effectiveCaptureBase;
@@ -344,7 +655,7 @@ class AutoCaptureController {
       captureBaseline: effectiveCaptureBase,
       current: current,
       target: target,
-      trackHealth: _trackHealthProvider?.call(pose),
+      trackHealth: portableTrackHealth,
     );
 
     final movedM = captureBase == null
@@ -367,8 +678,8 @@ class AutoCaptureController {
       visualSimilarity: visualSimilarity,
       trackEvidence: trackEvidence,
       trackEvidenceRequired: trackEvidenceRequired,
-      smartSelectionMotionReady: _smartMotionSegment.ready,
       blurry: _objectivelyBlurry(q),
+      exposureRejected: _objectivelyBadExposure(q),
     );
     _lastMovedM = movedM;
     _lastTurnDeg = motion.viewTurnDeg;
@@ -383,8 +694,6 @@ class AutoCaptureController {
         _segmentSharpness.length < _kSharpnessMedianMinSamples
         ? null
         : medianOf(_segmentSharpness);
-    _lastSegmentMotionPx = _smartMotionSegment.accumulatedPixelMotion;
-
     switch (decision) {
       case AutoCaptureDecision.skipCapped:
       case AutoCaptureDecision.skipTimeLimit:
@@ -401,6 +710,7 @@ class AutoCaptureController {
       case AutoCaptureDecision.skipRedundant:
         return decision;
       case AutoCaptureDecision.skipBlurry:
+      case AutoCaptureDecision.skipQuality:
         // 客观模糊是硬拒绝；基准与去抖时钟都不动。下一份清晰视觉样本
         // 仍可立即开火，但等待多久都不会把糊片强行放入队列。
         return decision;
@@ -411,37 +721,76 @@ class AutoCaptureController {
         // 250 ms 地板再重试。绝不能把一帧没拍下来的 pose 偷偷播成
         // “上一张照片”。
         if (captureBase == null || geometryBase == null) {
+          if (_automaticStillPending) {
+            return AutoCaptureDecision.skipPaced;
+          }
           final lastAttemptSec = _lastStartAnchorAttemptSec;
           if (trackingOk &&
+              !repeatsRejectedCandidate &&
               (lastAttemptSec == null ||
                   pose.timestamp - lastAttemptSec >=
                       kAutoCaptureSafetyDebounceSec)) {
             _lastStartAnchorAttemptSec = pose.timestamp;
             _lastTickSec = pose.timestamp;
-            if (_onStartAnchor()) {
-              _seedBaselines(pose);
-              _commitSignature(pose);
-            }
+            _requestStartAnchor(pose);
           }
           return AutoCaptureDecision.skipNotMoved;
         }
         return decision;
       case AutoCaptureDecision.fire:
+        if (_automaticStillPending) return AutoCaptureDecision.skipPaced;
+        if (rejectedActualStillBlocksRetry) {
+          return rejectedActualTrackEvidence == null
+              ? AutoCaptureDecision.skipNoVisualEvidence
+              : AutoCaptureDecision.skipRedundant;
+        }
+        if (repeatsRejectedCandidate) {
+          return AutoCaptureDecision.skipRedundant;
+        }
+        // Pose floor for the same guard, active ONLY when the failed candidate
+        // had no signature to arm the content check with. See
+        // [_rejectedCandidatePose]. Same classifier and same thresholds as the
+        // photo gate — deliberately not a second number.
+        final rejectedPose = _rejectedCandidatePose;
+        if (rejectedPose != null) {
+          final sinceRejected = classifyAutoCaptureMotion(
+            geometryBaseline: rejectedPose,
+            captureBaseline: rejectedPose,
+            current: current,
+            target: target,
+            trackHealth: portableTrackHealth,
+          );
+          if (!sinceRejected.shouldCapture) {
+            return AutoCaptureDecision.skipRedundant;
+          }
+          _rejectedCandidatePose = null;
+        }
         // 去抖先记账:入队失败按 spec §7「下 tick 重试」,不是下一帧重试 ——
         // 失败的开火照样吃掉一次节奏预算,tickIntervalSec 之内不再返回 fire。
         _lastTickSec = pose.timestamp;
         // 入队失败时基准帧**不动** —— 否则下一次会拿一个根本没拍成
         // 的位置当基准,位移闸直接漏判。
-        if (_onFire()) {
-          _captureBaseline = current;
-          if (motion.advancesGeometryBaseline) {
-            _geometryBaseline = current;
+        final automaticTicket = _newAutomaticStillTicket();
+        if (_onFire(automaticTicket)) {
+          _automaticStillPending = true;
+          _pendingAutomaticStillTicket = automaticTicket;
+          _pendingCaptureFrame = current;
+          _pendingMotion = motion;
+          _pendingSignature = currentSignature == null
+              ? null
+              : Uint8List.fromList(currentSignature);
+          _pendingQuality = q;
+          _pendingCandidateTimestamp = pose.timestamp;
+          final synchronousReceipt = _synchronousReceiptProvider?.call();
+          if (synchronousReceipt != null) {
+            resolveAutomaticStill(
+              ticket: automaticTicket,
+              accepted: synchronousReceipt,
+              acceptedStill: synchronousReceipt
+                  ? _syntheticAcceptedStillForTest()
+                  : null,
+            );
           }
-          _capturedSignature = Uint8List.fromList(currentSignature!);
-          if (q != null) _commitTrackSource(q);
-          // 开火 = 本段结束,锐度段清零(subsequence 语义)。
-          _segmentSharpness.clear();
-          _smartMotionSegment.reset();
         }
         return decision;
     }
@@ -483,11 +832,131 @@ class AutoCaptureController {
     return pose.position + _forwardOf(pose).normalized() * depth;
   }
 
-  void _seedBaselines(ARPose pose) {
-    final frame = _frameFrom(pose);
-    _captureBaseline = frame;
-    _geometryBaseline = frame;
-    _activeTarget = _targetFrom(pose);
+  void _requestStartAnchor(ARPose pose) {
+    if (_automaticStillPending) return;
+    final automaticTicket = _newAutomaticStillTicket();
+    if (!_onStartAnchor(automaticTicket)) return;
+    _automaticStillPending = true;
+    _pendingAutomaticStillTicket = automaticTicket;
+    _pendingCaptureFrame = _frameFrom(pose);
+    _pendingMotion = null;
+    final signature = _signatureFrom(pose);
+    _pendingSignature = signature == null
+        ? null
+        : Uint8List.fromList(signature);
+    _pendingQuality = pose.quality;
+    _pendingCandidateTimestamp = pose.timestamp;
+    _pendingIsStartAnchor = true;
+    _pendingTarget = _targetFrom(pose);
+    final synchronousReceipt = _synchronousReceiptProvider?.call();
+    if (synchronousReceipt != null) {
+      resolveAutomaticStill(
+        ticket: automaticTicket,
+        accepted: synchronousReceipt,
+        acceptedStill: synchronousReceipt
+            ? _syntheticAcceptedStillForTest()
+            : null,
+      );
+    }
+  }
+
+  AutomaticStillTicket _newAutomaticStillTicket() {
+    final ticket = AutomaticStillTicket(
+      runGeneration: _runGeneration,
+      ticketId: _nextAutomaticTicketId,
+    );
+    _nextAutomaticTicketId += 1;
+    return ticket;
+  }
+
+  AcceptedAutomaticStill _syntheticAcceptedStillForTest() {
+    final frame = _pendingCaptureFrame;
+    if (frame == null) {
+      throw StateError('synchronous receipt has no pending candidate frame');
+    }
+    return AcceptedAutomaticStill(
+      frame: frame,
+      captureTimestamp: _pendingCandidateTimestamp ?? _lastPoseSec,
+      gray128: _pendingQuality?.rawGray128 ?? Uint8List(128 * 128),
+    );
+  }
+
+  void _commitAcceptedStill(AcceptedAutomaticStill still) {
+    final gray = Uint8List.fromList(still.gray128);
+    final intrinsics = still.frame.intrinsics;
+    final imageWidth = intrinsics.imageWidth;
+    final imageHeight = intrinsics.imageHeight;
+    final focalX = imageWidth <= 0 ? 0.0 : intrinsics.fx * 128.0 / imageWidth;
+    final focalY = imageHeight <= 0 ? 0.0 : intrinsics.fy * 128.0 / imageHeight;
+    final principalX = imageWidth <= 0
+        ? double.nan
+        : intrinsics.cx * 128.0 / imageWidth;
+    final principalY = imageHeight <= 0
+        ? double.nan
+        : intrinsics.cy * 128.0 / imageHeight;
+    _capturedGray128 = gray;
+    _capturedGrayFocalX = focalX > 0 && focalX.isFinite ? focalX : null;
+    _capturedGrayFocalY = focalY > 0 && focalY.isFinite ? focalY : null;
+    _capturedGrayPrincipalX = principalX.isFinite ? principalX : null;
+    _capturedGrayPrincipalY = principalY.isFinite ? principalY : null;
+    _capturedSignature = _signature16FromGray128(gray);
+    _lastTrackedGraySourceTimestamp = still.captureTimestamp;
+    _lastAcceptedStillTimestamp = still.captureTimestamp;
+    _continuousTracks.setReference(gray: gray, width: 128, height: 128);
+  }
+
+  void _rememberRejectedActualEvidence(
+    RejectedAutomaticStillEvidence evidence,
+  ) {
+    final intrinsics = evidence.intrinsics;
+    if (intrinsics.imageWidth <= 0 || intrinsics.imageHeight <= 0) {
+      _clearRejectedActualEvidence();
+      return;
+    }
+    final focalX = intrinsics.fx * 128.0 / intrinsics.imageWidth;
+    final focalY = intrinsics.fy * 128.0 / intrinsics.imageHeight;
+    final principalX = intrinsics.cx * 128.0 / intrinsics.imageWidth;
+    final principalY = intrinsics.cy * 128.0 / intrinsics.imageHeight;
+    if (!focalX.isFinite ||
+        !focalY.isFinite ||
+        focalX <= 0 ||
+        focalY <= 0 ||
+        !principalX.isFinite ||
+        !principalY.isFinite) {
+      _clearRejectedActualEvidence();
+      return;
+    }
+    _rejectedActualGray128 = Uint8List.fromList(evidence.gray128);
+    _rejectedActualFocalX = focalX;
+    _rejectedActualFocalY = focalY;
+    _rejectedActualPrincipalX = principalX;
+    _rejectedActualPrincipalY = principalY;
+  }
+
+  void _clearRejectedActualEvidence() {
+    _rejectedActualGray128 = null;
+    _rejectedActualFocalX = null;
+    _rejectedActualFocalY = null;
+    _rejectedActualPrincipalX = null;
+    _rejectedActualPrincipalY = null;
+    _lastRejectedActualTrackEvidence = null;
+  }
+
+  static Uint8List _signature16FromGray128(Uint8List gray) {
+    final signature = Uint8List(16 * 16);
+    for (var by = 0; by < 16; by++) {
+      for (var bx = 0; bx < 16; bx++) {
+        var sum = 0;
+        for (var y = 0; y < 8; y++) {
+          final row = (by * 8 + y) * 128 + bx * 8;
+          for (var x = 0; x < 8; x++) {
+            sum += gray[row + x];
+          }
+        }
+        signature[by * 16 + bx] = sum ~/ 64;
+      }
+    }
+    return signature;
   }
 
   static Uint8List? _signatureFrom(ARPose pose) {
@@ -502,35 +971,36 @@ class AutoCaptureController {
     return quality.signature;
   }
 
-  void _commitSignature(ARPose pose) {
-    final signature = _signatureFrom(pose);
-    if (signature != null) {
-      _capturedSignature = Uint8List.fromList(signature);
-    }
-    final quality = pose.quality;
-    if (quality != null) _commitTrackSource(quality);
-  }
-
   void _commitTrackSource(FrameQualityReport quality) {
     final gray = quality.rawGray128;
     final focalX = quality.sourceFocalX;
     final focalY = quality.sourceFocalY;
+    final principalX = quality.sourcePrincipalX;
+    final principalY = quality.sourcePrincipalY;
     if (gray == null ||
         gray.length != 128 * 128 ||
         focalX == null ||
         focalY == null ||
+        principalX == null ||
+        principalY == null ||
         !focalX.isFinite ||
         !focalY.isFinite ||
+        !principalX.isFinite ||
+        !principalY.isFinite ||
         focalX <= 0 ||
-        focalY <= 0) {
+        focalY <= 0 ||
+        principalX < 0 ||
+        principalY < 0 ||
+        principalX > 128 ||
+        principalY > 128) {
       return;
     }
     _capturedGray128 = Uint8List.fromList(gray);
     _capturedGrayFocalX = focalX;
     _capturedGrayFocalY = focalY;
-    _capturedGraySourceTimestamp = quality.sourceTimestamp;
+    _capturedGrayPrincipalX = principalX;
+    _capturedGrayPrincipalY = principalY;
     _lastTrackedGraySourceTimestamp = quality.sourceTimestamp;
     _continuousTracks.setReference(gray: gray, width: 128, height: 128);
-    _smartMotionSegment.reset();
   }
 }

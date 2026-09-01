@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pocketworld_flutter/official_capture/accepted_photo_record_store.dart';
+import 'package:pocketworld_flutter/official_capture/accepted_photo_transaction.dart';
 import 'package:pocketworld_flutter/official_capture/photo_card_state.dart';
 import 'package:pocketworld_flutter/official_capture/project_photo_album.dart';
 import 'package:pocketworld_flutter/ui/official_capture/ar_album_page.dart';
@@ -11,8 +14,9 @@ void main() {
   late Directory tempDir;
   late File photo;
   late OfficialProjectPhotoAlbum album;
+  late AcceptedPhotoRecordStore store;
 
-  setUp(() {
+  setUp(() async {
     tempDir = Directory.systemTemp.createTempSync('official_album_widget_');
     photo = File('${tempDir.path}/photo.jpg')
       ..writeAsBytesSync(
@@ -22,12 +26,8 @@ void main() {
         ),
       );
     album = OfficialProjectPhotoAlbum();
-    album.commitVerified(
-      jpegPath: photo.path,
-      captureTimestamp: 1,
-      imageWidth: 4032,
-      imageHeight: 3024,
-    );
+    store = await AcceptedPhotoRecordStore.open(tempDir);
+    await store.publish(_record(photo.path), canPublish: () => true);
   });
 
   tearDown(() {
@@ -61,14 +61,14 @@ void main() {
     tester,
   ) async {
     var deleteCalls = 0;
+    final deletionCommitted = Completer<void>();
     await tester.pumpWidget(
       MaterialApp(
         home: ARAlbumPage(
           projectPhotos: album,
           onDelete: (path) async {
             deleteCalls++;
-            album.remove(path);
-            await File(path).delete();
+            await deletionCommitted.future;
           },
         ),
       ),
@@ -85,7 +85,15 @@ void main() {
     await tester.pumpAndSettle();
     expect(deleteCalls, 0);
 
-    await tester.tap(find.text('删除所选').last);
+    await tester.tap(find.widgetWithText(FilledButton, '删除所选'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(deleteCalls, 1);
+    await tester.runAsync(() async {
+      expect(await store.tombstone('album-widget-1'), isTrue);
+      if (await photo.exists()) await photo.delete();
+      deletionCommitted.complete();
+    });
     await tester.pumpAndSettle();
 
     expect(deleteCalls, 1);
@@ -93,3 +101,41 @@ void main() {
     expect(photo.existsSync(), isFalse);
   });
 }
+
+AcceptedPhotoRecord _record(String jpegPath) => AcceptedPhotoRecord(
+  transactionId: 'album-widget-1',
+  generation: 1,
+  frameId: 'frame-1',
+  jpegPath: jpegPath,
+  previewPath: '$jpegPath.preview.jpg',
+  automaticSelection: false,
+  imageWidth: 4032,
+  imageHeight: 3024,
+  triggerTimestamp: 1,
+  captureTimestamp: 1,
+  cameraTransform: const <double>[
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
+  ],
+  intrinsics: const <double>[2000, 2000, 2016, 1512],
+  captureKind: 'arkit_high_res_still',
+  poseSyncQuality: 'ar_session_high_res_frame',
+  trackingStateName: 'normal',
+  gray128Base64: null,
+  sample: const <String, Object?>{},
+  quality: const <String, Object?>{},
+);

@@ -30,7 +30,6 @@
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:math' as math;
@@ -48,6 +47,7 @@ import 'photo_archive_coordinator.dart';
 import 'photo_archive_runtime.dart';
 import 'pw_telemetry.dart';
 import 'sfm_feed_queue.dart';
+import 'sfm_recon_lifecycle.dart';
 import 'telemetry_writer.dart';
 import 'true_parallax.dart';
 
@@ -74,11 +74,6 @@ import 'true_parallax.dart';
 /// 各重建一次(实验臂本就每次装机决定开关,不需要运行时可切)。仍经 boot 消息
 /// 传给 worker isolate(worker 读不到主 isolate 的顶层常量也无妨,常量已内联)。
 const bool _arEveryFrameEnabled = true;
-
-// [SPRINT-RACE 2026-07-26] matcher capture-active atomic, read side (see
-// pwofficial_gpu_match.mm aether_gpu_match_get_capture_active).
-typedef _CaptureActiveC = ffi.Int32 Function();
-typedef _CaptureActiveDart = int Function();
 
 /// One reconstruction snapshot (LOCAL_READY or REFINED). Always the FULL
 /// point set — render-side thinning is allowed, data-side never.
@@ -344,9 +339,14 @@ class SfmLiveRefined extends SfmLiveEvent {
 /// Terminal failure (create / finalize / background refine). The capture
 /// bundle is unaffected —材料已保留, the post-capture pipeline still runs.
 class SfmLiveFailed extends SfmLiveEvent {
-  const SfmLiveFailed(this.stage, this.message);
+  const SfmLiveFailed(
+    this.stage,
+    this.message, {
+    this.kind = SfmTerminalFailureKind.workerProtocol,
+  });
   final String stage;
   final String message;
+  final SfmTerminalFailureKind kind;
 }
 
 // [增量D 2026-07-28] SfmLiveArbitrateDone 事件已删:L1 仲裁链 07-20 E25
@@ -446,7 +446,24 @@ class SfmLiveRecon {
     this._dbPath,
     this._leaseOwner,
     this._photoArchiveActivityLease,
-  );
+  ) {
+    _debtCpuOverride = SfmScopedEnvironmentOverride(
+      initialValue:
+          Platform.environment['OFFICIAL_AETHER_EXTRACT_CPU_FALLBACK'],
+      setValue: (value) =>
+          AetherProcessEnv.set('OFFICIAL_AETHER_EXTRACT_CPU_FALLBACK', value),
+      unsetValue: () =>
+          AetherProcessEnv.unset('OFFICIAL_AETHER_EXTRACT_CPU_FALLBACK'),
+    );
+    _previewPublisher = SfmLatestWinsPublisher<SfmLiveSnapshot>(
+      interval: const Duration(milliseconds: 400),
+      publish: (snapshot) {
+        if (!_disposed && _terminalGate.failure == null && !_events.isClosed) {
+          _events.add(SfmLivePreview(snapshot));
+        }
+      },
+    );
+  }
 
   final SendPort _toWorker;
   final ReceivePort _fromWorker;
@@ -461,7 +478,25 @@ class SfmLiveRecon {
 
   int _seq = 0;
   int _liveCloudSourceReceiveSequence = 0;
-  int _inFlight = 0; // frames sent to the worker but not yet acked
+  final SfmDeliveryLedger _deliveries = SfmDeliveryLedger(
+    maxInFlight: kSfmFeedMaxInFlight,
+  );
+  final SfmTerminalGate _terminalGate = SfmTerminalGate();
+  final Completer<SfmTerminalFailure?> _completion =
+      Completer<SfmTerminalFailure?>();
+  final Completer<void> _workerExitAck = Completer<void>();
+  late final SfmScopedEnvironmentOverride _debtCpuOverride;
+  late final SfmLatestWinsPublisher<SfmLiveSnapshot> _previewPublisher;
+  Future<void>? _disposeFuture;
+  Future<void>? _workerCleanupFuture;
+  Timer? _finalizeWatchdog;
+  bool _disposeRequested = false;
+  bool _workerDisposedAcked = false;
+  bool _workerUnavailable = false;
+  bool _terminalEventEmitted = false;
+  bool _resourcesReleased = false;
+
+  int get _inFlight => _deliveries.inFlightCount;
   int _fedOk = 0;
   bool _finalizeRequested = false; // finish tapped — no new frames accepted
   // [QUAD-PREPAY 2026-07-26] one idle prepay cmd in flight at a time.
@@ -470,6 +505,7 @@ class SfmLiveRecon {
   // (见 _thermalAllowsFeedNow)。
   bool _thermalDropArmed = false;
   bool _finalizeSent = false; // finalize cmd actually dispatched to worker
+  bool _finishPendingNotified = false;
 
   // [PREFETCH-AB] 同场分块交替 A/B 的块长(launch env;0=关=恒预取)。
   static final int _prefetchAbBlock = (() {
@@ -485,9 +521,8 @@ class SfmLiveRecon {
   // 重喂补算(拍完等待期相机停/内存空/GPU 闲,没有拍摄期爆内存的土壤)。
   // 重喂走 100% 正常喂帧路径(_SpooledFrame + _pump)⇒ fed_frames.jsonl /
   // 取色映射 / 事件流 / 遥测全部沿用,零特殊分支。
-  final List<SfmFedFrameMeta> _extractDebts = [];
+  final List<int> _extractDebts = <int>[];
   final Set<int> _debtRefeedSeqs = {};
-  bool _debtCpuEnvSet = false;
   bool _pumping = false;
   bool _disposed = false;
   Completer<void>? _disposeAck;
@@ -496,15 +531,19 @@ class SfmLiveRecon {
   // and poses are all on disk anyway, so a busy worker just means the frame
   // waits its turn; finalize is deferred until the queue drains).
   final List<_SpooledFrame> _spool = <_SpooledFrame>[];
+  final Map<int, _SpooledFrame> _frameBySeq = <int, _SpooledFrame>{};
 
   // seq → meta while in flight; frameId → meta once the worker acks the
   // add_frame (frame ids come back with frame_done).
   final Map<int, SfmFedFrameMeta> _pendingMeta = <int, SfmFedFrameMeta>{};
+  final Map<int, SfmFedFrameMeta> _offeredMetaBySeq = <int, SfmFedFrameMeta>{};
   final Map<int, SfmFedFrameMeta> _fedMeta = <int, SfmFedFrameMeta>{};
   final Map<String, int> _nativeFrameIdByJpegPath = <String, int>{};
   final Map<String, Completer<bool>> _removeWhenFrameAcked =
       <String, Completer<bool>>{};
   final Map<int, Completer<bool>> _removeRequests = <int, Completer<bool>>{};
+  final Map<int, int> _removeOfferSeqs = <int, int>{};
+  final Map<int, int> _removeRequestIdByFrameId = <int, int>{};
   int _nextRemoveRequestId = 0;
 
   // ── 遥测【frame】时间戳(epoch ms):seq → offer 到达 / 实际送 worker。
@@ -536,12 +575,20 @@ class SfmLiveRecon {
   /// Keyframes parked on disk awaiting the worker.
   int get queuedCount => _spool.length;
 
-  /// Frames not yet acknowledged by native SfM, including both disk-spooled
-  /// frames and the at-most-two worker calls currently in flight.
-  int get remainingCount => _spool.length + _inFlight;
+  /// Frames not yet terminal in native SfM, including disk-spooled work, the
+  /// at-most-two worker calls, extract retries, and acknowledged removals.
+  int get remainingCount =>
+      _spool.length +
+      _inFlight +
+      _extractDebts.length +
+      _deliveries.pendingRemovalCount;
 
   /// Every keyframe offered this take (fed + in-flight + queued).
-  int get offeredCount => _seq;
+  int get offeredCount => _deliveries.offeredCount;
+
+  /// Completes once with null for a refined result or with the first typed
+  /// terminal failure. Worker error and exit notifications cannot double-settle.
+  Future<SfmTerminalFailure?> get completion => _completion.future;
 
   bool get finalizeStarted => _finalizeRequested;
 
@@ -568,6 +615,7 @@ class SfmLiveRecon {
     final photoArchiveActivityLease = photoArchiveCoordinator
         .beginReconstructionActivity(Directory(File(dbPath).parent.path));
     final fromWorker = ReceivePort();
+    final startupExitAck = Completer<void>();
     Isolate? isolate;
     StreamSubscription<dynamic>? sub;
     var handedOff = false;
@@ -577,9 +625,14 @@ class SfmLiveRecon {
           _sfmWorkerMain,
           // _arEveryFrameEnabled 在此(主 isolate)读——env 在主 isolate 才有效。
           _SfmWorkerBootstrap(
-              fromWorker.sendPort, dbPath, _arEveryFrameEnabled),
+            fromWorker.sendPort,
+            dbPath,
+            _arEveryFrameEnabled,
+          ),
           debugName: 'official_sfm_live_recon',
           errorsAreFatal: true,
+          onError: fromWorker.sendPort,
+          onExit: fromWorker.sendPort,
         );
       } catch (e) {
         DeviceLog.log('SfmLive', 'worker spawn FAILED: $e');
@@ -592,13 +645,27 @@ class SfmLiveRecon {
       // listen() throws; this exact mistake shipped once and silently killed
       // the feature in release.)
       final handshake = Completer<SendPort?>();
+      final pendingWorkerSignals = <dynamic>[];
       SfmLiveRecon? recon;
       sub = fromWorker.listen((msg) {
+        if (msg == null && !startupExitAck.isCompleted) {
+          startupExitAck.complete();
+        }
         if (!handshake.isCompleted) {
-          handshake.complete(msg is SendPort ? msg : null);
+          if (msg is SendPort) {
+            handshake.complete(msg);
+          } else {
+            pendingWorkerSignals.add(msg);
+            handshake.complete(null);
+          }
           return;
         }
-        recon?._onWorkerMessage(msg);
+        final liveRecon = recon;
+        if (liveRecon == null) {
+          pendingWorkerSignals.add(msg);
+        } else {
+          liveRecon._onWorkerSignal(msg);
+        }
       });
       SendPort? port;
       try {
@@ -623,6 +690,9 @@ class SfmLiveRecon {
         photoArchiveActivityLease,
       );
       handedOff = true;
+      for (final signal in pendingWorkerSignals) {
+        recon._onWorkerSignal(signal);
+      }
       DeviceLog.log('SfmLive', 'worker up (db=$dbPath)');
       return recon;
     } catch (e, st) {
@@ -631,13 +701,16 @@ class SfmLiveRecon {
     } finally {
       if (!handedOff) {
         try {
+          if (isolate != null && !startupExitAck.isCompleted) {
+            isolate.kill(priority: Isolate.immediate);
+            await startupExitAck.future;
+          }
           await sub?.cancel();
         } catch (_) {
-          // Cleanup continues below so a failed start cannot leak the lease.
+          // Cleanup continues only after the worker has confirmed exit.
         }
         try {
           fromWorker.close();
-          isolate?.kill(priority: Isolate.immediate);
         } finally {
           reconstructionLease.release(leaseOwner);
           await photoArchiveActivityLease.close();
@@ -649,7 +722,9 @@ class SfmLiveRecon {
   /// Offers one validated 12MP JPEG to the official reconstruction. Only the
   /// path and same-frame calibration cross Dart; decoded pixels do not.
   bool offerFrame(OfficialHighResReconstructionInput feed) {
-    if (_disposed || _finalizeRequested) return false;
+    if (_disposed || _finalizeRequested || _terminalGate.failure != null) {
+      return false;
+    }
     if (feed.intrinsics.length < 4 ||
         feed.imageWidth != OfficialHighResReconstructionInput.requiredWidth ||
         feed.imageHeight != OfficialHighResReconstructionInput.requiredHeight ||
@@ -681,7 +756,7 @@ class SfmLiveRecon {
       cameraCenterWorld = [cWorld.x, cWorld.y, cWorld.z];
     }
 
-    _pendingMeta[seq] = SfmFedFrameMeta(
+    final meta = SfmFedFrameMeta(
       jpegPath: feed.jpegPath,
       imageW: feed.imageWidth,
       imageH: feed.imageHeight,
@@ -696,40 +771,34 @@ class SfmLiveRecon {
       arkitTransTxyz: trans?.toList(),
       arkitCameraCenterWorld: cameraCenterWorld,
     );
+    _pendingMeta[seq] = meta;
+    _offeredMetaBySeq[seq] = meta;
+    final entry = _SpooledFrame(
+      seq: seq,
+      path: feed.jpegPath,
+      w: feed.imageWidth,
+      h: feed.imageHeight,
+      captureTimestamp: feed.captureTimestamp,
+      fx: fx,
+      fy: fy,
+      cx: cx,
+      cy: cy,
+      quatWxyz: quatWxyz,
+      trans: trans,
+    );
+    _frameBySeq[seq] = entry;
+    _deliveries.offer(seq: seq, jpegPath: feed.jpegPath);
 
     // [THERMAL-DOWNSHIFT 2026-08-07] 直发路径同样过热闸(短路求值:要 spool
     // 时不消耗奇偶);被闸下的帧走 spool,排空期回填,交付数据零损失。
     if (!sfmFeedShouldSpool(inFlight: _inFlight, spoolDepth: _spool.length) &&
         _thermalAllowsFeedNow()) {
-      _sendJpegFrameCmd(
-        seq,
-        feed.jpegPath,
-        feed.imageWidth,
-        feed.imageHeight,
-        feed.captureTimestamp,
-        fx,
-        fy,
-        cx,
-        cy,
-        quatWxyz,
-        trans,
-      );
+      if (!_deliveries.reserve(seq)) {
+        throw StateError('SfM direct-send slot reservation failed for #$seq');
+      }
+      _sendJpegFrameCmd(entry);
     } else {
-      _spool.add(
-        _SpooledFrame(
-          seq: seq,
-          path: feed.jpegPath,
-          w: feed.imageWidth,
-          h: feed.imageHeight,
-          captureTimestamp: feed.captureTimestamp,
-          fx: fx,
-          fy: fy,
-          cx: cx,
-          cy: cy,
-          quatWxyz: quatWxyz,
-          trans: trans,
-        ),
-      );
+      _spool.add(entry);
       _events.add(SfmLiveFrameQueued(seq, _spool.length));
       DeviceLog.log(
         'SfmLive',
@@ -751,12 +820,20 @@ class SfmLiveRecon {
   /// ObservationManager/database path. Analysis status never calls this
   /// method; the only caller is the explicit album delete action.
   Future<bool> removePhoto(String jpegPath) async {
-    if (_disposed || _finalizeRequested || jpegPath.isEmpty) return false;
+    if (_disposed ||
+        _finalizeRequested ||
+        _terminalGate.failure != null ||
+        jpegPath.isEmpty) {
+      return false;
+    }
 
     final queuedIndex = _spool.indexWhere((entry) => entry.path == jpegPath);
     if (queuedIndex >= 0) {
       final entry = _spool.removeAt(queuedIndex);
+      _deliveries.remove(entry.seq);
       _pendingMeta.remove(entry.seq);
+      _offeredMetaBySeq.remove(entry.seq);
+      _frameBySeq.remove(entry.seq);
       _seqOfferMs.remove(entry.seq);
       _seqSentMs.remove(entry.seq);
       _events.add(SfmLiveFrameQueued(entry.seq, _spool.length));
@@ -764,9 +841,26 @@ class SfmLiveRecon {
       return true;
     }
 
+    final debtIndex = _extractDebts.indexWhere(
+      (seq) => _frameBySeq[seq]?.path == jpegPath,
+    );
+    if (debtIndex >= 0) {
+      final seq = _extractDebts.removeAt(debtIndex);
+      _deliveries.remove(seq);
+      _pendingMeta.remove(seq);
+      _offeredMetaBySeq.remove(seq);
+      _frameBySeq.remove(seq);
+      _seqOfferMs.remove(seq);
+      _seqSentMs.remove(seq);
+      DeviceLog.log('SfmLive', 'user removed extract-debt frame#$seq');
+      return true;
+    }
+
     final nativeFrameId = _nativeFrameIdByJpegPath[jpegPath];
     if (nativeFrameId != null) {
-      return _requestNativeFrameRemoval(nativeFrameId);
+      final offerSeq = _offerSeqForJpegPath(jpegPath);
+      if (offerSeq == null) return false;
+      return _requestNativeFrameRemoval(nativeFrameId, offerSeq: offerSeq);
     }
 
     final isInFlight = _pendingMeta.values.any(
@@ -786,51 +880,79 @@ class SfmLiveRecon {
     return true;
   }
 
-  Future<bool> _requestNativeFrameRemoval(int frameId) async {
+  int? _offerSeqForJpegPath(String jpegPath) {
+    for (final entry in _frameBySeq.entries) {
+      if (entry.value.path == jpegPath) return entry.key;
+    }
+    return null;
+  }
+
+  Future<bool> _requestNativeFrameRemoval(
+    int frameId, {
+    required int offerSeq,
+    bool removalStarted = false,
+  }) async {
+    final existingRequestId = _removeRequestIdByFrameId[frameId];
+    final existing = existingRequestId == null
+        ? null
+        : _removeRequests[existingRequestId];
+    if (existing != null) return existing.future;
+    if (!removalStarted) _deliveries.beginRemoval(offerSeq);
     final requestId = ++_nextRemoveRequestId;
     final completer = Completer<bool>();
     _removeRequests[requestId] = completer;
-    _toWorker.send(<String, Object?>{
-      'cmd': 'remove_frame',
-      'requestId': requestId,
-      'frameId': frameId,
-    });
+    _removeOfferSeqs[requestId] = offerSeq;
+    _removeRequestIdByFrameId[frameId] = requestId;
+    try {
+      _toWorker.send(<String, Object?>{
+        'cmd': 'remove_frame',
+        'requestId': requestId,
+        'frameId': frameId,
+      });
+    } catch (_) {
+      _removeRequests.remove(requestId);
+      _removeOfferSeqs.remove(requestId);
+      _removeRequestIdByFrameId.remove(frameId);
+      _deliveries.completeRemoval(
+        offerSeq,
+        removed: false,
+        result: 'removeDispatchFailed',
+      );
+      _emitDeliveryFailure();
+      return false;
+    }
     try {
       return await completer.future.timeout(const Duration(seconds: 30));
     } on TimeoutException {
       _removeRequests.remove(requestId);
+      _removeOfferSeqs.remove(requestId);
+      _removeRequestIdByFrameId.remove(frameId);
+      if (!completer.isCompleted) completer.complete(false);
+      _deliveries.completeRemoval(
+        offerSeq,
+        removed: false,
+        result: 'removeTimeout',
+      );
+      _emitDeliveryFailure();
       return false;
     }
   }
 
-  void _sendJpegFrameCmd(
-    int seq,
-    String jpegPath,
-    int w,
-    int h,
-    double captureTimestamp,
-    double fx,
-    double fy,
-    double cx,
-    double cy,
-    Float64List? q,
-    Float64List? t,
-  ) {
-    _inFlight++;
-    _seqSentMs[seq] = DateTime.now().millisecondsSinceEpoch; // 遥测【frame】
+  void _sendJpegFrameCmd(_SpooledFrame entry) {
+    _seqSentMs[entry.seq] = DateTime.now().millisecondsSinceEpoch; // 遥测【frame】
     _toWorker.send(<String, Object?>{
       'cmd': 'jpeg_frame',
-      'seq': seq,
-      'jpegPath': jpegPath,
-      'w': w,
-      'h': h,
-      'captureTimestamp': captureTimestamp,
-      'fx': fx,
-      'fy': fy,
-      'cx': cx,
-      'cy': cy,
-      'q': q,
-      't': t,
+      'seq': entry.seq,
+      'jpegPath': entry.path,
+      'w': entry.w,
+      'h': entry.h,
+      'captureTimestamp': entry.captureTimestamp,
+      'fx': entry.fx,
+      'fy': entry.fy,
+      'cx': entry.cx,
+      'cy': entry.cy,
+      'q': entry.quatWxyz,
+      't': entry.trans,
     });
   }
 
@@ -867,33 +989,27 @@ class SfmLiveRecon {
   /// Feeds spooled frames whenever the worker has room; sends the deferred
   /// finalize once everything drained. Single-flight (re-entry guarded).
   Future<void> _pump() async {
-    if (_pumping || _disposed) return;
+    if (_pumping || _disposed || _terminalGate.failure != null) return;
     _pumping = true;
     try {
       while (!_disposed &&
+          _terminalGate.failure == null &&
           sfmFeedCanPumpNext(inFlight: _inFlight, spoolDepth: _spool.length)) {
         // [THERMAL-DOWNSHIFT 2026-08-07] 拍摄期热闸:serious 隔帧、critical
         // 停喂(帧留在 spool,排空期回填;排空期本闸恒放行)。break 而非
         // continue —— "歇一次"的语义是这一轮不喂,下一次 frame_done/offer
         // 再泵时重新决策。
         if (!_finalizeRequested && !_thermalAllowsFeedNow()) break;
-        // [C2-BACKPRESSURE 2026-08-06 用户签决] 拍摄期 latest-first,排空期
-        // FIFO。拍摄期取 _spool 最新一帧优先喂(live 点云跟手,预览永远反映
-        // 刚拍到的视角);finalize 请求后(_finalizeRequested)转为取最旧一帧,
-        // 按拍摄序回填,与既有排空行为一致。设计依据:
-        //   1. 乱序喂帧 A/B 四指标实证安全——注册帧零差、点数 +0.44%、
-        //      重投影误差 +1.25%、轨迹长度无损;
-        //   2. 空间配对(spatial pairing)不吃喂入顺序,配对集由几何决定;
-        //   3. 进度条口径零改动——queuedCount/remainingCount 只看长度,
-        //      不看顺序;本改动不丢帧,深度无上限保持,只改处理顺序;
-        //   4. AVCapture 的 alwaysDiscardsLateVideoFrames 同向:实时管线
-        //      标准做法就是最新优先。
-        // 取帧即出队(removeLast/removeAt(0)),不在 await 之后再按索引删,
-        // 避免挂起期间新帧 append 使尾部索引漂移。
-        // 回滚 = 本处与下方出队两处改回 `_spool.first` / `_spool.removeAt(0)`
-        // 的旧形态(严格 FIFO)。
-        final entry =
-            _finalizeRequested ? _spool.removeAt(0) : _spool.removeLast();
+        // One temporal contract for capture and drain: native frame ids are
+        // assigned in feed order, so disk backlog must stay strict FIFO.
+        final entry = _spool.removeAt(0);
+        // Reserve synchronously BEFORE file I/O. While the await below is
+        // suspended, offerFrame now observes this occupied slot and cannot
+        // direct-send a third worker command.
+        if (!_deliveries.reserve(entry.seq)) {
+          _spool.insert(0, entry);
+          break;
+        }
         try {
           if (!await File(entry.path).exists()) {
             throw FileSystemException('canonical JPEG missing', entry.path);
@@ -908,29 +1024,26 @@ class SfmLiveRecon {
           // 交替,同场景同热漂;frame_split 的 pf 命中位标注真实臂。未设=
           // 恒发(生产形态)。跨帧状态刀不能逐帧翻,分块是它的合法交替粒度。
           if (_spool.isNotEmpty && _prefetchAbArmB(entry.seq)) {
-            final next = _finalizeRequested ? _spool.first : _spool.last;
+            final next = _spool.first;
             _toWorker.send(<String, Object?>{
               'cmd': 'prefetch',
               'path': next.path,
             });
           }
-          _sendJpegFrameCmd(
-            entry.seq,
-            entry.path,
-            entry.w,
-            entry.h,
-            entry.captureTimestamp,
-            entry.fx,
-            entry.fy,
-            entry.cx,
-            entry.cy,
-            entry.quatWxyz,
-            entry.trans,
-          );
+          _sendJpegFrameCmd(entry);
         } catch (e) {
-          // Unreadable spill — skip this frame rather than stall the queue.
-          // ([C2-BACKPRESSURE] entry 已在取帧处出队,此处无需再删。)
+          // The canonical JPEG remains user evidence. A missing/unreadable
+          // path is delivery debt, never a successfully drained frame.
           final meta = _pendingMeta.remove(entry.seq);
+          final removeAfterAck = meta == null
+              ? null
+              : _removeWhenFrameAcked.remove(meta.jpegPath);
+          if (removeAfterAck != null) {
+            _deliveries.remove(entry.seq);
+            if (!removeAfterAck.isCompleted) removeAfterAck.complete(true);
+          } else {
+            _deliveries.acknowledgeFailure(entry.seq, result: 'missingJpeg');
+          }
           _seqOfferMs.remove(entry.seq);
           _seqSentMs.remove(entry.seq);
           _events.add(
@@ -943,6 +1056,7 @@ class SfmLiveRecon {
             ),
           );
           DeviceLog.log('SfmLive', 'spool #${entry.seq} unreadable: $e');
+          _emitDeliveryFailure();
         }
       }
     } finally {
@@ -953,6 +1067,7 @@ class SfmLiveRecon {
 
   void _maybeSendFinalize() {
     if (_disposed ||
+        _terminalGate.failure != null ||
         !sfmFeedCanSendFinalize(
           finalizeRequested: _finalizeRequested,
           finalizeSent: _finalizeSent,
@@ -968,10 +1083,14 @@ class SfmLiveRecon {
       _repayExtractDebts();
       return;
     }
-    if (_debtCpuEnvSet) {
-      AetherProcessEnv.unset('OFFICIAL_AETHER_EXTRACT_CPU_FALLBACK');
-      _debtCpuEnvSet = false;
+    // A worker slot is already free while native ObservationManager/database
+    // removal is pending, but finalize must wait for that acknowledgement.
+    if (_deliveries.hasPendingRemoval) return;
+    if (!_deliveries.canFinalize) {
+      _emitDeliveryFailure();
+      return;
     }
+    _debtCpuOverride.restore();
     _finalizeSent = true;
     DeviceLog.log('SfmLive', 'queue drained → finalize dispatched');
     // 遥测【finalize/queue_drain】:完成动作 → 队列排空 → finalize 下发。
@@ -979,7 +1098,7 @@ class SfmLiveRecon {
       'ms': _finalizeRequestMs > 0
           ? DateTime.now().millisecondsSinceEpoch - _finalizeRequestMs
           : 0,
-      'offered': _seq,
+      'offered': _deliveries.offeredCount,
       'fed': _fedOk,
       // [WAIT-BUDGET 2026-07-29] 完成动作那一刻欠了多少帧(见 _finalizeBacklog)。
       // backlog=0 ⇒ 流式跟上了快门,拍摄期成本对用户完全隐形;backlog>0 ⇒ 这
@@ -988,47 +1107,32 @@ class SfmLiveRecon {
       'in_flight': _finalizeInFlight,
     });
     _toWorker.send(const <String, Object?>{'cmd': 'finalize'});
+    _startFinalizeWatchdog();
   }
 
   /// [EXTRACT-DEBT REPAY 2026-08-09] 把欠账帧按拍摄序重新入 spool 补算。
   /// 临时放开 native 的 CPU 兜底闸(拍完等待期安全;finalize 下发前恢复)。
   /// 单次重试:重喂 seq 记入 _debtRefeedSeqs,再失败不三喂、大声上报。
   void _repayExtractDebts() {
-    final debts = List<SfmFedFrameMeta>.of(_extractDebts);
+    final debts = List<int>.of(_extractDebts);
     _extractDebts.clear();
-    if (!_debtCpuEnvSet) {
-      AetherProcessEnv.set('OFFICIAL_AETHER_EXTRACT_CPU_FALLBACK', '1');
-      _debtCpuEnvSet = true;
-    }
-    for (final m in debts) {
-      final seq = ++_seq;
+    if (!_debtCpuOverride.isEnabled) _debtCpuOverride.enable('1');
+    for (final seq in debts) {
+      final m = _offeredMetaBySeq[seq];
+      final entry = _frameBySeq[seq];
+      if (m == null || entry == null) {
+        _deliveries.fail(seq, result: 'missingRetryState');
+        continue;
+      }
       _seqOfferMs[seq] = DateTime.now().millisecondsSinceEpoch;
       _debtRefeedSeqs.add(seq);
       _pendingMeta[seq] = m;
-      _spool.add(
-        _SpooledFrame(
-          seq: seq,
-          path: m.jpegPath,
-          w: m.imageW,
-          h: m.imageH,
-          captureTimestamp: m.captureTimestamp ?? 0.0,
-          fx: m.fx,
-          fy: m.fy,
-          cx: m.cx,
-          cy: m.cy,
-          quatWxyz: m.arkitQuatWxyz != null
-              ? Float64List.fromList(m.arkitQuatWxyz!)
-              : null,
-          trans: m.arkitTransTxyz != null
-              ? Float64List.fromList(m.arkitTransTxyz!)
-              : null,
-        ),
-      );
+      _spool.add(entry);
     }
     DeviceLog.log(
       'SfmLive',
       'extract-debt repay: refeeding ${debts.length} frame(s) '
-      'with CPU fallback temporarily enabled',
+          'with CPU fallback temporarily enabled',
     );
     TelemetryWriter.instance.event('extract_debt_repay', {'n': debts.length});
     unawaited(_pump());
@@ -1043,8 +1147,13 @@ class SfmLiveRecon {
   /// 2 pairs/tick keeps the worst-case added shutter latency to one small
   /// matcher call (~a few hundred ms hot).
   void _maybePrepay() {
-    if (_disposed || _finalizeRequested || _prepayInFlight) return;
-    if (_spool.isNotEmpty || _inFlight > 0) return;
+    if (_disposed ||
+        _finalizeRequested ||
+        _prepayInFlight ||
+        _terminalGate.failure != null) {
+      return;
+    }
+    if (_spool.isNotEmpty || _inFlight > 0 || _extractDebts.isNotEmpty) return;
     _prepayInFlight = true;
     _toWorker.send(const <String, Object?>{'cmd': 'repay', 'budget': 2});
   }
@@ -1052,18 +1161,42 @@ class SfmLiveRecon {
   /// Ends the capture. New frames are refused from this moment; the worker
   /// finishes the disk queue first, then runs finalize_async (phase 1
   /// blocks in-worker; LOCAL_READY and REFINED/ERROR arrive via [events]).
+  ///
+  /// The camera lifecycle owner may call [notifyFinishCommitted] earlier, at
+  /// the synchronous UI transition, to suppress preview BA while the final
+  /// already-verified shutter receipts are still draining.
+  void notifyFinishCommitted() {
+    if (_disposed || _finishPendingNotified) return;
+    _finishPendingNotified = true;
+    if (_workerUnavailable || _terminalGate.failure != null) return;
+    _toWorker.send(const <String, Object?>{'cmd': 'finish_pending'});
+  }
+
   void finalize() {
     if (_disposed || _finalizeRequested) return;
     _finalizeRequested = true;
-    // [SPRINT-FIX] 完成即翻框架内匹配器的 capture_active(排空+enrich 不再
-    // 给已停相机让路;旧 silgen 只翻了旧栈副本 —— 07-26 起的哑旗)。
-    AetherMatchFlags.setCaptureActive(false);
+    _previewPublisher.dispose();
+    // capture_active is owned by the camera lifecycle, not by reconstruction.
+    // The external owner must flip the framework-exported AetherMatchFlags API
+    // synchronously when Finish commits, before this asynchronous drain starts.
     _finalizeRequestMs = DateTime.now().millisecondsSinceEpoch; // 遥测
     // 遥测【WAIT-BUDGET】欠债快照必须在这一刻取:_pump() 一旦跑起来 _spool
     // 就开始缩,到 _maybeSendFinalize 时永远是 0。
-    _finalizeBacklog = _spool.length;
+    _finalizeBacklog = _spool.length + _extractDebts.length;
+    _finalizeBacklog += _deliveries.pendingRemovalCount;
     _finalizeInFlight = _inFlight;
-    if (_spool.isNotEmpty || _inFlight > 0) {
+    // This message shares the worker FIFO, but sending it at the first
+    // synchronous finalize boundary prevents retry/debt frames from starting
+    // any new capture-time preview BA once it is observed.
+    notifyFinishCommitted();
+    // Capture-time worker failures are recorded immediately, but the page
+    // consumes terminal reconstruction events only after Finish. Publish the
+    // saved first failure now so the black transition remains exitable.
+    if (_terminalGate.failure != null) {
+      _publishTerminalFailureIfReady();
+      return;
+    }
+    if (_spool.isNotEmpty || _inFlight > 0 || _extractDebts.isNotEmpty) {
       DeviceLog.log(
         'SfmLive',
         'finalize deferred: inFlight=$_inFlight queued=${_spool.length}',
@@ -1071,7 +1204,6 @@ class SfmLiveRecon {
       // [SPRINT-MODE 2026-07-26] Tell the worker immediately so the drain
       // frames skip interim preview BAs (measured 9.5s of wasted wall time
       // between the finish tap and REFINED on cap_1785070530166049).
-      _toWorker.send(const <String, Object?>{'cmd': 'finish_pending'});
       unawaited(_pump());
       return;
     }
@@ -1085,7 +1217,9 @@ class SfmLiveRecon {
   /// [imageWidth]/[imageHeight] seed the session options only; the reconstruction
   /// reads its geometry from the db, so a nominal capture resolution is fine.
   void resumeFromDb({int imageWidth = 3840, int imageHeight = 2160}) {
-    if (_disposed || _finalizeRequested) return;
+    if (_disposed || _finalizeRequested || _terminalGate.failure != null) {
+      return;
+    }
     _finalizeRequested = true;
     _finalizeSent = true;
     _toWorker.send(<String, Object?>{
@@ -1093,6 +1227,7 @@ class SfmLiveRecon {
       'w': imageWidth,
       'h': imageHeight,
     });
+    _startFinalizeWatchdog();
   }
 
   /// RECOVERY 配套:断点续跑的会话没喂过任何帧,_fedMeta 天然为空 ——
@@ -1144,41 +1279,203 @@ class SfmLiveRecon {
     } catch (_) {}
   }
 
-  /// Frees the native session (joins the background BA thread, drops the
-  /// sqlite db) and tears the isolate down. Safe to call more than once.
-  Future<void> dispose() async {
-    if (_disposed) return;
-    _disposed = true;
-    // Queue entries reference canonical capture evidence; never delete them.
-    _spool.clear();
-    final ack = _disposeAck = Completer<void>();
-    try {
-      _toWorker.send(const <String, Object?>{'cmd': 'dispose'});
-      // aether_sfm_free may legitimately block while joining a running
-      // global-BA thread; give it generous room before force-killing.
-      await ack.future.timeout(const Duration(seconds: 120));
-    } catch (_) {
-      // Timeout/port death — fall through to kill.
-    } finally {
-      try {
-        await _sub.cancel();
-      } catch (_) {
-        // Continue deterministic termination and lease release.
-      }
-      _fromWorker.close();
-      _isolate.kill(priority: Isolate.immediate);
-      try {
-        await _events.close();
-      } finally {
-        reconstructionLease.release(_leaseOwner);
-        unawaited(_photoArchiveActivityLease.close());
-      }
+  static const Duration _finalizeLivenessLimit = Duration(minutes: 25);
+
+  void _startFinalizeWatchdog() {
+    _finalizeWatchdog?.cancel();
+    _finalizeWatchdog = Timer(_finalizeLivenessLimit, () {
+      final failure = _emitTerminalFailure(
+        kind: SfmTerminalFailureKind.finalizeTimeout,
+        stage: 'finalize_timeout',
+        message:
+            'worker produced no terminal finalize status within '
+            '${_finalizeLivenessLimit.inMinutes} minutes',
+      );
+      if (failure == null) return;
+      _settlePendingAfterTerminal('finalizeTimeout');
+      unawaited(dispose());
+    });
+  }
+
+  void _emitDeliveryFailure() {
+    final failures = _deliveries.failures;
+    final first = failures.isEmpty ? null : failures.first;
+    final failure = _emitTerminalFailure(
+      kind: SfmTerminalFailureKind.deliveryFailed,
+      stage: 'delivery',
+      message: first == null
+          ? 'delivery ledger cannot finalize'
+          : 'frame#${first.seq} ${first.result}: ${first.jpegPath}',
+    );
+    if (failure != null) _settlePendingAfterTerminal('deliveryAborted');
+  }
+
+  SfmTerminalFailure? _emitTerminalFailure({
+    required SfmTerminalFailureKind kind,
+    required String stage,
+    required String message,
+  }) {
+    final failure = _terminalGate.fail(
+      kind: kind,
+      stage: stage,
+      message: message,
+    );
+    if (failure == null) return null;
+    _finalizeWatchdog?.cancel();
+    _debtCpuOverride.restore();
+    if (!_completion.isCompleted) _completion.complete(failure);
+    _publishTerminalFailureIfReady();
+    return failure;
+  }
+
+  void _publishTerminalFailureIfReady() {
+    final failure = _terminalGate.failure;
+    if (failure == null ||
+        _terminalEventEmitted ||
+        !_finalizeRequested ||
+        _events.isClosed) {
+      return;
     }
+    _terminalEventEmitted = true;
+    _events.add(
+      SfmLiveFailed(failure.stage, failure.message, kind: failure.kind),
+    );
+  }
+
+  void _settlePendingAfterTerminal(String result) {
+    _previewPublisher.dispose();
+    _deliveries.failOutstanding(result: result);
+    _spool.clear();
+    _extractDebts.clear();
+    _pendingMeta.clear();
+    _prepayInFlight = false;
+    for (final completer in _removeWhenFrameAcked.values) {
+      if (!completer.isCompleted) completer.complete(false);
+    }
+    _removeWhenFrameAcked.clear();
+    for (final completer in _removeRequests.values) {
+      if (!completer.isCompleted) completer.complete(false);
+    }
+    _removeRequests.clear();
+    _removeOfferSeqs.clear();
+    _removeRequestIdByFrameId.clear();
+    _debtCpuOverride.restore();
+  }
+
+  void _onWorkerSignal(dynamic signal) {
+    if (signal is Map) {
+      _onWorkerMessage(signal);
+      return;
+    }
+    if (signal == null) {
+      _onWorkerExit();
+      return;
+    }
+    if (signal is List && signal.isNotEmpty) {
+      final error = signal.first;
+      final stack = signal.length > 1 ? signal[1] : null;
+      _emitTerminalFailure(
+        kind: SfmTerminalFailureKind.workerFatal,
+        stage: 'worker_fatal',
+        message: stack == null ? '$error' : '$error\n$stack',
+      );
+      _settlePendingAfterTerminal('workerFatal');
+      return;
+    }
+    _emitTerminalFailure(
+      kind: SfmTerminalFailureKind.workerProtocol,
+      stage: 'worker_protocol',
+      message: 'unexpected isolate signal: $signal',
+    );
+    _settlePendingAfterTerminal('workerProtocol');
+  }
+
+  void _onWorkerExit() {
+    if (!_workerExitAck.isCompleted) _workerExitAck.complete();
+    final disposeAck = _disposeAck;
+    if (disposeAck != null && !disposeAck.isCompleted) disposeAck.complete();
+    if (!_disposeRequested &&
+        !_workerDisposedAcked &&
+        !_completion.isCompleted) {
+      _emitTerminalFailure(
+        kind: SfmTerminalFailureKind.workerExited,
+        stage: 'worker_exit',
+        message: 'SfM worker exited before deterministic disposal',
+      );
+      _settlePendingAfterTerminal('workerExited');
+    }
+    _workerUnavailable = true;
+    _workerCleanupFuture ??= _releaseWorkerResourcesAfterConfirmedExit();
+  }
+
+  /// Frees the native session and releases the process lease only after the VM
+  /// confirms worker exit. Killing an isolate cannot interrupt a blocking FFI
+  /// call, so a timed-out native join deliberately keeps the lease held.
+  Future<void> dispose() {
+    final existing = _disposeFuture;
+    if (existing != null) return existing;
+    _disposeRequested = true;
+    _disposed = true;
+    _finalizeWatchdog?.cancel();
+    _debtCpuOverride.restore();
+    _previewPublisher.dispose();
+    _settlePendingAfterTerminal('disposed');
+    if (!_completion.isCompleted) {
+      _completion.complete(
+        const SfmTerminalFailure(
+          kind: SfmTerminalFailureKind.disposed,
+          stage: 'dispose',
+          message: 'reconstruction disposed before refined completion',
+        ),
+      );
+    }
+    return _disposeFuture = _disposeDeterministically();
+  }
+
+  Future<void> _disposeDeterministically() async {
+    if (!_workerExitAck.isCompleted) {
+      final ack = _disposeAck = Completer<void>();
+      _toWorker.send(const <String, Object?>{'cmd': 'dispose'});
+      try {
+        await ack.future.timeout(const Duration(seconds: 120));
+      } on TimeoutException {
+        _isolate.kill(priority: Isolate.immediate);
+      }
+      // onExit is the only proof that the isolate is no longer inside native
+      // code. There is intentionally no second timeout before lease release.
+      await _workerExitAck.future;
+    }
+    await (_workerCleanupFuture ??=
+        _releaseWorkerResourcesAfterConfirmedExit());
+    if (!_events.isClosed) await _events.close();
+  }
+
+  Future<void> _releaseWorkerResourcesAfterConfirmedExit() async {
+    if (_resourcesReleased) return;
+    if (!_workerExitAck.isCompleted) {
+      throw StateError(
+        'cannot release reconstruction lease before worker exit',
+      );
+    }
+    _resourcesReleased = true;
+    try {
+      await _sub.cancel();
+    } catch (_) {}
+    _fromWorker.close();
+    reconstructionLease.release(_leaseOwner);
+    await _photoArchiveActivityLease.close();
   }
 
   void _onWorkerMessage(dynamic msg) {
     if (msg is! Map) return;
-    switch (msg['evt']) {
+    final evt = msg['evt'];
+    if (_terminalGate.failure != null &&
+        evt != 'disposed' &&
+        evt != 'log' &&
+        evt != 'telem') {
+      return;
+    }
+    switch (evt) {
       case 'log':
         // Worker isolates must not touch DeviceLog (path cache lives on the
         // main isolate) — they forward lines here instead.
@@ -1201,8 +1498,8 @@ class SfmLiveRecon {
           }
         }
       case 'frame_done':
-        _inFlight = _inFlight > 0 ? _inFlight - 1 : 0;
-        final ok = msg['result'] == 'ok';
+        final result = msg['result'] as String;
+        final ok = result == 'ok';
         final seq = msg['seq'] as int;
         final frameId = msg['frameId'] as int;
         final meta = _pendingMeta.remove(seq);
@@ -1215,8 +1512,13 @@ class SfmLiveRecon {
         if (ok && removeAfterAck == null) _fedOk++;
         if (removeAfterAck != null) {
           if (frameId >= 0) {
+            _deliveries.beginRemoval(seq);
             unawaited(
-              _requestNativeFrameRemoval(frameId).then((removed) {
+              _requestNativeFrameRemoval(
+                frameId,
+                offerSeq: seq,
+                removalStarted: true,
+              ).then((removed) {
                 if (!removeAfterAck.isCompleted) {
                   removeAfterAck.complete(removed);
                 }
@@ -1225,40 +1527,60 @@ class SfmLiveRecon {
           } else if (!removeAfterAck.isCompleted) {
             // The frame never entered native SfM, so there is no contribution
             // to withdraw even though the add-frame result itself failed.
+            _deliveries.remove(seq);
             removeAfterAck.complete(true);
           }
-        } else if (ok && meta != null && frameId >= 0) {
-          _fedMeta[frameId] = meta;
-          _persistFedMeta(frameId, meta);
+        } else {
+          final processed =
+              ok ||
+              result == 'errNoInitialPair' ||
+              result == 'errNotRegistered';
+          if (processed) {
+            _deliveries.acknowledgeSuccess(seq);
+            _debtRefeedSeqs.remove(seq);
+            if (ok && meta != null && frameId >= 0) {
+              _fedMeta[frameId] = meta;
+              _persistFedMeta(frameId, meta);
+            }
+          } else if (result == 'errExtract' && meta != null) {
+            if (_debtRefeedSeqs.remove(seq)) {
+              _deliveries.acknowledgeFailure(seq, result: result);
+              _emitDeliveryFailure();
+            } else {
+              _deliveries.retry(seq);
+              _extractDebts.add(seq);
+            }
+          } else {
+            _deliveries.acknowledgeFailure(seq, result: result);
+            _debtRefeedSeqs.remove(seq);
+            _emitDeliveryFailure();
+          }
         }
         // [EXTRACT-DEBT REPAY] 提取失败的帧记欠账(照片在盘上、pose 在 meta
         // 里,什么都不缺,只是晚算)。正被删除的帧(removeAfterAck)不欠;
         // 补喂仍失败的帧(_debtRefeedSeqs)不再入账 —— 单次重试,失败大声上报。
-        if (msg['result'] == 'errExtract' && meta != null) {
-          if (_debtRefeedSeqs.remove(seq)) {
+        if (result == 'errExtract' && meta != null && removeAfterAck == null) {
+          if (!_extractDebts.contains(seq)) {
             DeviceLog.log(
               'SfmLive',
               'extract-debt REPAY FAILED (CPU fallback also failed): '
-              '${meta.jpegPath.split('/').last} — frame missing from '
-              'delivery, ESCALATE',
+                  '${meta.jpegPath.split('/').last} — frame missing from '
+                  'delivery, ESCALATE',
             );
             TelemetryWriter.instance.event('extract_debt_repay_failed', {
               'jpeg': meta.jpegPath.split('/').last,
             });
           } else if (removeAfterAck == null) {
-            _extractDebts.add(meta);
             DeviceLog.log(
               'SfmLive',
               'extract-debt recorded (#${_extractDebts.length}): '
-              '${meta.jpegPath.split('/').last} — repay before finalize',
+                  '${meta.jpegPath.split('/').last} — repay before finalize',
             );
             TelemetryWriter.instance.event('extract_debt_recorded', {
               'jpeg': meta.jpegPath.split('/').last,
               'debts': _extractDebts.length,
             });
           }
-        } else {
-          _debtRefeedSeqs.remove(seq);
         }
         // Consolidated per-frame telemetry: timing (worker) + queue state
         // (facade owns the disk spool) + memory/thermal (worker peak sample).
@@ -1352,6 +1674,16 @@ class SfmLiveRecon {
         final requestId = msg['requestId'] as int;
         final frameId = msg['frameId'] as int;
         final removed = msg['ok'] == true;
+        final offerSeq = _removeOfferSeqs.remove(requestId);
+        _removeRequestIdByFrameId.remove(frameId);
+        if (offerSeq != null) {
+          _deliveries.completeRemoval(
+            offerSeq,
+            removed: removed,
+            result: 'removeFailed',
+          );
+          if (!removed) _emitDeliveryFailure();
+        }
         if (removed) {
           final hadFrame = _fedMeta.remove(frameId) != null;
           if (hadFrame && _fedOk > 0) _fedOk--;
@@ -1367,6 +1699,7 @@ class SfmLiveRecon {
           'SfmLive',
           'user remove frameId=$frameId ok=$removed stats=${msg['stats']}',
         );
+        _maybeSendFinalize();
       case 'preview':
         // Preview xyz is already in ARKit's gravity-aligned metric world. It
         // shares the payload shape with local_ready but not its coordinate-space
@@ -1396,7 +1729,7 @@ class SfmLiveRecon {
           'source_receive seq=$sourceReceiveSeq source=$source '
               'version=$publishVersion points=${snapshot.pointCount}',
         );
-        _events.add(SfmLivePreview(snapshot));
+        _previewPublisher.add(snapshot);
       case 'live_poses':
         // 拍摄期逐帧连通性(合成 posesPacked,契约见 SfmLiveConnectivity)。
         _events.add(
@@ -1432,6 +1765,9 @@ class SfmLiveRecon {
           ),
         );
       case 'refined':
+        _finalizeWatchdog?.cancel();
+        _debtCpuOverride.restore();
+        if (!_completion.isCompleted) _completion.complete(null);
         TelemetryWriter.instance.event('finalize_wall', {
           'phase': 'refined',
           'ms': msg['ms'] as int? ?? -1,
@@ -1455,14 +1791,18 @@ class SfmLiveRecon {
           'stage': msg['stage'],
           'message': '${msg['message']}',
         });
-        _events.add(
-          SfmLiveFailed(
-            msg['stage'] as String? ?? 'unknown',
-            msg['message'] as String? ?? 'unknown',
-          ),
+        final stage = msg['stage'] as String? ?? 'unknown';
+        final message = msg['message'] as String? ?? 'unknown';
+        final failure = _emitTerminalFailure(
+          kind: SfmTerminalFailureKind.workerProtocol,
+          stage: stage,
+          message: message,
         );
+        if (failure != null) _settlePendingAfterTerminal('workerError');
       case 'disposed':
-        _disposeAck?.complete();
+        _workerDisposedAcked = true;
+        final ack = _disposeAck;
+        if (ack != null && !ack.isCompleted) ack.complete();
     }
   }
 
@@ -1699,29 +2039,6 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
   // Finalize's own stage-1/stage-2 refinement redoes this work to its own
   // convergence criteria, so skipping interim preview BAs sheds no data.
   var finishPending = false;
-  // [SPRINT-RACE 2026-07-26, signed] The finish_pending message travels the
-  // same FIFO as frame events, so a finish tapped while a frame event is
-  // mid-flight cannot flip the flag in time to stop THAT event's preview BA
-  // (cap4 lost 9.5s exactly this way). Swift flips the matcher's
-  // gCaptureActive atomic synchronously in stopSession — an FFI read closes
-  // the window. Unresolvable symbol → assume active (legacy behaviour).
-  _CaptureActiveDart? captureActiveFn;
-  var captureActiveResolved = false;
-  bool nativeCaptureActive() {
-    if (!captureActiveResolved) {
-      captureActiveResolved = true;
-      try {
-        captureActiveFn = ffi.DynamicLibrary.process()
-            .lookupFunction<_CaptureActiveC, _CaptureActiveDart>(
-              'aether_gpu_match_get_capture_active',
-            );
-      } catch (_) {
-        // Symbol absent (host tests / old binary) — gate stays message-only.
-      }
-    }
-    final fn = captureActiveFn;
-    return fn == null || fn() != 0;
-  }
   // True session high-water footprint — the public TASK_VM_INFO layout has no
   // historical peak field, so we take a running max of the instantaneous
   // sample taken right after each heavy native call.
@@ -1749,6 +2066,30 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
       'evt': 'telem',
       'type': type,
       'data': data,
+    });
+  }
+
+  /// A capability that failed to engage, reported ONCE per capability per
+  /// session.
+  ///
+  /// Every `catch (_) {}` in this worker used to swallow one of these whole.
+  /// On 2026-08-31 that cost a full session: the thermal throttle built on
+  /// 2026-07-11 — the one whose own header comment names this exact failure
+  /// chain ("thermal serious → GPU saturated → Metal drops command buffers →
+  /// ARSession stalls") — never engaged. `throttled_cum` read 0 across 1206
+  /// samples while the device sat at `serious` and world tracking was lost six
+  /// times. Nothing anywhere recorded that it had been switched off, because
+  /// the catch that switched it off wrote nothing.
+  ///
+  /// Latched, because the worst offender sits in the per-frame path: reporting
+  /// every occurrence would bury the first one under thousands of repeats.
+  final degradedCapabilities = <String>{};
+  void reportDegraded(String capability, Object error) {
+    if (!degradedCapabilities.add(capability)) return;
+    wlog('DEGRADED $capability: $error');
+    telem('sfm_capability_degraded', <String, Object?>{
+      'capability': capability,
+      'error': error.toString(),
     });
   }
 
@@ -1944,7 +2285,40 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
           if (telPre != null && telPre.thermalState >= 0) {
             try {
               session!.setThermalState(telPre.thermalState);
-            } catch (_) {} // 旧 .a 无此符号时静默跳过(throttle 保持关闭)
+              // 证明这次调用真的到达了 native,以及送进去的是哪个值。
+              //
+              // 2026-08-31:thermal 到 serious 的样本有 30 个、reportDegraded
+              // 证明能力没被静默关闭、候选窗在 19~23 张的长会话里早已填满 ——
+              // 但 throttled_cum 在 132 个样本里**恒为 0**,降级一次没触发。
+              // 剩下两种可能:①值送到了,上游的降级判据与头文件注释不符;
+              // ②值根本没送到(ABI/时序)。这条埋点分辨这两者:有记录且
+              // value=2 却仍然 throttled_cum=0 ⇒ 问题在上游那个预编译库里,
+              // 不在我们这边。按会话+值去重,避免每帧刷屏。
+              final key = 'thermal_push_${telPre.thermalState}';
+              if (degradedCapabilities.add(key)) {
+                telem('sfm_thermal_push', <String, Object?>{
+                  'value': telPre.thermalState,
+                });
+              }
+            } catch (e) {
+              // Was `catch (_) {}`. Swallowing this disables the thermal
+              // throttle for the entire session, leaving no trace anywhere.
+              reportDegraded('thermal_throttle_set_state', e);
+            }
+          } else {
+            // The other way the throttle dies: never entering the branch at
+            // all. A null sample or a negative thermalState leaves native
+            // holding whatever bucket it started with, and the catch above —
+            // which only fires INSIDE the branch — reports nothing. On
+            // 2026-08-31 throttled_cum read 0 across 1206 samples with the
+            // device at thermal serious, and these two causes were
+            // indistinguishable. They no longer are.
+            reportDegraded(
+              'thermal_throttle_no_sample',
+              telPre == null
+                  ? 'PwTelemetry.sample() returned null'
+                  : 'thermalState=${telPre.thermalState} (<0)',
+            );
           }
           final r = session!.addJpegFrame(
             msg['jpegPath'] as String,
@@ -1982,7 +2356,12 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
           var throttledCum = -1;
           try {
             throttledCum = session!.thermalThrottledFrames();
-          } catch (_) {}
+          } catch (e) {
+            // Was `catch (_) {}`. Leaving throttledCum at -1 in silence is how
+            // "the throttle never ran" and "we cannot read whether it ran"
+            // became indistinguishable in the logs.
+            reportDegraded('thermal_throttle_stats', e);
+          }
           wlog(
             'add_frame seq=${msg['seq']} frameId=${r.frameId} '
             'rc=${r.result.name} ms=${sw.elapsedMilliseconds} (${w}x$h) | '
@@ -2040,10 +2419,7 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
             try {
               // [SPRINT-MODE] No preview BA once finish is pending — see the
               // finishPending declaration for the measured rationale.
-              // [SPRINT-RACE] Also consult the native capture-active atomic:
-              // it flips synchronously with the AR session stop, closing the
-              // in-flight-event race the message-driven flag cannot cover.
-              final beforeGlobal = (finishPending || !nativeCaptureActive())
+              final beforeGlobal = finishPending
                   ? null
                   : session!.previewTracked();
               // [AR-EVERY-FRAME 2026-08-04] 默认关。开启后:每个被接受、且已有
@@ -2260,9 +2636,14 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
           try {
             final prc = session!.prefetchJpegFrame(msg['path'] as String);
             if (prc == 0) {
-              wlog('prefetch queued: ${(msg['path'] as String).split('/').last}');
+              wlog(
+                'prefetch queued: ${(msg['path'] as String).split('/').last}',
+              );
             }
-          } catch (_) {} // 旧 framework 无符号 → 静默跳过
+          } catch (e) {
+            // Was `catch (_) {}`.
+            reportDegraded('prefetch', e);
+          }
         }
       case 'finish_pending':
         // [SPRINT-MODE] Finish tapped while frames are still draining: keep
@@ -2280,9 +2661,7 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
         var repaid = 0;
         if (!finishPending && session != null) {
           try {
-            repaid = session!.liveRepay(
-              maxPairs: (msg['budget'] as int?) ?? 2,
-            );
+            repaid = session!.liveRepay(maxPairs: (msg['budget'] as int?) ?? 2);
           } catch (e) {
             wlog('quad-prepay failed (non-fatal): $e');
           }

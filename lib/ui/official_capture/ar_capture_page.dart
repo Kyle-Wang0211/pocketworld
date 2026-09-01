@@ -23,6 +23,7 @@
 // HUD (shutter / recording panel).
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data' show Int32List, Float32List, Float64List, Uint8List;
@@ -38,16 +39,24 @@ import 'package:flutter/cupertino.dart'
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
-import 'package:vector_math/vector_math_64.dart' show Quaternion, Vector3;
+import 'package:vector_math/vector_math_64.dart'
+    show Matrix4, Quaternion, Vector3;
 
 import '../../point_cloud_display/progressive_octree_order.dart';
 import '../../official_capture/auto_capture_controller.dart';
+import '../../official_capture/auto_capture_failure_visibility.dart';
 import '../../official_capture/auto_capture_geometry.dart'
-    show medianDepthFromCloudXyz;
+    show
+        AutoCaptureGeometryFrame,
+        AutoCaptureIntrinsics,
+        medianDepthFromCloudXyz;
 import '../../official_capture/auto_capture_governor.dart';
 import '../../official_capture/auto_capture_mode.dart';
 import '../../official_capture/auto_capture_telemetry.dart';
+import '../../official_capture/accepted_photo_transaction.dart';
+import '../../official_capture/accepted_photo_record_store.dart';
 import '../../official_capture/capture_coverage_cloud.dart';
+import '../../official_capture/capture_finish_coordinator.dart';
 import '../../official_capture/capture_session.dart';
 import '../../official_capture/colorize_pipeline.dart';
 import '../../official_capture/live_sfm_publish_policy.dart';
@@ -71,10 +80,10 @@ import '../../official_capture/transient_preview_cleanup.dart';
 import '../../official_capture/dome/dome_target_points.dart';
 import '../../official_capture/realtime_capture_preview.dart';
 import '../../official_capture/sfm_live_recon.dart';
+import '../../official_capture/sfm_recon_lifecycle.dart';
 import '../../official_dome/ar_pose.dart';
 import '../../l10n/app_localizations.dart';
 import '../../me/scan_record_store.dart';
-import '../../official_quality/guidance_engine.dart' show GuidanceSnapshot;
 import '../../official_util/device_log.dart';
 import '../draft_capture_shell.dart';
 import '../me_page.dart';
@@ -102,7 +111,25 @@ import '../../vio/diagnostics/vio_shadow_switch.dart';
 /// 一次快门入队的三种结果。手动与自动**共用同一条入队路径**,但对"没入队"
 /// 的反馈不同:手动到上限要弹对话框,自动模式绝不弹(每个 tick 撞一次会
 /// 刷屏)。把两者的差别收在这个返回值里,守卫就只需要写一份。
-enum _ShutterAdmission { admitted, blocked, budgetExhausted }
+enum _ShutterAdmission { admitted, busyNotAdmitted, closed, budgetExhausted }
+
+enum _CommittedCaptureExit { reconstruct, saveDraft, discard }
+
+final class _PendingFinishTerminal {
+  const _PendingFinishTerminal({
+    required this.attempt,
+    required this.success,
+    required this.stage,
+    this.error,
+    this.stackTrace,
+  });
+
+  final CaptureFinishAttempt attempt;
+  final bool success;
+  final String stage;
+  final Object? error;
+  final StackTrace? stackTrace;
+}
 
 class OfficialARCapturePage extends StatefulWidget {
   const OfficialARCapturePage({super.key});
@@ -166,15 +193,25 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   // populates them.
   bool _recording = false;
   bool _lockInProgress = false;
-  bool _finalizingRecording = false;
-  bool _finishTapInProgress = false;
-  bool _finishCancellationRequested = false;
-  bool _finishDrainFailed = false;
-  bool _closeTapInProgress = false;
-  bool _discardingCapture = false;
+  final CaptureFinishCoordinator _finishCoordinator = CaptureFinishCoordinator(
+    stageTimeout: const Duration(seconds: 20),
+  );
+  // This prevents two modal confirmation stacks. It never participates in
+  // capture admission or rendering, so dismissing a dialog is state-neutral.
+  bool _confirmationDialogOpen = false;
+  bool _finishDraftPersisted = false;
+  _PendingFinishTerminal? _pendingFinishTerminal;
   bool _cameraResumeFailed = false;
   bool _maximumPhotosDialogOpen = false;
   String? _captureQueueFailureText;
+  String? _activePhotoFeedbackTransactionId;
+  String? _activePhotoFeedbackEvidencePath;
+  final Map<String, String> _photoTransactionIdsByEvidencePath =
+      <String, String>{};
+  final Map<String, AutomaticStillTicket> _automaticTicketByTransaction =
+      <String, AutomaticStillTicket>{};
+  final Set<String> _automaticControllerReceiptTransactions = <String>{};
+  final Set<String> _controllerProjectedTransactions = <String>{};
 
   // ─── 自动采集(auto capture)────────────────────────────────────────
   // **判定逻辑一行都不在本文件**:几何在 auto_capture_geometry.dart、判据在
@@ -215,6 +252,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
 
   /// 第一级:活体 SfM 云的中位深度。快照没到 / 点太少时返回 null。
   double? _liveCloudMedianDepthFor(ARPose pose) {
+    if (!_liveReconReady) return null;
     final xyz = _liveCloudXyz;
     if (xyz == null) return null;
     if (identical(xyz, _liveSfmDepthMemoCloud) &&
@@ -242,10 +280,6 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// 与"你还没动够"逐字相同(见 [autoCaptureIndicatorFor] 的注释)。
   AutoCaptureDecision _lastAutoDecision = AutoCaptureDecision.skipNotMoved;
 
-  /// 低重叠警告的可见 UI 状态。单列出来参与 setState 节流，否则连续的
-  /// skipNotMoved 会把“请减速”变化误判成无变化而永远不刷新到屏幕。
-  bool _autoPromptSlowDown = false;
-
   /// 上一次已反映到 UI 的 `_autoCapture.isRunning`,**只用于**判断要不要
   /// setState —— pose 流是 20–60 Hz,每帧无条件 setState 会把整页重建成热源。
   bool _autoRunningLastSeen = false;
@@ -258,6 +292,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// 根本不是一个纪元。缓存帧若因丢跟踪/暂停而陈旧,起点就落在过去,
   /// 5 分钟上限会被立刻判超。代价只是至多晚一帧(17–50 ms)起跑。
   bool _autoStartPending = false;
+
+  /// 节流用,单位秒,取自 ARFrame 时钟(与 controller 同一条)。
+  /// 本页别处的 DateTime.now() 是另一个纪元,混进来只会静默算错。
+  double _autoIdleProbeLastSec = -1;
 
   /// 每落一帧 +1,驱动录制键脉冲一次(spec §8:落帧脉冲,不出文案)。
   int _autoFirePulseToken = 0;
@@ -274,18 +312,26 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   StreamSubscription<OfficialHighResReconstructionInput>? _sfmFeedSub;
   StreamSubscription<SfmLiveEvent>? _sfmEventSub;
   StreamSubscription<OfficialHighResCaptureFailureEvent>? _highResFailureSub;
+  final List<OfficialHighResReconstructionInput> _pendingSfmInputs =
+      <OfficialHighResReconstructionInput>[];
 
-  /// Live reconstruction is part of the capture contract, not an optional
-  /// preview. Until its worker owns the shared lease, both capture controls
-  /// stay disabled. A startup failure remains visible until this take exits.
+  /// Live reconstruction health is deliberately separate from camera
+  /// admission. The worker may degrade or restart without revoking a valid
+  /// 12 MP capture session or trapping the user on the capture route.
   bool _sfmStarting = false;
   String? _sfmStartFailureText;
+  SfmTerminalGate _sfmProcessingTerminalGate = SfmTerminalGate();
 
-  bool get _sfmCaptureReady =>
+  bool get _captureAdmissionOpen =>
+      _finishCoordinator.captureAdmissionOpen &&
       _recording &&
-      !_sfmStarting &&
-      _sfmStartFailureText == null &&
-      _sfmRecon != null;
+      !_cameraResumeFailed;
+
+  bool get _finishAllowed =>
+      _finishCoordinator.captureAdmissionOpen && _recording && _session != null;
+
+  bool get _liveReconReady =>
+      !_sfmStarting && _sfmStartFailureText == null && _sfmRecon != null;
 
   /// Non-null while the post-capture preview overlay is showing.
   SfmPreviewPhase? _sfmPhase;
@@ -300,13 +346,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// already-colored result), so a stale colorize pass can't clobber a newer one.
   SfmLiveSnapshot? _colorizeTarget;
 
-  /// Colored LOCAL (phase-1) snapshot held back from display: we only reveal
-  /// the cleaner REFINED (phase-2) cloud, but keep this so a REFINE failure
-  /// still shows a usable colored cloud instead of an error (采集必出点云).
-  SfmLiveSnapshot? _pendingLocalColored;
-
   /// L2 渲染门可见性(ghost_view_filter.dart),与 [_sfmSnapshot] /
-  /// [_pendingLocalColored] 的点序逐位对齐;null = 全显示。RENDER-ONLY:
+  /// 终态快照的点序逐位对齐;null = 全显示。RENDER-ONLY:
   /// 只喂 SfmPreviewOverlay → SparseCloudView,persist/导出永远看不到。
 
   String? _sfmErrorText;
@@ -331,7 +372,6 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
 
   /// The finish flow wants to pop to Drafts, but the preview overlay owns
   /// the exit while it's up — set, then honoured by [_onSfmPreviewDone].
-  bool _sfmPendingPop = false;
 
   /// The waiting UI can be folded into Drafts without popping this route.
   /// Keeping the route mounted is what keeps the worker, queue and final
@@ -341,6 +381,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   bool _draftTerminalExitScheduled = false;
   final ReconstructionRouteReleaseGate _routeReleaseGate =
       ReconstructionRouteReleaseGate();
+  Future<void>? _sfmReleaseFuture;
 
   /// Capture directory used as the idempotency key for the one iOS continued-
   /// processing task protecting this user-triggered final reconstruction.
@@ -352,7 +393,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   // many photos saw them. Policy lives in capture_coverage_cloud.dart
   // (cross-platform); native only displays what we push.
   final CaptureCoverageCloud _coverageCloud = CaptureCoverageCloud();
-  StreamSubscription<OfficialHighResReconstructionInput>? _coverageFeedSub;
+  StreamSubscription<AcceptedPhotoRecord>? _canonicalPhotoCommitSub;
 
   /// The last globally-BA-refined official SfM cloud published to AR.
   /// Capture coverage voxels remain a private guidance signal; the native
@@ -386,6 +427,16 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   int _adaptiveFpsCurrent = 60;
   int _adaptiveHotSinceMs = 0;
   int _adaptiveCoolSinceMs = 0;
+  bool _matcherCaptureActive = false;
+
+  /// The page-level camera lifecycle is the sole production writer of the
+  /// native matcher yield flag. Reconstruction and native AR adapters may
+  /// observe this boundary, but cannot change it independently.
+  void _setMatcherCaptureActive(bool active) {
+    if (_matcherCaptureActive == active) return;
+    _matcherCaptureActive = active;
+    AetherMatchFlags.setCaptureActive(active);
+  }
 
   void _adaptiveFpsTick() {
     if (!_adaptiveFpsEnabled) return;
@@ -867,7 +918,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // flow stopped the camera for the SfM preview/finalize (camera off to
       // free GPU/memory for the solve), a background round-trip must NOT
       // reopen it — the preview overlay has no use for the camera.
-      if (_recording && _sfmPhase == null) {
+      if (_captureAdmissionOpen && _sfmPhase == null) {
         _restartArSessionAfterResume();
       }
     }
@@ -877,12 +928,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // Release only the camera; leave the Dart CaptureSession started and its
     // retained photos untouched so resume continues the same capture.
     final session = _session;
-    session?.suspendManualCaptureTransactions();
+    if (session == null) return;
     try {
-      await _arKitChannel.invokeMethod<void>('stopSession');
-    } catch (_) {
-      session?.resumeManualCaptureTransactions();
-    }
+      await session.suspendCameraTransport();
+      _setMatcherCaptureActive(false);
+    } catch (_) {}
   }
 
   Future<void> _restartArSessionAfterResume() async {
@@ -895,15 +945,12 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     }
     _lastArSessionResumeAt = now;
     try {
-      // resume:true → native keeps the world map + photo-card anchors (no
-      // resetTracking / removeExistingAnchors) so the AR cards survive.
-      await _arKitChannel.invokeMethod<void>('startSession', {'resume': true});
+      // The provider keeps the logical world and native anchors while its
+      // platform transport resumes.
+      await _session?.resumeCameraTransport();
+      _setMatcherCaptureActive(true);
       _cameraResumeFailed = false;
-      _session?.resumeManualCaptureTransactions();
-      if (_recording &&
-          !_finishTapInProgress &&
-          !_closeTapInProgress &&
-          !_shutterQueue.accepting) {
+      if (_captureAdmissionOpen && !_shutterQueue.accepting) {
         _shutterQueue.resume();
       }
       if (!mounted) return;
@@ -942,91 +989,41 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
 
   Future<void> _stopRecordingIfRunning() async {
     if (!_recording) return;
-    await _finalizeRecording(navigateToDrafts: false, showSparseHint: false);
+    await _finalizeRecording(navigateToDrafts: true, showSparseHint: false);
   }
 
   Future<void> _onCloseTap() async {
-    if (_finalizingRecording ||
-        _lockInProgress ||
-        _closeTapInProgress ||
-        _discardingCapture) {
-      return;
-    }
+    if (_lockInProgress || _confirmationDialogOpen) return;
+    if (!_finishCoordinator.captureAdmissionOpen) return;
     if (!_recording) {
       if (mounted) Navigator.of(context).maybePop(false);
       return;
     }
 
-    if (_finishTapInProgress) _finishCancellationRequested = true;
-    _closeTapInProgress = true;
+    _confirmationDialogOpen = true;
     try {
       // [2026-08-22 用户签决] 黑白弹窗 + 开关:"是否保存照片,方便下次补拍"
       // 的小开关(默认开=绿=保存,关=红=不保存)+ "确定"/"取消" 两颗按钮。
       // (取代 2026-08-09 那版滑轴 —— 见 capture_exit_dialog.dart 文件头。)
       // 返回值语义不变:saveExit / discardExit / null=回拍摄。
-      // 弹窗是模态的:不先停,自动拍会在弹窗背后继续落帧。
-      _stopAutoCapture();
+      // Confirmation is deliberately non-mutating. Auto capture, the current
+      // ticket, matcher state, and camera all remain exactly as they were if
+      // the user cancels.
       final hasAcceptedPhotos =
           _projectPhotos.count + _shutterQueue.outstandingCount > 0;
       final choice = hasAcceptedPhotos
           ? await showCaptureExitDialog(context)
           : CaptureExitChoice.discardExit;
       if (!mounted || choice == null) return;
-
-      if (choice == CaptureExitChoice.saveExit) {
-        // 退出并保存:与"完成"同一条落草稿链路,但**不启动重建** ——
-        // 照片与增量 db 原样留在盘上,草稿显示"未完成",点卡片可断点续跑。
-        // 无损:不 cancelPending,先把在途快门全部落地。
-        _discardingCapture = true;
-        final session = _session;
-        await _shutterQueue.freezeAndDrain();
-        if (session != null) {
-          await session.stop();
-          await _stopVioShadowForCapture();
-          await session.waitForPendingPhotoSaves();
-        }
-        final recon = _sfmRecon;
-        if (recon != null) {
-          _sfmRecon = null;
-          await _sfmFeedSub?.cancel();
-          _sfmFeedSub = null;
-          await _sfmEventSub?.cancel();
-          _sfmEventSub = null;
-          unawaited(recon.dispose());
-        }
-        await _persistDraft(showSnackBar: false);
-        if (!mounted) return;
-        setState(() {
-          _recording = false;
-          _isAiming = false;
-          _lockInProgress = false;
-        });
-        _previewModel.reset();
-        // pop(true) = 提示外壳切到"我的草稿"(与完成路径同语义)。
-        Navigator.of(context).pop(true);
-        return;
-      }
-
-      _discardingCapture = true;
-      _shutterQueue.cancelPending();
-      final session = _session;
-      if (session != null) await session.stop();
-      await _stopVioShadowForCapture();
-      await _shutterQueue.freezeAndDrain();
-      if (session != null) {
-        await session.discardCurrentCapture();
-      }
-      if (!mounted) return;
-      setState(() {
-        _recording = false;
-        _isAiming = false;
-        _lockInProgress = false;
-      });
-      _previewModel.reset();
-      Navigator.of(context).pop(false);
+      await _commitCaptureExit(
+        disposition: choice == CaptureExitChoice.saveExit
+            ? _CommittedCaptureExit.saveDraft
+            : _CommittedCaptureExit.discard,
+        navigateToDrafts: choice == CaptureExitChoice.saveExit,
+        showSparseHint: false,
+      );
     } finally {
-      _discardingCapture = false;
-      _closeTapInProgress = false;
+      _confirmationDialogOpen = false;
     }
   }
 
@@ -1144,6 +1141,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       _photoCardStateSent.clear();
       _photoCaptureEpochMs.clear();
       _failedEvidenceJpegPaths.clear();
+      _automaticTicketByTransaction.clear();
+      _automaticControllerReceiptTransactions.clear();
+      _controllerProjectedTransactions.clear();
       _sfmLatestPoses = Float64List(0);
       // Fresh take → 上一场的活体云深度不许被下一场继承(换场景了)。
       _liveCloudXyz = null;
@@ -1163,10 +1163,20 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       });
       // force:新一轮拍摄的归零推送必须落到 native,不能被去重门挡掉。
       unawaited(_pushCoverageCloud(force: true));
-      _coverageFeedSub ??= session.sfmFrameStream.listen(_onCoverageKeyframe);
+      _canonicalPhotoCommitSub ??= session.canonicalPhotoCommitStream.listen(
+        (record) => unawaited(_projectCanonicalPhoto(session, record)),
+      );
+      unawaited(
+        session.replayCanonicalPhotoProjections(
+          handlers: <AcceptedPhotoProjection, AcceptedPhotoProjectionHandler>{
+            AcceptedPhotoProjection.controller: _applyCanonicalPhotoController,
+          },
+        ),
+      );
       // [SPRINT-FIX + YIELD-FPS-LINK] 新一轮拍摄:框架内匹配器旗复位。
-      AetherMatchFlags.setCaptureActive(true);
+      _setMatcherCaptureActive(true);
       AetherMatchFlags.setPreviewFps30(_adaptiveFpsCurrent <= 30);
+      _sfmProcessingTerminalGate = SfmTerminalGate();
       setState(() {
         _recording = true;
         _sfmStarting = true;
@@ -1209,34 +1219,115 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     DeviceLog.log('VioDiag', 'capture shadow terminal receipt flushed');
   }
 
-  /// Per committed shutter: frustum-mark the coverage cloud with the
-  /// frame-exact pose+intrinsics (the same SfmFrameFeed that drives
-  /// streaming SfM — but fully independent of the SfM worker, so the
-  /// coverage UX works even where on-device SfM is unavailable).
-  void _onCoverageKeyframe(OfficialHighResReconstructionInput input) {
-    final committed = _projectPhotos.commitVerified(
-      jpegPath: input.jpegPath,
-      captureTimestamp: input.captureTimestamp,
-      imageWidth: input.imageWidth,
-      imageHeight: input.imageHeight,
+  void _stopVioShadowInBackground() {
+    unawaited(
+      _stopVioShadowForCapture().catchError((Object error, StackTrace stack) {
+        DeviceLog.log(
+          'VioDiag',
+          'capture shadow terminal cleanup failed: $error\n$stack',
+        );
+      }),
     );
-    if (!committed) {
+  }
+
+  Future<void> _projectCanonicalPhoto(
+    CaptureSession session,
+    AcceptedPhotoRecord record,
+  ) async {
+    try {
+      final result = await session.projectCanonicalPhoto(
+        transactionId: record.transactionId,
+        projection: AcceptedPhotoProjection.controller,
+        apply: _applyCanonicalPhotoController,
+      );
+      if (result.status != AcceptedPhotoProjectionStatus.deferred) return;
       DeviceLog.log(
         'OfficialARCapturePage',
-        'verified project photo was not committed: ${input.jpegPath}',
+        'canonical controller projection deferred '
+            'transaction=${record.transactionId} code=${result.debt?.code}',
       );
+    } catch (error, stackTrace) {
+      // Stream delivery is intentionally unawaited. Keep its failure contained;
+      // the canonical owner retains the durable record for replay.
+      DeviceLog.log(
+        'OfficialARCapturePage',
+        'canonical controller projection callback failed '
+            'transaction=${record.transactionId}: $error\n$stackTrace',
+      );
+    }
+  }
+
+  /// Page-owned projection of an already durable canonical membership row.
+  /// This can never admit a JPEG; [projectCanonicalPhoto] stores its typed
+  /// receipt/debt under the same transaction id.
+  void _applyCanonicalPhotoController(AcceptedPhotoRecord record) {
+    if (_controllerProjectedTransactions.contains(record.transactionId)) {
+      return;
+    }
+    if (!_projectPhotos.applyCanonicalRecord(record)) {
+      throw const AcceptedPhotoProjectionException(
+        code: 'album_projection_missing',
+        message: 'canonical record is absent from the album registry',
+      );
+    }
+    if (record.automaticSelection &&
+        !_automaticControllerReceiptTransactions.contains(
+          record.transactionId,
+        )) {
+      final ticket = _automaticTicketByTransaction[record.transactionId];
+      final grayBase64 = record.gray128Base64;
+      if (ticket == null || grayBase64 == null) {
+        throw const AcceptedPhotoProjectionException(
+          code: 'automatic_controller_receipt_missing',
+          message:
+              'automatic canonical record has no matching controller receipt',
+        );
+      }
+      final gray = Uint8List.fromList(base64Decode(grayBase64));
+      final worldFromCamera = Matrix4.fromList(record.evidencePose);
+      final acceptedStill = AcceptedAutomaticStill(
+        frame: AutoCaptureGeometryFrame(
+          camera: worldFromCamera.getTranslation(),
+          orientation: Quaternion.fromRotation(worldFromCamera.getRotation()),
+          intrinsics: AutoCaptureIntrinsics(
+            fx: record.intrinsics[0],
+            fy: record.intrinsics[1],
+            cx: record.intrinsics[2],
+            cy: record.intrinsics[3],
+            imageWidth: record.imageWidth,
+            imageHeight: record.imageHeight,
+          ),
+        ),
+        captureTimestamp: record.captureTimestamp,
+        gray128: gray,
+      );
+      if (!_autoCapture.resolveAutomaticStill(
+        ticket: ticket,
+        accepted: true,
+        acceptedStill: acceptedStill,
+      )) {
+        throw const AcceptedPhotoProjectionException(
+          code: 'automatic_controller_receipt_stale',
+          message: 'automatic controller rejected the canonical transaction',
+        );
+      }
+      _automaticControllerReceiptTransactions.add(record.transactionId);
+      _automaticTicketByTransaction.remove(record.transactionId);
+    }
+    if (_finishCoordinator.captureRootTombstoned) {
+      _controllerProjectedTransactions.add(record.transactionId);
       return;
     }
     final feed = SfmFrameFeed(
       gray: Uint8List(0),
-      grayW: input.imageWidth,
-      grayH: input.imageHeight,
-      imageW: input.imageWidth,
-      imageH: input.imageHeight,
-      intrinsicFxFyCxCy: input.intrinsics,
-      extrinsic4x4: input.cameraTransform,
-      timestamp: input.captureTimestamp,
-      jpegPath: input.jpegPath,
+      grayW: record.imageWidth,
+      grayH: record.imageHeight,
+      imageW: record.imageWidth,
+      imageH: record.imageHeight,
+      intrinsicFxFyCxCy: record.intrinsics,
+      extrinsic4x4: record.cameraTransform,
+      timestamp: record.captureTimestamp,
+      jpegPath: record.jpegPath,
     );
     // 遥测【card】:记下每张照片的拍摄时刻(epoch ms),卡片状态变化行
     // 用它算"距拍摄延迟"。既有回调顺手记,零额外调用。
@@ -1253,6 +1344,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // (黄=低视差,补拍换角度后转白)。差量推送,无变化零开销。
     _refreshPhotoCardStates();
     _sampleStarvedBanner();
+    _controllerProjectedTransactions.add(record.transactionId);
   }
 
   /// 补强1:starved 横幅采样。挂在既有回调上(markCapture 后 +
@@ -1568,17 +1660,13 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           'frame not fed; NOT a coverage problem',
     );
     if (_sfmInternalFailureStreak < _kSfmInternalFailureWarnStreak) return;
-    const text =
-        '点云重建服务出错，最近的照片没有进入重建。'
-        '照片已保留，但继续拍摄不会改善——请结束本次拍摄后重试。';
+    _sfmProcessingTerminalGate.fail(
+      kind: SfmTerminalFailureKind.deliveryFailed,
+      stage: 'live_delivery',
+      message: reason,
+    );
+    const text = '实时点云暂不可用；高分辨率照片仍会正常保存并在结束后处理。';
     if (_sfmStartFailureText == text || !mounted) return;
-    // ⚠️ 这一句翻的是 `_sfmCaptureReady`,而它一假,`_admitShutterCapture`
-    // 就**恒**被拒 —— 自动拍从此每次开火都入队失败。基准帧按设计不动,
-    // 于是它会一路空转到 5 分钟上限才停,期间一张都拍不出来。
-    // 与其余四条会让入队失效的路径(退后台 / 退出弹窗 / 完成 / finalize)
-    // 同源:让入队失效的人负责停自动拍。
-    // (幂等:_stopAutoCapture 开头就 `if (!isRunning) return;`。)
-    _stopAutoCapture();
     setState(() => _sfmStartFailureText = text);
   }
 
@@ -1667,22 +1755,41 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   }
 
   void _markSfmStartFailure(String detail) {
-    DeviceLog.log('OfficialARCapturePage', 'sfm: startup blocked: $detail');
+    final failure = _sfmProcessingTerminalGate.fail(
+      kind: SfmTerminalFailureKind.startupFailed,
+      stage: 'startup',
+      message: detail,
+    );
+    if (failure == null) return;
+    DeviceLog.log(
+      'OfficialARCapturePage',
+      'sfm: typed terminal ${failure.kind.name}/${failure.stage}: '
+          '${failure.message}',
+    );
     if (!mounted) return;
-    // 与 _noteSfmInternalFailure 同源:凡是翻 _sfmCaptureReady 的地方都要停
-    // 自动拍,否则它会对着一扇永远关着的门每 tick 撞一次。
-    _stopAutoCapture();
     setState(() {
       _sfmStarting = false;
-      _sfmStartFailureText = '点云重建未能启动（$detail）。请退出后重试；此次拍摄不会保存。';
+      _sfmStartFailureText = '实时点云未启动（$detail）；照片仍会正常保存。';
     });
   }
 
   /// Spawns the required streaming-SfM worker for this take and wires the
   /// keyframe feed. Startup is fail-closed: unsupported devices, missing
   /// capture storage, lease contention (reported as a null worker), and thrown
-  /// errors all leave a persistent page error with capture/save disabled.
+  /// errors degrade only the optional live reconstruction path. Camera
+  /// capture and draft persistence remain independently available.
   Future<void> _startSfmLiveRecon(CaptureSession session) async {
+    // Subscribe before the first await. The instant first shutter is allowed
+    // while the worker starts, so accepted photos must be buffered rather than
+    // disappearing in the startup gap between CaptureSession and SfM.
+    _sfmFeedSub ??= session.sfmFrameStream.listen((input) {
+      final recon = _sfmRecon;
+      if (recon == null) {
+        _pendingSfmInputs.add(input);
+      } else {
+        recon.offerFrame(input);
+      }
+    });
     try {
       if (_sfmRecon != null) {
         if (mounted) setState(() => _sfmStarting = false);
@@ -1713,8 +1820,14 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         return;
       }
       _sfmRecon = recon;
-      _sfmFeedSub = session.sfmFrameStream.listen(recon.offerFrame);
-      _sfmEventSub = recon.events.listen(_onSfmEvent);
+      for (final input in _pendingSfmInputs) {
+        recon.offerFrame(input);
+      }
+      _pendingSfmInputs.clear();
+      _sfmEventSub = recon.events.listen((event) => _onSfmEvent(recon, event));
+      unawaited(
+        recon.completion.then((failure) => _onSfmTerminal(recon, failure)),
+      );
       _highResFailureSub ??= session.highResFailureStream.listen(
         _onHighResCaptureFailure,
       );
@@ -1728,8 +1841,105 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     }
   }
 
+  bool _resolveFinishTerminal({
+    required CaptureFinishAttempt attempt,
+    required bool success,
+    required String stage,
+    Object? error,
+    StackTrace? stackTrace,
+    bool deferUntilDraftPersisted = false,
+  }) {
+    if (attempt.generation != _finishCoordinator.currentGeneration) {
+      return false;
+    }
+    if (deferUntilDraftPersisted &&
+        !_finishDraftPersisted &&
+        _finishCoordinator.terminalOutcome == null) {
+      final request = _PendingFinishTerminal(
+        attempt: attempt,
+        success: success,
+        stage: stage,
+        error: error,
+        stackTrace: stackTrace,
+      );
+      final pending = _pendingFinishTerminal;
+      if (pending == null || (!success && pending.success)) {
+        _pendingFinishTerminal = request;
+      }
+      return false;
+    }
+    final resolved = success
+        ? _finishCoordinator.completeSuccess(attempt)
+        : _finishCoordinator.completeError(
+            attempt,
+            stage: stage,
+            error: error ?? StateError(stage),
+            stackTrace: stackTrace,
+          );
+    if (resolved && !success) {
+      _colorizeTarget = null;
+      unawaited(_endReconUmbrella());
+      _showFinishCoordinatorFailure(attempt);
+    }
+    return resolved;
+  }
+
+  bool _flushDeferredFinishTerminal() {
+    _finishDraftPersisted = true;
+    final pending = _pendingFinishTerminal;
+    _pendingFinishTerminal = null;
+    if (pending == null) return false;
+    return _resolveFinishTerminal(
+      attempt: pending.attempt,
+      success: pending.success,
+      stage: pending.stage,
+      error: pending.error,
+      stackTrace: pending.stackTrace,
+    );
+  }
+
+  void _onSfmTerminal(SfmLiveRecon source, SfmTerminalFailure? failure) {
+    if (!identical(source, _sfmRecon) || failure == null) return;
+    final typedFailure = _sfmProcessingTerminalGate.fail(
+      kind: failure.kind,
+      stage: failure.stage,
+      message: failure.message,
+    );
+    if (typedFailure == null) return;
+    DeviceLog.log(
+      'OfficialARCapturePage',
+      'sfm: terminal ${typedFailure.kind.name}/${typedFailure.stage}',
+    );
+    final phase = _finishCoordinator.phase;
+    if (phase == CaptureFinishPhase.processing ||
+        phase == CaptureFinishPhase.cameraStopped ||
+        phase == CaptureFinishPhase.drainingActiveTicket ||
+        phase == CaptureFinishPhase.committing) {
+      final attempt = CaptureFinishAttempt(
+        _finishCoordinator.currentGeneration,
+      );
+      _resolveFinishTerminal(
+        attempt: attempt,
+        success: false,
+        stage: 'sfm_${typedFailure.stage}',
+        error: typedFailure,
+        deferUntilDraftPersisted: true,
+      );
+      return;
+    }
+    if (!mounted || !_recording) return;
+    setState(() {
+      _sfmStarting = false;
+      _sfmStartFailureText = '实时点云已停止；照片仍会正常保存。';
+    });
+  }
+
   void _onHighResCaptureFailure(OfficialHighResCaptureFailureEvent event) {
     if (!mounted) return;
+    if (event.automaticSelection &&
+        !automaticShutterFailureIsUserVisible(event.failure)) {
+      return;
+    }
     final message = switch (event.failure) {
       OfficialHighResInputFailure.unexpectedDimensions =>
         '高分辨率照片不是 4032×3024，本张未进入重建，请重拍',
@@ -1737,7 +1947,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       OfficialHighResInputFailure.missingPose ||
       OfficialHighResInputFailure.missingIntrinsics =>
         '本张 ARKit 相机数据不完整，未进入重建，请重拍',
+      OfficialHighResInputFailure.transactionMismatch =>
+        '高分辨率照片事务与快门不匹配，本张未进入重建，请重拍',
       OfficialHighResInputFailure.captureFailed ||
+      OfficialHighResInputFailure.captureTimedOut ||
       OfficialHighResInputFailure.missingJpeg => '高分辨率照片拍摄失败，本张未进入重建，请重拍',
       OfficialHighResInputFailure.actualStillMissingEvidence =>
         '高分辨率照片缺少实际图像校验，本张未进入重建，请重拍',
@@ -1746,27 +1959,26 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       OfficialHighResInputFailure.actualStillDuplicate =>
         '高分辨率照片与上一张重复，本张未进入重建，请继续移动',
     };
-    _markPhotoCardFailed(event.evidenceJpegPath, message);
+    _markPhotoCardFailed(event.evidenceJpegPath, event.transactionId, message);
   }
 
-  void _markPhotoCardFailed(String evidenceJpegPath, String message) {
+  void _markPhotoCardFailed(
+    String evidenceJpegPath,
+    String transactionId,
+    String message,
+  ) {
     _failedEvidenceJpegPaths.add(evidenceJpegPath);
+    _photoTransactionIdsByEvidencePath[evidenceJpegPath] = transactionId;
     unawaited(
-      _arKitChannel
-          .invokeMethod<void>('removePhotoCard', <String, dynamic>{
-            'evidenceJpegPath': evidenceJpegPath,
-          })
-          .catchError((Object _) {}),
+      _removePhotoCard(
+        transactionId: transactionId,
+        evidenceJpegPath: evidenceJpegPath,
+      ),
     );
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(
-          content: Text(message),
-          behavior: SnackBarBehavior.floating,
-          duration: const Duration(seconds: 3),
-        ),
-      );
+    DeviceLog.log(
+      'OfficialARCapturePage',
+      'high-resolution candidate rejected silently: $message',
+    );
   }
 
   /// 修1:推进等待页阶段(单调递增,重复/回退调用被忽略),重置该阶段的
@@ -1825,8 +2037,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     };
   }
 
-  void _onSfmEvent(SfmLiveEvent event) {
-    if (!mounted) return;
+  void _onSfmEvent(SfmLiveRecon source, SfmLiveEvent event) {
+    if (!identical(source, _sfmRecon) || !mounted) return;
     if (event is SfmLivePreview &&
         (event.snapshot.summary['source'] == 'streaming_global_ba' ||
             event.snapshot.summary['source'] == 'streaming_local_ba_live')) {
@@ -1967,40 +2179,22 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           // streaming-preview cloud is now track-annotated, so it colorizes on
           // the SAME path — it is the ONLY cloud shown (global BA deferred).
           break;
-        case SfmLiveFailed(:final stage, :final message):
-          // During capture (overlay hidden) a per-frame failure is log-only;
-          // once the preview is up, a finalize/refine failure surfaces the
-          // non-blocking "已保留素材" state. But a REFINE failure after
-          // LOCAL_READY should reveal the perfectly usable colored LOCAL cloud
-          // we held back (deferred display), NOT an error.
+        case SfmLiveFailed():
+          // Display-only event. SfmLiveRecon.completion supplies the terminal
+          // failure after raw-draft persistence has settled.
           if (_sfmPhase == SfmPreviewPhase.generating) {
-            final localFallback = _pendingLocalColored;
-            if (localFallback != null) {
-              _sfmSnapshot = localFallback;
-              _sfmPhase = SfmPreviewPhase.refined; // show the done chip + cloud
-              _pendingLocalColored = null;
-              // [2026-08-24] LOCAL 兜底云也是真呈现 —— 同 refined 主路径,
-              // 在屏上就算"看过"(PLY 没落盘时 store 侧自然 no-op)。
-              final viewedDir = _session?.captureDir;
-              if (!_showDraftsWhileReconstructing && viewedDir != null) {
-                unawaited(
-                  ScanRecordStore.instance.markResultViewedByCaptureDir(
-                    viewedDir,
-                  ),
-                );
-              }
-            } else {
-              _sfmPhase = SfmPreviewPhase.error;
-              _sfmErrorText = '$stage: $message';
-            }
+            _sfmPhase = SfmPreviewPhase.error;
+            _sfmErrorText = '处理未完成，已保留全部照片。请稍后从草稿重试。';
           }
       }
     });
-    // A failure is terminal immediately. On success the umbrella stays alive
-    // through final colorization + PLY persistence and ends in
-    // [_colorizeSnapshot], just before the completion button appears.
+    // Events own presentation only; they never write the finish terminal.
     switch (event) {
-      case SfmLiveFailed():
+      case SfmLiveFailed(:final stage, :final message, :final kind):
+        _onSfmTerminal(
+          source,
+          SfmTerminalFailure(kind: kind, stage: stage, message: message),
+        );
         unawaited(_endReconUmbrella());
       default:
         break;
@@ -2035,22 +2229,69 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           unawaited(_pushReconProgress(0.75, '提取色彩中'));
         }
         _colorizeTarget = snapshot;
-        unawaited(_colorizeSnapshot(snapshot));
+        unawaited(_runColorizeSnapshot(snapshot));
       default:
         break;
     }
   }
 
+  Future<void> _runColorizeSnapshot(SfmLiveSnapshot snapshot) async {
+    final expectsTerminal =
+        snapshot.summary['terminal'] == true ||
+        snapshot.summary['source'] == 'streaming_global_ba' ||
+        snapshot.refined;
+    final attempt = CaptureFinishAttempt(_finishCoordinator.currentGeneration);
+    var completed = false;
+    final processed = await _finishCoordinator.runProcessingStep(
+      attempt: attempt,
+      stage: 'colorizeAndPersist',
+      operation: () async {
+        completed = await _colorizeSnapshot(snapshot);
+      },
+    );
+    if (!processed) {
+      if (_finishCoordinator.phase == CaptureFinishPhase.error) {
+        _showFinishCoordinatorFailure(attempt);
+      }
+      return;
+    }
+    if (!identical(_colorizeTarget, snapshot)) return;
+    if (expectsTerminal && !completed) {
+      _resolveFinishTerminal(
+        attempt: attempt,
+        success: false,
+        stage: 'colorizeAndPersist',
+        error: StateError(
+          'terminal point cloud did not produce a persisted PLY',
+        ),
+        deferUntilDraftPersisted: true,
+      );
+      return;
+    }
+    if (completed) {
+      _resolveFinishTerminal(
+        attempt: attempt,
+        success: true,
+        stage: 'colorizeAndPersist',
+        deferUntilDraftPersisted: true,
+      );
+    }
+  }
+
   // [增量D 2026-07-28] 此处原挂着一段 BIT5/L1 仲裁重算的孤儿注释(所述
   // 函数早已随 E25 停用删除)——注释一并清理,勿被其误导。
-  Future<void> _colorizeSnapshot(SfmLiveSnapshot snap) async {
+  Future<bool> _colorizeSnapshot(SfmLiveSnapshot snap) async {
     final recon = _sfmRecon;
-    if (recon == null || snap.pointCount == 0) return;
+    if (recon == null || snap.pointCount == 0) return false;
+    final isTerminalColorize =
+        snap.summary['terminal'] == true ||
+        snap.summary['source'] == 'streaming_global_ba' ||
+        snap.refined;
     final n = snap.pointCount;
     final offs = snap.obsOffsets;
     final fids = snap.obsFrameIds;
     final oxy = snap.obsXY;
-    if (fids.isEmpty || offs.length != n + 1) return; // no track data
+    if (fids.isEmpty || offs.length != n + 1) return false; // no track data
 
     // Group observations by frame so every JPEG decodes exactly once.
     // byFrame[frameId] = flat [pointIndex, kpX, kpY, ...] triples.
@@ -2068,7 +2309,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           ..add(oxy[j * 2 + 1]);
       }
     }
-    if (byFrame.isEmpty) return;
+    if (byFrame.isEmpty) return false;
 
     final sw = Stopwatch()..start();
     // 代表色样本池:收集每点全部双线性观测样本,归约时选亮度中位的真实样本
@@ -2116,7 +2357,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // 中位数定位 ImageIO 慢帧/热降频)。
     final decodeMsList = dstats.decodeMs;
     if (!identical(_colorizeTarget, snap)) {
-      return; // superseded during decode/sampling
+      return false; // superseded during decode/sampling
     }
 
     final rgb = Uint8List(n * 3);
@@ -2282,6 +2523,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       unawaited(_pushReconProgress(0.85, '保存点云中'));
     }
     final captureDir = _session?.captureDir;
+    if (captureDir == null && isTerminalColorize) {
+      throw StateError('terminal point cloud has no capture directory');
+    }
+    var terminalPersisted = false;
     if (captureDir != null && identical(_colorizeTarget, snap)) {
       final psw = Stopwatch()..start();
       var persistOk = false;
@@ -2292,6 +2537,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           rgb: rgb,
         );
         persistOk = true;
+        terminalPersisted = isTerminalColorize;
         // [2026-08-08 用户实机指认] "点云诞生出来的那一刻就删除封面照片然后立刻
         // 替换成点云截图" —— 草稿卡片的封面在这里就画好,而不是等回到草稿页轮询
         // 补图(那会让卡片先显示照片、几秒后肉眼跳变一下)。
@@ -2309,11 +2555,12 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         );
         // [E25-D 2026-07-20] 原在此把交付点序的 ghost_view_mask.bin 与 PLY
         // 一起落盘(供草稿查看页对齐渲染门)。L2 已删,不再产该 sidecar。
-      } catch (e) {
+      } catch (e, stackTrace) {
         DeviceLog.log(
           'OfficialARCapturePage',
           'final sparse persist failed: $e',
         );
+        Error.throwWithStackTrace(e, stackTrace);
       }
       psw.stop();
       // 遥测【persist】:PLY+meta 落盘耗时与字节数("完成"按钮的前置)。
@@ -2361,7 +2608,6 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         setState(() {
           _sfmSnapshot = display;
           _sfmPhase = SfmPreviewPhase.refined;
-          _pendingLocalColored = null;
         });
         // [2026-08-24] 终态点云在这里第一次呈现给用户 —— 预览页真的在屏幕上
         // (没退到草稿视图)就算"看过",草稿卡右上角的绿"完成"胶囊不再出现。
@@ -2371,20 +2617,14 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
             ScanRecordStore.instance.markResultViewedByCaptureDir(captureDir),
           );
         }
-      } else {
-        // Defer: do NOT show the noisier phase-1 (local) cloud — wait for the
-        // refined one. Hold it as the refine-failure fallback; the generating
-        // spinner ("实时重建") stays up as the finalize loading state.
-        _pendingLocalColored = display;
       }
     }
-    final isTerminalColorize =
-        snap.summary['terminal'] == true ||
-        snap.summary['source'] == 'streaming_global_ba' ||
-        snap.refined;
     if (isTerminalColorize && identical(_colorizeTarget, snap)) {
       if (snap.refined) unawaited(_endReconUmbrella());
     }
+    return isTerminalColorize &&
+        terminalPersisted &&
+        identical(_colorizeTarget, snap);
   }
 
   /// Fast native JPEG decode for colorization — ImageIO decode at
@@ -2497,7 +2737,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
 
   /// "完成" on the preview overlay: tear the worker down (frees the native
   /// session + sqlite db) and run the exit the finish flow deferred.
-  Future<void> _releaseLiveReconstructionResources() async {
+  Future<void> _releaseLiveReconstructionResources() {
+    return _sfmReleaseFuture ??= _releaseLiveReconstructionResourcesOnce();
+  }
+
+  Future<void> _releaseLiveReconstructionResourcesOnce() async {
     // The root FAB must not become enabled until dispose releases the
     // process-wide reconstruction lease.
     await _endReconUmbrella();
@@ -2506,14 +2750,15 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     final feedSub = _sfmFeedSub;
     final eventSub = _sfmEventSub;
     final failureSub = _highResFailureSub;
-    _sfmRecon = null;
-    _sfmFeedSub = null;
-    _sfmEventSub = null;
-    _highResFailureSub = null;
     await feedSub?.cancel();
     await eventSub?.cancel();
     await failureSub?.cancel();
     if (recon != null) await recon.dispose();
+    if (identical(_sfmRecon, recon)) _sfmRecon = null;
+    if (identical(_sfmFeedSub, feedSub)) _sfmFeedSub = null;
+    if (identical(_sfmEventSub, eventSub)) _sfmEventSub = null;
+    if (identical(_highResFailureSub, failureSub)) _highResFailureSub = null;
+    _pendingSfmInputs.clear();
   }
 
   Future<void> _onSfmPreviewDone() async {
@@ -2521,20 +2766,44 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         _sfmPhase != SfmPreviewPhase.error) {
       return;
     }
-    await _routeReleaseGate.release(
-      releaseResources: _releaseLiveReconstructionResources,
-      revealRoot: () {
-        if (!mounted) return;
-        setState(() {
-          _sfmPhase = null;
-          _showDraftsWhileReconstructing = false;
-        });
-        if (_sfmPendingPop) {
-          _sfmPendingPop = false;
-          Navigator.of(context).pop(true);
-        }
-      },
-    );
+    if (_finishCoordinator.terminalOutcome == null) return;
+    try {
+      await _routeReleaseGate.release(
+        releaseResources: () => _releaseLiveReconstructionResources().timeout(
+          const Duration(seconds: 20),
+        ),
+        revealRoot: () {
+          if (!mounted) return;
+          final attempt = CaptureFinishAttempt(
+            _finishCoordinator.currentGeneration,
+          );
+          if (!_finishCoordinator.beginExit(attempt)) return;
+          final showDrafts =
+              _finishCoordinator.exitIntent !=
+              CaptureFinishExitIntent.discardCapture;
+          Navigator.of(context).pop(showDrafts);
+          _finishCoordinator.markExited(attempt);
+        },
+      );
+    } on TimeoutException {
+      _sfmReleaseFuture = null;
+      if (!mounted) return;
+      setState(() {
+        _sfmPhase = SfmPreviewPhase.error;
+        _sfmErrorText = '资源仍在安全释放，请稍后再试。照片已保留。';
+      });
+    } catch (error, stackTrace) {
+      _sfmReleaseFuture = null;
+      DeviceLog.log(
+        'OfficialARCapturePage',
+        'reconstruction release failed: $error\n$stackTrace',
+      );
+      if (!mounted) return;
+      setState(() {
+        _sfmPhase = SfmPreviewPhase.error;
+        _sfmErrorText = '资源释放未完成，请稍后重试。照片已保留。';
+      });
+    }
   }
 
   /// [选区 2026-07-27] 等待页"下一步"→ 选区页。返回 'save_draft'(签决:
@@ -2813,8 +3082,6 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     final released = await _routeReleaseGate.release(
       releaseResources: () async {
         await _releaseLiveReconstructionResources();
-        await _coverageFeedSub?.cancel();
-        _coverageFeedSub = null;
         final session = _session;
         _session = null;
         await session?.dispose();
@@ -2870,7 +3137,6 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       )) {
         return;
       }
-      _sfmPendingPop = true;
       unawaited(_onSfmPreviewDone());
     });
   }
@@ -2893,7 +3159,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// 路径,它不该在手动快门已被判死时还能开火);第四条是"AR 会话在,pose
   /// 确实在流"—— 退后台时我们已经把自动拍停掉了,所以这一条足够。
   bool get _autoCaptureCanStart => autoCaptureCanStart(
-    captureReady: _sfmCaptureReady,
+    captureReady: _captureAdmissionOpen,
     queueAccepting: _shutterQueue.accepting,
     withinFrameBudget: officialCaptureCanShoot(
       acceptedFrameCount: _autoCaptureAcceptedFrameCount(),
@@ -2916,7 +3182,30 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       _startAutoCapture(pose);
       return; // 起跑帧只播种,不判定。
     }
-    if (!_autoCapture.isRunning) return;
+    if (!_autoCapture.isRunning) {
+      // 观测。这是这条链上的第二个静默出口:遥测 recordDecision 在它**之后**,
+      // 所以治理器没起来时 auto_capture 一条都采不到,现象与"起来了但一直
+      // 不开火"在日志上**完全同形**。2026-08-31 那场就卡在这个歧义里。
+      //
+      // 每帧都会走到(30–60 Hz),所以按 5 秒节流,时钟取 pose.timestamp
+      // ——与 controller 同一条 ARFrame 时间轴。本页的时钟纪律由
+      // auto_capture_page_wiring_test 守着,它连注释里提到别的时钟来源都
+      // 不放过(本注释第一版就是这么被判红的),那样很好:这条判据宁可
+      // 误伤也不该漏。纯观测,不改变这条 return。
+      if (_autoIdleProbeLastSec < 0 ||
+          pose.timestamp - _autoIdleProbeLastSec >= 5.0) {
+        _autoIdleProbeLastSec = pose.timestamp;
+        TelemetryWriter.instance.event('auto_capture_idle', {
+          'reason': 'controller_not_running',
+          'mode': _captureMode.name,
+          'pending': _autoStartPending,
+          'can_start': _autoCaptureCanStart,
+          'accepted_frame_count': _autoCaptureAcceptedFrameCount(),
+          't_sec': pose.timestamp,
+        });
+      }
+      return;
+    }
     // 开火钩子在 onPose **内部**同步跑完,并且只在**真的入队成功**时把这个
     // 令牌 +1(见 _onAutoCaptureFire)。所以前后一比就知道这一帧到底落没落。
     final pulseBefore = _autoFirePulseToken;
@@ -2960,8 +3249,23 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           _autoCapture.lastTrackEvidence?.medianNormalizedDisplacement,
       trackMedianStepPixelDisplacement:
           _autoCapture.lastTrackEvidence?.medianStepPixelDisplacement,
-      segmentMotionPx: _autoCapture.lastSegmentMotionPx,
-      segmentMotionThresholdPx: _autoCapture.segmentMotionThresholdPx,
+      vinsTrackedCount: _autoCapture.lastTrackEvidence?.vinsTrackedCount,
+      vinsActiveTrackCount:
+          _autoCapture.lastTrackEvidence?.vinsActiveTrackCount,
+      vinsReplenishedTrackCount:
+          _autoCapture.lastTrackEvidence?.vinsReplenishedTrackCount,
+      vinsLongestTrackAge: _autoCapture.lastTrackEvidence?.vinsLongestTrackAge,
+      vinsMeanStepNormalizedParallax:
+          _autoCapture.lastTrackEvidence?.vinsMeanStepNormalizedParallax,
+      vinsGeometricInputCount:
+          _autoCapture.lastTrackEvidence?.vinsGeometricInputCount,
+      vinsGeometricInlierCount:
+          _autoCapture.lastTrackEvidence?.vinsGeometricInlierCount,
+      vinsGeometricInlierFraction:
+          _autoCapture.lastTrackEvidence?.vinsGeometricInlierFraction,
+      vinsOccupiedGridFraction:
+          _autoCapture.lastTrackEvidence?.vinsOccupiedGridFraction,
+      vinsClaheApplied: _autoCapture.lastTrackEvidence?.vinsClaheApplied,
       visualSourceAgeSec: _autoCapture.lastVisualSourceAgeSec,
     );
     // isRunning 由 true 翻 false = controller 自停(撞 300 张或 5 分钟)。
@@ -2978,26 +3282,23 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     }
     // ⚠️ 判据是「令牌变了 = **真的落了一帧**」,不是 `decision == fire`
     // 〔2026-08-19 评审改正〕。两处理由:
-    //   ① 开火 ≠ 拍成(spec §7,遥测层正是为此把 fire_enqueued /
-    //      fire_enqueue_failed 分开记);拿 fire 当"落帧"会在入队失败时
+    //   ① 开火 ≠ 拍成(spec §7,遥测层正是为此把 fire_admitted /
+    //      fire_busy_not_admitted 分开记);拿 fire 当"落帧"会在 busy 时
     //      给用户一个**假的正反馈** —— 红键脉冲一下、N/300 一动不动,
     //      而自动模式下那颗红键的脉冲是"到底拍上没有"的唯一反馈。
     //   ② `fired == true` 会跳过这条短路。入队持续失败时(SfM 内部故障)
     //      判定会连着好几帧是 fire,于是这个 4800 行的页面被每帧重建一次
     //      —— 正是这段注释自己要避免的那个热源。
     final landed = _autoFirePulseToken != pulseBefore;
-    final promptSlowDown = _autoCapture.shouldPromptSlowDown;
     if (!landed &&
         decision == _lastAutoDecision &&
-        running == _autoRunningLastSeen &&
-        promptSlowDown == _autoPromptSlowDown) {
+        running == _autoRunningLastSeen) {
       // pose 流是 20–60 Hz。没有任何变化时不重建整页 —— 每帧 setState
       // 会把这个 4800 行的页面变成一个热源。
       return;
     }
     _lastAutoDecision = decision;
     _autoRunningLastSeen = running;
-    _autoPromptSlowDown = promptSlowDown;
     if (mounted) setState(() {});
   }
 
@@ -3021,7 +3322,6 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // 混进来什么都不会抛,只会把时长与节流一起静默算错。
     _autoTelemetry.recordSessionStart(seed.timestamp);
     _lastAutoDecision = AutoCaptureDecision.skipNotMoved;
-    _autoPromptSlowDown = false;
     // start() 会同步尝试首张锚点入队；队列 admission 不能藏在 setState 回调里。
     _autoCapture.start(seed);
     _autoRunningLastSeen = _autoCapture.isRunning;
@@ -3035,7 +3335,6 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // 用户停 / 切模式 / 退后台 / 完成 —— 这一轮到此为止,写终态行。
     _emitAutoTelemetry(_autoTelemetry.recordSessionEnd());
     _autoRunningLastSeen = false;
-    _autoPromptSlowDown = false;
     if (mounted) setState(() {});
   }
 
@@ -3052,6 +3351,47 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   }
 
   void _toggleAutoRun() {
+    // 观测。这条链上此前**一个埋点都没有**:模式、这次点击、四个起跑条件的
+    // 各自取值、以及"起跑被拦下"这件事本身,日志里全都查不到。2026-08-31
+    // 有一场自动拍从头到尾没开火,只能证明「治理器没在跑」,证明不了「为什么」
+    // ——四个条件合成一个布尔,`if (!_autoCaptureCanStart) return;` 静默吃掉
+    // 了原因。记录**每个条件各自的值**,不是记那个合成布尔,否则下次仍然只
+    // 知道"没起来"。纯观测,不改变任何一条判定。
+    final captureReady = _captureAdmissionOpen;
+    final queueAccepting = _shutterQueue.accepting;
+    final withinFrameBudget = officialCaptureCanShoot(
+      acceptedFrameCount: _autoCaptureAcceptedFrameCount(),
+    );
+    final posesFlowing = _session != null;
+    final canStart = autoCaptureCanStart(
+      captureReady: captureReady,
+      queueAccepting: queueAccepting,
+      withinFrameBudget: withinFrameBudget,
+      posesFlowing: posesFlowing,
+    );
+    final String action;
+    if (_autoStartPending) {
+      action = 'cancel_pending';
+    } else if (_autoCapture.isRunning) {
+      action = 'stop';
+    } else if (!canStart) {
+      action = 'blocked';
+    } else {
+      action = 'arm';
+    }
+    TelemetryWriter.instance.event('auto_capture_toggle', {
+      'action': action,
+      'mode': _captureMode.name,
+      'capture_ready': captureReady,
+      'queue_accepting': queueAccepting,
+      'within_frame_budget': withinFrameBudget,
+      'poses_flowing': posesFlowing,
+      'can_start': canStart,
+      'was_running': _autoCapture.isRunning,
+      'was_pending': _autoStartPending,
+      'accepted_frame_count': _autoCaptureAcceptedFrameCount(),
+    });
+
     if (_autoStartPending) {
       // 起跑还没落到帧上,再点一下就是取消。
       setState(() => _autoStartPending = false);
@@ -3067,17 +3407,6 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     setState(() => _autoStartPending = true);
   }
 
-  void _triggerShutterHaptic() {
-    unawaited(
-      HapticFeedback.heavyImpact().catchError((
-        Object error,
-        StackTrace stackTrace,
-      ) {
-        DeviceLog.log('OfficialARCapturePage', 'shutter haptic failed: $error');
-      }),
-    );
-  }
-
   /// 自动拍的触发口。**返回 true = 真的入队成功** —— controller 据此决定
   /// 要不要把基准帧推到这一帧上。报假的 true 会把基准帧钉在一个**根本没有
   /// 照片**的位置上,此后位移闸系统性欠触发,正是 T3 要防的那件事。
@@ -3089,11 +3418,13 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// **契约:绝不抛。** 异常穿出去会打断整条 pose 回调(覆盖云、预警横幅、
   /// 暖机判定都挂在上面)。入队路径里有平台通道与磁盘工作,不能假设它永远
   /// 干净,所以一律按"没入队"处理 —— 基准帧因此不动,下一 tick 自然重试。
-  bool _onAutoCaptureStartAnchor() {
+  bool _onAutoCaptureStartAnchor(AutomaticStillTicket automaticStillTicket) {
     try {
-      final enqueued = _enqueueShutterCapture(automaticSelection: true);
+      final enqueued = _enqueueShutterCapture(
+        automaticSelection: true,
+        automaticStillTicket: automaticStillTicket,
+      );
       _autoTelemetry.recordStartAnchorOutcome(enqueued: enqueued);
-      if (enqueued) _autoFirePulseToken++;
       return enqueued;
     } catch (e) {
       _autoTelemetry.recordStartAnchorOutcome(enqueued: false);
@@ -3105,20 +3436,22 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     }
   }
 
-  bool _onAutoCaptureFire() {
+  bool _onAutoCaptureFire(AutomaticStillTicket automaticStillTicket) {
     try {
-      final enqueued = _enqueueShutterCapture(automaticSelection: true);
+      final enqueued = _enqueueShutterCapture(
+        automaticSelection: true,
+        automaticStillTicket: automaticStillTicket,
+      );
       // spec §7「入队失败 ⇒ 基准帧不更新 + **记遥测**」。这里是全链路唯一
       // 拿得到真实入队结果的地方 —— 判定层只知道"开了一枪"。
-      _autoTelemetry.recordFireOutcome(enqueued: enqueued);
-      // spec §8「**落帧**时 → 指示器脉冲一次」。脉冲与 fire_enqueued 在
+      _autoTelemetry.recordFireOutcome(admitted: enqueued);
+      // spec §8「**落帧**时 → 指示器脉冲一次」。脉冲与 fire_admitted 在
       // **同一处**记账,屏幕与遥测因此不可能说两套话
       //〔2026-08-19 评审改正:此前脉冲挂在 `decision == fire` 上,
       // 入队失败也照样脉冲〕。
-      if (enqueued) _autoFirePulseToken++;
       return enqueued;
     } catch (e) {
-      _autoTelemetry.recordFireOutcome(enqueued: false);
+      _autoTelemetry.recordFireOutcome(admitted: false);
       DeviceLog.log('OfficialARCapturePage', 'auto capture enqueue failed: $e');
       return false;
     }
@@ -3127,8 +3460,15 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// O(1) UI admission only. Camera, JPEG, disk, and SfM work are serialized
   /// by [_shutterQueue] after this callback has already returned.
   void _onShutterTap() {
-    if (_admitShutterCapture() == _ShutterAdmission.budgetExhausted) {
-      unawaited(_showMaximumPhotosDialog());
+    switch (_admitShutterCapture()) {
+      case _ShutterAdmission.budgetExhausted:
+        unawaited(_showMaximumPhotosDialog());
+        break;
+      case _ShutterAdmission.busyNotAdmitted:
+        _showManualShutterBusyFeedback();
+        break;
+      case _ShutterAdmission.admitted || _ShutterAdmission.closed:
+        break;
     }
   }
 
@@ -3137,23 +3477,57 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// 三道守卫与 300 张上限判据因此只有一份。给自动拍抄第二份守卫迟早会漏掉
   /// 其中一条 —— 尤其是 `_shutterQueue.accepting`,它只在收尾流程
   /// (freezeAndDrain / cancelPending)期间为 false,平时测不出来。
-  _ShutterAdmission _admitShutterCapture({bool automaticSelection = false}) {
-    if (_session == null || !_sfmCaptureReady || !_shutterQueue.accepting) {
-      return _ShutterAdmission.blocked;
+  _ShutterAdmission _admitShutterCapture({
+    bool automaticSelection = false,
+    AutomaticStillTicket? automaticStillTicket,
+  }) {
+    if (_session == null ||
+        !_captureAdmissionOpen ||
+        !_shutterQueue.accepting) {
+      return _ShutterAdmission.closed;
+    }
+    // High-resolution capture is a shared real-time single-flight
+    // transaction. A second manual tap or automatic selection while the one
+    // native request is active is not admitted and therefore cannot become a
+    // stale FIFO ticket. Busy is not the 300-photo budget condition.
+    if (_shutterQueue.outstandingCount > 0) {
+      return _ShutterAdmission.busyNotAdmitted;
+    }
+    if (_projectPhotos.count >= kOfficialMaximumCaptureFrames) {
+      return _ShutterAdmission.budgetExhausted;
     }
     final ticket = _shutterQueue.enqueue(
       verifiedCount: _projectPhotos.count,
       automaticSelection: automaticSelection,
+      automaticStillTicket: automaticStillTicket,
     );
-    if (ticket == null) return _ShutterAdmission.budgetExhausted;
-    _triggerShutterHaptic();
+    if (ticket == null) return _ShutterAdmission.busyNotAdmitted;
     return _ShutterAdmission.admitted;
   }
 
   /// [_admitShutterCapture] 的布尔视图,给 [AutoCaptureController.onFire]。
-  bool _enqueueShutterCapture({bool automaticSelection = false}) =>
-      _admitShutterCapture(automaticSelection: automaticSelection) ==
+  bool _enqueueShutterCapture({
+    bool automaticSelection = false,
+    AutomaticStillTicket? automaticStillTicket,
+  }) =>
+      _admitShutterCapture(
+        automaticSelection: automaticSelection,
+        automaticStillTicket: automaticStillTicket,
+      ) ==
       _ShutterAdmission.admitted;
+
+  void _showManualShutterBusyFeedback() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        const SnackBar(
+          content: Text('上一张照片正在保存，请稍候'),
+          behavior: SnackBarBehavior.floating,
+          duration: Duration(milliseconds: 900),
+        ),
+      );
+  }
 
   Future<void> _showMaximumPhotosDialog() async {
     if (!mounted || _maximumPhotosDialogOpen) return;
@@ -3214,34 +3588,228 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       'verified_at_start': _projectPhotos.count,
       'outstanding_at_start': _shutterQueue.outstandingCount,
     });
-    final input = await capture.highResolutionCompletion;
-    if (mounted &&
-        !_failedEvidenceJpegPaths.contains(capture.evidenceJpegPath)) {
-      unawaited(
-        _arKitChannel
-            .invokeMethod<void>('addPhotoCard', <String, dynamic>{
-              'textureJpegPath': capture.previewJpegPath,
-              'evidenceJpegPath': capture.evidenceJpegPath,
-            })
-            .catchError((Object e) {
-              // ignore: avoid_print
-              print('[OfficialARCapturePage] addPhotoCard failed: $e');
-            }),
+    _activePhotoFeedbackTransactionId = capture.transactionId;
+    _activePhotoFeedbackEvidencePath = capture.evidenceJpegPath;
+    _photoTransactionIdsByEvidencePath[capture.evidenceJpegPath] =
+        capture.transactionId;
+    if (ticket.automaticSelection) {
+      _automaticTicketByTransaction[capture.transactionId] =
+          ticket.automaticStillTicket!;
+    }
+    try {
+      late final OfficialHighResReconstructionInput input;
+      try {
+        input = await capture.highResolutionCompletion;
+      } catch (_) {
+        await _discardPhotoFeedback(
+          capture.evidenceJpegPath,
+          transactionId: capture.transactionId,
+        );
+        if (ticket.automaticSelection) {
+          await _deleteRejectedAutomaticCandidate(capture);
+        }
+        rethrow;
+      }
+      AcceptedPhotoRecord? canonicalRecord;
+      for (final record in session.canonicalPhotoSnapshot) {
+        if (record.transactionId == capture.transactionId) {
+          canonicalRecord = record;
+          break;
+        }
+      }
+      if (canonicalRecord == null) {
+        throw StateError(
+          '12MP completion returned without a canonical membership record',
+        );
+      }
+      await _projectCanonicalPhoto(session, canonicalRecord);
+      if (ticket.automaticSelection) {
+        if (!session.commitAutomaticActualPhoto(input)) {
+          throw const OfficialHighResCaptureException(
+            OfficialHighResInputFailure.captureFailed,
+            message:
+                'canonical automatic still failed its compatibility receipt',
+          );
+        }
+        _autoTelemetry.recordAutomaticStillReceipt(
+          accepted: true,
+          reason: 'accepted',
+        );
+      }
+      if (!mounted ||
+          _failedEvidenceJpegPaths.contains(capture.evidenceJpegPath)) {
+        await _discardPhotoFeedback(
+          capture.evidenceJpegPath,
+          transactionId: capture.transactionId,
+        );
+        throw StateError('accepted 12MP photo cannot publish capture feedback');
+      }
+      // Both manual and automatic capture converge here. Native holds this
+      // method-channel result until the exact high-res pose card has participated
+      // in a rendered SceneKit frame; it emits the haptic in that same completion.
+      // A private candidate rejected above never reaches this transaction.
+      await _commitAcceptedPhotoFeedback(capture, input);
+      if (ticket.automaticSelection) {
+        _autoFirePulseToken++;
+      }
+      _recomputeShutterPace();
+      TelemetryWriter.instance.event('shutter', {
+        'ticket_id': ticket.id,
+        'tap_timestamp_us': ticket.tapTimestampMicros,
+        'queue_wait_us': queueWaitMicros,
+        'automatic_selection': ticket.automaticSelection,
+        'wait_ms': shutterSw.elapsedMilliseconds,
+        'gap_ms': gapMs,
+        'transaction_ms': shutterSw.elapsedMilliseconds,
+        'capture_timestamp': input.captureTimestamp,
+        'phase': _sfmPhase?.name,
+        'jpeg': capture.evidenceJpegPath.split('/').last,
+      });
+    } finally {
+      if (capture.transaction.dataOutcome !=
+          AcceptedPhotoDataOutcome.accepted) {
+        _automaticTicketByTransaction.remove(capture.transactionId);
+      }
+      if (_activePhotoFeedbackTransactionId == capture.transactionId) {
+        _activePhotoFeedbackTransactionId = null;
+        _activePhotoFeedbackEvidencePath = null;
+      }
+    }
+  }
+
+  Future<bool> _commitAcceptedPhotoFeedback(
+    OfficialManualCaptureResult capture,
+    OfficialHighResReconstructionInput input,
+  ) async {
+    if (!mounted ||
+        input.jpegPath != capture.evidenceJpegPath ||
+        _failedEvidenceJpegPaths.contains(input.jpegPath)) {
+      await _discardPhotoFeedback(
+        capture.evidenceJpegPath,
+        transactionId: capture.transactionId,
+      );
+      return false;
+    }
+    if (!_finishCoordinator.captureAdmissionOpen) {
+      final outcome = await _suppressPhotoPresentation(
+        transactionId: capture.transactionId,
+        evidenceJpegPath: input.jpegPath,
+      );
+      _session?.resolvePhotoPresentation(capture.transaction, outcome);
+      return outcome != AcceptedPhotoPresentationOutcome.failed;
+    }
+    try {
+      final receipt = await _arKitChannel.invokeMapMethod<String, dynamic>(
+        'commitAcceptedPhotoFeedback',
+        <String, dynamic>{
+          'transactionId': capture.transactionId,
+          'evidenceJpegPath': input.jpegPath,
+        },
+      );
+      final outcome = acceptedPhotoPresentationOutcomeFromReceipt(receipt);
+      _session?.resolvePhotoPresentation(capture.transaction, outcome);
+      if (outcome == AcceptedPhotoPresentationOutcome.failed) {
+        DeviceLog.log(
+          'OfficialARCapturePage',
+          'photo data accepted; presentation receipt failed '
+              'transaction=${capture.transactionId}',
+        );
+      }
+      return outcome != AcceptedPhotoPresentationOutcome.failed;
+    } catch (error, stackTrace) {
+      _session?.resolvePhotoPresentation(
+        capture.transaction,
+        AcceptedPhotoPresentationOutcome.failed,
+      );
+      DeviceLog.log(
+        'OfficialARCapturePage',
+        'commitAcceptedPhotoFeedback failed: $error\n$stackTrace',
+      );
+      return false;
+    }
+  }
+
+  Future<AcceptedPhotoPresentationOutcome> _suppressPhotoPresentation({
+    required String transactionId,
+    required String evidenceJpegPath,
+  }) async {
+    try {
+      final receipt = await _arKitChannel.invokeMapMethod<String, dynamic>(
+        'suppressPhotoFeedbackPresentation',
+        <String, dynamic>{
+          'transactionId': transactionId,
+          'evidenceJpegPath': evidenceJpegPath,
+        },
+      );
+      return acceptedPhotoPresentationOutcomeFromReceipt(receipt);
+    } catch (error, stackTrace) {
+      DeviceLog.log(
+        'OfficialARCapturePage',
+        'suppressPhotoFeedbackPresentation failed: $error\n$stackTrace',
+      );
+      return AcceptedPhotoPresentationOutcome.failed;
+    }
+  }
+
+  Future<void> _suppressActivePhotoPresentationForFinish() async {
+    final active = _session?.activePhotoTransaction;
+    final transactionId =
+        active?.transactionId ?? _activePhotoFeedbackTransactionId;
+    final evidenceJpegPath =
+        active?.evidenceJpegPath ?? _activePhotoFeedbackEvidencePath;
+    if (transactionId == null || evidenceJpegPath == null) return;
+    if (active != null) {
+      _session?.resolvePhotoPresentation(
+        active.transaction,
+        AcceptedPhotoPresentationOutcome.suppressed,
       );
     }
-    _recomputeShutterPace();
-    TelemetryWriter.instance.event('shutter', {
-      'ticket_id': ticket.id,
-      'tap_timestamp_us': ticket.tapTimestampMicros,
-      'queue_wait_us': queueWaitMicros,
-      'automatic_selection': ticket.automaticSelection,
-      'wait_ms': shutterSw.elapsedMilliseconds,
-      'gap_ms': gapMs,
-      'transaction_ms': shutterSw.elapsedMilliseconds,
-      'capture_timestamp': input.captureTimestamp,
-      'phase': _sfmPhase?.name,
-      'jpeg': capture.evidenceJpegPath.split('/').last,
-    });
+    final nativeOutcome = await _suppressPhotoPresentation(
+      transactionId: transactionId,
+      evidenceJpegPath: evidenceJpegPath,
+    );
+    if (nativeOutcome != AcceptedPhotoPresentationOutcome.suppressed) {
+      DeviceLog.log(
+        'OfficialARCapturePage',
+        'native Finish suppression receipt was ${nativeOutcome.name} '
+            'transaction=$transactionId',
+      );
+    }
+  }
+
+  Future<void> _discardPhotoFeedback(
+    String evidenceJpegPath, {
+    String? transactionId,
+  }) async {
+    try {
+      await _arKitChannel
+          .invokeMethod<void>('discardPhotoFeedback', <String, dynamic>{
+            if (transactionId != null) 'transactionId': transactionId,
+            'evidenceJpegPath': evidenceJpegPath,
+          });
+    } catch (error) {
+      DeviceLog.log(
+        'OfficialARCapturePage',
+        'discardPhotoFeedback failed: $error',
+      );
+    }
+  }
+
+  Future<void> _removePhotoCard({
+    required String transactionId,
+    required String evidenceJpegPath,
+  }) async {
+    try {
+      await _arKitChannel.invokeMethod<void>(
+        'removePhotoCard',
+        <String, dynamic>{
+          'transactionId': transactionId,
+          'evidenceJpegPath': evidenceJpegPath,
+        },
+      );
+    } catch (error) {
+      DeviceLog.log('OfficialARCapturePage', 'removePhotoCard failed: $error');
+    }
   }
 
   void _onShutterTicketError(
@@ -3249,6 +3817,38 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     Object error,
     StackTrace stackTrace,
   ) {
+    if (ticket.automaticSelection) {
+      _autoTelemetry.recordAutomaticStillReceipt(
+        accepted: false,
+        reason: error is OfficialHighResCaptureException
+            ? error.failure.name
+            : error.runtimeType.toString(),
+      );
+      final rejectedInput = error is OfficialHighResCaptureException
+          ? error.rejectedInput
+          : null;
+      final rejectedGray = rejectedInput?.gray128;
+      _autoCapture.resolveAutomaticStill(
+        ticket: ticket.automaticStillTicket!,
+        accepted: false,
+        rejectedStill:
+            rejectedInput == null ||
+                rejectedGray == null ||
+                rejectedGray.length != 128 * 128
+            ? null
+            : RejectedAutomaticStillEvidence(
+                gray128: rejectedGray,
+                intrinsics: AutoCaptureIntrinsics(
+                  fx: rejectedInput.intrinsics[0],
+                  fy: rejectedInput.intrinsics[1],
+                  cx: rejectedInput.intrinsics[2],
+                  cy: rejectedInput.intrinsics[3],
+                  imageWidth: rejectedInput.imageWidth,
+                  imageHeight: rejectedInput.imageHeight,
+                ),
+              ),
+      );
+    }
     DeviceLog.log(
       'OfficialARCapturePage',
       'shutter ticket=${ticket.id} FAILED: $error\n$stackTrace',
@@ -3258,16 +3858,38 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       'tap_timestamp_us': ticket.tapTimestampMicros,
       'error': '$error',
     });
-    if (_finishTapInProgress) {
-      _finishDrainFailed = true;
-      _shutterQueue.cancelPending();
+    // A rejected private candidate is not a user-visible task failure. It
+    // advances no photo/SfM/baseline ledger and the next eligible frame may
+    // try again after the single-flight receipt releases.
+  }
+
+  Future<void> _deleteRejectedAutomaticCandidate(
+    OfficialManualCaptureResult capture,
+  ) async {
+    final evidence = capture.evidenceJpegPath;
+    final preview = capture.previewJpegPath;
+    final dot = evidence.lastIndexOf('.');
+    final stem = dot < 0 ? evidence : evidence.substring(0, dot);
+    final paths = <String>{
+      evidence,
+      preview,
+      '$stem.json',
+      '${preview.substring(0, preview.lastIndexOf('.'))}.json',
+      '${preview.substring(0, preview.lastIndexOf(Platform.pathSeparator) + 1)}'
+          '${stem.split(Platform.pathSeparator).last}_highres_preview.jpg',
+    };
+    for (final path in paths) {
+      try {
+        final file = File(path);
+        if (await file.exists()) await file.delete();
+      } catch (error) {
+        TelemetryWriter.instance.event('automatic_candidate_cleanup', {
+          'file': path.split(Platform.pathSeparator).last,
+          'outcome': 'delete_failed',
+          'error': '$error',
+        });
+      }
     }
-    if (!mounted || _discardingCapture) return;
-    setState(() {
-      _captureQueueFailureText =
-          '有一张高分辨率照片未完成（任务 ${ticket.id}）。'
-          '已继续处理后续拍摄；你可以继续拍摄或退出重试。';
-    });
   }
 
   /// Open the full-screen, time-ordered photo album.
@@ -3292,68 +3914,14 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// 弹窗只是前置门。每次点完成都记一行 finish_gate 遥测
   /// (starved/true_vox + 用户选择;未触发门 = pass)。
   Future<void> _onFinishTap() async {
-    if (!_sfmCaptureReady ||
-        _finalizingRecording ||
-        _finishTapInProgress ||
-        _closeTapInProgress ||
-        _discardingCapture) {
-      return;
-    }
-    _finishCancellationRequested = false;
-    _finishDrainFailed = false;
-    // 收尾第一件事就是停自动拍:下面 freezeAndDrain 之后队列不再收人,
-    // 自动拍会每个 tick 撞一次关着的门(还撞不出任何反馈)。
-    _stopAutoCapture();
-
-    // [pw] 2026-08-24 真机报的 bug:点完成之后**还在继续拍**。
-    //
-    // 用户的观察字面上就是对的 —— 它确实还在拍,不是"在处理已拍的照片"。
-    // 队列的入队方法只是排一张**票**,真正的 12MP 拍照发生在
-    // `_pump()` 里(见 manual_capture_queue.dart)。所以 pending 的票
-    // = **还没拍、但排着队要拍的照片**,
-    // 而 `freezeAndDrain()` 会把它们**全部拍完**才返回。
-    //
-    // 为什么手动模式完全没有这个现象:手动是点一下拍一张,点完成时
-    // `outstandingCount == 0`,`freezeAndDrain` 那句
-    // `if (outstandingCount == 0) return Future.value();` 直接命中 ⇒ 秒结束。
-    // 自动是 1 秒 1 张压着,而 pump 是串行的(`await _execute(ticket)`),
-    // 单张只要慢过 1 秒队列就一直涨 ⇒ 点完成后要把那一摞全拍完。
-    //
-    // 丢掉未拍的票**不违反无损铁律**:无损管的是**已采集的数据**,而这些票
-    // 一张照片都还没拍。用户按了结束还补拍,那不是无损,是没听指令。
-    // 屏幕上的 N/300 读的是 `_projectPhotos.count`(已落盘张数),不含
-    // outstanding ⇒ 计数不会倒退。
-    //
-    // `cancelPending() + freezeAndDrain()` 是本文件既有的「立即停」惯用法
-    // (放弃拍摄那条路就是这么写的);而"保存并退出"那条刻意不 cancel,
-    // 注释写着「无损:先把在途快门全部落地」—— 两者语义本来就该不同,
-    // 完成键此前错用了后者。
-    //
-    // 在飞的那一张仍然等它落地(cancelPending 只清 _pending,不动 _active)。
-    final cancelledTickets = _shutterQueue.pendingCount;
-    _shutterQueue.cancelPending();
-    if (cancelledTickets > 0) {
-      // 丢了多少必须可见 —— 静默丢弃就又是一个静默失效。
-      TelemetryWriter.instance.event('finish_cancel_pending', <String, Object>{
-        'cancelled_tickets': cancelledTickets,
-        'mode': _captureMode.name,
-      });
-      DeviceLog.log(
-        'OfficialARCapturePage',
-        'finish: 丢弃 $cancelledTickets 张未拍的排队票(模式 ${_captureMode.name})',
-      );
-    }
-    setState(() => _finishTapInProgress = true);
+    if (!_finishAllowed || _confirmationDialogOpen) return;
+    // Confirmation gates run before the commit boundary. Until they all pass,
+    // no pending work is cancelled, no camera is stopped, and the user can
+    // return to the exact same capture session.
+    _confirmationDialogOpen = true;
     try {
-      await _shutterQueue.freezeAndDrain();
-      if (!mounted ||
-          _finishCancellationRequested ||
-          _finishDrainFailed ||
-          _discardingCapture ||
-          !_recording) {
-        return;
-      }
       final acceptedFrameCount = _projectPhotos.count;
+      if (!mounted || !_finishAllowed) return;
       if (!officialCaptureCanFinish(acceptedFrameCount: acceptedFrameCount)) {
         final remaining = kOfficialMinimumCaptureFrames - acceptedFrameCount;
         await showDialog<void>(
@@ -3419,14 +3987,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       }
       await _finalizeRecording(navigateToDrafts: true, showSparseHint: true);
     } finally {
-      if (mounted &&
-          _recording &&
-          !_discardingCapture &&
-          !_cameraResumeFailed) {
-        _shutterQueue.resume();
-      }
-      _finishCancellationRequested = false;
-      if (mounted) setState(() => _finishTapInProgress = false);
+      _confirmationDialogOpen = false;
     }
   }
 
@@ -3440,147 +4001,315 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     required bool navigateToDrafts,
     required bool showSparseHint,
   }) async {
+    await _commitCaptureExit(
+      disposition: _CommittedCaptureExit.reconstruct,
+      navigateToDrafts: navigateToDrafts,
+      showSparseHint: showSparseHint,
+    );
+  }
+
+  Future<void> _commitCaptureExit({
+    required _CommittedCaptureExit disposition,
+    required bool navigateToDrafts,
+    required bool showSparseHint,
+  }) async {
     final session = _session;
-    if (session == null || !_sfmCaptureReady) return;
-    if (_finalizingRecording) return;
-    _finalizingRecording = true;
-    _stopAutoCapture();
-    _stopGuidanceTelemetry(); // 拍摄结束,【guidance】采样停止
+    if (session == null) return;
+    final finishAttempt = _finishCoordinator.beginFinish(
+      exitIntent: disposition == _CommittedCaptureExit.discard
+          ? CaptureFinishExitIntent.discardCapture
+          : navigateToDrafts
+          ? CaptureFinishExitIntent.popToDrafts
+          : CaptureFinishExitIntent.remainOnRoute,
+    );
+    if (finishAttempt == null) return;
+
+    final recon = _sfmRecon;
+    final captureDirAtCommit = session.captureDir;
+    _finishDraftPersisted = false;
+    _pendingFinishTerminal = null;
+    if (mounted) {
+      setState(() {
+        _recording = false;
+        _isAiming = false;
+        _lockInProgress = false;
+        _sfmSnapshot = null;
+        _colorizeTarget = null;
+        _sfmErrorText = null;
+        _showDraftsWhileReconstructing = false;
+      });
+    }
     try {
-      await _shutterQueue.freezeAndDrain();
-      // RECORDING → STOP. The high-res stills are written incrementally
-      // under `<captureDir>/photos_highres/`; stop freezes curation and
-      // writes the shared photo_bundle contract.
-      await session.stop();
-      await _stopVioShadowForCapture();
-      // T6: tear down the live sparse cloud when the take ends.
-      try {
-        await _arKitChannel.invokeMethod<void>(
-          'setFeaturePointsVisible',
-          <String, dynamic>{'visible': false},
-        );
-      } catch (_) {}
-      if (mounted) {
-        setState(() {
-          _recording = false;
-          _isAiming = false;
-          _lockInProgress = false;
-        });
+      session.sealCaptureAdmission();
+      _shutterQueue.cancelPending();
+      _stopAutoCapture();
+      _stopGuidanceTelemetry();
+      _setMatcherCaptureActive(false);
+      if (disposition == _CommittedCaptureExit.reconstruct) {
+        recon?.notifyFinishCommitted();
+      } else {
+        _sfmRecon = null;
       }
-      await session.waitForPendingPhotoSaves();
-      await _highResFailureSub?.cancel();
-      _highResFailureSub = null;
-      // Capture is over — STOP THE CAMERA NOW, before the minutes-scale SfM
-      // finalize. All keyframes are fed and every high-res still is on disk
-      // (the barrier above guarantees it), so the ARSession (4K camera
-      // capture + VIO + buffered ARFrames + ARSCNView GPU work) is pure
-      // overhead from here — and it was competing with the finalize for
-      // memory/GPU/thermal (mem ~950 MB, thermal=serious during solve).
-      // pause() + clearing recentFrameSnapshots frees it all for CPU+GPU SfM.
-      try {
-        await _arKitChannel.invokeMethod<void>('stopSession');
-        DeviceLog.log(
-          'OfficialARCapturePage',
-          'finish: ARSession stopped (camera off)',
-        );
-      } catch (_) {}
-      final recon = _sfmRecon;
-      if (_projectPhotos.count == 0) {
-        if (recon != null) {
-          _sfmRecon = null;
-          await _sfmFeedSub?.cancel();
-          _sfmFeedSub = null;
-          await _sfmEventSub?.cancel();
-          _sfmEventSub = null;
-          unawaited(recon.dispose());
-        }
-        if (mounted && showSparseHint) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(AppL10n.of(context).captureMaterialTooSparseHint),
-              behavior: SnackBarBehavior.floating,
-            ),
+    } catch (error, stackTrace) {
+      _resolveFinishTerminal(
+        attempt: finishAttempt,
+        success: false,
+        stage: 'synchronousCommit',
+        error: error,
+        stackTrace: stackTrace,
+      );
+      return;
+    }
+
+    try {
+      final enteredProcessing = await _finishCoordinator
+          .orchestrateToProcessing(
+            attempt: finishAttempt,
+            drainActiveTicket: () async {
+              await _suppressActivePhotoPresentationForFinish();
+              await _shutterQueue.freezeAndDrain();
+              await session.waitForPendingPhotoSaves();
+              for (final record in session.canonicalPhotoSnapshot) {
+                await _projectCanonicalPhoto(session, record);
+              }
+            },
+            stopCamera: () async {
+              try {
+                await _arKitChannel.invokeMethod<void>(
+                  'setFeaturePointsVisible',
+                  <String, dynamic>{'visible': false},
+                );
+              } catch (_) {}
+              await session.stopCameraTransport();
+            },
+            beginProcessing: () async {
+              _stopVioShadowInBackground();
+              await session.stop();
+              await _highResFailureSub?.cancel();
+              _highResFailureSub = null;
+            },
           );
+      if (!enteredProcessing) {
+        _showFinishCoordinatorFailure(finishAttempt);
+        return;
+      }
+
+      if (disposition != _CommittedCaptureExit.reconstruct) {
+        _releaseReconstructionAfterCommittedClose(recon);
+        final processed = await _finishCoordinator.runProcessingStep(
+          attempt: finishAttempt,
+          stage: disposition == _CommittedCaptureExit.saveDraft
+              ? 'persistCloseDraft'
+              : 'discardCapture',
+          operation: () async {
+            if (disposition == _CommittedCaptureExit.saveDraft) {
+              if (!await _persistDraft(showSnackBar: false)) {
+                throw StateError('close-save draft was not persisted');
+              }
+              return;
+            }
+            await session.discardCurrentCapture();
+            if (captureDirAtCommit != null &&
+                await Directory(captureDirAtCommit).exists()) {
+              throw StateError('discarded capture directory still exists');
+            }
+          },
+        );
+        if (!processed) {
+          _showFinishCoordinatorFailure(finishAttempt);
+          return;
         }
-        if (navigateToDrafts && mounted) {
-          _exitToDrafts();
+        _finishDraftPersisted = true;
+        if (_resolveFinishTerminal(
+          attempt: finishAttempt,
+          success: true,
+          stage: disposition == _CommittedCaptureExit.saveDraft
+              ? 'persistCloseDraft'
+              : 'discardCapture',
+        )) {
+          _exitCommittedCaptureRoute(
+            finishAttempt,
+            showDrafts: disposition == _CommittedCaptureExit.saveDraft,
+          );
         }
         return;
       }
 
-      // Keep the post-capture waiting page alive until the authoritative final
-      // sparse cloud lands. SfM remains asynchronous: the worker drains every
-      // offered frame while this page merely renders queue progress, then runs
-      // spatial loop matching + full finalize. We deliberately retain the event
-      // subscription and session ownership here; detaching them would make the
-      // page exit straight to Drafts and hide the queue/final result.
-      final sfmPreviewing = recon != null && recon.offeredCount >= 2;
-      final captureDirForSfm = session.captureDir;
+      await _continueCommittedReconstruction(
+        session: session,
+        recon: recon,
+        finishAttempt: finishAttempt,
+        navigateToDrafts: navigateToDrafts,
+        showSparseHint: showSparseHint,
+      );
+    } catch (error, stackTrace) {
+      if (_finishCoordinator.terminalOutcome == null) {
+        _resolveFinishTerminal(
+          attempt: finishAttempt,
+          success: false,
+          stage: 'finishPipeline',
+          error: error,
+          stackTrace: stackTrace,
+        );
+      } else {
+        _showFinishCoordinatorFailure(finishAttempt);
+      }
+    }
+  }
+
+  Future<void> _continueCommittedReconstruction({
+    required CaptureSession session,
+    required SfmLiveRecon? recon,
+    required CaptureFinishAttempt finishAttempt,
+    required bool navigateToDrafts,
+    required bool showSparseHint,
+  }) async {
+    if (_projectPhotos.count == 0) {
+      _releaseReconstructionAfterCommittedClose(recon);
+      _resolveFinishTerminal(
+        attempt: finishAttempt,
+        success: false,
+        stage: 'verifiedPhotoLedger',
+        error: StateError('no verified high-resolution photos to persist'),
+      );
+      return;
+    }
+
+    final sfmPreviewing = recon != null && recon.offeredCount >= 2;
+    final captureDirForSfm = session.captureDir;
+    // The canonical raw bundle is the recovery boundary. Settle it before
+    // finalize can emit completion/events or colorization can time out, so a
+    // reconstruction terminal can never prevent the draft from being saved.
+    final persisted = await _finishCoordinator.runProcessingStep(
+      attempt: finishAttempt,
+      stage: 'persistDraft',
+      operation: () async {
+        if (!await _persistDraft(showSnackBar: mounted && showSparseHint)) {
+          throw StateError('capture draft was not persisted');
+        }
+      },
+    );
+    if (!persisted) {
+      _showFinishCoordinatorFailure(finishAttempt);
+      return;
+    }
+    _flushDeferredFinishTerminal();
+    if (_finishCoordinator.phase == CaptureFinishPhase.error) return;
+
+    if (sfmPreviewing) {
+      final prepared = await _finishCoordinator.runProcessingStep(
+        attempt: finishAttempt,
+        stage: 'startReconstruction',
+        operation: () async {
+          await _sfmFeedSub?.cancel();
+          _sfmFeedSub = null;
+          if (mounted) {
+            setState(() {
+              _sfmFed = recon.fedCount;
+              _sfmQueued = recon.remainingCount;
+              _sfmSnapshot = null;
+              _colorizeTarget = null;
+              _sfmErrorText = null;
+              _sfmPhase = SfmPreviewPhase.generating;
+              _showDraftsWhileReconstructing = false;
+              _sfmFinalizeStage = recon.remainingCount == 0 ? 1 : 0;
+              _sfmStageStartMs = DateTime.now().millisecondsSinceEpoch;
+            });
+            _startSfmStageTicker();
+          }
+          if (captureDirForSfm != null) {
+            await _beginReconUmbrella(captureDirForSfm);
+          }
+          recon.finalize();
+        },
+      );
+      if (!prepared) {
+        _showFinishCoordinatorFailure(finishAttempt);
+        return;
+      }
+    } else {
+      _sfmRecon = null;
+      _releaseReconstructionAfterCommittedClose(recon);
+    }
+    if (!sfmPreviewing) {
+      final failure =
+          _sfmProcessingTerminalGate.failure ??
+          _sfmProcessingTerminalGate.fail(
+            kind: SfmTerminalFailureKind.deliveryFailed,
+            stage: 'preview_unavailable',
+            message:
+                'capture persisted but final reconstruction could not start',
+          )!;
+      _resolveFinishTerminal(
+        attempt: finishAttempt,
+        success: false,
+        stage: 'sfm_${failure.stage}',
+        error: failure,
+      );
+      return;
+    }
+    if (navigateToDrafts && mounted) _exitToDrafts();
+  }
+
+  void _releaseReconstructionAfterCommittedClose(SfmLiveRecon? recon) {
+    final feedSub = _sfmFeedSub;
+    final eventSub = _sfmEventSub;
+    _sfmFeedSub = null;
+    _sfmEventSub = null;
+    _pendingSfmInputs.clear();
+    unawaited(() async {
+      await feedSub?.cancel();
+      await eventSub?.cancel();
+      if (recon != null) await recon.dispose();
+    }());
+  }
+
+  void _exitCommittedCaptureRoute(
+    CaptureFinishAttempt attempt, {
+    required bool showDrafts,
+  }) {
+    if (!mounted || !_finishCoordinator.beginExit(attempt)) return;
+    Navigator.of(context).pop(showDrafts);
+    _finishCoordinator.markExited(attempt);
+  }
+
+  void _showFinishCoordinatorFailure(CaptureFinishAttempt attempt) {
+    if (!mounted ||
+        attempt.generation != _finishCoordinator.currentGeneration) {
+      return;
+    }
+    final failure = _finishCoordinator.failure;
+    DeviceLog.log(
+      'OfficialARCapturePage',
+      'finish terminal error stage=${failure?.stage ?? 'unknown'} '
+          'timeout=${failure?.timedOut ?? false} error=${failure?.error}',
+    );
+    for (final cleanup in _finishCoordinator.cleanupFailures) {
       DeviceLog.log(
         'OfficialARCapturePage',
-        'finish: sfm fed=${recon?.fedCount ?? -1} '
-            'remaining=${recon?.remainingCount ?? -1} preview=$sfmPreviewing',
+        'finish cleanup error stage=${cleanup.stage} '
+            'timeout=${cleanup.timedOut} error=${cleanup.error}',
       );
-      if (sfmPreviewing) {
-        await _sfmFeedSub?.cancel();
-        _sfmFeedSub = null;
-        if (mounted) {
-          setState(() {
-            _sfmFed = recon.fedCount;
-            _sfmQueued = recon.remainingCount;
-            _sfmSnapshot = null;
-            _colorizeTarget = null;
-            _pendingLocalColored = null;
-            _sfmErrorText = null;
-            _sfmPhase = SfmPreviewPhase.generating;
-            _showDraftsWhileReconstructing = false;
-            // 修1:队列已空则立即进入阶段 1;否则等 FrameFed 排空时进。
-            _sfmFinalizeStage = recon.remainingCount == 0 ? 1 : 0;
-            _sfmStageStartMs = DateTime.now().millisecondsSinceEpoch;
-          });
-          _startSfmStageTicker();
-        }
-        if (captureDirForSfm != null) {
-          await _beginReconUmbrella(captureDirForSfm);
-        }
-        recon.finalize();
-      } else if (recon != null) {
-        _sfmRecon = null;
-        await _sfmFeedSub?.cancel();
-        _sfmFeedSub = null;
-        await _sfmEventSub?.cancel();
-        _sfmEventSub = null;
-        unawaited(recon.dispose());
-      }
-      // Every verified 12MP shutter is a project photo. Upload curation may
-      // choose a subset for a later stage, but it must never delete photos from
-      // the user-visible album or change its one authoritative count.
-      await _persistDraft(showSnackBar: mounted && showSparseHint);
-      // Pop with `true` as a signal to AetherAppShell that it should
-      // switch the active tab to Me Drafts (the user just created a
-      // scan and expects to see it sitting in their drafts list).
-      if (navigateToDrafts && mounted) {
-        _exitToDrafts();
-      }
-    } finally {
-      _finalizingRecording = false;
     }
+    setState(() {
+      _colorizeTarget = null;
+      _sfmPhase = SfmPreviewPhase.error;
+      _sfmErrorText = '处理未完成，已保留全部照片。请稍后从草稿重试。';
+      _showDraftsWhileReconstructing = false;
+    });
   }
 
   /// Exit to Drafts — unless the live-reconstruction preview overlay is up,
   /// in which case the user leaves via its "完成" button and the pop is
   /// deferred to [_onSfmPreviewDone].
   void _exitToDrafts() {
-    if (_sfmPhase != null) {
-      _sfmPendingPop = true;
-      return;
-    }
+    if (_sfmPhase != null) return;
     Navigator.of(context).pop(true);
   }
 
-  Future<void> _persistDraft({required bool showSnackBar}) async {
+  Future<bool> _persistDraft({required bool showSnackBar}) async {
     final session = _session;
-    if (session == null) return;
+    if (session == null) return false;
     final dir = session.photosHighresDir ?? session.photosDir;
     final photoCount = _projectPhotos.count;
     final captureDirPath = session.captureDir;
@@ -3593,7 +4322,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           ),
         );
       }
-      return;
+      return false;
     }
     final photosDir = Directory(dir);
     final captureDir = Directory(captureDirPath);
@@ -3639,7 +4368,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     final manifestFile = await session.writeProjectPhotoBundleManifest(
       _projectPhotos.paths,
     );
-    if (manifestFile == null || !manifestFile.existsSync()) return;
+    if (manifestFile == null || !manifestFile.existsSync()) return false;
     final record = ScanRecord(
       id: captureId,
       name: nextUntitledScanName(store.records.map((r) => r.name)),
@@ -3668,6 +4397,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         ),
       );
     }
+    return true;
   }
 
   String _cardThumbnailSourceFor(String highresPath) {
@@ -3682,8 +4412,28 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   }
 
   Future<void> _deleteProjectPhoto(String path) async {
+    // The canonical owner flushes the tombstone before removing the record,
+    // files, or in-memory projections. No UI-local mutation may precede it.
+    final session = _session;
+    final deletedRecord = session == null
+        ? null
+        : await session.tombstoneCanonicalPhoto(path);
+    if (deletedRecord == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            const SnackBar(
+              content: Text('照片暂时无法安全删除，请稍后重试'),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+      }
+      return;
+    }
     final recon = _sfmRecon;
     int? removedFrameId;
+    var reconRemovalFailed = false;
     if (recon != null) {
       for (final entry in recon.fedFrameMeta.entries) {
         if (entry.value.jpegPath == path) {
@@ -3692,21 +4442,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         }
       }
       final removed = await recon.removePhoto(path);
-      if (!removed) {
-        if (mounted) {
-          ScaffoldMessenger.of(context)
-            ..hideCurrentSnackBar()
-            ..showSnackBar(
-              const SnackBar(
-                content: Text('照片暂时无法从重建中撤回，请稍后重试'),
-                behavior: SnackBarBehavior.floating,
-              ),
-            );
-        }
-        return;
-      }
+      reconRemovalFailed = !removed;
     }
-    _projectPhotos.remove(path);
     _photoCardStateSent.remove(path);
     _photoCaptureEpochMs.remove(path);
     _failedEvidenceJpegPaths.remove(path);
@@ -3716,12 +4453,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     }
     final keep = _targetPoints.retainedJpegPaths.toSet()..remove(path);
     _targetPoints.retainOnlyJpegPaths(keep);
+    final transactionId =
+        _photoTransactionIdsByEvidencePath.remove(path) ??
+        deletedRecord.transactionId;
     unawaited(
-      _arKitChannel
-          .invokeMethod<void>('removePhotoCard', <String, dynamic>{
-            'evidenceJpegPath': path,
-          })
-          .catchError((Object _) {}),
+      _removePhotoCard(transactionId: transactionId, evidenceJpegPath: path),
     );
     final previewPath = path.replaceFirst('/photos_highres/', '/previews/');
     final sidecarPath = path.endsWith('.jpg')
@@ -3750,6 +4486,16 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       }
     }
     if (mounted) setState(() {});
+    if (reconRemovalFailed && mounted) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('照片已删除；重建工作器未确认撤回，完成时将以项目清单为准'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+    }
   }
 
   Future<bool> _writeCardThumbnail({
@@ -3775,8 +4521,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     ManualCaptureQueue shutterQueue,
     CaptureSession? session,
   ) async {
-    await session?.stop();
     await shutterQueue.freezeAndDrain();
+    await session?.stopCameraTransport();
+    await session?.stop();
     shutterQueue.dispose();
     await session?.dispose();
   }
@@ -3799,7 +4546,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // Streaming-SfM teardown: frees the native session (joins the background
     // BA thread, drops the sqlite db) off this isolate — page dispose never
     // blocks. Re-entering capture creates a fresh session + worker.
-    _coverageFeedSub?.cancel();
+    _canonicalPhotoCommitSub?.cancel();
     _sfmFeedSub?.cancel();
     _sfmEventSub?.cancel();
     _highResFailureSub?.cancel();
@@ -3811,9 +4558,12 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     _emitAutoTelemetry(_autoTelemetry.recordSessionEnd());
     _autoCapture.stop();
     shutterQueue.cancelPending();
+    _setMatcherCaptureActive(false);
+    VioDiagnosticsRecorder.instance.stopInBackground();
     unawaited(_disposeCaptureResourcesAfterQueueDrain(shutterQueue, session));
     final sfmRecon = _sfmRecon;
     _sfmRecon = null;
+    _pendingSfmInputs.clear();
     if (sfmRecon != null) unawaited(sfmRecon.dispose());
     _adaptiveFpsTimer?.cancel(); // [ADAPTIVE-FPS]
     _previewModel.dispose();
@@ -3841,10 +4591,17 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // 折叠成"显示草稿"(与等待页左上角返回按钮同一语义)。显式的
     // Navigator.pop(_exitToDrafts/_onSfmPreviewDone)不受 canPop 影响。
     return PopScope(
-      canPop: _sfmPhase == null,
+      canPop: !_recording && _finishCoordinator.canPop && _sfmPhase == null,
       onPopInvokedWithResult: (bool didPop, Object? result) {
-        if (didPop || _sfmPhase == null) return;
-        if (!_showDraftsWhileReconstructing) _showDraftsDuringReconstruction();
+        if (didPop) return;
+        if (_recording) {
+          unawaited(_onCloseTap());
+          return;
+        }
+        final terminal =
+            _sfmPhase == SfmPreviewPhase.refined ||
+            _sfmPhase == SfmPreviewPhase.error;
+        if (terminal) unawaited(_onSfmPreviewBack());
       },
       child: _buildRouteBody(context),
     );
@@ -3872,7 +4629,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       body: Stack(
         children: [
           // Camera preview / init / error placeholder.
-          Positioned.fill(child: _buildPreviewLayer()),
+          Positioned.fill(
+            child: _finishCoordinator.captureRootTombstoned
+                ? const ColoredBox(color: Colors.black)
+                : _buildPreviewLayer(),
+          ),
 
           // ─── Top bar: subtle route marker + X close button (right).
           // Tracking dot was previously rendered dead-center here, but
@@ -3881,28 +4642,29 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           // green/red/white color carried no clear meaning to the user.
           // The IdleHintPill + preview minimap + bottom button cover the same
           // information already, so this dot was pure noise. Removed.
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
-                child: SizedBox(
-                  height: 38,
-                  // [2026-07-27 UI 签决]"官方"路由徽章已删除:线上只剩这一条
-                  // 采集路由(另一条 lib/ui/capture/ar_capture_page.dart 早已
-                  // 不存在),标签对用户零信息量,只是占着取景框右上角。
-                  // [2026-08-10 用户签决,附截图] 右上角"×"改为左上角"<",
-                  // 功能保持不变(仍走 _onCloseTap 的退出弹窗)。
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.start,
-                    children: [_CloseButton(onTap: _onCloseTap)],
+          if (!_finishCoordinator.captureRootTombstoned)
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 0),
+                  child: SizedBox(
+                    height: 38,
+                    // [2026-07-27 UI 签决]"官方"路由徽章已删除:线上只剩这一条
+                    // 采集路由(另一条 lib/ui/capture/ar_capture_page.dart 早已
+                    // 不存在),标签对用户零信息量,只是占着取景框右上角。
+                    // [2026-08-10 用户签决,附截图] 右上角"×"改为左上角"<",
+                    // 功能保持不变(仍走 _onCloseTap 的退出弹窗)。
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.start,
+                      children: [_CloseButton(onTap: _onCloseTap)],
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
 
           // ─── [spec §8.1] 顶部说明条(按 RealityScan 实机截图复刻)。
           //
@@ -3912,7 +4674,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           // 常驻文案会把这两条一起推翻。所以四档一格没动(66/60/104/148/192),
           // 本条与硬拒 toast 共用第 60 档 —— 它排在 Stack 里更靠前,真撞上时
           // 警告盖在它上面,由警告赢。
-          if (_session != null && _sfmPhase == null)
+          if (!_finishCoordinator.captureRootTombstoned &&
+              _session != null &&
+              _sfmPhase == null)
             Positioned(
               top: 0,
               left: 16,
@@ -3925,10 +4689,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               ),
             ),
 
-          // A live-SfM worker is mandatory for this product route. Keep the
-          // failure on screen (rather than a transient snackbar) and leave X
-          // available so the user can discard the invalid take and retry.
-          if (_sfmStartFailureText != null || _captureQueueFailureText != null)
+          // Only a camera-transport failure may cover the capture UI. Live
+          // reconstruction degradation is recorded for the processing state
+          // and never blocks a valid high-resolution capture.
+          if (_captureQueueFailureText != null)
             Positioned(
               top: 0,
               left: 16,
@@ -3938,7 +4702,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                   padding: const EdgeInsets.only(top: 66),
                   child: Container(
                     key: const ValueKey<String>(
-                      'sfm-start-failure-banner-official',
+                      'capture-transport-failure-banner-official',
                     ),
                     padding: const EdgeInsets.symmetric(
                       horizontal: 14,
@@ -3959,7 +4723,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                         const SizedBox(width: 10),
                         Expanded(
                           child: Text(
-                            _sfmStartFailureText ?? _captureQueueFailureText!,
+                            _captureQueueFailureText!,
                             style: const TextStyle(
                               color: Colors.white,
                               fontSize: 13,
@@ -3998,92 +4762,13 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               ),
             ),
 
-          // ─── Plan G W2 P3 transient hint toast (recording only).
-          // Surfaces blur / dark / bright GuidanceEngine hard-reject
-          // signals as a 3 s fading pill below the close button. The
-          // long-form `hintText` already drives the IdleHintPill, but
-          // those wordy lines are easy to miss mid-orbit; this toast
-          // is glanceable + transient. Only the 2 conditions the user
-          // can actually act on (light + 手抖) — occupancy/soft-reject
-          // bubbles up via the existing dome cell coloring instead.
-          if (_recording && _session != null)
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: SafeArea(
-                child: Padding(
-                  padding: const EdgeInsets.only(top: 60),
-                  child: Center(
-                    child: _HardRejectToast(stream: _session!.guidanceStream),
-                  ),
-                ),
-              ),
-            ),
-
           // Photo cards are now rendered NATIVELY as world-anchored SceneKit
           // quads (see AetherARKitPlugin addPhotoCard) — stable, no drift. The
           // old Flutter 2D-projected `_PhotoPositionOverlay` is removed.
-          if (_recording && _session != null)
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: SafeArea(
-                child: Padding(
-                  padding: const EdgeInsets.only(top: 104),
-                  child: Center(
-                    child: _MotionSpeedToast(stream: _session!.motionStream),
-                  ),
-                ),
-              ),
-            ),
-
-          // ─── 补强1:"拍摄角度不足"实时横幅(真值 starved 口径)。
-          // 非阻塞(IgnorePointer)、顶部第三档(60/104 已被硬拒/移速
-          // toast 占用),不遮取景中心。可见性由 _starvedBannerGate 的
-          // 去抖/滞回决定(tool/parallax_banner_check.dart 断言),采样
-          // 挂在既有覆盖云/true-parallax 回调上,零新增计时器。
-          if (_recording && _session != null)
-            Positioned(
-              top: 0,
-              left: 0,
-              right: 0,
-              child: SafeArea(
-                child: Padding(
-                  padding: const EdgeInsets.only(top: 148),
-                  child: Center(
-                    child: _ParallaxStarvedBanner(
-                      visible: _starvedBannerVisible,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-
-          // RealityScan-style unconnected-photo warning. The project ledger
-          // owns the ratio, so pending analysis cannot masquerade as success
-          // and no photo is removed merely because this banner is visible.
-          if (_recording && _session != null)
-            Positioned(
-              top: 0,
-              left: 18,
-              right: 18,
-              child: SafeArea(
-                child: Padding(
-                  padding: const EdgeInsets.only(top: 192),
-                  child: AnimatedBuilder(
-                    animation: _projectPhotos,
-                    builder: (context, _) => _DisconnectedPhotoBanner(
-                      visible: _projectPhotos.shouldWarnDisconnected,
-                      disconnected: _projectPhotos.disconnectedCount,
-                      analyzed: _projectPhotos.analyzedCount,
-                      onTap: _openAlbum,
-                    ),
-                  ),
-                ),
-              ),
-            ),
+          // Quality, motion, parallax and connectivity remain algorithm and
+          // telemetry evidence. They intentionally render no capture-time
+          // warning: private candidate rejection and background SfM health
+          // must not ask the user to compensate for pipeline latency.
 
           // ─── 07-12 签决(彻底不限流):快门配速横幅已撤除。曾经在拥塞时
           // 弹「照片处理中,请稍候再拍」——那与「快门永不阻挡」矛盾(等于劝
@@ -4096,7 +4781,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           // Hidden once the preview overlay is up: it replaces the whole
           // capture UI (a clean switch, not a translucent cover) so nothing
           // leaks through the bottom and there's no illusion of still capturing.
-          if (_session != null && _sfmPhase == null)
+          if (!_finishCoordinator.captureRootTombstoned &&
+              _session != null &&
+              _sfmPhase == null)
             Positioned(
               left: 0,
               right: 0,
@@ -4119,7 +4806,6 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                             text: autoCaptureShutterHintText(
                               mode: _captureMode,
                               running: _autoCapture.isRunning,
-                              shouldPromptSlowDown: _autoPromptSlowDown,
                             ),
                           ),
                         ),
@@ -4182,8 +4868,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                       processedCount: _sfmFed,
                       // 07-12 签决:快门彻底不限流 —— 只要在录制就永远可拍,
                       // 绝不因队列深度/热态置灰(积压走磁盘 spool 队列,不回压快门)。
-                      ready: _sfmCaptureReady,
-                      finishing: _finalizingRecording || _finishTapInProgress,
+                      ready: _captureAdmissionOpen,
+                      finishing: !_finishCoordinator.captureAdmissionOpen,
                       mode: _captureMode,
                       // ⚠️ 运行态取自 controller 本身,**不从最近一帧的判定
                       // 反推** —— 停机时 onPose 返回的就是 skipNotMoved,与
@@ -4204,12 +4890,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                       onOpenAlbum: _openAlbum,
                       // 补强2:完成前先过 starved 把关门(_onFinishTap),
                       // 通过后才走原 _finalizeRecording,原流程一个字不改。
-                      onFinish:
-                          _sfmCaptureReady &&
-                              !_finalizingRecording &&
-                              !_finishTapInProgress
-                          ? _onFinishTap
-                          : null,
+                      onFinish: _finishAllowed ? _onFinishTap : null,
                     ),
                   ],
                 ),
@@ -4219,7 +4900,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           // [spec §8.1] 切到自动模式时居中浮出的短提示(RS 的 "Auto Capture
           // On")。只在**用户主动切换**时出现 —— 进页面时的默认自动不算一次
           // 切换,那会变成每次进采集页都弹一下的噪音。
-          if (_session != null && _sfmPhase == null)
+          if (!_finishCoordinator.captureRootTombstoned &&
+              _session != null &&
+              _sfmPhase == null)
             Positioned.fill(
               child: IgnorePointer(
                 child: Center(
@@ -4228,29 +4911,12 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               ),
             ),
 
-          // [pw] 2026-08-24:这里曾经加过一个黑底转圈的「收尾遮罩」。**按同行调研撤掉了。**
-          //
-          // 调研五家(RealityScan / Polycam / Scaniverse / KIRI / Apple
-          // ObjectCaptureSession)的结论:
-          //   • 「点完成后弹一个黑底 spinner」**零家在做**,一份文档都没有;
-          //   • Apple 自己的 GuidedCapture 示例在 `.finishing` 期间**保持相机
-          //     视图**,直到 session 走到 `.completed` 才切重建页;
-          //   • RealityScan 点「Next step」进的是**可交互的点云 Review 屏**,
-          //     而且能「Take More Pictures」倒回去。
-          //
-          // 而遮罩存在的理由本来就是"drain 要花时间",那个理由已经被
-          // `cancelPending()` 消掉了 —— 现在只等在飞的那一张,遮罩只会闪一下,
-          // 闪一下的黑屏比不闪更难受。
-          //
-          // 真正对齐同行的方向是 RealityScan 那条:把上传/对齐前置到拍摄过程中
-          // ("Images will start uploading the moment you begin capturing them"),
-          // 结束时已经没有活要干,所以才能"点结束就真结束"。那是架构级改动。
-
-          // ─── Post-capture final reconstruction (topmost). It owns navigation
-          // until the queue drains and the final colored sparse cloud lands.
-          if (_sfmPhase != null)
+          // Capture exit and reconstruction readiness are separate states.
+          // The opaque post-capture page takes ownership synchronously when
+          // Finish commits; `_sfmPhase` may arrive later without exposing AR.
+          if (_finishCoordinator.shouldShowOpaqueOverlay || _sfmPhase != null)
             SfmPreviewOverlay(
-              phase: _sfmPhase!,
+              phase: _sfmPhase ?? SfmPreviewPhase.generating,
               snapshot: _sfmSnapshot,
               errorText: _sfmErrorText,
               // [2026-08-09 用户签决] 进度口径=用户视角:"已完成 x/N 帧",
@@ -4283,7 +4949,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                     )
                   : null,
               // [SEL-DISCARD 2026-07-30] 退到草稿前先裁决未保存的选区编辑。
-              onBack: () => unawaited(_onSfmPreviewBack()),
+              onBack:
+                  _sfmPhase == SfmPreviewPhase.refined ||
+                      _sfmPhase == SfmPreviewPhase.error
+                  ? () => unawaited(_onSfmPreviewBack())
+                  : null,
               onDone: () => unawaited(_onSfmPreviewDone()),
               // [2026-07-31 用户签决] 底部"下一步" = 启动后续处理;进选区
               // 编辑归右上角那个可选入口。
@@ -4363,272 +5033,6 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
 }
 
 // ─── Top bar widgets ───────────────────────────────────────────────────
-
-/// Plan G W2 P3: 3 s fading toast that surfaces GuidanceEngine HARD
-/// reject signals (blur / dark / bright) to the user mid-recording.
-/// Subscribes to [CaptureSession.guidanceStream] and re-arms its fade
-/// timer on every non-null `hardRejectKind` snapshot, so a continuous
-/// blur run keeps the toast pinned visible. Auto-fades 3 s after the
-/// last bad frame.
-class _HardRejectToast extends StatefulWidget {
-  final Stream<GuidanceSnapshot> stream;
-  const _HardRejectToast({required this.stream});
-
-  @override
-  State<_HardRejectToast> createState() => _HardRejectToastState();
-}
-
-class _HardRejectToastState extends State<_HardRejectToast> {
-  StreamSubscription<GuidanceSnapshot>? _sub;
-  Timer? _fadeTimer;
-  String? _shownKind;
-
-  @override
-  void initState() {
-    super.initState();
-    _sub = widget.stream.listen(_onSnapshot);
-  }
-
-  void _onSnapshot(GuidanceSnapshot snap) {
-    final kind = snap.hardRejectKind;
-    if (kind == null) return;
-    if (!mounted) return;
-    setState(() => _shownKind = kind);
-    _fadeTimer?.cancel();
-    _fadeTimer = Timer(const Duration(seconds: 3), () {
-      if (mounted) setState(() => _shownKind = null);
-    });
-  }
-
-  @override
-  void dispose() {
-    _sub?.cancel();
-    _fadeTimer?.cancel();
-    super.dispose();
-  }
-
-  ({String text, IconData icon}) _content(String kind) {
-    switch (kind) {
-      case 'blur':
-        return (text: '手抖了，稳一稳手', icon: Icons.vibration);
-      case 'dark':
-        return (text: '光线太暗，找亮一些的地方', icon: Icons.brightness_low);
-      case 'bright':
-        return (text: '光线太强，避开直射光', icon: Icons.wb_sunny_outlined);
-      default:
-        return (text: '', icon: Icons.warning_amber_rounded);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final kind = _shownKind;
-    final visible = kind != null;
-    final pickedKind = kind ?? 'blur'; // placeholder when fading out
-    final content = _content(pickedKind);
-    return IgnorePointer(
-      child: AnimatedOpacity(
-        opacity: visible ? 1.0 : 0.0,
-        duration: const Duration(milliseconds: 250),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.65),
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(content.icon, color: Colors.white, size: 18),
-              const SizedBox(width: 8),
-              Text(
-                content.text,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// 补强1:"拍摄角度不足"实时横幅。样式与 [_HardRejectToast] 同款黑底
-/// 圆角 pill(琥珀警示 icon 区分严重级),但生命周期不同:不自动淡出,
-/// 可见性完全由页面状态 `_starvedBannerVisible`(StarvedParallaxBannerGate
-/// 的去抖/滞回结论)驱动 —— 计数回落滞回线以下才隐藏。IgnorePointer
-/// 保证永不挡快门/取景交互。
-class _ParallaxStarvedBanner extends StatelessWidget {
-  const _ParallaxStarvedBanner({required this.visible});
-  final bool visible;
-
-  @override
-  Widget build(BuildContext context) {
-    return IgnorePointer(
-      child: AnimatedOpacity(
-        opacity: visible ? 1.0 : 0.0,
-        duration: const Duration(milliseconds: 250),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-          decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.65),
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: const Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.warning_amber_rounded,
-                color: Color(0xFFFFC53D),
-                size: 18,
-              ),
-              SizedBox(width: 8),
-              Text(
-                '对黄色区域：横移一大步/蹲低举高，再拍一张',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _DisconnectedPhotoBanner extends StatelessWidget {
-  const _DisconnectedPhotoBanner({
-    required this.visible,
-    required this.disconnected,
-    required this.analyzed,
-    required this.onTap,
-  });
-
-  final bool visible;
-  final int disconnected;
-  final int analyzed;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedOpacity(
-      opacity: visible ? 1 : 0,
-      duration: const Duration(milliseconds: 250),
-      child: IgnorePointer(
-        ignoring: !visible,
-        child: GestureDetector(
-          onTap: onTap,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-            decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: 0.72),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: const Color(0xFFFF4D4F), width: 1),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(
-                  Icons.warning_amber_rounded,
-                  color: Color(0xFFFF5A5F),
-                  size: 18,
-                ),
-                const SizedBox(width: 8),
-                Flexible(
-                  child: Text(
-                    '$disconnected/$analyzed 张照片未连接；'
-                    '请在红色照片附近补拍连接画面',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _MotionSpeedToast extends StatefulWidget {
-  final Stream<CaptureMotionSnapshot> stream;
-  const _MotionSpeedToast({required this.stream});
-
-  @override
-  State<_MotionSpeedToast> createState() => _MotionSpeedToastState();
-}
-
-class _MotionSpeedToastState extends State<_MotionSpeedToast> {
-  StreamSubscription<CaptureMotionSnapshot>? _sub;
-  bool _visible = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _sub = widget.stream.listen(_onMotion);
-  }
-
-  void _onMotion(CaptureMotionSnapshot snap) {
-    if (!mounted || _visible == snap.tooFast) return;
-    setState(() => _visible = snap.tooFast);
-  }
-
-  @override
-  void dispose() {
-    _sub?.cancel();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return IgnorePointer(
-      child: AnimatedOpacity(
-        opacity: _visible ? 1.0 : 0.0,
-        duration: const Duration(milliseconds: 180),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-          decoration: BoxDecoration(
-            color: const Color(0xFFE9583F).withValues(alpha: 0.92),
-            borderRadius: BorderRadius.circular(20),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.22),
-                blurRadius: 14,
-                offset: const Offset(0, 6),
-              ),
-            ],
-          ),
-          child: const Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.speed_rounded, color: Colors.white, size: 18),
-              SizedBox(width: 8),
-              Text(
-                '移动太快，慢一点',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
 
 class _PhotoPositionOverlay extends StatelessWidget {
   final RealtimeCapturePreviewModel model;

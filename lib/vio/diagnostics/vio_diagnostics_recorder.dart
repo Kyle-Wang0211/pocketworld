@@ -48,6 +48,12 @@ String _newVioSessionId() {
       '${byte(12)}${byte(13)}${byte(14)}${byte(15)}';
 }
 
+int? _positiveWireInteger(Object? value) {
+  if (value is! num || !value.isFinite || value <= 0) return null;
+  final int integer = value.toInt();
+  return value.toDouble() == integer.toDouble() ? integer : null;
+}
+
 /// Portable capture policy. Platform glue applies this exact Dart-selected
 /// value; it is never read back from Swift as a competing source of truth.
 const int kVioShadowDownsampleFactor = 3;
@@ -348,8 +354,10 @@ class VioDiagnosticsRecorder {
   final VioDiagnosticPollGate _pollGate = VioDiagnosticPollGate();
   int? _terminalReceiptGeneration;
   int? _trustedRunningGeneration;
+  int? _trustedNativeLifecycleGeneration;
   bool _trustedRunningGenerationConflict = false;
   bool _terminalReceiptConsumed = false;
+  bool _lastTerminalReceiptAccepted = false;
   String _sessionId = '';
   int _sessionEpoch = 0;
   int _activeTimebaseGeneration = 0;
@@ -381,6 +389,7 @@ class VioDiagnosticsRecorder {
 
   bool get isRunning => _running;
   VioDiagnosticsLifecycleState get lifecycleState => _lifecycleState;
+  bool get lastTerminalReceiptAccepted => _lastTerminalReceiptAccepted;
 
   /// 只在 iOS 上有原生实现;其他平台直接不启动而不是假装在跑。
   bool get _supported => _supportedOverride ?? (!kIsWeb && Platform.isIOS);
@@ -391,6 +400,20 @@ class VioDiagnosticsRecorder {
 
   Future<void> stop() async {
     await _enqueueLifecycle(_stopSerialized);
+  }
+
+  /// Page disposal cannot await, but the stop still owns the lifecycle tail.
+  /// A following [start] is queued behind the terminal receipt and cleanup.
+  void stopInBackground() {
+    unawaited(
+      _enqueueLifecycle(_stopSerialized).then<void>(
+        (_) {},
+        onError: (Object error, StackTrace stack) {
+          _lastTerminalReceiptAccepted = false;
+          _note('background lifecycle stop failed: $error');
+        },
+      ),
+    );
   }
 
   Future<void> _enqueueLifecycle(Future<void> Function() operation) {
@@ -445,8 +468,10 @@ class VioDiagnosticsRecorder {
     _pollGate.open();
     _terminalReceiptGeneration = null;
     _trustedRunningGeneration = null;
+    _trustedNativeLifecycleGeneration = null;
     _trustedRunningGenerationConflict = false;
     _terminalReceiptConsumed = false;
+    _lastTerminalReceiptAccepted = false;
     _sessionId = _sessionIdFactory();
     _sessionEpoch++;
     _activeTimebaseGeneration = 0;
@@ -581,6 +606,7 @@ class VioDiagnosticsRecorder {
 
   Future<void> _stopSerialized() async {
     if (_lifecycleState == VioDiagnosticsLifecycleState.stopped) return;
+    _lastTerminalReceiptAccepted = false;
     final int lifecycleToken = ++_lifecycleToken;
     _lifecycleState = VioDiagnosticsLifecycleState.stopping;
     _running = false;
@@ -915,6 +941,9 @@ class VioDiagnosticsRecorder {
                 );
             if (!_pollGate.isCurrent(token)) return;
             final Map<String, Object?>? directSnapshot = startReceipt.snapshot;
+            final int? nativeStartLifecycleGeneration = _positiveWireInteger(
+              directSnapshot?['nativeStartLifecycleGeneration'],
+            );
             final VioShadowHealthSummary? startProbe = directSnapshot == null
                 ? null
                 : VioShadowHealthSummary.fromWire(
@@ -927,11 +956,14 @@ class VioDiagnosticsRecorder {
                 startProbe.schemaValid &&
                 startProbe.identity.valid &&
                 startProbe.state == 'running' &&
-                startProbe.sessionGeneration == startReceipt.generation;
+                startProbe.sessionGeneration == startReceipt.generation &&
+                nativeStartLifecycleGeneration != null;
             _feedStarted = trustedStart;
             if (trustedStart) {
               _lifecycleUpgraded = true;
               _trustedRunningGeneration = startReceipt.generation;
+              _trustedNativeLifecycleGeneration =
+                  nativeStartLifecycleGeneration;
               _consumeShadowSnapshot(startReceipt.snapshot!);
             } else {
               _note(
@@ -1009,6 +1041,8 @@ class VioDiagnosticsRecorder {
     if (requireTerminal) {
       final Object? raw = sm['poseObservations'];
       final int generation = gi('sessionGeneration');
+      final VioShadowNativeTerminalReceipt nativeReceipt =
+          VioShadowNativeTerminalReceipt.fromWire(sm);
       if (_terminalReceiptConsumed) {
         _clearTransientShadowAccumulators();
         throw StateError('duplicate shadow terminal receipt call');
@@ -1020,10 +1054,16 @@ class VioDiagnosticsRecorder {
           gi('queueBacklog') == 0 &&
           gi('queueInFlight') == 0 &&
           raw is List &&
-          raw.isEmpty &&
           !_trustedRunningGenerationConflict &&
           _trustedRunningGeneration != null &&
-          generation == _trustedRunningGeneration;
+          generation == _trustedRunningGeneration &&
+          _trustedNativeLifecycleGeneration != null &&
+          nativeReceipt.accepted &&
+          nativeReceipt.sessionGeneration == _trustedRunningGeneration &&
+          nativeReceipt.startLifecycleGeneration ==
+              _trustedNativeLifecycleGeneration &&
+          nativeReceipt.destroyLifecycleGeneration ==
+              _trustedNativeLifecycleGeneration;
       if (!terminal) {
         _clearTransientShadowAccumulators();
         throw StateError(
@@ -1032,6 +1072,8 @@ class VioDiagnosticsRecorder {
           'inflight=${gi('queueInFlight')} '
           'raw=${raw is List ? raw.length : 'missing'} '
           'runningGeneration=$_trustedRunningGeneration '
+          'nativeStartGeneration=$_trustedNativeLifecycleGeneration '
+          'nativeReceiptAccepted=${nativeReceipt.accepted} '
           'generationConflict=$_trustedRunningGenerationConflict',
         );
       }
@@ -1079,6 +1121,10 @@ class VioDiagnosticsRecorder {
       );
     } finally {
       if (requireTerminal) _clearTransientShadowAccumulators();
+    }
+
+    if (requireTerminal) {
+      _lastTerminalReceiptAccepted = true;
     }
 
     _slamTicks.add(
@@ -1239,6 +1285,7 @@ class VioDiagnosticsRecorder {
       'slamDropped': _slamTicks.dropped,
     },
     'shadowHealth': _shadowHealth?.toJson(),
+    'lastTerminalReceiptAccepted': _lastTerminalReceiptAccepted,
     'errors': _errors,
     'timebase': _timebaseTicks.items
         .map((TimebaseTick t) => t.toJson())

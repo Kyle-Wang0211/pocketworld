@@ -133,8 +133,9 @@ void main() {
       'sessionEpoch': 11,
       'epoch': 7,
       'queueCapacity': 256,
-      'cameraCapacity': 2,
-      'poseObservationCapacity': 'loss-intolerant-dynamic',
+      'cameraCapacity': 30,
+      'fullFrameIngressCapacity': 2,
+      'poseObservationCapacity': 128,
       'dropPolicy': 'invalidate-on-overflow',
       'appVersion': '1.2.3',
       'appBuild': '37',
@@ -149,6 +150,8 @@ void main() {
           'b98ed6aa689c9edaaac6da707d97592217d3f6caccc6df8c4d6961e2ee751de0',
       'xrslamDestroyLifecyclePatchSha256':
           '13592cb486f159217fa5ecf9ef2f9863be78cf599d42fb1757e34bd7d4bbb220',
+      'xrslamZeroInlierMaskPatchSha256':
+          '62b12204c647e445e88917859de6b29452df0e6cc65b447e7ea86005f98d1794',
       'xrslamAlgorithmBranch': 'generic',
       'xrslamIosEnabled': 'false',
       'xrslamThreadingEnabled': 'false',
@@ -196,7 +199,31 @@ void main() {
       ..['state'] = 'stopped'
       ..['queueProcessedSuccess'] = 10
       ..['queueBacklog'] = 0
-      ..['queueInFlight'] = 0;
+      ..['queueInFlight'] = 0
+      ..['receiptAvailable'] = true
+      ..['nativeStartLifecycleGeneration'] = 17
+      ..['nativeLifecycleGeneration'] = 17
+      ..['nativeDestroyRc'] = 0
+      ..['nativeDestroyAcknowledged'] = 1
+      ..['terminalReceiptComplete'] = true
+      ..['workConserved'] = true
+      ..['ingressClosed'] = true
+      ..['ingressOffered'] = 18
+      ..['ingressCompleted'] = 18
+      ..['terminalIngressSequence'] = 18
+      ..['shadowRunInvalidated'] = false
+      ..['transportValid'] = true
+      ..['runCalls'] = 3
+      ..['imagesSubmitted'] = 3
+      ..['accSubmitted'] = 8
+      ..['gyroSubmitted'] = 7
+      ..['nativeCameraSubmitted'] = 3
+      ..['nativeCameraRunCalls'] = 3
+      ..['nativeAccelerationSubmitted'] = 8
+      ..['nativeGyroscopeSubmitted'] = 7
+      ..['nativeRejectedInvalidArgument'] = 0
+      ..['nativeRejectedNonMonotonic'] = 0
+      ..['nativeRejectedNotRunning'] = 0;
     wire['rejectionReasons'] = <String, Object?>{
       'images': sensorReasons(),
       'acc': sensorReasons(),
@@ -376,8 +403,13 @@ void main() {
     );
   });
 
-  test('old dynamic queue identity cannot pass the bounded 256/2 schema', () {
-    for (final String field in <String>['queueCapacity', 'cameraCapacity']) {
+  test('dynamic identity cannot pass any bounded carrier schema', () {
+    for (final String field in <String>[
+      'queueCapacity',
+      'cameraCapacity',
+      'fullFrameIngressCapacity',
+      'poseObservationCapacity',
+    ]) {
       final Map<String, Object?> wire = healthyWire();
       (wire['identity']! as Map<String, Object?>)[field] =
           'loss-intolerant-dynamic';
@@ -506,11 +538,7 @@ void main() {
       isFalse,
       reason: 'a running/backlogged snapshot is never a final accepted run',
     );
-    clean
-      ..['state'] = 'stopped'
-      ..['queueProcessedSuccess'] = 10
-      ..['queueBacklog'] = 0
-      ..['queueInFlight'] = 0;
+    clean.addAll(cleanTerminalWire());
     final VioShadowHealthSummary transportOnly =
         VioShadowHealthSummary.fromWire(
           clean,
@@ -537,22 +565,7 @@ void main() {
   test(
     'quality gate requires non-empty continuous pose and comparison evidence',
     () {
-      final Map<String, Object?> clean = healthyWire()
-        ..['imagesAttempted'] = 3
-        ..['imagesRejected'] = 0
-        ..['gyroAttempted'] = 7
-        ..['gyroRejected'] = 0
-        ..['state'] = 'stopped'
-        ..['queueProcessedSuccess'] = 10
-        ..['queueBacklog'] = 0
-        ..['queueInFlight'] = 0;
-      clean['rejectionReasons'] = <String, Object?>{
-        'images': sensorReasons(),
-        'acc': sensorReasons(),
-        'gyro': sensorReasons(),
-        'workTerminal': workTerminalReasons(),
-        'workDroppedOnStop': <String, Object?>{'dropped_on_stop': 0},
-      };
+      final Map<String, Object?> clean = cleanTerminalWire();
       const VioShadowPoseAvailability pose = VioShadowPoseAvailability(
         schemaValid: true,
         nativeOffered: 3,
@@ -610,6 +623,35 @@ void main() {
       expect(qualified.transportValid, isTrue);
       expect(qualified.qualityGatePassed, isTrue);
       expect(qualified.productionAuthorityEligible, isFalse);
+
+      final outsideThreshold = VioShadowHealthSummary.fromWire(
+        clean,
+        expectedIdentity: expectedIdentity,
+        timebase: validTimebase,
+        terminalReceipt: trustedTerminal,
+        pose: pose,
+        comparison: const VioShadowComparisonSummary(
+          schemaValid: true,
+          nativeOfferedCount: 3,
+          nativeDroppedCount: 0,
+          alignmentInitialized: true,
+          pairCount: 3,
+          acceptedPairCount: 3,
+          sampleCount: 2,
+          referenceTrackingRejectedCount: 0,
+          timestampInvalidCount: 0,
+          timestampMismatchCount: 0,
+          malformedPairCount: 0,
+          translationRmseM: .100001,
+          translationMaxM: .250001,
+          rotationRmseDeg: 5.000001,
+          rotationMaxDeg: 10.000001,
+          poseEpochCount: 1,
+          continuityBreakCount: 0,
+        ),
+        quality: quality,
+      );
+      expect(outsideThreshold.qualityGatePassed, isFalse);
 
       final VioShadowHealthSummary brokenContinuity =
           VioShadowHealthSummary.fromWire(

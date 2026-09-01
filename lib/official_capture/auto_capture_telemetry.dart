@@ -56,6 +56,7 @@ class _RoleCounts {
   int fired = 0;
   int maskedByPriority = 0;
   int blockedBlur = 0;
+  int blockedQuality = 0;
   int blockedPace = 0;
   int blockedNoVisualEvidence = 0;
   int blockedRedundant = 0;
@@ -71,6 +72,7 @@ class _RoleCounts {
     fired = 0;
     maskedByPriority = 0;
     blockedBlur = 0;
+    blockedQuality = 0;
     blockedPace = 0;
     blockedNoVisualEvidence = 0;
     blockedRedundant = 0;
@@ -87,6 +89,7 @@ class _RoleCounts {
     'fired': fired,
     'masked_by_priority': maskedByPriority,
     'blocked_blur': blockedBlur,
+    'blocked_quality': blockedQuality,
     'blocked_pace': blockedPace,
     'blocked_no_visual_evidence': blockedNoVisualEvidence,
     'blocked_redundant': blockedRedundant,
@@ -158,12 +161,15 @@ class AutoCaptureTelemetry {
   double? _lastFireSec;
 
   double _lastEmitSec = 0;
-  int _fireEnqueued = 0;
-  int _fireEnqueueFailed = 0;
+  int _fireAdmitted = 0;
+  int _fireBusyNotAdmitted = 0;
   int _fireBeforeTick = 0;
   int _startAnchorAttempted = 0;
   int _startAnchorEnqueued = 0;
   int _startAnchorFailed = 0;
+  int _actualStillAccepted = 0;
+  int _actualStillRejected = 0;
+  final Map<String, int> _actualStillReceiptReasons = <String, int>{};
 
   /// 开一轮。[tSec] 必须是起跑那一帧的 `ARPose.timestamp`(与
   /// `AutoCaptureController.start()` 收到的是同一个 pose)。
@@ -179,12 +185,15 @@ class AutoCaptureTelemetry {
     // 节流从起跑时刻起算,不是从 0 —— ARFrame 时钟是开机以来的秒数,
     // 开机跑几小时后它是个几万的数,从 0 起算的话第一帧就"到点"⇒ 每帧一行。
     _lastEmitSec = tSec;
-    _fireEnqueued = 0;
-    _fireEnqueueFailed = 0;
+    _fireAdmitted = 0;
+    _fireBusyNotAdmitted = 0;
     _fireBeforeTick = 0;
     _startAnchorAttempted = 0;
     _startAnchorEnqueued = 0;
     _startAnchorFailed = 0;
+    _actualStillAccepted = 0;
+    _actualStillRejected = 0;
+    _actualStillReceiptReasons.clear();
     _fireMovedM.clear();
     _fireDistM.clear();
     _fireTurnDeg.clear();
@@ -200,12 +209,20 @@ class AutoCaptureTelemetry {
     _redundantTrackMedianNormalized.clear();
     _fireTrackMedianStepPx.clear();
     _redundantTrackMedianStepPx.clear();
-    _fireSegmentMotionPx.clear();
-    _redundantSegmentMotionPx.clear();
-    _segmentMotionThresholdPx = null;
     _trackCommonFraction.clear();
     _trackCommonCount.clear();
     _visualSourceAgeSec.clear();
+    _vinsTrackedCount.clear();
+    _vinsActiveTrackCount.clear();
+    _vinsReplenishedTrackCount.clear();
+    _vinsLongestTrackAge.clear();
+    _vinsMeanStepNormalizedParallax.clear();
+    _vinsGeometricInputCount.clear();
+    _vinsGeometricInlierCount.clear();
+    _vinsGeometricInlierFraction.clear();
+    _vinsOccupiedGridFraction.clear();
+    _vinsClaheReceiptCount = 0;
+    _vinsClaheAppliedCount = 0;
     for (final d in AutoCaptureDecision.values) {
       _counts[d] = 0;
     }
@@ -273,8 +290,16 @@ class AutoCaptureTelemetry {
     double? trackCommonFraction,
     double? trackMedianNormalizedDisplacement,
     double? trackMedianStepPixelDisplacement,
-    double? segmentMotionPx,
-    double? segmentMotionThresholdPx,
+    int? vinsTrackedCount,
+    int? vinsActiveTrackCount,
+    int? vinsReplenishedTrackCount,
+    int? vinsLongestTrackAge,
+    double? vinsMeanStepNormalizedParallax,
+    int? vinsGeometricInputCount,
+    int? vinsGeometricInlierCount,
+    double? vinsGeometricInlierFraction,
+    double? vinsOccupiedGridFraction,
+    bool? vinsClaheApplied,
     double? visualSourceAgeSec,
   }) {
     if (!_open) return;
@@ -315,6 +340,9 @@ class AutoCaptureTelemetry {
           break;
         case AutoCaptureDecision.skipBlurry:
           winnerRow.blockedBlur++;
+          break;
+        case AutoCaptureDecision.skipQuality:
+          winnerRow.blockedQuality++;
           break;
         case AutoCaptureDecision.skipPaced:
           winnerRow.blockedPace++;
@@ -369,8 +397,23 @@ class AutoCaptureTelemetry {
     if (visualSourceAgeSec != null && visualSourceAgeSec.isFinite) {
       _visualSourceAgeSec.add(visualSourceAgeSec);
     }
-    if (segmentMotionThresholdPx != null && segmentMotionThresholdPx.isFinite) {
-      _segmentMotionThresholdPx ??= segmentMotionThresholdPx;
+    void keepFinite(List<double> into, num? value) {
+      final converted = value?.toDouble();
+      if (converted != null && converted.isFinite) into.add(converted);
+    }
+
+    keepFinite(_vinsTrackedCount, vinsTrackedCount);
+    keepFinite(_vinsActiveTrackCount, vinsActiveTrackCount);
+    keepFinite(_vinsReplenishedTrackCount, vinsReplenishedTrackCount);
+    keepFinite(_vinsLongestTrackAge, vinsLongestTrackAge);
+    keepFinite(_vinsMeanStepNormalizedParallax, vinsMeanStepNormalizedParallax);
+    keepFinite(_vinsGeometricInputCount, vinsGeometricInputCount);
+    keepFinite(_vinsGeometricInlierCount, vinsGeometricInlierCount);
+    keepFinite(_vinsGeometricInlierFraction, vinsGeometricInlierFraction);
+    keepFinite(_vinsOccupiedGridFraction, vinsOccupiedGridFraction);
+    if (vinsClaheApplied != null) {
+      _vinsClaheReceiptCount++;
+      if (vinsClaheApplied) _vinsClaheAppliedCount++;
     }
 
     // [pw] 2026-08-24 触发层换血后的开火快照:位移 / 生效阈值 / 转角 /
@@ -400,7 +443,6 @@ class AutoCaptureTelemetry {
       keep(_fireVisualSimilarity, visualSimilarity);
       keep(_fireTrackMedianNormalized, trackMedianNormalizedDisplacement);
       keep(_fireTrackMedianStepPx, trackMedianStepPixelDisplacement);
-      keep(_fireSegmentMotionPx, segmentMotionPx);
       _fireRoleCounts[winner] = _fireRoleCounts[winner]! + 1;
     } else if (d == AutoCaptureDecision.skipRedundant) {
       if (visualSimilarity != null && visualSimilarity.isFinite) {
@@ -413,9 +455,6 @@ class AutoCaptureTelemetry {
       if (trackMedianStepPixelDisplacement != null &&
           trackMedianStepPixelDisplacement.isFinite) {
         _redundantTrackMedianStepPx.add(trackMedianStepPixelDisplacement);
-      }
-      if (segmentMotionPx != null && segmentMotionPx.isFinite) {
-        _redundantSegmentMotionPx.add(segmentMotionPx);
       }
     }
 
@@ -448,15 +487,15 @@ class AutoCaptureTelemetry {
     }
   }
 
-  /// 记一次开火的**真实**入队结果(spec §7:入队失败要记遥测)。
-  /// 由采集页的 onFire 钩子在拿到 `_enqueueShutterCapture()` 返回值处调用,
-  /// 那是全链路唯一能把"拍成了"与"没拍成"分开的地方。
-  void recordFireOutcome({required bool enqueued}) {
+  /// 记一次开火的**真实**单飞 admission 结果。
+  /// 由采集页的 onFire 钩子在拿到共享 executor 返回值处调用；busy 不会
+  /// 入队、保留或延迟执行，因此必须单列为 `busy-not-admitted`。
+  void recordFireOutcome({required bool admitted}) {
     if (!_open) return;
-    if (enqueued) {
-      _fireEnqueued++;
+    if (admitted) {
+      _fireAdmitted++;
     } else {
-      _fireEnqueueFailed++;
+      _fireBusyNotAdmitted++;
     }
   }
 
@@ -469,6 +508,24 @@ class AutoCaptureTelemetry {
     } else {
       _startAnchorFailed++;
     }
+  }
+
+  /// Terminal outcome of the actual 4032×3024 photo. Queue admission is kept
+  /// separate because an admitted ticket may still be rejected as blurry,
+  /// duplicate, missing evidence, or native capture failure.
+  void recordAutomaticStillReceipt({
+    required bool accepted,
+    required String reason,
+  }) {
+    if (!_open) return;
+    if (accepted) {
+      _actualStillAccepted++;
+    } else {
+      _actualStillRejected++;
+    }
+    final normalized = reason.trim().isEmpty ? 'unknown' : reason.trim();
+    _actualStillReceiptReasons[normalized] =
+        (_actualStillReceiptReasons[normalized] ?? 0) + 1;
   }
 
   /// 关一轮,返回**终态**快照(`closed=true`)供调用方落盘。
@@ -516,9 +573,14 @@ class AutoCaptureTelemetry {
       'start_anchor_attempted': _startAnchorAttempted,
       'start_anchor_enqueued': _startAnchorEnqueued,
       'start_anchor_failed': _startAnchorFailed,
-      // spec §7:开火 ≠ 拍成。两者分开记。
-      'fire_enqueued': _fireEnqueued,
-      'fire_enqueue_failed': _fireEnqueueFailed,
+      'actual_still_accepted': _actualStillAccepted,
+      'actual_still_rejected': _actualStillRejected,
+      'actual_still_receipt_reasons': Map<String, int>.unmodifiable(
+        _actualStillReceiptReasons,
+      ),
+      // 单飞守恒：每个 fire 只可能 admitted 或 busy-not-admitted。
+      'fire_admitted': _fireAdmitted,
+      'fire_busy_not_admitted': _fireBusyNotAdmitted,
       // R2(重叠上限)提前触发的**下界**,见 recordDecision 里的推导。
       'fire_before_tick': _fireBeforeTick,
       'fire_role_counts': <String, int>{
@@ -590,18 +652,34 @@ class AutoCaptureTelemetry {
         'fire_track_median_step_px': v,
       if (_triple(_redundantTrackMedianStepPx) case final List<double> v)
         'redundant_track_median_step_px': v,
-      if (_triple(_fireSegmentMotionPx) case final List<double> v)
-        'fire_segment_motion_px': v,
-      if (_triple(_redundantSegmentMotionPx) case final List<double> v)
-        'redundant_segment_motion_px': v,
-      if (_segmentMotionThresholdPx case final double v)
-        'segment_motion_threshold_px': _round3(v),
       if (_triple(_trackCommonFraction) case final List<double> v)
         'track_common_fraction': v,
       if (_triple(_trackCommonCount) case final List<double> v)
         'track_common_count': v,
       if (_triple(_visualSourceAgeSec) case final List<double> v)
         'visual_source_age_sec': v,
+      if (_triple(_vinsTrackedCount) case final List<double> v)
+        'vins_tracked_count': v,
+      if (_triple(_vinsActiveTrackCount) case final List<double> v)
+        'vins_active_track_count': v,
+      if (_triple(_vinsReplenishedTrackCount) case final List<double> v)
+        'vins_replenished_track_count': v,
+      if (_triple(_vinsLongestTrackAge) case final List<double> v)
+        'vins_longest_track_age': v,
+      if (_triple(_vinsMeanStepNormalizedParallax) case final List<double> v)
+        'vins_mean_step_normalized_parallax': v,
+      if (_triple(_vinsGeometricInputCount) case final List<double> v)
+        'vins_geometric_input_count': v,
+      if (_triple(_vinsGeometricInlierCount) case final List<double> v)
+        'vins_geometric_inlier_count': v,
+      if (_triple(_vinsGeometricInlierFraction) case final List<double> v)
+        'vins_geometric_inlier_fraction': v,
+      if (_triple(_vinsOccupiedGridFraction) case final List<double> v)
+        'vins_occupied_grid_fraction': v,
+      'vins_clahe_receipts': <String, int>{
+        'reported': _vinsClaheReceiptCount,
+        'applied': _vinsClaheAppliedCount,
+      },
       // spec §11:ShutterPace 三档各停留多久(秒)= 积压严重程度。
       'pace_sec': <String, double>{
         for (final e in _paceSec.entries) e.key.name: _round3(e.value),
@@ -627,12 +705,20 @@ class AutoCaptureTelemetry {
   final List<double> _redundantTrackMedianNormalized = <double>[];
   final List<double> _fireTrackMedianStepPx = <double>[];
   final List<double> _redundantTrackMedianStepPx = <double>[];
-  final List<double> _fireSegmentMotionPx = <double>[];
-  final List<double> _redundantSegmentMotionPx = <double>[];
-  double? _segmentMotionThresholdPx;
   final List<double> _trackCommonFraction = <double>[];
   final List<double> _trackCommonCount = <double>[];
   final List<double> _visualSourceAgeSec = <double>[];
+  final List<double> _vinsTrackedCount = <double>[];
+  final List<double> _vinsActiveTrackCount = <double>[];
+  final List<double> _vinsReplenishedTrackCount = <double>[];
+  final List<double> _vinsLongestTrackAge = <double>[];
+  final List<double> _vinsMeanStepNormalizedParallax = <double>[];
+  final List<double> _vinsGeometricInputCount = <double>[];
+  final List<double> _vinsGeometricInlierCount = <double>[];
+  final List<double> _vinsGeometricInlierFraction = <double>[];
+  final List<double> _vinsOccupiedGridFraction = <double>[];
+  int _vinsClaheReceiptCount = 0;
+  int _vinsClaheAppliedCount = 0;
 
   /// 序列的**首 / 中 / 末**三个值(按发生顺序,不排序)。
   ///

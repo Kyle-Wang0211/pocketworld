@@ -33,12 +33,14 @@ const double kAutoCaptureStableParallaxFloorDeg = 1.5;
 /// 原地旋转累计到此角度时保留一张覆盖候选。
 const double kAutoCaptureRotationCandidateDeg = 12.0;
 
-/// 相邻照片的二维面积重叠安全线。RealityScan、Polycam 与 KIRI 的公开口径
-/// 都集中在约 70%。
+/// 相邻照片的二维面积重叠安全线。Apple Object Capture 的公开
+/// 拍摄指南明确要求相邻照片 70% 或更多；这是方法建议，不是对
+/// RealityScan / Polycam / KIRI 私有快门代码的逆向结论。
 const double kAutoCaptureOverlapSafetyFraction = 0.70;
 
-/// 仅前后移动时，画面尺度至少跨过一级才保留连接/细节帧。1.2 逐字采用
-/// ORB-SLAM3 官方单目配置的尺度金字塔一级倍率。
+/// 仅前后移动时的尺度步长。对居中目标，尺度放大 s 后面积共视为
+/// 1/s²；令其不低于上面的 70% 得 s=1/sqrt(0.70)=1.1952…。这里的
+/// 1.20 是该重叠几何的四舍五入，不是 ORB-SLAM 图像金字塔参数。
 const double kAutoCaptureRadialScaleStep = 1.20;
 
 /// 后端无关的特征跟踪健康度。生产 ARKit 与影子 xrslam 都只能通过这一份
@@ -156,6 +158,25 @@ class AutoCaptureMotionMetrics {
   /// 只有同一帧还满足正式几何、旋转覆盖或径向连接之一，才值得在警告时
   /// 立即开火。这样不改任何摄影测量阈值，也不会用固定时间间隔掩盖问题。
   bool get shouldCapture => role != AutoCaptureMotionRole.none;
+
+  /// 本段已攒到门槛的几倍。
+  ///
+  /// AliceVision 的 `processSmart` 按累积位移切子段
+  /// (`KeyframeSelector.cpp`：`if (motionAcc >= step) { subsequenceLimits
+  /// .push_back(i); motionAcc = 0.0; }`)，**每个子段无条件产出一帧**
+  /// (Step 3 在段内按锐度×中心权重挑 bestIndex 后 push)。也就是说位移每
+  /// 攒够一个 step 就必须交出一张照片，锐度只决定“交哪一张”，从不否决。
+  ///
+  /// 我们是在线的，帧过去就没了，没法回头挑段内最锐的那一张。可搬的是它的
+  /// 保证：位移攒够 = 该出一帧，为等更锐的帧可以缓，但**最多缓到下一个段
+  /// 边界** —— 缓过 2.0 就等于整段没有产出，那是 AliceVision 构造性排除的
+  /// 情况。所以 2.0 不是挑的数，是段定义推出来的。
+  double get segmentFullness => geometryThresholdDeg <= 0
+      ? 0
+      : geometryParallaxDeg / geometryThresholdDeg;
+
+  /// 已经攒过一整个额外段：再缓拍就等于跳过一段。
+  bool get segmentOverdue => segmentFullness >= 2.0;
 
   bool isRoleEligible(AutoCaptureMotionRole candidate) {
     switch (candidate) {
@@ -284,6 +305,23 @@ AutoCaptureMotionMetrics classifyAutoCaptureMotion({
   final rotationCoverage =
       turn + eps >= kAutoCaptureRotationCandidateDeg &&
       parallax < kAutoCaptureStableParallaxFloorDeg;
+  // radialBridge：到目标的距离变化达到 1.2 倍（远近都算）。
+  //
+  // ⚠️ 它是**覆盖/细节**角色，不是几何角色。理由与 COLMAP 独立一致：
+  //
+  //   COLMAP 的 `IncrementalMapper::Options::init_max_forward_motion = 0.95`
+  //   会拒绝把接近纯轴向运动的像对选作**初始像对**。判据在
+  //   `sfm/incremental_mapper_impl.cc`：
+  //       std::abs(two_view_geometry.cam2_from_cam1->translation().z())
+  //           >= options.init_max_forward_motion  →  reject
+  //   其中 translation 来自本质矩阵分解、是**单位向量**，所以 |t.z| 是基线方向
+  //   落在光轴上的比例；0.95 ⇔ 基线与光轴夹角小于 acos(0.95) ≈ 18.2°。
+  //   上游这么做的原因是：沿光轴前进时三点趋于共线，几何约束力弱。
+  //
+  //   我们的 radialBridge 量的是**距离比值**，不是基线方向，两者不是同一个量，
+  //   所以不能直接照搬那个 0.95。但结论是同一个：轴向位移不该被当成几何观测。
+  //   我们表达这个结论的方式是下面的 `advancesGeometryBaseline: geometryReady`
+  //   —— 见那一行的注释。
   final radialBridge = depthScale + eps >= kAutoCaptureRadialScaleStep;
 
   final AutoCaptureMotionRole role;
@@ -310,6 +348,23 @@ AutoCaptureMotionMetrics classifyAutoCaptureMotion({
     depthScaleRatio: depthScale,
     viewTurnDeg: turn,
     overlapFraction: overlap,
+    // 🔑 **只有 geometry 角色推进几何基线**，rotationCoverage 与 radialBridge
+    //    都不推进。这一行看着不起眼，但它是整套角色划分的承重墙，改成 `true`
+    //    不会有任何测试变红，行为却会静默劣化 —— 后续帧会开始与一张几何上没
+    //    有价值的照片比视差。
+    //
+    //    依据（两条独立来源指向同一结论）：
+    //    ① 动作语言表 2026-07-11：「原地转身 / 原地连拍 | 纯旋转零基线 →
+    //       0 视差，完全无效」⇒ rotationCoverage 不是几何观测。
+    //    ② COLMAP `init_max_forward_motion = 0.95` 拒绝近纯轴向像对作初始像对
+    //       （详见上方 radialBridge 处的推导）⇒ radialBridge 不是几何观测。
+    //
+    //    附带一个已核实的事实：radialBridge 帧的视差必然低于 geometry 阈值
+    //    （10/12/15°，因为它是 else-if 的第三顺位），而 COLMAP 的
+    //    `init_min_tri_angle = 16°` 独立地把它挡在初始像对之外。两道门冗余，
+    //    不冲突 —— 我们只是不需要它当几何基准，而不是上游禁止它存在。
+    //    后续图像在 COLMAP 里走 PnP 注册（abs_pose_*），那条链上没有任何
+    //    前向运动限制。
     advancesGeometryBaseline: geometryReady,
     shouldPromptSlowDown: overlapSafety,
     overlapSafetyEligible: overlapSafety,

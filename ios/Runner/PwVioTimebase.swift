@@ -720,7 +720,8 @@ public final class PwVioTimebase {
     let result = startRawCoreMotionFeedLocked(
       accelerometerHz: accelerometerHz,
       gyroscopeHz: gyroscopeHz,
-      lifecycleGeneration: generation
+      lifecycleGeneration: generation,
+      feederGeneration: nil
     )
     if !result {
       rollbackShadowStartIntentLocked()
@@ -732,7 +733,8 @@ public final class PwVioTimebase {
   private func startRawCoreMotionFeedLocked(
     accelerometerHz: Double,
     gyroscopeHz: Double,
-    lifecycleGeneration: Int
+    lifecycleGeneration: Int,
+    feederGeneration: Int?
   ) -> Bool {
     guard accelerometerHz.isFinite, accelerometerHz > 0,
           gyroscopeHz.isFinite, gyroscopeHz > 0,
@@ -749,8 +751,11 @@ public final class PwVioTimebase {
       }
       guard let self, let sample else { return }
       self.noteCoreMotionGyroscope(timestamp: sample.timestamp)
-      if #available(iOS 11.0, *) {
-        _ = PwVioSlamFeeder.shared.enqueue(gyroscope: sample)
+      if #available(iOS 11.0, *), let feederGeneration {
+        _ = PwVioSlamFeeder.shared.enqueue(
+          gyroscope: sample,
+          expectedGeneration: feederGeneration
+        )
       }
     }
     motion.startAccelerometerUpdates(to: motionQueue) { [weak self] sample, error in
@@ -760,8 +765,11 @@ public final class PwVioTimebase {
       }
       guard let self, let sample else { return }
       self.noteCoreMotionAccelerometer(timestamp: sample.timestamp)
-      if #available(iOS 11.0, *) {
-        _ = PwVioSlamFeeder.shared.enqueue(acceleration: sample)
+      if #available(iOS 11.0, *), let feederGeneration {
+        _ = PwVioSlamFeeder.shared.enqueue(
+          acceleration: sample,
+          expectedGeneration: feederGeneration
+        )
       }
     }
     // CoreMotion activation is asynchronous. On a physical iPhone the two
@@ -866,7 +874,7 @@ public final class PwVioTimebase {
       shadowLifecycleLock.unlock()
       return
     }
-    guard PwVioSlamFeeder.shared.isRunning else {
+    guard let feederGeneration = PwVioSlamFeeder.shared.runningGeneration else {
       shadowLifecycleGeneration += 1
       rollbackShadowStartIntentLocked()
       shadowLifecycleLock.unlock()
@@ -879,7 +887,8 @@ public final class PwVioTimebase {
       let started = startRawCoreMotionFeedLocked(
         accelerometerHz: accelerometerHz,
         gyroscopeHz: gyroscopeHz,
-        lifecycleGeneration: shadowLifecycleGeneration
+        lifecycleGeneration: shadowLifecycleGeneration,
+        feederGeneration: feederGeneration
       )
       if !started { rollbackShadowStartIntentLocked() }
     } else {
@@ -915,6 +924,7 @@ public final class PwVioTimebase {
   /// wins and the stale completion cannot start it at all.
   private func completeShadowStartIntent(
     generation: Int,
+    feederGeneration: Int,
     rc: Int32
   ) -> PwVioShadowStartIntentResult {
     shadowLifecycleLock.lock()
@@ -926,7 +936,8 @@ public final class PwVioTimebase {
         failureReason: "stale-start-receipt"
       )
     }
-    guard rc == 1 && PwVioSlamFeeder.shared.isRunning else {
+    guard rc == 1 &&
+          PwVioSlamFeeder.shared.runningGeneration == feederGeneration else {
       rollbackShadowStartIntentLocked()
       shadowLifecycleLock.unlock()
       return PwVioShadowStartIntentResult(
@@ -946,7 +957,8 @@ public final class PwVioTimebase {
     let rawFeedStarted = startRawCoreMotionFeedLocked(
         accelerometerHz: accelerometerHz,
         gyroscopeHz: gyroscopeHz,
-        lifecycleGeneration: generation
+        lifecycleGeneration: generation,
+        feederGeneration: feederGeneration
     )
     if !rawFeedStarted {
       rollbackShadowStartIntentLocked()
@@ -1040,6 +1052,7 @@ public final class PwVioTimebase {
       }
       let intentResult = self.completeShadowStartIntent(
         generation: generation,
+        feederGeneration: feederGeneration,
         rc: rc
       )
       let directSnapshot = intentResult.accepted

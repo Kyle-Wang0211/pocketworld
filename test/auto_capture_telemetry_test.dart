@@ -249,6 +249,7 @@ void main() {
           row['selected'],
           row['fired']! +
               row['blocked_blur']! +
+              row['blocked_quality']! +
               row['blocked_pace']! +
               row['blocked_tracking']! +
               row['blocked_cap']! +
@@ -282,6 +283,7 @@ void main() {
         );
         expect(roleCounts['fired'], matrixRow['fire']);
         expect(roleCounts['blocked_blur'], matrixRow['skipBlurry']);
+        expect(roleCounts['blocked_quality'], matrixRow['skipQuality']);
         expect(roleCounts['blocked_pace'], matrixRow['skipPaced']);
         expect(roleCounts['blocked_tracking'], matrixRow['skipTracking']);
         expect(roleCounts['blocked_cap'], matrixRow['skipCapped']);
@@ -522,13 +524,13 @@ void main() {
       // 一次采集里用户可以停了再开。第二轮带着第一轮的计数 = 两轮的比例
       // 全是错的,而且看不出来。
       final t = _openWith(AutoCaptureDecision.fire, 3);
-      t.recordFireOutcome(enqueued: true);
+      t.recordFireOutcome(admitted: true);
       t.recordSessionEnd();
 
       t.recordSessionStart(100.0);
       expect(_int(t, 'decisions'), 0);
       expect(_counts(t)['fire'], 0);
-      expect(_int(t, 'fire_enqueued'), 0);
+      expect(_int(t, 'fire_admitted'), 0);
       expect(_int(t, 'fire_before_tick'), 0);
       expect(_num(t.snapshot(), 'session_duration_sec'), 0.0);
       expect(_paceSec(t)['normal'], 0.0);
@@ -556,32 +558,44 @@ void main() {
     });
   });
 
-  group('fire outcomes (spec §7「入队失败 + 记遥测」)', () {
-    test('enqueued and failed are counted apart', () {
+  group('fire outcomes use single-flight admission terminology', () {
+    test('snapshot exposes only admitted and busy-not-admitted counters', () {
       final t = AutoCaptureTelemetry()..recordSessionStart(0);
-      t.recordFireOutcome(enqueued: true);
-      t.recordFireOutcome(enqueued: false);
-      t.recordFireOutcome(enqueued: true);
-      expect(_int(t, 'fire_enqueued'), 2);
-      expect(_int(t, 'fire_enqueue_failed'), 1);
+      t.recordFireOutcome(admitted: true);
+      t.recordFireOutcome(admitted: false);
+
+      final snapshot = t.snapshot();
+      expect(snapshot['fire_admitted'], 1);
+      expect(snapshot['fire_busy_not_admitted'], 1);
+      expect(snapshot, isNot(contains('fire_enqueued')));
+      expect(snapshot, isNot(contains('fire_enqueue_failed')));
+    });
+
+    test('admitted and busy-not-admitted are counted apart', () {
+      final t = AutoCaptureTelemetry()..recordSessionStart(0);
+      t.recordFireOutcome(admitted: true);
+      t.recordFireOutcome(admitted: false);
+      t.recordFireOutcome(admitted: true);
+      expect(_int(t, 'fire_admitted'), 2);
+      expect(_int(t, 'fire_busy_not_admitted'), 1);
     });
 
     test('a failed enqueue is never counted as a success', () {
       // 对照上一条的反向:入队失败与成功是两件不同的事(spec §7),
       // 把失败并进成功 = 遥测显示 300 张齐活,盘上只有 250 张。
       final t = AutoCaptureTelemetry()..recordSessionStart(0);
-      t.recordFireOutcome(enqueued: false);
-      t.recordFireOutcome(enqueued: false);
-      expect(_int(t, 'fire_enqueued'), 0);
-      expect(_int(t, 'fire_enqueue_failed'), 2);
+      t.recordFireOutcome(admitted: false);
+      t.recordFireOutcome(admitted: false);
+      expect(_int(t, 'fire_admitted'), 0);
+      expect(_int(t, 'fire_busy_not_admitted'), 2);
     });
 
     test('outcomes reconcile with the fire decisions', () {
       // 这条不变式是整行数据的自检:页面接线漏了任何一侧,
-      // fire_enqueued + fire_enqueue_failed 就对不上 decision_counts.fire。
+      // admitted + busy-not-admitted 就对不上 decision_counts.fire。
       final t = AutoCaptureTelemetry()..recordSessionStart(0);
       for (var i = 1; i <= 5; i++) {
-        t.recordFireOutcome(enqueued: i != 3);
+        t.recordFireOutcome(admitted: i != 3);
         t.recordDecision(
           AutoCaptureDecision.fire,
           tSec: i.toDouble(),
@@ -593,8 +607,8 @@ void main() {
       final decisionCounts = terminal['decision_counts']! as Map<String, int>;
       final fireRoleCounts = terminal['fire_role_counts']! as Map<String, int>;
       expect(
-        (terminal['fire_enqueued']! as int) +
-            (terminal['fire_enqueue_failed']! as int),
+        (terminal['fire_admitted']! as int) +
+            (terminal['fire_busy_not_admitted']! as int),
         decisionCounts['fire'],
       );
       expect(
@@ -604,17 +618,17 @@ void main() {
       expect(fireRoleCounts.keys.toSet(), {
         for (final role in _fireRoles) role.name,
       });
-      expect(terminal['fire_enqueue_failed'], 1);
+      expect(terminal['fire_busy_not_admitted'], 1);
     });
 
     test('fire outcomes outside a session are dropped', () {
       final t = AutoCaptureTelemetry();
-      t.recordFireOutcome(enqueued: true);
+      t.recordFireOutcome(admitted: true);
       t.recordSessionStart(0);
       t.recordSessionEnd();
-      t.recordFireOutcome(enqueued: false);
-      expect(_int(t, 'fire_enqueued'), 0);
-      expect(_int(t, 'fire_enqueue_failed'), 0);
+      t.recordFireOutcome(admitted: false);
+      expect(_int(t, 'fire_admitted'), 0);
+      expect(_int(t, 'fire_busy_not_admitted'), 0);
     });
   });
 
@@ -861,7 +875,7 @@ void main() {
       expect(snap['start_anchor_attempted'], 1);
       expect(snap['start_anchor_enqueued'], 1);
       expect(snap['start_anchor_failed'], 0);
-      expect(snap['fire_enqueued'], 0);
+      expect(snap['fire_admitted'], 0);
       expect(
         (snap['fire_role_counts']! as Map<String, int>).values.fold<int>(
           0,
@@ -883,8 +897,11 @@ void main() {
         'start_anchor_attempted',
         'start_anchor_enqueued',
         'start_anchor_failed',
-        'fire_enqueued',
-        'fire_enqueue_failed',
+        'actual_still_accepted',
+        'actual_still_rejected',
+        'actual_still_receipt_reasons',
+        'fire_admitted',
+        'fire_busy_not_admitted',
         'fire_before_tick',
         'fire_role_counts',
         'role_counts',
@@ -892,6 +909,7 @@ void main() {
         'winner_decision_counts',
         'overlap_counts',
         'threshold_counts',
+        'vins_clahe_receipts',
         'no_candidate',
         'selected_none',
         'selected_none_decision_counts',
@@ -914,8 +932,6 @@ void main() {
           fireDistM: 0.10,
           turnDeg: 2.0 * i,
           liveDepthM: 1.0 + i,
-          segmentMotionPx: 12.8 + i,
-          segmentMotionThresholdPx: 12.8,
           trackMedianStepPixelDisplacement: 4.0 + i,
         );
       }
@@ -924,9 +940,61 @@ void main() {
       expect(snap['fire_dist_m'], <double>[0.1, 0.1, 0.1]);
       expect(snap['fire_turn_deg'], <double>[2.0, 4.0, 6.0]);
       expect(snap['fire_live_depth_m'], <double>[2.0, 3.0, 4.0]);
-      expect(snap['fire_segment_motion_px'], <double>[13.8, 14.8, 15.8]);
-      expect(snap['segment_motion_threshold_px'], 12.8);
       expect(snap['fire_track_median_step_px'], <double>[5.0, 6.0, 7.0]);
+    });
+
+    test('VINS front-end receipts expose the exact realtime evidence', () {
+      final t = AutoCaptureTelemetry()..recordSessionStart(0);
+      t.recordDecision(
+        AutoCaptureDecision.skipRedundant,
+        tSec: 1,
+        pace: ShutterPace.normal,
+        motionRole: AutoCaptureMotionRole.geometry,
+        vinsTrackedCount: 44,
+        vinsActiveTrackCount: 150,
+        vinsReplenishedTrackCount: 12,
+        vinsLongestTrackAge: 8,
+        vinsMeanStepNormalizedParallax: 0.021,
+        vinsGeometricInputCount: 60,
+        vinsGeometricInlierCount: 55,
+        vinsGeometricInlierFraction: 55 / 60,
+        vinsOccupiedGridFraction: 0.75,
+        vinsClaheApplied: true,
+      );
+
+      final snap = t.snapshot();
+      expect(snap['vins_tracked_count'], <double>[44, 44, 44]);
+      expect(snap['vins_active_track_count'], <double>[150, 150, 150]);
+      expect(snap['vins_replenished_track_count'], <double>[12, 12, 12]);
+      expect(snap['vins_longest_track_age'], <double>[8, 8, 8]);
+      expect(snap['vins_mean_step_normalized_parallax'], <double>[
+        0.021,
+        0.021,
+        0.021,
+      ]);
+      expect(snap['vins_geometric_input_count'], <double>[60, 60, 60]);
+      expect(snap['vins_geometric_inlier_count'], <double>[55, 55, 55]);
+      expect(snap['vins_occupied_grid_fraction'], <double>[0.75, 0.75, 0.75]);
+      expect(snap['vins_clahe_receipts'], <String, int>{
+        'reported': 1,
+        'applied': 1,
+      });
+    });
+
+    test('actual 12MP receipts stay separate from queue admission', () {
+      final t = AutoCaptureTelemetry()..recordSessionStart(0);
+      t.recordAutomaticStillReceipt(accepted: true, reason: 'accepted');
+      t.recordAutomaticStillReceipt(
+        accepted: false,
+        reason: 'actualStillDuplicate',
+      );
+      final snap = t.snapshot();
+      expect(snap['actual_still_accepted'], 1);
+      expect(snap['actual_still_rejected'], 1);
+      expect(snap['actual_still_receipt_reasons'], <String, int>{
+        'accepted': 1,
+        'actualStillDuplicate': 1,
+      });
     });
 
     test('fire sharpness pairs record the blur-gate treatment effect', () {
@@ -1117,11 +1185,6 @@ void main() {
 
     test('the first tracked pose is captured as a real startup anchor', () {
       final page = _pageSource();
-      final drive = _section(
-        page,
-        'void _driveAutoCapture(ARPose pose)',
-        'void _emitAutoTelemetry(',
-      );
       final start = _section(
         page,
         'void _startAutoCapture(ARPose seed)',
@@ -1129,8 +1192,8 @@ void main() {
       );
       final anchor = _section(
         page,
-        'bool _onAutoCaptureStartAnchor()',
-        'bool _onAutoCaptureFire()',
+        'bool _onAutoCaptureStartAnchor(',
+        'bool _onAutoCaptureFire(',
       );
       expect(page, contains('onStartAnchor: _onAutoCaptureStartAnchor'));
       expect(start, contains('_autoCapture.start(seed)'));
@@ -1140,12 +1203,10 @@ void main() {
         lessThan(start.indexOf('if (mounted) setState(() {});')),
         reason: 'queue admission must not run inside the setState callback',
       );
-      expect(
-        anchor,
-        contains('_enqueueShutterCapture(automaticSelection: true)'),
-      );
+      expect(anchor, contains('automaticSelection: true,'));
       expect(anchor, contains('recordStartAnchorOutcome(enqueued: enqueued)'));
-      expect(anchor, contains('if (enqueued) _autoFirePulseToken++'));
+      expect(anchor, isNot(contains('_autoFirePulseToken++')));
+      expect(page, contains('_autoCapture.resolveAutomaticStill('));
       expect(
         anchor,
         isNot(contains('recordFireOutcome(')),
@@ -1159,7 +1220,7 @@ void main() {
       final page = _pageSource();
       final fire = _section(
         page,
-        'bool _onAutoCaptureFire()',
+        'bool _onAutoCaptureFire(',
         'void _onShutterTap()',
       );
       expect(
@@ -1167,17 +1228,14 @@ void main() {
         2,
         reason: 'try 与 catch 两条路各记一次',
       );
-      expect(fire, contains('recordFireOutcome(enqueued: false)'));
+      expect(fire, contains('recordFireOutcome(admitted: false)'));
       // 恒真 = 把失败记成成功。
       expect(
-        RegExp(r'recordFireOutcome\(enqueued: true\)').allMatches(fire).isEmpty,
+        RegExp(r'recordFireOutcome\(admitted: true\)').allMatches(fire).isEmpty,
         isTrue,
       );
       // T4 的既有契约不许被这次改动破坏。
-      expect(
-        fire,
-        contains('_enqueueShutterCapture(automaticSelection: true)'),
-      );
+      expect(fire, contains('automaticSelection: true,'));
       expect(_codeOnly(fire), isNot(contains('return true;')));
     });
   });

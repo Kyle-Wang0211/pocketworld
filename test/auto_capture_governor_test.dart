@@ -36,6 +36,7 @@ AutoCaptureDecision _decide({
   double sinceLastTickSec = 1,
   double tickIntervalSec = kAutoCaptureNormalIntervalSec,
   bool blurry = false,
+  bool exposureRejected = false,
   bool geometryEligible = false,
   bool rotationCoverageEligible = false,
   bool radialBridgeEligible = false,
@@ -43,7 +44,6 @@ AutoCaptureDecision _decide({
   double? visualSimilarity = 0.0,
   FrameTrackEvidence? trackEvidence,
   bool trackEvidenceRequired = false,
-  bool smartSelectionMotionReady = true,
 }) => autoCaptureDecideMotion(
   trackingNormal: trackingNormal,
   capturedCount: capturedCount,
@@ -60,8 +60,20 @@ AutoCaptureDecision _decide({
   visualSimilarity: visualSimilarity,
   trackEvidence: trackEvidence,
   trackEvidenceRequired: trackEvidenceRequired,
-  smartSelectionMotionReady: smartSelectionMotionReady,
   blurry: blurry,
+  exposureRejected: exposureRejected,
+);
+
+/// The shutter bar for a 12 MP 4:3 frame on the 128x128 tracker grid.
+/// fx = fy = 3230 px is a real iPhone main-camera intrinsic at 4032x3024;
+/// the grid focals are that scaled per axis, exactly as the gate scales them.
+const double _fx128 = 3230.0 * 128.0 / 4032.0;
+const double _fy128 = 3230.0 * 128.0 / 3024.0;
+final double _shutterBar = kOfficialCaptureNoveltyThreshold(
+  gridWidth: 128,
+  gridHeight: 128,
+  focalXPixels: _fx128,
+  focalYPixels: _fy128,
 );
 
 void main() {
@@ -132,6 +144,13 @@ void main() {
     );
   });
 
+  test('dark or blown preview evidence defers the candidate', () {
+    expect(
+      _decide(role: AutoCaptureMotionRole.geometry, exposureRejected: true),
+      AutoCaptureDecision.skipQuality,
+    );
+  });
+
   test('spatial candidate needs fresh visual evidence', () {
     expect(
       _decide(role: AutoCaptureMotionRole.geometry, visualSimilarity: null),
@@ -139,69 +158,136 @@ void main() {
     );
   });
 
-  test('VINS under-20 track loss waits for reseeded visual evidence', () {
-    const lostTracks = FrameTrackEvidence(
-      seedTrackCount: 114,
-      commonTrackCount: 19,
-      commonTrackFraction: 19 / 114,
-      medianPixelDisplacement: 26.8,
-      medianNormalizedDisplacement: 0.21,
+  test('a geometry candidate stays live when the official VINS keyframe signal '
+      'survives after photo-anchor tracks expire', () {
+    final replenishedVinsTracks = FrameTrackEvidence(
+      seedTrackCount: 132,
+      commonTrackCount: 0,
+      commonTrackFraction: 0,
+      medianPixelDisplacement: double.nan,
+      medianNormalizedDisplacement: double.nan,
+      vinsTrackedCount: 45,
+      vinsActiveTrackCount: 110,
+      vinsMeanStepNormalizedParallax: 0.146,
+      vinsGeometricInputCount: 92,
+      vinsGeometricInlierCount: 46,
+      vinsOccupiedGridFraction: 0.875,
+      captureNoveltyThresholdNormalized: _shutterBar,
     );
+    expect(replenishedVinsTracks.isVinsEstimatorKeyframeCandidate, isTrue);
     expect(
       _decide(
         role: AutoCaptureMotionRole.geometry,
         trackEvidenceRequired: true,
-        trackEvidence: lostTracks,
+        trackEvidence: replenishedVinsTracks,
       ),
-      AutoCaptureDecision.skipNoVisualEvidence,
+      AutoCaptureDecision.fire,
     );
     expect(
       _decide(
         role: AutoCaptureMotionRole.geometry,
         trackEvidenceRequired: true,
-        trackEvidence: lostTracks,
+        trackEvidence: replenishedVinsTracks,
         blurry: true,
       ),
-      AutoCaptureDecision.skipNoVisualEvidence,
+      AutoCaptureDecision.skipBlurry,
     );
   });
 
-  test('VINS parallax alone cannot bypass the smart motion segment', () {
-    const vinsCandidate = FrameTrackEvidence(
+  test('the official VINS under-20 signal cannot bypass the geometry gate', () {
+    final lostTracks = FrameTrackEvidence(
+      seedTrackCount: 114,
+      commonTrackCount: 0,
+      commonTrackFraction: 0,
+      medianPixelDisplacement: double.nan,
+      medianNormalizedDisplacement: double.nan,
+      vinsTrackedCount: 19,
+      vinsActiveTrackCount: 100,
+      vinsMeanStepNormalizedParallax: 0.001,
+      captureNoveltyThresholdNormalized: _shutterBar,
+    );
+    expect(lostTracks.isVinsEstimatorKeyframeCandidate, isTrue);
+    expect(
+      _decide(
+        role: AutoCaptureMotionRole.none,
+        trackEvidenceRequired: true,
+        trackEvidence: lostTracks,
+      ),
+      AutoCaptureDecision.skipNotMoved,
+    );
+  });
+
+  test('VINS estimator parallax never replaces photographic displacement', () {
+    final vinsCandidate = FrameTrackEvidence(
       seedTrackCount: 114,
       commonTrackCount: 80,
       commonTrackFraction: 80 / 114,
       medianPixelDisplacement: 4,
       medianNormalizedDisplacement: 4 / 128,
+      captureNoveltyThresholdNormalized: _shutterBar,
     );
     expect(vinsCandidate.hasEnoughNovelty, isTrue);
     expect(
       _decide(
-        role: AutoCaptureMotionRole.geometry,
+        role: AutoCaptureMotionRole.none,
         trackEvidenceRequired: true,
         trackEvidence: vinsCandidate,
-        smartSelectionMotionReady: false,
       ),
-      AutoCaptureDecision.skipRedundant,
+      AutoCaptureDecision.skipNotMoved,
     );
     expect(
       _decide(
         role: AutoCaptureMotionRole.geometry,
         trackEvidenceRequired: true,
         trackEvidence: vinsCandidate,
-        smartSelectionMotionReady: true,
+      ),
+      AutoCaptureDecision.skipRedundant,
+    );
+
+    final captureCandidate = FrameTrackEvidence(
+      seedTrackCount: 114,
+      commonTrackCount: 80,
+      commonTrackFraction: 80 / 114,
+      medianPixelDisplacement: 14,
+      medianNormalizedDisplacement: 14 / 128,
+      captureNoveltyThresholdNormalized: _shutterBar,
+    );
+    expect(captureCandidate.isCaptureNoveltyVerified, isTrue);
+    expect(
+      _decide(
+        role: AutoCaptureMotionRole.geometry,
+        trackEvidenceRequired: true,
+        trackEvidence: captureCandidate,
       ),
       AutoCaptureDecision.fire,
+    );
+
+    final duplicate = FrameTrackEvidence(
+      seedTrackCount: 114,
+      commonTrackCount: 80,
+      commonTrackFraction: 80 / 114,
+      medianPixelDisplacement: 1,
+      medianNormalizedDisplacement: 1 / 128,
+      captureNoveltyThresholdNormalized: _shutterBar,
+    );
+    expect(
+      _decide(
+        role: AutoCaptureMotionRole.geometry,
+        trackEvidenceRequired: true,
+        trackEvidence: duplicate,
+      ),
+      AutoCaptureDecision.skipRedundant,
     );
   });
 
   test('missing or never-healthy tracks still fail closed', () {
-    const noTracks = FrameTrackEvidence(
+    final noTracks = FrameTrackEvidence(
       seedTrackCount: 0,
       commonTrackCount: 0,
       commonTrackFraction: 0,
       medianPixelDisplacement: double.nan,
       medianNormalizedDisplacement: double.nan,
+      captureNoveltyThresholdNormalized: _shutterBar,
     );
     expect(
       _decide(

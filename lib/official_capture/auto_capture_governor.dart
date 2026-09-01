@@ -26,17 +26,21 @@ enum AutoCaptureDecision {
   /// the next cross-platform grayscale sample instead of guessing from VIO.
   skipNoVisualEvidence,
 
-  /// The current 16×16 grayscale signature is too similar to the last photo
-  /// that actually entered the shutter queue (Aether3D threshold: 0.92).
+  /// Exact continuous-feature evidence proves insufficient novelty relative to
+  /// the last accepted actual photo. A 16×16 block signature cannot authorize
+  /// a camera shutter.
   skipRedundant,
 
   /// 运动已够格开火，但当前画面未通过 Aether3D 的原版帧级清晰度硬门。
   ///
   /// 判据逐字复用 [FrameQualityConstants.blurThresholdLaplacian] (=200)：
   /// 128×128 灰度缩略图由平台桥搬运，Laplacian variance 在 Dart 统一计算。
-  /// AliceVision 的段内相对锐度只用于候选排序，不能当作客观模糊硬门；
-  /// Apple Object Capture 的 movingTooFast 同样会暂停自动拍摄而非超时放行。
+  /// 历史段内相对锐度不能当作客观模糊硬门，也不能超时放行。
   skipBlurry,
+
+  /// The preview candidate is objectively under- or over-exposed according
+  /// to the shared Aether3D 60..200 mean-luma hard gate.
+  skipQuality,
   skipTracking,
   skipCapped,
   skipTimeLimit,
@@ -70,8 +74,8 @@ AutoCaptureDecision autoCaptureDecideMotion({
   required double? visualSimilarity,
   FrameTrackEvidence? trackEvidence,
   bool trackEvidenceRequired = false,
-  bool smartSelectionMotionReady = false,
   bool blurry = false,
+  bool exposureRejected = false,
 }) {
   if (capturedCount >= kOfficialMaximumCaptureFrames) {
     return AutoCaptureDecision.skipCapped;
@@ -91,11 +95,14 @@ AutoCaptureDecision autoCaptureDecideMotion({
     if (trackEvidence == null) {
       return AutoCaptureDecision.skipNoVisualEvidence;
     }
-    if (!trackEvidence.comparable) {
-      return AutoCaptureDecision.skipNoVisualEvidence;
-    }
-    if (!smartSelectionMotionReady) {
-      return AutoCaptureDecision.skipRedundant;
+    final hasRealtimeKeyframeSupport =
+        trackEvidence.lostTrackedOverlap &&
+        trackEvidence.isVinsEstimatorKeyframeCandidate;
+    if (!trackEvidence.isCaptureNoveltyVerified &&
+        !hasRealtimeKeyframeSupport) {
+      return trackEvidence.comparable
+          ? AutoCaptureDecision.skipRedundant
+          : AutoCaptureDecision.skipNoVisualEvidence;
     }
   } else {
     // Compatibility path for old fixtures/platforms that have not yet attached
@@ -109,9 +116,24 @@ AutoCaptureDecision autoCaptureDecideMotion({
     }
   }
 
-  // 糊片对 SfM 没有可恢复的特征价值；空间覆盖不能把质量硬门绕开。
-  // 基准仍停在上一张真实照片，待下一份清晰视觉样本继续判断。
-  if (blurry) return AutoCaptureDecision.skipBlurry;
+  // 质量是**缓拍**，不是否决 —— 抄 AliceVision。
+  //
+  // 它的 `processSmart` 里锐度从不拒绝任何一帧：位移累积切出子段
+  // (`KeyframeSelector.cpp`，`motionAcc >= step`)，每个子段**无条件**产出
+  // 一帧，锐度只在段内决定“交哪一张”(Step 3，bestIndex)。RTAB-Map 更彻底，
+  // 它的 `Parameters.h` 里根本没有任何 blur/quality 参数。三家上游没有一家
+  // 把画质做成拒绝闸。
+  //
+  // 我们原来是硬拒绝：糊就不拍、基准不动、等下一份清晰样本。代价是**这一段
+  // 可能一张照片都没有** —— 那正是 AliceVision 构造性排除的情况。
+  //
+  // 在线不能回头挑段内最锐的那张，所以改成：位移攒够后允许为等更锐的帧而缓
+  // 拍，但一旦位移攒到下一个段边界([AutoCaptureMotion.segmentOverdue]，即
+  // 2×门槛)就必须交出当前这一帧 —— 交一张糊的，也好过整段空着。
+  if (blurry && !motion.segmentOverdue) return AutoCaptureDecision.skipBlurry;
+  if (exposureRejected && !motion.segmentOverdue) {
+    return AutoCaptureDecision.skipQuality;
+  }
   return AutoCaptureDecision.fire;
 }
 

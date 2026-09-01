@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PocketWorld 开门动效节奏</title>
+  <style>
+    * { box-sizing: border-box; }
+    :root {
+      color-scheme: light;
+      --ink: #111;
+      --muted: #717171;
+      --rule: #dedede;
+      --page: #f4f4f2;
+    }
+    body {
+      margin: 0;
+      padding: 36px 28px 50px;
+      background: var(--page);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+    }
+    header { max-width: 1180px; margin: 0 auto 26px; }
+    .eyebrow { font-size: 12px; letter-spacing: .12em; color: var(--muted); }
+    h1 { margin: 8px 0 8px; font-size: 30px; letter-spacing: -.04em; }
+    header p { margin: 0; color: var(--muted); line-height: 1.55; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(250px, 1fr));
+      gap: 22px;
+      max-width: 1180px;
+      margin: 0 auto;
+    }
+    .choice {
+      cursor: pointer;
+      border: 1px solid var(--rule);
+      border-radius: 22px;
+      background: #fff;
+      padding: 18px 18px 20px;
+      transition: border-color .2s, box-shadow .2s, transform .2s;
+    }
+    .choice:hover { transform: translateY(-2px); box-shadow: 0 12px 34px #0000000d; }
+    .choice.selected { border-color: #111; box-shadow: 0 0 0 2px #111; }
+    .choice-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 14px; }
+    .choice-head strong { font-size: 18px; }
+    .choice-head span { font-size: 11px; color: var(--muted); letter-spacing: .08em; }
+    .phone {
+      position: relative;
+      width: min(100%, 260px);
+      aspect-ratio: 393 / 852;
+      margin: 0 auto;
+      overflow: hidden;
+      border-radius: 34px;
+      background: #000;
+      box-shadow: inset 0 0 0 1px #ffffff22, 0 18px 40px #00000020;
+    }
+    .feed {
+      position: absolute; inset: 0;
+      background: #fff;
+      padding: 38px 12px 24px;
+      color: #111;
+    }
+    .feed-status { position: absolute; top: 12px; left: 18px; font-size: 7px; font-weight: 700; }
+    .feed-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .feed-title b { font-size: 13px; letter-spacing: -.03em; }
+    .avatar { width: 18px; height: 18px; border: 1px solid #111; border-radius: 50%; }
+    .feature {
+      height: 78px; border-radius: 12px; background: #121212; margin-bottom: 10px;
+      display: grid; place-items: center; color: #fff; position: relative; overflow: hidden;
+    }
+    .feature::before { content:""; width: 58px; height: 58px; border: 1px solid #ffffff88; border-radius: 50%; box-shadow: 0 0 24px #fff2; }
+    .feature small { position:absolute; left:10px; bottom:8px; font-size:6px; letter-spacing:.08em; }
+    .work { border: 1px solid #e7e7e7; border-radius: 14px; overflow: hidden; margin-bottom: 9px; }
+    .thumb { height: 145px; background: radial-gradient(circle at 58% 40%, #737373, #222 38%, #050505 75%); }
+    .meta { display:flex; justify-content:space-between; padding:8px 9px 9px; font-size:7px; }
+    .nav { position:absolute; bottom:0; left:0; right:0; height:38px; background:#fffffff2; border-top:1px solid #eee; display:flex; justify-content:space-around; align-items:center; font-size:6px; }
+    .nav i { width:12px; height:12px; border:1px solid #111; display:block; margin:0 auto 2px; border-radius:4px; }
+    canvas { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 4; }
+    .door { position:absolute; top:0; bottom:0; width:50%; z-index:5; background:#000; will-change:transform; }
+    .door.left { left:0; border-right:1px solid #fff; }
+    .door.right { right:0; border-left:1px solid #fff; }
+    .copy { margin-top: 16px; }
+    .copy h2 { margin: 0 0 7px; font-size: 16px; }
+    .copy p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+    .timing { display:grid; grid-template-columns:repeat(3,1fr); gap:5px; margin-top:12px; }
+    .timing div { border-top:1px solid #ddd; padding-top:7px; }
+    .timing b { display:block; font-size:11px; }
+    .timing span { font-size:9px; color:var(--muted); }
+    .recommended { color:#111 !important; font-weight:700; }
+    .footer { max-width:1180px; margin:22px auto 0; font-size:12px; color:var(--muted); }
+    @media (max-width: 900px) {
+      .grid { grid-template-columns: 1fr; }
+      .choice { display:grid; grid-template-columns:minmax(210px,260px) 1fr; gap:20px; align-items:center; }
+      .choice-head { grid-column:1 / -1; }
+      .copy { margin-top:0; }
+    }
+    @media (max-width: 580px) {
+      body { padding:24px 14px 40px; }
+      .choice { display:block; }
+      .copy { margin-top:16px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="eyebrow">POCKETWORLD · LOADING REVEAL</div>
+    <h1>哪一种“开门”节奏更对？</h1>
+    <p>三组都会循环播放：粒子球 → 粒子压成贯穿全屏的 2px 白线 → 左右黑幕各带 1px 白边开启 → 社区主页完整露出。</p>
+  </header>
+
+  <main class="grid">
+    <section class="choice" data-choice="a-crisp" onclick="toggleSelect(this)">
+      <div class="choice-head"><strong>A · 利落</strong><span>FAST / PRECISE</span></div>
+      <div class="phone" data-collapse="300" data-hold="70" data-open="500"></div>
+      <div class="copy">
+        <h2>几乎不停顿</h2>
+        <p>更像系统级转场；加载一完成就马上让路，动作短、脆、效率感强。</p>
+        <div class="timing"><div><b>300ms</b><span>收束</span></div><div><b>70ms</b><span>线停顿</span></div><div><b>500ms</b><span>开门</span></div></div>
+      </div>
+    </section>
+
+    <section class="choice" data-choice="b-cinematic" onclick="toggleSelect(this)">
+      <div class="choice-head"><strong>B · 克制电影感</strong><span class="recommended">推荐</span></div>
+      <div class="phone" data-collapse="430" data-hold="130" data-open="650"></div>
+      <div class="copy">
+        <h2>让 2px 白线成立一瞬</h2>
+        <p>先让用户真正看见“全部粒子已解算为一条线”，再开门；有仪式感但不拖。</p>
+        <div class="timing"><div><b>430ms</b><span>收束</span></div><div><b>130ms</b><span>线停顿</span></div><div><b>650ms</b><span>开门</span></div></div>
+      </div>
+    </section>
+
+    <section class="choice" data-choice="c-dramatic" onclick="toggleSelect(this)">
+      <div class="choice-head"><strong>C · 戏剧化</strong><span>SLOW / CEREMONIAL</span></div>
+      <div class="phone" data-collapse="560" data-hold="220" data-open="820"></div>
+      <div class="copy">
+        <h2>完整的品牌揭幕</h2>
+        <p>强调“门”的重量和期待，但如果每次冷启动都播放，可能会比内容准备本身更显慢。</p>
+        <div class="timing"><div><b>560ms</b><span>收束</span></div><div><b>220ms</b><span>线停顿</span></div><div><b>820ms</b><span>开门</span></div></div>
+      </div>
+    </section>
+  </main>
+  <p class="footer">点击一个方案进行选择；动画结束后会自动停留片刻并循环。</p>
+
+  <template id="screen-template">
+    <div class="feed">
+      <span class="feed-status">9:41</span>
+      <div class="feed-title"><b>社区</b><span class="avatar"></span></div>
+      <div class="feature"><small>本周精选 · SPATIAL STUDIES</small></div>
+      <div class="work"><div class="thumb"></div><div class="meta"><b>城市切片 07</b><span>♡ 128　◉ 3.2k</span></div></div>
+      <div class="work"><div class="thumb" style="background:radial-gradient(circle at 43% 48%,#999,#343434 34%,#080808 72%)"></div><div class="meta"><b>片刻之间</b><span>♡ 64　◉ 1.8k</span></div></div>
+      <div class="nav"><span><i></i>社区</span><span><i style="border-radius:50%"></i>我的</span></div>
+    </div>
+    <canvas></canvas>
+    <div class="door left"></div><div class="door right"></div>
+  </template>
+
+  <script>
+    const clamp = (v, a=0, b=1) => Math.max(a, Math.min(b, v));
+    const easeInOut = t => t < .5 ? 4*t*t*t : 1-Math.pow(-2*t+2,3)/2;
+    const easeOut = t => 1 - Math.pow(1-t, 4);
+
+    document.querySelectorAll('.phone').forEach((phone, phoneIndex) => {
+      phone.append(document.querySelector('#screen-template').content.cloneNode(true));
+      const canvas = phone.querySelector('canvas');
+      const ctx = canvas.getContext('2d');
+      const left = phone.querySelector('.left');
+      const right = phone.querySelector('.right');
+      const collapseMs = +phone.dataset.collapse;
+      const holdMs = +phone.dataset.hold;
+      const openMs = +phone.dataset.open;
+      const orbitMs = 1350;
+      const finalHold = 1100;
+      const resetHold = 350;
+      const total = orbitMs + collapseMs + holdMs + openMs + finalHold + resetHold;
+      const particles = Array.from({length: 156}, (_, i) => {
+        const a = i * 2.399963 + phoneIndex * .15;
+        const r = 10 + 46 * Math.sqrt((i + .5) / 156);
+        return { a, r, yLine: (i + .5) / 156, phase: Math.sin(i * 12.17) };
+      });
+      let start = performance.now();
+
+      function sizeCanvas() {
+        const dpr = Math.min(2, window.devicePixelRatio || 1);
+        const rect = phone.getBoundingClientRect();
+        canvas.width = Math.round(rect.width * dpr);
+        canvas.height = Math.round(rect.height * dpr);
+        ctx.setTransform(dpr,0,0,dpr,0,0);
+      }
+
+      function frame(now) {
+        const rect = phone.getBoundingClientRect();
+        const w = rect.width, h = rect.height, cx = w/2, cy = h/2;
+        const t = (now - start) % total;
+        const collapseStart = orbitMs;
+        const lineAt = collapseStart + collapseMs;
+        const openAt = lineAt + holdMs;
+        const openEnd = openAt + openMs;
+        const c = easeInOut(clamp((t-collapseStart)/collapseMs));
+        const o = easeInOut(clamp((t-openAt)/openMs));
+        left.style.transform = `translateX(${-100*o}%)`;
+        right.style.transform = `translateX(${100*o}%)`;
+
+        ctx.clearRect(0,0,w,h);
+        if (t < openAt) {
+          particles.forEach((p,i) => {
+            const spin = (t/1000)*.7;
+            const depth = .6 + .4*Math.sin(p.a + spin);
+            const orbX = cx + Math.cos(p.a+spin)*p.r*(.65+.35*depth);
+            const orbY = cy + Math.sin(p.a*1.13-spin*.65)*p.r;
+            const lineY = 2 + p.yLine*(h-4);
+            const x = orbX + (cx-orbX)*c;
+            const y = orbY + (lineY-orbY)*c;
+            const radius = Math.max(.45, (1.45 + depth*1.05)*(1-c) + .55*c);
+            ctx.fillStyle = `rgba(255,255,255,${.46+depth*.48})`;
+            ctx.beginPath(); ctx.arc(x,y,radius,0,Math.PI*2); ctx.fill();
+          });
+          if (t >= lineAt) {
+            ctx.fillStyle = '#fff'; ctx.fillRect(cx-1,0,2,h);
+          }
+        }
+        requestAnimationFrame(frame);
+      }
+      sizeCanvas();
+      new ResizeObserver(sizeCanvas).observe(phone);
+      requestAnimationFrame(frame);
+    });
+  </script>
+</body>
+</html>

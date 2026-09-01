@@ -20,17 +20,23 @@
 警示:shader 硬编码 DSP_NUM,必须同步动)。
 peak/上限(0.005/20k)是桌面默认 vs 我们的设备预算漏斗(已审计),不属对账差异。
 
-## ② 开火锐度择优 —— ✅ 已实装(跨端版),201 测试全绿,进 build 27
+## ② 开火锐度择优 —— ❌ 08-27 纠错:旧结论不是 AliceVision 完整复刻
 
-用户裁定:不用任何平台私有信号(iOS/Android/鸿蒙一致);"事后挑流"翻译成"事前缓拍"。
+本节旧版把 AliceVision 的离线“区段结束后回看历史候选并择优”,擅自翻译成实时
+“事前缓拍”,又称“语义同构、已实装”。这个结论错误,也是后续审核被本地文档
+自证误导的来源之一。
 
-- 判据:**当前锐度 < 本段锐度中位 ⇒ 缓拍**,上限 0.25s(复用去抖地板,零新常数);
-- 锐度源 = FrameQualityReport(128 灰度图纯 Dart Laplacian,四端一份实现,6Hz);
-- "段" = 两次开火之间 = AliceVision KeyframeSelection 的 subsequence(相对排序、无绝对
-  阈值,与其源码语义同构);样本 <3 fail-open(覆盖压过锐度,无损铁律);
-- 代码:auto_capture_governor.dart(skipBlurry + kAutoCaptureBlurDeferMaxSec)、
-  auto_capture_controller.dart(_segmentSharpness/_currentlyBlurry);测试:governor 4 条 +
-  controller 4 条。**真机待验**(装 build 27 后看 skipBlurry 计数与糊片率)。
+AliceVision 官方 Smart Selection 会先取得整段候选,关闭 subsequence,再从历史帧
+按清晰度与时间居中权重选一帧。现役 Dart 只能累计短边 10% 运动并对当前帧做
+因果判断,不能返回过去的 12MP 帧;因此只能标为 `product_adapter`,不得叫
+AliceVision 复刻。`alicevision_motion_segment.dart` 已明确写成 diagnostic adapter,
+但 `auto_capture_controller.dart` 仍把 `currentSelected` 用作生产空间门:这是待替换的
+产品适配,不是上游授权。
+
+完整复刻的前置条件是保留真正可选的历史图像候选、按官方规则闭段和排序,并让最终
+被选帧进入正式高分辨率管线。做到之前状态一律是 `not_implemented + product_adapter`,
+不得再用本地测试全绿替代上游完整性证明。总规则见
+`docs/solutions/workflow-issues/upstream-algorithm-reproduction-before-product-adaptation.md`。
 
 ## ③ DepthMapFilter 两条精细化 —— ✅ 变体已写,待 MVS 产物对照验证
 

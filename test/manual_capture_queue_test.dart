@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pocketworld_flutter/official_capture/auto_capture_controller.dart';
 import 'package:pocketworld_flutter/official_capture/manual_capture_queue.dart';
 
 Future<void> _flushAsyncWork() async {
@@ -11,79 +12,87 @@ Future<void> _flushAsyncWork() async {
 }
 
 void main() {
-  test('ticket preserves whether admission came from automatic capture', () {
-    final queue = ManualCaptureQueue(maxTickets: 2, execute: (_) async {});
-    expect(
-      queue
-          .enqueue(verifiedCount: 0, automaticSelection: true)!
-          .automaticSelection,
-      isTrue,
-    );
-    expect(queue.enqueue(verifiedCount: 0)!.automaticSelection, isFalse);
-  });
-
   test(
-    'runs 100 synchronous admissions one at a time in strict FIFO order',
+    'ticket preserves whether admission came from automatic capture',
     () async {
-      final gates = List<Completer<void>>.generate(
-        100,
-        (_) => Completer<void>(),
+      const identity = AutomaticStillTicket(runGeneration: 1, ticketId: 1);
+      final queue = ManualCaptureQueue(maxTickets: 2, execute: (_) async {});
+      final automatic = queue.enqueue(
+        verifiedCount: 0,
+        automaticSelection: true,
+        automaticStillTicket: identity,
       );
-      final started = <int>[];
-      var activeExecutors = 0;
-      var maxConcurrentExecutors = 0;
-      var listenerCalls = 0;
-      final queue = ManualCaptureQueue(
-        maxTickets: 100,
-        nowMicros: () => 123,
-        execute: (ticket) async {
-          started.add(ticket.id);
-          activeExecutors += 1;
-          if (activeExecutors > maxConcurrentExecutors) {
-            maxConcurrentExecutors = activeExecutors;
-          }
-          await gates[ticket.id - 1].future;
-          activeExecutors -= 1;
-        },
-      );
-      queue.addListener(() => listenerCalls += 1);
+      expect(automatic?.automaticSelection, isTrue);
+      await queue.freezeAndDrain();
 
-      final accepted = <ManualCaptureTicket?>[
-        for (var index = 0; index < 100; index += 1)
-          queue.enqueue(verifiedCount: 0),
-      ];
-
-      expect(accepted, everyElement(isNotNull));
-      expect(listenerCalls, 0);
-      expect(started, isEmpty);
-      expect(queue.inFlightCount, 0);
-      expect(queue.pendingCount, 100);
-      expect(queue.outstandingCount, 100);
-      await _flushAsyncWork();
-      expect(listenerCalls, 1);
-      expect(started, <int>[1]);
-      expect(queue.inFlightCount, 1);
-      expect(queue.pendingCount, 99);
-      expect(maxConcurrentExecutors, 1);
-
-      for (var index = 0; index < gates.length; index += 1) {
-        gates[index].complete();
-        await _flushAsyncWork();
-        expect(
-          started,
-          List<int>.generate(index + 2 > 100 ? 100 : index + 2, (i) => i + 1),
-        );
-        expect(maxConcurrentExecutors, 1);
-      }
-
-      expect(queue.pendingCount, 0);
-      expect(queue.inFlightCount, 0);
-      expect(queue.outstandingCount, 0);
+      queue.resume();
+      final manual = queue.enqueue(verifiedCount: 0);
+      expect(manual?.automaticSelection, isFalse);
+      await queue.freezeAndDrain();
     },
   );
 
   test(
-    'freeze rejects admission, drains queued work, and resume reopens it',
+    'automatic queue ticket preserves the exact terminal receipt identity',
+    () {
+      const identity = AutomaticStillTicket(runGeneration: 7, ticketId: 19);
+      final queue = ManualCaptureQueue(maxTickets: 1, execute: (_) async {});
+
+      final ticket = queue.enqueue(
+        verifiedCount: 0,
+        automaticSelection: true,
+        automaticStillTicket: identity,
+      );
+
+      expect(ticket, isNotNull);
+      expect(ticket!.automaticStillTicket, identity);
+    },
+  );
+
+  test('runs 100 sequential admissions without accepting backlog', () async {
+    final gates = List<Completer<void>>.generate(100, (_) => Completer<void>());
+    final started = <int>[];
+    var activeExecutors = 0;
+    var maxConcurrentExecutors = 0;
+    var listenerCalls = 0;
+    final queue = ManualCaptureQueue(
+      maxTickets: 100,
+      nowMicros: () => 123,
+      execute: (ticket) async {
+        started.add(ticket.id);
+        activeExecutors += 1;
+        if (activeExecutors > maxConcurrentExecutors) {
+          maxConcurrentExecutors = activeExecutors;
+        }
+        await gates[ticket.id - 1].future;
+        activeExecutors -= 1;
+      },
+    );
+    queue.addListener(() => listenerCalls += 1);
+
+    for (var index = 0; index < gates.length; index += 1) {
+      final accepted = queue.enqueue(verifiedCount: 0);
+      expect(accepted?.id, index + 1);
+      expect(started.last, index + 1);
+      expect(queue.enqueue(verifiedCount: 0), isNull);
+      expect(queue.inFlightCount, 1);
+      expect(queue.pendingCount, 0);
+      final drain = queue.freezeAndDrain();
+      gates[index].complete();
+      await drain;
+      expect(maxConcurrentExecutors, 1);
+      if (index + 1 < gates.length) queue.resume();
+    }
+
+    expect(listenerCalls, greaterThan(0));
+    expect(started, List<int>.generate(100, (index) => index + 1));
+    expect(queue.pendingCount, 0);
+    expect(queue.inFlightCount, 0);
+    expect(queue.outstandingCount, 0);
+  });
+
+  test(
+    'freeze rejects admission, drains active work, and resume reopens it',
     () async {
       final gates = List<Completer<void>>.generate(3, (_) => Completer<void>());
       final started = <int>[];
@@ -96,7 +105,7 @@ void main() {
       );
 
       expect(queue.enqueue(verifiedCount: 0)?.id, 1);
-      expect(queue.enqueue(verifiedCount: 0)?.id, 2);
+      expect(queue.enqueue(verifiedCount: 0), isNull);
       var drained = false;
       final drain = queue.freezeAndDrain().then((_) => drained = true);
 
@@ -106,73 +115,75 @@ void main() {
       expect(drained, isFalse);
 
       gates[0].complete();
-      await _flushAsyncWork();
-      expect(started, <int>[1, 2]);
-      expect(drained, isFalse);
-
-      gates[1].complete();
       await drain;
       expect(queue.outstandingCount, 0);
+      expect(started, <int>[1]);
 
       queue.resume();
       expect(queue.accepting, isTrue);
-      expect(queue.enqueue(verifiedCount: 0)?.id, 3);
-      gates[2].complete();
+      expect(queue.enqueue(verifiedCount: 0)?.id, 2);
+      gates[1].complete();
       await queue.freezeAndDrain();
-      expect(started, <int>[1, 2, 3]);
+      expect(started, <int>[1, 2]);
     },
   );
 
-  test('cancelPending removes only tickets that have not started', () async {
-    final activeGate = Completer<void>();
-    final started = <int>[];
-    final queue = ManualCaptureQueue(
-      maxTickets: 3,
-      execute: (ticket) async {
-        started.add(ticket.id);
-        await activeGate.future;
-      },
-    );
+  test(
+    'cancelPending freezes admission but does not cancel active work',
+    () async {
+      final activeGate = Completer<void>();
+      final started = <int>[];
+      final queue = ManualCaptureQueue(
+        maxTickets: 3,
+        execute: (ticket) async {
+          started.add(ticket.id);
+          await activeGate.future;
+        },
+      );
 
-    queue.enqueue(verifiedCount: 0);
-    queue.enqueue(verifiedCount: 0);
-    queue.enqueue(verifiedCount: 0);
-    await _flushAsyncWork();
-    queue.cancelPending();
+      expect(queue.enqueue(verifiedCount: 0)?.id, 1);
+      expect(queue.enqueue(verifiedCount: 0), isNull);
+      expect(queue.enqueue(verifiedCount: 0), isNull);
+      queue.cancelPending();
 
-    expect(queue.accepting, isFalse);
-    expect(queue.pendingCount, 0);
-    expect(queue.inFlightCount, 1);
-    expect(queue.outstandingCount, 1);
-    expect(started, <int>[1]);
-    expect(queue.enqueue(verifiedCount: 0), isNull);
+      expect(queue.accepting, isFalse);
+      expect(queue.pendingCount, 0);
+      expect(queue.inFlightCount, 1);
+      expect(queue.outstandingCount, 1);
+      expect(started, <int>[1]);
+      expect(queue.enqueue(verifiedCount: 0), isNull);
 
-    final drain = queue.freezeAndDrain();
-    activeGate.complete();
-    await drain;
-    expect(started, <int>[1]);
-  });
+      final drain = queue.freezeAndDrain();
+      activeGate.complete();
+      await drain;
+      expect(started, <int>[1]);
+    },
+  );
 
-  test('capacity includes verified and outstanding tickets', () async {
-    final gates = List<Completer<void>>.generate(2, (_) => Completer<void>());
-    final queue = ManualCaptureQueue(
-      maxTickets: 3,
-      execute: (ticket) => gates[ticket.id - 1].future,
-    );
+  test(
+    'capacity preserves verified budget while busy is single-flight',
+    () async {
+      final gates = List<Completer<void>>.generate(2, (_) => Completer<void>());
+      final queue = ManualCaptureQueue(
+        maxTickets: 3,
+        execute: (ticket) => gates[ticket.id - 1].future,
+      );
 
-    expect(queue.canEnqueue(verifiedCount: 1), isTrue);
-    expect(queue.enqueue(verifiedCount: 1)?.id, 1);
-    expect(queue.canEnqueue(verifiedCount: 1), isTrue);
-    expect(queue.enqueue(verifiedCount: 1)?.id, 2);
-    expect(queue.canEnqueue(verifiedCount: 1), isFalse);
-    expect(queue.enqueue(verifiedCount: 1), isNull);
+      expect(queue.canEnqueue(verifiedCount: 1), isTrue);
+      expect(queue.enqueue(verifiedCount: 1)?.id, 1);
+      expect(queue.canEnqueue(verifiedCount: 1), isFalse);
+      expect(queue.enqueue(verifiedCount: 1), isNull);
 
-    final drain = queue.freezeAndDrain();
-    gates[0].complete();
-    await _flushAsyncWork();
-    gates[1].complete();
-    await drain;
-  });
+      gates[0].complete();
+      await _flushAsyncWork();
+      expect(queue.canEnqueue(verifiedCount: 2), isTrue);
+      expect(queue.canEnqueue(verifiedCount: 3), isFalse);
+      expect(queue.enqueue(verifiedCount: 2)?.id, 2);
+      final drain = queue.freezeAndDrain();
+      gates[1].complete();
+      await drain;
+    },
+  );
 
   test('negative verified counts are rejected on both admission paths', () {
     final queue = ManualCaptureQueue(maxTickets: 1, execute: (_) async {});
@@ -193,6 +204,7 @@ void main() {
     );
 
     final first = queue.enqueue(verifiedCount: 0)!;
+    await _flushAsyncWork();
     final second = queue.enqueue(verifiedCount: 0)!;
 
     expect(first.id, 1);
@@ -217,6 +229,7 @@ void main() {
     );
 
     queue.enqueue(verifiedCount: 0);
+    await _flushAsyncWork();
     queue.enqueue(verifiedCount: 0);
     await queue.freezeAndDrain();
 
@@ -245,6 +258,7 @@ void main() {
         );
 
         queue.enqueue(verifiedCount: 0);
+        await _flushAsyncWork();
         queue.enqueue(verifiedCount: 0);
         await queue.freezeAndDrain();
 
@@ -279,13 +293,17 @@ void main() {
   });
 
   test(
-    'dispose before the scheduled pump cancels pending work safely',
+    'dispose keeps a synchronously started receipt active until it settles',
     () async {
+      final gate = Completer<void>();
       final started = <int>[];
       var listenerCalls = 0;
       final queue = ManualCaptureQueue(
         maxTickets: 1,
-        execute: (ticket) async => started.add(ticket.id),
+        execute: (ticket) async {
+          started.add(ticket.id);
+          await gate.future;
+        },
       );
       queue.addListener(() => listenerCalls += 1);
 
@@ -293,24 +311,28 @@ void main() {
       final drain = queue.freezeAndDrain();
       queue.dispose();
 
-      await drain;
       await _flushAsyncWork();
-      expect(started, isEmpty);
+      expect(started, <int>[1]);
       expect(listenerCalls, 0);
       expect(queue.pendingCount, 0);
-      expect(queue.inFlightCount, 0);
-      expect(queue.outstandingCount, 0);
+      expect(queue.inFlightCount, 1);
+      expect(queue.outstandingCount, 1);
       expect(queue.accepting, isFalse);
       expect(queue.enqueue(verifiedCount: 0), isNull);
       expect(queue.canEnqueue(verifiedCount: 0), isFalse);
       expect(queue.resume, returnsNormally);
       expect(queue.cancelPending, returnsNormally);
-      await expectLater(queue.freezeAndDrain(), completes);
+
+      final postDisposeDrain = queue.freezeAndDrain();
+      gate.complete();
+      await Future.wait(<Future<void>>[drain, postDisposeDrain]);
+      expect(queue.inFlightCount, 0);
+      expect(queue.outstandingCount, 0);
     },
   );
 
   test(
-    'dispose drops queued tickets while an active executor finishes',
+    'dispose rejects additional tickets while an active executor finishes',
     () async {
       final gate = Completer<void>();
       final started = <int>[];
@@ -324,8 +346,8 @@ void main() {
       );
       queue.addListener(() => listenerCalls += 1);
 
-      queue.enqueue(verifiedCount: 0);
-      queue.enqueue(verifiedCount: 0);
+      expect(queue.enqueue(verifiedCount: 0)?.id, 1);
+      expect(queue.enqueue(verifiedCount: 0), isNull);
       await _flushAsyncWork();
       expect(started, <int>[1]);
       final callsBeforeDispose = listenerCalls;
@@ -402,8 +424,8 @@ void main() {
     ).allMatches(source).map((match) => match.group(1)).toList();
     expect(imports, <String>[
       'dart:async',
-      'dart:collection',
       'package:flutter/foundation.dart',
+      'auto_capture_controller.dart',
     ]);
 
     final ticketStart = source.indexOf('class ManualCaptureTicket');
@@ -417,14 +439,11 @@ void main() {
       'int id',
       'int tapTimestampMicros',
       'bool automaticSelection',
+      'AutomaticStillTicket? automaticStillTicket',
     ]);
-    expect(
-      source,
-      contains(
-        'final Queue<ManualCaptureTicket> _pending = '
-        'Queue<ManualCaptureTicket>();',
-      ),
-    );
+    expect(source, contains('int get pendingCount => 0;'));
+    expect(source, isNot(contains('Queue<ManualCaptureTicket>')));
+    expect(source, isNot(contains('_schedulePump')));
     const forbiddenTokens = <String>[
       'dart:typed_data',
       'dart:ui',

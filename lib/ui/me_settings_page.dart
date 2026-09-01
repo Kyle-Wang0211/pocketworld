@@ -16,11 +16,18 @@ import 'me_stats_view_model.dart';
 import 'legal/platform_rules_page.dart';
 import 'legal/legal_doc_page.dart';
 import '../analytics/pw_analytics.dart';
+import '../community/social_profile_repository.dart';
+import 'community/blocked_users_page.dart';
 
 class MeSettingsPage extends StatelessWidget {
   final MeStatsViewModel stats;
+  final SocialProfileRepository socialRepository;
 
-  const MeSettingsPage({super.key, required this.stats});
+  const MeSettingsPage({
+    super.key,
+    required this.stats,
+    required this.socialRepository,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -54,7 +61,16 @@ class MeSettingsPage extends StatelessWidget {
           children: [
             AnimatedBuilder(
               animation: stats,
-              builder: (_, _) => _SettingsSection(stats: stats, user: user),
+              builder: (_, _) => _SettingsSection(
+                stats: stats,
+                user: user,
+                onOpenBlockedUsers: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) =>
+                        BlockedUsersPage(repository: socialRepository),
+                  ),
+                ),
+              ),
             ),
             const SizedBox(height: AetherSpacing.xl),
             const _SignOutButton(),
@@ -70,8 +86,13 @@ class MeSettingsPage extends StatelessWidget {
 class _SettingsSection extends StatelessWidget {
   final MeStatsViewModel stats;
   final AuthenticatedUser? user;
+  final VoidCallback onOpenBlockedUsers;
 
-  const _SettingsSection({required this.stats, required this.user});
+  const _SettingsSection({
+    required this.stats,
+    required this.user,
+    required this.onOpenBlockedUsers,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -121,6 +142,12 @@ class _SettingsSection extends StatelessWidget {
         title: l.mePrivacy,
         trailing: privacyTrailing,
         onTap: null,
+      ),
+      _SettingsRowSpec(
+        icon: Icons.person_off_outlined,
+        title: l.meBlockedUsers,
+        trailing: '',
+        onTap: onOpenBlockedUsers,
       ),
       _SettingsRowSpec(
         icon: Icons.language_rounded,
@@ -567,8 +594,9 @@ class _DeleteAccountButtonState extends State<_DeleteAccountButton> {
       child: Container(
         height: 52,
         decoration: BoxDecoration(
-          color: _busy ? AetherColors.danger.withValues(alpha: 0.5)
-                       : AetherColors.danger,
+          color: _busy
+              ? AetherColors.danger.withValues(alpha: 0.5)
+              : AetherColors.danger,
           borderRadius: BorderRadius.circular(AetherRadii.lg),
         ),
         alignment: Alignment.center,

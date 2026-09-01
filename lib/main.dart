@@ -26,6 +26,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'auth/auth_scope.dart';
 import 'auth/cold_start_session_gate.dart';
+import 'auth/data_api_readiness_gate.dart';
 import 'auth/current_user.dart';
 import 'auth/mock_auth_service.dart';
 import 'auth/secure_session_storage.dart';
@@ -240,6 +241,12 @@ Future<void> main() async {
             },
           );
           DeviceLog.log('AuthStartup', 'session gate=$gateResult');
+          auth.onAuthStateChange.listen((state) {
+            if (state.event == AuthChangeEvent.tokenRefreshed ||
+                state.event == AuthChangeEvent.signedOut) {
+              dataApiReadinessGate.reset();
+            }
+          });
           // ignore: avoid_print
           print(
             '[AUTH-DEBUG] Supabase.initialize done. '

@@ -8,6 +8,8 @@ abstract final class XrslamBuildContract {
       'b98ed6aa689c9edaaac6da707d97592217d3f6caccc6df8c4d6961e2ee751de0';
   static const String destroyLifecyclePatchSha256 =
       '13592cb486f159217fa5ecf9ef2f9863be78cf599d42fb1757e34bd7d4bbb220';
+  static const String zeroInlierMaskPatchSha256 =
+      '62b12204c647e445e88917859de6b29452df0e6cc65b447e7ea86005f98d1794';
   static const String opencvVersion = '4.0.1';
   static const String opencvRevision =
       'c9ad5779f2803dcc91a9938142209128d30b22d1';

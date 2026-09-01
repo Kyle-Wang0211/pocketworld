@@ -146,6 +146,161 @@ class VioShadowTerminalReceiptEvidence {
   };
 }
 
+/// Strict parser for the receipt frozen by the native Destroy call. Provenance
+/// (`VioShadowTerminalReceiptEvidence`) is separate: both are required because
+/// a generic snapshot can copy valid-looking fields without being slamStop's
+/// direct, exactly-once response.
+class VioShadowNativeTerminalReceipt {
+  const VioShadowNativeTerminalReceipt._({
+    required this.schemaValid,
+    required this.sessionGeneration,
+    required this.startLifecycleGeneration,
+    required this.destroyLifecycleGeneration,
+    required this.countersMatch,
+    required this.lifecycleMatches,
+    required this.ingressConserved,
+    required this.accepted,
+  });
+
+  final bool schemaValid;
+  final int sessionGeneration;
+  final int startLifecycleGeneration;
+  final int destroyLifecycleGeneration;
+  final bool countersMatch;
+  final bool lifecycleMatches;
+  final bool ingressConserved;
+  final bool accepted;
+
+  Map<String, Object?> toJson() => <String, Object?>{
+    'schemaValid': schemaValid,
+    'sessionGeneration': sessionGeneration,
+    'startLifecycleGeneration': startLifecycleGeneration,
+    'destroyLifecycleGeneration': destroyLifecycleGeneration,
+    'countersMatch': countersMatch,
+    'lifecycleMatches': lifecycleMatches,
+    'ingressConserved': ingressConserved,
+    'accepted': accepted,
+  };
+
+  static int? _integer(Object? value, {bool positive = false}) {
+    if (value is! num) return null;
+    final double raw = value.toDouble();
+    if (!raw.isFinite || raw < 0 || raw != raw.truncateToDouble()) return null;
+    final int result = raw.toInt();
+    return positive && result == 0 ? null : result;
+  }
+
+  factory VioShadowNativeTerminalReceipt.fromWire(Map<String, Object?> wire) {
+    final int? sessionGeneration = _integer(
+      wire['sessionGeneration'],
+      positive: true,
+    );
+    final int? startLifecycle = _integer(
+      wire['nativeStartLifecycleGeneration'],
+      positive: true,
+    );
+    final int? destroyLifecycle = _integer(
+      wire['nativeLifecycleGeneration'],
+      positive: true,
+    );
+    final int? destroyRc = _integer(wire['nativeDestroyRc']);
+    final int? destroyAcknowledged = _integer(
+      wire['nativeDestroyAcknowledged'],
+    );
+    final int? runCalls = _integer(wire['runCalls']);
+    final int? imagesSubmitted = _integer(wire['imagesSubmitted']);
+    final int? accSubmitted = _integer(wire['accSubmitted']);
+    final int? gyroSubmitted = _integer(wire['gyroSubmitted']);
+    final int? nativeCameraSubmitted = _integer(wire['nativeCameraSubmitted']);
+    final int? nativeCameraRunCalls = _integer(wire['nativeCameraRunCalls']);
+    final int? nativeAccSubmitted = _integer(
+      wire['nativeAccelerationSubmitted'],
+    );
+    final int? nativeGyroSubmitted = _integer(wire['nativeGyroscopeSubmitted']);
+    final int? nativeRejectedInvalid = _integer(
+      wire['nativeRejectedInvalidArgument'],
+    );
+    final int? nativeRejectedNonMonotonic = _integer(
+      wire['nativeRejectedNonMonotonic'],
+    );
+    final int? nativeRejectedNotRunning = _integer(
+      wire['nativeRejectedNotRunning'],
+    );
+    final int? ingressOffered = _integer(wire['ingressOffered']);
+    final int? ingressCompleted = _integer(wire['ingressCompleted']);
+    final int? terminalIngressSequence = _integer(
+      wire['terminalIngressSequence'],
+    );
+    final bool schemaValid =
+        wire['receiptAvailable'] is bool &&
+        wire['state'] is String &&
+        sessionGeneration != null &&
+        startLifecycle != null &&
+        destroyLifecycle != null &&
+        destroyRc != null &&
+        destroyAcknowledged != null &&
+        wire['terminalReceiptComplete'] is bool &&
+        wire['workConserved'] is bool &&
+        wire['ingressClosed'] is bool &&
+        wire['shadowRunInvalidated'] is bool &&
+        wire['transportValid'] is bool &&
+        runCalls != null &&
+        imagesSubmitted != null &&
+        accSubmitted != null &&
+        gyroSubmitted != null &&
+        nativeCameraSubmitted != null &&
+        nativeCameraRunCalls != null &&
+        nativeAccSubmitted != null &&
+        nativeGyroSubmitted != null &&
+        nativeRejectedInvalid != null &&
+        nativeRejectedNonMonotonic != null &&
+        nativeRejectedNotRunning != null &&
+        ingressOffered != null &&
+        ingressCompleted != null &&
+        terminalIngressSequence != null;
+    final bool countersMatch =
+        schemaValid &&
+        nativeCameraSubmitted == imagesSubmitted &&
+        nativeCameraRunCalls == runCalls &&
+        nativeCameraRunCalls == imagesSubmitted &&
+        nativeAccSubmitted == accSubmitted &&
+        nativeGyroSubmitted == gyroSubmitted;
+    final bool lifecycleMatches =
+        schemaValid && startLifecycle == destroyLifecycle;
+    final bool ingressConserved =
+        schemaValid &&
+        ingressOffered == ingressCompleted &&
+        terminalIngressSequence == ingressOffered;
+    final bool accepted =
+        schemaValid &&
+        wire['receiptAvailable'] == true &&
+        wire['state'] == 'stopped' &&
+        destroyRc == 0 &&
+        destroyAcknowledged == 1 &&
+        wire['terminalReceiptComplete'] == true &&
+        wire['workConserved'] == true &&
+        wire['ingressClosed'] == true &&
+        wire['shadowRunInvalidated'] == false &&
+        wire['transportValid'] == true &&
+        countersMatch &&
+        lifecycleMatches &&
+        ingressConserved &&
+        nativeRejectedInvalid == 0 &&
+        nativeRejectedNonMonotonic == 0 &&
+        nativeRejectedNotRunning == 0;
+    return VioShadowNativeTerminalReceipt._(
+      schemaValid: schemaValid,
+      sessionGeneration: sessionGeneration ?? -1,
+      startLifecycleGeneration: startLifecycle ?? -1,
+      destroyLifecycleGeneration: destroyLifecycle ?? -1,
+      countersMatch: countersMatch,
+      lifecycleMatches: lifecycleMatches,
+      ingressConserved: ingressConserved,
+      accepted: accepted,
+    );
+  }
+}
+
 class VioShadowRunIdentitySummary {
   const VioShadowRunIdentitySummary({
     required this.schemaValid,
@@ -679,6 +834,7 @@ class VioShadowHealthSummary {
     required this.identity,
     required this.timebase,
     required this.terminalReceipt,
+    required this.nativeTerminalReceipt,
   });
 
   final bool schemaValid;
@@ -714,6 +870,7 @@ class VioShadowHealthSummary {
   final VioShadowRunIdentitySummary identity;
   final VioShadowTimebaseEvidence timebase;
   final VioShadowTerminalReceiptEvidence terminalReceipt;
+  final VioShadowNativeTerminalReceipt nativeTerminalReceipt;
 
   String get xrslamSha256 =>
       identity.values['xrslamSha256'] as String? ?? 'UNSTAMPED';
@@ -895,6 +1052,8 @@ class VioShadowHealthSummary {
       nativeGeneration: generation,
       expected: expectedIdentity,
     );
+    final VioShadowNativeTerminalReceipt nativeTerminalReceipt =
+        VioShadowNativeTerminalReceipt.fromWire(wire);
     final bool schemaValid =
         wire['schema'] == 'pw.vio.shadow-native/6' &&
         generation != null &&
@@ -934,6 +1093,8 @@ class VioShadowHealthSummary {
         timebase.boundShadowGeneration == generation &&
         terminalReceipt.accepted &&
         terminalReceipt.receiptGeneration == generation &&
+        nativeTerminalReceipt.accepted &&
+        nativeTerminalReceipt.sessionGeneration == generation &&
         images.accepted > 0 &&
         acc.accepted > 0 &&
         gyro.accepted > 0 &&
@@ -963,12 +1124,16 @@ class VioShadowHealthSummary {
         comparison.singleContinuousPoseEpoch &&
         comparison.translationRmseM.isFinite &&
         comparison.translationRmseM >= 0 &&
+        comparison.translationRmseM <= 0.10 &&
         comparison.translationMaxM.isFinite &&
         comparison.translationMaxM >= 0 &&
+        comparison.translationMaxM <= 0.25 &&
         comparison.rotationRmseDeg.isFinite &&
         comparison.rotationRmseDeg >= 0 &&
+        comparison.rotationRmseDeg <= 5.0 &&
         comparison.rotationMaxDeg.isFinite &&
         comparison.rotationMaxDeg >= 0 &&
+        comparison.rotationMaxDeg <= 10.0 &&
         quality.schemaValid &&
         quality.observationCount > 0 &&
         quality.invalidMeasurementCount == 0 &&
@@ -1004,6 +1169,7 @@ class VioShadowHealthSummary {
       identity: identity,
       timebase: timebase,
       terminalReceipt: terminalReceipt,
+      nativeTerminalReceipt: nativeTerminalReceipt,
     );
   }
 
@@ -1018,6 +1184,7 @@ class VioShadowHealthSummary {
     'identity': identity.toJson(),
     'timebaseAcceptance': timebase.toJson(),
     'terminalReceipt': terminalReceipt.toJson(),
+    'nativeTerminalReceipt': nativeTerminalReceipt.toJson(),
     'sessionGeneration': sessionGeneration,
     'state': state,
     'runValid': runValid,
@@ -1075,6 +1242,7 @@ VioShadowRunIdentitySummary _parseRunIdentity(
     'epoch',
     'queueCapacity',
     'cameraCapacity',
+    'fullFrameIngressCapacity',
     'poseObservationCapacity',
     'dropPolicy',
     'appVersion',
@@ -1088,6 +1256,7 @@ VioShadowRunIdentitySummary _parseRunIdentity(
     'xrslamUpstreamRevision',
     'xrslamBuildPatchSha256',
     'xrslamDestroyLifecyclePatchSha256',
+    'xrslamZeroInlierMaskPatchSha256',
     'xrslamAlgorithmBranch',
     'xrslamIosEnabled',
     'xrslamThreadingEnabled',
@@ -1115,6 +1284,12 @@ VioShadowRunIdentitySummary _parseRunIdentity(
   final int? sessionEpoch = _wireCounter(map?['sessionEpoch']);
   final int? queueCapacity = _wireCounter(map?['queueCapacity']);
   final int? cameraCapacity = _wireCounter(map?['cameraCapacity']);
+  final int? fullFrameIngressCapacity = _wireCounter(
+    map?['fullFrameIngressCapacity'],
+  );
+  final int? poseObservationCapacity = _wireCounter(
+    map?['poseObservationCapacity'],
+  );
   final int? downsampleFactor = _wireCounter(map?['downsampleFactor']);
   final String downsampleFormula = value('downsampleFormula');
   final double? requestedCameraHz = _wireFiniteDouble(
@@ -1157,8 +1332,9 @@ VioShadowRunIdentitySummary _parseRunIdentity(
       sessionEpoch != null &&
       sessionUuid.hasMatch(value('sessionId')) &&
       queueCapacity == 256 &&
-      cameraCapacity == 2 &&
-      value('poseObservationCapacity') == 'loss-intolerant-dynamic' &&
+      cameraCapacity == 30 &&
+      fullFrameIngressCapacity == 2 &&
+      poseObservationCapacity == 128 &&
       downsampleFactor != null &&
       downsampleFactor > 0 &&
       downsampleFormula == kVioShadowDownsampleFormulaBoxNxnHalfUpV1 &&
@@ -1185,6 +1361,8 @@ VioShadowRunIdentitySummary _parseRunIdentity(
           XrslamBuildContract.xrslamBuildPatchSha256 &&
       value('xrslamDestroyLifecyclePatchSha256') ==
           XrslamBuildContract.destroyLifecyclePatchSha256 &&
+      value('xrslamZeroInlierMaskPatchSha256') ==
+          XrslamBuildContract.zeroInlierMaskPatchSha256 &&
       value('xrslamAlgorithmBranch') == 'generic' &&
       value('xrslamIosEnabled') == 'false' &&
       value('xrslamThreadingEnabled') == 'false' &&
