@@ -69,7 +69,11 @@ int _indexOfAscii(Uint8List bytes, String needle) {
 }
 
 class SparseCloudViewerPage extends StatefulWidget {
-  const SparseCloudViewerPage({super.key, required this.plyPath, this.title});
+  const SparseCloudViewerPage({
+    super.key,
+    required this.plyPath,
+    this.title,
+  });
 
   final String plyPath;
   final String? title;
@@ -89,11 +93,8 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
   }
 
   Future<void> _load() async {
-    final cloud = await compute(
-      loadSparsePly,
-      widget.plyPath,
-      debugLabel: 'sparse_ply_load',
-    );
+    final cloud = await compute(loadSparsePly, widget.plyPath,
+        debugLabel: 'sparse_ply_load');
     // [E25-D 2026-07-20] L2 渲染门已删除 —— 草稿查看页渲染全量交付点云。
     // 原逻辑读 ghost_view_mask.bin / ghost_mask.bin 算可见性并隐藏 band15
     // 非救援点;整条 L1/L2 已按用户签决移除(理由见 git log 7e98b5e)。
@@ -134,16 +135,19 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                 ),
               )
             : cloud == null
-            ? const Center(
-                child: Text(
-                  '点云文件读取失败',
-                  style: TextStyle(color: Colors.white54, fontSize: 14),
-                ),
-              )
-            : Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: SparseCloudView(xyz: cloud.xyz, rgb: cloud.rgb),
-              ),
+                ? const Center(
+                    child: Text(
+                      '点云文件读取失败',
+                      style: TextStyle(color: Colors.white54, fontSize: 14),
+                    ),
+                  )
+                : Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: SparseCloudView(
+                      xyz: cloud.xyz,
+                      rgb: cloud.rgb,
+                    ),
+                  ),
       ),
     );
   }

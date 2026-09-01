@@ -91,8 +91,11 @@ class OrientationTracker {
 
   /// Most recent reading — convenient for callers that want a sync read
   /// rather than subscribing.
-  OrientationSample get current =>
-      OrientationSample(yaw: _yaw, pitch: _pitch, motionScore: _motionScore());
+  OrientationSample get current => OrientationSample(
+        yaw: _yaw,
+        pitch: _pitch,
+        motionScore: _motionScore(),
+      );
 
   /// Subscribe to sensor streams and reset accumulators.
   void start() {
@@ -225,8 +228,10 @@ class OrientationTracker {
 
   void _emit() {
     if (_ctrl.isClosed) return;
-    _ctrl.add(
-      OrientationSample(yaw: _yaw, pitch: _pitch, motionScore: _motionScore()),
-    );
+    _ctrl.add(OrientationSample(
+      yaw: _yaw,
+      pitch: _pitch,
+      motionScore: _motionScore(),
+    ));
   }
 }

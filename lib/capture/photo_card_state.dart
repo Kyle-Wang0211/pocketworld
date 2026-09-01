@@ -136,7 +136,8 @@ int frameBelowEnterStreak({
   required double sampleDeg,
   required int prevStreak,
   double enterDeg = kFrameYellowEnterDeg,
-}) => sampleDeg < enterDeg ? prevStreak + 1 : 0;
+}) =>
+    sampleDeg < enterDeg ? prevStreak + 1 : 0;
 
 /// 帧级判黄 v4(真值唯一 + 滞回 + 白态粘性)。
 ///

@@ -1711,9 +1711,6 @@ class CaptureSession {
                   'decision': actualGate.decision.name,
                   'capture_timestamp': still.timestamp,
                   'request_timestamp': still.requestTimestamp,
-                  // rejectWithF 剔除前/后的跟踪数。会话内部对照,不需要跨会话比较。
-                  'actual_track_before_ransac':
-                      actualGate.trackEvidence?.trackedBeforeRejection,
                   'actual_track_common':
                       actualGate.trackEvidence?.commonTrackCount,
                   'actual_track_common_fraction':

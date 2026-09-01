@@ -47,26 +47,14 @@ class ObjectTransform {
   ///                           (OrbitControls.distance) — controls the
   ///                           pixel-to-world ratio.
   /// @param viewSize           Widget size in pixels.
-  void pan(
-    Offset deltaPixels,
-    Float32List viewMatrix,
-    double fovYRadians,
-    double distanceToTarget,
-    Size viewSize,
-  ) {
+  void pan(Offset deltaPixels, Float32List viewMatrix, double fovYRadians,
+      double distanceToTarget, Size viewSize) {
     final aspect = viewSize.width / viewSize.height;
     final tanHalf = math.tan(fovYRadians * 0.5);
     // Camera-space delta: pan one pixel → 2 * tan(fov/2) * distance / view.height world units.
-    final cameraDx =
-        deltaPixels.dx /
-        viewSize.height *
-        2 *
-        tanHalf *
-        distanceToTarget *
-        aspect;
+    final cameraDx = deltaPixels.dx / viewSize.height * 2 * tanHalf * distanceToTarget * aspect;
     // Flip Y because screen-Y grows down while world/camera-Y grows up.
-    final cameraDy =
-        -deltaPixels.dy / viewSize.height * 2 * tanHalf * distanceToTarget;
+    final cameraDy = -deltaPixels.dy / viewSize.height * 2 * tanHalf * distanceToTarget;
 
     // Transform camera-space delta vector by inverse-view to get world-space delta.
     // We want only the rotation+translation part for direction; the position

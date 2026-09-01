@@ -34,14 +34,13 @@ class _CubeTransitionDemoState extends State<CubeTransitionDemo>
   @override
   void initState() {
     super.initState();
-    _ctrl =
-        AnimationController(
-          vsync: this,
-          duration: const Duration(milliseconds: 480),
-        )..addListener(() {
-          final s = _snap;
-          if (s != null) setState(() => _t = s.value);
-        });
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 480),
+    )..addListener(() {
+        final s = _snap;
+        if (s != null) setState(() => _t = s.value);
+      });
   }
 
   @override
@@ -51,10 +50,9 @@ class _CubeTransitionDemoState extends State<CubeTransitionDemo>
   }
 
   void _snapTo(double target) {
-    _snap = Tween<double>(
-      begin: _t,
-      end: target,
-    ).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOutCubic));
+    _snap = Tween<double>(begin: _t, end: target).animate(
+      CurvedAnimation(parent: _ctrl, curve: Curves.easeOutCubic),
+    );
     _ctrl.forward(from: 0);
   }
 
@@ -114,8 +112,7 @@ class _CubeTransitionDemoState extends State<CubeTransitionDemo>
   /// left edge; both share that vertical edge so the pair folds like a cube.
   Widget _cubeFace({required bool isLogin, required Widget child}) {
     final angle = isLogin
-        ? -1.5707963 *
-              _t // 0 → -90° as we turn away
+        ? -1.5707963 * _t // 0 → -90° as we turn away
         : 1.5707963 * (1 - _t); // +90° → 0° as it comes forward
     // how far this face is turned away from camera (0 flat .. 1 edge-on)
     final turn = isLogin ? _t : (1 - _t);
@@ -166,11 +163,7 @@ class _CubeTransitionDemoState extends State<CubeTransitionDemo>
           child: const DecoratedBox(
             decoration: BoxDecoration(
               gradient: LinearGradient(
-                colors: [
-                  Colors.transparent,
-                  Colors.black54,
-                  Colors.transparent,
-                ],
+                colors: [Colors.transparent, Colors.black54, Colors.transparent],
               ),
             ),
           ),
@@ -197,13 +190,13 @@ class _CubeTransitionDemoState extends State<CubeTransitionDemo>
   }
 
   Widget _dot(double on) => Container(
-    width: 6 + 10 * on,
-    height: 6,
-    decoration: BoxDecoration(
-      borderRadius: BorderRadius.circular(3),
-      color: Color.lerp(Colors.white24, Colors.white, on),
-    ),
-  );
+        width: 6 + 10 * on,
+        height: 6,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(3),
+          color: Color.lerp(Colors.white24, Colors.white, on),
+        ),
+      );
 
   Widget _swipeHint() {
     final o = (1 - _t * 2).clamp(0.0, 1.0); // visible on the login face
@@ -221,10 +214,7 @@ class _CubeTransitionDemoState extends State<CubeTransitionDemo>
               '← 滑动进入空间 →',
               textAlign: TextAlign.center,
               style: TextStyle(
-                color: _inkSoft,
-                fontSize: 12,
-                letterSpacing: 0.5,
-              ),
+                  color: _inkSoft, fontSize: 12, letterSpacing: 0.5),
             ),
           ),
         ),
@@ -250,11 +240,8 @@ class _CubeTransitionDemoState extends State<CubeTransitionDemo>
                   color: _ink,
                   borderRadius: BorderRadius.circular(15),
                 ),
-                child: const Icon(
-                  Icons.view_in_ar_outlined,
-                  color: Colors.white,
-                  size: 28,
-                ),
+                child: const Icon(Icons.view_in_ar_outlined,
+                    color: Colors.white, size: 28),
               ),
             ),
             const SizedBox(height: 22),
@@ -284,10 +271,8 @@ class _CubeTransitionDemoState extends State<CubeTransitionDemo>
                 const Expanded(child: Divider(color: _line)),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 12),
-                  child: Text(
-                    '其他方式',
-                    style: TextStyle(color: _inkSoft, fontSize: 12),
-                  ),
+                  child: Text('其他方式',
+                      style: TextStyle(color: _inkSoft, fontSize: 12)),
                 ),
                 const Expanded(child: Divider(color: _line)),
               ],
@@ -309,16 +294,16 @@ class _CubeTransitionDemoState extends State<CubeTransitionDemo>
   }
 
   Widget _field(String hint) => Container(
-    height: 54,
-    alignment: Alignment.centerLeft,
-    padding: const EdgeInsets.symmetric(horizontal: 18),
-    decoration: BoxDecoration(
-      color: const Color(0xFFF5F5F6),
-      borderRadius: BorderRadius.circular(16),
-      border: Border.all(color: _line),
-    ),
-    child: Text(hint, style: const TextStyle(color: _inkSoft, fontSize: 15)),
-  );
+        height: 54,
+        alignment: Alignment.centerLeft,
+        padding: const EdgeInsets.symmetric(horizontal: 18),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF5F5F6),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: _line),
+        ),
+        child: Text(hint, style: const TextStyle(color: _inkSoft, fontSize: 15)),
+      );
 
   Widget _primaryButton(String label, {required VoidCallback onTap}) =>
       GestureDetector(
@@ -330,26 +315,23 @@ class _CubeTransitionDemoState extends State<CubeTransitionDemo>
             color: _ink,
             borderRadius: BorderRadius.circular(16),
           ),
-          child: Text(
-            label,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 16,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
+          child: Text(label,
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700)),
         ),
       );
 
   Widget _ovalSocial(IconData icon) => Container(
-    width: 56,
-    height: 48,
-    decoration: BoxDecoration(
-      borderRadius: BorderRadius.circular(14),
-      border: Border.all(color: _line),
-    ),
-    child: Icon(icon, color: _ink, size: 26),
-  );
+        width: 56,
+        height: 48,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: _line),
+        ),
+        child: Icon(icon, color: _ink, size: 26),
+      );
 
   // ── face 2: 个人 ──────────────────────────────────────────────────────
   Widget _personalFace() {
@@ -371,42 +353,31 @@ class _CubeTransitionDemoState extends State<CubeTransitionDemo>
                         color: Color(0xFFE2E2E5),
                         shape: BoxShape.circle,
                       ),
-                      child: const Icon(
-                        Icons.person_rounded,
-                        color: Color(0xFF9A9A9F),
-                        size: 30,
-                      ),
+                      child: const Icon(Icons.person_rounded,
+                          color: Color(0xFF9A9A9F), size: 30),
                     ),
                     const SizedBox(width: 14),
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: const [
-                        Text(
-                          'Kyle',
-                          style: TextStyle(
-                            color: _ink,
-                            fontSize: 20,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
+                        Text('Kyle',
+                            style: TextStyle(
+                                color: _ink,
+                                fontSize: 20,
+                                fontWeight: FontWeight.w800)),
                         SizedBox(height: 2),
-                        Text(
-                          '作品 12 · 浏览 1.2k',
-                          style: TextStyle(color: _inkSoft, fontSize: 13),
-                        ),
+                        Text('作品 12 · 浏览 1.2k',
+                            style: TextStyle(color: _inkSoft, fontSize: 13)),
                       ],
                     ),
                   ],
                 ),
                 const SizedBox(height: 26),
-                const Text(
-                  '我的空间',
-                  style: TextStyle(
-                    color: _ink,
-                    fontSize: 17,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
+                const Text('我的空间',
+                    style: TextStyle(
+                        color: _ink,
+                        fontSize: 17,
+                        fontWeight: FontWeight.w700)),
                 const SizedBox(height: 14),
                 Expanded(
                   child: GridView.count(
@@ -439,11 +410,7 @@ class _CubeTransitionDemoState extends State<CubeTransitionDemo>
                   ),
                 ],
               ),
-              child: const Icon(
-                Icons.add_rounded,
-                color: Colors.white,
-                size: 30,
-              ),
+              child: const Icon(Icons.add_rounded, color: Colors.white, size: 30),
             ),
           ),
         ],
@@ -452,16 +419,13 @@ class _CubeTransitionDemoState extends State<CubeTransitionDemo>
   }
 
   Widget _workCard(int i) => DecoratedBox(
-    decoration: BoxDecoration(
-      color: const Color(0xFFEAEAEC),
-      borderRadius: BorderRadius.circular(18),
-    ),
-    child: Center(
-      child: Icon(
-        Icons.view_in_ar_outlined,
-        color: const Color(0xFFB6B6BB),
-        size: 34,
-      ),
-    ),
-  );
+        decoration: BoxDecoration(
+          color: const Color(0xFFEAEAEC),
+          borderRadius: BorderRadius.circular(18),
+        ),
+        child: Center(
+          child: Icon(Icons.view_in_ar_outlined,
+              color: const Color(0xFFB6B6BB), size: 34),
+        ),
+      );
 }

@@ -111,10 +111,10 @@ class VioFrameScheduler {
     _framesSeen += 1;
 
     final periodUs = (1000000 / budget.visualHz).round();
-    final sinceLast = _lastVisualUs == null ? -1 : timestampUs - _lastVisualUs!;
-    final staleLimit = (2 * periodUs) > kAbsoluteVisualStaleUs
-        ? 2 * periodUs
-        : kAbsoluteVisualStaleUs;
+    final sinceLast =
+        _lastVisualUs == null ? -1 : timestampUs - _lastVisualUs!;
+    final staleLimit =
+        (2 * periodUs) > kAbsoluteVisualStaleUs ? 2 * periodUs : kAbsoluteVisualStaleUs;
     final stale = sinceLast >= 0 && sinceLast > staleLimit;
 
     FramePlan skip(SkipReason reason) {

@@ -49,22 +49,19 @@ class GlbCache {
   GlbCache._();
   static final GlbCache instance = GlbCache._();
 
-  final Dio _dio = Dio(
-    BaseOptions(
-      responseType: ResponseType.bytes,
-      connectTimeout: const Duration(seconds: 15),
-      // 17MB+ GLBs (e.g. AntiqueCamera Khronos sample) need more than the
-      // old 60s ceiling on slower mobile networks — a typical 2-3 Mbps
-      // cellular link takes 50-70s alone, then add backoff/jitter and
-      // we'd reliably time out. 180s gives comfortable headroom; the
-      // user can still kill the request by scrolling away.
-      receiveTimeout: const Duration(seconds: 180),
-    ),
-  );
+  final Dio _dio = Dio(BaseOptions(
+    responseType: ResponseType.bytes,
+    connectTimeout: const Duration(seconds: 15),
+    // 17MB+ GLBs (e.g. AntiqueCamera Khronos sample) need more than the
+    // old 60s ceiling on slower mobile networks — a typical 2-3 Mbps
+    // cellular link takes 50-70s alone, then add backoff/jitter and
+    // we'd reliably time out. 180s gives comfortable headroom; the
+    // user can still kill the request by scrolling away.
+    receiveTimeout: const Duration(seconds: 180),
+  ));
 
   final Map<String, Uint8List> _mem = <String, Uint8List>{};
-  final Map<String, Future<Uint8List>> _inflight =
-      <String, Future<Uint8List>>{};
+  final Map<String, Future<Uint8List>> _inflight = <String, Future<Uint8List>>{};
 
   /// De-dupes concurrent [fetchPath] downloads. Separate from [_inflight]
   /// because that one is keyed to in-memory byte futures.
@@ -119,11 +116,8 @@ class GlbCache {
     // same model don't fetch it twice.
     final pending = _inflightPaths[url];
     if (pending != null) return pending;
-    final future = _downloadToFile(
-      url,
-      file,
-      maxBytes: kMaxDownloadBytes,
-    ).then((_) => file.path);
+    final future = _downloadToFile(url, file, maxBytes: kMaxDownloadBytes)
+        .then((_) => file.path);
     _inflightPaths[url] = future;
     future.whenComplete(() => _inflightPaths.remove(url)).ignore();
     return future;
@@ -154,9 +148,7 @@ class GlbCache {
           _mem[url] = bytes;
           return bytes;
         }
-      } catch (_) {
-        /* corrupt cache → fall through to redownload */
-      }
+      } catch (_) {/* corrupt cache → fall through to redownload */}
     }
     // Stream to disk with a hard byte ceiling, then read back. Reasons:
     //
@@ -217,9 +209,8 @@ class GlbCache {
         options: Options(responseType: ResponseType.stream),
         cancelToken: cancelToken,
       );
-      final declared = int.tryParse(
-        res.headers.value(Headers.contentLengthHeader) ?? '',
-      );
+      final declared =
+          int.tryParse(res.headers.value(Headers.contentLengthHeader) ?? '');
       if (declared != null && declared > maxBytes) {
         exceeded = true;
         cancelToken.cancel('declared size $declared exceeds $maxBytes');
@@ -251,13 +242,12 @@ class GlbCache {
       if (sink != null) {
         try {
           await sink.close();
-        } catch (_) {
-          /* already broken */
-        }
+        } catch (_) {/* already broken */}
       }
       await _safeDelete(part);
       if (exceeded) {
-        DeviceLog.log('GlbCache', '拒绝超限资源($received/$maxBytes bytes): $url');
+        DeviceLog.log('GlbCache',
+            '拒绝超限资源($received/$maxBytes bytes): $url');
       }
       rethrow;
     }
@@ -266,9 +256,7 @@ class GlbCache {
   Future<void> _safeDelete(File f) async {
     try {
       if (await f.exists()) await f.delete();
-    } catch (_) {
-      /* best-effort */
-    }
+    } catch (_) {/* best-effort */}
   }
 
   Future<File> _diskFile(String url) async {
@@ -292,10 +280,9 @@ class GlbCache {
     final lower = url.toLowerCase();
     final qIdx = lower.indexOf('?');
     final hashIdx = lower.indexOf('#');
-    final cut = [
-      qIdx,
-      hashIdx,
-    ].where((i) => i >= 0).fold<int>(lower.length, (a, b) => a < b ? a : b);
+    final cut = [qIdx, hashIdx]
+        .where((i) => i >= 0)
+        .fold<int>(lower.length, (a, b) => a < b ? a : b);
     final path = lower.substring(0, cut);
     for (final ext in const ['.spz', '.ply', '.gltf', '.splat', '.glb']) {
       if (path.endsWith(ext)) return ext;

@@ -53,10 +53,10 @@ class TimebaseNormalizerConfig {
     this.maxAcceptableOffsetJitterSeconds = 0.020,
     this.minSamplesBeforeAccept = 16,
     this.offsetWindowSpanSeconds = 4.0,
-  }) : assert(exposureCenterFraction >= -1.0 && exposureCenterFraction <= 1.0),
-       assert(exposureUncertaintyFraction >= 0.0),
-       assert(rollingShutterReadoutSeconds >= 0.0),
-       assert(maxAcceptableOffsetJitterSeconds > 0);
+  })  : assert(exposureCenterFraction >= -1.0 && exposureCenterFraction <= 1.0),
+        assert(exposureUncertaintyFraction >= 0.0),
+        assert(rollingShutterReadoutSeconds >= 0.0),
+        assert(maxAcceptableOffsetJitterSeconds > 0);
 
   final StreamRateConfig rates;
   final TimeDomain cameraDomain;
@@ -84,34 +84,35 @@ class TimebaseNormalizerConfig {
   TimebaseNormalizerConfig calibratedExposure({
     required double measuredFraction,
     required double residualFraction,
-  }) => TimebaseNormalizerConfig(
-    rates: rates,
-    cameraDomain: cameraDomain,
-    imuDomain: imuDomain,
-    referenceDomain: referenceDomain,
-    exposureCenterFraction: measuredFraction,
-    exposureUncertaintyFraction: residualFraction,
-    rollingShutterReadoutSeconds: rollingShutterReadoutSeconds,
-    maxAcceptableOffsetJitterSeconds: maxAcceptableOffsetJitterSeconds,
-    minSamplesBeforeAccept: minSamplesBeforeAccept,
-    offsetWindowSpanSeconds: offsetWindowSpanSeconds,
-  );
+  }) =>
+      TimebaseNormalizerConfig(
+        rates: rates,
+        cameraDomain: cameraDomain,
+        imuDomain: imuDomain,
+        referenceDomain: referenceDomain,
+        exposureCenterFraction: measuredFraction,
+        exposureUncertaintyFraction: residualFraction,
+        rollingShutterReadoutSeconds: rollingShutterReadoutSeconds,
+        maxAcceptableOffsetJitterSeconds: maxAcceptableOffsetJitterSeconds,
+        minSamplesBeforeAccept: minSamplesBeforeAccept,
+        offsetWindowSpanSeconds: offsetWindowSpanSeconds,
+      );
 }
 
 /// 会话级归一化闸门。
 class TimebaseNormalizer {
   TimebaseNormalizer(this.config)
-    : _cameraOffset = ClockOffsetEstimator(
-        windowSpanSeconds: config.offsetWindowSpanSeconds,
-        minSamples: config.minSamplesBeforeAccept,
-      ),
-      _imuOffset = ClockOffsetEstimator(
-        windowSpanSeconds: config.offsetWindowSpanSeconds,
-        minSamples: config.minSamplesBeforeAccept,
-      ),
-      _cameraMono = MonotonicityDetector(stream: StreamKind.camera),
-      _imuMono = MonotonicityDetector(stream: StreamKind.imu),
-      _cross = DomainMismatchDetector(rates: config.rates);
+      : _cameraOffset = ClockOffsetEstimator(
+          windowSpanSeconds: config.offsetWindowSpanSeconds,
+          minSamples: config.minSamplesBeforeAccept,
+        ),
+        _imuOffset = ClockOffsetEstimator(
+          windowSpanSeconds: config.offsetWindowSpanSeconds,
+          minSamples: config.minSamplesBeforeAccept,
+        ),
+        _cameraMono = MonotonicityDetector(stream: StreamKind.camera),
+        _imuMono = MonotonicityDetector(stream: StreamKind.imu),
+        _cross = DomainMismatchDetector(rates: config.rates);
 
   final TimebaseNormalizerConfig config;
 
@@ -154,10 +155,8 @@ class TimebaseNormalizer {
 
     final double? arrival = s.hostArrivalSeconds;
     if (arrival == null) {
-      why.add(
-        '样本未携带 hostArrivalSeconds,无法测量 ${s.domain.name} → '
-        '${config.referenceDomain.name} 的偏置',
-      );
+      why.add('样本未携带 hostArrivalSeconds,无法测量 ${s.domain.name} → '
+          '${config.referenceDomain.name} 的偏置');
       return null;
     }
     est.add(srcSeconds: s.rawSeconds, refSeconds: arrival);
@@ -168,10 +167,8 @@ class TimebaseNormalizer {
       return null;
     }
     if (e.jitterSeconds > config.maxAcceptableOffsetJitterSeconds) {
-      why.add(
-        '偏置抖动 ${(e.jitterSeconds * 1e3).toStringAsFixed(2)}ms 超过 '
-        '${(config.maxAcceptableOffsetJitterSeconds * 1e3).toStringAsFixed(1)}ms',
-      );
+      why.add('偏置抖动 ${(e.jitterSeconds * 1e3).toStringAsFixed(2)}ms 超过 '
+          '${(config.maxAcceptableOffsetJitterSeconds * 1e3).toStringAsFixed(1)}ms');
       return null;
     }
     return e.offsetSeconds;
@@ -189,14 +186,12 @@ class TimebaseNormalizer {
     }
 
     if (s.domain == TimeDomain.unknown) {
-      faults.add(
-        const TimebaseFault(
-          kind: TimebaseFaultKind.undeterminedDomain,
-          detail: 'IMU 流的时钟域为 unknown —— 不许当成任何已知域使用',
-          measuredSeconds: 0,
-          limitSeconds: 0,
-        ),
-      );
+      faults.add(const TimebaseFault(
+        kind: TimebaseFaultKind.undeterminedDomain,
+        detail: 'IMU 流的时钟域为 unknown —— 不许当成任何已知域使用',
+        measuredSeconds: 0,
+        limitSeconds: 0,
+      ));
     }
 
     if (faults.isNotEmpty) {
@@ -235,14 +230,12 @@ class TimebaseNormalizer {
     if (m.fault != null) faults.add(m.fault!);
 
     if (s.domain == TimeDomain.unknown) {
-      faults.add(
-        const TimebaseFault(
-          kind: TimebaseFaultKind.undeterminedDomain,
-          detail: '相机流的时钟域为 unknown',
-          measuredSeconds: 0,
-          limitSeconds: 0,
-        ),
-      );
+      faults.add(const TimebaseFault(
+        kind: TimebaseFaultKind.undeterminedDomain,
+        detail: '相机流的时钟域为 unknown',
+        measuredSeconds: 0,
+        limitSeconds: 0,
+      ));
     }
 
     if (faults.isNotEmpty) {
@@ -277,8 +270,7 @@ class TimebaseNormalizer {
     }
 
     final ClockOffsetEstimate? e = _cameraOffset.estimate();
-    final double unc =
-        (e?.jitterSeconds ?? 0.0) +
+    final double unc = (e?.jitterSeconds ?? 0.0) +
         config.exposureUncertaintyFraction * d +
         0.5 * config.rollingShutterReadoutSeconds;
 
@@ -301,7 +293,8 @@ class TimebaseNormalizer {
       'cameraDomainOriginDocumented': config.cameraDomain.originIsDocumented,
       'imuDomainOriginDocumented': config.imuDomain.originIsDocumented,
       'cameraOffsetSeconds': c?.offsetSeconds,
-      'cameraOffsetJitterMs': c == null ? null : c.jitterSeconds * 1e3,
+      'cameraOffsetJitterMs':
+          c == null ? null : c.jitterSeconds * 1e3,
       'cameraDriftPpm': c?.driftPpm,
       'cameraDriftSignificant': c?.driftIsSignificant,
       'imuOffsetSeconds': i?.offsetSeconds,
@@ -329,4 +322,5 @@ class TimebaseNormalizer {
 double timingUncertaintyToMeters({
   required double uncertaintySeconds,
   required double handSpeedMetersPerSecond,
-}) => uncertaintySeconds * math.max(0.0, handSpeedMetersPerSecond);
+}) =>
+    uncertaintySeconds * math.max(0.0, handSpeedMetersPerSecond);

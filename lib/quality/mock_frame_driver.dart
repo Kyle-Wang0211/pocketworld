@@ -75,8 +75,7 @@ class MockFrameDriver {
       // Soft reject — low variance or dim.
       laplacian = 500 + _rng.nextDouble() * 280;
       brightness = 55 + _rng.nextDouble() * 40;
-      globalVariance =
-          14 + _rng.nextDouble() * 16; // below MIN_LOCAL_VARIANCE_FOR_TEXTURE
+      globalVariance = 14 + _rng.nextDouble() * 16; // below MIN_LOCAL_VARIANCE_FOR_TEXTURE
     } else if (bucket < 0.98) {
       // Hard reject blur.
       laplacian = 200 + _rng.nextDouble() * 250;
@@ -134,27 +133,25 @@ class MockFrameDriver {
     final passRate = total > 0 ? passed / total : 0.0;
 
     _azimuthHint = (_azimuthHint + 0.02) % (2 * math.pi);
-    final omega =
-        0.4 + math.sin(_azimuthHint * 3) * 0.3 + _rng.nextDouble() * 0.2;
+    final omega = 0.4 + math.sin(_azimuthHint * 3) * 0.3 + _rng.nextDouble() * 0.2;
     final tilt = 3.0 + _rng.nextDouble() * 6.0;
     final gravDev = 1.5 + _rng.nextDouble() * 3.5;
 
-    onDebugStats?.call(
-      QualityDebugStats(
-        currentVariance: laplacian,
-        avgVariance: avg,
-        brightness: brightness,
-        threshold: 500,
-        angularVelocity: omega,
-        angularVelocityLimit: 1.2,
-        tiltDegrees: tilt,
-        tiltDegreesLimit: 15,
-        gravityDeviationDegrees: gravDev,
-        gravityDeviationLimit: 12,
-        passRate: passRate.clamp(0.0, 1.0),
-        sampleCountInWindow: _variances.length,
-        timestamp: timestamp,
-      ),
-    );
+    onDebugStats?.call(QualityDebugStats(
+      currentVariance: laplacian,
+      avgVariance: avg,
+      brightness: brightness,
+      threshold: 500,
+      angularVelocity: omega,
+      angularVelocityLimit: 1.2,
+      tiltDegrees: tilt,
+      tiltDegreesLimit: 15,
+      gravityDeviationDegrees: gravDev,
+      gravityDeviationLimit: 12,
+      passRate: passRate.clamp(0.0, 1.0),
+      sampleCountInWindow: _variances.length,
+      timestamp: timestamp,
+    ));
   }
 }
+

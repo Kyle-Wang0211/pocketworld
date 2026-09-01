@@ -76,13 +76,12 @@ class UploadFinalizeResult {
 /// ⚠️ title/description 从这里传进去是**收口的一部分**:它们要由服务端
 /// 校验后写库。客户端不再构造 works row —— user_id / model_storage_path /
 /// file_size_bytes / format 一律由服务端自己算,连伪造的机会都没有。
-typedef UploadModelFn =
-    Future<UploadFinalizeResult> Function({
-      required String path,
-      required Uint8List bytes,
-      required String title,
-      String? description,
-    });
+typedef UploadModelFn = Future<UploadFinalizeResult> Function({
+  required String path,
+  required Uint8List bytes,
+  required String title,
+  String? description,
+});
 
 /// Narrow view of [CommunityService] — just the thumbnail broker. Lets
 /// the unit test fake it without a live Supabase.
@@ -190,117 +189,109 @@ class PublishService {
        _uploadModel = uploadModel;
 
   /// Production constructor.
-  factory PublishService({
-    SupabaseClient? client,
-    CommunityService? community,
-  }) {
+  factory PublishService({SupabaseClient? client, CommunityService? community}) {
     final c = client ?? Supabase.instance.client;
     final comm = community ?? CommunityService(client: c);
     return PublishService._(
       uid: () => c.auth.currentUser?.id,
       community: _CommunityAdapter(comm),
-      uploadModel:
-          ({required path, required bytes, required title, description}) async {
-            // 两阶段上传(2026-08-18)。此前是直传 `works` 公开桶,那条路上
-            // **服务端侧没有任何内容校验**:桶的 MIME 白名单匹配的是客户端
-            // 自己声明的 header(storage 源码 uploader.ts 里 mimeType 直接取自
-            // 请求头,从不看字节),而 works 白名单含 application/octet-stream
-            // 这个万能通配 ⇒ 等于不设防;storage-sign-upload broker 只覆盖
-            // scans/thumbnails 两个桶,够不着 works;RLS 只能约束路径与归属,
-            // 看不到内容。
-            //
-            // 现在:先传进**私有** staging 桶,再由 upload-finalize 用 Range
-            // 读头部校验,通过才由服务端 move 进 works。客户端全程没有 works
-            // 桶的写入位置决定权。
-            //
-            // 跳过 finalize 的后果是对象留在私有桶、永远拿不到公开 URL ——
-            // 所以这一步不是信任边界,只是触发器。
-            await c.storage
-                .from('staging')
-                .uploadBinary(
-                  path,
-                  bytes,
-                  fileOptions: const FileOptions(
-                    contentType: 'application/octet-stream',
-                    upsert: true,
-                    cacheControl: '604800',
-                  ),
-                );
+      uploadModel: ({required path, required bytes, required title, description}) async {
+        // 两阶段上传(2026-08-18)。此前是直传 `works` 公开桶,那条路上
+        // **服务端侧没有任何内容校验**:桶的 MIME 白名单匹配的是客户端
+        // 自己声明的 header(storage 源码 uploader.ts 里 mimeType 直接取自
+        // 请求头,从不看字节),而 works 白名单含 application/octet-stream
+        // 这个万能通配 ⇒ 等于不设防;storage-sign-upload broker 只覆盖
+        // scans/thumbnails 两个桶,够不着 works;RLS 只能约束路径与归属,
+        // 看不到内容。
+        //
+        // 现在:先传进**私有** staging 桶,再由 upload-finalize 用 Range
+        // 读头部校验,通过才由服务端 move 进 works。客户端全程没有 works
+        // 桶的写入位置决定权。
+        //
+        // 跳过 finalize 的后果是对象留在私有桶、永远拿不到公开 URL ——
+        // 所以这一步不是信任边界,只是触发器。
+        await c.storage.from('staging').uploadBinary(
+              path,
+              bytes,
+              fileOptions: const FileOptions(
+                contentType: 'application/octet-stream',
+                upsert: true,
+                cacheControl: '604800',
+              ),
+            );
 
-            // [FINALIZE-ERR 2026-08-23] 这里以前是死代码,而且是双重锁死的:
-            //
-            //   1. functions_client 对**任何非 2xx** 直接 `throw FunctionException`
-            //      (functions_client-2.5.0/lib/src/functions_client.dart:183-190),
-            //      永远不会把失败体交给下面的 `res.data` 分支;
-            //   2. 而 upload-finalize 的**所有**失败出口都是非 2xx,两个 2xx 出口
-            //      又都带 ok:true ⇒ 原来那两行解析 reason 的代码结构性不可达。
-            //   3. 就算异常消息里带上了响应体,外层匹配的字面量是
-            //      `upload_validation_failed`,而服务端 422 体里写的是
-            //      `validation_failed`(index.ts:187)——**少了 upload_ 前缀**,
-            //      contains() 也不可能命中。
-            //
-            // 后果:用户上传了一个被服务端判违规的文件,却被告知"网络故障请重试",
-            // 于是反复重传几十 MB 的 PLY。收口后把文本审核也放进 finalize,这个洞
-            // 会从"文件格式被拒"放大到"标题/描述被拒",更常见也更伤。
-            //
-            // ⚠️ `upload_validation_failed:` 是**客户端内部约定**的信号前缀,不是
-            //    服务端字符串。外层 catch(见 _publishInner 的异常分类)按它把错误
-            //    归入 'rejected' 而非 'uploading' —— 二者的区别是"重试永远不会成功"
-            //    与"重试可能成功",对用户是完全不同的话。改这里时不要顺手去改服务端。
-            final FunctionResponse res;
-            try {
-              res = await c.functions.invoke(
-                'upload-finalize',
-                body: <String, dynamic>{
-                  'staging_path': path,
-                  'title': title,
-                  if (description != null && description.isNotEmpty)
-                    'description': description,
-                },
-              );
-            } on FunctionException catch (e) {
-              // details 可能是 Map(JSON 体)也可能是 String —— 照抄
-              // supabase_auth_service._mapFunctionException 的既有处理。
-              final d = e.details;
-              String reason = '';
-              if (d is Map) {
-                reason = (d['reason'] ?? d['error'] ?? '').toString();
-              } else if (d is String) {
-                reason = d;
-              }
-              if (reason.isEmpty) reason = 'http_${e.status}';
-              // 422 = 服务端内容校验拒绝,重试同一份字节永远不会通过 ⇒ 'rejected'。
-              // 其余(401/403/404/429/500/502)要么是瞬时故障要么是环境问题,
-              // 重试有意义 ⇒ 交给外层归入 'uploading'。
-              if (e.status == 422) {
-                throw StateError('upload_validation_failed:$reason');
-              }
-              throw StateError('upload-finalize http_${e.status}: $reason');
-            }
-            final data = res.data;
-            if (data is Map && data['ok'] == true) {
-              final wid = data['work_id'] as String?;
-              if (wid == null || wid.isEmpty) {
-                // 2xx + ok:true 却没有 work_id ⇒ 部署的是收口前的旧版函数。
-                // 这种情况下作品的行根本没被创建过,当成失败比当成成功安全。
-                throw StateError(
-                  'upload-finalize stale_version: work_id missing',
-                );
-              }
-              return UploadFinalizeResult(
-                path: (data['path'] as String?) ?? path,
-                workId: wid,
-                moderationStatus:
-                    (data['moderation_status'] as String?) ?? 'under_review',
-              );
-            }
-            // 2xx 却没有 ok:true。服务端目前只有两个 2xx 出口且都带 ok:true,
-            // 走到这里说明协议被破坏(例如函数被换成了别的版本),按拒绝处理而不是
-            // 按网络故障处理 —— 放行一个协议不明的响应比报错危险。
-            // 校验失败时服务端已把对象搬进 quarantine,staging 不会留下残留。
-            final reason = (data is Map ? data['reason'] : null) ?? 'unknown';
+        // [FINALIZE-ERR 2026-08-23] 这里以前是死代码,而且是双重锁死的:
+        //
+        //   1. functions_client 对**任何非 2xx** 直接 `throw FunctionException`
+        //      (functions_client-2.5.0/lib/src/functions_client.dart:183-190),
+        //      永远不会把失败体交给下面的 `res.data` 分支;
+        //   2. 而 upload-finalize 的**所有**失败出口都是非 2xx,两个 2xx 出口
+        //      又都带 ok:true ⇒ 原来那两行解析 reason 的代码结构性不可达。
+        //   3. 就算异常消息里带上了响应体,外层匹配的字面量是
+        //      `upload_validation_failed`,而服务端 422 体里写的是
+        //      `validation_failed`(index.ts:187)——**少了 upload_ 前缀**,
+        //      contains() 也不可能命中。
+        //
+        // 后果:用户上传了一个被服务端判违规的文件,却被告知"网络故障请重试",
+        // 于是反复重传几十 MB 的 PLY。收口后把文本审核也放进 finalize,这个洞
+        // 会从"文件格式被拒"放大到"标题/描述被拒",更常见也更伤。
+        //
+        // ⚠️ `upload_validation_failed:` 是**客户端内部约定**的信号前缀,不是
+        //    服务端字符串。外层 catch(见 _publishInner 的异常分类)按它把错误
+        //    归入 'rejected' 而非 'uploading' —— 二者的区别是"重试永远不会成功"
+        //    与"重试可能成功",对用户是完全不同的话。改这里时不要顺手去改服务端。
+        final FunctionResponse res;
+        try {
+          res = await c.functions.invoke(
+            'upload-finalize',
+            body: <String, dynamic>{
+              'staging_path': path,
+              'title': title,
+              if (description != null && description.isNotEmpty)
+                'description': description,
+            },
+          );
+        } on FunctionException catch (e) {
+          // details 可能是 Map(JSON 体)也可能是 String —— 照抄
+          // supabase_auth_service._mapFunctionException 的既有处理。
+          final d = e.details;
+          String reason = '';
+          if (d is Map) {
+            reason = (d['reason'] ?? d['error'] ?? '').toString();
+          } else if (d is String) {
+            reason = d;
+          }
+          if (reason.isEmpty) reason = 'http_${e.status}';
+          // 422 = 服务端内容校验拒绝,重试同一份字节永远不会通过 ⇒ 'rejected'。
+          // 其余(401/403/404/429/500/502)要么是瞬时故障要么是环境问题,
+          // 重试有意义 ⇒ 交给外层归入 'uploading'。
+          if (e.status == 422) {
             throw StateError('upload_validation_failed:$reason');
-          },
+          }
+          throw StateError('upload-finalize http_${e.status}: $reason');
+        }
+        final data = res.data;
+        if (data is Map && data['ok'] == true) {
+          final wid = data['work_id'] as String?;
+          if (wid == null || wid.isEmpty) {
+            // 2xx + ok:true 却没有 work_id ⇒ 部署的是收口前的旧版函数。
+            // 这种情况下作品的行根本没被创建过,当成失败比当成成功安全。
+            throw StateError('upload-finalize stale_version: work_id missing');
+          }
+          return UploadFinalizeResult(
+            path: (data['path'] as String?) ?? path,
+            workId: wid,
+            moderationStatus:
+                (data['moderation_status'] as String?) ?? 'under_review',
+          );
+        }
+        // 2xx 却没有 ok:true。服务端目前只有两个 2xx 出口且都带 ok:true,
+        // 走到这里说明协议被破坏(例如函数被换成了别的版本),按拒绝处理而不是
+        // 按网络故障处理 —— 放行一个协议不明的响应比报错危险。
+        // 校验失败时服务端已把对象搬进 quarantine,staging 不会留下残留。
+        final reason = (data is Map ? data['reason'] : null) ?? 'unknown';
+        throw StateError('upload_validation_failed:$reason');
+      },
     );
   }
 
@@ -423,7 +414,10 @@ class PublishService {
     // 真正的强制必须在服务端;直传架构下服务端拿不到内容,需要上传后用
     // Range 请求读文件头 —— 那一步会改变发布流程,待定。
     if (!matchesDeclaredExtension(bytes, storagePath)) {
-      throw PublishException('validating', '文件内容不是有效的 PLY 点云。请确认选择的是扫描产物文件。');
+      throw PublishException(
+        'validating',
+        '文件内容不是有效的 PLY 点云。请确认选择的是扫描产物文件。',
+      );
     }
 
     // 3c) 体积预检 —— 只为快速失败,不是安全控制。
@@ -440,7 +434,7 @@ class PublishService {
       throw PublishException(
         'too_large',
         '${(bytes.length / 1048576).toStringAsFixed(1)}MB / '
-            '${(maxBytes / 1048576).toStringAsFixed(0)}MB',
+        '${(maxBytes / 1048576).toStringAsFixed(0)}MB',
       );
     }
 
@@ -479,11 +473,7 @@ class PublishService {
       if (msg.contains('upload_validation_failed')) {
         throw PublishException(
           'rejected',
-          msg
-              .split('upload_validation_failed:')
-              .last
-              .split(RegExp(r'[\s)]'))
-              .first,
+          msg.split('upload_validation_failed:').last.split(RegExp(r'[\s)]')).first,
         );
       }
       // 收口后建行发生在服务端,所以"建行失败"也从这条路回来。保留
@@ -503,8 +493,7 @@ class PublishService {
       if (msg.contains('uploads_disabled')) {
         throw PublishException('uploading', '上传功能暂时关闭');
       }
-      if (msg.contains('invalid_title') ||
-          msg.contains('invalid_description')) {
+      if (msg.contains('invalid_title') || msg.contains('invalid_description')) {
         throw PublishException('rejected', msg);
       }
       throw PublishException('uploading', e.toString());

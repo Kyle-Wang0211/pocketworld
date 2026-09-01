@@ -34,12 +34,12 @@ class PwTelemetrySample {
   final int thermalState;
 
   String get thermalName => switch (thermalState) {
-    0 => 'nominal',
-    1 => 'fair',
-    2 => 'serious',
-    3 => 'critical',
-    _ => 'unknown',
-  };
+        0 => 'nominal',
+        1 => 'fair',
+        2 => 'serious',
+        3 => 'critical',
+        _ => 'unknown',
+      };
 
   @override
   String toString() =>
@@ -48,18 +48,10 @@ class PwTelemetrySample {
       'thermal=$thermalName';
 }
 
-typedef _TelemetryC =
-    Int32 Function(
-      Pointer<Double> physMb,
-      Pointer<Double> peakMb,
-      Pointer<Int32> thermal,
-    );
-typedef _TelemetryDart =
-    int Function(
-      Pointer<Double> physMb,
-      Pointer<Double> peakMb,
-      Pointer<Int32> thermal,
-    );
+typedef _TelemetryC = Int32 Function(
+    Pointer<Double> physMb, Pointer<Double> peakMb, Pointer<Int32> thermal);
+typedef _TelemetryDart = int Function(
+    Pointer<Double> physMb, Pointer<Double> peakMb, Pointer<Int32> thermal);
 
 class PwTelemetry {
   PwTelemetry._();

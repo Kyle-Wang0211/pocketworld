@@ -175,10 +175,8 @@ class _OtpVerificationViewState extends State<OtpVerificationView>
         backgroundColor: AetherColors.bg,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(
-            Icons.chevron_left_rounded,
-            color: AetherColors.textPrimary,
-          ),
+          icon: const Icon(Icons.chevron_left_rounded,
+              color: AetherColors.textPrimary),
           onPressed: () => Navigator.of(context).maybePop(),
         ),
       ),

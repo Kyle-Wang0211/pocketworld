@@ -91,4 +91,5 @@ bool starvedFinishGateShouldPrompt({
   required int starvedTrue,
   required int trueVoxels,
   double ratio = kParallaxStarvedFinishRatio,
-}) => trueVoxels > 0 && starvedTrue > trueVoxels * ratio;
+}) =>
+    trueVoxels > 0 && starvedTrue > trueVoxels * ratio;

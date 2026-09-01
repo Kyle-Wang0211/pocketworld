@@ -123,9 +123,10 @@ class SceneBridge {
 
   /// Destroy a renderer. Safe on unknown ids (no-op on the native side).
   Future<void> destroyTexture(int textureId) async {
-    await _channel.invokeMethod<void>('disposeTexture', <String, dynamic>{
-      'textureId': textureId,
-    });
+    await _channel.invokeMethod<void>(
+      'disposeTexture',
+      <String, dynamic>{'textureId': textureId},
+    );
   }
 
   /// Load a GLB into the renderer. Throws PlatformException on parse /
@@ -165,15 +166,17 @@ class SceneBridge {
     double splatScaleMultiplier = 1.0,
     double max3dScale = 0.0,
   }) async {
-    final raw = await _channel
-        .invokeMethod<Map<dynamic, dynamic>>('loadPly', <String, dynamic>{
-          'textureId': textureId,
-          'path': path,
-          'maxSplats': maxSplats,
-          'maxShDegree': maxShDegree,
-          'splatScaleMultiplier': splatScaleMultiplier,
-          'max3dScale': max3dScale,
-        });
+    final raw = await _channel.invokeMethod<Map<dynamic, dynamic>>(
+      'loadPly',
+      <String, dynamic>{
+        'textureId': textureId,
+        'path': path,
+        'maxSplats': maxSplats,
+        'maxShDegree': maxShDegree,
+        'splatScaleMultiplier': splatScaleMultiplier,
+        'max3dScale': max3dScale,
+      },
+    );
     return _decodeBounds(raw);
   }
 
@@ -187,15 +190,17 @@ class SceneBridge {
     double splatScaleMultiplier = 1.0,
     double max3dScale = 0.0,
   }) async {
-    final raw = await _channel
-        .invokeMethod<Map<dynamic, dynamic>>('loadSpz', <String, dynamic>{
-          'textureId': textureId,
-          'path': path,
-          'maxSplats': maxSplats,
-          'maxShDegree': maxShDegree,
-          'splatScaleMultiplier': splatScaleMultiplier,
-          'max3dScale': max3dScale,
-        });
+    final raw = await _channel.invokeMethod<Map<dynamic, dynamic>>(
+      'loadSpz',
+      <String, dynamic>{
+        'textureId': textureId,
+        'path': path,
+        'maxSplats': maxSplats,
+        'maxShDegree': maxShDegree,
+        'splatScaleMultiplier': splatScaleMultiplier,
+        'max3dScale': max3dScale,
+      },
+    );
     return _decodeBounds(raw);
   }
 
@@ -225,11 +230,14 @@ class SceneBridge {
   }) async {
     assert(view.length == 16, 'view matrix must be 16 floats');
     assert(model.length == 16, 'model matrix must be 16 floats');
-    await _channel.invokeMethod<void>('setMatrices', <String, dynamic>{
-      'textureId': textureId,
-      'view': view,
-      'model': model,
-    });
+    await _channel.invokeMethod<void>(
+      'setMatrices',
+      <String, dynamic>{
+        'textureId': textureId,
+        'view': view,
+        'model': model,
+      },
+    );
   }
 
   /// Pause / resume the displayLink (lifecycle hooks). Both are
@@ -254,7 +262,10 @@ class SceneBridge {
   }) async {
     final raw = await _channel.invokeMethod<Uint8List>(
       'captureThumb',
-      <String, dynamic>{'textureId': textureId, 'quality': quality},
+      <String, dynamic>{
+        'textureId': textureId,
+        'quality': quality,
+      },
     );
     return raw;
   }

@@ -101,7 +101,10 @@ class SplatViewerOverrides {
   /// or this could be 0 to disable the cull entirely.
   final double? max3dScale;
 
-  const SplatViewerOverrides({this.splatScaleMultiplier, this.max3dScale});
+  const SplatViewerOverrides({
+    this.splatScaleMultiplier,
+    this.max3dScale,
+  });
 
   /// All-default overrides. Equivalent to passing `null`.
   static const SplatViewerOverrides none = SplatViewerOverrides();
@@ -113,7 +116,10 @@ abstract class ViewerImpl {
   /// OR null if this impl doesn't use a Flutter Texture (in which
   /// case the caller mounts the impl's own widget — thermion's
   /// `ViewerWidget` is its own thing).
-  Future<int?> create({required double width, required double height});
+  Future<int?> create({
+    required double width,
+    required double height,
+  });
 
   /// Fetch + parse the model at [url]. Format detection happens
   /// inside (see `format_detect.dart`); GLB → mesh path, PLY/SPZ/
@@ -126,8 +132,7 @@ abstract class ViewerImpl {
   /// [overrides] lets the caller dial the splat-scene tunables on a
   /// per-asset basis (creator-side metadata or per-URL hardcoded
   /// overrides). Default uses the per-quality presets.
-  Future<ModelBounds?> load(
-    String url, {
+  Future<ModelBounds?> load(String url, {
     ViewerQuality quality,
     SplatViewerOverrides overrides,
   });
@@ -163,14 +168,11 @@ class ThermionViewerImpl implements ViewerImpl {
   }
 
   @override
-  Future<ModelBounds?> load(
-    String url, {
-    ViewerQuality quality = ViewerQuality.full,
-    SplatViewerOverrides overrides = SplatViewerOverrides.none,
-  }) async {
+  Future<ModelBounds?> load(String url,
+      {ViewerQuality quality = ViewerQuality.full,
+      SplatViewerOverrides overrides = SplatViewerOverrides.none}) async {
     throw UnimplementedError(
-      'G4: move existing GlbAssetCache.getOrLoad + addToScene here.',
-    );
+        'G4: move existing GlbAssetCache.getOrLoad + addToScene here.');
   }
 
   @override
@@ -184,8 +186,7 @@ class ThermionViewerImpl implements ViewerImpl {
   @override
   Future<void> dispose() async {
     throw UnimplementedError(
-      'G4: move existing dispose ordering (flag → ticker → null fields) here.',
-    );
+        'G4: move existing dispose ordering (flag → ticker → null fields) here.');
   }
 }
 
@@ -210,7 +211,10 @@ class AetherCppViewerImpl implements ViewerImpl {
   bool _loaded = false;
 
   @override
-  Future<int?> create({required double width, required double height}) async {
+  Future<int?> create({
+    required double width,
+    required double height,
+  }) async {
     if (_textureId != null) return _textureId;
     if (!kAetherSceneBridgeAvailable) {
       // G6 / G8: Android + Web don't have the native plugin yet.
@@ -222,8 +226,7 @@ class AetherCppViewerImpl implements ViewerImpl {
       throw const UnsupportedViewerFormatError(
         format: ViewerFormat.unknown,
         url: '',
-        reason:
-            'aether_texture MethodChannel not registered on this '
+        reason: 'aether_texture MethodChannel not registered on this '
             'platform. iOS + macOS only until G6 (Android via '
             'SurfaceTexture + Dawn-Vulkan) and G8 (Web via Dawn '
             'emscripten) land.',
@@ -238,11 +241,9 @@ class AetherCppViewerImpl implements ViewerImpl {
   }
 
   @override
-  Future<ModelBounds?> load(
-    String url, {
-    ViewerQuality quality = ViewerQuality.full,
-    SplatViewerOverrides overrides = SplatViewerOverrides.none,
-  }) async {
+  Future<ModelBounds?> load(String url,
+      {ViewerQuality quality = ViewerQuality.full,
+      SplatViewerOverrides overrides = SplatViewerOverrides.none}) async {
     final id = _textureId;
     if (id == null) {
       throw StateError('AetherCppViewerImpl.load called before create');
@@ -267,10 +268,10 @@ class AetherCppViewerImpl implements ViewerImpl {
     // Detail page passes max_splats=0 (no cap) for full quality; the
     // user is on the detail page intentionally and can wait the extra
     // few ms per frame for the full splat density.
-    final int capMaxSplats = quality == ViewerQuality.feedThumbnail
-        ? 200000
-        : 0;
-    final int capMaxShDegree = quality == ViewerQuality.feedThumbnail ? 0 : 3;
+    final int capMaxSplats =
+        quality == ViewerQuality.feedThumbnail ? 200000 : 0;
+    final int capMaxShDegree =
+        quality == ViewerQuality.feedThumbnail ? 0 : 3;
     // Phase 6.4f hotfix — splat-scale multiplier. Niantic SPZ files
     // are authored at AR-viewing density (splat scales chosen for
     // viewing the model from ~1 m away in headset). At PocketWorld
@@ -315,7 +316,10 @@ class AetherCppViewerImpl implements ViewerImpl {
     final Map<String, double>? bounds;
     switch (format) {
       case ViewerFormat.glb:
-        bounds = await SceneBridge.instance.loadGlb(textureId: id, path: path);
+        bounds = await SceneBridge.instance.loadGlb(
+          textureId: id,
+          path: path,
+        );
         break;
       case ViewerFormat.plyGsplat:
         // Phase 6.4f stub: SceneBridge.loadPly calls the native C ABI
@@ -349,16 +353,14 @@ class AetherCppViewerImpl implements ViewerImpl {
         throw UnsupportedViewerFormatError(
           format: format,
           url: url,
-          reason:
-              '.splat fixed-stride format is not on the roadmap; '
+          reason: '.splat fixed-stride format is not on the roadmap; '
               'use .ply or .spz instead.',
         );
       case ViewerFormat.plyMesh:
         throw UnsupportedViewerFormatError(
           format: format,
           url: url,
-          reason:
-              'Plain triangulated PLY → mesh conversion is not '
+          reason: 'Plain triangulated PLY → mesh conversion is not '
               'planned. The aether_cpp scene renderer takes GLB only; '
               'export to GLB upstream.',
         );
@@ -366,8 +368,7 @@ class AetherCppViewerImpl implements ViewerImpl {
         throw UnsupportedViewerFormatError(
           format: format,
           url: url,
-          reason:
-              'Could not classify the URL by extension. Supported '
+          reason: 'Could not classify the URL by extension. Supported '
               '.glb / .gltf (GLB), .ply (gsplat), .spz.',
         );
     }
@@ -383,12 +384,8 @@ class AetherCppViewerImpl implements ViewerImpl {
     final maxX = bounds['maxX'];
     final maxY = bounds['maxY'];
     final maxZ = bounds['maxZ'];
-    if (minX == null ||
-        minY == null ||
-        minZ == null ||
-        maxX == null ||
-        maxY == null ||
-        maxZ == null) {
+    if (minX == null || minY == null || minZ == null ||
+        maxX == null || maxY == null || maxZ == null) {
       return null;
     }
     final hx = (maxX - minX) * 0.5;
@@ -474,5 +471,7 @@ const bool kAetherCppViewerEnabled = true;
 /// ViewerWidget usage with `ViewerImpl impl = createViewerImpl();
 /// ...`.
 ViewerImpl createViewerImpl() {
-  return kAetherCppViewerEnabled ? AetherCppViewerImpl() : ThermionViewerImpl();
+  return kAetherCppViewerEnabled
+      ? AetherCppViewerImpl()
+      : ThermionViewerImpl();
 }

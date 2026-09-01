@@ -60,10 +60,13 @@ class _LowPass {
 ///  - [dCutoff] Hz: cutoff of the internal speed estimate. 1.0 is the paper's
 ///    default and rarely needs changing.
 class OneEuroFilter {
-  OneEuroFilter({this.minCutoff = 1.0, this.beta = 0.0, this.dCutoff = 1.0})
-    : assert(minCutoff > 0, 'minCutoff must be > 0'),
-      assert(dCutoff > 0, 'dCutoff must be > 0'),
-      assert(beta >= 0, 'beta must be >= 0');
+  OneEuroFilter({
+    this.minCutoff = 1.0,
+    this.beta = 0.0,
+    this.dCutoff = 1.0,
+  })  : assert(minCutoff > 0, 'minCutoff must be > 0'),
+        assert(dCutoff > 0, 'dCutoff must be > 0'),
+        assert(beta >= 0, 'beta must be >= 0');
 
   final double minCutoff;
   final double beta;
@@ -109,16 +112,19 @@ class OneEuroFilter3 {
     double minCutoff = 1.0,
     double beta = 0.0,
     double dCutoff = 1.0,
-  }) : _x = OneEuroFilter(minCutoff: minCutoff, beta: beta, dCutoff: dCutoff),
-       _y = OneEuroFilter(minCutoff: minCutoff, beta: beta, dCutoff: dCutoff),
-       _z = OneEuroFilter(minCutoff: minCutoff, beta: beta, dCutoff: dCutoff);
+  })  : _x = OneEuroFilter(minCutoff: minCutoff, beta: beta, dCutoff: dCutoff),
+        _y = OneEuroFilter(minCutoff: minCutoff, beta: beta, dCutoff: dCutoff),
+        _z = OneEuroFilter(minCutoff: minCutoff, beta: beta, dCutoff: dCutoff);
 
   final OneEuroFilter _x;
   final OneEuroFilter _y;
   final OneEuroFilter _z;
 
-  vm.Vector3 filter(vm.Vector3 v, double dt) =>
-      vm.Vector3(_x.filter(v.x, dt), _y.filter(v.y, dt), _z.filter(v.z, dt));
+  vm.Vector3 filter(vm.Vector3 v, double dt) => vm.Vector3(
+        _x.filter(v.x, dt),
+        _y.filter(v.y, dt),
+        _z.filter(v.z, dt),
+      );
 
   void reset() {
     _x.reset();

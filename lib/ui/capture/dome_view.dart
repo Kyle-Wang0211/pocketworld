@@ -68,13 +68,10 @@ class DomeView extends StatefulWidget {
   final double targetYaw;
   final double targetPitch;
   final bool trackingFrozen;
-
   /// Optional tap handler — Aether3D taps the dome to finish recording.
   final VoidCallback? onTap;
-
   /// Animation / smoothing config. See [DomeAnimationConfig].
   final DomeAnimationConfig animation;
-
   /// Useful for re-snapping when the user re-locks origin or restarts.
   final Object? snapKey;
 
@@ -151,9 +148,8 @@ class _DomeViewState extends State<DomeView>
   void initState() {
     super.initState();
     _ticker = createTicker(_onTick)..start();
-    _pointVisitedSub = widget.targetPoints.pointVisitedStream.listen(
-      _handlePointVisited,
-    );
+    _pointVisitedSub =
+        widget.targetPoints.pointVisitedStream.listen(_handlePointVisited);
   }
 
   @override
@@ -163,10 +159,8 @@ class _DomeViewState extends State<DomeView>
       _hasSnappedInitial = false;
       if (_kDiagLog) {
         // ignore: avoid_print
-        print(
-          '[DomeView] snapKey ${old.snapKey} → ${widget.snapKey}, '
-          'will re-snap on next tick',
-        );
+        print('[DomeView] snapKey ${old.snapKey} → ${widget.snapKey}, '
+            'will re-snap on next tick');
       }
     }
     if (old.trackingFrozen != widget.trackingFrozen) {
@@ -196,9 +190,8 @@ class _DomeViewState extends State<DomeView>
     }
     if (widget.targetPoints != old.targetPoints) {
       _pointVisitedSub?.cancel();
-      _pointVisitedSub = widget.targetPoints.pointVisitedStream.listen(
-        _handlePointVisited,
-      );
+      _pointVisitedSub = widget.targetPoints.pointVisitedStream
+          .listen(_handlePointVisited);
       _visitFadeStarts.clear();
       _currentVisitFades.clear();
     }
@@ -230,10 +223,8 @@ class _DomeViewState extends State<DomeView>
       _diagSnaps++;
       if (_kDiagLog) {
         // ignore: avoid_print
-        print(
-          '[DomeView] snap → '
-          '(yaw=${ty.toStringAsFixed(3)}, pitch=${tp.toStringAsFixed(3)})',
-        );
+        print('[DomeView] snap → '
+            '(yaw=${ty.toStringAsFixed(3)}, pitch=${tp.toStringAsFixed(3)})');
       }
     } else {
       final baseAlpha = widget.animation.smoothingAlpha;
@@ -248,10 +239,10 @@ class _DomeViewState extends State<DomeView>
           _unfreezeStart = null;
           _unfreezeRampLen = Duration.zero;
         } else {
-          final t =
-              since.inMilliseconds /
+          final t = since.inMilliseconds /
               _unfreezeRampLen.inMilliseconds.clamp(1, 1 << 30);
-          alpha = _unfreezeAlphaFloor + (baseAlpha - _unfreezeAlphaFloor) * t;
+          alpha = _unfreezeAlphaFloor +
+              (baseAlpha - _unfreezeAlphaFloor) * t;
         }
       }
       final epsilon = widget.animation.smoothEpsilon;
@@ -287,12 +278,10 @@ class _DomeViewState extends State<DomeView>
       final secs = _diagClock.elapsedMilliseconds / 1000;
       final hz = _diagNotifies / secs;
       // ignore: avoid_print
-      print(
-        '[DomeView] 5s window: $_diagNotifies notify '
-        '(${hz.toStringAsFixed(1)} Hz), '
-        '$_diagSnaps snap, $_diagFrozenToggles frozenToggle, '
-        '$_diagPointsVisited visited',
-      );
+      print('[DomeView] 5s window: $_diagNotifies notify '
+          '(${hz.toStringAsFixed(1)} Hz), '
+          '$_diagSnaps snap, $_diagFrozenToggles frozenToggle, '
+          '$_diagPointsVisited visited');
       _diagNotifies = 0;
       _diagSnaps = 0;
       _diagFrozenToggles = 0;
@@ -355,7 +344,8 @@ class _DomeViewState extends State<DomeView>
 
   // ─── Helpers ────────────────────────────────────────────────────────
 
-  static double _lerp(double a, double b, double alpha) => a + (b - a) * alpha;
+  static double _lerp(double a, double b, double alpha) =>
+      a + (b - a) * alpha;
 
   /// Lerps an angle (radians) along the SHORT path so spinning past ±π
   /// doesn't cause the sphere to whip the long way around.

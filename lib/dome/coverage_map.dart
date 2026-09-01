@@ -18,11 +18,8 @@ class CoverageMap {
 
   /// 2D bin grid — index = elevation * azimuthBins + azimuth.
   /// Value semantics: 0 = not captured, >0 = hit count.
-  final List<int> _bins = List<int>.filled(
-    azimuthBins * elevationBins,
-    0,
-    growable: false,
-  );
+  final List<int> _bins =
+      List<int>.filled(azimuthBins * elevationBins, 0, growable: false);
 
   /// Total count of accepted frames that contributed to the map.
   int _totalHits = 0;

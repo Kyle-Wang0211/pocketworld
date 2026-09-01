@@ -16,8 +16,6 @@
 //     rule manages its estimator window; track loss is not photo novelty.
 
 import 'dart:math' as math;
-
-import 'vins_fundamental_ransac.dart';
 import 'dart:typed_data';
 
 const double kOfficialNormalizedTrackDisplacement = 10.0 / 460.0;
@@ -31,7 +29,6 @@ class FrameTrackEvidence {
     required this.medianPixelDisplacement,
     required this.medianNormalizedDisplacement,
     required this.meanNormalizedDisplacement,
-    this.trackedBeforeRejection = -1,
     this.medianStepPixelDisplacement = double.nan,
   });
 
@@ -57,12 +54,6 @@ class FrameTrackEvidence {
   /// 「可能更适合我们」不是复刻,是自研。已改回均值。
   /// [medianNormalizedDisplacement] 保留为证据,便于事后对照两者的分歧。
   final double meanNormalizedDisplacement;
-
-  /// rejectWithF **之前**存活的跟踪点数。[commonTrackCount] 是之后的。
-  /// 两者一起记进遥测,就能在**同一次会话内部**看出剔除比例 —— 不需要跨会话
-  /// 比较(2026-09-01 定则:跨会话的中位数/点数不可比,只有会话内证据算数)。
-  /// -1 表示这条路径没有做剔除(类内 advance(),见 trackFrameNovelty 的注释)。
-  final int trackedBeforeRejection;
   final double medianStepPixelDisplacement;
 
   bool get comparable =>
@@ -286,51 +277,13 @@ FrameTrackEvidence trackFrameNovelty({
 
   final previousPyramid = _pyramid(previous, levels: 3);
   final currentPyramid = _pyramid(current, levels: 3);
-
-  // 上游 VINS-Mono FeatureTracker::readImage() 的每帧顺序,逐字:
-  //     cv::calcOpticalFlowPyrLK(...);   // 1 跟踪
-  //     rejectWithF();                   // 2 基本矩阵 RANSAC 剔除离群跟踪
-  //     setMask();  addPoints();         // 3/4 均匀分布、补新点
-  // 而 addFeatureCheckParallax 的均值,是在第 2 步筛完之后的**存活点**上算的。
-  //
-  // 2026-09-01:我们先只复刻了均值(build 81),把这一步留在了原地 —— 那是
-  // 「搬走不变量、把前提留下」,和当天早些时候 processSmart 那次同一类错误。
-  // 用中位数时离群点基本无害;换成均值之后,几个配错的跟踪点会直接把均值抬
-  // 起来,让快门在没真动的时候开火。所以这一步是均值的前提,不是可选项。
-  final tracked = <_Point>[];
-  final anchors = <_Point>[];
-  for (final seed in seeds) {
-    final t = _trackPyramidal(previousPyramid, currentPyramid, seed);
-    if (t == null) continue;
-    anchors.add(seed);
-    tracked.add(t);
-  }
-
-  // 上游门槛:`if (forw_pts.size() >= 8)`,不足 8 点不做剔除。
-  // 坐标口径也照抄:上游先 liftProjective 到归一化相机坐标,再
-  // `FOCAL_LENGTH * x/z + COL/2`(FOCAL_LENGTH = 460),阈值 F_THRESHOLD = 1.0 像素。
-  // 我们两轴各自除以自己的焦距得到归一化坐标,再统一乘 460 —— 同一个相似变换
-  // 同时作用于两幅图,所以极线距离与上游同尺度,1.0 的阈值含义一致。
-  var keep = List<bool>.filled(tracked.length, true);
-  if (tracked.length >= 8) {
-    const vinsFocalLength = 460.0;
-    keep = vinsFundamentalRansacInlierMask(<VinsCorrespondence>[
-      for (var i = 0; i < tracked.length; i++)
-        VinsCorrespondence(
-          firstX: anchors[i].x / focalXPixels * vinsFocalLength,
-          firstY: anchors[i].y / focalYPixels * vinsFocalLength,
-          secondX: tracked[i].x / focalXPixels * vinsFocalLength,
-          secondY: tracked[i].y / focalYPixels * vinsFocalLength,
-        ),
-    ]);
-  }
-
   final displacements = <double>[];
   final normalizedDisplacements = <double>[];
-  for (var i = 0; i < tracked.length; i++) {
-    if (!keep[i]) continue;
-    final dx = tracked[i].x - anchors[i].x;
-    final dy = tracked[i].y - anchors[i].y;
+  for (final seed in seeds) {
+    final tracked = _trackPyramidal(previousPyramid, currentPyramid, seed);
+    if (tracked == null) continue;
+    final dx = tracked.x - seed.x;
+    final dy = tracked.y - seed.y;
     final displacement = math.sqrt(dx * dx + dy * dy);
     final normalized = math.sqrt(
       (dx / focalXPixels) * (dx / focalXPixels) +
@@ -366,7 +319,6 @@ FrameTrackEvidence trackFrameNovelty({
     medianPixelDisplacement: median,
     medianNormalizedDisplacement: normalizedMedian,
     meanNormalizedDisplacement: normalizedMean,
-    trackedBeforeRejection: tracked.length,
     medianStepPixelDisplacement: median,
   );
 }

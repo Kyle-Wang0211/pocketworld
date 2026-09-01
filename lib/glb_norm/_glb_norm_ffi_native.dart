@@ -64,7 +64,11 @@ final class _StatsRaw extends Struct {
 }
 
 // C signature: int (*)(float, const char*, void*).
-typedef _ProgressFnNative = Int32 Function(Float, Pointer<Utf8>, Pointer<Void>);
+typedef _ProgressFnNative = Int32 Function(
+  Float,
+  Pointer<Utf8>,
+  Pointer<Void>,
+);
 
 // ─── Function-pointer typedefs ─────────────────────────────────────
 
@@ -74,26 +78,24 @@ typedef _GlbNormOptionsDefaultDart = void Function(Pointer<_OptionsRaw>);
 typedef _GlbNormBufferFreeNative = Void Function(Pointer<_BufferRaw>);
 typedef _GlbNormBufferFreeDart = void Function(Pointer<_BufferRaw>);
 
-typedef _GlbNormRunNative =
-    Int32 Function(
-      Pointer<Uint8>,
-      Size,
-      Pointer<_OptionsRaw>,
-      Pointer<NativeFunction<_ProgressFnNative>>,
-      Pointer<Void>,
-      Pointer<_BufferRaw>,
-      Pointer<_StatsRaw>,
-    );
-typedef _GlbNormRunDart =
-    int Function(
-      Pointer<Uint8>,
-      int,
-      Pointer<_OptionsRaw>,
-      Pointer<NativeFunction<_ProgressFnNative>>,
-      Pointer<Void>,
-      Pointer<_BufferRaw>,
-      Pointer<_StatsRaw>,
-    );
+typedef _GlbNormRunNative = Int32 Function(
+  Pointer<Uint8>,
+  Size,
+  Pointer<_OptionsRaw>,
+  Pointer<NativeFunction<_ProgressFnNative>>,
+  Pointer<Void>,
+  Pointer<_BufferRaw>,
+  Pointer<_StatsRaw>,
+);
+typedef _GlbNormRunDart = int Function(
+  Pointer<Uint8>,
+  int,
+  Pointer<_OptionsRaw>,
+  Pointer<NativeFunction<_ProgressFnNative>>,
+  Pointer<Void>,
+  Pointer<_BufferRaw>,
+  Pointer<_StatsRaw>,
+);
 
 typedef _GlbNormResultStrNative = Pointer<Utf8> Function(Int32);
 typedef _GlbNormResultStrDart = Pointer<Utf8> Function(int);
@@ -215,10 +217,8 @@ class _Bindings {
   factory _Bindings.resolve() {
     final lib = _resolveLibrary();
     return _Bindings._(
-      lib.lookupFunction<
-        _GlbNormOptionsDefaultNative,
-        _GlbNormOptionsDefaultDart
-      >('aether_glb_norm_options_default'),
+      lib.lookupFunction<_GlbNormOptionsDefaultNative,
+          _GlbNormOptionsDefaultDart>('aether_glb_norm_options_default'),
       lib.lookupFunction<_GlbNormBufferFreeNative, _GlbNormBufferFreeDart>(
         'aether_glb_norm_buffer_free',
       ),
@@ -311,17 +311,16 @@ GlbNormResult _runOnThisIsolate({
   NativeCallable<_ProgressFnNative>? progressCallable;
   Pointer<NativeFunction<_ProgressFnNative>> progressPtr = nullptr;
   if (progressSendPort != null) {
-    progressCallable = NativeCallable<_ProgressFnNative>.isolateLocal((
-      double fraction,
-      Pointer<Utf8> phasePtr,
-      Pointer<Void> userData,
-    ) {
-      // phase_label is `const char*` from string-literal storage on
-      // the C side; safe to dereference synchronously here.
-      final phase = phasePtr == nullptr ? '' : phasePtr.toDartString();
-      progressSendPort.send(<dynamic>[fraction, phase]);
-      return 0; // public API has no cancellation; never cancel.
-    }, exceptionalReturn: 0);
+    progressCallable = NativeCallable<_ProgressFnNative>.isolateLocal(
+      (double fraction, Pointer<Utf8> phasePtr, Pointer<Void> userData) {
+        // phase_label is `const char*` from string-literal storage on
+        // the C side; safe to dereference synchronously here.
+        final phase = phasePtr == nullptr ? '' : phasePtr.toDartString();
+        progressSendPort.send(<dynamic>[fraction, phase]);
+        return 0; // public API has no cancellation; never cancel.
+      },
+      exceptionalReturn: 0,
+    );
     progressPtr = progressCallable.nativeFunction;
   }
 

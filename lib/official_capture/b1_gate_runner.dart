@@ -130,11 +130,9 @@ Future<void> maybeRunB1Gate(String documentsPath) async {
     // 门里强制试跑**当前最深一级**(含第三级 drop matches),即使生产常量
     // 还没翻 —— 门的意义就是先验证再翻闸。
     const gateDropsMatches = true;
-    final prune = await const DatabaseRecipeTransaction().pruneCapture(
-      armB,
-      outputDbPath: '${armB.path}/pruned.db',
-      dropRawMatchesOverride: gateDropsMatches,
-    );
+    final prune = await const DatabaseRecipeTransaction().pruneCapture(armB,
+        outputDbPath: '${armB.path}/pruned.db',
+        dropRawMatchesOverride: gateDropsMatches);
     result['prune'] = {
       'applicable': prune.applicable,
       'reason': prune.reason,
@@ -148,17 +146,15 @@ Future<void> maybeRunB1Gate(String documentsPath) async {
     await File(dbB.path).delete();
     await File('${dbB.path}$_poseSidecarSuffix').delete();
     await File('${armB.path}/pruned.db').rename(dbB.path);
-    await File(
-      '${armB.path}/pruned.db$_poseSidecarSuffix',
-    ).rename('${dbB.path}$_poseSidecarSuffix');
+    await File('${armB.path}/pruned.db$_poseSidecarSuffix')
+        .rename('${dbB.path}$_poseSidecarSuffix');
     result['pruned_db_bytes'] = await dbB.length();
 
     // 保全表逐字节对账(裁前 vs 裁后)。
     final tables = <String, Object?>{};
     var tablesOk = true;
     for (final t in DatabaseRecipeManifest.preservedTablesFor(
-      dropRawMatches: gateDropsMatches,
-    )) {
+        dropRawMatches: gateDropsMatches)) {
       final a = await tableContentSha256(dbA.path, t);
       final b = await tableContentSha256(dbB.path, t);
       final same = a != null && a == b;
@@ -183,8 +179,7 @@ Future<void> maybeRunB1Gate(String documentsPath) async {
 
     final a = result['rebuild_full'] as Map<String, Object?>?;
     final b = result['rebuild_pruned'] as Map<String, Object?>?;
-    final ok =
-        tablesOk &&
+    final ok = tablesOk &&
         a?['ok'] == true &&
         b?['ok'] == true &&
         (b?['registered'] as int? ?? -1) == (a?['registered'] as int? ?? -2);

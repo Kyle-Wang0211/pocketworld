@@ -28,16 +28,12 @@ import 'official_aether_ffi.dart'
 /// 所以进程内 setenv 即时生效。⚠️ 别拿它去改 native 已静态缓存(static const
 /// cached)的旋钮:那些只在首次读取时生效,中途改了也不会变。
 class AetherProcessEnv {
-  static final _setenv = DynamicLibrary.process()
-      .lookupFunction<
-        Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Int32),
-        int Function(Pointer<Utf8>, Pointer<Utf8>, int)
-      >('setenv');
-  static final _unsetenv = DynamicLibrary.process()
-      .lookupFunction<
-        Int32 Function(Pointer<Utf8>),
-        int Function(Pointer<Utf8>)
-      >('unsetenv');
+  static final _setenv = DynamicLibrary.process().lookupFunction<
+      Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Int32),
+      int Function(Pointer<Utf8>, Pointer<Utf8>, int)>('setenv');
+  static final _unsetenv = DynamicLibrary.process().lookupFunction<
+      Int32 Function(Pointer<Utf8>),
+      int Function(Pointer<Utf8>)>('unsetenv');
 
   static void set(String name, String value) {
     final n = name.toNativeUtf8();
@@ -119,12 +115,12 @@ class AetherMatchFlags {
     _resolved = true;
     try {
       final lib = OfficialAetherFfi.resolveLibraryForBindings();
-      _setActive = lib.lookupFunction<Void Function(Int32), void Function(int)>(
-        'pwofficial_match_set_capture_active',
-      );
-      _setFps30 = lib.lookupFunction<Void Function(Int32), void Function(int)>(
-        'pwofficial_match_set_preview_fps30',
-      );
+      _setActive = lib
+          .lookupFunction<Void Function(Int32), void Function(int)>(
+              'pwofficial_match_set_capture_active');
+      _setFps30 = lib
+          .lookupFunction<Void Function(Int32), void Function(int)>(
+              'pwofficial_match_set_preview_fps30');
     } catch (_) {}
   }
 

@@ -129,21 +129,14 @@ Future<File?> _resolveFromPwvaMaster({
     final ok = await Isolate.run(() {
       try {
         final reader = PwvaReader(
-          Directory(hevcPath),
-          (au) => AppleHevcDecoder(
-            width: _pwvaWidth(hevcPath),
-            height: _pwvaHeight(hevcPath),
-            keyframeAu: au,
-          ),
-        );
+            Directory(hevcPath),
+            (au) => AppleHevcDecoder(
+                width: _pwvaWidth(hevcPath),
+                height: _pwvaHeight(hevcPath),
+                keyframeAu: au));
         final decoded = reader.readFrameNv12(frame);
-        writeNv12JpegFile(
-          decoded.y,
-          decoded.uv,
-          width: reader.width,
-          height: reader.height,
-          path: outPath,
-        );
+        writeNv12JpegFile(decoded.y, decoded.uv,
+            width: reader.width, height: reader.height, path: outPath);
         return true;
       } catch (_) {
         return false;

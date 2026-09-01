@@ -16,13 +16,10 @@ import 'package:flutter/widgets.dart';
 enum DomeCellState {
   /// Gray. Nothing recorded yet.
   empty(0),
-
   /// Yellow / orange. Has 1–2 frames or fails the excellent gates.
   weak(1),
-
   /// Light green. Confident contribution but not yet "perfect".
   ok(2),
-
   /// Dark green. Hits all the excellence thresholds (frame count, sharpness,
   /// azimuth spread, time spread, motion ceiling).
   excellent(3);

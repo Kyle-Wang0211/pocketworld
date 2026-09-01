@@ -82,15 +82,12 @@ class _WorkDetailPageState extends State<WorkDetailPage> {
           children: [
             if (_isMine)
               ListTile(
-                leading: const Icon(
-                  Icons.delete_outline_rounded,
-                  color: AetherColors.danger,
-                ),
+                leading: const Icon(Icons.delete_outline_rounded,
+                    color: AetherColors.danger),
                 title: Text(
                   l.workDeleteAction,
-                  style: AetherTextStyles.body.copyWith(
-                    color: AetherColors.danger,
-                  ),
+                  style: AetherTextStyles.body
+                      .copyWith(color: AetherColors.danger),
                 ),
                 onTap: () {
                   Navigator.of(sheetCtx).pop();
@@ -99,10 +96,8 @@ class _WorkDetailPageState extends State<WorkDetailPage> {
               )
             else ...[
               ListTile(
-                leading: const Icon(
-                  Icons.flag_outlined,
-                  color: AetherColors.textPrimary,
-                ),
+                leading: const Icon(Icons.flag_outlined,
+                    color: AetherColors.textPrimary),
                 title: Text(l.reportAction, style: AetherTextStyles.body),
                 onTap: () {
                   Navigator.of(sheetCtx).pop();
@@ -110,15 +105,12 @@ class _WorkDetailPageState extends State<WorkDetailPage> {
                 },
               ),
               ListTile(
-                leading: const Icon(
-                  Icons.block_rounded,
-                  color: AetherColors.danger,
-                ),
+                leading:
+                    const Icon(Icons.block_rounded, color: AetherColors.danger),
                 title: Text(
                   l.blockAction,
-                  style: AetherTextStyles.body.copyWith(
-                    color: AetherColors.danger,
-                  ),
+                  style: AetherTextStyles.body
+                      .copyWith(color: AetherColors.danger),
                 ),
                 onTap: () {
                   Navigator.of(sheetCtx).pop();
@@ -143,14 +135,15 @@ class _WorkDetailPageState extends State<WorkDetailPage> {
           top: Radius.circular(AetherRadii.xl),
         ),
       ),
-      builder: (_) =>
-          _ReportSheet(service: widget.service, workId: widget.work.id),
+      builder: (_) => _ReportSheet(
+        service: widget.service,
+        workId: widget.work.id,
+      ),
     );
     if (submitted == true && mounted) {
       final l = AppL10n.of(context);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(l.reportSubmitted)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(l.reportSubmitted)));
     }
   }
 
@@ -189,17 +182,15 @@ class _WorkDetailPageState extends State<WorkDetailPage> {
     try {
       await widget.service.deleteMyWork(widget.work.id);
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(l.workDeleteDone)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(l.workDeleteDone)));
       // The work no longer exists; leave the page. The feed refetches on
       // its next load, and pull-to-refresh is right there.
       Navigator.of(context).maybePop();
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(l.workDeleteFailed)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(l.workDeleteFailed)));
     }
   }
 
@@ -234,18 +225,16 @@ class _WorkDetailPageState extends State<WorkDetailPage> {
     try {
       await widget.service.blockUser(widget.work.userId);
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(l.blockDone)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(l.blockDone)));
       // Leave the page: its author is now blocked, so keeping their work
       // on screen would contradict the action just taken. The feed
       // re-filters on its next load.
       Navigator.of(context).maybePop();
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(l.blockFailed)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(l.blockFailed)));
     }
   }
 
@@ -336,10 +325,7 @@ class _WorkDetailPageState extends State<WorkDetailPage> {
           child: SizedBox(
             width: 28,
             height: 28,
-            child: CircularProgressIndicator(
-              strokeWidth: 2,
-              color: Colors.white54,
-            ),
+            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white54),
           ),
         );
       case _CloudStatus.ready:
@@ -378,8 +364,7 @@ class _WorkDetailPageState extends State<WorkDetailPage> {
       case _CloudStatus.unsupported:
         return _EmptyState(
           icon: Icons.view_in_ar_rounded,
-          message:
-              '${l.communityFormatUnsupported}'
+          message: '${l.communityFormatUnsupported}'
               ' (${widget.work.format.toUpperCase()})',
         );
       case _CloudStatus.failed:
@@ -491,15 +476,9 @@ class _MetaRow extends StatelessWidget {
                   ),
                 ),
               ),
-              _CountChip(
-                icon: Icons.remove_red_eye_outlined,
-                value: viewsCount,
-              ),
+              _CountChip(icon: Icons.remove_red_eye_outlined, value: viewsCount),
               const SizedBox(width: 12),
-              _CountChip(
-                icon: Icons.favorite_border_rounded,
-                value: likesCount,
-              ),
+              _CountChip(icon: Icons.favorite_border_rounded, value: likesCount),
             ],
           ),
           if (description != null && description!.trim().isNotEmpty) ...[
@@ -616,15 +595,15 @@ class _ReportSheetState extends State<_ReportSheet> {
   }
 
   String _label(AppL10n l, String reason) => switch (reason) {
-    'spam' => l.reportReasonSpam,
-    'harassment' => l.reportReasonHarassment,
-    'hate_speech' => l.reportReasonHateSpeech,
-    'sexual_content' => l.reportReasonSexualContent,
-    'violence' => l.reportReasonViolence,
-    'copyright' => l.reportReasonCopyright,
-    'misinformation' => l.reportReasonMisinformation,
-    _ => l.reportReasonOther,
-  };
+        'spam' => l.reportReasonSpam,
+        'harassment' => l.reportReasonHarassment,
+        'hate_speech' => l.reportReasonHateSpeech,
+        'sexual_content' => l.reportReasonSexualContent,
+        'violence' => l.reportReasonViolence,
+        'copyright' => l.reportReasonCopyright,
+        'misinformation' => l.reportReasonMisinformation,
+        _ => l.reportReasonOther,
+      };
 
   Future<void> _submit() async {
     final reason = _reason;
@@ -641,9 +620,8 @@ class _ReportSheetState extends State<_ReportSheet> {
       if (!mounted) return;
       setState(() => _busy = false);
       final l = AppL10n.of(context);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(l.reportFailed)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(l.reportFailed)));
     }
   }
 
@@ -666,9 +644,8 @@ class _ReportSheetState extends State<_ReportSheet> {
                 const SizedBox(height: AetherSpacing.xs),
                 Text(
                   l.reportSheetSubtitle,
-                  style: AetherTextStyles.bodySm.copyWith(
-                    color: AetherColors.textSecondary,
-                  ),
+                  style: AetherTextStyles.bodySm
+                      .copyWith(color: AetherColors.textSecondary),
                 ),
                 const SizedBox(height: AetherSpacing.md),
                 for (final r in _kReportReasons)
@@ -691,10 +668,8 @@ class _ReportSheetState extends State<_ReportSheet> {
                           ),
                           const SizedBox(width: AetherSpacing.sm),
                           Expanded(
-                            child: Text(
-                              _label(l, r),
-                              style: AetherTextStyles.body,
-                            ),
+                            child: Text(_label(l, r),
+                                style: AetherTextStyles.body),
                           ),
                         ],
                       ),
@@ -733,9 +708,8 @@ class _ReportSheetState extends State<_ReportSheet> {
                             width: 18,
                             child: CircularProgressIndicator(
                               strokeWidth: 2,
-                              valueColor: AlwaysStoppedAnimation<Color>(
-                                Colors.white,
-                              ),
+                              valueColor:
+                                  AlwaysStoppedAnimation<Color>(Colors.white),
                             ),
                           )
                         : Text(

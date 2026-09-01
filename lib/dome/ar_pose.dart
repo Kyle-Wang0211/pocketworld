@@ -481,16 +481,16 @@ class SfmFrameFeed {
   final String? jpegPath;
 
   SfmFrameFeed withJpegPath(String path) => SfmFrameFeed(
-    gray: gray,
-    grayW: grayW,
-    grayH: grayH,
-    imageW: imageW,
-    imageH: imageH,
-    intrinsicFxFyCxCy: intrinsicFxFyCxCy,
-    extrinsic4x4: extrinsic4x4,
-    timestamp: timestamp,
-    jpegPath: path,
-  );
+        gray: gray,
+        grayW: grayW,
+        grayH: grayH,
+        imageW: imageW,
+        imageH: imageH,
+        intrinsicFxFyCxCy: intrinsicFxFyCxCy,
+        extrinsic4x4: extrinsic4x4,
+        timestamp: timestamp,
+        jpegPath: path,
+      );
 }
 
 class ARFrameSaveResult {

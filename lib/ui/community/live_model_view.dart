@@ -93,24 +93,20 @@ import '../design_system.dart';
 
 class LiveModelView extends StatefulWidget {
   final String modelUrl;
-
   /// True → camera spins slowly around the model's Y axis. Off-focused
   /// cards pass false so they sit still (saves GPU + matches the
   /// Polycam-style "only the centered card animates" feel). Ignored
   /// when [interactive] is true — the user's gestures own the camera.
   final bool autoRotate;
-
   /// True → enable manual orbit gestures (1-finger drag = rotate, 2-
   /// finger pinch = zoom). Used by the detail page. Feed cards leave
   /// it false so the parent GestureDetector's single-tap → push-detail
   /// path wins.
   final bool interactive;
-
   /// Solid color shown both behind the model and as the cover that
   /// hides the load-in red flash. Painted by Flutter's compositor under
   /// a transparent Filament clear color so it's guaranteed pure.
   final Color background;
-
   /// Initial camera distance from the unit-cube origin. transformToUnitCube
   /// in ViewerWidget normalizes any glb to fit a 1-unit cube, but the
   /// cube's diagonal is ~1.73 — to consistently frame *the whole model*
@@ -208,7 +204,8 @@ class _LiveModelViewState extends State<LiveModelView>
   static const double _kFocalLengthMM = 50.0;
 
   double? _fittedDistance;
-  double get _autoRotateDistance => _fittedDistance ?? widget.cameraDistance;
+  double get _autoRotateDistance =>
+      _fittedDistance ?? widget.cameraDistance;
   v64.Vector3 _modelCenter = v64.Vector3.zero();
   double _pinchStartRadius = 0.0;
 
@@ -257,10 +254,8 @@ class _LiveModelViewState extends State<LiveModelView>
       // a captured scan, where the baseColor already carries the
       // baked lighting from the original capture).
       if (widget.useEnvironmentLighting) {
-        await viewer.loadIbl(
-          'assets/ibl/default_env_ibl.ktx',
-          intensity: 30000,
-        );
+        await viewer.loadIbl('assets/ibl/default_env_ibl.ktx',
+            intensity: 30000);
       }
 
       if (_disposed) return;
@@ -282,10 +277,8 @@ class _LiveModelViewState extends State<LiveModelView>
       }
       await _loadAsset();
     } catch (e, st) {
-      debugPrint(
-        '[LiveModelView] viewer init failed for ${widget.modelUrl}: '
-        '$e\n$st',
-      );
+      debugPrint('[LiveModelView] viewer init failed for ${widget.modelUrl}: '
+          '$e\n$st');
       _markLoadFailed();
     }
   }
@@ -328,9 +321,8 @@ class _LiveModelViewState extends State<LiveModelView>
         await asset.setCastShadows(false);
       } catch (e, st) {
         debugPrint(
-          '[LiveModelView] addToScene failed for ${widget.modelUrl} '
-          '(probably viewer disposed mid-load): $e\n$st',
-        );
+            '[LiveModelView] addToScene failed for ${widget.modelUrl} '
+            '(probably viewer disposed mid-load): $e\n$st');
         _markLoadFailed();
         return;
       }
@@ -379,7 +371,8 @@ class _LiveModelViewState extends State<LiveModelView>
         _loadFailed = false;
       });
     } catch (e, st) {
-      debugPrint('[LiveModelView] load failed for ${widget.modelUrl}: $e\n$st');
+      debugPrint(
+          '[LiveModelView] load failed for ${widget.modelUrl}: $e\n$st');
       _markLoadFailed();
     }
   }
@@ -402,8 +395,7 @@ class _LiveModelViewState extends State<LiveModelView>
       return await GlbAssetCache.instance.getOrLoad(widget.modelUrl);
     } catch (e) {
       debugPrint(
-        '[LiveModelView] asset load failed for ${widget.modelUrl}: $e',
-      );
+          '[LiveModelView] asset load failed for ${widget.modelUrl}: $e');
       return null;
     }
   }
@@ -484,11 +476,10 @@ class _LiveModelViewState extends State<LiveModelView>
       _orbitRadius = next.clamp(_minRadius, _maxRadius);
     } else {
       _orbitAzimuth -= d.focalPointDelta.dx * _touchSensitivity;
-      _orbitElevation += d.focalPointDelta.dy * _touchSensitivity * _yInversion;
-      _orbitElevation = _orbitElevation.clamp(
-        -math.pi / 2 + 0.05,
-        math.pi / 2 - 0.05,
-      );
+      _orbitElevation +=
+          d.focalPointDelta.dy * _touchSensitivity * _yInversion;
+      _orbitElevation =
+          _orbitElevation.clamp(-math.pi / 2 + 0.05, math.pi / 2 - 0.05);
     }
     unawaited(_applyOrbit());
   }
@@ -605,17 +596,15 @@ class _LiveModelViewState extends State<LiveModelView>
         debugPrint('[LiveModelView] setLensProjection (fit) failed: $e');
       }
       if (_disposed) return;
-      debugPrint(
-        '[LiveModelView] fit ${widget.modelUrl}: '
-        'aabb=([${aabb.min.x.toStringAsFixed(2)}..${aabb.max.x.toStringAsFixed(2)}], '
-        '[${aabb.min.y.toStringAsFixed(2)}..${aabb.max.y.toStringAsFixed(2)}], '
-        '[${aabb.min.z.toStringAsFixed(2)}..${aabb.max.z.toStringAsFixed(2)}]) '
-        'center=(${cx.toStringAsFixed(2)},${cy.toStringAsFixed(2)},${cz.toStringAsFixed(2)}) '
-        'sphereR=${r.toStringAsFixed(2)} fovV=${fovVdeg.toStringAsFixed(1)}° '
-        '→ dist=${dist.toStringAsFixed(2)} '
-        'near=${nearPlane.toStringAsFixed(2)} '
-        'far=${farPlane.toStringAsFixed(2)}',
-      );
+      debugPrint('[LiveModelView] fit ${widget.modelUrl}: '
+          'aabb=([${aabb.min.x.toStringAsFixed(2)}..${aabb.max.x.toStringAsFixed(2)}], '
+          '[${aabb.min.y.toStringAsFixed(2)}..${aabb.max.y.toStringAsFixed(2)}], '
+          '[${aabb.min.z.toStringAsFixed(2)}..${aabb.max.z.toStringAsFixed(2)}]) '
+          'center=(${cx.toStringAsFixed(2)},${cy.toStringAsFixed(2)},${cz.toStringAsFixed(2)}) '
+          'sphereR=${r.toStringAsFixed(2)} fovV=${fovVdeg.toStringAsFixed(1)}° '
+          '→ dist=${dist.toStringAsFixed(2)} '
+          'near=${nearPlane.toStringAsFixed(2)} '
+          'far=${farPlane.toStringAsFixed(2)}');
       _fittedDistance = dist;
       _orbitRadius = dist;
       if (mounted && !_disposed) {
@@ -636,10 +625,8 @@ class _LiveModelViewState extends State<LiveModelView>
       _restartRotateTicker();
     }
     if (widget.modelUrl != old.modelUrl) {
-      debugPrint(
-        '[LiveModelView] modelUrl changed at runtime — '
-        'caller should rebuild with a new ValueKey instead',
-      );
+      debugPrint('[LiveModelView] modelUrl changed at runtime — '
+          'caller should rebuild with a new ValueKey instead');
     }
   }
 
@@ -677,11 +664,8 @@ class _LiveModelViewState extends State<LiveModelView>
       destroyEngineOnUnload: false,
       // Match the eye in _applyAutoRotate / _applyOrbit so the very first
       // frame Filament renders is already framed correctly.
-      initialCameraPosition: v64.Vector3(
-        0,
-        widget.cameraDistance * 0.05,
-        widget.cameraDistance,
-      ),
+      initialCameraPosition:
+          v64.Vector3(0, widget.cameraDistance * 0.05, widget.cameraDistance),
       onViewerAvailable: _onViewerReady,
     );
 
@@ -725,7 +709,10 @@ class _LiveModelViewState extends State<LiveModelView>
               opacity: _modelReady ? 0.0 : 1.0,
               duration: const Duration(milliseconds: 300),
               curve: Curves.easeOut,
-              child: _LoadCover(failed: _loadFailed, onRetry: _retryLoad),
+              child: _LoadCover(
+                failed: _loadFailed,
+                onRetry: _retryLoad,
+              ),
             ),
           ),
         ],
@@ -779,6 +766,8 @@ class _LoadCover extends StatelessWidget {
     }
     // Loading state per UX direction (2026-05-02): bare gradient cover,
     // no spinner. See AetherCppCardDemo._AetherCardCover for rationale.
-    return DecoratedBox(decoration: BoxDecoration(gradient: gradient));
+    return DecoratedBox(
+      decoration: BoxDecoration(gradient: gradient),
+    );
   }
 }

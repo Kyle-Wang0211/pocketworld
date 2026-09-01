@@ -131,11 +131,12 @@ class _ARAlbumPageState extends State<ARAlbumPage> {
               )
             : GridView.builder(
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 3,
-                  crossAxisSpacing: 10,
-                  mainAxisSpacing: 10,
-                ),
+                gridDelegate:
+                    const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 3,
+                      crossAxisSpacing: 10,
+                      mainAxisSpacing: 10,
+                    ),
                 itemCount: photos.length,
                 itemBuilder: (ctx, index) {
                   final path = photos[index];
@@ -232,11 +233,8 @@ class _PhotoPagerViewState extends State<_PhotoPagerView> {
               minScale: 0.8,
               maxScale: 4,
               child: Center(
-                child: Image.file(
-                  File(_photos[i]),
-                  fit: BoxFit.contain,
-                  cacheWidth: 1600,
-                ),
+                child: Image.file(File(_photos[i]),
+                    fit: BoxFit.contain, cacheWidth: 1600),
               ),
             ),
           ),

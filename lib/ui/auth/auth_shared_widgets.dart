@@ -11,7 +11,12 @@ import 'package:flutter/services.dart';
 
 import '../design_system.dart';
 
-enum AuthFieldKeyboard { text, email, phone, number }
+enum AuthFieldKeyboard {
+  text,
+  email,
+  phone,
+  number,
+}
 
 extension _KeyboardTypeMap on AuthFieldKeyboard {
   TextInputType get flutter {
@@ -78,7 +83,10 @@ class AuthField extends StatelessWidget {
       enableSuggestions: !shouldDisableInputAssistance,
       autofillHints: autofillHints,
       textCapitalization: TextCapitalization.none,
-      style: const TextStyle(fontSize: 15, color: AetherColors.textPrimary),
+      style: const TextStyle(
+        fontSize: 15,
+        color: AetherColors.textPrimary,
+      ),
       decoration: InputDecoration(
         hintText: title,
         hintStyle: const TextStyle(
@@ -97,7 +105,10 @@ class AuthField extends StatelessWidget {
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(AetherRadii.md),
-          borderSide: const BorderSide(color: AetherColors.primary, width: 1.4),
+          borderSide: const BorderSide(
+            color: AetherColors.primary,
+            width: 1.4,
+          ),
         ),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(AetherRadii.md),

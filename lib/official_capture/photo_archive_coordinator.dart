@@ -410,11 +410,11 @@ class PhotoArchiveCoordinator {
   /// 归档转码是否仍在进行(码流已开写、收尾报告未落、且近期仍有写入)。
   Future<bool> _pwvaTranscodeInFlight(Directory captureDirectory) async {
     try {
-      final stream = File('${captureDirectory.path}/photos_hevc/photos.hevc');
+      final stream =
+          File('${captureDirectory.path}/photos_hevc/photos.hevc');
       if (!await stream.exists()) return false;
-      final report = File(
-        '${captureDirectory.path}/photos_hevc/archive-report.json',
-      );
+      final report =
+          File('${captureDirectory.path}/photos_hevc/archive-report.json');
       if (await report.exists()) return false;
       final age = DateTime.now().difference(await stream.lastModified());
       return age < const Duration(minutes: 10);

@@ -54,8 +54,7 @@ ShutterPace shutterPaceNext({
   if (softEnter) return ShutterPace.soft;
   if (previous != ShutterPace.normal) {
     // 已在 soft(或刚从 hard 回落):滞回退出。
-    final stillSoft =
-        queueDepth > kPaceSoftExitQueue ||
+    final stillSoft = queueDepth > kPaceSoftExitQueue ||
         (hot && queueDepth > kPaceSoftExitQueueHot);
     if (stillSoft) return ShutterPace.soft;
   }

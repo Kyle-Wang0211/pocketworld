@@ -56,7 +56,11 @@ ProcStat? parseProcStat(String content) {
   final stime = at(15);
   final processor = at(39);
   if (utime == null || stime == null || processor == null) return null;
-  return ProcStat(utimeTicks: utime, stimeTicks: stime, processor: processor);
+  return ProcStat(
+    utimeTicks: utime,
+    stimeTicks: stime,
+    processor: processor,
+  );
 }
 
 /// 解析 /sys/devices/system/cpu/{online,present} 的区间表示,如
@@ -117,9 +121,8 @@ MapEntry<int, ProcStat>? busiestThread(
   var bestDelta = -1;
   for (final e in current.entries) {
     final prev = previous[e.key];
-    final delta = prev == null
-        ? e.value.totalTicks
-        : e.value.totalTicks - prev.totalTicks;
+    final delta =
+        prev == null ? e.value.totalTicks : e.value.totalTicks - prev.totalTicks;
     if (delta > bestDelta) {
       bestDelta = delta;
       best = e;

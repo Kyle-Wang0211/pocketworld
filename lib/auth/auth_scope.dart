@@ -22,7 +22,8 @@ class AuthScope extends InheritedNotifier<CurrentUser> {
   /// Non-dependency variant for imperative callers (gesture handlers,
   /// method-channel callbacks). Doesn't subscribe this widget to rebuilds.
   static CurrentUser read(BuildContext context) {
-    final scope = context.getInheritedWidgetOfExactType<AuthScope>();
+    final scope =
+        context.getInheritedWidgetOfExactType<AuthScope>();
     assert(scope != null, 'AuthScope missing from widget tree');
     return scope!.notifier!;
   }

@@ -46,9 +46,7 @@ class _VoxelGrid {
   final Map<int, List<int>> _buckets = <int, List<int>>{};
 
   int _key(double x, double y, double z) {
-    final ix = (x / cell).floor(),
-        iy = (y / cell).floor(),
-        iz = (z / cell).floor();
+    final ix = (x / cell).floor(), iy = (y / cell).floor(), iz = (z / cell).floor();
     // 三维格点 → 64 位哈希(质数混合,避免负数取模问题)。
     return ((ix * 73856093) ^ (iy * 19349663) ^ (iz * 83492791)) & 0x3FFFFFFF;
   }
@@ -56,15 +54,12 @@ class _VoxelGrid {
   /// 收集 p 所在格及 26 邻格里的点(含自身);上限 [cap] 防止稠密区爆炸。
   List<int> neighbors(int i, int cap) {
     final x = xyz[i * 3], y = xyz[i * 3 + 1], z = xyz[i * 3 + 2];
-    final ix = (x / cell).floor(),
-        iy = (y / cell).floor(),
-        iz = (z / cell).floor();
+    final ix = (x / cell).floor(), iy = (y / cell).floor(), iz = (z / cell).floor();
     final out = <int>[];
     for (var dx = -1; dx <= 1; dx++) {
       for (var dy = -1; dy <= 1; dy++) {
         for (var dz = -1; dz <= 1; dz++) {
-          final k =
-              (((ix + dx) * 73856093) ^
+          final k = (((ix + dx) * 73856093) ^
                   ((iy + dy) * 19349663) ^
                   ((iz + dz) * 83492791)) &
               0x3FFFFFFF;
@@ -84,12 +79,7 @@ class _VoxelGrid {
 /// 邻域低通:对 [src](扁平 RGB,0-255)按空间邻域求均值。
 /// [radius] 内的点参与(欧氏距离),自身恒参与;无邻居时返回自身。
 Float32List _lowPass(
-  Float32List xyz,
-  Float32List src,
-  _VoxelGrid grid,
-  double radius,
-  int cap,
-) {
+    Float32List xyz, Float32List src, _VoxelGrid grid, double radius, int cap) {
   final n = xyz.length ~/ 3;
   final out = Float32List(n * 3);
   final r2 = radius * radius;
@@ -99,9 +89,7 @@ Float32List _lowPass(
     var w = 0;
     final x = xyz[i * 3], y = xyz[i * 3 + 1], z = xyz[i * 3 + 2];
     for (final j in cand) {
-      final dx = xyz[j * 3] - x,
-          dy = xyz[j * 3 + 1] - y,
-          dz = xyz[j * 3 + 2] - z;
+      final dx = xyz[j * 3] - x, dy = xyz[j * 3 + 1] - y, dz = xyz[j * 3 + 2] - z;
       if (dx * dx + dy * dy + dz * dz > r2) continue;
       sr += src[j * 3];
       sg += src[j * 3 + 1];

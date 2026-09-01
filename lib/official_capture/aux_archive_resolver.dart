@@ -68,9 +68,7 @@ class AuxArchiveResolver {
       scratch = await Directory.systemTemp.createTemp('pw_sidecars_');
       for (final entry in entries) {
         final name = entry.relativePath.split('/').last;
-        await File(
-          '${scratch.path}/$name',
-        ).writeAsBytes(entry.bytes, flush: true);
+        await File('${scratch.path}/$name').writeAsBytes(entry.bytes, flush: true);
       }
       return SidecarSession._(scratch, scratch);
     } catch (_) {

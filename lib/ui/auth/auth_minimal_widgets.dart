@@ -315,9 +315,8 @@ class MinimalCta extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = enabled
-        ? AetherColors.textPrimary
-        : AetherColors.textTertiary;
+    final color =
+        enabled ? AetherColors.textPrimary : AetherColors.textTertiary;
     return GestureDetector(
       onTap: enabled ? onTap : null,
       behavior: HitTestBehavior.opaque,

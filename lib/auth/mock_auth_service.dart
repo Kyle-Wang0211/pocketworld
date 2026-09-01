@@ -146,7 +146,8 @@ class MockAuthServiceImpl implements AuthService {
   static String _slug(String input) {
     final buf = StringBuffer();
     for (final c in input.toLowerCase().runes) {
-      final isAlphaNum = (c >= 48 && c <= 57) || (c >= 97 && c <= 122);
+      final isAlphaNum = (c >= 48 && c <= 57) ||
+          (c >= 97 && c <= 122);
       buf.writeCharCode(isAlphaNum ? c : 95 /* '_' */);
     }
     return buf.toString();

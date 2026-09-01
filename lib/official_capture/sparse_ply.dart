@@ -111,7 +111,8 @@ Future<void> persistSparseSnapshot({
         'scale_anchor_factor': snapshot.scaleAnchorFactor,
         if (rawPoses != null)
           'poses_raw_colmap': <Map<String, Object?>>[
-            for (var i = 0; i < rawPoses.length; i += 9) poseEntry(rawPoses, i),
+            for (var i = 0; i < rawPoses.length; i += 9)
+              poseEntry(rawPoses, i),
           ],
       }),
     );

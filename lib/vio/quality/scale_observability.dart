@@ -257,10 +257,7 @@ class ScaleObservabilityConfig {
     this.maxDiameterProbes = 96,
     this.pureRotationSpanDeg = 30.0,
     this.bandLimitToPoseRate = true,
-  }) : assert(
-         accelNoiseSigmaMps2 > 0,
-         'σ_a 必须实测,见 estimateAccelNoiseSigmaMps2',
-       ),
+  }) : assert(accelNoiseSigmaMps2 > 0, 'σ_a 必须实测,见 estimateAccelNoiseSigmaMps2'),
        assert(targetRelativeScaleSigma > 0),
        assert(minImuSamples >= 2),
        assert(maxDiameterProbes >= 2);

@@ -107,9 +107,7 @@ class EndpointConfig {
     if (src == null || cdn == null || cdn.host.isEmpty) return url;
     final origin = Uri.tryParse(supabaseUrl);
     if (origin == null || src.host != origin.host) return url;
-    return src
-        .replace(scheme: cdn.scheme, host: cdn.host, port: cdn.port)
-        .toString();
+    return src.replace(scheme: cdn.scheme, host: cdn.host, port: cdn.port).toString();
   }
 
   @override
@@ -253,9 +251,9 @@ class EndpointConfigResolver {
 
     // Cache missing or stale — it is worth a bounded wait so a moved
     // backend is picked up on this launch rather than the next one.
-    final remote = await _fetch(
-      client: client,
-    ).timeout(coldTimeout, onTimeout: () => null).catchError((_) => null);
+    final remote = await _fetch(client: client)
+        .timeout(coldTimeout, onTimeout: () => null)
+        .catchError((_) => null);
 
     if (remote != null) {
       unawaited(_persist(remote, now));
@@ -344,7 +342,7 @@ class EndpointConfigResolver {
         await prefs.setString(_kCdn, cdn);
       } else {
         await prefs.remove(_kCdn);
-        await prefs.remove(_kMaxUp);
+      await prefs.remove(_kMaxUp);
       }
       final maxUp = cfg.maxUploadBytes;
       if (maxUp != null && maxUp > 0) {

@@ -299,11 +299,9 @@ class CaptureSession {
   // 在放开两道门的同时,把每次失败的 native 错误码原样记下来,下次一看便知。
   int _hiresStillDropped = 0; // 队列满被丢弃(对纹理零贡献)
   int _stillQueueDepth = 0;
-
   /// 每种失败原因的次数,key = native 错误码(210 无 session / 211 无帧 /
   /// 212 时间戳超差 / 213 内存刹车 / other)。
   final Map<String, int> _hiresStillFailReasons = <String, int>{};
-
   /// 队列上限。按实测拍摄节奏(相邻快门约 3.5s、单张静照约 0.15s)队列几乎
   /// 不该堆积;设 12 是给连点留足余量,同时防止无界积压把内存/热拖垮。
   static const int _maxQueuedHiresStills = 12;
@@ -1363,14 +1361,12 @@ class CaptureSession {
     // pipeline), but if the origin isn't locked yet or tracking has degraded to
     // IMU dead-reckoning, we proceed anyway and save the JPEG to the album with
     // best-effort (possibly null) pose. Downstream filters on pose quality later.
-    final extrinsic =
-        _lastPoseSource == 'arkit' &&
+    final extrinsic = _lastPoseSource == 'arkit' &&
             pose.extrinsic4x4.isNotEmpty &&
             pose.extrinsic4x4.length == 16
         ? pose.extrinsic4x4
         : null;
-    final intrinsic =
-        _lastPoseSource == 'arkit' &&
+    final intrinsic = _lastPoseSource == 'arkit' &&
             pose.intrinsicFxFyCxCy.isNotEmpty &&
             pose.intrinsicFxFyCxCy.length >= 4
         ? pose.intrinsicFxFyCxCy
@@ -1469,10 +1465,8 @@ class CaptureSession {
       // user's photo here is not acceptable.
       if (savedOk && await File(jpegPath).exists()) {
         // ignore: avoid_print
-        print(
-          '[CaptureSession] manual photo retained (sidecar incomplete): '
-          '$jpegPath',
-        );
+        print('[CaptureSession] manual photo retained (sidecar incomplete): '
+            '$jpegPath');
         targetPoints.stampJpegPath(
           cellIdx: admit.cellIdx,
           slotIdx: admit.slotIdx,
@@ -1541,7 +1535,10 @@ class CaptureSession {
               triggerTimestamp: triggerTimestamp,
               maxTimestampDelta: 2.0,
             )
-            .timeout(const Duration(seconds: 3), onTimeout: () => null);
+            .timeout(
+              const Duration(seconds: 3),
+              onTimeout: () => null,
+            );
         if (still == null) {
           _hiresStillFailed++;
           outcome = 'null_or_timeout';

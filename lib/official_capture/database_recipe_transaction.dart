@@ -67,9 +67,9 @@ class DatabaseRecipeManifest {
   ];
 
   static List<String> preservedTablesFor({required bool dropRawMatches}) => [
-    ...preservedTablesAlways,
-    if (!dropRawMatches) 'matches',
-  ];
+        ...preservedTablesAlways,
+        if (!dropRawMatches) 'matches',
+      ];
 
   static Future<bool> exists(Directory captureDirectory) =>
       File('${captureDirectory.path}/$fileName').exists();
@@ -79,8 +79,7 @@ class DatabaseRecipeManifest {
   /// 否则 v1→v2 升级时 original_db_bytes 会退化成"上一轮裁后的大小"
   /// (2026-08-12 真机实证:cap_…928171 的 115.0MB 溯源就是这样丢的)。
   static Future<Map<String, dynamic>?> readAnyVersion(
-    Directory captureDirectory,
-  ) async {
+      Directory captureDirectory) async {
     try {
       final f = File('${captureDirectory.path}/$fileName');
       if (!await f.exists()) return null;
@@ -137,7 +136,6 @@ class DatabaseRecipeTransaction {
   Future<DatabaseRecipeResult> pruneCapture(
     Directory captureDirectory, {
     String? outputDbPath,
-
     /// 设备门用:在总闸翻开前强制试跑第三级。生产路径不传 = 用常量。
     bool? dropRawMatchesOverride,
   }) async {
@@ -147,33 +145,27 @@ class DatabaseRecipeTransaction {
     }
     try {
       final source = File(
-        '${captureDirectory.path}/${DatabaseArchivePolicy.sourceFileName}',
-      );
+          '${captureDirectory.path}/${DatabaseArchivePolicy.sourceFileName}');
       if (!await source.exists()) {
         return const DatabaseRecipeResult(reason: 'no_source_db');
       }
-      final manifestExists = await DatabaseRecipeManifest.exists(
-        captureDirectory,
-      );
+      final manifestExists =
+          await DatabaseRecipeManifest.exists(captureDirectory);
       Map<String, dynamic>? priorManifest;
       if (manifestExists && outputDbPath == null) {
         // read() 只认当前 schema:v1(只删了描述子)会返回 null ⇒ 该 capture
         // 需要**升级**(补裁仿射列),不能被"已裁过"挡住。
         priorManifest = await DatabaseRecipeManifest.readAnyVersion(
-          captureDirectory,
-        );
-        final currentSchema =
-            priorManifest?['schema'] == DatabaseRecipeManifest.schema;
+            captureDirectory);
+        final currentSchema = priorManifest?['schema'] ==
+            DatabaseRecipeManifest.schema;
         final desc = await tableContentSha256(source.path, 'descriptors');
         // 这次检查以读写方式打开了源库,会重建 -wal/-shm;不清掉的话下游
         // ZPAQ 事务会一直判 db_not_cold 而永远跳过(真机 2026-08-11 实证)。
         await _dropStaleSiblings(source);
         if (currentSchema && desc == _sha256OfNothing) {
           return const DatabaseRecipeResult(
-            applicable: true,
-            committed: true,
-            reason: 'already_pruned',
-          );
+              applicable: true, committed: true, reason: 'already_pruned');
         }
         // 落到这里:要么 manifest 是旧版(补裁),要么替换前崩了(重做)。
         // 两种都再走一遍完整的裁剪+验证+替换,幂等。
@@ -207,8 +199,7 @@ class DatabaseRecipeTransaction {
 
       // 裁剪前逐表摘要(在副本上,内容与源逐字节相同)。
       final tables = DatabaseRecipeManifest.preservedTablesFor(
-        dropRawMatches: dropMatches,
-      );
+          dropRawMatches: dropMatches);
       final pre = <String, String>{};
       for (final t in tables) {
         final d = await tableContentSha256(work.path, t);
@@ -231,11 +222,8 @@ class DatabaseRecipeTransaction {
 
       final pruned = File(outputDbPath ?? '${source.path}.pruned.tmp');
       await _deleteWithSiblings(pruned);
-      final rc = await pruneDescriptorsFile(
-        work.path,
-        pruned.path,
-        dropRawMatches: dropMatches,
-      );
+      final rc = await pruneDescriptorsFile(work.path, pruned.path,
+          dropRawMatches: dropMatches);
       if (rc != 0 || !await pruned.exists()) {
         await _deleteWithSiblings(work);
         await _deleteWithSiblings(pruned);
@@ -265,10 +253,8 @@ class DatabaseRecipeTransaction {
           return const DatabaseRecipeResult(reason: 'matches_not_empty');
         }
       }
-      final emptyDescriptors = await tableContentSha256(
-        pruned.path,
-        'descriptors',
-      );
+      final emptyDescriptors =
+          await tableContentSha256(pruned.path, 'descriptors');
       if (emptyDescriptors != _sha256OfNothing) {
         await _deleteWithSiblings(work);
         await _deleteWithSiblings(pruned);
@@ -286,10 +272,8 @@ class DatabaseRecipeTransaction {
       }
       final prunedSidecar = File('${pruned.path}$_poseSidecarSuffix');
       await sidecar.copy(prunedSidecar.path);
-      final resealRc = await resealArkitPoseDigests(
-        pruned.path,
-        prunedSidecar.path,
-      );
+      final resealRc =
+          await resealArkitPoseDigests(pruned.path, prunedSidecar.path);
       if (resealRc != 0) {
         await _deleteWithSiblings(work);
         await _deleteWithSiblings(pruned);
@@ -326,22 +310,20 @@ class DatabaseRecipeTransaction {
         'pruned_db_bytes': prunedBytes,
         'preserved_table_sha256': pre,
         'keypoints_xy_sha256': preXy,
-        'deleted':
-            'descriptors(匹配中间物;可从归档帧重提,语义档) + '
+        'deleted': 'descriptors(匹配中间物;可从归档帧重提,语义档) + '
             'keypoints 仿射形状列 a11/a12/a21/a22(匹配期形状信息,重建只读 x,y)'
             '${dropMatches ? ' + matches 原始匹配表(已蒸馏成 TVG 内点)' : ''}',
         'drop_raw_matches': dropMatches,
-        'rationale': 'b1-regen-ceiling-PROVEN: 匹配图不可从 q65 帧再生(轨迹-24%),必须保留',
+        'rationale':
+            'b1-regen-ceiling-PROVEN: 匹配图不可从 q65 帧再生(轨迹-24%),必须保留',
       };
       final manifestFile = File(
-        '${captureDirectory.path}/${DatabaseRecipeManifest.fileName}',
-      );
+          '${captureDirectory.path}/${DatabaseRecipeManifest.fileName}');
       {
         // 总是原子重写(升级路径要换 schema/补字段;崩溃重做时内容等价)。
         final tmp = File('${manifestFile.path}.tmp');
         await tmp.writeAsString(
-          const JsonEncoder.withIndent(' ').convert(manifest),
-        );
+            const JsonEncoder.withIndent(' ').convert(manifest));
         await tmp.rename(manifestFile.path);
       }
       if (!await _canContinueNow()) {
@@ -350,9 +332,8 @@ class DatabaseRecipeTransaction {
         // 替换是单个 rename,不可中断出坏态。
       }
       // 侧车先就位(盖章版覆盖原版),再换 DB —— 两者必须成对。
-      await File(
-        '${pruned.path}$_poseSidecarSuffix',
-      ).rename('${source.path}$_poseSidecarSuffix');
+      await File('${pruned.path}$_poseSidecarSuffix')
+          .rename('${source.path}$_poseSidecarSuffix');
       await pruned.rename(source.path);
       // 陈旧伴生清除:裁后 db 自洽(prune 内已 checkpoint TRUNCATE),留着只会
       // 让下游 ZPAQ 事务继续判 db_not_cold。

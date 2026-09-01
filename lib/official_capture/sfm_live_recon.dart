@@ -577,10 +577,7 @@ class SfmLiveRecon {
           _sfmWorkerMain,
           // _arEveryFrameEnabled 在此(主 isolate)读——env 在主 isolate 才有效。
           _SfmWorkerBootstrap(
-            fromWorker.sendPort,
-            dbPath,
-            _arEveryFrameEnabled,
-          ),
+              fromWorker.sendPort, dbPath, _arEveryFrameEnabled),
           debugName: 'official_sfm_live_recon',
           errorsAreFatal: true,
         );
@@ -895,9 +892,8 @@ class SfmLiveRecon {
         // 避免挂起期间新帧 append 使尾部索引漂移。
         // 回滚 = 本处与下方出队两处改回 `_spool.first` / `_spool.removeAt(0)`
         // 的旧形态(严格 FIFO)。
-        final entry = _finalizeRequested
-            ? _spool.removeAt(0)
-            : _spool.removeLast();
+        final entry =
+            _finalizeRequested ? _spool.removeAt(0) : _spool.removeLast();
         try {
           if (!await File(entry.path).exists()) {
             throw FileSystemException('canonical JPEG missing', entry.path);
@@ -1032,7 +1028,7 @@ class SfmLiveRecon {
     DeviceLog.log(
       'SfmLive',
       'extract-debt repay: refeeding ${debts.length} frame(s) '
-          'with CPU fallback temporarily enabled',
+      'with CPU fallback temporarily enabled',
     );
     TelemetryWriter.instance.event('extract_debt_repay', {'n': debts.length});
     unawaited(_pump());
@@ -1243,8 +1239,8 @@ class SfmLiveRecon {
             DeviceLog.log(
               'SfmLive',
               'extract-debt REPAY FAILED (CPU fallback also failed): '
-                  '${meta.jpegPath.split('/').last} — frame missing from '
-                  'delivery, ESCALATE',
+              '${meta.jpegPath.split('/').last} — frame missing from '
+              'delivery, ESCALATE',
             );
             TelemetryWriter.instance.event('extract_debt_repay_failed', {
               'jpeg': meta.jpegPath.split('/').last,
@@ -1254,7 +1250,7 @@ class SfmLiveRecon {
             DeviceLog.log(
               'SfmLive',
               'extract-debt recorded (#${_extractDebts.length}): '
-                  '${meta.jpegPath.split('/').last} — repay before finalize',
+              '${meta.jpegPath.split('/').last} — repay before finalize',
             );
             TelemetryWriter.instance.event('extract_debt_recorded', {
               'jpeg': meta.jpegPath.split('/').last,
@@ -1726,7 +1722,6 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
     final fn = captureActiveFn;
     return fn == null || fn() != 0;
   }
-
   // True session high-water footprint — the public TASK_VM_INFO layout has no
   // historical peak field, so we take a running max of the instantaneous
   // sample taken right after each heavy native call.
@@ -2265,9 +2260,7 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
           try {
             final prc = session!.prefetchJpegFrame(msg['path'] as String);
             if (prc == 0) {
-              wlog(
-                'prefetch queued: ${(msg['path'] as String).split('/').last}',
-              );
+              wlog('prefetch queued: ${(msg['path'] as String).split('/').last}');
             }
           } catch (_) {} // 旧 framework 无符号 → 静默跳过
         }
@@ -2287,7 +2280,9 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
         var repaid = 0;
         if (!finishPending && session != null) {
           try {
-            repaid = session!.liveRepay(maxPairs: (msg['budget'] as int?) ?? 2);
+            repaid = session!.liveRepay(
+              maxPairs: (msg['budget'] as int?) ?? 2,
+            );
           } catch (e) {
             wlog('quad-prepay failed (non-fatal): $e');
           }

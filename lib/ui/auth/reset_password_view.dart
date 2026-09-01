@@ -86,7 +86,8 @@ class _ResetPasswordViewState extends State<ResetPasswordView>
     setState(() {});
   }
 
-  String get _normalizedEmail => _emailController.text.trim().toLowerCase();
+  String get _normalizedEmail =>
+      _emailController.text.trim().toLowerCase();
 
   bool get _step1CanSubmit => _normalizedEmail.contains('@');
   bool get _step2CanSubmit =>
@@ -144,7 +145,8 @@ class _ResetPasswordViewState extends State<ResetPasswordView>
   }
 
   Future<void> _confirmReset() async {
-    if (!_step2CanSubmit || widget.currentUser.isPerformingAuthAction) {
+    if (!_step2CanSubmit ||
+        widget.currentUser.isPerformingAuthAction) {
       return;
     }
     final ok = await widget.currentUser.resetPasswordWithOtp(

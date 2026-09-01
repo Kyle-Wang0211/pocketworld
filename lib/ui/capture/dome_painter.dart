@@ -59,7 +59,7 @@ class DomePainter extends CustomPainter {
   // against any AR feed without overpowering it); pure white for
   // visited (maximum contrast — "lit up").
   static const int _grayUnvisitedFill = 42; // ≈ #2A2A2A
-  static const int _grayVisitedFill = 255; // pure white
+  static const int _grayVisitedFill = 255;  // pure white
   static const double _alphaUnvisitedFill = 0.55;
   static const double _alphaVisitedFill = 1.0;
   static const double _alphaUnvisitedStroke = 0.35;
@@ -95,8 +95,7 @@ class DomePainter extends CustomPainter {
     // Sort point indices back-to-front for alpha layering.
     final sortIndices = List.generate(points.length, (i) => i);
     sortIndices.sort(
-      (a, b) => projected[a].depthZ.compareTo(projected[b].depthZ),
-    );
+        (a, b) => projected[a].depthZ.compareTo(projected[b].depthZ));
 
     // Draw dots.
     final dotFill = Paint()..style = PaintingStyle.fill;
@@ -138,7 +137,8 @@ class DomePainter extends CustomPainter {
     }
   }
 
-  static int _lerpInt(int a, int b, double t) => (a + (b - a) * t).round();
+  static int _lerpInt(int a, int b, double t) =>
+      (a + (b - a) * t).round();
 
   static double _lerpDouble(double a, double b, double t) => a + (b - a) * t;
 

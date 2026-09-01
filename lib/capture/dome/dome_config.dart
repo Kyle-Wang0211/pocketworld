@@ -112,7 +112,6 @@ class DomePointConfig {
   /// single pole point ("south star / north star") instead of N
   /// degenerate stacked points.
   final double minElevationDeg;
-
   /// Top-most ring elevation in degrees. +90 = zenith (straight up).
   final double maxElevationDeg;
 

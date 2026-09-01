@@ -155,11 +155,8 @@ class _MyWorkDetailPageState extends State<MyWorkDetailPage> {
           if (mounted) setState(() => _publishFraction = p.fraction);
         },
       );
-      DeviceLog.log(
-        'Publish',
-        '✅ 发布成功:workId=${result.workId} '
-            '(format=ply,社区 feed 的 live 卡只认它)',
-      );
+      DeviceLog.log('Publish', '✅ 发布成功:workId=${result.workId} '
+          '(format=ply,社区 feed 的 live 卡只认它)');
       // Stamp the local record so the button flips to "已发布" and the
       // same scan can't be published twice. PublishService never writes
       // to the store — that is this page's job.
@@ -253,7 +250,8 @@ class _MyWorkDetailPageState extends State<MyWorkDetailPage> {
                 ),
               ],
             ),
-            if (_publishing) _PublishOverlay(fraction: _publishFraction),
+            if (_publishing)
+              _PublishOverlay(fraction: _publishFraction),
           ],
         ),
       ),
@@ -305,11 +303,7 @@ class _StatusBar extends StatelessWidget {
   final String? hint;
   final Color color;
 
-  const _StatusBar({
-    required this.label,
-    required this.hint,
-    required this.color,
-  });
+  const _StatusBar({required this.label, required this.hint, required this.color});
 
   @override
   Widget build(BuildContext context) {
@@ -601,6 +595,7 @@ class _PublishFormState extends State<_PublishForm> {
 class _PublishOverlay extends StatelessWidget {
   final double fraction;
   const _PublishOverlay({required this.fraction});
+
 
   @override
   Widget build(BuildContext context) {

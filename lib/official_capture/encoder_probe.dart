@@ -107,27 +107,18 @@ Future<void> maybeRunEncoderProbe(String documentsPath) async {
 
     await flush('encoding_both_arms');
     final started = DateTime.now();
-    final decoder = AppleHevcDecoder(
-      width: w,
-      height: h,
-      keyframeAu: readAu(entries[0]),
-    );
-    final arms =
-        <bool, ({Directory dir, AppleHevcEncoder enc, PwvaWriter wr})>{};
+    final decoder =
+        AppleHevcDecoder(width: w, height: h, keyframeAu: readAu(entries[0]));
+    final arms = <bool, ({Directory dir, AppleHevcEncoder enc, PwvaWriter wr})>{};
     for (final pe in <bool>[true, false]) {
       final dir = Directory('${workDir.path}/pe_${pe ? 'on' : 'off'}');
       await dir.create(recursive: true);
       final enc = AppleHevcEncoder(
-        width: w,
-        height: h,
-        gop: 8,
-        quality: 0.65,
-        powerEfficient: pe,
-      );
+          width: w, height: h, gop: 8, quality: 0.65, powerEfficient: pe);
       arms[pe] = (
         dir: dir,
         enc: enc,
-        wr: PwvaWriter(enc, dir, width: w, height: h, gop: 8),
+        wr: PwvaWriter(enc, dir, width: w, height: h, gop: 8)
       );
     }
     try {
@@ -138,9 +129,8 @@ Future<void> maybeRunEncoderProbe(String documentsPath) async {
         for (final pe in <bool>[true, false]) {
           final a = arms[pe]!;
           a.wr.addEncodedFrame(
-            a.enc.encodeNv12(y, uv, ptsMs: i * 300, durationMs: 300),
-            source: 'frame_$i',
-          );
+              a.enc.encodeNv12(y, uv, ptsMs: i * 300, durationMs: 300),
+              source: 'frame_$i');
         }
       }
     } finally {

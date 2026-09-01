@@ -20,7 +20,6 @@ class FeedWork {
   final int? fileSizeBytes;
   final String? thumbnailStoragePath;
   final int likesCount;
-
   /// Server-maintained view counter (works.views_count). Bumped by the
   /// `bump_work_views_count` trigger on every new public.work_views row;
   /// the dedup key is (work_id, viewer_id, hour-bucket) so the same
@@ -103,7 +102,11 @@ class FeedWork {
   /// Returns a copy with optional field overrides. Used by the
   /// optimistic like-toggle path in PostCard so the parent feed can
   /// swap a stale FeedWork for a fresh one without rebuilding the list.
-  FeedWork copyWith({int? likesCount, int? viewsCount, bool? likedByMe}) {
+  FeedWork copyWith({
+    int? likesCount,
+    int? viewsCount,
+    bool? likedByMe,
+  }) {
     return FeedWork(
       id: id,
       userId: userId,

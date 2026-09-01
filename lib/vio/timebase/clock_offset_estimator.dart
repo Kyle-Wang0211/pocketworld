@@ -119,9 +119,9 @@ class ClockOffsetEstimator {
     this.windowSpanSeconds = 4.0,
     this.minSamples = 16,
     this.maxSamples = 2048,
-  }) : assert(windowSpanSeconds > 0),
-       assert(minSamples >= 2),
-       assert(maxSamples >= minSamples);
+  })  : assert(windowSpanSeconds > 0),
+        assert(minSamples >= 2),
+        assert(maxSamples >= minSamples);
 
   /// 滑动窗长(参考钟秒)。窗内取 min。
   final double windowSpanSeconds;
@@ -235,8 +235,7 @@ class OffsetTracker {
   double lastJumpSeconds = 0.0;
 
   BracketedOffset? get latest => _history.isEmpty ? null : _history.last;
-  List<BracketedOffset> get history =>
-      List<BracketedOffset>.unmodifiable(_history);
+  List<BracketedOffset> get history => List<BracketedOffset>.unmodifiable(_history);
 
   /// 记入一次重测。返回 true 表示**发生了跳变**(偏置区间与上一次不相交)。
   bool record(BracketedOffset o) {

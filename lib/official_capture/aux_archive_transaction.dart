@@ -275,10 +275,7 @@ class AuxArchiveTransaction {
       for (final entry in restored) {
         final digest = sha256.convert(entry.bytes).toString();
         if (expected[entry.relativePath] != digest) {
-          throw FileSystemException(
-            'entry digest mismatch',
-            entry.relativePath,
-          );
+          throw FileSystemException('entry digest mismatch', entry.relativePath);
         }
         sourceBytes += entry.bytes.length;
         files.add(
@@ -378,7 +375,9 @@ Future<List<AuxContainerEntry>?> restoreAuxBundle({
   required DatabaseArchiveCodec codec,
 }) async {
   if (!codec.isSupported) return null;
-  final archive = File('${captureDirectory.path}/${bundle.archiveFileName}');
+  final archive = File(
+    '${captureDirectory.path}/${bundle.archiveFileName}',
+  );
   final temporary = File('${archive.path}.restore.tmp');
   try {
     if (!await archive.exists()) return null;
@@ -415,6 +414,7 @@ Future<List<AuxContainerEntry>?> restoreAuxBundle({
 }
 
 String _baseName(String path) => path.split(Platform.pathSeparator).last;
+
 
 Future<void> _deleteAll(Iterable<File> files) async {
   for (final file in files) {

@@ -97,8 +97,7 @@ class MonotonicityDetector {
       return MonotonicityReport(
         fault: TimebaseFault(
           kind: TimebaseFaultKind.duplicateTimestamp,
-          detail:
-              '${stream.name} 流出现重复时间戳 t=$t;'
+          detail: '${stream.name} 流出现重复时间戳 t=$t;'
               'Δt=0 会让 preintegration 产生零权重/除零因子',
           measuredSeconds: 0.0,
           limitSeconds: 0.0,
@@ -140,8 +139,7 @@ class MonotonicityDetector {
       return MonotonicityReport(
         fault: TimebaseFault(
           kind: TimebaseFaultKind.clockReset,
-          detail:
-              '${stream.name} 流时间戳后退 ${(-delta).toStringAsFixed(3)}s,'
+          detail: '${stream.name} 流时间戳后退 ${(-delta).toStringAsFixed(3)}s,'
               '超过 ${clockResetBackwardJumpSeconds}s ⇒ 判为时钟基准被重置'
               '(重启残留样本 / 域被中途切换)',
           measuredSeconds: -delta,
@@ -156,8 +154,7 @@ class MonotonicityDetector {
     return MonotonicityReport(
       fault: TimebaseFault(
         kind: TimebaseFaultKind.nonMonotonic,
-        detail:
-            '${stream.name} 流时间戳后退 ${(-delta).toStringAsFixed(6)}s'
+        detail: '${stream.name} 流时间戳后退 ${(-delta).toStringAsFixed(6)}s'
             '${s.sequence == null ? '(无 sequence,无法排除投递乱序,按 fail-closed 处理)' : '(sequence 仍在前进 ⇒ 真回退)'}',
         measuredSeconds: -delta,
         limitSeconds: 0.0,
