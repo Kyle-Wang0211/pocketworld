@@ -109,9 +109,14 @@ AutoCaptureDecision autoCaptureDecideMotion({
     }
   }
 
-  // 糊片对 SfM 没有可恢复的特征价值；空间覆盖不能把质量硬门绕开。
-  // 基准仍停在上一张真实照片，待下一份清晰视觉样本继续判断。
-  if (blurry) return AutoCaptureDecision.skipBlurry;
+  // 糊片对 SfM 没有可恢复的特征价值,所以段内**可以**等一张更清晰的 ——
+  // 这等价于上游 processSmart 在子序列内按加权清晰度排序。
+  //
+  // 但清晰度**不能一直否决**:上游每个子序列无条件产出一帧,清晰度只排序。
+  // 一旦攒够第二个 step(segmentOverdue)还没出帧,就是上游不会出现的状态 ——
+  // 一整段糊在这里会留下一个覆盖空洞。此时必须开火。
+  // 见 AutoCaptureMotionMetrics.segmentOverdue 的出处引用。
+  if (blurry && !motion.segmentOverdue) return AutoCaptureDecision.skipBlurry;
   return AutoCaptureDecision.fire;
 }
 

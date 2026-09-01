@@ -289,4 +289,74 @@ void main() {
       kAutoCaptureSafetyDebounceSec,
     );
   });
+
+  // ── AliceVision processSmart:每个子序列恰好产出一帧 ──────────────────
+  // KeyframeSelector.cpp:motionAcc >= step 就关一段,段内按加权清晰度(中间
+  // 权重 2.0)挑一帧,**清晰度只排序、从不否决**。流式实现里可迁移的就是这条
+  // 不变量:段内可以等更清晰的一张,但攒够第二个 step 还没出帧就必须开火,
+  // 否则一整段糊会留下上游不可能出现的覆盖空洞。
+  AutoCaptureMotionMetrics motionAt(double parallaxDeg) =>
+      AutoCaptureMotionMetrics(
+        role: AutoCaptureMotionRole.geometry,
+        geometryParallaxDeg: parallaxDeg,
+        geometryThresholdDeg: 12,
+        horizontalBaselineM: 0,
+        verticalBaselineM: 0,
+        radialTravelM: 0,
+        depthScaleRatio: 1,
+        viewTurnDeg: 0,
+        overlapFraction: 0.9,
+        advancesGeometryBaseline: true,
+        shouldPromptSlowDown: false,
+        geometryEligible: true,
+      );
+
+  AutoCaptureDecision decideBlurryAt(double parallaxDeg) =>
+      autoCaptureDecideMotion(
+        trackingNormal: true,
+        capturedCount: 1,
+        elapsedSec: 10,
+        sinceLastTickSec: 10,
+        tickIntervalSec: 0.25,
+        motion: motionAt(parallaxDeg),
+        visualSimilarity: 0.1,
+        blurry: true,
+      );
+
+  test('段内(未攒够第二个 step)清晰度可以推迟开火', () {
+    expect(motionAt(12).segmentFullness, 1.0);
+    expect(motionAt(12).segmentOverdue, isFalse);
+    expect(decideBlurryAt(12), AutoCaptureDecision.skipBlurry);
+    expect(decideBlurryAt(23.9), AutoCaptureDecision.skipBlurry);
+  });
+
+  test('攒够第二个 step 之后清晰度不再有否决权,必须开火', () {
+    expect(motionAt(24).segmentFullness, 2.0);
+    expect(motionAt(24).segmentOverdue, isTrue);
+    expect(
+      decideBlurryAt(24),
+      AutoCaptureDecision.fire,
+      reason: '上游每段无条件产出一帧;一整段糊不得留下覆盖空洞',
+    );
+    expect(decideBlurryAt(40), AutoCaptureDecision.fire);
+  });
+
+  test('阈值为 0 时不得误判为 overdue(退回今天的行为)', () {
+    final degenerate = AutoCaptureMotionMetrics(
+      role: AutoCaptureMotionRole.geometry,
+      geometryParallaxDeg: 99,
+      geometryThresholdDeg: 0,
+      horizontalBaselineM: 0,
+      verticalBaselineM: 0,
+      radialTravelM: 0,
+      depthScaleRatio: 1,
+      viewTurnDeg: 0,
+      overlapFraction: 0.9,
+      advancesGeometryBaseline: true,
+      shouldPromptSlowDown: false,
+      geometryEligible: true,
+    );
+    expect(degenerate.segmentFullness, 0);
+    expect(degenerate.segmentOverdue, isFalse);
+  });
 }

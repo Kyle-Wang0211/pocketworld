@@ -157,6 +157,27 @@ class AutoCaptureMotionMetrics {
   /// 立即开火。这样不改任何摄影测量阈值，也不会用固定时间间隔掩盖问题。
   bool get shouldCapture => role != AutoCaptureMotionRole.none;
 
+  /// 段内累积运动相对**一个 step** 的比例。
+  ///
+  /// 上游 AliceVision `KeyframeSelector::processSmart`(KeyframeSelector.cpp):
+  ///
+  ///   float step = pxDisplacement * std::min(_frameWidth, _frameHeight) / 100.0;
+  ///   motionAcc += flowScore;
+  ///   if (motionAcc >= step) { subsequenceLimits.push_back(i); motionAcc = 0.0; }
+  ///
+  /// 关键契约是**每个子序列恰好产出一帧**:段一关就必出,清晰度只在段内做
+  /// 加权排序(中间帧权重最大 2.0),**从不否决**。我们是流式的、没法回看整段,
+  /// 所以可迁移的是这条不变量,而不是它的离线选帧方式。
+  double get segmentFullness => geometryThresholdDeg <= 0
+      ? 0
+      : geometryParallaxDeg / geometryThresholdDeg;
+
+  /// 已经攒够第二个 step 却一帧都没出 —— 上游走到这里早就交付两帧了。
+  ///
+  /// 2.0 不是挑出来的数:它就是「第二段也关了,而第一段还欠着一帧」。到这一刻
+  /// 清晰度不再有否决权,只剩段内排序的作用 —— 这正是上游的语义。
+  bool get segmentOverdue => segmentFullness >= 2.0;
+
   bool isRoleEligible(AutoCaptureMotionRole candidate) {
     switch (candidate) {
       case AutoCaptureMotionRole.none:
