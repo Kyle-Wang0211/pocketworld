@@ -28,6 +28,7 @@ class FrameTrackEvidence {
     required this.commonTrackFraction,
     required this.medianPixelDisplacement,
     required this.medianNormalizedDisplacement,
+    required this.meanNormalizedDisplacement,
     this.medianStepPixelDisplacement = double.nan,
   });
 
@@ -36,15 +37,32 @@ class FrameTrackEvidence {
   final double commonTrackFraction;
   final double medianPixelDisplacement;
   final double medianNormalizedDisplacement;
+
+  /// 上游 VINS-Mono 判决用的量。feature_manager.cpp,逐字:
+  ///
+  ///     parallax_sum += compensatedParallax2(it_per_id, frame_count);
+  ///     parallax_num++;
+  ///     ...
+  ///     return parallax_sum / parallax_num >= MIN_PARALLAX;
+  ///
+  /// 是**算术均值**,不是中位数。而 compensatedParallax2 返回的就是
+  /// `sqrt(du*du + dv*dv)`(归一化像平面坐标,已除深度)—— 与本文件的
+  /// `sqrt((dx/fx)^2 + (dy/fy)^2)` 是同一个量。
+  ///
+  /// 2026-09-01 之前这里用的是中位数,那是自研:上游没有任何一家这么做,
+  /// 而且代码里没写理由。中位数抗离群点(LK 配错会产生凭空的大位移),但
+  /// 「可能更适合我们」不是复刻,是自研。已改回均值。
+  /// [medianNormalizedDisplacement] 保留为证据,便于事后对照两者的分歧。
+  final double meanNormalizedDisplacement;
   final double medianStepPixelDisplacement;
 
   bool get comparable =>
       commonTrackCount >= kOfficialMinimumCommonTracks &&
-      medianNormalizedDisplacement.isFinite;
+      meanNormalizedDisplacement.isFinite;
 
   bool get hasEnoughNovelty =>
       comparable &&
-      medianNormalizedDisplacement >= kOfficialNormalizedTrackDisplacement;
+      meanNormalizedDisplacement >= kOfficialNormalizedTrackDisplacement;
 
   /// Mirrors VINS-Mono FeatureManager::addFeatureCheckParallax(): a healthy
   /// tracked reference dropping below 20 shared observations is a keyframe
@@ -194,12 +212,18 @@ class ContinuousFeatureTracks {
           : common / _referenceSeedCount,
       medianPixelDisplacement: _median(displacements),
       medianNormalizedDisplacement: _median(normalizedDisplacements),
+      meanNormalizedDisplacement: _mean(normalizedDisplacements),
       medianStepPixelDisplacement: _median(stepDisplacements),
     );
   }
 
   static bool _validGray(Uint8List gray, int width, int height) =>
       width >= 32 && height >= 32 && gray.length == width * height;
+
+  /// 上游 VINS-Mono 的判决量:`parallax_sum / parallax_num`(算术均值)。
+  static double _mean(List<double> values) => values.isEmpty
+      ? double.nan
+      : values.reduce((a, b) => a + b) / values.length;
 
   static double _median(List<double> sorted) {
     if (sorted.isEmpty) return double.nan;
@@ -233,6 +257,7 @@ FrameTrackEvidence trackFrameNovelty({
       commonTrackFraction: 0,
       medianPixelDisplacement: double.nan,
       medianNormalizedDisplacement: double.nan,
+      meanNormalizedDisplacement: double.nan,
     );
   }
 
@@ -246,6 +271,7 @@ FrameTrackEvidence trackFrameNovelty({
       commonTrackFraction: 0,
       medianPixelDisplacement: double.nan,
       medianNormalizedDisplacement: double.nan,
+      meanNormalizedDisplacement: double.nan,
     );
   }
 
@@ -276,6 +302,9 @@ FrameTrackEvidence trackFrameNovelty({
       : common.isOdd
       ? displacements[common ~/ 2]
       : (displacements[common ~/ 2 - 1] + displacements[common ~/ 2]) * 0.5;
+  final normalizedMean = common == 0
+      ? double.nan
+      : normalizedDisplacements.reduce((a, b) => a + b) / common;
   final normalizedMedian = common == 0
       ? double.nan
       : common.isOdd
@@ -289,6 +318,7 @@ FrameTrackEvidence trackFrameNovelty({
     commonTrackFraction: common / seeds.length,
     medianPixelDisplacement: median,
     medianNormalizedDisplacement: normalizedMedian,
+    meanNormalizedDisplacement: normalizedMean,
     medianStepPixelDisplacement: median,
   );
 }

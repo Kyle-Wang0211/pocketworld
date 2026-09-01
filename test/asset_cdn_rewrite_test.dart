@@ -11,15 +11,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/config/endpoint_config.dart';
 
 const _supabase = 'https://tzvwkqmgaourwqrmxbyb.supabase.co';
-const _assetUrl =
-    '$_supabase/storage/v1/object/public/works/uid/model.glb';
+const _assetUrl = '$_supabase/storage/v1/object/public/works/uid/model.glb';
 
 EndpointConfig _cfg(String? cdn) => EndpointConfig(
-      supabaseUrl: _supabase,
-      supabaseAnonKey: 'k',
-      assetCdnBase: cdn,
-      source: EndpointConfigSource.builtin,
-    );
+  supabaseUrl: _supabase,
+  supabaseAnonKey: 'k',
+  assetCdnBase: cdn,
+  source: EndpointConfigSource.builtin,
+);
 
 void main() {
   group('cdnRewrite — 默认路径必须零变化', () {
@@ -35,8 +34,10 @@ void main() {
   group('cdnRewrite — 只换 origin,路径必须逐字保留', () {
     test('替换 host,保留完整 storage 路径', () {
       final out = _cfg('https://cdn.pocketworld.io').cdnRewrite(_assetUrl);
-      expect(out,
-          'https://cdn.pocketworld.io/storage/v1/object/public/works/uid/model.glb');
+      expect(
+        out,
+        'https://cdn.pocketworld.io/storage/v1/object/public/works/uid/model.glb',
+      );
     });
 
     test('带查询串的 URL 不丢参数', () {
@@ -46,11 +47,12 @@ void main() {
     });
 
     test('缩略图路径同样只换 origin', () {
-      final thumb =
-          '$_supabase/storage/v1/object/public/thumbnails/uid/w.jpg';
+      final thumb = '$_supabase/storage/v1/object/public/thumbnails/uid/w.jpg';
       final out = _cfg('https://cdn.pocketworld.io').cdnRewrite(thumb);
-      expect(out,
-          'https://cdn.pocketworld.io/storage/v1/object/public/thumbnails/uid/w.jpg');
+      expect(
+        out,
+        'https://cdn.pocketworld.io/storage/v1/object/public/thumbnails/uid/w.jpg',
+      );
     });
   });
 
@@ -73,20 +75,25 @@ void main() {
 
   group('isAcceptableCdn — 配置校验', () {
     test('http 被拒(降级攻击面)', () {
-      expect(EndpointConfigResolver.isAcceptableCdn('http://cdn.supabase.co'),
-          isFalse);
+      expect(
+        EndpointConfigResolver.isAcceptableCdn('http://cdn.supabase.co'),
+        isFalse,
+      );
     });
 
     test('白名单外的 host 被拒', () {
       expect(
-          EndpointConfigResolver.isAcceptableCdn('https://cdn.evil.com'),
-          isFalse);
+        EndpointConfigResolver.isAcceptableCdn('https://cdn.evil.com'),
+        isFalse,
+      );
     });
 
     test('白名单内的 host 通过', () {
       // allowedHostSuffixes 目前含 '.supabase.co'
-      expect(EndpointConfigResolver.isAcceptableCdn('https://x.supabase.co'),
-          isTrue);
+      expect(
+        EndpointConfigResolver.isAcceptableCdn('https://x.supabase.co'),
+        isTrue,
+      );
     });
 
     test('空 host 被拒', () {

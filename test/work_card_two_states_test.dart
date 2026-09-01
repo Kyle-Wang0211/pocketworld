@@ -38,29 +38,31 @@ void main() {
   );
 
   FeedWork work({String? thumb, String? model}) => FeedWork(
-        id: 'w1',
-        userId: 'u1',
-        title: '未命名(1)',
-        description: null,
-        format: 'glb',
-        modelStoragePath: model,
-        fileSizeBytes: null,
-        thumbnailStoragePath: thumb,
-        likesCount: 3,
-        viewsCount: 9,
-        publishedAt: DateTime.utc(2026, 8, 21),
-        authorDisplayName: 'kyle',
-        authorHandle: 'kyle',
-        authorAvatarUrl: null,
-        likedByMe: false,
-      );
+    id: 'w1',
+    userId: 'u1',
+    title: '未命名(1)',
+    description: null,
+    format: 'glb',
+    modelStoragePath: model,
+    fileSizeBytes: null,
+    thumbnailStoragePath: thumb,
+    likesCount: 3,
+    viewsCount: 9,
+    publishedAt: DateTime.utc(2026, 8, 21),
+    authorDisplayName: 'kyle',
+    authorHandle: 'kyle',
+    authorAvatarUrl: null,
+    likedByMe: false,
+  );
 
   Future<void> pump(WidgetTester t, FeedWork w) async {
-    await t.pumpWidget(MaterialApp(
-      home: Scaffold(
-        body: WorkCard(work: w, service: service, onTap: () {}),
+    await t.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: WorkCard(work: w, service: service, onTap: () {}),
+        ),
       ),
-    ));
+    );
     await t.pump();
   }
 
@@ -79,8 +81,11 @@ void main() {
       await pump(t, work(thumb: 'thumbs/a.png'));
       expect(curtainOpacity(t), 1.0, reason: '加载态:幕布全不透明');
       // 玻璃板上的文字一个都不该在
-      expect(find.text('未命名(1)'), findsNothing,
-          reason: '玻璃板必须等 ready —— 否则就是那个"黑底 + 幽灵文字"的中间态');
+      expect(
+        find.text('未命名(1)'),
+        findsNothing,
+        reason: '玻璃板必须等 ready —— 否则就是那个"黑底 + 幽灵文字"的中间态',
+      );
       expect(find.text('3'), findsNothing);
     });
 
@@ -92,15 +97,17 @@ void main() {
 
     testWidgets('加载态下点击仍能穿透(幕布不吞手势)', (t) async {
       var tapped = false;
-      await t.pumpWidget(MaterialApp(
-        home: Scaffold(
-          body: WorkCard(
-            work: work(thumb: 'thumbs/a.png'),
-            service: service,
-            onTap: () => tapped = true,
+      await t.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: WorkCard(
+              work: work(thumb: 'thumbs/a.png'),
+              service: service,
+              onTap: () => tapped = true,
+            ),
           ),
         ),
-      ));
+      );
       await t.pump();
       await t.tap(find.byType(WorkCard));
       expect(tapped, isTrue, reason: '加载中点一下也该能进详情页');
@@ -160,24 +167,22 @@ void main() {
     testWidgets('缩略图 404 → 幕布退场,进入完成态', (t) async {
       // Flutter 测试环境的默认 HttpClient 对所有请求返回 400,
       // 于是 Image.network 走 errorBuilder —— 正是要测的那条路。
-      await t.pumpWidget(MaterialApp(
-        home: Scaffold(
-          body: WorkCard(
-            work: work(thumb: 'thumbs/does-not-exist.png'),
-            service: service,
-            onTap: () {},
+      await t.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: WorkCard(
+              work: work(thumb: 'thumbs/does-not-exist.png'),
+              service: service,
+              onTap: () {},
+            ),
           ),
         ),
-      ));
+      );
       // 给 image resolve + errorBuilder + addPostFrameCallback 各一拍
       for (var i = 0; i < 8; i++) {
         await t.pump(const Duration(milliseconds: 50));
       }
-      expect(
-        curtainOpacity(t),
-        0.0,
-        reason: '图挂了也必须放行 —— 否则骨架永远盖着,那是第三种状态',
-      );
+      expect(curtainOpacity(t), 0.0, reason: '图挂了也必须放行 —— 否则骨架永远盖着,那是第三种状态');
       expect(find.text('未命名(1)'), findsOneWidget);
     });
   });

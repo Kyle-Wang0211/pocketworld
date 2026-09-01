@@ -17,7 +17,7 @@ import 'package:pocketworld_flutter/config/endpoint_config.dart';
 /// Records what the fake collaborators were asked to do.
 class _Spy implements CommunityServiceLike {
   final List<({String path, int bytes, String title, String? description})>
-      uploads = [];
+  uploads = [];
   final List<({String workId, int bytes, String contentType})> thumbs = [];
 
   Object? uploadThrows;
@@ -53,11 +53,7 @@ class _Spy implements CommunityServiceLike {
     String extension = 'jpg',
   }) async {
     if (thumbThrows != null) throw thumbThrows!;
-    thumbs.add((
-      workId: workId,
-      bytes: bytes.length,
-      contentType: contentType,
-    ));
+    thumbs.add((workId: workId, bytes: bytes.length, contentType: contentType));
     return thumbReturns;
   }
 }
@@ -116,14 +112,15 @@ void main() {
       spy.uploadThrows = StateError('upload_validation_failed:exe_mz');
       await expectLater(
         service().publish(record: record(), title: 'T'),
-        throwsA(isA<PublishException>()
-            .having((e) => e.phase, 'phase', 'rejected')
-            .having((e) => e.message, 'reason', contains('exe_mz'))),
+        throwsA(
+          isA<PublishException>()
+              .having((e) => e.phase, 'phase', 'rejected')
+              .having((e) => e.message, 'reason', contains('exe_mz')),
+        ),
       );
       // 收口后 works 行只能由 finalize 创建,客户端已无从断言"有没有行"。
       // 换成更强也更直接的判据:流程在被拒后**中止**了,没有继续到缩略图。
-      expect(spy.thumbs, isEmpty,
-          reason: '被拒之后不该再走缩略图,那意味着流程没有中止');
+      expect(spy.thumbs, isEmpty, reason: '被拒之后不该再走缩略图,那意味着流程没有中止');
     });
 
     test('🔑 网络错误仍是 uploading —— 证明没把所有失败都归成拒绝', () async {
@@ -131,8 +128,9 @@ void main() {
       spy.uploadThrows = StateError('SocketException: connection reset');
       await expectLater(
         service().publish(record: record(), title: 'T'),
-        throwsA(isA<PublishException>()
-            .having((e) => e.phase, 'phase', 'uploading')),
+        throwsA(
+          isA<PublishException>().having((e) => e.phase, 'phase', 'uploading'),
+        ),
       );
     });
   });
@@ -150,11 +148,11 @@ void main() {
       );
       await expectLater(
         service().publish(record: record(), title: 'T'),
-        throwsA(isA<PublishException>()
-            .having((e) => e.phase, 'phase', 'too_large')),
+        throwsA(
+          isA<PublishException>().having((e) => e.phase, 'phase', 'too_large'),
+        ),
       );
-      expect(spy.uploads, isEmpty,
-          reason: '预检的全部意义就是别把几十MB传完才被拒');
+      expect(spy.uploads, isEmpty, reason: '预检的全部意义就是别把几十MB传完才被拒');
       expect(spy.uploads, isEmpty);
     });
 
@@ -170,8 +168,9 @@ void main() {
       spy.uploadThrows = StateError('StorageException: EntityTooLarge (413)');
       await expectLater(
         service().publish(record: record(), title: 'T'),
-        throwsA(isA<PublishException>()
-            .having((e) => e.phase, 'phase', 'too_large')),
+        throwsA(
+          isA<PublishException>().having((e) => e.phase, 'phase', 'too_large'),
+        ),
       );
       expect(spy.uploads, isEmpty);
     });
@@ -181,8 +180,9 @@ void main() {
       spy.uploadThrows = StateError('Connection closed before full header');
       await expectLater(
         service().publish(record: record(), title: 'T'),
-        throwsA(isA<PublishException>()
-            .having((e) => e.phase, 'phase', 'uploading')),
+        throwsA(
+          isA<PublishException>().having((e) => e.phase, 'phase', 'uploading'),
+        ),
       );
     });
   });
@@ -192,17 +192,32 @@ void main() {
       // 写一个 PNG 到点云文件名下 —— 正是"扩展名/Content-Type 皆为调用方
       // 声明"的那类伪装。
       await Directory(record().captureDir!).create(recursive: true);
-      await File('${record().captureDir!}/official_sfm_sparse.ply')
-          .writeAsBytes(Uint8List.fromList(
-              [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0]));
+      await File(
+        '${record().captureDir!}/official_sfm_sparse.ply',
+      ).writeAsBytes(
+        Uint8List.fromList([
+          0x89,
+          0x50,
+          0x4E,
+          0x47,
+          0x0D,
+          0x0A,
+          0x1A,
+          0x0A,
+          0,
+          0,
+          0,
+          0,
+        ]),
+      );
 
       await expectLater(
         service().publish(record: record(), title: 'T'),
-        throwsA(isA<PublishException>()
-            .having((e) => e.phase, 'phase', 'validating')),
+        throwsA(
+          isA<PublishException>().having((e) => e.phase, 'phase', 'validating'),
+        ),
       );
-      expect(spy.uploads, isEmpty,
-          reason: '校验必须发生在上传之前,否则字节已经落进公开桶了');
+      expect(spy.uploads, isEmpty, reason: '校验必须发生在上传之前,否则字节已经落进公开桶了');
       expect(spy.uploads, isEmpty);
     });
 
@@ -282,32 +297,35 @@ void main() {
   });
 
   group('happy path', () {
-    test('uploads the PLY byte-for-byte and inserts a public ply row', () async {
-      await writePly();
-      final res = await service().publish(
-        record: record(),
-        title: '  My Scan  ',
-        description: '  hello  ',
-      );
+    test(
+      'uploads the PLY byte-for-byte and inserts a public ply row',
+      () async {
+        await writePly();
+        final res = await service().publish(
+          record: record(),
+          title: '  My Scan  ',
+          description: '  hello  ',
+        );
 
-      // Uploaded unmodified — no decimation, no re-encode.
-      expect(spy.uploads.single.bytes, plyBytes.length);
-      expect(res.fileSizeBytes, plyBytes.length);
+        // Uploaded unmodified — no decimation, no re-encode.
+        expect(spy.uploads.single.bytes, plyBytes.length);
+        expect(res.fileSizeBytes, plyBytes.length);
 
-      // Content-addressed path.
-      final hash = sha1.convert(plyBytes).toString();
-      expect(res.modelStoragePath, 'uid/$hash.ply');
-      expect(spy.uploads.single.path, res.modelStoragePath);
+        // Content-addressed path.
+        final hash = sha1.convert(plyBytes).toString();
+        expect(res.modelStoragePath, 'uid/$hash.ply');
+        expect(spy.uploads.single.path, res.modelStoragePath);
 
-      // 收口后客户端**只**发送 title / description。
-      // format / visibility / user_id / model_storage_path / file_size_bytes
-      // / published_at 全部由服务端自己算 —— 客户端连伪造的机会都没有,
-      // 所以这里没有它们可断言,这正是收口的目的。
-      final up = spy.uploads.single;
-      expect(up.title, 'My Scan'); // trimmed
-      expect(up.description, 'hello'); // trimmed
-      expect(res.workId, 'work-1'); // 服务端回传的 id
-    });
+        // 收口后客户端**只**发送 title / description。
+        // format / visibility / user_id / model_storage_path / file_size_bytes
+        // / published_at 全部由服务端自己算 —— 客户端连伪造的机会都没有,
+        // 所以这里没有它们可断言,这正是收口的目的。
+        final up = spy.uploads.single;
+        expect(up.title, 'My Scan'); // trimmed
+        expect(up.description, 'hello'); // trimmed
+        expect(res.workId, 'work-1'); // 服务端回传的 id
+      },
+    );
 
     test('empty description is stored as null, not an empty string', () async {
       await writePly();
@@ -348,11 +366,7 @@ void main() {
         ),
       );
       // 同上:行由服务端建,客户端断言不到。改为断言流程确实中止。
-      expect(
-        spy.thumbs,
-        isEmpty,
-        reason: '上传失败后不该再走缩略图 —— 那会留下指向不存在文件的痕迹',
-      );
+      expect(spy.thumbs, isEmpty, reason: '上传失败后不该再走缩略图 —— 那会留下指向不存在文件的痕迹');
     });
 
     test('服务端建行失败仍归入 inserting phase(行为不变,只是换了台机器做)', () async {

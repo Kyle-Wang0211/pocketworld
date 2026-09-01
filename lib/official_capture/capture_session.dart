@@ -1715,6 +1715,10 @@ class CaptureSession {
                       actualGate.trackEvidence?.commonTrackCount,
                   'actual_track_common_fraction':
                       actualGate.trackEvidence?.commonTrackFraction,
+                  // 判决用的是均值(上游 VINS 口径);中位数一并记下,便于事后
+                  // 对照两者何时分歧、分歧是否跨过阈值线。
+                  'actual_track_mean_normalized':
+                      actualGate.trackEvidence?.meanNormalizedDisplacement,
                   'actual_track_median_normalized':
                       actualGate.trackEvidence?.medianNormalizedDisplacement,
                   'actual_laplacian_variance': actualQuality.laplacianVariance,

@@ -91,11 +91,7 @@ void main() {
       for (final c in CaptureGuidanceCue.values) {
         final name = c.name.toLowerCase();
         for (final b in banned) {
-          expect(
-            name.contains(b),
-            isFalse,
-            reason: '${c.name} 看起来像质量档位而不是引导',
-          );
+          expect(name.contains(b), isFalse, reason: '${c.name} 看起来像质量档位而不是引导');
         }
       }
     });
@@ -104,7 +100,11 @@ void main() {
       final g = computeCaptureGuidance(
         disposition: _converged(),
         texture: _tex(400, 1.0),
-        scale: _scale(ScaleObservabilityVerdict.sufficient, bd: 0.5, sigma: 0.005),
+        scale: _scale(
+          ScaleObservabilityVerdict.sufficient,
+          bd: 0.5,
+          sigma: 0.005,
+        ),
       );
       expect(g.cue, CaptureGuidanceCue.none);
       expect(g.progress01, 1.0);

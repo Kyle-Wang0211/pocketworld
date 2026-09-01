@@ -89,16 +89,12 @@ void main() {
     expect(leftovers, isEmpty, reason: '超限下载不得留下 .part 残file');
   });
 
-  test('🔑 服务端不发 Content-Length 时,仍靠逐块计数拦住(预检不是安全边界)',
-      () async {
+  test('🔑 服务端不发 Content-Length 时,仍靠逐块计数拦住(预检不是安全边界)', () async {
     // 这条是 C7 的核心:chunked 编码下没有 Content-Length,恶意服务端也可以
     // 直接撒谎。所以必须靠边收边数。
     // 用 fetch()(走 kMaxInMemoryBytes=128MB 这条更严的线),否则要真发 512MB。
     final url = '$base/lie.ply?size=${140 * 1024 * 1024}&nolen=1';
-    await expectLater(
-      GlbCache.instance.fetch(url),
-      throwsA(isA<StateError>()),
-    );
+    await expectLater(GlbCache.instance.fetch(url), throwsA(isA<StateError>()));
   }, timeout: const Timeout(Duration(minutes: 3)));
 
   test('超过内存上限但低于下载上限的资源,fetchPath 仍可用', () async {

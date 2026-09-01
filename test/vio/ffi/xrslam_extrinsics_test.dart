@@ -11,15 +11,21 @@ void main() {
   });
 
   test('q_bc 近似单位四元数(上游只写到 7 位小数)', () {
-    final double n2 = kIosCameraImuQbc
-        .fold<double>(0, (double a, double b) => a + b * b);
+    final double n2 = kIosCameraImuQbc.fold<double>(
+      0,
+      (double a, double b) => a + b * b,
+    );
     // 上游写的是 0.7071068,不是 0.70710678118…,所以平方和是 1.000000057。
     // 差 5.7e-8 —— 对应约 0.0000016 度的旋转误差,可忽略。
     // 容差不能收到 1e-9:那会把"照抄上游"判成失败。
     expect(n2, closeTo(1.0, 1e-6));
-    expect((n2 - 1.0).abs(), greaterThan(1e-9),
-        reason: '若这条挂了,说明有人把上游的值"修正"成了精确值 —— '
-            '那就不再是逐字复刻,应重新确认是否有意为之');
+    expect(
+      (n2 - 1.0).abs(),
+      greaterThan(1e-9),
+      reason:
+          '若这条挂了,说明有人把上游的值"修正"成了精确值 —— '
+          '那就不再是逐字复刻,应重新确认是否有意为之',
+    );
   });
 
   test('q_bc 不是 identity —— 这正是之前的 bug', () {
@@ -29,8 +35,13 @@ void main() {
 
   test('表覆盖 20 个 hw.machine 标识符 / 18 款机型', () {
     expect(kIosCameraImuPbc.length, 20);
-    expect(kIosCameraImuPbc.values.map((List<double> v) => v.join(',')).toSet()
-        .length, 17);  // 上游 16e 复用了 14 Pro 的值
+    expect(
+      kIosCameraImuPbc.values
+          .map((List<double> v) => v.join(','))
+          .toSet()
+          .length,
+      17,
+    ); // 上游 16e 复用了 14 Pro 的值
   });
 
   test('每个 p_bc 是 3 维且量级合理(< 10cm)', () {
@@ -59,8 +70,11 @@ void main() {
   test('16e 被标成非标定值(上游是 14 Pro 的逐字节拷贝)', () {
     expect(kIosCameraImuPbcCopied, contains('iPhone17,5'));
     final CameraImuExtrinsic e = CameraImuExtrinsic.forIosMachine('iPhone17,5');
-    expect(e.provenance, FieldProvenance.placeholder,
-        reason: '查得到值但不是该机型标定的 —— 遥测里必须与真标定可区分');
+    expect(
+      e.provenance,
+      FieldProvenance.placeholder,
+      reason: '查得到值但不是该机型标定的 —— 遥测里必须与真标定可区分',
+    );
     expect(e.qbc, kIosCameraImuQbc, reason: '旋转仍必须是正确的那个');
   });
 
