@@ -187,8 +187,7 @@ class SlowdownAttributor {
     final duty = c.wallMs > 0 && c.threads > 0
         ? c.cpuMs / (c.wallMs * c.threads)
         : null;
-    final nsPerUnit =
-        c.workUnits > 0 ? (c.cpuMs * 1e6) / c.workUnits : null;
+    final nsPerUnit = c.workUnits > 0 ? (c.cpuMs * 1e6) / c.workUnits : null;
 
     // 只用冷机(nominal)且工作量有效的样本建基线。
     if (!baselineEstablished &&
@@ -202,10 +201,12 @@ class SlowdownAttributor {
       }
     }
 
-    final coreDemotion = c.lastCpuIndex != null &&
+    final coreDemotion =
+        c.lastCpuIndex != null &&
         _littleCluster.isNotEmpty &&
         _littleCluster.contains(c.lastCpuIndex);
-    final offlined = c.onlineCpuCount != null &&
+    final offlined =
+        c.onlineCpuCount != null &&
         c.presentCpuCount != null &&
         c.onlineCpuCount! < c.presentCpuCount!;
 

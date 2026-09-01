@@ -57,11 +57,11 @@ class CommunityService {
     SupabaseClient? client,
     SignedUploadBroker? uploadBroker,
     @visibleForTesting EndpointConfig? endpointOverride,
-  })  : _client = client ?? Supabase.instance.client,
-        _endpointOverride = endpointOverride,
-        _uploadBroker =
-            uploadBroker ??
-            SignedUploadBroker(client: client ?? Supabase.instance.client);
+  }) : _client = client ?? Supabase.instance.client,
+       _endpointOverride = endpointOverride,
+       _uploadBroker =
+           uploadBroker ??
+           SignedUploadBroker(client: client ?? Supabase.instance.client);
 
   /// Public works joined with profile (display_name + avatar_url) and the
   /// current user's like state.
@@ -72,6 +72,7 @@ class CommunityService {
     int offset = 0,
     FeedSort sortBy = FeedSort.recent,
     String? query,
+
     /// [D7 2026-08-23 用户签决] 只看某个作者的作品 —— 流内过滤,**不是**
     /// 个人主页。后端本就 100% 就绪:profiles 六字段齐、FeedWork 已带 userId,
     /// 过滤就是下面这一句 .eq('user_id', ...)。
@@ -132,9 +133,10 @@ class CommunityService {
     final transformed = switch (sortBy) {
       // 次级键 id 是 keyset 的硬性前提:排序键必须唯一确定一个位置,
       // 否则边界上 published_at 相同的行会被跳过或重复。
-      FeedSort.recent => filter
-          .order('published_at', ascending: false)
-          .order('id', ascending: false),
+      FeedSort.recent =>
+        filter
+            .order('published_at', ascending: false)
+            .order('id', ascending: false),
       // ⚠️ hot 仍走 offset。它自 2026-08-23 砍掉标签后已无生产调用点
       // (vault_page 定死 FeedSort.recent),不值得为它再补一套三键游标
       // (likes_count, published_at, id)。若哪天复活,照 recent 的样子加。
@@ -349,8 +351,7 @@ class CommunityService {
       'target_type': 'work',
       'target_id': workId,
       'reason': reason,
-      if (detail != null && detail.trim().isNotEmpty)
-        'detail': detail.trim(),
+      if (detail != null && detail.trim().isNotEmpty) 'detail': detail.trim(),
     });
   }
 
@@ -369,11 +370,13 @@ class CommunityService {
     if (myId == blockedUserId) {
       throw ArgumentError('Cannot block yourself.');
     }
-    await _client.from('blocks').upsert(
-      {'blocker_id': myId, 'blocked_id': blockedUserId},
-      onConflict: 'blocker_id,blocked_id',
-      ignoreDuplicates: true,
-    );
+    await _client
+        .from('blocks')
+        .upsert(
+          {'blocker_id': myId, 'blocked_id': blockedUserId},
+          onConflict: 'blocker_id,blocked_id',
+          ignoreDuplicates: true,
+        );
   }
 
   /// Undo [blockUser].

@@ -567,8 +567,9 @@ class _DeleteAccountButtonState extends State<_DeleteAccountButton> {
       child: Container(
         height: 52,
         decoration: BoxDecoration(
-          color: _busy ? AetherColors.danger.withValues(alpha: 0.5)
-                       : AetherColors.danger,
+          color: _busy
+              ? AetherColors.danger.withValues(alpha: 0.5)
+              : AetherColors.danger,
           borderRadius: BorderRadius.circular(AetherRadii.lg),
         ),
         alignment: Alignment.center,

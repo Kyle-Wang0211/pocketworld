@@ -107,7 +107,6 @@ class _VaultPageState extends State<VaultPage> {
     if (mounted) setState(() {});
   }
 
-
   @override
   void initState() {
     super.initState();
@@ -183,9 +182,11 @@ class _VaultPageState extends State<VaultPage> {
     final path = work.modelStoragePath;
     if (path == null || path.isEmpty) return;
     final url = _service.modelUrlFor(path);
-    unawaited(GlbCache.instance.fetch(url).catchError((Object _) {
-      return Uint8List(0);
-    }));
+    unawaited(
+      GlbCache.instance.fetch(url).catchError((Object _) {
+        return Uint8List(0);
+      }),
+    );
   }
 
   Future<List<FeedWork>> _loadFeed() {
@@ -257,7 +258,6 @@ class _VaultPageState extends State<VaultPage> {
     });
     await next;
   }
-
 
   // ignore: unused_element  —— [D2] 搜索代码按用户要求保留,只是不渲染。
   void _onQuerySubmitted(String value) {
@@ -369,8 +369,7 @@ class _VaultPageState extends State<VaultPage> {
 
   /// 主题卡只在**没有作者过滤**时出现 —— 「本周精选」是策展,
   /// 在"只看某个人"的视图里没有意义。
-  bool get _showTopicCard =>
-      kShowCommunityTopicCard && _authorFilterId == null;
+  bool get _showTopicCard => kShowCommunityTopicCard && _authorFilterId == null;
 
   Widget _buildFeed() {
     return FutureBuilder<List<FeedWork>>(
@@ -385,10 +384,7 @@ class _VaultPageState extends State<VaultPage> {
           );
         }
         if (snap.hasError) {
-          return _ErrorState(
-            message: snap.error.toString(),
-            onRetry: _refresh,
-          );
+          return _ErrorState(message: snap.error.toString(), onRetry: _refresh);
         }
         final works = snap.data ?? const <FeedWork>[];
         // 新的一批 feed 到手就重定"一起揭幕"这一组。放在这里而不是 _loadFeed
@@ -554,9 +550,7 @@ class _SearchBar extends StatelessWidget {
               onTap: onClear,
               behavior: HitTestBehavior.opaque,
               child: const Padding(
-                padding: EdgeInsets.symmetric(
-                  horizontal: AetherSpacing.md,
-                ),
+                padding: EdgeInsets.symmetric(horizontal: AetherSpacing.md),
                 child: Icon(
                   Icons.close_rounded,
                   size: 18,
@@ -660,8 +654,11 @@ class _ErrorState extends StatelessWidget {
       physics: const AlwaysScrollableScrollPhysics(),
       children: [
         const SizedBox(height: 160),
-        const Icon(Icons.error_outline_rounded,
-            size: 48, color: AetherColors.danger),
+        const Icon(
+          Icons.error_outline_rounded,
+          size: 48,
+          color: AetherColors.danger,
+        ),
         const SizedBox(height: AetherSpacing.md),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 32),
@@ -676,16 +673,12 @@ class _ErrorState extends StatelessWidget {
         ),
         const SizedBox(height: AetherSpacing.lg),
         Center(
-          child: TextButton(
-            onPressed: onRetry,
-            child: const Text('Retry'),
-          ),
+          child: TextButton(onPressed: onRetry, child: const Text('Retry')),
         ),
       ],
     );
   }
 }
-
 
 /// [D9(a) 2026-08-23] 主题卡的内容**客户端硬编码**,不建表、不发请求。
 ///
@@ -962,7 +955,6 @@ class _SkeletonTopicCard extends StatelessWidget {
     );
   }
 }
-
 
 /// [D7] 作者过滤条。整个"只看这个人的作品"就只有这一条 —— 刻意到此为止。
 ///

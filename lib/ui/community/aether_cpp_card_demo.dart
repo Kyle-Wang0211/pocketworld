@@ -325,7 +325,8 @@ class _AetherCppCardDemoState extends State<AetherCppCardDemo>
       // 契约:kViewerSocialPolicyContract.detailQuality = 'full'。
       final bounds = await impl.load(
         widget.modelUrl,
-        quality: widget.quality ??
+        quality:
+            widget.quality ??
             (widget.interactive
                 ? ViewerQuality.full
                 : ViewerQuality.feedThumbnail),

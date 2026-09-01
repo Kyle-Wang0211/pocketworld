@@ -177,12 +177,7 @@ class AetherGradients {
 
 // ─── Design Inspector ───────────────────────────────────────────────
 
-enum DesignKind {
-  customizable,
-  partial,
-  iosLocked,
-  backendNeeded,
-}
+enum DesignKind { customizable, partial, iosLocked, backendNeeded }
 
 extension DesignKindColor on DesignKind {
   Color get color {
@@ -301,9 +296,7 @@ class _InspectorToggleButton extends StatelessWidget {
           ],
         ),
         child: Icon(
-          enabled
-              ? Icons.visibility_off_rounded
-              : Icons.auto_awesome_rounded,
+          enabled ? Icons.visibility_off_rounded : Icons.auto_awesome_rounded,
           color: enabled ? Colors.white : AetherColors.textSecondary,
           size: 20,
         ),
@@ -396,7 +389,9 @@ class DesignBox extends StatelessWidget {
         child,
         Positioned.fill(
           child: IgnorePointer(
-            child: CustomPaint(painter: _DashedBorderPainter(color: kind.color)),
+            child: CustomPaint(
+              painter: _DashedBorderPainter(color: kind.color),
+            ),
           ),
         ),
         Positioned(

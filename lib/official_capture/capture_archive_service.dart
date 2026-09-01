@@ -57,8 +57,9 @@ class CaptureArchiveService {
       final port = await ready.first as SendPort;
       final reply = ReceivePort();
       port.send({'root': captureRoot, 'reply': reply.sendPort});
-      final report = await reply.first
-          .timeout(const Duration(minutes: 5)) as Map<String, Object?>?;
+      final report =
+          await reply.first.timeout(const Duration(minutes: 5))
+              as Map<String, Object?>?;
       return report;
     } catch (_) {
       return null;
@@ -83,17 +84,20 @@ Future<void> _batchArchiveIsolate(SendPort ready) async {
     report = {'status': 'failed', 'error': '$e'};
     try {
       outDir.createSync(recursive: true);
-      File('${outDir.path}/archive-error.json').writeAsStringSync(jsonEncode({
-        'schema': 'pw_capture_archive_error_v1',
-        'error': '$e',
-        'stack': '$st',
-      }));
+      File('${outDir.path}/archive-error.json').writeAsStringSync(
+        jsonEncode({
+          'schema': 'pw_capture_archive_error_v1',
+          'error': '$e',
+          'stack': '$st',
+        }),
+      );
     } catch (_) {}
   }
   report['elapsed_s'] = DateTime.now().difference(started).inSeconds;
   try {
-    File('${outDir.path}/archive-report.json')
-        .writeAsStringSync(jsonEncode(report));
+    File(
+      '${outDir.path}/archive-report.json',
+    ).writeAsStringSync(jsonEncode(report));
   } catch (_) {}
   reply.send(report);
   inbox.close();
@@ -113,12 +117,18 @@ Future<Map<String, Object?>> _archive(String root, Directory outDir) async {
   final first = '$root/photos_highres/${frames.first['highresFilename']}';
   final size = probeJpegSize(first);
   final encoder = AppleHevcEncoder(
-      width: size.width,
-      height: size.height,
-      gop: CaptureArchiveService._gop,
-      quality: CaptureArchiveService._quality);
-  final writer = PwvaWriter(encoder, outDir,
-      width: size.width, height: size.height, gop: CaptureArchiveService._gop);
+    width: size.width,
+    height: size.height,
+    gop: CaptureArchiveService._gop,
+    quality: CaptureArchiveService._quality,
+  );
+  final writer = PwvaWriter(
+    encoder,
+    outDir,
+    width: size.width,
+    height: size.height,
+    gop: CaptureArchiveService._gop,
+  );
   var done = 0;
   final recordedSha = <String, String>{};
   for (final f in frames) {
@@ -126,16 +136,23 @@ Future<Map<String, Object?>> _archive(String root, Directory outDir) async {
     final path = '$root/photos_highres/$name';
     final sha = sha256.convert(await File(path).readAsBytes()).toString();
     recordedSha[name] = sha;
-    final encoded =
-        encoder.encodeJpegFile(path, ptsMs: done * 300, durationMs: 300);
-    writer.addEncodedFrame(encoded,
-        source: name,
-        trigger: (f['triggerTimestamp'] as num?)?.toDouble(),
-        sourceSha256: sha);
+    final encoded = encoder.encodeJpegFile(
+      path,
+      ptsMs: done * 300,
+      durationMs: 300,
+    );
+    writer.addEncodedFrame(
+      encoded,
+      source: name,
+      trigger: (f['triggerTimestamp'] as num?)?.toDouble(),
+      sourceSha256: sha,
+    );
     done++;
   }
   await writer.finalize(
-      captureId: root.split('/').last, extra: 'p1_1_finalize_batch_curated');
+    captureId: root.split('/').last,
+    extra: 'p1_1_finalize_batch_curated',
+  );
 
   // ── 自检(fail closed)──
   // [2026-08-11 阈值判死] 原先的拉普拉斯锐度阈值(500)与代码里真正使用的
@@ -165,21 +182,28 @@ Future<Map<String, Object?>> _archive(String root, Directory outDir) async {
     decodeError = e;
   }
   if (changed.isNotEmpty || !decodeOk) {
-    File('${outDir.path}/archive-error.json').writeAsStringSync(jsonEncode({
-      'schema': 'pw_capture_archive_error_v1',
-      'error': changed.isNotEmpty ? 'source_changed_during_encode' : 'undecodable',
-      'changed_frames': changed.take(10).toList(),
-      'changed_count': changed.length,
-      if (decodeError != null) 'decode_error': '$decodeError',
-    }));
+    File('${outDir.path}/archive-error.json').writeAsStringSync(
+      jsonEncode({
+        'schema': 'pw_capture_archive_error_v1',
+        'error': changed.isNotEmpty
+            ? 'source_changed_during_encode'
+            : 'undecodable',
+        'changed_frames': changed.take(10).toList(),
+        'changed_count': changed.length,
+        if (decodeError != null) 'decode_error': '$decodeError',
+      }),
+    );
     return {
-      'status': changed.isNotEmpty ? 'failed_source_changed' : 'failed_undecodable',
+      'status': changed.isNotEmpty
+          ? 'failed_source_changed'
+          : 'failed_undecodable',
       'frames': done,
       'changed_count': changed.length,
     };
   }
-  final manifest =
-      jsonDecode(File('${outDir.path}/manifest.json').readAsStringSync());
+  final manifest = jsonDecode(
+    File('${outDir.path}/manifest.json').readAsStringSync(),
+  );
   return {
     'schema': 'pw_capture_archive_report_v1',
     'status': 'finalized',
@@ -193,7 +217,9 @@ Future<Map<String, Object?>> _archive(String root, Directory outDir) async {
 /// 码流可解性冒烟:解首帧(必要时含其 GOP 前缀),解不开即抛。
 void _decodeSmokeTest(Directory outDir, int w, int h) {
   final reader = PwvaReader(
-      outDir, (au) => AppleHevcDecoder(width: w, height: h, keyframeAu: au));
+    outDir,
+    (au) => AppleHevcDecoder(width: w, height: h, keyframeAu: au),
+  );
   final frame = reader.readFrameNv12(0);
   if (frame.y.length != w * h) {
     throw StateError('decoded plane size mismatch');

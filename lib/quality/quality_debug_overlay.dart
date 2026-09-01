@@ -99,10 +99,7 @@ class QualityDebugOverlay extends StatelessWidget {
           label: 'gravDev',
           value: s.gravityDeviationDegrees,
           suffix: '°',
-          color: _tiltColor(
-            s.gravityDeviationDegrees,
-            s.gravityDeviationLimit,
-          ),
+          color: _tiltColor(s.gravityDeviationDegrees, s.gravityDeviationLimit),
         ),
         _rowInt(
           label: 'threshold',
@@ -156,20 +153,18 @@ class QualityDebugOverlay extends StatelessWidget {
     required String label,
     required int value,
     required Color color,
-  }) =>
-      _row(label: label, valueText: '$value', color: color);
+  }) => _row(label: label, valueText: '$value', color: color);
 
   Widget _rowFloat({
     required String label,
     required double value,
     required String suffix,
     required Color color,
-  }) =>
-      _row(
-        label: label,
-        valueText: '${value.toStringAsFixed(2)} $suffix',
-        color: color,
-      );
+  }) => _row(
+    label: label,
+    valueText: '${value.toStringAsFixed(2)} $suffix',
+    color: color,
+  );
 
   Widget _row({
     required String label,

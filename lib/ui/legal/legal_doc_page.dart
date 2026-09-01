@@ -98,8 +98,9 @@ class LegalDocPage extends StatelessWidget {
                       height: 1.8,
                       color: AetherColors.textPrimary,
                       // 民法典 496 条的显著提示义务落在这一行。
-                      fontWeight:
-                          p.emphasized ? FontWeight.w700 : FontWeight.w400,
+                      fontWeight: p.emphasized
+                          ? FontWeight.w700
+                          : FontWeight.w400,
                     ),
                   ),
                 ),
@@ -115,32 +116,32 @@ class LegalDocPage extends StatelessWidget {
 class PrivacyPolicyPage extends StatelessWidget {
   const PrivacyPolicyPage({super.key});
 
-  static Future<void> open(BuildContext context) => Navigator.of(context).push(
-        MaterialPageRoute<void>(builder: (_) => const PrivacyPolicyPage()),
-      );
+  static Future<void> open(BuildContext context) => Navigator.of(
+    context,
+  ).push(MaterialPageRoute<void>(builder: (_) => const PrivacyPolicyPage()));
 
   @override
   Widget build(BuildContext context) => const LegalDocPage(
-        title: '方寸间隐私政策',
-        version: kPrivacyPolicyVersion,
-        effectiveDate: kPrivacyPolicyEffectiveDate,
-        sections: kPrivacyPolicyZh,
-      );
+    title: '方寸间隐私政策',
+    version: kPrivacyPolicyVersion,
+    effectiveDate: kPrivacyPolicyEffectiveDate,
+    sections: kPrivacyPolicyZh,
+  );
 }
 
 /// 用户协议页。入口同上。
 class UserAgreementPage extends StatelessWidget {
   const UserAgreementPage({super.key});
 
-  static Future<void> open(BuildContext context) => Navigator.of(context).push(
-        MaterialPageRoute<void>(builder: (_) => const UserAgreementPage()),
-      );
+  static Future<void> open(BuildContext context) => Navigator.of(
+    context,
+  ).push(MaterialPageRoute<void>(builder: (_) => const UserAgreementPage()));
 
   @override
   Widget build(BuildContext context) => const LegalDocPage(
-        title: '方寸间用户协议',
-        version: kUserAgreementVersion,
-        effectiveDate: kUserAgreementEffectiveDate,
-        sections: kUserAgreementZh,
-      );
+    title: '方寸间用户协议',
+    version: kUserAgreementVersion,
+    effectiveDate: kUserAgreementEffectiveDate,
+    sections: kUserAgreementZh,
+  );
 }

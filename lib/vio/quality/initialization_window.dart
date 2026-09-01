@@ -231,15 +231,14 @@ class VioInitializationGate {
 
   /// 与尺度闸门并排出结论。[mayReportAbsoluteDimensions] 由调用方从
   /// ScaleObservabilityLedger.report() 取,本类不代它做主。
-  VioSessionAdmission admission({
-    required bool mayReportAbsoluteDimensions,
-  }) => VioSessionAdmission(
-    initPhase: _phase,
-    cloudDeliverable: _phase == VioInitPhase.converged,
-    mayReportAbsoluteDimensions: mayReportAbsoluteDimensions,
-    previewOnlyFrames: _previewOnly,
-    totalFrames: _total,
-  );
+  VioSessionAdmission admission({required bool mayReportAbsoluteDimensions}) =>
+      VioSessionAdmission(
+        initPhase: _phase,
+        cloudDeliverable: _phase == VioInitPhase.converged,
+        mayReportAbsoluteDimensions: mayReportAbsoluteDimensions,
+        previewOnlyFrames: _previewOnly,
+        totalFrames: _total,
+      );
 
   void reset() {
     _phase = VioInitPhase.bootstrapping;

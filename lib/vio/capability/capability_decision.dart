@@ -40,11 +40,7 @@ enum PoseSource {
 }
 
 /// 会话能力档位。
-enum CapabilityTier {
-  selfCoreOk,
-  degradeToPlatformPose,
-  unusable,
-}
+enum CapabilityTier { selfCoreOk, degradeToPlatformPose, unusable }
 
 /// 阻断自研核的具体原因。**每一条都要能说出「为什么它是硬伤」。**
 enum CapabilityBlocker {
@@ -119,9 +115,12 @@ class BlockerReason {
 
   @override
   String toString() {
-    final StringBuffer b = StringBuffer(blocker.name)..write(': ')..write(detail);
+    final StringBuffer b = StringBuffer(blocker.name)
+      ..write(': ')
+      ..write(detail);
     if (measured != null) b.write(' (measured=$measured');
-    if (measured != null && threshold != null) b.write(', threshold=$threshold');
+    if (measured != null && threshold != null)
+      b.write(', threshold=$threshold');
     if (measured != null) b.write(')');
     return b.toString();
   }
@@ -145,7 +144,8 @@ class CapabilityDecision {
       reasons: <BlockerReason>[
         BlockerReason(
           blocker: CapabilityBlocker.platformPoseByDesign,
-          detail: 'Platform pose is the designated source on this device class '
+          detail:
+              'Platform pose is the designated source on this device class '
               '(HMD). Not a fault.',
         ),
       ],
@@ -169,7 +169,8 @@ class CapabilityDecision {
       reasons.where((BlockerReason r) => r.poseSourceIndependent).toList();
 
   @override
-  String toString() => 'CapabilityDecision(${tier.name} via ${poseSource.name}, '
+  String toString() =>
+      'CapabilityDecision(${tier.name} via ${poseSource.name}, '
       '${reasons.length} reason(s))\n'
       '${reasons.map((BlockerReason r) => '  - $r').join('\n')}';
 }

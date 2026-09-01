@@ -45,14 +45,14 @@ class SfmDbRegenReport {
   final int elapsedMs;
 
   Map<String, Object?> toJson() => {
-        'ok': ok,
-        'stage': stage,
-        'frames_fed': framesFed,
-        'frames_total': framesTotal,
-        if (summary != null) 'summary': summary,
-        if (error != null) 'error': error,
-        'elapsed_ms': elapsedMs,
-      };
+    'ok': ok,
+    'stage': stage,
+    'frames_fed': framesFed,
+    'frames_total': framesTotal,
+    if (summary != null) 'summary': summary,
+    if (error != null) 'error': error,
+    'elapsed_ms': elapsedMs,
+  };
 }
 
 class SfmDbRegen {
@@ -67,18 +67,23 @@ class SfmDbRegen {
     required Directory materializeCache,
   }) async {
     final started = DateTime.now();
-    SfmDbRegenReport fail(String stage, String error, [int fed = 0, int total = 0]) =>
-        SfmDbRegenReport(
-          ok: false,
-          stage: stage,
-          error: error,
-          framesFed: fed,
-          framesTotal: total,
-          elapsedMs: DateTime.now().difference(started).inMilliseconds,
-        );
+    SfmDbRegenReport fail(
+      String stage,
+      String error, [
+      int fed = 0,
+      int total = 0,
+    ]) => SfmDbRegenReport(
+      ok: false,
+      stage: stage,
+      error: error,
+      framesFed: fed,
+      framesTotal: total,
+      elapsedMs: DateTime.now().difference(started).inMilliseconds,
+    );
 
-    final candidates =
-        await PhotoArchiveManifest.loadCandidateNames(captureDirectory);
+    final candidates = await PhotoArchiveManifest.loadCandidateNames(
+      captureDirectory,
+    );
     if (candidates.isEmpty) return fail('candidates', 'empty candidate list');
 
     // 逐帧组装喂入包:sidecar 元数据 + 物化 JPEG。全部就绪才开跑
@@ -92,21 +97,24 @@ class SfmDbRegen {
     );
     // 侧车可能已被附属物归档收走(pw_aux_archive_v1),走 resolver 拿目录:
     // 没归档时它就是 photos_highres 本身,归档后是校验过的临时物化目录。
-    final sidecars = await AuxArchiveResolver(codec: databaseArchiveCodec)
-        .openSidecars(captureDirectory);
+    final sidecars = await AuxArchiveResolver(
+      codec: databaseArchiveCodec,
+    ).openSidecars(captureDirectory);
     if (sidecars == null) return fail('sidecar', 'cannot resolve sidecars');
     final feeds = <({String jpegPath, Map<String, dynamic> sidecar})>[];
     try {
       for (final name in candidates) {
         final sidecarFile = File(
-            '${sidecars.directory.path}/${name.replaceAll(RegExp(r'\.jpe?g$'), '.json')}');
+          '${sidecars.directory.path}/${name.replaceAll(RegExp(r'\.jpe?g$'), '.json')}',
+        );
         if (!await sidecarFile.exists()) {
           return fail('sidecar', 'missing sidecar for $name');
         }
         Map<String, dynamic> sidecar;
         try {
-          sidecar = jsonDecode(await sidecarFile.readAsString())
-              as Map<String, dynamic>;
+          sidecar =
+              jsonDecode(await sidecarFile.readAsString())
+                  as Map<String, dynamic>;
         } catch (e) {
           return fail('sidecar', 'bad sidecar for $name: $e');
         }
@@ -154,8 +162,10 @@ class SfmDbRegen {
             imageHeight: (sc['image_h'] as num).toInt(),
             triggerTimestamp: (sc['t'] as num).toDouble(),
             captureTimestamp: (sc['t'] as num).toDouble(),
-            cameraTransform:
-                (sc['extrinsic'] as List).cast<num>().map((v) => v.toDouble()).toList(),
+            cameraTransform: (sc['extrinsic'] as List)
+                .cast<num>()
+                .map((v) => v.toDouble())
+                .toList(),
             intrinsics: (sc['intrinsics_fxfycxcy'] as List)
                 .cast<num>()
                 .map((v) => v.toDouble())
@@ -163,8 +173,12 @@ class SfmDbRegen {
           );
           final input = validation.input;
           if (input == null) {
-            return fail('validate',
-                'input rejected: ${validation.failure}', fed, feeds.length);
+            return fail(
+              'validate',
+              'input rejected: ${validation.failure}',
+              fed,
+              feeds.length,
+            );
           }
           if (!recon.offerFrame(input)) {
             return fail('feed', 'offerFrame rejected', fed, feeds.length);
@@ -172,8 +186,10 @@ class SfmDbRegen {
           fed++;
         }
         recon.finalize();
-        final summary = await refined.future.timeout(_refinedTimeout,
-            onTimeout: () => null);
+        final summary = await refined.future.timeout(
+          _refinedTimeout,
+          onTimeout: () => null,
+        );
         if (summary == null) {
           return fail('finalize', 'refined not reached', fed, feeds.length);
         }

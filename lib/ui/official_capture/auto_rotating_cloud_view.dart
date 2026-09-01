@@ -69,9 +69,11 @@ class _AutoRotatingCloudViewState extends State<AutoRotatingCloudView>
     super.initState();
     _governor = CardLiveGovernor()..addListener(_onGovernorChanged);
     _ticker = createTicker(_onTick)..start();
-    DeviceLog.log('AutoRotate',
-        '${widget.logTag}:viewer 挂载,${widget.xyz.length ~/ 3} 点,'
-        '起转 ${_governor.fpsCap}fps(15 秒一圈)');
+    DeviceLog.log(
+      'AutoRotate',
+      '${widget.logTag}:viewer 挂载,${widget.xyz.length ~/ 3} 点,'
+          '起转 ${_governor.fpsCap}fps(15 秒一圈)',
+    );
   }
 
   @override
@@ -86,8 +88,10 @@ class _AutoRotatingCloudViewState extends State<AutoRotatingCloudView>
   void _onGovernorChanged() {
     if (!mounted) return;
     if (!_governor.liveAllowed && !_userTookOver) {
-      DeviceLog.log('AutoRotate',
-          '${widget.logTag}:自转暂停(thermal=${_governor.thermalState})');
+      DeviceLog.log(
+        'AutoRotate',
+        '${widget.logTag}:自转暂停(thermal=${_governor.thermalState})',
+      );
     }
   }
 
@@ -122,9 +126,11 @@ class _AutoRotatingCloudViewState extends State<AutoRotatingCloudView>
     final window = elapsed - _fpsWindowStart;
     if (window < const Duration(seconds: 5)) return;
     final fps = _frames / (window.inMilliseconds / 1000.0);
-    DeviceLog.log('AutoRotate',
-        '${widget.logTag}:实测 fps=${fps.toStringAsFixed(1)} '
-        '(封顶 ${_governor.fpsCap}) thermal=${_governor.thermalState}');
+    DeviceLog.log(
+      'AutoRotate',
+      '${widget.logTag}:实测 fps=${fps.toStringAsFixed(1)} '
+          '(封顶 ${_governor.fpsCap}) thermal=${_governor.thermalState}',
+    );
     _frames = 0;
     _fpsWindowStart = elapsed;
   }

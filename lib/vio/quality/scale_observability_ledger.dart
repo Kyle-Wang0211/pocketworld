@@ -105,9 +105,7 @@ class ScaleObservabilityPolicy {
 
 /// 逐窗口喂入,产出会话级结论。纯累加,无 IO,无计时器。
 class ScaleObservabilityLedger {
-  ScaleObservabilityLedger({
-    this.policy = const ScaleObservabilityPolicy(),
-  });
+  ScaleObservabilityLedger({this.policy = const ScaleObservabilityPolicy()});
 
   final ScaleObservabilityPolicy policy;
 
@@ -139,9 +137,7 @@ class ScaleObservabilityLedger {
       return;
     }
     if (s.verdict != _openVerdict) {
-      _intervals.add(
-        ScaleObservabilityInterval(_openStart, t, _openVerdict!),
-      );
+      _intervals.add(ScaleObservabilityInterval(_openStart, t, _openVerdict!));
       _openVerdict = s.verdict;
       _openStart = t;
     }

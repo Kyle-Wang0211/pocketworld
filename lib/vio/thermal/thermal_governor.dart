@@ -125,7 +125,8 @@ class ThermalGovernor {
       _pendingSinceUs = null;
     }
 
-    final suspended = signal.cameraStream == CameraStreamState.interrupted ||
+    final suspended =
+        signal.cameraStream == CameraStreamState.interrupted ||
         signal.cameraStream == CameraStreamState.stopped;
     if (suspended) {
       _visualLostSinceUs ??= nowUs;
@@ -133,8 +134,7 @@ class ThermalGovernor {
       _visualLostSinceUs = null;
     }
 
-    final lostUs =
-        _visualLostSinceUs == null ? 0 : nowUs - _visualLostSinceUs!;
+    final lostUs = _visualLostSinceUs == null ? 0 : nowUs - _visualLostSinceUs!;
     if (lostUs >= reacquireAfterVisualLoss.inMicroseconds) {
       _reacquireLatched = true;
     }

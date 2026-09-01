@@ -200,10 +200,8 @@ class FusionAhrs {
   /// Roll (rotation around world-X), radians. Provided for completeness
   /// — the dome doesn't currently use it but a future "phone-held-
   /// sideways" warning HUD might.
-  double get rollRad => math.atan2(
-        _qy * _qz + _qw * _qx,
-        _qw * _qw + _qz * _qz - 0.5,
-      );
+  double get rollRad =>
+      math.atan2(_qy * _qz + _qw * _qx, _qw * _qw + _qz * _qz - 0.5);
 
   /// True until the startup gain ramp finishes (~3 s after init/reset).
   /// Useful for a "warming up" indicator in the UI.

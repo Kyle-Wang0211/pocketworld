@@ -33,13 +33,17 @@ import 'dart:typed_data';
 /// 不缩放会让数据项小 4 个数量级、先验把增益全钉在 1.0。
 double srgbToLinear255(double v) {
   final c = v / 255.0;
-  final lin = c <= 0.04045 ? c / 12.92 : math.pow((c + 0.055) / 1.055, 2.4).toDouble();
+  final lin = c <= 0.04045
+      ? c / 12.92
+      : math.pow((c + 0.055) / 1.055, 2.4).toDouble();
   return lin * 255.0;
 }
 
 double linear255ToSrgb(double v) {
   final c = (v < 0 ? 0.0 : v) / 255.0;
-  final e = c <= 0.0031308 ? c * 12.92 : 1.055 * math.pow(c, 1 / 2.4).toDouble() - 0.055;
+  final e = c <= 0.0031308
+      ? c * 12.92
+      : 1.055 * math.pow(c, 1 / 2.4).toDouble() - 0.055;
   return e * 255.0;
 }
 
@@ -100,8 +104,8 @@ int selectRepresentativeSample(Float32List samples, int start, int count) {
 /// 挑了不同帧的真实观测,颜色都真,但差 25% 亮度 ⇒ 斑块。
 class FrameColorGains {
   FrameColorGains(this.frames)
-      : logGain = Float64List(frames * 3),
-        banned = Uint8List(frames);
+    : logGain = Float64List(frames * 3),
+      banned = Uint8List(frames);
 
   final int frames;
 
@@ -150,7 +154,12 @@ class RepresentativeColorSamples {
   final Int32List _frame; // [RS-CORRECT-COLORS] 每样本来自第几帧(-1=未知)
 
   RepresentativeColorSamples._(
-      this._base, this._cap, this._count, this._rgb, this._frame);
+    this._base,
+    this._cap,
+    this._count,
+    this._rgb,
+    this._frame,
+  );
 
   factory RepresentativeColorSamples(Int32List capacityPerPoint) {
     final n = capacityPerPoint.length;
@@ -213,8 +222,12 @@ class RepresentativeColorSamples {
   ///   - [applyToOutput]=true  → 输出校正后的 RGB(RS `Correct colors` 的忠实
   ///     形态:颜色仍来自这个点自己的那次观测,只是按整帧倍数缩放,不与任何
   ///     其它表面混合 —— 与"白床单变粉"那个**平均**bug 不是一类)。
-  bool selectInto(int i, Uint8List out,
-      {FrameColorGains? gains, bool applyToOutput = false}) {
+  bool selectInto(
+    int i,
+    Uint8List out, {
+    FrameColorGains? gains,
+    bool applyToOutput = false,
+  }) {
     final c = _count[i];
     if (c == 0) return false;
     if (gains == null) {
@@ -262,8 +275,12 @@ class RepresentativeColorSamples {
   /// [RS-MULTIBAND 2026-08-14] 代表色的**浮点**版(写 out[i*3..]),语义与
   /// [selectInto] 完全一致,只是不取整 —— multi-band 要在浮点域做频段加减,
   /// 先取整会把量化误差带进低频。
-  bool selectIntoFloat(int i, Float32List out,
-      {FrameColorGains? gains, bool applyToOutput = false}) {
+  bool selectIntoFloat(
+    int i,
+    Float32List out, {
+    FrameColorGains? gains,
+    bool applyToOutput = false,
+  }) {
     final c = _count[i];
     if (c == 0) return false;
     final base = _base[i];
@@ -275,7 +292,8 @@ class RepresentativeColorSamples {
       for (var k = 0; k < c; k++) {
         final o = (base + k) * 3;
         final f = _frame[base + k];
-        lum[k] = 0.299 * gains.correct(_rgb[o], f, 0) +
+        lum[k] =
+            0.299 * gains.correct(_rgb[o], f, 0) +
             0.587 * gains.correct(_rgb[o + 1], f, 1) +
             0.114 * gains.correct(_rgb[o + 2], f, 2);
       }
@@ -352,12 +370,14 @@ class RepresentativeColorSamples {
   ///    误差有空间结构(每帧覆盖一片连续区域),不是恢复了真实光照。
   ///
   /// 末轮按增益幅度 3σ(MAD)剔坏帧 = RS 的"禁用图片"(不参与变换、自身不变)。
-  FrameColorGains estimateFrameGains(int frameCount,
-      {int iterations = 200,
-      double minLevel = 12.0,
-      int minPairPoints = 30,
-      double alpha = 0.01,
-      double beta = 100.0}) {
+  FrameColorGains estimateFrameGains(
+    int frameCount, {
+    int iterations = 200,
+    double minLevel = 12.0,
+    int minPairPoints = 30,
+    double alpha = 0.01,
+    double beta = 100.0,
+  }) {
     final out = FrameColorGains(frameCount);
     if (frameCount <= 0) return out;
 
@@ -401,7 +421,8 @@ class RepresentativeColorSamples {
         mb[ch] = sb[ch] / N;
       }
       // 太暗的对不参与:线性光下暗部比值噪声极大。
-      if (ma[1] < srgbToLinear255(minLevel) || mb[1] < srgbToLinear255(minLevel)) {
+      if (ma[1] < srgbToLinear255(minLevel) ||
+          mb[1] < srgbToLinear255(minLevel)) {
         return;
       }
       e1.add(key ~/ frameCount);

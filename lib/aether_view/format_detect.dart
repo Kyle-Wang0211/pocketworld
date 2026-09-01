@@ -136,9 +136,10 @@ abstract class FormatDetector {
     // ?token=... after the extension).
     final qIdx = lower.indexOf('?');
     final hashIdx = lower.indexOf('#');
-    final cut = [qIdx, hashIdx]
-        .where((i) => i >= 0)
-        .fold<int>(lower.length, (a, b) => a < b ? a : b);
+    final cut = [
+      qIdx,
+      hashIdx,
+    ].where((i) => i >= 0).fold<int>(lower.length, (a, b) => a < b ? a : b);
     final path = lower.substring(0, cut);
     if (path.endsWith('.glb') || path.endsWith('.gltf')) {
       return ViewerFormat.glb;

@@ -49,7 +49,8 @@ class RevealGate extends ChangeNotifier {
   void setWorks(List<String> workIds) {
     if (_disposed) return;
     final next = workIds.take(groupSize).toList();
-    final same = next.length == _group.length &&
+    final same =
+        next.length == _group.length &&
         !next.indexed.any((e) => _group[e.$1] != e.$2);
     if (same) return;
 

@@ -147,8 +147,8 @@ ThermalSignal decodeThermalSignal(Map<Object?, Object?> raw) {
   final platform = platformName == 'ios'
       ? VioPlatform.ios
       : platformName == 'android'
-          ? VioPlatform.android
-          : VioPlatform.unknown;
+      ? VioPlatform.android
+      : VioPlatform.unknown;
 
   CameraStreamState camera;
   switch (raw['cameraStream']) {
@@ -172,11 +172,14 @@ ThermalSignal decodeThermalSignal(Map<Object?, Object?> raw) {
     rawStatus: status ?? 0,
     statusReadable: status != null && raw['statusReadable'] != false,
     headroom: asDouble(raw['headroom']),
-    lowPowerMode: raw['lowPowerMode'] is bool ? raw['lowPowerMode'] as bool : null,
+    lowPowerMode: raw['lowPowerMode'] is bool
+        ? raw['lowPowerMode'] as bool
+        : null,
     cameraStream: camera,
     interruptionReason: asInt(raw['interruptionReason']),
-    systemPressureLevel:
-        raw['systemPressureLevel'] is String ? raw['systemPressureLevel'] as String : null,
+    systemPressureLevel: raw['systemPressureLevel'] is String
+        ? raw['systemPressureLevel'] as String
+        : null,
     systemPressureFactors: asInt(raw['systemPressureFactors']),
     activeProcessorCount: asInt(raw['activeProcessorCount']),
     onlineCpuCount: asInt(raw['onlineCpuCount']),

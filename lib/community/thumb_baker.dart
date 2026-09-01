@@ -39,11 +39,9 @@ class ThumbBaker {
   final Set<String> _inFlight = <String>{};
   final Set<String> _completed = <String>{};
 
-  ThumbBaker({
-    required CommunityService service,
-    SupabaseClient? client,
-  })  : _service = service,
-        _client = client ?? Supabase.instance.client;
+  ThumbBaker({required CommunityService service, SupabaseClient? client})
+    : _service = service,
+      _client = client ?? Supabase.instance.client;
 
   /// Snapshot the viewer's current frame and upload it as the work's
   /// canonical thumbnail, but only if:
@@ -62,29 +60,31 @@ class ThumbBaker {
     // skips are silent and the user's "still gray" reports can't be
     // distinguished from "bake never fired" vs "bake fired and failed".
     debugPrint(
-        '[ThumbBaker] maybeBake fired for work=${work.id} '
-        'format=${work.format} '
-        'thumbPath=${work.thumbnailStoragePath ?? "<null>"} '
-        'ownerId=${work.userId}');
+      '[ThumbBaker] maybeBake fired for work=${work.id} '
+      'format=${work.format} '
+      'thumbPath=${work.thumbnailStoragePath ?? "<null>"} '
+      'ownerId=${work.userId}',
+    );
 
     // Fast path: already has one.
     if (work.thumbnailStoragePath != null &&
         work.thumbnailStoragePath!.isNotEmpty) {
       debugPrint(
-          '[ThumbBaker] SKIP work=${work.id} — already has thumbnail '
-          '(${work.thumbnailStoragePath})');
+        '[ThumbBaker] SKIP work=${work.id} — already has thumbnail '
+        '(${work.thumbnailStoragePath})',
+      );
       return null;
     }
 
     // Per-process dedup.
     if (_completed.contains(work.id)) {
       debugPrint(
-          '[ThumbBaker] SKIP work=${work.id} — already baked this session');
+        '[ThumbBaker] SKIP work=${work.id} — already baked this session',
+      );
       return null;
     }
     if (_inFlight.contains(work.id)) {
-      debugPrint(
-          '[ThumbBaker] SKIP work=${work.id} — bake already in-flight');
+      debugPrint('[ThumbBaker] SKIP work=${work.id} — bake already in-flight');
       return null;
     }
 
@@ -93,18 +93,20 @@ class ThumbBaker {
     final myId = _client.auth.currentUser?.id;
     if (myId == null) {
       debugPrint(
-          '[ThumbBaker] SKIP work=${work.id} — no signed-in user (anon RLS)');
+        '[ThumbBaker] SKIP work=${work.id} — no signed-in user (anon RLS)',
+      );
       return null;
     }
     if (myId != work.userId) {
-      DeviceLog.log('ThumbBaker',
-          '跳过 work=${work.id} — 当前用户 $myId 不是作者 ${work.userId},'
-          'RLS 只允许作者写 thumbnail_storage_path');
+      DeviceLog.log(
+        'ThumbBaker',
+        '跳过 work=${work.id} — 当前用户 $myId 不是作者 ${work.userId},'
+            'RLS 只允许作者写 thumbnail_storage_path',
+      );
       return null;
     }
 
-    DeviceLog.log('ThumbBaker',
-        '开始烘焙 work=${work.id}(门槛全过,100ms 后截图)');
+    DeviceLog.log('ThumbBaker', '开始烘焙 work=${work.id}(门槛全过,100ms 后截图)');
     _inFlight.add(work.id);
     try {
       // Tiny delay so the viewer's first push frame fully settles
@@ -115,14 +117,17 @@ class ThumbBaker {
 
       final bytes = await viewer.captureThumb(quality: 0.85);
       if (bytes == null || bytes.isEmpty) {
-        DeviceLog.log('ThumbBaker',
-            '🔴 失败 work=${work.id} — captureThumb 返回空 '
-            '(textureId=${viewer.textureId ?? "<null>"})');
+        DeviceLog.log(
+          'ThumbBaker',
+          '🔴 失败 work=${work.id} — captureThumb 返回空 '
+              '(textureId=${viewer.textureId ?? "<null>"})',
+        );
         return null;
       }
       debugPrint(
-          '[ThumbBaker] captured ${(bytes.length / 1024).toStringAsFixed(1)} KB '
-          'for work=${work.id}, uploading...');
+        '[ThumbBaker] captured ${(bytes.length / 1024).toStringAsFixed(1)} KB '
+        'for work=${work.id}, uploading...',
+      );
 
       // [2026-08-17] 参数名从 jpegBytes 改成了 bytes(CommunityService 侧
       // 加了 contentType/extension 后统一的),ThumbBaker 被删期间没跟上。
@@ -134,8 +139,10 @@ class ThumbBaker {
         _completed.add(work.id);
         DeviceLog.log('ThumbBaker', '✅ 成功 work=${work.id} → $storagePath');
       } else {
-        DeviceLog.log('ThumbBaker',
-            '🔴 失败 work=${work.id} — 上传返回 null(多半是 RLS 拒绝)');
+        DeviceLog.log(
+          'ThumbBaker',
+          '🔴 失败 work=${work.id} — 上传返回 null(多半是 RLS 拒绝)',
+        );
       }
       return storagePath;
     } catch (e, s) {

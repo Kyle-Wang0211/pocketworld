@@ -39,12 +39,7 @@ class DomeView extends StatefulWidget {
   /// updated). Callers hook this to drive the GuidanceEngine.
   final void Function(ARPose pose)? onPose;
 
-  const DomeView({
-    super.key,
-    this.coverage,
-    this.poseProvider,
-    this.onPose,
-  });
+  const DomeView({super.key, this.coverage, this.poseProvider, this.onPose});
 
   @override
   State<DomeView> createState() => _DomeViewState();
@@ -83,10 +78,7 @@ class _DomeViewState extends State<DomeView> {
     return AspectRatio(
       aspectRatio: 1,
       child: CustomPaint(
-        painter: _DomePainter(
-          coverage: _coverage,
-          pose: _pose,
-        ),
+        painter: _DomePainter(coverage: _coverage, pose: _pose),
       ),
     );
   }
@@ -104,11 +96,7 @@ class _DomePainter extends CustomPainter {
     final radius = math.min(size.width, size.height) / 2 - 4;
 
     // Back plate (dome silhouette).
-    canvas.drawCircle(
-      center,
-      radius,
-      Paint()..color = AetherColors.bgElevated,
-    );
+    canvas.drawCircle(center, radius, Paint()..color = AetherColors.bgElevated);
 
     // Draw every coverage bin as a wedge. The sphere is projected
     // orthographically: front hemisphere fills the circle; back
@@ -136,8 +124,12 @@ class _DomePainter extends CustomPainter {
       for (int a = 0; a < aBins; a++) {
         final azCenter = (a + 0.5) / aBins * twoPi;
         final hits = bins[e * aBins + a];
-        final (screenPos, projectedRadius) =
-            _project(center, radius, azCenter, elCenter);
+        final (screenPos, projectedRadius) = _project(
+          center,
+          radius,
+          azCenter,
+          elCenter,
+        );
         final visited = hits > 0;
         final wedgeFill = Paint()
           ..color = visited

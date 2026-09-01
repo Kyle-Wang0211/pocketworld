@@ -57,8 +57,8 @@ class StreamRateConfig {
     required this.imuHz,
     this.cameraPipelineLatencyAllowanceSeconds = 0.200,
     this.imuBatchAllowanceSeconds = 0.200,
-  })  : assert(cameraHz > 0),
-        assert(imuHz > 0);
+  }) : assert(cameraHz > 0),
+       assert(imuHz > 0);
 
   final double cameraHz;
   final double imuHz;
@@ -124,9 +124,9 @@ class DomainMismatchDetector {
     this.minCoverageRatio = 0.5,
     this.starvedFrameLimit = 3,
     this.imuBufferSpanSeconds = 5.0,
-  })  : assert(minCoverageRatio > 0 && minCoverageRatio <= 1),
-        assert(starvedFrameLimit >= 1),
-        assert(imuBufferSpanSeconds > 0);
+  }) : assert(minCoverageRatio > 0 && minCoverageRatio <= 1),
+       assert(starvedFrameLimit >= 1),
+       assert(imuBufferSpanSeconds > 0);
 
   final StreamRateConfig rates;
   final double minCoverageRatio;
@@ -180,26 +180,32 @@ class DomainMismatchDetector {
       skew = tImu - normalizedSeconds;
       if (skew > rates.maxSkewLeadSeconds) {
         skewFaultCount++;
-        faults.add(TimebaseFault(
-          kind: TimebaseFaultKind.domainSkew,
-          detail: 't_imu 领先 t_cam ${skew.toStringAsFixed(6)}s,'
-              '超过结构上限 ${rates.maxSkewLeadSeconds.toStringAsFixed(3)}s'
-              '(= 相机流水线延迟余量 ${rates.cameraPipelineLatencyAllowanceSeconds}s '
-              '+ IMU 周期 ${rates.imuPeriodSeconds.toStringAsFixed(4)}s)'
-              ' ⇒ 两路不在同一时钟域',
-          measuredSeconds: skew,
-          limitSeconds: rates.maxSkewLeadSeconds,
-        ));
+        faults.add(
+          TimebaseFault(
+            kind: TimebaseFaultKind.domainSkew,
+            detail:
+                't_imu 领先 t_cam ${skew.toStringAsFixed(6)}s,'
+                '超过结构上限 ${rates.maxSkewLeadSeconds.toStringAsFixed(3)}s'
+                '(= 相机流水线延迟余量 ${rates.cameraPipelineLatencyAllowanceSeconds}s '
+                '+ IMU 周期 ${rates.imuPeriodSeconds.toStringAsFixed(4)}s)'
+                ' ⇒ 两路不在同一时钟域',
+            measuredSeconds: skew,
+            limitSeconds: rates.maxSkewLeadSeconds,
+          ),
+        );
       } else if (-skew > rates.maxSkewLagSeconds) {
         skewFaultCount++;
-        faults.add(TimebaseFault(
-          kind: TimebaseFaultKind.domainSkew,
-          detail: 't_imu 落后 t_cam ${(-skew).toStringAsFixed(6)}s,'
-              '超过结构上限 ${rates.maxSkewLagSeconds.toStringAsFixed(3)}s'
-              ' ⇒ 两路不在同一时钟域,或 IMU 流已停',
-          measuredSeconds: -skew,
-          limitSeconds: rates.maxSkewLagSeconds,
-        ));
+        faults.add(
+          TimebaseFault(
+            kind: TimebaseFaultKind.domainSkew,
+            detail:
+                't_imu 落后 t_cam ${(-skew).toStringAsFixed(6)}s,'
+                '超过结构上限 ${rates.maxSkewLagSeconds.toStringAsFixed(3)}s'
+                ' ⇒ 两路不在同一时钟域,或 IMU 流已停',
+            measuredSeconds: -skew,
+            limitSeconds: rates.maxSkewLagSeconds,
+          ),
+        );
       }
     }
 
@@ -218,29 +224,35 @@ class DomainMismatchDetector {
       if (inWindow == 0) {
         emptyWindowCount++;
         _consecutiveStarved++;
-        faults.add(TimebaseFault(
-          kind: TimebaseFaultKind.emptyPreintegrationWindow,
-          detail: '相机帧间隔 ${dt.toStringAsFixed(4)}s 内 **0 条** IMU 样本'
-              '(期望 ${expected.toStringAsFixed(1)} 条,缓冲里共 ${_imuTimes.length} 条,'
-              '缓冲区间 ${_imuTimes.isEmpty ? "空" : "[${_imuTimes.first.toStringAsFixed(3)}, ${_imuTimes.last.toStringAsFixed(3)}]"})'
-              ' ⇒ preintegration 必为空,求解器将退化成纯单目',
-          measuredSeconds: dt,
-          limitSeconds: 0.0,
-        ));
+        faults.add(
+          TimebaseFault(
+            kind: TimebaseFaultKind.emptyPreintegrationWindow,
+            detail:
+                '相机帧间隔 ${dt.toStringAsFixed(4)}s 内 **0 条** IMU 样本'
+                '(期望 ${expected.toStringAsFixed(1)} 条,缓冲里共 ${_imuTimes.length} 条,'
+                '缓冲区间 ${_imuTimes.isEmpty ? "空" : "[${_imuTimes.first.toStringAsFixed(3)}, ${_imuTimes.last.toStringAsFixed(3)}]"})'
+                ' ⇒ preintegration 必为空,求解器将退化成纯单目',
+            measuredSeconds: dt,
+            limitSeconds: 0.0,
+          ),
+        );
       } else if (expected > 0 && inWindow! / expected < minCoverageRatio) {
         starvedWindowCount++;
         _consecutiveStarved++;
         if (_consecutiveStarved >= starvedFrameLimit) {
-          faults.add(TimebaseFault(
-            kind: TimebaseFaultKind.emptyPreintegrationWindow,
-            detail: '连续 $_consecutiveStarved 帧 IMU 覆盖率不足'
-                '(本帧 $inWindow/${expected.toStringAsFixed(1)} = '
-                '${(inWindow / expected * 100).toStringAsFixed(1)}% < '
-                '${(minCoverageRatio * 100).toStringAsFixed(0)}%)'
-                ' ⇒ 系统性欠采样,不是单次打嗝',
-            measuredSeconds: inWindow / expected,
-            limitSeconds: minCoverageRatio,
-          ));
+          faults.add(
+            TimebaseFault(
+              kind: TimebaseFaultKind.emptyPreintegrationWindow,
+              detail:
+                  '连续 $_consecutiveStarved 帧 IMU 覆盖率不足'
+                  '(本帧 $inWindow/${expected.toStringAsFixed(1)} = '
+                  '${(inWindow / expected * 100).toStringAsFixed(1)}% < '
+                  '${(minCoverageRatio * 100).toStringAsFixed(0)}%)'
+                  ' ⇒ 系统性欠采样,不是单次打嗝',
+              measuredSeconds: inWindow / expected,
+              limitSeconds: minCoverageRatio,
+            ),
+          );
         }
       } else {
         _consecutiveStarved = 0;
@@ -259,18 +271,18 @@ class DomainMismatchDetector {
 
   /// 供上层做诊断展示。
   Map<String, Object?> diagnostics() => <String, Object?>{
-        'framesChecked': framesChecked,
-        'skewFaultCount': skewFaultCount,
-        'emptyWindowCount': emptyWindowCount,
-        'starvedWindowCount': starvedWindowCount,
-        'consecutiveStarved': _consecutiveStarved,
-        'bufferedImuCount': _imuTimes.length,
-        'maxSkewLeadSeconds': rates.maxSkewLeadSeconds,
-        'maxSkewLagSeconds': rates.maxSkewLagSeconds,
-        'lastSkewSeconds': (lastImuSeconds != null && _lastCameraSeconds != null)
-            ? lastImuSeconds! - _lastCameraSeconds!
-            : null,
-      };
+    'framesChecked': framesChecked,
+    'skewFaultCount': skewFaultCount,
+    'emptyWindowCount': emptyWindowCount,
+    'starvedWindowCount': starvedWindowCount,
+    'consecutiveStarved': _consecutiveStarved,
+    'bufferedImuCount': _imuTimes.length,
+    'maxSkewLeadSeconds': rates.maxSkewLeadSeconds,
+    'maxSkewLagSeconds': rates.maxSkewLagSeconds,
+    'lastSkewSeconds': (lastImuSeconds != null && _lastCameraSeconds != null)
+        ? lastImuSeconds! - _lastCameraSeconds!
+        : null,
+  };
 }
 
 /// 把 [DomainCheckResult] 里最严重的那条故障挑出来(用于日志/UI 只显示一条)。
@@ -284,8 +296,10 @@ TimebaseFault? mostSevere(List<TimebaseFault> faults) {
     TimebaseFaultKind.duplicateTimestamp,
     TimebaseFaultKind.undeterminedDomain,
   ];
-  faults.sort((TimebaseFault a, TimebaseFault b) =>
-      order.indexOf(a.kind).compareTo(order.indexOf(b.kind)));
+  faults.sort(
+    (TimebaseFault a, TimebaseFault b) =>
+        order.indexOf(a.kind).compareTo(order.indexOf(b.kind)),
+  );
   return faults.first;
 }
 

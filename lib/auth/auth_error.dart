@@ -81,5 +81,6 @@ class AuthException implements Exception {
   }
 
   @override
-  String toString() => 'AuthException($kind${detail == null ? '' : ': $detail'})';
+  String toString() =>
+      'AuthException($kind${detail == null ? '' : ': $detail'})';
 }

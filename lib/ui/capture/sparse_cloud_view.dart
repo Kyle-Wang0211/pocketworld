@@ -131,8 +131,9 @@ class _SparseCloudViewState extends State<SparseCloudView>
     final fit = SparseCloudPainter.fitOf(widget.xyz);
     _pivot = [fit.cx, fit.cy, fit.cz];
     _tween = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 280))
-      ..addListener(_onTween);
+      vsync: this,
+      duration: const Duration(milliseconds: 280),
+    )..addListener(_onTween);
   }
 
   @override
@@ -194,14 +195,16 @@ class _SparseCloudViewState extends State<SparseCloudView>
       visibility: widget.visibility,
     );
     if (world == null) return;
-    _animateTo(_CamState(
-      pivot: world,
-      panX: 0,
-      panY: 0,
-      zoom: _zoom,
-      yaw: _yaw,
-      pitch: _pitch,
-    ));
+    _animateTo(
+      _CamState(
+        pivot: world,
+        panX: 0,
+        panY: 0,
+        zoom: _zoom,
+        yaw: _yaw,
+        pitch: _pitch,
+      ),
+    );
   }
 
   /// Reframe safety net — pivot back to the fit center, undo pan/zoom, return
@@ -209,14 +212,16 @@ class _SparseCloudViewState extends State<SparseCloudView>
   /// (model-viewer's warning: give the user a way back to the framing).
   void _reframe() {
     final fit = SparseCloudPainter.fitOf(widget.xyz);
-    _animateTo(_CamState(
-      pivot: [fit.cx, fit.cy, fit.cz],
-      panX: 0,
-      panY: 0,
-      zoom: 1.0,
-      yaw: _kDefaultYaw,
-      pitch: _kDefaultPitch,
-    ));
+    _animateTo(
+      _CamState(
+        pivot: [fit.cx, fit.cy, fit.cz],
+        panX: 0,
+        panY: 0,
+        zoom: 1.0,
+        yaw: _kDefaultYaw,
+        pitch: _kDefaultPitch,
+      ),
+    );
   }
 
   /// 16×16 anti-aliased white disc — drawRawAtlas modulates it with each
@@ -255,8 +260,10 @@ class _SparseCloudViewState extends State<SparseCloudView>
                       _panX += d.focalPointDelta.dx;
                       _panY += d.focalPointDelta.dy;
                       if (d.scale != 1.0) {
-                        _zoom = (_zoom * (1 + (d.scale - 1) * 0.08))
-                            .clamp(0.15, 20.0);
+                        _zoom = (_zoom * (1 + (d.scale - 1) * 0.08)).clamp(
+                          0.15,
+                          20.0,
+                        );
                       }
                     } else {
                       // Yaw sign negated to match the un-mirrored projection
@@ -264,8 +271,10 @@ class _SparseCloudViewState extends State<SparseCloudView>
                       // → scene turns right" intuitive. Pitch now reaches the
                       // poles (±89°) instead of the old ±77° dead zone.
                       _yaw -= d.focalPointDelta.dx * 0.008;
-                      _pitch = (_pitch + d.focalPointDelta.dy * 0.006)
-                          .clamp(-_kPitchLimit, _kPitchLimit);
+                      _pitch = (_pitch + d.focalPointDelta.dy * 0.006).clamp(
+                        -_kPitchLimit,
+                        _kPitchLimit,
+                      );
                     }
                   });
                 },
@@ -371,7 +380,9 @@ class SparseCloudPainter extends CustomPainter {
 
   static double _srgbDecode(int b) {
     final c = b / 255.0;
-    return c <= 0.04045 ? c / 12.92 : math.pow((c + 0.055) / 1.055, 2.4).toDouble();
+    return c <= 0.04045
+        ? c / 12.92
+        : math.pow((c + 0.055) / 1.055, 2.4).toDouble();
   }
 
   static int _srgbEncode(double c) {
@@ -393,15 +404,12 @@ class SparseCloudPainter extends CustomPainter {
     var y = 0.0691 * r + 0.9195 * g + 0.0113 * b;
     var z = 0.0164 * r + 0.0880 * g + 0.8956 * b;
     // AgXInsetMatrix
-    final ix = 0.856627153315983 * x +
-        0.0951212405381588 * y +
-        0.0482516061458583 * z;
-    final iy = 0.137318972929847 * x +
-        0.761241990602591 * y +
-        0.101439036467562 * z;
-    final iz = 0.11189821299995 * x +
-        0.0767994186031903 * y +
-        0.811302368396859 * z;
+    final ix =
+        0.856627153315983 * x + 0.0951212405381588 * y + 0.0482516061458583 * z;
+    final iy =
+        0.137318972929847 * x + 0.761241990602591 * y + 0.101439036467562 * z;
+    final iz =
+        0.11189821299995 * x + 0.0767994186031903 * y + 0.811302368396859 * z;
     // Log2 encoding between AgxMinEv/AgxMaxEv, then 6th-order sigmoid.
     const minEv = -12.47393, maxEv = 4.026069;
     double enc(double v) {
@@ -423,13 +431,16 @@ class SparseCloudPainter extends CustomPainter {
     y = enc(iy);
     z = enc(iz);
     // AgXOutsetMatrix
-    var or_ = 1.1271005818144368 * x -
+    var or_ =
+        1.1271005818144368 * x -
         0.11060664309660323 * y -
         0.016493938717834573 * z;
-    var og = -0.1413297634984383 * x +
+    var og =
+        -0.1413297634984383 * x +
         1.157823702216272 * y -
         0.016493938717834257 * z;
-    var ob = -0.14132976349843826 * x -
+    var ob =
+        -0.14132976349843826 * x -
         0.11060664309660294 * y +
         1.2519364065950405 * z;
     // Linearize — the sigmoid output is 2.2-gamma encoded; three.js r160:
@@ -476,7 +487,11 @@ class SparseCloudPainter extends CustomPainter {
   /// fix the AgX/ACES desaturation that washed our colors. In/out: Linear-sRGB;
   /// exposure applied first (matches three.js `color *= toneMappingExposure`).
   static List<double> _pbrNeutral(
-      double r, double g, double b, double exposure) {
+    double r,
+    double g,
+    double b,
+    double exposure,
+  ) {
     const startCompression = 0.8 - 0.04; // 0.76
     const desaturation = 0.15;
     r *= exposure;
@@ -552,7 +567,8 @@ class SparseCloudPainter extends CustomPainter {
             (lb * exposure).clamp(0.0, 1.0),
           ];
       }
-      out[i] = 0xFF000000 |
+      out[i] =
+          0xFF000000 |
           (_srgbEncode(m[0]) << 16) |
           (_srgbEncode(m[1]) << 8) |
           _srgbEncode(m[2]);
@@ -586,7 +602,8 @@ class SparseCloudPainter extends CustomPainter {
   /// widget uses this to seed / reset the orbit pivot without re-deriving the
   /// robust fit itself.
   static ({double cx, double cy, double cz, double radius}) fitOf(
-      Float32List xyz) {
+    Float32List xyz,
+  ) {
     _ensureFit(xyz);
     return (cx: _cx, cy: _cy, cz: _cz, radius: _radius);
   }
@@ -612,12 +629,14 @@ class SparseCloudPainter extends CustomPainter {
     _ensureFit(xyz);
     final n = xyz.length ~/ 3;
     // 渲染门对齐:被隐藏的点不参与拾取(与 paint 同一容错——长度不符整组忽略)。
-    final vis =
-        visibility != null && visibility.length == n ? visibility : null;
+    final vis = visibility != null && visibility.length == n
+        ? visibility
+        : null;
     final cosY = math.cos(yaw), sinY = math.sin(yaw);
     final cosP = math.cos(pitch), sinP = math.sin(pitch);
     final half = size.shortestSide * 0.5;
-    final f = half * _fitFillK * zoom; // constant → scale-invariant (see _fitFillK)
+    final f =
+        half * _fitFillK * zoom; // constant → scale-invariant (see _fitFillK)
     final camDist = _radius * 3.2;
     final ox = size.width * 0.5 + panX, oy = size.height * 0.5 + panY;
     const rPx = 44.0; // tap tolerance
@@ -713,12 +732,17 @@ class SparseCloudPainter extends CustomPainter {
     _radius = dd.isEmpty
         ? 1
         : math.max(
-            1e-6, dd[(dd.length * 0.995).floor().clamp(0, dd.length - 1)]);
+            1e-6,
+            dd[(dd.length * 0.995).floor().clamp(0, dd.length - 1)],
+          );
     // Height ramp domain for uncolored clouds.
     final ysSorted = ys.toList()..sort();
     _minY = ysSorted[(ysSorted.length * 0.05).floor()];
-    final ySpan = ysSorted[(ysSorted.length * 0.95).floor()
-            .clamp(0, ysSorted.length - 1)] -
+    final ySpan =
+        ysSorted[(ysSorted.length * 0.95).floor().clamp(
+          0,
+          ysSorted.length - 1,
+        )] -
         _minY;
     _invYSpan = ySpan.abs() < 1e-9 ? 1 : 1 / ySpan;
   }
@@ -734,8 +758,9 @@ class SparseCloudPainter extends CustomPainter {
     // L2 渲染门(默认 null = 全显示):被标记的点不进渲染 buffer。
     // 长度不符 = mask 与当前点序错位 → 整组忽略(容错,绝不隐藏错点)。
     // 取景 fit(_ensureFit)刻意仍吃全量:开关翻转不得改变取景/尺度。
-    final vis =
-        visibility != null && visibility!.length == n ? visibility : null;
+    final vis = visibility != null && visibility!.length == n
+        ? visibility
+        : null;
     final cosY = math.cos(yaw), sinY = math.sin(yaw);
     final cosP = math.cos(pitch), sinP = math.sin(pitch);
     final half = size.shortestSide * 0.5;
@@ -790,8 +815,10 @@ class SparseCloudPainter extends CustomPainter {
       // right-handed again, matching the desktop three.js viewer.
       final vx = ox - x1 * f / depth; // perspective divide (chirality-correct)
       final vy = oy - y2 * f / depth;
-      if (vx < -24 || vx > size.width + 24 ||
-          vy < -24 || vy > size.height + 24) {
+      if (vx < -24 ||
+          vx > size.width + 24 ||
+          vy < -24 ||
+          vy > size.height + 24) {
         continue;
       }
       vxA[m] = vx;

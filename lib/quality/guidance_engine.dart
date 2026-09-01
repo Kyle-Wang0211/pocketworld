@@ -161,12 +161,14 @@ class GuidanceEngine {
     _coverageCredits = 0;
     _smoothedQuality = 0;
     _auditSummary.reset();
-    _publish(const GuidanceSnapshot(
-      acceptedFrames: 0,
-      orbitCompletion: 0,
-      hintText: '很好，开始缓慢绕主体移动，系统会自动挑选有效帧。',
-      stabilityScore: 1,
-    ));
+    _publish(
+      const GuidanceSnapshot(
+        acceptedFrames: 0,
+        orbitCompletion: 0,
+        hintText: '很好，开始缓慢绕主体移动，系统会自动挑选有效帧。',
+        stabilityScore: 1,
+      ),
+    );
   }
 
   void endRecording() {
@@ -184,10 +186,10 @@ class GuidanceEngine {
   }) {
     return {
       'visual_policy_version': 'v2_unified_capture_audit',
-      'visual_min_target_signal':
-          _hardRejectTargetSignalThreshold.toStringAsFixed(4),
-      'visual_warn_target_signal':
-          _softWarnTargetSignalThreshold.toStringAsFixed(4),
+      'visual_min_target_signal': _hardRejectTargetSignalThreshold
+          .toStringAsFixed(4),
+      'visual_warn_target_signal': _softWarnTargetSignalThreshold
+          .toStringAsFixed(4),
       'visual_min_orb_features':
           '${FrameQualityConstants.minOrbFeaturesForSfm}',
       'visual_warn_orb_features':
@@ -257,16 +259,16 @@ class GuidanceEngine {
         : _smoothedQuality * 0.72 + qualityScore * 0.28;
 
     final now = sample.timestamp;
-    final recordingAge = DateTime.now()
-        .difference(startedAt)
-        .inMilliseconds /
-        1000.0;
-    final enoughTimePassed =
-        _lastAcceptedAt == null ? true : (now - _lastAcceptedAt!) > 0.28;
+    final recordingAge =
+        DateTime.now().difference(startedAt).inMilliseconds / 1000.0;
+    final enoughTimePassed = _lastAcceptedAt == null
+        ? true
+        : (now - _lastAcceptedAt!) > 0.28;
     final qualityThreshold = _acceptanceThreshold(_snapshot.acceptedFrames);
     final maxSimilarity = _maximumSimilarity(targetZoneMode);
     final lowTexture =
-        sample.globalVariance < FrameQualityConstants.minLocalVarianceForTexture;
+        sample.globalVariance <
+        FrameQualityConstants.minLocalVarianceForTexture;
 
     int accepted = _snapshot.acceptedFrames;
     bool acceptedNew = false;
@@ -276,7 +278,8 @@ class GuidanceEngine {
     // (if any) so the UI can show a 3 s toast hint. Priority blur >
     // dark > bright since blur is most actionable to the user.
     String? hardRejectKindLocal;
-    if (sample.laplacianVariance < FrameQualityConstants.blurThresholdLaplacian) {
+    if (sample.laplacianVariance <
+        FrameQualityConstants.blurThresholdLaplacian) {
       _auditSummary.hardRejectBlurCount += 1;
       hardRejectKindLocal ??= 'blur';
     }
@@ -284,7 +287,8 @@ class GuidanceEngine {
       _auditSummary.hardRejectDarkCount += 1;
       hardRejectKindLocal ??= 'dark';
     }
-    if (sample.meanBrightness > FrameQualityConstants.brightThresholdBrightness) {
+    if (sample.meanBrightness >
+        FrameQualityConstants.brightThresholdBrightness) {
       _auditSummary.hardRejectBrightCount += 1;
       hardRejectKindLocal ??= 'bright';
     }
@@ -363,14 +367,16 @@ class GuidanceEngine {
       hintText = '质量已经不错，可以结束，也可以继续补更细节的角度。';
     }
 
-    _publish(GuidanceSnapshot(
-      acceptedFrames: accepted,
-      orbitCompletion: orbitCompletion,
-      hintText: hintText,
-      stabilityScore: _smoothedQuality,
-      lastAcceptedTimestamp: acceptedNew ? now : null,
-      hardRejectKind: hardRejectKindLocal,
-    ));
+    _publish(
+      GuidanceSnapshot(
+        acceptedFrames: accepted,
+        orbitCompletion: orbitCompletion,
+        hintText: hintText,
+        stabilityScore: _smoothedQuality,
+        lastAcceptedTimestamp: acceptedNew ? now : null,
+        hardRejectKind: hardRejectKindLocal,
+      ),
+    );
   }
 
   // ─── Helpers (verbatim port) ───────────────────────────────────────
@@ -396,10 +402,7 @@ class GuidanceEngine {
   }
 
   double _orbitCompletionHint(int acceptedFrames, double coverageCredits) {
-    return math.max(
-      coverageCredits,
-      math.min(acceptedFrames / 20.0, 1.0),
-    );
+    return math.max(coverageCredits, math.min(acceptedFrames / 20.0, 1.0));
   }
 
   double _normalizedBrightnessScore(double brightness) {
@@ -528,7 +531,8 @@ class GuidanceEngine {
     final values = <double>[];
     for (int y = minY; y < maxY; y++) {
       for (int x = minX; x < maxX; x++) {
-        if (excluding != null && excluding.contains(Offset(x.toDouble(), y.toDouble()))) {
+        if (excluding != null &&
+            excluding.contains(Offset(x.toDouble(), y.toDouble()))) {
           continue;
         }
         final index = y * width + x;

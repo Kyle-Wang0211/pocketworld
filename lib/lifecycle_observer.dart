@@ -42,25 +42,31 @@ class LifecycleObserver with WidgetsBindingObserver {
   Future<void> save() async {
     try {
       final prefs = await AetherPrefs.getInstance();
-      await prefs.setString(_orbitKey, jsonEncode({
-        'distance': orbit.distance,
-        // Quaternion components (w, x, y, z). Arcball orientation — see
-        // orbit_controls.dart. Kept as a flat object (not nested) so the
-        // JSON diff stays readable in debug logs.
-        'orientW': orbit.orientation.w,
-        'orientX': orbit.orientation.x,
-        'orientY': orbit.orientation.y,
-        'orientZ': orbit.orientation.z,
-        'targetX': orbit.target.x,
-        'targetY': orbit.target.y,
-        'targetZ': orbit.target.z,
-      }));
-      await prefs.setString(_objectKey, jsonEncode({
-        'positionX': obj.position.x,
-        'positionY': obj.position.y,
-        'positionZ': obj.position.z,
-        'rotationY': obj.rotationY,
-      }));
+      await prefs.setString(
+        _orbitKey,
+        jsonEncode({
+          'distance': orbit.distance,
+          // Quaternion components (w, x, y, z). Arcball orientation — see
+          // orbit_controls.dart. Kept as a flat object (not nested) so the
+          // JSON diff stays readable in debug logs.
+          'orientW': orbit.orientation.w,
+          'orientX': orbit.orientation.x,
+          'orientY': orbit.orientation.y,
+          'orientZ': orbit.orientation.z,
+          'targetX': orbit.target.x,
+          'targetY': orbit.target.y,
+          'targetZ': orbit.target.z,
+        }),
+      );
+      await prefs.setString(
+        _objectKey,
+        jsonEncode({
+          'positionX': obj.position.x,
+          'positionY': obj.position.y,
+          'positionZ': obj.position.z,
+          'rotationY': obj.rotationY,
+        }),
+      );
     } catch (e, st) {
       debugPrint('[LifecycleObserver] save error: $e\n$st');
     }

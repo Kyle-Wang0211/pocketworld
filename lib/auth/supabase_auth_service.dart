@@ -387,7 +387,9 @@ class SupabaseAuthServiceImpl implements AuthService {
       // failure, so it is best-effort.
       try {
         await _client.auth.signOut();
-      } catch (_) {/* user already deleted; local state cleared by caller */}
+      } catch (_) {
+        /* user already deleted; local state cleared by caller */
+      }
     } on AuthException {
       rethrow;
     } catch (e) {
@@ -478,15 +480,9 @@ class SupabaseAuthServiceImpl implements AuthService {
       case 'cooldown':
         final ms = (d is Map ? d['retry_after_ms'] : null);
         final days = ms is num ? (ms / 86400000).ceil() : 3;
-        return AuthException(
-          AuthErrorKind.rateLimited,
-          '改名太频繁,请 $days 天后再试',
-        );
+        return AuthException(AuthErrorKind.rateLimited, '改名太频繁,请 $days 天后再试');
       case 'rate_limited':
-        return const AuthException(
-          AuthErrorKind.rateLimited,
-          '操作过于频繁,请稍后再试',
-        );
+        return const AuthException(AuthErrorKind.rateLimited, '操作过于频繁,请稍后再试');
       case 'reserved_name':
         final kind = (d is Map ? d['kind']?.toString() : null) ?? '';
         return AuthException(

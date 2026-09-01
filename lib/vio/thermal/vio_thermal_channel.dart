@@ -22,11 +22,9 @@ const String kVioThermalMethodChannel = 'pocketworld_vio_thermal';
 const String kVioThermalEventChannel = 'pocketworld_vio_thermal/events';
 
 class VioThermalChannel {
-  VioThermalChannel({
-    MethodChannel? method,
-    EventChannel? events,
-  })  : _method = method ?? const MethodChannel(kVioThermalMethodChannel),
-        _events = events ?? const EventChannel(kVioThermalEventChannel);
+  VioThermalChannel({MethodChannel? method, EventChannel? events})
+    : _method = method ?? const MethodChannel(kVioThermalMethodChannel),
+      _events = events ?? const EventChannel(kVioThermalEventChannel);
 
   final MethodChannel _method;
   final EventChannel _events;
@@ -42,9 +40,10 @@ class VioThermalChannel {
             _malformedEvents += 1;
           }
         },
-        handleError: (Object err, StackTrace st, EventSink<ThermalSignal> sink) {
-          _channelErrors += 1;
-        },
+        handleError:
+            (Object err, StackTrace st, EventSink<ThermalSignal> sink) {
+              _channelErrors += 1;
+            },
       ),
     );
   }

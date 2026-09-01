@@ -196,13 +196,13 @@ class _AuthRootViewState extends State<AuthRootView> {
                         onTap: working
                             ? null
                             : () => Navigator.of(context).push(
-                                  MaterialPageRoute<void>(
-                                    builder: (_) => PhoneSignInView(
-                                      currentUser: widget.currentUser,
-                                      intent: PhoneIntent.signIn,
-                                    ),
+                                MaterialPageRoute<void>(
+                                  builder: (_) => PhoneSignInView(
+                                    currentUser: widget.currentUser,
+                                    intent: PhoneIntent.signIn,
                                   ),
                                 ),
+                              ),
                       ),
                       const SizedBox(height: AetherSpacing.xl),
                       MinimalLink(

@@ -40,8 +40,16 @@ AssetKind? detectAssetKind(Uint8List bytes) {
   if (_matchesAscii(bytes, 'ply')) return AssetKind.ply;
   if (_matchesAscii(bytes, 'glTF')) return AssetKind.glb;
   if (_matchesBytes(bytes, const [0xFF, 0xD8, 0xFF])) return AssetKind.jpeg;
-  if (_matchesBytes(
-      bytes, const [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])) {
+  if (_matchesBytes(bytes, const [
+    0x89,
+    0x50,
+    0x4E,
+    0x47,
+    0x0D,
+    0x0A,
+    0x1A,
+    0x0A,
+  ])) {
     return AssetKind.png;
   }
   return null;

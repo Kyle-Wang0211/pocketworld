@@ -21,7 +21,8 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import '_glb_norm_ffi_native.dart'
-    if (dart.library.js_interop) '_glb_norm_ffi_web.dart' as ffi;
+    if (dart.library.js_interop) '_glb_norm_ffi_web.dart'
+    as ffi;
 
 /// Tunables for [GlbNormalizer.normalize].
 ///

@@ -13,9 +13,9 @@ class PlatformRulesPage extends StatelessWidget {
   const PlatformRulesPage({super.key});
 
   /// 统一的打开方式,三个入口都走它,避免各处各写一遍 MaterialPageRoute。
-  static Future<void> open(BuildContext context) => Navigator.of(context).push(
-        MaterialPageRoute<void>(builder: (_) => const PlatformRulesPage()),
-      );
+  static Future<void> open(BuildContext context) => Navigator.of(
+    context,
+  ).push(MaterialPageRoute<void>(builder: (_) => const PlatformRulesPage()));
 
   @override
   Widget build(BuildContext context) {
@@ -49,8 +49,8 @@ class PlatformRulesPage extends StatelessWidget {
                   isZh
                       ? '本公约描述的是产品当前的实际规则。规则调整时本页同步更新。'
                       : 'These rules describe how the product actually behaves today, '
-                          'and are updated when behaviour changes. '
-                          'In case of any discrepancy, the Chinese version prevails.',
+                            'and are updated when behaviour changes. '
+                            'In case of any discrepancy, the Chinese version prevails.',
                   style: const TextStyle(
                     fontSize: 12,
                     height: 1.6,

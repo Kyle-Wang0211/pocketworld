@@ -145,14 +145,20 @@ class CardLiveGovernor extends ChangeNotifier with WidgetsBindingObserver {
     _thermal = next;
     if (stop && !_thermalStop) {
       _everThermalStopped = true;
-      DeviceLog.log('FeedLive',
-          '🔴 闸 4 触发:thermal=${s?.thermalName ?? "n/a"} → 停转回落静态图');
+      DeviceLog.log(
+        'FeedLive',
+        '🔴 闸 4 触发:thermal=${s?.thermalName ?? "n/a"} → 停转回落静态图',
+      );
     } else if (!stop && _thermalStop) {
-      DeviceLog.log('FeedLive',
-          '闸 4 解除:thermal=${s?.thermalName ?? "n/a"} → 恢复 live');
+      DeviceLog.log(
+        'FeedLive',
+        '闸 4 解除:thermal=${s?.thermalName ?? "n/a"} → 恢复 live',
+      );
     } else if (next != prevThermal) {
-      DeviceLog.log('FeedLive',
-          'thermal 变化:${s?.thermalName ?? "n/a"}($next) fps_cap=$fpsCap');
+      DeviceLog.log(
+        'FeedLive',
+        'thermal 变化:${s?.thermalName ?? "n/a"}($next) fps_cap=$fpsCap',
+      );
     }
     _thermalStop = stop;
     notifyListeners();
@@ -212,10 +218,7 @@ class CardLiveGovernor extends ChangeNotifier with WidgetsBindingObserver {
     // 只记录,不动任何东西 —— 见上面 v4 的说明。
     if (_memoryStop) return;
     _memoryStop = true;
-    DeviceLog.log(
-      'FeedLive',
-      '内存告警(仅记录,不改实例上限 —— 收紧会制造 thrashing,实测更费)',
-    );
+    DeviceLog.log('FeedLive', '内存告警(仅记录,不改实例上限 —— 收紧会制造 thrashing,实测更费)');
     _memoryTimer?.cancel();
     _memoryTimer = Timer(memoryBackoff, () {
       _memoryTimer = null;
@@ -241,7 +244,6 @@ class CardLiveGovernor extends ChangeNotifier with WidgetsBindingObserver {
     super.dispose();
   }
 }
-
 
 /// 全 App 同时存活的 live viewer 实例硬上限(LRU 挤出)。
 ///

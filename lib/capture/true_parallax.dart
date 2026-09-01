@@ -150,8 +150,10 @@ TrueParallaxAggregate? trueParallaxAggregate({
         final bx = cams[b][0] - px, by = cams[b][1] - py, bz = cams[b][2] - pz;
         final bn = math.sqrt(bx * bx + by * by + bz * bz);
         if (bn < 1e-12) continue;
-        final cosAng =
-            ((ax * bx + ay * by + az * bz) / (an * bn)).clamp(-1.0, 1.0);
+        final cosAng = ((ax * bx + ay * by + az * bz) / (an * bn)).clamp(
+          -1.0,
+          1.0,
+        );
         final ang = math.acos(cosAng);
         pairs++;
         if (ang > best) best = ang;
@@ -164,7 +166,10 @@ TrueParallaxAggregate? trueParallaxAggregate({
       frameAngles.putIfAbsent(fid, () => <double>[]).add(deg);
     }
     voxelAngles
-        .putIfAbsent(coverageVoxelKeyFor(px, py, pz, voxelSizeM), () => <double>[])
+        .putIfAbsent(
+          coverageVoxelKeyFor(px, py, pz, voxelSizeM),
+          () => <double>[],
+        )
         .add(deg);
   }
   if (sampled == 0) return null;

@@ -28,7 +28,8 @@ Future<void> persistSparseSnapshot({
     final xyz = snapshot.xyz;
 
     // ── binary PLY ──
-    final header = 'ply\n'
+    final header =
+        'ply\n'
         'format binary_little_endian 1.0\n'
         'comment PocketWorld capture-time sparse reconstruction (full set)\n'
         // [DEEPSYN-MARK 2026-08-23] 《互联网信息服务深度合成管理规定》第十六条:
@@ -88,14 +89,16 @@ Future<void> persistSparseSnapshot({
         't': [poses[i + 6], poses[i + 7], poses[i + 8]],
       });
     }
-    await File('$captureDir/sfm_sparse_meta.json').writeAsString(jsonEncode({
-      'schema': 'pw_sfm_sparse_meta_v1',
-      'written_at': DateTime.now().toIso8601String(),
-      'refined': snapshot.refined,
-      'n_points': n,
-      'summary': snapshot.summary,
-      'poses': posesJson,
-    }));
+    await File('$captureDir/sfm_sparse_meta.json').writeAsString(
+      jsonEncode({
+        'schema': 'pw_sfm_sparse_meta_v1',
+        'written_at': DateTime.now().toIso8601String(),
+        'refined': snapshot.refined,
+        'n_points': n,
+        'summary': snapshot.summary,
+        'poses': posesJson,
+      }),
+    );
     // ── track-length histogram (de-risk the ignore_two_view_tracks lever) ──
     // Point i's track length = obsOffsets[i+1]-obsOffsets[i] (CSR offsets).
     // The count in the len=2 bucket answers whether 2-view tracks are already
@@ -120,12 +123,16 @@ Future<void> persistSparseSnapshot({
         for (var l = 2; l <= 9; l++) 'L$l=${buckets[l]}',
         'L10+=${buckets[10]}',
       ].join(' ');
-      DeviceLog.log('SfmLive',
-          'track-hist: n=$n 2view=$twoView($pct%) mean=$mean max=$maxLen | $hist (refined=${snapshot.refined})');
+      DeviceLog.log(
+        'SfmLive',
+        'track-hist: n=$n 2view=$twoView($pct%) mean=$mean max=$maxLen | $hist (refined=${snapshot.refined})',
+      );
     }
 
-    DeviceLog.log('SfmLive',
-        'sparse persisted: $n pts (refined=${snapshot.refined}) → $captureDir/sfm_sparse.ply');
+    DeviceLog.log(
+      'SfmLive',
+      'sparse persisted: $n pts (refined=${snapshot.refined}) → $captureDir/sfm_sparse.ply',
+    );
   } catch (e) {
     DeviceLog.log('SfmLive', 'sparse persist FAILED: $e');
   }

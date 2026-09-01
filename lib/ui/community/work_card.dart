@@ -173,6 +173,7 @@ class _WorkCardState extends State<WorkCard> {
   /// [2026-08-23] 与 [_viewerFirstFrameReady] 一起构成**唯一的就绪闸**。
   /// 在此之前整张卡被骨架盖住 —— 见 build 里 `ready` 的注释。
   bool _thumbReady = false;
+
   /// [D7] @handle 的点击识别器。
   ///
   /// ⚠️ TapGestureRecognizer **必须 dispose**,否则每张卡漏一个 —— feed 滚起来
@@ -234,11 +235,13 @@ class _WorkCardState extends State<WorkCard> {
     // 以下"] 要定 cap 就得先知道**一个 viewer 到底吃多少**,而不是继续拿
     // 峰值猜。前后两条 mem 相减就是这一个实例的真实成本。
     final mb = PwTelemetry.sample()?.physFootprintMb;
-    DeviceLog.log('FeedLive',
-        '${next ? "挂载" : "卸载"} live viewer:${widget.work.id} '
-        '(format=${widget.work.format},存活 ${CardViewerRegistry.aliveCount}'
-        '/${CardViewerRegistry.cap}'
-        '${mb == null ? "" : ",mem=${mb.toStringAsFixed(0)}MB"})');
+    DeviceLog.log(
+      'FeedLive',
+      '${next ? "挂载" : "卸载"} live viewer:${widget.work.id} '
+          '(format=${widget.work.format},存活 ${CardViewerRegistry.aliveCount}'
+          '/${CardViewerRegistry.cap}'
+          '${mb == null ? "" : ",mem=${mb.toStringAsFixed(0)}MB"})',
+    );
     setState(() {
       _isLive = next;
       // 每次挂/卸都重置首帧标志。挂:缩略图 backdrop 盖着,直到 viewer 报出
@@ -364,8 +367,7 @@ class _WorkCardState extends State<WorkCard> {
     // 且**必须先用 Instruments 实测一次** —— 公开资料给不出 iOS 上渲染 N splat
     // 的实测 RSS,这个数只能自己量。
     final fmt = _work.format.toLowerCase();
-    final isPointCloudFormat =
-        fmt == 'spz' || fmt == 'gsplat' || fmt == 'ply';
+    final isPointCloudFormat = fmt == 'spz' || fmt == 'gsplat' || fmt == 'ply';
     final canMountLiveViewer =
         _isLive && modelUrl != null && !isPointCloudFormat;
 
@@ -407,262 +409,273 @@ class _WorkCardState extends State<WorkCard> {
         // 玻璃板与边缘之间的留白点下去会没反应。
         behavior: HitTestBehavior.opaque,
         child: AspectRatio(
-        aspectRatio: 1,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(AetherRadii.lg),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              // Black plate under everything — matches the thumbnail's own
-              // background so a letterboxed image has no visible seam.
-              const ColoredBox(color: Colors.black),
-              if (thumbUrl != null)
-                Image.network(
-                  thumbUrl,
-                  fit: BoxFit.cover,
-                  cacheWidth: cacheWidth,
-                  gaplessPlayback: true,
-                  // [2026-08-23] 首帧画出来才算就绪。
-                  // frameBuilder 在 build 期间被调,不能直接 setState。
-                  frameBuilder: (ctx, child, frame, wasSync) {
-                    if ((frame != null || wasSync) && !_thumbReady) {
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (mounted && !_thumbReady) {
-                          setState(() => _thumbReady = true);
-                        }
-                      });
-                    }
-                    return child;
-                  },
-                  // 图挂了也要放行 —— 否则骨架会永远盖着,那是第三种状态。
-                  errorBuilder: (ctx, _, _) {
-                    if (!_thumbReady) {
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (mounted && !_thumbReady) {
-                          setState(() => _thumbReady = true);
-                        }
-                      });
-                    }
-                    return const SizedBox.shrink();
-                  },
-                ),
-              // 焦点卡的 live 层 —— 叠在缩略图之上、玻璃板之下。
-              //
-              // 闸 6「离开焦点立即回落静态图,不留后台渲染」在这里是**卸载**
-              // 而不是隐藏:isLive 转 false,viewer 整个从树上消失,
-              // ticker 停、点云引用断开。隐藏的 widget 还会 build/paint,那不
-              // 叫停。
-              //
-              // 玻璃板压在它上面是对的:liquid_glass 采样 Flutter framebuffer
-              // 里它背后的东西,而 SparseCloudView 是纯 Dart CustomPaint,画在
-              // 同一个 framebuffer 里 —— 所以焦点卡的玻璃板下面是**转着的
-              // 点云**,这正是 PostCard 时代的观感。(当年需要 Thermion 才做到
-              // 这点,是因为旧的 WKWebView 路径画成 iOS 硬件 overlay,着色器
-              // 根本读不到。)
-              // 只在 backdrop(缩略图)之上淡入,而且要等 viewer 报出第一帧
-              // 才淡 —— 否则会闪一下刚分配、还没渲染过的空 IOSurface,就是
-              // 五月注释里那个"小黑点 / 灰色 reload"。
-              if (canMountLiveViewer)
-                AnimatedOpacity(
-                  opacity: _viewerFirstFrameReady ? 1.0 : 0.0,
-                  duration: const Duration(milliseconds: 200),
-                  curve: Curves.easeOut,
-                  child: AetherCppCardDemo(
-                    key: ValueKey('mv-aether-${_work.id}'),
-                    modelUrl: modelUrl,
-                    // 只有焦点卡跑 Ticker、只有它每帧 setMatrices 标脏。别的
-                    // 卡加载完渲一帧就睡,等被滚到中间才醒 —— 这是五月为了
-                    // 躲开 Dawn 的 MTLTexture import 风暴定下的。
-                    isFocused: widget.isFocused && widget.rotationAllowed,
-                    onFirstFrameReady: _onViewerFirstFrameReady,
+          aspectRatio: 1,
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(AetherRadii.lg),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                // Black plate under everything — matches the thumbnail's own
+                // background so a letterboxed image has no visible seam.
+                const ColoredBox(color: Colors.black),
+                if (thumbUrl != null)
+                  Image.network(
+                    thumbUrl,
+                    fit: BoxFit.cover,
+                    cacheWidth: cacheWidth,
+                    gaplessPlayback: true,
+                    // [2026-08-23] 首帧画出来才算就绪。
+                    // frameBuilder 在 build 期间被调,不能直接 setState。
+                    frameBuilder: (ctx, child, frame, wasSync) {
+                      if ((frame != null || wasSync) && !_thumbReady) {
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (mounted && !_thumbReady) {
+                            setState(() => _thumbReady = true);
+                          }
+                        });
+                      }
+                      return child;
+                    },
+                    // 图挂了也要放行 —— 否则骨架会永远盖着,那是第三种状态。
+                    errorBuilder: (ctx, _, _) {
+                      if (!_thumbReady) {
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (mounted && !_thumbReady) {
+                            setState(() => _thumbReady = true);
+                          }
+                        });
+                      }
+                      return const SizedBox.shrink();
+                    },
                   ),
-                ),
-              // Floating glass info plate — restored from PostCard.
-              //
-              // The plate never depended on a live renderer: liquid_glass
-              // samples whatever sits behind it in the FLUTTER framebuffer,
-              // and an Image.network thumbnail qualifies. (Thermion was
-              // needed only to escape the older WKWebView path, which drew
-              // as an iOS hardware overlay the shader could not read.) So
-              // the glass survives the move to static posters unchanged —
-              // and gets cheaper, since there is no renderer under it.
-              //
-              // Settings are PostCard's tuned values, kept verbatim. They
-              // encode real feedback:
-              //   • "更厚"          → thickness 20→50 (overshot)
-              //   • "更透明 + 太厚了" → thickness 50→20, α 0x14→0x08,
-              //                        refractiveIndex 1.45→1.20
-              // [2026-08-23] 加闸:没就绪就不画。此前它是**无条件**的,
-              // 于是在黑底上浮出一块几乎看不见文字的玻璃板 —— 那是中间态 ②。
-              if (ready)
-                Positioned(
-                  left: AetherSpacing.md,
-                  right: AetherSpacing.md,
-                  bottom: AetherSpacing.md,
-                  child: LiquidGlassLayer(
-                  settings: const LiquidGlassSettings(
-                    thickness: 20,
-                    blur: 4,
-                    glassColor: Color(0x08FFFFFF),
-                    refractiveIndex: 1.20,
-                    lightIntensity: 1.0,
-                    saturation: 1.0,
+                // 焦点卡的 live 层 —— 叠在缩略图之上、玻璃板之下。
+                //
+                // 闸 6「离开焦点立即回落静态图,不留后台渲染」在这里是**卸载**
+                // 而不是隐藏:isLive 转 false,viewer 整个从树上消失,
+                // ticker 停、点云引用断开。隐藏的 widget 还会 build/paint,那不
+                // 叫停。
+                //
+                // 玻璃板压在它上面是对的:liquid_glass 采样 Flutter framebuffer
+                // 里它背后的东西,而 SparseCloudView 是纯 Dart CustomPaint,画在
+                // 同一个 framebuffer 里 —— 所以焦点卡的玻璃板下面是**转着的
+                // 点云**,这正是 PostCard 时代的观感。(当年需要 Thermion 才做到
+                // 这点,是因为旧的 WKWebView 路径画成 iOS 硬件 overlay,着色器
+                // 根本读不到。)
+                // 只在 backdrop(缩略图)之上淡入,而且要等 viewer 报出第一帧
+                // 才淡 —— 否则会闪一下刚分配、还没渲染过的空 IOSurface,就是
+                // 五月注释里那个"小黑点 / 灰色 reload"。
+                if (canMountLiveViewer)
+                  AnimatedOpacity(
+                    opacity: _viewerFirstFrameReady ? 1.0 : 0.0,
+                    duration: const Duration(milliseconds: 200),
+                    curve: Curves.easeOut,
+                    child: AetherCppCardDemo(
+                      key: ValueKey('mv-aether-${_work.id}'),
+                      modelUrl: modelUrl,
+                      // 只有焦点卡跑 Ticker、只有它每帧 setMatrices 标脏。别的
+                      // 卡加载完渲一帧就睡,等被滚到中间才醒 —— 这是五月为了
+                      // 躲开 Dawn 的 MTLTexture import 风暴定下的。
+                      isFocused: widget.isFocused && widget.rotationAllowed,
+                      onFirstFrameReady: _onViewerFirstFrameReady,
+                    ),
                   ),
-                  child: LiquidGlass(
-                    shape: const LiquidRoundedSuperellipse(borderRadius: 20),
-                    glassContainsChild: false,
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.center,
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  _work.title,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w700,
-                                    color: AetherColors.textPrimary,
-                                  ),
-                                ),
-                                const SizedBox(height: 2),
-                                // 作者行。五月是纯 `@author`;点数是 08-16 为
-                                // 点云作品加的,GLB 时代没有这个概念,保留。
-                                Text.rich(
-                                  TextSpan(children: [
-                                    // [D7] 只有 @handle 这一段可点;点数那段不可点。
-                                    // 用 TextSpan 而不是套 GestureDetector ——
-                                    // 后者会把整行的命中区抢走,连带压掉卡片本身的
-                                    // onTap(整张卡是可点的)。
-                                    TextSpan(
-                                      // [HANDLE-SEMANTICS 2026-08-23]
-                                      // `@` 只跟唯一 ID,不跟昵称。
-                                      //
-                                      // 迁移 20260823010000 把命名做成双轨:
-                                      //   display_name 可重复(中文/emoji 都行)
-                                      //   handle       全局唯一(小写 ASCII)
-                                      // 抖音号 / 小红书号 / 微信号都是这个结构。
-                                      //
-                                      // 在此之前这里渲染的是 '@${'$'}{authorDisplayName}' ——
-                                      // `@` 在 Twitter/Instagram/GitHub/Discord 里
-                                      // 都专指唯一标识,跟在一个**可以有无数同名**的
-                                      // 昵称后面,等于告诉用户"这是唯一的",而它不是。
-                                      //
-                                      // 没设 handle 的用户显示昵称且**不带 @** ——
-                                      // 诚实地反映"这个人还没有 ID",而不是拿昵称冒充。
-                                      // 点击过滤仍然按 userId 走(见 onAuthorTap),
-                                      // 所以行为不受影响,变的只是那串字符说了什么。
-                                      // 判空串而不只判 null:DB 的 CHECK 保证
-                                      // handle 是 2-32 字符,但渲染层不该依赖
-                                      // 上游的约束 —— 一个空串会渲染成孤零零的
-                                      // '@'。(这条边界是被测试当场抓到的。)
-                                      text: (_work.authorHandle?.isNotEmpty ?? false)
-                                          ? '@${_work.authorHandle}'
-                                          : _work.authorDisplayName,
-                                      recognizer: _authorTapRecognizer,
-                                      style: widget.onAuthorTap == null
-                                          ? null
-                                          : const TextStyle(
-                                              color: AetherColors.textPrimary,
-                                              fontWeight: FontWeight.w600,
-                                            ),
-                                    ),
-                                    if (points != null)
-                                      TextSpan(
-                                        text: '  ·  '
-                                            '${_formatPointCount(points, AppL10n.of(context).communityPointsSuffix)}',
-                                      ),
-                                  ]),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w500,
-                                    color: AetherColors.textSecondary,
-                                    fontFeatures: [
-                                      FontFeature.tabularFigures(),
-                                    ],
-                                  ),
-                                ),
-                                // 简介 —— 五月有,我整块漏了。发布时填的描述
-                                // 在 feed 里根本没露过面。
-                                if (_work.description != null &&
-                                    _work.description!.isNotEmpty) ...[
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    _work.description!,
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w400,
-                                      color: AetherColors.textSecondary,
-                                      height: 1.35,
-                                    ),
-                                  ),
-                                ],
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          // 五月是**竖排**:心在上、眼在下,各自图标配数字。
-                          // 我第一版摊成一行(眼 图标+数字 心 图标+数字),
-                          // 占宽更多、标题被挤,和原设计不是一个东西。
-                          Column(
-                            mainAxisSize: MainAxisSize.min,
+                // Floating glass info plate — restored from PostCard.
+                //
+                // The plate never depended on a live renderer: liquid_glass
+                // samples whatever sits behind it in the FLUTTER framebuffer,
+                // and an Image.network thumbnail qualifies. (Thermion was
+                // needed only to escape the older WKWebView path, which drew
+                // as an iOS hardware overlay the shader could not read.) So
+                // the glass survives the move to static posters unchanged —
+                // and gets cheaper, since there is no renderer under it.
+                //
+                // Settings are PostCard's tuned values, kept verbatim. They
+                // encode real feedback:
+                //   • "更厚"          → thickness 20→50 (overshot)
+                //   • "更透明 + 太厚了" → thickness 50→20, α 0x14→0x08,
+                //                        refractiveIndex 1.45→1.20
+                // [2026-08-23] 加闸:没就绪就不画。此前它是**无条件**的,
+                // 于是在黑底上浮出一块几乎看不见文字的玻璃板 —— 那是中间态 ②。
+                if (ready)
+                  Positioned(
+                    left: AetherSpacing.md,
+                    right: AetherSpacing.md,
+                    bottom: AetherSpacing.md,
+                    child: LiquidGlassLayer(
+                      settings: const LiquidGlassSettings(
+                        thickness: 20,
+                        blur: 4,
+                        glassColor: Color(0x08FFFFFF),
+                        refractiveIndex: 1.20,
+                        lightIntensity: 1.0,
+                        saturation: 1.0,
+                      ),
+                      child: LiquidGlass(
+                        shape: const LiquidRoundedSuperellipse(
+                          borderRadius: 20,
+                        ),
+                        glassContainsChild: false,
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.center,
                             children: [
-                              _LikeButton(
-                                liked: _work.likedByMe,
-                                count: _work.likesCount,
-                                busy: _likeInFlight,
-                                onTap: _toggleLike,
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      _work.title,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w700,
+                                        color: AetherColors.textPrimary,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    // 作者行。五月是纯 `@author`;点数是 08-16 为
+                                    // 点云作品加的,GLB 时代没有这个概念,保留。
+                                    Text.rich(
+                                      TextSpan(
+                                        children: [
+                                          // [D7] 只有 @handle 这一段可点;点数那段不可点。
+                                          // 用 TextSpan 而不是套 GestureDetector ——
+                                          // 后者会把整行的命中区抢走,连带压掉卡片本身的
+                                          // onTap(整张卡是可点的)。
+                                          TextSpan(
+                                            // [HANDLE-SEMANTICS 2026-08-23]
+                                            // `@` 只跟唯一 ID,不跟昵称。
+                                            //
+                                            // 迁移 20260823010000 把命名做成双轨:
+                                            //   display_name 可重复(中文/emoji 都行)
+                                            //   handle       全局唯一(小写 ASCII)
+                                            // 抖音号 / 小红书号 / 微信号都是这个结构。
+                                            //
+                                            // 在此之前这里渲染的是 '@${'$'}{authorDisplayName}' ——
+                                            // `@` 在 Twitter/Instagram/GitHub/Discord 里
+                                            // 都专指唯一标识,跟在一个**可以有无数同名**的
+                                            // 昵称后面,等于告诉用户"这是唯一的",而它不是。
+                                            //
+                                            // 没设 handle 的用户显示昵称且**不带 @** ——
+                                            // 诚实地反映"这个人还没有 ID",而不是拿昵称冒充。
+                                            // 点击过滤仍然按 userId 走(见 onAuthorTap),
+                                            // 所以行为不受影响,变的只是那串字符说了什么。
+                                            // 判空串而不只判 null:DB 的 CHECK 保证
+                                            // handle 是 2-32 字符,但渲染层不该依赖
+                                            // 上游的约束 —— 一个空串会渲染成孤零零的
+                                            // '@'。(这条边界是被测试当场抓到的。)
+                                            text:
+                                                (_work
+                                                        .authorHandle
+                                                        ?.isNotEmpty ??
+                                                    false)
+                                                ? '@${_work.authorHandle}'
+                                                : _work.authorDisplayName,
+                                            recognizer: _authorTapRecognizer,
+                                            style: widget.onAuthorTap == null
+                                                ? null
+                                                : const TextStyle(
+                                                    color: AetherColors
+                                                        .textPrimary,
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                          ),
+                                          if (points != null)
+                                            TextSpan(
+                                              text:
+                                                  '  ·  '
+                                                  '${_formatPointCount(points, AppL10n.of(context).communityPointsSuffix)}',
+                                            ),
+                                        ],
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w500,
+                                        color: AetherColors.textSecondary,
+                                        fontFeatures: [
+                                          FontFeature.tabularFigures(),
+                                        ],
+                                      ),
+                                    ),
+                                    // 简介 —— 五月有,我整块漏了。发布时填的描述
+                                    // 在 feed 里根本没露过面。
+                                    if (_work.description != null &&
+                                        _work.description!.isNotEmpty) ...[
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        _work.description!,
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w400,
+                                          color: AetherColors.textSecondary,
+                                          height: 1.35,
+                                        ),
+                                      ),
+                                    ],
+                                  ],
+                                ),
                               ),
-                              // [D8] 浏览块被藏掉时这道间距也要跟着消失,
-                              // 否则心形下方留一段无来由的空白。
-                              if (_work.viewsCount >= kWorkCardMinViewsToShow)
-                                const SizedBox(height: 4),
-                              _ViewsChip(count: _work.viewsCount),
+                              const SizedBox(width: 10),
+                              // 五月是**竖排**:心在上、眼在下,各自图标配数字。
+                              // 我第一版摊成一行(眼 图标+数字 心 图标+数字),
+                              // 占宽更多、标题被挤,和原设计不是一个东西。
+                              Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  _LikeButton(
+                                    liked: _work.likedByMe,
+                                    count: _work.likesCount,
+                                    busy: _likeInFlight,
+                                    onTap: _toggleLike,
+                                  ),
+                                  // [D8] 浏览块被藏掉时这道间距也要跟着消失,
+                                  // 否则心形下方留一段无来由的空白。
+                                  if (_work.viewsCount >=
+                                      kWorkCardMinViewsToShow)
+                                    const SizedBox(height: 4),
+                                  _ViewsChip(count: _work.viewsCount),
+                                ],
+                              ),
                             ],
                           ),
-                        ],
+                        ),
                       ),
                     ),
                   ),
-                ),
-              ),
-              // ── 加载态:骨架**盖在最上层**,盖住黑底、缩略图、玻璃板全部。
-              //
-              // [2026-08-23 用户签决]「我就要两个状态:灰色闪烁的加载状态,
-              // 和最终的完成状态。」所以这里不是"某一层的占位",而是一整块
-              // 幕布 —— 在 ready 之前,用户看到的就只有灰色骨架。
-              //
-              // 用 IgnorePointer 让点击穿透到下面的卡片手势(加载中点一下也该
-              // 能进详情页,而不是被幕布吞掉)。
-              //
-              // 200ms 淡出与 viewer 的淡入同时长,两者交叉过渡,不会出现
-              // "骨架已经没了但内容还没上来"的第三帧。
-              IgnorePointer(
-                ignoring: ready,
-                child: AnimatedOpacity(
-                  opacity: ready ? 0.0 : 1.0,
-                  duration: const Duration(milliseconds: 200),
-                  curve: Curves.easeOut,
-                  child: SkeletonWorkCard(
-                    fill: true,
-                    animate: widget.rotationAllowed,
+                // ── 加载态:骨架**盖在最上层**,盖住黑底、缩略图、玻璃板全部。
+                //
+                // [2026-08-23 用户签决]「我就要两个状态:灰色闪烁的加载状态,
+                // 和最终的完成状态。」所以这里不是"某一层的占位",而是一整块
+                // 幕布 —— 在 ready 之前,用户看到的就只有灰色骨架。
+                //
+                // 用 IgnorePointer 让点击穿透到下面的卡片手势(加载中点一下也该
+                // 能进详情页,而不是被幕布吞掉)。
+                //
+                // 200ms 淡出与 viewer 的淡入同时长,两者交叉过渡,不会出现
+                // "骨架已经没了但内容还没上来"的第三帧。
+                IgnorePointer(
+                  ignoring: ready,
+                  child: AnimatedOpacity(
+                    opacity: ready ? 0.0 : 1.0,
+                    duration: const Duration(milliseconds: 200),
+                    curve: Curves.easeOut,
+                    child: SkeletonWorkCard(
+                      fill: true,
+                      animate: widget.rotationAllowed,
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
-      ),
       ),
     );
   }
@@ -812,4 +825,3 @@ class _ViewsChip extends StatelessWidget {
     );
   }
 }
-

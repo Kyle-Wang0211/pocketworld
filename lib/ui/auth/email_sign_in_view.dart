@@ -96,10 +96,7 @@ class _EmailSignUpPageState extends State<EmailSignUpPage> {
   Future<void> _submit() async {
     try {
       await widget.currentUser.signUp(
-        SignUpRequest.email(
-          email: _normalizedEmail,
-          password: _password.text,
-        ),
+        SignUpRequest.email(email: _normalizedEmail, password: _password.text),
       );
     } on EmailVerificationPending catch (e) {
       // signup-start has emailed an OTP and stashed the request in

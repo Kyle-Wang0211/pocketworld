@@ -20,7 +20,13 @@ Uint8List _texture({required int shiftX}) {
 }
 
 void main() {
-  const intrinsics = <double>[460, 460, 2016, 1512];
+  // 2026-09-01 修正单位错误:此前是 [460, 460, ...] 配 4032 的图宽,等于
+  // 2·atan(2016/460) = 154° 的视场角 —— 没有这种镜头。那个 460 是从 VINS 的
+  // FOCAL_LENGTH 抄来的,但它是虚拟归一化焦距,不是 4032 图上的像素焦距。
+  //
+  // 这个错误会让任何按「归一化后乘 460」口径工作的步骤(rejectWithF)拿到
+  // 6.3 倍偏严的阈值。改成 iPhone 12MP 的实测量级:fx≈3200 → 约 65° 视场。
+  const intrinsics = <double>[3200, 3200, 2016, 1512];
 
   test('only an accepted actual still advances the actual-photo baseline', () {
     final gate = OfficialActualPhotoGate();

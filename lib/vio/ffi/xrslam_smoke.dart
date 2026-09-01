@@ -71,27 +71,27 @@ class XrslamSmokeResult {
       version!.isNotEmpty;
 
   Map<String, Object?> toJson() => <String, Object?>{
-        'ok': ok,
-        'symbolFound': symbolFound,
-        'probeRc': probeRc,
-        'probeRcName': xrslamStatusName(probeRc),
-        'neededChars': neededChars,
-        'fetchRc': fetchRc,
-        'fetchRcName': xrslamStatusName(fetchRc),
-        'version': version,
-        'error': error,
-        'createRc': createRc,
-        'createOk': createRc == null ? null : xrslamCreateSucceeded(createRc!),
-        'destroyed': destroyed,
-        'configProvenance': configProvenance,
-      };
+    'ok': ok,
+    'symbolFound': symbolFound,
+    'probeRc': probeRc,
+    'probeRcName': xrslamStatusName(probeRc),
+    'neededChars': neededChars,
+    'fetchRc': fetchRc,
+    'fetchRcName': xrslamStatusName(fetchRc),
+    'version': version,
+    'error': error,
+    'createRc': createRc,
+    'createOk': createRc == null ? null : xrslamCreateSucceeded(createRc!),
+    'destroyed': destroyed,
+    'configProvenance': configProvenance,
+  };
 
   @override
   String toString() => ok
       ? 'XRSLAM FFI OK — version="$version" (needed=$neededChars chars)'
       : 'XRSLAM FFI FAIL — symbolFound=$symbolFound '
-          'probe=${xrslamStatusName(probeRc)} fetch=${xrslamStatusName(fetchRc)} '
-          'err=$error';
+            'probe=${xrslamStatusName(probeRc)} fetch=${xrslamStatusName(fetchRc)} '
+            'err=$error';
 }
 
 /// 跑一次最小验证。**不抛异常** —— 诊断代码自己崩掉是最没用的失败方式。
@@ -128,9 +128,7 @@ XrslamSmokeResult runXrslamSmoke() {
         neededChars: needed,
         fetchRc: xrslamErrInternal,
         version: null,
-        error: needed <= 0
-            ? '查长度返回 $needed —— 库没写出参,或版本串为空'
-            : null,
+        error: needed <= 0 ? '查长度返回 $needed —— 库没写出参,或版本串为空' : null,
       );
     }
 
@@ -180,14 +178,19 @@ XrslamSmokeResult runXrslamSmoke() {
 ///    结果里的 configProvenance 会如实标出哪些字段是 PLACEHOLDER。
 XrslamSmokeResult runXrslamLifecycle({CameraIntrinsics? intrinsics}) {
   final XrslamSmokeResult base = runXrslamSmoke();
-  if (!base.ok) return base;   // 通路都不通就别往下走
+  if (!base.ok) return base; // 通路都不通就别往下走
 
   // 没传就用一组**明确标记为占位**的值。1280x720 下 fx≈fy≈1000 是
   // iPhone 主摄的量级,但**这不是标定值** —— provenance 会如实说。
-  final CameraIntrinsics k = intrinsics ??
+  final CameraIntrinsics k =
+      intrinsics ??
       const CameraIntrinsics(
-        fx: 1000.0, fy: 1000.0, cx: 640.0, cy: 360.0,
-        resolutionWidth: 1280, resolutionHeight: 720,
+        fx: 1000.0,
+        fy: 1000.0,
+        cx: 640.0,
+        cy: 360.0,
+        resolutionWidth: 1280,
+        resolutionHeight: 720,
         provenance: FieldProvenance.placeholder,
       );
   final XrslamConfigBuilder builder = XrslamConfigBuilder(intrinsics: k);
@@ -195,13 +198,18 @@ XrslamSmokeResult runXrslamLifecycle({CameraIntrinsics? intrinsics}) {
   final XrslamBindings bindings = XrslamBindings(ffi.DynamicLibrary.process());
   // 我们的构建打开了 XRSLAM_CONFIG_FROM_STRING ⇒ 这两个参数是 **YAML 正文**,
   // 不是文件路径。传路径进去会被当 YAML 解析然后失败。
-  final ffi.Pointer<ffi.Char> slamCfg =
-      builder.buildSlamConfigYaml().toNativeUtf8().cast<ffi.Char>();
-  final ffi.Pointer<ffi.Char> devCfg =
-      builder.buildDeviceConfigYaml().toNativeUtf8().cast<ffi.Char>();
+  final ffi.Pointer<ffi.Char> slamCfg = builder
+      .buildSlamConfigYaml()
+      .toNativeUtf8()
+      .cast<ffi.Char>();
+  final ffi.Pointer<ffi.Char> devCfg = builder
+      .buildDeviceConfigYaml()
+      .toNativeUtf8()
+      .cast<ffi.Char>();
   final ffi.Pointer<ffi.Char> license = ''.toNativeUtf8().cast<ffi.Char>();
-  final ffi.Pointer<ffi.Char> product =
-      'pocketworld'.toNativeUtf8().cast<ffi.Char>();
+  final ffi.Pointer<ffi.Char> product = 'pocketworld'
+      .toNativeUtf8()
+      .cast<ffi.Char>();
   final ffi.Pointer<ffi.Pointer<ffi.Void>> cfgOut =
       calloc<ffi.Pointer<ffi.Void>>();
 
@@ -209,15 +217,15 @@ XrslamSmokeResult runXrslamLifecycle({CameraIntrinsics? intrinsics}) {
   bool destroyed = false;
   String? err;
   try {
-    createRc =
-        bindings.XRSLAMCreate(slamCfg, devCfg, license, product, cfgOut);
+    createRc = bindings.XRSLAMCreate(slamCfg, devCfg, license, product, cfgOut);
     // ⚠️ 这里**必须**用 xrslamCreateSucceeded:上游是 1=成功/0=失败,
     //    用常规的 rc>=0 会把失败当成功。
     if (xrslamCreateSucceeded(createRc)) {
       bindings.XRSLAMDestroy();
       destroyed = true;
     } else {
-      err = 'XRSLAMCreate 返回 $createRc(约定 1=成功);'
+      err =
+          'XRSLAMCreate 返回 $createRc(约定 1=成功);'
           'cfgOut=${cfgOut.value.address}';
     }
   } catch (e) {

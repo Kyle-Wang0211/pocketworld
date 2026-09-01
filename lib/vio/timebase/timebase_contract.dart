@@ -244,7 +244,8 @@ class ClockOffsetEstimate {
   bool get driftIsSignificant => driftPpm.abs() > driftPpmUncertainty;
 
   @override
-  String toString() => 'ClockOffsetEstimate(offset=${offsetSeconds.toStringAsFixed(6)}s, '
+  String toString() =>
+      'ClockOffsetEstimate(offset=${offsetSeconds.toStringAsFixed(6)}s, '
       'n=$sampleCount, jitter=${(jitterSeconds * 1e3).toStringAsFixed(3)}ms, '
       'span=${spanSeconds.toStringAsFixed(1)}s, '
       'drift=${driftPpm.toStringAsFixed(1)}±${driftPpmUncertainty.toStringAsFixed(1)}ppm)';
@@ -336,7 +337,8 @@ class TimebaseVerdict {
   bool get isBlocking => decision != TimebaseDecision.accept;
 
   @override
-  String toString() => 'TimebaseVerdict(${decision.name}'
+  String toString() =>
+      'TimebaseVerdict(${decision.name}'
       '${normalizedSeconds != null ? ', t=$normalizedSeconds' : ''}'
       '${faults.isEmpty ? '' : ', faults=$faults'}'
       '${reason.isEmpty ? '' : ', reason=$reason'})';

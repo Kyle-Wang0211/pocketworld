@@ -34,19 +34,24 @@ class _CubeSceneState extends State<CubeScene>
 
     // key + fill directional lights so the cube faces shade differently and
     // read as real volume (instead of a flat white blob).
-    await viewer.addDirectLight(DirectLight.sun(
-      intensity: 60000,
-      castShadows: false,
-      direction: vm.Vector3(-0.4, -0.8, -0.55)..normalize(),
-    ));
-    await viewer.addDirectLight(DirectLight.sun(
-      intensity: 16000,
-      castShadows: false,
-      direction: vm.Vector3(0.7, -0.1, 0.45)..normalize(),
-    ));
+    await viewer.addDirectLight(
+      DirectLight.sun(
+        intensity: 60000,
+        castShadows: false,
+        direction: vm.Vector3(-0.4, -0.8, -0.55)..normalize(),
+      ),
+    );
+    await viewer.addDirectLight(
+      DirectLight.sun(
+        intensity: 16000,
+        castShadows: false,
+        direction: vm.Vector3(0.7, -0.1, 0.45)..normalize(),
+      ),
+    );
 
-    final mat = await FilamentApp.instance!
-        .createUbershaderMaterialInstance(unlit: false);
+    final mat = await FilamentApp.instance!.createUbershaderMaterialInstance(
+      unlit: false,
+    );
     await mat.setParameterFloat4('baseColorFactor', 0.82, 0.82, 0.86, 1.0);
 
     _cube = await viewer.createGeometry(

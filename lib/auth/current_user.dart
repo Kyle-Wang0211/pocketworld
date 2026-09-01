@@ -66,8 +66,10 @@ class CurrentUser extends ChangeNotifier {
     // silent SignedOut flip (AuthGate pops every route → login page) was
     // undiagnosable in the field without this.
     DeviceLog.log('CurrentUser', '→ SignedOut ($reason)');
-    debugPrint('[CurrentUser] → SignedOut ($reason)\n'
-        '${StackTrace.current}');
+    debugPrint(
+      '[CurrentUser] → SignedOut ($reason)\n'
+      '${StackTrace.current}',
+    );
   }
 
   /// Swap the concrete auth backend at runtime. main() uses this to
@@ -75,8 +77,10 @@ class CurrentUser extends ChangeNotifier {
   /// Firebase.initializeApp) and upgrade to the Firebase-backed
   /// service once initialization settles.
   void swapService(AuthService newService) {
-    DeviceLog.log('CurrentUser',
-        'swapService → ${newService.runtimeType} (state=${_state.runtimeType})');
+    DeviceLog.log(
+      'CurrentUser',
+      'swapService → ${newService.runtimeType} (state=${_state.runtimeType})',
+    );
     _service = newService;
   }
 
@@ -102,14 +106,18 @@ class CurrentUser extends ChangeNotifier {
     // init 本身不发任何事件;track 在未登录时是 no-op ⇒ 登录墙即同意门,
     // 注册(同意协议与隐私政策)之前不会有任何统计数据离开设备。
     // 错误钩子链式接管,原 handler 照常执行。
-    unawaited(PwAnalytics.instance.init().then((_) {
-      PwAnalytics.instance.installErrorHandlers();
-    }));
+    unawaited(
+      PwAnalytics.instance.init().then((_) {
+        PwAnalytics.instance.installErrorHandlers();
+      }),
+    );
     try {
       final user = await _service.currentUser();
       // ignore: avoid_print
-      print('[AUTH-DEBUG] CurrentUser.bootstrap: _service.currentUser() '
-          '→ ${user == null ? "null (will go to signedOut)" : "user=${user.email ?? user.id.rawValue}"}');
+      print(
+        '[AUTH-DEBUG] CurrentUser.bootstrap: _service.currentUser() '
+        '→ ${user == null ? "null (will go to signedOut)" : "user=${user.email ?? user.id.rawValue}"}',
+      );
       if (user == null) {
         await _clearPersistedUserID();
         _logSignedOut('bootstrap: currentUser==null');
@@ -123,7 +131,9 @@ class CurrentUser extends ChangeNotifier {
       if (idleExpired) {
         try {
           await _service.signOut();
-        } catch (_) {/* best effort */}
+        } catch (_) {
+          /* best effort */
+        }
         await _clearIdleTimestamp();
         await _clearPersistedUserID();
         _logSignedOut('bootstrap: idle expired');
@@ -321,7 +331,9 @@ class CurrentUser extends ChangeNotifier {
   Future<void> signOut() async {
     try {
       await _service.signOut();
-    } catch (_) {/* best effort */}
+    } catch (_) {
+      /* best effort */
+    }
     await _clearIdleTimestamp();
     await _clearPersistedUserID();
     _logSignedOut('signOut() called');
@@ -430,7 +442,8 @@ class CurrentUser extends ChangeNotifier {
 
   Future<bool> _isIdleExpired() async {
     final prefs = await AetherPrefs.getInstance();
-    final lastMs = (await prefs.getInt(AuthPersistenceKeys.lastActivityAt)) ?? 0;
+    final lastMs =
+        (await prefs.getInt(AuthPersistenceKeys.lastActivityAt)) ?? 0;
     if (lastMs <= 0) return false;
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     return (nowMs - lastMs) > idleSignOutInterval.inMilliseconds;

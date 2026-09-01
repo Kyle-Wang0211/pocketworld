@@ -162,11 +162,7 @@ class SkeletonWorkCard extends StatelessWidget {
   /// 而不是自带一套圆角与方形约束。
   final bool fill;
 
-  const SkeletonWorkCard({
-    super.key,
-    this.animate = true,
-    this.fill = false,
-  });
+  const SkeletonWorkCard({super.key, this.animate = true, this.fill = false});
 
   @override
   Widget build(BuildContext context) {
@@ -180,29 +176,29 @@ class SkeletonWorkCard extends StatelessWidget {
 
   Widget _content(BuildContext context) {
     return Stack(
-          fit: StackFit.expand,
-          children: [
-            SkeletonBox(
-              animate: animate,
-              // [2026-08-24] 原来是自造值 20,而 WorkCard 的 ClipRRect 用的是
-              // AetherRadii.lg=24 —— 幕布的角比卡片的角更紧,揭幕那一刻角上会
-              // 跳一下。全仓统一走令牌。
-              borderRadius: BorderRadius.circular(AetherRadii.lg),
-            ),
-            Positioned(
-              left: 12,
-              right: 12,
-              bottom: 12,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  SkeletonBox(animate: animate, width: 168, height: 16),
-                  const SizedBox(height: 8),
-                  SkeletonBox(animate: animate, width: 104, height: 12),
-                ],
-              ),
-            ),
+      fit: StackFit.expand,
+      children: [
+        SkeletonBox(
+          animate: animate,
+          // [2026-08-24] 原来是自造值 20,而 WorkCard 的 ClipRRect 用的是
+          // AetherRadii.lg=24 —— 幕布的角比卡片的角更紧,揭幕那一刻角上会
+          // 跳一下。全仓统一走令牌。
+          borderRadius: BorderRadius.circular(AetherRadii.lg),
+        ),
+        Positioned(
+          left: 12,
+          right: 12,
+          bottom: 12,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SkeletonBox(animate: animate, width: 168, height: 16),
+              const SizedBox(height: 8),
+              SkeletonBox(animate: animate, width: 104, height: 12),
+            ],
+          ),
+        ),
       ],
     );
   }

@@ -222,9 +222,7 @@ class _CaptureExitDialogState extends State<CaptureExitDialog> {
               AnimatedAlign(
                 duration: _toggleDuration,
                 curve: _toggleCurve,
-                alignment: _save
-                    ? Alignment.centerRight
-                    : Alignment.centerLeft,
+                alignment: _save ? Alignment.centerRight : Alignment.centerLeft,
                 child: Padding(
                   padding: const EdgeInsets.all(_knobInset),
                   child: AnimatedContainer(

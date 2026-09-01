@@ -256,8 +256,10 @@ class PoseDriftTracker {
       _currentDegradedRunStart = t;
       if (_kDiagLog) {
         // ignore: avoid_print
-        print('[PoseDrift] DEGRADED: normal → $state '
-            '(transition #$_transitionsToDegraded)');
+        print(
+          '[PoseDrift] DEGRADED: normal → $state '
+          '(transition #$_transitionsToDegraded)',
+        );
       }
     } else if (!wasNormal && isNormal) {
       // Recovery — close out the current degraded run, update the
@@ -276,8 +278,10 @@ class PoseDriftTracker {
       if (_kDiagLog) {
         final runSec = (runMicros / 1e6).toStringAsFixed(2);
         // ignore: avoid_print
-        print('[PoseDrift] RECOVERED: $prevState → normal '
-            '(degraded for ${runSec}s)');
+        print(
+          '[PoseDrift] RECOVERED: $prevState → normal '
+          '(degraded for ${runSec}s)',
+        );
       }
     } else if (!wasNormal && !isNormal && prevState != state) {
       // limited reason changed mid-degraded-run (e.g.
@@ -285,8 +289,10 @@ class PoseDriftTracker {
       // because the root cause shifted.
       if (_kDiagLog) {
         // ignore: avoid_print
-        print('[PoseDrift] limited reason changed: '
-            '$prevState → $state (still degraded)');
+        print(
+          '[PoseDrift] limited reason changed: '
+          '$prevState → $state (still degraded)',
+        );
       }
     }
     // Same-bucket transitions (normal→normal, limited→limited, even
@@ -333,8 +339,7 @@ class PoseDriftTracker {
     final tailMicros = now.difference(_lastEventT!).inMicroseconds;
     if (tailMicros > 0) {
       final tailState = _lastState ?? 'normal';
-      reasonMicros[tailState] =
-          (reasonMicros[tailState] ?? 0) + tailMicros;
+      reasonMicros[tailState] = (reasonMicros[tailState] ?? 0) + tailMicros;
     }
 
     var totalMicros = 0;
@@ -359,8 +364,7 @@ class PoseDriftTracker {
     var longestRunMicros = _longestDegradedRunMicros;
     final inflightRunStart = _currentDegradedRunStart;
     if (inflightRunStart != null) {
-      final inflightMicros =
-          now.difference(inflightRunStart).inMicroseconds;
+      final inflightMicros = now.difference(inflightRunStart).inMicroseconds;
       if (inflightMicros > longestRunMicros) longestRunMicros = inflightMicros;
     }
 

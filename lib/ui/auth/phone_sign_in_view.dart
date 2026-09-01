@@ -131,9 +131,7 @@ class _PhoneSignInViewState extends State<PhoneSignInView> {
                 title: l.authPhoneNumberHint,
                 controller: _nationalNumber,
                 keyboard: AuthFieldKeyboard.phone,
-                inputFormatters: [
-                  FilteringTextInputFormatter.digitsOnly,
-                ],
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                 onChanged: (_) => setState(() {}),
               ),
             ),
@@ -197,7 +195,9 @@ class _PhoneSignInViewState extends State<PhoneSignInView> {
         ),
         const SizedBox(height: AetherSpacing.lg),
         AuthPrimaryButton(
-          title: widget.intent == PhoneIntent.signIn ? l.authPhoneSubmitSignIn : l.authPhoneSubmitSignUp,
+          title: widget.intent == PhoneIntent.signIn
+              ? l.authPhoneSubmitSignIn
+              : l.authPhoneSubmitSignUp,
           isWorking: working,
           isEnabled: _code.text.length >= 6,
           onTap: _submitCode,
@@ -207,9 +207,9 @@ class _PhoneSignInViewState extends State<PhoneSignInView> {
           onTap: working
               ? null
               : () => setState(() {
-                    _challenge = null;
-                    _code.clear();
-                  }),
+                  _challenge = null;
+                  _code.clear();
+                }),
           child: Text(
             l.authPhoneChangeNumber,
             style: const TextStyle(

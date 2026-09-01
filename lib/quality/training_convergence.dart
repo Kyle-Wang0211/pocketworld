@@ -85,13 +85,11 @@ abstract class TrainingConvergenceProvider {
 /// against during development. Designed to match the Brush training
 /// loop's typical behavior on the Mip-NeRF 360 garden:
 ///   step 0..400, gaussians 50k→120k, pearson 0.3→0.94, loss 0.18→0.05
-class MockTrainingConvergenceProvider
-    implements TrainingConvergenceProvider {
+class MockTrainingConvergenceProvider implements TrainingConvergenceProvider {
   final int targetSteps;
   final Duration tick;
 
-  final _controller =
-      StreamController<TrainingConvergenceSnapshot>.broadcast();
+  final _controller = StreamController<TrainingConvergenceSnapshot>.broadcast();
   final Stopwatch _clock = Stopwatch();
   Timer? _timer;
   int _step = 0;
@@ -135,9 +133,9 @@ class MockTrainingConvergenceProvider
     // Smooth growth: sigmoid-ish curve from 0.3 to 0.94.
     final pearson = 0.3 + 0.64 * (1.0 / (1.0 + math.exp(-8 * (f - 0.45))));
     final loss = 0.18 - 0.13 * f + math.sin(step * 0.12) * 0.008;
-    final gaussians =
-        (50000 + (70000 * math.min(1.0, f * 1.3))).round();
-    final densRate = math.max(0.0, 0.08 - f * 0.095) +
+    final gaussians = (50000 + (70000 * math.min(1.0, f * 1.3))).round();
+    final densRate =
+        math.max(0.0, 0.08 - f * 0.095) +
         math.max(0.0, math.sin(step * 0.21) * 0.01);
     return TrainingConvergenceSnapshot(
       step: step,
