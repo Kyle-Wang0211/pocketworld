@@ -3219,46 +3219,38 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       'verified_at_start': _projectPhotos.count,
       'outstanding_at_start': _shutterQueue.outstandingCount,
     });
-    // ══ 瞬时快门:相框与震动都在这里,不等 12MP 事务 ══
+    // ══ 反馈锚在「照片确认存在」那一刻 ══
     //
-    // 原生 addPhotoCard 把卡片锚在**调用那一刻的 session.currentFrame 位姿**上。
-    // 这个调用此前放在 `await capture.highResolutionCompletion` 之后,也就是快门
-    // 后 317ms(p90 542ms)—— 那段时间手已经移动了,所以卡片被钉在了一个**不是
-    // 拍摄位姿**的地方。原生那句注释("called immediately after a manual capture,
-    // so it == the capture pose")的前提当时是假的;移到这里之后才成立。
+    // 时间线(build-76 实测 n=22):
+    //   0ms     治理器判定开火
+    //   +1ms    票据受理            ← 照片还不存在
+    //   +255ms  原生 12MP 送达      ← 照片在这一刻才真正存在(物理地板,苹果的账)
+    //   +304ms  事务完成(本行)     ← Dart 能拿到的最早诚实信号
     //
-    // 贴图还没落盘不是问题:渲染器早就为此写好了重试(每 150ms、最多 30 次),
-    // 几何与位姿存在 spec 里,重试不动位姿。见 Swift 侧 "[瞬时快门]" 注释。
+    // 震动与黑相框都放在这里,中间不隔任何 await —— 用户底线「拍照和给反馈必须
+    // 同时发生」,且「照片都不知道有没有,那干嘛震动」。
     //
-    // 震动紧贴着它,中间不隔 await —— 用户底线「拍照和给反馈必须同时发生」。
+    // 为什么不是 +255ms:那需要原生多发一个「已送达」信号,属于苹果侧改动。
+    // 项目规矩是能用 Dart 就用 Dart、跨端优先,而 49ms 感知不出来。
     //
-    // 代价说明白:震动回到了「照片确认存在之前」。一旦事务失败,下面会把已经
-    // 挂上的卡片摘掉,但那一下震动收不回来。全历史 captureFailed 22 次;重复
-    // 判决那 80 次已经在上一刀里不再失败,所以这个错配现在很小。
-    _triggerShutterHaptic();
-    unawaited(
-      _arKitChannel
-          .invokeMethod<void>('addPhotoCard', <String, dynamic>{
-            'textureJpegPath': capture.previewJpegPath,
-            'evidenceJpegPath': capture.evidenceJpegPath,
-          })
-          .catchError((Object e) {
-            // ignore: avoid_print
-            print('[OfficialARCapturePage] addPhotoCard failed: $e');
-          }),
-    );
-
-    late final OfficialHighResReconstructionInput input;
-    try {
-      input = await capture.highResolutionCompletion;
-    } catch (_) {
-      // 事务失败 → 摘掉刚挂上的卡片,绝不留鬼框。
-      _removePhotoCardForEvidence(capture.evidenceJpegPath);
-      rethrow;
-    }
-    if (!mounted ||
-        _failedEvidenceJpegPaths.contains(capture.evidenceJpegPath)) {
-      _removePhotoCardForEvidence(capture.evidenceJpegPath);
+    // 2026-09-01 教训:此前把两者前移到受理时刻(build 79),相框确实瞬时了,
+    // 但震动又跑到照片存在之前 —— 那正是用户半个月前抓到的「震了 30+ 次、
+    // 相册只有 20 张」。已撤回。
+    final input = await capture.highResolutionCompletion;
+    if (mounted &&
+        !_failedEvidenceJpegPaths.contains(capture.evidenceJpegPath)) {
+      _triggerShutterHaptic();
+      unawaited(
+        _arKitChannel
+            .invokeMethod<void>('addPhotoCard', <String, dynamic>{
+              'textureJpegPath': capture.previewJpegPath,
+              'evidenceJpegPath': capture.evidenceJpegPath,
+            })
+            .catchError((Object e) {
+              // ignore: avoid_print
+              print('[OfficialARCapturePage] addPhotoCard failed: $e');
+            }),
+      );
     }
     _recomputeShutterPace();
     TelemetryWriter.instance.event('shutter', {
@@ -3273,17 +3265,6 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       'phase': _sfmPhase?.name,
       'jpeg': capture.evidenceJpegPath.split('/').last,
     });
-  }
-
-  /// 摘掉某张证据对应的 AR 卡片。瞬时快门先挂后验,失败时必须回收。
-  void _removePhotoCardForEvidence(String evidenceJpegPath) {
-    unawaited(
-      _arKitChannel
-          .invokeMethod<void>('removePhotoCard', <String, dynamic>{
-            'evidenceJpegPath': evidenceJpegPath,
-          })
-          .catchError((Object _) {}),
-    );
   }
 
   void _onShutterTicketError(

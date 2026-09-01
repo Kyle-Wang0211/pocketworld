@@ -64,44 +64,19 @@ void main() {
       reason: '两者之间一旦出现 await,就不再是「同时」——那是用户定的底线',
     );
 
-    // 且必须在 12MP 事务**之前** —— 卡片锚在调用那一刻的 currentFrame 位姿上,
-    // 放到事务之后就等于钉在快门后 317ms(p90 542ms)的位姿,不是拍摄位姿。
+    // 且必须在 12MP 事务**之后** —— 照片确认存在才给反馈。
+    // 「照片都不知道有没有,那干嘛震动」(用户,2026-09-01)。
     final completionAt = source.indexOf(
-      'input = await capture.highResolutionCompletion',
+      'await capture.highResolutionCompletion',
       execStart,
     );
     expect(completionAt, greaterThanOrEqualTo(0));
-    expect(hapticAt, lessThan(completionAt), reason: '相框必须钉在拍摄位姿上,不能等事务走完');
-    expect(cardAt, lessThan(completionAt));
-  });
-
-  test('瞬时快门先挂后验 —— 失败必须摘框,不留鬼框', () {
-    final source = File(
-      'lib/ui/official_capture/ar_capture_page.dart',
-    ).readAsStringSync();
-    final execStart = source.indexOf('Future<void> _executeShutterTicket(');
-    final execEnd = source.indexOf(
-      'void _removePhotoCardForEvidence(',
-      execStart,
-    );
-    expect(execEnd, greaterThan(execStart));
-    final body = source
-        .substring(execStart, execEnd)
-        .split('\n')
-        .where((line) => !line.trimLeft().startsWith('//'))
-        .join('\n');
-
     expect(
-      body,
-      contains('_removePhotoCardForEvidence(capture.evidenceJpegPath)'),
-      reason: '卡片在事务确认之前就挂上了,失败路径必须回收它',
+      completionAt,
+      lessThan(hapticAt),
+      reason: '照片确认存在之前不得给任何反馈 —— 那是承诺不是事实',
     );
-    expect(
-      '_removePhotoCardForEvidence('.allMatches(body).length,
-      greaterThanOrEqualTo(2),
-      reason: '异常路径和 _failedEvidenceJpegPaths 路径都要摘',
-    );
-    expect(body, contains('rethrow;'));
+    expect(completionAt, lessThan(cardAt));
   });
 
   test('haptic is best effort and manual/auto paths do not duplicate it', () {
