@@ -111,3 +111,36 @@ parity-scope 顾虑("byte-exact 只验过一对")就此关闭 —— 便携核�
 - SR-3D 已实现待测:-db 软件流水(3→2 barrier/tile,预算内版)、
   -xb barrier 成本探针。r64 对照轮被机器负载污染作废 —— 污染源含并行
   侦探的重放(主线调度失误,已改为串行:等深度侦探收工再补正式轮)。
+
+## SR-3C/D 终局 + 新前沿全量闸(2026-09-02 夜,战役收官)
+
+**新前沿 = `fusedr128-db`(SR-3D-1 软件流水)**:
+- 速度:GPU paired −2.05ms 中位、7/7 轮铁赢 → 便携核对 native 从 2.7× 收窄到 **~2.1×**。
+- 机制(xb 探针拆开证实):纯 barrier 省除仅 0.5ms;主体 ~1.5ms = "下一 tile
+  staging 与本 tile 扫描在同一 barrier 区间访存重叠" —— **赢在时间维度**。
+  空间布局族(tacc/s33/Direct-B)全军覆没,bank-conflict 假设被 s33 证伪。
+- **无损证明:全量闸 696/696 逐字节全等**(今天两场真实 12MP,20f 162 + 51f 534,
+  与 native Metal pairs SHA 逐对相同)。速度赢不牺牲语义。
+- 顺带修两个静默 bug(核名解析器吞后缀 / mma 族占位符未替换,均非 Dawn 漂移)。
+
+战备源:工作区 `fair_match_portable_arm.cc`(SHA 1dbcb75e… = 快照 =
+现役二进制,三方一致);324 行完整 diff + 双批 parity 全绿 + 全 paired 原始日志
+在 ~/Developer/pw_h2_sr3c_20260902/。
+
+**方法论诚实**:后段 r64/xb/db 正式轮遇机器负载(主线深度重放 agent + Spotlight
+全库重建 + Hydra),严格 5.0ms 括号不可达,改用 paired ABBA + 轮内守卫
+(A 臂比值≤1.12 + 镜像双半 + pairs SHA 恒等)承载,对均匀抬高构造免疫、
+突发由 A 比值拒;绝对括号如实记录未美化。db 幅度 −2.0ms 是 7 轮中位、
+单轮方差 ±0.5ms,方向与量级稳。
+
+**SR-3E 活口(下一刀)**:时间维度未尽 —— 真双缓冲让 staging 与 mma 本身重叠
+(db 目前只重叠 staging 与扫描)。空间维度已死透,不再碰。
+
+## 明早裁决清单(两条线)
+
+1. **匹配器跨端**(可自主推进的无损线):fusedr128-db 前沿,696/696 无损已证。
+   生产化缺口:guided 两趟 WGSL 化、production ABI TU、Android/鸿蒙 V0/V1/V2
+   实机探针。iOS 上 2.1× 是"一套代码跨三端"的代价;Vulkan 端因原生整数点积
+   预期显著更优。可继续:SR-3E 真双缓冲 / 开始生产 TU。
+2. **12MP 深度塌陷**(须用户裁决的质量交换线):见 2026-09-02-match-depth-DECISION.md。
+   四候选全撞无损/默认红线,须你 + 真机 A/B。今晚未自主推进。
