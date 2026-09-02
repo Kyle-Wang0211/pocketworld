@@ -42,6 +42,11 @@ class TelemetryWriter {
   bool _dirtySinceFlush = false;
   int _written = 0;
   int _dropped = 0;
+  int _degraded = 0;
+  int _lastReportedDropped = 0;
+  int _lastReportedDegraded = 0;
+  String? _sinkError;
+  bool _sinkErrorReported = false;
 
   /// init 之前到达的事件行(启动早期),init 成功后按序补写。
   final List<String> _pending = <String>[];
@@ -50,8 +55,55 @@ class TelemetryWriter {
   /// 已成功写入 sink 的事件行数(断言脚本用)。
   int get writtenCount => _written;
 
-  /// 因 init 失败 / pending 溢出而丢弃的行数。
+  /// 因 init 失败 / pending 溢出 / 编码灾难而丢弃的行数。
   int get droppedCount => _dropped;
+
+  /// 被 [_jsonSafe] 降级过的字段值总数(NaN/Inf → 字符串)。
+  int get degradedValueCount => _degraded;
+
+  /// 非有限 double 是 JSON 非法值:jsonEncode 直接抛,而旧的降级分支写的是
+  /// `v is num ? v : '\$v'` —— NaN 恰恰是 num,原样保留、二次编码原样再抛,
+  /// 整行落进外层空 catch 无声蒸发且不计数(2026-09-02 build-88 会话
+  /// 票据 2 的三行 Dart 遥测就是这样消失的,账本自己犯了「静默出口」)。
+  /// 所以:编码**之前**递归查体,非有限值降级为字符串标记并计数。
+  Object? _jsonSafe(Object? value) {
+    if (value is double && !value.isFinite) {
+      _degraded++;
+      return value.isNaN ? 'NaN' : (value > 0 ? 'Infinity' : '-Infinity');
+    }
+    if (value is List) return [for (final e in value) _jsonSafe(e)];
+    if (value is Map) {
+      return value.map((k, v) => MapEntry(k.toString(), _jsonSafe(v)));
+    }
+    if (value is num || value is String || value is bool || value == null) {
+      return value;
+    }
+    _degraded++;
+    return '$value';
+  }
+
+  /// 账本自身的健康行:每当丢失/降级计数或 sink 错误**新增**时,随下一次
+  /// 成功写入补一行 `telemetry_writer_health`。丢可以,必须承认丢了。
+  /// 只用已验安全的标量拼行(不走 event(),零递归风险)。
+  void _appendHealthLineIfNeeded(IOSink sink) {
+    final sinkErrorPending = _sinkError != null && !_sinkErrorReported;
+    if (_dropped == _lastReportedDropped &&
+        _degraded == _lastReportedDegraded &&
+        !sinkErrorPending) {
+      return;
+    }
+    _lastReportedDropped = _dropped;
+    _lastReportedDegraded = _degraded;
+    _sinkErrorReported = _sinkError != null;
+    final line =
+        '{"t":${DateTime.now().millisecondsSinceEpoch},'
+        '"type":"telemetry_writer_health",'
+        '"dropped_total":$_dropped,'
+        '"degraded_values_total":$_degraded,'
+        '"sink_error":${jsonEncode(_sinkError)}}\n';
+    sink.add(utf8.encode(line));
+    _written++;
+  }
 
   /// 打开(追加模式)JSONL 文件。可重复调用(幂等);失败只关掉遥测,
   /// 绝不影响 App。App 侧路径 = `<Documents>/telemetry_official_dart.jsonl`。
@@ -61,6 +113,12 @@ class TelemetryWriter {
       final file = File(filePath);
       await file.parent.create(recursive: true);
       final sink = file.openWrite(mode: FileMode.append);
+      // 磁盘异步写失败不再无声:记下错误,下一行健康行里承认。
+      unawaited(
+        sink.done.catchError((Object e) {
+          _sinkError ??= e.runtimeType.toString();
+        }),
+      );
       _sink = sink;
       // 补写 init 前排队的事件(保持到达顺序)。
       if (_pending.isNotEmpty) {
@@ -89,14 +147,7 @@ class TelemetryWriter {
         'type': type,
         ...fields,
       };
-      String line;
-      try {
-        line = '${jsonEncode(map)}\n';
-      } catch (_) {
-        // 含不可编码值 — 逐字段降级为字符串再试一次。
-        line =
-            '${jsonEncode(map.map((k, v) => MapEntry(k, v is num || v is String || v is bool || v == null ? v : '$v')))}\n';
-      }
+      final line = '${jsonEncode(_jsonSafe(map))}\n';
       final sink = _sink;
       if (sink == null) {
         if (_initFailed || _pending.length >= _maxPending) {
@@ -108,10 +159,12 @@ class TelemetryWriter {
       }
       sink.add(utf8.encode(line)); // 内存缓冲,不等磁盘
       _written++;
+      _appendHealthLineIfNeeded(sink);
       _dirtySinceFlush = true;
       _scheduleFlush();
     } catch (_) {
-      // 遥测绝不伤害 App。
+      // 遥测绝不伤害 App —— 但丢行必须记账,随下一行补健康行。
+      _dropped++;
     }
   }
 
