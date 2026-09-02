@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -22,6 +23,7 @@ Uint8List _texturedFrame({int shiftX = 0}) {
 void main() {
   _meanNotMedianContract();
   _openCvLkSemanticsContract();
+  _newFeatureBurstContract();
 
   test('continuous LK carries capture tracks across small frame steps', () {
     final tracks = ContinuousFeatureTracks();
@@ -35,6 +37,7 @@ void main() {
         height: 128,
         focalXPixels: 128,
         focalYPixels: 128,
+        detectNewFeatures: false,
       );
     }
 
@@ -52,6 +55,8 @@ void main() {
       medianPixelDisplacement: 26.8,
       medianNormalizedDisplacement: 0.21,
       meanNormalizedDisplacement: 0.21,
+      newFeatureCount: -1,
+      liveTrackCount: -1,
     );
 
     expect(evidence.comparable, isFalse);
@@ -67,6 +72,8 @@ void main() {
       medianPixelDisplacement: double.nan,
       medianNormalizedDisplacement: double.nan,
       meanNormalizedDisplacement: double.nan,
+      newFeatureCount: -1,
+      liveTrackCount: -1,
     );
 
     expect(evidence.lostTrackedOverlap, isFalse);
@@ -170,6 +177,8 @@ void _meanNotMedianContract() {
       medianPixelDisplacement: 5,
       medianNormalizedDisplacement: median,
       meanNormalizedDisplacement: mean,
+      newFeatureCount: -1,
+      liveTrackCount: -1,
     );
     expect(evidence.hasEnoughNovelty, isTrue, reason: '上游按均值判决;中位数低于阈值不得推翻它');
 
@@ -181,6 +190,8 @@ void _meanNotMedianContract() {
       medianPixelDisplacement: 5,
       medianNormalizedDisplacement: 0.9,
       meanNormalizedDisplacement: 0.001,
+      newFeatureCount: -1,
+      liveTrackCount: -1,
     );
     expect(inverted.hasEnoughNovelty, isFalse);
   });
@@ -202,6 +213,7 @@ void _openCvLkSemanticsContract() {
       height: 128,
       focalXPixels: 101.6,
       focalYPixels: 101.6,
+      detectNewFeatures: false,
     );
     expect(e, isNotNull);
     expect(
@@ -220,6 +232,7 @@ void _openCvLkSemanticsContract() {
       height: 128,
       focalXPixels: 101.6,
       focalYPixels: 101.6,
+      detectNewFeatures: false,
     );
     expect(e, isNotNull);
     expect(e!.commonTrackCount, greaterThanOrEqualTo(20));
@@ -231,29 +244,150 @@ void _openCvLkSemanticsContract() {
   });
 }
 
+// ── 复刻:VINS-Fusion 新旧比开火条件 ─────────────────────────────────────
+// feature_manager.cpp 逐字:`new_feature_num > 0.5 * last_track_num` → 关键帧。
+// 适配边界见 FrameTrackEvidence.hasNewFeatureBurst 的注释(六路调研存档:
+// docs/research/2026-09-01-info-gain-shutter-trigger-six-path-survey.md)。
+void _newFeatureBurstContract() {
+  FrameTrackEvidence ev({required int newCount, required int tracked}) =>
+      FrameTrackEvidence(
+        seedTrackCount: tracked,
+        commonTrackCount: tracked,
+        commonTrackFraction: 1,
+        medianPixelDisplacement: 1,
+        medianNormalizedDisplacement: 0.001,
+        meanNormalizedDisplacement: 0.001,
+        newFeatureCount: newCount,
+        liveTrackCount: tracked,
+      );
+
+  test('新旧比过半 → burst;未过半/未检测/跟踪不足 → 不 burst', () {
+    // 30 tracked,16 new:16 > 15 → burst
+    expect(ev(newCount: 16, tracked: 30).hasNewFeatureBurst, isTrue);
+    // 15 new:15 > 15 不成立(上游是严格大于)
+    expect(ev(newCount: 15, tracked: 30).hasNewFeatureBurst, isFalse);
+    // 未检测(-1)绝不 burst —— 节流窗之间不许凭空开火
+    expect(ev(newCount: -1, tracked: 30).hasNewFeatureBurst, isFalse);
+    // 跟踪 <20:维持我们「无证据不拍」的既有偏离(上游此时反而强制关键帧)
+    expect(ev(newCount: 19, tracked: 19).hasNewFeatureBurst, isFalse);
+  });
+
+  test('advance 只在 detectNewFeatures 时才数新点;旧场景不 burst', () {
+    // 平滑斑点场:LK 友好。此前用高频条纹夹具,一半角点本来就跟不上,
+    // 跟不上的进不了掩膜、每次检测都被重复数成"新"(84→91→105 越数越多)
+    // —— 那是夹具的混叠毒性,不是判据语义。夹具必须像真实画面(同日
+    // 假内参教训:自造夹具的非物理性质会伪造出判据缺陷)。
+    final t = ContinuousFeatureTracks();
+    t.setReference(gray: _blobField(0), width: 128, height: 128);
+    final off = t.advance(
+      gray: _blobField(0, shiftX: 1),
+      width: 128,
+      height: 128,
+      focalXPixels: 128,
+      focalYPixels: 128,
+      detectNewFeatures: false,
+    );
+    expect(off!.newFeatureCount, -1, reason: '未检测时绝不凭空给数');
+    final on = t.advance(
+      gray: _blobField(0, shiftX: 2),
+      width: 128,
+      height: 128,
+      focalXPixels: 128,
+      focalYPixels: 128,
+      detectNewFeatures: true,
+    );
+    expect(on!.newFeatureCount, greaterThanOrEqualTo(0));
+    expect(
+      on.hasNewFeatureBurst,
+      isFalse,
+      reason: '纯平移的旧场景不得触发新旧比 —— 掩膜+补池语义在起作用',
+    );
+  });
+
+  test('画面里出现大片新内容 → burst', () {
+    // 参考帧:斑点只在左半;新帧:左半不动、右半冒出另一组斑点 ——
+    // "转到新面"的最小模型。
+    final t = ContinuousFeatureTracks();
+    t.setReference(
+      gray: _blobField(0, rightHalfSeed: -1),
+      width: 128,
+      height: 128,
+    );
+    final e = t.advance(
+      gray: _blobField(0, rightHalfSeed: 7),
+      width: 128,
+      height: 128,
+      focalXPixels: 128,
+      focalYPixels: 128,
+      detectNewFeatures: true,
+    );
+    expect(e, isNotNull);
+    expect(
+      e!.liveTrackCount,
+      greaterThanOrEqualTo(20),
+      reason: '左半的旧斑点必须还在跟,否则判据被守卫关掉',
+    );
+    expect(
+      e.hasNewFeatureBurst,
+      isTrue,
+      reason: 'VINS-Fusion:new > 0.5 × tracked 必须点亮 —— 这正是本刀的全部目的',
+    );
+  });
+
+  test('接线契约:burst 与流量段是 OR,几何角色闸不动', () {
+    final source = File(
+      'lib/official_capture/auto_capture_controller.dart',
+    ).readAsLinesSync().where((l) => !l.trimLeft().startsWith('//')).join('\n');
+    expect(
+      source,
+      contains('_smartMotionSegment.ready || _newFeatureBurst'),
+      reason: '上游 addFeatureCheckParallax 就是「新旧比 OR 视差」的结构',
+    );
+    expect(
+      source,
+      contains('detectNewFeatures:'),
+      reason: '检测必须节流,不许每 tick 检测',
+    );
+    expect(
+      source,
+      contains('_newFeatureBurst = false;'),
+      reason: '开火与新照片入列必须清闩',
+    );
+  });
+}
+
 /// 平滑斑点场:确定性伪随机中心 + 高斯斑,LK 友好(接近真实画面的低频结构)。
-/// 高频条纹类夹具是 LK 毒药(混叠),会伪造出跟踪缺陷 —— 见当日 88 个假
-/// "新点"的教训。
-Uint8List _blobField(int seed, {int shiftX = 0}) {
+/// [rightHalfSeed] >= 0 时右半改用另一组斑点;-1 = 右半留空。
+Uint8List _blobField(int seed, {int shiftX = 0, int? rightHalfSeed}) {
   const side = 128;
   final out = Uint8List(side * side);
-  final pts = <List<int>>[];
-  var state = seed * 2654435761 + 97;
-  while (pts.length < 24) {
-    state = (state * 1103515245 + 12345) & 0x7fffffff;
-    final x = 8 + (state >> 8) % (side - 16);
-    state = (state * 1103515245 + 12345) & 0x7fffffff;
-    final y = 8 + (state >> 8) % (side - 16);
-    if (pts.every(
-      (p) => (p[0] - x) * (p[0] - x) + (p[1] - y) * (p[1] - y) >= 144,
-    )) {
-      pts.add([x, y]);
+  List<List<int>> centers(int s, int x0, int x1) {
+    final pts = <List<int>>[];
+    var state = s * 2654435761 + 97;
+    while (pts.length < 24) {
+      state = (state * 1103515245 + 12345) & 0x7fffffff;
+      final x = x0 + (state >> 8) % (x1 - x0);
+      state = (state * 1103515245 + 12345) & 0x7fffffff;
+      final y = 8 + (state >> 8) % (side - 16);
+      if (pts.every(
+        (p) => (p[0] - x) * (p[0] - x) + (p[1] - y) * (p[1] - y) >= 144,
+      )) {
+        pts.add([x, y]);
+      }
     }
+    return pts;
   }
+
+  final left = centers(seed, 8, rightHalfSeed == null ? side - 8 : 60);
+  final right = rightHalfSeed == null
+      ? const <List<int>>[]
+      : rightHalfSeed < 0
+      ? const <List<int>>[]
+      : centers(rightHalfSeed, 68, side - 8);
   for (var y = 0; y < side; y++) {
     for (var x = 0; x < side; x++) {
       var v = 24.0;
-      for (final c in pts) {
+      for (final c in [...left, ...right]) {
         final dx = x - c[0] - shiftX;
         final dy = y - c[1];
         final d2 = dx * dx + dy * dy;

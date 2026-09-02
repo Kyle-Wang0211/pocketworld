@@ -51,8 +51,9 @@ const int kColorizeDecodeMaxPx = 8192;
 /// native 解码回调签名(live/resume 各自的 `_decodeJpegNative`):
 /// 按 [kColorizeDecodeMaxPx] 降采样(实际=不降)、raw sensor 方向、
 /// 3B/px top-down;失败返回 null。
-typedef ColorJpegDecoder =
-    Future<({Uint8List rgb, int w, int h})?> Function(String jpegPath);
+typedef ColorJpegDecoder = Future<({Uint8List rgb, int w, int h})?> Function(
+  String jpegPath,
+);
 
 /// 一帧的取色工作项:tri = 该帧要采样的 [pointIndex, kpX, kpY]* 扁平三元组
 /// (kp 坐标在 fed-gray 像素空间,采样时按 JPEG/gray 比例缩放)。

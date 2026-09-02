@@ -148,9 +148,8 @@ Future<void> maybeRunB1Gate(String documentsPath) async {
     await File(dbB.path).delete();
     await File('${dbB.path}$_poseSidecarSuffix').delete();
     await File('${armB.path}/pruned.db').rename(dbB.path);
-    await File(
-      '${armB.path}/pruned.db$_poseSidecarSuffix',
-    ).rename('${dbB.path}$_poseSidecarSuffix');
+    await File('${armB.path}/pruned.db$_poseSidecarSuffix')
+        .rename('${dbB.path}$_poseSidecarSuffix');
     result['pruned_db_bytes'] = await dbB.length();
 
     // 保全表逐字节对账(裁前 vs 裁后)。

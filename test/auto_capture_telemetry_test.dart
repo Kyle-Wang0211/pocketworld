@@ -887,6 +887,8 @@ void main() {
         'fire_enqueue_failed',
         'fire_before_tick',
         'fire_role_counts',
+        // 开火成因二维计数(段位×burst),VINS-Fusion 新旧比接线时新增。
+        'fire_reason_counts',
         'role_counts',
         'predicate_counts',
         'winner_decision_counts',

@@ -97,9 +97,8 @@ class SfmDbRegen {
     );
     // 侧车可能已被附属物归档收走(pw_aux_archive_v1),走 resolver 拿目录:
     // 没归档时它就是 photos_highres 本身,归档后是校验过的临时物化目录。
-    final sidecars = await AuxArchiveResolver(
-      codec: databaseArchiveCodec,
-    ).openSidecars(captureDirectory);
+    final sidecars = await AuxArchiveResolver(codec: databaseArchiveCodec)
+        .openSidecars(captureDirectory);
     if (sidecars == null) return fail('sidecar', 'cannot resolve sidecars');
     final feeds = <({String jpegPath, Map<String, dynamic> sidecar})>[];
     try {
@@ -112,9 +111,9 @@ class SfmDbRegen {
         }
         Map<String, dynamic> sidecar;
         try {
-          sidecar =
-              jsonDecode(await sidecarFile.readAsString())
-                  as Map<String, dynamic>;
+          sidecar = jsonDecode(
+            await sidecarFile.readAsString(),
+          ) as Map<String, dynamic>;
         } catch (e) {
           return fail('sidecar', 'bad sidecar for $name: $e');
         }

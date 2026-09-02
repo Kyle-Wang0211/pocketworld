@@ -121,28 +121,54 @@ typedef _NativeCString = Pointer<Utf8> Function();
 typedef _DartCString = Pointer<Utf8> Function();
 typedef _NativeErrorMessage = Pointer<Utf8> Function(Int32);
 typedef _DartErrorMessage = Pointer<Utf8> Function(int);
-typedef _NativeEncodeFile =
-    Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Int32, Pointer<Uint64>);
-typedef _DartEncodeFile =
-    int Function(Pointer<Utf8>, Pointer<Utf8>, int, Pointer<Uint64>);
-typedef _NativeReconstructFile =
-    Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Uint64>);
-typedef _DartReconstructFile =
-    int Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Uint64>);
-typedef _NativeEncodeFileCancellable =
-    Int32 Function(
-      Pointer<Utf8>,
-      Pointer<Utf8>,
-      Int32,
-      Uint64,
-      Pointer<Uint64>,
-    );
-typedef _DartEncodeFileCancellable =
-    int Function(Pointer<Utf8>, Pointer<Utf8>, int, int, Pointer<Uint64>);
-typedef _NativeReconstructFileCancellable =
-    Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Uint64, Pointer<Uint64>);
-typedef _DartReconstructFileCancellable =
-    int Function(Pointer<Utf8>, Pointer<Utf8>, int, Pointer<Uint64>);
+typedef _NativeEncodeFile = Int32 Function(
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  Int32,
+  Pointer<Uint64>,
+);
+typedef _DartEncodeFile = int Function(
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  int,
+  Pointer<Uint64>,
+);
+typedef _NativeReconstructFile = Int32 Function(
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  Pointer<Uint64>,
+);
+typedef _DartReconstructFile = int Function(
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  Pointer<Uint64>,
+);
+typedef _NativeEncodeFileCancellable = Int32 Function(
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  Int32,
+  Uint64,
+  Pointer<Uint64>,
+);
+typedef _DartEncodeFileCancellable = int Function(
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  int,
+  int,
+  Pointer<Uint64>,
+);
+typedef _NativeReconstructFileCancellable = Int32 Function(
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  Uint64,
+  Pointer<Uint64>,
+);
+typedef _DartReconstructFileCancellable = int Function(
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  int,
+  Pointer<Uint64>,
+);
 typedef _NativeCancellationGeneration = Uint64 Function();
 typedef _DartCancellationGeneration = int Function();
 typedef _NativeRequestCancel = Void Function();

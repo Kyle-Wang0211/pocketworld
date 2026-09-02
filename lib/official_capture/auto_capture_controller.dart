@@ -84,6 +84,33 @@ class AutoCaptureController {
   double? _capturedGrayFocalY;
   double? _capturedGraySourceTimestamp;
   final ContinuousFeatureTracks _continuousTracks = ContinuousFeatureTracks();
+
+  /// VINS-Fusion 新旧比开火条件的节流与闩锁。
+  ///
+  /// 检测 host 实测 1.36ms/次(128×128,含金字塔),不能上 60Hz 位姿流;
+  /// 上游前端本来就只有 10Hz。0.3s ≈ 3.3Hz。时钟取 pose.timestamp ——
+  /// 与本控制器其余全部计时同一条 ARFrame 时间轴(时钟纪律)。
+  ///
+  /// 闩锁:检测是 3.3Hz 的,判决是每 tick 的 —— 两次检测之间沿用上一次的
+  /// burst 结论,否则信号会以检测节奏闪烁。开火或拍到新照片即清零。
+  static const double _kNewFeatureDetectIntervalSec = 0.3;
+  double _lastNewFeatureDetectSec = double.negativeInfinity;
+  bool _newFeatureBurst = false;
+  bool? _pendingFireSegmentReady;
+  bool? _pendingFireNewFeatureBurst;
+
+  /// 最近一次**成功**开火时,两个授权信号的状态 —— 读一次即清(一枪一账,
+  /// 页面在 recordDecision 之后消费;失败的入队不留快照,与红键脉冲同一条
+  /// 「开火 ≠ 拍成」纪律)。
+  ({bool segmentReady, bool newFeatureBurst})? takeFireReason() {
+    final segment = _pendingFireSegmentReady;
+    final burst = _pendingFireNewFeatureBurst;
+    _pendingFireSegmentReady = null;
+    _pendingFireNewFeatureBurst = null;
+    if (segment == null || burst == null) return null;
+    return (segmentReady: segment, newFeatureBurst: burst);
+  }
+
   final AliceVisionMotionSegment _smartMotionSegment = AliceVisionMotionSegment(
     width: 128,
     height: 128,
@@ -321,6 +348,9 @@ class AutoCaptureController {
             gray: currentGray,
             width: 128,
             height: 128,
+            detectNewFeatures:
+                pose.timestamp - _lastNewFeatureDetectSec >=
+                _kNewFeatureDetectIntervalSec,
             focalXPixels: _capturedGrayFocalX == null
                 ? currentFocalX
                 : (_capturedGrayFocalX! + currentFocalX) * 0.5,
@@ -330,6 +360,10 @@ class AutoCaptureController {
           );
     if (trackEvidence != null && sourceTimestamp != null) {
       _lastTrackedGraySourceTimestamp = sourceTimestamp;
+      if (trackEvidence.newFeatureCount >= 0) {
+        _lastNewFeatureDetectSec = pose.timestamp;
+        _newFeatureBurst = trackEvidence.hasNewFeatureBurst;
+      }
       _smartMotionSegment.add(trackEvidence);
       // VINS uses track loss to manage its estimator window. A camera shutter
       // cannot treat missing correspondences as new content, so reseed the
@@ -373,7 +407,11 @@ class AutoCaptureController {
       visualSimilarity: visualSimilarity,
       trackEvidence: trackEvidence,
       trackEvidenceRequired: trackEvidenceRequired,
-      smartSelectionMotionReady: _smartMotionSegment.ready,
+      // 上游 addFeatureCheckParallax 的结构就是「新旧比 OR 视差」——四个提前
+      // 返回条件不中才落到视差均值。这里把新旧比 OR 进流量段位判据:新内容
+      // 过半时不必等 AliceVision 10% 短边的累积流量。几何角色闸(视差角)
+      // 不动 —— 一次一个变量。
+      smartSelectionMotionReady: _smartMotionSegment.ready || _newFeatureBurst,
       blurry: _objectivelyBlurry(q),
       tooDark: _tooDark(q),
     );
@@ -441,6 +479,10 @@ class AutoCaptureController {
         // 入队失败时基准帧**不动** —— 否则下一次会拿一个根本没拍成
         // 的位置当基准,位移闸直接漏判。
         if (_onFire()) {
+          // 开火成因快照,页面一次性消费(takeFireReason)。必须在段清零
+          // **之前**落下 —— 与锐度快照同一条纪律。
+          _pendingFireSegmentReady = _smartMotionSegment.ready;
+          _pendingFireNewFeatureBurst = _newFeatureBurst;
           _captureBaseline = current;
           if (motion.advancesGeometryBaseline) {
             _geometryBaseline = current;
@@ -450,6 +492,7 @@ class AutoCaptureController {
           // 开火 = 本段结束,锐度段清零(subsequence 语义)。
           _segmentSharpness.clear();
           _smartMotionSegment.reset();
+          _newFeatureBurst = false;
         }
         return decision;
     }
@@ -540,5 +583,6 @@ class AutoCaptureController {
     _lastTrackedGraySourceTimestamp = quality.sourceTimestamp;
     _continuousTracks.setReference(gray: gray, width: 128, height: 128);
     _smartMotionSegment.reset();
+    _newFeatureBurst = false;
   }
 }

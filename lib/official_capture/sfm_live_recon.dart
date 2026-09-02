@@ -1142,9 +1142,8 @@ class SfmLiveRecon {
         });
       }
       final line = '${jsonEncode(meta)}\n';
-      File(
-        '$dir/official_sfm_fed_frames.jsonl',
-      ).writeAsStringSync(line, mode: FileMode.append, flush: false);
+      File('$dir/official_sfm_fed_frames.jsonl')
+          .writeAsStringSync(line, mode: FileMode.append, flush: false);
     } catch (_) {}
   }
 
@@ -2471,9 +2470,9 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
                   '${File(boot.dbPath).parent.path}/official_finalize_segments.json',
                 );
                 if (segFile.existsSync()) {
-                  segs =
-                      jsonDecode(segFile.readAsStringSync())
-                          as Map<String, dynamic>;
+                  segs = jsonDecode(
+                    segFile.readAsStringSync(),
+                  ) as Map<String, dynamic>;
                 }
               } catch (e) {
                 wlog('finalize segments read failed (non-fatal): $e');

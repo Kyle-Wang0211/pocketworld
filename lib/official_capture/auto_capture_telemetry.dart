@@ -139,6 +139,12 @@ class AutoCaptureTelemetry {
   int _noCandidate = 0;
   int _selectedNone = 0;
 
+  // fire_reason:每次成功开火时,两个授权信号各自的状态。会话内部证据 ——
+  // 直接读出「新旧比条件单独促成了几枪」,不需要跨会话比较。
+  int _firesSegmentReadyOnly = 0;
+  int _firesNewFeatureBurstOnly = 0;
+  int _firesBothReady = 0;
+
   int _overlapKnown = 0;
   int _overlapUnknown = 0;
   int _geometryWeakThreshold = 0;
@@ -229,6 +235,9 @@ class AutoCaptureTelemetry {
     }
     _noCandidate = 0;
     _selectedNone = 0;
+    _firesSegmentReadyOnly = 0;
+    _firesNewFeatureBurstOnly = 0;
+    _firesBothReady = 0;
     _overlapKnown = 0;
     _overlapUnknown = 0;
     _geometryWeakThreshold = 0;
@@ -457,6 +466,21 @@ class AutoCaptureTelemetry {
   /// 记一次开火的**真实**入队结果(spec §7:入队失败要记遥测)。
   /// 由采集页的 onFire 钩子在拿到 `_enqueueShutterCapture()` 返回值处调用,
   /// 那是全链路唯一能把"拍成了"与"没拍成"分开的地方。
+  /// 成功开火时两个授权信号的状态。`newFeatureBurst && !segmentReady` 的那
+  /// 一档,就是 VINS-Fusion 新旧比条件**单独**促成的开火。
+  void recordFireReason({
+    required bool segmentReady,
+    required bool newFeatureBurst,
+  }) {
+    if (segmentReady && newFeatureBurst) {
+      _firesBothReady++;
+    } else if (newFeatureBurst) {
+      _firesNewFeatureBurstOnly++;
+    } else {
+      _firesSegmentReadyOnly++;
+    }
+  }
+
   void recordFireOutcome({required bool enqueued}) {
     if (!_open) return;
     if (enqueued) {
@@ -549,6 +573,11 @@ class AutoCaptureTelemetry {
       },
       'no_candidate': _noCandidate,
       'selected_none': _selectedNone,
+      'fire_reason_counts': <String, int>{
+        'segment_ready_only': _firesSegmentReadyOnly,
+        'new_feature_burst_only': _firesNewFeatureBurstOnly,
+        'both': _firesBothReady,
+      },
       'selected_none_decision_counts': <String, int>{
         for (final decision in AutoCaptureDecision.values)
           decision.name: _selectedNoneDecisionCounts[decision] ?? 0,

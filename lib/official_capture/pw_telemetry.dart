@@ -48,18 +48,16 @@ class PwTelemetrySample {
       'thermal=$thermalName';
 }
 
-typedef _TelemetryC =
-    Int32 Function(
-      Pointer<Double> physMb,
-      Pointer<Double> peakMb,
-      Pointer<Int32> thermal,
-    );
-typedef _TelemetryDart =
-    int Function(
-      Pointer<Double> physMb,
-      Pointer<Double> peakMb,
-      Pointer<Int32> thermal,
-    );
+typedef _TelemetryC = Int32 Function(
+  Pointer<Double> physMb,
+  Pointer<Double> peakMb,
+  Pointer<Int32> thermal,
+);
+typedef _TelemetryDart = int Function(
+  Pointer<Double> physMb,
+  Pointer<Double> peakMb,
+  Pointer<Int32> thermal,
+);
 
 class PwTelemetry {
   PwTelemetry._();

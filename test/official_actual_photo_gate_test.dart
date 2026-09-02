@@ -97,6 +97,8 @@ void main() {
       medianPixelDisplacement: 26.8,
       medianNormalizedDisplacement: 0.21,
       meanNormalizedDisplacement: 0.21,
+      newFeatureCount: -1,
+      liveTrackCount: -1,
     );
 
     expect(officialActualPhotoTrackAccepted(evidence), isFalse);

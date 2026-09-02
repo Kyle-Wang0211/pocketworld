@@ -57,9 +57,9 @@ class CaptureArchiveService {
       final port = await ready.first as SendPort;
       final reply = ReceivePort();
       port.send({'root': captureRoot, 'reply': reply.sendPort});
-      final report =
-          await reply.first.timeout(const Duration(minutes: 5))
-              as Map<String, Object?>?;
+      final report = await reply.first.timeout(
+        const Duration(minutes: 5),
+      ) as Map<String, Object?>?;
       return report;
     } catch (_) {
       return null;
@@ -95,9 +95,8 @@ Future<void> _batchArchiveIsolate(SendPort ready) async {
   }
   report['elapsed_s'] = DateTime.now().difference(started).inSeconds;
   try {
-    File(
-      '${outDir.path}/archive-report.json',
-    ).writeAsStringSync(jsonEncode(report));
+    File('${outDir.path}/archive-report.json')
+        .writeAsStringSync(jsonEncode(report));
   } catch (_) {}
   reply.send(report);
   inbox.close();

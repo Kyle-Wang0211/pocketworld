@@ -15,10 +15,18 @@ typedef _ResealC = Int32 Function(Pointer<Utf8>, Pointer<Utf8>);
 typedef _ResealD = int Function(Pointer<Utf8>, Pointer<Utf8>);
 typedef _XyC = Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Int32);
 typedef _XyD = int Function(Pointer<Utf8>, Pointer<Utf8>, int);
-typedef _DigestC =
-    Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>, Int32);
-typedef _DigestD =
-    int Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Utf8>, int);
+typedef _DigestC = Int32 Function(
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  Int32,
+);
+typedef _DigestD = int Function(
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  int,
+);
 
 bool get databasePruneSupported => Platform.isIOS;
 

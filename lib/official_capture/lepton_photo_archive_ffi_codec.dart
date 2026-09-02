@@ -133,10 +133,18 @@ typedef _NativeGeneration = Uint64 Function();
 typedef _DartGeneration = int Function();
 typedef _NativeCancel = Void Function();
 typedef _DartCancel = void Function();
-typedef _NativeCancellableFileOperation =
-    Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Uint64, Pointer<Uint64>);
-typedef _DartCancellableFileOperation =
-    int Function(Pointer<Utf8>, Pointer<Utf8>, int, Pointer<Uint64>);
+typedef _NativeCancellableFileOperation = Int32 Function(
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  Uint64,
+  Pointer<Uint64>,
+);
+typedef _DartCancellableFileOperation = int Function(
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  int,
+  Pointer<Uint64>,
+);
 
 class _NativeLeptonBindings {
   _NativeLeptonBindings._(DynamicLibrary library)

@@ -129,9 +129,8 @@ class PwvaMasterTransaction {
 
       // 全部候选 JPEG 必须在盘(Lepton 已先行归档的旧 capture → 不适用)。
       for (final name in candidates) {
-        if (!await File(
-          '${captureDirectory.path}/photos_highres/$name',
-        ).exists()) {
+        if (!await File('${captureDirectory.path}/photos_highres/$name')
+            .exists()) {
           return const PwvaMasterResult();
         }
       }

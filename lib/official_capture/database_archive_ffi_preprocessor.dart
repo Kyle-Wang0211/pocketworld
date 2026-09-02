@@ -159,17 +159,22 @@ void _transformFileWithTransform(
   }
 }
 
-typedef _NativeTransformFile =
-    Int32 Function(
-      Pointer<Utf8>,
-      Pointer<Utf8>,
-      Int32,
-      Int32,
-      Uint64,
-      Pointer<Void>,
-    );
-typedef _DartTransformFile =
-    int Function(Pointer<Utf8>, Pointer<Utf8>, int, int, int, Pointer<Void>);
+typedef _NativeTransformFile = Int32 Function(
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  Int32,
+  Int32,
+  Uint64,
+  Pointer<Void>,
+);
+typedef _DartTransformFile = int Function(
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  int,
+  int,
+  int,
+  Pointer<Void>,
+);
 typedef _NativeCancellationGeneration = Uint64 Function();
 typedef _DartCancellationGeneration = int Function();
 typedef _NativeRequestCancel = Void Function();

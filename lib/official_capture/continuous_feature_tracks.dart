@@ -21,6 +21,21 @@ import 'dart:typed_data';
 const double kOfficialNormalizedTrackDisplacement = 10.0 / 460.0;
 const int kOfficialMinimumCommonTracks = 20;
 
+/// Shi-Tomasi 的最小间距(OpenCV goodFeaturesToTrack 默认 minDistance=7 的
+/// 复刻,文件头有出处)。同一个值同时用于:
+///   * 检测器内部的非极大值抑制;
+///   * 「新特征」计数的掩膜半径 —— 上游 VINS 前端 setMask() 用 MIN_DIST 在
+///     已跟踪点周围画禁区,addPoints() 只在禁区外补新点;落在禁区外的检测
+///     角点就是上游语义下的 new feature。
+const double kOfficialCornerMinimumDistance = 7.0;
+
+/// 上游前端的特征池上限。VINS 配置 euroc_config.yaml:
+/// `max_cnt: 150  # max feature number in feature tracking`。
+/// addPoints() 每帧把掩膜外的新角点补进池子直到这个数 —— **new_feature_num
+/// 的语义依赖这一步**:池子不补充就会持续衰减,衰减出的空位会被误判成
+/// "新内容"(本文件的钉子测试在 host 上抓到过:纯平移数出 88 个"新点")。
+const int kVinsFrontEndMaxFeatureCount = 150;
+
 class FrameTrackEvidence {
   const FrameTrackEvidence({
     required this.seedTrackCount,
@@ -29,6 +44,8 @@ class FrameTrackEvidence {
     required this.medianPixelDisplacement,
     required this.medianNormalizedDisplacement,
     required this.meanNormalizedDisplacement,
+    required this.newFeatureCount,
+    required this.liveTrackCount,
     this.medianStepPixelDisplacement = double.nan,
   });
 
@@ -54,6 +71,44 @@ class FrameTrackEvidence {
   /// 「可能更适合我们」不是复刻,是自研。已改回均值。
   /// [medianNormalizedDisplacement] 保留为证据,便于事后对照两者的分歧。
   final double meanNormalizedDisplacement;
+
+  /// 当前帧里检测到的、不在任何存活轨迹 [kOfficialCornerMinimumDistance]
+  /// 邻域内的角点数。**-1 表示本次没有检测**(检测被节流,见控制器)。
+  ///
+  /// 上游出处 —— VINS-Fusion feature_manager.cpp `addFeatureCheckParallax`,逐字:
+  ///
+  ///     if (frame_count < 2 || last_track_num < 20 || long_track_num < 40 ||
+  ///         new_feature_num > 0.5 * last_track_num)
+  ///         return true;      // 立为关键帧
+  ///
+  /// 其中 new_feature_num 在前端无对应老 ID 时自增 —— 前端用 setMask() 在已
+  /// 跟踪点周围画 MIN_DIST 禁区、addPoints() 只在禁区外补点,所以「新」的
+  /// 语义就是「掩膜外的检测角点」,与本字段的数法一致。
+  final int newFeatureCount;
+
+  /// 本帧成功续上的**全部**轨迹数(锚定轨迹 + 补充轨迹),即上游
+  /// `last_track_num` 的直接对应物。-1 = 此路径不维护补充池(按张判据)。
+  final int liveTrackCount;
+
+  /// VINS-Fusion 的新旧比开火条件:`new_feature_num > 0.5 * last_track_num`。
+  ///
+  /// 适配边界(2026-09-02,六路调研后定,见
+  /// docs/research/2026-09-01-info-gain-shutter-trigger-six-path-survey.md):
+  ///   * 判据本体原样;用途从「滑窗边缘化决策」改为「快门触发」—— 适配。
+  ///   * 上游 `last_track_num < 20` 单独就返回 true(强制关键帧);我们维持
+  ///     既有的故意偏离 —— 跟踪不足视为无证据、不开火 —— 所以这里要求
+  ///     comparable(≥20 条轨迹)才允许按新旧比开火。
+  ///   * `long_track_num < 40` 不搬:它绑定上游 10Hz 前端帧率,前提在我们
+  ///     的按张结构里不成立(同日 processSmart 教训:复刻不变量必须连前提)。
+  ///   * 数的都是 2D 图像轨迹,不含「存储的 3D 扫描点集」要素 —— 刻意避开
+  ///     Shopify US12361636B2 / Google US9648297B1 的权利要求,见调研存档。
+  bool get hasNewFeatureBurst =>
+      newFeatureCount >= 0 &&
+      // 上游守卫 `last_track_num < 20` 时强制关键帧;我们维持既有偏离:
+      // 跟踪不足 = 无证据、不开火。比值基数用 liveTrackCount —— 与上游的
+      // last_track_num(本帧全部续上的轨迹)一一对应,不是锚定子集。
+      liveTrackCount >= kOfficialMinimumCommonTracks &&
+      newFeatureCount > 0.5 * liveTrackCount;
   final double medianStepPixelDisplacement;
 
   bool get comparable =>
@@ -111,6 +166,12 @@ class _ContinuousTrack {
 class ContinuousFeatureTracks {
   _GrayLevel? _previous;
   List<_ContinuousTrack> _tracks = const <_ContinuousTrack>[];
+
+  /// 上游 addPoints() 的对应物:掩膜外检测到的新角点补进来、随帧续跟,
+  /// 让特征池保持在 [kVinsFrontEndMaxFeatureCount] 附近。它们没有参考照片
+  /// 里的锚点,**不参与位移统计**,只承担两件事:掩膜(挡住重复计数)与
+  /// liveTrackCount(新旧比的分母)。
+  List<_Point> _fillTracks = const <_Point>[];
   int _referenceSeedCount = 0;
   int _width = 0;
   int _height = 0;
@@ -118,6 +179,7 @@ class ContinuousFeatureTracks {
   void clear() {
     _previous = null;
     _tracks = const <_ContinuousTrack>[];
+    _fillTracks = const <_Point>[];
     _referenceSeedCount = 0;
     _width = 0;
     _height = 0;
@@ -138,6 +200,7 @@ class ContinuousFeatureTracks {
     _tracks = <_ContinuousTrack>[
       for (final seed in seeds) _ContinuousTrack(anchor: seed, current: seed),
     ];
+    _fillTracks = const <_Point>[];
     _referenceSeedCount = seeds.length;
     _width = width;
     _height = height;
@@ -150,6 +213,7 @@ class ContinuousFeatureTracks {
     required int height,
     required double focalXPixels,
     required double focalYPixels,
+    required bool detectNewFeatures,
   }) {
     final previous = _previous;
     if (previous == null ||
@@ -206,6 +270,50 @@ class ContinuousFeatureTracks {
       stepDisplacements.add(stepDisplacement);
     }
 
+    // 补充池随帧续跟(上游前端的池子是一体的;我们拆成锚定/补充两半,
+    // 只因锚定半边还要对参考照片算位移)。
+    final fillSurvivors = <_Point>[];
+    for (final point in _fillTracks) {
+      final tracked = _trackPyramidal(previousPyramid, currentPyramid, point);
+      if (tracked != null) fillSurvivors.add(tracked);
+    }
+    final liveTrackCount = survivors.length + fillSurvivors.length;
+
+    // 「新特征」计数(节流由调用方决定 —— host 实测检测 1.36ms/次,不能上
+    // 60Hz 位姿流;上游前端本来也只有 10Hz)。掩膜 = 本帧**全部**存活轨迹
+    // (锚定 + 补充)—— 上游 setMask 圈的是整个池子;数完把新点补进池
+    // (addPoints),下次它们就是旧点,不会再被数一遍。
+    var newFeatureCount = -1;
+    if (detectNewFeatures) {
+      newFeatureCount = 0;
+      final detected = _goodFeaturesToTrack(current);
+      const r2 =
+          kOfficialCornerMinimumDistance * kOfficialCornerMinimumDistance;
+      bool masked(_Point corner) {
+        for (final track in survivors) {
+          final dx = corner.x - track.current.x;
+          final dy = corner.y - track.current.y;
+          if (dx * dx + dy * dy < r2) return true;
+        }
+        for (final point in fillSurvivors) {
+          final dx = corner.x - point.x;
+          final dy = corner.y - point.y;
+          if (dx * dx + dy * dy < r2) return true;
+        }
+        return false;
+      }
+
+      for (final corner in detected) {
+        if (masked(corner)) continue;
+        newFeatureCount++;
+        if (survivors.length + fillSurvivors.length <
+            kVinsFrontEndMaxFeatureCount) {
+          fillSurvivors.add(corner);
+        }
+      }
+    }
+    _fillTracks = fillSurvivors;
+
     _previous = current;
     _tracks = survivors;
     displacements.sort();
@@ -221,6 +329,8 @@ class ContinuousFeatureTracks {
       medianPixelDisplacement: _median(displacements),
       medianNormalizedDisplacement: _median(normalizedDisplacements),
       meanNormalizedDisplacement: _mean(normalizedDisplacements),
+      newFeatureCount: newFeatureCount,
+      liveTrackCount: liveTrackCount,
       medianStepPixelDisplacement: _median(stepDisplacements),
     );
   }
@@ -266,6 +376,8 @@ FrameTrackEvidence trackFrameNovelty({
       medianPixelDisplacement: double.nan,
       medianNormalizedDisplacement: double.nan,
       meanNormalizedDisplacement: double.nan,
+      newFeatureCount: -1,
+      liveTrackCount: -1,
     );
   }
 
@@ -280,6 +392,8 @@ FrameTrackEvidence trackFrameNovelty({
       medianPixelDisplacement: double.nan,
       medianNormalizedDisplacement: double.nan,
       meanNormalizedDisplacement: double.nan,
+      newFeatureCount: -1,
+      liveTrackCount: -1,
     );
   }
 
@@ -331,6 +445,9 @@ FrameTrackEvidence trackFrameNovelty({
     medianPixelDisplacement: median,
     medianNormalizedDisplacement: normalizedMedian,
     meanNormalizedDisplacement: normalizedMean,
+    // 按张判据(trackFrameNovelty)不数新点 —— 本刀只接开火路径,后判据不动。
+    newFeatureCount: -1,
+    liveTrackCount: -1,
     medianStepPixelDisplacement: median,
   );
 }
@@ -373,7 +490,7 @@ List<_Point> _goodFeaturesToTrack(_GrayLevel image) {
   const blockRadius = 2;
   const border = blockRadius + 2;
   const qualityLevel = 0.01;
-  const minimumDistance = 7.0;
+  const minimumDistance = kOfficialCornerMinimumDistance;
   const maximumCorners = 160;
   final candidates = <_CornerScore>[];
   var maximumScore = 0.0;

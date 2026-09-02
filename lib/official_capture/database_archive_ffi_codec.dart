@@ -105,12 +105,23 @@ typedef _NativeCString = Pointer<Utf8> Function();
 typedef _DartCString = Pointer<Utf8> Function();
 typedef _NativeErrorMessage = Pointer<Utf8> Function(Int32);
 typedef _DartErrorMessage = Pointer<Utf8> Function(int);
-typedef _NativeCompressFile =
-    Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Int32, Uint64);
-typedef _DartCompressFile =
-    int Function(Pointer<Utf8>, Pointer<Utf8>, int, int);
-typedef _NativeDecompressFile =
-    Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Uint64);
+typedef _NativeCompressFile = Int32 Function(
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  Int32,
+  Uint64,
+);
+typedef _DartCompressFile = int Function(
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  int,
+  int,
+);
+typedef _NativeDecompressFile = Int32 Function(
+  Pointer<Utf8>,
+  Pointer<Utf8>,
+  Uint64,
+);
 typedef _DartDecompressFile = int Function(Pointer<Utf8>, Pointer<Utf8>, int);
 typedef _NativeCancellationGeneration = Uint64 Function();
 typedef _DartCancellationGeneration = int Function();

@@ -16,14 +16,14 @@ class ManualCaptureTicket {
   final bool automaticSelection;
 }
 
-typedef ManualCaptureExecutor =
-    Future<void> Function(ManualCaptureTicket ticket);
-typedef ManualCaptureErrorHandler =
-    void Function(
-      ManualCaptureTicket ticket,
-      Object error,
-      StackTrace stackTrace,
-    );
+typedef ManualCaptureExecutor = Future<void> Function(
+  ManualCaptureTicket ticket,
+);
+typedef ManualCaptureErrorHandler = void Function(
+  ManualCaptureTicket ticket,
+  Object error,
+  StackTrace stackTrace,
+);
 
 class ManualCaptureQueue extends ChangeNotifier {
   ManualCaptureQueue({

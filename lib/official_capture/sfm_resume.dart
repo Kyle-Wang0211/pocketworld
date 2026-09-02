@@ -17,6 +17,7 @@
 // it never depends on the user's capture timing or the device staying cool.
 
 import 'package:flutter/foundation.dart';
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -672,9 +673,9 @@ Future<Map<int, SfmFedFrameMeta>> _materializeArchivedJpegs(
 
 Future<Directory> _archiveRestoreCacheDirectory(String captureDir) async {
   final temporary = await getTemporaryDirectory();
-  final captureName = Directory(
-    captureDir,
-  ).uri.pathSegments.where((segment) => segment.isNotEmpty).last;
+  final captureName = Directory(captureDir).uri.pathSegments
+      .where((segment) => segment.isNotEmpty)
+      .last;
   return Directory('${temporary.path}/pocketworld_photo_archive/$captureName');
 }
 

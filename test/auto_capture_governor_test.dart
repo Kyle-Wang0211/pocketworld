@@ -149,6 +149,8 @@ void main() {
       medianPixelDisplacement: 26.8,
       medianNormalizedDisplacement: 0.21,
       meanNormalizedDisplacement: 0.21,
+      newFeatureCount: -1,
+      liveTrackCount: -1,
     );
     expect(
       _decide(
@@ -177,6 +179,8 @@ void main() {
       medianPixelDisplacement: 4,
       medianNormalizedDisplacement: 4 / 128,
       meanNormalizedDisplacement: 4 / 128,
+      newFeatureCount: -1,
+      liveTrackCount: -1,
     );
     expect(vinsCandidate.hasEnoughNovelty, isTrue);
     expect(
@@ -207,6 +211,8 @@ void main() {
       medianPixelDisplacement: double.nan,
       medianNormalizedDisplacement: double.nan,
       meanNormalizedDisplacement: double.nan,
+      newFeatureCount: -1,
+      liveTrackCount: -1,
     );
     expect(
       _decide(

@@ -350,9 +350,8 @@ class DatabaseRecipeTransaction {
         // 替换是单个 rename,不可中断出坏态。
       }
       // 侧车先就位(盖章版覆盖原版),再换 DB —— 两者必须成对。
-      await File(
-        '${pruned.path}$_poseSidecarSuffix',
-      ).rename('${source.path}$_poseSidecarSuffix');
+      await File('${pruned.path}$_poseSidecarSuffix')
+          .rename('${source.path}$_poseSidecarSuffix');
       await pruned.rename(source.path);
       // 陈旧伴生清除:裁后 db 自洽(prune 内已 checkpoint TRUNCATE),留着只会
       // 让下游 ZPAQ 事务继续判 db_not_cold。

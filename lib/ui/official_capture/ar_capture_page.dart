@@ -29,7 +29,9 @@ import 'dart:typed_data' show Int32List, Float32List, Float64List, Uint8List;
 
 import 'package:flutter/foundation.dart'
     show compute, defaultTargetPlatform, TargetPlatform;
+
 import '../../official_capture/dense_stage.dart';
+
 import 'package:flutter/cupertino.dart'
     show
         CupertinoActionSheet,
@@ -1394,12 +1396,14 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       channel.fields,
     );
     try {
-      await _arKitChannel
-          .invokeMethod<void>('setCoveragePointCloud', <String, dynamic>{
-            'xyz': packed.xyz,
-            'rgb': packed.rgb,
-            ...tag.channelArguments(channelPushSequence: channel.pushSequence),
-          });
+      await _arKitChannel.invokeMethod<void>(
+        'setCoveragePointCloud',
+        <String, dynamic>{
+          'xyz': packed.xyz,
+          'rgb': packed.rgb,
+          ...tag.channelArguments(channelPushSequence: channel.pushSequence),
+        },
+      );
       TelemetryWriter.instance.event('live_cloud_channel_ack_v1', {
         ...channel.fields,
         'channel_ack_t': DateTime.now().millisecondsSinceEpoch,
@@ -2964,6 +2968,15 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       segmentMotionThresholdPx: _autoCapture.segmentMotionThresholdPx,
       visualSourceAgeSec: _autoCapture.lastVisualSourceAgeSec,
     );
+    // 开火成因(VINS-Fusion 新旧比 vs AliceVision 流量段):一枪一账,
+    // 只在成功开火后 controller 才留快照,读一次即清。
+    final fireReason = _autoCapture.takeFireReason();
+    if (fireReason != null) {
+      _autoTelemetry.recordFireReason(
+        segmentReady: fireReason.segmentReady,
+        newFeatureBurst: fireReason.newFeatureBurst,
+      );
+    }
     // isRunning 由 true 翻 false = controller 自停(撞 300 张或 5 分钟)。
     // 这里读的是 isRunning 而不是 decision:停机后 onPose 恒返回
     // skipNotMoved,与"你还没动够"逐字相同(见 autoCaptureIndicatorFor)。
