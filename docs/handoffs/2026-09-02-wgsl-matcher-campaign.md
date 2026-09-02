@@ -73,3 +73,14 @@ guided 语义(WGSL 化时逐字对齐):
 跨端 TU 形态(建议):`pwofficial_gpu_match_dawn.cc` 导出同一 weak ABI,
 iOS 端 env 开关择 Metal/Dawn(默认 Metal 不动,单变量上机),安卓/鸿蒙端
 唯一实现;chunking/watchdog/池子逻辑平移(全部已是可移植 C++)。
+
+## 全量闸就绪(2026-09-02 16:0x)
+
+- iCloud 把 ~/Documents 下的 cap7_day 夹具库(195MB)现场蒸发(EPERM,
+  brctl 下载也被拒)—— 8192 基准夹具幸存于 /private/tmp;全量闸改用
+  **今天 build-89 的两场 12MP 会话库**(20 帧 + 51 帧,已在 ~/Developer,
+  比 cap7 更能代表现役口径)。
+- `~/Developer/pw_h2_fullgate_20260902/run_fullgate.sh <kernel> [maxf]`:
+  逐帧抽描述子 → 时间 K12 全对(20 帧 ≈ 222 对)→ native vs 候选核
+  每对 pairs SHA 逐字节对拍。烟测 10/10 全等;fusedr128 全量在跑。
+  51 帧库(db_second.db)已备作第二阶段。
