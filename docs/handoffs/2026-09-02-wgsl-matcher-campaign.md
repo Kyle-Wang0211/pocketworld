@@ -46,3 +46,30 @@ Android/鸿蒙实机 V0/V1/V2 探针。
 attachments/2026-09-02-h2-matcher/:fair_match_common.h、
 fair_match_portable_arm.PRE_SR3C.cc(SR-3C 前原件)、fair_match_parity_suite.sh
 (aether_cpp git 经 iCloud 挂死,照旧在本仓保底)。
+
+## 生产化设计(草案,待 SR-3C 定核后落地)
+
+现役 Metal TU(pwofficial_gpu_match.mm,2103 行)的完整 ABI 面(已盘点):
+- `aether_gpu_match_gemm_pairs`(主入口,weak 引用,缺席自动回退 CPU)
+- `aether_gpu_match_gemm_pairs_resident` + `descriptor_residency_invalidate/clear_session`(描述子驻留)
+- `aether_gpu_match_last_error`(rc=7 错误桥接到 sfm_match_fail.jsonl)
+- `aether_match_set_ab_phase` / `set_capture_active` / `set_preview_fps30`(热/相机竞争节流)
+- 观测量:`aether_match_gpu_ms/sleep_ms/chunks`
+- 行为:KNIFE-C 分块(env OFFICIAL_AETHER_MATCH_CHUNK_TARGET_MS,自校准
+  成本模型 + 热占空隙)、30s 超时 watchdog(可移植 condition_variable,
+  返回码 0/7/8 分类已按 Vulkan DEVICE_LOST 映射预留)、零填充不变量、
+  buffer 池互斥。
+
+guided 语义(WGSL 化时逐字对齐):
+- mode1 E/F:对称极线残差 `nom²≤maxResidual·denom`(两条线都算);
+- mode2 H:重投影 `|Hq/hz−d|²≤maxResidual`,hz≤1e-8 拒;
+- 距离域:plain=acos(dot/512²) 角度 + 绝对门;guided=归一化 L2
+  √(2−2cos),second 以 131072 点积哨兵垫底(=COLMAP 哨兵距离 512);
+- ⚠️ 已证明:guided 门的浮点代数跨编译不逐位(1575 假设全败);验收口径
+  = 边界受限发散(±1 match/对量级)+ 下游无损,产线 Metal 自己也因此
+  guided→v1 两趟。
+- 平局铁律:best=max dot,平局最小下标;升序严格 >;merge 平局保 ours。
+
+跨端 TU 形态(建议):`pwofficial_gpu_match_dawn.cc` 导出同一 weak ABI,
+iOS 端 env 开关择 Metal/Dawn(默认 Metal 不动,单变量上机),安卓/鸿蒙端
+唯一实现;chunking/watchdog/池子逻辑平移(全部已是可移植 C++)。
