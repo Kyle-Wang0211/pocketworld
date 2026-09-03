@@ -311,3 +311,15 @@ OFFICIAL_AETHER_DESCRIPTOR_RESIDENCY_V1=1 <out>/pwofficial_gpu_match_dawn_abi_te
   (待定:走 pwofficial_telemetry 的 C 面或核的 jsonl)。
 - A/B 协议:同物体不可复拍 ⇒ 用多场分布:build 94 若干场(应≈build 91)→ build 95 若干场;
   判据 = 1:1/漂移/丢失/单张 min/队列 + match_ms;点云应逐场 = 对应 metal 结果(逐字节同语义)。
+
+## 🔴 上机纪律纠正(2026-09-03 21:5x,用户拦下)
+
+我把"代码层默认 dawn(架构裁决)"当成了"可以上生产",装了 build 96 到设备 —— **错**。
+用户的两条令是有顺序的:①三端同一套实现(架构,已落地) ②速度必须追平甚至超越苹果原生
+(**上机前置条件**,未达成:M3 上 dawn 11.0/14.4ms vs metal 4.9ms)。在 2.2-2.9× 的匹配成本下
+上生产,等于明知会重演 13312 那次"单张 578ms / 队列 2"的采集路径拖慢。已回滚设备到 build 91。
+
+**上机闸(写死)**:Dawn 后端进设备的前置条件 = 主机 8192² 每对 GPU 时间 ≤ Metal(4.9ms)。
+未达标前:代码默认保持 dawn(架构真值,三端唯一实现),但**任何 build 不得装机**;
+build 96 归档在 `~/Developer/pw_builds/build96_dawn_default.app`,只作**一次性成本测量**用途
+(需用户明确同意的测量场次),不作日常使用版本。
