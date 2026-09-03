@@ -1111,74 +1111,6 @@ Ctx* EnsureDawn() {
 // source of truth: only the operand types change. The accumulator (Res),
 // accSh, the gate math and the tie-break order are untouched, so the dots
 // stay exact (see Ctx::sgcfg_f16_f32) and the output is bit-identical.
-// [SCAN-SPLIT 2026-09-03] 行扫描从"每行 1 线程扫 32 列"改成"每行 2 线程各扫 16 列"。
-// 动机(对比手写 Metal v1):它用每行 4 线程 × 8 列 + simd_shuffle_xor 归约,每块 8 次
-// 迭代;我们每块 32 次串行依赖迭代。归因探针显示 MMA 外的部分(staging+扫描)占 35-50%。
-// 线程预算(共 512):原 128 扫行 + 32 扫列 + 352 预取 → 新 256 扫行 + 32 扫列 + 224 预取。
-// 每个线程只跟踪自己那半边列的 top-2(跨块累积),**最后合并一次**(无需逐块归约)。
-// 合并语义:低列号那半 = "ours",平局保 ours —— 与全局"最小下标胜"逐字一致。
-// env OFFICIAL_AETHER_MATCH_DAWN_SCAN2=1 启用(默认走每行 1 线程的现役路径)。
-std::string ScanSplitWgsl(const std::string& src) {
-  std::string t = src;
-  auto rep = [&t](const std::string& from, const std::string& to) {
-    const size_t p = t.find(from);
-    if (p == std::string::npos) return false;
-    t.replace(p, from.size(), to);
-    return true;
-  };
-  bool ok = true;
-  // 行扫描:2 线程/行,各扫 16 列
-  ok &= rep(
-      "    if (lid < WGR) {\n"
-      "      let lim = min(BT, U.numB - tile0);\n"
-      "      for (var c = 0u; c < lim; c = c + 1u) {\n"
-      "        let s = accSh[lid * 32u + c];\n"
-      "        if (s > rbest) {\n"
-      "          rsecond = rbest; rbest = s; rbi = i32(tile0 + c);\n"
-      "        } else if (s > rsecond) { rsecond = s; }\n"
-      "      }\n"
-      "    }",
-      "    if (lid < WGR * 2u) {\n"
-      "      let rr = lid / 2u;\n"
-      "      let c0 = (lid % 2u) * 16u;\n"
-      "      let lim = min(BT, U.numB - tile0);\n"
-      "      var c = c0;\n"
-      "      let cEnd = min(c0 + 16u, lim);\n"
-      "      while (c < cEnd) {\n"
-      "        let s = accSh[rr * 32u + c];\n"
-      "        if (s > rbest) {\n"
-      "          rsecond = rbest; rbest = s; rbi = i32(tile0 + c);\n"
-      "        } else if (s > rsecond) { rsecond = s; }\n"
-      "        c = c + 1u;\n"
-      "      }\n"
-      "    }");
-  // 列扫描线程窗口后移
-  ok &= rep("    if (lid >= WGR && lid < WGR + BT) {\n      let cl = lid - WGR;",
-            "    if (lid >= WGR * 2u && lid < WGR * 2u + BT) {\n      let cl = lid - WGR * 2u;");
-  // 预取线程窗口与步长
-  ok &= rep("    if (nextT < U.numB && lid >= 160u) {\n"
-            "      for (var e = lid - 160u; e < BT * 128u; e = e + 352u) {",
-            "    if (nextT < U.numB && lid >= 288u) {\n"
-            "      for (var e = lid - 288u; e < BT * 128u; e = e + 224u) {");
-  // 收尾:两半合并后由 half==0 的线程写出(平局保低列号那半)
-  ok &= rep("  let row = row0 + lid;\n"
-            "  if (lid < WGR && row < U.numA) {\n"
-            "    OutAB[row] = gatef(rbest, rsecond, rbi);\n"
-            "  }",
-            "  let ob = subgroupShuffleXor(rbest, 1u);\n"
-            "  let os = subgroupShuffleXor(rsecond, 1u);\n"
-            "  let oi = subgroupShuffleXor(rbi, 1u);\n"
-            "  if (lid < WGR * 2u && (lid % 2u) == 0u) {\n"
-            "    var fb = rbest; var fs = rsecond; var fi = rbi;\n"
-            "    if (ob > fb) { fs = max(fb, os); fb = ob; fi = oi; }\n"
-            "    else { fs = max(fs, ob); }\n"
-            "    let row = row0 + lid / 2u;\n"
-            "    if (row < U.numA) { OutAB[row] = gatef(fb, fs, fi); }\n"
-            "  }");
-  if (!ok) return src;  // 任一锚点没命中就整体不改(fail-closed)
-  return t;
-}
-
 std::string MixedWgsl(const char* src) {
   std::string t(src);
   auto sub = [&t](const std::string& from, const std::string& to) {
@@ -1245,13 +1177,12 @@ bool EnsureMainPipelines(Ctx& c) {
   if (c.tried_main) return false;
   c.tried_main = true;
   if (c.backend == Backend::kMma) {
-    std::string mixed_src = c.mixed ? MixedWgsl(kWgslMmaFused) : std::string();
+    const std::string mixed_src =
+        c.mixed ? MixedWgsl(kWgslMmaFused) : std::string();
     // 默认关闭:逐字节已验(984 匹配、SHA 同),但收益尚未在干净窗口测得
     // (测时机器有 WeChat ~50% + WindowServer 26%,1 线程臂离散 3.8ms > 信号)。
     // 纪律:未测得收益的改动不进默认路径。OFFICIAL_AETHER_MATCH_DAWN_SCAN2=1 启用。
-    if (c.mixed && getenv("OFFICIAL_AETHER_MATCH_DAWN_SCAN2") != nullptr) {
-      mixed_src = ScanSplitWgsl(mixed_src);
-    }
+
     wgpu::ShaderModule m = CompileWgsl(
         c, c.mixed ? mixed_src.c_str() : kWgslMmaFused,
         c.mixed ? "mma fused mixed" : "mma fused");
