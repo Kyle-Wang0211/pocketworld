@@ -1,0 +1,49 @@
+                                     wgpu::HeapProperty::HostCoherent |
+                                     wgpu::HeapProperty::HostCached;
+            heapInfo[1].size = hostInfo.max_mem;
+#else
+            DAWN_UNREACHABLE();
+#endif
+        }
+    }
+    if (auto* subgroupMatrixConfigs = info.Get<AdapterPropertiesSubgroupMatrixConfigs>()) {
+        DAWN_ASSERT([*mDevice supportsFamily:MTLGPUFamilyApple7]);
+
+        // [PW-MIXED-MMA 2026-09-03] Advertise the MIXED f16-in/f32-out config.
+        // Rationale: MSL supports simdgroup_multiply_accumulate with
+        // simdgroup_matrix<half> operands and a simdgroup_matrix<float>
+        // accumulator on Apple7+ (PocketWorld's shipped Metal matcher kernel
+        // uses exactly that form), tint's core.def already declares the
+        // overload (`implicit(T: f16, TR: f32_f16, ...)` in
+        // src/tint/lang/core/core.def) and the MSL writer's polyfill is
+        // type-agnostic (builtin_polyfill.cc:1194 forwards the result type).
+        // The ONLY thing blocking WGSL from using it was this hardcoded
+        // advertisement list, which ShaderModule.cpp:1728
+        // ValidateSubgroupMatrixConfiguration checks the shader against.
+        // Exposing it lets one portable WGSL kernel compute u8 descriptor dot
+        // products EXACTLY (products <= 65025 and sums <= 262144 are exact in
+        // f32's 24-bit significand) at f16 input rate.
+        auto* configs = new SubgroupMatrixConfig[3];
+        subgroupMatrixConfigs->configCount = 3;
+        subgroupMatrixConfigs->configs = configs;
+
+        configs[0].componentType = wgpu::SubgroupMatrixComponentType::F32;
+        configs[0].resultComponentType = wgpu::SubgroupMatrixComponentType::F32;
+        configs[0].M = 8;
+        configs[0].N = 8;
+        configs[0].K = 8;
+
+        configs[1].componentType = wgpu::SubgroupMatrixComponentType::F16;
+        configs[1].resultComponentType = wgpu::SubgroupMatrixComponentType::F16;
+        configs[1].M = 8;
+        configs[1].N = 8;
+        configs[1].K = 8;
+
+        configs[2].componentType = wgpu::SubgroupMatrixComponentType::F16;
+        configs[2].resultComponentType = wgpu::SubgroupMatrixComponentType::F32;
+        configs[2].M = 8;
+        configs[2].N = 8;
+        configs[2].K = 8;
+    }
+}
+}  // namespace dawn::native::metal
