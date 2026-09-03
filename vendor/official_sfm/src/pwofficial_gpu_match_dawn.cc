@@ -864,10 +864,27 @@ void ClearAllDescriptorResidencyForDeviceError();
 
 std::unique_ptr<Ctx> CreateCtx() {
   auto c = std::make_unique<Ctx>();
-  const char* allow = "allow_unsafe_apis";  // chromium_experimental_subgroup_matrix
+  // [DIAG 2026-09-03] OFFICIAL_AETHER_MATCH_DAWN_DUMP=1 → Dawn 的 dump_shaders
+  // toggle + 设备日志回调,把 tint 生成的 MSL 打到 stderr。仅主机诊断用,
+  // 默认关闭、对运行路径零影响。
+  static const char* kAllowT = "allow_unsafe_apis";
+  static const char* kDumpT = "dump_shaders";
+  // [ROBUSTNESS 2026-09-03] tint 的健壮性代码在 MMA 最内层循环里生成:
+  // 每次迭代一次 half 矩阵零填充 + 一次边界检查(实测生成的 MSL:
+  // `make_filled_simdgroup_matrix<half,8,8>(0.0h)` + `if (off+128*7+8 <= 4096)`),
+  // 而手写 Metal 核是原地 `simdgroup_multiply_accumulate(c, a, b, c)`。
+  // 我们的索引**由构造保证在界内**:主机把两张描述子表补齐到 128 行倍数并零填充、
+  // outAB 按补齐行数超额分配(见本文件头 Zero-padding invariant),Bsh/accSh 的偏移
+  // 由 BT/WGR 常量界定。因此关掉健壮性不改变任何读写目标 —— 逐字节等价由
+  // parity 19 案例 + 696 对全量闸 + guided 148 案例实测把关。
+  static const char* kNoRobust = "disable_robustness";
+  static const char* kNoWgInit = "disable_workgroup_init";
+  const bool kWantDump = getenv("OFFICIAL_AETHER_MATCH_DAWN_DUMP") != nullptr;
+  const char* allow = kAllowT;
+  const char* kDbgToggles[2] = {kAllowT, kDumpT};
   wgpu::DawnTogglesDescriptor toggles{};
-  toggles.enabledToggleCount = 1;
-  toggles.enabledToggles = &allow;
+  toggles.enabledToggleCount = kWantDump ? 2 : 1;
+  toggles.enabledToggles = kWantDump ? kDbgToggles : &allow;
   const wgpu::InstanceFeatureName timed = wgpu::InstanceFeatureName::TimedWaitAny;
   wgpu::InstanceDescriptor idesc{};
   idesc.nextInChain = &toggles;
@@ -961,6 +978,22 @@ std::unique_ptr<Ctx> CreateCtx() {
   }
   dd.requiredFeatureCount = feats.size();
   dd.requiredFeatures = feats.empty() ? nullptr : feats.data();
+  // dump_shaders 是**设备级** toggle(Toggles.cpp: ToggleStage::Device),
+  // 必须挂在 DeviceDescriptor 上,挂实例无效。
+  // 设备级 toggles:健壮性开关(env 可关闭以做单变量 A/B)+ 诊断 dump。
+  const bool no_robust = getenv("OFFICIAL_AETHER_MATCH_DAWN_ROBUST") == nullptr;
+  std::vector<const char*> dtoggles;
+  if (no_robust) {
+    dtoggles.push_back(kNoRobust);
+    dtoggles.push_back(kNoWgInit);
+  }
+  if (kWantDump) dtoggles.push_back(kDumpT);
+  wgpu::DawnTogglesDescriptor dtog{};
+  if (!dtoggles.empty()) {
+    dtog.enabledToggleCount = dtoggles.size();
+    dtog.enabledToggles = dtoggles.data();
+    dd.nextInChain = &dtog;
+  }
   dd.SetDeviceLostCallback(
       wgpu::CallbackMode::AllowSpontaneous,
       [](const wgpu::Device&, wgpu::DeviceLostReason reason,
@@ -1008,6 +1041,13 @@ std::unique_ptr<Ctx> CreateCtx() {
   if (!c->device) {
     Log("device creation failed: %s", dmsg.c_str());
     return nullptr;
+  }
+  if (kWantDump) {
+    // 诊断:把 dump_shaders 的输出(生成的 MSL)接到 stderr。
+    c->device.SetLoggingCallback(
+        [](wgpu::LoggingType, wgpu::StringView msg) {
+          std::fprintf(stderr, "%.*s\n", (int)msg.length, msg.data);
+        });
   }
   c->queue = c->device.GetQueue();
   gDeviceLostRc.store(0);

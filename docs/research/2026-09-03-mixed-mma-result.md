@@ -46,3 +46,42 @@ Bsh 从 16KiB 降到 8KiB ⇒ 空出 8KiB。之前被 32KiB 预算枪毙的两�
 3. 决定 dawn 后端的默认核(建议:检测到 `f16_f32` 即默认 mixed);
 4. 🔴 **速度闸尚未达标**:我此前写死"dawn 上机前置 = 主机 8192² GPU ≤ Metal 4.9ms",
    现在是 8.9-11.0ms(1.7-2.1×)。**是否在未追平前上机,需用户裁决。**
+
+## 第二刀:关掉 tint 的健壮性代码(2026-09-03 23:5x)—— 再 −28%
+
+**发现方式**:给 TU 加 `dump_shaders`(**设备级** toggle,挂实例无效)+ 设备日志回调,
+把 tint 生成的 MSL 打出来,与手写 Metal 核逐段对比。MMA 最内层循环(16 次 / 列块 / 行块)里
+tint 生成了:
+```
+simdgroup_half8x8 v_46 = make_filled_simdgroup_matrix<half,8,8>(0.0h);   // 零填充
+if ((((v_45 + (128u*7u)) + 8u) <= 4096u)) { simdgroup_load(...); }        // 边界检查
+simdgroup_float8x8 v_49 = make_filled_simdgroup_matrix<float,8,8>(0.0f); // 累加器零填充
+simdgroup_multiply_accumulate(v_49, v_25[v_44], v_48, v_43); v_43 = v_49; // 再拷回
+```
+手写 Metal 是 `simdgroup_multiply_accumulate(c, aFrag[k], bF, c);` —— 原地,无填充无检查。
+**确认混合精度真的生效**:`v_49` 是 float、两个操作数是 half ✓。
+
+**处置**:开启 Dawn 设备 toggle `disable_robustness` + `disable_workgroup_init`。
+安全性论证:索引由构造在界内(主机把两张描述子表补齐到 128 行倍数并零填充、outAB 按补齐
+行数超额分配 —— TU 头部的 Zero-padding invariant;Bsh/accSh 偏移由 BT/WGR 常量界定);
+共享内存 Bsh/accSh **全部写后读**(Bsh 每块整体覆盖含填充列,accSh 由 subgroupMatrixStore
+16 个子组 × 4 个 nt 全覆盖),不依赖自动清零。生成的 MSL 里边界检查已消失。
+env `OFFICIAL_AETHER_MATCH_DAWN_ROBUST=1` 可切回做单变量 A/B。
+
+**镜像 ABBA(括号 11.046/11.217,差 0.17ms,干净)**:
+| 臂 | GPU p50 | wall |
+|---|---|---|
+| 健壮性 ON | 11.046 / 11.217 | 11.6 / 11.9 |
+| **健壮性 OFF** | **7.890 / 8.113** | 8.4 / 8.8 |
+paired **−3.13ms / −28.1%**;四臂 pairs SHA 全同。
+
+**门(全部重跑)**:parity 19 案例 PASS · 全量闸 162/162 + 534/534 · guided 148 案例
+79,082 对逐字节 · ABI 0 失败。
+
+## 累积进度
+| 配置 | GPU p50 | 对 Metal(5.28 wall) |
+|---|---|---|
+| f32 + 健壮性(战役起点) | 13.87 | 2.6× |
+| 混合精度 | 9.94 | 1.9× |
+| **混合精度 + 关健壮性** | **8.00** | **~1.5×** |
+累积 **−42%**,全程逐字节无损。分块只值 0.22ms(2.4%,已用干净 ABBA 结案,不是杠杆)。
