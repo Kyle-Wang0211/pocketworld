@@ -126,3 +126,34 @@ exact flags; rebuilding the objects for iOS 14 would no longer be the byte-
 faithful baseline requested here. The final framework load command currently
 records minOS 14.0, so the linker emits inherited newer-object warnings.
 Runtime support below iOS 26.2 is **not validated or claimed** by this artifact.
+
+## Dawn archive update — mixed subgroup-matrix config (2026-09-04)
+
+- Old pinned Dawn archive SHA-256 (2026-06-21 build):
+  `625cf65dded708ad1abd3dc92f3b47c3c90c384f508676b56303f9341d301b42`
+- New pinned Dawn archive SHA-256:
+  `a283007b6bb4f3a328434205e93a73be5738563393033c2dd81b29e3364ccb17`
+- Change: **one object replaced** inside the pinned archive —
+  `PhysicalDeviceMTL.o`, recompiled from the vendored Dawn source with the
+  `[PW-MIXED-MMA 2026-09-03]` patch that advertises a third subgroup-matrix
+  config `f16 in → f32 out, 8x8x8` (upstream Dawn hardcodes only f32→f32 and
+  f16→f16 in `src/dawn/native/metal/PhysicalDeviceMTL.mm`, while Apple's
+  hardware, MSL, the WGSL language (`core.def` overload `T: f16, TR: f32_f16`)
+  and tint's MSL writer all support the mixed form — PocketWorld's shipped
+  Metal matcher kernel uses it directly).
+- Verification: archive member count 640 → 640; the replaced member is
+  byte-identical to the freshly compiled object; spot-checked members
+  (`ChainUtils_autogen.o`, `ObjectType_autogen.o`) byte-identical to the old
+  archive; only `__.SYMDEF` differs (rebuilt by `ranlib`).
+- Why not a full rebuild: the June archive was bundled in a build tree that no
+  longer exists (`/private/tmp/aether_p2_gpu_timestamp_probe_20260730`); the
+  current Xcode build regenerates `dawn_native_objects.a` but not the bundled
+  `libwebgpu_dawn.a`. The surgical replacement keeps every other object at its
+  pinned identity, which is stronger than a full rebuild for single-variable
+  discipline. Old archive retained at
+  `build-ios-device-dawn/.../Debug-iphoneos/libwebgpu_dawn.a.pinned-0621`.
+- Cross-platform note: the patch is in the **Metal backend source shared by
+  macOS and iOS** (one source change, two cross-compiles). The Vulkan backend
+  (Android/HarmonyOS) enumerates configs dynamically from the driver
+  (`vulkan/PhysicalDeviceVk.cpp: EnumerateSubgroupMatrixConfigs`) and needs no
+  patch — `fp16×fp16→fp32` is a standard `VK_KHR_cooperative_matrix` config.

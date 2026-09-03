@@ -962,7 +962,12 @@ std::unique_ptr<Ctx> CreateCtx() {
 
   const char* force = getenv("OFFICIAL_AETHER_MATCH_DAWN_KERNEL");
   const bool want_mma = !(force && std::strcmp(force, "tiled") == 0);
-  const bool want_mixed = force && std::strcmp(force, "mixed") == 0;
+  // [ONE-PIPELINE 2026-09-04] 混合精度(f16 操作数 + f32 累加器)是 **默认**:
+  // 它逐字节等价于 f32 路径(u8 在 f16 中精确;逐积 ≤65,025、K=128 总和 ≤262,144
+  // 均在 f32 的 24 位尾数内精确),主机实测 −11.4%(关健壮性后仍成立,交替 3 轮全胜)。
+  // 配置不可用时(未打补丁的 Dawn / 不支持的 GPU)自动退回 f32 —— 输出不变,只是慢些。
+  // env OFFICIAL_AETHER_MATCH_DAWN_KERNEL=plain 可强制 f32 做单变量 A/B。
+  const bool want_mixed = !(force && std::strcmp(force, "plain") == 0);
   const bool mma_ok = c->feat_subgroups && c->feat_sgmatrix &&
                       c->sgcfg_f32_8x8x8 && c->subgroup_min == 32 &&
                       c->subgroup_max == 32 && c->lim_invocations >= 512 &&

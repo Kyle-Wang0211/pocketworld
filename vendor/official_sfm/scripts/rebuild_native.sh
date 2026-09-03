@@ -29,7 +29,16 @@ BUILD_FRAMEWORK="$ROOT/scripts/build_xcframework.sh"
 VERIFY_CARRIER="$AETHER_ROOT/aether_cpp/tests/sift/verify_pwofficial_gpu_extract_artifact.sh"
 ALGORITHM_REVISION=b930ab185135dfbd172aef7c2bbeed67ef315f75
 PWOFFICIAL_DAWN_ARCHIVE="$AETHER_ROOT/aether_cpp/build-ios-device-dawn/third_party/dawn/src/dawn/native/Debug-iphoneos/libwebgpu_dawn.a"
-PWOFFICIAL_DAWN_SHA256=625cf65dded708ad1abd3dc92f3b47c3c90c384f508676b56303f9341d301b42
+# [PW-MIXED-MMA 2026-09-04] Dawn 归档更新:vendored Dawn 的 Metal 后端补登第三条
+# 子组矩阵配置(f16 in → f32 out 8x8x8)。上游 Dawn 只硬编码 f32→f32 与 f16→f16
+# (metal/PhysicalDeviceMTL.mm),而 Apple 硬件/MSL/WGSL 语言层/tint 生成端全都支持
+# 混合形态 —— 我们出货的 Metal 匹配核就在用。补上后 WGSL 匹配器拿到同款
+# half 操作数 + float 累加器:**逐字节精确**(u8 在 f16 精确;逐积 ≤65,025、
+# K=128 总和 ≤262,144 在 f32 24 位尾数内精确),主机实测 −11.4%。
+# 归档变更方式:只把重编的 PhysicalDeviceMTL.o 替换进 6 月钉定的归档
+# (640 个成员,其余逐字节未动,仅 __.SYMDEF 由 ranlib 重建)。
+# 旧钉子(6 月 21 日):625cf65dded708ad1abd3dc92f3b47c3c90c384f508676b56303f9341d301b42
+PWOFFICIAL_DAWN_SHA256=a283007b6bb4f3a328434205e93a73be5738563393033c2dd81b29e3364ccb17
 PWOFFICIAL_EXPECTED_CARRIER_SHA256=189f728d21c2efa211851e6d42e63182a0808e836884baed8b6e060c91a48902
 PWOFFICIAL_EXPECTED_OLD_CARRIER_SHA256=6c6a0aa0c5abf5eda79c50ef367f04c67838326b5f7c42e09f6649f8906eb88e
 PWOFFICIAL_EXPECTED_OLD_FRAMEWORK_SHA256=0b69ca576a624972f0b95993d8f1e217a1f0bfe54fe1b1ac0890a37531520485
