@@ -1,0 +1,21 @@
+date: 2026-09-03T11:52:59Z
+clang: Apple clang version 17.0.0 (clang-1700.6.3.2)
+== sources ==
+fc5fc4179174d22f6a33b17f454e8018f894cceddc2373e45b69c5058b6afc61  /Users/kaidongwang/Developer/pw-head-0827/vendor/official_sfm/src/pwofficial_gpu_match_dawn.cc
+08a6d4854a79ed80947bba3083bec68db753c0f4f57ac6dacb07c22b70121156  /Users/kaidongwang/Developer/pw-head-0827/vendor/official_sfm/src/pwofficial_gpu_match.mm
+b3ce96ead376bf3c20902d6b42bfec60a68c1f7eeae715eb3ff3ca2b36e209d6  /Users/kaidongwang/Developer/pw-head-0827/vendor/official_sfm/src/pwofficial_gpu_match_dispatch.cc
+b297dbffd3fbb0870160862a5c671217c60a803896a4105c0241fc3890462474  /Users/kaidongwang/Developer/pw-head-0827/vendor/official_sfm/src/pwofficial_gpu_match_metal_rename.h
+618f1406a97f38be492954721347522741122a56040e1bc53201d5e5d2b5ccb9  /Users/kaidongwang/Developer/pw-head-0827/vendor/official_sfm/tests/pwofficial_gpu_match_dawn_host_arm.cc
+131a53617b48ed306726c813cb73c6465cd47aa124faf564a3bc8fd75a5667a5  /Users/kaidongwang/Developer/pw-head-0827/vendor/official_sfm/tests/pwofficial_gpu_match_guided_compare.mm
+b13d75160329865ccbe33c684b9112aabc4fae8096a1e651d0a815c2088aa830  /Users/kaidongwang/Developer/Aether3D-cross/aether_cpp/experiments/portable_frontend_pareto/tools/fair_match_common.h
+c168abf68012f3683530702460a97fc37d45a0a778e4593f2fb670a8d461b96c  /Users/kaidongwang/Developer/Aether3D-cross/aether_cpp/experiments/portable_frontend_pareto/tools/fair_match_native_arm.mm
+9591aa69cc0c12168b8dfabfda735473aaa58c56a017a66c04052bd7a6c03c9e  /Users/kaidongwang/Developer/Aether3D-cross/aether_cpp/experiments/portable_frontend_pareto/tools/fair_match_gen_fixture.cc
+c388eded44cd45ac3f21b69bd1ffb435abb2169f13896f90f7361bd8c06adf9f  /Users/kaidongwang/Developer/Aether3D-cross/aether_cpp/experiments/portable_frontend_pareto/tools/fair_match_extract_fixture.cc
+== dawn ==
+081bab5f80f4892b4760a8fbd42a64ec6643d90b4a92ef046abc92f26e53aeaa  libwebgpu_dawn.a (host)
+== binaries ==
+da4b31df88630c751a3bbf10062c7802b0efe7e2e6e03ab2cb2f793adef275b9  /private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/d40553d6-aed5-41b7-942f-102f636b38ca/scratchpad/dawnhost/fair_match_extract_fixture
+6ffda4bc3e4006de1d01305afef1bb741f0e3e0b756b2342101b8d69ebb4bfac  /private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/d40553d6-aed5-41b7-942f-102f636b38ca/scratchpad/dawnhost/fair_match_gen_fixture
+d5864b93f704646ddb69437dffebe5c38bc805ea9e2edad21c3af6b2f9679e0a  /private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/d40553d6-aed5-41b7-942f-102f636b38ca/scratchpad/dawnhost/fair_match_native_arm
+3141989702a53c5fb60ec00779b35903cb7caa5f0f3876f8dbfe1d58c8d29d6a  /private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/d40553d6-aed5-41b7-942f-102f636b38ca/scratchpad/dawnhost/fair_match_portable_arm
+81a0a33e4f252e3e7f487c14d31eec18e3c78f356d5d0e9eabe4373f7a65445c  /private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/d40553d6-aed5-41b7-942f-102f636b38ca/scratchpad/dawnhost/pwofficial_gpu_match_guided_compare

@@ -1,0 +1,335 @@
+#include <metal_stdlib>
+using namespace metal;
+
+template<typename T, size_t N>
+struct tint_array {
+  const constant T& operator[](size_t i) const constant { return elements[i]; }
+  device T& operator[](size_t i) device { return elements[i]; }
+  const device T& operator[](size_t i) const device { return elements[i]; }
+  thread T& operator[](size_t i) thread { return elements[i]; }
+  const thread T& operator[](size_t i) const thread { return elements[i]; }
+  threadgroup T& operator[](size_t i) threadgroup { return elements[i]; }
+  const threadgroup T& operator[](size_t i) const threadgroup { return elements[i]; }
+  T elements[N];
+};
+
+struct Params {
+  /* 0x0000 */ uint numA;
+  /* 0x0004 */ uint numB;
+  /* 0x0008 */ float maxRatio;
+  /* 0x000c */ float maxDistance;
+  /* 0x0010 */ uint numWg;
+  /* 0x0014 */ uint rowBase;
+  /* 0x0018 */ uint pad1;
+  /* 0x001c */ uint pad2;
+};
+
+struct ColPart {
+  /* 0x0000 */ float best;
+  /* 0x0004 */ float second;
+  /* 0x0008 */ int idx;
+};
+
+struct tint_module_vars_struct {
+  const device tint_array<float, 1>* A;
+  const device tint_array<float, 1>* B;
+  device tint_array<int, 1>* OutAB;
+  const constant Params* U;
+  device tint_array<ColPart, 1>* ColP;
+  threadgroup tint_array<float, 4096>* Bsh;
+  threadgroup tint_array<float, 4096>* accSh;
+  const constant tint_array<uint4, 1>* tint_storage_buffer_sizes;
+};
+
+struct tint_array_lengths_struct {
+  uint tint_array_length_0_2;
+  uint tint_array_length_0_3;
+  uint tint_array_length_0_4;
+  uint tint_array_length_0_1;
+};
+
+struct tint_symbol_2 {
+  tint_array<float, 4096> tint_symbol;
+  tint_array<float, 4096> tint_symbol_1;
+};
+
+int gatef(float best, float second, int bestIndex, tint_module_vars_struct tint_module_vars) {
+  if ((bestIndex < 0)) {
+    return -1;
+  }
+  float const bd = acos(min((best * 0.000003814697265625f), 1.0f));
+  float const sd = acos(min((second * 0.000003814697265625f), 1.0f));
+  bool v = false;
+  if ((bd <= (*tint_module_vars.U).maxDistance)) {
+    v = (bd < ((*tint_module_vars.U).maxRatio * sd));
+  } else {
+    v = false;
+  }
+  if (v) {
+    return bestIndex;
+  }
+  return -1;
+}
+
+uint tint_mod_u32(uint lhs, uint rhs) {
+  return (lhs - ((lhs / select(rhs, 1u, (rhs == 0u))) * select(rhs, 1u, (rhs == 0u))));
+}
+
+uint tint_div_u32(uint lhs, uint rhs) {
+  return (lhs / select(rhs, 1u, (rhs == 0u)));
+}
+
+void main_inner(uint3 wg, uint lid, uint sg, tint_module_vars_struct tint_module_vars) {
+  {
+    uint v_1 = 0u;
+    v_1 = lid;
+    while(true) {
+      uint const v_2 = v_1;
+      if ((v_2 >= 4096u)) {
+        break;
+      }
+      (*tint_module_vars.Bsh)[v_2] = 0.0f;
+      (*tint_module_vars.accSh)[v_2] = 0.0f;
+      {
+        v_1 = (v_2 + 512u);
+      }
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  tint_array_lengths_struct const v_3 = tint_array_lengths_struct{.tint_array_length_0_2=((*tint_module_vars.tint_storage_buffer_sizes)[0u].y / 4u), .tint_array_length_0_3=((*tint_module_vars.tint_storage_buffer_sizes)[0u].z / 12u), .tint_array_length_0_4=((*tint_module_vars.tint_storage_buffer_sizes)[0u].w / 4u), .tint_array_length_0_1=((*tint_module_vars.tint_storage_buffer_sizes)[0u].x / 4u)};
+  uint const rb = ((*tint_module_vars.U).rowBase + wg.x);
+  uint const row0 = (rb * 128u);
+  uint const aRow0 = (row0 + (sg * 8u));
+  tint_array<simdgroup_float8x8, 16> aFrag = {};
+  {
+    uint k = 0u;
+    while(true) {
+      if ((k < 16u)) {
+      } else {
+        break;
+      }
+      uint const v_4 = ((aRow0 * 128u) + (k * 8u));
+      simdgroup_float8x8 v_5 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+      if ((((v_4 + (128u * 7u)) + 8u) <= v_3.tint_array_length_0_1)) {
+        simdgroup_float8x8 v_6 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+        simdgroup_load(v_6, (&(*tint_module_vars.A)[v_4]), ulong(128u), ulong2(0ul), false);
+        v_5 = v_6;
+      }
+      aFrag[k] = v_5;
+      {
+        k = (k + 1u);
+      }
+    }
+  }
+  float rbest = 0.0f;
+  float rsecond = 0.0f;
+  int rbi = -1;
+  {
+    uint2 tint_loop_idx = uint2(4294967295u);
+    uint e = lid;
+    while(true) {
+      if (all((tint_loop_idx == uint2(0u)))) {
+        break;
+      }
+      if ((e < 4096u)) {
+      } else {
+        break;
+      }
+      uint const brow = (0u + tint_div_u32(e, 128u));
+      threadgroup float* const v_7 = (&(*tint_module_vars.Bsh)[min(e, 4095u)]);
+      float const v_8 = (*tint_module_vars.B)[min(((brow * 128u) + tint_mod_u32(e, 128u)), (v_3.tint_array_length_0_2 - 1u))];
+      (*v_7) = select(0.0f, v_8, (brow < (*tint_module_vars.U).numB));
+      {
+        uint const tint_low_inc = (tint_loop_idx.x - 1u);
+        tint_loop_idx.x = tint_low_inc;
+        uint const tint_carry = uint((tint_low_inc == 4294967295u));
+        tint_loop_idx.y = (tint_loop_idx.y - tint_carry);
+        e = (e + 512u);
+      }
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  uint tile0 = 0u;
+  {
+    uint2 tint_loop_idx = uint2(4294967295u);
+    while(true) {
+      if (all((tint_loop_idx == uint2(0u)))) {
+        break;
+      }
+      if ((tile0 >= (*tint_module_vars.U).numB)) {
+        break;
+      }
+      {
+        uint nt = 0u;
+        while(true) {
+          if ((nt < 4u)) {
+          } else {
+            break;
+          }
+          simdgroup_float8x8 acc = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+          {
+            uint k = 0u;
+            while(true) {
+              if ((k < 16u)) {
+              } else {
+                break;
+              }
+              uint const v_9 = (((nt * 8u) * 128u) + (k * 8u));
+              simdgroup_float8x8 v_10 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+              if ((((v_9 + (128u * 7u)) + 8u) <= 4096u)) {
+                simdgroup_float8x8 v_11 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+                simdgroup_load(v_11, (&(*tint_module_vars.Bsh)[v_9]), ulong(128u), ulong2(0ul), true);
+                v_10 = v_11;
+              }
+              simdgroup_float8x8 const bF = v_10;
+              simdgroup_float8x8 v_12 = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+              simdgroup_multiply_accumulate(v_12, aFrag[k], bF, acc);
+              acc = v_12;
+              {
+                k = (k + 1u);
+              }
+            }
+          }
+          uint const v_13 = (((sg * 8u) * 32u) + (nt * 8u));
+          simdgroup_float8x8 const v_14 = acc;
+          if ((((v_13 + (32u * 7u)) + 8u) <= 4096u)) {
+            simdgroup_store(v_14, (&(*tint_module_vars.accSh)[v_13]), ulong(32u), ulong2(0ul), false);
+          }
+          {
+            nt = (nt + 1u);
+          }
+        }
+      }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+      uint const nextT = (tile0 + 32u);
+      bool v_15 = false;
+      if ((nextT < (*tint_module_vars.U).numB)) {
+        v_15 = (lid >= 160u);
+      } else {
+        v_15 = false;
+      }
+      if (v_15) {
+        {
+          uint2 tint_loop_idx_1 = uint2(4294967295u);
+          uint e = (lid - 160u);
+          while(true) {
+            if (all((tint_loop_idx_1 == uint2(0u)))) {
+              break;
+            }
+            if ((e < 4096u)) {
+            } else {
+              break;
+            }
+            uint const brow = (nextT + tint_div_u32(e, 128u));
+            threadgroup float* const v_16 = (&(*tint_module_vars.Bsh)[min(e, 4095u)]);
+            float const v_17 = (*tint_module_vars.B)[min(((brow * 128u) + tint_mod_u32(e, 128u)), (v_3.tint_array_length_0_2 - 1u))];
+            (*v_16) = select(0.0f, v_17, (brow < (*tint_module_vars.U).numB));
+            {
+              uint const tint_low_inc_2 = (tint_loop_idx_1.x - 1u);
+              tint_loop_idx_1.x = tint_low_inc_2;
+              uint const tint_carry_2 = uint((tint_low_inc_2 == 4294967295u));
+              tint_loop_idx_1.y = (tint_loop_idx_1.y - tint_carry_2);
+              e = (e + 352u);
+            }
+          }
+        }
+      }
+      if ((lid < 128u)) {
+        uint const lim = min(32u, ((*tint_module_vars.U).numB - tile0));
+        {
+          uint2 tint_loop_idx_2 = uint2(4294967295u);
+          uint c = 0u;
+          while(true) {
+            if (all((tint_loop_idx_2 == uint2(0u)))) {
+              break;
+            }
+            if ((c < lim)) {
+            } else {
+              break;
+            }
+            float const s = (*tint_module_vars.accSh)[min(((lid * 32u) + c), 4095u)];
+            if ((s > rbest)) {
+              rsecond = rbest;
+              rbest = s;
+              rbi = int((tile0 + c));
+            } else {
+              if ((s > rsecond)) {
+                rsecond = s;
+              }
+            }
+            {
+              uint const tint_low_inc_3 = (tint_loop_idx_2.x - 1u);
+              tint_loop_idx_2.x = tint_low_inc_3;
+              uint const tint_carry_3 = uint((tint_low_inc_3 == 4294967295u));
+              tint_loop_idx_2.y = (tint_loop_idx_2.y - tint_carry_3);
+              c = (c + 1u);
+            }
+          }
+        }
+      }
+      bool v_18 = false;
+      if ((lid >= 128u)) {
+        v_18 = (lid < 160u);
+      } else {
+        v_18 = false;
+      }
+      if (v_18) {
+        uint const cl = (lid - 128u);
+        uint const c = (tile0 + cl);
+        if ((c < (*tint_module_vars.U).numB)) {
+          float best = 0.0f;
+          float second = 0.0f;
+          int bi = -1;
+          {
+            uint r = 0u;
+            while(true) {
+              if ((r < 128u)) {
+              } else {
+                break;
+              }
+              float const s = (*tint_module_vars.accSh)[min(((r * 32u) + cl), 4095u)];
+              if ((s > best)) {
+                second = best;
+                best = s;
+                bi = int((row0 + r));
+              } else {
+                if ((s > second)) {
+                  second = s;
+                }
+              }
+              {
+                r = (r + 1u);
+              }
+            }
+          }
+          device ColPart* const v_19 = (&(*tint_module_vars.ColP)[min(((c * (*tint_module_vars.U).numWg) + rb), (v_3.tint_array_length_0_3 - 1u))]);
+          (*v_19) = ColPart{.best=best, .second=second, .idx=bi};
+        }
+      }
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+      tile0 = nextT;
+      {
+        uint const tint_low_inc_1 = (tint_loop_idx.x - 1u);
+        tint_loop_idx.x = tint_low_inc_1;
+        uint const tint_carry_1 = uint((tint_low_inc_1 == 4294967295u));
+        tint_loop_idx.y = (tint_loop_idx.y - tint_carry_1);
+      }
+    }
+  }
+  uint const row = (row0 + lid);
+  bool v_20 = false;
+  if ((lid < 128u)) {
+    v_20 = (row < (*tint_module_vars.U).numA);
+  } else {
+    v_20 = false;
+  }
+  if (v_20) {
+    (*tint_module_vars.OutAB)[min(row, (v_3.tint_array_length_0_4 - 1u))] = gatef(rbest, rsecond, rbi, tint_module_vars);
+  }
+}
+
+[[max_total_threads_per_threadgroup(512)]]
+kernel void v_21(uint3 wg [[threadgroup_position_in_grid]], uint lid [[thread_index_in_threadgroup]], uint sg [[simdgroup_index_in_threadgroup]], const device tint_array<float, 1>* A [[buffer(1)]], const device tint_array<float, 1>* B [[buffer(2)]], device tint_array<int, 1>* OutAB [[buffer(4)]], const constant Params* U [[buffer(0)]], device tint_array<ColPart, 1>* ColP [[buffer(3)]], threadgroup tint_symbol_2* v_22 [[threadgroup(0)]], const constant tint_array<uint4, 1>* tint_storage_buffer_sizes [[buffer(30)]]) {
+  tint_module_vars_struct const tint_module_vars = tint_module_vars_struct{.A=A, .B=B, .OutAB=OutAB, .U=U, .ColP=ColP, .Bsh=(&(*v_22).tint_symbol), .accSh=(&(*v_22).tint_symbol_1), .tint_storage_buffer_sizes=tint_storage_buffer_sizes};
+  main_inner(wg, lid, sg, tint_module_vars);
+}

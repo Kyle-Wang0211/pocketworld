@@ -121,6 +121,22 @@ actual_glog_sha=$(/usr/bin/shasum -a 256 "$PWOFFICIAL_GLOG_ARCHIVE" | awk '{prin
 mkdir -p "$(dirname "$PWOFFICIAL_XCFRAMEWORK_OUT")" \
   "$(dirname "$PWOFFICIAL_LINK_MAP")"
 
+# [MATCHER-DAWN 2026-09-03] Header roots for the cross-platform Dawn matcher
+# TU (src/pwofficial_gpu_match_dawn.cc). Derived from the pinned Dawn archive
+# path (…/build-ios-device-dawn/third_party/dawn/src/dawn/native/<cfg>/libwebgpu_dawn.a)
+# so the iOS-generated headers always match the archive that is force-loaded
+# below; overridable for out-of-tree layouts.
+PWOFFICIAL_DAWN_GEN_INCLUDE=${PWOFFICIAL_DAWN_GEN_INCLUDE:-"$(CDPATH= cd -- "$(dirname -- "$PWOFFICIAL_DAWN_ARCHIVE")/../../../../gen/include" && pwd)"}
+PWOFFICIAL_DAWN_SRC_INCLUDE=${PWOFFICIAL_DAWN_SRC_INCLUDE:-"$(CDPATH= cd -- "$(dirname -- "$PWOFFICIAL_DAWN_ARCHIVE")/../../../../../../../third_party/dawn/include" && pwd)"}
+[ -f "$PWOFFICIAL_DAWN_GEN_INCLUDE/dawn/webgpu_cpp.h" ] || {
+  echo "FAIL: missing iOS Dawn generated headers: $PWOFFICIAL_DAWN_GEN_INCLUDE" >&2
+  exit 66
+}
+[ -f "$PWOFFICIAL_DAWN_SRC_INCLUDE/webgpu/webgpu_cpp.h" ] || {
+  echo "FAIL: missing Dawn source headers: $PWOFFICIAL_DAWN_SRC_INCLUDE" >&2
+  exit 66
+}
+
 DEVICE_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
 CLANG=$(xcrun --find clang)
@@ -166,10 +182,31 @@ build_device_framework() {
   target=arm64-apple-ios14.0
   object_dir="$DEVICE_FRAMEWORK.objects"
   compile_common_objects "$DEVICE_SDK" "$target" "$DEVICE_FRAMEWORK" "$object_dir"
+  # [MATCHER-DAWN 2026-09-03] The shipped Metal TU is compiled with its
+  # exports renamed to pwmetal_* (source byte-identical; -include only), the
+  # public aether_gpu_match_* ABI is owned by the dispatch TU, and the
+  # cross-platform Dawn TU + Apple thermal hook join the link. Default
+  # backend stays Metal (OFFICIAL_AETHER_MATCH_BACKEND unset); "dawn" flips.
   "$CLANGXX" -target "$target" -isysroot "$DEVICE_SDK" \
     -miphoneos-version-min=14.0 -fPIC -fvisibility=hidden -O3 -std=c++17 \
-    -fobjc-arc -c "$ROOT/src/pwofficial_gpu_match.mm" \
+    -fobjc-arc -include "$ROOT/src/pwofficial_gpu_match_metal_rename.h" \
+    -c "$ROOT/src/pwofficial_gpu_match.mm" \
     -o "$object_dir/gpu_match.o"
+  "$CLANGXX" -target "$target" -isysroot "$DEVICE_SDK" \
+    -miphoneos-version-min=14.0 -fPIC -fvisibility=hidden -O3 -std=c++17 \
+    -c "$ROOT/src/pwofficial_gpu_match_dispatch.cc" \
+    -o "$object_dir/gpu_match_dispatch.o"
+  "$CLANGXX" -target "$target" -isysroot "$DEVICE_SDK" \
+    -miphoneos-version-min=14.0 -fPIC -fvisibility=hidden -O3 -std=c++17 \
+    -DPWOFFICIAL_DAWN_OBSERVABLES_EXTERN=1 \
+    -I"$PWOFFICIAL_DAWN_SRC_INCLUDE" -I"$PWOFFICIAL_DAWN_GEN_INCLUDE" \
+    -I"$ROOT/include" \
+    -c "$ROOT/src/pwofficial_gpu_match_dawn.cc" \
+    -o "$object_dir/gpu_match_dawn.o"
+  "$CLANGXX" -target "$target" -isysroot "$DEVICE_SDK" \
+    -miphoneos-version-min=14.0 -fPIC -fvisibility=hidden -O3 -std=c++17 \
+    -fobjc-arc -c "$ROOT/src/pwofficial_gpu_match_thermal_apple.mm" \
+    -o "$object_dir/gpu_match_thermal_apple.o"
 
   "$CLANGXX" -target "$target" -isysroot "$DEVICE_SDK" \
     -miphoneos-version-min=14.0 -dynamiclib -fPIC \
@@ -179,6 +216,8 @@ build_device_framework() {
     -Wl,-map,"$PWOFFICIAL_LINK_MAP" \
     "$object_dir/export_shim.o" "$object_dir/telemetry.o" \
     "$object_dir/jpeg_decode.o" "$object_dir/gpu_match.o" \
+    "$object_dir/gpu_match_dispatch.o" "$object_dir/gpu_match_dawn.o" \
+    "$object_dir/gpu_match_thermal_apple.o" \
     -Wl,-force_load,"$PWOFFICIAL_GPU_CARRIER" \
     -Wl,-force_load,"$ROOT/libs/ios-arm64/libpwofficial_core.a" \
     -Wl,-force_load,"$PWOFFICIAL_DAWN_ARCHIVE" \

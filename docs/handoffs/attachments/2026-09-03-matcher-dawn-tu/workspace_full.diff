@@ -1,0 +1,3512 @@
+diff --git a/vendor/official_sfm/scripts/build_xcframework.sh b/vendor/official_sfm/scripts/build_xcframework.sh
+index 92aa728..5510079 100755
+--- a/vendor/official_sfm/scripts/build_xcframework.sh
++++ b/vendor/official_sfm/scripts/build_xcframework.sh
+@@ -121,6 +121,22 @@ actual_glog_sha=$(/usr/bin/shasum -a 256 "$PWOFFICIAL_GLOG_ARCHIVE" | awk '{prin
+ mkdir -p "$(dirname "$PWOFFICIAL_XCFRAMEWORK_OUT")" \
+   "$(dirname "$PWOFFICIAL_LINK_MAP")"
+ 
++# [MATCHER-DAWN 2026-09-03] Header roots for the cross-platform Dawn matcher
++# TU (src/pwofficial_gpu_match_dawn.cc). Derived from the pinned Dawn archive
++# path (…/build-ios-device-dawn/third_party/dawn/src/dawn/native/<cfg>/libwebgpu_dawn.a)
++# so the iOS-generated headers always match the archive that is force-loaded
++# below; overridable for out-of-tree layouts.
++PWOFFICIAL_DAWN_GEN_INCLUDE=${PWOFFICIAL_DAWN_GEN_INCLUDE:-"$(CDPATH= cd -- "$(dirname -- "$PWOFFICIAL_DAWN_ARCHIVE")/../../../../gen/include" && pwd)"}
++PWOFFICIAL_DAWN_SRC_INCLUDE=${PWOFFICIAL_DAWN_SRC_INCLUDE:-"$(CDPATH= cd -- "$(dirname -- "$PWOFFICIAL_DAWN_ARCHIVE")/../../../../../../../third_party/dawn/include" && pwd)"}
++[ -f "$PWOFFICIAL_DAWN_GEN_INCLUDE/dawn/webgpu_cpp.h" ] || {
++  echo "FAIL: missing iOS Dawn generated headers: $PWOFFICIAL_DAWN_GEN_INCLUDE" >&2
++  exit 66
++}
++[ -f "$PWOFFICIAL_DAWN_SRC_INCLUDE/webgpu/webgpu_cpp.h" ] || {
++  echo "FAIL: missing Dawn source headers: $PWOFFICIAL_DAWN_SRC_INCLUDE" >&2
++  exit 66
++}
++
+ DEVICE_SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+ SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
+ CLANG=$(xcrun --find clang)
+@@ -166,10 +182,31 @@ build_device_framework() {
+   target=arm64-apple-ios14.0
+   object_dir="$DEVICE_FRAMEWORK.objects"
+   compile_common_objects "$DEVICE_SDK" "$target" "$DEVICE_FRAMEWORK" "$object_dir"
++  # [MATCHER-DAWN 2026-09-03] The shipped Metal TU is compiled with its
++  # exports renamed to pwmetal_* (source byte-identical; -include only), the
++  # public aether_gpu_match_* ABI is owned by the dispatch TU, and the
++  # cross-platform Dawn TU + Apple thermal hook join the link. Default
++  # backend stays Metal (OFFICIAL_AETHER_MATCH_BACKEND unset); "dawn" flips.
+   "$CLANGXX" -target "$target" -isysroot "$DEVICE_SDK" \
+     -miphoneos-version-min=14.0 -fPIC -fvisibility=hidden -O3 -std=c++17 \
+-    -fobjc-arc -c "$ROOT/src/pwofficial_gpu_match.mm" \
++    -fobjc-arc -include "$ROOT/src/pwofficial_gpu_match_metal_rename.h" \
++    -c "$ROOT/src/pwofficial_gpu_match.mm" \
+     -o "$object_dir/gpu_match.o"
++  "$CLANGXX" -target "$target" -isysroot "$DEVICE_SDK" \
++    -miphoneos-version-min=14.0 -fPIC -fvisibility=hidden -O3 -std=c++17 \
++    -c "$ROOT/src/pwofficial_gpu_match_dispatch.cc" \
++    -o "$object_dir/gpu_match_dispatch.o"
++  "$CLANGXX" -target "$target" -isysroot "$DEVICE_SDK" \
++    -miphoneos-version-min=14.0 -fPIC -fvisibility=hidden -O3 -std=c++17 \
++    -DPWOFFICIAL_DAWN_OBSERVABLES_EXTERN=1 \
++    -I"$PWOFFICIAL_DAWN_SRC_INCLUDE" -I"$PWOFFICIAL_DAWN_GEN_INCLUDE" \
++    -I"$ROOT/include" \
++    -c "$ROOT/src/pwofficial_gpu_match_dawn.cc" \
++    -o "$object_dir/gpu_match_dawn.o"
++  "$CLANGXX" -target "$target" -isysroot "$DEVICE_SDK" \
++    -miphoneos-version-min=14.0 -fPIC -fvisibility=hidden -O3 -std=c++17 \
++    -fobjc-arc -c "$ROOT/src/pwofficial_gpu_match_thermal_apple.mm" \
++    -o "$object_dir/gpu_match_thermal_apple.o"
+ 
+   "$CLANGXX" -target "$target" -isysroot "$DEVICE_SDK" \
+     -miphoneos-version-min=14.0 -dynamiclib -fPIC \
+@@ -179,6 +216,8 @@ build_device_framework() {
+     -Wl,-map,"$PWOFFICIAL_LINK_MAP" \
+     "$object_dir/export_shim.o" "$object_dir/telemetry.o" \
+     "$object_dir/jpeg_decode.o" "$object_dir/gpu_match.o" \
++    "$object_dir/gpu_match_dispatch.o" "$object_dir/gpu_match_dawn.o" \
++    "$object_dir/gpu_match_thermal_apple.o" \
+     -Wl,-force_load,"$PWOFFICIAL_GPU_CARRIER" \
+     -Wl,-force_load,"$ROOT/libs/ios-arm64/libpwofficial_core.a" \
+     -Wl,-force_load,"$PWOFFICIAL_DAWN_ARCHIVE" \
+diff --git a/vendor/official_sfm/src/pwofficial_gpu_match_dawn.cc b/vendor/official_sfm/src/pwofficial_gpu_match_dawn.cc
+new file mode 100644
+index 0000000..9fd4075
+--- /dev/null
++++ b/vendor/official_sfm/src/pwofficial_gpu_match_dawn.cc
+@@ -0,0 +1,2116 @@
++// pwofficial_gpu_match_dawn.cc — pocketworld cross-platform (Dawn/WGSL) GPU
++// descriptor matcher: the ONE matcher implementation shared by iOS (Dawn →
++// Metal), Android and HarmonyOS (Dawn → Vulkan). Production sibling of the
++// shipped Metal TU pwofficial_gpu_match.mm; that TU is the SEMANTIC GOLD
++// STANDARD and is not modified by this file (see the dispatch layer
++// pwofficial_gpu_match_dispatch.cc for how the two coexist on iOS).
++//
++// ── Provenance (2026-09-03) ────────────────────────────────────────────────
++// Plain path kernel = the H2 campaign frontier `fusedr128-db` (SR-3D-1
++// software-pipelined fused dual-direction subgroup-matrix kernel), taken
++// VERBATIM from the WGSL text the harness
++// aether_cpp/experiments/portable_frontend_pareto/tools/fair_match_portable_arm.cc
++// assembles for kernel "fusedr128-db" (dumped through the harness's own
++// assembly path, SHA-256 2e4a7d40b19346852d4fb085d292c8cb160f5c6d6e5b8eb5327662f7af09ae8f),
++// with exactly two textual deltas for KNIFE-C chunking:
++//   1. Params.pad0 is renamed rowBase and `let rb = U.rowBase + wg.x;`
++//      replaces the implicit block index (rowBase == 0 reproduces the
++//      frontier bit-for-bit);
++//   2. column partials are indexed by the ABSOLUTE row block `rb`.
++// That frontier was proven 696/696 byte-identical to native Metal on the two
++// 2026-09-02 build-89 12MP sessions (docs/handoffs/2026-09-02-wgsl-matcher-campaign.md).
++// Fallback kernel = the harness's `tiled` kernel (dot4U8Packed, one query per
++// thread, 64-row shared B tile; SHA-256 of the dumped text
++// 1de3662a9afa4edfa2ea87a17507bbd876f74d1d1afea829c481539ce91feea3), same
++// rowBase delta. Both kernels are gated by the parity suite (19 frozen
++// goldens) and the 696-pair full gate before promotion.
++//
++// ── Semantics (identical to pwofficial_gpu_match.mm, see its header) ──────
++// * best = MAX dot, LOWEST index wins ties; second = max of the remaining
++//   multiset; every scan ascends with strict `>`; every merge level combines
++//   an ordered lower-index chunk with a higher-index chunk keeping "ours" on
++//   ties. Dots are exact integers (< 2^24) in f32 / u32.
++// * plain gate (guideMode 0): angular domain, bd = acos(min(best/512², 1)),
++//   sd likewise, keep iff bd <= maxDistance(0.7) && bd < maxRatio * sd.
++// * guided gate (guideMode 1/2): v1 TWO-PASS structure (one direction per
++//   dispatch, mirrored arguments), geometry gate BEFORE top-2 insertion:
++//     mode 1 (E/F): symmetric epipolar residual — line2 = M·p1, line1 = Mᵀ·p2,
++//                   nom = p2·line2, denom = |line2.xy|² + |line1.xy|²,
++//                   accept iff denom > 1e-12 && nom² <= maxResidual·denom;
++//     mode 2 (H):   reprojection — h = M·q, reject iff |hz| <= 1e-8, else
++//                   accept iff |(hx/hz, hy/hz) − d|² <= maxResidual;
++//   distance domain normalized L2 √(2 − 2cos) with the second-best floored
++//   by the 131072 dot sentinel (= COLMAP's sentinel distance 512).
++//   ⚠️ The guided gate is a near-cancellation and its float algebra is
++//   compile-context dependent (pwofficial_gpu_match.mm header: 1,575
++//   recombination hypotheses, ZERO bit-reproduce the Metal v1 gate).
++//   Bit-parity with Metal is therefore NOT a gate for guided; the accepted
++//   criterion is boundary-confined divergence (candidates within ~1e-3
++//   relative of the residual threshold, ±1 match/pair scale) + downstream
++//   losslessness. Do not "fix" the algebra to chase bits.
++// * zero-padding invariant: both descriptor tables (and, when guided, both
++//   keypoint tables) are padded to 128-row multiples, zero-filled, on the
++//   host; padded rows produce dot == 0 candidates that can never become best
++//   nor raise second under strict `>` against best/second initialised to 0.
++// * mutual cross-check + ordered pair emission on the host, verbatim.
++//
++// ── Portable host driver (ported from the Metal TU, standard C++ only) ───
++// * KNIFE-C chunked dispatch: env OFFICIAL_AETHER_MATCH_CHUNK_TARGET_MS
++//   (default 16; 0 = monolithic), _COOL_MS, _FPS30, _ALT, thermal gap
++//   OFFICIAL_AETHER_MATCH_GAP_SERIOUS_PCT / _CRITICAL_PCT / _FPS30 — same
++//   names, same defaults, same self-calibrating EMA cost model (one EMA per
++//   kernel family). Row blocks are independent and column partials are
++//   indexed by absolute row block, so any chunking is bit-identical.
++// * GPU-HANG-A1 watchdog: wgpu::Instance::WaitAny with a bounded timeout
++//   (TimedWaitAny instance feature; env OFFICIAL_AETHER_GPU_MATCH_WAIT_MS,
++//   default 30000). Timeout ⇒ rc 7 (retryable), never an unbounded wait.
++// * rc classification (same contract as the Metal TU): 0 ok · 1 bad args ·
++//   2 GPU/pipeline unavailable · 5 descriptor buffer alloc failed · 6 aux
++//   buffer alloc failed · 7 retryable GPU failure (timeout / transient error
++//   / device lost with reason Unknown / incomplete output) · 8 permanent
++//   (device lost with reason Destroyed or FailedCreation). Vulkan's
++//   VK_ERROR_DEVICE_LOST surfaces through Dawn's device-lost callback and
++//   lands in the same 7/8 split; Metal's NotPermitted/AccessRevoked codes
++//   are NOT observable through Dawn (it abstracts the MTLCommandBuffer
++//   error) — documented gap, they degrade to repeated rc 7.
++// * Silent-completion guard (Dawn-specific): Dawn's Metal backend does not
++//   inspect MTLCommandBuffer.error in its completed handler, so a GPU hang
++//   under thermal pressure would "complete" with garbage outputs. Every
++//   output slot is pre-filled with INT32_MIN before submission; any sentinel
++//   left after readback ⇒ the kernel did not run to completion ⇒ rc 7.
++//   The kernels never write INT32_MIN (they write −1 or an index ≥ 0).
++// * Buffer pools are grow-only and shared; whole calls are serialised behind
++//   one mutex, exactly like the Metal TU.
++// * Descriptor residency V1 (env OFFICIAL_AETHER_DESCRIPTOR_RESIDENCY_V1=1,
++//   default off) reuses the shared policy header; resident tables are kept
++//   in the active kernel's storage format (f32 for the subgroup-matrix
++//   kernel, raw u8 for the tiled fallback) and accounted in those bytes.
++// * Thermal state: the Metal TU reads NSProcessInfo directly. Here the
++//   platform feeds it either through the weak hook
++//   pwofficial_platform_thermal_state() (provided on Apple by
++//   pwofficial_gpu_match_thermal_apple.mm) or the explicit setter
++//   pwdawn_gpu_match_set_thermal_state(0 nominal · 1 fair · 2 serious ·
++//   3 critical — the aether_sfm_set_thermal_state scale). Serious/critical
++//   drive the chunk target and duty-cycle gaps exactly as on Metal.
++//
++// ── Kernel selection = the Vulkan lane's V0 / V1 / V2 branch points ──────
++//   V0: adapter exposes Subgroups + ChromiumExperimentalSubgroupMatrix with
++//       an F32 8×8×8 config, fixed subgroup size 32, ≥512 invocations and
++//       ≥32 KiB workgroup storage → `fusedr128-db` (Metal: simdgroup_matrix;
++//       Vulkan: VK_KHR_cooperative_matrix, see PhysicalDeviceVk.cpp:533).
++//   V1: otherwise → `tiled` with dot4U8Packed lowered to OpUDotKHR
++//       (SPV_KHR_integer_dot_product) when VK_KHR_shader_integer_dot_product
++//       is present (tint spirv writer builtin_polyfill.cc DotPacked4x8).
++//   V2: no integer-dot extension → same `tiled` WGSL, Dawn force-enables
++//       Toggle::PolyFillPacked4x8DotProduct (PhysicalDeviceVk.cpp:1225) and
++//       the scalar polyfill runs. On Metal dot4U8Packed is always the
++//       polyfill, which is why V0 is the iOS production kernel.
++//   env OFFICIAL_AETHER_MATCH_DAWN_KERNEL=tiled forces V1/V2 for A/B.
++//   Which branch was taken is reported once at init on stderr and through
++//   pwdawn_gpu_match_backend_info().
++//
++// ── Exported C ABI (backend-private names; the public aether_gpu_match_*
++//    names are owned by pwofficial_gpu_match_dispatch.cc) ─────────────────
++//   pwdawn_gpu_match_gemm_pairs / _resident / _guided / _probe_batch
++//   pwdawn_gpu_match_descriptor_residency_invalidate / _clear_session / _stats
++//   pwdawn_gpu_match_last_error
++//   pwdawn_gpu_match_set_capture_active / _set_preview_fps30 /
++//   pwdawn_match_set_ab_phase / pwdawn_gpu_match_set_thermal_state
++//   pwdawn_gpu_match_backend_info
++// Observation globals aether_match_gpu_ms / aether_match_sleep_ms /
++// aether_match_chunks are DEFINED here unless
++// PWOFFICIAL_DAWN_OBSERVABLES_EXTERN=1 (the iOS framework build, where the
++// Metal TU defines them and both backends accumulate into the same words).
++//
++// Build: C++17, <webgpu/webgpu_cpp.h> from aether_cpp/third_party/dawn/include
++// plus the TARGET's generated headers (host: aether_cpp/build/third_party/dawn/
++// gen/include; iOS: aether_cpp/build-ios-device-dawn/third_party/dawn/gen/include).
++
++#include <webgpu/webgpu_cpp.h>
++
++#include <algorithm>
++#include <atomic>
++#include <chrono>
++#include <climits>
++#include <cstdarg>
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <functional>
++#include <memory>
++#include <mutex>
++#include <string>
++#include <thread>
++#include <unordered_map>
++#include <vector>
++
++#if __has_include("aether/sfm/descriptor_residency_policy_v1.h")
++#include "aether/sfm/descriptor_residency_policy_v1.h"
++#else
++#include "../include/aether/sfm/descriptor_residency_policy_v1.h"
++#endif
++
++// ── Observation globals (see header) ─────────────────────────────────────
++#if defined(PWOFFICIAL_DAWN_OBSERVABLES_EXTERN) && PWOFFICIAL_DAWN_OBSERVABLES_EXTERN
++extern "C" double aether_match_gpu_ms;
++extern "C" double aether_match_sleep_ms;
++extern "C" int aether_match_chunks;
++#else
++extern "C" double aether_match_gpu_ms = 0.0;
++extern "C" double aether_match_sleep_ms = 0.0;
++extern "C" int aether_match_chunks = 0;
++#endif
++
++// Weak platform hook: Apple provides it from pwofficial_gpu_match_thermal_apple.mm
++// (NSProcessInfo.thermalState); other platforms leave it undefined and feed
++// the explicit setter instead.
++extern "C" __attribute__((weak)) int pwofficial_platform_thermal_state(void);
++
++namespace {
++
++constexpr int kD = 128;
++constexpr uint32_t kMmaRows = 128;   // WGR of the subgroup-matrix kernel
++constexpr uint32_t kTiledRows = 64;  // WG of the tiled fallback kernel
++constexpr int32_t kOutSentinel = INT32_MIN;
++constexpr uint64_t kSlot = 256;      // uniform / storage offset alignment
++
++inline uint64_t RoundUp(uint64_t v, uint64_t m) { return (v + m - 1) / m * m; }
++
++double NowMs() {
++  using namespace std::chrono;
++  return duration<double, std::milli>(steady_clock::now().time_since_epoch())
++      .count();
++}
++
++std::string SV(wgpu::StringView v) {
++  if (!v.data) return std::string();
++  if (v.length == WGPU_STRLEN) return std::string(v.data);
++  return std::string(v.data, v.length);
++}
++
++void Log(const char* fmt, ...) {
++  char buf[512];
++  va_list ap;
++  va_start(ap, fmt);
++  vsnprintf(buf, sizeof(buf), fmt, ap);
++  va_end(ap);
++  std::fprintf(stderr, "[pwofficial_gpu_match_dawn] %s\n", buf);
++}
++
++// ── Last error stash (rc=7 bridge to sfm_match_fail.jsonl) ───────────────
++std::mutex gLastErrLock;
++char gLastErr[192] = {0};
++
++void StashLastError(const std::string& text) {
++  std::lock_guard<std::mutex> lk(gLastErrLock);
++  std::snprintf(gLastErr, sizeof(gLastErr), "%s", text.c_str());
++}
++
++// ── Flags (same meaning as the Metal TU) ─────────────────────────────────
++std::atomic<int> gCaptureActive{1};
++std::atomic<int> gPreviewFps30{0};
++std::atomic<int> gAbPhase{-1};
++std::atomic<int> gThermalState{0};  // explicit feed; 0 nominal … 3 critical
++
++int PlatformThermalState() {
++  if (pwofficial_platform_thermal_state != nullptr) {
++    return pwofficial_platform_thermal_state();
++  }
++  return gThermalState.load(std::memory_order_relaxed);
++}
++
++// ── Env knobs (cached per process, verbatim semantics of the Metal TU) ───
++uint64_t CmdWaitTimeoutMs() {
++  static const uint64_t v = [] {
++    const char* e = getenv("OFFICIAL_AETHER_GPU_MATCH_WAIT_MS");
++    if (e != nullptr) {
++      const long long ms = atoll(e);
++      if (ms > 0) return (uint64_t)ms;
++    }
++    return (uint64_t)30000;
++  }();
++  return v;
++}
++
++double AbAltValue(const char* key) {
++  const char* e = getenv(key);
++  return e ? atof(e) : -1.0;
++}
++
++double ChunkTargetMs() {
++  static double v = -1.0;
++  if (v < 0.0) {
++    const char* e = getenv("OFFICIAL_AETHER_MATCH_CHUNK_TARGET_MS");
++    v = e ? atof(e) : 16.0;
++    if (v < 0.0) v = 0.0;
++  }
++  if (gAbPhase.load(std::memory_order_relaxed) == 1) {
++    static const double alt =
++        AbAltValue("OFFICIAL_AETHER_MATCH_CHUNK_TARGET_MS_ALT");
++    if (alt >= 0.0) return alt;
++  }
++  if (gPreviewFps30.load(std::memory_order_relaxed) == 1) {
++    static double v30 = -1.0;
++    if (v30 < 0.0) {
++      const char* e30 = getenv("OFFICIAL_AETHER_MATCH_CHUNK_TARGET_MS_FPS30");
++      v30 = e30 ? atof(e30) : 24.0;
++      if (v30 < 0.0) v30 = 0.0;
++    }
++    return v30 > v ? v30 : v;
++  }
++  return v;
++}
++
++double ChunkTargetCoolMs() {
++  static double v = -1.0;
++  if (v < 0.0) {
++    const char* e = getenv("OFFICIAL_AETHER_MATCH_CHUNK_TARGET_COOL_MS");
++    v = e ? atof(e) : 16.0;
++    if (v < 0.0) v = 0.0;
++  }
++  const double hot = ChunkTargetMs();
++  return v > hot ? v : hot;
++}
++
++bool ThermalHot() {
++  if (gCaptureActive.load(std::memory_order_relaxed) == 0) return false;
++  const int st = PlatformThermalState();
++  return st >= 2;  // serious (2) or critical (3)
++}
++
++double ThermalGapPct() {
++  if (gCaptureActive.load(std::memory_order_relaxed) == 0) return 0.0;
++  const int st = PlatformThermalState();
++  if (st == 2) {
++    static double v = -1.0;
++    if (v < 0.0) {
++      const char* e = getenv("OFFICIAL_AETHER_MATCH_GAP_SERIOUS_PCT");
++      v = e ? atof(e) : 100.0;
++      if (v < 0.0) v = 0.0;
++    }
++    if (gPreviewFps30.load(std::memory_order_relaxed) == 1) {
++      static double v30 = -1.0;
++      if (v30 < 0.0) {
++        const char* e30 = getenv("OFFICIAL_AETHER_MATCH_GAP_SERIOUS_PCT_FPS30");
++        v30 = e30 ? atof(e30) : -1.0;
++      }
++      return v30 >= 0.0 ? v30 : v * 0.5;
++    }
++    return v;
++  }
++  if (st >= 3) {
++    static double v = -1.0;
++    if (v < 0.0) {
++      const char* e = getenv("OFFICIAL_AETHER_MATCH_GAP_CRITICAL_PCT");
++      v = e ? atof(e) : 300.0;
++      if (v < 0.0) v = 0.0;
++    }
++    return v;
++  }
++  return 0.0;
++}
++
++bool DescriptorResidencyEnabled() {
++  static const bool enabled = [] {
++    const char* value = std::getenv("OFFICIAL_AETHER_DESCRIPTOR_RESIDENCY_V1");
++    return value && value[0] == '1' && value[1] == '\0';
++  }();
++  return enabled;
++}
++
++uint64_t DescriptorResidencyBudgetBytes() {
++  static const uint64_t budget = [] {
++    constexpr uint64_t kDefault = UINT64_C(48) * 1024 * 1024;
++    const char* value = std::getenv("OFFICIAL_AETHER_DESCRIPTOR_RESIDENCY_BYTES");
++    if (!value || !value[0]) return kDefault;
++    char* end = nullptr;
++    const unsigned long long parsed = std::strtoull(value, &end, 10);
++    if (!end || *end != '\0') return kDefault;
++    return static_cast<uint64_t>(parsed);
++  }();
++  return budget;
++}
++
++// ══════════════════════════════ WGSL ═════════════════════════════════════
++
++// Plain fused dual-direction kernel: `fusedr128-db` frontier verbatim except
++// the two rowBase lines (see header). Bindings: 0 A (f32 rows×128, padded to
++// 128-row multiple), 1 B (same), 2 OutAB (i32 × numA), 3 Params, 4 ColP
++// (ColPart × numB × numWg), 5 OutBA (i32 × numB; merge entry only).
++constexpr char kWgslMmaFused[] = R"WGSL(
++enable chromium_experimental_subgroup_matrix;
++enable subgroups;
++
++alias Left = subgroup_matrix_left<f32, 8, 8>;
++alias Right = subgroup_matrix_right<f32, 8, 8>;
++alias Res = subgroup_matrix_result<f32, 8, 8>;
++
++const INV_SQ_NORM : f32 = 0.000003814697265625; // 1/262144
++const WGR : u32 = 128u;
++const BT : u32 = 32u;
++
++struct Params {
++  numA : u32,
++  numB : u32,
++  maxRatio : f32,
++  maxDistance : f32,
++  numWg : u32,
++  rowBase : u32,
++  pad1 : u32,
++  pad2 : u32,
++};
++
++struct ColPart {
++  best : f32,
++  second : f32,
++  idx : i32,
++};
++
++@group(0) @binding(0) var<storage, read> A : array<f32>;
++@group(0) @binding(1) var<storage, read> B : array<f32>;
++@group(0) @binding(2) var<storage, read_write> OutAB : array<i32>;
++@group(0) @binding(3) var<uniform> U : Params;
++@group(0) @binding(4) var<storage, read_write> ColP : array<ColPart>;
++@group(0) @binding(5) var<storage, read_write> OutBA : array<i32>;
++
++var<workgroup> Bsh : array<f32, 4096>; // 32 rows x 128 (16 KiB)
++var<workgroup> accSh : array<f32, 4096>;   // WGR rows x 32 cols
++
++fn gatef(best : f32, second : f32, bestIndex : i32) -> i32 {
++  if (bestIndex < 0) { return -1; }
++  let bd = acos(min(best * INV_SQ_NORM, 1.0));
++  let sd = acos(min(second * INV_SQ_NORM, 1.0));
++  if (bd <= U.maxDistance && bd < U.maxRatio * sd) { return bestIndex; }
++  return -1;
++}
++
++@compute @workgroup_size(512)
++fn main(@builtin(workgroup_id) wg : vec3<u32>,
++        @builtin(local_invocation_index) lid : u32,
++        @builtin(subgroup_id) sg : u32) {
++  let rb = U.rowBase + wg.x;
++  let row0 = rb * WGR;
++  let aRow0 = row0 + sg * 8u;
++  var aFrag : array<Left, 16>;
++  for (var k = 0u; k < 16u; k = k + 1u) {
++    aFrag[k] = subgroupMatrixLoad<Left>(&A, aRow0 * 128u + k * 8u, false, 128u);
++  }
++  var rbest = 0.0;
++  var rsecond = 0.0;
++  var rbi = -1;
++    for (var e = lid; e < BT * 128u; e = e + 512u) {
++      let brow = 0u + e / 128u;
++      Bsh[e] = select(0.0, B[brow * 128u + (e % 128u)], brow < U.numB);
++    }
++
++  workgroupBarrier();
++
++  var tile0 = 0u;
++  loop {
++    if (tile0 >= U.numB) { break; }
++    for (var nt = 0u; nt < 4u; nt = nt + 1u) {
++      var acc = Res(0.0);
++      for (var k = 0u; k < 16u; k = k + 1u) {
++        let bF = subgroupMatrixLoad<Right>(&Bsh, (nt * 8u) * 128u + k * 8u, true, 128u);
++        acc = subgroupMatrixMultiplyAccumulate(aFrag[k], bF, acc);
++      }
++      subgroupMatrixStore(&accSh, (sg * 8u) * 32u + nt * 8u, acc, false, 32u);
++    }
++    workgroupBarrier();
++    let nextT = tile0 + BT;
++    if (nextT < U.numB && lid >= 160u) {
++      for (var e = lid - 160u; e < BT * 128u; e = e + 352u) {
++        let brow = nextT + e / 128u;
++        Bsh[e] = select(0.0, B[brow * 128u + (e % 128u)], brow < U.numB);
++      }
++    }
++
++    if (lid < WGR) {
++      let lim = min(BT, U.numB - tile0);
++      for (var c = 0u; c < lim; c = c + 1u) {
++        let s = accSh[lid * 32u + c];
++        if (s > rbest) {
++          rsecond = rbest; rbest = s; rbi = i32(tile0 + c);
++        } else if (s > rsecond) { rsecond = s; }
++      }
++    }
++    if (lid >= WGR && lid < WGR + BT) {
++      let cl = lid - WGR;
++      let c = tile0 + cl;
++      if (c < U.numB) {
++        var best = 0.0; var second = 0.0; var bi = -1;
++        for (var r = 0u; r < WGR; r = r + 1u) {
++          let s = accSh[r * 32u + cl];
++          if (s > best) {
++            second = best; best = s; bi = i32(row0 + r);
++          } else if (s > second) { second = s; }
++        }
++        ColP[c * U.numWg + rb] = ColPart(best, second, bi);
++      }
++    }
++
++    workgroupBarrier();
++    tile0 = nextT;
++  }
++  let row = row0 + lid;
++  if (lid < WGR && row < U.numA) {
++    OutAB[row] = gatef(rbest, rsecond, rbi);
++  }
++}
++
++@compute @workgroup_size(64)
++fn merge(@builtin(global_invocation_id) gid : vec3<u32>) {
++  let c = gid.x;
++  if (c >= U.numB) { return; }
++  var best = 0.0;
++  var second = 0.0;
++  var bi = -1;
++  for (var w = 0u; w < U.numWg; w = w + 1u) {
++    let p = ColP[c * U.numWg + w];
++    if (p.best > best) {
++      second = max(best, p.second);
++      best = p.best;
++      bi = p.idx;
++    } else {
++      second = max(second, p.best);
++    }
++  }
++  OutBA[c] = gatef(best, second, bi);
++}
++)WGSL";
++
++// Guided gate + guided final gate, shared text for both guided kernels
++// (Metal v1 pw_match_gemm lines 340-373 / 385-395 transliterated: same
++// expression trees, same operand order).
++constexpr char kWgslGuidedCommon[] = R"WGSL(
++struct GParams {
++  numA : u32,
++  numB : u32,
++  maxRatio : f32,
++  maxDistance : f32,
++  guideMode : u32,
++  rowBase : u32,
++  maxResidual : f32,
++  pad0 : u32,
++};
++
++fn guide_ok(q : vec2<f32>, d : vec2<f32>) -> bool {
++  if (U.guideMode == 1u) {
++    let p1 = vec3<f32>(q, 1.0);
++    let p2 = vec3<f32>(d, 1.0);
++    let line2 = vec3<f32>(
++        M[0] * p1.x + M[1] * p1.y + M[2],
++        M[3] * p1.x + M[4] * p1.y + M[5],
++        M[6] * p1.x + M[7] * p1.y + M[8]);
++    let line1 = vec3<f32>(
++        M[0] * p2.x + M[3] * p2.y + M[6],
++        M[1] * p2.x + M[4] * p2.y + M[7],
++        M[2] * p2.x + M[5] * p2.y + M[8]);
++    let nom = dot(p2, line2);
++    let denom = dot(line2.xy, line2.xy) + dot(line1.xy, line1.xy);
++    return denom > 1e-12 && nom * nom <= U.maxResidual * denom;
++  } else if (U.guideMode == 2u) {
++    let hx = M[0] * q.x + M[1] * q.y + M[2];
++    let hy = M[3] * q.x + M[4] * q.y + M[5];
++    let hz = M[6] * q.x + M[7] * q.y + M[8];
++    if (abs(hz) <= 1e-8) {
++      return false;
++    }
++    let delta = vec2<f32>(hx / hz, hy / hz) - d;
++    return dot(delta, delta) <= U.maxResidual;
++  }
++  return true;
++}
++
++fn gate_guided(best : f32, second : f32, bestIndex : i32) -> i32 {
++  if (bestIndex < 0) { return -1; }
++  let secondDot = max(second, 131072.0);
++  let bd = sqrt(max(0.0, 2.0 - 2.0 * best * INV_SQ_NORM));
++  let sd = sqrt(max(0.0, 2.0 - 2.0 * secondDot * INV_SQ_NORM));
++  if (bd <= U.maxDistance && bd < U.maxRatio * sd) { return bestIndex; }
++  return -1;
++}
++)WGSL";
++
++// Guided, ONE direction per dispatch (v1 two-pass structure): the fused
++// kernel's row half (same MMA tile pipeline, same staging schedule, no column
++// partials) with the geometry gate inserted before top-2 insertion.
++// Bindings: 0 query descriptors (f32, padded), 1 database descriptors, 2 Out
++// (i32 × numA), 3 GParams, 4 PtsQ (vec2 × padded query rows), 5 PtsD (vec2 ×
++// database rows), 6 M (9 floats row-major, query→database geometry).
++constexpr char kWgslMmaGuidedHead[] = R"WGSL(
++enable chromium_experimental_subgroup_matrix;
++enable subgroups;
++
++alias Left = subgroup_matrix_left<f32, 8, 8>;
++alias Right = subgroup_matrix_right<f32, 8, 8>;
++alias Res = subgroup_matrix_result<f32, 8, 8>;
++
++const INV_SQ_NORM : f32 = 0.000003814697265625; // 1/262144
++const WGR : u32 = 128u;
++const BT : u32 = 32u;
++)WGSL";
++
++constexpr char kWgslMmaGuidedBindings[] = R"WGSL(
++@group(0) @binding(0) var<storage, read> A : array<f32>;
++@group(0) @binding(1) var<storage, read> B : array<f32>;
++@group(0) @binding(2) var<storage, read_write> Out : array<i32>;
++@group(0) @binding(3) var<uniform> U : GParams;
++@group(0) @binding(4) var<storage, read> PtsQ : array<vec2<f32>>;
++@group(0) @binding(5) var<storage, read> PtsD : array<vec2<f32>>;
++@group(0) @binding(6) var<storage, read> M : array<f32>;
++
++var<workgroup> Bsh : array<f32, 4096>;
++var<workgroup> accSh : array<f32, 4096>;
++)WGSL";
++
++constexpr char kWgslMmaGuidedMain[] = R"WGSL(
++@compute @workgroup_size(512)
++fn main(@builtin(workgroup_id) wg : vec3<u32>,
++        @builtin(local_invocation_index) lid : u32,
++        @builtin(subgroup_id) sg : u32) {
++  let rb = U.rowBase + wg.x;
++  let row0 = rb * WGR;
++  let aRow0 = row0 + sg * 8u;
++  var aFrag : array<Left, 16>;
++  for (var k = 0u; k < 16u; k = k + 1u) {
++    aFrag[k] = subgroupMatrixLoad<Left>(&A, aRow0 * 128u + k * 8u, false, 128u);
++  }
++  var rbest = 0.0;
++  var rsecond = 0.0;
++  var rbi = -1;
++  var q = vec2<f32>(0.0, 0.0);
++  if (lid < WGR) { q = PtsQ[row0 + lid]; }
++    for (var e = lid; e < BT * 128u; e = e + 512u) {
++      let brow = 0u + e / 128u;
++      Bsh[e] = select(0.0, B[brow * 128u + (e % 128u)], brow < U.numB);
++    }
++
++  workgroupBarrier();
++
++  var tile0 = 0u;
++  loop {
++    if (tile0 >= U.numB) { break; }
++    for (var nt = 0u; nt < 4u; nt = nt + 1u) {
++      var acc = Res(0.0);
++      for (var k = 0u; k < 16u; k = k + 1u) {
++        let bF = subgroupMatrixLoad<Right>(&Bsh, (nt * 8u) * 128u + k * 8u, true, 128u);
++        acc = subgroupMatrixMultiplyAccumulate(aFrag[k], bF, acc);
++      }
++      subgroupMatrixStore(&accSh, (sg * 8u) * 32u + nt * 8u, acc, false, 32u);
++    }
++    workgroupBarrier();
++    let nextT = tile0 + BT;
++    if (nextT < U.numB && lid >= 160u) {
++      for (var e = lid - 160u; e < BT * 128u; e = e + 352u) {
++        let brow = nextT + e / 128u;
++        Bsh[e] = select(0.0, B[brow * 128u + (e % 128u)], brow < U.numB);
++      }
++    }
++
++    if (lid < WGR) {
++      let lim = min(BT, U.numB - tile0);
++      for (var c = 0u; c < lim; c = c + 1u) {
++        if (!guide_ok(q, PtsD[tile0 + c])) { continue; }
++        let s = accSh[lid * 32u + c];
++        if (s > rbest) {
++          rsecond = rbest; rbest = s; rbi = i32(tile0 + c);
++        } else if (s > rsecond) { rsecond = s; }
++      }
++    }
++
++    workgroupBarrier();
++    tile0 = nextT;
++  }
++  let row = row0 + lid;
++  if (lid < WGR && row < U.numA) {
++    Out[row] = gate_guided(rbest, rsecond, rbi);
++  }
++}
++)WGSL";
++
++// Tiled fallback (V1/V2): harness `tiled` kernel verbatim + rowBase, with the
++// Params struct widened to the shared 32-byte layout. Bindings: 0 A (raw u8
++// rows as vec4<u32>), 1 B, 2 Out, 3 Params.
++constexpr char kWgslTiledPlain[] = R"WGSL(
++const INV_SQ_NORM : f32 = 0.000003814697265625; // 1/262144
++
++struct Params {
++  numA : u32,
++  numB : u32,
++  maxRatio : f32,
++  maxDistance : f32,
++  numWg : u32,
++  rowBase : u32,
++  pad1 : u32,
++  pad2 : u32,
++};
++
++@group(0) @binding(0) var<storage, read> A : array<vec4<u32>>;
++@group(0) @binding(1) var<storage, read> B : array<vec4<u32>>;
++@group(0) @binding(2) var<storage, read_write> Out : array<i32>;
++@group(0) @binding(3) var<uniform> U : Params;
++
++fn gate(best : u32, second : u32, bestIndex : i32) -> i32 {
++  if (bestIndex < 0) { return -1; }
++  let bd = acos(min(f32(best) * INV_SQ_NORM, 1.0));
++  let sd = acos(min(f32(second) * INV_SQ_NORM, 1.0));
++  if (bd <= U.maxDistance && bd < U.maxRatio * sd) { return bestIndex; }
++  return -1;
++}
++
++const WG : u32 = 64u;
++
++var<workgroup> Bsh : array<vec4<u32>, 512>; // 64 rows x 8 vec4 words
++
++@compute @workgroup_size(64)
++fn main(@builtin(workgroup_id) wg : vec3<u32>,
++        @builtin(local_invocation_index) lid : u32) {
++  let row = (U.rowBase + wg.x) * WG + lid;
++  let valid = row < U.numA;
++  var q : array<vec4<u32>, 8>;
++  if (valid) {
++    for (var w = 0u; w < 8u; w = w + 1u) { q[w] = A[row * 8u + w]; }
++  }
++  var best = 0u;
++  var second = 0u;
++  var bestIndex = -1;
++  var tile0 = 0u;
++  loop {
++    if (tile0 >= U.numB) { break; }
++    let brow = tile0 + lid;
++    if (brow < U.numB) {
++      for (var w = 0u; w < 8u; w = w + 1u) {
++        Bsh[lid * 8u + w] = B[brow * 8u + w];
++      }
++    }
++    workgroupBarrier();
++    let lim = min(WG, U.numB - tile0);
++    if (valid) {
++      for (var c = 0u; c < lim; c = c + 1u) {
++        var s = 0u;
++        for (var w = 0u; w < 8u; w = w + 1u) {
++          let bv = Bsh[c * 8u + w];
++          s += dot4U8Packed(q[w].x, bv.x) + dot4U8Packed(q[w].y, bv.y) +
++               dot4U8Packed(q[w].z, bv.z) + dot4U8Packed(q[w].w, bv.w);
++        }
++        if (s > best) {
++          second = best;
++          best = s;
++          bestIndex = i32(tile0 + c);
++        } else if (s > second) {
++          second = s;
++        }
++      }
++    }
++    workgroupBarrier();
++    tile0 = tile0 + WG;
++  }
++  if (valid) { Out[row] = gate(best, second, bestIndex); }
++}
++)WGSL";
++
++// Tiled guided (V1/V2 sibling of the MMA guided kernel; same bindings as the
++// MMA guided kernel except descriptors are raw u8 vec4<u32>; dots are u32
++// and converted to f32 for the guided distance gate — exact, < 2^24).
++constexpr char kWgslTiledGuidedHead[] = R"WGSL(
++const INV_SQ_NORM : f32 = 0.000003814697265625; // 1/262144
++)WGSL";
++
++constexpr char kWgslTiledGuidedBindings[] = R"WGSL(
++@group(0) @binding(0) var<storage, read> A : array<vec4<u32>>;
++@group(0) @binding(1) var<storage, read> B : array<vec4<u32>>;
++@group(0) @binding(2) var<storage, read_write> Out : array<i32>;
++@group(0) @binding(3) var<uniform> U : GParams;
++@group(0) @binding(4) var<storage, read> PtsQ : array<vec2<f32>>;
++@group(0) @binding(5) var<storage, read> PtsD : array<vec2<f32>>;
++@group(0) @binding(6) var<storage, read> M : array<f32>;
++
++const WG : u32 = 64u;
++
++var<workgroup> Bsh : array<vec4<u32>, 512>; // 64 rows x 8 vec4 words
++)WGSL";
++
++constexpr char kWgslTiledGuidedMain[] = R"WGSL(
++@compute @workgroup_size(64)
++fn main(@builtin(workgroup_id) wg : vec3<u32>,
++        @builtin(local_invocation_index) lid : u32) {
++  let row = (U.rowBase + wg.x) * WG + lid;
++  let valid = row < U.numA;
++  var q : array<vec4<u32>, 8>;
++  var qpt = vec2<f32>(0.0, 0.0);
++  if (valid) {
++    for (var w = 0u; w < 8u; w = w + 1u) { q[w] = A[row * 8u + w]; }
++    qpt = PtsQ[row];
++  }
++  var best = 0.0;
++  var second = 0.0;
++  var bestIndex = -1;
++  var tile0 = 0u;
++  loop {
++    if (tile0 >= U.numB) { break; }
++    let brow = tile0 + lid;
++    if (brow < U.numB) {
++      for (var w = 0u; w < 8u; w = w + 1u) {
++        Bsh[lid * 8u + w] = B[brow * 8u + w];
++      }
++    }
++    workgroupBarrier();
++    let lim = min(WG, U.numB - tile0);
++    if (valid) {
++      for (var c = 0u; c < lim; c = c + 1u) {
++        if (!guide_ok(qpt, PtsD[tile0 + c])) { continue; }
++        var su = 0u;
++        for (var w = 0u; w < 8u; w = w + 1u) {
++          let bv = Bsh[c * 8u + w];
++          su += dot4U8Packed(q[w].x, bv.x) + dot4U8Packed(q[w].y, bv.y) +
++                dot4U8Packed(q[w].z, bv.z) + dot4U8Packed(q[w].w, bv.w);
++        }
++        let s = f32(su);
++        if (s > best) {
++          second = best;
++          best = s;
++          bestIndex = i32(tile0 + c);
++        } else if (s > second) {
++          second = s;
++        }
++      }
++    }
++    workgroupBarrier();
++    tile0 = tile0 + WG;
++  }
++  if (valid) { Out[row] = gate_guided(best, second, bestIndex); }
++}
++)WGSL";
++
++struct alignas(16) Params {
++  uint32_t numA, numB;
++  float maxRatio, maxDistance;
++  uint32_t numWg, rowBase, pad1, pad2;
++};
++struct alignas(16) GParams {
++  uint32_t numA, numB;
++  float maxRatio, maxDistance;
++  uint32_t guideMode, rowBase;
++  float maxResidual;
++  uint32_t pad0;
++};
++static_assert(sizeof(Params) == 32, "Params must be 32 bytes");
++static_assert(sizeof(GParams) == 32, "GParams must be 32 bytes");
++constexpr uint64_t kRowBaseOffset = 20;  // byte offset of rowBase in both
++
++// ══════════════════════ Dawn context (process-wide) ══════════════════════
++
++enum class Backend { kNone, kMma, kTiled };
++
++// Device-loss / error flags written from Dawn callbacks (possibly other
++// threads), read under the call lock.
++std::atomic<int> gDeviceLostRc{0};   // 0 alive, else 7/8 classification
++std::atomic<int> gErrorType{0};      // last uncaptured wgpu::ErrorType seen
++std::atomic<bool> gTearingDown{false};
++
++struct PoolBuf {
++  wgpu::Buffer buf;
++  uint64_t cap = 0;
++  wgpu::BufferUsage usage = wgpu::BufferUsage::None;
++};
++
++struct Ctx {
++  wgpu::Instance instance;
++  wgpu::Adapter adapter;
++  wgpu::Device device;
++  wgpu::Queue queue;
++  Backend backend = Backend::kNone;
++  std::string adapter_name;
++  std::string backend_info;
++  bool feat_subgroups = false, feat_sgmatrix = false, feat_packed_dot = false;
++  bool feat_timestamp = false, sgcfg_f32_8x8x8 = false;
++  uint32_t subgroup_min = 0, subgroup_max = 0;
++  uint32_t lim_storage = 0, lim_invocations = 0, lim_size_x = 0;
++  // Pipelines (lazy; a failed compile is remembered so we do not retry).
++  wgpu::ComputePipeline p_main, p_merge, p_guided;
++  bool tried_main = false, tried_guided = false;
++  // Pools (grow-only).
++  PoolBuf a{}, b{}, outAB{}, outBA{}, colp{}, uni{}, staging{}, ptsA{}, ptsB{},
++      matAB{}, matBA{};
++  PoolBuf pbA{}, pbB{}, pbOutAB{}, pbOutBA{}, pbColp{}, pbUni{}, pbStaging{};
++  // Host scratch.
++  std::vector<float> scratchA, scratchB;
++  std::vector<int32_t> sentinel, host;
++  // Cost-model EMAs: ms per (row workgroup × 1024 database columns).
++  double ema_main = 0.0;    // fused (MMA) or per-direction (tiled) chunks
++  double ema_guided = 0.0;  // guided per-direction chunks
++};
++
++std::mutex gMatchCallLock;
++std::unique_ptr<Ctx> gCtx;
++double gLastInitFailMs = -1e12;
++int gInitLogged = 0;
++
++void ClearAllDescriptorResidencyForDeviceError();
++
++std::unique_ptr<Ctx> CreateCtx() {
++  auto c = std::make_unique<Ctx>();
++  const char* allow = "allow_unsafe_apis";  // chromium_experimental_subgroup_matrix
++  wgpu::DawnTogglesDescriptor toggles{};
++  toggles.enabledToggleCount = 1;
++  toggles.enabledToggles = &allow;
++  const wgpu::InstanceFeatureName timed = wgpu::InstanceFeatureName::TimedWaitAny;
++  wgpu::InstanceDescriptor idesc{};
++  idesc.nextInChain = &toggles;
++  idesc.requiredFeatureCount = 1;
++  idesc.requiredFeatures = &timed;
++  c->instance = wgpu::CreateInstance(&idesc);
++  if (!c->instance) {
++    Log("instance creation failed (TimedWaitAny unavailable?)");
++    return nullptr;
++  }
++  c->feat_packed_dot = c->instance.HasWGSLLanguageFeature(
++      wgpu::WGSLLanguageFeatureName::Packed4x8IntegerDotProduct);
++
++  wgpu::RequestAdapterOptions aopts{};
++  std::string amsg;
++  c->instance.WaitAny(
++      c->instance.RequestAdapter(
++          &aopts, wgpu::CallbackMode::WaitAnyOnly,
++          [&](wgpu::RequestAdapterStatus st, wgpu::Adapter a,
++              wgpu::StringView m) {
++            if (st == wgpu::RequestAdapterStatus::Success) {
++              c->adapter = std::move(a);
++            } else {
++              amsg = SV(m);
++            }
++          }),
++      UINT64_MAX);
++  if (!c->adapter) {
++    Log("no adapter: %s", amsg.c_str());
++    return nullptr;
++  }
++  c->feat_subgroups = c->adapter.HasFeature(wgpu::FeatureName::Subgroups);
++  c->feat_sgmatrix = c->adapter.HasFeature(
++      wgpu::FeatureName::ChromiumExperimentalSubgroupMatrix);
++  c->feat_timestamp = c->adapter.HasFeature(wgpu::FeatureName::TimestampQuery);
++  {
++    wgpu::AdapterInfo info{};
++    wgpu::AdapterPropertiesSubgroupMatrixConfigs cfgs{};
++    if (c->feat_sgmatrix) info.nextInChain = &cfgs;
++    c->adapter.GetInfo(&info);
++    c->adapter_name = SV(info.device);
++    c->subgroup_min = info.subgroupMinSize;
++    c->subgroup_max = info.subgroupMaxSize;
++    if (c->feat_sgmatrix) {
++      for (size_t i = 0; i < cfgs.configCount; ++i) {
++        const wgpu::SubgroupMatrixConfig& k = cfgs.configs[i];
++        if (k.componentType == wgpu::SubgroupMatrixComponentType::F32 &&
++            k.resultComponentType == wgpu::SubgroupMatrixComponentType::F32 &&
++            k.M == 8 && k.N == 8 && k.K == 8) {
++          c->sgcfg_f32_8x8x8 = true;
++        }
++      }
++    }
++  }
++  wgpu::Limits alim{};
++  c->adapter.GetLimits(&alim);
++  c->lim_storage = alim.maxComputeWorkgroupStorageSize;
++  c->lim_invocations = alim.maxComputeInvocationsPerWorkgroup;
++  c->lim_size_x = alim.maxComputeWorkgroupSizeX;
++
++  const char* force = getenv("OFFICIAL_AETHER_MATCH_DAWN_KERNEL");
++  const bool want_mma = !(force && std::strcmp(force, "tiled") == 0);
++  const bool mma_ok = c->feat_subgroups && c->feat_sgmatrix &&
++                      c->sgcfg_f32_8x8x8 && c->subgroup_min == 32 &&
++                      c->subgroup_max == 32 && c->lim_invocations >= 512 &&
++                      c->lim_size_x >= 512 && c->lim_storage >= 32768;
++  std::vector<wgpu::FeatureName> feats;
++  wgpu::Limits req{};
++  wgpu::DeviceDescriptor dd{};
++  if (want_mma && mma_ok) {
++    c->backend = Backend::kMma;
++    feats.push_back(wgpu::FeatureName::Subgroups);
++    feats.push_back(wgpu::FeatureName::ChromiumExperimentalSubgroupMatrix);
++    req.maxComputeWorkgroupStorageSize = alim.maxComputeWorkgroupStorageSize;
++    req.maxComputeInvocationsPerWorkgroup =
++        alim.maxComputeInvocationsPerWorkgroup;
++    req.maxComputeWorkgroupSizeX = alim.maxComputeWorkgroupSizeX;
++    dd.requiredLimits = &req;
++  } else {
++    c->backend = Backend::kTiled;
++  }
++  dd.requiredFeatureCount = feats.size();
++  dd.requiredFeatures = feats.empty() ? nullptr : feats.data();
++  dd.SetDeviceLostCallback(
++      wgpu::CallbackMode::AllowSpontaneous,
++      [](const wgpu::Device&, wgpu::DeviceLostReason reason,
++         wgpu::StringView message) {
++        if (gTearingDown.load()) return;
++        const int rc = (reason == wgpu::DeviceLostReason::Destroyed ||
++                        reason == wgpu::DeviceLostReason::FailedCreation)
++                           ? 8
++                           : 7;
++        gDeviceLostRc.store(rc);
++        const std::string m = SV(message);
++        static std::atomic<long> gLostCount{0};
++        const long k = ++gLostCount;
++        if (k <= 5 || (k % 100) == 0) {
++          Log("device lost #%ld reason=%u rc=%d: %s", k, (unsigned)reason, rc,
++              m.c_str());
++        }
++        StashLastError(std::string("DawnDeviceLost reason=") +
++                       std::to_string((unsigned)reason) + " " + m);
++      });
++  dd.SetUncapturedErrorCallback(
++      [](const wgpu::Device&, wgpu::ErrorType type, wgpu::StringView message) {
++        gErrorType.store((int)type);
++        const std::string m = SV(message);
++        static std::atomic<long> gErrCount{0};
++        const long k = ++gErrCount;
++        if (k <= 5 || (k % 100) == 0) {
++          Log("uncaptured error #%ld type=%u: %s", k, (unsigned)type, m.c_str());
++        }
++        StashLastError(std::string("DawnError type=") +
++                       std::to_string((unsigned)type) + " " + m);
++      });
++  std::string dmsg;
++  c->instance.WaitAny(
++      c->adapter.RequestDevice(
++          &dd, wgpu::CallbackMode::WaitAnyOnly,
++          [&](wgpu::RequestDeviceStatus st, wgpu::Device d, wgpu::StringView m) {
++            if (st == wgpu::RequestDeviceStatus::Success) {
++              c->device = std::move(d);
++            } else {
++              dmsg = SV(m);
++            }
++          }),
++      UINT64_MAX);
++  if (!c->device) {
++    Log("device creation failed: %s", dmsg.c_str());
++    return nullptr;
++  }
++  c->queue = c->device.GetQueue();
++  gDeviceLostRc.store(0);
++  gErrorType.store(0);
++  char info[512];
++  std::snprintf(info, sizeof(info),
++                "backend=%s adapter=\"%s\" subgroups=%d sgmatrix=%d "
++                "f32_8x8x8=%d subgroup=[%u,%u] packed_dot=%d timestamp=%d "
++                "limits[storage=%u invocations=%u sizeX=%u]%s",
++                c->backend == Backend::kMma ? "mma(fusedr128-db,V0)"
++                                            : "tiled(dot4U8Packed,V1/V2)",
++                c->adapter_name.c_str(), (int)c->feat_subgroups,
++                (int)c->feat_sgmatrix, (int)c->sgcfg_f32_8x8x8, c->subgroup_min,
++                c->subgroup_max, (int)c->feat_packed_dot, (int)c->feat_timestamp,
++                c->lim_storage, c->lim_invocations, c->lim_size_x,
++                (force && std::strcmp(force, "tiled") == 0) ? " (forced tiled)"
++                                                            : "");
++  c->backend_info = info;
++  if (gInitLogged < 3) {
++    ++gInitLogged;
++    Log("%s", info);
++  }
++  return c;
++}
++
++// Whole-process context, created once; torn down and recreated (bounded by
++// a 250 ms cooldown) after a device loss.
++Ctx* EnsureDawn() {
++  if (gCtx && gDeviceLostRc.load() != 0) {
++    ClearAllDescriptorResidencyForDeviceError();
++    gTearingDown.store(true);
++    gCtx.reset();
++    gTearingDown.store(false);
++    gDeviceLostRc.store(0);
++  }
++  if (gCtx) return gCtx.get();
++  const double now = NowMs();
++  if (now - gLastInitFailMs < 250.0) return nullptr;
++  gCtx = CreateCtx();
++  if (!gCtx) gLastInitFailMs = now;
++  return gCtx.get();
++}
++
++// ── Shader / pipeline helpers ────────────────────────────────────────────
++wgpu::ShaderModule CompileWgsl(Ctx& c, const std::string& src,
++                               const char* what) {
++  wgpu::ShaderSourceWGSL s{};
++  s.code = src.c_str();
++  wgpu::ShaderModuleDescriptor d{};
++  d.nextInChain = &s;
++  wgpu::ShaderModule m = c.device.CreateShaderModule(&d);
++  if (!m) return nullptr;
++  bool ok = true;
++  std::string err;
++  c.instance.WaitAny(
++      m.GetCompilationInfo(
++          wgpu::CallbackMode::WaitAnyOnly,
++          [&](wgpu::CompilationInfoRequestStatus,
++              const wgpu::CompilationInfo* ci) {
++            if (!ci) return;
++            for (size_t i = 0; i < ci->messageCount; ++i) {
++              if (ci->messages[i].type == wgpu::CompilationMessageType::Error) {
++                ok = false;
++                if (err.size() < 400) {
++                  err += SV(ci->messages[i].message);
++                  err += " | ";
++                }
++              }
++            }
++          }),
++      UINT64_MAX);
++  if (!ok) {
++    Log("WGSL compile failed (%s): %s", what, err.c_str());
++    StashLastError(std::string("WGSL compile failed: ") + what);
++    return nullptr;
++  }
++  return m;
++}
++
++wgpu::ComputePipeline MakePipeline(Ctx& c, wgpu::ShaderModule m,
++                                   const char* entry) {
++  wgpu::ComputePipelineDescriptor pd{};
++  pd.compute.module = m;
++  pd.compute.entryPoint = entry;
++  return c.device.CreateComputePipeline(&pd);
++}
++
++bool EnsureMainPipelines(Ctx& c) {
++  if (c.p_main && (c.backend != Backend::kMma || c.p_merge)) return true;
++  if (c.tried_main) return false;
++  c.tried_main = true;
++  if (c.backend == Backend::kMma) {
++    wgpu::ShaderModule m = CompileWgsl(c, kWgslMmaFused, "mma fused");
++    if (!m) return false;
++    c.p_main = MakePipeline(c, m, "main");
++    c.p_merge = MakePipeline(c, m, "merge");
++    return c.p_main && c.p_merge;
++  }
++  wgpu::ShaderModule m = CompileWgsl(c, kWgslTiledPlain, "tiled plain");
++  if (!m) return false;
++  c.p_main = MakePipeline(c, m, "main");
++  return (bool)c.p_main;
++}
++
++bool EnsureGuidedPipeline(Ctx& c) {
++  if (c.p_guided) return true;
++  if (c.tried_guided) return false;
++  c.tried_guided = true;
++  std::string src;
++  if (c.backend == Backend::kMma) {
++    src = std::string(kWgslMmaGuidedHead) + kWgslGuidedCommon +
++          kWgslMmaGuidedBindings + kWgslMmaGuidedMain;
++  } else {
++    src = std::string(kWgslTiledGuidedHead) + kWgslGuidedCommon +
++          kWgslTiledGuidedBindings + kWgslTiledGuidedMain;
++  }
++  // The GParams struct must precede the U binding and guide_ok must see M/U:
++  // WGSL resolves module-scope declarations in any order, so concatenation
++  // order only needs to be syntactically valid.
++  wgpu::ShaderModule m = CompileWgsl(c, src, "guided");
++  if (!m) return false;
++  c.p_guided = MakePipeline(c, m, "main");
++  return (bool)c.p_guided;
++}
++
++// ── Buffers ──────────────────────────────────────────────────────────────
++wgpu::Buffer PoolGet(Ctx& c, PoolBuf& p, uint64_t need,
++                     wgpu::BufferUsage usage) {
++  need = RoundUp(std::max<uint64_t>(need, 16), kSlot);
++  if (!p.buf || p.cap < need || p.usage != usage) {
++    if (p.buf) p.buf.Destroy();
++    wgpu::BufferDescriptor d{};
++    d.usage = usage;
++    d.size = need;
++    p.buf = c.device.CreateBuffer(&d);
++    p.usage = usage;
++    p.cap = p.buf ? need : 0;
++  }
++  return p.buf;
++}
++
++constexpr wgpu::BufferUsage kUsageDesc =
++    wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopyDst;
++constexpr wgpu::BufferUsage kUsageOut = wgpu::BufferUsage::Storage |
++                                        wgpu::BufferUsage::CopyDst |
++                                        wgpu::BufferUsage::CopySrc;
++constexpr wgpu::BufferUsage kUsageColp = wgpu::BufferUsage::Storage;
++constexpr wgpu::BufferUsage kUsageUni =
++    wgpu::BufferUsage::Uniform | wgpu::BufferUsage::CopyDst;
++constexpr wgpu::BufferUsage kUsageStaging =
++    wgpu::BufferUsage::MapRead | wgpu::BufferUsage::CopyDst;
++
++// Bytes of one descriptor table in the active kernel's storage format.
++uint64_t DescBytes(const Ctx& c, uint32_t n, uint32_t npad) {
++  return c.backend == Backend::kMma ? (uint64_t)npad * kD * sizeof(float)
++                                    : (uint64_t)n * kD;
++}
++
++// Uploads n descriptor rows at byte offset off (MMA: u8→f32 expansion into a
++// zero-filled npad-row table — the per-call u8→half conversion of the Metal
++// TU, exact; tiled: raw u8 rows, the kernel guards rows itself).
++void UploadDesc(Ctx& c, wgpu::Buffer buf, uint64_t off, const uint8_t* d,
++                uint32_t n, uint32_t npad, std::vector<float>& scratch) {
++  if (c.backend == Backend::kMma) {
++    scratch.assign((size_t)npad * kD, 0.0f);
++    const size_t live = (size_t)n * kD;
++    for (size_t i = 0; i < live; ++i) scratch[i] = (float)d[i];
++    c.queue.WriteBuffer(buf, off, reinterpret_cast<const uint8_t*>(scratch.data()),
++                        (uint64_t)npad * kD * sizeof(float));
++  } else {
++    c.queue.WriteBuffer(buf, off, d, (uint64_t)n * kD);
++  }
++}
++
++void FillSentinel(Ctx& c, wgpu::Buffer buf, uint64_t off, uint32_t n) {
++  if (c.sentinel.size() < n) c.sentinel.assign(n, kOutSentinel);
++  c.queue.WriteBuffer(buf, off, reinterpret_cast<const uint8_t*>(c.sentinel.data()),
++                      (uint64_t)n * sizeof(int32_t));
++}
++
++wgpu::BindGroupEntry BE(uint32_t binding, wgpu::Buffer b, uint64_t off,
++                        uint64_t size) {
++  wgpu::BindGroupEntry e{};
++  e.binding = binding;
++  e.buffer = b;
++  e.offset = off;
++  e.size = size;
++  return e;
++}
++
++wgpu::BindGroup MakeBG(Ctx& c, const wgpu::ComputePipeline& p,
++                       const std::vector<wgpu::BindGroupEntry>& entries) {
++  wgpu::BindGroupDescriptor d{};
++  d.layout = p.GetBindGroupLayout(0);
++  d.entryCount = entries.size();
++  d.entries = entries.data();
++  return c.device.CreateBindGroup(&d);
++}
++
++// ── Submission with the bounded watchdog ─────────────────────────────────
++int WaitFuture(Ctx& c, wgpu::Future f, const char* what) {
++  const uint64_t ms = CmdWaitTimeoutMs();
++  const wgpu::WaitStatus ws = c.instance.WaitAny(f, ms * 1000000ull);
++  if (ws == wgpu::WaitStatus::TimedOut) {
++    static std::atomic<long> gTimeoutCount{0};
++    const long k = ++gTimeoutCount;
++    if (k <= 5 || (k % 100) == 0) {
++      Log("%s wait TIMEOUT #%ld after %llu ms (rc=7)", what, k,
++          (unsigned long long)ms);
++    }
++    StashLastError(std::string("host-side wait timeout after ") +
++                   std::to_string((unsigned long long)ms) + " ms (" + what + ")");
++    ClearAllDescriptorResidencyForDeviceError();
++    return 7;
++  }
++  if (ws != wgpu::WaitStatus::Success) {
++    StashLastError(std::string("WaitAny error (") + what + ")");
++    return 7;
++  }
++  return 0;
++}
++
++// Submits one command buffer and waits for completion. *gpu_ms receives the
++// submit→done wall window (the cost model's unit; Dawn exposes no per-buffer
++// GPU timestamps without a query-set round trip).
++int SubmitAndWait(Ctx& c, wgpu::CommandBuffer cb, double* gpu_ms) {
++  gErrorType.store(0);
++  const double t0 = NowMs();
++  c.queue.Submit(1, &cb);
++  wgpu::QueueWorkDoneStatus st = wgpu::QueueWorkDoneStatus::Error;
++  wgpu::Future f = c.queue.OnSubmittedWorkDone(
++      wgpu::CallbackMode::WaitAnyOnly,
++      [&](wgpu::QueueWorkDoneStatus s, wgpu::StringView) { st = s; });
++  const int rc = WaitFuture(c, f, "submit");
++  if (gpu_ms) *gpu_ms = NowMs() - t0;
++  if (rc != 0) return rc;
++  const int lost = gDeviceLostRc.load();
++  if (lost != 0) {
++    ClearAllDescriptorResidencyForDeviceError();
++    return lost;
++  }
++  if (st != wgpu::QueueWorkDoneStatus::Success) {
++    static std::atomic<long> gCmdErrCount{0};
++    const long k = ++gCmdErrCount;
++    if (k <= 5 || (k % 100) == 0) {
++      Log("queue work done status=%u (rc=7) #%ld", (unsigned)st, k);
++    }
++    StashLastError("OnSubmittedWorkDone status != Success");
++    ClearAllDescriptorResidencyForDeviceError();
++    return 7;
++  }
++  const int et = gErrorType.load();
++  if (et != 0) {
++    return et == (int)wgpu::ErrorType::OutOfMemory ? 5 : 7;
++  }
++  return 0;
++}
++
++int ReadbackStaging(Ctx& c, wgpu::Buffer staging, uint64_t bytes, void* dst) {
++  bool mapped = false;
++  std::string msg;
++  wgpu::Future f = staging.MapAsync(
++      wgpu::MapMode::Read, 0, (size_t)bytes, wgpu::CallbackMode::WaitAnyOnly,
++      [&](wgpu::MapAsyncStatus s, wgpu::StringView m) {
++        mapped = s == wgpu::MapAsyncStatus::Success;
++        if (!mapped) msg = SV(m);
++      });
++  const int rc = WaitFuture(c, f, "map");
++  if (rc != 0) return rc;
++  if (!mapped) {
++    StashLastError("MapAsync failed: " + msg);
++    return 7;
++  }
++  const void* p = staging.GetConstMappedRange(0, (size_t)bytes);
++  if (!p) {
++    staging.Unmap();
++    StashLastError("GetConstMappedRange returned null");
++    return 7;
++  }
++  std::memcpy(dst, p, (size_t)bytes);
++  staging.Unmap();
++  return 0;
++}
++
++// ── KNIFE-C chunked runner (generic over stages) ─────────────────────────
++// A stage is one row-chunkable dispatch family: MMA fused (one stage) or
++// tiled per-direction (two stages). rowBase for a chunk is written into the
++// stage's uniform slot right before the submit (queue-ordered, serial).
++struct Stage {
++  uint32_t total_groups = 0;
++  uint32_t nDb = 0;  // database columns (cost-model scale)
++  wgpu::Buffer uni;
++  uint64_t uniOff = 0;
++  std::function<void(wgpu::ComputePassEncoder&, uint32_t, uint32_t)> encode;
++};
++
++int RunStages(Ctx& c, std::vector<Stage>& stages,
++              const std::function<void(wgpu::CommandEncoder&)>& finish,
++              double* ema) {
++  const double chunkTargetMs = ChunkTargetMs();
++  if (chunkTargetMs <= 0.0) {
++    // Monolithic (kill switch): every stage + finish in ONE submit.
++    wgpu::CommandEncoder enc = c.device.CreateCommandEncoder();
++    for (Stage& s : stages) {
++      const uint32_t zero = 0;
++      c.queue.WriteBuffer(s.uni, s.uniOff + kRowBaseOffset,
++                          reinterpret_cast<const uint8_t*>(&zero), 4);
++      wgpu::ComputePassEncoder pass = enc.BeginComputePass();
++      s.encode(pass, 0u, s.total_groups);
++      pass.End();
++    }
++    finish(enc);
++    wgpu::CommandBuffer cb = enc.Finish();
++    return SubmitAndWait(c, cb, nullptr);
++  }
++  for (Stage& s : stages) {
++    uint32_t tg0 = 0;
++    while (tg0 < s.total_groups) {
++      const double target = ThermalHot() ? chunkTargetMs : ChunkTargetCoolMs();
++      const double unit = *ema;
++      uint32_t want = 8;  // first probe: 8 row groups (~few ms cool)
++      if (unit > 0.0) {
++        const double perTg = unit * ((double)s.nDb / 1024.0);
++        const double ideal = target / (perTg > 1e-6 ? perTg : 1e-6);
++        want = ideal < 1.0 ? 1u : (uint32_t)std::min(ideal, 1e9);
++      }
++      const uint32_t groups =
++          want < s.total_groups - tg0 ? want : s.total_groups - tg0;
++      c.queue.WriteBuffer(s.uni, s.uniOff + kRowBaseOffset,
++                          reinterpret_cast<const uint8_t*>(&tg0), 4);
++      wgpu::CommandEncoder enc = c.device.CreateCommandEncoder();
++      wgpu::ComputePassEncoder pass = enc.BeginComputePass();
++      s.encode(pass, tg0, groups);
++      pass.End();
++      wgpu::CommandBuffer cb = enc.Finish();
++      double gpuMs = 0.0;
++      const int rc = SubmitAndWait(c, cb, &gpuMs);
++      if (rc != 0) return rc;
++      if (gpuMs > 0.0 && gpuMs < 10000.0) aether_match_gpu_ms += gpuMs;
++      ++aether_match_chunks;
++      if (gpuMs > 0.0 && gpuMs < 10000.0) {
++        const double u = gpuMs / ((double)groups * ((double)s.nDb / 1024.0));
++        const double prev = *ema;
++        *ema = prev <= 0.0 ? u : prev * 0.7 + u * 0.3;
++      }
++      const double gapPct = ThermalGapPct();
++      if (gapPct > 0.0 && gpuMs > 0.0) {
++        double gapMs = gpuMs * gapPct / 100.0;
++        if (gapMs > 250.0) gapMs = 250.0;
++        aether_match_sleep_ms += gapMs;
++        std::this_thread::sleep_for(
++            std::chrono::microseconds((long long)(gapMs * 1000.0)));
++      }
++      tg0 += groups;
++    }
++  }
++  wgpu::CommandEncoder enc = c.device.CreateCommandEncoder();
++  finish(enc);
++  wgpu::CommandBuffer cb = enc.Finish();
++  return SubmitAndWait(c, cb, nullptr);
++}
++
++// ── Descriptor residency V1 (backend handles only; policy is shared) ─────
++using aether::sfm::DescriptorFormatV1;
++using aether::sfm::DescriptorResidencyKeyHashV1;
++using aether::sfm::DescriptorResidencyKeyV1;
++using aether::sfm::DescriptorResidencyMetadataV1;
++using aether::sfm::DescriptorResidencyPolicyV1;
++
++struct ResidencySession {
++  explicit ResidencySession(uint64_t budget) : policy(budget) {}
++  DescriptorResidencyPolicyV1 policy;
++  std::unordered_map<DescriptorResidencyKeyV1, wgpu::Buffer,
++                     DescriptorResidencyKeyHashV1>
++      buffers;
++  uint64_t upload_bytes = 0;
++  uint64_t allocation_failures = 0;
++  uint64_t device_resets = 0;
++};
++
++std::unordered_map<uint64_t, std::unique_ptr<ResidencySession>> gResidency;
++
++ResidencySession* ResidencyFor(uint64_t nonce) {
++  auto found = gResidency.find(nonce);
++  if (found != gResidency.end()) return found->second.get();
++  auto inserted = gResidency.emplace(
++      nonce, std::make_unique<ResidencySession>(DescriptorResidencyBudgetBytes()));
++  return inserted.first->second.get();
++}
++
++void EraseResident(ResidencySession* s,
++                   const std::vector<DescriptorResidencyKeyV1>& keys) {
++  if (!s) return;
++  for (const auto& k : keys) {
++    auto it = s->buffers.find(k);
++    if (it != s->buffers.end()) {
++      if (it->second) it->second.Destroy();
++      s->buffers.erase(it);
++    }
++  }
++}
++
++void ClearAllDescriptorResidencyForDeviceError() {
++  for (auto& kv : gResidency) {
++    kv.second->policy.ClearAll();
++    kv.second->buffers.clear();
++    ++kv.second->device_resets;
++  }
++}
++
++// Returns a resident buffer holding the padded table in the active kernel's
++// format, or null (caller uploads into the pool instead).
++wgpu::Buffer ResidentBuffer(Ctx& c, uint64_t nonce, uint32_t frame,
++                            uint32_t generation, const uint8_t* desc,
++                            uint32_t n, uint32_t npad, std::vector<float>& scratch) {
++  if (!DescriptorResidencyEnabled() || nonce == 0 || !desc || n == 0 ||
++      npad < n) {
++    return nullptr;
++  }
++  ResidencySession* s = ResidencyFor(nonce);
++  const DescriptorResidencyKeyV1 key{nonce, frame, generation};
++  const uint64_t bytes = DescBytes(c, n, npad);
++  // The format tag only has to be stable per process (the backend never
++  // changes after init): kRawU8 for the tiled table, kHalf as the tag for
++  // the f32-expanded subgroup-matrix table.
++  const DescriptorResidencyMetadataV1 md{
++      n, c.backend == Backend::kMma ? DescriptorFormatV1::kHalf
++                                    : DescriptorFormatV1::kRawU8,
++      bytes};
++  auto access = s->policy.Access(key, md);
++  EraseResident(s, access.evicted);
++  if (access.hit) {
++    auto found = s->buffers.find(key);
++    if (found != s->buffers.end() && found->second) return found->second;
++    EraseResident(s, s->policy.InvalidateFrame(nonce, frame));
++    access = s->policy.Access(key, md);
++    EraseResident(s, access.evicted);
++  }
++  if (!access.admitted) return nullptr;
++  wgpu::BufferDescriptor d{};
++  d.usage = kUsageDesc;
++  d.size = RoundUp(std::max<uint64_t>(bytes, 16), 4);
++  wgpu::Buffer buf = c.device.CreateBuffer(&d);
++  if (!buf) {
++    ++s->allocation_failures;
++    EraseResident(s, s->policy.InvalidateFrame(nonce, frame));
++    return nullptr;
++  }
++  UploadDesc(c, buf, 0, desc, n, npad, scratch);
++  s->upload_bytes += bytes;
++  s->buffers[key] = buf;
++  return buf;
++}
++
++// ── Mutual cross-check + sentinel guard ──────────────────────────────────
++// Returns rc: 0 ok, 7 incomplete output (sentinel survived).
++int CrossCheck(const int32_t* mAB, int nA, const int32_t* mBA, int nB,
++               uint32_t* out_pairs, int max_pairs, int* out_num) {
++  for (int i = 0; i < nA; ++i) {
++    if (mAB[i] == kOutSentinel) {
++      StashLastError("output incomplete (A->B sentinel survived)");
++      return 7;
++    }
++  }
++  for (int j = 0; j < nB; ++j) {
++    if (mBA[j] == kOutSentinel) {
++      StashLastError("output incomplete (B->A sentinel survived)");
++      return 7;
++    }
++  }
++  int n_out = 0;
++  for (int i = 0; i < nA; ++i) {
++    const int j = mAB[i];
++    if (j >= 0 && j < nB && mBA[j] == i) {
++      if (out_pairs != nullptr) {
++        if (n_out >= max_pairs) break;  // unreachable per contract
++        out_pairs[2 * n_out] = (uint32_t)i;
++        out_pairs[2 * n_out + 1] = (uint32_t)j;
++      }
++      ++n_out;
++    }
++  }
++  if (out_num) *out_num = n_out;
++  return 0;
++}
++
++#if defined(PWOFFICIAL_DAWN_HOST_TEST) && PWOFFICIAL_DAWN_HOST_TEST
++std::vector<int32_t> gDbgAB, gDbgBA;
++double gDbgUploadMs = 0.0, gDbgSubmitMs = 0.0, gDbgReadbackMs = 0.0;
++#endif
++
++// ══════════════════════════ plain match ══════════════════════════════════
++int MatchPairsImpl(const uint8_t* dA, int nA, const uint8_t* dB, int nB,
++                   double max_ratio, uint32_t* out_pairs, int max_pairs,
++                   int* out_num, uint64_t nonce = 0, uint32_t frameA = 0,
++                   uint32_t genA = 0, uint32_t frameB = 0, uint32_t genB = 0) {
++  if (out_num) *out_num = 0;
++  if (!dA || !dB || nA <= 0 || nB <= 0) return 1;
++  if (out_pairs != nullptr && max_pairs <= 0) return 1;
++  Ctx* cp = EnsureDawn();
++  if (!cp) return 2;
++  Ctx& c = *cp;
++  if (!EnsureMainPipelines(c)) return 2;
++  const double tStart = NowMs();
++
++  const uint32_t nAu = (uint32_t)nA, nBu = (uint32_t)nB;
++  const uint32_t nApad = (uint32_t)RoundUp(nAu, 128);
++  const uint32_t nBpad = (uint32_t)RoundUp(nBu, 128);
++  const uint64_t aBytes = DescBytes(c, nAu, nApad);
++  const uint64_t bBytes = DescBytes(c, nBu, nBpad);
++
++  wgpu::Buffer aBuf = ResidentBuffer(c, nonce, frameA, genA, dA, nAu, nApad,
++                                     c.scratchA);
++  wgpu::Buffer bBuf = ResidentBuffer(c, nonce, frameB, genB, dB, nBu, nBpad,
++                                     c.scratchB);
++  const bool aRes = (bool)aBuf, bRes = (bool)bBuf;
++  if (!aBuf) aBuf = PoolGet(c, c.a, aBytes, kUsageDesc);
++  if (!bBuf) bBuf = PoolGet(c, c.b, bBytes, kUsageDesc);
++  if (!aBuf || !bBuf) return 5;
++  if (!aRes) UploadDesc(c, aBuf, 0, dA, nAu, nApad, c.scratchA);
++  if (!bRes) UploadDesc(c, bBuf, 0, dB, nBu, nBpad, c.scratchB);
++
++  const uint64_t outABBytes = (uint64_t)nAu * 4, outBABytes = (uint64_t)nBu * 4;
++  wgpu::Buffer outAB = PoolGet(c, c.outAB, outABBytes, kUsageOut);
++  wgpu::Buffer outBA = PoolGet(c, c.outBA, outBABytes, kUsageOut);
++  wgpu::Buffer uni = PoolGet(c, c.uni, 2 * kSlot, kUsageUni);
++  wgpu::Buffer staging =
++      PoolGet(c, c.staging, outABBytes + outBABytes, kUsageStaging);
++  if (!outAB || !outBA || !uni || !staging) return 6;
++  FillSentinel(c, outAB, 0, nAu);
++  FillSentinel(c, outBA, 0, nBu);
++
++  float maxRatio = (float)max_ratio;
++  if (maxRatio <= 0.0f) maxRatio = 0.8f;
++  const float maxDistance = 0.7f;  // colmap SiftMatchingOptions::max_distance
++
++  std::vector<Stage> stages;
++  std::function<void(wgpu::CommandEncoder&)> finish;
++  wgpu::BindGroup bgMain, bgMerge, bgBA;
++  const double tUpload = NowMs();
++  if (c.backend == Backend::kMma) {
++    const uint32_t numWg = nApad / kMmaRows;
++    const uint64_t colBytes = (uint64_t)nBu * numWg * 12;
++    wgpu::Buffer colp = PoolGet(c, c.colp, colBytes, kUsageColp);
++    if (!colp) return 6;
++    const Params p{nAu, nBu, maxRatio, maxDistance, numWg, 0u, 0u, 0u};
++    c.queue.WriteBuffer(uni, 0, reinterpret_cast<const uint8_t*>(&p), sizeof(p));
++    bgMain = MakeBG(c, c.p_main,
++                    {BE(0, aBuf, 0, aBytes), BE(1, bBuf, 0, bBytes),
++                     BE(2, outAB, 0, outABBytes), BE(3, uni, 0, sizeof(Params)),
++                     BE(4, colp, 0, colBytes)});
++    bgMerge = MakeBG(c, c.p_merge,
++                     {BE(3, uni, 0, sizeof(Params)), BE(4, colp, 0, colBytes),
++                      BE(5, outBA, 0, outBABytes)});
++    if (!bgMain || !bgMerge) return 6;
++    Stage s;
++    s.total_groups = numWg;
++    s.nDb = nBu;
++    s.uni = uni;
++    s.uniOff = 0;
++    s.encode = [&](wgpu::ComputePassEncoder& pass, uint32_t, uint32_t groups) {
++      pass.SetPipeline(c.p_main);
++      pass.SetBindGroup(0, bgMain);
++      pass.DispatchWorkgroups(groups);
++    };
++    stages.push_back(s);
++    finish = [&](wgpu::CommandEncoder& enc) {
++      wgpu::ComputePassEncoder pass = enc.BeginComputePass();
++      pass.SetPipeline(c.p_merge);
++      pass.SetBindGroup(0, bgMerge);
++      pass.DispatchWorkgroups((nBu + 63) / 64);
++      pass.End();
++      enc.CopyBufferToBuffer(outAB, 0, staging, 0, outABBytes);
++      enc.CopyBufferToBuffer(outBA, 0, staging, outABBytes, outBABytes);
++    };
++  } else {
++    const Params pab{nAu, nBu, maxRatio, maxDistance, 0u, 0u, 0u, 0u};
++    const Params pba{nBu, nAu, maxRatio, maxDistance, 0u, 0u, 0u, 0u};
++    c.queue.WriteBuffer(uni, 0, reinterpret_cast<const uint8_t*>(&pab), sizeof(pab));
++    c.queue.WriteBuffer(uni, kSlot, reinterpret_cast<const uint8_t*>(&pba),
++                        sizeof(pba));
++    bgMain = MakeBG(c, c.p_main,
++                    {BE(0, aBuf, 0, aBytes), BE(1, bBuf, 0, bBytes),
++                     BE(2, outAB, 0, outABBytes), BE(3, uni, 0, sizeof(Params))});
++    bgBA = MakeBG(c, c.p_main,
++                  {BE(0, bBuf, 0, bBytes), BE(1, aBuf, 0, aBytes),
++                   BE(2, outBA, 0, outBABytes), BE(3, uni, kSlot, sizeof(Params))});
++    if (!bgMain || !bgBA) return 6;
++    Stage sab, sba;
++    sab.total_groups = (nAu + kTiledRows - 1) / kTiledRows;
++    sab.nDb = nBu;
++    sab.uni = uni;
++    sab.uniOff = 0;
++    sab.encode = [&](wgpu::ComputePassEncoder& pass, uint32_t, uint32_t groups) {
++      pass.SetPipeline(c.p_main);
++      pass.SetBindGroup(0, bgMain);
++      pass.DispatchWorkgroups(groups);
++    };
++    sba.total_groups = (nBu + kTiledRows - 1) / kTiledRows;
++    sba.nDb = nAu;
++    sba.uni = uni;
++    sba.uniOff = kSlot;
++    sba.encode = [&](wgpu::ComputePassEncoder& pass, uint32_t, uint32_t groups) {
++      pass.SetPipeline(c.p_main);
++      pass.SetBindGroup(0, bgBA);
++      pass.DispatchWorkgroups(groups);
++    };
++    stages.push_back(sab);
++    stages.push_back(sba);
++    finish = [&](wgpu::CommandEncoder& enc) {
++      enc.CopyBufferToBuffer(outAB, 0, staging, 0, outABBytes);
++      enc.CopyBufferToBuffer(outBA, 0, staging, outABBytes, outBABytes);
++    };
++  }
++  int rc = RunStages(c, stages, finish, &c.ema_main);
++  if (rc != 0) return rc;
++  const double tSubmit = NowMs();
++  c.host.resize((size_t)nAu + nBu);
++  rc = ReadbackStaging(c, staging, outABBytes + outBABytes, c.host.data());
++  if (rc != 0) return rc;
++  const int32_t* mAB = c.host.data();
++  const int32_t* mBA = c.host.data() + nAu;
++#if defined(PWOFFICIAL_DAWN_HOST_TEST) && PWOFFICIAL_DAWN_HOST_TEST
++  gDbgAB.assign(mAB, mAB + nAu);
++  gDbgBA.assign(mBA, mBA + nBu);
++  gDbgUploadMs = tUpload - tStart;
++  gDbgSubmitMs = tSubmit - tUpload;
++  gDbgReadbackMs = NowMs() - tSubmit;
++#else
++  (void)tStart;
++  (void)tUpload;
++  (void)tSubmit;
++#endif
++  return CrossCheck(mAB, nA, mBA, nB, out_pairs, max_pairs, out_num);
++}
++
++// ══════════════════════════ guided match (v1 two-pass) ═══════════════════
++int MatchGuidedImpl(const uint8_t* dA, int nA, const float* xyA,
++                    const uint8_t* dB, int nB, const float* xyB,
++                    double max_ratio, const float* matrixAB,
++                    const float* matrixBA, uint32_t guideMode,
++                    float maxResidual, uint32_t* out_pairs, int max_pairs,
++                    int* out_num) {
++  if (out_num) *out_num = 0;
++  if (!dA || !dB || nA <= 0 || nB <= 0) return 1;
++  if (out_pairs != nullptr && max_pairs <= 0) return 1;
++  if (guideMode == 0u || guideMode > 2u) return 1;
++  if (!xyA || !xyB || !matrixAB || !matrixBA || maxResidual <= 0.0f) return 1;
++  Ctx* cp = EnsureDawn();
++  if (!cp) return 2;
++  Ctx& c = *cp;
++  if (!EnsureGuidedPipeline(c)) return 2;
++  const double tStart = NowMs();
++
++  const uint32_t nAu = (uint32_t)nA, nBu = (uint32_t)nB;
++  const uint32_t nApad = (uint32_t)RoundUp(nAu, 128);
++  const uint32_t nBpad = (uint32_t)RoundUp(nBu, 128);
++  const uint64_t aBytes = DescBytes(c, nAu, nApad);
++  const uint64_t bBytes = DescBytes(c, nBu, nBpad);
++  wgpu::Buffer aBuf = PoolGet(c, c.a, aBytes, kUsageDesc);
++  wgpu::Buffer bBuf = PoolGet(c, c.b, bBytes, kUsageDesc);
++  if (!aBuf || !bBuf) return 5;
++  UploadDesc(c, aBuf, 0, dA, nAu, nApad, c.scratchA);
++  UploadDesc(c, bBuf, 0, dB, nBu, nBpad, c.scratchB);
++
++  // Keypoints padded like the descriptors (zero-filled): padded query rows
++  // read in-bounds points whose verdict is irrelevant (never written).
++  const uint64_t ptsABytes = (uint64_t)nApad * 2 * sizeof(float);
++  const uint64_t ptsBBytes = (uint64_t)nBpad * 2 * sizeof(float);
++  wgpu::Buffer ptsA = PoolGet(c, c.ptsA, ptsABytes, kUsageDesc);
++  wgpu::Buffer ptsB = PoolGet(c, c.ptsB, ptsBBytes, kUsageDesc);
++  wgpu::Buffer matAB = PoolGet(c, c.matAB, 48, kUsageDesc);
++  wgpu::Buffer matBA = PoolGet(c, c.matBA, 48, kUsageDesc);
++  if (!ptsA || !ptsB || !matAB || !matBA) return 6;
++  {
++    std::vector<float>& sa = c.scratchA;
++    sa.assign((size_t)nApad * 2, 0.0f);
++    std::memcpy(sa.data(), xyA, (size_t)nAu * 2 * sizeof(float));
++    c.queue.WriteBuffer(ptsA, 0, reinterpret_cast<const uint8_t*>(sa.data()),
++                        ptsABytes);
++    std::vector<float>& sb = c.scratchB;
++    sb.assign((size_t)nBpad * 2, 0.0f);
++    std::memcpy(sb.data(), xyB, (size_t)nBu * 2 * sizeof(float));
++    c.queue.WriteBuffer(ptsB, 0, reinterpret_cast<const uint8_t*>(sb.data()),
++                        ptsBBytes);
++    float m[12] = {0};
++    std::memcpy(m, matrixAB, 9 * sizeof(float));
++    c.queue.WriteBuffer(matAB, 0, reinterpret_cast<const uint8_t*>(m), 48);
++    std::memcpy(m, matrixBA, 9 * sizeof(float));
++    c.queue.WriteBuffer(matBA, 0, reinterpret_cast<const uint8_t*>(m), 48);
++  }
++  const uint64_t outABBytes = (uint64_t)nAu * 4, outBABytes = (uint64_t)nBu * 4;
++  wgpu::Buffer outAB = PoolGet(c, c.outAB, outABBytes, kUsageOut);
++  wgpu::Buffer outBA = PoolGet(c, c.outBA, outBABytes, kUsageOut);
++  wgpu::Buffer uni = PoolGet(c, c.uni, 2 * kSlot, kUsageUni);
++  wgpu::Buffer staging =
++      PoolGet(c, c.staging, outABBytes + outBABytes, kUsageStaging);
++  if (!outAB || !outBA || !uni || !staging) return 6;
++  FillSentinel(c, outAB, 0, nAu);
++  FillSentinel(c, outBA, 0, nBu);
++
++  float maxRatio = (float)max_ratio;
++  if (maxRatio <= 0.0f) maxRatio = 0.8f;
++  const float maxDistance = 0.7f;
++  const GParams pab{nAu, nBu, maxRatio, maxDistance, guideMode, 0u, maxResidual, 0u};
++  const GParams pba{nBu, nAu, maxRatio, maxDistance, guideMode, 0u, maxResidual, 0u};
++  c.queue.WriteBuffer(uni, 0, reinterpret_cast<const uint8_t*>(&pab), sizeof(pab));
++  c.queue.WriteBuffer(uni, kSlot, reinterpret_cast<const uint8_t*>(&pba), sizeof(pba));
++  wgpu::BindGroup bgAB = MakeBG(
++      c, c.p_guided,
++      {BE(0, aBuf, 0, aBytes), BE(1, bBuf, 0, bBytes), BE(2, outAB, 0, outABBytes),
++       BE(3, uni, 0, sizeof(GParams)), BE(4, ptsA, 0, ptsABytes),
++       BE(5, ptsB, 0, ptsBBytes), BE(6, matAB, 0, 48)});
++  wgpu::BindGroup bgBA = MakeBG(
++      c, c.p_guided,
++      {BE(0, bBuf, 0, bBytes), BE(1, aBuf, 0, aBytes), BE(2, outBA, 0, outBABytes),
++       BE(3, uni, kSlot, sizeof(GParams)), BE(4, ptsB, 0, ptsBBytes),
++       BE(5, ptsA, 0, ptsABytes), BE(6, matBA, 0, 48)});
++  if (!bgAB || !bgBA) return 6;
++  const uint32_t rows = c.backend == Backend::kMma ? kMmaRows : kTiledRows;
++  std::vector<Stage> stages;
++  Stage sab, sba;
++  sab.total_groups = (nAu + rows - 1) / rows;
++  sab.nDb = nBu;
++  sab.uni = uni;
++  sab.uniOff = 0;
++  sab.encode = [&](wgpu::ComputePassEncoder& pass, uint32_t, uint32_t groups) {
++    pass.SetPipeline(c.p_guided);
++    pass.SetBindGroup(0, bgAB);
++    pass.DispatchWorkgroups(groups);
++  };
++  sba.total_groups = (nBu + rows - 1) / rows;
++  sba.nDb = nAu;
++  sba.uni = uni;
++  sba.uniOff = kSlot;
++  sba.encode = [&](wgpu::ComputePassEncoder& pass, uint32_t, uint32_t groups) {
++    pass.SetPipeline(c.p_guided);
++    pass.SetBindGroup(0, bgBA);
++    pass.DispatchWorkgroups(groups);
++  };
++  stages.push_back(sab);
++  stages.push_back(sba);
++  auto finish = [&](wgpu::CommandEncoder& enc) {
++    enc.CopyBufferToBuffer(outAB, 0, staging, 0, outABBytes);
++    enc.CopyBufferToBuffer(outBA, 0, staging, outABBytes, outBABytes);
++  };
++  const double tUpload = NowMs();
++  int rc = RunStages(c, stages, finish, &c.ema_guided);
++  if (rc != 0) return rc;
++  const double tSubmit = NowMs();
++  c.host.resize((size_t)nAu + nBu);
++  rc = ReadbackStaging(c, staging, outABBytes + outBABytes, c.host.data());
++  if (rc != 0) return rc;
++  const int32_t* mAB = c.host.data();
++  const int32_t* mBA = c.host.data() + nAu;
++#if defined(PWOFFICIAL_DAWN_HOST_TEST) && PWOFFICIAL_DAWN_HOST_TEST
++  gDbgAB.assign(mAB, mAB + nAu);
++  gDbgBA.assign(mBA, mBA + nBu);
++  gDbgUploadMs = tUpload - tStart;
++  gDbgSubmitMs = tSubmit - tUpload;
++  gDbgReadbackMs = NowMs() - tSubmit;
++#else
++  (void)tStart;
++  (void)tUpload;
++  (void)tSubmit;
++#endif
++  return CrossCheck(mAB, nA, mBA, nB, out_pairs, max_pairs, out_num);
++}
++
++// ══════════════════════════ probe batch ══════════════════════════════════
++// Same contract as the Metal TU's aether_gpu_match_probe_batch: K candidates
++// scored INDEPENDENTLY (own buffer regions, own dispatches), sharing only the
++// GPU submissions; grouped by the same cost model / thermal targets. rc 0 =
++// every candidate scored; 7/8 = whole remaining batch aborted (caller fails
++// OPEN). WebGPU compute passes serialise dispatches, so — unlike the Metal
++// concurrent encoders — the win here is only the removed CPU↔GPU round
++// trips.
++int ProbeBatchImpl(const uint8_t* dA, int nA, const uint8_t* const* dBs,
++                   const int* nBs, int n_cands, double max_ratio,
++                   int* out_counts) {
++  if (!dA || !dBs || !nBs || !out_counts || nA <= 0 || n_cands <= 0) return 1;
++  for (int k = 0; k < n_cands; ++k) {
++    if (!dBs[k] || nBs[k] <= 0) return 1;
++    out_counts[k] = 0;
++  }
++  Ctx* cp = EnsureDawn();
++  if (!cp) return 2;
++  Ctx& c = *cp;
++  if (!EnsureMainPipelines(c)) return 2;
++  const bool mma = c.backend == Backend::kMma;
++  const uint32_t nAu = (uint32_t)nA;
++  const uint32_t nApad = (uint32_t)RoundUp(nAu, 128);
++  const uint32_t numWg = nApad / kMmaRows;
++  const uint64_t aBytes = DescBytes(c, nAu, nApad);
++  const uint64_t outABBytes = (uint64_t)nAu * 4;
++  const uint64_t outABSlot = RoundUp(outABBytes, kSlot);
++  const uint32_t uniPerCand = mma ? 1u : 2u;
++
++  struct Cand {
++    uint32_t nB, nBpad;
++    uint64_t bOff, bBytes, outBAOff, outBABytes, colOff, colBytes, uniOff,
++        stgOff;
++    wgpu::BindGroup bgMain, bgMerge, bgBA;
++    double units;
++  };
++  std::vector<Cand> cands((size_t)n_cands);
++  uint64_t bTotal = 0, outBATotal = 0, colTotal = 0, stgTotal = 0;
++  for (int k = 0; k < n_cands; ++k) {
++    Cand& cd = cands[(size_t)k];
++    cd.nB = (uint32_t)nBs[k];
++    cd.nBpad = (uint32_t)RoundUp(cd.nB, 128);
++    cd.bBytes = DescBytes(c, cd.nB, cd.nBpad);
++    cd.bOff = bTotal;
++    bTotal += RoundUp(cd.bBytes, kSlot);
++    cd.outBABytes = (uint64_t)cd.nB * 4;
++    cd.outBAOff = outBATotal;
++    outBATotal += RoundUp(cd.outBABytes, kSlot);
++    cd.colBytes = mma ? (uint64_t)cd.nB * numWg * 12 : 16;
++    cd.colOff = colTotal;
++    colTotal += RoundUp(cd.colBytes, kSlot);
++    cd.uniOff = (uint64_t)k * uniPerCand * kSlot;
++    cd.stgOff = stgTotal;
++    stgTotal += outABBytes + cd.outBABytes;
++    cd.units = mma ? (double)numWg * ((double)cd.nB / 1024.0)
++                   : (double)((nAu + 63) / 64) * ((double)cd.nB / 1024.0) +
++                         (double)((cd.nB + 63) / 64) * ((double)nAu / 1024.0);
++  }
++  wgpu::Buffer aBuf = PoolGet(c, c.pbA, aBytes, kUsageDesc);
++  wgpu::Buffer bBuf = PoolGet(c, c.pbB, bTotal, kUsageDesc);
++  if (!aBuf || !bBuf) return 5;
++  UploadDesc(c, aBuf, 0, dA, nAu, nApad, c.scratchA);
++  for (int k = 0; k < n_cands; ++k) {
++    const Cand& cd = cands[(size_t)k];
++    UploadDesc(c, bBuf, cd.bOff, dBs[k], cd.nB, cd.nBpad, c.scratchB);
++  }
++  wgpu::Buffer outAB = PoolGet(c, c.pbOutAB, outABSlot * (uint64_t)n_cands, kUsageOut);
++  wgpu::Buffer outBA = PoolGet(c, c.pbOutBA, outBATotal, kUsageOut);
++  wgpu::Buffer colp = PoolGet(c, c.pbColp, colTotal, kUsageColp);
++  wgpu::Buffer uni = PoolGet(c, c.pbUni, (uint64_t)n_cands * uniPerCand * kSlot,
++                             kUsageUni);
++  wgpu::Buffer staging = PoolGet(c, c.pbStaging, stgTotal, kUsageStaging);
++  if (!outAB || !outBA || !colp || !uni || !staging) return 6;
++
++  float maxRatio = (float)max_ratio;
++  if (maxRatio <= 0.0f) maxRatio = 0.8f;
++  const float maxDistance = 0.7f;
++  for (int k = 0; k < n_cands; ++k) {
++    Cand& cd = cands[(size_t)k];
++    FillSentinel(c, outAB, (uint64_t)k * outABSlot, nAu);
++    FillSentinel(c, outBA, cd.outBAOff, cd.nB);
++    if (mma) {
++      const Params p{nAu, cd.nB, maxRatio, maxDistance, numWg, 0u, 0u, 0u};
++      c.queue.WriteBuffer(uni, cd.uniOff, reinterpret_cast<const uint8_t*>(&p),
++                          sizeof(p));
++      cd.bgMain = MakeBG(
++          c, c.p_main,
++          {BE(0, aBuf, 0, aBytes), BE(1, bBuf, cd.bOff, cd.bBytes),
++           BE(2, outAB, (uint64_t)k * outABSlot, outABBytes),
++           BE(3, uni, cd.uniOff, sizeof(Params)), BE(4, colp, cd.colOff, cd.colBytes)});
++      cd.bgMerge = MakeBG(c, c.p_merge,
++                          {BE(3, uni, cd.uniOff, sizeof(Params)),
++                           BE(4, colp, cd.colOff, cd.colBytes),
++                           BE(5, outBA, cd.outBAOff, cd.outBABytes)});
++      if (!cd.bgMain || !cd.bgMerge) return 6;
++    } else {
++      const Params pab{nAu, cd.nB, maxRatio, maxDistance, 0u, 0u, 0u, 0u};
++      const Params pba{cd.nB, nAu, maxRatio, maxDistance, 0u, 0u, 0u, 0u};
++      c.queue.WriteBuffer(uni, cd.uniOff, reinterpret_cast<const uint8_t*>(&pab),
++                          sizeof(pab));
++      c.queue.WriteBuffer(uni, cd.uniOff + kSlot,
++                          reinterpret_cast<const uint8_t*>(&pba), sizeof(pba));
++      cd.bgMain = MakeBG(c, c.p_main,
++                         {BE(0, aBuf, 0, aBytes), BE(1, bBuf, cd.bOff, cd.bBytes),
++                          BE(2, outAB, (uint64_t)k * outABSlot, outABBytes),
++                          BE(3, uni, cd.uniOff, sizeof(Params))});
++      cd.bgBA = MakeBG(c, c.p_main,
++                       {BE(0, bBuf, cd.bOff, cd.bBytes), BE(1, aBuf, 0, aBytes),
++                        BE(2, outBA, cd.outBAOff, cd.outBABytes),
++                        BE(3, uni, cd.uniOff + kSlot, sizeof(Params))});
++      if (!cd.bgMain || !cd.bgBA) return 6;
++    }
++  }
++
++  auto runGroup = [&](int c0, int c1) -> int {
++    wgpu::CommandEncoder enc = c.device.CreateCommandEncoder();
++    wgpu::ComputePassEncoder pass = enc.BeginComputePass();
++    for (int k = c0; k < c1; ++k) {
++      const Cand& cd = cands[(size_t)k];
++      if (mma) {
++        pass.SetPipeline(c.p_main);
++        pass.SetBindGroup(0, cd.bgMain);
++        pass.DispatchWorkgroups(numWg);
++        pass.SetPipeline(c.p_merge);
++        pass.SetBindGroup(0, cd.bgMerge);
++        pass.DispatchWorkgroups((cd.nB + 63) / 64);
++      } else {
++        pass.SetPipeline(c.p_main);
++        pass.SetBindGroup(0, cd.bgMain);
++        pass.DispatchWorkgroups((nAu + 63) / 64);
++        pass.SetBindGroup(0, cd.bgBA);
++        pass.DispatchWorkgroups((cd.nB + 63) / 64);
++      }
++    }
++    pass.End();
++    for (int k = c0; k < c1; ++k) {
++      const Cand& cd = cands[(size_t)k];
++      enc.CopyBufferToBuffer(outAB, (uint64_t)k * outABSlot, staging, cd.stgOff,
++                             outABBytes);
++      enc.CopyBufferToBuffer(outBA, cd.outBAOff, staging, cd.stgOff + outABBytes,
++                             cd.outBABytes);
++    }
++    wgpu::CommandBuffer cb = enc.Finish();
++    double gpuMs = 0.0;
++    const int rc = SubmitAndWait(c, cb, &gpuMs);
++    if (rc != 0) return rc;
++    if (gpuMs > 0.0 && gpuMs < 10000.0) aether_match_gpu_ms += gpuMs;
++    ++aether_match_chunks;
++    // No EMA update from the probe batch (its per-unit cost differs from the
++    // full-pair chunks the EMA calibrates) — same rule as the Metal TU.
++    const double gapPct = ThermalGapPct();
++    if (gapPct > 0.0 && gpuMs > 0.0) {
++      double gapMs = gpuMs * gapPct / 100.0;
++      if (gapMs > 250.0) gapMs = 250.0;
++      aether_match_sleep_ms += gapMs;
++      std::this_thread::sleep_for(
++          std::chrono::microseconds((long long)(gapMs * 1000.0)));
++    }
++    return 0;
++  };
++  const double chunkTargetMs = ChunkTargetMs();
++  double estCap = 0.0;
++  if (chunkTargetMs > 0.0) {
++    const double target = ThermalHot() ? chunkTargetMs : ChunkTargetCoolMs();
++    estCap = c.ema_main > 0.0 ? target / c.ema_main : 0.0;
++  }
++  int g0 = 0;
++  double gUnits = 0.0;
++  for (int k = 0; k < n_cands; ++k) {
++    const double cu = cands[(size_t)k].units;
++    if (k > g0 && estCap > 0.0 && gUnits + cu > estCap) {
++      const int rc = runGroup(g0, k);
++      if (rc != 0) return rc;
++      g0 = k;
++      gUnits = 0.0;
++    }
++    gUnits += cu;
++  }
++  if (g0 < n_cands) {
++    const int rc = runGroup(g0, n_cands);
++    if (rc != 0) return rc;
++  }
++  c.host.resize((size_t)(stgTotal / 4));
++  const int rrc = ReadbackStaging(c, staging, stgTotal, c.host.data());
++  if (rrc != 0) return rrc;
++  for (int k = 0; k < n_cands; ++k) {
++    const Cand& cd = cands[(size_t)k];
++    const int32_t* mAB = c.host.data() + cd.stgOff / 4;
++    const int32_t* mBA = mAB + nAu;
++    int n_out = 0;
++    const int rc = CrossCheck(mAB, nA, mBA, (int)cd.nB, nullptr, 0, &n_out);
++    if (rc != 0) return rc;
++    out_counts[k] = n_out;
++  }
++  return 0;
++}
++
++}  // namespace
++
++// ═══════════════════════════ exported C ABI ══════════════════════════════
++
++extern "C" int pwdawn_gpu_match_last_error(char* buf, int cap) {
++  if (!buf || cap <= 0) return 0;
++  std::lock_guard<std::mutex> lk(gLastErrLock);
++  const int n = std::snprintf(buf, (size_t)cap, "%s", gLastErr);
++  return n < 0 ? 0 : (n < cap ? n : cap - 1);
++}
++
++extern "C" void pwdawn_match_set_ab_phase(int phase) {
++  gAbPhase.store(phase, std::memory_order_relaxed);
++}
++extern "C" void pwdawn_gpu_match_set_capture_active(int active) {
++  gCaptureActive.store(active ? 1 : 0, std::memory_order_relaxed);
++}
++extern "C" void pwdawn_gpu_match_set_preview_fps30(int on) {
++  gPreviewFps30.store(on ? 1 : 0, std::memory_order_relaxed);
++}
++extern "C" void pwdawn_gpu_match_set_thermal_state(int state) {
++  gThermalState.store((state >= 0 && state <= 3) ? state : 0,
++                      std::memory_order_relaxed);
++}
++extern "C" int pwdawn_gpu_match_get_capture_active(void) {
++  return gCaptureActive.load(std::memory_order_relaxed);
++}
++
++#if !(defined(PWOFFICIAL_DAWN_OBSERVABLES_EXTERN) && PWOFFICIAL_DAWN_OBSERVABLES_EXTERN)
++// Dart-side race gate reader (see the Metal TU): on builds without the Metal
++// TU this backend owns the public symbol.
++extern "C" __attribute__((used, visibility("default"))) int
++aether_gpu_match_get_capture_active(void) {
++  return gCaptureActive.load(std::memory_order_relaxed);
++}
++#endif
++
++// Initialises Dawn if needed and copies a one-line backend description into
++// buf ("backend=mma(...) adapter=... "). Returns bytes written (0 = no GPU).
++extern "C" int pwdawn_gpu_match_backend_info(char* buf, int cap) {
++  if (!buf || cap <= 0) return 0;
++  std::lock_guard<std::mutex> lk(gMatchCallLock);
++  Ctx* c = EnsureDawn();
++  if (!c) {
++    buf[0] = 0;
++    return 0;
++  }
++  const int n = std::snprintf(buf, (size_t)cap, "%s", c->backend_info.c_str());
++  return n < 0 ? 0 : (n < cap ? n : cap - 1);
++}
++
++extern "C" int pwdawn_gpu_match_gemm_pairs(const uint8_t* dA, int nA,
++                                           const uint8_t* dB, int nB,
++                                           double max_ratio,
++                                           uint32_t* out_pairs, int max_pairs,
++                                           int* out_num_matches) {
++  std::lock_guard<std::mutex> lk(gMatchCallLock);
++  return MatchPairsImpl(dA, nA, dB, nB, max_ratio, out_pairs, max_pairs,
++                        out_num_matches);
++}
++
++extern "C" int pwdawn_gpu_match_gemm_pairs_resident(
++    uint64_t session_nonce, uint32_t frame_a, uint32_t generation_a,
++    const uint8_t* dA, int nA, uint32_t frame_b, uint32_t generation_b,
++    const uint8_t* dB, int nB, double max_ratio, uint32_t* out_pairs,
++    int max_pairs, int* out_num_matches) {
++  std::lock_guard<std::mutex> lk(gMatchCallLock);
++  return MatchPairsImpl(dA, nA, dB, nB, max_ratio, out_pairs, max_pairs,
++                        out_num_matches, session_nonce, frame_a, generation_a,
++                        frame_b, generation_b);
++}
++
++extern "C" void pwdawn_gpu_match_descriptor_residency_invalidate(
++    uint64_t session_nonce, uint32_t frame_ordinal) {
++  std::lock_guard<std::mutex> lk(gMatchCallLock);
++  auto found = gResidency.find(session_nonce);
++  if (found == gResidency.end()) return;
++  EraseResident(found->second.get(),
++                found->second->policy.InvalidateFrame(session_nonce, frame_ordinal));
++}
++
++extern "C" void pwdawn_gpu_match_descriptor_residency_clear_session(
++    uint64_t session_nonce) {
++  std::lock_guard<std::mutex> lk(gMatchCallLock);
++  auto found = gResidency.find(session_nonce);
++  if (found == gResidency.end()) return;
++  found->second->policy.ClearSession(session_nonce);
++  for (auto& kv : found->second->buffers) {
++    if (kv.second) kv.second.Destroy();
++  }
++  found->second->buffers.clear();
++  gResidency.erase(found);
++}
++
++extern "C" int pwdawn_gpu_match_descriptor_residency_stats(
++    uint64_t session_nonce, uint64_t* hits, uint64_t* misses,
++    uint64_t* evictions, uint64_t* stale_replacements, uint64_t* upload_bytes,
++    uint64_t* resident_bytes, uint64_t* resident_entries,
++    uint64_t* allocation_failures, uint64_t* device_resets) {
++  std::lock_guard<std::mutex> lk(gMatchCallLock);
++  uint64_t values[9] = {0};
++  auto found = gResidency.find(session_nonce);
++  if (found != gResidency.end()) {
++    const auto stats = found->second->policy.stats();
++    values[0] = stats.hits;
++    values[1] = stats.misses;
++    values[2] = stats.evictions;
++    values[3] = stats.stale_replacements;
++    values[4] = found->second->upload_bytes;
++    values[5] = found->second->policy.resident_bytes();
++    values[6] = found->second->policy.size();
++    values[7] = found->second->allocation_failures;
++    values[8] = found->second->device_resets;
++  }
++  uint64_t* outputs[9] = {hits,           misses,           evictions,
++                          stale_replacements, upload_bytes, resident_bytes,
++                          resident_entries, allocation_failures, device_resets};
++  for (size_t i = 0; i < 9; ++i) {
++    if (outputs[i]) *outputs[i] = values[i];
++  }
++  return found == gResidency.end() ? 0 : 1;
++}
++
++extern "C" int pwdawn_gpu_match_probe_batch(const uint8_t* dA, int nA,
++                                            const uint8_t* const* dBs,
++                                            const int* nBs, int n_cands,
++                                            double max_ratio, int* out_counts) {
++  std::lock_guard<std::mutex> lk(gMatchCallLock);
++  return ProbeBatchImpl(dA, nA, dBs, nBs, n_cands, max_ratio, out_counts);
++}
++
++extern "C" int pwdawn_gpu_match_gemm_pairs_guided(
++    const uint8_t* dA, int nA, const float* xyA, const uint8_t* dB, int nB,
++    const float* xyB, double max_ratio, const float* matrixAB,
++    const float* matrixBA, int guide_mode, float max_residual,
++    uint32_t* out_pairs, int max_pairs, int* out_num_matches) {
++  std::lock_guard<std::mutex> lk(gMatchCallLock);
++  if (guide_mode < 0) return 1;
++  return MatchGuidedImpl(dA, nA, xyA, dB, nB, xyB, max_ratio, matrixAB,
++                         matrixBA, (uint32_t)guide_mode, max_residual,
++                         out_pairs, max_pairs, out_num_matches);
++}
++
++#if defined(PWOFFICIAL_DAWN_HOST_TEST) && PWOFFICIAL_DAWN_HOST_TEST
++// Host-test-only hooks (never compiled into the framework): raw direction
++// maps of the last call (parity suite triple golden) and the call's timing
++// split (upload / submit→done / readback).
++extern "C" void pwdawn_gpu_match_debug_last_dirmaps(const int32_t** ab, int* na,
++                                                    const int32_t** ba, int* nb) {
++  if (ab) *ab = gDbgAB.data();
++  if (na) *na = (int)gDbgAB.size();
++  if (ba) *ba = gDbgBA.data();
++  if (nb) *nb = (int)gDbgBA.size();
++}
++extern "C" void pwdawn_gpu_match_debug_last_timing(double* upload_ms,
++                                                   double* submit_ms,
++                                                   double* readback_ms) {
++  if (upload_ms) *upload_ms = gDbgUploadMs;
++  if (submit_ms) *submit_ms = gDbgSubmitMs;
++  if (readback_ms) *readback_ms = gDbgReadbackMs;
++}
++#endif
+diff --git a/vendor/official_sfm/src/pwofficial_gpu_match_dispatch.cc b/vendor/official_sfm/src/pwofficial_gpu_match_dispatch.cc
+new file mode 100644
+index 0000000..9e129bc
+--- /dev/null
++++ b/vendor/official_sfm/src/pwofficial_gpu_match_dispatch.cc
+@@ -0,0 +1,270 @@
++// pwofficial_gpu_match_dispatch.cc — thin owner of the public GPU matcher
++// ABI (aether_gpu_match_* / aether_match_set_ab_phase) that forwards every
++// call to ONE of two backend TUs:
++//   * pwmetal_*  — the shipped Metal TU pwofficial_gpu_match.mm, compiled
++//                  with -include pwofficial_gpu_match_metal_rename.h (Apple
++//                  targets only; absent when PWOFFICIAL_MATCH_NO_METAL=1);
++//   * pwdawn_*   — the cross-platform Dawn/WGSL TU pwofficial_gpu_match_dawn.cc
++//                  (iOS → Metal, Android/HarmonyOS → Vulkan).
++// Selection: env OFFICIAL_AETHER_MATCH_BACKEND, read ONCE per process.
++//   unset / "metal" → Metal (default on Apple: the shipped path, unchanged)
++//   "dawn"          → Dawn
++// On builds without the Metal TU the Dawn backend is the only implementation
++// and the env is ignored. The choice is process-wide and cached like every
++// other OFFICIAL_AETHER_* knob (the residency / cost-model state lives inside
++// each backend, so switching mid-process is deliberately not supported).
++//
++// Flag setters (capture_active / preview_fps30 / ab_phase / thermal) are
++// forwarded to BOTH backends so their scheduling state stays coherent
++// regardless of which one executes the match.
++//
++// Observation globals aether_match_gpu_ms / _sleep_ms / _chunks and the
++// Dart-dlsym'd aether_gpu_match_get_capture_active are NOT owned here: the
++// Metal TU defines them on Apple (both backends write the same words); the
++// Dawn TU defines them elsewhere.
++
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++
++extern "C" {
++
++// ── Dawn backend (always present) ────────────────────────────────────────
++int pwdawn_gpu_match_gemm_pairs(const uint8_t* dA, int nA, const uint8_t* dB,
++                                int nB, double max_ratio, uint32_t* out_pairs,
++                                int max_pairs, int* out_num_matches);
++int pwdawn_gpu_match_gemm_pairs_resident(
++    uint64_t session_nonce, uint32_t frame_a, uint32_t generation_a,
++    const uint8_t* dA, int nA, uint32_t frame_b, uint32_t generation_b,
++    const uint8_t* dB, int nB, double max_ratio, uint32_t* out_pairs,
++    int max_pairs, int* out_num_matches);
++void pwdawn_gpu_match_descriptor_residency_invalidate(uint64_t session_nonce,
++                                                      uint32_t frame_ordinal);
++void pwdawn_gpu_match_descriptor_residency_clear_session(uint64_t session_nonce);
++int pwdawn_gpu_match_descriptor_residency_stats(
++    uint64_t session_nonce, uint64_t* hits, uint64_t* misses,
++    uint64_t* evictions, uint64_t* stale_replacements, uint64_t* upload_bytes,
++    uint64_t* resident_bytes, uint64_t* resident_entries,
++    uint64_t* allocation_failures, uint64_t* device_resets);
++int pwdawn_gpu_match_probe_batch(const uint8_t* dA, int nA,
++                                 const uint8_t* const* dBs, const int* nBs,
++                                 int n_cands, double max_ratio, int* out_counts);
++int pwdawn_gpu_match_gemm_pairs_guided(
++    const uint8_t* dA, int nA, const float* xyA, const uint8_t* dB, int nB,
++    const float* xyB, double max_ratio, const float* matrixAB,
++    const float* matrixBA, int guide_mode, float max_residual,
++    uint32_t* out_pairs, int max_pairs, int* out_num_matches);
++int pwdawn_gpu_match_last_error(char* buf, int cap);
++void pwdawn_match_set_ab_phase(int phase);
++void pwdawn_gpu_match_set_capture_active(int active);
++void pwdawn_gpu_match_set_preview_fps30(int on);
++void pwdawn_gpu_match_set_thermal_state(int state);
++int pwdawn_gpu_match_backend_info(char* buf, int cap);
++
++#if !defined(PWOFFICIAL_MATCH_NO_METAL)
++// ── Metal backend (renamed exports of pwofficial_gpu_match.mm) ───────────
++int pwmetal_gpu_match_gemm_pairs(const uint8_t* dA, int nA, const uint8_t* dB,
++                                 int nB, double max_ratio, uint32_t* out_pairs,
++                                 int max_pairs, int* out_num_matches);
++int pwmetal_gpu_match_gemm_pairs_resident(
++    uint64_t session_nonce, uint32_t frame_a, uint32_t generation_a,
++    const uint8_t* dA, int nA, uint32_t frame_b, uint32_t generation_b,
++    const uint8_t* dB, int nB, double max_ratio, uint32_t* out_pairs,
++    int max_pairs, int* out_num_matches);
++void pwmetal_gpu_match_descriptor_residency_invalidate(uint64_t session_nonce,
++                                                       uint32_t frame_ordinal);
++void pwmetal_gpu_match_descriptor_residency_clear_session(uint64_t session_nonce);
++int pwmetal_gpu_match_descriptor_residency_stats(
++    uint64_t session_nonce, uint64_t* hits, uint64_t* misses,
++    uint64_t* evictions, uint64_t* stale_replacements, uint64_t* upload_bytes,
++    uint64_t* resident_bytes, uint64_t* resident_entries,
++    uint64_t* allocation_failures, uint64_t* device_resets);
++int pwmetal_gpu_match_probe_batch(const uint8_t* dA, int nA,
++                                  const uint8_t* const* dBs, const int* nBs,
++                                  int n_cands, double max_ratio, int* out_counts);
++int pwmetal_gpu_match_gemm_pairs_guided(
++    const uint8_t* dA, int nA, const float* xyA, const uint8_t* dB, int nB,
++    const float* xyB, double max_ratio, const float* matrixAB,
++    const float* matrixBA, int guide_mode, float max_residual,
++    uint32_t* out_pairs, int max_pairs, int* out_num_matches);
++int pwmetal_gpu_match_last_error(char* buf, int cap);
++void pwmetal_match_set_ab_phase(int phase);
++void pwmetal_gpu_match_set_capture_active(int active);
++void pwmetal_gpu_match_set_preview_fps30(int on);
++#endif
++
++}  // extern "C"
++
++namespace {
++
++bool UseDawn() {
++#if defined(PWOFFICIAL_MATCH_NO_METAL)
++  return true;
++#else
++  static const bool v = [] {
++    const char* e = std::getenv("OFFICIAL_AETHER_MATCH_BACKEND");
++    return e != nullptr && std::strcmp(e, "dawn") == 0;
++  }();
++  return v;
++#endif
++}
++
++}  // namespace
++
++// Which backend this process dispatches to ("metal" | "dawn"). For device
++// verification that the env switch actually took effect (installed ≠ live).
++extern "C" const char* aether_gpu_match_backend_name(void) {
++  return UseDawn() ? "dawn" : "metal";
++}
++
++extern "C" int aether_gpu_match_gemm_pairs(const uint8_t* dA, int nA,
++                                           const uint8_t* dB, int nB,
++                                           double max_ratio,
++                                           uint32_t* out_pairs, int max_pairs,
++                                           int* out_num_matches) {
++#if !defined(PWOFFICIAL_MATCH_NO_METAL)
++  if (!UseDawn()) {
++    return pwmetal_gpu_match_gemm_pairs(dA, nA, dB, nB, max_ratio, out_pairs,
++                                        max_pairs, out_num_matches);
++  }
++#endif
++  return pwdawn_gpu_match_gemm_pairs(dA, nA, dB, nB, max_ratio, out_pairs,
++                                     max_pairs, out_num_matches);
++}
++
++extern "C" int aether_gpu_match_gemm_pairs_resident(
++    uint64_t session_nonce, uint32_t frame_a, uint32_t generation_a,
++    const uint8_t* dA, int nA, uint32_t frame_b, uint32_t generation_b,
++    const uint8_t* dB, int nB, double max_ratio, uint32_t* out_pairs,
++    int max_pairs, int* out_num_matches) {
++#if !defined(PWOFFICIAL_MATCH_NO_METAL)
++  if (!UseDawn()) {
++    return pwmetal_gpu_match_gemm_pairs_resident(
++        session_nonce, frame_a, generation_a, dA, nA, frame_b, generation_b,
++        dB, nB, max_ratio, out_pairs, max_pairs, out_num_matches);
++  }
++#endif
++  return pwdawn_gpu_match_gemm_pairs_resident(
++      session_nonce, frame_a, generation_a, dA, nA, frame_b, generation_b, dB,
++      nB, max_ratio, out_pairs, max_pairs, out_num_matches);
++}
++
++extern "C" void aether_gpu_match_descriptor_residency_invalidate(
++    uint64_t session_nonce, uint32_t frame_ordinal) {
++#if !defined(PWOFFICIAL_MATCH_NO_METAL)
++  if (!UseDawn()) {
++    pwmetal_gpu_match_descriptor_residency_invalidate(session_nonce,
++                                                      frame_ordinal);
++    return;
++  }
++#endif
++  pwdawn_gpu_match_descriptor_residency_invalidate(session_nonce, frame_ordinal);
++}
++
++extern "C" void aether_gpu_match_descriptor_residency_clear_session(
++    uint64_t session_nonce) {
++#if !defined(PWOFFICIAL_MATCH_NO_METAL)
++  if (!UseDawn()) {
++    pwmetal_gpu_match_descriptor_residency_clear_session(session_nonce);
++    return;
++  }
++#endif
++  pwdawn_gpu_match_descriptor_residency_clear_session(session_nonce);
++}
++
++extern "C" int aether_gpu_match_descriptor_residency_stats(
++    uint64_t session_nonce, uint64_t* hits, uint64_t* misses,
++    uint64_t* evictions, uint64_t* stale_replacements, uint64_t* upload_bytes,
++    uint64_t* resident_bytes, uint64_t* resident_entries,
++    uint64_t* allocation_failures, uint64_t* device_resets) {
++#if !defined(PWOFFICIAL_MATCH_NO_METAL)
++  if (!UseDawn()) {
++    return pwmetal_gpu_match_descriptor_residency_stats(
++        session_nonce, hits, misses, evictions, stale_replacements,
++        upload_bytes, resident_bytes, resident_entries, allocation_failures,
++        device_resets);
++  }
++#endif
++  return pwdawn_gpu_match_descriptor_residency_stats(
++      session_nonce, hits, misses, evictions, stale_replacements, upload_bytes,
++      resident_bytes, resident_entries, allocation_failures, device_resets);
++}
++
++extern "C" int aether_gpu_match_probe_batch(const uint8_t* dA, int nA,
++                                            const uint8_t* const* dBs,
++                                            const int* nBs, int n_cands,
++                                            double max_ratio,
++                                            int* out_counts) {
++#if !defined(PWOFFICIAL_MATCH_NO_METAL)
++  if (!UseDawn()) {
++    return pwmetal_gpu_match_probe_batch(dA, nA, dBs, nBs, n_cands, max_ratio,
++                                         out_counts);
++  }
++#endif
++  return pwdawn_gpu_match_probe_batch(dA, nA, dBs, nBs, n_cands, max_ratio,
++                                      out_counts);
++}
++
++extern "C" int aether_gpu_match_gemm_pairs_guided(
++    const uint8_t* dA, int nA, const float* xyA, const uint8_t* dB, int nB,
++    const float* xyB, double max_ratio, const float* matrixAB,
++    const float* matrixBA, int guide_mode, float max_residual,
++    uint32_t* out_pairs, int max_pairs, int* out_num_matches) {
++#if !defined(PWOFFICIAL_MATCH_NO_METAL)
++  if (!UseDawn()) {
++    return pwmetal_gpu_match_gemm_pairs_guided(
++        dA, nA, xyA, dB, nB, xyB, max_ratio, matrixAB, matrixBA, guide_mode,
++        max_residual, out_pairs, max_pairs, out_num_matches);
++  }
++#endif
++  return pwdawn_gpu_match_gemm_pairs_guided(
++      dA, nA, xyA, dB, nB, xyB, max_ratio, matrixAB, matrixBA, guide_mode,
++      max_residual, out_pairs, max_pairs, out_num_matches);
++}
++
++extern "C" int aether_gpu_match_last_error(char* buf, int cap) {
++#if !defined(PWOFFICIAL_MATCH_NO_METAL)
++  if (!UseDawn()) return pwmetal_gpu_match_last_error(buf, cap);
++#endif
++  return pwdawn_gpu_match_last_error(buf, cap);
++}
++
++// Flag setters: both backends, always (cheap atomics; keeps scheduling
++// state coherent whichever backend executes).
++extern "C" void aether_match_set_ab_phase(int phase) {
++  pwdawn_match_set_ab_phase(phase);
++#if !defined(PWOFFICIAL_MATCH_NO_METAL)
++  pwmetal_match_set_ab_phase(phase);
++#endif
++}
++
++extern "C" void aether_gpu_match_set_capture_active(int active) {
++  pwdawn_gpu_match_set_capture_active(active);
++#if !defined(PWOFFICIAL_MATCH_NO_METAL)
++  pwmetal_gpu_match_set_capture_active(active);
++#endif
++}
++
++extern "C" void aether_gpu_match_set_preview_fps30(int on) {
++  pwdawn_gpu_match_set_preview_fps30(on);
++#if !defined(PWOFFICIAL_MATCH_NO_METAL)
++  pwmetal_gpu_match_set_preview_fps30(on);
++#endif
++}
++
++// Portable thermal feed (0 nominal · 1 fair · 2 serious · 3 critical). On
++// Apple the Dawn TU also reads NSProcessInfo through the weak platform hook;
++// the Metal TU reads NSProcessInfo itself, so only Dawn consumes this.
++extern "C" void aether_gpu_match_set_thermal_state(int state) {
++  pwdawn_gpu_match_set_thermal_state(state);
++}
++
++extern "C" int aether_gpu_match_backend_info(char* buf, int cap) {
++  if (!buf || cap <= 0) return 0;
++  if (!UseDawn()) {
++    const int n = std::snprintf(buf, (size_t)cap, "backend=metal(pwofficial_gpu_match.mm)");
++    return n < 0 ? 0 : (n < cap ? n : cap - 1);
++  }
++  return pwdawn_gpu_match_backend_info(buf, cap);
++}
+diff --git a/vendor/official_sfm/src/pwofficial_gpu_match_metal_rename.h b/vendor/official_sfm/src/pwofficial_gpu_match_metal_rename.h
+new file mode 100644
+index 0000000..2e878fc
+--- /dev/null
++++ b/vendor/official_sfm/src/pwofficial_gpu_match_metal_rename.h
+@@ -0,0 +1,35 @@
++// pwofficial_gpu_match_metal_rename.h — backend-private names for the
++// shipped Metal matcher TU (pwofficial_gpu_match.mm).
++//
++// Force-included (`clang++ -include <this file>`) ONLY when compiling
++// pwofficial_gpu_match.mm. It renames that TU's exported C entry points to
++// pwmetal_* so the public aether_gpu_match_* ABI can be owned by the thin
++// dispatch layer (pwofficial_gpu_match_dispatch.cc) that selects Metal or
++// Dawn at runtime. The .mm SOURCE stays byte-identical (single-variable
++// discipline: the Metal TU's logic is not touched; only its symbol names
++// change, at the build-script level).
++//
++// Deliberately NOT renamed (shared words, defined once by the Metal TU on
++// iOS, accumulated by both backends):
++//   aether_match_gpu_ms / aether_match_sleep_ms / aether_match_chunks
++//   aether_gpu_match_get_capture_active  (dlsym'd by the Dart worker; both
++//                                         backends' flags are set together)
++#ifndef PWOFFICIAL_GPU_MATCH_METAL_RENAME_H
++#define PWOFFICIAL_GPU_MATCH_METAL_RENAME_H
++
++#define aether_gpu_match_gemm_pairs pwmetal_gpu_match_gemm_pairs
++#define aether_gpu_match_gemm_pairs_resident pwmetal_gpu_match_gemm_pairs_resident
++#define aether_gpu_match_descriptor_residency_invalidate \
++  pwmetal_gpu_match_descriptor_residency_invalidate
++#define aether_gpu_match_descriptor_residency_clear_session \
++  pwmetal_gpu_match_descriptor_residency_clear_session
++#define aether_gpu_match_descriptor_residency_stats \
++  pwmetal_gpu_match_descriptor_residency_stats
++#define aether_gpu_match_probe_batch pwmetal_gpu_match_probe_batch
++#define aether_gpu_match_gemm_pairs_guided pwmetal_gpu_match_gemm_pairs_guided
++#define aether_gpu_match_last_error pwmetal_gpu_match_last_error
++#define aether_match_set_ab_phase pwmetal_match_set_ab_phase
++#define aether_gpu_match_set_capture_active pwmetal_gpu_match_set_capture_active
++#define aether_gpu_match_set_preview_fps30 pwmetal_gpu_match_set_preview_fps30
++
++#endif  // PWOFFICIAL_GPU_MATCH_METAL_RENAME_H
+diff --git a/vendor/official_sfm/src/pwofficial_gpu_match_thermal_apple.mm b/vendor/official_sfm/src/pwofficial_gpu_match_thermal_apple.mm
+new file mode 100644
+index 0000000..e41f6c9
+--- /dev/null
++++ b/vendor/official_sfm/src/pwofficial_gpu_match_thermal_apple.mm
+@@ -0,0 +1,18 @@
++// pwofficial_gpu_match_thermal_apple.mm — Apple provider of the weak
++// platform hook consumed by the cross-platform Dawn matcher TU
++// (pwofficial_gpu_match_dawn.cc). Returns NSProcessInfo.thermalState on the
++// same 0..3 scale the C core uses for aether_sfm_set_thermal_state
++// (NSProcessInfoThermalStateNominal=0 · Fair=1 · Serious=2 · Critical=3), so
++// the Dawn backend's KNIFE-C chunk targets and duty-cycle gaps fire on
++// exactly the same states as the Metal TU's own NSProcessInfo reads.
++// Pure observation; no matcher logic lives here. Android/HarmonyOS builds
++// omit this file and feed aether_gpu_match_set_thermal_state instead.
++
++#import <Foundation/Foundation.h>
++
++extern "C" int pwofficial_platform_thermal_state(void) {
++  if (@available(iOS 11.0, macOS 10.10.3, *)) {
++    return (int)NSProcessInfo.processInfo.thermalState;
++  }
++  return 0;
++}
+diff --git a/vendor/official_sfm/tests/pwofficial_gpu_match_dawn_abi_test.cc b/vendor/official_sfm/tests/pwofficial_gpu_match_dawn_abi_test.cc
+new file mode 100644
+index 0000000..2722e77
+--- /dev/null
++++ b/vendor/official_sfm/tests/pwofficial_gpu_match_dawn_abi_test.cc
+@@ -0,0 +1,218 @@
++// pwofficial_gpu_match_dawn_abi_test.cc — exercises the Dawn matcher TU's
++// ABI surface that the parity suite / full gate do NOT reach, so no path
++// ships untested (silent-exit discipline):
++//   1. argument validation → rc 1 on every entry;
++//   2. probe_batch: K candidates of assorted sizes (incl. sub-128 and
++//      >8192-row-count edge cases) must report EXACTLY the per-pair mutual
++//      counts of gemm_pairs, across one or several submissions (cost-model
++//      grouping is forced through the chunk-target env by the caller);
++//   3. descriptor residency V1 (env OFFICIAL_AETHER_DESCRIPTOR_RESIDENCY_V1=1
++//      set by the caller): resident vs upload-per-call pairs byte-identical,
++//      stats report hits after the second call, invalidate/clear_session
++//      drop entries, and a generation bump replaces the stale table;
++//   4. guided validation (mode 0 / 3, missing points, residual <= 0 → rc 1).
++// usage: <fixture_dir (8192-ish H2 fixture)>
++// Exit 0 = all checks passed; prints ABI_TEST lines.
++
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++#include <vector>
++
++#include "fair_match_common.h"
++
++extern "C" {
++int pwdawn_gpu_match_gemm_pairs(const uint8_t*, int, const uint8_t*, int, double,
++                                uint32_t*, int, int*);
++int pwdawn_gpu_match_gemm_pairs_resident(uint64_t, uint32_t, uint32_t,
++                                         const uint8_t*, int, uint32_t, uint32_t,
++                                         const uint8_t*, int, double, uint32_t*,
++                                         int, int*);
++void pwdawn_gpu_match_descriptor_residency_invalidate(uint64_t, uint32_t);
++void pwdawn_gpu_match_descriptor_residency_clear_session(uint64_t);
++int pwdawn_gpu_match_descriptor_residency_stats(uint64_t, uint64_t*, uint64_t*,
++                                                uint64_t*, uint64_t*, uint64_t*,
++                                                uint64_t*, uint64_t*, uint64_t*,
++                                                uint64_t*);
++int pwdawn_gpu_match_probe_batch(const uint8_t*, int, const uint8_t* const*,
++                                 const int*, int, double, int*);
++int pwdawn_gpu_match_gemm_pairs_guided(const uint8_t*, int, const float*,
++                                       const uint8_t*, int, const float*, double,
++                                       const float*, const float*, int, float,
++                                       uint32_t*, int, int*);
++int pwdawn_gpu_match_last_error(char*, int);
++int pwdawn_gpu_match_backend_info(char*, int);
++}
++
++static int g_fail = 0;
++#define CHECK(cond, ...)                                              \
++  do {                                                                \
++    if (cond) {                                                       \
++      std::printf("ABI_TEST PASS " __VA_ARGS__);                      \
++      std::printf("\n");                                              \
++    } else {                                                          \
++      std::printf("ABI_TEST FAIL " __VA_ARGS__);                      \
++      std::printf("\n");                                              \
++      ++g_fail;                                                       \
++    }                                                                 \
++  } while (0)
++
++static std::string Digest(const std::vector<uint32_t>& p, int n) {
++  return fairmatch::Sha256Hex(p.data(), (size_t)n * 8);
++}
++
++int main(int argc, char** argv) {
++  if (argc != 2) {
++    std::fprintf(stderr, "usage: %s <fixture_dir>\n", argv[0]);
++    return 1;
++  }
++  const fairmatch::Fixture f = fairmatch::LoadFixture(argv[1]);
++  char info[512] = {0};
++  pwdawn_gpu_match_backend_info(info, sizeof(info));
++  std::printf("ABI_TEST backend %s\n", info);
++  const double ratio = 0.8;
++
++  // ── 1. argument validation ──
++  {
++    int n = -1;
++    uint32_t dummy[2];
++    CHECK(pwdawn_gpu_match_gemm_pairs(nullptr, 1, f.b.data(), 1, ratio, dummy, 1, &n) == 1 && n == 0,
++          "gemm_pairs null desc → rc1");
++    CHECK(pwdawn_gpu_match_gemm_pairs(f.a.data(), 0, f.b.data(), 1, ratio, dummy, 1, &n) == 1,
++          "gemm_pairs nA=0 → rc1");
++    CHECK(pwdawn_gpu_match_gemm_pairs(f.a.data(), 1, f.b.data(), 1, ratio, dummy, 0, &n) == 1,
++          "gemm_pairs max_pairs=0 with out → rc1");
++    int counts[1];
++    const uint8_t* dbs[1] = {f.b.data()};
++    int nbs[1] = {0};
++    CHECK(pwdawn_gpu_match_probe_batch(f.a.data(), 512, dbs, nbs, 1, ratio, counts) == 1,
++          "probe_batch nB=0 → rc1");
++    CHECK(pwdawn_gpu_match_probe_batch(f.a.data(), 512, dbs, nbs, 0, ratio, counts) == 1,
++          "probe_batch n_cands=0 → rc1");
++    std::vector<float> xy((size_t)f.na * 2, 0.0f), xyb((size_t)f.nb * 2, 0.0f);
++    float M[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
++    CHECK(pwdawn_gpu_match_gemm_pairs_guided(f.a.data(), (int)f.na, xy.data(), f.b.data(), (int)f.nb,
++                                             xyb.data(), ratio, M, M, 0, 1.0f, dummy, 1, &n) == 1,
++          "guided mode 0 → rc1");
++    CHECK(pwdawn_gpu_match_gemm_pairs_guided(f.a.data(), (int)f.na, xy.data(), f.b.data(), (int)f.nb,
++                                             xyb.data(), ratio, M, M, 3, 1.0f, dummy, 1, &n) == 1,
++          "guided mode 3 → rc1");
++    CHECK(pwdawn_gpu_match_gemm_pairs_guided(f.a.data(), (int)f.na, nullptr, f.b.data(), (int)f.nb,
++                                             xyb.data(), ratio, M, M, 1, 1.0f, dummy, 1, &n) == 1,
++          "guided null xy → rc1");
++    CHECK(pwdawn_gpu_match_gemm_pairs_guided(f.a.data(), (int)f.na, xy.data(), f.b.data(), (int)f.nb,
++                                             xyb.data(), ratio, M, M, 1, 0.0f, dummy, 1, &n) == 1,
++          "guided residual 0 → rc1");
++  }
++
++  // ── 2. probe batch vs per-pair counts ──
++  {
++    const int nA = 512;  // production probe subset size
++    std::vector<int> sizes = {(int)f.nb, 4000, 1000, 513, 512, 129, 128, 127, 64, 7, 1, 2500};
++    std::vector<const uint8_t*> dbs;
++    std::vector<int> nbs;
++    for (int s : sizes) {
++      if (s > (int)f.nb) s = (int)f.nb;
++      dbs.push_back(f.b.data());
++      nbs.push_back(s);
++    }
++    std::vector<int> expect(sizes.size(), -1);
++    for (size_t k = 0; k < sizes.size(); ++k) {
++      int n = 0;
++      const int rc = pwdawn_gpu_match_gemm_pairs(f.a.data(), nA, dbs[k], nbs[k], ratio, nullptr, 0, &n);
++      if (rc != 0) {
++        char e[256] = {0};
++        pwdawn_gpu_match_last_error(e, sizeof(e));
++        std::printf("ABI_TEST FAIL per-pair rc=%d (%s)\n", rc, e);
++        return 2;
++      }
++      expect[k] = n;
++    }
++    std::vector<int> counts(sizes.size(), -1);
++    const int rc = pwdawn_gpu_match_probe_batch(f.a.data(), nA, dbs.data(), nbs.data(), (int)sizes.size(),
++                                                ratio, counts.data());
++    char e[256] = {0};
++    pwdawn_gpu_match_last_error(e, sizeof(e));
++    CHECK(rc == 0, "probe_batch rc=%d %s", rc, e);
++    bool all = rc == 0;
++    for (size_t k = 0; k < sizes.size(); ++k) {
++      if (counts[k] != expect[k]) {
++        all = false;
++        std::printf("ABI_TEST   cand %zu nB=%d batch=%d per-pair=%d\n", k, nbs[k], counts[k], expect[k]);
++      }
++    }
++    CHECK(all, "probe_batch counts == per-pair counts for %zu candidates (sum=%d)", sizes.size(),
++          [&] { int s = 0; for (int c : expect) s += c; return s; }());
++  }
++
++  // ── 3. descriptor residency ──
++  {
++    const bool enabled = [] {
++      const char* v = std::getenv("OFFICIAL_AETHER_DESCRIPTOR_RESIDENCY_V1");
++      return v && v[0] == '1' && v[1] == '\0';
++    }();
++    const int cap = (int)std::min(f.na, f.nb);
++    std::vector<uint32_t> p0((size_t)cap * 2), p1((size_t)cap * 2), p2((size_t)cap * 2);
++    int n0 = 0, n1 = 0, n2 = 0;
++    CHECK(pwdawn_gpu_match_gemm_pairs(f.a.data(), (int)f.na, f.b.data(), (int)f.nb, ratio, p0.data(), cap, &n0) == 0,
++          "plain gemm_pairs rc0 (n=%d)", n0);
++    const uint64_t nonce = 0x5eed1234u;
++    CHECK(pwdawn_gpu_match_gemm_pairs_resident(nonce, 7, 1, f.a.data(), (int)f.na, 9, 1, f.b.data(), (int)f.nb,
++                                               ratio, p1.data(), cap, &n1) == 0,
++          "resident #1 rc0 (n=%d)", n1);
++    CHECK(pwdawn_gpu_match_gemm_pairs_resident(nonce, 7, 1, f.a.data(), (int)f.na, 9, 1, f.b.data(), (int)f.nb,
++                                               ratio, p2.data(), cap, &n2) == 0,
++          "resident #2 rc0 (n=%d)", n2);
++    CHECK(n0 == n1 && n1 == n2 && Digest(p0, n0) == Digest(p1, n1) && Digest(p1, n1) == Digest(p2, n2),
++          "plain == resident#1 == resident#2 (sha %s)", Digest(p0, n0).substr(0, 12).c_str());
++    uint64_t hits = 0, misses = 0, ev = 0, stale = 0, up = 0, resb = 0, ents = 0, af = 0, dr = 0;
++    const int have = pwdawn_gpu_match_descriptor_residency_stats(nonce, &hits, &misses, &ev, &stale, &up,
++                                                                &resb, &ents, &af, &dr);
++    std::printf("ABI_TEST residency enabled=%d have=%d hits=%llu misses=%llu ev=%llu stale=%llu "
++                "upload=%llu resident=%llu entries=%llu allocfail=%llu resets=%llu\n",
++                (int)enabled, have, (unsigned long long)hits, (unsigned long long)misses,
++                (unsigned long long)ev, (unsigned long long)stale, (unsigned long long)up,
++                (unsigned long long)resb, (unsigned long long)ents, (unsigned long long)af,
++                (unsigned long long)dr);
++    if (enabled) {
++      CHECK(have == 1 && hits == 2 && misses == 2 && ents == 2 && resb > 0, "residency stats after two calls: hits=2 misses=2 entries=2");
++      // generation bump replaces the stale table (frame 9 gen 2), same result
++      CHECK(pwdawn_gpu_match_gemm_pairs_resident(nonce, 7, 1, f.a.data(), (int)f.na, 9, 2, f.b.data(), (int)f.nb,
++                                                 ratio, p2.data(), cap, &n2) == 0 && n2 == n0 && Digest(p2, n2) == Digest(p0, n0),
++            "generation bump → same pairs");
++      pwdawn_gpu_match_descriptor_residency_stats(nonce, &hits, &misses, &ev, &stale, &up, &resb, &ents, &af, &dr);
++      CHECK(stale == 1 && ents == 2, "stale replacement counted (stale=%llu entries=%llu)", (unsigned long long)stale, (unsigned long long)ents);
++      pwdawn_gpu_match_descriptor_residency_invalidate(nonce, 7);
++      pwdawn_gpu_match_descriptor_residency_stats(nonce, &hits, &misses, &ev, &stale, &up, &resb, &ents, &af, &dr);
++      CHECK(ents == 1, "invalidate frame 7 → entries=1 (%llu)", (unsigned long long)ents);
++      CHECK(pwdawn_gpu_match_gemm_pairs_resident(nonce, 7, 1, f.a.data(), (int)f.na, 9, 2, f.b.data(), (int)f.nb,
++                                                 ratio, p2.data(), cap, &n2) == 0 && Digest(p2, n2) == Digest(p0, n0),
++            "re-upload after invalidate → same pairs");
++      pwdawn_gpu_match_descriptor_residency_clear_session(nonce);
++      CHECK(pwdawn_gpu_match_descriptor_residency_stats(nonce, &hits, &misses, &ev, &stale, &up, &resb, &ents, &af, &dr) == 0,
++            "clear_session → session gone");
++    } else {
++      CHECK(have == 0, "residency disabled → no session recorded");
++    }
++  }
++
++  // ── 4. guided smoke on identity geometry (mode 2, huge residual) ==
++  //     plain vs guided differ only by the distance domain, so the guided
++  //     count must be > 0 and every guided pair must be a top-1 mutual match
++  //     under the L2 gate — here we just assert rc 0 and non-empty.
++  {
++    std::vector<float> xa((size_t)f.na * 2, 0.0f), xb((size_t)f.nb * 2, 0.0f);
++    float M[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
++    const int cap = (int)std::min(f.na, f.nb);
++    std::vector<uint32_t> p((size_t)cap * 2);
++    int n = 0;
++    const int rc = pwdawn_gpu_match_gemm_pairs_guided(f.a.data(), (int)f.na, xa.data(), f.b.data(), (int)f.nb,
++                                                      xb.data(), ratio, M, M, 2, 1e6f, p.data(), cap, &n);
++    CHECK(rc == 0 && n > 0, "guided mode2 identity/open gate rc=%d n=%d", rc, n);
++  }
++
++  std::printf("ABI_TEST %s (%d failures)\n", g_fail ? "FAIL" : "PASS", g_fail);
++  return g_fail ? 3 : 0;
++}
+diff --git a/vendor/official_sfm/tests/pwofficial_gpu_match_dawn_fullgate.sh b/vendor/official_sfm/tests/pwofficial_gpu_match_dawn_fullgate.sh
+new file mode 100755
+index 0000000..76dfccc
+--- /dev/null
++++ b/vendor/official_sfm/tests/pwofficial_gpu_match_dawn_fullgate.sh
+@@ -0,0 +1,57 @@
++#!/usr/bin/env bash
++# pwofficial_gpu_match_dawn_fullgate.sh — the 2026-09-02 full gate
++# (~/Developer/pw_h2_fullgate_20260902/run_fullgate.sh) re-pointed at the
++# production Dawn TU host arm: every temporal K12 pair of a real 12MP session
++# db, native Metal (shipped TU) vs the Dawn TU, ordered-pairs SHA-256 compared
++# byte-for-byte. Differences from the original script: the bin dir and the
++# frame library are parameters (the original hard-codes both and shares one
++# frame dir across dbs), and the environment is passed through untouched so
++# backend variants (tiled / chunk sizes) can be gated with the same script.
++#
++# usage: BIN=<build_dir> FULLGATE_DB=<db> [MAXF=<n>] [LABEL=<name>] \
++#          pwofficial_gpu_match_dawn_fullgate.sh
++set -euo pipefail
++BIN="${BIN:?build dir with fair_match_extract_fixture/native_arm/portable_arm}"
++DB="${FULLGATE_DB:?session db}"
++MAXF="${MAXF:-146}"
++LABEL="${LABEL:-dawntu}"
++ROOT="${FULLGATE_ROOT:-$HOME/Developer/pw_h2_fullgate_20260902}"
++DBNAME=$(basename "$DB" .db)
++LIB="${FULLGATE_LIB:-$ROOT/frames_$DBNAME}"
++PAIR="$ROOT/pairwork_$LABEL.$$"
++LOG="$ROOT/fullgate_${LABEL}_${DBNAME}.log"
++mkdir -p "$LIB" "$PAIR"
++: > "$LOG"
++echo "BIN=$BIN DB=$DB LIB=$LIB LABEL=$LABEL env: OFFICIAL_AETHER_MATCH_DAWN_KERNEL=${OFFICIAL_AETHER_MATCH_DAWN_KERNEL:-} OFFICIAL_AETHER_MATCH_CHUNK_TARGET_MS=${OFFICIAL_AETHER_MATCH_CHUNK_TARGET_MS:-}" | tee -a "$LOG"
++
++# 1) each frame's descriptors extracted once ((i,i) pair; a.u8 is the frame)
++for ((i=1;i<=MAXF;i++)); do
++  d="$LIB/f$i"
++  [ -s "$d/a.u8" ] && continue
++  mkdir -p "$d"
++  "$BIN/fair_match_extract_fixture" "$DB" "$d" "$i" "$i" >/dev/null 2>&1 || { echo "extract-skip $i" >> "$LOG"; rm -rf "$d"; }
++done
++
++# 2) temporal K12 pairs: i vs i-1..i-12; native and Dawn each 1 rep; compare pairs sha
++pass=0; fail=0; skip=0
++for ((i=2;i<=MAXF;i++)); do
++  for ((j=i-1;j>=i-12 && j>=1;j--)); do
++    [ -s "$LIB/f$i/a.u8" ] && [ -s "$LIB/f$j/a.u8" ] || { skip=$((skip+1)); continue; }
++    rm -rf "$PAIR"; mkdir -p "$PAIR/n" "$PAIR/p"
++    cp "$LIB/f$i/a.u8" "$PAIR/a.u8"; cp "$LIB/f$j/a.u8" "$PAIR/b.u8"
++    python3 - "$LIB/f$i/manifest.json" "$LIB/f$j/manifest.json" "$PAIR" <<'PYEOF'
++import json,sys,hashlib
++mi=json.load(open(sys.argv[1])); mj=json.load(open(sys.argv[2])); d=sys.argv[3]
++sha=lambda f: hashlib.sha256(open(f,'rb').read()).hexdigest()
++json.dump({"rows_a":mi["rows_a"],"rows_b":mj["rows_a"],
++           "sha256_a":sha(d+"/a.u8"),"sha256_b":sha(d+"/b.u8"),"cols":128},
++          open(d+"/manifest.json","w"))
++PYEOF
++    na=$("$BIN/fair_match_native_arm" "$PAIR" "$PAIR/n" 1 0 0.7 2>/dev/null | grep -o '"pairs_sha256":"[a-f0-9]*"' | head -1)
++    po=$("$BIN/fair_match_portable_arm" "$PAIR" "$PAIR/p" 1 0 0.7 "$LABEL" 2>"$PAIR/p/err.log" | grep -o '"pairs_sha256":"[a-f0-9]*"' | head -1)
++    if [ -n "$na" ] && [ "$na" = "$po" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "MISMATCH i=$i j=$j na=$na po=$po err=$(tail -c 300 "$PAIR/p/err.log" | tr '\n' ' ')" >> "$LOG"; fi
++  done
++done
++rm -rf "$PAIR"
++echo "FULLGATE label=$LABEL db=$DBNAME pass=$pass fail=$fail skip=$skip" | tee -a "$LOG"
++[ "$fail" -eq 0 ]
+diff --git a/vendor/official_sfm/tests/pwofficial_gpu_match_dawn_host_arm.cc b/vendor/official_sfm/tests/pwofficial_gpu_match_dawn_host_arm.cc
+new file mode 100644
+index 0000000..ce4959a
+--- /dev/null
++++ b/vendor/official_sfm/tests/pwofficial_gpu_match_dawn_host_arm.cc
+@@ -0,0 +1,159 @@
++// pwofficial_gpu_match_dawn_host_arm.cc — host test arm that drives the
++// PRODUCTION Dawn matcher TU (pwofficial_gpu_match_dawn.cc, compiled with
++// -DPWOFFICIAL_DAWN_HOST_TEST=1) through its C ABI on an H2 fixture, with the
++// same argv / output contract as the harness's fair_match_portable_arm so the
++// frozen parity suite (fair_match_parity_suite.sh, 19 triple goldens) and the
++// 696-pair full gate (run_fullgate.sh) can be pointed at it unchanged.
++//
++// usage: <fixture_dir> <out_dir> <reps> <warmup> <ratio> <label>
++//   label is free text (e.g. dawntu); env selects the backend variant:
++//   OFFICIAL_AETHER_MATCH_DAWN_KERNEL=tiled forces the V1/V2 fallback,
++//   OFFICIAL_AETHER_MATCH_CHUNK_TARGET_MS=0 forces the monolithic submit.
++// Output: <out_dir>/portable_<label>_pairs.bin + one PORTABLE_RESULT JSON line
++// with pairs / OutAB / OutBA SHA-256 digests (triple golden) and timing.
++
++#include <chrono>
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <string>
++#include <vector>
++
++#include "fair_match_common.h"
++
++static double fairmatch_now_ms() {
++  using namespace std::chrono;
++  return duration<double, std::milli>(steady_clock::now().time_since_epoch())
++      .count();
++}
++
++extern "C" int pwdawn_gpu_match_gemm_pairs(const uint8_t* dA, int nA,
++                                           const uint8_t* dB, int nB,
++                                           double max_ratio,
++                                           uint32_t* out_pairs, int max_pairs,
++                                           int* out_num_matches);
++extern "C" int pwdawn_gpu_match_last_error(char* buf, int cap);
++extern "C" int pwdawn_gpu_match_backend_info(char* buf, int cap);
++extern "C" void pwdawn_gpu_match_debug_last_dirmaps(const int32_t** ab, int* na,
++                                                    const int32_t** ba, int* nb);
++extern "C" void pwdawn_gpu_match_debug_last_timing(double* upload_ms,
++                                                   double* submit_ms,
++                                                   double* readback_ms);
++// Observation globals defined by the TU in the host build (KNIFE-C chunk
++// count / GPU ms / duty-cycle sleep, accumulated across calls).
++extern "C" int aether_match_chunks;
++extern "C" double aether_match_gpu_ms;
++extern "C" double aether_match_sleep_ms;
++
++int main(int argc, char** argv) {
++  if (argc != 7) {
++    std::fprintf(stderr,
++                 "usage: %s <fixture_dir> <out_dir> <reps> <warmup> <ratio> "
++                 "<label>\n",
++                 argv[0]);
++    return 1;
++  }
++  const std::string fixture_dir = argv[1];
++  const std::string out_dir = argv[2];
++  const int reps = std::atoi(argv[3]);
++  const int warmup = std::atoi(argv[4]);
++  const double ratio = std::atof(argv[5]);
++  const std::string label = argv[6];
++
++  const fairmatch::Fixture f = fairmatch::LoadFixture(fixture_dir);
++  if (f.na == 0 || f.nb == 0) {
++    // Production contract: empty sides never reach the matcher (rc=1).
++    fairmatch::WriteFileBytes(out_dir + "/portable_" + label + "_pairs.bin", "",
++                              0);
++    std::printf(
++        "PORTABLE_RESULT {\"arm\":\"portable_wgsl_%s\",\"count\":0,"
++        "\"pairs_sha256\":\"%s\",\"empty_input_early_return\":true}\n",
++        label.c_str(), fairmatch::Sha256Hex("", 0).c_str());
++    return 0;
++  }
++
++  char info[512] = {0};
++  pwdawn_gpu_match_backend_info(info, sizeof(info));
++  std::printf("PORTABLE_ARM tu=pwofficial_gpu_match_dawn label=%s na=%u nb=%u "
++              "ratio=%.3f %s\n",
++              label.c_str(), f.na, f.nb, ratio, info);
++
++  const int cap = (int)(f.na < f.nb ? f.na : f.nb);
++  std::vector<uint32_t> pairs((size_t)cap * 2);
++  std::vector<uint32_t> final_pairs;
++  std::vector<double> wall, submit_v, upload_v, readback_v;
++  std::string digest, dir_ab, dir_ba;
++  int count = -1;
++  for (int r = 0; r < warmup + reps; ++r) {
++    const bool record = r >= warmup;
++    const double t0 = fairmatch_now_ms();
++    const int chunks_before = aether_match_chunks;
++    int n = 0;
++    const int rc = pwdawn_gpu_match_gemm_pairs(f.a.data(), (int)f.na, f.b.data(),
++                                               (int)f.nb, ratio, pairs.data(),
++                                               cap, &n);
++    const double t1 = fairmatch_now_ms();
++    if (rc != 0) {
++      char err[256] = {0};
++      pwdawn_gpu_match_last_error(err, sizeof(err));
++      std::fprintf(stderr, "FAIL pwdawn_gpu_match_gemm_pairs rc=%d: %s\n", rc,
++                   err);
++      return 20 + rc;
++    }
++    const int32_t* ab = nullptr;
++    const int32_t* ba = nullptr;
++    int na = 0, nb = 0;
++    pwdawn_gpu_match_debug_last_dirmaps(&ab, &na, &ba, &nb);
++    if (na != (int)f.na || nb != (int)f.nb) {
++      std::fprintf(stderr, "FAIL direction map sizes %d/%d vs %u/%u\n", na, nb,
++                   f.na, f.nb);
++      return 35;
++    }
++    // Self-consistency: the TU's emitted pairs must equal the shared host
++    // reference cross-check over its own direction maps.
++    const std::vector<uint32_t> ref =
++        fairmatch::MutualPairs(ab, f.na, ba, f.nb);
++    if ((int)(ref.size() / 2) != n ||
++        std::memcmp(ref.data(), pairs.data(), ref.size() * 4) != 0) {
++      std::fprintf(stderr, "FAIL TU pairs != host MutualPairs(dirmaps)\n");
++      return 36;
++    }
++    const std::string d_ab = fairmatch::Sha256Hex(ab, (size_t)na * 4);
++    const std::string d_ba = fairmatch::Sha256Hex(ba, (size_t)nb * 4);
++    const std::string d = fairmatch::Sha256Hex(pairs.data(), (size_t)n * 8);
++    double up = 0, sub = 0, rb = 0;
++    pwdawn_gpu_match_debug_last_timing(&up, &sub, &rb);
++    if (record) {
++      if (count < 0) {
++        count = n;
++        digest = d;
++        dir_ab = d_ab;
++        dir_ba = d_ba;
++        final_pairs.assign(pairs.begin(), pairs.begin() + (size_t)n * 2);
++      } else if (n != count || d != digest || d_ab != dir_ab || d_ba != dir_ba) {
++        std::fprintf(stderr, "FAIL output not deterministic across reps\n");
++        return 32;
++      }
++      wall.push_back(t1 - t0);
++      upload_v.push_back(up);
++      submit_v.push_back(sub);
++      readback_v.push_back(rb);
++      std::printf("  rep complete_ms=%.3f upload=%.3f submit=%.3f readback=%.3f "
++                  "chunks=%d count=%d\n",
++                  t1 - t0, up, sub, rb, aether_match_chunks - chunks_before, n);
++    }
++  }
++  fairmatch::WriteFileBytes(out_dir + "/portable_" + label + "_pairs.bin",
++                            final_pairs.data(), final_pairs.size() * 4);
++  std::printf(
++      "PORTABLE_RESULT {\"arm\":\"portable_wgsl_%s\",\"count\":%d,"
++      "\"pairs_sha256\":\"%s\",\"wall_ms\":[%s],\"p50_ms\":%.3f,"
++      "\"p95_ms\":%.3f,\"gpu_p50_ms\":%.3f,\"upload_p50_ms\":%.3f,"
++      "\"readback_p50_ms\":%.3f,\"outab_sha256\":\"%s\",\"outba_sha256\":\"%s\"}\n",
++      label.c_str(), count, digest.c_str(), fairmatch::JoinMs(wall).c_str(),
++      fairmatch::Percentile(wall, 0.5), fairmatch::Percentile(wall, 0.95),
++      fairmatch::Percentile(submit_v, 0.5), fairmatch::Percentile(upload_v, 0.5),
++      fairmatch::Percentile(readback_v, 0.5), dir_ab.c_str(), dir_ba.c_str());
++  return 0;
++}
+diff --git a/vendor/official_sfm/tests/pwofficial_gpu_match_dawn_host_build.sh b/vendor/official_sfm/tests/pwofficial_gpu_match_dawn_host_build.sh
+new file mode 100755
+index 0000000..d3b4d11
+--- /dev/null
++++ b/vendor/official_sfm/tests/pwofficial_gpu_match_dawn_host_build.sh
+@@ -0,0 +1,84 @@
++#!/usr/bin/env bash
++# pwofficial_gpu_match_dawn_host_build.sh — builds the host gate binaries for
++# the production Dawn matcher TU into $1:
++#   fair_match_portable_arm   = pwofficial_gpu_match_dawn_host_arm (drives the
++#                               PRODUCTION TU pwofficial_gpu_match_dawn.cc via
++#                               its C ABI; same argv/output contract as the H2
++#                               harness arm so fair_match_parity_suite.sh and
++#                               run_fullgate.sh work unchanged)
++#   fair_match_native_arm     = H2 native Metal arm linking the shipped Metal
++#                               TU verbatim (reference)
++#   fair_match_gen_fixture / fair_match_extract_fixture = H2 fixture tools
++#   pwofficial_gpu_match_guided_compare = Metal-v1 vs Dawn guided comparator
++# Records source + binary SHA-256 into $OUT/build_identity.txt.
++set -euo pipefail
++
++here="$(cd "$(dirname "$0")" && pwd)"
++ROOT="$(cd "$here/.." && pwd)"                       # vendor/official_sfm
++AETHER="${AETHER_ROOT:-$HOME/Developer/Aether3D-cross}"
++TOOLS="$AETHER/aether_cpp/experiments/portable_frontend_pareto/tools"
++OUT="${1:-/private/tmp/pwofficial-dawn-host/build}"
++mkdir -p "$OUT"
++
++DAWN_INC="$AETHER/aether_cpp/third_party/dawn/include"
++DAWN_GEN="$AETHER/aether_cpp/build/third_party/dawn/gen/include"
++DAWN_LIB="$AETHER/aether_cpp/build/third_party/dawn/src/dawn/native/libwebgpu_dawn.a"
++METAL_TU="$ROOT/src/pwofficial_gpu_match.mm"
++DAWN_TU="$ROOT/src/pwofficial_gpu_match_dawn.cc"
++DAWN_FRAMEWORKS="-framework CoreFoundation -framework Foundation -framework IOSurface -framework QuartzCore -framework Cocoa -framework IOKit -framework Metal"
++
++CXX="xcrun clang++ -O2 -std=c++17 -arch arm64"
++
++$CXX -std=c++20 "$TOOLS/fair_match_extract_fixture.cc" -lsqlite3 \
++  -o "$OUT/fair_match_extract_fixture"
++$CXX -std=c++20 "$TOOLS/fair_match_gen_fixture.cc" -o "$OUT/fair_match_gen_fixture"
++
++# Native reference arm: the shipped Metal TU, source untouched.
++$CXX -std=c++20 -I"$ROOT/include" -fobjc-arc \
++  "$TOOLS/fair_match_native_arm.mm" "$METAL_TU" \
++  -framework Metal -framework Foundation \
++  -o "$OUT/fair_match_native_arm"
++
++# Production Dawn TU (host test build: debug hooks on, observables defined
++# here because no Metal TU is linked).
++$CXX -fvisibility=hidden -DPWOFFICIAL_DAWN_HOST_TEST=1 \
++  -I"$DAWN_INC" -I"$DAWN_GEN" -I"$ROOT/include" \
++  -c "$DAWN_TU" -o "$OUT/pwofficial_gpu_match_dawn.host.o"
++$CXX -fobjc-arc -c "$ROOT/src/pwofficial_gpu_match_thermal_apple.mm" \
++  -o "$OUT/pwofficial_gpu_match_thermal_apple.o"
++$CXX -I"$TOOLS" "$here/pwofficial_gpu_match_dawn_host_arm.cc" \
++  "$OUT/pwofficial_gpu_match_dawn.host.o" "$OUT/pwofficial_gpu_match_thermal_apple.o" \
++  "$DAWN_LIB" $DAWN_FRAMEWORKS \
++  -o "$OUT/fair_match_portable_arm"
++
++# Guided comparator: Metal TU (as shipped, exports aether_gpu_match_*) +
++# Dawn TU (pwdawn_*, observables extern = the iOS configuration).
++$CXX -fvisibility=hidden -DPWOFFICIAL_DAWN_HOST_TEST=1 \
++  -DPWOFFICIAL_DAWN_OBSERVABLES_EXTERN=1 \
++  -I"$DAWN_INC" -I"$DAWN_GEN" -I"$ROOT/include" \
++  -c "$DAWN_TU" -o "$OUT/pwofficial_gpu_match_dawn.hostx.o"
++$CXX -I"$TOOLS" -I"$ROOT/include" -fobjc-arc \
++  "$here/pwofficial_gpu_match_guided_compare.mm" "$METAL_TU" \
++  "$OUT/pwofficial_gpu_match_dawn.hostx.o" "$OUT/pwofficial_gpu_match_thermal_apple.o" \
++  "$DAWN_LIB" $DAWN_FRAMEWORKS \
++  -o "$OUT/pwofficial_gpu_match_guided_compare"
++
++{
++  echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
++  echo "clang: $(xcrun clang++ --version | head -1)"
++  echo "== sources =="
++  shasum -a 256 "$DAWN_TU" "$METAL_TU" "$ROOT/src/pwofficial_gpu_match_dispatch.cc" \
++    "$ROOT/src/pwofficial_gpu_match_metal_rename.h" \
++    "$here/pwofficial_gpu_match_dawn_host_arm.cc" \
++    "$here/pwofficial_gpu_match_guided_compare.mm" \
++    "$TOOLS/fair_match_common.h" "$TOOLS/fair_match_native_arm.mm" \
++    "$TOOLS/fair_match_gen_fixture.cc" "$TOOLS/fair_match_extract_fixture.cc"
++  echo "== dawn =="
++  shasum -a 256 "$DAWN_LIB" | awk '{print $1"  libwebgpu_dawn.a (host)"}'
++  echo "== binaries =="
++  shasum -a 256 "$OUT/fair_match_extract_fixture" "$OUT/fair_match_gen_fixture" \
++    "$OUT/fair_match_native_arm" "$OUT/fair_match_portable_arm" \
++    "$OUT/pwofficial_gpu_match_guided_compare"
++} > "$OUT/build_identity.txt"
++cat "$OUT/build_identity.txt"
++echo "BUILD_OK $OUT"
+diff --git a/vendor/official_sfm/tests/pwofficial_gpu_match_guided_compare.mm b/vendor/official_sfm/tests/pwofficial_gpu_match_guided_compare.mm
+new file mode 100644
+index 0000000..aed5e72
+--- /dev/null
++++ b/vendor/official_sfm/tests/pwofficial_gpu_match_guided_compare.mm
+@@ -0,0 +1,194 @@
++// pwofficial_gpu_match_guided_compare.mm — guided matcher comparator: the
++// shipped Metal TU (aether_gpu_match_gemm_pairs_guided, default v1 two-pass
++// path) vs the production Dawn TU (pwdawn_gpu_match_gemm_pairs_guided) on
++// one guided fixture (see pwofficial_gpu_match_guided_fixtures.py).
++//
++// Reports the two ordered pair lists' digests, the symmetric difference, and
++// for every A row where the two disagree, the boundary evidence: the exact
++// (double precision) residual ratio r = residual/maxResidual of every
++// candidate involved (both directions), so a divergence can be classified as
++// boundary-confined (min |r − 1| tiny) or structural. Expected outcome per
++// the Metal TU header: divergences only within ~1e-3 relative of the
++// threshold, ±1 match/pair scale.
++//
++// usage: <fixture_dir> <out_dir>
++// Env: OFFICIAL_AETHER_MATCH_V2 / _V2_GUIDED_FUSED default (guided → Metal v1).
++
++#include <cmath>
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <set>
++#include <string>
++#include <utility>
++#include <vector>
++
++#include "fair_match_common.h"
++
++extern "C" int aether_gpu_match_gemm_pairs_guided(
++    const uint8_t* dA, int nA, const float* xyA, const uint8_t* dB, int nB,
++    const float* xyB, double max_ratio, const float* matrixAB,
++    const float* matrixBA, int guide_mode, float max_residual,
++    uint32_t* out_pairs, int max_pairs, int* out_num_matches);
++extern "C" int pwdawn_gpu_match_gemm_pairs_guided(
++    const uint8_t* dA, int nA, const float* xyA, const uint8_t* dB, int nB,
++    const float* xyB, double max_ratio, const float* matrixAB,
++    const float* matrixBA, int guide_mode, float max_residual,
++    uint32_t* out_pairs, int max_pairs, int* out_num_matches);
++extern "C" int pwdawn_gpu_match_last_error(char* buf, int cap);
++extern "C" int aether_gpu_match_last_error(char* buf, int cap);
++extern "C" void pwdawn_gpu_match_debug_last_dirmaps(const int32_t** ab, int* na,
++                                                    const int32_t** ba, int* nb);
++
++namespace {
++
++std::vector<float> ReadF32(const std::string& p) {
++  std::vector<uint8_t> b = fairmatch::ReadFileBytes(p);
++  std::vector<float> v(b.size() / 4);
++  std::memcpy(v.data(), b.data(), v.size() * 4);
++  return v;
++}
++
++double JsonNumber(const std::string& text, const char* key, double dflt) {
++  const std::string needle = std::string("\"") + key + "\":";
++  size_t at = text.find(needle);
++  if (at == std::string::npos) return dflt;
++  at += needle.size();
++  while (at < text.size() && text[at] == ' ') ++at;
++  return std::strtod(text.c_str() + at, nullptr);
++}
++
++// Exact-arithmetic residual ratio of candidate (q, d) under matrix M for the
++// given mode (q = query point, d = database point, M = query→database).
++double ResidualRatio(int mode, const double* M, double qx, double qy,
++                     double dx, double dy, double maxResidual) {
++  if (mode == 1) {
++    const double p1[3] = {qx, qy, 1.0}, p2[3] = {dx, dy, 1.0};
++    const double line2[3] = {M[0] * p1[0] + M[1] * p1[1] + M[2],
++                             M[3] * p1[0] + M[4] * p1[1] + M[5],
++                             M[6] * p1[0] + M[7] * p1[1] + M[8]};
++    const double line1[3] = {M[0] * p2[0] + M[3] * p2[1] + M[6],
++                             M[1] * p2[0] + M[4] * p2[1] + M[7],
++                             M[2] * p2[0] + M[5] * p2[1] + M[8]};
++    const double nom = p2[0] * line2[0] + p2[1] * line2[1] + p2[2] * line2[2];
++    const double denom = line2[0] * line2[0] + line2[1] * line2[1] +
++                         line1[0] * line1[0] + line1[1] * line1[1];
++    if (denom <= 1e-12) return INFINITY;
++    return (nom * nom / denom) / maxResidual;
++  }
++  const double hx = M[0] * qx + M[1] * qy + M[2];
++  const double hy = M[3] * qx + M[4] * qy + M[5];
++  const double hz = M[6] * qx + M[7] * qy + M[8];
++  if (std::fabs(hz) <= 1e-8) return INFINITY;
++  const double ex = hx / hz - dx, ey = hy / hz - dy;
++  return (ex * ex + ey * ey) / maxResidual;
++}
++
++}  // namespace
++
++int main(int argc, char** argv) {
++  if (argc != 3) {
++    std::fprintf(stderr, "usage: %s <fixture_dir> <out_dir>\n", argv[0]);
++    return 1;
++  }
++  const std::string dir = argv[1], out = argv[2];
++  const fairmatch::Fixture f = fairmatch::LoadFixture(dir);
++  const std::vector<float> xyA = ReadF32(dir + "/xy_a.f32");
++  const std::vector<float> xyB = ReadF32(dir + "/xy_b.f32");
++  const std::vector<float> mAB = ReadF32(dir + "/mat_ab.f32");
++  const std::vector<float> mBA = ReadF32(dir + "/mat_ba.f32");
++  if (xyA.size() != (size_t)f.na * 2 || xyB.size() != (size_t)f.nb * 2 ||
++      mAB.size() != 9 || mBA.size() != 9) {
++    std::fprintf(stderr, "FAIL guided fixture shape\n");
++    return 2;
++  }
++  std::vector<uint8_t> gj = fairmatch::ReadFileBytes(dir + "/guided.json");
++  const std::string gtext(gj.begin(), gj.end());
++  const int mode = (int)JsonNumber(gtext, "mode", 0);
++  const float maxResidual = (float)JsonNumber(gtext, "max_residual", 0.0);
++  const double ratio = JsonNumber(gtext, "ratio", 0.8);
++  if (mode < 1 || mode > 2 || maxResidual <= 0.0f) {
++    std::fprintf(stderr, "FAIL guided.json mode/max_residual\n");
++    return 2;
++  }
++  const int cap = (int)std::min(f.na, f.nb);
++  std::vector<uint32_t> pm((size_t)cap * 2), pd((size_t)cap * 2);
++  int nm = 0, nd = 0;
++  int rc = aether_gpu_match_gemm_pairs_guided(
++      f.a.data(), (int)f.na, xyA.data(), f.b.data(), (int)f.nb, xyB.data(),
++      ratio, mAB.data(), mBA.data(), mode, maxResidual, pm.data(), cap, &nm);
++  if (rc != 0) {
++    char e[256] = {0};
++    aether_gpu_match_last_error(e, sizeof(e));
++    std::fprintf(stderr, "FAIL metal guided rc=%d %s\n", rc, e);
++    return 10 + rc;
++  }
++  rc = pwdawn_gpu_match_gemm_pairs_guided(
++      f.a.data(), (int)f.na, xyA.data(), f.b.data(), (int)f.nb, xyB.data(),
++      ratio, mAB.data(), mBA.data(), mode, maxResidual, pd.data(), cap, &nd);
++  if (rc != 0) {
++    char e[256] = {0};
++    pwdawn_gpu_match_last_error(e, sizeof(e));
++    std::fprintf(stderr, "FAIL dawn guided rc=%d %s\n", rc, e);
++    return 20 + rc;
++  }
++  pm.resize((size_t)nm * 2);
++  pd.resize((size_t)nd * 2);
++  fairmatch::WriteFileBytes(out + "/metal_pairs.bin", pm.data(), pm.size() * 4);
++  fairmatch::WriteFileBytes(out + "/dawn_pairs.bin", pd.data(), pd.size() * 4);
++  const std::string sm = fairmatch::Sha256Hex(pm.data(), pm.size() * 4);
++  const std::string sd = fairmatch::Sha256Hex(pd.data(), pd.size() * 4);
++
++  std::set<std::pair<uint32_t, uint32_t>> SM, SD;
++  for (int i = 0; i < nm; ++i) SM.insert({pm[2 * i], pm[2 * i + 1]});
++  for (int i = 0; i < nd; ++i) SD.insert({pd[2 * i], pd[2 * i + 1]});
++  std::vector<std::pair<uint32_t, uint32_t>> onlyM, onlyD;
++  for (const auto& p : SM) if (!SD.count(p)) onlyM.push_back(p);
++  for (const auto& p : SD) if (!SM.count(p)) onlyD.push_back(p);
++  const size_t inter = SM.size() - onlyM.size();
++  const double jaccard = (SM.size() + SD.size() - inter) > 0
++                             ? (double)inter / (double)(SM.size() + SD.size() - inter)
++                             : 1.0;
++
++  // Boundary evidence: for every pair in the symmetric difference, the exact
++  // residual ratio of that candidate in both directions.
++  double MABd[9], MBAd[9];
++  for (int i = 0; i < 9; ++i) { MABd[i] = mAB[i]; MBAd[i] = mBA[i]; }
++  double min_dist = INFINITY, max_dist = 0.0;
++  int n_boundary_1e3 = 0, n_boundary_1e2 = 0, n_diff = 0;
++  std::string diff_json;
++  auto note = [&](const char* side, uint32_t i, uint32_t j) {
++    const double rAB = ResidualRatio(mode, MABd, xyA[2 * i], xyA[2 * i + 1],
++                                     xyB[2 * j], xyB[2 * j + 1], maxResidual);
++    const double rBA = ResidualRatio(mode, MBAd, xyB[2 * j], xyB[2 * j + 1],
++                                     xyA[2 * i], xyA[2 * i + 1], maxResidual);
++    const double dist = std::min(std::fabs(rAB - 1.0), std::fabs(rBA - 1.0));
++    min_dist = std::min(min_dist, dist);
++    max_dist = std::max(max_dist, dist);
++    if (dist < 1e-3) ++n_boundary_1e3;
++    if (dist < 1e-2) ++n_boundary_1e2;
++    ++n_diff;
++    if (diff_json.size() < 4000) {
++      char b[200];
++      std::snprintf(b, sizeof(b), "%s{\"only\":\"%s\",\"i\":%u,\"j\":%u,\"rAB\":%.6g,\"rBA\":%.6g}",
++                    diff_json.empty() ? "" : ",", side, i, j, rAB, rBA);
++      diff_json += b;
++    }
++  };
++  for (const auto& p : onlyM) note("metal", p.first, p.second);
++  for (const auto& p : onlyD) note("dawn", p.first, p.second);
++
++  std::printf(
++      "GUIDED_COMPARE {\"fixture\":\"%s\",\"mode\":%d,\"max_residual\":%.9g,"
++      "\"na\":%u,\"nb\":%u,\"metal_count\":%d,\"dawn_count\":%d,"
++      "\"metal_sha256\":\"%s\",\"dawn_sha256\":\"%s\",\"identical\":%s,"
++      "\"only_metal\":%zu,\"only_dawn\":%zu,\"jaccard\":%.6f,"
++      "\"diff_min_rel_dist\":%.3g,\"diff_max_rel_dist\":%.3g,"
++      "\"diff_within_1e-3\":%d,\"diff_within_1e-2\":%d,\"diffs\":[%s]}\n",
++      dir.c_str(), mode, (double)maxResidual, f.na, f.nb, nm, nd, sm.c_str(),
++      sd.c_str(), sm == sd ? "true" : "false", onlyM.size(), onlyD.size(),
++      jaccard, n_diff ? min_dist : 0.0, n_diff ? max_dist : 0.0,
++      n_boundary_1e3, n_boundary_1e2, diff_json.c_str());
++  return 0;
++}
+diff --git a/vendor/official_sfm/tests/pwofficial_gpu_match_guided_fixtures.py b/vendor/official_sfm/tests/pwofficial_gpu_match_guided_fixtures.py
+new file mode 100755
+index 0000000..dec4eac
+--- /dev/null
++++ b/vendor/official_sfm/tests/pwofficial_gpu_match_guided_fixtures.py
+@@ -0,0 +1,232 @@
++#!/usr/bin/env python3
++"""pwofficial_gpu_match_guided_fixtures.py — builds guided-matcher fixtures.
++
++Two sources, one on-disk format:
++
++  real   : every two_view_geometries row of a capture session db (COLMAP
++           schema), replicating official_aether_sfm_c.cc PrepareGuidedGeometry
++           verbatim: CALIBRATED(2)/CALIBRATED_RIG(7) with E → mode 1 on
++           normalised camera coordinates, max_residual = (0.5·(thr_a+thr_b))²
++           with thr = 4.0 px / mean focal length (Camera::CamFromImgThreshold);
++           UNCALIBRATED(3) with F → mode 1 on pixels, residual 16.0;
++           PLANAR/PANORAMIC/PLANAR_OR_PANORAMIC(4/5/6) with H → mode 2 on
++           pixels, residual 16.0, matrix_ba = H⁻¹. Descriptors come from the
++           full-gate frame library (frames_<db>/f<image_id>/a.u8).
++  probe  : synthetic pairs whose candidate keypoints are placed AT the
++           residual threshold (nom²/denom = maxResidual·(1 ± eps) with eps in
++           {0, 1e-6, 1e-4, 1e-2}) so the boundary-divergence claim is tested
++           head-on, plus a random-descriptor body so top-2 competition is real.
++
++Fixture dir: a.u8 b.u8 manifest.json (H2 contract) + xy_a.f32 xy_b.f32
++(float32 x,y per row) + mat_ab.f32 mat_ba.f32 (9 float32 row-major) +
++guided.json {"mode","max_residual","ratio","source",...}.
++"""
++import hashlib
++import json
++import os
++import sqlite3
++import struct
++import sys
++
++import numpy as np
++
++MAX_ERROR_PIXELS = 4.0
++RATIO = 0.8  # kSpatialMatchRatio
++MAX_IMAGE_ID = 2147483647
++
++
++def sha(b):
++    return hashlib.sha256(b).hexdigest()
++
++
++def write_fixture(d, a_u8, b_u8, xy_a, xy_b, m_ab, m_ba, mode, res, meta):
++    os.makedirs(d, exist_ok=True)
++    a_u8 = np.ascontiguousarray(a_u8, dtype=np.uint8)
++    b_u8 = np.ascontiguousarray(b_u8, dtype=np.uint8)
++    open(os.path.join(d, "a.u8"), "wb").write(a_u8.tobytes())
++    open(os.path.join(d, "b.u8"), "wb").write(b_u8.tobytes())
++    json.dump({"rows_a": int(a_u8.shape[0]), "rows_b": int(b_u8.shape[0]),
++               "sha256_a": sha(a_u8.tobytes()), "sha256_b": sha(b_u8.tobytes()),
++               "cols": 128}, open(os.path.join(d, "manifest.json"), "w"))
++    np.ascontiguousarray(xy_a, dtype=np.float32).tofile(os.path.join(d, "xy_a.f32"))
++    np.ascontiguousarray(xy_b, dtype=np.float32).tofile(os.path.join(d, "xy_b.f32"))
++    np.ascontiguousarray(m_ab, dtype=np.float32).reshape(9).tofile(os.path.join(d, "mat_ab.f32"))
++    np.ascontiguousarray(m_ba, dtype=np.float32).reshape(9).tofile(os.path.join(d, "mat_ba.f32"))
++    meta = dict(meta)
++    meta.update({"mode": int(mode), "max_residual": float(res), "ratio": RATIO})
++    json.dump(meta, open(os.path.join(d, "guided.json"), "w"), indent=1)
++
++
++def real_fixtures(db_path, frames_dir, out_root, limit=None):
++    con = sqlite3.connect(db_path)
++    cams = {}
++    for cid, model, w, h, params in con.execute(
++            "select camera_id, model, width, height, params from cameras"):
++        p = np.frombuffer(params, dtype=np.float64)
++        if model == 1:      # PINHOLE fx fy cx cy
++            fx, fy, cx, cy = p[:4]
++        elif model == 0:    # SIMPLE_PINHOLE f cx cy
++            fx = fy = p[0]; cx, cy = p[1], p[2]
++        else:
++            raise SystemExit(f"unsupported camera model {model} (only pinhole replicated)")
++        cams[cid] = (fx, fy, cx, cy)
++    img_cam = dict(con.execute("select image_id, camera_id from images"))
++    kps = {}
++    for iid, rows, cols, data in con.execute("select image_id, rows, cols, data from keypoints"):
++        arr = np.frombuffer(data, dtype=np.float32).reshape(rows, cols)
++        kps[iid] = arr[:, :2].copy()
++    n_written = 0
++    stats = {"mode1_E": 0, "mode1_F": 0, "mode2_H": 0, "skipped": 0}
++    for pair_id, config, F, E, H in con.execute(
++            "select pair_id, config, F, E, H from two_view_geometries order by pair_id"):
++        i1 = pair_id // MAX_IMAGE_ID
++        i2 = pair_id % MAX_IMAGE_ID
++        fa = os.path.join(frames_dir, f"f{i1}", "a.u8")
++        fb = os.path.join(frames_dir, f"f{i2}", "a.u8")
++        if not (os.path.exists(fa) and os.path.exists(fb) and i1 in kps and i2 in kps):
++            stats["skipped"] += 1
++            continue
++        a = np.fromfile(fa, dtype=np.uint8).reshape(-1, 128)
++        b = np.fromfile(fb, dtype=np.uint8).reshape(-1, 128)
++        xa, xb = kps[i1], kps[i2]
++        if a.shape[0] != xa.shape[0] or b.shape[0] != xb.shape[0]:
++            # the frame library is the 8192-clamped table; keypoints table must agree
++            n = min(a.shape[0], xa.shape[0]); a, xa = a[:n], xa[:n]
++            n = min(b.shape[0], xb.shape[0]); b, xb = b[:n], xb[:n]
++        mat = lambda blob: np.frombuffer(blob, dtype=np.float64).reshape(3, 3)
++        if config in (2, 7) and E is not None and len(E) == 72:
++            fxa, fya, cxa, cya = cams[img_cam[i1]]
++            fxb, fyb, cxb, cyb = cams[img_cam[i2]]
++            na = np.stack([(xa[:, 0] - cxa) / fxa, (xa[:, 1] - cya) / fya], 1)
++            nb = np.stack([(xb[:, 0] - cxb) / fxb, (xb[:, 1] - cyb) / fyb], 1)
++            thr_a = MAX_ERROR_PIXELS / (0.5 * (fxa + fya))
++            thr_b = MAX_ERROR_PIXELS / (0.5 * (fxb + fyb))
++            nerr = 0.5 * (thr_a + thr_b)
++            Em = mat(E)
++            d = os.path.join(out_root, f"real_E_{i1}_{i2}")
++            write_fixture(d, a, b, na, nb, Em, Em.T, 1, nerr * nerr,
++                          {"source": "db", "db": os.path.basename(db_path), "pair": [i1, i2],
++                           "config": config, "coords": "normalized"})
++            stats["mode1_E"] += 1
++        elif config == 3 and F is not None and len(F) == 72:
++            Fm = mat(F)
++            d = os.path.join(out_root, f"real_F_{i1}_{i2}")
++            write_fixture(d, a, b, xa, xb, Fm, Fm.T, 1, MAX_ERROR_PIXELS ** 2,
++                          {"source": "db", "db": os.path.basename(db_path), "pair": [i1, i2],
++                           "config": config, "coords": "pixels"})
++            stats["mode1_F"] += 1
++        elif config in (4, 5, 6) and H is not None and len(H) == 72:
++            Hm = mat(H)
++            if not np.all(np.isfinite(Hm)) or abs(np.linalg.det(Hm)) < 1e-12:
++                stats["skipped"] += 1
++                continue
++            Hi = np.linalg.inv(Hm)
++            d = os.path.join(out_root, f"real_H_{i1}_{i2}")
++            write_fixture(d, a, b, xa, xb, Hm, Hi, 2, MAX_ERROR_PIXELS ** 2,
++                          {"source": "db", "db": os.path.basename(db_path), "pair": [i1, i2],
++                           "config": config, "coords": "pixels"})
++            stats["mode2_H"] += 1
++        else:
++            stats["skipped"] += 1
++            continue
++        n_written += 1
++        if limit and n_written >= limit:
++            break
++    print("real fixtures:", n_written, stats)
++
++
++def sift_like(rng, n):
++    # non-negative, L2 norm 512, u8-quantised (like SIFT descriptors)
++    v = rng.random((n, 128)).astype(np.float64) ** 2
++    v /= np.linalg.norm(v, axis=1, keepdims=True)
++    return np.clip(np.round(v * 512.0), 0, 255).astype(np.uint8)
++
++
++def probe_fixtures(out_root, seed=0x9E3779B97F4A7C15 & 0xFFFFFFFF):
++    """Synthetic boundary probes for mode 1 (F, pixels) and mode 2 (H, pixels)."""
++    rng = np.random.default_rng(seed)
++    n = 1024
++    res = MAX_ERROR_PIXELS ** 2
++    # A random fundamental matrix from two random projective cameras.
++    def rand_F():
++        K = np.array([[1500.0, 0, 640.0], [0, 1500.0, 480.0], [0, 0, 1]])
++        R = np.linalg.qr(rng.standard_normal((3, 3)))[0]
++        if np.linalg.det(R) < 0: R[:, 0] *= -1
++        t = rng.standard_normal(3); t /= np.linalg.norm(t)
++        tx = np.array([[0, -t[2], t[1]], [t[2], 0, -t[0]], [-t[1], t[0], 0]])
++        Ki = np.linalg.inv(K)
++        F = Ki.T @ tx @ R @ Ki
++        return F / np.abs(F).max()
++    for eps_i, eps in enumerate([0.0, 1e-6, 1e-4, 1e-2]):
++        F = rand_F()
++        xa = rng.uniform([0, 0], [1280, 960], (n, 2))
++        # Place b_i on the epipolar line of a_i, then offset along the line
++        # normal so that the symmetric residual nom²/denom == res·(1+eps).
++        xb = np.zeros((n, 2))
++        for i in range(n):
++            p1 = np.array([xa[i, 0], xa[i, 1], 1.0])
++            l2 = F @ p1                                   # line in image 2
++            # a point on the line near the image centre
++            nrm = l2[:2] / np.linalg.norm(l2[:2])
++            x0 = np.array([640.0, 480.0])
++            x0 = x0 - (l2[0] * x0[0] + l2[1] * x0[1] + l2[2]) / np.dot(l2[:2], l2[:2]) * l2[:2]
++            # solve for offset s along nrm: residual(s) = nom(s)²/denom(s); nom is linear in s
++            sign = 1.0 if (i % 2 == 0) else -1.0
++            lo, hi = 0.0, 50.0
++            def resid(s):
++                p2 = np.array([x0[0] + sign * s * nrm[0], x0[1] + sign * s * nrm[1], 1.0])
++                l1 = F.T @ p2
++                nom = p2 @ l2
++                den = l2[0] ** 2 + l2[1] ** 2 + l1[0] ** 2 + l1[1] ** 2
++                return nom * nom / den
++            target = res * (1.0 + eps) if (i % 4 < 2) else res * (1.0 - eps)
++            for _ in range(200):
++                mid = 0.5 * (lo + hi)
++                if resid(mid) < target: lo = mid
++                else: hi = mid
++            s = 0.5 * (lo + hi)
++            xb[i] = x0 + sign * s * nrm
++        # descriptors: b_i is the nearest neighbour of a_i by construction
++        # (copy + small noise), the rest random → real top-2 competition
++        a = sift_like(rng, n)
++        b = a.copy().astype(np.int32) + rng.integers(-6, 7, (n, 128))
++        b = np.clip(b, 0, 255).astype(np.uint8)
++        perm = rng.permutation(n)
++        b_perm = b[perm]              # b row perm[k] ← a row k ... keep xy aligned
++        xb_perm = xb[perm]
++        d = os.path.join(out_root, f"probe_F_eps{eps_i}")
++        write_fixture(d, a, b_perm, xa, xb_perm, F, F.T, 1, res,
++                      {"source": "probe", "eps": eps, "note": "b_i placed so that nom^2/denom = res*(1±eps); half above, half below"})
++    # mode 2: H = random homography; place b at |Hq/hz - d|² = res(1±eps)
++    for eps_i, eps in enumerate([0.0, 1e-6, 1e-4, 1e-2]):
++        H = np.eye(3) + 0.05 * rng.standard_normal((3, 3)); H[2, :2] *= 1e-3
++        xa = rng.uniform([0, 0], [1280, 960], (n, 2))
++        xb = np.zeros((n, 2))
++        for i in range(n):
++            q = H @ np.array([xa[i, 0], xa[i, 1], 1.0])
++            q = q[:2] / q[2]
++            ang = rng.uniform(0, 2 * np.pi)
++            target = res * (1.0 + eps) if (i % 2 == 0) else res * (1.0 - eps)
++            r = np.sqrt(target)
++            xb[i] = q + r * np.array([np.cos(ang), np.sin(ang)])
++        a = sift_like(rng, n)
++        b = np.clip(a.astype(np.int32) + rng.integers(-6, 7, (n, 128)), 0, 255).astype(np.uint8)
++        perm = rng.permutation(n)
++        d = os.path.join(out_root, f"probe_H_eps{eps_i}")
++        write_fixture(d, a, b[perm], xa, xb[perm], H, np.linalg.inv(H), 2, res,
++                      {"source": "probe", "eps": eps, "note": "b_i placed at |Hq/hz-d|^2 = res*(1±eps)"})
++    print("probe fixtures: 8")
++
++
++if __name__ == "__main__":
++    if len(sys.argv) < 3:
++        print(__doc__)
++        sys.exit(64)
++    cmd = sys.argv[1]
++    if cmd == "real":
++        real_fixtures(sys.argv[2], sys.argv[3], sys.argv[4],
++                      int(sys.argv[5]) if len(sys.argv) > 5 else None)
++    elif cmd == "probe":
++        probe_fixtures(sys.argv[2])
++    else:
++        sys.exit(64)

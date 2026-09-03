@@ -1,0 +1,8 @@
+1c1
+< /private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/d40553d6-aed5-41b7-942f-102f636b38ca/scratchpad/iosobj/gpu_match_shipped.o:
+---
+> /private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/d40553d6-aed5-41b7-942f-102f636b38ca/scratchpad/iosobj/gpu_match_renamed.o:
+9437c9437
+< _aether_gpu_match_probe_batch.cold.1:
+---
+> _pwmetal_gpu_match_probe_batch.cold.1:

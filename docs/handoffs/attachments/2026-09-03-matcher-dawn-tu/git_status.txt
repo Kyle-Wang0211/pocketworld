@@ -1,0 +1,12 @@
+ M vendor/official_sfm/scripts/build_xcframework.sh
+?? docs/handoffs/attachments/2026-09-03-matcher-dawn-tu/
+?? vendor/official_sfm/src/pwofficial_gpu_match_dawn.cc
+?? vendor/official_sfm/src/pwofficial_gpu_match_dispatch.cc
+?? vendor/official_sfm/src/pwofficial_gpu_match_metal_rename.h
+?? vendor/official_sfm/src/pwofficial_gpu_match_thermal_apple.mm
+?? vendor/official_sfm/tests/pwofficial_gpu_match_dawn_abi_test.cc
+?? vendor/official_sfm/tests/pwofficial_gpu_match_dawn_fullgate.sh
+?? vendor/official_sfm/tests/pwofficial_gpu_match_dawn_host_arm.cc
+?? vendor/official_sfm/tests/pwofficial_gpu_match_dawn_host_build.sh
+?? vendor/official_sfm/tests/pwofficial_gpu_match_guided_compare.mm
+?? vendor/official_sfm/tests/pwofficial_gpu_match_guided_fixtures.py
