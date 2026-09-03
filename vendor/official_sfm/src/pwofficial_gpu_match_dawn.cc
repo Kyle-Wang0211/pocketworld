@@ -826,6 +826,18 @@ struct Ctx {
   std::string backend_info;
   bool feat_subgroups = false, feat_sgmatrix = false, feat_packed_dot = false;
   bool feat_timestamp = false, sgcfg_f32_8x8x8 = false;
+  // [MIXED-MMA 2026-09-03] f16 operands with an f32 accumulator — the config
+  // Metal's own matcher kernel uses (simdgroup_matrix<half> × <half> into
+  // simdgroup_matrix<float>). EXACT for u8 descriptors: u8 ≤ 255 is exact in
+  // f16 (11-bit significand), each product ≤ 65,025 and the K=128 sum ≤
+  // 262,144 (L2 = 512 ⇒ Cauchy–Schwarz) are exact in f32's 24-bit
+  // significand, so no scaling is needed and the dots are bit-identical to
+  // the f32 path — at f16 operand rate, with Bsh and the A/B load traffic
+  // halved. Dawn's Metal backend did not advertise this config
+  // (PhysicalDeviceMTL.mm hardcoded two entries); the vendored tree now does.
+  bool sgcfg_f16_f32 = false;
+  bool mixed = false;  // use the f16-in/f32-out kernel
+  std::vector<uint16_t> scratch16;
   uint32_t subgroup_min = 0, subgroup_max = 0;
   uint32_t lim_storage = 0, lim_invocations = 0, lim_size_x = 0;
   // Pipelines (lazy; a failed compile is remembered so we do not retry).
@@ -902,6 +914,11 @@ std::unique_ptr<Ctx> CreateCtx() {
     if (c->feat_sgmatrix) {
       for (size_t i = 0; i < cfgs.configCount; ++i) {
         const wgpu::SubgroupMatrixConfig& k = cfgs.configs[i];
+        if (k.componentType == wgpu::SubgroupMatrixComponentType::F16 &&
+            k.resultComponentType == wgpu::SubgroupMatrixComponentType::F32 &&
+            k.M == 8 && k.N == 8 && k.K == 8) {
+          c->sgcfg_f16_f32 = true;
+        }
         if (k.componentType == wgpu::SubgroupMatrixComponentType::F32 &&
             k.resultComponentType == wgpu::SubgroupMatrixComponentType::F32 &&
             k.M == 8 && k.N == 8 && k.K == 8) {
@@ -918,6 +935,7 @@ std::unique_ptr<Ctx> CreateCtx() {
 
   const char* force = getenv("OFFICIAL_AETHER_MATCH_DAWN_KERNEL");
   const bool want_mma = !(force && std::strcmp(force, "tiled") == 0);
+  const bool want_mixed = force && std::strcmp(force, "mixed") == 0;
   const bool mma_ok = c->feat_subgroups && c->feat_sgmatrix &&
                       c->sgcfg_f32_8x8x8 && c->subgroup_min == 32 &&
                       c->subgroup_max == 32 && c->lim_invocations >= 512 &&
@@ -929,6 +947,10 @@ std::unique_ptr<Ctx> CreateCtx() {
     c->backend = Backend::kMma;
     feats.push_back(wgpu::FeatureName::Subgroups);
     feats.push_back(wgpu::FeatureName::ChromiumExperimentalSubgroupMatrix);
+    if (want_mixed && c->sgcfg_f16_f32 && c->adapter.HasFeature(wgpu::FeatureName::ShaderF16)) {
+      c->mixed = true;
+      feats.push_back(wgpu::FeatureName::ShaderF16);
+    }
     req.maxComputeWorkgroupStorageSize = alim.maxComputeWorkgroupStorageSize;
     req.maxComputeInvocationsPerWorkgroup =
         alim.maxComputeInvocationsPerWorkgroup;
@@ -993,12 +1015,13 @@ std::unique_ptr<Ctx> CreateCtx() {
   char info[512];
   std::snprintf(info, sizeof(info),
                 "backend=%s adapter=\"%s\" subgroups=%d sgmatrix=%d "
-                "f32_8x8x8=%d subgroup=[%u,%u] packed_dot=%d timestamp=%d "
+                "f32_8x8x8=%d f16_f32=%d mixed=%d subgroup=[%u,%u] packed_dot=%d timestamp=%d "
                 "limits[storage=%u invocations=%u sizeX=%u]%s",
                 c->backend == Backend::kMma ? "mma(fusedr128-db,V0)"
                                             : "tiled(dot4U8Packed,V1/V2)",
                 c->adapter_name.c_str(), (int)c->feat_subgroups,
-                (int)c->feat_sgmatrix, (int)c->sgcfg_f32_8x8x8, c->subgroup_min,
+                (int)c->feat_sgmatrix, (int)c->sgcfg_f32_8x8x8,
+                (int)c->sgcfg_f16_f32, (int)c->mixed, c->subgroup_min,
                 c->subgroup_max, (int)c->feat_packed_dot, (int)c->feat_timestamp,
                 c->lim_storage, c->lim_invocations, c->lim_size_x,
                 (force && std::strcmp(force, "tiled") == 0) ? " (forced tiled)"
@@ -1030,6 +1053,28 @@ Ctx* EnsureDawn() {
 }
 
 // ── Shader / pipeline helpers ────────────────────────────────────────────
+// Derives the f16-operand / f32-accumulator variant from the single WGSL
+// source of truth: only the operand types change. The accumulator (Res),
+// accSh, the gate math and the tie-break order are untouched, so the dots
+// stay exact (see Ctx::sgcfg_f16_f32) and the output is bit-identical.
+std::string MixedWgsl(const char* src) {
+  std::string t(src);
+  auto sub = [&t](const std::string& from, const std::string& to) {
+    for (size_t p = t.find(from); p != std::string::npos;
+         p = t.find(from, p + to.size())) {
+      t.replace(p, from.size(), to);
+    }
+  };
+  sub("enable subgroups;", "enable subgroups;\nenable f16;");
+  sub("subgroup_matrix_left<f32", "subgroup_matrix_left<f16");
+  sub("subgroup_matrix_right<f32", "subgroup_matrix_right<f16");
+  sub("var<storage, read> A : array<f32>", "var<storage, read> A : array<f16>");
+  sub("var<storage, read> B : array<f32>", "var<storage, read> B : array<f16>");
+  sub("var<workgroup> Bsh : array<f32,", "var<workgroup> Bsh : array<f16,");
+  sub("select(0.0, B[", "select(f16(0.0), B[");
+  return t;
+}
+
 wgpu::ShaderModule CompileWgsl(Ctx& c, const std::string& src,
                                const char* what) {
   wgpu::ShaderSourceWGSL s{};
@@ -1078,7 +1123,11 @@ bool EnsureMainPipelines(Ctx& c) {
   if (c.tried_main) return false;
   c.tried_main = true;
   if (c.backend == Backend::kMma) {
-    wgpu::ShaderModule m = CompileWgsl(c, kWgslMmaFused, "mma fused");
+    const std::string mixed_src = c.mixed ? MixedWgsl(kWgslMmaFused)
+                                          : std::string();
+    wgpu::ShaderModule m = CompileWgsl(
+        c, c.mixed ? mixed_src.c_str() : kWgslMmaFused,
+        c.mixed ? "mma fused mixed" : "mma fused");
     if (!m) return false;
     c.p_main = MakePipeline(c, m, "main");
     c.p_merge = MakePipeline(c, m, "merge");
@@ -1105,7 +1154,12 @@ bool EnsureGuidedPipeline(Ctx& c) {
   // The GParams struct must precede the U binding and guide_ok must see M/U:
   // WGSL resolves module-scope declarations in any order, so concatenation
   // order only needs to be syntactically valid.
-  wgpu::ShaderModule m = CompileWgsl(c, src, "guided");
+  // Mixed mode uploads the descriptor tables as f16, so the guided kernels
+  // must read them as f16 too (the guide matrix M and the residual math stay
+  // f32). Without this the guided path reads f16 bytes as f32 and returns 0
+  // matches — caught by the ABI test's guided mode2 identity case.
+  if (c.mixed) src = MixedWgsl(src.c_str());
+  wgpu::ShaderModule m = CompileWgsl(c, src, c.mixed ? "guided mixed" : "guided");
   if (!m) return false;
   c.p_guided = MakePipeline(c, m, "main");
   return (bool)c.p_guided;
@@ -1140,8 +1194,8 @@ constexpr wgpu::BufferUsage kUsageStaging =
 
 // Bytes of one descriptor table in the active kernel's storage format.
 uint64_t DescBytes(const Ctx& c, uint32_t n, uint32_t npad) {
-  return c.backend == Backend::kMma ? (uint64_t)npad * kD * sizeof(float)
-                                    : (uint64_t)n * kD;
+  if (c.backend != Backend::kMma) return (uint64_t)n * kD;
+  return (uint64_t)npad * kD * (c.mixed ? sizeof(uint16_t) : sizeof(float));
 }
 
 // Uploads n descriptor rows at byte offset off (MMA: u8→f32 expansion into a
@@ -1149,6 +1203,21 @@ uint64_t DescBytes(const Ctx& c, uint32_t n, uint32_t npad) {
 // TU, exact; tiled: raw u8 rows, the kernel guards rows itself).
 void UploadDesc(Ctx& c, wgpu::Buffer buf, uint64_t off, const uint8_t* d,
                 uint32_t n, uint32_t npad, std::vector<float>& scratch) {
+  if (c.backend == Backend::kMma && c.mixed) {
+    // u8 → f16, EXACT (no scaling): every u8 value is representable in f16.
+    c.scratch16.assign((size_t)npad * kD, 0);
+    const size_t live16 = (size_t)n * kD;
+    for (size_t i = 0; i < live16; ++i) {
+      const _Float16 v = (_Float16)(float)d[i];
+      uint16_t bits;
+      std::memcpy(&bits, &v, sizeof(bits));
+      c.scratch16[i] = bits;
+    }
+    c.queue.WriteBuffer(buf, off,
+                        reinterpret_cast<const uint8_t*>(c.scratch16.data()),
+                        (uint64_t)npad * kD * sizeof(uint16_t));
+    return;
+  }
   if (c.backend == Backend::kMma) {
     scratch.assign((size_t)npad * kD, 0.0f);
     const size_t live = (size_t)n * kD;
