@@ -297,3 +297,17 @@ OFFICIAL_AETHER_DESCRIPTOR_RESIDENCY_V1=1 <out>/pwofficial_gpu_match_dawn_abi_te
   `xcrun clang++ -O2 -std=c++17 -arch arm64 -I<tools> -I<dawn/include> -I<build/dawn/gen/include>
    tests/pwofficial_gpu_match_dawn_abi_test.cc <out>/pwofficial_gpu_match_dawn.host.o
    <out>/pwofficial_gpu_match_thermal_apple.o <libwebgpu_dawn.a> <Dawn frameworks> -o <out>/…abi_test`。
+
+## 装机候选(2026-09-03 20:0x,主线,均未装)
+
+- `vendor/official_sfm/Frameworks/PWOfficialSfm.xcframework` 已换成含分发层的重编版(f366cb5;两个后端
+  内部符号均在,ABI 冻结清单未改,边界门 PASS 35 导出)。
+- `~/Developer/pw_builds/build94_dispatch_metal.app`:分发层 + 默认 metal —— 预期与 build 91 行为逐字节等价
+  (Metal TU __text 同出货),是"三端一套"上机的第一步(单变量 = 框架换血)。
+- `~/Developer/pw_builds/build95_dispatch_dawn.app`:同上 + 插件一行 `setenv("OFFICIAL_AETHER_MATCH_BACKEND","dawn",0)`
+  (临时改动,已还原,未提交)—— dawn 臂。
+- 装机≠生效核验:`aether_gpu_match_backend_name` 未走冻结的 pwofficial 导出面(契约未改),设备上只能用
+  指纹判后端:match_ms 分布(主机 dawn ≈ 2.8× metal)+ diagnostic build id;若要硬证据需一条遥测事件
+  (待定:走 pwofficial_telemetry 的 C 面或核的 jsonl)。
+- A/B 协议:同物体不可复拍 ⇒ 用多场分布:build 94 若干场(应≈build 91)→ build 95 若干场;
+  判据 = 1:1/漂移/丢失/单张 min/队列 + match_ms;点云应逐场 = 对应 metal 结果(逐字节同语义)。
