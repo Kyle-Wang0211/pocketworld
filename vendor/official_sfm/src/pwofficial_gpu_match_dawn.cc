@@ -838,6 +838,16 @@ struct Ctx {
   bool sgcfg_f16_f32 = false;
   bool mixed = false;  // use the f16-in/f32-out kernel
   std::vector<uint16_t> scratch16;
+  // [TS-GPU 2026-09-03] 真 GPU 时间戳(env OFFICIAL_AETHER_MATCH_DAWN_TSGPU=1)。
+  // SubmitAndWait 量的是 submit→done 墙钟,含 CPU 侧排队 —— 机器有背景负载时
+  // (实测 HydraRenderingService 常驻 ~96%)括号能飘 2ms,0.5ms 级归因不可做。
+  // TimestampQuery 量的是 GPU 执行本身,对 CPU 负载免疫。默认关闭:开启后
+  // aether_match_gpu_ms 改由时间戳累加(语义更准),分块成本模型同源受益。
+  bool ts_on = false;
+  wgpu::QuerySet ts_qset;
+  wgpu::Buffer ts_resolve, ts_map;
+  uint32_t ts_slot = 0;
+  static constexpr uint32_t kTsSlots = 64;
   uint32_t subgroup_min = 0, subgroup_max = 0;
   uint32_t lim_storage = 0, lim_invocations = 0, lim_size_x = 0;
   // Pipelines (lazy; a failed compile is remembered so we do not retry).
@@ -964,6 +974,10 @@ std::unique_ptr<Ctx> CreateCtx() {
     c->backend = Backend::kMma;
     feats.push_back(wgpu::FeatureName::Subgroups);
     feats.push_back(wgpu::FeatureName::ChromiumExperimentalSubgroupMatrix);
+    if (getenv("OFFICIAL_AETHER_MATCH_DAWN_TSGPU") && c->feat_timestamp) {
+      c->ts_on = true;
+      feats.push_back(wgpu::FeatureName::TimestampQuery);
+    }
     if (want_mixed && c->sgcfg_f16_f32 && c->adapter.HasFeature(wgpu::FeatureName::ShaderF16)) {
       c->mixed = true;
       feats.push_back(wgpu::FeatureName::ShaderF16);
@@ -1163,8 +1177,8 @@ bool EnsureMainPipelines(Ctx& c) {
   if (c.tried_main) return false;
   c.tried_main = true;
   if (c.backend == Backend::kMma) {
-    const std::string mixed_src = c.mixed ? MixedWgsl(kWgslMmaFused)
-                                          : std::string();
+    const std::string mixed_src =
+        c.mixed ? MixedWgsl(kWgslMmaFused) : std::string();
     wgpu::ShaderModule m = CompileWgsl(
         c, c.mixed ? mixed_src.c_str() : kWgslMmaFused,
         c.mixed ? "mma fused mixed" : "mma fused");
@@ -1391,6 +1405,67 @@ struct Stage {
   std::function<void(wgpu::ComputePassEncoder&, uint32_t, uint32_t)> encode;
 };
 
+// 惰性创建时间戳资源(仅 ts_on 时)。槽位循环使用,读回在整对结束时一次完成。
+void TsEnsure(Ctx& c) {
+  if (!c.ts_on || c.ts_qset) return;
+  wgpu::QuerySetDescriptor qd{};
+  qd.type = wgpu::QueryType::Timestamp;
+  qd.count = Ctx::kTsSlots;
+  c.ts_qset = c.device.CreateQuerySet(&qd);
+  wgpu::BufferDescriptor rd{};
+  rd.usage = wgpu::BufferUsage::QueryResolve | wgpu::BufferUsage::CopySrc;
+  rd.size = (uint64_t)Ctx::kTsSlots * 8;
+  c.ts_resolve = c.device.CreateBuffer(&rd);
+  wgpu::BufferDescriptor md{};
+  md.usage = wgpu::BufferUsage::MapRead | wgpu::BufferUsage::CopyDst;
+  md.size = rd.size;
+  c.ts_map = c.device.CreateBuffer(&md);
+}
+
+// 开一个带首尾时间戳的 compute pass(ts_on 关闭时退化为普通 pass)。
+wgpu::ComputePassEncoder BeginPassTs(Ctx& c, wgpu::CommandEncoder& enc) {
+  if (!c.ts_on) return enc.BeginComputePass();
+  TsEnsure(c);
+  if (c.ts_slot + 2 > Ctx::kTsSlots) return enc.BeginComputePass();
+  wgpu::PassTimestampWrites tw{};
+  tw.querySet = c.ts_qset;
+  tw.beginningOfPassWriteIndex = c.ts_slot;
+  tw.endOfPassWriteIndex = c.ts_slot + 1;
+  c.ts_slot += 2;
+  wgpu::ComputePassDescriptor pd{};
+  pd.timestampWrites = &tw;
+  return enc.BeginComputePass(&pd);
+}
+
+// 把本对累计的 GPU 纳秒读出来(阻塞一次,整对一次)。
+double TsDrainMs(Ctx& c) {
+  if (!c.ts_on || !c.ts_qset || c.ts_slot == 0) return -1.0;
+  const uint32_t used = c.ts_slot;
+  c.ts_slot = 0;
+  wgpu::CommandEncoder enc = c.device.CreateCommandEncoder();
+  enc.ResolveQuerySet(c.ts_qset, 0, used, c.ts_resolve, 0);
+  enc.CopyBufferToBuffer(c.ts_resolve, 0, c.ts_map, 0, (uint64_t)used * 8);
+  wgpu::CommandBuffer cb = enc.Finish();
+  if (SubmitAndWait(c, cb, nullptr) != 0) return -1.0;
+  bool done = false;
+  wgpu::Future f = c.ts_map.MapAsync(
+      wgpu::MapMode::Read, 0, (size_t)used * 8, wgpu::CallbackMode::WaitAnyOnly,
+      [&](wgpu::MapAsyncStatus, wgpu::StringView) { done = true; });
+  if (WaitFuture(c, f, "ts-map") != 0) return -1.0;
+  double total_ns = 0.0;
+  if (done) {
+    const uint64_t* p =
+        static_cast<const uint64_t*>(c.ts_map.GetConstMappedRange(0, (size_t)used * 8));
+    if (p) {
+      for (uint32_t i = 0; i + 1 < used; i += 2) {
+        if (p[i + 1] > p[i]) total_ns += (double)(p[i + 1] - p[i]);
+      }
+    }
+    c.ts_map.Unmap();
+  }
+  return total_ns / 1e6;
+}
+
 int RunStages(Ctx& c, std::vector<Stage>& stages,
               const std::function<void(wgpu::CommandEncoder&)>& finish,
               double* ema) {
@@ -1402,13 +1477,18 @@ int RunStages(Ctx& c, std::vector<Stage>& stages,
       const uint32_t zero = 0;
       c.queue.WriteBuffer(s.uni, s.uniOff + kRowBaseOffset,
                           reinterpret_cast<const uint8_t*>(&zero), 4);
-      wgpu::ComputePassEncoder pass = enc.BeginComputePass();
+      wgpu::ComputePassEncoder pass = BeginPassTs(c, enc);
       s.encode(pass, 0u, s.total_groups);
       pass.End();
     }
     finish(enc);
     wgpu::CommandBuffer cb = enc.Finish();
-    return SubmitAndWait(c, cb, nullptr);
+    const int rc0 = SubmitAndWait(c, cb, nullptr);
+    if (rc0 == 0 && c.ts_on) {
+      const double ts = TsDrainMs(c);
+      if (ts >= 0.0) aether_match_gpu_ms = ts;  // 真 GPU 时间覆盖墙钟
+    }
+    return rc0;
   }
   for (Stage& s : stages) {
     uint32_t tg0 = 0;
@@ -1426,7 +1506,7 @@ int RunStages(Ctx& c, std::vector<Stage>& stages,
       c.queue.WriteBuffer(s.uni, s.uniOff + kRowBaseOffset,
                           reinterpret_cast<const uint8_t*>(&tg0), 4);
       wgpu::CommandEncoder enc = c.device.CreateCommandEncoder();
-      wgpu::ComputePassEncoder pass = enc.BeginComputePass();
+      wgpu::ComputePassEncoder pass = BeginPassTs(c, enc);
       s.encode(pass, tg0, groups);
       pass.End();
       wgpu::CommandBuffer cb = enc.Finish();
@@ -1454,7 +1534,12 @@ int RunStages(Ctx& c, std::vector<Stage>& stages,
   wgpu::CommandEncoder enc = c.device.CreateCommandEncoder();
   finish(enc);
   wgpu::CommandBuffer cb = enc.Finish();
-  return SubmitAndWait(c, cb, nullptr);
+  const int rcF = SubmitAndWait(c, cb, nullptr);
+  if (rcF == 0 && c.ts_on) {
+    const double ts = TsDrainMs(c);
+    if (ts >= 0.0) aether_match_gpu_ms = ts;  // 真 GPU 时间覆盖墙钟累加
+  }
+  return rcF;
 }
 
 // ── Descriptor residency V1 (backend handles only; policy is shared) ─────
