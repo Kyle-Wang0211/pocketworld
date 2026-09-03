@@ -282,3 +282,18 @@ OFFICIAL_AETHER_DESCRIPTOR_RESIDENCY_V1=1 <out>/pwofficial_gpu_match_dawn_abi_te
 生产四份 + dump 补丁拷贝)、`spirv/`(spvasm ×5、msl ×2)、`parity/`(5 变体日志)、
 `fullgate/`(4 道闸日志)、`guided/guided_compare.jsonl`(148 行)、`ios_proof/`
 (.o SHA、`__text` md5 ×2、反汇编 diff)、`git_status.txt`。
+
+## 主线复核(2026-09-03 19:5x,协调员亲手复现)
+
+- parity 19/19(dawntu)PASS;全量闸 20f 162/162 + 51f 534/534 = 696/696;
+- guided:今日 db51 重新生成 148 案例(140 真实 E/H + 8 探针),Metal-v1 vs Dawn **79,082 对逐字节相同**;
+- ABI 测试 0 失败(需手动编,host_build.sh 不含它,编译命令见下);iOS 四 .o 编过,pwmetal_* 11 / aether_gpu_match* 13;
+- ABBA(db51 图 1-2 夹具):native 4.90/4.86ms,新 TU 默认分块 14.4(GPU 13.6),pairs SHA 相同;
+- 契约 --source-only PASS;`build_xcframework.sh`(打补丁版)成功产出候选 xcframework:
+  边界门 PASS(35 官方 ABI 导出、TWOLEVEL/NOUNDEFS),归档在 `~/Developer/pw_builds/PWOfficialSfm-dawn-cand.xcframework`
+  (未装机;/private/tmp 副本会蒸发)。
+- 注意:guided_compare 与 abi_test 都不自建输出目录,调用前须 mkdir(否则只看到 teardown 的
+  "device lost" 噪声,真错误在上一行)。ABI 测试编译:
+  `xcrun clang++ -O2 -std=c++17 -arch arm64 -I<tools> -I<dawn/include> -I<build/dawn/gen/include>
+   tests/pwofficial_gpu_match_dawn_abi_test.cc <out>/pwofficial_gpu_match_dawn.host.o
+   <out>/pwofficial_gpu_match_thermal_apple.o <libwebgpu_dawn.a> <Dawn frameworks> -o <out>/…abi_test`。
