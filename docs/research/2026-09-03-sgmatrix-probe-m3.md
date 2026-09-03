@@ -139,3 +139,44 @@ WGSL/Dawn 在 M3 上**只暴露 f32→f32 与 f16→f16**(本文件顶部实测)
 3. **Vulkan 侧(安卓/鸿蒙)**:`dot4U8Packed` 在 Vulkan lower 为原生 `OpUDot`(Metal 上是软件
    polyfill)⇒ 非 MMA 的 tiled 路径在安卓可能是另一番景象,与 iOS 结论无关,需单独量;
 4. 不再碰:f16 任何形态、空间布局族(tacc/s33/Direct-B)、真双缓冲(f32 预算下不可行)。
+
+## 🎯 突破:混合精度不是硬件/标准缺失,是 Dawn 少登记了一条配置(已补,已验证)
+
+追踪链(全部本地源码,可复核):
+1. `dawn/src/dawn/native/metal/PhysicalDeviceMTL.mm:1038-1056` —— Metal 后端把配置表
+   **硬编码成 2 条**(`new SubgroupMatrixConfig[2]`:f32→f32、f16→f16);
+2. `dawn/src/dawn/native/ShaderModule.cpp:1728 ValidateSubgroupMatrixConfiguration` ——
+   Dawn 拿 shader 的用法**逐条比对这张已登记表**,不在表里就在校验期拒绝;
+3. `dawn/src/tint/lang/core/core.def:2858-2862` —— **WGSL 语言层早已声明混合重载**:
+   `implicit(T: f16, TR: f32_f16, …) fn subgroupMatrixMultiplyAccumulate(left<T>, right<T>, result<TR>)`
+   (另有 `T: iu8` 配 `TR: iu32` 的**精确整数** MMA 重载);
+4. `dawn/src/tint/lang/msl/writer/raise/builtin_polyfill.cc:1194` —— MSL 生成端**类型无关**,
+   直接把 `builtin->Result()->Type()` 转给 `simdgroup_multiply_accumulate`;
+5. MSL 原生支持 `simdgroup_matrix<half>` 操作数 + `simdgroup_matrix<float>` 累加器 ——
+   **我们自己出货的 Metal 核就是这么写的**(`pwofficial_gpu_match.mm` 的 aFrag/c/simdgroup_multiply_accumulate)。
+
+⇒ 结论:**Apple 硬件支持、MSL 支持、WGSL 语言支持、tint 生成支持,唯独 Dawn 没登记。**
+
+**已实施**:给 vendored Dawn 的 Metal 后端加第三条配置(`f16 in → f32 out, 8×8×8`,注释含出处),
+重建主机 `libwebgpu_dawn.a`,探针复验:
+```
+subgroup matrix configs: 3
+  cfg[0] in=f32 out=f32 M=8 N=8 K=8
+  cfg[1] in=f16 out=f16 M=8 N=8 K=8
+  cfg[2] in=f16 out=f32 M=8 N=8 K=8   ← 新增
+```
+
+**为什么它能同时给到"精确"和"速度"**:u8 ≤255 在 f16 中精确(11 位有效数字);逐积 ≤65,025(17 位)
+与总和 ≤262,144(18 位)在 f32 的 24 位尾数内精确 ⇒ **点积逐位精确,无需任何缩放**;而输入侧
+按 f16 走 ⇒ 拿到 Metal 同款的 half 输入速率,并且 **Bsh 与 A 的加载带宽同时减半**(16KiB→8KiB,
+之前判死的更大 tile / 真双缓冲随之复活)。
+
+**待办与已知整合成本**:
+- 核改动极小:`alias Left/Right = subgroup_matrix_left/right<f16,8,8>`(原 f32),`Res` 保持 f32,
+  storage 与 Bsh 换 f16;其余结构不动。
+- 门:parity 19 案例 + 696 对逐字节全量闸(精确性由构造保证,但必须实测)。
+- 🔴 iOS 侧那份 Dawn 归档是 **SHA 钉定的构建输入**(`build_xcframework.sh` 校验
+  `PWOFFICIAL_DAWN_SHA256`),改 Dawn ⇒ 必须重编 iOS Dawn 并更新钉子,记入 PROVENANCE。
+- Vulkan 侧:`VK_KHR_cooperative_matrix` 的 fp16×fp16→fp32 是标准配置 ⇒ 同一份 WGSL 在
+  安卓/鸿蒙同样受益(需实机验证)。
+- 上游价值:这条 config 缺失可提 Dawn issue/CL(我们本地先行,不阻塞)。
