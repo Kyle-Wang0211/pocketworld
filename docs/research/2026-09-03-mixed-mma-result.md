@@ -193,3 +193,30 @@ tile 形状(128 行 × 32 列)、同样的 24KB 共享内存占用。差异只�
 `mixed` 默认路径:**GPU p50 8.69ms / wall 9.36ms**;同轮 native Metal **wall 6.63ms**。
 (不同轮次绝对值随机器状态在 7.8-8.7 / 5.2-6.6 之间浮动,**比值稳定在 ~1.3-1.6×**;
 战役起点 2.6×。)门:parity 19 · 全量闸 162+534 逐字节 · guided 148 案例 79,082 对 · ABI 0 失败。
+
+## 第六刀:Metal 管线的"线程组=执行宽度整数倍"标志 —— 无效,已撤(2026-09-04)
+
+**来源**:读 Dawn 的 Metal 后端发现两处与手写 Metal 的差异:
+1. `ShaderModuleMTL.mm:423-427` —— Dawn 用 `#pragma METAL fp math_mode(relaxed)`,
+   而手写核走 `newLibraryWithSource` 的默认(fast)。**但 MMA 是硬件指令,数学模式不影响其吞吐**,
+   且我们的 relaxed 与产线 fast 在 79k+696 对上逐字节一致 ⇒ 不动(动了反而威胁无损)。
+2. `ComputePipelineMTL.mm:69-80` —— Dawn **不设**
+   `descriptor.threadGroupSizeIsMultipleOfThreadExecutionWidth`。理论上设了可让编译器省掉
+   simdgroup 操作的"半个 simdgroup"处理。我们的线程组是 512 = 16×32,严格符合。
+   (另注:`[[max_total_threads_per_threadgroup]]` **tint 已经在发**,printer.cc:341,
+   所以寄存器预算那条早已覆盖,不是缺口。)
+
+**实装**:给 vendored Dawn 打补丁,仅当 `localWorkgroupSize` 各维乘积 % 32 == 0 时置 YES
+(精确守卫,非整数倍自动跳过)。逐字节仍相同(984 匹配、SHA 同)。
+**交替 3 轮单变量**(重建两份 Dawn,只差这一处):
+
+| 轮 | 有标志 | 无标志 |
+|---|---|---|
+| 1 | 10.966 | 10.255 |
+| 2 | 7.943 | 7.672 |
+| 3 | 7.947 | 7.839 |
+
+**无标志三轮全胜(快 0.15-0.27ms)⇒ 该标志无效甚至微负,补丁已撤销。**
+理由不只是"没用":每多一个 Dawn 补丁就多一份升级维护债,而用户的首要诉求正是
+"三端一套、SOP 最短、成本最低" —— 无收益的补丁不留。
+Dawn 现在只带**一处**改动(混合子组矩阵配置),这是目前唯一有实测收益的 Dawn 补丁。
