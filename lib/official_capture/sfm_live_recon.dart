@@ -1935,7 +1935,19 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
               // photo-capture path (shutter unresponsive, frame count stuck).
               // Reverted to 8192: 0.004 + 8192 was the balanced config (49k
               // points, sheet filled, capture kept pace).
-              maxFeatures: 8192,
+              //
+              // [R3 2026-09-03] 8192 → 13312:密度对齐 COLMAP 默认搭配。上游默认
+              // {max_image_size=3200, max_num_features=8192} 是成对的;我们喂
+              // 12MP 全幅(4032px,面积 ×1.59)却只给 8192 名额 ⇒ 特征密度仅
+              // 上游的 63%,整个 octave 0(最细尺度)被裁没,每对 verified 中位
+              // 仅 136-146(预算的 2%)。13312 = 8192×1.625 把密度还原到上游
+              // 在其默认分辨率下的水平;分辨率一像素不动。主机重建层审计
+              // (两场×10 rep):点数 +6.7~9.4%,浮点/孤立占比持平或降,无任何
+              // 超噪声劣化(docs/handoffs/2026-09-02-recon-lossless-audit.md)。
+              // 上面那次 07-08 的 12288 回滚是 4K 灰度 + CPU 提取时代;现在是
+              // GPU 提取 + COLMAP 对齐的配对。真机否决项(预注册):单张 min
+              // 不升、队列 max ≤1、热态不升、漂移 0。
+              maxFeatures: 13312,
             );
             wlog('session created (${w}x$h, db=${boot.dbPath})');
           }
