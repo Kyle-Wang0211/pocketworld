@@ -7,8 +7,8 @@
 //   * pwdawn_*   — the cross-platform Dawn/WGSL TU pwofficial_gpu_match_dawn.cc
 //                  (iOS → Metal, Android/HarmonyOS → Vulkan).
 // Selection: env OFFICIAL_AETHER_MATCH_BACKEND, read ONCE per process.
-//   unset / "metal" → Metal (default on Apple: the shipped path, unchanged)
-//   "dawn"          → Dawn
+//   unset / "dawn"  → Dawn (DEFAULT on every platform — one pipeline rule)
+//   "metal"         → shipped Metal TU (parity oracle for on-device A/B only)
 // On builds without the Metal TU the Dawn backend is the only implementation
 // and the env is ignored. The choice is process-wide and cached like every
 // other OFFICIAL_AETHER_* knob (the residency / cost-model state lives inside
@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 extern "C" {
 
@@ -102,9 +103,25 @@ bool UseDawn() {
 #if defined(PWOFFICIAL_MATCH_NO_METAL)
   return true;
 #else
+  // [ONE-PIPELINE 2026-09-03] User rule: all three platforms run the SAME
+  // matcher implementation (Dawn/WGSL). Dawn is the default everywhere; the
+  // shipped Metal TU stays linked ONLY as the byte-exact parity oracle for
+  // on-device A/B (env OFFICIAL_AETHER_MATCH_BACKEND=metal). Never make Metal
+  // the default again for speed — close the speed gap in the Dawn kernel.
   static const bool v = [] {
     const char* e = std::getenv("OFFICIAL_AETHER_MATCH_BACKEND");
-    return e != nullptr && std::strcmp(e, "dawn") == 0;
+    const bool dawn = !(e != nullptr && std::strcmp(e, "metal") == 0);
+    // Device fingerprint (installed != live): one pull-able line per process,
+    // <HOME>/Documents/matcher_backend.jsonl. Observation only; never throws.
+    if (const char* home = std::getenv("HOME")) {
+      std::string path = std::string(home) + "/Documents/matcher_backend.jsonl";
+      if (FILE* f = std::fopen(path.c_str(), "a")) {
+        std::fprintf(f, "{\"backend\":\"%s\",\"env\":\"%s\"}\n",
+                     dawn ? "dawn" : "metal", e ? e : "");
+        std::fclose(f);
+      }
+    }
+    return dawn;
   }();
   return v;
 #endif
