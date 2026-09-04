@@ -1510,6 +1510,84 @@ std::string PackedWgsl(const std::string& src) {
   return t;
 }
 
+// [PREFETCH-SHADOW 2026-09-04] 软件流水:把下一块 B 的 device load **提前**发出、
+// 解包写回**推后**,让扫描+归并跑在 load 的延迟阴影里。
+// 机制(用无污染源的探针量出来的,这是本战役最关键的一次测量):
+//   同一二进制、同一着色器、只改一个 uniform(额外一遍扫描写影子变量 + 运行期 select
+//   折回,输出逐字节不变)⇒ **一遍扫描的边际成本:我们 0.98ms,原生 1.02-1.28ms**。
+//   **两边扫描一样贵** —— 此前十刀全部瞄准"我们的扫描更慢",那个缺陷根本不存在。
+//   再对账:原生总计 4.71,而它的 MMA-only 4.28 + 一遍扫描 1.02 = 5.30 > 总计
+//   ⇒ **原生有约 0.6ms 的扫描是藏起来的**,藏在预取的 device load 延迟阴影里
+//   (它的预取是 8 次迭代的长延迟 load,GEMM 之后扫描就在这些 load 的影子里跑)。
+//   而 packed 上传把我们的预取压到 2 次迭代 —— 省了 0.65ms 上传 + 0.3ms GPU(净赚),
+//   **但同时把阴影削没了**。这也解释了当时那个反常:packed 之后串行归并突然比蝶形贵
+//   0.85ms,因为它原本就藏在预取后面。
+// 做法:不需要第二个 Bsh 缓冲。GEMM 之后的 barrier 已保证所有 SG 读完 Bsh ⇒
+//   同一个 Bsh 可以就地覆盖。每线程只多 2 个 u32 寄存器(packed 下 1024 u32 / 512 线程)。
+//   共享内存不变、barrier 数不变(仍 3 次)。
+// env OFFICIAL_AETHER_MATCH_DAWN_NOPREFETCH=1 回到原结构做单变量 A/B。
+std::string PrefetchWgsl(const std::string& src) {
+  std::string t = src;
+  // packed 形态下的预取块(PackedWgsl 的产物),整块搬走
+  const std::string stage =
+      "    for (var e = lid; e < BT * 32u; e = e + 512u) {\n"
+      "      let brow = col0 + e / 32u;\n"
+      "      let pu = select(0u, B[brow * 32u + (e % 32u)], brow < U.numB);\n"
+      "      let po = (e / 32u) * 128u + (e % 32u) * 4u;\n"
+      "      Bsh[po] = f16(pu & 255u);\n"
+      "      Bsh[po + 1u] = f16((pu >> 8u) & 255u);\n"
+      "      Bsh[po + 2u] = f16((pu >> 16u) & 255u);\n"
+      "      Bsh[po + 3u] = f16(pu >> 24u);\n"
+      "    }\n"
+      "    workgroupBarrier();\n";
+  const size_t sp = t.find(stage);
+  if (sp == std::string::npos) return src;
+  // 1) 循环内的预取块删掉
+  t.erase(sp, stage.size());
+  // 2) 循环外(loop 之前)先把第 0 块预取好
+  const std::string loop_head = "  var col0 = 0u;\n  loop {\n";
+  const size_t lp = t.find(loop_head);
+  if (lp == std::string::npos) return src;
+  std::string pre0 = stage;
+  { const size_t q = pre0.find("col0 + e / 32u"); pre0.replace(q, 14, "0u + e / 32u"); }
+  t.insert(lp, pre0);
+  // 3) GEMM 后的 barrier 之后:发出下一块的 load 到寄存器
+  const std::string after_gemm =
+      "      subgroupMatrixStore(&accSh, (sg * 8u) * 32u + nt * 8u, acc, false, 32u);\n"
+      "    }\n"
+      "    workgroupBarrier();\n";
+  const size_t ag = t.find(after_gemm);
+  if (ag == std::string::npos) return src;
+  t.insert(ag + after_gemm.size(),
+      "    // 提前发出下一块的 device load(只进寄存器,不碰 Bsh)\n"
+      "    let nextT = col0 + BT;\n"
+      "    let pe0 = lid;\n"
+      "    let pe1 = lid + 512u;\n"
+      "    let pr0 = nextT + pe0 / 32u;\n"
+      "    let pr1 = nextT + pe1 / 32u;\n"
+      "    let pv0 = select(0u, B[pr0 * 32u + (pe0 % 32u)], pr0 < U.numB);\n"
+      "    let pv1 = select(0u, B[pr1 * 32u + (pe1 % 32u)], pr1 < U.numB);\n");
+  // 4) 归并之后、循环末尾之前:解包写回 Bsh,再一次 barrier
+  const std::string tail = "    col0 = col0 + BT;\n";
+  const size_t tp = t.rfind(tail);
+  if (tp == std::string::npos) return src;
+  t.replace(tp, tail.size(),
+      "    // 用得最晚:此时 load 已在飞行中被扫描+归并掩藏\n"
+      "    let po0 = (pe0 / 32u) * 128u + (pe0 % 32u) * 4u;\n"
+      "    Bsh[po0] = f16(pv0 & 255u);\n"
+      "    Bsh[po0 + 1u] = f16((pv0 >> 8u) & 255u);\n"
+      "    Bsh[po0 + 2u] = f16((pv0 >> 16u) & 255u);\n"
+      "    Bsh[po0 + 3u] = f16(pv0 >> 24u);\n"
+      "    let po1 = (pe1 / 32u) * 128u + (pe1 % 32u) * 4u;\n"
+      "    Bsh[po1] = f16(pv1 & 255u);\n"
+      "    Bsh[po1 + 1u] = f16((pv1 >> 8u) & 255u);\n"
+      "    Bsh[po1 + 2u] = f16((pv1 >> 16u) & 255u);\n"
+      "    Bsh[po1 + 3u] = f16(pv1 >> 24u);\n"
+      "    workgroupBarrier();\n"
+      "    col0 = nextT;\n");
+  return t;
+}
+
 std::string ColpTransposeWgsl(const std::string& src) {
   std::string t = src;
   auto rep = [&t](const std::string& from, const std::string& to) {
@@ -1605,6 +1683,10 @@ bool EnsureMainPipelines(Ctx& c) {
       mixed_src = ColpTransposeWgsl(mixed_src);  // 新核已是 rb-major,不重复转置
     }
     if (c.packed) mixed_src = PackedWgsl(mixed_src);
+    if (c.packed && shape &&
+        getenv("OFFICIAL_AETHER_MATCH_DAWN_NOPREFETCH") == nullptr) {
+      mixed_src = PrefetchWgsl(mixed_src);
+    }
     if (c.mixed && getenv("OFFICIAL_AETHER_MATCH_DAWN_NOSCAN") != nullptr) {
       mixed_src = NoScanWgsl(mixed_src);
     }
