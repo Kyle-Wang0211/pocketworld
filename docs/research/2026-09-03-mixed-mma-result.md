@@ -527,3 +527,29 @@ env 开关做镜像 A/B;估价只用来排序候选,绝不用来承诺收益。
 +1.11ms 全在扫描机构上。已排除:数学模式、累加器形态、静态/动态线程组分配、
 线程重平衡族、跨 SG 归并、分块开销。已定价且不可修:WGSL 无子组 barrier ≈ 0.10ms。
 **其余约 1.0ms 目前没有机制,不做无根据的猜测。**
+
+## 09-04 本地定案两条(读源码 + 编译探针,不占 GPU)
+
+### ① WGSL 无法按元素访问矩阵累加器 ⇒ 「落 threadgroup 内存再扫」是语言层必然
+`src/tint/lang/core/core.def` 里 subgroup matrix 的**全部**内建只有 7 个:
+`Load / Store / Multiply / MultiplyAccumulate / ScalarAdd / ScalarMultiply / ScalarSubtract`。
+**没有任何元素访问**。CUDA 的 `wmma::fragment` 可以按元素索引(CUTLASS 的 epilogue 就靠这个
+在寄存器里做归约),WGSL 不行 ⇒ 我们必须 `subgroupMatrixStore` 到 threadgroup 再扫。
+这条不是"没想到",是**结构性约束**,可以停止在这个方向上找出路。
+
+### ② 整数矩阵乘:WGSL 有、**Apple 没有**;但**跨端那一侧可能有**
+core.def 里:`subgroup_matrix_elements: f32 | f16 | u32 | i32 | u8 | i8`,
+`subgroupMatrixMultiplyAccumulate<TR: iu32_iu8>`,而且 `subgroupMatrixLoad` 有
+**直接读 packed u8(`array<u32>`)** 的重载 —— 正好是我们描述子的原生形态。
+若可用:**解包整段消失**(实测手写核不解包 3.87 vs 解包 4.13-4.33,值 0.3-0.45ms),
+而且逐字节无损从"u8 在 f16 里精确"的论证变成**构造上精确**。
+
+**但 MSL 不支持整数 simdgroup_matrix**(编译探针实证):
+`is_simdgroup_matrix_element<uchar>` / `<uint>` / `<short>` 全部静态断言失败,
+只有 **half / float / bfloat** 通过。Dawn 的 Metal 后端也是硬编码通告配置的
+(`PhysicalDeviceMTL.mm`,f16→f32 那条就是我们自己加的)。⇒ **Apple 端死路**。
+
+🔴 **但这条要留给三端**:Vulkan 的 `VK_KHR_cooperative_matrix` 在 Adreno/Mali 上普遍支持
+int8→int32,WGSL 的重载已经就位。Android/鸿蒙臂可以走 u8→u32 整数通路:不解包、
+构造上精确、且整数矩阵单元通常是更高吞吐。**这是"一套 WGSL 经能力门分档"的正当用法**
+(同一份着色器文本按适配器能力做编译期变换,不是两套手写后端)。上机前需实测。
