@@ -595,3 +595,52 @@ MMA+预取+barrier 我们 4.13   原生 4.28     我们更快
 ```
 🔴 **我无法定位这 24%。** 不再猜测。若将来重启这条线,已判死的十条不要重走;
 可信的只有同一二进制内 env 开关的镜像 A/B,减法估价在这个核里一律不作数。
+
+## 09-04 自研线:软件流水预取(成 1 / 死 2),以及 AGX 的阴影规则
+
+### 成:PrefetchWgsl —— **−0.257ms**(harness)/ **−0.365ms**(隔离台架)
+把下一块 B 的 device load 提前发出到寄存器、解包推后,不需要第二个 Bsh 缓冲
+(GEMM 之后的 barrier 已保证所有 SG 读完 Bsh ⇒ 就地覆盖)。每线程只多 2 个 u32。
+共享内存不变、barrier 数不变。四道门全绿,sha fcb72732ae098e0b 不变。
+
+**它来自一次重新定位,不是猜**:此前十刀全部瞄准"我们的扫描比原生慢",而用无污染源的秤
+(额外一遍扫描写影子变量 + 运行期 select 折回,输出逐字节不变、pad 是 uniform 故不被 DCE)
+量出**一遍扫描我们 0.98ms、原生 1.02-1.28ms —— 两边一样贵**。那个缺陷根本不存在。
+
+### 🔴 AGX 的阴影规则(agent 从 Mesa 源码打到源头,改变设计口径)
+1. **threadgroup 访存没有阴影可藏。** `agx_opcodes.py` 里 `local_load/local_store/local_atomic`
+   **全都不带 SCOREBOARD**,而 `device_load/device_store/texture_sample/stack_*` 都带;
+   `agx_insert_waits.c` 的 `instr_is_async()` 就是按 SCOREBOARD 判的。
+   ⇒ threadgroup 访存在硬件上**不可能在飞行中**,没有槽可挂。
+   **所有"给 Bsh 取数做流水"的方向(B fragment 提前载入 / k 循环流水 / aFrag 分批)一次性全死。**
+2. **barrier 会强制等掉所有在飞的 scoreboard 槽**(同文件)⇒ **阴影长度 = 发出点到下一个 barrier
+   的无 barrier 区间**,一分不多。这把"阴影发在哪"变成可算的问题。
+
+### 死:三条,而且合起来说明**阴影已经饱和**
+| 变体 | 阴影区间 | 结果 |
+|---|---|---|
+| 发出点挪到循环顶(GEMM 前) | 整块 GEMM ~4ms | **+0.10ms**(三次一致) |
+| 现役:GEMM barrier 之后 | 两遍扫描 ~0.9ms | 基准 |
+| t+2 加深(寄存器轮转,共享内存/barrier 不变) | 阴影翻倍 | **+0.02ms**(三次,min 复现到 ±0.001) |
+
+**阴影越长越差、加深也无用 ⇒ 阴影早已过剩**(一块 B 才 4KiB,device 延迟微秒级,
+而扫描给了 0.9ms 掩护)。所以 −0.257ms **不是"藏延迟"**,是把 load 从 barrier 与 GEMM
+之间的关键路径上挪开;发得更早反而把 2 个寄存器压进寄存器最紧的 GEMM 段伤占用
+(Mesa `agx_performance.c` 占用表:+32 halfregs 跨两档 ≈ −25%)。**这条机制到此饱和。**
+
+### 副产品:一个只会在 Android 上炸的 bug(已修,commit cb87263)
+`select(0u, B[pr0 * 32u + ...], pr0 < U.numB)` 看着有守卫,但 **WGSL 的 select 是函数不是
+短路运算符,两个操作数都会求值** ⇒ 最后一块读到 B 尾后约 2 KiB。`disable_robustness` 开着,
+Metal 上无害(值被丢弃、输出逐字节不变),**但 Vulkan 后端可能触发校验层或崩溃**。
+已把行号钳到界内,界内地址逐字节不变。**这个发现比那两刀本身值钱 —— 它在 Mac 上永远不会暴露。**
+
+### A 侧方向的算术死刑(不必动机制)
+A 的载入是**每 workgroup 一次的序幕**,而列块循环 = 8192/32 = **256 轮**。
+序幕 barrier 9 次 vs 循环 768 次;序幕 device load 每 lane 8 次 vs 循环 512 次;
+序幕 fragment load 16 次 vs 循环 16384 次。**把 A 的载入整个删掉,上限也不到 1%。**
+
+## 收盘(09-04)
+```
+WGSL 三端一套  5.855 ms      原生 Metal  5.008 ms      ⇒ 1.17×
+战役起点 2.6× → 1.23×(五刀)→ 1.17×(软件流水预取)
+```
