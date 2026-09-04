@@ -1751,6 +1751,40 @@ std::string PackedWgsl(const std::string& src) {
   return t;
 }
 
+// [NOAPRO-PROBE 2026-09-05] 计时探针(输出作废,只为定价):砍掉 A 的解包前奏
+// (4 轮 × 每轮 4 个 SG 活 12 个闲 + 8 次 barrier),只保留 16 次 fragment 载入。
+// 起因:按列分块之后,**每个 dispatch 的 104 个工作组都要重跑一遍这段前奏**,
+// 而实测每多一个 dispatch 仍有 ~1ms 落在提交内(尾部空转已被按列分块消除)。
+// 若这段占大头,解法是:B 仍打包(上传便宜),A 改成 f16 直存 —— 前奏整段消失。
+std::string NoAProWgsl(const std::string& src) {
+  std::string t = src;
+  const std::string head = "  {\n    let pwv = sg >> 2u;\n";
+  const size_t p = t.find(head);
+  if (p == std::string::npos) {
+    AnchorAlarm("NoAProWgsl", "前奏头未命中");
+    return src;
+  }
+  const std::string tail = "      workgroupBarrier();\n    }\n  }";
+  const size_t q = t.find(tail, p);
+  if (q == std::string::npos) {
+    AnchorAlarm("NoAProWgsl", "前奏尾未命中");
+    return src;
+  }
+  const std::string repl =
+      "  {\n"
+      "    let pq = (sg & 3u) * 1024u;\n"
+      // 保留一次对 A 的引用,否则 binding 0 会被自动派生的布局裁掉
+      // (Dawn 报 \"binding index 0 not present in the bind group layout\")。
+      "    if (lid == 0u) { Bsh[0] = f16(A[aRow0 * 32u] & 255u); }\n"
+      "    workgroupBarrier();\n"
+      "    for (var k = 0u; k < 16u; k = k + 1u) {\n"
+      "      aFrag[k] = subgroupMatrixLoad<Left>(&Bsh, pq + k * 8u, false, 128u);\n"
+      "    }\n"
+      "  }";
+  t.replace(p, q + tail.size() - p, repl);
+  return t;
+}
+
 // [PREFETCH-SHADOW 2026-09-04] 软件流水:把下一块 B 的 device load **提前**发出、
 // 解包写回**推后**,让扫描+归并跑在 load 的延迟阴影里。
 // 机制(用无污染源的探针量出来的,这是本战役最关键的一次测量):
@@ -1968,6 +2002,9 @@ bool EnsureMainPipelines(Ctx& c) {
     }
     if (c.mixed && getenv("OFFICIAL_AETHER_MATCH_DAWN_HALFLOAD") != nullptr) {
       mixed_src = HalfLoadWgsl(mixed_src);
+    }
+    if (c.mixed && getenv("OFFICIAL_AETHER_MATCH_DAWN_NOAPRO") != nullptr) {
+      mixed_src = NoAProWgsl(mixed_src);
     }
     if (c.mixed && getenv("OFFICIAL_AETHER_MATCH_DAWN_BSTORE") != nullptr) {
       mixed_src = BStoreWgsl(mixed_src);
