@@ -1222,9 +1222,22 @@ std::unique_ptr<Ctx> CreateCtx() {
   // 配置不可用时(未打补丁的 Dawn / 不支持的 GPU)自动退回 f32 —— 输出不变,只是慢些。
   // env OFFICIAL_AETHER_MATCH_DAWN_KERNEL=plain 可强制 f32 做单变量 A/B。
   const bool want_mixed = !(force && std::strcmp(force, "plain") == 0);
+  // [IOS-SUBGROUP-VENDOR 2026-09-04] 🔴 这道闸曾让**每一台 iPhone**都无条件回退 tiled。
+  // Dawn 在 iOS 上把 vendorId 硬写成 0(metal/PhysicalDeviceMTL.mm 的 IOS 分支
+  // GetDevicePCIInfo:`*ids = PCIIDs{0, 0}`),于是 gpu_info::IsApple() 为假,
+  // subgroup size 被报成 [4,64] 而不是 Apple GPU 真实的 [32,32] —— 而同一个文件里
+  // 上游自己的注释正引着 Apple 的话 "on all Apple GPUs, it is equal to 32"。
+  // 后果:09-04 首次上机,A16 上每对 8192² 要 205ms(同尺寸原生 Metal 24ms,8.5×),
+  // 指纹显示 kernel=tiled —— 我们优化了一整天的 MMA 核在设备上一次都没执行过。
+  // iOS 上不存在非 Apple 的 GPU;macOS 上 Dawn 自己也是按设备名里的 "Apple" 认厂商的
+  // (kVendors/GetVendorIdFromVendors),所以这里用同一判据放行,判据强度与上游一致。
+  // 仍然要求 [min,max] 真的把 32 夹在中间 —— 核是按 32 lane 写死的,这个要求不放松。
+  const bool apple_gpu = c->adapter_name.find("Apple") != std::string::npos;
+  const bool sg32 = (c->subgroup_min == 32 && c->subgroup_max == 32) ||
+                    (apple_gpu && c->subgroup_min <= 32 && c->subgroup_max >= 32);
   const bool mma_ok = c->feat_subgroups && c->feat_sgmatrix &&
-                      c->sgcfg_f32_8x8x8 && c->subgroup_min == 32 &&
-                      c->subgroup_max == 32 && c->lim_invocations >= 512 &&
+                      c->sgcfg_f32_8x8x8 && sg32 &&
+                      c->lim_invocations >= 512 &&
                       c->lim_size_x >= 512 && c->lim_storage >= 32768;
   std::vector<wgpu::FeatureName> feats;
   wgpu::Limits req{};
@@ -1312,6 +1325,31 @@ std::unique_ptr<Ctx> CreateCtx() {
             }
           }),
       UINT64_MAX);
+  if (!c->device && c->backend == Backend::kMma) {
+    // [MMA-DEGRADE 2026-09-04] 安全网:放宽上面那道闸之后,若某机型确实拿不到
+    // MMA 所需的特性/限制,原来的行为是 EnsureDawn 返回 nullptr ⇒ 整个 Dawn
+    // 匹配器不可用 ⇒ 管线逐对跳过(注释明写"绝不 CPU 暴力回退")⇒ **点数静默变少**。
+    // 那是最坏的失败形态。改为降级重试 tiled:慢,但结果仍逐字节正确。
+    Log("MMA device creation failed (%s); degrading to tiled", dmsg.c_str());
+    c->backend = Backend::kTiled;
+    c->mixed = false;
+    c->ts_on = false;
+    dd.requiredFeatureCount = 0;
+    dd.requiredFeatures = nullptr;
+    dd.requiredLimits = nullptr;
+    dmsg.clear();
+    c->instance.WaitAny(
+        c->adapter.RequestDevice(
+            &dd, wgpu::CallbackMode::WaitAnyOnly,
+            [&](wgpu::RequestDeviceStatus st, wgpu::Device d, wgpu::StringView m) {
+              if (st == wgpu::RequestDeviceStatus::Success) {
+                c->device = std::move(d);
+              } else {
+                dmsg = SV(m);
+              }
+            }),
+        UINT64_MAX);
+  }
   if (!c->device) {
     Log("device creation failed: %s", dmsg.c_str());
     return nullptr;
