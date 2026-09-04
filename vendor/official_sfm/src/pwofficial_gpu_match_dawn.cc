@@ -1456,35 +1456,53 @@ Ctx* EnsureDawn() {
 // [STAGE0-PROBE 2026-09-04] 计时探针(输出错但确定,能过跨 rep 确定性闸):
 // 预取永远读第 0 块 ⇒ 同样的 8KB 反复命中缓存,差值 = 预取的真实内存成本。
 // 记账进度:总 7.8ms = MMA ~4.3(roofline 86%)+ 扫描 0.86 + barrier 0.2 + ?2.4
+// [ANCHOR-ALARM 2026-09-05] 锚点失配必须**在设备上也看得见**。
+// 09-05 一天里 NOSCAN / Stage0 / ExtraBarrier 三个探针都被查出早已静默退化,
+// 而设备侧读到的"扫描只值 1.5%""B 流量零成本""barrier 零成本"全部作废 ——
+// 因为 app 的 stderr 传不回电脑。现在同一条告警也追加进 matcher_backend.jsonl,
+// 电脑侧 devicectl copy from 就能看到,不用开 app。
+void AnchorAlarm(const char* what, const char* detail) {
+  std::fprintf(stderr, "[pwofficial_gpu_match_dawn] 🔴 锚点失配:%s %s\n", what,
+               detail ? detail : "");
+  if (const char* home = std::getenv("HOME")) {
+    const std::string fp = std::string(home) + "/Documents/matcher_backend.jsonl";
+    if (FILE* f = std::fopen(fp.c_str(), "a")) {
+      std::fprintf(f, "{\"anchor_mismatch\":\"%s\",\"detail\":\"%s\"}\n", what,
+                   detail ? detail : "");
+      std::fclose(f);
+    }
+  }
+}
+
 std::string Stage0Wgsl(const std::string& src) {
   std::string t = src;
-  const std::string from = "        let brow = nextT + e / 128u;";
+  // [ANCHOR-FIX 2026-09-05] 旧锚点是形状刀之前的预取行,早已不存在 ⇒ 探针静默死亡,
+  // 设备上据此读出"B 流量零成本"的假结论。现役预取是 packed u32 形态的 pr0。
+  const std::string from = "    let pr0 = nextT + pe0 / 32u;";
   const size_t p = t.find(from);
-  if (p == std::string::npos) { std::fprintf(stderr, "[pwofficial_gpu_match_dawn] 🔴 锚点失配:Stage0Wgsl 静默退化为 no-op\n"); return src; }
-  t.replace(p, from.size(), "        let brow = e / 128u;");
+  if (p == std::string::npos) { AnchorAlarm("Stage0Wgsl", "静默退化为 no-op"); return src; }
+  t.replace(p, from.size(), "    let pr0 = pe0 / 32u;");
   return t;
 }
 
 std::string ExtraBarrierWgsl(const std::string& src, int n) {
   std::string t = src;
-  const std::string from =
-      "      subgroupMatrixStore(&accSh, (sg * 8u) * 32u + nt * 8u, acc, false, 32u);\n"
-      "    }\n"
-      "    workgroupBarrier();\n";
-  const size_t p = t.find(from);
-  if (p == std::string::npos) { std::fprintf(stderr, "[pwofficial_gpu_match_dawn] 🔴 锚点失配:ExtraBarrierWgsl 静默退化为 no-op\n"); return src; }
-  (void)p;
-  // 相邻同种 barrier 会被 Metal 编译器合并(实测 +4 相邻 = 零代价)⇒ 必须放到
-  // 被 MMA 工作隔开的程序点上:nt 循环每轮末尾加一次(nt 循环对全部 512 线程一致)。
-  std::string one =
-      "      subgroupMatrixStore(&accSh, (sg * 8u) * 32u + nt * 8u, acc, false, 32u);\n";
+  // [ANCHOR-FIX 2026-09-05] 旧锚点是**循环交换之前**的单累加器 store
+  // ("+ nt * 8u, acc"),ILP4 之后变成 acc0..acc3 四条 ⇒ 探针静默死亡,
+  // 设备上据此读出"barrier 零成本"的假结论。改锚在第 4 条 store 上,在它之后加 N 次。
+  const std::string one =
+      "    subgroupMatrixStore(&accSh, (sg * 8u) * 32u + 3u * 8u, acc3, false, 32u);\n";
   const size_t q = t.find(one);
-  if (q == std::string::npos) { std::fprintf(stderr, "[pwofficial_gpu_match_dawn] 🔴 锚点失配:ExtraBarrierWgsl 静默退化为 no-op\n"); return src; }
+  if (q == std::string::npos) {
+    AnchorAlarm("ExtraBarrierWgsl", "静默退化为 no-op");
+    return src;
+  }
   std::string add = one;
-  for (int i = 0; i < n; ++i) add += "      workgroupBarrier();\n";
+  for (int i = 0; i < n; ++i) add += "    workgroupBarrier();\n";
   t.replace(q, one.size(), add);
   return t;
 }
+
 
 std::string NoScanWgsl(const std::string& src) {
   std::string t = src;
@@ -1492,9 +1510,7 @@ std::string NoScanWgsl(const std::string& src) {
     const size_t p = t.find(from);
     if (p == std::string::npos) {
       // 逐锚点报告:只说"这个变换失配"不够,得说清是哪一条,否则每次都要重查。
-      std::fprintf(stderr,
-                   "[pwofficial_gpu_match_dawn] 🔴 NoScanWgsl 锚点未命中: <<%s>>\n",
-                   from.c_str());
+      AnchorAlarm("NoScanWgsl", from.c_str());
       return false;
     }
     t.replace(p, from.size(), to);
@@ -1513,7 +1529,7 @@ std::string NoScanWgsl(const std::string& src) {
             "    for (var t = 0u; t < 1u; t = t + 1u) {");
   ok &= rep("    for (var r = 0u; r < 8u; r = r + 1u) {",
             "    for (var r = 0u; r < 1u; r = r + 1u) {");
-  if (!ok) { std::fprintf(stderr, "[pwofficial_gpu_match_dawn] 🔴 锚点失配:NoScanWgsl 静默退化为 no-op\n"); return src; }
+  if (!ok) { AnchorAlarm("NoScanWgsl", "静默退化为 no-op"); return src; }
   return t;
 }
 
@@ -1557,9 +1573,7 @@ std::string HalfLoadWgsl(const std::string& src) {
   auto rep = [&t](const std::string& from, const std::string& to) {
     const size_t p = t.find(from);
     if (p == std::string::npos) {
-      std::fprintf(stderr,
-                   "[pwofficial_gpu_match_dawn] 🔴 HalfLoadWgsl 锚点未命中: <<%s>>\n",
-                   from.c_str());
+      AnchorAlarm("HalfLoadWgsl", from.c_str());
       return false;
     }
     t.replace(p, from.size(), to);
@@ -1574,6 +1588,54 @@ std::string HalfLoadWgsl(const std::string& src) {
             "      acc2 = subgroupMatrixMultiplyAccumulate(aFrag[15u - k], b0, acc2);\n"
             "      acc3 = subgroupMatrixMultiplyAccumulate(aFrag[15u - k], b1, acc3);\n");
   if (!ok) return src;
+  return t;
+}
+
+// [MERGE1-PROBE 2026-09-05] 计时探针(输出作废,只为定价):把跨工作组归并的
+// 内层循环截断到 1 次。13312² 时 numWg = nA/WGR = 104,归并每列要扫 104 项、
+// 共 138 万次读(16.6 MB,rb-major 布局下是合并访问)。它是分块之后**另一个
+// dispatch**,此前从没定过价 —— NOSCAN 只覆盖核内的两个扫描,覆盖不到它。
+std::string Merge1Wgsl(const std::string& src) {
+  std::string t = src;
+  const std::string from = "  for (var w = 0u; w < U.numWg; w = w + 1u) {";
+  const std::string to   = "  for (var w = 0u; w < min(U.numWg, 1u); w = w + 1u) {";
+  const size_t p = t.find(from);
+  if (p == std::string::npos) {
+    AnchorAlarm("Merge1Wgsl", "锚点未命中");
+    return src;
+  }
+  t.replace(p, from.size(), to);
+  return t;
+}
+
+// [BSTORE-PROBE 2026-09-05] 可行性 + 定价探针:B fragment **直接从存储缓冲读**,
+// 不再经过 Bsh。必须与 UNPACKED 同开(那时 B 在存储里就是 f16)。
+//
+// 依据:设备侧 stage0 探针测出**从全局读 B 的流量成本 ≈ 0**(13312 时整个 B 只有
+// 1.7MB,全在 SLC 里)。而每个工作组都要把整个 B 解包写进 Bsh 一遍 —— 104 个
+// 工作组 × 13312 × 128 = 1.77 亿次线程组写,外加每块两次 barrier。
+// A 侧本来就是 `subgroupMatrixLoad<Left>(&A, ...)` 直读存储缓冲的,B 没有理由不能。
+// 索引对齐:Bsh 里 (nt*8) 行对应 B 的 (tile0 + nt*8) 行,步长同为 128,transpose 同为 true。
+std::string BStoreWgsl(const std::string& src) {
+  std::string t = src;
+  int hit = 0;
+  for (int nt = 0; nt < 4; ++nt) {
+    char from[160], to[160];
+    std::snprintf(from, sizeof(from),
+                  "subgroupMatrixLoad<Right>(&Bsh, (%du * 8u) * 128u + k * 8u, true, 128u)",
+                  nt);
+    std::snprintf(to, sizeof(to),
+                  "subgroupMatrixLoad<Right>(&B, (col0 + %du * 8u) * 128u + k * 8u, true, 128u)",
+                  nt);
+    const size_t p = t.find(from);
+    if (p == std::string::npos) continue;
+    t.replace(p, std::strlen(from), to);
+    ++hit;
+  }
+  if (hit != 4) {
+    AnchorAlarm("BStoreWgsl", "四条 B 载入没全部命中");
+    return src;
+  }
   return t;
 }
 
@@ -1658,7 +1720,7 @@ std::string PackedWgsl(const std::string& src) {
              "      workgroupBarrier();\n"
              "    }\n"
              "  }") > 0);
-  if (!ok) { std::fprintf(stderr, "[pwofficial_gpu_match_dawn] 🔴 锚点失配:PackedWgsl 静默退化为 no-op\n"); return src; }
+  if (!ok) { AnchorAlarm("PackedWgsl", "静默退化为 no-op"); return src; }
   return t;
 }
 
@@ -1700,7 +1762,7 @@ std::string PrefetchWgsl(const std::string& src) {
     std::fprintf(stderr,
                  "[pwofficial_gpu_match_dawn] PrefetchWgsl 锚点失配(stage),"
                  "变换未生效 —— 内核结构可能已改,请核对锚点\n");
-    { std::fprintf(stderr, "[pwofficial_gpu_match_dawn] 🔴 锚点失配:PrefetchWgsl 静默退化为 no-op\n"); return src; }
+    { AnchorAlarm("PrefetchWgsl", "静默退化为 no-op"); return src; }
   }
   // 1) 循环内的预取块删掉
   t.erase(sp, stage.size());
@@ -1709,7 +1771,7 @@ std::string PrefetchWgsl(const std::string& src) {
   const size_t lp = t.find(loop_head);
   if (lp == std::string::npos) {
     std::fprintf(stderr, "[pwofficial_gpu_match_dawn] PrefetchWgsl 锚点失配(loop_head),变换未生效\n");
-    { std::fprintf(stderr, "[pwofficial_gpu_match_dawn] 🔴 锚点失配:PrefetchWgsl 静默退化为 no-op\n"); return src; }
+    { AnchorAlarm("PrefetchWgsl", "静默退化为 no-op"); return src; }
   }
   std::string pre0 = stage;
   { const size_t q = pre0.find("col0 + e / 32u"); pre0.replace(q, 14, "0u + e / 32u"); }
@@ -1730,7 +1792,7 @@ std::string PrefetchWgsl(const std::string& src) {
   const size_t ag = t.find(after_gemm);
   if (ag == std::string::npos) {
     std::fprintf(stderr, "[pwofficial_gpu_match_dawn] PrefetchWgsl 锚点失配(after_gemm),变换未生效\n");
-    { std::fprintf(stderr, "[pwofficial_gpu_match_dawn] 🔴 锚点失配:PrefetchWgsl 静默退化为 no-op\n"); return src; }
+    { AnchorAlarm("PrefetchWgsl", "静默退化为 no-op"); return src; }
   }
   t.insert(ag + after_gemm.size(),
       "    // 提前发出下一块的 device load(只进寄存器,不碰 Bsh)\n"
@@ -1751,7 +1813,7 @@ std::string PrefetchWgsl(const std::string& src) {
   // 4) 归并之后、循环末尾之前:解包写回 Bsh,再一次 barrier
   const std::string tail = "    col0 = col0 + BT;\n";
   const size_t tp = t.rfind(tail);
-  if (tp == std::string::npos) { std::fprintf(stderr, "[pwofficial_gpu_match_dawn] 🔴 锚点失配:PrefetchWgsl 静默退化为 no-op\n"); return src; }
+  if (tp == std::string::npos) { AnchorAlarm("PrefetchWgsl", "静默退化为 no-op"); return src; }
   t.replace(tp, tail.size(),
       "    // 用得最晚:此时 load 已在飞行中被扫描+归并掩藏\n"
       "    let po0 = (pe0 / 32u) * 128u + (pe0 % 32u) * 4u;\n"
@@ -1782,7 +1844,7 @@ std::string ColpTransposeWgsl(const std::string& src) {
             "        ColP[rb * U.numB + c] = ColPart(best, second, bi);");
   ok &= rep("    let p = ColP[c * U.numWg + w];",
             "    let p = ColP[w * U.numB + c];");
-  if (!ok) { std::fprintf(stderr, "[pwofficial_gpu_match_dawn] 🔴 锚点失配:ColpTransposeWgsl 静默退化为 no-op\n"); return src; }
+  if (!ok) { AnchorAlarm("ColpTransposeWgsl", "静默退化为 no-op"); return src; }
   return t;
 }
 
@@ -1873,6 +1935,12 @@ bool EnsureMainPipelines(Ctx& c) {
     }
     if (c.mixed && getenv("OFFICIAL_AETHER_MATCH_DAWN_HALFLOAD") != nullptr) {
       mixed_src = HalfLoadWgsl(mixed_src);
+    }
+    if (c.mixed && getenv("OFFICIAL_AETHER_MATCH_DAWN_BSTORE") != nullptr) {
+      mixed_src = BStoreWgsl(mixed_src);
+    }
+    if (c.mixed && getenv("OFFICIAL_AETHER_MATCH_DAWN_MERGE1") != nullptr) {
+      mixed_src = Merge1Wgsl(mixed_src);
     }
     if (c.mixed && getenv("OFFICIAL_AETHER_MATCH_DAWN_BLOAD") != nullptr) {
       mixed_src = BLoadHoistWgsl(mixed_src);
