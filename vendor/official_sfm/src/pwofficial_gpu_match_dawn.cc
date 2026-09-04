@@ -338,6 +338,201 @@ uint64_t DescriptorResidencyBudgetBytes() {
 // the two rowBase lines (see header). Bindings: 0 A (f32 rows×128, padded to
 // 128-row multiple), 1 B (same), 2 OutAB (i32 × numA), 3 Params, 4 ColP
 // (ColPart × numB × numWg), 5 OutBA (i32 × numB; merge entry only).
+// [METAL-SHAPE 2026-09-04] 主核改用出货 Metal 核 pw_match_gemm2 的形状。
+// 起因(隔离台架,把 tint 生成的 MSL 与手写 Metal 同台交替跑,噪声 ±0.02ms):
+//   tint 完整 7.485 / 仅 MMA 4.282 / 手写仅 MMA 3.873
+//   ⇒ MMA 段只慢 11%,**扫描段值 2.77ms**,而截断循环体只省 0.86ms
+//   ⇒ 1.9ms 是脚手架:扫描临界路径 32 次(行)/128 次(列),只有 160/512 线程在做。
+// Metal v2 的形状:每个 SG 只扫**自己那 8 行**,512 线程全参与,临界路径 8+8 次。
+// 连带解锁:扫描不再放在 `if (lid < WGR)` 这种发散分支里 ⇒ 控制流对子组一致 ⇒
+//   tint 允许 subgroupShuffleXor(此前"必须在子组一致控制流中调用"就是被发散卡死的)。
+// 逐字复刻 pw_match_gemm2 的三处语义(它本身是我们逐字节对拍的 oracle):
+//   1) 行方向 lcg 两级蝶形,`if (ob > pb)` 严格大于 ⇒ 平局留自己;lcg 升序对应列
+//      升序,只有 lcg==0 的结果被读走,那一条恰好是"最小列号胜"。
+//   2) 列方向每 lane 独占一列、只扫本 SG 的 8 行 → cp* 线程组内 partial;
+//      跨 SG 归并按 sgid 升序 == 行号升序 ⇒ "最小行号胜"保留。
+//   3) 分块 top-2 的层次归并与逐元素扫描等价(v2 本就是这么对着 v1 过闸的)。
+// 共享内存 30 KiB = Bsh 8(f16)+ accSh 16 + cp* 3×2 ⇒ **只在 mixed 档可用**
+//   (f32 档 Bsh 16KiB 会撑到 38KiB 越限),plain 回退档继续用老核。
+// 预取回到"循环顶部全线程"(Metal v2 同款),放弃双缓冲重叠 —— 双缓冲正是
+//   逼出发散结构、进而锁死子组操作的那个根。
+constexpr char kWgslMmaMetalShape[] = R"WGSL(
+enable chromium_experimental_subgroup_matrix;
+enable subgroups;
+
+alias Left = subgroup_matrix_left<f32, 8, 8>;
+alias Right = subgroup_matrix_right<f32, 8, 8>;
+alias Res = subgroup_matrix_result<f32, 8, 8>;
+
+const INV_SQ_NORM : f32 = 0.000003814697265625; // 1/262144
+const WGR : u32 = 128u;
+const BT : u32 = 32u;
+
+struct Params {
+  numA : u32,
+  numB : u32,
+  maxRatio : f32,
+  maxDistance : f32,
+  numWg : u32,
+  rowBase : u32,
+  pad1 : u32,
+  pad2 : u32,
+};
+
+struct ColPart {
+  best : f32,
+  second : f32,
+  idx : i32,
+};
+
+@group(0) @binding(0) var<storage, read> A : array<f32>;
+@group(0) @binding(1) var<storage, read> B : array<f32>;
+@group(0) @binding(2) var<storage, read_write> OutAB : array<i32>;
+@group(0) @binding(3) var<uniform> U : Params;
+@group(0) @binding(4) var<storage, read_write> ColP : array<ColPart>;
+@group(0) @binding(5) var<storage, read_write> OutBA : array<i32>;
+
+var<workgroup> Bsh : array<f32, 4096>; // 32 rows x 128 (16 KiB)
+var<workgroup> accSh : array<f32, 4096>;   // WGR rows x 32 cols
+
+fn gatef(best : f32, second : f32, bestIndex : i32) -> i32 {
+  if (bestIndex < 0) { return -1; }
+  let bd = acos(min(best * INV_SQ_NORM, 1.0));
+  let sd = acos(min(second * INV_SQ_NORM, 1.0));
+  if (bd <= U.maxDistance && bd < U.maxRatio * sd) { return bestIndex; }
+  return -1;
+}
+
+var<workgroup> cpBest : array<f32, 512>;    // kSG(16) x BT(32)
+var<workgroup> cpSecond : array<f32, 512>;
+var<workgroup> cpIdx : array<i32, 512>;
+
+@compute @workgroup_size(512)
+fn main(@builtin(workgroup_id) wg : vec3<u32>,
+        @builtin(local_invocation_index) lid : u32,
+        @builtin(subgroup_id) sg : u32,
+        @builtin(subgroup_invocation_id) lane : u32) {
+  let rb = U.rowBase + wg.x;
+  let row0 = rb * WGR;
+  let lrow = lane >> 2u;
+  let lcg = lane & 3u;
+  let gRow = row0 + sg * 8u + lrow;
+  let aRow0 = row0 + sg * 8u;
+  var aFrag : array<Left, 16>;
+  for (var k = 0u; k < 16u; k = k + 1u) {
+    aFrag[k] = subgroupMatrixLoad<Left>(&A, aRow0 * 128u + k * 8u, false, 128u);
+  }
+  var rowBest = 0.0;
+  var rowSecond = 0.0;
+  var rowBestI = -1;
+
+  var col0 = 0u;
+  loop {
+    if (col0 >= U.numB) { break; }
+    for (var e = lid; e < BT * 128u; e = e + 512u) {
+      let brow = col0 + e / 128u;
+      Bsh[e] = select(0.0, B[brow * 128u + (e % 128u)], brow < U.numB);
+    }
+    workgroupBarrier();
+
+    for (var nt = 0u; nt < 4u; nt = nt + 1u) {
+      var acc = Res(0.0);
+      for (var k = 0u; k < 16u; k = k + 1u) {
+        let bF = subgroupMatrixLoad<Right>(&Bsh, (nt * 8u) * 128u + k * 8u, true, 128u);
+        acc = subgroupMatrixMultiplyAccumulate(aFrag[k], bF, acc);
+      }
+      subgroupMatrixStore(&accSh, (sg * 8u) * 32u + nt * 8u, acc, false, 32u);
+    }
+    workgroupBarrier();
+
+    var pb = 0.0;
+    var ps = 0.0;
+    var pbi = -1;
+    let rbase = (sg * 8u + lrow) * 32u;
+    for (var t = 0u; t < 8u; t = t + 1u) {
+      let cLoc = lcg * 8u + t;
+      let d = accSh[rbase + cLoc];
+      if (d > pb) { ps = pb; pb = d; pbi = i32(col0 + cLoc); }
+      else if (d > ps) { ps = d; }
+    }
+    {
+      let ob = subgroupShuffleXor(pb, 1u);
+      let os = subgroupShuffleXor(ps, 1u);
+      let oi = subgroupShuffleXor(pbi, 1u);
+      if (ob > pb) { ps = max(os, pb); pb = ob; pbi = oi; }
+      else { ps = max(ps, ob); }
+    }
+    {
+      let ob = subgroupShuffleXor(pb, 2u);
+      let os = subgroupShuffleXor(ps, 2u);
+      let oi = subgroupShuffleXor(pbi, 2u);
+      if (ob > pb) { ps = max(os, pb); pb = ob; pbi = oi; }
+      else { ps = max(ps, ob); }
+    }
+    if (lcg == 0u) {
+      if (pb > rowBest) { rowSecond = max(rowBest, ps); rowBest = pb; rowBestI = pbi; }
+      else { rowSecond = max(rowSecond, pb); }
+    }
+
+    var cb = 0.0;
+    var cs = 0.0;
+    var ci = -1;
+    let cbase = sg * 8u * 32u + lane;
+    for (var r = 0u; r < 8u; r = r + 1u) {
+      let d = accSh[cbase + r * 32u];
+      if (d > cb) { cs = cb; cb = d; ci = i32(row0 + sg * 8u + r); }
+      else if (d > cs) { cs = d; }
+    }
+    cpBest[sg * 32u + lane] = cb;
+    cpSecond[sg * 32u + lane] = cs;
+    cpIdx[sg * 32u + lane] = ci;
+    workgroupBarrier();
+
+    if (lid < BT) {
+      var b = cpBest[lid];
+      var s2 = cpSecond[lid];
+      var bi = cpIdx[lid];
+      for (var w = 1u; w < 16u; w = w + 1u) {
+        let ob = cpBest[w * 32u + lid];
+        let os = cpSecond[w * 32u + lid];
+        let oi = cpIdx[w * 32u + lid];
+        if (ob > b) { s2 = max(b, os); b = ob; bi = oi; }
+        else { s2 = max(s2, ob); }
+      }
+      let j = col0 + lid;
+      if (j < U.numB) {
+        ColP[rb * U.numB + j] = ColPart(b, s2, bi);
+      }
+    }
+    col0 = col0 + BT;
+  }
+
+  if (lcg == 0u && gRow < U.numA) {
+    OutAB[gRow] = gatef(rowBest, rowSecond, rowBestI);
+  }
+}
+
+@compute @workgroup_size(64)
+fn merge(@builtin(global_invocation_id) gid : vec3<u32>) {
+  let c = gid.x;
+  if (c >= U.numB) { return; }
+  var best = 0.0;
+  var second = 0.0;
+  var bi = -1;
+  for (var w = 0u; w < U.numWg; w = w + 1u) {
+    let p = ColP[w * U.numB + c];
+    if (p.best > best) {
+      second = max(best, p.second);
+      best = p.best;
+      bi = p.idx;
+    } else {
+      second = max(second, p.best);
+    }
+  }
+  OutBA[c] = gatef(best, second, bi);
+}
+)WGSL";
+
 constexpr char kWgslMmaFused[] = R"WGSL(
 enable chromium_experimental_subgroup_matrix;
 enable subgroups;
@@ -427,8 +622,15 @@ fn main(@builtin(workgroup_id) wg : vec3<u32>,
     }
 
     if (lid < WGR) {
-      let lim = min(BT, U.numB - tile0);
-      for (var c = 0u; c < lim; c = c + 1u) {
+      // [CONST-BOUND 2026-09-04] 上界用编译期常量 BT,而非 min(BT, numB-tile0)。
+      // 运行时上界让 LLVM 无法展开这个 32 次循环(手写 Metal 那边是编译期常量);
+      // 隔离台架(tint 生成的 MSL 逐行对拍手写形态)实测这一改 −0.37ms。
+      // **语义等价证明**:预取对越界列写的是精确 0(select(0, B[..], brow<numB)),
+      // 而这里是严格 `>` ⇒ rbest 初值 0.0 时 `0.0 > 0.0` 为假,补位列永远不会
+      // 成为 best/second,tile0+c 也就永远不会被写进 rbi。逐字节闸复验。
+      // guided 核**不能同样处理**:那边多一个 guide_ok(q, PtsD[tile0+c]),
+      // 补位下标会越界读点云缓冲,零点积的论证覆盖不到它。
+      for (var c = 0u; c < BT; c = c + 1u) {
         let s = accSh[lid * 32u + c];
         if (s > rbest) {
           rsecond = rbest; rbest = s; rbi = i32(tile0 + c);
@@ -1116,6 +1318,93 @@ Ctx* EnsureDawn() {
 // source of truth: only the operand types change. The accumulator (Res),
 // accSh, the gate math and the tie-break order are untouched, so the dots
 // stay exact (see Ctx::sgcfg_f16_f32) and the output is bit-identical.
+// [COLP-TRANSPOSE 2026-09-04] ColP 布局 c-major → rb-major。
+// 机制(由 COL-SCAN-4x 实验的变量分解逼出来的):ColP 写在
+//   `ColP[c * U.numWg + rb]` —— 一个 lane 组里相邻 lane 的 c 相邻,地址间隔
+//   numWg*12 = 768B ⇒ **32 条 lane 命中 32 条不同缓存行**,纯散射写。
+//   merge 核读 `ColP[c*U.numWg + w]` 同样散射(相邻 gid.x 间隔 768B)。
+// 转置成 `ColP[rb * U.numB + c]` 后两侧都变连续:32 lane × 12B = 384B ≈ 6 行。
+// 量化依据:把 partial 数 ×4 使这条流量 ×4,实测 +1.2ms(已扣除预取线程的
+//   +0.2ms)⇒ 这条散射流量在 1× 时约值 0.4ms,占总时长 5%。
+// 缓冲区大小不变(numWg*numB 项),merge 的遍历顺序不变(w 升序 = 行号升序)
+//   ⇒ 「平局取最小行号」逐字保留,输出必须逐字节相同。
+// env OFFICIAL_AETHER_MATCH_DAWN_COLPC=1 回到 c-major 做单变量 A/B。
+// [NOSCAN-PROBE 2026-09-04] 计时探针(输出作废,只为定价):把两个 top-2 扫描
+// 循环截断到 1 次迭代,保留全部 barrier / 预取 / ColP 写 / MMA。
+// 差值 = 扫描阶段的真实成本。起因:COL-SCAN-4x 把列扫描迭代 128→32 却零收益,
+// 与"扫描阶段 = 128 次迭代长"的模型冲突 ⇒ 先给这个阶段定价再决定要不要重写。
+// [BARRIER-PRICE-PROBE 2026-09-04] 计时探针:每块**多加** N 次 workgroupBarrier。
+// 删 barrier 会产生竞态、被 harness 的跨 rep 确定性闸拦下(闸是对的);加 barrier
+// 不改语义,输出仍逐字节相同,**斜率 = 单次 barrier 的价格**。
+// 起因:扫描只值 0.86ms、MMA 约 4.3ms(roofline 86%),余下 ~2.6ms 需要定位;
+// Metal v2 每块只有 1 次 threadgroup barrier + 1 次近乎免费的 simdgroup_barrier。
+// [STAGE0-PROBE 2026-09-04] 计时探针(输出错但确定,能过跨 rep 确定性闸):
+// 预取永远读第 0 块 ⇒ 同样的 8KB 反复命中缓存,差值 = 预取的真实内存成本。
+// 记账进度:总 7.8ms = MMA ~4.3(roofline 86%)+ 扫描 0.86 + barrier 0.2 + ?2.4
+std::string Stage0Wgsl(const std::string& src) {
+  std::string t = src;
+  const std::string from = "        let brow = nextT + e / 128u;";
+  const size_t p = t.find(from);
+  if (p == std::string::npos) return src;
+  t.replace(p, from.size(), "        let brow = e / 128u;");
+  return t;
+}
+
+std::string ExtraBarrierWgsl(const std::string& src, int n) {
+  std::string t = src;
+  const std::string from =
+      "      subgroupMatrixStore(&accSh, (sg * 8u) * 32u + nt * 8u, acc, false, 32u);\n"
+      "    }\n"
+      "    workgroupBarrier();\n";
+  const size_t p = t.find(from);
+  if (p == std::string::npos) return src;
+  (void)p;
+  // 相邻同种 barrier 会被 Metal 编译器合并(实测 +4 相邻 = 零代价)⇒ 必须放到
+  // 被 MMA 工作隔开的程序点上:nt 循环每轮末尾加一次(nt 循环对全部 512 线程一致)。
+  std::string one =
+      "      subgroupMatrixStore(&accSh, (sg * 8u) * 32u + nt * 8u, acc, false, 32u);\n";
+  const size_t q = t.find(one);
+  if (q == std::string::npos) return src;
+  std::string add = one;
+  for (int i = 0; i < n; ++i) add += "      workgroupBarrier();\n";
+  t.replace(q, one.size(), add);
+  return t;
+}
+
+std::string NoScanWgsl(const std::string& src) {
+  std::string t = src;
+  auto rep = [&t](const std::string& from, const std::string& to) {
+    const size_t p = t.find(from);
+    if (p == std::string::npos) return false;
+    t.replace(p, from.size(), to);
+    return true;
+  };
+  bool ok = true;
+  ok &= rep("      for (var c = 0u; c < lim; c = c + 1u) {",
+            "      for (var c = 0u; c < min(lim, 1u); c = c + 1u) {");
+  ok &= rep("        for (var r = 0u; r < WGR; r = r + 1u) {",
+            "        for (var r = 0u; r < 1u; r = r + 1u) {");
+  if (!ok) return src;
+  return t;
+}
+
+std::string ColpTransposeWgsl(const std::string& src) {
+  std::string t = src;
+  auto rep = [&t](const std::string& from, const std::string& to) {
+    const size_t p = t.find(from);
+    if (p == std::string::npos) return false;
+    t.replace(p, from.size(), to);
+    return true;
+  };
+  bool ok = true;
+  ok &= rep("        ColP[c * U.numWg + rb] = ColPart(best, second, bi);",
+            "        ColP[rb * U.numB + c] = ColPart(best, second, bi);");
+  ok &= rep("    let p = ColP[c * U.numWg + w];",
+            "    let p = ColP[w * U.numB + c];");
+  if (!ok) return src;
+  return t;
+}
+
 std::string MixedWgsl(const char* src) {
   std::string t(src);
   auto sub = [&t](const std::string& from, const std::string& to) {
@@ -1182,8 +1471,26 @@ bool EnsureMainPipelines(Ctx& c) {
   if (c.tried_main) return false;
   c.tried_main = true;
   if (c.backend == Backend::kMma) {
-    const std::string mixed_src =
-        c.mixed ? MixedWgsl(kWgslMmaFused) : std::string();
+    // 四道门全绿(parity / 162 / 534 / ABI)后 09-04 翻默认。
+    // OFFICIAL_AETHER_MATCH_DAWN_OLDSHAPE=1 回到旧核做单变量 A/B。
+    const bool shape = c.mixed &&
+                       getenv("OFFICIAL_AETHER_MATCH_DAWN_OLDSHAPE") == nullptr;
+    std::string mixed_src =
+        c.mixed ? MixedWgsl(shape ? kWgslMmaMetalShape : kWgslMmaFused)
+                : std::string();
+    if (c.mixed && !shape &&
+        getenv("OFFICIAL_AETHER_MATCH_DAWN_COLPC") == nullptr) {
+      mixed_src = ColpTransposeWgsl(mixed_src);  // 新核已是 rb-major,不重复转置
+    }
+    if (c.mixed && getenv("OFFICIAL_AETHER_MATCH_DAWN_NOSCAN") != nullptr) {
+      mixed_src = NoScanWgsl(mixed_src);
+    }
+    if (c.mixed && getenv("OFFICIAL_AETHER_MATCH_DAWN_STAGE0") != nullptr) {
+      mixed_src = Stage0Wgsl(mixed_src);
+    }
+    if (const char* nb = getenv("OFFICIAL_AETHER_MATCH_DAWN_XBARRIER")) {
+      if (c.mixed) mixed_src = ExtraBarrierWgsl(mixed_src, atoi(nb));
+    }
     // 默认关闭:逐字节已验(984 匹配、SHA 同),但收益尚未在干净窗口测得
     // (测时机器有 WeChat ~50% + WindowServer 26%,1 线程臂离散 3.8ms > 信号)。
     // 纪律:未测得收益的改动不进默认路径。OFFICIAL_AETHER_MATCH_DAWN_SCAN2=1 启用。
