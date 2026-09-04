@@ -1341,6 +1341,30 @@ std::unique_ptr<Ctx> CreateCtx() {
                 (force && std::strcmp(force, "tiled") == 0) ? " (forced tiled)"
                                                             : "");
   c->backend_info = info;
+  // [DEVICE-FINGERPRINT 2026-09-04] 电脑侧必须能读出设备**到底选了哪个核**和适配器能力。
+  // 起因:09-04 首次上机,A16 上每对 8192x8192 要 205ms,而同尺寸原生 Metal 只要 24ms
+  // (8.5x);同一份核在 M3 Pro 上是 0.986x。没有这一行就分不清两件事 ——
+  // 「设备回退到了 tiled 整数路径」还是「MMA 核在 A16 上就是慢」。
+  // 只在 Dawn 初始化时写一次;纯观测,失败不抛。banner 里含引号,所以逐字段落 JSON。
+  if (const char* home = std::getenv("HOME")) {
+    const std::string fp = std::string(home) + "/Documents/matcher_backend.jsonl";
+    if (FILE* f = std::fopen(fp.c_str(), "a")) {
+      std::fprintf(f,
+                   "{\"dawn_init\":1,\"kernel\":\"%s\",\"adapter\":\"%s\","
+                   "\"subgroups\":%d,\"sgmatrix\":%d,\"f32_8x8x8\":%d,"
+                   "\"f16_f32\":%d,\"mixed\":%d,\"subgroup_min\":%u,"
+                   "\"subgroup_max\":%u,\"packed_dot\":%d,\"storage\":%u,"
+                   "\"invocations\":%u,\"sizeX\":%u}\n",
+                   c->backend == Backend::kMma ? "mma(fusedr128-db,V0)"
+                                               : "tiled(dot4U8Packed,V1/V2)",
+                   c->adapter_name.c_str(), (int)c->feat_subgroups,
+                   (int)c->feat_sgmatrix, (int)c->sgcfg_f32_8x8x8,
+                   (int)c->sgcfg_f16_f32, (int)c->mixed, c->subgroup_min,
+                   c->subgroup_max, (int)c->feat_packed_dot, c->lim_storage,
+                   c->lim_invocations, c->lim_size_x);
+      std::fclose(f);
+    }
+  }
   if (gInitLogged < 3) {
     ++gInitLogged;
     Log("%s", info);
