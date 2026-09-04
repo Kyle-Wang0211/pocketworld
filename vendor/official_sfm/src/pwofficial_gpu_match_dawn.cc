@@ -546,24 +546,61 @@ fn main(@builtin(workgroup_id) wg : vec3<u32>,
   }
 }
 
-@compute @workgroup_size(64)
-fn merge(@builtin(global_invocation_id) gid : vec3<u32>) {
-  let c = gid.x;
-  if (c >= U.numB) { return; }
+// [MERGE-WIDE 2026-09-04] 归约 dispatch 由「8192 线程 × 每人 64 次串行」改为
+// 「一个 256 线程工作组管 32 列 × 8 个 w 分段」。
+// 起因(隔离台架,把原生出货核 pw_match_gemm2 抽进来同进程交替跑):
+//   我们的**主核** min 5.804/5.853 vs 原生 5.353 ⇒ 1.09×,基本追平;
+//   而端到端 6.14 vs 5.07 ⇒ 1.21× ⇒ 约 0.45ms 不在主核里。
+// 这个核原本一列一个线程(共 numB=8192 个,对这块 GPU 只有约 256 个 simdgroup),
+// 每个线程串行跑 numWg=64 次 —— 与我刚在核内修掉的失衡同型,但在 dispatch 层更糟。
+// 新形态:并行度 ×8(65536 线程),每线程 8 次;分段归约只多一次 barrier,
+// 而且整趟 dispatch 只此一次(不是每块一次)。
+// **保住合并访问**:cl = lid % 32 ⇒ 相邻 lane 读相邻列(地址连续);
+//   若改成"一个子组管一列"会把读打散,所以没那么做。
+// 语义:分段 t 覆盖 w ∈ [numWg*t/8, numWg*(t+1)/8),对 t 单调递增;段内升序、
+//   段间按 t 升序合并、严格 `>` 留先者 ⇒ 与原来 w 升序的串行扫描逐字等价。
+//   numWg < 8 时部分段为空(best=0/bi=-1),空段合并无副作用(0 > best 恒假)。
+var<workgroup> mBest : array<f32, 256>;
+var<workgroup> mSecond : array<f32, 256>;
+var<workgroup> mIdx : array<i32, 256>;
+
+@compute @workgroup_size(256)
+fn merge(@builtin(workgroup_id) wg : vec3<u32>,
+         @builtin(local_invocation_index) lid : u32) {
+  let cl = lid % 32u;
+  let g = lid / 32u;
+  let c = wg.x * 32u + cl;
   var best = 0.0;
   var second = 0.0;
   var bi = -1;
-  for (var w = 0u; w < U.numWg; w = w + 1u) {
-    let p = ColP[w * U.numB + c];
-    if (p.best > best) {
-      second = max(best, p.second);
-      best = p.best;
-      bi = p.idx;
-    } else {
-      second = max(second, p.best);
+  if (c < U.numB) {
+    let w0 = (U.numWg * g) / 8u;
+    let w1 = (U.numWg * (g + 1u)) / 8u;
+    for (var w = w0; w < w1; w = w + 1u) {
+      let p = ColP[w * U.numB + c];
+      if (p.best > best) {
+        second = max(best, p.second);
+        best = p.best;
+        bi = p.idx;
+      } else {
+        second = max(second, p.best);
+      }
     }
   }
-  OutBA[c] = gatef(best, second, bi);
+  mBest[lid] = best;
+  mSecond[lid] = second;
+  mIdx[lid] = bi;
+  workgroupBarrier();
+  if (g == 0u && c < U.numB) {
+    for (var t = 1u; t < 8u; t = t + 1u) {
+      let ob = mBest[t * 32u + cl];
+      let os = mSecond[t * 32u + cl];
+      let oi = mIdx[t * 32u + cl];
+      if (ob > best) { second = max(best, os); best = ob; bi = oi; }
+      else { second = max(second, ob); }
+    }
+    OutBA[c] = gatef(best, second, bi);
+  }
 }
 )WGSL";
 
@@ -1074,6 +1111,7 @@ struct Ctx {
   bool sgcfg_f16_f32 = false;
   bool mixed = false;  // use the f16-in/f32-out kernel
   bool packed = false; // 描述子以 packed u8 上传(见 PackedWgsl)
+  bool merge_wide = false;  // merge 核每工作组管 32 列(见 MERGE-WIDE)
   std::vector<uint16_t> scratch16;
   std::vector<uint8_t> padZero;
   // [TS-GPU 2026-09-03] 真 GPU 时间戳(env OFFICIAL_AETHER_MATCH_DAWN_TSGPU=1)。
@@ -1605,6 +1643,7 @@ bool EnsureMainPipelines(Ctx& c) {
       mixed_src = ColpTransposeWgsl(mixed_src);  // 新核已是 rb-major,不重复转置
     }
     if (c.packed) mixed_src = PackedWgsl(mixed_src);
+    c.merge_wide = shape;
     if (c.mixed && getenv("OFFICIAL_AETHER_MATCH_DAWN_NOSCAN") != nullptr) {
       mixed_src = NoScanWgsl(mixed_src);
     }
@@ -2201,7 +2240,8 @@ int MatchPairsImpl(const uint8_t* dA, int nA, const uint8_t* dB, int nB,
       wgpu::ComputePassEncoder pass = enc.BeginComputePass();
       pass.SetPipeline(c.p_merge);
       pass.SetBindGroup(0, bgMerge);
-      pass.DispatchWorkgroups((nBu + 63) / 64);
+      pass.DispatchWorkgroups(c.merge_wide ? (nBu + 31) / 32
+                                           : (nBu + 63) / 64);
       pass.End();
       enc.CopyBufferToBuffer(outAB, 0, staging, 0, outABBytes);
       enc.CopyBufferToBuffer(outBA, 0, staging, outABBytes, outBABytes);
@@ -2525,7 +2565,8 @@ int ProbeBatchImpl(const uint8_t* dA, int nA, const uint8_t* const* dBs,
         pass.DispatchWorkgroups(numWg);
         pass.SetPipeline(c.p_merge);
         pass.SetBindGroup(0, cd.bgMerge);
-        pass.DispatchWorkgroups((cd.nB + 63) / 64);
+        pass.DispatchWorkgroups(c.merge_wide ? (cd.nB + 31) / 32
+                                             : (cd.nB + 63) / 64);
       } else {
         pass.SetPipeline(c.p_main);
         pass.SetBindGroup(0, cd.bgMain);
