@@ -1565,8 +1565,15 @@ std::string PrefetchWgsl(const std::string& src) {
       "    let pe1 = lid + 512u;\n"
       "    let pr0 = nextT + pe0 / 32u;\n"
       "    let pr1 = nextT + pe1 / 32u;\n"
-      "    let pv0 = select(0u, B[pr0 * 32u + (pe0 % 32u)], pr0 < U.numB);\n"
-      "    let pv1 = select(0u, B[pr1 * 32u + (pe1 % 32u)], pr1 < U.numB);\n");
+      "    // 🔴 WGSL 的 select **两个操作数都会求值** ⇒ 条件为假时 B[...] 照样读。\n"
+      "    // 最后一块 nextT == numB,行号最多超出 15 行 ⇒ 读到 B 尾后约 2 KiB。\n"
+      "    // disable_robustness 开着,在 Metal 上无害(值被外层 select 丢弃),但这是 UB,\n"
+      "    // **Vulkan 后端可能触发校验层或崩溃** —— 三端一套下是硬伤。先把下标钳到界内,\n"
+      "    // 界内地址逐字节不变(只影响最后一块的越界行,那些行本来就被丢弃)。\n"
+      "    let sr0 = select(0u, pr0, pr0 < U.numB);\n"
+      "    let sr1 = select(0u, pr1, pr1 < U.numB);\n"
+      "    let pv0 = select(0u, B[sr0 * 32u + (pe0 % 32u)], pr0 < U.numB);\n"
+      "    let pv1 = select(0u, B[sr1 * 32u + (pe1 % 32u)], pr1 < U.numB);\n");
   // 4) 归并之后、循环末尾之前:解包写回 Bsh,再一次 barrier
   const std::string tail = "    col0 = col0 + BT;\n";
   const size_t tp = t.rfind(tail);
