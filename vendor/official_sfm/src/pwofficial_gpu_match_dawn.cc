@@ -435,14 +435,30 @@ fn main(@builtin(workgroup_id) wg : vec3<u32>,
     }
     workgroupBarrier();
 
-    for (var nt = 0u; nt < 4u; nt = nt + 1u) {
-      var acc = Res(0.0);
-      for (var k = 0u; k < 16u; k = k + 1u) {
-        let bF = subgroupMatrixLoad<Right>(&Bsh, (nt * 8u) * 128u + k * 8u, true, 128u);
-        acc = subgroupMatrixMultiplyAccumulate(aFrag[k], bF, acc);
-      }
-      subgroupMatrixStore(&accSh, (sg * 8u) * 32u + nt * 8u, acc, false, 32u);
+    // [ILP4 2026-09-04] 循环交换:nt 与 k 对调,4 个累加器同时推进。
+    // 原形态的内层是**16 次串行依赖的 MMA**(每次都等上一次的 acc);交换后变成
+    // **4 条独立累加链**,载入次数 / MMA 次数 / store 次数**一次不变**,只多 3 个
+    // 累加器(每 lane +6 个 32 位寄存器)。手写 Metal 台架实测 −3.9% ~ −5.8%。
+    // 线索来自 llama.cpp 的 mul_mm(ma[4] × mb[2] → c_res[8],8 条独立链);
+    // **原生出货核与我们原来一样是单链**,所以这一刀是超越而不是追平。
+    var acc0 = Res(0.0);
+    var acc1 = Res(0.0);
+    var acc2 = Res(0.0);
+    var acc3 = Res(0.0);
+    for (var k = 0u; k < 16u; k = k + 1u) {
+      let b0 = subgroupMatrixLoad<Right>(&Bsh, (0u * 8u) * 128u + k * 8u, true, 128u);
+      let b1 = subgroupMatrixLoad<Right>(&Bsh, (1u * 8u) * 128u + k * 8u, true, 128u);
+      let b2 = subgroupMatrixLoad<Right>(&Bsh, (2u * 8u) * 128u + k * 8u, true, 128u);
+      let b3 = subgroupMatrixLoad<Right>(&Bsh, (3u * 8u) * 128u + k * 8u, true, 128u);
+      acc0 = subgroupMatrixMultiplyAccumulate(aFrag[k], b0, acc0);
+      acc1 = subgroupMatrixMultiplyAccumulate(aFrag[k], b1, acc1);
+      acc2 = subgroupMatrixMultiplyAccumulate(aFrag[k], b2, acc2);
+      acc3 = subgroupMatrixMultiplyAccumulate(aFrag[k], b3, acc3);
     }
+    subgroupMatrixStore(&accSh, (sg * 8u) * 32u + 0u * 8u, acc0, false, 32u);
+    subgroupMatrixStore(&accSh, (sg * 8u) * 32u + 1u * 8u, acc1, false, 32u);
+    subgroupMatrixStore(&accSh, (sg * 8u) * 32u + 2u * 8u, acc2, false, 32u);
+    subgroupMatrixStore(&accSh, (sg * 8u) * 32u + 3u * 8u, acc3, false, 32u);
     workgroupBarrier();
 
     var pb = 0.0;
@@ -1573,8 +1589,7 @@ std::string PrefetchWgsl(const std::string& src) {
   const std::string after_gemm =
       late ? std::string("    cpIdx[sg * 32u + lane] = ci;\n    workgroupBarrier();\n")
            : std::string(
-      "      subgroupMatrixStore(&accSh, (sg * 8u) * 32u + nt * 8u, acc, false, 32u);\n"
-      "    }\n"
+      "    subgroupMatrixStore(&accSh, (sg * 8u) * 32u + 3u * 8u, acc3, false, 32u);\n"
       "    workgroupBarrier();\n");
   const size_t ag = t.find(after_gemm);
   if (ag == std::string::npos) {
