@@ -488,21 +488,55 @@ fn main(@builtin(workgroup_id) wg : vec3<u32>,
     cpIdx[sg * 32u + lane] = ci;
     workgroupBarrier();
 
-    if (lid < BT) {
-      var b = cpBest[lid];
-      var s2 = cpSecond[lid];
-      var bi = cpIdx[lid];
-      for (var w = 1u; w < 16u; w = w + 1u) {
-        let ob = cpBest[w * 32u + lid];
-        let os = cpSecond[w * 32u + lid];
-        let oi = cpIdx[w * 32u + lid];
-        if (ob > b) { s2 = max(b, os); b = ob; bi = oi; }
-        else { s2 = max(s2, ob); }
-      }
-      let j = col0 + lid;
-      if (j < U.numB) {
-        ColP[rb * U.numB + j] = ColPart(b, s2, bi);
-      }
+    // [MERGE-BUTTERFLY 2026-09-04] 跨 SG 归并由「32 线程 × 15 次串行」改为
+    // 「512 线程 × 每人 1 个 partial + 4 级蝶形」。
+    // Metal v2 在这里用的是串行形态,并注明"并行 shuffle 树试过更慢——串行形态
+    // 藏在其他线程的进度后面"。**那个前提在我们这里已经没了**:packed 上传把预取
+    // 从 8 次迭代压到 2 次,480 个线程两拍就干完,归并再没东西可藏。
+    // 分解实测(隔离台架,删掉本块):现役 6.555 → 4.982,这块值 ~1.5ms。
+    // 映射:mcl = lid/16 是列(0..31),ms = lid%16 是 SG 下标;同一列的 16 个线程
+    //   落在同一子组的同一半(偶数列 lane 0-15 / 奇数列 lane 16-31),掩码 1/2/4/8
+    //   的蝶形不会跨出那一半。**全部 512 线程无条件执行 ⇒ 控制流对子组一致**,
+    //   这正是 tint 允许 subgroupShuffleXor 的前提(条件分支里会被拒)。
+    // 共享内存读总量不变(512 次 = 32 列 × 16 SG),没有冗余读。
+    // 语义:ms 升序 == sg 升序 == 行号升序,`ob > b` 严格大于 ⇒ 平局留自己;
+    //   逐级 xor 后 ms==0 那条恰好是"最小行号胜",与串行形态逐字等价。
+    let mcl = lid / 16u;
+    let ms = lid % 16u;
+    var b = cpBest[ms * 32u + mcl];
+    var s2 = cpSecond[ms * 32u + mcl];
+    var bi = cpIdx[ms * 32u + mcl];
+    {
+      let ob = subgroupShuffleXor(b, 1u);
+      let os = subgroupShuffleXor(s2, 1u);
+      let oi = subgroupShuffleXor(bi, 1u);
+      if (ob > b) { s2 = max(b, os); b = ob; bi = oi; }
+      else { s2 = max(s2, ob); }
+    }
+    {
+      let ob = subgroupShuffleXor(b, 2u);
+      let os = subgroupShuffleXor(s2, 2u);
+      let oi = subgroupShuffleXor(bi, 2u);
+      if (ob > b) { s2 = max(b, os); b = ob; bi = oi; }
+      else { s2 = max(s2, ob); }
+    }
+    {
+      let ob = subgroupShuffleXor(b, 4u);
+      let os = subgroupShuffleXor(s2, 4u);
+      let oi = subgroupShuffleXor(bi, 4u);
+      if (ob > b) { s2 = max(b, os); b = ob; bi = oi; }
+      else { s2 = max(s2, ob); }
+    }
+    {
+      let ob = subgroupShuffleXor(b, 8u);
+      let os = subgroupShuffleXor(s2, 8u);
+      let oi = subgroupShuffleXor(bi, 8u);
+      if (ob > b) { s2 = max(b, os); b = ob; bi = oi; }
+      else { s2 = max(s2, ob); }
+    }
+    let j = col0 + mcl;
+    if (ms == 0u && j < U.numB) {
+      ColP[rb * U.numB + j] = ColPart(b, s2, bi);
     }
     col0 = col0 + BT;
   }
