@@ -238,6 +238,16 @@ double AbAltValue(const char* key) {
   return e ? atof(e) : -1.0;
 }
 
+// [COLCHUNK 2026-09-05] 按列分块(默认关,先做单变量 A/B)。
+// 机制:现役按**行**分块 —— 104 个工作组切成 5 份、每份只有 21 个,摊到 A16 的
+// GPU 核上每个 dispatch 尾部都要空转一截。实测拟合出**每多一个 dispatch ≈ +2.5ms**,
+// 而单次 dispatch(monolithic)= 59.3ms、5 个 dispatch = 69.6ms,差 10.4ms(15%)。
+// 按列切之后每个 dispatch 仍然发**全部** 104 个工作组(满并行、无尾部),
+// 只是各自处理一段列 ⇒ **dispatch 次数不变、抢占粒度不变、热态间隔逻辑不变**,
+// 纯赚。行向 top-2 靠 RowP 跨 dispatch 读-改-写(每组独占自己的行,无竞争)。
+// 默认**开**;env OFFICIAL_AETHER_MATCH_DAWN_ROWCHUNK=1 回到按行分块做单变量 A/B。
+bool kColChunk = getenv("OFFICIAL_AETHER_MATCH_DAWN_ROWCHUNK") == nullptr;
+
 double ChunkTargetMs() {
   static double v = -1.0;
   if (v < 0.0) {
@@ -375,8 +385,10 @@ struct Params {
   maxDistance : f32,
   numWg : u32,
   rowBase : u32,
-  pad1 : u32,
-  pad2 : u32,
+  // [COLCHUNK 2026-09-05] 复用原来的两个 pad 位,结构体布局与偏移全不变
+  // (numA0 numB4 maxRatio8 maxDistance12 numWg16 rowBase20 colBase24 colSpan28)。
+  colBase : u32,
+  colSpan : u32,
 };
 
 struct ColPart {
@@ -391,6 +403,10 @@ struct ColPart {
 @group(0) @binding(3) var<uniform> U : Params;
 @group(0) @binding(4) var<storage, read_write> ColP : array<ColPart>;
 @group(0) @binding(5) var<storage, read_write> OutBA : array<i32>;
+// [COLCHUNK 2026-09-05] 行向 top-2 的跨 dispatch 持久化。按列分块后一个工作组
+// 只看到部分列,行向最优必须跨 dispatch 累加。**每个工作组独占自己那 128 行**
+// ⇒ 无跨组竞争,读-改-写即可,不需要像 ColP 那样再来一趟归并。
+@group(0) @binding(6) var<storage, read_write> RowP : array<ColPart>;
 
 var<workgroup> Bsh : array<f32, 4096>; // 32 rows x 128 (16 KiB)
 var<workgroup> accSh : array<f32, 4096>;   // WGR rows x 32 cols
@@ -426,9 +442,16 @@ fn main(@builtin(workgroup_id) wg : vec3<u32>,
   var rowSecond = 0.0;
   var rowBestI = -1;
 
-  var col0 = 0u;
+  if (U.colBase != 0u && lcg == 0u && gRow < U.numA) {
+    let rp = RowP[gRow];
+    rowBest = rp.best;
+    rowSecond = rp.second;
+    rowBestI = rp.idx;
+  }
+  var col0 = U.colBase;
+  let colEnd = min(U.colBase + U.colSpan, U.numB);
   loop {
-    if (col0 >= U.numB) { break; }
+    if (col0 >= colEnd) { break; }
     for (var e = lid; e < BT * 128u; e = e + 512u) {
       let brow = col0 + e / 128u;
       Bsh[e] = select(0.0, B[brow * 128u + (e % 128u)], brow < U.numB);
@@ -558,6 +581,7 @@ fn main(@builtin(workgroup_id) wg : vec3<u32>,
   }
 
   if (lcg == 0u && gRow < U.numA) {
+    RowP[gRow] = ColPart(rowBest, rowSecond, rowBestI);
     OutAB[gRow] = gatef(rowBest, rowSecond, rowBestI);
   }
 }
@@ -1039,7 +1063,8 @@ fn main(@builtin(workgroup_id) wg : vec3<u32>,
 struct alignas(16) Params {
   uint32_t numA, numB;
   float maxRatio, maxDistance;
-  uint32_t numWg, rowBase, pad1, pad2;
+  // [COLCHUNK 2026-09-05] 原 pad1/pad2 改作列分块参数;布局与大小不变。
+  uint32_t numWg, rowBase, colBase, colSpan;
 };
 struct alignas(16) GParams {
   uint32_t numA, numB;
@@ -1050,6 +1075,8 @@ struct alignas(16) GParams {
 };
 static_assert(sizeof(Params) == 32, "Params must be 32 bytes");
 static_assert(sizeof(GParams) == 32, "GParams must be 32 bytes");
+constexpr uint64_t kColBaseOffset = 24;  // Params::colBase
+constexpr uint64_t kColSpanOffset = 28;  // Params::colSpan
 constexpr uint64_t kRowBaseOffset = 20;  // byte offset of rowBase in both
 
 // ══════════════════════ Dawn context (process-wide) ══════════════════════
@@ -1108,9 +1135,9 @@ struct Ctx {
   wgpu::ComputePipeline p_main, p_merge, p_guided;
   bool tried_main = false, tried_guided = false;
   // Pools (grow-only).
-  PoolBuf a{}, b{}, outAB{}, outBA{}, colp{}, uni{}, staging{}, ptsA{}, ptsB{},
+  PoolBuf a{}, b{}, outAB{}, outBA{}, colp{}, rowp{}, uni{}, staging{}, ptsA{}, ptsB{},
       matAB{}, matBA{};
-  PoolBuf pbA{}, pbB{}, pbOutAB{}, pbOutBA{}, pbColp{}, pbUni{}, pbStaging{};
+  PoolBuf pbA{}, pbB{}, pbOutAB{}, pbOutBA{}, pbColp{}, pbRowp{}, pbUni{}, pbStaging{};
   // Host scratch.
   std::vector<float> scratchA, scratchB;
   std::vector<int32_t> sentinel, host;
@@ -1767,14 +1794,20 @@ std::string PrefetchWgsl(const std::string& src) {
   // 1) 循环内的预取块删掉
   t.erase(sp, stage.size());
   // 2) 循环外(loop 之前)先把第 0 块预取好
-  const std::string loop_head = "  var col0 = 0u;\n  loop {\n";
+  // [ANCHOR-FIX 2026-09-05] COLCHUNK 把 `var col0 = 0u;` 改成了 `= U.colBase;`
+  // 并在其后加了 colEnd —— 锚点随之更新。第 0 块的预取地址也不再恒为 0,
+  // 而是 U.colBase(按行分块时它就是 0,逐字节等价)。
+  const std::string loop_head =
+      "  var col0 = U.colBase;\n"
+      "  let colEnd = min(U.colBase + U.colSpan, U.numB);\n"
+      "  loop {\n";
   const size_t lp = t.find(loop_head);
   if (lp == std::string::npos) {
     std::fprintf(stderr, "[pwofficial_gpu_match_dawn] PrefetchWgsl 锚点失配(loop_head),变换未生效\n");
     { AnchorAlarm("PrefetchWgsl", "静默退化为 no-op"); return src; }
   }
   std::string pre0 = stage;
-  { const size_t q = pre0.find("col0 + e / 32u"); pre0.replace(q, 14, "0u + e / 32u"); }
+  { const size_t q = pre0.find("col0 + e / 32u"); pre0.replace(q, 14, "U.colBase + e / 32u"); }
   t.insert(lp, pre0);
   // 3) GEMM 后的 barrier 之后:发出下一块的 load 到寄存器
   // [LIVE-RANGE 2026-09-04] 预取的发出点:默认挪到 cp barrier 之后(紧挨归并),
@@ -2186,6 +2219,10 @@ int ReadbackStaging(Ctx& c, wgpu::Buffer staging, uint64_t bytes, void* dst) {
 // tiled per-direction (two stages). rowBase for a chunk is written into the
 // stage's uniform slot right before the submit (queue-ordered, serial).
 struct Stage {
+  // [COLCHUNK 2026-09-05] 只有平路径的 mma 核认识 colBase/colSpan/RowP。
+  // guided 核用的是另一套 GParams(布局不同、没有这两个字段),
+  // 若按 stages.size()==1 来判会把列参数写进它的 uniform ⇒ 污染。显式标记。
+  bool col_chunkable = false;
   uint32_t total_groups = 0;
   uint32_t nDb = 0;  // database columns (cost-model scale)
   wgpu::Buffer uni;
@@ -2278,6 +2315,58 @@ int RunStages(Ctx& c, std::vector<Stage>& stages,
     }
     return rc0;
   }
+  // [COLCHUNK 2026-09-05] 按列分块:每个 dispatch 发全部工作组、只跑一段列。
+  if (kColChunk && stages.size() == 1 && stages[0].col_chunkable) {
+    Stage& s = stages[0];
+    uint32_t c0 = 0;
+    while (c0 < s.nDb) {
+      const double target = ThermalHot() ? chunkTargetMs : ChunkTargetCoolMs();
+      const double unit = *ema;  // ms / (group × 1024 列)
+      uint32_t span = 1024;      // 首探:1024 列
+      if (unit > 0.0) {
+        const double perCol = unit * (double)s.total_groups / 1024.0;
+        const double ideal = target / (perCol > 1e-9 ? perCol : 1e-9);
+        span = ideal < 32.0 ? 32u : (uint32_t)std::min(ideal, 1e9);
+      }
+      span = ((span + 31u) / 32u) * 32u;  // 必须是 BT 的整数倍
+      if (span > s.nDb - c0) span = s.nDb - c0;
+      c.queue.WriteBuffer(s.uni, s.uniOff + kColBaseOffset,
+                          reinterpret_cast<const uint8_t*>(&c0), 4);
+      c.queue.WriteBuffer(s.uni, s.uniOff + kColSpanOffset,
+                          reinterpret_cast<const uint8_t*>(&span), 4);
+      wgpu::CommandEncoder enc = c.device.CreateCommandEncoder();
+      wgpu::ComputePassEncoder pass = BeginPassTs(c, enc);
+      s.encode(pass, 0u, s.total_groups);
+      pass.End();
+      wgpu::CommandBuffer cb = enc.Finish();
+      double gpuMs = 0.0;
+      const int rc = SubmitAndWait(c, cb, &gpuMs);
+      if (rc != 0) return rc;
+      if (gpuMs > 0.0 && gpuMs < 10000.0) aether_match_gpu_ms += gpuMs;
+      ++aether_match_chunks;
+      if (gpuMs > 0.0 && gpuMs < 10000.0) {
+        const double u =
+            gpuMs / ((double)s.total_groups * ((double)span / 1024.0));
+        const double prev = *ema;
+        *ema = prev <= 0.0 ? u : prev * 0.7 + u * 0.3;
+      }
+      const double gapPct = ThermalGapPct();
+      if (gapPct > 0.0 && gpuMs > 0.0) {
+        double gapMs = gpuMs * gapPct / 100.0;
+        if (gapMs > 250.0) gapMs = 250.0;
+        aether_match_sleep_ms += gapMs;
+        std::this_thread::sleep_for(
+            std::chrono::microseconds((long long)(gapMs * 1000.0)));
+      }
+      c0 += span;
+    }
+    // 收尾后把 colBase/colSpan 复位,免得污染同一 uni 槽的后续调用。
+    const uint32_t zero = 0u;
+    c.queue.WriteBuffer(s.uni, s.uniOff + kColBaseOffset,
+                        reinterpret_cast<const uint8_t*>(&zero), 4);
+    c.queue.WriteBuffer(s.uni, s.uniOff + kColSpanOffset,
+                        reinterpret_cast<const uint8_t*>(&s.nDb), 4);
+  } else
   for (Stage& s : stages) {
     uint32_t tg0 = 0;
     while (tg0 < s.total_groups) {
@@ -2513,17 +2602,22 @@ int MatchPairsImpl(const uint8_t* dA, int nA, const uint8_t* dB, int nB,
     const uint64_t colBytes = (uint64_t)nBu * numWg * 12;
     wgpu::Buffer colp = PoolGet(c, c.colp, colBytes, kUsageColp);
     if (!colp) return 6;
-    const Params p{nAu, nBu, maxRatio, maxDistance, numWg, 0u, 0u, 0u};
+    // [COLCHUNK 2026-09-05] colSpan 默认 = nBu ⇒ 与按行分块时行为逐字节相同。
+    const uint64_t rowBytes = (uint64_t)nApad * 12;
+    wgpu::Buffer rowp = PoolGet(c, c.rowp, rowBytes, kUsageColp);
+    if (!rowp) return 6;
+    const Params p{nAu, nBu, maxRatio, maxDistance, numWg, 0u, 0u, nBu};
     c.queue.WriteBuffer(uni, 0, reinterpret_cast<const uint8_t*>(&p), sizeof(p));
     bgMain = MakeBG(c, c.p_main,
                     {BE(0, aBuf, 0, aBytes), BE(1, bBuf, 0, bBytes),
                      BE(2, outAB, 0, outABBytes), BE(3, uni, 0, sizeof(Params)),
-                     BE(4, colp, 0, colBytes)});
+                     BE(4, colp, 0, colBytes), BE(6, rowp, 0, rowBytes)});
     bgMerge = MakeBG(c, c.p_merge,
                      {BE(3, uni, 0, sizeof(Params)), BE(4, colp, 0, colBytes),
                       BE(5, outBA, 0, outBABytes)});
     if (!bgMain || !bgMerge) return 6;
     Stage s;
+    s.col_chunkable = true;  // 只有这一处的核认识 colBase/colSpan/RowP
     s.total_groups = numWg;
     s.nDb = nBu;
     s.uni = uni;
@@ -2762,6 +2856,8 @@ int ProbeBatchImpl(const uint8_t* dA, int nA, const uint8_t* const* dBs,
   const uint32_t nApad = (uint32_t)RoundUp(nAu, 128);
   const uint32_t numWg = nApad / kMmaRows;
   const uint64_t aBytes = DescBytes(c, nAu, nApad);
+  // [COLCHUNK 2026-09-05] 行向 top-2 的持久缓冲(binding 6),probe_batch 也要有。
+  const uint64_t rowPbBytes = (uint64_t)nApad * 12;
   const uint64_t outABBytes = (uint64_t)nAu * 4;
   const uint64_t outABSlot = RoundUp(outABBytes, kSlot);
   const uint32_t uniPerCand = mma ? 1u : 2u;
@@ -2806,6 +2902,8 @@ int ProbeBatchImpl(const uint8_t* dA, int nA, const uint8_t* const* dBs,
   wgpu::Buffer outAB = PoolGet(c, c.pbOutAB, outABSlot * (uint64_t)n_cands, kUsageOut);
   wgpu::Buffer outBA = PoolGet(c, c.pbOutBA, outBATotal, kUsageOut);
   wgpu::Buffer colp = PoolGet(c, c.pbColp, colTotal, kUsageColp);
+  wgpu::Buffer rowpPb = PoolGet(c, c.pbRowp, rowPbBytes, kUsageColp);
+  if (!rowpPb) return 6;
   wgpu::Buffer uni = PoolGet(c, c.pbUni, (uint64_t)n_cands * uniPerCand * kSlot,
                              kUsageUni);
   wgpu::Buffer staging = PoolGet(c, c.pbStaging, stgTotal, kUsageStaging);
@@ -2819,14 +2917,19 @@ int ProbeBatchImpl(const uint8_t* dA, int nA, const uint8_t* const* dBs,
     FillSentinel(c, outAB, (uint64_t)k * outABSlot, nAu);
     FillSentinel(c, outBA, cd.outBAOff, cd.nB);
     if (mma) {
-      const Params p{nAu, cd.nB, maxRatio, maxDistance, numWg, 0u, 0u, 0u};
+      // [COLCHUNK 2026-09-05] 主核多了 binding 6(RowP),这条 probe_batch 路径的
+      // 绑定组也必须跟上 —— 否则 Dawn 报 "Number of entries (5) did not match
+      // the expected number of entries (6)"。ABI 门当场抓到了这一处遗漏,
+      // 而 probe-gate 正是采集期在跑的路径。colSpan 同样默认 = cd.nB。
+      const Params p{nAu, cd.nB, maxRatio, maxDistance, numWg, 0u, 0u, cd.nB};
       c.queue.WriteBuffer(uni, cd.uniOff, reinterpret_cast<const uint8_t*>(&p),
                           sizeof(p));
       cd.bgMain = MakeBG(
           c, c.p_main,
           {BE(0, aBuf, 0, aBytes), BE(1, bBuf, cd.bOff, cd.bBytes),
            BE(2, outAB, (uint64_t)k * outABSlot, outABBytes),
-           BE(3, uni, cd.uniOff, sizeof(Params)), BE(4, colp, cd.colOff, cd.colBytes)});
+           BE(3, uni, cd.uniOff, sizeof(Params)), BE(4, colp, cd.colOff, cd.colBytes),
+           BE(6, rowpPb, 0, rowPbBytes)});
       cd.bgMerge = MakeBG(c, c.p_merge,
                           {BE(3, uni, cd.uniOff, sizeof(Params)),
                            BE(4, colp, cd.colOff, cd.colBytes),
