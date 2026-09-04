@@ -1494,14 +1494,14 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
               boot.dbPath,
               imageWidth: w,
               imageHeight: h,
-              // A/B (2026-07-08): tried 12288 to keep the ~10k raw keypoints
-              // peak=0.004 finds, but on the 4K gray it made per-frame extract
-              // heavy enough that the SfM worker couldn't keep up — the feed
-              // queue exploded (32 deep) and the heavy extract starved the
-              // photo-capture path (shutter unresponsive, frame count stuck).
-              // Reverted to 8192: 0.004 + 8192 was the balanced config (49k
-              // points, sheet filled, capture kept pace).
-              maxFeatures: 8192,
+              // [FEATURES-13312 2026-09-04 用户裁决] 8192 → 13312。改成引用常量,
+              // 让预算只有一个真源(此前这里是字面量、resume 路径用常量,两边会漂)。
+              // 留档 A/B (2026-07-08):试过 12288 被撤,当时的败因是**CPU 提取**太重
+              // (每帧 5-15s)⇒ 喂帧队列炸到 32、快门失灵。那个前提已经没了:提取
+              // 早已搬 GPU,09-04 真机实测 extract ≈478ms。撤回理由随前提一起失效。
+              // 🔴 仍要盯的是匹配段:13312² 是 8192² 的 2.64 倍工作量,设备台架
+              // (PWMatchBench)实测单对 25.8ms → 70.2ms。
+              maxFeatures: AetherSfmStreamSession.researchMaxFeatures,
             );
             wlog('session created (${w}x$h, db=${boot.dbPath})');
             // DIAGNOSTIC TAP (errNotRegistered investigation): dump the

@@ -982,14 +982,17 @@ class AetherSfmStreamSession {
   /// Two operating tiers (2026-07-05, user-directed switch to research):
   ///  • LIVE tier (former default): 2048 features / K=6 — the ≤2s/frame
   ///    streaming budget config.
-  ///  • RESEARCH tier (current): 8192 features / K=12 at full-resolution
+  ///  • RESEARCH tier (current): 13312 features / K=12 at full-resolution
   ///    feed — the desktop K12/K20 viewer operating point, enabled by the
   ///    tiled-GEMM Metal matcher (pwofficial_gpu_match.mm; mutual cross-check,
   ///    bench 11568² @ 119 ms on A16). CPU extraction is now the slow leg
   ///    (~5-15 s/frame full-res) so live drop-rate rises — dropped frames
   ///    only skip the preview, never the delivered JPEGs.
   /// match_max_ratio stays 0.8 in both tiers.
-  static const int researchMaxFeatures = 8192;
+  // [FEATURES-13312 2026-09-04 用户裁决] 8192 → 13312。09-03 已裁决过一次但
+  // 从未落进产品代码(只进了研究文档),09-04 查设备 db 的 keypoints 表发现
+  // 机上每帧恒为 8192 才发现,用户重申"以后必须都用 13312"。
+  static const int researchMaxFeatures = 13312;
   static const int researchKNeighbors = 12;
   static const int liveMaxFeatures = 2048;
   static const int liveKNeighbors = 6;
