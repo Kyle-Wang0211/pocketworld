@@ -1541,23 +1541,46 @@ std::string PrefetchWgsl(const std::string& src) {
       "    }\n"
       "    workgroupBarrier();\n";
   const size_t sp = t.find(stage);
-  if (sp == std::string::npos) return src;
+  if (sp == std::string::npos) {
+    // 🔴 今天被这个静默出口坑过一次:撤诊断探针时留下的 `let ntm = nt;` 让锚点失配,
+    // 变换悄悄退化成 no-op,于是"晚 vs 早"的 A/B 实际测成了"有预取 vs 无预取",
+    // 差点报出一个不存在的 −0.213ms。锚点失配一律出声。
+    std::fprintf(stderr,
+                 "[pwofficial_gpu_match_dawn] PrefetchWgsl 锚点失配(stage),"
+                 "变换未生效 —— 内核结构可能已改,请核对锚点\n");
+    return src;
+  }
   // 1) 循环内的预取块删掉
   t.erase(sp, stage.size());
   // 2) 循环外(loop 之前)先把第 0 块预取好
   const std::string loop_head = "  var col0 = 0u;\n  loop {\n";
   const size_t lp = t.find(loop_head);
-  if (lp == std::string::npos) return src;
+  if (lp == std::string::npos) {
+    std::fprintf(stderr, "[pwofficial_gpu_match_dawn] PrefetchWgsl 锚点失配(loop_head),变换未生效\n");
+    return src;
+  }
   std::string pre0 = stage;
   { const size_t q = pre0.find("col0 + e / 32u"); pre0.replace(q, 14, "0u + e / 32u"); }
   t.insert(lp, pre0);
   // 3) GEMM 后的 barrier 之后:发出下一块的 load 到寄存器
+  // [LIVE-RANGE 2026-09-04] 预取的发出点:默认挪到 cp barrier 之后(紧挨归并),
+  // 把 pv0/pv1 的活跃区间从「跨扫描+归并」缩短到「只跨归并」。
+  // 起因:加法定价测出**预取的 2 个寄存器让 GEMM 边际从 4.200 涨到 4.733(+0.53ms)** ——
+  // 这一刀是交易不是白赚。发得更早(agent 试过)更慢,与此自洽;发得更晚没人试过。
+  // 发出点三选一都试过:提前到循环顶(+0.10ms)、现役(GEMM barrier 之后)、
+  // 推后到 cp barrier 之后(隔离台架 +0.025ms)⇒ **这一维已穷尽,保持现役**。
+  const bool late = getenv("OFFICIAL_AETHER_MATCH_DAWN_PFLATE") != nullptr;
   const std::string after_gemm =
+      late ? std::string("    cpIdx[sg * 32u + lane] = ci;\n    workgroupBarrier();\n")
+           : std::string(
       "      subgroupMatrixStore(&accSh, (sg * 8u) * 32u + nt * 8u, acc, false, 32u);\n"
       "    }\n"
-      "    workgroupBarrier();\n";
+      "    workgroupBarrier();\n");
   const size_t ag = t.find(after_gemm);
-  if (ag == std::string::npos) return src;
+  if (ag == std::string::npos) {
+    std::fprintf(stderr, "[pwofficial_gpu_match_dawn] PrefetchWgsl 锚点失配(after_gemm),变换未生效\n");
+    return src;
+  }
   t.insert(ag + after_gemm.size(),
       "    // 提前发出下一块的 device load(只进寄存器,不碰 Bsh)\n"
       "    let nextT = col0 + BT;\n"
