@@ -1905,8 +1905,15 @@ std::unique_ptr<Ctx> CreateCtx() {
         alim.maxComputeInvocationsPerWorkgroup;
     req.maxComputeWorkgroupSizeX = alim.maxComputeWorkgroupSizeX;
     dd.requiredLimits = &req;
-  } else {
+  } else if (force && std::strcmp(force, "tiled") == 0) {
     c->backend = Backend::kTiled;
+  } else {
+    // [UNIVERSAL-FALLBACK 2026-09-05] 没有 MMA(A13 / Mali / Adreno)时默认落通用核,
+    // 不再落 tiled:Adreno 660 实测 tiled 3202ms vs blocked 430ms(8192²),逐字节相同。
+    // tiled 只在 env OFFICIAL_AETHER_MATCH_DAWN_KERNEL=tiled 时显式选用(保留为对照)。
+    c->backend = Backend::kBlocked;
+    c->packed = true;
+    c->mixed = false;
   }
   dd.requiredFeatureCount = feats.size();
   dd.requiredFeatures = feats.empty() ? nullptr : feats.data();
@@ -1975,8 +1982,9 @@ std::unique_ptr<Ctx> CreateCtx() {
     // MMA 所需的特性/限制,原来的行为是 EnsureDawn 返回 nullptr ⇒ 整个 Dawn
     // 匹配器不可用 ⇒ 管线逐对跳过(注释明写"绝不 CPU 暴力回退")⇒ **点数静默变少**。
     // 那是最坏的失败形态。改为降级重试 tiled:慢,但结果仍逐字节正确。
-    Log("MMA device creation failed (%s); degrading to tiled", dmsg.c_str());
-    c->backend = Backend::kTiled;
+    Log("MMA device creation failed (%s); degrading to blocked", dmsg.c_str());
+    c->backend = Backend::kBlocked;
+    c->packed = true;
     c->mixed = false;
     c->ts_on = false;
     dd.requiredFeatureCount = 0;
@@ -2750,6 +2758,31 @@ std::string BlkRScanWgsl(const std::string& src) {
   return t;
 }
 
+// 刀(逐字节无损):BLK_PIPEB 只把 B 那一个 vec4 提前一拍(A 的两个不动)。
+// 依据:PIPE 在 Adreno −13% 但在 A16 +12% —— A16 赔的是 3 个活 vec4;只提前 B 把活寄存器
+// 压到 1 个,试探两边都赚的形态。
+std::string BlkPipeBWgsl(const std::string& src) {
+  std::string t = src;
+  const std::string from =
+      "      for (var k = 0u; k < KC; k = k + 1u) {\n"
+      "        let al = S[k * 16u + tr * 2u];\n"
+      "        let ah = S[k * 16u + tr * 2u + 1u];\n"
+      "        let b4 = S[512u + k * 16u + tc];\n";
+  const size_t p = t.find(from);
+  if (p == std::string::npos) { AnchorAlarm("BlkPipeBWgsl", "8x4 循环头未命中"); return src; }
+  t.replace(p, from.size(),
+      "      var b4 = S[512u + tc];\n"
+      "      for (var k = 0u; k < KC; k = k + 1u) {\n"
+      "        let al = S[k * 16u + tr * 2u];\n"
+      "        let ah = S[k * 16u + tr * 2u + 1u];\n"
+      "        let bn = S[512u + min(k + 1u, KC - 1u) * 16u + tc];\n");
+  const std::string tail = "        acc7 = acc7 + ah.w * b4;\n      }\n";
+  const size_t q = t.find(tail, p);
+  if (q == std::string::npos) { AnchorAlarm("BlkPipeBWgsl", "8x4 循环尾未命中"); return src; }
+  t.replace(q, tail.size(), "        acc7 = acc7 + ah.w * b4;\n        b4 = bn;\n      }\n");
+  return t;
+}
+
 std::string BlkUnrollWgsl(const std::string& src) {
   std::string t = src;
   const std::string from =
@@ -3030,14 +3063,25 @@ bool EnsureMainPipelines(Ctx& c) {
     return c.p_main && c.p_merge;
   }
   if (c.backend == Backend::kBlocked) {
+    // [UNIVERSAL-DEFAULT 2026-09-05] 通用核默认 = 8x4/128 线程 + PIPEB(只提前 B 的一个 vec4)。
+    // 两台真机同向:A16 −5.2%(两轮交替)、Adreno 660 −5.9%(5 轮 min);三平台逐字节相同。
+    // 这是唯一一把两边都赚的预取刀:PIPE(提前 3 个 vec4)与 GPF 在 A16 赔 +12%/+9%、
+    // 在 Adreno 赚 −13%/−11% —— 反相关;PIPEB 把活寄存器压到 1 个,两边都正。
+    // env:BLK_44=1 回 4x4/256;BLK_88=1 选 8x8;BLK_NOPIPEB=1 关 B 预取(单变量 A/B)。
     std::string blk = getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_88") != nullptr
                           ? std::string(kWgslBlocked88)
-                      : getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_84") != nullptr
-                          ? std::string(kWgslBlocked84) : std::string(kWgslBlockedPlain);
+                      : getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr
+                          ? std::string(kWgslBlockedPlain) : std::string(kWgslBlocked84);
     if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_GPF") != nullptr) blk = BlkGpfWgsl(blk);
     if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_STG") != nullptr) blk = BlkStgWgsl(blk);
     if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_RSCAN") != nullptr) blk = BlkRScanWgsl(blk);
     if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_PIPE") != nullptr) blk = BlkPipeWgsl(blk);
+    if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_NOPIPEB") == nullptr &&
+        getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_PIPE") == nullptr &&
+        getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_88") == nullptr &&
+        getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") == nullptr) {
+      blk = BlkPipeBWgsl(blk);  // 默认开(见上)
+    }
     if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_FMA") != nullptr) blk = BlkFmaWgsl(blk);
     if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_NOLOAD") != nullptr) blk = BlkNoLoadWgsl(blk);
     if (const char* nb = getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_XBAR")) blk = BlkXBarWgsl(blk, atoi(nb));
