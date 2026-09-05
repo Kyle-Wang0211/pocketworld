@@ -1927,7 +1927,7 @@ static const char* BlockedLabel() {
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_FMA", "+fma"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN", "+pscan"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PACKED", "+packed"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TMAP", "+tmap"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB", "+tailb"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB2", "+tailb2"},
-    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA", "+pipea"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANSEL", "+scansel"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANU4", "+scanu4"},
+    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA", "+pipea"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANSEL", "+scansel"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANU4", "+scanu4"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN2", "+pscan2"},
   };
   for (auto& e : extras) if (std::getenv(e[0]) != nullptr) lbl += e[1];
   if (const char* v = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL")) lbl += std::string("+unroll") + v;
@@ -3243,13 +3243,14 @@ std::string DirectTo44W128Wgsl(const std::string& src) {
 // 与 merge 核对行组的合并规则同一条(严格大于、并列取先出现者、second 含重复的 best),
 // 分段按列/行升序合并 ⇒ 与串行扫描逐字节同。局部结果覆写在已读完的分数 S 上,不加线程组内存。
 // 只认 4x4 形态:workgroup 128(WGR=32)或 256(WGR=64),即 NT = 4*WGR、NT/64 个列段。
-std::string DirectPScanWgsl(const std::string& src) {
+std::string DirectPScanWgsl(const std::string& src, bool ext = false) {
   std::string t = src;
   const bool w128 = t.find("const WGR : u32 = 32u;\n") != std::string::npos;
   const bool w256 = t.find("const WGR : u32 = 64u;\n") != std::string::npos &&
                     t.find("@compute @workgroup_size(256)\nfn main(") != std::string::npos;
   if (!w128 && !w256) { AnchorAlarm("DirectPScanWgsl", "只认 4x4 形态(128/WGR32 或 256/WGR64)"); return src; }
-  const char* nt = w128 ? "const NT : u32 = 128u;\nconst CSEG : u32 = 2u;\n" : "const NT : u32 = 256u;\nconst CSEG : u32 = 4u;\n";
+  const char* nt = w128 ? "const NT : u32 = 128u;\nconst CSEG : u32 = 2u;\nconst PB : u32 = 512u;\n" : "const NT : u32 = 256u;\nconst CSEG : u32 = 4u;\nconst PB : u32 = 1024u;\n";
+  if (ext && !w128) { AnchorAlarm("DirectPScanWgsl", "ext 模式只认 W128(S 512→768 仍在 16 KiB 内)"); return src; }
   {
     const std::string wgr = w128 ? "const WGR : u32 = 32u;\n" : "const WGR : u32 = 64u;\n";
     const size_t p = t.find(wgr);
@@ -3260,6 +3261,12 @@ std::string DirectPScanWgsl(const std::string& src) {
   const size_t p = t.find(from_head);
   const size_t q = t.find(from_tail, p);
   if (p == std::string::npos || q == std::string::npos) { AnchorAlarm("DirectPScanWgsl", "扫描块未命中"); return src; }
+  if (ext) {
+    const std::string sdecl = "var<workgroup> S : array<vec4<f32>, 512>;\n";
+    const size_t ps = t.find(sdecl);
+    if (ps == std::string::npos) { AnchorAlarm("DirectPScanWgsl", "ext:S 声明未命中"); return src; }
+    t.replace(ps, sdecl.size(), "var<workgroup> S : array<vec4<f32>, 768>;\n");
+  }
   const std::string to =
     "    // [PSCAN] 行 partial:4 线程/行,各 16 列(4 个 vec4)\n"
     "    let prow = lid / 4u;\n"
@@ -3283,13 +3290,15 @@ std::string DirectPScanWgsl(const std::string& src) {
     "      let d = S[r * 16u + pq][pm];\n"
     "      if (d > cb) { cs = cb; cb = d; ci = i32(row0 + r); }\n      else if (d > cs) { cs = d; }\n"
     "    }\n"
-    "    workgroupBarrier();\n"
-    "    S[lid] = vec4<f32>(pb, ps, bitcast<f32>(pi), 0.0);\n"
-    "    S[NT + lid] = vec4<f32>(cb, cs, bitcast<f32>(ci), 0.0);\n"
+    + std::string(ext ? "" : "    workgroupBarrier();\n") +
+    (ext ? "    S[PB + lid] = vec4<f32>(pb, ps, bitcast<f32>(pi), 0.0);\n"
+           "    S[PB + NT + lid] = vec4<f32>(cb, cs, bitcast<f32>(ci), 0.0);\n"
+         : "    S[lid] = vec4<f32>(pb, ps, bitcast<f32>(pi), 0.0);\n"
+           "    S[NT + lid] = vec4<f32>(cb, cs, bitcast<f32>(ci), 0.0);\n") +
     "    workgroupBarrier();\n"
     "    if (lid < WGR) {\n"
     "      for (var sg = 0u; sg < 4u; sg = sg + 1u) {\n"
-    "        let pp = S[lid * 4u + sg];\n"
+    + std::string(ext ? "        let pp = S[PB + lid * 4u + sg];\n" : "        let pp = S[lid * 4u + sg];\n") +
     "        let b2 = pp.x;\n        let s2 = pp.y;\n        let i2 = bitcast<i32>(pp.z);\n"
     "        if (b2 > rowBest) { rowSecond = max(rowBest, s2); rowBest = b2; rowBestI = i2; }\n"
     "        else { rowSecond = max(rowSecond, b2); }\n"
@@ -3298,7 +3307,7 @@ std::string DirectPScanWgsl(const std::string& src) {
     "      let c = lid - WGR;\n"
     "      var mb = 0.0;\n      var ms = 0.0;\n      var mi = -1;\n"
     "      for (var sg = 0u; sg < CSEG; sg = sg + 1u) {\n"
-    "        let pp = S[NT + sg * 64u + c];\n"
+    + std::string(ext ? "        let pp = S[PB + NT + sg * 64u + c];\n" : "        let pp = S[NT + sg * 64u + c];\n") +
     "        let b2 = pp.x;\n        let s2 = pp.y;\n        let i2 = bitcast<i32>(pp.z);\n"
     "        if (b2 > mb) { ms = max(mb, s2); mb = b2; mi = i2; }\n"
     "        else { ms = max(ms, b2); }\n"
@@ -4217,6 +4226,11 @@ bool EnsureMainPipelines(Ctx& c) {
           if (dbg) std::fprintf(stderr, "[direct-chain] W128 in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
           dsrc = x;
         }
+      }
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN2") != nullptr) {
+        const std::string x = DirectPScanWgsl(dsrc, true);
+        if (dbg) std::fprintf(stderr, "[direct-chain] PSCAN2 in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
+        dsrc = x;
       }
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN") != nullptr) {
         const std::string x = DirectPScanWgsl(dsrc);
