@@ -1927,7 +1927,7 @@ static const char* BlockedLabel() {
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_FMA", "+fma"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN", "+pscan"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PACKED", "+packed"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TMAP", "+tmap"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB", "+tailb"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB2", "+tailb2"},
-    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA", "+pipea"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANSEL", "+scansel"},
+    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA", "+pipea"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANSEL", "+scansel"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANU4", "+scanu4"},
   };
   for (auto& e : extras) if (std::getenv(e[0]) != nullptr) lbl += e[1];
   if (const char* v = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL")) lbl += std::string("+unroll") + v;
@@ -3600,6 +3600,60 @@ std::string DirectNoScanColWgsl(const std::string& src) {
   t.replace(p, from.size(), "      for (var r = 0u; r < 1u; r = r + 1u) {\n"); return t;
 }
 
+// [DIRECT-SCANU4 2026-09-06] 扫描段载入 4 路提前:列扫描每次先取 4 行(d0..d3)再按 r 升序比较;行扫描每次先取 4 个 vec4 再按 v 升序
+// 逐分量比较。比较顺序一字不改 ⇒ 逐字节同。动机:Mate 10 形态 A 段账 —— 去列扫描 −31%、去行扫描 −12%:64 线程各自串行 32 次
+// 从线程组内存取数,每次延迟暴露(Mali 编译器不重排互不依赖的载入)。
+std::string DirectScanU4Wgsl(const std::string& src) {
+  std::string t = src;
+  // 列扫描
+  {
+    const std::string from =
+      "      for (var r = 0u; r < WGR; r = r + 1u) {\n"
+      "        let d = S[r * 16u + q][m];\n"
+      "        if (d > cb) { cs = cb; cb = d; ci = i32(row0 + r); }\n"
+      "        else if (d > cs) { cs = d; }\n"
+      "      }\n";
+    const size_t p = t.find(from);
+    if (p == std::string::npos) { AnchorAlarm("DirectScanU4Wgsl", "列扫描循环未命中"); return src; }
+    std::string to = "      for (var r = 0u; r < WGR; r = r + 4u) {\n";
+    for (int i = 0; i < 4; ++i) { char b[96]; std::snprintf(b, sizeof(b), "        let d%d = S[(r + %du) * 16u + q][m];\n", i, i); to += b; }
+    for (int i = 0; i < 4; ++i) {
+      char b[256];
+      std::snprintf(b, sizeof(b), "        if (d%d > cb) { cs = cb; cb = d%d; ci = i32(row0 + r + %du); }\n        else if (d%d > cs) { cs = d%d; }\n", i, i, i, i, i);
+      to += b;
+    }
+    to += "      }\n";
+    t.replace(p, from.size(), to);
+  }
+  // 行扫描
+  {
+    const std::string head = "      for (var v = 0u; v < 16u; v = v + 1u) {\n        let d = S[lid * 16u + v];\n        let c0 = i32(col0 + v * 4u);\n";
+    const size_t p = t.find(head);
+    if (p == std::string::npos) { AnchorAlarm("DirectScanU4Wgsl", "行扫描循环头未命中"); return src; }
+    const std::string tail = "        if (d.w > rowBest) { rowSecond = rowBest; rowBest = d.w; rowBestI = c0 + 3; }\n        else if (d.w > rowSecond) { rowSecond = d.w; }\n      }\n";
+    const size_t q = t.find(tail, p);
+    if (q == std::string::npos) { AnchorAlarm("DirectScanU4Wgsl", "行扫描循环尾未命中"); return src; }
+    // 原体(8 行更新)= head 之后到 tail 结尾(不含最后的 "      }\n")
+    const std::string body = t.substr(p + head.size(), q + tail.size() - 8 - (p + head.size()));
+    std::string to = "      for (var v = 0u; v < 16u; v = v + 4u) {\n";
+    for (int i = 0; i < 4; ++i) { char b[96]; std::snprintf(b, sizeof(b), "        let e%d = S[lid * 16u + v + %du];\n", i, i); to += b; }
+    for (int i = 0; i < 4; ++i) {
+      char b[96]; std::snprintf(b, sizeof(b), "        let c%d = i32(col0 + (v + %du) * 4u);\n", i, i); to += b;
+      std::string x = body;
+      // d.  -> e{i}.   c0 -> c{i}
+      std::string y; for (size_t j = 0; j < x.size(); ++j) {
+        if (x.compare(j, 2, "d.") == 0) { y += "e" + std::to_string(i) + "."; ++j; }
+        else if (x.compare(j, 2, "c0") == 0 && (j + 2 >= x.size() || !std::isalnum((unsigned char)x[j+2]))) { y += "c" + std::to_string(i); ++j; }
+        else y += x[j];
+      }
+      to += y;
+    }
+    to += "      }\n";
+    t.replace(p, q + tail.size() - p, to);
+  }
+  return t;
+}
+
 std::string BlkNoLoadWgsl(const std::string& src) {
   std::string t = src;
   // [ANCHOR 2026-09-05] 默认形态是 8x4+PIPEB(b4 预取成 bn),锚点必须先认这一形态;
@@ -4172,6 +4226,11 @@ bool EnsureMainPipelines(Ctx& c) {
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TMAP") != nullptr) {
         const std::string x = DirectTMapWgsl(dsrc);
         if (dbg) std::fprintf(stderr, "[direct-chain] TMAP in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
+        dsrc = x;
+      }
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANU4") != nullptr) {
+        const std::string x = DirectScanU4Wgsl(dsrc);
+        if (dbg) std::fprintf(stderr, "[direct-chain] SCANU4 in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
       }
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANSEL") != nullptr) {
