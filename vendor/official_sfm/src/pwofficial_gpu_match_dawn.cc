@@ -1890,8 +1890,9 @@ enum class Backend { kNone, kMma, kTiled, kBlocked };
 // 选核逻辑读同一组 env,同源不会再漂。
 static const char* BlockedLabel() {
   if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT") != nullptr) {
-    return std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr ? "blocked(fma4x4+direct,V4)"
-                                                                        : "blocked(fma8x4+direct,V4)";
+    const bool g = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_G") != nullptr;
+    if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr) return g ? "blocked(fma4x4+directg,V4)" : "blocked(fma4x4+direct,V4)";
+    return g ? "blocked(fma8x4+directg,V4)" : "blocked(fma8x4+direct,V4)";
   }
   if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_88") != nullptr) return "blocked(fma8x8,V3)";
   if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr) return "blocked(fma4x4,V3)";
@@ -1964,12 +1965,14 @@ struct Ctx {
   wgpu::ComputePipeline p_main, p_merge, p_guided;
   wgpu::ComputePipeline p_xpose;  // [DIRECT] A/B → f32 [k][row/4] 预转置
   bool direct = false;            // [DIRECT] 主核走 At/Bt(绑定 7/8),GEMM 段无线程组暂存
+  bool direct_g = false;          // [DIRECT-G] 扫描交换也走全局暂存 Scr(绑定 9),核内无 var<workgroup>
   bool tried_main = false, tried_guided = false;
   // Pools (grow-only).
   PoolBuf a{}, b{}, outAB{}, outBA{}, colp{}, rowp{}, uni{}, staging{}, ptsA{}, ptsB{},
       matAB{}, matBA{};
   PoolBuf pbA{}, pbB{}, pbOutAB{}, pbOutBA{}, pbColp{}, pbRowp{}, pbUni{}, pbStaging{};
   PoolBuf at{}, bt{}, pbAt{}, pbBt{}, pbXUni{};  // [DIRECT]
+  PoolBuf scr{}, pbScr{};                         // [DIRECT-G]
   // Host scratch.
   std::vector<float> scratchA, scratchB;
   std::vector<int32_t> sentinel, host;
@@ -2807,6 +2810,35 @@ std::string DirectTo44Wgsl(const std::string& src) {
   return t;
 }
 
+// [DIRECT-G 2026-09-05] 由 DIRECT 文本派生:连扫描段的 64x64 结果交换也不用线程组内存,改写到每个
+// workgroup 自己的全局暂存 Scr(绑定 9,numWg × 1024 vec4);核里不再有任何 var<workgroup>。
+// 动机:chips&cheese 在 G52 上实测 "Each Shader Core can only have one workgroup with local memory
+// allocated" —— 若 G72 同理,DIRECT 留着的 16 KiB S 仍把每核占用率锁在一个 workgroup。
+// Mali 上 local 本就是 global(Arm 指南 §3.7),这里零代价;A16/Adreno 上扫描段只占 ~9%。
+// 同步:workgroupBarrier 只管线程组内存,存储缓冲的组内可见性要 storageBarrier。
+std::string DirectToGlobalScratchWgsl(const std::string& src) {
+  std::string t = src;
+  struct Sub { const char* from; const char* to; };
+  const Sub subs[] = {
+    {"@group(0) @binding(8) var<storage, read> Bt : array<vec4<f32>>;\n",
+     "@group(0) @binding(8) var<storage, read> Bt : array<vec4<f32>>;\n"
+     "@group(0) @binding(9) var<storage, read_write> Scr : array<vec4<f32>>;\n"},
+    {"var<workgroup> S : array<vec4<f32>, 1024>;\n", ""},
+    {"  let rq = row0 / 4u + tr * 2u;\n", "  let rq = row0 / 4u + tr * 2u;\n  let sb = wg.x * 1024u;\n"},
+    {"    workgroupBarrier();\n    S[(tr * 8u + 0u) * 16u + tc] = acc0;\n    S[(tr * 8u + 1u) * 16u + tc] = acc1;\n    S[(tr * 8u + 2u) * 16u + tc] = acc2;\n    S[(tr * 8u + 3u) * 16u + tc] = acc3;\n    S[(tr * 8u + 4u) * 16u + tc] = acc4;\n    S[(tr * 8u + 5u) * 16u + tc] = acc5;\n    S[(tr * 8u + 6u) * 16u + tc] = acc6;\n    S[(tr * 8u + 7u) * 16u + tc] = acc7;\n    workgroupBarrier();\n",
+     "    storageBarrier();\n    Scr[sb + (tr * 8u + 0u) * 16u + tc] = acc0;\n    Scr[sb + (tr * 8u + 1u) * 16u + tc] = acc1;\n    Scr[sb + (tr * 8u + 2u) * 16u + tc] = acc2;\n    Scr[sb + (tr * 8u + 3u) * 16u + tc] = acc3;\n    Scr[sb + (tr * 8u + 4u) * 16u + tc] = acc4;\n    Scr[sb + (tr * 8u + 5u) * 16u + tc] = acc5;\n    Scr[sb + (tr * 8u + 6u) * 16u + tc] = acc6;\n    Scr[sb + (tr * 8u + 7u) * 16u + tc] = acc7;\n    storageBarrier();\n"},
+    {"        let d = S[lid * 16u + v];\n", "        let d = Scr[sb + lid * 16u + v];\n"},
+    {"        let d = S[r * 16u + q][m];\n", "        let d = Scr[sb + r * 16u + q][m];\n"},
+  };
+  for (const Sub& sb : subs) {
+    const size_t p = t.find(sb.from);
+    if (p == std::string::npos) { AnchorAlarm("DirectToGlobalScratchWgsl", sb.from); return src; }
+    t.replace(p, std::strlen(sb.from), sb.to);
+  }
+  if (t.find("S[") != std::string::npos) { AnchorAlarm("DirectToGlobalScratchWgsl", "残留 S[ 引用"); return src; }
+  return t;
+}
+
 std::string BlkNoLoadWgsl(const std::string& src) {
   std::string t = src;
   // [ANCHOR 2026-09-05] 默认形态是 8x4+PIPEB(b4 预取成 bn),锚点必须先认这一形态;
@@ -3359,6 +3391,10 @@ bool EnsureMainPipelines(Ctx& c) {
       // [DIRECT 2026-09-05] 见 kWgslBlocked84Direct 注释。纯净形态,不叠任何探针变换。
       std::string dsrc = kWgslBlocked84Direct;
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr) dsrc = DirectTo44Wgsl(dsrc);
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_G") != nullptr) {
+        dsrc = DirectToGlobalScratchWgsl(dsrc);
+        c.direct_g = true;
+      }
       wgpu::ShaderModule m = CompileWgsl(c, dsrc.c_str(), "blocked direct");
       if (!m) return false;
       wgpu::ShaderModule mx = CompileWgsl(c, kWgslXpose, "xpose");
@@ -4034,6 +4070,12 @@ int MatchPairsImpl(const uint8_t* dA, int nA, const uint8_t* dB, int nB,
       c.queue.WriteBuffer(uni, 2 * kSlot, reinterpret_cast<const uint8_t*>(xb), 16);
       mainEntries.push_back(BE(7, at, 0, atBytes));
       mainEntries.push_back(BE(8, bt, 0, btBytes));
+      if (c.direct_g) {
+        const uint64_t scrBytes = 16384ull * numWg;  // 每 workgroup 64x64 f32
+        wgpu::Buffer scr = PoolGet(c, c.scr, scrBytes, kUsageColp);
+        if (!scr) return 6;
+        mainEntries.push_back(BE(9, scr, 0, scrBytes));
+      }
       bgXA = MakeBG(c, c.p_xpose, {BE(0, aBuf, 0, aBytes), BE(3, uni, kSlot, 16),
                                    BE(7, at, 0, atBytes)});
       bgXB = MakeBG(c, c.p_xpose, {BE(0, bBuf, 0, bBytes), BE(3, uni, 2 * kSlot, 16),
@@ -4400,6 +4442,12 @@ int ProbeBatchImpl(const uint8_t* dA, int nA, const uint8_t* const* dBs,
                             reinterpret_cast<const uint8_t*>(xb), 16);
         me.push_back(BE(7, atPb, 0, atPbBytes));
         me.push_back(BE(8, btPb, cd.btOff, cd.btBytes));
+        if (c.direct_g) {
+          const uint64_t scrBytes = 16384ull * numWg;
+          wgpu::Buffer scr = PoolGet(c, c.pbScr, scrBytes, kUsageColp);
+          if (!scr) return 6;
+          me.push_back(BE(9, scr, 0, scrBytes));
+        }
         cd.bgX = MakeBG(c, c.p_xpose,
                         {BE(0, bBuf, cd.bOff, cd.bBytes),
                          BE(3, xuni, (uint64_t)(k + 1) * kSlot, 16),
