@@ -5221,31 +5221,54 @@ extern "C" void pwdawn_gpu_match_debug_last_timing(double* upload_ms,
 // ── [ALU-PEAK 探针 2026-09-05] 纯算术、零访存:16 条独立 FMA 链,量"此刻这台 GPU 的 FMA 峰值"。
 // 用途:Mate 10 的 GPU 频率节点不 root 读不到;这个数就是当前热态下的真实天花板,是跨端通用的尺子。
 // 只有探针台架调用;不进产品路径。
+extern "C" int pwdawn_probe_alu_shape(const char* shape, uint32_t workgroups, uint32_t iters, double* out_ms, double* out_gfma);
 extern "C" int pwdawn_probe_alu_peak(uint32_t workgroups, uint32_t iters, double* out_ms, double* out_gfma) {
+  return pwdawn_probe_alu_shape("chain16", workgroups, iters, out_ms, out_gfma);
+}
+// [ALU-LADDER 2026-09-05] 同一探针的"梯子":逐级加回 GEMM 内层的构件,看 GFMA/s 在哪一级掉下去。
+//   chain16   : 16 条独立 FMA 链,全向量 fma(a,b,c)                —— 纯峰值
+//   gemm44    : 我们的 4x4 内层(4 个 vec4 acc,al.{x..w} 广播 × b4),al/b4 由 k 合成,无访存
+//   gemm44ld  : 同上但 al/b4 从一块 L1 常驻的小缓冲读(索引 k&63)   —— 加回载入指令
+//   gemm84    : 8 个 vec4 acc(我们的 8x4 内层),无访存
+// 每级的 FMA 数按各自形态精确计入。仅探针台架调用。
+extern "C" int pwdawn_probe_alu_shape(const char* shape, uint32_t workgroups, uint32_t iters, double* out_ms, double* out_gfma) {
   Ctx* cp = EnsureDawn();
   if (!cp) return 2;
   Ctx& c = *cp;
-  static const char* kSrc = R"WGSL(
-struct P { iters : u32, p1 : u32, p2 : u32, p3 : u32, };
-@group(0) @binding(0) var<uniform> U : P;
-@group(0) @binding(1) var<storage, read_write> Out : array<f32>;
-@compute @workgroup_size(256)
-fn main(@builtin(global_invocation_id) gid : vec3<u32>, @builtin(local_invocation_index) lid : u32) {
-  var a0 = vec4<f32>(f32(lid) * 0.001, 1.0, 2.0, 3.0);
-  var a1 = a0 + 1.0;
-  var a2 = a0 + 2.0;
-  var a3 = a0 + 3.0;
-  let b = vec4<f32>(0.999, 1.001, 0.998, 1.002);
-  let cc = vec4<f32>(0.0000001);
-  for (var i = 0u; i < U.iters; i = i + 1u) {
-    a0 = fma(a0, b, cc); a1 = fma(a1, b, cc); a2 = fma(a2, b, cc); a3 = fma(a3, b, cc);
-    a0 = fma(a0, b, cc); a1 = fma(a1, b, cc); a2 = fma(a2, b, cc); a3 = fma(a3, b, cc);
+  const std::string sh = shape ? shape : "chain16";
+  std::string body; double fmaPerIter = 32.0;
+  if (sh == "gemm44" || sh == "gemm44ld") {
+    body = sh == "gemm44"
+      ? "    let fk = f32(i);\n    let al = vec4<f32>(fk, fk + 1.0, fk + 2.0, fk + 3.0) * 0.001;\n    let b4 = vec4<f32>(fk * 0.5, fk, fk * 1.5, fk * 2.0) * 0.001;\n"
+      : "    let al = Src[(i & 63u) * 2u + (lid & 1u)];\n    let b4 = Src[128u + (i & 63u) * 4u + (lid & 3u)];\n";
+    body += "    a0 = a0 + al.x * b4;\n    a1 = a1 + al.y * b4;\n    a2 = a2 + al.z * b4;\n    a3 = a3 + al.w * b4;\n";
+    fmaPerIter = 16.0;
+  } else if (sh == "gemm84") {
+    body = "    let fk = f32(i);\n    let al = vec4<f32>(fk, fk + 1.0, fk + 2.0, fk + 3.0) * 0.001;\n    let ah = al + 4.0;\n    let b4 = vec4<f32>(fk * 0.5, fk, fk * 1.5, fk * 2.0) * 0.001;\n"
+           "    a0 = a0 + al.x * b4;\n    a1 = a1 + al.y * b4;\n    a2 = a2 + al.z * b4;\n    a3 = a3 + al.w * b4;\n"
+           "    a4 = a4 + ah.x * b4;\n    a5 = a5 + ah.y * b4;\n    a6 = a6 + ah.z * b4;\n    a7 = a7 + ah.w * b4;\n";
+    fmaPerIter = 32.0;
+  } else {
+    body = "    a0 = fma(a0, b, cc); a1 = fma(a1, b, cc); a2 = fma(a2, b, cc); a3 = fma(a3, b, cc);\n"
+           "    a0 = fma(a0, b, cc); a1 = fma(a1, b, cc); a2 = fma(a2, b, cc); a3 = fma(a3, b, cc);\n";
+    fmaPerIter = 32.0;
   }
-  let sum = a0 + a1 + a2 + a3;
-  Out[gid.x] = sum.x + sum.y + sum.z + sum.w;
-}
-)WGSL";
-  wgpu::ShaderModule m = CompileWgsl(c, kSrc, "alu peak");
+  const bool eight = sh == "gemm84";
+  std::string src =
+    "struct P { iters : u32, p1 : u32, p2 : u32, p3 : u32, };\n"
+    "@group(0) @binding(0) var<uniform> U : P;\n"
+    "@group(0) @binding(1) var<storage, read_write> Out : array<f32>;\n"
+    "@group(0) @binding(2) var<storage, read> Src : array<vec4<f32>>;\n"
+    "@compute @workgroup_size(256)\n"
+    "fn main(@builtin(global_invocation_id) gid : vec3<u32>, @builtin(local_invocation_index) lid : u32) {\n"
+    "  var a0 = vec4<f32>(f32(lid) * 0.001, 1.0, 2.0, 3.0);\n  var a1 = a0 + 1.0;\n  var a2 = a0 + 2.0;\n  var a3 = a0 + 3.0;\n";
+  if (eight) src += "  var a4 = a0 + 4.0;\n  var a5 = a0 + 5.0;\n  var a6 = a0 + 6.0;\n  var a7 = a0 + 7.0;\n";
+  src += "  let b = vec4<f32>(0.999, 1.001, 0.998, 1.002);\n  let cc = vec4<f32>(0.0000001);\n"
+         "  for (var i = 0u; i < U.iters; i = i + 1u) {\n" + body + "  }\n"
+         "  var sum = a0 + a1 + a2 + a3;\n";
+  if (eight) src += "  sum = sum + a4 + a5 + a6 + a7;\n";
+  src += "  Out[gid.x] = sum.x + sum.y + sum.z + sum.w + Src[lid & 3u].x * 0.0;\n}\n";
+  wgpu::ShaderModule m = CompileWgsl(c, src.c_str(), "alu ladder");
   if (!m) return 3;
   wgpu::ComputePipeline pipe = MakePipeline(c, m, "main");
   if (!pipe) return 3;
@@ -5253,10 +5276,17 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>, @builtin(local_invocatio
   wgpu::Buffer uni = c.device.CreateBuffer(&ud);
   wgpu::BufferDescriptor od{}; od.usage = wgpu::BufferUsage::Storage; od.size = (uint64_t)workgroups * 256u * 4u;
   wgpu::Buffer outb = c.device.CreateBuffer(&od);
-  if (!uni || !outb) return 6;
+  wgpu::BufferDescriptor sd{}; sd.usage = wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopyDst; sd.size = 512u * 16u;
+  wgpu::Buffer srcb = c.device.CreateBuffer(&sd);
+  if (!uni || !outb || !srcb) return 6;
+  {
+    std::vector<float> init(512 * 4);
+    for (size_t k = 0; k < init.size(); ++k) init[k] = 0.001f * (float)(k % 97);
+    c.queue.WriteBuffer(srcb, 0, reinterpret_cast<const uint8_t*>(init.data()), init.size() * 4);
+  }
   const uint32_t pv[4] = {iters, 0u, 0u, 0u};
   c.queue.WriteBuffer(uni, 0, reinterpret_cast<const uint8_t*>(pv), 16);
-  wgpu::BindGroup bg = MakeBG(c, pipe, {BE(0, uni, 0, 16), BE(1, outb, 0, od.size)});
+  wgpu::BindGroup bg = MakeBG(c, pipe, {BE(0, uni, 0, 16), BE(1, outb, 0, od.size), BE(2, srcb, 0, sd.size)});
   if (!bg) return 6;
   double best = 1e30;
   for (int rep = 0; rep < 3; ++rep) {
@@ -5273,7 +5303,7 @@ fn main(@builtin(global_invocation_id) gid : vec3<u32>, @builtin(local_invocatio
     if (rc != 0) return rc;
     if (dt < best) best = dt;
   }
-  const double fmas = (double)workgroups * 256.0 * (double)iters * 32.0;  // 8 个 vec4 fma / 迭代
+  const double fmas = (double)workgroups * 256.0 * (double)iters * fmaPerIter;
   if (out_ms) *out_ms = best;
   if (out_gfma) *out_gfma = fmas / (best * 1e-3) / 1e9;
   return 0;
