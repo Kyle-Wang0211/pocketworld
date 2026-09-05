@@ -2427,9 +2427,16 @@ std::string BlkNoScanWgsl(const std::string& src) {
 
 std::string BlkNoStageWgsl(const std::string& src) {
   std::string t = src;
-  const std::string head = "      {\n        let side = lid / 128u;\n";
+  // [ANCHOR-FIX 2026-09-05] 4x4 的暂存头是 `{ let side = lid / 128u;`,8x4 是 `for (var side ...`,
+  // 8x8 是 `for (var pair ...` —— 三种都认。此前只认第一种 ⇒ 在 8x4 上静默 no-op,
+  // Adreno 上一度读出"暂存零成本"的假数(sha 没变就是铁证)。
+  const char* heads[] = {"      {\n        let side = lid / 128u;\n",
+                         "      for (var side = 0u; side < 2u; side = side + 1u) {\n",
+                         "      for (var pair = 0u; pair < 4u; pair = pair + 1u) {\n"};
+  std::string head;
+  size_t p = std::string::npos;
+  for (const char* h : heads) { p = t.find(h); if (p != std::string::npos) { head = h; break; } }
   const std::string tail = "        S[o + 3u * 16u] = vec4<f32>(f32(x0 >> 24u), f32(x1 >> 24u), f32(x2 >> 24u), f32(x3 >> 24u));\n      }\n";
-  const size_t p = t.find(head);
   const size_t q = (p == std::string::npos) ? std::string::npos : t.find(tail, p);
   if (p == std::string::npos || q == std::string::npos) {
     AnchorAlarm("BlkNoStageWgsl", "暂存块首尾未命中");
@@ -2444,12 +2451,39 @@ std::string BlkNoStageWgsl(const std::string& src) {
 // 依据:内层占 83%、每 k 2 次线程组载入换 16 次 FMA,而 AGX 的线程组载入没有 scoreboard。
 std::string BlkPipeWgsl(const std::string& src) {
   std::string t = src;
+  // [ANCHOR-FIX 2026-09-05] 原只认 4x4 的 `let a4/b4` 循环;8x4 是 `al/ah/b4` ⇒ 静默 no-op,
+  // Adreno 上一度读出"PIPE 零收益"的假数。现在两种形态都认。
+  const std::string from84 =
+      "      for (var k = 0u; k < KC; k = k + 1u) {\n"
+      "        let al = S[k * 16u + tr * 2u];\n"
+      "        let ah = S[k * 16u + tr * 2u + 1u];\n"
+      "        let b4 = S[512u + k * 16u + tc];\n";
+  const size_t p84 = t.find(from84);
+  if (p84 != std::string::npos) {
+    t.replace(p84, from84.size(),
+      "      var al = S[tr * 2u];\n"
+      "      var ah = S[tr * 2u + 1u];\n"
+      "      var b4 = S[512u + tc];\n"
+      "      for (var k = 0u; k < KC; k = k + 1u) {\n"
+      "        let kn = min(k + 1u, KC - 1u);\n"
+      "        let aln = S[kn * 16u + tr * 2u];\n"
+      "        let ahn = S[kn * 16u + tr * 2u + 1u];\n"
+      "        let bn = S[512u + kn * 16u + tc];\n");
+    const std::string tail84 = "        acc7 = acc7 + ah.w * b4;\n      }\n";
+    const size_t q84 = t.find(tail84, p84);
+    if (q84 == std::string::npos) { AnchorAlarm("BlkPipeWgsl", "8x4 循环尾未命中"); return src; }
+    t.replace(q84, tail84.size(),
+              "        acc7 = acc7 + ah.w * b4;\n"
+              "        al = aln; ah = ahn; b4 = bn;\n"
+              "      }\n");
+    return t;
+  }
   const std::string from =
       "      for (var k = 0u; k < KC; k = k + 1u) {\n"
       "        let a4 = S[k * 16u + tr];\n"
       "        let b4 = S[512u + k * 16u + tc];\n";
   const size_t p = t.find(from);
-  if (p == std::string::npos) { AnchorAlarm("BlkPipeWgsl", "k 循环头未命中"); return src; }
+  if (p == std::string::npos) { AnchorAlarm("BlkPipeWgsl", "k 循环头未命中(4x4/8x4 都不是)"); return src; }
   const std::string to =
       "      var a4 = S[tr];\n"
       "      var b4 = S[512u + tc];\n"
