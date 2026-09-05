@@ -1802,6 +1802,13 @@ std::unique_ptr<Ctx> CreateCtx() {
       wgpu::WGSLLanguageFeatureName::Packed4x8IntegerDotProduct);
 
   wgpu::RequestAdapterOptions aopts{};
+#if !defined(__APPLE__)
+  // [NO-NULL-ADAPTER 2026-09-05] 非 Apple 平台只接受 Vulkan。起因:Mate 10(麒麟 970,
+  // 有 vulkan.kirin970.so、Vulkan 1.1)上 Dawn 把请求交给了 **Null 后端**(软件空操作),
+  // rc=0、0.5ms、count=1、sha 是垃圾 —— 指纹抓到了 adapter="Null backend",但 RESULT
+  // 长得像成功。这是产品级的静默失败形态。显式指定 Vulkan 后,拒绝原因会进回调消息。
+  aopts.backendType = wgpu::BackendType::Vulkan;
+#endif
   std::string amsg;
   c->instance.WaitAny(
       c->instance.RequestAdapter(
@@ -1829,6 +1836,20 @@ std::unique_ptr<Ctx> CreateCtx() {
     if (c->feat_sgmatrix) info.nextInChain = &cfgs;
     c->adapter.GetInfo(&info);
     c->adapter_name = SV(info.device);
+    // [NO-NULL-ADAPTER 2026-09-05] Null 后端一律拒绝:它会"成功"地吐出垃圾。
+    // 走无 GPU 路径(EnsureDawn 返回 nullptr ⇒ 管线 fail-closed),并留指纹。
+    if (info.backendType == wgpu::BackendType::Null) {
+      Log("adapter is the Null backend — refusing (would silently return garbage)");
+      if (const char* home = std::getenv("HOME")) {
+        const std::string fp = std::string(home) + "/Documents/matcher_backend.jsonl";
+        if (FILE* f = std::fopen(fp.c_str(), "a")) {
+          std::fprintf(f, "{\"adapter_refused\":\"Null backend\"}\n");
+          std::fclose(f);
+        }
+      }
+      c->adapter = nullptr;
+      return nullptr;
+    }
     c->subgroup_min = info.subgroupMinSize;
     c->subgroup_max = info.subgroupMaxSize;
     if (c->feat_sgmatrix) {
