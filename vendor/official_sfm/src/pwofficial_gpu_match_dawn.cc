@@ -1882,12 +1882,18 @@ std::unique_ptr<Ctx> CreateCtx() {
   wgpu::Limits req{};
   wgpu::DeviceDescriptor dd{};
   // [UNIVERSAL 2026-09-05] 通用核只吃默认合同,不要任何特性/限制。
-  const bool want_blocked = force && std::strcmp(force, "blocked") == 0;
-  if (want_blocked) {
+  // [ONE-KERNEL 2026-09-05 用户裁决] 产品路径三端一律通用核 blocked,mma 不再是默认。
+  // mma 只在 env OFFICIAL_AETHER_MATCH_DAWN_KERNEL=mma 时显式选用 —— 留作对拍 oracle
+  // (parity / fullgate 仍用它与冻结金标准互证),不进产品路径。
+  // 代价已知:A14+ 上通用核比 mma 慢约 33%(13312² 93.5 vs 70ms);换来的是
+  // A13 / Mali / Adreno / A16 跑同一份字节的 WGSL、同一套闸、同一份输出。
+  const bool want_mma_explicit = force && std::strcmp(force, "mma") == 0;
+  const bool want_tiled_explicit = force && std::strcmp(force, "tiled") == 0;
+  if (!want_mma_explicit && !want_tiled_explicit) {
     c->backend = Backend::kBlocked;
     c->packed = true;
     c->mixed = false;
-  } else if (want_mma && mma_ok) {
+  } else if (want_mma_explicit && mma_ok) {
     c->backend = Backend::kMma;
     feats.push_back(wgpu::FeatureName::Subgroups);
     feats.push_back(wgpu::FeatureName::ChromiumExperimentalSubgroupMatrix);
