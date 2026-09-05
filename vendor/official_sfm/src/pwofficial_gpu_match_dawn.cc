@@ -4218,6 +4218,21 @@ bool EnsureMainPipelines(Ctx& c) {
         if (dbg) std::fprintf(stderr, "[direct-chain] NOSCAN(probe) in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
       }
+      // [WGSL-FILE 2026-09-06] 台架专用:OFFICIAL_AETHER_MATCH_DAWN_WGSL_FILE=<路径> 时用文件内容替换主核源码
+      // (Mac 上经变换链生成、sha 已验的 WGSL,adb push 即可换核,不必重装 .so)。绑定/缓冲仍由 env 派生的
+      // direct_* 旗决定,文件必须与同一组 env 生成。仅探针台架用,产品路径不读。
+      if (const char* wf = getenv("OFFICIAL_AETHER_MATCH_DAWN_WGSL_FILE")) {
+        if (FILE* f = std::fopen(wf, "rb")) {
+          std::string file;
+          char buf[4096]; size_t n;
+          while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) file.append(buf, n);
+          std::fclose(f);
+          if (dbg) std::fprintf(stderr, "[direct-chain] WGSL_FILE %s len=%zu (replaces generated len=%zu)\n", wf, file.size(), dsrc.size());
+          if (!file.empty()) dsrc = file;
+        } else if (dbg) {
+          std::fprintf(stderr, "[direct-chain] WGSL_FILE %s open failed\n", wf);
+        }
+      }
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_WGSL_DUMP") != nullptr) std::fprintf(stderr, "===WGSL_BEGIN===\n%s\n===WGSL_END===\n", dsrc.c_str());
       wgpu::ShaderModule m = CompileWgsl(c, dsrc.c_str(), "blocked direct");
       if (!m) return false;
