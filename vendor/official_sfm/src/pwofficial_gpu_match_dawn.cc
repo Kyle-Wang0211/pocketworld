@@ -1896,8 +1896,9 @@ static const char* BlockedLabel() {
     static std::string lbl;
     const bool nopb = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOPB") != nullptr;
     const bool txa = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TEXA") != nullptr;
+    const bool sm = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANMEM") != nullptr;
     const bool pa = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA") != nullptr;
-    lbl = std::string("blocked(") + (k44 ? "fma4x4" : "fma8x4") + "+direct" + (g ? "g" : "") + (tx ? "+tex" : "") + (txa ? "+texa" : "") + (nopb ? "+nopb" : "") + (pa ? "+pipea" : "") + ",V4)";
+    lbl = std::string("blocked(") + (k44 ? "fma4x4" : "fma8x4") + "+direct" + (g ? "g" : "") + (tx ? "+tex" : "") + (txa ? "+texa" : "") + (nopb ? "+nopb" : "") + (sm ? "+scanmem" : "") + (pa ? "+pipea" : "") + ",V4)";
     return lbl.c_str();
   }
   if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_88") != nullptr) return "blocked(fma8x8,V3)";
@@ -2998,6 +2999,64 @@ std::string DirectToTexAWgsl(const std::string& src) {
   return t;
 }
 
+// [DIRECT-SCANMEM 2026-09-05] 行扫描状态(rowBest/rowSecond/rowBestI)不再跨 GEMM 循环活着:
+// 每个 tile 的扫描段开头从 RowP 读回(首 tile 且 colBase==0 时置零),扫描完立刻写回 RowP;
+// 循环外的收尾只做 gate。少 3 个跨循环活寄存器,赌 Bifrost 的 ≤32 满占用率线。语义逐字节同:
+// 同一批值、同一顺序,只是中途落地了一次。两种形态(8x4/4x4)都认。
+std::string DirectScanMemWgsl(const std::string& src) {
+  std::string t = src;
+  struct Sub { const char* from; const char* to; };
+  const Sub subs[] = {
+    {"  let myRow = row0 + lid;\n"
+     "  var rowBest = 0.0;\n"
+     "  var rowSecond = 0.0;\n"
+     "  var rowBestI = -1;\n"
+     "  if (U.colBase != 0u && lid < WGR && myRow < U.numA) {\n"
+     "    let rp = RowP[myRow];\n"
+     "    rowBest = rp.best;\n"
+     "    rowSecond = rp.second;\n"
+     "    rowBestI = rp.idx;\n"
+     "  }\n",
+     "  let myRow = row0 + lid;\n"},
+    {"    if (lid < WGR) {\n"
+     "      for (var v = 0u; v < 16u; v = v + 1u) {\n",
+     "    if (lid < WGR) {\n"
+     "      var rowBest = 0.0;\n"
+     "      var rowSecond = 0.0;\n"
+     "      var rowBestI = -1;\n"
+     "      if (!(U.colBase == 0u && col0 == 0u) && myRow < U.numA) {\n"
+     "        let rp = RowP[myRow];\n"
+     "        rowBest = rp.best;\n"
+     "        rowSecond = rp.second;\n"
+     "        rowBestI = rp.idx;\n"
+     "      }\n"
+     "      for (var v = 0u; v < 16u; v = v + 1u) {\n"},
+    {"        if (d.w > rowBest) { rowSecond = rowBest; rowBest = d.w; rowBestI = c0 + 3; }\n"
+     "        else if (d.w > rowSecond) { rowSecond = d.w; }\n"
+     "      }\n"
+     "    } else if (lid < 2u * WGR) {\n",
+     "        if (d.w > rowBest) { rowSecond = rowBest; rowBest = d.w; rowBestI = c0 + 3; }\n"
+     "        else if (d.w > rowSecond) { rowSecond = d.w; }\n"
+     "      }\n"
+     "      if (myRow < U.numA) { RowP[myRow] = ColPart(rowBest, rowSecond, rowBestI); }\n"
+     "    } else if (lid < 2u * WGR) {\n"},
+    {"  if (lid < WGR && myRow < U.numA) {\n"
+     "    RowP[myRow] = ColPart(rowBest, rowSecond, rowBestI);\n"
+     "    OutAB[myRow] = gatef(rowBest, rowSecond, rowBestI);\n"
+     "  }\n",
+     "  if (lid < WGR && myRow < U.numA) {\n"
+     "    let rp = RowP[myRow];\n"
+     "    OutAB[myRow] = gatef(rp.best, rp.second, rp.idx);\n"
+     "  }\n"},
+  };
+  for (const Sub& sb : subs) {
+    const size_t p = t.find(sb.from);
+    if (p == std::string::npos) { AnchorAlarm("DirectScanMemWgsl", sb.from); return src; }
+    t.replace(p, std::strlen(sb.from), sb.to);
+  }
+  return t;
+}
+
 std::string BlkNoLoadWgsl(const std::string& src) {
   std::string t = src;
   // [ANCHOR 2026-09-05] 默认形态是 8x4+PIPEB(b4 预取成 bn),锚点必须先认这一形态;
@@ -3554,6 +3613,11 @@ bool EnsureMainPipelines(Ctx& c) {
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr) {
         dsrc = DirectTo44Wgsl(dsrc);
         if (dbg) std::fprintf(stderr, "[direct-chain] after 44 len=%zu\n", dsrc.size());
+      }
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANMEM") != nullptr) {
+        const std::string x = DirectScanMemWgsl(dsrc);
+        if (dbg) std::fprintf(stderr, "[direct-chain] SCANMEM in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
+        dsrc = x;
       }
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOPB") != nullptr) {
         const std::string x = DirectNoPipeBWgsl(dsrc);
