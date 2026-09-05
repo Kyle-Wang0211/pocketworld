@@ -1927,7 +1927,7 @@ static const char* BlockedLabel() {
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_FMA", "+fma"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN", "+pscan"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PACKED", "+packed"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TMAP", "+tmap"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB", "+tailb"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB2", "+tailb2"},
-    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA", "+pipea"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANSEL", "+scansel"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANU4", "+scanu4"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN2", "+pscan2"},
+    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA", "+pipea"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANSEL", "+scansel"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANU4", "+scanu4"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN2", "+pscan2"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN", "+keyscan"},
   };
   for (auto& e : extras) if (std::getenv(e[0]) != nullptr) lbl += e[1];
   if (const char* v = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL")) lbl += std::string("+unroll") + v;
@@ -3663,6 +3663,97 @@ std::string DirectScanU4Wgsl(const std::string& src) {
   return t;
 }
 
+// [DIRECT-KEYSCAN 2026-09-06] 扫描段重写(调研复刻:COLMAP SiftGPU MultiplyDescriptorG / OpenCV cuda knnMatch k=2 / FAISS 的
+// "寄存器里先归约、只写一次、短链合并";onnxruntime/tfjs 的复合键 (value,index) 并列技巧)。
+//   每线程把 4x4 结果块在寄存器里归约成 4 个行局部 + 4 个列局部 (bestKey, secondKey);键 = (score << 6) | (63 - 列在块内序)
+//   (行局部)/ (score << 5) | (31 - 行在块内序)(列局部);score 0 → 键 0(= 无候选,对应原核 idx=-1)。
+//   score ≤ 128·255·255 = 8,323,200 < 2^23 ⇒ u32 精确,键 < 2^29。键在块内唯一 ⇒ 合并无序、无分支:
+//   second = max(max(second, s2), min(best, b2)); best = max(best, b2)。并列时高键 = 小序号 = 原核"先出现者胜";
+//   second 含重复 best 值,与原核 else-分支语义同。解码后仍按原规则并入跨 tile 的行状态 / 写 ColP。
+//   barrier 仍是 2 次;P 复用原 S 的 8 KiB(2048 u32:行局部 32×16×2 + 列局部 64×8×2);无运行时分量索引;
+//   串行链 64/32 → 16/8;忙线程 64 → 96。只认 4x4 + W128(WGR=32)形态。
+std::string DirectKeyScanWgsl(const std::string& src) {
+  std::string t = src;
+  if (t.find("const WGR : u32 = 32u;\n") == std::string::npos) { AnchorAlarm("DirectKeyScanWgsl", "只认 W128(WGR=32)"); return src; }
+  {
+    const std::string sd = "var<workgroup> S : array<vec4<f32>, 512>;\n";
+    const size_t p = t.find(sd);
+    if (p == std::string::npos) { AnchorAlarm("DirectKeyScanWgsl", "S 声明未命中"); return src; }
+    t.replace(p, sd.size(), "var<workgroup> P : array<u32, 2048>;\n");
+  }
+  const std::string from_head = "    workgroupBarrier();\n    S[(tr * 4u + 0u) * 16u + tc] = acc0;\n";
+  const std::string from_tail = "      if (gc < U.numB) { ColP[rb * U.numB + gc] = ColPart(cb, cs, ci); }\n    }\n";
+  const size_t p = t.find(from_head);
+  const size_t q = (p == std::string::npos) ? std::string::npos : t.find(from_tail, p);
+  if (p == std::string::npos || q == std::string::npos) { AnchorAlarm("DirectKeyScanWgsl", "扫描块未命中"); return src; }
+  std::string to;
+  to += "    workgroupBarrier();\n    {\n      let cbase = tc * 4u;\n      let rbase = tr * 4u;\n";
+  const char* comp[] = {"x", "y", "z", "w"};
+  const char* accs[] = {"acc0", "acc1", "acc2", "acc3"};
+  // 行局部:行 i = rbase+i,键来自 acc_i.{x,y,z,w}(列 cbase+j)
+  for (int i = 0; i < 4; ++i) {
+    to += "      {\n";
+    for (int j = 0; j < 4; ++j) {
+      char b[256];
+      std::snprintf(b, sizeof(b), "        let k%d = select((u32(%s.%s) << 6u) | (63u - (cbase + %du)), 0u, %s.%s == 0.0);\n", j, accs[i], comp[j], j, accs[i], comp[j]);
+      to += b;
+    }
+    to += "        var b = k0;\n        var s = 0u;\n"
+          "        s = max(s, min(b, k1)); b = max(b, k1);\n"
+          "        s = max(s, min(b, k2)); b = max(b, k2);\n"
+          "        s = max(s, min(b, k3)); b = max(b, k3);\n";
+    char w[160];
+    std::snprintf(w, sizeof(w), "        P[((rbase + %du) * 16u + tc) * 2u] = b;\n        P[((rbase + %du) * 16u + tc) * 2u + 1u] = s;\n      }\n", i, i);
+    to += w;
+  }
+  // 列局部:列 j = cbase+j,键来自 acc0..3 的分量 j(行 rbase+i)
+  for (int j = 0; j < 4; ++j) {
+    to += "      {\n";
+    for (int i = 0; i < 4; ++i) {
+      char b[256];
+      std::snprintf(b, sizeof(b), "        let k%d = select((u32(%s.%s) << 5u) | (31u - (rbase + %du)), 0u, %s.%s == 0.0);\n", i, accs[i], comp[j], i, accs[i], comp[j]);
+      to += b;
+    }
+    to += "        var b = k0;\n        var s = 0u;\n"
+          "        s = max(s, min(b, k1)); b = max(b, k1);\n"
+          "        s = max(s, min(b, k2)); b = max(b, k2);\n"
+          "        s = max(s, min(b, k3)); b = max(b, k3);\n";
+    char w[160];
+    std::snprintf(w, sizeof(w), "        P[1024u + ((cbase + %du) * 8u + tr) * 2u] = b;\n        P[1024u + ((cbase + %du) * 8u + tr) * 2u + 1u] = s;\n      }\n", j, j);
+    to += w;
+  }
+  to += "    }\n    workgroupBarrier();\n"
+        "    if (lid < WGR) {\n"
+        "      var b = 0u;\n      var s = 0u;\n"
+        "      for (var t = 0u; t < 16u; t = t + 1u) {\n"
+        "        let bk = P[(lid * 16u + t) * 2u];\n"
+        "        let sk = P[(lid * 16u + t) * 2u + 1u];\n"
+        "        s = max(max(s, sk), min(b, bk));\n"
+        "        b = max(b, bk);\n"
+        "      }\n"
+        "      let b2 = f32(b >> 6u);\n      let s2 = f32(s >> 6u);\n"
+        "      let i2 = select(i32(col0 + (63u - (b & 63u))), -1, b == 0u);\n"
+        "      if (b2 > rowBest) { rowSecond = max(rowBest, s2); rowBest = b2; rowBestI = i2; }\n"
+        "      else { rowSecond = max(rowSecond, b2); }\n"
+        "    } else if (lid < WGR + 64u) {\n"
+        "      let c = lid - WGR;\n"
+        "      var b = 0u;\n      var s = 0u;\n"
+        "      for (var t = 0u; t < 8u; t = t + 1u) {\n"
+        "        let bk = P[1024u + (c * 8u + t) * 2u];\n"
+        "        let sk = P[1024u + (c * 8u + t) * 2u + 1u];\n"
+        "        s = max(max(s, sk), min(b, bk));\n"
+        "        b = max(b, bk);\n"
+        "      }\n"
+        "      let cb = f32(b >> 5u);\n      let cs = f32(s >> 5u);\n"
+        "      let ci = select(i32(row0 + (31u - (b & 31u))), -1, b == 0u);\n"
+        "      let gc = col0 + c;\n"
+        "      if (gc < U.numB) { ColP[rb * U.numB + gc] = ColPart(cb, cs, ci); }\n"
+        "    }\n";
+  t.replace(p, q + from_tail.size() - p, to);
+  if (t.find("S[") != std::string::npos) { AnchorAlarm("DirectKeyScanWgsl", "残留 S[ 引用"); return src; }
+  return t;
+}
+
 std::string BlkNoLoadWgsl(const std::string& src) {
   std::string t = src;
   // [ANCHOR 2026-09-05] 默认形态是 8x4+PIPEB(b4 预取成 bn),锚点必须先认这一形态;
@@ -4226,6 +4317,11 @@ bool EnsureMainPipelines(Ctx& c) {
           if (dbg) std::fprintf(stderr, "[direct-chain] W128 in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
           dsrc = x;
         }
+      }
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN") != nullptr) {
+        const std::string x = DirectKeyScanWgsl(dsrc);
+        if (dbg) std::fprintf(stderr, "[direct-chain] KEYSCAN in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
+        dsrc = x;
       }
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN2") != nullptr) {
         const std::string x = DirectPScanWgsl(dsrc, true);
