@@ -989,6 +989,208 @@ fn merge(@builtin(global_invocation_id) gid : vec3<u32>) {
 }
 )WGSL";
 
+// [DIRECT 2026-09-05] 通用核的"去线程组暂存"形态(env OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT=1)。
+// 依据(一手):Arm Mali OpenCL Developer Guide 6.1 §3.7 / "Use of local or private memory":
+//   "If you allocate local or private memory, it is allocated in global memory. Moving data from
+//    global to local memory typically does not improve performance." /
+//   "Some code copies data into a local or private memory, processes it, then writes it out again.
+//    This code wastes both performance and power by performing these copies." /
+//   "If you remove copy operations to or from these memories, also remove the associated barriers."
+// Arm Compute Library 的 Mali GEMM(gemm_mm_reshaped_only_rhs_*)正是这么写的:不用 __local,
+// 右矩阵预先 reshape/转置,内层全靠寄存器分块 + 向量载入。
+// 这里:A/B 各做一次预转置到 f32 [k][row/4] 布局(xpose 入口),主循环三次 vec4 全局载入喂 32 次 FMA,
+// GEMM 段零 barrier;S 只留给 64x64 结果交换的扫描段。算术与 8x4+PIPEB 逐 FMA 同源 ⇒ 逐字节同。
+// Mate 10 起因:13312² 7234ms = 峰值的 ~3%,而载入/FMA 配比在纸面上并不缺;可疑项正是暂存+barrier。
+constexpr char kWgslXpose[] = R"WGSL(
+struct XParams { n4 : u32, p1 : u32, p2 : u32, p3 : u32, };
+@group(0) @binding(0) var<storage, read> Src : array<u32>;
+@group(0) @binding(3) var<uniform> X : XParams;
+@group(0) @binding(7) var<storage, read_write> Dst : array<vec4<f32>>;
+// 线程 i:q = 行四元组(相邻线程相邻 q ⇒ 写合并),w = 32 个 u32 字之一(k = 4w..4w+3)。
+// 源缓冲已按 n4*4 行零补位(见 UploadDesc),越界由构造排除。
+@compute @workgroup_size(64)
+fn xpose(@builtin(global_invocation_id) gid : vec3<u32>) {
+  let n4 = X.n4;
+  let i = gid.x;
+  if (i >= n4 * 32u) { return; }
+  let q = i % n4;
+  let w = i / n4;
+  let x0 = Src[(4u * q + 0u) * 32u + w];
+  let x1 = Src[(4u * q + 1u) * 32u + w];
+  let x2 = Src[(4u * q + 2u) * 32u + w];
+  let x3 = Src[(4u * q + 3u) * 32u + w];
+  let o = (w * 4u) * n4 + q;
+  Dst[o + 0u * n4] = vec4<f32>(f32(x0 & 255u), f32(x1 & 255u), f32(x2 & 255u), f32(x3 & 255u));
+  Dst[o + 1u * n4] = vec4<f32>(f32((x0 >> 8u) & 255u), f32((x1 >> 8u) & 255u), f32((x2 >> 8u) & 255u), f32((x3 >> 8u) & 255u));
+  Dst[o + 2u * n4] = vec4<f32>(f32((x0 >> 16u) & 255u), f32((x1 >> 16u) & 255u), f32((x2 >> 16u) & 255u), f32((x3 >> 16u) & 255u));
+  Dst[o + 3u * n4] = vec4<f32>(f32(x0 >> 24u), f32(x1 >> 24u), f32(x2 >> 24u), f32(x3 >> 24u));
+}
+)WGSL";
+
+constexpr char kWgslBlocked84Direct[] = R"WGSL(
+const INV_SQ_NORM : f32 = 0.000003814697265625; // 1/262144
+const WGR : u32 = 64u;
+const BT : u32 = 64u;
+const KD : u32 = 128u;
+
+struct Params {
+  numA : u32,
+  numB : u32,
+  maxRatio : f32,
+  maxDistance : f32,
+  numWg : u32,
+  rowBase : u32,
+  colBase : u32,
+  colSpan : u32,
+};
+
+struct ColPart {
+  best : f32,
+  second : f32,
+  idx : i32,
+};
+
+@group(0) @binding(0) var<storage, read> A : array<u32>;
+@group(0) @binding(1) var<storage, read> B : array<u32>;
+@group(0) @binding(2) var<storage, read_write> OutAB : array<i32>;
+@group(0) @binding(3) var<uniform> U : Params;
+@group(0) @binding(4) var<storage, read_write> ColP : array<ColPart>;
+@group(0) @binding(5) var<storage, read_write> OutBA : array<i32>;
+@group(0) @binding(6) var<storage, read_write> RowP : array<ColPart>;
+@group(0) @binding(7) var<storage, read> At : array<vec4<f32>>;
+@group(0) @binding(8) var<storage, read> Bt : array<vec4<f32>>;
+
+fn gatef(best : f32, second : f32, bestIndex : i32) -> i32 {
+  if (bestIndex < 0) { return -1; }
+  let bd = acos(min(best * INV_SQ_NORM, 1.0));
+  let sd = acos(min(second * INV_SQ_NORM, 1.0));
+  if (bd <= U.maxDistance && bd < U.maxRatio * sd) { return bestIndex; }
+  return -1;
+}
+
+var<workgroup> S : array<vec4<f32>, 1024>;
+
+@compute @workgroup_size(128)
+fn main(@builtin(workgroup_id) wg : vec3<u32>,
+        @builtin(local_invocation_index) lid : u32) {
+  let rb = U.rowBase + wg.x;
+  let row0 = rb * WGR;
+  let tr = lid / 16u;
+  let tc = lid % 16u;
+  let rowPad4 = ((U.numA + 63u) / 64u) * 16u;
+  let colPad4 = ((U.numB + 127u) / 128u) * 32u;
+  let rq = row0 / 4u + tr * 2u;
+
+  let myRow = row0 + lid;
+  var rowBest = 0.0;
+  var rowSecond = 0.0;
+  var rowBestI = -1;
+  if (U.colBase != 0u && lid < WGR && myRow < U.numA) {
+    let rp = RowP[myRow];
+    rowBest = rp.best;
+    rowSecond = rp.second;
+    rowBestI = rp.idx;
+  }
+
+  var col0 = U.colBase;
+  let colEnd = min(U.colBase + U.colSpan, U.numB);
+  loop {
+    if (col0 >= colEnd) { break; }
+    let cq = col0 / 4u + tc;
+
+    var acc0 = vec4<f32>(0.0);
+    var acc1 = vec4<f32>(0.0);
+    var acc2 = vec4<f32>(0.0);
+    var acc3 = vec4<f32>(0.0);
+    var acc4 = vec4<f32>(0.0);
+    var acc5 = vec4<f32>(0.0);
+    var acc6 = vec4<f32>(0.0);
+    var acc7 = vec4<f32>(0.0);
+
+    var b4 = Bt[cq];
+    for (var k = 0u; k < KD; k = k + 1u) {
+      let al = At[k * rowPad4 + rq];
+      let ah = At[k * rowPad4 + rq + 1u];
+      let bn = Bt[min(k + 1u, KD - 1u) * colPad4 + cq];
+      acc0 = acc0 + al.x * b4;
+      acc1 = acc1 + al.y * b4;
+      acc2 = acc2 + al.z * b4;
+      acc3 = acc3 + al.w * b4;
+      acc4 = acc4 + ah.x * b4;
+      acc5 = acc5 + ah.y * b4;
+      acc6 = acc6 + ah.z * b4;
+      acc7 = acc7 + ah.w * b4;
+      b4 = bn;
+    }
+    workgroupBarrier();
+    S[(tr * 8u + 0u) * 16u + tc] = acc0;
+    S[(tr * 8u + 1u) * 16u + tc] = acc1;
+    S[(tr * 8u + 2u) * 16u + tc] = acc2;
+    S[(tr * 8u + 3u) * 16u + tc] = acc3;
+    S[(tr * 8u + 4u) * 16u + tc] = acc4;
+    S[(tr * 8u + 5u) * 16u + tc] = acc5;
+    S[(tr * 8u + 6u) * 16u + tc] = acc6;
+    S[(tr * 8u + 7u) * 16u + tc] = acc7;
+    workgroupBarrier();
+
+    if (lid < WGR) {
+      for (var v = 0u; v < 16u; v = v + 1u) {
+        let d = S[lid * 16u + v];
+        let c0 = i32(col0 + v * 4u);
+        if (d.x > rowBest) { rowSecond = rowBest; rowBest = d.x; rowBestI = c0; }
+        else if (d.x > rowSecond) { rowSecond = d.x; }
+        if (d.y > rowBest) { rowSecond = rowBest; rowBest = d.y; rowBestI = c0 + 1; }
+        else if (d.y > rowSecond) { rowSecond = d.y; }
+        if (d.z > rowBest) { rowSecond = rowBest; rowBest = d.z; rowBestI = c0 + 2; }
+        else if (d.z > rowSecond) { rowSecond = d.z; }
+        if (d.w > rowBest) { rowSecond = rowBest; rowBest = d.w; rowBestI = c0 + 3; }
+        else if (d.w > rowSecond) { rowSecond = d.w; }
+      }
+    } else if (lid < 2u * WGR) {
+      let c = lid - WGR;
+      let q = c / 4u;
+      let m = c % 4u;
+      var cb = 0.0;
+      var cs = 0.0;
+      var ci = -1;
+      for (var r = 0u; r < WGR; r = r + 1u) {
+        let d = S[r * 16u + q][m];
+        if (d > cb) { cs = cb; cb = d; ci = i32(row0 + r); }
+        else if (d > cs) { cs = d; }
+      }
+      let gc = col0 + c;
+      if (gc < U.numB) { ColP[rb * U.numB + gc] = ColPart(cb, cs, ci); }
+    }
+    col0 = col0 + BT;
+  }
+
+  if (lid < WGR && myRow < U.numA) {
+    RowP[myRow] = ColPart(rowBest, rowSecond, rowBestI);
+    OutAB[myRow] = gatef(rowBest, rowSecond, rowBestI);
+  }
+}
+
+@compute @workgroup_size(64)
+fn merge(@builtin(global_invocation_id) gid : vec3<u32>) {
+  let c = gid.x;
+  if (c >= U.numB) { return; }
+  var best = 0.0;
+  var second = 0.0;
+  var bi = -1;
+  for (var w = 0u; w < U.numWg; w = w + 1u) {
+    let p = ColP[w * U.numB + c];
+    if (p.best > best) {
+      second = max(best, p.second);
+      best = p.best;
+      bi = p.idx;
+    } else {
+      second = max(second, p.best);
+    }
+  }
+  OutBA[c] = gatef(best, second, bi);
+}
+)WGSL";
+
 // [UNIVERSAL-88 2026-09-05] 8x8 / 64 线程:16 条独立累加链,每 k 4 次载入换 64 次 FMA。
 // 依据:8x4/128 线程的纯 FMA 地板(90.4)优于 4x4/256(100.2)—— 线程数不是瓶颈,链数才是。
 // 代价:扫描变两趟(64 线程先行后列)。
@@ -1687,6 +1889,7 @@ enum class Backend { kNone, kMma, kTiled, kBlocked };
 // "blocked(fma4x4,V3)",而默认早已是 8x4+PIPEB —— 指纹说了假话。与 EnsureBlockedPipeline 的
 // 选核逻辑读同一组 env,同源不会再漂。
 static const char* BlockedLabel() {
+  if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT") != nullptr) return "blocked(fma8x4+direct,V4)";
   if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_88") != nullptr) return "blocked(fma8x8,V3)";
   if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr) return "blocked(fma4x4,V3)";
   if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_PIPE") != nullptr) return "blocked(fma8x4+pipe,V3)";
@@ -1756,11 +1959,14 @@ struct Ctx {
   uint32_t lim_storage = 0, lim_invocations = 0, lim_size_x = 0;
   // Pipelines (lazy; a failed compile is remembered so we do not retry).
   wgpu::ComputePipeline p_main, p_merge, p_guided;
+  wgpu::ComputePipeline p_xpose;  // [DIRECT] A/B → f32 [k][row/4] 预转置
+  bool direct = false;            // [DIRECT] 主核走 At/Bt(绑定 7/8),GEMM 段无线程组暂存
   bool tried_main = false, tried_guided = false;
   // Pools (grow-only).
   PoolBuf a{}, b{}, outAB{}, outBA{}, colp{}, rowp{}, uni{}, staging{}, ptsA{}, ptsB{},
       matAB{}, matBA{};
   PoolBuf pbA{}, pbB{}, pbOutAB{}, pbOutBA{}, pbColp{}, pbRowp{}, pbUni{}, pbStaging{};
+  PoolBuf at{}, bt{}, pbAt{}, pbBt{}, pbXUni{};  // [DIRECT]
   // Host scratch.
   std::vector<float> scratchA, scratchB;
   std::vector<int32_t> sentinel, host;
@@ -2576,6 +2782,21 @@ std::string BlkFmaWgsl(const std::string& src) {
 // ⇒ 这个结构的**纯 FMA 地板**。差值 = 载入(含无 scoreboard 的延迟)的全部成本。
 std::string BlkNoLoadWgsl(const std::string& src) {
   std::string t = src;
+  // [ANCHOR 2026-09-05] 默认形态是 8x4+PIPEB(b4 预取成 bn),锚点必须先认这一形态;
+  // 09-05 晚 Mac 活性检查发现本探针在默认形态上静默 no-op(生成代码与基线逐字节同)。
+  const std::string fromPipeB =
+      "        let al = S[k * 16u + tr * 2u];\n"
+      "        let ah = S[k * 16u + tr * 2u + 1u];\n"
+      "        let bn = S[512u + min(k + 1u, KC - 1u) * 16u + tc];\n";
+  const size_t pb = t.find(fromPipeB);
+  if (pb != std::string::npos) {
+    t.replace(pb, fromPipeB.size(),
+        "        let fk = f32(k);\n"
+        "        let al = vec4<f32>(fk, fk + 1.0, fk + 2.0, fk + 3.0);\n"
+        "        let ah = vec4<f32>(fk + 4.0, fk + 5.0, fk + 6.0, fk + 7.0);\n"
+        "        let bn = vec4<f32>(fk * 0.5, fk, fk * 1.5, fk * 2.0);\n");
+    return t;
+  }
   const std::string from =
       "        let al = S[k * 16u + tr * 2u];\n"
       "        let ah = S[k * 16u + tr * 2u + 1u];\n"
@@ -2605,11 +2826,17 @@ std::string BlkNoLoadWgsl(const std::string& src) {
 // 尺子(逐字节不变):BLK_XBAR 每个 k 段的计算之后多加 N 个 barrier,斜率 = 单个 barrier 的价。
 std::string BlkXBarWgsl(const std::string& src, int n) {
   std::string t = src;
-  const std::string from =
+  // [ANCHOR 2026-09-05] 先认 PIPEB 形态的循环尾(多一行 b4 = bn),再认裸 8x4。
+  std::string from =
       "        acc7 = acc7 + ah.w * b4;\n"
+      "        b4 = bn;\n"
       "      }\n";
-  const size_t p = t.find(from);
-  if (p == std::string::npos) { AnchorAlarm("BlkXBarWgsl", "8x4 内层尾未命中"); return src; }
+  size_t p = t.find(from);
+  if (p == std::string::npos) {
+    from = "        acc7 = acc7 + ah.w * b4;\n      }\n";
+    p = t.find(from);
+  }
+  if (p == std::string::npos) { AnchorAlarm("BlkXBarWgsl", "8x4 内层尾未命中(PIPEB/裸 都不是)"); return src; }
   std::string add = from;
   for (int i = 0; i < n; ++i) add += "      workgroupBarrier();\n";
   t.replace(p, from.size(), add);
@@ -3101,6 +3328,18 @@ bool EnsureMainPipelines(Ctx& c) {
     return c.p_main && c.p_merge;
   }
   if (c.backend == Backend::kBlocked) {
+    if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT") != nullptr) {
+      // [DIRECT 2026-09-05] 见 kWgslBlocked84Direct 注释。纯净形态,不叠任何探针变换。
+      wgpu::ShaderModule m = CompileWgsl(c, kWgslBlocked84Direct, "blocked direct");
+      if (!m) return false;
+      wgpu::ShaderModule mx = CompileWgsl(c, kWgslXpose, "xpose");
+      if (!mx) return false;
+      c.p_main = MakePipeline(c, m, "main");
+      c.p_merge = MakePipeline(c, m, "merge");
+      c.p_xpose = MakePipeline(c, mx, "xpose");
+      c.direct = c.p_main && c.p_merge && c.p_xpose;
+      return c.direct;
+    }
     // [UNIVERSAL-DEFAULT 2026-09-05] 通用核默认 = 8x4/128 线程 + PIPEB(只提前 B 的一个 vec4)。
     // 两台真机同向:A16 −5.2%(两轮交替)、Adreno 660 −5.9%(5 轮 min);三平台逐字节相同。
     // 这是唯一一把两边都赚的预取刀:PIPE(提前 3 个 vec4)与 GPF 在 A16 赔 +12%/+9%、
@@ -3720,7 +3959,7 @@ int MatchPairsImpl(const uint8_t* dA, int nA, const uint8_t* dB, int nB,
   const uint64_t outABBytes = (uint64_t)nAu * 4, outBABytes = (uint64_t)nBu * 4;
   wgpu::Buffer outAB = PoolGet(c, c.outAB, outABBytes, kUsageOut);
   wgpu::Buffer outBA = PoolGet(c, c.outBA, outBABytes, kUsageOut);
-  wgpu::Buffer uni = PoolGet(c, c.uni, 2 * kSlot, kUsageUni);
+  wgpu::Buffer uni = PoolGet(c, c.uni, 4 * kSlot, kUsageUni);  // 槽 1/2 给 [DIRECT] 的 XParams
   wgpu::Buffer staging =
       PoolGet(c, c.staging, outABBytes + outBABytes, kUsageStaging);
   if (!outAB || !outBA || !uni || !staging) return 6;
@@ -3746,14 +3985,51 @@ int MatchPairsImpl(const uint8_t* dA, int nA, const uint8_t* dB, int nB,
     if (!rowp) return 6;
     const Params p{nAu, nBu, maxRatio, maxDistance, numWg, 0u, 0u, nBu};
     c.queue.WriteBuffer(uni, 0, reinterpret_cast<const uint8_t*>(&p), sizeof(p));
-    bgMain = MakeBG(c, c.p_main,
-                    {BE(0, aBuf, 0, aBytes), BE(1, bBuf, 0, bBytes),
-                     BE(2, outAB, 0, outABBytes), BE(3, uni, 0, sizeof(Params)),
-                     BE(4, colp, 0, colBytes), BE(6, rowp, 0, rowBytes)});
+    std::vector<wgpu::BindGroupEntry> mainEntries = {
+        BE(0, aBuf, 0, aBytes), BE(1, bBuf, 0, bBytes),
+        BE(2, outAB, 0, outABBytes), BE(3, uni, 0, sizeof(Params)),
+        BE(4, colp, 0, colBytes), BE(6, rowp, 0, rowBytes)};
+    wgpu::BindGroup bgXA, bgXB;
+    if (c.direct) {
+      // [DIRECT] 主核不再读 A/B(绑定 0/1);Dawn 自动布局只收录实际用到的绑定,多给会报
+      // "binding index 0 not present in the bind group layout"(首次 Mac 复验就撞上)。
+      mainEntries.erase(mainEntries.begin(), mainEntries.begin() + 2);
+      // [DIRECT] At/Bt = f32 [k][row/4]:每行 128 k × 4 B = 512 B;按补位行数分配。
+      const uint64_t atBytes = 512ull * nApad, btBytes = 512ull * nBpad;
+      wgpu::Buffer at = PoolGet(c, c.at, atBytes, kUsageColp);
+      wgpu::Buffer bt = PoolGet(c, c.bt, btBytes, kUsageColp);
+      if (!at || !bt) return 6;
+      const uint32_t xa[4] = {nApad / 4u, 0u, 0u, 0u};
+      const uint32_t xb[4] = {nBpad / 4u, 0u, 0u, 0u};
+      c.queue.WriteBuffer(uni, kSlot, reinterpret_cast<const uint8_t*>(xa), 16);
+      c.queue.WriteBuffer(uni, 2 * kSlot, reinterpret_cast<const uint8_t*>(xb), 16);
+      mainEntries.push_back(BE(7, at, 0, atBytes));
+      mainEntries.push_back(BE(8, bt, 0, btBytes));
+      bgXA = MakeBG(c, c.p_xpose, {BE(0, aBuf, 0, aBytes), BE(3, uni, kSlot, 16),
+                                   BE(7, at, 0, atBytes)});
+      bgXB = MakeBG(c, c.p_xpose, {BE(0, bBuf, 0, bBytes), BE(3, uni, 2 * kSlot, 16),
+                                   BE(7, bt, 0, btBytes)});
+      if (!bgXA || !bgXB) return 6;
+    }
+    bgMain = MakeBG(c, c.p_main, mainEntries);
     bgMerge = MakeBG(c, c.p_merge,
                      {BE(3, uni, 0, sizeof(Params)), BE(4, colp, 0, colBytes),
                       BE(5, outBA, 0, outBABytes)});
     if (!bgMain || !bgMerge) return 6;
+    if (c.direct) {
+      // [DIRECT] 预转置一次;队列有序,后续分块 submit 天然在其后。
+      wgpu::CommandEncoder enc = c.device.CreateCommandEncoder();
+      wgpu::ComputePassEncoder pass = enc.BeginComputePass();
+      pass.SetPipeline(c.p_xpose);
+      pass.SetBindGroup(0, bgXA);
+      pass.DispatchWorkgroups((nApad / 4u * 32u + 63u) / 64u);
+      pass.SetBindGroup(0, bgXB);
+      pass.DispatchWorkgroups((nBpad / 4u * 32u + 63u) / 64u);
+      pass.End();
+      wgpu::CommandBuffer cb = enc.Finish();
+      const int rcx = SubmitAndWait(c, cb, nullptr);
+      if (rcx != 0) return rcx;
+    }
     Stage s;
     s.col_chunkable = true;  // 只有这一处的核认识 colBase/colSpan/RowP
     s.tile_cols = MainTileCols(c.backend);
@@ -3895,7 +4171,7 @@ int MatchGuidedImpl(const uint8_t* dA, int nA, const float* xyA,
   const uint64_t outABBytes = (uint64_t)nAu * 4, outBABytes = (uint64_t)nBu * 4;
   wgpu::Buffer outAB = PoolGet(c, c.outAB, outABBytes, kUsageOut);
   wgpu::Buffer outBA = PoolGet(c, c.outBA, outBABytes, kUsageOut);
-  wgpu::Buffer uni = PoolGet(c, c.uni, 2 * kSlot, kUsageUni);
+  wgpu::Buffer uni = PoolGet(c, c.uni, 4 * kSlot, kUsageUni);  // 槽 1/2 给 [DIRECT] 的 XParams
   wgpu::Buffer staging =
       PoolGet(c, c.staging, outABBytes + outBABytes, kUsageStaging);
   if (!outAB || !outBA || !uni || !staging) return 6;
@@ -4005,11 +4281,13 @@ int ProbeBatchImpl(const uint8_t* dA, int nA, const uint8_t* const* dBs,
     uint32_t nB, nBpad;
     uint64_t bOff, bBytes, outBAOff, outBABytes, colOff, colBytes, uniOff,
         stgOff;
+    uint64_t btOff = 0, btBytes = 0;  // [DIRECT]
     wgpu::BindGroup bgMain, bgMerge, bgBA;
+    wgpu::BindGroup bgX;  // [DIRECT] 该候选 B 的预转置
     double units;
   };
   std::vector<Cand> cands((size_t)n_cands);
-  uint64_t bTotal = 0, outBATotal = 0, colTotal = 0, stgTotal = 0;
+  uint64_t bTotal = 0, outBATotal = 0, colTotal = 0, stgTotal = 0, btTotal = 0;
   for (int k = 0; k < n_cands; ++k) {
     Cand& cd = cands[(size_t)k];
     cd.nB = (uint32_t)nBs[k];
@@ -4026,6 +4304,9 @@ int ProbeBatchImpl(const uint8_t* dA, int nA, const uint8_t* const* dBs,
     cd.uniOff = (uint64_t)k * uniPerCand * kSlot;
     cd.stgOff = stgTotal;
     stgTotal += outABBytes + cd.outBABytes;
+    cd.btBytes = 512ull * cd.nBpad;
+    cd.btOff = btTotal;
+    btTotal += RoundUp(cd.btBytes, kSlot);
     cd.units = mma ? (double)numWg * ((double)cd.nB / 1024.0)
                    : (double)((nAu + 63) / 64) * ((double)cd.nB / 1024.0) +
                          (double)((cd.nB + 63) / 64) * ((double)nAu / 1024.0);
@@ -4043,6 +4324,21 @@ int ProbeBatchImpl(const uint8_t* dA, int nA, const uint8_t* const* dBs,
   wgpu::Buffer colp = PoolGet(c, c.pbColp, colTotal, kUsageColp);
   wgpu::Buffer rowpPb = PoolGet(c, c.pbRowp, rowPbBytes, kUsageColp);
   if (!rowpPb) return 6;
+  // [DIRECT] 批量路径同样要绑定 7/8 并先做预转置(ABI 门会抓漏绑定)。
+  const uint64_t atPbBytes = 512ull * nApad;
+  wgpu::Buffer atPb, btPb, xuni;
+  wgpu::BindGroup bgXA;
+  if (c.direct) {
+    atPb = PoolGet(c, c.pbAt, atPbBytes, kUsageColp);
+    btPb = PoolGet(c, c.pbBt, btTotal, kUsageColp);
+    xuni = PoolGet(c, c.pbXUni, (uint64_t)(n_cands + 1) * kSlot, kUsageUni);
+    if (!atPb || !btPb || !xuni) return 6;
+    const uint32_t xa[4] = {nApad / 4u, 0u, 0u, 0u};
+    c.queue.WriteBuffer(xuni, 0, reinterpret_cast<const uint8_t*>(xa), 16);
+    bgXA = MakeBG(c, c.p_xpose, {BE(0, aBuf, 0, aBytes), BE(3, xuni, 0, 16),
+                                 BE(7, atPb, 0, atPbBytes)});
+    if (!bgXA) return 6;
+  }
   wgpu::Buffer uni = PoolGet(c, c.pbUni, (uint64_t)n_cands * uniPerCand * kSlot,
                              kUsageUni);
   wgpu::Buffer staging = PoolGet(c, c.pbStaging, stgTotal, kUsageStaging);
@@ -4063,12 +4359,25 @@ int ProbeBatchImpl(const uint8_t* dA, int nA, const uint8_t* const* dBs,
       const Params p{nAu, cd.nB, maxRatio, maxDistance, numWg, 0u, 0u, cd.nB};
       c.queue.WriteBuffer(uni, cd.uniOff, reinterpret_cast<const uint8_t*>(&p),
                           sizeof(p));
-      cd.bgMain = MakeBG(
-          c, c.p_main,
-          {BE(0, aBuf, 0, aBytes), BE(1, bBuf, cd.bOff, cd.bBytes),
-           BE(2, outAB, (uint64_t)k * outABSlot, outABBytes),
-           BE(3, uni, cd.uniOff, sizeof(Params)), BE(4, colp, cd.colOff, cd.colBytes),
-           BE(6, rowpPb, 0, rowPbBytes)});
+      std::vector<wgpu::BindGroupEntry> me = {
+          BE(0, aBuf, 0, aBytes), BE(1, bBuf, cd.bOff, cd.bBytes),
+          BE(2, outAB, (uint64_t)k * outABSlot, outABBytes),
+          BE(3, uni, cd.uniOff, sizeof(Params)), BE(4, colp, cd.colOff, cd.colBytes),
+          BE(6, rowpPb, 0, rowPbBytes)};
+      if (c.direct) {
+        me.erase(me.begin(), me.begin() + 2);  // 主核不读 A/B(见 MatchPairsImpl)
+        const uint32_t xb[4] = {cd.nBpad / 4u, 0u, 0u, 0u};
+        c.queue.WriteBuffer(xuni, (uint64_t)(k + 1) * kSlot,
+                            reinterpret_cast<const uint8_t*>(xb), 16);
+        me.push_back(BE(7, atPb, 0, atPbBytes));
+        me.push_back(BE(8, btPb, cd.btOff, cd.btBytes));
+        cd.bgX = MakeBG(c, c.p_xpose,
+                        {BE(0, bBuf, cd.bOff, cd.bBytes),
+                         BE(3, xuni, (uint64_t)(k + 1) * kSlot, 16),
+                         BE(7, btPb, cd.btOff, cd.btBytes)});
+        if (!cd.bgX) return 6;
+      }
+      cd.bgMain = MakeBG(c, c.p_main, me);
       cd.bgMerge = MakeBG(c, c.p_merge,
                           {BE(3, uni, cd.uniOff, sizeof(Params)),
                            BE(4, colp, cd.colOff, cd.colBytes),
@@ -4096,9 +4405,19 @@ int ProbeBatchImpl(const uint8_t* dA, int nA, const uint8_t* const* dBs,
   auto runGroup = [&](int c0, int c1) -> int {
     wgpu::CommandEncoder enc = c.device.CreateCommandEncoder();
     wgpu::ComputePassEncoder pass = enc.BeginComputePass();
+    if (c.direct && c0 == 0) {
+      pass.SetPipeline(c.p_xpose);
+      pass.SetBindGroup(0, bgXA);
+      pass.DispatchWorkgroups((nApad / 4u * 32u + 63u) / 64u);
+    }
     for (int k = c0; k < c1; ++k) {
       const Cand& cd = cands[(size_t)k];
       if (mma) {
+        if (c.direct) {
+          pass.SetPipeline(c.p_xpose);
+          pass.SetBindGroup(0, cd.bgX);
+          pass.DispatchWorkgroups((cd.nBpad / 4u * 32u + 63u) / 64u);
+        }
         pass.SetPipeline(c.p_main);
         pass.SetBindGroup(0, cd.bgMain);
         pass.DispatchWorkgroups(numWg);
