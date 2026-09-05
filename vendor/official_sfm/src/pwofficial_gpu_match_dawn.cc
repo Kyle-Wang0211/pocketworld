@@ -1889,7 +1889,10 @@ enum class Backend { kNone, kMma, kTiled, kBlocked };
 // "blocked(fma4x4,V3)",而默认早已是 8x4+PIPEB —— 指纹说了假话。与 EnsureBlockedPipeline 的
 // 选核逻辑读同一组 env,同源不会再漂。
 static const char* BlockedLabel() {
-  if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT") != nullptr) return "blocked(fma8x4+direct,V4)";
+  if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT") != nullptr) {
+    return std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr ? "blocked(fma4x4+direct,V4)"
+                                                                        : "blocked(fma8x4+direct,V4)";
+  }
   if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_88") != nullptr) return "blocked(fma8x8,V3)";
   if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr) return "blocked(fma4x4,V3)";
   if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_PIPE") != nullptr) return "blocked(fma8x4+pipe,V3)";
@@ -2780,6 +2783,30 @@ std::string BlkFmaWgsl(const std::string& src) {
 
 // 尺子(输出作废):BLK_NOLOAD 把内层三次线程组载入换成只依赖 k 的寄存器值
 // ⇒ 这个结构的**纯 FMA 地板**。差值 = 载入(含无 scoreboard 的延迟)的全部成本。
+// [DIRECT-44 2026-09-05] 由 DIRECT 8x4 文本派生 4x4/256 线程形态(env BLK_DIRECT=1 + BLK_44=1)。
+// 动机:Arm 指南 "Every thread has 64 32-bit working registers … more than 64 → spill";
+// chips&cheese 实测 Bifrost >32 寄存器占用率减半。8x4 的 8 个 vec4 累加器 + 4 个 vec4 载入 ≈ 48+,
+// 4x4 只要 16+8。锚点全部来自本文件自有的 kWgslBlocked84Direct 文本。
+std::string DirectTo44Wgsl(const std::string& src) {
+  std::string t = src;
+  struct Sub { const char* from; const char* to; };
+  const Sub subs[] = {
+    {"@compute @workgroup_size(128)\nfn main(", "@compute @workgroup_size(256)\nfn main("},
+    {"  let rq = row0 / 4u + tr * 2u;\n", "  let rq = row0 / 4u + tr;\n"},
+    {"    var acc4 = vec4<f32>(0.0);\n    var acc5 = vec4<f32>(0.0);\n    var acc6 = vec4<f32>(0.0);\n    var acc7 = vec4<f32>(0.0);\n", ""},
+    {"      let al = At[k * rowPad4 + rq];\n      let ah = At[k * rowPad4 + rq + 1u];\n", "      let al = At[k * rowPad4 + rq];\n"},
+    {"      acc4 = acc4 + ah.x * b4;\n      acc5 = acc5 + ah.y * b4;\n      acc6 = acc6 + ah.z * b4;\n      acc7 = acc7 + ah.w * b4;\n", ""},
+    {"    S[(tr * 8u + 0u) * 16u + tc] = acc0;\n    S[(tr * 8u + 1u) * 16u + tc] = acc1;\n    S[(tr * 8u + 2u) * 16u + tc] = acc2;\n    S[(tr * 8u + 3u) * 16u + tc] = acc3;\n    S[(tr * 8u + 4u) * 16u + tc] = acc4;\n    S[(tr * 8u + 5u) * 16u + tc] = acc5;\n    S[(tr * 8u + 6u) * 16u + tc] = acc6;\n    S[(tr * 8u + 7u) * 16u + tc] = acc7;\n",
+     "    S[(tr * 4u + 0u) * 16u + tc] = acc0;\n    S[(tr * 4u + 1u) * 16u + tc] = acc1;\n    S[(tr * 4u + 2u) * 16u + tc] = acc2;\n    S[(tr * 4u + 3u) * 16u + tc] = acc3;\n"},
+  };
+  for (const Sub& sb : subs) {
+    const size_t p = t.find(sb.from);
+    if (p == std::string::npos) { AnchorAlarm("DirectTo44Wgsl", sb.from); return src; }
+    t.replace(p, std::strlen(sb.from), sb.to);
+  }
+  return t;
+}
+
 std::string BlkNoLoadWgsl(const std::string& src) {
   std::string t = src;
   // [ANCHOR 2026-09-05] 默认形态是 8x4+PIPEB(b4 预取成 bn),锚点必须先认这一形态;
@@ -3330,7 +3357,9 @@ bool EnsureMainPipelines(Ctx& c) {
   if (c.backend == Backend::kBlocked) {
     if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT") != nullptr) {
       // [DIRECT 2026-09-05] 见 kWgslBlocked84Direct 注释。纯净形态,不叠任何探针变换。
-      wgpu::ShaderModule m = CompileWgsl(c, kWgslBlocked84Direct, "blocked direct");
+      std::string dsrc = kWgslBlocked84Direct;
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr) dsrc = DirectTo44Wgsl(dsrc);
+      wgpu::ShaderModule m = CompileWgsl(c, dsrc.c_str(), "blocked direct");
       if (!m) return false;
       wgpu::ShaderModule mx = CompileWgsl(c, kWgslXpose, "xpose");
       if (!mx) return false;
