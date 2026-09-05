@@ -1898,9 +1898,10 @@ static const char* BlockedLabel() {
     const bool txa = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TEXA") != nullptr;
     const bool sm = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANMEM") != nullptr;
     const bool fm = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_FMA") != nullptr;
+    const bool w128 = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_W128") != nullptr;
     const char* un = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL");
     const bool pa = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA") != nullptr;
-    lbl = std::string("blocked(") + (k44 ? "fma4x4" : "fma8x4") + "+direct" + (g ? "g" : "") + (tx ? "+tex" : "") + (txa ? "+texa" : "") + (nopb ? "+nopb" : "") + (sm ? "+scanmem" : "") + (fm ? "+fma" : "") + (un ? std::string("+unroll") + un : std::string("")) + (pa ? "+pipea" : "") + ",V4)";
+    lbl = std::string("blocked(") + (k44 ? "fma4x4" : "fma8x4") + "+direct" + (g ? "g" : "") + (tx ? "+tex" : "") + (txa ? "+texa" : "") + (nopb ? "+nopb" : "") + (sm ? "+scanmem" : "") + (fm ? "+fma" : "") + (w128 ? "+w128" : "") + (un ? std::string("+unroll") + un : std::string("")) + (pa ? "+pipea" : "") + ",V4)";
     return lbl.c_str();
   }
   if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_88") != nullptr) return "blocked(fma8x8,V3)";
@@ -1910,8 +1911,9 @@ static const char* BlockedLabel() {
   return "blocked(fma8x4+pipeb,V3)";
 }
 // [UNIVERSAL 2026-09-05] 主路径(mma / blocked)每工作组的行数;两者共用同一条 host 路径。
+uint32_t gBlockedRows = kBlockedRows;  // [DIRECT-44-W128] 选核时可改为 32
 inline uint32_t MainRows(Backend b) {
-  return b == Backend::kBlocked ? kBlockedRows : kMmaRows;
+  return b == Backend::kBlocked ? gBlockedRows : kMmaRows;
 }
 // [COLCHUNK-ALIGN 2026-09-05] 列分块的 span 必须是**该核 tile 宽度**的整数倍,
 // 否则 tile 跨过 chunk 边界,同一列被两个 dispatch 各扫一次:第二次
@@ -3151,6 +3153,42 @@ std::string DirectUnrollWgsl(const std::string& src, int n) {
   return t;
 }
 
+// [DIRECT-NOSYNC 探针 2026-09-05] 去掉 tile 边界的两个 workgroupBarrier 与 S 写入(扫描读到的是垃圾,非逐字节),
+// 只量"barrier 尾巴 + 结果交换"的价。认 4x4 形态(S 写块 4 行)。
+std::string DirectNoSyncWgsl(const std::string& src) {
+  std::string t = src;
+  const char* blk44 =
+      "    workgroupBarrier();\n    S[(tr * 4u + 0u) * 16u + tc] = acc0;\n    S[(tr * 4u + 1u) * 16u + tc] = acc1;\n    S[(tr * 4u + 2u) * 16u + tc] = acc2;\n    S[(tr * 4u + 3u) * 16u + tc] = acc3;\n    workgroupBarrier();\n";
+  const size_t p = t.find(blk44);
+  if (p == std::string::npos) { AnchorAlarm("DirectNoSyncWgsl", "4x4 结果交换块未命中"); return src; }
+  // 保留一处对 acc 的使用,免得编译器把整个循环删掉:只让 lid==0 写一个 vec4。
+  t.replace(p, std::strlen(blk44), "    if (lid == 0u) { S[tc] = acc0 + acc1 + acc2 + acc3; }\n");
+  return t;
+}
+
+// [DIRECT-44-W128 2026-09-05] 4x4 形态改 128 线程一组:tile 32 行 × 64 列(WGR=32),S 减半到 8 KiB。
+// 动机:Bifrost 满占用率 384 线程/核要求 ≤32 寄存器,>32 就减半到 192 —— 256 线程的组比 192 还大,
+// 编译器只能强行压寄存器(spill)或一核挂半个组;NOPB/SCANMEM 这些"少几个寄存器"的刀都赚正是这个症状。
+// 组改 128 后 64 寄存器也不越界。ColP 的行组粒度变 32,merge 按 w 升序 = 行号升序,并列取最小行号的语义不变。
+std::string DirectTo44W128Wgsl(const std::string& src) {
+  std::string t = src;
+  struct Sub { const char* from; const char* to; };
+  const Sub subs[] = {
+    {"const WGR : u32 = 64u;\n", "const WGR : u32 = 32u;\n"},
+    {"var<workgroup> S : array<vec4<f32>, 1024>;\n", "var<workgroup> S : array<vec4<f32>, 512>;\n"},
+    {"@compute @workgroup_size(256)\nfn main(", "@compute @workgroup_size(128)\nfn main("},
+    {"  let rowPad4 = ((U.numA + 63u) / 64u) * 16u;\n", "  let rowPad4 = ((U.numA + 31u) / 32u) * 8u;\n"},
+    {"    } else if (lid < 2u * WGR) {\n", "    } else if (lid < WGR + 64u) {\n"},
+  };
+  for (const Sub& sb : subs) {
+    const size_t p = t.find(sb.from);
+    if (p == std::string::npos) { AnchorAlarm("DirectTo44W128Wgsl", sb.from); return src; }
+    t.replace(p, std::strlen(sb.from), sb.to);
+  }
+  if (t.find("let ah = ") != std::string::npos) { AnchorAlarm("DirectTo44W128Wgsl", "只认 4x4 形态"); return src; }
+  return t;
+}
+
 std::string BlkNoLoadWgsl(const std::string& src) {
   std::string t = src;
   // [ANCHOR 2026-09-05] 默认形态是 8x4+PIPEB(b4 预取成 bn),锚点必须先认这一形态;
@@ -3707,6 +3745,12 @@ bool EnsureMainPipelines(Ctx& c) {
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr) {
         dsrc = DirectTo44Wgsl(dsrc);
         if (dbg) std::fprintf(stderr, "[direct-chain] after 44 len=%zu\n", dsrc.size());
+        if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_W128") != nullptr) {
+          const std::string x = DirectTo44W128Wgsl(dsrc);
+          if (x != dsrc) gBlockedRows = 32;
+          if (dbg) std::fprintf(stderr, "[direct-chain] W128 in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
+          dsrc = x;
+        }
       }
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANMEM") != nullptr) {
         const std::string x = DirectScanMemWgsl(dsrc);
@@ -3754,6 +3798,11 @@ bool EnsureMainPipelines(Ctx& c) {
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOLOAD") != nullptr) {  // 探针
         const std::string x = DirectNoLoadWgsl(dsrc);
         if (dbg) std::fprintf(stderr, "[direct-chain] NOLOAD(probe) in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
+        dsrc = x;
+      }
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOSYNC") != nullptr) {  // 探针
+        const std::string x = DirectNoSyncWgsl(dsrc);
+        if (dbg) std::fprintf(stderr, "[direct-chain] NOSYNC(probe) in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
       }
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOSCAN") != nullptr) {  // 探针:复用 LDS 核的扫描锚点(S 文本相同)
@@ -5168,3 +5217,64 @@ extern "C" void pwdawn_gpu_match_debug_last_timing(double* upload_ms,
   if (readback_ms) *readback_ms = gDbgReadbackMs;
 }
 #endif
+
+// ── [ALU-PEAK 探针 2026-09-05] 纯算术、零访存:16 条独立 FMA 链,量"此刻这台 GPU 的 FMA 峰值"。
+// 用途:Mate 10 的 GPU 频率节点不 root 读不到;这个数就是当前热态下的真实天花板,是跨端通用的尺子。
+// 只有探针台架调用;不进产品路径。
+extern "C" int pwdawn_probe_alu_peak(uint32_t workgroups, uint32_t iters, double* out_ms, double* out_gfma) {
+  Ctx* cp = EnsureDawn();
+  if (!cp) return 2;
+  Ctx& c = *cp;
+  static const char* kSrc = R"WGSL(
+struct P { iters : u32, p1 : u32, p2 : u32, p3 : u32, };
+@group(0) @binding(0) var<uniform> U : P;
+@group(0) @binding(1) var<storage, read_write> Out : array<f32>;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid : vec3<u32>, @builtin(local_invocation_index) lid : u32) {
+  var a0 = vec4<f32>(f32(lid) * 0.001, 1.0, 2.0, 3.0);
+  var a1 = a0 + 1.0;
+  var a2 = a0 + 2.0;
+  var a3 = a0 + 3.0;
+  let b = vec4<f32>(0.999, 1.001, 0.998, 1.002);
+  let cc = vec4<f32>(0.0000001);
+  for (var i = 0u; i < U.iters; i = i + 1u) {
+    a0 = fma(a0, b, cc); a1 = fma(a1, b, cc); a2 = fma(a2, b, cc); a3 = fma(a3, b, cc);
+    a0 = fma(a0, b, cc); a1 = fma(a1, b, cc); a2 = fma(a2, b, cc); a3 = fma(a3, b, cc);
+  }
+  let sum = a0 + a1 + a2 + a3;
+  Out[gid.x] = sum.x + sum.y + sum.z + sum.w;
+}
+)WGSL";
+  wgpu::ShaderModule m = CompileWgsl(c, kSrc, "alu peak");
+  if (!m) return 3;
+  wgpu::ComputePipeline pipe = MakePipeline(c, m, "main");
+  if (!pipe) return 3;
+  wgpu::BufferDescriptor ud{}; ud.usage = kUsageUni; ud.size = 256;
+  wgpu::Buffer uni = c.device.CreateBuffer(&ud);
+  wgpu::BufferDescriptor od{}; od.usage = wgpu::BufferUsage::Storage; od.size = (uint64_t)workgroups * 256u * 4u;
+  wgpu::Buffer outb = c.device.CreateBuffer(&od);
+  if (!uni || !outb) return 6;
+  const uint32_t pv[4] = {iters, 0u, 0u, 0u};
+  c.queue.WriteBuffer(uni, 0, reinterpret_cast<const uint8_t*>(pv), 16);
+  wgpu::BindGroup bg = MakeBG(c, pipe, {BE(0, uni, 0, 16), BE(1, outb, 0, od.size)});
+  if (!bg) return 6;
+  double best = 1e30;
+  for (int rep = 0; rep < 3; ++rep) {
+    wgpu::CommandEncoder enc = c.device.CreateCommandEncoder();
+    wgpu::ComputePassEncoder pass = enc.BeginComputePass();
+    pass.SetPipeline(pipe);
+    pass.SetBindGroup(0, bg);
+    pass.DispatchWorkgroups(workgroups);
+    pass.End();
+    wgpu::CommandBuffer cb = enc.Finish();
+    const double t0 = NowMs();
+    const int rc = SubmitAndWait(c, cb, nullptr);
+    const double dt = NowMs() - t0;
+    if (rc != 0) return rc;
+    if (dt < best) best = dt;
+  }
+  const double fmas = (double)workgroups * 256.0 * (double)iters * 32.0;  // 8 个 vec4 fma / 迭代
+  if (out_ms) *out_ms = best;
+  if (out_gfma) *out_gfma = fmas / (best * 1e-3) / 1e9;
+  return 0;
+}
