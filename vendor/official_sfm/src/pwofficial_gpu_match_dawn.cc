@@ -1927,7 +1927,7 @@ static const char* BlockedLabel() {
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_FMA", "+fma"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN", "+pscan"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PACKED", "+packed"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TMAP", "+tmap"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB", "+tailb"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB2", "+tailb2"},
-    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA", "+pipea"},
+    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA", "+pipea"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANSEL", "+scansel"},
   };
   for (auto& e : extras) if (std::getenv(e[0]) != nullptr) lbl += e[1];
   if (const char* v = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL")) lbl += std::string("+unroll") + v;
@@ -3109,6 +3109,12 @@ std::string DirectNoLoadWgsl(const std::string& src) {
   std::string t = src;
   struct Sub { const char* from; const char* var; const char* hoist; };
   const Sub subs[] = {
+    // f16 形态(默认 A):载入外包了 vec4<f32>(…)
+    {"      let al = vec4<f32>(At[k * rowPad4 + rq]);\n", "al", "    let al_c = vec4<f32>(At[rq]);\n"},
+    {"      let ah = vec4<f32>(At[k * rowPad4 + rq + 1u]);\n", "ah", "    let ah_c = vec4<f32>(At[rq + 1u]);\n"},
+    {"      let bn = vec4<f32>(Bt[min(k + 1u, KD - 1u) * colPad4 + cq]);\n", "bn", "    let bn_c = vec4<f32>(Bt[colPad4 + cq]);\n"},
+    {"      let b4 = vec4<f32>(Bt[k * colPad4 + cq]);\n", "b4", "    let b4_c = vec4<f32>(Bt[cq]);\n"},
+    {"      let aln = vec4<f32>(At[min(k + 1u, KD - 1u) * rowPad4 + rq]);\n", "aln", "    let aln_c = vec4<f32>(At[rowPad4 + rq]);\n"},
     {"      let al = At[k * rowPad4 + rq];\n", "al", "    let al_c = At[rq];\n"},
     {"      let ah = At[k * rowPad4 + rq + 1u];\n", "ah", "    let ah_c = At[rq + 1u];\n"},
     {"      let bn = Bt[min(k + 1u, KD - 1u) * colPad4 + cq];\n", "bn", "    let bn_c = Bt[colPad4 + cq];\n"},
@@ -3567,6 +3573,31 @@ std::string DirectTailB2Wgsl(const std::string& src) {
   t.replace(q, tail.size(), std::string("      acc3 = acc3 + al.w * b4;\n      b4 = ") + nexts[which] + ";\n    }\n" + epilogue);
   (void)alast;
   return t;
+}
+
+// [DIRECT-SCANSEL 2026-09-06] 列扫描里 `S[r*16+q][m]` 是对线程组 vec4 的运行时分量索引;Mali 上疑似编成内存寻址/4 路选择。
+// 改成整 vec4 读出 + select 链取分量(逐字节同:select 不改值)。Mate 10 形态 A 段账:扫描占 35%。
+std::string DirectScanSelWgsl(const std::string& src) {
+  std::string t = src;
+  const std::string from = "        let d = S[r * 16u + q][m];\n";
+  const size_t p = t.find(from);
+  if (p == std::string::npos) { AnchorAlarm("DirectScanSelWgsl", "列扫描分量索引未命中"); return src; }
+  t.replace(p, from.size(),
+    "        let dv = S[r * 16u + q];\n"
+    "        let d = select(select(dv.x, dv.y, m == 1u), select(dv.z, dv.w, m == 3u), m >= 2u);\n");
+  return t;
+}
+
+// [探针 2026-06] 只去行扫描 / 只去列扫描(非逐字节),定位 Mali 形态 A 下"扫描 35%"的来源。
+std::string DirectNoScanRowWgsl(const std::string& src) {
+  std::string t = src; const std::string from = "      for (var v = 0u; v < 16u; v = v + 1u) {\n";
+  const size_t p = t.find(from); if (p == std::string::npos) { AnchorAlarm("DirectNoScanRowWgsl", "行扫描未命中"); return src; }
+  t.replace(p, from.size(), "      for (var v = 0u; v < 1u; v = v + 1u) {\n"); return t;
+}
+std::string DirectNoScanColWgsl(const std::string& src) {
+  std::string t = src; const std::string from = "      for (var r = 0u; r < WGR; r = r + 1u) {\n";
+  const size_t p = t.find(from); if (p == std::string::npos) { AnchorAlarm("DirectNoScanColWgsl", "列扫描未命中"); return src; }
+  t.replace(p, from.size(), "      for (var r = 0u; r < 1u; r = r + 1u) {\n"); return t;
 }
 
 std::string BlkNoLoadWgsl(const std::string& src) {
@@ -4143,6 +4174,11 @@ bool EnsureMainPipelines(Ctx& c) {
         if (dbg) std::fprintf(stderr, "[direct-chain] TMAP in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
       }
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANSEL") != nullptr) {
+        const std::string x = DirectScanSelWgsl(dsrc);
+        if (dbg) std::fprintf(stderr, "[direct-chain] SCANSEL in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
+        dsrc = x;
+      }
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANMEM") != nullptr) {
         const std::string x = DirectScanMemWgsl(dsrc);
         if (dbg) std::fprintf(stderr, "[direct-chain] SCANMEM in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
@@ -4229,6 +4265,16 @@ bool EnsureMainPipelines(Ctx& c) {
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOSYNC") != nullptr) {  // 探针
         const std::string x = DirectNoSyncWgsl(dsrc);
         if (dbg) std::fprintf(stderr, "[direct-chain] NOSYNC(probe) in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
+        dsrc = x;
+      }
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOSCANROW") != nullptr) {  // 探针
+        const std::string x = DirectNoScanRowWgsl(dsrc);
+        if (dbg) std::fprintf(stderr, "[direct-chain] NOSCANROW(probe) in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
+        dsrc = x;
+      }
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOSCANCOL") != nullptr) {  // 探针
+        const std::string x = DirectNoScanColWgsl(dsrc);
+        if (dbg) std::fprintf(stderr, "[direct-chain] NOSCANCOL(probe) in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
       }
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOSCAN") != nullptr) {  // 探针:复用 LDS 核的扫描锚点(S 文本相同)
