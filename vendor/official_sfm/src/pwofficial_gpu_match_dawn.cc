@@ -1891,8 +1891,11 @@ enum class Backend { kNone, kMma, kTiled, kBlocked };
 static const char* BlockedLabel() {
   if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT") != nullptr) {
     const bool g = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_G") != nullptr;
-    if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr) return g ? "blocked(fma4x4+directg,V4)" : "blocked(fma4x4+direct,V4)";
-    return g ? "blocked(fma8x4+directg,V4)" : "blocked(fma8x4+direct,V4)";
+    const bool tx = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TEX") != nullptr;
+    const bool k44 = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr;
+    static std::string lbl;
+    lbl = std::string("blocked(") + (k44 ? "fma4x4" : "fma8x4") + "+direct" + (g ? "g" : "") + (tx ? "+tex" : "") + ",V4)";
+    return lbl.c_str();
   }
   if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_88") != nullptr) return "blocked(fma8x8,V3)";
   if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr) return "blocked(fma4x4,V3)";
@@ -1966,6 +1969,9 @@ struct Ctx {
   wgpu::ComputePipeline p_xpose;  // [DIRECT] A/B → f32 [k][row/4] 预转置
   bool direct = false;            // [DIRECT] 主核走 At/Bt(绑定 7/8),GEMM 段无线程组暂存
   bool direct_g = false;          // [DIRECT-G] 扫描交换也走全局暂存 Scr(绑定 9),核内无 var<workgroup>
+  bool direct_tex = false;        // [DIRECT-TEX] B 侧走 rgba32float 纹理(绑定 8 变纹理)
+  wgpu::Texture btTex; uint32_t btTexW = 0;               // [DIRECT-TEX] MatchPairs 路径的纹理缓存
+  std::vector<wgpu::Texture> pbTex; std::vector<uint32_t> pbTexW;  // [DIRECT-TEX] ProbeBatch 每候选
   bool tried_main = false, tried_guided = false;
   // Pools (grow-only).
   PoolBuf a{}, b{}, outAB{}, outBA{}, colp{}, rowp{}, uni{}, staging{}, ptsA{}, ptsB{},
@@ -2839,6 +2845,54 @@ std::string DirectToGlobalScratchWgsl(const std::string& src) {
   return t;
 }
 
+// [DIRECT-TEX 2026-09-05] 由 DIRECT 文本派生:B 侧改走纹理(rgba32float,x = 列四元组,y = k)。
+// 依据:Arm Compute Library 的 Mali GEMM 提供 export_to_cl_image 路径(RHS 经 read_image 取),
+// chips&cheese 实测 Bifrost 纹理通路 26 B/拍、载入通路 16 B/拍 —— 若 Mali 上 DIRECT 是 LSU 受限,
+// 把 B 挪到纹理缓存等于再开一条带宽。textureLoad 返回原样 f32,逐字节同源。
+std::string DirectToTexWgsl(const std::string& src) {
+  std::string t = src;
+  struct Sub { const char* from; const char* to; };
+  const Sub subs[] = {
+    {"@group(0) @binding(8) var<storage, read> Bt : array<vec4<f32>>;\n",
+     "@group(0) @binding(8) var BtT : texture_2d<f32>;\n"},
+    {"    var b4 = Bt[cq];\n", "    var b4 = textureLoad(BtT, vec2<i32>(i32(cq), 0), 0);\n"},
+    {"      let bn = Bt[min(k + 1u, KD - 1u) * colPad4 + cq];\n",
+     "      let bn = textureLoad(BtT, vec2<i32>(i32(cq), i32(min(k + 1u, KD - 1u))), 0);\n"},
+  };
+  for (const Sub& sb : subs) {
+    const size_t p = t.find(sb.from);
+    if (p == std::string::npos) { AnchorAlarm("DirectToTexWgsl", sb.from); return src; }
+    t.replace(p, std::strlen(sb.from), sb.to);
+  }
+  return t;
+}
+
+// [DIRECT-TEX] 由 Bt 缓冲拷贝出的纹理(宽 = nBpad/4 texel,高 = 128 k)。按尺寸缓存,尺寸变了重建。
+wgpu::TextureView EnsureBtTexture(Ctx& c, wgpu::Texture& tex, uint32_t& texW, uint32_t colPad4) {
+  if (!tex || texW != colPad4) {
+    if (tex) tex.Destroy();
+    wgpu::TextureDescriptor d{};
+    d.dimension = wgpu::TextureDimension::e2D;
+    d.size = {colPad4, 128u, 1u};
+    d.format = wgpu::TextureFormat::RGBA32Float;
+    d.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
+    tex = c.device.CreateTexture(&d);
+    texW = tex ? colPad4 : 0;
+  }
+  return tex ? tex.CreateView() : wgpu::TextureView();
+}
+void EncodeBtToTexture(wgpu::CommandEncoder& enc, wgpu::Buffer bt, wgpu::Texture tex, uint32_t colPad4) {
+  wgpu::TexelCopyBufferInfo src{};
+  src.buffer = bt;
+  src.layout.offset = 0;
+  src.layout.bytesPerRow = colPad4 * 16u;  // nBpad*4,恒为 256 的倍数(nBpad 是 128 的倍数)
+  src.layout.rowsPerImage = 128u;
+  wgpu::TexelCopyTextureInfo dst{};
+  dst.texture = tex;
+  wgpu::Extent3D ext{colPad4, 128u, 1u};
+  enc.CopyBufferToTexture(&src, &dst, &ext);
+}
+
 std::string BlkNoLoadWgsl(const std::string& src) {
   std::string t = src;
   // [ANCHOR 2026-09-05] 默认形态是 8x4+PIPEB(b4 预取成 bn),锚点必须先认这一形态;
@@ -3394,6 +3448,10 @@ bool EnsureMainPipelines(Ctx& c) {
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_G") != nullptr) {
         dsrc = DirectToGlobalScratchWgsl(dsrc);
         c.direct_g = true;
+      }
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TEX") != nullptr) {
+        dsrc = DirectToTexWgsl(dsrc);
+        c.direct_tex = true;
       }
       wgpu::ShaderModule m = CompileWgsl(c, dsrc.c_str(), "blocked direct");
       if (!m) return false;
@@ -4062,14 +4120,24 @@ int MatchPairsImpl(const uint8_t* dA, int nA, const uint8_t* dB, int nB,
       // [DIRECT] At/Bt = f32 [k][row/4]:每行 128 k × 4 B = 512 B;按补位行数分配。
       const uint64_t atBytes = 512ull * nApad, btBytes = 512ull * nBpad;
       wgpu::Buffer at = PoolGet(c, c.at, atBytes, kUsageColp);
-      wgpu::Buffer bt = PoolGet(c, c.bt, btBytes, kUsageColp);
+      wgpu::Buffer bt = PoolGet(c, c.bt, btBytes,
+                                c.direct_tex ? (kUsageColp | wgpu::BufferUsage::CopySrc) : kUsageColp);
       if (!at || !bt) return 6;
       const uint32_t xa[4] = {nApad / 4u, 0u, 0u, 0u};
       const uint32_t xb[4] = {nBpad / 4u, 0u, 0u, 0u};
       c.queue.WriteBuffer(uni, kSlot, reinterpret_cast<const uint8_t*>(xa), 16);
       c.queue.WriteBuffer(uni, 2 * kSlot, reinterpret_cast<const uint8_t*>(xb), 16);
       mainEntries.push_back(BE(7, at, 0, atBytes));
-      mainEntries.push_back(BE(8, bt, 0, btBytes));
+      if (c.direct_tex) {
+        wgpu::TextureView tv = EnsureBtTexture(c, c.btTex, c.btTexW, nBpad / 4u);
+        if (!tv) return 6;
+        wgpu::BindGroupEntry te{};
+        te.binding = 8;
+        te.textureView = tv;
+        mainEntries.push_back(te);
+      } else {
+        mainEntries.push_back(BE(8, bt, 0, btBytes));
+      }
       if (c.direct_g) {
         const uint64_t scrBytes = 16384ull * numWg;  // 每 workgroup 64x64 f32
         wgpu::Buffer scr = PoolGet(c, c.scr, scrBytes, kUsageColp);
@@ -4097,6 +4165,7 @@ int MatchPairsImpl(const uint8_t* dA, int nA, const uint8_t* dB, int nB,
       pass.SetBindGroup(0, bgXB);
       pass.DispatchWorkgroups((nBpad / 4u * 32u + 63u) / 64u);
       pass.End();
+      if (c.direct_tex) EncodeBtToTexture(enc, c.bt.buf, c.btTex, nBpad / 4u);
       wgpu::CommandBuffer cb = enc.Finish();
       const int rcx = SubmitAndWait(c, cb, nullptr);
       if (rcx != 0) return rcx;
@@ -4401,7 +4470,9 @@ int ProbeBatchImpl(const uint8_t* dA, int nA, const uint8_t* const* dBs,
   wgpu::BindGroup bgXA;
   if (c.direct) {
     atPb = PoolGet(c, c.pbAt, atPbBytes, kUsageColp);
-    btPb = PoolGet(c, c.pbBt, btTotal, kUsageColp);
+    btPb = PoolGet(c, c.pbBt, btTotal,
+                   c.direct_tex ? (kUsageColp | wgpu::BufferUsage::CopySrc) : kUsageColp);
+    if (c.direct_tex) { c.pbTex.resize((size_t)n_cands); c.pbTexW.resize((size_t)n_cands, 0u); }
     xuni = PoolGet(c, c.pbXUni, (uint64_t)(n_cands + 1) * kSlot, kUsageUni);
     if (!atPb || !btPb || !xuni) return 6;
     const uint32_t xa[4] = {nApad / 4u, 0u, 0u, 0u};
@@ -4441,7 +4512,16 @@ int ProbeBatchImpl(const uint8_t* dA, int nA, const uint8_t* const* dBs,
         c.queue.WriteBuffer(xuni, (uint64_t)(k + 1) * kSlot,
                             reinterpret_cast<const uint8_t*>(xb), 16);
         me.push_back(BE(7, atPb, 0, atPbBytes));
-        me.push_back(BE(8, btPb, cd.btOff, cd.btBytes));
+        if (c.direct_tex) {
+          wgpu::TextureView tv = EnsureBtTexture(c, c.pbTex[(size_t)k], c.pbTexW[(size_t)k], cd.nBpad / 4u);
+          if (!tv) return 6;
+          wgpu::BindGroupEntry te{};
+          te.binding = 8;
+          te.textureView = tv;
+          me.push_back(te);
+        } else {
+          me.push_back(BE(8, btPb, cd.btOff, cd.btBytes));
+        }
         if (c.direct_g) {
           const uint64_t scrBytes = 16384ull * numWg;
           wgpu::Buffer scr = PoolGet(c, c.pbScr, scrBytes, kUsageColp);
@@ -4487,10 +4567,33 @@ int ProbeBatchImpl(const uint8_t* dA, int nA, const uint8_t* const* dBs,
       pass.SetBindGroup(0, bgXA);
       pass.DispatchWorkgroups((nApad / 4u * 32u + 63u) / 64u);
     }
+    if (c.direct && c.direct_tex) {
+      // 纹理拷贝不能在 pass 内:先把本组所有候选的 xposeB 发完,结束 pass,拷纹理,再开 pass 跑主核。
+      for (int k = c0; k < c1; ++k) {
+        const Cand& cd = cands[(size_t)k];
+        pass.SetPipeline(c.p_xpose);
+        pass.SetBindGroup(0, cd.bgX);
+        pass.DispatchWorkgroups((cd.nBpad / 4u * 32u + 63u) / 64u);
+      }
+      pass.End();
+      for (int k = c0; k < c1; ++k) {
+        const Cand& cd = cands[(size_t)k];
+        wgpu::TexelCopyBufferInfo src{};
+        src.buffer = btPb;
+        src.layout.offset = cd.btOff;
+        src.layout.bytesPerRow = cd.nBpad * 4u;
+        src.layout.rowsPerImage = 128u;
+        wgpu::TexelCopyTextureInfo dst{};
+        dst.texture = c.pbTex[(size_t)k];
+        wgpu::Extent3D ext{cd.nBpad / 4u, 128u, 1u};
+        enc.CopyBufferToTexture(&src, &dst, &ext);
+      }
+      pass = enc.BeginComputePass();
+    }
     for (int k = c0; k < c1; ++k) {
       const Cand& cd = cands[(size_t)k];
       if (mma) {
-        if (c.direct) {
+        if (c.direct && !c.direct_tex) {
           pass.SetPipeline(c.p_xpose);
           pass.SetBindGroup(0, cd.bgX);
           pass.DispatchWorkgroups((cd.nBpad / 4u * 32u + 63u) / 64u);
