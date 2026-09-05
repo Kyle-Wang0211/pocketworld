@@ -3057,6 +3057,39 @@ std::string DirectScanMemWgsl(const std::string& src) {
   return t;
 }
 
+// [DIRECT-NOLOAD 探针 2026-09-05] 内层载入换成由 k 合成的值(非逐字节,只量纯 FMA 循环的地板)。认 8x4/4x4、pipeb/nopb、tex/texa。
+std::string DirectNoLoadWgsl(const std::string& src) {
+  // 载入提到 k 循环外(k→0 的那一次),循环内零载入;绑定 7/8 仍被引用,Dawn 布局不变。
+  std::string t = src;
+  struct Sub { const char* from; const char* var; const char* hoist; };
+  const Sub subs[] = {
+    {"      let al = At[k * rowPad4 + rq];\n", "al", "    let al_c = At[rq];\n"},
+    {"      let ah = At[k * rowPad4 + rq + 1u];\n", "ah", "    let ah_c = At[rq + 1u];\n"},
+    {"      let bn = Bt[min(k + 1u, KD - 1u) * colPad4 + cq];\n", "bn", "    let bn_c = Bt[colPad4 + cq];\n"},
+    {"      let b4 = Bt[k * colPad4 + cq];\n", "b4", "    let b4_c = Bt[cq];\n"},
+    {"      let aln = At[min(k + 1u, KD - 1u) * rowPad4 + rq];\n", "aln", "    let aln_c = At[rowPad4 + rq];\n"},
+    {"      let al = textureLoad(AtT, vec2<i32>(i32(rq), i32(k)), 0);\n", "al", "    let al_c = textureLoad(AtT, vec2<i32>(i32(rq), 0), 0);\n"},
+    {"      let ah = textureLoad(AtT, vec2<i32>(i32(rq + 1u), i32(k)), 0);\n", "ah", "    let ah_c = textureLoad(AtT, vec2<i32>(i32(rq + 1u), 0), 0);\n"},
+    {"      let bn = textureLoad(BtT, vec2<i32>(i32(cq), i32(min(k + 1u, KD - 1u))), 0);\n", "bn", "    let bn_c = textureLoad(BtT, vec2<i32>(i32(cq), 1), 0);\n"},
+    {"      let b4 = textureLoad(BtT, vec2<i32>(i32(cq), i32(k)), 0);\n", "b4", "    let b4_c = textureLoad(BtT, vec2<i32>(i32(cq), 0), 0);\n"},
+    {"      let aln = textureLoad(AtT, vec2<i32>(i32(rq), i32(min(k + 1u, KD - 1u))), 0);\n", "aln", "    let aln_c = textureLoad(AtT, vec2<i32>(i32(rq), 1), 0);\n"},
+  };
+  std::string hoisted;
+  int hits = 0;
+  for (const Sub& sb : subs) {
+    const size_t p = t.find(sb.from);
+    if (p == std::string::npos) continue;
+    t.replace(p, std::strlen(sb.from), std::string("      let ") + sb.var + " = " + sb.var + "_c;\n");
+    hoisted += sb.hoist; ++hits;
+  }
+  if (hits < 2) { AnchorAlarm("DirectNoLoadWgsl", "内层载入未命中"); return src; }
+  const char* loop = "    for (var k = 0u; k < KD; k = k + 1u) {\n";
+  const size_t q = t.find(loop);
+  if (q == std::string::npos) { AnchorAlarm("DirectNoLoadWgsl", "k 循环头未命中"); return src; }
+  t.insert(q, hoisted);
+  return t;
+}
+
 std::string BlkNoLoadWgsl(const std::string& src) {
   std::string t = src;
   // [ANCHOR 2026-09-05] 默认形态是 8x4+PIPEB(b4 预取成 bn),锚点必须先认这一形态;
@@ -3645,6 +3678,16 @@ bool EnsureMainPipelines(Ctx& c) {
         const std::string x = DirectToTexWgsl(dsrc);
         c.direct_tex = (x != dsrc);
         if (dbg) std::fprintf(stderr, "[direct-chain] TEX in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)c.direct_tex);
+        dsrc = x;
+      }
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOLOAD") != nullptr) {  // 探针
+        const std::string x = DirectNoLoadWgsl(dsrc);
+        if (dbg) std::fprintf(stderr, "[direct-chain] NOLOAD(probe) in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
+        dsrc = x;
+      }
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOSCAN") != nullptr) {  // 探针:复用 LDS 核的扫描锚点(S 文本相同)
+        const std::string x = BlkNoScanWgsl(dsrc);
+        if (dbg) std::fprintf(stderr, "[direct-chain] NOSCAN(probe) in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
       }
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_WGSL_DUMP") != nullptr) std::fprintf(stderr, "===WGSL_BEGIN===\n%s\n===WGSL_END===\n", dsrc.c_str());
