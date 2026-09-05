@@ -1897,8 +1897,10 @@ static const char* BlockedLabel() {
     const bool nopb = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOPB") != nullptr;
     const bool txa = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TEXA") != nullptr;
     const bool sm = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANMEM") != nullptr;
+    const bool fm = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_FMA") != nullptr;
+    const char* un = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL");
     const bool pa = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA") != nullptr;
-    lbl = std::string("blocked(") + (k44 ? "fma4x4" : "fma8x4") + "+direct" + (g ? "g" : "") + (tx ? "+tex" : "") + (txa ? "+texa" : "") + (nopb ? "+nopb" : "") + (sm ? "+scanmem" : "") + (pa ? "+pipea" : "") + ",V4)";
+    lbl = std::string("blocked(") + (k44 ? "fma4x4" : "fma8x4") + "+direct" + (g ? "g" : "") + (tx ? "+tex" : "") + (txa ? "+texa" : "") + (nopb ? "+nopb" : "") + (sm ? "+scanmem" : "") + (fm ? "+fma" : "") + (un ? std::string("+unroll") + un : std::string("")) + (pa ? "+pipea" : "") + ",V4)";
     return lbl.c_str();
   }
   if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_88") != nullptr) return "blocked(fma8x8,V3)";
@@ -3090,6 +3092,65 @@ std::string DirectNoLoadWgsl(const std::string& src) {
   return t;
 }
 
+// [DIRECT-FMA 2026-09-05] acc = acc + a * b → acc = fma(vec4(a), b, acc)。u8 积 ≤65025、和 ≤8.3M 全是精确整数,
+// 融合与否结果逐字节同;Bifrost 标量发射,若编译器没融合就是双倍指令(Mate 10 探针:纯 FMA 循环只有 ~40% 峰值)。
+std::string DirectFmaWgsl(const std::string& src) {
+  std::string t = src;
+  int hits = 0;
+  const char* comps[] = {"x", "y", "z", "w"};
+  const char* srcs[] = {"al", "ah", "a4"};
+  for (int i = 0; i < 8; ++i) {
+    for (const char* a : srcs) {
+      for (const char* c : comps) {
+        char from[96], to[96];
+        std::snprintf(from, sizeof(from), "      acc%d = acc%d + %s.%s * b4;\n", i, i, a, c);
+        std::snprintf(to, sizeof(to), "      acc%d = fma(vec4<f32>(%s.%s), b4, acc%d);\n", i, a, c, i);
+        const size_t p = t.find(from);
+        if (p != std::string::npos) { t.replace(p, std::strlen(from), to); ++hits; }
+      }
+    }
+  }
+  if (hits < 4) { AnchorAlarm("DirectFmaWgsl", "FMA 行未命中"); return src; }
+  return t;
+}
+// [DIRECT-UNROLL 2026-09-05] 4x4+NOPB 的 k 循环手工展开 n 倍(KD=128 整除)。A16 曾对展开赔 43%(寄存器),
+// 这里是给 Mali 的臂:每 16 次 FMA 配 5–6 条循环/地址指令,展开把这份税摊薄。只认 4x4+NOPB 文本。
+std::string DirectUnrollWgsl(const std::string& src, int n) {
+  std::string t = src;
+  const std::string head = "    for (var k = 0u; k < KD; k = k + 1u) {\n";
+  const size_t p = t.find(head);
+  if (p == std::string::npos) { AnchorAlarm("DirectUnrollWgsl", "循环头未命中"); return src; }
+  // 44 形态里 A 的变量名沿用 al(DirectTo44Wgsl 只删了 ah),不是 a4。
+  const std::string tail = "      acc3 = acc3 + al.w * b4;\n    }\n";
+  const std::string tailF = "      acc3 = fma(vec4<f32>(al.w), b4, acc3);\n    }\n";
+  size_t q = t.find(tail, p); size_t tlen = tail.size();
+  if (q == std::string::npos) { q = t.find(tailF, p); tlen = tailF.size(); }
+  if (q == std::string::npos) { AnchorAlarm("DirectUnrollWgsl", "循环尾未命中(只认 4x4)"); return src; }
+  std::string body = t.substr(p + head.size(), q + tlen - 6 - (p + head.size()));  // 去掉结尾 "    }\n"
+  if (body.find("let ah") != std::string::npos || body.find("bn") != std::string::npos) {
+    AnchorAlarm("DirectUnrollWgsl", "只认 4x4+NOPB 形态"); return src;
+  }
+  std::string out;
+  char hdr[96];
+  std::snprintf(hdr, sizeof(hdr), "    for (var k0 = 0u; k0 < KD; k0 = k0 + %du) {\n", n);
+  out += hdr;
+  for (int u = 0; u < n; ++u) {
+    char kk[32]; std::snprintf(kk, sizeof(kk), "(k0 + %du)", u);
+    std::string b = body;
+    // 把 body 里的独立标识符 k 换成 (k0 + u);b 内没有其它以 k 命名的符号(KD 除外)。
+    std::string r;
+    for (size_t i = 0; i < b.size(); ++i) {
+      if (b[i] == 'k' && (i == 0 || !(std::isalnum((unsigned char)b[i-1]) || b[i-1] == '_')) &&
+          (i + 1 >= b.size() || !(std::isalnum((unsigned char)b[i+1]) || b[i+1] == '_'))) r += kk;
+      else r += b[i];
+    }
+    out += "      {\n" + r + "      }\n";
+  }
+  out += "    }\n";
+  t.replace(p, q + tlen - p, out);
+  return t;
+}
+
 std::string BlkNoLoadWgsl(const std::string& src) {
   std::string t = src;
   // [ANCHOR 2026-09-05] 默认形态是 8x4+PIPEB(b4 预取成 bn),锚点必须先认这一形态;
@@ -3678,6 +3739,16 @@ bool EnsureMainPipelines(Ctx& c) {
         const std::string x = DirectToTexWgsl(dsrc);
         c.direct_tex = (x != dsrc);
         if (dbg) std::fprintf(stderr, "[direct-chain] TEX in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)c.direct_tex);
+        dsrc = x;
+      }
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_FMA") != nullptr) {
+        const std::string x = DirectFmaWgsl(dsrc);
+        if (dbg) std::fprintf(stderr, "[direct-chain] FMA in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
+        dsrc = x;
+      }
+      if (const char* un = getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL")) {
+        const std::string x = DirectUnrollWgsl(dsrc, std::max(2, atoi(un)));
+        if (dbg) std::fprintf(stderr, "[direct-chain] UNROLL%s in=%zu out=%zu applied=%d\n", un, dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
       }
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOLOAD") != nullptr) {  // 探针
