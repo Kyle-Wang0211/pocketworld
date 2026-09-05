@@ -1899,9 +1899,10 @@ static const char* BlockedLabel() {
     const bool sm = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANMEM") != nullptr;
     const bool fm = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_FMA") != nullptr;
     const bool w128 = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_W128") != nullptr;
+    const bool psc = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN") != nullptr;
     const char* un = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL");
     const bool pa = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA") != nullptr;
-    lbl = std::string("blocked(") + (k44 ? "fma4x4" : "fma8x4") + "+direct" + (g ? "g" : "") + (tx ? "+tex" : "") + (txa ? "+texa" : "") + (nopb ? "+nopb" : "") + (sm ? "+scanmem" : "") + (fm ? "+fma" : "") + (w128 ? "+w128" : "") + (un ? std::string("+unroll") + un : std::string("")) + (pa ? "+pipea" : "") + ",V4)";
+    lbl = std::string("blocked(") + (k44 ? "fma4x4" : "fma8x4") + "+direct" + (g ? "g" : "") + (tx ? "+tex" : "") + (txa ? "+texa" : "") + (nopb ? "+nopb" : "") + (sm ? "+scanmem" : "") + (fm ? "+fma" : "") + (w128 ? "+w128" : "") + (psc ? "+pscan" : "") + (un ? std::string("+unroll") + un : std::string("")) + (pa ? "+pipea" : "") + ",V4)";
     return lbl.c_str();
   }
   if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_88") != nullptr) return "blocked(fma8x8,V3)";
@@ -3189,6 +3190,80 @@ std::string DirectTo44W128Wgsl(const std::string& src) {
   return t;
 }
 
+// [DIRECT-PSCAN 2026-09-05] 并行扫描:tile 的行/列 best/second 搜索由全部线程分段做(行:4 线程/行各 16 列;
+// 列:每线程 16 行),再按"前段 ⊕ 后段"的精确合并规则树形合并:
+//   if (b2 > B) { S = max(B, s2); B = b2; I = i2; } else { S = max(S, b2); }
+// 与 merge 核对行组的合并规则同一条(严格大于、并列取先出现者、second 含重复的 best),
+// 分段按列/行升序合并 ⇒ 与串行扫描逐字节同。局部结果覆写在已读完的分数 S 上,不加线程组内存。
+// 只认 4x4 形态:workgroup 128(WGR=32)或 256(WGR=64),即 NT = 4*WGR、NT/64 个列段。
+std::string DirectPScanWgsl(const std::string& src) {
+  std::string t = src;
+  const bool w128 = t.find("const WGR : u32 = 32u;\n") != std::string::npos;
+  const bool w256 = t.find("const WGR : u32 = 64u;\n") != std::string::npos &&
+                    t.find("@compute @workgroup_size(256)\nfn main(") != std::string::npos;
+  if (!w128 && !w256) { AnchorAlarm("DirectPScanWgsl", "只认 4x4 形态(128/WGR32 或 256/WGR64)"); return src; }
+  const char* nt = w128 ? "const NT : u32 = 128u;\nconst CSEG : u32 = 2u;\n" : "const NT : u32 = 256u;\nconst CSEG : u32 = 4u;\n";
+  {
+    const std::string wgr = w128 ? "const WGR : u32 = 32u;\n" : "const WGR : u32 = 64u;\n";
+    const size_t p = t.find(wgr);
+    t.insert(p + wgr.size(), nt);
+  }
+  const std::string from_head = "    if (lid < WGR) {\n      for (var v = 0u; v < 16u; v = v + 1u) {\n";
+  const std::string from_tail = "      if (gc < U.numB) { ColP[rb * U.numB + gc] = ColPart(cb, cs, ci); }\n    }\n";
+  const size_t p = t.find(from_head);
+  const size_t q = t.find(from_tail, p);
+  if (p == std::string::npos || q == std::string::npos) { AnchorAlarm("DirectPScanWgsl", "扫描块未命中"); return src; }
+  const std::string to =
+    "    // [PSCAN] 行 partial:4 线程/行,各 16 列(4 个 vec4)\n"
+    "    let prow = lid / 4u;\n"
+    "    let psub = lid % 4u;\n"
+    "    var pb = 0.0;\n    var ps = 0.0;\n    var pi = -1;\n"
+    "    for (var v = 0u; v < 4u; v = v + 1u) {\n"
+    "      let d = S[prow * 16u + psub * 4u + v];\n"
+    "      let c0 = i32(col0 + (psub * 4u + v) * 4u);\n"
+    "      if (d.x > pb) { ps = pb; pb = d.x; pi = c0; }\n      else if (d.x > ps) { ps = d.x; }\n"
+    "      if (d.y > pb) { ps = pb; pb = d.y; pi = c0 + 1; }\n      else if (d.y > ps) { ps = d.y; }\n"
+    "      if (d.z > pb) { ps = pb; pb = d.z; pi = c0 + 2; }\n      else if (d.z > ps) { ps = d.z; }\n"
+    "      if (d.w > pb) { ps = pb; pb = d.w; pi = c0 + 3; }\n      else if (d.w > ps) { ps = d.w; }\n"
+    "    }\n"
+    "    // [PSCAN] 列 partial:线程负责列 lid%64、行段 lid/64(16 行)\n"
+    "    let pcol = lid % 64u;\n"
+    "    let pseg = lid / 64u;\n"
+    "    let pq = pcol / 4u;\n"
+    "    let pm = pcol % 4u;\n"
+    "    var cb = 0.0;\n    var cs = 0.0;\n    var ci = -1;\n"
+    "    for (var r = pseg * 16u; r < pseg * 16u + 16u; r = r + 1u) {\n"
+    "      let d = S[r * 16u + pq][pm];\n"
+    "      if (d > cb) { cs = cb; cb = d; ci = i32(row0 + r); }\n      else if (d > cs) { cs = d; }\n"
+    "    }\n"
+    "    workgroupBarrier();\n"
+    "    S[lid] = vec4<f32>(pb, ps, bitcast<f32>(pi), 0.0);\n"
+    "    S[NT + lid] = vec4<f32>(cb, cs, bitcast<f32>(ci), 0.0);\n"
+    "    workgroupBarrier();\n"
+    "    if (lid < WGR) {\n"
+    "      for (var sg = 0u; sg < 4u; sg = sg + 1u) {\n"
+    "        let pp = S[lid * 4u + sg];\n"
+    "        let b2 = pp.x;\n        let s2 = pp.y;\n        let i2 = bitcast<i32>(pp.z);\n"
+    "        if (b2 > rowBest) { rowSecond = max(rowBest, s2); rowBest = b2; rowBestI = i2; }\n"
+    "        else { rowSecond = max(rowSecond, b2); }\n"
+    "      }\n"
+    "    } else if (lid < WGR + 64u) {\n"
+    "      let c = lid - WGR;\n"
+    "      var mb = 0.0;\n      var ms = 0.0;\n      var mi = -1;\n"
+    "      for (var sg = 0u; sg < CSEG; sg = sg + 1u) {\n"
+    "        let pp = S[NT + sg * 64u + c];\n"
+    "        let b2 = pp.x;\n        let s2 = pp.y;\n        let i2 = bitcast<i32>(pp.z);\n"
+    "        if (b2 > mb) { ms = max(mb, s2); mb = b2; mi = i2; }\n"
+    "        else { ms = max(ms, b2); }\n"
+    "      }\n"
+    "      let gc = col0 + c;\n"
+    "      if (gc < U.numB) { ColP[rb * U.numB + gc] = ColPart(mb, ms, mi); }\n"
+    "    }\n";
+  t.replace(p, q + from_tail.size() - p, to);
+  // S 容量:W128 需要 NT + NT = 256 ≤ 512 ✓;256 线程需要 512 ≤ 1024 ✓(覆写在 WGR*16 个分数上)
+  return t;
+}
+
 std::string BlkNoLoadWgsl(const std::string& src) {
   std::string t = src;
   // [ANCHOR 2026-09-05] 默认形态是 8x4+PIPEB(b4 预取成 bn),锚点必须先认这一形态;
@@ -3751,6 +3826,11 @@ bool EnsureMainPipelines(Ctx& c) {
           if (dbg) std::fprintf(stderr, "[direct-chain] W128 in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
           dsrc = x;
         }
+      }
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN") != nullptr) {
+        const std::string x = DirectPScanWgsl(dsrc);
+        if (dbg) std::fprintf(stderr, "[direct-chain] PSCAN in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
+        dsrc = x;
       }
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANMEM") != nullptr) {
         const std::string x = DirectScanMemWgsl(dsrc);
