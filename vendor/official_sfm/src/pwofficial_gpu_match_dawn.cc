@@ -1900,9 +1900,11 @@ static const char* BlockedLabel() {
     const bool fm = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_FMA") != nullptr;
     const bool w128 = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_W128") != nullptr;
     const bool psc = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN") != nullptr;
+    const bool pk = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PACKED") != nullptr;
+    const bool h16 = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_F16") != nullptr;
     const char* un = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL");
     const bool pa = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA") != nullptr;
-    lbl = std::string("blocked(") + (k44 ? "fma4x4" : "fma8x4") + "+direct" + (g ? "g" : "") + (tx ? "+tex" : "") + (txa ? "+texa" : "") + (nopb ? "+nopb" : "") + (sm ? "+scanmem" : "") + (fm ? "+fma" : "") + (w128 ? "+w128" : "") + (psc ? "+pscan" : "") + (un ? std::string("+unroll") + un : std::string("")) + (pa ? "+pipea" : "") + ",V4)";
+    lbl = std::string("blocked(") + (k44 ? "fma4x4" : "fma8x4") + "+direct" + (g ? "g" : "") + (tx ? "+tex" : "") + (txa ? "+texa" : "") + (nopb ? "+nopb" : "") + (sm ? "+scanmem" : "") + (fm ? "+fma" : "") + (w128 ? "+w128" : "") + (psc ? "+pscan" : "") + (pk ? "+packed" : "") + (h16 ? "+f16" : "") + (un ? std::string("+unroll") + un : std::string("")) + (pa ? "+pipea" : "") + ",V4)";
     return lbl.c_str();
   }
   if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_88") != nullptr) return "blocked(fma8x8,V3)";
@@ -1980,6 +1982,9 @@ struct Ctx {
   bool direct_g = false;          // [DIRECT-G] 扫描交换也走全局暂存 Scr(绑定 9),核内无 var<workgroup>
   bool direct_tex = false;        // [DIRECT-TEX] B 侧走 rgba32float 纹理(绑定 8 变纹理)
   bool direct_texa = false;       // [DIRECT-TEXA] A 侧走纹理(绑定 7 变纹理)
+  bool direct_packed = false;     // [DIRECT-PACKED] At/Bt 存 u8 打包,载入字节 ÷4
+  bool feat_f16 = false;          // [DIRECT-F16] 设备已带 ShaderF16
+  bool direct_f16 = false;        // [DIRECT-F16] At/Bt 存 vec4<f16>,载入字节 ÷2
   wgpu::Texture atTex; uint32_t atTexW = 0;               // [DIRECT-TEXA] MatchPairs 路径
   wgpu::Texture pbAtTex; uint32_t pbAtTexW = 0;           // [DIRECT-TEXA] ProbeBatch 路径
   wgpu::Texture btTex; uint32_t btTexW = 0;               // [DIRECT-TEX] MatchPairs 路径的纹理缓存
@@ -2143,6 +2148,12 @@ std::unique_ptr<Ctx> CreateCtx() {
   std::vector<wgpu::FeatureName> feats;
   wgpu::Limits req{};
   wgpu::DeviceDescriptor dd{};
+  // [DIRECT-F16] 只在 env 明示时申请 f16 存储/算术特性(可选特性,不进默认合同)。
+  if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_F16") != nullptr &&
+      c->adapter.HasFeature(wgpu::FeatureName::ShaderF16)) {
+    feats.push_back(wgpu::FeatureName::ShaderF16);
+    c->feat_f16 = true;
+  }
   // [UNIVERSAL 2026-09-05] 通用核只吃默认合同,不要任何特性/限制。
   // [ONE-KERNEL 2026-09-05 用户裁决] 产品路径三端一律通用核 blocked,mma 不再是默认。
   // mma 只在 env OFFICIAL_AETHER_MATCH_DAWN_KERNEL=mma 时显式选用 —— 留作对拍 oracle
@@ -3264,6 +3275,121 @@ std::string DirectPScanWgsl(const std::string& src) {
   return t;
 }
 
+// [DIRECT-PACKED 2026-09-05] At/Bt 存 u8 打包(每个 u32 = 4 行在同一 k 的字节),载入字节量 ÷4,
+// 用 unpack4xU8 在寄存器里展开成 f32(值逐位相同 ⇒ 逐字节同)。三端同一处方:A16 每条 vec4 载入
+// 512 B 占 8 拍(梯子 gemm44ld 33%),Mali 每条载入指令占一个 FMA 槽 —— 都是"每次 FMA 搬的字节太多"。
+// 认 4x4/8x4、pipeb/nopb;不与 TEX/TEXA 叠加(纹理已按"三端一起赚"规矩淘汰)。
+constexpr char kWgslXposePacked[] = R"WGSL(
+struct XParams { n4 : u32, p1 : u32, p2 : u32, p3 : u32, };
+@group(0) @binding(0) var<storage, read> Src : array<u32>;
+@group(0) @binding(3) var<uniform> X : XParams;
+@group(0) @binding(7) var<storage, read_write> Dst : array<u32>;
+@compute @workgroup_size(64)
+fn xpose(@builtin(global_invocation_id) gid : vec3<u32>) {
+  let n4 = X.n4;
+  let i = gid.x;
+  if (i >= n4 * 32u) { return; }
+  let q = i % n4;
+  let w = i / n4;
+  let x0 = Src[(4u * q + 0u) * 32u + w];
+  let x1 = Src[(4u * q + 1u) * 32u + w];
+  let x2 = Src[(4u * q + 2u) * 32u + w];
+  let x3 = Src[(4u * q + 3u) * 32u + w];
+  let o = (w * 4u) * n4 + q;
+  Dst[o + 0u * n4] = (x0 & 255u) | ((x1 & 255u) << 8u) | ((x2 & 255u) << 16u) | ((x3 & 255u) << 24u);
+  Dst[o + 1u * n4] = ((x0 >> 8u) & 255u) | (((x1 >> 8u) & 255u) << 8u) | (((x2 >> 8u) & 255u) << 16u) | (((x3 >> 8u) & 255u) << 24u);
+  Dst[o + 2u * n4] = ((x0 >> 16u) & 255u) | (((x1 >> 16u) & 255u) << 8u) | (((x2 >> 16u) & 255u) << 16u) | (((x3 >> 16u) & 255u) << 24u);
+  Dst[o + 3u * n4] = (x0 >> 24u) | ((x1 >> 24u) << 8u) | ((x2 >> 24u) << 16u) | ((x3 >> 24u) << 24u);
+}
+)WGSL";
+std::string DirectPackedWgsl(const std::string& src) {
+  std::string t = src;
+  struct Sub { const char* from; const char* to; };
+  const Sub decl[] = {
+    {"@group(0) @binding(7) var<storage, read> At : array<vec4<f32>>;\n", "@group(0) @binding(7) var<storage, read> At : array<u32>;\n"},
+    {"@group(0) @binding(8) var<storage, read> Bt : array<vec4<f32>>;\n", "@group(0) @binding(8) var<storage, read> Bt : array<u32>;\n"},
+  };
+  for (const Sub& sb : decl) {
+    const size_t p = t.find(sb.from);
+    if (p == std::string::npos) { AnchorAlarm("DirectPackedWgsl", sb.from); return src; }
+    t.replace(p, std::strlen(sb.from), sb.to);
+  }
+  const Sub loads[] = {
+    {"At[k * rowPad4 + rq + 1u]", "vec4<f32>(unpack4xU8(At[k * rowPad4 + rq + 1u]))"},
+    {"At[k * rowPad4 + rq]", "vec4<f32>(unpack4xU8(At[k * rowPad4 + rq]))"},
+    {"At[min(k + 1u, KD - 1u) * rowPad4 + rq]", "vec4<f32>(unpack4xU8(At[min(k + 1u, KD - 1u) * rowPad4 + rq]))"},
+    {"At[rq]", "vec4<f32>(unpack4xU8(At[rq]))"},
+    {"Bt[min(k + 1u, KD - 1u) * colPad4 + cq]", "vec4<f32>(unpack4xU8(Bt[min(k + 1u, KD - 1u) * colPad4 + cq]))"},
+    {"Bt[k * colPad4 + cq]", "vec4<f32>(unpack4xU8(Bt[k * colPad4 + cq]))"},
+    {"Bt[cq]", "vec4<f32>(unpack4xU8(Bt[cq]))"},
+  };
+  int hits = 0;
+  for (const Sub& sb : loads) {
+    size_t p = 0;
+    while ((p = t.find(sb.from, p)) != std::string::npos) {
+      // 跳过已经包在 unpack4xU8( 里的
+      if (p >= 11 && t.compare(p - 11, 11, "unpack4xU8(") == 0) { p += std::strlen(sb.from); continue; }
+      t.replace(p, std::strlen(sb.from), sb.to); p += std::strlen(sb.to); ++hits;
+    }
+  }
+  if (hits < 2) { AnchorAlarm("DirectPackedWgsl", "载入未命中"); return src; }
+  return t;
+}
+
+// [DIRECT-F16 2026-09-05] At/Bt 存 vec4<f16>(u8 在 f16 精确),载入字节 ÷2,寄存器里 vec4<f32>(v) 一条转换后走
+// 原 f32 FMA ⇒ 乘积/和全在 f32,逐字节同。动机:A16 梯子 gemm44ld 33%(每条 vec4 载入 ≈14 个 FMA 槽),
+// PACKED(u8+unpack4xU8)因解包指令太多反赔 36% ⇒ 要"字节减半且几乎不加指令"。需要适配器有 ShaderF16。
+constexpr char kWgslXposeF16[] = R"WGSL(
+enable f16;
+struct XParams { n4 : u32, p1 : u32, p2 : u32, p3 : u32, };
+@group(0) @binding(0) var<storage, read> Src : array<u32>;
+@group(0) @binding(3) var<uniform> X : XParams;
+@group(0) @binding(7) var<storage, read_write> Dst : array<vec4<f16>>;
+@compute @workgroup_size(64)
+fn xpose(@builtin(global_invocation_id) gid : vec3<u32>) {
+  let n4 = X.n4;
+  let i = gid.x;
+  if (i >= n4 * 32u) { return; }
+  let q = i % n4;
+  let w = i / n4;
+  let x0 = Src[(4u * q + 0u) * 32u + w];
+  let x1 = Src[(4u * q + 1u) * 32u + w];
+  let x2 = Src[(4u * q + 2u) * 32u + w];
+  let x3 = Src[(4u * q + 3u) * 32u + w];
+  let o = (w * 4u) * n4 + q;
+  Dst[o + 0u * n4] = vec4<f16>(f16(x0 & 255u), f16(x1 & 255u), f16(x2 & 255u), f16(x3 & 255u));
+  Dst[o + 1u * n4] = vec4<f16>(f16((x0 >> 8u) & 255u), f16((x1 >> 8u) & 255u), f16((x2 >> 8u) & 255u), f16((x3 >> 8u) & 255u));
+  Dst[o + 2u * n4] = vec4<f16>(f16((x0 >> 16u) & 255u), f16((x1 >> 16u) & 255u), f16((x2 >> 16u) & 255u), f16((x3 >> 16u) & 255u));
+  Dst[o + 3u * n4] = vec4<f16>(f16(x0 >> 24u), f16(x1 >> 24u), f16(x2 >> 24u), f16(x3 >> 24u));
+}
+)WGSL";
+std::string DirectF16Wgsl(const std::string& src) {
+  std::string t = "enable f16;\n" + src;
+  struct Sub { const char* from; const char* to; };
+  const Sub decl[] = {
+    {"@group(0) @binding(7) var<storage, read> At : array<vec4<f32>>;\n", "@group(0) @binding(7) var<storage, read> At : array<vec4<f16>>;\n"},
+    {"@group(0) @binding(8) var<storage, read> Bt : array<vec4<f32>>;\n", "@group(0) @binding(8) var<storage, read> Bt : array<vec4<f16>>;\n"},
+  };
+  for (const Sub& sb : decl) {
+    const size_t p = t.find(sb.from);
+    if (p == std::string::npos) { AnchorAlarm("DirectF16Wgsl", sb.from); return src; }
+    t.replace(p, std::strlen(sb.from), sb.to);
+  }
+  const char* loads[] = {"At[k * rowPad4 + rq + 1u]", "At[k * rowPad4 + rq]", "At[min(k + 1u, KD - 1u) * rowPad4 + rq]", "At[rq]",
+                         "Bt[min(k + 1u, KD - 1u) * colPad4 + cq]", "Bt[k * colPad4 + cq]", "Bt[cq]"};
+  int hits = 0;
+  for (const char* ld : loads) {
+    const std::string from = ld; const std::string to = "vec4<f32>(" + from + ")";
+    size_t p = 0;
+    while ((p = t.find(from, p)) != std::string::npos) {
+      if (p >= 10 && t.compare(p - 10, 10, "vec4<f32>(") == 0) { p += from.size(); continue; }
+      t.replace(p, from.size(), to); p += to.size(); ++hits;
+    }
+  }
+  if (hits < 2) { AnchorAlarm("DirectF16Wgsl", "载入未命中"); return src; }
+  return t;
+}
+
 std::string BlkNoLoadWgsl(const std::string& src) {
   std::string t = src;
   // [ANCHOR 2026-09-05] 默认形态是 8x4+PIPEB(b4 预取成 bn),锚点必须先认这一形态;
@@ -3853,13 +3979,28 @@ bool EnsureMainPipelines(Ctx& c) {
         if (dbg) std::fprintf(stderr, "[direct-chain] G in=%zu out=%zu applied=%d\n", dsrc.size(), g.size(), (int)c.direct_g);
         dsrc = g;
       }
-      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TEXA") != nullptr) {
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_F16") != nullptr) {
+        if (!c.feat_f16) { if (dbg) std::fprintf(stderr, "[direct-chain] F16 skipped: adapter lacks ShaderF16\n"); }
+        else {
+          const std::string x = DirectF16Wgsl(dsrc);
+          c.direct_f16 = (x != dsrc);
+          if (dbg) std::fprintf(stderr, "[direct-chain] F16 in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)c.direct_f16);
+          dsrc = x;
+        }
+      }
+      if (!c.direct_f16 && getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PACKED") != nullptr) {
+        const std::string x = DirectPackedWgsl(dsrc);
+        c.direct_packed = (x != dsrc);
+        if (dbg) std::fprintf(stderr, "[direct-chain] PACKED in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)c.direct_packed);
+        dsrc = x;
+      }
+      if (!c.direct_packed && getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TEXA") != nullptr) {
         const std::string x = DirectToTexAWgsl(dsrc);
         c.direct_texa = (x != dsrc);
         if (dbg) std::fprintf(stderr, "[direct-chain] TEXA in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)c.direct_texa);
         dsrc = x;
       }
-      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TEX") != nullptr) {
+      if (!c.direct_packed && getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TEX") != nullptr) {
         const std::string x = DirectToTexWgsl(dsrc);
         c.direct_tex = (x != dsrc);
         if (dbg) std::fprintf(stderr, "[direct-chain] TEX in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)c.direct_tex);
@@ -3893,7 +4034,7 @@ bool EnsureMainPipelines(Ctx& c) {
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_WGSL_DUMP") != nullptr) std::fprintf(stderr, "===WGSL_BEGIN===\n%s\n===WGSL_END===\n", dsrc.c_str());
       wgpu::ShaderModule m = CompileWgsl(c, dsrc.c_str(), "blocked direct");
       if (!m) return false;
-      wgpu::ShaderModule mx = CompileWgsl(c, kWgslXpose, "xpose");
+      wgpu::ShaderModule mx = CompileWgsl(c, c.direct_f16 ? kWgslXposeF16 : (c.direct_packed ? kWgslXposePacked : kWgslXpose), "xpose");
       if (!mx) return false;
       c.p_main = MakePipeline(c, m, "main");
       c.p_merge = MakePipeline(c, m, "merge");
@@ -4556,7 +4697,8 @@ int MatchPairsImpl(const uint8_t* dA, int nA, const uint8_t* dB, int nB,
       // "binding index 0 not present in the bind group layout"(首次 Mac 复验就撞上)。
       mainEntries.erase(mainEntries.begin(), mainEntries.begin() + 2);
       // [DIRECT] At/Bt = f32 [k][row/4]:每行 128 k × 4 B = 512 B;按补位行数分配。
-      const uint64_t atBytes = 512ull * nApad, btBytes = 512ull * nBpad;
+      const uint64_t rowB = c.direct_f16 ? 256ull : (c.direct_packed ? 128ull : 512ull);  // [F16] 2 B / [PACKED] 1 B 每 k
+      const uint64_t atBytes = rowB * nApad, btBytes = rowB * nBpad;
       wgpu::Buffer at = PoolGet(c, c.at, atBytes,
                                 c.direct_texa ? (kUsageColp | wgpu::BufferUsage::CopySrc) : kUsageColp);
       wgpu::Buffer bt = PoolGet(c, c.bt, btBytes,
@@ -4893,7 +5035,7 @@ int ProbeBatchImpl(const uint8_t* dA, int nA, const uint8_t* const* dBs,
     cd.uniOff = (uint64_t)k * uniPerCand * kSlot;
     cd.stgOff = stgTotal;
     stgTotal += outABBytes + cd.outBABytes;
-    cd.btBytes = 512ull * cd.nBpad;
+    cd.btBytes = (c.direct_f16 ? 256ull : (c.direct_packed ? 128ull : 512ull)) * cd.nBpad;
     cd.btOff = btTotal;
     btTotal += RoundUp(cd.btBytes, kSlot);
     cd.units = mma ? (double)numWg * ((double)cd.nB / 1024.0)
@@ -4914,7 +5056,7 @@ int ProbeBatchImpl(const uint8_t* dA, int nA, const uint8_t* const* dBs,
   wgpu::Buffer rowpPb = PoolGet(c, c.pbRowp, rowPbBytes, kUsageColp);
   if (!rowpPb) return 6;
   // [DIRECT] 批量路径同样要绑定 7/8 并先做预转置(ABI 门会抓漏绑定)。
-  const uint64_t atPbBytes = 512ull * nApad;
+  const uint64_t atPbBytes = (c.direct_f16 ? 256ull : (c.direct_packed ? 128ull : 512ull)) * nApad;
   wgpu::Buffer atPb, btPb, xuni;
   wgpu::BindGroup bgXA;
   if (c.direct) {
