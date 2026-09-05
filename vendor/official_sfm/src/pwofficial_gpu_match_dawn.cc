@@ -1888,35 +1888,53 @@ enum class Backend { kNone, kMma, kTiled, kBlocked };
 // [FINGERPRINT-LABEL 2026-09-05] 指纹里的核名必须与实际选核形态一致:Mate 10 首跑报出
 // "blocked(fma4x4,V3)",而默认早已是 8x4+PIPEB —— 指纹说了假话。与 EnsureBlockedPipeline 的
 // 选核逻辑读同一组 env,同源不会再漂。
+// [ONE-KERNEL-A 2026-09-06 用户裁决] 三端一套核默认形态 A = DIRECT + 4x4 + W128 + 零预取 + f16 存储/f32 计算。
+// 账(13312²,逐字节同):A16 68.3–70.3 ms vs 原生 70(0.97–1.00×);Mate 10 824–850(开工 6461 的 7.8×);M3 16.2。
+// 旧形态 8x4 线程组暂存(A16 97.4 / Mate 10 6461)改为显式 OFFICIAL_AETHER_MATCH_DAWN_BLK_LEGACY84=1 才走;
+// 形态 B(预取 B:Mali 615 / A16 1.15×)= OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEB=1。
+// 其它反向旋钮:BLK_84=1(8x4)、BLK_DIRECT_W256=1(256 线程)、BLK_DIRECT_F32=1(f32 存储)。
+struct DirectKnobs { bool direct, k44, w128, nopb, f16; };
+static DirectKnobs ResolveDirectKnobs() {
+  DirectKnobs k{};
+  const bool legacy = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_LEGACY84") != nullptr;
+  k.direct = legacy ? (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT") != nullptr) : true;
+  k.k44 = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_84") == nullptr &&
+          (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr || !legacy);
+  k.w128 = k.k44 && std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_W256") == nullptr &&
+           (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_W128") != nullptr || !legacy);
+  k.nopb = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEB") == nullptr &&
+           (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOPB") != nullptr || !legacy);
+  k.f16 = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_F32") == nullptr &&
+          (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_F16") != nullptr || !legacy);
+  return k;
+}
+
 static const char* BlockedLabel() {
-  if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT") != nullptr) {
-    const bool g = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_G") != nullptr;
-    const bool tx = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TEX") != nullptr;
-    const bool k44 = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr;
-    static std::string lbl;
-    const bool nopb = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOPB") != nullptr;
-    const bool txa = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TEXA") != nullptr;
-    const bool sm = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANMEM") != nullptr;
-    const bool fm = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_FMA") != nullptr;
-    const bool w128 = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_W128") != nullptr;
-    const bool psc = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN") != nullptr;
-    const bool pk = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PACKED") != nullptr;
-    const bool h16 = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_F16") != nullptr;
-    const bool tm = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TMAP") != nullptr;
-    const bool tb = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB") != nullptr;
-    const bool tb2 = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB2") != nullptr;
-    const char* un = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL");
-    const char* uh = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLLH");
-    const char* ub = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLLHB");
-    const bool pa = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA") != nullptr;
-    lbl = std::string("blocked(") + (k44 ? "fma4x4" : "fma8x4") + "+direct" + (g ? "g" : "") + (tx ? "+tex" : "") + (txa ? "+texa" : "") + (nopb ? "+nopb" : "") + (sm ? "+scanmem" : "") + (fm ? "+fma" : "") + (w128 ? "+w128" : "") + (psc ? "+pscan" : "") + (pk ? "+packed" : "") + (h16 ? "+f16" : "") + (tm ? "+tmap" : "") + (tb ? "+tailb" : "") + (tb2 ? "+tailb2" : "") + (un ? std::string("+unroll") + un : std::string("")) + (uh ? std::string("+unrollh") + uh : std::string("")) + (ub ? std::string("+unrollhb") + ub : std::string("")) + (pa ? "+pipea" : "") + ",V4)";
-    return lbl.c_str();
+  const DirectKnobs k = ResolveDirectKnobs();
+  if (!k.direct) {
+    if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_88") != nullptr) return "blocked(fma8x8,V3)";
+    if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr) return "blocked(fma4x4,V3)";
+    if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_PIPE") != nullptr) return "blocked(fma8x4+pipe,V3)";
+    if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_NOPIPEB") != nullptr) return "blocked(fma8x4,V3)";
+    return "blocked(fma8x4+pipeb,V3)";
   }
-  if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_88") != nullptr) return "blocked(fma8x8,V3)";
-  if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr) return "blocked(fma4x4,V3)";
-  if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_PIPE") != nullptr) return "blocked(fma8x4+pipe,V3)";
-  if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_NOPIPEB") != nullptr) return "blocked(fma8x4,V3)";
-  return "blocked(fma8x4+pipeb,V3)";
+  static std::string lbl;
+  lbl = std::string("blocked(") + (k.k44 ? "fma4x4" : "fma8x4") + "+direct" + (k.w128 ? "+w128" : "") +
+        (k.nopb ? "+nopb" : "+pipeb") + (k.f16 ? "+f16" : "+f32");
+  const char* extras[][2] = {
+    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_G", "+g"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TEX", "+tex"},
+    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TEXA", "+texa"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANMEM", "+scanmem"},
+    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_FMA", "+fma"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN", "+pscan"},
+    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PACKED", "+packed"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TMAP", "+tmap"},
+    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB", "+tailb"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB2", "+tailb2"},
+    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA", "+pipea"},
+  };
+  for (auto& e : extras) if (std::getenv(e[0]) != nullptr) lbl += e[1];
+  if (const char* v = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL")) lbl += std::string("+unroll") + v;
+  if (const char* v = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLLH")) lbl += std::string("+unrollh") + v;
+  if (const char* v = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLLHB")) lbl += std::string("+unrollhb") + v;
+  lbl += ",V5)";
+  return lbl.c_str();
 }
 // [UNIVERSAL 2026-09-05] 主路径(mma / blocked)每工作组的行数;两者共用同一条 host 路径。
 uint32_t gBlockedRows = kBlockedRows;  // [DIRECT-44-W128] 选核时可改为 32
@@ -2154,8 +2172,7 @@ std::unique_ptr<Ctx> CreateCtx() {
   wgpu::Limits req{};
   wgpu::DeviceDescriptor dd{};
   // [DIRECT-F16] 只在 env 明示时申请 f16 存储/算术特性(可选特性,不进默认合同)。
-  if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_F16") != nullptr &&
-      c->adapter.HasFeature(wgpu::FeatureName::ShaderF16)) {
+  if (ResolveDirectKnobs().f16 && c->adapter.HasFeature(wgpu::FeatureName::ShaderF16)) {
     feats.push_back(wgpu::FeatureName::ShaderF16);
     c->feat_f16 = true;
   }
@@ -4100,15 +4117,16 @@ bool EnsureMainPipelines(Ctx& c) {
     return c.p_main && c.p_merge;
   }
   if (c.backend == Backend::kBlocked) {
-    if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT") != nullptr) {
+    const DirectKnobs kn = ResolveDirectKnobs();
+    if (kn.direct) {
       // [DIRECT 2026-09-05] 见 kWgslBlocked84Direct 注释。纯净形态,不叠任何探针变换。
       std::string dsrc = kWgslBlocked84Direct;
       const bool dbg = getenv("OFFICIAL_AETHER_MATCH_DAWN_WGSL_DUMP") != nullptr;
       if (dbg) std::fprintf(stderr, "[direct-chain] base len=%zu\n", dsrc.size());
-      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr) {
+      if (kn.k44) {
         dsrc = DirectTo44Wgsl(dsrc);
         if (dbg) std::fprintf(stderr, "[direct-chain] after 44 len=%zu\n", dsrc.size());
-        if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_W128") != nullptr) {
+        if (kn.w128) {
           const std::string x = DirectTo44W128Wgsl(dsrc);
           if (x != dsrc) gBlockedRows = 32;
           if (dbg) std::fprintf(stderr, "[direct-chain] W128 in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
@@ -4130,7 +4148,7 @@ bool EnsureMainPipelines(Ctx& c) {
         if (dbg) std::fprintf(stderr, "[direct-chain] SCANMEM in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
       }
-      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOPB") != nullptr) {
+      if (kn.nopb) {
         const std::string x = DirectNoPipeBWgsl(dsrc);
         if (dbg) std::fprintf(stderr, "[direct-chain] NOPB in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
@@ -4146,7 +4164,7 @@ bool EnsureMainPipelines(Ctx& c) {
         if (dbg) std::fprintf(stderr, "[direct-chain] G in=%zu out=%zu applied=%d\n", dsrc.size(), g.size(), (int)c.direct_g);
         dsrc = g;
       }
-      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_F16") != nullptr) {
+      if (kn.f16) {
         if (!c.feat_f16) { if (dbg) std::fprintf(stderr, "[direct-chain] F16 skipped: adapter lacks ShaderF16\n"); }
         else {
           const std::string x = DirectF16Wgsl(dsrc);
