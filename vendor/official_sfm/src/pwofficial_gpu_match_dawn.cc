@@ -1927,7 +1927,7 @@ static const char* BlockedLabel() {
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_FMA", "+fma"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN", "+pscan"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PACKED", "+packed"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TMAP", "+tmap"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB", "+tailb"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB2", "+tailb2"},
-    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA", "+pipea"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANSEL", "+scansel"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANU4", "+scanu4"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN2", "+pscan2"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN", "+keyscan"},
+    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA", "+pipea"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANSEL", "+scansel"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANU4", "+scanu4"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN2", "+pscan2"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN", "+keyscan"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_W64", "+w64"},
   };
   for (auto& e : extras) if (std::getenv(e[0]) != nullptr) lbl += e[1];
   if (const char* v = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL")) lbl += std::string("+unroll") + v;
@@ -3663,6 +3663,34 @@ std::string DirectScanU4Wgsl(const std::string& src) {
   return t;
 }
 
+// [DIRECT-W64 2026-09-06] 调研候选 #2:工作组 128 → 64(8×8 线程,tile 32×32,仍 4x4/线程,列循环步长 BT 64→32)。
+// 来源:Arm GPU Best Practices r3.4 §9.2 "Do not use more than 64 threads per workgroup"(barrier/共享内存的 WG 不能拆合调度);
+// tfjs/ORT/llama.cpp-webgpu/ncnn/MNN 的移动端 GEMM 全部 64 线程;Bifrost 每核 ~192 线程容量 ⇒ 64 线程组可驻 3 组。
+// 只改线程几何与 S 索引,算术与扫描顺序不变(列仍按升序串行扫)⇒ 逐字节同。只认 W128(WGR=32,BT=64)文本。
+std::string DirectW64Wgsl(const std::string& src) {
+  if (src.find("const WGR : u32 = 32u;\n") == std::string::npos || src.find("const BT : u32 = 64u;\n") == std::string::npos) {
+    AnchorAlarm("DirectW64Wgsl", "只认 W128(WGR=32,BT=64)"); return src;
+  }
+  struct Sub { const char* from; const char* to; };
+  static const Sub subs[] = {
+    {"const BT : u32 = 64u;\n", "const BT : u32 = 32u;\n"},
+    {"var<workgroup> S : array<vec4<f32>, 512>;\n", "var<workgroup> S : array<vec4<f32>, 256>;\n"},
+    {"@compute @workgroup_size(128)\nfn main(", "@compute @workgroup_size(64)\nfn main("},
+    {"  let tr = lid / 16u;\n  let tc = lid % 16u;\n", "  let tr = lid / 8u;\n  let tc = lid % 8u;\n"},
+    {"    S[(tr * 4u + 0u) * 16u + tc] = acc0;\n    S[(tr * 4u + 1u) * 16u + tc] = acc1;\n    S[(tr * 4u + 2u) * 16u + tc] = acc2;\n    S[(tr * 4u + 3u) * 16u + tc] = acc3;\n",
+     "    S[(tr * 4u + 0u) * 8u + tc] = acc0;\n    S[(tr * 4u + 1u) * 8u + tc] = acc1;\n    S[(tr * 4u + 2u) * 8u + tc] = acc2;\n    S[(tr * 4u + 3u) * 8u + tc] = acc3;\n"},
+    {"      for (var v = 0u; v < 16u; v = v + 1u) {\n        let d = S[lid * 16u + v];\n", "      for (var v = 0u; v < 8u; v = v + 1u) {\n        let d = S[lid * 8u + v];\n"},
+    {"    } else if (lid < WGR + 64u) {\n", "    } else if (lid < WGR + 32u) {\n"},
+    {"        let d = S[r * 16u + q][m];\n", "        let d = S[r * 8u + q][m];\n"},
+  };
+  std::string t = src;
+  for (const Sub& sb : subs) {
+    const size_t p = t.find(sb.from);
+    if (p == std::string::npos) { AnchorAlarm("DirectW64Wgsl", sb.from); return src; }
+    t.replace(p, std::strlen(sb.from), sb.to);
+  }
+  return t;
+}
 // [DIRECT-KEYSCAN 2026-09-06] 扫描段重写(调研复刻:COLMAP SiftGPU MultiplyDescriptorG / OpenCV cuda knnMatch k=2 / FAISS 的
 // "寄存器里先归约、只写一次、短链合并";onnxruntime/tfjs 的复合键 (value,index) 并列技巧)。
 //   每线程把 4x4 结果块在寄存器里归约成 4 个行局部 + 4 个列局部 (bestKey, secondKey);键 = (score << 6) | (63 - 列在块内序)
@@ -3674,14 +3702,20 @@ std::string DirectScanU4Wgsl(const std::string& src) {
 //   串行链 64/32 → 16/8;忙线程 64 → 96。只认 4x4 + W128(WGR=32)形态。
 std::string DirectKeyScanWgsl(const std::string& src) {
   std::string t = src;
-  if (t.find("const WGR : u32 = 32u;\n") == std::string::npos) { AnchorAlarm("DirectKeyScanWgsl", "只认 W128(WGR=32)"); return src; }
+  if (t.find("const WGR : u32 = 32u;\n") == std::string::npos) { AnchorAlarm("DirectKeyScanWgsl", "只认 WGR=32"); return src; }
+  const bool w64 = t.find("const BT : u32 = 32u;\n") != std::string::npos;   // W64:tile 32×32,8 tc;否则 W128:32×64,16 tc
+  const unsigned TCN = w64 ? 8u : 16u;          // 每行的列组数(= 行局部个数)
+  const unsigned CB = w64 ? 5u : 6u;            // 列序位数(32 列 → 5 位,64 列 → 6 位)
+  const unsigned CMASK = w64 ? 31u : 63u;
+  const unsigned NCOL = w64 ? 32u : 64u;
+  const unsigned COLOFF = w64 ? 512u : 1024u;   // P 中列局部区起点(行局部 32×TCN×2)
   {
-    const std::string sd = "var<workgroup> S : array<vec4<f32>, 512>;\n";
+    const std::string sd = w64 ? "var<workgroup> S : array<vec4<f32>, 256>;\n" : "var<workgroup> S : array<vec4<f32>, 512>;\n";
     const size_t p = t.find(sd);
     if (p == std::string::npos) { AnchorAlarm("DirectKeyScanWgsl", "S 声明未命中"); return src; }
-    t.replace(p, sd.size(), "var<workgroup> P : array<u32, 2048>;\n");
+    t.replace(p, sd.size(), w64 ? "var<workgroup> P : array<u32, 1024>;\n" : "var<workgroup> P : array<u32, 2048>;\n");
   }
-  const std::string from_head = "    workgroupBarrier();\n    S[(tr * 4u + 0u) * 16u + tc] = acc0;\n";
+  const std::string from_head = w64 ? "    workgroupBarrier();\n    S[(tr * 4u + 0u) * 8u + tc] = acc0;\n" : "    workgroupBarrier();\n    S[(tr * 4u + 0u) * 16u + tc] = acc0;\n";
   const std::string from_tail = "      if (gc < U.numB) { ColP[rb * U.numB + gc] = ColPart(cb, cs, ci); }\n    }\n";
   const size_t p = t.find(from_head);
   const size_t q = (p == std::string::npos) ? std::string::npos : t.find(from_tail, p);
@@ -3695,7 +3729,7 @@ std::string DirectKeyScanWgsl(const std::string& src) {
     to += "      {\n";
     for (int j = 0; j < 4; ++j) {
       char b[256];
-      std::snprintf(b, sizeof(b), "        let k%d = select((u32(%s.%s) << 6u) | (63u - (cbase + %du)), 0u, %s.%s == 0.0);\n", j, accs[i], comp[j], j, accs[i], comp[j]);
+      std::snprintf(b, sizeof(b), "        let k%d = select((u32(%s.%s) << %uu) | (%uu - (cbase + %du)), 0u, %s.%s == 0.0);\n", j, accs[i], comp[j], CB, CMASK, j, accs[i], comp[j]);
       to += b;
     }
     to += "        var b = k0;\n        var s = 0u;\n"
@@ -3703,7 +3737,7 @@ std::string DirectKeyScanWgsl(const std::string& src) {
           "        s = max(s, min(b, k2)); b = max(b, k2);\n"
           "        s = max(s, min(b, k3)); b = max(b, k3);\n";
     char w[160];
-    std::snprintf(w, sizeof(w), "        P[((rbase + %du) * 16u + tc) * 2u] = b;\n        P[((rbase + %du) * 16u + tc) * 2u + 1u] = s;\n      }\n", i, i);
+    std::snprintf(w, sizeof(w), "        P[((rbase + %du) * %uu + tc) * 2u] = b;\n        P[((rbase + %du) * %uu + tc) * 2u + 1u] = s;\n      }\n", i, TCN, i, TCN);
     to += w;
   }
   // 列局部:列 j = cbase+j,键来自 acc0..3 的分量 j(行 rbase+i)
@@ -3719,28 +3753,32 @@ std::string DirectKeyScanWgsl(const std::string& src) {
           "        s = max(s, min(b, k2)); b = max(b, k2);\n"
           "        s = max(s, min(b, k3)); b = max(b, k3);\n";
     char w[160];
-    std::snprintf(w, sizeof(w), "        P[1024u + ((cbase + %du) * 8u + tr) * 2u] = b;\n        P[1024u + ((cbase + %du) * 8u + tr) * 2u + 1u] = s;\n      }\n", j, j);
+    std::snprintf(w, sizeof(w), "        P[%uu + ((cbase + %du) * 8u + tr) * 2u] = b;\n        P[%uu + ((cbase + %du) * 8u + tr) * 2u + 1u] = s;\n      }\n", COLOFF, j, COLOFF, j);
     to += w;
   }
-  to += "    }\n    workgroupBarrier();\n"
+  char tail[1400];
+  std::snprintf(tail, sizeof(tail),
+        "    }\n    workgroupBarrier();\n"
         "    if (lid < WGR) {\n"
         "      var b = 0u;\n      var s = 0u;\n"
-        "      for (var t = 0u; t < 16u; t = t + 1u) {\n"
-        "        let bk = P[(lid * 16u + t) * 2u];\n"
-        "        let sk = P[(lid * 16u + t) * 2u + 1u];\n"
+        "      for (var t = 0u; t < %uu; t = t + 1u) {\n"
+        "        let bk = P[(lid * %uu + t) * 2u];\n"
+        "        let sk = P[(lid * %uu + t) * 2u + 1u];\n"
         "        s = max(max(s, sk), min(b, bk));\n"
         "        b = max(b, bk);\n"
         "      }\n"
-        "      let b2 = f32(b >> 6u);\n      let s2 = f32(s >> 6u);\n"
-        "      let i2 = select(i32(col0 + (63u - (b & 63u))), -1, b == 0u);\n"
+        "      let b2 = f32(b >> %uu);\n      let s2 = f32(s >> %uu);\n"
+        "      let i2 = select(i32(col0 + (%uu - (b & %uu))), -1, b == 0u);\n"
         "      if (b2 > rowBest) { rowSecond = max(rowBest, s2); rowBest = b2; rowBestI = i2; }\n"
         "      else { rowSecond = max(rowSecond, b2); }\n"
-        "    } else if (lid < WGR + 64u) {\n"
+        "    } else if (lid < WGR + %uu) {\n"
         "      let c = lid - WGR;\n"
         "      var b = 0u;\n      var s = 0u;\n"
         "      for (var t = 0u; t < 8u; t = t + 1u) {\n"
-        "        let bk = P[1024u + (c * 8u + t) * 2u];\n"
-        "        let sk = P[1024u + (c * 8u + t) * 2u + 1u];\n"
+        "        let bk = P[%uu + (c * 8u + t) * 2u];\n"
+        "        let sk = P[%uu + (c * 8u + t) * 2u + 1u];\n", TCN, TCN, TCN, CB, CB, CMASK, CMASK, NCOL, COLOFF, COLOFF);
+  to += tail;
+  to += ""
         "        s = max(max(s, sk), min(b, bk));\n"
         "        b = max(b, bk);\n"
         "      }\n"
@@ -4317,6 +4355,11 @@ bool EnsureMainPipelines(Ctx& c) {
           if (dbg) std::fprintf(stderr, "[direct-chain] W128 in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
           dsrc = x;
         }
+      }
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_W64") != nullptr) {
+        const std::string x = DirectW64Wgsl(dsrc);
+        if (dbg) std::fprintf(stderr, "[direct-chain] W64 in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
+        dsrc = x;
       }
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN") != nullptr) {
         const std::string x = DirectKeyScanWgsl(dsrc);
