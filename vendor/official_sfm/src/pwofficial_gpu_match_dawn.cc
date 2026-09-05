@@ -1903,10 +1903,11 @@ static const char* BlockedLabel() {
     const bool pk = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PACKED") != nullptr;
     const bool h16 = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_F16") != nullptr;
     const bool tm = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TMAP") != nullptr;
+    const bool tb = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB") != nullptr;
     const char* un = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL");
     const char* uh = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLLH");
     const bool pa = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA") != nullptr;
-    lbl = std::string("blocked(") + (k44 ? "fma4x4" : "fma8x4") + "+direct" + (g ? "g" : "") + (tx ? "+tex" : "") + (txa ? "+texa" : "") + (nopb ? "+nopb" : "") + (sm ? "+scanmem" : "") + (fm ? "+fma" : "") + (w128 ? "+w128" : "") + (psc ? "+pscan" : "") + (pk ? "+packed" : "") + (h16 ? "+f16" : "") + (tm ? "+tmap" : "") + (un ? std::string("+unroll") + un : std::string("")) + (uh ? std::string("+unrollh") + uh : std::string("")) + (pa ? "+pipea" : "") + ",V4)";
+    lbl = std::string("blocked(") + (k44 ? "fma4x4" : "fma8x4") + "+direct" + (g ? "g" : "") + (tx ? "+tex" : "") + (txa ? "+texa" : "") + (nopb ? "+nopb" : "") + (sm ? "+scanmem" : "") + (fm ? "+fma" : "") + (w128 ? "+w128" : "") + (psc ? "+pscan" : "") + (pk ? "+packed" : "") + (h16 ? "+f16" : "") + (tm ? "+tmap" : "") + (tb ? "+tailb" : "") + (un ? std::string("+unroll") + un : std::string("")) + (uh ? std::string("+unrollh") + uh : std::string("")) + (pa ? "+pipea" : "") + ",V4)";
     return lbl.c_str();
   }
   if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_88") != nullptr) return "blocked(fma8x8,V3)";
@@ -3474,6 +3475,30 @@ std::string DirectUnrollHWgsl(const std::string& src, int n) {
   return t;
 }
 
+// [DIRECT-TAILB 2026-09-06] 零额外寄存器的 B 预取:FMAs(k) 之后再发 k+1 的 B 载入,装回已死的 b4。
+// FMA 期间活寄存器 = acc + al + b4,与零预取相同(A16 对每个跨迭代活寄存器赔 ~17%);
+// 载入在跑回循环头、取 A 的这段时间里在飞(Mali 需要源码级软件流水)。累加顺序不变 ⇒ 逐字节同。
+// 只认 4x4+NOPB 文本(f32 或 f16 载入形态都认)。
+std::string DirectTailBWgsl(const std::string& src) {
+  std::string t = src;
+  const char* heads[] = {
+    "    for (var k = 0u; k < KD; k = k + 1u) {\n      let b4 = vec4<f32>(Bt[k * colPad4 + cq]);\n",
+    "    for (var k = 0u; k < KD; k = k + 1u) {\n      let b4 = Bt[k * colPad4 + cq];\n",
+  };
+  const char* firsts[] = { "vec4<f32>(Bt[cq])", "Bt[cq]" };
+  const char* nexts[]  = { "vec4<f32>(Bt[min(k + 1u, KD - 1u) * colPad4 + cq])", "Bt[min(k + 1u, KD - 1u) * colPad4 + cq]" };
+  int which = -1; size_t p = std::string::npos;
+  for (int i = 0; i < 2; ++i) { p = t.find(heads[i]); if (p != std::string::npos) { which = i; break; } }
+  if (which < 0) { AnchorAlarm("DirectTailBWgsl", "只认 4x4+NOPB 的循环头"); return src; }
+  t.replace(p, std::strlen(heads[which]),
+            std::string("    var b4 = ") + firsts[which] + ";\n    for (var k = 0u; k < KD; k = k + 1u) {\n");
+  const std::string tail = "      acc3 = acc3 + al.w * b4;\n    }\n";
+  const size_t q = t.find(tail, p);
+  if (q == std::string::npos) { AnchorAlarm("DirectTailBWgsl", "循环尾未命中"); return src; }
+  t.replace(q, tail.size(), std::string("      acc3 = acc3 + al.w * b4;\n      b4 = ") + nexts[which] + ";\n    }\n");
+  return t;
+}
+
 std::string BlkNoLoadWgsl(const std::string& src) {
   std::string t = src;
   // [ANCHOR 2026-09-05] 默认形态是 8x4+PIPEB(b4 预取成 bn),锚点必须先认这一形态;
@@ -4093,6 +4118,11 @@ bool EnsureMainPipelines(Ctx& c) {
         const std::string x = DirectToTexWgsl(dsrc);
         c.direct_tex = (x != dsrc);
         if (dbg) std::fprintf(stderr, "[direct-chain] TEX in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)c.direct_tex);
+        dsrc = x;
+      }
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB") != nullptr) {
+        const std::string x = DirectTailBWgsl(dsrc);
+        if (dbg) std::fprintf(stderr, "[direct-chain] TAILB in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
       }
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_FMA") != nullptr) {
