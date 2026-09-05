@@ -1904,10 +1904,12 @@ static const char* BlockedLabel() {
     const bool h16 = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_F16") != nullptr;
     const bool tm = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TMAP") != nullptr;
     const bool tb = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB") != nullptr;
+    const bool tb2 = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB2") != nullptr;
     const char* un = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL");
     const char* uh = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLLH");
+    const char* ub = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLLHB");
     const bool pa = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA") != nullptr;
-    lbl = std::string("blocked(") + (k44 ? "fma4x4" : "fma8x4") + "+direct" + (g ? "g" : "") + (tx ? "+tex" : "") + (txa ? "+texa" : "") + (nopb ? "+nopb" : "") + (sm ? "+scanmem" : "") + (fm ? "+fma" : "") + (w128 ? "+w128" : "") + (psc ? "+pscan" : "") + (pk ? "+packed" : "") + (h16 ? "+f16" : "") + (tm ? "+tmap" : "") + (tb ? "+tailb" : "") + (un ? std::string("+unroll") + un : std::string("")) + (uh ? std::string("+unrollh") + uh : std::string("")) + (pa ? "+pipea" : "") + ",V4)";
+    lbl = std::string("blocked(") + (k44 ? "fma4x4" : "fma8x4") + "+direct" + (g ? "g" : "") + (tx ? "+tex" : "") + (txa ? "+texa" : "") + (nopb ? "+nopb" : "") + (sm ? "+scanmem" : "") + (fm ? "+fma" : "") + (w128 ? "+w128" : "") + (psc ? "+pscan" : "") + (pk ? "+packed" : "") + (h16 ? "+f16" : "") + (tm ? "+tmap" : "") + (tb ? "+tailb" : "") + (tb2 ? "+tailb2" : "") + (un ? std::string("+unroll") + un : std::string("")) + (uh ? std::string("+unrollh") + uh : std::string("")) + (ub ? std::string("+unrollhb") + ub : std::string("")) + (pa ? "+pipea" : "") + ",V4)";
     return lbl.c_str();
   }
   if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_88") != nullptr) return "blocked(fma8x8,V3)";
@@ -3419,7 +3421,7 @@ std::string DirectTMapWgsl(const std::string& src) {
 // [DIRECT-UNROLLH 2026-09-05] 载入提前的 n 倍展开:体首先发出 n 个 k 的 al/b4 载入,再按 k 升序做各自的 16 次 FMA。
 // k+1 的载入在 k 的 FMA 期间在飞(Mali 编译器不重排,需要源码级软件流水),但不跨迭代持有寄存器(A16 对跨迭代
 // 预取赔 17%)。累加顺序按 k 升序不变 ⇒ 逐字节同。只认 4x4+NOPB 文本(载入行 `let b4 = …` / `let al = …`)。
-std::string DirectUnrollHWgsl(const std::string& src, int n) {
+std::string DirectUnrollHWgsl(const std::string& src, int n, bool onlyB = false) {
   std::string t = src;
   const std::string head = "    for (var k = 0u; k < KD; k = k + 1u) {\n";
   const size_t p = t.find(head);
@@ -3454,9 +3456,11 @@ std::string DirectUnrollHWgsl(const std::string& src, int n) {
   std::string out;
   char hdr[96]; std::snprintf(hdr, sizeof(hdr), "    for (var k0 = 0u; k0 < KD; k0 = k0 + %du) {\n", n);
   out += hdr;
+  // [UNROLLHB] onlyB:体首只装 n 拍的 b4(+4(n-1) 寄存器、不跨回边),al 各拍就地取 —— Mali 接受 +4 的预取、A16 接受迭代内提前。
   for (int u = 0; u < n; ++u) {
     char kk[32]; std::snprintf(kk, sizeof(kk), "(k0 + %du)", u);
     for (const std::string& l : loads) {
+      if (onlyB && l.rfind("      let al = ", 0) == 0) continue;
       std::string x = subst_k(l, kk);
       x = rename(x, "let al = ", "let al_" + std::to_string(u) + " = ");
       x = rename(x, "let b4 = ", "let b4_" + std::to_string(u) + " = ");
@@ -3464,6 +3468,14 @@ std::string DirectUnrollHWgsl(const std::string& src, int n) {
     }
   }
   for (int u = 0; u < n; ++u) {
+    char kk[32]; std::snprintf(kk, sizeof(kk), "(k0 + %du)", u);
+    if (onlyB) {
+      for (const std::string& l : loads) {
+        if (l.rfind("      let al = ", 0) != 0) continue;
+        std::string x = subst_k(l, kk);
+        out += rename(x, "let al = ", "let al_" + std::to_string(u) + " = ");
+      }
+    }
     for (const std::string& l : comps) {
       std::string x = rename(l, "al.", "al_" + std::to_string(u) + ".");
       x = rename(x, "b4;", "b4_" + std::to_string(u) + ";");
@@ -3496,6 +3508,47 @@ std::string DirectTailBWgsl(const std::string& src) {
   const size_t q = t.find(tail, p);
   if (q == std::string::npos) { AnchorAlarm("DirectTailBWgsl", "循环尾未命中"); return src; }
   t.replace(q, tail.size(), std::string("      acc3 = acc3 + al.w * b4;\n      b4 = ") + nexts[which] + ";\n    }\n");
+  return t;
+}
+
+// [DIRECT-TAILB2 2026-09-06] TAILB 去掉 min():循环跑到 KD-2、最后一拍剥离到循环外。A16 上 TAILB/PIPEB/PIPEA 一律赔 17%
+// 而 FMA 期间寄存器与零预取相同 ⇒ 赔的是预取地址里的 min+乘+加(编译器做不了强度削减)。累加顺序不变 ⇒ 逐字节同。
+std::string DirectTailB2Wgsl(const std::string& src) {
+  std::string t = src;
+  const char* heads[] = {
+    "    for (var k = 0u; k < KD; k = k + 1u) {\n      let b4 = vec4<f32>(Bt[k * colPad4 + cq]);\n",
+    "    for (var k = 0u; k < KD; k = k + 1u) {\n      let b4 = Bt[k * colPad4 + cq];\n",
+  };
+  const char* firsts[] = { "vec4<f32>(Bt[cq])", "Bt[cq]" };
+  const char* nexts[]  = { "vec4<f32>(Bt[(k + 1u) * colPad4 + cq])", "Bt[(k + 1u) * colPad4 + cq]" };
+  const char* alast[]  = { "vec4<f32>(At[(KD - 1u) * rowPad4 + rq])", "At[(KD - 1u) * rowPad4 + rq]" };
+  int which = -1; size_t p = std::string::npos;
+  for (int i = 0; i < 2; ++i) { p = t.find(heads[i]); if (p != std::string::npos) { which = i; break; } }
+  if (which < 0) { AnchorAlarm("DirectTailB2Wgsl", "只认 4x4+NOPB 的循环头"); return src; }
+  t.replace(p, std::strlen(heads[which]),
+            std::string("    var b4 = ") + firsts[which] + ";\n    for (var k = 0u; k < KD - 1u; k = k + 1u) {\n");
+  const std::string tail = "      acc3 = acc3 + al.w * b4;\n    }\n";
+  const size_t q = t.find(tail, p);
+  if (q == std::string::npos) { AnchorAlarm("DirectTailB2Wgsl", "循环尾未命中"); return src; }
+  // 取出循环体里 al 的载入行以复用于最后一拍
+  const std::string body = t.substr(p, q - p);
+  const size_t la = body.find("      let al = ");
+  const size_t le = body.find('\n', la);
+  if (la == std::string::npos || le == std::string::npos) { AnchorAlarm("DirectTailB2Wgsl", "al 载入行未命中"); return src; }
+  std::string alLine = body.substr(la, le - la + 1);
+  // 把 al 载入行里的 k 换成 (KD - 1u)
+  {
+    std::string r; for (size_t j = 0; j < alLine.size(); ++j) {
+      if (alLine[j] == 'k' && (j == 0 || !(std::isalnum((unsigned char)alLine[j-1]) || alLine[j-1] == '_')) &&
+          (j + 1 >= alLine.size() || !(std::isalnum((unsigned char)alLine[j+1]) || alLine[j+1] == '_'))) r += "(KD - 1u)"; else r += alLine[j];
+    }
+    alLine = r;
+  }
+  const std::string fmas =
+    "      acc0 = acc0 + al.x * b4;\n      acc1 = acc1 + al.y * b4;\n      acc2 = acc2 + al.z * b4;\n      acc3 = acc3 + al.w * b4;\n";
+  std::string epilogue = "    {\n" + alLine + fmas + "    }\n";
+  t.replace(q, tail.size(), std::string("      acc3 = acc3 + al.w * b4;\n      b4 = ") + nexts[which] + ";\n    }\n" + epilogue);
+  (void)alast;
   return t;
 }
 
@@ -4120,6 +4173,11 @@ bool EnsureMainPipelines(Ctx& c) {
         if (dbg) std::fprintf(stderr, "[direct-chain] TEX in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)c.direct_tex);
         dsrc = x;
       }
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB2") != nullptr) {
+        const std::string x = DirectTailB2Wgsl(dsrc);
+        if (dbg) std::fprintf(stderr, "[direct-chain] TAILB2 in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
+        dsrc = x;
+      }
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB") != nullptr) {
         const std::string x = DirectTailBWgsl(dsrc);
         if (dbg) std::fprintf(stderr, "[direct-chain] TAILB in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
@@ -4128,6 +4186,11 @@ bool EnsureMainPipelines(Ctx& c) {
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_FMA") != nullptr) {
         const std::string x = DirectFmaWgsl(dsrc);
         if (dbg) std::fprintf(stderr, "[direct-chain] FMA in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
+        dsrc = x;
+      }
+      if (const char* ub = getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLLHB")) {
+        const std::string x = DirectUnrollHWgsl(dsrc, std::max(2, atoi(ub)), true);
+        if (dbg) std::fprintf(stderr, "[direct-chain] UNROLLHB%s in=%zu out=%zu applied=%d\n", ub, dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
       }
       if (const char* uh = getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLLH")) {
