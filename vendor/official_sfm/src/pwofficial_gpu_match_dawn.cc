@@ -2825,21 +2825,47 @@ std::string DirectTo44Wgsl(const std::string& src) {
 std::string DirectToGlobalScratchWgsl(const std::string& src) {
   std::string t = src;
   struct Sub { const char* from; const char* to; };
-  const Sub subs[] = {
+  // [ANCHOR 2026-09-05] 8x4 与 4x4(DirectTo44Wgsl 之后)两种形态都认:Mate 10 上 44+G 叠加时锚点未命中
+  // → 静默退回无 G 的核而 C++ 仍绑 Scr → 管线失败(125ms 无 sha 的假读数)。每个变换对每种形态验活性。
+  const Sub common[] = {
     {"@group(0) @binding(8) var<storage, read> Bt : array<vec4<f32>>;\n",
      "@group(0) @binding(8) var<storage, read> Bt : array<vec4<f32>>;\n"
      "@group(0) @binding(9) var<storage, read_write> Scr : array<vec4<f32>>;\n"},
     {"var<workgroup> S : array<vec4<f32>, 1024>;\n", ""},
-    {"  let rq = row0 / 4u + tr * 2u;\n", "  let rq = row0 / 4u + tr * 2u;\n  let sb = wg.x * 1024u;\n"},
-    {"    workgroupBarrier();\n    S[(tr * 8u + 0u) * 16u + tc] = acc0;\n    S[(tr * 8u + 1u) * 16u + tc] = acc1;\n    S[(tr * 8u + 2u) * 16u + tc] = acc2;\n    S[(tr * 8u + 3u) * 16u + tc] = acc3;\n    S[(tr * 8u + 4u) * 16u + tc] = acc4;\n    S[(tr * 8u + 5u) * 16u + tc] = acc5;\n    S[(tr * 8u + 6u) * 16u + tc] = acc6;\n    S[(tr * 8u + 7u) * 16u + tc] = acc7;\n    workgroupBarrier();\n",
-     "    storageBarrier();\n    Scr[sb + (tr * 8u + 0u) * 16u + tc] = acc0;\n    Scr[sb + (tr * 8u + 1u) * 16u + tc] = acc1;\n    Scr[sb + (tr * 8u + 2u) * 16u + tc] = acc2;\n    Scr[sb + (tr * 8u + 3u) * 16u + tc] = acc3;\n    Scr[sb + (tr * 8u + 4u) * 16u + tc] = acc4;\n    Scr[sb + (tr * 8u + 5u) * 16u + tc] = acc5;\n    Scr[sb + (tr * 8u + 6u) * 16u + tc] = acc6;\n    Scr[sb + (tr * 8u + 7u) * 16u + tc] = acc7;\n    storageBarrier();\n"},
     {"        let d = S[lid * 16u + v];\n", "        let d = Scr[sb + lid * 16u + v];\n"},
     {"        let d = S[r * 16u + q][m];\n", "        let d = Scr[sb + r * 16u + q][m];\n"},
   };
-  for (const Sub& sb : subs) {
+  for (const Sub& sb : common) {
     const size_t p = t.find(sb.from);
     if (p == std::string::npos) { AnchorAlarm("DirectToGlobalScratchWgsl", sb.from); return src; }
     t.replace(p, std::strlen(sb.from), sb.to);
+  }
+  // rq 行(两种形态)之后插入 sb
+  {
+    const char* rq84 = "  let rq = row0 / 4u + tr * 2u;\n";
+    const char* rq44 = "  let rq = row0 / 4u + tr;\n";
+    size_t p = t.find(rq84); const char* hit = rq84;
+    if (p == std::string::npos) { p = t.find(rq44); hit = rq44; }
+    if (p == std::string::npos) { AnchorAlarm("DirectToGlobalScratchWgsl", "rq 行未命中"); return src; }
+    t.insert(p + std::strlen(hit), "  let sb = wg.x * 1024u;\n");
+  }
+  // 结果交换块(两种形态)
+  {
+    const char* blk84 =
+        "    workgroupBarrier();\n    S[(tr * 8u + 0u) * 16u + tc] = acc0;\n    S[(tr * 8u + 1u) * 16u + tc] = acc1;\n    S[(tr * 8u + 2u) * 16u + tc] = acc2;\n    S[(tr * 8u + 3u) * 16u + tc] = acc3;\n    S[(tr * 8u + 4u) * 16u + tc] = acc4;\n    S[(tr * 8u + 5u) * 16u + tc] = acc5;\n    S[(tr * 8u + 6u) * 16u + tc] = acc6;\n    S[(tr * 8u + 7u) * 16u + tc] = acc7;\n    workgroupBarrier();\n";
+    const char* to84 =
+        "    storageBarrier();\n    Scr[sb + (tr * 8u + 0u) * 16u + tc] = acc0;\n    Scr[sb + (tr * 8u + 1u) * 16u + tc] = acc1;\n    Scr[sb + (tr * 8u + 2u) * 16u + tc] = acc2;\n    Scr[sb + (tr * 8u + 3u) * 16u + tc] = acc3;\n    Scr[sb + (tr * 8u + 4u) * 16u + tc] = acc4;\n    Scr[sb + (tr * 8u + 5u) * 16u + tc] = acc5;\n    Scr[sb + (tr * 8u + 6u) * 16u + tc] = acc6;\n    Scr[sb + (tr * 8u + 7u) * 16u + tc] = acc7;\n    storageBarrier();\n";
+    const char* blk44 =
+        "    workgroupBarrier();\n    S[(tr * 4u + 0u) * 16u + tc] = acc0;\n    S[(tr * 4u + 1u) * 16u + tc] = acc1;\n    S[(tr * 4u + 2u) * 16u + tc] = acc2;\n    S[(tr * 4u + 3u) * 16u + tc] = acc3;\n    workgroupBarrier();\n";
+    const char* to44 =
+        "    storageBarrier();\n    Scr[sb + (tr * 4u + 0u) * 16u + tc] = acc0;\n    Scr[sb + (tr * 4u + 1u) * 16u + tc] = acc1;\n    Scr[sb + (tr * 4u + 2u) * 16u + tc] = acc2;\n    Scr[sb + (tr * 4u + 3u) * 16u + tc] = acc3;\n    storageBarrier();\n";
+    size_t p = t.find(blk84);
+    if (p != std::string::npos) t.replace(p, std::strlen(blk84), to84);
+    else {
+      p = t.find(blk44);
+      if (p == std::string::npos) { AnchorAlarm("DirectToGlobalScratchWgsl", "结果交换块未命中(8x4/4x4 都不是)"); return src; }
+      t.replace(p, std::strlen(blk44), to44);
+    }
   }
   if (t.find("S[") != std::string::npos) { AnchorAlarm("DirectToGlobalScratchWgsl", "残留 S[ 引用"); return src; }
   return t;
@@ -3444,15 +3470,25 @@ bool EnsureMainPipelines(Ctx& c) {
     if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT") != nullptr) {
       // [DIRECT 2026-09-05] 见 kWgslBlocked84Direct 注释。纯净形态,不叠任何探针变换。
       std::string dsrc = kWgslBlocked84Direct;
-      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr) dsrc = DirectTo44Wgsl(dsrc);
+      const bool dbg = getenv("OFFICIAL_AETHER_MATCH_DAWN_WGSL_DUMP") != nullptr;
+      if (dbg) std::fprintf(stderr, "[direct-chain] base len=%zu\n", dsrc.size());
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr) {
+        dsrc = DirectTo44Wgsl(dsrc);
+        if (dbg) std::fprintf(stderr, "[direct-chain] after 44 len=%zu\n", dsrc.size());
+      }
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_G") != nullptr) {
-        dsrc = DirectToGlobalScratchWgsl(dsrc);
-        c.direct_g = true;
+        const std::string g = DirectToGlobalScratchWgsl(dsrc);
+        c.direct_g = (g != dsrc);  // 变换未命中就不绑 Scr,避免"核没变、绑定多了"的管线失败
+        if (dbg) std::fprintf(stderr, "[direct-chain] G in=%zu out=%zu applied=%d\n", dsrc.size(), g.size(), (int)c.direct_g);
+        dsrc = g;
       }
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TEX") != nullptr) {
-        dsrc = DirectToTexWgsl(dsrc);
-        c.direct_tex = true;
+        const std::string x = DirectToTexWgsl(dsrc);
+        c.direct_tex = (x != dsrc);
+        if (dbg) std::fprintf(stderr, "[direct-chain] TEX in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)c.direct_tex);
+        dsrc = x;
       }
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_WGSL_DUMP") != nullptr) std::fprintf(stderr, "===WGSL_BEGIN===\n%s\n===WGSL_END===\n", dsrc.c_str());
       wgpu::ShaderModule m = CompileWgsl(c, dsrc.c_str(), "blocked direct");
       if (!m) return false;
       wgpu::ShaderModule mx = CompileWgsl(c, kWgslXpose, "xpose");
