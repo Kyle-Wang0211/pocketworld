@@ -171,6 +171,7 @@ namespace {
 
 constexpr int kD = 128;
 constexpr uint32_t kMmaRows = 128;   // WGR of the subgroup-matrix kernel
+constexpr uint32_t kBlockedRows = 64;  // WGR of the universal (no-subgroup) kernel
 constexpr uint32_t kTiledRows = 64;  // WG of the tiled fallback kernel
 constexpr int32_t kOutSentinel = INT32_MIN;
 constexpr uint64_t kSlot = 256;      // uniform / storage offset alignment
@@ -583,6 +584,387 @@ fn main(@builtin(workgroup_id) wg : vec3<u32>,
   if (lcg == 0u && gRow < U.numA) {
     RowP[gRow] = ColPart(rowBest, rowSecond, rowBestI);
     OutAB[gRow] = gatef(rowBest, rowSecond, rowBestI);
+  }
+}
+
+@compute @workgroup_size(64)
+fn merge(@builtin(global_invocation_id) gid : vec3<u32>) {
+  let c = gid.x;
+  if (c >= U.numB) { return; }
+  var best = 0.0;
+  var second = 0.0;
+  var bi = -1;
+  for (var w = 0u; w < U.numWg; w = w + 1u) {
+    let p = ColP[w * U.numB + c];
+    if (p.best > best) {
+      second = max(best, p.second);
+      best = p.best;
+      bi = p.idx;
+    } else {
+      second = max(second, p.best);
+    }
+  }
+  OutBA[c] = gatef(best, second, bi);
+}
+)WGSL";
+
+// ── [UNIVERSAL 2026-09-05] 通用核:所有系统所有机型同一套,下限即上限 ──────
+// 用户红线:不按硬件分叉。所以这个核**不用** subgroup_matrix(A13 / Mali / Adreno 没有)、
+// **不用任何 subgroup 操作**(宽度 4~128 各家不同)、**不用 f16**(Vulkan 侧非普遍)、
+// 只吃 WebGPU 的默认合同:256 线程 / 16 KiB 线程组内存 / 核心 WGSL。
+//
+// 为什么它有机会快过原生 MMA 核:metal-benchmarks 实测 simdgroup_matrix 在 Apple GPU 上
+// **不比 FMA 峰值快**(只是降寄存器压力的调度便利);原生核 8192² 24ms = A16 FMA 峰值的 40%。
+// 而现役 tiled 核用 dot4U8Packed(Apple 上 polyfill 成 1/4 速率的整数乘)且零寄存器分块,
+// 所以慢 8.5x。这里换成 **f32 FMA + 4x4 寄存器分块 + 线程组 vec4 分块**:
+//   u8 在 f32 里精确、逐积 ≤65025、K=128 总和 ≤8.3M < 2^24 ⇒ 与 MMA 路径**逐字节相同**。
+//
+// 形态:每工作组 64 行(WGR)× 全部列;每 tile 64 列(BT);K 分 4 段 × 32(KC)。
+//   16 KiB 单一缓冲 S 分相复用:GEMM 相 [0,512)=A 段 [k][row/4]、[512,1024)=B 段 [k][col/4],
+//   都按 k 为行、vec4 为列存 ⇒ 内层每 k 只要 2 次 vec4 载入换 16 次 FMA(0.125 载入/FMA),
+//   16 个连续 lane 读 16 个连续 vec4,零 bank 冲突。扫描相 [0,1024)=acc [row][col/4]。
+// top-2 语义逐字复刻 MMA 核:列升序 + 严格 > ⇒ 最小列号胜;行升序 + 严格 > ⇒ 最小行号胜;
+//   ColP 仍是 rb-major、merge 核原文照抄 ⇒ 跨工作组归并 tie-break 不变。
+// 支持 COLCHUNK(colBase/colSpan + RowP),host 侧走与 mma 完全相同的路径。
+constexpr char kWgslBlockedPlain[] = R"WGSL(
+const INV_SQ_NORM : f32 = 0.000003814697265625; // 1/262144
+const WGR : u32 = 64u;
+const BT : u32 = 64u;
+const KC : u32 = 32u;
+
+struct Params {
+  numA : u32,
+  numB : u32,
+  maxRatio : f32,
+  maxDistance : f32,
+  numWg : u32,
+  rowBase : u32,
+  colBase : u32,
+  colSpan : u32,
+};
+
+struct ColPart {
+  best : f32,
+  second : f32,
+  idx : i32,
+};
+
+@group(0) @binding(0) var<storage, read> A : array<u32>;
+@group(0) @binding(1) var<storage, read> B : array<u32>;
+@group(0) @binding(2) var<storage, read_write> OutAB : array<i32>;
+@group(0) @binding(3) var<uniform> U : Params;
+@group(0) @binding(4) var<storage, read_write> ColP : array<ColPart>;
+@group(0) @binding(5) var<storage, read_write> OutBA : array<i32>;
+@group(0) @binding(6) var<storage, read_write> RowP : array<ColPart>;
+
+fn gatef(best : f32, second : f32, bestIndex : i32) -> i32 {
+  if (bestIndex < 0) { return -1; }
+  let bd = acos(min(best * INV_SQ_NORM, 1.0));
+  let sd = acos(min(second * INV_SQ_NORM, 1.0));
+  if (bd <= U.maxDistance && bd < U.maxRatio * sd) { return bestIndex; }
+  return -1;
+}
+
+var<workgroup> S : array<vec4<f32>, 1024>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(workgroup_id) wg : vec3<u32>,
+        @builtin(local_invocation_index) lid : u32) {
+  let rb = U.rowBase + wg.x;
+  let row0 = rb * WGR;
+  let tr = lid / 16u;
+  let tc = lid % 16u;
+
+  let myRow = row0 + lid;
+  var rowBest = 0.0;
+  var rowSecond = 0.0;
+  var rowBestI = -1;
+  if (U.colBase != 0u && lid < WGR && myRow < U.numA) {
+    let rp = RowP[myRow];
+    rowBest = rp.best;
+    rowSecond = rp.second;
+    rowBestI = rp.idx;
+  }
+
+  var col0 = U.colBase;
+  let colEnd = min(U.colBase + U.colSpan, U.numB);
+  loop {
+    if (col0 >= colEnd) { break; }
+
+    var acc0 = vec4<f32>(0.0);
+    var acc1 = vec4<f32>(0.0);
+    var acc2 = vec4<f32>(0.0);
+    var acc3 = vec4<f32>(0.0);
+
+    for (var kc = 0u; kc < 4u; kc = kc + 1u) {
+      workgroupBarrier();
+      // 暂存:线程 0..127 负责 A、128..255 负责 B;每线程取同一 w 下连续 4 行的
+      // 4 个 u32,写出 4 个**完整** vec4(k = w*4+j,j=0..3)。不对分量做运行时索引写。
+      {
+        let side = lid / 128u;
+        let t = lid % 128u;
+        let w = t / 16u;
+        let q = t % 16u;
+        let base = q * 4u;
+        var x0 = 0u; var x1 = 0u; var x2 = 0u; var x3 = 0u;
+        if (side == 0u) {
+          let g = row0 + base;
+          x0 = select(0u, A[(g + 0u) * 32u + kc * 8u + w], g + 0u < U.numA);
+          x1 = select(0u, A[(g + 1u) * 32u + kc * 8u + w], g + 1u < U.numA);
+          x2 = select(0u, A[(g + 2u) * 32u + kc * 8u + w], g + 2u < U.numA);
+          x3 = select(0u, A[(g + 3u) * 32u + kc * 8u + w], g + 3u < U.numA);
+        } else {
+          let g = col0 + base;
+          x0 = select(0u, B[(g + 0u) * 32u + kc * 8u + w], g + 0u < U.numB);
+          x1 = select(0u, B[(g + 1u) * 32u + kc * 8u + w], g + 1u < U.numB);
+          x2 = select(0u, B[(g + 2u) * 32u + kc * 8u + w], g + 2u < U.numB);
+          x3 = select(0u, B[(g + 3u) * 32u + kc * 8u + w], g + 3u < U.numB);
+        }
+        let o = side * 512u + (w * 4u) * 16u + q;
+        S[o + 0u * 16u] = vec4<f32>(f32(x0 & 255u), f32(x1 & 255u), f32(x2 & 255u), f32(x3 & 255u));
+        S[o + 1u * 16u] = vec4<f32>(f32((x0 >> 8u) & 255u), f32((x1 >> 8u) & 255u), f32((x2 >> 8u) & 255u), f32((x3 >> 8u) & 255u));
+        S[o + 2u * 16u] = vec4<f32>(f32((x0 >> 16u) & 255u), f32((x1 >> 16u) & 255u), f32((x2 >> 16u) & 255u), f32((x3 >> 16u) & 255u));
+        S[o + 3u * 16u] = vec4<f32>(f32(x0 >> 24u), f32(x1 >> 24u), f32(x2 >> 24u), f32(x3 >> 24u));
+      }
+      workgroupBarrier();
+      for (var k = 0u; k < KC; k = k + 1u) {
+        let a4 = S[k * 16u + tr];
+        let b4 = S[512u + k * 16u + tc];
+        acc0 = acc0 + a4.x * b4;
+        acc1 = acc1 + a4.y * b4;
+        acc2 = acc2 + a4.z * b4;
+        acc3 = acc3 + a4.w * b4;
+      }
+    }
+    workgroupBarrier();
+    S[(tr * 4u + 0u) * 16u + tc] = acc0;
+    S[(tr * 4u + 1u) * 16u + tc] = acc1;
+    S[(tr * 4u + 2u) * 16u + tc] = acc2;
+    S[(tr * 4u + 3u) * 16u + tc] = acc3;
+    workgroupBarrier();
+
+    if (lid < WGR) {
+      for (var v = 0u; v < 16u; v = v + 1u) {
+        let d = S[lid * 16u + v];
+        let c0 = i32(col0 + v * 4u);
+        if (d.x > rowBest) { rowSecond = rowBest; rowBest = d.x; rowBestI = c0; }
+        else if (d.x > rowSecond) { rowSecond = d.x; }
+        if (d.y > rowBest) { rowSecond = rowBest; rowBest = d.y; rowBestI = c0 + 1; }
+        else if (d.y > rowSecond) { rowSecond = d.y; }
+        if (d.z > rowBest) { rowSecond = rowBest; rowBest = d.z; rowBestI = c0 + 2; }
+        else if (d.z > rowSecond) { rowSecond = d.z; }
+        if (d.w > rowBest) { rowSecond = rowBest; rowBest = d.w; rowBestI = c0 + 3; }
+        else if (d.w > rowSecond) { rowSecond = d.w; }
+      }
+    } else if (lid < 2u * WGR) {
+      let c = lid - WGR;
+      let q = c / 4u;
+      let m = c % 4u;
+      var cb = 0.0;
+      var cs = 0.0;
+      var ci = -1;
+      for (var r = 0u; r < WGR; r = r + 1u) {
+        let d = S[r * 16u + q][m];
+        if (d > cb) { cs = cb; cb = d; ci = i32(row0 + r); }
+        else if (d > cs) { cs = d; }
+      }
+      let gc = col0 + c;
+      if (gc < U.numB) { ColP[rb * U.numB + gc] = ColPart(cb, cs, ci); }
+    }
+    col0 = col0 + BT;
+  }
+
+  if (lid < WGR && myRow < U.numA) {
+    RowP[myRow] = ColPart(rowBest, rowSecond, rowBestI);
+    OutAB[myRow] = gatef(rowBest, rowSecond, rowBestI);
+  }
+}
+
+@compute @workgroup_size(64)
+fn merge(@builtin(global_invocation_id) gid : vec3<u32>) {
+  let c = gid.x;
+  if (c >= U.numB) { return; }
+  var best = 0.0;
+  var second = 0.0;
+  var bi = -1;
+  for (var w = 0u; w < U.numWg; w = w + 1u) {
+    let p = ColP[w * U.numB + c];
+    if (p.best > best) {
+      second = max(best, p.second);
+      best = p.best;
+      bi = p.idx;
+    } else {
+      second = max(second, p.best);
+    }
+  }
+  OutBA[c] = gatef(best, second, bi);
+}
+)WGSL";
+
+// [UNIVERSAL-84 2026-09-05] 8x4 / 128 线程变体:每 k 3 次 vec4 载入换 32 次 FMA
+// (载入/FMA 从 0.125 降到 0.094),且扫描时 128 线程无人闲置。其余与基核逐字相同。
+constexpr char kWgslBlocked84[] = R"WGSL(
+const INV_SQ_NORM : f32 = 0.000003814697265625; // 1/262144
+const WGR : u32 = 64u;
+const BT : u32 = 64u;
+const KC : u32 = 32u;
+
+struct Params {
+  numA : u32,
+  numB : u32,
+  maxRatio : f32,
+  maxDistance : f32,
+  numWg : u32,
+  rowBase : u32,
+  colBase : u32,
+  colSpan : u32,
+};
+
+struct ColPart {
+  best : f32,
+  second : f32,
+  idx : i32,
+};
+
+@group(0) @binding(0) var<storage, read> A : array<u32>;
+@group(0) @binding(1) var<storage, read> B : array<u32>;
+@group(0) @binding(2) var<storage, read_write> OutAB : array<i32>;
+@group(0) @binding(3) var<uniform> U : Params;
+@group(0) @binding(4) var<storage, read_write> ColP : array<ColPart>;
+@group(0) @binding(5) var<storage, read_write> OutBA : array<i32>;
+@group(0) @binding(6) var<storage, read_write> RowP : array<ColPart>;
+
+fn gatef(best : f32, second : f32, bestIndex : i32) -> i32 {
+  if (bestIndex < 0) { return -1; }
+  let bd = acos(min(best * INV_SQ_NORM, 1.0));
+  let sd = acos(min(second * INV_SQ_NORM, 1.0));
+  if (bd <= U.maxDistance && bd < U.maxRatio * sd) { return bestIndex; }
+  return -1;
+}
+
+var<workgroup> S : array<vec4<f32>, 1024>;
+
+@compute @workgroup_size(128)
+fn main(@builtin(workgroup_id) wg : vec3<u32>,
+        @builtin(local_invocation_index) lid : u32) {
+  let rb = U.rowBase + wg.x;
+  let row0 = rb * WGR;
+  let tr = lid / 16u;
+  let tc = lid % 16u;
+
+  let myRow = row0 + lid;
+  var rowBest = 0.0;
+  var rowSecond = 0.0;
+  var rowBestI = -1;
+  if (U.colBase != 0u && lid < WGR && myRow < U.numA) {
+    let rp = RowP[myRow];
+    rowBest = rp.best;
+    rowSecond = rp.second;
+    rowBestI = rp.idx;
+  }
+
+  var col0 = U.colBase;
+  let colEnd = min(U.colBase + U.colSpan, U.numB);
+  loop {
+    if (col0 >= colEnd) { break; }
+
+    var acc0 = vec4<f32>(0.0);
+    var acc1 = vec4<f32>(0.0);
+    var acc2 = vec4<f32>(0.0);
+    var acc3 = vec4<f32>(0.0);
+    var acc4 = vec4<f32>(0.0);
+    var acc5 = vec4<f32>(0.0);
+    var acc6 = vec4<f32>(0.0);
+    var acc7 = vec4<f32>(0.0);
+
+    for (var kc = 0u; kc < 4u; kc = kc + 1u) {
+      workgroupBarrier();
+      // 暂存:线程 0..127 负责 A、128..255 负责 B;每线程取同一 w 下连续 4 行的
+      // 4 个 u32,写出 4 个**完整** vec4(k = w*4+j,j=0..3)。不对分量做运行时索引写。
+      for (var side = 0u; side < 2u; side = side + 1u) {
+        let w = lid / 16u;
+        let q = lid % 16u;
+        let base = q * 4u;
+        var x0 = 0u; var x1 = 0u; var x2 = 0u; var x3 = 0u;
+        if (side == 0u) {
+          let g = row0 + base;
+          x0 = select(0u, A[(g + 0u) * 32u + kc * 8u + w], g + 0u < U.numA);
+          x1 = select(0u, A[(g + 1u) * 32u + kc * 8u + w], g + 1u < U.numA);
+          x2 = select(0u, A[(g + 2u) * 32u + kc * 8u + w], g + 2u < U.numA);
+          x3 = select(0u, A[(g + 3u) * 32u + kc * 8u + w], g + 3u < U.numA);
+        } else {
+          let g = col0 + base;
+          x0 = select(0u, B[(g + 0u) * 32u + kc * 8u + w], g + 0u < U.numB);
+          x1 = select(0u, B[(g + 1u) * 32u + kc * 8u + w], g + 1u < U.numB);
+          x2 = select(0u, B[(g + 2u) * 32u + kc * 8u + w], g + 2u < U.numB);
+          x3 = select(0u, B[(g + 3u) * 32u + kc * 8u + w], g + 3u < U.numB);
+        }
+        let o = side * 512u + (w * 4u) * 16u + q;
+        S[o + 0u * 16u] = vec4<f32>(f32(x0 & 255u), f32(x1 & 255u), f32(x2 & 255u), f32(x3 & 255u));
+        S[o + 1u * 16u] = vec4<f32>(f32((x0 >> 8u) & 255u), f32((x1 >> 8u) & 255u), f32((x2 >> 8u) & 255u), f32((x3 >> 8u) & 255u));
+        S[o + 2u * 16u] = vec4<f32>(f32((x0 >> 16u) & 255u), f32((x1 >> 16u) & 255u), f32((x2 >> 16u) & 255u), f32((x3 >> 16u) & 255u));
+        S[o + 3u * 16u] = vec4<f32>(f32(x0 >> 24u), f32(x1 >> 24u), f32(x2 >> 24u), f32(x3 >> 24u));
+      }
+      workgroupBarrier();
+      for (var k = 0u; k < KC; k = k + 1u) {
+        let al = S[k * 16u + tr * 2u];
+        let ah = S[k * 16u + tr * 2u + 1u];
+        let b4 = S[512u + k * 16u + tc];
+        acc0 = acc0 + al.x * b4;
+        acc1 = acc1 + al.y * b4;
+        acc2 = acc2 + al.z * b4;
+        acc3 = acc3 + al.w * b4;
+        acc4 = acc4 + ah.x * b4;
+        acc5 = acc5 + ah.y * b4;
+        acc6 = acc6 + ah.z * b4;
+        acc7 = acc7 + ah.w * b4;
+      }
+    }
+    workgroupBarrier();
+    S[(tr * 8u + 0u) * 16u + tc] = acc0;
+    S[(tr * 8u + 1u) * 16u + tc] = acc1;
+    S[(tr * 8u + 2u) * 16u + tc] = acc2;
+    S[(tr * 8u + 3u) * 16u + tc] = acc3;
+    S[(tr * 8u + 4u) * 16u + tc] = acc4;
+    S[(tr * 8u + 5u) * 16u + tc] = acc5;
+    S[(tr * 8u + 6u) * 16u + tc] = acc6;
+    S[(tr * 8u + 7u) * 16u + tc] = acc7;
+    workgroupBarrier();
+
+    if (lid < WGR) {
+      for (var v = 0u; v < 16u; v = v + 1u) {
+        let d = S[lid * 16u + v];
+        let c0 = i32(col0 + v * 4u);
+        if (d.x > rowBest) { rowSecond = rowBest; rowBest = d.x; rowBestI = c0; }
+        else if (d.x > rowSecond) { rowSecond = d.x; }
+        if (d.y > rowBest) { rowSecond = rowBest; rowBest = d.y; rowBestI = c0 + 1; }
+        else if (d.y > rowSecond) { rowSecond = d.y; }
+        if (d.z > rowBest) { rowSecond = rowBest; rowBest = d.z; rowBestI = c0 + 2; }
+        else if (d.z > rowSecond) { rowSecond = d.z; }
+        if (d.w > rowBest) { rowSecond = rowBest; rowBest = d.w; rowBestI = c0 + 3; }
+        else if (d.w > rowSecond) { rowSecond = d.w; }
+      }
+    } else if (lid < 2u * WGR) {
+      let c = lid - WGR;
+      let q = c / 4u;
+      let m = c % 4u;
+      var cb = 0.0;
+      var cs = 0.0;
+      var ci = -1;
+      for (var r = 0u; r < WGR; r = r + 1u) {
+        let d = S[r * 16u + q][m];
+        if (d > cb) { cs = cb; cb = d; ci = i32(row0 + r); }
+        else if (d > cs) { cs = d; }
+      }
+      let gc = col0 + c;
+      if (gc < U.numB) { ColP[rb * U.numB + gc] = ColPart(cb, cs, ci); }
+    }
+    col0 = col0 + BT;
+  }
+
+  if (lid < WGR && myRow < U.numA) {
+    RowP[myRow] = ColPart(rowBest, rowSecond, rowBestI);
+    OutAB[myRow] = gatef(rowBest, rowSecond, rowBestI);
   }
 }
 
@@ -1081,7 +1463,19 @@ constexpr uint64_t kRowBaseOffset = 20;  // byte offset of rowBase in both
 
 // ══════════════════════ Dawn context (process-wide) ══════════════════════
 
-enum class Backend { kNone, kMma, kTiled };
+enum class Backend { kNone, kMma, kTiled, kBlocked };
+// [UNIVERSAL 2026-09-05] 主路径(mma / blocked)每工作组的行数;两者共用同一条 host 路径。
+inline uint32_t MainRows(Backend b) {
+  return b == Backend::kBlocked ? kBlockedRows : kMmaRows;
+}
+// [COLCHUNK-ALIGN 2026-09-05] 列分块的 span 必须是**该核 tile 宽度**的整数倍,
+// 否则 tile 跨过 chunk 边界,同一列被两个 dispatch 各扫一次:第二次
+// `d > rowSecond` 为真 ⇒ second 被抬到等于 best ⇒ ratio 判负 ⇒ 匹配丢失。
+// EMA 按时序选 span,所以表现为**非确定性**(设备上一轮对一轮错)。
+// mma 核 BT=32,通用核 BT=64。
+inline uint32_t MainTileCols(Backend b) {
+  return b == Backend::kBlocked ? 64u : 32u;
+}
 
 // Device-loss / error flags written from Dawn callbacks (possibly other
 // threads), read under the call lock.
@@ -1269,7 +1663,13 @@ std::unique_ptr<Ctx> CreateCtx() {
   std::vector<wgpu::FeatureName> feats;
   wgpu::Limits req{};
   wgpu::DeviceDescriptor dd{};
-  if (want_mma && mma_ok) {
+  // [UNIVERSAL 2026-09-05] 通用核只吃默认合同,不要任何特性/限制。
+  const bool want_blocked = force && std::strcmp(force, "blocked") == 0;
+  if (want_blocked) {
+    c->backend = Backend::kBlocked;
+    c->packed = true;
+    c->mixed = false;
+  } else if (want_mma && mma_ok) {
     c->backend = Backend::kMma;
     feats.push_back(wgpu::FeatureName::Subgroups);
     feats.push_back(wgpu::FeatureName::ChromiumExperimentalSubgroupMatrix);
@@ -1396,8 +1796,9 @@ std::unique_ptr<Ctx> CreateCtx() {
                 "backend=%s adapter=\"%s\" subgroups=%d sgmatrix=%d "
                 "f32_8x8x8=%d f16_f32=%d mixed=%d subgroup=[%u,%u] packed_dot=%d timestamp=%d "
                 "limits[storage=%u invocations=%u sizeX=%u]%s",
-                c->backend == Backend::kMma ? "mma(fusedr128-db,V0)"
-                                            : "tiled(dot4U8Packed,V1/V2)",
+                c->backend == Backend::kMma     ? "mma(fusedr128-db,V0)"
+                : c->backend == Backend::kBlocked ? "blocked(fma4x4,V3)"
+                                                  : "tiled(dot4U8Packed,V1/V2)",
                 c->adapter_name.c_str(), (int)c->feat_subgroups,
                 (int)c->feat_sgmatrix, (int)c->sgcfg_f32_8x8x8,
                 (int)c->sgcfg_f16_f32, (int)c->mixed, c->subgroup_min,
@@ -1420,8 +1821,9 @@ std::unique_ptr<Ctx> CreateCtx() {
                    "\"f16_f32\":%d,\"mixed\":%d,\"subgroup_min\":%u,"
                    "\"subgroup_max\":%u,\"packed_dot\":%d,\"storage\":%u,"
                    "\"invocations\":%u,\"sizeX\":%u}\n",
-                   c->backend == Backend::kMma ? "mma(fusedr128-db,V0)"
-                                               : "tiled(dot4U8Packed,V1/V2)",
+                   c->backend == Backend::kMma     ? "mma(fusedr128-db,V0)"
+                   : c->backend == Backend::kBlocked ? "blocked(fma4x4,V3)"
+                                                     : "tiled(dot4U8Packed,V1/V2)",
                    c->adapter_name.c_str(), (int)c->feat_subgroups,
                    (int)c->feat_sgmatrix, (int)c->sgcfg_f32_8x8x8,
                    (int)c->sgcfg_f16_f32, (int)c->mixed, c->subgroup_min,
@@ -1785,6 +2187,102 @@ std::string NoAProWgsl(const std::string& src) {
   return t;
 }
 
+// ── [UNIVERSAL 2026-09-05] 通用核的三个变换:两把尺子 + 一把刀 ─────────────
+// 尺子(输出作废,只为定价):BLK_NOSCAN 截断两个扫描;BLK_NOSTAGE 砍掉整段暂存
+// (保留一次对 A/B 的引用,免得 binding 被自动布局裁掉)。
+// 刀(逐字节无损):BLK_UNROLL 把 KC=32 的 k 循环手工展开 —— 那篇 WebGPU 优化记录里
+// 3x 的来源就是它("让编译器不必初始化/递增循环变量,并放出指令级并行")。
+std::string BlkNoScanWgsl(const std::string& src) {
+  std::string t = src;
+  int hit = 0;
+  auto rep = [&](const std::string& from, const std::string& to) {
+    const size_t p = t.find(from);
+    if (p == std::string::npos) { AnchorAlarm("BlkNoScanWgsl", from.c_str()); return; }
+    t.replace(p, from.size(), to); ++hit;
+  };
+  rep("      for (var v = 0u; v < 16u; v = v + 1u) {",
+      "      for (var v = 0u; v < 1u; v = v + 1u) {");
+  rep("      for (var r = 0u; r < WGR; r = r + 1u) {",
+      "      for (var r = 0u; r < 1u; r = r + 1u) {");
+  return hit == 2 ? t : src;
+}
+
+std::string BlkNoStageWgsl(const std::string& src) {
+  std::string t = src;
+  const std::string head = "      {\n        let side = lid / 128u;\n";
+  const std::string tail = "        S[o + 3u * 16u] = vec4<f32>(f32(x0 >> 24u), f32(x1 >> 24u), f32(x2 >> 24u), f32(x3 >> 24u));\n      }\n";
+  const size_t p = t.find(head);
+  const size_t q = (p == std::string::npos) ? std::string::npos : t.find(tail, p);
+  if (p == std::string::npos || q == std::string::npos) {
+    AnchorAlarm("BlkNoStageWgsl", "暂存块首尾未命中");
+    return src;
+  }
+  t.replace(p, q + tail.size() - p,
+            "      if (lid == 0u) { S[0] = vec4<f32>(f32(A[row0 * 32u] & 255u), f32(B[col0 * 32u] & 255u), 0.0, 0.0); }\n");
+  return t;
+}
+
+// 刀(逐字节无损):BLK_PIPE 把 k+1 的两次 vec4 载入提前到本步 FMA 之前发出。
+// 依据:内层占 83%、每 k 2 次线程组载入换 16 次 FMA,而 AGX 的线程组载入没有 scoreboard。
+std::string BlkPipeWgsl(const std::string& src) {
+  std::string t = src;
+  const std::string from =
+      "      for (var k = 0u; k < KC; k = k + 1u) {\n"
+      "        let a4 = S[k * 16u + tr];\n"
+      "        let b4 = S[512u + k * 16u + tc];\n";
+  const size_t p = t.find(from);
+  if (p == std::string::npos) { AnchorAlarm("BlkPipeWgsl", "k 循环头未命中"); return src; }
+  const std::string to =
+      "      var a4 = S[tr];\n"
+      "      var b4 = S[512u + tc];\n"
+      "      for (var k = 0u; k < KC; k = k + 1u) {\n"
+      "        let kn = min(k + 1u, KC - 1u);\n"
+      "        let an = S[kn * 16u + tr];\n"
+      "        let bn = S[512u + kn * 16u + tc];\n";
+  t.replace(p, from.size(), to);
+  const std::string tail =
+      "        acc3 = acc3 + a4.w * b4;\n"
+      "      }\n";
+  const size_t q = t.find(tail, p);
+  if (q == std::string::npos) { AnchorAlarm("BlkPipeWgsl", "k 循环尾未命中"); return src; }
+  t.replace(q, tail.size(),
+            "        acc3 = acc3 + a4.w * b4;\n"
+            "        a4 = an; b4 = bn;\n"
+            "      }\n");
+  return t;
+}
+
+std::string BlkUnrollWgsl(const std::string& src) {
+  std::string t = src;
+  const std::string from =
+      "      for (var k = 0u; k < KC; k = k + 1u) {\n"
+      "        let a4 = S[k * 16u + tr];\n"
+      "        let b4 = S[512u + k * 16u + tc];\n"
+      "        acc0 = acc0 + a4.x * b4;\n"
+      "        acc1 = acc1 + a4.y * b4;\n"
+      "        acc2 = acc2 + a4.z * b4;\n"
+      "        acc3 = acc3 + a4.w * b4;\n"
+      "      }\n";
+  const size_t p = t.find(from);
+  if (p == std::string::npos) { AnchorAlarm("BlkUnrollWgsl", "k 循环未命中"); return src; }
+  std::string to;
+  for (int k = 0; k < 32; ++k) {
+    char buf[512];
+    std::snprintf(buf, sizeof(buf),
+        "      {\n"
+        "        let a4 = S[%du + tr];\n"
+        "        let b4 = S[%du + tc];\n"
+        "        acc0 = acc0 + a4.x * b4;\n"
+        "        acc1 = acc1 + a4.y * b4;\n"
+        "        acc2 = acc2 + a4.z * b4;\n"
+        "        acc3 = acc3 + a4.w * b4;\n"
+        "      }\n", k * 16, 512 + k * 16);
+    to += buf;
+  }
+  t.replace(p, from.size(), to);
+  return t;
+}
+
 // [PREFETCH-SHADOW 2026-09-04] 软件流水:把下一块 B 的 device load **提前**发出、
 // 解包写回**推后**,让扫描+归并跑在 load 的延迟阴影里。
 // 机制(用无污染源的探针量出来的,这是本战役最关键的一次测量):
@@ -1977,7 +2475,7 @@ wgpu::ComputePipeline MakePipeline(Ctx& c, wgpu::ShaderModule m,
 }
 
 bool EnsureMainPipelines(Ctx& c) {
-  if (c.p_main && (c.backend != Backend::kMma || c.p_merge)) return true;
+  if (c.p_main && (c.backend == Backend::kTiled || c.p_merge)) return true;
   if (c.tried_main) return false;
   c.tried_main = true;
   if (c.backend == Backend::kMma) {
@@ -2028,6 +2526,19 @@ bool EnsureMainPipelines(Ctx& c) {
     wgpu::ShaderModule m = CompileWgsl(
         c, c.mixed ? mixed_src.c_str() : kWgslMmaFused,
         c.mixed ? "mma fused mixed" : "mma fused");
+    if (!m) return false;
+    c.p_main = MakePipeline(c, m, "main");
+    c.p_merge = MakePipeline(c, m, "merge");
+    return c.p_main && c.p_merge;
+  }
+  if (c.backend == Backend::kBlocked) {
+    std::string blk = getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_84") != nullptr
+                          ? std::string(kWgslBlocked84) : std::string(kWgslBlockedPlain);
+    if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_PIPE") != nullptr) blk = BlkPipeWgsl(blk);
+    if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_UNROLL") != nullptr) blk = BlkUnrollWgsl(blk);
+    if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_NOSCAN") != nullptr) blk = BlkNoScanWgsl(blk);
+    if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_NOSTAGE") != nullptr) blk = BlkNoStageWgsl(blk);
+    wgpu::ShaderModule m = CompileWgsl(c, blk.c_str(), "blocked plain");
     if (!m) return false;
     c.p_main = MakePipeline(c, m, "main");
     c.p_merge = MakePipeline(c, m, "merge");
@@ -2095,6 +2606,7 @@ constexpr wgpu::BufferUsage kUsageStaging =
 
 // Bytes of one descriptor table in the active kernel's storage format.
 uint64_t DescBytes(const Ctx& c, uint32_t n, uint32_t npad) {
+  if (c.backend == Backend::kBlocked) return (uint64_t)npad * kD;  // packed u8 + 零补位
   if (c.backend != Backend::kMma) return (uint64_t)n * kD;
   if (c.packed) return (uint64_t)npad * kD;  // u8;npad*128 恒为 4 的倍数
   return (uint64_t)npad * kD * (c.mixed ? sizeof(uint16_t) : sizeof(float));
@@ -2105,7 +2617,7 @@ uint64_t DescBytes(const Ctx& c, uint32_t n, uint32_t npad) {
 // TU, exact; tiled: raw u8 rows, the kernel guards rows itself).
 void UploadDesc(Ctx& c, wgpu::Buffer buf, uint64_t off, const uint8_t* d,
                 uint32_t n, uint32_t npad, std::vector<float>& scratch) {
-  if (c.backend == Backend::kMma && c.packed) {
+  if ((c.backend == Backend::kMma && c.packed) || c.backend == Backend::kBlocked) {
     // 原样传 u8,零 CPU 转换;补位行必须显式清零(A 的补位行会被 aFrag 直接读走)。
     c.queue.WriteBuffer(buf, off, d, (uint64_t)n * kD);
     if (npad > n) {
@@ -2260,6 +2772,7 @@ struct Stage {
   // guided 核用的是另一套 GParams(布局不同、没有这两个字段),
   // 若按 stages.size()==1 来判会把列参数写进它的 uniform ⇒ 污染。显式标记。
   bool col_chunkable = false;
+  uint32_t tile_cols = 32;  // 列分块 span 的对齐单位 = 核的 BT
   uint32_t total_groups = 0;
   uint32_t nDb = 0;  // database columns (cost-model scale)
   wgpu::Buffer uni;
@@ -2365,7 +2878,7 @@ int RunStages(Ctx& c, std::vector<Stage>& stages,
         const double ideal = target / (perCol > 1e-9 ? perCol : 1e-9);
         span = ideal < 32.0 ? 32u : (uint32_t)std::min(ideal, 1e9);
       }
-      span = ((span + 31u) / 32u) * 32u;  // 必须是 BT 的整数倍
+      span = ((span + s.tile_cols - 1u) / s.tile_cols) * s.tile_cols;  // 必须是核的 BT 的整数倍
       if (span > s.nDb - c0) span = s.nDb - c0;
       c.queue.WriteBuffer(s.uni, s.uniOff + kColBaseOffset,
                           reinterpret_cast<const uint8_t*>(&c0), 4);
@@ -2600,7 +3113,7 @@ int MatchPairsImpl(const uint8_t* dA, int nA, const uint8_t* dB, int nB,
   const double tStart = NowMs();
 
   const uint32_t nAu = (uint32_t)nA, nBu = (uint32_t)nB;
-  const uint32_t nApad = (uint32_t)RoundUp(nAu, 128);
+  const uint32_t nApad = (uint32_t)RoundUp(nAu, MainRows(c.backend));
   const uint32_t nBpad = (uint32_t)RoundUp(nBu, 128);
   const uint64_t aBytes = DescBytes(c, nAu, nApad);
   const uint64_t bBytes = DescBytes(c, nBu, nBpad);
@@ -2634,8 +3147,8 @@ int MatchPairsImpl(const uint8_t* dA, int nA, const uint8_t* dB, int nB,
   std::function<void(wgpu::CommandEncoder&)> finish;
   wgpu::BindGroup bgMain, bgMerge, bgBA;
   const double tUpload = NowMs();
-  if (c.backend == Backend::kMma) {
-    const uint32_t numWg = nApad / kMmaRows;
+  if (c.backend == Backend::kMma || c.backend == Backend::kBlocked) {
+    const uint32_t numWg = nApad / MainRows(c.backend);
     const uint64_t colBytes = (uint64_t)nBu * numWg * 12;
     wgpu::Buffer colp = PoolGet(c, c.colp, colBytes, kUsageColp);
     if (!colp) return 6;
@@ -2655,6 +3168,7 @@ int MatchPairsImpl(const uint8_t* dA, int nA, const uint8_t* dB, int nB,
     if (!bgMain || !bgMerge) return 6;
     Stage s;
     s.col_chunkable = true;  // 只有这一处的核认识 colBase/colSpan/RowP
+    s.tile_cols = MainTileCols(c.backend);
     s.total_groups = numWg;
     s.nDb = nBu;
     s.uni = uni;
@@ -2888,10 +3402,10 @@ int ProbeBatchImpl(const uint8_t* dA, int nA, const uint8_t* const* dBs,
   if (!cp) return 2;
   Ctx& c = *cp;
   if (!EnsureMainPipelines(c)) return 2;
-  const bool mma = c.backend == Backend::kMma;
+  const bool mma = c.backend == Backend::kMma || c.backend == Backend::kBlocked;
   const uint32_t nAu = (uint32_t)nA;
-  const uint32_t nApad = (uint32_t)RoundUp(nAu, 128);
-  const uint32_t numWg = nApad / kMmaRows;
+  const uint32_t nApad = (uint32_t)RoundUp(nAu, MainRows(c.backend));
+  const uint32_t numWg = nApad / MainRows(c.backend);
   const uint64_t aBytes = DescBytes(c, nAu, nApad);
   // [COLCHUNK 2026-09-05] 行向 top-2 的持久缓冲(binding 6),probe_batch 也要有。
   const uint64_t rowPbBytes = (uint64_t)nApad * 12;
