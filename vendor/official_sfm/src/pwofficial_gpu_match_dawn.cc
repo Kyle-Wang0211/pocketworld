@@ -1682,6 +1682,17 @@ constexpr uint64_t kRowBaseOffset = 20;  // byte offset of rowBase in both
 // ══════════════════════ Dawn context (process-wide) ══════════════════════
 
 enum class Backend { kNone, kMma, kTiled, kBlocked };
+
+// [FINGERPRINT-LABEL 2026-09-05] 指纹里的核名必须与实际选核形态一致:Mate 10 首跑报出
+// "blocked(fma4x4,V3)",而默认早已是 8x4+PIPEB —— 指纹说了假话。与 EnsureBlockedPipeline 的
+// 选核逻辑读同一组 env,同源不会再漂。
+static const char* BlockedLabel() {
+  if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_88") != nullptr) return "blocked(fma8x8,V3)";
+  if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr) return "blocked(fma4x4,V3)";
+  if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_PIPE") != nullptr) return "blocked(fma8x4+pipe,V3)";
+  if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_NOPIPEB") != nullptr) return "blocked(fma8x4,V3)";
+  return "blocked(fma8x4+pipeb,V3)";
+}
 // [UNIVERSAL 2026-09-05] 主路径(mma / blocked)每工作组的行数;两者共用同一条 host 路径。
 inline uint32_t MainRows(Backend b) {
   return b == Backend::kBlocked ? kBlockedRows : kMmaRows;
@@ -2050,7 +2061,7 @@ std::unique_ptr<Ctx> CreateCtx() {
                 "f32_8x8x8=%d f16_f32=%d mixed=%d subgroup=[%u,%u] packed_dot=%d timestamp=%d "
                 "limits[storage=%u invocations=%u sizeX=%u]%s",
                 c->backend == Backend::kMma     ? "mma(fusedr128-db,V0)"
-                : c->backend == Backend::kBlocked ? "blocked(fma4x4,V3)"
+                : c->backend == Backend::kBlocked ? BlockedLabel()
                                                   : "tiled(dot4U8Packed,V1/V2)",
                 c->adapter_name.c_str(), (int)c->feat_subgroups,
                 (int)c->feat_sgmatrix, (int)c->sgcfg_f32_8x8x8,
@@ -2075,7 +2086,7 @@ std::unique_ptr<Ctx> CreateCtx() {
                    "\"subgroup_max\":%u,\"packed_dot\":%d,\"storage\":%u,"
                    "\"invocations\":%u,\"sizeX\":%u}\n",
                    c->backend == Backend::kMma     ? "mma(fusedr128-db,V0)"
-                   : c->backend == Backend::kBlocked ? "blocked(fma4x4,V3)"
+                   : c->backend == Backend::kBlocked ? BlockedLabel()
                                                      : "tiled(dot4U8Packed,V1/V2)",
                    c->adapter_name.c_str(), (int)c->feat_subgroups,
                    (int)c->feat_sgmatrix, (int)c->sgcfg_f32_8x8x8,
