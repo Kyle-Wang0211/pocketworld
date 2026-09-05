@@ -2622,6 +2622,100 @@ std::string BlkGpfWgsl(const std::string& src) {
   return t;
 }
 
+// 刀(逐字节无损):BLK_STG 暂存全局读改合并访问。现役映射 q=t%16、w=t/16 ⇒ 同一时刻
+// 16 个线程读 16 个不同行组、同一个 word ⇒ 16 条 cache line。改成 w=t%8、q=t/8 ⇒
+// 8 个连续线程读同 4 行的连续 8 个 word(每行 32B 连续)。数据与目的地不变。
+std::string BlkStgWgsl(const std::string& src) {
+  std::string t = src;
+  const std::string from = "        let w = lid / 16u;\n        let q = lid % 16u;\n";
+  const size_t p = t.find(from);
+  if (p == std::string::npos) { AnchorAlarm("BlkStgWgsl", "8x4 暂存映射未命中"); return src; }
+  t.replace(p, from.size(), "        let w = lid % 8u;\n        let q = lid / 8u;\n");
+  return t;
+}
+
+// 刀(逐字节无损,第 3 刀复刻):BLK_RSCAN 寄存器内 partial 扫描。
+// 每线程先在寄存器里把自己 8x4 块归约成 8 个行向 partial(各在 4 列上 top-2,列升序严格 >)
+// 与 4 个列向 partial(各在 8 行上 top-2,行升序严格 >);行 partial 存 S[row*16+tc](恰好
+// 1024 个 vec4 = 16 KiB),64 线程各折叠 16 个(tc 升序 = 列升序);再存 4 个列 partial 到
+// S[col*8+tr],64 线程各折叠 8 个(tr 升序 = 行升序)。
+// 折叠规则逐字复刻 MMA 核蝶形:高下标集合只在严格 > 时替换 best,second = max(...)。
+// 层次 top-2 归并与逐元素扫描等价(v2 对 v1 过闸的同一论证)⇒ 逐字节不变。
+std::string BlkRScanWgsl(const std::string& src) {
+  std::string t = src;
+  const std::string head = "    workgroupBarrier();\n    S[(tr * 8u + 0u) * 16u + tc] = acc0;\n";
+  const size_t p = t.find(head);
+  if (p == std::string::npos) { AnchorAlarm("BlkRScanWgsl", "acc 存储头未命中"); return src; }
+  const std::string tail = "      if (gc < U.numB) { ColP[rb * U.numB + gc] = ColPart(cb, cs, ci); }\n    }\n";
+  const size_t q = t.find(tail, p);
+  if (q == std::string::npos) { AnchorAlarm("BlkRScanWgsl", "列扫描尾未命中"); return src; }
+  std::string body;
+  body +=
+    "    workgroupBarrier();\n"
+    "    // ── 行向 partial(本线程 8 行 × 4 列)──\n";
+  for (int i = 0; i < 8; ++i) {
+    char b[700];
+    std::snprintf(b, sizeof(b),
+      "    {\n"
+      "      let d = acc%d;\n"
+      "      var pb = 0.0; var ps = 0.0; var pi = -1;\n"
+      "      let cb0 = i32(col0 + tc * 4u);\n"
+      "      if (d.x > pb) { ps = pb; pb = d.x; pi = cb0; } else if (d.x > ps) { ps = d.x; }\n"
+      "      if (d.y > pb) { ps = pb; pb = d.y; pi = cb0 + 1; } else if (d.y > ps) { ps = d.y; }\n"
+      "      if (d.z > pb) { ps = pb; pb = d.z; pi = cb0 + 2; } else if (d.z > ps) { ps = d.z; }\n"
+      "      if (d.w > pb) { ps = pb; pb = d.w; pi = cb0 + 3; } else if (d.w > ps) { ps = d.w; }\n"
+      "      S[(tr * 8u + %du) * 16u + tc] = vec4<f32>(pb, ps, bitcast<f32>(pi), 0.0);\n"
+      "    }\n", i, i);
+    body += b;
+  }
+  body +=
+    "    workgroupBarrier();\n"
+    "    if (lid < WGR) {\n"
+    "      for (var v = 0u; v < 16u; v = v + 1u) {\n"
+    "        let d = S[lid * 16u + v];\n"
+    "        let ob = d.x; let os = d.y; let oi = bitcast<i32>(d.z);\n"
+    "        if (ob > rowBest) { rowSecond = max(os, rowBest); rowBest = ob; rowBestI = oi; }\n"
+    "        else { rowSecond = max(rowSecond, ob); }\n"
+    "      }\n"
+    "    }\n"
+    "    workgroupBarrier();\n"
+    "    // ── 列向 partial(本线程 4 列 × 8 行)──\n";
+  for (int j = 0; j < 4; ++j) {
+    const char* comp = "xyzw";
+    std::string b =
+      "    {\n"
+      "      var pb = 0.0; var ps = 0.0; var pi = -1;\n"
+      "      let rb0 = i32(row0 + tr * 8u);\n";
+    for (int i = 0; i < 8; ++i) {
+      char l[200];
+      std::snprintf(l, sizeof(l),
+        "      if (acc%d.%c > pb) { ps = pb; pb = acc%d.%c; pi = rb0 + %d; } else if (acc%d.%c > ps) { ps = acc%d.%c; }\n",
+        i, comp[j], i, comp[j], i, i, comp[j], i, comp[j]);
+      b += l;
+    }
+    char st[160];
+    std::snprintf(st, sizeof(st), "      S[(tc * 4u + %du) * 8u + tr] = vec4<f32>(pb, ps, bitcast<f32>(pi), 0.0);\n    }\n", j);
+    b += st;
+    body += b;
+  }
+  body +=
+    "    workgroupBarrier();\n"
+    "    if (lid >= WGR && lid < 2u * WGR) {\n"
+    "      let c = lid - WGR;\n"
+    "      var cb = 0.0; var cs = 0.0; var ci = -1;\n"
+    "      for (var r8 = 0u; r8 < 8u; r8 = r8 + 1u) {\n"
+    "        let d = S[c * 8u + r8];\n"
+    "        let ob = d.x; let os = d.y; let oi = bitcast<i32>(d.z);\n"
+    "        if (ob > cb) { cs = max(os, cb); cb = ob; ci = oi; }\n"
+    "        else { cs = max(cs, ob); }\n"
+    "      }\n"
+    "      let gc = col0 + c;\n"
+    "      if (gc < U.numB) { ColP[rb * U.numB + gc] = ColPart(cb, cs, ci); }\n"
+    "    }\n";
+  t.replace(p, q + tail.size() - p, body);
+  return t;
+}
+
 std::string BlkUnrollWgsl(const std::string& src) {
   std::string t = src;
   const std::string from =
@@ -2907,6 +3001,8 @@ bool EnsureMainPipelines(Ctx& c) {
                       : getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_84") != nullptr
                           ? std::string(kWgslBlocked84) : std::string(kWgslBlockedPlain);
     if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_GPF") != nullptr) blk = BlkGpfWgsl(blk);
+    if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_STG") != nullptr) blk = BlkStgWgsl(blk);
+    if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_RSCAN") != nullptr) blk = BlkRScanWgsl(blk);
     if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_PIPE") != nullptr) blk = BlkPipeWgsl(blk);
     if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_FMA") != nullptr) blk = BlkFmaWgsl(blk);
     if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_NOLOAD") != nullptr) blk = BlkNoLoadWgsl(blk);
