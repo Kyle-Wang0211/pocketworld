@@ -1904,8 +1904,9 @@ static const char* BlockedLabel() {
     const bool h16 = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_F16") != nullptr;
     const bool tm = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TMAP") != nullptr;
     const char* un = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL");
+    const char* uh = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLLH");
     const bool pa = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA") != nullptr;
-    lbl = std::string("blocked(") + (k44 ? "fma4x4" : "fma8x4") + "+direct" + (g ? "g" : "") + (tx ? "+tex" : "") + (txa ? "+texa" : "") + (nopb ? "+nopb" : "") + (sm ? "+scanmem" : "") + (fm ? "+fma" : "") + (w128 ? "+w128" : "") + (psc ? "+pscan" : "") + (pk ? "+packed" : "") + (h16 ? "+f16" : "") + (tm ? "+tmap" : "") + (un ? std::string("+unroll") + un : std::string("")) + (pa ? "+pipea" : "") + ",V4)";
+    lbl = std::string("blocked(") + (k44 ? "fma4x4" : "fma8x4") + "+direct" + (g ? "g" : "") + (tx ? "+tex" : "") + (txa ? "+texa" : "") + (nopb ? "+nopb" : "") + (sm ? "+scanmem" : "") + (fm ? "+fma" : "") + (w128 ? "+w128" : "") + (psc ? "+pscan" : "") + (pk ? "+packed" : "") + (h16 ? "+f16" : "") + (tm ? "+tmap" : "") + (un ? std::string("+unroll") + un : std::string("")) + (uh ? std::string("+unrollh") + uh : std::string("")) + (pa ? "+pipea" : "") + ",V4)";
     return lbl.c_str();
   }
   if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_88") != nullptr) return "blocked(fma8x8,V3)";
@@ -3414,6 +3415,65 @@ std::string DirectTMapWgsl(const std::string& src) {
   return t;
 }
 
+// [DIRECT-UNROLLH 2026-09-05] 载入提前的 n 倍展开:体首先发出 n 个 k 的 al/b4 载入,再按 k 升序做各自的 16 次 FMA。
+// k+1 的载入在 k 的 FMA 期间在飞(Mali 编译器不重排,需要源码级软件流水),但不跨迭代持有寄存器(A16 对跨迭代
+// 预取赔 17%)。累加顺序按 k 升序不变 ⇒ 逐字节同。只认 4x4+NOPB 文本(载入行 `let b4 = …` / `let al = …`)。
+std::string DirectUnrollHWgsl(const std::string& src, int n) {
+  std::string t = src;
+  const std::string head = "    for (var k = 0u; k < KD; k = k + 1u) {\n";
+  const size_t p = t.find(head);
+  if (p == std::string::npos) { AnchorAlarm("DirectUnrollHWgsl", "循环头未命中"); return src; }
+  const std::string tail = "      acc3 = acc3 + al.w * b4;\n    }\n";
+  const size_t q = t.find(tail, p);
+  if (q == std::string::npos) { AnchorAlarm("DirectUnrollHWgsl", "循环尾未命中(只认 4x4 未 fma 化)"); return src; }
+  const std::string body = t.substr(p + head.size(), q + tail.size() - 6 - (p + head.size()));
+  if (body.find("bn") != std::string::npos || body.find("aln") != std::string::npos || body.find("let ah") != std::string::npos) {
+    AnchorAlarm("DirectUnrollHWgsl", "只认 4x4+NOPB(无预取)形态"); return src;
+  }
+  std::vector<std::string> loads, comps;
+  size_t i = 0;
+  while (i < body.size()) {
+    size_t e = body.find('\n', i); if (e == std::string::npos) e = body.size();
+    const std::string line = body.substr(i, e - i + 1);
+    if (line.rfind("      let al = ", 0) == 0 || line.rfind("      let b4 = ", 0) == 0) loads.push_back(line); else comps.push_back(line);
+    i = e + 1;
+  }
+  if (loads.size() != 2) { AnchorAlarm("DirectUnrollHWgsl", "载入行数不是 2"); return src; }
+  auto subst_k = [](const std::string& b, const std::string& kk) {
+    std::string r;
+    for (size_t j = 0; j < b.size(); ++j) {
+      if (b[j] == 'k' && (j == 0 || !(std::isalnum((unsigned char)b[j-1]) || b[j-1] == '_')) &&
+          (j + 1 >= b.size() || !(std::isalnum((unsigned char)b[j+1]) || b[j+1] == '_'))) r += kk; else r += b[j];
+    }
+    return r;
+  };
+  auto rename = [](std::string l, const char* from, const std::string& to) {
+    size_t pos = 0; while ((pos = l.find(from, pos)) != std::string::npos) { l.replace(pos, std::strlen(from), to); pos += to.size(); } return l;
+  };
+  std::string out;
+  char hdr[96]; std::snprintf(hdr, sizeof(hdr), "    for (var k0 = 0u; k0 < KD; k0 = k0 + %du) {\n", n);
+  out += hdr;
+  for (int u = 0; u < n; ++u) {
+    char kk[32]; std::snprintf(kk, sizeof(kk), "(k0 + %du)", u);
+    for (const std::string& l : loads) {
+      std::string x = subst_k(l, kk);
+      x = rename(x, "let al = ", "let al_" + std::to_string(u) + " = ");
+      x = rename(x, "let b4 = ", "let b4_" + std::to_string(u) + " = ");
+      out += x;
+    }
+  }
+  for (int u = 0; u < n; ++u) {
+    for (const std::string& l : comps) {
+      std::string x = rename(l, "al.", "al_" + std::to_string(u) + ".");
+      x = rename(x, "b4;", "b4_" + std::to_string(u) + ";");
+      out += x;
+    }
+  }
+  out += "    }\n";
+  t.replace(p, q + tail.size() - p, out);
+  return t;
+}
+
 std::string BlkNoLoadWgsl(const std::string& src) {
   std::string t = src;
   // [ANCHOR 2026-09-05] 默认形态是 8x4+PIPEB(b4 预取成 bn),锚点必须先认这一形态;
@@ -4038,6 +4098,11 @@ bool EnsureMainPipelines(Ctx& c) {
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_FMA") != nullptr) {
         const std::string x = DirectFmaWgsl(dsrc);
         if (dbg) std::fprintf(stderr, "[direct-chain] FMA in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
+        dsrc = x;
+      }
+      if (const char* uh = getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLLH")) {
+        const std::string x = DirectUnrollHWgsl(dsrc, std::max(2, atoi(uh)));
+        if (dbg) std::fprintf(stderr, "[direct-chain] UNROLLH%s in=%zu out=%zu applied=%d\n", uh, dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
       }
       if (const char* un = getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL")) {
