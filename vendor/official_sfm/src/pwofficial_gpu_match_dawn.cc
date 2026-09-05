@@ -1902,9 +1902,10 @@ static const char* BlockedLabel() {
     const bool psc = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN") != nullptr;
     const bool pk = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PACKED") != nullptr;
     const bool h16 = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_F16") != nullptr;
+    const bool tm = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TMAP") != nullptr;
     const char* un = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL");
     const bool pa = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA") != nullptr;
-    lbl = std::string("blocked(") + (k44 ? "fma4x4" : "fma8x4") + "+direct" + (g ? "g" : "") + (tx ? "+tex" : "") + (txa ? "+texa" : "") + (nopb ? "+nopb" : "") + (sm ? "+scanmem" : "") + (fm ? "+fma" : "") + (w128 ? "+w128" : "") + (psc ? "+pscan" : "") + (pk ? "+packed" : "") + (h16 ? "+f16" : "") + (un ? std::string("+unroll") + un : std::string("")) + (pa ? "+pipea" : "") + ",V4)";
+    lbl = std::string("blocked(") + (k44 ? "fma4x4" : "fma8x4") + "+direct" + (g ? "g" : "") + (tx ? "+tex" : "") + (txa ? "+texa" : "") + (nopb ? "+nopb" : "") + (sm ? "+scanmem" : "") + (fm ? "+fma" : "") + (w128 ? "+w128" : "") + (psc ? "+pscan" : "") + (pk ? "+packed" : "") + (h16 ? "+f16" : "") + (tm ? "+tmap" : "") + (un ? std::string("+unroll") + un : std::string("")) + (pa ? "+pipea" : "") + ",V4)";
     return lbl.c_str();
   }
   if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_88") != nullptr) return "blocked(fma8x8,V3)";
@@ -2980,15 +2981,23 @@ std::string DirectNoPipeBWgsl(const std::string& src) {
 std::string DirectPipeAWgsl(const std::string& src) {
   std::string t = src;
   struct Sub { const char* from; const char* to; };
-  const Sub subs[] = {
+  // 形态 A:带 B 预取(var b4 = Bt[cq]; for { let al = ...; let bn = ...; ... b4 = bn; })
+  const Sub pipeb[] = {
     {"    var b4 = Bt[cq];\n    for (var k = 0u; k < KD; k = k + 1u) {\n      let al = At[k * rowPad4 + rq];\n",
      "    var b4 = Bt[cq];\n    var al = At[rq];\n    for (var k = 0u; k < KD; k = k + 1u) {\n      let aln = At[min(k + 1u, KD - 1u) * rowPad4 + rq];\n"},
     {"      b4 = bn;\n", "      b4 = bn;\n      al = aln;\n"},
   };
-  for (const Sub& sb : subs) {
-    const size_t p = t.find(sb.from);
-    if (p == std::string::npos) { AnchorAlarm("DirectPipeAWgsl", sb.from); return src; }
-    t.replace(p, std::strlen(sb.from), sb.to);
+  // 形态 B:NOPB 之后(for { let b4 = Bt[k*colPad4+cq]; let al = ...; ... })—— 09-05 深夜发现此前在 NOPB 上静默 no-op
+  const Sub nopb[] = {
+    {"    for (var k = 0u; k < KD; k = k + 1u) {\n      let b4 = Bt[k * colPad4 + cq];\n      let al = At[k * rowPad4 + rq];\n",
+     "    var al = At[rq];\n    for (var k = 0u; k < KD; k = k + 1u) {\n      let b4 = Bt[k * colPad4 + cq];\n      let aln = At[min(k + 1u, KD - 1u) * rowPad4 + rq];\n"},
+    {"      acc3 = acc3 + al.w * b4;\n    }\n", "      acc3 = acc3 + al.w * b4;\n      al = aln;\n    }\n"},
+  };
+  const Sub* subs = (t.find(pipeb[0].from) != std::string::npos) ? pipeb : nopb;
+  for (int i = 0; i < 2; ++i) {
+    const size_t p = t.find(subs[i].from);
+    if (p == std::string::npos) { AnchorAlarm("DirectPipeAWgsl", subs[i].from); return src; }
+    t.replace(p, std::strlen(subs[i].from), subs[i].to);
   }
   if (t.find("let ah = At[") != std::string::npos) { AnchorAlarm("DirectPipeAWgsl", "只认 4x4 形态(发现 ah)"); return src; }
   return t;
@@ -3387,6 +3396,21 @@ std::string DirectF16Wgsl(const std::string& src) {
     }
   }
   if (hits < 2) { AnchorAlarm("DirectF16Wgsl", "载入未命中"); return src; }
+  return t;
+}
+
+// [DIRECT-TMAP 2026-09-05] 线程映射转置:tr = lid % NR, tc = lid / NR(原 tr = lid/16, tc = lid%16)。
+// 相邻线程改为共享同一 B(b4 在 quad 内广播)、A 各不相同(al 连续)。动机:Mali 必须预取"每线程地址不同"
+// 的那个操作数(现为 B:PIPEB 618 / NOPB 822 / PIPEA 842),而 A16 能接受预取 A(PIPEA 68.6–71.4)却不接受
+// 预取 B(80.7)。转置后 Mali 要预取的变成 A ⇒ PIPEA 有望两端都不赔。扫描段只用 lid,不受影响;逐字节同。
+std::string DirectTMapWgsl(const std::string& src) {
+  std::string t = src;
+  const bool w128 = t.find("@compute @workgroup_size(128)\nfn main(") != std::string::npos;
+  const char* nr = w128 ? "8u" : "16u";  // 行组数:W128 是 8(4 行×8=32),256 线程是 16(×4=64)
+  const std::string from = "  let tr = lid / 16u;\n  let tc = lid % 16u;\n";
+  const size_t p = t.find(from);
+  if (p == std::string::npos) { AnchorAlarm("DirectTMapWgsl", "tr/tc 映射未命中"); return src; }
+  t.replace(p, from.size(), std::string("  let tr = lid % ") + nr + ";\n  let tc = lid / " + nr + ";\n");
   return t;
 }
 
@@ -3956,6 +3980,11 @@ bool EnsureMainPipelines(Ctx& c) {
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN") != nullptr) {
         const std::string x = DirectPScanWgsl(dsrc);
         if (dbg) std::fprintf(stderr, "[direct-chain] PSCAN in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
+        dsrc = x;
+      }
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TMAP") != nullptr) {
+        const std::string x = DirectTMapWgsl(dsrc);
+        if (dbg) std::fprintf(stderr, "[direct-chain] TMAP in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
       }
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANMEM") != nullptr) {
