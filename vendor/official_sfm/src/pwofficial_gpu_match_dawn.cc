@@ -1894,7 +1894,9 @@ static const char* BlockedLabel() {
     const bool tx = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TEX") != nullptr;
     const bool k44 = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr;
     static std::string lbl;
-    lbl = std::string("blocked(") + (k44 ? "fma4x4" : "fma8x4") + "+direct" + (g ? "g" : "") + (tx ? "+tex" : "") + ",V4)";
+    const bool nopb = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOPB") != nullptr;
+    const bool pa = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA") != nullptr;
+    lbl = std::string("blocked(") + (k44 ? "fma4x4" : "fma8x4") + "+direct" + (g ? "g" : "") + (tx ? "+tex" : "") + (nopb ? "+nopb" : "") + (pa ? "+pipea" : "") + ",V4)";
     return lbl.c_str();
   }
   if (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_88") != nullptr) return "blocked(fma8x8,V3)";
@@ -2878,18 +2880,33 @@ std::string DirectToGlobalScratchWgsl(const std::string& src) {
 std::string DirectToTexWgsl(const std::string& src) {
   std::string t = src;
   struct Sub { const char* from; const char* to; };
-  const Sub subs[] = {
-    {"@group(0) @binding(8) var<storage, read> Bt : array<vec4<f32>>;\n",
-     "@group(0) @binding(8) var BtT : texture_2d<f32>;\n"},
+  const Sub head = {"@group(0) @binding(8) var<storage, read> Bt : array<vec4<f32>>;\n",
+                    "@group(0) @binding(8) var BtT : texture_2d<f32>;\n"};
+  {
+    const size_t p = t.find(head.from);
+    if (p == std::string::npos) { AnchorAlarm("DirectToTexWgsl", head.from); return src; }
+    t.replace(p, std::strlen(head.from), head.to);
+  }
+  // 两种循环形态:带 B 预取(b4/bn)或 NOPB(每 k 直接取 b4)
+  const Sub pipeb[] = {
     {"    var b4 = Bt[cq];\n", "    var b4 = textureLoad(BtT, vec2<i32>(i32(cq), 0), 0);\n"},
     {"      let bn = Bt[min(k + 1u, KD - 1u) * colPad4 + cq];\n",
      "      let bn = textureLoad(BtT, vec2<i32>(i32(cq), i32(min(k + 1u, KD - 1u))), 0);\n"},
   };
-  for (const Sub& sb : subs) {
-    const size_t p = t.find(sb.from);
-    if (p == std::string::npos) { AnchorAlarm("DirectToTexWgsl", sb.from); return src; }
-    t.replace(p, std::strlen(sb.from), sb.to);
+  const Sub nopb = {"      let b4 = Bt[k * colPad4 + cq];\n",
+                    "      let b4 = textureLoad(BtT, vec2<i32>(i32(cq), i32(k)), 0);\n"};
+  if (t.find(pipeb[0].from) != std::string::npos) {
+    for (const Sub& sb : pipeb) {
+      const size_t p = t.find(sb.from);
+      if (p == std::string::npos) { AnchorAlarm("DirectToTexWgsl", sb.from); return src; }
+      t.replace(p, std::strlen(sb.from), sb.to);
+    }
+  } else {
+    const size_t p = t.find(nopb.from);
+    if (p == std::string::npos) { AnchorAlarm("DirectToTexWgsl", "循环形态未命中(pipeb/nopb 都不是)"); return src; }
+    t.replace(p, std::strlen(nopb.from), nopb.to);
   }
+  if (t.find("Bt[") != std::string::npos) { AnchorAlarm("DirectToTexWgsl", "残留 Bt[ 引用"); return src; }
   return t;
 }
 
@@ -2917,6 +2934,43 @@ void EncodeBtToTexture(wgpu::CommandEncoder& enc, wgpu::Buffer bt, wgpu::Texture
   dst.texture = tex;
   wgpu::Extent3D ext{colPad4, 128u, 1u};
   enc.CopyBufferToTexture(&src, &dst, &ext);
+}
+
+// [DIRECT-NOPB 2026-09-05] 去掉 B 的一拍预取(b4/bn 只留 b4):8x4 形态少 4 个寄存器(48→44),
+// 赌 Bifrost 64 寄存器线;两种形态(8x4 / 4x4)都认。
+std::string DirectNoPipeBWgsl(const std::string& src) {
+  std::string t = src;
+  struct Sub { const char* from; const char* to; };
+  const Sub subs[] = {
+    {"    var b4 = Bt[cq];\n    for (var k = 0u; k < KD; k = k + 1u) {\n",
+     "    for (var k = 0u; k < KD; k = k + 1u) {\n      let b4 = Bt[k * colPad4 + cq];\n"},
+    {"      let bn = Bt[min(k + 1u, KD - 1u) * colPad4 + cq];\n", ""},
+    {"      b4 = bn;\n", ""},
+  };
+  for (const Sub& sb : subs) {
+    const size_t p = t.find(sb.from);
+    if (p == std::string::npos) { AnchorAlarm("DirectNoPipeBWgsl", sb.from); return src; }
+    t.replace(p, std::strlen(sb.from), sb.to);
+  }
+  return t;
+}
+// [DIRECT-PIPEA 2026-09-05] 4x4 形态上把 A 也提前一拍(al/aln),与 B 的预取对称:16 acc + 16 载入 = 32 寄存器。
+// 只认 4x4 文本(8x4 会到 56+,越线)。
+std::string DirectPipeAWgsl(const std::string& src) {
+  std::string t = src;
+  struct Sub { const char* from; const char* to; };
+  const Sub subs[] = {
+    {"    var b4 = Bt[cq];\n    for (var k = 0u; k < KD; k = k + 1u) {\n      let al = At[k * rowPad4 + rq];\n",
+     "    var b4 = Bt[cq];\n    var al = At[rq];\n    for (var k = 0u; k < KD; k = k + 1u) {\n      let aln = At[min(k + 1u, KD - 1u) * rowPad4 + rq];\n"},
+    {"      b4 = bn;\n", "      b4 = bn;\n      al = aln;\n"},
+  };
+  for (const Sub& sb : subs) {
+    const size_t p = t.find(sb.from);
+    if (p == std::string::npos) { AnchorAlarm("DirectPipeAWgsl", sb.from); return src; }
+    t.replace(p, std::strlen(sb.from), sb.to);
+  }
+  if (t.find("let ah = At[") != std::string::npos) { AnchorAlarm("DirectPipeAWgsl", "只认 4x4 形态(发现 ah)"); return src; }
+  return t;
 }
 
 std::string BlkNoLoadWgsl(const std::string& src) {
@@ -3475,6 +3529,16 @@ bool EnsureMainPipelines(Ctx& c) {
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_44") != nullptr) {
         dsrc = DirectTo44Wgsl(dsrc);
         if (dbg) std::fprintf(stderr, "[direct-chain] after 44 len=%zu\n", dsrc.size());
+      }
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOPB") != nullptr) {
+        const std::string x = DirectNoPipeBWgsl(dsrc);
+        if (dbg) std::fprintf(stderr, "[direct-chain] NOPB in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
+        dsrc = x;
+      }
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA") != nullptr) {
+        const std::string x = DirectPipeAWgsl(dsrc);
+        if (dbg) std::fprintf(stderr, "[direct-chain] PIPEA in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
+        dsrc = x;
       }
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_G") != nullptr) {
         const std::string g = DirectToGlobalScratchWgsl(dsrc);
