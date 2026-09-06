@@ -3167,6 +3167,29 @@ std::string DirectFmaWgsl(const std::string& src) {
 // 这里是给 Mali 的臂:每 16 次 FMA 配 5–6 条循环/地址指令,展开把这份税摊薄。只认 4x4+NOPB 文本。
 std::string DirectUnrollWgsl(const std::string& src, int n) {
   std::string t = src;
+  // [PTR-UNROLL 2026-09-06] PTR 形态(指针递增地址)的顺序展开:每段 载入→16 FMA→指针 +=,不提前载入、不改顺序 ⇒ 逐字节同。
+  // 09-06 FMA 形状探针:Mali 纯 FMA 循环 4 路展开 −24%(循环/clause 开销占近 1/3),A16 −13% 地板;真刀在两机以 WGSL 文件先量,此处生成文本与手工文件逐字节同。
+  {
+    const std::string ph = "    var ia = rq;\n    var ib = cq;\n    for (var k = 0u; k < KD; k = k + 1u) {\n"
+                           "      let b4 = vec4<f32>(Bt[ib]);\n      let al = vec4<f32>(At[ia]);\n"
+                           "      acc0 = acc0 + al.x * b4;\n      acc1 = acc1 + al.y * b4;\n      acc2 = acc2 + al.z * b4;\n      acc3 = acc3 + al.w * b4;\n"
+                           "      ia = ia + rowPad4;\n      ib = ib + colPad4;\n    }\n";
+    const size_t pp = t.find(ph);
+    if (pp != std::string::npos) {
+      if (n < 2 || 128 % n != 0) { AnchorAlarm("DirectUnrollWgsl", "n 必须整除 128"); return src; }
+      std::string u = "    var ia = rq;\n    var ib = cq;\n    for (var k = 0u; k < KD; k = k + " + std::to_string(n) + "u) {\n";
+      for (int i = 0; i < n; ++i) {
+        const std::string si = std::to_string(i);
+        u += "      let b4_" + si + " = vec4<f32>(Bt[ib]);\n      let al_" + si + " = vec4<f32>(At[ia]);\n";
+        u += "      acc0 = acc0 + al_" + si + ".x * b4_" + si + ";\n      acc1 = acc1 + al_" + si + ".y * b4_" + si + ";\n";
+        u += "      acc2 = acc2 + al_" + si + ".z * b4_" + si + ";\n      acc3 = acc3 + al_" + si + ".w * b4_" + si + ";\n";
+        u += "      ia = ia + rowPad4;\n      ib = ib + colPad4;\n";
+      }
+      u += "    }\n";
+      t.replace(pp, ph.size(), u);
+      return t;
+    }
+  }
   const std::string head = "    for (var k = 0u; k < KD; k = k + 1u) {\n";
   const size_t p = t.find(head);
   if (p == std::string::npos) { AnchorAlarm("DirectUnrollWgsl", "循环头未命中"); return src; }
@@ -4528,14 +4551,14 @@ bool EnsureMainPipelines(Ctx& c) {
         if (dbg) std::fprintf(stderr, "[direct-chain] UNROLLH%s in=%zu out=%zu applied=%d\n", uh, dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
       }
-      if (const char* un = getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL")) {
-        const std::string x = DirectUnrollWgsl(dsrc, std::max(2, atoi(un)));
-        if (dbg) std::fprintf(stderr, "[direct-chain] UNROLL%s in=%zu out=%zu applied=%d\n", un, dsrc.size(), x.size(), (int)(x != dsrc));
-        dsrc = x;
-      }
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PTR") != nullptr) {
         const std::string x = DirectPtrWgsl(dsrc);
         if (dbg) std::fprintf(stderr, "[direct-chain] PTR in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
+        dsrc = x;
+      }
+      if (const char* un = getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL")) {
+        const std::string x = DirectUnrollWgsl(dsrc, std::max(2, atoi(un)));
+        if (dbg) std::fprintf(stderr, "[direct-chain] UNROLL%s in=%zu out=%zu applied=%d\n", un, dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
       }
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOLOAD") != nullptr) {  // 探针
