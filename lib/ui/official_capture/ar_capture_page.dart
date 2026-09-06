@@ -3250,6 +3250,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // 但震动又跑到照片存在之前 —— 那正是用户半个月前抓到的「震了 30+ 次、
     // 相册只有 20 张」。已撤回。
     final input = await capture.highResolutionCompletion;
+    // [2026-09-06 抄对①] 照片真正拍成:把自动拍的几何基准/流量起点对齐到
+    // 实拍瞬间(ARFrame 时间线 captureTimestamp),而不是快门请求时刻。
+    _autoCapture.onCaptureCompleted(
+      captureTimestampSec: input.captureTimestamp,
+    );
     if (mounted &&
         !_failedEvidenceJpegPaths.contains(capture.evidenceJpegPath)) {
       _triggerShutterHaptic();
@@ -3289,6 +3294,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       'OfficialARCapturePage',
       'shutter ticket=${ticket.id} FAILED: $error\n$stackTrace',
     );
+    _autoCapture.onCaptureFailed();
     TelemetryWriter.instance.event('shutter_error', {
       'ticket_id': ticket.id,
       'tap_timestamp_us': ticket.tapTimestampMicros,

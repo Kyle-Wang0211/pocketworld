@@ -157,6 +157,16 @@ class AutoCaptureMotionMetrics {
   /// 立即开火。这样不改任何摄影测量阈值，也不会用固定时间间隔掩盖问题。
   bool get shouldCapture => role != AutoCaptureMotionRole.none;
 
+  /// [2026-09-06 抄对] 视差角退回它在 COLMAP 里的原始角色:稳定三角化底线
+  /// (`min_angle` 1.5°),只回答"这张和上一张实拍之间有没有真实平移";
+  /// 原地旋转由旋转覆盖(12°)、纯前后移动由径向尺度(1.2×)各自作答。
+  /// 它不再决定"什么时候拍"——那是 AliceVision 累计光流(10% 短边)的事。
+  bool get meetsParallaxFloor =>
+      (geometryParallaxDeg.isFinite &&
+          geometryParallaxDeg >= kAutoCaptureStableParallaxFloorDeg) ||
+      rotationCoverageEligible ||
+      radialBridgeEligible;
+
   bool isRoleEligible(AutoCaptureMotionRole candidate) {
     switch (candidate) {
       case AutoCaptureMotionRole.none:

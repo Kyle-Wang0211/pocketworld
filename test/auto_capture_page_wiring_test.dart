@@ -148,6 +148,18 @@ class _WiredHost {
     // 接线口径与活体深度无关:null ⇒ 兜底位移 0.10m(governor 的常数)。
     liveDepthProvider: (_) => null,
   );
+
+  /// 驱动一帧并模拟"照片瞬间拍成"(页面在快门事务完成时回调
+  /// onCaptureCompleted;台架里没有原生事务,等价于立即完成)。
+  AutoCaptureDecision tick(ARPose pose) {
+    final before = admitted;
+    final d = controller.onPose(pose);
+    // 只有真的入了队(拍了)才有"拍成"回调;入队失败的那一枪没有照片。
+    if (d == AutoCaptureDecision.fire && admitted > before) {
+      controller.onCaptureCompleted(captureTimestampSec: pose.timestamp);
+    }
+    return d;
+  }
 }
 
 String _pageSource() =>
@@ -469,17 +481,17 @@ void main() {
       var t = 0.0;
       for (final x in track()) {
         t += 0.1;
-        h.controller.onPose(_pose(t: t, pos: Vector3(x, 0, 0)));
+        h.tick(_pose(t: t, pos: Vector3(x, 0, 0)));
       }
       expect(h.admitted, 0, reason: 'the queue was closed the whole time');
       h.queue.resume();
       // spec §7「入队失败 ⇒ **下 tick 重试**」:失败那一发照样吃掉一次去抖
       // 预算,所以恢复后 0.1s 内的下一帧还轮不到。
-      h.controller.onPose(_pose(t: t + 0.1, pos: Vector3(0.37, 0, 0)));
+      h.tick(_pose(t: t + 0.1, pos: Vector3(0.37, 0, 0)));
       expect(h.admitted, 0, reason: 'the retry waits for the next tick');
       // 一个间隔之后补上,而且是相对**原始**基准判的(0.37 ≥ 0.10)——
       // 基准帧从头到尾没动过,那 32 cm 没有白走。
-      h.controller.onPose(_pose(t: t + 1.1, pos: Vector3(0.37, 0, 0)));
+      h.tick(_pose(t: t + 1.1, pos: Vector3(0.37, 0, 0)));
       expect(h.admitted, 1);
     });
 
@@ -494,13 +506,13 @@ void main() {
       var t = 0.0;
       for (final x in track()) {
         t += 0.1;
-        h.controller.onPose(_pose(t: t, pos: Vector3(x, 0, 0)));
+        h.tick(_pose(t: t, pos: Vector3(x, 0, 0)));
       }
       expect(h.admitted, 0);
       h.queue.resume();
-      h.controller.onPose(_pose(t: t + 0.1, pos: Vector3(0.37, 0, 0)));
+      h.tick(_pose(t: t + 0.1, pos: Vector3(0.37, 0, 0)));
       // 与上一条同样的两拍,证明差别不是"等得不够久"而是基准帧被推走了。
-      h.controller.onPose(_pose(t: t + 1.1, pos: Vector3(0.37, 0, 0)));
+      h.tick(_pose(t: t + 1.1, pos: Vector3(0.37, 0, 0)));
       expect(
         h.admitted,
         0,
@@ -524,7 +536,7 @@ void main() {
       );
       final fireTimes = <double>[];
       void drive(ARPose p) {
-        final d = h.controller.onPose(p);
+        final d = h.tick(p);
         tel.recordDecision(
           d,
           tSec: p.timestamp,
@@ -591,7 +603,7 @@ void main() {
     void drive(_WiredHost h, int poses) {
       h.controller.start(_pose(t: 0));
       for (var i = 1; i <= poses; i++) {
-        h.controller.onPose(_pose(t: i * 0.05, yawDeg: i * 12.0));
+        h.tick(_pose(t: i * 0.05, yawDeg: i * 12.0));
       }
     }
 
@@ -648,7 +660,7 @@ void main() {
       final h = _WiredHost(reportRealEnqueueResult: true, countsInFlight: true);
       expect(h.controller.isRunning, isFalse);
       expect(
-        h.controller.onPose(_pose(t: 1, pos: Vector3(9, 0, 0))),
+        h.tick(_pose(t: 1, pos: Vector3(9, 0, 0))),
         AutoCaptureDecision.skipNotMoved,
       );
       expect(h.admitted, 0);

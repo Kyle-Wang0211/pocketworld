@@ -189,9 +189,17 @@ class _Harness {
     if (decision == AutoCaptureDecision.fire && enqueueSucceeds) {
       firedRoles.add(controller.lastMotionRole);
       firedParallaxDeg.add(controller.lastGeometryParallaxDeg);
+      // 台架默认"照片瞬间拍成":实拍时刻 = 请求时刻。真机的 0.27–0.74 s
+      // 快门事务由下面的 delayed-capture 测试单独覆盖。
+      if (instantCapture) {
+        controller.onCaptureCompleted(captureTimestampSec: pose.timestamp);
+      }
     }
     return decision;
   }
+
+  /// false = 模拟真机快门事务:照片要等页面回调 onCaptureCompleted 才算拍成。
+  bool instantCapture = true;
 }
 
 void main() {
@@ -305,11 +313,12 @@ void main() {
             grayShiftX: 17,
           ),
         ),
-        AutoCaptureDecision.skipRedundant,
+        AutoCaptureDecision.skipNotMoved,
+        reason: '相对刚拍成的那张只累计了 1 px 光流(<12.8),AliceVision 说没动够',
       );
-      expect(h.controller.lastMotionRole, AutoCaptureMotionRole.geometry);
       expect(h.fires, 1);
-      expect(h.controller.geometryBaselinePosition, Vector3.zero());
+      // [2026-09-06] 视差底线按上一张**实拍**量:几何基准每枪都前进。
+      expect(h.controller.geometryBaselinePosition, Vector3(0.16, 0, -0.20));
     },
   );
 
@@ -663,6 +672,8 @@ void main() {
       h.controller.start(_pose(t: 0, grayShiftX: 0));
 
       for (final sample in <(double, int)>[(0.25, 4), (0.50, 8), (0.75, 12)]) {
+        // [2026-09-06] 累计光流未到 10% 短边 = 还没"动够"(AliceVision 是
+        // 决策者,不再是被视差角盖过的冗余闸)。
         expect(
           h.feed(
             _pose(
@@ -671,7 +682,7 @@ void main() {
               grayShiftX: sample.$2,
             ),
           ),
-          AutoCaptureDecision.skipRedundant,
+          AutoCaptureDecision.skipNotMoved,
         );
       }
       expect(h.fires, 0);
@@ -1010,5 +1021,100 @@ void main() {
         ),
       );
     }
+  });
+
+  group('[2026-09-06 抄对①] 基准取实拍瞬间,不取快门请求时刻', () {
+    test('a shutter in flight blocks decisions; completion moves the baseline '
+        'to the actual capture instant and restarts the flow segment', () {
+      final h = _Harness()..instantCapture = false;
+      h.controller.start(_pose(t: 0, signatureByte: 0, grayShiftX: 0));
+      for (final sample in <(double, int)>[(0.25, 4), (0.50, 8), (0.75, 12)]) {
+        h.feed(_pose(t: sample.$1, signatureByte: 0, grayShiftX: sample.$2));
+      }
+      expect(
+        h.feed(
+          _pose(t: 1.0, pos: Vector3(0.22, 0, 0), signatureByte: 40, grayShiftX: 16),
+        ),
+        AutoCaptureDecision.fire,
+      );
+      expect(h.fires, 1);
+      expect(h.controller.awaitingCaptureBaseline, isTrue);
+      // 快门事务进行中(真机 0.27–0.74 s):相机继续大幅运动,光流早已过阈,
+      // 位姿相对请求时刻也早已过阈 —— 但基准未知,一律不判定。
+      var shift = 20;
+      for (var t = 1.1; t < 1.45; t += 0.1) {
+        expect(
+          h.feed(
+            _pose(
+              t: t,
+              pos: Vector3(0.22 + (t - 1.0) * 1.0, 0, 0),
+              signatureByte: 200,
+              grayShiftX: shift,
+            ),
+          ),
+          AutoCaptureDecision.skipAwaitingCapture,
+          reason: 't=$t',
+        );
+        shift += 4;
+      }
+      expect(h.fires, 1);
+      // 照片在 t=1.4 真正拍成:基准 = t=1.4 那一刻的位姿/预览,不是 t=1.0。
+      h.controller.onCaptureCompleted(captureTimestampSec: 1.4);
+      expect(h.controller.awaitingCaptureBaseline, isFalse);
+      expect(h.controller.baselinePosition!.x, closeTo(0.62, 1e-9));
+      expect(h.controller.geometryBaselinePosition!.x, closeTo(0.62, 1e-9));
+      // 流量从实拍帧重新累计:与实拍帧相同的预览 ⇒ 累计 0 ⇒ 没动够。
+      final same = h.feed(
+        _pose(t: 1.5, pos: Vector3(0.62, 0, 0), signatureByte: 200, grayShiftX: shift - 4),
+      );
+      expect(same, AutoCaptureDecision.skipNotMoved);
+      expect(h.controller.lastSegmentMotionPx, 0);
+      expect(h.fires, 1);
+    });
+
+    test('a failed shutter transaction resumes decisions immediately', () {
+      final h = _Harness()..instantCapture = false;
+      h.controller.start(_pose(t: 0, signatureByte: 0, grayShiftX: 0));
+      for (final sample in <(double, int)>[(0.25, 4), (0.50, 8), (0.75, 12)]) {
+        h.feed(_pose(t: sample.$1, signatureByte: 0, grayShiftX: sample.$2));
+      }
+      expect(
+        h.feed(_pose(t: 1.0, pos: Vector3(0.22, 0, 0), signatureByte: 40, grayShiftX: 16)),
+        AutoCaptureDecision.fire,
+      );
+      expect(
+        h.feed(_pose(t: 1.2, pos: Vector3(0.40, 0, 0), signatureByte: 200, grayShiftX: 24)),
+        AutoCaptureDecision.skipAwaitingCapture,
+      );
+      h.controller.onCaptureFailed();
+      expect(h.controller.awaitingCaptureBaseline, isFalse);
+      expect(
+        h.feed(_pose(t: 1.3, pos: Vector3(0.45, 0, 0), signatureByte: 200, grayShiftX: 28)),
+        isNot(AutoCaptureDecision.skipAwaitingCapture),
+      );
+    });
+
+    test('a completion that never arrives times out after 2 s and falls back '
+        'to the request-time baseline', () {
+      final h = _Harness()..instantCapture = false;
+      h.controller.start(_pose(t: 0, signatureByte: 0, grayShiftX: 0));
+      for (final sample in <(double, int)>[(0.25, 4), (0.50, 8), (0.75, 12)]) {
+        h.feed(_pose(t: sample.$1, signatureByte: 0, grayShiftX: sample.$2));
+      }
+      expect(
+        h.feed(_pose(t: 1.0, pos: Vector3(0.22, 0, 0), signatureByte: 40, grayShiftX: 16)),
+        AutoCaptureDecision.fire,
+      );
+      expect(
+        h.feed(_pose(t: 2.5, pos: Vector3(0.22, 0, 0), signatureByte: 40, grayShiftX: 16)),
+        AutoCaptureDecision.skipAwaitingCapture,
+      );
+      expect(
+        h.feed(_pose(t: 3.1, pos: Vector3(0.22, 0, 0), signatureByte: 40, grayShiftX: 16)),
+        AutoCaptureDecision.skipNotMoved,
+        reason: '超时后恢复判定;相对请求时刻基准没有新光流 ⇒ 没动够',
+      );
+      expect(h.controller.awaitingCaptureBaseline, isFalse);
+    });
   });
 }

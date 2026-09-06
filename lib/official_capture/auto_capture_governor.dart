@@ -48,6 +48,11 @@ enum AutoCaptureDecision {
   ///                          quality may suffer."
   /// 两级:lowLight 不设闸(照拍,质量理由只记遥测);tooDark 才停在这里。
   skipTooDark,
+  /// 上一枪已入队但照片还没真正拍成(快门事务 0.27–0.74 s):下一张的几何
+  /// 基准与流量起点都要用**实拍瞬间**,基准未知就不判定。这不是时间地板,
+  /// 是"没有基准就没有决策"。(2026-09-06 未命名(15) 定罪:请求时刻的基准
+  /// 在快扫时过期 ⇒ 背靠背两张同一画面。)
+  skipAwaitingCapture,
 }
 
 /// 正常档只保留防重复触发的 250 ms 去抖，不把秒数冒充摄影测量参数。
@@ -87,6 +92,7 @@ AutoCaptureDecision autoCaptureDecideMotion({
   bool smartSelectionMotionReady = false,
   bool blurry = false,
   bool tooDark = false,
+  bool awaitingCaptureBaseline = false,
 }) {
   if (capturedCount >= kOfficialMaximumCaptureFrames) {
     return AutoCaptureDecision.skipCapped;
@@ -98,13 +104,12 @@ AutoCaptureDecision autoCaptureDecideMotion({
   // Apple 口径里 tooDark 是环境级硬停("Auto-capture will stop"),放在运动
   // 判据之前 —— 遥测里显示真实原因,而不是被 skipNotMoved 盖住。
   if (tooDark) return AutoCaptureDecision.skipTooDark;
-  if (!motion.shouldCapture) return AutoCaptureDecision.skipNotMoved;
-  if (sinceLastTickSec < kAutoCaptureSafetyDebounceSec) {
-    return AutoCaptureDecision.skipPaced;
-  }
-  if (sinceLastTickSec < tickIntervalSec) {
-    return AutoCaptureDecision.skipPaced;
-  }
+  if (awaitingCaptureBaseline) return AutoCaptureDecision.skipAwaitingCapture;
+  // [2026-09-06 抄对] 决策者 = AliceVision KeyframeSelector 智能选帧:
+  // 自上一张**实拍**起累计光流达到 10% 短边才出一帧(纯 2D)。此前它被降成
+  // 最低流量否决闸、开火时机交给 ARKit 视差 12° —— 未命名(15) 实测开火时
+  // 累计流量已是阈值的 2–5 倍,闸等于没在决策。视差角退回 COLMAP 稳定三角化
+  // 底线(1.5°)的角色,只否决"根本没平移也没转"的帧。
   if (trackEvidenceRequired) {
     if (trackEvidence == null) {
       return AutoCaptureDecision.skipNoVisualEvidence;
@@ -113,18 +118,30 @@ AutoCaptureDecision autoCaptureDecideMotion({
       return AutoCaptureDecision.skipNoVisualEvidence;
     }
     if (!smartSelectionMotionReady) {
-      return AutoCaptureDecision.skipRedundant;
+      return AutoCaptureDecision.skipNotMoved;
+    }
+    if (!motion.meetsParallaxFloor) {
+      return AutoCaptureDecision.skipNotMoved;
     }
   } else {
     // Compatibility path for old fixtures/platforms that have not yet attached
-    // the exact gray source. Production iOS attaches it, so block-mean
-    // similarity cannot independently authorize a shutter there.
-    if (visualSimilarity == null) {
+    // the exact gray source: no optical flow exists there, so the geometric
+    // roles keep deciding as before. Production iOS attaches it.
+    if (!motion.shouldCapture) return AutoCaptureDecision.skipNotMoved;
+  }
+  if (sinceLastTickSec < kAutoCaptureSafetyDebounceSec) {
+    return AutoCaptureDecision.skipPaced;
+  }
+  if (sinceLastTickSec < tickIntervalSec) {
+    return AutoCaptureDecision.skipPaced;
+  }
+  // Aether3D 16×16 签名相似度 0.92 硬拒绝:两条路径都保留(上游同一常数)。
+  if (visualSimilarity == null) {
+    if (!trackEvidenceRequired) {
       return AutoCaptureDecision.skipNoVisualEvidence;
     }
-    if (visualSimilarity > FrameQualityConstants.maxFrameSimilarity) {
-      return AutoCaptureDecision.skipRedundant;
-    }
+  } else if (visualSimilarity > FrameQualityConstants.maxFrameSimilarity) {
+    return AutoCaptureDecision.skipRedundant;
   }
 
   // 糊片对 SfM 没有可恢复的特征价值；空间覆盖不能把质量硬门绕开。

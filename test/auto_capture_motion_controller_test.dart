@@ -129,6 +129,8 @@ void main() {
     expect(h.controller.lastMotionRole, AutoCaptureMotionRole.rotationCoverage);
     expect(h.controller.baselinePosition, Vector3.zero());
     expect(h.controller.geometryBaselinePosition, Vector3.zero());
+    // 照片拍成(台架:瞬间);真机由页面在快门事务完成时回调。
+    h.controller.onCaptureCompleted(captureTimestampSec: 1);
 
     expect(
       h.controller.onPose(_pose(t: 2, position: Vector3(0.22, 0, 0))),
@@ -138,7 +140,7 @@ void main() {
     expect(h.controller.geometryBaselinePosition, Vector3(0.22, 0, 0));
   });
 
-  test('radial bridge does not advance the geometry baseline', () {
+  test('[2026-09-06] every actual photo advances both baselines — radial too', () {
     final h = _Harness();
     h.controller.start(_pose(t: 0));
 
@@ -148,7 +150,8 @@ void main() {
     );
     expect(h.controller.lastMotionRole, AutoCaptureMotionRole.radialBridge);
     expect(h.controller.baselinePosition, Vector3(0, 0, -0.2));
-    expect(h.controller.geometryBaselinePosition, Vector3.zero());
+    // 视差底线(COLMAP 1.5°)按上一张实拍量 ⇒ 几何基准跟着每张实拍走。
+    expect(h.controller.geometryBaselinePosition, Vector3(0, 0, -0.2));
   });
 
   test('regular geometry is movement-driven after duplicate debounce', () {
