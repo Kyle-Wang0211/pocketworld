@@ -1893,7 +1893,7 @@ enum class Backend { kNone, kMma, kTiled, kBlocked };
 // 旧形态 8x4 线程组暂存(A16 97.4 / Mate 10 6461)改为显式 OFFICIAL_AETHER_MATCH_DAWN_BLK_LEGACY84=1 才走;
 // 形态 B(预取 B:Mali 615 / A16 1.15×)= OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEB=1。
 // 其它反向旋钮:BLK_84=1(8x4)、BLK_DIRECT_W256=1(256 线程)、BLK_DIRECT_F32=1(f32 存储)。
-struct DirectKnobs { bool direct, k44, w128, nopb, f16, w64, keyscan2, ptr; };
+struct DirectKnobs { bool direct, k44, w128, nopb, f16, w64, keyscan2, ptr, keyscan3; };
 static DirectKnobs ResolveDirectKnobs() {
   DirectKnobs k{};
   const bool legacy = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_LEGACY84") != nullptr;
@@ -1912,7 +1912,10 @@ static DirectKnobs ResolveDirectKnobs() {
   k.keyscan2 = k.w128 && std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOKEYSCAN") == nullptr &&
                std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN") == nullptr &&
                (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN2") != nullptr || !legacy);
-  const bool anyKeyscan = k.keyscan2 || (k.w128 && std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN") != nullptr);
+  k.keyscan3 = k.w128 && std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOKEYSCAN") == nullptr &&
+               std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN3") != nullptr;
+  if (k.keyscan3) k.keyscan2 = false;   // KEYSCAN3 优先于默认的 v2
+  const bool anyKeyscan = k.keyscan2 || k.keyscan3 || (k.w128 && std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN") != nullptr);
   k.w64 = anyKeyscan && std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOW64") == nullptr &&
           (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_W64") != nullptr || !legacy);
   k.ptr = k.nopb && std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOPTR") == nullptr &&
@@ -1931,7 +1934,7 @@ static const char* BlockedLabel() {
   }
   static std::string lbl;
   lbl = std::string("blocked(") + (k.k44 ? "fma4x4" : "fma8x4") + "+direct" + (k.w128 ? (k.w64 ? "+w64" : "+w128") : "") +
-        (k.nopb ? "+nopb" : "+pipeb") + (k.f16 ? "+f16" : "+f32") + (k.keyscan2 ? "+keyscan2" : "") + (k.ptr ? "+ptr" : "");
+        (k.nopb ? "+nopb" : "+pipeb") + (k.f16 ? "+f16" : "+f32") + (k.keyscan2 ? "+keyscan2" : "") + (k.keyscan3 ? "+keyscan3" : "") + (k.ptr ? "+ptr" : "");
   const char* extras[][2] = {
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_G", "+g"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TEX", "+tex"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TEXA", "+texa"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANMEM", "+scanmem"},
@@ -3763,7 +3766,11 @@ std::string DirectPtrWgsl(const std::string& src) {
 // vec=true:[KEYSCAN2] 尾段向量化 —— 4 个 vec4<u32> 转换 + 8 次向量移位/或 得到全部 32 个键;行/列 top-2 各用 7 步树形
 // (a=max(x,y) b=min(x,y) c=max(z,w) d=min(z,w); best=max(a,c); second=max(min(a,c),max(b,d)))一次算 4 行 / 4 列;
 // 零分键不再逐键 select 成 0,而是保留列/行位(≤63/≤31,小于任何正分键 ≥64/≥32),解码时按 (key>>bits)==0 判无候选 ⇒ 语义同。
-std::string DirectKeyScanWgsl(const std::string& src, bool vec = false) {
+// [KEYSCAN3 2026-09-06] noselect=true(且 vec=false):v1 的顺序折叠(峰值活寄存器最低)+ 去掉 32 个逐键 select
+// (零分键保留列/行位段 <64/<32,小于任何正分键;解码按 (key>>bits)==0 判无候选,语义与 v1/v2 同)。
+// 起因:P50 Pocket/Adreno 660 上 v1/v2 都比形态 A 慢 11~17%(v2 向量化尾段峰值 +~48 活寄存器;v1 的 32 个 select 同样赔),
+// v3 在 Adreno 与形态 A 持平(473/488 vs 474–488)、Mali 583(v2 574)、A16 63.8(v2 63.0)⇒ 三端不赔的 KEYSCAN。
+std::string DirectKeyScanWgsl(const std::string& src, bool vec = false, bool noselect = false) {
   std::string t = src;
   if (t.find("const WGR : u32 = 32u;\n") == std::string::npos) { AnchorAlarm("DirectKeyScanWgsl", "只认 WGR=32"); return src; }
   const bool w64 = t.find("const BT : u32 = 32u;\n") != std::string::npos;   // W64:tile 32×32,8 tc;否则 W128:32×64,16 tc
@@ -3822,7 +3829,8 @@ std::string DirectKeyScanWgsl(const std::string& src, bool vec = false) {
     to += "      {\n";
     for (int j = 0; j < 4; ++j) {
       char b[256];
-      std::snprintf(b, sizeof(b), "        let k%d = select((u32(%s.%s) << %uu) | (%uu - (cbase + %du)), 0u, %s.%s == 0.0);\n", j, accs[i], comp[j], CB, CMASK, j, accs[i], comp[j]);
+      if (noselect) std::snprintf(b, sizeof(b), "        let k%d = (u32(%s.%s) << %uu) | (%uu - (cbase + %du));\n", j, accs[i], comp[j], CB, CMASK, j);
+      else std::snprintf(b, sizeof(b), "        let k%d = select((u32(%s.%s) << %uu) | (%uu - (cbase + %du)), 0u, %s.%s == 0.0);\n", j, accs[i], comp[j], CB, CMASK, j, accs[i], comp[j]);
       to += b;
     }
     to += "        var b = k0;\n        var s = 0u;\n"
@@ -3838,7 +3846,8 @@ std::string DirectKeyScanWgsl(const std::string& src, bool vec = false) {
     to += "      {\n";
     for (int i = 0; i < 4; ++i) {
       char b[256];
-      std::snprintf(b, sizeof(b), "        let k%d = select((u32(%s.%s) << 5u) | (31u - (rbase + %du)), 0u, %s.%s == 0.0);\n", i, accs[i], comp[j], i, accs[i], comp[j]);
+      if (noselect) std::snprintf(b, sizeof(b), "        let k%d = (u32(%s.%s) << 5u) | (31u - (rbase + %du));\n", i, accs[i], comp[j], i);
+      else std::snprintf(b, sizeof(b), "        let k%d = select((u32(%s.%s) << 5u) | (31u - (rbase + %du)), 0u, %s.%s == 0.0);\n", i, accs[i], comp[j], i, accs[i], comp[j]);
       to += b;
     }
     to += "        var b = k0;\n        var s = 0u;\n"
@@ -3869,7 +3878,7 @@ std::string DirectKeyScanWgsl(const std::string& src, bool vec = false) {
         "      var b = 0u;\n      var s = 0u;\n"
         "      for (var t = 0u; t < 8u; t = t + 1u) {\n"
         "        let bk = P[%uu + (c * 8u + t) * 2u];\n"
-        "        let sk = P[%uu + (c * 8u + t) * 2u + 1u];\n", TCN, TCN, TCN, CB, CB, CMASK, CMASK, vec ? "(b >> CBITSu) == 0u" : "b == 0u", NCOL, COLOFF, COLOFF);
+        "        let sk = P[%uu + (c * 8u + t) * 2u + 1u];\n", TCN, TCN, TCN, CB, CB, CMASK, CMASK, (vec || noselect) ? "(b >> CBITSu) == 0u" : "b == 0u", NCOL, COLOFF, COLOFF);
   {
     std::string tl = tail;
     const std::string cb = std::to_string(CB);
@@ -3881,7 +3890,7 @@ std::string DirectKeyScanWgsl(const std::string& src, bool vec = false) {
         "        b = max(b, bk);\n"
         "      }\n"
         "      let cb = f32(b >> 5u);\n      let cs = f32(s >> 5u);\n"
-        "      let ci = select(i32(row0 + (31u - (b & 31u))), -1, " + std::string(vec ? "(b >> 5u) == 0u" : "b == 0u") + ");\n"
+        "      let ci = select(i32(row0 + (31u - (b & 31u))), -1, " + std::string((vec || noselect) ? "(b >> 5u) == 0u" : "b == 0u") + ");\n"
         "      let gc = col0 + c;\n"
         "      if (gc < U.numB) { ColP[rb * U.numB + gc] = ColPart(cb, cs, ci); }\n"
         "    }\n";
@@ -4459,8 +4468,8 @@ bool EnsureMainPipelines(Ctx& c) {
         if (dbg) std::fprintf(stderr, "[direct-chain] W64 in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
       }
-      if (kn.keyscan2 || getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN") != nullptr) {
-        const std::string x = DirectKeyScanWgsl(dsrc, kn.keyscan2);
+      if (kn.keyscan2 || kn.keyscan3 || getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN") != nullptr) {
+        const std::string x = DirectKeyScanWgsl(dsrc, kn.keyscan2, kn.keyscan3);
         if (dbg) std::fprintf(stderr, "[direct-chain] KEYSCAN in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
       }
