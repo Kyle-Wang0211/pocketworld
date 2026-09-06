@@ -1909,12 +1909,15 @@ static DirectKnobs ResolveDirectKnobs() {
   // [A″ 默认 2026-09-06 用户裁决] 形态 A″ = f16 + 4x4 + W64 + NOPB + KEYSCAN2 + PTR 为三端默认:
   //   Mate 10 816→573 ms(−30%)、A16 68.2→63.0(−7.6%,0.90× 原生 Metal)、Mac sha/parity/db51 全绿(研究仓 android_probe/README.md 09-06 总账)。
   //   退回形态 A 做对照:NOW64 + NOKEYSCAN + NOPTR。W64 只与 KEYSCAN 同用(单独在 Mali +39%),故 NOKEYSCAN 时 W64 一并关闭。
-  k.keyscan2 = k.w128 && std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOKEYSCAN") == nullptr &&
-               std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN") == nullptr &&
-               (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN2") != nullptr || !legacy);
-  k.keyscan3 = k.w128 && std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOKEYSCAN") == nullptr &&
-               std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN3") != nullptr;
-  if (k.keyscan3) k.keyscan2 = false;   // KEYSCAN3 优先于默认的 v2
+  // [A‴ 默认 2026-09-06 13:4x 用户裁决] 第三台机 P50 Pocket(HarmonyOS 4.2 / Adreno 660)推翻 A″:KEYSCAN2 在 Adreno +13~17%。
+  //   A‴ = f16 + 4x4 + W64 + NOPB + KEYSCAN3 + PTR:Adreno 473–488 ≈ 形态 A、Mate 10 583(−30%)、A16 63.8(−6%);Mac 四闸绿。
+  //   KEYSCAN2 退为 opt-in(…_KEYSCAN2=1),KEYSCAN v1 opt-in(…_KEYSCAN=1),NOKEYSCAN 关掉全部(并带走 W64)。
+  const bool noks = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOKEYSCAN") != nullptr;
+  const bool ks1 = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN") != nullptr;
+  const bool ks2 = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN2") != nullptr;
+  k.keyscan2 = k.w128 && !noks && !ks1 && ks2;
+  k.keyscan3 = k.w128 && !noks && !ks1 && !ks2 &&
+               (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN3") != nullptr || !legacy);
   const bool anyKeyscan = k.keyscan2 || k.keyscan3 || (k.w128 && std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN") != nullptr);
   k.w64 = anyKeyscan && std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOW64") == nullptr &&
           (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_W64") != nullptr || !legacy);
@@ -1947,7 +1950,7 @@ static const char* BlockedLabel() {
   if (const char* v = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL")) lbl += std::string("+unroll") + v;
   if (const char* v = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLLH")) lbl += std::string("+unrollh") + v;
   if (const char* v = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLLHB")) lbl += std::string("+unrollhb") + v;
-  lbl += ",V6)";  // V6 = A″ 默认(w64+keyscan2+ptr 进标签本体)
+  lbl += ",V7)";  // V7 = A‴ 默认(keyscan3);V6 = A″(keyscan2)
   return lbl.c_str();
 }
 // [UNIVERSAL 2026-09-05] 主路径(mma / blocked)每工作组的行数;两者共用同一条 host 路径。
