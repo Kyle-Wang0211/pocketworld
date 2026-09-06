@@ -5042,11 +5042,14 @@ double TsDrainMs(Ctx& c) {
 
 int RunStages(Ctx& c, std::vector<Stage>& stages,
               const std::function<void(wgpu::CommandEncoder&)>& finish,
-              double* ema) {
+              double* ema,
+              const std::function<void(wgpu::CommandEncoder&)>& pre = nullptr) {
+  // [XFOLD 2026-09-06] pre = 折进第一份命令缓冲的前置 pass(DIRECT 预转置),省一次单独 SubmitAndWait;同缓冲内顺序即依赖。
   const double chunkTargetMs = ChunkTargetMs();
   if (chunkTargetMs <= 0.0) {
     // Monolithic (kill switch): every stage + finish in ONE submit.
     wgpu::CommandEncoder enc = c.device.CreateCommandEncoder();
+    if (pre) pre(enc);
     for (Stage& s : stages) {
       const uint32_t zero = 0;
       c.queue.WriteBuffer(s.uni, s.uniOff + kRowBaseOffset,
@@ -5088,6 +5091,7 @@ int RunStages(Ctx& c, std::vector<Stage>& stages,
       c.queue.WriteBuffer(s.uni, s.uniOff + kColSpanOffset,
                           reinterpret_cast<const uint8_t*>(&span), 4);
       wgpu::CommandEncoder enc = c.device.CreateCommandEncoder();
+      if (pre && c0 == 0u) pre(enc);
       wgpu::ComputePassEncoder pass = BeginPassTs(c, enc);
       s.encode(pass, 0u, s.total_groups);
       pass.End();
@@ -5335,6 +5339,7 @@ int MatchPairsImpl(const uint8_t* dA, int nA, const uint8_t* dB, int nB,
   Ctx& c = *cp;
   if (!EnsureMainPipelines(c)) return 2;
   const double tStart = NowMs();
+  std::function<void(wgpu::CommandEncoder&)> preXpose;  // [XFOLD] 折进第一块的预转置
 
   const uint32_t nAu = (uint32_t)nA, nBu = (uint32_t)nB;
   const uint32_t nApad = (uint32_t)RoundUp(nAu, MainRows(c.backend));
@@ -5484,7 +5489,16 @@ int MatchPairsImpl(const uint8_t* dA, int nA, const uint8_t* dB, int nB,
                      {BE(3, uni, 0, sizeof(Params)), BE(4, colp, 0, colBytes),
                       BE(5, outBA, 0, outBABytes)});
     if (!bgMain || !bgMerge) return 6;
-    if (c.direct && (xposeA || xposeB)) {
+    static const bool kXfold = getenv("OFFICIAL_AETHER_MATCH_DAWN_NOXFOLD") == nullptr;
+    if (c.direct && (xposeA || xposeB) && kXfold && kColChunk && !c.direct_tex && !c.direct_texa && ChunkTargetMs() > 0.0) {
+      preXpose = [&, xposeA, xposeB, bgXA, bgXB, nApad, nBpad](wgpu::CommandEncoder& enc) {
+        wgpu::ComputePassEncoder pass = enc.BeginComputePass();
+        pass.SetPipeline(c.p_xpose);
+        if (xposeA) { pass.SetBindGroup(0, bgXA); pass.DispatchWorkgroups((nApad / 4u * 32u + 63u) / 64u); }
+        if (xposeB) { pass.SetBindGroup(0, bgXB); pass.DispatchWorkgroups((nBpad / 4u * 32u + 63u) / 64u); }
+        pass.End();
+      };
+    } else if (c.direct && (xposeA || xposeB)) {
       // [DIRECT] 预转置一次;队列有序,后续分块 submit 天然在其后。[XRES] 只转未命中的一侧。
       wgpu::CommandEncoder enc = c.device.CreateCommandEncoder();
       wgpu::ComputePassEncoder pass = enc.BeginComputePass();
@@ -5559,7 +5573,7 @@ int MatchPairsImpl(const uint8_t* dA, int nA, const uint8_t* dB, int nB,
       enc.CopyBufferToBuffer(outBA, 0, staging, outABBytes, outBABytes);
     };
   }
-  int rc = RunStages(c, stages, finish, &c.ema_main);
+  int rc = RunStages(c, stages, finish, &c.ema_main, preXpose);
   if (rc != 0) return rc;
   const double tSubmit = NowMs();
   c.host.resize((size_t)nAu + nBu);
