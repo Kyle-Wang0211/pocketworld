@@ -157,3 +157,26 @@ Runtime support below iOS 26.2 is **not validated or claimed** by this artifact.
   (Android/HarmonyOS) enumerates configs dynamically from the driver
   (`vulkan/PhysicalDeviceVk.cpp: EnumerateSubgroupMatrixConfigs`) and needs no
   patch — `fp16×fp16→fp32` is a standard `VK_KHR_cooperative_matrix` config.
+
+
+## 2026-09-07 Dawn iOS archive re-pin (build tree lost, rebuilt from vendored source)
+
+- What happened: the `aether_cpp/build-ios-device-dawn` tree was deleted during a
+  disk cleanup on 2026-09-07 ~00:05. It held the only copy of the pinned Dawn
+  Debug archive (`a283007b…`, the June build with the 2026-09-04 surgical
+  PhysicalDeviceMTL.o replacement). That identity cannot be reproduced
+  byte-for-byte (its June build tree was already gone).
+- Rebuild: vendored `third_party/dawn` @ `12ee391c74` with the single intentional
+  Metal patch (mixed f16-in/f32-out subgroup-matrix config in
+  `PhysicalDeviceMTL.mm`; `MetalBackend.mm` verified identical to upstream),
+  Unix Makefiles tree `build-ios-device-dawn-mk` (Xcode generator does not emit
+  the bundled `libwebgpu_dawn.a`), `CMAKE_SYSTEM_NAME=iOS`, arm64, deployment
+  14.0, `CMAKE_BUILD_TYPE=Debug`, `DAWN_FETCH_DEPENDENCIES=OFF`. Result: 640
+  members (same count as the June archive), arm64, copied to the pinned path
+  `build-ios-device-dawn/third_party/dawn/src/dawn/native/Debug-iphoneos/libwebgpu_dawn.a`
+  (+ `.pinned-20260907` sibling and `~/Developer/pw_backups/dawn_ios_debug_20260907/`).
+- New pin: `199fec5ee01ec5920d3036d8611a14c8126b2f8784dc92f6e960ce8893c53c0d`.
+- Consequence: any future PWOfficialSfm rebuilt through `rebuild_native.sh` links
+  this archive, not the June one; functionally the same source, not the same
+  bytes. The shipped builds 100–104 still carry the June archive inside their
+  Runner and PWOfficialSfm binaries.

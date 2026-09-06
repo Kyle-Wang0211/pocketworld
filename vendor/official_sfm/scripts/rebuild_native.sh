@@ -38,7 +38,16 @@ PWOFFICIAL_DAWN_ARCHIVE="$AETHER_ROOT/aether_cpp/build-ios-device-dawn/third_par
 # 归档变更方式:只把重编的 PhysicalDeviceMTL.o 替换进 6 月钉定的归档
 # (640 个成员,其余逐字节未动,仅 __.SYMDEF 由 ranlib 重建)。
 # 旧钉子(6 月 21 日):625cf65dded708ad1abd3dc92f3b47c3c90c384f508676b56303f9341d301b42
-PWOFFICIAL_DAWN_SHA256=a283007b6bb4f3a328434205e93a73be5738563393033c2dd81b29e3364ccb17
+# [DAWN-REPIN 2026-09-07] 09-07 00:0x 清盘误删 build-ios-device-dawn,上面那份 6 月钉定 +
+# 09-04 手术替换的归档(a283007b…)随构建树一起丢失,不可逐字节重建。此归档由
+# vendored Dawn(third_party/dawn @ 12ee391c74 + 同一处 PhysicalDeviceMTL.mm
+# 混合 f16 补丁,MetalBackend.mm 已核对与上游一致)用 Unix Makefiles 树
+# (build-ios-device-dawn-mk:CMAKE_SYSTEM_NAME=iOS / arm64 / 部署 14.0 / Debug /
+# DAWN_FETCH_DEPENDENCIES=OFF)整体重编 bundle 而成:640 个成员(与 6 月归档同数)、
+# arm64;拷到 Xcode 树的 Debug-iphoneos/ 钉定路径(Xcode 生成器下 Dawn 的
+# bundle_libraries 不产出合并归档)。备份:~/Developer/pw_backups/dawn_ios_debug_20260907/。
+# 旧钉子(09-04 手术版):a283007b6bb4f3a328434205e93a73be5738563393033c2dd81b29e3364ccb17
+PWOFFICIAL_DAWN_SHA256=199fec5ee01ec5920d3036d8611a14c8126b2f8784dc92f6e960ce8893c53c0d
 PWOFFICIAL_EXPECTED_CARRIER_SHA256=189f728d21c2efa211851e6d42e63182a0808e836884baed8b6e060c91a48902
 PWOFFICIAL_EXPECTED_OLD_CARRIER_SHA256=6c6a0aa0c5abf5eda79c50ef367f04c67838326b5f7c42e09f6649f8906eb88e
 PWOFFICIAL_EXPECTED_OLD_FRAMEWORK_SHA256=0b69ca576a624972f0b95993d8f1e217a1f0bfe54fe1b1ac0890a37531520485
