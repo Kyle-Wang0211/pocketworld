@@ -1927,7 +1927,7 @@ static const char* BlockedLabel() {
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_FMA", "+fma"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN", "+pscan"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PACKED", "+packed"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TMAP", "+tmap"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB", "+tailb"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB2", "+tailb2"},
-    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA", "+pipea"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANSEL", "+scansel"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANU4", "+scanu4"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN2", "+pscan2"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN", "+keyscan"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_W64", "+w64"},
+    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA", "+pipea"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANSEL", "+scansel"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANU4", "+scanu4"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN2", "+pscan2"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN", "+keyscan"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_W64", "+w64"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN2", "+keyscan2"},
   };
   for (auto& e : extras) if (std::getenv(e[0]) != nullptr) lbl += e[1];
   if (const char* v = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL")) lbl += std::string("+unroll") + v;
@@ -3700,7 +3700,10 @@ std::string DirectW64Wgsl(const std::string& src) {
 //   second 含重复 best 值,与原核 else-分支语义同。解码后仍按原规则并入跨 tile 的行状态 / 写 ColP。
 //   barrier 仍是 2 次;P 复用原 S 的 8 KiB(2048 u32:行局部 32×16×2 + 列局部 64×8×2);无运行时分量索引;
 //   串行链 64/32 → 16/8;忙线程 64 → 96。只认 4x4 + W128(WGR=32)形态。
-std::string DirectKeyScanWgsl(const std::string& src) {
+// vec=true:[KEYSCAN2] 尾段向量化 —— 4 个 vec4<u32> 转换 + 8 次向量移位/或 得到全部 32 个键;行/列 top-2 各用 7 步树形
+// (a=max(x,y) b=min(x,y) c=max(z,w) d=min(z,w); best=max(a,c); second=max(min(a,c),max(b,d)))一次算 4 行 / 4 列;
+// 零分键不再逐键 select 成 0,而是保留列/行位(≤63/≤31,小于任何正分键 ≥64/≥32),解码时按 (key>>bits)==0 判无候选 ⇒ 语义同。
+std::string DirectKeyScanWgsl(const std::string& src, bool vec = false) {
   std::string t = src;
   if (t.find("const WGR : u32 = 32u;\n") == std::string::npos) { AnchorAlarm("DirectKeyScanWgsl", "只认 WGR=32"); return src; }
   const bool w64 = t.find("const BT : u32 = 32u;\n") != std::string::npos;   // W64:tile 32×32,8 tc;否则 W128:32×64,16 tc
@@ -3724,8 +3727,38 @@ std::string DirectKeyScanWgsl(const std::string& src) {
   to += "    workgroupBarrier();\n    {\n      let cbase = tc * 4u;\n      let rbase = tr * 4u;\n";
   const char* comp[] = {"x", "y", "z", "w"};
   const char* accs[] = {"acc0", "acc1", "acc2", "acc3"};
+  if (vec) {
+    char v[3000];
+    std::snprintf(v, sizeof(v),
+      "      let colBits = vec4<u32>(%uu - cbase, %uu - cbase, %uu - cbase, %uu - cbase);\n"
+      "      let u0 = vec4<u32>(acc0);\n      let u1 = vec4<u32>(acc1);\n      let u2 = vec4<u32>(acc2);\n      let u3 = vec4<u32>(acc3);\n"
+      "      let r0 = (u0 << vec4<u32>(%uu)) | colBits;\n      let r1 = (u1 << vec4<u32>(%uu)) | colBits;\n"
+      "      let r2 = (u2 << vec4<u32>(%uu)) | colBits;\n      let r3 = (u3 << vec4<u32>(%uu)) | colBits;\n"
+      "      // 行 top-2:按列转置后 4 行同时折叠\n"
+      "      let tX = vec4<u32>(r0.x, r1.x, r2.x, r3.x);\n      let tY = vec4<u32>(r0.y, r1.y, r2.y, r3.y);\n"
+      "      let tZ = vec4<u32>(r0.z, r1.z, r2.z, r3.z);\n      let tW = vec4<u32>(r0.w, r1.w, r2.w, r3.w);\n"
+      "      let ra = max(tX, tY);\n      let rb = min(tX, tY);\n      let rc = max(tZ, tW);\n      let rd = min(tZ, tW);\n"
+      "      let rbest = max(ra, rc);\n      let rsec = max(min(ra, rc), max(rb, rd));\n"
+      "      P[((rbase + 0u) * %uu + tc) * 2u] = rbest.x;\n      P[((rbase + 0u) * %uu + tc) * 2u + 1u] = rsec.x;\n"
+      "      P[((rbase + 1u) * %uu + tc) * 2u] = rbest.y;\n      P[((rbase + 1u) * %uu + tc) * 2u + 1u] = rsec.y;\n"
+      "      P[((rbase + 2u) * %uu + tc) * 2u] = rbest.z;\n      P[((rbase + 2u) * %uu + tc) * 2u + 1u] = rsec.z;\n"
+      "      P[((rbase + 3u) * %uu + tc) * 2u] = rbest.w;\n      P[((rbase + 3u) * %uu + tc) * 2u + 1u] = rsec.w;\n"
+      "      // 列键:行位 31-rbase-i;列 top-2 直接按分量折叠(4 列同时)\n"
+      "      let c0 = (u0 << vec4<u32>(5u)) | vec4<u32>(31u - rbase);\n      let c1 = (u1 << vec4<u32>(5u)) | vec4<u32>(30u - rbase);\n"
+      "      let c2 = (u2 << vec4<u32>(5u)) | vec4<u32>(29u - rbase);\n      let c3 = (u3 << vec4<u32>(5u)) | vec4<u32>(28u - rbase);\n"
+      "      let ca = max(c0, c1);\n      let cb_ = min(c0, c1);\n      let cc = max(c2, c3);\n      let cd = min(c2, c3);\n"
+      "      let cbest = max(ca, cc);\n      let csec = max(min(ca, cc), max(cb_, cd));\n"
+      "      P[%uu + ((cbase + 0u) * 8u + tr) * 2u] = cbest.x;\n      P[%uu + ((cbase + 0u) * 8u + tr) * 2u + 1u] = csec.x;\n"
+      "      P[%uu + ((cbase + 1u) * 8u + tr) * 2u] = cbest.y;\n      P[%uu + ((cbase + 1u) * 8u + tr) * 2u + 1u] = csec.y;\n"
+      "      P[%uu + ((cbase + 2u) * 8u + tr) * 2u] = cbest.z;\n      P[%uu + ((cbase + 2u) * 8u + tr) * 2u + 1u] = csec.z;\n"
+      "      P[%uu + ((cbase + 3u) * 8u + tr) * 2u] = cbest.w;\n      P[%uu + ((cbase + 3u) * 8u + tr) * 2u + 1u] = csec.w;\n",
+      CMASK, CMASK - 1u, CMASK - 2u, CMASK - 3u, CB, CB, CB, CB,
+      TCN, TCN, TCN, TCN, TCN, TCN, TCN, TCN,
+      COLOFF, COLOFF, COLOFF, COLOFF, COLOFF, COLOFF, COLOFF, COLOFF);
+    to += v;
+  }
   // 行局部:行 i = rbase+i,键来自 acc_i.{x,y,z,w}(列 cbase+j)
-  for (int i = 0; i < 4; ++i) {
+  for (int i = 0; i < 4 && !vec; ++i) {
     to += "      {\n";
     for (int j = 0; j < 4; ++j) {
       char b[256];
@@ -3741,7 +3774,7 @@ std::string DirectKeyScanWgsl(const std::string& src) {
     to += w;
   }
   // 列局部:列 j = cbase+j,键来自 acc0..3 的分量 j(行 rbase+i)
-  for (int j = 0; j < 4; ++j) {
+  for (int j = 0; j < 4 && !vec; ++j) {
     to += "      {\n";
     for (int i = 0; i < 4; ++i) {
       char b[256];
@@ -3768,7 +3801,7 @@ std::string DirectKeyScanWgsl(const std::string& src) {
         "        b = max(b, bk);\n"
         "      }\n"
         "      let b2 = f32(b >> %uu);\n      let s2 = f32(s >> %uu);\n"
-        "      let i2 = select(i32(col0 + (%uu - (b & %uu))), -1, b == 0u);\n"
+        "      let i2 = select(i32(col0 + (%uu - (b & %uu))), -1, %s);\n"
         "      if (b2 > rowBest) { rowSecond = max(rowBest, s2); rowBest = b2; rowBestI = i2; }\n"
         "      else { rowSecond = max(rowSecond, b2); }\n"
         "    } else if (lid < WGR + %uu) {\n"
@@ -3776,14 +3809,19 @@ std::string DirectKeyScanWgsl(const std::string& src) {
         "      var b = 0u;\n      var s = 0u;\n"
         "      for (var t = 0u; t < 8u; t = t + 1u) {\n"
         "        let bk = P[%uu + (c * 8u + t) * 2u];\n"
-        "        let sk = P[%uu + (c * 8u + t) * 2u + 1u];\n", TCN, TCN, TCN, CB, CB, CMASK, CMASK, NCOL, COLOFF, COLOFF);
-  to += tail;
+        "        let sk = P[%uu + (c * 8u + t) * 2u + 1u];\n", TCN, TCN, TCN, CB, CB, CMASK, CMASK, vec ? "(b >> CBITSu) == 0u" : "b == 0u", NCOL, COLOFF, COLOFF);
+  {
+    std::string tl = tail;
+    const std::string cb = std::to_string(CB);
+    for (size_t q = tl.find("CBITS"); q != std::string::npos; q = tl.find("CBITS")) tl.replace(q, 5, cb);
+    to += tl;
+  }
   to += ""
         "        s = max(max(s, sk), min(b, bk));\n"
         "        b = max(b, bk);\n"
         "      }\n"
         "      let cb = f32(b >> 5u);\n      let cs = f32(s >> 5u);\n"
-        "      let ci = select(i32(row0 + (31u - (b & 31u))), -1, b == 0u);\n"
+        "      let ci = select(i32(row0 + (31u - (b & 31u))), -1, " + std::string(vec ? "(b >> 5u) == 0u" : "b == 0u") + ");\n"
         "      let gc = col0 + c;\n"
         "      if (gc < U.numB) { ColP[rb * U.numB + gc] = ColPart(cb, cs, ci); }\n"
         "    }\n";
@@ -4361,8 +4399,8 @@ bool EnsureMainPipelines(Ctx& c) {
         if (dbg) std::fprintf(stderr, "[direct-chain] W64 in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
       }
-      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN") != nullptr) {
-        const std::string x = DirectKeyScanWgsl(dsrc);
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN") != nullptr || getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN2") != nullptr) {
+        const std::string x = DirectKeyScanWgsl(dsrc, getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN2") != nullptr);
         if (dbg) std::fprintf(stderr, "[direct-chain] KEYSCAN in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
       }
@@ -4497,7 +4535,11 @@ bool EnsureMainPipelines(Ctx& c) {
       // [WGSL-FILE 2026-09-06] 台架专用:OFFICIAL_AETHER_MATCH_DAWN_WGSL_FILE=<路径> 时用文件内容替换主核源码
       // (Mac 上经变换链生成、sha 已验的 WGSL,adb push 即可换核,不必重装 .so)。绑定/缓冲仍由 env 派生的
       // direct_* 旗决定,文件必须与同一组 env 生成。仅探针台架用,产品路径不读。
-      if (const char* wf = getenv("OFFICIAL_AETHER_MATCH_DAWN_WGSL_FILE")) {
+      if (const char* wf0 = getenv("OFFICIAL_AETHER_MATCH_DAWN_WGSL_FILE")) {
+        // "~/x" → $HOME/x:iOS 台架 app 的容器路径外部不可知,devicectl 把文件拷进 Documents 后用 ~/Documents/... 引用即可
+        std::string wfs = wf0;
+        if (wfs.size() > 1 && wfs[0] == '~' && wfs[1] == '/') { if (const char* h = getenv("HOME")) wfs = std::string(h) + wfs.substr(1); }
+        const char* wf = wfs.c_str();
         if (FILE* f = std::fopen(wf, "rb")) {
           std::string file;
           char buf[4096]; size_t n;
