@@ -1893,7 +1893,7 @@ enum class Backend { kNone, kMma, kTiled, kBlocked };
 // 旧形态 8x4 线程组暂存(A16 97.4 / Mate 10 6461)改为显式 OFFICIAL_AETHER_MATCH_DAWN_BLK_LEGACY84=1 才走;
 // 形态 B(预取 B:Mali 615 / A16 1.15×)= OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEB=1。
 // 其它反向旋钮:BLK_84=1(8x4)、BLK_DIRECT_W256=1(256 线程)、BLK_DIRECT_F32=1(f32 存储)。
-struct DirectKnobs { bool direct, k44, w128, nopb, f16; };
+struct DirectKnobs { bool direct, k44, w128, nopb, f16, w64, keyscan2, ptr; };
 static DirectKnobs ResolveDirectKnobs() {
   DirectKnobs k{};
   const bool legacy = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_LEGACY84") != nullptr;
@@ -1906,6 +1906,17 @@ static DirectKnobs ResolveDirectKnobs() {
            (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOPB") != nullptr || !legacy);
   k.f16 = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_F32") == nullptr &&
           (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_F16") != nullptr || !legacy);
+  // [A″ 默认 2026-09-06 用户裁决] 形态 A″ = f16 + 4x4 + W64 + NOPB + KEYSCAN2 + PTR 为三端默认:
+  //   Mate 10 816→573 ms(−30%)、A16 68.2→63.0(−7.6%,0.90× 原生 Metal)、Mac sha/parity/db51 全绿(研究仓 android_probe/README.md 09-06 总账)。
+  //   退回形态 A 做对照:NOW64 + NOKEYSCAN + NOPTR。W64 只与 KEYSCAN 同用(单独在 Mali +39%),故 NOKEYSCAN 时 W64 一并关闭。
+  k.keyscan2 = k.w128 && std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOKEYSCAN") == nullptr &&
+               std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN") == nullptr &&
+               (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN2") != nullptr || !legacy);
+  const bool anyKeyscan = k.keyscan2 || (k.w128 && std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN") != nullptr);
+  k.w64 = anyKeyscan && std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOW64") == nullptr &&
+          (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_W64") != nullptr || !legacy);
+  k.ptr = k.nopb && std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOPTR") == nullptr &&
+          (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PTR") != nullptr || !legacy);
   return k;
 }
 
@@ -1919,21 +1930,21 @@ static const char* BlockedLabel() {
     return "blocked(fma8x4+pipeb,V3)";
   }
   static std::string lbl;
-  lbl = std::string("blocked(") + (k.k44 ? "fma4x4" : "fma8x4") + "+direct" + (k.w128 ? "+w128" : "") +
-        (k.nopb ? "+nopb" : "+pipeb") + (k.f16 ? "+f16" : "+f32");
+  lbl = std::string("blocked(") + (k.k44 ? "fma4x4" : "fma8x4") + "+direct" + (k.w128 ? (k.w64 ? "+w64" : "+w128") : "") +
+        (k.nopb ? "+nopb" : "+pipeb") + (k.f16 ? "+f16" : "+f32") + (k.keyscan2 ? "+keyscan2" : "") + (k.ptr ? "+ptr" : "");
   const char* extras[][2] = {
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_G", "+g"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TEX", "+tex"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TEXA", "+texa"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANMEM", "+scanmem"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_FMA", "+fma"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN", "+pscan"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PACKED", "+packed"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TMAP", "+tmap"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB", "+tailb"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB2", "+tailb2"},
-    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA", "+pipea"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANSEL", "+scansel"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANU4", "+scanu4"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN2", "+pscan2"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN", "+keyscan"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_W64", "+w64"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN2", "+keyscan2"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PTR", "+ptr"},
+    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA", "+pipea"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANSEL", "+scansel"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANU4", "+scanu4"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN2", "+pscan2"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN", "+keyscan"},
   };
   for (auto& e : extras) if (std::getenv(e[0]) != nullptr) lbl += e[1];
   if (const char* v = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL")) lbl += std::string("+unroll") + v;
   if (const char* v = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLLH")) lbl += std::string("+unrollh") + v;
   if (const char* v = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLLHB")) lbl += std::string("+unrollhb") + v;
-  lbl += ",V5)";
+  lbl += ",V6)";  // V6 = A″ 默认(w64+keyscan2+ptr 进标签本体)
   return lbl.c_str();
 }
 // [UNIVERSAL 2026-09-05] 主路径(mma / blocked)每工作组的行数;两者共用同一条 host 路径。
@@ -4443,13 +4454,13 @@ bool EnsureMainPipelines(Ctx& c) {
           dsrc = x;
         }
       }
-      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_W64") != nullptr) {
+      if (kn.w64) {
         const std::string x = DirectW64Wgsl(dsrc);
         if (dbg) std::fprintf(stderr, "[direct-chain] W64 in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
       }
-      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN") != nullptr || getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN2") != nullptr) {
-        const std::string x = DirectKeyScanWgsl(dsrc, getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN2") != nullptr);
+      if (kn.keyscan2 || getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN") != nullptr) {
+        const std::string x = DirectKeyScanWgsl(dsrc, kn.keyscan2);
         if (dbg) std::fprintf(stderr, "[direct-chain] KEYSCAN in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
       }
@@ -4551,7 +4562,7 @@ bool EnsureMainPipelines(Ctx& c) {
         if (dbg) std::fprintf(stderr, "[direct-chain] UNROLLH%s in=%zu out=%zu applied=%d\n", uh, dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
       }
-      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PTR") != nullptr) {
+      if (kn.ptr) {
         const std::string x = DirectPtrWgsl(dsrc);
         if (dbg) std::fprintf(stderr, "[direct-chain] PTR in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
