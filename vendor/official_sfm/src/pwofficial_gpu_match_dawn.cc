@@ -1927,7 +1927,7 @@ static const char* BlockedLabel() {
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_FMA", "+fma"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN", "+pscan"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PACKED", "+packed"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TMAP", "+tmap"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB", "+tailb"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB2", "+tailb2"},
-    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA", "+pipea"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANSEL", "+scansel"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANU4", "+scanu4"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN2", "+pscan2"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN", "+keyscan"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_W64", "+w64"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN2", "+keyscan2"},
+    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA", "+pipea"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANSEL", "+scansel"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANU4", "+scanu4"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN2", "+pscan2"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN", "+keyscan"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_W64", "+w64"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN2", "+keyscan2"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PTR", "+ptr"},
   };
   for (auto& e : extras) if (std::getenv(e[0]) != nullptr) lbl += e[1];
   if (const char* v = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL")) lbl += std::string("+unroll") + v;
@@ -3691,6 +3691,32 @@ std::string DirectW64Wgsl(const std::string& src) {
   }
   return t;
 }
+// [DIRECT-PTR 2026-09-06] GEMM 循环地址改指针递增:k*colPad4+cq / k*rowPad4+rq → ib/ia 每轮 +colPad4/+rowPad4。
+// 09-06 A16 三轮 −3.4%(A′+KEYSCAN2 之上,WGSL 文件推送验证);Mali 段账显示 A′ 已是 GEMM 循环 ALU 瓶颈,地址乘加是可省的非 FMA 指令。
+// 只改地址算术,载入/FMA 顺序不变 ⇒ 逐字节同。认 NOPB 形态(f16 或 f32 载入)。
+std::string DirectPtrWgsl(const std::string& src) {
+  struct Sub { const char* from; const char* to; };
+  static const Sub subs[] = {
+    {"    for (var k = 0u; k < KD; k = k + 1u) {\n      let b4 = vec4<f32>(Bt[k * colPad4 + cq]);\n      let al = vec4<f32>(At[k * rowPad4 + rq]);\n",
+     "    var ia = rq;\n    var ib = cq;\n    for (var k = 0u; k < KD; k = k + 1u) {\n      let b4 = vec4<f32>(Bt[ib]);\n      let al = vec4<f32>(At[ia]);\n"},
+    {"    for (var k = 0u; k < KD; k = k + 1u) {\n      let b4 = Bt[k * colPad4 + cq];\n      let al = At[k * rowPad4 + rq];\n",
+     "    var ia = rq;\n    var ib = cq;\n    for (var k = 0u; k < KD; k = k + 1u) {\n      let b4 = Bt[ib];\n      let al = At[ia];\n"},
+  };
+  const std::string tail_from = "      acc3 = acc3 + al.w * b4;\n    }\n";
+  const std::string tail_to = "      acc3 = acc3 + al.w * b4;\n      ia = ia + rowPad4;\n      ib = ib + colPad4;\n    }\n";
+  for (const Sub& sb : subs) {
+    const size_t p = src.find(sb.from);
+    if (p == std::string::npos) continue;
+    std::string t = src;
+    t.replace(p, std::strlen(sb.from), sb.to);
+    const size_t q = t.find(tail_from, p);
+    if (q == std::string::npos) { AnchorAlarm("DirectPtrWgsl", "循环尾未命中"); return src; }
+    t.replace(q, tail_from.size(), tail_to);
+    return t;
+  }
+  AnchorAlarm("DirectPtrWgsl", "只认 NOPB 形态的 GEMM 循环");
+  return src;
+}
 // [DIRECT-KEYSCAN 2026-09-06] 扫描段重写(调研复刻:COLMAP SiftGPU MultiplyDescriptorG / OpenCV cuda knnMatch k=2 / FAISS 的
 // "寄存器里先归约、只写一次、短链合并";onnxruntime/tfjs 的复合键 (value,index) 并列技巧)。
 //   每线程把 4x4 结果块在寄存器里归约成 4 个行局部 + 4 个列局部 (bestKey, secondKey);键 = (score << 6) | (63 - 列在块内序)
@@ -4505,6 +4531,11 @@ bool EnsureMainPipelines(Ctx& c) {
       if (const char* un = getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL")) {
         const std::string x = DirectUnrollWgsl(dsrc, std::max(2, atoi(un)));
         if (dbg) std::fprintf(stderr, "[direct-chain] UNROLL%s in=%zu out=%zu applied=%d\n", un, dsrc.size(), x.size(), (int)(x != dsrc));
+        dsrc = x;
+      }
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PTR") != nullptr) {
+        const std::string x = DirectPtrWgsl(dsrc);
+        if (dbg) std::fprintf(stderr, "[direct-chain] PTR in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
       }
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOLOAD") != nullptr) {  // 探针
