@@ -1944,7 +1944,7 @@ static const char* BlockedLabel() {
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_FMA", "+fma"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN", "+pscan"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PACKED", "+packed"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TMAP", "+tmap"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB", "+tailb"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB2", "+tailb2"},
-    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA", "+pipea"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANSEL", "+scansel"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANU4", "+scanu4"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN2", "+pscan2"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN", "+keyscan"},
+    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA", "+pipea"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANSEL", "+scansel"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANU4", "+scanu4"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN2", "+pscan2"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN", "+keyscan"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KP", "+kp"},
   };
   for (auto& e : extras) if (std::getenv(e[0]) != nullptr) lbl += e[1];
   if (const char* v = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL")) lbl += std::string("+unroll") + v;
@@ -2025,6 +2025,7 @@ struct Ctx {
   bool direct_packed = false;     // [DIRECT-PACKED] At/Bt 存 u8 打包,载入字节 ÷4
   bool feat_f16 = false;          // [DIRECT-F16] 设备已带 ShaderF16
   bool direct_f16 = false;        // [DIRECT-F16] At/Bt 存 vec4<f16>,载入字节 ÷2
+  bool direct_kp = false;         // [DIRECT-KP] At/Bt 存 [k/2][row/4] vec4<u32>(k 成对 128 位载入),字节同 F16
   wgpu::Texture atTex; uint32_t atTexW = 0;               // [DIRECT-TEXA] MatchPairs 路径
   wgpu::Texture pbAtTex; uint32_t pbAtTexW = 0;           // [DIRECT-TEXA] ProbeBatch 路径
   wgpu::Texture btTex; uint32_t btTexW = 0;               // [DIRECT-TEX] MatchPairs 路径的纹理缓存
@@ -3757,6 +3758,63 @@ std::string DirectPtrWgsl(const std::string& src) {
   AnchorAlarm("DirectPtrWgsl", "只认 NOPB 形态的 GEMM 循环");
   return src;
 }
+// [DIRECT-KP 2026-09-06 用户批准装机] k 成对打包:At/Bt 布局 [k/2][row/4] 的 vec4<u32>,每元素 8 个 f16 =
+//   (k=2kp 的 4 行 | k=2kp+1 的 4 行),主核每 2 个 k 各做一次 128 位载入(Qualcomm 80-NB295-11 §6.3:每事务 128 位,
+//   vec4<f16> 只用了一半;P50 Pocket noload 探针 −28% 是上限线索)。字节总量与 F16 布局相同;值 0..255 经 pack2x16float 精确。
+//   主核用 unpack2x16float 解包(Metal: as_type<half2>;Vulkan: UnpackHalf2x16),FMA 顺序 k、k+1 不变 ⇒ 逐字节同。
+constexpr char kWgslXposeKP[] = R"WGSL(
+struct XParams { n4 : u32, p1 : u32, p2 : u32, p3 : u32, };
+@group(0) @binding(0) var<storage, read> Src : array<u32>;
+@group(0) @binding(3) var<uniform> X : XParams;
+@group(0) @binding(7) var<storage, read_write> Dst : array<vec4<u32>>;
+fn pk(a : u32, b : u32) -> u32 { return pack2x16float(vec2<f32>(f32(a), f32(b))); }
+@compute @workgroup_size(64)
+fn xpose(@builtin(global_invocation_id) gid : vec3<u32>) {
+  let n4 = X.n4;
+  let i = gid.x;
+  if (i >= n4 * 32u) { return; }
+  let q = i % n4;
+  let w = i / n4;
+  let x0 = Src[(4u * q + 0u) * 32u + w];
+  let x1 = Src[(4u * q + 1u) * 32u + w];
+  let x2 = Src[(4u * q + 2u) * 32u + w];
+  let x3 = Src[(4u * q + 3u) * 32u + w];
+  // k = 4w + j,j = 字节序;kp = 2w + (j >> 1),半 = j & 1
+  let o = (w * 2u) * n4 + q;
+  Dst[o] = vec4<u32>(pk(x0 & 255u, x1 & 255u), pk(x2 & 255u, x3 & 255u),
+                     pk((x0 >> 8u) & 255u, (x1 >> 8u) & 255u), pk((x2 >> 8u) & 255u, (x3 >> 8u) & 255u));
+  Dst[o + n4] = vec4<u32>(pk((x0 >> 16u) & 255u, (x1 >> 16u) & 255u), pk((x2 >> 16u) & 255u, (x3 >> 16u) & 255u),
+                          pk(x0 >> 24u, x1 >> 24u), pk(x2 >> 24u, x3 >> 24u));
+}
+)WGSL";
+std::string DirectKPWgsl(const std::string& src) {
+  std::string t = src;
+  struct Sub { const char* from; const char* to; };
+  static const Sub subs[] = {
+    {"@group(0) @binding(7) var<storage, read> At : array<vec4<f16>>;\n", "@group(0) @binding(7) var<storage, read> At : array<vec4<u32>>;\n"},
+    {"@group(0) @binding(8) var<storage, read> Bt : array<vec4<f16>>;\n", "@group(0) @binding(8) var<storage, read> Bt : array<vec4<u32>>;\n"},
+    {"    var ia = rq;\n    var ib = cq;\n    for (var k = 0u; k < KD; k = k + 1u) {\n"
+     "      let b4 = vec4<f32>(Bt[ib]);\n      let al = vec4<f32>(At[ia]);\n"
+     "      acc0 = acc0 + al.x * b4;\n      acc1 = acc1 + al.y * b4;\n      acc2 = acc2 + al.z * b4;\n      acc3 = acc3 + al.w * b4;\n"
+     "      ia = ia + rowPad4;\n      ib = ib + colPad4;\n    }\n",
+     "    var ia = rq;\n    var ib = cq;\n    for (var k = 0u; k < KD; k = k + 2u) {\n"
+     "      let wb = Bt[ib];\n      let wa = At[ia];\n"
+     "      let b4 = vec4<f32>(unpack2x16float(wb.x), unpack2x16float(wb.y));\n"
+     "      let al = vec4<f32>(unpack2x16float(wa.x), unpack2x16float(wa.y));\n"
+     "      acc0 = acc0 + al.x * b4;\n      acc1 = acc1 + al.y * b4;\n      acc2 = acc2 + al.z * b4;\n      acc3 = acc3 + al.w * b4;\n"
+     "      let b4b = vec4<f32>(unpack2x16float(wb.z), unpack2x16float(wb.w));\n"
+     "      let alb = vec4<f32>(unpack2x16float(wa.z), unpack2x16float(wa.w));\n"
+     "      acc0 = acc0 + alb.x * b4b;\n      acc1 = acc1 + alb.y * b4b;\n      acc2 = acc2 + alb.z * b4b;\n      acc3 = acc3 + alb.w * b4b;\n"
+     "      ia = ia + rowPad4;\n      ib = ib + colPad4;\n    }\n"},
+  };
+  for (const Sub& sb : subs) {
+    const size_t p = t.find(sb.from);
+    if (p == std::string::npos) { AnchorAlarm("DirectKPWgsl", sb.from); return src; }
+    t.replace(p, std::strlen(sb.from), sb.to);
+  }
+  if (t.find("At[") != t.rfind("At[") || t.find("Bt[") != t.rfind("Bt[")) { AnchorAlarm("DirectKPWgsl", "残留其它 At/Bt 读"); return src; }
+  return t;
+}
 // [DIRECT-KEYSCAN 2026-09-06] 扫描段重写(调研复刻:COLMAP SiftGPU MultiplyDescriptorG / OpenCV cuda knnMatch k=2 / FAISS 的
 // "寄存器里先归约、只写一次、短链合并";onnxruntime/tfjs 的复合键 (value,index) 并列技巧)。
 //   每线程把 4x4 结果块在寄存器里归约成 4 个行局部 + 4 个列局部 (bestKey, secondKey);键 = (score << 6) | (63 - 列在块内序)
@@ -4584,6 +4642,16 @@ bool EnsureMainPipelines(Ctx& c) {
         if (dbg) std::fprintf(stderr, "[direct-chain] UNROLL%s in=%zu out=%zu applied=%d\n", un, dsrc.size(), x.size(), (int)(x != dsrc));
         dsrc = x;
       }
+      c.direct_kp = false;
+      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KP") != nullptr) {
+        if (!c.direct_f16) { if (dbg) std::fprintf(stderr, "[direct-chain] KP skipped: needs F16 storage\n"); }
+        else {
+          const std::string x = DirectKPWgsl(dsrc);
+          c.direct_kp = (x != dsrc);
+          if (dbg) std::fprintf(stderr, "[direct-chain] KP in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)c.direct_kp);
+          dsrc = x;
+        }
+      }
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOLOAD") != nullptr) {  // 探针
         const std::string x = DirectNoLoadWgsl(dsrc);
         if (dbg) std::fprintf(stderr, "[direct-chain] NOLOAD(probe) in=%zu out=%zu applied=%d\n", dsrc.size(), x.size(), (int)(x != dsrc));
@@ -4631,7 +4699,7 @@ bool EnsureMainPipelines(Ctx& c) {
       if (getenv("OFFICIAL_AETHER_MATCH_DAWN_WGSL_DUMP") != nullptr) std::fprintf(stderr, "===WGSL_BEGIN===\n%s\n===WGSL_END===\n", dsrc.c_str());
       wgpu::ShaderModule m = CompileWgsl(c, dsrc.c_str(), "blocked direct");
       if (!m) return false;
-      wgpu::ShaderModule mx = CompileWgsl(c, c.direct_f16 ? kWgslXposeF16 : (c.direct_packed ? kWgslXposePacked : kWgslXpose), "xpose");
+      wgpu::ShaderModule mx = CompileWgsl(c, c.direct_kp ? kWgslXposeKP : (c.direct_f16 ? kWgslXposeF16 : (c.direct_packed ? kWgslXposePacked : kWgslXpose)), "xpose");
       if (!mx) return false;
       c.p_main = MakePipeline(c, m, "main");
       c.p_merge = MakePipeline(c, m, "merge");
