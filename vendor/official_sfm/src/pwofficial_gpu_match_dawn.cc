@@ -143,6 +143,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <deque>
 #include <vector>
 
 #if __has_include("aether/sfm/descriptor_residency_policy_v1.h")
@@ -5183,6 +5184,13 @@ struct ResidencySession {
   uint64_t upload_bytes = 0;
   uint64_t allocation_failures = 0;
   uint64_t device_resets = 0;
+  // [XRES 2026-09-06] 预转置布局驻留:同键(nonce,frame,generation)+ 同 npad + 同布局 ⇒ 主核直接绑定,
+  //   跳过该侧的 xpose dispatch;两侧都命中时连整次 SubmitAndWait 一起省掉。生产里 B(新帧)一帧被转 12 次、
+  //   A 每候选重转(frame_split 证据,09-06);内容与重转逐字节同。上限 48 键 LRU(≈48×3.4 MB),随 u8 条目一起淘汰。
+  struct Xposed { wgpu::Buffer buf; uint32_t npad = 0; uint32_t layout = 0; };
+  std::unordered_map<DescriptorResidencyKeyV1, Xposed, DescriptorResidencyKeyHashV1> xposed;
+  std::deque<DescriptorResidencyKeyV1> xorder;
+  uint64_t xres_hits = 0, xres_misses = 0;
 };
 
 std::unordered_map<uint64_t, std::unique_ptr<ResidencySession>> gResidency;
@@ -5203,6 +5211,11 @@ void EraseResident(ResidencySession* s,
     if (it != s->buffers.end()) {
       if (it->second) it->second.Destroy();
       s->buffers.erase(it);
+    }
+    auto xt = s->xposed.find(k);
+    if (xt != s->xposed.end()) {
+      if (xt->second.buf) xt->second.buf.Destroy();
+      s->xposed.erase(xt);
     }
   }
 }
@@ -5361,6 +5374,7 @@ int MatchPairsImpl(const uint8_t* dA, int nA, const uint8_t* dB, int nB,
         BE(2, outAB, 0, outABBytes), BE(3, uni, 0, sizeof(Params)),
         BE(4, colp, 0, colBytes), BE(6, rowp, 0, rowBytes)};
     wgpu::BindGroup bgXA, bgXB;
+    bool xposeA = true, xposeB = true;  // [XRES] 该侧是否需要本次转置
     if (c.direct) {
       // [DIRECT] 主核不再读 A/B(绑定 0/1);Dawn 自动布局只收录实际用到的绑定,多给会报
       // "binding index 0 not present in the bind group layout"(首次 Mac 复验就撞上)。
@@ -5368,11 +5382,54 @@ int MatchPairsImpl(const uint8_t* dA, int nA, const uint8_t* dB, int nB,
       // [DIRECT] At/Bt = f32 [k][row/4]:每行 128 k × 4 B = 512 B;按补位行数分配。
       const uint64_t rowB = c.direct_f16 ? 256ull : (c.direct_packed ? 128ull : 512ull);  // [F16] 2 B / [PACKED] 1 B 每 k
       const uint64_t atBytes = rowB * nApad, btBytes = rowB * nBpad;
-      wgpu::Buffer at = PoolGet(c, c.at, atBytes,
-                                c.direct_texa ? (kUsageColp | wgpu::BufferUsage::CopySrc) : kUsageColp);
-      wgpu::Buffer bt = PoolGet(c, c.bt, btBytes,
-                                c.direct_tex ? (kUsageColp | wgpu::BufferUsage::CopySrc) : kUsageColp);
+      // [XRES] 预转置布局驻留(见 ResidencySession::Xposed);纹理路径与非驻留调用走原池。env NOXRES=1 关闭做 A/B。
+      static const bool kXres = getenv("OFFICIAL_AETHER_MATCH_DAWN_NOXRES") == nullptr;
+      const uint32_t xlayout = (c.direct_f16 ? 1u : 0u) | (c.direct_kp ? 2u : 0u) | (c.direct_packed ? 4u : 0u);
+      ResidencySession* rs = (kXres && nonce != 0 && DescriptorResidencyEnabled() && !c.direct_tex && !c.direct_texa)
+                                 ? ResidencyFor(nonce) : nullptr;
+      auto xlookup = [&](bool res, uint32_t frame, uint32_t gen, uint32_t npad, uint64_t bytes, PoolBuf& pool,
+                         wgpu::BufferUsage usage, bool& needX) -> wgpu::Buffer {
+        needX = true;
+        if (rs && res) {
+          const DescriptorResidencyKeyV1 key{nonce, frame, gen};
+          auto it = rs->xposed.find(key);
+          if (it != rs->xposed.end() && it->second.buf && it->second.npad == npad && it->second.layout == xlayout) {
+            ++rs->xres_hits; needX = false; return it->second.buf;
+          }
+          ++rs->xres_misses;
+          wgpu::BufferDescriptor d{};
+          d.usage = kUsageColp;
+          d.size = RoundUp(std::max<uint64_t>(bytes, 16), 4);
+          wgpu::Buffer nb = c.device.CreateBuffer(&d);
+          if (nb) {
+            if (it != rs->xposed.end()) { if (it->second.buf) it->second.buf.Destroy(); rs->xposed.erase(it); }
+            else rs->xorder.push_back(key);
+            rs->xposed[key] = ResidencySession::Xposed{nb, npad, xlayout};
+            while (rs->xorder.size() > 48) {
+              const DescriptorResidencyKeyV1 old = rs->xorder.front(); rs->xorder.pop_front();
+              auto ot = rs->xposed.find(old);
+              if (ot != rs->xposed.end() && ot->second.buf.Get() != nb.Get()) { if (ot->second.buf) ot->second.buf.Destroy(); rs->xposed.erase(ot); }
+            }
+            return nb;
+          }
+        }
+        return PoolGet(c, pool, bytes, usage);
+      };
+      wgpu::Buffer at = xlookup(aRes, frameA, genA, nApad, atBytes, c.at,
+                                c.direct_texa ? (kUsageColp | wgpu::BufferUsage::CopySrc) : kUsageColp, xposeA);
+      wgpu::Buffer bt = xlookup(bRes, frameB, genB, nBpad, btBytes, c.bt,
+                                c.direct_tex ? (kUsageColp | wgpu::BufferUsage::CopySrc) : kUsageColp, xposeB);
       if (!at || !bt) return 6;
+      if (rs && ((rs->xres_hits + rs->xres_misses) % 256u) == 0u) {
+        if (const char* home = getenv("HOME")) {
+          const std::string fp = std::string(home) + "/Documents/matcher_backend.jsonl";
+          if (FILE* f = std::fopen(fp.c_str(), "a")) {
+            std::fprintf(f, "{\"xres\":{\"hits\":%llu,\"misses\":%llu,\"entries\":%zu}}\n",
+                         (unsigned long long)rs->xres_hits, (unsigned long long)rs->xres_misses, rs->xposed.size());
+            std::fclose(f);
+          }
+        }
+      }
       const uint32_t xa[4] = {nApad / 4u, 0u, 0u, 0u};
       const uint32_t xb[4] = {nBpad / 4u, 0u, 0u, 0u};
       c.queue.WriteBuffer(uni, kSlot, reinterpret_cast<const uint8_t*>(xa), 16);
@@ -5414,15 +5471,13 @@ int MatchPairsImpl(const uint8_t* dA, int nA, const uint8_t* dB, int nB,
                      {BE(3, uni, 0, sizeof(Params)), BE(4, colp, 0, colBytes),
                       BE(5, outBA, 0, outBABytes)});
     if (!bgMain || !bgMerge) return 6;
-    if (c.direct) {
-      // [DIRECT] 预转置一次;队列有序,后续分块 submit 天然在其后。
+    if (c.direct && (xposeA || xposeB)) {
+      // [DIRECT] 预转置一次;队列有序,后续分块 submit 天然在其后。[XRES] 只转未命中的一侧。
       wgpu::CommandEncoder enc = c.device.CreateCommandEncoder();
       wgpu::ComputePassEncoder pass = enc.BeginComputePass();
       pass.SetPipeline(c.p_xpose);
-      pass.SetBindGroup(0, bgXA);
-      pass.DispatchWorkgroups((nApad / 4u * 32u + 63u) / 64u);
-      pass.SetBindGroup(0, bgXB);
-      pass.DispatchWorkgroups((nBpad / 4u * 32u + 63u) / 64u);
+      if (xposeA) { pass.SetBindGroup(0, bgXA); pass.DispatchWorkgroups((nApad / 4u * 32u + 63u) / 64u); }
+      if (xposeB) { pass.SetBindGroup(0, bgXB); pass.DispatchWorkgroups((nBpad / 4u * 32u + 63u) / 64u); }
       pass.End();
       if (c.direct_tex) EncodeBtToTexture(enc, c.bt.buf, c.btTex, nBpad / 4u);
       if (c.direct_texa) EncodeBtToTexture(enc, c.at.buf, c.atTex, nApad / 4u);
