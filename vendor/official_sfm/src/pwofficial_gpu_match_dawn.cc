@@ -1893,7 +1893,7 @@ enum class Backend { kNone, kMma, kTiled, kBlocked };
 // 旧形态 8x4 线程组暂存(A16 97.4 / Mate 10 6461)改为显式 OFFICIAL_AETHER_MATCH_DAWN_BLK_LEGACY84=1 才走;
 // 形态 B(预取 B:Mali 615 / A16 1.15×)= OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEB=1。
 // 其它反向旋钮:BLK_84=1(8x4)、BLK_DIRECT_W256=1(256 线程)、BLK_DIRECT_F32=1(f32 存储)。
-struct DirectKnobs { bool direct, k44, w128, nopb, f16, w64, keyscan2, ptr, keyscan3; };
+struct DirectKnobs { bool direct, k44, w128, nopb, f16, w64, keyscan2, ptr, keyscan3, kp; };
 static DirectKnobs ResolveDirectKnobs() {
   DirectKnobs k{};
   const bool legacy = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_LEGACY84") != nullptr;
@@ -1923,6 +1923,10 @@ static DirectKnobs ResolveDirectKnobs() {
           (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_W64") != nullptr || !legacy);
   k.ptr = k.nopb && std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOPTR") == nullptr &&
           (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PTR") != nullptr || !legacy);
+  // [KP 默认 2026-09-06 15:0x] k 成对 128 位载入:A16 −5%(0.86× 原生)、Mate 10 −8%、Adreno 660 中性(见研究仓 09-06 KP 表);
+  //   需要 F16 存储 + PTR 形态(变换锚点);退回:…_NOKP=1。
+  k.kp = k.f16 && k.ptr && std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_NOKP") == nullptr &&
+         (std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KP") != nullptr || !legacy);
   return k;
 }
 
@@ -1937,20 +1941,20 @@ static const char* BlockedLabel() {
   }
   static std::string lbl;
   lbl = std::string("blocked(") + (k.k44 ? "fma4x4" : "fma8x4") + "+direct" + (k.w128 ? (k.w64 ? "+w64" : "+w128") : "") +
-        (k.nopb ? "+nopb" : "+pipeb") + (k.f16 ? "+f16" : "+f32") + (k.keyscan2 ? "+keyscan2" : "") + (k.keyscan3 ? "+keyscan3" : "") + (k.ptr ? "+ptr" : "");
+        (k.nopb ? "+nopb" : "+pipeb") + (k.f16 ? "+f16" : "+f32") + (k.keyscan2 ? "+keyscan2" : "") + (k.keyscan3 ? "+keyscan3" : "") + (k.ptr ? "+ptr" : "") + (k.kp ? "+kp" : "");
   const char* extras[][2] = {
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_G", "+g"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TEX", "+tex"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TEXA", "+texa"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANMEM", "+scanmem"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_FMA", "+fma"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN", "+pscan"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PACKED", "+packed"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TMAP", "+tmap"},
     {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB", "+tailb"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_TAILB2", "+tailb2"},
-    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA", "+pipea"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANSEL", "+scansel"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANU4", "+scanu4"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN2", "+pscan2"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN", "+keyscan"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KP", "+kp"},
+    {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PIPEA", "+pipea"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANSEL", "+scansel"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_SCANU4", "+scanu4"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_PSCAN2", "+pscan2"}, {"OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KEYSCAN", "+keyscan"},
   };
   for (auto& e : extras) if (std::getenv(e[0]) != nullptr) lbl += e[1];
   if (const char* v = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLL")) lbl += std::string("+unroll") + v;
   if (const char* v = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLLH")) lbl += std::string("+unrollh") + v;
   if (const char* v = std::getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_UNROLLHB")) lbl += std::string("+unrollhb") + v;
-  lbl += ",V7)";  // V7 = A‴ 默认(keyscan3);V6 = A″(keyscan2)
+  lbl += ",V8)";  // V8 = A‴+KP 默认;V7 = A‴;V6 = A″
   return lbl.c_str();
 }
 // [UNIVERSAL 2026-09-05] 主路径(mma / blocked)每工作组的行数;两者共用同一条 host 路径。
@@ -4643,7 +4647,7 @@ bool EnsureMainPipelines(Ctx& c) {
         dsrc = x;
       }
       c.direct_kp = false;
-      if (getenv("OFFICIAL_AETHER_MATCH_DAWN_BLK_DIRECT_KP") != nullptr) {
+      if (kn.kp) {
         if (!c.direct_f16) { if (dbg) std::fprintf(stderr, "[direct-chain] KP skipped: needs F16 storage\n"); }
         else {
           const std::string x = DirectKPWgsl(dsrc);
