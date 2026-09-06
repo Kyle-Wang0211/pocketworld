@@ -5065,6 +5065,10 @@ int RunStages(Ctx& c, std::vector<Stage>& stages,
     return rc0;
   }
   // [COLCHUNK 2026-09-05] 按列分块:每个 dispatch 发全部工作组、只跑一段列。
+  // [FINISHFOLD 2026-09-06] 最后一个分块把 finish(合并核 + 两次拷贝)折进同一份命令缓冲:省掉每候选一次单独的
+  //   SubmitAndWait(生产每候选 ≈7 次同步之一)。同一命令缓冲内 pass 顺序即依赖顺序 ⇒ 逐字节同。env NOFINISHFOLD=1 关。
+  static const bool kFinishFold = getenv("OFFICIAL_AETHER_MATCH_DAWN_NOFINISHFOLD") == nullptr;
+  bool folded = false;
   if (kColChunk && stages.size() == 1 && stages[0].col_chunkable) {
     Stage& s = stages[0];
     uint32_t c0 = 0;
@@ -5087,13 +5091,15 @@ int RunStages(Ctx& c, std::vector<Stage>& stages,
       wgpu::ComputePassEncoder pass = BeginPassTs(c, enc);
       s.encode(pass, 0u, s.total_groups);
       pass.End();
+      const bool lastChunk = (c0 + span >= s.nDb);
+      if (kFinishFold && lastChunk) { finish(enc); folded = true; }
       wgpu::CommandBuffer cb = enc.Finish();
       double gpuMs = 0.0;
       const int rc = SubmitAndWait(c, cb, &gpuMs);
       if (rc != 0) return rc;
       if (gpuMs > 0.0 && gpuMs < 10000.0) aether_match_gpu_ms += gpuMs;
       ++aether_match_chunks;
-      if (gpuMs > 0.0 && gpuMs < 10000.0) {
+      if (!folded && gpuMs > 0.0 && gpuMs < 10000.0) {  // 折入 finish 的那块不喂 EMA(含合并核,非纯 GEMM 单价)
         const double u =
             gpuMs / ((double)s.total_groups * ((double)span / 1024.0));
         const double prev = *ema;
@@ -5156,6 +5162,13 @@ int RunStages(Ctx& c, std::vector<Stage>& stages,
       }
       tg0 += groups;
     }
+  }
+  if (folded) {
+    if (c.ts_on) {
+      const double ts = TsDrainMs(c);
+      if (ts >= 0.0) aether_match_gpu_ms = ts;
+    }
+    return 0;
   }
   wgpu::CommandEncoder enc = c.device.CreateCommandEncoder();
   finish(enc);
