@@ -31,8 +31,13 @@
 ```
 产品仓(Flutter)      ~/Developer/pw-head-0827
 算法仓(C++/WGSL)     ~/Developer/Aether3D-cross/aether_cpp
-                      ⚠️ 它的 .git 在 iCloud,写操作会超时;补丁存
-                         ~/Developer/pw_extract_knives/
+                      ⚠️ 它的 .git 已于 2026-09-07 夜搬出 iCloud:
+                         ~/Developer/Aether3D.git(主工作树留 gitdir: 指针,
+                         5 个 worktree 指针已改写)。搬之前近 1 GB 对象被 iCloud
+                         驱逐,commit 必然超时(300 s 不落地);搬后 commit 1.19 s、
+                         rev-parse 0.02 s。**不要再把它移回 ~/Documents。**
+                         回滚素材 ~/Developer/aether3d_gitmove_20260907/
+                      补丁另存   ~/Developer/pw_extract_knives/
 成品 .app 与台账       ~/Developer/pw_builds_20260904/  (+ README.md 是台账)
 备份根                 ~/Developer/pw_backups/pw102_20260906/
   历史脚本             backup.sh / install_gate.sh(可复用的模板)
@@ -56,7 +61,7 @@ Dart VM 哈希(引擎指纹) 0451907c2eaa8467e848c0067bfe8ed4
 | 形态 | 换哪个二进制 | 什么时候用 |
 |---|---|---|
 | **DART_ONLY** | 只换 `Frameworks/App.framework` | 只改了 Dart(`lib/**`)。**绝大多数情况** |
-| **PIPELINE_ONLY** | 只换 `Frameworks/PWOfficialSfm.framework` | 只改了 aether_cpp / WGSL |
+| **PIPELINE_ONLY** | 只换 `Frameworks/PWOfficialSfm.framework` | 只改了 aether_cpp / WGSL。**🔴 `flutter build ios` 出不了这个 framework,见 §3.1** |
 | 全量 | 整包重签 | 改了原生插件、Runner、Flutter 版本 |
 
 **单变量铁律**:一次只换一个。产品(Dart)与管线(C++)不得在同一个 build 里
@@ -89,6 +94,49 @@ flutter test                        # 与改动前的基线对比失败集合
 > `test/widget_test.dart` 的 AuthGate 那条(30 s 定时器)。
 > 另有若干在并发下偶发的用例(resume_badge / platform_pose_provider):
 > **单独重跑两次全绿就算并发抖动,不是回归。**
+
+---
+
+### 3.1 🔴 PIPELINE_ONLY 出包:`flutter build ios` 不会重链 `PWOfficialSfm`
+
+`vendor/official_sfm/official_sfm.podspec` 里是
+
+```ruby
+s.vendored_frameworks = 'Frameworks/PWOfficialSfm.xcframework'
+```
+
+—— pod 吃的是**预制的 xcframework**,`libs/ios-arm64/*.a` 只是 `preserve_paths` 的输入。
+**把新的 `.a` 拷进 `libs/` 再 `flutter build ios`,产出的 framework 还是旧的那一份**
+(2026-09-08 实测:构建成功、`PWOfficialSfm` 二进制日期仍是 9-05、新符号 0 命中)。
+装上去等于什么都没改 —— 这次是 §4 的**第 3 项自证**把它拦下的。
+
+换它只有一条路:`scripts/build_xcframework.sh`(要 10 个 env:carrier / 钉定 Dawn+Ceres+glog
+归档及各自 SHA / link map / 输出路径…),而它唯一的正经调用者是 `scripts/rebuild_native.sh`。
+**`rebuild_native.sh` 是带评审闸的**,开头三个必需输入都在仓外:
+
+```
+PWOFFICIAL_ACCEPTED_PRODUCT_MANIFEST     # fresh-review 已接受的产品清单(文件)
+PWOFFICIAL_ACCEPTED_PRODUCT_MANIFEST_SHA256
+PWOFFICIAL_IDENTITY_OBSERVER             # 可执行文件,SHA 必须 = 脚本里钉的 eb493fd4…
+```
+
+外加一道硬闸:
+
+```sh
+actual_revision=$(git -C "$AETHER_ROOT" rev-parse HEAD)
+[ "$actual_revision" = "$ALGORITHM_REVISION" ] || exit 66   # FAIL: algorithm revision mismatch
+```
+
+**🔴 已知不一致(2026-09-08 查实,未修)**:脚本里钉的 `ALGORITHM_REVISION=b930ab18` 日期是
+**2026-07-21**,而出货归档里的 `official_bundle_adjustment_ceres.cc.o` 其源码 **2026-08-10**
+才被加进来(`4924f0ae`)。⇒ **按这个钉子跑,复现不出生产机上正在跑的二进制。**
+动管线前必须先把钉子修正到与出货产物真正对应的版本 —— 这是评审动作,要用户签。
+
+**改单个 `.o` 的正解(本仓已有先例)**:不整树重编,而是**把重编的那一个 `.o` 用 `ar r` 换进
+钉定归档**,`ranlib` 重建索引 —— `rebuild_native.sh` 里对 Dawn 归档就是这么做的
+("640 个成员,其余逐字节未动,仅 `__.SYMDEF` 由 ranlib 重建")。判据:逐 `.o` 对拍后
+**只有你换的那一个 + `__.SYMDEF` 不同,且没有任何一边独有的 `.o`**。
+2026-09-08 局部 BA 两刀就是这样做出单变量归档的(`~/Developer/pw_backups/libpwofficial_core_ba_20260908.a`)。
 
 ---
 
@@ -349,6 +397,8 @@ Library:    允许 SplashBoard/Snapshots/*.ktx 有出入(系统启动快照会�
 | `devicectl copy from` 断连 / 只拉一半 | 磁盘满 或 传输中断。按 §5.4 逐目录重拉,不要整目录一把梭 |
 | Wi-Fi adb / devicectl 掉线 | iPhone 走配对的 Wi-Fi(`Kyles-iPhone.coredevice.local`);Android 台架机 `adb connect 192.168.1.11:5555`,拔线后 adbd 复位需重连 |
 | 台架机(Mate 10)数字忽快忽慢 | 必须 `adb shell svc power stayon true` + `input keyevent KEYCODE_WAKEUP`。锁屏态 GPU 慢 2–3 倍(4.7 s → 10 s),且 thermalservice 不报节流 |
+| 换了 `.a` 却装完行为没变 | `PWOfficialSfm` 是 podspec vendor 的**预制 xcframework**,`flutter build ios` 不重链它。见 §3.1。必须用 §4 第 3 项自证(新符号 `strings | grep -c`)拦 |
+| `rebuild_native.sh` 报 `exit 66 algorithm revision mismatch` | `ALGORITHM_REVISION` 钉子过期(见 §3.1 已知不一致)。**不要改钉子绕过** —— 那一行就是评审凭据,要用户签 |
 
 ---
 
