@@ -33,6 +33,17 @@ const double kAutoCaptureTimeLimitSec = 300.0;
 // 函数默认 0.8 不一致(上游自身的分歧,不是我们改的)。取 C++ 默认 0.8。
 const double kStellaMaxIntervalSec = 1.0;
 const double kStellaMinIntervalSec = 0.1;
+// [2026-09-07 实测裁决] max_distance 保持上游默认 -1(关闭)。理由不是"没查到
+// 取值",而是量过之后确认它在我们这里是**惰性**的:
+//  * 上游的 view_changed(丢掉参考帧 20% 的路标就拍)本身就是上限,而且比
+//    Agisoft Metashape 手册要求的"相邻照片重叠不低于 60–70%"更严 —— 20% 内容
+//    变化 ≈ 80% 重叠;任何按 60% 重叠反推出来的 max_distance 都比它松,永远
+//    轮不到触发。
+//  * 高速扫描时相邻照片确实会拉开(1 m/s、深度 1 m 时 73 cm、重叠 27%),但那
+//    不是规则缺项:实测间距 ≈ 快门延迟 × 速度 + 常数(延迟 0/0.27/0.5/0.74 s
+//    对应 27/53/73/100 cm)。快门事务里不判定(skipAwaitingCapture),等能判定
+//    时已经 overshoot,加任何触发项都追不回来。能做的是提示用户走慢
+//    (shouldPromptSlowDown),不是改判据。
 const double kStellaMaxDistanceM = -1.0; // 上游默认:关闭
 const double kStellaMinDistanceM = -1.0; // 上游默认:关闭
 const double kStellaLmsRatioThrAlmostAllLmsAreTracked = 0.9;
