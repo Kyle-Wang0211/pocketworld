@@ -682,6 +682,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       onError: _onShutterTicketError,
     );
     WidgetsBinding.instance.addObserver(this);
+    // 原生侧「这一张已经拍下」的信号(见 _handleNativeCall)。三端规矩:
+    // 反馈发在拍下那一刻,不发在处理完成那一刻。
+    _arKitChannel.setMethodCallHandler(_handleNativeCall);
     // Capture reconstruction runs on-device via streaming SfM (see
     // _startSfmLiveRecon) plus server-side recon on upload — no local model
     // download gate. The App Store install bundle stays small (~80 MB).
@@ -3089,6 +3092,69 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     setState(() => _autoStartPending = true);
   }
 
+  /// 已经给过反馈的证据路径。早信号与完成路径都调 [_fireShutterFeedback],
+  /// 由它保证**每张照片正好一次**震动 + 一个黑相框。
+  final Set<String> _feedbackFiredEvidencePaths = <String>{};
+
+  /// 原生 → Dart 的反向调用。目前只有一件事:`highResFrameCaptured`。
+  ///
+  /// **三端一致的规矩(各端官方文档,措辞几乎一样)**:反馈发在平台报告
+  /// 「这一张已经拍下」的那一刻,绝不等我们自己的编码/落盘:
+  ///   iOS       `AVCapturePhotoCaptureDelegate.photoOutput(_:willCapturePhotoFor:)`
+  ///   Android   CameraX `ImageCapture.OnImageCapturedCallback.onCaptureStarted`
+  ///             (底层 Camera2 `CameraCaptureSession.CaptureCallback.onCaptureStarted`)
+  ///   HarmonyOS `photoOutput.on('captureStartWithInfo')`
+  /// 策略(这个方法)三端共用;各端适配层只负责在自己那个回调上发事件。
+  /// iOS 走 ARKit `captureHighResolutionFrame`,它没有 willCapture 那种更早的
+  /// 挂点,所以本端绑在 ARFrame 到手那一刻 —— 是本端能拿到的最早且诚实的信号。
+  Future<dynamic> _handleNativeCall(MethodCall call) async {
+    if (call.method != 'highResFrameCaptured') return null;
+    final args = call.arguments;
+    if (args is! Map) return null;
+    final evidence = args['evidenceJpegPath'] as String?;
+    final preview = args['previewJpegPath'] as String?;
+    if (evidence == null || preview == null) return null;
+    _fireShutterFeedback(
+      evidenceJpegPath: evidence,
+      previewJpegPath: preview,
+      source: 'captured_signal',
+    );
+    return null;
+  }
+
+  /// 震动 + 黑相框,**中间不隔任何 await**(用户底线:「拍照和给反馈必须同时
+  /// 发生」)。按证据路径去重,所以早信号与完成路径的兜底加起来仍是每张一次。
+  ///
+  /// 诚实性:只在照片**物理上已经存在**之后调 —— 早信号是 ARFrame 到手,
+  /// 兜底是事务返回。绝不在受理时刻调(2026-09-01「震了 30+ 次、相册只有
+  /// 20 张」就是发在受理时刻)。此后若校验/落盘失败,`_markPhotoCardFailed`
+  /// 会 removePhotoCard 并提示,把这一张撤掉。
+  void _fireShutterFeedback({
+    required String evidenceJpegPath,
+    required String previewJpegPath,
+    required String source,
+  }) {
+    if (!mounted) return;
+    if (_failedEvidenceJpegPaths.contains(evidenceJpegPath)) return;
+    if (!_feedbackFiredEvidencePaths.add(evidenceJpegPath)) return;
+    _triggerShutterHaptic();
+    unawaited(
+      _arKitChannel
+          .invokeMethod<void>('addPhotoCard', <String, dynamic>{
+            'textureJpegPath': previewJpegPath,
+            'evidenceJpegPath': evidenceJpegPath,
+          })
+          .catchError((Object e) {
+            // ignore: avoid_print
+            print('[OfficialARCapturePage] addPhotoCard failed: $e');
+          }),
+    );
+    TelemetryWriter.instance.event('shutter_feedback', {
+      'source': source,
+      'jpeg': evidenceJpegPath.split('/').last,
+    });
+  }
+
   void _triggerShutterHaptic() {
     unawaited(
       HapticFeedback.heavyImpact().catchError((
@@ -3264,21 +3330,13 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     _autoCapture.onCaptureCompleted(
       captureTimestampSec: input.captureTimestamp,
     );
-    if (mounted &&
-        !_failedEvidenceJpegPaths.contains(capture.evidenceJpegPath)) {
-      _triggerShutterHaptic();
-      unawaited(
-        _arKitChannel
-            .invokeMethod<void>('addPhotoCard', <String, dynamic>{
-              'textureJpegPath': capture.previewJpegPath,
-              'evidenceJpegPath': capture.evidenceJpegPath,
-            })
-            .catchError((Object e) {
-              // ignore: avoid_print
-              print('[OfficialARCapturePage] addPhotoCard failed: $e');
-            }),
-      );
-    }
+    // 兜底:正常情况下反馈已由原生的「已经拍下」信号发过了(去重会挡在这里)。
+    // 只有那个信号没到(通道异常等)才在这里补,保证不会有照片没反馈。
+    _fireShutterFeedback(
+      evidenceJpegPath: capture.evidenceJpegPath,
+      previewJpegPath: capture.previewJpegPath,
+      source: 'transaction_complete_fallback',
+    );
     _recomputeShutterPace();
     TelemetryWriter.instance.event('shutter', {
       'ticket_id': ticket.id,
@@ -3835,6 +3893,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _arKitChannel.setMethodCallHandler(null);
     unawaited(_endReconUmbrella());
     _stopGuidanceTelemetry();
     // 遥测【resource】:拍摄页退出 → 停 Swift 侧 10s 资源采样。

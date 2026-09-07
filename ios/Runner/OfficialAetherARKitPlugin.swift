@@ -2134,6 +2134,47 @@ class OfficialAetherARKitPlugin: NSObject {
         let timestamp = frame.timestamp
         let requestToCaptureDelta = timestamp - requestFrameTimestamp
 
+        // ══ 「已经拍下」信号:反馈挂这里,不挂「处理完成」 ══
+        //
+        // 三端官方各自有明文规定的同一条规矩,措辞几乎一样:
+        //   iOS      AVCapturePhotoCaptureDelegate.photoOutput(_:willCapturePhotoFor:)
+        //            —— "delivered right when the photo is being taken … if you want
+        //               to perform a shutter animation, this is the appropriate time"
+        //            (处理完成是另一个更晚的回调 didFinishProcessingPhoto)
+        //   Android  CameraX ImageCapture.OnImageCapturedCallback.onCaptureStarted
+        //            —— "recommended to play the shutter sound or the shutter
+        //               animation at this point";底层是 Camera2 的
+        //               CameraCaptureSession.CaptureCallback.onCaptureStarted
+        //   HarmonyOS photoOutput.on('captureStartWithInfo') —— 带 captureId,
+        //            处理完成是另一个 photoAvailable
+        //
+        // ARKit 的 captureHighResolutionFrame 只有一个 completion,没有
+        // willCapture 那种更早的挂点,所以本端能拿到的**最早且诚实**的信号就是
+        // 这里:ARFrame 已在手,照片物理上已经存在。此刻之后的 JPEG 编码、
+        // gray1024/gray128 派生、建目录、写文件、写元数据全是**我们自己的处理**,
+        // 属于三端规矩里 didFinishProcessing 那一半,不该让用户等。
+        //
+        // 2026-09-07 实测(未命名(25) n=20):12MP 事务中位 702 ms、最长 1567 ms,
+        // 而震动与黑相框一直等到事务返回才发 —— 用户报"检测和快门之间还是有
+        // 零点几秒的延迟"。原代码注释里 "+255ms 送达 / +304ms 事务完成 / 49ms
+        // 感知不出来" 是 build-76 的数字,今天的差值早已不是 49 ms。
+        //
+        // 诚实性:此信号只在 ARFrame 真的到手后发,绝不在受理时刻发(2026-09-01
+        // 那次"震了 30+ 次、相册只有 20 张"正是发在受理时刻)。此刻之后若校验
+        // 或落盘失败,Dart 侧既有的 removePhotoCard + 失败提示会把这张撤掉。
+        let capturedAtHostMs = Date().timeIntervalSince1970 * 1000.0
+        DispatchQueue.main.async {
+          self.methodChannel.invokeMethod(
+            "highResFrameCaptured",
+            arguments: [
+              "evidenceJpegPath": highresPath,
+              "previewJpegPath": previewPath,
+              "captureTimestamp": timestamp,
+              "capturedAtHostMs": capturedAtHostMs,
+            ]
+          )
+        }
+
         // [曝光遥测 2026-09-01] 纯观测。09-01 那天有 7 次同物体会话,照片清晰度
         // (Laplacian 中位)从 846 掉到 341、上限从 ~1400 塌到 ~465,而每帧几何
         // 验证过的匹配对数随之从 4431 掉到 554(rho +0.96),最终点数跟着掉 3.5 倍。

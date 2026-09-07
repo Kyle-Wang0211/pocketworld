@@ -40,19 +40,37 @@ void main() {
     );
   });
 
+  // 2026-09-08 契约**搬家(不是放宽)**:「照片确认存在」的锚点从
+  // 「我们的 12MP 事务返回」换成「平台报告这一张已经拍下」。
+  //
+  // 起因:未命名(25) 实测事务中位 702 ms、最长 1567 ms,而队列等待只有
+  // 2.89 ms —— 用户报"检测和快门之间还是有零点几秒的延迟"。原来把反馈压到
+  // 事务返回,是在等我们自己的 JPEG 编码/落盘/派生灰度,不是在等照片存在。
+  //
+  // 三端官方对这件事各自有明文规定,措辞几乎一样,都要求发在「拍下」那一刻:
+  //   iOS       willCapturePhotoFor(处理完成是另一个 didFinishProcessingPhoto)
+  //   Android   CameraX onCaptureStarted / Camera2 CaptureCallback.onCaptureStarted
+  //   HarmonyOS photoOutput.on('captureStartWithInfo')(处理完成是 photoAvailable)
+  //
+  // 底线一个字没松:反馈仍然只在照片**物理上已经存在**之后发(ARFrame 到手),
+  // 仍然震一次 = 真有一张(按证据路径去重),两者之间仍然不隔任何 await。
   test('震动与 AR 相框同时发出 —— 中间不得有 await', () {
     final source = File(
       'lib/ui/official_capture/ar_capture_page.dart',
     ).readAsStringSync();
 
-    final execStart = source.indexOf('Future<void> _executeShutterTicket(');
-    expect(execStart, greaterThanOrEqualTo(0));
-    final hapticAt = source.indexOf('_triggerShutterHaptic()', execStart);
-    final cardAt = source.indexOf("'addPhotoCard'", execStart);
+    // 反馈现在只有一个入口:_fireShutterFeedback。
+    final fnStart = source.indexOf('  void _fireShutterFeedback({');
+    expect(fnStart, greaterThanOrEqualTo(0), reason: '反馈入口不存在了');
+    final fnEnd = source.indexOf('\n  }\n', fnStart);
+    final body = source.substring(fnStart, fnEnd);
+
+    final hapticAt = body.indexOf('_triggerShutterHaptic()');
+    final cardAt = body.indexOf("'addPhotoCard'");
     expect(hapticAt, greaterThanOrEqualTo(0), reason: '震动必须在这条路径上');
     expect(cardAt, greaterThan(hapticAt), reason: '震动必须紧挨在挂相框之前');
 
-    final between = source
+    final between = body
         .substring(hapticAt, cardAt)
         .split('\n')
         .where((line) => !line.trimLeft().startsWith('//'))
@@ -63,20 +81,42 @@ void main() {
       isFalse,
       reason: '两者之间一旦出现 await,就不再是「同时」——那是用户定的底线',
     );
+  });
 
-    // 且必须在 12MP 事务**之后** —— 照片确认存在才给反馈。
-    // 「照片都不知道有没有,那干嘛震动」(用户,2026-09-01)。
-    final completionAt = source.indexOf(
-      'await capture.highResolutionCompletion',
-      execStart,
-    );
-    expect(completionAt, greaterThanOrEqualTo(0));
+  test('反馈只能由「照片已经存在」的两个来源触发,别处一律不许发', () {
+    final source = File(
+      'lib/ui/official_capture/ar_capture_page.dart',
+    ).readAsStringSync();
+    final code = source
+        .split('\n')
+        .where((l) =>
+            !l.trimLeft().startsWith('//') && !l.trimLeft().startsWith('///'))
+        .join('\n');
+
+    // 唯一的震动调用点在 _fireShutterFeedback 里(声明不算)。
     expect(
-      completionAt,
-      lessThan(hapticAt),
-      reason: '照片确认存在之前不得给任何反馈 —— 那是承诺不是事实',
+      RegExp(r'(?<!void )_triggerShutterHaptic\(\);').allMatches(code),
+      hasLength(1),
+      reason: '多一个调用点,「震动次数 = 照片数」这条不变量就被绕过了',
     );
-    expect(completionAt, lessThan(cardAt));
+
+    // 去重:同一张照片只反馈一次。
+    expect(
+      code.contains('_feedbackFiredEvidencePaths.add('),
+      isTrue,
+      reason: '没有去重的话,早信号 + 兜底会震两次',
+    );
+
+    // 两个来源,一个都不能少、一个都不能多。
+    final sources = RegExp(r"source: '([a-z_]+)'").allMatches(code)
+        .map((m) => m.group(1)!)
+        .toSet();
+    expect(
+      sources,
+      {'captured_signal', 'transaction_complete_fallback'},
+      reason: '反馈来源只许是「原生说已经拍下」与「事务返回兜底」,'
+          '两者都在照片物理存在之后;实测来源集合 = $sources',
+    );
   });
 
   test('haptic is best effort and manual/auto paths do not duplicate it', () {
