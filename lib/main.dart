@@ -27,7 +27,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'auth/auth_scope.dart';
 import 'auth/cold_start_session_gate.dart';
 import 'auth/current_user.dart';
-import 'auth/mock_auth_service.dart';
+import 'auth/unavailable_auth_service.dart';
 import 'auth/secure_session_storage.dart';
 import 'auth/supabase_auth_service.dart';
 import 'config/endpoint_config.dart';
@@ -136,7 +136,10 @@ Future<void> main() async {
       // very next microtask and the splash paints immediately. Firebase
       // is initialized in the background and swapped into CurrentUser
       // once it's up (or after a 10-second timeout fallback to mock).
-      final currentUser = CurrentUser(service: MockAuthServiceImpl());
+      // [2026-09-07 用户裁决] 启动期不再用 Mock 登录服务占位:占位服务是
+      // "显式不可用",任何登录动作都报 providerUnavailable;后端就绪后再换成
+      // 真实认证。初始化失败/超时 ⇒ 不可用态 + 重试,不回退假登录。
+      final currentUser = CurrentUser(service: const UnavailableAuthService());
       final localeNotifier = LocaleNotifier();
       unawaited(localeNotifier.bootstrap());
       runApp(
@@ -145,6 +148,7 @@ Future<void> main() async {
           localeNotifier: localeNotifier,
         ),
       );
+      _appCurrentUser = currentUser;
       // ignore: avoid_print
       print('[AET-SMOKE] runApp returned');
       // Did Flutter actually paint the first frame?
@@ -179,107 +183,155 @@ Future<void> main() async {
         print('[AET-SMOKE] first frame RASTERIZED');
       });
 
-      unawaited(() async {
-        // Backend address is resolved at RUNTIME — see
-        // lib/config/endpoint_config.dart. It used to be read straight from
-        // `String.fromEnvironment` here, but `--dart-define` does not reach
-        // this project's iOS xcconfig chain (verified on device
-        // 2026-08-09), so the defaults were the shipped values: the backend
-        // host was effectively compiled into the binary, and moving it
-        // meant cutting a release and waiting for adoption. The resolver
-        // falls back to those same constants, so with no config endpoint
-        // set this is byte-for-byte the previous behaviour.
-        //
-        // The anon key is intentionally public — RLS policies on each
-        // table do the actual access control.
-        final endpoint = await EndpointConfigResolver.resolve();
-        debugPrint('[main] backend endpoint resolved: $endpoint');
-        final supabaseUrl = endpoint.supabaseUrl;
-        final supabaseAnonKey = endpoint.supabaseAnonKey;
-        const initTimeout = Duration(seconds: 10);
-        bool supabaseReady = false;
-        try {
-          await Supabase.initialize(
-            url: supabaseUrl,
-            anonKey: supabaseAnonKey,
-            debug: false,
-            // Keychain instead of the default plaintext UserDefaults. The
-            // default leaves the long-lived refresh_token readable in the
-            // preferences plist and carries it into unencrypted backups;
-            // see lib/auth/secure_session_storage.dart for why the key
-            // derivation and accessibility level are what they are.
-            // initialize() performs the one-time migration before
-            // recoverSession() runs, so existing sessions survive.
-            authOptions: FlutterAuthClientOptions(
-              localStorage: SecureSessionStorage(supabaseUrl: supabaseUrl),
-            ),
-          ).timeout(initTimeout);
-          supabaseReady = true;
-        } catch (e) {
-          debugPrint(
-            '[main] Supabase.initialize failed/timeout: $e — '
-            'continuing with mock auth.',
-          );
-        }
-        if (supabaseReady) {
-          final auth = Supabase.instance.client.auth;
-          final restoredSession = auth.currentSession;
-          final gateResult = await waitForColdStartSession(
-            hasSession: restoredSession != null,
-            isExpired: restoredSession?.isExpired ?? false,
-            authEvents: auth.onAuthStateChange.map((state) {
-              return switch (state.event) {
-                AuthChangeEvent.tokenRefreshed =>
-                  ColdStartAuthEvent.tokenRefreshed,
-                AuthChangeEvent.signedOut => ColdStartAuthEvent.signedOut,
-                _ => ColdStartAuthEvent.other,
-              };
-            }),
-            fallbackRefresh: () async {
-              await auth.refreshSession();
-            },
-          );
-          DeviceLog.log('AuthStartup', 'session gate=$gateResult');
-          // ignore: avoid_print
-          print(
-            '[AUTH-DEBUG] Supabase.initialize done. '
-            'currentSession exists: '
-            '${Supabase.instance.client.auth.currentSession != null} '
-            'currentUser: '
-            '${Supabase.instance.client.auth.currentUser?.email ?? "null"}',
-          );
-          currentUser.swapService(
-            SupabaseAuthServiceImpl(localeNotifier: localeNotifier),
-          );
-        }
-        await currentUser.bootstrap();
-        // Plan G W2 全本地 (2026-05-16): no cloud upload, no job-status
-        // poll. Captures live entirely on-device — JobStatusWatcher
-        // deleted along with the rest of the cloud upload chain.
-      }());
+      currentUser.retryInit = () =>
+          _initAuthBackend(currentUser, localeNotifier);
+      unawaited(_initAuthBackend(currentUser, localeNotifier));
     },
     (error, stack) {
       // ignore: avoid_print
       print('[main.runZonedGuarded] uncaught: $error\n$stack');
+      // [2026-09-07 用户裁决] 未捕获异常只记日志,**绝不**用假登录服务重新
+      // runApp(此前每个异常都会把整个 app 换成 Mock 版:未命名(18) 拍摄期间
+      // 异常风暴 ⇒ 用户在 Mock 登录页里输了真账号)。设备日志留原文,离线可查。
       try {
-        WidgetsFlutterBinding.ensureInitialized();
-        final fallback = CurrentUser(service: MockAuthServiceImpl())
-          ..bootstrap();
-        runApp(
-          PocketWorldApp(
-            currentUser: fallback,
-            localeNotifier: LocaleNotifier(),
-          ),
+        final text = '$error\n$stack';
+        DeviceLog.log(
+          'Uncaught',
+          text.length > 4000 ? text.substring(0, 4000) : text,
         );
-      } catch (e) {
-        // ignore: avoid_print
-        print('[main] fallback runApp also failed: $e');
+      } catch (_) {}
+      if (_appCurrentUser == null) {
+        // 还没 runApp 就炸了:用真实(不可用态)的 app 起来,让用户看到失败与重试。
+        try {
+          WidgetsFlutterBinding.ensureInitialized();
+          final cu = CurrentUser(service: const UnavailableAuthService())
+            ..markServiceUnavailable('startup failed before runApp: $error');
+          _appCurrentUser = cu;
+          runApp(
+            PocketWorldApp(currentUser: cu, localeNotifier: LocaleNotifier()),
+          );
+        } catch (e) {
+          // ignore: avoid_print
+          print('[main] fallback runApp also failed: $e');
+        }
       }
     },
   );
 }
 
+/// runApp 过的 CurrentUser(只用于未捕获异常兜底判断"app 起来了没有")。
+CurrentUser? _appCurrentUser;
+
 const Color _aetherColdStartBackground = AetherColors.bg;
+
+Future<void>? _supabaseInit;
+
+Future<void> _startSupabase(String supabaseUrl, String supabaseAnonKey) {
+  late final Future<void> f;
+  f =
+      Supabase.initialize(
+        url: supabaseUrl,
+        anonKey: supabaseAnonKey,
+        debug: false,
+        // Keychain instead of the default plaintext UserDefaults. The
+        // default leaves the long-lived refresh_token readable in the
+        // preferences plist and carries it into unencrypted backups;
+        // see lib/auth/secure_session_storage.dart for why the key
+        // derivation and accessibility level are what they are.
+        // initialize() performs the one-time migration before
+        // recoverSession() runs, so existing sessions survive.
+        authOptions: FlutterAuthClientOptions(
+          localStorage: SecureSessionStorage(supabaseUrl: supabaseUrl),
+        ),
+      ).then<void>(
+        (_) {},
+        onError: (Object e, StackTrace st) {
+          if (identical(_supabaseInit, f)) _supabaseInit = null;
+          DeviceLog.log('AuthStartup', 'Supabase.initialize error: $e');
+          throw e;
+        },
+      );
+  // 超时分支不再等它;它之后若失败已在上面记日志,不要再冒成未捕获异常。
+  f.ignore();
+  return f;
+}
+
+/// 登录后端初始化(解析后端地址 → Supabase.initialize → 冷启动会话门 →
+/// swapService → bootstrap)。启动时调一次;失败进入不可用态,UI 的"重试"
+/// 通过 [CurrentUser.retryInit] 再调它。绝不回退到假登录。
+Future<void> _initAuthBackend(
+  CurrentUser currentUser,
+  LocaleNotifier localeNotifier,
+) async {
+  try {
+    // Backend address is resolved at RUNTIME — see
+    // lib/config/endpoint_config.dart. It used to be read straight from
+    // `String.fromEnvironment` here, but `--dart-define` does not reach
+    // this project's iOS xcconfig chain (verified on device
+    // 2026-08-09), so the defaults were the shipped values: the backend
+    // host was effectively compiled into the binary, and moving it
+    // meant cutting a release and waiting for adoption. The resolver
+    // falls back to those same constants, so with no config endpoint
+    // set this is byte-for-byte the previous behaviour.
+    //
+    // The anon key is intentionally public — RLS policies on each
+    // table do the actual access control.
+    final endpoint = await EndpointConfigResolver.resolve();
+    debugPrint('[main] backend endpoint resolved: $endpoint');
+    final supabaseUrl = endpoint.supabaseUrl;
+    final supabaseAnonKey = endpoint.supabaseAnonKey;
+    const initTimeout = Duration(seconds: 10);
+    bool supabaseReady = false;
+    try {
+      // 重试时复用仍在途的 initialize(超时只是我们不再等,底层还在跑);
+      // 只有它真的失败了才允许下一次重试重新发起。
+      final inflight = _supabaseInit ??= _startSupabase(
+        supabaseUrl,
+        supabaseAnonKey,
+      );
+      await inflight.timeout(initTimeout);
+      supabaseReady = true;
+    } catch (e) {
+      DeviceLog.log('AuthStartup', 'Supabase.initialize failed/timeout: $e');
+      currentUser.markServiceUnavailable('Supabase.initialize: $e');
+      return;
+    }
+    if (supabaseReady) {
+      final auth = Supabase.instance.client.auth;
+      final restoredSession = auth.currentSession;
+      final gateResult = await waitForColdStartSession(
+        hasSession: restoredSession != null,
+        isExpired: restoredSession?.isExpired ?? false,
+        authEvents: auth.onAuthStateChange.map((state) {
+          return switch (state.event) {
+            AuthChangeEvent.tokenRefreshed => ColdStartAuthEvent.tokenRefreshed,
+            AuthChangeEvent.signedOut => ColdStartAuthEvent.signedOut,
+            _ => ColdStartAuthEvent.other,
+          };
+        }),
+        fallbackRefresh: () async {
+          await auth.refreshSession();
+        },
+      );
+      DeviceLog.log('AuthStartup', 'session gate=$gateResult');
+      // ignore: avoid_print
+      print(
+        '[AUTH-DEBUG] Supabase.initialize done. '
+        'currentSession exists: '
+        '${Supabase.instance.client.auth.currentSession != null} '
+        'currentUser: '
+        '${Supabase.instance.client.auth.currentUser?.email ?? "null"}',
+      );
+      currentUser.swapService(
+        SupabaseAuthServiceImpl(localeNotifier: localeNotifier),
+      );
+      await currentUser.bootstrap();
+    }
+  } catch (e, st) {
+    DeviceLog.log('AuthStartup', 'init failed: $e\n$st');
+    currentUser.markServiceUnavailable('init: $e');
+  }
+}
 
 class PocketWorldApp extends StatelessWidget {
   final CurrentUser currentUser;
@@ -404,6 +456,8 @@ class _AuthGateState extends State<_AuthGate> {
       body = const HomeScreen();
     } else if (state is CurrentUserSignedOut) {
       body = AuthRootView(currentUser: user);
+    } else if (state is CurrentUserServiceUnavailable) {
+      body = _ServiceUnavailableView(currentUser: user, reason: state.reason);
     } else {
       body = const SizedBox.expand();
     }
@@ -425,7 +479,60 @@ class _AuthGateState extends State<_AuthGate> {
     final l = AppL10n.of(context);
     if (state is CurrentUserBootstrapping) return l.splashRestoringSession;
     if (state is CurrentUserSignedOut) return l.splashPreparingSignIn;
+    if (state is CurrentUserServiceUnavailable) return l.authServiceUnavailable;
     return l.splashWaking3DEngine;
+  }
+}
+
+/// 登录后端不可用:显示失败与重试,不显示登录表单(表单背后没有真服务)。
+class _ServiceUnavailableView extends StatelessWidget {
+  const _ServiceUnavailableView({
+    required this.currentUser,
+    required this.reason,
+  });
+
+  final CurrentUser currentUser;
+  final String reason;
+
+  @override
+  Widget build(BuildContext context) {
+    final l = AppL10n.of(context);
+    return Scaffold(
+      backgroundColor: AetherColors.bg,
+      body: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  l.authServiceUnavailable,
+                  textAlign: TextAlign.center,
+                  style: AetherTextStyles.body,
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  reason,
+                  textAlign: TextAlign.center,
+                  style: AetherTextStyles.caption,
+                ),
+                const SizedBox(height: 24),
+                AnimatedBuilder(
+                  animation: currentUser,
+                  builder: (context, _) => FilledButton(
+                    onPressed: currentUser.isRetryingInit
+                        ? null
+                        : () => unawaited(currentUser.retryServiceInit()),
+                    child: Text(l.authRetry),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 

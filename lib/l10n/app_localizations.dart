@@ -127,6 +127,18 @@ abstract class AppL10n {
   /// **'Preparing sign-in…'**
   String get splashPreparingSignIn;
 
+  /// No description provided for @authServiceUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Sign-in service is unavailable. Check your network and retry.'**
+  String get authServiceUnavailable;
+
+  /// No description provided for @authRetry.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry'**
+  String get authRetry;
+
   /// No description provided for @splashWaking3DEngine.
   ///
   /// In en, this message translates to:

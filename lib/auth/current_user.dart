@@ -19,6 +19,7 @@ import '../util/device_log.dart';
 import 'auth_error.dart';
 import 'auth_models.dart';
 import 'auth_service.dart';
+import 'unavailable_auth_service.dart';
 
 sealed class CurrentUserState {
   const CurrentUserState();
@@ -35,6 +36,14 @@ class CurrentUserSignedIn extends CurrentUserState {
 
 class CurrentUserSignedOut extends CurrentUserState {
   const CurrentUserSignedOut();
+}
+
+/// 登录后端不可用(初始化失败/超时/网络不通)。**不是** signedOut:登录页
+/// 不能出现,否则用户会往一个假服务里输真密码(2026-09-07 未命名(18) 事故)。
+/// UI 显示失败原因与"重试";重试走 [CurrentUser.retryServiceInit]。
+class CurrentUserServiceUnavailable extends CurrentUserState {
+  final String reason;
+  const CurrentUserServiceUnavailable(this.reason);
 }
 
 class CurrentUser extends ChangeNotifier {
@@ -66,8 +75,10 @@ class CurrentUser extends ChangeNotifier {
     // silent SignedOut flip (AuthGate pops every route → login page) was
     // undiagnosable in the field without this.
     DeviceLog.log('CurrentUser', '→ SignedOut ($reason)');
-    debugPrint('[CurrentUser] → SignedOut ($reason)\n'
-        '${StackTrace.current}');
+    debugPrint(
+      '[CurrentUser] → SignedOut ($reason)\n'
+      '${StackTrace.current}',
+    );
   }
 
   /// Swap the concrete auth backend at runtime. main() uses this to
@@ -75,12 +86,42 @@ class CurrentUser extends ChangeNotifier {
   /// Firebase.initializeApp) and upgrade to the Firebase-backed
   /// service once initialization settles.
   void swapService(AuthService newService) {
-    DeviceLog.log('CurrentUser',
-        'swapService → ${newService.runtimeType} (state=${_state.runtimeType})');
+    DeviceLog.log(
+      'CurrentUser',
+      'swapService → ${newService.runtimeType} (state=${_state.runtimeType})',
+    );
     _service = newService;
   }
 
   CurrentUserState get state => _state;
+
+  /// main() 挂上的"重新初始化登录后端"动作(解析后端地址 → Supabase.initialize
+  /// → 会话恢复 → swapService → bootstrap)。UI 的"重试"按钮只调这个。
+  Future<void> Function()? retryInit;
+  bool _retryingInit = false;
+  bool get isRetryingInit => _retryingInit;
+
+  Future<void> retryServiceInit() async {
+    final r = retryInit;
+    if (r == null || _retryingInit) return;
+    _retryingInit = true;
+    _state = const CurrentUserBootstrapping();
+    notifyListeners();
+    try {
+      await r();
+    } finally {
+      _retryingInit = false;
+      notifyListeners();
+    }
+  }
+
+  /// 登录后端不可用:进入显式失败态(带原因),绝不用假服务顶替。
+  void markServiceUnavailable(String reason) {
+    DeviceLog.log('CurrentUser', '→ ServiceUnavailable ($reason)');
+    _state = CurrentUserServiceUnavailable(reason);
+    notifyListeners();
+  }
+
   AuthException? get lastError => _lastError;
   bool get isPerformingAuthAction => _isPerformingAuthAction;
   bool get isSignedIn => _state is CurrentUserSignedIn;
@@ -102,14 +143,25 @@ class CurrentUser extends ChangeNotifier {
     // init 本身不发任何事件;track 在未登录时是 no-op ⇒ 登录墙即同意门,
     // 注册(同意协议与隐私政策)之前不会有任何统计数据离开设备。
     // 错误钩子链式接管,原 handler 照常执行。
-    unawaited(PwAnalytics.instance.init().then((_) {
-      PwAnalytics.instance.installErrorHandlers();
-    }));
+    unawaited(
+      PwAnalytics.instance.init().then((_) {
+        PwAnalytics.instance.installErrorHandlers();
+      }),
+    );
+    // 后端还没就绪就不"引导":引导到 signedOut 会把登录页亮出来,而此时的
+    // 服务连凭据都收不了。保持/进入不可用态,等重试。
+    if (_service is UnavailableAuthService) {
+      final reason = (_service as UnavailableAuthService).reason;
+      markServiceUnavailable('bootstrap: $reason');
+      return;
+    }
     try {
       final user = await _service.currentUser();
       // ignore: avoid_print
-      print('[AUTH-DEBUG] CurrentUser.bootstrap: _service.currentUser() '
-          '→ ${user == null ? "null (will go to signedOut)" : "user=${user.email ?? user.id.rawValue}"}');
+      print(
+        '[AUTH-DEBUG] CurrentUser.bootstrap: _service.currentUser() '
+        '→ ${user == null ? "null (will go to signedOut)" : "user=${user.email ?? user.id.rawValue}"}',
+      );
       if (user == null) {
         await _clearPersistedUserID();
         _logSignedOut('bootstrap: currentUser==null');
@@ -123,7 +175,9 @@ class CurrentUser extends ChangeNotifier {
       if (idleExpired) {
         try {
           await _service.signOut();
-        } catch (_) {/* best effort */}
+        } catch (_) {
+          /* best effort */
+        }
         await _clearIdleTimestamp();
         await _clearPersistedUserID();
         _logSignedOut('bootstrap: idle expired');
@@ -321,7 +375,9 @@ class CurrentUser extends ChangeNotifier {
   Future<void> signOut() async {
     try {
       await _service.signOut();
-    } catch (_) {/* best effort */}
+    } catch (_) {
+      /* best effort */
+    }
     await _clearIdleTimestamp();
     await _clearPersistedUserID();
     _logSignedOut('signOut() called');
@@ -430,7 +486,8 @@ class CurrentUser extends ChangeNotifier {
 
   Future<bool> _isIdleExpired() async {
     final prefs = await AetherPrefs.getInstance();
-    final lastMs = (await prefs.getInt(AuthPersistenceKeys.lastActivityAt)) ?? 0;
+    final lastMs =
+        (await prefs.getInt(AuthPersistenceKeys.lastActivityAt)) ?? 0;
     if (lastMs <= 0) return false;
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     return (nowMs - lastMs) > idleSignOutInterval.inMilliseconds;

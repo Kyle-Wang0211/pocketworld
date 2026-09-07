@@ -24,6 +24,12 @@ class AppL10nZh extends AppL10n {
   String get splashPreparingSignIn => '准备登录界面…';
 
   @override
+  String get authServiceUnavailable => '登录服务暂时不可用,请检查网络后重试';
+
+  @override
+  String get authRetry => '重试';
+
+  @override
   String get splashWaking3DEngine => '正在唤醒 3D 引擎…';
 
   @override

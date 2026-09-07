@@ -24,6 +24,13 @@ class AppL10nEn extends AppL10n {
   String get splashPreparingSignIn => 'Preparing sign-in…';
 
   @override
+  String get authServiceUnavailable =>
+      'Sign-in service is unavailable. Check your network and retry.';
+
+  @override
+  String get authRetry => 'Retry';
+
+  @override
   String get splashWaking3DEngine => 'Waking 3D engine…';
 
   @override
