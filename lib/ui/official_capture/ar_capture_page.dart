@@ -203,7 +203,6 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     liveDepthProvider: _liveCloudMedianDepthFor,
     // [2026-09-07 stella_vslam] mapper_is_skipping_localBA = 工作线程还有帧
     // 排队/在途;is_paused/pause_is_requested = 快门队列不接受。
-    mapperIdleProvider: () => (_sfmRecon?.remainingCount ?? 0) == 0,
     mapperAcceptingProvider: () => _shutterQueue.accepting,
   );
 

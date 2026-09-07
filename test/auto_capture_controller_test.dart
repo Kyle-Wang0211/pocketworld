@@ -128,7 +128,6 @@ class _Harness {
   int fireAttempts = 0;
   bool enqueueSucceeds = true;
   int captured = 0;
-  bool mapperIdle = true;
   bool mapperAccepting = true;
   double? liveDepthM;
   final List<AutoCaptureMotionRole?> firedRoles = <AutoCaptureMotionRole?>[];
@@ -146,7 +145,6 @@ class _Harness {
     capturedCountProvider: () => captured,
     thermalStateProvider: () => 0,
     liveDepthProvider: (pose) => liveDepthM,
-    mapperIdleProvider: () => mapperIdle,
     mapperAcceptingProvider: () => mapperAccepting,
   );
 
@@ -330,7 +328,7 @@ void main() {
     );
   });
 
-  test('view_changed and the mapper idle → fire, tagged keyframeInserter', () {
+  test('view_changed → fire, tagged keyframeInserter', () {
     final h = _started();
     expect(
       h.feed(_pose(t: 0.2, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40)),
@@ -344,22 +342,26 @@ void main() {
     );
   });
 
-  test('mapper skipping localBA → skipMapperBusy, retried once it is idle', () {
-    final h = _started()..mapperIdle = false;
-    expect(
-      h.feed(_pose(t: 0.2, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40)),
-      AutoCaptureDecision.skipMapperBusy,
-    );
-    expect(
-      h.feed(_pose(t: 0.3, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40)),
-      AutoCaptureDecision.skipMapperBusy,
-    );
-    h.mapperIdle = true;
-    expect(
-      h.feed(_pose(t: 0.4, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40)),
-      AutoCaptureDecision.fire,
-    );
-    expect(h.fires, 1);
+  // 2026-09-07 真机定罪(未命名(24)):这个位置原来钉的是相反的行为 ——
+  // 「重建队列非空 ⇒ skipMapperBusy,排空后才允许开火」。上机后 20/20 次快门
+  // 都落在上一帧 `add_frame rc=ok` 之后 23–303 ms 内,到达该闸的 196 个 tick
+  // 里 178 个被挡、通过的 18 个全部开火 ⇒ **快门节奏完全由重建队列决定**,
+  // 用户体感是"动的时候不拍、停一两秒就拍"。拍摄与重建必须解耦:
+  // 遇到合格视角就拍,不等重建。
+  test('重建队列深度不得进入快门判决 —— 拍摄与重建解耦', () {
+    final h = _started();
+    // 连续开火,期间不给重建任何机会"排空";每一步都只由几何决定。
+    for (var i = 1; i <= 3; i++) {
+      final d = h.feed(
+        _pose(t: 0.2 * i, pos: Vector3(40.0 * i / 128, 0, 0), grayShiftX: 40 * i),
+      );
+      expect(
+        d,
+        AutoCaptureDecision.fire,
+        reason: '第 $i 次:几何已达标就必须开火,不许被任何重建侧状态推迟',
+      );
+    }
+    expect(h.fires, 3);
   });
 
   test('mapper paused (shutter queue not accepting) → skipMapperStopped', () {

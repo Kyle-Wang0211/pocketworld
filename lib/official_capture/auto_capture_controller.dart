@@ -39,7 +39,6 @@ class AutoCaptureController {
     required int Function() thermalStateProvider,
     required double? Function(ARPose pose) liveDepthProvider,
     // [2026-09-07 stella_vslam] mapper 是否空闲 / 是否接受新关键帧。
-    bool Function()? mapperIdleProvider,
     bool Function()? mapperAcceptingProvider,
     PortableTrackHealth? Function(ARPose pose)? trackHealthProvider,
   }) : _onStartAnchor = onStartAnchor,
@@ -48,7 +47,6 @@ class AutoCaptureController {
        _capturedCountProvider = capturedCountProvider,
        _thermalStateProvider = thermalStateProvider,
        _liveDepthProvider = liveDepthProvider,
-       _mapperIdleProvider = mapperIdleProvider ?? _alwaysTrue,
        _mapperAcceptingProvider = mapperAcceptingProvider ?? _alwaysTrue,
        _trackHealthProvider = trackHealthProvider;
 
@@ -74,7 +72,6 @@ class AutoCaptureController {
   /// 无锁定目标时用于播种一个稳定目标点的跨端 SfM 深度；有 worldOrigin 的
   /// 正常生产路径不调用。目标在本轮冻结，不用深度逐帧缩放触发阈值。
   final double? Function(ARPose pose) _liveDepthProvider;
-  final bool Function() _mapperIdleProvider;
   final bool Function() _mapperAcceptingProvider;
   static bool _alwaysTrue() => true;
   // stella_vslam:last_inserted_keyfrm 的时刻与世界位置(insert 时更新)。
@@ -555,7 +552,18 @@ class AutoCaptureController {
       blurry: _objectivelyBlurry(q),
       initialized: captureBase != null,
       mapperAccepting: _mapperAcceptingProvider(),
-      mapperSkippingLocalBA: !_mapperIdleProvider(),
+      // 上游 `mapper_is_skipping_localBA()` 是**罕见的背压逃生阀**:30 fps 视频、
+      // 一个关键帧几十毫秒,只有建图线程被压垮到放弃局部 BA 时才为真。
+      // 2026-09-07 真机定罪:我曾把它接成 `remainingCount != 0`(SfM 队列非空)。
+      // 我们一张 12MP 重建要 1.1–4.1 s,这个闸于是几乎全程关闭、只在每帧落地后
+      // 开几十毫秒 —— 未命名(24) 20/20 次快门都落在上一帧 `add_frame rc=ok` 之后
+      // 23–303 ms 内;到达该闸的 196 个 tick 里 178 个被它挡下,而**通过它的 18 个
+      // 全部开火**(skipNotMoved/skipPaced/skipMinDistance/skipBlurry 全为 0)。
+      // 也就是说这个我自己编的代理是唯一在决定快门节奏的东西,复刻的 stella
+      // 条件排在它后面从未生效;用户的体感是"动的时候不拍、停一两秒就拍"。
+      // 队列深度不是上游那个量,接上去就是移位前提。本工程的建图侧没有
+      // 「放弃局部 BA」这个状态,上游健康态的取值是 false,照搬。
+      mapperSkippingLocalBA: false,
       hasTrackEvidence: trackEvidence != null,
       numTrackedLms: trackEvidence?.commonTrackCount ?? 0,
       numReliableLms: trackEvidence?.commonTrackCount ?? 0,
