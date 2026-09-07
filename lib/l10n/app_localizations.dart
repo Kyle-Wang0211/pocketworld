@@ -139,6 +139,12 @@ abstract class AppL10n {
   /// **'Retry'**
   String get authRetry;
 
+  /// No description provided for @authAutoRetrying.
+  ///
+  /// In en, this message translates to:
+  /// **'Retrying automatically in the background'**
+  String get authAutoRetrying;
+
   /// No description provided for @splashWaking3DEngine.
   ///
   /// In en, this message translates to:

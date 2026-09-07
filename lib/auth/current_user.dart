@@ -19,6 +19,7 @@ import '../util/device_log.dart';
 import 'auth_error.dart';
 import 'auth_models.dart';
 import 'auth_service.dart';
+import 'connection_backoff.dart';
 import 'unavailable_auth_service.dart';
 
 sealed class CurrentUserState {
@@ -62,7 +63,9 @@ class CurrentUser extends ChangeNotifier {
   AuthException? _lastError;
   bool _isPerformingAuthAction = false;
 
-  CurrentUser({required AuthService service}) : _service = service;
+  CurrentUser({required AuthService service, ConnectionBackoff? initBackoff})
+    : _service = service,
+      initBackoff = initBackoff ?? ConnectionBackoff();
 
   /// Debug-only: logs every SignedOut state mutation with a stack trace
   /// so we can answer "who flipped me to SignedOut?" when a stale
@@ -96,30 +99,79 @@ class CurrentUser extends ChangeNotifier {
   CurrentUserState get state => _state;
 
   /// main() 挂上的"重新初始化登录后端"动作(解析后端地址 → Supabase.initialize
-  /// → 会话恢复 → swapService → bootstrap)。UI 的"重试"按钮只调这个。
+  /// → 会话恢复 → swapService → bootstrap)。UI 的"重试"按钮和自动重连都只调这个。
   Future<void> Function()? retryInit;
   bool _retryingInit = false;
   bool get isRetryingInit => _retryingInit;
 
-  Future<void> retryServiceInit() async {
+  /// 自动重连退避:抄 gRPC 连接退避协议(1 s ×1.6、±20% 抖动、封顶 120 s、
+  /// 成功即复位;B 站 kratos 同参),见 connection_backoff.dart。网络级重试
+  /// gotrue 自己做;这里管"后端初始化整体失败"之后的自动再试——大厂 SDK 的
+  /// 通用做法(腾讯 IM / 火山 RTC / 微信 Mars 都是断线后 SDK 自动重连,只有
+  /// 服务器明确判票据失效/被踢才要用户重新登录)。
+  final ConnectionBackoff initBackoff;
+  Timer? _autoRetryTimer;
+  DateTime? _nextAutoRetryAt;
+
+  /// 下一次自动重试的时刻(不可用态且已排期时非空;供 UI 显示)。
+  DateTime? get nextAutoRetryAt => _nextAutoRetryAt;
+
+  /// [manual] = 用户点了"重试":走一次引导态让闪屏文案动起来;自动重连保持
+  /// 不可用态静默进行,只把按钮置灰,避免每次退避都闪一下。
+  Future<void> retryServiceInit({bool manual = true}) async {
     final r = retryInit;
     if (r == null || _retryingInit) return;
+    _cancelAutoRetry();
     _retryingInit = true;
-    _state = const CurrentUserBootstrapping();
+    if (manual) _state = const CurrentUserBootstrapping();
     notifyListeners();
     try {
       await r();
     } finally {
       _retryingInit = false;
+      if (_state is! CurrentUserServiceUnavailable) {
+        // 成功(到了 signedIn/signedOut):复位退避——gRPC 的"连接被接受即复位"。
+        initBackoff.reset();
+      }
       notifyListeners();
     }
   }
 
-  /// 登录后端不可用:进入显式失败态(带原因),绝不用假服务顶替。
+  /// 登录后端不可用:进入显式失败态(带原因),绝不用假服务顶替;并按退避
+  /// 排下一次自动重试。
   void markServiceUnavailable(String reason) {
     DeviceLog.log('CurrentUser', '→ ServiceUnavailable ($reason)');
     _state = CurrentUserServiceUnavailable(reason);
+    _scheduleAutoRetry();
     notifyListeners();
+  }
+
+  void _scheduleAutoRetry() {
+    _cancelAutoRetry();
+    if (retryInit == null) return;
+    final delay = initBackoff.next();
+    _nextAutoRetryAt = DateTime.now().add(delay);
+    DeviceLog.log(
+      'CurrentUser',
+      'auto-retry #${initBackoff.failures} in ${delay.inMilliseconds} ms',
+    );
+    _autoRetryTimer = Timer(delay, () {
+      _autoRetryTimer = null;
+      _nextAutoRetryAt = null;
+      unawaited(retryServiceInit(manual: false));
+    });
+  }
+
+  void _cancelAutoRetry() {
+    _autoRetryTimer?.cancel();
+    _autoRetryTimer = null;
+    _nextAutoRetryAt = null;
+  }
+
+  @override
+  void dispose() {
+    _cancelAutoRetry();
+    super.dispose();
   }
 
   AuthException? get lastError => _lastError;

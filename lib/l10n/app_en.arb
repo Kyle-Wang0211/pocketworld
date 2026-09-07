@@ -10,6 +10,7 @@
   "splashPreparingSignIn": "Preparing sign-in…",
   "authServiceUnavailable": "Sign-in service is unavailable. Check your network and retry.",
   "authRetry": "Retry",
+  "authAutoRetrying": "Retrying automatically in the background",
   "splashWaking3DEngine": "Waking 3D engine…",
   "splashRendererUnavailable": "Renderer unavailable, retrying…",
   "communityEmptyTitle": "No works yet",

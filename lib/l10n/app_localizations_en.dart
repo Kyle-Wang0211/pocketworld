@@ -31,6 +31,9 @@ class AppL10nEn extends AppL10n {
   String get authRetry => 'Retry';
 
   @override
+  String get authAutoRetrying => 'Retrying automatically in the background';
+
+  @override
   String get splashWaking3DEngine => 'Waking 3D engine…';
 
   @override

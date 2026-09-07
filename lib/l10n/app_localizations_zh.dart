@@ -30,6 +30,9 @@ class AppL10nZh extends AppL10n {
   String get authRetry => '重试';
 
   @override
+  String get authAutoRetrying => '已在后台自动重试';
+
+  @override
   String get splashWaking3DEngine => '正在唤醒 3D 引擎…';
 
   @override

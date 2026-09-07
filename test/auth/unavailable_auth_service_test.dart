@@ -4,12 +4,18 @@
 //   2. CurrentUser 在不可用服务上 bootstrap 进入 ServiceUnavailable(不是
 //      signedOut ⇒ 登录表单不会亮出来);重试走 retryInit 并能换成真服务;
 //   3. main.dart 源码不再引用 MockAuthServiceImpl(源码契约)。
+import 'dart:async';
 import 'dart:io';
+import 'dart:math';
+
+// ignore: depend_on_referenced_packages
+import 'package:fake_async/fake_async.dart';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/auth/auth_error.dart';
 import 'package:pocketworld_flutter/auth/auth_models.dart';
 import 'package:pocketworld_flutter/auth/auth_service.dart';
+import 'package:pocketworld_flutter/auth/connection_backoff.dart';
 import 'package:pocketworld_flutter/auth/current_user.dart';
 import 'package:pocketworld_flutter/auth/mock_auth_service.dart';
 import 'package:pocketworld_flutter/auth/unavailable_auth_service.dart';
@@ -129,6 +135,72 @@ void main() {
       expect(cu.state, isA<CurrentUserServiceUnavailable>());
     });
 
+    test('auto-retries on the gRPC backoff schedule and resets on success', () {
+      fakeAsync((async) {
+        final cu = CurrentUser(
+          service: const UnavailableAuthService(),
+          initBackoff: ConnectionBackoff(jitter: 0, random: Random(1)),
+        );
+        var calls = 0;
+        final seen = <Type>[];
+        cu.addListener(() => seen.add(cu.state.runtimeType));
+        cu.retryInit = () async {
+          calls++;
+          if (calls < 3) {
+            cu.markServiceUnavailable('down $calls');
+            return;
+          }
+          cu.swapService(_SignedOutService());
+          await cu.bootstrap();
+        };
+
+        cu.markServiceUnavailable('init'); // 排 1 s
+        expect(cu.nextAutoRetryAt, isNotNull);
+        async.elapse(const Duration(milliseconds: 999));
+        expect(calls, 0);
+        async.elapse(const Duration(milliseconds: 1));
+        expect(calls, 1); // 失败 ⇒ 排 1.6 s
+        async.elapse(const Duration(milliseconds: 1599));
+        expect(calls, 1);
+        async.elapse(const Duration(milliseconds: 1));
+        expect(calls, 2); // 失败 ⇒ 排 2.56 s
+        async.elapse(const Duration(milliseconds: 2560));
+        expect(calls, 3);
+        async.flushMicrotasks();
+        expect(cu.state, isA<CurrentUserSignedOut>());
+        expect(cu.initBackoff.failures, 0, reason: '成功即复位');
+        expect(cu.nextAutoRetryAt, isNull);
+        // 自动重试不走引导态(静默),不闪屏。
+        expect(seen, isNot(contains(CurrentUserBootstrapping)));
+        async.elapse(const Duration(seconds: 20));
+        expect(calls, 3, reason: '成功后不再自动重试');
+        cu.dispose();
+      });
+    });
+
+    test('manual retry cancels the pending auto-retry', () {
+      fakeAsync((async) {
+        final cu = CurrentUser(
+          service: const UnavailableAuthService(),
+          initBackoff: ConnectionBackoff(jitter: 0),
+        );
+        var calls = 0;
+        cu.retryInit = () async {
+          calls++;
+          cu.markServiceUnavailable('down');
+        };
+        cu.markServiceUnavailable('init'); // 排 1 s(第 0 次失败)
+        unawaited(cu.retryServiceInit()); // 手动:取消排期,立即跑 ⇒ 失败 ⇒ 排 1.6 s
+        async.flushMicrotasks();
+        expect(calls, 1);
+        async.elapse(const Duration(milliseconds: 1000));
+        expect(calls, 1, reason: '原 1 s 排期已被取消');
+        async.elapse(const Duration(milliseconds: 600));
+        expect(calls, 2);
+        cu.dispose();
+      });
+    });
+
     test('a failing retry lands back in ServiceUnavailable', () async {
       final cu = CurrentUser(service: const UnavailableAuthService());
       await cu.bootstrap();
@@ -138,6 +210,7 @@ void main() {
       await cu.retryServiceInit();
       expect(cu.state, isA<CurrentUserServiceUnavailable>());
       expect((cu.state as CurrentUserServiceUnavailable).reason, 'still down');
+      cu.dispose();
     });
   });
 

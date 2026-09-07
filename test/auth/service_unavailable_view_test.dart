@@ -44,10 +44,16 @@ void main() {
 
     await tester.tap(retry);
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 1000));
+    await tester.pump(const Duration(milliseconds: 500));
     expect(retries, 1);
     expect(find.byType(AuthRootView), findsNothing);
     expect(find.textContaining('still down'), findsOneWidget);
     expect(find.byType(FilledButton), findsOneWidget);
+    // 失败后按 gRPC 退避排了自动重试(1 s 起);推进时间让它真的自己再试。
+    expect(currentUser.nextAutoRetryAt, isNotNull);
+    await tester.pump(const Duration(seconds: 3));
+    expect(retries, greaterThanOrEqualTo(2));
+    expect(find.byType(AuthRootView), findsNothing);
+    currentUser.dispose();
   });
 }

@@ -520,11 +520,25 @@ class _ServiceUnavailableView extends StatelessWidget {
                 const SizedBox(height: 24),
                 AnimatedBuilder(
                   animation: currentUser,
-                  builder: (context, _) => FilledButton(
-                    onPressed: currentUser.isRetryingInit
-                        ? null
-                        : () => unawaited(currentUser.retryServiceInit()),
-                    child: Text(l.authRetry),
+                  builder: (context, _) => Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      FilledButton(
+                        onPressed: currentUser.isRetryingInit
+                            ? null
+                            : () => unawaited(currentUser.retryServiceInit()),
+                        child: Text(l.authRetry),
+                      ),
+                      if (currentUser.nextAutoRetryAt != null ||
+                          currentUser.isRetryingInit) ...[
+                        const SizedBox(height: 12),
+                        Text(
+                          l.authAutoRetrying,
+                          textAlign: TextAlign.center,
+                          style: AetherTextStyles.caption,
+                        ),
+                      ],
+                    ],
                   ),
                 ),
               ],
