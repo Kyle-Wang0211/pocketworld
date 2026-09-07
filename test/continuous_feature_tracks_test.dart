@@ -334,22 +334,14 @@ void _newFeatureBurstContract() {
     );
   });
 
-  test('接线契约:只有 AliceVision 累计光流授权开火;新特征 burst 退回遥测', () {
-    // [2026-09-06 抄对②] AliceVision KeyframeSelector 的选帧规则里没有
-    // "新特征过半"这一项;它是我们借 VINS 的 addFeatureCheckParallax 结构
-    // 自加的 OR 路径,未命名(15) 之后撤回,只留作遥测。
+  test('接线契约:burst 与流量段是 OR,几何角色闸不动', () {
     final source = File(
       'lib/official_capture/auto_capture_controller.dart',
     ).readAsLinesSync().where((l) => !l.trimLeft().startsWith('//')).join('\n');
     expect(
       source,
-      isNot(contains('_smartMotionSegment.ready || _newFeatureBurst')),
-      reason: '开火授权不再 OR 新特征 burst',
-    );
-    expect(
-      source,
-      contains('smartSelectionMotionReady: _smartMotionSegment.ready,'),
-      reason: 'AliceVision 累计光流是唯一的流量授权',
+      contains('_smartMotionSegment.ready || _newFeatureBurst'),
+      reason: '上游 addFeatureCheckParallax 就是「新旧比 OR 视差」的结构',
     );
     expect(
       source,

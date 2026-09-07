@@ -73,7 +73,6 @@ AutoCaptureIndicator autoCaptureIndicatorFor({
     case AutoCaptureDecision.skipTooDark:
     case AutoCaptureDecision.skipBlurry:
     case AutoCaptureDecision.skipPaced:
-    case AutoCaptureDecision.skipAwaitingCapture:
     case AutoCaptureDecision.skipNoVisualEvidence:
     case AutoCaptureDecision.skipRedundant:
     case AutoCaptureDecision.skipTracking:

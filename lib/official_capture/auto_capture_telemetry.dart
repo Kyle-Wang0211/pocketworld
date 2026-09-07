@@ -329,9 +329,6 @@ class AutoCaptureTelemetry {
           winnerRow.blockedBlur++;
           break;
         case AutoCaptureDecision.skipPaced:
-        case AutoCaptureDecision.skipAwaitingCapture:
-          // 等实拍基准与 250 ms 去抖同属"节奏类"阻挡;decision_counts 里仍按
-          // 各自的枚举名分开计数。
           winnerRow.blockedPace++;
           break;
         case AutoCaptureDecision.skipNoVisualEvidence:
