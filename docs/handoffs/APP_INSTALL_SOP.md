@@ -118,7 +118,15 @@ codesign --force --sign "$ID" --entitlements "$ENT" --timestamp=none "$DST" >/de
 codesign --verify --deep --strict "$DST"
 ```
 
-**必须做的三项自证**(去签名后比 sha,签名本身每次都不同):
+**组装前先确认构建真的结束**(2026-09-07 踩过:构建还在跑就去组装,拿到的是上一版
+的 `App.framework`,三项自证里"新符号存在"照样通过,因为上一版也有那个符号):
+
+```bash
+# 后台构建时,必须等到日志出现完成行再组装
+until grep -qE "Built build/ios|Encountered error|error:" build110.log; do sleep 10; done
+```
+
+**必须做的四项自证**(去签名后比 sha,签名本身每次都不同):
 
 ```bash
 S=$(mktemp -d)
@@ -140,6 +148,14 @@ done
 3. **改动真的进去了**:用一个新符号自证,例如
    `strings .../App.framework/App | grep -c stellaVslamNewKeyframeIsNeeded`
    新包应 ≥1、旧包应 0。**"编译过了"不等于"改动进了包"。**
+4. **新包与上一版的同一二进制必须不同**(去签名后比):
+   ```bash
+   # 只改了函数体、没加新符号时,第 3 项验不出来,只有这一项能验
+   for v in <上一版> <新版本>; do
+     cp $B/Runner-$v.app/Frameworks/App.framework/App $T/$v
+     codesign --remove-signature $T/$v; shasum -a 256 $T/$v
+   done
+   # 两者相同 ⇒ 组装抓到了旧产物,或者这次根本没编出新东西 ⇒ 停下
 
 ---
 
@@ -268,7 +284,9 @@ Library:    允许 SplashBoard/Snapshots/*.ktx 有出入(系统启动快照会�
 - [ ] `flutter analyze` error = 0;`flutter test` 失败集合 == 已知基线
 - [ ] 组装:只该换的那个 DIFF,其余 SAME
 - [ ] Dart VM 哈希与引擎一致
+- [ ] 构建日志出现完成行之后才组装
 - [ ] 新符号在新包里存在、在旧包里不存在
+- [ ] 新包与上一版的同一二进制去签名后 sha **不同**
 - [ ] `df` 余量 ≥ 15 GB
 - [ ] 增量备份三条终判据全绿
 - [ ] 装机闸:进程表阳性对照过、app 不在跑、5 分钟内无采集/重建
