@@ -525,6 +525,9 @@ class AutoCaptureController {
     // 几何角色/签名相似度/AliceVision 流量段从此只进遥测,不再决定开火。
     final lastKfSec = _lastKeyframeSec;
     final lastKfPos = _lastKeyframePos;
+    // min_distance = 12% × 场景深度中位数(SVO 论文的式子;上游把这个数留给
+    // 集成方)。没有活体点云深度时退回上游默认 -1 = 关闭。
+    final sceneDepthM = _liveDepthProvider(pose);
     final decision = stellaVslamNewKeyframeIsNeeded(
       trackingNormal: trackingOk,
       capturedCount: _capturedCountProvider(),
@@ -545,6 +548,7 @@ class AutoCaptureController {
       distanceTraveledM: lastKfPos == null
           ? null
           : (pose.position - lastKfPos).length,
+      minDistanceM: autoCaptureMinDistanceMetres(sceneDepthM),
     );
 
     _lastMovedM = movedM;

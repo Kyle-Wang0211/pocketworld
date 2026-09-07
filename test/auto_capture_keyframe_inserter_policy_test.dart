@@ -259,6 +259,62 @@ void main() {
     },
   );
 
+  group('min_distance 取值 —— SVO 论文的式子(12% 场景深度)', () {
+    test(
+      'threshold scales with scene depth; unknown depth disables the gate',
+      () {
+        expect(kSvoKeyframeMinDistanceSceneDepthRatio, 0.12);
+        expect(autoCaptureMinDistanceMetres(1.0), closeTo(0.12, 1e-12));
+        expect(autoCaptureMinDistanceMetres(10.0), closeTo(1.2, 1e-12));
+        expect(autoCaptureMinDistanceMetres(0.5), closeTo(0.06, 1e-12));
+        // 没有活体点云深度 ⇒ 退回 stella 的默认 -1(门关闭),不猜绝对米数。
+        expect(autoCaptureMinDistanceMetres(null), kStellaMinDistanceM);
+        expect(autoCaptureMinDistanceMetres(0), kStellaMinDistanceM);
+        expect(autoCaptureMinDistanceMetres(-3), kStellaMinDistanceM);
+        expect(autoCaptureMinDistanceMetres(double.nan), kStellaMinDistanceM);
+        expect(
+          autoCaptureMinDistanceMetres(double.infinity),
+          kStellaMinDistanceM,
+        );
+      },
+    );
+
+    test('pure rotation cannot pass it: distance 0 always fails the gate', () {
+      for (final depth in <double>[0.5, 1.0, 5.0, 20.0]) {
+        expect(
+          _decide(
+            numReliableLms: 127, // view_changed:转头把画面换了
+            distanceTraveledM: 0.0,
+            minDistanceM: autoCaptureMinDistanceMetres(depth),
+          ),
+          AutoCaptureDecision.skipMinDistance,
+          reason: 'depth=$depth',
+        );
+      }
+    });
+
+    test('12% of scene depth is exactly the boundary', () {
+      final thr = autoCaptureMinDistanceMetres(1.0); // 0.12 m
+      expect(
+        _decide(
+          numReliableLms: 127,
+          distanceTraveledM: 0.12,
+          minDistanceM: thr,
+        ),
+        AutoCaptureDecision.skipMinDistance,
+        reason: '上游用严格 > ⇒ 正好等于阈值不算走够',
+      );
+      expect(
+        _decide(
+          numReliableLms: 127,
+          distanceTraveledM: 0.13,
+          minDistanceM: thr,
+        ),
+        AutoCaptureDecision.fire,
+      );
+    });
+  });
+
   test('product gates keep their place', () {
     expect(
       _decide(capturedCount: kOfficialMaximumCaptureFrames),

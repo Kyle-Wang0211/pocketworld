@@ -130,6 +130,7 @@ class _Harness {
   int captured = 0;
   bool mapperIdle = true;
   bool mapperAccepting = true;
+  double? liveDepthM;
   final List<AutoCaptureMotionRole?> firedRoles = <AutoCaptureMotionRole?>[];
 
   late final AutoCaptureController controller = AutoCaptureController(
@@ -144,7 +145,7 @@ class _Harness {
     paceProvider: () => ShutterPace.normal,
     capturedCountProvider: () => captured,
     thermalStateProvider: () => 0,
-    liveDepthProvider: (pose) => null,
+    liveDepthProvider: (pose) => liveDepthM,
     mapperIdleProvider: () => mapperIdle,
     mapperAcceptingProvider: () => mapperAccepting,
   );
@@ -228,6 +229,90 @@ void main() {
     }
     expect(h.fires, 0);
   });
+
+  test('[用户 2026-09-07] 原地转头:画面换了,但相机没动 ⇒ min_distance 挡住', () {
+    // SVO 论文的式子:门槛 = 12% × 场景深度。深度 1 m ⇒ 要走够 12 cm。
+    // captured > num_enough_keyfrms_thr(5):上游只在照片数超过 5 之后才让
+    // min_interval / min_distance 生效(见下面单独的一条测试)。
+    final h = _started()
+      ..liveDepthM = 1.0
+      ..captured = 10;
+    // 先拍一张,把 last_inserted_keyfrm 的位置钉在原点。
+    expect(h.feed(_pose(t: 0.2, grayShiftX: 40)), AutoCaptureDecision.fire);
+    // 接着原地转头:预览一路滚(内容确实换了),位置一动不动。
+    var shift = 80;
+    for (var t = 0.4; t < 2.0; t += 0.2) {
+      final d = h.feed(
+        _pose(
+          t: t,
+          pos: Vector3.zero(),
+          yawDeg: t * 60,
+          grayShiftX: shift % 128,
+        ),
+      );
+      expect(
+        d,
+        anyOf(
+          AutoCaptureDecision.skipMinDistance,
+          AutoCaptureDecision.skipRedundant,
+        ),
+        reason: 't=$t shift=$shift —— 转头绝不能拍出第二张',
+      );
+      shift += 40;
+    }
+    expect(h.fires, 1, reason: '整段只有最开始那一张');
+  });
+
+  test('走够 12% 场景深度就恢复开火', () {
+    final h = _started()
+      ..liveDepthM = 1.0
+      ..captured = 10;
+    expect(h.feed(_pose(t: 0.2, grayShiftX: 40)), AutoCaptureDecision.fire);
+    expect(
+      h.feed(_pose(t: 0.4, pos: Vector3(0.10, 0, 0), grayShiftX: 0)),
+      AutoCaptureDecision.skipMinDistance,
+      reason: '只走了 10 cm < 12 cm',
+    );
+    expect(
+      h.feed(_pose(t: 0.6, pos: Vector3(0.13, 0, 0), grayShiftX: 0)),
+      AutoCaptureDecision.fire,
+      reason: '13 cm > 12 cm,而且画面也换了',
+    );
+    expect(h.fires, 2);
+  });
+
+  test('深度越远门槛越高:同样走 13 cm,10 m 深度下不算走够', () {
+    final h = _started()
+      ..liveDepthM =
+          10.0 // 门槛 1.2 m
+      ..captured = 10;
+    expect(h.feed(_pose(t: 0.2, grayShiftX: 40)), AutoCaptureDecision.fire);
+    expect(
+      h.feed(_pose(t: 0.4, pos: Vector3(0.13, 0, 0), grayShiftX: 0)),
+      AutoCaptureDecision.skipMinDistance,
+    );
+    expect(
+      h.feed(_pose(t: 0.6, pos: Vector3(1.5, 0, 0), grayShiftX: 0)),
+      AutoCaptureDecision.fire,
+    );
+  });
+
+  test(
+    '上游 num_enough_keyfrms_thr = 5:前 6 张不受 min_interval/min_distance 限制',
+    () {
+      // 这是 stella 原样行为(!enough_keyfrms 短路整条强制项),不是我们放宽的。
+      // 冷启动时地图还很薄,上游宁可多插几帧。
+      final h = _started()
+        ..liveDepthM = 1.0
+        ..captured = 0;
+      expect(h.feed(_pose(t: 0.2, grayShiftX: 40)), AutoCaptureDecision.fire);
+      expect(
+        h.feed(_pose(t: 0.25, pos: Vector3.zero(), grayShiftX: 80)),
+        AutoCaptureDecision.fire,
+        reason: '照片数 ≤ 5 ⇒ 原地转头也照拍;第 7 张起才受 min_distance 管',
+      );
+    },
+  );
 
   test('view_changed and the mapper idle → fire, tagged keyframeInserter', () {
     final h = _started();

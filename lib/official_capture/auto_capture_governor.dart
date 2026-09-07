@@ -41,6 +41,35 @@ const int kStellaEnoughLmsThr = 100;
 const int kStellaNumEnoughKeyfrmsThr = 5;
 const int kStellaNumTrackedLmsThrUnstable = 15;
 
+// ─── min_distance 的取值:SVO 的关键帧间距判据 ───────────────────────────
+// stella_vslam 把 min_distance 留给集成方(默认 -1 = 关闭),因为 SLAM 不在乎
+// 照片重叠。我们在乎:每张 12MP 照片要 1.5 s GPU、拍下来删不掉,而且原地转头
+// 拍出来的照片没有基线、三角化不出新的 3D 点(未命名(22) 的重叠病)。
+//
+// 取值出处:Forster、Pizzoli、Scaramuzza,《SVO: Fast Semi-Direct Monocular
+// Visual Odometry》,ICRA 2014,Mapping 一节 —— 论文正文规定:新帧相对所有
+// 关键帧的欧氏距离超过**平均场景深度的 12%** 时才选为关键帧。PTAM(Klein &
+// Murray,ISMAR 2007)用同构判据:到最近关键帧的距离除以场景深度均值再比阈值。
+// 两者都用"平移 ÷ 场景深度",因此离物体近要走得少、离得远要走得多。
+//
+// ⚠️ 许可:SVO 与 PTAM 的**实现**都是 GPL。这里只采用论文发表的规则与常数,
+// 代码为独立编写,未复制任何上游源码文本(见 MEMORY 的 License 红线)。
+// ⚠️ 与 SVO 的差异(写明):SVO 在相机坐标系下按 x/y/z 三轴分别比(y×0.8、
+// z×1.3);stella 的 min_distance 是一个标量米数,所以这里只取它的各向同性
+// 核心 0.12,不引入 SVO 的三轴权重 —— 不把两家的结构混在一起。
+const double kSvoKeyframeMinDistanceSceneDepthRatio = 0.12;
+
+/// stella_vslam 的 `min_distance`(米),按 SVO 的式子由场景深度给出。
+/// 没有活体点云深度时返回上游默认 -1(即这道门关闭),不猜一个绝对米数。
+double autoCaptureMinDistanceMetres(double? sceneDepthMetres) {
+  if (sceneDepthMetres == null ||
+      !sceneDepthMetres.isFinite ||
+      sceneDepthMetres <= 0) {
+    return kStellaMinDistanceM;
+  }
+  return kSvoKeyframeMinDistanceSceneDepthRatio * sceneDepthMetres;
+}
+
 enum AutoCaptureDecision {
   fire,
   skipNotMoved,
