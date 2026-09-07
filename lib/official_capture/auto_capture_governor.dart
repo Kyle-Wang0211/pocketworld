@@ -48,6 +48,12 @@ enum AutoCaptureDecision {
   ///                          quality may suffer."
   /// 两级:lowLight 不设闸(照拍,质量理由只记遥测);tooDark 才停在这里。
   skipTooDark,
+
+  /// 上一枪已入队但照片还没真正拍成(快门事务 0.27–0.74 s):下一张的基准
+  /// 与流量起点都要用**实拍瞬间**,基准未知就不判定。这不是时间地板,是
+  /// "没有基准就没有决策"。(2026-09-06 未命名(15) 定罪:请求时刻的基准在
+  /// 快扫时过期 ⇒ 背靠背两张同一画面。)
+  skipAwaitingCapture,
 }
 
 /// 正常档只保留防重复触发的 250 ms 去抖，不把秒数冒充摄影测量参数。
@@ -87,6 +93,7 @@ AutoCaptureDecision autoCaptureDecideMotion({
   bool smartSelectionMotionReady = false,
   bool blurry = false,
   bool tooDark = false,
+  bool awaitingCaptureBaseline = false,
 }) {
   if (capturedCount >= kOfficialMaximumCaptureFrames) {
     return AutoCaptureDecision.skipCapped;
@@ -98,6 +105,11 @@ AutoCaptureDecision autoCaptureDecideMotion({
   // Apple 口径里 tooDark 是环境级硬停("Auto-capture will stop"),放在运动
   // 判据之前 —— 遥测里显示真实原因,而不是被 skipNotMoved 盖住。
   if (tooDark) return AutoCaptureDecision.skipTooDark;
+  if (awaitingCaptureBaseline) return AutoCaptureDecision.skipAwaitingCapture;
+  // [2026-09-07 未命名(22) 定罪] 决策者 = 几何角色(10°/12°/15° 与径向);
+  // AliceVision 累计光流只是下面的否决闸(skipRedundant)。104 曾把"流量段
+  // 就绪 + 1.5° 地板"直接当开火条件——那是把视频事后抽样规则拔掉前提抄进
+  // 实时快门:35/40 张无角色开火、相邻位移 <5 cm。间距由角色管,不动。
   if (!motion.shouldCapture) return AutoCaptureDecision.skipNotMoved;
   if (sinceLastTickSec < kAutoCaptureSafetyDebounceSec) {
     return AutoCaptureDecision.skipPaced;

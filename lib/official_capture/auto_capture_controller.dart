@@ -115,6 +115,21 @@ class AutoCaptureController {
     width: 128,
     height: 128,
   );
+
+  // ─── [2026-09-06 抄对①,09-07 单独复活] 实拍瞬间的基准 ─────────────────
+  // 快门请求到照片真正拍成之间有 0.27–0.74 s;快扫时用请求时刻的位姿/预览
+  // 当基准会过期(未命名(15):279→283 位姿差 42°,实拍画面只差 4.8%)。
+  // 因此:开火后先记"等实拍",页面拿到 captureTimestamp 后回调
+  // [onCaptureCompleted],从最近样本环里取**实拍瞬间**的位姿/灰度做下一张的
+  // 基准与流量起点;等待期间不判定(skipAwaitingCapture)。
+  // 几何基准是否前进仍按开火角色(advancesGeometryBaseline)——决策规则不动。
+  final List<_RecentSample> _recent = <_RecentSample>[];
+  static const double _kRecentWindowSec = 2.0;
+  static const double _kCaptureMatchToleranceSec = 0.25;
+  static const double _kAwaitingCaptureTimeoutSec = 2.0;
+  double? _awaitingCaptureSinceSec;
+  bool _pendingAdvanceGeometry = false;
+  bool get awaitingCaptureBaseline => _awaitingCaptureSinceSec != null;
   double? _lastTrackedGraySourceTimestamp;
   static const double _kMaximumGraySourceAgeSec = 1.0 / 6.0;
 
@@ -253,7 +268,101 @@ class AutoCaptureController {
     }
   }
 
+  /// 页面在照片**真正拍成**后调用(快门事务完成,拿到 ARFrame 时间线上的
+  /// captureTimestamp)。从最近样本环取实拍瞬间的位姿/签名/灰度做基准。
+  void onCaptureCompleted({required double captureTimestampSec}) {
+    if (!_running) return;
+    _awaitingCaptureSinceSec = null;
+    final advanceGeometry = _pendingAdvanceGeometry;
+    _pendingAdvanceGeometry = false;
+    if (!captureTimestampSec.isFinite || _recent.isEmpty) return;
+    _RecentSample? best;
+    double bestDt = double.infinity;
+    for (final r in _recent) {
+      final dt = (r.timestampSec - captureTimestampSec).abs();
+      if (dt < bestDt) {
+        bestDt = dt;
+        best = r;
+      }
+    }
+    if (best == null || bestDt > _kCaptureMatchToleranceSec) return;
+    _captureBaseline = best.frame;
+    if (advanceGeometry) _geometryBaseline = best.frame;
+    final sig = best.signature;
+    if (sig != null) _capturedSignature = Uint8List.fromList(sig);
+    // 流量起点 = 实拍瞬间最近的一份预览灰度(≤ tolerance);没有就保留
+    // 请求时刻那份(临时兜底)。
+    _RecentSample? grayBest;
+    double grayDt = double.infinity;
+    for (final r in _recent) {
+      if (r.gray128 == null) continue;
+      final dt = (r.timestampSec - captureTimestampSec).abs();
+      if (dt < grayDt) {
+        grayDt = dt;
+        grayBest = r;
+      }
+    }
+    if (grayBest != null && grayDt <= _kCaptureMatchToleranceSec) {
+      _capturedGray128 = Uint8List.fromList(grayBest.gray128!);
+      _capturedGrayFocalX = grayBest.focalX;
+      _capturedGrayFocalY = grayBest.focalY;
+      _capturedGraySourceTimestamp = grayBest.sourceTimestamp;
+      _lastTrackedGraySourceTimestamp = grayBest.sourceTimestamp;
+      _continuousTracks.setReference(
+        gray: grayBest.gray128!,
+        width: 128,
+        height: 128,
+      );
+      _smartMotionSegment.reset();
+      _newFeatureBurst = false;
+    }
+  }
+
+  /// 快门事务失败:没有实拍,退回请求时刻的临时基准,恢复判定。
+  void onCaptureFailed() {
+    _awaitingCaptureSinceSec = null;
+    _pendingAdvanceGeometry = false;
+  }
+
+  void _recordRecentSample(
+    ARPose pose,
+    AutoCaptureGeometryFrame frame,
+    Uint8List? signature,
+  ) {
+    final q = pose.quality;
+    final gray = q?.rawGray128;
+    final fx = q?.sourceFocalX;
+    final fy = q?.sourceFocalY;
+    final grayOk =
+        gray != null &&
+        gray.length == 128 * 128 &&
+        fx != null &&
+        fy != null &&
+        fx.isFinite &&
+        fy.isFinite &&
+        fx > 0 &&
+        fy > 0;
+    _recent.add(
+      _RecentSample(
+        timestampSec: pose.timestamp,
+        frame: frame,
+        signature: signature == null ? null : Uint8List.fromList(signature),
+        gray128: grayOk ? Uint8List.fromList(gray) : null,
+        focalX: grayOk ? fx : null,
+        focalY: grayOk ? fy : null,
+        sourceTimestamp: grayOk ? q?.sourceTimestamp : null,
+      ),
+    );
+    while (_recent.isNotEmpty &&
+        pose.timestamp - _recent.first.timestampSec > _kRecentWindowSec) {
+      _recent.removeAt(0);
+    }
+  }
+
   void stop() {
+    _awaitingCaptureSinceSec = null;
+    _pendingAdvanceGeometry = false;
+    _recent.clear();
     // 先结算本轮时长再翻 _running:整场预算按"自动拍真正在跑的时间"累积。
     _settleElapsed(_lastPoseSec);
     _running = false;
@@ -298,6 +407,14 @@ class AutoCaptureController {
     final trackingOk = _trackingNormal(pose);
     final current = _frameFrom(pose);
     final currentSignature = _signatureFrom(pose);
+    _recordRecentSample(pose, current, currentSignature);
+    final awaitingSince = _awaitingCaptureSinceSec;
+    if (awaitingSince != null &&
+        pose.timestamp - awaitingSince > _kAwaitingCaptureTimeoutSec) {
+      // 快门事务超时/失败没回调:退回请求时刻的临时基准,不能让采集停摆。
+      _awaitingCaptureSinceSec = null;
+      _pendingAdvanceGeometry = false;
+    }
     // The start anchor can land on one of the pose-only ticks between the
     // 6 Hz grayscale samples. The first real visual sample becomes its
     // conservative comparison baseline; that same sample therefore cannot
@@ -414,6 +531,7 @@ class AutoCaptureController {
       smartSelectionMotionReady: _smartMotionSegment.ready || _newFeatureBurst,
       blurry: _objectivelyBlurry(q),
       tooDark: _tooDark(q),
+      awaitingCaptureBaseline: awaitingCaptureBaseline,
     );
     _lastMovedM = movedM;
     _lastTurnDeg = motion.viewTurnDeg;
@@ -444,6 +562,8 @@ class AutoCaptureController {
         return decision;
       case AutoCaptureDecision.skipNoVisualEvidence:
       case AutoCaptureDecision.skipRedundant:
+        return decision;
+      case AutoCaptureDecision.skipAwaitingCapture:
         return decision;
       case AutoCaptureDecision.skipTooDark:
       case AutoCaptureDecision.skipBlurry:
@@ -483,10 +603,14 @@ class AutoCaptureController {
           // **之前**落下 —— 与锐度快照同一条纪律。
           _pendingFireSegmentReady = _smartMotionSegment.ready;
           _pendingFireNewFeatureBurst = _newFeatureBurst;
+          // 请求时刻的位姿只是**临时**基准(拍成回调前的兜底);实拍瞬间的
+          // 基准由 onCaptureCompleted 覆盖。几何基准是否前进仍按角色。
           _captureBaseline = current;
           if (motion.advancesGeometryBaseline) {
             _geometryBaseline = current;
           }
+          _pendingAdvanceGeometry = motion.advancesGeometryBaseline;
+          _awaitingCaptureSinceSec = pose.timestamp;
           _capturedSignature = Uint8List.fromList(currentSignature!);
           if (q != null) _commitTrackSource(q);
           // 开火 = 本段结束,锐度段清零(subsequence 语义)。
@@ -585,4 +709,24 @@ class AutoCaptureController {
     _smartMotionSegment.reset();
     _newFeatureBurst = false;
   }
+}
+
+/// 最近 2 s 的位姿/签名/预览灰度样本(供 onCaptureCompleted 回取实拍瞬间)。
+class _RecentSample {
+  const _RecentSample({
+    required this.timestampSec,
+    required this.frame,
+    required this.signature,
+    required this.gray128,
+    required this.focalX,
+    required this.focalY,
+    required this.sourceTimestamp,
+  });
+  final double timestampSec;
+  final AutoCaptureGeometryFrame frame;
+  final Uint8List? signature;
+  final Uint8List? gray128;
+  final double? focalX;
+  final double? focalY;
+  final double? sourceTimestamp;
 }

@@ -203,6 +203,57 @@ void main() {
     );
   });
 
+  test('[2026-09-06 抄对②] 光流到阈后视差角只当 COLMAP 1.5° 底线', () {
+    const evidence = FrameTrackEvidence(
+      seedTrackCount: 114,
+      commonTrackCount: 80,
+      commonTrackFraction: 80 / 114,
+      medianPixelDisplacement: 4,
+      medianNormalizedDisplacement: 4 / 128,
+      meanNormalizedDisplacement: 4 / 128,
+      newFeatureCount: -1,
+      liveTrackCount: -1,
+    );
+    // 几何角色不合格(视差 0°、无旋转覆盖、无径向)⇒ 光流够也不拍:原地没动。
+    expect(
+      _decide(
+        role: AutoCaptureMotionRole.none,
+        trackEvidenceRequired: true,
+        trackEvidence: evidence,
+        smartSelectionMotionReady: true,
+      ),
+      AutoCaptureDecision.skipNotMoved,
+    );
+    // 纯旋转覆盖合格 + 光流够 ⇒ 拍(不需要 12° 视差角)。
+    expect(
+      _decide(
+        role: AutoCaptureMotionRole.rotationCoverage,
+        rotationCoverageEligible: true,
+        trackEvidenceRequired: true,
+        trackEvidence: evidence,
+        smartSelectionMotionReady: true,
+      ),
+      AutoCaptureDecision.fire,
+    );
+    // 请求中的快门未拍成 ⇒ 不判定。
+    expect(
+      autoCaptureDecideMotion(
+        trackingNormal: true,
+        capturedCount: 10,
+        elapsedSec: 30,
+        sinceLastTickSec: 1,
+        tickIntervalSec: kAutoCaptureNormalIntervalSec,
+        motion: _motion(AutoCaptureMotionRole.geometry, geometryEligible: true),
+        visualSimilarity: 0.0,
+        trackEvidence: evidence,
+        trackEvidenceRequired: true,
+        smartSelectionMotionReady: true,
+        awaitingCaptureBaseline: true,
+      ),
+      AutoCaptureDecision.skipAwaitingCapture,
+    );
+  });
+
   test('missing or never-healthy tracks still fail closed', () {
     const noTracks = FrameTrackEvidence(
       seedTrackCount: 0,
@@ -340,5 +391,35 @@ void _twoTierLightContract() {
       tooDark: false,
     );
     expect(d, AutoCaptureDecision.fire);
+  });
+
+  test('[2026-09-07 契约] 没有几何角色就永远不开火——不管光流/视觉证据怎么说', () {
+    const evidence = FrameTrackEvidence(
+      seedTrackCount: 114,
+      commonTrackCount: 80,
+      commonTrackFraction: 80 / 114,
+      medianPixelDisplacement: 4,
+      medianNormalizedDisplacement: 4 / 128,
+      meanNormalizedDisplacement: 4 / 128,
+      newFeatureCount: -1,
+      liveTrackCount: -1,
+    );
+    for (final required in [true, false]) {
+      for (final ready in [true, false]) {
+        for (final sim in [null, 0.0, 0.5]) {
+          expect(
+            _decide(
+              role: AutoCaptureMotionRole.none,
+              trackEvidenceRequired: required,
+              trackEvidence: evidence,
+              smartSelectionMotionReady: ready,
+              visualSimilarity: sim,
+            ),
+            isNot(AutoCaptureDecision.fire),
+            reason: 'required=$required ready=$ready sim=$sim',
+          );
+        }
+      }
+    }
   });
 }

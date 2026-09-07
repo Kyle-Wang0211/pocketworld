@@ -129,6 +129,8 @@ void main() {
     expect(h.controller.lastMotionRole, AutoCaptureMotionRole.rotationCoverage);
     expect(h.controller.baselinePosition, Vector3.zero());
     expect(h.controller.geometryBaselinePosition, Vector3.zero());
+    // 照片拍成(台架:瞬间);真机由页面在快门事务完成时回调。
+    h.controller.onCaptureCompleted(captureTimestampSec: 1);
 
     expect(
       h.controller.onPose(_pose(t: 2, position: Vector3(0.22, 0, 0))),
@@ -148,6 +150,7 @@ void main() {
     );
     expect(h.controller.lastMotionRole, AutoCaptureMotionRole.radialBridge);
     expect(h.controller.baselinePosition, Vector3(0, 0, -0.2));
+    // 103 规则不动:径向桥接不推进几何基准(拍成回调也按开火角色决定是否推进)。
     expect(h.controller.geometryBaselinePosition, Vector3.zero());
   });
 

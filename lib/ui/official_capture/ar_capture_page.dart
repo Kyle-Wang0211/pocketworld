@@ -1396,14 +1396,12 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       channel.fields,
     );
     try {
-      await _arKitChannel.invokeMethod<void>(
-        'setCoveragePointCloud',
-        <String, dynamic>{
-          'xyz': packed.xyz,
-          'rgb': packed.rgb,
-          ...tag.channelArguments(channelPushSequence: channel.pushSequence),
-        },
-      );
+      await _arKitChannel
+          .invokeMethod<void>('setCoveragePointCloud', <String, dynamic>{
+            'xyz': packed.xyz,
+            'rgb': packed.rgb,
+            ...tag.channelArguments(channelPushSequence: channel.pushSequence),
+          });
       TelemetryWriter.instance.event('live_cloud_channel_ack_v1', {
         ...channel.fields,
         'channel_ack_t': DateTime.now().millisecondsSinceEpoch,
@@ -2935,41 +2933,49 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // 时钟用 pose.timestamp(ARFrame 时间轴,与 controller 同一条);
     // 档位用 _shutterPace —— 与 controller 的 paceProvider **同一个字段**,
     // 换个来源就会与 governor 实际用的 tick 间隔对不上。
-    _autoTelemetry.recordDecision(
-      decision,
-      tSec: pose.timestamp,
-      pace: _shutterPace,
-      // 与 controller 的 thermalStateProvider **同一个字段** —— fire_before_tick
-      // 用的间隔必须与 governor 实际用的逐位相同,否则热机时会算漏。
-      thermalState: _lastThermalState,
-      // 开火那一刻的位移/阈值/转角/活体深度 —— 见 recordDecision 里的理由。
-      // 全部取自 controller 判定时用的那份状态(或其同帧记忆化),不重算:
-      // 重算 = 又造一个可能与判定不一致的数。
-      movedM: _autoCapture.lastMovedM,
-      fireDistM: _autoCapture.lastFireDistM,
-      turnDeg: _autoCapture.lastTurnDeg,
-      // 锐度缓拍门疗效对(开火帧锐度 vs 段中位),取自 controller 判定
-      // 时的同一份状态,不重算。
-      sharpness: _autoCapture.lastSharpness,
-      segMedianSharpness: _autoCapture.lastSegmentMedianSharpness,
-      motion: _autoCapture.lastMotionMetrics,
-      motionRole: _autoCapture.lastMotionRole,
-      geometryParallaxDeg: _autoCapture.lastGeometryParallaxDeg,
-      overlapFraction: _autoCapture.lastOverlapFraction,
-      depthScaleRatio: _autoCapture.lastDepthScaleRatio,
-      visualSimilarity: _autoCapture.lastVisualSimilarity,
-      trackCommonCount: _autoCapture.lastTrackEvidence?.commonTrackCount,
-      trackCommonFraction: _autoCapture.lastTrackEvidence?.commonTrackFraction,
-      trackMedianNormalizedDisplacement:
-          _autoCapture.lastTrackEvidence?.medianNormalizedDisplacement,
-      trackMedianStepPixelDisplacement:
-          _autoCapture.lastTrackEvidence?.medianStepPixelDisplacement,
-      segmentMotionPx: _autoCapture.lastSegmentMotionPx,
-      segmentMotionThresholdPx: _autoCapture.segmentMotionThresholdPx,
-      visualSourceAgeSec: _autoCapture.lastVisualSourceAgeSec,
-    );
-    // 开火成因(VINS-Fusion 新旧比 vs AliceVision 流量段):一枪一账,
-    // 只在成功开火后 controller 才留快照,读一次即清。
+    // [2026-09-07 未命名(22)] 遥测的不变量校验(开火必须带角色)抛过 35 次
+    // 未捕获异常,把这一拍之后的统计/界面刷新全吞掉。遥测失败只记日志,
+    // 绝不打断快门链;不变量本身由 governor 的契约测试守。
+    try {
+      _autoTelemetry.recordDecision(
+        decision,
+        tSec: pose.timestamp,
+        pace: _shutterPace,
+        // 与 controller 的 thermalStateProvider **同一个字段** —— fire_before_tick
+        // 用的间隔必须与 governor 实际用的逐位相同,否则热机时会算漏。
+        thermalState: _lastThermalState,
+        // 开火那一刻的位移/阈值/转角/活体深度 —— 见 recordDecision 里的理由。
+        // 全部取自 controller 判定时用的那份状态(或其同帧记忆化),不重算:
+        // 重算 = 又造一个可能与判定不一致的数。
+        movedM: _autoCapture.lastMovedM,
+        fireDistM: _autoCapture.lastFireDistM,
+        turnDeg: _autoCapture.lastTurnDeg,
+        // 锐度缓拍门疗效对(开火帧锐度 vs 段中位),取自 controller 判定
+        // 时的同一份状态,不重算。
+        sharpness: _autoCapture.lastSharpness,
+        segMedianSharpness: _autoCapture.lastSegmentMedianSharpness,
+        motion: _autoCapture.lastMotionMetrics,
+        motionRole: _autoCapture.lastMotionRole,
+        geometryParallaxDeg: _autoCapture.lastGeometryParallaxDeg,
+        overlapFraction: _autoCapture.lastOverlapFraction,
+        depthScaleRatio: _autoCapture.lastDepthScaleRatio,
+        visualSimilarity: _autoCapture.lastVisualSimilarity,
+        trackCommonCount: _autoCapture.lastTrackEvidence?.commonTrackCount,
+        trackCommonFraction:
+            _autoCapture.lastTrackEvidence?.commonTrackFraction,
+        trackMedianNormalizedDisplacement:
+            _autoCapture.lastTrackEvidence?.medianNormalizedDisplacement,
+        trackMedianStepPixelDisplacement:
+            _autoCapture.lastTrackEvidence?.medianStepPixelDisplacement,
+        segmentMotionPx: _autoCapture.lastSegmentMotionPx,
+        segmentMotionThresholdPx: _autoCapture.segmentMotionThresholdPx,
+        visualSourceAgeSec: _autoCapture.lastVisualSourceAgeSec,
+      );
+      // 开火成因(VINS-Fusion 新旧比 vs AliceVision 流量段):一枪一账,
+      // 只在成功开火后 controller 才留快照,读一次即清。
+    } catch (e, st) {
+      DeviceLog.log('OfficialARCapturePage', 'auto telemetry failed: $e\n$st');
+    }
     final fireReason = _autoCapture.takeFireReason();
     if (fireReason != null) {
       _autoTelemetry.recordFireReason(
@@ -3250,6 +3256,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // 但震动又跑到照片存在之前 —— 那正是用户半个月前抓到的「震了 30+ 次、
     // 相册只有 20 张」。已撤回。
     final input = await capture.highResolutionCompletion;
+    // [2026-09-06 抄对①] 照片真正拍成:把自动拍的基准/流量起点对齐到实拍
+    // 瞬间(ARFrame 时间线 captureTimestamp),而不是快门请求时刻。
+    _autoCapture.onCaptureCompleted(
+      captureTimestampSec: input.captureTimestamp,
+    );
     if (mounted &&
         !_failedEvidenceJpegPaths.contains(capture.evidenceJpegPath)) {
       _triggerShutterHaptic();
@@ -3289,6 +3300,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       'OfficialARCapturePage',
       'shutter ticket=${ticket.id} FAILED: $error\n$stackTrace',
     );
+    _autoCapture.onCaptureFailed();
     TelemetryWriter.instance.event('shutter_error', {
       'ticket_id': ticket.id,
       'tap_timestamp_us': ticket.tapTimestampMicros,
