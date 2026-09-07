@@ -45,6 +45,9 @@ user-visible state. xrslam may emit only diagnostics into its isolated report.
 The xrslam snapshot reports `authority=shadow` and `decisionConsumers=0`;
 neither field transfers production authority. Any attempted product read of an
 xrslam pose is a contract violation, not a fallback or a partial promotion.
+XRSLAM also has no matcher-lifecycle authority: native callbacks, stop, crash,
+and late delivery never write or infer the production matcher capture-active
+flag, whose only writer is the Dart capture-lifecycle coordinator.
 
 ## Official map-frame semantics and platform relocalization
 
@@ -119,7 +122,7 @@ generation stamps. Dart computes midpoint, sandwich width, uncertainty, drift,
 clock-domain compatibility, and the final acceptance verdict. The exact wire
 contracts are `pw.vio.timebase-raw/5`,
 `pw.vio.timebase-remeasure-raw/1`,
-`pw.vio.shadow-run-input-descriptor/4`, and `pw.vio.shadow-native/6`.
+`pw.vio.shadow-run-input-descriptor/4`, and `pw.vio.shadow-native/7`.
 
 Each `/5` source ledger carries cumulative attempted/accepted/rejected,
 delivered, and dropped counts plus one bounded drained batch. Native drains the
@@ -153,39 +156,61 @@ looks correct on one phone.
 
 ## Loss-intolerant asynchronous ingress
 
-One explicit ring holds at most 256 xrslam work items. A camera item retains its
-pixel buffer and constant-size timestamp/alignment metadata. An accelerometer
+One explicit ring holds at most 256 xrslam work items. Before a camera callback
+acquires any additional ownership of an `ARFrame` or `CVPixelBuffer`, one atomic
+admission operation checks the open generation and reserves a ring item, one of
+30 camera-retention permits, and one preallocated 640×480 grayscale pool slot.
+If any reservation fails, the callback records one rejection and retains
+nothing. An accepted camera item may retain only the image handle required for
+off-callback conversion; it never retains the `ARFrame` object, and it releases
+the platform image immediately after filling the reserved grayscale slot. An accelerometer
 item owns one copied raw acceleration sample and timestamp; a gyroscope item
 owns one copied raw angular-rate sample and its independent timestamp. Native
 does not fuse, pair, or resample them. Camera retention has a separate hard
-ceiling of two buffers even when the ring has room. The dispatch queue may have
+ceiling of 30 slots (one declared 30 Hz source-camera envelope) even when the
+ring has room. The shared C++ box-N×N-half-up preparation function writes into
+the caller-owned slot without allocating. The dispatch queue may have
 at most one drain closure scheduled, so repeated callbacks cannot create an
 unbounded closure backlog.
 
-Admission must not share a contended try-lock with snapshots, metrics, pose
-serialization, or XRSLAM execution.  The adapter accepts every observation in
+Admission must not use a contended try-lock as an input rejection policy. The
+single sensor-ingress queue owns producer ordering; a short ledger publication
+lock is never held across pixel conversion, pose serialization, snapshot I/O,
+or XRSLAM execution. The adapter accepts every observation in
 the declared source-camera / 100 Hz-per-raw-IMU reproduction contract in source
 timestamp order.  It never replaces an older observation with a newer
 "useful" frame and never uses backlog to choose an observation. Ring full,
 retention exhaustion, or any admission contention is an explicitly recorded
 transport failure that invalidates the reproduction. Admission never blocks a
 production callback, grows without a fixed bound, or silently evicts work.
-Retained buffers and copied payloads are released exactly once after processing
+Retained slots and copied payloads are released exactly once after processing
 or a terminal rejection.
 
 Each callback completes one coherent admit-or-drop accounting transaction for
 one generation. `attempted`, its accepted/rejected outcome, and its exact reason
-cannot straddle separate mutable snapshots. Stop seals the generation facts;
-an offer racing that seal is either wholly recorded in the old generation or
-wholly rejected against the closed generation. No callback may append to a
-sealed receipt. Lock-contention facts use an equivalent atomic per-generation
-path without waiting.
+cannot straddle separate mutable snapshots. Stop atomically closes admission and
+publishes exactly one immutable `generationCloseMarker` containing the session,
+epoch, generation, and final admitted sequence. An offer racing that marker is
+either wholly admitted with an admission sequence at or before the marker, or
+wholly rejected against the closed generation. The marker is copied unchanged
+into the terminal envelope; no callback may append to or advance facts beyond
+it. Lock-contention facts use an equivalent atomic per-generation path without
+waiting.
 
 One serial `coreQueue` exclusively owns every xrslam C-API call, including
 create, sensor pushes, `RunOneFrame`, health/pose reads, and destroy.
 Downsampling and xrslam calls never run on the ARKit callback stack. xrslam
 delay or failure can change only raw shadow outcomes and drop counts that Dart
 later evaluates; it cannot delay or fail the production ARKit path.
+
+Stop seals new admission and gives every already-admitted item exactly one
+terminal disposition before calling Destroy. Every pose produced before that
+boundary is published live or included among the terminal envelope's unpolled
+poses. The envelope also contains the unchanged `generationCloseMarker` and the
+exact nested Destroy receipt returned by the shared C++ transport. Live and
+terminal camera/run/accelerometer/gyroscope/rejection counters come from that
+same transport ledger; Swift does not synthesize core health or reconstruct a
+Destroy receipt from a later snapshot.
 
 ## Lifecycle
 
@@ -207,7 +232,10 @@ pose state is cleared. `slamStop` atomically completes with exactly one
 immutable terminal receipt captured from that old generation after lifecycle
 reaches `stopped`. It does not return `void` and require a later mutable
 `slamSnapshot` read. The receipt reports `backlog=0` and `inFlight=0` and
-contains no retained raw absolute pose or raw observation payload.
+contains no retained raw absolute pose or raw observation payload. Its nested
+Destroy receipt is the exact transport return, including Destroy return code,
+acknowledgement, lifecycle generation, and core submission counters; platform
+code may envelope those facts but cannot recalculate or replace them.
 
 An authorized immediate restart may begin only after the old receipt has been
 frozen; it cannot alter the direct stop completion or its generation. On the
@@ -219,6 +247,15 @@ generation, and rejects an otherwise stopped-shaped generic snapshot. Neither
 a late poll nor a restarted generation may overwrite the terminal summary.
 After the immutable summary is formed, Dart clears its raw-derived pose,
 quality, and SE(3) accumulators before another session can start.
+
+The Future returned by the diagnostic `slamStop` operation may wait for that
+terminal receipt, but production teardown never awaits that Future. Capture
+completion, camera stop, draft persistence, and navigation initiate the shadow
+stop and continue independently. A worker crash, missing receipt, timeout, or
+Destroy error closes the diagnostic generation with one typed invalid terminal;
+it cannot hold the production camera, matcher flag, route, or persistence lease.
+Resource cleanup may continue on the bounded shadow teardown path after product
+teardown has completed.
 
 Temporary suspension and explicit shutdown have different authority. A
 temporary AR interruption may preserve permission to resume only the same
@@ -244,8 +281,10 @@ carrier therefore completes that declared lifecycle by resetting the owner and
 running the existing upstream `Detail` destructor, which stops its frontend and
 feature-tracker workers. This is classified as lifecycle completion, not an
 algorithm change. The direct receipt is accepted only after Destroy returns and
-proves same-generation `created=false`, `state=stopped`, `backlog=0`, and
-`inFlight=0`.
+proves same-generation `created=false`, `state=stopped`, `backlog=0`,
+`inFlight=0`, the unchanged close marker, and exact transport Destroy facts. A
+missing or failed Destroy receipt invalidates shadow evidence but never converts
+diagnostic cleanup into a production-teardown dependency.
 
 ## Physical-phone single-variable regression
 
@@ -255,7 +294,9 @@ authority, capture settings, and logging. OFF disables only the XRSLAM shadow;
 ON enables only the gated shadow. The primary regression criterion is zero
 `limited_initializing` transitions after subject lock in both arms. ON is
 invalid, not degraded, if timebase acceptance did not precede the first XRSLAM
-create/push or capture completion did not return the terminal destroy receipt.
+create/push or the diagnostic evidence bundle did not eventually contain the
+exact terminal Destroy receipt. Capture completion itself never waits for that
+evidence.
 
 ## Real counters and identity
 

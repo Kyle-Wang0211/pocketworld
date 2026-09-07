@@ -1,0 +1,67 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 6917617..85af565 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -14,6 +14,14 @@ option(XRSLAM_ENABLE_THREADING "..." OFF)
+ option(XRSLAM_PC_HEADLESS_ONLY "..." OFF)
+ option(XRSLAM_IOS "..." OFF)
+ option(XRSLAM_TEST "..." OFF)
++option(XRSLAM_ANDROID_OFFICIAL_IOS_SEMANTICS
++       "Compile the unmodified official iOS algorithm branches for an Android research port"
++       OFF)
++
++if(XRSLAM_ANDROID_OFFICIAL_IOS_SEMANTICS)
++  set(XRSLAM_IOS ON)
++  set(XRSLAM_ENABLE_THREADING ON)
++endif()
+ 
+ if(IOS)
+   set(XRSLAM_IOS ON)
+@@ -22,7 +30,7 @@ if(IOS)
+ endif()
+ 
+ 
+-if(NOT IOS)
++if(NOT IOS AND NOT XRSLAM_ANDROID_OFFICIAL_IOS_SEMANTICS)
+   set(XRSLAM_PC ON)
+ endif()
+ 
+@@ -34,6 +42,6 @@ if(XRSLAM_PC)
+   add_subdirectory(xrslam-pc)
+ endif()
+-if(XRSLAM_IOS)
++if(XRSLAM_IOS AND NOT XRSLAM_ANDROID_OFFICIAL_IOS_SEMANTICS)
+   add_subdirectory(xrslam-ios)
+ endif()
+ if(XRSLAM_TEST)
+diff --git a/xrslam-interface/CMakeLists.txt b/xrslam-interface/CMakeLists.txt
+index 7c3fd55..8d250ab 100644
+--- a/xrslam-interface/CMakeLists.txt
++++ b/xrslam-interface/CMakeLists.txt
+@@ -7,7 +7,7 @@ include(SuperBuildDepends)
+ set(XRSLAM_INTERFACE_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
+ set(XRSLAM_INTERFACE_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include)
+ 
+-IF (XRSLAM_IOS)
++IF (XRSLAM_IOS AND NOT XRSLAM_ANDROID_OFFICIAL_IOS_SEMANTICS)
+     message(STATUS "xrslam will build as static library")
+     add_library(xrslam STATIC
+         ${XRSLAM_INTERFACE_INCLUDE_DIR}/XRSLAM.h
+@@ -35,7 +35,7 @@ target_include_directories(xrslam
+     ${XRSLAM_INTERFACE_SOURCE_DIR}
+ )
+ 
+-if(XRSLAM_IOS)
++if(XRSLAM_IOS AND NOT XRSLAM_ANDROID_OFFICIAL_IOS_SEMANTICS)
+     # for PC static_lib merge
+     # add_custom_command(TARGET xrslam POST_BUILD
+     #                         COMMAND ar x $<TARGET_FILE:xrslam>
+@@ -57,7 +57,7 @@ endif()
+ file(COPY  "${CMAKE_SOURCE_DIR}/xrslam-interface/include/XRSLAM.h"
+      DESTINATION  "${CMAKE_SOURCE_DIR}/include")
+ SET(LIBRARY_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/lib)
+-if(XRSLAM_IOS)
++if(XRSLAM_IOS AND NOT XRSLAM_ANDROID_OFFICIAL_IOS_SEMANTICS)
+     SET(LIBRARY_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/lib/iOS)
+ else()
+     SET(LIBRARY_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/lib)

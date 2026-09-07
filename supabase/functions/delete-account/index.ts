@@ -32,36 +32,47 @@
 //   block that forever would be a worse failure than a leftover file.
 //   Every failure is recorded in audit_logs for manual sweeping.
 
-import { createClient } from 'jsr:@supabase/supabase-js@2.112.3';
-import { corsHeaders, jsonResponse, consumeRateLimit } from '../_shared/cors.ts';
+import { createClient } from "jsr:@supabase/supabase-js@2.112.3";
+import {
+  consumeRateLimit,
+  corsHeaders,
+  jsonResponse,
+} from "../_shared/cors.ts";
 
 // Buckets whose layout is `{user_id}/...` and can be swept by prefix.
-const USER_PREFIXED_BUCKETS = ['avatars', 'works', 'thumbnails', 'scans'];
+const USER_PREFIXED_BUCKETS = [
+  "avatars",
+  "works",
+  "thumbnails",
+  "scans",
+  "report-evidence",
+  "report-source-evidence",
+];
 
 type AssetRef = { bucket: string; path: string };
 
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
   }
-  if (req.method !== 'POST') {
-    return jsonResponse({ error: 'method_not_allowed' }, 405);
+  if (req.method !== "POST") {
+    return jsonResponse({ error: "method_not_allowed" }, 405);
   }
 
-  const supabaseUrl = Deno.env.get('SUPABASE_URL');
-  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!supabaseUrl || !serviceKey) {
-    return jsonResponse({ error: 'server_misconfigured' }, 500);
+    return jsonResponse({ error: "server_misconfigured" }, 500);
   }
   const admin = createClient(supabaseUrl, serviceKey, {
     auth: { persistSession: false },
   });
 
-  const bearer = (req.headers.get('Authorization') ?? '')
-    .replace(/^Bearer\s+/i, '')
+  const bearer = (req.headers.get("Authorization") ?? "")
+    .replace(/^Bearer\s+/i, "")
     .trim();
   if (!bearer) {
-    return jsonResponse({ error: 'missing_authorization' }, 401);
+    return jsonResponse({ error: "missing_authorization" }, 401);
   }
 
   let body: Record<string, unknown> = {};
@@ -77,9 +88,11 @@ Deno.serve(async (req) => {
 
   if (timingSafeEqual(bearer, serviceKey)) {
     viaServiceRole = true;
-    const t = typeof body.target_user_id === 'string' ? body.target_user_id.trim() : '';
+    const t = typeof body.target_user_id === "string"
+      ? body.target_user_id.trim()
+      : "";
     if (!isUuid(t)) {
-      return jsonResponse({ error: 'target_user_id_required' }, 400);
+      return jsonResponse({ error: "target_user_id_required" }, 400);
     }
     targetUserId = t;
   } else {
@@ -87,14 +100,14 @@ Deno.serve(async (req) => {
     // revocation) rather than decoding it locally.
     const { data, error } = await admin.auth.getUser(bearer);
     if (error || !data.user) {
-      return jsonResponse({ error: 'unauthorized' }, 401);
+      return jsonResponse({ error: "unauthorized" }, 401);
     }
     targetUserId = data.user.id;
     // Explicit confirmation for the self-serve path so a stray call
     // can't nuke an account. The UI must send this.
     if (body.confirm !== true) {
       return jsonResponse({
-        error: 'confirmation_required',
+        error: "confirmation_required",
         message: 'Send {"confirm": true} to proceed. This is irreversible.',
       }, 400);
     }
@@ -107,11 +120,33 @@ Deno.serve(async (req) => {
   //
   // fail-open on purpose: Apple 5.1.1(v) makes account deletion mandatory,
   // so a broken limiter must never be what stops someone from leaving.
-  if (!await consumeRateLimit(admin, `delete-account:${targetUserId}`, 3, 86400)) {
+  if (
+    !await consumeRateLimit(admin, `delete-account:${targetUserId}`, 3, 86400)
+  ) {
     return jsonResponse({
-      error: 'rate_limited',
-      message: 'Too many deletion attempts today. Try again tomorrow.',
+      error: "rate_limited",
+      message: "Too many deletion attempts today. Try again tomorrow.",
     }, 429);
+  }
+
+  await retryPendingSourcePreservation(admin, targetUserId);
+
+  // Claim every authored work before deleting any Storage object. Sensitive
+  // report submission locks the same rows. If server-side preservation is not
+  // complete, fail before erasure and let the caller retry shortly.
+  const { data: contentClaimed, error: contentClaimError } = await admin.rpc(
+    "claim_account_content_deletion",
+    { p_user_id: targetUserId },
+  );
+  if (contentClaimError) {
+    return jsonResponse({ error: "account_delete_claim_failed" }, 500);
+  }
+  if (contentClaimed !== true) {
+    return jsonResponse({
+      error: "safety_preservation_in_progress",
+      message:
+        "Safety evidence is still being preserved. Please retry shortly.",
+    }, 409);
   }
 
   // ── 1. enumerate EVERY storage object, before touching the user ─────
@@ -128,44 +163,46 @@ Deno.serve(async (req) => {
 
   // 1a. rows that name their own paths
   const { data: works } = await admin
-    .from('works')
-    .select('id, moderation_status, deleted_at, model_storage_path, thumbnail_storage_path, preview_video_path')
-    .eq('user_id', targetUserId);
+    .from("works")
+    .select(
+      "id, moderation_status, deleted_at, model_storage_path, thumbnail_storage_path, preview_video_path",
+    )
+    .eq("user_id", targetUserId);
   for (const w of works ?? []) {
-    push('works', w.model_storage_path);
-    push('thumbnails', w.thumbnail_storage_path);
-    push('works', w.preview_video_path);
+    push("works", w.model_storage_path);
+    push("thumbnails", w.thumbnail_storage_path);
+    push("works", w.preview_video_path);
   }
 
   const workIds = (works ?? []).map((w) => w.id as string);
   if (workIds.length > 0) {
     const { data: versions } = await admin
-      .from('work_versions')
-      .select('model_storage_path, thumbnail_storage_path')
-      .in('work_id', workIds);
+      .from("work_versions")
+      .select("model_storage_path, thumbnail_storage_path")
+      .in("work_id", workIds);
     for (const v of versions ?? []) {
-      push('works', v.model_storage_path);
-      push('thumbnails', v.thumbnail_storage_path);
+      push("works", v.model_storage_path);
+      push("thumbnails", v.thumbnail_storage_path);
     }
   }
 
   const { data: scans } = await admin
-    .from('scans')
-    .select('raw_storage_path, cover_thumbnail_path')
-    .eq('user_id', targetUserId);
+    .from("scans")
+    .select("raw_storage_path, cover_thumbnail_path")
+    .eq("user_id", targetUserId);
   for (const s of scans ?? []) {
-    push('scans', s.raw_storage_path);
-    push('scans', s.cover_thumbnail_path);
+    push("scans", s.raw_storage_path);
+    push("scans", s.cover_thumbnail_path);
   }
 
   const { data: profile } = await admin
-    .from('profiles')
-    .select('avatar_url, banner_url')
-    .eq('id', targetUserId)
+    .from("profiles")
+    .select("avatar_url, banner_url")
+    .eq("id", targetUserId)
     .maybeSingle();
   if (profile) {
-    push('avatars', profile.avatar_url);
-    push('avatars', profile.banner_url);
+    push("avatars", profile.avatar_url);
+    push("avatars", profile.banner_url);
   }
 
   // 1b. prefix sweep — catches orphans the DB never knew about (failed
@@ -192,13 +229,13 @@ Deno.serve(async (req) => {
   // carve-out.
   const moderatedWorkIds = new Set(
     (works ?? [])
-      .filter((w) => w.moderation_status !== 'ok' || w.deleted_at !== null)
+      .filter((w) => w.moderation_status !== "ok" || w.deleted_at !== null)
       .map((w) => w.id as string),
   );
   for (const wid of workIds) {
     if (moderatedWorkIds.has(wid)) continue;
-    for (const p of await listAllUnder(admin, 'quarantine', wid)) {
-      push('quarantine', p);
+    for (const p of await listAllUnder(admin, "quarantine", wid)) {
+      push("quarantine", p);
     }
   }
 
@@ -229,18 +266,18 @@ Deno.serve(async (req) => {
   // row survives the deletion. Only the UUID is retained — no email, no
   // display name — so the record is anonymised by construction while
   // still supporting "was this erasure actually performed?".
-  await admin.from('audit_logs').insert({
+  await admin.from("audit_logs").insert({
     // Self-serve deletion has a real identity behind it — record it. Only
     // a service_role-initiated erasure (an out-of-band GDPR/PIPL request)
     // genuinely has no user to attribute to.
     actor_id: viaServiceRole ? null : targetUserId,
-    action: 'user.account_deleted',
-    target_type: 'user',
+    action: "user.account_deleted",
+    target_type: "user",
     target_id: targetUserId,
-    ip_address: firstIp(req.headers.get('x-forwarded-for')),
-    user_agent: (req.headers.get('user-agent') ?? '').slice(0, 500) || null,
+    ip_address: firstIp(req.headers.get("x-forwarded-for")),
+    user_agent: (req.headers.get("user-agent") ?? "").slice(0, 500) || null,
     metadata: {
-      via: viaServiceRole ? 'service_role' : 'self_serve',
+      via: viaServiceRole ? "service_role" : "self_serve",
       storage_objects_found: assets.length,
       storage_objects_deleted: deletedCount,
       storage_failures: failures,
@@ -249,7 +286,7 @@ Deno.serve(async (req) => {
       moderated_works_evidence_retained: moderatedWorkIds.size,
       // Fail-open on storage is deliberate; see the header comment.
       note: failures.length > 0
-        ? 'Account deleted despite storage failures — sweep these manually.'
+        ? "Account deleted despite storage failures — sweep these manually."
         : null,
     },
   });
@@ -258,7 +295,7 @@ Deno.serve(async (req) => {
   const { error: delErr } = await admin.auth.admin.deleteUser(targetUserId);
   if (delErr) {
     return jsonResponse({
-      error: 'user_delete_failed',
+      error: "user_delete_failed",
       detail: delErr.message,
       // Files are already gone — surface it so this isn't silently
       // half-applied.
@@ -280,7 +317,8 @@ Deno.serve(async (req) => {
 /// Supabase's list() is single-level and paginated, so directories are
 /// walked explicitly. Returns full paths.
 async function listAllUnder(
-  admin: ReturnType<typeof createClient>,
+  // deno-lint-ignore no-explicit-any
+  admin: any,
   bucket: string,
   prefix: string,
 ): Promise<string[]> {
@@ -317,15 +355,17 @@ async function listAllUnder(
 /// URL (what getPublicUrl returns, which is what some columns hold) and
 /// returns the bucket-relative path.
 function normalizeStoragePath(raw: unknown, bucket: string): string | null {
-  if (typeof raw !== 'string') return null;
+  if (typeof raw !== "string") return null;
   const s = raw.trim();
   if (s.length === 0) return null;
-  if (!s.startsWith('http')) {
-    return s.replace(/^\/+/, '');
+  if (!s.startsWith("http")) {
+    return s.replace(/^\/+/, "");
   }
   // .../storage/v1/object/public/<bucket>/<path>  (or /sign/, /authenticated/)
   const m = s.match(
-    new RegExp(`/storage/v1/object/(?:public|sign|authenticated)/${bucket}/(.+?)(?:\\?|$)`),
+    new RegExp(
+      `/storage/v1/object/(?:public|sign|authenticated)/${bucket}/(.+?)(?:\\?|$)`,
+    ),
   );
   if (!m) return null;
   try {
@@ -350,10 +390,131 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+async function retryPendingSourcePreservation(
+  // deno-lint-ignore no-explicit-any
+  admin: any,
+  targetUserId: string,
+): Promise<void> {
+  const { data: reports } = await admin
+    .from("reports")
+    .select(
+      "id, reporter_id, source_work_id, source_work_snapshot, " +
+        "preservation_state, preservation_attempts",
+    )
+    .eq("target_type", "user")
+    .eq("target_id", targetUserId)
+    .in("reason", ["minor_safety", "sexual_content"])
+    .in("status", ["pending", "in_review"])
+    .not("source_work_id", "is", null)
+    .in("preservation_state", ["pending", "retrying", "partial", "failed"]);
+
+  for (const report of reports ?? []) {
+    const { data: retryClaimed, error: retryClaimError } = await admin.rpc(
+      "claim_report_preservation_retry",
+      { p_report_id: report.id },
+    );
+    if (retryClaimError || retryClaimed !== true) continue;
+    const { data: existing } = await admin
+      .from("report_source_assets")
+      .select("ordinal")
+      .eq("report_id", report.id);
+    const completed = new Set(
+      (existing ?? []).map((row: { ordinal: number }) => Number(row.ordinal)),
+    );
+    const snapshot = report.source_work_snapshot ?? {};
+    const candidates = [
+      { bucket: "works", raw: snapshot.model_storage_path },
+      { bucket: "thumbnails", raw: snapshot.thumbnail_storage_path },
+      { bucket: "works", raw: snapshot.preview_video_path },
+    ].map((asset) => ({
+      bucket: asset.bucket,
+      path: normalizeStoragePath(asset.raw, asset.bucket),
+    })).filter((asset) => asset.path !== null).slice(0, 3);
+
+    let failed = 0;
+    for (let ordinal = 0; ordinal < candidates.length; ordinal++) {
+      if (completed.has(ordinal)) continue;
+      const asset = candidates[ordinal] as { bucket: string; path: string };
+      const { data: info, error: infoError } = await admin.storage
+        .from(asset.bucket).info(asset.path);
+      if (infoError || !info) {
+        failed++;
+        continue;
+      }
+      const storagePath =
+        `${report.reporter_id}/${report.id}/${crypto.randomUUID()}${
+          extensionOf(asset.path)
+        }`;
+      const { error: copyError } = await admin.storage.from(asset.bucket)
+        .copy(asset.path, storagePath, {
+          destinationBucket: "report-source-evidence",
+        });
+      if (copyError) {
+        failed++;
+        continue;
+      }
+      const { error: metadataError } = await admin
+        .from("report_source_assets")
+        .insert({
+          report_id: report.id,
+          reporter_id: report.reporter_id,
+          ordinal,
+          source_bucket: asset.bucket,
+          source_path: asset.path,
+          storage_path: storagePath,
+          byte_size: info.size ?? 1,
+          content_type: info.contentType || null,
+        });
+      if (metadataError) {
+        failed++;
+        await admin.storage.from("report-source-evidence").remove([
+          storagePath,
+        ]);
+      } else {
+        completed.add(ordinal);
+      }
+    }
+    const complete = failed === 0 && completed.size >= candidates.length;
+    const attempts = Number(report.preservation_attempts ?? 0) + 1;
+    const released = !complete && attempts >= 3;
+    await admin.from("reports").update({
+      preservation_state: complete
+        ? "complete"
+        : released
+        ? "released"
+        : completed.size > 0
+        ? "partial"
+        : "failed",
+      preservation_attempts: attempts,
+      preservation_lease_until: null,
+    }).eq("id", report.id);
+    if (released) {
+      await admin.from("audit_logs").insert({
+        actor_id: null,
+        action: "report.preservation_released_for_erasure",
+        target_type: "system",
+        target_id: null,
+        metadata: {
+          report_id: report.id,
+          target_user_id: targetUserId,
+          attempts,
+          preserved_assets: completed.size,
+          failed_assets: failed,
+        },
+      });
+    }
+  }
+}
+
+function extensionOf(path: string): string {
+  const match = path.match(/(\.[a-z0-9]{1,10})$/i);
+  return match?.[1]?.toLowerCase() ?? ".bin";
+}
+
 /// x-forwarded-for may be a chain; the first entry is the original client.
 /// Returns null when unparseable — attribution must never fail the erasure.
 function firstIp(raw: string | null): string | null {
   if (!raw) return null;
-  const first = raw.split(',')[0]?.trim();
+  const first = raw.split(",")[0]?.trim();
   return first && first.length > 0 ? first : null;
 }

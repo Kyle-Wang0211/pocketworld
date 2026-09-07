@@ -802,4 +802,240 @@ class AppL10nEn extends AppL10n {
 
   @override
   String get workDeleteFailed => 'Removal failed. Please try again later.';
+
+  @override
+  String get socialActionFailed => 'Action failed. Please try again later.';
+
+  @override
+  String get socialFollowingTitle => 'Following';
+
+  @override
+  String get socialFollowingLoadFailed => 'Couldn\'t load your following list';
+
+  @override
+  String get socialFollowingEmpty => 'You aren\'t following anyone yet';
+
+  @override
+  String get socialFollow => 'Follow';
+
+  @override
+  String get socialFollowing => 'Following';
+
+  @override
+  String get socialWorks => 'Works';
+
+  @override
+  String get socialFollowers => 'Followers';
+
+  @override
+  String get profileLoadFailed => 'Couldn\'t load this profile';
+
+  @override
+  String get profileBack => 'Back';
+
+  @override
+  String get profileMore => 'More';
+
+  @override
+  String get profileReportUser => 'Report this user';
+
+  @override
+  String get profileBlockUser => 'Block this user';
+
+  @override
+  String get profileBlockTitle => 'Block this user?';
+
+  @override
+  String get profileBlockBody =>
+      'While signed in to PocketWorld with this account, you won\'t see this person in Community, search, following lists, or profiles. Any follow relationship between you will be removed and neither account can follow the other. They won\'t be notified. Public links, signed-out visitors, or other accounts may still see their public content.';
+
+  @override
+  String get profileBlockConfirm => 'Block';
+
+  @override
+  String get profileBlockFailed =>
+      'Couldn\'t block this user. Please try again later.';
+
+  @override
+  String get reportUserTitle => 'Report this user';
+
+  @override
+  String get reportTierTitle => 'Choose report type';
+
+  @override
+  String get reportReasonTitle => 'Choose a reason';
+
+  @override
+  String get reportStandardTitle => 'Standard report';
+
+  @override
+  String get reportStandardSubtitle =>
+      'Harassment, fraud, harmful content, or another community issue';
+
+  @override
+  String get reportRightsTitle => 'Rights complaint';
+
+  @override
+  String get reportRightsEntry => 'Infringes rights';
+
+  @override
+  String get reportRightsSubtitle =>
+      'Impersonation, privacy, portrait, or intellectual-property concerns';
+
+  @override
+  String get reportStandardDetailHint =>
+      'Describe whether the issue appears on the front, back, top, or another view';
+
+  @override
+  String get reportRightsDetailHint =>
+      'Describe ownership, where the infringement appears, and the requested action';
+
+  @override
+  String get reportEvidenceType => 'Evidence type';
+
+  @override
+  String get reportEvidenceContext => 'Issue screenshot';
+
+  @override
+  String get reportEvidenceIdentity => 'Identity evidence';
+
+  @override
+  String get reportEvidenceOwnership => 'Ownership evidence';
+
+  @override
+  String get reportEvidenceAuthorization => 'Authorization evidence';
+
+  @override
+  String get reportEvidenceOther => 'Other evidence';
+
+  @override
+  String get reportEvidenceOptional => 'Supporting screenshots (optional)';
+
+  @override
+  String get reportEvidenceLimitHint =>
+      'Up to 3 JPG or PNG images. Location and other metadata are removed before upload.';
+
+  @override
+  String get reportHistoryTitle => 'My reports';
+
+  @override
+  String get reportHistoryEmpty => 'You haven\'t submitted any reports';
+
+  @override
+  String get reportHistoryLoadFailed => 'Couldn\'t load report history';
+
+  @override
+  String reportHistorySource(String title) {
+    return 'Related work: $title';
+  }
+
+  @override
+  String get reportStatusPending => 'Pending';
+
+  @override
+  String get reportStatusInReview => 'In review';
+
+  @override
+  String get reportStatusNeedsInfo => 'More information needed';
+
+  @override
+  String get reportStatusActioned => 'Action taken';
+
+  @override
+  String get reportStatusDismissed => 'No violation found';
+
+  @override
+  String get reportAdditionalInfoTitle => 'Additional information';
+
+  @override
+  String get reportImageProcessFailed =>
+      'Couldn\'t process that image. Choose a JPG or PNG.';
+
+  @override
+  String get reportUserSubmitted => 'Report submitted';
+
+  @override
+  String get reportSubmittedPartial =>
+      'Report submitted, but some images weren\'t uploaded';
+
+  @override
+  String get reportDetailUserHint => 'Describe what happened (optional)';
+
+  @override
+  String reportSourceWork(String workId) {
+    return 'Related work: $workId';
+  }
+
+  @override
+  String get reportAddEvidence => 'Add screenshots or photos (up to 3)';
+
+  @override
+  String get reportSensitiveEvidenceWarning =>
+      'Don\'t re-upload or redistribute sensitive material. The platform will preserve linked in-app content for review.';
+
+  @override
+  String get reportSubmitting => 'Submitting…';
+
+  @override
+  String get reportSubmitUser => 'Submit report';
+
+  @override
+  String get reportReasonImpersonation =>
+      'Impersonation or false account information';
+
+  @override
+  String get reportReasonHarassmentThreat => 'Harassment, bullying, or threats';
+
+  @override
+  String get reportReasonSpamFraud =>
+      'Fraud, spam, or suspicious account activity';
+
+  @override
+  String get reportReasonMinorSafety => 'Minor safety';
+
+  @override
+  String get reportReasonSexualLowQuality => 'Sexual or explicit content';
+
+  @override
+  String get reportReasonViolenceIllegal =>
+      'Violence, self-harm, hate, extremism, or other illegal harmful content';
+
+  @override
+  String get reportReasonMisleading => 'False or misleading information';
+
+  @override
+  String get reportReasonPrivacyIp =>
+      'Privacy, doxxing, portrait, or intellectual property';
+
+  @override
+  String get reportReasonOtherUncertain => 'Other / not sure';
+
+  @override
+  String get blockedUsersTitle => 'Blocked users';
+
+  @override
+  String get blockedUsersLoadFailed => 'Couldn\'t load blocked users';
+
+  @override
+  String get blockedUsersEmpty => 'You haven\'t blocked anyone';
+
+  @override
+  String get unblockTitle => 'Unblock this user?';
+
+  @override
+  String get unblockBody =>
+      'You\'ll be able to see their public content again. Previous follow relationships won\'t be restored automatically.';
+
+  @override
+  String get unblockAction => 'Unblock';
+
+  @override
+  String get unblockFailed =>
+      'Couldn\'t unblock this user. Please try again later.';
+
+  @override
+  String get meBlockedUsers => 'Blocked users';
+
+  @override
+  String get meSocialLoadFailed => 'Couldn\'t load social profile';
 }

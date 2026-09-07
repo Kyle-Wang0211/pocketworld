@@ -48,11 +48,47 @@ void TestOffsetAppliedExactlyOnceAndOneRunPerCamera() {
   CHECK(Near(trace.effective_timestamp, 10.125));
   CHECK(trace.submitted_sequence == 1);
 
+  PWXrslamTransportCounters live{};
+  CHECK(PWXrslamTransportGetCounters(&live) == PW_XRSLAM_OK);
+  CHECK(live.lifecycle_generation == 1);
+  CHECK(live.running == 1);
+  CHECK(live.camera_submitted == 1);
+  CHECK(live.camera_run_calls == 1);
+  CHECK(live.acceleration_submitted == 0);
+  CHECK(live.gyroscope_submitted == 0);
+
   PWXrslamDestroyReceipt receipt{};
   CHECK(PWXrslamTransportDestroyWithReceipt(&receipt) == PW_XRSLAM_OK);
   CHECK(receipt.destroy_acknowledged == 1);
   CHECK(receipt.camera_submitted == 1);
   CHECK(receipt.camera_run_calls == 1);
+}
+
+void TestPreparesExactBoxDownsampleIntoCallerPool() {
+  const std::array<uint8_t, 16> source = {
+      0, 2, 10, 12,
+      4, 6, 14, 16,
+      20, 22, 30, 32,
+      24, 26, 34, 36,
+  };
+  std::array<uint8_t, 4> destination{};
+  int32_t width = 0;
+  int32_t height = 0;
+  CHECK(PWXrslamTransportPrepareGrayBoxNxN(
+            source.data(), 4, 4, 4, 2, destination.data(),
+            static_cast<int32_t>(destination.size()), &width, &height) ==
+        PW_XRSLAM_OK);
+  CHECK(width == 2);
+  CHECK(height == 2);
+  CHECK(destination[0] == 3);
+  CHECK(destination[1] == 13);
+  CHECK(destination[2] == 23);
+  CHECK(destination[3] == 33);
+
+  CHECK(PWXrslamTransportPrepareGrayBoxNxN(
+            source.data(), 4, 4, 4, 3, destination.data(),
+            static_cast<int32_t>(destination.size()), &width, &height) ==
+        PW_XRSLAM_ERR_INVALID_ARGUMENT);
 }
 
 void TestNegativeOffsetAppliedExactlyOnce() {
@@ -239,6 +275,7 @@ void TestWorldFromCameraXyzwGolden() {
 
 int main() {
   TestOffsetAppliedExactlyOnceAndOneRunPerCamera();
+  TestPreparesExactBoxDownsampleIntoCallerPool();
   TestNegativeOffsetAppliedExactlyOnce();
   TestRejectsNonFiniteRollbackAndStoppedBeforeAbi();
   TestCreateFailureDoesNotOpenRunningGate();

@@ -30,9 +30,10 @@ be inferred from source tests or a build.
 - [ ] Gate XRSLAM Create and all sensor admission on an accepted exact-generation
   Dart timebase verdict; prove all XRSLAM work counters remain zero before it.
 
-- [ ] Put all shadow work in one 256-item ring, retain at most two camera
-  buffers, schedule at most one drain closure, and give one serial `coreQueue`
-  exclusive ownership of every xrslam C-API call.
+- [ ] Put all shadow work in one 256-item ring; atomically reserve generation,
+  ring, 30-slot camera retention, and grayscale ownership before retaining any
+  ARFrame/CVPixelBuffer; schedule at most one drain closure; and give one serial
+  `coreQueue` exclusive ownership of every xrslam C-API call.
 - [ ] Implement the declared start, stop, drain, and destroy lifecycle with
   idempotent entry points and exactly-once resource release, including zeroed
   image scratch and cleared raw pose at terminal stop.
@@ -51,7 +52,15 @@ be inferred from source tests or a build.
   first identity-valid direct running generation, reject generic stopped-shaped
   maps, and clear raw-derived pose/quality/SE(3) state after terminal summary.
 - [ ] Seal coherent per-generation callback facts through O(1), nonblocking
-  admit-or-drop transactions so attempted/outcome/reason never straddle a stop.
+  admit-or-drop transactions so attempted/outcome/reason never straddle a stop;
+  publish one immutable `generationCloseMarker` and carry it unchanged into the
+  terminal envelope.
+- [ ] Return the exact nested C++ transport Destroy receipt, including return
+  code, acknowledgement, generation, and submission counters; reject any
+  platform-synthesized or later-snapshot substitute.
+- [ ] Decouple production teardown from diagnostic `slamStop`: worker crash,
+  timeout, or Destroy failure emits a typed invalid terminal but cannot delay
+  camera stop, matcher lifecycle, draft persistence, or route navigation.
 - [ ] Separate temporary same-session suspension from explicit Dart shutdown;
   shutdown clears native resume authorization, desired state, and configuration
   so AR resume cannot resurrect the shadow.
@@ -74,7 +83,7 @@ be inferred from source tests or a build.
   finite/range/integer validation of `CameraIntrinsics`.
 - [ ] Bind `pw.vio.timebase-raw/5`,
   `pw.vio.timebase-remeasure-raw/1`,
-  `pw.vio.shadow-run-input-descriptor/4`, and `pw.vio.shadow-native/6` to the
+  `pw.vio.shadow-run-input-descriptor/4`, and `pw.vio.shadow-native/7` to the
   exact session/epoch/generation and start/stop receipts.
 - [ ] Drain each bounded `/5` raw timebase batch after delivery while preserving
   cumulative delivery/drop/rejection conservation; reject true loss and permit
@@ -99,13 +108,18 @@ be inferred from source tests or a build.
   verdict.
 - [ ] Keep ARKit as production authority and enforce xrslam
   `authority=shadow` with `decisionConsumers=0` at the integration boundary.
+- [ ] Prohibit every XRSLAM callback and lifecycle path from writing the matcher
+  capture-active flag; prove the single Dart capture-lifecycle owner remains the
+  only writer across start, stop, crash, and late callbacks.
 - [ ] Keep asynchronous CoreMotion starts alive until delivery/error and report
   raw-IMU, stale-intent, feeder, and direct-receipt failures distinctly.
 - [ ] Add deterministic tests for capacity overflow, callback nonblocking
   behavior, start/stop races, cancellation, faults, rejection-partition and
   terminal conservation, stop/restart receipt isolation, poll/stop joining,
-  explicit-shutdown resurrection prevention, sealed-generation facts, unknown
-  top-level reasons, identity rules, intrinsics, one terminal snapshot,
+  explicit-shutdown resurrection prevention, pre-retention admission,
+  generation-close-marker races, exact Destroy receipt identity, nonblocking
+  production teardown, sealed-generation facts, unknown top-level reasons,
+  identity rules, intrinsics, one terminal snapshot, forbidden matcher writes,
   forbidden native reductions/decisions, and forbidden product consumption.
 - [ ] Collect S1 physical-iPhone shadow evidence without changing or installing
   over the production bundle.

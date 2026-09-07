@@ -17,6 +17,7 @@ expected_ninja_version="1.13.2"
 expected_clang_revision="5e96669f06077099aa41290cdb4c5e6fa0f59349"
 source_date_epoch="1700000000"
 xrslam_patch_sha256="b98ed6aa689c9edaaac6da707d97592217d3f6caccc6df8c4d6961e2ee751de0"
+zero_inlier_mask_patch_sha256="62b12204c647e445e88917859de6b29452df0e6cc65b447e7ea86005f98d1794"
 opencv_patch_sha256="4041a1ac34b397679a04b733aa78bb1c37a25fcaf6a19c32e9563b0fd9159136"
 spdlog_patch_sha256="1afb69176857159ad29e69d0abf3359576ebc091104278fee5fdeeff08e21adb"
 expected_artifact_sha256="083220bb6ecbaa161c0f0bae9bf007da5c59ed010455cf6f2e3b600bb0eaf8f4"
@@ -55,6 +56,8 @@ require_hash() {
 verify_pinned_inputs() {
   verify_toolchain
   require_hash "$patch_dir/xrslam_generic_mobile.patch" "$xrslam_patch_sha256"
+  require_hash "$repo_root/vendor/xrslam/patches/xrslam_zero_inlier_mask.patch" \
+    "$zero_inlier_mask_patch_sha256"
   require_hash "$patch_dir/opencv_mobile_contract.patch" "$opencv_patch_sha256"
   require_hash "$patch_dir/spdlog_char8_compat.patch" "$spdlog_patch_sha256"
   require_hash "$artifact" "$expected_artifact_sha256"
@@ -109,6 +112,10 @@ git -C "$xrslam_source" checkout --detach "$xrslam_revision"
 test "$(git -C "$xrslam_source" rev-parse HEAD)" = "$xrslam_revision"
 git -C "$xrslam_source" apply "$patch_dir/xrslam_generic_mobile.patch"
 require_hash "$patch_dir/xrslam_generic_mobile.patch" "$xrslam_patch_sha256"
+git -C "$xrslam_source" apply \
+  "$repo_root/vendor/xrslam/patches/xrslam_zero_inlier_mask.patch"
+require_hash "$repo_root/vendor/xrslam/patches/xrslam_zero_inlier_mask.patch" \
+  "$zero_inlier_mask_patch_sha256"
 
 git clone --filter=blob:none --no-checkout \
   https://github.com/opencv/opencv.git "$opencv_source"
@@ -230,6 +237,7 @@ run_receipt="$work_root/rebuild-run.receipt"
   echo "clang_revision=$expected_clang_revision"
   echo "source_date_epoch=$source_date_epoch"
   echo "xrslam_patch_sha256=$(hash_file "$patch_dir/xrslam_generic_mobile.patch")"
+  echo "zero_inlier_mask_patch_sha256=$(hash_file "$repo_root/vendor/xrslam/patches/xrslam_zero_inlier_mask.patch")"
   echo "opencv_patch_sha256=$(hash_file "$patch_dir/opencv_mobile_contract.patch")"
   echo "spdlog_patch_sha256=$(hash_file "$patch_dir/spdlog_char8_compat.patch")"
   echo "artifact_sha256=$rebuilt_sha256"

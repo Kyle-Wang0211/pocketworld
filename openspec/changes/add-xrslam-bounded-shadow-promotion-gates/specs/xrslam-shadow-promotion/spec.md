@@ -3,22 +3,48 @@
 ### Requirement: xrslam shadow work is bounded and asynchronous
 
 The system SHALL place shadow work in one ownership-safe fixed ring of 256 work
-items, retain at most two camera buffers, and schedule at most one drain closure.
+items, retain at most 30 camera buffers (one declared 30 Hz camera envelope),
+and schedule at most one drain closure.
 One serial `coreQueue` SHALL exclusively execute every xrslam C-API call.
 Ingress SHALL NOT block, grow, or silently evict prior work. Each callback SHALL
 complete one coherent O(1) admit-or-drop accounting transaction against its
 generation; attempted, outcome, and rejection reason SHALL NOT be exposed as a
 partially updated fact set. Stop SHALL seal those facts immutably.
 
+Before retaining an `ARFrame` or `CVPixelBuffer` beyond its production callback,
+camera ingress SHALL atomically verify the open generation and reserve one ring
+item, one of 30 camera-retention permits, and one caller-owned preallocated
+640×480 grayscale slot. A failed reservation SHALL retain no platform image
+state. An admitted item SHALL release its platform image immediately after
+conversion and SHALL NOT retain the `ARFrame` object. Stop SHALL reject new
+offers, give every already-admitted item exactly one processed,
+`droppedOnStop`, or `terminalRejected` disposition, publish every pose produced
+before the boundary, then destroy the core and return one terminal receipt.
+Live and terminal core submission counters SHALL come from the shared C++
+transport ledger.
+
 #### Scenario: Camera admission cannot proceed immediately
 
-- **WHEN** the ring is full, two camera buffers are already retained, or the
-  admission lock is contended when an ARKit frame is offered
+- **WHEN** the ring is full or 30 camera buffers are already retained when an
+  ARKit frame is offered
 - **THEN** the production callback returns without waiting for xrslam,
   downsampling, or diagnostic I/O
 - **AND** the new frame is rejected exactly once with its real reason
 - **AND** ring occupancy remains at most 256 and retained camera count remains
-  at most two
+  at most 30
+- **AND** admission failure occurs before any additional ARFrame/CVPixelBuffer
+  ownership is acquired
+- **AND** ordinary ledger-lock contention is not classified as an input drop
+
+#### Scenario: Stop races admitted work
+
+- **WHEN** stop seals admission while accepted camera or IMU work remains
+- **THEN** every accepted item receives exactly one processed,
+  `droppedOnStop`, or `terminalRejected` disposition before Destroy
+- **AND** every pose produced before that boundary is returned live or in the
+  terminal receipt
+- **AND** the terminal work-item conservation equation closes at the published
+  `generationCloseMarker`
 
 #### Scenario: The ring is full when a raw IMU sample arrives
 
@@ -43,6 +69,15 @@ partially updated fact set. Stop SHALL seal those facts immutably.
 - **AND** its attempted, accepted/rejected outcome, and exact reason appear in
   one coherent fact set
 - **AND** the callback does not wait and cannot mutate the sealed receipt
+
+#### Scenario: Stop publishes the generation close boundary
+
+- **WHEN** stop closes admission for one running generation
+- **THEN** it publishes exactly one immutable `generationCloseMarker` containing
+  the session, epoch, generation, and final admitted sequence
+- **AND** every admitted item has a sequence at or before that marker
+- **AND** every later offer is wholly rejected against the closed generation
+- **AND** the same marker appears unchanged in the terminal envelope
 
 #### Scenario: xrslam is slow or faults
 
@@ -209,13 +244,20 @@ C-API call SHALL begin after destroy. Dart SHALL serialize start and stop as one
 FIFO lifecycle transaction, pin the first identity-valid direct running
 generation, and accept only the once-consumed direct-stop receipt for that same
 generation. After forming the immutable summary, Dart SHALL clear raw-derived
-pose, quality, and SE(3) accumulator state.
+pose, quality, and SE(3) accumulator state. The terminal envelope SHALL carry the
+unchanged `generationCloseMarker` and the exact nested transport Destroy receipt;
+Swift/Kotlin SHALL NOT synthesize either from mutable state. The nested Destroy
+receipt SHALL preserve, field-for-field without recomputation, the transport's
+return code, acknowledgement, lifecycle generation, camera submission/run
+counters, independent IMU submission counters, and rejection counters.
 
 #### Scenario: Capture ends while work is queued
 
 - **WHEN** the lifecycle enters `stopping`
 - **THEN** submission returns without blocking while its asynchronous
   completion waits for the terminal receipt
+- **AND** production capture teardown, camera stop, persistence, and navigation
+  do not await that diagnostic completion
 - **AND** new input is counted as a stop rejection
 - **AND** queued input receives a `droppedOnStop` or `terminalRejected` outcome
 - **AND** exactly one immutable terminal snapshot is delivered after the
@@ -224,6 +266,16 @@ pose, quality, and SE(3) accumulator state.
 - **AND** retained image scratch is zeroed before release
 - **AND** neither native state nor the snapshot retains a raw absolute pose,
   raw observation payload, or prior-generation scratch
+
+#### Scenario: Worker or Destroy fails during production teardown
+
+- **WHEN** shadow stop encounters a worker crash, missing receipt, timeout, or
+  non-OK Destroy return while the product is stopping capture
+- **THEN** the shadow generation emits one typed invalid terminal
+- **AND** product camera stop, matcher lifecycle, draft persistence, and route
+  teardown continue without waiting
+- **AND** no stopped-looking snapshot is substituted for the missing exact
+  Destroy receipt
 
 #### Scenario: Stop is requested more than once
 
@@ -339,7 +391,7 @@ The direct start receipt SHALL bind the exact session, epoch, generation,
 independent requested raw-sensor rates, acceleration scale, pixel downsample
 factor, versioned pixel-reduction formula, and
 `pw.vio.shadow-run-input-descriptor/4` input identity. The matching native
-receipt SHALL use `pw.vio.shadow-native/6`; the terminal receipt SHALL match the
+receipt SHALL use `pw.vio.shadow-native/7`; the terminal receipt SHALL match the
 same values exactly.
 
 Raw CoreMotion producers start asynchronously. Native transport SHALL treat a
@@ -441,7 +493,9 @@ Every other input SHALL fail closed.
 
 During S1, xrslam poses and health SHALL be diagnostic-only. Its snapshot SHALL
 report `authority=shadow` and `decisionConsumers=0`; ARKit SHALL remain the sole
-production pose authority.
+production pose authority. XRSLAM callbacks and lifecycle code SHALL NOT write
+the production matcher capture-active flag; its sole writer is the Dart capture
+lifecycle owner.
 
 #### Scenario: A product decision path requests an xrslam pose
 
@@ -449,6 +503,12 @@ production pose authority.
   other product consumer attempts to read shadow output
 - **THEN** the boundary rejects the read and records a contract violation
 - **AND** ARKit remains authoritative
+
+#### Scenario: XRSLAM lifecycle observes capture start or stop
+
+- **WHEN** XRSLAM starts, stops, crashes, or delivers a late callback
+- **THEN** it does not write, clear, or infer the matcher capture-active flag
+- **AND** product capture teardown remains independent of the shadow lifecycle
 
 ### Requirement: ARKit-to-xrslam promotion is sequential
 

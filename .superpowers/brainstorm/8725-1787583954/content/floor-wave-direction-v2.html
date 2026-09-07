@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PocketWorld · 俯视方块地板波浪</title>
+  <style>
+    :root { color-scheme:light; --ink:#111; --muted:#777; --line:#dedede; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:#f7f7f7; color:var(--ink); font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang SC",sans-serif; }
+    main { max-width:1160px; margin:0 auto; padding:40px 26px 54px; }
+    .eyebrow { margin:0 0 9px; color:#929292; font-size:12px; font-weight:750; letter-spacing:.12em; text-transform:uppercase; }
+    h1 { margin:0; font-size:31px; letter-spacing:-.025em; }
+    .lead { max-width:780px; margin:12px 0 27px; color:var(--muted); font-size:16px; line-height:1.65; }
+    .choices { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; }
+    .choice { position:relative; overflow:hidden; border:1px solid var(--line); border-radius:24px; background:white; cursor:pointer; transition:transform 160ms ease,border-color 160ms ease,box-shadow 160ms ease; }
+    .choice:hover { transform:translateY(-3px); border-color:#aaa; box-shadow:0 16px 38px rgba(0,0,0,.07); }
+    .choice.selected { border:2px solid #111; box-shadow:0 0 0 4px rgba(0,0,0,.08),0 18px 45px rgba(0,0,0,.08); }
+    .preview { padding:16px; }
+    .task-card { overflow:hidden; position:relative; aspect-ratio:4/5; border-radius:24px; background:#e6e6e6; box-shadow:inset 0 0 0 1px rgba(0,0,0,.035); }
+    canvas { display:block; width:100%; height:100%; }
+    .copy { padding:3px 20px 22px; }
+    .title-row { display:flex; align-items:center; gap:10px; }
+    .badge { display:flex; width:28px; height:28px; flex:0 0 28px; align-items:center; justify-content:center; border-radius:50%; background:#111; color:#fff; font-size:12px; font-weight:800; }
+    h2 { margin:0; font-size:18px; }
+    .copy p { min-height:48px; margin:10px 0 0; color:#737373; font-size:13px; line-height:1.55; }
+    .recommend { position:absolute; top:28px; right:28px; z-index:2; padding:5px 8px; border-radius:999px; background:#111; color:#fff; font-size:10px; font-weight:700; }
+    .note { margin:24px auto 0; max-width:720px; color:#777; font-size:13px; line-height:1.6; text-align:center; }
+    @media (max-width:840px) { .choices { grid-template-columns:1fr; } .copy p { min-height:0; } }
+    @media (prefers-reduced-motion:reduce) { .choice { transition:none; } }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">PocketWorld · Revised top-down view</p>
+    <h1>整张任务卡片，就是一块方块地板</h1>
+    <p class="lead">已改为正俯视：方块从圆角卡片的四边铺满到四边，没有消失点、没有斜视透视。现在只需要选择波浪怎样穿过这块“地板”。</p>
+    <section class="choices">
+      <article class="choice" data-choice="a-floor-diagonal" onclick="toggleSelect(this)">
+        <div class="recommend">推荐</div>
+        <div class="preview"><div class="task-card"><canvas width="360" height="450" data-wave="diagonal"></canvas></div></div>
+        <div class="copy"><div class="title-row"><span class="badge">A</span><h2>斜向地形波</h2></div><p>宽波峰斜着扫过整块地板，方向清楚，方块之间有连续高低关系，最像一整片 3D 地形。</p></div>
+      </article>
+      <article class="choice" data-choice="b-floor-radial" onclick="toggleSelect(this)">
+        <div class="preview"><div class="task-card"><canvas width="360" height="450" data-wave="radial"></canvas></div></div>
+        <div class="copy"><div class="title-row"><span class="badge">B</span><h2>中心涟漪</h2></div><p>波纹从卡片中心向四周扩散，像一次空间扫描；中心感更强，也更有“正在生成”的意味。</p></div>
+      </article>
+      <article class="choice" data-choice="c-floor-cross" onclick="toggleSelect(this)">
+        <div class="preview"><div class="task-card"><canvas width="360" height="450" data-wave="cross"></canvas></div></div>
+        <div class="copy"><div class="title-row"><span class="badge">C</span><h2>柔和交叉波</h2></div><p>两股低幅波浪缓慢交错，没有明确起点；更自然安静，但加载方向不如 A、B 明确。</p></div>
+      </article>
+    </section>
+    <p class="note">这里的方块始终保持正方形和平整网格；3D 高低感只由每块砖的顶面明暗、右下缘和软阴影表达。</p>
+  </main>
+  <script>
+    const canvases=[...document.querySelectorAll('canvas')];
+    const cols=12, rows=15, gap=1.35;
+    function wave(kind,c,r,t){
+      if(kind==='diagonal') return Math.sin(t*1.65-(c*.48+r*.37));
+      if(kind==='radial'){ const d=Math.hypot(c-(cols-1)/2,r-(rows-1)/2); return Math.sin(t*1.75-d*.78); }
+      return (Math.sin(t*1.25-c*.46)+Math.sin(t*.92-r*.34))*.5;
+    }
+    function draw(canvas,t){
+      const ctx=canvas.getContext('2d'); const cw=canvas.width/cols, ch=canvas.height/rows; const kind=canvas.dataset.wave;
+      ctx.clearRect(0,0,canvas.width,canvas.height); ctx.fillStyle='#d6d6d6'; ctx.fillRect(0,0,canvas.width,canvas.height);
+      for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+        const n=(wave(kind,c,r,t)+1)/2;
+        const x=c*cw, y=r*ch;
+        const depth=.8+n*3.4;
+        ctx.fillStyle=`rgba(110,110,110,${.09+n*.10})`;
+        ctx.fillRect(x+gap+depth,y+gap+depth,cw-gap*2,ch-gap*2);
+        const g=ctx.createLinearGradient(x+gap,y+gap,x+cw,y+ch);
+        const light=Math.round(232+n*16);
+        g.addColorStop(0,`rgb(${Math.min(255,light+7)},${Math.min(255,light+7)},${Math.min(255,light+7)})`);
+        g.addColorStop(1,`rgb(${light-8},${light-8},${light-8})`);
+        ctx.fillStyle=g;
+        ctx.fillRect(x+gap,y+gap,cw-gap*2-depth*.32,ch-gap*2-depth*.32);
+        ctx.fillStyle=`rgba(255,255,255,${.13+n*.16})`; ctx.fillRect(x+gap,y+gap,cw-gap*2-depth*.32,1);
+        ctx.fillStyle=`rgba(85,85,85,${.035+n*.065})`; ctx.fillRect(x+cw-gap-depth*.32,y+gap,1,ch-gap*2-depth*.32);
+      }
+    }
+    const start=performance.now();
+    function loop(now){ const t=(now-start)/1000; canvases.forEach(c=>draw(c,t)); requestAnimationFrame(loop); }
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>

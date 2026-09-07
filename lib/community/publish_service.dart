@@ -210,15 +210,25 @@ class PublishService {
         //
         // 跳过 finalize 的后果是对象留在私有桶、永远拿不到公开 URL ——
         // 所以这一步不是信任边界,只是触发器。
-        await c.storage.from('staging').uploadBinary(
-              path,
-              bytes,
-              fileOptions: const FileOptions(
-                contentType: 'application/octet-stream',
-                upsert: true,
-                cacheControl: '604800',
-              ),
-            );
+        try {
+          await c.storage.from('staging').uploadBinary(
+                path,
+                bytes,
+                fileOptions: const FileOptions(
+                  contentType: 'application/octet-stream',
+                  // staging deliberately has no SELECT policy. Supabase's
+                  // upsert path needs conflict visibility and therefore returns
+                  // RLS 403 even when this owner-scoped object does not exist.
+                  upsert: false,
+                  cacheControl: '604800',
+                ),
+              );
+        } on StorageException catch (e) {
+          // A lost HTTP response can leave the complete object in staging.
+          // The next attempt gets 409; continue so upload-finalize can validate
+          // and promote that already-landed, content-addressed object.
+          if (e.statusCode != '409') rethrow;
+        }
 
         // [FINALIZE-ERR 2026-08-23] 这里以前是死代码,而且是双重锁死的:
         //

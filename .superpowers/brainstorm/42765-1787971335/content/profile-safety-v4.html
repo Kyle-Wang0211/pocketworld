@@ -1,0 +1,93 @@
+<style>
+  .flow { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; align-items:start; margin:24px auto; max-width:1040px; }
+  .phone { background:#f2f2ef; border:1px solid #d8d8d3; border-radius:30px; padding:10px; box-shadow:0 16px 36px rgba(0,0,0,.09); }
+  .screen { min-height:530px; overflow:hidden; background:#fff; border-radius:21px; position:relative; }
+  .safe { height:16px; }
+  .nav { height:48px; display:grid; grid-template-columns:44px 1fr 44px; align-items:center; padding:0 7px; border-bottom:1px solid #ededeb; }
+  .icon-hit { width:44px; height:44px; display:flex; align-items:center; justify-content:center; }
+  .back { font-size:27px; line-height:1; transform:translateY(-1px); }
+  .dots { font-size:17px; letter-spacing:1px; line-height:1; transform:translateY(-3px); }
+  .hero { padding:20px 17px 16px; }
+  .identity { display:flex; gap:13px; align-items:center; }
+  .avatar { width:64px; height:64px; border-radius:50%; background:linear-gradient(145deg,#242424,#9b9b94); }
+  .name { font-weight:800; font-size:18px; color:#111; }
+  .handle { font-size:12px; color:#777; margin-top:2px; }
+  .bio { font-size:12px; color:#50504c; margin-top:11px; }
+  .follow { margin-top:14px; background:#111; color:#fff; border-radius:999px; padding:10px; text-align:center; font-size:13px; font-weight:800; }
+  .stats { display:grid; grid-template-columns:repeat(3,1fr); text-align:center; border-top:1px solid #eee; border-bottom:1px solid #eee; padding:12px 8px; }
+  .stat strong { display:block; font-size:15px; }.stat span { font-size:10px; color:#777; }
+  .works { display:grid; grid-template-columns:repeat(2,1fr); gap:7px; padding:14px 12px; }
+  .work { aspect-ratio:1/1; border-radius:12px; background:linear-gradient(145deg,#111 0 45%,#5b5b57 46% 65%,#cececa 66%); }
+  .shade { position:absolute; inset:0; background:rgba(0,0,0,.24); }
+  .sheet { position:absolute; left:0; right:0; bottom:0; background:#fff; border-radius:20px 20px 0 0; padding:10px 12px 12px; box-shadow:0 -8px 24px rgba(0,0,0,.12); }
+  .grab { width:34px; height:4px; border-radius:99px; background:#d7d7d4; margin:0 auto 9px; }
+  .sheet-row { min-height:50px; display:flex; align-items:center; padding:0 10px; font-size:14px; font-weight:650; border-bottom:1px solid #eee; }
+  .sheet-row.danger { color:#c82727; border-bottom:0; }
+  .titlebar { height:48px; display:grid; grid-template-columns:44px 1fr 44px; align-items:center; border-bottom:1px solid #eee; padding:0 7px; }
+  .titlebar strong { text-align:center; font-size:15px; }
+  .reason-intro { padding:16px 16px 7px; color:#777; font-size:11px; }
+  .reason { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:13px 16px; border-bottom:1px solid #eee; font-size:13px; font-weight:650; }
+  .chev { color:#aaa; font-size:18px; }
+  .success { margin:110px 22px 0; text-align:center; }
+  .check { width:54px; height:54px; border-radius:50%; background:#111; color:#fff; display:flex; align-items:center; justify-content:center; margin:0 auto 16px; font-size:25px; }
+  .success h3 { margin:0 0 8px; font-size:18px; }
+  .success p { margin:0; color:#777; font-size:12px; line-height:1.7; }
+  .ticket { margin:18px auto 0; padding:10px; background:#f5f5f2; border-radius:10px; font-size:11px; color:#555; }
+  .caption { text-align:center; color:#666; font-size:12px; margin-top:8px; }
+  @media (max-width:860px){ .flow{grid-template-columns:1fr; max-width:350px;} }
+</style>
+
+<h2>个人主页安全菜单 · 国内大平台范式</h2>
+<p class="subtitle">按抖音 / 小红书 / 微博 / B站的共同骨架：小三点只承载举报与拉黑；举报分层选择并反馈进度。</p>
+
+<div class="flow">
+  <div>
+    <div class="phone"><div class="screen">
+      <div class="safe"></div>
+      <div class="nav"><div class="icon-hit"><span class="back">‹</span></div><div></div><div class="icon-hit"><span class="dots">•••</span></div></div>
+      <div class="hero">
+        <div class="identity"><div class="avatar"></div><div><div class="name">林墨</div><div class="handle">@lin.mo · 上海</div></div></div>
+        <div class="bio">把日常物件做成可触摸的空间记忆。</div><div class="follow">关注</div>
+      </div>
+      <div class="stats"><div class="stat"><strong>12</strong><span>作品</span></div><div class="stat"><strong>286</strong><span>粉丝</span></div><div class="stat"><strong>48</strong><span>关注</span></div></div>
+      <div class="works"><div class="work"></div><div class="work"></div><div class="work"></div><div class="work"></div></div>
+      <div class="shade"></div>
+      <div class="sheet"><div class="grab"></div><div class="sheet-row">举报该用户</div><div class="sheet-row danger">拉黑该用户</div></div>
+    </div></div>
+    <div class="caption">① 三点菜单：只有两个动作</div>
+  </div>
+
+  <div>
+    <div class="phone"><div class="screen">
+      <div class="safe"></div>
+      <div class="titlebar"><span class="back">‹</span><strong>举报该用户</strong><span></span></div>
+      <div class="reason-intro">选择最符合的原因</div>
+      <div class="reason"><span>冒充他人或账号信息虚假</span><span class="chev">›</span></div>
+      <div class="reason"><span>骚扰、霸凌或人身威胁</span><span class="chev">›</span></div>
+      <div class="reason"><span>垃圾信息、诈骗或恶意营销</span><span class="chev">›</span></div>
+      <div class="reason"><span>持续发布违规内容</span><span class="chev">›</span></div>
+      <div class="reason"><span>涉及未成年人安全</span><span class="chev">›</span></div>
+      <div class="reason"><span>泄露隐私或人肉搜索</span><span class="chev">›</span></div>
+      <div class="reason"><span>其他违法和不良信息</span><span class="chev">›</span></div>
+    </div></div>
+    <div class="caption">② 一级原因；下一页关联作品并补充说明</div>
+  </div>
+
+  <div>
+    <div class="phone"><div class="screen">
+      <div class="safe"></div>
+      <div class="titlebar"><span class="back">‹</span><strong>举报结果</strong><span></span></div>
+      <div class="success">
+        <div class="check">✓</div>
+        <h3>举报已提交</h3>
+        <p>我们会根据社区规范进行审核。你可以在「设置—帮助与安全—我的举报」查看处理进度。</p>
+        <div class="ticket">举报编号　PW-260829-0182<br>当前状态　已收到</div>
+      </div>
+    </div></div>
+    <div class="caption">③ 有编号、有状态，不把举报扔进黑洞</div>
+  </div>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="domestic-platform-safety-flow-approved" onclick="toggleSelect(this)"><div class="letter">✓</div><div class="content"><h3>按这个国内平台范式做</h3><p>举报与拉黑分开；原因分层；提交后可查进度。</p></div></div>
+</div>

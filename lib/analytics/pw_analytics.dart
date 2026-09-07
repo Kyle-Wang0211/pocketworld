@@ -49,8 +49,10 @@ class PwAnalytics {
   // 每会话错误事件上限,防异常风暴刷爆队列。
   static const _errorCapPerSession = 20;
 
-  static const String _appVersion =
-      String.fromEnvironment('PW_APP_VERSION', defaultValue: 'dev');
+  static const String _appVersion = String.fromEnvironment(
+    'PW_APP_VERSION',
+    defaultValue: 'dev',
+  );
 
   // ⚠️ 不缓存 SharedPreferences 实例:setMockInitialValues 会重置底层
   //    存储,缓存的旧实例读到的是旧 map(测试里踩过)。getInstance 自身
@@ -83,7 +85,6 @@ class PwAnalytics {
       onInactive: () => unawaited(_flush('inactive')),
       onResume: _startTimer,
     );
-    _startTimer();
     track('app_open');
   }
 
@@ -107,6 +108,7 @@ class PwAnalytics {
       if (!_enabled) return;
       final uid = Supabase.instance.client.auth.currentUser?.id;
       if (uid == null) return;
+      _startTimer();
       final row = <String, dynamic>{
         'event': event,
         'session_id': _evalSessionId(),
@@ -160,6 +162,12 @@ class PwAnalytics {
   }
 
   void _startTimer() {
+    if (!_enabled) return;
+    try {
+      if (Supabase.instance.client.auth.currentUser == null) return;
+    } catch (_) {
+      return;
+    }
     _timer ??= Timer.periodic(_tick, (_) => unawaited(_flush('timer')));
   }
 
@@ -183,9 +191,7 @@ class PwAnalytics {
         final q = p.getStringList(_prefQueue) ?? <String>[];
         if (q.isEmpty) return;
         final take = q.length < _batch ? q.length : _batch;
-        final rows = q
-            .take(take)
-            .map((e) {
+        final rows = q.take(take).map((e) {
           final m = jsonDecode(e) as Map<String, dynamic>;
           if (uid != null) m['user_id'] = uid;
           return m;

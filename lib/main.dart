@@ -26,6 +26,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'auth/auth_scope.dart';
 import 'auth/cold_start_session_gate.dart';
+import 'auth/data_api_readiness_gate.dart';
 import 'auth/current_user.dart';
 import 'auth/unavailable_auth_service.dart';
 import 'auth/secure_session_storage.dart';
@@ -314,6 +315,14 @@ Future<void> _initAuthBackend(
         },
       );
       DeviceLog.log('AuthStartup', 'session gate=$gateResult');
+      // [合并自 reporting 线] 令牌刷新/登出时重置 data-api 就绪门,
+      // 否则换了身份后仍拿旧的就绪状态。
+      auth.onAuthStateChange.listen((state) {
+        if (state.event == AuthChangeEvent.tokenRefreshed ||
+            state.event == AuthChangeEvent.signedOut) {
+          dataApiReadinessGate.reset();
+        }
+      });
       // ignore: avoid_print
       print(
         '[AUTH-DEBUG] Supabase.initialize done. '

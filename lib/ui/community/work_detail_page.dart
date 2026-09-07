@@ -32,14 +32,18 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart' show compute;
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../community/community_service.dart';
 import '../../community/feed_models.dart';
 import '../../community/glb_cache.dart';
+import '../../community/social_profile_models.dart';
+import '../../community/social_profile_repository.dart';
 import '../../community/thumb_baker.dart';
 import '../../l10n/app_localizations.dart';
 import '../design_system.dart';
 import 'aether_cpp_card_demo.dart';
+import 'user_report_page.dart';
 import 'viewer_impl.dart' show ViewerQuality, AetherCppViewerImpl;
 import '../official_capture/auto_rotating_cloud_view.dart';
 import '../official_capture/sparse_cloud_viewer_page.dart'
@@ -53,8 +57,14 @@ enum _CloudStatus { loading, ready, mesh, unsupported, failed }
 class WorkDetailPage extends StatefulWidget {
   final FeedWork work;
   final CommunityService service;
+  final SocialProfileRepository? reportRepository;
 
-  const WorkDetailPage({super.key, required this.work, required this.service});
+  const WorkDetailPage({
+    super.key,
+    required this.work,
+    required this.service,
+    this.reportRepository,
+  });
 
   @override
   State<WorkDetailPage> createState() => _WorkDetailPageState();
@@ -82,12 +92,15 @@ class _WorkDetailPageState extends State<WorkDetailPage> {
           children: [
             if (_isMine)
               ListTile(
-                leading: const Icon(Icons.delete_outline_rounded,
-                    color: AetherColors.danger),
+                leading: const Icon(
+                  Icons.delete_outline_rounded,
+                  color: AetherColors.danger,
+                ),
                 title: Text(
                   l.workDeleteAction,
-                  style: AetherTextStyles.body
-                      .copyWith(color: AetherColors.danger),
+                  style: AetherTextStyles.body.copyWith(
+                    color: AetherColors.danger,
+                  ),
                 ),
                 onTap: () {
                   Navigator.of(sheetCtx).pop();
@@ -96,21 +109,26 @@ class _WorkDetailPageState extends State<WorkDetailPage> {
               )
             else ...[
               ListTile(
-                leading: const Icon(Icons.flag_outlined,
-                    color: AetherColors.textPrimary),
+                leading: const Icon(
+                  Icons.flag_outlined,
+                  color: AetherColors.textPrimary,
+                ),
                 title: Text(l.reportAction, style: AetherTextStyles.body),
                 onTap: () {
                   Navigator.of(sheetCtx).pop();
-                  _showReportSheet();
+                  _openReport();
                 },
               ),
               ListTile(
-                leading:
-                    const Icon(Icons.block_rounded, color: AetherColors.danger),
+                leading: const Icon(
+                  Icons.block_rounded,
+                  color: AetherColors.danger,
+                ),
                 title: Text(
                   l.blockAction,
-                  style: AetherTextStyles.body
-                      .copyWith(color: AetherColors.danger),
+                  style: AetherTextStyles.body.copyWith(
+                    color: AetherColors.danger,
+                  ),
                 ),
                 onTap: () {
                   Navigator.of(sheetCtx).pop();
@@ -125,25 +143,30 @@ class _WorkDetailPageState extends State<WorkDetailPage> {
     );
   }
 
-  Future<void> _showReportSheet() async {
-    final submitted = await showModalBottomSheet<bool>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: AetherColors.bgCanvas,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(
-          top: Radius.circular(AetherRadii.xl),
+  Future<void> _openReport() async {
+    final repository =
+        widget.reportRepository ??
+        SupabaseSocialProfileRepository(client: Supabase.instance.client);
+    final result = await Navigator.of(context).push<UserReportResult>(
+      MaterialPageRoute<UserReportResult>(
+        builder: (_) => UserReportPage(
+          targetUserId: widget.work.userId,
+          sourceWorkId: widget.work.id,
+          repository: repository,
         ),
       ),
-      builder: (_) => _ReportSheet(
-        service: widget.service,
-        workId: widget.work.id,
-      ),
     );
-    if (submitted == true && mounted) {
+    if (result != null && mounted) {
       final l = AppL10n.of(context);
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(l.reportSubmitted)));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            result.failedEvidenceCount == 0
+                ? l.reportUserSubmitted
+                : l.reportSubmittedPartial,
+          ),
+        ),
+      );
     }
   }
 
@@ -182,15 +205,17 @@ class _WorkDetailPageState extends State<WorkDetailPage> {
     try {
       await widget.service.deleteMyWork(widget.work.id);
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(l.workDeleteDone)));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(l.workDeleteDone)));
       // The work no longer exists; leave the page. The feed refetches on
       // its next load, and pull-to-refresh is right there.
       Navigator.of(context).maybePop();
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(l.workDeleteFailed)));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(l.workDeleteFailed)));
     }
   }
 
@@ -225,16 +250,18 @@ class _WorkDetailPageState extends State<WorkDetailPage> {
     try {
       await widget.service.blockUser(widget.work.userId);
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(l.blockDone)));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(l.blockDone)));
       // Leave the page: its author is now blocked, so keeping their work
       // on screen would contradict the action just taken. The feed
       // re-filters on its next load.
       Navigator.of(context).maybePop();
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(l.blockFailed)));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(l.blockFailed)));
     }
   }
 
@@ -325,7 +352,10 @@ class _WorkDetailPageState extends State<WorkDetailPage> {
           child: SizedBox(
             width: 28,
             height: 28,
-            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white54),
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: Colors.white54,
+            ),
           ),
         );
       case _CloudStatus.ready:
@@ -364,7 +394,8 @@ class _WorkDetailPageState extends State<WorkDetailPage> {
       case _CloudStatus.unsupported:
         return _EmptyState(
           icon: Icons.view_in_ar_rounded,
-          message: '${l.communityFormatUnsupported}'
+          message:
+              '${l.communityFormatUnsupported}'
               ' (${widget.work.format.toUpperCase()})',
         );
       case _CloudStatus.failed:
@@ -476,9 +507,15 @@ class _MetaRow extends StatelessWidget {
                   ),
                 ),
               ),
-              _CountChip(icon: Icons.remove_red_eye_outlined, value: viewsCount),
+              _CountChip(
+                icon: Icons.remove_red_eye_outlined,
+                value: viewsCount,
+              ),
               const SizedBox(width: 12),
-              _CountChip(icon: Icons.favorite_border_rounded, value: likesCount),
+              _CountChip(
+                icon: Icons.favorite_border_rounded,
+                value: likesCount,
+              ),
             ],
           ),
           if (description != null && description!.trim().isNotEmpty) ...[
@@ -550,181 +587,6 @@ class _EmptyState extends StatelessWidget {
             ),
           ],
         ],
-      ),
-    );
-  }
-}
-
-/// Report reasons must match the `reports.reason` CHECK constraint in
-/// 20260429020005_moderation.sql exactly — a typo here becomes a silent
-/// 400 at insert time.
-const List<String> _kReportReasons = <String>[
-  'spam',
-  'harassment',
-  'hate_speech',
-  'sexual_content',
-  'violence',
-  'copyright',
-  'misinformation',
-  'other',
-];
-
-/// Bottom sheet implementing Guideline 1.2's "mechanism to report
-/// offensive content". Pops `true` once the row is in, so the caller
-/// shows the confirmation — the report must never fail silently, or the
-/// user will assume it worked and we'll have lost a real complaint.
-class _ReportSheet extends StatefulWidget {
-  final CommunityService service;
-  final String workId;
-
-  const _ReportSheet({required this.service, required this.workId});
-
-  @override
-  State<_ReportSheet> createState() => _ReportSheetState();
-}
-
-class _ReportSheetState extends State<_ReportSheet> {
-  String? _reason;
-  final TextEditingController _detail = TextEditingController();
-  bool _busy = false;
-
-  @override
-  void dispose() {
-    _detail.dispose();
-    super.dispose();
-  }
-
-  String _label(AppL10n l, String reason) => switch (reason) {
-        'spam' => l.reportReasonSpam,
-        'harassment' => l.reportReasonHarassment,
-        'hate_speech' => l.reportReasonHateSpeech,
-        'sexual_content' => l.reportReasonSexualContent,
-        'violence' => l.reportReasonViolence,
-        'copyright' => l.reportReasonCopyright,
-        'misinformation' => l.reportReasonMisinformation,
-        _ => l.reportReasonOther,
-      };
-
-  Future<void> _submit() async {
-    final reason = _reason;
-    if (reason == null || _busy) return;
-    setState(() => _busy = true);
-    try {
-      await widget.service.reportWork(
-        workId: widget.workId,
-        reason: reason,
-        detail: _detail.text,
-      );
-      if (mounted) Navigator.of(context).pop(true);
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _busy = false);
-      final l = AppL10n.of(context);
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(l.reportFailed)));
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final l = AppL10n.of(context);
-    // Sheet sits above the keyboard when the detail field has focus.
-    final bottomInset = MediaQuery.of(context).viewInsets.bottom;
-    return Padding(
-      padding: EdgeInsets.only(bottom: bottomInset),
-      child: SafeArea(
-        child: SingleChildScrollView(
-          child: Padding(
-            padding: const EdgeInsets.all(AetherSpacing.lg),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(l.reportSheetTitle, style: AetherTextStyles.h2),
-                const SizedBox(height: AetherSpacing.xs),
-                Text(
-                  l.reportSheetSubtitle,
-                  style: AetherTextStyles.bodySm
-                      .copyWith(color: AetherColors.textSecondary),
-                ),
-                const SizedBox(height: AetherSpacing.md),
-                for (final r in _kReportReasons)
-                  InkWell(
-                    onTap: _busy ? null : () => setState(() => _reason = r),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        vertical: AetherSpacing.sm,
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            _reason == r
-                                ? Icons.radio_button_checked_rounded
-                                : Icons.radio_button_unchecked_rounded,
-                            size: 20,
-                            color: _reason == r
-                                ? AetherColors.textPrimary
-                                : AetherColors.textTertiary,
-                          ),
-                          const SizedBox(width: AetherSpacing.sm),
-                          Expanded(
-                            child: Text(_label(l, r),
-                                style: AetherTextStyles.body),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                const SizedBox(height: AetherSpacing.sm),
-                TextField(
-                  controller: _detail,
-                  enabled: !_busy,
-                  maxLines: 3,
-                  // Schema caps detail at 2000 chars; enforce client-side
-                  // so a long paste fails visibly here instead of as a
-                  // CHECK violation on insert.
-                  maxLength: 2000,
-                  decoration: InputDecoration(
-                    hintText: l.reportDetailHint,
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(AetherRadii.md),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: AetherSpacing.sm),
-                SizedBox(
-                  height: 48,
-                  child: FilledButton(
-                    onPressed: (_reason == null || _busy) ? null : _submit,
-                    style: FilledButton.styleFrom(
-                      backgroundColor: AetherColors.danger,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(AetherRadii.md),
-                      ),
-                    ),
-                    child: _busy
-                        ? const SizedBox(
-                            height: 18,
-                            width: 18,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              valueColor:
-                                  AlwaysStoppedAnimation<Color>(Colors.white),
-                            ),
-                          )
-                        : Text(
-                            l.reportSubmit,
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w700,
-                              color: Colors.white,
-                            ),
-                          ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
       ),
     );
   }

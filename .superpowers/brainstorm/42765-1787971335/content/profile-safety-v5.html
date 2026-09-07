@@ -1,0 +1,112 @@
+<style>
+  .flow { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; align-items:start; margin:24px auto; max-width:1040px; }
+  .phone { background:#f2f2ef; border:1px solid #d8d8d3; border-radius:30px; padding:10px; box-shadow:0 16px 36px rgba(0,0,0,.09); }
+  .screen { min-height:570px; overflow:hidden; background:#fff; border-radius:21px; position:relative; }
+  .safe { height:16px; }
+  .nav { height:48px; display:grid; grid-template-columns:44px 1fr 44px; align-items:center; padding:0 7px; border-bottom:1px solid #ededeb; position:relative; }
+  .icon-hit { width:44px; height:44px; display:flex; align-items:center; justify-content:center; }
+  .back { font-size:27px; line-height:1; transform:translateY(-1px); }
+  .dots { font-size:17px; letter-spacing:1px; line-height:1; transform:translateY(-3px); }
+  .hero { padding:20px 17px 16px; }
+  .identity { display:flex; gap:13px; align-items:center; }
+  .avatar { width:64px; height:64px; border-radius:50%; background:linear-gradient(145deg,#242424,#9b9b94); }
+  .name { font-weight:800; font-size:18px; color:#111; }
+  .handle { font-size:12px; color:#777; margin-top:2px; }
+  .bio { font-size:12px; color:#50504c; margin-top:11px; }
+  .follow { margin-top:14px; background:#111; color:#fff; border-radius:999px; padding:10px; text-align:center; font-size:13px; font-weight:800; }
+  .stats { display:grid; grid-template-columns:repeat(3,1fr); text-align:center; border-top:1px solid #eee; border-bottom:1px solid #eee; padding:12px 8px; }
+  .stat strong { display:block; font-size:15px; }.stat span { font-size:10px; color:#777; }
+  .works { display:grid; grid-template-columns:repeat(2,1fr); gap:7px; padding:14px 12px; }
+  .work { aspect-ratio:1/1; border-radius:12px; background:linear-gradient(145deg,#111 0 45%,#5b5b57 46% 65%,#cececa 66%); }
+  .shade { position:absolute; inset:64px 0 0; background:rgba(0,0,0,.13); }
+  .popover { position:absolute; z-index:3; top:56px; right:10px; width:148px; background:#fff; border:1px solid #e5e5e2; border-radius:12px; box-shadow:0 10px 28px rgba(0,0,0,.18); overflow:hidden; }
+  .popover::before { content:""; position:absolute; right:18px; top:-6px; width:11px; height:11px; background:#fff; transform:rotate(45deg); border-left:1px solid #e5e5e2; border-top:1px solid #e5e5e2; }
+  .pop-row { position:relative; z-index:1; height:48px; display:flex; align-items:center; padding:0 14px; font-size:13px; font-weight:700; background:#fff; border-bottom:1px solid #eee; }
+  .pop-row.danger { color:#c82727; border-bottom:0; }
+  .titlebar { height:48px; display:grid; grid-template-columns:44px 1fr 44px; align-items:center; border-bottom:1px solid #eee; padding:0 7px; }
+  .titlebar strong { text-align:center; font-size:15px; }
+  .intro { padding:15px 15px 6px; color:#777; font-size:11px; }
+  .group { padding:10px 15px 5px; color:#8b8b87; font-size:10px; font-weight:750; background:#f7f7f5; }
+  .reason { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:11px 15px; border-bottom:1px solid #eee; font-size:12px; font-weight:650; }
+  .chev { color:#aaa; font-size:18px; }
+  .form { padding:14px 15px 20px; }
+  .label { font-size:12px; font-weight:800; margin:0 0 7px; }
+  .selected { padding:11px 12px; background:#f5f5f2; border-radius:10px; font-size:11px; margin-bottom:16px; }
+  .field { min-height:80px; border:1px solid #dededa; border-radius:10px; padding:10px; color:#aaa; font-size:11px; line-height:1.5; }
+  .counter { text-align:right; color:#aaa; font-size:9px; margin-top:4px; }
+  .evidence-row { display:flex; gap:8px; margin-top:8px; }
+  .upload { width:62px; height:62px; border:1px dashed #c8c8c3; border-radius:10px; display:flex; flex-direction:column; align-items:center; justify-content:center; color:#777; font-size:9px; }
+  .plus { font-size:22px; color:#555; line-height:1; }
+  .work-pick { padding:11px 12px; border:1px solid #dededa; border-radius:10px; display:flex; justify-content:space-between; align-items:center; font-size:11px; margin-bottom:16px; }
+  .hint { color:#777; font-size:10.5px; line-height:1.55; margin-top:7px; }
+  .submit { margin-top:18px; background:#111; color:#fff; border-radius:999px; padding:11px; text-align:center; font-size:12px; font-weight:800; }
+  .caption { text-align:center; color:#666; font-size:12px; margin-top:8px; }
+  @media (max-width:860px){ .flow{grid-template-columns:1fr; max-width:350px;} }
+</style>
+
+<h2>个人主页安全菜单 · 第五版</h2>
+<p class="subtitle">按反馈调整：菜单锚定右上角；举报采用“大类—子类—证据”；提交前可文字说明、关联作品、上传截图或照片。</p>
+
+<div class="flow">
+  <div>
+    <div class="phone"><div class="screen">
+      <div class="safe"></div>
+      <div class="nav"><div class="icon-hit"><span class="back">‹</span></div><div></div><div class="icon-hit"><span class="dots">•••</span></div></div>
+      <div class="hero">
+        <div class="identity"><div class="avatar"></div><div><div class="name">林墨</div><div class="handle">@lin.mo · 上海</div></div></div>
+        <div class="bio">把日常物件做成可触摸的空间记忆。</div><div class="follow">关注</div>
+      </div>
+      <div class="stats"><div class="stat"><strong>12</strong><span>作品</span></div><div class="stat"><strong>286</strong><span>粉丝</span></div><div class="stat"><strong>48</strong><span>关注</span></div></div>
+      <div class="works"><div class="work"></div><div class="work"></div><div class="work"></div><div class="work"></div></div>
+      <div class="shade"></div>
+      <div class="popover"><div class="pop-row">举报该用户</div><div class="pop-row danger">拉黑该用户</div></div>
+    </div></div>
+    <div class="caption">① 小浮层锚定三点下方</div>
+  </div>
+
+  <div>
+    <div class="phone"><div class="screen">
+      <div class="safe"></div>
+      <div class="titlebar"><span class="back">‹</span><strong>举报该用户</strong><span></span></div>
+      <div class="intro">先选择大类，下一步再选具体原因</div>
+      <div class="group">账号与行为</div>
+      <div class="reason"><span>冒充他人或账号资料虚假</span><span class="chev">›</span></div>
+      <div class="reason"><span>骚扰、网暴或人身威胁</span><span class="chev">›</span></div>
+      <div class="reason"><span>诈骗、广告骚扰或异常账号行为</span><span class="chev">›</span></div>
+      <div class="group">内容与安全</div>
+      <div class="reason"><span>涉及未成年人安全</span><span class="chev">›</span></div>
+      <div class="reason"><span>色情低俗</span><span class="chev">›</span></div>
+      <div class="reason"><span>暴力、自伤、仇恨或违法有害</span><span class="chev">›</span></div>
+      <div class="reason"><span>虚假不实或误导性信息</span><span class="chev">›</span></div>
+      <div class="group">权益与其他</div>
+      <div class="reason"><span>隐私、人肉、肖像或知识产权</span><span class="chev">›</span></div>
+      <div class="reason"><span>其他 / 不确定</span><span class="chev">›</span></div>
+    </div></div>
+    <div class="caption">② 九个大类，子类按具体问题下钻</div>
+  </div>
+
+  <div>
+    <div class="phone"><div class="screen">
+      <div class="safe"></div>
+      <div class="titlebar"><span class="back">‹</span><strong>补充举报信息</strong><span></span></div>
+      <div class="form">
+        <div class="label">举报原因</div>
+        <div class="selected">骚扰、网暴或人身威胁　›　持续辱骂或恶意攻击</div>
+        <div class="label">关联具体作品（可选）</div>
+        <div class="work-pick"><span>选择该用户发布的作品</span><span class="chev">›</span></div>
+        <div class="label">详细说明</div>
+        <div class="field">请说明发生了什么、出现在哪里、发生时间等，帮助审核人员准确判断。</div>
+        <div class="counter">0 / 500</div>
+        <div class="label" style="margin-top:13px">截图（仅本原因可选，最多 3 张）</div>
+        <div class="evidence-row"><div class="upload"><span class="plus">＋</span><span>添加图片</span></div></div>
+        <div class="hint">仅用于举报审核，并需使用私有证据存储。涉及未成年人性内容或非自愿私密影像时不显示上传入口，平台直接保全所关联的站内内容。</div>
+        <div class="submit">提交举报</div>
+      </div>
+    </div></div>
+    <div class="caption">③ 文字 + 站内内容定位；图片按原因安全开放</div>
+  </div>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="profile-safety-v5-approved" onclick="toggleSelect(this)"><div class="letter">✓</div><div class="content"><h3>第五版方向正确</h3><p>右上角浮层；九大类；补充材料页完整。</p></div></div>
+</div>

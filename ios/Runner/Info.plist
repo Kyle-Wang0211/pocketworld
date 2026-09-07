@@ -56,10 +56,16 @@
 	<string>仅开发调试版本使用本地网络与开发工具通信；正式版本不访问本地网络。</string>
 	<key>NSMotionUsageDescription</key>
 	<string>方寸间使用运动传感器在拍摄时实时引导你绕物体一圈。</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>方寸间仅在你主动选择时读取照片，用于提交举报或权益投诉的证明材料。</string>
 	<key>PWBuildExperimentMarker</key>
 	<string>future-jxl-lossless-archive-v1+transient-ar-previews-v1+future-official-zpaq-db-archive-v1+official-archive-bgprocessing-v1+official-fast-safe-rollback-v1+highres-metadata-json-safety-v1+production-archive-hard-stop-v1+portable-sfm-speed-arms-v1-default-off+sqlite-dual-candidate-archive-v2+future-official-lepton-photo-archive-v2</string>
 	<key>PWBuildMarker</key>
 	<string>permanent-project-delete-20260725</string>
+	<key>PWSocialProfileSafetyBuildId</key>
+	<string>profile-follow-report-block-20260829-v1</string>
+	<key>PWReportingFlowBuildId</key>
+	<string>reporting-authoritative-flow-20260906-v1</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

@@ -1,0 +1,95 @@
+{
+  "schema": "pw.xrslam.research-build-profiles/1",
+  "upstream_repository": "https://github.com/openxrlab/xrslam.git",
+  "upstream_revision": "4beb1a942f33da9afbfae2d70e2c641cfc2bb675",
+  "upstream_tree": "8dc778aa6e748f1b34c9c96ef083311eab580265",
+  "product_selection_change": false,
+  "current_product_profile": "pocketworld_hardened_generic",
+  "dependencies": {
+    "opencv_ios_framework": {
+      "version": "4.0.1",
+      "archive_md5": "35ebe10de1089f6b1e1cce04d822f740"
+    },
+    "opencv_source_revision": "c9ad5779f2803dcc91a9938142209128d30b22d1",
+    "ceres_revision": "e809cf0c2879f521078b4c9e6329390b42ecf722",
+    "eigen_revision": "cf794d3b741a6278df169e58461f8529f43bce5d",
+    "spdlog_revision": "a7148b718ea2fabb8387cb90aee9bf448da63e65",
+    "yaml_cpp_revision": "0579ae3d976091d7d664aa9d2527e0d0cff25763"
+  },
+  "cross_platform_ports": {
+    "android_official_ios_semantics": {
+      "classification": "cross_platform_port_candidate",
+      "official_android_sample": false,
+      "research_only": true,
+      "product_selected": false,
+      "xrslam_ios": true,
+      "threading": true,
+      "release_floating_point_flags": [
+        "-O3",
+        "-ffast-math"
+      ],
+      "algorithm_source_patches": [],
+      "build_route_patch": "vendor/xrslam/patches/xrslam_android_official_semantics_build_route.patch",
+      "build_route_patch_sha256": "33cc992445bc7f2c85c8b70e77b77b30b8cd02e6fda3720e69b10a40fd1a955a",
+      "candidate_gate": "Must compile against the pinned OpenCV 4.0.1 Android dependency and emit a complete artifact receipt before it can be called buildable."
+    }
+  },
+  "profiles": {
+    "official_ios_semantics": {
+      "profile_id": "source-faithful-official-ios-semantics-4beb1a9",
+      "research_only": true,
+      "product_selected": false,
+      "xrslam_ios": true,
+      "threading": true,
+      "algorithm_change": false,
+      "source_patches": [],
+      "release_floating_point_flags": [
+        "-O3",
+        "-ffast-math"
+      ],
+      "official_target_compile_flags": [
+        "-Qunused-arguments",
+        "-mllvm",
+        "-inline-threshold=5000"
+      ],
+      "upstream_ios_toolchain_sha256": "ad3531f41be7390cba4e8f93e93d370108cdc45018413e0c27bb8920a4c31aad",
+      "target_source_manifest_scope": "git blobs below xrslam/, xrslam-extra/, and xrslam-interface/, sorted by git ls-tree order",
+      "target_source_manifest_sha256": "dde850251a1b5ced4dd258f767a78918b51889c3b103b703a44193f15363a2b5",
+      "minimum_ios": "14.0",
+      "camera_timestamp_offset_seconds": 0,
+      "calibration_policy": "exact_machine_calibration_only"
+    },
+    "pocketworld_hardened_generic": {
+      "profile_id": "pocketworld-hardened-generic-4beb1a9",
+      "research_only": false,
+      "product_selected": true,
+      "xrslam_ios": false,
+      "threading": false,
+      "algorithm_change": true,
+      "release_floating_point_flags": [
+        "-O3",
+        "-ffp-contract=off",
+        "-fno-fast-math"
+      ],
+      "deviations": [
+        "generic_mobile_build_route",
+        "zero_inlier_mask_contract",
+        "explicit_destroy_lifecycle"
+      ],
+      "source_patches": [
+        {
+          "path": "android_ready/native/xrslam/patches/xrslam_generic_mobile.patch",
+          "sha256": "b98ed6aa689c9edaaac6da707d97592217d3f6caccc6df8c4d6961e2ee751de0"
+        },
+        {
+          "path": "vendor/xrslam/patches/xrslam_zero_inlier_mask.patch",
+          "sha256": "62b12204c647e445e88917859de6b29452df0e6cc65b447e7ea86005f98d1794"
+        },
+        {
+          "path": "vendor/xrslam/patches/xrslam_destroy_lifecycle.patch",
+          "sha256": "13592cb486f159217fa5ecf9ef2f9863be78cf599d42fb1757e34bd7d4bbb220"
+        }
+      ]
+    }
+  }
+}

@@ -65,6 +65,22 @@ typedef struct PWXrslamDestroyReceipt {
   int32_t destroy_acknowledged;
 } PWXrslamDestroyReceipt;
 
+// Live transport receipt. XRSLAM's frozen void sensor ABI does not expose an
+// internal acceptance counter, so these values mean the wrapper successfully
+// called that exact ABI. They are read from the same C++ ledger used by the
+// terminal Destroy receipt; Swift must not synthesize them.
+typedef struct PWXrslamTransportCounters {
+  uint64_t lifecycle_generation;
+  uint64_t camera_submitted;
+  uint64_t camera_run_calls;
+  uint64_t acceleration_submitted;
+  uint64_t gyroscope_submitted;
+  uint64_t rejected_invalid_argument;
+  uint64_t rejected_non_monotonic;
+  uint64_t rejected_not_running;
+  int32_t running;
+} PWXrslamTransportCounters;
+
 int32_t PWXrslamTransportCreate(const char *slam_config_path,
                                 const char *device_config_path);
 
@@ -97,6 +113,16 @@ int32_t PWXrslamTransportGetLastTimestampTrace(int32_t stream,
                                                PWXrslamTimestampTrace *trace);
 
 int32_t PWXrslamTransportGetPoseMetadata(PWXrslamPoseMetadata *metadata);
+int32_t PWXrslamTransportGetCounters(PWXrslamTransportCounters *counters);
+
+// Cross-platform transport preparation for a caller-owned preallocated gray
+// frame slot. It preserves the versioned box-NxN half-up kernel already used
+// by PocketWorld and performs no XRSLAM state transition or policy decision.
+int32_t PWXrslamTransportPrepareGrayBoxNxN(
+    const uint8_t *source, int32_t source_width, int32_t source_height,
+    int32_t source_stride, int32_t factor, uint8_t *destination,
+    int32_t destination_capacity, int32_t *destination_width,
+    int32_t *destination_height);
 
 // Converts the frozen upstream camera result (T_world_camera, quaternion xyzw)
 // to a row-major 4x4 homogeneous matrix. The quaternion is normalized after

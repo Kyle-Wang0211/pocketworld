@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PocketWorld 粒子直接归线</title>
+  <style>
+    *{box-sizing:border-box} :root{color-scheme:light;--ink:#111;--muted:#737373;--paper:#f3f3f1}
+    body{margin:0;min-height:100vh;padding:30px 24px 46px;background:var(--paper);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",sans-serif}
+    header{max-width:960px;margin:0 auto 24px}.eyebrow{font-size:11px;letter-spacing:.14em;color:var(--muted)}
+    h1{margin:8px 0 7px;font-size:28px;letter-spacing:-.04em}header p{margin:0;max-width:760px;color:var(--muted);line-height:1.55;font-size:14px}
+    main{max-width:960px;margin:auto;display:grid;grid-template-columns:minmax(280px,390px) 1fr;gap:42px;align-items:center}
+    .stage{background:#fff;border:1px solid #dedede;border-radius:28px;padding:20px}
+    .phone{position:relative;width:min(100%,320px);aspect-ratio:393/852;margin:auto;overflow:hidden;border-radius:42px;background:#000;box-shadow:inset 0 0 0 1px #ffffff25,0 24px 60px #0002}
+    .feed{position:absolute;inset:0;background:#fff;padding:42px 14px;color:#111}.status{position:absolute;top:14px;left:22px;font-size:8px;font-weight:700}
+    .head{display:flex;align-items:center;justify-content:space-between;margin-bottom:13px}.head b{font-size:15px;letter-spacing:-.04em}.avatar{width:21px;height:21px;border:1px solid #111;border-radius:50%}
+    .feature{position:relative;height:95px;border-radius:16px;overflow:hidden;background:#121212;margin-bottom:12px;color:#fff}.feature:before{content:"";position:absolute;width:68px;height:68px;border:1px solid #ffffff90;border-radius:50%;left:50%;top:50%;transform:translate(-50%,-50%);box-shadow:0 0 28px #fff2}.feature small{position:absolute;left:11px;bottom:9px;font-size:7px;letter-spacing:.09em}
+    .card{overflow:hidden;border:1px solid #e5e5e5;border-radius:16px;margin-bottom:10px}.thumb{height:177px;background:radial-gradient(circle at 55% 44%,#8b8b8b,#303030 38%,#050505 76%)}.meta{display:flex;justify-content:space-between;padding:9px 10px 10px;font-size:8px}
+    .nav{position:absolute;left:0;right:0;bottom:0;height:42px;background:#fffffff4;border-top:1px solid #eee;display:flex;justify-content:space-around;align-items:center;font-size:7px}.nav i{display:block;width:13px;height:13px;margin:0 auto 2px;border:1px solid #111;border-radius:4px}
+    .door{position:absolute;top:0;bottom:0;width:50%;z-index:3;background:#000;will-change:transform}.door.left{left:0}.door.right{right:0}.door:after{content:"";position:absolute;top:0;bottom:0;width:1px;background:#fff;opacity:0}.door.left:after{right:0}.door.right:after{left:0}.phone.line-ready .door:after{opacity:1}
+    canvas{position:absolute;inset:0;z-index:4;width:100%;height:100%;pointer-events:none}.replay{width:100%;margin-top:16px;border:1px solid #111;background:#111;color:#fff;border-radius:999px;padding:10px 16px;font-weight:650;cursor:pointer}
+    .steps{display:grid}.step{display:grid;grid-template-columns:38px 1fr;gap:13px;padding:18px 0;border-bottom:1px solid #d9d9d7}.num{width:30px;height:30px;border:1px solid #111;border-radius:50%;display:grid;place-items:center;font-size:11px;font-weight:700}.step h2{margin:1px 0 5px;font-size:16px}.step p{margin:0;color:var(--muted);line-height:1.5;font-size:13px}
+    .timeline{display:flex;height:4px;margin-top:22px;border-radius:99px;overflow:hidden;background:#ddd}.timeline i:nth-child(1){width:55%;background:#222}.timeline i:nth-child(2){width:18%;background:#888}.timeline i:nth-child(3){width:27%;background:#111}.labels{display:flex;justify-content:space-between;margin-top:7px;color:var(--muted);font-size:10px}.note{margin-top:20px;padding:13px 14px;border-radius:12px;background:#e8e8e6;font-size:12px;line-height:1.5}
+    @media(max-width:760px){main{grid-template-columns:1fr}.stage{max-width:390px;margin:auto}.steps{max-width:520px;margin:auto}}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="eyebrow">DIRECT MORPH · V3</div>
+    <h1>粒子球直接归线，再开门</h1>
+    <p>已彻底取消全屏发散。加载完成的那一帧之后，同一批白色粒子一边向中央纵轴收拢，一边沿屏幕上下铺开，连续熔合为 2px 实线。</p>
+  </header>
+  <main>
+    <section class="stage">
+      <div class="phone" id="phone">
+        <div class="feed"><span class="status">9:41</span><div class="head"><b>社区</b><span class="avatar"></span></div><div class="feature"><small>本周精选 · SPATIAL STUDIES</small></div><div class="card"><div class="thumb"></div><div class="meta"><b>城市切片 07</b><span>♡ 128　◉ 3.2k</span></div></div><div class="card"><div class="thumb" style="background:radial-gradient(circle at 43% 46%,#aaa,#3a3a3a 35%,#070707 73%)"></div><div class="meta"><b>片刻之间</b><span>♡ 64　◉ 1.8k</span></div></div><div class="nav"><span><i></i>社区</span><span><i style="border-radius:50%"></i>我的</span></div></div>
+        <div class="door left"></div><div class="door right"></div><canvas id="particles"></canvas>
+      </div>
+      <button class="replay" id="replay">重新播放</button>
+    </section>
+    <section>
+      <div class="steps">
+        <div class="step"><span class="num">1</span><div><h2>持续解算</h2><p>128pt 白色粒子球保持原来的实时旋转，直到加载完成信号到达。</p></div></div>
+        <div class="step"><span class="num">2</span><div><h2>直接归线并熔合 · 500ms</h2><p>没有发散中间态。粒子的 x 坐标直接归到屏幕中央，y 坐标同步展开至屏幕上下；末段填实为 2px 白线。</p></div></div>
+        <div class="step"><span class="num">3</span><div><h2>双门开启 · 680ms</h2><p>实体白线无缝拆成左右黑幕各自 1px 的内边，并随门扇退到屏幕两侧。</p></div></div>
+      </div>
+      <div class="timeline"><i></i><i></i><i></i></div><div class="labels"><span>粒子球</span><span>直接归线</span><span>开门</span></div>
+      <div class="note">整个转场只保留一个视觉主语：粒子本身。没有全屏发散、没有淡出，也没有提前出现的门缝。</div>
+    </section>
+  </main>
+  <script>
+    const phone=document.querySelector('#phone'),canvas=document.querySelector('#particles'),ctx=canvas.getContext('2d'),leftDoor=phone.querySelector('.left'),rightDoor=phone.querySelector('.right'),replay=document.querySelector('#replay');
+    const COUNT=240,orbitDuration=1700,lineDuration=500,lineHold=110,doorDuration=680,endHold=1450,total=orbitDuration+lineDuration+lineHold+doorDuration+endHold;let start=performance.now(),dpr=1;
+    const particles=Array.from({length:COUNT},(_,i)=>{const a=i*2.3999632297,band=(i+.5)/COUNT,z=1-2*band,radial=Math.sqrt(Math.max(0,1-z*z));return{ax:Math.cos(a)*radial,ay:z,az:Math.sin(a)*radial,lineY:(i+.5)/COUNT}});
+    const clamp=v=>Math.max(0,Math.min(1,v)),ease=t=>t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2,smoother=t=>t*t*t*(t*(t*6-15)+10);
+    function resize(){const r=phone.getBoundingClientRect();dpr=Math.min(2,window.devicePixelRatio||1);canvas.width=Math.round(r.width*dpr);canvas.height=Math.round(r.height*dpr);ctx.setTransform(dpr,0,0,dpr,0,0)}new ResizeObserver(resize).observe(phone);resize();
+    function render(now){
+      const r=phone.getBoundingClientRect(),w=r.width,h=r.height,cx=w/2,cy=h/2,elapsed=(now-start)%total,lineStart=orbitDuration,lineEnd=lineStart+lineDuration,openStart=lineEnd+lineHold,openEnd=openStart+doorDuration,line=smoother(clamp((elapsed-lineStart)/lineDuration)),open=ease(clamp((elapsed-openStart)/doorDuration));
+      leftDoor.style.transform=`translateX(${-100*open}%)`;rightDoor.style.transform=`translateX(${100*open}%)`;phone.classList.toggle('line-ready',elapsed>=openStart&&elapsed<openEnd+.5);canvas.style.opacity=elapsed>=openStart?'0':'1';ctx.clearRect(0,0,w,h);
+      if(elapsed<openStart){
+        const time=elapsed/1000,yaw=time*.85,tilt=.38+.08*Math.sin(time*.8),orbRadius=Math.min(w,h)*.17;
+        for(const p of particles){
+          const rx=p.ax*Math.cos(yaw)+p.az*Math.sin(yaw),rz=-p.ax*Math.sin(yaw)+p.az*Math.cos(yaw),ry=p.ay*Math.cos(tilt)-rz*Math.sin(tilt),depth=p.ay*Math.sin(tilt)+rz*Math.cos(tilt),orbX=cx+rx*orbRadius,orbY=cy-ry*orbRadius,targetY=1+p.lineY*(h-2),x=orbX+(cx-orbX)*line,y=orbY+(targetY-orbY)*line,dotRadius=Math.max(.4,(1.18+1.05*(depth+1)/2)*(1-line)+.48*line),alpha=(.48+.5*(depth+1)/2)*(1-.32*line);
+          ctx.fillStyle=`rgba(255,255,255,${alpha})`;ctx.beginPath();ctx.arc(x,y,dotRadius,0,Math.PI*2);ctx.fill();
+        }
+        if(elapsed>=lineStart){const solid=clamp((line-.58)/.42);ctx.fillStyle=`rgba(255,255,255,${solid})`;ctx.fillRect(cx-1,0,2,h)}
+      }
+      requestAnimationFrame(render)
+    }
+    replay.addEventListener('click',()=>start=performance.now());requestAnimationFrame(render);
+  </script>
+</body>
+</html>

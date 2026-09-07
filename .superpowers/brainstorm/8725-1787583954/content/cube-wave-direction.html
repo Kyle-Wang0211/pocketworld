@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PocketWorld · 3D 方块波浪方向</title>
+  <style>
+    :root { color-scheme: light; --ink:#111; --muted:#727272; --line:#dedede; --soft:#f3f3f3; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:#f7f7f7; color:var(--ink); font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","PingFang SC",sans-serif; }
+    main { max-width:1180px; margin:0 auto; padding:42px 28px 54px; }
+    .eyebrow { margin:0 0 10px; color:#8a8a8a; font-size:12px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; }
+    h1 { margin:0; font-size:32px; line-height:1.2; letter-spacing:-.025em; }
+    .lead { max-width:760px; margin:12px 0 28px; color:var(--muted); font-size:16px; line-height:1.7; }
+    .choices { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; }
+    .choice { position:relative; overflow:hidden; border:1px solid var(--line); border-radius:24px; background:#fff; cursor:pointer; transition:transform 160ms ease,border-color 160ms ease,box-shadow 160ms ease; }
+    .choice:hover { transform:translateY(-3px); border-color:#aaa; box-shadow:0 16px 38px rgba(0,0,0,.07); }
+    .choice.selected { border:2px solid #111; box-shadow:0 0 0 4px rgba(0,0,0,.08),0 18px 45px rgba(0,0,0,.08); }
+    .phone { margin:16px; padding:18px 14px 14px; border-radius:19px; background:#fafafa; border:1px solid #ececec; }
+    .topic { padding:13px 14px 12px; border-radius:14px; border:1px solid #e3e3e3; background:#f8f8f8; }
+    .topic strong { display:block; font-size:13px; }
+    .topic span { display:block; margin-top:5px; color:#888; font-size:9px; }
+    canvas { display:block; width:100%; height:auto; margin-top:12px; border-radius:18px; background:#ededed; }
+    .copy { padding:4px 20px 22px; }
+    .row { display:flex; align-items:center; gap:10px; }
+    .badge { display:flex; width:28px; height:28px; flex:0 0 28px; align-items:center; justify-content:center; border-radius:50%; background:#111; color:#fff; font-size:12px; font-weight:800; }
+    h2 { margin:0; font-size:18px; }
+    .copy p { min-height:48px; margin:10px 0 0; color:#707070; font-size:13px; line-height:1.55; }
+    .recommend { position:absolute; top:28px; right:26px; z-index:2; padding:5px 8px; border-radius:999px; background:#111; color:#fff; font-size:10px; font-weight:700; }
+    .hint { margin:24px 0 0; color:#777; font-size:13px; text-align:center; }
+    @media (max-width:840px) { .choices { grid-template-columns:1fr; } .copy p { min-height:0; } }
+    @media (prefers-reduced-motion:reduce) { .choice { transition:none; } }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">PocketWorld · Social loading motion</p>
+    <h1>你想要哪一种“方块波浪感”？</h1>
+    <p class="lead">三种方案都用同一组等距 3D 方块、同一灰度和同一卡片轮廓。请只比较波浪从哪里来、怎样传播。点击卡片选择。</p>
+    <section class="choices">
+      <article class="choice" data-choice="a-diagonal" onclick="toggleSelect(this)">
+        <div class="recommend">推荐</div>
+        <div class="phone">
+          <div class="topic"><strong>✦ 本周精选</strong><span>编辑挑出的空间。想上这里，就把你扫的地方发出来。</span></div>
+          <canvas width="320" height="390" data-wave="diagonal"></canvas>
+        </div>
+        <div class="copy"><div class="row"><span class="badge">A</span><h2>斜向行波</h2></div><p>波峰从左上向右下掠过，读起来像一块立体地形正在被扫描；方向最明确，也最接近“多个方块形成一整片波浪”。</p></div>
+      </article>
+      <article class="choice" data-choice="b-radial" onclick="toggleSelect(this)">
+        <div class="phone">
+          <div class="topic"><strong>✦ 本周精选</strong><span>编辑挑出的空间。想上这里，就把你扫的地方发出来。</span></div>
+          <canvas width="320" height="390" data-wave="radial"></canvas>
+        </div>
+        <div class="copy"><div class="row"><span class="badge">B</span><h2>中心涟漪</h2></div><p>从画面中心向外扩散，像扫描点激活空间。更有“生成中”的仪式感，但视觉焦点会更强。</p></div>
+      </article>
+      <article class="choice" data-choice="c-band" onclick="toggleSelect(this)">
+        <div class="phone">
+          <div class="topic"><strong>✦ 本周精选</strong><span>编辑挑出的空间。想上这里，就把你扫的地方发出来。</span></div>
+          <canvas width="320" height="390" data-wave="band"></canvas>
+        </div>
+        <div class="copy"><div class="row"><span class="badge">C</span><h2>横向脉冲</h2></div><p>一条宽波带从左向右穿过，节奏最安静、最像现有骨架的升级版；3D 感会更克制。</p></div>
+      </article>
+    </section>
+    <p class="hint">无需纠结速度和颜色，这一轮只选传播方式；下一步再收敛密度与立体幅度。</p>
+  </main>
+  <script>
+    const canvases = [...document.querySelectorAll('canvas')];
+    const specs = { cols:7, rows:9, size:12.6 };
+    function poly(ctx, pts, fill) {
+      ctx.beginPath(); ctx.moveTo(pts[0][0],pts[0][1]);
+      for (let i=1;i<pts.length;i++) ctx.lineTo(pts[i][0],pts[i][1]);
+      ctx.closePath(); ctx.fillStyle=fill; ctx.fill();
+    }
+    function cube(ctx,x,y,s,h,lift) {
+      const top=[[x,y-lift-h],[x+s,y+s*.52-lift-h],[x,y+s-lift-h],[x-s,y+s*.52-lift-h]];
+      const left=[[x-s,y+s*.52-lift-h],[x,y+s-lift-h],[x,y+s-lift],[x-s,y+s*.52-lift]];
+      const right=[[x,y+s-lift-h],[x+s,y+s*.52-lift-h],[x+s,y+s*.52-lift],[x,y+s-lift]];
+      poly(ctx,left,'#c8c8c8'); poly(ctx,right,'#b6b6b6'); poly(ctx,top,'#e9e9e9');
+    }
+    function wave(kind,c,r,t) {
+      if (kind==='diagonal') return Math.sin(t*2.0-(c+r)*.72);
+      if (kind==='radial') { const d=Math.hypot(c-3,r-4); return Math.sin(t*2.05-d*1.18); }
+      return Math.sin(t*1.75-c*.9-r*.12);
+    }
+    function draw(canvas,t) {
+      const ctx=canvas.getContext('2d'); const {cols,rows,size}=specs; const kind=canvas.dataset.wave;
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      ctx.fillStyle='#ededed'; ctx.fillRect(0,0,canvas.width,canvas.height);
+      const ox=160, oy=72;
+      const cubes=[];
+      for(let r=0;r<rows;r++) for(let c=0;c<cols;c++) {
+        const x=ox+(c-r)*size; const y=oy+(c+r)*size*.55;
+        const w=(wave(kind,c,r,t)+1)/2;
+        cubes.push({x,y,h:8+w*16,lift:w*11,depth:c+r});
+      }
+      cubes.sort((a,b)=>a.depth-b.depth).forEach(v=>cube(ctx,v.x,v.y,size-1.2,v.h,v.lift));
+      const g=ctx.createLinearGradient(0,250,0,390); g.addColorStop(0,'rgba(237,237,237,0)'); g.addColorStop(1,'#ededed');
+      ctx.fillStyle=g; ctx.fillRect(0,250,320,140);
+    }
+    const start=performance.now();
+    function loop(now) { const t=(now-start)/1000; canvases.forEach(c=>draw(c,t)); requestAnimationFrame(loop); }
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
