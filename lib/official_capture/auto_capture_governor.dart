@@ -70,15 +70,27 @@ const int kStellaNumTrackedLmsThrUnstable = 15;
 // 核心 0.12,不引入 SVO 的三轴权重 —— 不把两家的结构混在一起。
 const double kSvoKeyframeMinDistanceSceneDepthRatio = 0.12;
 
+/// SVO 在还没有真实尺度时用的场景深度。出处同上,`svo/map_scale` 默认 **1.0**,
+/// config.h 注释 "Initial scale of the map";initialization.cpp 明写
+/// "Rescale the map such that the mean scene depth is equal to the specified
+/// scale"(`scale = mapScale() / scene_depth_median`)。也就是说 SVO 的 12% 在
+/// 地图刚起步时就是"0.12 × 深度 1"。
+/// 我们用它兜住冷启动:活体点云还没凑够深度锚点(需要 SfM 注册两三帧 + ≥8 个
+/// 有效深度点)之前,若退回 stella 的 -1(关门),原地转头会在开场连拍
+/// (实测 10 s 拍 8 张)。用 SVO 的初始尺度后降到 1 张(那 1 张是无条件的首张)。
+const double kSvoInitialMapScaleMetres = 1.0;
+
 /// stella_vslam 的 `min_distance`(米),按 SVO 的式子由场景深度给出。
-/// 没有活体点云深度时返回上游默认 -1(即这道门关闭),不猜一个绝对米数。
+/// 拿不到活体点云深度时退回 SVO 的初始地图尺度(深度 = 1.0),而不是把门关掉 ——
+/// 关掉会在冷启动期放行原地转头。
 double autoCaptureMinDistanceMetres(double? sceneDepthMetres) {
-  if (sceneDepthMetres == null ||
-      !sceneDepthMetres.isFinite ||
-      sceneDepthMetres <= 0) {
-    return kStellaMinDistanceM;
-  }
-  return kSvoKeyframeMinDistanceSceneDepthRatio * sceneDepthMetres;
+  final depth =
+      (sceneDepthMetres == null ||
+          !sceneDepthMetres.isFinite ||
+          sceneDepthMetres <= 0)
+      ? kSvoInitialMapScaleMetres
+      : sceneDepthMetres;
+  return kSvoKeyframeMinDistanceSceneDepthRatio * depth;
 }
 
 enum AutoCaptureDecision {
@@ -282,10 +294,21 @@ AutoCaptureDecision stellaVslamNewKeyframeIsNeeded({
       notEnoughLms)) {
     return AutoCaptureDecision.skipNotMoved;
   }
-  if (enoughKeyfrms) {
-    if (!minIntervalElapsed) return AutoCaptureDecision.skipPaced;
-    if (!minDistanceTraveled) return AutoCaptureDecision.skipMinDistance;
+  // stella 的 `!enough_keyfrms` 豁免:关键帧不足 5 张时跳过时间/距离下限,让
+  // 冷启动期把地图先搭起来。**时间下限照搬这条豁免。**
+  if (enoughKeyfrms && !minIntervalElapsed) {
+    return AutoCaptureDecision.skipPaced;
   }
+  // [2026-09-07 前提修正] **距离下限不吃这条豁免。**
+  // stella 出厂时 min_distance = -1(关闭),所以它的 enough_keyfrms 豁免从来
+  // 没有绕过过任何距离门 —— 上游根本没考虑过这种组合。我们把 min_distance 打开
+  // 了(值取自 SVO),搬过来就会在冷启动期放行"原地转头":距离 0、但转头把画面
+  // 换了 ⇒ 触发子句成立 ⇒ 前 6 张照拍。
+  // 取 SVO 的原始适用范围:它的 needNewKf 对**每一个**共视关键帧都比 12%,没有
+  // 冷启动豁免;只有一个关键帧都还没有时(overlap_kfs_ 为空)才无条件放行 ——
+  // 这正好对应我们的 distanceTraveledM == null(还没有上一张照片)。
+  // 值与适用范围取自同一家,不拼盘。
+  if (!minDistanceTraveled) return AutoCaptureDecision.skipMinDistance;
   if (blurry) return AutoCaptureDecision.skipBlurry;
   return AutoCaptureDecision.fire;
 }

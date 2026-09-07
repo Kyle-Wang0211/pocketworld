@@ -168,8 +168,8 @@ class _Harness {
 /// 起跑锚 + 一帧同画面预览(把参考轨迹种下)。
 _Harness _started() {
   final h = _Harness();
-  h.controller.start(_pose(t: 0, grayShiftX: 0));
-  h.feed(_pose(t: 0.1, grayShiftX: 0));
+  h.controller.start(_pose(t: 0, pos: Vector3(0 / 128, 0, 0), grayShiftX: 0));
+  h.feed(_pose(t: 0.1, pos: Vector3(0 / 128, 0, 0), grayShiftX: 0));
   return h;
 }
 
@@ -183,10 +183,12 @@ void main() {
   });
 
   test('fixture: 8 px keeps > 90% of the tracks, 40 px drops below 80%', () {
-    final a = _started()..feed(_pose(t: 0.2, grayShiftX: 8));
+    final a = _started()
+      ..feed(_pose(t: 0.2, pos: Vector3(8 / 128, 0, 0), grayShiftX: 8));
     final e8 = a.controller.lastTrackEvidence!;
     expect(e8.commonTrackCount, greaterThan(e8.seedTrackCount * 0.9));
-    final b = _started()..feed(_pose(t: 0.2, grayShiftX: 40));
+    final b = _started()
+      ..feed(_pose(t: 0.2, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40));
     final e40 = b.controller.lastTrackEvidence!;
     expect(e40.commonTrackCount, lessThan(e40.seedTrackCount * 0.8));
     expect(e40.commonTrackCount, greaterThan(15));
@@ -197,11 +199,11 @@ void main() {
     () {
       final h = _started();
       expect(
-        h.feed(_pose(t: 0.2, grayShiftX: 8)),
+        h.feed(_pose(t: 0.2, pos: Vector3(8 / 128, 0, 0), grayShiftX: 8)),
         AutoCaptureDecision.skipRedundant,
       );
       expect(
-        h.feed(_pose(t: 0.3, grayShiftX: 8)),
+        h.feed(_pose(t: 0.3, pos: Vector3(8 / 128, 0, 0), grayShiftX: 8)),
         AutoCaptureDecision.skipRedundant,
       );
       expect(h.fires, 0);
@@ -232,26 +234,26 @@ void main() {
 
   test('[用户 2026-09-07] 原地转头:画面换了,但相机没动 ⇒ min_distance 挡住', () {
     // SVO 论文的式子:门槛 = 12% × 场景深度。深度 1 m ⇒ 要走够 12 cm。
-    // captured > num_enough_keyfrms_thr(5):上游只在照片数超过 5 之后才让
-    // min_interval / min_distance 生效(见下面单独的一条测试)。
     final h = _started()
       ..liveDepthM = 1.0
       ..captured = 10;
-    // 先拍一张,把 last_inserted_keyfrm 的位置钉在原点。
-    expect(h.feed(_pose(t: 0.2, grayShiftX: 40)), AutoCaptureDecision.fire);
-    // 接着原地转头:预览一路滚(内容确实换了),位置一动不动。
+    // 先走 31 cm 拍一张(画面同步右移 40 px),上一张照片的位置钉在 x=0.31。
+    expect(
+      h.feed(_pose(t: 0.2, pos: Vector3(0.31, 0, 0), grayShiftX: 40)),
+      AutoCaptureDecision.fire,
+    );
+    // 接着**站在原地**转头:预览一路滚(内容确实换了),位置一动不动。
     var shift = 80;
     for (var t = 0.4; t < 2.0; t += 0.2) {
-      final d = h.feed(
-        _pose(
-          t: t,
-          pos: Vector3.zero(),
-          yawDeg: t * 60,
-          grayShiftX: shift % 128,
-        ),
-      );
       expect(
-        d,
+        h.feed(
+          _pose(
+            t: t,
+            pos: Vector3(0.31, 0, 0),
+            yawDeg: t * 60,
+            grayShiftX: shift % 128,
+          ),
+        ),
         anyOf(
           AutoCaptureDecision.skipMinDistance,
           AutoCaptureDecision.skipRedundant,
@@ -267,16 +269,19 @@ void main() {
     final h = _started()
       ..liveDepthM = 1.0
       ..captured = 10;
-    expect(h.feed(_pose(t: 0.2, grayShiftX: 40)), AutoCaptureDecision.fire);
     expect(
-      h.feed(_pose(t: 0.4, pos: Vector3(0.10, 0, 0), grayShiftX: 0)),
-      AutoCaptureDecision.skipMinDistance,
-      reason: '只走了 10 cm < 12 cm',
+      h.feed(_pose(t: 0.2, pos: Vector3(0.31, 0, 0), grayShiftX: 40)),
+      AutoCaptureDecision.fire,
     );
     expect(
-      h.feed(_pose(t: 0.6, pos: Vector3(0.13, 0, 0), grayShiftX: 0)),
+      h.feed(_pose(t: 0.4, pos: Vector3(0.41, 0, 0), grayShiftX: 0)),
+      AutoCaptureDecision.skipMinDistance,
+      reason: '相对上一张只走了 10 cm < 12 cm',
+    );
+    expect(
+      h.feed(_pose(t: 0.6, pos: Vector3(0.44, 0, 0), grayShiftX: 0)),
       AutoCaptureDecision.fire,
-      reason: '13 cm > 12 cm,而且画面也换了',
+      reason: '走了 13 cm > 12 cm,而且画面也换了',
     );
     expect(h.fires, 2);
   });
@@ -286,37 +291,51 @@ void main() {
       ..liveDepthM =
           10.0 // 门槛 1.2 m
       ..captured = 10;
-    expect(h.feed(_pose(t: 0.2, grayShiftX: 40)), AutoCaptureDecision.fire);
     expect(
-      h.feed(_pose(t: 0.4, pos: Vector3(0.13, 0, 0), grayShiftX: 0)),
+      h.feed(_pose(t: 0.2, pos: Vector3(0.31, 0, 0), grayShiftX: 40)),
+      AutoCaptureDecision.fire,
+    );
+    expect(
+      h.feed(_pose(t: 0.4, pos: Vector3(0.44, 0, 0), grayShiftX: 0)),
       AutoCaptureDecision.skipMinDistance,
     );
     expect(
-      h.feed(_pose(t: 0.6, pos: Vector3(1.5, 0, 0), grayShiftX: 0)),
+      h.feed(_pose(t: 0.6, pos: Vector3(1.81, 0, 0), grayShiftX: 0)),
       AutoCaptureDecision.fire,
     );
   });
 
-  test(
-    '上游 num_enough_keyfrms_thr = 5:前 6 张不受 min_interval/min_distance 限制',
-    () {
-      // 这是 stella 原样行为(!enough_keyfrms 短路整条强制项),不是我们放宽的。
-      // 冷启动时地图还很薄,上游宁可多插几帧。
-      final h = _started()
-        ..liveDepthM = 1.0
-        ..captured = 0;
-      expect(h.feed(_pose(t: 0.2, grayShiftX: 40)), AutoCaptureDecision.fire);
-      expect(
-        h.feed(_pose(t: 0.25, pos: Vector3.zero(), grayShiftX: 80)),
-        AutoCaptureDecision.fire,
-        reason: '照片数 ≤ 5 ⇒ 原地转头也照拍;第 7 张起才受 min_distance 管',
-      );
-    },
-  );
+  test('[2026-09-07 前提修正] 冷启动豁免只放过时间下限,不放过距离下限', () {
+    // stella 出厂 min_distance = -1,它的 !enough_keyfrms 豁免从没绕过距离门;
+    // 我们把 min_distance 打开(值取自 SVO),就得连 SVO 的适用范围一起取:
+    // SVO 的 needNewKf 对每一个共视关键帧都比 12%,没有冷启动豁免。
+    final h = _started()
+      ..liveDepthM = 1.0
+      ..captured = 0;
+    expect(
+      h.feed(_pose(t: 0.2, pos: Vector3(0.31, 0, 0), grayShiftX: 40)),
+      AutoCaptureDecision.fire,
+    );
+    // 原地转头把画面换了,但位移 0 ⇒ 照片数还不到 5 也必须挡住。
+    expect(
+      h.feed(_pose(t: 0.25, pos: Vector3(0.31, 0, 0), grayShiftX: 80)),
+      AutoCaptureDecision.skipMinDistance,
+      reason: '冷启动期也不许原地转头出片',
+    );
+    // 时间下限仍照搬 stella 的豁免:照片数 ≤5 时 0.05 s 的间隔不算过快。
+    expect(
+      h.feed(_pose(t: 0.3, pos: Vector3(0.51, 0, 0), grayShiftX: 80)),
+      AutoCaptureDecision.fire,
+      reason: '走够 20 cm > 12 cm,且冷启动期不受 min_interval 0.1 s 限制',
+    );
+  });
 
   test('view_changed and the mapper idle → fire, tagged keyframeInserter', () {
     final h = _started();
-    expect(h.feed(_pose(t: 0.2, grayShiftX: 40)), AutoCaptureDecision.fire);
+    expect(
+      h.feed(_pose(t: 0.2, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40)),
+      AutoCaptureDecision.fire,
+    );
     expect(h.fires, 1);
     expect(h.firedRoles.single, AutoCaptureMotionRole.keyframeInserter);
     expect(
@@ -328,22 +347,25 @@ void main() {
   test('mapper skipping localBA → skipMapperBusy, retried once it is idle', () {
     final h = _started()..mapperIdle = false;
     expect(
-      h.feed(_pose(t: 0.2, grayShiftX: 40)),
+      h.feed(_pose(t: 0.2, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40)),
       AutoCaptureDecision.skipMapperBusy,
     );
     expect(
-      h.feed(_pose(t: 0.3, grayShiftX: 40)),
+      h.feed(_pose(t: 0.3, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40)),
       AutoCaptureDecision.skipMapperBusy,
     );
     h.mapperIdle = true;
-    expect(h.feed(_pose(t: 0.4, grayShiftX: 40)), AutoCaptureDecision.fire);
+    expect(
+      h.feed(_pose(t: 0.4, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40)),
+      AutoCaptureDecision.fire,
+    );
     expect(h.fires, 1);
   });
 
   test('mapper paused (shutter queue not accepting) → skipMapperStopped', () {
     final h = _started()..mapperAccepting = false;
     expect(
-      h.feed(_pose(t: 0.2, grayShiftX: 40)),
+      h.feed(_pose(t: 0.2, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40)),
       AutoCaptureDecision.skipMapperStopped,
     );
     expect(h.fires, 0);
@@ -353,13 +375,16 @@ void main() {
     'a fire re-seeds the reference: the photographed view is then redundant',
     () {
       final h = _started();
-      expect(h.feed(_pose(t: 0.2, grayShiftX: 40)), AutoCaptureDecision.fire);
       expect(
-        h.feed(_pose(t: 0.3, grayShiftX: 40)),
+        h.feed(_pose(t: 0.2, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40)),
+        AutoCaptureDecision.fire,
+      );
+      expect(
+        h.feed(_pose(t: 0.3, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40)),
         AutoCaptureDecision.skipRedundant,
       );
       expect(
-        h.feed(_pose(t: 0.5, grayShiftX: 0)),
+        h.feed(_pose(t: 0.5, pos: Vector3(0 / 128, 0, 0), grayShiftX: 0)),
         AutoCaptureDecision.fire,
         reason: '相对刚拍成的参考(40)回到 0 ⇒ 共有 71% < 80%',
       );
@@ -369,13 +394,19 @@ void main() {
 
   test('min_interval 0.1 s only bites after more than 5 photos', () {
     final h = _started()..captured = 6;
-    expect(h.feed(_pose(t: 0.2, grayShiftX: 40)), AutoCaptureDecision.fire);
     expect(
-      h.feed(_pose(t: 0.25, grayShiftX: 0)),
+      h.feed(_pose(t: 0.2, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40)),
+      AutoCaptureDecision.fire,
+    );
+    expect(
+      h.feed(_pose(t: 0.25, pos: Vector3(0 / 128, 0, 0), grayShiftX: 0)),
       AutoCaptureDecision.skipPaced,
       reason: '距上一张只有 0.05 s < min_interval 0.1 s',
     );
-    expect(h.feed(_pose(t: 0.35, grayShiftX: 0)), AutoCaptureDecision.fire);
+    expect(
+      h.feed(_pose(t: 0.35, pos: Vector3(0 / 128, 0, 0), grayShiftX: 0)),
+      AutoCaptureDecision.fire,
+    );
   });
 
   test('no track evidence (no preview gray) → skipNoVisualEvidence', () {
@@ -420,7 +451,10 @@ void main() {
         ..captured = 10
         ..instantCapture = false;
       // 在原点按下快门。
-      expect(h.feed(_pose(t: 0.2, grayShiftX: 40)), AutoCaptureDecision.fire);
+      expect(
+        h.feed(_pose(t: 0.2, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40)),
+        AutoCaptureDecision.fire,
+      );
       // 快门事务进行中相机继续走了 50 cm,照片在 x=0.5 处才真正拍成。
       for (var t = 0.3; t < 0.65; t += 0.1) {
         h.feed(
@@ -443,15 +477,18 @@ void main() {
 
     test('a failed shutter transaction resumes decisions immediately', () {
       final h = _started()..instantCapture = false;
-      expect(h.feed(_pose(t: 0.2, grayShiftX: 40)), AutoCaptureDecision.fire);
       expect(
-        h.feed(_pose(t: 0.3, grayShiftX: 40)),
+        h.feed(_pose(t: 0.2, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40)),
+        AutoCaptureDecision.fire,
+      );
+      expect(
+        h.feed(_pose(t: 0.3, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40)),
         AutoCaptureDecision.skipAwaitingCapture,
       );
       h.controller.onCaptureFailed();
       expect(h.controller.awaitingCaptureBaseline, isFalse);
       expect(
-        h.feed(_pose(t: 0.4, grayShiftX: 0)),
+        h.feed(_pose(t: 0.4, pos: Vector3(0 / 128, 0, 0), grayShiftX: 0)),
         AutoCaptureDecision.fire,
         reason: '参考是请求时刻那帧(40),回到 0 ⇒ view_changed',
       );
@@ -459,13 +496,16 @@ void main() {
 
     test('a completion that never arrives times out after 2 s', () {
       final h = _started()..instantCapture = false;
-      expect(h.feed(_pose(t: 0.2, grayShiftX: 40)), AutoCaptureDecision.fire);
       expect(
-        h.feed(_pose(t: 2.1, grayShiftX: 0)),
+        h.feed(_pose(t: 0.2, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40)),
+        AutoCaptureDecision.fire,
+      );
+      expect(
+        h.feed(_pose(t: 2.1, pos: Vector3(0 / 128, 0, 0), grayShiftX: 0)),
         AutoCaptureDecision.skipAwaitingCapture,
       );
       expect(
-        h.feed(_pose(t: 2.3, grayShiftX: 0)),
+        h.feed(_pose(t: 2.3, pos: Vector3(0 / 128, 0, 0), grayShiftX: 0)),
         AutoCaptureDecision.fire,
         reason: '超时后恢复判定;参考是请求时刻那帧(40)',
       );
@@ -474,10 +514,15 @@ void main() {
 
   test('stop() forgets the last-keyframe bookkeeping', () {
     final h = _started();
-    h.feed(_pose(t: 0.2, grayShiftX: 40));
+    h.feed(_pose(t: 0.2, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40));
     h.controller.stop();
-    h.controller.start(_pose(t: 5.0, grayShiftX: 0));
-    h.feed(_pose(t: 5.1, grayShiftX: 0));
-    expect(h.feed(_pose(t: 5.2, grayShiftX: 40)), AutoCaptureDecision.fire);
+    h.controller.start(
+      _pose(t: 5.0, pos: Vector3(0 / 128, 0, 0), grayShiftX: 0),
+    );
+    h.feed(_pose(t: 5.1, pos: Vector3(0 / 128, 0, 0), grayShiftX: 0));
+    expect(
+      h.feed(_pose(t: 5.2, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40)),
+      AutoCaptureDecision.fire,
+    );
   });
 }

@@ -646,9 +646,17 @@ void main() {
     void drive(_WiredHost h, int poses) {
       h.controller.start(_pose(t: 0, grayShiftX: 0));
       for (var i = 1; i <= poses; i++) {
-        // 画面每帧在 0/40 px 之间翻转 ⇒ 相对上一张实拍丢 >10% 轨迹,队列接受
-        // 时每帧都能开火。
-        h.tick(_pose(t: i * 0.05, yawDeg: i * 12.0, grayShiftX: (i % 2) * 40));
+        // 位姿与画面物理一致(深度回退 1 m ⇒ 128 px ↔ 1 m):每帧在 0 / 40 px
+        // 之间翻转,相当于来回走 31 cm ⇒ 既过 min_distance 又丢够轨迹。
+        final shift = (i % 2) * 40;
+        h.tick(
+          _pose(
+            t: i * 0.05,
+            pos: Vector3(shift / 128, 0, 0),
+            yawDeg: i * 12.0,
+            grayShiftX: shift,
+          ),
+        );
       }
     }
 

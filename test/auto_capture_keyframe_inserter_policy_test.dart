@@ -261,20 +261,21 @@ void main() {
 
   group('min_distance 取值 —— SVO 论文的式子(12% 场景深度)', () {
     test(
-      'threshold scales with scene depth; unknown depth disables the gate',
+      'threshold scales with scene depth; unknown depth falls back to SVO map scale',
       () {
         expect(kSvoKeyframeMinDistanceSceneDepthRatio, 0.12);
         expect(autoCaptureMinDistanceMetres(1.0), closeTo(0.12, 1e-12));
         expect(autoCaptureMinDistanceMetres(10.0), closeTo(1.2, 1e-12));
         expect(autoCaptureMinDistanceMetres(0.5), closeTo(0.06, 1e-12));
         // 没有活体点云深度 ⇒ 退回 stella 的默认 -1(门关闭),不猜绝对米数。
-        expect(autoCaptureMinDistanceMetres(null), kStellaMinDistanceM);
-        expect(autoCaptureMinDistanceMetres(0), kStellaMinDistanceM);
-        expect(autoCaptureMinDistanceMetres(-3), kStellaMinDistanceM);
-        expect(autoCaptureMinDistanceMetres(double.nan), kStellaMinDistanceM);
+        expect(kSvoInitialMapScaleMetres, 1.0);
+        expect(autoCaptureMinDistanceMetres(null), closeTo(0.12, 1e-12));
+        expect(autoCaptureMinDistanceMetres(0), closeTo(0.12, 1e-12));
+        expect(autoCaptureMinDistanceMetres(-3), closeTo(0.12, 1e-12));
+        expect(autoCaptureMinDistanceMetres(double.nan), closeTo(0.12, 1e-12));
         expect(
           autoCaptureMinDistanceMetres(double.infinity),
-          kStellaMinDistanceM,
+          closeTo(0.12, 1e-12),
         );
       },
     );
@@ -311,6 +312,45 @@ void main() {
           minDistanceM: thr,
         ),
         AutoCaptureDecision.fire,
+      );
+    });
+  });
+
+  group('[前提修正] 冷启动豁免只放过时间下限', () {
+    test('min_interval 照搬 stella 的豁免,min_distance 取 SVO 的适用范围', () {
+      expect(
+        _decide(
+          capturedCount: 5,
+          numReliableLms: 127,
+          sinceLastKeyframeSec: 0.05,
+          minDistanceM: 0.12,
+          distanceTraveledM: 0.5,
+        ),
+        AutoCaptureDecision.fire,
+        reason: '照片数 ≤5 ⇒ 时间下限豁免',
+      );
+      for (final n in <int>[0, 1, 3, 5, 6, 20]) {
+        expect(
+          _decide(
+            capturedCount: n,
+            numReliableLms: 127,
+            distanceTraveledM: 0.0,
+            minDistanceM: 0.12,
+          ),
+          AutoCaptureDecision.skipMinDistance,
+          reason: 'capturedCount=$n —— 冷启动期也不许原地转头出片',
+        );
+      }
+      expect(
+        _decide(
+          capturedCount: 0,
+          numReliableLms: 127,
+          distanceTraveledM: null,
+          sinceLastKeyframeSec: null,
+          minDistanceM: 0.12,
+        ),
+        AutoCaptureDecision.fire,
+        reason: '还没有上一张照片 ⇒ 无条件放行(SVO:overlap_kfs_ 为空)',
       );
     });
   });
