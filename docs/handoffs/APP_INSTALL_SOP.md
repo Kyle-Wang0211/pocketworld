@@ -17,6 +17,12 @@
    装后的核对拿着残缺集合"通过"。
 4. **装完不要启动 app。** 让用户自己开。
 5. **生产机在用户当天要拍摄时不跑台架/压测。**(两次热态 serious 事故)
+6. **四项自证只证「我装的是我想装的字节」,不证「这东西能用」。** 装机门槛必须
+   同时有一条**功能臂**(§4.5、§7.1),否则它只是打包检查表。2026-09-07 build 113
+   带着全绿的四项自证和 1539 个通过的测试上机,**第一次快门就失败**。
+7. **`flutter test` 全绿不是上机判据。** 仓库里没有一个测试跨过 MethodChannel /
+   FFI,对「Dart 侧与 native 侧来自不同代码状态」这一整类缺陷结构性失明。
+   引用测试数时必须同时写明它覆盖不到什么。
 
 ---
 
@@ -157,6 +163,38 @@ done
    done
    # 两者相同 ⇒ 组装抓到了旧产物,或者这次根本没编出新东西 ⇒ 停下
 
+
+### 4.5 功能臂之一:接口穿越审计(合并 / 全量原生构建时**必做**)
+
+四项自证按文件比字节,而缺陷发生在**接口**上 —— 接口的两端在两个目录里。
+只要这次出包满足下面任意一条,就必须做这一节:
+
+- 合并了另一条工作树(不管冲突多少个);
+- 做了全量原生构建(不是只换 `App.framework`);
+- 动了 `ios/Runner/**` 或 `lib/official_dome/**`、`lib/*/platform_*.dart`。
+
+```bash
+# ① 列出这次合并里「取了对方版本」的全部文件
+git diff --name-only <merge>^1 <merge> | while read f; do
+  m=$(git rev-parse "<merge>:$f" 2>/dev/null); b=$(git rev-parse "<merge>^2:$f" 2>/dev/null)
+  [ "$m" = "$b" ] && [ -n "$b" ] && echo "$f"
+done > /tmp/took_theirs.txt
+
+# ② 其中凡是带跨语言契约的,都是红旗:它的对端可能来自另一侧
+grep -E "^lib/" /tmp/took_theirs.txt | while read f; do
+  k=$(grep -cE "MethodChannel|EventChannel|invokeMethod|ffi|Native" "$f" 2>/dev/null)
+  [ "$k" -gt 0 ] && echo "🔴 $f 有 $k 处跨语言引用 —— 它的 native 对端取的是哪一侧?"
+done
+
+# ③ 跑通道契约测试(方法名 / 回包键 / 请求参数三样对齐)
+flutter test --no-pub test/arkit_channel_key_contract_test.dart
+```
+
+**判据**:②必须为空,或者每一条都已人工确认对端同源;③必须绿。
+**归属规则是关于文件的,契约是关于接口的 —— 按目录裁决冲突时,必须再按接口复核一遍。**
+
+### 4.6 功能臂之二:装后冒烟(§7.1),不可省
+
 ---
 
 ## 5. 装前备份(Phase C:增量 + 逐目录对账)
@@ -251,6 +289,36 @@ Library:    允许 SplashBoard/Snapshots/*.ktx 有出入(系统启动快照会�
 
 **中止条件**:出现非 SplashBoard 的 missing → 立即告诉用户,并准备用备份恢复。
 
+### 7.1 装后冒烟闸 —— **在这一步之前,这次装机都不算完成**
+
+清单对齐只证明"数据没丢",不证明"app 能用"。2026-09-07 build 113 的清单
+1854/1854 全对、四项自证全绿、1539 个测试通过,而用户点下第一次快门就失败:
+合并时 Dart 侧读 `evidenceWorldFromCamera`、Swift 侧只发 `cameraTransform`,
+位姿解成空数组,**每一张照片都废**。装机门槛里没有任何一条能碰到这个。
+
+我不 launch app(铁律 4,以及"绝不为取数据而开 app")。所以这条闸的形态是:
+**把冒烟当成交付的一部分说出来,并在用户点完之后由我读日志判决**,而不是
+装完就宣布"装好了"。
+
+1. 交付话术必须是"**装上了,还没验过**",并明确请用户做最小动作:
+   进采集页 → **点一次快门** → 退出。
+2. 用户点完后,我拉设备日志判决:
+   ```bash
+   xcrun devicectl device copy from --device $D --domain-type appDataContainer \
+     --domain-identifier $BID --source Documents/official_pw_device_log.txt \
+     --destination /tmp/devlog_post.txt
+   # 红线(出现任意一条 ⇒ 这次装机判失败,立刻回退)
+   grep -E "shutter ticket=[0-9]+ FAILED|Uncaught|sfm: start FAILED|未进入重建" /tmp/devlog_post.txt | tail
+   # 绿线:该会话出现 shutter ticket=1 之后有对应的 add_frame ... rc=ok
+   ```
+3. **判据必须先过阳性对照**:上面那条 grep 要能在坏版本的日志里真的命中
+   (113 的日志里 `shutter ticket=1 FAILED` 就在那儿摆着,是我没去看)。
+4. 冒烟不绿 ⇒ 原地装回上一版,不卸载,并在台账里写明"装了又退"。
+
+> 为什么这条以前没有:我把"绝不为取数据而开 app"读成了"装完什么都不验"。
+> 那条规矩禁的是**为了刷数据而启动**,不是禁**验证这次装机是否成功**。
+> 一次快门 + 一次日志读,60 秒,能挡住整整一类"两端不同源"的事故。
+
 ---
 
 ## 8. 记账(Phase F,不可省)
@@ -258,7 +326,11 @@ Library:    允许 SplashBoard/Snapshots/*.ktx 有出入(系统启动快照会�
 1. 追加一行到 `~/Developer/pw_builds_20260904/README.md`,必须写清:
    时间、版本号、基线是哪一版、只换了什么、对应的 git commit、
    装前备份了哪几场、装机闸三项的实际读数、装后核对结果、
+   **§7.1 冒烟闸的判决(绿/红/未验)**、
    **怎么退回**(退回 = 装上一版的 .app,不卸载)。
+   引用 `flutter test` 的通过数时,必须同时写明它覆盖不到什么(至少:
+   不跨 MethodChannel / FFI / 真机)。只写"N 个测试通过"是把打包检查
+   当成了功能验收。
 2. 产品仓 `git commit`(提交信息里写清出处/许可/实测数字)。
 3. 更新记忆:装了什么、验证凭据是什么、还有什么没验。
 
@@ -282,6 +354,9 @@ Library:    允许 SplashBoard/Snapshots/*.ktx 有出入(系统启动快照会�
 - [ ] 用户**这一次**明确说了要装
 - [ ] 只换一个二进制(产品 / 管线不混)
 - [ ] `flutter analyze` error = 0;`flutter test` 失败集合 == 已知基线
+      —— 并且**清楚这一条覆盖不到跨语言契约**,不能当功能验收
+- [ ] **接口穿越审计(§4.5)**:合并 / 全量原生构建时必做,取了对方版本的
+      文件里没有一个的 native 对端来自另一侧;通道契约测试绿
 - [ ] 组装:只该换的那个 DIFF,其余 SAME
 - [ ] Dart VM 哈希与引擎一致
 - [ ] 构建日志出现完成行之后才组装
@@ -294,5 +369,7 @@ Library:    允许 SplashBoard/Snapshots/*.ktx 有出入(系统启动快照会�
 - [ ] build 号已核
 - [ ] 装后清单对比 missing = 0(SplashBoard 除外)
 - [ ] 装完**没有**启动 app
-- [ ] README 台账 + git commit + 记忆已更新
+- [ ] **交付话术是「装上了,还没验过」,并请用户点一次快门(§7.1)**
+- [ ] **用户点完后我读日志判决冒烟闸;没绿之前这次装机不算完成**
+- [ ] README 台账 + git commit + 记忆已更新(含冒烟闸判决)
 - [ ] 已告诉用户:验证凭据是什么、怎么退回
