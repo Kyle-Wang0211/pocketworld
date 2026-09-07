@@ -174,16 +174,19 @@ done
 - 动了 `ios/Runner/**` 或 `lib/official_dome/**`、`lib/*/platform_*.dart`。
 
 ```bash
-# ① 列出这次合并里「取了对方版本」的全部文件
-git diff --name-only <merge>^1 <merge> | while read f; do
-  m=$(git rev-parse "<merge>:$f" 2>/dev/null); b=$(git rev-parse "<merge>^2:$f" 2>/dev/null)
-  [ "$m" = "$b" ] && [ -n "$b" ] && echo "$f"
+# ① 列出**出包这一刻的 HEAD 里**仍与对方分支同源的文件
+#    注意比的是 HEAD,不是合并提交 —— 合并后又修过的文件不该再报红。
+git diff --name-only <merge>^1 HEAD | while read f; do
+  [ -f "$f" ] || continue
+  m=$(git rev-parse "HEAD:$f" 2>/dev/null); b=$(git rev-parse "<merge>^2:$f" 2>/dev/null)
+  [ -n "$b" ] && [ "$m" = "$b" ] && echo "$f"
 done > /tmp/took_theirs.txt
 
 # ② 其中凡是带跨语言契约的,都是红旗:它的对端可能来自另一侧
+#    `grep -c` 无命中时退出码为 1,别用 `|| echo 0`(会打出两行)。
 grep -E "^lib/" /tmp/took_theirs.txt | while read f; do
-  k=$(grep -cE "MethodChannel|EventChannel|invokeMethod|ffi|Native" "$f" 2>/dev/null)
-  [ "$k" -gt 0 ] && echo "🔴 $f 有 $k 处跨语言引用 —— 它的 native 对端取的是哪一侧?"
+  k=$(grep -cE "MethodChannel|EventChannel|invokeMethod|ffi\.|Native" "$f" 2>/dev/null || true)
+  [ "${k:-0}" -gt 0 ] && echo "🔴 $f 有 $k 处跨语言引用 —— 它的 native 对端取的是哪一侧?"
 done
 
 # ③ 跑通道契约测试(方法名 / 回包键 / 请求参数三样对齐)
