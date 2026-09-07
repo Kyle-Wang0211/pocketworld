@@ -27,8 +27,7 @@ import '../official_capture/logical_world_frame.dart';
 import '../official_quality/quality_compute.dart';
 import 'ar_pose.dart';
 
-class PlatformARPoseProvider
-    implements ARPoseProvider, ARPoseTransportLifecycle {
+class PlatformARPoseProvider implements ARPoseProvider {
   static const _method = MethodChannel('pocketworld_official_arkit');
   static const _poseEvents = EventChannel(
     'pocketworld_official_arkit/pose_stream',
@@ -41,7 +40,6 @@ class PlatformARPoseProvider
   LogicalWorldFrame? _logicalWorldFrame;
   LogicalWorldUpdate? _logicalWorldUpdate;
   List<double>? _lastDisplayTransform;
-  bool _transportSuspended = false;
 
   @override
   ARPose? get lastPose => _lastPose;
@@ -67,7 +65,6 @@ class PlatformARPoseProvider
     await _method.invokeMethod('startSession', <String, dynamic>{
       'videoFormatMode': pwVideoFormat,
     });
-    _transportSuspended = false;
     _nativeSub = _poseEvents.receiveBroadcastStream().listen(
       (event) => _onNativePose(event),
       onError: (Object error, StackTrace stackTrace) {
@@ -76,24 +73,6 @@ class PlatformARPoseProvider
         }
       },
     );
-  }
-
-  @override
-  Future<void> suspendTransport() async {
-    if (_transportSuspended) return;
-    await ensureStarted();
-    await _method.invokeMethod<void>('stopSession');
-    _transportSuspended = true;
-  }
-
-  @override
-  Future<void> resumeTransport() async {
-    await ensureStarted();
-    if (!_transportSuspended) return;
-    await _method.invokeMethod<void>('startSession', <String, dynamic>{
-      'resume': true,
-    });
-    _transportSuspended = false;
   }
 
   void _onNativePose(dynamic event) {
@@ -186,8 +165,6 @@ class PlatformARPoseProvider
           sourceTimestamp: (map['q_graySourceTimestamp'] as num?)?.toDouble(),
           sourceFocalX: (map['q_graySourceFocalX'] as num?)?.toDouble(),
           sourceFocalY: (map['q_graySourceFocalY'] as num?)?.toDouble(),
-          sourcePrincipalX: (map['q_graySourcePrincipalX'] as num?)?.toDouble(),
-          sourcePrincipalY: (map['q_graySourcePrincipalY'] as num?)?.toDouble(),
         );
       } on ArgumentError {
         // Length mismatch — shouldn't happen since we just checked,
@@ -205,8 +182,6 @@ class PlatformARPoseProvider
           sourceTimestamp: (map['q_graySourceTimestamp'] as num?)?.toDouble(),
           sourceFocalX: (map['q_graySourceFocalX'] as num?)?.toDouble(),
           sourceFocalY: (map['q_graySourceFocalY'] as num?)?.toDouble(),
-          sourcePrincipalX: (map['q_graySourcePrincipalX'] as num?)?.toDouble(),
-          sourcePrincipalY: (map['q_graySourcePrincipalY'] as num?)?.toDouble(),
         );
       } on ArgumentError {
         quality = null;
@@ -445,9 +420,6 @@ class PlatformARPoseProvider
     ARFrameSaveSpec? saveSpec,
     bool feedSfm = false,
     bool deriveAuxiliary = true,
-    bool stagePhotoFeedback = false,
-    String? transactionId,
-    String? cardTexturePath,
     double? maxTimestampDelta,
   }) async {
     try {
@@ -457,9 +429,6 @@ class PlatformARPoseProvider
         'quality': quality,
         'feedSfm': feedSfm,
         'deriveAuxiliary': deriveAuxiliary,
-        'stagePhotoFeedback': stagePhotoFeedback,
-        if (transactionId != null) 'transactionId': transactionId,
-        if (cardTexturePath != null) 'cardTexturePath': cardTexturePath,
       };
       if (triggerTimestamp != null) {
         args['triggerTimestamp'] = triggerTimestamp;
@@ -494,7 +463,6 @@ class PlatformARPoseProvider
         gray1024 = Uint8List.fromList(gray1024Raw.cast<int>());
       }
       return HighResolutionStillCapture(
-        transactionId: result['transactionId'] as String?,
         highresPath: (result['highresPath'] as String?) ?? highresPath,
         previewPath: (result['previewPath'] as String?) ?? previewPath,
         requestTimestamp: (result['requestTimestamp'] as num?)?.toDouble() ?? 0,
@@ -503,14 +471,8 @@ class PlatformARPoseProvider
             (result['timestampDelta'] as num?)?.toDouble() ?? double.infinity,
         imageWidth: (result['imageWidth'] as num?)?.toInt() ?? 0,
         imageHeight: (result['imageHeight'] as num?)?.toInt() ?? 0,
-        requestPose: _logicalCameraTransform(
-          _decodeFloatList(result['requestWorldFromCamera']),
-        ),
-        evidencePose: _logicalCameraTransform(
-          _decodeFloatList(result['evidenceWorldFromCamera']),
-        ),
-        cardPose: _logicalCameraTransform(
-          _decodeFloatList(result['cardWorldTransform']),
+        cameraTransform: _logicalCameraTransform(
+          _decodeFloatList(result['cameraTransform']),
         ),
         intrinsics: _decodeFloatList(result['intrinsics']),
         gray128: gray,
@@ -583,8 +545,6 @@ class PlatformARPoseProvider
     } catch (_) {
       /* best effort */
     }
-    _transportSuspended = false;
-    _startFuture = null;
     _logicalWorldFrame = null;
     _logicalWorldUpdate = null;
     _lastDisplayTransform = null;

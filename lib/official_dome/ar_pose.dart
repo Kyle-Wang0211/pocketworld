@@ -335,12 +335,6 @@ class FrameQualityReport {
   final double? sourceFocalX;
   final double? sourceFocalY;
 
-  /// Principal point scaled into [rawGray128]. Together with
-  /// [sourceFocalX]/[sourceFocalY] this is the complete pinhole camera matrix
-  /// for the exact source frame; Dart must not silently assume image centre.
-  final double? sourcePrincipalX;
-  final double? sourcePrincipalY;
-
   const FrameQualityReport({
     required this.sharpness,
     required this.roiSharpness,
@@ -359,14 +353,11 @@ class FrameQualityReport {
     this.sourceTimestamp,
     this.sourceFocalX,
     this.sourceFocalY,
-    this.sourcePrincipalX,
-    this.sourcePrincipalY,
   });
 }
 
 class HighResolutionStillCapture {
   const HighResolutionStillCapture({
-    this.transactionId,
     required this.highresPath,
     required this.previewPath,
     required this.requestTimestamp,
@@ -374,10 +365,7 @@ class HighResolutionStillCapture {
     required this.timestampDelta,
     required this.imageWidth,
     required this.imageHeight,
-    List<double>? requestPose,
-    List<double>? evidencePose,
-    List<double>? cardPose,
-    List<double>? cameraTransform,
+    required this.cameraTransform,
     required this.intrinsics,
     this.gray128,
     this.gray1024,
@@ -387,12 +375,8 @@ class HighResolutionStillCapture {
     this.sfmGray,
     this.sfmGrayW,
     this.sfmGrayH,
-  }) : requestPose = requestPose ?? cameraTransform ?? const <double>[],
-       evidencePose = evidencePose ?? cameraTransform ?? const <double>[],
-       cardPose =
-           cardPose ?? requestPose ?? cameraTransform ?? const <double>[];
+  });
 
-  final String? transactionId;
   final String highresPath;
   final String previewPath;
   final double requestTimestamp;
@@ -400,11 +384,7 @@ class HighResolutionStillCapture {
   final double timestampDelta;
   final int imageWidth;
   final int imageHeight;
-  final List<double> requestPose;
-  final List<double> evidencePose;
-  final List<double> cardPose;
-
-  List<double> get cameraTransform => evidencePose;
+  final List<double> cameraTransform;
   final List<double> intrinsics;
   final Uint8List? gray128;
   final Uint8List? gray1024;
@@ -643,9 +623,6 @@ abstract class ARPoseProvider {
     ARFrameSaveSpec? saveSpec,
     bool feedSfm = false,
     bool deriveAuxiliary = true,
-    bool stagePhotoFeedback = false,
-    String? transactionId,
-    String? cardTexturePath,
     double? maxTimestampDelta,
   });
 
@@ -655,13 +632,4 @@ abstract class ARPoseProvider {
 
   /// Most recent pose synchronously accessible (null if not started yet).
   ARPose? get lastPose;
-}
-
-/// Optional transport lifecycle implemented by providers that can suspend an
-/// active camera without discarding their logical-world/event-stream state.
-/// CaptureSession owns this interface; UI pages must not invoke platform
-/// start/stop methods directly.
-abstract interface class ARPoseTransportLifecycle {
-  Future<void> suspendTransport();
-  Future<void> resumeTransport();
 }

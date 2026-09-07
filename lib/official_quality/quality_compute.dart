@@ -79,8 +79,6 @@ FrameQualityReport computeFrameQualityFromGray128(
   double? sourceTimestamp,
   double? sourceFocalX,
   double? sourceFocalY,
-  double? sourcePrincipalX,
-  double? sourcePrincipalY,
 }) {
   const tw = kQualityGraySide;
   const th = kQualityGraySide;
@@ -213,8 +211,6 @@ FrameQualityReport computeFrameQualityFromGray128(
     sourceTimestamp: sourceTimestamp,
     sourceFocalX: sourceFocalX,
     sourceFocalY: sourceFocalY,
-    sourcePrincipalX: sourcePrincipalX,
-    sourcePrincipalY: sourcePrincipalY,
   );
 }
 

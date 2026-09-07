@@ -68,9 +68,6 @@ class MockARPoseProvider implements ARPoseProvider {
     ARFrameSaveSpec? saveSpec,
     bool feedSfm = false,
     bool deriveAuxiliary = true,
-    bool stagePhotoFeedback = false,
-    String? transactionId,
-    String? cardTexturePath,
     double? maxTimestampDelta,
   }) async => null;
 
