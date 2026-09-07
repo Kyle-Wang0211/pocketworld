@@ -8,7 +8,7 @@ import 'package:pocketworld_flutter/l10n/app_localizations.dart';
 import 'package:pocketworld_flutter/ui/community/user_report_page.dart';
 
 void main() {
-  testWidgets('shows all nine approved reasons', (tester) async {
+  testWidgets('starts with one authoritative reason list', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
         locale: const Locale('zh'),
@@ -22,15 +22,15 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    expect(find.text('选择举报类型'), findsNothing);
+    expect(find.text('侵犯权益'), findsOneWidget);
     for (final label in const [
-      '冒充他人或账号资料虚假',
       '骚扰、网络暴力或人身威胁',
       '诈骗、广告骚扰或异常账号行为',
       '涉及未成年人安全',
       '色情低俗',
       '暴力、自伤、仇恨、极端或其他违法有害信息',
       '虚假不实或误导性信息',
-      '隐私、人肉搜索、肖像或知识产权',
       '其他 / 不确定',
     ]) {
       expect(find.text(label), findsOneWidget);
@@ -62,8 +62,11 @@ void main() {
     await tester.tap(find.text('骚扰、网络暴力或人身威胁'));
     await tester.pumpAndSettle();
 
-    expect(find.byType(TextField), findsOneWidget);
+    final field = tester.widget<TextField>(find.byType(TextField));
+    expect(field.maxLength, 50);
+    expect(find.text('请说明问题位于作品正面、背面、顶部或哪个画面'), findsOneWidget);
     expect(find.text('关联作品：work-1'), findsOneWidget);
+    expect(find.text('补充截图（选填）'), findsOneWidget);
     expect(find.text('添加截图或照片（最多 3 张）'), findsOneWidget);
     await tester.tap(find.text('添加截图或照片（最多 3 张）'));
     await tester.pumpAndSettle();
@@ -127,6 +130,43 @@ void main() {
     expect(draft.reason, UserReportReason.other);
     expect(draft.detail, '补充说明');
     expect(draft.sourceWorkId, 'work-1');
+    expect(draft.kind, ReportKind.standard);
+  });
+
+  testWidgets('rights complaint uses 500 characters and typed evidence', (
+    tester,
+  ) async {
+    final evidence = ReportEvidenceUpload(
+      bytes: Uint8List.fromList([0xff, 0xd8, 0xff, 0xd9]),
+      contentType: 'image/jpeg',
+      extension: 'jpg',
+    );
+    final repository = _FakeRepository();
+    await tester.pumpWidget(
+      MaterialApp(
+        locale: const Locale('zh'),
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
+        home: UserReportPage(
+          targetUserId: 'target',
+          repository: repository,
+          evidencePicker: (remaining) async => [evidence],
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('侵犯权益'));
+    await tester.pumpAndSettle();
+    expect(find.text('冒充他人或账号资料虚假'), findsOneWidget);
+    expect(find.text('隐私、人肉搜索、肖像或知识产权'), findsOneWidget);
+    expect(find.text('色情低俗'), findsNothing);
+    await tester.tap(find.text('隐私、人肉搜索、肖像或知识产权'));
+    await tester.pumpAndSettle();
+
+    final field = tester.widget<TextField>(find.byType(TextField));
+    expect(field.maxLength, 500);
+    expect(find.text('证明材料类型'), findsOneWidget);
+    expect(find.text('权属证明'), findsOneWidget);
   });
 }
 
@@ -161,4 +201,6 @@ class _FakeRepository implements SocialProfileRepository {
   Future<void> unblock(String userId) async {}
   @override
   Future<List<SocialProfile>> fetchBlockedUsers() async => const [];
+  @override
+  Future<List<ReportHistoryItem>> fetchMyReports() async => const [];
 }

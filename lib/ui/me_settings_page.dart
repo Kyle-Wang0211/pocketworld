@@ -18,6 +18,7 @@ import 'legal/legal_doc_page.dart';
 import '../analytics/pw_analytics.dart';
 import '../community/social_profile_repository.dart';
 import 'community/blocked_users_page.dart';
+import 'community/report_history_page.dart';
 
 class MeSettingsPage extends StatelessWidget {
   final MeStatsViewModel stats;
@@ -70,6 +71,12 @@ class MeSettingsPage extends StatelessWidget {
                         BlockedUsersPage(repository: socialRepository),
                   ),
                 ),
+                onOpenReportHistory: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) =>
+                        ReportHistoryPage(repository: socialRepository),
+                  ),
+                ),
               ),
             ),
             const SizedBox(height: AetherSpacing.xl),
@@ -87,11 +94,13 @@ class _SettingsSection extends StatelessWidget {
   final MeStatsViewModel stats;
   final AuthenticatedUser? user;
   final VoidCallback onOpenBlockedUsers;
+  final VoidCallback onOpenReportHistory;
 
   const _SettingsSection({
     required this.stats,
     required this.user,
     required this.onOpenBlockedUsers,
+    required this.onOpenReportHistory,
   });
 
   @override
@@ -148,6 +157,12 @@ class _SettingsSection extends StatelessWidget {
         title: l.meBlockedUsers,
         trailing: '',
         onTap: onOpenBlockedUsers,
+      ),
+      _SettingsRowSpec(
+        icon: Icons.flag_outlined,
+        title: l.reportHistoryTitle,
+        trailing: '',
+        onTap: onOpenReportHistory,
       ),
       _SettingsRowSpec(
         icon: Icons.language_rounded,

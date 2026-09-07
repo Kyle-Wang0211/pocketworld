@@ -145,7 +145,11 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('举报该用户'));
       await tester.pumpAndSettle();
+      await tester.tap(find.text('侵犯权益'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('冒充他人或账号资料虚假'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('提交举报'));
       await tester.pumpAndSettle();
       await tester.tap(find.text('提交举报'));
       await tester.pumpAndSettle();
@@ -258,4 +262,7 @@ class _FakeRepository implements SocialProfileRepository {
       failedEvidenceCount: 0,
     );
   }
+
+  @override
+  Future<List<ReportHistoryItem>> fetchMyReports() async => const [];
 }

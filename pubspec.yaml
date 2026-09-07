@@ -170,6 +170,8 @@ dependencies:
   # Standard pub.dev package, no native deps so it runs in any isolate.
   image: ^4.2.0
   file_picker: 8.3.7
+  # Native system photo library for user-supplied report evidence.
+  image_picker: 1.2.3
 
   # Shared pure-Dart capture bundle sidecar service. Swift/ARKit only returns
   # photo_bundle.json + images; Flutter/Dart generates COLMAP/view graph/

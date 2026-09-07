@@ -26,6 +26,7 @@ void main() {
       'Future<void> unblock(String userId);',
       'Future<List<SocialProfile>> fetchBlockedUsers();',
       'Future<UserReportResult> reportUser(UserReportDraft draft);',
+      'Future<List<ReportHistoryItem>> fetchMyReports();',
     ]) {
       expect(source, contains(member));
     }
@@ -56,8 +57,9 @@ void main() {
   });
 
   test('user report insert preserves stable structured context', () {
-    expect(source, contains("'submit-user-report'"));
+    expect(source, contains("'submit-report'"));
     expect(source, contains("'target_user_id': draft.targetUserId"));
+    expect(source, contains("'kind': draft.kind.code"));
     expect(source, contains("'reason': draft.reason.code"));
     expect(source, contains("'detail': draft.detail"));
     expect(source, contains("'source_work_id': draft.sourceWorkId"));
@@ -71,13 +73,19 @@ void main() {
     expect(source, contains('uploadedEvidenceCount'));
     expect(source, contains('failedEvidenceCount'));
     expect(
-      source.indexOf("'submit-user-report'"),
+      source.indexOf("'submit-report'"),
       lessThan(source.indexOf("'report-evidence-upload'")),
     );
     expect(
-      source.indexOf("'submit-user-report'"),
+      source.indexOf("'submit-report'"),
       lessThan(source.indexOf('try {')),
       reason: 'the durable report insert must not be swallowed as evidence',
     );
+  });
+
+  test('report history uses a server-owned safe projection', () {
+    expect(source, contains("'my-reports'"));
+    expect(source, contains('ReportHistoryItem.fromMap'));
+    expect(source, isNot(contains("_client.from('reports').select")));
   });
 }

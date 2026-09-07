@@ -80,6 +80,25 @@ void main() {
     },
   );
 
+  test('report reasons are partitioned into standard and rights tiers', () {
+    expect(ReportKind.standard.code, 'standard');
+    expect(ReportKind.standard.maxDetailGraphemes, 50);
+    expect(ReportKind.rights.code, 'rights');
+    expect(ReportKind.rights.maxDetailGraphemes, 500);
+    expect(UserReportReason.impersonation.kind, ReportKind.rights);
+    expect(UserReportReason.privacyIp.kind, ReportKind.rights);
+    expect(
+      UserReportReason.values
+          .where(
+            (reason) =>
+                reason != UserReportReason.impersonation &&
+                reason != UserReportReason.privacyIp,
+          )
+          .every((reason) => reason.kind == ReportKind.standard),
+      isTrue,
+    );
+  });
+
   test('minor and sexual reports disable user-supplied evidence', () {
     expect(UserReportReason.minorSafety.allowsEvidenceUpload, isFalse);
     expect(UserReportReason.sexualContent.allowsEvidenceUpload, isFalse);
@@ -101,6 +120,7 @@ void main() {
       bytes: bytes,
       contentType: ' image/jpeg ',
       extension: ' .JPG ',
+      kind: ReportEvidenceKind.ownership,
     );
 
     expect(evidence.bytes, bytes);
@@ -110,6 +130,7 @@ void main() {
       'bytes': 'AQID',
       'content_type': 'image/jpeg',
       'extension': 'jpg',
+      'evidence_kind': 'ownership',
     });
     bytes[0] = 9;
     expect(evidence.bytes, <int>[1, 2, 3]);
@@ -132,21 +153,40 @@ void main() {
       expect(draft.evidence, isEmpty);
     });
 
-    test('accepts exactly 500 trimmed characters', () {
+    test('standard reports accept exactly 50 trimmed graphemes', () {
       final draft = UserReportDraft(
         targetUserId: 'target-user',
         reason: UserReportReason.other,
-        detail: ' ${'x' * 500} ',
+        detail: ' ${'x' * 50} ',
       );
-      expect(draft.detail, hasLength(500));
+      expect(draft.kind, ReportKind.standard);
+      expect(draft.detail, hasLength(50));
     });
 
-    test('rejects detail longer than 500 trimmed characters', () {
+    test('standard reports reject detail longer than 50 graphemes', () {
       expect(
         () => UserReportDraft(
           targetUserId: 'target-user',
           reason: UserReportReason.other,
-          detail: ' ${'x' * 501} ',
+          detail: ' ${'x' * 51} ',
+        ),
+        throwsArgumentError,
+      );
+    });
+
+    test('rights complaints accept 500 and reject 501 graphemes', () {
+      final draft = UserReportDraft(
+        targetUserId: 'target-user',
+        reason: UserReportReason.privacyIp,
+        detail: ' ${'x' * 500} ',
+      );
+      expect(draft.kind, ReportKind.rights);
+      expect(draft.detail, hasLength(500));
+      expect(
+        () => UserReportDraft(
+          targetUserId: 'target-user',
+          reason: UserReportReason.impersonation,
+          detail: '👨‍👩‍👧‍👦' * 501,
         ),
         throwsArgumentError,
       );
@@ -164,15 +204,15 @@ void main() {
     test('counts emoji grapheme clusters as one character', () {
       final draft = UserReportDraft(
         targetUserId: 'target-user',
-        reason: UserReportReason.other,
-        detail: '👨‍👩‍👧‍👦' * 500,
+        reason: UserReportReason.spamFraud,
+        detail: '👨‍👩‍👧‍👦' * 50,
       );
       expect(draft.detail, isNotNull);
       expect(
         () => UserReportDraft(
           targetUserId: 'target-user',
-          reason: UserReportReason.other,
-          detail: '👨‍👩‍👧‍👦' * 501,
+          reason: UserReportReason.spamFraud,
+          detail: '👨‍👩‍👧‍👦' * 51,
         ),
         throwsArgumentError,
       );
@@ -286,5 +326,27 @@ void main() {
       ),
       throwsArgumentError,
     );
+  });
+
+  test('ReportHistoryItem parses only reporter-safe result fields', () {
+    final item = ReportHistoryItem.fromMap({
+      'id': 42,
+      'kind': 'rights',
+      'reason': 'privacy_ip',
+      'status': 'needs_info',
+      'reporter_feedback': '请补充权属证明',
+      'source_work_title': '雕塑扫描',
+      'created_at': '2026-09-06T08:00:00Z',
+      'due_at': '2026-09-09T08:00:00Z',
+      'is_overdue': false,
+    });
+
+    expect(item.id, '42');
+    expect(item.kind, ReportKind.rights);
+    expect(item.reason, UserReportReason.privacyIp);
+    expect(item.status, ReportStatus.needsInfo);
+    expect(item.reporterFeedback, '请补充权属证明');
+    expect(item.sourceWorkTitle, '雕塑扫描');
+    expect(item.isOverdue, isFalse);
   });
 }

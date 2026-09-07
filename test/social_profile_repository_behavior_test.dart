@@ -187,9 +187,10 @@ void main() {
     var functionCalls = 0;
     final client = MockClient((request) async {
       requestPaths.add(request.url.path);
-      if (request.url.path == '/functions/v1/submit-user-report') {
+      if (request.url.path == '/functions/v1/submit-report') {
         final body = jsonDecode(request.body) as Map<String, dynamic>;
         expect(body, containsPair('target_user_id', 'user-2'));
+        expect(body, containsPair('kind', 'standard'));
         expect(body, containsPair('reason', 'harassment_threat'));
         expect(body, containsPair('detail', 'details'));
         return jsonResponse(request, {'report_id': 42}, statusCode: 201);
@@ -224,14 +225,14 @@ void main() {
     expect(result.reportId, '42');
     expect(result.uploadedEvidenceCount, 1);
     expect(result.failedEvidenceCount, 1);
-    expect(requestPaths.first, '/functions/v1/submit-user-report');
+    expect(requestPaths.first, '/functions/v1/submit-report');
     expect(functionCalls, 2);
   });
 
   test('invalid report id stops before evidence upload', () async {
     var functionCalls = 0;
     final client = MockClient((request) async {
-      if (request.url.path == '/functions/v1/submit-user-report') {
+      if (request.url.path == '/functions/v1/submit-report') {
         return jsonResponse(request, {'report_id': null}, statusCode: 201);
       }
       functionCalls++;
@@ -254,5 +255,29 @@ void main() {
       throwsStateError,
     );
     expect(functionCalls, 0);
+  });
+
+  test('report history parses the safe server response', () async {
+    final client = MockClient((request) async {
+      expect(request.url.path, '/functions/v1/my-reports');
+      return jsonResponse(request, {
+        'reports': [
+          {
+            'id': 7,
+            'kind': 'standard',
+            'reason': 'spam_fraud',
+            'status': 'pending',
+            'created_at': '2026-09-06T08:00:00Z',
+            'due_at': '2026-09-13T08:00:00Z',
+            'is_overdue': false,
+          },
+        ],
+      });
+    });
+
+    final reports = await repository(httpClient: client).fetchMyReports();
+    expect(reports, hasLength(1));
+    expect(reports.single.id, '7');
+    expect(reports.single.reason, UserReportReason.spamFraud);
   });
 }

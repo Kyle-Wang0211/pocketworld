@@ -11,7 +11,10 @@ class ReportEvidenceProcessor {
 
   const ReportEvidenceProcessor();
 
-  ReportEvidenceUpload process(Uint8List input) {
+  ReportEvidenceUpload process(
+    Uint8List input, {
+    ReportEvidenceKind kind = ReportEvidenceKind.context,
+  }) {
     if (input.isEmpty || input.lengthInBytes > maxInputBytes) {
       throw const FormatException('Unsupported evidence image size.');
     }
@@ -57,6 +60,7 @@ class ReportEvidenceProcessor {
           bytes: output,
           contentType: 'image/jpeg',
           extension: 'jpg',
+          kind: kind,
         );
       }
     }

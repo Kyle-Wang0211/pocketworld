@@ -850,6 +850,91 @@ class AppL10nEn extends AppL10n {
   String get reportUserTitle => 'Report this user';
 
   @override
+  String get reportTierTitle => 'Choose report type';
+
+  @override
+  String get reportReasonTitle => 'Choose a reason';
+
+  @override
+  String get reportStandardTitle => 'Standard report';
+
+  @override
+  String get reportStandardSubtitle =>
+      'Harassment, fraud, harmful content, or another community issue';
+
+  @override
+  String get reportRightsTitle => 'Rights complaint';
+
+  @override
+  String get reportRightsEntry => 'Infringes rights';
+
+  @override
+  String get reportRightsSubtitle =>
+      'Impersonation, privacy, portrait, or intellectual-property concerns';
+
+  @override
+  String get reportStandardDetailHint =>
+      'Describe whether the issue appears on the front, back, top, or another view';
+
+  @override
+  String get reportRightsDetailHint =>
+      'Describe ownership, where the infringement appears, and the requested action';
+
+  @override
+  String get reportEvidenceType => 'Evidence type';
+
+  @override
+  String get reportEvidenceContext => 'Issue screenshot';
+
+  @override
+  String get reportEvidenceIdentity => 'Identity evidence';
+
+  @override
+  String get reportEvidenceOwnership => 'Ownership evidence';
+
+  @override
+  String get reportEvidenceAuthorization => 'Authorization evidence';
+
+  @override
+  String get reportEvidenceOther => 'Other evidence';
+
+  @override
+  String get reportEvidenceOptional => 'Supporting screenshots (optional)';
+
+  @override
+  String get reportEvidenceLimitHint =>
+      'Up to 3 JPG or PNG images. Location and other metadata are removed before upload.';
+
+  @override
+  String get reportHistoryTitle => 'My reports';
+
+  @override
+  String get reportHistoryEmpty => 'You haven\'t submitted any reports';
+
+  @override
+  String get reportHistoryLoadFailed => 'Couldn\'t load report history';
+
+  @override
+  String reportHistorySource(String title) {
+    return 'Related work: $title';
+  }
+
+  @override
+  String get reportStatusPending => 'Pending';
+
+  @override
+  String get reportStatusInReview => 'In review';
+
+  @override
+  String get reportStatusNeedsInfo => 'More information needed';
+
+  @override
+  String get reportStatusActioned => 'Action taken';
+
+  @override
+  String get reportStatusDismissed => 'No violation found';
+
+  @override
   String get reportAdditionalInfoTitle => 'Additional information';
 
   @override
