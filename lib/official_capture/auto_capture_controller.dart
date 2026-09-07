@@ -297,6 +297,11 @@ class AutoCaptureController {
       }
     }
     if (best == null || bestDt > _kCaptureMatchToleranceSec) return;
+    // last_inserted_keyfrm 的时刻与世界位置也要对齐到**实拍瞬间**:min_distance
+    // 是从上一张照片真正拍成的位置量起的,不是从按快门那一刻量起的。快门事务
+    // 0.27–0.74 s 里相机还在走,用请求时刻当原点会把距离算大 ⇒ 门形同虚设。
+    _lastKeyframeSec = captureTimestampSec;
+    _lastKeyframePos = best.frame.camera;
     _captureBaseline = best.frame;
     if (advanceGeometry) _geometryBaseline = best.frame;
     final sig = best.signature;

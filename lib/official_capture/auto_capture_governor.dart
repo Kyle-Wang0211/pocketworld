@@ -173,9 +173,13 @@ const int kAutoCaptureThermalCritical = 3;
 ///  * `mapper_->is_paused() || pause_is_requested()` → 快门队列不接受;
 ///  * `mapper_->is_skipping_localBA()` → SfM 工作线程还有帧排队/在途。
 ///
-/// ⚠️ `enough_lms_thr = 100` 是按上游 ORB 特征密度(每帧上千)定的;我们的
-/// 128×128 预览只播种约 160 条轨迹,这一条因此恒被 view_changed(0.8)先命中,
-/// 不会独立改变行为。常数照抄,不缩放。
+/// ⚠️ 密度错配,写明不缩放:`enough_lms_thr = 100` 是按上游 ORB 特征密度(每帧
+/// 上千)定的;我们的 128×128 预览上限 150 条轨迹
+/// (kVinsFrontEndMaxFeatureCount)。于是:播种 ≥125 时 view_changed(0.8)先
+/// 命中、not_enough_lms 不改变行为;播种 <125 时 not_enough_lms 反而先命中,
+/// 播种 <100 时它恒真 ⇒ 触发子句恒成立,实际把关的只剩强制子句
+/// (almost_all 0.9 + min_distance + mapper 空闲)。常数照抄,不缩放;
+/// 这一段是提醒读者:低纹理场景下本规则会退化成"只看强制子句"。
 ///
 /// 产品闸(张数上限、时限、ARKit 跟踪、Apple 过暗、等实拍基准、糊片)不属上游,
 /// 原位保留在前后。

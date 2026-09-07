@@ -414,6 +414,33 @@ void main() {
       expect(h.fires, 1);
     });
 
+    test('min_distance 从**实拍位置**量起,不是从按快门那一刻', () {
+      final h = _started()
+        ..liveDepthM = 1.0
+        ..captured = 10
+        ..instantCapture = false;
+      // 在原点按下快门。
+      expect(h.feed(_pose(t: 0.2, grayShiftX: 40)), AutoCaptureDecision.fire);
+      // 快门事务进行中相机继续走了 50 cm,照片在 x=0.5 处才真正拍成。
+      for (var t = 0.3; t < 0.65; t += 0.1) {
+        h.feed(
+          _pose(t: t, pos: Vector3((t - 0.2) * 1.0, 0, 0), grayShiftX: 40),
+        );
+      }
+      h.controller.onCaptureCompleted(captureTimestampSec: 0.6);
+      // 相对**实拍位置** 0.4 m 只走了 8 cm(<12 cm)⇒ 不许再拍。
+      expect(
+        h.feed(_pose(t: 0.8, pos: Vector3(0.48, 0, 0), grayShiftX: 0)),
+        AutoCaptureDecision.skipMinDistance,
+        reason: '若错用请求位置(0)当原点,这里会算成走了 48 cm 而放行',
+      );
+      expect(
+        h.feed(_pose(t: 1.0, pos: Vector3(0.55, 0, 0), grayShiftX: 0)),
+        AutoCaptureDecision.fire,
+        reason: '相对实拍位置走了 15 cm > 12 cm',
+      );
+    });
+
     test('a failed shutter transaction resumes decisions immediately', () {
       final h = _started()..instantCapture = false;
       expect(h.feed(_pose(t: 0.2, grayShiftX: 40)), AutoCaptureDecision.fire);
