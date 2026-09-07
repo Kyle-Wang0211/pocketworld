@@ -135,9 +135,22 @@ class AutoCaptureController {
   // 基准与流量起点;等待期间不判定(skipAwaitingCapture)。
   // 几何基准是否前进仍按开火角色(advancesGeometryBaseline)——决策规则不动。
   final List<_RecentSample> _recent = <_RecentSample>[];
-  static const double _kRecentWindowSec = 2.0;
+
+  /// 真机实测的快门事务上限(请求 → 照片真正拍成):0.27–0.74 s
+  /// (2026-09-06 未命名(15) 定罪时逐张量的)。下面三个时间常数都由它推出,
+  /// 不是拍脑袋的数:
+  ///  * 样本环要覆盖最坏一次事务并留一倍余量 ⇒ 2 × 0.74 ≈ 1.5,取 2.0 s;
+  ///  * 认定"这一份样本就是实拍那一刻"的容差取 ARKit 位姿周期(30 Hz)的
+  ///    上限侧,0.25 s 覆盖 6 Hz 灰度采样的一个周期(1/6 s)还有余量;
+  ///  * 回调迟迟不来的超时同样取 2.0 s —— 超过它就认定事务丢了,退回请求时刻
+  ///    的临时基准,绝不让采集停摆。
+  static const double kMeasuredShutterTransactionMaxSec = 0.74;
+  static const double _kRecentWindowSec =
+      2 * kMeasuredShutterTransactionMaxSec > 2.0
+      ? 2 * kMeasuredShutterTransactionMaxSec
+      : 2.0;
   static const double _kCaptureMatchToleranceSec = 0.25;
-  static const double _kAwaitingCaptureTimeoutSec = 2.0;
+  static const double _kAwaitingCaptureTimeoutSec = _kRecentWindowSec;
   double? _awaitingCaptureSinceSec;
   bool _pendingAdvanceGeometry = false;
   bool get awaitingCaptureBaseline => _awaitingCaptureSinceSec != null;
@@ -601,15 +614,16 @@ class AutoCaptureController {
       case AutoCaptureDecision.skipNotMoved:
       case AutoCaptureDecision.skipPaced:
         // 起跑锚点没入队或起跑帧 tracking 异常时，基准保持为空；后续只在
-        // tracking 恢复后的第一帧立即尝试；只有真实入队被拒后，才等共同
-        // 250 ms 地板再重试。绝不能把一帧没拍下来的 pose 偷偷播成
-        // “上一张照片”。
+        // tracking 恢复后的第一帧立即尝试;只有真实入队被拒后,才等一个
+        // stella 的 min_interval(0.1 s)再重试。绝不能把一帧没拍下来的 pose
+        // 偷偷播成"上一张照片"。
+        // [2026-09-07 出处更正] 原来等的是自研的 250 ms 去抖地板;那个地板已随
+        // 判据整本换成 stella 而退役,这里改用同一家的 min_interval。
         if (captureBase == null || geometryBase == null) {
           final lastAttemptSec = _lastStartAnchorAttemptSec;
           if (trackingOk &&
               (lastAttemptSec == null ||
-                  pose.timestamp - lastAttemptSec >=
-                      kAutoCaptureSafetyDebounceSec)) {
+                  pose.timestamp - lastAttemptSec >= kStellaMinIntervalSec)) {
             _lastStartAnchorAttemptSec = pose.timestamp;
             _lastTickSec = pose.timestamp;
             if (_onStartAnchor()) {

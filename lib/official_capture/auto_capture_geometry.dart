@@ -33,8 +33,13 @@ const double kAutoCaptureStableParallaxFloorDeg = 1.5;
 /// 原地旋转累计到此角度时保留一张覆盖候选。
 const double kAutoCaptureRotationCandidateDeg = 12.0;
 
-/// 相邻照片的二维面积重叠安全线。RealityScan、Polycam 与 KIRI 的公开口径
-/// 都集中在约 70%。
+/// 相邻照片的二维面积重叠安全线 —— 低于它就提示用户走慢(不改判据,只改 UI)。
+///
+/// [2026-09-07 出处更正] 原注释写的是"RealityScan、Polycam 与 KIRI 的公开口径",
+/// 属二手转述。改用一手:Agisoft Metashape User Manual,Capturing photos 一节
+/// 规定**相邻照片的重叠不应低于 60–70%**(航拍另有 60% 旁向 / 80% 航向)。
+/// 取该区间的保守端 0.70:重叠一跌到手册下限区间的上沿就提醒,而不是等跌破
+/// 60% 再说。数值未变,变的是它站得住脚的理由。
 const double kAutoCaptureOverlapSafetyFraction = 0.70;
 
 /// 仅前后移动时，画面尺度至少跨过一级才保留连接/细节帧。1.2 逐字采用
