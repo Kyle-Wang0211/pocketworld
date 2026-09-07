@@ -334,25 +334,18 @@ void _newFeatureBurstContract() {
     );
   });
 
-  test('接线契约:burst 与流量段是 OR,几何角色闸不动', () {
+  test('接线契约:开火判定 = stella_vslam new_keyframe_is_needed;burst/流量只进遥测', () {
+    // [2026-09-07] 用户令整本抄一家:自研角色、签名相似度、AliceVision 流量段、
+    // VINS 新特征 OR 一律不再决定开火,只留遥测;开火只由
+    // orbSlam2NeedNewKeyFrame(共有轨迹 <0.9×参考、>15、建图空闲)决定。
     final source = File(
       'lib/official_capture/auto_capture_controller.dart',
     ).readAsLinesSync().where((l) => !l.trimLeft().startsWith('//')).join('\n');
-    expect(
-      source,
-      contains('_smartMotionSegment.ready || _newFeatureBurst'),
-      reason: '上游 addFeatureCheckParallax 就是「新旧比 OR 视差」的结构',
-    );
-    expect(
-      source,
-      contains('detectNewFeatures:'),
-      reason: '检测必须节流,不许每 tick 检测',
-    );
-    expect(
-      source,
-      contains('_newFeatureBurst = false;'),
-      reason: '开火与新照片入列必须清闩',
-    );
+    expect(source, contains('stellaVslamNewKeyframeIsNeeded('));
+    expect(source, isNot(contains('autoCaptureDecideMotion(')));
+    expect(source, isNot(contains('smartSelectionMotionReady:')));
+    expect(source, contains('detectNewFeatures:'));
+    expect(source, contains('_newFeatureBurst = false;'));
   });
 }
 

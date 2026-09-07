@@ -67,6 +67,7 @@ AutoCaptureIndicator autoCaptureIndicatorFor({
     // skipNotMoved 归 waiting,不归 steady:用户此刻**还没动够**,
     // 指示灯该说"再走两步"而不是"一切正常"。
     case AutoCaptureDecision.skipNotMoved:
+    case AutoCaptureDecision.skipMinDistance:
       return AutoCaptureIndicator.waiting;
     // 画质缓拍归 steady:节奏自然慢一拍即可,不额外表达(spec §8 同款
     // 取舍 —— skipPaced 也不表达)。
@@ -74,6 +75,8 @@ AutoCaptureIndicator autoCaptureIndicatorFor({
     case AutoCaptureDecision.skipBlurry:
     case AutoCaptureDecision.skipPaced:
     case AutoCaptureDecision.skipAwaitingCapture:
+    case AutoCaptureDecision.skipMapperStopped:
+    case AutoCaptureDecision.skipMapperBusy:
     case AutoCaptureDecision.skipNoVisualEvidence:
     case AutoCaptureDecision.skipRedundant:
     case AutoCaptureDecision.skipTracking:

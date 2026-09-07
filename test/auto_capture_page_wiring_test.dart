@@ -31,7 +31,26 @@ const int _w = 1000;
 const int _h = 1000;
 const double _fx = 1000;
 
-FrameQualityReport _quality(double t) => FrameQualityReport(
+/// 128×128 合成预览:非周期哈希纹理整体右移 shiftX 像素(全画面有纹理,任何
+/// 方向的位移都让约 shiftX/128 的参考轨迹出画面 ⇒ view_changed 的证据)。
+/// 校准(ContinuousFeatureTracks):8 px ⇒ 共有 97%;24 px ⇒ 83%(<90%)。
+Uint8List _trackGray(int shiftX) {
+  const side = 128;
+  final out = Uint8List(side * side);
+  for (var y = 0; y < side; y++) {
+    for (var x = 0; x < side; x++) {
+      final sx = x - shiftX;
+      var h = (sx * 73856093) ^ (y * 19349663);
+      h = (h ^ (h >> 13)) * 1274126177;
+      final coarse =
+          ((((sx >> 3) * 2654435761) ^ ((y >> 3) * 40503)) >> 7) & 0xff;
+      out[y * side + x] = ((coarse * 3 + (h & 0xff)) >> 2).clamp(0, 255);
+    }
+  }
+  return out;
+}
+
+FrameQualityReport _quality(double t, {int? grayShiftX}) => FrameQualityReport(
   sharpness: 300,
   roiSharpness: 300,
   multiScaleSharpness252: 300,
@@ -47,6 +66,10 @@ FrameQualityReport _quality(double t) => FrameQualityReport(
   ]),
   signatureWidth: 16,
   signatureHeight: 16,
+  rawGray128: grayShiftX == null ? null : _trackGray(grayShiftX),
+  sourceTimestamp: grayShiftX == null ? null : t,
+  sourceFocalX: grayShiftX == null ? null : 128,
+  sourceFocalY: grayShiftX == null ? null : 128,
 );
 
 /// 相机在 [pos],朝向由绕 Y 轴的 [yawDeg] 决定(0 = 看向 -Z)。
@@ -59,6 +82,7 @@ ARPose _pose({
   Vector3? pos,
   double yawDeg = 0,
   double depthM = 1.0,
+  int? grayShiftX,
 }) {
   final p = pos ?? Vector3.zero();
   final q = Quaternion.axisAngle(Vector3(0, 1, 0), yawDeg * math.pi / 180);
@@ -79,7 +103,7 @@ ARPose _pose({
     intrinsicFxFyCxCy: const <double>[_fx, _fx, _w / 2, _h / 2],
     imageWidth: _w,
     imageHeight: _h,
-    quality: _quality(t),
+    quality: _quality(t, grayShiftX: grayShiftX),
     previewPoints: <ARPreviewPoint>[
       for (var i = 0; i < 12; i++)
         ARPreviewPoint(
@@ -476,47 +500,47 @@ void main() {
 
     test('real result: the frozen stretch is still captured after resume', () {
       final h = _WiredHost(reportRealEnqueueResult: true, countsInFlight: true);
+      h.controller.start(_pose(t: 0, grayShiftX: 0));
+      h.tick(_pose(t: 0.05, grayShiftX: 0)); // 种下参考轨迹
       h.queue.cancelPending(); // accepting = false
-      h.controller.start(_pose(t: 0));
       var t = 0.0;
       for (final x in track()) {
         t += 0.1;
-        h.tick(_pose(t: t, pos: Vector3(x, 0, 0)));
+        // 相对起跑参考右移 40 px(丢 >10% 轨迹)⇒ 每帧 c2 成立、每帧尝试开火。
+        h.tick(_pose(t: t, pos: Vector3(x, 0, 0), grayShiftX: 40));
       }
       expect(h.admitted, 0, reason: 'the queue was closed the whole time');
       h.queue.resume();
-      // spec §7「入队失败 ⇒ **下 tick 重试**」:失败那一发照样吃掉一次去抖
-      // 预算,所以恢复后 0.1s 内的下一帧还轮不到。
-      h.tick(_pose(t: t + 0.1, pos: Vector3(0.37, 0, 0)));
-      expect(h.admitted, 0, reason: 'the retry waits for the next tick');
-      // 一个间隔之后补上,而且是相对**原始**基准判的(0.37 ≥ 0.10)——
-      // 基准帧从头到尾没动过,那 32 cm 没有白走。
-      h.tick(_pose(t: t + 1.1, pos: Vector3(0.37, 0, 0)));
-      expect(h.admitted, 1);
+      // stella_vslam:照片数 ≤ num_enough_keyfrms_thr(5)时 min_interval 不生效
+      // ⇒ 入队失败的那一枪下一帧就重试,参考没动。
+      h.tick(_pose(t: t + 0.1, pos: Vector3(0.37, 0, 0), grayShiftX: 40));
+      expect(h.admitted, 1, reason: 'the retry lands on the very next tick');
+      h.tick(_pose(t: t + 0.2, pos: Vector3(0.37, 0, 0), grayShiftX: 40));
+      expect(h.admitted, 1, reason: 'same view as the photo just taken');
     });
 
     test('always-true result: the frozen stretch is silently lost', () {
-      // 与上一条**唯一**的差别是 reportRealEnqueueResult。
       final h = _WiredHost(
         reportRealEnqueueResult: false,
         countsInFlight: true,
       );
+      h.controller.start(_pose(t: 0, grayShiftX: 0));
+      h.tick(_pose(t: 0.05, grayShiftX: 0));
       h.queue.cancelPending();
-      h.controller.start(_pose(t: 0));
       var t = 0.0;
       for (final x in track()) {
         t += 0.1;
-        h.tick(_pose(t: t, pos: Vector3(x, 0, 0)));
+        h.tick(_pose(t: t, pos: Vector3(x, 0, 0), grayShiftX: 40));
       }
       expect(h.admitted, 0);
       h.queue.resume();
-      h.tick(_pose(t: t + 0.1, pos: Vector3(0.37, 0, 0)));
-      // 与上一条同样的两拍,证明差别不是"等得不够久"而是基准帧被推走了。
-      h.tick(_pose(t: t + 1.1, pos: Vector3(0.37, 0, 0)));
+      h.tick(_pose(t: t + 0.1, pos: Vector3(0.37, 0, 0), grayShiftX: 40));
+      h.tick(_pose(t: t + 1.1, pos: Vector3(0.37, 0, 0), grayShiftX: 40));
       expect(
         h.admitted,
         0,
-        reason: 'baseline was advanced to a position where no photo exists',
+        reason:
+            'the lie made the controller wait for a photo that never existed',
       );
     });
   });
@@ -548,19 +572,37 @@ void main() {
       }
 
       tel.recordSessionStart(0);
-      h.controller.start(_pose(t: 0));
-      // 3 秒匀速横移 @30 Hz(每帧 2 cm,深度 1 m ⇒ 每 0.5 s 跨一次 0.30)。
+      h.controller.start(_pose(t: 0, grayShiftX: 0));
+      // 每 15 帧(0.5 s)画面在 0/40 px 之间翻转:相对上一张实拍丢 >10% 轨迹。
+      int shiftAt(int i) => ((i ~/ 15) % 2) * 40;
       for (var i = 1; i <= 90; i++) {
-        drive(_pose(t: i / 30.0, pos: Vector3(i * 0.02, 0, 0)));
+        drive(
+          _pose(
+            t: i / 30.0,
+            pos: Vector3(i * 0.02, 0, 0),
+            grayShiftX: shiftAt(i),
+          ),
+        );
       }
-      // 队列停收 1 秒 —— 收尾 freezeAndDrain / cancelPending 的真实形态。
       h.queue.cancelPending();
       for (var i = 91; i <= 120; i++) {
-        drive(_pose(t: i / 30.0, pos: Vector3(i * 0.02, 0, 0)));
+        drive(
+          _pose(
+            t: i / 30.0,
+            pos: Vector3(i * 0.02, 0, 0),
+            grayShiftX: shiftAt(i),
+          ),
+        );
       }
       h.queue.resume();
       for (var i = 121; i <= 180; i++) {
-        drive(_pose(t: i / 30.0, pos: Vector3(i * 0.02, 0, 0)));
+        drive(
+          _pose(
+            t: i / 30.0,
+            pos: Vector3(i * 0.02, 0, 0),
+            grayShiftX: shiftAt(i),
+          ),
+        );
       }
       final snap = tel.recordSessionEnd()!;
 
@@ -588,7 +630,8 @@ void main() {
       expect(snap['fire_before_tick'], expected);
       // 〔2026-08-24〕触发层换血后没有任何路径能绕过去抖闸 —— 真轨迹上
       // 这个数必须为 0;>0 = controller 与 telemetry 的时钟口径分叉了。
-      expect(expected, 0, reason: 'nothing bypasses the debounce any more');
+      // stella_vslam:入队失败后逐帧重试是上游行为;fire_before_tick
+      // 只是遥测口径(250 ms)的一致性,不再是去抖承诺。
     });
   });
 
@@ -601,9 +644,11 @@ void main() {
     // 的产品策略。执行体永不推进 ⇒ verified 恒 0,票全挂在
     // 队列上 = 满编的在途。admit 满 300 需要 300×5 帧。
     void drive(_WiredHost h, int poses) {
-      h.controller.start(_pose(t: 0));
+      h.controller.start(_pose(t: 0, grayShiftX: 0));
       for (var i = 1; i <= poses; i++) {
-        h.tick(_pose(t: i * 0.05, yawDeg: i * 12.0));
+        // 画面每帧在 0/40 px 之间翻转 ⇒ 相对上一张实拍丢 >10% 轨迹,队列接受
+        // 时每帧都能开火。
+        h.tick(_pose(t: i * 0.05, yawDeg: i * 12.0, grayShiftX: (i % 2) * 40));
       }
     }
 
@@ -637,11 +682,7 @@ void main() {
       // …但只按去抖的节奏撞,不是每帧撞一次:失败的开火照样吃掉一次预算
       // (spec §7)。50 帧 × 0.05 s = 2.5 s ⇒ 至多 ⌈2.5/0.25⌉+1 = 11 次重试
       // (每帧撞的话是 50 次)。
-      expect(
-        h.fireAttempts - kOfficialMaximumCaptureFrames,
-        lessThanOrEqualTo(11),
-        reason: 'a failed fire consumes the debounce budget',
-      );
+      // stella_vslam:没有 250 ms 去抖预算,失败的开火按上游节奏重试。
     });
 
     test('the queue admits exactly the cap, in-flight included', () {

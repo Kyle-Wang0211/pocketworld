@@ -201,6 +201,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // 只给无锁定目标的极端冷启动兜底使用；纯 SfM、四端同口径，不再把
     // iOS centerRayDepthM/raycast 接进自动选帧。
     liveDepthProvider: _liveCloudMedianDepthFor,
+    // [2026-09-07 stella_vslam] mapper_is_skipping_localBA = 工作线程还有帧
+    // 排队/在途;is_paused/pause_is_requested = 快门队列不接受。
+    mapperIdleProvider: () => (_sfmRecon?.remainingCount ?? 0) == 0,
+    mapperAcceptingProvider: () => _shutterQueue.accepting,
   );
 
   /// 最新一份**拍摄期流式**快照的点云(与 ARKit 同一重力世界系;带重力

@@ -47,6 +47,8 @@ const List<AutoCaptureMotionRole> _fireRoles = <AutoCaptureMotionRole>[
   AutoCaptureMotionRole.geometry,
   AutoCaptureMotionRole.rotationCoverage,
   AutoCaptureMotionRole.radialBridge,
+  // [2026-09-07] 生产开火 = stella_vslam new_keyframe_is_needed;几何角色只留遥测。
+  AutoCaptureMotionRole.keyframeInserter,
 ];
 
 class _RoleCounts {
@@ -330,6 +332,8 @@ class AutoCaptureTelemetry {
           break;
         case AutoCaptureDecision.skipPaced:
         case AutoCaptureDecision.skipAwaitingCapture:
+        case AutoCaptureDecision.skipMapperStopped:
+        case AutoCaptureDecision.skipMapperBusy:
           // 等实拍基准与 250 ms 去抖同属"节奏类"阻挡;decision_counts 里仍按
           // 各自的枚举名分开计数。
           winnerRow.blockedPace++;
@@ -350,6 +354,7 @@ class AutoCaptureTelemetry {
           winnerRow.blockedTimeLimit++;
           break;
         case AutoCaptureDecision.skipNotMoved:
+        case AutoCaptureDecision.skipMinDistance:
           winnerRow.blockedNotMoved++;
           break;
         case AutoCaptureDecision.skipTooDark:

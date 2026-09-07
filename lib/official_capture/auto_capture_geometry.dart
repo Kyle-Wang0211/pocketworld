@@ -110,6 +110,10 @@ enum AutoCaptureMotionRole {
   radialBridge,
   rotationCoverage,
   overlapSafety,
+
+  /// [2026-09-07] 生产开火角色:stella_vslam `new_keyframe_is_needed` 判定通过。
+  /// 上面四个几何角色自此只出现在遥测里,不再决定开火。
+  keyframeInserter,
 }
 
 class AutoCaptureMotionMetrics {
@@ -173,8 +177,30 @@ class AutoCaptureMotionMetrics {
         return rotationCoverageEligible || role == candidate;
       case AutoCaptureMotionRole.radialBridge:
         return radialBridgeEligible || role == candidate;
+      case AutoCaptureMotionRole.keyframeInserter:
+        return role == candidate;
     }
   }
+
+  /// 同样的几何指标换个角色标签(开火时标成 keyframeInserter 供遥测)。
+  AutoCaptureMotionMetrics withRole(AutoCaptureMotionRole newRole) =>
+      AutoCaptureMotionMetrics(
+        role: newRole,
+        geometryParallaxDeg: geometryParallaxDeg,
+        geometryThresholdDeg: geometryThresholdDeg,
+        horizontalBaselineM: horizontalBaselineM,
+        verticalBaselineM: verticalBaselineM,
+        radialTravelM: radialTravelM,
+        depthScaleRatio: depthScaleRatio,
+        viewTurnDeg: viewTurnDeg,
+        overlapFraction: overlapFraction,
+        advancesGeometryBaseline: advancesGeometryBaseline,
+        shouldPromptSlowDown: shouldPromptSlowDown,
+        overlapSafetyEligible: overlapSafetyEligible,
+        geometryEligible: geometryEligible,
+        rotationCoverageEligible: rotationCoverageEligible,
+        radialBridgeEligible: radialBridgeEligible,
+      );
 }
 
 Vector3 _cross(Vector3 a, Vector3 b) => Vector3(

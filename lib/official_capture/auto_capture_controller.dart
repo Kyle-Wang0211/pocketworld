@@ -38,6 +38,9 @@ class AutoCaptureController {
     required int Function() capturedCountProvider,
     required int Function() thermalStateProvider,
     required double? Function(ARPose pose) liveDepthProvider,
+    // [2026-09-07 stella_vslam] mapper 是否空闲 / 是否接受新关键帧。
+    bool Function()? mapperIdleProvider,
+    bool Function()? mapperAcceptingProvider,
     PortableTrackHealth? Function(ARPose pose)? trackHealthProvider,
   }) : _onStartAnchor = onStartAnchor,
        _onFire = onFire,
@@ -45,6 +48,8 @@ class AutoCaptureController {
        _capturedCountProvider = capturedCountProvider,
        _thermalStateProvider = thermalStateProvider,
        _liveDepthProvider = liveDepthProvider,
+       _mapperIdleProvider = mapperIdleProvider ?? _alwaysTrue,
+       _mapperAcceptingProvider = mapperAcceptingProvider ?? _alwaysTrue,
        _trackHealthProvider = trackHealthProvider;
 
   /// 自动模式起跑锚点。它不是四类运动角色中的任何一种；只有真实入队成功
@@ -69,6 +74,12 @@ class AutoCaptureController {
   /// 无锁定目标时用于播种一个稳定目标点的跨端 SfM 深度；有 worldOrigin 的
   /// 正常生产路径不调用。目标在本轮冻结，不用深度逐帧缩放触发阈值。
   final double? Function(ARPose pose) _liveDepthProvider;
+  final bool Function() _mapperIdleProvider;
+  final bool Function() _mapperAcceptingProvider;
+  static bool _alwaysTrue() => true;
+  // stella_vslam:last_inserted_keyfrm 的时刻与世界位置(insert 时更新)。
+  double? _lastKeyframeSec;
+  Vector3? _lastKeyframePos;
 
   /// 跨端归一化的特征留存率/分布健康度。未接线时固定走 12° 常规档；这里
   /// 不读取 ARKit trackingStateName、Vision 或任何平台私有质量枚举。
@@ -363,6 +374,8 @@ class AutoCaptureController {
     _awaitingCaptureSinceSec = null;
     _pendingAdvanceGeometry = false;
     _recent.clear();
+    _lastKeyframeSec = null;
+    _lastKeyframePos = null;
     // 先结算本轮时长再翻 _running:整场预算按"自动拍真正在跑的时间"累积。
     _settleElapsed(_lastPoseSec);
     _running = false;
@@ -452,7 +465,6 @@ class AutoCaptureController {
         sourceTimestamp != null &&
         (previousSourceTimestamp == null ||
             sourceTimestamp > previousSourceTimestamp);
-    final trackEvidenceRequired = currentGray != null;
     final trackEvidence =
         !sourceBound ||
             !sourceOrderValid ||
@@ -509,34 +521,38 @@ class AutoCaptureController {
         : (pose.position - captureBase.camera).length;
 
     // 档位与热态都**每帧现问**:两者都是跑着变的(见各自 provider 的注释)。
-    final tickIntervalSec = autoCaptureTickIntervalSec(
-      pace: _paceProvider(),
-      thermalState: _thermalStateProvider(),
-    );
-    final decision = autoCaptureDecideMotion(
+    // ─── [2026-09-07 整本复刻] stella_vslam keyframe_inserter ───────────
+    // 几何角色/签名相似度/AliceVision 流量段从此只进遥测,不再决定开火。
+    final lastKfSec = _lastKeyframeSec;
+    final lastKfPos = _lastKeyframePos;
+    final decision = stellaVslamNewKeyframeIsNeeded(
       trackingNormal: trackingOk,
       capturedCount: _capturedCountProvider(),
-      // 整场累积(D8):本轮已跑 + 之前各轮已跑。
       elapsedSec: _elapsedBeforeRunSec + (pose.timestamp - _startedAtSec),
-      sinceLastTickSec: pose.timestamp - _lastTickSec,
-      tickIntervalSec: tickIntervalSec,
-      motion: motion,
-      visualSimilarity: visualSimilarity,
-      trackEvidence: trackEvidence,
-      trackEvidenceRequired: trackEvidenceRequired,
-      // 上游 addFeatureCheckParallax 的结构就是「新旧比 OR 视差」——四个提前
-      // 返回条件不中才落到视差均值。这里把新旧比 OR 进流量段位判据:新内容
-      // 过半时不必等 AliceVision 10% 短边的累积流量。几何角色闸(视差角)
-      // 不动 —— 一次一个变量。
-      smartSelectionMotionReady: _smartMotionSegment.ready || _newFeatureBurst,
-      blurry: _objectivelyBlurry(q),
       tooDark: _tooDark(q),
       awaitingCaptureBaseline: awaitingCaptureBaseline,
+      blurry: _objectivelyBlurry(q),
+      initialized: captureBase != null,
+      mapperAccepting: _mapperAcceptingProvider(),
+      mapperSkippingLocalBA: !_mapperIdleProvider(),
+      hasTrackEvidence: trackEvidence != null,
+      numTrackedLms: trackEvidence?.commonTrackCount ?? 0,
+      numReliableLms: trackEvidence?.commonTrackCount ?? 0,
+      numReliableLmsRef: trackEvidence?.seedTrackCount ?? 0,
+      sinceLastKeyframeSec: lastKfSec == null
+          ? null
+          : pose.timestamp - lastKfSec,
+      distanceTraveledM: lastKfPos == null
+          ? null
+          : (pose.position - lastKfPos).length,
     );
+
     _lastMovedM = movedM;
     _lastTurnDeg = motion.viewTurnDeg;
     _lastFireDistM = null;
-    _lastMotion = motion;
+    _lastMotion = decision == AutoCaptureDecision.fire
+        ? motion.withRole(AutoCaptureMotionRole.keyframeInserter)
+        : motion;
     _lastVisualSimilarity = visualSimilarity;
     _lastTrackEvidence = trackEvidence;
     _lastVisualSourceAgeSec = sourceAgeSec;
@@ -564,6 +580,9 @@ class AutoCaptureController {
       case AutoCaptureDecision.skipRedundant:
         return decision;
       case AutoCaptureDecision.skipAwaitingCapture:
+      case AutoCaptureDecision.skipMapperStopped:
+      case AutoCaptureDecision.skipMapperBusy:
+      case AutoCaptureDecision.skipMinDistance:
         return decision;
       case AutoCaptureDecision.skipTooDark:
       case AutoCaptureDecision.skipBlurry:
@@ -585,6 +604,9 @@ class AutoCaptureController {
             _lastStartAnchorAttemptSec = pose.timestamp;
             _lastTickSec = pose.timestamp;
             if (_onStartAnchor()) {
+              // 起跑锚也是一张真照片 ⇒ 上游的 last_inserted_keyfrm 就是它。
+              _lastKeyframeSec = pose.timestamp;
+              _lastKeyframePos = pose.position;
               _seedBaselines(pose);
               _commitSignature(pose);
             }
@@ -611,6 +633,9 @@ class AutoCaptureController {
           }
           _pendingAdvanceGeometry = motion.advancesGeometryBaseline;
           _awaitingCaptureSinceSec = pose.timestamp;
+          // insert_new_keyframe: last_inserted_keyfrm ← 这一张
+          _lastKeyframeSec = pose.timestamp;
+          _lastKeyframePos = pose.position;
           _capturedSignature = Uint8List.fromList(currentSignature!);
           if (q != null) _commitTrackSource(q);
           // 开火 = 本段结束,锐度段清零(subsequence 语义)。

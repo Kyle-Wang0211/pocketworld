@@ -74,6 +74,7 @@ const _fireRoles = <AutoCaptureMotionRole>[
   AutoCaptureMotionRole.geometry,
   AutoCaptureMotionRole.rotationCoverage,
   AutoCaptureMotionRole.radialBridge,
+  AutoCaptureMotionRole.keyframeInserter, // [2026-09-07] 生产开火角色
 ];
 
 /// 开一轮、喂 [n] 个 [d] 判定(1 秒一个,normal 档),不关。
