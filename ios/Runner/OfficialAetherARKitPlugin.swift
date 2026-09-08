@@ -2788,10 +2788,28 @@ class OfficialAetherARKitPlugin: NSObject {
           "encodeCIImageAsJpeg: CGImageDestinationCreateWithURL failed"]
       )
     }
+    // 🔴 2026-09-08 定罪「AR 相框里的照片变成横向」:这里**漏了朝向标签**。
+    // 姐妹函数 encodeCVPixelBufferAsJpeg 写了 kCGImagePropertyOrientation=.right,
+    // 这里没写。而卡片贴图用 kCGImageSourceCreateThumbnailWithTransform: true
+    // 解码 —— 它按 EXIF 朝向转正;没有标签就是恒等变换,图保持传感器原生的
+    // **横向** ⇒ 相框里的照片躺倒。
+    //
+    // 为什么现在才炸:116 之前卡片贴的是 saveCurrentFrame 写的那张预览;
+    // 我把反馈挪到早信号时,把 previewJpegPath 换成了本函数产出的
+    // `_highres_preview.jpg` —— 正是没写标签的那一张。(我在 119 的提交里
+    // 还断言过"这张图全仓没人读",那是错的:116 起卡片就在读它。)
+    //
+    // **解耦点**:朝向不该取决于"恰好读了哪个文件"。两个编码器从此都把
+    // 朝向写进文件,任何消费者按 EXIF 解码都能得到正确朝向 —— 这一类
+    // 「换个文件就躺倒」的缺陷被从根上去掉,而不是靠指回另一张图碰运气。
+    // 取值与姐妹函数逐字一致(.right),不新增常数。
     CGImageDestinationAddImage(
       dest,
       cgImage,
-      [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary
+      [
+        kCGImageDestinationLossyCompressionQuality: quality,
+        kCGImagePropertyOrientation: CGImagePropertyOrientation.right.rawValue,
+      ] as CFDictionary
     )
     if !CGImageDestinationFinalize(dest) {
       throw NSError(
