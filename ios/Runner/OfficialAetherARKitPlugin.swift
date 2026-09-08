@@ -677,6 +677,15 @@ class OfficialAetherARKitPlugin: NSObject {
   /// 两臂看到同一个场景、同一个热态、同一双手,代价三项(avg_compute_ms /
   /// skips / 热态)因此是**场内对照**。
   /// 缺省 [6] ⇒ 行为与改动前一字不差。
+  /// 当前生效的判决节拍(Hz)。资源采样器(10 s 一次)把它一起记下来 ——
+  /// 2026-09-08 教训:臂周期 5 s、资源采样周期 10 s,**整数倍 ⇒ 每次采样都落在
+  /// 同一个相位**,热态/CPU 永远只采到一个臂,分不出来。与其去调周期(还得算
+  /// 互质),不如让采样自己带上臂标签:一行,且对任何周期组合都成立。
+  /// 初值必须从 arms[0] 取,不能写死 —— `didSet` 不在初始化时触发,写死的话
+  /// env 若是 `12,6`,第一个臂会被错报成 6。
+  /// 仅诊断用:跨线程读写一个 Double(ARKit 代理队列写、遥测采样线程读),
+  /// 不加锁;最坏是某一条采样记错一个臂,不影响任何判决。
+  static var currentQualityHz: Double = qualityHzArms[0]
   private static let qualityHzArms: [Double] = {
     guard let raw = getenv("OFFICIAL_AETHER_QUALITY_HZ"),
           let text = String(validatingUTF8: raw) else { return [6.0] }
@@ -689,7 +698,9 @@ class OfficialAetherARKitPlugin: NSObject {
   }()
   /// 当前臂。只在 5 s 诊断窗口收尾处推进(那里同时把该窗口的代价落遥测,
   /// 所以每条 quality_window 记录天然属于且只属于一个臂)。
-  private var qualityArmIndex = 0
+  private var qualityArmIndex = 0 {
+    didSet { OfficialAetherARKitPlugin.currentQualityHz = 1.0 / qualityInterval }
+  }
   private var qualityInterval: TimeInterval {
     1.0 / Self.qualityHzArms[qualityArmIndex % Self.qualityHzArms.count]
   }
@@ -4905,6 +4916,8 @@ final class OfficialPwNativeTelemetry {
         "cpu_one_core_pct": (cpu * 10).rounded() / 10,
         "scn_fps": (fps * 10).rounded() / 10,
         "app_state": appState,
+        // 判决节拍的当前臂 —— 让热态/CPU 能按臂分组(见 currentQualityHz 注释)。
+        "quality_hz": OfficialAetherARKitPlugin.currentQualityHz,
       ])
     }
   }
