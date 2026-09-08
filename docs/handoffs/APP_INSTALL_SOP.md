@@ -196,6 +196,11 @@ done
 ```
 
 1. **只换的那个 DIFF,其余全 SAME。** 有第二个 DIFF ⇒ 停下,基线选错了。
+   > ⚠️ **2026-09-08 实测更正:Dart AOT 不可复现。** 同一份源连编两次,
+   > `App.framework/App` 去签名 sha 就不同(实测 `efd2c1c81e85` vs
+   > `46450f0882c2`)。所以**全量构建时 `App` 必然 DIFF,哪怕一行 Dart 没改**
+   > —— 这一条对全量构建只能判 `Flutter`/`PWOfficialSfm`/`thermion`,
+   > `Runner` 与 `App` 的 DIFF 不构成信息。**只换 App.framework 的形态不受影响。**
 2. **Dart VM 哈希与引擎一致**:
    `strings "$DST/Frameworks/App.framework/App" | grep -o "0451907c[0-9a-f]*" | head -1`
    对不上 ⇒ App.framework 与 Flutter.framework 不同源,停下。
@@ -203,6 +208,10 @@ done
    `strings .../App.framework/App | grep -c stellaVslamNewKeyframeIsNeeded`
    新包应 ≥1、旧包应 0。**"编译过了"不等于"改动进了包"。**
 4. **新包与上一版的同一二进制必须不同**(去签名后比):
+   > ⚠️ **2026-09-08:这一条对全量构建是废的** —— AOT 不可复现,sha 必然不同,
+   > 所以它证明不了"新代码真的进去了"。**全量构建唯一有判别力的是第 3 项
+   > (新符号在新包里存在、在旧包里不存在)**,必须找一个真正新增的符号;
+   > 纯删代码的改动要反向找(旧符号在新包里消失)。
    ```bash
    # 只改了函数体、没加新符号时,第 3 项验不出来,只有这一项能验
    for v in <上一版> <新版本>; do
