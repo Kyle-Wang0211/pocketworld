@@ -862,7 +862,14 @@ class CaptureSession {
   ///     invoking [lockOrigin] explicitly (typically when the user
   ///     taps a "lock" button after aiming the crosshair). Without
   ///     this, target points never see any frame with `hasOrigin`.
-  Future<void> start({bool autoLock = true, bool manualCapture = false}) async {
+  /// [extendCaptureDir] 非空 = **补拍**:复用这个已有的 capture 目录,
+  /// 照片编号接着已有最大值往下排,目录**绝不删**。留空 = 原来的新建行为,
+  /// 一字未动。
+  Future<void> start({
+    bool autoLock = true,
+    bool manualCapture = false,
+    String? extendCaptureDir,
+  }) async {
     if (_disposed) {
       throw StateError('CaptureSession used after dispose');
     }
@@ -891,7 +898,7 @@ class CaptureSession {
     // Plan G W2 photos-on-disk: prepare a fresh directory for this
     // capture's cell-admitted JPEGs. Wiped + recreated each start so a
     // stale prior session can't leak into the new cells.
-    await _setupPhotosDirectory();
+    await _setupPhotosDirectory(extendCaptureDir);
     // Clear hybrid anchor: a new recording means a new world origin
     // is about to be locked, so any IMU↔ARKit offset learned from
     // the previous session is stale.
@@ -919,20 +926,60 @@ class CaptureSession {
   /// Build (or wipe + recreate) `<docs>/captures_official/<captureId>/photos/`
   /// for this session's cell-admitted JPEGs. Call once per [start];
   /// the resulting path is exposed via [photosDir].
-  Future<void> _setupPhotosDirectory() async {
+  Future<void> _setupPhotosDirectory([String? extendCaptureDir]) async {
     try {
       final docs = await getApplicationDocumentsDirectory();
-      final captureId = 'cap_${DateTime.now().microsecondsSinceEpoch}';
-      final root = Directory('${docs.path}/captures_official/$captureId');
-      if (await root.exists()) {
-        await root.delete(recursive: true);
+      final extending =
+          extendCaptureDir != null && extendCaptureDir.trim().isNotEmpty;
+      final Directory root;
+      if (extending) {
+        // [2026-09-08 追加拍摄] 复用已有目录。**绝不 delete** —— 这个目录里
+        // 装着上一次拍摄的全部照片和 official_sfm_live.db,删了就是毁掉用户
+        // 的项目。原分支那句 delete(recursive:true) 在这里是致命的。
+        root = Directory(extendCaptureDir.trim());
+        if (!await root.exists()) {
+          // 失败必须留痕:静默把补拍降级成新建,用户会以为照片补进去了,
+          // 其实分裂成了两个项目。
+          // ignore: avoid_print
+          print(
+            '[CaptureSession] extend FAILED: dir missing $extendCaptureDir',
+          );
+          _captureDir = null;
+          _photosDir = null;
+          _photosHighresDir = null;
+          _previewsDir = null;
+          return;
+        }
+      } else {
+        final captureId = 'cap_${DateTime.now().microsecondsSinceEpoch}';
+        root = Directory('${docs.path}/captures_official/$captureId');
+        if (await root.exists()) {
+          await root.delete(recursive: true);
+        }
       }
       final highres = Directory('${root.path}/photos_highres');
       final previews = Directory('${root.path}/previews');
       await highres.create(recursive: true);
       await previews.create(recursive: true);
-      await PhotoArchivePolicy.writeForNewCapture(root);
-      await DatabaseArchivePolicy.writeForNewCapture(root);
+      if (extending) {
+        // 编号接着已有最大值 —— photo_slot_naming.dart 开头那条唯一性依据
+        // ("每次重建全新目录 + _frameSeq 归零")在补拍下不成立;归零会让新照片
+        // 与老照片同名覆盖,复现 cap47 的 16% 色彩污染。
+        final names = <String>[];
+        await for (final e in highres.list(followLinks: false)) {
+          names.add(e.uri.pathSegments.last);
+        }
+        _frameSeq = maxFrameSeqInNames(names);
+        // ignore: avoid_print
+        print(
+          '[CaptureSession] extend: reuse ${root.path} '
+          'frameSeq continues at $_frameSeq (${names.length} existing files)',
+        );
+      } else {
+        // writeForNewCapture 按名字就是"新建才写",补拍不能重写它们。
+        await PhotoArchivePolicy.writeForNewCapture(root);
+        await DatabaseArchivePolicy.writeForNewCapture(root);
+      }
       _captureDir = root.path;
       _photosDir = highres.path;
       _photosHighresDir = highres.path;

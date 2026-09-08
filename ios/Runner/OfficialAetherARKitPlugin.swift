@@ -446,6 +446,9 @@ class OfficialAetherARKitPlugin: NSObject {
     let captureCamPos: simd_float3  // camera world position AT CAPTURE (shrink reference)
   }
   static var photoCardSpecs: [String: PhotoCardSpec] = [:]
+  /// 证据 JPEG 路径 → **照片自己的**相机位姿(ARFrame 到手那一刻记下)。
+  /// addPhotoCard 用它替代 `session.currentFrame`,见那里的长注释。
+  static var photoPoseByEvidencePath: [String: simd_float4x4] = [:]
   // [瞬时快门 2026-07-19] 卡片缩略图解码重试计数:photo43 下 12MP 静照后台
   // 落盘,didAdd 建卡时文件可能还没写完;每 150ms 重试直到落盘(最多~4.5s)。
   static var photoCardThumbRetries: [String: Int] = [:]
@@ -1091,8 +1094,34 @@ class OfficialAetherARKitPlugin: NSObject {
       // stable: the card becomes a small chip before any VIO drift grows visible.
       // (Replaces the surface raycast, which placed the card far → big & slow to
       // shrink → drift very visible. RS does NOT anchor on the surface.)
-      let camT = camera.transform
+      // ══ 用**照片自己的**位姿,不是调用那一刻的实时位姿 ══
+      //
+      // 2026-09-08 定罪(实测,非猜):此前这里一直取 `session.currentFrame`,
+      // 也就是 addPhotoCard **被调用那一刻**相机在哪。可照片是更早曝好的:
+      // ARKit 把 ARFrame 交到我们手上要 220–610 ms(实测中位,随热态摆动),
+      // 这段时间手一直在动。
+      //   相邻照片相机速度 中位 0.135 m/s、p90 0.238 m/s(三场 71 对实测)
+      //   × 投递延迟 220–610 ms ⇒ **落点误差 中位 3.0–8.2 cm、p90 5.2–14.5 cm**
+      //   而卡片就锚在镜头前 photoCardCloseZ = **5 cm**
+      // 误差和锚点距离本身一个量级 —— 这就是用户看到的"第一张漂移"。
+      // 第一张最明显:该场首段速度 0.200 m/s(三场最高),且第一张的
+      // request_to_capture_dt = 0.25 s(其余典型 0.033),延迟最长。
+      //
+      // 照片位姿在早信号那一刻(ARFrame 到手)就记下了,这里直接取。
+      // 取不到才退回实时位姿(旧行为,不改判)。
+      // 投影矩阵仍用**实时**相机:卡片要填满的是预览视口,那是格式常量,
+      // 与位姿无关。朝向修正 R 从 ARKit 自己的 viewMatrix 反推,不自己编:
+      //   V = viewMatrix(for:.portrait),V⁻¹ = T · R ⇒ R = T⁻¹ · V⁻¹
+      let liveT = camera.transform
+      let photoT = OfficialAetherARKitPlugin
+        .photoPoseByEvidencePath.removeValue(forKey: evidencePath)
+      let camT = photoT ?? liveT
       let camPos = simd_make_float3(camT.columns.3)
+      OfficialPwNativeTelemetry.shared.log("photocard_pose_source", [
+        "source": photoT == nil ? "live_fallback" : "photo_pose",
+        "shift_m": Double(simd_length(
+          simd_make_float3(camT.columns.3) - simd_make_float3(liveT.columns.3))),
+      ])
       let z: Float = Self.photoCardCloseZ
       NSLog("[PHOTOCARD] addPhotoCard close-anchor z=%.3f", z)
       // SCREEN-ALIGNED quad built at depth z (the surface distance): the 4 viewport
@@ -1113,7 +1142,9 @@ class OfficialAetherARKitPlugin: NSObject {
       let proj = camera.projectionMatrix(for: .portrait,
                                          viewportSize: viewportSize,
                                          zNear: 0.001, zFar: 1000)
-      let invView = camera.viewMatrix(for: .portrait).inverse
+      let liveInvView = camera.viewMatrix(for: .portrait).inverse
+      let orientationR = liveT.inverse * liveInvView   // = R,见上面推导
+      let invView = camT * orientationR
       // View space: +X right, +Y up, -Z forward. halfX/halfY 都按同一 3:4
       // 视口投影算 —— 一致(上次坏在 halfX 全屏、halfY 却强设 3:4 错配)。
       let halfX = z / proj.columns.0.x
@@ -1409,6 +1440,9 @@ class OfficialAetherARKitPlugin: NSObject {
   /// world frame, so the old cards are unreliable — clear them; the user keeps
   /// capturing and the album keeps every shot).
   static func clearPhotoCards(in session: ARSession?) {
+    // 会话开场清一次:photoPoseByEvidencePath 是 static,不清会跨会话累积
+    // (每条 64 B,量小,但静默增长的表迟早咬人)。
+    photoPoseByEvidencePath.removeAll()
     if let session = session {
       for a in photoCardAnchors { session.remove(anchor: a) }
     }
@@ -2245,6 +2279,10 @@ class OfficialAetherARKitPlugin: NSObject {
         // 诚实性:此信号只在 ARFrame 真的到手后发,绝不在受理时刻发(2026-09-01
         // 那次"震了 30+ 次、相册只有 20 张"正是发在受理时刻)。此刻之后若校验
         // 或落盘失败,Dart 侧既有的 removePhotoCard + 失败提示会把这张撤掉。
+        // 顺手记下**照片自己的**位姿。addPhotoCard 稍后会用它,而不是
+        // 调用那一刻的实时位姿 —— 见 addPhotoCard 里的定罪注释。
+        OfficialAetherARKitPlugin.photoPoseByEvidencePath[highresPath] =
+          frame.camera.transform
         let capturedAtHostMs = Date().timeIntervalSince1970 * 1000.0
         DispatchQueue.main.async {
           self.methodChannel.invokeMethod(

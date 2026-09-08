@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../l10n/app_localizations.dart';
 import '../../official_capture/sfm_resume.dart' as official_resume;
 import '../scan_record.dart';
+import 'ar_capture_page.dart';
 import 'sfm_resume_wait_page.dart';
 import 'sparse_cloud_viewer_page.dart';
 
@@ -66,4 +67,27 @@ Future<void> pushOfficialViewerRoute(
       ),
     ),
   );
+}
+
+/// [2026-09-08 追加拍摄] 往一个**已有项目**里补拍。
+///
+/// 复刻 RealityScan 的做法:新照片就是新照片,丢进同一个工程再跑一次对齐;
+/// 坐标系不靠任何厂商 AR SDK 接续,由 SfM 按图像重新对齐(RS 官方文档
+/// "will continue from the previous state")。这里只负责把已有的 captureDir
+/// 递给采集页 —— 复用目录/照片续号在 CaptureSession 里,整组重建由现有的
+/// 「开始训练」(resume)完成:worker 的 resume 分支本来就是照整个 db 重建的
+/// (sfm_live_recon.dart:2295 注释:image_path 为空 ⇒ 全部状态来自 db)。
+///
+/// 返回是否真的补了照片(采集页 pop 回 true),调用方据此刷新卡片。
+Future<bool> pushOfficialExtendRoute(
+  BuildContext context,
+  ScanRecord record,
+  String captureDir,
+) async {
+  final added = await Navigator.of(context).push<bool>(
+    MaterialPageRoute<bool>(
+      builder: (_) => OfficialARCapturePage(extendCaptureDir: captureDir),
+    ),
+  );
+  return added == true;
 }

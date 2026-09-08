@@ -107,7 +107,18 @@ import '../../vio/diagnostics/vio_shadow_switch.dart';
 enum _ShutterAdmission { admitted, blocked, budgetExhausted }
 
 class OfficialARCapturePage extends StatefulWidget {
-  const OfficialARCapturePage({super.key});
+  const OfficialARCapturePage({super.key, this.extendCaptureDir});
+
+  /// [2026-09-08 追加拍摄] 非空 = 往这个已有项目里补拍:复用它的 capture 目录、
+  /// 照片编号接着排、目录绝不删。留空 = 原来的"新建一次拍摄",行为一字未动。
+  ///
+  /// 跨会话的坐标系**不靠任何厂商 AR SDK 接续**(ARWorldMap / Cloud Anchors /
+  /// AR Engine 三端不一致,且后者要云端 —— 已整条作废)。新照片喂的是本次会话
+  /// 自己的位姿,而该位姿只进一次性预览云:最终解算自己估 CamFromWorld
+  /// (official_aether_sfm_c.cc:10596),重力方向跨会话恒定
+  /// (mandatory_arkit_gravity_v1.h:25,ARKit .gravity 世界恒 +Y 朝天)。
+  /// 老新两批照片由 SfM 按图像重新对齐 —— 复刻 RealityScan 的做法。
+  final String? extendCaptureDir;
 
   @override
   State<OfficialARCapturePage> createState() => _OfficialARCapturePageState();
@@ -1077,7 +1088,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       }
       // Lock succeeded; proceed to recording (skip auto-retry loop).
       try {
-        await session.start(autoLock: false);
+        await session.start(
+          autoLock: false,
+          extendCaptureDir: widget.extendCaptureDir,
+        );
         _startVioShadowForCapture();
         if (!mounted) return;
         _previewModel.reset();
@@ -1117,11 +1131,56 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// RealityScan-style manual capture: silently start the session once ARKit
   /// is warm (auto-lock the world origin in the background, no aim crosshair),
   /// then each shutter tap takes exactly one photo. Idempotent.
+  /// 补拍时把上一次已落盘的照片装回相册。非补拍(extendCaptureDir 为空)直接
+  /// 返回,原行为一字未动。
+  ///
+  /// 失败必须留痕:目录读不动就记一条设备日志 —— 静默装 0 张会让完成闸把
+  /// 「还差几张」算错,而用户无从察觉。
+  Future<void> _adoptExistingProjectPhotos(CaptureSession session) async {
+    final extendDir = widget.extendCaptureDir;
+    if (extendDir == null || extendDir.trim().isEmpty) return;
+    final dirPath = session.photosHighresDir ?? session.photosDir;
+    if (dirPath == null) {
+      DeviceLog.log(
+        'OfficialARCapturePage',
+        'extend: no photos dir — album starts empty, 完成闸会按本次会话计数',
+      );
+      return;
+    }
+    try {
+      final dir = Directory(dirPath);
+      if (!await dir.exists()) return;
+      final jpegs = <String>[];
+      await for (final e in dir.list(followLinks: false)) {
+        if (e is! File) continue;
+        final lower = e.path.toLowerCase();
+        if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) {
+          jpegs.add(e.path);
+        }
+      }
+      final adopted = _projectPhotos.adoptExisting(jpegs);
+      DeviceLog.log(
+        'OfficialARCapturePage',
+        'extend: adopted $adopted existing photos into the album '
+            '(project now ${_projectPhotos.count})',
+      );
+    } on FileSystemException catch (e) {
+      DeviceLog.log(
+        'OfficialARCapturePage',
+        'extend: adopt existing photos FAILED: $e',
+      );
+    }
+  }
+
   Future<void> _startManualCapture() async {
     final session = _session;
     if (session == null || _recording || !mounted) return;
     try {
-      await session.start(autoLock: true, manualCapture: true);
+      await session.start(
+        autoLock: true,
+        manualCapture: true,
+        extendCaptureDir: widget.extendCaptureDir,
+      );
       _startVioShadowForCapture();
       if (!mounted) return;
       // Fresh take → clear any anchored AR cards left from a previous session.
@@ -1139,6 +1198,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       } catch (_) {}
       _previewModel.reset();
       _projectPhotos.clear();
+      // [2026-09-08 补拍] 相册计数是"**这个项目**有多少张",不是"这次会话拍了
+      // 多少张"。它同时喂着 N/300 显示、「至少 20 张」完成闸、300 张上限 ——
+      // 只算本次会话,一个已有 10 张的项目补拍时会显示 20/300,用户以为还得
+      // 再拍满 20 张。所以先把上一次已落盘的照片装回来。
+      await _adoptExistingProjectPhotos(session);
       _captureQueueFailureText = null;
       _cameraResumeFailed = false;
       // Fresh take → empty coverage cloud (0 photos ⇒ 0 dots on screen).
@@ -1928,7 +1992,14 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       //     "you didn't shoot well enough". Leave the card in its pending
       //     state (black = SfM has not processed it, which is exactly true)
       //     and surface the fault as a fault.
-      if (event.result == 'errInternal') {
+      // [2026-09-08 实机定罪] `exception` 与 `errInternal` 是**同一类**:两者都是
+      // 原生调用抛了、frameId == -1、帧根本没进重建,重拍无济于事。此前只认
+      // errInternal,于是补拍撞上一个损坏 db 时,20 帧全走了上面那条"涂红"分支
+      // —— 正是这段注释警告过的"把真 bug 伪装成拍摄问题",只不过换了个结果串。
+      // 证据:该次会话每帧 `fid=-1` + `aether_sfm_create failed: errDb`,而
+      // 设备日志里 `sfm internal fault` **0 次** ⇒ 这道闸被整个绕过。
+      // 接进来之后,同样的故障在第 3 帧就会停下并告诉用户,而不是白拍 20 张。
+      if (event.result == 'errInternal' || event.result == 'exception') {
         _noteSfmInternalFailure(event.result);
       } else {
         _markPhotoDisconnected(event.jpegPath!, event.result);
@@ -3687,6 +3758,27 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     Navigator.of(context).pop(true);
   }
 
+  /// 盘上实际的 JPEG 张数。补拍复用目录,本次会话的计数器只认自己拍的那些,
+  /// 拿它当项目张数会少算掉上一次的。列不动时退回调用方给的值(诚实降级,
+  /// 不静默记 0)。
+  static Future<int> _photosOnDiskCount(
+    Directory photosDir, {
+    required int fallback,
+  }) async {
+    try {
+      if (!await photosDir.exists()) return fallback;
+      var n = 0;
+      await for (final e in photosDir.list(followLinks: false)) {
+        if (e is! File) continue;
+        final path = e.path.toLowerCase();
+        if (path.endsWith('.jpg') || path.endsWith('.jpeg')) n++;
+      }
+      return n > 0 ? n : fallback;
+    } on FileSystemException {
+      return fallback;
+    }
+  }
+
   Future<void> _persistDraft({required bool showSnackBar}) async {
     final session = _session;
     if (session == null) return;
@@ -3749,9 +3841,22 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       _projectPhotos.paths,
     );
     if (manifestFile == null || !manifestFile.existsSync()) return;
+    // [2026-09-08 补拍] 补拍复用同一个 capture 目录 ⇒ captureId 相同 ⇒
+    // addOrUpdate 覆盖原记录。此前无条件重取名字,用户看到的就是"原卡片没了、
+    // 冒出一张未命名(N)" —— 项目的身份被一次补拍抹掉了。
+    //
+    // [用户裁决] **名字沿用,时间用新的**:名字是项目身份,补拍不该改;时间是
+    // "最后动过它"的时刻,补了照片就该更新 —— 作品页按 createdAt 新→旧排序,
+    // 刚补过的项目理应浮到最前面,而不是沉在原来的位置让用户找不着。
+    final existing = store.records
+        .where((r) => r.id == captureId)
+        .cast<ScanRecord?>()
+        .firstWhere((_) => true, orElse: () => null);
     final record = ScanRecord(
       id: captureId,
-      name: nextUntitledScanName(store.records.map((r) => r.name)),
+      name:
+          existing?.name ??
+          nextUntitledScanName(store.records.map((r) => r.name)),
       createdAt: createdAt,
       pipelineKind: CapturePipelineKind.official,
       preferredCaptureMode: CaptureMode.local,
@@ -3759,7 +3864,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       captureDir: captureDir.path,
       photosDir: photosDir.path,
       captureManifestPath: manifestFile.path,
-      photoCount: photoCount,
+      // 补拍时 _projectPhotos 只装本次会话的照片,直接写会把 30 张的项目
+      // 记成 20 张 —— 卡片和张数闸都会读到假数。以盘上实际 JPEG 为准。
+      photoCount: await _photosOnDiskCount(photosDir, fallback: photoCount),
       cloudUploadStatus: ScanCloudUploadStatus.localPending,
       localRawRetainedForDebug: true,
     );

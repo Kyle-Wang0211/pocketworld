@@ -88,6 +88,42 @@ class OfficialProjectPhotoAlbum extends ChangeNotifier {
     return true;
   }
 
+  /// [2026-09-08 补拍] 装入**上一次拍摄**已落盘的照片。返回实际装入的张数。
+  ///
+  /// 为什么必须有:补拍复用同一个 capture 目录,而这个计数器是"**这个项目**有
+  /// 多少张",不是"这次会话拍了多少张"。它同时喂着三处 —— 相册上的 N/300、
+  /// 「至少 20 张」的完成闸、300 张上限。只算本次会话的话,一个已有 10 张的
+  /// 项目在补拍时会显示 20/300,用户以为还得再拍满 20 张(实测如此)。
+  ///
+  /// 与 [commitVerified] 的区别:这些照片是**上一次**经同一条验证落盘的,
+  /// 4032×3024 的尺寸校验在当时就做过了,这里不再重复(也无法重复 —— 读尺寸
+  /// 要解码)。这里只确认文件还在、非空、不重复。
+  ///
+  /// 分析态一律 [PhotoCardSfmState.pending]:本次会话的 SfM 确实还没处理过
+  /// 它们,这是字面事实。pending 不进 [analyzedCount],所以既不会稀释
+  /// [disconnectedRatio],也不会凭空点亮 [shouldWarnDisconnected]。
+  int adoptExisting(Iterable<String> jpegPaths) {
+    var adopted = 0;
+    final sorted = jpegPaths.toList()..sort();
+    for (final jpegPath in sorted) {
+      if (jpegPath.isEmpty || _paths.contains(jpegPath)) continue;
+      final file = File(jpegPath);
+      if (!file.existsSync() || file.lengthSync() <= 0) continue;
+      _paths.add(jpegPath);
+      _photos.add(
+        OfficialProjectPhoto(
+          jpegPath: jpegPath,
+          // 上一次的快门时刻已不可得;用文件修改时间,单调且只用于排序。
+          captureTimestamp:
+              file.statSync().modified.millisecondsSinceEpoch / 1000.0,
+        ),
+      );
+      adopted++;
+    }
+    if (adopted > 0) notifyListeners();
+    return adopted;
+  }
+
   bool updateAnalysisState(String jpegPath, PhotoCardSfmState analysisState) {
     final index = _photos.indexWhere((photo) => photo.jpegPath == jpegPath);
     if (index < 0 || _photos[index].analysisState == analysisState) {

@@ -34,3 +34,27 @@ String photoSlotBaseName({
 }) {
   return 'cell_${cellIdx}_slot_${slotIdx}_$frameId';
 }
+
+/// 已有照片文件名里最大的 frame 序号;没有可解析的名字则返回 0。
+///
+/// [2026-09-08 追加拍摄] 上面那条唯一性依据("start() 每次重建全新 captureDir
+/// 且 _frameSeq 归零")在**补拍**下不再成立 —— 补拍复用同一个 captureDir。
+/// 若序号仍从 0 起,新照片会和老照片同名,直接复现本文件开头记的那个 bug
+/// (cap47:同名覆盖 → fed jsonl 的 jpegPath 指向"后来者的内容" → 25/121 帧
+/// 取错颜色、16% 点色彩污染)。所以补拍必须把 _frameSeq 接到已有最大值之后。
+///
+/// 解析的是基名尾部的 `_tap-<N>` / `_cap-<N>`。两种前缀共用一个序号空间
+/// (生产里 _frameSeq 本来就是同一个计数器),所以取两者的全局最大值。
+/// 认不出的名字(老式 `cell_i_slot_j`、缩略图、任何第三方文件)一律记 0 而
+/// 不是抛错 —— 一个陌生文件不该让补拍整个失败。
+int maxFrameSeqInNames(Iterable<String> fileNames) {
+  final re = RegExp(r'_(?:tap|cap)-(\d+)(?:\.[^.]*)?$');
+  var maxSeq = 0;
+  for (final name in fileNames) {
+    final m = re.firstMatch(name);
+    if (m == null) continue;
+    final n = int.tryParse(m.group(1)!);
+    if (n != null && n > maxSeq) maxSeq = n;
+  }
+  return maxSeq;
+}

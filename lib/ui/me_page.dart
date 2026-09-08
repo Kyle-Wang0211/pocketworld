@@ -33,6 +33,8 @@ import '../community/social_profile_repository.dart';
 import '../l10n/app_localizations.dart';
 import '../me/draft_card_action.dart';
 import '../me/scan_record_store.dart';
+import '../me/train_gate.dart';
+import '../official_capture/live_sfm_publish_policy.dart';
 import '../official_capture/sfm_resume.dart' as official_sfm_resume;
 import 'capture/sfm_resume_wait_page.dart';
 import 'capture/sparse_cloud_viewer_page.dart';
@@ -145,6 +147,14 @@ typedef OfficialScanViewerRoute =
       String plyPath,
     );
 
+/// [2026-09-08 追加拍摄] 往已有项目补拍。返回是否真的补了照片。
+typedef OfficialExtendCaptureRoute =
+    Future<bool> Function(
+      BuildContext context,
+      ScanRecord record,
+      String captureDir,
+    );
+
 typedef ActiveReconstructionDelete = Future<void> Function(ScanRecord record);
 
 class MePage extends StatefulWidget {
@@ -158,6 +168,7 @@ class MePage extends StatefulWidget {
     this.onRecordActionActivityChanged,
     this.officialResumeRoute,
     this.officialViewerRoute,
+    this.officialExtendRoute,
     this.socialProfileRepository,
   });
 
@@ -182,6 +193,9 @@ class MePage extends StatefulWidget {
   /// self-developed `SfmResumeWaitPage`.
   final OfficialScanResumeRoute? officialResumeRoute;
   final OfficialScanViewerRoute? officialViewerRoute;
+
+  /// 补拍入口。未注入时「拍摄更多照片」只提示,绝不静默失败。
+  final OfficialExtendCaptureRoute? officialExtendRoute;
   final SocialProfileRepository? socialProfileRepository;
 
   @override
@@ -388,6 +402,7 @@ class _MePageState extends State<MePage> {
                   onRecordActionActivityChanged:
                       widget.onRecordActionActivityChanged,
                   officialResumeRoute: widget.officialResumeRoute,
+                  officialExtendRoute: widget.officialExtendRoute,
                   officialViewerRoute: widget.officialViewerRoute,
                 ),
               ],
@@ -522,6 +537,7 @@ class _MyWorksSection extends StatefulWidget {
   final ValueChanged<bool>? onRecordActionActivityChanged;
   final OfficialScanResumeRoute? officialResumeRoute;
   final OfficialScanViewerRoute? officialViewerRoute;
+  final OfficialExtendCaptureRoute? officialExtendRoute;
 
   const _MyWorksSection({
     this.activeReconstructionCaptureDir,
@@ -531,6 +547,7 @@ class _MyWorksSection extends StatefulWidget {
     this.onRecordActionActivityChanged,
     this.officialResumeRoute,
     this.officialViewerRoute,
+    this.officialExtendRoute,
   });
 
   @override
@@ -831,9 +848,19 @@ class _MyWorksSectionState extends State<_MyWorksSection>
     unawaited(_ensureCloudThumbs());
   }
 
-  /// Long-press handler — opens a bottom sheet with train / rename / delete.
-  /// Drafts can explicitly enter the cloud worker queue from here; upload
-  /// acknowledgement alone is just "raw safely reached cloud".
+  /// Long-press handler — 未完成的卡片给「开始训练 / 拍摄更多照片 / 改名 /
+  /// 删除」四栏;已经出过点云的卡片保留原来的「查看点云 / 重新重建点云 /
+  /// 改名 / 删除」(对它们"开始训练"不是待办而是重跑)。
+  ///
+  /// [2026-09-07 用户签决] 20 张的判定此前**全 app 只有一处** —— 拍摄页
+  /// 「结束任务」按钮上的 [officialCaptureCanFinish]。而"未完成"卡片按定义
+  /// 就是没走那条出口的(闪退/被杀/中途退出 → 孤儿恢复捡回来,恢复门槛只有
+  /// `photos.isEmpty`,1 张也会变成一张卡)。异常路径绕过唯一的闸、作品页
+  /// 又不复查 ⇒ 不足 20 张照样能开始重建。这里补上复查。
+  ///
+  /// 阈值**不复制**:直接调用拍摄页那同一个 [officialCaptureCanFinish]。
+  /// 常数只有 [kOfficialMinimumCaptureFrames] 一处定义,两个入口同源,
+  /// 将来改 20 不会漏掉其中一边。
   Future<void> _showRecordActions(ScanRecord record) async {
     widget.onRecordActionActivityChanged?.call(true);
     try {
@@ -854,7 +881,17 @@ class _MyWorksSectionState extends State<_MyWorksSection>
           widget.activeReconstructionCaptureDir == null && captureDir != null
           ? await _resolveRecoverableCaptureDir(record)
           : null;
+      final photoCount = await _countCapturePhotos(record);
       if (!mounted) return;
+      // 判定提纯为纯函数(train_gate.dart),阈值同源于拍摄页的
+      // officialCaptureCanFinish —— 本文件里没有 20 这个数字。
+      final trainGate = trainGateFor(
+        photoCount: photoCount,
+        hasResumableData: rebuildDir != null,
+        anotherReconstructionActive:
+            widget.activeReconstructionCaptureDir != null,
+      );
+      final trainEnabled = trainGate == TrainGate.ready;
       final action = await showModalBottomSheet<String>(
         context: context,
         backgroundColor: AetherColors.bgCanvas,
@@ -865,18 +902,46 @@ class _MyWorksSectionState extends State<_MyWorksSection>
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              if (canViewSparse)
+              if (canViewSparse) ...[
                 ListTile(
                   leading: const Icon(Icons.grain_rounded),
                   title: const Text('查看点云'),
                   onTap: () => Navigator.of(ctx).pop('view_sparse'),
                 ),
-              if (rebuildDir != null)
+                if (rebuildDir != null)
+                  ListTile(
+                    leading: const Icon(Icons.restart_alt_rounded),
+                    title: const Text('重新重建点云'),
+                    onTap: () => Navigator.of(ctx).pop('rebuild_sparse'),
+                  ),
+              ] else ...[
+                // 置灰的项**仍然可点** —— 点击是唯一能问出"为什么点不动"的
+                // 动作,所以它必须有回答(居中 3 秒提示),而不是吞掉。
                 ListTile(
-                  leading: const Icon(Icons.restart_alt_rounded),
-                  title: Text(canViewSparse ? '重新重建点云' : '继续重建点云'),
-                  onTap: () => Navigator.of(ctx).pop('rebuild_sparse'),
+                  leading: Icon(
+                    Icons.auto_awesome_rounded,
+                    color: trainEnabled
+                        ? AetherColors.textPrimary
+                        : AetherColors.textTertiary,
+                  ),
+                  title: Text(
+                    '开始训练',
+                    style: TextStyle(
+                      color: trainEnabled
+                          ? AetherColors.textPrimary
+                          : AetherColors.textTertiary,
+                    ),
+                  ),
+                  onTap: () => Navigator.of(
+                    ctx,
+                  ).pop(trainEnabled ? 'rebuild_sparse' : 'train_blocked'),
                 ),
+                ListTile(
+                  leading: const Icon(Icons.add_a_photo_outlined),
+                  title: const Text('拍摄更多照片'),
+                  onTap: () => Navigator.of(ctx).pop('capture_more'),
+                ),
+              ],
               ListTile(
                 leading: const Icon(Icons.edit_outlined),
                 title: Text(l.meActionRename),
@@ -903,6 +968,31 @@ class _MyWorksSectionState extends State<_MyWorksSection>
         await _openSparseCloud(record, sparsePlyPath);
       } else if (action == 'rebuild_sparse' && rebuildDir != null) {
         await _offerResume(record, rebuildDir, regenerate: canViewSparse);
+      } else if (action == 'train_blocked') {
+        _showCenterToast(_trainBlockedReason(trainGate, photoCount));
+      } else if (action == 'capture_more') {
+        // [2026-09-08 追加拍摄] 复刻 RealityScan:新照片丢进同一个项目,坐标系
+        // 由 SfM 按图像重新对齐,不碰任何厂商 AR SDK。补完之后点「开始训练」
+        // 走现有 resume —— worker 的 resume 分支本来就是照整个 db 重建的
+        // (sfm_live_recon.dart:2295),新老照片自然一起。
+        //
+        // 每个不可用分支都必须说清原因,不做成点了没反应的死按钮。
+        final extendRoute = widget.officialExtendRoute;
+        if (record.pipelineKind != CapturePipelineKind.official) {
+          _showCenterToast('这个项目不是官方管线拍的，\n暂不支持补拍。');
+        } else if (extendRoute == null) {
+          _showCenterToast('补拍入口没有接上。');
+        } else if (widget.activeReconstructionCaptureDir != null) {
+          _showCenterToast('另一个项目正在重建中。\n等它完成后再补拍。');
+        } else if (rebuildDir == null) {
+          _showCenterToast('找不到这次拍摄的重建数据，\n无法补拍。');
+        } else {
+          final added = await extendRoute(context, record, rebuildDir);
+          if (added && mounted) {
+            setState(() {});
+            unawaited(_ensureCloudThumbs());
+          }
+        }
       } else if (action == 'rename') {
         await _renameRecord(record);
       } else if (action == 'delete') {
@@ -911,6 +1001,81 @@ class _MyWorksSectionState extends State<_MyWorksSection>
     } finally {
       widget.onRecordActionActivityChanged?.call(false);
     }
+  }
+
+  /// 这次拍摄实际留在盘上的照片张数 —— 「开始训练」置灰与否的唯一判据。
+  ///
+  /// 以磁盘为准而不是 `record.photoCount`:后者是保存那一刻的快照,用户之后
+  /// 删过照片("照片删了,数据也必须删了")它就偏大,偏大意味着闸会放行一个
+  /// 其实不足 20 张的项目。photoCount 只在没有 photosDir 的旧记录上兜底。
+  ///
+  /// 只数 JPEG、不要求 `.json` 伴生文件:孤儿恢复要伴生文件是因为它要重建
+  /// manifest(需要位姿),而这里问的是"拍了几张"。把伴生文件写进判据,一个
+  /// sidecar 丢失就会把张数静默算成 0、整个菜单错误置灰。
+  static Future<int> _countCapturePhotos(ScanRecord record) async {
+    final dirPath = record.photosDir;
+    if (dirPath == null || dirPath.isEmpty) return record.photoCount ?? 0;
+    final dir = Directory(dirPath);
+    if (!await dir.exists()) return record.photoCount ?? 0;
+    var n = 0;
+    await for (final entity in dir.list(followLinks: false)) {
+      if (entity is! File) continue;
+      final path = entity.path.toLowerCase();
+      if (path.endsWith('.jpg') || path.endsWith('.jpeg')) n++;
+    }
+    return n;
+  }
+
+  /// 「开始训练」为什么点不动 —— 每个 blocked 各说各的。
+  /// 绝不合并成一句笼统的"暂时不可用":用户下一步该做什么完全取决于是哪一个。
+  static String _trainBlockedReason(TrainGate gate, int photoCount) =>
+      switch (gate) {
+        TrainGate.ready => '',
+        TrainGate.blockedNeedMorePhotos =>
+          '要开始训练，必须至少拍摄 $kOfficialMinimumCaptureFrames 张照片。\n'
+              '这次拍摄只有 $photoCount 张，还需要 '
+              '${photosStillNeededToTrain(photoCount)} 张。\n'
+              '请继续拍摄补足。',
+        TrainGate.blockedAnotherReconstruction =>
+          '另一个项目正在重建中。\n同时只能跑一个，等它完成后再来。',
+        TrainGate.blockedNoResumableData => '这次拍摄没有留下可以续跑的重建数据，\n无法开始训练。',
+      };
+
+  /// 屏幕正中的 3 秒提示。
+  ///
+  /// 用 Overlay 而不是 SnackBar:SnackBar 贴底、会被底部 tab bar 压住,而这条
+  /// 提示是"你为什么点不动"的回答,必须落在视线中心(用户签决)。
+  void _showCenterToast(String message) {
+    final overlay = Overlay.maybeOf(context);
+    if (overlay == null) return;
+    late final OverlayEntry entry;
+    entry = OverlayEntry(
+      builder: (_) => IgnorePointer(
+        child: Center(
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 40),
+            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 18),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.82),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Text(
+              message,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 15,
+                height: 1.5,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    overlay.insert(entry);
+    Timer(const Duration(seconds: 3), () {
+      if (entry.mounted) entry.remove();
+    });
   }
 
   Future<void> _openSparseCloud(ScanRecord record, String plyPath) async {

@@ -88,6 +88,7 @@ class _AetherAppShellState extends State<AetherAppShell> {
             showDraftsSignal: _showDraftsSignal,
             officialResumeRoute: pushOfficialResumeRoute,
             officialViewerRoute: pushOfficialViewerRoute,
+            officialExtendRoute: pushOfficialExtendRoute,
           ),
         ],
       ),
