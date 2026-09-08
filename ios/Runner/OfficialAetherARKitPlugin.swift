@@ -2064,6 +2064,41 @@ class OfficialAetherARKitPlugin: NSObject {
     return (kr == KERN_SUCCESS) ? Double(info.phys_footprint) / 1_048_576.0 : -1.0
   }
 
+  /// 取 ARKit 自己的 defaultPhotoSettings;env 给了档位就覆盖,没给就原样返回
+  /// (⇒ 默认行为与旧的无参数调用等价)。顺带把解析结果打进日志 —— ARKit
+  /// 默认是哪一档我们从来没看过,这是第一手观测。
+  ///
+  /// AVCapturePhotoSettings 实例不可复用,每次拍照都要新取一个;
+  /// `defaultPhotoSettings` 的 getter 每次返回新实例,正合用。
+  @available(iOS 26.0, *)
+  private static func resolveHighResPhotoSettings(
+    session: ARSession
+  ) -> AVCapturePhotoSettings? {
+    guard let format = session.configuration?.videoFormat else { return nil }
+    let settings = format.defaultPhotoSettings
+    // env 用 getenv 直读:Swift 的 ProcessInfo.environment 是进程启动快照,
+    // 读不到 official_env.json 经 setenv 写进来的值(08-05 实测踩过同一个坑)。
+    var arm = "default"
+    if let raw = getenv("OFFICIAL_AETHER_PHOTO_QUALITY"),
+       let v = String(validatingUTF8: raw)?.lowercased(), !v.isEmpty {
+      switch v {
+      case "speed":
+        settings.photoQualityPrioritization = .speed; arm = "speed"
+      case "balanced":
+        settings.photoQualityPrioritization = .balanced; arm = "balanced"
+      case "quality":
+        settings.photoQualityPrioritization = .quality; arm = "quality"
+      default:
+        arm = "default(bad env \(v))"
+      }
+    }
+    let dims = settings.maxPhotoDimensions
+    NSLog("[HIRES-SETTINGS] arm=%@ qualityPrioritization=%ld maxPhotoDimensions=%dx%d",
+          arm, settings.photoQualityPrioritization.rawValue,
+          dims.width, dims.height)
+    return settings
+  }
+
   private func captureHighResolutionStill(
     highresPath: String,
     previewPath: String,
@@ -2115,7 +2150,7 @@ class OfficialAetherARKitPlugin: NSObject {
       return
     }
     if #available(iOS 16.0, *) {
-      session.captureHighResolutionFrame { [weak self] frame, error in
+      let onHighResFrame: (ARFrame?, Error?) -> Void = { [weak self] frame, error in
         guard let self else { return }
         if let error {
           completion(nil, error)
@@ -2415,6 +2450,36 @@ class OfficialAetherARKitPlugin: NSObject {
             DispatchQueue.main.async { completion(nil, error) }
           }
         }
+      }
+      // ══ iOS 26 起 ARKit 才允许把 AVCapturePhotoSettings 传进来 ══
+      //
+      // 2026-09-08 实测(未命名(26), n=20):快门发出到 ARFrame 到手 **610 ms**
+      // 中位,而 ARFrame 自己的曝光时间戳只比请求晚 67 ms(有时为负 —— iOS 17
+      // 起的 Zero Shutter Lag 会从环形缓冲里取过去的帧)。也就是说照片早就曝好了,
+      // 那 ~540 ms 是 ARKit 自己的处理与投递。三端规矩里的早回调
+      // (willCapturePhotoFor / onCaptureStarted / captureStartWithInfo)在 ARKit
+      // 高清取图这条路上**拿不到** —— ARSession 不暴露 AVCaptureSession
+      // (Apple 论坛:no supported way),WWDC26 讲高分辨率拍照那场也通篇没提它。
+      //
+      // 所以唯一能碰的是**让 ARKit 自己快一点**:iOS 26 的
+      // `captureHighResolutionFrameUsingPhotoSettings:` + ARVideoFormat 的
+      // `defaultPhotoSettings`。我们此前一直走 iOS 16 那个没有任何参数的版本 ——
+      // 这是一条从没开过的库自带开关。
+      //
+      // **默认行为一个字节不变**:不设 env 时原样传 ARKit 自己的
+      // defaultPhotoSettings,等价于旧调用。换档要动画质(多帧融合),画质掉了
+      // 特征就少、点就少 —— 那不叫无损,所以只做成 env 旋钮由实测裁决:
+      //   OFFICIAL_AETHER_PHOTO_QUALITY = speed | balanced | quality
+      // 一次装机、改 env 换臂,不必重装(设备 env 文件是共享单文件,
+      // 推送必须读-改-写合并)。
+      // 同时把 ARKit 的默认档打进日志 —— 我们从来不知道它默认是哪一档,
+      // 这是第一手观测,不是猜。
+      if #available(iOS 26.0, *),
+         let settings = Self.resolveHighResPhotoSettings(session: session) {
+        session.captureHighResolutionFrame(using: settings,
+                                           completion: onHighResFrame)
+      } else {
+        session.captureHighResolutionFrame(completion: onHighResFrame)
       }
     } else {
       completion(nil, NSError(
