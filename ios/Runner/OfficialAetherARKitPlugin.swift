@@ -4056,6 +4056,19 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
       // [瞬时快门] 12MP 静照后台落盘,文件可能还没写完 → 解码读空。卡片
       // 锚点/几何已建好(贴镜头),只差纹理;每 150ms 重试直到落盘(最多
       // 30 次~4.5s)。位姿/几何在 spec 里,重试不动位姿。
+      // 2026-09-08:**先把黑色相框立起来**,再去等贴图。
+      // 用户报"震动和黑色相框之间有明显延迟",实测中位 2090 ms(1269–8020)。
+      // 根因:build 116 把震动提前到 ARFrame 到手(照片物理存在的那一刻),
+      // 而预览 JPEG 要等 jpegEncodeQueue 写完才落盘 —— 这个 guard 在解不出
+      // 缩略图时**直接 return**,于是边框环/背板/照片面一个都还没建,卡片要
+      // 等文件写完才第一次出现。上面那段注释说"锚点/几何已建好,只差纹理",
+      // 代码并不是这么做的。
+      // 相框(黑边框环 + 不透明背板 + 正面黑填充)一个像素都不需要照片,
+      // 所以立刻建;照片面等贴图解出来再换上。不新增任何常数:重试节奏
+      // 仍是既有的 150 ms × 30 次。
+      if photoCardNodes[name] == nil {
+        buildPhotoCardShell(spec: spec, name: name, on: node)
+      }
       let tries = OfficialAetherARKitPlugin.photoCardThumbRetries[name, default: 0]
       if tries < 30 {
         OfficialAetherARKitPlugin.photoCardThumbRetries[name] = tries + 1
@@ -4109,6 +4122,16 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
     mat.diffuse.wrapS = .clamp
     mat.diffuse.wrapT = .clamp
     geometry.materials = [mat]
+
+    // 相框已经立起来了(上面的占位路径)⇒ 只把正面的黑填充换成照片,
+    // 边框/背板/四态材质都不重建,位姿几何一动不动。
+    if let shell = photoCardNodes[name] {
+      photoCardFrontFill[name]?.removeFromParentNode()
+      photoCardFrontFill.removeValue(forKey: name)
+      shell.addChildNode(SCNNode(geometry: geometry))
+      NSLog("[PHOTOCARD] renderer: photo swapped into standing shell for %@", name)
+      return
+    }
 
     // OPAQUE BACK: same quad, rendered only from the AWAY side (cullMode
     // .back = the face opposite the photo), so orbiting behind the card shows a
@@ -4168,6 +4191,87 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
       frameMat.diffuse.contents = c
       backMat.diffuse.contents = c
     }
+  }
+
+  /// 正面黑填充节点(照片解出来后被换掉);key = anchor name。
+  /// 与 photoCardNodes 同生命周期,故同为实例成员。
+  private var photoCardFrontFill: [String: SCNNode] = [:]
+
+  /// 立起「黑色相框」——**不需要照片的那三件**:黑边框环、不透明背板、
+  /// 正面黑填充。位姿/几何全部来自 spec,与带照片的那条路径逐字同源,
+  /// 所以照片换上时卡片不会跳动。
+  ///
+  /// 为什么要有这个:用户底线是「震动和黑色相框同时出现」。震动发在照片
+  /// 物理存在那一刻(ARFrame 到手),而预览 JPEG 还要等后台编码落盘 ——
+  /// 相框一个像素都不依赖那个文件,没有理由一起等。
+  private func buildPhotoCardShell(
+    spec: OfficialAetherARKitPlugin.PhotoCardSpec,
+    name: String,
+    on node: SCNNode
+  ) {
+    let positionSource = SCNGeometrySource(vertices: spec.localCorners)
+    let element = SCNGeometryElement(indices: [Int32]([0, 1, 2, 0, 2, 3]),
+                                     primitiveType: .triangles)
+
+    // 正面黑填充:占住照片的位置,解出贴图后被移除换成照片面。
+    // 参数与照片材质逐项对齐(cullMode/lighting/transparency/depth),
+    // 这样换上照片时只有内容变、形态不变。
+    let fillGeo = SCNGeometry(sources: [positionSource], elements: [element])
+    let fillMat = SCNMaterial()
+    fillMat.diffuse.contents = UIColor.black
+    fillMat.isDoubleSided = false
+    fillMat.cullMode = .front
+    fillMat.lightingModel = .constant
+    fillMat.transparency = 0.7
+    fillMat.writesToDepthBuffer = false
+    fillGeo.materials = [fillMat]
+
+    let backGeo = SCNGeometry(sources: [positionSource], elements: [element])
+    let backMat = SCNMaterial()
+    backMat.diffuse.contents = UIColor.black
+    backMat.isDoubleSided = false
+    backMat.cullMode = .back
+    backMat.lightingModel = .constant
+    backMat.transparency = 1.0
+    backMat.writesToDepthBuffer = false
+    backGeo.materials = [backMat]
+
+    let inner = spec.localCorners
+    let outer = inner.map { SCNVector3($0.x * 1.12, $0.y * 1.12, $0.z * 1.12) }
+    let frameVerts = inner + outer
+    let frameIdx: [Int32] = [4, 5, 1, 4, 1, 0,
+                             5, 6, 2, 5, 2, 1,
+                             6, 7, 3, 6, 3, 2,
+                             7, 4, 0, 7, 0, 3]
+    let frameGeo = SCNGeometry(
+      sources: [SCNGeometrySource(vertices: frameVerts)],
+      elements: [SCNGeometryElement(indices: frameIdx, primitiveType: .triangles)])
+    let frameMat = SCNMaterial()
+    frameMat.diffuse.contents = UIColor.black
+    frameMat.isDoubleSided = true
+    frameMat.lightingModel = .constant
+    frameMat.transparency = 0.95
+    frameMat.writesToDepthBuffer = false
+    frameGeo.materials = [frameMat]
+
+    let container = SCNNode()
+    container.addChildNode(SCNNode(geometry: frameGeo))
+    container.addChildNode(SCNNode(geometry: backGeo))
+    let fillNode = SCNNode(geometry: fillGeo)
+    container.addChildNode(fillNode)
+    node.addChildNode(container)
+    photoCardNodes[name] = container
+    photoCardFrontFill[name] = fillNode
+    photoCardStateMats[name] = [frameMat, backMat]
+    let initialState = OfficialAetherARKitPlugin.photoCardState(
+      forPath: spec.evidencePath
+    )
+    if initialState != 0 {
+      let c = Self.photoCardStateColor(initialState)
+      frameMat.diffuse.contents = c
+      backMat.diffuse.contents = c
+    }
+    NSLog("[PHOTOCARD] shell up (black frame, photo pending) for %@", name)
   }
 
   /// Per-frame: distance-compensated scaling for the floating photo cards +
@@ -4243,6 +4347,7 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
       }
       photoCardNodes.removeValue(forKey: name)
       photoCardStateMats.removeValue(forKey: name)
+      photoCardFrontFill.removeValue(forKey: name)  // 与 photoCardNodes 同生命周期
     }
     guard anchor.name == Self.subjectAnchorName else { return }
     NSLog("[OfficialAetherARKitPreview] subject anchor removed; marker went with it")
