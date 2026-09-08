@@ -669,13 +669,30 @@ class OfficialAetherARKitPlugin: NSObject {
   ///   OFFICIAL_AETHER_QUALITY_HZ = 6(默认,行为一字不变)/ 12 / 15 / 30 …
   /// 代价看同一个 5 s 窗口的 `quality_window` 遥测(fires/skips/avgMs)
   /// 加上热态与点数,四个数一起裁。
-  private static let qualityInterval: TimeInterval = {
-    let fallback = 1.0 / 6.0
+  /// 支持两种写法:
+  ///   `12`    固定 12 Hz
+  ///   `6,12`  **同一场里交替**,每 5 s 诊断窗口换一次臂
+  /// 交替是因为「拍不出完全一样的东西」—— 两场对比不可比,同场交替才可比
+  /// (项目规矩:交替 A/B 是唯一合法度量,08-08 提速日总账)。
+  /// 两臂看到同一个场景、同一个热态、同一双手,代价三项(avg_compute_ms /
+  /// skips / 热态)因此是**场内对照**。
+  /// 缺省 [6] ⇒ 行为与改动前一字不差。
+  private static let qualityHzArms: [Double] = {
     guard let raw = getenv("OFFICIAL_AETHER_QUALITY_HZ"),
-          let text = String(validatingUTF8: raw),
-          let hz = Double(text), hz.isFinite, hz > 0 else { return fallback }
-    return 1.0 / hz
+          let text = String(validatingUTF8: raw) else { return [6.0] }
+    let arms = text.split(separator: ",").compactMap { part -> Double? in
+      guard let v = Double(part.trimmingCharacters(in: .whitespaces)),
+            v.isFinite, v > 0 else { return nil }
+      return v
+    }
+    return arms.isEmpty ? [6.0] : arms
   }()
+  /// 当前臂。只在 5 s 诊断窗口收尾处推进(那里同时把该窗口的代价落遥测,
+  /// 所以每条 quality_window 记录天然属于且只属于一个臂)。
+  private var qualityArmIndex = 0
+  private var qualityInterval: TimeInterval {
+    1.0 / Self.qualityHzArms[qualityArmIndex % Self.qualityHzArms.count]
+  }
 
   /// RealityScan-style capture preview feed. This is intentionally
   /// throttled and decimated: native only reads ARKit's official
@@ -3121,7 +3138,7 @@ class OfficialAetherARKitPlugin: NSObject {
     // from silently treating those bytes as the delivery pose.
     qDiagPoseEvents += 1
     if qDiagWindowStart == 0 { qDiagWindowStart = frame.timestamp }
-    if frame.timestamp - lastQualityComputeTime >= Self.qualityInterval {
+    if frame.timestamp - lastQualityComputeTime >= qualityInterval {
       if qualityComputeInFlight {
         // Defensive guard: previous compute hasn't finished yet (shouldn't
         // happen if compute < interval, but track for diagnostic visibility).
@@ -3191,7 +3208,9 @@ class OfficialAetherARKitPlugin: NSObject {
       // (avgMs 是否逼近帧预算、skips 是否开始出现)。NSLog 只进设备控制台,
       // 电脑侧读不到 —— 那等于做自己看不见的测量。
       OfficialPwNativeTelemetry.shared.log("quality_window", [
-        "target_hz": 1.0 / Self.qualityInterval,
+        "target_hz": 1.0 / qualityInterval,
+        "arm_index": qualityArmIndex % Self.qualityHzArms.count,
+        "arms": Self.qualityHzArms.count,
         "fires": qDiagFires,
         "skips": qDiagSkips,
         "avg_compute_ms": avgMs,
@@ -3202,6 +3221,8 @@ class OfficialAetherARKitPlugin: NSObject {
         format: "[OfficialAetherARKit] 5s quality: fires=%d skips=%d avgMs=%.1f attached=%d/%d",
         qDiagFires, qDiagSkips, avgMs, qDiagAttached, qDiagPoseEvents
       ))
+      // 窗口收尾处换臂:每条 quality_window 只属于一个臂,天然可比。
+      qualityArmIndex += 1
       qDiagWindowStart = frame.timestamp
       qDiagFires = 0
       qDiagSkips = 0
