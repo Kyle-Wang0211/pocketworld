@@ -1168,20 +1168,23 @@ class OfficialAetherARKitPlugin: NSObject {
       let liveT = camera.transform
       let photoT = OfficialAetherARKitPlugin
         .photoPoseByEvidencePath.removeValue(forKey: evidencePath)
-      // 🔴 2026-09-08 回退:用户报"AR 相框里的照片变成横向",嫌疑就是这一刀。
-      // 我把数学推了三遍是对的(R = T⁻¹·V⁻¹ 是纯旋转,T_photo·R 等价于拿照片
-      // 位姿算 viewMatrix),存的也确实是同一约定的 frame.camera.transform,
-      // 而实测 `shift_m` 中位只有 **1.1 cm** —— 1 厘米的位移变不出 90° 旋转。
-      // **结论:我解释不了这个症状,说明我的模型里有洞。**
+      // ══ 用**照片自己的**位姿 —— 并且把朝向显式量出来 ══
       //
-      // 收益也远小于预期:我原本按"相机速度 0.135 m/s × 投递延迟 220–610 ms"
-      // 推出 3–8 cm,实测只有 1.1 cm(因为那几场 ARKit 段只有 126 ms、用户走得慢)。
-      // **1.1 cm 的收益换一个讲不清的可见回归,不划算 ⇒ 回到实时位姿。**
-      // 探针留着:shift_m 继续记,它是这条结论的证据,也是将来重开这一刀的依据。
-      let camT = liveT
+      // 2026-09-08 用户报「AR 相框里的照片变成横向」,并指出关键一点:
+      // **改算法(位姿)把 UI(纹理朝向)弄坏了,这本身就是耦合的证据;
+      // 回退只是把耦合藏起来,下次还会犯。** 所以不退,改成把朝向显式化 + 可量。
+      //
+      // 我先前说"数学推了三遍是对的所以查不出来" —— 那是**纸上的**推导,
+      // 没在设备上量过一次。下面三个角度就是把它变成可证伪的:
+      //   card_up_vs_live_deg / card_right_vs_live_deg —— 照片位姿导出的
+      //     卡片基向量,与实时位姿导出的差多少度。若 ~90° 就是旋转错了;
+      //     若 ~0° 则旋转没问题,横向的根在纹理那一侧,与位姿无关。
+      //   quad_aspect —— 四角算出来的宽高比。竖版应 <1;>1 就是几何真的躺倒了。
+      // 一场就能定论,不用再猜。
+      let camT = photoT ?? liveT
       let camPos = simd_make_float3(camT.columns.3)
       OfficialPwNativeTelemetry.shared.log("photocard_pose_source", [
-        "source": photoT == nil ? "live_only" : "live_used_photo_available",
+        "source": photoT == nil ? "live_fallback" : "photo_pose",
         // 纯观测:照片位姿与实时位姿差多远(不再用来放卡片)。
         "shift_m": Double(simd_length(
           simd_make_float3((photoT ?? liveT).columns.3)
@@ -1207,8 +1210,12 @@ class OfficialAetherARKitPlugin: NSObject {
       let proj = camera.projectionMatrix(for: .portrait,
                                          viewportSize: viewportSize,
                                          zNear: 0.001, zFar: 1000)
-      // 回退到 ARKit 自己算的 viewMatrix —— 不再自己推朝向修正 R。
-      let invView = camera.viewMatrix(for: .portrait).inverse
+      // 朝向修正 R 从 ARKit 自己的 viewMatrix 反推(V⁻¹ = T·R ⇒ R = T⁻¹·V⁻¹),
+      // 再套到照片位姿上。R 是纯旋转、与 T 无关 —— 这一条下面用实测角度验证,
+      // 不再只停在纸上。
+      let liveInvView = camera.viewMatrix(for: .portrait).inverse
+      let orientationR = liveT.inverse * liveInvView
+      let invView = camT * orientationR
       // View space: +X right, +Y up, -Z forward. halfX/halfY 都按同一 3:4
       // 视口投影算 —— 一致(上次坏在 halfX 全屏、halfY 却强设 3:4 错配)。
       let halfX = z / proj.columns.0.x
@@ -1227,6 +1234,28 @@ class OfficialAetherARKitPlugin: NSObject {
       }
       let centroid = (worldCorners[0] + worldCorners[1]
                       + worldCorners[2] + worldCorners[3]) / 4
+      // ── 朝向解耦的判据(纯观测,不改变任何行为)──
+      // 纹理的"上"必须只由卡片的基向量决定,不该被位姿这条链悄悄改掉。
+      // 这里把两条链各自导出的基向量摆出来比:
+      //   ~0°  ⇒ 位姿链没有旋转差,「照片横向」的根在纹理侧,与本刀无关
+      //   ~90° ⇒ 位姿链确实带进了 90° 旋转,本刀就是元凶,且元凶可定位
+      // quad_aspect 是几何自证:竖版应 <1,>1 说明四角真的躺倒了。
+      let liveUp = simd_normalize(simd_make_float3(liveInvView.columns.1))
+      let cardUp = simd_normalize(simd_make_float3(invView.columns.1))
+      let liveRight = simd_normalize(simd_make_float3(liveInvView.columns.0))
+      let cardRight = simd_normalize(simd_make_float3(invView.columns.0))
+      let degOf: (simd_float3, simd_float3) -> Double = { a, b in
+        Double(acos(max(-1, min(1, simd_dot(a, b)))) * 180 / .pi)
+      }
+      let qW = simd_length(worldCorners[1] - worldCorners[0])
+      let qH = simd_length(worldCorners[3] - worldCorners[0])
+      OfficialPwNativeTelemetry.shared.log("photocard_orientation", [
+        "card_up_vs_live_deg": degOf(cardUp, liveUp),
+        "card_right_vs_live_deg": degOf(cardRight, liveRight),
+        "quad_aspect": Double(qH > 0 ? qW / qH : -1),
+        "half_x": Double(halfX),
+        "half_y": Double(halfY),
+      ])
       let localCorners = worldCorners.map {
         SCNVector3($0.x - centroid.x, $0.y - centroid.y, $0.z - centroid.z)
       }
