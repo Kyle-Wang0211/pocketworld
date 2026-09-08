@@ -448,7 +448,19 @@ class OfficialAetherARKitPlugin: NSObject {
   static var photoCardSpecs: [String: PhotoCardSpec] = [:]
   /// 证据 JPEG 路径 → **照片自己的**相机位姿(ARFrame 到手那一刻记下)。
   /// addPhotoCard 用它替代 `session.currentFrame`,见那里的长注释。
-  static var photoPoseByEvidencePath: [String: simd_float4x4] = [:]
+  /// 证据 JPEG 路径 → **那一帧自己的** portrait 相机基(= ARKit 给这一帧算的
+  /// `viewMatrix(for:.portrait).inverse`)与位姿。
+  ///
+  /// 🔴 2026-09-08 定位「AR 相框里的照片变成横向」——**耦合在这里**:
+  /// 照片在屏幕上的"上"方向,是从位姿矩阵的基向量里**隐式**推出来的,
+  /// 没有任何独立定义 ⇒ 位姿路径上任何改动都能悄悄把照片转过去。
+  /// 我那一刀干的正是这件事:用**实时帧**反推朝向修正 R = T_live⁻¹·V_live⁻¹,
+  /// 再套到**高清帧**的位姿上。可 `viewMatrix(for:)` 的朝向修正是跟着那一帧的
+  /// `imageResolution` 朝向走的 —— 高清帧 4032×3024 与预览帧格式不同,
+  /// 两者的 R 不是同一个,差值正好落在 90° 这一档。
+  /// **改法是不再手推代数跨帧搭桥,直接问 ARKit 那一帧的 viewMatrix。**
+  static var photoBasisByEvidencePath:
+    [String: (invView: simd_float4x4, transform: simd_float4x4)] = [:]
   // [瞬时快门 2026-07-19] 卡片缩略图解码重试计数:photo43 下 12MP 静照后台
   // 落盘,didAdd 建卡时文件可能还没写完;每 150ms 重试直到落盘(最多~4.5s)。
   static var photoCardThumbRetries: [String: Int] = [:]
@@ -1166,8 +1178,8 @@ class OfficialAetherARKitPlugin: NSObject {
       // 与位姿无关。朝向修正 R 从 ARKit 自己的 viewMatrix 反推,不自己编:
       //   V = viewMatrix(for:.portrait),V⁻¹ = T · R ⇒ R = T⁻¹ · V⁻¹
       let liveT = camera.transform
-      let photoT = OfficialAetherARKitPlugin
-        .photoPoseByEvidencePath.removeValue(forKey: evidencePath)
+      let photoBasis = OfficialAetherARKitPlugin
+        .photoBasisByEvidencePath.removeValue(forKey: evidencePath)
       // ══ 用**照片自己的**位姿 —— 并且把朝向显式量出来 ══
       //
       // 2026-09-08 用户报「AR 相框里的照片变成横向」,并指出关键一点:
@@ -1181,14 +1193,13 @@ class OfficialAetherARKitPlugin: NSObject {
       //     若 ~0° 则旋转没问题,横向的根在纹理那一侧,与位姿无关。
       //   quad_aspect —— 四角算出来的宽高比。竖版应 <1;>1 就是几何真的躺倒了。
       // 一场就能定论,不用再猜。
-      let camT = photoT ?? liveT
+      let camT = photoBasis?.transform ?? liveT
       let camPos = simd_make_float3(camT.columns.3)
       OfficialPwNativeTelemetry.shared.log("photocard_pose_source", [
-        "source": photoT == nil ? "live_fallback" : "photo_pose",
+        "source": photoBasis == nil ? "live_fallback" : "photo_frame_basis",
         // 纯观测:照片位姿与实时位姿差多远(不再用来放卡片)。
         "shift_m": Double(simd_length(
-          simd_make_float3((photoT ?? liveT).columns.3)
-            - simd_make_float3(liveT.columns.3))),
+          simd_make_float3(camT.columns.3) - simd_make_float3(liveT.columns.3))),
       ])
       let z: Float = Self.photoCardCloseZ
       NSLog("[PHOTOCARD] addPhotoCard close-anchor z=%.3f", z)
@@ -1213,9 +1224,10 @@ class OfficialAetherARKitPlugin: NSObject {
       // 朝向修正 R 从 ARKit 自己的 viewMatrix 反推(V⁻¹ = T·R ⇒ R = T⁻¹·V⁻¹),
       // 再套到照片位姿上。R 是纯旋转、与 T 无关 —— 这一条下面用实测角度验证,
       // 不再只停在纸上。
+      // **不再手推代数**:直接用 ARKit 给那一帧算好的 portrait 基。
+      // 拿不到就退回实时帧的(旧行为),绝不自己合成一个。
       let liveInvView = camera.viewMatrix(for: .portrait).inverse
-      let orientationR = liveT.inverse * liveInvView
-      let invView = camT * orientationR
+      let invView = photoBasis?.invView ?? liveInvView
       // View space: +X right, +Y up, -Z forward. halfX/halfY 都按同一 3:4
       // 视口投影算 —— 一致(上次坏在 halfX 全屏、halfY 却强设 3:4 错配)。
       let halfX = z / proj.columns.0.x
@@ -1535,7 +1547,7 @@ class OfficialAetherARKitPlugin: NSObject {
   static func clearPhotoCards(in session: ARSession?) {
     // 会话开场清一次:photoPoseByEvidencePath 是 static,不清会跨会话累积
     // (每条 64 B,量小,但静默增长的表迟早咬人)。
-    photoPoseByEvidencePath.removeAll()
+    photoBasisByEvidencePath.removeAll()
     if let session = session {
       for a in photoCardAnchors { session.remove(anchor: a) }
     }
@@ -2374,8 +2386,10 @@ class OfficialAetherARKitPlugin: NSObject {
         // 或落盘失败,Dart 侧既有的 removePhotoCard + 失败提示会把这张撤掉。
         // 顺手记下**照片自己的**位姿。addPhotoCard 稍后会用它,而不是
         // 调用那一刻的实时位姿 —— 见 addPhotoCard 里的定罪注释。
-        OfficialAetherARKitPlugin.photoPoseByEvidencePath[highresPath] =
-          frame.camera.transform
+        OfficialAetherARKitPlugin.photoBasisByEvidencePath[highresPath] = (
+          invView: frame.camera.viewMatrix(for: .portrait).inverse,
+          transform: frame.camera.transform
+        )
         let capturedAtHostMs = Date().timeIntervalSince1970 * 1000.0
         DispatchQueue.main.async {
           self.methodChannel.invokeMethod(
