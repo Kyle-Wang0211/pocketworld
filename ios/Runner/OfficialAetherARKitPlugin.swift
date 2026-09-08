@@ -2332,6 +2332,11 @@ class OfficialAetherARKitPlugin: NSObject {
         let ciContext = self.ciContext
 
         self.jpegEncodeQueue.async {
+          // 关键路径逐段计时。完成回调一天不返回,Dart 的 awaitingCaptureBaseline
+          // 就一天不清、下一次自动拍就一天不许判 —— 所以这条路径上每一毫秒都
+          // 既是延迟也是吞吐。逐段量出来才知道下一刀该切哪儿(2026-09-08)。
+          let tStart = CACurrentMediaTime()
+          var tGray = tStart, tDirs = tStart, tJpeg = tStart, tSfmGray = tStart
           do {
             let gray1024 = deriveAuxiliary
               ? Self.extractGray(
@@ -2342,6 +2347,7 @@ class OfficialAetherARKitPlugin: NSObject {
             let gray128 = deriveAuxiliary
               ? Self.extractGray128(pixelBuffer)
               : nil
+            tGray = CACurrentMediaTime()
             try FileManager.default.createDirectory(
               atPath: (highresPath as NSString).deletingLastPathComponent,
               withIntermediateDirectories: true
@@ -2358,57 +2364,14 @@ class OfficialAetherARKitPlugin: NSObject {
                 withIntermediateDirectories: true
               )
             }
+            tDirs = CACurrentMediaTime()
             try Self.encodeCVPixelBufferAsJpeg(
               pixelBuffer,
               to: URL(fileURLWithPath: highresPath),
               quality: CGFloat(quality),
               ciContext: ciContext
             )
-            if deriveAuxiliary {
-              try Self.encodeCIImageAsJpeg(
-                Self.makePreviewImage(from: ciImage),
-                to: URL(fileURLWithPath: previewPath),
-                quality: CGFloat(quality),
-                ciContext: ciContext
-              )
-            }
-
-            if let metadataPath {
-              var metadata: [String: Any] = [
-                "version": metadataSchemaVersion,
-                "native_role": "thin_arkit_high_res_still_executor",
-                "t": timestamp,
-                "request_frame_timestamp": requestFrameTimestamp,
-                "request_to_capture_dt": requestToCaptureDelta,
-                "image_w": imageWidth,
-                "image_h": imageHeight,
-                "extrinsic": cameraTransform,
-                "intrinsics_fxfycxcy": intrinsicFxFyCxCy,
-                "trackingStateName": trackingStateName,
-                "tracking_state": trackingStateName,
-                "is_tracking": isTracking,
-                "anchors_world": anchorsWorld,
-                "anchor_ids": anchorIds.map { NSNumber(value: $0) },
-                "scale_align_premetrics": [
-                  "anchor_depth_count": scaleAlignPremetrics.anchorDepthCount,
-                  "anchor_depth_min_m": scaleAlignPremetrics.anchorDepthMinM,
-                  "anchor_depth_max_m": scaleAlignPremetrics.anchorDepthMaxM,
-                  "anchor_depth_span_m": scaleAlignPremetrics.anchorDepthSpanM,
-                  "reliability_prior": scaleAlignPremetrics.reliabilityPrior,
-                ],
-              ]
-              if let dartSaveContract {
-                metadata["dart_save_contract"] = dartSaveContract
-              }
-              if let targetTimestamp {
-                metadata["save_target_t"] = targetTimestamp
-                metadata["save_dt"] = abs(timestamp - targetTimestamp)
-              } else {
-                metadata["save_dt"] = 0.0
-              }
-              let json = try PWJSONSafety.data(withJSONObject: metadata)
-              try json.write(to: URL(fileURLWithPath: metadataPath))
-            }
+            tJpeg = CACurrentMediaTime()
 
             var payload: [String: Any] = [
               "highresPath": highresPath,
@@ -2451,7 +2414,80 @@ class OfficialAetherARKitPlugin: NSObject {
               payload["sfm_gray_w"] = g.width
               payload["sfm_gray_h"] = g.height
             }
+            tSfmGray = CACurrentMediaTime()
+            // ══ 先返回,再写没人等的东西 ══
             DispatchQueue.main.async { completion(payload, nil) }
+            let ms = { (a: CFTimeInterval, b: CFTimeInterval) in Int((b - a) * 1000.0) }
+            OfficialPwNativeTelemetry.shared.log("hires_critical_path", [
+              "gray_ms": ms(tStart, tGray),
+              "mkdir_ms": ms(tGray, tDirs),
+              "jpeg12mp_ms": ms(tDirs, tJpeg),
+              "sfmgray_ms": ms(tJpeg, tSfmGray),
+              "total_ms": ms(tStart, tSfmGray),
+            ])
+            // 预览 JPEG 与元数据 JSON **挪到完成回调之后**:
+            //  · `_highres_preview.jpg` 全仓只有一处引用(拼路径那行),
+            //    `still.previewPath` 只被旧的 lib/capture/ 路径读,官方采集
+            //    这条路从不读它,归档/上传也不带它 —— 却每张都在关键路径上
+            //    编码+落盘一次。文件照写(不删任何数据),只是不再让用户等它。
+            //  · 元数据 sidecar 是事后取证用的(2026-09-07 定位 build 113 的
+            //    通道缺陷就是靠它),留着;但没有任何同步消费者,同样后置。
+            // 失败只记账不改判:照片此刻已经成立,完成回调已经发出去了。
+            let tAfter = CACurrentMediaTime()
+            do {
+            if deriveAuxiliary {
+              try Self.encodeCIImageAsJpeg(
+                Self.makePreviewImage(from: ciImage),
+                to: URL(fileURLWithPath: previewPath),
+                quality: CGFloat(quality),
+                ciContext: ciContext
+              )
+            }
+            if let metadataPath {
+              var metadata: [String: Any] = [
+                "version": metadataSchemaVersion,
+                "native_role": "thin_arkit_high_res_still_executor",
+                "t": timestamp,
+                "request_frame_timestamp": requestFrameTimestamp,
+                "request_to_capture_dt": requestToCaptureDelta,
+                "image_w": imageWidth,
+                "image_h": imageHeight,
+                "extrinsic": cameraTransform,
+                "intrinsics_fxfycxcy": intrinsicFxFyCxCy,
+                "trackingStateName": trackingStateName,
+                "tracking_state": trackingStateName,
+                "is_tracking": isTracking,
+                "anchors_world": anchorsWorld,
+                "anchor_ids": anchorIds.map { NSNumber(value: $0) },
+                "scale_align_premetrics": [
+                  "anchor_depth_count": scaleAlignPremetrics.anchorDepthCount,
+                  "anchor_depth_min_m": scaleAlignPremetrics.anchorDepthMinM,
+                  "anchor_depth_max_m": scaleAlignPremetrics.anchorDepthMaxM,
+                  "anchor_depth_span_m": scaleAlignPremetrics.anchorDepthSpanM,
+                  "reliability_prior": scaleAlignPremetrics.reliabilityPrior,
+                ],
+              ]
+              if let dartSaveContract {
+                metadata["dart_save_contract"] = dartSaveContract
+              }
+              if let targetTimestamp {
+                metadata["save_target_t"] = targetTimestamp
+                metadata["save_dt"] = abs(timestamp - targetTimestamp)
+              } else {
+                metadata["save_dt"] = 0.0
+              }
+              let json = try PWJSONSafety.data(withJSONObject: metadata)
+              try json.write(to: URL(fileURLWithPath: metadataPath))
+            }
+              OfficialPwNativeTelemetry.shared.log("hires_deferred_writes", [
+                "ms": Int((CACurrentMediaTime() - tAfter) * 1000.0),
+              ])
+            } catch {
+              OfficialPwNativeTelemetry.shared.log("hires_deferred_writes", [
+                "ms": Int((CACurrentMediaTime() - tAfter) * 1000.0),
+                "error": String(describing: error),
+              ])
+            }
           } catch {
             DispatchQueue.main.async { completion(nil, error) }
           }
