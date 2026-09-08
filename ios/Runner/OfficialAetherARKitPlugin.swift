@@ -450,6 +450,12 @@ class OfficialAetherARKitPlugin: NSObject {
   // 落盘,didAdd 建卡时文件可能还没写完;每 150ms 重试直到落盘(最多~4.5s)。
   static var photoCardThumbRetries: [String: Int] = [:]
   private static var photoCardAnchors: [ARAnchor] = []
+  /// 地图还没成熟时先不落世界锚的卡片:名字 → (待落的锚, 相机前距离 z, 记入时刻)。
+  /// 见 addPhotoCard 里 worldMappingStatus 那段。渲染器每帧检查,一旦地图转
+  /// extending/mapped 就迁移。
+  static var photoCardPendingAnchors:
+    [String: (anchor: ARAnchor, z: Float, halfX: Float, halfY: Float,
+              evidencePath: String, since: CFTimeInterval)] = [:]
   private static var photoCardCounter = 0
 
   /// T6 — live sparse feature-point overlay toggle. Read by the render loop in
@@ -1143,7 +1149,43 @@ class OfficialAetherARKitPlugin: NSObject {
       anchorT.columns.3 = simd_float4(centroid, 1)
       let cardAnchor = ARAnchor(name: cardName, transform: anchorT)
       OfficialAetherARKitPlugin.photoCardAnchors.append(cardAnchor)
-      session.add(anchor: cardAnchor)
+      // ══ 地图没成熟就先不落世界锚 ══
+      //
+      // 2026-09-08 定罪(读代码,非埋点):用户报"第一张漂移、AR 相框消失,
+      // 后面正常"。逐条排除后只剩 ARKit 自己移除锚点这一条路 ——
+      // Dart 侧零撤卡(30/30 hires_still 全 ok)、官方采集从不调 lockOrigin、
+      // startSession 只在页面挂载时跑一次、clearPhotoCards 只在开场调一次。
+      // `renderer(didRemove:)` 里那行注释早写着这个症状:
+      //   "ANCHOR REMOVED by ARKit ... world-map re-optimization"
+      //
+      // 为什么偏偏第一张:它是**唯一一张被放进未成熟地图**的卡片。实测该场
+      // 会话 11:05:12.5 起、11:05:14.0 跟踪才转 normal、11:05:15.2 就按了第一次
+      // 快门 —— 地图只有 1.2 秒。ARKit 随后重优化,先挪锚点(漂移)再丢掉它
+      // (消失);后面的卡片进的是成熟地图,所以没事。
+      //
+      // 我们此前**从未检查过地图成熟度**(全仓 worldMappingStatus 0 处),
+      // 而 ARKit 头文件把语义写得很明白:
+      //   NotAvailable 地图不可用 / Limited 该位置不建议用于重定位 /
+      //   Extending 正在扩展 / Mapped 已充分建图
+      // 判据来自 Apple 自己的枚举,不是我编的阈值。
+      //
+      // **延迟不变**:卡片此刻照样立刻出现,只是先挂在相机上(屏幕空间,
+      // 位置就是它在世界里会在的地方 —— 镜头正前方 z 处);地图一转
+      // extending/mapped 就迁到世界锚,形态复原。
+      let mapStatus = frame.worldMappingStatus
+      let mature = (mapStatus == .extending || mapStatus == .mapped)
+      OfficialPwNativeTelemetry.shared.log("photocard_anchor_decision", [
+        "name": cardName,
+        "world_mapping_status": mapStatus.rawValue,
+        "deferred": mature ? 0 : 1,
+      ])
+      if mature {
+        session.add(anchor: cardAnchor)
+      } else {
+        OfficialAetherARKitPlugin.photoCardPendingAnchors[cardName] =
+          (anchor: cardAnchor, z: z, halfX: halfX, halfY: halfY,
+           evidencePath: evidencePath, since: CACurrentMediaTime())
+      }
       result(nil)
     // [AF-SELFHEAL 2026-08-10 用户签] 自动对焦自愈的薄原语(无 UI、无手势,
     // 手动对焦已按用户指示删除)。病灶:失焦死锁 —— 糊掉的低纹理画面既无
@@ -4174,7 +4216,9 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
       // 所以立刻建;照片面等贴图解出来再换上。不新增任何常数:重试节奏
       // 仍是既有的 150 ms × 30 次。
       if photoCardNodes[name] == nil {
-        buildPhotoCardShell(spec: spec, name: name, on: node)
+        buildPhotoCardShell(corners: spec.localCorners,
+                            evidencePath: spec.evidencePath,
+                            name: name, on: node)
       }
       let tries = OfficialAetherARKitPlugin.photoCardThumbRetries[name, default: 0]
       if tries < 30 {
@@ -4313,11 +4357,12 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
   /// 物理存在那一刻(ARFrame 到手),而预览 JPEG 还要等后台编码落盘 ——
   /// 相框一个像素都不依赖那个文件,没有理由一起等。
   private func buildPhotoCardShell(
-    spec: OfficialAetherARKitPlugin.PhotoCardSpec,
+    corners: [SCNVector3],
+    evidencePath: String,
     name: String,
     on node: SCNNode
   ) {
-    let positionSource = SCNGeometrySource(vertices: spec.localCorners)
+    let positionSource = SCNGeometrySource(vertices: corners)
     let element = SCNGeometryElement(indices: [Int32]([0, 1, 2, 0, 2, 3]),
                                      primitiveType: .triangles)
 
@@ -4344,7 +4389,7 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
     backMat.writesToDepthBuffer = false
     backGeo.materials = [backMat]
 
-    let inner = spec.localCorners
+    let inner = corners
     let outer = inner.map { SCNVector3($0.x * 1.12, $0.y * 1.12, $0.z * 1.12) }
     let frameVerts = inner + outer
     let frameIdx: [Int32] = [4, 5, 1, 4, 1, 0,
@@ -4372,7 +4417,7 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
     photoCardFrontFill[name] = fillNode
     photoCardStateMats[name] = [frameMat, backMat]
     let initialState = OfficialAetherARKitPlugin.photoCardState(
-      forPath: spec.evidencePath
+      forPath: evidencePath
     )
     if initialState != 0 {
       let c = Self.photoCardStateColor(initialState)
@@ -4389,8 +4434,60 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
   /// four-state border colour application. Cheap: one distance + scale per
   /// card per frame (~百级节点一次 sqrt 可忽略), all on the SceneKit render
   /// thread.
+  /// 待落世界锚期间挂在相机上的卡片容器(名字 → 挂点)。
+  private var photoCardCameraHolders: [String: SCNNode] = [:]
+
+  /// 每帧两件事(都只在有待落锚卡片时才有开销):
+  /// ① 还没有节点的待落锚卡片 —— **立刻**挂到相机前 z 处建出来,所以「震动 →
+  ///    黑相框」的 35 ms 一点没变;几何用**相机坐标系**的角点(±halfX, ±halfY, 0),
+  ///    不能用 spec.localCorners(那是世界朝向的,挂到相机上会被相机旋转叠加一次)。
+  /// ② 地图一转 extending/mapped 就迁到世界锚:摘掉挂相机那份,`session.add`,
+  ///    随后走正常的 didAdd 路径按拍摄时的世界位姿重建 —— 形态复原、位置就是
+  ///    照片拍摄处。
+  private func servicePendingPhotoCardAnchors(_ renderer: SCNSceneRenderer) {
+    let pending = OfficialAetherARKitPlugin.photoCardPendingAnchors
+    guard !pending.isEmpty else { return }
+    if let pov = renderer.pointOfView {
+      for (name, p) in pending where photoCardCameraHolders[name] == nil {
+        let holder = SCNNode()
+        holder.position = SCNVector3(0, 0, -p.z)
+        pov.addChildNode(holder)
+        photoCardCameraHolders[name] = holder
+        let c: [SCNVector3] = [
+          SCNVector3(-p.halfX,  p.halfY, 0),   // TL
+          SCNVector3( p.halfX,  p.halfY, 0),   // TR
+          SCNVector3( p.halfX, -p.halfY, 0),   // BR
+          SCNVector3(-p.halfX, -p.halfY, 0),   // BL
+        ]
+        buildPhotoCardShell(corners: c, evidencePath: p.evidencePath,
+                            name: name, on: holder)
+      }
+    }
+    guard let status = arscnView.session.currentFrame?.worldMappingStatus,
+          status == .extending || status == .mapped else { return }
+    for (name, p) in pending {
+      photoCardCameraHolders[name]?.removeFromParentNode()
+      photoCardCameraHolders.removeValue(forKey: name)
+      photoCardNodes.removeValue(forKey: name)
+      photoCardStateMats.removeValue(forKey: name)
+      photoCardFrontFill.removeValue(forKey: name)
+      OfficialAetherARKitPlugin.photoCardThumbRetries.removeValue(forKey: name)
+      arscnView.session.add(anchor: p.anchor)
+      OfficialPwNativeTelemetry.shared.log("photocard_anchor_migrated", [
+        "name": name,
+        "waited_ms": Int((CACurrentMediaTime() - p.since) * 1000.0),
+        "world_mapping_status": status.rawValue,
+      ])
+      // **只删迁移过的这一个**。`pending` 是这一帧开头的快照;若用
+      // removeAll(),本帧内新进来的卡片会被静默丢掉 —— 那张就永远拿不到
+      // 世界锚,而且没有任何痕迹(正是「静默出口」那类缺陷)。
+      OfficialAetherARKitPlugin.photoCardPendingAnchors.removeValue(forKey: name)
+    }
+  }
+
   func renderer(_ renderer: SCNSceneRenderer, updateAtTime time: TimeInterval) {
     OfficialPwNativeTelemetry.shared.noteRenderFrame()  // 遥测 F:FPS 计帧(纳秒级)
+    servicePendingPhotoCardAnchors(renderer)
     updateFeaturePointOverlay(at: time) // stable dynamic LOD; independent of cards
     applyPhotoCardStatesIfDirty()  // 四态边框:消费 Dart 推来的状态差量
     guard !photoCardNodes.isEmpty, let cam = renderer.pointOfView else { return }
