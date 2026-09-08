@@ -2093,9 +2093,15 @@ class OfficialAetherARKitPlugin: NSObject {
       }
     }
     let dims = settings.maxPhotoDimensions
-    NSLog("[HIRES-SETTINGS] arm=%@ qualityPrioritization=%ld maxPhotoDimensions=%dx%d",
-          arm, settings.photoQualityPrioritization.rawValue,
-          dims.width, dims.height)
+    // 走**可落盘**的原生遥测(Documents/telemetry_official_native.jsonl),
+    // 不用 NSLog —— NSLog 只进设备控制台,电脑侧读不到,等于做了个自己
+    // 看不见的测量(2026-09-08 build 118 就犯了这个错)。
+    OfficialPwNativeTelemetry.shared.log("hires_settings", [
+      "arm": arm,
+      "quality_prioritization": settings.photoQualityPrioritization.rawValue,
+      "max_photo_w": Int(dims.width),
+      "max_photo_h": Int(dims.height),
+    ])
     return settings
   }
 
@@ -4194,6 +4200,7 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
       photoCardFrontFill[name]?.removeFromParentNode()
       photoCardFrontFill.removeValue(forKey: name)
       shell.addChildNode(SCNNode(geometry: geometry))
+      OfficialPwNativeTelemetry.shared.log("photocard_photo_in", ["name": name])
       NSLog("[PHOTOCARD] renderer: photo swapped into standing shell for %@", name)
       return
     }
@@ -4336,6 +4343,9 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
       frameMat.diffuse.contents = c
       backMat.diffuse.contents = c
     }
+    // 2026-09-08:这两个时刻此前**只有 NSLog**,电脑侧读不到 —— 用户不得不
+    // 用眼睛替我当传感器("震动和黑框是几乎同时出现")。落成可读遥测。
+    OfficialPwNativeTelemetry.shared.log("photocard_shell_up", ["name": name])
     NSLog("[PHOTOCARD] shell up (black frame, photo pending) for %@", name)
   }
 
