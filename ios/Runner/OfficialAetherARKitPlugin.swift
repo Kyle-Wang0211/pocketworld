@@ -650,7 +650,32 @@ class OfficialAetherARKitPlugin: NSObject {
   /// only run Laplacian + brightness + signature at 6 Hz to keep CPU
   /// cost bounded.
   private var lastQualityComputeTime: TimeInterval = 0
-  private static let qualityInterval: TimeInterval = 1.0 / 6.0
+  /// 灰度帧(=自动拍几何判决的节拍)的间隔。
+  ///
+  /// **默认 1/6 s 不变** —— 这个 6 Hz 抄的是 iOS
+  /// `ObjectModeV2ARDomeCoordinator.sampleInterval = 1.0/6.0`,有出处。
+  ///
+  /// 2026-09-08 实测发现它同时也在**当自动拍的判决节拍**,而那不是它的本职:
+  ///   位姿 tick 48.3 Hz,但 **75.9% 因"没有新灰度帧"直接跳过**,
+  ///   真正评估到几何只有 **5.1 Hz ⇒ 平均 196 ms 才判一次**。
+  ///   用户报"我都已经离开那个位置了才出相框" —— 最坏链:
+  ///   等判决 0–196 ms + 被上一张快门挡 0–328 ms + ARKit 126 ms + 相框 54 ms ≈ 700 ms。
+  ///   (按快门→黑相框只有 180 ms,不是它。)
+  ///
+  /// 当年压到 6 Hz 的理由写在下面 qualityQueue 的注释里:1920×1440 上算
+  /// Laplacian 要 5–15 ms,放**主线程**会撑爆 16 ms 预算。**但计算早已挪到
+  /// 后台队列**,那条理由不再成立 —— 所以这里开一个 env 旋钮,由实测裁决,
+  /// 我不自己定新数字:
+  ///   OFFICIAL_AETHER_QUALITY_HZ = 6(默认,行为一字不变)/ 12 / 15 / 30 …
+  /// 代价看同一个 5 s 窗口的 `quality_window` 遥测(fires/skips/avgMs)
+  /// 加上热态与点数,四个数一起裁。
+  private static let qualityInterval: TimeInterval = {
+    let fallback = 1.0 / 6.0
+    guard let raw = getenv("OFFICIAL_AETHER_QUALITY_HZ"),
+          let text = String(validatingUTF8: raw),
+          let hz = Double(text), hz.isFinite, hz > 0 else { return fallback }
+    return 1.0 / hz
+  }()
 
   /// RealityScan-style capture preview feed. This is intentionally
   /// throttled and decimated: native only reads ARKit's official
@@ -3162,6 +3187,17 @@ class OfficialAetherARKitPlugin: NSObject {
     //   • attached close to fires (every compute eventually reaches a payload)
     if frame.timestamp - qDiagWindowStart >= 5.0 {
       let avgMs = qDiagFires > 0 ? qDiagElapsedMsSum / Double(qDiagFires) : 0
+      // 走**可落盘**的原生遥测:这正是提高判决率之后要看的代价
+      // (avgMs 是否逼近帧预算、skips 是否开始出现)。NSLog 只进设备控制台,
+      // 电脑侧读不到 —— 那等于做自己看不见的测量。
+      OfficialPwNativeTelemetry.shared.log("quality_window", [
+        "target_hz": 1.0 / Self.qualityInterval,
+        "fires": qDiagFires,
+        "skips": qDiagSkips,
+        "avg_compute_ms": avgMs,
+        "attached": qDiagAttached,
+        "pose_events": qDiagPoseEvents,
+      ])
       NSLog(String(
         format: "[OfficialAetherARKit] 5s quality: fires=%d skips=%d avgMs=%.1f attached=%d/%d",
         qDiagFires, qDiagSkips, avgMs, qDiagAttached, qDiagPoseEvents
