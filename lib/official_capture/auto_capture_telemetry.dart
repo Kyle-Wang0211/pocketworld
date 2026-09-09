@@ -547,6 +547,15 @@ class AutoCaptureTelemetry {
       'session_duration_sec': _round3(duration),
       // 所有 decision 档之和,占比的分母(读者不用自己逐项相加)。
       'decisions': _counts.values.fold<int>(0, (a, b) => a + b),
+      // [2026-09-09] 判决顺序的**口径标签**。build 132 起,取图事务闸从第 5 位
+      // (所有几何之前)后移到唯一 fire 出口的前一行 ⇒ 同一个
+      // `decision_counts.skipAwaitingCapture` 的含义变了:
+      //   ≤131 = "上一张还在飞"(几何根本没算,混着该拍与不该拍两种帧);
+      //   ≥132 = "几何已经说开火、被在飞的上一张挡住"(优化取图事务的真上界)。
+      // 不打标签就会把两种口径的同名计数混进一次分析里 —— 那是静默换口径。
+      // 值随排序走,由 auto_capture_recon_decoupling_contract_test 与 governor
+      // 的实际排版对拍。
+      'decision_gate_order': 'geometry_before_awaiting_capture',
       // spec §11:视差下限触发率 = decision_counts.skipNotMoved / decisions。
       'decision_counts': <String, int>{
         for (final e in _counts.entries) e.key.name: e.value,

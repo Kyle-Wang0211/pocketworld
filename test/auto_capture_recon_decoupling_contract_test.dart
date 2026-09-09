@@ -91,6 +91,21 @@ void main() {
         .where((l) => l.contains('awaitingCaptureBaseline)'))
         .length;
     expect(gateCount, 1, reason: '闸只许有一处,多一处就有旁路');
+
+    // 排序变了,skipAwaitingCapture 这个计数的**含义**就变了 ⇒ 遥测必须自报
+    // 口径,否则跨版本的同名计数会被混进一次分析。这个字符串同时是装机自证
+    // 的探针(纯语句移位不产生新符号,sha 对 Dart AOT 又是空的)。
+    final telemetry = File('lib/official_capture/auto_capture_telemetry.dart');
+    expect(telemetry.existsSync(), isTrue);
+    expect(
+      stripComments(
+        telemetry.readAsStringSync(),
+      ).contains("'decision_gate_order': 'geometry_before_awaiting_capture'"),
+      isTrue,
+      reason:
+          '判决顺序的口径标签没了 —— 读者无从知道 skipAwaitingCapture '
+          '是哪一套口径',
+    );
   });
 
   test('页面不再把重建队列喂给治理器', () {
