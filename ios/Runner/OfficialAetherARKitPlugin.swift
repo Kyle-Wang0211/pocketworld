@@ -438,6 +438,16 @@ class OfficialAetherARKitPlugin: NSObject {
   /// the capture pose => glued to the world by ARKit, no drift. `height` (meters)
   /// is the card's physical size, sized from the intrinsics to fill the viewport.
   struct PhotoCardSpec {
+    /// 🔴 2026-09-09 解耦一:**贴图不依赖文件落盘**。
+    /// 用户报「相框出现了但是空的,过一秒才有照片」。实测本场 89 张:
+    /// 震动→黑相框 59 ms(好),**黑相框→照片填入 中位 788 ms、最长 12.8 s**。
+    /// 根因是我 119 把预览 JPEG 的编码落盘挪到完成回调之后(当时错误断言
+    /// 「这张图没人读」——116 起卡片就在读它),于是贴图要等一个被降级到
+    /// 后台、还要跟热态/队列抢的文件。
+    /// 改法:ARFrame 到手那一刻就把缩略图做进内存,addPhotoCard 直接取用,
+    /// **整条贴图路径不碰文件系统** ⇒ 相框与照片同时出现,且不再受落盘顺序、
+    /// 热态、队列深度的任何影响。文件照旧写(取证不减),只是没人等它。
+    let textureImage: UIImage?
     let texturePath: String
     let evidencePath: String
     let localCorners: [SCNVector3]  // 4 quad corners [TL,TR,BR,BL] in anchor-local space
@@ -461,6 +471,9 @@ class OfficialAetherARKitPlugin: NSObject {
   /// **改法是不再手推代数跨帧搭桥,直接问 ARKit 那一帧的 viewMatrix。**
   static var photoBasisByEvidencePath:
     [String: (invView: simd_float4x4, transform: simd_float4x4)] = [:]
+  /// 证据路径 → 卡片贴图(内存)。与 photoBasisByEvidencePath 同生同灭:
+  /// 早信号那一刻放进来,addPhotoCard 取走(removeValue),不留存。
+  static var photoCardThumbByEvidencePath: [String: UIImage] = [:]
   // [瞬时快门 2026-07-19] 卡片缩略图解码重试计数:photo43 下 12MP 静照后台
   // 落盘,didAdd 建卡时文件可能还没写完;每 150ms 重试直到落盘(最多~4.5s)。
   static var photoCardThumbRetries: [String: Int] = [:]
@@ -1276,8 +1289,11 @@ class OfficialAetherARKitPlugin: NSObject {
       // the world-aligned quad corners.
       let cardName = "official_photo_card_\(OfficialAetherARKitPlugin.photoCardCounter)"
       OfficialAetherARKitPlugin.photoCardCounter += 1
+      let cardThumb = OfficialAetherARKitPlugin
+        .photoCardThumbByEvidencePath.removeValue(forKey: evidencePath)
       OfficialAetherARKitPlugin.photoCardSpecs[cardName] =
-        PhotoCardSpec(texturePath: texturePath,
+        PhotoCardSpec(textureImage: cardThumb,
+                      texturePath: texturePath,
                       evidencePath: evidencePath,
                       localCorners: localCorners,
                       captureDistance: z, worldCentroid: centroid, captureCamPos: camPos)
@@ -1308,12 +1324,21 @@ class OfficialAetherARKitPlugin: NSObject {
       // **延迟不变**:卡片此刻照样立刻出现,只是先挂在相机上(屏幕空间,
       // 位置就是它在世界里会在的地方 —— 镜头正前方 z 处);地图一转
       // extending/mapped 就迁到世界锚,形态复原。
+      // 🔴 2026-09-09 解耦二:**卡片渲染位置不再依赖地图成熟度**。
+      // 120 曾在 worldMappingStatus 未成熟时把卡片先挂到相机上(屏幕空间),
+      // 等地图转好再迁到世界锚。本场 89 张实测:6 张触发(全是 Limited),
+      // 集中在第 46 与 **83/84/85/86/89** —— 正是用户报的「最后几张直接贴在
+      // 镜头上,镜头越来越暗,卡几秒后自动恢复」;迁移等待最长 **6460 ms**。
+      // 而 120 本想修的「第一张进嫩地图」这一场根本没发生(第一张 = Mapped)。
+      // ⇒ 收益没出现,代价是把卡片糊在镜头上。**永远落世界锚,不再有
+      // 「挂相机」这个状态**;地图状态降为纯观测,继续记账。
       let mapStatus = frame.worldMappingStatus
-      let mature = (mapStatus == .extending || mapStatus == .mapped)
+      let mature = true
       OfficialPwNativeTelemetry.shared.log("photocard_anchor_decision", [
         "name": cardName,
         "world_mapping_status": mapStatus.rawValue,
-        "deferred": mature ? 0 : 1,
+        "deferred": 0,
+        "world_mapping_status_observed": mapStatus.rawValue,
       ])
       if mature {
         session.add(anchor: cardAnchor)
@@ -1548,6 +1573,7 @@ class OfficialAetherARKitPlugin: NSObject {
     // 会话开场清一次:photoPoseByEvidencePath 是 static,不清会跨会话累积
     // (每条 64 B,量小,但静默增长的表迟早咬人)。
     photoBasisByEvidencePath.removeAll()
+    photoCardThumbByEvidencePath.removeAll()
     if let session = session {
       for a in photoCardAnchors { session.remove(anchor: a) }
     }
@@ -2390,6 +2416,14 @@ class OfficialAetherARKitPlugin: NSObject {
           invView: frame.camera.viewMatrix(for: .portrait).inverse,
           transform: frame.camera.transform
         )
+        // 贴图也在这一刻做好进内存(见 PhotoCardSpec.textureImage 的注释)。
+        // 用与落盘同一条 CIImage → CGImage 路径,但**只缩到卡片实际要的尺寸**、
+        // 不编码 JPEG、不落盘;朝向按传感器约定 .right 转正,与文件那条一致。
+        if let thumb = Self.makePhotoCardThumb(
+          pixelBuffer, ciContext: self.ciContext
+        ) {
+          OfficialAetherARKitPlugin.photoCardThumbByEvidencePath[highresPath] = thumb
+        }
         let capturedAtHostMs = Date().timeIntervalSince1970 * 1000.0
         DispatchQueue.main.async {
           self.methodChannel.invokeMethod(
@@ -2818,6 +2852,27 @@ class OfficialAetherARKitPlugin: NSObject {
           "encodeCIImageAsJpeg: CGImageDestinationFinalize failed"]
       )
     }
+  }
+
+  /// 卡片贴图(内存版):CIImage → 缩到 photoCardThumbMaxPx → UIImage,
+  /// 朝向用 .right(与 encodeCVPixelBufferAsJpeg 写进文件的 EXIF 一致),
+  /// 所以内存路径与文件路径出来的朝向逐字相同 —— 不会因为走哪条路而躺倒。
+  /// 不编码 JPEG、不碰文件系统。
+  private static func makePhotoCardThumb(
+    _ buffer: CVPixelBuffer, ciContext: CIContext
+  ) -> UIImage? {
+    let ci = CIImage(cvPixelBuffer: buffer)
+    let maxEdge = max(ci.extent.width, ci.extent.height)
+    guard maxEdge > 0 else { return nil }
+    let target = CGFloat(photoCardThumbMaxPx)
+    let scaled = maxEdge > target
+      ? ci.transformed(by: CGAffineTransform(scaleX: target / maxEdge,
+                                             y: target / maxEdge))
+      : ci
+    guard let cg = ciContext.createCGImage(scaled, from: scaled.extent) else {
+      return nil
+    }
+    return UIImage(cgImage: cg, scale: 1, orientation: .right)
   }
 
   private static func makePreviewImage(from image: CIImage) -> CIImage {
@@ -4376,6 +4431,17 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
       kCGImageSourceCreateThumbnailWithTransform: true,
       kCGImageSourceThumbnailMaxPixelSize: OfficialAetherARKitPlugin.photoCardThumbMaxPx,
     ]
+    // 内存贴图优先:早信号那一刻已经做好了(见 PhotoCardSpec.textureImage)。
+    // 拿到就直接建卡片 —— 不解码文件、不进重试循环 ⇒ 相框与照片同时出现。
+    // 拿不到才退回既有的文件解码 + 150ms×30 重试(旧行为,不改判)。
+    if let memImage = spec.textureImage {
+      OfficialAetherARKitPlugin.photoCardThumbRetries.removeValue(forKey: name)
+      buildPhotoCard(image: memImage, spec: spec, name: name, on: node)
+      OfficialPwNativeTelemetry.shared.log("photocard_photo_in", [
+        "name": name, "source": "memory_thumb",
+      ])
+      return
+    }
     guard let imgSrc = CGImageSourceCreateWithURL(
             URL(fileURLWithPath: spec.texturePath) as CFURL, nil),
           let thumbCG = CGImageSourceCreateThumbnailAtIndex(
@@ -4413,8 +4479,26 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
     }
     OfficialAetherARKitPlugin.photoCardThumbRetries.removeValue(forKey: name)
     let image = UIImage(cgImage: thumbCG)   // upright portrait, ~thumb px long edge
+    buildPhotoCard(image: image, spec: spec, name: name, on: node)
+    OfficialPwNativeTelemetry.shared.log("photocard_photo_in", [
+      "name": name, "source": "file_decode",
+    ])
+  }
+
+  /// 用一张已经转正的贴图把卡片建出来。两条路共用:
+  ///   · 内存贴图(早信号那一刻做好,不碰文件系统)—— 现在的主路
+  ///   · 文件解码(退路,拿不到内存贴图时走既有的 150ms×30 重试)
+  /// 抽出来是为了让「贴图从哪来」与「卡片怎么建」彻底分开 ——
+  /// 以后再换贴图来源,不必再动建卡片这段几何/材质代码。
+  private func buildPhotoCard(
+    image: UIImage,
+    spec: OfficialAetherARKitPlugin.PhotoCardSpec,
+    name: String,
+    on node: SCNNode
+  ) {
     NSLog("[PHOTOCARD] renderer building quad for %@ (%d corners) thumb=%dx%d",
-          name, spec.localCorners.count, thumbCG.width, thumbCG.height)
+          name, spec.localCorners.count,
+          Int(image.size.width), Int(image.size.height))
     let c = spec.localCorners
     let quadW = CGFloat(simd_length(simd_float3(
       c[1].x - c[0].x, c[1].y - c[0].y, c[1].z - c[0].z)))   // TL->TR
@@ -4522,6 +4606,7 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
       backMat.diffuse.contents = c
     }
   }
+
 
   /// 正面黑填充节点(照片解出来后被换掉);key = anchor name。
   /// 与 photoCardNodes 同生命周期,故同为实例成员。
