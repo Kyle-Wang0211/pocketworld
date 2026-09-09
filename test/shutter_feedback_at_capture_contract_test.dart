@@ -30,19 +30,41 @@ void main() {
 
   String stripComments(String src) => src
       .split('\n')
-      .where((l) => !l.trimLeft().startsWith('//') && !l.trimLeft().startsWith('///'))
+      .where(
+        (l) =>
+            !l.trimLeft().startsWith('//') && !l.trimLeft().startsWith('///'),
+      )
       .join('\n');
 
   test('原生在 ARFrame 到手那一刻发「已经拍下」信号', () {
     expect(plugin.existsSync(), isTrue);
     final swift = stripComments(plugin.readAsStringSync());
-    final signal = swift.indexOf('"highResFrameCaptured"');
-    final encode = swift.indexOf('jpegEncodeQueue.async', swift.indexOf('captureHighResolutionFrame {'));
-    expect(signal, greaterThan(0), reason: '原生没有发「已经拍下」信号');
+
+    // [2026-09-09] 锚点先自证。原来这里锚的是字面量 `captureHighResolutionFrame {`,
+    // build 118 把闭包提成具名的 `onHighResFrame` 之后它就再也匹配不上:
+    // indexOf 返回 -1,下一行 indexOf(_, -1) 抛 RangeError —— 测试是红的,但报的
+    // 错跟它要守的东西毫无关系,等于哑了一整轮版本。凡是靠字符串锚定源码的契约,
+    // 锚点本身必须先有一条**可读的**断言。
+    final handler = swift.indexOf('let onHighResFrame:');
+    expect(
+      handler,
+      greaterThan(0),
+      reason:
+          '取图回调的锚点没了(原名 onHighResFrame)。'
+          '改名字可以,但要连这条契约一起改 —— 别让它静默失明',
+    );
+
+    final signal = swift.indexOf('"highResFrameCaptured"', handler);
+    expect(signal, greaterThan(0), reason: '原生没有在取图回调里发「已经拍下」信号');
+
+    final encode = swift.indexOf('jpegEncodeQueue.async', handler);
+    expect(encode, greaterThan(0), reason: '取图回调里找不到 JPEG 编码段');
+
     expect(
       signal,
       lessThan(encode),
-      reason: '信号必须发在 JPEG 编码/落盘**之前** —— 编码是我们自己的处理,'
+      reason:
+          '信号必须发在 JPEG 编码/落盘**之前** —— 编码是我们自己的处理,'
           '属于三端规矩里 didFinishProcessing 那一半,不该让用户等',
     );
   });
@@ -54,12 +76,14 @@ void main() {
     expect(code.contains("'highResFrameCaptured'"), isTrue);
     // 震动只许由 _fireShutterFeedback 发起(它按证据路径去重 ⇒ 每张正好一次)。
     // 只数**调用**,不数声明(`void _triggerShutterHaptic() {`)。
-    final hapticCalls =
-        RegExp(r'(?<!void )_triggerShutterHaptic\(\);').allMatches(code).length;
+    final hapticCalls = RegExp(
+      r'(?<!void )_triggerShutterHaptic\(\);',
+    ).allMatches(code).length;
     expect(
       hapticCalls,
       1,
-      reason: '_triggerShutterHaptic 只能有一个调用点(在 _fireShutterFeedback 里),'
+      reason:
+          '_triggerShutterHaptic 只能有一个调用点(在 _fireShutterFeedback 里),'
           '否则「震动次数 = 照片数」这条不变量会被绕过;实测 $hapticCalls 处',
     );
   });
@@ -67,7 +91,9 @@ void main() {
   test('反馈不再排在 highResolutionCompletion 的 await 之后', () {
     final code = stripComments(page.readAsStringSync());
     final feedback = code.indexOf('_fireShutterFeedback(');
-    final awaitCompletion = code.indexOf('await capture.highResolutionCompletion');
+    final awaitCompletion = code.indexOf(
+      'await capture.highResolutionCompletion',
+    );
     expect(feedback, greaterThan(0));
     expect(awaitCompletion, greaterThan(0));
     expect(

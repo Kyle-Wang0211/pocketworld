@@ -353,7 +353,11 @@ void main() {
     // 连续开火,期间不给重建任何机会"排空";每一步都只由几何决定。
     for (var i = 1; i <= 3; i++) {
       final d = h.feed(
-        _pose(t: 0.2 * i, pos: Vector3(40.0 * i / 128, 0, 0), grayShiftX: 40 * i),
+        _pose(
+          t: 0.2 * i,
+          pos: Vector3(40.0 * i / 128, 0, 0),
+          grayShiftX: 40 * i,
+        ),
       );
       expect(
         d,
@@ -425,10 +429,19 @@ void main() {
         AutoCaptureDecision.fire,
       );
       expect(h.controller.awaitingCaptureBaseline, isTrue);
+      // [2026-09-09 解耦] 在飞期间喂的是**几何完全合格**的帧(相对实拍参考
+      // 位移 40 px ⇒ view_changed,行进 20 cm > 12 cm ⇒ 过距离下限)。旧排序
+      // 下这条闸排在几何**之前**,喂什么都返回 skipAwaitingCapture,看不出
+      // 它到底挡掉了什么;现在闸排在最后,拿到 skipAwaitingCapture 就等于
+      // 「几何已经说开火、被这道闸挡住」—— 这才是要钉的东西。
       for (var t = 0.3; t < 0.65; t += 0.1) {
         expect(
           h.feed(
-            _pose(t: t, pos: Vector3(0.22 + (t - 0.2), 0, 0), grayShiftX: 40),
+            _pose(
+              t: t,
+              pos: Vector3(0.22 + (t - 0.2) * 2.0, 0, 0),
+              grayShiftX: 80,
+            ),
           ),
           AutoCaptureDecision.skipAwaitingCapture,
           reason: 't=$t',
@@ -438,9 +451,9 @@ void main() {
       // 照片在 t=0.6 真正拍成:参考 = 那一刻的位姿/预览。
       h.controller.onCaptureCompleted(captureTimestampSec: 0.6);
       expect(h.controller.awaitingCaptureBaseline, isFalse);
-      expect(h.controller.baselinePosition!.x, closeTo(0.62, 1e-9));
+      expect(h.controller.baselinePosition!.x, closeTo(1.02, 1e-9));
       expect(
-        h.feed(_pose(t: 0.7, pos: Vector3(0.62, 0, 0), grayShiftX: 40)),
+        h.feed(_pose(t: 0.7, pos: Vector3(1.02, 0, 0), grayShiftX: 80)),
         AutoCaptureDecision.skipRedundant,
         reason: '与实拍帧同画面 ⇒ 共有 100% ⇒ almost_all',
       );
@@ -483,8 +496,12 @@ void main() {
         h.feed(_pose(t: 0.2, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40)),
         AutoCaptureDecision.fire,
       );
+      // 同上:喂一帧几何会开火的(走了 20 cm、画面换了 40 px),证明挡住它
+      // 的是这道闸而不是几何。
       expect(
-        h.feed(_pose(t: 0.3, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40)),
+        h.feed(
+          _pose(t: 0.3, pos: Vector3(40 / 128 + 0.2, 0, 0), grayShiftX: 80),
+        ),
         AutoCaptureDecision.skipAwaitingCapture,
       );
       h.controller.onCaptureFailed();

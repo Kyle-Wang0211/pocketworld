@@ -30,20 +30,14 @@ void main() {
     'mapperIdleProvider',
   ];
 
-  String stripComments(String src) => src
-      .split('\n')
-      .where((l) => !l.trimLeft().startsWith('//'))
-      .join('\n');
+  String stripComments(String src) =>
+      src.split('\n').where((l) => !l.trimLeft().startsWith('//')).join('\n');
 
   test('自动拍控制器里没有任何重建侧信号', () {
     expect(controller.existsSync(), isTrue);
     final code = stripComments(controller.readAsStringSync());
     final hits = reconSignals.where(code.contains).toList();
-    expect(
-      hits,
-      isEmpty,
-      reason: '重建侧信号回到了快门决策路径:$hits —— 拍摄必须与重建解耦',
-    );
+    expect(hits, isEmpty, reason: '重建侧信号回到了快门决策路径:$hits —— 拍摄必须与重建解耦');
   });
 
   test('上游的 mapperSkippingLocalBA 取健康态字面 false,不接任何代理', () {
@@ -51,9 +45,52 @@ void main() {
     expect(
       code.contains('mapperSkippingLocalBA: false'),
       isTrue,
-      reason: '本工程的建图侧没有「放弃局部 BA」这个状态,'
+      reason:
+          '本工程的建图侧没有「放弃局部 BA」这个状态,'
           '上游健康态取值就是 false;接任何代理都是移位前提',
     );
+  });
+
+  // 2026-09-09 未命名(1) 之后的第三刀:评估 ≠ 开火。
+  //
+  // `awaitingCaptureBaseline`(上一张还在取图事务里)本身不是耦合 —— 那一张
+  // 最终落在哪还不知道,这时再开火就是把 09-06 的连拍搬回来。但它原来排在
+  // **所有几何之前**:一张照片在飞的 0.4–0.7 s 里,几何一个字节都不算,
+  // skipAwaitingCapture 的计数因此既包含"本来就不该拍"的帧,也包含"本来该拍
+  // 却被挡住"的帧,两者混在一起,这条路径值多少钱永远量不出来。
+  //
+  // 解耦 = 把闸后移到**唯一那条 fire 出口**的前一行:几何照算,理由照报,
+  // 行为一个字节不变(仍然不开火),而 skipAwaitingCapture 的计数从此就是
+  // 「优化取图事务最多能多拍几张」的真上界。
+  //
+  // 不跨基准携带意图:闸放行的那一刻用的是**当前帧**的几何,不是在飞期间某
+  // 一帧攒下来的"想拍"。携带它就是连拍。
+  test('取图事务这道闸排在唯一 fire 出口的前一行(评估与开火分离)', () {
+    final governor = File('lib/official_capture/auto_capture_governor.dart');
+    expect(governor.existsSync(), isTrue);
+    final lines = stripComments(
+      governor.readAsStringSync(),
+    ).split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
+
+    final fireAt = <int>[
+      for (var i = 0; i < lines.length; i++)
+        if (lines[i] == 'return AutoCaptureDecision.fire;') i,
+    ];
+    expect(fireAt.length, 1, reason: '出口不止一个就没法用排版保证「在飞期间不开火」:$fireAt');
+
+    expect(
+      lines[fireAt.single - 1],
+      'if (awaitingCaptureBaseline) '
+      'return AutoCaptureDecision.skipAwaitingCapture;',
+      reason:
+          '这道闸必须紧贴 fire 出口:排在几何前面 ⇒ 评估被开火绑架;'
+          '排在 fire 之后 ⇒ 在飞期间会连拍',
+    );
+
+    final gateCount = lines
+        .where((l) => l.contains('awaitingCaptureBaseline)'))
+        .length;
+    expect(gateCount, 1, reason: '闸只许有一处,多一处就有旁路');
   });
 
   test('页面不再把重建队列喂给治理器', () {

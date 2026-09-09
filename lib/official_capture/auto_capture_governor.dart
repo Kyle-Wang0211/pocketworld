@@ -237,7 +237,20 @@ AutoCaptureDecision stellaVslamNewKeyframeIsNeeded({
   }
   if (!trackingNormal) return AutoCaptureDecision.skipTracking;
   if (tooDark) return AutoCaptureDecision.skipTooDark;
-  if (awaitingCaptureBaseline) return AutoCaptureDecision.skipAwaitingCapture;
+  // 🔴 2026-09-09 解耦:**评估 ≠ 开火**。
+  // 这道闸原本排在第 5 位 —— 几何一个字都还没算就 return 了,于是那 13.5% 的
+  // tick 里「几何到底说了什么」**完全不可见**。优化一个看不见的东西,正是我在
+  // 12 Hz 那件事上犯的错(拿凉机短会话的 0.1 ms 外推生产,而真实是 0.57 ms
+  // 中位、6 Hz 本身就在跳过)。
+  //
+  // 闸本身必须留:上一张还在飞,不知道它会落在哪,再开一枪就是 09-06 的连拍。
+  // 但它只该挡**开火**,不该挡**评估**。挪到最后之后:
+  //   · 其他理由该报什么报什么(更真实,不再被这道闸吞掉)
+  //   · `skipAwaitingCapture` 从此只在「几何已经说该拍、只差这道闸」时出现
+  //     ⇒ 它的计数直接就是「这道闸真正拦下了多少次开火」= 优化它的收益上限
+  // **不跨基准携带意图**:实拍完成会把基准挪到实拍瞬间,拿旧基准算出的
+  // 「该拍」在新基准下未必成立 —— 携带它就是把 09-06 的连拍搬回来。
+  // 所以只是把闸后移,行为一个字节不变(仍然不开火)。
   // 上游第一条:建图模块停了就一张也不插。
   if (!mapperAccepting) return AutoCaptureDecision.skipMapperStopped;
   // 还没有第一张照片(上游 last_inserted_keyfrm == nullptr)⇒ 交给起跑锚。
@@ -310,6 +323,8 @@ AutoCaptureDecision stellaVslamNewKeyframeIsNeeded({
   // 值与适用范围取自同一家,不拼盘。
   if (!minDistanceTraveled) return AutoCaptureDecision.skipMinDistance;
   if (blurry) return AutoCaptureDecision.skipBlurry;
+  // 见上面的解耦注释:几何全部算完,只差这道闸。
+  if (awaitingCaptureBaseline) return AutoCaptureDecision.skipAwaitingCapture;
   return AutoCaptureDecision.fire;
 }
 
