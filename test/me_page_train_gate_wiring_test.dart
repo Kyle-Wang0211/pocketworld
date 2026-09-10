@@ -29,6 +29,23 @@ void main() {
     expect(code, contains('l.meActionDelete'));
   });
 
+  test('已出点云的卡片只给「改名/删除」', () {
+    // [2026-09-08 用户裁决] 三项都删:
+    //   ·「重新重建点云」—— 点云已经在那儿了,重跑是给自己找事
+    //   ·「查看点云」—— 点卡片本来就开查看器,菜单里再放一个是重复
+    //   · 补拍 —— 只有"未完成"的项目才需要
+    expect(code, isNot(contains('重新重建点云')));
+    expect(code, isNot(contains("Text('查看点云')")));
+    // view_sparse 已无人发出 ⇒ 处理分支也必须删,否则是死代码。
+    expect(code, isNot(contains("pop('view_sparse')")));
+    expect(code, isNot(contains("action == 'view_sparse'")));
+    // 但点卡片开查看器那条路**必须还在**(draft_card_action 的 openSparseCloud)。
+    expect(code, contains('DraftCardAction.openSparseCloud'));
+    expect(code, contains('_openSparseCloud('));
+    // 开始训练/补拍只挂在"未完成"分支上。
+    expect(code, contains('if (!canViewSparse) ...['));
+  });
+
   test('张数闸真的接上了,而且是同源调用不是复制阈值', () {
     // [阴性对照 2026-09-07] 第一版只断言源码里出现过 trainGateFor( ——
     // 结果把 `trainGate = TrainGate.ready` 硬塞进去、把真调用改名成
@@ -43,7 +60,13 @@ void main() {
     expect(RegExp(r'trainGate\s*=(?!=)').allMatches(code).length, 1);
     expect(RegExp(r'trainEnabled\s*=(?!=)').allMatches(code).length, 1);
     expect(code, contains('photoCount: photoCount'));
-    expect(code, contains('hasResumableData: rebuildDir != null'));
+    // [2026-09-08] db **在** ≠ db **能开**。闸吃的必须是"能开"(dbUsable),
+    // 不是 rebuildDir != null —— 后者只回答文件在不在,正是那个 errDb
+    // 红弹窗的成因。
+    expect(code, contains('hasResumableData: dbUsable'));
+    expect(code, isNot(contains('hasResumableData: rebuildDir != null')));
+    expect(RegExp(r'dbUsable\s*=(?!=)').allMatches(code).length, 1);
+    expect(code, contains('sqliteDatabaseUsable('));
     // 阈值只能来自 live_sfm_publish_policy.dart。me_page 自己写死 20 就是
     // 制造第二个真相 —— 将来改阈值必漏一边。
     expect(code, isNot(contains('>= 20')));
@@ -103,6 +126,57 @@ void main() {
     expect(shell, contains('officialExtendRoute: pushOfficialExtendRoute'));
     // MePage -> _MyWorksSection 的透传断了,菜单里就永远是 null。
     expect(code, contains('officialExtendRoute: widget.officialExtendRoute'));
+  });
+
+  test('🔴db 坏掉时「开始训练」改走"从照片重建",而不是置灰或续跑', () {
+    // 分叉必须真的分:只要还写着无条件 _offerResume,db 坏的项目就会照旧
+    // 一路走到 native 炸成 errDb(2026-09-08 真机红弹窗)。
+    expect(code, contains('final trainRoute = trainRouteFor('));
+    expect(code, contains('TrainRoute.resumeFromDb'));
+    expect(code, contains('TrainRoute.rebuildFromArchivedPhotos'));
+    expect(RegExp(r'trainRoute\s*=(?!=)').allMatches(code).length, 1);
+    // [阴性对照 2026-09-08] 只断言"两个枚举名都出现过"挡不住把 switch 的
+    // 主语换成常量(`switch (TrainRoute.resumeFromDb)`)—— 那一改两个名字
+    // 照样在,分叉却已经死了。所以必须钉住**分的是谁**。
+    expect(code, contains('switch (trainRoute) {'));
+    expect(RegExp(r'switch \(trainRoute\)').allMatches(code).length, 1);
+    // 闸的"还能不能重建"必须问照片,不是再问一次 db。
+    expect(code, contains('canRebuildFromPhotos:'));
+    expect(code, contains('archivedPhotoCount('));
+    // 路由从 app_shell 注入并一路透传到长按菜单;断一节菜单里就永远是 null。
+    final shell = File('lib/ui/app_shell.dart').readAsStringSync();
+    expect(shell, contains('pushOfficialRebuildFromPhotosRoute'));
+    expect(
+      code,
+      contains('officialRebuildFromPhotosRoute:\n'
+          '                      widget.officialRebuildFromPhotosRoute'),
+    );
+    // 那条腿本身必须真的存在于 sfm_resume.dart,并且**改名**挪开死 db 而不是删。
+    final resume = File(
+      'lib/official_capture/sfm_resume.dart',
+    ).readAsStringSync();
+    final resumeCode = resume
+        .split('\n')
+        .map((line) {
+          final i = line.indexOf('//');
+          return i < 0 ? line : line.substring(0, i);
+        })
+        .join('\n');
+    expect(resumeCode, contains('Future<ArchivedRebuildResult> '
+        'rebuildFromArchivedPhotos('));
+    expect(resumeCode, contains('_sidelineDeadDatabase('));
+    // 挪开用 rename;出现 delete 就是把用户唯一剩下的证据毁了。
+    final sideStart = resumeCode.indexOf('_sidelineDeadDatabase(String');
+    expect(sideStart, greaterThanOrEqualTo(0));
+    final sideBody = resumeCode.substring(sideStart, sideStart + 900);
+    expect(sideBody, contains('.rename('));
+    expect(sideBody, isNot(contains('.delete(')));
+    // 旧的 fed_frames.jsonl 也必须一起挪:它按 frameId 追加,新旧会话撞号会
+    // 让取色照着错的照片采(cap47 色彩污染同一类错配)。
+    expect(sideBody, contains('official_sfm_fed_frames.jsonl'));
+    // wal/shm 留一个都会被 sqlite 当成新库的日志回放。
+    expect(sideBody, contains('official_sfm_live.db-wal'));
+    expect(sideBody, contains('official_sfm_live.db-shm'));
   });
 
   test('采集会话复用目录时绝不删,且编号接着排', () {

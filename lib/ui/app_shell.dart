@@ -87,6 +87,8 @@ class _AetherAppShellState extends State<AetherAppShell> {
           MePage(
             showDraftsSignal: _showDraftsSignal,
             officialResumeRoute: pushOfficialResumeRoute,
+            officialRebuildFromPhotosRoute:
+                pushOfficialRebuildFromPhotosRoute,
             officialViewerRoute: pushOfficialViewerRoute,
             officialExtendRoute: pushOfficialExtendRoute,
           ),

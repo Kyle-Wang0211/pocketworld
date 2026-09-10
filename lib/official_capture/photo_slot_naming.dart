@@ -48,13 +48,27 @@ String photoSlotBaseName({
 /// 认不出的名字(老式 `cell_i_slot_j`、缩略图、任何第三方文件)一律记 0 而
 /// 不是抛错 —— 一个陌生文件不该让补拍整个失败。
 int maxFrameSeqInNames(Iterable<String> fileNames) {
-  final re = RegExp(r'_(?:tap|cap)-(\d+)(?:\.[^.]*)?$');
   var maxSeq = 0;
   for (final name in fileNames) {
-    final m = re.firstMatch(name);
-    if (m == null) continue;
-    final n = int.tryParse(m.group(1)!);
+    final n = frameSeqInName(name);
     if (n != null && n > maxSeq) maxSeq = n;
   }
   return maxSeq;
+}
+
+/// 单个文件名里的 frame 序号;认不出返回 null。
+///
+/// [2026-09-08] 抽出来是因为它有了**第二个**用途:从存档照片重建时的**喂帧顺序**
+/// (archived_photo_rebuild.dart)。那里不能按拍摄时刻排 —— ARKit 的 `t` 是
+/// uptime 时钟,跨会话归零,而补拍天然跨会话。实测 cap_1788845271610360:
+/// tap-1..182 的 t≈47901,补拍进来的 tap-203/226/233 t≈2145(晚 36 分钟、
+/// 中间重启过),按 t 排会把补拍那三张排到最前面。
+/// 而 N 由采集会话单调发放、补拍时由 [maxFrameSeqInNames] 接着往上排,
+/// 所以它是我们自己保证的全局拍摄序,不依赖任何时钟。
+///
+/// 两个调用方共用这一处解析,避免"同一个规则两份实现"。
+int? frameSeqInName(String fileName) {
+  final m = RegExp(r'_(?:tap|cap)-(\d+)(?:\.[^.]*)?$').firstMatch(fileName);
+  if (m == null) return null;
+  return int.tryParse(m.group(1)!);
 }

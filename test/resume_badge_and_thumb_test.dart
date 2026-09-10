@@ -120,7 +120,7 @@ void main() {
           home: SfmResumeWaitPage(
             captureDir: dir.path,
             title: '未命名(6)',
-            debugResume: (_) async => true,
+            runner: (_) async => true,
           ),
         ),
       );
@@ -151,7 +151,7 @@ void main() {
           home: SfmResumeWaitPage(
             captureDir: dir.path,
             title: '未命名(6)',
-            debugResume: (_) async => false,
+            runner: (_) async => false,
           ),
         ),
       );

@@ -17,6 +17,7 @@ void main() {
         trainGateFor(
           photoCount: n,
           hasResumableData: true,
+          canRebuildFromPhotos: false,
           anotherReconstructionActive: false,
         ),
         TrainGate.blockedNeedMorePhotos,
@@ -27,6 +28,7 @@ void main() {
       trainGateFor(
         photoCount: 20,
         hasResumableData: true,
+        canRebuildFromPhotos: false,
         anotherReconstructionActive: false,
       ),
       TrainGate.ready,
@@ -35,6 +37,7 @@ void main() {
       trainGateFor(
         photoCount: 300,
         hasResumableData: true,
+        canRebuildFromPhotos: false,
         anotherReconstructionActive: false,
       ),
       TrainGate.ready,
@@ -47,6 +50,7 @@ void main() {
       trainGateFor(
         photoCount: 3,
         hasResumableData: false,
+        canRebuildFromPhotos: false,
         anotherReconstructionActive: true,
       ),
       TrainGate.blockedNeedMorePhotos,
@@ -58,6 +62,7 @@ void main() {
       trainGateFor(
         photoCount: 25,
         hasResumableData: true,
+        canRebuildFromPhotos: false,
         anotherReconstructionActive: true,
       ),
       TrainGate.blockedAnotherReconstruction,
@@ -66,9 +71,23 @@ void main() {
       trainGateFor(
         photoCount: 25,
         hasResumableData: false,
+        canRebuildFromPhotos: false,
         anotherReconstructionActive: false,
       ),
       TrainGate.blockedNoResumableData,
+      reason: 'db 坏了 + 一张照片都没有 = 真的无解',
+    );
+    // 🔴 [2026-09-08] db 坏了但照片还在 ⇒ **可点**,走"从照片重建"。
+    // 这一条是真机逼出来的:被杀的 db 只剩 4096 字节残骸,而照片和每张的
+    // ARKit 位姿完好(Mac 台架同一批照片 12/12 注册、14151 点)。
+    expect(
+      trainGateFor(
+        photoCount: 25,
+        hasResumableData: false,
+        canRebuildFromPhotos: true,
+        anotherReconstructionActive: false,
+      ),
+      TrainGate.ready,
     );
     // 有别的重建在跑时 hasResumableData 恒为 false(me_page 根本不去解析),
     // 这一组必须报"等待"而不是"无解" —— 否则用户会以为数据丢了。
@@ -76,9 +95,40 @@ void main() {
       trainGateFor(
         photoCount: 25,
         hasResumableData: false,
+        canRebuildFromPhotos: false,
         anotherReconstructionActive: true,
       ),
       TrainGate.blockedAnotherReconstruction,
+    );
+  });
+
+  test('路由:db 可用就续跑,不可用就重喂存档照片', () {
+    expect(
+      trainRouteFor(hasResumableData: true),
+      TrainRoute.resumeFromDb,
+    );
+    expect(
+      trainRouteFor(hasResumableData: false),
+      TrainRoute.rebuildFromArchivedPhotos,
+    );
+    // 两条路必须是两个值 —— 合并成一条就等于"db 坏了也去续跑",那正是
+    // 09-08 那个 errDb 红弹窗的成因。
+    expect(TrainRoute.values.length, 2);
+  });
+
+  test('照片够但 db 坏时,闸放行 + 路由指向重喂 —— 两者必须一致', () {
+    const photoCount = 25;
+    final gate = trainGateFor(
+      photoCount: photoCount,
+      hasResumableData: false,
+      canRebuildFromPhotos: true,
+      anotherReconstructionActive: false,
+    );
+    expect(gate, TrainGate.ready);
+    expect(
+      trainRouteFor(hasResumableData: false),
+      TrainRoute.rebuildFromArchivedPhotos,
+      reason: '闸放行却把用户送去续跑,就是把红弹窗换了个地方出',
     );
   });
 

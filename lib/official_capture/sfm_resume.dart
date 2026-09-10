@@ -27,6 +27,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../me/scan_record_store.dart';
 import '../official_util/device_log.dart';
+import 'archived_photo_rebuild.dart';
 import 'colorize_pipeline.dart';
 import 'database_archive_resolver.dart';
 import 'photo_archive_coordinator.dart';
@@ -46,6 +47,12 @@ final Set<String> _detachedFinalizing = <String>{};
 /// 同卡重复点击/重进等待页时直接挂到同一个 future 上 —— 绝不为同一个
 /// capture 起第二个 worker(与等待页重入契约同精神)。
 final Map<String, Future<bool>> _resumeInFlight = <String, Future<bool>>{};
+
+/// 「从存档照片重建」的在飞表(与 [_resumeInFlight] 同精神:同一个 capture
+/// 永远只有一条在跑)。它比 [_resumeInFlight] 多存一层结果,因为调用方要拿到
+/// 逐张的接收/拒绝账,不是一个 bool。
+final Map<String, Future<ArchivedRebuildResult>> _rebuildInFlight =
+    <String, Future<ArchivedRebuildResult>>{};
 
 /// [resumeSingleCapture] 是否正在为 [captureDir] 跑。
 bool isResumeInFlight(String captureDir) =>
@@ -715,4 +722,321 @@ Future<void> _umbrella(String method, String captureDir) async {
       'jobId': captureDir,
     });
   } catch (_) {}
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// 「从存档照片重建」—— db 已经死透时的恢复路。
+//
+// [2026-09-08 实机定罪] 上面那条 resume 腿的前提是"db 里有东西"。拍摄被杀
+// (闪退 / jetsam / 用户划掉)时这个前提不成立:流式核写进 sqlite 的东西还压在
+// 一个没提交的长事务里,进程一死全没。三方对照:
+//     跑完 finalize 的  db=41 MB, wal=0,  有 .work.tmp, 有 PLY
+//     被杀的            db=4096(1 页), wal=32 KB, 无 .work.tmp, 无 PLY
+// 那个 4096 字节的 db 单独拿出来也是 malformed,`sqlite3 .recover` 抢不出任何表。
+// ⇒「开始训练」(resume)和「补拍」(复用 db 继续喂)都必然 errDb。
+//
+// **但原料没丢**:照片和每张的 ARKit 位姿/内参都完整留在 photos_highres/。
+// 所以这条腿把存档照片重新喂一遍,走与拍摄期**完全同一条** offerFrame 路径。
+//
+// 已在 Mac 台架验过(archived_refeed_bench.mm,真机 cap_1788845271610360 的
+// 12 张存档照片):fed=12/12、n_reg=12/12、14151 点、产出 db 25.6MB/wal=0
+// —— 正是"跑完 finalize 的健康 db"的形状。
+
+/// 一次「从存档照片重建」的结果。**逐项可见**:少救一张都要说得出是哪张、
+/// 为什么 —— 静默出口是本项目的头号复发缺陷。
+class ArchivedRebuildResult {
+  const ArchivedRebuildResult({
+    required this.photosFound,
+    required this.accepted,
+    required this.fed,
+    required this.rejections,
+    required this.plyWritten,
+    this.failure,
+  });
+
+  /// photos_highres 下找到的 .jpg 张数。
+  final int photosFound;
+
+  /// 解析 + validate 通过、可以喂的张数。
+  final int accepted;
+
+  /// 真正被 offerFrame 收下的张数(与 [accepted] 的差值 = 被会话拒收的)。
+  final int fed;
+
+  /// 每条 "<文件名>: <原因>";accepted 之外的每一张都必然在这里出现一次。
+  final List<String> rejections;
+
+  /// 最终有没有写出 official_sfm_sparse.ply —— 这才是"救回来了"的判据。
+  final bool plyWritten;
+
+  /// 整条路失败的原因(照片目录不存在 / 会话起不来 / 超时…);成功时为 null。
+  final String? failure;
+
+  bool get ok => plyWritten;
+}
+
+/// `<captureDir>` 下的存档照片有没有多到值得走这条路。
+///
+/// 只数**盘上的 jpg**,不看 record 里的快照张数 —— 补拍之后 record 的
+/// photoCount 会滞后(09-08 已因此把 30 张记成 20 张)。
+int archivedPhotoCount(String captureDir) {
+  try {
+    final dir = Directory('$captureDir/photos_highres');
+    if (!dir.existsSync()) return 0;
+    return dir
+        .listSync()
+        .whereType<File>()
+        .where((f) => f.path.toLowerCase().endsWith('.jpg'))
+        .length;
+  } catch (_) {
+    return 0;
+  }
+}
+
+/// 把已经不可用的 db 及其随从**改名**挪开(**绝不删**),让新会话能在原路径
+/// 重新建库。
+///
+/// 必须整组一起挪:留下一个 stale `-wal` 会被 sqlite 当成新库的日志回放,
+/// 那是比"打不开"更坏的结果。`official_sfm_fed_frames.jsonl` 也要挪 ——
+/// 它按 frameId 追加,旧会话的 frameId 会和新会话的撞号,而取色正是按
+/// frameId → jpegPath 找照片的(cap47 色彩污染就是同一类错配)。
+///
+/// 返回挪走的文件名列表,便于把"动过什么"落进日志。
+Future<List<String>> _sidelineDeadDatabase(String captureDir) async {
+  final stamp = DateTime.now().millisecondsSinceEpoch;
+  final moved = <String>[];
+  const names = <String>[
+    'official_sfm_live.db',
+    'official_sfm_live.db-wal',
+    'official_sfm_live.db-shm',
+    'official_sfm_live.db.arkit_pose_v1',
+    'official_sfm_fed_frames.jsonl',
+  ];
+  for (final n in names) {
+    final f = File('$captureDir/$n');
+    if (!f.existsSync()) continue;
+    try {
+      await f.rename('$captureDir/$n.dead-$stamp');
+      moved.add(n);
+    } catch (e) {
+      DeviceLog.log('SfmResume', 'sideline failed for $n: $e');
+    }
+  }
+  return moved;
+}
+
+/// 从 `<captureDir>/photos_highres` 的存档照片**重新喂帧**并重建点云。
+///
+/// 与 [resumeSingleCapture] 互斥:两者共用 `_resumeInFlight`,同一个 capture
+/// 上永远只有一条重建在飞。
+Future<ArchivedRebuildResult> rebuildFromArchivedPhotos(
+  String captureDir, {
+  Duration timeout = const Duration(minutes: 25),
+}) {
+  final existing = _rebuildInFlight[captureDir];
+  if (existing != null) return existing;
+  final completer = Completer<ArchivedRebuildResult>();
+  _rebuildInFlight[captureDir] = completer.future;
+  // 让草稿页/作品页的"重建中"判定同样盖住这条腿(它们查的是 _resumeInFlight)。
+  _resumeInFlight[captureDir] = completer.future.then((r) => r.ok);
+  () async {
+    ArchivedRebuildResult result;
+    try {
+      result = await _rebuildFromArchivedPhotosOnce(captureDir, timeout);
+    } catch (e, st) {
+      DeviceLog.log('SfmResume', 'rebuild error $captureDir: $e\n$st');
+      result = ArchivedRebuildResult(
+        photosFound: 0,
+        accepted: 0,
+        fed: 0,
+        rejections: const <String>[],
+        plyWritten: File('$captureDir/official_sfm_sparse.ply').existsSync(),
+        failure: '$e',
+      );
+    } finally {
+      _rebuildInFlight.remove(captureDir);
+      _resumeInFlight.remove(captureDir);
+    }
+    completer.complete(result);
+  }();
+  return completer.future;
+}
+
+Future<ArchivedRebuildResult> _rebuildFromArchivedPhotosOnce(
+  String captureDir,
+  Duration timeout,
+) async {
+  final rejections = <String>[];
+  final photosDir = Directory('$captureDir/photos_highres');
+  if (!photosDir.existsSync()) {
+    return ArchivedRebuildResult(
+      photosFound: 0,
+      accepted: 0,
+      fed: 0,
+      rejections: rejections,
+      plyWritten: false,
+      failure: '照片目录不存在:${photosDir.path}',
+    );
+  }
+
+  final jpegs =
+      photosDir
+          .listSync()
+          .whereType<File>()
+          .map((f) => f.path)
+          .where((p) => p.toLowerCase().endsWith('.jpg'))
+          .toList()
+        ..sort();
+
+  final parses = <ArchivedPhotoParse>[];
+  for (final jpeg in jpegs) {
+    final sidecar = File('${jpeg.substring(0, jpeg.length - 4)}.json');
+    if (!sidecar.existsSync()) {
+      rejections.add('${jpeg.split('/').last}: 缺 sidecar .json');
+      continue;
+    }
+    String text;
+    try {
+      text = await sidecar.readAsString();
+    } catch (e) {
+      rejections.add('${jpeg.split('/').last}: sidecar 读不出 ($e)');
+      continue;
+    }
+    final p = parseArchivedPhoto(jpegPath: jpeg, sidecarJson: text);
+    if (p.isAccepted) {
+      parses.add(p);
+    } else {
+      rejections.add('${jpeg.split('/').last}: ${p.failure}');
+    }
+  }
+  final ordered = orderForRefeed(parses);
+  DeviceLog.log(
+    'SfmResume',
+    'rebuild $captureDir: jpg=${jpegs.length} accepted=${ordered.length} '
+        'rejected=${rejections.length}',
+  );
+  if (ordered.isEmpty) {
+    return ArchivedRebuildResult(
+      photosFound: jpegs.length,
+      accepted: 0,
+      fed: 0,
+      rejections: rejections,
+      plyWritten: false,
+      failure: '没有一张存档照片可用',
+    );
+  }
+
+  SfmLiveRecon? recon;
+  PhotoArchiveActivityLease? archiveLease;
+  StreamSubscription<SfmLiveEvent>? sub;
+  final done = Completer<void>();
+  var fed = 0;
+  String? failure;
+  try {
+    archiveLease = photoArchiveCoordinator.beginReconstructionActivity(
+      Directory(captureDir),
+    );
+    await _umbrella('beginReconUmbrella', captureDir);
+
+    final moved = await _sidelineDeadDatabase(captureDir);
+    DeviceLog.log('SfmResume', 'rebuild sidelined: ${moved.join(",")}');
+
+    // 新会话在**原路径**重建库 —— 下游(resume sweep / 补拍 / 归档策略)全都
+    // 按这个固定名字找 db,换个名字等于把这次重建的成果藏起来。
+    recon = await SfmLiveRecon.start(
+      dbPath: '$captureDir/official_sfm_live.db',
+    );
+    if (recon == null) {
+      return ArchivedRebuildResult(
+        photosFound: jpegs.length,
+        accepted: ordered.length,
+        fed: 0,
+        rejections: rejections,
+        plyWritten: false,
+        failure: '重建会话起不来(可能已有另一条重建在跑)',
+      );
+    }
+
+    sub = recon.events.listen((e) {
+      switch (e) {
+        case SfmLiveLocalReady(:final snapshot):
+          DeviceLog.log(
+            'SfmResume',
+            'rebuild local ignored: ${snapshot.pointCount} pts',
+          );
+        case SfmLiveRefined(:final snapshot):
+          // 与另外两条腿同构:persist(取色 + 孤点过滤 + PLY 落盘)跑完才算完,
+          // refined 一到就 complete 会让调用方在 PLY 没写完时误判失败。
+          unawaited(() async {
+            try {
+              // 🔴 这里**不**跟着 detached 腿调 _prunePhotosAfterSparse:
+              // 那条腿删的是刚拍完、db 健全时的冗余照片;而走到这条腿的项目,
+              // 存档照片是它**仅剩**的恢复材料(db 已经死了)。删掉就再也没有
+              // 第二次机会。两条腿看着对称,但前提相反。
+              await _persistColored(captureDir, snapshot);
+            } catch (e) {
+              DeviceLog.log('SfmResume', 'rebuild persist failed: $e');
+            } finally {
+              if (!done.isCompleted) done.complete();
+            }
+          }());
+        case SfmLiveFailed(:final stage, :final message):
+          failure = '$stage $message';
+          DeviceLog.log(
+            'SfmResume',
+            'rebuild $captureDir failed: $stage $message',
+          );
+          if (!done.isCompleted) done.complete();
+        default:
+          break;
+      }
+    });
+
+    for (final p in ordered) {
+      final input = p.input!;
+      if (recon.offerFrame(input)) {
+        fed++;
+      } else {
+        // 会话拒收(尺寸不符 / 文件不在 / 已请求 finalize)——必须留痕。
+        rejections.add('${p.jpegPath.split('/').last}: 会话拒收(offerFrame)');
+      }
+    }
+    DeviceLog.log('SfmResume', 'rebuild fed=$fed/${ordered.length}');
+    if (fed == 0) {
+      return ArchivedRebuildResult(
+        photosFound: jpegs.length,
+        accepted: ordered.length,
+        fed: 0,
+        rejections: rejections,
+        plyWritten: false,
+        failure: '一张都没喂进去',
+      );
+    }
+
+    recon.finalize();
+    await done.future.timeout(
+      timeout,
+      onTimeout: () {
+        failure = '超时(${timeout.inMinutes} 分钟)';
+        DeviceLog.log('SfmResume', 'rebuild $captureDir timed out');
+      },
+    );
+  } finally {
+    await sub?.cancel();
+    if (recon != null) await recon.dispose();
+    await _umbrella('endReconUmbrella', captureDir);
+    await archiveLease?.close();
+    await _clearMaterializedArchiveCache(captureDir);
+  }
+
+  final ply = File('$captureDir/official_sfm_sparse.ply').existsSync();
+  DeviceLog.log('SfmResume', 'rebuild $captureDir → ply=$ply fed=$fed');
+  return ArchivedRebuildResult(
+    photosFound: jpegs.length,
+    accepted: ordered.length,
+    fed: fed,
+    rejections: rejections,
+    plyWritten: ply,
+    failure: ply ? null : (failure ?? '重建没有产出点云'),
+  );
 }

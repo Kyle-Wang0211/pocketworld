@@ -53,6 +53,59 @@ Future<void> pushOfficialResumeRoute(
   );
 }
 
+/// [2026-09-08]「从存档照片重建」—— db 已经死透时的那条路。
+///
+/// 与 [pushOfficialResumeRoute] 是**同一个等待页、不同的腿**:确认文案和进度
+/// 文案都必须换掉,因为"从已保存的重建数据恢复"对一个 db 只剩 4096 字节残骸
+/// 的项目是句假话;这条路是把 photos_highres 里的存档照片重新喂一遍。
+/// 耗时也不是一个量级(要重新提特征+匹配),所以文案里明说会更久。
+Future<void> pushOfficialRebuildFromPhotosRoute(
+  BuildContext context,
+  ScanRecord record,
+  String captureDir, {
+  required int photoCount,
+}) async {
+  if (!official_resume.isResumeInFlight(captureDir)) {
+    final name = record.name.isEmpty ? '这次拍摄' : '「${record.name}」';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('从照片重建？'),
+        content: Text(
+          '$name的重建数据已经损坏，无法从中断处继续。\n\n'
+          '但 $photoCount 张照片和每张的拍摄位置都完整保留着，'
+          '可以用它们重新重建，无需重拍。\n'
+          '这会比继续重建慢一些。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text(AppL10n.of(dialogContext).meActionCancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('从照片重建'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+  }
+  if (!context.mounted) return;
+  await Navigator.of(context).push(
+    MaterialPageRoute<void>(
+      builder: (_) => SfmResumeWaitPage(
+        captureDir: captureDir,
+        title: record.name,
+        runner: (dir) async =>
+            (await official_resume.rebuildFromArchivedPhotos(dir)).ok,
+        progressTitle: '正在从照片重建…',
+        progressDetail: '把 $photoCount 张已拍的照片重新喂进重建，无需重拍',
+      ),
+    ),
+  );
+}
+
 /// Opens the official sparse-cloud viewer without a self-pipeline fallback.
 Future<void> pushOfficialViewerRoute(
   BuildContext context,

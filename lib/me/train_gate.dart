@@ -33,8 +33,23 @@ enum TrainGate {
   /// 真机上限(与 draft_card_action 的续跑门同一规矩)。
   blockedAnotherReconstruction,
 
-  /// 灰字 —— 张数够了,但这次拍摄没留下可续跑的重建数据(sfm_live.db 不在)。
+  /// 灰字 —— 张数够了,但这次拍摄既没有可用的 db,也没有能重喂的存档照片。
   blockedNoResumableData,
+}
+
+/// 「开始训练」点下去之后走哪条路。
+///
+/// [2026-09-08] 这条分叉是被实机数据逼出来的:拍摄被杀时 db 只落了一个
+/// 4096 字节的残骸(头声称 3025 页、文件只有 1 页 ⇒ sqlite 报 malformed),
+/// 续跑那条路必然 errDb。但照片和每张的 ARKit 位姿都完好,重新喂一遍能救回来
+/// (Mac 台架实测同一批照片 12/12 注册、14151 点)。
+/// 所以 db 坏掉不再等于"无解",而是**换一条路**。
+enum TrainRoute {
+  /// db 可用 —— 直接照 db 续跑(不需要照片,最快)。
+  resumeFromDb,
+
+  /// db 已不可用 —— 把 photos_highres 里的存档照片重新喂一遍。
+  rebuildFromArchivedPhotos,
 }
 
 /// 「开始训练」的闸。优先级(高→低):
@@ -43,12 +58,16 @@ enum TrainGate {
 ///   3. 无可续跑数据 → 无解。
 ///   4. 其余 → 可点。
 ///
+/// [hasResumableData] = **db 可用**(存在 且 打得开,见 sqlite_db_health.dart);
+/// [canRebuildFromPhotos] = 盘上还有存档照片,可以重新喂一遍。
+///
 /// [photoCount] 是**磁盘上实际的照片数**,不是保存时的快照 —— 见
 /// me_page 的 _countCapturePhotos。用快照会在用户删过照片后偏大,偏大
 /// 意味着这道闸会放行一个其实不足 20 张的项目。
 TrainGate trainGateFor({
   required int photoCount,
   required bool hasResumableData,
+  required bool canRebuildFromPhotos,
   required bool anotherReconstructionActive,
 }) {
   if (!officialCaptureCanFinish(acceptedFrameCount: photoCount)) {
@@ -57,9 +76,21 @@ TrainGate trainGateFor({
   if (anotherReconstructionActive) {
     return TrainGate.blockedAnotherReconstruction;
   }
-  if (!hasResumableData) return TrainGate.blockedNoResumableData;
+  // db 坏了不再是死路:存档照片还在就能重喂。两条都没有才是真的无解。
+  if (!hasResumableData && !canRebuildFromPhotos) {
+    return TrainGate.blockedNoResumableData;
+  }
   return TrainGate.ready;
 }
+
+/// 闸放行之后走哪条路。db 可用就续跑,不可用就重喂存档照片。
+///
+/// 单独一个函数而不是塞进 [TrainGate]:闸回答"能不能点",路回答"点了干什么",
+/// 混在一起会让"db 坏但能重建"这种状态在枚举里无处安放。
+TrainRoute trainRouteFor({required bool hasResumableData}) =>
+    hasResumableData
+    ? TrainRoute.resumeFromDb
+    : TrainRoute.rebuildFromArchivedPhotos;
 
 /// 还差几张才够开始训练;够了返回 0。
 int photosStillNeededToTrain(int photoCount) {

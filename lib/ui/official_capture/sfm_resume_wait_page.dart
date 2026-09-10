@@ -27,12 +27,23 @@ class SfmResumeWaitPage extends StatefulWidget {
     super.key,
     required this.captureDir,
     required this.title,
-    @visibleForTesting this.debugResume,
+    this.runner,
+    this.progressTitle,
+    this.progressDetail,
   });
 
-  /// 测试注入:替身 resume(生产恒 null,走 [resumeSingleCapture])。
-  /// 真 resume 会 spawn native worker,widget 测试里跑不了。
-  final Future<bool> Function(String captureDir)? debugResume;
+  /// 真正干活的那条腿;null = 默认的断点续跑 [resumeSingleCapture]。
+  ///
+  /// 两种用途,同一个口子:
+  ///  · 生产:「从存档照片重建」把这里换成 rebuildFromArchivedPhotos —— 那条
+  ///    腿自己也有在飞表,所以"返回后再进来挂回同一个 future"的幂等契约不变。
+  ///  · 测试:真 resume 会 spawn native worker,widget 测试里跑不了,换成替身。
+  final Future<bool> Function(String captureDir)? runner;
+
+  /// 进度文案。默认是续跑的说法;走别的腿时**必须**换掉 ——
+  /// 「从已保存的重建数据恢复」对一个 db 已经死了的项目是句假话。
+  final String? progressTitle;
+  final String? progressDetail;
 
   /// 已通过 resolveRecoverableCaptureDir 解析的、当前容器内的 capture 目录。
   final String captureDir;
@@ -54,7 +65,7 @@ class _SfmResumeWaitPageState extends State<SfmResumeWaitPage> {
   void initState() {
     super.initState();
     // 幂等:已在跑就挂到同一 future(绝不起第二个 worker)。
-    (widget.debugResume ?? resumeSingleCapture)(widget.captureDir).then((ok) {
+    (widget.runner ?? resumeSingleCapture)(widget.captureDir).then((ok) {
       // [2026-08-08 用户实机指认"回到草稿页仍显示照片封面"] 点云诞生的那一刻就把
       // 草稿卡的封面画好 —— 与 live 路径(ar_capture_page 的 persist 现场)同一
       // 契约。刻意放在 mounted 检查**之前**:用户提前返回、本页已销毁时也要画,
@@ -145,13 +156,14 @@ class _SfmResumeWaitPageState extends State<SfmResumeWaitPage> {
                       ),
                     ),
                     const SizedBox(height: 16),
-                    const Text(
-                      '正在继续重建…',
-                      style: TextStyle(color: Colors.white, fontSize: 15),
+                    Text(
+                      widget.progressTitle ?? '正在继续重建…',
+                      style: const TextStyle(color: Colors.white, fontSize: 15),
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      '从已保存的重建数据恢复,无需重拍 · 已 ${_elapsedText()}',
+                      '${widget.progressDetail ?? "从已保存的重建数据恢复,无需重拍"}'
+                      ' · 已 ${_elapsedText()}',
                       textAlign: TextAlign.center,
                       style: const TextStyle(
                         color: Colors.white38,

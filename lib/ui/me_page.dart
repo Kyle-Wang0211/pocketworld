@@ -34,8 +34,11 @@ import '../l10n/app_localizations.dart';
 import '../me/draft_card_action.dart';
 import '../me/scan_record_store.dart';
 import '../me/train_gate.dart';
+import '../official_capture/database_archive_policy.dart';
 import '../official_capture/live_sfm_publish_policy.dart';
 import '../official_capture/sfm_resume.dart' as official_sfm_resume;
+import '../official_capture/sqlite_db_health.dart';
+import '../official_util/device_log.dart';
 import 'capture/sfm_resume_wait_page.dart';
 import 'capture/sparse_cloud_viewer_page.dart';
 import 'community/following_list_page.dart';
@@ -155,6 +158,15 @@ typedef OfficialExtendCaptureRoute =
       String captureDir,
     );
 
+/// [2026-09-08] db 已损坏时的恢复路:把存档照片重新喂一遍。
+typedef OfficialRebuildFromPhotosRoute =
+    Future<void> Function(
+      BuildContext context,
+      ScanRecord record,
+      String captureDir, {
+      required int photoCount,
+    });
+
 typedef ActiveReconstructionDelete = Future<void> Function(ScanRecord record);
 
 class MePage extends StatefulWidget {
@@ -167,6 +179,7 @@ class MePage extends StatefulWidget {
     this.onActiveReconstructionDelete,
     this.onRecordActionActivityChanged,
     this.officialResumeRoute,
+    this.officialRebuildFromPhotosRoute,
     this.officialViewerRoute,
     this.officialExtendRoute,
     this.socialProfileRepository,
@@ -192,6 +205,7 @@ class MePage extends StatefulWidget {
   /// Until that page is installed, official records never fall back to the
   /// self-developed `SfmResumeWaitPage`.
   final OfficialScanResumeRoute? officialResumeRoute;
+  final OfficialRebuildFromPhotosRoute? officialRebuildFromPhotosRoute;
   final OfficialScanViewerRoute? officialViewerRoute;
 
   /// 补拍入口。未注入时「拍摄更多照片」只提示,绝不静默失败。
@@ -402,6 +416,8 @@ class _MePageState extends State<MePage> {
                   onRecordActionActivityChanged:
                       widget.onRecordActionActivityChanged,
                   officialResumeRoute: widget.officialResumeRoute,
+                  officialRebuildFromPhotosRoute:
+                      widget.officialRebuildFromPhotosRoute,
                   officialExtendRoute: widget.officialExtendRoute,
                   officialViewerRoute: widget.officialViewerRoute,
                 ),
@@ -536,6 +552,7 @@ class _MyWorksSection extends StatefulWidget {
   final ActiveReconstructionDelete? onActiveReconstructionDelete;
   final ValueChanged<bool>? onRecordActionActivityChanged;
   final OfficialScanResumeRoute? officialResumeRoute;
+  final OfficialRebuildFromPhotosRoute? officialRebuildFromPhotosRoute;
   final OfficialScanViewerRoute? officialViewerRoute;
   final OfficialExtendCaptureRoute? officialExtendRoute;
 
@@ -546,6 +563,7 @@ class _MyWorksSection extends StatefulWidget {
     this.onActiveReconstructionDelete,
     this.onRecordActionActivityChanged,
     this.officialResumeRoute,
+    this.officialRebuildFromPhotosRoute,
     this.officialViewerRoute,
     this.officialExtendRoute,
   });
@@ -881,17 +899,41 @@ class _MyWorksSectionState extends State<_MyWorksSection>
           widget.activeReconstructionCaptureDir == null && captureDir != null
           ? await _resolveRecoverableCaptureDir(record)
           : null;
+      // [2026-09-08] db 在 ≠ db 能开。拍摄被杀留下的是个 4096 字节的残骸
+      // (头声称 3025 页、文件只有 1 页 ⇒ sqlite 报 malformed),而
+      // _resolveRecoverableCaptureDir 只回答"文件在不在" —— 于是「开始训练」
+      // 一路走到 native 才炸成 errDb,用户看到红弹窗而不是一句人话。
+      // 这里先用结构性判据看一眼(只读 100 字节 + 一次 stat)。
+      final dbHealth = rebuildDir == null
+          ? null
+          : sqliteDatabaseUsable(
+              File('$rebuildDir/${DatabaseArchivePolicy.sourceFileName}'),
+            );
+      final dbUsable = rebuildDir != null && (dbHealth?.usable ?? false);
       final photoCount = await _countCapturePhotos(record);
       if (!mounted) return;
       // 判定提纯为纯函数(train_gate.dart),阈值同源于拍摄页的
       // officialCaptureCanFinish —— 本文件里没有 20 这个数字。
       final trainGate = trainGateFor(
         photoCount: photoCount,
-        hasResumableData: rebuildDir != null,
+        hasResumableData: dbUsable,
+        // db 坏了不是死路:存档照片还在就能重喂(Mac 台架已验同一批照片
+        // 12/12 注册)。所以这里只问"还有没有照片可喂"。
+        canRebuildFromPhotos:
+            rebuildDir != null &&
+            official_sfm_resume.archivedPhotoCount(rebuildDir) > 0,
         anotherReconstructionActive:
             widget.activeReconstructionCaptureDir != null,
       );
+      final trainRoute = trainRouteFor(hasResumableData: dbUsable);
       final trainEnabled = trainGate == TrainGate.ready;
+      if (dbHealth != null && !dbHealth.usable) {
+        DeviceLog.log(
+          'MePage',
+          'db unusable for ${record.id}: ${dbHealth.reason} '
+              '→ route=$trainRoute photos=$photoCount',
+        );
+      }
       final action = await showModalBottomSheet<String>(
         context: context,
         backgroundColor: AetherColors.bgCanvas,
@@ -902,19 +944,12 @@ class _MyWorksSectionState extends State<_MyWorksSection>
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              if (canViewSparse) ...[
-                ListTile(
-                  leading: const Icon(Icons.grain_rounded),
-                  title: const Text('查看点云'),
-                  onTap: () => Navigator.of(ctx).pop('view_sparse'),
-                ),
-                if (rebuildDir != null)
-                  ListTile(
-                    leading: const Icon(Icons.restart_alt_rounded),
-                    title: const Text('重新重建点云'),
-                    onTap: () => Navigator.of(ctx).pop('rebuild_sparse'),
-                  ),
-              ] else ...[
+              // [2026-09-08 用户裁决] 已出点云的卡片**只给「改名 / 删除」**:
+              //   ·「重新重建点云」删 —— 点云已经在那儿了,重跑是给自己找事;
+              //   ·「查看点云」删 —— 点卡片本来就直接开点云查看器
+              //     (draft_card_action 的 openSparseCloud),菜单里再放一个是重复;
+              //   · 补拍也不给 —— 只有"未完成"的项目才需要补拍。
+              if (!canViewSparse) ...[
                 // 置灰的项**仍然可点** —— 点击是唯一能问出"为什么点不动"的
                 // 动作,所以它必须有回答(居中 3 秒提示),而不是吞掉。
                 ListTile(
@@ -964,10 +999,27 @@ class _MyWorksSectionState extends State<_MyWorksSection>
         ),
       );
       if (!mounted) return;
-      if (action == 'view_sparse' && sparsePlyPath != null) {
-        await _openSparseCloud(record, sparsePlyPath);
-      } else if (action == 'rebuild_sparse' && rebuildDir != null) {
-        await _offerResume(record, rebuildDir, regenerate: canViewSparse);
+      if (action == 'rebuild_sparse' && rebuildDir != null) {
+        switch (trainRoute) {
+          case TrainRoute.resumeFromDb:
+            await _offerResume(record, rebuildDir, regenerate: canViewSparse);
+          case TrainRoute.rebuildFromArchivedPhotos:
+            // 每个不可用分支都要说清原因 —— 不做成点了没反应的死按钮。
+            final route = widget.officialRebuildFromPhotosRoute;
+            if (record.pipelineKind != CapturePipelineKind.official) {
+              _showCenterToast('这个项目不是官方管线拍的，\n无法从照片重建。');
+            } else if (route == null) {
+              _showCenterToast('从照片重建的入口没有接上。');
+            } else {
+              await route(
+                context,
+                record,
+                rebuildDir,
+                photoCount: photoCount,
+              );
+              _refreshAfterResumeReturn();
+            }
+        }
       } else if (action == 'train_blocked') {
         _showCenterToast(_trainBlockedReason(trainGate, photoCount));
       } else if (action == 'capture_more') {
@@ -1038,7 +1090,8 @@ class _MyWorksSectionState extends State<_MyWorksSection>
               '请继续拍摄补足。',
         TrainGate.blockedAnotherReconstruction =>
           '另一个项目正在重建中。\n同时只能跑一个，等它完成后再来。',
-        TrainGate.blockedNoResumableData => '这次拍摄没有留下可以续跑的重建数据，\n无法开始训练。',
+        TrainGate.blockedNoResumableData =>
+          '这次拍摄的重建数据已损坏，照片也不在了，\n无法重建。',
       };
 
   /// 屏幕正中的 3 秒提示。
