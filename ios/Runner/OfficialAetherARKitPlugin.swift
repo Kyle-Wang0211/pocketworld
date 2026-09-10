@@ -447,7 +447,14 @@ class OfficialAetherARKitPlugin: NSObject {
     /// 改法:ARFrame 到手那一刻就把缩略图做进内存,addPhotoCard 直接取用,
     /// **整条贴图路径不碰文件系统** ⇒ 相框与照片同时出现,且不再受落盘顺序、
     /// 热态、队列深度的任何影响。文件照旧写(取证不减),只是没人等它。
-    let textureImage: UIImage?
+    /// 🔴 类型是 **CGImage 而不是 UIImage**,这是有意的(2026-09-10)。
+    /// 消费端 buildPhotoCard 把它交给 `SCNMaterial.diffuse.contents`,而
+    /// **SceneKit 只读像素、不看 UIImage.imageOrientation**(那个标志只有
+    /// UIKit 绘制路径才认)。用 UIImage 做参数,接口就**表达得出**一种它其实
+    /// 不支持的东西 —— build 131 我加第二个生产者时正是这样躺倒的。
+    /// 换成 CGImage 之后,"朝向标志"这个概念在这条路上根本不存在,
+    /// 生产者只有一个选择:把旋转烤进像素。
+    let textureCGImage: CGImage?
     let texturePath: String
     let evidencePath: String
     let localCorners: [SCNVector3]  // 4 quad corners [TL,TR,BR,BL] in anchor-local space
@@ -473,7 +480,7 @@ class OfficialAetherARKitPlugin: NSObject {
     [String: (invView: simd_float4x4, transform: simd_float4x4)] = [:]
   /// 证据路径 → 卡片贴图(内存)。与 photoBasisByEvidencePath 同生同灭:
   /// 早信号那一刻放进来,addPhotoCard 取走(removeValue),不留存。
-  static var photoCardThumbByEvidencePath: [String: UIImage] = [:]
+  static var photoCardThumbByEvidencePath: [String: CGImage] = [:]
   // [瞬时快门 2026-07-19] 卡片缩略图解码重试计数:photo43 下 12MP 静照后台
   // 落盘,didAdd 建卡时文件可能还没写完;每 150ms 重试直到落盘(最多~4.5s)。
   static var photoCardThumbRetries: [String: Int] = [:]
@@ -1292,7 +1299,7 @@ class OfficialAetherARKitPlugin: NSObject {
       let cardThumb = OfficialAetherARKitPlugin
         .photoCardThumbByEvidencePath.removeValue(forKey: evidencePath)
       OfficialAetherARKitPlugin.photoCardSpecs[cardName] =
-        PhotoCardSpec(textureImage: cardThumb,
+        PhotoCardSpec(textureCGImage: cardThumb,
                       texturePath: texturePath,
                       evidencePath: evidencePath,
                       localCorners: localCorners,
@@ -2416,7 +2423,7 @@ class OfficialAetherARKitPlugin: NSObject {
           invView: frame.camera.viewMatrix(for: .portrait).inverse,
           transform: frame.camera.transform
         )
-        // 贴图也在这一刻做好进内存(见 PhotoCardSpec.textureImage 的注释)。
+        // 贴图也在这一刻做好进内存(见 PhotoCardSpec.textureCGImage 的注释)。
         // 用与落盘同一条 CIImage → CGImage 路径,但**只缩到卡片实际要的尺寸**、
         // 不编码 JPEG、不落盘;朝向按传感器约定 .right 转正,与文件那条一致。
         if let thumb = Self.makePhotoCardThumb(
@@ -2854,14 +2861,32 @@ class OfficialAetherARKitPlugin: NSObject {
     }
   }
 
-  /// 卡片贴图(内存版):CIImage → 缩到 photoCardThumbMaxPx → UIImage,
-  /// 朝向用 .right(与 encodeCVPixelBufferAsJpeg 写进文件的 EXIF 一致),
-  /// 所以内存路径与文件路径出来的朝向逐字相同 —— 不会因为走哪条路而躺倒。
+  /// 卡片贴图(内存版):CIImage → **转正** → 缩到 photoCardThumbMaxPx → CGImage。
+  /// 转正用 .right,与 encodeCVPixelBufferAsJpeg 写进文件的 EXIF 朝向同值,
+  /// 所以内存路径与磁盘路径出来的**像素**逐字同向 —— 走哪条路都不会躺倒。
   /// 不编码 JPEG、不碰文件系统。
   private static func makePhotoCardThumb(
     _ buffer: CVPixelBuffer, ciContext: CIContext
-  ) -> UIImage? {
-    let ci = CIImage(cvPixelBuffer: buffer)
+  ) -> CGImage? {
+    // 🔴 2026-09-10 定罪「AR 相框里的照片又变成横向」——**是 build 131 这条
+    // 内存路径自己带回来的**,与 09-08 那次同一个位置、不同的门。
+    //
+    // 契约(消费端 buildPhotoCard):`mat.diffuse.contents = image`,
+    // **SceneKit 取的是底层 CGImage,不看 UIImage.imageOrientation**
+    // (那个标志只有 UIKit 绘制路径 —— UIImageView / UIImage.draw —— 才认)。
+    // 所以交给它的图必须是**像素本身已经转正**的。
+    // 磁盘那条路满足契约:kCGImageSourceCreateThumbnailWithTransform: true
+    // 把 EXIF 旋转**烤进像素**,再 UIImage(cgImage:) 不带任何朝向标志。
+    // 131 我新开的这条内存路只挂了 orientation: .right —— 像素没转,标志被
+    // 无视 ⇒ 相框里又是横的。
+    // 而且是双重错:UIImage.size 会按 orientation 交换宽高,于是 buildPhotoCard
+    // 里 texAspect 算成竖版 0.75、真实纹理却是横版 1.333 ⇒ UV 裁剪一并算错。
+    //
+    // 改法不是给这条路打补丁,而是让两个生产者服从**同一个契约**,并且把契约
+    // 抬进类型里:① 这里在 CIImage 阶段 .oriented(.right) 把旋转**烤进像素**;
+    // ② 整条链的载体从 UIImage 换成 CGImage,于是"朝向标志"这个概念在这条路
+    // 上根本不存在,第三个生产者也**表达不出**当年那个错误。
+    let ci = CIImage(cvPixelBuffer: buffer).oriented(.right)
     let maxEdge = max(ci.extent.width, ci.extent.height)
     guard maxEdge > 0 else { return nil }
     let target = CGFloat(photoCardThumbMaxPx)
@@ -2869,10 +2894,7 @@ class OfficialAetherARKitPlugin: NSObject {
       ? ci.transformed(by: CGAffineTransform(scaleX: target / maxEdge,
                                              y: target / maxEdge))
       : ci
-    guard let cg = ciContext.createCGImage(scaled, from: scaled.extent) else {
-      return nil
-    }
-    return UIImage(cgImage: cg, scale: 1, orientation: .right)
+    return ciContext.createCGImage(scaled, from: scaled.extent)
   }
 
   private static func makePreviewImage(from image: CIImage) -> CIImage {
@@ -4431,10 +4453,10 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
       kCGImageSourceCreateThumbnailWithTransform: true,
       kCGImageSourceThumbnailMaxPixelSize: OfficialAetherARKitPlugin.photoCardThumbMaxPx,
     ]
-    // 内存贴图优先:早信号那一刻已经做好了(见 PhotoCardSpec.textureImage)。
+    // 内存贴图优先:早信号那一刻已经做好了(见 PhotoCardSpec.textureCGImage)。
     // 拿到就直接建卡片 —— 不解码文件、不进重试循环 ⇒ 相框与照片同时出现。
     // 拿不到才退回既有的文件解码 + 150ms×30 重试(旧行为,不改判)。
-    if let memImage = spec.textureImage {
+    if let memImage = spec.textureCGImage {
       OfficialAetherARKitPlugin.photoCardThumbRetries.removeValue(forKey: name)
       buildPhotoCard(image: memImage, spec: spec, name: name, on: node)
       OfficialPwNativeTelemetry.shared.log("photocard_photo_in", [
@@ -4478,8 +4500,8 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
       return
     }
     OfficialAetherARKitPlugin.photoCardThumbRetries.removeValue(forKey: name)
-    let image = UIImage(cgImage: thumbCG)   // upright portrait, ~thumb px long edge
-    buildPhotoCard(image: image, spec: spec, name: name, on: node)
+    // thumbCG 的旋转已被 kCGImageSource…WithTransform: true 烤进像素。
+    buildPhotoCard(image: thumbCG, spec: spec, name: name, on: node)
     OfficialPwNativeTelemetry.shared.log("photocard_photo_in", [
       "name": name, "source": "file_decode",
     ])
@@ -4491,21 +4513,23 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
   /// 抽出来是为了让「贴图从哪来」与「卡片怎么建」彻底分开 ——
   /// 以后再换贴图来源,不必再动建卡片这段几何/材质代码。
   private func buildPhotoCard(
-    image: UIImage,
+    image: CGImage,
     spec: OfficialAetherARKitPlugin.PhotoCardSpec,
     name: String,
     on node: SCNNode
   ) {
     NSLog("[PHOTOCARD] renderer building quad for %@ (%d corners) thumb=%dx%d",
-          name, spec.localCorners.count,
-          Int(image.size.width), Int(image.size.height))
+          name, spec.localCorners.count, image.width, image.height)
     let c = spec.localCorners
     let quadW = CGFloat(simd_length(simd_float3(
       c[1].x - c[0].x, c[1].y - c[0].y, c[1].z - c[0].z)))   // TL->TR
     let quadH = CGFloat(simd_length(simd_float3(
       c[3].x - c[0].x, c[3].y - c[0].y, c[3].z - c[0].z)))   // TL->BL
-    let texAspect = image.size.height > 0
-      ? image.size.width / image.size.height : 0.75
+    // 取**真实像素**宽高。UIImage.size 会按 imageOrientation 交换宽高 ——
+    // 131 躺倒的第二半就是它:纹理明明是横的,size 却报竖的 0.75,UV 裁剪
+    // 一并算错。CGImage 没有这个二义性。
+    let texAspect = image.height > 0
+      ? CGFloat(image.width) / CGFloat(image.height) : 0.75
     let quadAspect = quadH > 0 ? quadW / quadH : 0.46
     var u0: CGFloat = 0, u1: CGFloat = 1, v0: CGFloat = 0, v1: CGFloat = 1
     if texAspect > quadAspect {            // texture relatively wider → crop width
@@ -4515,8 +4539,8 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
     }
     let texUVs = [CGPoint(x: u0, y: v0), CGPoint(x: u1, y: v0),
                   CGPoint(x: u1, y: v1), CGPoint(x: u0, y: v1)]   // TL,TR,BR,BL
-    NSLog("[PHOTOCARD] tex thumb=%.0fx%.0f texAsp=%.3f quadAsp=%.3f",
-          image.size.width, image.size.height, texAspect, quadAspect)
+    NSLog("[PHOTOCARD] tex thumb=%dx%d texAsp=%.3f quadAsp=%.3f",
+          image.width, image.height, texAspect, quadAspect)
 
     let positionSource = SCNGeometrySource(vertices: spec.localCorners)
     let texSource = SCNGeometrySource(textureCoordinates: texUVs)
