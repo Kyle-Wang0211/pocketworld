@@ -28,6 +28,17 @@ const double kRtabmapNndrRatio = 0.8;
 /// `Kp/MaxFeatures` 默认值(rtabmap_Parameters.h:262)。
 const int kRtabmapMaxFeatures = 500;
 
+/// `Mem/STMSize` 默认 **10**(rtabmap_Parameters.h:226)。
+///
+/// 🔴 这一层我一开始漏了,后果很具体:`Rtabmap::process` 里
+/// `computeLikelihood(signature, signaturesToCompare)` 的候选来自
+/// **`getWorkingMem()`,不是 STM** —— 一个地点要等 STM 满了才转进工作记忆
+/// (`Memory.cpp:1588`)。**所以最近 10 个地点整个不参与回环判定。**
+/// 它防的正是"紧邻的上一张永远看起来最像"这件结构性的事:
+/// 2026-09-10 实测,单向前进、从不回头的轨迹上,不排除 STM 会判出
+/// **113 次**回环(最高后验 0.641),全是误判。
+const int kRtabmapStmSize = 10;
+
 /// 一张已拍照片在词典里的身份 = 它的词袋。
 class SignatureWords {
   SignatureWords(this.signatureId, this.wordCounts)

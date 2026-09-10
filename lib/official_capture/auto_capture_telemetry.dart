@@ -29,6 +29,7 @@
 // 设计见 docs/superpowers/specs/2026-08-19-auto-capture-design.md §7 / §9 / §11。
 
 import 'auto_capture_governor.dart';
+import 'place_recognition_bayes.dart';
 import 'auto_capture_geometry.dart'
     show
         AutoCaptureMotionMetrics,
@@ -292,6 +293,10 @@ class AutoCaptureTelemetry {
     int? placeQueryMicros,
     int? placeBestSharedWords,
     int? placeBestReferenceWords,
+    // 贝叶斯后验(RTAB-Map `LoopThr=0.11` 卡的就是它)。千分数存整数,免得
+    // JSON 里出现 NaN/Inf 把整条事件丢掉(静默出口那条老教训)。
+    int? placePosteriorPermille,
+    bool? placeLoopClosure,
     double? trackCommonFraction,
     double? trackMedianNormalizedDisplacement,
     double? trackMedianStepPixelDisplacement,
@@ -315,6 +320,10 @@ class AutoCaptureTelemetry {
       if (placeQueryMicros != null) _placeQueryMicros.add(placeQueryMicros);
       if (placeSignatureCount != null) _placeSigsLast = placeSignatureCount;
       if (placeWordCount != null) _placeWordsLast = placeWordCount;
+      if (placePosteriorPermille != null) {
+        _placePosteriorPermille.add(placePosteriorPermille);
+        if (placeLoopClosure == true) _placeLoopClosures++;
+      }
       if (placeBestSharedWords != null &&
           placeBestReferenceWords != null &&
           placeBestReferenceWords > 0) {
@@ -559,6 +568,8 @@ class AutoCaptureTelemetry {
   final List<int> _placeBestRatioPermille = <int>[];
   int _placeSigsLast = 0;
   int _placeWordsLast = 0;
+  final List<int> _placePosteriorPermille = <int>[];
+  int _placeLoopClosures = 0;
 
   static int _maxOf(List<int> xs) =>
       xs.isEmpty ? 0 : xs.reduce((a, b) => a > b ? a : b);
@@ -604,6 +615,11 @@ class AutoCaptureTelemetry {
         'query_us_max': _maxOf(_placeQueryMicros),
         'best_ratio_permille_p50': _percentile(_placeBestRatioPermille, 0.5),
         'best_ratio_permille_max': _maxOf(_placeBestRatioPermille),
+        // 后验与判决门:0.9 那道旧门够不到的那一格,靠这一层接住。
+        'posterior_permille_p50': _percentile(_placePosteriorPermille, 0.5),
+        'posterior_permille_max': _maxOf(_placePosteriorPermille),
+        'loop_thr_permille': (kRtabmapLoopThreshold * 1000).round(),
+        'loop_closures': _placeLoopClosures,
       },
       // spec §11:视差下限触发率 = decision_counts.skipNotMoved / decisions。
       'decision_counts': <String, int>{

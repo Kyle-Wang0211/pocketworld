@@ -3057,6 +3057,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
             _autoCapture.lastPlaceRecognitionScan?.bestSharedWords,
         placeBestReferenceWords:
             _autoCapture.lastPlaceRecognitionScan?.bestReferenceWords,
+        placePosteriorPermille: _autoCapture.lastLoopHypothesis == null
+            ? null
+            : (_autoCapture.lastLoopHypothesis!.bestPosterior * 1000).round(),
+        placeLoopClosure: _autoCapture.lastLoopHypothesis?.isLoopClosure,
       );
       // 开火成因(VINS-Fusion 新旧比 vs AliceVision 流量段):一枪一账,
       // 只在成功开火后 controller 才留快照,读一次即清。

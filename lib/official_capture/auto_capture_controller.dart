@@ -26,6 +26,7 @@ import '../official_quality/frame_signature_similarity.dart';
 import 'auto_capture_geometry.dart';
 import 'auto_capture_governor.dart';
 import 'orb_descriptor.dart';
+import 'place_recognition_bayes.dart';
 import 'visual_word_dictionary.dart';
 import 'alicevision_motion_segment.dart';
 import 'continuous_feature_tracks.dart';
@@ -105,6 +106,12 @@ class AutoCaptureController {
   int _placeSignatureSeq = 0;
 
   /// 最近一次地点识别的读数(遥测用)。
+  final PlaceBayesFilter _placeBayes = PlaceBayesFilter();
+  LoopHypothesis? _lastLoop;
+
+  /// 最近一次贝叶斯回环判定(遥测/契约用)。
+  LoopHypothesis? get lastLoopHypothesis => _lastLoop;
+
   PlaceRecognitionScan? _lastPlaceScan;
   PlaceRecognitionScan? get lastPlaceRecognitionScan => _lastPlaceScan;
 
@@ -294,6 +301,8 @@ class AutoCaptureController {
     _lastTrackedGraySourceTimestamp = null;
     _continuousTracks.clear();
     _placeDictionary.clear();
+    _placeBayes.clear();
+    _lastLoop = null;
     _placeSignatureSeq = 0;
     _lastPlaceScan = null;
     _smartMotionSegment.reset();
@@ -423,6 +432,8 @@ class AutoCaptureController {
     _lastTrackedGraySourceTimestamp = null;
     _continuousTracks.clear();
     _placeDictionary.clear();
+    _placeBayes.clear();
+    _lastLoop = null;
     _placeSignatureSeq = 0;
     _lastPlaceScan = null;
     _smartMotionSegment.reset();
@@ -582,6 +593,17 @@ class AutoCaptureController {
       swDesc.stop();
       final swQuery = Stopwatch()..start();
       final counts = _placeDictionary.quantizeQuery(descriptors);
+      // RTAB-Map 那条链的后半段:TF-IDF 似然 → adjustLikelihood → 贝叶斯后验
+      // → `LoopThr = 0.11`。只喂**更早的**那些(末号那张由传播式跟踪覆盖)。
+      // 候选 = 上游的**工作记忆**:最近 `Mem/STMSize = 10` 张还在短期记忆里,
+      // 不参与回环判定(见该常数处的注释 —— 漏掉它会让"紧邻的上一张最像"
+      // 变成 113 次误判)。
+      final wmCutoff = _placeSignatureSeq - kRtabmapStmSize;
+      final likelihood = <int, double>{
+        for (final e in _placeDictionary.computeLikelihood(counts).entries)
+          if (e.key <= wmCutoff) e.key: e.value,
+      };
+      if (likelihood.isNotEmpty) _lastLoop = _placeBayes.update(likelihood);
       var bestId = 0;
       var bestShared = 0;
       var bestTotal = 0;
@@ -634,6 +656,7 @@ class AutoCaptureController {
       elapsedSec: _elapsedBeforeRunSec + (pose.timestamp - _startedAtSec),
       tooDark: _tooDark(q),
       awaitingCaptureBaseline: awaitingCaptureBaseline,
+      placeAlreadyPhotographed: _lastLoop?.isLoopClosure ?? false,
       blurry: _objectivelyBlurry(q),
       initialized: captureBase != null,
       mapperAccepting: _mapperAcceptingProvider(),

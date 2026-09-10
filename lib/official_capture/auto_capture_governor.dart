@@ -213,6 +213,21 @@ AutoCaptureDecision stellaVslamNewKeyframeIsNeeded({
   required double elapsedSec,
   required bool tooDark,
   required bool awaitingCaptureBaseline,
+
+  /// RTAB-Map 的地点识别说「这个视角我已经拍过了」(贝叶斯**后验** >
+  /// `Rtabmap/LoopThr = 0.11`)。
+  ///
+  /// 🔴 为什么它是**独立一路**、而不是去喂 `almost_all_lms_are_tracked`:
+  /// 两者是不同的量。stella 的 0.9 比的是「地图路标还剩多少看得见」,
+  /// RTAB-Map 给的是「词袋检索 + 贝叶斯后验」。2026-09-10 未命名(5) 真机
+  /// 定罪:同场 17 对真实重访(最近 0.23 m / 5.5° / 隔 8.5 s),共享词比例
+  /// 中位 3.7%、最高 **20.8%**,拿 0.9 卡它一次都开不了火 —— 信号有
+  /// (最高比中位高 5.6 倍),错的是门的位置。
+  ///
+  /// 所以两家**各答各的问题、各用各的门**,不混量、不自定阈值:
+  ///   RTAB-Map 答「我是不是回到这儿了」→ 它自己的 0.11 后验门;
+  ///   stella   答「相对上一张,这个视角够不够新」→ 它自己的 0.9。
+  bool placeAlreadyPhotographed = false,
   required bool blurry,
   required bool initialized,
   // ── 上游输入 ──
@@ -300,6 +315,9 @@ AutoCaptureDecision stellaVslamNewKeyframeIsNeeded({
   if (trackingIsUnstable) return AutoCaptureDecision.skipTracking;
   // 「画面里还是同一批东西」⇒ 不拍。用户 2026-09-07 要的那一条就是它。
   if (almostAllLmsAreTracked) return AutoCaptureDecision.skipRedundant;
+  // 「这个地方拍过了」与「画面里还是同一批东西」是同一件事的两种问法,
+  // 所以并排放在这里,同样报 skipRedundant。
+  if (placeAlreadyPhotographed) return AutoCaptureDecision.skipRedundant;
   if (mapperSkippingLocalBA) return AutoCaptureDecision.skipMapperBusy;
   if (!(maxIntervalElapsed ||
       maxDistanceTraveled ||
