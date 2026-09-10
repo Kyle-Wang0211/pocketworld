@@ -4124,16 +4124,29 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     _scheduleDraftTerminalExitIfNeeded();
     if (_showDraftsWhileReconstructing &&
         (_sfmPhase != null || _draftsPinnedAfterTerminal)) {
+      // 终态之后重建已经结束,拦截必须**整套**跟着解除。四个出口
+      // (拦截文案 / 拍摄按钮回调 / 卡片的"活跃重建同卡"身份 / 删除改道)
+      // 由同一个值一次性给出 —— build 142 只解了第一个,另外三个把刚拍完
+      // 那张卡和拍摄按钮一起变成了死键。见 ReconstructionDraftIntercepts。
+      final intercepts = _sfmPhase != null
+          ? ReconstructionDraftIntercepts.reconstructing(_session?.captureDir)
+          : const ReconstructionDraftIntercepts.finished();
       return DraftCaptureShell(
-        // 终态之后重建已经结束,拦截必须跟着解除 —— 否则页面虽然不动了,
-        // 拍摄按钮却会一直挂着一句过时的"当前任务正在重建"。
-        blockedMessage: _draftsPinnedAfterTerminal ? null : '当前任务正在重建',
-        onCaptureTap: _showReconstructionProgress,
+        blockedMessage: intercepts.blockedMessage,
+        // 终态后拍摄按钮不能再调那个会静默 return 的回调 —— 这一页没有返回
+        // 图标、右滑也被吞掉,它是用户唯一的出口。
+        onCaptureTap: intercepts.reopensWaitPage
+            ? _showReconstructionProgress
+            : _exitToDrafts,
         child: MePage(
-          activeReconstructionCaptureDir: _session?.captureDir,
+          activeReconstructionCaptureDir: intercepts.activeCaptureDir,
           activeReconstructionPipelineKind: CapturePipelineKind.official,
-          onActiveReconstructionTap: _showReconstructionProgress,
-          onActiveReconstructionDelete: _permanentlyDeleteActiveReconstruction,
+          onActiveReconstructionTap: intercepts.reopensWaitPage
+              ? _showReconstructionProgress
+              : null,
+          onActiveReconstructionDelete: intercepts.reopensWaitPage
+              ? _permanentlyDeleteActiveReconstruction
+              : null,
           onRecordActionActivityChanged: _setDraftRecordActionInProgress,
           officialResumeRoute: pushOfficialResumeRoute,
           officialViewerRoute: pushOfficialViewerRoute,

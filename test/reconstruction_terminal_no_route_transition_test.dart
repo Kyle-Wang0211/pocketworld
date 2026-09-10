@@ -53,10 +53,11 @@ void main() {
   });
 
   test('③ 终态后拦截跟着解除(别留一句过时的「正在重建」)', () {
+    // 2026-09-11 更正:原判据钉的是 build 142 那种"只解一处"的写法,而那正是
+    // 未命名(6) 点不进去的原因 —— 现在四个出口整套由 intercepts 给出,
+    // 详细判据见 reconstruction_terminal_intercepts_release_test.dart。
     expect(
-      code.contains(
-        "blockedMessage: _draftsPinnedAfterTerminal ? null : '当前任务正在重建'",
-      ),
+      code.contains('blockedMessage: intercepts.blockedMessage'),
       isTrue,
       reason: '页面不动了,但拍摄按钮不能一直被过时的提示挡着',
     );
@@ -72,6 +73,15 @@ void main() {
   test('④ 用户主动退出这条路没被动(阳性对照:别把人关在里面)', () {
     expect(code.contains('void _exitToDrafts()'), isTrue);
     expect(code.contains('Navigator.of(context).pop(true)'), isTrue);
+    // 🔴 2026-09-11 补强:原来这条只证明"函数还在",没证明**有人调它**。
+    // build 142 终态之后真的没人调 —— 这一页没有返回图标、右滑被 PopScope
+    // 吞掉、拍摄按钮挂在一个会静默 return 的回调上,用户被关在里面,而这条
+    // 测试是绿的。判据必须打到"钉住之后那个唯一出口"。
+    expect(
+      code.contains(': _exitToDrafts,'),
+      isTrue,
+      reason: '终态钉住后,拍摄按钮必须接到真的退出上',
+    );
   });
 
   test('⑤ 纯函数判据本身没改(它还被别处用着)', () {
