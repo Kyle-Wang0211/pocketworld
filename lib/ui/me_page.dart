@@ -24,6 +24,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../auth/auth_scope.dart';
@@ -584,6 +585,15 @@ class _MyWorksSectionState extends State<_MyWorksSection>
   /// 自己停,避免常驻定时器。
   Timer? _pollTimer;
 
+  /// 上一帧哪些卡片还在"生成中" —— 用来做**边沿触发**:只在
+  /// 「生成中 → 不再生成中」那**一次**响,不是每次 build 都响,也不是
+  /// 每 2 秒轮询都响。
+  ///
+  /// [2026-09-10 用户令] "在任务完成那一瞬间可以加一个强震动的效果"。
+  /// 用 `heavyImpact` —— 与快门那一次同一种(ar_capture_page 的
+  /// `_triggerShutterHaptic`),全仓不引入第二种强度口径。
+  Set<String> _generatingIds = <String>{};
+
   @override
   void initState() {
     super.initState();
@@ -670,6 +680,19 @@ class _MyWorksSectionState extends State<_MyWorksSection>
     if (mounted) setState(() {});
   }
 
+  /// 任务完成那一瞬间的强震动。**绝不抛** —— 震动失败不该打断作品页的刷新
+  /// (静默出口那条规矩的反面:失败要留痕,但不能穿出去)。
+  void _triggerCompletionHaptic() {
+    unawaited(
+      HapticFeedback.heavyImpact().catchError((
+        Object error,
+        StackTrace stackTrace,
+      ) {
+        DeviceLog.log('MePage', 'completion haptic failed: $error');
+      }),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final l = AppL10n.of(context);
@@ -715,9 +738,22 @@ class _MyWorksSectionState extends State<_MyWorksSection>
     final anyGenerating = badges.values.contains(
       ScanProcessingBadge.generating,
     );
+    final nowGenerating = <String>{
+      for (final e in badges.entries)
+        if (e.value == ScanProcessingBadge.generating) e.key,
+    };
+    // 完成 = 上一帧在生成中、这一帧不在了。**只认这一次边沿**;
+    // 卡片被删掉也会离开这个集合,所以要求它此刻仍在列表里。
+    final justFinished = _generatingIds
+        .difference(nowGenerating)
+        .where((id) => badges.containsKey(id))
+        .toList();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _syncPolling(anyGenerating);
+      if (!mounted) return;
+      _syncPolling(anyGenerating);
+      if (justFinished.isNotEmpty) _triggerCompletionHaptic();
     });
+    _generatingIds = nowGenerating;
     return GridView.count(
       crossAxisCount: 2,
       crossAxisSpacing: AetherSpacing.lg,
@@ -1011,12 +1047,7 @@ class _MyWorksSectionState extends State<_MyWorksSection>
             } else if (route == null) {
               _showCenterToast('从照片重建的入口没有接上。');
             } else {
-              await route(
-                context,
-                record,
-                rebuildDir,
-                photoCount: photoCount,
-              );
+              await route(context, record, rebuildDir, photoCount: photoCount);
               _refreshAfterResumeReturn();
             }
         }
@@ -1090,8 +1121,7 @@ class _MyWorksSectionState extends State<_MyWorksSection>
               '请继续拍摄补足。',
         TrainGate.blockedAnotherReconstruction =>
           '另一个项目正在重建中。\n同时只能跑一个，等它完成后再来。',
-        TrainGate.blockedNoResumableData =>
-          '这次拍摄的重建数据已损坏，照片也不在了，\n无法重建。',
+        TrainGate.blockedNoResumableData => '这次拍摄的重建数据已损坏，照片也不在了，\n无法重建。',
       };
 
   /// 屏幕正中的 3 秒提示。

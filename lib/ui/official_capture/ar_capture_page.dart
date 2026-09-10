@@ -2906,6 +2906,19 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     if (mounted) Navigator.of(context).pop(true);
   }
 
+  /// 重建已到终态、但**页面留在原地**(不 pop、不切页)。
+  ///
+  /// [2026-09-10 用户令] "在最后一刻整个页面都会有一个滚动或者说刷新的动画,
+  /// 这个才从『生成中』变成『已完成』。删除这个动画,只保留卡片状态的变化。"
+  ///
+  /// 那个"动画"是**整条采集 route 的 pop 转场**:重建期用户看到的作品页其实是
+  /// 本 route 里嵌的 [MePage],终态时旧逻辑会自动 pop 掉整条 route,落到**真正
+  /// 的**作品页 —— 两者长得一样,所以看起来就是整屏刷新一遍。
+  ///
+  /// 现在终态只做两件事:释放重建资源、解除拍摄拦截。页面一动不动,卡片由嵌入
+  /// 的 MePage 自己的 2 秒轮询从"生成中"翻成"已完成"。
+  bool _draftsPinnedAfterTerminal = false;
+
   /// Reveal Drafts without disposing the capture route or touching SfM.
   void _showDraftsDuringReconstruction() {
     if (_sfmPhase == null || _showDraftsWhileReconstructing) return;
@@ -2949,8 +2962,22 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       )) {
         return;
       }
-      _sfmPendingPop = true;
-      unawaited(_onSfmPreviewDone());
+      // 不再 pop —— 只释放资源并解除拦截,页面留在原地(见
+      // [_draftsPinnedAfterTerminal] 的注释)。`revealRoot: () {}` 与
+      // _permanentlyDeleteActiveReconstruction 同一写法:走同一道释放闸,
+      // 但不揭开根路由。
+      unawaited(
+        _routeReleaseGate.release(
+          releaseResources: _releaseLiveReconstructionResources,
+          revealRoot: () {
+            if (!mounted) return;
+            setState(() {
+              _sfmPhase = null;
+              _draftsPinnedAfterTerminal = true;
+            });
+          },
+        ),
+      );
     });
   }
 
@@ -4095,9 +4122,12 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
 
   Widget _buildRouteBody(BuildContext context) {
     _scheduleDraftTerminalExitIfNeeded();
-    if (_showDraftsWhileReconstructing && _sfmPhase != null) {
+    if (_showDraftsWhileReconstructing &&
+        (_sfmPhase != null || _draftsPinnedAfterTerminal)) {
       return DraftCaptureShell(
-        blockedMessage: '当前任务正在重建',
+        // 终态之后重建已经结束,拦截必须跟着解除 —— 否则页面虽然不动了,
+        // 拍摄按钮却会一直挂着一句过时的"当前任务正在重建"。
+        blockedMessage: _draftsPinnedAfterTerminal ? null : '当前任务正在重建',
         onCaptureTap: _showReconstructionProgress,
         child: MePage(
           activeReconstructionCaptureDir: _session?.captureDir,
