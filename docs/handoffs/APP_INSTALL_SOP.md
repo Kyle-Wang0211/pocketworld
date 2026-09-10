@@ -334,6 +334,17 @@ tail -300 /tmp/devlog_pre.txt | grep -E "worker up|session created|shutter ticke
 
 **中止条件**:①②③ 任一不过 → 停下告诉用户,让用户退出 app 或等重建结束。
 
+### 6.0 🔴 两条线共用这台机器 —— 先读共用协议
+
+`docs/handoffs/SHARED_DEVICE_INSTALL_PROTOCOL.md`。三条规矩:
+**永不 `flutter run`/`flutter install`**、**只换自己改的那一个二进制**、
+**包必须带名字 `Runner-<号>-<标签>.app`**;取号在
+`~/Developer/pw_builds_20260904/README.md` 顶部的登记表,先写先得。
+
+工具:`~/Developer/pw_backups/pw102_20260906/pw_ship.sh`
+(`claim` / `assemble` / `install`,后者含五道闸)。
+它替代了旧的 `gate_and_install.sh`(只有装,不会组装,也没有备份闸)。
+
 ### 6.1 🔴 闸与 install 必须在**同一条命令**里(2026-09-10 教训)
 
 把闸和 `install` 拆成两次工具调用、中间隔一轮对话,等于给了 app 几分钟窗口:
