@@ -1341,15 +1341,37 @@ Uint8List computeOrbDescriptor(
   return desc;
 }
 
+/// 256 项 popcount 查表 —— 把汉明距离的内层循环换成一次数组读。
+/// **无损**:结果与逐位数 1 完全相同,只是不再逐位循环。
+/// (词典查询是每 tick 的大头:160 个描述子 × ~1400 个词 = 20 万次距离。)
+final Uint8List _popcount8 = Uint8List.fromList(<int>[
+  for (var i = 0; i < 256; i++)
+    ((i & 1) +
+        ((i >> 1) & 1) +
+        ((i >> 2) & 1) +
+        ((i >> 3) & 1) +
+        ((i >> 4) & 1) +
+        ((i >> 5) & 1) +
+        ((i >> 6) & 1) +
+        ((i >> 7) & 1)),
+]);
+
 /// 汉明距离 —— RTAB-Map 的词典按它做近邻(二进制描述子)。
 int hammingDistance(Uint8List a, Uint8List b) {
   var d = 0;
   for (var i = 0; i < a.length; ++i) {
-    var x = a[i] ^ b[i];
-    while (x != 0) {
-      x &= x - 1;
-      d++;
-    }
+    d += _popcount8[a[i] ^ b[i]];
+  }
+  return d;
+}
+
+/// 带上界的汉明距离:一旦已经超过 [limit] 就停 —— 近邻搜索只关心"有没有更近",
+/// 更远的具体值不影响结果。**无损**(返回值 ≥ limit 时调用方只用它来判"更远")。
+int hammingDistanceBounded(Uint8List a, Uint8List b, int limit) {
+  var d = 0;
+  for (var i = 0; i < a.length; ++i) {
+    d += _popcount8[a[i] ^ b[i]];
+    if (d >= limit) return d;
   }
   return d;
 }

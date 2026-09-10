@@ -13,6 +13,12 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pocketworld_flutter/official_capture/auto_capture_controller.dart';
+import 'package:pocketworld_flutter/official_capture/auto_capture_geometry.dart';
+import 'package:pocketworld_flutter/official_capture/auto_capture_governor.dart';
+import 'package:pocketworld_flutter/official_capture/shutter_backpressure_gate.dart';
+import 'package:pocketworld_flutter/official_dome/ar_pose.dart';
+import 'package:vector_math/vector_math_64.dart';
 import 'package:pocketworld_flutter/official_capture/continuous_feature_tracks.dart';
 import 'package:pocketworld_flutter/official_capture/orb_descriptor.dart';
 import 'package:pocketworld_flutter/official_capture/visual_word_dictionary.dart';
@@ -143,5 +149,125 @@ void main() {
       reason: '同一张图第二次进来,描述子应归到老词而不是造新词',
     );
     expect(dict.signatureCount, 2);
+  });
+
+  test('接进控制器:走开再回到拍过的视角 ⇒ 判重复,不再拍', () {
+    // 端到端穿过 AutoCaptureController —— 这是用户 2026-09-10 圈出的那一格。
+    var fires = 0;
+    var captured = 0;
+    final controller = AutoCaptureController(
+      onStartAnchor: () => true,
+      onFire: () {
+        fires++;
+        captured++;
+        return true;
+      },
+      paceProvider: () => ShutterPace.normal,
+      capturedCountProvider: () => captured,
+      thermalStateProvider: () => 0,
+      liveDepthProvider: (_) => 1.0,
+      mapperAcceptingProvider: () => true,
+    );
+
+    ARPose poseAt(double t, double x, Uint8List gray) => ARPose(
+      position: Vector3(x, 0, 0),
+      orientation: Quaternion.identity(),
+      azimuth: 0,
+      elevation: 0,
+      isTracking: true,
+      trackingStateName: 'normal',
+      timestamp: t,
+      hasOrigin: true,
+      worldOrigin: Vector3(0, 0, -1),
+      worldYaw: 0,
+      extrinsic4x4: const <double>[],
+      intrinsicFxFyCxCy: const <double>[1000, 1000, 500, 500],
+      imageWidth: 1000,
+      imageHeight: 1000,
+      quality: FrameQualityReport(
+        sharpness: 1000,
+        roiSharpness: 1000,
+        multiScaleSharpness252: 1000,
+        multiScaleSharpness512: 1000,
+        edgeBlockSharpness: 1000,
+        backgroundSharpness: 1000,
+        subjectVsBackgroundSharpnessDelta: 0,
+        sharpnessConsensus: 1000,
+        meanBrightness: 128,
+        globalVariance: 100,
+        signature: Uint8List(256)..fillRange(0, 256, (t * 97).round() & 0xff),
+        signatureWidth: 16,
+        signatureHeight: 16,
+        rawGray128: gray,
+        sourceTimestamp: t,
+        sourceFocalX: 128,
+        sourceFocalY: 128,
+      ),
+      previewPoints: <ARPreviewPoint>[
+        for (var i = 0; i < 12; i++)
+          ARPreviewPoint(
+            position: Vector3(x + i * 0.001, 0, -1),
+            r: 0,
+            g: 0,
+            b: 0,
+            confidence: 1,
+          ),
+      ],
+    );
+
+    AutoCaptureDecision feed(double t, double x, Uint8List gray) {
+      final d = controller.onPose(poseAt(t, x, gray));
+      if (d == AutoCaptureDecision.fire) {
+        controller.onCaptureCompleted(captureTimestampSec: t);
+      }
+      return d;
+    }
+
+    // 用**同一场景横移**造轨迹:相机在现实里是渐进平移的,不会瞬移。
+    // (第一版让它从 A 一步跳到完全不同的 B —— 传播式 LK 在那种巨大跳变上
+    //  又给出假阳性,判成重复。那是夹具不真实,不是判据错。)
+    Uint8List rolled(int dx) {
+      final base = views['same']!;
+      final out = Uint8List(_w * _h);
+      for (var y = 0; y < _h; y++) {
+        for (var x = 0; x < _w; x++) {
+          out[y * _w + x] = base[y * _w + ((x + dx) % _w)];
+        }
+      }
+      return out;
+    }
+
+    controller.start(poseAt(0, 0, rolled(0)));
+    feed(0.1, 0, rolled(0)); // 起跑锚:这个视角进词典
+    // 平移出去(每步 16 px = 12.5 cm,轨迹跟得住)。
+    var t = 0.2;
+    for (final dx in <int>[16, 32, 48, 64, 80, 96]) {
+      feed(t, dx / 128.0, rolled(dx));
+      t += 0.3;
+    }
+    expect(fires, greaterThan(0), reason: '一路平移过去总该拍到照片');
+    final firesAway = fires;
+    // 再原路平移回起点。
+    for (final dx in <int>[80, 64, 48, 32, 16]) {
+      feed(t, dx / 128.0, rolled(dx));
+      t += 0.3;
+    }
+    final back = feed(t, 0, rolled(0)); // 回到起跑锚那个视角
+    final scan = controller.lastPlaceRecognitionScan;
+    expect(scan, isNotNull, reason: '地点识别没跑起来,判据无从谈起');
+    // ignore: avoid_print
+    print(
+      '  控制器内:已拍 ${scan!.signatureCount} 张、词典 ${scan.wordCount} 词,'
+      '命中 ${scan.bestSharedWords}/${scan.bestReferenceWords} '
+      '(${(scan.bestSharedRatio * 100).toStringAsFixed(1)}%),'
+      'describe ${(scan.describeMicros / 1000).toStringAsFixed(1)}ms '
+      'query ${(scan.queryMicros / 1000).toStringAsFixed(1)}ms;'
+      ' 去程拍了 $firesAway 张,回程判决 $back',
+    );
+    expect(
+      back,
+      isNot(AutoCaptureDecision.fire),
+      reason: '这个视角起跑就拍过 —— 回来还开火就是用户 2026-09-10 报的那个 bug',
+    );
   });
 }

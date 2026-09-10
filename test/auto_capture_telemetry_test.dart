@@ -883,6 +883,8 @@ void main() {
         // build 132 起:判决顺序的口径标签(≤131 与 ≥132 的
         // skipAwaitingCapture 不是同一个含义)。
         'decision_gate_order',
+        // 地点识别(RTAB-Map 词袋)的规模与代价。
+        'place_recognition',
         'decision_counts',
         'start_anchor_attempted',
         'start_anchor_enqueued',

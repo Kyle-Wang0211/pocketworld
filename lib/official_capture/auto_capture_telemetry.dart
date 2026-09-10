@@ -284,6 +284,14 @@ class AutoCaptureTelemetry {
     double? depthScaleRatio,
     double? visualSimilarity,
     int? trackCommonCount,
+    // [2026-09-10] 地点识别(RTAB-Map 词袋)的代价与结果。用户明确要"然后去做
+    // 优化提速+降本" ⇒ **优化之前先有账**,否则又变成"感觉慢"。
+    int? placeSignatureCount,
+    int? placeWordCount,
+    int? placeDescribeMicros,
+    int? placeQueryMicros,
+    int? placeBestSharedWords,
+    int? placeBestReferenceWords,
     double? trackCommonFraction,
     double? trackMedianNormalizedDisplacement,
     double? trackMedianStepPixelDisplacement,
@@ -301,6 +309,19 @@ class AutoCaptureTelemetry {
         'motionRole',
         'fire requires exactly one of the four capture roles',
       );
+    }
+    if (placeDescribeMicros != null) {
+      _placeDescribeMicros.add(placeDescribeMicros);
+      if (placeQueryMicros != null) _placeQueryMicros.add(placeQueryMicros);
+      if (placeSignatureCount != null) _placeSigsLast = placeSignatureCount;
+      if (placeWordCount != null) _placeWordsLast = placeWordCount;
+      if (placeBestSharedWords != null &&
+          placeBestReferenceWords != null &&
+          placeBestReferenceWords > 0) {
+        _placeBestRatioPermille.add(
+          (1000 * placeBestSharedWords / placeBestReferenceWords).round(),
+        );
+      }
     }
     _counts[d] = (_counts[d] ?? 0) + 1;
     for (final role in _fireRoles) {
@@ -533,6 +554,21 @@ class AutoCaptureTelemetry {
   }
 
   /// 自会话起点起的累计量。字段少而准 —— 拉回来的人不用再自己推导。
+  final List<int> _placeDescribeMicros = <int>[];
+  final List<int> _placeQueryMicros = <int>[];
+  final List<int> _placeBestRatioPermille = <int>[];
+  int _placeSigsLast = 0;
+  int _placeWordsLast = 0;
+
+  static int _maxOf(List<int> xs) =>
+      xs.isEmpty ? 0 : xs.reduce((a, b) => a > b ? a : b);
+
+  static int _percentile(List<int> xs, double q) {
+    if (xs.isEmpty) return 0;
+    final sorted = List<int>.from(xs)..sort();
+    return sorted[((sorted.length - 1) * q).round()];
+  }
+
   Map<String, Object> snapshot() {
     final start = _startSec;
     // 时长以**最近一次判定**为终点,而不是"关会话时才有数":中途 roll-up
@@ -556,6 +592,19 @@ class AutoCaptureTelemetry {
       // 值随排序走,由 auto_capture_recon_decoupling_contract_test 与 governor
       // 的实际排版对拍。
       'decision_gate_order': 'geometry_before_awaiting_capture',
+      // 地点识别:词典规模、每 tick 代价、命中的共享词比例(千分数)。
+      // describe_us 是固定成本(GFTT+ORB),query_us 随词典规模涨 ——
+      // 提速时先看哪一半更大。
+      'place_recognition': <String, Object>{
+        'sigs': _placeSigsLast,
+        'words': _placeWordsLast,
+        'scans': _placeDescribeMicros.length,
+        'describe_us_p50': _percentile(_placeDescribeMicros, 0.5),
+        'query_us_p50': _percentile(_placeQueryMicros, 0.5),
+        'query_us_max': _maxOf(_placeQueryMicros),
+        'best_ratio_permille_p50': _percentile(_placeBestRatioPermille, 0.5),
+        'best_ratio_permille_max': _maxOf(_placeBestRatioPermille),
+      },
       // spec §11:视差下限触发率 = decision_counts.skipNotMoved / decisions。
       'decision_counts': <String, int>{
         for (final e in _counts.entries) e.key.name: e.value,

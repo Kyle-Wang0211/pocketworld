@@ -119,7 +119,8 @@ class VisualWordDictionary {
     if (_wordDescriptors.isEmpty) return const <_Neighbour>[];
     var best = -1, bestD = 1 << 30, second = -1, secondD = 1 << 30;
     for (var i = 0; i < _wordDescriptors.length; i++) {
-      final dist = hammingDistance(d, _wordDescriptors[i]);
+      // 只要"是不是进前二",比 secondD 还远的具体值不影响结果 ⇒ 提前收手。
+      final dist = hammingDistanceBounded(d, _wordDescriptors[i], secondD);
       if (dist < bestD) {
         secondD = bestD;
         second = best;
@@ -194,4 +195,36 @@ class _Neighbour {
   const _Neighbour(this.wordId, this.distance);
   final int wordId;
   final int distance;
+}
+
+/// 一次地点识别的结果 + 代价(留账给提速用)。
+class PlaceRecognitionScan {
+  const PlaceRecognitionScan({
+    required this.signatureCount,
+    required this.wordCount,
+    required this.queryWordCount,
+    required this.bestSignatureId,
+    required this.bestSharedWords,
+    required this.bestReferenceWords,
+    required this.describeMicros,
+    required this.queryMicros,
+  });
+
+  final int signatureCount;
+  final int wordCount;
+  final int queryWordCount;
+
+  /// 共享词最多的那张已拍照片 = 上游的 `ref_keyfrm`;没有则 0。
+  final int bestSignatureId;
+  final int bestSharedWords;
+  final int bestReferenceWords;
+
+  final int describeMicros;
+  final int queryMicros;
+
+  bool get hasMatch => bestSignatureId > 0 && bestReferenceWords > 0;
+
+  /// 与 stella `almost_all_lms_are_tracked` 同形状的比例。
+  double get bestSharedRatio =>
+      bestReferenceWords == 0 ? 0 : bestSharedWords / bestReferenceWords;
 }

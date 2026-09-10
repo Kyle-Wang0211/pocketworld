@@ -3047,6 +3047,16 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         segmentMotionPx: _autoCapture.lastSegmentMotionPx,
         segmentMotionThresholdPx: _autoCapture.segmentMotionThresholdPx,
         visualSourceAgeSec: _autoCapture.lastVisualSourceAgeSec,
+        placeSignatureCount:
+            _autoCapture.lastPlaceRecognitionScan?.signatureCount,
+        placeWordCount: _autoCapture.lastPlaceRecognitionScan?.wordCount,
+        placeDescribeMicros:
+            _autoCapture.lastPlaceRecognitionScan?.describeMicros,
+        placeQueryMicros: _autoCapture.lastPlaceRecognitionScan?.queryMicros,
+        placeBestSharedWords:
+            _autoCapture.lastPlaceRecognitionScan?.bestSharedWords,
+        placeBestReferenceWords:
+            _autoCapture.lastPlaceRecognitionScan?.bestReferenceWords,
       );
       // 开火成因(VINS-Fusion 新旧比 vs AliceVision 流量段):一枪一账,
       // 只在成功开火后 controller 才留快照,读一次即清。

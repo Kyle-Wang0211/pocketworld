@@ -25,6 +25,8 @@ import '../official_quality/frame_quality_constants.dart';
 import '../official_quality/frame_signature_similarity.dart';
 import 'auto_capture_geometry.dart';
 import 'auto_capture_governor.dart';
+import 'orb_descriptor.dart';
+import 'visual_word_dictionary.dart';
 import 'alicevision_motion_segment.dart';
 import 'continuous_feature_tracks.dart';
 import 'photo_card_state.dart' show medianOf;
@@ -92,6 +94,19 @@ class AutoCaptureController {
   double? _capturedGrayFocalY;
   double? _capturedGraySourceTimestamp;
   final ContinuousFeatureTracks _continuousTracks = ContinuousFeatureTracks();
+
+  /// 上游 `ref_keyfrm`(与当前画面共视最多的关键帧)的对应物 —— RTAB-Map 的
+  /// 增量视觉词典。**不带预训练词表,出货成本 0。**
+  /// 为什么不用 [_continuousTracks] 做这件事:它是传播式的,相机离开视角后
+  /// 轨迹永久死;而 LK 本身没有「匹配对不对」的概念,跨大位移会收敛到垃圾并
+  /// 报成功(实测老照片"匹配"156/160)。详见
+  /// docs/handoffs/PLACE_RECOGNITION_RTABMAP_PLAN.md。
+  final VisualWordDictionary _placeDictionary = VisualWordDictionary();
+  int _placeSignatureSeq = 0;
+
+  /// 最近一次地点识别的读数(遥测用)。
+  PlaceRecognitionScan? _lastPlaceScan;
+  PlaceRecognitionScan? get lastPlaceRecognitionScan => _lastPlaceScan;
 
   /// VINS-Fusion 新旧比开火条件的节流与闩锁。
   ///
@@ -278,6 +293,9 @@ class AutoCaptureController {
     _capturedGraySourceTimestamp = null;
     _lastTrackedGraySourceTimestamp = null;
     _continuousTracks.clear();
+    _placeDictionary.clear();
+    _placeSignatureSeq = 0;
+    _lastPlaceScan = null;
     _smartMotionSegment.reset();
     _lastVisualSimilarity = null;
     if (_trackingNormal(pose)) {
@@ -404,6 +422,9 @@ class AutoCaptureController {
     _capturedGraySourceTimestamp = null;
     _lastTrackedGraySourceTimestamp = null;
     _continuousTracks.clear();
+    _placeDictionary.clear();
+    _placeSignatureSeq = 0;
+    _lastPlaceScan = null;
     _smartMotionSegment.reset();
     _lastVisualSimilarity = null;
     _lastStartAnchorAttemptSec = null;
@@ -540,6 +561,70 @@ class AutoCaptureController {
     // 几何角色/签名相似度/AliceVision 流量段从此只进遥测,不再决定开火。
     final lastKfSec = _lastKeyframeSec;
     final lastKfPos = _lastKeyframePos;
+
+    // ─── 地点识别:上游 `ref_keyfrm` 的对应物 ──────────────────────────
+    // 上游取的是 **argmax 共视**,不是"换一个参考"。这里也只做 argmax:
+    //   候选① 最近拍的那张 —— 仍用**传播式**读数。tracker 类文档写明了理由:
+    //          一次大跳变的 LK 会失败,所以它一路跟过来;对最近那张,传播式
+    //          是更准的估计。
+    //   候选② 更早的每一张 —— 用词袋(RTAB-Map)。它们的轨迹早就断了,只有
+    //          外观检索认得出来。
+    // 🔴 两个候选用的是**不同的量**(轨迹 vs 词),所以比的是**比例**而不是
+    // 原始计数 —— 两者都是"参考图的特征还剩多少看得见",比例才可比。这是与
+    // 上游(按共视计数 argmax)的一处明确偏离,如实记在这里。
+    // 只在**这一帧确实有新灰度**时做(与 trackEvidence 同一个门)。
+    PlaceRecognitionScan? placeScan;
+    if (trackEvidence != null &&
+        currentGray != null &&
+        _placeDictionary.signatureCount > 1) {
+      final swDesc = Stopwatch()..start();
+      final descriptors = _describePlace(currentGray);
+      swDesc.stop();
+      final swQuery = Stopwatch()..start();
+      final counts = _placeDictionary.quantizeQuery(descriptors);
+      var bestId = 0;
+      var bestShared = 0;
+      var bestTotal = 0;
+      var bestRatio = 0.0;
+      // 末号那张 = 最近拍的,已由传播式跟踪覆盖,不重复算。
+      for (final sig in _placeDictionary.signatures) {
+        if (sig.signatureId >= _placeSignatureSeq) continue;
+        final (shared, total) = _placeDictionary.sharedWordsWith(
+          counts,
+          sig.signatureId,
+        );
+        if (total == 0) continue;
+        final ratio = shared / total;
+        if (ratio > bestRatio) {
+          bestRatio = ratio;
+          bestId = sig.signatureId;
+          bestShared = shared;
+          bestTotal = total;
+        }
+      }
+      swQuery.stop();
+      placeScan = PlaceRecognitionScan(
+        signatureCount: _placeDictionary.signatureCount,
+        wordCount: _placeDictionary.wordCount,
+        queryWordCount: counts.values.fold<int>(0, (a, b) => a + b),
+        bestSignatureId: bestId,
+        bestSharedWords: bestShared,
+        bestReferenceWords: bestTotal,
+        describeMicros: swDesc.elapsedMicroseconds,
+        queryMicros: swQuery.elapsedMicroseconds,
+      );
+      _lastPlaceScan = placeScan;
+    }
+    final propagatedCommon = trackEvidence?.commonTrackCount ?? 0;
+    final propagatedRef = trackEvidence?.seedTrackCount ?? 0;
+    final propagatedRatio = propagatedRef == 0
+        ? 0.0
+        : propagatedCommon / propagatedRef;
+    // 老照片只有在**比例更高**时才夺走参考权。
+    final olderWins =
+        placeScan != null &&
+        placeScan.hasMatch &&
+        placeScan.bestSharedRatio > propagatedRatio;
     // min_distance = 12% × 场景深度中位数(SVO 论文的式子;上游把这个数留给
     // 集成方)。没有活体点云深度时退回上游默认 -1 = 关闭。
     final sceneDepthM = _liveDepthProvider(pose);
@@ -565,9 +650,14 @@ class AutoCaptureController {
       // 「放弃局部 BA」这个状态,上游健康态的取值是 false,照搬。
       mapperSkippingLocalBA: false,
       hasTrackEvidence: trackEvidence != null,
-      numTrackedLms: trackEvidence?.commonTrackCount ?? 0,
-      numReliableLms: trackEvidence?.commonTrackCount ?? 0,
-      numReliableLmsRef: trackEvidence?.seedTrackCount ?? 0,
+      // `num_tracked_lms` 是**当前帧自己**跟得稳不稳(喂 tracking 不稳闸),
+      // 与参考是谁无关 ⇒ 仍取传播式读数,不动。
+      numTrackedLms: propagatedCommon,
+      // 这两路走 ref_keyfrm(见上面的 argmax 注释)。
+      numReliableLms: olderWins ? placeScan!.bestSharedWords : propagatedCommon,
+      numReliableLmsRef: olderWins
+          ? placeScan!.bestReferenceWords
+          : propagatedRef,
       sinceLastKeyframeSec: lastKfSec == null
           ? null
           : pose.timestamp - lastKfSec,
@@ -668,7 +758,7 @@ class AutoCaptureController {
           _lastKeyframeSec = pose.timestamp;
           _lastKeyframePos = pose.position;
           _capturedSignature = Uint8List.fromList(currentSignature!);
-          if (q != null) _commitTrackSource(q);
+          if (q != null) _commitTrackSource(q, entersMap: true);
           // 开火 = 本段结束,锐度段清零(subsequence 语义)。
           _segmentSharpness.clear();
           _smartMotionSegment.reset();
@@ -739,10 +829,35 @@ class AutoCaptureController {
       _capturedSignature = Uint8List.fromList(signature);
     }
     final quality = pose.quality;
-    if (quality != null) _commitTrackSource(quality);
+    if (quality != null) _commitTrackSource(quality, entersMap: true);
   }
 
-  void _commitTrackSource(FrameQualityReport quality) {
+  /// RTAB-Map `Kp/DetectorStrategy = 8`(GFTT/ORB):关键点用已复刻的
+  /// goodFeaturesToTrack,描述子用 ORB。**角度传 −1** —— 上游把 GFTT 关键点
+  /// 直接喂 `cv::ORB::compute`,而它对外部关键点不重算方向,实际就是 −1。
+  static List<Uint8List> _describePlace(Uint8List gray) {
+    final corners = goodFeaturesToTrack(
+      gray: gray,
+      width: 128,
+      height: 128,
+      maxCorners: kRtabmapMaxFeatures,
+    );
+    if (corners.isEmpty) return const <Uint8List>[];
+    final blurred = orbBlurForDescriptors(gray, 128, 128);
+    return <Uint8List>[
+      for (final c in corners)
+        computeOrbDescriptor(blurred, 128, 128, c.$1, c.$2, angleDeg: -1.0),
+    ];
+  }
+
+  /// [entersMap] = 这一次提交对应**真的进了地图的一张照片**(开火 / 起跑锚)。
+  /// 只有它才有资格当上游的 `ref_keyfrm` 候选。第三个调用点是"还没拍过任何
+  /// 一张时先把跟踪器种下"的兜底 —— 那不是照片,混进候选集会让"回到从未拍过
+  /// 的起始画面"被误判成重复。
+  void _commitTrackSource(
+    FrameQualityReport quality, {
+    bool entersMap = false,
+  }) {
     final gray = quality.rawGray128;
     final focalX = quality.sourceFocalX;
     final focalY = quality.sourceFocalY;
@@ -755,6 +870,14 @@ class AutoCaptureController {
         focalX <= 0 ||
         focalY <= 0) {
       return;
+    }
+    if (entersMap) {
+      // 上游 insert_new_keyframe 之后这一张就进了地图、可以当 ref_keyfrm。
+      final descriptors = _describePlace(gray);
+      if (descriptors.isNotEmpty) {
+        _placeSignatureSeq++;
+        _placeDictionary.addNewWords(descriptors, _placeSignatureSeq);
+      }
     }
     _capturedGray128 = Uint8List.fromList(gray);
     _capturedGrayFocalX = focalX;
