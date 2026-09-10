@@ -4057,11 +4057,23 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // 修法:重建进行中(_sfmPhase != null)禁止隐式 pop;把返回手势
     // 折叠成"显示草稿"(与等待页左上角返回按钮同一语义)。显式的
     // Navigator.pop(_exitToDrafts/_onSfmPreviewDone)不受 canPop 影响。
+    // [2026-09-10 用户令] **拍摄期取消右滑退出**:唯一的退出方式是左上角的
+    // 返回图标。此前 canPop 只在重建期(_sfmPhase != null)为 false,拍摄期
+    // 仍然放行 iOS 边缘右滑 —— 一次误触就把整条采集 route pop 掉。
+    // 显式的 Navigator.pop(_exitToDrafts / _onSfmPreviewDone)**不受 canPop
+    // 影响**,所以左上角返回照常工作,只是隐式手势不再能退出。
     return PopScope(
-      canPop: _sfmPhase == null,
+      canPop: false,
       onPopInvokedWithResult: (bool didPop, Object? result) {
-        if (didPop || _sfmPhase == null) return;
-        if (!_showDraftsWhileReconstructing) _showDraftsDuringReconstruction();
+        if (didPop) return;
+        // 重建期:把返回手势折叠成"显示草稿"(与等待页左上角返回同语义)。
+        if (_sfmPhase != null) {
+          if (!_showDraftsWhileReconstructing) {
+            _showDraftsDuringReconstruction();
+          }
+          return;
+        }
+        // 拍摄期:什么都不做 —— 手势被吞掉,退出只能走左上角返回图标。
       },
       child: _buildRouteBody(context),
     );
