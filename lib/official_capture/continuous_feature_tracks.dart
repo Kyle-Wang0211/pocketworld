@@ -718,3 +718,186 @@ double _sample(_GrayLevel level, double x, double y) {
       level.data[yb * level.width + xb] * fx;
   return top * (1 - fy) + bottom * fy;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-09-10 复刻补齐:上游的 **ref_keyfrm**(与当前画面共视最多的关键帧)
+//
+// 用户报:"这两张在空间上非常重合,为什么会判定可以拍摄呢?虽然这两张照片
+// 拍摄的时间相隔很长。"
+//
+// 查上游 `stella_keyframe_inserter.cc`,它用的是**两个不同的参考**:
+//   L55/L66  `const data::keyframe& ref_keyfrm`
+//            `num_reliable_lms_ref = ref_keyfrm.get_num_tracked_landmarks(...)`
+//              → 喂 view_changed / almost_all_lms_are_tracked
+//   L63      `last_inserted_keyfrm = map_db->get_last_inserted_keyframe()`
+//              → 只喂时间/距离那几道闸(L77–93)
+// `ref_keyfrm` 是**跟踪器**给的:与当前帧共视路标最多的那个关键帧,不是时间上
+// 最后一个。我复刻时把两个参考塌成了同一个(都取"最近拍的那张")⇒ 走开再回到
+// 一个早就拍过的视角时,参考是别处那张,画面当然对不上,判成新视角就开火。
+//
+// 🔴 为什么不能用 [ContinuousFeatureTracks] 做这件事:它是**传播式**的
+// (见其类文档),相机离开视角后那批轨迹就永久死了 —— 给每张老照片各配一个
+// 传播 tracker,回到老视角时对每一张都会算出 0,是个空转的假复刻。
+//
+// 能对上的最小等价物:把每张已拍照片自己的**种子角点**冻结下来,每 tick 从
+// 种子**直接**做一次两帧 LK 到当前帧(不传播)。视角几乎重合时跳变很小、能
+// 对上;视角真不同时对不上 ⇒ 该拍还是拍。检测(昂贵)只在拍照那一刻做一次,
+// 每 tick 每张只剩 LK。用的是同一个 `_trackPyramidal` 内核,算法没有第二套。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 一张**已拍照片**的视角参考:金字塔与种子角点在拍下那一刻冻结,之后只读。
+class CapturedViewReference {
+  const CapturedViewReference._({
+    required List<_GrayLevel> levels,
+    required List<_Point> seeds,
+    required this.width,
+    required this.height,
+    required this.sourceTimestampSec,
+  }) : _levels = levels,
+       _seeds = seeds;
+
+  final List<_GrayLevel> _levels;
+  final List<_Point> _seeds;
+  final int width;
+  final int height;
+
+  /// 拍下这张照片的预览帧时间戳(仅用于遥测里报"命中的是多久以前那张")。
+  final double? sourceTimestampSec;
+
+  /// 上游 `ref_keyfrm.get_num_tracked_landmarks(...)` 的对应物。
+  int get seedTrackCount => _seeds.length;
+
+  /// 每张参考约占 128²+64²+32² ≈ 21 KB。300 张 ≈ 6.5 MB。
+  static CapturedViewReference? build({
+    required Uint8List gray,
+    required int width,
+    required int height,
+    double? sourceTimestampSec,
+  }) {
+    if (gray.length != width * height || width <= 0 || height <= 0) return null;
+    final level = _toLevel(gray, width, height);
+    final seeds = _goodFeaturesToTrack(level);
+    if (seeds.isEmpty) return null;
+    return CapturedViewReference._(
+      levels: _pyramid(level, levels: 3),
+      seeds: seeds,
+      width: width,
+      height: height,
+      sourceTimestampSec: sourceTimestampSec,
+    );
+  }
+}
+
+/// 当前帧只建一次金字塔,给 N 张参考共用 —— (a) 方案里唯一能摊薄的固定成本。
+class CurrentViewMatcher {
+  CurrentViewMatcher._(this._levels, this.width, this.height);
+
+  final List<_GrayLevel> _levels;
+  final int width;
+  final int height;
+
+  static CurrentViewMatcher? build({
+    required Uint8List gray,
+    required int width,
+    required int height,
+  }) {
+    if (gray.length != width * height || width <= 0 || height <= 0) return null;
+    return CurrentViewMatcher._(
+      _pyramid(_toLevel(gray, width, height), levels: 3),
+      width,
+      height,
+    );
+  }
+
+  /// 从 [reference] 的种子角点**直接** LK 到当前帧,返回存活数
+  /// (= 上游语义下"当前帧还看得见 ref_keyfrm 多少路标")。
+  /// 出画剔除照抄 VINS `inBorder()`(BORDER_SIZE=1),与 [ContinuousFeatureTracks
+  /// .advance] 同一条规矩,免得两条路对"存活"的定义不一样。
+  /// [pruneAtOrBelow]:**分支限界剪枝**。调用方只要 argmax,所以一旦
+  /// 「已中 + 剩余全中」都追不上当前最好成绩,这张参考就不可能是 ref_keyfrm,
+  /// 立刻放弃。**结果逐位不变**(赢家的计数照算),也不引入任何阈值 ——
+  /// 纯粹是把注定白算的 LK 省掉。省掉的正是最贵的那部分:视角对不上的参考
+  /// 会让 LK 走满整个金字塔搜索。返回 -1 = 已剪枝(不可能是赢家)。
+  int commonTracksWith(
+    CapturedViewReference reference, {
+    int pruneAtOrBelow = -1,
+  }) {
+    if (reference.width != width || reference.height != height) return 0;
+    var common = 0;
+    var remaining = reference._seeds.length;
+    for (final seed in reference._seeds) {
+      remaining--;
+      final point = _trackPyramidal(reference._levels, _levels, seed);
+      if (point != null) {
+        final rx = point.x.round();
+        final ry = point.y.round();
+        if (rx >= 1 && rx < width - 1 && ry >= 1 && ry < height - 1) common++;
+      }
+      if (common + remaining <= pruneAtOrBelow) return -1;
+    }
+    return common;
+  }
+}
+
+/// 扫描结果:上游 `ref_keyfrm` 的对应物 + 这一遍扫描的代价(为后续提速留账)。
+class RefKeyframeScan {
+  const RefKeyframeScan({
+    required this.referenceCount,
+    this.prunedCount = 0,
+    required this.bestIndex,
+    required this.bestCommonTracks,
+    required this.bestSeedTracks,
+    required this.scanMicros,
+  });
+
+  final int referenceCount;
+
+  /// 被分支限界剪掉的参考数(结果不变,只是没白算)。留账给提速用。
+  final int prunedCount;
+  final int bestIndex;
+  final int bestCommonTracks;
+  final int bestSeedTracks;
+  final int scanMicros;
+
+  bool get hasMatch => bestIndex >= 0;
+}
+
+/// 对**每一张**已拍照片做一次性匹配,取共视最多的那张 = 上游的 `ref_keyfrm`。
+///
+/// 2026-09-10 用户拍板走 (a):全比,先要效果,提速降本随后做。所以这里**故意**
+/// 是 O(已拍张数),并把 [RefKeyframeScan.scanMicros] 一并报出来 —— 优化之前先
+/// 有账,免得又变成"感觉慢"。
+RefKeyframeScan selectReferenceKeyframe({
+  required CurrentViewMatcher matcher,
+  required List<CapturedViewReference> references,
+}) {
+  final sw = Stopwatch()..start();
+  var bestIndex = -1;
+  var bestCommon = -1;
+  var bestSeed = 0;
+  var pruned = 0;
+  for (var i = 0; i < references.length; i++) {
+    final common = matcher.commonTracksWith(
+      references[i],
+      pruneAtOrBelow: bestCommon,
+    );
+    if (common < 0) {
+      pruned++;
+      continue;
+    }
+    if (common > bestCommon) {
+      bestCommon = common;
+      bestIndex = i;
+      bestSeed = references[i].seedTrackCount;
+    }
+  }
+  sw.stop();
+  return RefKeyframeScan(
+    referenceCount: references.length,
+    prunedCount: pruned,
+    bestIndex: bestIndex,
+    bestCommonTracks: bestCommon < 0 ? 0 : bestCommon,
+    bestSeedTracks: bestSeed,
+    scanMicros: sw.elapsedMicroseconds,
+  );
+}
