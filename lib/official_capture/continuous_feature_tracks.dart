@@ -719,6 +719,28 @@ double _sample(_GrayLevel level, double x, double y) {
   return top * (1 - fy) + bottom * fy;
 }
 
+/// 对外暴露 Shi-Tomasi 角点(OpenCV goodFeaturesToTrack 的复刻,
+/// qualityLevel=.01 / minDistance=7,见文件头的出处)。
+/// RTAB-Map 的 `Kp/DetectorStrategy = 8`(GFTT/ORB)用的就是这个检测器 ——
+/// 地点识别那条路直接复用,不再引入第二个检测器。
+/// 返回的是像素坐标 (x, y)。
+List<(double, double)> goodFeaturesToTrack({
+  required Uint8List gray,
+  required int width,
+  required int height,
+  int maxCorners = 0,
+}) {
+  if (gray.length != width * height || width <= 0 || height <= 0) {
+    return const <(double, double)>[];
+  }
+  final corners = _goodFeaturesToTrack(_toLevel(gray, width, height));
+  final out = <(double, double)>[for (final c in corners) (c.x, c.y)];
+  if (maxCorners > 0 && out.length > maxCorners) {
+    return out.sublist(0, maxCorners);
+  }
+  return out;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 2026-09-10 复刻补齐:上游的 **ref_keyfrm**(与当前画面共视最多的关键帧)
 //
