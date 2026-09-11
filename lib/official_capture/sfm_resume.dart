@@ -297,7 +297,7 @@ Future<void> _resumeOne(
     // arkitCamFromWorldQwxyz)回填,refined 快照就会走与 live 完全同一条
     // _gravityAlign 链。sidecar 缺失(极老草稿)时按时间戳序兜底,无
     // ARKit 四元数 → 对齐自然跳过(与今日行为一致,诚实降级)。
-    final frameMeta = await _loadFrameMeta(captureDir);
+    final frameMeta = await loadFedFrameMeta(captureDir);
     recon.seedFedMeta(frameMeta);
     DeviceLog.log(
       'SfmResume',
@@ -370,7 +370,7 @@ Future<void> _persistColored(
 }) async {
   final n = snap.pointCount;
   if (n == 0) return;
-  frameMeta ??= await _loadFrameMeta(captureDir);
+  frameMeta ??= await loadFedFrameMeta(captureDir);
   frameMeta = await _materializeArchivedJpegs(captureDir, frameMeta);
   final offs = snap.obsOffsets;
   final fids = snap.obsFrameIds;
@@ -533,7 +533,10 @@ Future<void> _prunePhotosAfterSparse(
 /// the identity "SfM frame-id N == Nth shutter photo by capture timestamp",
 /// which holds because frames are fed to SfM in tap order. Paths are rebuilt
 /// under the CURRENT captureDir so a changed app-container UUID can't stale them.
-Future<Map<int, SfmFedFrameMeta>> _loadFrameMeta(String captureDir) async {
+/// [2026-09-11] 改公开:「只重建」模式(采集页无相机档)续跑时同样要回填
+/// fed-meta,否则 _gravityAlign 会整段跳过、恢复出的点云歪着(41 号 capture
+/// 真机实锤)。两条腿共用这一处读取。
+Future<Map<int, SfmFedFrameMeta>> loadFedFrameMeta(String captureDir) async {
   final photosDir = '$captureDir/photos_highres';
   final map = <int, SfmFedFrameMeta>{};
 
@@ -860,6 +863,75 @@ Future<List<String>> sidelineDatabaseForFreshSession(String captureDir) async {
   return moved;
 }
 
+/// 「这个项目要重喂哪些照片、按什么顺序」—— 扫盘 + 解析 + 排序,一处实现。
+///
+/// [2026-09-11] 抽出来是因为有了**第二个**调用方:补拍结束时,采集页要用
+/// **它自己的** SfmLiveRecon 把这些照片喂进去,好让整条收尾走**与正常拍摄
+/// 完全同一条**流程(同一个浮层、同一串事件、同一个持久化),而不是弹回作品页
+/// 再进一张单独的等待页。两边共用这一个解析器,判据只有一处。
+class ArchivedRefeedPlan {
+  const ArchivedRefeedPlan({
+    required this.photosFound,
+    required this.ordered,
+    required this.rejections,
+  });
+
+  /// photos_highres 下的 .jpg 张数。
+  final int photosFound;
+
+  /// 解析通过、已按帧序号排好的照片。
+  final List<ArchivedPhotoParse> ordered;
+
+  /// 每条 "<文件名>: <原因>";photosFound 减去 ordered 的每一张都在这里。
+  final List<String> rejections;
+}
+
+Future<ArchivedRefeedPlan> planArchivedRefeed(String captureDir) async {
+  final rejections = <String>[];
+  final photosDir = Directory('$captureDir/photos_highres');
+  if (!photosDir.existsSync()) {
+    return ArchivedRefeedPlan(
+      photosFound: 0,
+      ordered: const <ArchivedPhotoParse>[],
+      rejections: rejections,
+    );
+  }
+  final jpegs =
+      photosDir
+          .listSync()
+          .whereType<File>()
+          .map((f) => f.path)
+          .where((p) => p.toLowerCase().endsWith('.jpg'))
+          .toList()
+        ..sort();
+  final parses = <ArchivedPhotoParse>[];
+  for (final jpeg in jpegs) {
+    final sidecar = File('${jpeg.substring(0, jpeg.length - 4)}.json');
+    if (!sidecar.existsSync()) {
+      rejections.add('${jpeg.split('/').last}: 缺 sidecar .json');
+      continue;
+    }
+    String text;
+    try {
+      text = await sidecar.readAsString();
+    } catch (e) {
+      rejections.add('${jpeg.split('/').last}: sidecar 读不出 ($e)');
+      continue;
+    }
+    final p = parseArchivedPhoto(jpegPath: jpeg, sidecarJson: text);
+    if (p.isAccepted) {
+      parses.add(p);
+    } else {
+      rejections.add('${jpeg.split('/').last}: ${p.failure}');
+    }
+  }
+  return ArchivedRefeedPlan(
+    photosFound: jpegs.length,
+    ordered: orderForRefeed(parses),
+    rejections: rejections,
+  );
+}
+
 /// 从 `<captureDir>/photos_highres` 的存档照片**重新喂帧**并重建点云。
 ///
 /// 与 [resumeSingleCapture] 互斥:两者共用 `_resumeInFlight`,同一个 capture
@@ -901,63 +973,24 @@ Future<ArchivedRebuildResult> _rebuildFromArchivedPhotosOnce(
   String captureDir,
   Duration timeout,
 ) async {
-  final rejections = <String>[];
-  final photosDir = Directory('$captureDir/photos_highres');
-  if (!photosDir.existsSync()) {
-    return ArchivedRebuildResult(
-      photosFound: 0,
-      accepted: 0,
-      fed: 0,
-      rejections: rejections,
-      plyWritten: false,
-      failure: '照片目录不存在:${photosDir.path}',
-    );
-  }
-
-  final jpegs =
-      photosDir
-          .listSync()
-          .whereType<File>()
-          .map((f) => f.path)
-          .where((p) => p.toLowerCase().endsWith('.jpg'))
-          .toList()
-        ..sort();
-
-  final parses = <ArchivedPhotoParse>[];
-  for (final jpeg in jpegs) {
-    final sidecar = File('${jpeg.substring(0, jpeg.length - 4)}.json');
-    if (!sidecar.existsSync()) {
-      rejections.add('${jpeg.split('/').last}: 缺 sidecar .json');
-      continue;
-    }
-    String text;
-    try {
-      text = await sidecar.readAsString();
-    } catch (e) {
-      rejections.add('${jpeg.split('/').last}: sidecar 读不出 ($e)');
-      continue;
-    }
-    final p = parseArchivedPhoto(jpegPath: jpeg, sidecarJson: text);
-    if (p.isAccepted) {
-      parses.add(p);
-    } else {
-      rejections.add('${jpeg.split('/').last}: ${p.failure}');
-    }
-  }
-  final ordered = orderForRefeed(parses);
+  final plan = await planArchivedRefeed(captureDir);
+  final rejections = List<String>.of(plan.rejections);
+  final ordered = plan.ordered;
   DeviceLog.log(
     'SfmResume',
-    'rebuild $captureDir: jpg=${jpegs.length} accepted=${ordered.length} '
+    'rebuild $captureDir: jpg=${plan.photosFound} accepted=${ordered.length} '
         'rejected=${rejections.length}',
   );
   if (ordered.isEmpty) {
     return ArchivedRebuildResult(
-      photosFound: jpegs.length,
+      photosFound: plan.photosFound,
       accepted: 0,
       fed: 0,
       rejections: rejections,
       plyWritten: false,
-      failure: '没有一张存档照片可用',
+      failure: plan.photosFound == 0
+          ? '照片目录为空或不存在:$captureDir/photos_highres'
+          : '没有一张存档照片可用',
     );
   }
 
@@ -983,7 +1016,7 @@ Future<ArchivedRebuildResult> _rebuildFromArchivedPhotosOnce(
     );
     if (recon == null) {
       return ArchivedRebuildResult(
-        photosFound: jpegs.length,
+        photosFound: plan.photosFound,
         accepted: ordered.length,
         fed: 0,
         rejections: rejections,
@@ -1039,7 +1072,7 @@ Future<ArchivedRebuildResult> _rebuildFromArchivedPhotosOnce(
     DeviceLog.log('SfmResume', 'rebuild fed=$fed/${ordered.length}');
     if (fed == 0) {
       return ArchivedRebuildResult(
-        photosFound: jpegs.length,
+        photosFound: plan.photosFound,
         accepted: ordered.length,
         fed: 0,
         rejections: rejections,
@@ -1067,7 +1100,7 @@ Future<ArchivedRebuildResult> _rebuildFromArchivedPhotosOnce(
   final ply = File('$captureDir/official_sfm_sparse.ply').existsSync();
   DeviceLog.log('SfmResume', 'rebuild $captureDir → ply=$ply fed=$fed');
   return ArchivedRebuildResult(
-    photosFound: jpegs.length,
+    photosFound: plan.photosFound,
     accepted: ordered.length,
     fed: fed,
     rejections: rejections,

@@ -10,6 +10,16 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
+
+/// 所有断言都跑在**去掉注释**的源码上 —— 判据不能匹配自己刚写的注释。
+String stripComments(String raw) => raw
+    .split('\n')
+    .map((line) {
+      final i = line.indexOf('//');
+      return i < 0 ? line : line.substring(0, i);
+    })
+    .join('\n');
+
 void main() {
   final raw = File('lib/ui/me_page.dart').readAsStringSync();
 
@@ -192,105 +202,132 @@ void main() {
     expect(code, contains('db 覆盖不全'));
   });
 
-  test('🔴补拍结束走整项目全量重喂,不交付本场那朵云', () {
-    final arp = File(
-      'lib/ui/official_capture/ar_capture_page.dart',
-    ).readAsStringSync();
-    final arpCode = arp
-        .split('\n')
-        .map((line) {
-          final i = line.indexOf('//');
-          return i < 0 ? line : line.substring(0, i);
-        })
-        .join('\n');
-    // 补拍分支必须真的调全量重喂 —— 这是本次修复的心脏。
+  test('🔴补拍结束走**正常拍摄结束那条流程**,不跳去单独的等待页', () {
+    final arpCode = stripComments(
+      File('lib/ui/official_capture/ar_capture_page.dart').readAsStringSync(),
+    );
+
     // 条件必须真的来自「这次是不是补拍」,不是一个能被改成常量的旗子。
     //
     // [阴性对照 2026-09-11] 第一版断言是"从 `final extendingProject =` 起
     // 160 字符内出现 widget.extendCaptureDir" —— 变异成
     // `final extendingProject = false; final unusedExtend = widget.extend…`
     // 照样全绿:它只证明了条件**在附近**,没证明值**来自**条件。
-    // 所以要切到分号为止,并且全文只许有这一处赋值。
     final ci = arpCode.indexOf('final extendingProject =');
     expect(ci, greaterThanOrEqualTo(0));
-    final rhs = arpCode.substring(
-      ci + 'final extendingProject ='.length,
-      arpCode.indexOf(';', ci),
-    );
-    expect(rhs, contains('widget.extendCaptureDir != null'));
     expect(
-      RegExp(r'extendingProject\s*=(?!=)').allMatches(arpCode).length,
-      1,
+      arpCode.substring(
+        ci + 'final extendingProject ='.length,
+        arpCode.indexOf(';', ci),
+      ),
+      contains('widget.extendCaptureDir != null'),
     );
-    expect(arpCode, contains('if (extendingProject) {'));
-    expect(
-      arpCode,
-      contains('sfm_resume.rebuildFromArchivedPhotos(captureDirForSfm)'),
-    );
-    // 且 recon.finalize() 只剩**非补拍**那一条路能走到。
-    expect(RegExp(r'recon\.finalize\(\)').allMatches(arpCode).length, 1);
+    expect(RegExp(r'extendingProject\s*=(?!=)').allMatches(arpCode).length, 1);
+
     final ei = arpCode.indexOf('if (extendingProject) {');
     final pi = arpCode.indexOf('} else if (sfmPreviewing) {', ei);
-    final fi = arpCode.indexOf('recon.finalize();');
     expect(ei, greaterThanOrEqualTo(0));
     // 🔴 补拍分支必须排在 sfmPreviewing **之前**:开场已经把旧 db 挪开了,
-    // 这一场哪怕只拍 1 张(够不到 offeredCount>=2 的预览门槛)也必须重喂,
-    // 否则项目被留在"旧 db 已挪走、新 db 只有 1 帧、PLY 还是旧的"的更差状态。
+    // 这一场哪怕只拍 1 张(够不到 offeredCount>=2 的预览门槛)也必须重喂。
     expect(pi, greaterThan(ei), reason: '补拍分支必须先于预览分支');
-    expect(fi, greaterThan(pi), reason: 'finalize 只能落在非补拍那条路上');
-    // 圈的是**补拍分支本身**,到 `} else if` 为止 —— 把后面圈进来会永远红,
-    // 因为那一侧本来就该开伞(判据划错边界和判据写错一样坏)。
     final branch = arpCode.substring(ei, pi);
-    // 全量重喂自带 umbrella,补拍分支再开一层就是两层伞。
-    expect(branch, isNot(contains('_beginReconUmbrella')));
-    // 会话必须先彻底放掉:重建资源全局独占,不 dispose 就起不来第二个。
+    expect(branch, contains('_startArchivedRefeed('));
+    // 旧会话必须先彻底放掉:重建资源全局独占,不 dispose 起不来第二个。
     expect(branch, contains('recon.dispose()'));
-    expect(branch, contains('rebuildFromArchivedPhotos'));
+    // 🔴 绝不把用户弹去另一张页 —— 收尾就该留在本页。
+    expect(branch, isNot(contains('SfmResumeWaitPage')));
+    expect(branch, isNot(contains('Navigator')));
+
+    // 重喂本体:自己起会话、自己喂、自己 finalize,并挂上**本页**的事件流,
+    // 这样浮层/取色/持久化/封面全部沿用正常收尾那条路。
+    final mi = arpCode.indexOf('Future<void> _startArchivedRefeed(');
+    expect(mi, greaterThanOrEqualTo(0));
+    final me = arpCode.indexOf('Future<void> _startSfmLiveRecon(', mi);
+    expect(me, greaterThan(mi));
+    final body = arpCode.substring(mi, me);
+    for (final need in const <String>[
+      'sfm_resume.planArchivedRefeed(',
+      'sfm_resume.sidelineDatabaseForFreshSession(',
+      'SfmLiveRecon.start(',
+      '.offerFrame(',
+      'events.listen(_onSfmEvent)',
+      'SfmPreviewPhase.generating',
+      '_beginReconUmbrella',
+      '.finalize()',
+    ]) {
+      expect(body, contains(need), reason: '重喂本体缺了 $need');
+    }
+  });
+
+  test('🔴「开始训练」进的就是拍摄收尾那张页面,那张单独的等待页已删除', () {
+    // [2026-09-11 用户裁决]「点击开始训练那就跟平时拍摄完进入的页面一样」。
+    expect(
+      File('lib/ui/official_capture/sfm_resume_wait_page.dart').existsSync(),
+      isFalse,
+      reason: 'official 线的等待页应已删除',
+    );
+    final routes = stripComments(
+      File(
+        'lib/ui/official_capture/official_gallery_routes.dart',
+      ).readAsStringSync(),
+    );
+    expect(routes, isNot(contains('SfmResumeWaitPage')));
+    expect(
+      routes,
+      contains('OfficialARCapturePage(reconstructOnlyCaptureDir:'),
+    );
+    // 两个入口(续跑 / 从照片重建)都要走到那一处,不许只改一个。
+    expect(
+      RegExp(r'_pushReconstructOnly\(context, captureDir\)')
+          .allMatches(routes)
+          .length,
+      2,
+    );
+
+    // 采集页的「只重建」档:不碰相机,一进来就把浮层点亮。
+    final arpCode = stripComments(
+      File('lib/ui/official_capture/ar_capture_page.dart').readAsStringSync(),
+    );
+    final ri = arpCode.indexOf(
+      'final reconstructOnly = widget.reconstructOnlyCaptureDir;',
+    );
+    expect(ri, greaterThanOrEqualTo(0));
+    final gate = arpCode.substring(ri, arpCode.indexOf('_initCamera();', ri));
+    expect(gate, contains('SfmPreviewPhase.generating'));
+    expect(gate, contains('_runReconstructOnly('));
+    // 🔴 这一档**绝不**能走到 _initCamera —— 走到就等于为了看进度去开相机。
+    expect(gate, contains('return;'));
   });
 
   test('🔴补拍开场把旧 db 挪开(撞名会废掉整场),而且是改名不是删', () {
-    final arp = File(
-      'lib/ui/official_capture/ar_capture_page.dart',
-    ).readAsStringSync();
-    final arpCode = arp
-        .split('\n')
-        .map((line) {
-          final i = line.indexOf('//');
-          return i < 0 ? line : line.substring(0, i);
-        })
-        .join('\n');
-    final si = arpCode.indexOf('sfm_resume.sidelineDatabaseForFreshSession(');
-    expect(si, greaterThanOrEqualTo(0));
-    // 必须只在补拍时挪 —— 正常拍摄是全新目录,挪了等于白开一次 IO。
-    final before = arpCode.substring(0, si);
-    expect(before.lastIndexOf('widget.extendCaptureDir != null'),
-        greaterThan(before.lastIndexOf('SfmLiveRecon.start')));
-    // 且必须挪在起会话**之前**。
-    final after = arpCode.substring(si);
-    expect(after.indexOf('SfmLiveRecon.start'), greaterThanOrEqualTo(0));
+    final arpCode = stripComments(
+      File('lib/ui/official_capture/ar_capture_page.dart').readAsStringSync(),
+    );
+    // 只圈**起会话**那个方法 —— 重喂本体里也有一处 sideline,不圈清楚会串台。
+    final li = arpCode.indexOf('Future<void> _startSfmLiveRecon(');
+    expect(li, greaterThanOrEqualTo(0));
+    final lend = arpCode.indexOf('SfmLiveRecon.start(', li);
+    expect(lend, greaterThan(li));
+    final pre = arpCode.substring(li, lend);
+    // 必须只在补拍时挪(正常拍摄是全新目录),且在起会话**之前**。
+    expect(pre, contains('widget.extendCaptureDir != null'));
+    expect(pre, contains('sfm_resume.sidelineDatabaseForFreshSession('));
 
     // 挪的动作本身:rename,绝不 delete;wal/shm/账本一个都不能落下。
-    final resume = File(
-      'lib/official_capture/sfm_resume.dart',
-    ).readAsStringSync();
-    final rCode = resume
-        .split('\n')
-        .map((line) {
-          final i = line.indexOf('//');
-          return i < 0 ? line : line.substring(0, i);
-        })
-        .join('\n');
+    final rCode = stripComments(
+      File('lib/official_capture/sfm_resume.dart').readAsStringSync(),
+    );
     final hi = rCode.indexOf('sidelineDatabaseForFreshSession(String');
     expect(hi, greaterThanOrEqualTo(0));
-    final body = rCode.substring(hi, hi + 900);
-    expect(body, contains('.rename('));
-    expect(body, isNot(contains('.delete(')));
+    final hbody = rCode.substring(hi, hi + 900);
+    expect(hbody, contains('.rename('));
+    expect(hbody, isNot(contains('.delete(')));
     for (final n in const <String>[
       'official_sfm_live.db-wal',
       'official_sfm_live.db-shm',
       'official_sfm_fed_frames.jsonl',
     ]) {
-      expect(body, contains(n));
+      expect(hbody, contains(n));
     }
   });
 

@@ -4,7 +4,6 @@ import '../../l10n/app_localizations.dart';
 import '../../official_capture/sfm_resume.dart' as official_resume;
 import '../scan_record.dart';
 import 'ar_capture_page.dart';
-import 'sfm_resume_wait_page.dart';
 import 'sparse_cloud_viewer_page.dart';
 
 /// Opens the physically separate official resume route.
@@ -12,7 +11,7 @@ import 'sparse_cloud_viewer_page.dart';
 /// This deliberately mirrors the self-developed confirmation contract while
 /// keeping every execution dependency inside the official capture stack. An
 /// already-running official resume skips the confirmation and reattaches to
-/// the same idempotent future in [SfmResumeWaitPage].
+/// the same idempotent future in the reconstruct-only capture page.
 Future<void> pushOfficialResumeRoute(
   BuildContext context,
   ScanRecord record,
@@ -45,10 +44,21 @@ Future<void> pushOfficialResumeRoute(
     if (confirmed != true) return;
   }
   if (!context.mounted) return;
-  await Navigator.of(context).push(
+  await _pushReconstructOnly(context, captureDir);
+}
+
+/// [2026-09-11 用户裁决]「开始训练」进的就是**平时拍摄完那张页面**。
+///
+/// 原先进的是 SfmResumeWaitPage —— 一张只有转圈和一行字的黑页,和收尾那套
+/// (进度 → 点云 → 选区 → 「完成」)完全两套东西。用户:「点击开始训练那就跟
+/// 平时拍摄完进入的页面一样不就行了吗」。于是这里改推采集页的「只重建」档:
+/// 不开相机,进来就跑重建,浮层/取色/持久化/封面全部与收尾逐字同路。
+/// 续跑还是全量重喂由采集页用**与长按菜单同一对纯函数**自己判,不在这里重复。
+Future<void> _pushReconstructOnly(BuildContext context, String captureDir) {
+  return Navigator.of(context).push(
     MaterialPageRoute<void>(
       builder: (_) =>
-          SfmResumeWaitPage(captureDir: captureDir, title: record.name),
+          OfficialARCapturePage(reconstructOnlyCaptureDir: captureDir),
     ),
   );
 }
@@ -92,18 +102,7 @@ Future<void> pushOfficialRebuildFromPhotosRoute(
     if (confirmed != true) return;
   }
   if (!context.mounted) return;
-  await Navigator.of(context).push(
-    MaterialPageRoute<void>(
-      builder: (_) => SfmResumeWaitPage(
-        captureDir: captureDir,
-        title: record.name,
-        runner: (dir) async =>
-            (await official_resume.rebuildFromArchivedPhotos(dir)).ok,
-        progressTitle: '正在从照片重建…',
-        progressDetail: '把 $photoCount 张已拍的照片重新喂进重建，无需重拍',
-      ),
-    ),
-  );
+  await _pushReconstructOnly(context, captureDir);
 }
 
 /// Opens the official sparse-cloud viewer without a self-pipeline fallback.

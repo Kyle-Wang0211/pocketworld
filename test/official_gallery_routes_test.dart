@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/l10n/app_localizations.dart';
 import 'package:pocketworld_flutter/ui/official_capture/official_gallery_routes.dart';
-import 'package:pocketworld_flutter/ui/official_capture/sfm_resume_wait_page.dart';
+import 'package:pocketworld_flutter/ui/official_capture/ar_capture_page.dart';
 import 'package:pocketworld_flutter/ui/scan_record.dart';
 
 void main() {
@@ -42,7 +42,7 @@ void main() {
     );
   }
 
-  testWidgets('official resume requires confirmation before wait page', (
+  testWidgets('official resume requires confirmation before navigating', (
     tester,
   ) async {
     await pumpLauncher(tester, regenerate: false);
@@ -54,12 +54,12 @@ void main() {
 
     expect(find.text('继续重建？'), findsOneWidget);
     expect(find.textContaining('「测试扫描」的点云还没有生成'), findsOneWidget);
-    expect(find.byType(SfmResumeWaitPage), findsNothing);
+    expect(find.byType(OfficialARCapturePage), findsNothing);
 
     await tester.tap(find.text('取消'));
     await tester.pumpAndSettle();
 
-    expect(find.byType(SfmResumeWaitPage), findsNothing);
+    expect(find.byType(OfficialARCapturePage), findsNothing);
   });
 
   testWidgets('official regenerate uses the matching confirmation copy', (
@@ -74,11 +74,11 @@ void main() {
 
     expect(find.text('重新重建？'), findsOneWidget);
     expect(find.text('重新重建'), findsOneWidget);
-    expect(find.byType(SfmResumeWaitPage), findsNothing);
+    expect(find.byType(OfficialARCapturePage), findsNothing);
 
     await tester.tap(find.text('取消'));
     await tester.pumpAndSettle();
 
-    expect(find.byType(SfmResumeWaitPage), findsNothing);
+    expect(find.byType(OfficialARCapturePage), findsNothing);
   });
 }

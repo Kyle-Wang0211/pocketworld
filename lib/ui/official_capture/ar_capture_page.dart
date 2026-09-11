@@ -52,6 +52,8 @@ import '../../official_capture/auto_capture_telemetry.dart';
 import '../../official_capture/capture_coverage_cloud.dart';
 import '../../official_capture/capture_session.dart';
 import '../../official_capture/colorize_pipeline.dart';
+import '../../official_capture/database_archive_policy.dart';
+import '../../official_capture/sqlite_db_health.dart';
 import '../../official_capture/live_sfm_publish_policy.dart';
 import '../../official_capture/live_cloud_diagnostics.dart';
 import '../../official_capture/manual_capture_queue.dart';
@@ -109,7 +111,14 @@ import '../../vio/diagnostics/vio_shadow_switch.dart';
 enum _ShutterAdmission { admitted, blocked, budgetExhausted }
 
 class OfficialARCapturePage extends StatefulWidget {
-  const OfficialARCapturePage({super.key, this.extendCaptureDir});
+  const OfficialARCapturePage({
+    super.key,
+    this.extendCaptureDir,
+    this.reconstructOnlyCaptureDir,
+  }) : assert(
+         extendCaptureDir == null || reconstructOnlyCaptureDir == null,
+         '补拍和「只重建」是两种进入方式,不能同时给',
+       );
 
   /// [2026-09-08 追加拍摄] 非空 = 往这个已有项目里补拍:复用它的 capture 目录、
   /// 照片编号接着排、目录绝不删。留空 = 原来的"新建一次拍摄",行为一字未动。
@@ -121,6 +130,18 @@ class OfficialARCapturePage extends StatefulWidget {
   /// (mandatory_arkit_gravity_v1.h:25,ARKit .gravity 世界恒 +Y 朝天)。
   /// 老新两批照片由 SfM 按图像重新对齐 —— 复刻 RealityScan 的做法。
   final String? extendCaptureDir;
+
+  /// [2026-09-11 用户裁决]「只重建」模式:**不开相机**,进来就跑重建,用与正常
+  /// 拍摄收尾**完全同一张**浮层显示进度与结果。
+  ///
+  /// 起因:作品页「开始训练」原本进的是 SfmResumeWaitPage —— 一张只有转圈和
+  /// 一行字的黑页,和收尾那套(进度 → 点云 → 选区 → 完成)完全两套东西。
+  /// 用户:「点击开始训练那就跟平时拍摄完进入的页面一样不就行了吗」。
+  ///
+  /// 实现上只需要两件事:initState 里**跳过 _initCamera**,并且一上来就把
+  /// `_sfmPhase` 点亮 —— SfmPreviewOverlay 是 Stack 最顶层且"owns navigation",
+  /// 点亮之后它就盖住整屏,下面的相机预览层从第一帧起就没露过面。
+  final String? reconstructOnlyCaptureDir;
 
   @override
   State<OfficialARCapturePage> createState() => _OfficialARCapturePageState();
@@ -766,7 +787,55 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // Capture reconstruction runs on-device via streaming SfM (see
     // _startSfmLiveRecon) plus server-side recon on upload — no local model
     // download gate. The App Store install bundle stays small (~80 MB).
+    final reconstructOnly = widget.reconstructOnlyCaptureDir;
+    if (reconstructOnly != null) {
+      // 只重建:绝不碰相机/ARKit。浮层立刻点亮,盖住整屏。
+      _initializing = false;
+      _sfmPhase = SfmPreviewPhase.generating;
+      _sfmFinalizeStage = 0;
+      _sfmStageStartMs = DateTime.now().millisecondsSinceEpoch;
+      _startSfmStageTicker();
+      unawaited(_runReconstructOnly(reconstructOnly));
+      return;
+    }
     _initCamera();
+  }
+
+  /// 「只重建」模式的入口:db 还能用且装着全部照片就照 db 续跑(快,特征
+  /// 不用重提);否则整项目全量重喂。判据与作品页长按菜单**同一对纯函数**
+  /// (sqlite_db_health / projectCoverageFrom),不另立标准。
+  Future<void> _runReconstructOnly(String captureDir) async {
+    final health = sqliteDatabaseUsable(
+      File('$captureDir/${DatabaseArchivePolicy.sourceFileName}'),
+    );
+    final coverage = sfm_resume.projectCoverage(captureDir);
+    DeviceLog.log(
+      'OfficialARCapturePage',
+      'reconstruct-only $captureDir: db=${health.usable ? "可用" : health.reason} '
+          '覆盖=${coverage.covered ? "齐" : coverage.reason} '
+          '(盘上 ${coverage.photosOnDisk} / 账本 ${coverage.fedDistinct})',
+    );
+    if (health.usable && coverage.covered) {
+      final recon = await SfmLiveRecon.start(
+        dbPath: '$captureDir/official_sfm_live.db',
+      );
+      if (recon != null) {
+        _sfmRecon = recon;
+        _sfmEventSub = recon.events.listen(_onSfmEvent);
+        // 续跑会话没喂过帧 ⇒ _fedMeta 为空 ⇒ 重力对齐会整段跳过、云是歪的。
+        // 先用拍摄期落盘的 fed_frames.jsonl 回填,与 sfm_resume 的续跑腿同处理。
+        recon.seedFedMeta(await sfm_resume.loadFedFrameMeta(captureDir));
+        await _beginReconUmbrella(captureDir);
+        recon.resumeFromDb();
+        DeviceLog.log('OfficialARCapturePage', 'reconstruct-only: 照 db 续跑');
+        return;
+      }
+      DeviceLog.log(
+        'OfficialARCapturePage',
+        'reconstruct-only: 续跑会话起不来,改走全量重喂',
+      );
+    }
+    await _startArchivedRefeed(captureDir, liveFedCount: 0);
   }
 
   Future<void> _initCamera() async {
@@ -1821,6 +1890,97 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// keyframe feed. Startup is fail-closed: unsupported devices, missing
   /// capture storage, lease contention (reported as a null worker), and thrown
   /// errors all leave a persistent page error with capture/save disabled.
+  /// 整项目**全量重喂**:扫 photos_highres → 按帧序号排 → 用**本页自己的**
+  /// SfmLiveRecon 喂进去 → finalize。之后的浮层/事件/取色/持久化/「完成」
+  /// 全部走与正常拍摄收尾同一条路 —— 本方法只负责把那条路点着。
+  ///
+  /// 两个调用方:
+  ///  · 补拍收尾(_finishRecording 的 extendingProject 分支);
+  ///  · 「开始训练」的无相机重建模式(widget.reconstructOnlyCaptureDir)。
+  /// 抽成一处是因为两边的正确性要求逐字相同 —— 分两份写必然漂。
+  Future<void> _startArchivedRefeed(
+    String captureDir, {
+    required int liveFedCount,
+  }) async {
+    final plan = await sfm_resume.planArchivedRefeed(captureDir);
+    DeviceLog.log(
+      'OfficialARCapturePage',
+      'refeed: 本场喂了 $liveFedCount 张;整项目重喂 jpg=${plan.photosFound} '
+          'accepted=${plan.ordered.length} rejected=${plan.rejections.length}',
+    );
+    for (final r in plan.rejections) {
+      DeviceLog.log('OfficialARCapturePage', 'refeed reject: $r');
+    }
+
+    SfmLiveRecon? refeed;
+    if (plan.ordered.isNotEmpty) {
+      // 旧 db 整组改名挪开(**绝不删**):新会话帧号从 0 重数,不挪必撞
+      // images.name 的 UNIQUE,核自己的注释说那会废掉整场。
+      final moved = await sfm_resume.sidelineDatabaseForFreshSession(captureDir);
+      DeviceLog.log(
+        'OfficialARCapturePage',
+        'refeed: sidelined → ${moved.isEmpty ? "(nothing)" : moved.join(",")}',
+      );
+      refeed = await SfmLiveRecon.start(
+        dbPath: '$captureDir/official_sfm_live.db',
+      );
+    }
+    if (refeed == null) {
+      // 诚实收场:浮层撤掉,不假装在跑。素材全在盘上,用户可以从作品页
+      // 再点一次「开始训练」(覆盖度判据会把它送回全量重喂)。
+      final why = plan.ordered.isEmpty
+          ? '没有一张可用的存档照片(共 ${plan.photosFound} 张)'
+          : '重建会话起不来(资源被占用?)';
+      DeviceLog.log('OfficialARCapturePage', 'refeed 放弃:$why');
+      if (mounted) {
+        setState(() {
+          _sfmErrorText = why;
+          _sfmPhase = SfmPreviewPhase.generating;
+          _sfmFinalizeStage = 0;
+          _showDraftsWhileReconstructing = false;
+        });
+      }
+      _stopSfmStageTicker();
+      return;
+    }
+
+    _sfmRecon = refeed;
+    _sfmEventSub = refeed.events.listen(_onSfmEvent);
+    var fed = 0;
+    for (final parse in plan.ordered) {
+      if (refeed.offerFrame(parse.input!)) {
+        fed++;
+      } else {
+        DeviceLog.log(
+          'OfficialARCapturePage',
+          'refeed: 会话拒收 ${parse.jpegPath.split('/').last}',
+        );
+      }
+    }
+    DeviceLog.log(
+      'OfficialARCapturePage',
+      'refeed: fed=$fed/${plan.ordered.length} → finalize',
+    );
+    if (mounted) {
+      final r = refeed;
+      setState(() {
+        _sfmFed = r.fedCount;
+        _sfmQueued = r.remainingCount;
+        _sfmSnapshot = null;
+        _colorizeTarget = null;
+        _pendingLocalColored = null;
+        _sfmErrorText = null;
+        _sfmPhase = SfmPreviewPhase.generating;
+        _showDraftsWhileReconstructing = false;
+        _sfmFinalizeStage = r.remainingCount == 0 ? 1 : 0;
+        _sfmStageStartMs = DateTime.now().millisecondsSinceEpoch;
+      });
+      _startSfmStageTicker();
+    }
+    await _beginReconUmbrella(captureDir);
+    refeed.finalize();
+  }
+
   Future<void> _startSfmLiveRecon(CaptureSession session) async {
     try {
       if (_sfmRecon != null) {
@@ -3889,43 +4049,26 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
             'remaining=${recon?.remainingCount ?? -1} preview=$sfmPreviewing',
       );
       if (extendingProject) {
-        // 🔴 这一条必须在 sfmPreviewing 之外:开场已经把旧 db 挪开了,
-        // 这一场哪怕只拍了 1 张(够不到 offeredCount>=2 的预览门槛),也必须
-        // 重喂 —— 否则项目被留在"旧 db 已挪走、新 db 只有 1 帧、PLY 还是旧的"
-        // 这个比原来更差的状态上。
+        // [2026-09-11 用户裁决] 补拍收尾**走与正常拍摄结束完全同一条流程**。
+        //
+        // 上一版做成「弹回作品页 + 后台重喂」,用户点草稿卡进的是
+        // SfmResumeWaitPage 那张单独的黑页 —— 那是「开始训练」的 UI,不是收尾的。
+        // 用户指认后改成这样:重喂就在**本页**跑、用**本页自己的** SfmLiveRecon,
+        // 于是浮层/事件/取色/持久化/「完成」按钮全部沿用原路,一行 UI 都不另写。
+        //
+        // 为什么仍要重喂而不是直接 finalize 本场:补拍只把老照片 adopt 进相册,
+        // 一帧都没喂给重建;直接 finalize 交付的云只有新照片(未命名(8) 26 张
+        // 里 20 张颗粒无收)。整项目重喂才是 RS 的做法。
+        // 为什么不把老照片追加喂进**本场会话**:喂帧顺序要按帧序号升序,
+        // 老照片排在新照片之后会让时序候选窗(k_neighbors)挑错邻居。
         await _sfmFeedSub?.cancel();
         _sfmFeedSub = null;
-        _sfmRecon = null;
         await _sfmEventSub?.cancel();
         _sfmEventSub = null;
+        _sfmRecon = null;
+        final liveFed = recon?.fedCount ?? 0;
         if (recon != null) await recon.dispose();
-        if (mounted) {
-          setState(() {
-            _sfmPhase = null;
-            _sfmFinalizeStage = 0;
-            _showDraftsWhileReconstructing = false;
-          });
-        }
-        _stopSfmStageTicker();
-        // rebuildFromArchivedPhotos 自己带在飞表 + umbrella + lease,所以
-        // 这里**不要**再 _beginReconUmbrella,否则伞会开两层。
-        // 草稿卡的"生成中"徽章靠 isResumeInFlightForDirName 认这条腿,
-        // 用户回作品页就能看到它在跑,点进去还能回到等待页。
-        DeviceLog.log(
-          'OfficialARCapturePage',
-          'extend finish: 不交付本场 live_reuse 云,改为整项目全量重喂 '
-              '($captureDirForSfm, 本场喂了 ${recon?.fedCount ?? 0} 张)',
-        );
-        unawaited(
-          sfm_resume.rebuildFromArchivedPhotos(captureDirForSfm).then((r) {
-            DeviceLog.log(
-              'OfficialARCapturePage',
-              'extend rebuild done: ok=${r.ok} fed=${r.fed}/${r.accepted} '
-                  'found=${r.photosFound} rejected=${r.rejections.length}'
-                  '${r.failure == null ? "" : " failure=${r.failure}"}',
-            );
-          }),
-        );
+        await _startArchivedRefeed(captureDirForSfm, liveFedCount: liveFed);
       } else if (sfmPreviewing) {
         await _sfmFeedSub?.cancel();
         _sfmFeedSub = null;

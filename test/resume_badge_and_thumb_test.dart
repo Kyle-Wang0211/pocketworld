@@ -19,7 +19,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/official_capture/sfm_resume.dart'
     as official;
 import 'package:pocketworld_flutter/ui/me_page.dart';
-import 'package:pocketworld_flutter/ui/official_capture/sfm_resume_wait_page.dart';
 import 'package:pocketworld_flutter/ui/scan_record.dart';
 import 'package:pocketworld_flutter/ui/sparse_thumbnail.dart';
 
@@ -108,58 +107,12 @@ void main() {
     });
     tearDown(() => dir.delete(recursive: true));
 
-    testWidgets('resume 成功 ⇒ official_sparse_thumb.png 已在盘上', (tester) async {
-      late String ply;
-      await tester.runAsync(() async {
-        ply = await writePly(dir.path);
-      });
-      expect(File(ply).existsSync(), isTrue);
-
-      await tester.pumpWidget(
-        MaterialApp(
-          home: SfmResumeWaitPage(
-            captureDir: dir.path,
-            title: '未命名(6)',
-            runner: (_) async => true,
-          ),
-        ),
-      );
-      // 离屏渲染是真实异步 I/O —— 必须 runAsync。
-      await tester.runAsync(() async {
-        for (var i = 0; i < 100; i++) {
-          if (File(sparseThumbPathFor(dir.path)).existsSync()) break;
-          await Future<void>.delayed(const Duration(milliseconds: 20));
-        }
-      });
-      await tester.pumpAndSettle();
-
-      final thumb = File(sparseThumbPathFor(dir.path));
-      expect(
-        thumb.existsSync() && thumb.lengthSync() > 0,
-        isTrue,
-        reason:
-            '等待页 resume 成功后没画封面 ⇒ 用户回到草稿页看到的还是照片,'
-            '要等 2 秒轮询懒补才跳变',
-      );
-      // PNG magic。
-      expect(thumb.readAsBytesSync().sublist(0, 4), [0x89, 0x50, 0x4E, 0x47]);
-    });
-
-    testWidgets('resume 失败 ⇒ 不画封面(没有点云,别糊一张旧图)', (tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: SfmResumeWaitPage(
-            captureDir: dir.path,
-            title: '未命名(6)',
-            runner: (_) async => false,
-          ),
-        ),
-      );
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 200)),
-      );
-      await tester.pumpAndSettle();
-      expect(File(sparseThumbPathFor(dir.path)).existsSync(), isFalse);
-    });
+    // [2026-09-11] 原先这里有两条用例钉 SfmResumeWaitPage 的
+    // 「成功那一刻就画封面 / 失败不画」。那张页已按用户裁决删除 ——
+    // 「开始训练」现在进的是采集页的「只重建」档,封面由采集页 persist 现场的
+    // writeSparseThumbFrom(ar_capture_page.dart:2653)画,与正常拍摄收尾
+    // 同一处代码、同一个时机。被删的是**被测对象本身**,不是断言被放宽。
+    // 🔴 那一处目前没有 widget 测试覆盖(和正常拍摄收尾的现状一样),
+    //    只能靠真机验证。
   });
 }
