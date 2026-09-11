@@ -237,6 +237,34 @@ void main() {
     });
   });
 
+  test('候选收窄:位图为 0 的点不参与计数(组合在调用点,不在本模块)', () {
+    final t = _tableOf(
+      <List<double>>[
+        <double>[0, 0, 5],
+        <double>[0.5, 0, 5],
+      ],
+      <List<int>>[
+        <int>[0, 0, 0],
+        <int>[0, 0, 0],
+      ],
+      <int, List<double>>{
+        0: <double>[0, 0, 0],
+      },
+    );
+    ({int tracked, int reliable}) run(Uint8List? sel) => observableLandmarkCounts(
+          table: t,
+          rotCw: _identity,
+          transCw: const <double>[0, 0, 0],
+          fx: 100, fy: 100, cx: 64, cy: 64,
+          minX: 0, maxX: 128, minY: 0, maxY: 128,
+          minNumObsThr: 2,
+          selected: sel,
+        );
+    expect(run(null).tracked, 2, reason: '不收窄 = 全图');
+    expect(run(Uint8List.fromList(<int>[1, 0])).tracked, 1);
+    expect(run(Uint8List.fromList(<int>[0, 0])).tracked, 0);
+  });
+
   test('解耦纪律:只许依赖 dart:math / dart:typed_data', () {
     final src = File(
       'lib/official_capture/map_landmark_observability.dart',

@@ -162,6 +162,11 @@ const double kStellaRayCosThr = 0.5;
   required double maxY,
   required int minNumObsThr,
   double rayCosThr = kStellaRayCosThr,
+  /// 候选收窄:上游遍历的是 `local_landmarks_`(共视挑出的局部地图),
+  /// 不是整张地图(tracking_module.cc:560)。位图由**调用方**算好传进来 ——
+  /// 本文件不 import 挑局部地图的那个模块,组合发生在调用点,不在这里。
+  /// null = 不收窄(全图)。
+  Uint8List? selected,
 }) {
   final count = table.count;
   if (count == 0) return (tracked: 0, reliable: 0);
@@ -175,6 +180,7 @@ const double kStellaRayCosThr = 0.5;
   var tracked = 0;
   var reliable = 0;
   for (var i = 0; i < count; i++) {
+    if (selected != null && (i >= selected.length || selected[i] == 0)) continue;
     final px = table.xyz[i * 3];
     final py = table.xyz[i * 3 + 1];
     final pz = table.xyz[i * 3 + 2];
