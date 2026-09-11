@@ -1,86 +1,85 @@
-// 重建到终态时**不许再 pop 整条采集 route**(用户 2026-09-10 令)。
+// 重建到终态时**不许有整屏转场动画**(用户 2026-09-10 令)。
 //
 // 用户原话:"在最后一刻整个页面都会有一个滚动或者说刷新的动画,这个才从
 // 『生成中』变成『已完成』。删除这个动画,只保留卡片状态的变化。"
 //
-// 那个"动画"不是一段动画代码 —— 我把 me_page / 卡片 / 徽章 / 缩略图 / app_shell
-// 全读过,一处 Animated* 都没有。它是**整条采集 route 的 pop 转场**:重建期
-// 用户看到的作品页其实是采集 route 里嵌的 MePage,终态时旧逻辑自动 pop 掉整条
-// route,落到**真正的**作品页 —— 两者长得一样,所以看起来就是整屏刷新一遍。
+// 那个"动画"不是一段动画代码 —— me_page / 卡片 / 徽章 / 缩略图 / app_shell
+// 全读过,一处 Animated* 都没有。它是**采集 route 的 pop 转场**:重建期用户
+// 看到的作品页其实是采集 route 里嵌的临时 MePage,终态时 route 自动 pop,落到
+// 长得几乎一样的真作品页 —— 所以看起来像整屏刷新一遍。
+//
+// 🔴 2026-09-11 修法更正。build 142 的解法是"终态不 pop、页面钉在原地",
+// 代价是把那张**临时**作品页变成常驻页,而它穿的是早已退役的 MeRootPage
+// 那套壳(右下角 "+" FAB、没有底部导航栏)—— 用户一眼认出来了。连带三个
+// 缺陷:刚拍完那张卡点不动、拍摄按钮死键、没有返回图标出不去。
+// 现在的解法:**照常 pop,但把这条 route 退出方向的转场时长设为 0**。
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/ui/reconstruction_draft_route_state.dart';
 
 void main() {
-  final page = File('lib/ui/official_capture/ar_capture_page.dart');
+  late String page;
+  late String shell;
 
-  late String code;
+  String stripComments(String src) => src
+      .split('\n')
+      .where(
+        (l) => !l.trimLeft().startsWith('//') && !l.trimLeft().startsWith('///'),
+      )
+      .join('\n');
 
   setUpAll(() {
-    expect(page.existsSync(), isTrue);
-    code = page
-        .readAsStringSync()
-        .split('\n')
-        .where(
-          (l) =>
-              !l.trimLeft().startsWith('//') && !l.trimLeft().startsWith('///'),
-        )
-        .join('\n');
+    final p = File('lib/ui/official_capture/ar_capture_page.dart');
+    final s = File('lib/ui/app_shell.dart');
+    expect(p.existsSync(), isTrue);
+    expect(s.existsSync(), isTrue);
+    page = stripComments(p.readAsStringSync());
+    shell = stripComments(s.readAsStringSync());
   });
 
-  test('① 终态自动退出那条路上不再有 pop', () {
+  test('锚点自身可读(阳性对照:锚没了要报锚没了,不是报回归)', () {
+    expect(shell.contains('OfficialARCapturePage()'), isTrue);
+    expect(page.contains('_scheduleDraftTerminalExitIfNeeded'), isTrue);
+  });
+
+  test('① 退出方向零转场 —— 这就是被删掉的那个"整屏刷新"', () {
     expect(
-      code.contains(
-        '_sfmPendingPop = true;\n      unawaited(_onSfmPreviewDone());',
+      shell.contains('reverseTransitionDuration: Duration.zero'),
+      isTrue,
+      reason: '终态 pop 必须零帧',
+    );
+    expect(
+      shell.contains(
+        'MaterialPageRoute<bool>(builder: (_) => const OfficialARCapturePage())',
       ),
       isFalse,
-      reason: '这是旧写法 —— 它会 pop 整条 route,产生整屏转场',
-    );
-    expect(
-      code.contains('bool _draftsPinnedAfterTerminal = false;'),
-      isTrue,
-      reason: '终态后页面要留在原地',
+      reason: 'MaterialPageRoute 的默认 300 ms 下滑正是那个动画',
     );
   });
 
-  test('② 资源仍然释放(不是把 pop 连同释放一起删了)', () {
+  test('② 终态照常 pop(不许再钉住临时页)', () {
+    expect(page.contains('_sfmPendingPop = true;'), isTrue);
     expect(
-      code.contains('releaseResources: _releaseLiveReconstructionResources'),
-      isTrue,
-      reason: '重建资源必须释放 —— 只删转场,不删释放',
+      page.contains('_draftsPinnedAfterTerminal'),
+      isFalse,
+      reason: 'build 142 的钉住写法 —— 它把临时页变成常驻页',
     );
   });
 
-  test('③ 终态后拦截跟着解除(别留一句过时的「正在重建」)', () {
-    // 2026-09-11 更正:原判据钉的是 build 142 那种"只解一处"的写法,而那正是
-    // 未命名(6) 点不进去的原因 —— 现在四个出口整套由 intercepts 给出,
-    // 详细判据见 reconstruction_terminal_intercepts_release_test.dart。
+  test('③ 资源仍然释放(不是把 pop 连同释放一起改没了)', () {
     expect(
-      code.contains('blockedMessage: intercepts.blockedMessage'),
+      page.contains('releaseResources: _releaseLiveReconstructionResources'),
       isTrue,
-      reason: '页面不动了,但拍摄按钮不能一直被过时的提示挡着',
-    );
-    expect(
-      code.contains(
-        '_showDraftsWhileReconstructing &&\n        (_sfmPhase != null || _draftsPinnedAfterTerminal)',
-      ),
-      isTrue,
-      reason: '_sfmPhase 清空之后草稿视图仍要留着,否则会闪回相机 —— 那还是整屏变化',
     );
   });
 
-  test('④ 用户主动退出这条路没被动(阳性对照:别把人关在里面)', () {
-    expect(code.contains('void _exitToDrafts()'), isTrue);
-    expect(code.contains('Navigator.of(context).pop(true)'), isTrue);
-    // 🔴 2026-09-11 补强:原来这条只证明"函数还在",没证明**有人调它**。
-    // build 142 终态之后真的没人调 —— 这一页没有返回图标、右滑被 PopScope
-    // 吞掉、拍摄按钮挂在一个会静默 return 的回调上,用户被关在里面,而这条
-    // 测试是绿的。判据必须打到"钉住之后那个唯一出口"。
+  test('④ 完成震动发在终态这一刻,不靠徽章边沿', () {
+    expect(page.contains('_triggerCompletionHaptic();'), isTrue);
     expect(
-      code.contains(': _exitToDrafts,'),
+      page.contains('HapticFeedback.heavyImpact()'),
       isTrue,
-      reason: '终态钉住后,拍摄按钮必须接到真的退出上',
+      reason: '与快门同一种强度,全仓不引入第二种口径',
     );
   });
 

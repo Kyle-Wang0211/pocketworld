@@ -78,7 +78,6 @@ import '../../l10n/app_localizations.dart';
 import '../../me/scan_record_store.dart';
 import '../../official_quality/guidance_engine.dart' show GuidanceSnapshot;
 import '../../official_util/device_log.dart';
-import '../draft_capture_shell.dart';
 import '../me_page.dart';
 import '../reconstruction_draft_route_state.dart';
 import '../reconstruction_route_release_gate.dart';
@@ -2906,19 +2905,6 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     if (mounted) Navigator.of(context).pop(true);
   }
 
-  /// 重建已到终态、但**页面留在原地**(不 pop、不切页)。
-  ///
-  /// [2026-09-10 用户令] "在最后一刻整个页面都会有一个滚动或者说刷新的动画,
-  /// 这个才从『生成中』变成『已完成』。删除这个动画,只保留卡片状态的变化。"
-  ///
-  /// 那个"动画"是**整条采集 route 的 pop 转场**:重建期用户看到的作品页其实是
-  /// 本 route 里嵌的 [MePage],终态时旧逻辑会自动 pop 掉整条 route,落到**真正
-  /// 的**作品页 —— 两者长得一样,所以看起来就是整屏刷新一遍。
-  ///
-  /// 现在终态只做两件事:释放重建资源、解除拍摄拦截。页面一动不动,卡片由嵌入
-  /// 的 MePage 自己的 2 秒轮询从"生成中"翻成"已完成"。
-  bool _draftsPinnedAfterTerminal = false;
-
   /// Reveal Drafts without disposing the capture route or touching SfM.
   void _showDraftsDuringReconstruction() {
     if (_sfmPhase == null || _showDraftsWhileReconstructing) return;
@@ -2962,22 +2948,20 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       )) {
         return;
       }
-      // 不再 pop —— 只释放资源并解除拦截,页面留在原地(见
-      // [_draftsPinnedAfterTerminal] 的注释)。`revealRoot: () {}` 与
-      // _permanentlyDeleteActiveReconstruction 同一写法:走同一道释放闸,
-      // 但不揭开根路由。
-      unawaited(
-        _routeReleaseGate.release(
-          releaseResources: _releaseLiveReconstructionResources,
-          revealRoot: () {
-            if (!mounted) return;
-            setState(() {
-              _sfmPhase = null;
-              _draftsPinnedAfterTerminal = true;
-            });
-          },
-        ),
-      );
+      // [2026-09-11 用户令] 终态照常 pop 回**真**作品页 —— 用户要删掉的那个
+      // "整屏刷新"是这条 route 的 pop **转场动画**,不是 pop 本身。转场已在
+      // 推入处按 `reverseTransitionDuration: Duration.zero` 关掉(app_shell.dart),
+      // 所以这里 pop 是零帧的:底下露出来的就是真作品页,卡片当场已是"已完成"
+      // (badgeOf 只看 PLY 在不在盘上,PLY 在终态前就落了)。
+      //
+      // 🔴 build 142 曾改成"不 pop、页面钉在原地",代价是把采集 route 里那张
+      // **临时**作品页变成常驻页 —— 它穿的是早已退役的 MeRootPage 那套壳
+      // (右下角 "+" FAB、没有底部导航栏),用户一眼认出"这 UI 不是早删了吗"。
+      // 连带三个缺陷:刚拍完那张卡点不动、拍摄按钮死键、没有返回图标出不去。
+      // 不要再走回那条路。
+      _triggerCompletionHaptic();
+      _sfmPendingPop = true;
+      unawaited(_onSfmPreviewDone());
     });
   }
 
@@ -3265,6 +3249,26 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       'source': source,
       'jpeg': evidenceJpegPath.split('/').last,
     });
+  }
+
+  /// [2026-09-10 用户令] "在任务完成那一瞬间可以加一个强震动的效果。"
+  ///
+  /// 发在**终态这一刻**,不是发在作品页看到卡片变色那一刻 —— 终态之后本
+  /// route 立刻 pop,嵌入的那份 MePage 根本不会再 build 一次,靠它的徽章
+  /// 边沿触发就永远不响。(me_page 里那份边沿触发仍留着,它管的是另一条路:
+  /// 断点续跑在**真**作品页上跑完的那一次。)
+  void _triggerCompletionHaptic() {
+    unawaited(
+      HapticFeedback.heavyImpact().catchError((
+        Object error,
+        StackTrace stackTrace,
+      ) {
+        DeviceLog.log(
+          'OfficialARCapturePage',
+          'completion haptic failed: $error',
+        );
+      }),
+    );
   }
 
   void _triggerShutterHaptic() {
@@ -4122,35 +4126,21 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
 
   Widget _buildRouteBody(BuildContext context) {
     _scheduleDraftTerminalExitIfNeeded();
-    if (_showDraftsWhileReconstructing &&
-        (_sfmPhase != null || _draftsPinnedAfterTerminal)) {
-      // 终态之后重建已经结束,拦截必须**整套**跟着解除。四个出口
-      // (拦截文案 / 拍摄按钮回调 / 卡片的"活跃重建同卡"身份 / 删除改道)
-      // 由同一个值一次性给出 —— build 142 只解了第一个,另外三个把刚拍完
-      // 那张卡和拍摄按钮一起变成了死键。见 ReconstructionDraftIntercepts。
-      final intercepts = _sfmPhase != null
-          ? ReconstructionDraftIntercepts.reconstructing(_session?.captureDir)
-          : const ReconstructionDraftIntercepts.finished();
-      return DraftCaptureShell(
-        blockedMessage: intercepts.blockedMessage,
-        // 终态后拍摄按钮不能再调那个会静默 return 的回调 —— 这一页没有返回
-        // 图标、右滑也被吞掉,它是用户唯一的出口。
-        onCaptureTap: intercepts.reopensWaitPage
-            ? _showReconstructionProgress
-            : _exitToDrafts,
-        child: MePage(
-          activeReconstructionCaptureDir: intercepts.activeCaptureDir,
-          activeReconstructionPipelineKind: CapturePipelineKind.official,
-          onActiveReconstructionTap: intercepts.reopensWaitPage
-              ? _showReconstructionProgress
-              : null,
-          onActiveReconstructionDelete: intercepts.reopensWaitPage
-              ? _permanentlyDeleteActiveReconstruction
-              : null,
-          onRecordActionActivityChanged: _setDraftRecordActionInProgress,
-          officialResumeRoute: pushOfficialResumeRoute,
-          officialViewerRoute: pushOfficialViewerRoute,
-        ),
+    if (_showDraftsWhileReconstructing && _sfmPhase != null) {
+      // 重建期临时给用户看的作品页。**裸 MePage,没有任何拍摄入口** ——
+      // [2026-09-11 用户令]"直接删除这个 icon":那个右下角 "+" FAB 来自早已
+      // 退役的 MeRootPage 的壳(DraftCaptureShell),真作品页用的是底部导航栏。
+      // 重建期本来也不允许再起一次采集(原生 SfM 会话是进程唯一的),所以这里
+      // 根本不该有拍摄按钮 —— 删掉它,连"当前任务正在重建"那句提示一起没了。
+      // 回等待页看进度的入口在卡片上(onActiveReconstructionTap)。
+      return MePage(
+        activeReconstructionCaptureDir: _session?.captureDir,
+        activeReconstructionPipelineKind: CapturePipelineKind.official,
+        onActiveReconstructionTap: _showReconstructionProgress,
+        onActiveReconstructionDelete: _permanentlyDeleteActiveReconstruction,
+        onRecordActionActivityChanged: _setDraftRecordActionInProgress,
+        officialResumeRoute: pushOfficialResumeRoute,
+        officialViewerRoute: pushOfficialViewerRoute,
       );
     }
     return Scaffold(

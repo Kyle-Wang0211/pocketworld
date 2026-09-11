@@ -825,8 +825,12 @@ class _HomeScreenState extends State<HomeScreen> {
         // in Plan G W2, so the tab could only ever show an empty list.
         // PublishService is back and points to the sparse cloud the
         // capture route actually produces, so 社区 has content and earns
-        // its tab. MeRootPage stays in the tree — flipping this one line
-        // back is how we ship a community-less build if we ever need to.
+        // its tab.
+        //
+        // [2026-09-11 用户令]"直接删除这个 icon" —— MeRootPage 与它的壳
+        // DraftCaptureShell(右下角 "+" FAB)已**从仓库删除**。要再出一个
+        // 无社区的版本,得给 AetherAppShell 加一个"只剩我的"形态,不要把
+        // 那个 FAB 捡回来:现役的拍摄入口是底部导航栏中间那颗。
         const AetherAppShell(),
         Positioned.fill(
           child: AetherSplashOverlay(

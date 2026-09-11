@@ -4,29 +4,25 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test('every product capture entry opens the official route directly', () {
-    final rootPage = File('lib/ui/me_root_page.dart').readAsStringSync();
+    // [2026-09-11 用户令]"直接删除这个 icon" —— MeRootPage(以及它的壳
+    // DraftCaptureShell 那颗右下角 "+" FAB)已删除。现在拍摄入口只剩一个:
+    // AetherAppShell 底部导航栏中间那颗。
+    expect(File('lib/ui/me_root_page.dart').existsSync(), isFalse);
+    expect(File('lib/ui/draft_capture_shell.dart').existsSync(), isFalse);
+
     final appShell = File('lib/ui/app_shell.dart').readAsStringSync();
-
-    expect(
-      rootPage,
-      contains("import 'official_capture/ar_capture_page.dart';"),
-    );
-    expect(rootPage, isNot(contains("import 'capture/ar_capture_page.dart';")));
-    expect(rootPage, isNot(contains('capture_pipeline_chooser.dart')));
-    expect(rootPage, isNot(contains('CaptureRouteChoice')));
-    expect(rootPage, isNot(contains('CapturePipelineChooser')));
-    expect(
-      rootPage,
-      isNot(contains('showModalBottomSheet<CaptureRouteChoice>')),
-    );
-    expect(rootPage, contains('builder: (_) => const OfficialARCapturePage()'));
-
     expect(
       appShell,
       contains("import 'official_capture/ar_capture_page.dart';"),
     );
     expect(appShell, isNot(contains("import 'capture/ar_capture_page.dart';")));
-    expect(appShell, contains('builder: (_) => const OfficialARCapturePage()'));
+    expect(appShell, isNot(contains('capture_pipeline_chooser.dart')));
+    expect(appShell, isNot(contains('CaptureRouteChoice')));
+    expect(appShell, isNot(contains('CapturePipelineChooser')));
+    // 推入写法从 MaterialPageRoute 换成了 PageRouteBuilder(退出方向零转场,
+    // 见 reconstruction_terminal_no_route_transition_test)——**直接构造,
+    // 中间不经过任何选择器**这条契约不变。
+    expect(appShell, contains('const OfficialARCapturePage()'));
 
     expect(File('lib/ui/capture_pipeline_chooser.dart').existsSync(), isFalse);
   });

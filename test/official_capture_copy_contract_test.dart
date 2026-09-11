@@ -115,9 +115,11 @@ void main() {
       expect(page, contains('officialResumeRoute:'));
       expect(page, contains('officialViewerRoute:'));
 
-      final root = read('lib/ui/me_root_page.dart');
-      expect(root, contains('officialResumeRoute: _pushOfficialResumeRoute'));
-      expect(root, contains('officialViewerRoute: _pushOfficialViewerRoute'));
+      // MeRootPage 已于 2026-09-11 删除(见 single_official_capture_route),
+      // 它接的那两条线现在只由 app_shell 与采集 route 里的临时页接。
+      final appShell = read('lib/ui/app_shell.dart');
+      expect(appShell, contains('officialResumeRoute:'));
+      expect(appShell, contains('officialViewerRoute:'));
     },
   );
 

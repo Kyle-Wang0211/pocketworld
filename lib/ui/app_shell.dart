@@ -118,8 +118,34 @@ class _AetherAppShellState extends State<AetherAppShell> {
     // CapturePage returns `true` when the user tapped Stop and the
     // upload kicked off — that's our cue to flip the bottom nav to
     // Me so the freshly-created scan card is visible right away.
+    // [2026-09-11 用户令]"在最后一刻整个页面都会有一个滚动或者说刷新的动画"
+    // —— 那个动画就是**这条 route 的 pop 转场**(MaterialPageRoute 默认 300 ms
+    // 下滑)。重建期用户看到的作品页是采集 route 里嵌的临时 MePage,终态时
+    // route 自动 pop,落到长得几乎一样的真作品页,于是看起来像整屏刷新一遍。
+    //
+    // 修法是把**退出方向**的转场时长设为 0:进入相机仍然有正常转场,终态
+    // pop 是零帧 —— 底下露出来的就是真作品页,卡片当场已是"已完成"
+    // (badgeOf 只看 PLY 在不在盘上,PLY 在终态前就落了)。
+    //
+    // 🔴 不要改回"终态不 pop、页面钉在原地"(build 142 走过):那会把那张
+    // **临时**作品页变成常驻页,而它穿的是早已退役的 MeRootPage 那套壳。
     final shouldShowMe = await Navigator.of(context).push<bool>(
-      MaterialPageRoute<bool>(builder: (_) => const OfficialARCapturePage()),
+      PageRouteBuilder<bool>(
+        pageBuilder: (_, _, _) => const OfficialARCapturePage(),
+        transitionsBuilder: (_, animation, _, child) =>
+            SlideTransition(
+              position:
+                  Tween<Offset>(
+                    begin: const Offset(0, 1),
+                    end: Offset.zero,
+                  ).animate(
+                    CurvedAnimation(parent: animation, curve: Curves.easeOut),
+                  ),
+              child: child,
+            ),
+        transitionDuration: const Duration(milliseconds: 300),
+        reverseTransitionDuration: Duration.zero,
+      ),
     );
     if (!mounted) return;
     if (shouldShowMe == true) {
