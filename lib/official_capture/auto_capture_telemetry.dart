@@ -197,6 +197,11 @@ class AutoCaptureTelemetry {
     _startAnchorAttempted = 0;
     _startAnchorEnqueued = 0;
     _startAnchorFailed = 0;
+    _evidenceTicksTracks = 0;
+    _evidenceTicksMap = 0;
+    _mapTrackedLms.clear();
+    _mapReliableLms.clear();
+    _mapReliableLmsRef.clear();
     _fireMovedM.clear();
     _fireDistM.clear();
     _fireTurnDeg.clear();
@@ -285,6 +290,13 @@ class AutoCaptureTelemetry {
     double? depthScaleRatio,
     double? visualSimilarity,
     int? trackCommonCount,
+    // [2026-09-11] 判据吃的三个量是哪套口径来的:'tracks' = 现役 LK 轨迹,
+    // 'map' = 上游的地图路标口径。**上机之后唯一能验"真的切过去了"的东西**;
+    // 三个数一并记,便于事后核 view_changed / almost_all 的比值。
+    String? evidenceSource,
+    int? mapNumTrackedLms,
+    int? mapNumReliableLms,
+    int? mapNumReliableLmsRef,
     // [2026-09-10] 地点识别(RTAB-Map 词袋)的代价与结果。用户明确要"然后去做
     // 优化提速+降本" ⇒ **优化之前先有账**,否则又变成"感觉慢"。
     int? placeSignatureCount,
@@ -318,6 +330,16 @@ class AutoCaptureTelemetry {
     if (placeDescribeMicros != null) {
       _placeDescribeMicros.add(placeDescribeMicros);
       if (placeQueryMicros != null) _placeQueryMicros.add(placeQueryMicros);
+      if (evidenceSource == 'map') {
+        _evidenceTicksMap++;
+      } else if (evidenceSource != null) {
+        _evidenceTicksTracks++;
+      }
+      if (mapNumTrackedLms != null) _mapTrackedLms.add(mapNumTrackedLms);
+      if (mapNumReliableLms != null) _mapReliableLms.add(mapNumReliableLms);
+      if (mapNumReliableLmsRef != null) {
+        _mapReliableLmsRef.add(mapNumReliableLmsRef);
+      }
       if (placeSignatureCount != null) _placeSigsLast = placeSignatureCount;
       if (placeWordCount != null) _placeWordsLast = placeWordCount;
       if (placePosteriorPermille != null) {
@@ -566,6 +588,11 @@ class AutoCaptureTelemetry {
   final List<int> _placeDescribeMicros = <int>[];
   final List<int> _placeQueryMicros = <int>[];
   final List<int> _placeBestRatioPermille = <int>[];
+  int _evidenceTicksTracks = 0;
+  int _evidenceTicksMap = 0;
+  final List<int> _mapTrackedLms = <int>[];
+  final List<int> _mapReliableLms = <int>[];
+  final List<int> _mapReliableLmsRef = <int>[];
   int _placeSigsLast = 0;
   int _placeWordsLast = 0;
   final List<int> _placePosteriorPermille = <int>[];
@@ -603,6 +630,15 @@ class AutoCaptureTelemetry {
       // 值随排序走,由 auto_capture_recon_decoupling_contract_test 与 governor
       // 的实际排版对拍。
       'decision_gate_order': 'geometry_before_awaiting_capture',
+      // [2026-09-11] 地图口径接线的自证。tick 计数按口径分箱;三个量取各自
+      // 的中位数(每 tick 都在变,聚合期只留分布的中点)。
+      'evidence': <String, Object>{
+        'ticks_tracks': _evidenceTicksTracks,
+        'ticks_map': _evidenceTicksMap,
+        'map_tracked_lms_p50': _percentile(_mapTrackedLms, 0.5),
+        'map_reliable_lms_p50': _percentile(_mapReliableLms, 0.5),
+        'map_reliable_lms_ref_p50': _percentile(_mapReliableLmsRef, 0.5),
+      },
       // 地点识别:词典规模、每 tick 代价、命中的共享词比例(千分数)。
       // describe_us 是固定成本(GFTT+ORB),query_us 随词典规模涨 ——
       // 提速时先看哪一半更大。

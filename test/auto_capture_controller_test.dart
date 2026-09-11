@@ -12,6 +12,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/official_capture/auto_capture_controller.dart';
 import 'package:pocketworld_flutter/official_capture/auto_capture_geometry.dart';
 import 'package:pocketworld_flutter/official_capture/auto_capture_governor.dart';
+import 'package:pocketworld_flutter/official_capture/map_keyframe_evidence.dart';
 import 'package:pocketworld_flutter/official_capture/shutter_backpressure_gate.dart';
 import 'package:pocketworld_flutter/official_dome/ar_pose.dart';
 import 'package:vector_math/vector_math_64.dart';
@@ -146,7 +147,11 @@ class _Harness {
     thermalStateProvider: () => 0,
     liveDepthProvider: (pose) => liveDepthM,
     mapperAcceptingProvider: () => mapperAccepting,
+    mapEvidenceProvider: (pose) => mapEvidence,
   );
+
+  /// 地图口径读数;null = 取不到(退回 LK 口径)。测试里现喂。
+  StellaMapEvidence? mapEvidence;
 
   /// false = 模拟真机快门事务:照片要等页面回调 onCaptureCompleted 才算拍成。
   bool instantCapture = true;
@@ -172,6 +177,69 @@ _Harness _started() {
 }
 
 void main() {
+  // ─── 地图口径接线(2026-09-11 A 路)────────────────────────────────
+  // 判据本身一个字节没改;换的是喂给它的三个量。顺序照抄上游
+  // tracking_module.cc:145-148:先判跟踪成没成功,没成功就根本不问判据。
+  group('地图口径', () {
+    StellaMapEvidence ev(int tracked, int reliable, int ref) =>
+        StellaMapEvidence(
+          numTrackedLms: tracked,
+          numReliableLms: reliable,
+          numReliableLmsRef: ref,
+          minNumObsThr: 3,
+          localKeyframeCount: 4,
+          localLandmarkCount: 500,
+        );
+
+    test('没有地图口径时,用的还是 LK 轨迹口径(阳性对照:行为不变)', () {
+      final h = _started();
+      expect(h.controller.lastEvidenceSource, 'tracks');
+      expect(
+        h.feed(_pose(t: 0.2, pos: Vector3(8 / 128, 0, 0), grayShiftX: 8)),
+        AutoCaptureDecision.skipRedundant,
+      );
+      expect(h.controller.lastEvidenceSource, 'tracks');
+    });
+
+    test('🔴 跟踪没成功(<20)⇒ 判据不问地图口径,退回 LK', () {
+      final h = _started();
+      h.mapEvidence = ev(19, 1000, 1000);
+      h.feed(_pose(t: 0.2, pos: Vector3(8 / 128, 0, 0), grayShiftX: 8));
+      expect(h.controller.lastEvidenceSource, 'tracks');
+      expect(h.controller.lastMapEvidence, isNotNull, reason: '读数照样记,只是不采信');
+    });
+
+    test('跟踪成功(>=20)⇒ 三个量一起换成地图口径', () {
+      final h = _started();
+      h.mapEvidence = ev(400, 1000, 1000);
+      h.feed(_pose(t: 0.2, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40));
+      expect(h.controller.lastEvidenceSource, 'map');
+    });
+
+    test('🔴 地图口径说"还是同一批东西"就不拍 —— 哪怕 LK 说画面已经换了', () {
+      final h = _started();
+      // 40 px 在 LK 口径下 < 80%(会开火);地图口径给 0.95 > 0.9 ⇒ 冗余。
+      h.mapEvidence = ev(400, 950, 1000);
+      expect(
+        h.feed(_pose(t: 0.2, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40)),
+        AutoCaptureDecision.skipRedundant,
+      );
+      expect(h.controller.lastEvidenceSource, 'map');
+      expect(h.fires, 0);
+    });
+
+    test('🔴 地图口径说"视角换了"就拍 —— 哪怕 LK 说还是老样子', () {
+      final h = _started();
+      // 8 px 在 LK 口径下 > 90%(会报冗余);地图口径给 0.5 < 0.8 ⇒ 视角已变。
+      h.mapEvidence = ev(400, 500, 1000);
+      expect(
+        h.feed(_pose(t: 0.2, pos: Vector3(8 / 128, 0, 0), grayShiftX: 8)),
+        AutoCaptureDecision.fire,
+      );
+      expect(h.controller.lastEvidenceSource, 'map');
+    });
+  });
+
   test('a stopped controller never fires', () {
     final h = _Harness();
     for (var i = 0; i < 60; i++) {

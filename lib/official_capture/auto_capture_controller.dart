@@ -25,6 +25,7 @@ import '../official_quality/frame_quality_constants.dart';
 import '../official_quality/frame_signature_similarity.dart';
 import 'auto_capture_geometry.dart';
 import 'auto_capture_governor.dart';
+import 'map_keyframe_evidence.dart';
 import 'orb_descriptor.dart';
 import 'place_recognition_bayes.dart';
 import 'visual_word_dictionary.dart';
@@ -41,6 +42,7 @@ class AutoCaptureController {
     required int Function() capturedCountProvider,
     required int Function() thermalStateProvider,
     required double? Function(ARPose pose) liveDepthProvider,
+    StellaMapEvidence? Function(ARPose pose)? mapEvidenceProvider,
     // [2026-09-07 stella_vslam] mapper 是否空闲 / 是否接受新关键帧。
     bool Function()? mapperAcceptingProvider,
     PortableTrackHealth? Function(ARPose pose)? trackHealthProvider,
@@ -50,6 +52,7 @@ class AutoCaptureController {
        _capturedCountProvider = capturedCountProvider,
        _thermalStateProvider = thermalStateProvider,
        _liveDepthProvider = liveDepthProvider,
+       _mapEvidenceProvider = mapEvidenceProvider,
        _mapperAcceptingProvider = mapperAcceptingProvider ?? _alwaysTrue,
        _trackHealthProvider = trackHealthProvider;
 
@@ -75,6 +78,25 @@ class AutoCaptureController {
   /// 无锁定目标时用于播种一个稳定目标点的跨端 SfM 深度；有 worldOrigin 的
   /// 正常生产路径不调用。目标在本轮冻结，不用深度逐帧缩放触发阈值。
   final double? Function(ARPose pose) _liveDepthProvider;
+
+  /// 🔴 [2026-09-11] 上游判据吃的三个量的**地图口径**来源(见
+  /// map_keyframe_evidence.dart)。null 或取不到 ⇒ 退回现役的 LK 轨迹口径。
+  ///
+  /// 为什么要有退路:上游把关键帧插入判据挂在「局部地图跟踪成功」之后
+  /// (tracking_module.cc:148),而它的地图在跟踪开始前就由初始化阶段
+  /// (`tracking_state_ == Initializing` → `initialize()`,tracking_module.cc:135)
+  /// 建好了。我们没有那个初始化阶段:地图是一张一张照片喂出来的,开局
+  /// 若干张里 `num_tracked_lms` 达不到 20。那几张由现役的 LK 口径接管 ——
+  /// 与上游"初始化阶段由另一套机制负责"结构同源。
+  final StellaMapEvidence? Function(ARPose pose)? _mapEvidenceProvider;
+
+  /// 最近一次判定用的是哪套口径(只读,供遥测;不参与任何判断)。
+  String get lastEvidenceSource => _lastEvidenceSource;
+  String _lastEvidenceSource = 'tracks';
+
+  /// 最近一次取到的地图口径读数(只读,供遥测)。
+  StellaMapEvidence? get lastMapEvidence => _lastMapEvidence;
+  StellaMapEvidence? _lastMapEvidence;
   final bool Function() _mapperAcceptingProvider;
   static bool _alwaysTrue() => true;
   // stella_vslam:last_inserted_keyfrm 的时刻与世界位置(insert 时更新)。
@@ -650,6 +672,19 @@ class AutoCaptureController {
     // min_distance = 12% × 场景深度中位数(SVO 论文的式子;上游把这个数留给
     // 集成方)。没有活体点云深度时退回上游默认 -1 = 关闭。
     final sceneDepthM = _liveDepthProvider(pose);
+
+    // ── 地图口径取数(照抄上游 tracking_module.cc:145-148 的顺序)────────
+    // 先 track(拿三个量 + 判跟踪成没成功),**跟踪没成功就根本不问判据**。
+    // 我们把"不问判据"落成:退回现役 LK 口径 —— 见 [_mapEvidenceProvider]
+    // 的注释(上游那几帧归初始化阶段管,我们没有初始化阶段)。
+    final rawMapEvidence = _mapEvidenceProvider?.call(pose);
+    _lastMapEvidence = rawMapEvidence;
+    final mapEvidence =
+        (rawMapEvidence != null && rawMapEvidence.trackingSucceeded)
+        ? rawMapEvidence
+        : null;
+    _lastEvidenceSource = mapEvidence != null ? 'map' : 'tracks';
+
     final decision = stellaVslamNewKeyframeIsNeeded(
       trackingNormal: trackingOk,
       capturedCount: _capturedCountProvider(),
@@ -675,12 +710,17 @@ class AutoCaptureController {
       hasTrackEvidence: trackEvidence != null,
       // `num_tracked_lms` 是**当前帧自己**跟得稳不稳(喂 tracking 不稳闸),
       // 与参考是谁无关 ⇒ 仍取传播式读数,不动。
-      numTrackedLms: propagatedCommon,
-      // 这两路走 ref_keyfrm(见上面的 argmax 注释)。
-      numReliableLms: olderWins ? placeScan!.bestSharedWords : propagatedCommon,
-      numReliableLmsRef: olderWins
-          ? placeScan!.bestReferenceWords
-          : propagatedRef,
+      numTrackedLms: mapEvidence?.numTrackedLms ?? propagatedCommon,
+      // 🔴 [2026-09-11] 有地图口径时,三个量**一起**换 —— 混着用比值没有意义。
+      // 这时不再叠 olderWins 的词袋改写:上游选 ref 用的是**共视 argmax**,
+      // 而共视 argmax 我们现在在 map_local_map 里就有(nearest_covisibility,
+      // local_map_updater.cc:133-136),不需要那个替代品。
+      numReliableLms: mapEvidence != null
+          ? mapEvidence.numReliableLms
+          : (olderWins ? placeScan!.bestSharedWords : propagatedCommon),
+      numReliableLmsRef: mapEvidence != null
+          ? mapEvidence.numReliableLmsRef
+          : (olderWins ? placeScan!.bestReferenceWords : propagatedRef),
       sinceLastKeyframeSec: lastKfSec == null
           ? null
           : pose.timestamp - lastKfSec,

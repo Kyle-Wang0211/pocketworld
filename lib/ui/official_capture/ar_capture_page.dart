@@ -72,7 +72,10 @@ import '../../official_capture/telemetry_writer.dart';
 import '../../official_capture/transient_preview_cleanup.dart';
 import '../../official_capture/dome/dome_target_points.dart';
 import '../../official_capture/realtime_capture_preview.dart';
+import '../../official_capture/map_frame_alignment.dart';
+import '../../official_capture/map_keyframe_evidence.dart';
 import '../../official_capture/sfm_live_recon.dart';
+import '../../official_capture/sfm_resume.dart' as sfm_resume;
 import '../../official_dome/ar_pose.dart';
 import '../../l10n/app_localizations.dart';
 import '../../me/scan_record_store.dart';
@@ -211,6 +214,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // 只给无锁定目标的极端冷启动兜底使用；纯 SfM、四端同口径，不再把
     // iOS centerRayDepthM/raycast 接进自动选帧。
     liveDepthProvider: _liveCloudMedianDepthFor,
+    mapEvidenceProvider: _mapEvidenceFor,
     // [2026-09-07 stella_vslam] mapper_is_skipping_localBA = 工作线程还有帧
     // 排队/在途;is_paused/pause_is_requested = 快门队列不接受。
     mapperAcceptingProvider: () => _shutterQueue.accepting,
@@ -229,6 +233,70 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   double _liveSfmDepthMemoAtSec = -1e9;
 
   /// 第一级:活体 SfM 云的中位深度。快照没到 / 点太少时返回 null。
+  /// 上游判据三个量的地图口径来源(map_keyframe_evidence.dart)。
+  /// 只在拍摄期流式快照上更新,见那处的同一道闸。
+  final MapKeyframeEvidenceSource _mapEvidenceSource =
+      MapKeyframeEvidenceSource();
+
+  /// 每 tick 取一次数。取不到就返回 null —— 控制器据此退回现役 LK 口径。
+  ///
+  /// 参考帧 = **最后一张喂进重建的照片**(上游的 last_inserted_keyfrm /
+  /// ref_keyfrm 在我们这里就是它)。内参与画幅取那张照片的 —— 判据问的是
+  /// 「从现在这个位置拍一张,能看到几个路标」,所以用照片的成像参数才对口径;
+  /// 预览分辨率不参与(用户 2026-09-11:"预览的像素不重要")。
+  StellaMapEvidence? _mapEvidenceFor(ARPose pose) {
+    if (!_mapEvidenceSource.hasSnapshot) return null;
+    final recon = _sfmRecon;
+    if (recon == null) return null;
+    int? refId;
+    SfmFedFrameMeta? refMeta;
+    recon.fedFrameMeta.forEach((id, meta) {
+      if (refId == null || id > refId!) {
+        refId = id;
+        refMeta = meta;
+      }
+    });
+    final id = refId;
+    final meta = refMeta;
+    if (id == null || meta == null) return null;
+    final q = meta.arkitQuatWxyz;
+    final t = meta.arkitTransTxyz;
+    if (q == null || q.length < 4 || t == null || t.length < 3) return null;
+    // 当前预览帧的 ARKit 位姿 → CamFromWorld(与上游同约定)。
+    // pose.orientation 是 world-from-camera,pose.position 是相机中心。
+    final rotWc = rotationFromQuatWxyz(
+      pose.orientation.w,
+      pose.orientation.x,
+      pose.orientation.y,
+      pose.orientation.z,
+    );
+    final rotCw = <double>[
+      rotWc[0], rotWc[3], rotWc[6],
+      rotWc[1], rotWc[4], rotWc[7],
+      rotWc[2], rotWc[5], rotWc[8],
+    ];
+    final p = pose.position;
+    final transCw = <double>[
+      -(rotCw[0] * p.x + rotCw[1] * p.y + rotCw[2] * p.z),
+      -(rotCw[3] * p.x + rotCw[4] * p.y + rotCw[5] * p.z),
+      -(rotCw[6] * p.x + rotCw[7] * p.y + rotCw[8] * p.z),
+    ];
+    return _mapEvidenceSource.evidenceFor(
+      refFrameId: id,
+      arkitRefPose: CamFromWorldPose(
+        rotCw: rotationFromQuatWxyz(q[0], q[1], q[2], q[3]),
+        transCw: <double>[t[0], t[1], t[2]],
+      ),
+      arkitCurrentPose: CamFromWorldPose(rotCw: rotCw, transCw: transCw),
+      fx: meta.fx,
+      fy: meta.fy,
+      cx: meta.cx,
+      cy: meta.cy,
+      imageWidth: meta.imageW.toDouble(),
+      imageHeight: meta.imageH.toDouble(),
+    );
+  }
+
   double? _liveCloudMedianDepthFor(ARPose pose) {
     final xyz = _liveCloudXyz;
     if (xyz == null) return null;
@@ -1768,6 +1836,27 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         _markSfmStartFailure('拍摄目录不可用');
         return;
       }
+      // [2026-09-11 补拍撞名] 补拍复用同一个 captureDir,而新会话的帧号是
+      // **每会话从 0 重数**的(`official_aether_sfm_c.cc:9266`
+      // `frame_id = s->frames.size()`),写进 db 的名字 `frame_%06d.jpg` 会撞上
+      // `images.name` 的 UNIQUE 约束。核自己的注释(同文件 9278 行)写着这种
+      // 撞名"bricks the whole live capture" —— 不是废一帧,是这一场之后**每一帧**
+      // 都废。所以补拍开场先把旧 db 整组改名挪开(**绝不删**),让这一场在一个
+      // 干净的库上跑。
+      //
+      // 挪走的那份不是损失:这一场结束时走的是**整项目全量重喂**
+      // (见 _finishRecording 的补拍分支),重建只认 photos_highres 里的照片,
+      // 不认旧 db。旧 db 留在盘上带 `.dead-<ts>` 后缀,随时可查。
+      if (widget.extendCaptureDir != null) {
+        final moved = await sfm_resume.sidelineDatabaseForFreshSession(
+          captureDir,
+        );
+        DeviceLog.log(
+          'OfficialARCapturePage',
+          'extend: sidelined old db before fresh session → '
+              '${moved.isEmpty ? "(nothing to move)" : moved.join(",")}',
+        );
+      }
       final recon = await SfmLiveRecon.start(
         dbPath: '$captureDir/official_sfm_live.db',
       );
@@ -2103,6 +2192,16 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         // 坐标系已不同,且那时自动拍早已结束。
         if (snapshot.gravityAlignQuatWxyz == null && snapshot.xyz.isNotEmpty) {
           _liveCloudXyz = snapshot.xyz;
+          // [2026-09-11] 上游判据的地图口径数据源。**与上面同一道闸**:只吃
+          // 未做重力旋转的拍摄期流式快照 —— 那时重建世界与 ARKit 同系
+          // (这一条是上面那段注释里早就立好的纪律,这里照用,不另立)。
+          // 每快照重建一次派生表,**不是每 tick**。
+          _mapEvidenceSource.updateFromSnapshot(
+            xyz: snapshot.xyz,
+            obsOffsets: snapshot.obsOffsets,
+            obsFrameIds: snapshot.obsFrameIds,
+            posesPacked: snapshot.posesPacked,
+          );
         }
         // 修1:finalize 快照到达 → 阶段 3(提取色彩)。拍摄期的流式
         // preview(_sfmPhase == null)不进阶段流。
@@ -3072,6 +3171,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
             ? null
             : (_autoCapture.lastLoopHypothesis!.bestPosterior * 1000).round(),
         placeLoopClosure: _autoCapture.lastLoopHypothesis?.isLoopClosure,
+              evidenceSource: _autoCapture?.lastEvidenceSource,
+        mapNumTrackedLms: _autoCapture?.lastMapEvidence?.numTrackedLms,
+        mapNumReliableLms: _autoCapture?.lastMapEvidence?.numReliableLms,
+        mapNumReliableLmsRef: _autoCapture?.lastMapEvidence?.numReliableLmsRef,
       );
       // 开火成因(VINS-Fusion 新旧比 vs AliceVision 流量段):一枪一账,
       // 只在成功开火后 controller 才留快照,读一次即清。
@@ -3751,12 +3854,67 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // page exit straight to Drafts and hide the queue/final result.
       final sfmPreviewing = recon != null && recon.offeredCount >= 2;
       final captureDirForSfm = session.captureDir;
+      // [2026-09-11 用户裁决] 补拍**不交付这一场自己的云**。
+      //
+      // 定罪(未命名(8),26 张里 20 张颗粒无收):补拍只把老照片 adopt 进相册
+      // (_adoptExistingProjectPhotos 只动 _projectPhotos),一帧都没喂给重建;
+      // 而拍摄结束的 finalize 走的是 phase1=live_reuse —— 吃的是**本会话内存里**
+      // 那个重建,里面只有新拍的几张。于是 n_registered=6、4538 点,而第一次拍摄
+      // 当时屏幕上是 12808 点 / 14 帧。
+      //
+      // 改法:补拍结束后对**整个项目**全量重喂(rebuildFromArchivedPhotos),
+      // 老照片 + 新照片一起进同一次重建 —— 这也正是 RealityScan 的做法
+      // (新照片进同一个工程,整体按图像重新对齐),不是自创。
+      //
+      // 代价说清楚:新照片的特征会被提取两次(直播一次、重喂一次)。没有省掉
+      // 它的干净办法 —— 直播会话的帧号从 0 重数,和老照片在同一个 db 里必然
+      // 撞 `images.name`(所以开场才要 sideline)。正确性优先于这一次提取。
+      final extendingProject =
+          widget.extendCaptureDir != null && captureDirForSfm != null;
       DeviceLog.log(
         'OfficialARCapturePage',
         'finish: sfm fed=${recon?.fedCount ?? -1} '
             'remaining=${recon?.remainingCount ?? -1} preview=$sfmPreviewing',
       );
-      if (sfmPreviewing) {
+      if (extendingProject) {
+        // 🔴 这一条必须在 sfmPreviewing 之外:开场已经把旧 db 挪开了,
+        // 这一场哪怕只拍了 1 张(够不到 offeredCount>=2 的预览门槛),也必须
+        // 重喂 —— 否则项目被留在"旧 db 已挪走、新 db 只有 1 帧、PLY 还是旧的"
+        // 这个比原来更差的状态上。
+        await _sfmFeedSub?.cancel();
+        _sfmFeedSub = null;
+        _sfmRecon = null;
+        await _sfmEventSub?.cancel();
+        _sfmEventSub = null;
+        if (recon != null) await recon.dispose();
+        if (mounted) {
+          setState(() {
+            _sfmPhase = null;
+            _sfmFinalizeStage = 0;
+            _showDraftsWhileReconstructing = false;
+          });
+        }
+        _stopSfmStageTicker();
+        // rebuildFromArchivedPhotos 自己带在飞表 + umbrella + lease,所以
+        // 这里**不要**再 _beginReconUmbrella,否则伞会开两层。
+        // 草稿卡的"生成中"徽章靠 isResumeInFlightForDirName 认这条腿,
+        // 用户回作品页就能看到它在跑,点进去还能回到等待页。
+        DeviceLog.log(
+          'OfficialARCapturePage',
+          'extend finish: 不交付本场 live_reuse 云,改为整项目全量重喂 '
+              '($captureDirForSfm, 本场喂了 ${recon?.fedCount ?? 0} 张)',
+        );
+        unawaited(
+          sfm_resume.rebuildFromArchivedPhotos(captureDirForSfm).then((r) {
+            DeviceLog.log(
+              'OfficialARCapturePage',
+              'extend rebuild done: ok=${r.ok} fed=${r.fed}/${r.accepted} '
+                  'found=${r.photosFound} rejected=${r.rejections.length}'
+                  '${r.failure == null ? "" : " failure=${r.failure}"}',
+            );
+          }),
+        );
+      } else if (sfmPreviewing) {
         await _sfmFeedSub?.cancel();
         _sfmFeedSub = null;
         if (mounted) {
