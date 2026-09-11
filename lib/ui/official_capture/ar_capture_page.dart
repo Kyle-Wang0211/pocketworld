@@ -2021,6 +2021,18 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // ⇒ _gravityAlign 恒 no-op ⇒ quat 为 null),守卫条件与下方同款。
       if (snapshot.gravityAlignQuatWxyz == null && snapshot.xyz.isNotEmpty) {
         _liveCloudXyz = snapshot.xyz;
+        // 🔴 [2026-09-11] 上游判据的地图口径数据源,**必须和 _liveCloudXyz
+        // 贴在一起**。上面那段注释早就写明:拍摄期的流式快照只走这条早退
+        // 分支,下方 colorize switch 里的同款钩子在拍摄期根本执行不到。
+        // build 150 我只加在了下面那个够不到的分支里 ⇒ 整场
+        // `evidence.ticks_map = 0`,地图口径一次都没接上(未命名(11) 实测)。
+        // 与 _liveCloudXyz 同一道闸、同一处赋值,就不会再走散。
+        _mapEvidenceSource.updateFromSnapshot(
+          xyz: snapshot.xyz,
+          obsOffsets: snapshot.obsOffsets,
+          obsFrameIds: snapshot.obsFrameIds,
+          posesPacked: snapshot.posesPacked,
+        );
       }
       unawaited(_publishOfficialSfmCloudToAr(snapshot, receiveTag));
       return;
