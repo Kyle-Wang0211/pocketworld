@@ -124,6 +124,14 @@ void main() {
       'lib/ui/official_capture/ar_capture_page.dart',
     ).readAsStringSync();
 
+    // [2026-09-11] 本 route 现在有**两个**震动事件,各自一个具名 helper:
+    //   · _triggerShutterHaptic    —— 平台说"已经拍下"那一刻
+    //   · _triggerCompletionHaptic —— 重建到终态那一刻(用户 09-10 令)
+    // 本条契约要挡的从来不是"只许震一种事",而是**手动/自动两条快门路径各喊
+    // 一次**。所以判据从"全文只许出现 1 次 heavyImpact"收紧成"每个具名
+    // helper 里恰好 1 次、全文恰好 2 次、两条快门路径自己一次都不喊"。
+    final completionStart = source.indexOf('void _triggerCompletionHaptic()');
+    expect(completionStart, greaterThanOrEqualTo(0));
     final helperStart = source.indexOf('void _triggerShutterHaptic()');
     final autoStart = source.indexOf('bool _onAutoCaptureStartAnchor()');
     final manualStart = source.indexOf('void _onShutterTap()');
@@ -135,13 +143,32 @@ void main() {
     expect(manualStart, greaterThan(autoStart));
     expect(admissionStart, greaterThan(manualStart));
 
+    expect(
+      helperStart,
+      greaterThan(completionStart),
+      reason: '两个 helper 相邻,顺序变了下面的切片就切错了',
+    );
+    final completionHelper = source.substring(completionStart, helperStart);
     final helper = source.substring(helperStart, autoStart);
     final autoOuter = source.substring(autoStart, manualStart);
     final manualOuter = source.substring(manualStart, admissionStart);
     expect(helper, contains('HapticFeedback.heavyImpact()'));
     expect(helper, contains('.catchError('));
     expect(helper, contains('DeviceLog.log('));
-    expect('HapticFeedback.heavyImpact()'.allMatches(source), hasLength(1));
+    expect(
+      'HapticFeedback.heavyImpact()'.allMatches(completionHelper),
+      hasLength(1),
+      reason: '完成震动也必须收在自己的 helper 里,与快门同一种强度',
+    );
+    expect(
+      'HapticFeedback.heavyImpact()'.allMatches(helper),
+      hasLength(1),
+    );
+    expect(
+      'HapticFeedback.heavyImpact()'.allMatches(source),
+      hasLength(2),
+      reason: '只许这两个 helper 各一次 —— 多出来的就是散落的临时调用',
+    );
     expect(source, isNot(contains('HapticFeedback.mediumImpact()')));
     expect(autoOuter, isNot(contains('HapticFeedback.')));
     expect(manualOuter, isNot(contains('HapticFeedback.')));
