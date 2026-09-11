@@ -133,6 +133,41 @@ void main() {
     });
   });
 
+  group('局部地图跟踪成功门(tracking_module.cc:483-497 + :148)', () {
+    test('常数就是上游的 20', () {
+      expect(kStellaNumTrackedLmsThr, 20);
+    });
+
+    test('不足 20 => 跟踪失败 => 判据根本不该被调用', () {
+      expect(stellaLocalMapTrackingSucceeded(numTrackedLms: 19), isFalse);
+      expect(stellaLocalMapTrackingSucceeded(numTrackedLms: 20), isTrue);
+    });
+
+    test('刚重定位过时门槛翻倍(tracking_module.cc:486)', () {
+      expect(
+        stellaLocalMapTrackingSucceeded(
+          numTrackedLms: 39,
+          recentlyRelocalized: true,
+        ),
+        isFalse,
+      );
+      expect(
+        stellaLocalMapTrackingSucceeded(
+          numTrackedLms: 40,
+          recentlyRelocalized: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('🔴 开局那两张:地图太小,这道门必须把判据挡在外面', () {
+      // 未命名(10) 实测:第2张 P=93/O=186,第3张 P=1208/O=2493。
+      // 可观测的路标数在那一刻远不到 20 —— 门关上,不连拍。
+      expect(stellaLocalMapTrackingSucceeded(numTrackedLms: 0), isFalse);
+      expect(stellaLocalMapTrackingSucceeded(numTrackedLms: 12), isFalse);
+    });
+  });
+
   test('解耦纪律:数数的模块不许 import 判定方,也不许碰 Flutter', () {
     final src = File(
       'lib/official_capture/map_landmark_counts.dart',

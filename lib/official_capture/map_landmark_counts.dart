@@ -85,3 +85,44 @@ int stellaMinNumObsThr(int numKeyframes) => 3 <= numKeyframes ? 3 : 2;
   }
   return (tracked: tracked, reliable: reliable);
 }
+
+/// 上游 `tracking_module.cc:483`:
+/// ```cpp
+/// constexpr unsigned int num_tracked_lms_thr = 20;
+/// ```
+const int kStellaNumTrackedLmsThr = 20;
+
+/// 局部地图跟踪算不算成功(`tracking_module.cc:483-497`)。
+///
+/// 🔴 这是判据的**前置门**,不是判据的一部分:上游在
+/// `tracking_module.cc:148` 写的是
+/// ```cpp
+/// if (succeeded && !is_stopped_keyframe_insertion_ && new_keyframe_is_needed(...))
+/// ```
+/// —— 跟踪没成功时,`new_keyframe_is_needed` **根本不会被调用**。
+///
+/// 为什么必须一起搬过来(2026-09-11 离线复算):把 num_reliable_lms 换成地图
+/// 口径之后,开局地图太小会让 `not_enough_lms`(< 100)恒为真。用未命名(10)
+/// 的真实数据算上界(每个点至少 2 次观测,故 #(obs>=3) <= O - 2P):
+///   第2张 P=93   O=186   ⇒ 上界 0    ⇒ not_enough_lms 必然为真
+///   第3张 P=1208 O=2493  ⇒ 上界 77   ⇒ 仍然必然为真
+///   第4张起上界才过 100。
+/// 而 `not_enough_lms` 在上游是**触发项**(与 view_changed 并列在第一个析取
+/// 里),再叠上「关键帧 <= 5 时 min_interval / min_distance 被豁免」
+/// (keyframe_inserter.cc:124 的 `!enough_keyfrms ||`),第 2–6 张就会按 tick
+/// 连拍 —— 正是 09-06 那一类事故。
+///
+/// 上游不会这样,是因为它有这道前置门:地图小的时候 `num_tracked_lms` 不够,
+/// 跟踪直接判失败,判据压根不参与。所以这道门**不是可选项**。
+///
+/// [recentlyRelocalized] 对应上游 `curr_frm_.timestamp_ <
+/// last_reloc_frm_timestamp_ + 1.0`,此时门槛翻倍(tracking_module.cc:486)。
+bool stellaLocalMapTrackingSucceeded({
+  required int numTrackedLms,
+  bool recentlyRelocalized = false,
+}) {
+  if (recentlyRelocalized && numTrackedLms < 2 * kStellaNumTrackedLmsThr) {
+    return false;
+  }
+  return numTrackedLms >= kStellaNumTrackedLmsThr;
+}
