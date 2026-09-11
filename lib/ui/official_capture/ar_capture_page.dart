@@ -3234,11 +3234,21 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     if (_failedEvidenceJpegPaths.contains(evidenceJpegPath)) return;
     if (!_feedbackFiredEvidencePaths.add(evidenceJpegPath)) return;
     _triggerShutterHaptic();
+    // [2026-09-11 用户令]「在 native addPhotoCard 真正把相框挂进场景的那一刻
+    // 补一条埋点」。这里把**震动这一刻**的墙钟交给 native,让它在卡片节点
+    // 进场景那一行相减 —— 用户在意的就是这一段(震了→相框出现),而此前
+    // 唯一能拿来估它的 `card` 埋点记的是相框**变色**,不是相框出现。
+    // 🔴 墙钟(millisecondsSinceEpoch),native 侧用 Date() 同域相减;
+    // 不能用 CACurrentMediaTime 那种 mach 单调钟(08-30 时钟域定罪)。
+    // 取值在震动之后、通道调用之前,中间没有 await —— 「震动与相框之间
+    // 不得有 await」那条底线不变。
+    final feedbackEpochMs = DateTime.now().millisecondsSinceEpoch;
     unawaited(
       _arKitChannel
           .invokeMethod<void>('addPhotoCard', <String, dynamic>{
             'textureJpegPath': previewJpegPath,
             'evidenceJpegPath': evidenceJpegPath,
+            'shutterFeedbackEpochMs': feedbackEpochMs,
           })
           .catchError((Object e) {
             // ignore: avoid_print

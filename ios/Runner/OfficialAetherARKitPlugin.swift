@@ -457,6 +457,14 @@ class OfficialAetherARKitPlugin: NSObject {
     let textureCGImage: CGImage?
     let texturePath: String
     let evidencePath: String
+    /// Dart 发出**震动**那一刻的墙钟毫秒(`DateTime.now().millisecondsSinceEpoch`)。
+    /// 用来量用户真正在意的那一段:「震了 → 相框出现在画面里」。
+    /// 🔴 必须是墙钟,不能用 `CACurrentMediaTime()` —— 那是 mach 单调钟,
+    /// 与 Dart 侧不同域,相减出来的数没有意义(08-30 时钟域定罪)。
+    /// 收不到(老版本 Dart / 手动路径)就是 nil,埋点里那一项缺省。
+    let shutterFeedbackEpochMs: Double?
+    /// native 收到 `addPhotoCard` 那一刻的墙钟毫秒。与上一项相减 = 通道跳。
+    let addCalledEpochMs: Double
     let localCorners: [SCNVector3]  // 4 quad corners [TL,TR,BR,BL] in anchor-local space
     let captureDistance: Float      // camera→card distance at capture
     let worldCentroid: simd_float3  // anchor world position AT PLACEMENT (drift baseline)
@@ -1302,6 +1310,9 @@ class OfficialAetherARKitPlugin: NSObject {
         PhotoCardSpec(textureCGImage: cardThumb,
                       texturePath: texturePath,
                       evidencePath: evidencePath,
+                      shutterFeedbackEpochMs:
+                        (args["shutterFeedbackEpochMs"] as? NSNumber)?.doubleValue,
+                      addCalledEpochMs: Date().timeIntervalSince1970 * 1000.0,
                       localCorners: localCorners,
                       captureDistance: z, worldCentroid: centroid, captureCamPos: camPos)
       var anchorT = matrix_identity_float4x4
@@ -4512,6 +4523,46 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
   ///   · 文件解码(退路,拿不到内存贴图时走既有的 150ms×30 重试)
   /// 抽出来是为了让「贴图从哪来」与「卡片怎么建」彻底分开 ——
   /// 以后再换贴图来源,不必再动建卡片这段几何/材质代码。
+  /// 已经报过 `photocard_visible` 的 (卡片名|形态),防止重试路径重复记账。
+  private var photoCardVisibleLogged: Set<String> = []
+
+  /// 🔴 [2026-09-11 用户令]「在 native addPhotoCard 真正把相框挂进场景的那一刻
+  /// 补一条埋点」。
+  ///
+  /// 为什么非补不可:此前唯一能拿来估「震动→相框」的是 Dart 侧的 `card` 埋点,
+  /// 而它记的是相框**变色**(黑=处理中→白=已注册),不是相框**出现**。用户
+  /// 09-11 报「有两次震动了但没拍照」时,我只能证明照片没丢(36 震动 = 36 照片
+  /// = 36 帧入重建),却**证伪不了**"相框迟迟不出现"这半 —— 因为没有探针。
+  ///
+  /// 这条埋点打在 `node.addChildNode(container)` 的下一行,也就是卡片节点真正
+  /// 进入场景图那一刻,两种形态各记一次:
+  ///   · `shell` —— 只有黑边框/背板(贴图还没解出来时先立起来的那个)
+  ///   · `photo` —— 带照片面的完整卡片
+  /// 正常主路(内存贴图)只会出现 `photo`;出现 `shell` 就说明走了文件解码退路,
+  /// 那时 `shell→photo` 的间隔正是「相框是空的」那段。
+  private func logPhotoCardVisible(
+    name: String,
+    spec: OfficialAetherARKitPlugin.PhotoCardSpec,
+    kind: String
+  ) {
+    let key = "\(name)|\(kind)"
+    guard !photoCardVisibleLogged.contains(key) else { return }
+    photoCardVisibleLogged.insert(key)
+    let nowMs = Date().timeIntervalSince1970 * 1000.0
+    var fields: [String: Any] = [
+      "name": name,
+      "kind": kind,
+      "evidence": (spec.evidencePath as NSString).lastPathComponent,
+      // native 收到调用 → 卡片进场景。通道跳不在内。
+      "since_add_call_ms": Int((nowMs - spec.addCalledEpochMs).rounded()),
+    ]
+    if let fb = spec.shutterFeedbackEpochMs {
+      // 用户真正感觉到的那一段:震动那一刻 → 相框出现。含通道跳。
+      fields["since_feedback_ms"] = Int((nowMs - fb).rounded())
+    }
+    OfficialPwNativeTelemetry.shared.log("photocard_visible", fields)
+  }
+
   private func buildPhotoCard(
     image: CGImage,
     spec: OfficialAetherARKitPlugin.PhotoCardSpec,
@@ -4618,6 +4669,7 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
     container.addChildNode(SCNNode(geometry: geometry))   // photo on the front
     node.addChildNode(container)
     photoCardNodes[name] = container
+    logPhotoCardVisible(name: name, spec: spec, kind: "photo")
     // 四态边框:登记环+背板材质,并立刻套用 Dart 已推过的状态(卡片
     // 节点可能晚于状态到达 —— didAdd 是异步回调)。
     photoCardStateMats[name] = [frameMat, backMat]
@@ -4702,6 +4754,11 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
     node.addChildNode(container)
     photoCardNodes[name] = container
     photoCardFrontFill[name] = fillNode
+    // 黑相框这一刻就进场景了(照片面还没换上)。spec 按名字回查 —— 本函数
+    // 有两个调用点,只有一个手上有 spec,回查让两条路都记得上账。
+    if let spec = OfficialAetherARKitPlugin.photoCardSpecs[name] {
+      logPhotoCardVisible(name: name, spec: spec, kind: "shell")
+    }
     photoCardStateMats[name] = [frameMat, backMat]
     let initialState = OfficialAetherARKitPlugin.photoCardState(
       forPath: evidencePath
