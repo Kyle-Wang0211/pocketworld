@@ -18,6 +18,8 @@
 
 import 'dart:typed_data';
 
+import 'package:meta/meta.dart';
+
 import 'package:vector_math/vector_math_64.dart';
 
 import '../official_dome/ar_pose.dart';
@@ -91,6 +93,11 @@ class AutoCaptureController {
   Vector3? _activeTarget;
   Uint8List? _capturedSignature;
   Uint8List? _capturedGray128;
+  /// 自上一张照片以来,因为跟踪断点而**已经掉掉**的参考比例(连乘结转)。
+  /// 1.0 = 从上一张照片起一次都没断过。每拍成一张照片清回 1.0
+  /// (见 [_commitTrackSource] / [onCaptureCompleted])。
+  double _refRatioCarry = 1.0;
+
   double? _capturedGrayFocalX;
   double? _capturedGrayFocalY;
   double? _capturedGraySourceTimestamp;
@@ -255,6 +262,10 @@ class AutoCaptureController {
   double? get lastVisualSimilarity => _lastVisualSimilarity;
   double? _lastVisualSimilarity;
   FrameTrackEvidence? get lastTrackEvidence => _lastTrackEvidence;
+
+  /// 测试用:自上一张照片以来因跟踪断点结转下来的参考比例(1.0 = 没断过)。
+  @visibleForTesting
+  double get referenceRatioCarry => _refRatioCarry;
   FrameTrackEvidence? _lastTrackEvidence;
   double? get lastVisualSourceAgeSec => _lastVisualSourceAgeSec;
   double? _lastVisualSourceAgeSec;
@@ -295,6 +306,8 @@ class AutoCaptureController {
     _activeTarget = null;
     _capturedSignature = null;
     _capturedGray128 = null;
+    // 跨轮不携带陈旧的结转比例(start/stop 两条路都清)。
+    _refRatioCarry = 1.0;
     _capturedGrayFocalX = null;
     _capturedGrayFocalY = null;
     _capturedGraySourceTimestamp = null;
@@ -356,6 +369,7 @@ class AutoCaptureController {
       }
     }
     if (grayBest != null && grayDt <= _kCaptureMatchToleranceSec) {
+      _refRatioCarry = 1.0;
       _capturedGray128 = Uint8List.fromList(grayBest.gray128!);
       _capturedGrayFocalX = grayBest.focalX;
       _capturedGrayFocalY = grayBest.focalY;
@@ -426,6 +440,8 @@ class AutoCaptureController {
     _activeTarget = null;
     _capturedSignature = null;
     _capturedGray128 = null;
+    // 跨轮不携带陈旧的结转比例(start/stop 两条路都清)。
+    _refRatioCarry = 1.0;
     _capturedGrayFocalX = null;
     _capturedGrayFocalY = null;
     _capturedGraySourceTimestamp = null;
@@ -544,7 +560,22 @@ class AutoCaptureController {
       // VINS uses track loss to manage its estimator window. A camera shutter
       // cannot treat missing correspondences as new content, so reseed the
       // preview tracker and keep waiting for comparable accumulated flow.
+      //
+      // 🔴 [2026-09-11] 但**重新种参考不等于换一个参考**。
+      // 上游 stella 的 view_changed / almost_all_lms_are_tracked 问的是
+      // 「`ref_keyfrm`(上一张照片)的内容还剩多少看得见」。这一行把跟踪器
+      // 的参考从"上一张照片"换成了"半路上的某一帧预览",比值当场回到 1.0
+      // —— 于是判据问的变成了「**半路那一帧**还剩多少看得见」,上一张照片
+      // 已经掉掉的那部分被抹掉了。每发生一次,下一张就被往后推一次,而且
+      // **没有任何计数器记着它**(所以在遥测里完全看不见)。
+      // 修法:参考照旧重新种(LK 需要它才能继续跟),但把断点前**已经掉掉
+      // 的比例**结转下来,交给判据的比值仍然是「相对上一张照片」的。
+      // 结转是比例的连乘,不是新阈值 —— 没有引入任何自定常数。
       if (!trackEvidence.comparable && currentGray != null) {
+        final seg = trackEvidence.seedTrackCount == 0
+            ? 1.0
+            : trackEvidence.commonTrackCount / trackEvidence.seedTrackCount;
+        _refRatioCarry *= seg.clamp(0.0, 1.0);
         _continuousTracks.setReference(
           gray: currentGray,
           width: 128,
@@ -639,9 +670,12 @@ class AutoCaptureController {
     }
     final propagatedCommon = trackEvidence?.commonTrackCount ?? 0;
     final propagatedRef = trackEvidence?.seedTrackCount ?? 0;
+    // 「相对**上一张照片**还剩多少」= 本段比例 × 断点前结转的比例。
+    // 没断过时 _refRatioCarry == 1.0,与旧行为逐字节相同。
+    final propagatedCommonVsPhoto = (propagatedCommon * _refRatioCarry).round();
     final propagatedRatio = propagatedRef == 0
         ? 0.0
-        : propagatedCommon / propagatedRef;
+        : propagatedCommonVsPhoto / propagatedRef;
     // 老照片只有在**比例更高**时才夺走参考权。
     final olderWins =
         placeScan != null &&
@@ -677,7 +711,9 @@ class AutoCaptureController {
       // 与参考是谁无关 ⇒ 仍取传播式读数,不动。
       numTrackedLms: propagatedCommon,
       // 这两路走 ref_keyfrm(见上面的 argmax 注释)。
-      numReliableLms: olderWins ? placeScan!.bestSharedWords : propagatedCommon,
+      numReliableLms: olderWins
+          ? placeScan!.bestSharedWords
+          : propagatedCommonVsPhoto,
       numReliableLmsRef: olderWins
           ? placeScan!.bestReferenceWords
           : propagatedRef,
@@ -902,6 +938,7 @@ class AutoCaptureController {
         _placeDictionary.addNewWords(descriptors, _placeSignatureSeq);
       }
     }
+    _refRatioCarry = 1.0;
     _capturedGray128 = Uint8List.fromList(gray);
     _capturedGrayFocalX = focalX;
     _capturedGrayFocalY = focalY;

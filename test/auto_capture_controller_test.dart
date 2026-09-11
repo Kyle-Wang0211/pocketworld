@@ -172,6 +172,46 @@ _Harness _started() {
 }
 
 void main() {
+  // ─── 跟踪断点不许把「相对上一张照片」的比值抹成 1.0 ─────────────────
+  //
+  // 🔴 2026-09-11 定量:用户报"第一张之后第二张要移动半天"。三场三次复现
+  // (第2张间隔是之后中位的 2.2–3.7×)。拿盘上已有的数据(交付点云 +
+  // official_sfm_live.db.arkit_pose_v1 逐张位姿)按**场景深度归一化**后:
+  //   第1→2 张:位移 0.555 m / 深度 0.85 m = 0.655
+  //   第3 张起:位移/深度 中位 0.161  ⇒ 第一段要走 **4.1×** 的路。
+  // 深度不是原因(第1张反而是全场最近的一张);开火角色全场都是
+  // keyframeInserter;头 4.5 s 的 300 次决策里 minDistance/pace/blur/tracking
+  // **全 0**,拦路的是 skipRedundant(有证据的 29 个 tick 里 28 个)。
+  //
+  // 0.555 m / 0.85 m = 65% 基线下 LK 还能保住九成轨迹,只有一种解释:
+  // **参考被中途重新种过**,比值每次回到 1.0。那一行是
+  // 「!trackEvidence.comparable ⇒ setReference(currentGray)」——它为了让 LK
+  // 继续跟必须留,但它同时把 stella 判据问的问题从「ref_keyfrm(上一张照片)
+  // 还剩多少看得见」偷换成「半路那一帧还剩多少看得见」。
+  // 修法:参考照旧重新种,把断点前已经掉掉的比例**结转**下来(比例连乘,
+  // 不引入任何新阈值)。
+  //
+  // ⚠️ 这两条测不到断点分支本身:合成纹理上的 LK **从不丢轨迹**(它没有
+  // 「匹配对不对」的概念,会收敛到垃圾并报成功 —— 09-10 已定罪),
+  // comparable 永远为真。这里锁的是**状态语义**与**无断点时行为不变**。
+  test('阳性对照:没有断点时结转恒为 1.0,既有判据行为不变', () {
+    final h = _started();
+    expect(h.controller.referenceRatioCarry, 1.0);
+    expect(
+      h.feed(_pose(t: 0.2, pos: Vector3(8 / 128, 0, 0), grayShiftX: 8)),
+      AutoCaptureDecision.skipRedundant,
+      reason: '8 px 仍跟住 >90% —— 这条既有语义不许被结转改动',
+    );
+    expect(h.controller.referenceRatioCarry, 1.0);
+  });
+
+  test('每拍成一张照片,结转清回 1.0(新参考 = 新起点)', () {
+    final h = _started();
+    h.feed(_pose(t: 0.3, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40));
+    expect(h.fires, 1);
+    expect(h.controller.referenceRatioCarry, 1.0);
+  });
+
   test('a stopped controller never fires', () {
     final h = _Harness();
     for (var i = 0; i < 60; i++) {
