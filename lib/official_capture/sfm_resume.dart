@@ -793,16 +793,51 @@ int archivedPhotoCount(String captureDir) {
   }
 }
 
-/// 把已经不可用的 db 及其随从**改名**挪开(**绝不删**),让新会话能在原路径
-/// 重新建库。
+/// 读盘判定 `<captureDir>` 的 db 覆盖度(纯判据在 archived_photo_rebuild.dart)。
+///
+/// 只读一个 jsonl + 列一次目录 —— 这条会在长按菜单弹出前跑,不能有可感知耗时。
+/// 读不出账本时返回**覆盖不齐**:没有账本就等于没有"这个 db 里有谁"的证据,
+/// 而这一侧判错的代价只是多跑一次重喂,反过来判错是交付一朵缺了大半素材的云。
+ProjectCoverage projectCoverage(String captureDir) {
+  final names = <String>[];
+  try {
+    final dir = Directory('$captureDir/photos_highres');
+    if (dir.existsSync()) {
+      for (final f in dir.listSync().whereType<File>()) {
+        final n = f.path.split('/').last;
+        if (n.toLowerCase().endsWith('.jpg')) names.add(n);
+      }
+    }
+  } catch (_) {
+    // 列不出目录 ⇒ 下面按"账本覆盖不了盘上的照片"处理。
+  }
+  var jsonl = '';
+  try {
+    final f = File('$captureDir/official_sfm_fed_frames.jsonl');
+    if (f.existsSync()) jsonl = f.readAsStringSync();
+  } catch (_) {
+    jsonl = '';
+  }
+  return projectCoverageFrom(jpegNamesOnDisk: names, fedFramesJsonl: jsonl);
+}
+
+/// 把当前的 db 及其随从**改名**挪开(**绝不删**),让新会话能在原路径重新建库。
 ///
 /// 必须整组一起挪:留下一个 stale `-wal` 会被 sqlite 当成新库的日志回放,
 /// 那是比"打不开"更坏的结果。`official_sfm_fed_frames.jsonl` 也要挪 ——
 /// 它按 frameId 追加,旧会话的 frameId 会和新会话的撞号,而取色正是按
 /// frameId → jpegPath 找照片的(cap47 色彩污染就是同一类错配)。
 ///
+/// [2026-09-11] 两个调用方,前提不同但动作完全一样,所以共用这一处:
+///  · 全量重喂前 —— 那个 db 已经不可用(或覆盖不全);
+///  · **补拍开场前** —— 那个 db 可能好好的,但新会话的帧号从 0 重数、
+///    名字 `frame_%06d.jpg` 会撞上 `images.name` 的 UNIQUE 约束。核自己的
+///    注释(`official_aether_sfm_c.cc:9278`)写着这种撞名会
+///    "bricks the whole live capture" —— 不是废一帧,是这一场之后**每一帧**
+///    都废。2026-09-08 用户报的「补拍 20 帧全是红框」多半就是这个。
+///
 /// 返回挪走的文件名列表,便于把"动过什么"落进日志。
-Future<List<String>> _sidelineDeadDatabase(String captureDir) async {
+Future<List<String>> sidelineDatabaseForFreshSession(String captureDir) async {
   final stamp = DateTime.now().millisecondsSinceEpoch;
   final moved = <String>[];
   const names = <String>[
@@ -938,7 +973,7 @@ Future<ArchivedRebuildResult> _rebuildFromArchivedPhotosOnce(
     );
     await _umbrella('beginReconUmbrella', captureDir);
 
-    final moved = await _sidelineDeadDatabase(captureDir);
+    final moved = await sidelineDatabaseForFreshSession(captureDir);
     DeviceLog.log('SfmResume', 'rebuild sidelined: ${moved.join(",")}');
 
     // 新会话在**原路径**重建库 —— 下游(resume sweep / 补拍 / 归档策略)全都

@@ -164,9 +164,11 @@ void main() {
         .join('\n');
     expect(resumeCode, contains('Future<ArchivedRebuildResult> '
         'rebuildFromArchivedPhotos('));
-    expect(resumeCode, contains('_sidelineDeadDatabase('));
+    expect(resumeCode, contains('sidelineDatabaseForFreshSession('));
     // 挪开用 rename;出现 delete 就是把用户唯一剩下的证据毁了。
-    final sideStart = resumeCode.indexOf('_sidelineDeadDatabase(String');
+    final sideStart = resumeCode.indexOf(
+      'sidelineDatabaseForFreshSession(String',
+    );
     expect(sideStart, greaterThanOrEqualTo(0));
     final sideBody = resumeCode.substring(sideStart, sideStart + 900);
     expect(sideBody, contains('.rename('));
@@ -177,6 +179,119 @@ void main() {
     // wal/shm 留一个都会被 sqlite 当成新库的日志回放。
     expect(sideBody, contains('official_sfm_live.db-wal'));
     expect(sideBody, contains('official_sfm_live.db-shm'));
+  });
+
+  test('🔴db 覆盖不全时也改走全量重喂(未命名(8) 那类项目)', () {
+    // 判据必须**同时**吃两条腿:只吃 dbUsable 就会把"db 健全但只装了 6 张"
+    // 的项目送去续跑 —— 那正是 2026-09-11 未命名(8) 丢掉 20 张的成因。
+    expect(code, contains('official_sfm_resume.projectCoverage('));
+    expect(code, contains('final dbCoversAllPhotos = coverage'));
+    expect(code, contains('dbCoversAllPhotos: dbCoversAllPhotos'));
+    expect(RegExp(r'dbCoversAllPhotos\s*=(?!=)').allMatches(code).length, 1);
+    // 覆盖不全必须留痕,否则下次又只能靠用户肉眼看点云数量发现。
+    expect(code, contains('db 覆盖不全'));
+  });
+
+  test('🔴补拍结束走整项目全量重喂,不交付本场那朵云', () {
+    final arp = File(
+      'lib/ui/official_capture/ar_capture_page.dart',
+    ).readAsStringSync();
+    final arpCode = arp
+        .split('\n')
+        .map((line) {
+          final i = line.indexOf('//');
+          return i < 0 ? line : line.substring(0, i);
+        })
+        .join('\n');
+    // 补拍分支必须真的调全量重喂 —— 这是本次修复的心脏。
+    // 条件必须真的来自「这次是不是补拍」,不是一个能被改成常量的旗子。
+    //
+    // [阴性对照 2026-09-11] 第一版断言是"从 `final extendingProject =` 起
+    // 160 字符内出现 widget.extendCaptureDir" —— 变异成
+    // `final extendingProject = false; final unusedExtend = widget.extend…`
+    // 照样全绿:它只证明了条件**在附近**,没证明值**来自**条件。
+    // 所以要切到分号为止,并且全文只许有这一处赋值。
+    final ci = arpCode.indexOf('final extendingProject =');
+    expect(ci, greaterThanOrEqualTo(0));
+    final rhs = arpCode.substring(
+      ci + 'final extendingProject ='.length,
+      arpCode.indexOf(';', ci),
+    );
+    expect(rhs, contains('widget.extendCaptureDir != null'));
+    expect(
+      RegExp(r'extendingProject\s*=(?!=)').allMatches(arpCode).length,
+      1,
+    );
+    expect(arpCode, contains('if (extendingProject) {'));
+    expect(
+      arpCode,
+      contains('sfm_resume.rebuildFromArchivedPhotos(captureDirForSfm)'),
+    );
+    // 且 recon.finalize() 只剩**非补拍**那一条路能走到。
+    expect(RegExp(r'recon\.finalize\(\)').allMatches(arpCode).length, 1);
+    final ei = arpCode.indexOf('if (extendingProject) {');
+    final pi = arpCode.indexOf('} else if (sfmPreviewing) {', ei);
+    final fi = arpCode.indexOf('recon.finalize();');
+    expect(ei, greaterThanOrEqualTo(0));
+    // 🔴 补拍分支必须排在 sfmPreviewing **之前**:开场已经把旧 db 挪开了,
+    // 这一场哪怕只拍 1 张(够不到 offeredCount>=2 的预览门槛)也必须重喂,
+    // 否则项目被留在"旧 db 已挪走、新 db 只有 1 帧、PLY 还是旧的"的更差状态。
+    expect(pi, greaterThan(ei), reason: '补拍分支必须先于预览分支');
+    expect(fi, greaterThan(pi), reason: 'finalize 只能落在非补拍那条路上');
+    // 圈的是**补拍分支本身**,到 `} else if` 为止 —— 把后面圈进来会永远红,
+    // 因为那一侧本来就该开伞(判据划错边界和判据写错一样坏)。
+    final branch = arpCode.substring(ei, pi);
+    // 全量重喂自带 umbrella,补拍分支再开一层就是两层伞。
+    expect(branch, isNot(contains('_beginReconUmbrella')));
+    // 会话必须先彻底放掉:重建资源全局独占,不 dispose 就起不来第二个。
+    expect(branch, contains('recon.dispose()'));
+    expect(branch, contains('rebuildFromArchivedPhotos'));
+  });
+
+  test('🔴补拍开场把旧 db 挪开(撞名会废掉整场),而且是改名不是删', () {
+    final arp = File(
+      'lib/ui/official_capture/ar_capture_page.dart',
+    ).readAsStringSync();
+    final arpCode = arp
+        .split('\n')
+        .map((line) {
+          final i = line.indexOf('//');
+          return i < 0 ? line : line.substring(0, i);
+        })
+        .join('\n');
+    final si = arpCode.indexOf('sfm_resume.sidelineDatabaseForFreshSession(');
+    expect(si, greaterThanOrEqualTo(0));
+    // 必须只在补拍时挪 —— 正常拍摄是全新目录,挪了等于白开一次 IO。
+    final before = arpCode.substring(0, si);
+    expect(before.lastIndexOf('widget.extendCaptureDir != null'),
+        greaterThan(before.lastIndexOf('SfmLiveRecon.start')));
+    // 且必须挪在起会话**之前**。
+    final after = arpCode.substring(si);
+    expect(after.indexOf('SfmLiveRecon.start'), greaterThanOrEqualTo(0));
+
+    // 挪的动作本身:rename,绝不 delete;wal/shm/账本一个都不能落下。
+    final resume = File(
+      'lib/official_capture/sfm_resume.dart',
+    ).readAsStringSync();
+    final rCode = resume
+        .split('\n')
+        .map((line) {
+          final i = line.indexOf('//');
+          return i < 0 ? line : line.substring(0, i);
+        })
+        .join('\n');
+    final hi = rCode.indexOf('sidelineDatabaseForFreshSession(String');
+    expect(hi, greaterThanOrEqualTo(0));
+    final body = rCode.substring(hi, hi + 900);
+    expect(body, contains('.rename('));
+    expect(body, isNot(contains('.delete(')));
+    for (final n in const <String>[
+      'official_sfm_live.db-wal',
+      'official_sfm_live.db-shm',
+      'official_sfm_fed_frames.jsonl',
+    ]) {
+      expect(body, contains(n));
+    }
   });
 
   test('采集会话复用目录时绝不删,且编号接着排', () {

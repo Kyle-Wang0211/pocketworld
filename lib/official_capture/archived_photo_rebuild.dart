@@ -153,3 +153,112 @@ List<ArchivedPhotoParse> orderForRefeed(Iterable<ArchivedPhotoParse> parses) {
   });
   return list;
 }
+
+// ════════════════════════════════════════════════════════════════════════
+// 「这个 db 覆盖了盘上所有照片吗」—— 路由判据的第二条腿。
+//
+// [2026-09-11 实机定罪] 用户报「未命名(8) 分两次拍，前 20 帧好像没参与训练」。
+// 查实:确实一张都没参与。设备日志的完整时序:
+//     13:49:42  第一次拍摄,打了 20 次快门,喂进去 14 帧
+//     13:50:22  日志戛然而止(thermal=serious / mem peak 1803MB,无 finalize、
+//               无 dispose、无 Uncaught)⇒ 被系统杀掉,db 落成 0 字节
+//     13:55:00  用户点「拍摄更多照片」→ 补拍只把老照片 adopt 进**相册**,
+//               一帧都没喂给重建;新会话在同一个 db 上从 frameId 0 重新数
+//     13:55:21  拍摄结束自动 finalize(live_reuse)⇒ 交付的云只有那 6 张新照片
+// 结果:`n_registered=6`、db 的 images 表只有 6 行、4538 点;而第一次拍摄当时
+// 屏幕上的实时云是 **12808 点 / 14 帧**。26 张里 20 张颗粒无收。
+//
+// 光有 sqlite_db_health 那条判据挡不住这个:事后那个 db **头完全自洽**
+// (3032 页对 3032 页),它只是「健全但只装了 6 张」。所以「开始训练」要再问
+// 一句:**这个 db 覆盖盘上所有照片吗**。
+//
+// 🔴 为什么不直接数 db 的 images 行数:ABI 里没有「只看一眼 db」的导出,
+// 加一个就是原生改动(还会打破 DART_ONLY 的装机形态);纯 Dart 数 sqlite 的
+// b-tree 是另一个真相源。所以改用**我们自己记的账**:`official_sfm_fed_frames.jsonl`
+// 由 native 每注册一帧追加一行(frameId + jpegPath),它就是「这个 db 里有谁」。
+
+/// 一个项目的「db 覆盖度」判定,带原因。
+class ProjectCoverage {
+  const ProjectCoverage({
+    required this.photosOnDisk,
+    required this.fedDistinct,
+    required this.duplicateFrameIds,
+    required this.neverFed,
+  });
+
+  final int photosOnDisk;
+
+  /// 账本里出现过的**不同**照片数。
+  final int fedDistinct;
+
+  /// 账本里 frameId 的重复次数。>0 = 这份账跨了不止一个会话。
+  final int duplicateFrameIds;
+
+  /// 盘上有、账本里却没有的照片名(排序后)。
+  final List<String> neverFed;
+
+  /// 覆盖齐 ⇒ 可以照 db 续跑;否则必须全量重喂。
+  bool get covered => neverFed.isEmpty && duplicateFrameIds == 0;
+
+  /// 不齐的原因(人话);覆盖齐时为 null。
+  String? get reason {
+    if (covered) return null;
+    final parts = <String>[];
+    if (neverFed.isNotEmpty) parts.add('盘上有 ${neverFed.length} 张没喂过');
+    if (duplicateFrameIds > 0) {
+      parts.add('账本 frameId 重复 $duplicateFrameIds 次(跨了多个会话)');
+    }
+    return parts.join(' | ');
+  }
+}
+
+/// 纯判据:盘上的照片名 × `official_sfm_fed_frames.jsonl` 全文 → 覆盖度。
+///
+/// 两条独立的腿,任一条命中就判「不齐」:
+///  ① **盘上有照片从没出现在账本里** —— 它必然不在 db 里。
+///  ② **账本里 frameId 有重复** —— frameId 是**每会话从 0 重数**的
+///    (`official_aether_sfm_c.cc:9266  frame_id = s->frames.size()`),
+///    所以重复 = 这份账被两个会话写过 = 它已经描述不了当前这个 db。
+///    这条是必须的:①单独不够,账本只会**高估**覆盖(老会话的行还在,
+///    而它们对应的 db 行可能早没了),高估正是危险的那个方向。
+///
+/// **真机标定(2026-09-11,设备上全部 7 个项目)**:
+///   未命名(1)(89 张)/(2)(35)/(3)(20)/(4)(20)/(5)(20)/(6)(35) —— 六个健康项目
+///   盘上数 == 账本数 == 独立数,重复 frameId **全为 0** ⇒ 一个都不误报;
+///   未命名(8)(26 张) —— **两条腿各自独立命中**(6 张没喂过、6 次 fid 重复)。
+/// 阈值不是我定的,是这组数据分出来的。
+ProjectCoverage projectCoverageFrom({
+  required Iterable<String> jpegNamesOnDisk,
+  required String fedFramesJsonl,
+}) {
+  final fedNames = <String>{};
+  final frameIdCounts = <int, int>{};
+  for (final line in const LineSplitter().convert(fedFramesJsonl)) {
+    if (line.trim().isEmpty) continue;
+    try {
+      final m = jsonDecode(line);
+      if (m is! Map<String, dynamic>) continue;
+      final path = m['jpegPath'];
+      if (path is String && path.isNotEmpty) {
+        fedNames.add(path.split('/').last);
+      }
+      final fid = m['frameId'];
+      if (fid is int) frameIdCounts[fid] = (frameIdCounts[fid] ?? 0) + 1;
+    } catch (_) {
+      // 坏行不算数,但也不能让整条判据崩 —— 账本是 best-effort 追加写的。
+      continue;
+    }
+  }
+  var dup = 0;
+  for (final n in frameIdCounts.values) {
+    if (n > 1) dup += n - 1;
+  }
+  final disk = jpegNamesOnDisk.toSet();
+  final never = disk.difference(fedNames).toList()..sort();
+  return ProjectCoverage(
+    photosOnDisk: disk.length,
+    fedDistinct: fedNames.length,
+    duplicateFrameIds: dup,
+    neverFed: never,
+  );
+}

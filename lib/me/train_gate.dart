@@ -83,12 +83,25 @@ TrainGate trainGateFor({
   return TrainGate.ready;
 }
 
-/// 闸放行之后走哪条路。db 可用就续跑,不可用就重喂存档照片。
+/// 闸放行之后走哪条路。
 ///
 /// 单独一个函数而不是塞进 [TrainGate]:闸回答"能不能点",路回答"点了干什么",
 /// 混在一起会让"db 坏但能重建"这种状态在枚举里无处安放。
-TrainRoute trainRouteFor({required bool hasResumableData}) =>
-    hasResumableData
+///
+/// 两个条件**都**满足才续跑:
+///  · [hasResumableData] —— db 打得开(sqlite_db_health.dart 的结构性判据);
+///  · [dbCoversAllPhotos] —— db 里装的就是盘上全部照片
+///    (archived_photo_rebuild.dart 的 projectCoverageFrom)。
+///
+/// [2026-09-11] 第二条是被真机逼出来的。未命名(8):补拍之后 db **头完全自洽**
+/// (3032 页对 3032 页,第一条判据一路放行),但里面只有 6 张,而盘上有 26 张。
+/// 只问"打不开吗"会把这种项目送去续跑,交付一朵缺了 20 张素材的云 ——
+/// 而且一次比一次更像"本来就该这样",因为它每次都成功。
+TrainRoute trainRouteFor({
+  required bool hasResumableData,
+  required bool dbCoversAllPhotos,
+}) =>
+    (hasResumableData && dbCoversAllPhotos)
     ? TrainRoute.resumeFromDb
     : TrainRoute.rebuildFromArchivedPhotos;
 

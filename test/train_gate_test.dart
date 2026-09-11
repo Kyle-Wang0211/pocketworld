@@ -104,11 +104,11 @@ void main() {
 
   test('路由:db 可用就续跑,不可用就重喂存档照片', () {
     expect(
-      trainRouteFor(hasResumableData: true),
+      trainRouteFor(hasResumableData: true, dbCoversAllPhotos: true),
       TrainRoute.resumeFromDb,
     );
     expect(
-      trainRouteFor(hasResumableData: false),
+      trainRouteFor(hasResumableData: false, dbCoversAllPhotos: true),
       TrainRoute.rebuildFromArchivedPhotos,
     );
     // 两条路必须是两个值 —— 合并成一条就等于"db 坏了也去续跑",那正是
@@ -126,9 +126,24 @@ void main() {
     );
     expect(gate, TrainGate.ready);
     expect(
-      trainRouteFor(hasResumableData: false),
+      trainRouteFor(hasResumableData: false, dbCoversAllPhotos: true),
       TrainRoute.rebuildFromArchivedPhotos,
       reason: '闸放行却把用户送去续跑,就是把红弹窗换了个地方出',
+    );
+  });
+
+  test('🔴db 打得开但只装了一部分照片 ⇒ 也必须走全量重喂', () {
+    // 真机未命名(8):补拍之后 db 头完全自洽(3032 页对 3032 页),
+    // 第一条判据一路放行,但里面只有 6 张而盘上有 26 张。只问"打不开吗"
+    // 会交付一朵缺 20 张素材的云,而且它每次都"成功"。
+    expect(
+      trainRouteFor(hasResumableData: true, dbCoversAllPhotos: false),
+      TrainRoute.rebuildFromArchivedPhotos,
+    );
+    // 阴性对照:两条都满足才续跑 —— 否则这条断言用"永远重喂"也能通过。
+    expect(
+      trainRouteFor(hasResumableData: true, dbCoversAllPhotos: true),
+      TrainRoute.resumeFromDb,
     );
   });
 

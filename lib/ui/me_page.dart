@@ -946,6 +946,13 @@ class _MyWorksSectionState extends State<_MyWorksSection>
               File('$rebuildDir/${DatabaseArchivePolicy.sourceFileName}'),
             );
       final dbUsable = rebuildDir != null && (dbHealth?.usable ?? false);
+      // [2026-09-11] db 打得开 ≠ db 里装着全部照片。未命名(8) 补拍之后那个 db
+      // 头完全自洽(3032 页对 3032 页),但只装了 6 张,盘上有 26 张 —— 只问
+      // "打不开吗"会把它送去续跑,交付一朵缺 20 张素材的云,而且每次都"成功"。
+      final coverage = rebuildDir == null
+          ? null
+          : official_sfm_resume.projectCoverage(rebuildDir);
+      final dbCoversAllPhotos = coverage?.covered ?? false;
       final photoCount = await _countCapturePhotos(record);
       if (!mounted) return;
       // 判定提纯为纯函数(train_gate.dart),阈值同源于拍摄页的
@@ -961,8 +968,19 @@ class _MyWorksSectionState extends State<_MyWorksSection>
         anotherReconstructionActive:
             widget.activeReconstructionCaptureDir != null,
       );
-      final trainRoute = trainRouteFor(hasResumableData: dbUsable);
+      final trainRoute = trainRouteFor(
+        hasResumableData: dbUsable,
+        dbCoversAllPhotos: dbCoversAllPhotos,
+      );
       final trainEnabled = trainGate == TrainGate.ready;
+      if (coverage != null && !coverage.covered) {
+        DeviceLog.log(
+          'MePage',
+          'db 覆盖不全 for ${record.id}: ${coverage.reason} '
+              '(盘上 ${coverage.photosOnDisk} 张 / 账本 ${coverage.fedDistinct} 张)'
+              ' → route=$trainRoute',
+        );
+      }
       if (dbHealth != null && !dbHealth.usable) {
         DeviceLog.log(
           'MePage',
