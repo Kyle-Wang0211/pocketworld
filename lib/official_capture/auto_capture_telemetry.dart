@@ -202,6 +202,8 @@ class AutoCaptureTelemetry {
     _mapTrackedLms.clear();
     _mapReliableLms.clear();
     _mapReliableLmsRef.clear();
+    _mapLocalKeyframes.clear();
+    _mapLocalLandmarks.clear();
     _fireMovedM.clear();
     _fireDistM.clear();
     _fireTurnDeg.clear();
@@ -297,6 +299,11 @@ class AutoCaptureTelemetry {
     int? mapNumTrackedLms,
     int? mapNumReliableLms,
     int? mapNumReliableLmsRef,
+    // [2026-09-14] 局部地图有多大。用来分清 num_reliable_lms 塌掉的两种病:
+    // 局部地图本来就小(收窄那一步的问题)vs 局部地图很大但可观测只剩几十个
+    // (can_observe 那三条的问题)。两个数组合器早就算出来了,只是没露出来。
+    int? mapLocalKeyframeCount,
+    int? mapLocalLandmarkCount,
     // [2026-09-10] 地点识别(RTAB-Map 词袋)的代价与结果。用户明确要"然后去做
     // 优化提速+降本" ⇒ **优化之前先有账**,否则又变成"感觉慢"。
     int? placeSignatureCount,
@@ -339,6 +346,12 @@ class AutoCaptureTelemetry {
       if (mapNumReliableLms != null) _mapReliableLms.add(mapNumReliableLms);
       if (mapNumReliableLmsRef != null) {
         _mapReliableLmsRef.add(mapNumReliableLmsRef);
+      }
+      if (mapLocalKeyframeCount != null) {
+        _mapLocalKeyframes.add(mapLocalKeyframeCount);
+      }
+      if (mapLocalLandmarkCount != null) {
+        _mapLocalLandmarks.add(mapLocalLandmarkCount);
       }
       if (placeSignatureCount != null) _placeSigsLast = placeSignatureCount;
       if (placeWordCount != null) _placeWordsLast = placeWordCount;
@@ -593,6 +606,8 @@ class AutoCaptureTelemetry {
   final List<int> _mapTrackedLms = <int>[];
   final List<int> _mapReliableLms = <int>[];
   final List<int> _mapReliableLmsRef = <int>[];
+  final List<int> _mapLocalKeyframes = <int>[];
+  final List<int> _mapLocalLandmarks = <int>[];
   int _placeSigsLast = 0;
   int _placeWordsLast = 0;
   final List<int> _placePosteriorPermille = <int>[];
@@ -638,6 +653,8 @@ class AutoCaptureTelemetry {
         'map_tracked_lms_p50': _percentile(_mapTrackedLms, 0.5),
         'map_reliable_lms_p50': _percentile(_mapReliableLms, 0.5),
         'map_reliable_lms_ref_p50': _percentile(_mapReliableLmsRef, 0.5),
+        'map_local_keyframes_p50': _percentile(_mapLocalKeyframes, 0.5),
+        'map_local_landmarks_p50': _percentile(_mapLocalLandmarks, 0.5),
       },
       // 地点识别:词典规模、每 tick 代价、命中的共享词比例(千分数)。
       // describe_us 是固定成本(GFTT+ORB),query_us 随词典规模涨 ——

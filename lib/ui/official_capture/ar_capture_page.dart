@@ -3347,6 +3347,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         mapNumTrackedLms: _autoCapture?.lastMapEvidence?.numTrackedLms,
         mapNumReliableLms: _autoCapture?.lastMapEvidence?.numReliableLms,
         mapNumReliableLmsRef: _autoCapture?.lastMapEvidence?.numReliableLmsRef,
+        mapLocalKeyframeCount:
+            _autoCapture?.lastMapEvidence?.localKeyframeCount,
+        mapLocalLandmarkCount:
+            _autoCapture?.lastMapEvidence?.localLandmarkCount,
       );
       // 开火成因(VINS-Fusion 新旧比 vs AliceVision 流量段):一枪一账,
       // 只在成功开火后 controller 才留快照,读一次即清。
