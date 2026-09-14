@@ -42,6 +42,7 @@ import 'official_capture/encoder_probe.dart';
 import 'official_capture/photo_archive_runtime.dart';
 import 'official_capture/telemetry_writer.dart' as official_telemetry;
 import 'official_util/device_log.dart' as official_device_log;
+import 'official_util/startup_trace.dart';
 import 'orbit_controls.dart';
 import 'ui/app_shell.dart';
 import 'ui/auth/auth_root_view.dart';
@@ -92,6 +93,10 @@ Future<void> main() async {
       // ignore: avoid_print
       print('[AET-SMOKE] inside runZonedGuarded');
       WidgetsFlutterBinding.ensureInitialized();
+      // 🔴 冷启动逐帧账(诊断脚手架)。挂在 ensureInitialized 之后、任何
+      // 初始化之前 —— 越早挂,"启动第几毫秒"这个横轴才越接近真的启动。
+      StartupTrace.start();
+      StartupTrace.mark('ensureInitialized 之后');
       await officialArchiveBackgroundRuntime.initialize();
       // Release-visible container-file log (Documents/pw_device_log.txt) —
       // print/debugPrint are invisible in release builds on device.
@@ -123,6 +128,7 @@ Future<void> main() async {
           );
         } catch (_) {}
       }());
+      StartupTrace.mark('即将 runApp(env/日志/遥测都已就绪)');
       // ignore: avoid_print
       print('[AET-SMOKE] ensureInitialized done, about to runApp');
 
@@ -431,6 +437,9 @@ class _AuthGateState extends State<_AuthGate> {
   bool _shellPainted = false;
   Timer? _splashMinTimer;
   Timer? _splashMaxTimer;
+  // 诊断脚手架:只记跳变,不记每一帧(每帧写文件=自己制造卡顿)。
+  bool? _lastLoggedVisible;
+  bool _loggedMotionFlag = false;
   // Tracks the previous CurrentUserState so we can detect a signedIn →
   // signedOut transition and tear down any pushed routes that were
   // sitting on top of HomeScreen (MyWorkDetailPage, MeSettingsPage,
@@ -444,10 +453,12 @@ class _AuthGateState extends State<_AuthGate> {
     super.initState();
     // Minimum splash duration — avoids a jarring flicker when bootstrap
     // completes in a few ms (e.g. mock service / cached user).
+    StartupTrace.mark('_AuthGate initState(第一帧的 Dart 侧起点)');
     _splashMinTimer = Timer(
       const Duration(milliseconds: _splashMinDurationMs),
       () {
         if (!mounted) return;
+        StartupTrace.mark('最短时长到(${_splashMinDurationMs}ms)');
         setState(() => _splashMinElapsed = true);
       },
     );
@@ -496,6 +507,24 @@ class _AuthGateState extends State<_AuthGate> {
     _wasSignedIn = state is CurrentUserSignedIn;
 
     final splashVisible = _splashVisibleFor(state);
+    if (!_loggedMotionFlag) {
+      _loggedMotionFlag = true;
+      // 🔴 这一条是用来排除"系统减弱动态效果开着"这条解释的 —— 它一开,
+      // 直线形变与开门会被整段跳过(splash_overlay.dart 的 reducedMotion 分支),
+      // 看上去就是"动画没了"。不测就只能猜。
+      StartupTrace.mark(
+        'disableAnimations=${MediaQuery.maybeOf(context)?.disableAnimations}'
+        ' state=${state.runtimeType}',
+      );
+    }
+    if (_lastLoggedVisible != splashVisible) {
+      _lastLoggedVisible = splashVisible;
+      StartupTrace.mark(
+        'splashVisible=$splashVisible'
+        ' (minElapsed=$_splashMinElapsed shellPainted=$_shellPainted'
+        ' state=${state.runtimeType})',
+      );
+    }
 
     Widget body;
     if (state is CurrentUserSignedIn) {
@@ -505,6 +534,7 @@ class _AuthGateState extends State<_AuthGate> {
         // 才跑 —— 所以"最贵的那一帧"必然发生在浮层还盖着的时候。
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted || _shellPainted) return;
+          StartupTrace.mark('壳首帧画完(_shellPainted)');
           setState(() => _shellPainted = true);
         });
       }

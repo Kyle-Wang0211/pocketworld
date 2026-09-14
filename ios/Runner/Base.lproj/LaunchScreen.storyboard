@@ -19,8 +19,8 @@
                             <imageView opaque="NO" clipsSubviews="YES" multipleTouchEnabled="YES" contentMode="center" image="LaunchImage" translatesAutoresizingMaskIntoConstraints="NO" id="YRO-k0-Ey4">
                             </imageView>
                         </subviews>
-                        <!-- Aether3D cold-start background. Minimalist warm-white #FAFAFA (0.98, 0.98, 0.98). Matches Flutter Scaffold backgroundColor (AetherColors.bg) so LaunchScreen → Flutter engine handoff is seamless (no flash while Dawn renderer initializes ~2-3s release / ~10s debug). Change this and AetherColors.bg together. -->
-                        <color key="backgroundColor" red="0.98039215686274506" green="0.98039215686274506" blue="0.98039215686274506" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+                        <!-- 冷启动背景。必须与 **Flutter 的第一帧** 同色,而第一帧是启动浮层的纯黑(splash_overlay.dart 的 ColoredBox(Colors.black) / SplashDoorPainter 的黑挡板),不是 Scaffold 的暖白。 [2026-09-14 定] 这里原本写的是 #FAFAFA,注释还说"与 AetherColors.bg 一致所以交接无闪" —— 那条不变式在浮层改成黑底之后就断了,没人改这边:于是每次冷启动都是 **整屏白 → 硬切纯黑**,横跨整个屏幕,正是用户说的那个"非常明显的卡顿瞬间"。改黑之后原生启动屏与 Flutter 第一帧同色,交接看不见。 改这里 = 改 splash_overlay 的底色,两边必须一起改;判据见 test/splash_launch_screen_color_test.dart。 -->
+                        <color key="backgroundColor" red="0.0" green="0.0" blue="0.0" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
                         <constraints>
                             <constraint firstItem="YRO-k0-Ey4" firstAttribute="centerX" secondItem="Ze5-6b-2t3" secondAttribute="centerX" id="1a2-6s-vTC"/>
                             <constraint firstItem="YRO-k0-Ey4" firstAttribute="centerY" secondItem="Ze5-6b-2t3" secondAttribute="centerY" id="4X2-HB-R7a"/>
