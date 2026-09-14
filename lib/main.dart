@@ -411,8 +411,26 @@ class _AuthGate extends StatefulWidget {
 }
 
 class _AuthGateState extends State<_AuthGate> {
+  // [2026-09-14 用户令]「加载」和「打开」必须是**一段**。
+  //
+  // 此前是两个 AetherSplashOverlay 串着放:这一层一个(fade 档,SplashSolvingOrb,
+  // 最短 900ms),HomeScreen 里还有一个(directLineDoor 档,SplashDirectLineField,
+  // 最短 1200ms + 等 createSharedNativeTexture/DamagedHelmet.glb)。两者是**不同的
+  // widget、各自一只 Stopwatch**,交接时上面那只淡出 420ms、下面那只从 phase 0
+  // 起跑 —— 点阵当场跳一下;而这 420ms 正好压在 AetherAppShell 第一次 build 上。
+  // 这就是用户看到的「中间那个非常明显的卡顿瞬间」。
+  //
+  // 现在只剩这一个浮层,从第一帧到开门用的是同一个 SplashDirectLineField、
+  // 同一只时钟,中间没有任何交接。
+  static const _splashMinDurationMs = 1200;
+  static const _splashMaxDurationMs = 20000;
   bool _splashMinElapsed = false;
+  bool _splashForceHidden = false;
+  /// 真 UI 已经**画过一帧**(不是"已经决定要画")。重活压在浮层底下发生,
+  /// 开门那一下才不会再撞上首帧。
+  bool _shellPainted = false;
   Timer? _splashMinTimer;
+  Timer? _splashMaxTimer;
   // Tracks the previous CurrentUserState so we can detect a signedIn →
   // signedOut transition and tear down any pushed routes that were
   // sitting on top of HomeScreen (MyWorkDetailPage, MeSettingsPage,
@@ -426,16 +444,37 @@ class _AuthGateState extends State<_AuthGate> {
     super.initState();
     // Minimum splash duration — avoids a jarring flicker when bootstrap
     // completes in a few ms (e.g. mock service / cached user).
-    _splashMinTimer = Timer(const Duration(milliseconds: 900), () {
-      if (!mounted) return;
-      setState(() => _splashMinElapsed = true);
-    });
+    _splashMinTimer = Timer(
+      const Duration(milliseconds: _splashMinDurationMs),
+      () {
+        if (!mounted) return;
+        setState(() => _splashMinElapsed = true);
+      },
+    );
+    // 兜底:任何一环卡死都不许把用户永久关在浮层后面(静默出口那条老教训)。
+    _splashMaxTimer = Timer(
+      const Duration(milliseconds: _splashMaxDurationMs),
+      () {
+        if (!mounted) return;
+        setState(() => _splashForceHidden = true);
+      },
+    );
   }
 
   @override
   void dispose() {
     _splashMinTimer?.cancel();
+    _splashMaxTimer?.cancel();
     super.dispose();
+  }
+
+  bool _splashVisibleFor(CurrentUserState state) {
+    if (_splashForceHidden) return false;
+    if (state is CurrentUserBootstrapping) return true;
+    if (!_splashMinElapsed) return true;
+    // 登录态:等壳真的画过一帧再开门。登出/服务不可用那两条路没有壳可等。
+    if (state is CurrentUserSignedIn && !_shellPainted) return true;
+    return false;
   }
 
   @override
@@ -456,13 +495,19 @@ class _AuthGateState extends State<_AuthGate> {
     }
     _wasSignedIn = state is CurrentUserSignedIn;
 
-    // During bootstrap OR until min-splash elapsed, show the splash.
-    final splashVisible =
-        state is CurrentUserBootstrapping || !_splashMinElapsed;
+    final splashVisible = _splashVisibleFor(state);
 
     Widget body;
     if (state is CurrentUserSignedIn) {
       body = const HomeScreen();
+      if (!_shellPainted) {
+        // 这一帧就是壳的首帧(build+layout+paint 都在里面)。回调在它画完之后
+        // 才跑 —— 所以"最贵的那一帧"必然发生在浮层还盖着的时候。
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || _shellPainted) return;
+          setState(() => _shellPainted = true);
+        });
+      }
     } else if (state is CurrentUserSignedOut) {
       body = AuthRootView(currentUser: user);
     } else if (state is CurrentUserServiceUnavailable) {
@@ -478,6 +523,7 @@ class _AuthGateState extends State<_AuthGate> {
           child: AetherSplashOverlay(
             visible: splashVisible,
             progressMessage: _bootstrapMessage(context, state),
+            exitStyle: SplashExitStyle.directLineDoor,
           ),
         ),
       ],
@@ -569,20 +615,18 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   static const _channel = MethodChannel('aether_texture');
   int? _textureId;
-  String? _textureError;
   bool _isRetrying = false;
-
   String? _meshStatus = 'warming up renderer...';
-  bool _meshStatusBusy = true;
-  bool _meshStatusError = false;
   Timer? _meshStatusHideTimer;
-
-  static const _splashMinDurationMs = 1200;
-  static const _splashMaxDurationMs = 20000;
-  bool _splashMinElapsed = false;
-  bool _splashForceHidden = false;
-  Timer? _splashMinTimer;
-  Timer? _splashMaxTimer;
+  // 这三个只剩"记下来"没人读了 —— 唯一的读者是被删掉的第二个浮层的
+  // _splashVisible/_splashMessage。和上面那段注释说的一样,整条 texture 取
+  // 路径是留给重建口径回接的,所以留字段不留读者,别让 analyzer 天天报。
+  // ignore: unused_field
+  String? _textureError;
+  // ignore: unused_field
+  bool _meshStatusBusy = true;
+  // ignore: unused_field
+  bool _meshStatusError = false;
 
   final OrbitControls _orbit = OrbitControls();
   final ObjectTransform _object = ObjectTransform();
@@ -600,37 +644,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _pushMatrices();
       },
     );
-    _splashMinTimer = Timer(
-      const Duration(milliseconds: _splashMinDurationMs),
-      () {
-        if (!mounted) return;
-        setState(() => _splashMinElapsed = true);
-      },
-    );
-    _splashMaxTimer = Timer(
-      const Duration(milliseconds: _splashMaxDurationMs),
-      () {
-        if (!mounted) return;
-        setState(() => _splashForceHidden = true);
-      },
-    );
     _requestTexture();
-  }
-
-  bool get _splashVisible {
-    if (_splashForceHidden) return false;
-    if (!_splashMinElapsed) return true;
-    final rendererReady = _textureId != null;
-    final meshSettled = !_meshStatusBusy || _meshStatusError;
-    return !(rendererReady && meshSettled);
-  }
-
-  String _splashMessage(BuildContext context) {
-    final l = AppL10n.of(context);
-    if (_textureError != null) return l.splashRendererUnavailable;
-    if (_textureId == null) return l.splashWaking3DEngine;
-    if (_meshStatusBusy) return l.splashWaking3DEngine;
-    return l.splashWaking3DEngine;
   }
 
   Future<void> _requestTexture({bool isManualRetry = false}) async {
@@ -682,8 +696,6 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _meshStatusHideTimer?.cancel();
-    _splashMinTimer?.cancel();
-    _splashMaxTimer?.cancel();
     _lifecycle?.dispose();
     final id = _textureId;
     if (id != null) {
@@ -817,29 +829,26 @@ class _HomeScreenState extends State<HomeScreen> {
     // in place for the moment because the texture acquisition path
     // (_requestTexture, _loadGlbAsset, _handleScaleUpdate) is what the
     // ported capture flow will reattach to.
-    return Stack(
-      children: [
-        // 2026-08-16 — the two-tab shell is routed to again. It was
-        // swapped for MeRootPage in cf68313 ("V1 IA") when the community
-        // feed had no way to be fed: the publish chain had been deleted
-        // in Plan G W2, so the tab could only ever show an empty list.
-        // PublishService is back and points to the sparse cloud the
-        // capture route actually produces, so 社区 has content and earns
-        // its tab.
-        //
-        // [2026-09-11 用户令]"直接删除这个 icon" —— MeRootPage 与它的壳
-        // DraftCaptureShell(右下角 "+" FAB)已**从仓库删除**。要再出一个
-        // 无社区的版本,得给 AetherAppShell 加一个"只剩我的"形态,不要把
-        // 那个 FAB 捡回来:现役的拍摄入口是底部导航栏中间那颗。
-        const AetherAppShell(),
-        Positioned.fill(
-          child: AetherSplashOverlay(
-            visible: _splashVisible,
-            progressMessage: _splashMessage(context),
-            exitStyle: SplashExitStyle.directLineDoor,
-          ),
-        ),
-      ],
-    );
+    // [2026-09-14 用户令]「两段合并成一段」—— 这里原本还盖着**第二个**
+    // AetherSplashOverlay(directLineDoor 档),它等的是 createSharedNativeTexture
+    // 与 DamagedHelmet.glb,而那条渲染路径**在出货 UI 里一帧都不显示**
+    // (_textureId 只进 setMatrices/dispose,build 里没有任何 Texture widget)。
+    // 于是"第二段"的长度由一个看不见的 demo 渲染器决定,交接处还要和壳的首帧
+    // 撞在一起。浮层现在只剩 _AuthGate 那一个,这里直接交出壳本身。
+    // (_requestTexture 保留:同一条 aether_texture 通道也是社区实时卡的渲染器,
+    //  它是不是纯浪费要另外量,不在这一刀里顺手删。)
+    //
+    // 2026-08-16 — the two-tab shell is routed to again. It was swapped for
+    // MeRootPage in cf68313 ("V1 IA") when the community feed had no way to
+    // be fed: the publish chain had been deleted in Plan G W2, so the tab
+    // could only ever show an empty list. PublishService is back and points
+    // to the sparse cloud the capture route actually produces, so 社区 has
+    // content and earns its tab.
+    //
+    // [2026-09-11 用户令]"直接删除这个 icon" —— MeRootPage 与它的壳
+    // DraftCaptureShell(右下角 "+" FAB)已**从仓库删除**。要再出一个无社区
+    // 的版本,得给 AetherAppShell 加一个"只剩我的"形态,不要把那个 FAB 捡
+    // 回来:现役的拍摄入口是底部导航栏中间那颗。
+    return const AetherAppShell();
   }
 }
