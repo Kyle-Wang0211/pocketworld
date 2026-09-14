@@ -3855,7 +3855,29 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     }
     setState(() => _finishTapInProgress = true);
     try {
+      // 只等**在飞的那一张** —— 未拍的排队票在「完成」键那里已经
+      // cancelPending() 掉了(见 finish_cancel_pending 遥测)。
       await _shutterQueue.freezeAndDrain();
+      // 🔴 [2026-09-14 用户令]「摄像头一关,AR 算法强制停止」——
+      // 手机烫,能结束的算法就得立刻结束,不许在后台空转。
+      //
+      // 这一行**从落盘屏障之后提到这里**。此刻在飞的最后一张 12MP 已经
+      // 落地(上面那行等的就是它),相机再没有任何待交付的东西 ⇒ 可以停。
+      //
+      // 为什么不会丢帧(查过原生,不是推测):高清静照的 completion 里
+      // `jpegEncodeQueue.async { ... pixelBuffer ... }` **闭包持有那个
+      // CVPixelBuffer**(CF 类型,ARC 保留),编码与落盘跑在自己的队列上,
+      // 与 ARSession 生死无关。下面的 waitForPendingPhotoSaves() 等的是
+      // 那条队列,纯 CPU + 磁盘,不需要相机、不需要 VIO。
+      //
+      // stopSession() 停掉的是一整套热源(OfficialAetherARKitPlugin.swift):
+      //   PwVioTimebase.suspendShadowPipeline() —— 影子 VIO 停
+      //   arSession.pause()                      —— 4K 取景 + VIO + ARFrame 缓冲停
+      //   PwARCameraLease.release()              —— 相机租约还回去
+      //   aether_gpu_match_set_capture_active(0) —— 匹配器退出"拍摄期"降速档
+      // 此前它排在所有 JPEG 编码之后:自动模式一场二十几张 12MP,那是好几秒
+      // 的相机 + VIO 空转,正是"手机这么烫"的一部分。
+      await _stopArSessionNow();
       if (!mounted ||
           _finishCancellationRequested ||
           _finishDrainFailed ||
@@ -3981,6 +4003,12 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     }
     try {
       await _shutterQueue.freezeAndDrain();
+      // 🔴 [2026-09-14 用户令]「摄像头一关,AR 算法强制停止」。
+      // 在飞的最后一张 12MP 已经落地(上一行等的就是它)⇒ 相机再没有待交付
+      // 的东西,立刻停。幂等:完成键那条路已经先停过一次,这里覆盖其余入口。
+      // 安全依据见 [_stopArSessionNow] 的注释(编码队列持有 pixelBuffer,
+      // 落盘与 ARSession 生死无关)。
+      await _stopArSessionNow();
       // RECORDING → STOP. The high-res stills are written incrementally
       // under `<captureDir>/photos_highres/`; stop freezes curation and
       // writes the shared photo_bundle contract.
@@ -4010,13 +4038,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // overhead from here — and it was competing with the finalize for
       // memory/GPU/thermal (mem ~950 MB, thermal=serious during solve).
       // pause() + clearing recentFrameSnapshots frees it all for CPU+GPU SfM.
-      try {
-        await _arKitChannel.invokeMethod<void>('stopSession');
-        DeviceLog.log(
-          'OfficialARCapturePage',
-          'finish: ARSession stopped (camera off)',
-        );
-      } catch (_) {}
+      // 相机已在排空后立刻停过(见上面的 _stopArSessionNow)。这里保留一次
+      // 幂等复核 —— 停两次是安全的(pause 幂等),而漏停一次就是几秒空转。
+      await _stopArSessionNow();
       final recon = _sfmRecon;
       if (_projectPhotos.count == 0) {
         if (recon != null) {
@@ -4141,6 +4165,21 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     } finally {
       _finalizingRecording = false;
     }
+  }
+
+  /// 立刻停掉 ARSession(相机 + VIO + 影子管线 + 匹配器拍摄档)。
+  /// 幂等:`arSession.pause()` 可以重复调用。
+  bool _arSessionStopped = false;
+  Future<void> _stopArSessionNow() async {
+    if (_arSessionStopped) return;
+    try {
+      await _arKitChannel.invokeMethod<void>('stopSession');
+      _arSessionStopped = true;
+      DeviceLog.log(
+        'OfficialARCapturePage',
+        'finish: ARSession stopped (camera off, VIO off) —— 紧跟在飞快门落地之后',
+      );
+    } catch (_) {}
   }
 
   /// Exit to Drafts — unless the live-reconstruction preview overlay is up,

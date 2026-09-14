@@ -72,15 +72,29 @@ void main() {
     );
   });
 
-  test('🔴 拆除顺序不许动:停相机仍排在排空与落盘之后(永久缺帧红线)', () {
+  // 🔴 [2026-09-14 用户令]「摄像头一关,AR 算法强制停止」。
+  // 盖页只是视觉,真正要的是热源立刻停。判据随之改向:
+  //   停相机必须紧跟在**在飞快门落地**之后,且排在**落盘屏障之前**。
+  // 安全性依据(查过原生,不是推测):高清静照 completion 里
+  // `jpegEncodeQueue.async { ... pixelBuffer ... }` 闭包持有那个 CVPixelBuffer,
+  // 编码落盘与 ARSession 生死无关;而在飞那一张必须先落地,否则 pause 会
+  // 打断取图 = 永久缺帧。
+  test('🔴 停相机紧跟在飞快门落地之后,并排在落盘屏障之前', () {
     final drain = at('await _shutterQueue.freezeAndDrain();');
     final saves = at('waitForPendingPhotoSaves()');
-    final stop = at("invokeMethod<void>('stopSession')");
+    final stop = at('await _stopArSessionNow();');
     expect(drain, greaterThanOrEqualTo(0));
     expect(saves, greaterThanOrEqualTo(0));
     expect(stop, greaterThanOrEqualTo(0));
-    expect(saves, greaterThan(drain), reason: '落盘屏障在排空之后');
-    expect(stop, greaterThan(saves), reason: '停 ARSession 必须在所有在飞 12MP 落盘之后');
+    expect(stop, greaterThan(drain),
+        reason: '在飞的 12MP 必须先落地 —— 先 pause 会打断取图 = 永久缺帧');
+    expect(stop, lessThan(saves),
+        reason: '落盘是纯 CPU+磁盘,不需要相机;等它等完再停就是几秒空转');
+    expect(
+      stop,
+      lessThan(drain + 3),
+      reason: '中间不许再插别的 await,否则"立刻停"又会被拖长',
+    );
   });
 
   test('不重建的分支必须把等待页收回(否则 pop 被永远挂起)', () {
