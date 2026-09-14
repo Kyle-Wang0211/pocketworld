@@ -3956,6 +3956,29 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     _finalizingRecording = true;
     _stopAutoCapture();
     _stopGuidanceTelemetry(); // 拍摄结束,【guidance】采样停止
+    // 🔴 [2026-09-14 用户令]「点完成拍摄的蓝色按键,摄像头必须立刻关闭,进入
+    // 黑色背景的等待页面」。用户实机指认:**自动快门模式下没做到**。
+    //
+    // 两条快门路径走的是**同一个** _finalizeRecording,一行 mode 分支都没有 ——
+    // 差别是**时延**:下面第一件事 `freezeAndDrain()` 要等**所有在飞的快门票
+    // 拍完**(manual_capture_queue.dart:89-96,它等的是 outstandingCount 归零,
+    // 不是丢弃),随后还有 waitForPendingPhotoSaves()。手动模式按完成时在飞
+    // 通常 0–1 张,看着就是"立刻";自动模式一秒一张,在飞好几张 ⇒ 相机要多亮
+    // 好几秒。此前那次「相机立刻关」的修正管的是**相对 finalize 的顺序**
+    // (见下面 stopSession 处的注释),从来没有覆盖这段排空。
+    //
+    // 修法:**先盖页,再拆**。盖的就是 SfmPreviewOverlay(Stack 最顶层、
+    // 整屏、owns navigation —— 见 230eecf)。底下的拆除顺序**一个字节不动**:
+    // 在飞的 12MP 必须拍完才停 ARSession,否则就是永久缺帧(铁律)。
+    // 不重建的那两条分支会把它清回 null(见下面两处 `_sfmPhase = null`),
+    // 免得 _exitToDrafts 把 pop 永远挂起。
+    if (mounted) {
+      setState(() {
+        _sfmPhase = SfmPreviewPhase.generating;
+        _sfmFinalizeStage = 0;
+        _sfmStageStartMs = DateTime.now().millisecondsSinceEpoch;
+      });
+    }
     try {
       await _shutterQueue.freezeAndDrain();
       // RECORDING → STOP. The high-res stills are written incrementally
@@ -4004,6 +4027,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           _sfmEventSub = null;
           unawaited(recon.dispose());
         }
+        // 零张照片 ⇒ 不重建,把开头盖上的等待页收回(同下面那条分支的理由)。
+        if (mounted) setState(() => _sfmPhase = null);
         if (mounted && showSparseHint) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -4099,6 +4124,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         await _sfmEventSub?.cancel();
         _sfmEventSub = null;
         unawaited(recon.dispose());
+        // 这条路不重建 ⇒ 把开头盖上的等待页收回,否则 _exitToDrafts 会看到
+        // _sfmPhase != null 而把 pop 永远挂起(那张页没有「完成」按钮可点)。
+        if (mounted) setState(() => _sfmPhase = null);
       }
       // Every verified 12MP shutter is a project photo. Upload curation may
       // choose a subset for a later stage, but it must never delete photos from
