@@ -18,7 +18,7 @@ BUILD=$ROOT/build; OUT=$ROOT/Frameworks; rm -rf "$BUILD" "$OUT"; mkdir -p "$BUIL
 DEVICE_SDK=$(xcrun --sdk iphoneos --show-sdk-path); SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
 CLANGXX=$(xcrun --find clang++); CLANG=$(xcrun --find clang)
 MINOS=26.2   # the shipped OpenCV archive carries minos 26.2
-printf '_pwdense_abi_version\n_pwdense_available\n_pwdense_options_default\n_pwdense_default_model_path\n_pwdense_run\n' > "$BUILD/exports.txt"
+printf '_pwdense_abi_version\n_pwdense_available\n_pwdense_options_default\n_pwdense_default_model_path\n_pwdense_run\n_pwdense_run2\n' > "$BUILD/exports.txt"
 
 # ---- PWOnnxRuntime.framework (device only; simulator gets no ORT — the sim slice of PWDense does not link it)
 ORTFW=$BUILD/device/PWOnnxRuntime.framework; mkdir -p "$ORTFW"
