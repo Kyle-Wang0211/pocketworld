@@ -30,6 +30,13 @@ typedef struct pwdense_options_t {
     const char* work_dir;      /* scratch dir for the depth pack (created; ~NF x 7 MB) */
     const char* out_ply;       /* output PLY (binary little endian xyz f32 + rgb u8, the app's own layout) */
     uint64_t noise_seed;
+    /* Selection (the viewer's SelectionBox): has_box=0 -> whole cloud. Centre, FULL side lengths, row-major
+       local->world rotation, all in the sparse PLY's world frame. Frames seeing no sparse point inside the box
+       are left out; only fused points inside the box are delivered. */
+    int32_t has_box;
+    double box_center[3];
+    double box_size[3];
+    double box_rot[9];
 } pwdense_options_t;
 
 /* Progress: phase in {"session","images","infer","fuse","done"}; return non-zero to cancel. */
@@ -37,6 +44,8 @@ typedef int (*pwdense_progress_fn)(const char* phase, int32_t done, int32_t tota
 
 typedef struct pwdense_stats_t {
     int32_t frames, inferred, images;
+    int32_t frames_selected;   /* frames used after the selection subset (== frames when no box or fallback) */
+    int32_t box_fallback;      /* 1 if fewer than nsrc+1 frames saw the box and the whole set was used */
     double session_ms, images_ms, ort_session_ms, infer_ms_median, infer_ms_total, fuse_ms;
     uint64_t points;
     double photo_frac, geo_frac, final_frac;

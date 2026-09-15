@@ -31,11 +31,20 @@ final class PwDenseFrame {
   final String jpegPath;
 }
 
+/// The viewer's SelectionBox handed to C unchanged: centre, FULL side lengths, row-major local->world rotation.
+final class PwDenseBox {
+  const PwDenseBox({required this.cx, required this.cy, required this.cz, required this.sx, required this.sy, required this.sz, required this.rot});
+  final double cx, cy, cz, sx, sy, sz;
+  final List<double> rot; // 9
+}
+
 final class PwDenseStats {
   const PwDenseStats({
     required this.frames,
     required this.inferred,
     required this.images,
+    required this.framesSelected,
+    required this.boxFallback,
     required this.sessionMs,
     required this.imagesMs,
     required this.ortSessionMs,
@@ -46,7 +55,8 @@ final class PwDenseStats {
     required this.finalFrac,
     required this.error,
   });
-  final int frames, inferred, images, points;
+  final int frames, inferred, images, points, framesSelected;
+  final bool boxFallback;
   final double sessionMs, imagesMs, ortSessionMs, inferMsMedian, inferMsTotal, fuseMs, finalFrac;
   final String error;
 }
@@ -95,6 +105,14 @@ final class _OptionsRaw extends Struct {
   external Pointer<Utf8> outPly;
   @Uint64()
   external int noiseSeed;
+  @Int32()
+  external int hasBox;
+  @Array(3)
+  external Array<Double> boxCenter;
+  @Array(3)
+  external Array<Double> boxSize;
+  @Array(9)
+  external Array<Double> boxRot;
 }
 
 final class _StatsRaw extends Struct {
@@ -104,6 +122,10 @@ final class _StatsRaw extends Struct {
   external int inferred;
   @Int32()
   external int images;
+  @Int32()
+  external int framesSelected;
+  @Int32()
+  external int boxFallback;
   @Double()
   external double sessionMs;
   @Double()
@@ -210,12 +232,13 @@ final class PwDenseProgress {
 }
 
 final class _JobArgs {
-  const _JobArgs(this.frames, this.pointsXyz, this.workDir, this.outPly, this.webgpu, this.progressPort);
+  const _JobArgs(this.frames, this.pointsXyz, this.workDir, this.outPly, this.webgpu, this.progressPort, this.box);
   final List<PwDenseFrame> frames;
   final List<double> pointsXyz; // flat N*3
   final String workDir, outPly;
   final bool webgpu;
   final SendPort? progressPort;
+  final PwDenseBox? box;
 }
 
 /// Runs the dense job on a worker isolate. [onProgress] is invoked on the calling isolate.
@@ -225,6 +248,7 @@ Future<PwDenseResult> runPwDenseJob({
   required String workDir,
   required String outPly,
   bool webgpu = true,
+  PwDenseBox? box,
   void Function(PwDenseProgress p)? onProgress,
 }) async {
   ReceivePort? progressPort;
@@ -235,7 +259,7 @@ Future<PwDenseResult> runPwDenseJob({
     });
   }
   try {
-    return await Isolate.run(() => _runInIsolate(_JobArgs(frames, pointsXyz, workDir, outPly, webgpu, progressPort?.sendPort)));
+    return await Isolate.run(() => _runInIsolate(_JobArgs(frames, pointsXyz, workDir, outPly, webgpu, progressPort?.sendPort, box)));
   } finally {
     progressPort?.close();
   }
@@ -280,6 +304,19 @@ PwDenseResult _runInIsolate(_JobArgs a) {
   opts.ref.outPly = outPlyC;
   opts.ref.webgpu = a.webgpu ? 1 : 0;
   opts.ref.modelPath = nullptr; // -> pwdense_default_model_path() (the model shipped inside PWDense.framework)
+  final box = a.box;
+  if (box != null) {
+    opts.ref.hasBox = 1;
+    opts.ref.boxCenter[0] = box.cx;
+    opts.ref.boxCenter[1] = box.cy;
+    opts.ref.boxCenter[2] = box.cz;
+    opts.ref.boxSize[0] = box.sx;
+    opts.ref.boxSize[1] = box.sy;
+    opts.ref.boxSize[2] = box.sz;
+    for (var k = 0; k < 9; k++) {
+      opts.ref.boxRot[k] = box.rot[k];
+    }
+  }
   final stats = calloc<_StatsRaw>();
 
   NativeCallable<_ProgressFnNative>? cb;
@@ -315,7 +352,7 @@ PwDenseResult _runInIsolate(_JobArgs a) {
 }
 
 PwDenseStats _emptyStats(String error) => PwDenseStats(
-      frames: 0, inferred: 0, images: 0, sessionMs: 0, imagesMs: 0, ortSessionMs: 0, inferMsMedian: 0,
+      frames: 0, inferred: 0, images: 0, framesSelected: 0, boxFallback: false, sessionMs: 0, imagesMs: 0, ortSessionMs: 0, inferMsMedian: 0,
       inferMsTotal: 0, fuseMs: 0, points: 0, finalFrac: 0, error: error);
 
 PwDenseStats _readStats(_StatsRaw r) {
@@ -329,6 +366,8 @@ PwDenseStats _readStats(_StatsRaw r) {
     frames: r.frames,
     inferred: r.inferred,
     images: r.images,
+    framesSelected: r.framesSelected,
+    boxFallback: r.boxFallback != 0,
     sessionMs: r.sessionMs,
     imagesMs: r.imagesMs,
     ortSessionMs: r.ortSessionMs,

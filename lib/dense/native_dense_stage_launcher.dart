@@ -2,8 +2,9 @@
 // (refined poses, sidecar intrinsics, fed-frame photo names, sparse PLY), materialises archived photos, and runs
 // the on-device dense job (PWDense.framework: CasDiffMVS on ORT-WebGPU + the official fusion) on a worker isolate.
 //
-// Constraints inherited from dense_stage.dart: pure local; delivery is the full cloud, never downsampled.
-// v1 gap: the selection box is accepted but the whole cloud is processed (the message says so).
+// Constraints inherited from dense_stage.dart: pure local; delivery is the full cloud of what was selected, never
+// downsampled. A selection box is passed to C unchanged: frames that see no sparse point inside it are skipped and
+// only fused points inside it are delivered ("未被选中的部分就不用进入稠密点云").
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -49,7 +50,7 @@ class NativeDenseStageLauncher implements DenseStageLauncher {
     _running = true;
     denseStageProgress.value = DenseStageProgress(captureDir: request.captureDir, state: DenseStageState.running, phase: 'session');
     unawaited(_runJob(request, inputs));
-    final note = request.selection != null ? '(v1 先处理整朵云,选区稍后生效)' : '';
+    final note = request.selection != null ? '(只处理选区内)' : '(整朵云)';
     return DenseStageResult(DenseStageStatus.started, message: '稠密处理已开始$note');
   }
 
@@ -58,13 +59,22 @@ class NativeDenseStageLauncher implements DenseStageLauncher {
     final outPly = '$dir/$kDensePlyFileName';
     final workDir = '$dir/$kDenseWorkDirName';
     final t0 = DateTime.now();
-    official_device_log.DeviceLog.log('DenseStage', 'start capture=$dir frames=${inputs.frames.length} points=${inputs.pointsXyz.length ~/ 3}');
+    final sel = request.selection;
+    final box = sel == null
+        ? null
+        : PwDenseBox(cx: sel.cx, cy: sel.cy, cz: sel.cz, sx: sel.sx, sy: sel.sy, sz: sel.sz, rot: List<double>.from(sel.rot, growable: false));
+    official_device_log.DeviceLog.log(
+      'DenseStage',
+      'start capture=$dir frames=${inputs.frames.length} points=${inputs.pointsXyz.length ~/ 3} '
+      'box=${box == null ? 'none' : '${box.cx.toStringAsFixed(3)},${box.cy.toStringAsFixed(3)},${box.cz.toStringAsFixed(3)} ${box.sx.toStringAsFixed(3)}x${box.sy.toStringAsFixed(3)}x${box.sz.toStringAsFixed(3)}'}',
+    );
     try {
       final r = await runPwDenseJob(
         frames: inputs.frames,
         pointsXyz: inputs.pointsXyz,
         workDir: workDir,
         outPly: outPly,
+        box: box,
         onProgress: (p) {
           final cur = denseStageProgress.value;
           if (cur == null || cur.captureDir != dir) return;
@@ -75,7 +85,7 @@ class NativeDenseStageLauncher implements DenseStageLauncher {
       final s = r.stats;
       official_device_log.DeviceLog.log(
         'DenseStage',
-        'end rc=${r.code} ${secs.toStringAsFixed(1)}s frames=${s.frames} inferred=${s.inferred} images=${s.images} '
+        'end rc=${r.code} ${secs.toStringAsFixed(1)}s frames=${s.frames} selected=${s.framesSelected}${s.boxFallback ? '(fallback:all)' : ''} inferred=${s.inferred} images=${s.images} '
         'session=${s.sessionMs.toStringAsFixed(0)}ms images=${s.imagesMs.toStringAsFixed(0)}ms ort=${s.ortSessionMs.toStringAsFixed(0)}ms '
         'infer_med=${s.inferMsMedian.toStringAsFixed(1)}ms infer_total=${(s.inferMsTotal / 1000).toStringAsFixed(1)}s '
         'fuse=${s.fuseMs.toStringAsFixed(0)}ms points=${s.points} final=${(s.finalFrac * 100).toStringAsFixed(2)}% err="${s.error}"',
