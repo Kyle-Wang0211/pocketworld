@@ -21,14 +21,39 @@ import '../../official_capture/selection_box.dart';
 import 'ruler_scrubber.dart';
 import 'selection_tools_layer.dart';
 import 'sfm_preview_overlay.dart' show SfmBottomActionButton;
+import '../../point_cloud_display/progressive_octree_order.dart';
 import 'sparse_cloud_view.dart';
 
-/// Parsed cloud (full set — delivery never downsamples).
+/// Parsed cloud (full set — delivery never downsamples). [sourceCount] is the
+/// number of points in the file; [count] the number held here (smaller only
+/// when the review point budget truncated a progressive-ordered copy).
 class SparseCloudData {
-  const SparseCloudData(this.xyz, this.rgb);
+  const SparseCloudData(this.xyz, this.rgb, {int? sourceCount})
+      : _sourceCount = sourceCount;
   final Float32List xyz;
   final Uint8List rgb;
+  final int? _sourceCount;
   int get count => xyz.length ~/ 3;
+  int get sourceCount => _sourceCount ?? count;
+  bool get isBudgeted => sourceCount > count;
+}
+
+/// What the viewer loads (isolate entry): the full PLY when it fits the review
+/// point budget, otherwise the first [ReviewPointCloudPolicy.kPointBudget]
+/// points of the progressive octree order (uniform over the whole extent).
+/// The file is left as is.
+SparseCloudData? loadReviewCloud(String path) =>
+    loadReviewCloudWithBudget(path, ReviewPointCloudPolicy.kPointBudget);
+
+SparseCloudData? loadReviewCloudWithBudget(String path, int budget) {
+  final full = loadSparsePly(path);
+  if (full == null || full.count <= budget) return full;
+  final ordered = ProgressiveOctreeOrder.reorder(xyz: full.xyz, rgb: full.rgb);
+  return SparseCloudData(
+    Float32List.fromList(ordered.xyz.sublist(0, budget * 3)),
+    Uint8List.fromList(ordered.rgb.sublist(0, budget * 3)),
+    sourceCount: full.count,
+  );
 }
 
 /// Loads the app's own binary-little-endian PLY (xyz float32 + rgb uchar,
@@ -473,7 +498,7 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
 
   Future<void> _load() async {
     final cloud = await compute(
-      loadSparsePly,
+      loadReviewCloud,
       widget.plyPath,
       debugLabel: 'sparse_ply_load',
     );
@@ -617,7 +642,7 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                                     // 自相矛盾。
                                     _selectionApplied
                                         ? (_visibleCount ?? cloud.count)
-                                        : cloud.count,
+                                        : cloud.sourceCount,
                                   ),
                                   textAlign: TextAlign.center,
                                   style: const TextStyle(
@@ -713,6 +738,20 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                     ),
                   ),
                 ],
+                if (cloud.isBudgeted)
+                  Positioned(
+                    left: 16,
+                    right: 16,
+                    top: 60,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Text(
+                        '显示前 ${cloud.count} 点(八叉树均匀抽样)· 文件含 ${cloud.sourceCount} 点',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white38, fontSize: 12),
+                      ),
+                    ),
+                  ),
                 // [2026-09-15] 稠密阶段状态块(按钮上方)—— 必须是 Positioned 子项(见 dense_stage_panel.dart)
                 DenseStagePanel(
                   captureDir: _captureDir,

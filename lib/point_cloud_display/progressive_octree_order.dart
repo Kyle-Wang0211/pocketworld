@@ -12,11 +12,20 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 /// Review is the authoritative inspection surface: it draws every persisted
-/// PLY point. Capture may choose a display-only prefix from a progressive copy.
+/// PLY point up to [kPointBudget]. Above it (dense clouds: millions of points;
+/// the Dart canvas painter projects and sorts every drawn point every frame,
+/// 6.9 M points froze build 161's viewer) it draws the first [kPointBudget]
+/// points of the progressive octree order — a spatially uniform prefix, the
+/// same Potree budget model this file is adapted from. The PLY itself is never
+/// touched (delivery stays full); see `loadReviewCloud` in the viewer page.
 abstract final class ReviewPointCloudPolicy {
+  /// Potree's default: src/Potree.js (v1.8.2) `export let pointBudget = 1 * 1000 * 1000;`
+  static const int kPointBudget = 1 * 1000 * 1000;
+
   static int drawStrideFor(int pointCount) => 1;
 
-  static int drawCountFor(int pointCount) => math.max(0, pointCount);
+  static int drawCountFor(int pointCount) =>
+      math.max(0, math.min(pointCount, kPointBudget));
 }
 
 final class ProgressivePointCloud {
