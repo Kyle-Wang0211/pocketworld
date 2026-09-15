@@ -38,6 +38,9 @@ import 'lifecycle_observer.dart';
 import 'object_transform.dart';
 import 'official_aether_sfm_ffi.dart' show AetherEnvFile;
 import 'official_capture/b1_gate_runner.dart';
+import 'dense/native_dense_stage_launcher.dart';
+import 'dense/pw_dense_ffi.dart' show PwDenseFfi;
+import 'official_capture/dense_stage.dart' show denseStageLauncher;
 import 'official_capture/encoder_probe.dart';
 import 'official_capture/photo_archive_runtime.dart';
 import 'official_capture/telemetry_writer.dart' as official_telemetry;
@@ -130,6 +133,17 @@ Future<void> main() async {
           );
         } catch (_) {}
       }());
+      // [2026-09-15] on-device dense stage: PWDense.framework opened by path; absent/stub ⇒ the
+      // launcher stays unavailable and the viewer's 下一步 stays grey (dense_stage.dart contract).
+      try {
+        denseStageLauncher = NativeDenseStageLauncher();
+        official_device_log.DeviceLog.log(
+          'DenseStage',
+          'available=${denseStageLauncher.isAvailable} ${PwDenseFfi.lastError ?? ''}',
+        );
+      } catch (e) {
+        official_device_log.DeviceLog.log('DenseStage', 'init failed: $e');
+      }
       StartupTrace.mark('即将 runApp(env/日志/遥测都已就绪)');
       // ignore: avoid_print
       print('[AET-SMOKE] ensureInitialized done, about to runApp');

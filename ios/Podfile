@@ -73,6 +73,8 @@ target 'Runner' do
   # Independent dynamic SfM image for the "官方" capture route. The framework
   # exports only pwofficial_*; it cannot fall back to the self-route pwsfm_* ABI.
   pod 'official_sfm', :path => '../vendor/official_sfm'
+  # [2026-09-15] on-device dense point cloud: PWDense + PWOnnxRuntime (dynamic, opened by path from Dart)
+  pod 'pw_dense', :path => '../vendor/pw_dense'
 
   # [pw][vio] XRSLAM (RD-VIO) 官方五函数 C ABI。Dart 统一配置与判决；
   #   两端固定 OpenCV 4.0.1 / Ceres 1.14 和同一 generic 编译契约。

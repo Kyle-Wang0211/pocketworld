@@ -72,6 +72,7 @@ PODS:
   - path_provider_foundation (0.0.1):
     - Flutter
     - FlutterMacOS
+  - pw_dense (1.0.0)
   - pw_hevc (0.1.0)
   - SDWebImage (5.21.7):
     - SDWebImage/Core (= 5.21.7)
@@ -104,6 +105,7 @@ DEPENDENCIES:
   - official_sfm (from `../vendor/official_sfm`)
   - onnxruntime (from `.symlinks/plugins/onnxruntime/ios`)
   - path_provider_foundation (from `.symlinks/plugins/path_provider_foundation/darwin`)
+  - pw_dense (from `../vendor/pw_dense`)
   - pw_hevc (from `.symlinks/plugins/pw_hevc/ios`)
   - sensors_plus (from `.symlinks/plugins/sensors_plus/ios`)
   - shared_preferences_foundation (from `.symlinks/plugins/shared_preferences_foundation/darwin`)
@@ -147,6 +149,8 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/onnxruntime/ios"
   path_provider_foundation:
     :path: ".symlinks/plugins/path_provider_foundation/darwin"
+  pw_dense:
+    :path: "../vendor/pw_dense"
   pw_hevc:
     :path: ".symlinks/plugins/pw_hevc/ios"
   sensors_plus:
@@ -180,6 +184,7 @@ SPEC CHECKSUMS:
   onnxruntime-c: ebdcfd8650bcbd10121c125262f99dea681b92a3
   onnxruntime-objc: ae7acec7a3d03eaf072d340afed7a35635c1c2a6
   path_provider_foundation: bb55f6dbba17d0dccd6737fe6f7f34fbd0376880
+  pw_dense: fd0e12c058b53612e64e6dc553889a841d8cc484
   pw_hevc: 6cf584f7f2897a0b2051b3225c3d217ffe6b78dd
   SDWebImage: e9fc87c1aab89a8ab1bbd74eba378c6f53be8abf
   sensors_plus: 6a11ed0c2e1d0bd0b20b4029d3bad27d96e0c65b
@@ -190,6 +195,6 @@ SPEC CHECKSUMS:
   video_thumbnail: b637e0ad5f588ca9945f6e2c927f73a69a661140
   xrslam: 4a3a232508740dd5fc98b9cbc7aa793ed1c7b8ab
 
-PODFILE CHECKSUM: 0eb3cdbb21e774c055c909f67d9c6456865b27b7
+PODFILE CHECKSUM: 37d958817efe4351827d615c660dac907a042263
 
 COCOAPODS: 1.16.2
