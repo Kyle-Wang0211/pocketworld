@@ -511,6 +511,17 @@ class AppL10nEn extends AppL10n {
   }
 
   @override
+  String get etaCalculating => 'Calculating…';
+
+  @override
+  String get etaUnderMinute => 'Time remaining · under a minute';
+
+  @override
+  String etaMinutes(int n) {
+    return 'Time remaining · about $n min';
+  }
+
+  @override
   String sfmChipReconDone(int count) {
     return 'Reconstruction complete · $count pts';
   }

@@ -1003,6 +1003,24 @@ abstract class AppL10n {
   /// **'Reconstructing · {count} pts…'**
   String sfmChipReconstructing(int count);
 
+  /// No description provided for @etaCalculating.
+  ///
+  /// In en, this message translates to:
+  /// **'Calculating…'**
+  String get etaCalculating;
+
+  /// No description provided for @etaUnderMinute.
+  ///
+  /// In en, this message translates to:
+  /// **'Time remaining · under a minute'**
+  String get etaUnderMinute;
+
+  /// No description provided for @etaMinutes.
+  ///
+  /// In en, this message translates to:
+  /// **'Time remaining · about {n} min'**
+  String etaMinutes(int n);
+
   /// No description provided for @sfmChipReconDone.
   ///
   /// In en, this message translates to:

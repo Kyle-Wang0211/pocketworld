@@ -22,7 +22,27 @@ class CloudCamera {
     this.fillK = kFitFillK, // 开屏取景系数(见 kFitFillK)
     this.orthographic = false,
     this.roll = 0,
+    this.camDistOverride,
+    this.orthoMix,
   });
+
+  /// [LIVE-WAIT 2026-09-15] Eye distance in world units instead of
+  /// `radius·kCamDistK`. Set when the rig has to reproduce a real pinhole
+  /// camera: eye = pivot − camDist·forward, so pivot = C + camDist·forward
+  /// puts the eye exactly at the capture camera centre C (Potree View.getPivot:
+  /// pivot = position + direction·radius, src/viewer/View.js L73-75). null =
+  /// the historical `radius·kCamDistK` (bit-identical to before).
+  final double? camDistOverride;
+
+  /// [LIVE-WAIT 2026-09-15] Perspective↔orthographic blend for the one-time
+  /// morph after a capture-pose start: 0 = perspective (divisor = depth),
+  /// 1 = orthographic (divisor = camDist), in between the divisor is
+  /// lerped — the size on the pivot plane (z2 = 0 ⇒ depth = camDist) is
+  /// identical in both, which is the same invariant Cesium's
+  /// SceneTransitioner keeps while it lerps the fov
+  /// (packages/engine/Source/Scene/SceneTransitioner.js L555-590). null =
+  /// derive from [orthographic] (bit-identical to before).
+  final double? orthoMix;
 
   /// 屏幕空间滚转(弧度)。[2026-07-28] 过极翻面动画专用:纯 yaw/pitch
   /// 相机翻过极点必然倒置(SO(3) 拓扑),补一段 roll 自旋回正才能落到
@@ -53,7 +73,7 @@ class CloudCamera {
       cosP: math.cos(pitch),
       sinP: math.sin(pitch),
       f: half * fillK * zoom,
-      camDist: radius * kCamDistK,
+      camDist: camDistOverride ?? radius * kCamDistK,
       ox: size.width * 0.5 + panX,
       oy: size.height * 0.5 + panY,
       pivotX: pivotX,
@@ -62,6 +82,7 @@ class CloudCamera {
       orthographic: orthographic,
       cosR: math.cos(roll),
       sinR: math.sin(roll),
+      orthoMix: orthoMix ?? (orthographic ? 1.0 : 0.0),
     );
   }
 }
@@ -82,6 +103,7 @@ class CloudProjection {
     required this.orthographic,
     required this.cosR,
     required this.sinR,
+    this.orthoMix = 0.0,
   });
 
   final double cosY, sinY, cosP, sinP, f, camDist, ox, oy;
@@ -95,6 +117,16 @@ class CloudProjection {
   /// depth。depth 仍按真值返回 —— 排序/衰减/裁剪语义不变。
   final bool orthographic;
 
+  /// See [CloudCamera.orthoMix]: 1.0 ⇔ orthographic divisor, 0.0 ⇔ depth.
+  /// Consumers branch on the two exact endpoints so those stay bit-identical
+  /// to the historical `orthographic ? camDist : depth`.
+  final double orthoMix;
+
+  /// Projection divisor at [depth] for the current blend.
+  double divisorAt(double depth) => orthoMix == 1.0
+      ? camDist
+      : (orthoMix == 0.0 ? depth : depth + (camDist - depth) * orthoMix);
+
   /// 权威投影:世界点 → (屏幕x, 屏幕y, 深度)。深度 <= 0 表示在相机后。
   (double, double, double) project(double wx, double wy, double wz) {
     final px = wx - pivotX, py = wy - pivotY, pz = wz - pivotZ;
@@ -103,7 +135,7 @@ class CloudProjection {
     final y2 = py * cosP - z1 * sinP;
     final z2 = py * sinP + z1 * cosP;
     final depth = z2 + camDist;
-    final d = orthographic ? camDist : depth;
+    final d = divisorAt(depth);
     final sx = ox - x1 * f / d;
     final sy = oy - y2 * f / d;
     if (sinR == 0.0 && cosR == 1.0) return (sx, sy, depth);
@@ -114,7 +146,7 @@ class CloudProjection {
 
   /// 深度 depth 处,1 屏幕像素对应的世界距离(手柄拖拽逆映射)。
   /// 正交模式下与 depth 无关(恒 camDist/f)。
-  double worldPerPixelAt(double depth) => (orthographic ? camDist : depth) / f;
+  double worldPerPixelAt(double depth) => divisorAt(depth) / f;
 
   /// 屏幕 +x 方向(注意投影带负号:sx = ox - x1·f/depth,所以屏幕右移
   /// = 视空间 x1 减小)对应的世界方向单位向量。

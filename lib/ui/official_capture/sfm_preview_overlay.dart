@@ -5,8 +5,6 @@
 // authoritative colored cloud is ready. Rendering uses the shared
 // SparseCloudView, identical to the drafts 查看点云 page.
 
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
 
 import '../../l10n/app_localizations.dart';
@@ -42,11 +40,13 @@ class SfmPreviewOverlay extends StatelessWidget {
     this.onEnterEditing,
     this.errorText,
     this.progressText,
+    this.waitLabel,
     this.onCameraChanged,
     this.editing = false,
     this.selectionBox,
     this.onBoxChanged,
     this.cloudController,
+    this.initialPerspective,
     this.toolsOverlay,
   });
 
@@ -71,6 +71,10 @@ class SfmPreviewOverlay extends StatelessWidget {
   /// final reconstruction runs.
   final String? progressText;
 
+  /// 底部等待胶囊的文案(仅 `phase == generating` 时显示)。null = 倒计时估计
+  /// 还不存在,胶囊改显 `AppL10n.of(context).etaCalculating`。
+  final String? waitLabel;
+
   /// 预览相机快照上报 —— "下一步"进选区页时原样继承(用户签决:预览与
   /// 编辑是同一个页面,点下一步只是让工具显现)。
   final ValueChanged<CloudViewCamera>? onCameraChanged;
@@ -81,6 +85,10 @@ class SfmPreviewOverlay extends StatelessWidget {
   final SelectionBox? selectionBox;
   final ValueChanged<SelectionBox>? onBoxChanged;
   final CloudViewController? cloudController;
+
+  /// [LIVE-WAIT 2026-09-15] Capture-pose start for the cloud view (see
+  /// SparseCloudView.initialPerspective); null = default framing.
+  final PerspectiveStart? initialPerspective;
   final Widget? toolsOverlay;
 
   @override
@@ -109,6 +117,7 @@ class SfmPreviewOverlay extends StatelessWidget {
                     rgb: snap.rgb,
                     onCameraChanged: onCameraChanged,
                     controller: cloudController,
+                    initialPerspective: initialPerspective,
                     // [SEL-PREVIEW 2026-07-30] 浏览态**也要**拿到框:预览呈现
                     // 的就是选区后的范围(painter 侧 cullOutsideSelection 按
                     // editing 取反,浏览剔除 / 编辑染红)。此前这里在非编辑态
@@ -128,19 +137,6 @@ class SfmPreviewOverlay extends StatelessWidget {
                     bottomFadeArcRadius: editing
                         ? rulerArcRadius(MediaQuery.of(context).size.width)
                         : 0,
-                  ),
-                ),
-              ),
-            // ── status chip (top center)
-            if (!editing)
-              Positioned(
-                top: 0,
-                left: 0,
-                right: 0,
-                child: SafeArea(
-                  child: Padding(
-                    padding: const EdgeInsets.only(top: 14),
-                    child: Center(child: _statusChip(context)),
                   ),
                 ),
               ),
@@ -204,7 +200,7 @@ class SfmPreviewOverlay extends StatelessWidget {
                 ),
               ),
             // ── generating spinner (center, before any snapshot exists)
-            if (phase == SfmPreviewPhase.generating)
+            if (phase == SfmPreviewPhase.generating && !hasCloud)
               Center(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -267,6 +263,22 @@ class SfmPreviewOverlay extends StatelessWidget {
                   ),
                 ),
               ),
+            // ── wait pill (bottom center) while reconstruction runs. The only
+            // status the page shows: "计算中…" until the countdown exists, then
+            // the committed coarse label (see lib/eta/pipeline_eta.dart).
+            if (phase == SfmPreviewPhase.generating && !editing)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: SafeArea(
+                  top: false,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
+                    child: Center(child: _waitPill(context)),
+                  ),
+                ),
+              ),
             // No early escape while frames/finalize are running: the user asked
             // for the authoritative sparse result, not a background replacement.
             if (canFinish && !editing)
@@ -314,47 +326,21 @@ class SfmPreviewOverlay extends StatelessWidget {
     );
   }
 
-  Widget _statusChip(BuildContext context) {
-    final l = AppL10n.of(context);
-    final String text;
-    final IconData? icon;
-    switch (phase) {
-      case SfmPreviewPhase.generating:
-        text = l.sfmChipFinalRecon;
-        icon = null;
-      case SfmPreviewPhase.localReady:
-        text = l.sfmChipReconstructing(snapshot?.pointCount ?? 0);
-        icon = null;
-      case SfmPreviewPhase.refined:
-        text = l.sfmChipReconDone(snapshot?.pointCount ?? 0);
-        icon = Icons.check_circle_rounded;
-      case SfmPreviewPhase.error:
-        text = l.sfmChipReconEnded;
-        icon = null;
-    }
+  Widget _waitPill(BuildContext context) {
+    final text = waitLabel ?? AppL10n.of(context).etaCalculating;
     return Container(
+      key: const ValueKey('sfm_wait_pill'),
       constraints: const BoxConstraints(maxWidth: 340),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: BoxDecoration(
         color: const Color(0xB31C1C1E),
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(22),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (icon != null) ...[
-            Icon(icon, color: const Color(0xFF6EE7A0), size: 15),
-            const SizedBox(width: 6),
-          ],
-          Flexible(
-            child: Text(
-              text,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Colors.white, fontSize: 12.5),
-            ),
-          ),
-        ],
+      child: Text(
+        text,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(color: Colors.white, fontSize: 14),
       ),
     );
   }

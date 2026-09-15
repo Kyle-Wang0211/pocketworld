@@ -500,6 +500,17 @@ class AppL10nZh extends AppL10n {
   }
 
   @override
+  String get etaCalculating => '计算中…';
+
+  @override
+  String get etaUnderMinute => '剩余等待时间 · 不到一分钟';
+
+  @override
+  String etaMinutes(int n) {
+    return '剩余等待时间 · 约 $n 分钟';
+  }
+
+  @override
   String sfmChipReconDone(int count) {
     return '重建完成 · $count 点';
   }

@@ -80,6 +80,38 @@ typedef CloudViewCamera = ({
   double pivotZ,
 });
 
+/// [LIVE-WAIT 2026-09-15] A capture-pose start for [SparseCloudView].
+///
+/// The rig reproduces a real pinhole camera: eye = pivot − camDist·forward
+/// with the pivot on the capture camera's optical axis (Potree View.getPivot,
+/// src/viewer/View.js L73-75: pivot = position + direction·radius), so the
+/// eye sits at the capture camera centre; [f]/[ox]/[oy] are the AR viewport's
+/// pinhole in the cloud view's own pixel coordinates (top-left origin), which
+/// the view turns into zoom/pan once it knows its size. Built by
+/// capturePoseToRig() in capture_pose_camera.dart.
+class PerspectiveStart {
+  const PerspectiveStart({
+    required this.yaw,
+    required this.pitch,
+    required this.roll,
+    required this.pivotX,
+    required this.pivotY,
+    required this.pivotZ,
+    required this.camDist,
+    required this.f,
+    required this.ox,
+    required this.oy,
+  });
+  final double yaw, pitch, roll;
+  final double pivotX, pivotY, pivotZ;
+
+  /// Eye distance from the pivot along the view axis (world units).
+  final double camDist;
+
+  /// Pixel focal length and principal point (absolute px in the view).
+  final double f, ox, oy;
+}
+
 /// 外部驱动相机的控制器(骰子点击归位用)。视图仍是相机的持有者 ——
 /// 这里只投递"请转到这个姿态"的一次性目标,避免把整套相机状态提升出去。
 class CloudViewController extends ChangeNotifier {
@@ -206,6 +238,7 @@ class SparseCloudView extends StatefulWidget {
     this.visibility,
     this.showControls = true,
     this.initialCamera,
+    this.initialPerspective,
     this.onCameraChanged,
     this.selectionBox,
     this.onBoxChanged,
@@ -248,6 +281,11 @@ class SparseCloudView extends StatefulWidget {
 
   /// 初始相机(null = 默认取景)。
   final CloudViewCamera? initialCamera;
+
+  /// [LIVE-WAIT 2026-09-15] 拍摄位姿起始态("关灯了,点云还在原地"):视图以
+  /// **透视**投影从拍摄相机的位置/朝向/焦距开画,第一次手势(或进编辑)时
+  /// 平滑过渡到本页的正交轨道相机。null = 历史行为逐位不变。
+  final PerspectiveStart? initialPerspective;
 
   /// 相机变化上报(供父页面记住,进编辑页时传下去)。**不要**在回调里
   /// setState —— 每帧手势都会触发。
@@ -296,7 +334,13 @@ const double _kPitchLimit = math.pi / 2 - 0.02;
 enum _BoxDrag { none, handle }
 
 class _SparseCloudViewState extends State<SparseCloudView>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
+  // [LIVE-WAIT 2026-09-15] capture-pose start state. null/1.0 = the historical
+  // rig, bit-identical (see CloudCamera.camDistOverride / orthoMix).
+  double? _camDistOverride;
+  double _orthoMix = kCloudOrthographic ? 1.0 : 0.0;
+  PerspectiveStart? _pendingPerspective;
+  late final AnimationController _morph;
   double _yaw = _kDefaultYaw;
   double _pitch = _kDefaultPitch;
   double _roll = 0;
@@ -360,10 +404,15 @@ class _SparseCloudViewState extends State<SparseCloudView>
       _panY = cam.panY;
       _pivot = [cam.pivotX, cam.pivotY, cam.pivotZ];
     }
+    _pendingPerspective = widget.initialPerspective;
     _tween = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 280),
     )..addListener(_onTween);
+    _morph = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 280),
+    )..addListener(_onMorph);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _emitCamera();
     });
@@ -394,6 +443,8 @@ class _SparseCloudViewState extends State<SparseCloudView>
   @override
   void didUpdateWidget(SparseCloudView old) {
     super.didUpdateWidget(old);
+    // [LIVE-WAIT] the selection handles assume the orthographic rig.
+    if (widget.editing && !old.editing) _beginOrthoMorph();
     // 浏览 → 编辑:立刻把视角拉回正俯视。
     //
     // [2026-08-07 用户签决] "编辑模式绝对不允许存在这种 45 度的情况"。
@@ -424,6 +475,7 @@ class _SparseCloudViewState extends State<SparseCloudView>
   void dispose() {
     widget.controller?.removeListener(_onControllerTarget);
     _tween.dispose();
+    _morph.dispose();
     super.dispose();
   }
 
@@ -449,6 +501,8 @@ class _SparseCloudViewState extends State<SparseCloudView>
       pivotZ: _pivot[2],
       radius: _fitRadius,
       orthographic: kCloudOrthographic,
+      camDistOverride: _camDistOverride,
+      orthoMix: _orthoMix,
     ).projectionFor(size);
   }
 
@@ -463,6 +517,8 @@ class _SparseCloudViewState extends State<SparseCloudView>
     pivotY: _pivot[1],
     pivotZ: _pivot[2],
     radius: _fitRadius,
+    camDistOverride: _camDistOverride,
+    orthoMix: _orthoMix,
     // [2026-07-30 用户签决] 浏览与编辑用**同一种**投影。
     //
     // 曾经是 `orthographic: widget.editing` —— 07-29 为"框外必须全红"给编辑态
@@ -483,6 +539,7 @@ class _SparseCloudViewState extends State<SparseCloudView>
   bool _ignoreGesture = false;
 
   void _onScaleStart(ScaleStartDetails d) {
+    _beginOrthoMorph();
     _gestureBox = null;
     _activeHandle = null;
     _boxMode = _BoxDrag.none;
@@ -569,6 +626,45 @@ class _SparseCloudViewState extends State<SparseCloudView>
     ));
   }
 
+  // ── [LIVE-WAIT] perspective start → orthographic rig ──────────────────
+
+  void _onMorph() {
+    if (!mounted) return;
+    setState(() {
+      _orthoMix = Curves.easeOutCubic.transform(_morph.value);
+    });
+  }
+
+  /// First gesture / entering edit after a perspective start: blend the
+  /// divisor from depth to camDist (Cesium SceneTransitioner pattern — the
+  /// pivot plane keeps its size throughout). No-op on the historical rig.
+  void _beginOrthoMorph() {
+    if (!kCloudOrthographic || _orthoMix == 1.0 || _morph.isAnimating) return;
+    _morph
+      ..reset()
+      ..forward();
+  }
+
+  /// Applies the capture-pose start once the view knows its size (zoom/pan
+  /// are size-relative: f = half·fillK·zoom, ox = w/2 + panX).
+  void _applyPendingPerspective(Size size) {
+    final p = _pendingPerspective;
+    if (p == null || size.isEmpty) return;
+    _pendingPerspective = null;
+    _yaw = p.yaw;
+    _pitch = p.pitch;
+    _roll = p.roll;
+    _pivot = [p.pivotX, p.pivotY, p.pivotZ];
+    _camDistOverride = p.camDist;
+    _zoom = p.f / (size.shortestSide * 0.5 * kFitFillK);
+    _panX = p.ox - size.width * 0.5;
+    _panY = p.oy - size.height * 0.5;
+    _orthoMix = 0.0;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _emitCamera();
+    });
+  }
+
   void _onTween() {
     final a = _tweenFrom, b = _tweenTo;
     if (a == null || b == null) return;
@@ -608,6 +704,7 @@ class _SparseCloudViewState extends State<SparseCloudView>
   /// orbit/zoom around. Picks the front-most point within a screen radius of
   /// the tap; falls back to the globally closest projected point.
   void _focusAt(Offset tap) {
+    _beginOrthoMorph();
     if (_viewSize.isEmpty || widget.xyz.isEmpty) return;
     final world = SparseCloudPainter.pointAtScreen(
       xyz: widget.xyz,
@@ -656,6 +753,10 @@ class _SparseCloudViewState extends State<SparseCloudView>
       );
       return;
     }
+    // [LIVE-WAIT] back to the historical rig: no eye override, orthographic.
+    _pendingPerspective = null;
+    _camDistOverride = null;
+    _orthoMix = kCloudOrthographic ? 1.0 : 0.0;
     _animateTo(
       _CamState(
         pivot: orbitPivotOf(widget.xyz),
@@ -717,6 +818,7 @@ class _SparseCloudViewState extends State<SparseCloudView>
           child: LayoutBuilder(
             builder: (context, constraints) {
               _viewSize = constraints.biggest;
+              _applyPendingPerspective(_viewSize);
               return GestureDetector(
                 onScaleStart: _onScaleStart,
                 onScaleUpdate: (d) {
@@ -798,6 +900,8 @@ class _SparseCloudViewState extends State<SparseCloudView>
                               // 重合(RS 观感)。
                               drawSelectionWireframe: false,
                               orthographic: kCloudOrthographic,
+                              camDistOverride: _camDistOverride,
+                              orthoMix: _orthoMix,
                               bottomFade: widget.bottomFade,
                               bottomFadeArcRadius: widget.bottomFadeArcRadius,
                             ),
@@ -861,6 +965,8 @@ class SparseCloudPainter extends CustomPainter {
     this.roll = 0,
     this.bottomFade = 0,
     this.bottomFadeArcRadius = 0,
+    this.camDistOverride,
+    this.orthoMix,
   });
 
   final Float32List xyz;
@@ -916,6 +1022,10 @@ class SparseCloudPainter extends CustomPainter {
   /// 正交投影(见 CloudCamera.orthographic)。浏览与编辑同取
   /// [kCloudOrthographic] —— 两态用不同投影会在切换瞬间造成"角度变了"的错觉。
   final bool orthographic;
+
+  /// See CloudCamera.camDistOverride / orthoMix (null = historical rig).
+  final double? camDistOverride;
+  final double? orthoMix;
 
   /// 屏幕滚转(过极翻面动画专用;见 CloudCamera.roll)。roll==0 时热循环
   /// 零开销跳过,查看器路径逐位不变。
@@ -1425,11 +1535,13 @@ class SparseCloudPainter extends CustomPainter {
       fillK: fitFillK,
       orthographic: orthographic,
       roll: roll,
+      camDistOverride: camDistOverride,
+      orthoMix: orthoMix,
     ).projectionFor(size);
     final cosY = proj.cosY, sinY = proj.sinY;
     final cosP = proj.cosP, sinP = proj.sinP;
     final f = proj.f, camDist = proj.camDist, ox = proj.ox, oy = proj.oy;
-    final ortho = proj.orthographic;
+    final mix = proj.orthoMix;
     final cosR = proj.cosR, sinR = proj.sinR;
     final hasRoll = !(sinR == 0.0 && cosR == 1.0);
 
@@ -1483,7 +1595,9 @@ class SparseCloudPainter extends CustomPainter {
       // the wrong side). Negating x1 flips "right" so the visual basis is
       // right-handed again, matching the desktop three.js viewer.
       // 除数按投影模式选(与 CloudProjection.project() 同式,parity 测试锁)
-      final dd = ortho ? camDist : depth;
+      final dd = mix == 1.0
+          ? camDist
+          : (mix == 0.0 ? depth : depth + (camDist - depth) * mix);
       var vx = ox - x1 * f / dd;
       var vy = oy - y2 * f / dd;
       if (hasRoll) {
@@ -1525,7 +1639,7 @@ class SparseCloudPainter extends CustomPainter {
       vyA[m] = vy;
       // sizeAttenuation: point radius scales with 1/depth (unit size at
       // the fitted cloud distance).
-      scaleA[m] = ortho ? baseScale : baseScale * (camDist / depth);
+      scaleA[m] = mix == 1.0 ? baseScale : baseScale * (camDist / dd);
       depthA[m] = depth;
       var argb = displayColors[i];
       if (outsideSelection) {
@@ -1597,7 +1711,9 @@ class SparseCloudPainter extends CustomPainter {
           final z2 = py * sinP + z1 * cosP;
           final depth = z2 + camDist;
           if (depth <= 1e-6) return null;
-          final dd = ortho ? camDist : depth;
+          final dd = mix == 1.0
+              ? camDist
+              : (mix == 0.0 ? depth : depth + (camDist - depth) * mix);
           var lx = ox - x1 * f / dd;
           var ly = oy - y2 * f / dd;
           if (hasRoll) {
@@ -1632,5 +1748,7 @@ class SparseCloudPainter extends CustomPainter {
       old.exposure != exposure ||
       old.tone != tone ||
       old.selectionBox != selectionBox ||
+      old.camDistOverride != camDistOverride ||
+      old.orthoMix != orthoMix ||
       old.drawSelectionWireframe != drawSelectionWireframe;
 }

@@ -2047,9 +2047,15 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
               // [SPRINT-RACE] Also consult the native capture-active atomic:
               // it flips synchronously with the AR session stop, closing the
               // in-flight-event race the message-driven flag cannot cover.
-              final beforeGlobal = (finishPending || !nativeCaptureActive())
-                  ? null
-                  : session!.previewTracked();
+              // [LIVE-WAIT 2026-09-15] The finish tap no longer silences the
+              // per-frame preview: the wait page draws every drain-time preview
+              // (the cloud keeps growing after the tap). Only the interim global
+              // BA stays gated by finish/capture-active — that is the measured
+              // 9.5 s of wasted wall time the SPRINT-MODE note refers to.
+              final captureLive = !finishPending && nativeCaptureActive();
+              final beforeGlobal = (captureLive || boot.arEveryFrame)
+                  ? session!.previewTracked()
+                  : null;
               // [AR-EVERY-FRAME 2026-08-04] 默认关。开启后:每个被接受、且已有
               // live_recon 点的帧,直接把这份已在手的 previewTracked 推给 AR,
               // 让点云每帧可见生长,而不是只在下面的全局BA检查点刷新。复用
@@ -2076,7 +2082,8 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
                   prefetched: beforeGlobal,
                 );
               }
-              if (beforeGlobal != null &&
+              if (captureLive &&
+                  beforeGlobal != null &&
                   publishPolicy.shouldRunGlobalBa(
                     registeredFrames: fedIds.length,
                     pointCount: beforeGlobal.count,
@@ -2447,6 +2454,31 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
             'phase-1 done (${summary['phase1'] ?? 'db_rerun'}); refined snapshot '
             'will be delivered immediately on completion',
           );
+          // [LIVE-WAIT 2026-09-15] phase-1 landed: publish the live recon as an
+          // interim (uncoloured) preview so the wait page shows the registered +
+          // locally optimised cloud while phase-2 global BA runs. Source name is
+          // distinct from the capture-time streams and from the finish-time
+          // 'streaming_local_ba' terminal cloud (see the colorize path's warning).
+          try {
+            final p1 = s.previewTracked();
+            if (p1.count > 0) {
+              sendSnapshot(
+                'preview',
+                <String, dynamic>{
+                  'source': 'finalize_local_live',
+                  'terminal': false,
+                  'publish_version': publishPolicy.version,
+                  'n_registered': fedIds.length,
+                  'n_points3d': p1.count,
+                },
+                0,
+                preview: true,
+                prefetched: p1,
+              );
+            }
+          } catch (e) {
+            wlog('phase-1 preview failed (non-fatal): $e');
+          }
           // Phase 2 runs on the session's own native thread; poll the
           // lock-free status flag until it lands. 250 ms(原 700 ms):
           // refined 是唯一用户可见成果,轮询间隔直接计入交付延迟;读的是

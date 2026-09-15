@@ -263,6 +263,16 @@
       }
     }
   },
+  "etaCalculating": "Calculating…",
+  "etaUnderMinute": "Time remaining · under a minute",
+  "etaMinutes": "Time remaining · about {n} min",
+  "@etaMinutes": {
+    "placeholders": {
+      "n": {
+        "type": "int"
+      }
+    }
+  },
   "sfmChipReconDone": "Reconstruction complete · {count} pts",
   "@sfmChipReconDone": {
     "placeholders": {

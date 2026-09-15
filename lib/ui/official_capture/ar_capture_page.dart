@@ -24,6 +24,8 @@
 
 import 'dart:async';
 import 'dart:io';
+
+import 'package:path_provider/path_provider.dart';
 import 'dart:math' as math;
 import 'dart:typed_data' show Int32List, Float32List, Float64List, Uint8List;
 
@@ -71,6 +73,8 @@ import '../../official_capture/representative_color.dart';
 import '../../official_capture/shutter_backpressure_gate.dart';
 import '../../official_capture/sparse_ply.dart';
 import '../../official_capture/telemetry_writer.dart';
+import '../../eta/eta_prior_log.dart';
+import '../../eta/pipeline_eta.dart';
 import '../../official_capture/transient_preview_cleanup.dart';
 import '../../official_capture/dome/dome_target_points.dart';
 import '../../official_capture/realtime_capture_preview.dart';
@@ -89,14 +93,17 @@ import '../reconstruction_route_release_gate.dart';
 import '../scan_record.dart';
 import 'ar_album_page.dart';
 import 'capture_preview_rect.dart';
+import '../../official_capture/capture_format.dart';
 import '../../official_capture/selection_box.dart';
 import 'selection_tools_layer.dart';
 import 'sparse_cloud_view.dart'
     show
         CloudViewCamera,
         CloudViewController,
+        PerspectiveStart,
         SparseCloudPainter,
         editingFrameOf;
+import 'capture_pose_camera.dart';
 import 'capture_exit_dialog.dart';
 import 'official_gallery_routes.dart';
 import 'sfm_preview_overlay.dart';
@@ -408,6 +415,24 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// the cleaner REFINED (phase-2) cloud, but keep this so a REFINE failure
   /// still shows a usable colored cloud instead of an error (采集必出点云).
   SfmLiveSnapshot? _pendingLocalColored;
+
+  /// [LIVE-WAIT 2026-09-15] Interim, uncoloured (all-white, same as the AR
+  /// layer during capture) cloud shown from the finish tap until the refined
+  /// cloud lands: the last streaming snapshot at the tap, then every
+  /// drain-time / phase-1 preview the worker publishes. Never colorized,
+  /// never persisted; `_sfmSnapshot` (refined) takes precedence on screen.
+  SfmLiveSnapshot? _sfmLiveSnapshot;
+
+  /// [LIVE-WAIT] The rig start that reproduces the ARKit camera at the tap
+  /// (capture_pose_camera.dart); null = default framing.
+  PerspectiveStart? _sfmPerspectiveStart;
+
+  /// [LIVE-WAIT] Wait countdown of the sparse job (lib/eta: Ninja prediction +
+  /// commit-once coarse label). Planned when the wait page goes up, finished
+  /// after the PLY is persisted; the prior log lives in the app documents dir.
+  PipelineEta? _sparseEta;
+  EtaPriorLog? _etaPriors;
+  int _etaDrainFedBase = 0;
 
   /// L2 渲染门可见性(ghost_view_filter.dart),与 [_sfmSnapshot] /
   /// [_pendingLocalColored] 的点序逐位对齐;null = 全显示。RENDER-ONLY:
@@ -824,9 +849,13 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         _sfmEventSub = recon.events.listen(_onSfmEvent);
         // 续跑会话没喂过帧 ⇒ _fedMeta 为空 ⇒ 重力对齐会整段跳过、云是歪的。
         // 先用拍摄期落盘的 fed_frames.jsonl 回填,与 sfm_resume 的续跑腿同处理。
-        recon.seedFedMeta(await sfm_resume.loadFedFrameMeta(captureDir));
+        final fedMeta = await sfm_resume.loadFedFrameMeta(captureDir);
+        recon.seedFedMeta(fedMeta);
         await _beginReconUmbrella(captureDir);
         recon.resumeFromDb();
+        unawaited(
+          _beginSparseEta(recon: recon, drainUnits: 0, frames: fedMeta.length),
+        );
         DeviceLog.log('OfficialARCapturePage', 'reconstruct-only: 照 db 续跑');
         return;
       }
@@ -1967,6 +1996,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         _sfmFed = r.fedCount;
         _sfmQueued = r.remainingCount;
         _sfmSnapshot = null;
+        _sfmLiveSnapshot = null; // no live cloud on the refeed path
+        _sfmPerspectiveStart = null;
         _colorizeTarget = null;
         _pendingLocalColored = null;
         _sfmErrorText = null;
@@ -1978,6 +2009,13 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       _startSfmStageTicker();
     }
     await _beginReconUmbrella(captureDir);
+    unawaited(
+      _beginSparseEta(
+        recon: refeed,
+        drainUnits: refeed.remainingCount,
+        frames: plan.ordered.length,
+      ),
+    );
     refeed.finalize();
   }
 
@@ -2108,8 +2146,170 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         if (identical(_sfmStageTicker, t)) _sfmStageTicker = null;
         return;
       }
-      if (_sfmFinalizeStage > 0 && _sfmQueued == 0) setState(() {});
+      // [LIVE-WAIT] the countdown commits itself on the tick (never in build).
+      _sparseEta?.labelAt(DateTime.now().millisecondsSinceEpoch);
+      setState(() {});
     });
+  }
+
+  // ── [LIVE-WAIT 2026-09-15] wait countdown + interim white cloud ──────────
+
+  /// All-white display copy of a worker snapshot (the AR layer's 2026-08-09
+  /// "拍摄期 AR live 云全白" rule, see _publishOfficialSfmCloudToAr). Track
+  /// arrays are dropped: this copy is display-only and never colorized.
+  static SfmLiveSnapshot _whiteSnapshot(Float32List xyz) {
+    final rgb = Uint8List(xyz.length)..fillRange(0, xyz.length, 255);
+    return SfmLiveSnapshot(
+      xyz: xyz,
+      rgb: rgb,
+      posesPacked: Float64List(0),
+      summary: const <String, dynamic>{'source': 'live_white'},
+      refined: false,
+      obsOffsets: Int32List(0),
+      obsFrameIds: Int32List(0),
+      obsXY: Float32List(0),
+    );
+  }
+
+  /// The capture camera at this instant, as the cloud view's start: the AR
+  /// image sits in the CapturePreviewRect (full width, 3:4, below the safe
+  /// top) and the overlay's cloud view shares the screen's top-left origin.
+  PerspectiveStart? _perspectiveStartAtTap(Float32List xyz) {
+    final pose = _previewModel.lastPose;
+    if (pose == null || !mounted) return null;
+    if (pose.imageWidth <= pose.imageHeight || pose.intrinsicFxFyCxCy.length != 4) {
+      DeviceLog.log(
+        'OfficialARCapturePage',
+        'perspective start skipped: image ${pose.imageWidth}x${pose.imageHeight}',
+      );
+      return null;
+    }
+    final screen = MediaQuery.sizeOf(context);
+    final safe = MediaQuery.paddingOf(context);
+    final w = screen.width;
+    final rect = Rect.fromLTWH(
+      0,
+      capturePreviewTop(
+        screen: screen,
+        safeTop: safe.top,
+        safeBottom: safe.bottom,
+      ),
+      w,
+      w / pwPreviewAspect,
+    );
+    final pin = capturePinholeFromPose(
+      extrinsic4x4: pose.extrinsic4x4,
+      intrinsicFxFyCxCy: pose.intrinsicFxFyCxCy,
+      imageWidth: pose.imageWidth,
+      imageHeight: pose.imageHeight,
+      viewport: rect,
+    );
+    if (pin == null) return null;
+    final start = capturePoseToRig(pin: pin, xyz: xyz, viewport: rect);
+    DeviceLog.log(
+      'OfficialARCapturePage',
+      'perspective start: ${start == null ? "none (no point in front)" : "f=${start.f.toStringAsFixed(1)} o=(${start.ox.toStringAsFixed(1)},${start.oy.toStringAsFixed(1)}) camDist=${start.camDist.toStringAsFixed(3)} ypr=(${start.yaw.toStringAsFixed(3)},${start.pitch.toStringAsFixed(3)},${start.roll.toStringAsFixed(3)})"} '
+          'rect=$rect img=${pose.imageWidth}x${pose.imageHeight} k=${pose.intrinsicFxFyCxCy.map((v) => v.toStringAsFixed(1)).join(",")}',
+    );
+    return start;
+  }
+
+  static const String _kEtaPriorLogName = 'official_eta_prior_log.json';
+
+  /// Plans the sparse-job countdown. Units = frames per stage (Parallax's
+  /// per-unit cost model), priors = this device's last run (Ninja's log).
+  /// [drainUnits] = frames still to be fed by the worker at this moment.
+  Future<void> _beginSparseEta({
+    required SfmLiveRecon recon,
+    required int drainUnits,
+    required int frames,
+  }) async {
+    final startMs = DateTime.now().millisecondsSinceEpoch;
+    _etaDrainFedBase = recon.fedCount; // latched now, before any await
+    _sparseEta = null;
+    EtaPriorLog priors;
+    try {
+      final docs = await getApplicationDocumentsDirectory();
+      priors = EtaPriorLog(File('${docs.path}/$_kEtaPriorLogName'));
+      await priors.load();
+    } catch (e) {
+      DeviceLog.log('OfficialARCapturePage', 'eta prior log unavailable: $e');
+      priors = EtaPriorLog(
+        File('${Directory.systemTemp.path}/$_kEtaPriorLogName'),
+      );
+    }
+    if (!mounted || _sfmPhase != SfmPreviewPhase.generating) return;
+    _etaPriors = priors;
+    _sparseEta = PipelineEta(
+      stages: [
+        EtaStage('sparse.drain', drainUnits),
+        EtaStage('sparse.phase1', frames),
+        EtaStage('sparse.refine', frames),
+        EtaStage('sparse.colorize', frames),
+        const EtaStage('sparse.persist', 1),
+      ],
+      priors: priors,
+      startMs: startMs,
+    );
+    // Events that arrived while the log was loading: catch up on the drain.
+    _sparseEta!.markUnits(
+      'sparse.drain',
+      recon.fedCount - _etaDrainFedBase,
+      DateTime.now().millisecondsSinceEpoch,
+    );
+    DeviceLog.log(
+      'OfficialARCapturePage',
+      'eta planned: drain=$drainUnits frames=$frames priors='
+          '${priors.entries.keys.join(",")}',
+    );
+  }
+
+  void _etaMark(String stageId, {int? units}) {
+    final eta = _sparseEta;
+    if (eta == null) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (units == null) {
+      eta.markStageDone(stageId, now);
+    } else {
+      eta.markUnits(stageId, units, now);
+    }
+  }
+
+  /// Job over: ruler verdict to telemetry + device log; priors saved only on
+  /// success (a failed run must not become next run's prior).
+  Future<void> _finishSparseEta({required bool ok}) async {
+    final eta = _sparseEta;
+    final priors = _etaPriors;
+    _sparseEta = null;
+    if (eta == null) return;
+    final r = eta.finish(DateTime.now().millisecondsSinceEpoch);
+    TelemetryWriter.instance.event('eta_ruler', {
+      ...r.toTelemetry(),
+      'job': 'sparse',
+      'ok': ok,
+    });
+    DeviceLog.log(
+      'OfficialARCapturePage',
+      'eta ruler: ${r.verdict.name} label=${r.label} '
+          'committed=${r.committedEtaSec?.toStringAsFixed(1)}s '
+          'actual=${r.actualSec?.toStringAsFixed(1)}s '
+          'total=${r.totalSec.toStringAsFixed(1)}s',
+    );
+    if (ok && priors != null) {
+      try {
+        await priors.save();
+      } catch (e) {
+        DeviceLog.log('OfficialARCapturePage', 'eta prior log save failed: $e');
+      }
+    }
+  }
+
+  /// Bottom pill text: null ⇒ "计算中…" (the overlay's default).
+  String? _sparseWaitLabel(BuildContext context) {
+    final label = _sparseEta?.committed;
+    if (label == null) return null;
+    final l = AppL10n.of(context);
+    return label.minutes == 0 ? l.etaUnderMinute : l.etaMinutes(label.minutes);
   }
 
   void _stopSfmStageTicker() {
@@ -2149,7 +2349,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     if (!mounted) return;
     if (event is SfmLivePreview &&
         (event.snapshot.summary['source'] == 'streaming_global_ba' ||
-            event.snapshot.summary['source'] == 'streaming_local_ba_live')) {
+            event.snapshot.summary['source'] == 'streaming_local_ba_live' ||
+            event.snapshot.summary['source'] == 'finalize_local_live')) {
       // [AR-EVERY-FRAME 2026-08-04] 两种拍摄期流式 source 都路由到 AR overlay
       // 并 return:检查点的 'streaming_global_ba'(既有,~8次),以及每帧的
       // 'streaming_local_ba_live'(实验臂,默认关时永不发出)。**必须在此 return**,
@@ -2193,6 +2394,14 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           obsFrameIds: snapshot.obsFrameIds,
           posesPacked: snapshot.posesPacked,
         );
+      }
+      // [LIVE-WAIT 2026-09-15] After the finish tap the same streams (drain-time
+      // per-frame previews, then the phase-1 cloud) feed the wait page as an
+      // all-white interim cloud until the refined one lands. Display-only.
+      if (_sfmPhase == SfmPreviewPhase.generating &&
+          _sfmSnapshot == null &&
+          snapshot.pointCount > 0) {
+        setState(() => _sfmLiveSnapshot = _whiteSnapshot(snapshot.xyz));
       }
       unawaited(_publishOfficialSfmCloudToAr(snapshot, receiveTag));
       return;
@@ -2272,6 +2481,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           break; // 已在上方早退处理(不触发 rebuild)
         case SfmLiveFrameFed():
           _sfmFed = _sfmRecon?.fedCount ?? _sfmFed;
+          _etaMark('sparse.drain', units: _sfmFed - _etaDrainFedBase);
           _sfmQueued = _sfmRecon?.remainingCount ?? _sfmQueued;
           // 拥塞遥测标签:队列深度刚变,重估标签(纯观测,已在 setState 内)。
           _recomputeShutterPace(inSetState: true);
@@ -2288,6 +2498,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           // 拥塞遥测标签:入队即重估(队列上行沿是标签的主要触发,纯观测)。
           _recomputeShutterPace(inSetState: true);
         case SfmLiveFinalizePhase1Done():
+          _etaMark('sparse.phase1');
           // 修1:phase1 完成 → 阶段 2(后台全局 BA,分钟级)。
           if (_sfmPhase == SfmPreviewPhase.generating &&
               _sfmFinalizeStage < 2) {
@@ -2305,8 +2516,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           // generating spinner / the previous colored cloud until then. The
           // streaming-preview cloud is now track-annotated, so it colorizes on
           // the SAME path — it is the ONLY cloud shown (global BA deferred).
+          if (event is SfmLiveRefined) _etaMark('sparse.refine');
           break;
         case SfmLiveFailed(:final stage, :final message):
+          unawaited(_finishSparseEta(ok: false));
           // During capture (overlay hidden) a per-frame failure is log-only;
           // once the preview is up, a finalize/refine failure surfaces the
           // non-blocking "已保留素材" state. But a REFINE failure after
@@ -2459,6 +2672,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       maxInFlight: colorizePar,
       isCancelled: () => !identical(_colorizeTarget, snap),
     );
+    if (identical(_colorizeTarget, snap)) _etaMark('sparse.colorize');
     final decoded = dstats.framesSampled;
     final decodeFail = dstats.decodeFail;
     // 遥测【colorize】:每次真实 native 解码耗时(去重后 unique 次数;
@@ -2689,6 +2903,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       if (persistOk) {
         unawaited(_pushReconProgress(0.95, '即将完成'));
       }
+      if (snap.refined) {
+        _etaMark('sparse.persist');
+        unawaited(_finishSparseEta(ok: persistOk));
+      }
     }
     // Display only if still mounted + current. THIS is where the cloud first
     // becomes visible — fully colored — and the phase advances in lock-step, so
@@ -2876,6 +3094,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         if (!mounted) return;
         setState(() {
           _sfmPhase = null;
+          _sfmLiveSnapshot = null;
+          _sfmPerspectiveStart = null;
           _showDraftsWhileReconstructing = false;
         });
         if (_sfmPendingPop) {
@@ -4003,7 +4223,23 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         _sfmPhase = SfmPreviewPhase.generating;
         _sfmFinalizeStage = 0;
         _sfmStageStartMs = DateTime.now().millisecondsSinceEpoch;
+        // [LIVE-WAIT 2026-09-15] "关灯了,点云还在原地": the last streaming
+        // cloud (ARKit world, all-white) is on screen from this very frame.
+        final live = _liveCloudXyz;
+        _sfmLiveSnapshot = live == null ? null : _whiteSnapshot(live);
+        _sfmPerspectiveStart = live == null ? null : _perspectiveStartAtTap(live);
       });
+      // The wait starts now (shutter drain + saves + finalize + colour).
+      final reconAtTap = _sfmRecon;
+      if (reconAtTap != null) {
+        unawaited(
+          _beginSparseEta(
+            recon: reconAtTap,
+            drainUnits: math.max(0, _projectPhotos.count - reconAtTap.fedCount),
+            frames: _projectPhotos.count,
+          ),
+        );
+      }
     }
     try {
       await _shutterQueue.freezeAndDrain();
@@ -4921,8 +5157,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           if (_sfmPhase != null)
             SfmPreviewOverlay(
               phase: _sfmPhase!,
-              snapshot: _sfmSnapshot,
+              snapshot: _sfmSnapshot ?? _sfmLiveSnapshot,
               errorText: _sfmErrorText,
+              waitLabel: _sparseWaitLabel(context),
+              initialPerspective: _sfmPerspectiveStart,
               // [2026-08-09 用户签决] 进度口径=用户视角:"已完成 x/N 帧",
               // N=本场实拍照片数。补算/重喂是内部机制,不暴露 —— 欠账帧
               // 补算完成时 fed 自然爬到 N,用户只看到计数在涨。
