@@ -45,15 +45,26 @@ void main() {
 
   test('阳性对照:三个锚点在非注释行里都还在', () {
     // 锚点没了 = 结构被重构过,下面的顺序判据会静默全绿,必须先在这里炸。
-    expect(at('final beforeGlobal ='), greaterThanOrEqualTo(0),
-        reason: 'beforeGlobal 改名了 —— 先修锚,别改判据');
-    expect(at('publishPolicy.shouldRunGlobalBa('), greaterThanOrEqualTo(0),
-        reason: 'interim 全局 BA 的守卫改名了 —— 先修锚');
-    expect(at("'phase-1 done ("), greaterThanOrEqualTo(0),
-        reason: 'phase-1 日志改词了 —— 先修锚');
-    expect(at('Timer.periodic(const Duration(milliseconds: 250)'),
-        greaterThanOrEqualTo(0),
-        reason: 'phase-2 轮询改了 —— 先修锚');
+    expect(
+      at('final beforeGlobal ='),
+      greaterThanOrEqualTo(0),
+      reason: 'beforeGlobal 改名了 —— 先修锚,别改判据',
+    );
+    expect(
+      at('publishPolicy.shouldRunGlobalBa('),
+      greaterThanOrEqualTo(0),
+      reason: 'interim 全局 BA 的守卫改名了 —— 先修锚',
+    );
+    expect(
+      at("'phase-1 done ("),
+      greaterThanOrEqualTo(0),
+      reason: 'phase-1 日志改词了 —— 先修锚',
+    );
+    expect(
+      at('Timer.periodic(const Duration(milliseconds: 250)'),
+      greaterThanOrEqualTo(0),
+      reason: 'phase-2 轮询改了 —— 先修锚',
+    );
   });
 
   test('🔴 ① 排空期每帧 preview 不再被 finishPending 掐断', () {
@@ -61,75 +72,124 @@ void main() {
     expect(
       src.contains('(finishPending || !nativeCaptureActive())'),
       isFalse,
-      reason: '回退了:finishPending 又把 previewTracked() 整个短路掉了,'
+      reason:
+          '回退了:finishPending 又把 previewTracked() 整个短路掉了,'
           '等待页会重新变成静止黑页',
     );
     // 新形态:capture 活着**或**每帧推送开着,就一定去拿点云。
-    final capture = at('final captureLive = !finishPending && nativeCaptureActive();');
-    final ternary = at('final beforeGlobal = (captureLive || boot.arEveryFrame)');
-    expect(capture, greaterThanOrEqualTo(0),
-        reason: 'captureLive 必须是独立的一个量 —— 拿点云与跑 BA 要能分开判');
+    final capture = at(
+      'final captureLive = !finishPending && nativeCaptureActive();',
+    );
+    final ternary = at(
+      'final beforeGlobal = (captureLive || boot.arEveryFrame)',
+    );
+    expect(
+      capture,
+      greaterThanOrEqualTo(0),
+      reason: 'captureLive 必须是独立的一个量 —— 拿点云与跑 BA 要能分开判',
+    );
     expect(ternary, greaterThan(capture));
-    expect(lines[ternary + 1].contains('? session!.previewTracked()'), isTrue,
-        reason: '真分支必须是真的去拿点云');
+    expect(
+      lines[ternary + 1].contains('? session!.previewTracked()'),
+      isTrue,
+      reason: '真分支必须是真的去拿点云',
+    );
     expect(lines[ternary + 2].contains(': null'), isTrue);
   });
 
   test('🔴 ② interim 全局 BA 仍被 captureLive 关死(9.5s 空转不许回来)', () {
     final guard = at('if (captureLive &&');
-    expect(guard, greaterThanOrEqualTo(0),
-        reason: 'SPRINT-MODE 的 9.5s 回来了:finish 之后又会跑 interim 全局 BA');
+    expect(
+      guard,
+      greaterThanOrEqualTo(0),
+      reason: 'SPRINT-MODE 的 9.5s 回来了:finish 之后又会跑 interim 全局 BA',
+    );
     expect(lines[guard + 1].contains('beforeGlobal != null &&'), isTrue);
-    expect(lines[guard + 2].contains('publishPolicy.shouldRunGlobalBa('), isTrue,
-        reason: 'captureLive 必须直接串在 shouldRunGlobalBa 这个守卫上');
+    expect(
+      lines[guard + 2].contains('publishPolicy.shouldRunGlobalBa('),
+      isTrue,
+      reason: 'captureLive 必须直接串在 shouldRunGlobalBa 这个守卫上',
+    );
     // 拿点云排在守卫之前 —— 顺序反了就是又把两件事绑回一起。
-    expect(at('final beforeGlobal = (captureLive || boot.arEveryFrame)'),
-        lessThan(guard));
+    expect(
+      at('final beforeGlobal = (captureLive || boot.arEveryFrame)'),
+      lessThan(guard),
+    );
   });
 
   test('拍摄期每帧推送那条(streaming_local_ba_live)原样保留', () {
     // 它现在**同时**承担排空期的每帧 preview —— 被顺手删掉/改门,①就空了。
     final push = at("'source': 'streaming_local_ba_live',");
     expect(push, greaterThanOrEqualTo(0));
-    expect(src.contains('if (boot.arEveryFrame &&'), isTrue,
-        reason: '这条的门仍是 arEveryFrame,不是 captureLive');
+    expect(
+      src.contains('if (boot.arEveryFrame &&'),
+      isTrue,
+      reason: '这条的门仍是 arEveryFrame,不是 captureLive',
+    );
   });
 
-  test('🔴 ③ phase-1 落地就发布 live recon(在 phase-1 日志之后、轮询之前)', () {
-    final done = at("'phase-1 done (");
+  test('🔴 ③ 排空完的 live recon 在 finalize_async 之前发布(之后 getter 就关了)', () {
+    // vendor/official_sfm/include/aether_sfm_c.h:180-186: the live-preview
+    // getters gate off once finalize_async returns ⇒ the publish must come first.
+    final fin = at('final summary = s.finalizeAsync();');
     final publish = at("'source': 'finalize_local_live',");
-    final poll = at('Timer.periodic(const Duration(milliseconds: 250)');
-    expect(done, greaterThanOrEqualTo(0));
-    expect(publish, greaterThanOrEqualTo(0),
-        reason: 'phase-1 落地不发布 ⇒ 用户要一直等到 refined 才第一次看到点云');
-    expect(publish, greaterThan(done),
-        reason: '必须等 phase-1 真的 ok 之后才发 —— 提前发的是上一轮的旧云');
-    expect(publish, lessThan(poll),
-        reason: '必须排在 phase-2 轮询之前,否则 refined 都到了才发就没意义了');
+    final caseFinalize = at("case 'finalize':");
+    expect(fin, greaterThanOrEqualTo(0));
+    expect(
+      publish,
+      greaterThanOrEqualTo(0),
+      reason: '不发布 ⇒ 队列空着按完成的用户要一直等到 refined 才第一次看到点云',
+    );
+    expect(publish, greaterThan(caseFinalize));
+    expect(
+      publish,
+      lessThan(fin),
+      reason: 'finalize_async 返回后 previewTracked 恒空,发在后面等于没发',
+    );
+    // and the empty case is logged, never silent
+    expect(
+      at("wlog('pre-finalize preview skipped: live recon empty');"),
+      greaterThan(publish),
+    );
   });
 
   test('phase-1 那份 preview 是非终态、且复用已取的点(不二次拷贝)', () {
     final publish = at("'source': 'finalize_local_live',");
     expect(publish, greaterThanOrEqualTo(0));
     final block = lines.sublist(publish - 8, publish + 12).join('\n');
-    expect(block.contains("'terminal': false,"), isTrue,
-        reason: 'terminal=true 会让 UI 把 phase-1 的粗云当拍完的终态云弹出去');
+    expect(
+      block.contains("'terminal': false,"),
+      isTrue,
+      reason: 'terminal=true 会让 UI 把 phase-1 的粗云当拍完的终态云弹出去',
+    );
     expect(block.contains('final p1 = s.previewTracked();'), isTrue);
-    expect(block.contains('prefetched: p1,'), isTrue,
-        reason: '已经在手的点必须复用,否则 finalize 路上白拷一份全量点云');
-    expect(block.contains('preview: true,'), isTrue,
-        reason: '走 previewTracked(live recon),不是 pointsTracked(finalize recon,'
-            '此刻还是空的)');
-    expect(block.contains('if (p1.count > 0)'), isTrue,
-        reason: '空云不许发 —— resume 路径没有内存 live recon');
+    expect(
+      block.contains('prefetched: p1,'),
+      isTrue,
+      reason: '已经在手的点必须复用,否则 finalize 路上白拷一份全量点云',
+    );
+    expect(
+      block.contains('preview: true,'),
+      isTrue,
+      reason:
+          '走 previewTracked(live recon),不是 pointsTracked(finalize recon,'
+          '此刻还是空的)',
+    );
+    expect(
+      block.contains('if (p1.count > 0)'),
+      isTrue,
+      reason: '空云不许发 —— resume 路径没有内存 live recon',
+    );
   });
 
   test('phase-1 发布失败必须吞掉(不许把 finalize 带崩)', () {
     final publish = at("'source': 'finalize_local_live',");
-    final block = lines.sublist(publish - 8, publish + 16).join('\n');
-    expect(block.contains("wlog('phase-1 preview failed (non-fatal): \$e');"),
-        isTrue,
-        reason: '一份可有可无的中间预览,绝不许让唯一用户可见成果 refined 丢掉');
+    final block = lines.sublist(publish - 8, publish + 18).join('\n');
+    expect(
+      block.contains("wlog('pre-finalize preview failed (non-fatal): \$e');"),
+      isTrue,
+      reason: '一份可有可无的中间预览,绝不许让唯一用户可见成果 refined 丢掉',
+    );
   });
 
   test('finishPending 没有在别处重新挡住 preview', () {
@@ -143,7 +203,9 @@ void main() {
     expect(uses.any((l) => l.startsWith('var finishPending = false;')), isTrue);
     expect(uses.any((l) => l.contains('final captureLive =')), isTrue);
     expect(uses.any((l) => l.startsWith('finishPending = true;')), isTrue);
-    expect(uses.any((l) => l.contains('if (!finishPending && session != null)')),
-        isTrue);
+    expect(
+      uses.any((l) => l.contains('if (!finishPending && session != null)')),
+      isTrue,
+    );
   });
 }

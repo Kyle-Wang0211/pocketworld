@@ -75,6 +75,8 @@ import '../../official_capture/sparse_ply.dart';
 import '../../official_capture/telemetry_writer.dart';
 import '../../eta/eta_prior_log.dart';
 import '../../eta/pipeline_eta.dart';
+import '../../dense/dense_live_cloud.dart';
+import '../../dense/dense_stage_progress.dart';
 import '../../official_capture/transient_preview_cleanup.dart';
 import '../../official_capture/dome/dome_target_points.dart';
 import '../../official_capture/realtime_capture_preview.dart';
@@ -104,9 +106,11 @@ import 'sparse_cloud_view.dart'
         SparseCloudPainter,
         editingFrameOf;
 import 'capture_pose_camera.dart';
+import 'dense_wait_eta.dart';
 import 'capture_exit_dialog.dart';
 import 'official_gallery_routes.dart';
 import 'sfm_preview_overlay.dart';
+import 'sparse_cloud_viewer_page.dart' show SparseCloudData, loadReviewCloud;
 import '../sparse_thumbnail.dart';
 import '../../util/image_sanitize.dart';
 import '../../vio/diagnostics/vio_diagnostics_recorder.dart';
@@ -122,9 +126,13 @@ class OfficialARCapturePage extends StatefulWidget {
     super.key,
     this.extendCaptureDir,
     this.reconstructOnlyCaptureDir,
+    this.reviewCaptureDir,
   }) : assert(
-         extendCaptureDir == null || reconstructOnlyCaptureDir == null,
-         '补拍和「只重建」是两种进入方式,不能同时给',
+         (extendCaptureDir == null ? 0 : 1) +
+                 (reconstructOnlyCaptureDir == null ? 0 : 1) +
+                 (reviewCaptureDir == null ? 0 : 1) <=
+             1,
+         '补拍、「只重建」、「查看」是三种进入方式,不能同时给',
        );
 
   /// [2026-09-08 追加拍摄] 非空 = 往这个已有项目里补拍:复用它的 capture 目录、
@@ -149,6 +157,11 @@ class OfficialARCapturePage extends StatefulWidget {
   /// `_sfmPhase` 点亮 —— SfmPreviewOverlay 是 Stack 最顶层且"owns navigation",
   /// 点亮之后它就盖住整屏,下面的相机预览层从第一帧起就没露过面。
   final String? reconstructOnlyCaptureDir;
+
+  /// [SAME-PAGE 2026-09-15 用户签决「从个人页再点进项目也走这同一个页面」]
+  /// 查看模式:不开相机、不重建,把盘上的稀疏点云装进和拍完一模一样的页
+  /// (编辑 / 下一步 / 保存草稿)。稠密在跑时页面照常接它的进度(见 dense 接线)。
+  final String? reviewCaptureDir;
 
   @override
   State<OfficialARCapturePage> createState() => _OfficialARCapturePageState();
@@ -426,6 +439,16 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// [LIVE-WAIT] The rig start that reproduces the ARKit camera at the tap
   /// (capture_pose_camera.dart); null = default framing.
   PerspectiveStart? _sfmPerspectiveStart;
+
+  /// [DENSE-SAME-PAGE 2026-09-15] Display wrapper of the growing dense cloud
+  /// (lib/dense DenseLiveCloud, review budget); rebuilt only when its buffers
+  /// change identity. The sparse `_sfmSnapshot` stays the editing/next source.
+  SfmLiveSnapshot? _denseDisplay;
+  Float32List? _denseDisplayKey;
+
+  /// Dense PLY already on disk when the page is entered in review mode (shown
+  /// instead of the sparse cloud; dense is then "done" for this project).
+  SfmLiveSnapshot? _denseReviewSnapshot;
 
   /// [LIVE-WAIT] Wait countdown of the sparse job (lib/eta: Ninja prediction +
   /// commit-once coarse label). Planned when the wait page goes up, finished
@@ -800,6 +823,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   @override
   void initState() {
     super.initState();
+    // [DENSE-SAME-PAGE] the dense stage reports through a global notifier; this
+    // page follows it for its own project (running → cloud grows, done → 完成).
+    denseStageProgress.addListener(_onDenseProgress);
+    DenseWaitEta.instance.label.addListener(_onDenseProgress);
+    DenseWaitEta.instance.ensureAttached();
     _shutterQueue = ManualCaptureQueue(
       maxTickets: kOfficialMaximumCaptureFrames,
       execute: _executeShutterTicket,
@@ -812,6 +840,13 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // Capture reconstruction runs on-device via streaming SfM (see
     // _startSfmLiveRecon) plus server-side recon on upload — no local model
     // download gate. The App Store install bundle stays small (~80 MB).
+    final review = widget.reviewCaptureDir;
+    if (review != null) {
+      _initializing = false;
+      _sfmPhase = SfmPreviewPhase.generating; // cover page while the PLY loads
+      unawaited(_enterReviewMode(review));
+      return;
+    }
     final reconstructOnly = widget.reconstructOnlyCaptureDir;
     if (reconstructOnly != null) {
       // 只重建:绝不碰相机/ARKit。浮层立刻点亮,盖住整屏。
@@ -2157,8 +2192,15 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// All-white display copy of a worker snapshot (the AR layer's 2026-08-09
   /// "拍摄期 AR live 云全白" rule, see _publishOfficialSfmCloudToAr). Track
   /// arrays are dropped: this copy is display-only and never colorized.
+  static Uint8List? _whiteRgbCache;
   static SfmLiveSnapshot _whiteSnapshot(Float32List xyz) {
-    final rgb = Uint8List(xyz.length)..fillRange(0, xyz.length, 255);
+    // one all-white buffer per length (a drain-time preview arrives per fed
+    // frame; the painter keys its colour cache on xyz identity, not rgb)
+    var rgb = _whiteRgbCache;
+    if (rgb == null || rgb.length != xyz.length) {
+      rgb = Uint8List(xyz.length)..fillRange(0, xyz.length, 255);
+      _whiteRgbCache = rgb;
+    }
     return SfmLiveSnapshot(
       xyz: xyz,
       rgb: rgb,
@@ -2212,6 +2254,78 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           'rect=$rect img=${pose.imageWidth}x${pose.imageHeight} k=${pose.intrinsicFxFyCxCy.map((v) => v.toStringAsFixed(1)).join(",")}',
     );
     return start;
+  }
+
+  /// The project directory this page is about: the live capture session's, or
+  /// the one handed in by the reconstruct-only / review entry. Every persist,
+  /// selection-box and dense-stage path must use THIS (the reconstruct-only
+  /// page has no CaptureSession, so `_pageCaptureDir` was null there).
+  String? get _pageCaptureDir =>
+      _session?.captureDir ??
+      widget.reconstructOnlyCaptureDir ??
+      widget.reviewCaptureDir;
+
+  /// [SAME-PAGE 2026-09-15] Gallery re-entry: load the persisted sparse cloud
+  /// (review budget, same loader as the old viewer page) into the finished
+  /// wait-page state. Missing/empty PLY ⇒ the error state (material kept).
+  Future<void> _enterReviewMode(String dir) async {
+    final ply = '$dir/official_sfm_sparse.ply';
+    SparseCloudData? cloud;
+    try {
+      cloud = await compute(loadReviewCloud, ply, debugLabel: 'review_load_sparse');
+    } catch (e) {
+      DeviceLog.log('OfficialARCapturePage', 'review load failed: $e');
+    }
+    // dense already produced for this project ⇒ show it (dev convenience; the
+    // user's deliverable is the mesh, see 2026-09-15 decision on the budget).
+    SparseCloudData? dense;
+    final densePly = '$dir/official_dense.ply';
+    if (File(densePly).existsSync()) {
+      try {
+        dense = await compute(loadReviewCloud, densePly, debugLabel: 'review_load_dense');
+      } catch (e) {
+        DeviceLog.log('OfficialARCapturePage', 'review dense load failed: $e');
+      }
+    }
+    if (!mounted) return;
+    final c = cloud;
+    final d = dense;
+    setState(() {
+      if (d != null && d.count > 0) {
+        _denseReviewSnapshot = SfmLiveSnapshot(
+          xyz: d.xyz,
+          rgb: d.rgb,
+          posesPacked: Float64List(0),
+          summary: const <String, dynamic>{'source': 'dense_review'},
+          refined: true,
+          obsOffsets: Int32List(0),
+          obsFrameIds: Int32List(0),
+          obsXY: Float32List(0),
+        );
+      }
+      if (c == null || c.count == 0) {
+        _sfmPhase = SfmPreviewPhase.error;
+        _sfmErrorText = '未找到点云';
+      } else {
+        _sfmSnapshot = SfmLiveSnapshot(
+          xyz: c.xyz,
+          rgb: c.rgb,
+          posesPacked: Float64List(0),
+          summary: const <String, dynamic>{'source': 'review'},
+          refined: true,
+          obsOffsets: Int32List(0),
+          obsFrameIds: Int32List(0),
+          obsXY: Float32List(0),
+        );
+        _sfmPhase = SfmPreviewPhase.refined;
+      }
+      // "保存草稿" / 完成 on this page pops the route (nothing to reveal).
+      _sfmPendingPop = true;
+    });
+    DeviceLog.log(
+      'OfficialARCapturePage',
+      'review mode: $dir → ${c == null ? "no cloud" : "${c.count} pts (file ${c.sourceCount})"}',
+    );
   }
 
   static const String _kEtaPriorLogName = 'official_eta_prior_log.json';
@@ -2304,6 +2418,60 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     }
   }
 
+  // ── [DENSE-SAME-PAGE 2026-09-15] dense stage on this page ─────────────────
+
+  void _onDenseProgress() {
+    final p = denseStageProgress.value;
+    if (p == null || p.captureDir != _pageCaptureDir) return;
+    if (mounted && _sfmPhase != null) setState(() {});
+  }
+
+  bool get _denseRunningHere {
+    final p = denseStageProgress.value;
+    return p != null &&
+        p.captureDir == _pageCaptureDir &&
+        p.state == DenseStageState.running;
+  }
+
+  bool get _denseDoneHere {
+    if (_denseReviewSnapshot != null) return true;
+    final p = denseStageProgress.value;
+    return p != null &&
+        p.captureDir == _pageCaptureDir &&
+        p.state == DenseStageState.done;
+  }
+
+  /// The growing (or finished) dense cloud of THIS project, as a display
+  /// snapshot; null while it has no points or when the job failed (the sparse
+  /// cloud comes back and 下一步 offers a retry).
+  SfmLiveSnapshot? _denseSnapshotFor(DenseStageProgress? p) {
+    if (p == null || p.captureDir != _pageCaptureDir) return null;
+    if (p.state == DenseStageState.failed) return null;
+    final DenseLiveCloud? live = p.live;
+    if (live == null || live.isEmpty) return null;
+    if (identical(_denseDisplayKey, live.xyz) && _denseDisplay != null) {
+      return _denseDisplay;
+    }
+    _denseDisplayKey = live.xyz;
+    return _denseDisplay = SfmLiveSnapshot(
+      xyz: live.xyz,
+      rgb: live.rgb,
+      posesPacked: Float64List(0),
+      summary: const <String, dynamic>{'source': 'dense_live'},
+      refined: true,
+      obsOffsets: Int32List(0),
+      obsFrameIds: Int32List(0),
+      obsXY: Float32List(0),
+    );
+  }
+
+  String? _denseWaitLabel(BuildContext context) {
+    final label = DenseWaitEta.instance.label.value;
+    if (label == null) return null;
+    final l = AppL10n.of(context);
+    return label.minutes == 0 ? l.etaUnderMinute : l.etaMinutes(label.minutes);
+  }
+
   /// Bottom pill text: null ⇒ "计算中…" (the overlay's default).
   String? _sparseWaitLabel(BuildContext context) {
     final label = _sparseEta?.committed;
@@ -2373,7 +2541,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       );
       if (snapshot.posesPacked.isNotEmpty) {
         _sfmLatestPoses = snapshot.posesPacked;
-        _refreshPhotoCardStates();
+        // the photo cards are covered once the wait page is up
+        if (_sfmPhase == null) _refreshPhotoCardStates();
       }
       // 自动拍位移阈值的场景深度输入(2026-08-24 二拍验证补修):拍摄期的
       // 流式快照**只走这条早退分支**,下方 colorize switch 里的同款钩子在
@@ -2533,7 +2702,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               _pendingLocalColored = null;
               // [2026-08-24] LOCAL 兜底云也是真呈现 —— 同 refined 主路径,
               // 在屏上就算"看过"(PLY 没落盘时 store 侧自然 no-op)。
-              final viewedDir = _session?.captureDir;
+              final viewedDir = _pageCaptureDir;
               if (!_showDraftsWhileReconstructing && viewedDir != null) {
                 unawaited(
                   ScanRecordStore.instance.markResultViewedByCaptureDir(
@@ -2844,7 +3013,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // 案④:灵动岛真实进度锚点 3 —— 取色完成、开始落盘 = 85%。
       unawaited(_pushReconProgress(0.85, '保存点云中'));
     }
-    final captureDir = _session?.captureDir;
+    final captureDir = _pageCaptureDir;
     if (captureDir != null && identical(_colorizeTarget, snap)) {
       final psw = Stopwatch()..start();
       var persistOk = false;
@@ -3132,7 +3301,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   ///
   /// 选区只在用户**真的**选过时才带上 —— 没选区就传 null 表示"处理整朵云"。
   Future<void> _startDenseStage() async {
-    final dir = _session?.captureDir;
+    final dir = _pageCaptureDir;
     final snap = _sfmSnapshot;
     if (dir == null || snap == null) return;
     final r = await denseStageLauncher.start(
@@ -3153,7 +3322,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   Future<void> _enterSfmEditing() async {
     if (_sfmPhase != SfmPreviewPhase.refined) return;
     final snap = _sfmSnapshot;
-    final dir = _session?.captureDir;
+    final dir = _pageCaptureDir;
     if (snap == null || dir == null || snap.pointCount == 0) return;
     final fit = SparseCloudPainter.fitOf(snap.xyz);
     final loaded = await SelectionBox.loadFrom(dir);
@@ -3231,7 +3400,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   ///
   /// [2026-07-30 用户签决"直接学苹果的相册"] 确认的负担只压在破坏性的那一侧。
   Future<void> _exitSfmEditing() async {
-    final dir = _session?.captureDir;
+    final dir = _pageCaptureDir;
     final b = _sfmBox;
     if (dir == null || b == null) return;
     await _persistSfmBox(b, dir, applied: _sfmSelectionApplied);
@@ -3249,7 +3418,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// "放弃"是**真回滚**；编辑期只改内存，入口状态写回同时兼容清理旧版本
   /// 可能遗留的提前落盘记录。
   Future<void> _cancelSfmEditing() async {
-    final dir = _session?.captureDir;
+    final dir = _pageCaptureDir;
     final entry = _sfmEditEntryBox;
     final b = _sfmBox;
     if (dir == null) return;
@@ -3338,7 +3507,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       ),
     );
     if (choice == null || choice == 'cancel') return false;
-    final dir = _session?.captureDir;
+    final dir = _pageCaptureDir;
     if (choice == 'discard') {
       // 回滚到编辑前的正式状态。若当时盘上没有选区，删除旧版本可能提前
       // 写入的记录；不能把仅用于显示的兜底框冒充成用户保存的选区。
@@ -3367,6 +3536,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   Future<void> _onSfmPreviewBack() async {
     if (!await _confirmLeaveWithSelectionEdits()) return;
     if (!mounted) return;
+    if (widget.reviewCaptureDir != null) {
+      Navigator.of(context).pop();
+      return;
+    }
     _showDraftsDuringReconstruction();
   }
 
@@ -3374,7 +3547,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     if (!recordOwnsActiveReconstruction(
       recordCaptureDir: record.captureDir,
       recordPipelineKind: record.pipelineKind,
-      activeCaptureDir: _session?.captureDir,
+      activeCaptureDir: _pageCaptureDir,
       activePipelineKind: CapturePipelineKind.official,
     )) {
       return;
@@ -4716,6 +4889,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     PaintingBinding.instance.imageCache
       ..clear()
       ..clearLiveImages();
+    denseStageProgress.removeListener(_onDenseProgress);
+    DenseWaitEta.instance.label.removeListener(_onDenseProgress);
     super.dispose();
   }
 
@@ -4764,7 +4939,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // 根本不该有拍摄按钮 —— 删掉它,连"当前任务正在重建"那句提示一起没了。
       // 回等待页看进度的入口在卡片上(onActiveReconstructionTap)。
       return MePage(
-        activeReconstructionCaptureDir: _session?.captureDir,
+        activeReconstructionCaptureDir: _pageCaptureDir,
         activeReconstructionPipelineKind: CapturePipelineKind.official,
         onActiveReconstructionTap: _showReconstructionProgress,
         onActiveReconstructionDelete: _permanentlyDeleteActiveReconstruction,
@@ -5157,9 +5332,16 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           if (_sfmPhase != null)
             SfmPreviewOverlay(
               phase: _sfmPhase!,
-              snapshot: _sfmSnapshot ?? _sfmLiveSnapshot,
+              snapshot:
+                  _denseSnapshotFor(denseStageProgress.value) ??
+                  _denseReviewSnapshot ??
+                  _sfmSnapshot ??
+                  _sfmLiveSnapshot,
               errorText: _sfmErrorText,
-              waitLabel: _sparseWaitLabel(context),
+              denseRunning: _denseRunningHere,
+              waitLabel: _denseRunningHere
+                  ? _denseWaitLabel(context)
+                  : _sparseWaitLabel(context),
               initialPerspective: _sfmPerspectiveStart,
               // [2026-08-09 用户签决] 进度口径=用户视角:"已完成 x/N 帧",
               // N=本场实拍照片数。补算/重喂是内部机制,不暴露 —— 欠账帧
@@ -5196,7 +5378,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               // [2026-07-31 用户签决] 底部"下一步" = 启动后续处理;进选区
               // 编辑归右上角那个可选入口。
               onNext:
-                  _sfmSnapshot != null &&
+                  !_denseRunningHere &&
+                      !_denseDoneHere &&
+                      _sfmSnapshot != null &&
                       _sfmSnapshot!.pointCount > 0 &&
                       denseStageLauncher.isAvailable
                   ? () => unawaited(_startDenseStage())
@@ -5206,7 +5390,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               // 入口不会产生两种状态。编辑态的出口("保存"/"返回")归
               // SelectionToolsLayer,这里不再出按钮。
               onEnterEditing:
-                  _sfmSnapshot != null && _sfmSnapshot!.pointCount > 0
+                  !_denseRunningHere &&
+                      !_denseDoneHere &&
+                      _sfmSnapshot != null &&
+                      _sfmSnapshot!.pointCount > 0
                   ? _enterSfmEditing
                   : null,
             ),

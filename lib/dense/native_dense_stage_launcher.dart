@@ -17,6 +17,7 @@ import '../official_capture/photo_archive_runtime.dart' show photoArchiveCodec, 
 import '../official_capture/sfm_resume.dart' show loadFedFrameMeta;
 import '../official_util/device_log.dart' as official_device_log;
 import '../ui/official_capture/sparse_cloud_viewer_page.dart' show loadSparsePly;
+import 'dense_live_cloud.dart';
 import 'dense_stage_progress.dart';
 import 'pw_dense_ffi.dart';
 
@@ -48,13 +49,17 @@ class NativeDenseStageLauncher implements DenseStageLauncher {
       return DenseStageResult(DenseStageStatus.failed, message: '稠密输入不完整: $e');
     }
     _running = true;
-    denseStageProgress.value = DenseStageProgress(captureDir: request.captureDir, state: DenseStageState.running, phase: 'session', startedAt: DateTime.now());
-    unawaited(_runJob(request, inputs));
+    // The display copy of the progressive chunks. Its stride comes from the number of reference frames the job
+    // is about to run, which is exactly what _gather just assembled.
+    final live = DenseLiveCloud(framesPlanned: inputs.frames.length);
+    denseStageProgress.value = DenseStageProgress(
+        captureDir: request.captureDir, state: DenseStageState.running, phase: 'session', startedAt: DateTime.now(), live: live);
+    unawaited(_runJob(request, inputs, live));
     final note = request.selection != null ? '(只处理选区内)' : '(整朵云)';
     return DenseStageResult(DenseStageStatus.started, message: '稠密处理已开始$note');
   }
 
-  Future<void> _runJob(DenseStageRequest request, _Inputs inputs) async {
+  Future<void> _runJob(DenseStageRequest request, _Inputs inputs, DenseLiveCloud live) async {
     final dir = request.captureDir;
     final outPly = '$dir/$kDensePlyFileName';
     final workDir = '$dir/$kDenseWorkDirName';
@@ -66,6 +71,7 @@ class NativeDenseStageLauncher implements DenseStageLauncher {
     official_device_log.DeviceLog.log(
       'DenseStage',
       'start capture=$dir frames=${inputs.frames.length} points=${inputs.pointsXyz.length ~/ 3} '
+      'abi=${_ffi?.abiVersion()} chunks=${_ffi?.hasChunkApi == true} '
       'box=${box == null ? 'none' : '${box.cx.toStringAsFixed(3)},${box.cy.toStringAsFixed(3)},${box.cz.toStringAsFixed(3)} ${box.sx.toStringAsFixed(3)}x${box.sy.toStringAsFixed(3)}x${box.sz.toStringAsFixed(3)}'}',
     );
     try {
@@ -79,6 +85,18 @@ class NativeDenseStageLauncher implements DenseStageLauncher {
           final cur = denseStageProgress.value;
           if (cur == null || cur.captureDir != dir) return;
           denseStageProgress.value = cur.copyWith(phase: p.phase, done: p.done, total: p.total);
+        },
+        // v2 only: one fused reference frame. Nothing arrives on a v1 framework (pwdense_run, no chunks).
+        onChunk: (c) {
+          live.addChunk(frameIndex: c.frameIndex, xyz: c.xyz, rgb: c.rgb);
+          if (live.frames % 10 == 1) {
+            official_device_log.DeviceLog.log(
+                'DenseStage', 'live chunk f=${c.frameIndex} n=${c.pointCount} total=${live.points}');
+          }
+          final cur = denseStageProgress.value;
+          if (cur == null || cur.captureDir != dir) return;
+          // same instance, new DenseStageProgress: the ValueNotifier only notifies on a new object
+          denseStageProgress.value = cur.copyWith(live: live);
         },
       );
       final secs = DateTime.now().difference(t0).inMilliseconds / 1000.0;

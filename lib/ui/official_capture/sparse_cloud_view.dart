@@ -230,6 +230,10 @@ const double kCloudBottomFadeGap = 28.0;
 /// 重合。
 const bool kCloudOrthographic = true;
 
+/// Potree's `maxSize` (50 px) over the 16 px point sprite: the largest a
+/// perspective-attenuated point may be drawn (PointCloudMaterial.js v1.8.2).
+const double kMaxPointSpriteScale = 50.0 / 16.0;
+
 class SparseCloudView extends StatefulWidget {
   const SparseCloudView({
     super.key,
@@ -443,6 +447,12 @@ class _SparseCloudViewState extends State<SparseCloudView>
   @override
   void didUpdateWidget(SparseCloudView old) {
     super.didUpdateWidget(old);
+    // [LIVE-WAIT] the cloud is swapped under a live view (white → refined →
+    // dense): the fit radius (reframe zoom, handle minimum, near clip) must
+    // follow the cloud on screen. The pivot and the user's camera do not move.
+    if (!identical(widget.xyz, old.xyz)) {
+      _fitRadius = SparseCloudPainter.fitOf(widget.xyz).radius;
+    }
     // [LIVE-WAIT] the selection handles assume the orthographic rig.
     if (widget.editing && !old.editing) _beginOrthoMorph();
     // 浏览 → 编辑:立刻把视角拉回正俯视。
@@ -718,6 +728,8 @@ class _SparseCloudViewState extends State<SparseCloudView>
       pivot: _pivot,
       // 渲染门隐藏的点不该被双击对焦锁定(用户看不见它)。
       visibility: widget.visibility,
+      camDistOverride: _camDistOverride,
+      orthoMix: _orthoMix,
     );
     if (world == null) return;
     _animateTo(
@@ -754,7 +766,12 @@ class _SparseCloudViewState extends State<SparseCloudView>
       return;
     }
     // [LIVE-WAIT] back to the historical rig: no eye override, orthographic.
+    // The ortho scale is f/camDist: rescale zoom so the picture does not jump
+    // when camDist goes from the capture eye distance back to radius·k.
+    _morph.stop();
     _pendingPerspective = null;
+    final ov = _camDistOverride;
+    if (ov != null && ov > 0) _zoom *= (_fitRadius * kCamDistK) / ov;
     _camDistOverride = null;
     _orthoMix = kCloudOrthographic ? 1.0 : 0.0;
     _animateTo(
@@ -1372,6 +1389,8 @@ class SparseCloudPainter extends CustomPainter {
     required double panY,
     required List<double> pivot,
     Uint8List? visibility,
+    double? camDistOverride,
+    double orthoMix = 0.0,
   }) {
     if (xyz.isEmpty || size.isEmpty) return null;
     _ensureFit(xyz);
@@ -1391,10 +1410,17 @@ class SparseCloudPainter extends CustomPainter {
       pivotZ: pivot[2],
       radius: _radius,
       fillK: fitFillK,
+      camDistOverride: camDistOverride,
+      orthoMix: orthoMix,
     ).projectionFor(size);
     final cosY = proj.cosY, sinY = proj.sinY;
     final cosP = proj.cosP, sinP = proj.sinP;
     final f = proj.f, camDist = proj.camDist, ox = proj.ox, oy = proj.oy;
+    // Historical pick divisor is the perspective depth (even on the ortho
+    // page); a mid-morph view uses the painter's blend so the pick lands where
+    // the point is drawn. With a perspective start (mix 0) depth is already
+    // the painter's divisor and camDist is the capture eye distance.
+    final blend = orthoMix != 1.0 && orthoMix != 0.0;
     const rPx = 44.0; // tap tolerance
     var bestInRadiusDepth = double.infinity;
     var bestInRadiusIdx = -1;
@@ -1411,8 +1437,9 @@ class SparseCloudPainter extends CustomPainter {
       final z2 = py * sinP + z1 * cosP;
       final depth = z2 + camDist;
       if (depth <= _radius * 0.02) continue;
-      final vx = ox - x1 * f / depth;
-      final vy = oy - y2 * f / depth;
+      final dd = blend ? proj.divisorAt(depth) : depth;
+      final vx = ox - x1 * f / dd;
+      final vy = oy - y2 * f / dd;
       final dx = vx - tap.dx, dy = vy - tap.dy;
       final d2 = dx * dx + dy * dy;
       if (d2 < bestAnyD2) {
@@ -1639,7 +1666,15 @@ class SparseCloudPainter extends CustomPainter {
       vyA[m] = vy;
       // sizeAttenuation: point radius scales with 1/depth (unit size at
       // the fitted cloud distance).
-      scaleA[m] = mix == 1.0 ? baseScale : baseScale * (camDist / dd);
+      if (mix == 1.0) {
+        scaleA[m] = baseScale;
+      } else {
+        // Potree caps attenuated point size at maxSize = 50 px
+        // (src/materials/PointCloudMaterial.js v1.8.2:
+        // getValid(parameters.maxSize, 50.0)); our sprite is 16 px at scale 1.
+        final sc = baseScale * (camDist / dd);
+        scaleA[m] = sc > kMaxPointSpriteScale ? kMaxPointSpriteScale : sc;
+      }
       depthA[m] = depth;
       var argb = displayColors[i];
       if (outsideSelection) {

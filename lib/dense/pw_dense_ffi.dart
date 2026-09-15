@@ -6,10 +6,15 @@
 import 'dart:ffi';
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 
-const int pwDenseAbiVersion = 1;
+/// ABI versions this binding can drive. v2 (2026-09-15) added `pwdense_run2` — the same job plus a per-reference-
+/// frame chunk callback. On a v1 framework that symbol does not exist; the lookup fails, [PwDenseFfi.hasChunkApi]
+/// is false and the job falls back to `pwdense_run` (no chunks), so the app works with either framework.
+const int pwDenseAbiVersionMin = 1;
+const int pwDenseAbiVersionMax = 2;
 
 final class PwDenseFrame {
   const PwDenseFrame({
@@ -161,6 +166,15 @@ typedef _RunC = Int32 Function(Pointer<_FrameRaw>, Int32, Pointer<Float>, Int32,
     Pointer<NativeFunction<_ProgressFnNative>>, Pointer<Void>, Pointer<_StatsRaw>);
 typedef _RunD = int Function(Pointer<_FrameRaw>, int, Pointer<Float>, int, Pointer<_OptionsRaw>,
     Pointer<NativeFunction<_ProgressFnNative>>, Pointer<Void>, Pointer<_StatsRaw>);
+// [v2] per-reference-frame delivery: xyz = n*3 floats, rgb = n*3 bytes, valid only during the call.
+typedef _ChunkFnNative = Int32 Function(Int32 frameIndex, Pointer<Float> xyz, Pointer<Uint8> rgb, Int32 nPoints,
+    Pointer<Void> user);
+typedef _Run2C = Int32 Function(Pointer<_FrameRaw>, Int32, Pointer<Float>, Int32, Pointer<_OptionsRaw>,
+    Pointer<NativeFunction<_ProgressFnNative>>, Pointer<NativeFunction<_ChunkFnNative>>, Pointer<Void>,
+    Pointer<_StatsRaw>);
+typedef _Run2D = int Function(Pointer<_FrameRaw>, int, Pointer<Float>, int, Pointer<_OptionsRaw>,
+    Pointer<NativeFunction<_ProgressFnNative>>, Pointer<NativeFunction<_ChunkFnNative>>, Pointer<Void>,
+    Pointer<_StatsRaw>);
 
 class PwDenseFfi {
   PwDenseFfi._(DynamicLibrary lib)
@@ -168,15 +182,29 @@ class PwDenseFfi {
         _available = lib.lookupFunction<_AbiVersionC, _AbiVersionD>('pwdense_available'),
         _optionsDefault = lib.lookupFunction<_OptionsDefaultC, _OptionsDefaultD>('pwdense_options_default'),
         _defaultModelPath = lib.lookupFunction<_DefaultModelPathC, _DefaultModelPathD>('pwdense_default_model_path'),
-        _run = lib.lookupFunction<_RunC, _RunD>('pwdense_run');
+        _run = lib.lookupFunction<_RunC, _RunD>('pwdense_run'),
+        _run2 = _tryLookupRun2(lib);
+
+  /// `pwdense_run2` only exists on the v2 framework; on v1 the lookup throws ArgumentError and we keep null.
+  static _Run2D? _tryLookupRun2(DynamicLibrary lib) {
+    try {
+      return lib.lookupFunction<_Run2C, _Run2D>('pwdense_run2');
+    } catch (_) {
+      return null;
+    }
+  }
 
   final _AbiVersionD _abiVersion;
   final _AbiVersionD _available;
   final _OptionsDefaultD _optionsDefault;
   final _DefaultModelPathD _defaultModelPath;
   final _RunD _run;
+  final _Run2D? _run2;
 
   int abiVersion() => _abiVersion();
+
+  /// True when the framework exports `pwdense_run2`, i.e. progressive chunks can be delivered.
+  bool get hasChunkApi => _run2 != null;
   int available() => _available();
   String defaultModelPath() {
     final p = _defaultModelPath();
@@ -205,8 +233,9 @@ class PwDenseFfi {
       try {
         final lib = DynamicLibrary.open(p);
         final ffi = PwDenseFfi._(lib);
-        if (ffi.abiVersion() != pwDenseAbiVersion) {
-          lastError = 'PWDense ABI ${ffi.abiVersion()} != $pwDenseAbiVersion';
+        final abi = ffi.abiVersion();
+        if (abi < pwDenseAbiVersionMin || abi > pwDenseAbiVersionMax) {
+          lastError = 'PWDense ABI $abi outside [$pwDenseAbiVersionMin, $pwDenseAbiVersionMax]';
           return null;
         }
         if (ffi.available() == 0) {
@@ -231,17 +260,48 @@ final class PwDenseProgress {
   final int done, total;
 }
 
+/// One reference frame's fused contribution, already copied out of the native buffers (which are only valid
+/// during the C call) and moved across the isolate boundary. [xyz] is n*3 floats, [rgb] n*3 bytes, in the sparse
+/// PLY's world frame and already box-filtered — the same bytes that frame contributes to the output PLY.
+final class PwDenseChunk {
+  const PwDenseChunk(this.frameIndex, this.xyz, this.rgb);
+  final int frameIndex;
+  final Float32List xyz;
+  final Uint8List rgb;
+  int get pointCount => xyz.length ~/ 3;
+}
+
+/// Tag distinguishing a chunk message from a progress message on the shared port.
+const String _kChunkTag = 'chunk';
+
+/// Decodes one worker message into a chunk; null when the message is not one (progress messages are
+/// `[phase, done, total]` and share the port). Chunk shape: `['chunk', frameIndex, xyz, rgb]` with both
+/// payloads [TransferableTypedData] — the bytes were copied inside the native callback before it returned.
+PwDenseChunk? decodePwDenseChunkMessage(Object? msg) {
+  if (msg is! List || msg.length != 4 || msg[0] != _kChunkTag) return null;
+  final frameIndex = msg[1];
+  final xyz = msg[2];
+  final rgb = msg[3];
+  if (frameIndex is! int || xyz is! TransferableTypedData || rgb is! TransferableTypedData) return null;
+  return PwDenseChunk(frameIndex, xyz.materialize().asFloat32List(), rgb.materialize().asUint8List());
+}
+
 final class _JobArgs {
-  const _JobArgs(this.frames, this.pointsXyz, this.workDir, this.outPly, this.webgpu, this.progressPort, this.box);
+  const _JobArgs(this.frames, this.pointsXyz, this.workDir, this.outPly, this.webgpu, this.progressPort, this.box,
+      this.wantChunks);
   final List<PwDenseFrame> frames;
   final List<double> pointsXyz; // flat N*3
   final String workDir, outPly;
   final bool webgpu;
+
+  /// Carries both progress and chunk messages (see [decodePwDenseChunkMessage]).
   final SendPort? progressPort;
   final PwDenseBox? box;
+  final bool wantChunks;
 }
 
-/// Runs the dense job on a worker isolate. [onProgress] is invoked on the calling isolate.
+/// Runs the dense job on a worker isolate. [onProgress] and [onChunk] are invoked on the calling isolate.
+/// [onChunk] needs the v2 framework (`pwdense_run2`); on v1 the job still runs, just without chunks.
 Future<PwDenseResult> runPwDenseJob({
   required List<PwDenseFrame> frames,
   required List<double> pointsXyz,
@@ -250,15 +310,24 @@ Future<PwDenseResult> runPwDenseJob({
   bool webgpu = true,
   PwDenseBox? box,
   void Function(PwDenseProgress p)? onProgress,
+  void Function(PwDenseChunk c)? onChunk,
 }) async {
   ReceivePort? progressPort;
-  if (onProgress != null) {
+  if (onProgress != null || onChunk != null) {
     progressPort = ReceivePort();
     progressPort.listen((msg) {
-      if (msg is List && msg.length == 3) onProgress(PwDenseProgress(msg[0] as String, msg[1] as int, msg[2] as int));
+      final chunk = decodePwDenseChunkMessage(msg);
+      if (chunk != null) {
+        onChunk?.call(chunk);
+        return;
+      }
+      if (onProgress != null && msg is List && msg.length == 3) {
+        onProgress(PwDenseProgress(msg[0] as String, msg[1] as int, msg[2] as int));
+      }
     });
   }
-  final args = _JobArgs(frames, pointsXyz, workDir, outPly, webgpu, progressPort?.sendPort, box);
+  final args =
+      _JobArgs(frames, pointsXyz, workDir, outPly, webgpu, progressPort?.sendPort, box, onChunk != null);
   try {
     return await _spawn(args);
   } finally {
@@ -339,11 +408,36 @@ PwDenseResult _runInIsolate(_JobArgs a) {
     );
     cbPtr = cb.nativeFunction;
   }
+  // [v2] chunk callback. The native buffers die with the call, so every chunk is COPIED here and handed to the
+  // main isolate as TransferableTypedData. Registered only when the caller asked for chunks AND the framework
+  // exports pwdense_run2 — on a v1 framework we run pwdense_run and no chunk ever arrives.
+  final run2 = ffi._run2;
+  NativeCallable<_ChunkFnNative>? chunkCb;
+  if (port != null && a.wantChunks && run2 != null) {
+    chunkCb = NativeCallable<_ChunkFnNative>.isolateLocal(
+      (int frameIndex, Pointer<Float> xyz, Pointer<Uint8> rgb, int nPoints, Pointer<Void> user) {
+        final cnt = nPoints > 0 && xyz != nullptr && rgb != nullptr ? nPoints : 0;
+        final xyzCopy = cnt == 0 ? Float32List(0) : Float32List.fromList(xyz.asTypedList(cnt * 3));
+        final rgbCopy = cnt == 0 ? Uint8List(0) : Uint8List.fromList(rgb.asTypedList(cnt * 3));
+        port.send(<Object>[
+          _kChunkTag,
+          frameIndex,
+          TransferableTypedData.fromList(<TypedData>[xyzCopy]),
+          TransferableTypedData.fromList(<TypedData>[rgbCopy]),
+        ]);
+        return 0; // no cancellation from the chunk path
+      },
+      exceptionalReturn: 0,
+    );
+  }
   int code;
   try {
-    code = ffi._run(framesPtr, n, ptsPtr, np, opts, cbPtr, nullptr, stats);
+    code = chunkCb != null
+        ? run2!(framesPtr, n, ptsPtr, np, opts, cbPtr, chunkCb.nativeFunction, nullptr, stats)
+        : ffi._run(framesPtr, n, ptsPtr, np, opts, cbPtr, nullptr, stats);
   } finally {
     cb?.close();
+    chunkCb?.close();
   }
   final st = _readStats(stats.ref);
   for (final s in strings) {

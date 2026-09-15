@@ -147,4 +147,38 @@ void main() {
     expect(find.text('正在生成最终点云…'), findsOneWidget);
     expect(find.byKey(_pillKey), findsOneWidget);
   });
+  _denseRunningTests();
+}
+
+// ── [DENSE-SAME-PAGE 2026-09-15] dense running on the finished page ──────────
+void _denseRunningTests() {
+  testWidgets('refined + denseRunning: pill with the dense label, no bottom buttons', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        localizationsDelegates: AppL10n.localizationsDelegates,
+        supportedLocales: AppL10n.supportedLocales,
+        home: Scaffold(
+          body: Stack(
+            children: [
+              SfmPreviewOverlay(
+                phase: SfmPreviewPhase.refined,
+                snapshot: null,
+                onBack: () {},
+                onDone: () {},
+                onNext: () {},
+                denseRunning: true,
+                waitLabel: 'Time remaining · about 2 min',
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.byKey(const ValueKey('sfm_wait_pill')), findsOneWidget);
+    expect(find.text('Time remaining · about 2 min'), findsOneWidget);
+    expect(find.text('Save Draft'), findsNothing);
+    expect(find.text('Next'), findsNothing);
+    expect(find.text('Done'), findsNothing);
+  });
 }

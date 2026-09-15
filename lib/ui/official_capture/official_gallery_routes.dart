@@ -111,6 +111,17 @@ Future<void> pushOfficialViewerRoute(
   ScanRecord record,
   String plyPath,
 ) {
+  // [SAME-PAGE 2026-09-15 用户签决] 再进入走**同一个页面**(拍完那页的查看
+  // 模式):稀疏云 + 编辑 / 下一步 / 保存草稿,稠密在跑就看到它的进度。
+  // 没有项目目录(老记录)才退回只读的 PLY 查看器。
+  final dir = record.captureDir;
+  if (dir != null && dir.isNotEmpty) {
+    return Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => OfficialARCapturePage(reviewCaptureDir: dir),
+      ),
+    );
+  }
   return Navigator.of(context).push(
     MaterialPageRoute<void>(
       builder: (_) => SparseCloudViewerPage(

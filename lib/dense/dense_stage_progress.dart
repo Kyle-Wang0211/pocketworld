@@ -2,6 +2,8 @@
 // processed, what phase it is in, when it started, and where the PLY landed when it finished.
 import 'package:flutter/foundation.dart';
 
+import 'dense_live_cloud.dart';
+
 enum DenseStageState { running, done, failed }
 
 final class DenseStageProgress {
@@ -16,6 +18,7 @@ final class DenseStageProgress {
     this.points = 0,
     this.startedAt,
     this.finishedAt,
+    this.live,
   });
   final String captureDir;
   final DenseStageState state;
@@ -29,6 +32,10 @@ final class DenseStageProgress {
   final DateTime? startedAt;
   final DateTime? finishedAt;
 
+  /// The display copy growing chunk by chunk while the job runs (PWDense v2). Null on a v1 framework, before the
+  /// first chunk, and on the terminal states — once the PLY is on disk the viewer reads that instead.
+  final DenseLiveCloud? live;
+
   DenseStageProgress copyWith({
     DenseStageState? state,
     String? phase,
@@ -39,6 +46,7 @@ final class DenseStageProgress {
     int? points,
     DateTime? startedAt,
     DateTime? finishedAt,
+    DenseLiveCloud? live,
   }) =>
       DenseStageProgress(
         captureDir: captureDir,
@@ -51,6 +59,7 @@ final class DenseStageProgress {
         points: points ?? this.points,
         startedAt: startedAt ?? this.startedAt,
         finishedAt: finishedAt ?? this.finishedAt,
+        live: live ?? this.live,
       );
 
   /// Phase label (zh) for the status line.

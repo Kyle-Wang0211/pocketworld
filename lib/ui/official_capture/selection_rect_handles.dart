@@ -101,7 +101,9 @@ BoxScreenBasis boxScreenBasis(CloudProjection proj, SelectionBox box) {
     axSy: sy,
     // 正交下缩放与深度无关(f/camDist,矩形与盒投影严格重合 —— 守门测试
     // 锁);透视下保留旧口径(盒中心深度的正交近似)。
-    scale: proj.orthographic ? proj.f / proj.camDist : proj.f / d0,
+    // [LIVE-WAIT] same divisor blend as the painter (divisorAt): ortho ⇒
+    // f/camDist, perspective ⇒ f/d0, mid-morph ⇒ the blend.
+    scale: proj.f / proj.divisorAt(d0),
     cxS: c0x,
     cyS: c0y,
   );

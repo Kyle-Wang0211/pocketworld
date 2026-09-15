@@ -41,6 +41,7 @@ class SfmPreviewOverlay extends StatelessWidget {
     this.errorText,
     this.progressText,
     this.waitLabel,
+    this.denseRunning = false,
     this.onCameraChanged,
     this.editing = false,
     this.selectionBox,
@@ -74,6 +75,12 @@ class SfmPreviewOverlay extends StatelessWidget {
   /// 底部等待胶囊的文案(仅 `phase == generating` 时显示)。null = 倒计时估计
   /// 还不存在,胶囊改显 `AppL10n.of(context).etaCalculating`。
   final String? waitLabel;
+
+  /// [DENSE-SAME-PAGE 2026-09-15] The dense stage is running for this project:
+  /// the wait pill shows its countdown ([waitLabel]) and the bottom action
+  /// buttons are hidden until it ends. The cloud on screen is whatever the
+  /// caller passes as [snapshot] (the growing dense cloud, then the sparse one).
+  final bool denseRunning;
 
   /// 预览相机快照上报 —— "下一步"进选区页时原样继承(用户签决:预览与
   /// 编辑是同一个页面,点下一步只是让工具显现)。
@@ -266,7 +273,7 @@ class SfmPreviewOverlay extends StatelessWidget {
             // ── wait pill (bottom center) while reconstruction runs. The only
             // status the page shows: "计算中…" until the countdown exists, then
             // the committed coarse label (see lib/eta/pipeline_eta.dart).
-            if (phase == SfmPreviewPhase.generating && !editing)
+            if ((phase == SfmPreviewPhase.generating || denseRunning) && !editing)
               Positioned(
                 left: 0,
                 right: 0,
@@ -281,7 +288,7 @@ class SfmPreviewOverlay extends StatelessWidget {
               ),
             // No early escape while frames/finalize are running: the user asked
             // for the authoritative sparse result, not a background replacement.
-            if (canFinish && !editing)
+            if (canFinish && !editing && !denseRunning)
               Positioned(
                 left: 0,
                 right: 0,

@@ -44,7 +44,8 @@ class EtaLabel {
   @override
   int get hashCode => minutes;
   @override
-  String toString() => minutes == 0 ? 'EtaLabel(<1 min)' : 'EtaLabel(~$minutes min)';
+  String toString() =>
+      minutes == 0 ? 'EtaLabel(<1 min)' : 'EtaLabel(~$minutes min)';
 }
 
 enum EtaVerdict { ok, early, late, uncommitted }
@@ -83,7 +84,7 @@ class PipelineEta {
     required List<EtaStage> stages,
     required EtaPriorLog priors,
     required this.startMs,
-  }) : _stages = List.unmodifiable(stages),
+  }) : _stages = List.of(stages),
        _priors = priors {
     for (final s in _stages) {
       final prior = priors.priorUnitMs(s.id);
@@ -125,6 +126,29 @@ class PipelineEta {
     return null;
   }
 
+  /// Corrects a stage's unit count before any of its units finished (a stage's
+  /// real total is often only known when it starts). Ninja's plan is mutable in
+  /// exactly this way (EdgeAddedToPlan / EdgeRemovedFromPlan, status_printer.cc
+  /// L91-116); a committed label is never revisited.
+  void setUnits(String stageId, int units) {
+    if (_finished || units < 0) return;
+    final idx = _stages.indexWhere((s) => s.id == stageId);
+    if (idx < 0 || (_done[stageId] ?? 0) > 0) return;
+    final cur = _stages[idx].units;
+    if (cur == units) return;
+    final prior = _priorUnitMs[stageId]!;
+    if (units > cur) {
+      for (var i = cur; i < units; i++) {
+        _ninja.edgeAddedToPlan(prior);
+      }
+    } else {
+      for (var i = units; i < cur; i++) {
+        _ninja.edgeRemovedFromPlan(prior);
+      }
+    }
+    _stages[idx] = EtaStage(stageId, units);
+  }
+
   /// Cumulative units finished for [stageId] as of [nowMs]. Idempotent for repeated counts.
   void markUnits(String stageId, int doneUnits, int nowMs) {
     if (_finished) return;
@@ -162,9 +186,12 @@ class PipelineEta {
   /// Ninja's %E at [nowMs] (BuildEdgeStarted sets time_millis_ = now for the running edge). null = "?".
   double? etaSeconds(int nowMs) {
     if (_finished) return 0;
-    _ninja.buildEdgeStarted((nowMs < _lastEndMs ? _lastEndMs : nowMs) - startMs);
+    _ninja.buildEdgeStarted(
+      (nowMs < _lastEndMs ? _lastEndMs : nowMs) - startMs,
+    );
     final eta = _ninja.etaSeconds();
-    _ninja.runningEdges--; // undo the bookkeeping of the pseudo-start (Ninja counts it per real edge)
+    _ninja
+        .runningEdges--; // undo the bookkeeping of the pseudo-start (Ninja counts it per real edge)
     _ninja.startedEdges--;
     return eta;
   }

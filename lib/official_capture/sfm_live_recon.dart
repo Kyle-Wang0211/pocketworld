@@ -2358,6 +2358,35 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
             'finalize_async phase-1 starting…'
             '${telBefore != null ? ' | $telBefore' : ''}',
           );
+          // [LIVE-WAIT 2026-09-15] The drained live recon, published once more
+          // right BEFORE finalize_async: the vendored ABI contract says the
+          // live-preview getters gate off once that call returns
+          // (vendor/official_sfm/include/aether_sfm_c.h:180-186), so this is the
+          // last moment previewTracked() answers. Source name is distinct from
+          // the capture-time streams and from the finish-time 'streaming_local_ba'
+          // terminal cloud (see the colorize path's warning).
+          try {
+            final p1 = s.previewTracked();
+            if (p1.count > 0) {
+              sendSnapshot(
+                'preview',
+                <String, dynamic>{
+                  'source': 'finalize_local_live',
+                  'terminal': false,
+                  'publish_version': publishPolicy.version,
+                  'n_registered': fedIds.length,
+                  'n_points3d': p1.count,
+                },
+                0,
+                preview: true,
+                prefetched: p1,
+              );
+            } else {
+              wlog('pre-finalize preview skipped: live recon empty');
+            }
+          } catch (e) {
+            wlog('pre-finalize preview failed (non-fatal): $e');
+          }
           final summary = s.finalizeAsync();
           sw.stop();
           final telAfter = PwTelemetry.sample();
@@ -2454,31 +2483,6 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
             'phase-1 done (${summary['phase1'] ?? 'db_rerun'}); refined snapshot '
             'will be delivered immediately on completion',
           );
-          // [LIVE-WAIT 2026-09-15] phase-1 landed: publish the live recon as an
-          // interim (uncoloured) preview so the wait page shows the registered +
-          // locally optimised cloud while phase-2 global BA runs. Source name is
-          // distinct from the capture-time streams and from the finish-time
-          // 'streaming_local_ba' terminal cloud (see the colorize path's warning).
-          try {
-            final p1 = s.previewTracked();
-            if (p1.count > 0) {
-              sendSnapshot(
-                'preview',
-                <String, dynamic>{
-                  'source': 'finalize_local_live',
-                  'terminal': false,
-                  'publish_version': publishPolicy.version,
-                  'n_registered': fedIds.length,
-                  'n_points3d': p1.count,
-                },
-                0,
-                preview: true,
-                prefetched: p1,
-              );
-            }
-          } catch (e) {
-            wlog('phase-1 preview failed (non-fatal): $e');
-          }
           // Phase 2 runs on the session's own native thread; poll the
           // lock-free status flag until it lands. 250 ms(原 700 ms):
           // refined 是唯一用户可见成果,轮询间隔直接计入交付延迟;读的是

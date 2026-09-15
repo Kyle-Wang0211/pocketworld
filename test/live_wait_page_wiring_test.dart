@@ -44,7 +44,7 @@ void main() {
 
   test('白云在盖页那一个 setState 里、排空之前就上屏', () {
     final cover = at('_sfmPhase = SfmPreviewPhase.generating;');
-    final white = at('_sfmLiveSnapshot = live == null ? null : _whiteSnapshot(live);');
+    final white = at('_sfmLiveSnapshot = live == null');
     final drain = at('await _shutterQueue.freezeAndDrain();');
     expect(cover, greaterThanOrEqualTo(0));
     expect(white, greaterThan(cover));
@@ -58,7 +58,9 @@ void main() {
     final drain = at('await _shutterQueue.freezeAndDrain();');
     expect(plan, greaterThanOrEqualTo(0));
     expect(plan, lessThan(drain));
-    final persistIdx = lines.indexWhere((l) => l.contains("_etaMark('sparse.persist');"));
+    final persistIdx = lines.indexWhere(
+      (l) => l.contains("_etaMark('sparse.persist');"),
+    );
     final finishIdx = lines.indexWhere(
       (l) => l.contains('_finishSparseEta(ok: persistOk)'),
       persistIdx,
@@ -68,36 +70,61 @@ void main() {
   });
 
   test('覆盖层画的是 refined 优先、否则实时白云;倒计时文案从 committed 标签来', () {
-    expect(src.contains('snapshot: _sfmSnapshot ?? _sfmLiveSnapshot,'), isTrue);
-    expect(src.contains('waitLabel: _sparseWaitLabel(context),'), isTrue);
+    final flat = src.replaceAll(RegExp(r'\s+'), ' ');
+    expect(
+      flat.contains(
+        '_denseReviewSnapshot ?? _sfmSnapshot ?? _sfmLiveSnapshot,',
+      ),
+      isTrue,
+    );
+    expect(flat.contains(': _sparseWaitLabel(context),'), isTrue);
     // the label commits on the ticker, never inside build
-    final ticker = lines.indexWhere((l) => l.contains('void _startSfmStageTicker()'));
+    final ticker = lines.indexWhere(
+      (l) => l.contains('void _startSfmStageTicker()'),
+    );
     final commit = lines.indexWhere(
-      (l) => l.contains('_sparseEta?.labelAt(DateTime.now().millisecondsSinceEpoch);'),
+      (l) => l.contains(
+        '_sparseEta?.labelAt(DateTime.now().millisecondsSinceEpoch);',
+      ),
       ticker,
     );
     expect(commit, greaterThan(ticker));
-    final build = lines.indexWhere((l) => l.contains('String? _sparseWaitLabel(BuildContext context)'));
+    final build = lines.indexWhere(
+      (l) => l.contains('String? _sparseWaitLabel(BuildContext context)'),
+    );
     final buildEnd = lines.indexWhere((l) => l.trim() == '}', build);
-    expect(lines.sublist(build, buildEnd).any((l) => l.contains('labelAt(')), isFalse);
+    expect(
+      lines.sublist(build, buildEnd).any((l) => l.contains('labelAt(')),
+      isFalse,
+    );
   });
 
   test('拍摄位姿起始态与白云同一 setState 落定,并透传给覆盖层', () {
     final cover = at('_sfmPhase = SfmPreviewPhase.generating;');
-    final start = at('_sfmPerspectiveStart = live == null ? null : _perspectiveStartAtTap(live);');
+    final start = at('_sfmPerspectiveStart = live == null');
     expect(start, greaterThan(cover));
     expect(body.sublist(cover, start).any((l) => l.trim() == '});'), isFalse);
     expect(src.contains('initialPerspective: _sfmPerspectiveStart,'), isTrue);
-    final overlay = File('lib/ui/official_capture/sfm_preview_overlay.dart').readAsStringSync();
+    final overlay = File(
+      'lib/ui/official_capture/sfm_preview_overlay.dart',
+    ).readAsStringSync();
     expect(overlay.contains('initialPerspective: initialPerspective,'), isTrue);
   });
 
   test('五个阶段都有事件挂点:排空/phase1/refine/取色/落盘', () {
-    for (final id in ['sparse.drain', 'sparse.phase1', 'sparse.refine', 'sparse.colorize', 'sparse.persist']) {
+    for (final id in [
+      'sparse.drain',
+      'sparse.phase1',
+      'sparse.refine',
+      'sparse.colorize',
+      'sparse.persist',
+    ]) {
       expect(src.contains("_etaMark('$id'"), isTrue, reason: id);
     }
     // failure ends the countdown without saving priors
-    final failed = lines.indexWhere((l) => l.contains('case SfmLiveFailed(:final stage, :final message):'));
+    final failed = lines.indexWhere(
+      (l) => l.contains('case SfmLiveFailed(:final stage, :final message):'),
+    );
     expect(lines[failed + 1].contains('_finishSparseEta(ok: false)'), isTrue);
   });
 }
