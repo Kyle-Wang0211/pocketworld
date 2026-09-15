@@ -47,6 +47,8 @@ import 'orbit_controls.dart';
 import 'ui/app_shell.dart';
 import 'ui/auth/auth_root_view.dart';
 import 'ui/design_system.dart';
+import 'ui/frame_quiet_detector.dart';
+import 'ui/startup_splash_gate.dart';
 import 'ui/splash_overlay.dart';
 import 'util/device_log.dart';
 
@@ -430,6 +432,20 @@ class _AuthGateState extends State<_AuthGate> {
   // 同一只时钟,中间没有任何交接。
   static const _splashMinDurationMs = 1200;
   static const _splashMaxDurationMs = 20000;
+  // 🔴 [2026-09-15 用户令]「我可以允许多等几秒,但是不能有卡顿」。
+  // 155 实测账逼出来的两条:
+  //   • 温启动:开门中途 @+1774ms 一帧 build=14.1ms;
+  //   • 冷启动:门刚开完 @+4693ms 一帧 build=11.1ms。
+  // 只要动画那 1290ms 里撞上任何一帧超预算,用户就看到一下顿挫。所以开门
+  // 不再由"到点了"决定,而是由"**UI 线程真的连续安静过这么久**"决定。
+  // 1500ms 的选法有据:run1 里壳的活是 +320…+1532 一段、+1774…+1807 一段,
+  // 相邻两段之间最长的安静只有 1.2s —— 窗口取 1.2s 会正好在下一阵活之前
+  // 放行(那就是实测挨的那一下),取 1.5s 才会等到整阵过去。
+  static const _quietWindowMs = 1500;
+  // 等不到安静也必须放行 —— 否则就是又一个静默出口。
+  static const _quietDeadlineMs = 12000;
+  bool _uiQuiet = false;
+  FrameQuietWatcher? _quietWatcher;
   bool _splashMinElapsed = false;
   bool _splashForceHidden = false;
   /// 真 UI 已经**画过一帧**(不是"已经决定要画")。重活压在浮层底下发生,
@@ -454,6 +470,8 @@ class _AuthGateState extends State<_AuthGate> {
     // Minimum splash duration — avoids a jarring flicker when bootstrap
     // completes in a few ms (e.g. mock service / cached user).
     StartupTrace.mark('_AuthGate initState(第一帧的 Dart 侧起点)');
+    WidgetsBinding.instance.addPostFrameCallback((_) => _startQuietWatch());
+    StartupSplashGate.instance.reset();
     _splashMinTimer = Timer(
       const Duration(milliseconds: _splashMinDurationMs),
       () {
@@ -472,10 +490,35 @@ class _AuthGateState extends State<_AuthGate> {
     );
   }
 
+  void _startQuietWatch() {
+    if (!mounted || _quietWatcher != null) return;
+    // 预算按**实际刷新率**算:iPhone 14 Pro 是 120Hz ⇒ 8.3ms。拿 60Hz 的
+    // 16.7ms 当预算会把一半的掉帧判成"没超" —— 155 那份账就是这么漏的。
+    final hz = View.of(context).display.refreshRate;
+    _quietWatcher = FrameQuietWatcher(
+      budget: frameBudgetFor(hz),
+      quietWindow: const Duration(milliseconds: _quietWindowMs),
+      deadline: const Duration(milliseconds: _quietDeadlineMs),
+      onQuiet: ({required bool byDeadline}) {
+        if (!mounted) return;
+        StartupTrace.mark(
+          'UI 线程安静${byDeadline ? "(等不到,按上限放行)" : ""}'
+          ' —— 可以开始播球→线→开门了',
+        );
+        setState(() => _uiQuiet = true);
+      },
+    )..start();
+    StartupTrace.mark(
+      '安静闸起步:预算=${frameBudgetFor(hz).inMicroseconds / 1000}ms'
+      '(${hz.toStringAsFixed(0)}Hz) 窗口=${_quietWindowMs}ms',
+    );
+  }
+
   @override
   void dispose() {
     _splashMinTimer?.cancel();
     _splashMaxTimer?.cancel();
+    _quietWatcher?.dispose();
     super.dispose();
   }
 
@@ -485,6 +528,9 @@ class _AuthGateState extends State<_AuthGate> {
     if (!_splashMinElapsed) return true;
     // 登录态:等壳真的画过一帧再开门。登出/服务不可用那两条路没有壳可等。
     if (state is CurrentUserSignedIn && !_shellPainted) return true;
+    // 🔴 最后一道:UI 线程必须**已经连续安静过**一整个窗口。球在这期间
+    // 一直自己转(它本来就在转),等的是"壳真的干完活了",而不是"到点了"。
+    if (!_uiQuiet) return true;
     return false;
   }
 
@@ -519,6 +565,14 @@ class _AuthGateState extends State<_AuthGate> {
     }
     if (_lastLoggedVisible != splashVisible) {
       _lastLoggedVisible = splashVisible;
+      if (!splashVisible) {
+        // 退场动画全长 = 直线 500 + 停顿 110 + 开门 680。等它放完再把被
+        // 推迟的启动期重活放出来,别让它们又压在动画上。
+        Timer(const Duration(milliseconds: 1290), () {
+          StartupTrace.mark('退场放完 —— 放行被推迟的启动期重活');
+          StartupSplashGate.instance.markDone();
+        });
+      }
       StartupTrace.mark(
         'splashVisible=$splashVisible'
         ' (minElapsed=$_splashMinElapsed shellPainted=$_shellPainted'
@@ -674,7 +728,14 @@ class _HomeScreenState extends State<HomeScreen> {
         _pushMatrices();
       },
     );
-    _requestTexture();
+    // 🔴 [2026-09-15] 实测:这条路在冷启动时把平台线程整段堵住 —— 155 的
+    // 账里 +2293→+2944ms **一帧都没有**(球当场僵住),而它建出来的那张纹理
+    // **出货 UI 里一帧都不显示**(build 里没有任何 Texture widget;社区实时卡
+    // 走的是 AetherCppViewerImpl.create 自己建的纹理)。留着它是给重建口径
+    // 回接用的,所以不删,只让它等启动动画放完再跑。
+    StartupSplashGate.instance.whenDone.then((_) {
+      if (mounted) _requestTexture();
+    });
   }
 
   Future<void> _requestTexture({bool isManualRetry = false}) async {

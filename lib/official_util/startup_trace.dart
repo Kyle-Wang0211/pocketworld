@@ -19,6 +19,7 @@ import 'dart:ui' show FramePhase, FrameTiming;
 
 import 'package:flutter/scheduler.dart';
 
+import '../ui/frame_quiet_detector.dart';
 import 'device_log.dart';
 
 class StartupTrace {
@@ -70,16 +71,44 @@ class StartupTrace {
         f.buildDuration.inMicroseconds + f.rasterDuration.inMicroseconds;
     final sorted = <int>[for (final f in _frames) total(f)]..sort();
     int pct(double p) => sorted[((sorted.length - 1) * p).round()];
-    const budgetUs = 16667;
+    // 🔴 预算必须按**实际刷新率**算。第一版写死 16667(60Hz),而 iPhone 14 Pro
+    // 是 120Hz ⇒ 8333 —— 于是 14.1ms 和 11.1ms 两帧都被报成"没超预算",
+    // 正好把用户看得见的那两下顿挫藏了起来。
+    final budgetUs = frameBudgetFor(
+      SchedulerBinding.instance.platformDispatcher.displays.isEmpty
+          ? 60
+          : SchedulerBinding.instance.platformDispatcher.displays.first.refreshRate,
+    ).inMicroseconds;
     final over = sorted.where((v) => v > budgetUs).length;
 
     DeviceLog.log(
       'Startup',
-      '帧账 ${_windowMs}ms 窗口:帧数=${_frames.length} 超预算(>16.7ms)=$over '
+      '帧账 ${_windowMs}ms 窗口:帧数=${_frames.length} '
+          '超预算(>${(budgetUs / 1000).toStringAsFixed(1)}ms)=$over '
           'p50=${(pct(0.5) / 1000).toStringAsFixed(1)}ms '
           'p95=${(pct(0.95) / 1000).toStringAsFixed(1)}ms '
           'max=${(sorted.last / 1000).toStringAsFixed(1)}ms',
     );
+
+    // 🔴 空洞账:**最严重的卡顿根本不产生帧计时**(线程被堵住时一帧都没有),
+    // 只排"最贵的帧"会把它整个漏掉 —— 155 那次 +2293→+2944ms 的 651ms 空洞
+    // 就没出现在最贵帧榜里。而且空洞还有第二重伤害:
+    // AnimationController 按真实时间推进,空洞过后它会**一步跳过去**,
+    // 500ms 的球→线形变会在一帧里走完 = 看上去"动画没了"。
+    final gaps = <({int atMs, int gapMs})>[];
+    for (var i = 1; i < _frames.length; i++) {
+      final prev = _frames[i - 1].timestampInMicroseconds(FramePhase.vsyncStart);
+      final cur = _frames[i].timestampInMicroseconds(FramePhase.vsyncStart);
+      final gap = cur - prev;
+      if (gap > budgetUs * 3) {
+        gaps.add((atMs: _ms(prev - base), gapMs: _ms(gap)));
+      }
+    }
+    gaps.sort((a, b) => b.gapMs.compareTo(a.gapMs));
+    DeviceLog.log('Startup', '空洞(>3 帧预算没有画面)共 ${gaps.length} 处');
+    for (final g in gaps.take(8)) {
+      DeviceLog.log('Startup', '  空洞 @+${g.atMs}ms  持续 ${g.gapMs}ms');
+    }
 
     final worst = <FrameTiming>[..._frames]
       ..sort((a, b) => total(b).compareTo(total(a)));
