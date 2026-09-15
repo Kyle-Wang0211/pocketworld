@@ -43,6 +43,15 @@ class VioShadowTimebaseEvidence {
     required this.arFrameBase,
     required this.accelerometerSameBaseAsCamera,
     required this.gyroscopeSameBaseAsCamera,
+    // [pw] 2026-09-14 为定案「transportValid 倒在哪一项」而补。
+    // 上面的 `schemaValid` 存的是 **wireAccepted 的合取结果**,它同时吃
+    // `snapshot.schemaValid` 与 `snapshot.transportLossFree`,一旦为 false
+    // 就分不出是哪一个 —— 09-14 排查到这里卡住了。下面把两个输入各自摊开。
+    // 纯观测,不进任何判据。
+    this.wireSchemaValid,
+    this.wireTransportLossFree,
+    this.wireOutOfSessionStaleObservations,
+    this.wireSourceLoss = const <String, Map<String, int>>{},
   });
 
   const VioShadowTimebaseEvidence.missing()
@@ -56,7 +65,11 @@ class VioShadowTimebaseEvidence {
       gyroscopeBase = 'unavailable',
       arFrameBase = 'unavailable',
       accelerometerSameBaseAsCamera = null,
-      gyroscopeSameBaseAsCamera = null;
+      gyroscopeSameBaseAsCamera = null,
+      wireSchemaValid = null,
+      wireTransportLossFree = null,
+      wireOutOfSessionStaleObservations = null,
+      wireSourceLoss = const <String, Map<String, int>>{};
 
   final bool schemaValid;
   final String sessionId;
@@ -69,6 +82,19 @@ class VioShadowTimebaseEvidence {
   final String arFrameBase;
   final bool? accelerometerSameBaseAsCamera;
   final bool? gyroscopeSameBaseAsCamera;
+
+  /// `snapshot.schemaValid` 本身(未与 transportLossFree 合取)。纯观测。
+  final bool? wireSchemaValid;
+
+  /// `snapshot.transportLossFree` 本身。纯观测。
+  final bool? wireTransportLossFree;
+
+  /// 快照自报的跨会话陈旧观测数;`transportLossFree` 要求它为 0。
+  final int? wireOutOfSessionStaleObservations;
+
+  /// 逐来源原始样本丢失:`{来源: {rejected, dropped, attempted, accepted}}`。
+  /// `transportLossFree` 要求每个来源的 rejected 与 dropped **都为 0**。
+  final Map<String, Map<String, int>> wireSourceLoss;
 
   /// The clock-domain receipt that must exist before creating the XRSLAM core.
   /// It intentionally does not require a shadow generation: that generation
@@ -106,6 +132,10 @@ class VioShadowTimebaseEvidence {
     'gyroscopeSameBaseAsCamera': gyroscopeSameBaseAsCamera,
     'preStartDomainAccepted': preStartDomainAccepted,
     'domainAccepted': domainAccepted,
+    'wireSchemaValid': wireSchemaValid,
+    'wireTransportLossFree': wireTransportLossFree,
+    'wireOutOfSessionStaleObservations': wireOutOfSessionStaleObservations,
+    'wireSourceLoss': wireSourceLoss,
   };
 }
 
@@ -910,7 +940,12 @@ class VioShadowHealthSummary {
     final bool accountingConserved =
         images.conserved && acc.conserved && gyro.conserved && queue.conserved;
     const Set<String> invalidatingSensorReasons = <String>{
-      'lock_contention',
+      // [pw] 2026-09-14 'lock_contention' 已移出。依据是本功能自己的 spec:
+      // openspec/changes/add-xrslam-bounded-shadow-promotion-gates/specs/
+      //   xrslam-shadow-promotion/spec.md:37
+      //   "ordinary ledger-lock contention is **not** classified as an input drop"
+      // 原生侧同步改了两处(PwVioSlamFeeder.swift 的 transportValid 与
+      // shadowOverflowDrops)。计数仍在 rejectionReasons 里可见,只是不再致废。
       'queue_full',
       'camera_full',
       'late_after_seal',

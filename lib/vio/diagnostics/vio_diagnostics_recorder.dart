@@ -1179,6 +1179,22 @@ class VioDiagnosticsRecorder {
       arFrameBase: cameraBase,
       accelerometerSameBaseAsCamera: sameBase(accelerometerBase),
       gyroscopeSameBaseAsCamera: sameBase(gyroscopeBase),
+      // [pw] 2026-09-14 把 wireAccepted 的两个布尔输入各自摊开落盘。
+      // `schemaValid: wireAccepted` 是合取,为 false 时无法回答「倒在哪一项」;
+      // 这四行纯观测,判据一个字没动。
+      wireSchemaValid: snapshot.schemaValid,
+      wireTransportLossFree: snapshot.transportLossFree,
+      wireOutOfSessionStaleObservations: snapshot.outOfSessionStaleObservations,
+      wireSourceLoss: <String, Map<String, int>>{
+        for (final MapEntry<String, IosSourceOffsets> e
+            in snapshot.sources.entries)
+          e.key: <String, int>{
+            'rejected': e.value.rawSamplesRejected,
+            'dropped': e.value.rawSamplesDropped,
+            'attempted': e.value.rawSamplesAttempted,
+            'accepted': e.value.rawSamplesAccepted,
+          },
+      },
     );
   }
 

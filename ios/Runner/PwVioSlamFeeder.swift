@@ -1858,8 +1858,13 @@ public final class PwVioSlamFeeder {
         default: 0
       ] += lateAfterSealTotal
     }
-    let transportValid = !shadowRunInvalidated &&
-      lockContentionTotal == 0 && lateAfterSealTotal == 0
+    // [pw] 2026-09-14 锁争用不再计入「输入丢弃」,依据是本功能自己的 spec:
+    // openspec/changes/add-xrslam-bounded-shadow-promotion-gates/specs/
+    //   xrslam-shadow-promotion/spec.md:37
+    //   "ordinary ledger-lock contention is **not** classified as an input drop"
+    // 计数与上报一个字没动(wire() 仍照常汇总、reasons 仍带 lock_contention),
+    // 改的只是**分类**:它不再让整场影子运行失效。
+    let transportValid = !shadowRunInvalidated && lateAfterSealTotal == 0
     out["identity"] = runIdentityLocked()
     for (key, value) in nativeDestroyReceipt { out[key] = value }
     out["queueAdmitted"] = queueAccepted
@@ -1899,7 +1904,10 @@ public final class PwVioSlamFeeder {
     out["gyroAccepted"] = gyro.submitted
     out["gyroRejected"] = gyro.rejected
     out["acceptedCompatibilitySemantics"] = "submitted_to_void_c_api"
-    out["shadowOverflowDrops"] = overflowBase + lockContentionTotal
+    // [pw] 2026-09-14 同上:overflow 只数真正的容量溢出(queue_full / camera_full),
+    // 不再把锁争用混进来。lockContentionTotal 仍在 reasons 与 invalidationReasons
+    // 里逐项可见,只是不再当作丢弃计入这个闸用的总数。
+    out["shadowOverflowDrops"] = overflowBase
     out["outOfSessionImageOffers"] = outOfSessionImageOffers.value
     out["outOfSessionAccelerationOffers"] =
       outOfSessionAccelerationOffers.value
