@@ -14,7 +14,7 @@ import 'package:flutter/material.dart';
 import '../../l10n/app_localizations.dart';
 
 import '../../official_capture/dense_stage.dart';
-import '../../dense/dense_stage_progress.dart';
+import '../../dense/dense_progress_bar.dart';
 import '../../official_capture/selection_box.dart';
 import 'ruler_scrubber.dart';
 import 'selection_tools_layer.dart';
@@ -214,61 +214,6 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
     final l = AppL10n.of(context);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(r.message ?? l.denseStageUnavailable)),
-    );
-  }
-
-  /// [2026-09-15] 稠密阶段的进度/结果条:只显示属于这一场的进度;完成后一键打开稠密点云
-  /// (同一个查看页,读同一格式的 PLY —— 交付全量,不降采样)。
-  Widget _denseProgressBar() {
-    return ValueListenableBuilder<DenseStageProgress?>(
-      valueListenable: denseStageProgress,
-      builder: (context, p, _) {
-        if (p == null || p.captureDir != _captureDir) return const SizedBox.shrink();
-        final String text;
-        Widget? action;
-        switch (p.state) {
-          case DenseStageState.running:
-            text = '稠密处理中 · ${p.label}';
-          case DenseStageState.done:
-            text = p.message ?? '稠密点云完成';
-            final ply = p.outPly;
-            if (ply != null) {
-              action = TextButton(
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => SparseCloudViewerPage(plyPath: ply, title: '稠密点云'),
-                  ),
-                ),
-                child: const Text('查看'),
-              );
-            }
-          case DenseStageState.failed:
-            text = p.message ?? '稠密处理失败';
-        }
-        return Positioned(
-          left: 12,
-          right: 12,
-          top: 8,
-          child: SafeArea(
-            bottom: false,
-            child: Material(
-              color: Colors.black.withValues(alpha: 0.72),
-              borderRadius: BorderRadius.circular(10),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Text(text, style: const TextStyle(color: Colors.white, fontSize: 13)),
-                    ),
-                    ?action,
-                  ],
-                ),
-              ),
-            ),
-          ),
-        );
-      },
     );
   }
 
@@ -738,7 +683,15 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                     ),
                   ),
                 ],
-                _denseProgressBar(),
+                // [2026-09-15] 稠密进度/结果条 —— 必须是 Positioned 子项(见 dense_progress_bar.dart)
+                DenseProgressBar(
+                  captureDir: _captureDir,
+                  onView: (ply) => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => SparseCloudViewerPage(plyPath: ply, title: '稠密点云'),
+                    ),
+                  ),
+                ),
                 if (_editing && _box != null)
                   Positioned.fill(
                     child: SelectionToolsLayer(
