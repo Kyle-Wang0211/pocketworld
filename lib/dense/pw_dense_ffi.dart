@@ -258,12 +258,19 @@ Future<PwDenseResult> runPwDenseJob({
       if (msg is List && msg.length == 3) onProgress(PwDenseProgress(msg[0] as String, msg[1] as int, msg[2] as int));
     });
   }
+  final args = _JobArgs(frames, pointsXyz, workDir, outPly, webgpu, progressPort?.sendPort, box);
   try {
-    return await Isolate.run(() => _runInIsolate(_JobArgs(frames, pointsXyz, workDir, outPly, webgpu, progressPort?.sendPort, box)));
+    return await _spawn(args);
   } finally {
     progressPort?.close();
   }
 }
+
+/// The isolate entry closure is created HERE, in a scope that holds nothing but [args]. Dart closures share one
+/// context per enclosing scope: created inside [runPwDenseJob] the closure would drag the ReceivePort and the
+/// `onProgress` callback along and `Isolate.run` refuses to send it ("object is unsendable — _ReceivePortImpl",
+/// build 160 on the phone). `test/dense/pw_dense_ffi_isolate_test.dart` pins this.
+Future<PwDenseResult> _spawn(_JobArgs args) => Isolate.run(() => _runInIsolate(args));
 
 PwDenseResult _runInIsolate(_JobArgs a) {
   final ffi = PwDenseFfi.tryResolve();

@@ -14,7 +14,9 @@ import 'package:flutter/material.dart';
 import '../../l10n/app_localizations.dart';
 
 import '../../official_capture/dense_stage.dart';
-import '../../dense/dense_progress_bar.dart';
+import '../../dense/dense_stage_progress.dart';
+import '../../dense/dense_stage_panel.dart';
+import '../../dense/native_dense_stage_launcher.dart' show kDensePlyFileName;
 import '../../official_capture/selection_box.dart';
 import 'ruler_scrubber.dart';
 import 'selection_tools_layer.dart';
@@ -210,10 +212,19 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
         selection: _selectionApplied ? _box : null,
       ),
     );
-    if (!mounted) return;
+    if (!mounted || r.status == DenseStageStatus.started) return;
     final l = AppL10n.of(context);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(r.message ?? l.denseStageUnavailable)),
+    );
+  }
+
+  /// 稠密 PLY 用同一个查看页打开(同一格式,全量不降采样)。
+  void _openDense(String ply) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => SparseCloudViewerPage(plyPath: ply, title: '稠密点云'),
+      ),
     );
   }
 
@@ -671,26 +682,42 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                       top: false,
                       child: SizedBox(
                         width: double.infinity,
-                        child: SfmBottomActionButton(
-                          // [2026-07-31 用户签决]"下一步"不再是进选区编辑
-                          // (那已降级成右上角的可选入口),而是启动后续处理。
-                          label: AppL10n.of(context).sfmNext,
-                          onTap: denseStageLauncher.isAvailable
-                              ? () => unawaited(_startDenseStage(cloud))
-                              : null,
+                        // [2026-07-31 用户签决]"下一步"不再是进选区编辑
+                        // (那已降级成右上角的可选入口),而是启动后续处理。
+                        // [2026-09-15] 同一颗按钮跟着稠密阶段走:处理中禁用、完成后
+                        // 变「查看稠密点云」、失败后变「重试」。
+                        child: ValueListenableBuilder<DenseStageProgress?>(
+                          valueListenable: denseStageProgress,
+                          builder: (context, p, _) {
+                            final mine = p != null && p.captureDir == _captureDir ? p : null;
+                            if (mine != null && mine.state == DenseStageState.running) {
+                              return const SfmBottomActionButton(label: '稠密处理中…', onTap: null);
+                            }
+                            if (mine != null && mine.state == DenseStageState.done && mine.outPly != null) {
+                              return SfmBottomActionButton(
+                                label: '查看稠密点云',
+                                onTap: () => _openDense(mine.outPly!),
+                              );
+                            }
+                            return SfmBottomActionButton(
+                              label: mine != null && mine.state == DenseStageState.failed
+                                  ? '重试稠密处理'
+                                  : AppL10n.of(context).sfmNext,
+                              onTap: denseStageLauncher.isAvailable
+                                  ? () => unawaited(_startDenseStage(cloud))
+                                  : null,
+                            );
+                          },
                         ),
                       ),
                     ),
                   ),
                 ],
-                // [2026-09-15] 稠密进度/结果条 —— 必须是 Positioned 子项(见 dense_progress_bar.dart)
-                DenseProgressBar(
+                // [2026-09-15] 稠密阶段状态块(按钮上方)—— 必须是 Positioned 子项(见 dense_stage_panel.dart)
+                DenseStagePanel(
                   captureDir: _captureDir,
-                  onView: (ply) => Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => SparseCloudViewerPage(plyPath: ply, title: '稠密点云'),
-                    ),
-                  ),
+                  densePlyPath: '$_captureDir/$kDensePlyFileName',
+                  onView: _openDense,
                 ),
                 if (_editing && _box != null)
                   Positioned.fill(

@@ -48,7 +48,7 @@ class NativeDenseStageLauncher implements DenseStageLauncher {
       return DenseStageResult(DenseStageStatus.failed, message: '稠密输入不完整: $e');
     }
     _running = true;
-    denseStageProgress.value = DenseStageProgress(captureDir: request.captureDir, state: DenseStageState.running, phase: 'session');
+    denseStageProgress.value = DenseStageProgress(captureDir: request.captureDir, state: DenseStageState.running, phase: 'session', startedAt: DateTime.now());
     unawaited(_runJob(request, inputs));
     final note = request.selection != null ? '(只处理选区内)' : '(整朵云)';
     return DenseStageResult(DenseStageStatus.started, message: '稠密处理已开始$note');
@@ -97,19 +97,29 @@ class NativeDenseStageLauncher implements DenseStageLauncher {
           phase: 'done',
           outPly: outPly,
           points: s.points,
-          message: '稠密点云 ${s.points} 点,${secs.toStringAsFixed(0)} s',
+          startedAt: t0,
+          finishedAt: DateTime.now(),
         );
       } else {
         denseStageProgress.value = DenseStageProgress(
           captureDir: dir,
           state: DenseStageState.failed,
           phase: 'failed',
-          message: '稠密处理失败 rc=${r.code}: ${s.error}',
+          message: DenseStageProgress.shorten('rc=${r.code} ${s.error}'),
+          startedAt: t0,
+          finishedAt: DateTime.now(),
         );
       }
-    } catch (e) {
-      official_device_log.DeviceLog.log('DenseStage', 'exception: $e');
-      denseStageProgress.value = DenseStageProgress(captureDir: dir, state: DenseStageState.failed, phase: 'failed', message: '$e');
+    } catch (e, st) {
+      official_device_log.DeviceLog.log('DenseStage', 'exception: $e\n$st');
+      denseStageProgress.value = DenseStageProgress(
+        captureDir: dir,
+        state: DenseStageState.failed,
+        phase: 'failed',
+        message: DenseStageProgress.shorten(e),
+        startedAt: t0,
+        finishedAt: DateTime.now(),
+      );
     } finally {
       _running = false;
       // the depth pack is scratch (NF x ~7 MB); the PLY is the deliverable. Materialised photos likewise.
