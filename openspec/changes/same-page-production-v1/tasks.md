@@ -7,4 +7,6 @@
 - [x] 2.4 DenseWaitEta 全局观察器 + PipelineEta.setUnits(test/eta 13 例)
 - [x] 2.5 页面接线(test/dense_same_page_wiring_test.dart 6 例)
 - [x] 2.6 PWDense.xcframework 重建(导出 6)+ 出包 Runner-164-same-page-dense.app(自证全过);五道闸待用户令「装」
-- [x] 3.1 核可行性调研 → ⛔ 阻断:机上 PWOfficialSfm 不可从提交复现,另一条线先提交出货态(记忆 project_pocketworld_pwofficialsfm_not_reproducible_20260916)
+- [x] 3.1 核可行性调研 → 阻断解除:出货态提交(28ca8b48+68bfa680,用户授权),scratch 干净重建 = 机上载荷只差 6 字节日期戳
+- [x] 3.2 Ceres 迭代计数刀(核 a313ede0)+ Dart 可选绑定/事件(4c0f29a)+ 页面按迭代重规划 + vendor 提升(4e22ee7);闸全过
+- [x] 3.3 出包 Runner-165-ba-iter-progress.app(基线 164,只换 App+PWOfficialSfm);待用户「装」
