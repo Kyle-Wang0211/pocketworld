@@ -2341,6 +2341,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     final startMs = DateTime.now().millisecondsSinceEpoch;
     _etaDrainFedBase = recon.fedCount; // latched now, before any await
     _sparseEta = null;
+    _etaRefineRoundBase = 0;
+    _etaRefineLastStage = 0;
+    _etaRefineRoundsSeen = 0;
+    _etaRefineMaxIter = 0;
+    _etaRefineSwitched = false;
     EtaPriorLog priors;
     try {
       final docs = await getApplicationDocumentsDirectory();
@@ -2359,6 +2364,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         EtaStage('sparse.drain', drainUnits),
         EtaStage('sparse.phase1', frames),
         EtaStage('sparse.refine', frames),
+        // [BA-ITER] real work units for the global BA (Ceres iterations); stays
+        // 0 (inert) on engines without pwofficial_finalize_progress.
+        const EtaStage('sparse.refine_iter', 0),
         EtaStage('sparse.colorize', frames),
         const EtaStage('sparse.persist', 1),
       ],
@@ -2376,6 +2384,40 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       'eta planned: drain=$drainUnits frames=$frames priors='
           '${priors.entries.keys.join(",")}',
     );
+  }
+
+  // [BA-ITER 2026-09-16] Global-BA progress from the core (Ceres
+  // IterationCallback, stage/round/iter/max_iter). The moment the first tuple
+  // arrives the frame-guessed 'sparse.refine' stage is emptied and the real
+  // iteration-counted stage takes its place: units = rounds seen × max_iter
+  // (grows as rounds are discovered — Ninja EdgeAddedToPlan), done =
+  // (round−1)·max_iter + iter. Stage-1 rounds then stage-2 rounds form one
+  // sequence. Priors for the two stage ids never mix.
+  int _etaRefineRoundBase = 0; // rounds completed in earlier stages
+  int _etaRefineLastStage = 0;
+  int _etaRefineRoundsSeen = 0;
+  int _etaRefineMaxIter = 0;
+  bool _etaRefineSwitched = false;
+
+  void _etaRefineProgress(int stage, int round, int iter, int maxIter) {
+    final eta = _sparseEta;
+    if (eta == null || stage <= 0 || round <= 0 || maxIter <= 0) return;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (!_etaRefineSwitched) {
+      _etaRefineSwitched = true;
+      eta.setUnits('sparse.refine', 0); // the guess retires (no unit finished yet)
+      _etaRefineMaxIter = maxIter;
+    }
+    if (stage != _etaRefineLastStage) {
+      if (_etaRefineLastStage != 0) _etaRefineRoundBase = _etaRefineRoundsSeen;
+      _etaRefineLastStage = stage;
+    }
+    final globalRound = _etaRefineRoundBase + round;
+    if (globalRound > _etaRefineRoundsSeen) _etaRefineRoundsSeen = globalRound;
+    final units = _etaRefineRoundsSeen * _etaRefineMaxIter;
+    eta.setUnits('sparse.refine_iter', units);
+    final done = ((globalRound - 1) * _etaRefineMaxIter + iter).clamp(0, units);
+    eta.markUnits('sparse.refine_iter', done, now);
   }
 
   void _etaMark(String stageId, {int? units}) {
@@ -2666,6 +2708,13 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           _sfmQueued = _sfmRecon?.remainingCount ?? _sfmQueued;
           // 拥塞遥测标签:入队即重估(队列上行沿是标签的主要触发,纯观测)。
           _recomputeShutterPace(inSetState: true);
+        case SfmLiveFinalizeProgress(
+          :final stage,
+          :final round,
+          :final iter,
+          :final maxIter,
+        ):
+          _etaRefineProgress(stage, round, iter, maxIter);
         case SfmLiveFinalizePhase1Done():
           _etaMark('sparse.phase1');
           // 修1:phase1 完成 → 阶段 2(后台全局 BA,分钟级)。
@@ -2685,7 +2734,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           // generating spinner / the previous colored cloud until then. The
           // streaming-preview cloud is now track-annotated, so it colorizes on
           // the SAME path — it is the ONLY cloud shown (global BA deferred).
-          if (event is SfmLiveRefined) _etaMark('sparse.refine');
+          if (event is SfmLiveRefined) {
+            _etaMark('sparse.refine');
+            _etaMark('sparse.refine_iter');
+          }
           break;
         case SfmLiveFailed(:final stage, :final message):
           unawaited(_finishSparseEta(ok: false));

@@ -126,16 +126,20 @@ class PipelineEta {
     return null;
   }
 
-  /// Corrects a stage's unit count before any of its units finished (a stage's
-  /// real total is often only known when it starts). Ninja's plan is mutable in
-  /// exactly this way (EdgeAddedToPlan / EdgeRemovedFromPlan, status_printer.cc
-  /// L91-116); a committed label is never revisited.
+  /// Corrects a stage's unit count. Before any of its units finished the count
+  /// may go either way; once the stage is in progress it may only GROW (Ninja's
+  /// plan is mutable exactly this way: EdgeAddedToPlan / EdgeRemovedFromPlan,
+  /// status_printer.cc L91-116; finished edges are never removed). Used when a
+  /// phase's real total is only known when it starts, and for the global-BA
+  /// stage whose rounds are discovered one by one. A committed label is never
+  /// revisited.
   void setUnits(String stageId, int units) {
     if (_finished || units < 0) return;
     final idx = _stages.indexWhere((s) => s.id == stageId);
-    if (idx < 0 || (_done[stageId] ?? 0) > 0) return;
+    if (idx < 0) return;
     final cur = _stages[idx].units;
-    if (cur == units) return;
+    final done = _done[stageId] ?? 0;
+    if (units == cur || (done > 0 && units < cur)) return;
     final prior = _priorUnitMs[stageId]!;
     if (units > cur) {
       for (var i = cur; i < units; i++) {
@@ -147,6 +151,7 @@ class PipelineEta {
       }
     }
     _stages[idx] = EtaStage(stageId, units);
+    if (units > 0 && done >= units) _stageEndMs[stageId] ??= _lastEndMs;
   }
 
   /// Cumulative units finished for [stageId] as of [nowMs]. Idempotent for repeated counts.

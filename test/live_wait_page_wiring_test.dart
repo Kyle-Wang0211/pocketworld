@@ -127,4 +127,31 @@ void main() {
     );
     expect(lines[failed + 1].contains('_finishSparseEta(ok: false)'), isTrue);
   });
+  _baIterTests();
+}
+
+// ── [BA-ITER 2026-09-16] core iteration progress feeds the countdown ─────────
+void _baIterTests() {
+  test('全局 BA 迭代进度:事件接到页面、frame 猜测阶段退位、迭代阶段随轮数增长、refined 收两段', () {
+    final src = File(
+      'lib/ui/official_capture/ar_capture_page.dart',
+    ).readAsStringSync();
+    final flat = src.replaceAll(RegExp(r'\s+'), ' ');
+    expect(flat.contains("const EtaStage('sparse.refine_iter', 0),"), isTrue);
+    expect(flat.contains('case SfmLiveFinalizeProgress('), isTrue);
+    expect(
+      flat.contains('_etaRefineProgress(stage, round, iter, maxIter);'),
+      isTrue,
+    );
+    expect(flat.contains("eta.setUnits('sparse.refine', 0);"), isTrue);
+    expect(flat.contains("eta.setUnits('sparse.refine_iter', units);"), isTrue);
+    expect(
+      flat.contains(
+        "_etaMark('sparse.refine'); _etaMark('sparse.refine_iter');",
+      ),
+      isTrue,
+    );
+    // per-job counters reset when a job is planned
+    expect(flat.contains('_etaRefineSwitched = false;'), isTrue);
+  });
 }

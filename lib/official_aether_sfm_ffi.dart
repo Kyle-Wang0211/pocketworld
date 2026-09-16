@@ -28,12 +28,16 @@ import 'official_aether_ffi.dart'
 /// 所以进程内 setenv 即时生效。⚠️ 别拿它去改 native 已静态缓存(static const
 /// cached)的旋钮:那些只在首次读取时生效,中途改了也不会变。
 class AetherProcessEnv {
-  static final _setenv = DynamicLibrary.process().lookupFunction<
-      Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Int32),
-      int Function(Pointer<Utf8>, Pointer<Utf8>, int)>('setenv');
-  static final _unsetenv = DynamicLibrary.process().lookupFunction<
-      Int32 Function(Pointer<Utf8>),
-      int Function(Pointer<Utf8>)>('unsetenv');
+  static final _setenv = DynamicLibrary.process()
+      .lookupFunction<
+        Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Int32),
+        int Function(Pointer<Utf8>, Pointer<Utf8>, int)
+      >('setenv');
+  static final _unsetenv = DynamicLibrary.process()
+      .lookupFunction<
+        Int32 Function(Pointer<Utf8>),
+        int Function(Pointer<Utf8>)
+      >('unsetenv');
 
   static void set(String name, String value) {
     final n = name.toNativeUtf8();
@@ -115,12 +119,12 @@ class AetherMatchFlags {
     _resolved = true;
     try {
       final lib = OfficialAetherFfi.resolveLibraryForBindings();
-      _setActive = lib
-          .lookupFunction<Void Function(Int32), void Function(int)>(
-              'pwofficial_match_set_capture_active');
-      _setFps30 = lib
-          .lookupFunction<Void Function(Int32), void Function(int)>(
-              'pwofficial_match_set_preview_fps30');
+      _setActive = lib.lookupFunction<Void Function(Int32), void Function(int)>(
+        'pwofficial_match_set_capture_active',
+      );
+      _setFps30 = lib.lookupFunction<Void Function(Int32), void Function(int)>(
+        'pwofficial_match_set_preview_fps30',
+      );
     } catch (_) {}
   }
 
@@ -640,6 +644,30 @@ typedef _RemoveFrameDart =
 typedef _FinalizeStatusC = Int32 Function(Pointer<Void> session);
 typedef _FinalizeStatusDart = int Function(Pointer<Void> session);
 
+// [BA-PROGRESS 2026-09-16] finalize 的**迭代级**进度:与 pwofficial_finalize_status
+// 同一 guard,status==RUNNING 期间给出 stage(1=stage-1 全局 BA 轮次 /
+// 2=stage-2 迭代式全局精化)、round(该 stage 内 1-based 轮)、iter(本次 solve
+// 内 1-based Ceres 迭代,每次 solve 起点归 0)、max_iter(该 solve 的
+// max_num_iterations,缺省 50)。什么都没跑时 stage=0。返回 0 = 成功。
+// ⚠️ 机上现役 framework **还没有**这个符号 —— 绑定必须可选,见
+// AetherSfm._finalizeProgress。
+typedef _FinalizeProgressC =
+    Int32 Function(
+      Pointer<Void> session,
+      Pointer<Int32> stage,
+      Pointer<Int32> round,
+      Pointer<Int32> iter,
+      Pointer<Int32> maxIter,
+    );
+typedef _FinalizeProgressDart =
+    int Function(
+      Pointer<Void> session,
+      Pointer<Int32> stage,
+      Pointer<Int32> round,
+      Pointer<Int32> iter,
+      Pointer<Int32> maxIter,
+    );
+
 typedef _GlobalRefineC = Int32 Function(Pointer<Void> session);
 typedef _GlobalRefineDart = int Function(Pointer<Void> session);
 
@@ -855,6 +883,27 @@ class AetherSfm {
       .lookupFunction<_FinalizeStatusC, _FinalizeStatusDart>(
         'pwofficial_finalize_status',
       );
+  // [BA-PROGRESS 2026-09-16] **唯一一个可选绑定**。其余 lookup 一律保持
+  // 「lookup 立刻抛 / 首次调用才抛」的老契约;这一条不行 —— 机上现役
+  // PWOfficialSfm 还没导出 pwofficial_finalize_progress,而它要被 phase-2
+  // 的 250ms 轮询每 tick 摸一次,任何抛出都会把轮询打断。所以在这里就
+  // catch 成 null:符号缺席时 finalizeProgress() 恒返回 null,轮询与今天
+  // 逐字节一致(只多一次 null 判断)。
+  static final _FinalizeProgressDart? _finalizeProgress =
+      _lookupFinalizeProgress();
+
+  static _FinalizeProgressDart? _lookupFinalizeProgress() {
+    try {
+      return _lib.lookupFunction<_FinalizeProgressC, _FinalizeProgressDart>(
+        'pwofficial_finalize_progress',
+      );
+    } catch (_) {
+      // 旧 framework(无符号)或 framework 根本没解析出来 —— 两种都当
+      // 「没有进度信号」处理,绝不冒泡到调用方。
+      return null;
+    }
+  }
+
   // [L1-ARBITRATE 2026-07-12] lazily bound like the rest; an OLD vendored .a
   // lacking the shim symbol throws on first use — callers catch (same
   // contract as repairStats).
@@ -1678,6 +1727,45 @@ class AetherSfmStreamSession {
   AetherSfmFinalizeStatus finalizeStatus() {
     _checkLive();
     return aetherSfmFinalizeStatusFromCode(AetherSfm._finalizeStatus(_session));
+  }
+
+  /// True when the loaded PWOfficialSfm exports `pwofficial_finalize_progress`.
+  /// Reading it is a cached null-check (no dlsym, no native call), so a poll
+  /// loop may gate on it every tick.
+  bool get hasFinalizeProgress => AetherSfm._finalizeProgress != null;
+
+  /// [BA-PROGRESS 2026-09-16] 迭代级进度快照,配合 [finalizeStatus] 使用:
+  /// status==RUNNING 期间返回 (stage, round, iter, maxIter),语义见
+  /// `_FinalizeProgressC` 的注释。
+  ///
+  /// 返回 null 的两种情形(调用方一律当「没有进度信号」处理,**不是错误**):
+  ///   · 现役 framework 没有该符号([hasFinalizeProgress] 为 false);
+  ///   · native 返回非 0(不可用)。
+  /// 什么都没在跑时 native 返回 0 且 stage=0 —— 那是一个**合法**的元组,
+  /// 不是 null。
+  ({int stage, int round, int iter, int maxIter})? finalizeProgress() {
+    _checkLive();
+    final fn = AetherSfm._finalizeProgress;
+    if (fn == null) return null;
+    final stage = calloc<Int32>();
+    final round = calloc<Int32>();
+    final iter = calloc<Int32>();
+    final maxIter = calloc<Int32>();
+    try {
+      final rc = fn(_session, stage, round, iter, maxIter);
+      if (rc != 0) return null;
+      return (
+        stage: stage.value,
+        round: round.value,
+        iter: iter.value,
+        maxIter: maxIter.value,
+      );
+    } finally {
+      calloc.free(stage);
+      calloc.free(round);
+      calloc.free(iter);
+      calloc.free(maxIter);
+    }
   }
 
   /// [L1-ARBITRATE 2026-07-12] Ghost-layer L1 CasDiffMVS 1-bit arbitration —

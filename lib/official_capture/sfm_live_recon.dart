@@ -334,6 +334,29 @@ class SfmLiveFinalizePhase1Done extends SfmLiveEvent {
   const SfmLiveFinalizePhase1Done();
 }
 
+/// [BA-PROGRESS 2026-09-16] phase-2 全局 BA 的**迭代级**心跳。
+///
+/// 来源是 native 新增的 `pwofficial_finalize_progress`(与 finalize_status 同
+/// 一 guard):[stage] 1=stage-1 全局 BA 轮次 / 2=stage-2 迭代式全局精化,
+/// [round] 是该 stage 内 1-based 的轮次,[iter] 是本次 solve 内 1-based 的
+/// Ceres 迭代(每次 solve 起点归 0),[maxIter] 是该 solve 的
+/// max_num_iterations(缺省 50)。什么都没跑时 stage=0。
+///
+/// ⚠️ 纯增量信号:现役 framework 没有该符号时**一条都不会发**,等待页必须
+/// 照旧只靠 [SfmLiveFinalizePhase1Done] / [SfmLiveRefined] 推进。
+class SfmLiveFinalizeProgress extends SfmLiveEvent {
+  const SfmLiveFinalizeProgress({
+    required this.stage,
+    required this.round,
+    required this.iter,
+    required this.maxIter,
+  });
+  final int stage;
+  final int round;
+  final int iter;
+  final int maxIter;
+}
+
 /// Background global BA converged — refined model silently swapped in.
 class SfmLiveRefined extends SfmLiveEvent {
   const SfmLiveRefined(this.snapshot, this.refineMs);
@@ -1142,8 +1165,9 @@ class SfmLiveRecon {
         });
       }
       final line = '${jsonEncode(meta)}\n';
-      File('$dir/official_sfm_fed_frames.jsonl')
-          .writeAsStringSync(line, mode: FileMode.append, flush: false);
+      File(
+        '$dir/official_sfm_fed_frames.jsonl',
+      ).writeAsStringSync(line, mode: FileMode.append, flush: false);
     } catch (_) {}
   }
 
@@ -1432,6 +1456,17 @@ class SfmLiveRecon {
               stage: _AlignmentSnapshotStage.localReady,
             ),
             msg['ms'] as int,
+          ),
+        );
+      case 'finalize_progress':
+        // [BA-PROGRESS 2026-09-16] worker 只在元组**变化**时才发,这里原样
+        // 转成事件,不做节流、不落遥测(每轮迭代一行会把 jsonl 冲爆)。
+        _events.add(
+          SfmLiveFinalizeProgress(
+            stage: msg['stage'] as int? ?? 0,
+            round: msg['round'] as int? ?? 0,
+            iter: msg['iter'] as int? ?? 0,
+            maxIter: msg['max_iter'] as int? ?? 0,
           ),
         );
       case 'refined':
@@ -2488,8 +2523,27 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
           // refined 是唯一用户可见成果,轮询间隔直接计入交付延迟;读的是
           // 无锁 atomic,加频无成本。
           refineStart = DateTime.now().millisecondsSinceEpoch;
+          // [BA-PROGRESS 2026-09-16] 上一 tick 读到的迭代进度元组;只在**变**
+          // 的时候才往 facade 发一条(250ms 一 tick,而一次 Ceres 迭代通常
+          // 比这慢,所以绝大多数 tick 是重复值)。
+          ({int stage, int round, int iter, int maxIter})? lastProgress;
           pollTimer = Timer.periodic(const Duration(milliseconds: 250), (t) {
             final st = s.finalizeStatus();
+            // 纯增量:现役 framework 无该符号时 hasFinalizeProgress 恒 false,
+            // 本 tick 除了这一次布尔判断之外不多做任何事,行为与今天一致。
+            if (s.hasFinalizeProgress) {
+              final pg = s.finalizeProgress();
+              if (pg != null && pg != lastProgress) {
+                lastProgress = pg;
+                boot.reply.send(<String, Object?>{
+                  'evt': 'finalize_progress',
+                  'stage': pg.stage,
+                  'round': pg.round,
+                  'iter': pg.iter,
+                  'max_iter': pg.maxIter,
+                });
+              }
+            }
             if (st == AetherSfmFinalizeStatus.refined) {
               t.cancel();
               final ms = DateTime.now().millisecondsSinceEpoch - refineStart;
@@ -2506,9 +2560,9 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
                   '${File(boot.dbPath).parent.path}/official_finalize_segments.json',
                 );
                 if (segFile.existsSync()) {
-                  segs = jsonDecode(
-                    segFile.readAsStringSync(),
-                  ) as Map<String, dynamic>;
+                  segs =
+                      jsonDecode(segFile.readAsStringSync())
+                          as Map<String, dynamic>;
                 }
               } catch (e) {
                 wlog('finalize segments read failed (non-fatal): $e');
