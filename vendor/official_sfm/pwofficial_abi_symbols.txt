@@ -5,6 +5,7 @@ pwofficial_create
 pwofficial_debug_last
 pwofficial_finalize_async
 pwofficial_finalize_status
+pwofficial_finalize_progress
 pwofficial_free
 pwofficial_get_points
 pwofficial_get_points_tracked
