@@ -1,0 +1,585 @@
+diff -ruN --exclude=.dart_tool --exclude=pubspec.lock --exclude=.packages --exclude=PW_LOCAL_PATCHES.md --exclude=.DS_Store /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/lib/src/bindings/src/thermion_dart_ffi.g.dart thermion_dart_pw/lib/src/bindings/src/thermion_dart_ffi.g.dart
+--- /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/lib/src/bindings/src/thermion_dart_ffi.g.dart	2026-04-30 03:54:44
++++ thermion_dart_pw/lib/src/bindings/src/thermion_dart_ffi.g.dart	2026-09-18 01:03:44
+@@ -145,6 +145,15 @@
+ @ffi.Native<
+     ffi.Void Function(ffi.Pointer<TMaterialInstance>, ffi.Pointer<ffi.Char>,
+         ffi.Pointer<ffi.Double>)>(isLeaf: true)
++external void MaterialInstance_setParameterMat3(
++  ffi.Pointer<TMaterialInstance> materialInstance,
++  ffi.Pointer<ffi.Char> propertyName,
++  ffi.Pointer<ffi.Double> matrix,
++);
++
++@ffi.Native<
++    ffi.Void Function(ffi.Pointer<TMaterialInstance>, ffi.Pointer<ffi.Char>,
++        ffi.Pointer<ffi.Double>)>(isLeaf: true)
+ external void MaterialInstance_setParameterMat4(
+   ffi.Pointer<TMaterialInstance> materialInstance,
+   ffi.Pointer<ffi.Char> propertyName,
+@@ -695,6 +704,51 @@
+   int pixelDataType,
+ );
+ 
++/// Bind a platform image (iOS/macOS: CVPixelBufferRef, Android: EGLImageKHR) as
++/// this texture's contents.
++///
++/// Calls filament::Texture::setExternalImage(Engine&, void*) -- the overload
++/// marked UTILS_DEPRECATED at Texture.h:459-462 -- and does so deliberately.
++/// The non-deprecated ExternalImageHandleRef overload (Texture.h:435) requires
++/// Platform::createExternalImage(), which the Metal backend does not implement:
++/// MetalDriver::setupExternalImage2 is an empty body whose only content is
++/// "// FIXME: implement setupExternalImage2" (MetalDriver.mm:1250-1252).
++/// So on Metal the deprecated overload is currently the only one that works.
++/// Texture.h:447-448 documents its accepted types as "eglImageOES on Android
++/// and CVPixelBufferRef on iOS".
++///
++/// PRECONDITION: the texture must have been built external, i.e. with
++/// Texture::Builder().sampler(SAMPLER_EXTERNAL) or .external(). Filament checks
++/// this with FILAMENT_CHECK_PRECONDITION(mExternal) (details/Texture.cpp:493),
++/// which aborts rather than returning an error. Note this constrains the
++/// TEXTURE, not the material: declaring the material parameter as `sampler2d`
++/// rather than `samplerExternal` is correct and is what Google's own AR sample
++/// does (ios/samples/hello-ar/Materials/camera_feed.mat), because on Metal the
++/// external image becomes an ordinary MTLTexture (MetalHandles.mm:700-707).
++///
++/// OWNERSHIP: Filament takes its own reference; it does NOT adopt the caller's.
++/// setExternalImage begins with api.setupExternalImage(image), described at
++/// details/Texture.cpp:495-496 as "synchronous, and allows the driver to take
++/// ownership of the external image on this thread". On Metal that is a single
++/// CVPixelBufferRetain (MetalDriver.mm:1254-1262), documented there as
++/// "allowing the application to free their reference to the buffer"; the
++/// matching release is MetalDriver.mm:545. A caller holding a +1 must therefore
++/// release it after this call returns, and may safely do so immediately.
++///
++/// Metal accepts only kCVPixelFormatType_32BGRA and
++/// kCVPixelFormatType_420YpCbCr8BiPlanarFullRange; any other format is a fatal
++/// check inside the backend, not a fallback. 420f additionally runs a
++/// ycbcr-to-rgb compute pass into a new RGB texture, so only 32BGRA is
++/// zero-copy.
++@ffi.Native<
++    ffi.Void Function(ffi.Pointer<TTexture>, ffi.Pointer<TEngine>,
++        ffi.Pointer<ffi.Void>)>(isLeaf: true)
++external void Texture_setExternalImagePlatform(
++  ffi.Pointer<TTexture> tTexture,
++  ffi.Pointer<TEngine> tEngine,
++  ffi.Pointer<ffi.Void> platformImage,
++);
++
+ @ffi.Native<ffi.Uint32 Function(ffi.Pointer<TTexture>, ffi.Uint32)>(
+     isLeaf: true)
+ external int Texture_getWidth(
+@@ -1997,6 +2051,17 @@
+ );
+ 
+ @ffi.Native<
++    ffi.Void Function(ffi.Pointer<TTexture>, ffi.Pointer<TEngine>,
++        ffi.Pointer<ffi.Void>, ffi.Uint32, VoidCallback)>(isLeaf: true)
++external void Texture_setExternalImagePlatformRenderThread(
++  ffi.Pointer<TTexture> tTexture,
++  ffi.Pointer<TEngine> tEngine,
++  ffi.Pointer<ffi.Void> platformImage,
++  int requestId,
++  VoidCallback onComplete,
++);
++
++@ffi.Native<
+     ffi.Void Function(ffi.Pointer<TTexture>, ffi.Pointer<TEngine>, ffi.Uint32,
+         VoidCallback)>(isLeaf: true)
+ external void Texture_generateMipMapsRenderThread(
+@@ -3209,6 +3274,15 @@
+   ffi.Pointer<TRenderableManager> tRenderableManager,
+   int entityId,
+   int layer,
++);
++
++@ffi.Native<
++    ffi.Void Function(
++        ffi.Pointer<TRenderableManager>, EntityId, ffi.Bool)>(isLeaf: true)
++external void RenderableManager_setCulling(
++  ffi.Pointer<TRenderableManager> tRenderableManager,
++  int entityId,
++  bool enabled,
+ );
+ 
+ @ffi.Native<
+diff -ruN --exclude=.dart_tool --exclude=pubspec.lock --exclude=.packages --exclude=PW_LOCAL_PATCHES.md --exclude=.DS_Store /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/lib/src/bindings/src/thermion_dart_js_interop.g.dart thermion_dart_pw/lib/src/bindings/src/thermion_dart_js_interop.g.dart
+--- /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/lib/src/bindings/src/thermion_dart_js_interop.g.dart	2026-04-30 03:54:44
++++ thermion_dart_pw/lib/src/bindings/src/thermion_dart_js_interop.g.dart	2026-09-18 01:03:48
+@@ -471,6 +471,11 @@
+     double w,
+     double z,
+   );
++  external void _MaterialInstance_setParameterMat3(
++    Pointer<TMaterialInstance> materialInstance,
++    Pointer<Char> propertyName,
++    Pointer<Float64> matrix,
++  );
+   external void _MaterialInstance_setParameterMat4(
+     Pointer<TMaterialInstance> materialInstance,
+     Pointer<Char> propertyName,
+@@ -783,6 +788,11 @@
+     int bufferFormat,
+     int pixelDataType,
+   );
++  external void _Texture_setExternalImagePlatform(
++    Pointer<TTexture> tTexture,
++    Pointer<TEngine> tEngine,
++    Pointer<Void> platformImage,
++  );
+   external int _Texture_getWidth(
+     Pointer<TTexture> tTexture,
+     int level,
+@@ -1499,6 +1509,13 @@
+     Pointer<self.NativeFunction<void Function(PointerClass<TTexture>)>>
+         onComplete,
+   );
++  external void _Texture_setExternalImagePlatformRenderThread(
++    Pointer<TTexture> tTexture,
++    Pointer<TEngine> tEngine,
++    Pointer<Void> platformImage,
++    int requestId,
++    VoidCallback onComplete,
++  );
+   external void _Texture_generateMipMapsRenderThread(
+     Pointer<TTexture> tTexture,
+     Pointer<TEngine> tEngine,
+@@ -2072,6 +2089,11 @@
+     EntityId entityId,
+     bool castShadows,
+   );
++  external void _RenderableManager_setCulling(
++    Pointer<TRenderableManager> tRenderableManager,
++    EntityId entityId,
++    bool enabled,
++  );
+   external void _RenderableManager_setReceiveShadows(
+     Pointer<TRenderableManager> tRenderableManager,
+     EntityId entityId,
+@@ -2525,6 +2547,16 @@
+   return result;
+ }
+ 
++void MaterialInstance_setParameterMat3(
++  self.Pointer<TMaterialInstance> materialInstance,
++  self.Pointer<Char> propertyName,
++  self.Pointer<Float64> matrix,
++) {
++  final result = _lib._MaterialInstance_setParameterMat3(
++      materialInstance.cast(), propertyName, matrix);
++  return result;
++}
++
+ void MaterialInstance_setParameterMat4(
+   self.Pointer<TMaterialInstance> materialInstance,
+   self.Pointer<Char> propertyName,
+@@ -3149,6 +3181,16 @@
+   return result == 1;
+ }
+ 
++void Texture_setExternalImagePlatform(
++  self.Pointer<TTexture> tTexture,
++  self.Pointer<TEngine> tEngine,
++  self.Pointer<Void> platformImage,
++) {
++  final result = _lib._Texture_setExternalImagePlatform(
++      tTexture.cast(), tEngine.cast(), platformImage);
++  return result;
++}
++
+ int Texture_getWidth(
+   self.Pointer<TTexture> tTexture,
+   int level,
+@@ -4632,6 +4674,22 @@
+   return result;
+ }
+ 
++void Texture_setExternalImagePlatformRenderThread(
++  self.Pointer<TTexture> tTexture,
++  self.Pointer<TEngine> tEngine,
++  self.Pointer<Void> platformImage,
++  int requestId,
++  DartVoidCallback onComplete,
++) {
++  final result = _lib._Texture_setExternalImagePlatformRenderThread(
++      tTexture.cast(),
++      tEngine.cast(),
++      platformImage,
++      requestId,
++      onComplete as Pointer<self.NativeFunction<VoidCallbackFunction>>);
++  return result;
++}
++
+ void Texture_generateMipMapsRenderThread(
+   self.Pointer<TTexture> tTexture,
+   self.Pointer<TEngine> tEngine,
+@@ -5830,6 +5888,16 @@
+ ) {
+   final result = _lib._RenderableManager_setCastShadows(
+       tRenderableManager.cast(), entityId, castShadows);
++  return result;
++}
++
++void RenderableManager_setCulling(
++  self.Pointer<TRenderableManager> tRenderableManager,
++  DartEntityId entityId,
++  bool enabled,
++) {
++  final result = _lib._RenderableManager_setCulling(
++      tRenderableManager.cast(), entityId, enabled);
+   return result;
+ }
+ 
+diff -ruN --exclude=.dart_tool --exclude=pubspec.lock --exclude=.packages --exclude=PW_LOCAL_PATCHES.md --exclude=.DS_Store /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/lib/src/filament/src/implementation/ffi_asset.dart thermion_dart_pw/lib/src/filament/src/implementation/ffi_asset.dart
+--- /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/lib/src/filament/src/implementation/ffi_asset.dart	2026-04-30 03:54:44
++++ thermion_dart_pw/lib/src/filament/src/implementation/ffi_asset.dart	2026-09-18 00:39:02
+@@ -368,6 +368,18 @@
+     }
+   }
+ 
++  /// [pw 2026-09-18] FRUSTUM culling (not backface -- that is
++  /// MaterialInstance.setCullingMode). Must be false for a
++  /// `vertexDomain : device` renderable; see
++  /// native/include/c_api/TRenderableManager.h.
++  @override
++  Future setCulling(bool enabled) async {
++    RenderableManager_setCulling(app.renderableManager, this.entity, enabled);
++    for (final entity in await this.getChildEntities()) {
++      RenderableManager_setCulling(app.renderableManager, entity, enabled);
++    }
++  }
++
+   ///
+   ///
+   ///
+diff -ruN --exclude=.dart_tool --exclude=pubspec.lock --exclude=.packages --exclude=PW_LOCAL_PATCHES.md --exclude=.DS_Store /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/lib/src/filament/src/implementation/ffi_material.dart thermion_dart_pw/lib/src/filament/src/implementation/ffi_material.dart
+--- /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/lib/src/filament/src/implementation/ffi_material.dart	2026-04-30 03:54:44
++++ thermion_dart_pw/lib/src/filament/src/implementation/ffi_material.dart	2026-09-18 00:37:35
+@@ -204,6 +204,15 @@
+         pointer, name.toNativeUtf8().cast<Char>(), matrix.storage.address);
+   }
+ 
++  // [pw 2026-09-18] Matrix3.storage is a Float64List of 9, column-major
++  // (vector_math stores columns), which is exactly what
++  // convert_double_to_mat3f expects on the C side.
++  @override
++  Future setParameterMat3(String name, Matrix3 matrix) async {
++    MaterialInstance_setParameterMat3(
++        pointer, name.toNativeUtf8().cast<Char>(), matrix.storage.address);
++  }
++
+   @override
+   Pointer<TMaterialInstance> getNativeHandle() {
+     return pointer;
+diff -ruN --exclude=.dart_tool --exclude=pubspec.lock --exclude=.packages --exclude=PW_LOCAL_PATCHES.md --exclude=.DS_Store /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/lib/src/filament/src/implementation/ffi_texture.dart thermion_dart_pw/lib/src/filament/src/implementation/ffi_texture.dart
+--- /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/lib/src/filament/src/implementation/ffi_texture.dart	2026-04-30 03:54:44
++++ thermion_dart_pw/lib/src/filament/src/implementation/ffi_texture.dart	2026-09-18 00:39:43
+@@ -66,10 +66,54 @@
+     return Texture_getWidth(pointer, level);
+   }
+ 
++  /// [pw 2026-09-17] Bind a platform image (iOS: `CVPixelBufferRef`) as this
++  /// texture's contents. [externalImage] is the raw native address as an `int`.
++  ///
++  /// Replicates google/filament `ios/samples/hello-ar/.../
++  /// FullScreenTriangle.cpp:107`. Routed through the render-thread variant
++  /// because it reaches the backend driver; Filament's Engine is documented
++  /// as not thread-safe (`Engine.h:156-158`).
++  ///
++  /// 🔴 Ownership: Filament takes its OWN reference. It does NOT adopt yours.
++  ///
++  /// `FTexture::setExternalImage` opens with `api.setupExternalImage(image)`,
++  /// which on Metal is a single `CVPixelBufferRetain`
++  /// (`MetalDriver.mm:1254-1262`), documented there as
++  ///   "we take ownership of the passed in buffer by calling
++  ///    CVPixelBufferRetain. This keeps the buffer alive until the driver
++  ///    thread processes it ..., ALLOWING THE APPLICATION TO FREE THEIR
++  ///    REFERENCE TO THE BUFFER."
++  /// The matching release is `MetalDriver.mm:545`, after `MetalTexture` has
++  /// taken its own retain.
++  ///
++  /// ⇒ If you hold a +1, release it once this future completes. Awaiting is
++  ///   what makes that safe here: the retain happens on the render thread
++  ///   inside this call, and the completion callback fires after it.
++  ///
++  /// 🔴 hello-ar's "No need to retain the pixel buffer here, as Filament will
++  /// take ownership" is true of THAT sample only -- its buffer is
++  /// `ARFrame.capturedImage`, which the app never retained. Read as a general
++  /// rule it is backwards, and following it with an owned buffer leaks one
++  /// full-resolution CVPixelBuffer per frame.
++  ///
++  /// 🔴 Metal accepts only `kCVPixelFormatType_32BGRA` and
++  /// `kCVPixelFormatType_420YpCbCr8BiPlanarFullRange`; anything else is a
++  /// fatal check inside the backend, not a fallback.
+   @override
+-  Future<void> setExternalImage(externalImage) {
+-    // TODO: implement setExternalImage
+-    throw UnimplementedError();
++  Future<void> setExternalImage(externalImage) async {
++    if (externalImage is! int) {
++      throw ArgumentError(
++        'setExternalImage expects the native image address as an int, '
++        'got ${externalImage.runtimeType}. On iOS this is the CVPixelBufferRef.',
++      );
++    }
++    if (externalImage == 0) {
++      throw ArgumentError('setExternalImage got a null address.');
++    }
++    final Pointer<Void> image = Pointer<Void>.fromAddress(externalImage);
++    await withVoidCallback((requestId, cb) =>
++        Texture_setExternalImagePlatformRenderThread(
++            pointer, _engine, image, requestId, cb));
+   }
+ 
+   @override
+diff -ruN --exclude=.dart_tool --exclude=pubspec.lock --exclude=.packages --exclude=PW_LOCAL_PATCHES.md --exclude=.DS_Store /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/lib/src/filament/src/interface/asset.dart thermion_dart_pw/lib/src/filament/src/interface/asset.dart
+--- /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/lib/src/filament/src/interface/asset.dart	2026-04-30 03:54:44
++++ thermion_dart_pw/lib/src/filament/src/interface/asset.dart	2026-09-18 00:39:05
+@@ -152,6 +152,13 @@
+     throw UnimplementedError();
+   }
+ 
++  /// [pw 2026-09-18] FRUSTUM culling, true by default in Filament.
++  /// Not backface culling -- that is MaterialInstance.setCullingMode.
++  /// Must be disabled for `vertexDomain : device` renderables.
++  Future setCulling(bool enabled) async {
++    throw UnimplementedError();
++  }
++
+   ///
+   ///
+   ///
+diff -ruN --exclude=.dart_tool --exclude=pubspec.lock --exclude=.packages --exclude=PW_LOCAL_PATCHES.md --exclude=.DS_Store /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/lib/src/filament/src/interface/material.dart thermion_dart_pw/lib/src/filament/src/interface/material.dart
+--- /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/lib/src/filament/src/interface/material.dart	2026-04-30 03:54:44
++++ thermion_dart_pw/lib/src/filament/src/interface/material.dart	2026-09-18 00:37:35
+@@ -112,6 +112,13 @@
+       String name, double x, double y, double z, double w);
+   Future setParameterMat4(
+       String name, Matrix4 matrix);
++
++  /// [pw 2026-09-18] Sets a `float3x3` material parameter. Added because
++  /// Filament's own AR camera-feed material takes its texture transform as a
++  /// float3x3 (hello-ar Materials/camera_feed.mat), and upstream thermion
++  /// only had Mat4.
++  Future setParameterMat3(
++      String name, Matrix3 matrix);
+   
+   Future setParameterInt(String name, int value);
+   Future setParameterBool(String name, bool value);
+diff -ruN --exclude=.dart_tool --exclude=pubspec.lock --exclude=.packages --exclude=PW_LOCAL_PATCHES.md --exclude=.DS_Store /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/native/include/MathUtils.hpp thermion_dart_pw/native/include/MathUtils.hpp
+--- /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/native/include/MathUtils.hpp	2026-04-30 03:54:44
++++ thermion_dart_pw/native/include/MathUtils.hpp	2026-09-18 01:03:35
+@@ -1,4 +1,5 @@
+ #pragma once
++#include <math/mat3.h>
+ #include <math/mat4.h>
+ #include "c_api/APIBoundaryTypes.h"
+ 
+@@ -12,6 +13,15 @@
+         filament::math::float4{static_cast<float>(data[4]), static_cast<float>(data[5]), static_cast<float>(data[6]), static_cast<float>(data[7])},
+         filament::math::float4{static_cast<float>(data[8]), static_cast<float>(data[9]), static_cast<float>(data[10]), static_cast<float>(data[11])},
+         filament::math::float4{static_cast<float>(data[12]), static_cast<float>(data[13]), static_cast<float>(data[14]), static_cast<float>(data[15])}};
++}
++
++// Helper function to convert double* to filament::math::mat3f
++static filament::math::mat3f convert_double_to_mat3f(double* data)
++{
++    return filament::math::mat3f {
++        filament::math::float3{static_cast<float>(data[0]), static_cast<float>(data[1]), static_cast<float>(data[2])},
++        filament::math::float3{static_cast<float>(data[3]), static_cast<float>(data[4]), static_cast<float>(data[5])},
++        filament::math::float3{static_cast<float>(data[6]), static_cast<float>(data[7]), static_cast<float>(data[8])}};
+ }
+ 
+ // Helper function to convert filament::math::mat4 to double4x4
+diff -ruN --exclude=.dart_tool --exclude=pubspec.lock --exclude=.packages --exclude=PW_LOCAL_PATCHES.md --exclude=.DS_Store /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/native/include/c_api/TMaterialInstance.h thermion_dart_pw/native/include/c_api/TMaterialInstance.h
+--- /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/native/include/c_api/TMaterialInstance.h	2026-04-30 03:54:44
++++ thermion_dart_pw/native/include/c_api/TMaterialInstance.h	2026-09-18 01:03:35
+@@ -90,7 +90,9 @@
+ 	EMSCRIPTEN_KEEPALIVE void MaterialInstance_setParameterFloat3(TMaterialInstance *materialInstance, const char *propertyName, double x, double y, double z);
+ 	EMSCRIPTEN_KEEPALIVE void MaterialInstance_setParameterFloat3Array(TMaterialInstance *tMaterialInstance, const char *propertyName, double *raw, uint32_t length);
+ 	EMSCRIPTEN_KEEPALIVE void MaterialInstance_setParameterFloat4(TMaterialInstance *materialInstance, const char *propertyName, double x, double y, double w, double z);
++	EMSCRIPTEN_KEEPALIVE void MaterialInstance_setParameterMat3(TMaterialInstance *materialInstance, const char *propertyName, double *matrix);
+ 	EMSCRIPTEN_KEEPALIVE void MaterialInstance_setParameterMat4(TMaterialInstance *materialInstance, const char *propertyName, double *matrix);
++
+ 	EMSCRIPTEN_KEEPALIVE void MaterialInstance_setParameterInt(TMaterialInstance *materialInstance, const char *propertyName, int value);
+ 	EMSCRIPTEN_KEEPALIVE void MaterialInstance_setParameterBool(TMaterialInstance *materialInstance, const char *propertyName, bool value);
+ 	EMSCRIPTEN_KEEPALIVE void MaterialInstance_setParameterTexture(TMaterialInstance *materialInstance, const char *propertyName, TTexture *texture, TTextureSampler *sampler);
+diff -ruN --exclude=.dart_tool --exclude=pubspec.lock --exclude=.packages --exclude=PW_LOCAL_PATCHES.md --exclude=.DS_Store /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/native/include/c_api/TRenderableManager.h thermion_dart_pw/native/include/c_api/TRenderableManager.h
+--- /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/native/include/c_api/TRenderableManager.h	2026-04-30 03:54:44
++++ thermion_dart_pw/native/include/c_api/TRenderableManager.h	2026-09-18 01:03:35
+@@ -17,11 +17,15 @@
+     EMSCRIPTEN_KEEPALIVE bool RenderableManager_getLightChannel(TRenderableManager *tRenderableManager, EntityId entityId, unsigned int channel);
+     EMSCRIPTEN_KEEPALIVE bool RenderableManager_isShadowCaster(TRenderableManager *tRenderableManager, EntityId entityId);
+     EMSCRIPTEN_KEEPALIVE void RenderableManager_setCastShadows(TRenderableManager *tRenderableManager, EntityId entityId, bool castShadows);
++
+     EMSCRIPTEN_KEEPALIVE void RenderableManager_setReceiveShadows(TRenderableManager *tRenderableManager, EntityId entityId, bool receiveShadows);
+     EMSCRIPTEN_KEEPALIVE bool RenderableManager_isShadowReceiver(TRenderableManager *tRenderableManager, EntityId entityId);
+     EMSCRIPTEN_KEEPALIVE bool RenderableManager_getFogEnabled(TRenderableManager *tRenderableManager, EntityId entityId);
+     EMSCRIPTEN_KEEPALIVE Aabb3 RenderableManager_getAabb(TRenderableManager *tRenderableManager, EntityId entityId);
+     EMSCRIPTEN_KEEPALIVE void RenderableManager_setVisibilityLayer(TRenderableManager *tRenderableManager, EntityId entityId, uint8_t layer);
++
++    // Culling
++    EMSCRIPTEN_KEEPALIVE void RenderableManager_setCulling(TRenderableManager *tRenderableManager, EntityId entityId, bool enabled);
+     EMSCRIPTEN_KEEPALIVE void RenderableManager_setPriority(TRenderableManager *tRenderableManager, EntityId entityId, uint8_t priority);
+     EMSCRIPTEN_KEEPALIVE Aabb3 RenderableManager_getBoundingBox(TRenderableManager *tRenderableManager, EntityId entityId);
+ 
+diff -ruN --exclude=.dart_tool --exclude=pubspec.lock --exclude=.packages --exclude=PW_LOCAL_PATCHES.md --exclude=.DS_Store /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/native/include/c_api/TTexture.h thermion_dart_pw/native/include/c_api/TTexture.h
+--- /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/native/include/c_api/TTexture.h	2026-04-30 03:54:44
++++ thermion_dart_pw/native/include/c_api/TTexture.h	2026-09-18 00:58:10
+@@ -242,6 +242,46 @@
+     uint32_t bufferFormat,
+     uint32_t pixelDataType
+ );
++/**
++ * Bind a platform image (iOS/macOS: CVPixelBufferRef, Android: EGLImageKHR) as
++ * this texture's contents.
++ *
++ * Calls filament::Texture::setExternalImage(Engine&, void*) -- the overload
++ * marked UTILS_DEPRECATED at Texture.h:459-462 -- and does so deliberately.
++ * The non-deprecated ExternalImageHandleRef overload (Texture.h:435) requires
++ * Platform::createExternalImage(), which the Metal backend does not implement:
++ * MetalDriver::setupExternalImage2 is an empty body whose only content is
++ * "// FIXME: implement setupExternalImage2" (MetalDriver.mm:1250-1252).
++ * So on Metal the deprecated overload is currently the only one that works.
++ * Texture.h:447-448 documents its accepted types as "eglImageOES on Android
++ * and CVPixelBufferRef on iOS".
++ *
++ * PRECONDITION: the texture must have been built external, i.e. with
++ * Texture::Builder().sampler(SAMPLER_EXTERNAL) or .external(). Filament checks
++ * this with FILAMENT_CHECK_PRECONDITION(mExternal) (details/Texture.cpp:493),
++ * which aborts rather than returning an error. Note this constrains the
++ * TEXTURE, not the material: declaring the material parameter as `sampler2d`
++ * rather than `samplerExternal` is correct and is what Google's own AR sample
++ * does (ios/samples/hello-ar/Materials/camera_feed.mat), because on Metal the
++ * external image becomes an ordinary MTLTexture (MetalHandles.mm:700-707).
++ *
++ * OWNERSHIP: Filament takes its own reference; it does NOT adopt the caller's.
++ * setExternalImage begins with api.setupExternalImage(image), described at
++ * details/Texture.cpp:495-496 as "synchronous, and allows the driver to take
++ * ownership of the external image on this thread". On Metal that is a single
++ * CVPixelBufferRetain (MetalDriver.mm:1254-1262), documented there as
++ * "allowing the application to free their reference to the buffer"; the
++ * matching release is MetalDriver.mm:545. A caller holding a +1 must therefore
++ * release it after this call returns, and may safely do so immediately.
++ *
++ * Metal accepts only kCVPixelFormatType_32BGRA and
++ * kCVPixelFormatType_420YpCbCr8BiPlanarFullRange; any other format is a fatal
++ * check inside the backend, not a fallback. 420f additionally runs a
++ * ycbcr-to-rgb compute pass into a new RGB texture, so only 32BGRA is
++ * zero-copy.
++ */
++EMSCRIPTEN_KEEPALIVE void Texture_setExternalImagePlatform(TTexture *tTexture, TEngine *tEngine, void *platformImage);
++
+ EMSCRIPTEN_KEEPALIVE uint32_t Texture_getWidth(TTexture *tTexture, uint32_t level);
+ EMSCRIPTEN_KEEPALIVE uint32_t Texture_getHeight(TTexture *tTexture, uint32_t level);
+ EMSCRIPTEN_KEEPALIVE uint32_t Texture_getDepth(TTexture *tTexture, uint32_t level);
+diff -ruN --exclude=.dart_tool --exclude=pubspec.lock --exclude=.packages --exclude=PW_LOCAL_PATCHES.md --exclude=.DS_Store /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/native/include/c_api/ThermionDartRenderThreadApi.h thermion_dart_pw/native/include/c_api/ThermionDartRenderThreadApi.h
+--- /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/native/include/c_api/ThermionDartRenderThreadApi.h	2026-04-30 03:54:44
++++ thermion_dart_pw/native/include/c_api/ThermionDartRenderThreadApi.h	2026-09-18 00:58:24
+@@ -59,6 +59,12 @@
+             TTextureFormat format,
+             void (*onComplete)(TTexture*)
+         );
++        // setExternalImage reaches the backend driver, so it must run on the
++        // render thread, like every other driver-touching entry point in this
++        // header. Filament's contract (Engine.h:156-158): "An Engine instance
++        // is not thread-safe ... synchronization must be external."
++        EMSCRIPTEN_KEEPALIVE void Texture_setExternalImagePlatformRenderThread(TTexture *tTexture, TEngine *tEngine, void *platformImage, uint32_t requestId, VoidCallback onComplete);
++
+         EMSCRIPTEN_KEEPALIVE void Texture_generateMipMapsRenderThread(TTexture *tTexture, TEngine *tEngine, uint32_t requestId, VoidCallback onComplete);
+         EMSCRIPTEN_KEEPALIVE void Ktx1Reader_createTextureRenderThread(TEngine *tEngine, TKtx1Bundle *tBundle, uint32_t requestId, VoidCallback onTextureUploadComplete, void (*onComplete)(TTexture *));
+ 
+diff -ruN --exclude=.dart_tool --exclude=pubspec.lock --exclude=.packages --exclude=PW_LOCAL_PATCHES.md --exclude=.DS_Store /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/native/src/c_api/TCamera.cpp thermion_dart_pw/native/src/c_api/TCamera.cpp
+--- /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/native/src/c_api/TCamera.cpp	2026-04-30 03:54:44
++++ thermion_dart_pw/native/src/c_api/TCamera.cpp	2026-09-18 01:03:35
+@@ -140,9 +140,11 @@
+             filament::Camera::Projection filamentProjection;
+             switch(projection) {
+                 case TProjection::Orthographic:
+-                    filamentProjection = filament::Camera::Projection::ORTHO; 
++                    filamentProjection = filament::Camera::Projection::ORTHO;
++                    break;
+                 case TProjection::Perspective:
+-                    filamentProjection = filament::Camera::Projection::PERSPECTIVE; 
++                    filamentProjection = filament::Camera::Projection::PERSPECTIVE;
++                    break;
+             }
+             camera->setProjection(filamentProjection, left, right, bottom, top, near, far);
+         }
+diff -ruN --exclude=.dart_tool --exclude=pubspec.lock --exclude=.packages --exclude=PW_LOCAL_PATCHES.md --exclude=.DS_Store /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/native/src/c_api/TMaterialInstance.cpp thermion_dart_pw/native/src/c_api/TMaterialInstance.cpp
+--- /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/native/src/c_api/TMaterialInstance.cpp	2026-04-30 03:54:44
++++ thermion_dart_pw/native/src/c_api/TMaterialInstance.cpp	2026-09-18 01:03:35
+@@ -161,6 +161,11 @@
+         }
+ 
+ 
++        EMSCRIPTEN_KEEPALIVE void MaterialInstance_setParameterMat3(TMaterialInstance *tMaterialInstance, const char *propertyName, double *matrix) {
++            auto *mi = reinterpret_cast<filament::MaterialInstance *>(tMaterialInstance);
++            mi->setParameter(propertyName, convert_double_to_mat3f(matrix));
++        }
++
+         EMSCRIPTEN_KEEPALIVE void MaterialInstance_setParameterMat4(TMaterialInstance *tMaterialInstance, const char *propertyName, double *matrix) {
+             auto *mi = reinterpret_cast<filament::MaterialInstance *>(tMaterialInstance);
+             mi->setParameter(propertyName, convert_double_to_mat4f(matrix));
+diff -ruN --exclude=.dart_tool --exclude=pubspec.lock --exclude=.packages --exclude=PW_LOCAL_PATCHES.md --exclude=.DS_Store /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/native/src/c_api/TRenderableManager.cpp thermion_dart_pw/native/src/c_api/TRenderableManager.cpp
+--- /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/native/src/c_api/TRenderableManager.cpp	2026-04-30 03:54:44
++++ thermion_dart_pw/native/src/c_api/TRenderableManager.cpp	2026-09-18 01:03:35
+@@ -100,6 +100,17 @@
+             return renderableManager->setCastShadows(renderableInstance, enabled);
+         }
+ 
++        EMSCRIPTEN_KEEPALIVE void RenderableManager_setCulling(TRenderableManager *tRenderableManager, EntityId entityId, bool enabled) {
++            auto *renderableManager = reinterpret_cast<filament::RenderableManager *>(tRenderableManager);
++            const auto &entity = utils::Entity::import(entityId);
++            auto renderableInstance = renderableManager->getInstance(entity);
++            if (!renderableInstance.isValid()) {
++                Log("Error: invalid renderable");
++                return;
++            }
++            renderableManager->setCulling(renderableInstance, enabled);
++        }
++
+         EMSCRIPTEN_KEEPALIVE bool RenderableManager_isShadowReceiver(TRenderableManager *tRenderableManager, EntityId entityId) {
+             auto *renderableManager = reinterpret_cast<filament::RenderableManager *>(tRenderableManager);
+             const auto &entity = utils::Entity::import(entityId);
+diff -ruN --exclude=.dart_tool --exclude=pubspec.lock --exclude=.packages --exclude=PW_LOCAL_PATCHES.md --exclude=.DS_Store /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/native/src/c_api/TTexture.cpp thermion_dart_pw/native/src/c_api/TTexture.cpp
+--- /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/native/src/c_api/TTexture.cpp	2026-04-30 03:54:44
++++ thermion_dart_pw/native/src/c_api/TTexture.cpp	2026-09-17 23:40:38
+@@ -647,6 +647,15 @@
+             return true;
+         }
+ 
++        // [pw] See the doc comment in TTexture.h. Replicates
++        // hello-ar/FullScreenTriangle.cpp:107.
++        EMSCRIPTEN_KEEPALIVE void Texture_setExternalImagePlatform(TTexture *tTexture, TEngine *tEngine, void *platformImage)
++        {
++            auto *texture = reinterpret_cast<filament::Texture *>(tTexture);
++            auto *engine = reinterpret_cast<filament::Engine *>(tEngine);
++            texture->setExternalImage(*engine, platformImage);
++        }
++
+         EMSCRIPTEN_KEEPALIVE uint32_t Texture_getWidth(TTexture *tTexture, uint32_t level)
+         {
+             auto *texture = reinterpret_cast<filament::Texture *>(tTexture);
+diff -ruN --exclude=.dart_tool --exclude=pubspec.lock --exclude=.packages --exclude=PW_LOCAL_PATCHES.md --exclude=.DS_Store /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/native/src/c_api/ThermionDartRenderThreadApi.cpp thermion_dart_pw/native/src/c_api/ThermionDartRenderThreadApi.cpp
+--- /Users/kaidongwang/.pub-cache/hosted/pub.dev/thermion_dart-0.3.4+1/native/src/c_api/ThermionDartRenderThreadApi.cpp	2026-04-30 03:54:44
++++ thermion_dart_pw/native/src/c_api/ThermionDartRenderThreadApi.cpp	2026-09-17 23:40:48
+@@ -910,6 +910,18 @@
+     auto fut = _renderThread->add_task(lambda);
+   }
+ 
++  // [pw] Same shape as Texture_generateMipMapsRenderThread below, which is
++  // the template this was copied from.
++  EMSCRIPTEN_KEEPALIVE void Texture_setExternalImagePlatformRenderThread(TTexture *tTexture, TEngine *tEngine, void *platformImage, uint32_t requestId, VoidCallback onComplete) {
++    std::packaged_task<void()> lambda(
++        [=]() mutable
++        {
++          Texture_setExternalImagePlatform(tTexture, tEngine, platformImage);
++          PROXY(onComplete(requestId));
++        });
++    auto fut = _renderThread->add_task(lambda);
++  }
++
+   EMSCRIPTEN_KEEPALIVE void Texture_generateMipMapsRenderThread(TTexture *tTexture, TEngine *tEngine, uint32_t requestId, VoidCallback onComplete) {
+     std::packaged_task<void()> lambda(
+         [=]() mutable
