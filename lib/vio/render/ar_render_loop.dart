@@ -51,7 +51,18 @@ class ArFrameOutcome {
     required this.hadIntrinsics,
     required this.hadProjection,
     required this.hadPose,
+    this.rotationDegrees,
+    this.croppedIntrinsics,
+    this.frustum,
+    this.uv,
   });
+
+  /// 以下四项只为诊断:出了问题要能看出**是哪一环算错**,而不是只知道
+  /// "没显示"。都可能为 null(那一环没走到)。
+  final int? rotationDegrees;
+  final PinholeIntrinsics? croppedIntrinsics;
+  final FrustumBounds? frustum;
+  final UvTransform? uv;
 
   /// 槽里有没有新帧。连续为 false = 相机没在交付。
   final bool hadFrame;
@@ -69,7 +80,16 @@ class ArFrameOutcome {
 
   @override
   String toString() => 'ArFrame(frame:$hadFrame K:$hadIntrinsics '
-      'proj:$hadProjection pose:$hadPose)';
+      'proj:$hadProjection pose:$hadPose rot:$rotationDegrees)';
+
+  /// 诊断用的多行展开。
+  String toDiagnosticString() => <String>[
+        'ArFrame frame=$hadFrame K=$hadIntrinsics proj=$hadProjection '
+            'pose=$hadPose rot=$rotationDegrees',
+        '  K(cropped) = $croppedIntrinsics',
+        '  frustum    = $frustum',
+        '  uv         = $uv',
+      ].join('\n');
 }
 
 /// 一次算出、两边共用的显示几何。
@@ -106,6 +126,9 @@ class ArRenderLoop {
 
   final ThermionViewer _viewer;
   final CameraFeedTriangle _triangle;
+
+  /// 诊断用:场景里那个 renderable 的实体。
+  ThermionEntity get triangleEntity => _triangle.asset.entity;
 
   /// 相机交付帧的尺寸,**传感器方向**。
   final int imageWidth;
@@ -256,19 +279,22 @@ class ArRenderLoop {
     );
 
     // ── 3. UV 变换 ────────────────────────────────────────────────────────
+    UvTransform? lastUv;
     if (geom != null) {
-      await _triangle.setTransform(DisplayTransform.compute(
+      lastUv = DisplayTransform.compute(
         imageWidth: imageWidth,
         imageHeight: imageHeight,
         viewportWidth: viewportWidth,
         viewportHeight: viewportHeight,
         rotationDegrees: geom.rotationDegrees,
         mirrored: frontFacing,
-      ));
+      );
+      await _triangle.setTransform(lastUv);
     }
 
     // ── 4. 投影 ───────────────────────────────────────────────────────────
     bool hadProjection = false;
+    FrustumBounds? lastFrustum;
     if (k != null && geom != null) {
       final FrustumBounds? f = CameraProjection.frustum(
         geom.croppedIntrinsics,
@@ -276,6 +302,7 @@ class ArRenderLoop {
         far: far,
         convention: principalPointConvention,
       );
+      lastFrustum = f;
       if (f != null) {
         final Camera camera = await _viewer.getActiveCamera();
         // 🔴 setProjection,不是 setCustomProjection。前者同时建"无穷远的
@@ -321,13 +348,32 @@ class ArRenderLoop {
     }
 
     // ── 6. 出图 ───────────────────────────────────────────────────────────
-    await _viewer.render();
+    // 🔴 **不在这里调 `viewer.render()`**。
+    //
+    // ViewerWidget 起来之后 viewer 自己就有渲染循环在跑。再手动 render 一次
+    // 等于同一个 Renderer 上两对 beginFrame/endFrame 并发,真机实测直接撞
+    // Filament 的断言并 SIGABRT:
+    //     Precondition in endFrame:410
+    //     reason: SwapChain must remain valid until endFrame is called.
+    //
+    // 而"关掉自带循环再自己渲染"这条路也不通:`setRendering(false)` 实际是
+    // 把 View 标成不可渲染(见 ar_minimal_loop_page.dart 里的说明),场景会
+    // 整个不画。
+    //
+    // ⚠️ 代价:本函数推的状态(纹理/投影/UV)与"哪一帧被呈现"之间没有严格
+    // 配对,某一帧可能用上一帧的纹理。对"背景出不出得来"这个判据无影响,但
+    // 接位姿之后必须解决 —— 正解是 `FilamentApp.registerRequestFrameHook`,
+    // 它就是"每帧渲染前跑一段"的接缝。这是一笔明写的欠账,不是遗漏。
 
     return ArFrameOutcome(
       hadFrame: hadFrame,
       hadIntrinsics: k != null,
       hadProjection: hadProjection,
       hadPose: hadPose,
+      rotationDegrees: geom?.rotationDegrees,
+      croppedIntrinsics: geom?.croppedIntrinsics,
+      frustum: lastFrustum,
+      uv: lastUv,
     );
   }
 
