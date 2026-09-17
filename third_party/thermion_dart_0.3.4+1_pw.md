@@ -88,11 +88,38 @@ Filament 会接管」——那**只对那个样例成立**(它的 buffer 是 `AR
 
 ---
 
-## 升级到 0.6.0-pre.0 的已知代价(尚未评估完)
+## 升级代价(2026-09-18 实测,不是估计)
 
-- Filament **v1.58.0 → v1.76.0**:我们编的 `pw_camera_feed.filamat` 是
-  **material version 58**,引擎版本不匹配 `Material::Builder` 会直接拒。
-  ⇒ 必须用 **v1.76.0 的 matc** 重编(要重新下官方 mac 发行包)。
-- `thermion_flutter` 也要一起动;生产在用 0.3.4 的 `ViewerWidget`。
-- 0.5.0 起有破坏性 API 变更,生产侧 `viewer_impl` / `live_model_view` /
-  `cube_scene` 都要复验。
+升级目标有两个,**不是一个**:
+
+| 目标 | 在 pub 上? | Filament | MATERIAL_VERSION | Mat3 | setCulling |
+|------|-----------|----------|------------------|------|-----------|
+| **0.5.0** | ✅ 正式版 | v1.69.1 | **69** | ✅ | ✅ |
+| 0.6.0-pre.0 (HEAD) | 🔴 未发布 | v1.76.0 | **76** | ✅ | ✅ |
+
+我们现在:Filament v1.58.0,`.filamat` 是 **version 58**。
+
+**必付的代价**
+1. **材质必须重编**。版本不匹配 `Material::Builder` 直接拒。需要对应版本的
+   `matc` —— 官方 mac 发行包实测 **46 MB**(不是我先前说的 300MB)。
+2. **一处调用点要改**:`setCulling` 在 0.5.0 起搬到了 `RenderableManager` 类上,
+   签名也变了:
+   `asset.setCulling(false)` → `FilamentApp.instance!.renderableManager.setCulling(entity, false)`
+   调用点只有一处:`lib/vio/render/camera_feed_triangle.dart:149`。
+3. 生产 9 个用 thermion 的文件要复验。API **名字全都还在**(16/16 核对过),
+   但行为变了(ColorGrading 所有权、skybox 不再由 viewer 缓存等)。
+
+**不必付的**(核对过,不用改)
+- `ViewerWidget` 的 `initialCameraPosition` 还在;我们没用 `showFpsCounter`
+  (已删)和 `directLightType`(改名 `directLight`)。
+- `createGeometry` 少了 `keepData` / `addToScene` 两个参数 —— 我们都没传。
+- 最低 Flutter 3.44 / Dart 3.12;我们在 3.47.1。
+
+**🔴 升级换不来的**
+0.5.0 与 HEAD 的 `Texture_setExternalImage` 都还是同一个
+`static_cast<Platform::ExternalImage*>` 类型混淆,Dart 侧都还是
+`throw UnimplementedError()`。⇒ **升级不会让这个 override 消失,只会让它变小**
+(17 文件 → 约 8 文件)。
+
+真正能删掉 override 的是上游 PR:
+https://github.com/nmfisher/thermion/pull/355

@@ -28,4 +28,4 @@ patch -p1 < <本仓>/third_party/thermion_dart_0.3.4+1_pw.patch
 其余都是上游 HEAD(0.6.0-pre.0)已有的回填,升级即整段删除。详见同目录的 `.md`。
 
 真·新增那一组已推到 fork:
-https://github.com/Kyle-Wang0211/thermion/tree/feat/metal-external-image
+https://github.com/nmfisher/thermion/pull/355
