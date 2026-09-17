@@ -194,6 +194,12 @@ dependencies:
 # throws MissingPluginException (empty drafts / no logs / auth can't persist).
 # Pin to the last podspec-based release.
 dependency_overrides:
+  # [pw 2026-09-17] 指向本地可编辑副本。改动清单与上线前必须走完的动作见
+  #   ../thermion_dart_pw/PW_LOCAL_PATCHES.md
+  # 其中三处是上游 HEAD 已有的回填(升级即消失),一处是上游没有、需要提 PR 的
+  # 新增(Texture_setExternalImagePlatform)。
+  thermion_dart:
+    path: ../thermion_dart_pw
   path_provider_foundation: 2.5.1
 
 
@@ -230,6 +236,10 @@ flutter:
   uses-material-design: true
 
   assets:
+    # 相机背景全屏三角形的材质。源码 assets/materials/pw_camera_feed.mat,
+    # 用 tool/build_materials.sh 编(matc 必须是 Filament v1.58.0,与 thermion
+    # 链的引擎同版本)。一个 blob 同时带 GL/Metal/Vulkan 着色器,三端共用。
+    - assets/materials/pw_camera_feed.filamat
     - assets/models/DamagedHelmet.glb
     - assets/models/Avocado.glb
     - assets/models/BoomBox.glb

@@ -100,17 +100,51 @@ abstract final class PwCameraSlot {
 
   static void release(int address) => _release(address);
 
-  /// 拿一帧、用它、保证还掉。**这是唯一应该用的入口。**
+  /// 拿一帧、**同步地**用它、保证还掉。
   ///
   /// [body] 返回值原样透出;无新帧时返回 `null` 且 [body] 不被调用。
+  ///
+  /// 🔴 [body] **不能是 async**。它一旦返回 Future,下面的 finally 会在
+  /// Future 还没完成时就把缓冲还掉 —— 消费方(Filament 的
+  /// `setupExternalImage`)还没来得及自己 retain,缓冲就可能被回收。
+  /// 而且 IOSurface 是复用的,读到的是**别人的像素,不是崩溃** ——
+  /// 这种错不会有任何报错。异步消费请用 [withFrameAsync]。
+  /// 运行时也拦一道,免得只靠注释。
   static T? withFrame<T>(T Function(int address) body) {
     final int addr = _acquire();
     if (addr == 0) return null;
     try {
-      return body(addr);
+      final T result = body(addr);
+      if (result is Future) {
+        throw ArgumentError(
+          'withFrame 的 body 返回了 Future。同步入口会在 Future 完成前就'
+          '归还缓冲,消费方读到的会是复用 IOSurface 里的陈旧像素(不报错)。'
+          '请改用 withFrameAsync。',
+        );
+      }
+      return result;
     } finally {
       // finally 而不是顺序执行:body 抛异常也必须还,否则一次异常就漏一个
       // 全分辨率缓冲,而相机池只有几个。
+      _release(addr);
+    }
+  }
+
+  /// 拿一帧、**异步地**用它、等它用完再还掉。
+  ///
+  /// 送进 Filament 的那条路必须走这个:`Texture.setExternalImage` 在
+  /// thermion 里是排到渲染线程上再执行的,真正的 `CVPixelBufferRetain`
+  /// (`MetalDriver.mm:1254-1262`)发生在那一侧。await 完成之后才归还,
+  /// 是让"Filament 已经自己 retain 过"这件事成立的唯一方式。
+  ///
+  /// 无新帧时返回 `null` 且 [body] 不被调用。
+  static Future<T?> withFrameAsync<T>(
+      Future<T> Function(int address) body) async {
+    final int addr = _acquire();
+    if (addr == 0) return null;
+    try {
+      return await body(addr);
+    } finally {
       _release(addr);
     }
   }

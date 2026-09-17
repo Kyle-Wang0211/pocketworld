@@ -99,15 +99,60 @@ void main() {
       expect(c1[1] - c0[1], closeTo(1.0, 1e-9), reason: 'y 不该收缩');
     });
 
-    test('旋转 90° 把 u 轴换到 v 轴', () {
+    // 🔴 这条测试以前断言的是「矩阵把它的输入顺时针转了 90°」。那是在断言
+    // 代码等于它自己 —— 矩阵的输入是**屏幕** UV、输出是**图像** UV,方向与
+    // 「把图像转到屏幕」正相反,所以"输入被顺时针转"恰恰意味着图像被逆时针
+    // 转,正是当时那个 bug。现在改成断言**物理结果**:图像的某个角,在屏幕
+    // 的哪个角出现。
+    test('🔴 旋转 90°:图像左上角必须出现在屏幕右上角', () {
       final t = DisplayTransform.compute(
-        imageWidth: 480, imageHeight: 480,   // 方图,排除 aspect 干扰
+        imageWidth: 480, imageHeight: 480, // 方图,排除 aspect 干扰
         viewportWidth: 480, viewportHeight: 480,
         rotationDegrees: 90,
       );
-      // (1, 0.5) 绕中心顺时针 90° ⇒ (0.5, 1)
-      expectUv(t.apply(1, 0.5), 0.5, 1, tol: 1e-9);
-      expectUv(t.apply(0.5, 0), 1, 0.5, tol: 1e-9);
+      // rotationDegrees 的语义(安卓 SENSOR_ORIENTATION 文档):图像要**顺时针**
+      // 转这么多度才正过来。顺时针 90° 之后:
+      //   图像左上 (0,0)   → 屏幕右上
+      //   图像右上 (1,0)   → 屏幕右下
+      //   图像右下 (1,1)   → 屏幕左下
+      //   图像左下 (0,1)   → 屏幕左上
+      // 矩阵是 屏幕→图像,所以反着写:
+      expectUv(t.apply(1, 0), 0, 0, tol: 1e-9); // 屏幕右上 ← 图像左上
+      expectUv(t.apply(1, 1), 1, 0, tol: 1e-9); // 屏幕右下 ← 图像右上
+      expectUv(t.apply(0, 1), 1, 1, tol: 1e-9); // 屏幕左下 ← 图像右下
+      expectUv(t.apply(0, 0), 0, 1, tol: 1e-9); // 屏幕左上 ← 图像左下
+    });
+
+    test('🔴 旋转 270° 是 90° 的逆向', () {
+      final t = DisplayTransform.compute(
+        imageWidth: 480, imageHeight: 480,
+        viewportWidth: 480, viewportHeight: 480,
+        rotationDegrees: 270,
+      );
+      expectUv(t.apply(0, 0), 1, 0, tol: 1e-9); // 屏幕左上 ← 图像右上
+      expectUv(t.apply(0, 1), 0, 0, tol: 1e-9); // 屏幕左下 ← 图像左上
+    });
+
+    test('🔴 aspect-fill 必须落在显示方向那条轴上(90° 时会换轴)', () {
+      // 640x480 的横图,竖屏视口,旋转 90°。旋转后是 480x640(竖的)。
+      // 视口 480x1280:scale = max(480/480, 1280/640) = 2 ⇒ 水平只看得到
+      // (480/2)/480 = 50%。而屏幕水平方向对应的是**图像的 v 轴**。
+      final t = DisplayTransform.compute(
+        imageWidth: 640, imageHeight: 480,
+        viewportWidth: 480, viewportHeight: 1280,
+        rotationDegrees: 90,
+      );
+      final a = t.apply(0, 0.5);
+      final b = t.apply(1, 0.5);
+      // 屏幕从左扫到右 ⇒ 图像 v 走过 50%(而且是反向的,所以取绝对值)。
+      expect((b[1] - a[1]).abs(), closeTo(0.5, 1e-9),
+          reason: '裁剪应当落在图像 v 轴上,实测 a=$a b=$b');
+      expect((b[0] - a[0]).abs(), closeTo(0.0, 1e-9),
+          reason: '屏幕水平方向不该动图像 u');
+      final c0 = t.apply(0.5, 0);
+      final c1 = t.apply(0.5, 1);
+      expect((c1[0] - c0[0]).abs(), closeTo(1.0, 1e-9),
+          reason: '屏幕竖直方向应当扫完整个图像 u 轴');
     });
 
     test('旋转 180° 是对合', () {

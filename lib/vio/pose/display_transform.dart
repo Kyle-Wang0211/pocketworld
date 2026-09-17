@@ -192,48 +192,80 @@ abstract final class DisplayTransform {
       viewportWidth / rotatedW,
       viewportHeight / rotatedH,
     );
-    // 视口在旋转后图像坐标里占的比例(≤1,溢出的被裁掉)。
-    final double visibleFracX = (viewportWidth / scale) / rotatedW;
-    final double visibleFracY = (viewportHeight / scale) / rotatedH;
+    // 视口在**旋转后**图像坐标里占的比例(≤1,溢出的被裁掉)。
+    final double fracU = (viewportWidth / scale) / rotatedW;
+    final double fracV = (viewportHeight / scale) / rotatedH;
 
-    // 1) [0,1] -> [-1,1],中心为原点。
-    UvTransform t = const UvTransform(<double>[
-      2, 0, -1, //
-      0, 2, -1, //
-      0, 0, 1, //
-    ]);
-
-    // 2) 旋转。顺时针 rot 度作用在 y 向下的坐标系上。
-    final double c = math.cos(rot * math.pi / 180.0);
-    final double s = math.sin(rot * math.pi / 180.0);
-    t = UvTransform(<double>[
-      c, -s, 0, //
-      s, c, 0, //
-      0, 0, 1, //
-    ]).multiply(t);
-
-    // 3) aspect-fill 裁剪:只保留可见比例。
-    t = UvTransform(<double>[
-      visibleFracX, 0, 0, //
-      0, visibleFracY, 0, //
-      0, 0, 1, //
-    ]).multiply(t);
-
-    // 4) 镜像。
+    // ── 1) 镜像(前置摄像头),在**屏幕**坐标里左右翻 ──────────────────────
+    UvTransform t = UvTransform.identity;
     if (mirrored) {
       t = const UvTransform(<double>[
-        -1, 0, 0, //
+        -1, 0, 1, //
         0, 1, 0, //
         0, 0, 1, //
-      ]).multiply(t);
+      ]);
     }
 
-    // 5) [-1,1] -> [0,1]。
-    t = const UvTransform(<double>[
-      0.5, 0, 0.5, //
-      0, 0.5, 0.5, //
+    // ── 2) aspect-fill:屏幕 UV → **旋转后图像** UV ────────────────────────
+    // 🔴 必须在旋转**之前**。fracU/fracV 是按"视口宽/旋转后图像宽"算的,
+    // 也就是**显示方向**上的比例。放到旋转之后施加,90°/270° 时就会作用到
+    // 交换过的那条轴上 —— 裁剪加在了错的方向上。
+    t = UvTransform(<double>[
+      fracU, 0, 0.5 - 0.5 * fracU, //
+      0, fracV, 0.5 - 0.5 * fracV, //
       0, 0, 1, //
     ]).multiply(t);
+
+    // ── 3) 旋转后图像 UV → **原始(传感器方向)图像** UV ────────────────────
+    // 🔴 这里是**逆映射**,不是正映射。
+    //
+    // [rotationDegrees] 的语义是安卓官方那一个:"图像需要**顺时针**转多少度
+    // 才能在屏幕上正过来"(camera2 `SENSOR_ORIENTATION` 文档原话)。
+    // 而本函数输出的矩阵在着色器里是这么用的(camera_feed.mat:24):
+    //     material.uv0 = textureTransform * material.uv0
+    // 输入是全屏三角形的 uv0 = **屏幕** UV,输出是**去图里取色**用的 UV。
+    // 也就是说这个矩阵的方向是 屏幕 → 图像,正好与"把图像转到屏幕"相反。
+    //
+    // 顺时针转 rot 的正映射(连续 [0,1] 坐标):
+    //     rot= 90:  (iu,iv) -> (1-iv, iu)
+    //     rot=180:  (iu,iv) -> (1-iu, 1-iv)
+    //     rot=270:  (iu,iv) -> (iv, 1-iu)
+    // 取逆即得下面三个。
+    //
+    // ⚠️ 这一步曾经写反过:直接套用 CameraX `getRectToRect` 那个
+    // **source→target(图像→视图)** 的合成当成了视图→图像用。症状是背景看着
+    // "转了,但转反了",而单元测试如果只断言"矩阵把输入顺时针转了 90°",
+    // 是断言不出来的 —— 那只是在断言代码等于它自己。现在的把关是
+    // test/vio/pose/rotate_intrinsics_agreement_test.dart 里那组阳性对照:
+    // 同一个 3D 点走"投影"和"UV"两条独立来源的路,必须落在同一个屏幕位置。
+    switch (rot) {
+      case 90:
+        // iu = rv ; iv = 1 - ru
+        t = const UvTransform(<double>[
+          0, 1, 0, //
+          -1, 0, 1, //
+          0, 0, 1, //
+        ]).multiply(t);
+        break;
+      case 180:
+        // iu = 1 - ru ; iv = 1 - rv
+        t = const UvTransform(<double>[
+          -1, 0, 1, //
+          0, -1, 1, //
+          0, 0, 1, //
+        ]).multiply(t);
+        break;
+      case 270:
+        // iu = 1 - rv ; iv = ru
+        t = const UvTransform(<double>[
+          0, -1, 1, //
+          1, 0, 0, //
+          0, 0, 1, //
+        ]).multiply(t);
+        break;
+      default:
+        break; // 0°,不动
+    }
 
     return t;
   }

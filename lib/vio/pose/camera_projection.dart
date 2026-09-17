@@ -194,6 +194,91 @@ class ImageCrop {
 }
 
 abstract final class CameraProjection {
+  /// 把内参从**传感器方向**转到**显示方向**。
+  ///
+  /// ══ 为什么必须有这一步 ═══════════════════════════════════════════════
+  /// 相机交付的帧永远是传感器方向的(iOS 后置相机 640×480 横向,安卓由
+  /// `SENSOR_ORIENTATION` 决定,鸿蒙同理),而屏幕通常是竖的。背景图会被
+  /// [DisplayTransform] 旋转过去,**投影矩阵也必须跟着转**,否则虚拟内容
+  /// 相对视频整体转 90°。这是"两条路必须同一个输入"里最容易漏的一半 ——
+  /// 漏了之后症状像"标定不准",不像"少转了一次"。
+  ///
+  /// [degrees] 是顺时针度数,取 [DisplayTransform.cameraToDisplayRotation]
+  /// 的返回值。只接受 0/90/180/270。
+  ///
+  /// ══ 公式 ═════════════════════════════════════════════════════════════
+  /// 图像旋转的像素映射本身是定义性的(OpenCV `cv::ROTATE_90_CLOCKWISE`
+  /// 的语义):在 x 向右、y 向下的像素**索引**坐标里,顺时针 90° 把
+  /// `(x, y)` 送到 `(H-1-y, x)`,并交换宽高。把主点当成一个像素位置跟着走、
+  /// 焦距跟着轴交换,就得到下面四行。
+  ///
+  /// [convention] 决定减的是 `H-1` 还是 `H`:
+  ///   * [PrincipalPointConvention.pixelCenter] —— 像素索引跑 `0..H-1`,
+  ///     镜像是 `H-1-cy`;
+  ///   * [PrincipalPointConvention.corner] —— 连续坐标跑 `[0, H]`,
+  ///     镜像是 `H-cy`。
+  /// 传错了就差半个到一个像素,量级见文件头(fx=1459 时半像素 = 1 m 处
+  /// 0.34 mm)。
+  ///
+  /// 🔴 出处口径要说清楚:这一段**没有**厂商 API 或论文可抄 —— 三家都把
+  /// 它藏在自己的投影矩阵 API 里(ARKit `projectionMatrixForOrientation:`
+  /// 一次做完旋转+aspect fill,不暴露中间量)。所以它是**推导**,不是引用。
+  /// 因此它的把关方式是**阳性对照**而不是引证:测试里让同一个 3D 点分别走
+  /// 「本函数 → frustum → NDC」和「投影到原始像素 → [DisplayTransform] 的
+  /// UV 变换 → 屏幕」两条路,两条路必须落在同一个屏幕位置。两条路的来源
+  /// 互相独立(这边是推导,那边复刻 AOSP CameraX),对上了才算数。
+  static PinholeIntrinsics rotate(
+    PinholeIntrinsics k,
+    int degrees, {
+    required PrincipalPointConvention convention,
+  }) {
+    final int rot = ((degrees % 360) + 360) % 360;
+    if (rot == 0) return k;
+    if (rot != 90 && rot != 180 && rot != 270) {
+      throw ArgumentError.value(
+          degrees, 'degrees', '只支持 0/90/180/270,收到 $degrees');
+    }
+    // pixelCenter 下像素索引跑 0..W-1,镜像点是 (W-1)-c;
+    // corner 下连续坐标跑 [0,W],镜像点是 W-c。
+    final double edge =
+        convention == PrincipalPointConvention.pixelCenter ? 1.0 : 0.0;
+    final double w = k.imageWidth.toDouble();
+    final double h = k.imageHeight.toDouble();
+
+    switch (rot) {
+      case 90:
+        // (x, y) -> (H-1-y, x)
+        return PinholeIntrinsics(
+          fx: k.fy,
+          fy: k.fx,
+          cx: (h - edge) - k.cy,
+          cy: k.cx,
+          imageWidth: k.imageHeight,
+          imageHeight: k.imageWidth,
+        );
+      case 180:
+        // (x, y) -> (W-1-x, H-1-y)
+        return PinholeIntrinsics(
+          fx: k.fx,
+          fy: k.fy,
+          cx: (w - edge) - k.cx,
+          cy: (h - edge) - k.cy,
+          imageWidth: k.imageWidth,
+          imageHeight: k.imageHeight,
+        );
+      default: // 270
+        // (x, y) -> (y, W-1-x)
+        return PinholeIntrinsics(
+          fx: k.fy,
+          fy: k.fx,
+          cx: k.cy,
+          cy: (w - edge) - k.cx,
+          imageWidth: k.imageHeight,
+          imageHeight: k.imageWidth,
+        );
+    }
+  }
+
   /// 把内参按裁剪修正。
   ///
   /// 顺序**先减后缩**,复刻 ROS `image_geometry` 的顺序(见文件头)。

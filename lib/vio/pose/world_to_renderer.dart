@@ -125,6 +125,75 @@ abstract final class WorldToRenderer {
     ];
   }
 
+  /// 绕光轴的滚转:**camera_from_displayCamera**,4×4 列主序,渲染器约定。
+  ///
+  /// ══ 它是 `CameraProjection.rotate` 的另一半,两个必须同时用 ═══════════
+  /// 把相机图像旋转 [degrees]° 显示,等价于**绕光轴旋转了相机**。所以除了
+  /// 把内参转过去(那一半给投影矩阵),位姿也得跟着转 —— 否则背景是正的、
+  /// 虚拟内容整体歪 90°。只做一半是"没衔接对"的典型:两边各自都对,合起来错。
+  ///
+  /// 用法(右乘,因为它是**相机系内部**的换基):
+  ///     world_from_displayCamera = world_from_camera · camera_from_displayCamera
+  ///
+  /// ══ 推导 ═════════════════════════════════════════════════════════════
+  /// 从像素映射推。顺时针 90° 是 `(x,y) → (H-1-y, x)`,代进针孔模型
+  /// (a = X/Z,b = Y/Z,y 向下):
+  ///     x' = (H-1) - (fy·b + cy) = fy·(−b) + ((H-1)−cy)
+  ///     y' =         fx·a + cx
+  /// 也就是显示系的视线分量 `(a', b') = (−b, a)`,即
+  /// **OpenCV 相机系**(x 右,y 下,z 前)里
+  ///     v_display = M · v_sensor,  M(90) = [[0,−1,0],[1,0,0],[0,0,1]]
+  /// 我们要的是反过来的换基,即 Mᵀ。
+  ///
+  /// 再换到**渲染器相机系**(x 右,y **上**,z **向后** —— OpenXR
+  /// `fundamentals.adoc:1240-1252`,Filament 同):两者差 `F = diag(1,−1,−1)`,
+  /// 且 F⁻¹ = F,所以 `R_render = F · Mᵀ · F`。逐个算完 90/180/270,结果
+  /// 收敛成一个很干净的形式:
+  ///
+  ///     R_render(θ) = Rz(θ)   —— 绕 z 轴转 θ,右手系。
+  ///
+  /// (90° 验算:F·Mᵀ·F = [[0,−1,0],[1,0,0],[0,0,1]] = Rz(90) ✓;
+  ///  270° 验算:= [[0,1,0],[−1,0,0],[0,0,1]] = Rz(270) ✓。)
+  ///
+  /// 🔴 出处口径:与 `CameraProjection.rotate` 一样,这是**推导**不是引用。
+  /// 把关靠 test/vio/pose/rotate_intrinsics_agreement_test.dart 那组阳性对照。
+  ///
+  /// 🔴 这**不是**那个 OpenCV↔渲染器的相机约定翻转(`diag(1,−1,−1)` 本身)。
+  /// 那一项取决于喂进来的位姿是 body 系还是相机系,是另一笔单独的账,见
+  /// [viewMatrixColumnMajor] 里的说明 —— 别把两件事混成一次乘法。
+  static List<double> displayRollColumnMajor(int degrees) {
+    final int rot = ((degrees % 360) + 360) % 360;
+    final double c = switch (rot) { 0 => 1, 90 => 0, 180 => -1, 270 => 0, _ => double.nan };
+    final double s = switch (rot) { 0 => 0, 90 => 1, 180 => 0, 270 => -1, _ => double.nan };
+    if (c.isNaN) {
+      throw ArgumentError.value(
+          degrees, 'degrees', '只支持 0/90/180/270,收到 $degrees');
+    }
+    // Rz(θ) 行主序是 [[c,-s,0],[s,c,0],[0,0,1]];列主序按列连续存放。
+    return <double>[
+      c, s, 0, 0, //
+      -s, c, 0, 0, //
+      0, 0, 1, 0, //
+      0, 0, 0, 1, //
+    ];
+  }
+
+  /// 两个 4×4 列主序相乘:`a · b`。
+  static List<double> multiplyColumnMajor(List<double> a, List<double> b) {
+    final List<double> out = List<double>.filled(16, 0);
+    for (int col = 0; col < 4; col++) {
+      for (int row = 0; row < 4; row++) {
+        double sum = 0;
+        for (int k = 0; k < 4; k++) {
+          // 列主序:元素 (row, k) 在 a[k*4 + row]。
+          sum += a[k * 4 + row] * b[col * 4 + k];
+        }
+        out[col * 4 + row] = sum;
+      }
+    }
+    return out;
+  }
+
   /// 视图矩阵 = camera_from_world,4×4 **列主序**(`Matrix4` 的存储顺序,
   /// 也是 Filament / OpenGL / Metal 的惯例)。
   ///

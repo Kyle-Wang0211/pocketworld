@@ -1,0 +1,72 @@
+// pw_camera_feed.mat — 相机背景全屏三角形的材质。
+//
+// ══ 这是复刻,不是自研 ═══════════════════════════════════════════════════════
+// 逐行照抄 Filament v1.58.0 官方 AR 样例
+//   ios/samples/hello-ar/Materials/camera_feed.mat
+// (Apache-2.0,© The Android Open Source Project)。
+// 与上游的**唯一**差别是 `name`,因为一个进程里两个同名 material 会互相踩。
+// 其余每一行都照原样保留,包括下面这些一改就出事的:
+//
+//   * vertexDomain : device
+//       顶点坐标**直接就是设备/裁剪空间**,不过投影矩阵。这正是"全屏三角形"
+//       能不受相机位姿影响、永远铺满屏幕的原因。
+//       🔴 配套要求:该 renderable 的**视锥剔除必须关掉**。它的顶点是 NDC,
+//         算出来的 AABB 是一个坐落在世界原点的约 4 单位的盒子;相机一走开
+//         就出视锥 ⇒ 背景静默消失。上游用 `.culling(false)` 关掉
+//         (FullScreenTriangle.cpp:98),我们用运行时的
+//         `RenderableManager::setCulling`(RenderableManager.h:640-644)。
+//
+//   * flipUV : false
+//       Filament 默认 `flipUV: true`,会再翻一次 y。上游关掉它,是因为送进来的
+//       UV 已经是**左上原点**(与 ARKit `ARCamera.h:111` 明文一致),
+//       我们 display_transform.dart 输出的也是左上原点。开着就整幅倒过来。
+//
+//   * type : sampler2d(不是 samplerExternal)
+//       纹理本身建成 SAMPLER_EXTERNAL,但**材质这一侧声明 sampler2d 是对的**,
+//       上游就是这么写的。Metal 后端把 CVPixelBuffer 变成一张普通 MTLTexture
+//       (MetalHandles.mm:700-707),着色器侧没有"外部采样器"这回事。
+//
+//   * inverseTonemapSRGB(...)
+//       Filament 出图前会做色调映射。相机画面是**已经**成像好的 sRGB,再被
+//       映射一次就发灰。先反向映射一次,抵消掉后面那一次,画面才是原样。
+//
+//   * float3x3 textureTransform
+//       上游的类型。thermion 上游只有 Mat4 没有 Mat3,所以我们给它补了一个
+//       `MaterialInstance_setParameterMat3`(见该包 TMaterialInstance.h),
+//       而不是把这里改成 float4x4 —— 宁可补库,不动复刻件。
+//
+// 编译:见 tool/build_materials.sh。matc 必须与引擎同版本(v1.58.0)。
+
+material {
+    name : pw_camera_feed,
+    shadingModel : unlit,
+    vertexDomain : device,
+    requires : [
+        uv0
+    ],
+    flipUV : false,
+    parameters : [
+        {
+            type : sampler2d,
+            name : cameraFeed
+        },
+        {
+            type : float3x3,
+            name : textureTransform
+        }
+    ]
+}
+
+vertex {
+    void materialVertex(inout MaterialVertexInputs material) {
+        // This applies the transform we received from displayTransformForOrientation.
+        material.uv0 = (materialParams.textureTransform * float3(material.uv0, 1.0)).rg;
+    }
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        material.baseColor.rgb = inverseTonemapSRGB(texture(materialParams_cameraFeed, getUV0()).rgb);
+    }
+}
