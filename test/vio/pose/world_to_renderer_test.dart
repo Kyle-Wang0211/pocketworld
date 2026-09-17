@@ -187,4 +187,61 @@ void main() {
       }
     });
   });
+  _modelVsView();
+}
+
+// —— 追加:model matrix vs view matrix ——
+// 这两个搞反不会崩、跟踪也看起来正常,只是内容反着动。必须钉死。
+void _modelVsView() {
+  group('modelMatrix(world_from_camera) 与 viewMatrix(camera_from_world)', () {
+    test('两者互为逆', () {
+      final math.Random rnd = math.Random(11);
+      for (int k = 0; k < 10; k++) {
+        final PoseQuaternion q = PoseQuaternion(
+          rnd.nextDouble() * 2 - 1, rnd.nextDouble() * 2 - 1,
+          rnd.nextDouble() * 2 - 1, rnd.nextDouble() * 2 - 1,
+        ).normalized();
+        final PosePosition t = PosePosition(
+          rnd.nextDouble() * 6 - 3, rnd.nextDouble() * 6 - 3,
+          rnd.nextDouble() * 6 - 3);
+        final TrackedPose p = TrackedPose.tracked(
+            orientation: q, position: t, timestampSeconds: 0);
+        final List<double> mm = WorldToRenderer.modelMatrixColumnMajor(p)!;
+        final List<double> vm = WorldToRenderer.viewMatrixColumnMajor(p)!;
+        // 列主序 4x4 相乘应得单位阵。
+        for (int i = 0; i < 4; i++) {
+          for (int j = 0; j < 4; j++) {
+            double s = 0;
+            for (int n = 0; n < 4; n++) {
+              s += vm[n * 4 + i] * mm[j * 4 + n];
+            }
+            expect(s, closeTo(i == j ? 1.0 : 0.0, 1e-9),
+                reason: 'k=$k 元素($i,$j) 应为 ${i == j ? 1 : 0}');
+          }
+        }
+      }
+    });
+
+    test('modelMatrix 的平移列就是相机在渲染器系里的位置', () {
+      final TrackedPose p = TrackedPose.tracked(
+        orientation: PoseQuaternion.identity,
+        position: const PosePosition(1, 2, 3),
+        timestampSeconds: 0,
+      );
+      final List<double> mm = WorldToRenderer.modelMatrixColumnMajor(p)!;
+      final List<double> c = WorldToRenderer.convertVector(<double>[1, 2, 3]);
+      expect(mm[12], closeTo(c[0], 1e-12));
+      expect(mm[13], closeTo(c[1], 1e-12));
+      expect(mm[14], closeTo(c[2], 1e-12));
+      expect(mm[15], 1);
+    });
+
+    test('3DOF 同样返回 null', () {
+      expect(
+        WorldToRenderer.modelMatrixColumnMajor(TrackedPose.orientationOnly(
+            orientation: PoseQuaternion.identity, timestampSeconds: 0)),
+        isNull,
+      );
+    });
+  });
 }

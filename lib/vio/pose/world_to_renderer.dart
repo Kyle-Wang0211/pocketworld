@@ -92,6 +92,39 @@ abstract final class WorldToRenderer {
     );
   }
 
+  /// **world_from_camera**,4×4 列主序 —— 这是 Filament `Camera::setModelMatrix`
+  /// 要的那个,**不是**视图矩阵。
+  ///
+  /// 🔴 两者差一次求逆,而且搞反了**不会崩、跟踪看起来也正常**,只是内容
+  /// 朝反方向动 —— 正是上游 PR #70「虚拟物体反向滑走」那一类故障(那次
+  /// 的根因是外参被应用了两次,症状同样是跟踪完全正常)。所以这里把两个
+  /// 出口都提供、各自写明收方,而不是只给一个让调用方自己猜。
+  ///
+  /// 依据:Google 自己的跨端 AR 帧契约
+  /// `google-ar/jetpack-xr-natives` `impress/core/ar/ar_frame.h`(Apache-2.0,
+  /// © 2024 Google LLC)携带的是 `model_matrix`,注释原文
+  /// *"The model matrix to use for placing the virtual camera."*
+  /// 而 Filament 的 AR 样例也是 `camera->setModelMatrix(frame.view)`,传进去
+  /// 的是 ARKit 的 `frame.camera.transform`,即 world-from-camera。
+  ///
+  /// 返回 `null` 的条件与 [viewMatrixColumnMajor] 相同,理由也相同。
+  static List<double>? modelMatrixColumnMajor(TrackedPose pose) {
+    final PoseQuaternion? q = pose.orientation;
+    final PosePosition? p = pose.position;
+    if (q == null || p == null) return null;
+
+    final PoseQuaternion r = convertRotation(q).normalized();
+    final List<double> t = convertVector(<double>[p.x, p.y, p.z]);
+
+    final double x = r.x, y = r.y, z = r.z, w = r.w;
+    return <double>[
+      1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w), 0, //
+      2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w), 0, //
+      2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y), 0, //
+      t[0], t[1], t[2], 1, //
+    ];
+  }
+
   /// 视图矩阵 = camera_from_world,4×4 **列主序**(`Matrix4` 的存储顺序,
   /// 也是 Filament / OpenGL / Metal 的惯例)。
   ///
