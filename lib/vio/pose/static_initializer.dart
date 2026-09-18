@@ -36,6 +36,29 @@
 //   判死才能接渲染器。本文件原样透传,不假装知道它是哪个系。
 // * 不给尺度、不给位置。静止起步交的是**姿态**,位置不可观
 //   (Kimera 原注释:"Absolute translation is unobservable, so return [0,0,0]")。
+//
+// ══ 🔴 `zeroVelocityUpdateEnabled` 该设什么:取决于**这个姿态交给谁** ══════
+//
+// 上游把它写成 `wait_for_jerk = (updaterZUPT == nullptr)`,是因为 OpenVINS 的
+// 静止初始化会**写进 EKF 状态**:静止段没有运动约束,没有 ZUPT 更新器扛着,
+// 滤波器会飘,所以宁可等一次急动。
+//
+// 我们有两种用途,答案相反:
+//
+//   ① 把姿态**喂回 XRSLAM 的滤波器** ⇒ 必须 `false`(等急动)
+//      实证:XRSLAM 里 `zupt` / `zero_velocity` / `stationary` / `standstill`
+//      四个关键词命中数**全是 0** —— 它一点静止段保护都没有,
+//      比 OpenVINS 默认关掉 try_zupt 的处境还差。
+//
+//   ② 把姿态**交给渲染器当 3DOF 兜底** ⇒ `true` 才对
+//      这个输出走的是 [VioPoseSource] 的 `orientationOnly` 档,**不回灌任何
+//      滤波器**,不存在发散风险;而且这正是 ARKit 的行为(它静止时也跟踪不了,
+//      但自带 3DOF fallback)。
+//
+// [StaticInitPoseChain] 走的是**②**。字段名沿用上游是为了可追溯,但它在我们
+// 这里的语义是「**愿不愿意在静止时就交出姿态**」,不是「有没有 ZUPT 更新器」。
+// 🔴 日后若真要把它接回 XRSLAM 的状态初始化,**必须改回 `false`**,
+//    否则就是在一个毫无静止段保护的滤波器上做静止初始化。
 
 import 'gravity_attitude.dart';
 import 'stationarity_gate.dart';
