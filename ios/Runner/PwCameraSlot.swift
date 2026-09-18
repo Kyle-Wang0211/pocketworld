@@ -271,3 +271,55 @@ public func pw_camera_slot_intrinsics(_ out: UnsafeMutablePointer<Double>) -> In
 public func pw_camera_slot_stats(_ out: UnsafeMutablePointer<Int64>) {
     PwCameraSlotImpl.shared.stats(into: out)
 }
+
+// ── 把帧交给 XRSLAM 用:锁定 + 交出基址 ────────────────────────────────────
+//
+// 🔴 这里**只做 Swift 才能做的那件事** —— 锁住 CVPixelBuffer 并交出基址。
+// 填 `XRSLAMImage` 与 `XRSLAMPushSensorData` 都留在 Dart(绑定本来就在那儿),
+// 这样 Swift 侧不需要 XRSLAM.h,也就不用改 pbxproj / 桥接头。
+//
+// 🔴 **不做灰度转换。** 引擎自己就接 4 通道:
+//   `XRSLAMManager.cpp:499` → `image->channel == 4` → `CV_8UC4`,
+//   转灰度是它内部用**自己那份 OpenCV 4.0.1** 做的。
+//   我们在外面再转一次,只会引入一份"与它不逐位一致"的实现 —— 这个代码库
+//   为 1 ULP 的像素差栽过(pip cv2 的 -ffp-contract=on vs 设备端 off)。
+//   我们的 slot 固定 32BGRA,与上游 demo 喂的 `CV_8UC4` 同型,直接推即可。
+//
+// 用法(必须成对):
+//   let n = pw_camera_slot_lock(addr, &out)   // out: [base, stride, w, h]
+//   … Dart 填 XRSLAMImage 并 PushSensorData + RunOneFrame …
+//   pw_camera_slot_unlock(addr)
+//
+// ⚠️ 锁期间**不要**做耗时的事:CVPixelBuffer 被锁住时相机线程拿不到它。
+
+/// 锁定并写出 4 个 UInt64:baseAddress、bytesPerRow、width、height。
+/// 返回 0 成功;-1 = 地址为 0 或锁失败。
+@_cdecl("pw_camera_slot_lock")
+public func pw_camera_slot_lock(_ addr: UInt64,
+                                _ out: UnsafeMutablePointer<UInt64>) -> Int32 {
+    out[0] = 0; out[1] = 0; out[2] = 0; out[3] = 0   // 无条件先清零
+    guard addr != 0 else { return -1 }
+    let pb = Unmanaged<CVPixelBuffer>.fromOpaque(
+        UnsafeRawPointer(bitPattern: UInt(addr))!).takeUnretainedValue()
+    guard CVPixelBufferLockBaseAddress(pb, .readOnly) == kCVReturnSuccess else {
+        return -1
+    }
+    guard let base = CVPixelBufferGetBaseAddress(pb) else {
+        CVPixelBufferUnlockBaseAddress(pb, .readOnly)
+        return -1
+    }
+    out[0] = UInt64(UInt(bitPattern: base))
+    out[1] = UInt64(CVPixelBufferGetBytesPerRow(pb))
+    out[2] = UInt64(CVPixelBufferGetWidth(pb))
+    out[3] = UInt64(CVPixelBufferGetHeight(pb))
+    return 0
+}
+
+/// 与 `pw_camera_slot_lock` 成对。**漏调会把相机卡死**。
+@_cdecl("pw_camera_slot_unlock")
+public func pw_camera_slot_unlock(_ addr: UInt64) {
+    guard addr != 0 else { return }
+    let pb = Unmanaged<CVPixelBuffer>.fromOpaque(
+        UnsafeRawPointer(bitPattern: UInt(addr))!).takeUnretainedValue()
+    CVPixelBufferUnlockBaseAddress(pb, .readOnly)
+}

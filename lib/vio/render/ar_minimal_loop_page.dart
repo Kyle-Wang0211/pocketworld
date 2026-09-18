@@ -27,6 +27,7 @@ import 'dart:async';
 
 import 'package:sensors_plus/sensors_plus.dart';
 
+import '../ffi/xrslam_session.dart';
 import '../pose/camera_slot_ffi.dart';
 import '../pose/display_transform.dart';
 import '../pose/engine_pose_poller.dart';
@@ -80,6 +81,7 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
   // 🔴 在这之前 `EnginePoseSample` 全仓只有探针页构造过、且写死 ok:false ——
   //    也就是说这条链**从建成起没有一条真引擎位姿进去过**。这里补上。
   final EnginePosePoller _poller = EnginePosePoller();
+  XrslamSessionStart? _session;
   late final StaticInitPoseChain _chain = StaticInitPoseChain(
     initializer: StaticInitializer(
       gate: StationarityGate(
@@ -108,6 +110,8 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
     _accSub?.cancel();
     _gyrSub?.cancel();
     _poller.dispose();
+    // 🔴 必须销毁:上游 Detail 是进程级单例,不销毁下一次 Create 是覆盖。
+    XrslamSession.current?.destroy();
     final hook = _frameHook;
     if (hook != null) {
       FilamentApp.instance?.unregisterRequestFrameHook(hook);
@@ -149,6 +153,13 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
         imageHeight: kFeedHeight,
       );
 
+      // ── 建引擎会话 ────────────────────────────────────────────────────
+      // 🔴 在这之前**全仓没有任何地方调过 XRSLAMCreate**(grep 实证),
+      //    所以那条位姿链的上游一直是空的 —— 接头做好了,水没进来。
+      _session = XrslamSession.start();
+      debugPrint('[arloop] XRSLAMCreate rc=${_session!.createRc} '
+          'ok=${_session!.ok}${_session!.error == null ? '' : ' err=${_session!.error}'}');
+
       // IMU:静止兜底那一半要它。100 Hz,与探针页同口径。
       _gyrSub = gyroscopeEventStream(
         samplingPeriod: const Duration(milliseconds: 10),
@@ -162,7 +173,7 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
         samplingPeriod: const Duration(milliseconds: 10),
       ).listen((AccelerometerEvent e) {
         if (!_gotGyro) return;
-        _chain.addImu(ImuSample(
+        final ImuSample s = ImuSample(
           timestampSeconds: _imuClock.elapsedMicroseconds / 1e6,
           ax: e.x,
           ay: e.y,
@@ -170,7 +181,9 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
           gx: _gx,
           gy: _gy,
           gz: _gz,
-        ));
+        );
+        _chain.addImu(s);          // 静止兜底那一半
+        XrslamSession.current?.pushImu(s); // 引擎那一半
       });
 
       final int rc = PwCameraSlot.start(width: kFeedWidth, height: kFeedHeight);
@@ -251,6 +264,19 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
       final Size size = _viewport;
       final double dpr = _dpr;
       if (size.width <= 0 || size.height <= 0) return;
+      // ── 把这一帧喂给引擎 ───────────────────────────────────────────────
+      // 顺序照上游 XRSLAM_iOS.mm:151-167 —— 推图像 → RunOneFrame → 读结果。
+      // 🔴 acquire 出来的 buffer **必须** release,所以走 withFrame 配对。
+      final XrslamSession? sess = XrslamSession.current;
+      if (sess != null) {
+        PwCameraSlot.withFrame<void>((int addr) {
+          sess.pushCameraFrame(
+            pixelBufferAddress: addr,
+            timestampSeconds: _imuClock.elapsedMicroseconds / 1e6,
+          );
+        });
+      }
+
       // ── 位姿:每帧向引擎拉一次,拉不到就走静止兜底 ──────────────────────
       // 🔴 拉取而非回调:dart:ffi 同步同线程,NativeCallable.isolateLocal 从
       //    非创建线程调用会**硬 abort**。理由见 engine_pose_poller.dart。
@@ -278,10 +304,11 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
         //    stage=tracking ⇒ 引擎给了 6DOF;orientationOnly ⇒ 走静止兜底;
         //    none ⇒ 两头都没有。rc 是 XRSLAMTryGetLatestPose 的返回码。
         debugPrint('[arloop] pose stage=${_chain.source.stage.name} '
-            'rc=${_poller.lastReturnCode} '
+            'state=${_poller.lastState} '
             'hasPos=${_pose?.position != null} '
             'hasOri=${_pose?.orientation != null}'
-            '${_lastAttempt == null ? '' : ' init=${_lastAttempt!.verdict.decision.name}'}');
+            '${_lastAttempt == null ? '' : ' init=${_lastAttempt!.verdict.decision.name}'}'
+            ' sess=${_session?.ok} rc=${_session?.createRc}');
         debugPrint('[arloop] $stats');
         debugPrint('[arloop] viewport = '
             '${(size.width * dpr).round()}x${(size.height * dpr).round()}');
