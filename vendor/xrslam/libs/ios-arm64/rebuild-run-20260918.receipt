@@ -1,0 +1,14 @@
+schema=pw.xrslam.ios-generic-rebuild-run/2
+script_sha256=fa884093cffddc996b582e494dcb61f8dff9d68b6aa9d3a61c3420aeda792437
+xrslam_revision=4beb1a942f33da9afbfae2d70e2c641cfc2bb675
+clang_version=Apple clang version 17.0.0 (clang-1700.6.3.2)
+ninja_version=1.13.2
+source_date_epoch=1700000000
+zero_ar_date=1
+lifecycle_patch_sha256=13592cb486f159217fa5ecf9ef2f9863be78cf599d42fb1757e34bd7d4bbb220
+zero_inlier_mask_patch_sha256=62b12204c647e445e88917859de6b29452df0e6cc65b447e7ea86005f98d1794
+override_patch_sha256=ed0a82a308f6b39e147f62f7a95da5a1dcc33eeedc6a6685076aa99063c5a8e6
+artifact_sha256=a00be79a5a7cb7268aef1d136413eb7d64700ee7c49cedfc09c35ccbf8e538bc
+archive_member_count=55
+archive_member_manifest_sha256=54f61f7c3e4ab61cface712f1f98f4355158c6793c5b0c4842e91cc4ebc6451a
+acceptance=behavioural-gate (see --gate-help); byte-identity is NOT the gate

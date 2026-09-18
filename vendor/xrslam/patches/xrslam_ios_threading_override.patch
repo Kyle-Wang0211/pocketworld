@@ -1,0 +1,26 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 6917617..7fc3076 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -15,8 +15,20 @@ option(XRSLAM_PC_HEADLESS_ONLY "..." OFF)
+ option(XRSLAM_IOS "..." OFF)
+ option(XRSLAM_TEST "..." OFF)
+ 
+-if(IOS)
++# Upstream hard-wires both of these to the iOS platform check, so a caller
++# cannot ask for the library-only configuration: -DXRSLAM_IOS=OFF and
++# -DXRSLAM_ENABLE_THREADING=OFF are silently overwritten here. Threading in
++# particular is not a performance knob -- with it forced on for iOS and left off
++# for Android the two platforms run different execution architectures, which
++# makes any cross-platform comparison meaningless.
++#
++# Decouple without changing any default: each override only takes effect when
++# the caller explicitly defines it, so an unpatched-equivalent configure is what
++# you still get by default.
++if(IOS AND NOT DEFINED XRSLAM_IOS_OVERRIDE)
+   set(XRSLAM_IOS ON)
++endif()
++if(IOS AND NOT DEFINED XRSLAM_THREADING_OVERRIDE)
+   set(XRSLAM_ENABLE_THREADING ON)
+   #set(XRSLAM_ENABLE_DEBUG_INSPECTION OFF CACHE BOOL "..." FORCE)
+ endif()
