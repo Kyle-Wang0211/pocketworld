@@ -2,9 +2,15 @@
 //
 // ══ 量的是 OpenVINS / XR-VIO 的那个判据量,不是 GLRT ═══════════════════════
 // 判据形式见 `lib/vio/pose/stationarity_gate.dart` 的文件头:
-//   * 窗长 **2.0 秒**(OpenVINS `init_window_time`,三份配置一致,已抄)
-//   * IMU 量 = 窗内加速度相对窗均值的**均方偏差**(OpenVINS `init_imu_thresh`)
+//   * 窗长 **2.0 秒**(OpenVINS `init_window_time`,三份配置一致,已抄),
+//     且**劈成两个 1.0 秒的半窗,两半都要过**
+//   * IMU 量 = 半窗内加速度相对**半窗均值向量**的**样本标准差**
+//     `sqrt(Σ‖aᵢ−ā‖²/(N−1))`,单位 **m/s²**(OpenVINS `init_imu_thresh`)
 //   * 视觉量 = 稀疏特征平均视差(OpenVINS `init_max_disparity`)
+//
+// 🔴 口径已按 OpenVINS 源码订正过一次(StaticInitializer.cpp:57-117):
+//    原先我量的是**整窗**的**均方偏差**(没开方、除 N、不劈半)。那个数
+//    拿去比 1.5 是**量纲错**,而且整窗均值会把末段抖动稀释掉。
 //
 // 🔴 **本页只能标定 IMU 那一半。** 视差那一半要相机 + 特征跟踪,不在这里;
 // 而且按 OpenVINS 自己的注释,视差阈值 "dependent on resolution",必须在
@@ -123,10 +129,12 @@ class _ZuptProbePageState extends State<ZuptProbePage> {
       return;
     }
 
-    // 逐样本喂进门,收集**每一次满窗**的两个方差。
+    // 逐样本喂进门,收集**每一次满窗**里**两个半窗各自**的标准差。
+    // 🔴 两半都收:门的判据是"两半都要低于阈值",所以定阈值时该看的是
+    //    两半里**较大**的那个 —— 分布也按这个口径出。
     final StationarityGate gate = StationarityGate(
       // 阈值在这里无意义(只取数不判定),给 OpenVINS euroc 的量级占位。
-      accelVarianceThreshold: 1.5,
+      imuExcitationThreshold: 1.5,
       disparityThresholdPixels: 10.0,
     );
     final List<double> av = <double>[], gv = <double>[];
@@ -134,9 +142,16 @@ class _ZuptProbePageState extends State<ZuptProbePage> {
     for (int i = 0; i < _raw.length; i++) {
       gate.add(i / hz, _raw[i]);
       if (!gate.windowFull) continue;
-      final v = gate.evaluate(averageDisparityPixels: 0.0);
-      if (v.accelVariance != null) av.add(v.accelVariance!);
-      if (v.gyroVariance != null) gv.add(v.gyroVariance!);
+      final StationarityVerdict v = gate.evaluate(
+        disparityOlderPixels: 0.0,
+        disparityNewerPixels: 0.0,
+        featureCountOlder: StationarityGate.kMinFeaturesPerHalfSpan,
+        featureCountNewer: StationarityGate.kMinFeaturesPerHalfSpan,
+      );
+      final double? ao = v.olderHalf.accelStdDev, an = v.newerHalf.accelStdDev;
+      final double? go = v.olderHalf.gyroStdDev, gn = v.newerHalf.gyroStdDev;
+      if (ao != null && an != null) av.add(math.max(ao, an));
+      if (go != null && gn != null) gv.add(math.max(go, gn));
     }
     if (av.isEmpty) {
       line('窗从未满 —— 采集时长不足 ${StationarityGate.kOpenVinsWindowSeconds}s?');
@@ -146,17 +161,15 @@ class _ZuptProbePageState extends State<ZuptProbePage> {
     av.sort();
     gv.sort();
 
-    line('窗长 ${StationarityGate.kOpenVinsWindowSeconds}s @ '
-        '${hz.toStringAsFixed(0)}Hz  ⇒ 每窗 ${(hz * 2).round()} 样本,'
+    line('窗长 ${StationarityGate.kOpenVinsWindowSeconds}s(劈两半,各 '
+        '${(hz).round()} 样本)@ ${hz.toStringAsFixed(0)}Hz,'
         '共 ${av.length} 个满窗');
-    line('加速度方差 (m/s²)²  [= OpenVINS init_imu_thresh 的量]');
+    line('加速度标准差 m/s²  [= OpenVINS init_imu_thresh 比的那个量,取两半较大者]');
     line('  p01=${_q(av, .01).toStringAsExponential(3)}  '
         'p50=${_q(av, .50).toStringAsExponential(3)}  '
         'p99=${_q(av, .99).toStringAsExponential(3)}  '
         'max=${av.last.toStringAsExponential(3)}');
-    line('  (换成标准差 p50=${StationarityGate.toStdDev(_q(av, .5)).toStringAsExponential(3)} m/s²'
-        ' —— XR-VIO 文字说的是 std,OpenVINS 字段名说的是 variance)');
-    line('角速度方差 (rad/s)²  [OpenVINS 配置里没有这一项,XR-VIO 文字提到了]');
+    line('角速度标准差 rad/s  [OpenVINS 源码里没有这一项,XR-VIO 文字提到了]');
     line('  p01=${_q(gv, .01).toStringAsExponential(3)}  '
         'p50=${_q(gv, .50).toStringAsExponential(3)}  '
         'p99=${_q(gv, .99).toStringAsExponential(3)}  '
