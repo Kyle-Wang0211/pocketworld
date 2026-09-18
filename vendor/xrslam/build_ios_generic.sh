@@ -25,6 +25,39 @@
 # ③ 不打 Android 的 `xrslam_generic_mobile.patch`(receipt 只声明了两个 patch:
 #    lifecycle + zero_inlier_mask)⇒ 不走 XRSLAM_CROSS_PLATFORM_GENERIC。
 #
+# ══ 🔴🔴 2026-09-18 实跑得到的结论:出货 .a **无法从它自己的 receipt 重建** ══
+#
+# 四轮实跑,三条独立证据指向同一件事:那份 .a 是从一棵**我们已经没有的源码树**
+# 编出来的,receipt 里声明的输入不足以复现它。
+#
+#  证据一:`build_commands_sha256=41c21b74…` 指向的命令文件,仓内外全机扫过,
+#          **不存在**。
+#
+#  证据二:`declared_source_diff_sha256=c6d8267…` 对不上。
+#          在干净 4beb1a9 上只打两个声明 patch 后:
+#            git diff 的 sha256      = 4b228e9fa0037960d14b3c7fc543bcb4be85d2539…
+#            两个 patch 文件拼接 sha  = 3a74cf2320b883133c724a8d359dde7c3fbf9b91…
+#          两种口径都不是 c6d8267…。
+#
+#  证据三(最硬):receipt 自己声明的组合在干净 4beb1a9 上**自相矛盾**。
+#          上游 CMakeLists.txt:17-27 有两段互斥的强制:
+#              if(IOS)      set(XRSLAM_IOS ON); set(XRSLAM_ENABLE_THREADING ON)
+#              if(NOT IOS)  set(XRSLAM_PC ON)      # ⇒ 拉入 argparse / liteviz
+#          于是:
+#            IOS 为真 ⇒ xrslam_ios / threading 被强开,与 receipt 的 False 矛盾;
+#            IOS 为假 ⇒ XRSLAM_PC 被强开,需要 argparse / liteviz,
+#                       而 receipt 的依赖清单里**这两个都没有**。
+#          两条路都无法同时满足 receipt。⇒ 那棵树的 CMakeLists 必定被改过,
+#          而那个改动**没有被声明**。
+#
+# ⇒ 本脚本**做不到**"重建出与出货 .a 逐成员一致的产物"。它能做到的是:
+#    ① --verify-only:把现有出货 .a 钉住(工具链/patch/成员清单/ABI 五函数),
+#      这一半已经实跑通过,防止它再被悄悄换掉;
+#    ② --rebuild:在干净 4beb1a9 上建立一条**新的、可复现的**基线 —— 但那需要
+#      再声明一个 CMakeLists patch(中和上面那段 force-on),
+#      且产物**不会**与出货 .a 逐位相同,要靠台架行为对照来判等价。
+#    🔴 ②是产品决定不是技术决定:等于换一次引擎基线。未经点头不要做。
+#
 # ── 验收判据(可执行,不是口号)──────────────────────────────────────────
 # receipt 里的 `archive_member_manifest_sha256` 是**逐成员内容哈希、按归档顺序**
 # 的清单哈希,格式 `archive-order: sha256-two-spaces-member-newline`。
@@ -52,10 +85,14 @@ yaml_ref="yaml-cpp-0.7.0"
 yaml_revision="0579ae3d976091d7d664aa9d2527e0d0cff25763"
 opencv_version="4.0.1"
 opencv_headers_revision="c9ad5779f2803dcc91a9938142209128d30b22d1"
+# 上游 cmake/external/ios/opencv.cmake 自己声明的 URL_MD5,本地包已逐位核过。
+opencv_zip_md5="35ebe10de1089f6b1e1cce04d822f740"
 
 expected_clang_version="Apple clang version 17.0.0 (clang-1700.6.3.2)"
 minimum_ios="14.0"
 source_date_epoch="1700000000"
+# Android 那份钉的也是这个版本,两端保持一致。
+expected_ninja_version="1.13.2"
 
 lifecycle_patch_sha256="13592cb486f159217fa5ecf9ef2f9863be78cf599d42fb1757e34bd7d4bbb220"
 zero_inlier_mask_patch_sha256="62b12204c647e445e88917859de6b29452df0e6cc65b447e7ea86005f98d1794"
@@ -93,6 +130,11 @@ verify_toolchain() {
   fi
   command -v libtool >/dev/null
   command -v xcrun >/dev/null
+  actual_ninja="$(ninja --version)"
+  if [ "$actual_ninja" != "$expected_ninja_version" ]; then
+    echo "ninja mismatch: expected=$expected_ninja_version actual=$actual_ninja" >&2
+    exit 65
+  fi
 }
 
 # 逐成员内容哈希、按归档顺序。格式与 receipt 的
@@ -214,6 +256,23 @@ clone_pinned https://github.com/ceres-solver/ceres-solver.git \
 clone_pinned https://github.com/jbeder/yaml-cpp.git \
   "$deps_root/depends-yaml-cpp-src" "$yaml_revision"
 
+# 🔴 OpenCV 走的是同一个 SuperBuildDepends 约定:上游
+# cmake/external/ios/opencv.cmake 只做 FetchContent + file(COPY ...) —— 它要的是
+# **解压后的 framework 内容**落在 _deps/depends-opencv-src。
+# FetchContent 对单顶层目录的压缩包会剥掉那一层,所以这里放的是
+# opencv2.framework 的**内容**(Headers/Resources/Versions/…),不是它本身。
+opencv_zip="$deps_tarballs/opencv-$opencv_version-ios-framework.zip"
+test -f "$opencv_zip" || { echo "missing $opencv_zip" >&2; exit 65; }
+actual_md5="$(md5 -q "$opencv_zip")"
+test "$actual_md5" = "$opencv_zip_md5" || {
+  echo "opencv zip md5 mismatch: expected=$opencv_zip_md5 actual=$actual_md5" >&2
+  exit 65
+}
+unzip -q "$opencv_zip" -d "$work_root/opencv-unzip"
+mkdir -p "$deps_root/depends-opencv-src"
+( cd "$work_root/opencv-unzip/opencv2.framework" && tar cf - . ) |
+  ( cd "$deps_root/depends-opencv-src" && tar xf - )
+
 # receipt: compile_flags。-ffp-contract=off / -fno-fast-math 与 Android 同口径
 # (设备端 FMA 收缩会让同一份源码算出不同的数,我们在稠密线上为此栽过)。
 deterministic_c_flags="-O3 -DNDEBUG -ffp-contract=off -fno-fast-math -ffile-prefix-map=$work_root=/pwbuild -fdebug-prefix-map=$work_root=/pwbuild"
@@ -222,10 +281,38 @@ export SOURCE_DATE_EPOCH="$source_date_epoch"
 # 🔴 iOS 专有:把 ar 归档头里的时间戳写成 0。见文件头 ①。
 export ZERO_AR_DATE=1
 
+# 🔴 用**上游自己的** iOS 工具链文件与变量名,不要手写 CMAKE_SYSTEM_NAME。
+# 实测:手写 CMAKE_OSX_DEPLOYMENT_TARGET 时 ceres 1.14 的 CMakeLists:196 直接报
+#   "Unsupported iOS version: , Ceres requires at least iOS version 7.0"
+# —— 它读的是 IOS_DEPLOYMENT_TARGET / IOS_PLATFORM(那套 ios.toolchain.cmake 的
+# 变量),CMAKE_OSX_* 它根本不看。上游 build-ios.sh 传的就是下面这组,照抄;
+# 只把版本从上游的 12.0 换成 receipt 钉的 $minimum_ios。
+# ══ 🔴 关键:**不要**用 CMake 的 iOS 平台支持 ═════════════════════════════
+# 上游 CMakeLists.txt:18-21 有一段:
+#     if(IOS)
+#       set(XRSLAM_IOS ON)
+#       set(XRSLAM_ENABLE_THREADING ON)
+#     endif()
+# 它会**覆盖**命令行传进来的 -DXRSLAM_IOS=OFF / -DXRSLAM_ENABLE_THREADING=OFF。
+# 而 `IOS` 这个变量,无论用 ios.toolchain.cmake 还是 CMAKE_SYSTEM_NAME=iOS,
+# 都会被置真 ⇒ 两条路都会把出货档的两个开关强行打开,与 receipt
+# (xrslam_ios=False / threading=False)矛盾。
+#
+# receipt 的 compile_flags 才是答案:里面有 `-arch arm64` 与
+# `-miphoneos-version-min=14.0` —— 这是**手工指定 iOS 目标**的写法,
+# 说明出货构建根本没走 CMake 的 iOS 平台支持。这样:
+#   * IOS 不置真 ⇒ 那段 force-on 不触发 ⇒ 两个开关保持 OFF ✅
+#   * xrslam-ios 子目录不被 add ⇒ 不需要 Swift 编译器(Ninja 生成器下配不出来)✅
+#   * ceres 1.14 不走它的 iOS 分支 ⇒ 不再要 IOS_DEPLOYMENT_TARGET ✅
+# 一个根因解释了三次配置失败。
+ios_sysroot="$(xcrun --sdk iphoneos --show-sdk-path)"
+ios_target_flags="-arch arm64 -miphoneos-version-min=$minimum_ios -fvisibility=hidden -fvisibility-inlines-hidden"
+deterministic_c_flags="$deterministic_c_flags $ios_target_flags"
+deterministic_cxx_flags="$deterministic_cxx_flags $ios_target_flags -std=gnu++17"
+
 cmake -S "$xrslam_source" -B "$xrslam_build" -G Ninja \
-  -DCMAKE_SYSTEM_NAME=iOS \
-  -DCMAKE_OSX_ARCHITECTURES=arm64 \
-  -DCMAKE_OSX_DEPLOYMENT_TARGET="$minimum_ios" \
+  -DCMAKE_MAKE_PROGRAM="$(command -v ninja)" \
+  -DCMAKE_OSX_SYSROOT="$ios_sysroot" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
   -DXRSLAM_IOS=OFF \
@@ -233,14 +320,15 @@ cmake -S "$xrslam_source" -B "$xrslam_build" -G Ninja \
   -DXRSLAM_ENABLE_DEBUG_INSPECTION=ON \
   -DXRSLAM_TEST=OFF \
   -DXRSLAM_DEBUG=OFF \
-  -DOpenCV_DIR="$deps_tarballs/opencv-$opencv_version-ios-framework" \
+  -DXRSLAM_PC_HEADLESS_ONLY=ON \
   -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
   "-DCMAKE_C_FLAGS_RELEASE=$deterministic_c_flags" \
   "-DCMAKE_CXX_FLAGS_RELEASE=$deterministic_cxx_flags" \
   -DSUITESPARSE=OFF -DCXSPARSE=OFF -DLAPACK=OFF -DACCELERATESPARSE=OFF \
   -DFETCHCONTENT_FULLY_DISCONNECTED=ON
 
-cmake --build "$xrslam_build" --parallel 12
+cmake --build "$xrslam_build" --parallel 12 --target \
+  xrslam-core xrslam-extra xrslam-interface yaml-cpp
 
 # ── 合并成出货归档 ──────────────────────────────────────────────────────────
 # 顺序必须与 receipt 的成员清单一致:interface → extra → core → yaml-cpp。
