@@ -68,6 +68,12 @@ class _ZuptProbePageState extends State<ZuptProbePage> {
   StreamSubscription<GyroscopeEvent>? _gyrSub;
   Timer? _tick;
 
+  /// 🔴 样本时间戳用**真实到达时刻**,不再用 `i/采样率` 推算。
+  /// 推算的前提是"一条不丢",而 sensors_plus 掉样时会把时间轴压缩,
+  /// 让 2.0 s 的窗实际盖住更长的一段。门是按**时间**裁窗的,喂错时间戳
+  /// 等于悄悄改了窗长。
+  final Stopwatch _clock = Stopwatch();
+
   /// 🔴 改成**两遍**:先把原始样本收下来,量出 g,再用那个 g 算 T。
   ///
   /// 为什么不能边收边算:g 是**这一段数据自己**的统计量(静止段比力模长的
@@ -97,6 +103,9 @@ class _ZuptProbePageState extends State<ZuptProbePage> {
       _raw.clear();
       _report.clear();
     });
+    _clock
+      ..reset()
+      ..start();
     _startSensors();
     _tick?.cancel();
     _tick = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -144,7 +153,14 @@ class _ZuptProbePageState extends State<ZuptProbePage> {
     });
     _accSub = accelerometerEventStream(samplingPeriod: _kPeriod).listen((e) {
       if (!_gotGyro || !_collecting) return;
-      _raw.add(ImuSample(ax: e.x, ay: e.y, az: e.z, gx: _gx, gy: _gy, gz: _gz));
+      _raw.add(ImuSample(
+          timestampSeconds: _clock.elapsedMicroseconds / 1e6,
+          ax: e.x,
+          ay: e.y,
+          az: e.z,
+          gx: _gx,
+          gy: _gy,
+          gz: _gz));
     });
   }
 
@@ -174,7 +190,7 @@ class _ZuptProbePageState extends State<ZuptProbePage> {
     final List<double> av = <double>[], gv = <double>[];
     final double hz = 1000.0 / _kPeriod.inMilliseconds;
     for (int i = 0; i < _raw.length; i++) {
-      gate.add(i / hz, _raw[i]);
+      gate.add(_raw[i]);
       if (!gate.windowFull) continue;
       final StationarityVerdict v = gate.evaluate(
         disparityOlderPixels: 0.0,

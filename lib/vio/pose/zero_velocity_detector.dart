@@ -51,24 +51,19 @@
 
 import 'dart:math' as math;
 
+// 🔴 ImuSample 统一到 gravity_attitude.dart。
+// 原先这里另有一个同名类(**不带时间戳**),与那边那个(**带时间戳**)同名不同形:
+// 两边都 import 就必须起别名,接线时极易悄悄传错一个。仓里已经因为这类
+// 静默不一致栽过好几次,所以合并成一个,并 export 出去保持既有 import 可用。
+import 'gravity_attitude.dart' show ImuSample;
+
+export 'gravity_attitude.dart' show ImuSample;
+
 /// 一条 IMU 样本。加速度是**比力**(含重力),单位 m/s²;角速度 rad/s。
 ///
 /// 🔴 必须含重力。GLRT 的第一步就是拿窗内均值定重力方向再减掉它;
 /// 喂"去重力加速度"(iOS 的 `userAcceleration` / 安卓的
 /// `TYPE_LINEAR_ACCELERATION`)进来,`norm(ya_m)` 会趋近 0,整个式子发散。
-class ImuSample {
-  const ImuSample({
-    required this.ax,
-    required this.ay,
-    required this.az,
-    required this.gx,
-    required this.gy,
-    required this.gz,
-  });
-
-  final double ax, ay, az; // 比力,m/s²
-  final double gx, gy, gz; // 角速度,rad/s
-}
 
 /// 参考实现的参数取值,原样带过来。
 ///

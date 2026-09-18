@@ -13,7 +13,10 @@ final double kEps = math.sqrt(2.220446049250313e-16);
 
 ImuSample _s(double ax, double ay, double az,
         [double gx = 0, double gy = 0, double gz = 0]) =>
-    ImuSample(ax: ax, ay: ay, az: az, gx: gx, gy: gy, gz: gz);
+    // GLRT 不看时间戳(它按**样本数**开窗,W=3 是 Skog 的原设定),
+    // 但 ImuSample 已统一成带时间戳的那一个,这里给 0 占位。
+    ImuSample(
+        timestampSeconds: 0, ax: ax, ay: ay, az: az, gx: gx, gy: gy, gz: gz);
 
 void main() {
   group('GLRT 的闭式解', () {

@@ -128,7 +128,7 @@
 
 import 'dart:math' as math;
 
-import 'zero_velocity_detector.dart' show ImuSample;
+import 'gravity_attitude.dart' show ImuSample;
 
 /// 判定结果。**三态**,不是布尔 —— "还不知道"和"在动"是两件事。
 enum Stationarity {
@@ -387,10 +387,11 @@ class StationarityGate {
   final List<double> _t = <double>[];
   final List<ImuSample> _s = <ImuSample>[];
 
-  /// 喂一条 IMU 样本。[timestampSeconds] 用来维持 [windowSeconds] 的时间窗
+  /// 喂一条 IMU 样本。用 `sample.timestampSeconds` 维持 [windowSeconds] 的时间窗
   /// ——**按时间而不是按样本数**,因为采样率会变(生产 100 Hz、台架可能不同,
   /// 三端也不同),按样本数会让窗的**时长**随平台漂。
-  void add(double timestampSeconds, ImuSample sample) {
+  void add(ImuSample sample) {
+    final double timestampSeconds = sample.timestampSeconds;
     _t.add(timestampSeconds);
     _s.add(sample);
     // 🔴 多留 [kBufferMarginSeconds],否则窗永远满不了 —— 见该常量的注释。

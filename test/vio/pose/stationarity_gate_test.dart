@@ -10,11 +10,12 @@ import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/vio/pose/stationarity_gate.dart';
-import 'package:pocketworld_flutter/vio/pose/zero_velocity_detector.dart' show ImuSample;
+import 'package:pocketworld_flutter/vio/pose/gravity_attitude.dart' show ImuSample;
 
 /// 造一条只在 x 轴上偏离 [dc] 的样本。
-ImuSample _s(double x, {double dc = 0, double gyro = 0}) =>
-    ImuSample(ax: dc + x, ay: 0, az: 0, gx: gyro, gy: 0, gz: 0);
+ImuSample _s(double x, {double dc = 0, double gyro = 0, double t = 0}) =>
+    ImuSample(
+        timestampSeconds: t, ax: dc + x, ay: 0, az: 0, gx: gyro, gy: 0, gz: 0);
 
 /// 喂 [seconds] 秒、[hz] 赫兹的样本,第 i 条的 x 偏移由 [ax] 给出。
 void _feed(
@@ -28,7 +29,8 @@ void _feed(
 }) {
   final int n = (seconds * hz).round();
   for (int i = 0; i < n; i++) {
-    g.add(fromT + (i + 1) / hz, _s(ax(i), dc: dc, gyro: gyro?.call(i) ?? 0));
+    g.add(_s(ax(i),
+        dc: dc, gyro: gyro?.call(i) ?? 0, t: fromT + (i + 1) / hz));
   }
 }
 
@@ -229,9 +231,9 @@ void main() {
         disparityThresholdPixels: 10.0,
         zeroVelocityUpdateEnabled: true,
       );
-      g.add(0.0, _s(0, dc: 9.80665));
-      g.add(1.6, _s(0, dc: 9.80665));
-      g.add(2.0, _s(0, dc: 9.80665));
+      g.add(_s(0, dc: 9.80665, t: 0.0));
+      g.add(_s(0, dc: 9.80665, t: 1.6));
+      g.add(_s(0, dc: 9.80665, t: 2.0));
       final StationarityVerdict v = g.evaluate(
         disparityOlderPixels: 0.1,
         disparityNewerPixels: 0.1,
@@ -256,7 +258,7 @@ void main() {
         final double t = (i + 1) / hz;
         // 新半窗是 (2.20−1.00, 2.20] = (1.20, 2.20];抖动只落在最后 0.2 秒。
         final bool lastFifth = t > 2.0;
-        g.add(t, _s(lastFifth ? (i.isEven ? 6.0 : -6.0) : 0.0, dc: dc));
+        g.add(_s(lastFifth ? (i.isEven ? 6.0 : -6.0) : 0.0, dc: dc, t: t));
       }
       final StationarityVerdict v = g.evaluate(
         disparityOlderPixels: 0.1,
@@ -292,7 +294,7 @@ void main() {
       for (int i = 0; i < 220; i++) {
         final double t = (i + 1) / hz;
         // 新半窗 = (1.20, 2.20],整半都在抖。
-        g.add(t, _s(t > 1.2 ? (i.isEven ? 1.9 : -1.9) : 0.0, dc: dc));
+        g.add(_s(t > 1.2 ? (i.isEven ? 1.9 : -1.9) : 0.0, dc: dc, t: t));
       }
       final StationarityVerdict v = g.evaluate(
         disparityOlderPixels: 0.1,
@@ -543,7 +545,7 @@ void main() {
       for (int i = 0; i < 220; i++) {
         final double t = (i + 1) / hz;
         // 新半窗 (1.20, 2.20] 里剧烈抖动,老半窗安静。
-        g.add(t, _s(t > 1.2 ? (i.isEven ? 2.0 : -2.0) : 0.0, dc: dc));
+        g.add(_s(t > 1.2 ? (i.isEven ? 2.0 : -2.0) : 0.0, dc: dc, t: t));
       }
       final StationarityVerdict v = g.evaluate(
         disparityOlderPixels: 0.1, // 老:静
