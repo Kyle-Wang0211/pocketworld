@@ -560,18 +560,37 @@ class StationarityGate {
             : '不满足任何一支(dynamicInit=$dynamicInitEnabled)'));
   }
 
+  /// **老半窗**的原始样本 `(newest − T, newest − 0.5·T]`。
+  ///
+  /// 🔴 给 `GravityAttitude.solve` 用的就是这一半,不是整窗、不是新半窗 ——
+  /// OpenVINS `StaticInitializer.cpp:87-96` 的重力方向与初始零偏取自
+  /// `window_2to1`,:134 还把状态时间戳定在 `window_2to1` 的最后一条上。
+  /// 理由在 wait_for_jerk 那条路上最清楚:急动发生在**新**半窗,拿它算重力
+  /// 就把急动的加速度当成重力了。非 jerk 路上两半都静,取老的一半与上游一致。
+  List<ImuSample> olderHalfSamples() => _pickBetween(
+        lowExclusive: _t.isEmpty ? 0 : _t.last - windowSeconds,
+        highInclusive: _t.isEmpty ? 0 : _t.last - 0.5 * windowSeconds,
+      );
+
+  List<ImuSample> _pickBetween({
+    required double lowExclusive,
+    required double highInclusive,
+  }) {
+    final List<ImuSample> picked = <ImuSample>[];
+    for (int i = 0; i < _t.length; i++) {
+      if (_t[i] > lowExclusive && _t[i] <= highInclusive) picked.add(_s[i]);
+    }
+    return picked;
+  }
+
   /// 取 `(lowExclusive, highInclusive]` 内的样本算统计量。
   /// 左开右闭是照 OpenVINS 的窗口条件(`> low && <= high`)。
   HalfWindowImuStats _statsBetween({
     required double lowExclusive,
     required double highInclusive,
   }) {
-    final List<ImuSample> picked = <ImuSample>[];
-    for (int i = 0; i < _t.length; i++) {
-      if (_t[i] > lowExclusive && _t[i] <= highInclusive) {
-        picked.add(_s[i]);
-      }
-    }
+    final List<ImuSample> picked =
+        _pickBetween(lowExclusive: lowExclusive, highInclusive: highInclusive);
     if (picked.length < kMinSamplesPerHalfWindow) {
       return HalfWindowImuStats(
         accelStdDev: null,

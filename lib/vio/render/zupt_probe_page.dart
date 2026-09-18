@@ -35,7 +35,11 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 
+import '../pose/gravity_attitude.dart';
+import '../pose/static_initializer.dart';
+import '../pose/tracked_pose.dart';
 import '../pose/stationarity_gate.dart';
+import '../pose/vio_pose_source.dart';
 import '../pose/zero_velocity_detector.dart' show ImuSample;
 
 /// 标签的**初值**。`--dart-define=PW_ZUPT=still|moving` 只决定进页面时默认选哪个,
@@ -230,6 +234,61 @@ class _ZuptProbePageState extends State<ZuptProbePage> {
     line('🔴 本场只出分布,不定阈值;且只标定了 IMU 那一半,'
         '视差那一半要相机+特征跟踪,另外取数。');
     line('🔴 两场都跑完后,看 still 的 p99 与 moving 的 p01 之间有没有空隙。');
+
+    // ═══ 整条链的真机消费者 ═══════════════════════════════════════════════
+    // IMU 流 → StationarityGate → InitDecision → GravityAttitude.solve(老半窗)
+    //        → VioPoseSource → TrackedPose
+    // 在这段之前,`GravityAttitude.solve` 在生产侧的调用者数是 **0**。
+    line('');
+    line('═══ 整条链(StaticInitPoseChain)═══');
+    line('🔴 本页不开相机,视差那一半**没有真数据**。下面给的是"假设视差判静止"');
+    line('   的条件结论 —— 视差阈值依赖分辨率,要在 1920×1440 下另外取数。');
+    for (final bool zupt in <bool>[false, true]) {
+      final StaticInitPoseChain chain = StaticInitPoseChain(
+        initializer: StaticInitializer(
+          gate: StationarityGate(
+            imuExcitationThreshold: kTumViHandheld.imuExcitationThreshold,
+            disparityThresholdPixels: kTumViHandheld.maxDisparityPixels,
+            zeroVelocityUpdateEnabled: zupt,
+            windowSeconds: kTumViHandheld.windowSeconds,
+          ),
+        ),
+      );
+      for (final ImuSample x in _raw) {
+        chain.addImu(x);
+      }
+      chain.setDisparity(
+        older: 0.0,
+        newer: 0.0,
+        featureCountOlder: StationarityGate.kMinFeaturesPerHalfSpan,
+        featureCountNewer: StationarityGate.kMinFeaturesPerHalfSpan,
+      );
+      chain.update(
+        // 引擎没给 6DOF —— 正是静止初始化要兜底的那一档。
+        sample: EnginePoseSample(
+          ok: false,
+          quaternionXyzw: const <double>[0, 0, 0, 0],
+          translationXyz: const <double>[0, 0, 0],
+          timestampSeconds: _raw.last.timestampSeconds,
+        ),
+        nowSeconds: _raw.last.timestampSeconds,
+      );
+      final StaticInitAttempt? at = chain.lastAttempt;
+      line('try_zupt=$zupt  →  档位 ${chain.source.stage.name}');
+      line('  判定 ${at?.verdict.state.name} / 决策 ${at?.verdict.decision.name}');
+      if (at?.attitude != null) {
+        final PoseQuaternion q = at!.attitude!.attitude;
+        line('  姿态 xyzw=(${q.x.toStringAsFixed(4)}, ${q.y.toStringAsFixed(4)}, '
+            '${q.z.toStringAsFixed(4)}, ${q.w.toStringAsFixed(4)})');
+        line('  加速度零偏 ${at.attitude!.accelerometerBias.map((double v) => v.toStringAsExponential(2)).join(", ")} m/s²');
+        line('  老半窗 ${at.olderHalfSampleCount} 条,位置**故意不给**(不可观)');
+      } else {
+        line('  ✗ 无姿态:${at?.blockedBy}');
+      }
+    }
+    line('🔴 上面两行的差,就是 try_zupt 这个开关对产品的全部后果:');
+    line('   关着 ⇒ 用户举着手机不动,连 3DOF 都拿不到。'
+        '上游 14 份配置里 12 份都是关的。');
     setState(() {});
   }
 
