@@ -23,8 +23,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:thermion_flutter/thermion_flutter.dart' hide VoidCallback;
 
+import 'dart:async';
+
+import 'package:sensors_plus/sensors_plus.dart';
+
 import '../pose/camera_slot_ffi.dart';
 import '../pose/display_transform.dart';
+import '../pose/engine_pose_poller.dart';
+import '../pose/gravity_attitude.dart' show ImuSample;
+import '../pose/static_initializer.dart';
+import '../pose/stationarity_gate.dart';
+import '../pose/tracked_pose.dart';
 import 'ar_render_loop.dart';
 
 /// 采集尺寸 —— **显示口径**,不是 VIO 口径。
@@ -66,8 +75,39 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
   int _ticks = 0;
   bool _capturedOnce = false;
 
+  // ══ 位姿链 ═══════════════════════════════════════════════════════════════
+  // 引擎 → EnginePosePoller → StaticInitPoseChain → TrackedPose → 渲染器。
+  // 🔴 在这之前 `EnginePoseSample` 全仓只有探针页构造过、且写死 ok:false ——
+  //    也就是说这条链**从建成起没有一条真引擎位姿进去过**。这里补上。
+  final EnginePosePoller _poller = EnginePosePoller();
+  late final StaticInitPoseChain _chain = StaticInitPoseChain(
+    initializer: StaticInitializer(
+      gate: StationarityGate(
+        // 整份抄 tum_vi —— 14 份已发布配置里唯一的**手持**场景。
+        imuExcitationThreshold: kTumViHandheld.imuExcitationThreshold,
+        disparityThresholdPixels: kTumViHandheld.maxDisparityPixels,
+        windowSeconds: kTumViHandheld.windowSeconds,
+        // 🔴 这里取 true,理由见 static_initializer.dart 文件头:
+        //    我们交出的是给渲染器的 3DOF 兜底(走 VioPoseSource 的
+        //    orientationOnly 档,**不回灌任何滤波器**),不是 EKF 状态初始化。
+        //    ARKit 静止时也是这个行为。若日后要回灌 XRSLAM 状态,必须改回 false。
+        zeroVelocityUpdateEnabled: true,
+      ),
+    ),
+  );
+  StreamSubscription<AccelerometerEvent>? _accSub;
+  StreamSubscription<GyroscopeEvent>? _gyrSub;
+  double _gx = 0, _gy = 0, _gz = 0;
+  bool _gotGyro = false;
+  final Stopwatch _imuClock = Stopwatch()..start();
+  TrackedPose? _pose;
+  StaticInitAttempt? _lastAttempt;
+
   @override
   void dispose() {
+    _accSub?.cancel();
+    _gyrSub?.cancel();
+    _poller.dispose();
     final hook = _frameHook;
     if (hook != null) {
       FilamentApp.instance?.unregisterRequestFrameHook(hook);
@@ -108,6 +148,30 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
         imageWidth: kFeedWidth,
         imageHeight: kFeedHeight,
       );
+
+      // IMU:静止兜底那一半要它。100 Hz,与探针页同口径。
+      _gyrSub = gyroscopeEventStream(
+        samplingPeriod: const Duration(milliseconds: 10),
+      ).listen((GyroscopeEvent e) {
+        _gx = e.x;
+        _gy = e.y;
+        _gz = e.z;
+        _gotGyro = true;
+      });
+      _accSub = accelerometerEventStream(
+        samplingPeriod: const Duration(milliseconds: 10),
+      ).listen((AccelerometerEvent e) {
+        if (!_gotGyro) return;
+        _chain.addImu(ImuSample(
+          timestampSeconds: _imuClock.elapsedMicroseconds / 1e6,
+          ax: e.x,
+          ay: e.y,
+          az: e.z,
+          gx: _gx,
+          gy: _gy,
+          gz: _gz,
+        ));
+      });
 
       final int rc = PwCameraSlot.start(width: kFeedWidth, height: kFeedHeight);
       if (rc != 0) {
@@ -187,9 +251,21 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
       final Size size = _viewport;
       final double dpr = _dpr;
       if (size.width <= 0 || size.height <= 0) return;
+      // ── 位姿:每帧向引擎拉一次,拉不到就走静止兜底 ──────────────────────
+      // 🔴 拉取而非回调:dart:ffi 同步同线程,NativeCallable.isolateLocal 从
+      //    非创建线程调用会**硬 abort**。理由见 engine_pose_poller.dart。
+      final double nowSeconds = _imuClock.elapsedMicroseconds / 1e6;
+      final TrackedPose pose = _chain.update(
+        sample: _poller.poll(nowSeconds: nowSeconds),
+        nowSeconds: nowSeconds,
+      );
+      _pose = pose;
+      _lastAttempt = _chain.lastAttempt;
+
       final outcome = await loop.step(
         viewportWidth: (size.width * dpr).round(),
         viewportHeight: (size.height * dpr).round(),
+        pose: pose,
         // 本页锁竖屏。接生产时这里要读真实的屏幕旋转
         // (iOS: UIInterfaceOrientation;安卓/鸿蒙: ScreenRotation.fromIndex)。
         displayRotation: ScreenRotation.degrees0,
@@ -198,6 +274,14 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
       // 每约 60 帧打一次。屏幕上那块字太小,控制台才读得到。
       if (++_ticks % 60 == 0) {
         debugPrint('[arloop] ${outcome.toDiagnosticString()}');
+        // 🔴 这一行是判断「引擎位姿到底有没有进来」的唯一现场证据:
+        //    stage=tracking ⇒ 引擎给了 6DOF;orientationOnly ⇒ 走静止兜底;
+        //    none ⇒ 两头都没有。rc 是 XRSLAMTryGetLatestPose 的返回码。
+        debugPrint('[arloop] pose stage=${_chain.source.stage.name} '
+            'rc=${_poller.lastReturnCode} '
+            'hasPos=${_pose?.position != null} '
+            'hasOri=${_pose?.orientation != null}'
+            '${_lastAttempt == null ? '' : ' init=${_lastAttempt!.verdict.decision.name}'}');
         debugPrint('[arloop] $stats');
         debugPrint('[arloop] viewport = '
             '${(size.width * dpr).round()}x${(size.height * dpr).round()}');
