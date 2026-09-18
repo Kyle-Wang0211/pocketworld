@@ -136,6 +136,7 @@ void main() {
     StationarityGate gate() => StationarityGate(
           imuExcitationThreshold: 1.5,
           disparityThresholdPixels: 10.0,
+        zeroVelocityUpdateEnabled: true,
         );
 
     test('窗未满', () {
@@ -198,6 +199,7 @@ void main() {
         StationarityGate(
           imuExcitationThreshold: 1.5,
           disparityThresholdPixels: 10.0,
+        zeroVelocityUpdateEnabled: true,
         ).windowSeconds,
         2.0,
       );
@@ -207,6 +209,7 @@ void main() {
       final StationarityGate g = StationarityGate(
         imuExcitationThreshold: 1.5,
         disparityThresholdPixels: 10.0,
+        zeroVelocityUpdateEnabled: true,
       );
       _feed(g, fromT: 0, seconds: 2.2, hz: 100, ax: (_) => 0, dc: 9.80665);
       final StationarityVerdict v = g.evaluate(
@@ -224,6 +227,7 @@ void main() {
       final StationarityGate g = StationarityGate(
         imuExcitationThreshold: 1.5,
         disparityThresholdPixels: 10.0,
+        zeroVelocityUpdateEnabled: true,
       );
       g.add(0.0, _s(0, dc: 9.80665));
       g.add(1.6, _s(0, dc: 9.80665));
@@ -244,6 +248,7 @@ void main() {
       final StationarityGate g = StationarityGate(
         imuExcitationThreshold: 1.5,
         disparityThresholdPixels: 10.0,
+        zeroVelocityUpdateEnabled: true,
       );
       const double hz = 100;
       const double dc = 9.80665;
@@ -280,6 +285,7 @@ void main() {
       final StationarityGate g = StationarityGate(
         imuExcitationThreshold: 1.5,
         disparityThresholdPixels: 10.0,
+        zeroVelocityUpdateEnabled: true,
       );
       const double hz = 100;
       const double dc = 9.80665;
@@ -317,6 +323,7 @@ void main() {
       final StationarityGate g = StationarityGate(
         imuExcitationThreshold: 1.5,
         disparityThresholdPixels: 10.0,
+        zeroVelocityUpdateEnabled: true,
       );
       // 7e-3 m/s² 量级的噪声地板,远低于 1.5。
       _feed(
@@ -380,6 +387,7 @@ void main() {
       final StationarityGate g = StationarityGate(
         imuExcitationThreshold: 1.5,
         disparityThresholdPixels: 10.0,
+        zeroVelocityUpdateEnabled: true,
         gyroStdDevThreshold: thresh,
       );
       // 加速度安静,但角速度很大。
@@ -432,12 +440,16 @@ void main() {
     test('非正阈值被 assert 拦下', () {
       expect(
         () => StationarityGate(
-            imuExcitationThreshold: 0, disparityThresholdPixels: 10),
+            imuExcitationThreshold: 0,
+            disparityThresholdPixels: 10,
+            zeroVelocityUpdateEnabled: true),
         throwsA(isA<AssertionError>()),
       );
       expect(
         () => StationarityGate(
-            imuExcitationThreshold: 1.5, disparityThresholdPixels: -1),
+            imuExcitationThreshold: 1.5,
+            disparityThresholdPixels: -1,
+            zeroVelocityUpdateEnabled: true),
         throwsA(isA<AssertionError>()),
       );
     });
@@ -449,6 +461,7 @@ void main() {
         final StationarityGate g = StationarityGate(
           imuExcitationThreshold: 1.5,
           disparityThresholdPixels: 10.0,
+        zeroVelocityUpdateEnabled: true,
         );
         _feed(g, fromT: 0, seconds: 10.0, hz: hz, ax: (_) => 0, dc: 9.80665);
         expect(g.windowFull, isTrue, reason: 'hz=$hz');
@@ -470,12 +483,136 @@ void main() {
       final StationarityGate g = StationarityGate(
         imuExcitationThreshold: 1.5,
         disparityThresholdPixels: 10.0,
+        zeroVelocityUpdateEnabled: true,
       );
       _feed(g, fromT: 0, seconds: 2.2, hz: 100, ax: (_) => 0, dc: 9.80665);
       expect(g.windowFull, isTrue);
       g.reset();
       expect(g.count, 0);
       expect(g.windowFull, isFalse);
+    });
+  });
+
+  group('🔴 try_zupt —— 真正的闸', () {
+    /// 完全静止的 2.2 秒:视差 0.1/0.1,加速度在噪声地板上。
+    StationarityGate stillGate({required bool zupt}) {
+      final StationarityGate g = StationarityGate(
+        imuExcitationThreshold: 0.45, // tum_vi
+        disparityThresholdPixels: 15.0, // tum_vi
+        zeroVelocityUpdateEnabled: zupt,
+      );
+      _feed(g,
+          fromT: 0,
+          seconds: 2.2,
+          hz: 100,
+          dc: 9.80665,
+          ax: (int i) => i.isEven ? 1.2e-2 : -1.2e-2);
+      return g;
+    }
+
+    StationarityVerdict evalStill(StationarityGate g) => g.evaluate(
+          disparityOlderPixels: 0.1,
+          disparityNewerPixels: 0.1,
+          featureCountOlder: 100,
+          featureCountNewer: 100,
+        );
+
+    test('try_zupt=false(上游默认,14 份里 12 份)⇒ 判"静止"但**拒绝初始化**',
+        () {
+      final StationarityVerdict v = evalStill(stillGate(zupt: false));
+      expect(v.state, Stationarity.stationary, reason: '它确实是静止的');
+      expect(v.decision, InitDecision.refuse, reason: '但流程不会初始化');
+      expect(v.rejectedBy, contains('wait_for_jerk'));
+      // 🔴 这两行就是本次改动的全部意义:静止 ≠ 能初始化。
+    });
+
+    test('try_zupt=true ⇒ 静止直接初始化', () {
+      final StationarityVerdict v = evalStill(stillGate(zupt: true));
+      expect(v.state, Stationarity.stationary);
+      expect(v.decision, InitDecision.staticWhileStationary);
+      expect(v.rejectedBy, isNull);
+    });
+
+    test('wait_for_jerk 下,老半窗静 + 新半窗动 ⇒ staticAfterJerk', () {
+      final StationarityGate g = StationarityGate(
+        imuExcitationThreshold: 0.45,
+        disparityThresholdPixels: 15.0,
+        zeroVelocityUpdateEnabled: false, // ⇒ waitForJerk
+      );
+      const double hz = 100, dc = 9.80665;
+      for (int i = 0; i < 220; i++) {
+        final double t = (i + 1) / hz;
+        // 新半窗 (1.20, 2.20] 里剧烈抖动,老半窗安静。
+        g.add(t, _s(t > 1.2 ? (i.isEven ? 2.0 : -2.0) : 0.0, dc: dc));
+      }
+      final StationarityVerdict v = g.evaluate(
+        disparityOlderPixels: 0.1, // 老:静
+        disparityNewerPixels: 30.0, // 新:动(> 15.0)
+        featureCountOlder: 100,
+        featureCountNewer: 100,
+      );
+      expect(v.decision, InitDecision.staticAfterJerk);
+      expect(v.state, Stationarity.moving, reason: '新半窗在动,当然不算静止');
+    });
+
+    test('waitForJerk 由开关取反 —— 抄 VioManagerHelper.cpp:106', () {
+      expect(
+          StationarityGate(
+                  imuExcitationThreshold: 1,
+                  disparityThresholdPixels: 1,
+                  zeroVelocityUpdateEnabled: false)
+              .waitForJerk,
+          isTrue);
+      expect(
+          StationarityGate(
+                  imuExcitationThreshold: 1,
+                  disparityThresholdPixels: 1,
+                  zeroVelocityUpdateEnabled: true)
+              .waitForJerk,
+          isFalse);
+    });
+  });
+
+  group('🔴 已发布配置 + 我们两场实测的裁决', () {
+    // 2026-09-18 iPhone,100 Hz×30 s,两半窗取较大者的加速度 σ(m/s²)。
+    const double stillMax = 2.523e-2; // 两场静止里最坏的一场
+    const double movingP01 = 8.060e-1;
+    const double movingP50 = 1.554;
+
+    test('整份抄:fromConfig(tum_vi) 带出窗 1.5 / 阈值 0.45 / zupt=false', () {
+      final StationarityGate g = StationarityGate.fromConfig(kTumViHandheld);
+      expect(g.windowSeconds, 1.5);
+      expect(g.imuExcitationThreshold, 0.45);
+      expect(g.disparityThresholdPixels, 15.0);
+      expect(g.zeroVelocityUpdateEnabled, isFalse);
+      expect(g.waitForJerk, isTrue);
+    });
+
+    test('🔴 窗长不是恒 2.0 —— tum_vi 是 1.5', () {
+      expect(kTumViHandheld.windowSeconds, 1.5);
+      expect(kEurocMav.windowSeconds, 2.0);
+      expect(kTumViHandheld.windowSeconds,
+          isNot(StationarityGate.kOpenVinsWindowSeconds));
+    });
+
+    test('tum_vi 的 0.45 **落在我们两场的空档里** ⇒ 可直接抄', () {
+      expect(stillMax, lessThan(kTumViHandheld.imuExcitationThreshold));
+      expect(kTumViHandheld.imuExcitationThreshold, lessThan(movingP01));
+      // 静止侧富余约 17.7×
+      expect(kTumViHandheld.imuExcitationThreshold / stillMax,
+          greaterThan(15));
+    });
+
+    test('🔴 euroc_mav 的 1.5 在我们手机上**不能用**', () {
+      // 运动场 p01 远低于 1.5 ⇒ 阈值落在运动分布内部,会漏判。
+      expect(movingP01, lessThan(kEurocMav.imuExcitationThreshold));
+      // 而且它压在运动中位数附近(p50=1.554),几乎一半的运动窗贴着阈值。
+      expect((movingP50 - kEurocMav.imuExcitationThreshold).abs() / movingP50,
+          lessThan(0.05));
+    });
+
+    test('两场分布不重叠,间隔约 32×', () {
+      expect(movingP01 / stillMax, greaterThan(30));
     });
   });
 }

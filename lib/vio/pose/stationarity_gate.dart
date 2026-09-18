@@ -62,22 +62,64 @@
 //   (与 OpenVINS 一致)。要用的话得自己给阈值,并且知道那一步没有 OpenVINS
 //   的出处背书。
 //
-// ══ 🔴 阈值不是普适常数,OpenVINS 自己就不当它是 ═══════════════════════════
-// 逐份配置核过,**窗长恒为 2.0 秒**(设计值,可直接抄),两个阈值**三份三样**:
+// ══ 🔴 阈值不是普适常数 —— 上游发布的 **14 份**配置全表 ═══════════════════
 //
-//   配置            window   imu_thresh   max_disparity
-//   euroc_mav        2.0        1.5           10.0
-//   rpng_aruco       2.0        1.2            2.0
-//   rpng_plane       2.0        0.5            4.0
+// 🔴 我上一版写的是「OpenVINS 自己三份配置三个值」「窗长恒为 2.0 秒(设计值,
+//    可直接抄)」。**两句都错**:我只翻了三份就下判词。全表如下(2026-09-18
+//    逐份核过 master 的 `config/*/estimator_config.yaml`):
 //
-// 而且视差那条的注释自己写着 "dependent on resolution"。
-// ⇒ **阈值必须按场景给**,本文件做成必填参数,不设默认值 —— 设了默认值就是
-//   假装有普适常数,那正是这个代码库反复栽过的静默降级。
+//   配置                window  imu_th  max_disp  max_feat  try_zupt  zupt_disp
+//   euroc_mav(无人机)    2.0     1.5     10.0       50      false      0.5
+//   kaist(车)            2.0     0.5      1.5       50      **true**   0.4
+//   kaist_vio            2.0     0.60     5.0       50      false      0.20
+//   rpng_aruco           2.0     1.2      2.0       50      false      0.5
+//   rpng_ironsides       2.0     0.5      1.5       50      **true**   0.4
+//   rpng_plane           2.0     0.5      4.0       50      false      1.5
+//   rpng_sim             2.0     1.0      1.5       15      false      0
+//   rs_d455 / rs_t265    2.0     1.5     10.0       50      false      0.5
+//   **tum_vi(手持)**   **1.5**  0.45    15.0       50      false      2.0
+//   uzhfpv ×4(竞速机)   2.0     0.30     2.0       50      false      0.5
 //
-// 量级佐证:1.5 m/s² 的加速度标准差,对照手机平放桌上实测噪声地板
-// **σ̂_a ≈ 7e-3 m/s²**,是它的 **~215 倍** —— IMU 那一半**极其宽松**,
-// 它不是用来要求"纹丝不动"的,防的是急动(注释原文 "detect a jerk")。
-// 真正卡住静止初始化的是**视差**那一半。
+//   ⇒ 窗长**不是**恒为 2.0:**tum_vi 是 1.5**。2.0 只是 13/14 的取值。
+//   ⇒ 视差阈值跨度 1.5–15.0,注释自认 "dependent on resolution";而且
+//     512×512 给 15.0、752×480 给 10.0,**本身就没有干净的换算规律**。
+//
+// 🔴 **我们要抄的是 `tum_vi`** —— 14 份里唯一的**手持**场景,最贴近手机。
+//   见 [kTumViHandheld]。
+//
+// ⇒ 阈值在本文件做成**必填、无默认**:普适常数不存在,必须由调用方指名道姓
+//   地选一份已发布配置(或说明为何偏离)。设默认值就是假装有普适常数。
+//
+// 量级佐证(**两场独立静止采集**,iPhone 平放桌上,100 Hz × 30 s):
+//     第一场 p50 1.301e-2  max 2.523e-2   第二场 p50 1.189e-2  max 1.271e-2
+// 取最坏的 2.523e-2 对 tum_vi 的 0.45 ⇒ **富余 17.7 倍**。
+// ⇒ IMU 那一半**极其宽松**,它不是用来要求"纹丝不动"的,防的是急动
+//   (注释原文 "detect a jerk")。**它不是卡住静止初始化的那道闸。**
+
+// ══ 🔴 真正的闸:`try_zupt` —— 默认关,关着就"越静止越起不来" ═════════════
+//
+// `VioManagerHelper.cpp:104-107`,上游自己的注释:
+//   "We will wait for a jerk if we do not have the zero velocity update
+//    enabled. Otherwise we can initialize right away as the zero velocity
+//    will handle the stationary case"
+//   bool wait_for_jerk = (updaterZUPT == nullptr);
+// 而 `VioManagerOptions.h:83` 是 **`bool try_zupt = false;`**,
+// 且上表 **14 份里只有 2 份**(kaist / rpng_ironsides)把它打开。
+//
+// 后果:`wait_for_jerk == true` 时 `StaticInitializer.cpp:101` 会因为
+// **新半窗太安静**而主动否决 —— 也就是**静止时根本不初始化,非等你动一下**。
+// 社区实证 rpng/open_vins#373 的日志:
+//     disparity is 0.215,0.254 (10.00 thresh)   ← 视差判静止,富余 46 倍
+//     failed static init: no accel jerk detected ← 仍然拒绝
+//
+// ⇒ 本文件把这个开关**建成必填参数** [zeroVelocityUpdateEnabled],
+//   并把最终走向报成 [InitDecision]。上一版只实现了 `!wait_for_jerk` 那一支,
+//   等于**默默假设了 try_zupt=true**,把真正的闸藏掉了。
+//
+// 排第二的闸是**特征数**(两个半跨度各自 ≥ 15,`InertialInitializer.cpp:121`):
+// 社区里报得最多的就是 `not enough feats to compute disp: 0,0 < 15`
+// (rpng/open_vins#373、#511、introlab/rtabmap#1144)。那是纹理/跟踪管线
+// 的问题,调阈值解决不了。
 //
 // ⚠️ 本文件**不含** GLRT/SHOE 检测器(`zero_velocity_detector.dart`)。
 // 那一条是把 IMU 判据按噪声 σ 归一化的严格形式,出处是 Skog 一脉;但**我们
@@ -103,6 +145,87 @@ enum Stationarity {
   /// 状态,是因为调用方需要分得清"在动"和"没数据"——前者要等,后者要修。
   unknown,
 }
+
+/// 初始化最终走哪条路。照 `InertialInitializer.cpp:133-147` 的分支。
+enum InitDecision {
+  /// `has_jerk && wait_for_jerk` ⇒ 静态初始化,用**急动前**那一半的数据。
+  /// 🔴 这是 14 份配置里 **12 份**的默认走向:**必须先动一下**。
+  staticAfterJerk,
+
+  /// `is_still && !wait_for_jerk` ⇒ 静止直接初始化。
+  /// **只有 `try_zupt: true` 时才可能走到**(kaist / rpng_ironsides)。
+  staticWhileStationary,
+
+  /// `init_dyn_use && !is_still` ⇒ 动态初始化。
+  dynamicInit,
+
+  /// 以上都不成立,或前置守卫(窗/样本/特征)没过 ⇒ 不初始化。
+  refuse,
+}
+
+/// 一份**已发布**的 OpenVINS 配置。
+///
+/// 🔴 抄就整份抄,**不要跨配置拼参数** —— 上游的取值是按场景一起调的
+/// (例如 tum_vi 同时把窗调短到 1.5、imu 阈值压到 0.45、视差放宽到 15.0)。
+class OpenVinsInitConfig {
+  const OpenVinsInitConfig({
+    required this.name,
+    required this.windowSeconds,
+    required this.imuExcitationThreshold,
+    required this.maxDisparityPixels,
+    required this.tryZupt,
+    required this.zuptMaxDisparityPixels,
+    required this.note,
+  });
+
+  final String name;
+  final double windowSeconds;
+  final double imuExcitationThreshold;
+  final double maxDisparityPixels;
+  final bool tryZupt;
+  final double zuptMaxDisparityPixels;
+  final String note;
+}
+
+/// 🔴 **我们该抄的那一份**:14 份里唯一的**手持**场景。
+///
+/// 注意它和常被引用的 euroc_mav 差得很远:窗 1.5 不是 2.0、imu 阈值 0.45
+/// 不是 1.5、视差 15.0 不是 10.0。原文 `init_imu_thresh: 0.45` 后面还跟着
+/// 注释 `# room1-5:0.45, room6:0.25` —— 同一个数据集内部不同场次都要改。
+///
+/// ⚠️ 它的 `try_zupt` 也是 **false** ⇒ 连手持这份参考配置都**不做静止初始化**。
+const OpenVinsInitConfig kTumViHandheld = OpenVinsInitConfig(
+  name: 'tum_vi',
+  windowSeconds: 1.5,
+  imuExcitationThreshold: 0.45,
+  maxDisparityPixels: 15.0,
+  tryZupt: false,
+  zuptMaxDisparityPixels: 2.0,
+  note: '手持;512×512;room1-5 用 0.45,room6 用 0.25',
+);
+
+/// 最常被引用的一份(无人机)。放在这里是为了对照,**不是**我们的默认。
+const OpenVinsInitConfig kEurocMav = OpenVinsInitConfig(
+  name: 'euroc_mav',
+  windowSeconds: 2.0,
+  imuExcitationThreshold: 1.5,
+  maxDisparityPixels: 10.0,
+  tryZupt: false,
+  zuptMaxDisparityPixels: 0.5,
+  note: '无人机;752×480',
+);
+
+/// 14 份里**仅有的两份** `try_zupt: true` 之一 —— 也就是仅有的两份真能
+/// "静止直接初始化"的配置。注意它把 `zupt_max_disparity` 压到 0.4。
+const OpenVinsInitConfig kKaist = OpenVinsInitConfig(
+  name: 'kaist',
+  windowSeconds: 2.0,
+  imuExcitationThreshold: 0.5,
+  maxDisparityPixels: 1.5,
+  tryZupt: true,
+  zuptMaxDisparityPixels: 0.4,
+  note: '车载;try_zupt=true',
+);
 
 /// 半个窗的 IMU 统计量。对应 OpenVINS 的 `window_1to0` / `window_2to1`。
 class HalfWindowImuStats {
@@ -142,7 +265,12 @@ class StationarityVerdict {
     required this.featureCountNewer,
     required this.windowSeconds,
     required this.rejectedBy,
+    required this.decision,
   });
+
+  /// 这一刻 OpenVINS 的流程会走哪条路。🔴 `stationary` 不等于"能初始化":
+  /// `try_zupt=false`(14 份里 12 份)时,静止只会得到 [InitDecision.refuse]。
+  final InitDecision decision;
 
   /// `window_2to1`:(newest − T, newest − 0.5·T]。
   /// 🔴 OpenVINS 的重力方向与初始零偏取自**这一半**(StaticInitializer.cpp:87-96)。
@@ -170,7 +298,7 @@ class StationarityVerdict {
   final String? rejectedBy;
 
   @override
-  String toString() => 'Stationarity(${state.name} '
+  String toString() => 'Stationarity(${state.name}→${decision.name} '
       'older[$olderHalf] newer[$newerHalf] '
       'disp=${disparityOlderPixels?.toStringAsFixed(2)},'
       '${disparityNewerPixels?.toStringAsFixed(2)}px '
@@ -183,11 +311,41 @@ class StationarityGate {
   StationarityGate({
     required this.imuExcitationThreshold,
     required this.disparityThresholdPixels,
+    required this.zeroVelocityUpdateEnabled,
+    this.dynamicInitEnabled = false,
     this.gyroStdDevThreshold,
     this.windowSeconds = kOpenVinsWindowSeconds,
   })  : assert(imuExcitationThreshold > 0),
         assert(disparityThresholdPixels > 0),
         assert(windowSeconds > 0);
+
+  /// 🔴 **整份抄**一个已发布配置。优先用这个,不要自己拼参数。
+  /// 我们的场景抄 [kTumViHandheld](14 份里唯一的手持)。
+  factory StationarityGate.fromConfig(
+    OpenVinsInitConfig c, {
+    bool dynamicInitEnabled = false,
+    double? gyroStdDevThreshold,
+  }) =>
+      StationarityGate(
+        imuExcitationThreshold: c.imuExcitationThreshold,
+        disparityThresholdPixels: c.maxDisparityPixels,
+        zeroVelocityUpdateEnabled: c.tryZupt,
+        windowSeconds: c.windowSeconds,
+        dynamicInitEnabled: dynamicInitEnabled,
+        gyroStdDevThreshold: gyroStdDevThreshold,
+      );
+
+  /// `try_zupt`。🔴 **必填,故意不给默认值。**
+  /// 上游默认 `false`,而 `false` 的后果是**静止时永远不初始化**
+  /// (`wait_for_jerk = (updaterZUPT == nullptr)`)。这是整套判据里最容易
+  /// 被忽略、后果又最大的一个开关,所以逼调用方明确写出来。
+  final bool zeroVelocityUpdateEnabled;
+
+  /// `init_dyn_use`。不开则"在动"时只能 [InitDecision.refuse]。
+  final bool dynamicInitEnabled;
+
+  /// `wait_for_jerk = (updaterZUPT == nullptr)`(VioManagerHelper.cpp:106)。
+  bool get waitForJerk => !zeroVelocityUpdateEnabled;
 
   /// `init_window_time: 2.0`。**三份 OpenVINS 配置完全一致**,是设计值不是
   /// 场景参数,所以这一个可以直接抄,并作为默认值。
@@ -284,9 +442,10 @@ class StationarityGate {
       highInclusive: _t.isEmpty ? 0 : _t.last,
     );
 
-    StationarityVerdict verdict(Stationarity s, String? why) =>
+    StationarityVerdict verdict(Stationarity s, InitDecision d, String? why) =>
         StationarityVerdict(
           state: s,
+          decision: d,
           olderHalf: older,
           newerHalf: newer,
           disparityOlderPixels: disparityOlderPixels,
@@ -298,50 +457,106 @@ class StationarityGate {
         );
 
     if (!windowFull) {
-      return verdict(Stationarity.unknown, '窗未满 ${windowSeconds}s');
+      return verdict(Stationarity.unknown, InitDecision.refuse,
+          '窗未满 ${windowSeconds}s');
     }
     if (!older.usable || !newer.usable) {
-      return verdict(Stationarity.unknown,
+      return verdict(Stationarity.unknown, InitDecision.refuse,
           '半窗样本不足(<$kMinSamplesPerHalfWindow):老${older.sampleCount} 新${newer.sampleCount}');
     }
     if (disparityOlderPixels == null || disparityNewerPixels == null) {
-      return verdict(Stationarity.unknown, '无视差输入');
+      return verdict(Stationarity.unknown, InitDecision.refuse, '无视差输入');
     }
     if (featureCountOlder < kMinFeaturesPerHalfSpan ||
         featureCountNewer < kMinFeaturesPerHalfSpan) {
-      return verdict(Stationarity.unknown,
+      return verdict(Stationarity.unknown, InitDecision.refuse,
           '特征不足(<$kMinFeaturesPerHalfSpan):老$featureCountOlder 新$featureCountNewer');
     }
 
-    // 🔴 四个数全过才算静止。顺序照 OpenVINS:先视差后 IMU。
-    if (disparityOlderPixels > disparityThresholdPixels) {
-      return verdict(Stationarity.moving,
+    // ═══ 两半 × 两量,先算出四个布尔 ═══════════════════════════════════════
+    final bool movingOlder = disparityOlderPixels > disparityThresholdPixels;
+    final bool movingNewer = disparityNewerPixels > disparityThresholdPixels;
+    // InertialInitializer.cpp:135-136
+    final bool hasJerk = !movingOlder && movingNewer;
+    final bool isStill = !movingOlder && !movingNewer;
+
+    final bool imuOlderQuiet = older.accelStdDev! <= imuExcitationThreshold;
+    final bool imuNewerQuiet = newer.accelStdDev! <= imuExcitationThreshold;
+
+    final double? gt = gyroStdDevThreshold;
+    final bool gyroQuiet = gt == null ||
+        (older.gyroStdDev! <= gt && newer.gyroStdDev! <= gt);
+
+    // ═══ 逐量归因:失败时必须看得出**是哪一个量**把它否掉的 ═══════════════
+    final List<String> over = <String>[];
+    if (movingOlder) {
+      over.add(
           '视差(老) ${disparityOlderPixels.toStringAsFixed(2)} > $disparityThresholdPixels px');
     }
-    if (disparityNewerPixels > disparityThresholdPixels) {
-      return verdict(Stationarity.moving,
+    if (movingNewer) {
+      over.add(
           '视差(新) ${disparityNewerPixels.toStringAsFixed(2)} > $disparityThresholdPixels px');
     }
-    if (older.accelStdDev! > imuExcitationThreshold) {
-      return verdict(Stationarity.moving,
+    if (!imuOlderQuiet) {
+      over.add(
           '加速度σ(老) ${older.accelStdDev!.toStringAsExponential(3)} > $imuExcitationThreshold m/s²');
     }
-    if (newer.accelStdDev! > imuExcitationThreshold) {
-      return verdict(Stationarity.moving,
+    if (!imuNewerQuiet) {
+      over.add(
           '加速度σ(新) ${newer.accelStdDev!.toStringAsExponential(3)} > $imuExcitationThreshold m/s²');
     }
-    final double? gt = gyroStdDevThreshold;
-    if (gt != null) {
-      if (older.gyroStdDev! > gt) {
-        return verdict(Stationarity.moving,
-            '角速度σ(老) ${older.gyroStdDev!.toStringAsExponential(3)} > $gt rad/s');
-      }
-      if (newer.gyroStdDev! > gt) {
-        return verdict(Stationarity.moving,
-            '角速度σ(新) ${newer.gyroStdDev!.toStringAsExponential(3)} > $gt rad/s');
-      }
+    if (gt != null && older.gyroStdDev! > gt) {
+      over.add(
+          '角速度σ(老) ${older.gyroStdDev!.toStringAsExponential(3)} > $gt rad/s');
     }
-    return verdict(Stationarity.stationary, null);
+    if (gt != null && newer.gyroStdDev! > gt) {
+      over.add(
+          '角速度σ(新) ${newer.gyroStdDev!.toStringAsExponential(3)} > $gt rad/s');
+    }
+    final String? attribution = over.isEmpty ? null : over.join('; ');
+    String? msg(String? decisionWhy) => attribution == null
+        ? decisionWhy
+        : (decisionWhy == null ? attribution : '$decisionWhy | $attribution');
+
+    // ═══ 「现在静不静」——XR-VIO 正文问的那个问题 ═════════════════════════
+    final Stationarity state =
+        (isStill && imuOlderQuiet && imuNewerQuiet && gyroQuiet)
+            ? Stationarity.stationary
+            : Stationarity.moving;
+
+    // ═══ 「会不会初始化」——照 InertialInitializer.cpp:133-147 + ═══════════
+    //     StaticInitializer.cpp:101-117。🔴 这两件事**不是同一件**。
+    if (hasJerk && waitForJerk) {
+      if (imuNewerQuiet) {
+        return verdict(state, InitDecision.refuse,
+            msg('no IMU excitation:新半窗 ${newer.accelStdDev!.toStringAsExponential(3)} < $imuExcitationThreshold'));
+      }
+      if (!imuOlderQuiet) {
+        return verdict(state, InitDecision.refuse,
+            msg('too much IMU excitation(老半窗)'));
+      }
+      return verdict(state, InitDecision.staticAfterJerk, msg(null));
+    }
+
+    if (isStill && !waitForJerk) {
+      if (!imuOlderQuiet || !imuNewerQuiet) {
+        return verdict(
+            state, InitDecision.refuse, msg('too much IMU excitation'));
+      }
+      return verdict(state, InitDecision.staticWhileStationary, msg(null));
+    }
+
+    if (dynamicInitEnabled && !isStill) {
+      return verdict(state, InitDecision.dynamicInit, msg(null));
+    }
+
+    // 🔴 最常见的一支:**静止、但 try_zupt 关着** ⇒ 它在等你动一下。
+    return verdict(
+        state,
+        InitDecision.refuse,
+        msg(isStill && waitForJerk
+            ? '静止,但 try_zupt=false ⇒ wait_for_jerk,要等一次急动才初始化'
+            : '不满足任何一支(dynamicInit=$dynamicInitEnabled)'));
   }
 
   /// 取 `(lowExclusive, highInclusive]` 内的样本算统计量。
