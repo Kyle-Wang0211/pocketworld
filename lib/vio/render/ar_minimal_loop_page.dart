@@ -27,11 +27,24 @@ import '../pose/camera_slot_ffi.dart';
 import '../pose/display_transform.dart';
 import 'ar_render_loop.dart';
 
-/// 采集尺寸。640×480 的出处:XRSLAM 上游 18 份 iPhone 标定 **18/18 全是
-/// 640×480**(含 iPhone 16e),且上游 demo 默认就是 `.vga640x480` ——
-/// 不是我们挑的数。
-const int kFeedWidth = 640;
-const int kFeedHeight = 480;
+/// 采集尺寸 —— **显示口径**,不是 VIO 口径。
+///
+/// 🔴 这两个口径必须分开,之前我把它们混成了一个,导致背景糊:
+///
+/// * **VIO 的输入**是 640×480。出处硬:XRSLAM 上游 18 份 iPhone 标定
+///   **18/18 全是 640×480**(含 iPhone 16e),上游 demo 默认也是
+///   `.vga640x480`。而且实测**1920×1440 直接喂 VIO 会撞吞吐墙**
+///   (只处理 10.5 fps / 相机供 24.4 / 丢 16.5% 帧)。
+/// * **显示的背景**没有任何理由跟着降到 640×480。
+///
+/// 算一下就知道差多少:640×480 转 90° 后是 480×640,aspect-fill 进
+/// 1179×2556 的视口只看得到 **295×640**,即 **3.99× 放大**;换成
+/// 1920×1440 是 886×1920 → **1.33×**。**像素密度差 9 倍。**
+///
+/// ⇒ 正解是**双流**:相机出 1920×1440 给显示,降采样后喂 VIO。生产的影子
+///   VIO 本来就在做 3× 降采样,不是新东西。本页还没接 VIO,所以先只改显示。
+const int kFeedWidth = 1920;
+const int kFeedHeight = 1440;
 
 class ArMinimalLoopPage extends StatefulWidget {
   const ArMinimalLoopPage({super.key});

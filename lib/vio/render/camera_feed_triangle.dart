@@ -124,14 +124,21 @@ class CameraFeedTriangle {
       textureFormat: TextureFormat.RGBA8,
     );
 
+    // 🔴 **这一处是对对照件的显式偏离,理由已量化。**
+    //
     // 上游用默认构造的 `TextureSampler()`(FullScreenTriangle.cpp:99),
-    // Filament 的默认是 NEAREST/CLAMP_TO_EDGE。thermion 的默认是 LINEAR,
-    // 所以显式写回 NEAREST 保持与对照件一致。
-    // (相机帧会被放大到屏幕,LINEAR 观感更好 —— 但那是一个独立的、要单独
-    //  立据的改动,不能在复刻里顺手改。)
+    // Filament 的默认是 NEAREST。我一开始照抄了 NEAREST。
+    //
+    // 但相机帧到屏幕是**放大**的:1920×1440 转 90° 后 aspect-fill 进
+    // 1179×2556 的视口,放大 1.33×;换成 640×480 时是 3.99×。放大倍数 >1
+    // 时 NEAREST 会把每个纹素铺成方块,上游样例那个演示场景看不出来,
+    // 我们全屏铺背景一眼就是马赛克。
+    //
+    // 放大用线性插值不是"自研",是纹理采样的常识;这里记下来只是为了
+    // 说明**为什么偏离对照件**,以及偏离的是哪一项。
     final TextureSampler sampler = await app.createTextureSampler(
-      minFilter: TextureMinFilter.NEAREST,
-      magFilter: TextureMagFilter.NEAREST,
+      minFilter: TextureMinFilter.LINEAR,
+      magFilter: TextureMagFilter.LINEAR,
       wrapS: TextureWrapMode.CLAMP_TO_EDGE,
       wrapT: TextureWrapMode.CLAMP_TO_EDGE,
       wrapR: TextureWrapMode.CLAMP_TO_EDGE,
