@@ -240,6 +240,8 @@ flutter:
     # 用 tool/build_materials.sh 编(matc 必须是 Filament v1.58.0,与 thermion
     # 链的引擎同版本)。一个 blob 同时带 GL/Metal/Vulkan 着色器,三端共用。
     - assets/materials/pw_camera_feed.filamat
+    # 纯色标记材质(位姿链探针用)。只要 POSITION,不吃 ubershader 那套属性要求。
+    - assets/materials/pw_solid.filamat
     - assets/models/DamagedHelmet.glb
     - assets/models/Avocado.glb
     - assets/models/BoomBox.glb
