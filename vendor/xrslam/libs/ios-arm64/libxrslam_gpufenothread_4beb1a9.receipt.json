@@ -74,5 +74,37 @@
   },
   "verdict_zh": "🔴 **不是逐位复刻**,现有 gpufe 回执的「OpenCV 4.0.1 逐字复刻」这个说法要限定:加/减/乘/除、LK、floor、round 全是 0 个不一致(**这些确实逐位**);但 `sqrt` 16384 中有 **4804** 个、未加保护的乘加有 **4655** 个与 CPU 不同,差在 float32 最后一位(相对约 1e-7,例:1.18074131 vs 1.18074143)。⇒ 精度必须**单独验**,不能因为直播表现好就当它与 generic 等价。"
  },
- "live_20260920_zh": "真机直播 1920×1440 + 相机 30fps:引擎留住 94.3%(交付 349 / 进引擎 329,丢 20 且多在启动);初始化 3.012 s;静置 |t| 稳在 0.07 m 连续 12 个采样点不涨(generic 同期是无界发散)。🔴 但该轮**同时改了两个变量**(相机 60→30、generic→本臂),归因未完成。"
+ "live_20260920_zh": "真机直播 1920×1440 + 相机 30fps:引擎留住 94.3%(交付 349 / 进引擎 329,丢 20 且多在启动);初始化 3.012 s;静置 |t| 稳在 0.07 m 连续 12 个采样点不涨(generic 同期是无界发散)。🔴 但该轮**同时改了两个变量**(相机 60→30、generic→本臂),归因未完成。",
+ "euroc_verdict_20260920": {
+  "protocol": "pw_run_arm.sh <label> replay-paced -PWDatasetPath euroc_v101_bmp|euroc_v102|euroc_v103 [-PWXrslamGpuFrontend],场间 ≥95s(照 09-15 判决书的「复现」节)",
+  "ate_rmse_m": {
+   "V1_01": {
+    "generic": 0.048964931,
+    "gpufenothread": 0.048964931,
+    "delta_pct": 0.0
+   },
+   "V1_02": {
+    "generic": 0.097604704,
+    "gpufenothread": 0.104049109,
+    "delta_pct": 6.6
+   },
+   "V1_03": {
+    "generic": 0.123155982,
+    "gpufenothread": 0.106235155,
+    "delta_pct": -13.7
+   },
+   "mean": {
+    "generic": 0.089908539,
+    "gpufenothread": 0.086416405,
+    "delta_pct": -3.9
+   }
+  },
+  "backend_self_proof": {
+   "generic": "cpu",
+   "gpufenothread": "gpu_frontend"
+  },
+  "cross_build_reproducibility_zh": "🔑 整张表与 09-15 判决书**逐位相同**,而那轮的 gpufe_nothread 引擎是sha16 `363bedb5b473402c`、本轮是 `6953592824d0a428`,Dawn 也从 Debug 换成 Release。⇒ GPU 前端改变的特征集是**确定性的**,selfcheck 里那 4804 个 sqrt 最后一位的差异**不引入随机性**,只是把算法推向一个不同但同样确定的解。generic 三档也逐位复现,说明整条重建链的口径是稳的,任何差异只能归给引擎归档。",
+  "verdict_zh": "**精度等价**:均值好 3.9%,但方向一场一个样(打平 / 差 6.6% / 好 13.7%)—— 不是更准,是在同一档噪声里换了个位置。没有系统性代价,也没有系统性收益。🔴 `state=valid_fail` 不作判据:那道 ate>0.10 / rpe_t>0.05 的门没有可追溯出处,现役 generic 在 V1_02/V1_03 同样 gates_not_met。",
+  "scope_limit_zh": "🔴 EuRoC 是 **752×480**,与我们 1920×1440 的实际场景不是一回事。这六格只能证明「换归档没有系统性精度代价」,**不能**外推到全分辨率。1920×1440 共享录制那两格另算(台架对该档不打分,只能对 arkit_poses.tum 比,而那是「差多少」不是「错多少」)。"
+ }
 }
