@@ -143,9 +143,23 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
       //   全黑 = 三角形画了,但采样到的是空纹理
       //   相机画面 = 成了
       await FilamentApp.instance!.setClearOptions(1.0, 0.0, 1.0, 1.0);
-      // 🔴 关后处理。相机背景已经用 inverseTonemapSRGB 抵消过一次色调映射,
-      // 这一页不需要泛光/FXAA 之类再插一脚。
-      await viewer.setPostProcessing(false);
+      // 🔴 **后处理必须开着** —— 2026-09-19 修正,原来这里是 `false`,
+      // 注释写着"材质已经用 inverseTonemapSRGB 抵消过一次色调映射,不需要后处理"。
+      // **那条推理是反的**,而且正是画面偏暗的根因:
+      //
+      //   `inverseTonemapSRGB` 的作用是**预先抵消 Filament 的色调映射**,
+      //   而色调映射(ColorGrading/tonemapping)**本身就跑在后处理阶段**。
+      //   关掉后处理 = 关掉"正向"那一半,只剩材质里的"反向"那一半:
+      //   反向变换把显示值往 HDR 线性空间拉,本该由 tonemapper 压回来 ——
+      //   没人压,中低调就整体偏暗。
+      //
+      //   上游 hello-ar(`FilamentApp.cpp`)**完全没有配置后处理**,
+      //   即用 Filament 的默认值:**开启**。它的 inverseTonemapSRGB 是配着
+      //   后处理一起工作的。我们关掉它,就是对复刻件的无记录偏离。
+      //
+      // ⚠️ 如果日后确实要省掉泛光/FXAA 的开销,应当**单独关那几项**,
+      //    绝不能再关整个 post-processing 阶段 —— 那会连 tonemapping 一起误伤。
+      await viewer.setPostProcessing(true);
 
       final ByteData bytes =
           await rootBundle.load('assets/materials/pw_camera_feed.filamat');
