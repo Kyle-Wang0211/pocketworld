@@ -27,7 +27,9 @@ import 'dart:async';
 
 import 'package:sensors_plus/sensors_plus.dart';
 
+import '../ffi/xrslam_config.dart';
 import '../ffi/xrslam_session.dart';
+import '../pose/camera_projection.dart' show PinholeIntrinsics;
 import '../pose/camera_slot_ffi.dart';
 import '../pose/display_transform.dart';
 import '../pose/engine_pose_poller.dart';
@@ -82,6 +84,7 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
   //    也就是说这条链**从建成起没有一条真引擎位姿进去过**。这里补上。
   final EnginePosePoller _poller = EnginePosePoller();
   XrslamSessionStart? _session;
+  bool _sessionAttempted = false;
   late final StaticInitPoseChain _chain = StaticInitPoseChain(
     initializer: StaticInitializer(
       gate: StationarityGate(
@@ -153,12 +156,8 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
         imageHeight: kFeedHeight,
       );
 
-      // ── 建引擎会话 ────────────────────────────────────────────────────
-      // 🔴 在这之前**全仓没有任何地方调过 XRSLAMCreate**(grep 实证),
-      //    所以那条位姿链的上游一直是空的 —— 接头做好了,水没进来。
-      _session = XrslamSession.start();
-      debugPrint('[arloop] XRSLAMCreate rc=${_session!.createRc} '
-          'ok=${_session!.ok}${_session!.error == null ? '' : ' err=${_session!.error}'}');
+      // 🔴 会话**不在这里建** —— 见 _ensureSession:要等第一帧交付、拿到
+      //    相机自报的真实内参之后才建,否则只能拿占位内参去建。
 
       // IMU:静止兜底那一半要它。100 Hz,与探针页同口径。
       _gyrSub = gyroscopeEventStream(
@@ -264,18 +263,7 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
       final Size size = _viewport;
       final double dpr = _dpr;
       if (size.width <= 0 || size.height <= 0) return;
-      // ── 把这一帧喂给引擎 ───────────────────────────────────────────────
-      // 顺序照上游 XRSLAM_iOS.mm:151-167 —— 推图像 → RunOneFrame → 读结果。
-      // 🔴 acquire 出来的 buffer **必须** release,所以走 withFrame 配对。
-      final XrslamSession? sess = XrslamSession.current;
-      if (sess != null) {
-        PwCameraSlot.withFrame<void>((int addr) {
-          sess.pushCameraFrame(
-            pixelBufferAddress: addr,
-            timestampSeconds: _imuClock.elapsedMicroseconds / 1e6,
-          );
-        });
-      }
+      _ensureSession();
 
       // ── 位姿:每帧向引擎拉一次,拉不到就走静止兜底 ──────────────────────
       // 🔴 拉取而非回调:dart:ffi 同步同线程,NativeCallable.isolateLocal 从
@@ -292,6 +280,16 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
         viewportWidth: (size.width * dpr).round(),
         viewportHeight: (size.height * dpr).round(),
         pose: pose,
+        // 🔴 **同一次 acquire 喂两个消费者** —— 抄上游 XRSLAM_iOS.mm:130-167
+        //    (一次 lock,同一 baseAddress 派生 SLAM 灰度 + 显示 RGB)。
+        //    我们的槽只有一格,分两次取会互相挤掉:实测 displaced 337→2127
+        //    (丢帧 11%→56%),渲染侧 hadFrame 常年 false。
+        onFrameAddress: (int addr) {
+          XrslamSession.current?.pushCameraFrame(
+            pixelBufferAddress: addr,
+            timestampSeconds: _imuClock.elapsedMicroseconds / 1e6,
+          );
+        },
         // 本页锁竖屏。接生产时这里要读真实的屏幕旋转
         // (iOS: UIInterfaceOrientation;安卓/鸿蒙: ScreenRotation.fromIndex)。
         displayRotation: ScreenRotation.degrees0,
@@ -330,6 +328,56 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
     } finally {
       _stepping = false;
     }
+  }
+
+  /// 建会话 —— **等到相机交出真实内参之后**才建,且只建一次。
+  ///
+  /// ══ 跨端分工照 `xrslam_config.dart` 文件头定的那套,不是新设计 ══
+  ///   · Dart 生成两份 YAML、写会话私有临时文件、传**路径**、标 provenance;
+  ///   · 原生侧(Swift/Kotlin/ArkTS)**只把路径搬到五函数 C ABI,
+  ///     "不解析也不判参数"**(原话);
+  ///   · 内参各端从自己的系统 API 读,填进同一个 [CameraIntrinsics]。
+  /// ⇒ [XrslamSession.start] 的签名本身就是跨端接口;平台差异只剩
+  ///   "这四个数从哪读"。
+  /// ⚠️ 上游那套**逐机型 yaml** 明确不抄 —— 同一份文件头记着:那 18 个 iPhone
+  ///   配置里 16e 与 14 Pro 的 intrinsics/p_bc **逐字节相同**,是占位拷贝;
+  ///   我们的硬需求是"一套管线服务所有手机,绝不逐机型实测"。
+  ///
+  /// 🔴 为什么不能在启动时建:`PwCameraSlot.intrinsics` 在第一帧交付之前返回
+  /// `null`,那时只能拿占位值(fx=1000 @1280×720)去建会话,而实际帧是
+  /// 1920×1440 —— 内参错了,三角化和重投影全跟着错,精度直接废掉。
+  ///
+  /// ⚠️ **已知局限,不假装解决了**:`XRSLAMCreate` 只吃一次内参,而相机自动对焦
+  /// 全程在动(该文件的文档实测单场 120 s 内 fx 漂 **10.90%**)。出货引擎导出的
+  /// 五个符号里**没有**任何"更新内参"的入口,所以这里只能取**建会话那一刻**的
+  /// 快照。这与台架既有的"冻第 0 帧焦距"是同一个已知缺陷,不是本次引入的。
+  void _ensureSession() {
+    if (_sessionAttempted || XrslamSession.current != null) return;
+    final PinholeIntrinsics? k = PwCameraSlot.intrinsics(
+      imageWidth: kFeedWidth,
+      imageHeight: kFeedHeight,
+    );
+    if (k == null) return; // 还没有交付过帧,下一帧再试
+    _sessionAttempted = true;
+    _session = XrslamSession.start(
+      intrinsics: CameraIntrinsics(
+        fx: k.fx,
+        fy: k.fy,
+        cx: k.cx,
+        cy: k.cy,
+        resolutionWidth: k.imageWidth,
+        resolutionHeight: k.imageHeight,
+        // 🔴 用仓里**已有**的取值:背后是 AVCameraCalibrationData ⇒ deviceApi。
+        //    (我第一版写了个自造的 `deviceReported`,仓里没有这个值。)
+        provenance: FieldProvenance.deviceApi,
+      ),
+    );
+    debugPrint('[arloop] XRSLAMCreate rc=${_session!.createRc} '
+        'ok=${_session!.ok} '
+        'fx=${k.fx.toStringAsFixed(2)} fy=${k.fy.toStringAsFixed(2)} '
+        'cx=${k.cx.toStringAsFixed(2)} cy=${k.cy.toStringAsFixed(2)} '
+        '${k.imageWidth}x${k.imageHeight}'
+        '${_session!.error == null ? '' : ' err=${_session!.error}'}');
   }
 
   /// 取一帧渲染结果,统计像素。判据见调用处。

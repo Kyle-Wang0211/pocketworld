@@ -239,11 +239,16 @@ class ArRenderLoop {
   /// 走一帧。
   ///
   /// [pose] 为 `null` 或未跟踪时,相机模型矩阵**保持上一次的值**。
+  ///
+  /// [onFrameAddress] 在**喂纹理的那次 acquire 内**被调用一次,拿到的是该帧的
+  /// CVPixelBuffer 地址。给"同一帧还要喂给 VIO 引擎"的场合用 —— 见下方注释,
+  /// 这是抄上游的一次-lock-两用途,不是两次 acquire。
   Future<ArFrameOutcome> step({
     required int viewportWidth,
     required int viewportHeight,
     required ScreenRotation displayRotation,
     TrackedPose? pose,
+    void Function(int pixelBufferAddress)? onFrameAddress,
   }) async {
     if (_disposed) {
       return const ArFrameOutcome(
@@ -257,7 +262,17 @@ class ArRenderLoop {
     // ── 1. 喂纹理 ──────────────────────────────────────────────────────────
     // 🔴 必须走 withFrameAsync:setExternalImage 是异步的(排到渲染线程),
     // 同步版会在 Filament 自己 retain 之前就把缓冲还掉。
+    // 🔴 **一次 acquire,两个消费者** —— 抄上游 `XRSLAM_iOS.mm:130-150`:
+    //   它对同一个 CVPixelBuffer 只 lock 一次,从同一个 baseAddress 派生两路
+    //   (`cvtColor(raw,cvimage,BGRA2GRAY)` 给 SLAM、`BGRA2RGB` 给显示),
+    //   再 unlock。显示与 SLAM 消费的是**同一帧**、在**同一个回调**里。
+    // ⚠️ 我们的槽只有一格:各取各的会互相挤掉 —— 2026-09-19 实测,
+    //   分两次取时 displaced 从 337 涨到 2127(丢帧 11%→56%),
+    //   而且渲染侧 hadFrame 常年 false。
+    // [onFrameAddress] 让调用方在**同一次 acquire 内**把这帧喂给引擎,
+    // 渲染器本身不需要知道引擎的存在。
     final bool? fed = await PwCameraSlot.withFrameAsync<bool>((int addr) async {
+      onFrameAddress?.call(addr);
       await _triangle.setFrame(addr);
       return true;
     });
