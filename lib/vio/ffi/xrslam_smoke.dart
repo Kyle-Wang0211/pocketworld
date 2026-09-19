@@ -193,8 +193,19 @@ XrslamSmokeResult runXrslamLifecycle({CameraIntrinsics? intrinsics}) {
   final XrslamConfigBuilder builder = XrslamConfigBuilder(intrinsics: k);
 
   final XrslamBindings bindings = XrslamBindings(ffi.DynamicLibrary.process());
-  // 我们的构建打开了 XRSLAM_CONFIG_FROM_STRING ⇒ 这两个参数是 **YAML 正文**,
-  // 不是文件路径。传路径进去会被当 YAML 解析然后失败。
+  // 🔴 **更正 2026-09-19:这段原来写反了,而且害得台架真机闪退。**
+  // 原文:"我们的构建打开了 XRSLAM_CONFIG_FROM_STRING ⇒ 这两个参数是 YAML 正文,
+  // 不是文件路径。传路径进去会被当 YAML 解析然后失败。" 两条实证否定它:
+  //   · 出货 receipt 的 compile_flags 全列里**没有** -DXRSLAM_CONFIG_FROM_STRING
+  //   · `nm -u libxrslam_generic_4beb1a9.a` **引用了 YAML::LoadFile**
+  //     (yaml_config.cpp:153-168 是二选一:定义了走 YAML::Load(正文),
+  //      没定义走 YAML::LoadFile(路径))
+  // ⇒ 出货引擎按**文件路径**加载。传正文的后果**不是**"解析失败返回错误码",
+  //   而是 LoadFile 找不到文件 → yaml-cpp 抛 → 穿过 C ABI → std::terminate
+  //   → **SIGABRT,整个 app 闪退**(真机栈:__cxa_throw / YamlConfig::YamlConfig
+  //   / XRSLAMCreate + 120)。
+  // ⚠️ 本函数**没有任何调用者**,所以这个缺陷一直潜伏着;真正按路径传的实现在
+  //   `xrslam_session.dart`。本函数如果日后要启用,必须先照那边改成写文件传路径。
   final ffi.Pointer<ffi.Char> slamCfg =
       builder.buildSlamConfigYaml().toNativeUtf8().cast<ffi.Char>();
   final ffi.Pointer<ffi.Char> devCfg =
