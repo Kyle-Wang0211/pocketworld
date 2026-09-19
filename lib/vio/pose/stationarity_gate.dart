@@ -1,5 +1,45 @@
 // stationarity_gate.dart —— 「设备是否静止」的判定门。纯 Dart,三端同一份。
 //
+// ══ 🔴 先读这段:本门在当前架构下**永远返回 refuse**,这是已知且预期的 ══════
+//
+// 2026-09-19 真机实证:`init=refuse` 从头到尾,原因是下面这一行:
+//     if (disparityOlderPixels == null || disparityNewerPixels == null) {
+//       return verdict(Stationarity.unknown, InitDecision.refuse, '无视差输入');
+// ⇒ **没有视差输入,门就无法下结论。** 而视差输入我们拿不到:
+//
+//   · 本门复刻自 **OpenVINS**,**不是 XRSLAM 的一部分** —— 是我们嫁接上来的。
+//     OpenVINS 能算视差,是因为**它自己做特征跟踪**,有一个保存每个特征跨时间
+//     观测历史的 feature database。
+//   · 我们的架构里跟踪在 **XRSLAM 内部**。而 XRSLAM 的公开 API(头文件里
+//     一共 20 个)**没有任何一个给 2D 特征观测**:
+//       - `XRSLAMGetLandmarks/Ex` 给的是 **3D xyz**,flags 只有 TRIANGULATED 一位;
+//       - `XRSLAMGetResult(XRSLAM_RESULT_FEATURES)` 在上游源码里写着
+//         `// NOT IMPLEMENTED,只置空`(XRSLAMInternal.cpp:134);
+//       - 出货档实测只导出 **5 个** C 符号(nm 核过,与 receipt 的 exported_abi
+//         一致):Create / Destroy / GetResult / PushSensorData / RunOneFrame。
+//   · XRSLAM 内部**确实有**一个等价量:`feature_tracker` 每帧算 70 分位残差角
+//     `misalignment`,低于阈值就打 `FT_NO_TRANSLATION` 标签(map/frame.cpp:126-143)。
+//     但 —— **上游自己的 `Initializer` 从不读它**,而且它只写进
+//     `InspectionSupport` 那个调试全局表,**没有 C ABI 取值器**。
+//
+// ⇒ 要喂活这个门,必须写一个上游没有的接口。那是**自研,不是复刻**,已被否决。
+//
+// ══ 那这是不是缺陷?不是。产品上不需要它 ════════════════════════════════════
+// 本门存在的目的是"静止时也能先给个 3DOF 朝向"。但:
+//   · **ARKit 静止时也做不到**(苹果文档:起步 `.notAvailable`,要设备移动),
+//     它的做法是降级到 `AROrientationTrackingConfiguration` 只报朝向;
+//   · 而我们生产端**在那段时间根本不让用户拍** ——
+//     `ar_capture_page.dart` 有 `_arWarmupComplete` 闸,注释写着 ARKit 冷启动
+//     `tracking == .normal` 要 **1-2 秒**,兜底等待 `_warmupFallbackDuration`
+//     = **1800 ms**,期间快门是灰的;
+//   · 我们台架实测首位姿 **2.689 s**(1920×1440 全分辨率 + 生产求解器预算),
+//     与那段暖机高度重叠。
+// ⇒ 这个门要解决的问题,**在我们的产品流程里不存在**。
+//
+// 🔴 **所以:不要再把 `refuse` 当成"接线漏了"去补第四次。**
+//    它是架构结论,不是 TODO。要改变它,先改变的应该是"XRSLAM 不给 2D 观测"
+//    这个前提,而那需要产品层面的决定,不是补一根线。
+//
 // ══ 出处:判据形式来自 XR-VIO 正文,判据结构与参数来自 OpenVINS 源码 ════════
 //
 // **XR-VIO**(arXiv:2502.01297, 2025-02,Zhai/Wang/Wang/Chen/Xie —— 与

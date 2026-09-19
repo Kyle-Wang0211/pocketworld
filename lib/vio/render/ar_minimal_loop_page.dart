@@ -85,6 +85,16 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
   final EnginePosePoller _poller = EnginePosePoller();
   XrslamSessionStart? _session;
   bool _sessionAttempted = false;
+
+  // ── 初始化延迟实测 ──────────────────────────────────────────────────────
+  // 🔴 口径必须说死,否则又是一笔不能比的数:
+  //   起点 = `XRSLAMCreate` 返回成功那一刻(不是 app 启动,也不是相机开)
+  //   终点 = 引擎**第一次**报 XRSLAM_STATE_TRACKING_SUCCESS 那一刻
+  // 与 ARKit 对比要拿同口径:ARSession.run → 第一次 trackingState == .normal。
+  // ⚠️「ARKit 44 秒进 fair」是**跟踪质量等级**,不是这个量,不能当对照。
+  int? _sessionReadyMicros;
+  int? _firstTrackingMicros;
+  bool _initLatencyReported = false;
   late final StaticInitPoseChain _chain = StaticInitPoseChain(
     initializer: StaticInitializer(
       gate: StationarityGate(
@@ -289,6 +299,7 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
       );
       _pose = pose;
       _lastAttempt = _chain.lastAttempt;
+      _markFirstTracking();
 
       final outcome = await loop.step(
         viewportWidth: (size.width * dpr).round(),
@@ -395,6 +406,28 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
         'cx=${k.cx.toStringAsFixed(2)} cy=${k.cy.toStringAsFixed(2)} '
         '${k.imageWidth}x${k.imageHeight}'
         '${_session!.error == null ? '' : ' err=${_session!.error}'}');
+    // 初始化延迟的**起点**:会话建立成功那一刻。失败就不计时。
+    if (_session!.ok) _sessionReadyMicros = _imuClock.elapsedMicroseconds;
+  }
+
+  /// 初始化延迟的**终点**:引擎第一次报 TRACKING_SUCCESS。只打一次。
+  ///
+  /// 🔴 这个数要跟 ARKit 比,必须同口径:ARSession.run → 第一次
+  /// `trackingState == .normal`。**别拿「进 fair」的秒数来比** —— 那是
+  /// 跟踪质量等级,不是首次出位姿的时刻,两者量的不是同一件事。
+  ///
+  /// ⚠️ 还有一个绕不开的前提:单目 VIO **静止时初始化不了**
+  /// (VINS-Mono 原文:"cannot start from a stationary condition")。
+  /// 所以这个延迟里包含**用户开始移动之前的等待**,跨设备比必须同样的运动剧本。
+  void _markFirstTracking() {
+    if (_initLatencyReported) return;
+    if (_sessionReadyMicros == null) return;
+    if (_poller.lastState != 1) return; // XRSLAM_STATE_TRACKING_SUCCESS
+    _firstTrackingMicros = _imuClock.elapsedMicroseconds;
+    _initLatencyReported = true;
+    final double sec = (_firstTrackingMicros! - _sessionReadyMicros!) / 1e6;
+    debugPrint('[arloop] INIT_LATENCY 会话建立→首次TRACKING = '
+        '${sec.toStringAsFixed(3)} s');
   }
 
   /// 取一帧渲染结果,统计像素。判据见调用处。
