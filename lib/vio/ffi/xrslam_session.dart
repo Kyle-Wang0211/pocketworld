@@ -166,6 +166,38 @@ class XrslamSession {
     return XrslamSessionStart(createRc: rc, error: err);
   }
 
+  // ── 引擎耗时实测 ────────────────────────────────────────────────────────
+  // 只量 `XRSLAMRunOneFrame` 一个调用 = **引擎整体**(前端+后端)。
+  // 拆不开内部,因为出货 generic 档没有任何计时出口(5 个符号里没有)。
+  // ⚠️ 这里量的是**同步阻塞时间**。若引擎内部有后台线程
+  //   (`XRSLAM_ENABLE_THREADING`),RunOneFrame 可能只是投递而立即返回,
+  //   那样这个数会**偏小** —— 判读时要结合 receipt 的 threading 字段看。
+  //   我们出货档 threading=false ⇒ 应当是真的同步跑完。
+  final Stopwatch _engineClock = Stopwatch()..start();
+  final List<int> _runOneFrameMicros = <int>[];
+  final List<int> _pushMicros = <int>[];
+
+  /// 帧像素的**自有副本**。见 pushCameraFrame 里"锁内只拷贝"的说明。
+  /// 复用同一块,不每帧分配(11 MB 级别,每帧 calloc/free 会把抖动引进帧时间)。
+  ffi.Pointer<ffi.Uint8> _copy = ffi.nullptr;
+  int _copyCap = 0;
+
+  /// 最近至多 240 次 `PushSensorData(CAMERA)` 的耗时,毫秒。
+  ({double p50, double p95, double max, int n})? pushStats() =>
+      _stats(_pushMicros);
+
+  /// 最近至多 240 次 `RunOneFrame` 的耗时统计,毫秒。`null` = 还没有样本。
+  ({double p50, double p95, double max, int n})? runOneFrameStats() =>
+      _stats(_runOneFrameMicros);
+
+  static ({double p50, double p95, double max, int n})? _stats(List<int> v) {
+    if (v.isEmpty) return null;
+    final List<int> s = List<int>.of(v)..sort();
+    double at(double q) =>
+        s[(s.length * q).clamp(0, s.length - 1).toInt()] / 1000.0;
+    return (p50: at(0.5), p95: at(0.95), max: s.last / 1000.0, n: s.length);
+  }
+
   static String? _slamPath;
   static String? _devPath;
 
@@ -234,7 +266,7 @@ class XrslamSession {
     required double timestampSeconds,
   }) {
     if (_destroyed || pixelBufferAddress == 0) return false;
-    final ffi.Pointer<ffi.Uint64> info = calloc<ffi.Uint64>(4);
+    final ffi.Pointer<ffi.Uint64> info = calloc<ffi.Uint64>(5);
     final ffi.Pointer<XRSLAMImage> img = calloc<XRSLAMImage>();
     bool locked = false;
     try {
@@ -245,8 +277,17 @@ class XrslamSession {
 
       // 🔴 `calloc` 已经零初始化。上游那行注释写着 "必须零初始化:
       //    width/height 是末尾新增字段" —— 不清零会把栈垃圾当分辨率。
-      img.ref.data = ffi.Pointer<ffi.UnsignedChar>.fromAddress(base);
-      img.ref.timeStamp = timestampSeconds;
+      // 🔴 **必须用这一帧自己的采集时刻**,不是调用方传进来的挂钟。
+      //    XRSLAM 的 `PushImage` 有一道 `gate_monotonic_locked`
+      //    (XRSLAMManager.cpp:433-441):时间戳**不严格递增就整帧丢弃**,
+      //    日志 "not strictly increasing, frame dropped"。
+      //    2026-09-19 实测:用 Dart Stopwatch 的当前时刻推帧,大量帧被闸拒 ⇒
+      //    `cur_image_` 常为空 ⇒ `RunOneFrame` 立刻返回(实测 p50=0.0ms),
+      //    看起来"引擎很快",实则**大部分帧根本没进引擎**。
+      //    info[4] 是 `pw_camera_slot_lock` 给的 presentationTimeStamp(纳秒)。
+      final int frameNs = info[4];
+      img.ref.timeStamp =
+          frameNs > 0 ? frameNs / 1e9 : timestampSeconds;
       img.ref.stride = info[1]; // 字节/行,与 cv::Mat::step[0] 同义
       img.ref.camera_id = 0;
       img.ref.channel = 4; // 🔴 BGRA 原样推,引擎内部转灰度
@@ -254,9 +295,46 @@ class XrslamSession {
       img.ref.height = info[3];
       img.ref.ext = ffi.nullptr;
 
+      // 🔴 **锁内只拷贝,锁外才处理** —— 抄上游两份的共同做法:
+      //   · XRSLAM demo `XRSLAM_iOS.mm:130-152`:lock → `cvtColor` 拷进
+      //     **自己的** cv::Mat → **unlock** → 之后才 PushSensorData/RunOneFrame;
+      //   · Filament hello-ar 的 `render()` 里**没有任何 SLAM 调用**。
+      //   我此前把 PushSensorData 放在锁内(而且是在渲染回路的
+      //   `withFrameAsync` 回调里),等于**整个推帧时长都占着相机缓冲**。
+      //   槽是深度 1,持有期间新帧全被顶掉 —— 这正是"引擎一开始真工作,
+      //   displaced 就从 9.5% 跳回 57%"的原因。
+      final int need = info[1] * info[3]; // stride × height
+      if (_copyCap < need) {
+        if (_copy != ffi.nullptr) calloc.free(_copy);
+        _copy = calloc<ffi.Uint8>(need);
+        _copyCap = need;
+      }
+      _copy.asTypedList(need).setAll(
+          0, ffi.Pointer<ffi.Uint8>.fromAddress(base).asTypedList(need));
+      img.ref.data = _copy.cast<ffi.UnsignedChar>();
+      // 拷完立刻还锁 —— 后面的推帧/跑帧都不再碰相机缓冲。
+      _unlock(pixelBufferAddress);
+      locked = false;
+
+      final int t0 = _engineClock.elapsedMicroseconds;
       _bindings.XRSLAMPushSensorData(
           XRSLAMSensorType.XRSLAM_SENSOR_CAMERA, img.cast<ffi.Void>());
+      // 🔴 给引擎**整体**掐表。理由:出货 generic 档 `nm` 核过,
+      //    **5 个导出符号里没有任何计时/统计接口**(gpufe 研究臂才有
+      //    `xrslam_gpufe_stats.json` 那条出口)。所以引擎内部拆不开,
+      //    但"引擎一共吃掉多少"在调用方这一侧量得到 —— 先拿到这个数,
+      //    再决定要不要为了内部拆分去动引擎。
+      final int t1 = _engineClock.elapsedMicroseconds;
       _bindings.XRSLAMRunOneFrame();
+      final int t2 = _engineClock.elapsedMicroseconds;
+      // 🔴 **两个调用分开量**。2026-09-19 实测:只量 RunOneFrame 得到
+      //    p50=0.0ms / max=0.1ms,而引擎确实在跟踪(state=1、位姿有值)
+      //    ⇒ 真正的计算**不在** RunOneFrame 里。我只掐了两个调用中的一个,
+      //    这是**测量设计错误**,不是引擎快。
+      _pushMicros.add(t1 - t0);
+      _runOneFrameMicros.add(t2 - t1);
+      if (_pushMicros.length > 240) _pushMicros.removeAt(0);
+      if (_runOneFrameMicros.length > 240) _runOneFrameMicros.removeAt(0);
       return true;
     } catch (_) {
       return false;
@@ -288,6 +366,11 @@ class XrslamSession {
   void destroy() {
     if (_destroyed) return;
     _destroyed = true;
+    if (_copy != ffi.nullptr) {
+      calloc.free(_copy);
+      _copy = ffi.nullptr;
+      _copyCap = 0;
+    }
     if (identical(_current, this)) _current = null;
     try {
       _bindings.XRSLAMDestroy();

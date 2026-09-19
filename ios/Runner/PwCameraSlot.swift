@@ -59,6 +59,10 @@ private final class PwCameraSlotImpl: NSObject,
 {
     static let shared = PwCameraSlotImpl()
 
+    /// 最新一帧的**采集时刻**(host time clock 秒)。见 captureOutput 里的说明。
+    /// 🔴 XRSLAM 的 PushImage 有严格递增闸,必须用这个而不是"取帧那一刻"。
+    fileprivate var latestFramePTSSeconds: Double = 0
+
     /// [pw 2026-09-19] 只读诊断:当前采集设备与所选格式是否 binned。
     /// 加它是为了回答"bench 画面为什么比系统相机暗" —— 不改任何采集设置。
     fileprivate var device: AVCaptureDevice?
@@ -182,6 +186,17 @@ private final class PwCameraSlotImpl: NSObject,
         from connection: AVCaptureConnection
     ) {
         guard let pb = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+
+        // 🔴 [pw 2026-09-19] 记下这一帧的**采集时刻**(presentationTimeStamp)。
+        // 为什么必须有:XRSLAM 的 `PushImage` 里有一道
+        // `gate_monotonic_locked` —— 时间戳**不严格递增就整帧丢弃**
+        // (XRSLAMManager.cpp:433-441,日志 "not strictly increasing, frame dropped")。
+        // 此前我们推帧时用的是 **Dart 侧 Stopwatch 的当前时刻**,那是"取帧那一刻"
+        // 而不是"这一帧何时被采集",既不是同一时间域、也不保证与帧序一致
+        // ⇒ 大量帧被闸拒,`cur_image_` 常为空,`RunOneFrame` 立刻返回。
+        // PTS 用 host time clock,与 `PwMonotonicClock` 的规范域一致。
+        latestFramePTSSeconds = CMTimeGetSeconds(
+            CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
 
         // 内参:每帧都读,因为自动对焦全程在动。
         if let raw = CMGetAttachment(
@@ -328,12 +343,18 @@ public func pw_camera_slot_exposure(_ out: UnsafeMutablePointer<Double>) -> Int3
 //
 // ⚠️ 锁期间**不要**做耗时的事:CVPixelBuffer 被锁住时相机线程拿不到它。
 
-/// 锁定并写出 4 个 UInt64:baseAddress、bytesPerRow、width、height。
+/// 锁定并写出 5 个 UInt64:baseAddress、bytesPerRow、width、height、
+/// **采集时刻(纳秒,host time clock)**。
+///
+/// 🔴 第 5 个是 2026-09-19 加的,不是可选项:XRSLAM 的 `PushImage` 有一道
+/// `gate_monotonic_locked`,时间戳**不严格递增就整帧丢弃**。用"取帧那一刻"
+/// 的挂钟会让大量帧被拒 —— 必须用这一帧自己的 presentationTimeStamp。
+///
 /// 返回 0 成功;-1 = 地址为 0 或锁失败。
 @_cdecl("pw_camera_slot_lock")
 public func pw_camera_slot_lock(_ addr: UInt64,
                                 _ out: UnsafeMutablePointer<UInt64>) -> Int32 {
-    out[0] = 0; out[1] = 0; out[2] = 0; out[3] = 0   // 无条件先清零
+    for i in 0..<5 { out[i] = 0 }   // 无条件先清零
     guard addr != 0 else { return -1 }
     let pb = Unmanaged<CVPixelBuffer>.fromOpaque(
         UnsafeRawPointer(bitPattern: UInt(addr))!).takeUnretainedValue()
@@ -348,6 +369,10 @@ public func pw_camera_slot_lock(_ addr: UInt64,
     out[1] = UInt64(CVPixelBufferGetBytesPerRow(pb))
     out[2] = UInt64(CVPixelBufferGetWidth(pb))
     out[3] = UInt64(CVPixelBufferGetHeight(pb))
+    let pts = PwCameraSlotImpl.shared.latestFramePTSSeconds
+    out[4] = pts.isFinite && pts > 0
+        ? UInt64((pts * 1_000_000_000.0).rounded(.toNearestOrAwayFromZero))
+        : 0
     return 0
 }
 

@@ -214,8 +214,23 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
           gy: _gy,
           gz: _gz,
         );
-        _chain.addImu(s);          // 静止兜底那一半
-        XrslamSession.current?.pushImu(s); // 引擎那一半
+        _chain.addImu(s); // 静止兜底那一半:只看相对时间,用 Stopwatch 无妨
+
+        // 🔴 **引擎那一路必须用与相机同域的时间戳。**
+        // 2026-09-19 实测教训:把相机换成 host-clock PTS 之后,IMU 若还用
+        // Dart Stopwatch(页面加载起算,约 12 s)去配相机(开机起算,约 5073 s),
+        // 两者**相差一个开机时长** ⇒ 引擎无法关联视觉与惯性,`state` 永远停在
+        // 0(INITIALIZING),跟踪起不来。
+        // `NativeImu` 的时间戳来自 `PwMonotonicClock`,与 `pw_camera_slot_lock`
+        // 给的 PTS 是**同一个规范域**(Core Media host clock)。
+        final NativeImuSample? ni = NativeImu.latest();
+        if (ni != null) {
+          XrslamSession.current?.pushImu(ImuSample(
+            timestampSeconds: ni.gyroTimestampSeconds,
+            ax: ni.ax, ay: ni.ay, az: ni.az,
+            gx: ni.gx, gy: ni.gy, gz: ni.gz,
+          ));
+        }
       });
 
       // 🔴 初始化延迟的**起点**打在这里,不是打在会话建立处。
@@ -356,6 +371,32 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
             '${_lastAttempt == null ? '' : ' init=${_lastAttempt!.verdict.decision.name}'}'
             ' sess=${_session?.ok} rc=${_session?.createRc}');
         debugPrint('[arloop] $stats');
+        // 🔴 吞吐瓶颈定位:引擎 RunOneFrame 的**整体**耗时。
+        //    对照:60fps 的帧间隔是 16.67ms,30fps 是 33.3ms。
+        //    若 p50 已经接近或超过帧间隔 ⇒ 瓶颈就在引擎,丢帧是必然结果;
+        //    若 p50 远小于帧间隔 ⇒ 瓶颈在别处(渲染/取帧/主线程)。
+        // 🔴 渲染回路分段 p50:喂纹理/内参/UV/投影/位姿/出图。
+        //    引擎侧已实测不是瓶颈(Push 1.9ms、Run 0.0ms vs 帧间隔 16.7ms),
+        //    所以开销必在这六段里 —— 逐段量,不猜。
+        final List<double>? stg = loop.stageP50Millis();
+        if (stg != null) {
+          final double sum = stg.reduce((a, b) => a + b);
+          debugPrint('[arloop] step 分段 p50(ms) 纹理=${stg[0].toStringAsFixed(1)} '
+              '内参=${stg[1].toStringAsFixed(1)} UV=${stg[2].toStringAsFixed(1)} '
+              '投影=${stg[3].toStringAsFixed(1)} 位姿=${stg[4].toStringAsFixed(1)} '
+              '出图=${stg[5].toStringAsFixed(1)} | 合计=${sum.toStringAsFixed(1)} '
+              '(帧间隔 16.7)');
+        }
+        final sess2 = XrslamSession.current;
+        final r = sess2?.runOneFrameStats();
+        final p = sess2?.pushStats();
+        if (r != null && p != null) {
+          debugPrint('[arloop] 引擎耗时 Push p50=${p.p50.toStringAsFixed(1)} '
+              'p95=${p.p95.toStringAsFixed(1)} max=${p.max.toStringAsFixed(1)} | '
+              'Run p50=${r.p50.toStringAsFixed(1)} '
+              'p95=${r.p95.toStringAsFixed(1)} max=${r.max.toStringAsFixed(1)} '
+              '(ms, n=${r.n}, 60fps 帧间隔=16.7)');
+        }
         // [pw 2026-09-19] 曝光实测 —— 回答"为什么比系统相机暗"。只读,不改设置。
         final CameraExposure? e = PwCameraSlot.exposure();
         if (e != null) debugPrint('[arloop] ${e.toDiagnosticString()}');

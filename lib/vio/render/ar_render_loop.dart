@@ -125,6 +125,38 @@ class ArRenderLoop {
         _triangle = triangle;
 
   final ThermionViewer _viewer;
+
+  // ── 分段耗时实测 ────────────────────────────────────────────────────────
+  // 🔴 为什么要逐段:2026-09-19 实测 `Push` 1.9ms / `Run` 0.0ms —— **引擎不是
+  //    瓶颈**(帧间隔 16.7ms),但 `displaced` 仍有 57%。说明开销在渲染回路
+  //    这一侧,而 step() 有六段,不逐段量就只能猜是哪一段。
+  //    ⚠️ 只量**同步耗时**;`await` 出去的等待也会算进来,这正是要看的
+  //    (喂纹理和出图都是异步排到渲染线程)。
+  final Stopwatch _stepClock = Stopwatch()..start();
+  final List<int> _marks = List<int>.filled(7, 0);
+  final List<List<int>> _stageMicros =
+      List<List<int>>.generate(6, (_) => <int>[]);
+
+  void _t(int i) {
+    _marks[i] = _stepClock.elapsedMicroseconds;
+    if (i > 0) {
+      final List<int> v = _stageMicros[i - 1];
+      v.add(_marks[i] - _marks[i - 1]);
+      if (v.length > 240) v.removeAt(0);
+    }
+  }
+
+  /// 六段各自的 p50(毫秒),顺序:喂纹理/内参/UV/投影/位姿/出图。
+  /// `null` = 还没有样本。
+  List<double>? stageP50Millis() {
+    if (_stageMicros[0].isEmpty) return null;
+    return <double>[
+      for (final List<int> v in _stageMicros)
+        v.isEmpty
+            ? 0
+            : (List<int>.of(v)..sort())[v.length ~/ 2] / 1000.0,
+    ];
+  }
   final CameraFeedTriangle _triangle;
 
   /// 诊断用:场景里那个 renderable 的实体。
@@ -259,6 +291,7 @@ class ArRenderLoop {
       );
     }
 
+    _t(0);
     // ── 1. 喂纹理 ──────────────────────────────────────────────────────────
     // 🔴 必须走 withFrameAsync:setExternalImage 是异步的(排到渲染线程),
     // 同步版会在 Filament 自己 retain 之前就把缓冲还掉。
@@ -278,6 +311,7 @@ class ArRenderLoop {
     });
     final bool hadFrame = fed == true;
 
+    _t(1);
     // ── 2. 内参 → 显示几何 ─────────────────────────────────────────────────
     // 🔴 每帧重取。自动对焦全程在动,台架实测单场 120 s fx 漂 10.90%
     // (426.842 → 476.037)。缓存一次等于把第 0 帧的焦距冻住 —— 那正是台架
@@ -293,6 +327,7 @@ class ArRenderLoop {
       viewportHeight: viewportHeight,
     );
 
+    _t(2);
     // ── 3. UV 变换 ────────────────────────────────────────────────────────
     UvTransform? lastUv;
     if (geom != null) {
@@ -307,6 +342,7 @@ class ArRenderLoop {
       await _triangle.setTransform(lastUv);
     }
 
+    _t(3);
     // ── 4. 投影 ───────────────────────────────────────────────────────────
     bool hadProjection = false;
     FrustumBounds? lastFrustum;
@@ -336,6 +372,7 @@ class ArRenderLoop {
       }
     }
 
+    _t(4);
     // ── 5. 位姿 ───────────────────────────────────────────────────────────
     bool hadPose = false;
     if (pose != null) {
@@ -362,6 +399,7 @@ class ArRenderLoop {
       }
     }
 
+    _t(5);
     // ── 6. 出图 ───────────────────────────────────────────────────────────
     // 🔴 **不在这里调 `viewer.render()`**。
     //
@@ -379,6 +417,8 @@ class ArRenderLoop {
     // 配对,某一帧可能用上一帧的纹理。对"背景出不出得来"这个判据无影响,但
     // 接位姿之后必须解决 —— 正解是 `FilamentApp.registerRequestFrameHook`,
     // 它就是"每帧渲染前跑一段"的接缝。这是一笔明写的欠账,不是遗漏。
+
+    _t(6);
 
     return ArFrameOutcome(
       hadFrame: hadFrame,
