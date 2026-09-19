@@ -34,6 +34,7 @@ import '../pose/camera_slot_ffi.dart';
 import '../pose/display_transform.dart';
 import '../pose/engine_pose_poller.dart';
 import '../pose/gravity_attitude.dart' show ImuSample;
+import '../pose/native_imu_ffi.dart';
 import '../pose/static_initializer.dart';
 import '../pose/stationarity_gate.dart';
 import '../pose/tracked_pose.dart';
@@ -95,6 +96,9 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
   /// 与台架 ARKit 参照同口径的起点:**相机启动之前**(= 台架的 runStart)。
   int? _runStartMicros;
 
+  /// `pw_imu_start` 的返回码。0=成功;-1/-2 传感器不可用;-3 host 时钟异常。
+  int? _imuStartRc;
+
   /// 会话建立成功的时刻。只用于把总延迟拆成两段看,**不作为对比口径**。
   int? _sessionReadyMicros;
   int? _firstTrackingMicros;
@@ -127,6 +131,7 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
     _accSub?.cancel();
     _gyrSub?.cancel();
     _poller.dispose();
+    NativeImu.stop();
     // 🔴 必须销毁:上游 Detail 是进程级单例,不销毁下一次 Create 是覆盖。
     XrslamSession.current?.destroy();
     final hook = _frameHook;
@@ -221,6 +226,12 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
       // 而我们的会话恰恰是**等第一帧内参到了才建**,所以那个起点晚得多,
       // 拿去和 ARKit 比是**对我们有利的不公平比较**。
       _runStartMicros = _imuClock.elapsedMicroseconds;
+      // 🔴 原生 IMU 与相机**同域**的时间戳源。锚点就在 start 里采,
+      //    所以要紧挨着相机启动调 —— 隔得越久,对齐越依赖时钟稳定性。
+      //    本轮**只做并行对照**,不替换喂数通路(见 native_imu_ffi.dart 的说明:
+      //    轮询会漏样本,不能当最终通路)。
+      _imuStartRc = NativeImu.start();
+      debugPrint('[arloop] pw_imu_start rc=$_imuStartRc');
       final int rc = PwCameraSlot.start(width: kFeedWidth, height: kFeedHeight);
       if (rc != 0) {
         setState(() => _status = '相机启动失败,原生返回码 $rc');
@@ -348,6 +359,25 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
         // [pw 2026-09-19] 曝光实测 —— 回答"为什么比系统相机暗"。只读,不改设置。
         final CameraExposure? e = PwCameraSlot.exposure();
         if (e != null) debugPrint('[arloop] ${e.toDiagnosticString()}');
+        // 🔴 域对齐实测 —— 本轮的目的就是拿到这几个数:
+        //   · regress  :时间戳回退次数,**非 0 即映射有问题**(硬指标)
+        //   · skew     :陀螺与加速度两路时间戳的差(同域内的到达错位)
+        //   · dartMinusNative:Dart Stopwatch 与原生同域时间戳的差 ——
+        //     这就是我们此前**跨域混用**所引入的偏差量级。
+        final NativeImuSample? imu = NativeImu.latest();
+        final NativeImuStats st = NativeImu.stats();
+        if (imu != null) {
+          final double dartSec = _imuClock.elapsedMicroseconds / 1e6;
+          debugPrint('[arloop] IMU ${st.toDiagnosticString()} '
+              'skew=${(imu.crossSensorSkewSeconds * 1000).toStringAsFixed(3)}ms '
+              'dartMinusNative='
+              '${((dartSec - imu.gyroTimestampSeconds) * 1000).toStringAsFixed(1)}ms '
+              'a=(${imu.ax.toStringAsFixed(2)},${imu.ay.toStringAsFixed(2)},'
+              '${imu.az.toStringAsFixed(2)})');
+        } else {
+          debugPrint('[arloop] IMU 无样本 rc=$_imuStartRc '
+              '${st.toDiagnosticString()}');
+        }
         debugPrint('[arloop] viewport = '
             '${(size.width * dpr).round()}x${(size.height * dpr).round()}');
       }

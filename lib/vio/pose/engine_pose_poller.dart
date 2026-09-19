@@ -67,6 +67,7 @@ import 'dart:ffi' as ffi;
 import 'package:ffi/ffi.dart';
 
 import '../ffi/xrslam_bindings.dart';
+import '../ffi/xrslam_session.dart';
 import 'vio_pose_source.dart';
 
 /// 引擎一次读数的快照。测试用它注入,生产由 [EnginePosePoller._readFromEngine] 产。
@@ -177,6 +178,14 @@ class EnginePosePoller {
   }
 
   EngineSnapshot? _readFromEngine() {
+    // 🔴 **没有会话就绝不碰引擎。** 2026-09-19 真机 SIGABRT 实证:
+    //    栈 = `XRSLAMManager::GetResultState` → `Detail::get_system_state()`,
+    //    后者要解引用 `Detail`,而 `XRSLAMCreate` 没跑过时它是空的 ⇒ 崩。
+    //    这不是"偶发" —— 是**必崩**,之前几轮没崩只是因为内参来得早、
+    //    会话先建上了。一旦启动时序变化(例如先起原生 IMU),立刻暴露。
+    //    ⚠️ 这也接不住:C++ 侧的空指针解引用不是异常,Dart 的 catch 拦不住。
+    //       唯一的防线就是**不调**。
+    if (XrslamSession.current == null) return null;
     final XrslamBindings? b = _fn();
     if (b == null) return null;
     final ffi.Pointer<ffi.UnsignedInt> statePtr = calloc<ffi.UnsignedInt>();
