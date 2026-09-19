@@ -35,6 +35,8 @@
 
 // 见 camera_feed_triangle.dart 里同样的注释:这一行同时带来 thermion 的
 // 类型、dart:typed_data 与 vector_math_64。
+import 'dart:math' as math;
+
 import 'package:flutter/services.dart' show ByteData, rootBundle;
 import 'package:thermion_flutter/thermion_flutter.dart';
 
@@ -245,6 +247,46 @@ class ArRenderLoop {
       at(2, 3) - back[2] * d + right[2] * ox + up[2] * oy,
     ];
   }
+
+  // ══ 取证:球此刻在**相机系**的哪里 ═══════════════════════════════════
+  // 🔴 "滑走了、转回来也找不到"有好几种互斥的成因,肉眼分不开:
+  //      ① 位姿平移量级不对(尺度/单位)⇒ 手机没动多少,相机跑出几十米;
+  //      ② model/view 矩阵搞反 ⇒ 相机朝反方向动(本文件与
+  //         world_to_renderer.dart 都点名过这是上游 PR #70 那一类);
+  //      ③ 球压根被摆到了相机背后 ⇒ 转多少度都不可能看到;
+  //      ④ 位姿在漂 ⇒ 静止时 t 也在涨。
+  //    把每个球的相机系坐标打出来,四者立刻可分:看 z 的符号和量级。
+  //    渲染器相机看 −z(OpenXR fundamentals.adoc:1240-1252),所以
+  //    **前方 ⇒ z<0**,距离 = −z。
+  List<double>? _lastRolled;
+  int _lastRotationDegrees = -1;
+
+  /// `null` = 还没推过位姿。否则是一行可读的取证串。
+  String? markerDiagnostic() {
+    final List<double>? m = _lastRolled;
+    if (m == null || _markerWorlds.isEmpty) return null;
+    final List<double> t = <double>[m[12], m[13], m[14]];
+    final StringBuffer b = StringBuffer();
+    b.write('cam_t=(${t[0].toStringAsFixed(2)},'
+        '${t[1].toStringAsFixed(2)},${t[2].toStringAsFixed(2)})'
+        ' |t|=${_norm(t).toStringAsFixed(2)}m rot=$_lastRotationDegrees');
+    for (int i = 0; i < _markerWorlds.length; i++) {
+      final List<double> w = _markerWorlds[i];
+      final List<double> d = <double>[w[0] - t[0], w[1] - t[1], w[2] - t[2]];
+      // p_cam = Rᵀ·(p_world − t);列主序里 R[j][i] = m[i*4+j] ⇒ Rᵀ 的第 i 行
+      // 就是 m 的第 i 列的前三个。
+      final List<double> c = <double>[
+        for (int i2 = 0; i2 < 3; i2++)
+          m[i2 * 4] * d[0] + m[i2 * 4 + 1] * d[1] + m[i2 * 4 + 2] * d[2],
+      ];
+      b.write(' | #$i cam=(${c[0].toStringAsFixed(2)},'
+          '${c[1].toStringAsFixed(2)},${c[2].toStringAsFixed(2)})');
+    }
+    return b.toString();
+  }
+
+  static double _norm(List<double> v) =>
+      math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
 
   /// 六段各自的 p50(毫秒),顺序:喂纹理/内参/UV/投影/位姿/出图。
   /// `null` = 还没有样本。
@@ -508,6 +550,8 @@ class ArRenderLoop {
         // 两者差一次求逆,而且搞反了**不会崩、跟踪看起来也正常**,只是内容
         // 朝反方向动(上游 PR #70 那一类)。
         await camera.setModelMatrix(Matrix4.fromList(rolled));
+        _lastRolled = rolled;
+        _lastRotationDegrees = geom?.rotationDegrees ?? -1;
         hadPose = true;
       }
     }

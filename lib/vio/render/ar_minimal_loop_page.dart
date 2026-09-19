@@ -28,6 +28,7 @@ import 'dart:async';
 import 'package:sensors_plus/sensors_plus.dart';
 
 import '../ffi/xrslam_config.dart';
+import '../ffi/xrslam_live_ffi.dart';
 import '../ffi/xrslam_session.dart';
 import '../pose/camera_projection.dart' show PinholeIntrinsics;
 import '../pose/camera_slot_ffi.dart';
@@ -95,9 +96,6 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
   // ⚠️「ARKit 44 秒进 fair」是**跟踪质量等级**,不是这个量,不能当对照。
   /// 与台架 ARKit 参照同口径的起点:**相机启动之前**(= 台架的 runStart)。
   int? _runStartMicros;
-
-  /// `pw_imu_start` 的返回码。0=成功;-1/-2 传感器不可用;-3 host 时钟异常。
-  int? _imuStartRc;
 
   /// 会话建立成功的时刻。只用于把总延迟拆成两段看,**不作为对比口径**。
   int? _sessionReadyMicros;
@@ -224,23 +222,11 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
           gy: _gy,
           gz: _gz,
         );
-        _chain.addImu(s); // 静止兜底那一半:只看相对时间,用 Stopwatch 无妨
-
-        // 🔴 **引擎那一路必须用与相机同域的时间戳。**
-        // 2026-09-19 实测教训:把相机换成 host-clock PTS 之后,IMU 若还用
-        // Dart Stopwatch(页面加载起算,约 12 s)去配相机(开机起算,约 5073 s),
-        // 两者**相差一个开机时长** ⇒ 引擎无法关联视觉与惯性,`state` 永远停在
-        // 0(INITIALIZING),跟踪起不来。
-        // `NativeImu` 的时间戳来自 `PwMonotonicClock`,与 `pw_camera_slot_lock`
-        // 给的 PTS 是**同一个规范域**(Core Media host clock)。
-        final NativeImuSample? ni = NativeImu.latest();
-        if (ni != null) {
-          XrslamSession.current?.pushImu(ImuSample(
-            timestampSeconds: ni.gyroTimestampSeconds,
-            ax: ni.ax, ay: ni.ay, az: ni.az,
-            gx: ni.gx, gy: ni.gy, gz: ni.gz,
-          ));
-        }
+        // 🔴 这条**只喂静止兜底**,不喂引擎。静止兜底只看相对时间,
+        //    用 Stopwatch 无妨。
+        //    引擎那一路在原生侧的 CoreMotion 回调里直推,不经过 Dart ——
+        //    上一版在这里轮询 `NativeImu.latest()` 再配对推,是发散的根因。
+        _chain.addImu(s);
       });
 
       // 🔴 初始化延迟的**起点**打在这里,不是打在会话建立处。
@@ -251,12 +237,16 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
       // 而我们的会话恰恰是**等第一帧内参到了才建**,所以那个起点晚得多,
       // 拿去和 ARKit 比是**对我们有利的不公平比较**。
       _runStartMicros = _imuClock.elapsedMicroseconds;
-      // 🔴 原生 IMU 与相机**同域**的时间戳源。锚点就在 start 里采,
-      //    所以要紧挨着相机启动调 —— 隔得越久,对齐越依赖时钟稳定性。
-      //    本轮**只做并行对照**,不替换喂数通路(见 native_imu_ffi.dart 的说明:
-      //    轮询会漏样本,不能当最终通路)。
-      _imuStartRc = NativeImu.start();
-      debugPrint('[arloop] pw_imu_start rc=$_imuStartRc');
+      // 🔴 [2026-09-20] `NativeImu` 已从喂数通路上摘掉,这里也不再起它。
+      //    理由:它的文件头自己就写着"**轮询会漏样本,不能当最终通路**",
+      //    而我上一版恰恰把它当成了最终通路 —— 真机位姿 45 秒发散到 1.6 km。
+      //    现在 IMU 由 `PwXrslamLive` 在 CoreMotion 回调里直推引擎(与上游
+      //    `Motion.swift` → `XRSLAMer` → `XRSLAMPushSensorData` 同位),
+      //    起停由 `XrslamSession.start/destroy` 管。再起一个 CMMotionManager
+      //    只是白耗电。
+      //
+      // 🔴 相机**必须先起**:`pw_xrslam_live_begin` 要用相机那条串行队列
+      //    (没登记就返回 -4)。这条顺序就是上游"两条流共用 .main"那条性质。
       final int rc = PwCameraSlot.start(width: kFeedWidth, height: kFeedHeight);
       if (rc != 0) {
         setState(() => _status = '相机启动失败,原生返回码 $rc');
@@ -353,16 +343,13 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
         viewportWidth: (size.width * dpr).round(),
         viewportHeight: (size.height * dpr).round(),
         pose: pose,
-        // 🔴 **同一次 acquire 喂两个消费者** —— 抄上游 XRSLAM_iOS.mm:130-167
-        //    (一次 lock,同一 baseAddress 派生 SLAM 灰度 + 显示 RGB)。
-        //    我们的槽只有一格,分两次取会互相挤掉:实测 displaced 337→2127
-        //    (丢帧 11%→56%),渲染侧 hadFrame 常年 false。
-        onFrameAddress: (int addr) {
-          XrslamSession.current?.pushCameraFrame(
-            pixelBufferAddress: addr,
-            timestampSeconds: _imuClock.elapsedMicroseconds / 1e6,
-          );
-        },
+        // 🔴 [2026-09-20] 这里不再喂引擎。
+        //    上游是在**相机回调内部**一次 lock、同一个 baseAddress 同时派生
+        //    SLAM 灰度与显示图(`XRSLAM_iOS.mm:130-167`)。我们现在也是:
+        //    `PwCameraSlot.captureOutput` 里当场调
+        //    `PwXrslamLive.onCameraFrame`,渲染侧照旧从槽里取。
+        //    这样引擎吃到的是**每一帧、按采集顺序**,不再是"渲染循环想起来
+        //    才取一次"。
         // 本页锁竖屏。接生产时这里要读真实的屏幕旋转
         // (iOS: UIInterfaceOrientation;安卓/鸿蒙: ScreenRotation.fromIndex)。
         displayRotation: ScreenRotation.degrees0,
@@ -388,6 +375,11 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
         // 🔴 渲染回路分段 p50:喂纹理/内参/UV/投影/位姿/出图。
         //    引擎侧已实测不是瓶颈(Push 1.9ms、Run 0.0ms vs 帧间隔 16.7ms),
         //    所以开销必在这六段里 —— 逐段量,不猜。
+        // 🔴 取证行:球在相机系的坐标。前方 ⇒ z<0,距离 = −z。
+        //    对照初值 红(0.20,0.15,−1.00)/绿(−0.30,−0.10,−2.00)/
+        //    蓝(0.05,0.35,−3.00) —— 手机放回原处时应回到这附近。
+        final String? md = loop.markerDiagnostic();
+        if (md != null) debugPrint('[arloop] 锚点 $md');
         final List<double>? stg = loop.stageP50Millis();
         if (stg != null) {
           final double sum = stg.reduce((a, b) => a + b);
@@ -397,38 +389,24 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
               '出图=${stg[5].toStringAsFixed(1)} | 合计=${sum.toStringAsFixed(1)} '
               '(帧间隔 16.7)');
         }
-        final sess2 = XrslamSession.current;
-        final r = sess2?.runOneFrameStats();
-        final p = sess2?.pushStats();
-        if (r != null && p != null) {
-          debugPrint('[arloop] 引擎耗时 Push p50=${p.p50.toStringAsFixed(1)} '
-              'p95=${p.p95.toStringAsFixed(1)} max=${p.max.toStringAsFixed(1)} | '
-              'Run p50=${r.p50.toStringAsFixed(1)} '
-              'p95=${r.p95.toStringAsFixed(1)} max=${r.max.toStringAsFixed(1)} '
-              '(ms, n=${r.n}, 60fps 帧间隔=16.7)');
+        // 🔴 喂料账本 —— 全部来自 C++ 侧的同一本账,Dart/Swift 都不合成。
+        //    判读:`拒:非单调` 相机那一路非 0 ⇒ PTS 没严格递增;
+        //    IMU 两路非 0 ⇒ 同一条样本被推了两遍(上一版的原病,现在应当恒 0)。
+        //    `acc`/`gyr` 的增速应当各约 100/s;`cam` 与 `cam回调` 应当相等。
+        final XrslamLiveStats? ls = XrslamLive.stats();
+        if (ls != null) debugPrint('[arloop] 喂料 $ls');
+        // 🔴 相机与 IMU 的时间轴是不是同一条 —— 删掉时钟映射时靠的是文档论证,
+        //    这一行是把它变成实测。同域 ⇒ delta 是几十毫秒;跨域 ⇒ 是开机时长。
+        final t = XrslamLive.timing();
+        if (t != null) {
+          debugPrint('[arloop] 时钟 camPTS=${t.cameraPts.toStringAsFixed(3)}s '
+              'imuTS=${t.imuTs.toStringAsFixed(3)}s '
+              'delta=${(t.delta * 1000).toStringAsFixed(1)}ms '
+              '|delta|峰值=${(t.maxAbsDelta * 1000).toStringAsFixed(1)}ms');
         }
         // [pw 2026-09-19] 曝光实测 —— 回答"为什么比系统相机暗"。只读,不改设置。
         final CameraExposure? e = PwCameraSlot.exposure();
         if (e != null) debugPrint('[arloop] ${e.toDiagnosticString()}');
-        // 🔴 域对齐实测 —— 本轮的目的就是拿到这几个数:
-        //   · regress  :时间戳回退次数,**非 0 即映射有问题**(硬指标)
-        //   · skew     :陀螺与加速度两路时间戳的差(同域内的到达错位)
-        //   · dartMinusNative:Dart Stopwatch 与原生同域时间戳的差 ——
-        //     这就是我们此前**跨域混用**所引入的偏差量级。
-        final NativeImuSample? imu = NativeImu.latest();
-        final NativeImuStats st = NativeImu.stats();
-        if (imu != null) {
-          final double dartSec = _imuClock.elapsedMicroseconds / 1e6;
-          debugPrint('[arloop] IMU ${st.toDiagnosticString()} '
-              'skew=${(imu.crossSensorSkewSeconds * 1000).toStringAsFixed(3)}ms '
-              'dartMinusNative='
-              '${((dartSec - imu.gyroTimestampSeconds) * 1000).toStringAsFixed(1)}ms '
-              'a=(${imu.ax.toStringAsFixed(2)},${imu.ay.toStringAsFixed(2)},'
-              '${imu.az.toStringAsFixed(2)})');
-        } else {
-          debugPrint('[arloop] IMU 无样本 rc=$_imuStartRc '
-              '${st.toDiagnosticString()}');
-        }
         debugPrint('[arloop] viewport = '
             '${(size.width * dpr).round()}x${(size.height * dpr).round()}');
       }
@@ -501,6 +479,12 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
         '${_session!.error == null ? '' : ' err=${_session!.error}'}');
     // 初始化延迟的**起点**:会话建立成功那一刻。失败就不计时。
     if (_session!.ok) _sessionReadyMicros = _imuClock.elapsedMicroseconds;
+    // 🔴 GPU 前端到底有没有真的起来 —— Dawn 失败会**静默回落 CPU**。
+    //    必须在**会话建好之后**读:痕迹是 `XRSLAMCreate` 期间写的。
+    //    不看这个,就会把"没提速"误判成"GPU 前端没用"。
+    final String trail = XrslamLive.gpuFrontEndTrail();
+    debugPrint('[arloop] GPU前端 '
+        '${trail.isEmpty ? "(无痕迹 ⇒ 没链 GPU 前端那条臂)" : trail.trim().split("\n").last}');
   }
 
   /// 初始化延迟的**终点**:引擎第一次报 TRACKING_SUCCESS。只打一次。

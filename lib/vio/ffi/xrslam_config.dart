@@ -308,7 +308,9 @@ class XrslamConfigBuilder {
     this.cameraTimeOffsetSeconds = 0.0,
     this.cameraTimeOffsetProvenance = FieldProvenance.placeholder,
     this.pixelNoiseVariance = 0.5,
-    this.slidingWindowSize = 5,
+    // 🔴 上游 `iphone_slam.yaml` 是 **10**(引擎代码默认也是 10)。
+    // 我们曾默认 5 —— 09-16 同录制对照里 sw5/freq3 那一臂精度更差,已判死。
+    this.slidingWindowSize = 10,
     this.solverTimeLimitSeconds = 0.1,
     this.solverIterationLimit = 10,
   });
@@ -408,36 +410,92 @@ cam0:
 ''';
   }
 
+  /// ══ 🔴 逐字段复刻上游 `configs/iphone_slam.yaml` @4beb1a9 ═══════════════
+  ///
+  /// 2026-09-20:上一版这份只写了 **9 个键**,其余全靠引擎的代码默认值兜底。
+  /// 我当时以为"没写 = 用上游默认",但那是错的 —— 上游的 **yaml 值**与引擎的
+  /// **代码默认值**在好几处并不相同,漏写就等于悄悄换了参数档:
+  ///
+  /// | 键 | 上游 yaml | 代码默认(=我们漏写时的实际值) |
+  /// |---|---|---|
+  /// | `rotation.misalignment_threshold`  | **0.02** | **0.1**(5×) |
+  /// | `initializer.min_triangulation`    | **20**   | **50** |
+  /// | `feature_tracker.max_frames`       | 20       | 200(我们还显式写了 100) |
+  /// | `feature_tracker.max_keypoint_detection` | 200 | 150(我们还显式写了 300) |
+  /// | `sliding_window.size`              | 10       | 10(我们显式写了 **5**) |
+  ///
+  /// 🔴 其中 `rotation.misalignment_threshold` 是 RD-VIO 的招牌闸:
+  /// `map/frame.cpp:120-143` 先用**纯旋转模型**拟合所有内点,取残差角的
+  /// **70 分位**;小于阈值就给这一帧打 `FT_NO_TRANSLATION` = "这段运动没有平移"。
+  /// 阈值从 0.02° 放大到 0.1° ⇒ **五倍多的帧被判成"没平移"** ⇒ 视觉不再约束
+  /// 平移 ⇒ 平移只剩 IMU 的二次积分在跑。这与真机实测的抛物线式无界发散
+  /// (45 秒 1.6 km、后来 3.2 km)机理吻合。
+  ///
+  /// ⚠️ 本函数**只允许两处偏离上游**,且都必须写明依据:
+  ///   ① `solver.time_limit` / `iteration_limit` = 0.1s / 10 次
+  ///      (上游是 1.0e6 / 30)。依据:那是**离线测质量**的档,端上预算是
+  ///      0.1/10;换过来首位姿 16.3s → 3.5s,EuRoC 三档精度代价均值 +3.2%。
+  ///   ② `visual_localization.enable: false` 显式写死。上游这份 yaml 没有这段,
+  ///      代码默认也是 false;我们显式写是因为开启后会把图像**明文**发到
+  ///      硬编码内网地址 —— 这种东西不能依赖默认值。
+  /// 任何第三处偏离都要先拿出实测依据,并加进上面这张表。
   String buildSlamConfigYaml() =>
       '''
 %YAML:1.0
 # GENERATED at runtime by XrslamConfigBuilder。
+# 字段集 = 上游 configs/iphone_slam.yaml @4beb1a9,逐字段复刻。
+# 偏离只有两处,见 buildSlamConfigYaml 的文档注释。
 output:
-  q_bo: [ 0, 0, 0, 1 ]
-  p_bo: [ 0, 0, 0 ]
-feature_tracker:
-  max_frames: 100
-  # OpenXRLab iOS slam_params.yaml @ 4beb1a9，逐项复刻。
-  min_keypoint_distance: 25.0
-  max_keypoint_detection: 300
-solver:
-  time_limit: $solverTimeLimitSeconds
-  iteration_limit: $solverIterationLimit
+  q_bo: [ 0.0, 0.0, 0.0, 1.0 ]
+  p_bo: [ 0.0, 0.0, 0.0 ]
+
 sliding_window:
   size: $slidingWindowSize
-  tracker_frequent: 3
-visual_localization:
-  # 永远关闭:上游默认会把图像明文外发到硬编码内网地址
-  enable: false
-  port: 12345
+  subframe_size: 3
+  force_keyframe_landmarks: 35
+  # 上游这份 yaml 没有这个键 ⇒ 走代码默认 1(config.cpp:82)。
+  # 显式写出来是为了可审计:我们曾经在这里写过 3。
+  tracker_frequent: 1
+
+feature_tracker:
+  min_keypoint_distance: 25.0
+  max_keypoint_detection: 200
+  max_init_frames: 60
+  max_frames: 20
+  predict_keypoints: true
+  clahe_clip_limit: 6.0
+  clahe_width: 8
+  clahe_height: 8
+
 initializer:
-  # [pw] 逐字沿用上游:euroc 与 iphone 两份配置都是 10.0。
+  keyframe_num: 8
+  keyframe_gap: 5
+  min_matches: 50
   min_parallax: 10.0
+  min_triangulation: 20
+  min_landmarks: 30
+  refine_imu: true
+
+solver:
+  # 🔴 偏离①:端上预算,不是上游的离线档(1.0e6 / 30)。见文档注释。
+  iteration_limit: $solverIterationLimit
+  time_limit: $solverTimeLimitSeconds
+
+rotation:
+  # 🔴 这一条漏写过,代价是无界发散。见文档注释。
+  misalignment_threshold: 0.02
+  ransac_threshold: 10
+
 parsac:
   parsac_flag: false
   dynamic_probability: 0.15
   threshold: 1.0
   norm_scale: 1.0
   keyframe_check_size: 1
+
+visual_localization:
+  # 🔴 偏离②:显式关死。开启会把图像明文外发到硬编码内网地址。
+  enable: false
+  port: 12345
 ''';
 }

@@ -24,8 +24,8 @@ import 'dart:ffi';
 
 import 'camera_projection.dart';
 
-typedef _StartNative = Int32 Function(Int32, Int32);
-typedef _StartDart = int Function(int, int);
+typedef _StartNative = Int32 Function(Int32, Int32, Double, Double);
+typedef _StartDart = int Function(int, int, double, double);
 typedef _VoidNative = Void Function();
 typedef _VoidDart = void Function();
 typedef _AcquireNative = Uint64 Function();
@@ -89,8 +89,28 @@ abstract final class PwCameraSlot {
   ///
   /// 🔴 iOS 把后置相机只给一个会话 ⇒ 这条通路与 ARKit / 生产采集
   /// **不能同时跑**。只在显式验证时调用。
-  static int start({int width = 640, int height = 480}) =>
-      _start(width, height);
+  /// 起相机。
+  ///
+  /// 🔴 [lensPosition] **锁镜头**,抄上游 `ViewController.swift:256`
+  ///    `camera.setFocus(0.835)`。不锁的话 fx 全程游走(实测跨度 7.7%),
+  ///    而引擎的内参来自 yaml 定值 —— 那等于拿定值内参解一台焦距在变的相机。
+  ///    传负数 = 不锁(只给对照实验用)。
+  /// 🔴 [fps] **抄上游 `ViewController.swift:255` 的 30**,不是我调的。
+  ///
+  /// 我一度设成 60,依据是「09-16 同录制对照里 30 Hz 那一臂精度更差」。
+  /// **那条依据不适用于直播** —— 它是在**回放**上量的,回放没有实时截止期,
+  /// 每帧再慢都会被跑完。直播有截止期,而 2026-09-20 实测:引擎在
+  /// 1920×1440 上的真实吞吐只有 **24.5 fps**(传输层账本:6.98 s 内相机交付
+  /// 412 帧、进引擎 171 帧),喂它 59 fps 等于 **58% 的帧被不规则丢掉**。
+  /// 不规则比低帧率更伤跟踪。供需比 59:24 → 30:24。
+  /// `<=0` = 不设(由系统选)。
+  static int start({
+    int width = 640,
+    int height = 480,
+    double fps = 30,
+    double lensPosition = 0.835,
+  }) =>
+      _start(width, height, fps, lensPosition);
 
   static void stop() => _stop();
 

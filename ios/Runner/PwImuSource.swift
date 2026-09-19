@@ -1,3 +1,12 @@
+// ⛔️ [2026-09-20] **这个文件不是引擎喂料通路,不要再把它接成喂料通路。**
+//    引擎喂料在 `ios/Runner/PwXrslamLive.swift`:CoreMotion 回调里当场调
+//    `PWXrslamTransportPush{Gyroscope,Acceleration}Raw`,与上游
+//    `Motion.swift` → `XRSLAMer.swift` → `XRSLAM_iOS.mm` 同位。
+//    本文件是"轮询取最新一条"的**诊断**接口。我曾经拿它当喂料通路 ——
+//    两个各约 100 Hz 的时钟互相采样会拍频(重复推 / 漏推),而且它把陀螺与
+//    加速度配成一对共用陀螺时间戳(实测 skew 4.987 ms)⇒ 真机位姿 45 秒
+//    发散到 1.6 km。
+//
 // PwImuSource.swift —— 原生 IMU 源:CMMotionManager + 与相机同域的时间戳。
 //
 // ══ 🔴 抄源(逐项标注,不是我设计的)═══════════════════════════════════════

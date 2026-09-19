@@ -62,11 +62,10 @@
 // 而 threading 打开时库内确有后台工作线程;`NativeCallable.listener` 只支持
 // 返回 void 且异步投递,拿不到同步结果。所以正确形状就是 Dart 侧按需 poll。
 
-import 'dart:ffi' as ffi;
 
-import 'package:ffi/ffi.dart';
 
 import '../ffi/xrslam_bindings.dart';
+import '../ffi/xrslam_live_ffi.dart';
 import '../ffi/xrslam_session.dart';
 import 'vio_pose_source.dart';
 
@@ -112,9 +111,6 @@ class EnginePosePoller {
   final EngineSnapshot? Function()? _injected;
   bool _disposed = false;
 
-  XrslamBindings? _resolved;
-  bool _resolveAttempted = false;
-
   /// 上一次读到的引擎状态(0=初始化中 / 1=跟踪成功 / 2=跟踪失败)。
   int? get lastState => _lastState;
   int? _lastState;
@@ -126,20 +122,6 @@ class EnginePosePoller {
   Object? _unavailableReason;
 
   bool get isAvailable => _unavailableReason == null;
-
-  XrslamBindings? _fn() {
-    if (_injected != null) return null; // 注入模式不走真绑定
-    if (_resolveAttempted) return _resolved;
-    _resolveAttempted = true;
-    try {
-      _resolved = XrslamBindings(ffi.DynamicLibrary.process());
-    } catch (e) {
-      // 最典型的一种:整个 app 没链 XRSLAM,或链了但符号被 dead-strip。
-      _unavailableReason = e;
-      _resolved = null;
-    }
-    return _resolved;
-  }
 
   /// 拉一次。**永远返回一个 [EnginePoseSample]**,不返回 `null` ——
   /// "没有新数据"本身就是链需要知道的信息([VioPoseSource] 靠它走
@@ -172,58 +154,48 @@ class EnginePosePoller {
       );
     } catch (e) {
       _unavailableReason = e;
-      _resolved = null;
       return _noData(nowSeconds);
     }
   }
 
   EngineSnapshot? _readFromEngine() {
-    // 🔴 **没有会话就绝不碰引擎。** 2026-09-19 真机 SIGABRT 实证:
-    //    栈 = `XRSLAMManager::GetResultState` → `Detail::get_system_state()`,
-    //    后者要解引用 `Detail`,而 `XRSLAMCreate` 没跑过时它是空的 ⇒ 崩。
-    //    这不是"偶发" —— 是**必崩**,之前几轮没崩只是因为内参来得早、
-    //    会话先建上了。一旦启动时序变化(例如先起原生 IMU),立刻暴露。
-    //    ⚠️ 这也接不住:C++ 侧的空指针解引用不是异常,Dart 的 catch 拦不住。
-    //       唯一的防线就是**不调**。
+    // 🔴 **不再自己调 XRSLAMGetResult。**
+    //
+    // 上游是在**相机回调内部**、紧跟 `XRSLAMRunOneFrame()` 之后立刻读结果
+    // (`XRSLAM_iOS.mm:165-184`:push → run → GetResult(STATE) → 若
+    // TRACKING_SUCCESS 再 GetResult(CAMERA_POSE)),三步是一个原子序列。
+    // 我们现在把这三步整体交给 `PWXrslamTransportPushCameraAndRunRaw`
+    // (`PwXrslamTransportCore.cpp:219-231`,逐行同形),Dart 只读它存下的结果。
+    //
+    // 这样一来两个老毛病同时没了:
+    //   · 读的不再是"上一帧的结果"(以前 poll 排在 push 之前);
+    //   · 也不会在引擎没 Create 时去碰 `Detail`(2026-09-19 那次必崩 SIGABRT,
+    //     栈 = GetResultState → get_system_state;C++ 空指针解引用 Dart 接不住,
+    //     唯一防线是**不调**)。现在由原生侧的 `running` 标志挡住。
+    //
+    // 🔴 口径同时从 BODY_POSE 换成了 **CAMERA_POSE** —— 与上游一致。
+    //    两者差一个 `q_bc`,而上游 iPhone 标定里那是 **180° 旋转**
+    //    (`configs/iphone12.yaml`:`q_bc: [-0.7071068, 0.7071068, 0, 0]`,w=0)。
     if (XrslamSession.current == null) return null;
-    final XrslamBindings? b = _fn();
-    if (b == null) return null;
-    final ffi.Pointer<ffi.UnsignedInt> statePtr = calloc<ffi.UnsignedInt>();
-    final ffi.Pointer<XRSLAMPose> posePtr = calloc<XRSLAMPose>();
-    try {
-      b.XRSLAMGetResult(
-          XRSLAMResultType.XRSLAM_RESULT_STATE, statePtr.cast<ffi.Void>());
-      final int state = statePtr.value;
-      if (state != XRSLAMState.XRSLAM_STATE_TRACKING_SUCCESS.value) {
-        return EngineSnapshot(
-          state: state,
-          quaternionXyzw: const <double>[0, 0, 0, 0],
-          translationXyz: const <double>[0, 0, 0],
-          timestampSeconds: 0,
-        );
-      }
-      b.XRSLAMGetResult(
-          XRSLAMResultType.XRSLAM_RESULT_BODY_POSE, posePtr.cast<ffi.Void>());
-      final XRSLAMPose pose = posePtr.ref;
+    final XrslamLiveSnapshot? live = XrslamLive.latest();
+    if (live == null) return null;
+    if (!live.hasPose ||
+        live.state != XRSLAMState.XRSLAM_STATE_TRACKING_SUCCESS.value) {
       return EngineSnapshot(
-        state: state,
-        quaternionXyzw: <double>[
-          pose.quaternion[EnginePose7.qx],
-          pose.quaternion[EnginePose7.qy],
-          pose.quaternion[EnginePose7.qz],
-          pose.quaternion[EnginePose7.qw],
-        ],
-        translationXyz: <double>[
-          pose.translation[0],
-          pose.translation[1],
-          pose.translation[2],
-        ],
-        timestampSeconds: pose.timestamp,
+        state: live.state,
+        quaternionXyzw: const <double>[0, 0, 0, 0],
+        translationXyz: const <double>[0, 0, 0],
+        timestampSeconds: 0,
       );
-    } finally {
-      calloc.free(statePtr);
-      calloc.free(posePtr);
     }
+    return EngineSnapshot(
+      state: live.state,
+      // [x, y, z, w],w 在第 4 位 —— `PWXrslamRawPose` 头文件原话
+      // "Frozen upstream XRSLAM camera-pose ABI order is x, y, z, w"。
+      quaternionXyzw: <double>[live.qx, live.qy, live.qz, live.qw],
+      translationXyz: <double>[live.px, live.py, live.pz],
+      timestampSeconds: live.timestampSeconds,
+    );
   }
 
   static EnginePoseSample _noData(double nowSeconds) => EnginePoseSample(

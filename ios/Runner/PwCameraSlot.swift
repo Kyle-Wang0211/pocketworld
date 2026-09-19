@@ -89,7 +89,9 @@ private final class PwCameraSlotImpl: NSObject,
     private let queue = DispatchQueue(
         label: "com.pocketworld.camera.slot", qos: .userInitiated)
 
-    func start(width: Int32, height: Int32) -> Int32 {
+    /// [fps] / [lensPosition] 见 `pw_camera_slot_start` 的说明。
+    func start(width: Int32, height: Int32,
+               fps: Double, lensPosition: Double) -> Int32 {
         lock.lock()
         if session != nil { lock.unlock(); return 0 }  // 已在跑
         lock.unlock()
@@ -111,6 +113,11 @@ private final class PwCameraSlotImpl: NSObject,
         // TN2445:晚到的帧丢掉,不排队。
         out.alwaysDiscardsLateVideoFrames = true
         out.setSampleBufferDelegate(self, queue: queue)
+        // 🔴 把这条队列登记给引擎喂料侧 —— 上游 `Camera.swift:47` /
+        //    `Motion.swift:38` 两处默认都是 `.main`,即**相机与 IMU 共享同一个
+        //    串行上下文**,到达顺序因此守序。我们不能占 Flutter 的 UI 线程,
+        //    所以共享的是这条队列;被复刻的是"共享"这条性质。见 PwXrslamLive。
+        PwXrslamLive.shared.bindSerialQueue(queue)
         guard s.canAddOutput(out) else { s.commitConfiguration(); return -5 }
         s.addOutput(out)
 
@@ -153,8 +160,40 @@ private final class PwCameraSlotImpl: NSObject,
             guard let f = cands.first(where: { !$0.isVideoBinned }) ?? cands.first
             else { return -7 }
             device.activeFormat = f
+
+            // 🔴 **锁镜头**。上游 `ViewController.swift:256` 是
+            //    `camera.setFocus(0.835)` → `setFocusModeLocked(lensPosition:)`。
+            //    为什么是承重的:整条管线的内参 `frame->K` 来自 yaml
+            //    (`detail.cpp:107`),**没有任何一处按实际图像重算**。而连续
+            //    自动对焦会让 fx 全程游走 —— 我们自己实测过一场 1280.37–1385.30、
+            //    跨度 7.7%、1429 个唯一值。镜头不锁 = 拿一个定值内参去解一台
+            //    焦距在变的相机。
+            //    [lensPosition] < 0 表示"不锁"(保留给需要对比的实验)。
+            if lensPosition >= 0 {
+                device.setFocusModeLocked(
+                    lensPosition: Float(min(max(lensPosition, 0), 1)),
+                    completionHandler: nil)
+            }
+
+            // 🔴 **显式定帧率**,值抄上游 `ViewController.swift:255`
+            //    `camera.setFps(30)`。做法也抄 `Camera.setFps`:在 activeFormat
+            //    支持的区间里同时钉住 min/max frameDuration。
+            //    ⚠️ 我一度传 60(依据是回放上的 30Hz vs 60Hz 对照),那条依据
+            //    **不适用于直播**:回放没有实时截止期。实测引擎在 1920×1440 上
+            //    只吃得下 24.5 fps,喂 59 fps 会让 58% 的帧被不规则丢掉。
+            if fps > 0 {
+                let want = Int32(fps.rounded())
+                for r in f.videoSupportedFrameRateRanges
+                where r.minFrameRate <= Double(want) && r.maxFrameRate >= Double(want) {
+                    device.activeVideoMinFrameDuration =
+                        CMTime(value: 1, timescale: want)
+                    device.activeVideoMaxFrameDuration =
+                        CMTime(value: 1, timescale: want)
+                    break
+                }
+            }
+
             // [pw 2026-09-19] 存住设备,供 pw_camera_slot_exposure 读实际曝光参数。
-            // 它是**只读诊断**用途:我们不在这里改任何曝光/对焦设置。
             self.device = device
             self.pickedFormatIsBinned = f.isVideoBinned
         } catch { return -8 }
@@ -212,6 +251,12 @@ private final class PwCameraSlotImpl: NSObject,
             lock.unlock()
         }
 
+        // 🔴 **在这个回调里当场喂引擎**,与上游 `XRSLAMer.cameraDidOutput →
+        //    trackCamera` 同位(`XRSLAMer.swift:27-33` / `XRSLAM_iOS.mm:152`)。
+        //    上一版是 Dart 每渲染帧再来取一次 —— 那既改了节奏也改了顺序。
+        //    位姿结果由 `PwXrslamLive` 存住,Dart 只读,不进热路径。
+        PwXrslamLive.shared.onCameraFrame(pb, ptsSeconds: latestFramePTSSeconds)
+
         // 换入即释放。Swift 的 `CVPixelBuffer` 是 CF 桥接类型,赋值即 retain、
         // 覆盖即 release —— 不需要手写 CVPixelBufferRetain/Release。
         lock.lock()
@@ -261,9 +306,15 @@ private final class PwCameraSlotImpl: NSObject,
 // `@_cdecl` 给 Swift 函数 C 链接,Dart 侧用 `DynamicLibrary.process()` 查找
 // (仓里 `official_aether_sfm_ffi.dart:31` 已有同样的用法)。
 
+/// 起相机。
+/// - `fps`:目标帧率;`<= 0` 表示不设(由系统选)。上游是 30,我们传 60。
+/// - `lensPosition`:锁定的镜头位置 0…1;**负数表示不锁**。上游是 0.835。
 @_cdecl("pw_camera_slot_start")
-public func pw_camera_slot_start(_ width: Int32, _ height: Int32) -> Int32 {
-    return PwCameraSlotImpl.shared.start(width: width, height: height)
+public func pw_camera_slot_start(_ width: Int32, _ height: Int32,
+                                 _ fps: Double,
+                                 _ lensPosition: Double) -> Int32 {
+    return PwCameraSlotImpl.shared.start(
+        width: width, height: height, fps: fps, lensPosition: lensPosition)
 }
 
 @_cdecl("pw_camera_slot_stop")
