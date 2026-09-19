@@ -78,6 +78,9 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
   CameraSlotStats? _stats;
   bool _stepping = false;
   int _ticks = 0;
+
+  /// GPU 前端痕迹只打一次。见上面那段说明。
+  bool _gpufeTrailLogged = false;
   bool _capturedOnce = false;
 
   // ══ 位姿链 ═══════════════════════════════════════════════════════════════
@@ -395,6 +398,20 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
         //    `acc`/`gyr` 的增速应当各约 100/s;`cam` 与 `cam回调` 应当相等。
         final XrslamLiveStats? ls = XrslamLive.stats();
         if (ls != null) debugPrint('[arloop] 喂料 $ls');
+        // 🔴 GPU 前端到底有没有真的起来 —— Dawn 失败会**静默回落 CPU**,
+        //    不看这个就会把"没提速"误判成"GPU 前端没用"。
+        //
+        // ⚠️ 读的时机是承重的:`GpuImage::create_image()` 在 **PushImage** 里调
+        //    (`XRSLAMManager.cpp:131`),不是在 `XRSLAMCreate` 里 ⇒ 痕迹要等
+        //    **第一帧推进去之后**才有。我第一版在会话建好那一刻就读,读到空串,
+        //    差点判成"没链上那条臂"。所以这里等 `进引擎 > 0` 才读,且只打一次。
+        if (!_gpufeTrailLogged && ls != null && ls.cameraSubmitted > 0) {
+          _gpufeTrailLogged = true;
+          final String trail = XrslamLive.gpuFrontEndTrail();
+          debugPrint('[arloop] GPU前端 ${trail.isEmpty
+              ? "(无痕迹 ⇒ 没链那条臂,或 PW_XRSLAM_GPU_FRONTEND 没置位)"
+              : trail.trim().replaceAll("\n", " | ")}');
+        }
         // 🔴 相机与 IMU 的时间轴是不是同一条 —— 删掉时钟映射时靠的是文档论证,
         //    这一行是把它变成实测。同域 ⇒ delta 是几十毫秒;跨域 ⇒ 是开机时长。
         final t = XrslamLive.timing();
@@ -479,12 +496,7 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
         '${_session!.error == null ? '' : ' err=${_session!.error}'}');
     // 初始化延迟的**起点**:会话建立成功那一刻。失败就不计时。
     if (_session!.ok) _sessionReadyMicros = _imuClock.elapsedMicroseconds;
-    // 🔴 GPU 前端到底有没有真的起来 —— Dawn 失败会**静默回落 CPU**。
-    //    必须在**会话建好之后**读:痕迹是 `XRSLAMCreate` 期间写的。
-    //    不看这个,就会把"没提速"误判成"GPU 前端没用"。
-    final String trail = XrslamLive.gpuFrontEndTrail();
-    debugPrint('[arloop] GPU前端 '
-        '${trail.isEmpty ? "(无痕迹 ⇒ 没链 GPU 前端那条臂)" : trail.trim().split("\n").last}');
+
   }
 
   /// 初始化延迟的**终点**:引擎第一次报 TRACKING_SUCCESS。只打一次。
