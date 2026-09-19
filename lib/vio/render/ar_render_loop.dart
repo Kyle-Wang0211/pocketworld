@@ -35,6 +35,7 @@
 
 // 见 camera_feed_triangle.dart 里同样的注释:这一行同时带来 thermion 的
 // 类型、dart:typed_data 与 vector_math_64。
+import 'package:flutter/services.dart' show ByteData, rootBundle;
 import 'package:thermion_flutter/thermion_flutter.dart';
 
 import '../pose/camera_projection.dart';
@@ -144,6 +145,105 @@ class ArRenderLoop {
       v.add(_marks[i] - _marks[i - 1]);
       if (v.length > 240) v.removeAt(0);
     }
+  }
+
+  // ══ B3 世界锚点标记(方向自检)═══════════════════════════════════════════
+  // 🔴 为什么需要它:所有"链路通了"的指标(state=1 / hasPos=true / pose=true)
+  //    证明的都是**数据流到了**,没有一条证明**数据用对了**。位姿符号反了、
+  //    轴映射错了,这些指标**照样全绿**,而画面会朝错误方向动。
+  //    `pose_chain_probe_page.dart` 的文件头把这件事命名为 **B3(虚拟物体与
+  //    真实特征对齐)**,并明确说 B1 的 "7/7 通过" **不能**替代它:
+  //      "roll 的正确性是相对**相机图像**定义的,而本页根本没有相机。"
+  //
+  // 🔴 **世界点只算一次**(抄探针页那条用一次失败换来的教训):
+  //    若每帧从当前模型矩阵派生 right/up/back 再定位,模型矩阵一变标记跟着变,
+  //    **朝向错误被自己抵消**,测试永远不会失败(实测正常臂 1.71px、
+  //    阴性臂 1.58px,分不开 —— 那是在断言代码等于它自己)。
+  //
+  // 判据(不需要标定参照物):符号/轴映射错误是**成倍、反向**的粗差,
+  // 正常拍房间就能看出来 —— 球应当像**钉在空中某一点**:手机动,它在画面里
+  // 的位置相应变化,但它在房间里的位置不变。若它跟着手机走、或朝反方向飞,
+  // 就是这条链错了。
+  //
+  // ⚠️ 判读前提:引擎初始化完成(state=1)**之前**位姿是 null,相机矩阵根本
+  //    没被设过 —— 这段窗口里球必然"跟着手机走",那是**正常的**,不是缺陷。
+  //    页面顶部那条 TRACKING 指示灯变绿之后才开始判。
+  /// 三个锚点的规格:(距离 m, 横移 m, 纵移 m, r, g, b)。
+  ///
+  /// ══ 为什么不照抄探针页的 1 cm @ 0.8 m ══
+  ///   那组数是给**机器判据**定的:屏上半径 5–6 px、面积约 100 px,刚好够算
+  ///   质心,又小到把偏心误差(Photogrammetric Record 1999)压在量化界之下。
+  ///   本页的判据是**人眼看房间**,质心和偏心都不参与,约束换成了两条:
+  ///     ① 单个锚点太近 ⇒ 稍一转身就出画,可观察窗口只有一两秒
+  ///        (实测:0.8 m 那版用户的原话是"后来就看不见红球了");
+  ///     ② 3 m 处要仍然看得见 ⇒ 直径 0.20 m 的角直径 2·atan(0.1/3)=3.8°,
+  ///        约占竖屏视场(≈60°)的 6%,几十个像素,肉眼没问题。
+  ///   三个不同深度 ⇒ 转身时**总有一个在画面里**;近大远小本身还顺带自证
+  ///   投影矩阵没错。
+  ///
+  /// 三个都给了**不同方向**的横纵偏移:全摆正中的话,左右或上下搞反了也看
+  /// 不出来(这条抄探针页 `_SyntheticPose` 的注释原文)。
+  static const List<List<double>> _kMarkerSpecs = <List<double>>[
+    <double>[1.0, 0.20, 0.15, 1.0, 0.1, 0.1], // 近 · 红 · 右上
+    <double>[2.0, -0.30, -0.10, 0.1, 1.0, 0.1], // 中 · 绿 · 左下
+    <double>[3.0, 0.05, 0.35, 0.2, 0.4, 1.0], // 远 · 蓝 · 正上
+  ];
+
+  /// 球半径(米)。直径 0.20 m —— 见 [_kMarkerSpecs] 的②。
+  static const double _kMarkerRadius = 0.10;
+
+  final List<ThermionAsset> _markers = <ThermionAsset>[];
+  final List<List<double>> _markerWorlds = <List<double>>[];
+
+  /// 建世界锚点标记。[rotationDegrees] 与显示滚转同口径。
+  Future<void> createWorldMarker({required int rotationDegrees}) async {
+    if (_markers.isNotEmpty) return;
+    final ByteData mb =
+        await rootBundle.load('assets/materials/pw_solid.filamat');
+    // 🔴 不写 `Material` 这个类型名:Flutter 的 material.dart 与 thermion 都
+    //    导出同名类型,写出来就是 ambiguous import(分析器只给 info,
+    //    **编译期才报错**)。抄探针页,用推断。
+    final solid =
+        await FilamentApp.instance!.createMaterial(mb.buffer.asUint8List());
+    for (final List<double> s in _kMarkerSpecs) {
+      // 一份材质、三个实例 —— 每个实例自己的 color 参数。
+      final MaterialInstance mi = await solid.createInstance();
+      await mi.setParameterFloat4('color', s[3], s[4], s[5], 1.0); // unlit
+      // 用**球**不用立方体 —— 抄探针页:偏心误差的文献分析(Photogrammetric
+      // Record 1999)针对的是圆形/球形标记,立方体在透视下可见面不对称。
+      _markers.add(await _viewer.createGeometry(
+        GeometryHelper.sphere(),
+        materialInstances: <MaterialInstance>[mi],
+      ));
+      _markerWorlds.add(_computeMarkerWorld(rotationDegrees, s[0], s[1], s[2]));
+    }
+  }
+
+  /// 用**参考位姿**(单位位姿 + 正确 roll)定标记位置:相机前方 [d] 米,
+  /// 再按相机自己的 right/up 轴偏移 [ox]/[oy]。
+  List<double> _computeMarkerWorld(
+      int rotationDegrees, double d, double ox, double oy) {
+    final List<double> base = WorldToRenderer.modelMatrixColumnMajor(
+      TrackedPose.tracked(
+        orientation: const PoseQuaternion(0, 0, 0, 1),
+        position: const PosePosition(0, 0, 0),
+        timestampSeconds: 0,
+      ),
+    )!;
+    final List<double> m = WorldToRenderer.multiplyColumnMajor(
+      base,
+      WorldToRenderer.displayRollColumnMajor(rotationDegrees),
+    );
+    double at(int r, int c) => m[c * 4 + r];
+    List<double> axis(int c) => <double>[at(0, c), at(1, c), at(2, c)];
+    final List<double> right = axis(0);
+    final List<double> up = axis(1);
+    final List<double> back = axis(2); // 相机看 −z ⇒ 前方是 −back
+    return <double>[
+      at(0, 3) - back[0] * d + right[0] * ox + up[0] * oy,
+      at(1, 3) - back[1] * d + right[1] * ox + up[1] * oy,
+      at(2, 3) - back[2] * d + right[2] * ox + up[2] * oy,
+    ];
   }
 
   /// 六段各自的 p50(毫秒),顺序:喂纹理/内参/UV/投影/位姿/出图。
@@ -374,6 +474,19 @@ class ArRenderLoop {
 
     _t(4);
     // ── 5. 位姿 ───────────────────────────────────────────────────────────
+    // 🔴 标记摆在**固定世界点**,每帧位置不变 —— 画面里的视差完全来自相机
+    //    矩阵的变化。这正是判据成立的前提:标记若跟着相机走,就测不出朝向错。
+    // 🔴 `GeometryHelper.sphere()` 出的是**单位半径**球(geometry.dart:31-32,
+    //    x=cosφ·sinθ / y=cosθ / z=sinφ·sinθ,模长恒 1)⇒ scale 就是半径,
+    //    不是直径。旧注释写"scale 0.02 = 直径 2 cm"是错的,那其实是 4 cm。
+    for (int i = 0; i < _markers.length; i++) {
+      await _markers[i].setTransform(Matrix4.identity()
+        ..setTranslation(Vector3(
+            _markerWorlds[i][0], _markerWorlds[i][1], _markerWorlds[i][2]))
+        ..scaleByDouble(
+            _kMarkerRadius, _kMarkerRadius, _kMarkerRadius, 1.0));
+    }
+
     bool hadPose = false;
     if (pose != null) {
       final List<double>? model =

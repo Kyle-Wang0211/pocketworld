@@ -189,6 +189,16 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
         imageHeight: kFeedHeight,
       );
 
+      // 🔴 B3 方向自检:建三个**钉在世界系固定点**的球(红 1 m / 绿 2 m /
+      //    蓝 3 m,直径 20 cm,各带不同方向的横纵偏移)。
+      //    没有它们,"位姿进了渲染器"就只是一句日志 —— 符号/轴映射错了
+      //    所有指标照样全绿(见 ar_render_loop 里 createWorldMarker 的说明)。
+      //    判据:正常拍房间,球应当像钉在空中 —— 手机动它在画面里的位置变,
+      //    但它在房间里的位置不变。跟着手机走或反向飞 = 这条链错。
+      //    三个深度是为了**转身时总有一个在画面里**;单个 0.8 m 的那版一动
+      //    就出画,用户的原话是"后来就看不见红球了"。
+      await loop.createWorldMarker(rotationDegrees: 90); // 与本页锁竖屏同口径
+
       // 🔴 会话**不在这里建** —— 见 _ensureSession:要等第一帧交付、拿到
       //    相机自报的真实内参之后才建,否则只能拿占位内参去建。
 
@@ -573,6 +583,11 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
     // hook 在渲染线程节奏上跑,拿不到 BuildContext,所以在这里存一份。
     _viewport = MediaQuery.of(context).size;
     _dpr = MediaQuery.of(context).devicePixelRatio;
+    // 🔴 B3 判读闸:引擎初始化完成前位姿是 null,相机矩阵**从没被设过**
+    //    ⇒ 球必然固定在屏幕同一处、"跟着手机走"。那是正常的,不是缺陷。
+    //    把这个窗口画在屏上,人才知道**什么时候可以开始判方向**。
+    final bool tracking =
+        _poller.lastState == 1 && _pose?.position != null;
     return Scaffold(
       backgroundColor: const Color(0xFF001018),
       body: Stack(
@@ -617,6 +632,32 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: <Widget>[
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: <Widget>[
+                          Container(
+                            width: 10,
+                            height: 10,
+                            margin: const EdgeInsets.only(right: 6),
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: tracking
+                                  ? Colors.greenAccent
+                                  : Colors.orangeAccent,
+                            ),
+                          ),
+                          Text(
+                            tracking
+                                ? 'TRACKING — 可以开始判方向了'
+                                : '初始化中 — 球贴在屏上不动是正常的',
+                            style: TextStyle(
+                              color: tracking
+                                  ? Colors.greenAccent
+                                  : Colors.orangeAccent,
+                            ),
+                          ),
+                        ],
+                      ),
                       Text(_status),
                       if (_last != null) Text('$_last'),
                       if (_stats != null) Text('$_stats'),
