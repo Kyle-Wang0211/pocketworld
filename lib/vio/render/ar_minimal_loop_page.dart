@@ -92,6 +92,10 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
   //   终点 = 引擎**第一次**报 XRSLAM_STATE_TRACKING_SUCCESS 那一刻
   // 与 ARKit 对比要拿同口径:ARSession.run → 第一次 trackingState == .normal。
   // ⚠️「ARKit 44 秒进 fair」是**跟踪质量等级**,不是这个量,不能当对照。
+  /// 与台架 ARKit 参照同口径的起点:**相机启动之前**(= 台架的 runStart)。
+  int? _runStartMicros;
+
+  /// 会话建立成功的时刻。只用于把总延迟拆成两段看,**不作为对比口径**。
   int? _sessionReadyMicros;
   int? _firstTrackingMicros;
   bool _initLatencyReported = false;
@@ -209,6 +213,14 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
         XrslamSession.current?.pushImu(s); // 引擎那一半
       });
 
+      // 🔴 初始化延迟的**起点**打在这里,不是打在会话建立处。
+      // 理由:要与台架 ARKit 参照同口径。台架用的是
+      // `runStartNanoseconds` = **整场 run 开始**,包含相机启动、第一帧交付、
+      // 会话建立在内(BenchmarkCoordinator.swift:1691 firstPoseLatencyMilliseconds)。
+      // 我们原来从「XRSLAMCreate 成功」起算,把上面那一整段排除在外了 ——
+      // 而我们的会话恰恰是**等第一帧内参到了才建**,所以那个起点晚得多,
+      // 拿去和 ARKit 比是**对我们有利的不公平比较**。
+      _runStartMicros = _imuClock.elapsedMicroseconds;
       final int rc = PwCameraSlot.start(width: kFeedWidth, height: kFeedHeight);
       if (rc != 0) {
         setState(() => _status = '相机启动失败,原生返回码 $rc');
@@ -421,13 +433,19 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
   /// 所以这个延迟里包含**用户开始移动之前的等待**,跨设备比必须同样的运动剧本。
   void _markFirstTracking() {
     if (_initLatencyReported) return;
-    if (_sessionReadyMicros == null) return;
+    if (_runStartMicros == null) return;
     if (_poller.lastState != 1) return; // XRSLAM_STATE_TRACKING_SUCCESS
     _firstTrackingMicros = _imuClock.elapsedMicroseconds;
     _initLatencyReported = true;
-    final double sec = (_firstTrackingMicros! - _sessionReadyMicros!) / 1e6;
-    debugPrint('[arloop] INIT_LATENCY 会话建立→首次TRACKING = '
-        '${sec.toStringAsFixed(3)} s');
+    // 🔴 **可比口径**:runStart(相机启动前)→ 首次 TRACKING_SUCCESS。
+    final double total = (_firstTrackingMicros! - _runStartMicros!) / 1e6;
+    // 拆段只为诊断,不用于对比。
+    final String breakdown = _sessionReadyMicros == null
+        ? ''
+        : ' [相机+建会话 ${((_sessionReadyMicros! - _runStartMicros!) / 1e6).toStringAsFixed(3)}s'
+            ' + 引擎初始化 ${((_firstTrackingMicros! - _sessionReadyMicros!) / 1e6).toStringAsFixed(3)}s]';
+    debugPrint('[arloop] INIT_LATENCY runStart→首次TRACKING = '
+        '${total.toStringAsFixed(3)} s$breakdown');
   }
 
   /// 取一帧渲染结果,统计像素。判据见调用处。
