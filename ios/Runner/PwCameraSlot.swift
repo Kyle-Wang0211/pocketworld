@@ -59,6 +59,11 @@ private final class PwCameraSlotImpl: NSObject,
 {
     static let shared = PwCameraSlotImpl()
 
+    /// [pw 2026-09-19] 只读诊断:当前采集设备与所选格式是否 binned。
+    /// 加它是为了回答"bench 画面为什么比系统相机暗" —— 不改任何采集设置。
+    fileprivate var device: AVCaptureDevice?
+    fileprivate var pickedFormatIsBinned: Bool = false
+
     private let lock = NSLock()
     private var session: AVCaptureSession?
     /// 深度 1。`nil` 表示消费者已取走、还没有新帧。
@@ -144,6 +149,10 @@ private final class PwCameraSlotImpl: NSObject,
             guard let f = cands.first(where: { !$0.isVideoBinned }) ?? cands.first
             else { return -7 }
             device.activeFormat = f
+            // [pw 2026-09-19] 存住设备,供 pw_camera_slot_exposure 读实际曝光参数。
+            // 它是**只读诊断**用途:我们不在这里改任何曝光/对焦设置。
+            self.device = device
+            self.pickedFormatIsBinned = f.isVideoBinned
         } catch { return -8 }
 
         // 只有到这里,activeFormat 才是我们要的那个,校验才会通过。
@@ -270,6 +279,33 @@ public func pw_camera_slot_intrinsics(_ out: UnsafeMutablePointer<Double>) -> In
 @_cdecl("pw_camera_slot_stats")
 public func pw_camera_slot_stats(_ out: UnsafeMutablePointer<Int64>) {
     PwCameraSlotImpl.shared.stats(into: out)
+}
+
+/// [pw 2026-09-19] 曝光实测出口 —— 回答"为什么比系统相机暗",**只读,不改设置**。
+///
+/// 写入 8 个 double,顺序固定:
+///   0 exposureDuration 秒(实际曝光时间;暗光下它会顶到帧间隔上限)
+///   1 ISO(感光度;顶满说明已经在用最大增益)
+///   2 lensAperture(光圈,iPhone 固定)
+///   3 exposureMode(0=locked 1=autoExpose 2=continuousAuto 3=custom)
+///   4 exposureTargetOffset EV(测光认为**还差几档**才够亮;负=欠曝)
+///   5 pickedFormatIsBinned(1=选了 binned 格式,进光更多)
+///   6 activeVideoMinFrameDuration 秒(**曝光时间的硬上限**)
+///   7 activeVideoMaxFrameDuration 秒
+/// 返回 0 成功,-1 表示还没开始采集。
+@_cdecl("pw_camera_slot_exposure")
+public func pw_camera_slot_exposure(_ out: UnsafeMutablePointer<Double>) -> Int32 {
+    for i in 0..<8 { out[i] = 0 }   // 无条件先清零
+    guard let d = PwCameraSlotImpl.shared.device else { return -1 }
+    out[0] = CMTimeGetSeconds(d.exposureDuration)
+    out[1] = Double(d.iso)
+    out[2] = Double(d.lensAperture)
+    out[3] = Double(d.exposureMode.rawValue)
+    out[4] = Double(d.exposureTargetOffset)
+    out[5] = PwCameraSlotImpl.shared.pickedFormatIsBinned ? 1 : 0
+    out[6] = CMTimeGetSeconds(d.activeVideoMinFrameDuration)
+    out[7] = CMTimeGetSeconds(d.activeVideoMaxFrameDuration)
+    return 0
 }
 
 // ── 把帧交给 XRSLAM 用:锁定 + 交出基址 ────────────────────────────────────

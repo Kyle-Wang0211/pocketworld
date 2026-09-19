@@ -308,6 +308,9 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
             '${_lastAttempt == null ? '' : ' init=${_lastAttempt!.verdict.decision.name}'}'
             ' sess=${_session?.ok} rc=${_session?.createRc}');
         debugPrint('[arloop] $stats');
+        // [pw 2026-09-19] 曝光实测 —— 回答"为什么比系统相机暗"。只读,不改设置。
+        final CameraExposure? e = PwCameraSlot.exposure();
+        if (e != null) debugPrint('[arloop] ${e.toDiagnosticString()}');
         debugPrint('[arloop] viewport = '
             '${(size.width * dpr).round()}x${(size.height * dpr).round()}');
       }

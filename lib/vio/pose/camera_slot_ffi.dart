@@ -173,6 +173,33 @@ abstract final class PwCameraSlot {
     }
   }
 
+  /// [pw 2026-09-19] 实际曝光参数 —— **只读诊断**,回答"为什么比系统相机暗"。
+  ///
+  /// `null` 表示还没开始采集。字段含义见 `PwCameraSlot.swift` 的
+  /// `pw_camera_slot_exposure`。
+  static CameraExposure? exposure() {
+    final Pointer<Double> buf = calloc8();
+    try {
+      if (_exposure(buf) != 0) return null;
+      return CameraExposure(
+        exposureSeconds: buf[0],
+        iso: buf[1],
+        aperture: buf[2],
+        exposureMode: buf[3].toInt(),
+        targetOffsetEv: buf[4],
+        formatIsBinned: buf[5] != 0,
+        minFrameDurationSeconds: buf[6],
+        maxFrameDurationSeconds: buf[7],
+      );
+    } finally {
+      _free(buf.cast());
+    }
+  }
+
+  static final int Function(Pointer<Double>) _exposure = _lib.lookupFunction<
+      Int32 Function(Pointer<Double>),
+      int Function(Pointer<Double>)>('pw_camera_slot_exposure');
+
   static CameraSlotStats stats() {
     final Pointer<Int64> buf = calloc5();
     try {
@@ -200,4 +227,48 @@ abstract final class PwCameraSlot {
 
   static Pointer<Double> calloc4() => _malloc(8 * 4).cast<Double>();
   static Pointer<Int64> calloc5() => _malloc(8 * 5).cast<Int64>();
+  static Pointer<Double> calloc8() => _malloc(8 * 8).cast<Double>();
+}
+
+
+/// 采集侧实际曝光参数。**只读诊断用**,不参与任何决策。
+///
+/// 🔴 判读要点(2026-09-19 为"bench 比系统相机暗"加的):
+///   · `exposureSeconds` 若已经等于 `minFrameDurationSeconds`,说明曝光时间
+///     **顶到了帧率给的硬上限** —— 想更亮只能降帧率,而降帧率会增加运动模糊。
+///   · `iso` 顶满 + `targetOffsetEv` 明显为负 ⇒ 测光认为仍然欠曝,已无余量。
+///   · `formatIsBinned=false` ⇒ 我们选的是非 binned 格式(单像素进光更少,
+///     换取分辨率);这是 `PwCameraSlot.swift` 里显式的取舍。
+class CameraExposure {
+  const CameraExposure({
+    required this.exposureSeconds,
+    required this.iso,
+    required this.aperture,
+    required this.exposureMode,
+    required this.targetOffsetEv,
+    required this.formatIsBinned,
+    required this.minFrameDurationSeconds,
+    required this.maxFrameDurationSeconds,
+  });
+
+  final double exposureSeconds;
+  final double iso;
+  final double aperture;
+  final int exposureMode;
+  final double targetOffsetEv;
+  final bool formatIsBinned;
+  final double minFrameDurationSeconds;
+  final double maxFrameDurationSeconds;
+
+  /// 曝光是否已经顶到帧率给的上限(容差 5%)。
+  bool get exposureClampedByFrameRate =>
+      minFrameDurationSeconds > 0 &&
+      exposureSeconds >= minFrameDurationSeconds * 0.95;
+
+  String toDiagnosticString() => 'exp=${(exposureSeconds * 1000).toStringAsFixed(2)}ms '
+      'iso=${iso.toStringAsFixed(0)} f/${aperture.toStringAsFixed(1)} '
+      'mode=$exposureMode evOff=${targetOffsetEv.toStringAsFixed(2)} '
+      'binned=$formatIsBinned '
+      'minFrameDur=${(minFrameDurationSeconds * 1000).toStringAsFixed(2)}ms'
+      '${exposureClampedByFrameRate ? ' **曝光已顶帧率上限**' : ''}';
 }
