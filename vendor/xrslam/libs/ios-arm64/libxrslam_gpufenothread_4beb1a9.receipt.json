@@ -106,5 +106,35 @@
   "cross_build_reproducibility_zh": "🔑 整张表与 09-15 判决书**逐位相同**,而那轮的 gpufe_nothread 引擎是sha16 `363bedb5b473402c`、本轮是 `6953592824d0a428`,Dawn 也从 Debug 换成 Release。⇒ GPU 前端改变的特征集是**确定性的**,selfcheck 里那 4804 个 sqrt 最后一位的差异**不引入随机性**,只是把算法推向一个不同但同样确定的解。generic 三档也逐位复现,说明整条重建链的口径是稳的,任何差异只能归给引擎归档。",
   "verdict_zh": "**精度等价**:均值好 3.9%,但方向一场一个样(打平 / 差 6.6% / 好 13.7%)—— 不是更准,是在同一档噪声里换了个位置。没有系统性代价,也没有系统性收益。🔴 `state=valid_fail` 不作判据:那道 ate>0.10 / rpe_t>0.05 的门没有可追溯出处,现役 generic 在 V1_02/V1_03 同样 gates_not_met。",
   "scope_limit_zh": "🔴 EuRoC 是 **752×480**,与我们 1920×1440 的实际场景不是一回事。这六格只能证明「换归档没有系统性精度代价」,**不能**外推到全分辨率。1920×1440 共享录制那两格另算(台架对该档不打分,只能对 arkit_poses.tum 比,而那是「差多少」不是「错多少」)。"
+ },
+ "shared_recording_verdict_20260920": {
+  "recording": "run-6e2d4b99-896b-4372-ae47-ac0b4679cf18(1920×1440,1702 帧)",
+  "protocol": "pw_run_arm.sh <label> replay-device-recording -PWFeederGateOff -PWDatasetPath VIOBenchRuns/run-6e2d4b99-... -PWLiveFullResolution [-PWXrslamGpuFrontend]",
+  "🔴必须显式指名录制": "BenchViewModel.swift:146-165 把设备上的录制按修改时间排序取 recordings.first。设备上那份原生 640×480 的 run-eb74a545 更新 ⇒ 会被挑走 ⇒ failure.json: 'recording is 640x480; only 1920x1440 may be scored'。我为此栽了三次。",
+  "vs_arkit": {
+   "generic": {
+    "配对": 1646,
+    "Sim3_ATE_cm": 2.11,
+    "SE3_ATE_cm": 2.6,
+    "尺度偏差_pct": 4.13,
+    "backend": "cpu"
+   },
+   "gpufenothread": {
+    "配对": 1646,
+    "Sim3_ATE_cm": 2.11,
+    "SE3_ATE_cm": 2.6,
+    "尺度偏差_pct": 4.13,
+    "backend": "gpu_frontend"
+   }
+  },
+  "两臂轨迹逐点比对": {
+   "共同位姿": 1646,
+   "位置差最大_µm": 0.002,
+   "位置差RMS_µm": 0.0,
+   "四元数差最大": 1.5e-11,
+   "位置逐位相同的点": "1506/1646"
+  },
+  "verdict_zh": "**在 1920×1440 上,GPU 前端与 CPU 前端产出的轨迹数值上不可区分**(位置最大差 2 纳米级)。这比 EuRoC 那三格更贴近我们的实际场景:EuRoC 是 752×480,V1_02/V1_03 上两臂差 ±6~14%,而到了 1920×1440 特征多、约束足,selfcheck 里那 4804 个 sqrt 最后一位的差异被完全吸收。",
+  "🔴指标含义": "2.60 cm 是**与 ARKit 差多少**,不是**错多少** —— arkit_poses.tum 不是真值。台架对这一档 state=invalid、自己不打分,这两个数来自 pw_ate.sh。它在这里的作用是**两臂对比**,而对比结论(不可区分)是可靠的。"
  }
 }
