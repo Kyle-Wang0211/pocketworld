@@ -168,6 +168,14 @@ final class PwXrslamLive {
         //    没有这两条就把"没提速"当成"GPU 前端没用",是又一次误判。
         setenv("PW_XRSLAM_GPU_FRONTEND", "1", 1)
 
+        // 🔴 痕迹文件**每次会话清一次**。`gpu_image.cpp:25` 用的是 `fopen(..., "a")`
+        //    —— 跨启动累积。我曾据一份**上一轮留下的**痕迹判断"GPU 前端起来了",
+        //    而那一轮链的其实是 generic:整轮归因作废。
+        //    清空之后,这个文件就成了"本次会话到底链没链 GPU 前端那条臂"的
+        //    可靠判据:空 = 没链(generic 里根本没有 GpuImage 这个编译单元)。
+        try? FileManager.default.removeItem(
+            atPath: NSHomeDirectory() + "/Documents/xrslam_gpufe_init.log")
+
         let rc = PWXrslamTransportCreate(slamConfigPath, deviceConfigPath)
         if rc == 1 { created = true }
         return rc
