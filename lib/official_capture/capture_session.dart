@@ -48,6 +48,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:official_capture_services/official_capture_services.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/widgets.dart' show Offset;
 import 'package:path_provider/path_provider.dart';
 
@@ -284,7 +285,87 @@ class CaptureSession {
   /// Last pose's source after hybrid resolution. Sampled into each
   /// CapturedFrameSample so the curator can split the manifest into
   /// arkit-pose vs imu-pose buckets.
-  String _lastPoseSource = 'arkit';
+  ///
+  /// [pw 2026-09-22] Was a hardcoded `'arkit'` literal. It is now seeded from
+  /// [_platformPoseSourceLabel], which is `'arkit'` for every provider that
+  /// does not implement [ARPoseSourceLabel] — i.e. for `PlatformARPoseProvider`
+  /// and every existing mock, this is byte-for-byte the previous value.
+  late String _lastPoseSource = _platformPoseSourceLabel;
+
+  /// What the installed [poseProvider] calls itself. `'arkit'` unless the
+  /// provider opts in via [ARPoseSourceLabel].
+  ///
+  /// 🔴 Validated **once, at first use** rather than per frame: an unknown
+  /// label is a wiring mistake, and it must surface as a loud failure at
+  /// session setup, not as silently-dropped camera geometry 40 frames into a
+  /// capture. That silent drop is exactly what the old
+  /// `_lastPoseSource == 'arkit'` gate did to any non-ARKit source.
+  late final String _platformPoseSourceLabel = _readPoseSourceLabel();
+
+  String _readPoseSourceLabel() {
+    final provider = poseProvider;
+    if (provider is! ARPoseSourceLabel) return 'arkit';
+    final label = (provider as ARPoseSourceLabel).poseSourceLabel;
+    if (!_knownPoseSources.contains(label)) {
+      throw StateError(
+        'ARPoseProvider ${provider.runtimeType} reported unknown pose source '
+        '"$label". Known sources: ${_knownPoseSources.join(', ')}. '
+        'Add the new source to _poseSourceCarriesCameraGeometry (and decide '
+        'whether its extrinsic/intrinsic are trustworthy) before using it.',
+      );
+    }
+    return label;
+  }
+
+  /// Every value `_lastPoseSource` may ever hold.
+  ///
+  /// `'imu'` is set by [_resolveHybridPose] when ARKit degrades and IMU
+  /// dead-reckoning takes over; the other two come from the provider.
+  static const Set<String> _knownPoseSources = <String>{
+    'arkit',
+    'xrslam',
+    'imu',
+  };
+
+  /// Does a pose from [source] carry camera extrinsic/intrinsic that are safe
+  /// to persist into the manifest?
+  ///
+  /// 🔴 [pw 2026-09-22] This replaces four separate `_lastPoseSource == 'arkit'`
+  /// comparisons. Those were an **implicit** gate: any pose source other than
+  /// the two they knew about was silently stripped of its extrinsic and
+  /// intrinsic and then failed `arMetadataReady`, so the frame was dropped with
+  /// a log line that blamed "incomplete AR metric metadata" rather than the
+  /// wiring. The `switch` below is exhaustive over [_knownPoseSources] and
+  /// **throws** on anything else — an unhandled source is a bug in this file,
+  /// not an input to tolerate.
+  static bool _poseSourceCarriesCameraGeometry(String source) {
+    switch (source) {
+      // ARKit reports a camera→world matrix and intrinsics for the exact frame
+      // it just vended. Unchanged behaviour.
+      case 'arkit':
+        return true;
+      // XRSLAM reports its own camera pose. 🔴 It is in the **engine's** world
+      // frame, not ARKit's (ARKit is y-up, XRSLAM is z-up; the signed
+      // permutation between them is still unsettled — see
+      // `lib/vio/pose/vio_ar_pose_provider.dart` file header). Persisting it is
+      // correct precisely **because** the sample carries `poseSource:
+      // 'xrslam'`, which tells the curator not to read it as ARKit truth.
+      case 'xrslam':
+        return true;
+      // IMU dead-reckoning: the extrinsic/intrinsic on the pose belong to a
+      // frame the platform tracker had already abandoned. Dropping them is the
+      // original, deliberate behaviour.
+      case 'imu':
+        return false;
+      default:
+        throw StateError(
+          'Unhandled pose source "$source" in '
+          '_poseSourceCarriesCameraGeometry. Every source must be decided '
+          'explicitly — falling through here used to mean silently shipping '
+          'frames with no camera geometry.',
+        );
+    }
+  }
 
   /// When true (RealityScan-style manual capture), [_onPoseTick] skips the
   /// motion/dome auto-ingest + auto-save path; photos are taken only via
@@ -720,6 +801,22 @@ class CaptureSession {
     };
   }
 
+  /// The pose-source tag the next persisted frame would carry. Test-only
+  /// window onto `_lastPoseSource`; nothing in `lib/` reads it.
+  @visibleForTesting
+  String get debugLastPoseSource => _lastPoseSource;
+
+  /// What the installed provider calls itself, without waiting for a pose.
+  /// Test-only. Throws [StateError] if the provider reports an unknown label.
+  @visibleForTesting
+  String get debugPlatformPoseSourceLabel => _platformPoseSourceLabel;
+
+  /// Test-only window onto the explicit pose-source gate that replaced the
+  /// old `_lastPoseSource == 'arkit'` comparisons.
+  @visibleForTesting
+  static bool debugPoseSourceCarriesCameraGeometry(String source) =>
+      _poseSourceCarriesCameraGeometry(source);
+
   bool get isRunning => _started;
   bool get isAttached => _attached;
   bool get manualCaptureTransactionsSuspended => _manualCaptureSuspended;
@@ -1038,7 +1135,7 @@ class CaptureSession {
       // Pre-lock: there's no world frame to compare against; the dome
       // ingest pipeline already filters on hasOrigin so the source tag
       // doesn't matter.
-      _lastPoseSource = 'arkit';
+      _lastPoseSource = _platformPoseSourceLabel;
       return raw;
     }
 
@@ -1079,7 +1176,7 @@ class CaptureSession {
           'imu.yaw=${imu.yaw.toStringAsFixed(2)})',
         );
       }
-      _lastPoseSource = 'arkit';
+      _lastPoseSource = _platformPoseSourceLabel;
       _diagArkitPoses++;
 
       // ── Apply delta-compensation ramp if we're in the post-transition
@@ -1136,7 +1233,7 @@ class CaptureSession {
 
     // Post-lock, ARKit limited, no IMU anchor yet — pass through with
     // isTracking=false. _onPoseTick still has its legacy gate to skip.
-    _lastPoseSource = 'arkit';
+    _lastPoseSource = _platformPoseSourceLabel;
     return raw;
   }
 
@@ -1596,15 +1693,18 @@ class CaptureSession {
     // IMU-only (camera→world matrix would be from a frame ARKit had
     // already abandoned). Drop them so the manifest doesn't ship stale
     // pose data tagged as ARKit ground truth.
-    final extrinsic = _lastPoseSource == 'arkit' && pose.extrinsic4x4.isNotEmpty
+    final carriesCameraGeometry = _poseSourceCarriesCameraGeometry(
+      _lastPoseSource,
+    );
+    final extrinsic = carriesCameraGeometry && pose.extrinsic4x4.isNotEmpty
         ? pose.extrinsic4x4
         : null;
     final intrinsic =
-        _lastPoseSource == 'arkit' && pose.intrinsicFxFyCxCy.isNotEmpty
+        carriesCameraGeometry && pose.intrinsicFxFyCxCy.isNotEmpty
         ? pose.intrinsicFxFyCxCy
         : null;
     final arMetadataReady =
-        _lastPoseSource == 'arkit' &&
+        carriesCameraGeometry &&
         pose.trackingStateName == 'normal' &&
         extrinsic != null &&
         extrinsic.length == 16 &&
@@ -1871,14 +1971,17 @@ class CaptureSession {
     // pipeline), but if the origin isn't locked yet or tracking has degraded to
     // IMU dead-reckoning, we proceed anyway and save the JPEG to the album with
     // best-effort (possibly null) pose. Downstream filters on pose quality later.
+    final carriesCameraGeometry = _poseSourceCarriesCameraGeometry(
+      _lastPoseSource,
+    );
     final extrinsic =
-        _lastPoseSource == 'arkit' &&
+        carriesCameraGeometry &&
             pose.extrinsic4x4.isNotEmpty &&
             pose.extrinsic4x4.length == 16
         ? pose.extrinsic4x4
         : null;
     final intrinsic =
-        _lastPoseSource == 'arkit' &&
+        carriesCameraGeometry &&
             pose.intrinsicFxFyCxCy.isNotEmpty &&
             pose.intrinsicFxFyCxCy.length >= 4
         ? pose.intrinsicFxFyCxCy

@@ -657,6 +657,21 @@ abstract class ARPoseProvider {
   ARPose? get lastPose;
 }
 
+/// Optional self-identification implemented by providers whose poses are NOT
+/// platform-ARKit. `CaptureSession` tags every persisted frame with this
+/// label (`CapturedFrameSample.poseSource`) and gates camera
+/// extrinsic/intrinsic on it, so a provider that carries a different world
+/// frame MUST say so here — otherwise its geometry would ship into the
+/// manifest labelled as ARKit ground truth.
+///
+/// Not implementing this interface means `'arkit'`, which is the existing
+/// behaviour of `PlatformARPoseProvider` and every mock in `test/`.
+/// 🔴 The label is part of an on-disk contract (manifest `pose_source`), so
+/// values are closed: see `PwVioPoseSourceSwitch.labelOf`.
+abstract interface class ARPoseSourceLabel {
+  String get poseSourceLabel;
+}
+
 /// Optional transport lifecycle implemented by providers that can suspend an
 /// active camera without discarding their logical-world/event-stream state.
 /// CaptureSession owns this interface; UI pages must not invoke platform

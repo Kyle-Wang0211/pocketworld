@@ -42,6 +42,9 @@ import 'package:image/image.dart' as img;
 import 'package:vector_math/vector_math_64.dart'
     show Matrix4, Quaternion, Vector3;
 
+import '../../vio/pose/vio_ar_pose_provider.dart';
+import '../../vio/pose/vio_pose_source_switch.dart';
+import '../../vio/quality/pose_confidence.dart';
 import '../../point_cloud_display/progressive_octree_order.dart';
 import '../../official_capture/auto_capture_controller.dart';
 import '../../official_capture/auto_capture_failure_visibility.dart';
@@ -183,6 +186,16 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   late final ManualCaptureQueue _shutterQueue;
   CaptureSession? _session;
   StreamSubscription<ARPose>? _poseSub;
+
+  // ── [pw 2026-09-22] VIO 消费层(默认关闭)────────────────────────────────
+  // `PwVioPoseSourceSwitch` 默认 arkit ⇒ 这两个字段在出货包里恒为 null,
+  // 下面所有读它们的地方都是 no-op。
+  VioArPoseProvider? _vioPoseProvider;
+  StreamSubscription<VioPoseConfidence>? _vioConfidenceSub;
+
+  /// 自研臂最近一帧的可信度。ARKit 路径下恒为 null。
+  /// 🔴 **只读诊断**,不驱动任何 UI —— UX 由用户定,本次不碰文案/布局。
+  VioPoseConfidence? _vioConfidence;
 
   String? _initError;
   bool _initializing = true;
@@ -751,7 +764,39 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // baseline pose instead of whatever angle ARKit happens to have
     // mid-warm-up while the user is still moving the phone.
     try {
-      final session = CaptureSession(targetPoints: _targetPoints);
+      // [pw 2026-09-22] VIO 消费层接线点。
+      //
+      // 🔴 `PwVioPoseSourceSwitch.current` 默认是 `arkit` ⇒ `poseProvider`
+      //    传 `null` ⇒ `CaptureSession` 内部照旧 `PlatformARPoseProvider()`。
+      //    也就是说**出货包里这一行与之前逐位等价**(而且 iOS 的
+      //    `--dart-define` 到不了 xcconfig 链,见
+      //    `lib/vio/pose/vio_pose_source_switch.dart` 文件头 ——
+      //    这个开关在出货 iOS 上物理上就打不开)。
+      //
+      // 🔴 铁律:「没全面持平/超越 ARKit 之前绝不上生产」。这里接的是
+      //    **契约与管线**,不是换生产位姿源。ON 这条臂目前连喂料都不通
+      //    (ARKit 独占相机),见 `vio_ar_pose_provider.dart` 的「已知缺口」。
+      final vioProvider = PwVioPoseSourceSwitch.isSelfVio
+          ? VioArPoseProvider()
+          : null;
+      _vioPoseProvider = vioProvider;
+      // 可信度与位姿一起带出来。ARKit 路径下 vioProvider == null ⇒ 不订阅。
+      _vioConfidenceSub = vioProvider?.confidenceStream.listen((c) {
+        if (!mounted) return;
+        final previous = _vioConfidence;
+        _vioConfidence = c;
+        // 只在档位变化时打一行 —— 整场通常 < 10 行。
+        // 🔴 不 setState、不进 UI:UX 由用户定,本次只接契约。
+        if (previous?.tier != c.tier ||
+            previous?.mayReportAbsoluteDimensions !=
+                c.mayReportAbsoluteDimensions) {
+          debugPrint('[vio-consume] confidence → $c');
+        }
+      });
+      final session = CaptureSession(
+        targetPoints: _targetPoints,
+        poseProvider: vioProvider,
+      );
       _poseSub = session.poseStream.listen((p) {
         if (!mounted) return;
         _diagPoseEvents++;
@@ -4543,6 +4588,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     _sfmStageTicker?.cancel();
     _coveragePushTimer?.cancel();
     _poseSub?.cancel();
+    _vioConfidenceSub?.cancel();
+    unawaited(_vioPoseProvider?.dispose() ?? Future<void>.value());
     // Streaming-SfM teardown: frees the native session (joins the background
     // BA thread, drops the sqlite db) off this isolate — page dispose never
     // blocks. Re-entering capture creates a fresh session + worker.
