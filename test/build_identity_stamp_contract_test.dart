@@ -124,10 +124,17 @@ void main() {
     expect(script, contains('PWLiveCloudDiagnosticBuildId'));
     expect(script, contains('App.framework/App'));
     expect(script, contains('PWOfficialSfm.framework/PWOfficialSfm'));
+    // [2026-09-22 引擎臂开关 ebf92de] 归档名不再是字面量:由 Podfile 在
+    // pod install 时写进 xcconfig 的 PW_XRSLAM_LINKED_ENGINE_LIB 决定,脚本里
+    // 只留**默认值**。默认臂必须仍是出货 generic 4beb1a9(0 字节差的依据),
+    // 且请求臂 ≠ 链上的臂时必须失败关闭(exit 70),不许静默沿用上一条臂。
     expect(
       script,
-      contains('vendor/xrslam/libs/ios-arm64/libxrslam_generic_4beb1a9.a'),
+      contains('PW_XRSLAM_LINKED_ENGINE_LIB:-libxrslam_generic_4beb1a9.a'),
     );
+    expect(script, contains(r'vendor/xrslam/libs/ios-arm64/$xrslam_lib_name'));
+    expect(script, contains('PW_XRSLAM_ENGINE'));
+    expect(script, contains('exit 70'));
     expect(script, contains('PW_PRODUCT_SOURCE_MANIFEST_SHA256'));
     expect(script, contains('PW_DIAGNOSTIC_BUILD_ID'));
     expect(script, contains('PW_VIO_SHADOW_MODE'));
