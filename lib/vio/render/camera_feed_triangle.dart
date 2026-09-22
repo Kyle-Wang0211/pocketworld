@@ -204,4 +204,24 @@ class CameraFeedTriangle {
     await _material.destroy();
     await FilamentApp.instance!.destroyAsset(asset);
   }
+
+  /// 只销毁纹理/采样器/材质实例/材质,**不销毁 asset**。
+  ///
+  /// 🔴 给「renderable 已经被 viewer 自己销毁」的场合用。thermion 的
+  /// `viewer.dispose()` 会 `destroyAssets()`,把经 `viewer.createGeometry`
+  /// 建的三角形一起销毁(thermion_viewer_ffi.dart:176-195 / :793-811);
+  /// 这之后再 `destroyAsset` 一次就是双重释放 —— `lib/ui/community/
+  /// live_model_view.dart` 文件头记的正是这种 EXC_BAD_ACCESS。
+  /// 而 Flutter 拆树**子先父后**,ViewerWidget 永远先于宿主 widget 拆掉,
+  /// 所以宿主没有机会在 viewer 之前调 [destroy]。
+  /// 调用时机:`viewer.onDispose` 回调里(在 destroyAssets 之后、
+  /// destroyScene 之前)。顺序与 [destroy] 相同,只是少最后一步。
+  Future<void> destroyGpuResourcesOnly() async {
+    if (_destroyed) return;
+    _destroyed = true;
+    await _texture.dispose();
+    await _sampler.dispose();
+    await _materialInstance.destroy();
+    await _material.destroy();
+  }
 }

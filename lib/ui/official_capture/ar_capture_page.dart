@@ -46,6 +46,7 @@ import '../../vio/capture/zero_arkit_capture_runtime.dart';
 import '../../vio/pose/vio_ar_pose_provider.dart';
 import '../../vio/pose/vio_pose_source_switch.dart';
 import '../../vio/quality/pose_confidence.dart';
+import '../../vio/render/zero_arkit_camera_preview.dart';
 import '../../point_cloud_display/progressive_octree_order.dart';
 import '../../official_capture/auto_capture_controller.dart';
 import '../../official_capture/auto_capture_failure_visibility.dart';
@@ -192,6 +193,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   // `PwVioPoseSourceSwitch` 默认 arkit ⇒ 这两个字段在出货包里恒为 null,
   // 下面所有读它们的地方都是 no-op。
   VioArPoseProvider? _vioPoseProvider;
+
+  /// 开关 ON 时的相机 + XRSLAM 会话运行时。单独持一份引用是因为预览层要它的
+  /// 采集尺寸(1920×1440):那是预览背景纹理的记账尺寸与 UV/投影的输入。
+  /// 出货包里恒为 null(与 [_vioPoseProvider] 同一道闸)。
+  ZeroArkitCaptureRuntime? _zeroArkitRuntime;
   StreamSubscription<VioPoseConfidence>? _vioConfidenceSub;
 
   /// 自研臂最近一帧的可信度。ARKit 路径下恒为 null。
@@ -785,9 +791,12 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // 🔴 这一条有单测钉死(`test/zero_arkit_capture_path_test.dart`):
       //    ON 时 `pocketworld_official_arkit` 这条 MethodChannel 上
       //    **一条 `startSession` 都没有**。
-      final vioProvider = PwVioPoseSourceSwitch.isSelfVio
-          ? VioArPoseProvider(runtime: ZeroArkitCaptureRuntime())
-          : null;
+      final ZeroArkitCaptureRuntime? zeroArkitRuntime =
+          PwVioPoseSourceSwitch.isSelfVio ? ZeroArkitCaptureRuntime() : null;
+      _zeroArkitRuntime = zeroArkitRuntime;
+      final vioProvider = zeroArkitRuntime == null
+          ? null
+          : VioArPoseProvider(runtime: zeroArkitRuntime);
       if (vioProvider != null) {
         DeviceLog.log(
           'OfficialARCapturePage',
@@ -5083,14 +5092,24 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // 我们根本不建它,于是它会**永远轮询下去**(0.05s 一次的 Timer,
       // 永不 invalidate),而且画面恒黑。
       // ⇒ ON 时不挂这个 view。**布局与尺寸一字未改**(同一个
-      //   `CapturePreviewRect` + 同一个黑底),换掉的只是里面那块画面来源。
-      // 🔴 预览画面本身**本刀没做** —— 用我们自己的相机流渲染背景是
-      //   「共享 AR 渲染器」那条分支的事(`ar_minimal_loop_page` 已验过
-      //   Filament 这条路)。这里先留一块黑,如实少一档,不假装有预览。
+      //   `CapturePreviewRect` + 同一个黑底),换掉的只是里面那块画面来源:
+      //   我们自己的相机流(`PwCameraSlot` 深度 1 槽)经 Filament 画成背景,
+      //   即 `ZeroArkitCameraPreview` —— 它是台架 `ar_minimal_loop_page`
+      //   (09-18 真机验过)拆出来的 widget,**不开相机**,相机归运行时。
+      //   运行时起失败时槽里永远没有帧 ⇒ 画面保持黑,不假装有预览。
       if (PwVioPoseSourceSwitch.isSelfVio) {
-        return const ColoredBox(
-          color: Color(0xFF000000),
-          child: CapturePreviewRect(child: SizedBox.expand()),
+        final ZeroArkitCaptureRuntime? rt = _zeroArkitRuntime;
+        return ColoredBox(
+          color: const Color(0xFF000000),
+          child: CapturePreviewRect(
+            child: rt == null
+                ? const SizedBox.expand()
+                : ZeroArkitCameraPreview(
+                    imageWidth: rt.captureWidth,
+                    imageHeight: rt.captureHeight,
+                    poseReader: () => _vioPoseProvider?.lastTrackedPose,
+                  ),
+          ),
         );
       }
       // [WYSIWYG 2026-07-19] 预览 letterbox 成照片画幅(photo43=3:4),黑边

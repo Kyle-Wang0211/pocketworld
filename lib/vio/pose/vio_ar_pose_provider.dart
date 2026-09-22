@@ -194,6 +194,17 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
   @override
   ARPose? get lastPose => _last;
 
+  /// 最近一次引擎位姿,**引擎系**(XRSLAM z-up),**未换轴**。
+  ///
+  /// 给渲染器用:`WorldToRenderer` 自己做 z-up → y-up
+  /// (world_to_renderer.dart 文件头,实测判死的换轴)。**不是** [lastPose]
+  /// 那条 ARKit 口径 —— 那条已按 `xrslam_world_axis.dart` 换成 y-up 给
+  /// dome / 落盘用。两条都 y-up,但差一个绕竖轴的偏航(VIO 里不可观);
+  /// 画虚拟内容之前必须统一成一条,见 zero_arkit_camera_preview.dart 文件头。
+  /// 本刀只画相机背景,位姿不影响背景像素。
+  TrackedPose? get lastTrackedPose => _lastTracked;
+  TrackedPose? _lastTracked;
+
   @override
   Stream<ARPose> start() {
     if (_timer != null) return _controller.stream;
@@ -227,6 +238,7 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
       stationaryAttitude: null,
       nowSeconds: now,
     );
+    _lastTracked = tracked;
 
     final VioFrameDisposition disposition = _initGate.admit(tSec: now);
     _confidence = summarizeVioPoseConfidence(
@@ -375,6 +387,8 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
     _timer?.cancel();
     _timer = null;
     _clock.stop();
+    // 相机与会话一停,位姿就是陈旧的 —— 渲染器不该再拿到它。
+    _lastTracked = null;
     // 🔴 相机与会话必须跟着停,否则离开采集页后相机还开着(而且租约还在
     //    我们名下 ⇒ 再进页面时 ARKit 那条臂也起不来)。`stop` 是幂等的。
     _runtime?.stop();

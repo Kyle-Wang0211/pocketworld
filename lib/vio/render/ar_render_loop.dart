@@ -594,4 +594,15 @@ class ArRenderLoop {
     _disposed = true;
     await _triangle.destroy();
   }
+
+  /// 给「ViewerWidget 先于本回路拆掉」的场合用 —— 生产采集页就是。
+  ///
+  /// 只销毁纹理/采样器/材质,**不碰 asset**(它已由 `viewer.dispose()` →
+  /// `destroyAssets()` 销毁;再碰就是双重释放,见
+  /// [CameraFeedTriangle.destroyGpuResourcesOnly])。之后 [step] 直接返回。
+  Future<void> disposeForViewerTeardown() async {
+    if (_disposed) return;
+    _disposed = true;
+    await _triangle.destroyGpuResourcesOnly();
+  }
 }
