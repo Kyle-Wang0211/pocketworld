@@ -505,6 +505,8 @@ class ManualCaptureV2Result {
     required this.sfmGrayPath,
     this.sfmGrayWidth = 0,
     this.sfmGrayHeight = 0,
+    this.sfmGrayByteLength = 0,
+    this.sfmGraySha256,
     this.timestamp,
     this.imageWidth = 0,
     this.imageHeight = 0,
@@ -521,6 +523,8 @@ class ManualCaptureV2Result {
   final String sfmGrayPath;
   final int sfmGrayWidth;
   final int sfmGrayHeight;
+  final int sfmGrayByteLength;
+  final String? sfmGraySha256;
   final double? timestamp;
   final int imageWidth;
   final int imageHeight;
@@ -538,7 +542,9 @@ class ManualCaptureV2Result {
       committed &&
       sfmGrayPath.isNotEmpty &&
       sfmGrayWidth > 0 &&
-      sfmGrayHeight > 0;
+      sfmGrayHeight > 0 &&
+      sfmGrayByteLength == sfmGrayWidth * sfmGrayHeight &&
+      RegExp(r'^[0-9a-f]{64}$').hasMatch(sfmGraySha256 ?? '');
 
   factory ManualCaptureV2Result.fromPlatformReply(dynamic reply) {
     if (reply is! Map) {
@@ -564,6 +570,8 @@ class ManualCaptureV2Result {
       sfmGrayPath: requiredString('sfm_gray_path'),
       sfmGrayWidth: (reply['sfm_gray_w'] as num?)?.toInt() ?? 0,
       sfmGrayHeight: (reply['sfm_gray_h'] as num?)?.toInt() ?? 0,
+      sfmGrayByteLength: (reply['sfm_gray_bytes'] as num?)?.toInt() ?? 0,
+      sfmGraySha256: reply['sfm_gray_sha256'] as String?,
       timestamp: (reply['t'] as num?)?.toDouble(),
       imageWidth: (reply['image_w'] as num?)?.toInt() ?? 0,
       imageHeight: (reply['image_h'] as num?)?.toInt() ?? 0,
@@ -571,6 +579,167 @@ class ManualCaptureV2Result {
       extrinsic4x4: doubles('extrinsic'),
       errorCode: reply['error_code'] as String?,
       message: reply['message'] as String?,
+    );
+  }
+}
+
+final class ManualCaptureV2ArtifactReceipt {
+  const ManualCaptureV2ArtifactReceipt({
+    required this.kind,
+    required this.path,
+    required this.byteLength,
+    required this.sha256,
+  });
+
+  final String kind;
+  final String path;
+  final int byteLength;
+  final String sha256;
+}
+
+/// Capture-scoped native durable intent/commit evidence returned after a Dart
+/// process restart. This is evidence only; callers still require the matching
+/// orphan/queue descriptor before promoting ledger stages.
+final class ManualCaptureV2RecoveryJob {
+  const ManualCaptureV2RecoveryJob({
+    required this.captureJobID,
+    required this.status,
+    required this.jpegPath,
+    required this.metadataPath,
+    required this.sfmGrayPath,
+    required this.frameIdentity,
+    required this.snapshotIdentity,
+    required this.intentDurable,
+    required this.commitMarkerPresent,
+    required this.captureCommitReceiptPresent,
+    required this.artifactReceipts,
+    this.errorCode,
+    this.message,
+    this.recoverable,
+  });
+
+  final String captureJobID;
+  final String status;
+  final String jpegPath;
+  final String metadataPath;
+  final String sfmGrayPath;
+  final String frameIdentity;
+  final String snapshotIdentity;
+  final bool intentDurable;
+  final bool commitMarkerPresent;
+  final bool captureCommitReceiptPresent;
+  final List<ManualCaptureV2ArtifactReceipt> artifactReceipts;
+
+  /// Exact native terminal failure evidence. These fields are populated only
+  /// when [status] is `failed`; callers must surface them against the same
+  /// [captureJobID] instead of collapsing failures into a capture-wide reason.
+  final String? errorCode;
+  final String? message;
+  final bool? recoverable;
+
+  bool get hasExactCommittedBundle {
+    if (status != 'committed' ||
+        !intentDurable ||
+        !commitMarkerPresent ||
+        !captureCommitReceiptPresent ||
+        artifactReceipts.length != 3) {
+      return false;
+    }
+    final expected = <String, String>{
+      'jpeg': jpegPath,
+      'metadata': metadataPath,
+      'sfm_gray': sfmGrayPath,
+    };
+    final seen = <String>{};
+    for (final receipt in artifactReceipts) {
+      if (!seen.add(receipt.kind) ||
+          expected[receipt.kind] != receipt.path ||
+          receipt.byteLength <= 0 ||
+          !RegExp(r'^[0-9a-f]{64}$').hasMatch(receipt.sha256)) {
+        return false;
+      }
+    }
+    return seen.length == expected.length && seen.containsAll(expected.keys);
+  }
+
+  factory ManualCaptureV2RecoveryJob.fromPlatformReply(Object? raw) {
+    if (raw is! Map) {
+      throw const FormatException('manual recovery job is not a map');
+    }
+    String requiredString(String key) {
+      final value = raw[key];
+      if (value is String && value.isNotEmpty && value.trim() == value) {
+        return value;
+      }
+      throw FormatException('manual recovery job missing $key');
+    }
+
+    final status = requiredString('status');
+    final errorCode = raw['error_code'];
+    final message = raw['message'];
+    final recoverable = raw['recoverable'];
+    if (status == 'failed') {
+      if (errorCode is! String ||
+          errorCode.isEmpty ||
+          errorCode.trim() != errorCode ||
+          message is! String ||
+          message.isEmpty ||
+          message.contains('\u0000') ||
+          recoverable is! bool) {
+        throw const FormatException(
+          'manual recovery failed job evidence invalid',
+        );
+      }
+    } else if (status != 'committed' && status != 'raw_spill_pending') {
+      throw FormatException('manual recovery job has invalid status $status');
+    }
+
+    final receiptsRaw = raw['artifact_receipts'];
+    if (receiptsRaw is! List) {
+      throw const FormatException('manual recovery artifact receipts missing');
+    }
+    final receipts = <ManualCaptureV2ArtifactReceipt>[];
+    for (final item in receiptsRaw) {
+      if (item is! Map) {
+        throw const FormatException('manual recovery artifact receipt invalid');
+      }
+      final kind = item['kind'];
+      final path = item['path'];
+      final bytes = item['bytes'];
+      final hash = item['sha256'];
+      if (kind is! String ||
+          path is! String ||
+          bytes is! num ||
+          hash is! String) {
+        throw const FormatException('manual recovery artifact receipt invalid');
+      }
+      receipts.add(
+        ManualCaptureV2ArtifactReceipt(
+          kind: kind,
+          path: path,
+          byteLength: bytes.toInt(),
+          sha256: hash,
+        ),
+      );
+    }
+    return ManualCaptureV2RecoveryJob(
+      captureJobID: requiredString('capture_job_id'),
+      status: status,
+      jpegPath: requiredString('jpeg_path'),
+      metadataPath: requiredString('metadata_path'),
+      sfmGrayPath: requiredString('sfm_gray_path'),
+      frameIdentity: requiredString('frame_identity'),
+      snapshotIdentity: requiredString('snapshot_identity'),
+      intentDurable: raw['intent_durable'] == true,
+      commitMarkerPresent: raw['commit_marker_present'] == true,
+      captureCommitReceiptPresent:
+          raw['capture_commit_receipt_present'] == true,
+      artifactReceipts: List<ManualCaptureV2ArtifactReceipt>.unmodifiable(
+        receipts,
+      ),
+      errorCode: errorCode as String?,
+      message: message as String?,
+      recoverable: recoverable as bool?,
     );
   }
 }
@@ -585,6 +754,58 @@ abstract interface class ManualCaptureV2Provider {
   Future<ManualCaptureV2Result> awaitManualCaptureV2(String captureJobID);
 }
 
+abstract interface class ManualCaptureV2RecoveryProvider {
+  Future<List<ManualCaptureV2RecoveryJob>> listManualCaptureV2Jobs(
+    String captureDirectory,
+  );
+}
+
+final class ManualCaptureV2DiscardReceipt {
+  const ManualCaptureV2DiscardReceipt({
+    required this.captureDirectory,
+    required this.discardedJobIds,
+    required this.releasedRawBytes,
+    required this.backlogMetrics,
+  });
+
+  final String captureDirectory;
+  final List<String> discardedJobIds;
+  final int releasedRawBytes;
+  final Map<String, Object?> backlogMetrics;
+
+  factory ManualCaptureV2DiscardReceipt.fromPlatformReply(Object? raw) {
+    if (raw is! Map ||
+        raw['schema_version'] != 'aether_manual_capture_v2_discard_v1' ||
+        raw['capture_directory'] is! String ||
+        raw['discarded_job_ids'] is! List ||
+        raw['released_raw_bytes'] is! num ||
+        raw['backlog_metrics'] is! Map) {
+      throw const FormatException('manual capture discard reply invalid');
+    }
+    final ids = (raw['discarded_job_ids'] as List).whereType<String>().toList();
+    if (ids.length != (raw['discarded_job_ids'] as List).length ||
+        ids.any((id) => id.isEmpty || id.trim() != id) ||
+        ids.toSet().length != ids.length ||
+        (raw['released_raw_bytes'] as num).toInt() < 0) {
+      throw const FormatException('manual capture discard evidence invalid');
+    }
+    return ManualCaptureV2DiscardReceipt(
+      captureDirectory: raw['capture_directory'] as String,
+      discardedJobIds: List<String>.unmodifiable(ids),
+      releasedRawBytes: (raw['released_raw_bytes'] as num).toInt(),
+      backlogMetrics: Map<String, Object?>.unmodifiable(
+        Map<String, Object?>.from(raw['backlog_metrics'] as Map),
+      ),
+    );
+  }
+}
+
+abstract interface class ManualCaptureV2DiscardProvider {
+  Future<ManualCaptureV2DiscardReceipt> discardManualCaptureV2Jobs(
+    String captureDirectory,
+  );
+}
+
 /// Frame-exact streaming-SfM feed extracted natively alongside the JPEG save:
 /// an aspect-preserving grayscale of the SAME ARFrame snapshot plus that
 /// frame's intrinsics/extrinsic. This is the input contract for
@@ -594,6 +815,7 @@ abstract interface class ManualCaptureV2Provider {
 /// aspect) before feeding SfM.
 class SfmFrameFeed {
   const SfmFrameFeed({
+    required this.captureJobId,
     required this.gray,
     required this.grayW,
     required this.grayH,
@@ -603,10 +825,27 @@ class SfmFrameFeed {
     required this.extrinsic4x4,
     required this.timestamp,
     this.jpegPath,
-  });
+    this.grayFilePath,
+    this.sfmGrayByteLength,
+    this.sfmGraySha256,
+  }) : assert(captureJobId != '');
+
+  /// Stable shutter identity carried unchanged into the durable queue and its
+  /// native-OK ACK record. Final publication joins on this value, never count.
+  final String captureJobId;
 
   /// Row-major top-down 8-bit grayscale, [grayW] x [grayH].
   final Uint8List gray;
+
+  /// Optional already-fsynced gray payload. Manual shutter v2 supplies this
+  /// path so the durable FIFO can atomically move the file into its own spool
+  /// instead of reading 4K bytes into Dart and writing a duplicate. Exactly
+  /// one of a non-empty [gray] or [grayFilePath] must carry the payload.
+  final String? grayFilePath;
+
+  /// Native durable receipt identity for a file-backed manual-v2 gray.
+  final int? sfmGrayByteLength;
+  final String? sfmGraySha256;
   final int grayW;
   final int grayH;
 
@@ -630,6 +869,7 @@ class SfmFrameFeed {
   final String? jpegPath;
 
   SfmFrameFeed withJpegPath(String path) => SfmFrameFeed(
+    captureJobId: captureJobId,
     gray: gray,
     grayW: grayW,
     grayH: grayH,
@@ -639,6 +879,9 @@ class SfmFrameFeed {
     extrinsic4x4: extrinsic4x4,
     timestamp: timestamp,
     jpegPath: path,
+    grayFilePath: grayFilePath,
+    sfmGrayByteLength: sfmGrayByteLength,
+    sfmGraySha256: sfmGraySha256,
   );
 }
 

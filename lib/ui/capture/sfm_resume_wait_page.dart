@@ -20,18 +20,119 @@ import 'package:flutter/material.dart';
 import '../../capture/sfm_resume.dart';
 import 'sparse_cloud_viewer_page.dart';
 
+enum SfmResumeUiActivity { none, sameCapture, otherCapture }
+
+class SfmResumeUiSnapshot {
+  const SfmResumeUiSnapshot({
+    required this.captureDir,
+    required this.future,
+    required this.forceRegenerate,
+  });
+
+  final String captureDir;
+  final Future<bool> future;
+  final bool forceRegenerate;
+}
+
+SfmResumeUiSnapshot? _activeSfmResume;
+
+String? get activeSfmResumeCaptureDir => _activeSfmResume?.captureDir;
+
+String? _captureIdentity(String? path) {
+  if (path == null) return null;
+  var normalized = path.trim();
+  while (normalized.length > 1 && normalized.endsWith('/')) {
+    normalized = normalized.substring(0, normalized.length - 1);
+  }
+  if (normalized.isEmpty) return null;
+  return normalized.split('/').last;
+}
+
+SfmResumeUiActivity sfmResumeUiActivityFor(String? captureDir) {
+  final active = _captureIdentity(_activeSfmResume?.captureDir);
+  if (active == null) return SfmResumeUiActivity.none;
+  return active == _captureIdentity(captureDir)
+      ? SfmResumeUiActivity.sameCapture
+      : SfmResumeUiActivity.otherCapture;
+}
+
+SfmResumeUiSnapshot? activeSfmResumeSnapshotFor(String? captureDir) =>
+    sfmResumeUiActivityFor(captureDir) == SfmResumeUiActivity.sameCapture
+    ? _activeSfmResume
+    : null;
+
+Future<bool>? _attachOrStartResume({
+  required String captureDir,
+  required bool forceRegenerate,
+  required Future<bool> Function(String captureDir, {bool forceRegenerate})
+  resume,
+}) {
+  switch (sfmResumeUiActivityFor(captureDir)) {
+    case SfmResumeUiActivity.sameCapture:
+      return _activeSfmResume?.future;
+    case SfmResumeUiActivity.otherCapture:
+      return null;
+    case SfmResumeUiActivity.none:
+      late final Future<bool> future;
+      try {
+        future = resume(captureDir, forceRegenerate: forceRegenerate);
+      } catch (_) {
+        future = Future<bool>.value(false);
+      }
+      final snapshot = SfmResumeUiSnapshot(
+        captureDir: captureDir,
+        future: future,
+        forceRegenerate: forceRegenerate,
+      );
+      _activeSfmResume = snapshot;
+      void clear() {
+        if (identical(_activeSfmResume, snapshot)) {
+          _activeSfmResume = null;
+        }
+      }
+
+      future.then<void>(
+        (_) => clear(),
+        onError: (Object error, StackTrace stackTrace) => clear(),
+      );
+      return future;
+  }
+}
+
 class SfmResumeWaitPage extends StatefulWidget {
   const SfmResumeWaitPage({
     super.key,
     required this.captureDir,
     required this.title,
-  });
+    this.forceRegenerate = false,
+    this.attachedFuture,
+    this.attachOnly = false,
+    @visibleForTesting this.resumeForTesting,
+  }) : assert(!attachOnly || attachedFuture != null);
 
   /// 已通过 resolveRecoverableCaptureDir 解析的、当前容器内的 capture 目录。
   final String captureDir;
 
   /// 草稿名(成功后点云查看器沿用)。
   final String title;
+
+  /// `true` only for the user's explicit "rebuild again" action. Normal
+  /// interrupted-capture recovery must retain the commit/recovery fast paths.
+  final bool forceRegenerate;
+
+  /// Exact already-running resume Future captured before route construction.
+  /// It may already be complete; attaching must still display that result and
+  /// must never re-enter [resumeSingleCapture].
+  final Future<bool>? attachedFuture;
+
+  /// Refuses to start when an attachment was not supplied. Re-entry routes use
+  /// this to make "attach, never restart" an explicit constructor contract.
+  final bool attachOnly;
+
+  /// Keeps the route contract testable without opening the native SfM worker.
+  @visibleForTesting
+  final Future<bool> Function(String captureDir, {bool forceRegenerate})?
+  resumeForTesting;
 
   @override
   State<SfmResumeWaitPage> createState() => _SfmResumeWaitPageState();
@@ -40,21 +141,43 @@ class SfmResumeWaitPage extends StatefulWidget {
 class _SfmResumeWaitPageState extends State<SfmResumeWaitPage> {
   bool _done = false;
   bool _ok = false;
+  bool _blockedByOtherCapture = false;
   Timer? _ticker;
   final DateTime _enteredAt = DateTime.now();
 
   @override
   void initState() {
     super.initState();
-    // 幂等:已在跑就挂到同一 future(绝不起第二个 worker)。
-    resumeSingleCapture(widget.captureDir).then((ok) {
+    // Module-wide single session: same capture attaches to the exact future;
+    // another capture is refused before it can call the native backend.
+    final resume = widget.resumeForTesting ?? resumeSingleCapture;
+    final future =
+        widget.attachedFuture ??
+        (widget.attachOnly
+            ? null
+            : _attachOrStartResume(
+                captureDir: widget.captureDir,
+                forceRegenerate: widget.forceRegenerate,
+                resume: resume,
+              ));
+    if (future == null) {
+      _done = true;
+      _blockedByOtherCapture = true;
+      return;
+    }
+    void finish(bool ok) {
       if (!mounted) return;
       setState(() {
         _done = true;
         _ok = ok;
       });
       _ticker?.cancel();
-    });
+    }
+
+    future.then<void>(
+      finish,
+      onError: (Object error, StackTrace stackTrace) => finish(false),
+    );
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted && !_done) setState(() {});
     });
@@ -179,13 +302,15 @@ class _SfmResumeWaitPageState extends State<SfmResumeWaitPage> {
                       size: 40,
                     ),
                     const SizedBox(height: 14),
-                    const Text(
-                      '这次未能完成重建,素材已保留',
+                    Text(
+                      _blockedByOtherCapture ? '另一项重建正在进行' : '这次未能完成重建,素材已保留',
                       style: TextStyle(color: Colors.white, fontSize: 15),
                     ),
                     const SizedBox(height: 8),
-                    const Text(
-                      '可稍后在草稿里再次尝试(设备冷却后成功率更高)',
+                    Text(
+                      _blockedByOtherCapture
+                          ? '完成当前重建后再试，未启动第二个重建任务'
+                          : '可稍后在草稿里再次尝试(设备冷却后成功率更高)',
                       textAlign: TextAlign.center,
                       style: TextStyle(color: Colors.white38, fontSize: 12),
                     ),

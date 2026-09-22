@@ -37,39 +37,40 @@ void _checkClose(double got, double want, double tol, String label) {
 
 /// 构造一个只带一个 preview 点的 ARPose(种下体素用)。
 ARPose _poseWithPoint(Vector3 p) => ARPose(
-      position: Vector3.zero(),
-      orientation: Quaternion.identity(),
-      azimuth: 0,
-      elevation: 0,
-      isTracking: true,
-      timestamp: 0,
-      hasOrigin: false,
-      worldOrigin: Vector3.zero(),
-      worldYaw: 0,
-      extrinsic4x4: const <double>[],
-      intrinsicFxFyCxCy: const <double>[],
-      previewPoints: <ARPreviewPoint>[
-        ARPreviewPoint(position: p, r: 128, g: 128, b: 128, confidence: 1.0),
-      ],
-    );
+  position: Vector3.zero(),
+  orientation: Quaternion.identity(),
+  azimuth: 0,
+  elevation: 0,
+  isTracking: true,
+  timestamp: 0,
+  hasOrigin: false,
+  worldOrigin: Vector3.zero(),
+  worldYaw: 0,
+  extrinsic4x4: const <double>[],
+  intrinsicFxFyCxCy: const <double>[],
+  previewPoints: <ARPreviewPoint>[
+    ARPreviewPoint(position: p, r: 128, g: 128, b: 128, confidence: 1.0),
+  ],
+);
 
 /// 相机在 [camPos]、旋转为单位阵(ARKit 相机系:-Z 前、+Y 上)的一拍。
 /// extrinsic4x4 是列主序 camera-to-world。
 SfmFrameFeed _feedAt(Vector3 camPos) => SfmFrameFeed(
-      gray: Uint8List(0),
-      grayW: 640,
-      grayH: 480,
-      imageW: 640,
-      imageH: 480,
-      intrinsicFxFyCxCy: const <double>[500, 500, 320, 240],
-      extrinsic4x4: <double>[
-        1, 0, 0, 0, //
-        0, 1, 0, 0, //
-        0, 0, 1, 0, //
-        camPos.x, camPos.y, camPos.z, 1, //
-      ],
-      timestamp: 0,
-    );
+  captureJobId: 'coverage-parallax-check',
+  gray: Uint8List(0),
+  grayW: 640,
+  grayH: 480,
+  imageW: 640,
+  imageH: 480,
+  intrinsicFxFyCxCy: const <double>[500, 500, 320, 240],
+  extrinsic4x4: <double>[
+    1, 0, 0, 0, //
+    0, 1, 0, 0, //
+    0, 0, 1, 0, //
+    camPos.x, camPos.y, camPos.z, 1, //
+  ],
+  timestamp: 0,
+);
 
 void main() {
   final voxelPos = Vector3(0, 0, -2); // 相机原点正前方 2 m
@@ -112,8 +113,10 @@ void main() {
   _check(flat.parallaxStarvedVoxelCount == 1, '视差饥饿体素计数=1');
   final flatPacked = flat.packed();
   _check(flatPacked.count == 1, 'packed 点数=1');
-  _check(flatPacked.xyz.length == 3 && flatPacked.rgb.length == 3,
-      'packed 布局:3×f32 + 3×u8');
+  _check(
+    flatPacked.xyz.length == 3 && flatPacked.rgb.length == 3,
+    'packed 布局:3×f32 + 3×u8',
+  );
   _checkClose(flatPacked.xyz[2], -2.0, 1e-6, 'packed xyz 同序同值');
   _check(
     flatPacked.rgb[0] == 255 && flatPacked.rgb[1] == 255,
@@ -150,8 +153,10 @@ void main() {
     }
     final p = c.packed();
     final isGreen = p.rgb[0] == 0 && p.rgb[1] == 255;
-    _check(isGreen == wantGreen,
-        '$deg° → ${wantGreen ? "绿" : "黄"} (r=${p.rgb[0]} g=${p.rgb[1]})');
+    _check(
+      isGreen == wantGreen,
+      '$deg° → ${wantGreen ? "绿" : "黄"} (r=${p.rgb[0]} g=${p.rgb[1]})',
+    );
   }
 
   if (_failures > 0) {

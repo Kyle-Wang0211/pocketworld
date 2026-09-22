@@ -28,7 +28,12 @@ import 'dart:math' as math;
 import 'dart:typed_data' show Int32List, Float32List, Float64List;
 
 import 'package:flutter/foundation.dart'
-    show compute, defaultTargetPlatform, TargetPlatform, ValueListenable;
+    show
+        compute,
+        defaultTargetPlatform,
+        TargetPlatform,
+        ValueListenable,
+        visibleForTesting;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
@@ -49,6 +54,8 @@ import '../../capture/telemetry_writer.dart';
 import '../../capture/dome/dome_target_points.dart';
 import '../../capture/realtime_capture_preview.dart';
 import '../../capture/sfm_live_recon.dart';
+import '../../capture/sfm_registration_publish_gate.dart';
+import '../../capture/sfm_resume.dart';
 import '../../dome/ar_pose.dart';
 import '../../l10n/app_localizations.dart';
 import '../../me/scan_record_store.dart';
@@ -59,6 +66,29 @@ import '../scan_record.dart';
 import 'ar_album_page.dart';
 import 'manual_capture_shutter_button.dart';
 import 'sfm_preview_overlay.dart';
+
+@visibleForTesting
+bool shouldPersistLocalCaptureDraft({
+  required int photoCount,
+  required int persistedManualJobCount,
+  required int unpersistedAttemptCount,
+}) =>
+    photoCount > 0 ||
+    persistedManualJobCount > 0 ||
+    unpersistedAttemptCount > 0;
+
+@visibleForTesting
+bool shouldDeferCaptureToRecoveryDraft({
+  required bool photoBarrierFailed,
+  required bool curatedFramesEmpty,
+}) => photoBarrierFailed || curatedFramesEmpty;
+
+@visibleForTesting
+String capturePhotoBarrierRecoveryMessage(
+  CapturePhotoSaveBarrierException failure,
+) => failure.failures
+    .map((job) => '${job.captureJobID}: ${job.code}: ${job.message}')
+    .join('\n');
 
 class ARCapturePage extends StatefulWidget {
   const ARCapturePage({super.key});
@@ -71,6 +101,101 @@ class ARCapturePage extends StatefulWidget {
 /// Native ARKit keeps continuous autofocus/exposure in charge during capture;
 /// subject locking is an AR anchor operation, not a hardware lens lock.
 const MethodChannel _arKitChannel = MethodChannel('aether_arkit');
+
+/// Result of publishing one colored live sparse snapshot.
+///
+/// A local/preview snapshot may be persisted for crash recovery but is never
+/// allowed to acknowledge replay payloads. A refined snapshot is deliverable
+/// only after the exact persist receipt has passed the durable final-artifact
+/// transaction.
+@visibleForTesting
+class LiveSparseArtifactPublication {
+  const LiveSparseArtifactPublication({
+    required this.receipt,
+    required this.finalArtifactCommitted,
+  });
+
+  final SparsePersistReceipt receipt;
+  final bool finalArtifactCommitted;
+}
+
+/// Receipt-bound publication gate shared by the real page and focused tests.
+///
+/// The callback split makes ordering observable without weakening production:
+/// persist must finish first; local snapshots stop there; refined snapshots
+/// must then complete the durable prepared -> purge -> committed transaction.
+@visibleForTesting
+Future<LiveSparseArtifactPublication> persistAndCommitLiveSparseArtifact({
+  required bool refined,
+  required int expectedPointCount,
+  required Future<SparsePersistReceipt> Function() persist,
+  required Future<bool> Function(SparsePersistReceipt receipt) commit,
+  FutureOr<void> Function()? requireBeforePersist,
+  FutureOr<void> Function(SparsePersistReceipt receipt)? requireBeforeCommit,
+}) async {
+  await requireBeforePersist?.call();
+  final receipt = await persist();
+  if (receipt.refined != refined || receipt.pointCount != expectedPointCount) {
+    throw StateError('persist receipt does not match the live snapshot');
+  }
+  if (!refined) {
+    return LiveSparseArtifactPublication(
+      receipt: receipt,
+      finalArtifactCommitted: false,
+    );
+  }
+  await requireBeforeCommit?.call(receipt);
+  if (!await commit(receipt)) {
+    throw StateError('durable final-artifact commit was not completed');
+  }
+  return LiveSparseArtifactPublication(
+    receipt: receipt,
+    finalArtifactCommitted: true,
+  );
+}
+
+/// Reopens durable queue + ledger evidence for each publication boundary.
+/// Nothing returned by the UI isolate is trusted across persist: commit-time
+/// evaluation rereads both manifests and therefore observes a late queue
+/// block/pending/replay mutation instead of purging recovery material.
+@visibleForTesting
+Future<SfmRegistrationPublishDecision> requireLiveRegistrationPublishGate({
+  required CaptureSession session,
+  required SfmLiveRecon recon,
+  required String captureDir,
+  required SfmLiveSnapshot snapshot,
+  required String artifactIdentity,
+  required String evidenceToken,
+  required bool reloadPersistedLedger,
+  SparsePersistReceipt? sparseReceipt,
+}) async {
+  return recon.withDurableRegistrationEvidence((queue) async {
+    final evidence = await session.reconcileManualFinalRegistration(
+      durableQueue: queue,
+      snapshot: snapshot,
+      artifactIdentity: artifactIdentity,
+      evidenceToken: evidenceToken,
+      reloadPersistedEvidence: reloadPersistedLedger,
+    );
+    final decision = evaluateSfmRegistrationPublishGate(
+      durableQueue: queue,
+      ledger: evidence.ledger,
+      finalRegistration: evidence.finalRegistration,
+      snapshot: snapshot,
+    );
+    decision.requireCanPublish();
+    if (sparseReceipt != null) {
+      await persistSfmRegistrationGateReceipt(
+        captureDir: captureDir,
+        sparseReceipt: sparseReceipt,
+        decision: decision,
+        ledger: evidence.ledger,
+        durableQueue: queue,
+      );
+    }
+    return decision;
+  });
+}
 
 // On-device colorize decode moved to native ImageIO downscale (see
 // _decodeJpegNative + AetherARKitPlugin decodeJpegForColor). Pure-Dart
@@ -566,7 +691,31 @@ class _ARCapturePageState extends State<ARCapturePage>
 
     final session = _session;
     if (session != null) {
-      await session.discardCurrentCapture();
+      _finalizingRecording = true;
+      try {
+        // First stop accepting shutters, then wait until every native writer
+        // and durable handoff has reached a terminal result.
+        await session.stop();
+        try {
+          await session.waitForPendingPhotoSaves();
+        } on CapturePhotoSaveBarrierException {
+          // Explicit discard remains authorized after terminal failures.
+        }
+
+        // The queue/worker owns files under captureDir. Join it before the
+        // recursive delete so no late ACK/manifest write can recreate a
+        // half-deleted capture root.
+        await _sfmFeedSub?.cancel();
+        _sfmFeedSub = null;
+        await _sfmEventSub?.cancel();
+        _sfmEventSub = null;
+        final recon = _sfmRecon;
+        _sfmRecon = null;
+        if (recon != null) await recon.dispose();
+        await session.discardCurrentCapture();
+      } finally {
+        _finalizingRecording = false;
+      }
     }
     if (!mounted) return;
     setState(() {
@@ -1038,6 +1187,29 @@ class _ARCapturePageState extends State<ARCapturePage>
 
   void _onSfmEvent(SfmLiveEvent event) {
     if (!mounted) return;
+    if (event is SfmLiveFrameFed && event.result == 'ok') {
+      final jpegPath = _sfmRecon?.fedFrameMeta[event.frameId]?.jpegPath;
+      final session = _session;
+      if (jpegPath != null && session != null) {
+        unawaited(
+          session
+              .recordManualSfmFrameFed(
+                jpegPath: jpegPath,
+                nativeImageId: event.frameId,
+                result: event.result,
+              )
+              .catchError((Object error, StackTrace stackTrace) {
+                // Final publication reopens the durable queue and can repair a
+                // lost process-local callback. A persistent write failure still
+                // makes that final gate fail closed.
+                DeviceLog.log(
+                  'ARCapturePage',
+                  'manual SfM ingestion ledger write failed: $error\n$stackTrace',
+                );
+              }),
+        );
+      }
+    }
     // 卡片边框连通性(黑→白/红):native 渲染,Flutter 无需 rebuild —
     // 不进 setState,处理完直接返回。
     if (event is SfmLiveConnectivity) {
@@ -1134,7 +1306,11 @@ class _ARCapturePageState extends State<ARCapturePage>
             if (localFallback != null) {
               _sfmSnapshot = localFallback;
               _sfmGhostVisibility = _pendingLocalVisibility; // 渲染门随快照配对
-              _sfmPhase = SfmPreviewPhase.refined; // show the done chip + cloud
+              // The LOCAL cloud remains viewable diagnostic material, but it
+              // is not a refined durable artifact and must never expose the
+              // completion chip or authorize replay cleanup.
+              _sfmPhase = SfmPreviewPhase.error;
+              _sfmErrorText = '$stage: $message';
               _pendingLocalColored = null;
               _pendingLocalVisibility = null;
             } else {
@@ -1553,20 +1729,70 @@ class _ARCapturePageState extends State<ARCapturePage>
       unawaited(_pushReconProgress(0.85, '保存点云中'));
     }
     final captureDir = _session?.captureDir;
-    final isTerminalColorize =
-        snap.summary['terminal'] == true ||
-        snap.summary['source'] == 'streaming_global_ba' ||
-        snap.refined;
+    // Only a true REFINED generation may close the durable replay transaction.
+    // LOCAL/streaming previews stay useful for live display, but never grant
+    // permission to purge their recovery inputs.
+    final isTerminalColorize = snap.refined;
+    var terminalArtifactCommitted = false;
+    Object? publicationError;
     if (captureDir != null && identical(_colorizeTarget, snap)) {
       final psw = Stopwatch()..start();
       var persistOk = false;
+      SparsePersistReceipt? persistedReceipt;
       try {
-        await persistSparseSnapshot(
-          captureDir: captureDir,
-          snapshot: fsnap,
-          rgb: frgb,
+        final publication = await persistAndCommitLiveSparseArtifact(
+          refined: fsnap.refined,
+          expectedPointCount: fsnap.pointCount,
+          requireBeforePersist: fsnap.refined
+              ? () => requireLiveRegistrationPublishGate(
+                  session: _session!,
+                  recon: _sfmRecon!,
+                  captureDir: captureDir,
+                  snapshot: fsnap,
+                  artifactIdentity:
+                      'prepersist-${captureDir.split(Platform.pathSeparator).last}-'
+                      '${fsnap.poseCount}-${fsnap.pointCount}',
+                  evidenceToken:
+                      'prepersist-${fsnap.poseCount}-${fsnap.registeredCount}',
+                  reloadPersistedLedger: false,
+                )
+              : null,
+          persist: () async {
+            final receipt = await persistSparseSnapshot(
+              captureDir: captureDir,
+              snapshot: fsnap,
+              rgb: frgb,
+            );
+            persistedReceipt = receipt;
+            return receipt;
+          },
+          requireBeforeCommit: fsnap.refined
+              ? (receipt) => requireLiveRegistrationPublishGate(
+                  session: _session!,
+                  recon: _sfmRecon!,
+                  captureDir: captureDir,
+                  snapshot: fsnap,
+                  artifactIdentity:
+                      'prepersist-${captureDir.split(Platform.pathSeparator).last}-'
+                      '${fsnap.poseCount}-${fsnap.pointCount}',
+                  evidenceToken:
+                      'receipt-${receipt.metaSha256}-${receipt.pointCount}',
+                  reloadPersistedLedger: true,
+                  sparseReceipt: receipt,
+                )
+              : null,
+          commit: (receipt) async {
+            final recon = _sfmRecon;
+            if (recon == null) return false;
+            return commitPersistedSfmFinalArtifact(
+              captureDir: captureDir,
+              recon: recon,
+              receipt: receipt,
+            );
+          },
         );
         persistOk = true;
+        terminalArtifactCommitted = publication.finalArtifactCommitted;
         // [L2-ALIGN 2026-07-12] Write the delivered-order render mask alongside
         // the PLY (SEPARATE from the arbitration-owned ghost_mask.bin). Its
         // point order/count == sfm_sparse.ply, so the draft viewer aligns with
@@ -1595,7 +1821,12 @@ class _ARCapturePageState extends State<ARCapturePage>
           }
         }
       } catch (e) {
-        DeviceLog.log('ARCapturePage', 'final sparse persist failed: $e');
+        persistOk = persistedReceipt != null;
+        publicationError = e;
+        DeviceLog.log(
+          'ARCapturePage',
+          'sparse persist/final commit failed: $e',
+        );
       }
       psw.stop();
       // 遥测【persist】:PLY+meta 落盘耗时与字节数("完成"按钮的前置)。
@@ -1609,7 +1840,9 @@ class _ARCapturePageState extends State<ARCapturePage>
         }
 
         TelemetryWriter.instance.event('persist', {
-          'ok': persistOk,
+          'ok': persistOk && (!isTerminalColorize || terminalArtifactCommitted),
+          'persist_ok': persistOk,
+          'final_commit_ok': terminalArtifactCommitted,
           'ms': psw.elapsedMilliseconds,
           'n_pts': fsnap.pointCount,
           'refined': fsnap.refined,
@@ -1619,30 +1852,26 @@ class _ARCapturePageState extends State<ARCapturePage>
       } catch (_) {}
       // 案④:灵动岛真实进度锚点 4 —— PLY 已在盘上 = 95%
       // (100% 仍只由 endReconUmbrella 置,语义 = "完成"按钮可见)。
-      if (persistOk) {
-        if (isTerminalColorize) {
-          try {
-            final replayPayloadsPurged = await _sfmRecon
-                ?.markFinalArtifactCommitted();
-            if (replayPayloadsPurged == false) {
-              DeviceLog.log(
-                'ARCapturePage',
-                'final artifact landed but replay payloads remain: '
-                    'queue is not durably closed',
-              );
-            }
-          } catch (e) {
-            // Cleanup is never allowed to invalidate the PLY that already
-            // landed. Retained replay bytes are safe and can be reclaimed on
-            // a later successful final-artifact acknowledgement.
-            DeviceLog.log(
-              'ARCapturePage',
-              'replay payload cleanup deferred: $e',
-            );
-          }
-        }
+      if (persistOk && terminalArtifactCommitted) {
         unawaited(_pushReconProgress(0.95, '即将完成'));
       }
+    } else if (isTerminalColorize && identical(_colorizeTarget, snap)) {
+      publicationError = StateError('capture directory is unavailable');
+    }
+
+    // A refined cloud is not a completed product until both the exact sparse
+    // generation and its durable replay transaction are committed. Keep the
+    // umbrella alive and surface a retained-material error; cold recovery can
+    // retry the prepared transaction without rebuilding or deleting photos.
+    if (isTerminalColorize && !terminalArtifactCommitted) {
+      if (mounted && identical(_colorizeTarget, snap)) {
+        setState(() {
+          _sfmPhase = SfmPreviewPhase.error;
+          _sfmErrorText =
+              'final_artifact_commit: ${publicationError ?? "not committed"}';
+        });
+      }
+      return;
     }
     // Display only if still mounted + current. THIS is where the cloud first
     // becomes visible — fully colored — and the phase advances in lock-step, so
@@ -1656,17 +1885,22 @@ class _ARCapturePageState extends State<ARCapturePage>
       // BA wait/overwrite. `streaming_global_ba` remains accepted for old builds
       // or explicit experiments. The resume/cold-finalize path still emits a
       // noisier phase-1 `local_ready` that we defer for its `refined` follow-up.
-      final src = snap.summary['source'];
-      final isStreamingPreview =
-          src == 'streaming_local_ba' || src == 'streaming_global_ba';
-      if (snap.refined || isStreamingPreview) {
-        // Reveal the clean terminal cloud (streaming preview, or REFINED phase-2).
+      if (snap.refined && terminalArtifactCommitted) {
+        // Reveal only the exact refined generation whose durable transaction
+        // completed. This is the sole path that exposes the completion chip.
         setState(() {
           _sfmSnapshot = display;
           _sfmGhostVisibility = ghostVisibility; // 渲染门随快照配对(默认 null)
           _sfmPhase = SfmPreviewPhase.refined;
           _pendingLocalColored = null;
           _pendingLocalVisibility = null;
+        });
+      } else if (_sfmPhase == null) {
+        // During capture a local preview remains useful and does not represent
+        // completion. It never commits/purges replay state.
+        setState(() {
+          _sfmSnapshot = display;
+          _sfmGhostVisibility = ghostVisibility;
         });
       } else {
         // Defer: do NOT show the noisier phase-1 (local) cloud — wait for the
@@ -1676,8 +1910,10 @@ class _ARCapturePageState extends State<ARCapturePage>
         _pendingLocalVisibility = ghostVisibility;
       }
     }
-    if (isTerminalColorize && identical(_colorizeTarget, snap)) {
-      if (snap.refined) unawaited(_endReconUmbrella());
+    if (isTerminalColorize &&
+        terminalArtifactCommitted &&
+        identical(_colorizeTarget, snap)) {
+      unawaited(_endReconUmbrella());
     }
   }
 
@@ -2015,7 +2251,19 @@ class _ARCapturePageState extends State<ARCapturePage>
           _lockInProgress = false;
         });
       }
-      await session.waitForPendingPhotoSaves();
+      CapturePhotoSaveBarrierException? photoBarrierFailure;
+      try {
+        await session.waitForPendingPhotoSaves();
+      } on CapturePhotoSaveBarrierException catch (error) {
+        // A failed accepted job is durable recovery state, not permission to
+        // abandon the take. Keep going only far enough to create its Drafts
+        // handle; authoritative reconstruction will resume from that handle.
+        photoBarrierFailure = error;
+        DeviceLog.log(
+          'ARCapturePage',
+          'finish: photo barrier retained recovery draft: $error',
+        );
+      }
       // Capture is over — STOP THE CAMERA NOW, before the minutes-scale SfM
       // finalize. All keyframes are fed and every high-res still is on disk
       // (the barrier above guarantees it), so the ARSession (4K camera
@@ -2032,7 +2280,10 @@ class _ARCapturePageState extends State<ARCapturePage>
       } catch (_) {}
       final recon = _sfmRecon;
       final curated = _targetPoints.curateForUpload(framesPerPoint: 5);
-      if (curated.isEmpty) {
+      if (shouldDeferCaptureToRecoveryDraft(
+        photoBarrierFailed: photoBarrierFailure != null,
+        curatedFramesEmpty: curated.isEmpty,
+      )) {
         // A reconstruction-empty curation set must not erase a valid local
         // capture. Persist the draft from the on-disk user photo inventory;
         // the empty photo_bundle remains an honest reconstruction selection.
@@ -2051,7 +2302,11 @@ class _ARCapturePageState extends State<ARCapturePage>
         if (mounted && showSparseHint) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(AppL10n.of(context).captureMaterialTooSparseHint),
+              content: Text(
+                photoBarrierFailure == null
+                    ? AppL10n.of(context).captureMaterialTooSparseHint
+                    : capturePhotoBarrierRecoveryMessage(photoBarrierFailure),
+              ),
               behavior: SnackBarBehavior.floating,
             ),
           );
@@ -2123,12 +2378,14 @@ class _ARCapturePageState extends State<ARCapturePage>
     }
   }
 
-  /// Exit to Drafts — unless the live-reconstruction preview overlay is up,
-  /// in which case the user leaves via its "完成" button and the pop is
-  /// deferred to [_onSfmPreviewDone].
+  /// Exit to Drafts. When reconstruction is still running, keep this route
+  /// alive as the worker owner but reveal Drafts immediately; the matching
+  /// task card can reopen progress. A hot/paused durable FIFO must never trap
+  /// the user on a loading overlay.
   void _exitToDrafts() {
     if (_sfmPhase != null) {
       _sfmPendingPop = true;
+      _showDraftsDuringReconstruction();
       return;
     }
     Navigator.of(context).pop(true);
@@ -2144,7 +2401,12 @@ class _ARCapturePageState extends State<ARCapturePage>
     final capturedPhotoPaths = await session.reconcileCapturedPhotosFromDisk();
     final photoCount = capturedPhotoPaths.length;
     final captureDirPath = session.captureDir;
-    if (dir == null || captureDirPath == null || photoCount == 0) {
+    final shouldPersist = shouldPersistLocalCaptureDraft(
+      photoCount: photoCount,
+      persistedManualJobCount: session.manualCaptureLedger.jobs.length,
+      unpersistedAttemptCount: session.unpersistedManualAttemptPaths.length,
+    );
+    if (dir == null || captureDirPath == null || !shouldPersist) {
       if (mounted && showSnackBar) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -2228,23 +2490,17 @@ class _ARCapturePageState extends State<ARCapturePage>
   }
 
   Future<void> _deleteRetainedPhoto(String path) async {
-    _session?.forgetCapturedPhoto(path);
-    final keep = _targetPoints.retainedJpegPaths.toSet()..remove(path);
-    _targetPoints.retainOnlyJpegPaths(keep);
-    final previewPath = path.replaceFirst('/photos_highres/', '/previews/');
-    final sidecarPath = path.endsWith('.jpg')
-        ? '${path.substring(0, path.length - 4)}.json'
-        : '$path.json';
-    for (final candidate in <String>{path, previewPath, sidecarPath}) {
-      try {
-        final file = File(candidate);
-        if (await file.exists()) {
-          await file.delete();
-        }
-      } on FileSystemException {
-        // Best-effort explicit user deletion. Automatic finalization never
-        // prunes captured photos.
+    final session = _session;
+    if (session == null) return;
+    try {
+      await session.deleteCapturedPhotoByUser(path);
+      final keep = _targetPoints.retainedJpegPaths.toSet()..remove(path);
+      _targetPoints.retainOnlyJpegPaths(keep);
+    } catch (error) {
+      if (mounted) {
+        _showManualCaptureError('照片删除未完成，原始素材已保留：$error');
       }
+      return;
     }
     if (mounted) setState(() {});
   }

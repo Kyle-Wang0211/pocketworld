@@ -2,6 +2,7 @@ import ARKit
 @preconcurrency import AVFoundation
 import CoreImage
 import CoreMedia
+import CryptoKit
 import Darwin
 import Flutter
 import Foundation
@@ -103,6 +104,7 @@ final class ManualCaptureV2JobRegistry {
     )
     case invalidTerminalResult(jobID: String, reason: String)
     case alreadyFinished(String)
+    case discardBeforeTerminal(String)
 
     var errorDescription: String? {
       switch self {
@@ -124,6 +126,8 @@ final class ManualCaptureV2JobRegistry {
         return "manual capture \(jobID) returned an invalid terminal result: \(reason)"
       case .alreadyFinished(let jobID):
         return "manual capture job already finished: \(jobID)"
+      case .discardBeforeTerminal(let jobID):
+        return "manual capture job cannot be discarded before terminal result: \(jobID)"
       }
     }
   }
@@ -217,6 +221,63 @@ final class ManualCaptureV2JobRegistry {
     }
   }
 
+  func reopenRecoverableFailure(jobID: String) throws {
+    try withLock {
+      guard var entry = entries[jobID] else {
+        throw RegistryError.unknownJob(jobID)
+      }
+      guard let result = entry.result,
+            result["status"] as? String == "failed",
+            result["recoverable"] as? Bool == true else {
+        throw RegistryError.alreadyFinished(jobID)
+      }
+      entry.result = nil
+      entries[jobID] = entry
+    }
+  }
+
+  /// Drops only terminal in-process rendezvous state for an explicit whole
+  /// capture discard. A missing entry is harmless after cold start; an active
+  /// waiter/job fails closed because Dart's writer barrier was not complete.
+  func discardTerminalJobs(captureDirectory: URL) throws -> [String] {
+    let root = captureDirectory.standardizedFileURL.path
+    guard captureDirectory.isFileURL, root.hasPrefix("/"), root != "/" else {
+      throw RegistryError.invalidPaths("<discard-root>")
+    }
+    return try withLock {
+      var matching: [String] = []
+      for (jobID, entry) in entries {
+        let paths = [
+          entry.paths.jpegPath,
+          entry.paths.metadataPath,
+          entry.paths.sfmGrayPath,
+        ]
+        let count = paths.filter {
+          Self.isDescendant($0, of: root)
+        }.count
+        if count == 0 { continue }
+        guard count == paths.count else {
+          throw RegistryError.invalidPaths(jobID)
+        }
+        guard entry.result != nil else {
+          throw RegistryError.discardBeforeTerminal(jobID)
+        }
+        matching.append(jobID)
+      }
+      for jobID in matching {
+        guard let entry = entries.removeValue(forKey: jobID) else { continue }
+        for path in [
+          entry.paths.jpegPath,
+          entry.paths.metadataPath,
+          entry.paths.sfmGrayPath,
+        ] where pathOwners[path] == jobID {
+          pathOwners.removeValue(forKey: path)
+        }
+      }
+      return matching.sorted()
+    }
+  }
+
   private func validateTerminalResult(
     _ result: Payload,
     jobID: String,
@@ -270,9 +331,55 @@ final class ManualCaptureV2JobRegistry {
     defer { lock.unlock() }
     return try body()
   }
+
+  private static func isDescendant(_ child: String, of root: String) -> Bool {
+    let normalizedChild = URL(fileURLWithPath: child).standardizedFileURL.path
+    let normalizedRoot = URL(fileURLWithPath: root).standardizedFileURL.path
+    return normalizedChild == normalizedRoot
+      || normalizedChild.hasPrefix(normalizedRoot + "/")
+  }
 }
 
-/// Same-directory, atomic, no-overwrite publication for manual shutter files.
+/// Hard cap for unspilled CVPixelBuffer ownership. Excess calls are rejected
+/// before an intent/ACK exists; every accepted job is therefore preserved,
+/// while even a hostile 4000-call method-channel burst cannot retain 4000 4K
+/// buffers waiting for disk.
+final class ManualCaptureV2ReservationGate {
+  private let lock = NSLock()
+  private let maximum: Int
+  private var inUse = 0
+  private(set) var peak = 0
+
+  init(maximum: Int = 2) {
+    self.maximum = max(1, maximum)
+  }
+
+  func tryAcquire() -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    guard inUse < maximum else { return false }
+    inUse += 1
+    peak = max(peak, inUse)
+    return true
+  }
+
+  func release() {
+    lock.lock()
+    precondition(inUse > 0, "manual capture reservation gate underflow")
+    inUse -= 1
+    lock.unlock()
+  }
+
+  var current: Int {
+    lock.lock()
+    defer { lock.unlock() }
+    return inUse
+  }
+}
+
+/// Atomic, no-overwrite publication for manual shutter files. `renameatx_np`
+/// is atomic across directories on the same APFS volume; cross-volume moves
+/// fail with EXDEV rather than falling back to a copy.
 enum ManualCaptureV2AtomicPublisher {
   static func temporaryURL(for finalURL: URL, jobID: String) -> URL {
     finalURL.deletingLastPathComponent().appendingPathComponent(
@@ -282,17 +389,6 @@ enum ManualCaptureV2AtomicPublisher {
   }
 
   static func publishNoReplace(tempURL: URL, finalURL: URL) throws {
-    let tempParent = tempURL.deletingLastPathComponent().standardizedFileURL
-    let finalParent = finalURL.deletingLastPathComponent().standardizedFileURL
-    guard tempParent == finalParent else {
-      throw NSError(
-        domain: NSPOSIXErrorDomain,
-        code: Int(EXDEV),
-        userInfo: [NSLocalizedDescriptionKey:
-          "manual capture temp and final files must share a directory"]
-      )
-    }
-
     var renameResult: Int32 = -1
     tempURL.withUnsafeFileSystemRepresentation { tempPath in
       finalURL.withUnsafeFileSystemRepresentation { finalPath in
@@ -315,6 +411,1760 @@ enum ManualCaptureV2AtomicPublisher {
           "manual capture publish refused for \(finalURL.path): \(String(cString: strerror(capturedErrno)))"]
       )
     }
+  }
+}
+
+/// Durable transaction record for manual shutter v2.
+///
+/// Before ACK, the exact ARFrame pixels and their encoding recipe are durably
+/// spilled into job-private storage and fsynced. The live CVPixelBuffer can then
+/// be released, so queued reservations do not retain unbounded camera buffers.
+/// The serial capture queue reconstructs that snapshot, writes three job-private
+/// staged artifacts, seals their byte lengths and SHA-256 values, publishes with
+/// RENAME_EXCL, and creates the commit marker last. A restart can therefore
+/// resume an ACKed raw snapshot or distinguish a fully committed bundle from
+/// every interrupted window without guessing or deleting a user's JPEG/sidecar.
+final class ManualCaptureV2DurableStore {
+  enum ArtifactKind: String, Codable, CaseIterable, Hashable {
+    case jpeg
+    case metadata
+    case sfmGray = "sfm_gray"
+
+    var stagingFilename: String { "\(rawValue).staged" }
+  }
+
+  struct Intent: Codable, Equatable {
+    let schemaVersion: Int
+    let captureJobID: String
+    let frameIdentity: String
+    let snapshotIdentity: String
+    let snapshotTimestamp: Double
+    let imageWidth: Int
+    let imageHeight: Int
+    let jpegPath: String
+    let metadataPath: String
+    let sfmGrayPath: String
+    let commitReceiptPath: String?
+    let createdUnixMicros: Int64
+
+    var artifactPaths: ManualCaptureV2JobRegistry.ArtifactPaths {
+      ManualCaptureV2JobRegistry.ArtifactPaths(
+        jpegPath: jpegPath,
+        metadataPath: metadataPath,
+        sfmGrayPath: sfmGrayPath
+      )
+    }
+  }
+
+  struct ArtifactReceipt: Codable, Equatable {
+    let kind: ArtifactKind
+    let finalPath: String
+    let byteLength: UInt64
+    let sha256: String
+  }
+
+  struct PreparedRecord: Codable, Equatable {
+    let schemaVersion: Int
+    let captureJobID: String
+    let snapshotIdentity: String
+    let artifacts: [ArtifactReceipt]
+    let sfmGrayWidth: Int
+    let sfmGrayHeight: Int
+    let timestamp: Double
+    let imageWidth: Int
+    let imageHeight: Int
+    let intrinsicsFxFyCxCy: [Float]
+    let extrinsic: [Float]
+  }
+
+  struct CommitMarker: Codable, Equatable {
+    let schemaVersion: Int
+    let captureJobID: String
+    let snapshotIdentity: String
+    let preparedSha256: String
+    let artifacts: [ArtifactReceipt]?
+    let committedUnixMicros: Int64
+  }
+
+  struct FailureMarker: Codable, Equatable {
+    let schemaVersion: Int
+    let captureJobID: String
+    let snapshotIdentity: String
+    let errorCode: String
+    let message: String
+    let recoverable: Bool
+    let failedUnixMicros: Int64
+  }
+
+  struct SnapshotRecipe: Codable, Equatable {
+    let metadataSchemaVersion: Int
+    let jpegQuality: Float
+    let targetTimestamp: Double?
+    let saveDelta: Double
+    let intrinsicsFxFyCxCy: [Float]
+    let extrinsic: [Float]
+    let trackingStateName: String
+    let isTracking: Bool
+    let anchorsWorld: [[Float]]
+    let anchorIDs: [UInt64]
+    let anchorDepthCount: Int
+    let anchorDepthMinM: Float
+    let anchorDepthMaxM: Float
+    let anchorDepthSpanM: Float
+    let reliabilityPrior: Float
+    let exifExposureDurationSec: Double?
+    let exifISO: Double?
+    let cameraAngularVelocity: [Float]?
+    let cameraAngularVelocityDtSec: Double?
+    let dartSaveContractJSON: Data?
+  }
+
+  struct RawPlaneDescriptor: Codable, Equatable {
+    let width: Int
+    let height: Int
+    let activeBytesPerRow: Int
+    let fileOffset: UInt64
+    let byteLength: UInt64
+  }
+
+  struct RawColorAttachments: Codable, Equatable {
+    let yCbCrMatrix: String?
+    let colorPrimaries: String?
+    let transferFunction: String?
+    let gammaLevel: Double?
+    let iccProfile: Data?
+  }
+
+  struct RawReadyRecord: Codable, Equatable {
+    let schemaVersion: Int
+    let captureJobID: String
+    let snapshotIdentity: String
+    let pixelFormat: UInt32
+    let imageWidth: Int
+    let imageHeight: Int
+    let planes: [RawPlaneDescriptor]
+    let colorAttachments: RawColorAttachments?
+    let rawByteLength: UInt64
+    let rawSha256: String
+    let recipeSha256: String
+  }
+
+  struct LoadedRawSnapshot {
+    let intent: Intent
+    let recipe: SnapshotRecipe
+    let pixelBuffer: CVPixelBuffer
+    let spillByteLength: UInt64
+  }
+
+  struct Recovery {
+    let intent: Intent
+    let payload: [String: Any]
+  }
+
+  enum StoreError: LocalizedError {
+    case invalidJobID(String)
+    case invalidIntent(String)
+    case jobAlreadyExists(String)
+    case pathAlreadyClaimed(path: String, ownerJobID: String)
+    case finalPathExists(String)
+    case missingStagedArtifact(ArtifactKind)
+    case receiptMismatch(String)
+    case markerConflict(String)
+    case rawSpillBudgetExceeded(required: UInt64, available: UInt64)
+
+    var errorDescription: String? {
+      switch self {
+      case .invalidJobID(let value):
+        return "invalid manual capture job id: \(value)"
+      case .invalidIntent(let reason):
+        return "invalid manual capture intent: \(reason)"
+      case .jobAlreadyExists(let jobID):
+        return "manual capture durable job already exists: \(jobID)"
+      case .pathAlreadyClaimed(let path, let ownerJobID):
+        return "manual capture output path is already claimed by \(ownerJobID): \(path)"
+      case .finalPathExists(let path):
+        return "manual capture refuses to overwrite existing final path: \(path)"
+      case .missingStagedArtifact(let kind):
+        return "manual capture staged \(kind.rawValue) is missing"
+      case .receiptMismatch(let reason):
+        return "manual capture receipt mismatch: \(reason)"
+      case .markerConflict(let reason):
+        return "manual capture marker conflict: \(reason)"
+      case .rawSpillBudgetExceeded(let required, let available):
+        return "manual capture raw spill budget exceeded: required \(required), available \(available)"
+      }
+    }
+  }
+
+  static var defaultRootURL: URL {
+    let base = FileManager.default.urls(
+      for: .applicationSupportDirectory,
+      in: .userDomainMask
+    ).first ?? FileManager.default.temporaryDirectory
+    return base
+      .appendingPathComponent("PocketWorld", isDirectory: true)
+      .appendingPathComponent("manual_capture_v2", isDirectory: true)
+  }
+
+  private let rootURL: URL
+  private let fileManager: FileManager
+  private let encoder: JSONEncoder
+  private let decoder = JSONDecoder()
+  private let rawSpillBudgetBytes: UInt64
+  private let metricsLock = NSLock()
+  private var rawBytesByJob: [String: UInt64] = [:]
+  private var didLoadRawBudget = false
+  private var spillDurationsMs: [Double] = []
+  private var consumeDurationsMs: [Double] = []
+
+  init(
+    rootURL: URL,
+    fileManager: FileManager = .default,
+    rawSpillBudgetBytes: UInt64 = 512 * 1024 * 1024
+  ) {
+    self.rootURL = rootURL.standardizedFileURL
+    self.fileManager = fileManager
+    self.rawSpillBudgetBytes = rawSpillBudgetBytes
+    encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+  }
+
+  convenience init() {
+    self.init(rootURL: Self.defaultRootURL)
+  }
+
+  func createIntent(_ intent: Intent) throws {
+    try validate(intent: intent)
+    try fileManager.createDirectory(
+      at: jobsRootURL,
+      withIntermediateDirectories: true
+    )
+    try fileManager.createDirectory(
+      at: claimsRootURL,
+      withIntermediateDirectories: true
+    )
+    for path in claimedPaths(intent) {
+      if fileManager.fileExists(atPath: path) {
+        throw StoreError.finalPathExists(path)
+      }
+    }
+
+    let directory = jobDirectoryURL(intent.captureJobID)
+    do {
+      try createDirectoryExclusively(directory)
+    } catch let error as StoreError {
+      throw error
+    } catch {
+      throw StoreError.jobAlreadyExists(intent.captureJobID)
+    }
+
+    var claimedURLs: [URL] = []
+    do {
+      for path in claimedPaths(intent) {
+        let claimURL = claimURL(for: path)
+        if fileManager.fileExists(atPath: claimURL.path) {
+          let owner = (try? decode(PathClaim.self, from: claimURL))?.captureJobID
+            ?? "<unknown>"
+          throw StoreError.pathAlreadyClaimed(path: path, ownerJobID: owner)
+        }
+        let claim = PathClaim(
+          schemaVersion: 1,
+          captureJobID: intent.captureJobID,
+          path: path
+        )
+        try writeAtomicNoReplace(try encoder.encode(claim), to: claimURL)
+        claimedURLs.append(claimURL)
+      }
+      try writeAtomicNoReplace(
+        try encoder.encode(intent),
+        to: intentURL(intent.captureJobID)
+      )
+      try syncDirectory(directory)
+    } catch {
+      for url in claimedURLs { try? fileManager.removeItem(at: url) }
+      try? fileManager.removeItem(at: directory)
+      throw error
+    }
+  }
+
+  func abandonUnacknowledgedIntent(_ intent: Intent) {
+    for path in claimedPaths(intent) {
+      let url = claimURL(for: path)
+      if let claim = try? decode(PathClaim.self, from: url),
+         claim.captureJobID == intent.captureJobID {
+        try? fileManager.removeItem(at: url)
+      }
+    }
+    try? fileManager.removeItem(at: jobDirectoryURL(intent.captureJobID))
+    releaseRawBudget(jobID: intent.captureJobID)
+  }
+
+  func stagingURL(jobID: String, kind: ArtifactKind) -> URL {
+    stagingDirectoryURL(jobID).appendingPathComponent(kind.stagingFilename)
+  }
+
+  func createPrivateStaging(intent: Intent) throws {
+    guard fileManager.fileExists(atPath: intentURL(intent.captureJobID).path) else {
+      throw StoreError.invalidIntent("intent must be durable before staging")
+    }
+    try createDirectoryExclusively(stagingDirectoryURL(intent.captureJobID))
+  }
+
+  /// Spill only active pixel bytes (never row padding) before ACK. The caller
+  /// may release its CVPixelBuffer as soon as this returns; queued JPEG work
+  /// later reconstructs an equivalent buffer from the private raw snapshot.
+  func spillRawSnapshot(
+    intent: Intent,
+    pixelBuffer: CVPixelBuffer,
+    recipe: SnapshotRecipe
+  ) throws -> RawReadyRecord {
+    let spillStarted = CACurrentMediaTime()
+    guard recipe.intrinsicsFxFyCxCy.count >= 4,
+          recipe.extrinsic.count == 16,
+          recipe.jpegQuality.isFinite,
+          (0...1).contains(recipe.jpegQuality) else {
+      throw StoreError.invalidIntent("invalid raw snapshot recipe")
+    }
+    let pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer)
+    let imageWidth = CVPixelBufferGetWidth(pixelBuffer)
+    let imageHeight = CVPixelBufferGetHeight(pixelBuffer)
+    guard imageWidth == intent.imageWidth, imageHeight == intent.imageHeight else {
+      throw StoreError.receiptMismatch("raw pixel dimensions differ from intent")
+    }
+    let estimatedBytes = try Self.activePixelByteCount(pixelBuffer)
+    try reserveRawBudget(jobID: intent.captureJobID, bytes: estimatedBytes)
+    var keepRawBudget = false
+    defer {
+      if !keepRawBudget { releaseRawBudget(jobID: intent.captureJobID) }
+    }
+
+    let tempURL = stagingDirectoryURL(intent.captureJobID).appendingPathComponent(
+      ".raw_pixels.\(UUID().uuidString).tmp"
+    )
+    let finalRawURL = rawPixelsURL(intent.captureJobID)
+    guard fileManager.createFile(atPath: tempURL.path, contents: nil) else {
+      throw StoreError.receiptMismatch("could not create raw pixel spill")
+    }
+    var planes: [RawPlaneDescriptor] = []
+    var hasher = SHA256()
+    var fileOffset: UInt64 = 0
+    let handle = try FileHandle(forWritingTo: tempURL)
+    let lockStatus = CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+    guard lockStatus == kCVReturnSuccess else {
+      try? handle.close()
+      try? fileManager.removeItem(at: tempURL)
+      throw StoreError.receiptMismatch("could not lock raw pixel buffer")
+    }
+    defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+    do {
+      let planeCount = max(CVPixelBufferGetPlaneCount(pixelBuffer), 1)
+      for plane in 0..<planeCount {
+        let planar = CVPixelBufferIsPlanar(pixelBuffer)
+        let width = planar
+          ? CVPixelBufferGetWidthOfPlane(pixelBuffer, plane)
+          : imageWidth
+        let height = planar
+          ? CVPixelBufferGetHeightOfPlane(pixelBuffer, plane)
+          : imageHeight
+        let sourceRowBytes = planar
+          ? CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, plane)
+          : CVPixelBufferGetBytesPerRow(pixelBuffer)
+        let activeRowBytes = Self.activeBytesPerRow(
+          pixelFormat: pixelFormat,
+          plane: plane,
+          width: width,
+          sourceRowBytes: sourceRowBytes
+        )
+        guard let base = planar
+          ? CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, plane)
+          : CVPixelBufferGetBaseAddress(pixelBuffer),
+          activeRowBytes > 0,
+          activeRowBytes <= sourceRowBytes else {
+          throw StoreError.receiptMismatch("invalid raw plane layout")
+        }
+        let planeLength = UInt64(activeRowBytes * height)
+        planes.append(RawPlaneDescriptor(
+          width: width,
+          height: height,
+          activeBytesPerRow: activeRowBytes,
+          fileOffset: fileOffset,
+          byteLength: planeLength
+        ))
+        if sourceRowBytes == activeRowBytes {
+          let bytes = Data(
+            bytesNoCopy: base,
+            count: activeRowBytes * height,
+            deallocator: .none
+          )
+          hasher.update(data: bytes)
+          try handle.write(contentsOf: bytes)
+        } else {
+          for row in 0..<height {
+            let rowPointer = base.advanced(by: row * sourceRowBytes)
+            let bytes = Data(
+              bytesNoCopy: rowPointer,
+              count: activeRowBytes,
+              deallocator: .none
+            )
+            hasher.update(data: bytes)
+            try handle.write(contentsOf: bytes)
+          }
+        }
+        fileOffset += planeLength
+      }
+      try handle.close()
+      try syncFile(tempURL)
+      try ManualCaptureV2AtomicPublisher.publishNoReplace(
+        tempURL: tempURL,
+        finalURL: finalRawURL
+      )
+      try syncDirectory(finalRawURL.deletingLastPathComponent())
+    } catch {
+      try? handle.close()
+      try? fileManager.removeItem(at: tempURL)
+      throw error
+    }
+
+    let recipeData = try encoder.encode(recipe)
+    try writeAtomicNoReplace(recipeData, to: rawRecipeURL(intent.captureJobID))
+    let record = RawReadyRecord(
+      schemaVersion: 1,
+      captureJobID: intent.captureJobID,
+      snapshotIdentity: intent.snapshotIdentity,
+      pixelFormat: pixelFormat,
+      imageWidth: imageWidth,
+      imageHeight: imageHeight,
+      planes: planes,
+      colorAttachments: Self.colorAttachments(pixelBuffer),
+      rawByteLength: fileOffset,
+      rawSha256: hasher.finalize().map { String(format: "%02x", $0) }.joined(),
+      recipeSha256: Self.sha256(recipeData)
+    )
+    try writeAtomicNoReplace(
+      try encoder.encode(record),
+      to: rawReadyURL(intent.captureJobID)
+    )
+    keepRawBudget = true
+    recordDuration(
+      (CACurrentMediaTime() - spillStarted) * 1000,
+      in: &spillDurationsMs
+    )
+    return record
+  }
+
+  func recordRawConsumeDuration(milliseconds: Double) {
+    recordDuration(milliseconds, in: &consumeDurationsMs)
+  }
+
+  func backlogMetrics() -> [String: Any] {
+    metricsLock.lock()
+    defer { metricsLock.unlock() }
+    if !didLoadRawBudget {
+      loadRawBudgetLocked()
+      didLoadRawBudget = true
+    }
+    let pendingBytes = rawBytesByJob.values.reduce(0, +)
+    let consumeP50 = Self.percentile(consumeDurationsMs, 0.50)
+    let consumeP95 = Self.percentile(consumeDurationsMs, 0.95)
+    return [
+      "raw_spill_budget_bytes": rawSpillBudgetBytes,
+      "raw_spill_pending_bytes": pendingBytes,
+      "raw_spill_pending_jobs": rawBytesByJob.count,
+      "raw_spill_ms_p50": Self.percentile(spillDurationsMs, 0.50),
+      "raw_spill_ms_p95": Self.percentile(spillDurationsMs, 0.95),
+      "jpeg_consume_ms_p50": consumeP50,
+      "jpeg_consume_ms_p95": consumeP95,
+      "jpeg_consume_jobs_per_second_p50": consumeP50 > 0 ? 1_000 / consumeP50 : 0,
+      "jpeg_consume_jobs_per_second_p95": consumeP95 > 0 ? 1_000 / consumeP95 : 0,
+    ]
+  }
+
+  func loadRawSnapshot(jobID: String) throws -> LoadedRawSnapshot? {
+    guard fileManager.fileExists(atPath: rawReadyURL(jobID).path) else {
+      return nil
+    }
+    let intent = try decode(Intent.self, from: intentURL(jobID))
+    let ready = try decode(RawReadyRecord.self, from: rawReadyURL(jobID))
+    guard ready.schemaVersion == 1,
+          ready.captureJobID == jobID,
+          ready.snapshotIdentity == intent.snapshotIdentity,
+          ready.imageWidth == intent.imageWidth,
+          ready.imageHeight == intent.imageHeight else {
+      throw StoreError.receiptMismatch("raw-ready marker differs from intent")
+    }
+    let rawURL = rawPixelsURL(jobID)
+    let rawDigest = try digestFile(rawURL)
+    guard rawDigest.length == ready.rawByteLength,
+          rawDigest.sha256 == ready.rawSha256 else {
+      throw StoreError.receiptMismatch("raw spill hash/length mismatch")
+    }
+    let recipeData = try Data(contentsOf: rawRecipeURL(jobID))
+    guard Self.sha256(recipeData) == ready.recipeSha256 else {
+      throw StoreError.receiptMismatch("raw recipe hash mismatch")
+    }
+    let recipe = try decoder.decode(SnapshotRecipe.self, from: recipeData)
+
+    var created: CVPixelBuffer?
+    let pixelBufferAttributes = [
+      kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+    ] as CFDictionary
+    let createStatus = CVPixelBufferCreate(
+      kCFAllocatorDefault,
+      ready.imageWidth,
+      ready.imageHeight,
+      ready.pixelFormat,
+      pixelBufferAttributes,
+      &created
+    )
+    guard createStatus == kCVReturnSuccess, let pixelBuffer = created else {
+      throw StoreError.receiptMismatch("could not reconstruct raw pixel buffer")
+    }
+    let rawData = try Data(contentsOf: rawURL, options: .mappedIfSafe)
+    let lockStatus = CVPixelBufferLockBaseAddress(pixelBuffer, [])
+    guard lockStatus == kCVReturnSuccess else {
+      throw StoreError.receiptMismatch("could not lock reconstructed pixel buffer")
+    }
+    defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+    let destinationPlaneCount = max(CVPixelBufferGetPlaneCount(pixelBuffer), 1)
+    guard destinationPlaneCount == ready.planes.count else {
+      throw StoreError.receiptMismatch("reconstructed plane count mismatch")
+    }
+    try rawData.withUnsafeBytes { rawBytes in
+      guard let rawBase = rawBytes.baseAddress else {
+        throw StoreError.receiptMismatch("raw spill is empty")
+      }
+      for (plane, descriptor) in ready.planes.enumerated() {
+        let planar = CVPixelBufferIsPlanar(pixelBuffer)
+        let destinationWidth = planar
+          ? CVPixelBufferGetWidthOfPlane(pixelBuffer, plane)
+          : ready.imageWidth
+        let destinationHeight = planar
+          ? CVPixelBufferGetHeightOfPlane(pixelBuffer, plane)
+          : ready.imageHeight
+        let destinationRowBytes = planar
+          ? CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, plane)
+          : CVPixelBufferGetBytesPerRow(pixelBuffer)
+        guard destinationWidth == descriptor.width,
+              destinationHeight == descriptor.height,
+              destinationRowBytes >= descriptor.activeBytesPerRow,
+              let destinationBase = planar
+                ? CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, plane)
+                : CVPixelBufferGetBaseAddress(pixelBuffer) else {
+          throw StoreError.receiptMismatch("reconstructed plane layout mismatch")
+        }
+        for row in 0..<descriptor.height {
+          let sourceOffset = Int(descriptor.fileOffset)
+            + row * descriptor.activeBytesPerRow
+          guard sourceOffset + descriptor.activeBytesPerRow <= rawBytes.count else {
+            throw StoreError.receiptMismatch("raw spill row is truncated")
+          }
+          memcpy(
+            destinationBase.advanced(by: row * destinationRowBytes),
+            rawBase.advanced(by: sourceOffset),
+            descriptor.activeBytesPerRow
+          )
+        }
+      }
+    }
+    Self.restoreColorAttachments(ready.colorAttachments, to: pixelBuffer)
+    return LoadedRawSnapshot(
+      intent: intent,
+      recipe: recipe,
+      pixelBuffer: pixelBuffer,
+      spillByteLength: ready.rawByteLength
+    )
+  }
+
+  /// Converts a cold raw-load exception into durable, job-exact evidence.
+  /// Receipt/schema/identity failures prove the spill is unusable and release
+  /// its private bytes. Transient filesystem errors retain the spill for an
+  /// explicit retry, but are still surfaced as `failed` instead of remaining
+  /// indefinitely indistinguishable from healthy `raw_spill_pending` work.
+  func recordRawRestoreFailure(jobID: String, error: Error) throws -> [String: Any] {
+    let intent = try decode(Intent.self, from: intentURL(jobID))
+    let nonrecoverable: Bool
+    if let storeError = error as? StoreError {
+      switch storeError {
+      case .invalidJobID, .invalidIntent, .receiptMismatch, .markerConflict:
+        nonrecoverable = true
+      default:
+        nonrecoverable = false
+      }
+    } else {
+      let nsError = error as NSError
+      nonrecoverable = (
+        nsError.domain == NSCocoaErrorDomain
+          && nsError.code == NSFileReadNoSuchFileError
+      ) || (
+        nsError.domain == NSPOSIXErrorDomain
+          && nsError.code == Int(ENOENT)
+      )
+    }
+    return try recordFailure(
+      intent: intent,
+      errorCode: nonrecoverable
+        ? "manual_capture_raw_restore_corrupt"
+        : "manual_capture_raw_restore_failed",
+      message: error.localizedDescription,
+      recoverable: !nonrecoverable
+    )
+  }
+
+  func hasRawSnapshot(jobID: String) -> Bool {
+    fileManager.fileExists(atPath: rawReadyURL(jobID).path)
+  }
+
+  func shouldExecuteRawSnapshot(jobID: String) -> Bool {
+    guard hasRawSnapshot(jobID: jobID),
+          !fileManager.fileExists(atPath: preparedURL(jobID).path),
+          !fileManager.fileExists(atPath: commitURL(jobID).path) else {
+      return false
+    }
+    guard fileManager.fileExists(atPath: failureURL(jobID).path) else {
+      return true
+    }
+    return (try? decode(FailureMarker.self, from: failureURL(jobID)))?
+      .recoverable == true
+  }
+
+  /// Reopen only a recoverable, unprepared raw-spill failure. Published final
+  /// paths or a sealed prepared receipt are never reset here; those belong to
+  /// receipt-based commit recovery instead.
+  func beginRawRetryIfPossible(jobID: String) throws -> Bool {
+    let failurePath = failureURL(jobID)
+    guard fileManager.fileExists(atPath: failurePath.path),
+          fileManager.fileExists(atPath: rawReadyURL(jobID).path),
+          !fileManager.fileExists(atPath: preparedURL(jobID).path) else {
+      return false
+    }
+    let intent = try decode(Intent.self, from: intentURL(jobID))
+    let failure = try decode(FailureMarker.self, from: failurePath)
+    guard failure.captureJobID == jobID,
+          failure.snapshotIdentity == intent.snapshotIdentity,
+          failure.recoverable else {
+      return false
+    }
+    for path in [intent.jpegPath, intent.metadataPath, intent.sfmGrayPath] {
+      guard !fileManager.fileExists(atPath: path) else {
+        throw StoreError.finalPathExists(path)
+      }
+    }
+    for kind in ArtifactKind.allCases {
+      try? fileManager.removeItem(at: stagingURL(jobID: jobID, kind: kind))
+    }
+    try fileManager.removeItem(at: failurePath)
+    try syncDirectory(failurePath.deletingLastPathComponent())
+    return true
+  }
+
+  func pendingRawJobIDs(captureDirectory: URL) -> [String] {
+    let captureRoot = captureDirectory.standardizedFileURL.path
+    let directories = (try? fileManager.contentsOfDirectory(
+      at: jobsRootURL,
+      includingPropertiesForKeys: [.isDirectoryKey],
+      options: [.skipsHiddenFiles]
+    )) ?? []
+    return directories.compactMap { directory in
+      let jobID = directory.lastPathComponent
+      guard !fileManager.fileExists(atPath: commitURL(jobID).path),
+            !fileManager.fileExists(atPath: preparedURL(jobID).path),
+            fileManager.fileExists(atPath: rawReadyURL(jobID).path),
+            let intent = try? decode(Intent.self, from: intentURL(jobID)) else {
+        return nil
+      }
+      if fileManager.fileExists(atPath: failureURL(jobID).path) {
+        guard let failure = try? decode(
+          FailureMarker.self,
+          from: failureURL(jobID)
+        ), failure.recoverable else { return nil }
+      }
+      let paths = [intent.jpegPath, intent.metadataPath, intent.sfmGrayPath]
+      return paths.allSatisfy({ Self.isDescendant($0, of: captureRoot) })
+        ? jobID : nil
+    }.sorted()
+  }
+
+  func prepare(
+    intent: Intent,
+    sfmGrayWidth: Int,
+    sfmGrayHeight: Int,
+    timestamp: Double,
+    imageWidth: Int,
+    imageHeight: Int,
+    intrinsicsFxFyCxCy: [Float],
+    extrinsic: [Float]
+  ) throws -> PreparedRecord {
+    guard sfmGrayWidth > 0, sfmGrayHeight > 0 else {
+      throw StoreError.receiptMismatch("sfm_gray dimensions must be positive")
+    }
+    guard fileManager.fileExists(
+      atPath: stagingDirectoryURL(intent.captureJobID).path
+    ) else {
+      throw StoreError.invalidIntent("private staging directory is missing")
+    }
+    let paths: [ArtifactKind: String] = [
+      .jpeg: intent.jpegPath,
+      .metadata: intent.metadataPath,
+      .sfmGray: intent.sfmGrayPath,
+    ]
+    var artifacts: [ArtifactReceipt] = []
+    for kind in ArtifactKind.allCases {
+      let staged = stagingURL(jobID: intent.captureJobID, kind: kind)
+      guard fileManager.fileExists(atPath: staged.path) else {
+        throw StoreError.missingStagedArtifact(kind)
+      }
+      try syncFile(staged)
+      let digest = try digestFile(staged)
+      artifacts.append(ArtifactReceipt(
+        kind: kind,
+        finalPath: paths[kind]!,
+        byteLength: digest.length,
+        sha256: digest.sha256
+      ))
+    }
+    let record = PreparedRecord(
+      schemaVersion: 1,
+      captureJobID: intent.captureJobID,
+      snapshotIdentity: intent.snapshotIdentity,
+      artifacts: artifacts,
+      sfmGrayWidth: sfmGrayWidth,
+      sfmGrayHeight: sfmGrayHeight,
+      timestamp: timestamp,
+      imageWidth: imageWidth,
+      imageHeight: imageHeight,
+      intrinsicsFxFyCxCy: intrinsicsFxFyCxCy,
+      extrinsic: extrinsic
+    )
+    try validate(record: record, intent: intent)
+    try writeAtomicNoReplace(
+      try encoder.encode(record),
+      to: preparedURL(intent.captureJobID)
+    )
+    return record
+  }
+
+  /// Publish one receipt. Production passes `allowExistingMatching=false` so
+  /// any pre-existing final fails even if its bytes happen to match. Recovery
+  /// uses true only to validate renames performed by this transaction before a
+  /// process kill.
+  func publishArtifact(
+    _ artifact: ArtifactReceipt,
+    jobID: String,
+    allowExistingMatching: Bool
+  ) throws {
+    let finalURL = URL(fileURLWithPath: artifact.finalPath).standardizedFileURL
+    let stagedURL = stagingURL(jobID: jobID, kind: artifact.kind)
+    if fileManager.fileExists(atPath: finalURL.path) {
+      guard allowExistingMatching else {
+        throw StoreError.finalPathExists(finalURL.path)
+      }
+      try validateFile(finalURL, receipt: artifact)
+      return
+    }
+    try validateFile(stagedURL, receipt: artifact)
+    try fileManager.createDirectory(
+      at: finalURL.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    try ManualCaptureV2AtomicPublisher.publishNoReplace(
+      tempURL: stagedURL,
+      finalURL: finalURL
+    )
+    try syncDirectory(finalURL.deletingLastPathComponent())
+    try validateFile(finalURL, receipt: artifact)
+  }
+
+  func commit(intent: Intent, record: PreparedRecord) throws -> [String: Any] {
+    try validate(record: record, intent: intent)
+    for artifact in record.artifacts {
+      try publishArtifact(
+        artifact,
+        jobID: intent.captureJobID,
+        allowExistingMatching: false
+      )
+    }
+    try validateFinalArtifacts(record)
+    try writeCommitMarker(intent: intent, record: record)
+    cleanupPrivateStaging(jobID: intent.captureJobID)
+    return committedPayload(intent: intent, record: record)
+  }
+
+  func recordFailure(
+    intent: Intent,
+    errorCode: String,
+    message: String,
+    recoverable: Bool = true
+  ) throws -> [String: Any] {
+    guard !fileManager.fileExists(atPath: commitURL(intent.captureJobID).path) else {
+      throw StoreError.markerConflict("cannot fail a committed job")
+    }
+    let marker = FailureMarker(
+      schemaVersion: 1,
+      captureJobID: intent.captureJobID,
+      snapshotIdentity: intent.snapshotIdentity,
+      errorCode: errorCode,
+      message: message,
+      recoverable: recoverable,
+      failedUnixMicros: Self.nowUnixMicros()
+    )
+    let url = failureURL(intent.captureJobID)
+    if fileManager.fileExists(atPath: url.path) {
+      let existing = try decode(FailureMarker.self, from: url)
+      guard existing.captureJobID == marker.captureJobID,
+            existing.snapshotIdentity == marker.snapshotIdentity else {
+        throw StoreError.markerConflict("failure marker belongs to another snapshot")
+      }
+      if !existing.recoverable {
+        cleanupPrivateStaging(jobID: intent.captureJobID)
+      }
+      return failedPayload(intent: intent, marker: existing)
+    }
+    try writeAtomicNoReplace(try encoder.encode(marker), to: url)
+    if !marker.recoverable {
+      cleanupPrivateStaging(jobID: intent.captureJobID)
+    }
+    return failedPayload(intent: intent, marker: marker)
+  }
+
+  func recover(jobID: String) throws -> Recovery? {
+    let intentPath = intentURL(jobID)
+    guard fileManager.fileExists(atPath: intentPath.path) else { return nil }
+    let intent = try decode(Intent.self, from: intentPath)
+    try validate(intent: intent)
+    guard intent.captureJobID == jobID else {
+      throw StoreError.markerConflict("intent job id mismatch")
+    }
+    let commitPath = commitURL(jobID)
+    let failurePath = failureURL(jobID)
+    if fileManager.fileExists(atPath: commitPath.path),
+       fileManager.fileExists(atPath: failurePath.path) {
+      throw StoreError.markerConflict("both commit and failure markers exist")
+    }
+    if fileManager.fileExists(atPath: commitPath.path) {
+      let record = try validatedCommittedRecord(intent: intent)
+      cleanupPrivateStaging(jobID: jobID)
+      return Recovery(
+        intent: intent,
+        payload: committedPayload(intent: intent, record: record)
+      )
+    }
+    // Once all three staged files are sealed by prepared.json, every rename
+    // window is idempotently recoverable. Existing finals must match their
+    // exact receipt; missing finals are published only from matching private
+    // staging with RENAME_EXCL. No pixel/pose value is inferred.
+    if fileManager.fileExists(atPath: preparedURL(jobID).path) {
+      do {
+        let record = try decode(PreparedRecord.self, from: preparedURL(jobID))
+        try validate(record: record, intent: intent)
+        for artifact in record.artifacts {
+          try publishArtifact(
+            artifact,
+            jobID: jobID,
+            allowExistingMatching: true
+          )
+        }
+        try validateFinalArtifacts(record)
+        if fileManager.fileExists(atPath: failurePath.path) {
+          let oldFailure = try decode(FailureMarker.self, from: failurePath)
+          guard oldFailure.captureJobID == jobID,
+                oldFailure.snapshotIdentity == intent.snapshotIdentity,
+                oldFailure.recoverable else {
+            throw StoreError.markerConflict(
+              "non-recoverable failure cannot become committed"
+            )
+          }
+          try fileManager.removeItem(at: failurePath)
+          try syncDirectory(failurePath.deletingLastPathComponent())
+        }
+        try writeCommitMarker(intent: intent, record: record)
+        cleanupPrivateStaging(jobID: jobID)
+        return Recovery(
+          intent: intent,
+          payload: committedPayload(intent: intent, record: record)
+        )
+      } catch {
+        if fileManager.fileExists(atPath: failurePath.path) {
+          let marker = try decode(FailureMarker.self, from: failurePath)
+          guard marker.captureJobID == jobID,
+                marker.snapshotIdentity == intent.snapshotIdentity else {
+            throw StoreError.markerConflict("failure marker job/snapshot mismatch")
+          }
+          return Recovery(
+            intent: intent,
+            payload: failedPayload(intent: intent, marker: marker)
+          )
+        }
+        let payload = try recordFailure(
+          intent: intent,
+          errorCode: "manual_capture_recovery_receipt_conflict",
+          message: error.localizedDescription,
+          recoverable: true
+        )
+        return Recovery(intent: intent, payload: payload)
+      }
+    }
+
+    if fileManager.fileExists(atPath: failurePath.path) {
+      let marker = try decode(FailureMarker.self, from: failurePath)
+      guard marker.captureJobID == jobID,
+            marker.snapshotIdentity == intent.snapshotIdentity else {
+        throw StoreError.markerConflict("failure marker job/snapshot mismatch")
+      }
+      return Recovery(
+        intent: intent,
+        payload: failedPayload(intent: intent, marker: marker)
+      )
+    }
+
+    let payload = try recordFailure(
+      intent: intent,
+      errorCode: "manual_capture_interrupted_recoverable",
+      message: "The process stopped after reservation but before the exact three-artifact bundle committed.",
+      recoverable: true
+    )
+    return Recovery(intent: intent, payload: payload)
+  }
+
+  func recoverAll() -> [Result<Recovery, Error>] {
+    guard let directories = try? fileManager.contentsOfDirectory(
+      at: jobsRootURL,
+      includingPropertiesForKeys: [.isDirectoryKey],
+      options: [.skipsHiddenFiles]
+    ) else { return [] }
+    return directories.sorted { $0.lastPathComponent < $1.lastPathComponent }
+      .compactMap { directory in
+        let jobID = directory.lastPathComponent
+        guard fileManager.fileExists(atPath: intentURL(jobID).path) else {
+          return nil
+        }
+        if fileManager.fileExists(atPath: rawReadyURL(jobID).path),
+           !fileManager.fileExists(atPath: preparedURL(jobID).path),
+           !fileManager.fileExists(atPath: commitURL(jobID).path),
+           !fileManager.fileExists(atPath: failureURL(jobID).path) {
+          return nil
+        }
+        do {
+          guard let recovered = try recover(jobID: jobID) else { return nil }
+          return .success(recovered)
+        } catch {
+          return .failure(error)
+        }
+      }
+  }
+
+  /// Capture-scoped reconciliation for the Dart cold-start ledger. Every
+  /// returned job has all three final paths under exactly this capture root;
+  /// jobs from other captures never cross the method-channel boundary.
+  private func reconciliationPayload(
+    intent: Intent,
+    status: String
+  ) -> [String: Any] {
+    [
+      "capture_job_id": intent.captureJobID,
+      "status": status,
+      "jpeg_path": intent.jpegPath,
+      "metadata_path": intent.metadataPath,
+      "sfm_gray_path": intent.sfmGrayPath,
+      "frame_identity": intent.frameIdentity,
+      "snapshot_identity": intent.snapshotIdentity,
+      "snapshot_timestamp": intent.snapshotTimestamp,
+      "intent_durable": true,
+      "commit_marker_present": false,
+      "capture_commit_receipt_present": false,
+      "artifact_receipts": [] as [[String: Any]],
+    ]
+  }
+
+  func reconciliationJobs(captureDirectory: URL) -> [[String: Any]] {
+    let captureRoot = captureDirectory.standardizedFileURL.path
+    var jobs: [[String: Any]] = []
+    let directories = (try? fileManager.contentsOfDirectory(
+      at: jobsRootURL,
+      includingPropertiesForKeys: [.isDirectoryKey],
+      options: [.skipsHiddenFiles]
+    )) ?? []
+    for directory in directories.sorted(by: {
+      $0.lastPathComponent < $1.lastPathComponent
+    }) {
+      let jobID = directory.lastPathComponent
+      guard let intent = try? decode(Intent.self, from: intentURL(jobID)) else {
+        continue
+      }
+      let paths = [intent.jpegPath, intent.metadataPath, intent.sfmGrayPath]
+      guard paths.allSatisfy({ Self.isDescendant($0, of: captureRoot) }) else {
+        continue
+      }
+      if fileManager.fileExists(atPath: commitURL(jobID).path),
+         !fileManager.fileExists(atPath: failureURL(jobID).path) {
+        do {
+          let committed = try validatedCommittedRecordForReconciliation(
+            intent: intent
+          )
+          var payload = reconciliationPayload(intent: intent, status: "committed")
+          for (key, value) in committedPayload(
+            intent: intent,
+            record: committed.record
+          ) {
+            payload[key] = value
+          }
+          payload["commit_marker_present"] = true
+          payload["capture_commit_receipt_present"] = true
+          payload["sfm_gray_transferred_to_queue"] = committed.grayTransferred
+          payload["artifact_receipts"] = committed.record.artifacts.map {
+            artifact in
+            [
+              "kind": artifact.kind.rawValue,
+              "path": artifact.finalPath,
+              "bytes": artifact.byteLength,
+              "sha256": artifact.sha256,
+            ] as [String: Any]
+          }
+          jobs.append(payload)
+        } catch {
+          var payload = reconciliationPayload(intent: intent, status: "failed")
+          payload["error_code"] = "manual_capture_recovery_failed"
+          payload["message"] = error.localizedDescription
+          payload["recoverable"] = false
+          jobs.append(payload)
+        }
+        continue
+      }
+      if fileManager.fileExists(atPath: rawReadyURL(jobID).path),
+         !fileManager.fileExists(atPath: preparedURL(jobID).path),
+         !fileManager.fileExists(atPath: commitURL(jobID).path),
+         !fileManager.fileExists(atPath: failureURL(jobID).path) {
+        let ready = try? decode(RawReadyRecord.self, from: rawReadyURL(jobID))
+        var payload = reconciliationPayload(
+          intent: intent,
+          status: "raw_spill_pending"
+        )
+        payload["raw_spill_durable"] = true
+        payload["raw_spill_bytes"] = ready?.rawByteLength ?? 0
+        jobs.append(payload)
+        continue
+      }
+      let recovery: Recovery
+      do {
+        guard let value = try recover(jobID: jobID) else { continue }
+        recovery = value
+      } catch {
+        var payload = reconciliationPayload(intent: intent, status: "failed")
+        payload["error_code"] = "manual_capture_recovery_failed"
+        payload["message"] = error.localizedDescription
+        payload["recoverable"] = false
+        jobs.append(payload)
+        continue
+      }
+      var payload = reconciliationPayload(
+        intent: recovery.intent,
+        status: recovery.payload["status"] as? String ?? "failed"
+      )
+      for (key, value) in recovery.payload {
+        payload[key] = value
+      }
+      payload["commit_marker_present"] = fileManager.fileExists(
+        atPath: commitURL(recovery.intent.captureJobID).path
+      )
+      if let receiptPath = recovery.intent.commitReceiptPath {
+        payload["durable_commit_marker_path"] = receiptPath
+        payload["capture_commit_receipt_present"] = fileManager.fileExists(
+          atPath: receiptPath
+        )
+      }
+      if let prepared = try? decode(
+        PreparedRecord.self,
+        from: preparedURL(recovery.intent.captureJobID)
+      ) {
+        payload["artifact_receipts"] = prepared.artifacts.map { artifact in
+          [
+            "kind": artifact.kind.rawValue,
+            "path": artifact.finalPath,
+            "bytes": artifact.byteLength,
+            "sha256": artifact.sha256,
+          ] as [String: Any]
+        }
+      } else {
+        payload["artifact_receipts"] = []
+      }
+      jobs.append(payload)
+    }
+    return jobs
+  }
+
+  /// Removes only native-private transaction state after the user explicitly
+  /// discards an entire capture and Dart has quiesced its accepted writers.
+  /// No JPEG, sidecar, gray final, commit receipt, DB, or other capture-root
+  /// file is touched here; Dart remains the sole owner of deleting that root.
+  /// Every job must be wholly scoped to this exact capture or it is left alone.
+  func discardJobs(captureDirectory: URL) throws -> [String: Any] {
+    let captureRoot = captureDirectory.standardizedFileURL.path
+    guard captureDirectory.isFileURL,
+          captureRoot.hasPrefix("/"),
+          captureRoot != "/" else {
+      throw StoreError.invalidIntent("invalid capture discard root")
+    }
+
+    let beforeMetrics = backlogMetrics()
+    let beforeRawBytes =
+      (beforeMetrics["raw_spill_pending_bytes"] as? NSNumber)?.uint64Value ?? 0
+    let directories: [URL]
+    if fileManager.fileExists(atPath: jobsRootURL.path) {
+      directories = try fileManager.contentsOfDirectory(
+        at: jobsRootURL,
+        includingPropertiesForKeys: [.isDirectoryKey],
+        options: [.skipsHiddenFiles]
+      )
+    } else {
+      directories = []
+    }
+    var candidates: [(directory: URL, intent: Intent)] = []
+    for directory in directories {
+      guard let intent = try? decode(
+        Intent.self,
+        from: directory.appendingPathComponent("intent.json")
+      ) else {
+        continue
+      }
+      let ownedPaths = claimedPaths(intent)
+      let descendantCount = ownedPaths.filter {
+        Self.isDescendant($0, of: captureRoot)
+      }.count
+      if descendantCount == 0 { continue }
+      guard descendantCount == ownedPaths.count,
+            [intent.jpegPath, intent.metadataPath, intent.sfmGrayPath]
+              .allSatisfy({ Self.isDescendant($0, of: captureRoot) }) else {
+        throw StoreError.invalidIntent(
+          "manual capture job crosses explicit discard root: \(intent.captureJobID)"
+        )
+      }
+      // Preflight every live claim before deleting anything. A mismatched
+      // owner is never removed even during an explicit whole-capture discard.
+      for path in ownedPaths {
+        let url = claimURL(for: path)
+        guard fileManager.fileExists(atPath: url.path) else { continue }
+        let claim = try decode(PathClaim.self, from: url)
+        guard claim.captureJobID == intent.captureJobID,
+              claim.path == path else {
+          throw StoreError.markerConflict(
+            "discard claim ownership mismatch for \(path)"
+          )
+        }
+      }
+      candidates.append((directory, intent))
+    }
+
+    let jobIDs = candidates.map(\.intent.captureJobID).sorted()
+    for candidate in candidates {
+      for path in claimedPaths(candidate.intent) {
+        let url = claimURL(for: path)
+        if fileManager.fileExists(atPath: url.path) {
+          try fileManager.removeItem(at: url)
+        }
+      }
+    }
+    if !candidates.isEmpty {
+      try syncDirectory(claimsRootURL)
+    }
+    for candidate in candidates {
+      try fileManager.removeItem(at: candidate.directory)
+      releaseRawBudget(jobID: candidate.intent.captureJobID)
+    }
+    if !candidates.isEmpty {
+      try syncDirectory(jobsRootURL)
+    }
+
+    let afterMetrics = backlogMetrics()
+    let afterRawBytes =
+      (afterMetrics["raw_spill_pending_bytes"] as? NSNumber)?.uint64Value ?? 0
+    return [
+      "schema_version": "aether_manual_capture_v2_discard_v1",
+      "capture_directory": captureRoot,
+      "discarded_job_ids": jobIDs,
+      "released_raw_bytes": beforeRawBytes >= afterRawBytes
+        ? beforeRawBytes - afterRawBytes : 0,
+      "backlog_metrics": afterMetrics,
+    ]
+  }
+
+  static func snapshotIdentity(
+    captureJobID: String,
+    timestamp: Double,
+    imageWidth: Int,
+    imageHeight: Int,
+    intrinsics: [Float],
+    extrinsic: [Float]
+  ) -> String {
+    var bytes = Data(captureJobID.utf8)
+    func appendUInt64(_ value: UInt64) {
+      var big = value.bigEndian
+      withUnsafeBytes(of: &big) { bytes.append(contentsOf: $0) }
+    }
+    appendUInt64(timestamp.bitPattern)
+    appendUInt64(UInt64(imageWidth))
+    appendUInt64(UInt64(imageHeight))
+    for value in intrinsics + extrinsic {
+      appendUInt64(UInt64(value.bitPattern))
+    }
+    return sha256(bytes)
+  }
+
+  private struct PathClaim: Codable {
+    let schemaVersion: Int
+    let captureJobID: String
+    let path: String
+  }
+
+  private var jobsRootURL: URL {
+    rootURL.appendingPathComponent("jobs", isDirectory: true)
+  }
+
+  private var claimsRootURL: URL {
+    rootURL.appendingPathComponent("claims", isDirectory: true)
+  }
+
+  private func jobDirectoryURL(_ jobID: String) -> URL {
+    jobsRootURL.appendingPathComponent(jobID, isDirectory: true)
+  }
+
+  private func stagingDirectoryURL(_ jobID: String) -> URL {
+    jobDirectoryURL(jobID).appendingPathComponent("staging", isDirectory: true)
+  }
+
+  private func intentURL(_ jobID: String) -> URL {
+    jobDirectoryURL(jobID).appendingPathComponent("intent.json")
+  }
+
+  private func preparedURL(_ jobID: String) -> URL {
+    jobDirectoryURL(jobID).appendingPathComponent("prepared.json")
+  }
+
+  private func commitURL(_ jobID: String) -> URL {
+    jobDirectoryURL(jobID).appendingPathComponent("committed.json")
+  }
+
+  private func failureURL(_ jobID: String) -> URL {
+    jobDirectoryURL(jobID).appendingPathComponent("failed.json")
+  }
+
+  private func rawPixelsURL(_ jobID: String) -> URL {
+    stagingDirectoryURL(jobID).appendingPathComponent("raw_pixels.staged")
+  }
+
+  private func rawRecipeURL(_ jobID: String) -> URL {
+    stagingDirectoryURL(jobID).appendingPathComponent("raw_recipe.json")
+  }
+
+  private func rawReadyURL(_ jobID: String) -> URL {
+    stagingDirectoryURL(jobID).appendingPathComponent("raw_ready.json")
+  }
+
+  private func claimURL(for path: String) -> URL {
+    claimsRootURL.appendingPathComponent(Self.sha256(Data(path.utf8)) + ".json")
+  }
+
+  private func validate(intent: Intent) throws {
+    let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._"))
+    guard intent.schemaVersion == 1,
+          !intent.captureJobID.isEmpty,
+          intent.captureJobID.rangeOfCharacter(from: allowed.inverted) == nil else {
+      throw StoreError.invalidJobID(intent.captureJobID)
+    }
+    let paths = [intent.jpegPath, intent.metadataPath, intent.sfmGrayPath]
+    guard Set(paths).count == 3,
+          paths.allSatisfy({ $0.hasPrefix("/") && !$0.isEmpty }),
+          intent.snapshotTimestamp.isFinite,
+          intent.imageWidth > 0,
+          intent.imageHeight > 0,
+          !intent.frameIdentity.isEmpty,
+          !intent.snapshotIdentity.isEmpty else {
+      throw StoreError.invalidIntent(intent.captureJobID)
+    }
+    if let receiptPath = intent.commitReceiptPath,
+       (!receiptPath.hasPrefix("/") || paths.contains(receiptPath)) {
+      throw StoreError.invalidIntent("invalid commit receipt path")
+    }
+  }
+
+  private func validate(record: PreparedRecord, intent: Intent) throws {
+    guard record.schemaVersion == 1,
+          record.captureJobID == intent.captureJobID,
+          record.snapshotIdentity == intent.snapshotIdentity,
+          record.sfmGrayWidth > 0,
+          record.sfmGrayHeight > 0,
+          record.timestamp == intent.snapshotTimestamp,
+          record.imageWidth == intent.imageWidth,
+          record.imageHeight == intent.imageHeight,
+          record.intrinsicsFxFyCxCy.count >= 4,
+          record.extrinsic.count == 16,
+          record.artifacts.count == ArtifactKind.allCases.count,
+          Set(record.artifacts.map(\.kind)) == Set(ArtifactKind.allCases) else {
+      throw StoreError.receiptMismatch("prepared record does not match intent")
+    }
+    let expected: [ArtifactKind: String] = [
+      .jpeg: intent.jpegPath,
+      .metadata: intent.metadataPath,
+      .sfmGray: intent.sfmGrayPath,
+    ]
+    for artifact in record.artifacts {
+      guard artifact.finalPath == expected[artifact.kind],
+            artifact.byteLength > 0,
+            artifact.sha256.count == 64 else {
+        throw StoreError.receiptMismatch("invalid \(artifact.kind.rawValue) receipt")
+      }
+    }
+  }
+
+  private func writeCommitMarker(intent: Intent, record: PreparedRecord) throws {
+    let preparedData = try Data(contentsOf: preparedURL(intent.captureJobID))
+    let marker = CommitMarker(
+      schemaVersion: 1,
+      captureJobID: intent.captureJobID,
+      snapshotIdentity: intent.snapshotIdentity,
+      preparedSha256: Self.sha256(preparedData),
+      artifacts: record.artifacts,
+      committedUnixMicros: Self.nowUnixMicros()
+    )
+    let url = commitURL(intent.captureJobID)
+    if fileManager.fileExists(atPath: url.path) {
+      let existing = try decode(CommitMarker.self, from: url)
+      guard existing.captureJobID == marker.captureJobID,
+            existing.snapshotIdentity == marker.snapshotIdentity,
+            existing.preparedSha256 == marker.preparedSha256 else {
+        throw StoreError.markerConflict("commit marker differs from prepared receipt")
+      }
+      try writeCaptureCommitReceiptIfNeeded(intent: intent, marker: existing)
+      return
+    }
+    try writeAtomicNoReplace(try encoder.encode(marker), to: url)
+    try writeCaptureCommitReceiptIfNeeded(intent: intent, marker: marker)
+  }
+
+  private func sealedCommittedRecord(
+    intent: Intent
+  ) throws -> (record: PreparedRecord, marker: CommitMarker) {
+    let recordURL = preparedURL(intent.captureJobID)
+    let recordData = try Data(contentsOf: recordURL)
+    let record = try decoder.decode(PreparedRecord.self, from: recordData)
+    try validate(record: record, intent: intent)
+    let marker = try decode(CommitMarker.self, from: commitURL(intent.captureJobID))
+    guard marker.schemaVersion == 1,
+          marker.captureJobID == intent.captureJobID,
+          marker.snapshotIdentity == intent.snapshotIdentity,
+          marker.preparedSha256 == Self.sha256(recordData),
+          marker.artifacts == nil || marker.artifacts == record.artifacts else {
+      throw StoreError.markerConflict("commit marker does not seal prepared receipt")
+    }
+    return (record, marker)
+  }
+
+  private func validatedCommittedRecord(intent: Intent) throws -> PreparedRecord {
+    let sealed = try sealedCommittedRecord(intent: intent)
+    let record = sealed.record
+    try validateFinalArtifacts(record)
+    try writeCaptureCommitReceiptIfNeeded(intent: intent, marker: sealed.marker)
+    return record
+  }
+
+  /// Validates a committed transaction for Dart cold-start reconciliation.
+  /// Dart's durable queue atomically moves only the sfm_gray final after native
+  /// commit. Therefore a missing gray is a permitted ownership-transfer state
+  /// only when both immutable commit markers agree and the user JPEG + sidecar
+  /// still match their sealed receipts. This method never recreates a marker
+  /// and never relaxes direct `recover(jobID:)`, so native evidence alone cannot
+  /// promote a missing gray without Dart finding exactly one matching queue row.
+  private func validatedCommittedRecordForReconciliation(
+    intent: Intent
+  ) throws -> (record: PreparedRecord, grayTransferred: Bool) {
+    if fileManager.fileExists(atPath: intent.sfmGrayPath) {
+      // Crash window: the durable marker is written before its capture-local
+      // sibling. With all three exact finals still present, normal recovery is
+      // authoritative and may idempotently finish that missing sibling marker.
+      return (try validatedCommittedRecord(intent: intent), false)
+    }
+
+    // Once gray left the capture directory, its bytes can be proven only by
+    // Dart's queue. Native may expose the pre-existing receipt, but it must not
+    // manufacture a missing capture receipt without revalidating gray itself.
+    let sealed = try sealedCommittedRecord(intent: intent)
+    guard let receiptPath = intent.commitReceiptPath else {
+      throw StoreError.markerConflict("capture commit receipt path is missing")
+    }
+    let receiptURL = URL(fileURLWithPath: receiptPath).standardizedFileURL
+    guard fileManager.fileExists(atPath: receiptURL.path) else {
+      throw StoreError.markerConflict("capture commit receipt is missing")
+    }
+    let captureMarker = try decode(CommitMarker.self, from: receiptURL)
+    guard captureMarker == sealed.marker else {
+      throw StoreError.markerConflict(
+        "capture commit receipt differs from durable marker"
+      )
+    }
+
+    for artifact in sealed.record.artifacts {
+      let finalURL = URL(fileURLWithPath: artifact.finalPath).standardizedFileURL
+      if artifact.kind == .sfmGray {
+        continue
+      }
+      try validateFile(finalURL, receipt: artifact)
+    }
+    return (sealed.record, true)
+  }
+
+  private func validateFinalArtifacts(_ record: PreparedRecord) throws {
+    for artifact in record.artifacts {
+      try validateFile(
+        URL(fileURLWithPath: artifact.finalPath).standardizedFileURL,
+        receipt: artifact
+      )
+    }
+  }
+
+  private func committedPayload(
+    intent: Intent,
+    record: PreparedRecord
+  ) -> [String: Any] {
+    var payload: [String: Any] = [
+      "capture_job_id": intent.captureJobID,
+      "status": "committed",
+      "jpeg_path": intent.jpegPath,
+      "metadata_path": intent.metadataPath,
+      "sfm_gray_path": intent.sfmGrayPath,
+      "sfm_gray_w": record.sfmGrayWidth,
+      "sfm_gray_h": record.sfmGrayHeight,
+      "t": record.timestamp,
+      "image_w": record.imageWidth,
+      "image_h": record.imageHeight,
+      "intrinsics_fxfycxcy": record.intrinsicsFxFyCxCy,
+      "extrinsic": record.extrinsic,
+      "snapshot_identity": intent.snapshotIdentity,
+      "durable_commit": true,
+    ]
+    if let receiptPath = intent.commitReceiptPath {
+      payload["durable_commit_marker_path"] = receiptPath
+    }
+    for artifact in record.artifacts {
+      payload["\(artifact.kind.rawValue)_bytes"] = artifact.byteLength
+      payload["\(artifact.kind.rawValue)_sha256"] = artifact.sha256
+    }
+    return payload
+  }
+
+  private func failedPayload(
+    intent: Intent,
+    marker: FailureMarker
+  ) -> [String: Any] {
+    var payload: [String: Any] = [
+      "capture_job_id": intent.captureJobID,
+      "status": "failed",
+      "error_code": marker.errorCode,
+      "message": marker.message,
+      "recoverable": marker.recoverable,
+      "jpeg_path": intent.jpegPath,
+      "metadata_path": intent.metadataPath,
+      "sfm_gray_path": intent.sfmGrayPath,
+      "snapshot_identity": intent.snapshotIdentity,
+    ]
+    if let receiptPath = intent.commitReceiptPath {
+      payload["durable_commit_marker_path"] = receiptPath
+    }
+    return payload
+  }
+
+  private func claimedPaths(_ intent: Intent) -> [String] {
+    [intent.jpegPath, intent.metadataPath, intent.sfmGrayPath]
+      + (intent.commitReceiptPath.map { [$0] } ?? [])
+  }
+
+  private func writeCaptureCommitReceiptIfNeeded(
+    intent: Intent,
+    marker: CommitMarker
+  ) throws {
+    guard let path = intent.commitReceiptPath else { return }
+    let url = URL(fileURLWithPath: path).standardizedFileURL
+    if fileManager.fileExists(atPath: url.path) {
+      let existing = try decode(CommitMarker.self, from: url)
+      guard existing == marker else {
+        throw StoreError.markerConflict("capture commit receipt differs from durable marker")
+      }
+      return
+    }
+    try writeAtomicNoReplace(try encoder.encode(marker), to: url)
+  }
+
+  private func cleanupPrivateStaging(jobID: String) {
+    // This is the only deletion performed by the store. It is confined to the
+    // transaction's private staging directory; final JPEGs and sidecars are
+    // never touched.
+    try? fileManager.removeItem(at: stagingDirectoryURL(jobID))
+    releaseRawBudget(jobID: jobID)
+  }
+
+  private func reserveRawBudget(jobID: String, bytes: UInt64) throws {
+    metricsLock.lock()
+    defer { metricsLock.unlock() }
+    if !didLoadRawBudget {
+      loadRawBudgetLocked()
+      didLoadRawBudget = true
+    }
+    let used = rawBytesByJob.values.reduce(0, +)
+    let available = used >= rawSpillBudgetBytes
+      ? 0 : rawSpillBudgetBytes - used
+    guard rawBytesByJob[jobID] == nil, bytes <= available else {
+      throw StoreError.rawSpillBudgetExceeded(
+        required: bytes,
+        available: available
+      )
+    }
+    rawBytesByJob[jobID] = bytes
+  }
+
+  private func releaseRawBudget(jobID: String) {
+    metricsLock.lock()
+    rawBytesByJob.removeValue(forKey: jobID)
+    metricsLock.unlock()
+  }
+
+  private func loadRawBudgetLocked() {
+    let directories = (try? fileManager.contentsOfDirectory(
+      at: jobsRootURL,
+      includingPropertiesForKeys: nil,
+      options: [.skipsHiddenFiles]
+    )) ?? []
+    for directory in directories {
+      let jobID = directory.lastPathComponent
+      guard let ready = try? decode(RawReadyRecord.self, from: rawReadyURL(jobID)),
+            !fileManager.fileExists(atPath: commitURL(jobID).path) else {
+        continue
+      }
+      rawBytesByJob[jobID] = ready.rawByteLength
+    }
+  }
+
+  private func recordDuration(_ milliseconds: Double, in values: inout [Double]) {
+    guard milliseconds.isFinite, milliseconds >= 0 else { return }
+    metricsLock.lock()
+    values.append(milliseconds)
+    if values.count > 1_024 { values.removeFirst(values.count - 1_024) }
+    metricsLock.unlock()
+  }
+
+  private func validateFile(_ url: URL, receipt: ArtifactReceipt) throws {
+    guard fileManager.fileExists(atPath: url.path) else {
+      throw StoreError.receiptMismatch("missing \(receipt.kind.rawValue): \(url.path)")
+    }
+    let digest = try digestFile(url)
+    guard digest.length == receipt.byteLength,
+          digest.sha256 == receipt.sha256 else {
+      throw StoreError.receiptMismatch("hash/length mismatch for \(receipt.kind.rawValue)")
+    }
+  }
+
+  private func digestFile(_ url: URL) throws -> (length: UInt64, sha256: String) {
+    let handle = try FileHandle(forReadingFrom: url)
+    defer { try? handle.close() }
+    var hasher = SHA256()
+    var length: UInt64 = 0
+    while true {
+      let chunk = try handle.read(upToCount: 1_048_576) ?? Data()
+      if chunk.isEmpty { break }
+      length += UInt64(chunk.count)
+      hasher.update(data: chunk)
+    }
+    return (length, hasher.finalize().map { String(format: "%02x", $0) }.joined())
+  }
+
+  private func writeAtomicNoReplace(_ data: Data, to finalURL: URL) throws {
+    try fileManager.createDirectory(
+      at: finalURL.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    let tempURL = finalURL.deletingLastPathComponent().appendingPathComponent(
+      ".\(finalURL.lastPathComponent).\(UUID().uuidString).tmp"
+    )
+    do {
+      try data.write(to: tempURL, options: .withoutOverwriting)
+      try syncFile(tempURL)
+      try ManualCaptureV2AtomicPublisher.publishNoReplace(
+        tempURL: tempURL,
+        finalURL: finalURL
+      )
+      try syncDirectory(finalURL.deletingLastPathComponent())
+    } catch {
+      try? fileManager.removeItem(at: tempURL)
+      throw error
+    }
+  }
+
+  private func createDirectoryExclusively(_ url: URL) throws {
+    var result: Int32 = -1
+    url.withUnsafeFileSystemRepresentation { path in
+      guard let path else { return }
+      result = Darwin.mkdir(path, S_IRWXU)
+    }
+    guard result == 0 else {
+      let capturedErrno = errno
+      if capturedErrno == EEXIST {
+        throw StoreError.jobAlreadyExists(url.lastPathComponent)
+      }
+      throw NSError(
+        domain: NSPOSIXErrorDomain,
+        code: Int(capturedErrno),
+        userInfo: [NSLocalizedDescriptionKey:
+          "mkdir failed for \(url.path): \(String(cString: strerror(capturedErrno)))"]
+      )
+    }
+    try syncDirectory(url.deletingLastPathComponent())
+  }
+
+  private func syncFile(_ url: URL) throws {
+    try syncDescriptor(at: url, flags: O_RDONLY)
+  }
+
+  private func syncDirectory(_ url: URL) throws {
+    try syncDescriptor(at: url, flags: O_RDONLY)
+  }
+
+  private func syncDescriptor(at url: URL, flags: Int32) throws {
+    var descriptor: Int32 = -1
+    url.withUnsafeFileSystemRepresentation { path in
+      guard let path else { return }
+      descriptor = Darwin.open(path, flags)
+    }
+    guard descriptor >= 0 else {
+      let capturedErrno = errno
+      throw NSError(
+        domain: NSPOSIXErrorDomain,
+        code: Int(capturedErrno),
+        userInfo: [NSLocalizedDescriptionKey: "open for sync failed: \(url.path)"]
+      )
+    }
+    defer { Darwin.close(descriptor) }
+    if Darwin.fsync(descriptor) != 0 {
+      let capturedErrno = errno
+      throw NSError(
+        domain: NSPOSIXErrorDomain,
+        code: Int(capturedErrno),
+        userInfo: [NSLocalizedDescriptionKey: "fsync failed: \(url.path)"]
+      )
+    }
+  }
+
+  private func decode<T: Decodable>(_ type: T.Type, from url: URL) throws -> T {
+    try decoder.decode(type, from: Data(contentsOf: url))
+  }
+
+  private static func sha256(_ data: Data) -> String {
+    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+  }
+
+  private static func nowUnixMicros() -> Int64 {
+    Int64((Date().timeIntervalSince1970 * 1_000_000).rounded())
+  }
+
+  private static func activePixelByteCount(
+    _ pixelBuffer: CVPixelBuffer
+  ) throws -> UInt64 {
+    let status = CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+    guard status == kCVReturnSuccess else {
+      throw StoreError.receiptMismatch("could not inspect raw pixel buffer")
+    }
+    defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+    let format = CVPixelBufferGetPixelFormatType(pixelBuffer)
+    let planeCount = max(CVPixelBufferGetPlaneCount(pixelBuffer), 1)
+    var total: UInt64 = 0
+    for plane in 0..<planeCount {
+      let planar = CVPixelBufferIsPlanar(pixelBuffer)
+      let width = planar
+        ? CVPixelBufferGetWidthOfPlane(pixelBuffer, plane)
+        : CVPixelBufferGetWidth(pixelBuffer)
+      let height = planar
+        ? CVPixelBufferGetHeightOfPlane(pixelBuffer, plane)
+        : CVPixelBufferGetHeight(pixelBuffer)
+      let sourceRowBytes = planar
+        ? CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, plane)
+        : CVPixelBufferGetBytesPerRow(pixelBuffer)
+      let active = activeBytesPerRow(
+        pixelFormat: format,
+        plane: plane,
+        width: width,
+        sourceRowBytes: sourceRowBytes
+      )
+      total += UInt64(active * height)
+    }
+    return total
+  }
+
+  private static func activeBytesPerRow(
+    pixelFormat: OSType,
+    plane: Int,
+    width: Int,
+    sourceRowBytes: Int
+  ) -> Int {
+    switch pixelFormat {
+    case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+         kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange:
+      return min(sourceRowBytes, plane == 0 ? width : width * 2)
+    case kCVPixelFormatType_32BGRA,
+         kCVPixelFormatType_32ARGB:
+      return min(sourceRowBytes, width * 4)
+    default:
+      // Unknown formats retain the full stride; reconstruction requires a
+      // destination stride at least this large and fails closed otherwise.
+      return sourceRowBytes
+    }
+  }
+
+  private static func percentile(_ values: [Double], _ fraction: Double) -> Double {
+    guard !values.isEmpty else { return 0 }
+    let sorted = values.sorted()
+    let index = Int(
+      (Double(sorted.count - 1) * min(max(fraction, 0), 1)).rounded()
+    )
+    return sorted[index]
+  }
+
+  private static func colorAttachments(
+    _ pixelBuffer: CVPixelBuffer
+  ) -> RawColorAttachments {
+    func value(_ key: CFString) -> CFTypeRef? {
+      CVBufferGetAttachment(pixelBuffer, key, nil)?.takeUnretainedValue()
+    }
+    return RawColorAttachments(
+      yCbCrMatrix: value(kCVImageBufferYCbCrMatrixKey) as? String,
+      colorPrimaries: value(kCVImageBufferColorPrimariesKey) as? String,
+      transferFunction: value(kCVImageBufferTransferFunctionKey) as? String,
+      gammaLevel: (value(kCVImageBufferGammaLevelKey) as? NSNumber)?.doubleValue,
+      iccProfile: value(kCVImageBufferICCProfileKey) as? Data
+    )
+  }
+
+  private static func restoreColorAttachments(
+    _ attachments: RawColorAttachments?,
+    to pixelBuffer: CVPixelBuffer
+  ) {
+    guard let attachments else { return }
+    func set(_ key: CFString, _ value: CFTypeRef?) {
+      guard let value else { return }
+      CVBufferSetAttachment(pixelBuffer, key, value, .shouldPropagate)
+    }
+    set(kCVImageBufferYCbCrMatrixKey, attachments.yCbCrMatrix as CFString?)
+    set(kCVImageBufferColorPrimariesKey, attachments.colorPrimaries as CFString?)
+    set(
+      kCVImageBufferTransferFunctionKey,
+      attachments.transferFunction as CFString?
+    )
+    set(
+      kCVImageBufferGammaLevelKey,
+      attachments.gammaLevel.map { NSNumber(value: $0) }
+    )
+    set(kCVImageBufferICCProfileKey, attachments.iccProfile as CFData?)
+  }
+
+  private static func isDescendant(_ child: String, of root: String) -> Bool {
+    let normalizedChild = URL(fileURLWithPath: child).standardizedFileURL.path
+    let normalizedRoot = URL(fileURLWithPath: root).standardizedFileURL.path
+    return normalizedChild == normalizedRoot
+      || normalizedChild.hasPrefix(normalizedRoot + "/")
   }
 }
 
@@ -707,10 +2557,24 @@ class AetherARKitPlugin: NSObject {
     qos: .userInitiated
   )
 
+  /// Reservation-only serial I/O. It spills active raw pixel bytes and fsyncs
+  /// the intent before ACK, then releases the CVPixelBuffer. JPEG/hash/commit
+  /// continue on `jpegEncodeQueue`, so an earlier JPEG never delays a later
+  /// reservation ACK and queued work retains zero 4K pixel buffers.
+  private let manualCaptureReservationQueue = DispatchQueue(
+    label: "com.pocketworld.arkit.manual-reservation",
+    qos: .userInteractive
+  )
+
   /// Thread-safe registry for the reserve/await manual shutter handshake.
   /// Pixel ownership remains the queued `LatestFrameSnapshot`; this registry
   /// stores only small ticket/result dictionaries, never image bytes.
   private let manualCaptureV2Jobs = ManualCaptureV2JobRegistry()
+  private let manualCaptureV2DurableStore = ManualCaptureV2DurableStore()
+  private let manualCaptureV2ReservationGate = ManualCaptureV2ReservationGate(
+    maximum: 2
+  )
+  private let manualCaptureV2PhaseLock = NSLock()
 
   /// One CIContext shared across all JPEG encodes (creating a fresh one
   /// per encode is several ms of overhead and allocates a GPU command
@@ -772,6 +2636,9 @@ class AetherARKitPlugin: NSObject {
     sessionDelegate.onFrame = { [weak self] frame in
       self?.broadcast(frame: frame)
     }
+    // Durable jobs are restored on demand by await(jobID) or by the
+    // capture-scoped reconciliation API. Do not scan every historical capture
+    // here: thousands of committed JPEG hashes must never delay first shutter.
   }
 
   // MARK: MethodChannel handler
@@ -826,16 +2693,81 @@ class AetherARKitPlugin: NSObject {
         ))
         return
       }
-      do {
-        try manualCaptureV2Jobs.waitForResult(jobID: captureJobID) { payload in
-          result(payload)
-        }
-      } catch {
+      awaitManualCaptureV2(jobID: captureJobID, result: result)
+    case "listManualCaptureV2Jobs":
+      guard let args = call.arguments as? [String: Any],
+            let captureDirectory = args["captureDirectory"] as? String,
+            captureDirectory.hasPrefix("/") else {
         result(FlutterError(
-          code: "ar_manual_capture_v2_unknown_job",
-          message: error.localizedDescription,
-          details: ["capture_job_id": captureJobID]
+          code: "ar_manual_capture_v2_bad_args",
+          message: "listManualCaptureV2Jobs requires an absolute captureDirectory",
+          details: nil
         ))
+        return
+      }
+      let captureURL = URL(fileURLWithPath: captureDirectory).standardizedFileURL
+      jpegEncodeQueue.async {
+        self.manualCaptureV2PhaseLock.lock()
+        let pendingJobIDs = self.manualCaptureV2DurableStore.pendingRawJobIDs(
+          captureDirectory: captureURL
+        )
+        self.manualCaptureV2PhaseLock.unlock()
+        for jobID in pendingJobIDs {
+          self.executeManualCaptureV2SpilledJob(
+            jobID: jobID,
+            registerIfNeeded: true
+          )
+        }
+        self.manualCaptureV2PhaseLock.lock()
+        let jobs = self.manualCaptureV2DurableStore.reconciliationJobs(
+          captureDirectory: captureURL
+        )
+        self.manualCaptureV2PhaseLock.unlock()
+        DispatchQueue.main.async {
+          result([
+            "schema_version": "aether_manual_capture_v2_reconcile_v1",
+            "capture_directory": captureURL.path,
+            "jobs": jobs,
+            "backlog_metrics": self.manualCaptureV2DurableStore.backlogMetrics(),
+          ])
+        }
+      }
+    case "discardManualCaptureV2Jobs":
+      guard let args = call.arguments as? [String: Any],
+            let captureDirectory = args["captureDirectory"] as? String,
+            captureDirectory.hasPrefix("/") else {
+        result(FlutterError(
+          code: "ar_manual_capture_v2_bad_args",
+          message: "discardManualCaptureV2Jobs requires an absolute captureDirectory",
+          details: nil
+        ))
+        return
+      }
+      let captureURL = URL(fileURLWithPath: captureDirectory).standardizedFileURL
+      // `jpegEncodeQueue` is the native writer barrier: accepted raw/JPEG jobs
+      // queued before this explicit discard finish first. The phase lock also
+      // excludes an intent→raw-ready publication in the reservation lane.
+      jpegEncodeQueue.async {
+        self.manualCaptureV2PhaseLock.lock()
+        defer { self.manualCaptureV2PhaseLock.unlock() }
+        do {
+          let registryJobIDs = try self.manualCaptureV2Jobs.discardTerminalJobs(
+            captureDirectory: captureURL
+          )
+          var payload = try self.manualCaptureV2DurableStore.discardJobs(
+            captureDirectory: captureURL
+          )
+          payload["discarded_registry_job_ids"] = registryJobIDs
+          DispatchQueue.main.async { result(payload) }
+        } catch {
+          DispatchQueue.main.async {
+            result(FlutterError(
+              code: "ar_manual_capture_v2_discard_failed",
+              message: error.localizedDescription,
+              details: ["capture_directory": captureURL.path]
+            ))
+          }
+        }
       }
     case "saveCurrentFrameAsJpeg":
       // Plan G W2 photos-on-disk: encode the most-recent ARFrame as JPEG
@@ -1140,6 +3072,10 @@ class AetherARKitPlugin: NSObject {
       NSLog("[AetherARKit] setFeaturePointsVisible=\(visible)")
       result(nil)
     case "telemetryCaptureBegin":
+      // A capture must survive unattended, detached Profile runs. Keeping the
+      // display awake also prevents the ARSession and its strictly ordered
+      // durable consumer from being suspended by the user's Auto-Lock timer.
+      UIApplication.shared.isIdleTimerDisabled = true
       // 遥测 F【resource】:拍摄页进入 → 10s 定时资源采样
       // (thermal/footprint/电池/CPU/SceneKit FPS → telemetry_native.jsonl)。
       PwNativeTelemetry.shared.startResourceSampling()
@@ -1148,6 +3084,7 @@ class AetherARKitPlugin: NSObject {
       PwCaptureBrightnessGovernor.shared.begin()
       result(nil)
     case "telemetryCaptureEnd":
+      UIApplication.shared.isIdleTimerDisabled = false
       // 拍摄页退出(含等待页完成)→ 停采样,收尾补一条。
       PwNativeTelemetry.shared.stopResourceSampling()
       // 刀②:退出拍摄页(含 dispose 路径,Dart 侧 dispose() 必调)→ 恢复原亮度。
@@ -1571,34 +3508,6 @@ class AetherARKitPlugin: NSObject {
       return
     }
 
-    let jpegTempURL = ManualCaptureV2AtomicPublisher.temporaryURL(
-      for: jpegURL,
-      jobID: captureJobID
-    )
-    let metadataTempURL = ManualCaptureV2AtomicPublisher.temporaryURL(
-      for: metadataURL,
-      jobID: captureJobID
-    )
-    let sfmGrayTempURL = ManualCaptureV2AtomicPublisher.temporaryURL(
-      for: sfmGrayURL,
-      jobID: captureJobID
-    )
-    let fileManager = FileManager.default
-    if let occupiedURL = [
-      jpegURL, metadataURL, sfmGrayURL,
-      jpegTempURL, metadataTempURL, sfmGrayTempURL,
-    ].first(where: { fileManager.fileExists(atPath: $0.path) }) {
-      result(FlutterError(
-        code: "ar_manual_capture_v2_path_exists",
-        message: "manual capture refuses to overwrite an existing final or temp path",
-        details: [
-          "capture_job_id": captureJobID,
-          "occupied_path": occupiedURL.path,
-        ]
-      ))
-      return
-    }
-
     let targetTimestamp = (args["targetTimestamp"] as? NSNumber)?.doubleValue
     let maxTimestampDelta = (args["maxTimestampDelta"] as? NSNumber)?.doubleValue
       ?? Self.defaultSaveMaxTimestampDelta
@@ -1626,21 +3535,15 @@ class AetherARKitPlugin: NSObject {
       ))
       return
     }
-
-    do {
-      try manualCaptureV2Jobs.register(
-        jobID: captureJobID,
-        paths: ManualCaptureV2JobRegistry.ArtifactPaths(
-          jpegPath: jpegURL.path,
-          metadataPath: metadataURL.path,
-          sfmGrayPath: sfmGrayURL.path
-        )
-      )
-    } catch {
+    guard manualCaptureV2ReservationGate.tryAcquire() else {
       result(FlutterError(
-        code: "ar_manual_capture_v2_duplicate_job",
-        message: error.localizedDescription,
-        details: ["capture_job_id": captureJobID]
+        code: "ar_manual_capture_v2_reservation_backpressure",
+        message: "The bounded raw-spill reservation lane is busy; no job was accepted.",
+        details: [
+          "capture_job_id": captureJobID,
+          "accepted": false,
+          "retained_pixel_buffer_limit": 2,
+        ]
       ))
       return
     }
@@ -1649,173 +3552,450 @@ class AetherARKitPlugin: NSObject {
       (args["metadataSchemaVersion"] as? NSNumber)?.intValue ?? 1
     let dartSaveContract = args["dartSaveContract"] as? [String: Any]
     let selectedDelta = selection.delta
-    let context = ciContext
-    jpegEncodeQueue.async { [snapshot] in
-      let terminalPayload: [String: Any]
-      guard let gray = Self.extractGrayAspect(
-        snapshot.pixelBuffer,
-        maxSide: Self.sfmFeedMaxSide
-      ) else {
-        terminalPayload = [
-          "capture_job_id": captureJobID,
-          "status": "failed",
-          "error_code": "sfm_gray_unavailable",
-          "message": "The reserved ARFrame could not produce required sfm_gray; it is not registerable",
-          "jpeg_path": jpegURL.path,
-          "metadata_path": metadataURL.path,
-          "sfm_gray_path": sfmGrayURL.path,
-        ]
-        self.finishManualCaptureV2(
-          jobID: captureJobID,
-          payload: terminalPayload
+    let frameIdentity =
+      (dartSaveContract?["frame_id"] as? String).flatMap {
+        $0.isEmpty ? nil : $0
+      } ?? captureJobID
+    let snapshotIdentity = ManualCaptureV2DurableStore.snapshotIdentity(
+      captureJobID: captureJobID,
+      timestamp: snapshot.timestamp,
+      imageWidth: snapshot.imageW,
+      imageHeight: snapshot.imageH,
+      intrinsics: snapshot.intrinsicsFxFyCxCy,
+      extrinsic: snapshot.extrinsic
+    )
+    let intent = ManualCaptureV2DurableStore.Intent(
+      schemaVersion: 1,
+      captureJobID: captureJobID,
+      frameIdentity: frameIdentity,
+      snapshotIdentity: snapshotIdentity,
+      snapshotTimestamp: snapshot.timestamp,
+      imageWidth: snapshot.imageW,
+      imageHeight: snapshot.imageH,
+      jpegPath: jpegURL.path,
+      metadataPath: metadataURL.path,
+      sfmGrayPath: sfmGrayURL.path,
+      commitReceiptPath: metadataURL.deletingPathExtension()
+        .appendingPathExtension("manual-v2-committed.json").path,
+      createdUnixMicros: Int64(
+        (Date().timeIntervalSince1970 * 1_000_000).rounded()
+      )
+    )
+    let dartSaveContractJSON: Data?
+    do {
+      dartSaveContractJSON = try dartSaveContract.map {
+        try JSONSerialization.data(withJSONObject: $0, options: [])
+      }
+    } catch {
+      manualCaptureV2ReservationGate.release()
+      result(FlutterError(
+        code: "ar_manual_capture_v2_bad_contract",
+        message: error.localizedDescription,
+        details: ["capture_job_id": captureJobID]
+      ))
+      return
+    }
+    let recipe = ManualCaptureV2DurableStore.SnapshotRecipe(
+      metadataSchemaVersion: metadataSchemaVersion,
+      jpegQuality: quality,
+      targetTimestamp: targetTimestamp,
+      saveDelta: selectedDelta ?? 0,
+      intrinsicsFxFyCxCy: snapshot.intrinsicsFxFyCxCy,
+      extrinsic: snapshot.extrinsic,
+      trackingStateName: snapshot.trackingStateName,
+      isTracking: snapshot.isTracking,
+      anchorsWorld: snapshot.anchorsWorld,
+      anchorIDs: snapshot.anchorIds,
+      anchorDepthCount: snapshot.scaleAlignPremetrics.anchorDepthCount,
+      anchorDepthMinM: snapshot.scaleAlignPremetrics.anchorDepthMinM,
+      anchorDepthMaxM: snapshot.scaleAlignPremetrics.anchorDepthMaxM,
+      anchorDepthSpanM: snapshot.scaleAlignPremetrics.anchorDepthSpanM,
+      reliabilityPrior: snapshot.scaleAlignPremetrics.reliabilityPrior,
+      exifExposureDurationSec: snapshot.exifExposureDurationSec,
+      exifISO: snapshot.exifISO,
+      cameraAngularVelocity: snapshot.cameraAngularVelocityRadPerSec.map {
+        [$0.x, $0.y, $0.z]
+      },
+      cameraAngularVelocityDtSec: snapshot.cameraAngularVelocityDtSec,
+      dartSaveContractJSON: dartSaveContractJSON
+    )
+    manualCaptureReservationQueue.async { [snapshot] in
+      defer { self.manualCaptureV2ReservationGate.release() }
+      self.manualCaptureV2PhaseLock.lock()
+      defer { self.manualCaptureV2PhaseLock.unlock() }
+      // The ACK is deliberately asynchronous: main/AR rendering never waits
+      // on fsync. The queue writes and fsyncs the small intent first, then
+      // registers the job, then schedules ACK on main ahead of completion.
+      let rawReady: ManualCaptureV2DurableStore.RawReadyRecord
+      var createdIntent = false
+      do {
+        try self.manualCaptureV2DurableStore.createIntent(intent)
+        createdIntent = true
+        try self.manualCaptureV2DurableStore.createPrivateStaging(intent: intent)
+        rawReady = try self.manualCaptureV2DurableStore.spillRawSnapshot(
+          intent: intent,
+          pixelBuffer: snapshot.pixelBuffer,
+          recipe: recipe
         )
+        try self.manualCaptureV2Jobs.register(
+          jobID: captureJobID,
+          paths: intent.artifactPaths
+        )
+      } catch {
+        if createdIntent {
+          self.manualCaptureV2DurableStore.abandonUnacknowledgedIntent(intent)
+        }
+        DispatchQueue.main.async {
+          result(FlutterError(
+            code: "ar_manual_capture_v2_intent_failed",
+            message: error.localizedDescription,
+            details: ["capture_job_id": captureJobID]
+          ))
+        }
         return
       }
 
-      do {
-        for parentURL in Set([
-          jpegURL.deletingLastPathComponent(),
-          metadataURL.deletingLastPathComponent(),
-          sfmGrayURL.deletingLastPathComponent(),
-        ]) {
-          try fileManager.createDirectory(
-            at: parentURL,
-            withIntermediateDirectories: true
-          )
-        }
-        if let occupiedURL = [
-          jpegURL, metadataURL, sfmGrayURL,
-          jpegTempURL, metadataTempURL, sfmGrayTempURL,
-        ].first(where: { fileManager.fileExists(atPath: $0.path) }) {
-          throw NSError(
-            domain: NSPOSIXErrorDomain,
-            code: Int(EEXIST),
-            userInfo: [NSLocalizedDescriptionKey:
-              "manual capture refuses to overwrite \(occupiedURL.path)"]
-          )
-        }
-
-        try Self.encodeCVPixelBufferAsJpeg(
-          snapshot.pixelBuffer,
-          to: jpegTempURL,
-          quality: CGFloat(quality),
-          ciContext: context
-        )
-
-        var metadata: [String: Any] = [
-          "version": metadataSchemaVersion,
-          "native_role": "thin_arkit_frame_executor",
-          "manual_capture_schema": "aether_manual_capture_v2_in_process_v1",
-          "capture_job_id": captureJobID,
-          "t": snapshot.timestamp,
-          "image_w": snapshot.imageW,
-          "image_h": snapshot.imageH,
-          "extrinsic": snapshot.extrinsic,
-          "intrinsics_fxfycxcy": snapshot.intrinsicsFxFyCxCy,
-          "trackingStateName": snapshot.trackingStateName,
-          "tracking_state": snapshot.trackingStateName,
-          "is_tracking": snapshot.isTracking,
-          "anchors_world": snapshot.anchorsWorld,
-          "anchor_ids": snapshot.anchorIds.map { NSNumber(value: $0) },
-          "scale_align_premetrics": [
-            "anchor_depth_count": snapshot.scaleAlignPremetrics.anchorDepthCount,
-            "anchor_depth_min_m": snapshot.scaleAlignPremetrics.anchorDepthMinM,
-            "anchor_depth_max_m": snapshot.scaleAlignPremetrics.anchorDepthMaxM,
-            "anchor_depth_span_m": snapshot.scaleAlignPremetrics.anchorDepthSpanM,
-            "reliability_prior": snapshot.scaleAlignPremetrics.reliabilityPrior,
-          ],
-          "save_dt": selectedDelta ?? 0.0,
-          "sfm_gray_path": sfmGrayURL.path,
-          "sfm_gray_w": gray.width,
-          "sfm_gray_h": gray.height,
-        ]
-        if let exposure = snapshot.exifExposureDurationSec {
-          metadata["exif_exposure_duration_sec"] = exposure
-        }
-        if let iso = snapshot.exifISO {
-          metadata["exif_iso"] = iso
-        }
-        if let angularVelocity = snapshot.cameraAngularVelocityRadPerSec,
-           let angularVelocityDt = snapshot.cameraAngularVelocityDtSec {
-          metadata["camera_angular_velocity_rad_s_xyz"] = [
-            angularVelocity.x,
-            angularVelocity.y,
-            angularVelocity.z,
-          ]
-          metadata["camera_angular_velocity_dt_sec"] = angularVelocityDt
-          metadata["camera_angular_velocity_source"] =
-            "adjacent_arkit_frames_backward"
-        }
-        if let dartSaveContract {
-          metadata["dart_save_contract"] = dartSaveContract
-        }
-        if let targetTimestamp {
-          metadata["save_target_t"] = targetTimestamp
-        }
-
-        let json = try JSONSerialization.data(
-          withJSONObject: metadata,
-          options: []
-        )
-        try json.write(to: metadataTempURL, options: .withoutOverwriting)
-        try gray.data.write(to: sfmGrayTempURL, options: .withoutOverwriting)
-
-        // Publish the JPEG last. Its presence is the commit marker for this
-        // slice; every rename is same-directory and RENAME_EXCL, so no
-        // existing user frame or sidecar can be replaced.
-        try ManualCaptureV2AtomicPublisher.publishNoReplace(
-          tempURL: metadataTempURL,
-          finalURL: metadataURL
-        )
-        try ManualCaptureV2AtomicPublisher.publishNoReplace(
-          tempURL: sfmGrayTempURL,
-          finalURL: sfmGrayURL
-        )
-        try ManualCaptureV2AtomicPublisher.publishNoReplace(
-          tempURL: jpegTempURL,
-          finalURL: jpegURL
-        )
-
-        terminalPayload = [
-          "capture_job_id": captureJobID,
-          "status": "committed",
-          "jpeg_path": jpegURL.path,
-          "metadata_path": metadataURL.path,
-          "sfm_gray_path": sfmGrayURL.path,
-          "sfm_gray_w": gray.width,
-          "sfm_gray_h": gray.height,
-          "t": snapshot.timestamp,
-          "image_w": snapshot.imageW,
-          "image_h": snapshot.imageH,
-          "intrinsics_fxfycxcy": snapshot.intrinsicsFxFyCxCy,
-          "extrinsic": snapshot.extrinsic,
-        ]
-      } catch {
-        terminalPayload = [
-          "capture_job_id": captureJobID,
-          "status": "failed",
-          "error_code": "manual_capture_write_failed",
-          "message": error.localizedDescription,
-          "jpeg_path": jpegURL.path,
-          "metadata_path": metadataURL.path,
-          "sfm_gray_path": sfmGrayURL.path,
-        ]
+      // Materialize a scalar-only ticket before leaving the bounded
+      // reservation lane. The main queue may be busy rendering AR; its ACK
+      // callback must never capture `snapshot` and thereby retain the 4K
+      // CVPixelBuffer after the reservation gate has released its slot.
+      let ticketPayload: [String: Any] = [
+        "schema_version": "aether_manual_capture_ticket_v2",
+        "capture_job_id": captureJobID,
+        "status": "snapshot_reserved",
+        "snapshot_timestamp": intent.snapshotTimestamp,
+        "snapshot_identity": snapshotIdentity,
+        "durable_commit_marker_path": intent.commitReceiptPath!,
+        "save_dt": selectedDelta ?? 0.0,
+        "jpeg_path": jpegURL.path,
+        "metadata_path": metadataURL.path,
+        "sfm_gray_path": sfmGrayURL.path,
+        "reservation_intent_durable": true,
+        "raw_spill_durable": true,
+        "raw_spill_bytes": rawReady.rawByteLength,
+        "retained_pixel_buffers_after_ack": 0,
+        "backlog_metrics": self.manualCaptureV2DurableStore.backlogMetrics(),
+      ]
+      DispatchQueue.main.async { [ticketPayload] in
+        result(ticketPayload)
       }
-      self.finishManualCaptureV2(jobID: captureJobID, payload: terminalPayload)
+
+      self.jpegEncodeQueue.async {
+        self.executeManualCaptureV2SpilledJob(
+          jobID: captureJobID,
+          registerIfNeeded: false
+        )
+      }
+    }
+  }
+
+  private func executeManualCaptureV2SpilledJob(
+    jobID: String,
+    registerIfNeeded: Bool
+  ) {
+    let consumeStarted = CACurrentMediaTime()
+    defer {
+      manualCaptureV2DurableStore.recordRawConsumeDuration(
+        milliseconds: (CACurrentMediaTime() - consumeStarted) * 1000
+      )
+    }
+    let loaded: ManualCaptureV2DurableStore.LoadedRawSnapshot
+    do {
+      let reopened = try manualCaptureV2DurableStore.beginRawRetryIfPossible(
+        jobID: jobID
+      )
+      guard let value = try manualCaptureV2DurableStore.loadRawSnapshot(
+        jobID: jobID
+      ) else {
+        return
+      }
+      loaded = value
+      if registerIfNeeded {
+        do {
+          try manualCaptureV2Jobs.register(
+            jobID: jobID,
+            paths: loaded.intent.artifactPaths
+          )
+        } catch ManualCaptureV2JobRegistry.RegistryError.duplicateJob {
+          // Already live in this process; continue the same durable job.
+        }
+      }
+      if reopened {
+        try? manualCaptureV2Jobs.reopenRecoverableFailure(jobID: jobID)
+      }
+    } catch {
+      NSLog(
+        "[AetherARKit] raw manual capture %@ could not be restored: %@",
+        jobID,
+        error.localizedDescription
+      )
+      if let payload = try? manualCaptureV2DurableStore.recordRawRestoreFailure(
+        jobID: jobID,
+        error: error
+      ) {
+        if registerIfNeeded,
+           let recovery = try? manualCaptureV2DurableStore.recover(jobID: jobID) {
+          do {
+            try manualCaptureV2Jobs.register(
+              jobID: jobID,
+              paths: recovery.intent.artifactPaths
+            )
+          } catch ManualCaptureV2JobRegistry.RegistryError.duplicateJob {
+            // The live entry remains the exact same job authority.
+          } catch {
+            NSLog(
+              "[AetherARKit] raw restore failure registry rejected %@: %@",
+              jobID,
+              error.localizedDescription
+            )
+          }
+        }
+        finishManualCaptureV2(jobID: jobID, payload: payload)
+      }
+      return
     }
 
-    // ACK only after the exact snapshot has been selected, retained by the
-    // serial JPEG queue closure, and bound to a unique captureJobId.
-    result([
-      "schema_version": "aether_manual_capture_ticket_v2",
-      "capture_job_id": captureJobID,
-      "status": "snapshot_reserved",
-      "snapshot_timestamp": snapshot.timestamp,
-      "save_dt": selectedDelta ?? 0.0,
-      "jpeg_path": jpegURL.path,
-      "metadata_path": metadataURL.path,
-      "sfm_gray_path": sfmGrayURL.path,
-    ])
+    let intent = loaded.intent
+    let recipe = loaded.recipe
+    var sealedPreparedRecord: ManualCaptureV2DurableStore.PreparedRecord?
+    do {
+      guard let gray = Self.extractGrayAspect(
+        loaded.pixelBuffer,
+        maxSide: Self.sfmFeedMaxSide
+      ) else {
+        let payload = try manualCaptureV2DurableStore.recordFailure(
+          intent: intent,
+          errorCode: "sfm_gray_unavailable",
+          message: "The reserved raw snapshot could not produce required sfm_gray; it is not registerable",
+          recoverable: false
+        )
+        finishManualCaptureV2(jobID: jobID, payload: payload)
+        return
+      }
+      let jpegStagingURL = manualCaptureV2DurableStore.stagingURL(
+        jobID: jobID,
+        kind: .jpeg
+      )
+      let metadataStagingURL = manualCaptureV2DurableStore.stagingURL(
+        jobID: jobID,
+        kind: .metadata
+      )
+      let sfmGrayStagingURL = manualCaptureV2DurableStore.stagingURL(
+        jobID: jobID,
+        kind: .sfmGray
+      )
+      try Self.encodeCVPixelBufferAsJpeg(
+        loaded.pixelBuffer,
+        to: jpegStagingURL,
+        quality: CGFloat(recipe.jpegQuality),
+        ciContext: ciContext
+      )
+
+      var metadata: [String: Any] = [
+        "version": recipe.metadataSchemaVersion,
+        "native_role": "thin_arkit_frame_executor",
+        "manual_capture_schema": "aether_manual_capture_v2_durable_v2",
+        "capture_job_id": jobID,
+        "frame_identity": intent.frameIdentity,
+        "snapshot_identity": intent.snapshotIdentity,
+        "t": intent.snapshotTimestamp,
+        "image_w": intent.imageWidth,
+        "image_h": intent.imageHeight,
+        "extrinsic": recipe.extrinsic,
+        "intrinsics_fxfycxcy": recipe.intrinsicsFxFyCxCy,
+        "trackingStateName": recipe.trackingStateName,
+        "tracking_state": recipe.trackingStateName,
+        "is_tracking": recipe.isTracking,
+        "anchors_world": recipe.anchorsWorld,
+        "anchor_ids": recipe.anchorIDs.map { NSNumber(value: $0) },
+        "scale_align_premetrics": [
+          "anchor_depth_count": recipe.anchorDepthCount,
+          "anchor_depth_min_m": recipe.anchorDepthMinM,
+          "anchor_depth_max_m": recipe.anchorDepthMaxM,
+          "anchor_depth_span_m": recipe.anchorDepthSpanM,
+          "reliability_prior": recipe.reliabilityPrior,
+        ],
+        "save_dt": recipe.saveDelta,
+        "sfm_gray_path": intent.sfmGrayPath,
+        "sfm_gray_w": gray.width,
+        "sfm_gray_h": gray.height,
+      ]
+      if let markerPath = intent.commitReceiptPath {
+        metadata["durable_commit_marker_path"] = markerPath
+      }
+      if let exposure = recipe.exifExposureDurationSec {
+        metadata["exif_exposure_duration_sec"] = exposure
+      }
+      if let iso = recipe.exifISO { metadata["exif_iso"] = iso }
+      if let angularVelocity = recipe.cameraAngularVelocity,
+         let angularVelocityDt = recipe.cameraAngularVelocityDtSec {
+        metadata["camera_angular_velocity_rad_s_xyz"] = angularVelocity
+        metadata["camera_angular_velocity_dt_sec"] = angularVelocityDt
+        metadata["camera_angular_velocity_source"] =
+          "adjacent_arkit_frames_backward"
+      }
+      if let contractData = recipe.dartSaveContractJSON {
+        metadata["dart_save_contract"] = try JSONSerialization.jsonObject(
+          with: contractData
+        )
+      }
+      if let targetTimestamp = recipe.targetTimestamp {
+        metadata["save_target_t"] = targetTimestamp
+      }
+      let json = try JSONSerialization.data(withJSONObject: metadata)
+      try json.write(to: metadataStagingURL, options: .withoutOverwriting)
+      try gray.data.write(to: sfmGrayStagingURL, options: .withoutOverwriting)
+      let prepared = try manualCaptureV2DurableStore.prepare(
+        intent: intent,
+        sfmGrayWidth: gray.width,
+        sfmGrayHeight: gray.height,
+        timestamp: intent.snapshotTimestamp,
+        imageWidth: intent.imageWidth,
+        imageHeight: intent.imageHeight,
+        intrinsicsFxFyCxCy: recipe.intrinsicsFxFyCxCy,
+        extrinsic: recipe.extrinsic
+      )
+      sealedPreparedRecord = prepared
+      let payload = try manualCaptureV2DurableStore.commit(
+        intent: intent,
+        record: prepared
+      )
+      finishManualCaptureV2(jobID: jobID, payload: payload)
+    } catch {
+      if sealedPreparedRecord != nil,
+         let recovered = try? manualCaptureV2DurableStore.recover(jobID: jobID),
+         recovered.payload["status"] as? String == "committed" {
+        finishManualCaptureV2(jobID: jobID, payload: recovered.payload)
+        return
+      }
+      let payload = (try? manualCaptureV2DurableStore.recordFailure(
+        intent: intent,
+        errorCode: "manual_capture_write_failed",
+        message: error.localizedDescription
+      )) ?? manualCaptureV2FailurePayload(
+        intent: intent,
+        errorCode: "manual_capture_write_failed",
+        message: error.localizedDescription
+      )
+      finishManualCaptureV2(jobID: jobID, payload: payload)
+    }
+  }
+
+  private func restoreManualCaptureV2Jobs() {
+    for recoveryResult in manualCaptureV2DurableStore.recoverAll() {
+      switch recoveryResult {
+      case .success(let recovery):
+        do {
+          try manualCaptureV2Jobs.register(
+            jobID: recovery.intent.captureJobID,
+            paths: recovery.intent.artifactPaths
+          )
+          try manualCaptureV2Jobs.finish(
+            jobID: recovery.intent.captureJobID,
+            result: recovery.payload
+          )
+        } catch ManualCaptureV2JobRegistry.RegistryError.duplicateJob {
+          // A queued live reservation won the race. Its registry entry is the
+          // authority for this process; durable createIntent will still reject
+          // a second disk transaction.
+          continue
+        } catch {
+          NSLog(
+            "[AetherARKit] manual capture recovery rejected %@: %@",
+            recovery.intent.captureJobID,
+            error.localizedDescription
+          )
+        }
+      case .failure(let error):
+        NSLog(
+          "[AetherARKit] manual capture durable scan failed closed: %@",
+          error.localizedDescription
+        )
+      }
+    }
+  }
+
+  private func awaitManualCaptureV2(
+    jobID: String,
+    result: @escaping FlutterResult
+  ) {
+    jpegEncodeQueue.async {
+      // This block is serialized behind startup recovery and any accepted
+      // encode. If startup was interrupted, an on-demand lookup gives the
+      // caller an explicit durable answer rather than "unknown job".
+      if self.manualCaptureV2DurableStore.shouldExecuteRawSnapshot(jobID: jobID) {
+        self.executeManualCaptureV2SpilledJob(
+          jobID: jobID,
+          registerIfNeeded: true
+        )
+      }
+      do {
+        try self.manualCaptureV2Jobs.waitForResult(jobID: jobID) { payload in
+          DispatchQueue.main.async { result(payload) }
+        }
+        return
+      } catch ManualCaptureV2JobRegistry.RegistryError.unknownJob {
+        do {
+          if let recovery = try self.manualCaptureV2DurableStore.recover(jobID: jobID) {
+            try self.manualCaptureV2Jobs.register(
+              jobID: jobID,
+              paths: recovery.intent.artifactPaths
+            )
+            try self.manualCaptureV2Jobs.finish(
+              jobID: jobID,
+              result: recovery.payload
+            )
+            try self.manualCaptureV2Jobs.waitForResult(jobID: jobID) { payload in
+              DispatchQueue.main.async { result(payload) }
+            }
+            return
+          }
+        } catch {
+          DispatchQueue.main.async {
+            result(FlutterError(
+              code: "ar_manual_capture_v2_recovery_failed",
+              message: error.localizedDescription,
+              details: ["capture_job_id": jobID]
+            ))
+          }
+          return
+        }
+      } catch {
+        DispatchQueue.main.async {
+          result(FlutterError(
+            code: "ar_manual_capture_v2_await_failed",
+            message: error.localizedDescription,
+            details: ["capture_job_id": jobID]
+          ))
+        }
+        return
+      }
+      DispatchQueue.main.async {
+        result(FlutterError(
+          code: "ar_manual_capture_v2_unknown_job",
+          message: "manual capture job is unknown: \(jobID)",
+          details: ["capture_job_id": jobID]
+        ))
+      }
+    }
+  }
+
+  private func manualCaptureV2FailurePayload(
+    intent: ManualCaptureV2DurableStore.Intent,
+    errorCode: String,
+    message: String
+  ) -> [String: Any] {
+    [
+      "capture_job_id": intent.captureJobID,
+      "status": "failed",
+      "error_code": errorCode,
+      "message": message,
+      "recoverable": true,
+      "jpeg_path": intent.jpegPath,
+      "metadata_path": intent.metadataPath,
+      "sfm_gray_path": intent.sfmGrayPath,
+      "snapshot_identity": intent.snapshotIdentity,
+    ]
   }
 
   private func finishManualCaptureV2(
@@ -3196,6 +5376,7 @@ private class ARSessionForwarder: NSObject, ARSessionDelegate {
     }
     // 帧监视:恢复检测(热路径只碰锁一次;水位事件写盘走 telemetry 队列)。
     let now = CACurrentMediaTime()
+    PwNativeTelemetry.shared.noteARFrame()
     stallLock.lock()
     let stalledFrom = stalledSince
     lastFrameAt = now
@@ -3842,6 +6023,22 @@ final class PwNativeTelemetry {
   private let frameLock = NSLock()
   private var renderFrames = 0
   private var frameWindowStart = CACurrentMediaTime()
+  private var lastRenderFrameAt: CFTimeInterval = 0
+  private var renderGapMaxMs = 0.0
+  private var renderGapOver50Ms = 0
+  private var renderGapOver100Ms = 0
+
+  // ARSession delivery cadence is distinct from SceneKit rendering cadence.
+  // Keep a lock-only in-memory window so a 30fps average cannot hide a visible
+  // one-off freeze during a shutter burst. No JSON or I/O runs on either hot
+  // path; the resource sampler consumes these counters every 10 seconds.
+  private let arFrameLock = NSLock()
+  private var arFrames = 0
+  private var arFrameWindowStart = CACurrentMediaTime()
+  private var lastArFrameAt: CFTimeInterval = 0
+  private var arGapMaxMs = 0.0
+  private var arGapOver50Ms = 0
+  private var arGapOver100Ms = 0
 
   // cardpush 差量条数(channel 线程写,渲染线程消费;同 photoCardStates
   // 一样用锁保护)。
@@ -3938,7 +6135,19 @@ final class PwNativeTelemetry {
       self.frameLock.lock()
       self.renderFrames = 0
       self.frameWindowStart = CACurrentMediaTime()
+      self.lastRenderFrameAt = 0
+      self.renderGapMaxMs = 0
+      self.renderGapOver50Ms = 0
+      self.renderGapOver100Ms = 0
       self.frameLock.unlock()
+      self.arFrameLock.lock()
+      self.arFrames = 0
+      self.arFrameWindowStart = CACurrentMediaTime()
+      self.lastArFrameAt = 0
+      self.arGapMaxMs = 0
+      self.arGapOver50Ms = 0
+      self.arGapOver100Ms = 0
+      self.arFrameLock.unlock()
       let timer = DispatchSource.makeTimerSource(queue: self.queue)
       timer.schedule(deadline: .now() + 10, repeating: 10)
       timer.setEventHandler { [weak self] in
@@ -3964,9 +6173,32 @@ final class PwNativeTelemetry {
   /// SceneKit 渲染 tick(AetherARKitPreviewView.updateAtTime 每帧调用)。
   /// 一次锁自增,纳秒级 —— 渲染线程零等待。
   func noteRenderFrame() {
+    let now = CACurrentMediaTime()
     frameLock.lock()
+    if lastRenderFrameAt > 0 {
+      let gapMs = (now - lastRenderFrameAt) * 1000
+      renderGapMaxMs = max(renderGapMaxMs, gapMs)
+      if gapMs > 50 { renderGapOver50Ms += 1 }
+      if gapMs > 100 { renderGapOver100Ms += 1 }
+    }
+    lastRenderFrameAt = now
     renderFrames += 1
     frameLock.unlock()
+  }
+
+  /// ARSession didUpdate tick. Lock-only; safe on the AR delivery queue.
+  func noteARFrame() {
+    let now = CACurrentMediaTime()
+    arFrameLock.lock()
+    if lastArFrameAt > 0 {
+      let gapMs = (now - lastArFrameAt) * 1000
+      arGapMaxMs = max(arGapMaxMs, gapMs)
+      if gapMs > 50 { arGapOver50Ms += 1 }
+      if gapMs > 100 { arGapOver100Ms += 1 }
+    }
+    lastArFrameAt = now
+    arFrames += 1
+    arFrameLock.unlock()
   }
 
   private func sampleResourcesOnQueue() {
@@ -3974,10 +6206,30 @@ final class PwNativeTelemetry {
     frameLock.lock()
     let frames = renderFrames
     let windowS = CACurrentMediaTime() - frameWindowStart
+    let scnGapMaxMs = renderGapMaxMs
+    let scnGapOver50Ms = renderGapOver50Ms
+    let scnGapOver100Ms = renderGapOver100Ms
     renderFrames = 0
     frameWindowStart = CACurrentMediaTime()
+    renderGapMaxMs = 0
+    renderGapOver50Ms = 0
+    renderGapOver100Ms = 0
     frameLock.unlock()
     let fps = windowS > 0.1 ? Double(frames) / windowS : 0
+
+    arFrameLock.lock()
+    let deliveredArFrames = arFrames
+    let arWindowS = CACurrentMediaTime() - arFrameWindowStart
+    let arFrameGapMaxMs = arGapMaxMs
+    let arFrameGapOver50Ms = arGapOver50Ms
+    let arFrameGapOver100Ms = arGapOver100Ms
+    arFrames = 0
+    arFrameWindowStart = CACurrentMediaTime()
+    arGapMaxMs = 0
+    arGapOver50Ms = 0
+    arGapOver100Ms = 0
+    arFrameLock.unlock()
+    let arFps = arWindowS > 0.1 ? Double(deliveredArFrames) / arWindowS : 0
 
     let footprint = Self.physFootprintMB()
     let cpu = Self.processCpuOneCorePercent()
@@ -3998,6 +6250,13 @@ final class PwNativeTelemetry {
         "battery": battery,
         "cpu_one_core_pct": (cpu * 10).rounded() / 10,
         "scn_fps": (fps * 10).rounded() / 10,
+        "scn_gap_max_ms": (scnGapMaxMs * 10).rounded() / 10,
+        "scn_gap_over_50ms": scnGapOver50Ms,
+        "scn_gap_over_100ms": scnGapOver100Ms,
+        "ar_fps": (arFps * 10).rounded() / 10,
+        "ar_gap_max_ms": (arFrameGapMaxMs * 10).rounded() / 10,
+        "ar_gap_over_50ms": arFrameGapOver50Ms,
+        "ar_gap_over_100ms": arFrameGapOver100Ms,
         "app_state": appState,
       ])
     }

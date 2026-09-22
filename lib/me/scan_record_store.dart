@@ -29,10 +29,15 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
+import 'package:crypto/crypto.dart';
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 
 import '../capture/captured_photo_catalog.dart';
+import '../capture/capture_session.dart';
+import '../capture/sfm_feed_queue.dart';
+import '../capture/sfm_orphan_recovery.dart';
+import '../dome/platform_pose_provider.dart';
 import '../ui/scan_record.dart';
 
 Uint8List? _uprightLandscapeThumbnailBytes(String path) {
@@ -218,17 +223,44 @@ class ScanRecordStore {
             .where((s) => s.isNotEmpty)
             .lastOrNull;
         if (captureId == null || existingIds.contains(captureId)) continue;
+        final manualLedger = File(
+          '${entity.path}/manual_capture_registration_ledger.json',
+        );
+        final hasManualRecoveryIdentity = await _manualLedgerNeedsRecovery(
+          manualLedger,
+        );
         var photosDir = Directory('${entity.path}/photos_highres');
         if (!await photosDir.exists()) {
           // Read-only compatibility for captures created before the local
           // high-resolution directory rename.
-          photosDir = Directory('${entity.path}/photos');
+          final legacyPhotosDir = Directory('${entity.path}/photos');
+          if (await legacyPhotosDir.exists()) {
+            photosDir = legacyPhotosDir;
+          } else if (hasManualRecoveryIdentity) {
+            // A failed/ACK-only shutter can durably own a job before its JPEG
+            // appears. Recreate only the empty canonical directory so the
+            // resulting recovery handle has a stable local photos path.
+            await photosDir.create(recursive: true);
+          }
         }
         if (!await photosDir.exists()) continue;
-        final photos = (await discoverCapturedPhotoPaths(
+        final discoveredPhotos = (await discoverCapturedPhotoPaths(
           photosDir,
         )).map(File.new).toList(growable: false);
-        if (photos.isEmpty) continue;
+        final hasNativeRecoveryIdentity = await _hasManualV2RecoveryEvidence(
+          photosDir,
+        );
+        final photos = await _committedVisiblePhotos(
+          captureDir: entity,
+          photosDir: photosDir,
+          ledger: manualLedger,
+          discovered: discoveredPhotos,
+        );
+        if (photos.isEmpty &&
+            !hasManualRecoveryIdentity &&
+            !hasNativeRecoveryIdentity) {
+          continue;
+        }
         final localBundle = File('${entity.path}/photo_bundle.json');
         final manifestFile = await localBundle.exists()
             ? localBundle
@@ -246,13 +278,15 @@ class ScanRecordStore {
           );
         }
         String? thumbnailPath;
-        try {
-          final thumbnail = await thumbnailFileFor(captureId);
-          await thumbnail.parent.create(recursive: true);
-          await photos.first.copy(thumbnail.path);
-          thumbnailPath = thumbnail.path;
-        } on FileSystemException {
-          thumbnailPath = photos.first.path;
+        if (photos.isNotEmpty) {
+          try {
+            final thumbnail = await thumbnailFileFor(captureId);
+            await thumbnail.parent.create(recursive: true);
+            await photos.first.copy(thumbnail.path);
+            thumbnailPath = thumbnail.path;
+          } on FileSystemException {
+            thumbnailPath = photos.first.path;
+          }
         }
         recovered.add(
           ScanRecord(
@@ -277,6 +311,244 @@ class ScanRecordStore {
       return 0;
     }
   }
+
+  Future<bool> _manualLedgerNeedsRecovery(File ledger) async {
+    if (!await ledger.exists()) return false;
+    try {
+      final decoded = jsonDecode(await ledger.readAsString());
+      if (decoded is! Map) return await ledger.length() > 0;
+      final events = decoded['events'];
+      if (events is List) return events.isNotEmpty;
+      // Forward-compatible reducer snapshots use materialized jobs instead
+      // of an event list. They carry the same recovery identity.
+      final jobs = decoded['jobs'];
+      if (jobs is List) return jobs.isNotEmpty;
+      // Unknown non-empty JSON is still evidence that capture persistence
+      // began. Keep it visible so resume can surface the exact format error.
+      return decoded.isNotEmpty;
+    } catch (_) {
+      // A corrupt non-empty ledger is still user-visible recovery state. The
+      // resume inspector will report the exact validation error; silently
+      // dropping its capture card would make repair/discard impossible.
+      return await ledger.length() > 0;
+    }
+  }
+
+  Future<bool> _hasManualV2RecoveryEvidence(Directory photosDir) async {
+    if (!await photosDir.exists()) return false;
+    await for (final entity in photosDir.list(followLinks: false)) {
+      if (entity is! File) continue;
+      if (entity.path.endsWith('.manual-v2-committed.json') ||
+          entity.path.endsWith('.sfm-gray')) {
+        return true;
+      }
+      if (!entity.path.endsWith('.json')) continue;
+      try {
+        final decoded = jsonDecode(await entity.readAsString());
+        if (decoded is Map &&
+            decoded['manual_capture_schema'] ==
+                'aether_manual_capture_v2_durable_v2') {
+          return true;
+        }
+      } catch (_) {}
+    }
+    return false;
+  }
+
+  /// A durable-v2 JPEG is not user-visible merely because its rename landed.
+  /// Swift publishes the three artifacts before its commit marker. Visibility
+  /// therefore requires either Dart's durable `photo_committed` ledger stage
+  /// or a fully validated native three-artifact receipt.
+  Future<List<File>> _committedVisiblePhotos({
+    required Directory captureDir,
+    required Directory photosDir,
+    required File ledger,
+    required List<File> discovered,
+  }) async {
+    final committed = <String>{};
+    final claimed = <String>{};
+    final userDeleted = <String>{};
+    if (await ledger.exists()) {
+      try {
+        final raw = jsonDecode(await ledger.readAsString());
+        if (raw is Map) {
+          final mapping = raw['job_to_jpeg_path'];
+          if (mapping is Map) {
+            for (final value in mapping.values.whereType<String>()) {
+              if (value.isNotEmpty) claimed.add(File(value).absolute.path);
+            }
+          }
+          final events = raw['events'];
+          if (events is List) {
+            for (final event in events.whereType<Map>()) {
+              if (event['event'] == 'attempted' &&
+                  event['identity_token'] is String) {
+                claimed.add(
+                  File(event['identity_token'] as String).absolute.path,
+                );
+              }
+            }
+          }
+        }
+      } catch (_) {}
+      try {
+        final persisted = await loadPersistedManualCaptureEvidence(
+          captureDir.path,
+        );
+        for (final entry in persisted.jobToJpegPath.entries) {
+          final job = persisted.ledger.job(entry.key);
+          if (job != null) {
+            final path = File(entry.value).absolute.path;
+            if (job.userDeleted) {
+              userDeleted.add(path);
+            } else if (job.photoCommitted) {
+              committed.add(path);
+            }
+          }
+        }
+      } catch (_) {
+        // The malformed ledger is still a visible zero-photo recovery handle;
+        // it is not authority to publish a possibly partial JPEG.
+      }
+    }
+
+    try {
+      final native = await scanCommittedSfmOrphans(photosDir);
+      committed.addAll(
+        native.committedOrphans.map((orphan) => orphan.jpegFile.absolute.path),
+      );
+    } catch (_) {
+      // Fail closed for visibility; the bytes stay on disk for reconciliation.
+    }
+    for (final photo in discovered) {
+      final sidecar = File(
+        photo.absolute.path.replaceFirst(RegExp(r'\.[^.]+$'), '.json'),
+      );
+      if (await _hasExactDurableV2PhotoReceipt(jpeg: photo, sidecar: sidecar)) {
+        committed.add(photo.absolute.path);
+      }
+    }
+    committed.removeAll(userDeleted);
+
+    final visible = <File>[];
+    for (final photo in discovered) {
+      final canonical = photo.absolute.path;
+      if (userDeleted.contains(canonical)) continue;
+      if (committed.contains(canonical)) {
+        visible.add(photo);
+        continue;
+      }
+      if (claimed.contains(canonical)) continue;
+      final sidecar = File(
+        canonical.replaceFirst(RegExp(r'\.[^.]+$'), '.json'),
+      );
+      var durableV2 = false;
+      try {
+        final decoded = jsonDecode(await sidecar.readAsString());
+        durableV2 =
+            decoded is Map &&
+            decoded['manual_capture_schema'] ==
+                'aether_manual_capture_v2_durable_v2';
+      } catch (_) {}
+      if (!durableV2) visible.add(photo);
+    }
+    return List<File>.unmodifiable(visible);
+  }
+
+  Future<bool> _hasExactDurableV2PhotoReceipt({
+    required File jpeg,
+    required File sidecar,
+  }) async {
+    try {
+      if (!await jpeg.exists() || !await sidecar.exists()) return false;
+      final sidecarRaw = jsonDecode(await sidecar.readAsString());
+      if (sidecarRaw is! Map ||
+          sidecarRaw['manual_capture_schema'] !=
+              'aether_manual_capture_v2_durable_v2') {
+        return false;
+      }
+      final jobId = sidecarRaw['capture_job_id'];
+      final snapshot = sidecarRaw['snapshot_identity'];
+      final markerPath = sidecarRaw['durable_commit_marker_path'];
+      final grayPath = sidecarRaw['sfm_gray_path'];
+      if (jobId is! String ||
+          jobId.isEmpty ||
+          snapshot is! String ||
+          snapshot.isEmpty ||
+          markerPath is! String ||
+          grayPath is! String) {
+        return false;
+      }
+      final sidecarStem = sidecar.absolute.path.endsWith('.json')
+          ? sidecar.absolute.path.substring(
+              0,
+              sidecar.absolute.path.length - '.json'.length,
+            )
+          : sidecar.absolute.path;
+      final expectedMarker = File('$sidecarStem.manual-v2-committed.json');
+      if (!File(markerPath).isAbsolute ||
+          File(markerPath).absolute.path != expectedMarker.absolute.path ||
+          !await expectedMarker.exists()) {
+        return false;
+      }
+      final markerRaw = jsonDecode(await expectedMarker.readAsString());
+      if (markerRaw is! Map ||
+          markerRaw['schemaVersion'] != 1 ||
+          markerRaw['captureJobID'] != jobId ||
+          markerRaw['snapshotIdentity'] != snapshot ||
+          markerRaw['preparedSha256'] is! String ||
+          !RegExp(
+            r'^[0-9a-f]{64}$',
+          ).hasMatch(markerRaw['preparedSha256'] as String) ||
+          markerRaw['committedUnixMicros'] is! int ||
+          (markerRaw['committedUnixMicros'] as int) <= 0) {
+        return false;
+      }
+      final artifacts = markerRaw['artifacts'];
+      if (artifacts is! List || artifacts.length != 3) return false;
+      final expectedPaths = <String, String>{
+        'jpeg': jpeg.absolute.path,
+        'metadata': sidecar.absolute.path,
+        'sfm_gray': File(grayPath).absolute.path,
+      };
+      final seen = <String>{};
+      for (final raw in artifacts) {
+        if (raw is! Map) return false;
+        final kind = raw['kind'];
+        final finalPath = raw['finalPath'];
+        final byteLength = raw['byteLength'];
+        final digest = raw['sha256'];
+        if (kind is! String ||
+            !seen.add(kind) ||
+            finalPath != expectedPaths[kind] ||
+            byteLength is! int ||
+            byteLength <= 0 ||
+            digest is! String ||
+            !RegExp(r'^[0-9a-f]{64}$').hasMatch(digest)) {
+          return false;
+        }
+        final file = kind == 'jpeg'
+            ? jpeg
+            : kind == 'metadata'
+            ? sidecar
+            : File(grayPath);
+        if (kind != 'sfm_gray' || await file.exists()) {
+          if (!await file.exists() ||
+              await file.length() != byteLength ||
+              await _sha256(file) != digest) {
+            return false;
+          }
+        }
+      }
+      return seen.length == expectedPaths.length &&
+          seen.containsAll(expectedPaths.keys);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<String> _sha256(File file) async =>
+      (await sha256.bind(file.openRead()).first).toString();
 
   Future<void> _writeRecoveredCaptureManifest({
     required File manifestFile,
@@ -333,24 +605,144 @@ class ScanRecordStore {
     return null;
   }
 
-  /// Delete by id. Best-effort removes the on-disk GLB + thumbnail too —
-  /// failure to delete either doesn't fail the call (the record vanishes
-  /// from the gallery either way; orphan files just leak ~30 MB of disk
-  /// until next reinstall).
-  Future<void> delete(String id) async {
+  /// Delete by id after deleting its owned local source bundle.
+  ///
+  /// The record remains visible if any filesystem deletion fails. This is
+  /// deliberate: removing the card first would hide an orphan capture and
+  /// make the user's explicit deletion impossible to retry.
+  Future<void> delete(
+    String id, {
+    Future<void> Function(Directory directory)? coordinatedCleanup,
+    Future<void> Function(File index, List<ScanRecord> records)?
+    recordIndexWriter,
+  }) async {
     await ensureLoaded();
-    _records = _records.where((r) => r.id != id).toList(growable: false);
+    final record = byId(id);
+    if (record == null) return;
+    if (!RegExp(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$').hasMatch(id)) {
+      throw StateError('scan record id is not a safe direct-child token: $id');
+    }
+
+    final capture = await _validatedCaptureDirectoryForDelete(record);
+    if (capture != null) {
+      final capturePath = capture.path;
+      if (await capture.exists()) {
+        final queueOwner = await SfmDurableFeedQueue.processOwnerSnapshot(
+          Directory('$capturePath/sfm_live.db.sfm-feed'),
+        );
+        if (queueOwner != null) {
+          throw StateError(
+            'capture is still owned by an active reconstruction: $capturePath',
+          );
+        }
+        if (coordinatedCleanup != null) {
+          await coordinatedCleanup(capture);
+        } else {
+          // On iOS this joins the serial native writer, refuses non-terminal
+          // registry jobs, and releases exact private raw claims first.
+          if (Platform.isIOS) {
+            await PlatformARPoseProvider().discardManualCaptureV2Jobs(
+              capturePath,
+            );
+          }
+          await capture.delete(recursive: true);
+        }
+      }
+    }
+    final artifact = await glbFileFor(id);
+    if (await artifact.exists()) await artifact.delete();
+    final thumbnail = await thumbnailFileFor(id);
+    if (await thumbnail.exists()) await thumbnail.delete();
+
+    final next = _records.where((r) => r.id != id).toList(growable: false);
+    await _writeRecordsStrict(next, writer: recordIndexWriter);
+    _records = next;
     _emit();
-    await _flush();
-    // Cleanup artifact + thumbnail + retry sources, best-effort.
+  }
+
+  Future<Directory?> _validatedCaptureDirectoryForDelete(
+    ScanRecord record,
+  ) async {
+    final storedPath = record.captureDir;
+    if (storedPath == null || storedPath.isEmpty) return null;
+    if (!File(storedPath).isAbsolute ||
+        storedPath.split(Platform.pathSeparator).contains('..')) {
+      throw StateError('capture path is not normalized absolute: $storedPath');
+    }
+
+    final documents = await getApplicationDocumentsDirectory();
+    final capturesRoot = Directory('${documents.path}/captures');
+    final expected = Directory('${capturesRoot.path}/${record.id}');
+    final stored = Directory(storedPath);
+    final storedExists = await stored.exists();
+    final expectedExists = await expected.exists();
+    if (!storedExists && !expectedExists) return null;
+    if (!expectedExists) {
+      throw StateError(
+        'capture path is not the current owned record directory: $storedPath',
+      );
+    }
+    if (!await capturesRoot.exists()) {
+      throw StateError('capture root is missing for ${record.id}');
+    }
+
+    final canonicalRoot = await capturesRoot.resolveSymbolicLinks();
+    final canonicalExpected = await expected.resolveSymbolicLinks();
+    final expectedResolved = Directory(canonicalExpected);
+    final expectedLeaf = expectedResolved.uri.pathSegments
+        .where((segment) => segment.isNotEmpty)
+        .lastOrNull;
+    if (expectedResolved.parent.path != canonicalRoot ||
+        expectedLeaf != record.id) {
+      throw StateError(
+        'capture directory escapes its owned direct child: $canonicalExpected',
+      );
+    }
+
+    if (storedExists) {
+      final normalizedStored = stored.absolute.path;
+      if (normalizedStored != expected.absolute.path ||
+          await stored.resolveSymbolicLinks() != canonicalExpected) {
+        throw StateError(
+          'capture record points at a different capture: $storedPath',
+        );
+      }
+    }
+    // A stale app-container UUID may no longer exist while the same record ID
+    // is present under the current Documents root. Return the exact re-anchored
+    // direct child; no other missing stored path is trusted.
+    return expectedResolved;
+  }
+
+  Future<void> _writeRecordsStrict(
+    List<ScanRecord> records, {
+    Future<void> Function(File index, List<ScanRecord> records)? writer,
+  }) async {
+    final last = _writeLock;
+    final completer = Completer<void>();
+    _writeLock = completer.future;
     try {
-      final f = await glbFileFor(id);
-      if (await f.exists()) await f.delete();
-    } catch (_) {}
-    try {
-      final t = await thumbnailFileFor(id);
-      if (await t.exists()) await t.delete();
-    } catch (_) {}
+      await last;
+      final file = await _storeFile();
+      if (writer != null) {
+        await writer(file, records);
+        return;
+      }
+      final temp = File(
+        '${file.path}.delete-$pid-${DateTime.now().microsecondsSinceEpoch}.tmp',
+      );
+      try {
+        await temp.writeAsString(
+          jsonEncode(records.map(_recordToJson).toList()),
+          flush: true,
+        );
+        await temp.rename(file.path);
+      } finally {
+        if (await temp.exists()) await temp.delete();
+      }
+    } finally {
+      completer.complete();
+    }
   }
 
   /// Where on disk to persist `<id>.glb` for a given record. W3 (待实现)

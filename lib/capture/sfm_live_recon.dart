@@ -181,6 +181,254 @@ typedef SfmDisconnectedSegment = ({
   int? nextRegisteredId,
 });
 
+/// Selects the only safe resume path after the durable queue has reopened.
+/// Any replay-owned work means the old DB is no longer authoritative (it may
+/// already have been rotated aside), so callers must drain frames through the
+/// normal finalize barrier instead of sending the native `resume` command.
+bool sfmResumeMustDrainReplay({
+  required int spoolDepth,
+  required int inFlight,
+  required int fedMetaCommitsInFlight,
+  required bool nativeReplayRequired,
+}) =>
+    spoolDepth > 0 ||
+    inFlight > 0 ||
+    fedMetaCommitsInFlight > 0 ||
+    nativeReplayRequired;
+
+enum SfmResumeRecoveryCommand { drainReplay, finalize, resumeExistingDb }
+
+/// Observable recovery ordering used by [SfmLiveRecon.resumeFromDb].
+List<SfmResumeRecoveryCommand> sfmResumeRecoveryCommands({
+  required int spoolDepth,
+  required int inFlight,
+  required int fedMetaCommitsInFlight,
+  required bool nativeReplayRequired,
+}) =>
+    sfmResumeMustDrainReplay(
+      spoolDepth: spoolDepth,
+      inFlight: inFlight,
+      fedMetaCommitsInFlight: fedMetaCommitsInFlight,
+      nativeReplayRequired: nativeReplayRequired,
+    )
+    ? const <SfmResumeRecoveryCommand>[
+        SfmResumeRecoveryCommand.drainReplay,
+        SfmResumeRecoveryCommand.finalize,
+      ]
+    : const <SfmResumeRecoveryCommand>[
+        SfmResumeRecoveryCommand.resumeExistingDb,
+      ];
+
+/// A previous worker death is retryable only after durable sidecar/gray
+/// verification and only when no frame replay remains.
+bool sfmRecoveredWorkerDeathCanResume({
+  required bool isWorkerDied,
+  required int spoolDepth,
+  required bool nativeReplayRequired,
+  required bool durableInputsVerified,
+}) =>
+    isWorkerDied &&
+    spoolDepth == 0 &&
+    !nativeReplayRequired &&
+    durableInputsVerified;
+
+enum SfmFinalArtifactCleanupRoute {
+  verifyInputsThenAuthorize,
+  continueAuthorizedPurge,
+}
+
+/// Durable producer admission is independent of consumer health. Once a take
+/// is active, a native/thermal/queue-head failure may pause consumption and
+/// block finalize, but it must never make later committed shutter frames skip
+/// the replay spool. Consumer failure is deliberately not an input here.
+bool sfmDurableOfferCanPersist({
+  required bool cleanupOnly,
+  required bool disposed,
+  required bool finalizeRequested,
+  required bool finalArtifactCommitted,
+}) =>
+    !cleanupOnly && !disposed && !finalizeRequested && !finalArtifactCommitted;
+
+/// A block tied to the frame just returned by enqueue means that frame's own
+/// gray/descriptor publication failed before durable ownership was proven.
+/// A different (pre-existing) consumer block still permits this later frame to
+/// be accepted into the spool. Queue frame IDs are monotonic and never reused.
+bool sfmDurableEnqueueOwnsFrame({
+  required String frameId,
+  required SfmFeedBlock? visibleBlock,
+}) => visibleBlock?.frameId != frameId;
+
+/// Once the queue has durably recorded the final-artifact receipt, replay
+/// payload absence is expected cleanup progress and must never be reclassified
+/// as missing reconstruction input.
+SfmFinalArtifactCleanupRoute sfmFinalArtifactCleanupRoute({
+  required bool finalArtifactCommitted,
+}) => finalArtifactCommitted
+    ? SfmFinalArtifactCleanupRoute.continueAuthorizedPurge
+    : SfmFinalArtifactCleanupRoute.verifyInputsThenAuthorize;
+
+/// Pure start-route seam for a queue that may already own a durable final
+/// artifact receipt. It lets host tests prove that forced regeneration can
+/// never silently fall back to cleanup-only and can never start against an
+/// unverified retained DB.
+enum SfmFinalReceiptStartRoute {
+  normalStart,
+  cleanupOnly,
+  refuseInvalidRebuild,
+  startVerifiedRebuildWorker,
+}
+
+SfmFinalReceiptStartRoute sfmFinalReceiptStartRoute({
+  required bool finalArtifactCommitted,
+  required bool forceRebuildFromRetainedDb,
+  required bool retainedDbRecoverable,
+}) {
+  if (!finalArtifactCommitted) {
+    return SfmFinalReceiptStartRoute.normalStart;
+  }
+  if (!forceRebuildFromRetainedDb) {
+    return SfmFinalReceiptStartRoute.cleanupOnly;
+  }
+  return retainedDbRecoverable
+      ? SfmFinalReceiptStartRoute.startVerifiedRebuildWorker
+      : SfmFinalReceiptStartRoute.refuseInvalidRebuild;
+}
+
+/// Read-only minimum validation before trusting an interrupted native DB.
+/// This rejects missing/truncated/non-SQLite files and SQLite files without the
+/// COLMAP tables required by resume. It never opens a native reconstruction or
+/// mutates the DB.
+Future<bool> sfmNativeDbLooksRecoverable(String dbPath) async {
+  final file = File(dbPath);
+  RandomAccessFile? handle;
+  try {
+    if (!await file.exists()) return false;
+    handle = await file.open();
+    final length = await handle.length();
+    if (length < 512) return false;
+    final bytes = await handle.read(math.min(length, 1024 * 1024));
+    if (bytes.length < 100) return false;
+    const signature = <int>[
+      0x53,
+      0x51,
+      0x4c,
+      0x69,
+      0x74,
+      0x65,
+      0x20,
+      0x66,
+      0x6f,
+      0x72,
+      0x6d,
+      0x61,
+      0x74,
+      0x20,
+      0x33,
+      0x00,
+    ];
+    for (var i = 0; i < signature.length; i++) {
+      if (bytes[i] != signature[i]) return false;
+    }
+    final encodedPageSize = (bytes[16] << 8) | bytes[17];
+    final pageSize = encodedPageSize == 1 ? 65536 : encodedPageSize;
+    if (pageSize < 512 ||
+        pageSize > 65536 ||
+        (pageSize & (pageSize - 1)) != 0 ||
+        length < pageSize ||
+        length % pageSize != 0 ||
+        (bytes[18] != 1 && bytes[18] != 2) ||
+        (bytes[19] != 1 && bytes[19] != 2) ||
+        bytes[21] != 64 ||
+        bytes[22] != 32 ||
+        bytes[23] != 32) {
+      return false;
+    }
+    final schema = latin1.decode(bytes, allowInvalid: true).toLowerCase();
+    for (final table in const <String>[
+      'cameras',
+      'images',
+      'keypoints',
+      'descriptors',
+    ]) {
+      if (!schema.contains(table)) return false;
+    }
+    return true;
+  } catch (_) {
+    return false;
+  } finally {
+    await handle?.close();
+  }
+}
+
+enum SfmNativeReplayPreparation {
+  reuseExistingDb,
+  freshReplayPrepared,
+  finalArtifactOwnsState,
+  failedClosed,
+}
+
+/// Makes the durable queue authoritative when the native DB is unavailable.
+///
+/// A fed-only queue is not proof that its DB survived the process. If the DB
+/// is missing/corrupt, every acknowledged frame is rewound from its retained
+/// gray/descriptor payload and a fresh DB is prepared even when no workerDied
+/// block was recorded. A final-artifact receipt is an absolute boundary and
+/// is never rewound.
+Future<SfmNativeReplayPreparation> sfmPrepareDurableNativeReplayIfNeeded({
+  required SfmDurableFeedQueue durableQueue,
+  required String dbPath,
+}) async {
+  if (durableQueue.finalArtifactCommitted) {
+    return SfmNativeReplayPreparation.finalArtifactOwnsState;
+  }
+
+  final hasPendingReplay = durableQueue.spoolDepth > 0;
+  final shouldValidateFedOnlyDb =
+      !hasPendingReplay && durableQueue.fedCount > 0;
+  final fedOnlyDbInvalid =
+      shouldValidateFedOnlyDb && !await sfmNativeDbLooksRecoverable(dbPath);
+
+  if (!hasPendingReplay && !fedOnlyDbInvalid) {
+    final interruptedWithoutReplay =
+        durableQueue.blockReason?.kind == SfmFeedBlockKind.workerDied &&
+        durableQueue.fedCount == 0 &&
+        !await sfmNativeDbLooksRecoverable(dbPath);
+    if (interruptedWithoutReplay) {
+      try {
+        await durableQueue.retainAndBlock(
+          const SfmFeedBlock(
+            kind: SfmFeedBlockKind.replayIncomplete,
+            message:
+                'interrupted native DB is invalid and no fed replay '
+                'frames exist',
+          ),
+        );
+      } catch (_) {}
+      return SfmNativeReplayPreparation.failedClosed;
+    }
+    return SfmNativeReplayPreparation.reuseExistingDb;
+  }
+
+  try {
+    final prepared = fedOnlyDbInvalid
+        ? await durableQueue.prepareAllForForcedFreshNativeReplay()
+        : await durableQueue.prepareAllForFreshNativeReplay();
+    if (!prepared) return SfmNativeReplayPreparation.failedClosed;
+    await prepareSfmNativeDbForFreshReplay(dbPath);
+    return SfmNativeReplayPreparation.freshReplayPrepared;
+  } catch (error) {
+    try {
+      await durableQueue.retainAndBlock(
+        SfmFeedBlock(
+          kind: SfmFeedBlockKind.replayIncomplete,
+          message: 'native DB replay preparation failed: $error',
+        ),
+      );
+    } catch (_) {}
+    return SfmNativeReplayPreparation.failedClosed;
+  }
+}
+
 /// Drops only points created exclusively by one time-far spatial pair.
 ///
 /// A two-view point has no third-view depth confirmation. When its two frames
@@ -381,6 +629,19 @@ class SfmLiveFailed extends SfmLiveEvent {
   final String message;
 }
 
+/// One terminal failure event per facade lifetime. Native add-frame exceptions
+/// intentionally produce both `frame_done(exception)` and a following `error`
+/// message; both paths share this gate so the UI observes exactly one failure.
+class SfmLiveFailureOnceGate {
+  bool _emitted = false;
+
+  SfmLiveFailed? accept(String stage, String message) {
+    if (_emitted) return null;
+    _emitted = true;
+    return SfmLiveFailed(stage, message);
+  }
+}
+
 /// [BIT5-FIX 2026-07-12] L1 1-bit 仲裁(aether_sfm_arbitrate)已完成 —— native
 /// `ghost_mask.bin` 此刻已在 Points3D 序上回写 rescued(bit5)/confirmed 位。
 /// 交付点序的 `ghost_view_mask.bin` 写在 persist(仲裁之前)时暂无 bit5;UI
@@ -423,6 +684,23 @@ class SfmFedFrameMeta {
   final double cx;
   final double cy;
 
+  /// Whether this record carries the real intrinsics used to feed native SfM.
+  ///
+  /// Legacy `sfm_fed_frames.jsonl` rows did not store image dimensions or K.
+  /// They are decoded with -1/NaN (never zero-valued fake calibration), so
+  /// consumers that need geometry must require this predicate.
+  bool get hasGrayIntrinsics =>
+      imageW > 0 &&
+      imageH > 0 &&
+      grayW > 0 &&
+      grayH > 0 &&
+      fx.isFinite &&
+      fy.isFinite &&
+      cx.isFinite &&
+      cy.isFinite &&
+      fx > 0 &&
+      fy > 0;
+
   /// ARKit CamFromWorld rotation [w,x,y,z] for this frame — ARKit ran with
   /// worldAlignment=.gravity, so its world Y axis is gravity-up. Pairing it
   /// with the solved COLMAP CamFromWorld lets the facade recover the rotation
@@ -435,6 +713,235 @@ class SfmFedFrameMeta {
 
   /// ARKit camera center in the gravity-aligned world frame, meters.
   final List<double>? arkitCameraCenterWorld;
+}
+
+/// One parsed row of `sfm_fed_frames.jsonl`.
+///
+/// New rows contain the exact image dimensions and gray-resolution K. Old
+/// rows remain readable for color/gravity recovery, but advertise unavailable
+/// calibration through [SfmFedFrameMeta.hasGrayIntrinsics] instead of filling
+/// zeroes that look like real camera parameters.
+class SfmFedFrameSidecarRecord {
+  const SfmFedFrameSidecarRecord({required this.frameId, required this.meta});
+
+  final int frameId;
+  final SfmFedFrameMeta meta;
+
+  factory SfmFedFrameSidecarRecord.fromJson(
+    Map<String, Object?> json, {
+    String? jpegDirectory,
+  }) {
+    final frameId = _requiredSidecarInt(json, 'frameId');
+    if (frameId < 0) {
+      throw const FormatException('fed frameId must be non-negative');
+    }
+    final storedJpegPath = json['jpegPath'];
+    if (storedJpegPath is! String || storedJpegPath.isEmpty) {
+      throw const FormatException('fed jpegPath must be a non-empty string');
+    }
+    final jpegPath = jpegDirectory == null
+        ? storedJpegPath
+        : '$jpegDirectory/${storedJpegPath.split(RegExp(r'[/\\]')).last}';
+    final grayW = _requiredSidecarInt(json, 'grayW');
+    final grayH = _requiredSidecarInt(json, 'grayH');
+    if (grayW <= 0 || grayH <= 0) {
+      throw const FormatException('fed gray dimensions must be positive');
+    }
+
+    const calibrationKeys = <String>[
+      'imageW',
+      'imageH',
+      'fx',
+      'fy',
+      'cx',
+      'cy',
+    ];
+    final calibrationFieldCount = calibrationKeys
+        .where(json.containsKey)
+        .length;
+    final rawSchemaVersion = json['schemaVersion'];
+    if (rawSchemaVersion != null && rawSchemaVersion is! num) {
+      throw const FormatException('fed schemaVersion must be numeric');
+    }
+    final schemaVersion = rawSchemaVersion == null
+        ? 1
+        : _requiredSidecarInt(json, 'schemaVersion');
+    if (schemaVersion < 1 || schemaVersion > 2) {
+      throw FormatException('unsupported fed schemaVersion $schemaVersion');
+    }
+    if (schemaVersion >= 2 && calibrationFieldCount != calibrationKeys.length) {
+      throw const FormatException(
+        'fed schemaVersion 2 requires imageW/imageH/fx/fy/cx/cy',
+      );
+    }
+    if (calibrationFieldCount != 0 &&
+        calibrationFieldCount != calibrationKeys.length) {
+      throw const FormatException(
+        'fed calibration must contain imageW/imageH/fx/fy/cx/cy together',
+      );
+    }
+
+    final hasCalibration = calibrationFieldCount == calibrationKeys.length;
+    final imageW = hasCalibration ? _requiredSidecarInt(json, 'imageW') : -1;
+    final imageH = hasCalibration ? _requiredSidecarInt(json, 'imageH') : -1;
+    final fx = hasCalibration ? _requiredSidecarDouble(json, 'fx') : double.nan;
+    final fy = hasCalibration ? _requiredSidecarDouble(json, 'fy') : double.nan;
+    final cx = hasCalibration ? _requiredSidecarDouble(json, 'cx') : double.nan;
+    final cy = hasCalibration ? _requiredSidecarDouble(json, 'cy') : double.nan;
+    if (hasCalibration &&
+        (imageW <= 0 ||
+            imageH <= 0 ||
+            !fx.isFinite ||
+            !fy.isFinite ||
+            !cx.isFinite ||
+            !cy.isFinite ||
+            fx <= 0 ||
+            fy <= 0)) {
+      throw const FormatException('fed calibration is invalid');
+    }
+
+    final arkitQuat = _optionalSidecarDoubles(json['arkitCamFromWorldQwxyz']);
+    final arkitTrans = _optionalSidecarDoubles(json['arkitCamFromWorldTxyz']);
+    final arkitCenter = _optionalSidecarDoubles(json['arkitCameraCenterWorld']);
+    if ((arkitQuat != null && arkitQuat.length != 4) ||
+        (arkitTrans != null && arkitTrans.length != 3) ||
+        (arkitCenter != null && arkitCenter.length != 3)) {
+      throw const FormatException('fed ARKit pose dimensions are invalid');
+    }
+
+    return SfmFedFrameSidecarRecord(
+      frameId: frameId,
+      meta: SfmFedFrameMeta(
+        jpegPath: jpegPath,
+        imageW: imageW,
+        imageH: imageH,
+        grayW: grayW,
+        grayH: grayH,
+        fx: fx,
+        fy: fy,
+        cx: cx,
+        cy: cy,
+        arkitQuatWxyz: arkitQuat,
+        arkitTransTxyz: arkitTrans,
+        arkitCameraCenterWorld: arkitCenter,
+      ),
+    );
+  }
+
+  factory SfmFedFrameSidecarRecord.fromLine(
+    String line, {
+    String? jpegDirectory,
+  }) {
+    final decoded = jsonDecode(line);
+    if (decoded is! Map) {
+      throw const FormatException('fed sidecar line must be a JSON object');
+    }
+    return SfmFedFrameSidecarRecord.fromJson(
+      Map<String, Object?>.from(decoded),
+      jpegDirectory: jpegDirectory,
+    );
+  }
+}
+
+int _requiredSidecarInt(Map<String, Object?> json, String key) {
+  final value = json[key];
+  final numeric = value is num ? value.toDouble() : double.nan;
+  if (!numeric.isFinite || numeric.truncateToDouble() != numeric) {
+    throw FormatException('fed $key must be a finite integer');
+  }
+  return numeric.toInt();
+}
+
+double _requiredSidecarDouble(Map<String, Object?> json, String key) {
+  final value = json[key];
+  if (value is! num || !value.toDouble().isFinite) {
+    throw FormatException('fed $key must be a finite number');
+  }
+  return value.toDouble();
+}
+
+List<double>? _optionalSidecarDoubles(Object? value) {
+  if (value == null) return null;
+  if (value is! List) {
+    throw const FormatException('fed pose field must be a number array');
+  }
+  final result = <double>[];
+  for (final item in value) {
+    if (item is! num || !item.toDouble().isFinite) {
+      throw const FormatException('fed pose field must contain finite numbers');
+    }
+    result.add(item.toDouble());
+  }
+  return List<double>.unmodifiable(result);
+}
+
+Map<String, Object?> _fedMetaSidecarJson(int frameId, SfmFedFrameMeta m) {
+  final json = <String, Object?>{
+    'schemaVersion': 2,
+    'frameId': frameId,
+    'jpegPath': m.jpegPath,
+    'imageW': m.imageW,
+    'imageH': m.imageH,
+    'grayW': m.grayW,
+    'grayH': m.grayH,
+    'fx': m.fx,
+    'fy': m.fy,
+    'cx': m.cx,
+    'cy': m.cy,
+  };
+  if (m.arkitQuatWxyz != null &&
+      m.arkitTransTxyz != null &&
+      m.arkitCameraCenterWorld != null) {
+    json.addAll(<String, Object?>{
+      'arkitPoseConvention':
+          'worldAlignment.gravity; cameraToWorld from ARKit, stored as CamFromWorld plus camera center',
+      'arkitCamFromWorldQwxyz': m.arkitQuatWxyz,
+      'arkitCamFromWorldTxyz': m.arkitTransTxyz,
+      'arkitCameraCenterWorld': m.arkitCameraCenterWorld,
+    });
+  }
+  return json;
+}
+
+bool _sameFedFrameMeta(SfmFedFrameMeta a, SfmFedFrameMeta b) =>
+    a.jpegPath.split(RegExp(r'[/\\]')).last ==
+        b.jpegPath.split(RegExp(r'[/\\]')).last &&
+    a.imageW == b.imageW &&
+    a.imageH == b.imageH &&
+    a.grayW == b.grayW &&
+    a.grayH == b.grayH &&
+    a.fx == b.fx &&
+    a.fy == b.fy &&
+    a.cx == b.cx &&
+    a.cy == b.cy &&
+    _sameDoubleList(a.arkitQuatWxyz, b.arkitQuatWxyz) &&
+    _sameDoubleList(a.arkitTransTxyz, b.arkitTransTxyz) &&
+    _sameDoubleList(a.arkitCameraCenterWorld, b.arkitCameraCenterWorld);
+
+bool _sameDoubleList(List<double>? a, List<double>? b) {
+  if (identical(a, b)) return true;
+  if (a == null || b == null || a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
+
+/// An immutable, acknowledged frame input for capture-finalize augmentation.
+/// The gray payload remains queue-owned; callers receive only its path and the
+/// exact metadata committed atomically with native OK.
+class SfmDurableFedFrameInput {
+  const SfmDurableFedFrameInput({
+    required this.sequence,
+    required this.frameId,
+    required this.grayPath,
+    required this.meta,
+  });
+
+  final int sequence;
+  final int frameId;
+  final String grayPath;
+  final SfmFedFrameMeta meta;
 }
 
 /// Main-isolate handle to the streaming-SfM worker. Create per capture take
@@ -462,7 +969,7 @@ class SfmLiveRecon {
 
   final SendPort _toWorker;
   final ReceivePort _fromWorker;
-  final Isolate _isolate;
+  final Isolate? _isolate;
   final StreamSubscription<dynamic> _sub;
   final ReceivePort _workerErrors;
   final ReceivePort _workerExit;
@@ -483,7 +990,14 @@ class SfmLiveRecon {
   bool _disposed = false;
   bool _workerTerminated = false;
   bool _foregroundCaptureActive = false;
+  bool _forceRebuildFromRetainedDb = false;
+  int _fedMetaCommitsInFlight = 0;
+  final Set<Future<void>> _pendingDurableTransactions = <Future<void>>{};
+  final SfmLiveFailureOnceGate _failureOnce = SfmLiveFailureOnceGate();
   Completer<void>? _disposeAck;
+
+  static const String _fedMetaDurableBlockPrefix =
+      'fed-meta sidecar incomplete:';
 
   static const Duration _consumerRecheckInterval = Duration(seconds: 1);
   final Stopwatch _scheduleClock = Stopwatch()..start();
@@ -494,7 +1008,10 @@ class SfmLiveRecon {
   int _lastGpuRc7Count = 0;
   int _consecutiveAddFrameFailures = 0;
   String? _queueFailure;
+  String? _authorizedPurgeError;
   String? _lastScheduleReason;
+
+  bool get _cleanupOnly => _isolate == null;
 
   // Native command sequence -> durable queue frame identity. The durable
   // manifest, not this in-memory map, owns pending/fed truth across restarts.
@@ -518,8 +1035,66 @@ class SfmLiveRecon {
   /// (== SfmLiveSnapshot.posesPacked frame ids).
   Map<int, SfmFedFrameMeta> get fedFrameMeta => _fedMeta;
 
+  /// Returns every native-acknowledged frame as an immutable finalize input.
+  ///
+  /// The durable queue continues to own the gray files. This method never
+  /// removes or transfers them, and it does not alter ACK state. Missing gray
+  /// payloads or incomplete/fake calibration are terminal data errors rather
+  /// than silently shortened input sets.
+  List<SfmDurableFedFrameInput> readDurableFedFrameInputs() {
+    final records = _durableQueue.fedRecords.toList()
+      ..sort((a, b) => a.sequence.compareTo(b.sequence));
+    final inputs = <SfmDurableFedFrameInput>[];
+    for (final record in records) {
+      final frameId = record.fedMeta['nativeFrameId'];
+      if (frameId is! int || frameId < 0) {
+        throw StateError('fed frame ${record.id} has no valid nativeFrameId');
+      }
+      final meta = _fedMetaFromDurable(record.fedMeta);
+      if (meta == null || !meta.hasGrayIntrinsics) {
+        throw StateError(
+          'fed frame ${record.id} has no valid durable image/K metadata',
+        );
+      }
+      final grayPath = '$_dbPath.sfm-feed/${record.id}.gray';
+      if (!File(grayPath).existsSync()) {
+        throw StateError('fed frame ${record.id} gray payload is missing');
+      }
+      inputs.add(
+        SfmDurableFedFrameInput(
+          sequence: record.sequence,
+          frameId: frameId,
+          grayPath: grayPath,
+          meta: meta,
+        ),
+      );
+    }
+    return List<SfmDurableFedFrameInput>.unmodifiable(inputs);
+  }
+
+  /// Runs one read-only registration publication inspection against this
+  /// facade's already-owned queue handle. Opening the same manifest a second
+  /// time in-process is unsafe on POSIX: closing the second fd can release the
+  /// process-scoped fcntl lock held by this live recon.
+  Future<T> withDurableRegistrationEvidence<T>(
+    Future<T> Function(SfmDurableFeedQueue durableQueue) inspect,
+  ) async {
+    if (_disposed || _cleanupOnly) {
+      throw StateError('live durable registration evidence is unavailable');
+    }
+    await _waitForDurableTransactions();
+    return inspect(_durableQueue);
+  }
+
   /// Keyframes successfully added to the live reconstruction.
   int get fedCount => _fedOk;
+
+  /// Last post-receipt cleanup error. It is retryable process-local status and
+  /// is deliberately never written as a reconstruction queue block.
+  String? get authorizedPurgeError => _authorizedPurgeError;
+
+  /// True for a receipt-backed cleanup handle that owns no native worker.
+  bool get isFinalArtifactCleanupOnly => _cleanupOnly;
 
   int get _waitingSpoolDepth =>
       math.max(0, _durableQueue.spoolDepth - _inFlight);
@@ -529,7 +1104,7 @@ class SfmLiveRecon {
 
   /// Frames not yet acknowledged by native SfM, including both disk-spooled
   /// frames and the sole worker call currently in flight.
-  int get remainingCount => _durableQueue.spoolDepth;
+  int get remainingCount => _durableQueue.spoolDepth + _fedMetaCommitsInFlight;
 
   /// Every keyframe offered this take (fed + in-flight + queued).
   int get offeredCount => _durableQueue.nextSequence;
@@ -555,55 +1130,143 @@ class SfmLiveRecon {
   /// hide the whole live-preview feature.
   static bool get isSupported => AetherSfm.isSupported;
 
+  static SfmLiveRecon _cleanupHandle({
+    required String dbPath,
+    required SfmDurableFeedQueue durableQueue,
+  }) {
+    final fromWorker = ReceivePort();
+    final workerErrors = ReceivePort();
+    final workerExit = ReceivePort();
+    final sub = fromWorker.listen((_) {});
+    final workerErrorSub = workerErrors.listen((_) {});
+    final workerExitSub = workerExit.listen((_) {});
+    final recon = SfmLiveRecon._(
+      fromWorker.sendPort,
+      fromWorker,
+      null,
+      sub,
+      workerErrors,
+      workerExit,
+      workerErrorSub,
+      workerExitSub,
+      dbPath,
+      durableQueue,
+    );
+    // A durable final-artifact receipt supersedes any stale pre-schema3
+    // in-memory reconstruction failure. Cleanup errors use their own retryable
+    // channel and are never promoted back into the queue manifest.
+    recon._queueFailure = null;
+    return recon;
+  }
+
   /// Spawns the worker. Returns null when unsupported or when the worker
   /// fails to come up — callers degrade by not showing the preview layer.
-  static Future<SfmLiveRecon?> start({required String dbPath}) async {
+  ///
+  /// A queue with a durable final-artifact receipt normally returns a
+  /// cleanup-only handle and never starts native code. The explicit
+  /// [forceRebuildFromRetainedDb] escape hatch is only for user-requested
+  /// regeneration: it preserves that receipt/queue verbatim, validates the
+  /// retained COLMAP DB, then starts a real worker so [resumeFromDb] can solve
+  /// again. Missing/corrupt DB fails closed.
+  static Future<SfmLiveRecon?> start({
+    required String dbPath,
+    bool forceRebuildFromRetainedDb = false,
+  }) async {
+    final queueDirectory = Directory('$dbPath.sfm-feed');
+    SfmDurableFeedQueue? existingQueue;
+    final manifest = File('${queueDirectory.path}/$kSfmFeedManifestFileName');
+    if (await manifest.exists()) {
+      try {
+        existingQueue = await SfmDurableFeedQueue.open(queueDirectory);
+      } catch (error) {
+        DeviceLog.log('SfmLive', 'durable queue open FAILED: $error');
+        return null;
+      }
+    }
+    final finalArtifactCommitted =
+        existingQueue?.finalArtifactCommitted == true;
+    final retainedDbRecoverable =
+        finalArtifactCommitted && forceRebuildFromRetainedDb
+        ? await sfmNativeDbLooksRecoverable(dbPath)
+        : false;
+    final receiptRoute = sfmFinalReceiptStartRoute(
+      finalArtifactCommitted: finalArtifactCommitted,
+      forceRebuildFromRetainedDb: forceRebuildFromRetainedDb,
+      retainedDbRecoverable: retainedDbRecoverable,
+    );
+    final rebuildCommittedDb =
+        receiptRoute == SfmFinalReceiptStartRoute.startVerifiedRebuildWorker;
+    if (receiptRoute == SfmFinalReceiptStartRoute.cleanupOnly) {
+      final cleanup = _cleanupHandle(
+        dbPath: dbPath,
+        durableQueue: existingQueue!,
+      );
+      try {
+        final continued = await cleanup._continueAuthorizedReplayPurge();
+        if (!continued) {
+          cleanup._authorizedPurgeError =
+              'authorized replay purge returned false';
+        }
+      } catch (error) {
+        cleanup._authorizedPurgeError = '$error';
+        DeviceLog.log(
+          'SfmLive',
+          'authorized replay purge remains retryable: $error',
+        );
+      }
+      return cleanup;
+    }
+    if (receiptRoute == SfmFinalReceiptStartRoute.refuseInvalidRebuild) {
+      DeviceLog.log(
+        'SfmLive',
+        'forced committed rebuild refused invalid retained DB ($dbPath)',
+      );
+      await existingQueue!.close();
+      return null;
+    }
     if (!isSupported) {
+      await existingQueue?.close();
       DeviceLog.log('SfmLive', 'start: unsupported (simulator) — hidden');
       return null;
     }
     final SfmDurableFeedQueue durableQueue;
-    try {
-      durableQueue = await SfmDurableFeedQueue.open(
-        Directory('$dbPath.sfm-feed'),
-      );
-    } catch (error) {
-      DeviceLog.log('SfmLive', 'durable queue open FAILED: $error');
-      return null;
-    }
-    // Pending entries at process startup are necessarily owned by a previous
-    // worker lifetime. Native may have committed any one of them before the
-    // Dart ACK crossed its atomic manifest boundary, so appending to the old
-    // COLMAP DB would risk either a duplicate frame or a name collision.
-    // Rewind every fed+pending payload and rebuild a fresh DB instead.
-    if (durableQueue.spoolDepth > 0) {
+    if (existingQueue != null) {
+      durableQueue = existingQueue;
+    } else {
       try {
-        final prepared = await durableQueue.prepareAllForFreshNativeReplay();
-        if (!prepared) {
-          DeviceLog.log(
-            'SfmLive',
-            'durable replay preparation FAILED: '
-                '${durableQueue.blockReason}',
-          );
-          await durableQueue.close();
-          return null;
-        }
-        await prepareSfmNativeDbForFreshReplay(dbPath);
-        DeviceLog.log(
-          'SfmLive',
-          'replaying ${durableQueue.spoolDepth} accepted frames into fresh DB',
-        );
+        durableQueue = await SfmDurableFeedQueue.open(queueDirectory);
       } catch (error) {
-        await durableQueue.retainAndBlock(
-          SfmFeedBlock(
-            kind: SfmFeedBlockKind.replayIncomplete,
-            message: 'native DB replay preparation failed: $error',
-          ),
-        );
-        await durableQueue.close();
-        DeviceLog.log('SfmLive', 'native DB replay preparation FAILED: $error');
+        DeviceLog.log('SfmLive', 'durable queue open FAILED: $error');
         return null;
       }
+    }
+    // The only final-receipt worker path is the explicit, already-validated
+    // retained-DB rebuild above. It must preserve the receipt verbatim and
+    // must never ask the ordinary replay preparation path to rewind it.
+    final replayPreparation = rebuildCommittedDb
+        ? SfmNativeReplayPreparation.reuseExistingDb
+        : await sfmPrepareDurableNativeReplayIfNeeded(
+            durableQueue: durableQueue,
+            dbPath: dbPath,
+          );
+    if (replayPreparation == SfmNativeReplayPreparation.failedClosed ||
+        replayPreparation ==
+            SfmNativeReplayPreparation.finalArtifactOwnsState) {
+      DeviceLog.log(
+        'SfmLive',
+        'durable replay preparation refused: $replayPreparation '
+            '(${durableQueue.blockReason})',
+      );
+      await durableQueue.close();
+      return null;
+    }
+    final fullReplayPrepared =
+        replayPreparation == SfmNativeReplayPreparation.freshReplayPrepared;
+    if (fullReplayPrepared) {
+      DeviceLog.log(
+        'SfmLive',
+        'replaying ${durableQueue.spoolDepth} accepted frames into fresh DB',
+      );
     }
     final fromWorker = ReceivePort();
     final workerErrors = ReceivePort();
@@ -694,6 +1357,80 @@ class SfmLiveRecon {
       dbPath,
       durableQueue,
     );
+    if (rebuildCommittedDb) {
+      recon._queueFailure = null;
+      recon._forceRebuildFromRetainedDb = true;
+      DeviceLog.log(
+        'SfmLive',
+        'forced rebuild worker opened against verified retained DB; '
+            'final receipt preserved',
+      );
+    } else {
+      try {
+        if (fullReplayPrepared) {
+          await recon._resetFedMetaSidecarForFullReplay();
+        } else {
+          await recon._ensureFedMetaSidecarComplete();
+        }
+        final persistedBlock = durableQueue.blockReason;
+        final repairedFedMetaBlock =
+            persistedBlock?.kind == SfmFeedBlockKind.replayIncomplete &&
+            persistedBlock!.message.startsWith(_fedMetaDurableBlockPrefix);
+        final interruptedDbVerified =
+            persistedBlock?.kind == SfmFeedBlockKind.workerDied
+            ? await sfmNativeDbLooksRecoverable(dbPath)
+            : false;
+        final retryableWorkerTermination = sfmRecoveredWorkerDeathCanResume(
+          isWorkerDied: persistedBlock?.kind == SfmFeedBlockKind.workerDied,
+          spoolDepth: durableQueue.spoolDepth,
+          nativeReplayRequired: durableQueue.nativeReplayRequired,
+          durableInputsVerified: interruptedDbVerified,
+        );
+        if (persistedBlock?.kind == SfmFeedBlockKind.workerDied &&
+            !interruptedDbVerified) {
+          DeviceLog.log(
+            'SfmLive',
+            'workerDied remains blocked: native DB failed SQLite/COLMAP '
+                'integrity checks ($dbPath)',
+          );
+        }
+        if (persistedBlock != null &&
+            !recon._workerTerminated &&
+            (repairedFedMetaBlock || retryableWorkerTermination)) {
+          final cleared = await durableQueue.clearBlockForRetry();
+          if (!cleared) {
+            throw StateError(
+              'verified recovery input but durable block could not clear: '
+              '${durableQueue.blockReason}',
+            );
+          }
+          if (recon._workerTerminated) {
+            await recon._waitForDurableTransactions();
+            recon._queueFailure =
+                durableQueue.blockReason?.toString() ??
+                'SfM worker terminated during durable recovery';
+          } else {
+            recon._queueFailure = null;
+          }
+          DeviceLog.log(
+            'SfmLive',
+            'cleared retryable durable termination '
+                '(${persistedBlock.kind.name})',
+          );
+        }
+      } catch (error) {
+        await durableQueue.retainAndBlock(
+          SfmFeedBlock(
+            kind: SfmFeedBlockKind.replayIncomplete,
+            message: '$_fedMetaDurableBlockPrefix $error',
+          ),
+        );
+        recon._blockQueue(
+          stage: 'sfm_durable_recovery',
+          message: 'durable recovery failed: $error',
+        );
+      }
+    }
     final termination = earlyTermination;
     if (termination != null) {
       recon._onWorkerTerminated(termination.$1, termination.$2);
@@ -707,6 +1444,12 @@ class SfmLiveRecon {
     // the consumer attaches. Start recovered queue consumption only after the
     // listener exists so frame/failure events cannot disappear through the
     // old broadcast-stream race.
+    if (_cleanupOnly) return;
+    final failure = _queueFailure;
+    if (failure != null) {
+      _emitFailureOnce('sfm_queue_reopen', failure);
+      return;
+    }
     if (_durableQueue.spoolDepth > 0 && !_disposed) unawaited(_pump());
   }
 
@@ -756,7 +1499,17 @@ class SfmLiveRecon {
         !fx.isFinite ||
         !fy.isFinite ||
         !cx.isFinite ||
-        !cy.isFinite) {
+        !cy.isFinite ||
+        fx <= 0 ||
+        fy <= 0) {
+      return null;
+    }
+    final arkitQuat = _durableDoubleList(value['arkitQuatWxyz']);
+    final arkitTrans = _durableDoubleList(value['arkitTransTxyz']);
+    final arkitCenter = _durableDoubleList(value['arkitCameraCenterWorld']);
+    if ((arkitQuat != null && arkitQuat.length != 4) ||
+        (arkitTrans != null && arkitTrans.length != 3) ||
+        (arkitCenter != null && arkitCenter.length != 3)) {
       return null;
     }
     return SfmFedFrameMeta(
@@ -769,11 +1522,9 @@ class SfmLiveRecon {
       fy: fy,
       cx: cx,
       cy: cy,
-      arkitQuatWxyz: _durableDoubleList(value['arkitQuatWxyz']),
-      arkitTransTxyz: _durableDoubleList(value['arkitTransTxyz']),
-      arkitCameraCenterWorld: _durableDoubleList(
-        value['arkitCameraCenterWorld'],
-      ),
+      arkitQuatWxyz: arkitQuat,
+      arkitTransTxyz: arkitTrans,
+      arkitCameraCenterWorld: arkitCenter,
     );
   }
 
@@ -797,8 +1548,28 @@ class SfmLiveRecon {
   /// and thermal-controlled. Finalize waits for every OK acknowledgement.
   /// Returns false when the frame cannot obtain durable queue ownership.
   Future<bool> offerFrame(SfmFrameFeed feed) async {
-    if (_disposed || _finalizeRequested || _queueFailure != null) return false;
-    if (feed.intrinsicFxFyCxCy.length < 4 || feed.imageW <= 0) {
+    if (!sfmDurableOfferCanPersist(
+      cleanupOnly: _cleanupOnly,
+      disposed: _disposed,
+      finalizeRequested: _finalizeRequested,
+      finalArtifactCommitted: _durableQueue.finalArtifactCommitted,
+    )) {
+      return false;
+    }
+    final expectedGrayBytes = feed.grayW * feed.grayH;
+    final hasFilePayload = feed.grayFilePath?.isNotEmpty == true;
+    final receiptHash = feed.sfmGraySha256;
+    if (feed.captureJobId.isEmpty ||
+        feed.captureJobId.trim() != feed.captureJobId ||
+        feed.intrinsicFxFyCxCy.length < 4 ||
+        feed.imageW <= 0 ||
+        feed.imageH <= 0 ||
+        expectedGrayBytes <= 0 ||
+        (hasFilePayload &&
+            (feed.sfmGrayByteLength != expectedGrayBytes ||
+                receiptHash == null ||
+                !RegExp(r'^[0-9a-f]{64}$').hasMatch(receiptHash))) ||
+        (!hasFilePayload && feed.gray.length != expectedGrayBytes)) {
       return false;
     }
     final offerMs = DateTime.now().millisecondsSinceEpoch; // 遥测【frame】
@@ -809,6 +1580,16 @@ class SfmLiveRecon {
     final fy = feed.intrinsicFxFyCxCy[1] * s;
     final cx = feed.intrinsicFxFyCxCy[2] * s;
     final cy = feed.intrinsicFxFyCxCy[3] * s;
+    if (!s.isFinite ||
+        s <= 0 ||
+        !fx.isFinite ||
+        !fy.isFinite ||
+        !cx.isFinite ||
+        !cy.isFinite ||
+        fx <= 0 ||
+        fy <= 0) {
+      return false;
+    }
 
     // ARKit extrinsic is column-major camera-to-world; the ABI wants the
     // CamFromWorld (world→camera) prior. Native uses it for the ARKit-world live
@@ -831,11 +1612,13 @@ class SfmLiveRecon {
     final jpegPath = feed.jpegPath;
     final durableMetadata = <String, Object?>{
       'schemaVersion': 1,
+      'captureJobId': feed.captureJobId,
       'jpegPath': ?jpegPath,
       'imageW': feed.imageW,
       'imageH': feed.imageH,
       'grayW': feed.grayW,
       'grayH': feed.grayH,
+      if (hasFilePayload) 'sfmGraySha256': receiptHash,
       'fx': fx,
       'fy': fy,
       'cx': cx,
@@ -849,11 +1632,30 @@ class SfmLiveRecon {
     // Gray bytes, camera metadata, and FIFO identity are durably published
     // before this Future succeeds. The manifest is the recovery source of
     // truth; in-memory maps below are disposable indexes only.
-    final frame = await _durableQueue.enqueueGray(
-      grayBytes: feed.gray,
-      metadata: durableMetadata,
-    );
+    final frame = hasFilePayload
+        ? await _durableQueue.enqueueGrayFile(
+            sourceGrayFile: File(feed.grayFilePath!),
+            expectedByteLength: expectedGrayBytes,
+            metadata: durableMetadata,
+          )
+        : await _durableQueue.enqueueGray(
+            grayBytes: feed.gray,
+            metadata: durableMetadata,
+          );
     final seq = frame.sequence + 1;
+    final visibleBlock = _durableQueue.blockReason;
+    if (_durableQueue.blocked &&
+        !sfmDurableEnqueueOwnsFrame(
+          frameId: frame.id,
+          visibleBlock: visibleBlock,
+        )) {
+      _blockQueue(
+        stage: 'sfm_queue_write',
+        message:
+            'frame#$seq failed before durable queue ownership: $visibleBlock',
+      );
+      return false;
+    }
     _seq = math.max(_seq, seq);
     _durableFrameBySeq[seq] = frame.id;
     _seqOfferMs[seq] = offerMs;
@@ -866,12 +1668,14 @@ class SfmLiveRecon {
           '(inFlight=$_inFlight, waiting=$_waitingSpoolDepth)',
     );
     if (_durableQueue.blocked) {
-      final reason = _durableQueue.blockReason;
       _blockQueue(
         stage: 'sfm_queue_write',
-        message: 'frame#$seq retained after durable enqueue failure: $reason',
+        message: 'frame#$seq durable behind blocked consumer: $visibleBlock',
       );
-      return false;
+      // Producer success means durable ownership, not immediate consumability.
+      // The retained head keeps pump/finalize blocked, while this exact later
+      // job remains recoverable across process restart.
+      return true;
     }
     if (_disposed) return false;
     unawaited(_pump());
@@ -1043,22 +1847,32 @@ class SfmLiveRecon {
   }
 
   void _blockQueue({required String stage, required String message}) {
-    if (_queueFailure != null) return;
-    _queueFailure = message;
-    _pumpRetryTimer?.cancel();
-    _pumpRetryTimer = null;
-    DeviceLog.log('SfmLive', message);
-    TelemetryWriter.instance.event('sfm_queue_blocked', {
-      'stage': stage,
-      'message': message,
-      'waiting': _waitingSpoolDepth,
-      'inflight': _inFlight,
-    });
-    _events.add(SfmLiveFailed(stage, message));
+    final firstFailure = _queueFailure == null;
+    _queueFailure ??= message;
+    if (firstFailure) {
+      _pumpRetryTimer?.cancel();
+      _pumpRetryTimer = null;
+      DeviceLog.log('SfmLive', message);
+      TelemetryWriter.instance.event('sfm_queue_blocked', {
+        'stage': stage,
+        'message': message,
+        'waiting': _waitingSpoolDepth,
+        'inflight': _inFlight,
+      });
+    }
+    _emitFailureOnce(stage, _queueFailure!);
+  }
+
+  void _emitFailureOnce(String stage, String message) {
+    if (_events.isClosed) return;
+    final event = _failureOnce.accept(stage, message);
+    if (event != null) _events.add(event);
   }
 
   void _maybeSendFinalize() {
     if (_disposed ||
+        _fedMetaCommitsInFlight != 0 ||
+        _durableQueue.nativeReplayRequired ||
         !sfmFeedCanSendFinalize(
           finalizeRequested: _finalizeRequested,
           finalizeSent: _finalizeSent,
@@ -1085,15 +1899,19 @@ class SfmLiveRecon {
   /// finishes the disk queue first, then runs finalize_async (phase 1
   /// blocks in-worker; LOCAL_READY and REFINED/ERROR arrive via [events]).
   void finalize() {
-    if (_disposed || _finalizeRequested) return;
+    if (_cleanupOnly || _disposed || _finalizeRequested) return;
     _finalizeRequested = true;
     _finalizeRequestMs = DateTime.now().millisecondsSinceEpoch; // 遥测
     if (_durableQueue.spoolDepth > 0 ||
         _inFlight > 0 ||
+        _fedMetaCommitsInFlight > 0 ||
+        _durableQueue.nativeReplayRequired ||
         _queueFailure != null) {
       DeviceLog.log(
         'SfmLive',
         'finalize deferred: inFlight=$_inFlight '
+            'fedMeta=$_fedMetaCommitsInFlight '
+            'nativeReplay=${_durableQueue.nativeReplayRequired} '
             'queued=${_durableQueue.spoolDepth}',
       );
       unawaited(_pump());
@@ -1109,7 +1927,66 @@ class SfmLiveRecon {
   /// [imageWidth]/[imageHeight] seed the session options only; the reconstruction
   /// reads its geometry from the db, so a nominal capture resolution is fine.
   void resumeFromDb({int imageWidth = 3840, int imageHeight = 2160}) {
-    if (_disposed || _finalizeRequested) return;
+    if (_cleanupOnly || _disposed || _finalizeRequested) return;
+    if (_queueFailure != null || _durableQueue.blocked) {
+      _blockQueue(
+        stage: 'sfm_resume_blocked',
+        message:
+            'resume refused blocked durable input: '
+            '${_durableQueue.blockReason ?? _queueFailure}',
+      );
+      return;
+    }
+    try {
+      final captureDir = File(_dbPath).parent.path;
+      final sidecarMeta = readFedMetaSidecar(captureDir);
+      for (final entry in sidecarMeta.entries) {
+        if (entry.value.hasGrayIntrinsics) {
+          _fedMeta[entry.key] = entry.value;
+        } else {
+          _fedMeta.putIfAbsent(entry.key, () => entry.value);
+        }
+      }
+    } catch (error) {
+      _blockQueue(
+        stage: 'sfm_resume_meta_read',
+        message: 'resume refused malformed sfm_fed_frames.jsonl: $error',
+      );
+      return;
+    }
+    final recoveryCommands = sfmResumeRecoveryCommands(
+      spoolDepth: _durableQueue.spoolDepth,
+      inFlight: _inFlight,
+      fedMetaCommitsInFlight: _fedMetaCommitsInFlight,
+      nativeReplayRequired: _durableQueue.nativeReplayRequired,
+    );
+    switch (recoveryCommands) {
+      case <SfmResumeRecoveryCommand>[
+        SfmResumeRecoveryCommand.drainReplay,
+        SfmResumeRecoveryCommand.finalize,
+      ]:
+        DeviceLog.log(
+          'SfmLive',
+          'resume redirected to durable replay drain '
+              '(spool=${_durableQueue.spoolDepth} inFlight=$_inFlight '
+              'fedMeta=$_fedMetaCommitsInFlight '
+              'nativeReplay=${_durableQueue.nativeReplayRequired})',
+        );
+        finalize();
+        return;
+      case <SfmResumeRecoveryCommand>[
+        SfmResumeRecoveryCommand.resumeExistingDb,
+      ]:
+        break;
+      default:
+        _blockQueue(
+          stage: 'sfm_resume_route',
+          message:
+              'resume refused invalid recovery command order: '
+              '$recoveryCommands',
+        );
+        return;
+    }
     _finalizeRequested = true;
     _finalizeSent = true;
     _toWorker.send(<String, Object?>{
@@ -1125,49 +2002,249 @@ class SfmLiveRecon {
   /// 拍摄期落盘的 sfm_fed_frames.jsonl(含 arkitCamFromWorldQwxyz)回填,
   /// 让 refined 事件走与 live 完全同一条 _gravityAlign 调用链。
   void seedFedMeta(Map<int, SfmFedFrameMeta> meta) {
-    _fedMeta.addAll(meta);
+    for (final entry in meta.entries) {
+      final value = entry.value;
+      if (value.hasGrayIntrinsics) {
+        _fedMeta[entry.key] = value;
+        continue;
+      }
+      _fedMeta.putIfAbsent(
+        entry.key,
+        () => SfmFedFrameMeta(
+          jpegPath: value.jpegPath,
+          imageW: -1,
+          imageH: -1,
+          grayW: value.grayW,
+          grayH: value.grayH,
+          fx: double.nan,
+          fy: double.nan,
+          cx: double.nan,
+          cy: double.nan,
+          arkitQuatWxyz: value.arkitQuatWxyz,
+          arkitTransTxyz: value.arkitTransTxyz,
+          arkitCameraCenterWorld: value.arkitCameraCenterWorld,
+        ),
+      );
+    }
+  }
+
+  /// Reads capture-time fed metadata for resume. Missing sidecars are a valid
+  /// legacy state and return an empty map. Malformed rows fail explicitly.
+  /// Legacy valid rows remain available for color/gravity, with unknown K
+  /// represented by `hasGrayIntrinsics == false` rather than zeroes.
+  static Map<int, SfmFedFrameMeta> readFedMetaSidecar(String captureDir) {
+    final sidecar = File('$captureDir/sfm_fed_frames.jsonl');
+    if (!sidecar.existsSync()) return const <int, SfmFedFrameMeta>{};
+    final result = <int, SfmFedFrameMeta>{};
+    var lineNumber = 0;
+    for (final line in sidecar.readAsLinesSync()) {
+      lineNumber++;
+      if (line.trim().isEmpty) continue;
+      try {
+        final record = SfmFedFrameSidecarRecord.fromLine(
+          line,
+          jpegDirectory: '$captureDir/photos_highres',
+        );
+        result[record.frameId] = record.meta;
+      } catch (error) {
+        throw FormatException('sfm_fed_frames.jsonl line $lineNumber: $error');
+      }
+    }
+    return Map<int, SfmFedFrameMeta>.unmodifiable(result);
+  }
+
+  Future<void> _ensureFedMetaSidecarComplete() async {
+    final records = _durableQueue.fedRecords.toList()
+      ..sort((a, b) => a.sequence.compareTo(b.sequence));
+    if (records.isEmpty) return;
+
+    final expected = <int, SfmFedFrameMeta>{};
+    for (final record in records) {
+      final frameId = record.fedMeta['nativeFrameId'];
+      final meta = _fedMetaFromDurable(record.fedMeta);
+      if (frameId is! int || frameId < 0 || meta == null) {
+        throw StateError(
+          'durable fed record ${record.id} has incomplete frame metadata',
+        );
+      }
+      if (expected.containsKey(frameId)) {
+        throw StateError('duplicate durable nativeFrameId $frameId');
+      }
+      final gray = File('$_dbPath.sfm-feed/${record.id}.gray');
+      if (!await gray.exists()) {
+        throw StateError('durable fed record ${record.id} gray is missing');
+      }
+      expected[frameId] = meta;
+    }
+
+    final captureDir = File(_dbPath).parent.path;
+    var needsRewrite = false;
+    Map<int, SfmFedFrameMeta> actual = const <int, SfmFedFrameMeta>{};
+    try {
+      actual = readFedMetaSidecar(captureDir);
+    } catch (_) {
+      needsRewrite = true;
+    }
+    if (!needsRewrite) {
+      for (final entry in expected.entries) {
+        final sidecarMeta = actual[entry.key];
+        if (sidecarMeta == null ||
+            !sidecarMeta.hasGrayIntrinsics ||
+            !_sameFedFrameMeta(sidecarMeta, entry.value)) {
+          needsRewrite = true;
+          break;
+        }
+      }
+    }
+    if (!needsRewrite) return;
+
+    final lines = <String>[];
+    for (final record in records) {
+      final frameId = record.fedMeta['nativeFrameId']! as int;
+      lines.add(jsonEncode(_fedMetaSidecarJson(frameId, expected[frameId]!)));
+    }
+    final sidecar = File('$captureDir/sfm_fed_frames.jsonl');
+    final temporary = File(
+      '${sidecar.path}.tmp.$pid.${DateTime.now().microsecondsSinceEpoch}',
+    );
+    try {
+      await temporary.writeAsString('${lines.join('\n')}\n', flush: true);
+      await temporary.rename(sidecar.path);
+    } catch (_) {
+      try {
+        if (await temporary.exists()) await temporary.delete();
+      } catch (_) {}
+      rethrow;
+    }
+
+    final repaired = readFedMetaSidecar(captureDir);
+    for (final entry in expected.entries) {
+      final repairedMeta = repaired[entry.key];
+      if (repairedMeta == null ||
+          !repairedMeta.hasGrayIntrinsics ||
+          !_sameFedFrameMeta(repairedMeta, entry.value)) {
+        throw StateError(
+          'fed-meta repair verification failed for frame ${entry.key}',
+        );
+      }
+    }
+  }
+
+  Future<void> _resetFedMetaSidecarForFullReplay() async {
+    final sidecar = File('${File(_dbPath).parent.path}/sfm_fed_frames.jsonl');
+    final temporary = File(
+      '${sidecar.path}.tmp.$pid.${DateTime.now().microsecondsSinceEpoch}',
+    );
+    try {
+      await temporary.writeAsString('', flush: true);
+      await temporary.rename(sidecar.path);
+    } catch (_) {
+      try {
+        if (await temporary.exists()) await temporary.delete();
+      } catch (_) {}
+      rethrow;
+    }
+  }
+
+  Future<void> _durablyBlockFedMetaFailure(
+    Object error, {
+    String? durableFrameId,
+  }) async {
+    if (_durableQueue.finalArtifactCommitted) {
+      _authorizedPurgeError = '$error';
+      DeviceLog.log(
+        'SfmLive',
+        'post-receipt fed-meta error remains non-blocking/retryable: $error',
+      );
+      return;
+    }
+    final message = '$_fedMetaDurableBlockPrefix $error';
+    await _durableQueue.retainAndBlock(
+      SfmFeedBlock(
+        kind: SfmFeedBlockKind.replayIncomplete,
+        message: message,
+        frameId: durableFrameId,
+      ),
+    );
+    _blockQueue(stage: 'sfm_fed_meta_write', message: message);
+  }
+
+  Future<bool> _continueAuthorizedReplayPurge() async {
+    if (!_durableQueue.finalArtifactCommitted) return false;
+    final purged = await _durableQueue.purgeReplayPayloadsAfterFinalArtifact();
+    if (!purged) return false;
+    if (_durableQueue.blocked) {
+      final cleared = await _durableQueue.clearBlockForRetry();
+      if (!cleared) return false;
+    }
+    _queueFailure = null;
+    await purgeSfmNativeReplayBackup(_dbPath);
+    return true;
   }
 
   /// Releases internal replay payloads only after the final PLY/meta artifact
   /// has been durably written. User JPEGs and AR sidecars are never touched.
   Future<bool> markFinalArtifactCommitted() async {
+    if (sfmFinalArtifactCleanupRoute(
+          finalArtifactCommitted: _durableQueue.finalArtifactCommitted,
+        ) ==
+        SfmFinalArtifactCleanupRoute.continueAuthorizedPurge) {
+      return _continueAuthorizedReplayPurge();
+    }
+    if (_fedMetaCommitsInFlight != 0 ||
+        _queueFailure != null ||
+        _durableQueue.blocked) {
+      return false;
+    }
+    try {
+      await _ensureFedMetaSidecarComplete();
+      // Completeness includes the replay payloads that B/C/D are allowed to
+      // read. Purge cannot race or hide a missing gray file.
+      readDurableFedFrameInputs();
+      final replayPayloadsVerified = await _durableQueue
+          .verifyFedReplayPayloadsForFinalCommit();
+      if (!replayPayloadsVerified) {
+        _blockQueue(
+          stage: 'sfm_final_replay_verify',
+          message:
+              'final artifact commit refused corrupt durable replay input: '
+              '${_durableQueue.blockReason}',
+        );
+        return false;
+      }
+      if (_fedMetaCommitsInFlight != 0 ||
+          _queueFailure != null ||
+          _durableQueue.blocked) {
+        return false;
+      }
+    } catch (error) {
+      await _durablyBlockFedMetaFailure(error);
+      return false;
+    }
     final purged = await _durableQueue.purgeReplayPayloadsAfterFinalArtifact();
     if (!purged) return false;
     await purgeSfmNativeReplayBackup(_dbPath);
     return true;
   }
 
-  /// Persist the SfM-frame-id → color-JPEG mapping (+ the gray dims the
-  /// keypoints live in) as a jsonl sidecar next to the db. A later resume reads
-  /// it to colorize the recovered cloud with TRUE per-point photo color — the
-  /// exact same track-observation sampling the live colorizer does — instead of
-  /// having to guess the mapping from disk. One tiny append per registered
-  /// frame; best-effort (colorize has a timestamp-order fallback if absent).
-  void _persistFedMeta(int frameId, SfmFedFrameMeta m) {
-    try {
-      final dir = File(_dbPath).parent.path;
-      final meta = <String, Object?>{
-        'frameId': frameId,
-        'jpegPath': m.jpegPath,
-        'grayW': m.grayW,
-        'grayH': m.grayH,
-      };
-      if (m.arkitQuatWxyz != null &&
-          m.arkitTransTxyz != null &&
-          m.arkitCameraCenterWorld != null) {
-        meta.addAll(<String, Object?>{
-          'arkitPoseConvention':
-              'worldAlignment.gravity; cameraToWorld from ARKit, stored as CamFromWorld plus camera center',
-          'arkitCamFromWorldQwxyz': m.arkitQuatWxyz,
-          'arkitCamFromWorldTxyz': m.arkitTransTxyz,
-          'arkitCameraCenterWorld': m.arkitCameraCenterWorld,
-        });
-      }
-      final line = '${jsonEncode(meta)}\n';
-      File(
-        '$dir/sfm_fed_frames.jsonl',
-      ).writeAsStringSync(line, mode: FileMode.append, flush: false);
-    } catch (_) {}
+  /// Persists the exact SfM-frame-id → JPEG/gray/calibration mapping next to
+  /// the db. A later resume can therefore recover both photo sampling and the
+  /// numerical inputs needed by finalize augmentation without guessing K.
+  ///
+  /// This is deliberately not best-effort: a failed append is surfaced and
+  /// blocks finalize. The authoritative queue ACK and its replay gray remain
+  /// untouched, allowing a later process to repair/replay instead of silently
+  /// producing a partial result.
+  Future<void> _persistFedMeta(int frameId, SfmFedFrameMeta m) async {
+    if (!m.hasGrayIntrinsics) {
+      throw StateError('frame#$frameId has no real gray intrinsics');
+    }
+    final dir = File(_dbPath).parent.path;
+    final meta = _fedMetaSidecarJson(frameId, m);
+    final line = '${jsonEncode(meta)}\n';
+    await File(
+      '$dir/sfm_fed_frames.jsonl',
+    ).writeAsString(line, mode: FileMode.append, flush: true);
   }
 
   /// Frees the native session (joins the background BA thread, drops the
@@ -1181,7 +2258,7 @@ class SfmLiveRecon {
     // lifecycle event is not proof that native ingested them.
     final ack = _disposeAck = Completer<void>();
     try {
-      if (!_workerTerminated) {
+      if (!_cleanupOnly && !_workerTerminated) {
         _toWorker.send(const <String, Object?>{'cmd': 'dispose'});
         // aether_sfm_free may legitimately block while joining a running
         // global-BA thread; give it generous room before force-killing.
@@ -1191,25 +2268,47 @@ class SfmLiveRecon {
       // Timeout/port death — fall through to kill.
     } finally {
       await _sub.cancel();
+      await _waitForDurableTransactions();
       await _workerErrorSub.cancel();
       await _workerExitSub.cancel();
       _fromWorker.close();
       _workerErrors.close();
       _workerExit.close();
-      _isolate.kill(priority: Isolate.immediate);
+      _isolate?.kill(priority: Isolate.immediate);
       await _durableQueue.close();
+      StreamSubscription<SfmLiveEvent>? cleanupDrain;
+      if (_cleanupOnly && !_events.hasListener) {
+        cleanupDrain = _events.stream.listen((_) {});
+      }
       await _events.close();
+      await cleanupDrain?.cancel();
     }
   }
 
   void _onWorkerTerminated(String stage, Object? detail) {
-    if (_disposed || _workerTerminated) return;
+    if (_workerTerminated) return;
+    if (_disposed) {
+      _workerTerminated = true;
+      final ack = _disposeAck;
+      if (ack != null && !ack.isCompleted) ack.complete();
+      return;
+    }
+    if (_durableQueue.finalArtifactCommitted) {
+      _workerTerminated = true;
+      final message = 'post-receipt worker terminated ($stage): $detail';
+      DeviceLog.log('SfmLive', '$message; durable queue unchanged');
+      if (_forceRebuildFromRetainedDb) {
+        _emitFailureOnce(stage, message);
+      }
+      final ack = _disposeAck;
+      if (ack != null && !ack.isCompleted) ack.complete();
+      return;
+    }
     _workerTerminated = true;
     _pumpRetryTimer?.cancel();
     _pumpRetryTimer = null;
     final message = 'SfM worker terminated unexpectedly ($stage): $detail';
-    _queueFailure = message;
-    unawaited(
+    _trackDurableTransaction(
       _durableQueue
           .retainAndBlock(
             SfmFeedBlock(kind: SfmFeedBlockKind.workerDied, message: message),
@@ -1221,14 +2320,7 @@ class SfmLiveRecon {
             );
           }),
     );
-    DeviceLog.log('SfmLive', message);
-    TelemetryWriter.instance.event('sfm_queue_blocked', {
-      'stage': stage,
-      'message': message,
-      'waiting': _waitingSpoolDepth,
-      'inflight': _inFlight,
-    });
-    if (!_events.isClosed) _events.add(SfmLiveFailed(stage, message));
+    _blockQueue(stage: stage, message: message);
     final ack = _disposeAck;
     if (ack != null && !ack.isCompleted) ack.complete();
   }
@@ -1258,7 +2350,7 @@ class SfmLiveRecon {
           }
         }
       case 'frame_done':
-        unawaited(_handleFrameDone(Map<Object?, Object?>.from(msg)));
+        _trackFrameDone(Map<Object?, Object?>.from(msg));
       case 'preview':
         // The streaming local-BA cloud, TRACK-ANNOTATED (same payload shape as
         // local_ready) so it colorizes + gravity-aligns identically to finalize.
@@ -1318,18 +2410,89 @@ class SfmLiveRecon {
           'stage': msg['stage'],
           'message': '${msg['message']}',
         });
-        _events.add(
-          SfmLiveFailed(
-            msg['stage'] as String? ?? 'unknown',
-            msg['message'] as String? ?? 'unknown',
-          ),
+        _emitFailureOnce(
+          msg['stage'] as String? ?? 'unknown',
+          msg['message'] as String? ?? 'unknown',
         );
       case 'disposed':
         _disposeAck?.complete();
     }
   }
 
+  void _trackFrameDone(Map<Object?, Object?> msg) {
+    _trackDurableTransaction(_runFrameDoneSafely(msg));
+  }
+
+  void _trackDurableTransaction(Future<void> transaction) {
+    _pendingDurableTransactions.add(transaction);
+    unawaited(
+      transaction.whenComplete(() {
+        _pendingDurableTransactions.remove(transaction);
+      }),
+    );
+  }
+
+  Future<void> _runFrameDoneSafely(Map<Object?, Object?> msg) async {
+    try {
+      await _handleFrameDone(msg);
+    } catch (error) {
+      if (_durableQueue.finalArtifactCommitted) {
+        _authorizedPurgeError = '$error';
+      } else {
+        try {
+          await _durableQueue.retainAndBlock(
+            SfmFeedBlock(
+              kind: SfmFeedBlockKind.replayIncomplete,
+              message: 'frame completion escaped transaction guard: $error',
+            ),
+          );
+        } catch (blockError) {
+          DeviceLog.log(
+            'SfmLive',
+            'failed to persist escaped frame transaction: $blockError',
+          );
+        }
+        _blockQueue(
+          stage: 'sfm_frame_transaction',
+          message: 'frame completion transaction failed: $error',
+        );
+      }
+    }
+  }
+
+  Future<void> _waitForDurableTransactions() async {
+    while (_pendingDurableTransactions.isNotEmpty) {
+      await Future.wait<void>(
+        _pendingDurableTransactions.toList(growable: false),
+      );
+    }
+  }
+
   Future<void> _handleFrameDone(Map<Object?, Object?> msg) async {
+    _fedMetaCommitsInFlight++;
+    try {
+      await _handleFrameDoneWithinBarrier(msg);
+    } catch (error) {
+      try {
+        await _durablyBlockFedMetaFailure(
+          StateError('frame completion transaction failed: $error'),
+        );
+      } catch (blockError) {
+        _blockQueue(
+          stage: 'sfm_frame_transaction',
+          message:
+              'frame completion failed ($error); durable block also '
+              'failed: $blockError',
+        );
+      }
+    } finally {
+      _fedMetaCommitsInFlight--;
+      unawaited(_pump());
+      _maybeSendFinalize();
+    }
+  }
+
+  Future<void> _handleFrameDoneWithinBarrier(Map<Object?, Object?> msg) async {
     _inFlight = _inFlight > 0 ? _inFlight - 1 : 0;
     final result = msg['result'] as String? ?? 'unknown';
     final seq = msg['seq'] as int? ?? -1;
@@ -1364,14 +2527,31 @@ class SfmLiveRecon {
 
     final durablyCommitted =
         nativeOk && disposition == SfmFeedAckDisposition.removeAfterSuccess;
+    var sidecarCommitted = false;
     if (durablyCommitted) {
       _fedOk = _durableQueue.fedCount;
       _consecutiveAddFrameFailures = 0;
       _durableFrameBySeq.remove(seq);
       _pendingMeta.remove(seq);
-      if (meta != null) {
+      if (meta == null || !meta.hasGrayIntrinsics) {
+        await _durablyBlockFedMetaFailure(
+          StateError('frame#$seq ACKed without valid durable image/K metadata'),
+          durableFrameId: durableId,
+        );
+      } else {
         _fedMeta[frameId] = meta;
-        _persistFedMeta(frameId, meta);
+        try {
+          await _persistFedMeta(frameId, meta);
+          sidecarCommitted = true;
+        } catch (error) {
+          await _durablyBlockFedMetaFailure(
+            StateError(
+              'frame#$seq retained for recovery after fed-meta '
+              'write failed: $error',
+            ),
+            durableFrameId: durableId,
+          );
+        }
       }
     } else {
       _consecutiveAddFrameFailures++;
@@ -1384,8 +2564,10 @@ class SfmLiveRecon {
       );
     }
 
-    final effectiveResult = durablyCommitted
+    final effectiveResult = durablyCommitted && sidecarCommitted
         ? result
+        : durablyCommitted
+        ? 'fed_meta_write_failed'
         : nativeOk
         ? 'durable_ack_failed'
         : result;
@@ -1459,7 +2641,6 @@ class SfmLiveRecon {
         result: effectiveResult,
       ),
     );
-    unawaited(_pump());
   }
 
   /// [L1-ARBITRATE 2026-07-12] 鬼层 L1 CasDiffMVS 推理链编排(主 isolate)。
@@ -1883,7 +3064,17 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
               // points, sheet filled, capture kept pace).
               maxFeatures: 8192,
             );
-            wlog('session created (${w}x$h, db=${boot.dbPath})');
+            wlog(
+              'session created (${w}x$h, db=${boot.dbPath}, '
+              'publishDepthConflictOwner='
+              '${AetherSfmStreamSession.publishDepthConflictOwnerTrial})',
+            );
+            telem('sfm_native_config', {
+              'publish_depth_conflict_owner':
+                  AetherSfmStreamSession.publishDepthConflictOwnerTrial,
+              'publish_depth_owner_error_first': true,
+              'publish_depth_min_gap_m': 0.012,
+            });
             // DIAGNOSTIC TAP (errNotRegistered investigation): dump the
             // first gray frame as a viewable PGM next to the db, plus the
             // exact intrinsics fed — settles the "is the gray content /
@@ -2111,7 +3302,11 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
               maxFeatures: AetherSfmStreamSession.researchMaxFeatures,
               kNeighbors: AetherSfmStreamSession.researchKNeighbors,
             );
-            wlog('resume: session opened on existing db (${boot.dbPath})');
+            wlog(
+              'resume: session opened on existing db (${boot.dbPath}, '
+              'publishDepthConflictOwner='
+              '${AetherSfmStreamSession.publishDepthConflictOwnerTrial})',
+            );
           } catch (e) {
             fail('resume', 'create-from-db failed: $e');
             break;

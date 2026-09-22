@@ -32,6 +32,7 @@ import 'auth/supabase_auth_service.dart';
 import 'i18n/locale_notifier.dart';
 import 'l10n/app_localizations.dart';
 import 'lifecycle_observer.dart';
+import 'maintenance/capture_source_cleanup.dart';
 import 'object_transform.dart';
 import 'orbit_controls.dart';
 import 'ui/me_root_page.dart';
@@ -55,7 +56,7 @@ import 'util/device_log.dart';
 final GlobalKey<ScaffoldMessengerState> rootScaffoldMessengerKey =
     GlobalKey<ScaffoldMessengerState>();
 
-Future<void> main() async {
+Future<void> main(List<String> arguments) async {
   // SMOKE LOG: if you don't see this print in Xcode console, Dart
   // main never got invoked by FlutterEngine — problem is above us
   // (iOS 26 + Flutter JIT handshake, plugin register blocking, etc).
@@ -83,6 +84,10 @@ Future<void> main() async {
       // ignore: avoid_print
       print('[AET-SMOKE] inside runZonedGuarded');
       WidgetsFlutterBinding.ensureInitialized();
+      // Explicit detached-maintenance launch only. Normal product launches do
+      // not carry the two confirmation variables and never delete capture
+      // sources. The sparse point cloud, project record, and thumbnail survive.
+      await runCaptureSourceCleanupIfRequested(arguments: arguments);
       // Release-visible container-file log (Documents/pw_device_log.txt) —
       // print/debugPrint are invisible in release builds on device.
       unawaited(DeviceLog.init());

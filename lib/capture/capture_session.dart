@@ -45,8 +45,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:aether_capture_services/aether_capture_services.dart';
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart' show ValueListenable, ValueNotifier;
 import 'package:flutter/widgets.dart' show Offset;
 import 'package:path_provider/path_provider.dart';
@@ -59,9 +61,15 @@ import 'captured_photo_catalog.dart';
 import 'dome/captured_frame_sample.dart';
 import 'dome/dome_config.dart';
 import 'dome/dome_target_points.dart';
+import 'manual_capture_ledger.dart';
 import 'orientation_tracker.dart';
 import 'photo_slot_naming.dart';
 import 'pose_drift_tracker.dart';
+import 'sfm_feed_queue.dart';
+import 'sfm_live_recon.dart';
+import 'sfm_orphan_recovery.dart';
+import 'sfm_registration_publish_gate.dart';
+import 'sparse_ply.dart';
 
 class CaptureMotionSnapshot {
   final double angularVelocityRadPerSec;
@@ -142,6 +150,816 @@ final class CapturePhotoSaveBarrierException implements Exception {
         .join(', ');
     return 'CapturePhotoSaveBarrierException(${failures.length}): $jobs';
   }
+}
+
+/// Durable, restart-readable manual-shutter evidence used by the final 100%
+/// registration publication gate.
+///
+/// The ledger reducer deliberately owns no I/O. This adapter atomically binds
+/// every accepted job to its exact JPEG path and persists the reducer's event
+/// history. Replaying the events (rather than trusting a cached count) restores
+/// the current reconstruction epoch and job/native-image bijection after a
+/// process restart.
+final class PersistedManualCaptureEvidence {
+  const PersistedManualCaptureEvidence({
+    required this.ledger,
+    required this.jobToJpegPath,
+  });
+
+  final ManualCaptureLedger ledger;
+  final Map<String, String> jobToJpegPath;
+}
+
+final class ManualRegistrationPublishEvidence {
+  const ManualRegistrationPublishEvidence({
+    required this.ledger,
+    required this.finalRegistration,
+  });
+
+  final ManualCaptureLedger ledger;
+  final FinalRegistrationObservation finalRegistration;
+}
+
+const String _manualCaptureEvidenceFileName =
+    'manual_capture_registration_ledger.json';
+const int _manualCaptureEvidenceSchemaVersion = 1;
+
+/// Reopens the exact ledger used by live capture. Unknown/corrupt evidence is
+/// an error: resume must fail closed instead of manufacturing an empty ledger.
+Future<PersistedManualCaptureEvidence> loadPersistedManualCaptureEvidence(
+  String captureDir,
+) async {
+  final file = File('$captureDir/$_manualCaptureEvidenceFileName');
+  if (!await file.exists()) {
+    return const PersistedManualCaptureEvidence(
+      ledger: ManualCaptureLedger.empty(),
+      jobToJpegPath: <String, String>{},
+    );
+  }
+  final decoded = jsonDecode(await file.readAsString());
+  if (decoded is! Map ||
+      decoded['schema_version'] != _manualCaptureEvidenceSchemaVersion ||
+      decoded['events'] is! List ||
+      decoded['job_to_jpeg_path'] is! Map) {
+    throw const FormatException('manual capture ledger document is invalid');
+  }
+  var ledger = const ManualCaptureLedger.empty();
+  for (final raw in decoded['events'] as List) {
+    if (raw is! Map) {
+      throw const FormatException('manual capture ledger event is invalid');
+    }
+    ledger = ledger.reduce(
+      _manualCaptureEventFromJson(Map<String, Object?>.from(raw)),
+    );
+  }
+  final paths = <String, String>{};
+  for (final entry in (decoded['job_to_jpeg_path'] as Map).entries) {
+    if (entry.key is! String ||
+        (entry.key as String).isEmpty ||
+        entry.value is! String ||
+        (entry.value as String).isEmpty) {
+      throw const FormatException('manual capture JPEG mapping is invalid');
+    }
+    paths[entry.key as String] = File(entry.value as String).absolute.path;
+  }
+  if (paths.keys.toSet().difference(ledger.jobs.keys.toSet()).isNotEmpty ||
+      ledger.jobs.keys.toSet().difference(paths.keys.toSet()).isNotEmpty) {
+    throw const FormatException(
+      'manual capture ledger jobs and JPEG mappings differ',
+    );
+  }
+  return PersistedManualCaptureEvidence(
+    ledger: ledger,
+    jobToJpegPath: Map<String, String>.unmodifiable(paths),
+  );
+}
+
+ManualCaptureEvent _manualCaptureEventFromJson(Map<String, Object?> json) {
+  final event = json['event'];
+  final job = json['capture_job_id'];
+  String requiredString(String key) {
+    final value = json[key];
+    if (value is! String || value.isEmpty) {
+      throw FormatException('manual capture event is missing $key');
+    }
+    return value;
+  }
+
+  if (event is! String) {
+    throw const FormatException('manual capture event type is invalid');
+  }
+  return switch (event) {
+    'attempted' => ManualCaptureEvent.attempted(
+      captureJobId: requiredString('capture_job_id'),
+      identityToken: requiredString('identity_token'),
+    ),
+    'accepted' => ManualCaptureEvent.accepted(
+      job is String ? job : requiredString('capture_job_id'),
+    ),
+    'photo_committed' => ManualCaptureEvent.photoCommitted(
+      job is String ? job : requiredString('capture_job_id'),
+    ),
+    'sfm_queued' => ManualCaptureEvent.sfmQueued(
+      job is String ? job : requiredString('capture_job_id'),
+    ),
+    'sfm_ingested' => ManualCaptureEvent.sfmIngested(
+      job is String ? job : requiredString('capture_job_id'),
+    ),
+    'registered' => ManualCaptureEvent.registered(
+      job is String ? job : requiredString('capture_job_id'),
+      reconstructionEpochId: requiredString('reconstruction_epoch_id'),
+      nativeImageId: requiredString('native_image_id'),
+      mappingEvidenceToken: requiredString('mapping_evidence_token'),
+    ),
+    'blocked' => ManualCaptureEvent.blocked(
+      job is String ? job : requiredString('capture_job_id'),
+      blockerId: requiredString('blocker_id'),
+      code: requiredString('blocker_code'),
+      message: requiredString('blocker_message'),
+    ),
+    'blocker_resolved' => ManualCaptureEvent.blockerResolved(
+      job is String ? job : requiredString('capture_job_id'),
+      blockerId: requiredString('blocker_id'),
+      resolutionEvidence: requiredString('resolution_evidence'),
+    ),
+    'user_deletion_requested' => ManualCaptureEvent.userDeletionRequested(
+      job is String ? job : requiredString('capture_job_id'),
+    ),
+    'writers_quiesced' => ManualCaptureEvent.writersQuiesced(
+      job is String ? job : requiredString('capture_job_id'),
+      evidenceToken: requiredString('evidence_token'),
+    ),
+    'user_deleted' => ManualCaptureEvent.userDeleted(
+      job is String ? job : requiredString('capture_job_id'),
+    ),
+    'reconstruction_tainted' => ManualCaptureEvent.reconstructionTainted(
+      job is String ? job : requiredString('capture_job_id'),
+      taintId: requiredString('taint_id'),
+      reasonCode: requiredString('reason_code'),
+      evidenceToken: requiredString('evidence_token'),
+    ),
+    'reconstruction_rebuilt' => ManualCaptureEvent.reconstructionRebuilt(
+      reconstructionEpochId: requiredString('reconstruction_epoch_id'),
+      artifactIdentity: requiredString('artifact_identity'),
+      evidenceToken: requiredString('evidence_token'),
+      jobToNativeImageId: _requiredManualStringMap(
+        json['job_to_native_image_id'],
+        'job_to_native_image_id',
+      ),
+    ),
+    _ => throw FormatException(
+      'unsupported manual capture ledger event: $event',
+    ),
+  };
+}
+
+Map<String, String> _requiredManualStringMap(Object? raw, String label) {
+  if (raw is! Map) {
+    throw FormatException('manual capture event is missing $label');
+  }
+  final result = <String, String>{};
+  for (final entry in raw.entries) {
+    if (entry.key is! String || entry.value is! String) {
+      throw FormatException('manual capture event $label is invalid');
+    }
+    result[entry.key as String] = entry.value as String;
+  }
+  return result;
+}
+
+Future<void> _writePersistedManualCaptureEvidence({
+  required String captureDir,
+  required ManualCaptureLedger ledger,
+  required Map<String, String> jobToJpegPath,
+}) async {
+  final finalFile = File('$captureDir/$_manualCaptureEvidenceFileName');
+  final temporary = File(
+    '${finalFile.path}.tmp.$pid.${DateTime.now().microsecondsSinceEpoch}',
+  );
+  final document = <String, Object?>{
+    'schema_version': _manualCaptureEvidenceSchemaVersion,
+    'events': ledger.events.map((event) => event.toJson()).toList(),
+    'job_to_jpeg_path': <String, String>{
+      for (final entry in jobToJpegPath.entries)
+        entry.key: File(entry.value).absolute.path,
+    },
+  };
+  try {
+    await temporary.writeAsString(jsonEncode(document), flush: true);
+    await temporary.rename(finalFile.path);
+  } catch (_) {
+    try {
+      if (await temporary.exists()) await temporary.delete();
+    } catch (_) {}
+    rethrow;
+  }
+}
+
+/// Resume-safe counterpart of [CaptureSession.reconcileManualFinalRegistration].
+/// It owns no camera/session state: all authority comes from the persisted
+/// ledger, durable queue ACK records, and the refined final pose table.
+Future<ManualRegistrationPublishEvidence>
+reconcilePersistedManualFinalRegistration({
+  required String captureDir,
+  required SfmDurableFeedQueue durableQueue,
+  required SfmLiveSnapshot snapshot,
+  required String artifactIdentity,
+  required String evidenceToken,
+}) async {
+  final persisted = await loadPersistedManualCaptureEvidence(captureDir);
+  final evidence = _reconcileManualRegistrationEvidence(
+    persisted: persisted,
+    durableQueue: durableQueue,
+    snapshot: snapshot,
+    reconstructionEpochId:
+        persisted.ledger.currentReconstructionEpochId ??
+        'live-${captureDir.split(Platform.pathSeparator).last}',
+    artifactIdentity: artifactIdentity,
+    evidenceToken: evidenceToken,
+  );
+  await _writePersistedManualCaptureEvidence(
+    captureDir: captureDir,
+    ledger: evidence.ledger,
+    jobToJpegPath: persisted.jobToJpegPath,
+  );
+  return evidence;
+}
+
+/// Repairs only the native-ACK→Dart-ledger crash window. A native intent or a
+/// naked bundle is insufficient: promotion requires the verified native commit
+/// receipt *and* exactly one matching durable queue pending/fed record.
+Future<PersistedManualCaptureEvidence> persistNativeManualCaptureFailures({
+  required String captureDir,
+  required List<ManualCaptureV2RecoveryJob> nativeJobs,
+}) async {
+  final persisted = await loadPersistedManualCaptureEvidence(captureDir);
+  final reconciled = _applyNativeManualCaptureFailures(
+    persisted: persisted,
+    nativeJobs: nativeJobs,
+  );
+  await _writePersistedManualCaptureEvidence(
+    captureDir: captureDir,
+    ledger: reconciled.ledger,
+    jobToJpegPath: reconciled.jobToJpegPath,
+  );
+  return reconciled;
+}
+
+/// Completes a user-deletion transaction that was durably requested before a
+/// process crash, but only after cold native enumeration proves that the exact
+/// job writer is terminal. This helper changes ledger truth only; the resume
+/// owner remains responsible for deleting authorized source bytes and queue
+/// payloads after the tombstone is durable.
+Future<PersistedManualCaptureEvidence>
+completePersistedManualDeletionRequestsAfterColdNativeReconciliation({
+  required String captureDir,
+  required List<ManualCaptureV2RecoveryJob> nativeJobs,
+}) async {
+  final persisted = await loadPersistedManualCaptureEvidence(captureDir);
+  final requested = persisted.ledger.jobs.values
+      .where((job) => job.deletionRequested && !job.userDeleted)
+      .toList(growable: false);
+  if (requested.isEmpty) return persisted;
+
+  final nativeById = <String, ManualCaptureV2RecoveryJob>{};
+  final duplicateIds = <String>{};
+  for (final native in nativeJobs) {
+    if (nativeById.containsKey(native.captureJobID)) {
+      duplicateIds.add(native.captureJobID);
+    }
+    nativeById[native.captureJobID] = native;
+  }
+
+  // Validate the complete transaction before reducing any event. A single
+  // missing/pending/ambiguous identity must leave the on-disk prefix intact.
+  for (final job in requested) {
+    final jobId = job.captureJobId;
+    if (duplicateIds.contains(jobId)) {
+      throw StateError(
+        'cold deletion job $jobId has duplicate native identities',
+      );
+    }
+    final native = nativeById[jobId];
+    if (native == null) {
+      throw StateError('cold deletion job $jobId has no native terminal');
+    }
+    if (native.status != 'committed' && native.status != 'failed') {
+      throw StateError(
+        'cold deletion job $jobId is not terminal: ${native.status}',
+      );
+    }
+    if (!native.intentDurable) {
+      throw StateError(
+        'cold deletion job $jobId lacks durable native intent evidence',
+      );
+    }
+    if (native.status == 'failed' &&
+        (native.errorCode == null ||
+            native.message == null ||
+            native.recoverable == null)) {
+      throw StateError(
+        'cold deletion job $jobId has ambiguous native failure evidence',
+      );
+    }
+    final expectedJpeg = persisted.jobToJpegPath[jobId];
+    if (expectedJpeg == null ||
+        File(expectedJpeg).absolute.path !=
+            File(native.jpegPath).absolute.path) {
+      throw StateError(
+        'cold deletion job $jobId native JPEG identity does not match ledger',
+      );
+    }
+  }
+
+  var ledger = persisted.ledger;
+  for (final requestedJob in requested) {
+    final jobId = requestedJob.captureJobId;
+    final current = ledger.job(jobId)!;
+    if (current.stage == ManualCaptureStage.sfmQueued) {
+      ledger = ledger.reduce(
+        ManualCaptureEvent.reconstructionTainted(
+          jobId,
+          taintId: 'user-delete-before-native-closure-$jobId',
+          reasonCode: 'user_deleted_queued_frame',
+          evidenceToken: 'user-delete-rebuild-required-$jobId',
+        ),
+      );
+    }
+    if (!ledger.job(jobId)!.writersQuiesced) {
+      ledger = ledger.reduce(
+        ManualCaptureEvent.writersQuiesced(
+          jobId,
+          evidenceToken: 'manual-writers-quiesced-$jobId',
+        ),
+      );
+    }
+    ledger = ledger.reduce(ManualCaptureEvent.userDeleted(jobId));
+  }
+  final completed = PersistedManualCaptureEvidence(
+    ledger: ledger,
+    jobToJpegPath: persisted.jobToJpegPath,
+  );
+  await _writePersistedManualCaptureEvidence(
+    captureDir: captureDir,
+    ledger: completed.ledger,
+    jobToJpegPath: completed.jobToJpegPath,
+  );
+  return completed;
+}
+
+PersistedManualCaptureEvidence _applyNativeManualCaptureFailures({
+  required PersistedManualCaptureEvidence persisted,
+  required List<ManualCaptureV2RecoveryJob> nativeJobs,
+}) {
+  var ledger = persisted.ledger;
+  final paths = <String, String>{...persisted.jobToJpegPath};
+  final byId = <String, ManualCaptureV2RecoveryJob>{};
+  final duplicates = <String>{};
+  for (final native in nativeJobs.where((job) => job.status == 'failed')) {
+    if (byId.containsKey(native.captureJobID)) {
+      duplicates.add(native.captureJobID);
+    }
+    byId[native.captureJobID] = native;
+  }
+  for (final native in byId.values) {
+    if (duplicates.contains(native.captureJobID)) continue;
+    final code = native.errorCode;
+    final message = native.message;
+    if (code == null || message == null || native.recoverable == null) {
+      throw StateError(
+        'native failed job ${native.captureJobID} lacks exact diagnostics',
+      );
+    }
+    final canonicalJpeg = File(native.jpegPath).absolute.path;
+    var job = ledger.job(native.captureJobID);
+    if (job == null) {
+      ledger = ledger.reduce(
+        ManualCaptureEvent.attempted(
+          captureJobId: native.captureJobID,
+          identityToken: canonicalJpeg,
+        ),
+      );
+      paths[native.captureJobID] = canonicalJpeg;
+      job = ledger.job(native.captureJobID)!;
+    }
+    // A failure marker for a different claimed JPEG cannot be attached to
+    // this ledger job. Preserve the original job evidence and fail closed.
+    if (paths[native.captureJobID] != canonicalJpeg || job.userDeleted) {
+      continue;
+    }
+    final blockerId = 'native-terminal-failure:$code';
+    final blockerMessage =
+        '$message (native_recoverable=${native.recoverable}; '
+        'capture_job_id=${native.captureJobID})';
+    final existing = job.blockers[blockerId];
+    if (existing != null) {
+      if (existing.code != code || existing.message != blockerMessage) {
+        throw StateError(
+          'native failed job ${native.captureJobID} conflicts with its '
+          'persisted blocker',
+        );
+      }
+      continue;
+    }
+    ledger = ledger.reduce(
+      ManualCaptureEvent.blocked(
+        native.captureJobID,
+        blockerId: blockerId,
+        code: code,
+        message: blockerMessage,
+      ),
+    );
+  }
+  return PersistedManualCaptureEvidence(
+    ledger: ledger,
+    jobToJpegPath: Map<String, String>.unmodifiable(paths),
+  );
+}
+
+Future<PersistedManualCaptureEvidence>
+reconcilePersistedManualCaptureJobsFromNative({
+  required String captureDir,
+  required SfmDurableFeedQueue durableQueue,
+  required List<ManualCaptureV2RecoveryJob> nativeJobs,
+}) async {
+  final loaded = await loadPersistedManualCaptureEvidence(captureDir);
+  final persisted = _applyNativeManualCaptureFailures(
+    persisted: loaded,
+    nativeJobs: nativeJobs,
+  );
+  var ledger = persisted.ledger;
+  final paths = <String, String>{...persisted.jobToJpegPath};
+  final nativeById = <String, ManualCaptureV2RecoveryJob>{};
+  final duplicateNativeJobs = <String>{};
+  for (final job in nativeJobs) {
+    if (nativeById.containsKey(job.captureJobID)) {
+      duplicateNativeJobs.add(job.captureJobID);
+    }
+    nativeById[job.captureJobID] = job;
+  }
+
+  for (final native in nativeById.values) {
+    if (duplicateNativeJobs.contains(native.captureJobID)) {
+      continue;
+    }
+    final canonicalJpeg = File(native.jpegPath).absolute.path;
+    if (native.status == 'failed') {
+      continue;
+    }
+    if (!native.hasExactCommittedBundle) {
+      continue;
+    }
+    final grayReceipts = native.artifactReceipts
+        .where((receipt) => receipt.kind == 'sfm_gray')
+        .toList(growable: false);
+    if (grayReceipts.length != 1) continue;
+    final grayReceipt = grayReceipts.single;
+    final canonicalGray = File(native.sfmGrayPath).absolute.path;
+    bool exactQueueMetadata(Map<String, Object?> metadata) {
+      final jpeg = metadata['jpegPath'];
+      final sourceGray = metadata['_sourceGrayPath'];
+      return metadata['captureJobId'] == native.captureJobID &&
+          jpeg is String &&
+          File(jpeg).absolute.path == canonicalJpeg &&
+          sourceGray is String &&
+          File(sourceGray).absolute.path == canonicalGray &&
+          metadata['_expectedGrayBytes'] == grayReceipt.byteLength &&
+          metadata['sfmGraySha256'] == grayReceipt.sha256;
+    }
+
+    final queueMatches = <({bool fed, Map<String, Object?> metadata})>[];
+    for (final pending in durableQueue.pendingFrames) {
+      if (exactQueueMetadata(pending.metadata)) {
+        queueMatches.add((fed: false, metadata: pending.metadata));
+      }
+    }
+    for (final fed in durableQueue.fedRecords) {
+      if (exactQueueMetadata(fed.fedMeta)) {
+        queueMatches.add((fed: true, metadata: fed.fedMeta));
+      }
+    }
+    if (queueMatches.length != 1) continue;
+
+    var job = ledger.job(native.captureJobID);
+    if (job == null) {
+      ledger = ledger.reduce(
+        ManualCaptureEvent.attempted(
+          captureJobId: native.captureJobID,
+          identityToken: canonicalJpeg,
+        ),
+      );
+      paths[native.captureJobID] = canonicalJpeg;
+      job = ledger.job(native.captureJobID)!;
+    }
+    if (paths[native.captureJobID] != canonicalJpeg) continue;
+
+    // An attempted job may be recovered only from a lost reservation reply or
+    // ledger write. Once accepted, the exact native commit + exact queue record
+    // proves that any capture/gray/queue completion blocker was superseded.
+    // Invalid-ticket/unsupported attempted jobs remain blocked forever.
+    final blockers = job.blockers.values.toList(growable: false);
+    final attemptedRecoveryCodes = <String>{
+      'manual_ledger_write_failed',
+      'snapshot_reservation_failed',
+    };
+    if (job.stage == ManualCaptureStage.attempted &&
+        blockers.any(
+          (blocker) => !attemptedRecoveryCodes.contains(blocker.code),
+        )) {
+      continue;
+    }
+    for (final blocker in blockers) {
+      ledger = ledger.reduce(
+        ManualCaptureEvent.blockerResolved(
+          native.captureJobID,
+          blockerId: blocker.blockerId,
+          resolutionEvidence:
+              'native-commit-and-queue-${native.snapshotIdentity}',
+        ),
+      );
+    }
+    job = ledger.job(native.captureJobID)!;
+    if (job.stage == ManualCaptureStage.attempted) {
+      ledger = ledger.reduce(ManualCaptureEvent.accepted(native.captureJobID));
+      job = ledger.job(native.captureJobID)!;
+    }
+    if (job.stage == ManualCaptureStage.accepted) {
+      ledger = ledger.reduce(
+        ManualCaptureEvent.photoCommitted(native.captureJobID),
+      );
+      job = ledger.job(native.captureJobID)!;
+    }
+    if (job.stage == ManualCaptureStage.photoCommitted) {
+      ledger = ledger.reduce(ManualCaptureEvent.sfmQueued(native.captureJobID));
+      job = ledger.job(native.captureJobID)!;
+    }
+    if (queueMatches.single.fed && job.stage == ManualCaptureStage.sfmQueued) {
+      ledger = ledger.reduce(
+        ManualCaptureEvent.sfmIngested(native.captureJobID),
+      );
+    }
+  }
+
+  await _writePersistedManualCaptureEvidence(
+    captureDir: captureDir,
+    ledger: ledger,
+    jobToJpegPath: paths,
+  );
+  return PersistedManualCaptureEvidence(
+    ledger: ledger,
+    jobToJpegPath: Map<String, String>.unmodifiable(paths),
+  );
+}
+
+ManualRegistrationPublishEvidence _reconcileManualRegistrationEvidence({
+  required PersistedManualCaptureEvidence persisted,
+  required SfmDurableFeedQueue durableQueue,
+  required SfmLiveSnapshot snapshot,
+  required String reconstructionEpochId,
+  required String artifactIdentity,
+  required String evidenceToken,
+}) {
+  final fedByJob = <String, SfmFeedFedRecord>{};
+  final ambiguousJobs = <String>{};
+  for (final record in durableQueue.fedRecords) {
+    final jobId = record.fedMeta['captureJobId'];
+    if (jobId is! String || jobId.isEmpty || jobId.trim() != jobId) continue;
+    if (fedByJob.containsKey(jobId)) ambiguousJobs.add(jobId);
+    fedByJob[jobId] = record;
+  }
+
+  final registeredNativeIds = <int>{};
+  for (var offset = 0; offset + 8 < snapshot.posesPacked.length; offset += 9) {
+    final rawId = snapshot.posesPacked[offset];
+    if (snapshot.posesPacked[offset + 1] == 1.0 &&
+        rawId.isFinite &&
+        rawId >= 0 &&
+        rawId == rawId.truncateToDouble()) {
+      registeredNativeIds.add(rawId.toInt());
+    }
+  }
+
+  var candidate = persisted.ledger;
+  if (candidate.rebuildRequired) {
+    final rebuiltMap = <String, String>{};
+    final activeJobs = candidate.jobs.values
+        .where((job) => job.accepted && !job.userDeleted)
+        .toList(growable: false);
+    final activeJobIds = activeJobs.map((job) => job.captureJobId).toSet();
+    final durableJobIds = fedByJob.keys.toSet();
+    // A subset-shaped snapshot is not clean-rebuild evidence. The exact
+    // durable replay epoch must itself contain only the current active jobs;
+    // otherwise a deleted image may already have influenced native geometry
+    // even if its camera row is absent from the final pose table.
+    var exactCleanRebuild =
+        durableQueue.spoolDepth == 0 &&
+        durableQueue.fedRecords.length == activeJobs.length &&
+        fedByJob.length == activeJobs.length &&
+        ambiguousJobs.isEmpty &&
+        durableJobIds.length == activeJobIds.length &&
+        durableJobIds.containsAll(activeJobIds);
+    for (final job in activeJobs) {
+      final path = persisted.jobToJpegPath[job.captureJobId];
+      final record = fedByJob[job.captureJobId];
+      final durablePath = record?.fedMeta['jpegPath'];
+      final nativeId = record?.fedMeta['nativeFrameId'];
+      if (path == null ||
+          ambiguousJobs.contains(job.captureJobId) ||
+          durablePath is! String ||
+          File(durablePath).absolute.path != path ||
+          nativeId is! int ||
+          nativeId < 0 ||
+          !registeredNativeIds.contains(nativeId) ||
+          !job.sfmQueued) {
+        exactCleanRebuild = false;
+        break;
+      }
+      rebuiltMap[job.captureJobId] = '$nativeId';
+    }
+    final rebuiltIds = rebuiltMap.values.map(int.parse).toSet();
+    if (exactCleanRebuild &&
+        rebuiltMap.length == activeJobs.length &&
+        rebuiltIds.length == activeJobs.length &&
+        registeredNativeIds.length == rebuiltIds.length &&
+        registeredNativeIds.containsAll(rebuiltIds)) {
+      candidate = candidate.reduce(
+        ManualCaptureEvent.reconstructionRebuilt(
+          reconstructionEpochId:
+              '$reconstructionEpochId-rebuild-$artifactIdentity',
+          artifactIdentity: artifactIdentity,
+          evidenceToken: evidenceToken,
+          jobToNativeImageId: rebuiltMap,
+        ),
+      );
+    }
+  }
+  final claimedNativeIds = candidate.currentJobToNativeImageId.values
+      .map(int.tryParse)
+      .whereType<int>()
+      .toSet();
+  final orderedJobs = candidate.jobs.keys.toList()..sort();
+  for (final jobId in orderedJobs) {
+    final path = persisted.jobToJpegPath[jobId];
+    if (path == null || ambiguousJobs.contains(jobId)) continue;
+    final record = fedByJob[jobId];
+    final durableJpegPath = record?.fedMeta['jpegPath'];
+    if (durableJpegPath is! String ||
+        File(durableJpegPath).absolute.path != path) {
+      continue;
+    }
+    final nativeRaw = record?.fedMeta['nativeFrameId'];
+    if (record == null || nativeRaw is! int || nativeRaw < 0) continue;
+    var job = candidate.job(jobId)!;
+    if (job.stage == ManualCaptureStage.photoCommitted) {
+      candidate = candidate.reduce(ManualCaptureEvent.sfmQueued(jobId));
+      job = candidate.job(jobId)!;
+    }
+    if (job.stage == ManualCaptureStage.sfmQueued) {
+      candidate = candidate.reduce(ManualCaptureEvent.sfmIngested(jobId));
+      job = candidate.job(jobId)!;
+    }
+    if (job.stage == ManualCaptureStage.sfmIngested &&
+        registeredNativeIds.contains(nativeRaw) &&
+        claimedNativeIds.add(nativeRaw)) {
+      candidate = candidate.reduce(
+        ManualCaptureEvent.registered(
+          jobId,
+          reconstructionEpochId: reconstructionEpochId,
+          nativeImageId: '$nativeRaw',
+          mappingEvidenceToken:
+              'durable-${record.id}-${record.sequence}-$nativeRaw',
+        ),
+      );
+    }
+  }
+
+  return ManualRegistrationPublishEvidence(
+    ledger: candidate,
+    finalRegistration: FinalRegistrationObservation(
+      artifactIdentity: artifactIdentity,
+      evidenceToken: evidenceToken,
+      reconstructionEpochId:
+          candidate.currentReconstructionEpochId ?? reconstructionEpochId,
+      jobToNativeImageId: candidate.currentJobToNativeImageId,
+    ),
+  );
+}
+
+const String _registrationGateReceiptFileName =
+    'sfm_registration_publish_receipt.json';
+const String _registrationGateReceiptSchema =
+    'pw_sfm_registration_publish_receipt_v1';
+
+/// Atomically records that the post-persist 100% registration gate evaluated
+/// the exact sparse generation which may later enter prepared/purge/committed.
+/// A refined PLY by itself is never this authorization.
+Future<void> persistSfmRegistrationGateReceipt({
+  required String captureDir,
+  required SparsePersistReceipt sparseReceipt,
+  required SfmRegistrationPublishDecision decision,
+  required ManualCaptureLedger ledger,
+  required SfmDurableFeedQueue durableQueue,
+}) async {
+  decision.requireCanPublish();
+  final ledgerCanonical = ledger.toCanonicalJson();
+  final queueEvidence = _registrationQueueEvidence(durableQueue);
+  final document = <String, Object?>{
+    'schema': _registrationGateReceiptSchema,
+    'sparse': _sparseReceiptJson(sparseReceipt),
+    'ledger_sha256': sha256.convert(utf8.encode(ledgerCanonical)).toString(),
+    'ledger_canonical_json': ledgerCanonical,
+    'reconstruction_epoch_id':
+        decision.ledgerClosure.finalRegistration.reconstructionEpochId,
+    'job_to_native_image_id':
+        decision.ledgerClosure.finalRegistration.jobToNativeImageId,
+    'queue': queueEvidence,
+    'accepted_count': decision.acceptedCount,
+    'snapshot_pose_count': decision.snapshotPoseCount,
+    'snapshot_registered_count': decision.snapshotRegisteredCount,
+    'snapshot_native_image_ids': decision.snapshotNativeImageIds.toList()
+      ..sort(),
+    'gate_can_publish': true,
+  };
+  final finalFile = File('$captureDir/$_registrationGateReceiptFileName');
+  final temporary = File(
+    '${finalFile.path}.tmp.$pid.${DateTime.now().microsecondsSinceEpoch}',
+  );
+  try {
+    await temporary.writeAsString(jsonEncode(document), flush: true);
+    await temporary.rename(finalFile.path);
+  } catch (_) {
+    try {
+      if (await temporary.exists()) await temporary.delete();
+    } catch (_) {}
+    rethrow;
+  }
+}
+
+/// Verifies the only durable authorization for crash-time commit-only retry.
+/// Current ledger and queue evidence must still be byte-canonically identical
+/// to the post-persist gate decision; any mutation forces re-gate/rebuild.
+Future<void> requirePersistedSfmRegistrationGateReceipt({
+  required String captureDir,
+  required SparsePersistReceipt sparseReceipt,
+  required SfmDurableFeedQueue durableQueue,
+}) async {
+  final file = File('$captureDir/$_registrationGateReceiptFileName');
+  if (!await file.exists()) {
+    throw StateError('post-persist registration gate receipt is missing');
+  }
+  final decoded = jsonDecode(await file.readAsString());
+  if (decoded is! Map ||
+      decoded['schema'] != _registrationGateReceiptSchema ||
+      decoded['gate_can_publish'] != true) {
+    throw const FormatException('registration gate receipt is invalid');
+  }
+  final persisted = await loadPersistedManualCaptureEvidence(captureDir);
+  final ledgerCanonical = persisted.ledger.toCanonicalJson();
+  final ledgerHash = sha256.convert(utf8.encode(ledgerCanonical)).toString();
+  if (jsonEncode(decoded['sparse']) !=
+          jsonEncode(_sparseReceiptJson(sparseReceipt)) ||
+      decoded['ledger_sha256'] != ledgerHash ||
+      decoded['ledger_canonical_json'] != ledgerCanonical ||
+      jsonEncode(decoded['queue']) !=
+          jsonEncode(_registrationQueueEvidence(durableQueue))) {
+    throw StateError(
+      'registration gate receipt no longer matches sparse/ledger/queue evidence',
+    );
+  }
+}
+
+Map<String, Object?> _sparseReceiptJson(SparsePersistReceipt receipt) =>
+    <String, Object?>{
+      'artifact_id': receipt.artifactId,
+      'point_count': receipt.pointCount,
+      'refined': receipt.refined,
+      'ply_bytes': receipt.plyBytes,
+      'ply_sha256': receipt.plySha256,
+      'meta_bytes': receipt.metaBytes,
+      'meta_sha256': receipt.metaSha256,
+    };
+
+Map<String, Object?> _registrationQueueEvidence(
+  SfmDurableFeedQueue durableQueue,
+) {
+  final records = durableQueue.fedRecords.toList()
+    ..sort((left, right) => left.sequence.compareTo(right.sequence));
+  return <String, Object?>{
+    'next_sequence': durableQueue.nextSequence,
+    'spool_depth': durableQueue.spoolDepth,
+    'blocked': durableQueue.blocked,
+    'native_replay_required': durableQueue.nativeReplayRequired,
+    'fed': <Map<String, Object?>>[
+      for (final record in records)
+        <String, Object?>{
+          'id': record.id,
+          'sequence': record.sequence,
+          'capture_job_id': record.fedMeta['captureJobId'],
+          'native_frame_id': record.fedMeta['nativeFrameId'],
+          'jpeg_path': record.fedMeta['jpegPath'],
+        },
+    ],
+  };
 }
 
 class CaptureSession {
@@ -292,6 +1110,7 @@ class CaptureSession {
   /// CapturedFrameSample so the curator can split the manifest into
   /// arkit-pose vs imu-pose buckets.
   String _lastPoseSource = 'arkit';
+  final Future<void> Function(Directory directory)? _discardDirectoryDeleter;
 
   /// When true (RealityScan-style manual capture), [_onPoseTick] skips the
   /// motion/dome auto-ingest + auto-save path; photos are taken only via
@@ -383,9 +1202,22 @@ class CaptureSession {
   ValueListenable<List<String>> get capturedPhotos => _capturedPhotos;
   List<String> get capturedPhotoPaths => _capturedPhotos.value;
 
+  /// Process-local view of the atomically persisted manual capture evidence.
+  /// Commit-time publication still reloads the file before authorizing purge.
+  ManualCaptureLedger get manualCaptureLedger => _manualCaptureLedger;
+
+  /// Exact process-local identities for shutter attempts whose first durable
+  /// ledger write failed before native reservation.
+  Map<String, String> get unpersistedManualAttemptPaths =>
+      Map<String, String>.unmodifiable(_unpersistedManualAttemptPaths);
+
   final List<Future<void>> _pendingPhotoSaves = <Future<void>>[];
   final Map<String, ManualPhotoCaptureException> _manualPhotoFailures =
       <String, ManualPhotoCaptureException>{};
+  final Map<String, String> _unpersistedManualAttemptPaths = <String, String>{};
+  ManualCaptureLedger _manualCaptureLedger = const ManualCaptureLedger.empty();
+  Map<String, String> _manualJobToJpegPath = <String, String>{};
+  Future<void> _manualLedgerTail = Future<void>.value();
   ManualSfmFrameSink? _manualSfmFrameSink;
   ManualCaptureActivitySink? _manualCaptureActivitySink;
   final Completer<void> _manualSfmSinkReady = Completer<void>();
@@ -421,11 +1253,68 @@ class CaptureSession {
   /// Call after the pending-save barrier before persisting a draft.
   Future<List<String>> reconcileCapturedPhotosFromDisk() async {
     final path = _photosHighresDir ?? _photosDir;
-    final discovered = path == null
+    final rawDiscovered = path == null
         ? const <String>[]
         : await discoverCapturedPhotoPaths(Directory(path));
+    final discovered = path == null
+        ? rawDiscovered
+        : await _filterManualCapturePhotoVisibility(
+            rawDiscovered,
+            Directory(path),
+          );
     if (!_disposed) _capturedPhotos.value = discovered;
     return discovered;
+  }
+
+  Future<List<String>> _filterManualCapturePhotoVisibility(
+    List<String> discovered,
+    Directory photosDirectory,
+  ) async {
+    if (discovered.isEmpty) return discovered;
+    final unpersisted = _unpersistedManualAttemptPaths.values
+        .map((path) => File(path).absolute.path)
+        .toSet();
+    final ownerByPath = <String, String>{
+      for (final entry in _manualJobToJpegPath.entries)
+        File(entry.value).absolute.path: entry.key,
+    };
+    final unresolvedOwners = ownerByPath.entries
+        .where((entry) {
+          final job = _manualCaptureLedger.job(entry.value);
+          return job == null || (!job.photoCommitted && !job.userDeleted);
+        })
+        .map((entry) => entry.value)
+        .toSet();
+    final receiptCommittedPaths = <String>{};
+    if (unresolvedOwners.isNotEmpty) {
+      try {
+        final scan = await scanCommittedSfmOrphans(photosDirectory);
+        for (final committed in scan.committedOrphans) {
+          final jobId = committed.captureJobId;
+          final mapped = _manualJobToJpegPath[jobId];
+          if (unresolvedOwners.contains(jobId) &&
+              mapped != null &&
+              File(mapped).absolute.path == committed.jpegFile.absolute.path) {
+            receiptCommittedPaths.add(committed.jpegFile.absolute.path);
+          }
+        }
+      } catch (_) {
+        // Receipt inspection is fail-closed for unresolved manual jobs. Plain
+        // non-manual photos and ledger-proven committed jobs remain visible.
+      }
+    }
+
+    return List<String>.unmodifiable(
+      discovered.where((path) {
+        final canonical = File(path).absolute.path;
+        if (unpersisted.contains(canonical)) return false;
+        final owner = ownerByPath[canonical];
+        if (owner == null) return true;
+        final job = _manualCaptureLedger.job(owner);
+        if (job == null || job.userDeleted) return false;
+        return job.photoCommitted || receiptCommittedPaths.contains(canonical);
+      }),
+    );
   }
 
   /// Updates the live inventory after an explicit user deletion. This only
@@ -435,6 +1324,80 @@ class CaptureSession {
     _capturedPhotos.value = List<String>.unmodifiable(
       _capturedPhotos.value.where((path) => path != jpegPath),
     );
+  }
+
+  /// Explicit user deletion for a manual-v2 frame. The durable tombstone is
+  /// written before any user file is removed. If the frame ever entered native
+  /// SfM, [ManualCaptureLedger] keeps `rebuildRequired` true until a clean new
+  /// reconstruction epoch proves the exact remaining job denominator.
+  Future<void> deleteCapturedPhotoByUser(String jpegPath) async {
+    final canonical = File(jpegPath).absolute.path;
+    final owners = _manualJobToJpegPath.entries
+        .where((entry) => entry.value == canonical)
+        .toList(growable: false);
+    if (owners.length != 1) {
+      throw StateError(
+        'user deletion requires one persisted manual job owner for $canonical',
+      );
+    }
+    final jobId = owners.single.key;
+    if (_manualCaptureLedger.job(jobId)?.userDeleted != true) {
+      await _recordManualLedgerEvent(
+        ManualCaptureEvent.userDeletionRequested(jobId),
+      );
+
+      // The album exposes a JPEG only after native commit. Still wait for the
+      // serialized durable handoff so sidecar/queue ownership cannot race delete.
+      try {
+        await _manualSfmHandoffTail;
+      } catch (_) {
+        // The prior explicit failure is already in the ledger; quiescence means
+        // no writer remains, not that reconstruction succeeded.
+      }
+      await _withManualLedgerTransaction<void>(() async {
+        var candidate = _manualCaptureLedger;
+        if (candidate.job(jobId)?.stage == ManualCaptureStage.sfmQueued) {
+          candidate = candidate.reduce(
+            ManualCaptureEvent.reconstructionTainted(
+              jobId,
+              taintId: 'user-delete-before-native-closure-$jobId',
+              reasonCode: 'user_deleted_queued_frame',
+              evidenceToken: 'user-delete-rebuild-required-$jobId',
+            ),
+          );
+        }
+        candidate = candidate.reduce(
+          ManualCaptureEvent.writersQuiesced(
+            jobId,
+            evidenceToken: 'manual-writers-quiesced-$jobId',
+          ),
+        );
+        candidate = candidate.reduce(ManualCaptureEvent.userDeleted(jobId));
+        await _persistManualLedgerCandidate(
+          ledger: candidate,
+          jobToJpegPath: _manualJobToJpegPath,
+        );
+      });
+    }
+
+    forgetCapturedPhoto(canonical);
+    final previewPath = canonical.replaceFirst(
+      '/photos_highres/',
+      '/previews/',
+    );
+    final stem = canonical.endsWith('.jpg')
+        ? canonical.substring(0, canonical.length - 4)
+        : canonical;
+    for (final candidate in <String>{
+      canonical,
+      previewPath,
+      '$stem.json',
+      '$stem.sfm-gray',
+      '$stem.manual-v2-committed.json',
+    }) {
+      final file = File(candidate);
+      if (await file.exists()) await file.delete();
+    }
   }
 
   Future<void> _recordCapturedPhotoIfPresent(String jpegPath) async {
@@ -628,11 +1591,13 @@ class CaptureSession {
     GuidanceEngine? guidance,
     DomeTargetPoints? targetPoints,
     DomePointConfig pointConfig = DomePointConfig.defaults,
+    Future<void> Function(Directory directory)? discardDirectoryDeleter,
     this.targetZoneAnchor = const Offset(0.5, 0.5),
     this.targetZoneMode = TargetZoneMode.subject,
   }) : poseProvider = poseProvider ?? PlatformARPoseProvider(),
        guidance = guidance ?? GuidanceEngine(),
-       targetPoints = targetPoints ?? DomeTargetPoints(config: pointConfig) {
+       targetPoints = targetPoints ?? DomeTargetPoints(config: pointConfig),
+       _discardDirectoryDeleter = discardDirectoryDeleter {
     this.guidance.onUpdate = (snap) {
       if (!_guidanceCtrl.isClosed) _guidanceCtrl.add(snap);
     };
@@ -864,7 +1829,11 @@ class CaptureSession {
     _manualCaptureMode = manualCapture;
     _pendingPhotoSaves.clear();
     _manualPhotoFailures.clear();
+    _unpersistedManualAttemptPaths.clear();
     _manualSfmHandoffTail = Future<void>.value();
+    _manualCaptureLedger = const ManualCaptureLedger.empty();
+    _manualJobToJpegPath = <String, String>{};
+    _manualLedgerTail = Future<void>.value();
     _manualCapturePublicationsInFlight = 0;
     _notifyManualCaptureActivity(false);
     _pendingPhotoSaveCount = 0;
@@ -936,6 +1905,171 @@ class CaptureSession {
       _photosHighresDir = null;
       _previewsDir = null;
     }
+  }
+
+  Future<T> _withManualLedgerTransaction<T>(
+    Future<T> Function() transaction,
+  ) async {
+    final predecessor = _manualLedgerTail;
+    final done = Completer<void>();
+    _manualLedgerTail = done.future;
+    try {
+      try {
+        await predecessor;
+      } catch (_) {
+        // A failed transaction never installs its candidate state. Later
+        // evidence must still get its own explicit outcome.
+      }
+      return await transaction();
+    } finally {
+      if (!done.isCompleted) done.complete();
+    }
+  }
+
+  Future<void> _persistManualLedgerCandidate({
+    required ManualCaptureLedger ledger,
+    required Map<String, String> jobToJpegPath,
+  }) async {
+    final root = _captureDir;
+    if (root == null) {
+      throw StateError('capture directory unavailable for manual ledger');
+    }
+    await _writePersistedManualCaptureEvidence(
+      captureDir: root,
+      ledger: ledger,
+      jobToJpegPath: jobToJpegPath,
+    );
+    _manualCaptureLedger = ledger;
+    _manualJobToJpegPath = Map<String, String>.unmodifiable(jobToJpegPath);
+  }
+
+  Future<void> _recordManualAttempt({
+    required String captureJobId,
+    required String jpegPath,
+  }) {
+    return _withManualLedgerTransaction<void>(() async {
+      final canonicalJpegPath = File(jpegPath).absolute.path;
+      final candidate = _manualCaptureLedger.reduce(
+        ManualCaptureEvent.attempted(
+          captureJobId: captureJobId,
+          identityToken: canonicalJpegPath,
+        ),
+      );
+      await _persistManualLedgerCandidate(
+        ledger: candidate,
+        jobToJpegPath: <String, String>{
+          ..._manualJobToJpegPath,
+          captureJobId: canonicalJpegPath,
+        },
+      );
+    });
+  }
+
+  Future<void> _recordManualAccepted(String captureJobId) =>
+      _recordManualLedgerEvent(ManualCaptureEvent.accepted(captureJobId));
+
+  Future<void> _recordManualBlocked({
+    required String captureJobId,
+    required String code,
+    required Object error,
+  }) => _recordManualLedgerEvent(
+    ManualCaptureEvent.blocked(
+      captureJobId,
+      blockerId: '$code-$captureJobId',
+      code: code,
+      message: '$error',
+    ),
+  );
+
+  Future<void> _recordManualLedgerEvent(ManualCaptureEvent event) {
+    return _withManualLedgerTransaction<void>(() async {
+      final candidate = _manualCaptureLedger.reduce(event);
+      await _persistManualLedgerCandidate(
+        ledger: candidate,
+        jobToJpegPath: _manualJobToJpegPath,
+      );
+    });
+  }
+
+  /// Persists native-OK ingestion evidence while the exact JPEG→native image
+  /// association is still available on the live event. Registration itself is
+  /// deliberately deferred until the authoritative refined pose table arrives.
+  Future<void> recordManualSfmFrameFed({
+    required String jpegPath,
+    required int nativeImageId,
+    required String result,
+  }) async {
+    if (result != 'ok' || nativeImageId < 0) return;
+    final canonicalJpegPath = File(jpegPath).absolute.path;
+    await _withManualLedgerTransaction<void>(() async {
+      final matches = _manualJobToJpegPath.entries
+          .where((entry) => entry.value == canonicalJpegPath)
+          .toList(growable: false);
+      if (matches.length != 1) {
+        throw StateError(
+          'native frame $nativeImageId has ${matches.length} manual JPEG owners',
+        );
+      }
+      final jobId = matches.single.key;
+      var candidate = _manualCaptureLedger;
+      final job = candidate.job(jobId)!;
+      if (job.stage == ManualCaptureStage.photoCommitted) {
+        candidate = candidate.reduce(ManualCaptureEvent.sfmQueued(jobId));
+      }
+      if (candidate.job(jobId)!.stage == ManualCaptureStage.sfmQueued) {
+        candidate = candidate.reduce(ManualCaptureEvent.sfmIngested(jobId));
+      }
+      await _persistManualLedgerCandidate(
+        ledger: candidate,
+        jobToJpegPath: _manualJobToJpegPath,
+      );
+    });
+  }
+
+  /// Reconciles restart-safe queue ACK evidence with the authoritative refined
+  /// pose table and atomically advances only exact one-to-one jobs. Missing,
+  /// duplicate, unregistered, pending, or blocked evidence remains incomplete
+  /// for [evaluateSfmRegistrationPublishGate] to reject.
+  Future<ManualRegistrationPublishEvidence> reconcileManualFinalRegistration({
+    required SfmDurableFeedQueue durableQueue,
+    required SfmLiveSnapshot snapshot,
+    required String artifactIdentity,
+    required String evidenceToken,
+    bool reloadPersistedEvidence = false,
+  }) {
+    return _withManualLedgerTransaction<ManualRegistrationPublishEvidence>(
+      () async {
+        final root = _captureDir;
+        if (root == null) {
+          throw StateError(
+            'capture directory unavailable for ledger reconcile',
+          );
+        }
+        if (reloadPersistedEvidence) {
+          final reopened = await loadPersistedManualCaptureEvidence(root);
+          _manualCaptureLedger = reopened.ledger;
+          _manualJobToJpegPath = reopened.jobToJpegPath;
+        }
+        final evidence = _reconcileManualRegistrationEvidence(
+          persisted: PersistedManualCaptureEvidence(
+            ledger: _manualCaptureLedger,
+            jobToJpegPath: _manualJobToJpegPath,
+          ),
+          durableQueue: durableQueue,
+          snapshot: snapshot,
+          reconstructionEpochId:
+              _manualCaptureLedger.currentReconstructionEpochId ??
+              'live-${_basename(root)}',
+          artifactIdentity: artifactIdentity,
+          evidenceToken: evidenceToken,
+        );
+        await _persistManualLedgerCandidate(
+          ledger: evidence.ledger,
+          jobToJpegPath: _manualJobToJpegPath,
+        );
+        return evidence;
+      },
+    );
   }
 
   /// Place the world origin in front of the camera and capture
@@ -1067,11 +2201,42 @@ class CaptureSession {
     if (_started) {
       await stop();
     }
-    await waitForPendingPhotoSaves(timeout: pendingSaveTimeout);
+    try {
+      await waitForPendingPhotoSaves(timeout: pendingSaveTimeout);
+    } on CapturePhotoSaveBarrierException {
+      // Explicit whole-take deletion is allowed after every accepted writer
+      // has terminated even when one terminal result failed. The barrier has
+      // already waited; its failure must not make user-requested discard
+      // impossible.
+    }
 
     final dirPath = _captureDir;
+    if (dirPath != null && poseProvider is ManualCaptureV2DiscardProvider) {
+      // Native owns private raw spills/claims outside the capture root. Only
+      // abandon them after every accepted writer and Dart handoff has settled;
+      // if native cleanup fails, preserve the root and all local state so the
+      // user can retry instead of leaking an unrecoverable private backlog.
+      await (poseProvider as ManualCaptureV2DiscardProvider)
+          .discardManualCaptureV2Jobs(dirPath);
+    }
+    if (dirPath != null) {
+      final dir = Directory(dirPath);
+      if (await dir.exists()) {
+        // Root deletion is authoritative. A failure retains every session
+        // identity below so explicit discard can be retried; never report
+        // success while user bytes remain orphaned on disk.
+        final deleter = _discardDirectoryDeleter;
+        if (deleter == null) {
+          await dir.delete(recursive: true);
+        } else {
+          await deleter(dir);
+        }
+      }
+    }
     targetPoints.reset();
     _pendingPhotoSaves.clear();
+    _manualPhotoFailures.clear();
+    _unpersistedManualAttemptPaths.clear();
     _pendingPhotoSaveCount = 0;
     _lastHighResStillTriggerSec = double.negativeInfinity;
     _resetPhotoSaveHealth();
@@ -1085,19 +2250,6 @@ class CaptureSession {
     _photosHighresDir = null;
     _previewsDir = null;
     _captureDir = null;
-
-    if (dirPath == null) return;
-    final dir = Directory(dirPath);
-    if (!await dir.exists()) return;
-    try {
-      await dir.delete(recursive: true);
-    } on FileSystemException catch (e) {
-      // Best effort: a native high-res encode can still be closing its file.
-      // No Draft record points at this directory, so failure here cannot make
-      // discarded material visible to the user.
-      // ignore: avoid_print
-      print('[CaptureSession] discard delete skipped: ${e.message}');
-    }
   }
 
   Future<void> dispose() async {
@@ -1489,10 +2641,6 @@ class CaptureSession {
   /// [ManualPhotoCapture.committed] and [ManualPhotoCapture.completion].
   Future<ManualPhotoCapture?> captureSinglePhoto() async {
     if (!_started || _disposed) return null;
-    final pose = _lastPose;
-    final photosDir = _photosDir;
-    if (pose == null || photosDir == null) return null;
-
     _beginManualCapturePublication();
     var publicationActivityOwnedByMethod = true;
 
@@ -1501,6 +2649,56 @@ class CaptureSession {
     final reservationBarrier = Completer<void>();
     _pendingPhotoSaves.add(reservationBarrier.future);
     try {
+      final nextFrameId = 'tap-${_frameSeq + 1}';
+      final captureRoot = _captureDir;
+      final photosDir = _photosDir;
+      if (captureRoot == null || photosDir == null) {
+        final captureJobID =
+            'manual-preflight-${DateTime.now().microsecondsSinceEpoch}-$nextFrameId';
+        final failure = ManualPhotoCaptureException(
+          captureJobID: captureJobID,
+          code: 'manual_capture_directory_unavailable',
+          message:
+              'The active take has no writable capture directory; '
+              'the shutter attempt was not accepted.',
+        );
+        _manualPhotoFailures[captureJobID] = failure;
+        throw failure;
+      }
+
+      final pose = _lastPose;
+      if (pose == null) {
+        _frameSeq++;
+        final jpegPath = '$photosDir/manual-preflight-$nextFrameId.jpg';
+        final captureJobID = '${_basename(captureRoot)}-$nextFrameId';
+        try {
+          await _recordManualAttempt(
+            captureJobId: captureJobID,
+            jpegPath: jpegPath,
+          );
+        } catch (error) {
+          final failure = ManualPhotoCaptureException(
+            captureJobID: captureJobID,
+            code: 'manual_ledger_write_failed',
+            message:
+                'Pose-unavailable shutter evidence could not be persisted: '
+                '$error',
+            cause: error,
+          );
+          _unpersistedManualAttemptPaths[captureJobID] = File(
+            jpegPath,
+          ).absolute.path;
+          _manualPhotoFailures[captureJobID] = failure;
+          throw failure;
+        }
+        final failure = ManualPhotoCaptureException(
+          captureJobID: captureJobID,
+          code: 'manual_capture_pose_unavailable',
+          message: 'No frame-exact camera pose was available for this shutter.',
+        );
+        throw await _persistManualCaptureFailure(failure);
+      }
+
       final extrinsic =
           _lastPoseSource == 'arkit' && pose.extrinsic4x4.length == 16
           ? pose.extrinsic4x4
@@ -1553,17 +2751,37 @@ class CaptureSession {
         targetTimestamp: pose.timestamp,
         quality: 0.92,
       );
-      final captureRoot = _captureDir;
-      final captureJobID = captureRoot == null
-          ? '${DateTime.now().microsecondsSinceEpoch}-${sample.frameId}'
-          : '${_basename(captureRoot)}-${sample.frameId}';
+      final captureJobID = '${_basename(captureRoot)}-${sample.frameId}';
+      try {
+        await _recordManualAttempt(
+          captureJobId: captureJobID,
+          jpegPath: jpegPath,
+        );
+      } catch (error) {
+        final failure = ManualPhotoCaptureException(
+          captureJobID: captureJobID,
+          code: 'manual_ledger_write_failed',
+          message: 'Shutter attempt evidence could not be persisted: $error',
+          cause: error,
+        );
+        // No native writer exists yet, but the user's tap must not disappear
+        // from this live session merely because durable storage failed. Keep
+        // the exact job/path failure as a finalize blocker until explicit
+        // whole-take discard (or a future retry path) resolves it.
+        _unpersistedManualAttemptPaths[captureJobID] = File(
+          jpegPath,
+        ).absolute.path;
+        _manualPhotoFailures[captureJobID] = failure;
+        throw failure;
+      }
       final provider = poseProvider;
       if (provider is! ManualCaptureV2Provider) {
-        throw ManualPhotoCaptureException(
+        final exception = ManualPhotoCaptureException(
           captureJobID: captureJobID,
           code: 'manual_capture_v2_unsupported',
           message: 'The active pose provider cannot reserve a manual frame.',
         );
+        throw await _persistManualCaptureFailure(exception);
       }
       final manualProvider = provider as ManualCaptureV2Provider;
 
@@ -1577,31 +2795,106 @@ class CaptureSession {
           ),
         );
       } catch (error) {
-        throw ManualPhotoCaptureException(
+        final failure = ManualPhotoCaptureException(
           captureJobID: captureJobID,
           code: 'snapshot_reservation_failed',
           message: 'Native snapshot reservation failed: $error',
           cause: error,
         );
+        throw await _persistManualCaptureFailure(failure);
       }
 
-      _validateManualReservation(
-        reservation,
-        captureJobID: captureJobID,
-        jpegPath: jpegPath,
-        metadataPath: metadataPath,
-        sfmGrayPath: sfmGrayPath,
-      );
+      try {
+        _validateManualReservation(
+          reservation,
+          captureJobID: captureJobID,
+          jpegPath: jpegPath,
+          metadataPath: metadataPath,
+          sfmGrayPath: sfmGrayPath,
+        );
+      } catch (error) {
+        final failure = error is ManualPhotoCaptureException
+            ? error
+            : ManualPhotoCaptureException(
+                captureJobID: captureJobID,
+                code: 'invalid_snapshot_reservation',
+                message: '$error',
+                cause: error,
+              );
+        _manualPhotoFailures[captureJobID] = failure;
+        // Native may have accepted either the requested identity or the one in
+        // its malformed reply. Isolate and await both identities before
+        // discard can remove the take. Await errors are intentionally swallowed
+        // here: the exact invalid-ticket blocker remains authoritative, while
+        // terminal/unknown-job are both quiescent outcomes for this rejected
+        // reservation.
+        publicationActivityOwnedByMethod = false;
+        final settlement = _quiesceInvalidManualReservation(
+          manualProvider,
+          requestedCaptureJobID: captureJobID,
+          returnedCaptureJobID: reservation.captureJobID,
+        ).whenComplete(_endManualCapturePublication);
+        _trackReservedManualPhoto(captureJobID, settlement);
+        throw await _persistManualCaptureFailure(failure);
+      }
 
+      // Native has ACKed the snapshot and may already be publishing files.
+      // Attach its terminal future to the finish/discard barrier immediately,
+      // before any later Dart ledger write can fail. Ledger-dependent side
+      // effects wait on [acceptedEvidenceReady], but native settlement itself
+      // is never orphaned from this process lifetime.
+      final acceptedEvidenceReady = Completer<ManualPhotoCaptureException?>();
       final nativeCommitted = _awaitManualPhotoCommit(
         manualProvider,
         reservation,
         frameId: sample.frameId,
+        acceptedEvidenceReady: acceptedEvidenceReady.future,
       );
       publicationActivityOwnedByMethod = false;
       final committed = nativeCommitted.whenComplete(
         _endManualCapturePublication,
       );
+      final lifecycleBarrier = Completer<void>();
+      _trackReservedManualPhoto(captureJobID, lifecycleBarrier.future);
+      void settleLifecycle(Future<void> lifecycle) {
+        lifecycle.then<void>(
+          (_) {
+            if (!lifecycleBarrier.isCompleted) lifecycleBarrier.complete();
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            if (!lifecycleBarrier.isCompleted) {
+              lifecycleBarrier.completeError(error, stackTrace);
+            }
+          },
+        );
+      }
+
+      // The snapshot ACK above is the acceptance event. Persist its exact
+      // job/path evidence before returning the ticket; a Dart write failure
+      // cannot un-accept native work, so the already-attached barrier keeps it
+      // owned until terminal settlement and cold reconciliation can recover it.
+      try {
+        await _recordManualAccepted(captureJobID);
+        acceptedEvidenceReady.complete(null);
+      } catch (error) {
+        final failure = ManualPhotoCaptureException(
+          captureJobID: captureJobID,
+          code: 'manual_ledger_write_failed',
+          message: 'Accepted shutter evidence could not be persisted: $error',
+          cause: error,
+        );
+        // Complete with a typed decision rather than an error: native may not
+        // have returned yet, and a Future error with no listener until that
+        // later terminal result would otherwise surface as an unhandled zone
+        // error while the barrier is correctly still waiting.
+        acceptedEvidenceReady.complete(failure);
+        // This future cannot finish until native await has actually settled;
+        // discard/finish therefore cannot delete a root that native may later
+        // recreate. The tracked failure persists the exact blocker afterward.
+        settleLifecycle(committed.then<void>((_) {}));
+        throw failure;
+      }
+
       // Serialize gray-file reads and durable handoff. Native publication is
       // already serial, but several Dart completion callbacks can otherwise
       // retain full gray planes concurrently while disk is slow or the device
@@ -1615,7 +2908,7 @@ class CaptureSession {
         await _completeManualPhoto(reservation, terminal);
       });
       _manualSfmHandoffTail = completion;
-      _trackAcceptedManualPhoto(captureJobID, completion);
+      settleLifecycle(completion);
       return ManualPhotoCapture(
         reservation: reservation,
         committed: committed,
@@ -1629,6 +2922,52 @@ class CaptureSession {
         reservationBarrier.complete();
       }
     }
+  }
+
+  Future<ManualPhotoCaptureException> _persistManualCaptureFailure(
+    ManualPhotoCaptureException failure,
+  ) async {
+    _manualPhotoFailures[failure.captureJobID] = failure;
+    try {
+      await _recordManualBlocked(
+        captureJobId: failure.captureJobID,
+        code: failure.code,
+        error: failure,
+      );
+      return failure;
+    } catch (error) {
+      final persistenceFailure = ManualPhotoCaptureException(
+        captureJobID: failure.captureJobID,
+        code: 'manual_ledger_write_failed',
+        message:
+            '${failure.message}; blocker evidence could not be persisted: '
+            '$error',
+        cause: error,
+      );
+      _manualPhotoFailures[failure.captureJobID] = persistenceFailure;
+      return persistenceFailure;
+    }
+  }
+
+  Future<void> _quiesceInvalidManualReservation(
+    ManualCaptureV2Provider provider, {
+    required String requestedCaptureJobID,
+    required String returnedCaptureJobID,
+  }) async {
+    final identities = <String>{requestedCaptureJobID};
+    if (returnedCaptureJobID.trim().isNotEmpty) {
+      identities.add(returnedCaptureJobID);
+    }
+    await Future.wait(
+      identities.map((captureJobID) async {
+        try {
+          await provider.awaitManualCaptureV2(captureJobID);
+        } catch (_) {
+          // Unknown/failed is terminal for this rejected identity. The caller
+          // retains the invalid-ticket failure as the finish blocker.
+        }
+      }),
+    );
   }
 
   void _beginManualCapturePublication() {
@@ -1686,6 +3025,7 @@ class CaptureSession {
     ManualCaptureV2Provider provider,
     ManualCaptureV2Ticket reservation, {
     required String frameId,
+    required Future<ManualPhotoCaptureException?> acceptedEvidenceReady,
   }) async {
     try {
       final terminal = await provider.awaitManualCaptureV2(
@@ -1701,6 +3041,8 @@ class CaptureSession {
           message: 'Native completion did not match its accepted reservation.',
         );
       }
+      final acceptedEvidenceFailure = await acceptedEvidenceReady;
+      if (acceptedEvidenceFailure != null) throw acceptedEvidenceFailure;
       if (terminal.committed) {
         if (!await File(terminal.jpegPath).exists()) {
           throw ManualPhotoCaptureException(
@@ -1733,6 +3075,18 @@ class CaptureSession {
           print(
             '[CaptureSession] committed manual frame left curation buffer '
             'before stamp: job=${reservation.captureJobID} frame=$frameId',
+          );
+        }
+        try {
+          await _recordManualLedgerEvent(
+            ManualCaptureEvent.photoCommitted(reservation.captureJobID),
+          );
+        } catch (error) {
+          throw ManualPhotoCaptureException(
+            captureJobID: reservation.captureJobID,
+            code: 'manual_ledger_write_failed',
+            message: 'Photo commit evidence could not be persisted: $error',
+            cause: error,
           );
         }
       }
@@ -1796,14 +3150,14 @@ class CaptureSession {
             '${terminal.sfmGrayPath}',
       );
     }
-    final gray = await grayFile.readAsBytes();
     final expectedGrayBytes = terminal.sfmGrayWidth * terminal.sfmGrayHeight;
-    if (gray.length != expectedGrayBytes) {
+    final actualGrayBytes = await grayFile.length();
+    if (actualGrayBytes != expectedGrayBytes) {
       throw ManualPhotoCaptureException(
         captureJobID: captureJobID,
         code: 'sfm_gray_invalid',
         message:
-            'Frame-exact gray has ${gray.length} bytes; '
+            'Frame-exact gray has $actualGrayBytes bytes; '
             'expected $expectedGrayBytes.',
       );
     }
@@ -1822,7 +3176,14 @@ class CaptureSession {
     }
 
     final feed = SfmFrameFeed(
-      gray: gray,
+      captureJobId: captureJobID,
+      // Manual-v2 native has already fsynced this exact gray. Keep the bytes
+      // out of the UI isolate; the durable sink atomically moves the file into
+      // its replay spool without creating a second 4K copy.
+      gray: Uint8List(0),
+      grayFilePath: terminal.sfmGrayPath,
+      sfmGrayByteLength: terminal.sfmGrayByteLength,
+      sfmGraySha256: terminal.sfmGraySha256,
       grayW: terminal.sfmGrayWidth,
       grayH: terminal.sfmGrayHeight,
       imageW: terminal.imageWidth,
@@ -1855,6 +3216,19 @@ class CaptureSession {
       );
     }
 
+    try {
+      await _recordManualLedgerEvent(
+        ManualCaptureEvent.sfmQueued(captureJobID),
+      );
+    } catch (error) {
+      throw ManualPhotoCaptureException(
+        captureJobID: captureJobID,
+        code: 'manual_ledger_write_failed',
+        message: 'Durable queue evidence could not be persisted: $error',
+        cause: error,
+      );
+    }
+
     // Compatibility/visualization only. Durable ownership above, not listener
     // timing, is the completion criterion.
     if (!_sfmFrameCtrl.isClosed) {
@@ -1869,13 +3243,12 @@ class CaptureSession {
     return _manualSfmFrameSink!;
   }
 
-  void _trackAcceptedManualPhoto(String captureJobID, Future<void> completion) {
+  void _trackReservedManualPhoto(String captureJobID, Future<void> completion) {
     _pendingPhotoSaveCount += 1;
     final tracked = completion
         .then<void>((_) {})
-        .catchError((Object error, StackTrace stackTrace) {
-          _manualPhotoFailures[captureJobID] =
-              error is ManualPhotoCaptureException
+        .catchError((Object error, StackTrace stackTrace) async {
+          final failure = error is ManualPhotoCaptureException
               ? error
               : ManualPhotoCaptureException(
                   captureJobID: captureJobID,
@@ -1883,6 +3256,23 @@ class CaptureSession {
                   message: '$error',
                   cause: error,
                 );
+          _manualPhotoFailures[captureJobID] = failure;
+          try {
+            await _recordManualBlocked(
+              captureJobId: captureJobID,
+              code: failure.code,
+              error: failure,
+            );
+          } catch (ledgerError) {
+            _manualPhotoFailures[captureJobID] = ManualPhotoCaptureException(
+              captureJobID: captureJobID,
+              code: 'manual_ledger_write_failed',
+              message:
+                  '${failure.message}; failure evidence could not be persisted: '
+                  '$ledgerError',
+              cause: ledgerError,
+            );
+          }
         })
         .whenComplete(() {
           _pendingPhotoSaveCount = math.max(0, _pendingPhotoSaveCount - 1);

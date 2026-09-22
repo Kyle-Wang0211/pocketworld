@@ -82,6 +82,55 @@ Pod::Spec.new do |s|
   # Runner link line. PODS_ROOT = <pocketworld>/ios/Pods:
   #   $(PODS_ROOT)/../../../dist            → ~/Developer/dist   (shared)
   #   $(PODS_ROOT)/../../vendor/aether_ffi  → this pod's dir     (local)
+  #
+  # B/C/D are reached only through DynamicLibrary.process() lookups in Dart.
+  # Keep every currently looked-up symbol alive in device Release links; the
+  # simulator archive predates these APIs, so none of these flags belongs on
+  # the simulator link line.
+  bcd_device_keepalive_flags = %w[
+    aether_structural_view_options_default
+    aether_structural_grid_count
+    aether_structural_grid_build
+    aether_structural_prepare_views
+    aether_structural_plane_fit_options_default
+    aether_structural_fit_floor
+    aether_structural_floor_proposal_options_default
+    aether_structural_propose_floors
+    aether_structural_envelope_wall_options_default
+    aether_structural_propose_envelope_walls
+    aether_structural_fit_walls
+    aether_planesweep_session_options_default
+    aether_planesweep_birth_options_default
+    aether_planesweep_session_create
+    aether_planesweep_session_add_jpeg_view
+    aether_planesweep_session_add_jpeg_view_scales
+    aether_planesweep_image_decode_jpeg
+    aether_planesweep_session_add_image_view_scales
+    aether_planesweep_image_free
+    aether_planesweep_session_finish
+    aether_planesweep_session_finish_rgb
+    aether_planesweep_session_debug_readback
+    aether_planesweep_session_free
+    aether_local_manifold_options_default
+    aether_local_manifold_session_create
+    aether_local_manifold_session_filter
+    aether_local_manifold_session_filter_reference_certified
+    aether_local_manifold_session_free
+    aether_filter_finite_floor_ownership
+    aether_filter_finite_wall_ownership
+    aether_detector_free_options_default
+    aether_detector_free_reciprocal_options_default
+    aether_detector_free_refine_options_default
+    aether_detector_free_session_create
+    aether_detector_free_session_set_view_aggregation
+    aether_detector_free_session_run_interpolated_tile
+    aether_detector_free_session_run_refined_tile
+    aether_detector_free_filter_reciprocal_depth_births
+    aether_detector_free_session_free
+    aether_detector_free_preprocess_jpeg_bytes
+    aether_detector_free_preprocess_jpeg_path
+  ].map { |symbol| "-Wl,-u,_#{symbol}" }.join(' ')
+
   s.user_target_xcconfig = {
     'LIBRARY_SEARCH_PATHS[sdk=iphoneos*]'        => '$(inherited) $(PODS_ROOT)/../../../dist/libs/ios-arm64 $(PODS_ROOT)/../../../dist/libs/ios-arm64/sfm',
     'LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]' => '$(inherited) $(PODS_ROOT)/../../../dist/libs/ios-arm64-simulator $(PODS_ROOT)/../../../dist/libs/ios-arm64-simulator/sfm',
@@ -93,7 +142,7 @@ Pod::Spec.new do |s|
     # dsp_sift_gpu_c.cc still link; the use_gpu_extract path guards on
     # nullptr"). Mach-O needs the -U flag to honour that intent — the symbol
     # resolves to NULL at runtime and the in-ABI guard falls back to CPU.
-    'OTHER_LDFLAGS[sdk=iphoneos*]'               => '$(inherited) -Wl,-U,_aether_dsp_sift_extract_gpu -force_load $(PODS_ROOT)/../../../dist/libs/ios-arm64/libaether3d_ffi.a -Wl,-u,_aether_version_string -Wl,-u,_aether_glb_norm_run -Wl,-u,_aether_glb_norm_options_default -Wl,-u,_aether_glb_norm_buffer_free -Wl,-u,_aether_glb_norm_result_str -force_load $(PODS_ROOT)/../../vendor/aether_ffi/libs/ios-arm64/sfm/libglomap_core.a -force_load $(PODS_ROOT)/../../vendor/aether_ffi/libs/ios-arm64/sfm/libpwsfm_gpu_extract.a $(PODS_ROOT)/../../../Aether3D-cross/aether_cpp/build-ios-device-dawn/third_party/dawn/src/dawn/native/Debug-iphoneos/libwebgpu_dawn.a -lceres -lglog -lsqlite3 -Wl,-u,_aether_sfm_run -Wl,-u,_aether_sfm_run_dir -Wl,-u,_aether_sfm_create -Wl,-u,_aether_sfm_add_frame -Wl,-u,_aether_sfm_finalize -Wl,-u,_aether_sfm_finalize_async -Wl,-u,_aether_sfm_finalize_status -Wl,-u,_aether_sfm_get_poses -Wl,-u,_aether_sfm_get_points -Wl,-u,_aether_sfm_points_free -Wl,-u,_aether_sfm_free -Wl,-u,_aether_sfm_options_default -Wl,-u,_aether_sfm_result_str -Wl,-u,_pwsfm_options_default -Wl,-u,_pwsfm_run -Wl,-u,_pwsfm_create -Wl,-u,_pwsfm_add_frame -Wl,-u,_pwsfm_finalize_async -Wl,-u,_pwsfm_finalize_status -Wl,-u,_pwsfm_get_poses -Wl,-u,_pwsfm_get_points -Wl,-u,_pwsfm_points_free -Wl,-u,_pwsfm_free -Wl,-u,_aether_sfm_get_points_tracked -Wl,-u,_aether_sfm_track_obs_free -Wl,-u,_pwsfm_get_points_tracked -Wl,-u,_pwsfm_track_obs_free -Wl,-u,_aether_sfm_debug_last -Wl,-u,_pwsfm_debug_last -Wl,-u,_aether_sfm_stream_stats -Wl,-u,_pwsfm_stream_stats -Wl,-u,_aether_sfm_candidate_stats -Wl,-u,_pwsfm_candidate_stats -Wl,-u,_aether_sfm_match_fail_stats -Wl,-u,_pwsfm_match_fail_stats -Wl,-u,_aether_sfm_get_preview_points -Wl,-u,_pwsfm_get_preview_points -Wl,-u,_aether_sfm_get_preview_tracked -Wl,-u,_pwsfm_get_preview_tracked -Wl,-u,_aether_sfm_global_refine -Wl,-u,_pwsfm_global_refine -Wl,-u,_pw_telemetry -Wl,-u,_aether_gpu_match_gemm_pairs -Wl,-u,_aether_sfm_set_thermal_state -Wl,-u,_pwsfm_set_thermal_state -Wl,-u,_aether_sfm_thermal_throttle_stats -Wl,-u,_pwsfm_thermal_throttle_stats -Wl,-u,_aether_sfm_live_repay -Wl,-u,_pwsfm_live_repay -Wl,-u,_aether_sfm_repair_stats -Wl,-u,_pwsfm_repair_stats -Wl,-U,_aether_sfm_arbitrate -Wl,-u,_pwsfm_arbitrate -Wl,-u,_aether_gpu_match_last_error',
+    'OTHER_LDFLAGS[sdk=iphoneos*]'               => '$(inherited) -Wl,-U,_aether_dsp_sift_extract_gpu -force_load $(PODS_ROOT)/../../../dist/libs/ios-arm64/libaether3d_ffi.a -Wl,-u,_aether_version_string -Wl,-u,_aether_glb_norm_run -Wl,-u,_aether_glb_norm_options_default -Wl,-u,_aether_glb_norm_buffer_free -Wl,-u,_aether_glb_norm_result_str -force_load $(PODS_ROOT)/../../vendor/aether_ffi/libs/ios-arm64/sfm/libglomap_core.a -force_load $(PODS_ROOT)/../../vendor/aether_ffi/libs/ios-arm64/sfm/libpwsfm_gpu_extract.a $(PODS_ROOT)/../../../Aether3D-cross/aether_cpp/build-ios-device-dawn/third_party/dawn/src/dawn/native/Debug-iphoneos/libwebgpu_dawn.a -lceres -lglog -lsqlite3 -Wl,-u,_aether_sfm_run -Wl,-u,_aether_sfm_run_dir -Wl,-u,_aether_sfm_create -Wl,-u,_aether_sfm_add_frame -Wl,-u,_aether_sfm_finalize -Wl,-u,_aether_sfm_finalize_async -Wl,-u,_aether_sfm_finalize_status -Wl,-u,_aether_sfm_get_poses -Wl,-u,_aether_sfm_get_points -Wl,-u,_aether_sfm_points_free -Wl,-u,_aether_sfm_free -Wl,-u,_aether_sfm_options_default -Wl,-u,_aether_sfm_result_str -Wl,-u,_pwsfm_options_default -Wl,-u,_pwsfm_run -Wl,-u,_pwsfm_create -Wl,-u,_pwsfm_add_frame -Wl,-u,_pwsfm_finalize_async -Wl,-u,_pwsfm_finalize_status -Wl,-u,_pwsfm_get_poses -Wl,-u,_pwsfm_get_points -Wl,-u,_pwsfm_points_free -Wl,-u,_pwsfm_free -Wl,-u,_aether_sfm_get_points_tracked -Wl,-u,_aether_sfm_track_obs_free -Wl,-u,_pwsfm_get_points_tracked -Wl,-u,_pwsfm_track_obs_free -Wl,-u,_aether_sfm_debug_last -Wl,-u,_pwsfm_debug_last -Wl,-u,_aether_sfm_stream_stats -Wl,-u,_pwsfm_stream_stats -Wl,-u,_aether_sfm_candidate_stats -Wl,-u,_pwsfm_candidate_stats -Wl,-u,_aether_sfm_match_fail_stats -Wl,-u,_pwsfm_match_fail_stats -Wl,-u,_aether_sfm_get_preview_points -Wl,-u,_pwsfm_get_preview_points -Wl,-u,_aether_sfm_get_preview_tracked -Wl,-u,_pwsfm_get_preview_tracked -Wl,-u,_aether_sfm_global_refine -Wl,-u,_pwsfm_global_refine -Wl,-u,_pw_telemetry -Wl,-u,_aether_gpu_match_gemm_pairs -Wl,-u,_aether_sfm_set_thermal_state -Wl,-u,_pwsfm_set_thermal_state -Wl,-u,_aether_sfm_thermal_throttle_stats -Wl,-u,_pwsfm_thermal_throttle_stats -Wl,-u,_aether_sfm_live_repay -Wl,-u,_pwsfm_live_repay -Wl,-u,_aether_sfm_repair_stats -Wl,-u,_pwsfm_repair_stats -Wl,-U,_aether_sfm_arbitrate -Wl,-u,_pwsfm_arbitrate -Wl,-u,_aether_gpu_match_last_error' + ' ' + bcd_device_keepalive_flags,
     'OTHER_LDFLAGS[sdk=iphonesimulator*]'        => '$(inherited) -force_load $(PODS_ROOT)/../../../dist/libs/ios-arm64-simulator/libaether3d_ffi.a -Wl,-u,_aether_version_string -Wl,-u,_aether_glb_norm_run -Wl,-u,_aether_glb_norm_options_default -Wl,-u,_aether_glb_norm_buffer_free -Wl,-u,_aether_glb_norm_result_str -force_load $(PODS_ROOT)/../../../dist/libs/ios-arm64-simulator/sfm/libaether_sfm.a -Wl,-u,_aether_sfm_run -Wl,-u,_aether_sfm_run_dir -Wl,-u,_aether_sfm_create -Wl,-u,_aether_sfm_add_frame -Wl,-u,_aether_sfm_finalize -Wl,-u,_aether_sfm_get_poses -Wl,-u,_aether_sfm_get_points -Wl,-u,_aether_sfm_points_free -Wl,-u,_aether_sfm_free -Wl,-u,_aether_sfm_options_default -Wl,-u,_aether_sfm_result_str -Wl,-u,_pwsfm_options_default -Wl,-u,_pwsfm_run -Wl,-u,_pwsfm_create -Wl,-u,_pwsfm_add_frame -Wl,-u,_pwsfm_finalize_async -Wl,-u,_pwsfm_finalize_status -Wl,-u,_pwsfm_get_poses -Wl,-u,_pwsfm_get_points -Wl,-u,_pwsfm_points_free -Wl,-u,_pwsfm_free -Wl,-u,_pwsfm_get_points_tracked -Wl,-u,_pwsfm_track_obs_free -Wl,-u,_pwsfm_get_preview_tracked -Wl,-u,_pwsfm_debug_last -Wl,-u,_pwsfm_stream_stats -Wl,-u,_pwsfm_candidate_stats -Wl,-u,_pwsfm_match_fail_stats -Wl,-u,_pw_telemetry -Wl,-u,_aether_gpu_match_gemm_pairs -Wl,-u,_pwsfm_set_thermal_state -Wl,-u,_pwsfm_thermal_throttle_stats -Wl,-u,_pwsfm_live_repay -Wl,-u,_pwsfm_repair_stats -Wl,-u,_pwsfm_arbitrate',
   }
 end

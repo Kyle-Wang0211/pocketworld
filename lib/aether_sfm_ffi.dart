@@ -135,6 +135,14 @@ final class _SfmPoint extends Struct {
 typedef _OptionsDefaultC = Void Function(Pointer<_SfmOptions>);
 typedef _OptionsDefaultDart = void Function(Pointer<_SfmOptions>);
 
+typedef _SetEnvC =
+    Int32 Function(Pointer<Utf8> name, Pointer<Utf8> value, Int32 overwrite);
+typedef _SetEnvDart =
+    int Function(Pointer<Utf8> name, Pointer<Utf8> value, int overwrite);
+
+/// Test seam for the process-wide native SfM environment configuration.
+typedef AetherSfmEnvironmentWriter = void Function(String name, String value);
+
 typedef _RunC =
     Int32 Function(
       Pointer<Utf8> dbPath,
@@ -591,6 +599,74 @@ class AetherSfm {
 
   static DynamicLibrary get _lib => AetherFfi.resolveLibraryForBindings();
 
+  // iOS, Android, and HarmonyOS all expose POSIX setenv from the process.
+  // Configure experimental native birth gates here, before the first SfM
+  // session, so the shared C++ implementation has identical semantics on
+  // every capture platform and no Swift-only algorithm switch is required.
+  static final _SetEnvDart _setEnv = DynamicLibrary.process()
+      .lookupFunction<_SetEnvC, _SetEnvDart>('setenv');
+
+  static const _publishDepthConflictOwnerEnabledEnvironment = <String, String>{
+    // The owner gate was certified against the complete internal cloud.
+    // The generic publish gate defaults ON natively and would otherwise
+    // remove most points before owner selection, invalidating that parity.
+    'AETHER_PUBLISH_GATE': '0',
+    'AETHER_PUBLISH_DEPTH_CONFLICT_OWNER': '1',
+    'AETHER_PUBLISH_DEPTH_OWNER_ERROR_FIRST': '1',
+    'AETHER_EXACT_SITE_OWNER_MIN_DEPTH_M': '0.012',
+  };
+
+  static const _publishDepthConflictOwnerDisabledEnvironment = <String, String>{
+    // Restore every process-wide switch explicitly. setenv survives the
+    // session that wrote it, so relying on native defaults here would let
+    // an earlier trial contaminate a later ordinary capture session.
+    'AETHER_PUBLISH_GATE': '1',
+    'AETHER_PUBLISH_DEPTH_CONFLICT_OWNER': '0',
+    'AETHER_PUBLISH_DEPTH_OWNER_ERROR_FIRST': '0',
+    'AETHER_EXACT_SITE_OWNER_MIN_DEPTH_M': '0.012',
+  };
+
+  static void _setProcessEnvironment(String key, String configuredValue) {
+    final name = key.toNativeUtf8();
+    final value = configuredValue.toNativeUtf8();
+    try {
+      if (_setEnv(name, value, 1) != 0) {
+        throw StateError('setenv failed for $key');
+      }
+    } finally {
+      malloc.free(name);
+      malloc.free(value);
+    }
+  }
+
+  static void _applyPublishDepthConflictOwnerEnvironment(
+    bool enabled,
+    AetherSfmEnvironmentWriter writer,
+  ) {
+    final values = enabled
+        ? _publishDepthConflictOwnerEnabledEnvironment
+        : _publishDepthConflictOwnerDisabledEnvironment;
+    for (final entry in values.entries) {
+      writer(entry.key, entry.value);
+    }
+  }
+
+  /// Applies the exact product environment policy to [writer].
+  ///
+  /// This is public only so host tests can prove that every new session writes
+  /// the full environment after ON/OFF transitions without mutating the test
+  /// runner's actual process environment.
+  static void configurePublishDepthConflictOwnerForTesting(
+    bool enabled,
+    AetherSfmEnvironmentWriter writer,
+  ) => _applyPublishDepthConflictOwnerEnvironment(enabled, writer);
+
+  static void _configurePublishDepthConflictOwner(bool enabled) =>
+      _applyPublishDepthConflictOwnerEnvironment(
+        enabled,
+        _setProcessEnvironment,
+      );
+
   // Symbol names: pwsfm_* — the vendored COLMAP-4.0.4 archive compiles the
   // ABI with -fvisibility=hidden, so the raw aether_sfm_* symbols are
   // localized in the Runner link and invisible to dlsym. The pod's export
@@ -815,6 +891,19 @@ class AetherSfmStreamSession {
   static const int liveMaxFeatures = 2048;
   static const int liveKNeighbors = 6;
 
+  /// Product-path A/B switch. Default stays OFF in ordinary builds; the
+  /// detached Profile trial is compiled with
+  /// `--dart-define=PW_SFM_PUBLISH_DEPTH_CONFLICT_OWNER=true`.
+  ///
+  /// The shared C++ gate changes only user-visible point identity allocation:
+  /// all frames, observations, internal points, registration, and BA remain
+  /// untouched. It requires the same exact image site in >=2 registered views
+  /// and >=12 mm metric depth disagreement before selecting one winner.
+  static const bool publishDepthConflictOwnerTrial = bool.fromEnvironment(
+    'PW_SFM_PUBLISH_DEPTH_CONFLICT_OWNER',
+    defaultValue: false,
+  );
+
   static AetherSfmStreamSession create(
     String dbPath, {
     required int imageWidth,
@@ -828,6 +917,9 @@ class AetherSfmStreamSession {
         'only). Run on a physical device.',
       );
     }
+    AetherSfm._configurePublishDepthConflictOwner(
+      publishDepthConflictOwnerTrial,
+    );
     final dbPtr = dbPath.toNativeUtf8();
     final optPtr = malloc<_SfmOptions>();
     final sessPtr = malloc<Pointer<Void>>();

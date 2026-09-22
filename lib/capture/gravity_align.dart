@@ -34,8 +34,41 @@ Float32List? gravityAlignedPoints({
   required Float64List posesPacked,
   required List<double>? Function(int frameId) arkitQuatWxyzOf,
 }) {
+  if (xyz.isEmpty) return null;
+  final rotation = gravityAlignmentRotationRowMajor(
+    posesPacked: posesPacked,
+    arkitQuatWxyzOf: arkitQuatWxyzOf,
+  );
+  if (rotation == null) return null;
+
+  final r00 = rotation[0], r01 = rotation[1], r02 = rotation[2];
+  final r10 = rotation[3], r11 = rotation[4], r12 = rotation[5];
+  final r20 = rotation[6], r21 = rotation[7], r22 = rotation[8];
+
+  final src = xyz;
+  final out = Float32List(src.length);
+  for (var i = 0; i < src.length; i += 3) {
+    final px = src[i], py = src[i + 1], pz = src[i + 2];
+    out[i] = r00 * px + r01 * py + r02 * pz;
+    out[i + 1] = r10 * px + r11 * py + r12 * pz;
+    out[i + 2] = r20 * px + r21 * py + r22 * pz;
+  }
+  return out;
+}
+
+/// Returns the exact double-precision rotation used by
+/// [gravityAlignedPoints], in row-major 3x3 order.
+///
+/// This is the shared coordinate authority for consumers that transform
+/// double-valued camera geometry. Registration selection, the fixed camera
+/// convention, quaternion hemisphere alignment, accumulation order and both
+/// normalizations deliberately match the original snapshot implementation.
+List<double>? gravityAlignmentRotationRowMajor({
+  required Float64List posesPacked,
+  required List<double>? Function(int frameId) arkitQuatWxyzOf,
+}) {
   final poses = posesPacked;
-  if (xyz.isEmpty || poses.isEmpty) return null;
+  if (poses.isEmpty) return null;
 
   // Hamilton product a*b (w,x,y,z).
   List<double> qmul(List<double> a, List<double> b) => [
@@ -81,7 +114,9 @@ Float32List? gravityAlignedPoints({
   final an = math.sqrt(aw * aw + ax * ax + ay * ay + az * az);
   if (an < 1e-9) return null;
   final w = aw / an, x = ax / an, y = ay / an, z = az / an;
-  // Rotation matrix rows for the mean R_w.
+  // Rotation matrix rows for the mean R_w. Keep the expression/evaluation
+  // order stable: gravityAlignedPoints exposes their Float32 products as
+  // snapshot bytes.
   final r00 = 1 - 2 * (y * y + z * z),
       r01 = 2 * (x * y - z * w),
       r02 = 2 * (x * z + y * w);
@@ -92,13 +127,5 @@ Float32List? gravityAlignedPoints({
       r21 = 2 * (y * z + x * w),
       r22 = 1 - 2 * (x * x + y * y);
 
-  final src = xyz;
-  final out = Float32List(src.length);
-  for (var i = 0; i < src.length; i += 3) {
-    final px = src[i], py = src[i + 1], pz = src[i + 2];
-    out[i] = r00 * px + r01 * py + r02 * pz;
-    out[i + 1] = r10 * px + r11 * py + r12 * pz;
-    out[i + 2] = r20 * px + r21 * py + r22 * pz;
-  }
-  return out;
+  return <double>[r00, r01, r02, r10, r11, r12, r20, r21, r22];
 }

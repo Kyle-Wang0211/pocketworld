@@ -102,6 +102,28 @@ class AetherFfi {
   static DynamicLibrary _resolveLibrary() {
     if (_cachedLibrary != null) return _cachedLibrary!;
 
+    // Host experiments must be able to pin one exact native revision even
+    // when Flutter native-assets has already loaded another aether dylib into
+    // the process. Product launches do not set this variable and retain the
+    // iOS process-symbol path below.
+    final explicitPath = (Platform.environment['AETHER3D_FFI_DYLIB'] ?? '')
+        .trim();
+    if (explicitPath.isNotEmpty) {
+      try {
+        final lib = DynamicLibrary.open(explicitPath);
+        lib.lookup<NativeFunction<_AetherVersionStringNative>>(
+          'aether_version_string',
+        );
+        _cachedLibrary = lib;
+        return lib;
+      } catch (error) {
+        throw FfiResolutionError(
+          'Failed to open explicitly pinned AETHER3D_FFI_DYLIB='
+          '$explicitPath: $error',
+        );
+      }
+    }
+
     Object? processError;
     try {
       final lib = DynamicLibrary.process();

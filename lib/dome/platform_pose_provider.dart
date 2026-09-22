@@ -26,7 +26,11 @@ import 'ar_pose.dart';
 import 'mock_pose_provider.dart';
 
 class PlatformARPoseProvider
-    implements ARPoseProvider, ManualCaptureV2Provider {
+    implements
+        ARPoseProvider,
+        ManualCaptureV2Provider,
+        ManualCaptureV2RecoveryProvider,
+        ManualCaptureV2DiscardProvider {
   static const _method = MethodChannel('aether_arkit');
   static const _poseEvents = EventChannel('aether_arkit/pose_stream');
 
@@ -266,7 +270,7 @@ class PlatformARPoseProvider
       return ARFrameSaveResult(
         spec: spec,
         status: 'saved',
-        sfmFrame: _sfmFrameFromSaveReply(reply),
+        sfmFrame: _sfmFrameFromSaveReply(reply, captureJobId: spec.frameID),
       );
     } on PlatformException catch (e) {
       // ignore: avoid_print
@@ -329,10 +333,43 @@ class PlatformARPoseProvider
     return terminal;
   }
 
+  @override
+  Future<List<ManualCaptureV2RecoveryJob>> listManualCaptureV2Jobs(
+    String captureDirectory,
+  ) => listPlatformManualCaptureV2Jobs(captureDirectory);
+
+  @override
+  Future<ManualCaptureV2DiscardReceipt> discardManualCaptureV2Jobs(
+    String captureDirectory,
+  ) async {
+    final canonical = captureDirectory.trim();
+    if (canonical.isEmpty ||
+        !canonical.startsWith('/') ||
+        canonical != captureDirectory) {
+      throw ArgumentError.value(
+        captureDirectory,
+        'captureDirectory',
+        'must be an absolute normalized path',
+      );
+    }
+    final reply = await _method.invokeMethod<Object?>(
+      'discardManualCaptureV2Jobs',
+      <String, Object?>{'captureDirectory': canonical},
+    );
+    final receipt = ManualCaptureV2DiscardReceipt.fromPlatformReply(reply);
+    if (receipt.captureDirectory != canonical) {
+      throw const FormatException('manual capture discard root mismatch');
+    }
+    return receipt;
+  }
+
   /// Parses the optional streaming-SfM feed off the `saveCurrentFrameAsJpeg`
   /// reply. Best-effort: any missing/malformed field → null (JPEG save is
   /// authoritative; SfM feeding is an enhancement, never a failure source).
-  static SfmFrameFeed? _sfmFrameFromSaveReply(dynamic reply) {
+  static SfmFrameFeed? _sfmFrameFromSaveReply(
+    dynamic reply, {
+    required String captureJobId,
+  }) {
     if (reply is! Map) return null;
     final grayRaw = reply['sfm_gray'];
     final Uint8List? gray = grayRaw is Uint8List
@@ -351,6 +388,8 @@ class PlatformARPoseProvider
         ? extrinsicRaw.map((e) => (e as num).toDouble()).toList()
         : const <double>[];
     if (gray == null ||
+        captureJobId.isEmpty ||
+        captureJobId.trim() != captureJobId ||
         grayW <= 0 ||
         grayH <= 0 ||
         gray.length < grayW * grayH ||
@@ -360,6 +399,7 @@ class PlatformARPoseProvider
       return null;
     }
     return SfmFrameFeed(
+      captureJobId: captureJobId,
       gray: gray,
       grayW: grayW,
       grayH: grayH,
@@ -487,4 +527,37 @@ class PlatformARPoseProvider
       /* best effort */
     }
   }
+}
+
+/// Cold-start entry point that does not start ARKit or allocate a provider
+/// stream. The native side scopes results to descendants of this exact capture.
+Future<List<ManualCaptureV2RecoveryJob>> listPlatformManualCaptureV2Jobs(
+  String captureDirectory,
+) async {
+  final canonical = captureDirectory.trim();
+  if (canonical.isEmpty || !canonical.startsWith('/')) {
+    throw ArgumentError.value(
+      captureDirectory,
+      'captureDirectory',
+      'must be an absolute normalized path',
+    );
+  }
+  Object? reply;
+  try {
+    reply = await PlatformARPoseProvider._method.invokeMethod<Object?>(
+      'listManualCaptureV2Jobs',
+      <String, Object?>{'captureDirectory': canonical},
+    );
+  } on MissingPluginException {
+    return const <ManualCaptureV2RecoveryJob>[];
+  }
+  if (reply is! Map ||
+      reply['schema_version'] != 'aether_manual_capture_v2_reconcile_v1' ||
+      reply['capture_directory'] != canonical ||
+      reply['jobs'] is! List) {
+    throw const FormatException('manual capture reconciliation reply invalid');
+  }
+  return List<ManualCaptureV2RecoveryJob>.unmodifiable(
+    (reply['jobs'] as List).map(ManualCaptureV2RecoveryJob.fromPlatformReply),
+  );
 }

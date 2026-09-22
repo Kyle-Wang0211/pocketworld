@@ -28,16 +28,24 @@ int _failures = 0;
 
 void check(String name, Object? actual, Object? expected) {
   final ok = actual == expected;
-  stdout.writeln('${ok ? 'PASS' : 'FAIL'}  $name'
-      '${ok ? '' : '  (expected $expected, got $actual)'}');
+  stdout.writeln(
+    '${ok ? 'PASS' : 'FAIL'}  $name'
+    '${ok ? '' : '  (expected $expected, got $actual)'}',
+  );
   if (!ok) _failures++;
 }
 
-void checkNear(String name, double? actual, double expected,
-    {double tol = 0.01}) {
+void checkNear(
+  String name,
+  double? actual,
+  double expected, {
+  double tol = 0.01,
+}) {
   final ok = actual != null && (actual - expected).abs() <= tol;
-  stdout.writeln('${ok ? 'PASS' : 'FAIL'}  $name'
-      '${ok ? '' : '  (expected $expected ± $tol, got $actual)'}');
+  stdout.writeln(
+    '${ok ? 'PASS' : 'FAIL'}  $name'
+    '${ok ? '' : '  (expected $expected ± $tol, got $actual)'}',
+  );
   if (!ok) _failures++;
 }
 
@@ -53,16 +61,16 @@ List<double> camAt(List<double> p, double deg) {
   List<double> p,
   List<int> fids,
 ) => (
-      xyz: Float32List.fromList([p[0], p[1], p[2]]),
-      offs: Int32List.fromList([0, fids.length]),
-      fids: Int32List.fromList(fids),
-    );
+  xyz: Float32List.fromList([p[0], p[1], p[2]]),
+  offs: Int32List.fromList([0, fids.length]),
+  fids: Int32List.fromList(fids),
+);
 
 /// framesPacked([frameId, medianDeg] ×2/帧)→ map 查询。
 Map<int, double> frameMap(Float64List packed) => {
-      for (var i = 0; i + 1 < packed.length; i += 2)
-        packed[i].toInt(): packed[i + 1],
-    };
+  for (var i = 0; i + 1 < packed.length; i += 2)
+    packed[i].toInt(): packed[i + 1],
+};
 
 void main() {
   // ── 相机中心恢复:CamFromWorld(q wxyz, t)→ C = -Rᵀt ─────────────
@@ -77,8 +85,11 @@ void main() {
     final c90 = cameraCenterFromCamFromWorld([h, 0, h, 0], [1, 0, 0]);
     checkNear('中心恢复:绕Y 90° C.x', c90![0], 0.0, tol: 1e-9);
     checkNear('  C.z = -1', c90[2], -1.0, tol: 1e-9);
-    check('中心恢复:零四元数(合成/降级 pose)→ null',
-        cameraCenterFromCamFromWorld([0, 0, 0, 0], [1, 2, 3]), null);
+    check(
+      '中心恢复:零四元数(合成/降级 pose)→ null',
+      cameraCenterFromCamFromWorld([0, 0, 0, 0], [1, 2, 3]),
+      null,
+    );
   }
 
   // ── 验收几何①:两相机 4° 观测一个点 → 帧中位 4° → 判黄 ───────────
@@ -96,18 +107,25 @@ void main() {
     checkNear('4° 几何:帧 1 中位 = 4°', fm[1], 4.0);
     checkNear('4° 几何:帧 2 中位 = 4°', fm[2], 4.0);
     check('4° 几何:体素数 = 1', agg.voxelKeys.length, 1);
-    check('4° 几何:voxel key 与 coverageVoxelKeyFor 一致', agg.voxelKeys[0],
-        coverageVoxelKeyFor(0, 0, 0, kCoverageVoxelSizeM));
+    check(
+      '4° 几何:voxel key 与 coverageVoxelKeyFor 一致',
+      agg.voxelKeys[0],
+      coverageVoxelKeyFor(0, 0, 0, kCoverageVoxelSizeM),
+    );
     checkNear('4° 几何:体素真值 = 4°', agg.voxelDeg[0], 4.0);
     // 帧判定:真值 4° < 5°(首判锚)→ 黄(photoCardSfmState 端到端)。
-    final poses = Float64List(9)..[0] = 1..[1] = 1; // 帧1已注册
+    final poses = Float64List(9)
+      ..[0] = 1
+      ..[1] = 1; // 帧1已注册
     check(
       '4° → 卡片黄(lowParallax)',
       photoCardSfmState(
         frameId: 1,
         posesPacked: poses,
         lowParallax: frameLowParallaxTrue(
-            trueMedianDeg: fm[1], wasLowParallax: null),
+          trueMedianDeg: fm[1],
+          wasLowParallax: null,
+        ),
       ),
       PhotoCardSfmState.lowParallax,
     );
@@ -130,24 +148,33 @@ void main() {
     )!;
     final fm = frameMap(agg.framesPacked);
     checkNear('15° 几何:帧 1 中位 = 15°', fm[1], 15.0);
-    final poses = Float64List(9)..[0] = 1..[1] = 1;
+    final poses = Float64List(9)
+      ..[0] = 1
+      ..[1] = 1;
     check(
       '15° → 卡片白(registered)',
       photoCardSfmState(
         frameId: 1,
         posesPacked: poses,
         lowParallax: frameLowParallaxTrue(
-            trueMedianDeg: fm[1], wasLowParallax: null),
+          trueMedianDeg: fm[1],
+          wasLowParallax: null,
+        ),
       ),
       PhotoCardSfmState.registered,
     );
     // 真值唯一铁律(白→黄反序修复):真值 15° → 白,视锥近似无发言权。
-    check('真值 15° → 不判黄(视锥近似已彻底退出帧判定)',
-        frameLowParallaxTrue(trueMedianDeg: fm[1], wasLowParallax: null),
-        false);
+    check(
+      '真值 15° → 不判黄(视锥近似已彻底退出帧判定)',
+      frameLowParallaxTrue(trueMedianDeg: fm[1], wasLowParallax: null),
+      false,
+    );
     // 真值缺席 → null → 已注册也保持黑(处理中),不再回退视锥近似。
-    check('真值缺席 → null(不许近似顶替)',
-        frameLowParallaxTrue(trueMedianDeg: null, wasLowParallax: null), null);
+    check(
+      '真值缺席 → null(不许近似顶替)',
+      frameLowParallaxTrue(trueMedianDeg: null, wasLowParallax: null),
+      null,
+    );
     check(
       '真值缺席 → 卡片黑(已注册也不抢答白)',
       photoCardSfmState(frameId: 1, posesPacked: poses, lowParallax: null),
@@ -172,26 +199,28 @@ void main() {
       xyz: xyz,
       obsOffsets: offs,
       obsFrameIds: fids,
-      centersByFrame: {
-        10: camAt(p0, 0),
-        11: camAt(p0, 4),
-        12: c12,
-      },
+      centersByFrame: {10: camAt(p0, 0), 11: camAt(p0, 4), 12: c12},
     )!;
     final fm = frameMap(agg.framesPacked);
     checkNear('混合:帧 10(见 4° 与 15° 两点)中位 = 9.5°', fm[10], 9.5);
     checkNear('混合:帧 11 中位 = 4°', fm[11], 4.0);
     checkNear('混合:帧 12 中位 = 15°', fm[12], 15.0);
-    check('混合:帧 10 → 白(中位 9.5° ≥ 5° 首判锚)',
-        frameLowParallaxTrue(trueMedianDeg: fm[10], wasLowParallax: null),
-        false);
-    check('混合:帧 11 → 黄',
-        frameLowParallaxTrue(trueMedianDeg: fm[11], wasLowParallax: null),
-        true);
-    check('混合:framesPacked 按 frameId 升序',
-        agg.framesPacked[0] < agg.framesPacked[2] &&
-            agg.framesPacked[2] < agg.framesPacked[4],
-        true);
+    check(
+      '混合:帧 10 → 白(中位 9.5° ≥ 5° 首判锚)',
+      frameLowParallaxTrue(trueMedianDeg: fm[10], wasLowParallax: null),
+      false,
+    );
+    check(
+      '混合:帧 11 → 黄',
+      frameLowParallaxTrue(trueMedianDeg: fm[11], wasLowParallax: null),
+      true,
+    );
+    check(
+      '混合:framesPacked 按 frameId 升序',
+      agg.framesPacked[0] < agg.framesPacked[2] &&
+          agg.framesPacked[2] < agg.framesPacked[4],
+      true,
+    );
     check('混合:体素数 = 2', agg.voxelKeys.length, 2);
     final kA = coverageVoxelKeyFor(0, 0, 0, kCoverageVoxelSizeM);
     final kB = coverageVoxelKeyFor(0, 0, 4, kCoverageVoxelSizeM);
@@ -222,8 +251,12 @@ void main() {
       },
     )!;
     check('同体素两点:体素数 = 1', agg.voxelKeys.length, 1);
-    checkNear('同体素两点(5°/15°):中位 = 10°', agg.voxelDeg[0].toDouble(),
-        10.0, tol: 0.05);
+    checkNear(
+      '同体素两点(5°/15°):中位 = 10°',
+      agg.voxelDeg[0].toDouble(),
+      10.0,
+      tol: 0.05,
+    );
   }
 
   // ── 观测封顶(maxObsPerPoint=6):第 7 个 90° 观测不参与 ──────────
@@ -238,8 +271,7 @@ void main() {
         6: camAt(p0, 90), // 第7个:若未封顶会把角度顶到 90°
       },
     )!;
-    checkNear('观测封顶:7 观测只取前 6 → 角度 5° 而非 90°',
-        agg.voxelDeg[0].toDouble(), 5.0);
+    checkNear('观测封顶:7 观测只取前 6 → 角度 5° 而非 90°', agg.voxelDeg[0].toDouble(), 5.0);
   }
 
   // ── 退化护栏 ────────────────────────────────────────────────────
@@ -322,56 +354,73 @@ void main() {
     check('端到端:真值未到达 → trueVoxels = 0', stats.trueVoxels, 0);
     check('端到端:starvedTrue = 0(真值缺席不计)', stats.starvedTrue, 0);
     check('端到端:starved(有效口径)= 1', cloud.parallaxStarvedVoxelCount, 1);
-    check('端到端:帧级近似信号判黄(仅诊断,已退出卡片判定)',
-        cloud.isFrameLowParallax('f0.jpg'), true);
+    check(
+      '端到端:帧级近似信号判黄(仅诊断,已退出卡片判定)',
+      cloud.isFrameLowParallax('f0.jpg'),
+      true,
+    );
 
     // 真值注入 12° ≥ 5° → 放绿(worker 侧同函数算 key,逐位一致)。
     final key = coverageVoxelKeyFor(p[0], p[1], p[2], kCoverageVoxelSizeM);
     cloud.applyTrueParallax(
-        Int64List.fromList([key]), Float32List.fromList([12.0]));
+      Int64List.fromList([key]),
+      Float32List.fromList([12.0]),
+    );
     stats = cloud.coverageStats();
     check('端到端:真值 12° 注入 → 绿 1', stats.green, 1);
     check('端到端:trueVoxels = 1', stats.trueVoxels, 1);
     check('端到端:trueLt8 = 0', stats.trueLt8, 0);
     check('端到端:starvedTrue = 0', stats.starvedTrue, 0);
     check('端到端:starved 清零', cloud.parallaxStarvedVoxelCount, 0);
-    check('端到端:帧级近似信号转白(真值经体素回流,仅诊断)',
-        cloud.isFrameLowParallax('f0.jpg'), false);
+    check(
+      '端到端:帧级近似信号转白(真值经体素回流,仅诊断)',
+      cloud.isFrameLowParallax('f0.jpg'),
+      false,
+    );
     checkNear('端到端:parallaxDegAt = 真值 12°', cloud.parallaxDegAt(vp), 12.0);
 
     // 真值降为 4° < 5° → 重新压黄 + starved_true 计数(D 域对数字段)。
     cloud.applyTrueParallax(
-        Int64List.fromList([key]), Float32List.fromList([4.0]));
+      Int64List.fromList([key]),
+      Float32List.fromList([4.0]),
+    );
     stats = cloud.coverageStats();
     check('端到端:真值 4° → 绿 0', stats.green, 0);
     check('端到端:trueLt8 = 1', stats.trueLt8, 1);
     check('端到端:starvedTrue = 1', stats.starvedTrue, 1);
-    check('端到端:starved(有效口径)回到 1',
-        cloud.parallaxStarvedVoxelCount, 1);
+    check('端到端:starved(有效口径)回到 1', cloud.parallaxStarvedVoxelCount, 1);
 
     // 真值压过视锥近似:两机位 15° 视锥视差的体素,真值 4° 仍压黄。
     final cloud2 = CaptureCoverageCloud();
     cloud2.ingestPose(_poseWithPreviewPoint(vp));
     for (var i = 0; i < 5; i++) {
       // 交替两个相隔 ~15° 的机位 → 视锥近似 maxParallaxDeg ≈ 15°。
-      cloud2.markCapture(_feedLookingAt(
-        cam: i.isEven
-            ? [0.5, 0.5, 1.0]
-            : [0.5 + 2 * math.sin(15 * math.pi / 180),
-                0.5,
-                -1.0 + 2 * math.cos(15 * math.pi / 180)],
-        jpeg: 'g$i.jpg',
-      ));
+      cloud2.markCapture(
+        _feedLookingAt(
+          cam: i.isEven
+              ? [0.5, 0.5, 1.0]
+              : [
+                  0.5 + 2 * math.sin(15 * math.pi / 180),
+                  0.5,
+                  -1.0 + 2 * math.cos(15 * math.pi / 180),
+                ],
+          jpeg: 'g$i.jpg',
+        ),
+      );
     }
     check('对照:视锥 15° 无真值 → 绿', cloud2.coverageStats().green, 1);
     cloud2.applyTrueParallax(
-        Int64List.fromList([key]), Float32List.fromList([4.0]));
-    check('对照:真值 4° 压过视锥 15° → 压黄(真值优先)',
-        cloud2.coverageStats().green, 0);
+      Int64List.fromList([key]),
+      Float32List.fromList([4.0]),
+    );
+    check('对照:真值 4° 压过视锥 15° → 压黄(真值优先)', cloud2.coverageStats().green, 0);
     // 长度不匹配的注入被整批拒绝(防御)。
     cloud2.applyTrueParallax(Int64List.fromList([key]), Float32List(0));
-    check('防御:keys/degs 长度不匹配 → 忽略,真值不变',
-        cloud2.coverageStats().starvedTrue, 1);
+    check(
+      '防御:keys/degs 长度不匹配 → 忽略,真值不变',
+      cloud2.coverageStats().starvedTrue,
+      1,
+    );
   }
 
   // ── voxel key 负坐标语义(floor,不是 truncate)──────────────────
@@ -391,38 +440,39 @@ void main() {
 
 /// 造一个只带 1 个 preview 点的 ARPose(其余字段全为占位)。
 ARPose _poseWithPreviewPoint(Vector3 p) => ARPose(
-      position: Vector3.zero(),
-      orientation: Quaternion.identity(),
-      azimuth: 0,
-      elevation: 0,
-      isTracking: true,
-      timestamp: 0,
-      hasOrigin: true,
-      worldOrigin: Vector3.zero(),
-      worldYaw: 0,
-      extrinsic4x4: const [],
-      intrinsicFxFyCxCy: const [],
-      previewPoints: [
-        ARPreviewPoint(position: p, r: 0, g: 0, b: 0, confidence: 1),
-      ],
-    );
+  position: Vector3.zero(),
+  orientation: Quaternion.identity(),
+  azimuth: 0,
+  elevation: 0,
+  isTracking: true,
+  timestamp: 0,
+  hasOrigin: true,
+  worldOrigin: Vector3.zero(),
+  worldYaw: 0,
+  extrinsic4x4: const [],
+  intrinsicFxFyCxCy: const [],
+  previewPoints: [ARPreviewPoint(position: p, r: 0, g: 0, b: 0, confidence: 1)],
+);
 
 /// 造一个从 [cam] 望向 -z(单位旋转)的 SfmFrameFeed:cam 放在被测点
 /// 正后方/侧后方时点必落在视锥内(fx=100, c=(200,200), 400×400)。
-SfmFrameFeed _feedLookingAt({required List<double> cam, required String jpeg}) =>
-    SfmFrameFeed(
-      gray: Uint8List(0),
-      grayW: 1,
-      grayH: 1,
-      imageW: 400,
-      imageH: 400,
-      intrinsicFxFyCxCy: const [100, 100, 200, 200],
-      extrinsic4x4: [
-        1, 0, 0, 0, //
-        0, 1, 0, 0, //
-        0, 0, 1, 0, //
-        cam[0], cam[1], cam[2], 1,
-      ],
-      timestamp: 0,
-      jpegPath: jpeg,
-    );
+SfmFrameFeed _feedLookingAt({
+  required List<double> cam,
+  required String jpeg,
+}) => SfmFrameFeed(
+  captureJobId: 'true-parallax-check-${jpeg.split('/').last}',
+  gray: Uint8List(0),
+  grayW: 1,
+  grayH: 1,
+  imageW: 400,
+  imageH: 400,
+  intrinsicFxFyCxCy: const [100, 100, 200, 200],
+  extrinsic4x4: [
+    1, 0, 0, 0, //
+    0, 1, 0, 0, //
+    0, 0, 1, 0, //
+    cam[0], cam[1], cam[2], 1,
+  ],
+  timestamp: 0,
+  jpegPath: jpeg,
+);

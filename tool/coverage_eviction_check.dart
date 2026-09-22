@@ -60,6 +60,7 @@ ARPose _poseWithPoints(Vector3 camPos, List<Vector3> points) => ARPose(
 /// 相机在 [camPos]、旋转为单位阵(ARKit 相机系:-Z 前、+Y 上)的一拍。
 /// extrinsic4x4 是列主序 camera-to-world(同 tool/coverage_parallax_check)。
 SfmFrameFeed _feedAt(Vector3 camPos) => SfmFrameFeed(
+  captureJobId: 'coverage-eviction-check',
   gray: Uint8List(0),
   grayW: 640,
   grayH: 480,

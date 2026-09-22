@@ -5,8 +5,10 @@ import 'dart:io';
 ///
 /// The reconstruction ring buffer is deliberately not consulted: eviction
 /// and curation may remove a frame from reconstruction consideration, but they
-/// never revoke ownership of a JPEG the user captured. Manual shutter v2
-/// publishes its JPEG last, so its presence is also the native commit marker.
+/// never revoke ownership of a JPEG the user captured. This raw catalog does
+/// not decide manual-v2 commit state: native artifacts may appear before the
+/// separate durable receipt. Callers must filter claimed paths through
+/// ledger/receipt evidence before exposing them in an album or manifest.
 Future<List<String>> discoverCapturedPhotoPaths(Directory directory) async {
   if (!await directory.exists()) return const <String>[];
 

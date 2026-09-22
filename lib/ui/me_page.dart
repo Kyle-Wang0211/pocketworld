@@ -21,11 +21,13 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart' show ValueListenable;
+import 'package:flutter/foundation.dart'
+    show ValueListenable, visibleForTesting;
 import 'package:flutter/material.dart';
 
 import '../auth/auth_scope.dart';
 import '../capture/sfm_resume.dart';
+import '../capture/sparse_ply.dart';
 import '../l10n/app_localizations.dart';
 import '../me/draft_card_action.dart';
 import '../me/scan_record_store.dart';
@@ -38,6 +40,164 @@ import 'me_settings_page.dart';
 import 'me_stats_view_model.dart';
 import 'scan_record.dart';
 import 'scan_record_cell.dart';
+
+/// Separates two independent truths which used to be collapsed into
+/// `File(sfm_sparse.ply).existsSync()`:
+///
+/// * whether the sparse generation is safe to show;
+/// * whether replay cleanup/commit is complete.
+///
+/// Modern captures may only open the exact committed refined generation,
+/// regardless of whether their DB still exists. A structurally verified
+/// historical PLY whose DB/queue has already been compacted remains viewable,
+/// but can never authorize cleanup.
+@visibleForTesting
+bool isDraftSparseArtifactViewable({
+  required SfmFinalArtifactInspection finalArtifact,
+  required SparsePublicationViewInspection sparseView,
+  required bool sfmDbExists,
+  required bool hasReplayState,
+}) {
+  final committedRefined =
+      sparseView.state == SparsePublicationViewState.committed &&
+      sparseView.receipt?.refined == true;
+  if (finalArtifact.state == SfmFinalArtifactRecoveryState.complete) {
+    return committedRefined;
+  }
+  if (sfmDbExists || hasReplayState) return false;
+  // A modern linked pair still requires its exact final commit marker. The
+  // sole no-marker exception is a structurally verified historical PLY-only
+  // artifact which predates metadata/commit/replay state entirely.
+  return sparseView.state == SparsePublicationViewState.legacyPlyOnly;
+}
+
+@visibleForTesting
+bool activeResumeBlocksDraftAction({
+  required SfmResumeUiActivity activity,
+  required DraftCardAction action,
+}) =>
+    activity == SfmResumeUiActivity.otherCapture &&
+    action == DraftCardAction.offerResume;
+
+@visibleForTesting
+bool activeResumeBlocksLongPressAction({
+  required SfmResumeUiActivity activity,
+  required String? action,
+}) =>
+    activity == SfmResumeUiActivity.otherCapture && action == 'rebuild_sparse';
+
+@visibleForTesting
+DraftCardAction draftCardActionForVerifiedArtifact({
+  required String? recordCaptureDir,
+  required bool hasArtifact,
+  required SfmFinalArtifactInspection finalArtifact,
+  required SparsePublicationViewInspection sparseView,
+  required bool sfmDbExists,
+  required bool hasReplayState,
+  required bool canExplicitlyResume,
+  required String? activeReconstructionCaptureDir,
+  required bool hasActiveReconstructionCallback,
+}) => draftCardActionFor(
+  recordCaptureDir: recordCaptureDir,
+  hasArtifact: hasArtifact,
+  sparsePlyExists: isDraftSparseArtifactViewable(
+    finalArtifact: finalArtifact,
+    sparseView: sparseView,
+    sfmDbExists: sfmDbExists,
+    hasReplayState: hasReplayState,
+  ),
+  sfmDbExists: sfmDbExists || canExplicitlyResume,
+  activeReconstructionCaptureDir: activeReconstructionCaptureDir,
+  hasActiveReconstructionCallback: hasActiveReconstructionCallback,
+);
+
+class _DraftArtifactDiskState {
+  const _DraftArtifactDiskState({
+    required this.finalArtifact,
+    required this.sparseView,
+    required this.sfmDbExists,
+    required this.hasReplayState,
+    required this.canExplicitlyResume,
+  });
+
+  final SfmFinalArtifactInspection finalArtifact;
+  final SparsePublicationViewInspection sparseView;
+  final bool sfmDbExists;
+  final bool hasReplayState;
+  final bool canExplicitlyResume;
+}
+
+Future<_DraftArtifactDiskState> _inspectDraftArtifactState(
+  String captureDir,
+) async {
+  final sfmDbExists = File('$captureDir/sfm_live.db').existsSync();
+  // One structured cold-recovery inspection owns DB, manifest and committed
+  // manual-v2 orphan validation. It may adopt a fully verified orphan into the
+  // queue; bare gray/incomplete sidecars remain durable but non-resumable.
+  final recoveryInputs = await inspectSfmRecoveryInputs(captureDir);
+  final hasReplayState = recoveryInputs.hasDurableState;
+  final finalArtifact = await inspectSfmFinalArtifact(captureDir);
+  final receipt = finalArtifact.receipt;
+  final SparsePublicationViewInspection sparseView;
+  if (receipt != null) {
+    // Reuse the exact receipt already verified by final-artifact inspection.
+    // Do not re-run sparse recovery for the same tap.
+    sparseView = SparsePublicationViewInspection(
+      state: SparsePublicationViewState.committed,
+      receipt: receipt,
+      pointCount: receipt.pointCount,
+    );
+  } else if (!sfmDbExists && !hasReplayState) {
+    // Only the historical no-DB/no-queue branch needs the independent,
+    // read-only PLY-only structural validator.
+    sparseView = await inspectSparsePublicationForViewing(
+      captureDir: captureDir,
+    );
+  } else {
+    sparseView = const SparsePublicationViewInspection(
+      state: SparsePublicationViewState.none,
+    );
+  }
+  return _DraftArtifactDiskState(
+    finalArtifact: finalArtifact,
+    sparseView: sparseView,
+    sfmDbExists: sfmDbExists,
+    hasReplayState: hasReplayState,
+    canExplicitlyResume: recoveryInputs.canExplicitlyResume,
+  );
+}
+
+@visibleForTesting
+SfmResumeWaitPage sfmResumeWaitPageForDraft({
+  required String captureDir,
+  required String title,
+  required bool regenerate,
+  Future<bool>? attachedFuture,
+  bool attachOnly = false,
+}) => SfmResumeWaitPage(
+  captureDir: captureDir,
+  title: title,
+  forceRegenerate: regenerate,
+  attachedFuture: attachedFuture,
+  attachOnly: attachOnly,
+);
+
+@visibleForTesting
+class DraftCardActionGuard {
+  final Set<String> _busy = <String>{};
+
+  bool isBusy(String key) => _busy.contains(key);
+
+  Future<bool> run(String key, Future<void> Function() action) async {
+    if (!_busy.add(key)) return false;
+    try {
+      await action();
+      return true;
+    } finally {
+      _busy.remove(key);
+    }
+  }
+}
 
 class MePage extends StatefulWidget {
   const MePage({
@@ -303,6 +463,7 @@ class _MyWorksSection extends StatefulWidget {
 
 class _MyWorksSectionState extends State<_MyWorksSection> {
   final HomeViewModel _vm = HomeViewModel();
+  final DraftCardActionGuard _cardActionGuard = DraftCardActionGuard();
 
   @override
   void initState() {
@@ -354,10 +515,52 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
             record: r,
             subtitle: _formatAbsTime(r.createdAt),
             minimal: true,
-            onTap: () => _onTap(r),
-            onLongPress: () => _showRecordActions(r),
+            onTap: () => unawaited(
+              _cardActionGuard.run(_cardActionKey(r), () => _onTap(r)),
+            ),
+            onLongPress: () => unawaited(
+              _cardActionGuard.run(
+                _cardActionKey(r),
+                () => _showRecordActions(r),
+              ),
+            ),
           ),
       ],
+    );
+  }
+
+  String _cardActionKey(ScanRecord record) =>
+      record.captureDir?.trim().isNotEmpty == true
+      ? record.captureDir!.trim()
+      : record.id;
+
+  void _showResumeBusy() {
+    ScaffoldMessenger.maybeOf(context)
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(
+        const SnackBar(
+          content: Text('另一项点云重建正在进行，完成后再试'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+  }
+
+  Future<void> _reopenActiveResume(ScanRecord record) async {
+    // Snapshot before the asynchronous route push. The future may complete
+    // and clear the global active slot before the page is built; the page must
+    // still attach to this exact result, never start a new normal resume.
+    final snapshot = activeSfmResumeSnapshotFor(record.captureDir);
+    if (snapshot == null || !mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => sfmResumeWaitPageForDraft(
+          captureDir: snapshot.captureDir,
+          title: record.name,
+          regenerate: snapshot.forceRegenerate,
+          attachedFuture: snapshot.future,
+          attachOnly: true,
+        ),
+      ),
     );
   }
 
@@ -367,47 +570,101 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
     //   • finalize 进行中点同一任务卡 → 回原等待页,绝不起第二个重建;
     //   • finalize 完成后点击 → 打开成品;
     //   • 重建被打断(有 sfm_live.db 无 PLY)→ 弹"继续重建"确认。
-    // 这里只做文件探测与执行。
+    // 这里只做 durable inspection 与执行。活动任务/GLB 不需要碰磁盘，
+    // 先走快速优先级，避免一次点击对同一 sparse generation 重复检查。
     final captureDir = record.captureDir;
-    final sparsePlyPath = captureDir == null
-        ? null
-        : '$captureDir/sfm_sparse.ply';
-    final sparsePlyExists =
-        sparsePlyPath != null && File(sparsePlyPath).existsSync();
-    // 容器 UUID 变更兜底:按目录名在当前 Documents 下重找 sfm_live.db。
-    final recoverableDir = captureDir == null
-        ? null
-        : await resolveRecoverableCaptureDir(captureDir);
-    if (!mounted) return;
-    final action = draftCardActionFor(
+    switch (sfmResumeUiActivityFor(captureDir)) {
+      case SfmResumeUiActivity.sameCapture:
+        await _reopenActiveResume(record);
+        return;
+      case SfmResumeUiActivity.otherCapture:
+        // Safe actions on another card (open/rename/delete) remain available.
+        // Only a later resume/rebuild action is globally serialized.
+        break;
+      case SfmResumeUiActivity.none:
+        break;
+    }
+    final fastAction = draftCardActionFor(
       recordCaptureDir: captureDir,
       hasArtifact: record.artifactPath != null,
-      sparsePlyExists: sparsePlyExists,
-      sfmDbExists: recoverableDir != null,
+      sparsePlyExists: false,
+      sfmDbExists: false,
       activeReconstructionCaptureDir: widget.activeReconstructionCaptureDir,
       hasActiveReconstructionCallback: widget.onActiveReconstructionTap != null,
     );
+    if (fastAction == DraftCardAction.reopenActiveReconstruction) {
+      widget.onActiveReconstructionTap?.call();
+      return;
+    }
+    if (fastAction == DraftCardAction.openWorkDetail) {
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => MyWorkDetailPage(recordId: record.id),
+        ),
+      );
+      return;
+    }
+    if (captureDir == null) return;
+
+    // Container UUID migration applies to finished historical PLY-only
+    // captures too, not just captures which still retain sfm_live.db.
+    final existingDir = await resolveExistingCaptureDir(captureDir);
+    if (existingDir == null) return;
+    final inspected = await _inspectDraftArtifactState(existingDir);
+    if (!mounted) return;
+    // Inspection is asynchronous; another route may have started a resume
+    // while it was running. Re-check before any viewer/resume navigation.
+    switch (sfmResumeUiActivityFor(existingDir)) {
+      case SfmResumeUiActivity.sameCapture:
+        await _reopenActiveResume(record);
+        return;
+      case SfmResumeUiActivity.otherCapture:
+        break;
+      case SfmResumeUiActivity.none:
+        break;
+    }
+    final action = draftCardActionForVerifiedArtifact(
+      recordCaptureDir: existingDir,
+      hasArtifact: false,
+      finalArtifact: inspected.finalArtifact,
+      sparseView: inspected.sparseView,
+      sfmDbExists: inspected.sfmDbExists,
+      hasReplayState: inspected.hasReplayState,
+      canExplicitlyResume: inspected.canExplicitlyResume,
+      activeReconstructionCaptureDir: widget.activeReconstructionCaptureDir,
+      hasActiveReconstructionCallback: widget.onActiveReconstructionTap != null,
+    );
+    if (activeResumeBlocksDraftAction(
+      activity: sfmResumeUiActivityFor(existingDir),
+      action: action,
+    )) {
+      _showResumeBusy();
+      return;
+    }
     switch (action) {
       case DraftCardAction.reopenActiveReconstruction:
         // capture route 仍在本临时草稿视图之下 —— 回它的等待页看进度。
         widget.onActiveReconstructionTap?.call();
       case DraftCardAction.openWorkDetail:
+        if (!mounted) return;
         await Navigator.of(context).push(
           MaterialPageRoute<void>(
             builder: (_) => MyWorkDetailPage(recordId: record.id),
           ),
         );
       case DraftCardAction.openSparseCloud:
+        if (!mounted) return;
         await Navigator.of(context).push(
           MaterialPageRoute<void>(
             builder: (_) => SparseCloudViewerPage(
-              plyPath: sparsePlyPath!,
+              plyPath: '$existingDir/sfm_sparse.ply',
               title: record.name.isEmpty ? '稀疏点云' : record.name,
             ),
           ),
         );
       case DraftCardAction.offerResume:
-        await _offerResume(record, recoverableDir!);
+        await _offerResume(record, existingDir);
       case DraftCardAction.none:
         // 修3:原"正在生成 3D 模型,完成后会自动打开"底部弹窗已按用户
         // 要求删除。无成品且无可恢复数据时,点击不再有任何弹层。
@@ -427,6 +684,15 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
     String recoverableDir, {
     bool regenerate = false,
   }) async {
+    final initialActivity = sfmResumeUiActivityFor(recoverableDir);
+    if (initialActivity == SfmResumeUiActivity.otherCapture) {
+      _showResumeBusy();
+      return;
+    }
+    if (initialActivity == SfmResumeUiActivity.sameCapture) {
+      await _reopenActiveResume(record);
+      return;
+    }
     if (!isResumeInFlight(recoverableDir)) {
       final name = record.name.isEmpty ? '这次拍摄' : '「${record.name}」';
       final confirmed = await showDialog<bool>(
@@ -450,13 +716,26 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
           ],
         ),
       );
+      if (!mounted) return;
       if (confirmed != true) return;
+    }
+    final currentActivity = sfmResumeUiActivityFor(recoverableDir);
+    if (currentActivity == SfmResumeUiActivity.otherCapture) {
+      _showResumeBusy();
+      return;
+    }
+    if (currentActivity == SfmResumeUiActivity.sameCapture) {
+      await _reopenActiveResume(record);
+      return;
     }
     if (!mounted) return;
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) =>
-            SfmResumeWaitPage(captureDir: recoverableDir, title: record.name),
+        builder: (_) => sfmResumeWaitPageForDraft(
+          captureDir: recoverableDir,
+          title: record.name,
+          regenerate: regenerate,
+        ),
       ),
     );
   }
@@ -464,23 +743,66 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
   /// Long-press handler for the local-only product route.
   Future<void> _showRecordActions(ScanRecord record) async {
     final l = AppL10n.of(context);
-    // 拍摄期落盘的稀疏点云(sfm_sparse.ply)存在时,提供 in-app 查看入口。
+    switch (sfmResumeUiActivityFor(record.captureDir)) {
+      case SfmResumeUiActivity.sameCapture:
+        await _reopenActiveResume(record);
+        return;
+      case SfmResumeUiActivity.otherCapture:
+        break;
+      case SfmResumeUiActivity.none:
+        break;
+    }
+    // 只给 verified final / verified legacy PLY 提供查看入口。单纯存在的
+    // partial/unverified PLY 不再进入查看器。
     final captureDir = record.captureDir;
-    final sparsePlyPath = captureDir == null
+    final existingDir = captureDir == null
         ? null
-        : '$captureDir/sfm_sparse.ply';
-    final canViewSparse =
-        sparsePlyPath != null && File(sparsePlyPath).existsSync();
+        : await resolveExistingCaptureDir(captureDir);
+    final inspected = existingDir == null
+        ? const _DraftArtifactDiskState(
+            finalArtifact: SfmFinalArtifactInspection(
+              state: SfmFinalArtifactRecoveryState.needsRebuild,
+            ),
+            sparseView: SparsePublicationViewInspection(
+              state: SparsePublicationViewState.none,
+            ),
+            sfmDbExists: false,
+            hasReplayState: false,
+            canExplicitlyResume: false,
+          )
+        : await _inspectDraftArtifactState(existingDir);
+    if (!mounted) return;
+    // Long-press inspection has the same race boundary as a tap.
+    switch (sfmResumeUiActivityFor(existingDir)) {
+      case SfmResumeUiActivity.sameCapture:
+        await _reopenActiveResume(record);
+        return;
+      case SfmResumeUiActivity.otherCapture:
+        break;
+      case SfmResumeUiActivity.none:
+        break;
+    }
+    if (!mounted) return;
+    final canViewSparse = isDraftSparseArtifactViewable(
+      finalArtifact: inspected.finalArtifact,
+      sparseView: inspected.sparseView,
+      sfmDbExists: inspected.sfmDbExists,
+      hasReplayState: inspected.hasReplayState,
+    );
+    final sparsePlyPath = canViewSparse
+        ? '${existingDir!}/sfm_sparse.ply'
+        : null;
     // 断点数据仍在(sfm_live.db 按契约保留)且当前没有别的重建在跑时,
     // 提供"重新重建点云"入口 —— 覆盖 PLY 已存在的场景(点击卡片只会打开
     // 查看器,永远到不了 offerResume 分支):恢复幂等,完成后覆盖旧 PLY。
     // 有活跃重建时不提供(双原生 SfM 会话会把内存/热推过真机上限,与
     // draft_card_action 的续跑门同一规矩)。
     final rebuildDir =
-        widget.activeReconstructionCaptureDir == null && captureDir != null
-        ? await resolveRecoverableCaptureDir(captureDir)
+        widget.activeReconstructionCaptureDir == null &&
+            sfmResumeUiActivityFor(existingDir) == SfmResumeUiActivity.none &&
+            inspected.canExplicitlyResume
+        ? existingDir
         : null;
-    if (!mounted) return;
     final action = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: AetherColors.bgCanvas,
@@ -524,6 +846,23 @@ class _MyWorksSectionState extends State<_MyWorksSection> {
         ),
       ),
     );
+    if (!mounted) return;
+    switch (sfmResumeUiActivityFor(existingDir)) {
+      case SfmResumeUiActivity.sameCapture:
+        await _reopenActiveResume(record);
+        return;
+      case SfmResumeUiActivity.otherCapture:
+        if (activeResumeBlocksLongPressAction(
+          activity: SfmResumeUiActivity.otherCapture,
+          action: action,
+        )) {
+          _showResumeBusy();
+          return;
+        }
+        break;
+      case SfmResumeUiActivity.none:
+        break;
+    }
     if (!mounted) return;
     if (action == 'view_sparse' && sparsePlyPath != null) {
       await Navigator.of(context).push(
