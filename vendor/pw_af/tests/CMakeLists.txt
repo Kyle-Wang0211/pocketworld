@@ -51,3 +51,17 @@ target_compile_features(pw_af_lens_scale_test PRIVATE cxx_std_17)
 target_include_directories(pw_af_lens_scale_test PRIVATE ..)
 target_compile_options(pw_af_lens_scale_test PRIVATE ${PW_AF_WARNINGS})
 add_test(NAME pw_af_lens_scale_test COMMAND pw_af_lens_scale_test)
+
+# C ABI 门面(pw_af_c.{h,cpp})。它把上面三件包成 C 给 Swift / JNI / NAPI 用,
+# 所以这个目标要把三份实现全链进来。
+add_executable(pw_af_c_test
+  pw_af_c_test.cpp
+  ../pw_af_c.cpp
+  ../af_scan.cpp
+  ../focus_measure.cpp
+  ../lens_scale.cpp
+)
+target_compile_features(pw_af_c_test PRIVATE cxx_std_17)
+target_include_directories(pw_af_c_test PRIVATE ..)
+target_compile_options(pw_af_c_test PRIVATE ${PW_AF_WARNINGS})
+add_test(NAME pw_af_c_test COMMAND pw_af_c_test)

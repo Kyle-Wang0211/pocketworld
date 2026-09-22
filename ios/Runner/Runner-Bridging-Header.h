@@ -9,3 +9,8 @@
 // [pw][vio] One cross-platform C++ transport wraps the frozen official ABI.
 // Swift sees raw transport only; Dart owns configuration and interpretation.
 #import "../../vendor/xrslam/transport/PwXrslamTransportCore.h"
+
+// [pw][af] 跨端 CDAF 的 C ABI 门面。算法在 vendor/pw_af/{af_scan,focus_measure,
+// lens_scale}.cpp —— libcamera 树莓派 IPA(BSD-2)的复刻 + Pertuz/Mir 评测里的
+// 梯度能量度量。Swift 只看到不透明指针与扁平结构体,C++ 类型一个都不暴露。
+#import "../../vendor/pw_af/pw_af_c.h"

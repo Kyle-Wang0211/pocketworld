@@ -47,6 +47,11 @@
 		D90000060000000000000006 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = D90000050000000000000005 /* PrivacyInfo.xcprivacy */; };
 		E0388DB63DBD4CF9745E00CE /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7779D977CD585B8DC1D4A1F9 /* SceneDelegate.swift */; };
 		E10000010000000000000001 /* PwXrslamTransportCore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E10000110000000000000001 /* PwXrslamTransportCore.cpp */; };
+		AF0C0A510000000000000002 /* PwFocusArms.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF0C0A510000000000000001 /* PwFocusArms.swift */; };
+		AF0C0A510000000000000005 /* pw_af_c.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AF0C0A510000000000000004 /* pw_af_c.cpp */; };
+		AF0C0A510000000000000007 /* af_scan.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AF0C0A510000000000000006 /* af_scan.cpp */; };
+		AF0C0A510000000000000009 /* focus_measure.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AF0C0A510000000000000008 /* focus_measure.cpp */; };
+		AF0C0A51000000000000000B /* lens_scale.cpp in Sources */ = {isa = PBXBuildFile; fileRef = AF0C0A51000000000000000A /* lens_scale.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -130,6 +135,12 @@
 		D90000150000000000000005 /* Rust-Standard-Library-COPYRIGHT.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; name = "Rust-Standard-Library-COPYRIGHT.html"; path = "../vendor/lepton_jpeg/licenses/Rust-Standard-Library-COPYRIGHT.html"; sourceTree = SOURCE_ROOT; };
 		DE1FF6E0A83B14479D1F4710 /* Pods-RunnerTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.debug.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.debug.xcconfig"; sourceTree = "<group>"; };
 		E10000110000000000000001 /* PwXrslamTransportCore.cpp */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.cpp.cpp; name = PwXrslamTransportCore.cpp; path = ../../vendor/xrslam/transport/PwXrslamTransportCore.cpp; sourceTree = "<group>"; };
+		AF0C0A510000000000000001 /* PwFocusArms.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PwFocusArms.swift; sourceTree = "<group>"; };
+		AF0C0A510000000000000003 /* pw_af_c.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = pw_af_c.h; path = ../../vendor/pw_af/pw_af_c.h; sourceTree = "<group>"; };
+		AF0C0A510000000000000004 /* pw_af_c.cpp */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.cpp.cpp; name = pw_af_c.cpp; path = ../../vendor/pw_af/pw_af_c.cpp; sourceTree = "<group>"; };
+		AF0C0A510000000000000006 /* af_scan.cpp */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.cpp.cpp; name = af_scan.cpp; path = ../../vendor/pw_af/af_scan.cpp; sourceTree = "<group>"; };
+		AF0C0A510000000000000008 /* focus_measure.cpp */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.cpp.cpp; name = focus_measure.cpp; path = ../../vendor/pw_af/focus_measure.cpp; sourceTree = "<group>"; };
+		AF0C0A51000000000000000A /* lens_scale.cpp */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.cpp.cpp; name = lens_scale.cpp; path = ../../vendor/pw_af/lens_scale.cpp; sourceTree = "<group>"; };
 		F5D156F1D2C2B5133C43EC38 /* Pods-Runner.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.debug.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -217,6 +228,12 @@
 				0F1C1A10000000000000A003 /* PwVioSlamFeeder.swift */,
 				0F1C1A10000000000000C001 /* PwXrslamLive.swift */,
 				E10000110000000000000001 /* PwXrslamTransportCore.cpp */,
+				AF0C0A510000000000000001 /* PwFocusArms.swift */,
+				AF0C0A510000000000000003 /* pw_af_c.h */,
+				AF0C0A510000000000000004 /* pw_af_c.cpp */,
+				AF0C0A510000000000000006 /* af_scan.cpp */,
+				AF0C0A510000000000000008 /* focus_measure.cpp */,
+				AF0C0A51000000000000000A /* lens_scale.cpp */,
 				0F1C1A10000000000000B001 /* PwCameraSlot.swift */,
 				0F1C1A10000000000000D001 /* PwZeroArkitGate.swift */,
 				0F1C1A10000000000000B003 /* PwImuSource.swift */,
@@ -576,6 +593,11 @@
 				03D62ABCFE668FE66D5CD107 /* MetalRenderer.swift in Sources */,
 				E0388DB63DBD4CF9745E00CE /* SceneDelegate.swift in Sources */,
 				E10000010000000000000001 /* PwXrslamTransportCore.cpp in Sources */,
+				AF0C0A510000000000000002 /* PwFocusArms.swift in Sources */,
+				AF0C0A510000000000000005 /* pw_af_c.cpp in Sources */,
+				AF0C0A510000000000000007 /* af_scan.cpp in Sources */,
+				AF0C0A510000000000000009 /* focus_measure.cpp in Sources */,
+				AF0C0A51000000000000000B /* lens_scale.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -770,6 +792,16 @@
 					"-Wl,-exported_symbol,_pw_camera_slot_exposure",
 					"-Wl,-exported_symbol,_pw_camera_slot_lock",
 					"-Wl,-exported_symbol,_pw_camera_slot_unlock",
+					"-Wl,-u,_pw_camera_slot_focus_arm",
+					"-Wl,-u,_pw_camera_slot_focus_state",
+					"-Wl,-u,_pw_camera_slot_focus_prepare",
+					"-Wl,-u,_pw_camera_slot_focus_series",
+					"-Wl,-u,_pw_camera_slot_focus_report",
+					"-Wl,-exported_symbol,_pw_camera_slot_focus_arm",
+					"-Wl,-exported_symbol,_pw_camera_slot_focus_state",
+					"-Wl,-exported_symbol,_pw_camera_slot_focus_prepare",
+					"-Wl,-exported_symbol,_pw_camera_slot_focus_series",
+					"-Wl,-exported_symbol,_pw_camera_slot_focus_report",
 					"-ljxl",
 					"-ljxl_cms",
 					"-ljxl_threads",
@@ -1075,6 +1107,16 @@
 					"-Wl,-exported_symbol,_pw_camera_slot_exposure",
 					"-Wl,-exported_symbol,_pw_camera_slot_lock",
 					"-Wl,-exported_symbol,_pw_camera_slot_unlock",
+					"-Wl,-u,_pw_camera_slot_focus_arm",
+					"-Wl,-u,_pw_camera_slot_focus_state",
+					"-Wl,-u,_pw_camera_slot_focus_prepare",
+					"-Wl,-u,_pw_camera_slot_focus_series",
+					"-Wl,-u,_pw_camera_slot_focus_report",
+					"-Wl,-exported_symbol,_pw_camera_slot_focus_arm",
+					"-Wl,-exported_symbol,_pw_camera_slot_focus_state",
+					"-Wl,-exported_symbol,_pw_camera_slot_focus_prepare",
+					"-Wl,-exported_symbol,_pw_camera_slot_focus_series",
+					"-Wl,-exported_symbol,_pw_camera_slot_focus_report",
 					"-ljxl",
 					"-ljxl_cms",
 					"-ljxl_threads",
@@ -1220,6 +1262,16 @@
 					"-Wl,-exported_symbol,_pw_camera_slot_exposure",
 					"-Wl,-exported_symbol,_pw_camera_slot_lock",
 					"-Wl,-exported_symbol,_pw_camera_slot_unlock",
+					"-Wl,-u,_pw_camera_slot_focus_arm",
+					"-Wl,-u,_pw_camera_slot_focus_state",
+					"-Wl,-u,_pw_camera_slot_focus_prepare",
+					"-Wl,-u,_pw_camera_slot_focus_series",
+					"-Wl,-u,_pw_camera_slot_focus_report",
+					"-Wl,-exported_symbol,_pw_camera_slot_focus_arm",
+					"-Wl,-exported_symbol,_pw_camera_slot_focus_state",
+					"-Wl,-exported_symbol,_pw_camera_slot_focus_prepare",
+					"-Wl,-exported_symbol,_pw_camera_slot_focus_series",
+					"-Wl,-exported_symbol,_pw_camera_slot_focus_report",
 					"-ljxl",
 					"-ljxl_cms",
 					"-ljxl_threads",

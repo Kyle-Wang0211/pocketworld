@@ -83,6 +83,7 @@ import 'package:path_provider/path_provider.dart';
 import '../../official_dome/ar_pose.dart';
 import '../capture/camera_time_offset.dart';
 import '../capture/zero_arkit_capture_runtime.dart';
+import '../ffi/pw_focus_ffi.dart';
 import '../ffi/xrslam_config.dart' show CameraIntrinsics, FieldProvenanceLabel;
 import '../ffi/xrslam_session.dart';
 import '../pose/camera_projection.dart' show PinholeIntrinsics;
@@ -103,7 +104,47 @@ const Duration kZeroArkitProbeIntrinsicsTimeout = Duration(seconds: 5);
 const Duration kZeroArkitProbeIntrinsicsPoll = Duration(milliseconds: 50);
 
 /// manifest 的 schema 标签。
-const String kZeroArkitProbeManifestSchema = 'pw.bench.zero_arkit_capture_probe/1';
+/// `/2` = 2026-09-23 加了对焦三臂那一块(`focus` 与 `focus_acceptance_tables`)。
+const String kZeroArkitProbeManifestSchema = 'pw.bench.zero_arkit_capture_probe/2';
+
+/// 快门前那一次对焦的轮询间隔与**兜底**上限。
+/// 🔴 真正的上限在原生侧(B 臂 2 s、C 臂 3 s,见 `PwFocusArms.swift`),
+///    这里这个 4 s 只防「原生一直不落终态」把按钮卡死,不是判据。
+const Duration kZeroArkitProbeFocusPoll = Duration(milliseconds: 16);
+const Duration kZeroArkitProbeFocusHardCap = Duration(seconds: 4);
+
+/// 每隔多久把原生的对焦时间序列取空一次。原生环形上限 20000 条(≈11 分钟),
+/// 1 秒一次 ⇒ 正常永远顶不到。
+const Duration kZeroArkitProbeFocusDrain = Duration(seconds: 1);
+
+/// manifest 里那条时间序列的点数上限(任务书)。
+const int kZeroArkitProbeFocusSeriesMaxPoints = 2000;
+
+/// 把对焦时间序列降采样到不超过 [maxPoints] 点。**纯函数,可单测。**
+///
+/// 做法:等间隔抽样(步长 = ceil(n / maxPoints)),并**无条件保留最后一条**。
+/// 🔴 刻意不做窗口平均:平均会把「镜头在动的那一瞬」的尖峰抹平,而那正是
+///    验收表 B 要看的东西(振荡 / 重触发)。抽样丢点是诚实的,平均是造数。
+List<PwFocusSample> downsampleFocusSeries(
+  List<PwFocusSample> src, {
+  int maxPoints = kZeroArkitProbeFocusSeriesMaxPoints,
+}) {
+  if (maxPoints <= 0) return const <PwFocusSample>[];
+  if (src.length <= maxPoints) return List<PwFocusSample>.of(src);
+  final int stride = (src.length + maxPoints - 1) ~/ maxPoints;
+  final List<PwFocusSample> out = <PwFocusSample>[];
+  for (int i = 0; i < src.length; i += stride) {
+    out.add(src[i]);
+  }
+  if (out.last != src.last) out.add(src.last);
+  return out;
+}
+
+/// [downsampleFocusSeries] 实际用的步长(写进 manifest,便于回放时对账)。
+int focusSeriesStride(int length, {int maxPoints = kZeroArkitProbeFocusSeriesMaxPoints}) {
+  if (maxPoints <= 0 || length <= maxPoints) return 1;
+  return (length + maxPoints - 1) ~/ maxPoints;
+}
 
 // ── 平台注入:台架版 ─────────────────────────────────────────────────────────
 
@@ -260,6 +301,12 @@ class ZeroArkitProbeShot {
     required this.elapsedMs,
     required this.trackingStateAtTrigger,
     required this.isTrackingAtTrigger,
+    this.focusPrepareState,
+    this.focusPrepareMs,
+    this.lensPositionAtShutter,
+    this.focusMeasureAtShutter,
+    this.armStateAtShutter,
+    this.isAdjustingFocusAtShutter,
   });
 
   final int index;
@@ -271,6 +318,24 @@ class ZeroArkitProbeShot {
   final int elapsedMs;
   final String? trackingStateAtTrigger;
   final bool isTrackingAtTrigger;
+
+  // ── 验收表 A「按快门瞬间对到物体」的一行(判决书 §6.3)────────────────
+  /// 快门前那一次对焦的终态。A 臂恒为 `unsupported_arm_a`(它本来就不动镜头,
+  /// 那正是对照的定义)。
+  final String? focusPrepareState;
+
+  /// 那一次对焦用了多少毫秒。判决书 §6.3 的**次指标**(主指标是成片锐度)。
+  final double? focusPrepareMs;
+
+  /// 快门那一刻的镜头位置。🔴 0 = 最近、1 = 最远(Apple 头文件原文)。
+  final double? lensPositionAtShutter;
+
+  /// 快门那一刻 ROI 上的 Tenengrad。**不是成片锐度** —— 成片锐度要拉回 Mac
+  /// 用 `quality_compute.dart` 的同一算子在照片上算(判决书 §6.3)。
+  final double? focusMeasureAtShutter;
+
+  final int? armStateAtShutter;
+  final bool? isAdjustingFocusAtShutter;
 
   bool get saved => status == 'saved';
 
@@ -284,6 +349,25 @@ class ZeroArkitProbeShot {
         'elapsed_ms': elapsedMs,
         'tracking_state_at_trigger': trackingStateAtTrigger,
         'is_tracking_at_trigger': isTrackingAtTrigger,
+        'focus_prepare_state': focusPrepareState,
+        'focus_prepare_ms': focusPrepareMs,
+        'lens_position_at_shutter': lensPositionAtShutter,
+        'focus_measure_at_shutter': focusMeasureAtShutter,
+        'arm_state_at_shutter': armStateAtShutter,
+        'is_adjusting_focus_at_shutter': isAdjustingFocusAtShutter,
+      };
+
+  /// 验收表 A 的一行(判决书 §6.3)。只有对焦那几项,与表 B 分开记。
+  Map<String, Object?> toFocusTableRow() => <String, Object?>{
+        'index': index,
+        'jpeg': jpegPath,
+        'focus_prepare_state': focusPrepareState,
+        'focus_prepare_ms': focusPrepareMs,
+        'lens_position_at_shutter': lensPositionAtShutter,
+        'focus_measure_at_shutter': focusMeasureAtShutter,
+        'arm_state_at_shutter': armStateAtShutter,
+        'is_adjusting_focus_at_shutter': isAdjustingFocusAtShutter,
+        'photo_status': status,
       };
 }
 
@@ -308,6 +392,10 @@ Map<String, Object?> buildZeroArkitProbeManifest({
   required DateTime startedAtUtc,
   required DateTime finishedAtUtc,
   required Object? engineUnavailableReason,
+  required bool focusAvailable,
+  required PwFocusState? focusStateAtFinish,
+  required String? focusNativeReportJson,
+  required List<PwFocusSample> focusSeries,
 }) {
   final CameraTimeOffset? c = runtimeStart?.cameraTimeOffset;
   final CameraIntrinsics? feedK = runtimeStart?.intrinsics;
@@ -382,6 +470,84 @@ Map<String, Object?> buildZeroArkitProbeManifest({
     'photos_requested': shots.length,
     'photos_saved': shots.where((ZeroArkitProbeShot s) => s.saved).length,
     'photos': shots.map((ZeroArkitProbeShot s) => s.toJson()).toList(),
+    'focus': _focusBlock(
+      focusAvailable: focusAvailable,
+      stateAtFinish: focusStateAtFinish,
+      nativeReportJson: focusNativeReportJson,
+      series: focusSeries,
+    ),
+    // 🔴 判决书 §6.3 要求**两张验收表分开**:
+    //    A「按快门瞬间对到物体」= 每张照片一行;
+    //    B「视频流持续对焦」= 整场一条时间序列。
+    //    不混着记,免得又出现「用一张表的数放行另一张表的问题」。
+    'focus_acceptance_tables': <String, Object?>{
+      'table_a_shutter_instant': <String, Object?>{
+        'what': '按快门瞬间对到物体(判决书 §6.3 表 A,最关键 —— 近距景深只有毫米级)',
+        'primary_metric_note':
+            '🔴 主指标是**成片在物体 ROI 上的锐度**,要拉回 Mac 用 quality_compute.dart '
+            '的同一 Laplacian 方差在照片上算;本 manifest 只给现场的次指标'
+            '(对焦耗时 / 快门瞬间的镜头位置与视频流度量)。',
+        'rows': shots
+            .map((ZeroArkitProbeShot s) => s.toFocusTableRow())
+            .toList(),
+      },
+      'table_b_video_stream': <String, Object?>{
+        'what': '视频流持续对焦(判决书 §6.3 表 B)',
+        'series_ref': 'focus.video_stream_series',
+      },
+    },
+  };
+}
+
+/// manifest 里 `focus` 那一块。抽出来是为了让上面那个函数别再长。
+Map<String, Object?> _focusBlock({
+  required bool focusAvailable,
+  required PwFocusState? stateAtFinish,
+  required String? nativeReportJson,
+  required List<PwFocusSample> series,
+}) {
+  Object? nativeReport;
+  if (nativeReportJson != null) {
+    try {
+      nativeReport = jsonDecode(nativeReportJson);
+    } catch (e) {
+      // 解不开就把原文与原因都留着,不吞。
+      nativeReport = <String, Object?>{
+        'decode_error': '$e',
+        'raw': nativeReportJson,
+      };
+    }
+  }
+  final List<PwFocusSample> kept = downsampleFocusSeries(series);
+  return <String, Object?>{
+    'available': focusAvailable,
+    'unavailable_note': focusAvailable
+        ? null
+        : '🔴 pw_camera_slot_focus_* 五个符号没全查到 —— 这条路没编进这个二进制'
+            '(模拟器 / 旧构建 / pbxproj 白名单漏了)⇒ 本场没有对焦数据。',
+    'arm_launch_argument': '-PWFocusArm a|b|c(默认 a = 现状锁焦对照臂)',
+    'state_at_finish': stateAtFinish?.toJson(),
+    'minimum_focus_distance_mm': stateAtFinish?.minimumFocusDistanceMm,
+    'minimum_focus_distance_note':
+        '🔴 AVCaptureDevice.minimumFocusDistance,毫米,**-1 = 未知**(Apple 头文件原文)。'
+        '判决书附录 A.4:主摄最近对焦距离若 > 10 cm,10 cm 档必须切超广角 —— '
+        '那是换一颗镜头、换一套内参。',
+    'native_report': nativeReport,
+    'video_stream_series': <String, Object?>{
+      'what': '验收表 B 的原始数据:逐帧 ROI 度量 + 镜头位置 + 对焦状态',
+      'sample_fields': <String>['t', 'lens', 'fm', 'adj', 'st', 'luma'],
+      'sample_fields_note':
+          't = 帧 PTS 秒(与照片 sidecar 的 t 同域);lens = lensPosition **0=最近**;'
+          'fm = Tenengrad ROI 均值;adj = isAdjustingFocus;'
+          'st = A 恒 0 / B 是否调焦 / C = PwAfState(0 Idle 1 Scanning 2 Focused 3 Failed);'
+          'luma = 同一 ROI 平均亮度。',
+      'captured': series.length,
+      'kept': kept.length,
+      'max_points': kZeroArkitProbeFocusSeriesMaxPoints,
+      'downsample_stride': focusSeriesStride(series.length),
+      'downsample_note': '等间隔抽样 + 无条件保留最后一条;**不做平均**(平均会抹掉尖峰)。',
+      'samples': kept.map((PwFocusSample x) => x.toJson()).toList(),
+    },
   };
 }
 
@@ -428,6 +594,13 @@ class _ZeroArkitCaptureProbePageState extends State<ZeroArkitCaptureProbePage> {
   bool _disposing = false;
   String? _manifestPath;
 
+  // ── 对焦三臂 ────────────────────────────────────────────────────────────
+  /// 整场的逐帧对焦流水(验收表 B)。每秒从原生取空一次,写 manifest 时再降采样。
+  final List<PwFocusSample> _focusSeries = <PwFocusSample>[];
+  Timer? _focusDrainTimer;
+  PwFocusState? _focusState;
+  PwFocusArm? _focusArm;
+
   @override
   void initState() {
     super.initState();
@@ -452,6 +625,13 @@ class _ZeroArkitCaptureProbePageState extends State<ZeroArkitCaptureProbePage> {
     _log('机型 prime()=${_primedMachine ?? 'null'} '
         'sysctl(hw.machine)=${_hwMachine ?? 'null'} run=${_runDir!.path}');
     if (!mounted) return;
+
+    // ②.5 🔴 读臂。**在起相机之前** —— `PwFocusArms.configureAtStart` 是在
+    //     `PwCameraSlot.start` 的 lockForConfiguration 块里跑的,那之后再换臂
+    //     就晚了(原生侧也会拒)。不传 `-PWFocusArm` 时默认 A = 现状对照臂。
+    _focusArm = PwFocus.currentArm();
+    _log('对焦臂 ${_focusArm?.describe ?? '🔴 pw_camera_slot_focus_* 符号不在'}'
+        ' available=${PwFocus.available}');
 
     // ③ runtime + provider。机型显式传入,c 的查表/provenance 仍是
     //    camera_time_offset.dart 那一份。
@@ -515,10 +695,32 @@ class _ZeroArkitCaptureProbePageState extends State<ZeroArkitCaptureProbePage> {
           'cx=${fk.cx.toStringAsFixed(2)} cy=${fk.cy.toStringAsFixed(2)} '
           '${fk.resolutionWidth}x${fk.resolutionHeight} ${fk.provenance.label}');
     }
+    // ⑥ 对焦流水每秒取空一次(原生环形上限 20000 条,1 秒一次顶不到)。
+    //    顺带刷新状态条要用的那一份快照。
+    _drainFocus();
+    _focusDrainTimer = Timer.periodic(kZeroArkitProbeFocusDrain, (Timer _) {
+      _drainFocus();
+      if (mounted) setState(() {});
+    });
+    final PwFocusState? fs = _focusState;
+    if (fs != null) {
+      _log('对焦 arm=${fs.arm?.label} 来源=${fs.armSource.label} '
+          'ROI=${fs.roiX},${fs.roiY} ${fs.roiWidth}x${fs.roiHeight} '
+          'minimumFocusDistance=${fs.minimumFocusDistanceMm}mm'
+          '${fs.minimumFocusDistanceMm < 0 ? '(-1 = 未知)' : ''}');
+    }
+
     setState(() {
       _running = true;
       _phase = (r?.ok ?? false) ? '在跑' : '会话未起(${r?.error ?? '未知'})';
     });
+  }
+
+  /// 把原生那边攒下的对焦流水取空,并刷一次状态快照。
+  void _drainFocus() {
+    final List<PwFocusSample> batch = PwFocus.drainSeries();
+    if (batch.isNotEmpty) _focusSeries.addAll(batch);
+    _focusState = PwFocus.state();
   }
 
   void _fail(String why) {
@@ -565,6 +767,34 @@ class _ZeroArkitCaptureProbePageState extends State<ZeroArkitCaptureProbePage> {
     if (provider == null || runDir == null || _shutterBusy || _finished) return;
     setState(() => _shutterBusy = true);
     final int n = _shots.length + 1;
+
+    // ── 🔴 表 A:**拍之前**按臂做一次对焦 ────────────────────────────────
+    //   A 直接拍(它本来就不动镜头,这正是对照的定义);
+    //   B 触发一次 `.autoFocus` 等 `isAdjustingFocus` 落定(原生上限 2 s);
+    //   C 调 `TriggerScan()` 等 Focused/Failed(原生上限 3 s)。
+    //   上限在原生侧;这里的 `kZeroArkitProbeFocusHardCap` 只防「一直不落终态」
+    //   把按钮卡死,不是判据。
+    final Stopwatch focusSw = Stopwatch()..start();
+    PwFocusPrepareState? prepare = PwFocus.prepareBegin();
+    if (prepare != null) {
+      PwFocusPrepareState cur = prepare;
+      while (mounted &&
+          !cur.isTerminal &&
+          focusSw.elapsed < kZeroArkitProbeFocusHardCap) {
+        await Future<void>.delayed(kZeroArkitProbeFocusPoll);
+        cur = PwFocus.preparePoll() ?? PwFocusPrepareState.error;
+      }
+      prepare = cur;
+    }
+    focusSw.stop();
+    _drainFocus();
+    final PwFocusState? focusAtShutter = _focusState;
+    _log('快门 #$n 对焦 臂=${_focusArm?.flag ?? '?'} '
+        '状态=${prepare?.label ?? 'symbol_missing'} '
+        '用时=${focusSw.elapsedMilliseconds}ms '
+        'lens=${focusAtShutter?.lensPosition.toStringAsFixed(4) ?? '?'} '
+        'fm=${focusAtShutter?.focusMeasure.toStringAsFixed(1) ?? '?'}');
+
     final ARPose? pose = provider.lastPose;
     final ARFrameSaveSpec spec = ARFrameSaveSpec(
       frameID: '$n',
@@ -592,8 +822,17 @@ class _ZeroArkitCaptureProbePageState extends State<ZeroArkitCaptureProbePage> {
       elapsedMs: sw.elapsedMilliseconds,
       trackingStateAtTrigger: pose?.trackingStateName,
       isTrackingAtTrigger: pose?.isTracking ?? false,
+      focusPrepareState: prepare?.label,
+      focusPrepareMs: focusSw.elapsedMilliseconds.toDouble(),
+      lensPositionAtShutter: focusAtShutter?.lensPosition,
+      focusMeasureAtShutter: focusAtShutter?.focusMeasure,
+      armStateAtShutter: focusAtShutter?.armState,
+      isAdjustingFocusAtShutter: focusAtShutter?.isAdjustingFocus,
     );
     _shots.add(shot);
+    // 拍完把臂放回常时状态:B 回 `.continuousAutoFocus`、C 回连续档,
+    // 否则「拍一张之后 B 臂就锁在那一次的结果上」,与它的定义不符。
+    PwFocus.prepareEnd();
     _log('快门 #$n status=${r.status} message=${r.message ?? '-'} '
         '用时=${sw.elapsedMilliseconds}ms state=${pose?.trackingStateName} '
         'tracking=${pose?.isTracking} target_t=${spec.targetTimestamp} '
@@ -612,13 +851,22 @@ class _ZeroArkitCaptureProbePageState extends State<ZeroArkitCaptureProbePage> {
     }
     await _poseSub?.cancel();
     _poseSub = null;
+    _focusDrainTimer?.cancel();
+    _focusDrainTimer = null;
     // 会话销毁 + 相机关。provider 没建起来时直接停相机。
     if (_provider != null) {
       await _provider!.stop();
     } else {
       _platform.stopCamera();
     }
+    // 相机已关,把原生那边最后那一批对焦流水取空(stop() 不清序列,就是为了这个)。
+    _drainFocus();
+    final String? focusReport = PwFocus.reportJson();
     _pageClock.stop();
+    _log('对焦收尾:臂=${_focusState?.arm?.label ?? '?'} '
+        '流水=${_focusSeries.length} 条 '
+        '(降采样后 ${downsampleFocusSeries(_focusSeries).length} 条)'
+        ' 丢=${_focusState?.seriesDropped ?? 0}');
     _log('已停:owned=${_platform.cameraOwnedBySelfVio()} '
         'session=${XrslamSession.current == null ? 'null' : 'alive'}');
 
@@ -644,6 +892,10 @@ class _ZeroArkitCaptureProbePageState extends State<ZeroArkitCaptureProbePage> {
         startedAtUtc: _startedAtUtc,
         finishedAtUtc: DateTime.now().toUtc(),
         engineUnavailableReason: _provider?.engineUnavailableReason,
+        focusAvailable: PwFocus.available,
+        focusStateAtFinish: _focusState,
+        focusNativeReportJson: focusReport,
+        focusSeries: _focusSeries,
       );
       try {
         await runDir.create(recursive: true);
@@ -684,6 +936,20 @@ class _ZeroArkitCaptureProbePageState extends State<ZeroArkitCaptureProbePage> {
     final CameraTimeOffset? c = r?.cameraTimeOffset ?? runtime?.cameraTimeOffset;
     final ARPose? pose = _lastPose;
     final ZeroArkitProbeShot? last = _shots.isEmpty ? null : _shots.last;
+    final PwFocusState? f = _focusState;
+    // C 臂的 armState 是 PwAfState;A/B 臂是「是否在调焦」。分开显示,不混。
+    const List<String> afStateNames = <String>[
+      'Idle', 'Scanning', 'Focused', 'Failed',
+    ];
+    String armStateText() {
+      if (f == null) return '-';
+      if (f.arm == PwFocusArm.c) {
+        return f.armState >= 0 && f.armState < afStateNames.length
+            ? afStateNames[f.armState]
+            : '${f.armState}';
+      }
+      return f.armState != 0 ? '调焦中' : '稳定';
+    }
 
     final List<String> lines = <String>[
       '阶段:$_phase${_fatal == null ? '' : ' 🔴 $_fatal'}',
@@ -695,6 +961,23 @@ class _ZeroArkitCaptureProbePageState extends State<ZeroArkitCaptureProbePage> {
       '状态 ${pose?.trackingStateName ?? '-'} · tracking=${pose?.isTracking ?? '-'}'
           ' · tier=${_confidence.tier.name}',
       '位姿帧 $_poseFrames(跟踪 $_trackingFrames)· 已存 $_savedCount/${_shots.length} 张',
+      // ── 对焦三臂 ────────────────────────────────────────────────────
+      f == null
+          ? '对焦 🔴 pw_camera_slot_focus_* 符号不在(这条路没编进这个二进制)'
+          : '对焦臂 ${f.arm?.flag ?? '?'}(${f.arm?.label ?? '?'})'
+              ' 来源=${f.armSource.label}'
+              ' · minFocusDist=${f.minimumFocusDistanceMm}mm'
+              '${f.minimumFocusDistanceMm < 0 ? '(未知)' : ''}',
+      if (f != null)
+        '镜位 ${f.lensPosition.toStringAsFixed(4)}(0=最近)'
+            ' · 度量 ${f.focusMeasure.toStringAsFixed(1)}'
+            ' · adjusting=${f.isAdjustingFocus}'
+            ' · 状态 ${armStateText()}',
+      if (f != null)
+        '快门对焦 ${f.prepareState.label} ${f.prepareElapsedMs.toStringAsFixed(0)}ms'
+            ' · 流水 ${_focusSeries.length}+${f.seriesPending}'
+            '${f.seriesDropped > 0 ? ' 🔴丢${f.seriesDropped}' : ''}'
+            ' · ROI ${f.roiWidth}x${f.roiHeight}@${f.roiX},${f.roiY}',
       last == null
           ? '最近快门:-'
           : '最近快门 #${last.index}:${last.status}'

@@ -234,11 +234,23 @@ private final class PwCameraSlotImpl: NSObject,
             //    跨度 7.7%、1429 个唯一值。镜头不锁 = 拿一个定值内参去解一台
             //    焦距在变的相机。
             //    [lensPosition] < 0 表示"不锁"(保留给需要对比的实验)。
-            if lensPosition >= 0 {
+            //
+            // 🔴 [pw 2026-09-23 对焦三臂] 下面这三行**一个字节没动**,只在 if
+            //    的条件上多加了 `&& focusArm == .a`。A 臂 = 默认臂 ⇒ 不传
+            //    `-PWFocusArm` 时条件与改之前完全相同,行为逐字节不变。
+            //    B/C 臂不走这一段,走 `PwFocusArms.configureAtStart`(见下),
+            //    各自的做法与 Apple 头文件引文都在 PwFocusArms.swift 里。
+            let focusArm = PwFocusArms.shared.currentArm()
+            if lensPosition >= 0 && focusArm == .a {
                 device.setFocusModeLocked(
                     lensPosition: Float(min(max(lensPosition, 0), 1)),
                     completionHandler: nil)
             }
+            // 🔴 台架第一件事:读 `minimumFocusDistance`(毫米,-1 未知)——
+            //    它决定 10 cm 档在主摄上是否物理可达(判决书附录 A.4)。
+            //    三臂都调:A 臂只读能力位与建度量 context,不碰任何设备设置。
+            //    必须在 lockForConfiguration 块内(B/C 要改 focus* 属性)。
+            PwFocusArms.shared.configureAtStart(device: device)
 
             // 🔴 **显式定帧率**,值抄上游 `ViewController.swift:255`
             //    `camera.setFps(30)`。做法也抄 `Camera.setFps`:在 activeFormat
@@ -317,6 +329,9 @@ private final class PwCameraSlotImpl: NSObject,
         session = nil
         slot = nil  // ARC + CVPixelBuffer 的 Swift 桥接会释放它
         lock.unlock()
+        // [pw 2026-09-23 对焦三臂] 放掉设备引用、把在途的对焦如实记成 error。
+        // **不清时间序列** —— Dart 还要把它 drain 进 manifest。
+        PwFocusArms.shared.onCameraStopped()
         s?.stopRunning()
     }
 
@@ -368,6 +383,11 @@ private final class PwCameraSlotImpl: NSObject,
         PwXrslamLive.shared.onCameraFrame(
             pb, ptsSeconds: latestFramePTSSeconds,
             exposureSeconds: latestExposureSeconds)
+
+        // [pw 2026-09-23 对焦三臂] **三臂都在这里算同一个度量**(A/B 臂不驱动
+        // 镜头,但没有度量就没得比);C 臂在里面顺带把状态机推一步并下发镜头。
+        // 位置在喂引擎**之后**:VIO 的实时截止期优先,对焦是观测不是承重。
+        PwFocusArms.shared.onFrame(pb, ptsSeconds: latestFramePTSSeconds)
 
         // 换入即释放。Swift 的 `CVPixelBuffer` 是 CF 桥接类型,赋值即 retain、
         // 覆盖即 release —— 不需要手写 CVPixelBufferRetain/Release。
