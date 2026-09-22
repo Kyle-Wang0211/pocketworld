@@ -323,3 +323,68 @@
 - `ios/Runner/PwCameraSlot.swift`:`:130-132` start 签名、`:237-241` 锁焦、`:323-395` 逐帧回调、`:707` 快门、`:468-483` 曝光/光圈读出
 - `lib/quality/quality_compute.dart`:`:4-21` 128×128 缩略图上的 Laplacian 方差(现有清晰度算子,6 Hz)
 - GPU 前端:`/Users/kaidongwang/Developer/Aether3D-cross/aether_cpp/tools/pw_gpu_frontend.cpp:58,120`(sobel/harris 管线装载与派发)、`pw_gpufe_wgsl.h:13 k_sobel_dxdy`、`:380 k_gftt_max`
+
+---
+
+# 附录 A(2026-09-23 补):VCM / 收敛 / 景深 的发表数值
+
+正文 §6 把「VCM 行程 / DAC 位数 / 整定时间」标成未核(负责该路的子 agent 当时未返回)。它随后返回,数值补在这里。**每条都打开过原文**(反爬页走 Wayback),未能打开原文的集中在 A.4。
+
+## A.1 VCM 执行器
+
+| 量 | 数值 | 来源 |
+|---|---|---|
+| 行程 | 额定 250–400 µm;AF 所需最大位移 300–400 µm;斜率 ≈10 µm/mA;起动电流 ≥20 mA | ADI *Analog Dialogue* 40-11 (2006) —— 🔴原文印作 "mm",HTML 与 PDF 抽文都丢了 µ 字符,按物理只能读作 µm |
+| 行程(论文实测) | 0.4 mm 行程,最大响应 10 ms @40 mA | Liu/Chang/Li 2016, doi:10.3233/JAE-150166 |
+| 闭环伺服 | 0.6 mm 范围、30 ms 到位、分辨率 <5 µm | IEEE PESC 2007, doi:10.1109/pesc.2007.4342192 |
+| **开环 DAC** | **10-bit**:DW9714A 1023 级 / 117.3 µA/LSB / 120 mA;TI DRV201、ROHM BU64292 同为 10-bit | 三家数据手册 |
+| **闭环 DAC** | **12-bit**(AK7375,0–4095;AK7345 为 9-bit/511) | Linux `drivers/media/i2c/ak7375.c` 常量 |
+| **整定时间** | 弹簧振铃 **50–150 Hz**(TI 默认 76.4 Hz);TI:100 Hz VCM 走 50 µm,**10 ms**(1/f)进 ±5 µm,20 ms(2/f)更稳;ROHM 可设 (1/f0)×0.48…1.20;Dongwoon DLC 把上升时间从 Tvib 减半到 Tvib/2 | DRV201 §6.6/§7.3.2/§8.2.2;BU64292 寄存器表;DW9714A |
+| 执行器速度量级 | VCM 10 ms / 压电 3 ms / 步进 100 ms | ADI 2006 表 I |
+| 迟滞 | 🔴**无任何发表 µm 值**。ADI 称「无迟滞,电流-位置直接对应」;Herrmann CVPR2020 称开环 VCM「无法知道真实位置」 | 两者并不矛盾:前者说静态可重复,后者说没有反馈 |
+
+⇒ **对我们的意义**:开环 10-bit 对应 1023 级、行程约 0.4 mm ⇒ 每级 ≈0.4 µm,远细于 20 cm 处 7.2 mm 景深所需;瓶颈不是分辨率,是**每步要等整定**(10–20 ms ≈ 0.3–0.6 帧 @30 fps),而 libcamera 默认等 `step_frames`=5 帧(167 ms),**远大于整定所需** —— 因为它等的不是镜头,是 ISP 统计更新。iOS 有 `completionHandler` 给「镜头已到位」的硬时间戳,这一项可以缩。
+
+## A.2 反差式 AF 收敛(正文 §3 的数字要按此修正)
+
+| 数值 | 来源 |
+|---|---|
+| **平均 6 步 ≈ 0.2 s @30 fps**(手机级平台实测) | Chan & Chen, Electronic Imaging 2018 |
+| 平均 5–10 次迭代 | Intel US 9756234 |
+| **结构下限 ≥2 帧**,加处理再延 ≥1 帧 | Imagination US 10855907 |
+| 学习型 1–2 帧定焦,比搜索法快 5–10× | Wang et al. arXiv:2002.12389 |
+| PDAF 到位 0.03 s(2 m→2 cm,≥2000 lux) | Sony IMX318 新闻稿 |
+| libcamera imx708 实际调优:normal `step_frames` **5**、macro 3–15 D;fast `step_frames` 4、`step_fine` 0 | `imx708.json` |
+| 由上推算(**推算非发表**):libcamera 默认 normal 全程 ≈80 帧 ≈**2.7 s**,fast ≈40 帧 ≈**1.3 s** | — |
+
+🔴 **修正正文 §0/§3 的「2–3 s」**:那是**libcamera 默认调优 + 全程粗扫**的上界,不是反差式 AF 的下限。同为 CDAF,手机级实现实测可到 **6 步 / 0.2 s**。我们的 macro 档只扫 3–15 D 且首峰即停,步数本就远少于全程,**别拿 2–3 s 当既定结论**;真实数由验收表量。
+
+## A.3 景深(发表参数 + 薄透镜公式,计算值非实测)
+
+f = 6.82 mm(由 Apple 公布的 2.44 µm 像元 + 24 mm 等效反推,与 DPReview 6.86、EXIF 6.765 差 <1%),N = 1.78。
+
+| 弥散圆 | 10 cm | 20 cm | 30 cm |
+|---|---|---|---|
+| 2.44 µm(48MP 两像元) | **1.7 mm** | **7.2 mm** | **16.4 mm** |
+| 4.88 µm(12MP 合并两像元) | 3.5 mm | 14.4 mm | 32.9 mm |
+| 8.2 µm(对角/1500) | 5.8 mm | 24.3 mm | 55.6 mm |
+
+⇒ **10–30 cm 的小物体,任何单一锁焦位置都盖不住整个物体**。这是「锁焦必须去掉」的定量依据。
+
+## A.4 一条会决定产品形态的发表值:最近对焦距离
+
+| 机型/镜头 | 最近对焦 | 来源 |
+|---|---|---|
+| iPhone 12 Pro 广角 | **12 cm** | Apple WWDC21 session 10047 |
+| iPhone 12 Pro Max 广角 | **15 cm** | 同上 |
+| iPhone 13 Pro 广角 | 15 cm(二手:Halide 博客) | Lux/Halide 2021-10-06 |
+| iPhone 13 Pro 超广角 | **2 cm** | Apple 新闻稿 |
+| 论文实测 12 Pro 广角「稳定最近」 | **20.5 cm** | Lin et al. TPAMI 2025 / arXiv:2310.11535 |
+
+🔴 **主摄在 10–15 cm 以内根本对不上焦**,原生「微距」就是切超广角实现的。我们的 10 cm 档若要成立,必须换镜头 ⇒ 换一套内参,影响远超对焦本身。Apple 不发布逐机型表,DTS 明确要求运行时读 `minimumFocusDistance`(iOS 15+,毫米,未知 −1)。**14 Pro 的值只能在机上读,台架第一件事就是读它。**
+
+另:Lin et al. 的标定法(直线导轨逐机逐镜头建查找表)确认 `lensPosition` 有效区间他们只用 **[0.1, 0.8]** —— 我们现状锁的 **0.835 在这个区间之外、且贴着最远端**。
+
+## A.5 仍未核实
+
+Apple AF 执行器类型(从未公布;「Cirrus Logic 驱动 + Hall 闭环」只在二手转载);闭环驱动 datasheet(onsemi/AKM/Dongwoon 官网不公开 PDF,AK7375 数值仅来自内核驱动常量);Kehtarnavaz & Oh 2003 的步数(付费墙);VCM 迟滞 µm 值(无发表数据);iPhone 传感器尺寸与真实焦距(DPReview 二手 + EXIF,已用 Apple 公布像元交叉验证到 <1%);Samsung Dual Pixel「毫秒级」(新闻稿里没有时间数字)。
