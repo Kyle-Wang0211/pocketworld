@@ -22,6 +22,8 @@ import 'ruler_scrubber.dart';
 import 'selection_tools_layer.dart';
 import 'sfm_preview_overlay.dart' show SfmBottomActionButton;
 import '../../point_cloud_display/progressive_octree_order.dart';
+import 'review_cloud_cache.dart'
+    show ReviewCloudCache, ReviewCloudRequest, loadReviewCloudCached;
 import 'sparse_cloud_view.dart';
 
 /// Parsed cloud (full set — delivery never downsamples). [sourceCount] is the
@@ -38,13 +40,13 @@ class SparseCloudData {
   bool get isBudgeted => sourceCount > count;
 }
 
-/// What the viewer loads (isolate entry): the full PLY when it fits the review
-/// point budget, otherwise the first [ReviewPointCloudPolicy.kPointBudget]
+/// What the viewer loads: the full PLY when it fits the review point budget
+/// ([ReviewPointCloudPolicy.kPointBudget]), otherwise the first `budget`
 /// points of the progressive octree order (uniform over the whole extent).
 /// The file is left as is.
-SparseCloudData? loadReviewCloud(String path) =>
-    loadReviewCloudWithBudget(path, ReviewPointCloudPolicy.kPointBudget);
-
+///
+/// [REVIEW-CACHE 2026-09-22] 这是**重算**路径,几十秒的那条。isolate 入口改成
+/// `loadReviewCloudCached`(review_cloud_cache.dart),它命中盘上缓存就不进来。
 SparseCloudData? loadReviewCloudWithBudget(String path, int budget) {
   final full = loadSparsePly(path);
   if (full == null || full.count <= budget) return full;
@@ -497,9 +499,12 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
   }
 
   Future<void> _load() async {
+    // [REVIEW-CACHE 2026-09-22] 与 ar_capture_page 的查看模式同一条缓存:目录
+    // 在主 isolate 上解析,解析不出来传 null ⇒ 不缓存,逐字退回改动前。
+    final cacheDir = await ReviewCloudCache.resolveDir();
     final cloud = await compute(
-      loadReviewCloud,
-      widget.plyPath,
+      loadReviewCloudCached,
+      ReviewCloudRequest(plyPath: widget.plyPath, cacheDir: cacheDir),
       debugLabel: 'sparse_ply_load',
     );
     // [E25-D 2026-07-20] L2 渲染门已删除 —— 草稿查看页渲染全量交付点云。

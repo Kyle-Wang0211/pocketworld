@@ -50,10 +50,19 @@ void main() {
       ret,
       lessThan(camera),
     ); // the review branch returns before _initCamera()
+    // [REVIEW-CACHE 2026-09-22] isolate 入口换成带盘缓存的 loadReviewCloudCached,
+    // 缓存目录必须在主 isolate 上解析好再随请求传进去。
+    final flat = page.replaceAll(RegExp(r'\s+'), '');
     expect(
-      page.contains(
-        "cloud = await compute(loadReviewCloud, ply, debugLabel: 'review_load_sparse');",
+      flat.contains(
+        "cloud=awaitcompute(loadReviewCloudCached,"
+        "ReviewCloudRequest(plyPath:ply,cacheDir:cacheDir),"
+        "debugLabel:'review_load_sparse',)",
       ),
+      isTrue,
+    );
+    expect(
+      flat.contains('finalcacheDir=awaitReviewCloudCache.resolveDir();'),
       isTrue,
     );
     expect(page.contains('_sfmPhase = SfmPreviewPhase.refined;'), isTrue);
