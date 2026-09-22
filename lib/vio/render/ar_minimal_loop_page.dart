@@ -421,6 +421,24 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
               'delta=${(t.delta * 1000).toStringAsFixed(1)}ms '
               '|delta|峰值=${(t.maxAbsDelta * 1000).toStringAsFixed(1)}ms');
         }
+        // [pw 2026-09-22] 时基自证 —— 相机时间戳是不是真的按"曝光中点 + c"进了引擎。
+        //    两个 residual 必须恒 0;`有曝光` 应等于 `帧`;`引擎收到−PTS` ≈ 曝光/2 + c。
+        //    这是把"改了两行"变成"引擎确实吃到了换算值"的唯一现场证据。
+        final tb = XrslamLive.timebase();
+        if (tb != null) {
+          debugPrint('[arloop] 时基 '
+              'c传入=${(tb.cameraTimeOffsetSeconds * 1000).toStringAsFixed(2)}ms '
+              'c施加=${(tb.appliedOffsetSeconds * 1000).toStringAsFixed(2)}ms '
+              '帧=${tb.frames} 有曝光=${tb.framesWithExposure} '
+              '曝光ms[min/mean/max]=${(tb.minExposureSeconds * 1000).toStringAsFixed(2)}/'
+              '${(tb.meanExposureSeconds * 1000).toStringAsFixed(2)}/'
+              '${(tb.maxExposureSeconds * 1000).toStringAsFixed(2)} '
+              '平均加=${(tb.meanHalfAppliedSeconds * 1000).toStringAsFixed(2)}ms '
+              '引擎收到−PTS=${(tb.effectiveMinusPtsSeconds * 1000).toStringAsFixed(2)}ms '
+              'residual[raw/offset]=${tb.maxAbsRawResidual.toStringAsExponential(1)}/'
+              '${tb.maxAbsOffsetResidual.toStringAsExponential(1)} '
+              'trace读=${tb.traceReads}');
+        }
         // [pw 2026-09-19] 曝光实测 —— 回答"为什么比系统相机暗"。只读,不改设置。
         final CameraExposure? e = PwCameraSlot.exposure();
         if (e != null) debugPrint('[arloop] ${e.toDiagnosticString()}');
@@ -467,6 +485,15 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
   /// 全程在动(该文件的文档实测单场 120 s 内 fx 漂 **10.90%**)。出货引擎导出的
   /// 五个符号里**没有**任何"更新内参"的入口,所以这里只能取**建会话那一刻**的
   /// 快照。这与台架既有的"冻第 0 帧焦距"是同一个已知缺陷,不是本次引入的。
+  /// [pw 2026-09-22] 每机常量 c,`--dart-define=PW_CAM_TD_MS=<毫秒>`,默认 0。
+  /// 传给 `PWXrslamTransportCreateWithCameraTimeOffset`,只加在相机时间戳上。
+  /// 它**不是**曝光/2 —— 那一项在 `PwCameraSlot`→`PwXrslamLive` 里逐帧算;
+  /// c 是剩下的(卷帘读出/2 + 管线固定延迟),用回放扫描定一次。
+  static const String _camTdMsRaw =
+      String.fromEnvironment('PW_CAM_TD_MS', defaultValue: '0');
+  static final double _camTdSeconds =
+      (double.tryParse(_camTdMsRaw) ?? 0.0) / 1000.0;
+
   void _ensureSession() {
     if (_sessionAttempted || XrslamSession.current != null) return;
     final PinholeIntrinsics? k = PwCameraSlot.intrinsics(
@@ -476,6 +503,7 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
     if (k == null) return; // 还没有交付过帧,下一帧再试
     _sessionAttempted = true;
     _session = XrslamSession.start(
+      cameraTimeOffsetSeconds: _camTdSeconds,
       intrinsics: CameraIntrinsics(
         fx: k.fx,
         fy: k.fy,

@@ -98,7 +98,13 @@ class XrslamSession {
   ///
   /// [intrinsics] 不传就用那边同一组**明确标记为占位**的值;真实值要从
   /// `AVCameraCalibrationData` 读(`PwCameraSlot.intrinsics` 能给)。
-  static XrslamSessionStart start({CameraIntrinsics? intrinsics}) {
+  ///
+  /// [cameraTimeOffsetSeconds] = 每机常量 c,原样交给原生 create(传输层只加在
+  /// 相机时间戳上)。默认 0。见 `PwXrslamLive.swift` 文件头偏离 (d)。
+  static XrslamSessionStart start({
+    CameraIntrinsics? intrinsics,
+    double cameraTimeOffsetSeconds = 0.0,
+  }) {
     if (_current != null) {
       return const XrslamSessionStart(
         createRc: null,
@@ -139,6 +145,7 @@ class XrslamSession {
     final int? rc = XrslamLive.create(
       slamConfigPath: _slamPath!,
       deviceConfigPath: _devPath!,
+      cameraTimeOffsetSeconds: cameraTimeOffsetSeconds,
     );
     if (rc != 1) {
       return XrslamSessionStart(

@@ -31,9 +31,9 @@ import 'dart:ffi' as ffi;
 import 'package:ffi/ffi.dart';
 
 typedef _CreateNative = ffi.Int32 Function(
-    ffi.Pointer<ffi.Char>, ffi.Pointer<ffi.Char>);
+    ffi.Pointer<ffi.Char>, ffi.Pointer<ffi.Char>, ffi.Double);
 typedef _CreateDart = int Function(
-    ffi.Pointer<ffi.Char>, ffi.Pointer<ffi.Char>);
+    ffi.Pointer<ffi.Char>, ffi.Pointer<ffi.Char>, double);
 typedef _BeginNative = ffi.Int32 Function(ffi.Double);
 typedef _BeginDart = int Function(double);
 typedef _VoidNative = ffi.Void Function();
@@ -165,9 +165,14 @@ abstract final class XrslamLive {
 
   /// 建会话。**返回 1 成功 / 0 失败**(冻结的 `XRSLAMCreate` 口径),
   /// 符号不在返回 `null`。
+  ///
+  /// [cameraTimeOffsetSeconds] = 每机常量 c,传输层只加在相机时间戳上
+  /// (`PWXrslamTransportCreateWithCameraTimeOffset`)。曝光/2 那一项**不在这里**,
+  /// 它在原生侧逐帧算(`PwXrslamLive.swift` 文件头偏离 (d))。
   static int? create({
     required String slamConfigPath,
     required String deviceConfigPath,
+    double cameraTimeOffsetSeconds = 0.0,
   }) {
     _lookup();
     final _CreateDart? f = _create;
@@ -177,7 +182,7 @@ abstract final class XrslamLive {
     final ffi.Pointer<ffi.Char> b =
         deviceConfigPath.toNativeUtf8().cast<ffi.Char>();
     try {
-      return f(a, b);
+      return f(a, b, cameraTimeOffsetSeconds);
     } finally {
       calloc.free(a);
       calloc.free(b);
@@ -249,6 +254,63 @@ abstract final class XrslamLive {
       imuTs: _timingOut[1],
       delta: _timingOut[2],
       maxAbsDelta: _timingOut[3],
+    );
+  }
+
+  static _OutDoubleDart? _timebase;
+  static final ffi.Pointer<ffi.Double> _timebaseOut = calloc<ffi.Double>(12);
+
+  /// [pw 2026-09-22] 相机时间戳换算的**运行期自证**(`PwXrslamLive.timebase`)。
+  /// `null` = 符号不在或还没推过帧。
+  ///
+  /// 判读(见 `PwXrslamLive.swift` 文件头偏离 (d)):
+  ///   · `framesWithExposure == frames` ⇒ 每帧都拿到了曝光时长;差的那些是按 0
+  ///     换算的(没猜,如实计数)。
+  ///   · `maxAbsRawResidual` **必须为 0** —— C 账本收到的 raw 就是我们推的
+  ///     PTS+exposure/2;非 0 = 推的不是换算值。
+  ///   · `maxAbsOffsetResidual` **必须为 0** —— 传输层加的就是 applied_offset。
+  ///   · `appliedOffsetSeconds` 应等于 create 时传的 [cameraTimeOffsetSeconds]。
+  ///   · `effectiveMinusPtsSeconds` = 引擎实际收到的时刻 − 原始 PTS
+  ///     = exposure/2 + c,是这条链**唯一**的端到端读数。
+  static ({
+    double cameraTimeOffsetSeconds,
+    double appliedOffsetSeconds,
+    int frames,
+    int framesWithExposure,
+    double meanExposureSeconds,
+    double minExposureSeconds,
+    double maxExposureSeconds,
+    double meanHalfAppliedSeconds,
+    double maxAbsRawResidual,
+    double maxAbsOffsetResidual,
+    double effectiveMinusPtsSeconds,
+    int traceReads,
+  })? timebase() {
+    _lookup();
+    _timebase ??= () {
+      try {
+        return _lib.lookupFunction<_OutDoubleNative, _OutDoubleDart>(
+            'pw_xrslam_live_timebase');
+      } catch (_) {
+        return null;
+      }
+    }();
+    final _OutDoubleDart? f = _timebase;
+    if (f == null) return null;
+    if (f(_timebaseOut) != 0) return null;
+    return (
+      cameraTimeOffsetSeconds: _timebaseOut[0],
+      appliedOffsetSeconds: _timebaseOut[1],
+      frames: _timebaseOut[2].toInt(),
+      framesWithExposure: _timebaseOut[3].toInt(),
+      meanExposureSeconds: _timebaseOut[4],
+      minExposureSeconds: _timebaseOut[5],
+      maxExposureSeconds: _timebaseOut[6],
+      meanHalfAppliedSeconds: _timebaseOut[7],
+      maxAbsRawResidual: _timebaseOut[8],
+      maxAbsOffsetResidual: _timebaseOut[9],
+      effectiveMinusPtsSeconds: _timebaseOut[10],
+      traceReads: _timebaseOut[11].toInt(),
     );
   }
 

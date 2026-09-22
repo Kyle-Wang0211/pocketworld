@@ -63,6 +63,13 @@ private final class PwCameraSlotImpl: NSObject,
     /// 🔴 XRSLAM 的 PushImage 有严格递增闸,必须用这个而不是"取帧那一刻"。
     fileprivate var latestFramePTSSeconds: Double = 0
 
+    /// [pw 2026-09-22] 最新一帧的**曝光时长**(秒)。与 PTS 同一回调里读,喂给
+    /// `PwXrslamLive.onCameraFrame` 做曝光中点换算(见那边文件头偏离 (d))。
+    /// 读法抄 Huai 的 MARS logger(arXiv 2001.00470 §III.B):
+    /// "the exposureDuration read from the AVCaptureDevice instance is recorded
+    ///  for every frame" —— 回调时刻的设备状态,不是 EXIF 附件。自动曝光下它逐帧变。
+    fileprivate var latestExposureSeconds: Double = 0
+
     /// [pw 2026-09-19] 只读诊断:当前采集设备与所选格式是否 binned。
     /// 加它是为了回答"bench 画面为什么比系统相机暗" —— 不改任何采集设置。
     fileprivate var device: AVCaptureDevice?
@@ -237,6 +244,15 @@ private final class PwCameraSlotImpl: NSObject,
         latestFramePTSSeconds = CMTimeGetSeconds(
             CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
 
+        // [pw 2026-09-22] 同一回调里读当帧曝光。`device` 在 start() 里存住,
+        // 还没存住时为 0 ⇒ 下游按"无曝光信息"如实计数,不猜。
+        if let d = device {
+            let e = CMTimeGetSeconds(d.exposureDuration)
+            latestExposureSeconds = (e.isFinite && e >= 0) ? e : 0
+        } else {
+            latestExposureSeconds = 0
+        }
+
         // 内参:每帧都读,因为自动对焦全程在动。
         if let raw = CMGetAttachment(
             sampleBuffer,
@@ -255,7 +271,9 @@ private final class PwCameraSlotImpl: NSObject,
         //    trackCamera` 同位(`XRSLAMer.swift:27-33` / `XRSLAM_iOS.mm:152`)。
         //    上一版是 Dart 每渲染帧再来取一次 —— 那既改了节奏也改了顺序。
         //    位姿结果由 `PwXrslamLive` 存住,Dart 只读,不进热路径。
-        PwXrslamLive.shared.onCameraFrame(pb, ptsSeconds: latestFramePTSSeconds)
+        PwXrslamLive.shared.onCameraFrame(
+            pb, ptsSeconds: latestFramePTSSeconds,
+            exposureSeconds: latestExposureSeconds)
 
         // 换入即释放。Swift 的 `CVPixelBuffer` 是 CF 桥接类型,赋值即 retain、
         // 覆盖即 release —— 不需要手写 CVPixelBufferRetain/Release。

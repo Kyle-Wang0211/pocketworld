@@ -61,6 +61,25 @@
 //     里那次 cvtColor 是同一个函数、同一个常量**。少一次拷贝,零口径差。
 // (c) 算法不在回调里跑,搬到 worker(见上)。依据是生产 `PwVioSlamFeeder`,
 //     不是我的设计。
+// (d) [2026-09-22] 相机时间戳在推给传输层之前换算到**曝光中点**:
+//     `t_canonical = PTS + exposureDuration/2`。上游 `Camera.swift:150-151` 把
+//     `presentationTimeStamp` 原样推、19 份 iPhone yaml 里 18 份 `time_offset: 0.0`
+//     —— 上游没做,我们此前忠实复刻了这个缺口。
+//     依据(不是自研):
+//       · Huai arXiv 2001.00470 §IV.B:iOS 帧 "timestamped at the beginning of
+//         exposure";修正是 "subtracting half of the sum of [rolling shutter +
+//         exposure]"。同一套硬件改曝光 td 就跟着动(Kalibr #267),斜率≈0.5
+//         (MDPI Sensors 2026 26(18):5849)。
+//       · 我们自己的契约 `xrslam-interface/include/XRSLAM.h` 条目 09:canonical =
+//         中心行曝光中点;`XRSLAMManager.cpp:92-99` 的换算就是 `+0.5·exposure+0.5·readout`。
+//     为什么不走 `timestamp_convention` 字段让库换算:**出货 vendor 头是 40 字节
+//     旧 `XRSLAMImage`**(`vendor/xrslam/include/XRSLAM.h:40-47`),没有那几个字段;
+//     头注释对 iOS 的建议本来就是"填 0 并自己换算到 canonical"。
+//     卷帘读出时间 iOS 不公开 ⇒ 它的一半连同管线固定延迟一起进**每机常量 c**,
+//     由 `PWXrslamTransportCreateWithCameraTimeOffset` 在传输层施加。
+//     🔴 自证:`runOneFrame` 推完当帧立刻从 C 账本读 `PWXrslamTimestampTrace`
+//     (同一条串行 worker ⇒ 一定是本帧):raw 必须 == 我们推的 canonical,
+//     effective − raw 必须 == applied_offset。`timebase(into:)` 把它们报出去。
 //
 // ⚠️ **本文件不解决"引擎在 1920×1440 上跑不到 60fps"** —— 它只保证相机不被
 //    堵住、丢帧被如实计数归因。真正吃不下的帧数会出现在 `framesDropped` 上。
@@ -139,6 +158,28 @@ final class PwXrslamLive {
     private var imuDropped: UInt64 = 0
     private var maxObservedPendingFrames = 0
 
+    // ── [pw 2026-09-22] 时基自证账本(见文件头偏离 (d)) ──────────────────
+    /// create 时传给传输层的每机常量 c(秒)。只作对照;报出的以 C 账本为准。
+    private var cameraTimeOffsetSeconds: Double = 0
+    private var tbFrames: UInt64 = 0
+    /// 曝光 > 0 的帧数。== tbFrames ⇒ 每帧都拿到了曝光;< ⇒ 有帧按 0 换算过。
+    private var tbFramesWithExposure: UInt64 = 0
+    private var tbExposureSum: Double = 0
+    private var tbExposureMin: Double = .infinity
+    private var tbExposureMax: Double = 0
+    /// 实际加到时间戳上的 exposure/2 之和。
+    private var tbHalfAppliedSum: Double = 0
+    private var lastCanonicalPts: Double = 0
+    /// 以下来自 C 账本 `PWXrslamTransportGetLastTimestampTrace`,不是 Swift 合成。
+    private var tbTraceReads: UInt64 = 0
+    private var tbLastAppliedOffset: Double = 0
+    /// 引擎实际收到的时刻 − 原始 PTS(最近一帧)。应 ≈ exposure/2 + c。
+    private var tbLastEffectiveMinusPts: Double = 0
+    /// |C 收到的 raw − 我们推的 canonical| 峰值。**必须恒 0**。
+    private var tbMaxAbsRawResidual: Double = 0
+    /// |(effective − raw) − applied_offset| 峰值。**必须恒 0**。
+    private var tbMaxAbsOffsetResidual: Double = 0
+
     // MARK: 生命周期
 
     /// 由 `PwCameraSlot.start()` 调用,登记相机的串行队列。
@@ -147,9 +188,21 @@ final class PwXrslamLive {
     }
 
     /// 返回沿用冻结的 `XRSLAMCreate` 口径:**1 成功 / 0 失败**。
-    func create(slamConfigPath: String, deviceConfigPath: String) -> Int32 {
+    ///
+    /// [cameraTimeOffsetSeconds] = 每机常量 c(见文件头偏离 (d)),由传输层在推相机
+    /// 样本前加到时间戳上(`PwXrslamTransportCore.cpp` `ValidateTimestampLocked`:
+    /// `effective = raw + offset`),IMU 不动。0 = 不加。
+    func create(slamConfigPath: String, deviceConfigPath: String,
+                cameraTimeOffsetSeconds: Double) -> Int32 {
         lock.lock(); defer { lock.unlock() }
         if created { return 1 }
+        self.cameraTimeOffsetSeconds =
+            cameraTimeOffsetSeconds.isFinite ? cameraTimeOffsetSeconds : 0
+        tbFrames = 0; tbFramesWithExposure = 0
+        tbExposureSum = 0; tbExposureMin = .infinity; tbExposureMax = 0
+        tbHalfAppliedSum = 0; lastCanonicalPts = 0
+        tbTraceReads = 0; tbLastAppliedOffset = 0; tbLastEffectiveMinusPts = 0
+        tbMaxAbsRawResidual = 0; tbMaxAbsOffsetResidual = 0
 
         // 🔴 GPU 前端的运行期开关。只有链了 `gpufenothread` 那条臂时才有东西读它
         //    (`gpu_image.cpp:28`);链 generic 时这个变量没有任何读者,置位无害。
@@ -176,7 +229,11 @@ final class PwXrslamLive {
         try? FileManager.default.removeItem(
             atPath: NSHomeDirectory() + "/Documents/xrslam_gpufe_init.log")
 
-        let rc = PWXrslamTransportCreate(slamConfigPath, deviceConfigPath)
+        // [pw 2026-09-22] 换成带相机时间偏移的版本 —— 同一个 C 入口,多一个 c。
+        // 生产 `PwVioSlamFeeder.swift:937` 用的就是它;此前这里传的是不带 offset 的
+        // `PWXrslamTransportCreate`(等价于 c=0)。
+        let rc = PWXrslamTransportCreateWithCameraTimeOffset(
+            slamConfigPath, deviceConfigPath, self.cameraTimeOffsetSeconds)
         if rc == 1 { created = true }
         return rc
     }
@@ -287,11 +344,29 @@ final class PwXrslamLive {
     /// 🔴 **只入队,不跑算法**(生产 `PwVioSlamFeeder.swift:9`:
     ///    "回调只尝试有界入队,绝不等算法")。在途满了就**计数丢弃**并立刻
     ///    返回 —— 让相机继续按自己的节奏交付,而不是被算法拖成 12 fps。
-    func onCameraFrame(_ pixelBuffer: CVPixelBuffer, ptsSeconds: Double) {
+    /// [ptsSeconds] 是**原始** presentationTimeStamp(曝光起点);[exposureSeconds]
+    /// 是当帧曝光时长(0 = 未知)。这里换算到曝光中点再推(文件头偏离 (d))。
+    func onCameraFrame(_ pixelBuffer: CVPixelBuffer, ptsSeconds: Double,
+                       exposureSeconds: Double) {
+        // 曝光中点换算。exposure 非法/未知按 0:等价于"没换算",并计数暴露出来。
+        let exposure = (exposureSeconds.isFinite && exposureSeconds >= 0)
+            ? exposureSeconds : 0
+        let half = 0.5 * exposure
+        let canonical = ptsSeconds + half
+
         lock.lock()
         guard running else { lock.unlock(); return }
         framesOffered &+= 1
-        lastCameraPts = ptsSeconds
+        lastCameraPts = ptsSeconds   // 保持原始 PTS:timing() 比的是时钟域,不是换算
+        lastCanonicalPts = canonical
+        tbFrames &+= 1
+        if exposure > 0 {
+            tbFramesWithExposure &+= 1
+            tbExposureSum += exposure
+            if exposure < tbExposureMin { tbExposureMin = exposure }
+            if exposure > tbExposureMax { tbExposureMax = exposure }
+        }
+        tbHalfAppliedSum += half
         if lastImuTs > 0 {
             lastDelta = ptsSeconds - lastImuTs
             haveDelta = true
@@ -311,13 +386,14 @@ final class PwXrslamLive {
         // `CVPixelBuffer` 是 CF 桥接类型,捕获进闭包即 retain、闭包销毁即
         // release —— 池里的这一格在 worker 用完之前不会被覆盖。
         workQueue.async { [weak self] in
-            self?.runOneFrame(pixelBuffer, ptsSeconds: ptsSeconds)
+            self?.runOneFrame(pixelBuffer, canonical: canonical, rawPts: ptsSeconds)
         }
     }
 
     /// 在 worker 上跑。与上游 `trackCamera`(`XRSLAM_iOS.mm:152-188`)同形:
     /// push → RunOneFrame → GetResult 由传输层一次原子做完。
-    private func runOneFrame(_ pixelBuffer: CVPixelBuffer, ptsSeconds: Double) {
+    private func runOneFrame(_ pixelBuffer: CVPixelBuffer, canonical: Double,
+                             rawPts: Double) {
         defer {
             lock.lock(); pendingFrames -= 1; lock.unlock()
         }
@@ -335,8 +411,27 @@ final class PwXrslamLive {
         // channel = 4:BGRA 直推,引擎内部转灰度(见文件头偏离 (b))。
         let rc = PWXrslamTransportPushCameraAndRunRaw(
             base.assumingMemoryBound(to: UInt8.self),
-            ptsSeconds, Int32(stride), /*camera_id=*/0, /*channel=*/4,
+            canonical, Int32(stride), /*camera_id=*/0, /*channel=*/4,
             &state, &pose)
+
+        // [pw 2026-09-22] 时基自证(文件头偏离 (d)):刚推完就读 C 账本里相机流的
+        //   最近一条 trace。workQueue 是串行的、只有这里推相机 ⇒ 读到的必是本帧。
+        //   `tr.stream` 的内容校验不依赖返回码语义。
+        var tr = PWXrslamTimestampTrace()
+        let trc = PWXrslamTransportGetLastTimestampTrace(
+            Int32(PW_XRSLAM_STREAM_CAMERA.rawValue), &tr)
+        if trc == PW_XRSLAM_OK.rawValue,
+           tr.stream == Int32(PW_XRSLAM_STREAM_CAMERA.rawValue) {
+            let rRaw = abs(tr.raw_timestamp - canonical)
+            let rOff = abs((tr.effective_timestamp - tr.raw_timestamp) - tr.applied_offset)
+            lock.lock()
+            tbTraceReads &+= 1
+            tbLastAppliedOffset = tr.applied_offset
+            tbLastEffectiveMinusPts = tr.effective_timestamp - rawPts
+            if rRaw > tbMaxAbsRawResidual { tbMaxAbsRawResidual = rRaw }
+            if rOff > tbMaxAbsOffsetResidual { tbMaxAbsOffsetResidual = rOff }
+            lock.unlock()
+        }
 
         lock.lock()
         cameraCallbacks &+= 1
@@ -364,6 +459,34 @@ final class PwXrslamLive {
         out[2] = lastDelta
         out[3] = maxAbsDelta
         return haveDelta ? 0 : -1
+    }
+
+    /// [pw 2026-09-22] 写 12 个 double —— 相机时间戳换算的运行期自证(文件头偏离 (d)):
+    ///   0 c 传入值(秒)          1 c 实际施加值(C 账本 applied_offset)
+    ///   2 帧数                   3 其中曝光>0 的帧数
+    ///   4 曝光均值  5 曝光最小  6 曝光最大(秒;3 为 0 时 4/5 写 0)
+    ///   7 平均实际加上的 exposure/2(秒)
+    ///   8 |C 收到的 raw − 我们推的 canonical| 峰值   **必须 0**
+    ///   9 |(effective−raw) − applied_offset| 峰值     **必须 0**
+    ///  10 引擎收到的时刻 − 原始 PTS(最近一帧,秒)= exposure/2 + c
+    ///  11 trace 读取次数
+    /// 返回 0 = 已有 trace;-1 = 还没推过帧。
+    func timebase(into out: UnsafeMutablePointer<Double>) -> Int32 {
+        lock.lock(); defer { lock.unlock() }
+        out[0] = cameraTimeOffsetSeconds
+        out[1] = tbLastAppliedOffset
+        out[2] = Double(tbFrames)
+        out[3] = Double(tbFramesWithExposure)
+        out[4] = tbFramesWithExposure > 0
+            ? tbExposureSum / Double(tbFramesWithExposure) : 0
+        out[5] = tbFramesWithExposure > 0 ? tbExposureMin : 0
+        out[6] = tbExposureMax
+        out[7] = tbFrames > 0 ? tbHalfAppliedSum / Double(tbFrames) : 0
+        out[8] = tbMaxAbsRawResidual
+        out[9] = tbMaxAbsOffsetResidual
+        out[10] = tbLastEffectiveMinusPts
+        out[11] = Double(tbTraceReads)
+        return tbTraceReads > 0 ? 0 : -1
     }
 
     /// 写 9 个 double:state t qx qy qz qw px py pz。
@@ -413,11 +536,13 @@ final class PwXrslamLive {
 @_cdecl("pw_xrslam_live_create")
 public func pw_xrslam_live_create(
     _ slamConfigPath: UnsafePointer<CChar>,
-    _ deviceConfigPath: UnsafePointer<CChar>
+    _ deviceConfigPath: UnsafePointer<CChar>,
+    _ cameraTimeOffsetSeconds: Double
 ) -> Int32 {
     return PwXrslamLive.shared.create(
         slamConfigPath: String(cString: slamConfigPath),
-        deviceConfigPath: String(cString: deviceConfigPath))
+        deviceConfigPath: String(cString: deviceConfigPath),
+        cameraTimeOffsetSeconds: cameraTimeOffsetSeconds)
 }
 
 /// 起 IMU 并开始推送。0 成功;-1/-2 传感器不可用;-3 还没 create。
@@ -460,6 +585,12 @@ public func pw_xrslam_live_gpufe_trail(
 @_cdecl("pw_xrslam_live_timing")
 public func pw_xrslam_live_timing(_ out: UnsafeMutablePointer<Double>) -> Int32 {
     return PwXrslamLive.shared.timing(into: out)
+}
+
+/// [pw 2026-09-22] 写 12 个 double,见 `PwXrslamLive.timebase`。0 有样本 / -1 还没推过帧。
+@_cdecl("pw_xrslam_live_timebase")
+public func pw_xrslam_live_timebase(_ out: UnsafeMutablePointer<Double>) -> Int32 {
+    return PwXrslamLive.shared.timebase(into: out)
 }
 
 /// 写 14 个 int64,见 `PwXrslamLive.stats`。
