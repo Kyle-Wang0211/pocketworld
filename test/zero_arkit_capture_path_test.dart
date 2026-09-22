@@ -1,6 +1,6 @@
 // zero_arkit_capture_path_test.dart —— 「开关 ON = 完全不启动 ARKit」的判据。
 //
-// 五组:
+// 六组:
 //   (A) **ARSession 没起**:`pocketworld_official_arkit` 这条 MethodChannel 上
 //       一条 `startSession` 都没有,而 OFF 时**有**(阴性对照 —— 没有它,
 //       「没调」可能只是因为测试压根没接上通道);
@@ -9,7 +9,9 @@
 //   (C) 内参换算:采集尺寸 → 喂料尺寸,fx **不是 0**(安卓喂料链在这一步漏过);
 //   (D) 尺度 provenance:没有用户输入之前恒 `vio_unanchored`,
 //       `mayReportAbsoluteDimensions == false`;量过距离之后才变;
-//   (E) 照片:按签名调对方的接口;接口不可用时**如实 unsupported**,不假装成功。
+//   (E) 照片:按签名调对方的接口;接口不可用时**如实 unsupported**,不假装成功;
+//   (F) 每机常量 c:查表命中 / 未测机型 0 / 显式覆盖优先,**原样进 `startSession`**
+//       (`_FakePlatform.sessionTimeOffsets` 记账),回执带值与来源。
 //
 // 🔴 全程**不等真实定时器**:`pollInterval` 传一个长到不会触发的值,手工 tick。
 
@@ -20,6 +22,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/official_capture/capture_session.dart';
 import 'package:pocketworld_flutter/official_capture/metric_rescale.dart';
 import 'package:pocketworld_flutter/official_dome/ar_pose.dart';
+import 'package:pocketworld_flutter/vio/capture/camera_time_offset.dart';
 import 'package:pocketworld_flutter/vio/capture/zero_arkit_capture_runtime.dart';
 import 'package:pocketworld_flutter/vio/capture/zero_arkit_photo_api.dart';
 import 'package:pocketworld_flutter/vio/capture/zero_arkit_scale_provenance.dart';
@@ -419,6 +422,109 @@ void main() {
         },
         hasLength(3),
       );
+    });
+  });
+
+  group('(F) 每机常量 c 进会话', () {
+    tearDown(PwDeviceMachine.debugReset);
+
+    test('查表命中:iPhone15,2 ⇒ startSession 收到 0.003 s,回执 measured', () {
+      final platform = _FakePlatform(intrinsicsValue: _capturedK());
+      final r = ZeroArkitCaptureRuntime(
+        platform: platform,
+        machineIdentifier: 'iPhone15,2',
+      ).start();
+      expect(r.ok, isTrue, reason: r.toString());
+      // 🔴 判据就在这一行:引擎那头收到的数**就是**查表出来的数。
+      expect(platform.sessionTimeOffsets.single, closeTo(0.003, 1e-12));
+      expect(r.cameraTimeOffsetSeconds, closeTo(0.003, 1e-12));
+      expect(r.cameraTimeOffset.provenance, FieldProvenance.measured);
+      expect(r.cameraTimeOffset.isMeasuredForThisDevice, isTrue);
+      expect(
+        r.cameraTimeOffset.describe,
+        'c=3.00ms provenance=measured(iPhone15,2)',
+      );
+      // 回执 toString 也要带这一行 —— 报告是从它抄的。
+      expect(r.toString(), contains('provenance=measured(iPhone15,2)'));
+    });
+
+    test('🔴 未测机型 ⇒ startSession 收到 0,回执 PLACEHOLDER —— 不拿 3 ms 顶', () {
+      final platform = _FakePlatform(intrinsicsValue: _capturedK());
+      final r = ZeroArkitCaptureRuntime(
+        platform: platform,
+        machineIdentifier: 'iPhone99,9',
+      ).start();
+      expect(r.ok, isTrue, reason: r.toString());
+      expect(platform.sessionTimeOffsets.single, 0.0);
+      expect(r.cameraTimeOffset.provenance, FieldProvenance.placeholder);
+      expect(r.cameraTimeOffset.isMeasuredForThisDevice, isFalse);
+      expect(r.cameraTimeOffset.machine, 'iPhone99,9');
+    });
+
+    test('机型还不知道(查表没回来)⇒ 0 / PLACEHOLDER(机型未知),与本刀之前逐位相同', () {
+      // 不传 machineIdentifier、没有 debugOverride;单测里 `pw_vio_timebase`
+      // 通道不存在 ⇒ `PwDeviceMachine.cached` 为 null。这就是文件头写的
+      // 「已知窗口」在单测里的样子。
+      final platform = _FakePlatform(intrinsicsValue: _capturedK());
+      final r = ZeroArkitCaptureRuntime(platform: platform).start();
+      expect(r.ok, isTrue, reason: r.toString());
+      expect(platform.sessionTimeOffsets.single, 0.0);
+      expect(r.cameraTimeOffset.provenance, FieldProvenance.placeholder);
+      expect(r.cameraTimeOffset.machine, isNull);
+      expect(r.cameraTimeOffset.describe, contains('机型未知'));
+    });
+
+    test('机型缓存热了之后,不传参的运行时(采集页那种构造法)也查得到表', () {
+      // 采集页是 `ZeroArkitCaptureRuntime()` 裸构造 —— 这条对应它。
+      PwDeviceMachine.debugOverride = 'iPhone15,2';
+      final platform = _FakePlatform(intrinsicsValue: _capturedK());
+      final r = ZeroArkitCaptureRuntime(platform: platform).start();
+      expect(platform.sessionTimeOffsets.single, closeTo(0.003, 1e-12));
+      expect(r.cameraTimeOffset.provenance, FieldProvenance.measured);
+      expect(r.cameraTimeOffset.machine, 'iPhone15,2');
+    });
+
+    test('显式覆盖(dart-define 口径)优先于查表,原样进 startSession', () {
+      final platform = _FakePlatform(intrinsicsValue: _capturedK());
+      final r = ZeroArkitCaptureRuntime(
+        platform: platform,
+        cameraTimeOffset: resolveCameraTimeOffset(
+          machine: 'iPhone15,2',
+          overrideMillisRaw: '8',
+        ),
+      ).start();
+      expect(platform.sessionTimeOffsets.single, closeTo(0.008, 1e-12));
+      expect(r.cameraTimeOffset.provenance, FieldProvenance.devOverride);
+      expect(r.cameraTimeOffset.isMeasuredForThisDevice, isFalse,
+          reason: '命令行传进来的数不是「这台机实测」');
+    });
+
+    test('c 只在建会话时传一次;start 幂等不重传', () {
+      final platform = _FakePlatform(intrinsicsValue: _capturedK());
+      final rt = ZeroArkitCaptureRuntime(
+        platform: platform,
+        machineIdentifier: 'iPhone15,2',
+      );
+      rt.start();
+      rt.start();
+      expect(platform.sessionTimeOffsets, hasLength(1));
+      expect(rt.lastStart!.cameraTimeOffset.provenance, FieldProvenance.measured);
+    });
+
+    test('失败路径的回执也带 c 与来源(没起成也得说清打算用哪个 c)', () {
+      final platform = _FakePlatform(
+        cameraRc: kZeroArkitCameraBusy,
+        intrinsicsValue: _capturedK(),
+      );
+      final r = ZeroArkitCaptureRuntime(
+        platform: platform,
+        machineIdentifier: 'iPhone15,2',
+      ).start();
+      expect(r.ok, isFalse);
+      expect(platform.sessionTimeOffsets, isEmpty,
+          reason: '没建会话就不该有 c 传出去');
+      expect(r.cameraTimeOffset.provenance, FieldProvenance.measured);
+      expect(r.cameraTimeOffset.seconds, closeTo(0.003, 1e-12));
     });
   });
 

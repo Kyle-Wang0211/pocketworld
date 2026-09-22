@@ -35,6 +35,15 @@ enum FieldProvenance {
 
   /// 占位,**没有依据**。任何用到它的结果都不能报绝对精度。
   placeholder,
+
+  /// [pw 2026-09-22] 研发口径的**显式覆盖**(如
+  /// `--dart-define=PW_CAM_TD_MS`,见 `lib/vio/capture/camera_time_offset.dart`)。
+  ///
+  /// 🔴 为什么要多这一态:上面四态没有一个说得对「这个数是命令行传进来的,
+  /// 它可能是任何值」—— 标 [measured] 是撒谎(不是量出来的),
+  /// 标 [placeholder] 又丢掉了「有人故意传了它」这件事。
+  /// 扫参数、对照实验都靠它;**出货包里不应该出现这一态**。
+  devOverride,
 }
 
 extension FieldProvenanceLabel on FieldProvenance {
@@ -43,6 +52,7 @@ extension FieldProvenanceLabel on FieldProvenance {
     FieldProvenance.measured => 'measured',
     FieldProvenance.sharedDefault => 'shared-default',
     FieldProvenance.placeholder => 'PLACEHOLDER',
+    FieldProvenance.devOverride => 'dev-override',
   };
 }
 

@@ -23,6 +23,19 @@
 //   🔴 换算这一步 09-22 的安卓喂料链里漏过一次(fx 写成 0),所以这里
 //     写成一个独立函数 + 单测,而不是内联一行。
 //
+// ══ [pw 2026-09-22] 每机常量 c 接进来了 ═══════════════════════════════════
+// 在此之前 `cameraTimeOffsetSeconds` 默认 0,而采集页构造时不传参 ⇒
+// **生产 ON 臂的 c 恒 0**,09-22 在 iPhone 14 Pro 上扫出来的 +3 ms 只活在
+// 台架页的 `--dart-define` 里。现在默认值改成**查表**
+// (`camera_time_offset.dart`:`hw.machine` → c + provenance)。
+// 🔴 c **不是**曝光/2 —— 曝光那一半是逐帧的,在原生
+// (`PwCameraSlot.swift` → `PwXrslamLive.swift` 偏离 (d))里加;
+// c 只是剩下的常量部分(卷帘读出/2 + 管线固定延迟),建会话时传一次。
+// 🔴 未知机型给 **0** 不给 3 —— 未测就是未测,理由写在 camera_time_offset.dart 头上。
+// 🔴 **已知窗口**:`deviceMachine()` 是异步 MethodChannel,而本类的 [start]
+//   是同步的 ⇒ 进程内第一次建会话时查表可能还没回来,那一次会如实打
+//   `provenance=PLACEHOLDER(机型未知)`。缺口与两条出路同样写在那个文件头上。
+//
 // ══ 🔴 不做的事 ════════════════════════════════════════════════════════════
 // * **不采帧、不喂帧。** 喂料(camera→引擎)在原生侧的传感器回调里完成
 //   (`PwXrslamLive.swift` + `vendor/xrslam/transport/`)。Dart 侧自己喂
@@ -30,11 +43,16 @@
 // * **不渲染。** 预览用什么画由渲染那条分支决定,不在这里。
 // * **不拍照。** 走 `ZeroArkitPhotoApi`(另一位 agent 实现)。
 
+import 'dart:async' show unawaited;
+
+import 'package:flutter/foundation.dart' show debugPrint;
+
 import '../ffi/xrslam_config.dart' show CameraIntrinsics, FieldProvenance;
 import '../ffi/xrslam_session.dart';
 import '../pose/camera_projection.dart' show PinholeIntrinsics;
 import '../pose/camera_slot_ffi.dart' show CameraExposure, PwCameraSlot;
 import '../pose/zero_arkit_camera_gate.dart';
+import 'camera_time_offset.dart';
 
 /// 启动结果。失败时 [error] 一定非空 —— 不返回一个「看起来起来了」的实例。
 class ZeroArkitStartResult {
@@ -42,6 +60,7 @@ class ZeroArkitStartResult {
     required this.cameraRc,
     required this.sessionStarted,
     required this.intrinsics,
+    required this.cameraTimeOffset,
     required this.error,
   });
 
@@ -54,6 +73,16 @@ class ZeroArkitStartResult {
   /// 真正交给引擎的那组内参(已按喂料尺寸换算)。
   final CameraIntrinsics? intrinsics;
 
+  /// 真正交给引擎的每机常量 c(值 + 来源 + 人话说明)。
+  ///
+  /// 🔴 下游/报告要能读到**来源**,而不只是一个数:
+  /// `measured` 才是这台机实测的,`PLACEHOLDER` 是「没测过 ⇒ 0」,
+  /// `dev-override` 是命令行传进来的研发值。
+  final CameraTimeOffset cameraTimeOffset;
+
+  /// c 的秒值。等价于 `cameraTimeOffset.seconds`,给只要数的调用方。
+  double get cameraTimeOffsetSeconds => cameraTimeOffset.seconds;
+
   final String? error;
 
   bool get ok => error == null;
@@ -65,6 +94,7 @@ class ZeroArkitStartResult {
   @override
   String toString() => 'ZeroArkitStartResult(cameraRc=$cameraRc '
       'session=$sessionStarted K=${intrinsics == null ? 'null' : 'ok'} '
+      '${cameraTimeOffset.describe} '
       'err=$error)';
 }
 
@@ -159,10 +189,26 @@ class ZeroArkitCaptureRuntime {
     this.feedHeight = 480,
     this.fps = 30,
     this.lensPosition = 0.835,
-    this.cameraTimeOffsetSeconds = 0.0,
-  }) : _platform = platform;
+    CameraTimeOffset? cameraTimeOffset,
+    String? machineIdentifier,
+  })  : _platform = platform,
+        _explicitOffset = cameraTimeOffset,
+        _machineIdentifier = machineIdentifier {
+    // 机型查表预热。**不 await** —— 本类的 [start] 是同步的(见文件头
+    // 「已知窗口」),这里能做的只有「尽早去问」。
+    // `prime()` 自己吞掉通道不存在的异常,不会上抛。
+    if (cameraTimeOffset == null && machineIdentifier == null) {
+      unawaited(PwDeviceMachine.prime());
+    }
+  }
 
   final ZeroArkitPlatform _platform;
+
+  /// 调用方显式指定的 c。`null` = 由 [cameraTimeOffset] 查表。
+  final CameraTimeOffset? _explicitOffset;
+
+  /// 调用方显式指定的 `hw.machine`。`null` = 用 [PwDeviceMachine.cached]。
+  final String? _machineIdentifier;
 
   /// 相机采集尺寸(显示/成片口径)。
   final int captureWidth;
@@ -179,9 +225,21 @@ class ZeroArkitCaptureRuntime {
   /// 不锁的话 fx 全程游走(实测单场 120 秒漂 10.90%),而引擎的内参是定值。
   final double lensPosition;
 
-  /// 每机常量 c。09-22 定案的时间戳公式是 `c + (读出 + 曝光)/2`,
-  /// 其中曝光那一半由原生传输层逐帧加;**这里只传常量 c**。
-  final double cameraTimeOffsetSeconds;
+  /// 每机常量 c(值 + 来源)。09-22 定案的时间戳公式是 `c + (读出 + 曝光)/2`,
+  /// 其中曝光那一半由原生传输层**逐帧**加;**这里只传常量 c**。
+  ///
+  /// 构造时不传就**查表**(`camera_time_offset.dart`):
+  /// `--dart-define=PW_CAM_TD_MS` > `hw.machine` 查表 > 0(未测)。
+  /// 🔴 每次读都重新解析 —— 机型查表是异步回来的,早读到的是「未知」,
+  /// 晚读到的才可能是实测值。[start] 只在建会话那一刻读一次并记进结果里。
+  CameraTimeOffset get cameraTimeOffset =>
+      _explicitOffset ??
+      resolveCameraTimeOffset(
+        machine: _machineIdentifier ?? PwDeviceMachine.cached,
+      );
+
+  /// c 的秒值。原样交给 `XrslamSession.start(cameraTimeOffsetSeconds:)`。
+  double get cameraTimeOffsetSeconds => cameraTimeOffset.seconds;
 
   bool _started = false;
   bool get started => _started;
@@ -191,12 +249,19 @@ class ZeroArkitCaptureRuntime {
 
   /// 起整条路。**幂等**:已起过就原样返回上次的结果。
   ZeroArkitStartResult start() {
+    // 🔴 c 在**这一刻**定下来:机型查表是异步回来的,早一点读到的可能是
+    //    「未知」。定下来之后原样进 [ZeroArkitStartResult],
+    //    引擎实际收到的是不是它,要靠 `XrslamLive.timebase()` 的
+    //    `c传入 / c施加` 两行在真机上核 —— 本刀没有真机证据。
+    final CameraTimeOffset c = cameraTimeOffset;
+
     if (_started) {
       return _lastStart ??
-          const ZeroArkitStartResult(
+          ZeroArkitStartResult(
             cameraRc: null,
             sessionStarted: true,
             intrinsics: null,
+            cameraTimeOffset: c,
             error: null,
           );
     }
@@ -213,6 +278,7 @@ class ZeroArkitCaptureRuntime {
         cameraRc: rc,
         sessionStarted: false,
         intrinsics: null,
+        cameraTimeOffset: c,
         error: rc == kZeroArkitCameraBusy
             ? '相机被 ARKit 占着(租约 rc=$rc)—— 开关 ON 时不该有 ARSession 在跑'
             : '相机起不来 rc=$rc',
@@ -233,6 +299,7 @@ class ZeroArkitCaptureRuntime {
         cameraRc: rc,
         sessionStarted: false,
         intrinsics: null,
+        cameraTimeOffset: c,
         error: '相机还没自报内参(或内参不可用)—— 不拿 PLACEHOLDER 建会话',
       );
       return _lastStart!;
@@ -244,10 +311,11 @@ class ZeroArkitCaptureRuntime {
       feedHeight: feedHeight,
     );
 
-    // ③ 建会话。
+    // ③ 建会话。c 只在这里传一次 —— 引擎的 create 只吃一次,
+    //    中途改不了(出货引擎导出的五个符号里没有「更新时间偏置」的入口)。
     final XrslamSessionStart s = _platform.startSession(
       intrinsics: feedK,
-      cameraTimeOffsetSeconds: cameraTimeOffsetSeconds,
+      cameraTimeOffsetSeconds: c.seconds,
     );
     if (!s.ok) {
       _platform.stopCamera();
@@ -255,6 +323,7 @@ class ZeroArkitCaptureRuntime {
         cameraRc: rc,
         sessionStarted: false,
         intrinsics: feedK,
+        cameraTimeOffset: c,
         error: 'XRSLAM 会话起不来:${s.error}',
       );
       return _lastStart!;
@@ -265,8 +334,13 @@ class ZeroArkitCaptureRuntime {
       cameraRc: rc,
       sessionStarted: true,
       intrinsics: feedK,
+      cameraTimeOffset: c,
       error: null,
     );
+    // 🔴 可核的一行:值 + 来源 + 这个值怎么来的。
+    //    台架页对应的那行是 `[arloop] 时基 c传入=… c施加=…`
+    //    (`ar_minimal_loop_page.dart:430`),两行要对得上。
+    debugPrint('[zero-arkit] ${c.describe} —— ${c.note}');
     return _lastStart!;
   }
 
