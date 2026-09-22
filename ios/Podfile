@@ -220,7 +220,66 @@ post_install do |installer|
   # threading both off. iOS/Android share Ceres 1.14 and OpenCV 4.0.1.
   # official calls but must not add or replace algorithm entry points.
   xrslam_dir = '$(PODS_ROOT)/../../vendor/xrslam/libs/ios-arm64'
-  xrslam_marker = 'libxrslam_generic_4beb1a9.a'
+
+  # ── 引擎臂开关 PW_XRSLAM_ENGINE ────────────────────────────────────────
+  #
+  #   不设 / 'generic'  ⇒ 出货档 libxrslam_generic_4beb1a9.a(**默认**)
+  #   'gpufenothread'   ⇒ 研究臂 libxrslam_gpufenothread_b9b14814.a
+  #                       (GPU 前端 ON + 线程化 OFF;唯一在 1920×1440
+  #                        直播撑得住 30 fps 的臂,回放 31.4→39.6-44.1 fps)
+  #
+  # 🔴 研究臂的 receipt 自标 research_only / product_selected=false。
+  #   「没全面持平/超越 ARKit 之前绝不上生产」——它只能用来上机对照。
+  #
+  # 🔴 默认档的链接标志与本段加入之前**逐字节相同**(下面 engine_extra
+  #   在 generic 档是空串,拼出来的 xrslam_flags 一字不差)。
+  xrslam_engine = ENV['PW_XRSLAM_ENGINE'].to_s.strip
+  xrslam_engine = 'generic' if xrslam_engine.empty?
+  xrslam_engine_table = {
+    # 名字 => [归档文件名, sha16, 二进制指纹(OpenCV mat.inl.hpp 的构建路径)]
+    'generic' => [
+      'libxrslam_generic_4beb1a9.a', 'fdc75c99358014d9',
+      '/private/tmp/opencv-official-c9ad577-b49/modules/core/include/opencv2/core/mat.inl.hpp',
+    ],
+    'gpufenothread' => [
+      'libxrslam_gpufenothread_b9b14814.a', 'b9b14814349eb945',
+      '/private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/' \
+      '4437f552-36d8-4d91-9d8d-ae4aaadf54b6/scratchpad/build-run1/_deps/' \
+      'depends-opencv-build/opencv2.framework/Headers/core/mat.inl.hpp',
+    ],
+  }
+  unless xrslam_engine_table.key?(xrslam_engine)
+    raise "unknown PW_XRSLAM_ENGINE=#{xrslam_engine} " \
+          "(可选:#{xrslam_engine_table.keys.join(' / ')})"
+  end
+  xrslam_lib, xrslam_engine_sha16, xrslam_engine_fingerprint =
+    xrslam_engine_table[xrslam_engine]
+
+  # GPU 前端那条臂还要一个伴随库:libpw_gpu_frontend_ios.a
+  #   —— CLAHE/金字塔/GFTT/LK 的 Dawn/WGSL 实现。
+  # 引擎归档里 pw::gpufe::FrontEnd::create 是**真外部符号**,缺它链接期就报
+  # Undefined symbol,不会静默降级 —— 所以这里不需要 -Wl,-u 保活。
+  # 它的 75 个 wgpu* 外部符号由 aether3d_ffi.podspec 已经链进来的
+  # libwebgpu_dawn.a 满足 —— 所以这里**不再另链一份 Dawn**。
+  #
+  # 🔴 **故意不 -force_load 这个伴随库**。它只有两个成员:
+  #     pw_gpu_frontend.o     ← 我们要的 pw::gpufe::FrontEnd
+  #     dawn_kernel_harness.o ← aether::tools::DawnKernelHarness
+  #   而 aether3d_ffi 那条 -force_load 已经把**同名的** DawnKernelHarness
+  #   带进来了。force_load 会把两个成员全塞进去 ⇒ 实测 `ld: 24 duplicate symbols`
+  #   (整 24 个全是 DawnKernelHarness 的方法)。按普通归档挂着,链接器只会为
+  #   引擎那个未定义符号拉 pw_gpu_frontend.o,dawn_kernel_harness.o 因为符号
+  #   已定义而不被拉 ⇒ 两边共用 aether 那一份 harness。
+  #   代价:harness 的实现取自 aether3d_ffi 的版本而不是编这个前端库时的那份
+  #   (同一棵 aether_cpp/tools 源码树,但不是同一次编译)。研究臂可接受,已记进 receipt。
+  xrslam_engine_extra =
+    if xrslam_engine == 'gpufenothread'
+      " \"#{xrslam_dir}/libpw_gpu_frontend_ios_ad0a4abe.a\"" \
+      " -framework Metal -framework IOSurface -framework QuartzCore"
+    else
+      ''
+    end
+
   xrslam_syms = %w[
     XRSLAMCreate XRSLAMDestroy XRSLAMRunOneFrame
     XRSLAMPushSensorData XRSLAMGetResult
@@ -229,20 +288,39 @@ post_install do |installer|
     XRSLAMCreate XRSLAMDestroy XRSLAMRunOneFrame
     XRSLAMPushSensorData XRSLAMGetResult
   ].map { |n| "-Wl,-exported_symbol,_#{n}" }.join(' ')
-  xrslam_flags = "-force_load \"#{xrslam_dir}/libxrslam_generic_4beb1a9.a\" " \
+  xrslam_flags = "-force_load \"#{xrslam_dir}/#{xrslam_lib}\" " \
                  "\"#{xrslam_dir}/libceres_official_1_14.a\" " \
                  "\"#{xrslam_dir}/libopencv_generic_4_0_1.a\" " \
-                 "#{xrslam_syms} #{xrslam_exports}"
+                 "#{xrslam_syms} #{xrslam_exports}#{xrslam_engine_extra}"
 
+  # 🔴 原来的幂等判据是 `next if contents.include?('libxrslam_generic_4beb1a9.a')`。
+  #   换臂时它会出事:`flutter run/build` 只在 Podfile 变了才跑 pod install,
+  #   不跑时旧 xcconfig 原样留着 —— 于是「换了臂」其实还在跑上一条臂,
+  #   而且**一声不吭**(2026-09-20 台架上已经因此作废过一整轮归因数据)。
+  #   改成:**先剥掉上一轮我们自己追加的那一段,再重建**,谁也不用记得清缓存。
+  #   我们追加的那段永远以 `-force_load "<xrslam_dir>/libxrslam_` 开头、到行尾为止,
+  #   所以剥得干净,也不会碰到 aether3d_ffi 写在同一行前半段的东西。
+  #   新装的 xcconfig 上剥是空操作 ⇒ 默认档输出与改动前逐字节相同。
+  xrslam_strip_re = / -force_load "#{Regexp.escape(xrslam_dir)}\/libxrslam_.*\z/
+  xrslam_setting_re = /^PW_XRSLAM_LINKED_ENGINE[A-Z_]* = .*\n/
   Dir[File.join(installer.config.installation_root, 'Pods/Target Support Files/Pods-Runner/*.xcconfig')].each do |xcconfig|
     contents = File.read(xcconfig)
-    next if contents.include?(xrslam_marker)   # 幂等
     pattern = /^OTHER_LDFLAGS\[sdk=iphoneos\*\] = (.*)$/
-    appended = if contents.match?(pattern)
-                 contents.sub(pattern) { |m| "#{m} #{xrslam_flags}" }
+    cleaned = contents.gsub(xrslam_setting_re, '')
+    cleaned = cleaned.sub(pattern) { |m| m.sub(xrslam_strip_re, '') }
+    appended = if cleaned.match?(pattern)
+                 cleaned.sub(pattern) { |m| "#{m} #{xrslam_flags}" }
                else
-                 contents + "\nOTHER_LDFLAGS[sdk=iphoneos*] = $(inherited) #{xrslam_flags}\n"
+                 cleaned + "\nOTHER_LDFLAGS[sdk=iphoneos*] = $(inherited) #{xrslam_flags}\n"
                end
+    # 把「实际链进去的是哪条臂」写成构建设置,让 Runner 的运行期身份脚本
+    # (ios/scripts/stamp_runtime_identity.sh)能拿到它,并与进程环境里的
+    # PW_XRSLAM_ENGINE 对账 —— 对不上就**构建失败**,不允许静默沿用旧臂。
+    appended += "\n" unless appended.end_with?("\n")
+    appended += "PW_XRSLAM_LINKED_ENGINE = #{xrslam_engine}\n" \
+                "PW_XRSLAM_LINKED_ENGINE_SHA16 = #{xrslam_engine_sha16}\n" \
+                "PW_XRSLAM_LINKED_ENGINE_LIB = #{xrslam_lib}\n" \
+                "PW_XRSLAM_LINKED_ENGINE_FINGERPRINT = #{xrslam_engine_fingerprint}\n"
     File.write(xcconfig, appended) if appended != contents
   end
 end
