@@ -15,8 +15,9 @@ explicit about which is which.
 |---|---|---|
 | Algorithms (all judgement) | `dart/pw_android_capture/` | **88 unit tests, `dart test`, green.** 16 negative controls, each confirmed to turn the suite red. |
 | Channel bridge | `dart/pw_android_capture_flutter/` | **6 tests, `flutter test`, green**, through a real `MethodChannel` with a mock handler. `flutter analyze` clean against the installed Flutter 3.47.1 / Dart 3.13.1. 2 negative controls confirmed red. |
-| Platform glue | `kotlin/com/pocketworld/capture/` | **Never compiled.** No Android SDK, no `kotlinc` and no JRE on this machine. Every API used was checked against Google's published reference (see *API provenance*), but a typo would only surface at the first Gradle build. |
-| Build config | `manifest/`, `gradle/` | **Never applied.** Snippets, not files. |
+| Platform glue | `kotlin/com/pocketworld/capture/` | **Compiled, 2026-09-22.** `scripts/compile_kotlin_check.sh` — kotlinc 2.4.20 against `android-34/android.jar` + Flutter 3.47.1 `flutter.jar`, `-no-jdk -jvm-target 1.8`. 23 classes, 0 errors. It found one real bug on the first run: see *What the first compile caught*. This is type checking + bytecode, **not** a Gradle build — it cannot catch manifest merging, resources, R8, or anything at run time. |
+| JNI + shared transport | `native/xrslam/` | **Built, 2026-09-22.** `native/xrslam/build_transport.sh` — NDK r29 (29.0.14206865) + cmake 4.2.3 + ninja, `arm64-v8a` / `android-24`, Release, stripped. Four gates: compile+link, `nm -D` exports == Kotlin `external fun native*` (8/8), 16 KB PT_LOAD alignment, and every undefined `XRSLAM*` symbol resolvable against the pinned core. Receipt: `native/xrslam/transport_build_receipt.json`. |
+| Build config | `manifest/`, `gradle/` | **Never applied.** Snippets, not files — there is still no `android/` directory. |
 | 16 KB check | `scripts/` | **Run for real** against xrslam's actual Android arm64 output. Exit-code matrix exercised across four cases, including a deliberately sabotaged library. |
 
 The split is deliberate: the Kotlin was kept as thin marshalling **because it
@@ -50,6 +51,12 @@ android_ready/
 │       PwThermalWatch.kt        PowerManager thermal, 10 s poll guard
 │       PwExitInfoReader.kt      getHistoricalProcessExitReasons marshalling
 │       PwCapturePlugin.kt       FlutterPlugin wiring
+│   ── the VIO feed chain, added 2026-09-22 ──────────────────────────────
+│       PwXrslamTransport.kt     raw JNI (8 externs; was 5 before 09-22)
+│       PwVioCameraSource.kt     camera2 + ImageReader, >=1920x1440, Y plane
+│       PwXrslamFeed.kt          bounded enqueue + one serial worker + timebase
+│                                self-proof. Port of ios/Runner/PwXrslamLive.swift
+│       PwDeviceCalibration.kt   per-device p_bc/q_bc/c table (EMPTY) + provenance
 │
 ├── manifest/AndroidManifest.snippet.xml   → merge into app/src/main/AndroidManifest.xml
 ├── gradle/app-build.gradle.kts.snippet    → merge into app/build.gradle.kts
@@ -292,7 +299,12 @@ rather than recalled. The load-bearing ones:
 | `PowerManager.getThermalHeadroom(int)` | 30 | NaN when unsupported or called too often |
 | `ActivityManager.getHistoricalProcessExitReasons(pkg, pid, maxNum)` | 30 | |
 | `ApplicationExitInfo.getRss()` / `getPss()` | 30 | documented **in kB**; 0 when never sampled |
-| `ApplicationExitInfo.getSubReason()` | 31 | guarded |
+| `ApplicationExitInfo.getSubReason()` | — | 🔴 **WRONG ROW, corrected 2026-09-22.** Not in the public SDK (`@hide`/`@SystemApi`); `android-34/android.jar` has no such method. Removed from `PwExitInfoReader`. |
+| `CaptureResult.SENSOR_TIMESTAMP` | 21 | first-row exposure **start**; feeds `t = ts + exposure/2 + skew/2` |
+| `ImageReader.newInstance(w,h,YUV_420_888,maxImages)` | 19 | Y plane `pixelStride` is 1 by spec ⇒ directly `CV_8UC1` for `channel=1` |
+| `Image.getPlanes()[0].getBuffer()` | 19 | direct `ByteBuffer` ⇒ usable with JNI `GetDirectBufferAddress` |
+| `CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES` | 21 | highest upper bound, fixed range preferred |
+| `CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP` | 21 | `getOutputSizes(ImageFormat.YUV_420_888)` |
 
 **Marshalling trap, found while writing the codec and fixed:** Flutter's
 `StandardMessageCodec` has no wire type for a 32-bit float. `FloatArray.toList()`
@@ -308,17 +320,59 @@ at compile time. Every `FloatArray` crossing the channel is widened with
 cd android_ready/dart/pw_android_capture         && dart analyze && dart test
 cd android_ready/dart/pw_android_capture_flutter && flutter analyze && flutter test
 android_ready/scripts/verify_16kb.sh <dir-of-.so | app.apk>
+
+# Kotlin type check + bytecode (needs Homebrew kotlin + openjdk + platform-34)
+android_ready/scripts/compile_kotlin_check.sh
+
+# JNI + shared transport .so, with the symbol / 16 KB / link gates
+ANDROID_NDK_HOME=/opt/homebrew/share/android-ndk \
+  android_ready/native/xrslam/build_transport.sh
 ```
+
+## What the first compile caught (2026-09-22)
+
+`PwExitInfoReader.kt:58` read `ApplicationExitInfo.getSubReason()` behind a
+`Build.VERSION_CODES.S` guard. It does not compile:
+
+```
+error: unresolved reference 'subReason' on receiver of type 'ApplicationExitInfo'
+```
+
+`getSubReason()` is **not in the public SDK** — it is `@hide`/`@SystemApi`, so
+`android-34/android.jar` has no such method. The *API provenance* table below
+recorded it as "API 31, guarded"; that row was wrong, and a runtime `SDK_INT`
+guard cannot save a symbol that does not exist at compile time. The read was
+removed rather than routed through reflection: reflection would compile and
+then be blocked by the hidden-API list on device, turning a build error into a
+silent null. `ExitTriage`'s discriminator is the `description` substring
+anyway — this README says so itself.
+
+This is exactly the class of error the old README predicted would "only surface
+at the first Gradle build". It surfaced at the first `kotlinc` run instead,
+which is cheaper.
 
 ## What is still not done
 
-* **No Kotlin has ever been compiled.** No Android SDK, no `kotlinc`, no JRE on
-  this machine. Treat the first Gradle build as the real review.
-* **Nothing has run on an Android device.** There is no Android device here and
-  no Android app to install.
-* No CameraX/`SurfaceTexture` plumbing, no session configuration, no preview —
-  `PwCameraProbe` reads characteristics and tunes a `CaptureRequest.Builder`
-  that someone else must build and submit.
+* **There is still no `android/` directory**, so no Gradle build has ever run
+  and the `manifest/` + `gradle/` snippets have never been applied. The Kotlin
+  is type-checked (`scripts/compile_kotlin_check.sh`) but not assembled.
+* **Nothing has run on an Android device or emulator.** There is no Android
+  device here, no emulator image installed, and no app to install. Everything
+  about the feed chain below is therefore link-level and type-level evidence
+  only — no frame has ever reached XRSLAM on Android.
+* **No per-device calibration.** `PwDeviceCalibration`'s tables are deliberately
+  empty: `p_bc`/`q_bc` and the per-device camera time offset `c` have never been
+  measured on any Android device, and no upstream Android YAML exists (iOS has
+  18, Android has 0). Every session therefore logs `PLACEHOLDER` and must not
+  report absolute scale.
+* **One sign/unit mapping is unverified.** Android's `TYPE_ACCELEROMETER` is
+  documented in m/s² with +9.81 on z when the device lies flat face up, which
+  is the same sign and unit as iOS's `CMAcceleration * -9.80665`. That is a
+  documentation argument, not a measurement. `PwXrslamFeed.timing()` reports
+  `lastAccelMagnitude` so the first device run can check it against 9.8.
+* No CameraX/`SurfaceTexture` preview. `PwVioCameraSource` configures an
+  `ImageReader`-only session for the VIO feed; there is no preview surface and
+  no UI.
 * No IMU↔camera extrinsics and no time-offset *calibration* (only time-base
   *normalisation*). `LENS_POSE_ROTATION` / `LENS_POSE_TRANSLATION` are read and
   passed through, not used.

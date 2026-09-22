@@ -54,9 +54,18 @@ object PwExitInfoReader {
         m["rssKb"] = i.rss
         m["pssKb"] = i.pss
         m["processName"] = i.processName ?: ""
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            m["subReason"] = i.subReason
-        }
+        // 🔴 [pw 2026-09-22] 这里原本读 `i.subReason`,第一次真编 Kotlin 就
+        //    炸了:`unresolved reference 'subReason'`。
+        //    `ApplicationExitInfo.getSubReason()` **不在公开 SDK 里**
+        //    (它是 @hide/@SystemApi),`android-34/android.jar` 里没有这个
+        //    方法 —— `README.md` 的 *API provenance* 表把它记成「API 31,
+        //    guarded」是错的,`Build.VERSION_CODES.S` 的版本闸拦不住一个
+        //    **编译期**就不存在的符号。
+        //    去掉它,不用反射绕:反射能编过但在设备上仍可能被 hidden-API
+        //    黑名单拦下,那只是把编译错误换成运行期静默返回 null。
+        //    Dart 侧 `ExitTriage` 的判据本来就是 `description` 子串,
+        //    不依赖 subReason(README 自己写着「The description substring is
+        //    the only discriminator」)。
         return m
     }
 }

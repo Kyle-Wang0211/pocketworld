@@ -94,16 +94,35 @@ class PwImuSource(
     /**
      * @param samplingPeriodUs 0 == SENSOR_DELAY_FASTEST. Above API 31 this is
      *   clamped to 200 Hz unless HIGH_SAMPLING_RATE_SENSORS is in the manifest.
+     * @param externalHandler when non-null, both streams are delivered on THIS
+     *   handler instead of a private HandlerThread, so that camera and IMU share
+     *   one serial arrival context (see `PwXrslamFeed`). This class still starts
+     *   no thread of its own in that case, and [stop] leaves the caller's thread
+     *   alone.
      * @return the sensors the platform accepted. A sensor missing from this
      *   list was refused by registerListener and must be surfaced, not ignored.
      */
-    fun start(samplingPeriodUs: Int = 0): List<String> {
+    fun start(samplingPeriodUs: Int = 0, externalHandler: Handler? = null): List<String> {
         stop()
-        val t = HandlerThread("pw-imu", Process.THREAD_PRIORITY_URGENT_AUDIO)
-        t.start()
-        thread = t
-        val h = Handler(t.looper)
-        handler = h
+        // [pw 2026-09-22] externalHandler != null 时**不起自己的线程**,而是把
+        // 两条 IMU 流挂到调用方给的那条串行 handler 上。
+        //
+        // 🔴 这是 VIO 喂料链要求的不变量,不是便利选项:上游 iOS demo
+        //    (`Camera.swift:47` `queue ?? .main` / `Motion.swift:38` `q ?? .main`)
+        //    把相机与 IMU 放在**同一个串行上下文**里,到达顺序因此守序。
+        //    `PwXrslamFeed` 用 `arrivalHandler` 复刻这条性质,三条流共享它。
+        //    传 null 时行为与从前逐字相同(探针路径不受影响)。
+        val h: Handler
+        if (externalHandler != null) {
+            h = externalHandler
+            handler = h
+        } else {
+            val t = HandlerThread("pw-imu", Process.THREAD_PRIORITY_URGENT_AUDIO)
+            t.start()
+            thread = t
+            h = Handler(t.looper)
+            handler = h
+        }
 
         val wanted = listOfNotNull(
             pick(Sensor.TYPE_GYROSCOPE_UNCALIBRATED, Sensor.TYPE_GYROSCOPE),

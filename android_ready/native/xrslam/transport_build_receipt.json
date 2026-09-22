@@ -1,0 +1,60 @@
+{
+  "schema": "pw.xrslam.android-transport-build-receipt/1",
+  "artifact": "libs/arm64-v8a/libpw_xrslam_transport.so",
+  "sha256": "f9fb09efacaf75a0bb431dee24a09bef2f06f43551dff63a331c66f43bf0db4b",
+  "elfBuildIdSha1": "f1bd9935b8b97cb01401630e0f14934b3ac6209d",
+  "builtAt": "2026-09-22",
+  "recipe": "android_ready/native/xrslam/build_transport.sh",
+  "sources": {
+    "android_ready/native/xrslam/PwXrslamTransport.cpp": "effe4a78b83e40946704e33e3b4cc7c4008f821f801f7018eac77a2204696672",
+    "vendor/xrslam/transport/PwXrslamTransportCore.cpp": "d5e3d0cce4c3332bed4fa3130a46a134e71f31227306a0133ed36dc54292b5cf",
+    "vendor/xrslam/transport/PwXrslamTransportCore.h": "d26753afd55e414252eb03a7dc250cee2553031d367e91245413b018496cf20a"
+  },
+  "linksAgainst": {
+    "path": "libs/arm64-v8a/libxrslam_generic_4beb1a9.so",
+    "sha256": "083220bb6ecbaa161c0f0bae9bf007da5c59ed010455cf6f2e3b600bb0eaf8f4",
+    "note": "untracked in git (341 MB); build_transport.sh refuses to run without it and CMakeLists re-hashes it"
+  },
+  "androidAbi": "arm64-v8a",
+  "androidApi": 24,
+  "androidNdkRevision": "29.0.14206865",
+  "clangRevision": "5e96669f06077099aa41290cdb4c5e6fa0f59349",
+  "cmakeVersion": "4.2.3",
+  "ninjaVersion": "1.13.2",
+  "buildType": "Release",
+  "compileFlags": [
+    "-ffp-contract=off",
+    "-fno-fast-math",
+    "-fchar8_t",
+    "-std=c++17"
+  ],
+  "debugInfo": "stripped (llvm-strip --strip-unneeded)",
+  "minimumLoadAlignmentBytes": 16384,
+  "exportedJniSymbols": [
+    "Java_com_pocketworld_capture_PwXrslamTransport_nativeCreate",
+    "Java_com_pocketworld_capture_PwXrslamTransport_nativeCreateWithCameraTimeOffset",
+    "Java_com_pocketworld_capture_PwXrslamTransport_nativeDestroy",
+    "Java_com_pocketworld_capture_PwXrslamTransport_nativeGetCounters",
+    "Java_com_pocketworld_capture_PwXrslamTransport_nativeGetLastTimestampTrace",
+    "Java_com_pocketworld_capture_PwXrslamTransport_nativePushAcceleration",
+    "Java_com_pocketworld_capture_PwXrslamTransport_nativePushCameraAndRunRaw",
+    "Java_com_pocketworld_capture_PwXrslamTransport_nativePushGyroscope"
+  ],
+  "undefinedEngineSymbols": [
+    "XRSLAMCreate",
+    "XRSLAMDestroy",
+    "XRSLAMGetResult",
+    "XRSLAMPushSensorData",
+    "XRSLAMRunOneFrame"
+  ],
+  "supersedes": {
+    "previousSha256": "bc1ab7a7e276eb3b6fcbcb5e3d43945c3e67bef41f78a3f0c91f648dfda07044",
+    "note": "The Aug 26 build exported only 5 JNI symbols. The three added on 2026-09-22 (nativeCreateWithCameraTimeOffset / nativeGetLastTimestampTrace / nativeGetCounters) were absent, so the old .so would UnsatisfiedLinkError on the new Kotlin externs."
+  },
+  "verification": {
+    "symbolGate": "PASS -- nm -D defined exports match the Kotlin 'external fun native*' declarations exactly, 8/8",
+    "pageAlign16k": "PASS -- min PT_LOAD align 0x4000 over 3 segments (scripts/check_elf_align.py)",
+    "engineSymbolsResolvable": "PASS -- all 5 undefined XRSLAM* symbols are exported by the pinned core .so",
+    "onDevice": "NOT RUN -- no Android device and no emulator on this machine"
+  }
+}

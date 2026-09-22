@@ -48,17 +48,49 @@ android {
             abiFilters += listOf("arm64-v8a")
         }
 
-        externalNativeBuild {
-            cmake {
-                // Belt and braces: r28+ does this by default, but an older NDK
-                // silently produces 4 KB-aligned segments and the APK still
-                // builds. Making it explicit means a toolchain downgrade shows
-                // up as a link flag, not as a field crash.
-                arguments += listOf("-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON")
-                cppFlags += listOf("-DPW_ANDROID_CAPTURE=1")
-            }
+        // [pw 2026-09-22] 🔴 这一段现在是**死配置**:下面刻意不挂
+        // `externalNativeBuild { cmake { path } }`(理由见那里),没有 CMake
+        // 目标时这些 arguments/cppFlags 谁也不读。留着是为了在改回
+        // externalNativeBuild 时不丢这两行的依据;等价的保证现在由
+        // `build_transport.sh` 的 16 KB 闸(scripts/check_elf_align.py)给出,
+        // 它检查的是**产物本身**而不是构建意图。
+        // externalNativeBuild {
+        //     cmake {
+        //         arguments += listOf("-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON")
+        //         cppFlags += listOf("-DPW_ANDROID_CAPTURE=1")
+        //     }
+        // }
+    }
+
+    // [pw 2026-09-22] 没有这一段,`android_ready/kotlin/` 里的 .kt 根本不参与
+    // 构建 —— 2026-09-22 之前 `PwXrslamTransport` 全仓零引用,一半原因就在
+    // 这里:snippet 只写了 16 KB 那一档,从没把源码接进来。
+    sourceSets {
+        getByName("main") {
+            java.srcDirs("../../android_ready/kotlin")
+            // 预编译的引擎核心。CMakeLists 对它做 SHA256 校验,改一个字节
+            // 就 FATAL_ERROR,所以它不需要额外的构建期守卫。
+            jniLibs.srcDirs("../../android_ready/native/xrslam/libs")
         }
     }
+
+    // 🔴 **刻意不在这里挂 `externalNativeBuild { cmake { path = … } }`。**
+    // `libs/arm64-v8a/` 里已经有一份 `libpw_xrslam_transport.so`,而
+    // CMake 目标叫的也是 `pw_xrslam_transport` ⇒ 两条路径会产出同名
+    // `lib/arm64-v8a/libpw_xrslam_transport.so`,AGP 直接报
+    // "More than one file was found with OS independent path"。
+    //
+    // 所以两份 .so 走同一种口径:**收据绑定的预编译产物**。
+    //   · libxrslam_generic_4beb1a9.so  <- native/xrslam/build_generic_core.sh
+    //                                      + core_build_receipt.json
+    //   · libpw_xrslam_transport.so     <- native/xrslam/build_transport.sh
+    //                                      + transport_build_receipt.json
+    // 防陈旧的闸在 `build_transport.sh` 里:它用 `nm -D` 把 .so 的
+    // `Java_com_pocketworld_capture_*` 导出与 `PwXrslamTransport.kt` 的
+    // `external fun native*` 声明逐项对齐,不一致就退出 1。
+    // 🔴 改了 `PwXrslamTransport.{kt,cpp}` 就必须重跑 `build_transport.sh`,
+    //    否则装到机器上是 `UnsatisfiedLinkError`(2026-09-22 就踩到过:
+    //    8 月那份 .so 只导出 5 个符号,新加的 3 个不在里面)。
 
     packaging {
         jniLibs {
@@ -68,7 +100,11 @@ android {
         }
     }
 
-    ndkVersion = "28.0.12674087" // r28. Pin it: an unpinned NDK is a silent
+    // [pw 2026-09-22] r28 → r29. 钉的必须是**实际造出产物的那一版**:
+    //   · libxrslam_generic_4beb1a9.so  -> core_build_receipt.json: 29.0.14206865
+    //   · libpw_xrslam_transport.so     -> transport_build_receipt.json: 29.0.14206865
+    // 此前这里写 r28,而两份收据都写 r29 —— 版本号对不上就等于没钉。
+    ndkVersion = "29.0.14206865" // r29. Pin it: an unpinned NDK is a silent
                                  // 16 KB regression waiting to happen.
 }
 

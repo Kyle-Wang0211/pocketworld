@@ -3,3 +3,7 @@
 .dart_tool/
 .packages
 build/
+
+# [pw 2026-09-22] 离线编译自证的产物目录(kotlinc / NDK+cmake),不入库。
+build-kotlin-check/
+native/xrslam/build-transport/

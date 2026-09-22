@@ -426,4 +426,99 @@ void main() {
     expect(kotlin, isNot(contains('trackingSuccess')));
     expect(kotlin, isNot(contains('threshold')));
   });
+
+  // ══ [pw 2026-09-22] Android 喂料链接线 ════════════════════════════════
+  // 这一组存在的理由:2026-09-22 的盘点发现 Android 侧 Kotlin / JNI / .so
+  // 三样都在,但 `PwXrslamTransport` **全仓零引用** —— IMU 读了从不 push,
+  // 相机源根本不存在。「文件存在」不等于「链条接上」,所以这里断言的是
+  // **引用关系**,不是文件存在。
+  test('Android feed chain is actually referenced, not just present', () {
+    final String feed = File(
+      'android_ready/kotlin/com/pocketworld/capture/PwXrslamFeed.kt',
+    ).readAsStringSync();
+    final String camera = File(
+      'android_ready/kotlin/com/pocketworld/capture/PwVioCameraSource.kt',
+    ).readAsStringSync();
+    final String plugin = File(
+      'android_ready/kotlin/com/pocketworld/capture/PwCapturePlugin.kt',
+    ).readAsStringSync();
+    final String imu = File(
+      'android_ready/kotlin/com/pocketworld/capture/PwImuSource.kt',
+    ).readAsStringSync();
+
+    // 传输层真的被喂料层调用(此前零引用)。
+    expect(feed, contains('PwXrslamTransport()'));
+    expect(feed, contains('pushGyroscope'));
+    expect(feed, contains('pushAcceleration'));
+    expect(feed, contains('pushCameraAndRunRaw'));
+    // 喂料层真的被插件调用(否则又是一座孤岛)。
+    expect(plugin, contains('PwXrslamFeed.shared'));
+    expect(plugin, contains('PwVioCameraSource('));
+    expect(plugin, contains('feed.onImuSample'));
+
+    // 相机源存在且用 camera2 的 ImageReader,而不是只读元数据。
+    expect(camera, contains('ImageReader'));
+    expect(camera, contains('ImageFormat.YUV_420_888'));
+    // acquireLatestImage 会静默吃掉丢帧的归因 —— 必须是 acquireNextImage。
+    expect(camera, contains('acquireNextImage'));
+    expect(camera, isNot(contains('acquireLatestImage')));
+    // 产品硬下限。
+    expect(camera, contains('MIN_WIDTH = 1920'));
+    expect(camera, contains('MIN_HEIGHT = 1440'));
+    // 永远不用 LiDAR / ToF 深度。
+    expect(camera, isNot(contains('DEPTH16')));
+    expect(camera, isNot(contains('ImageFormat.DEPTH')));
+
+    // 三条流共享一个串行到达上下文(上游 `.main` 的等价物)。
+    expect(feed, contains('arrivalHandler'));
+    expect(imu, contains('externalHandler'));
+    expect(plugin, contains('arrival'));
+  });
+
+  test('Android camera timestamp is converted to the exposure midpoint', () {
+    final String feed = File(
+      'android_ready/kotlin/com/pocketworld/capture/PwXrslamFeed.kt',
+    ).readAsStringSync();
+    final String camera = File(
+      'android_ready/kotlin/com/pocketworld/capture/PwVioCameraSource.kt',
+    ).readAsStringSync();
+
+    // t_canonical = SENSOR_TIMESTAMP + EXPOSURE/2 + SKEW/2
+    expect(camera, contains('SENSOR_EXPOSURE_TIME'));
+    expect(camera, contains('SENSOR_ROLLING_SHUTTER_SKEW'));
+    expect(feed, contains('exposureNs / 2.0'));
+    expect(feed, contains('skewNs / 2.0'));
+    // 每机常量 c 走传输层的 offset 入口,不在喂料层加。
+    expect(feed, contains('createWithCameraTimeOffset'));
+    // 时基自证:推完当帧读 C 账本。
+    expect(feed, contains('getLastTimestampTrace'));
+    expect(feed, contains('tbMaxAbsRawResidual'));
+    expect(feed, contains('tbMaxAbsOffsetResidual'));
+  });
+
+  test('Android per-device calibration table is empty and provenance-tagged', () {
+    final String cal = File(
+      'android_ready/kotlin/com/pocketworld/capture/PwDeviceCalibration.kt',
+    ).readAsStringSync();
+
+    // 🔴 表必须是空的。一个编出来的标定值比没有标定值更坏 —— 它会让缺口
+    //    在 provenance 里消失。加表项时**同时**要改这条断言并写出处。
+    expect(cal, contains('TABLE: Map<String, Extrinsic> = emptyMap()'));
+    expect(
+      cal,
+      contains('CAMERA_TIME_OFFSET_SECONDS: Map<String, Double> = emptyMap()'),
+    );
+    // 三态 provenance,与 Dart 的 FieldProvenance 逐项对齐。
+    for (final String label in <String>[
+      'device-api',
+      'measured',
+      'shared-default',
+      'PLACEHOLDER',
+    ]) {
+      expect(cal, contains(label));
+    }
+    // placeholder 时必须打醒目日志。
+    expect(cal, contains('Log.w'));
+    expect(cal, contains('MUST NOT report absolute scale'));
+  });
 }
