@@ -1,0 +1,43 @@
+{
+  "schema": "pocketworld.colmap411.texture_sampler_golden.v1",
+  "upstream_commit": "a0d785fba74b2664f31edc4a29026a8b27c00f67",
+  "patch_match_cuda_sha256": "1aebd4482de0ea6f1f3aad45150c09e0479119c607a843959c8aaa381c0d4448",
+  "required_cuda_device": "NVIDIA GeForce RTX 5090",
+  "coordinate_encoding": "float32_bits_little_endian",
+  "sample_encoding": "float32_bits_little_endian",
+  "coordinate_order": "sample,col_plus_half,row_plus_half,layer",
+  "sample_order": "sample",
+  "samplers": {
+    "source_image": {
+      "cuda_filter_mode": "cudaFilterModeLinear",
+      "cuda_read_mode": "cudaReadModeNormalizedFloat",
+      "cuda_normalized_coords": false,
+      "filter": "linear",
+      "address": "border_zero",
+      "read": "normalized_float_from_uint8",
+      "vulkan_format": "VK_FORMAT_R8_UNORM"
+    },
+    "source_depth": {
+      "cuda_filter_mode": "cudaFilterModePoint",
+      "cuda_read_mode": "cudaReadModeElementType",
+      "cuda_normalized_coords": false,
+      "filter": "point",
+      "address": "border_zero",
+      "read": "float32_element",
+      "vulkan_format": "VK_FORMAT_R32_SFLOAT"
+    }
+  },
+  "required_capture_fields": [
+    "cuda_runtime_version",
+    "cuda_driver_version",
+    "cuda_device_name",
+    "cuda_device_uuid",
+    "input_file",
+    "input_sha256",
+    "coordinate_file",
+    "coordinate_sha256",
+    "sample_file",
+    "sample_sha256"
+  ],
+  "parity_enabled_without_fixture": false
+}

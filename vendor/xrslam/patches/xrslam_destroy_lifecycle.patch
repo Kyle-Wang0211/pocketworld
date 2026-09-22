@@ -1,0 +1,18 @@
+diff --git a/xrslam-interface/src/XRSLAMManager.cpp b/xrslam-interface/src/XRSLAMManager.cpp
+index 866cb8a..c8163e1 100644
+--- a/xrslam-interface/src/XRSLAMManager.cpp
++++ b/xrslam-interface/src/XRSLAMManager.cpp
+@@ -92,6 +92,13 @@ void XRSLAMManager::Init(std::shared_ptr<Config> config) {
+ }
+ 
+ void XRSLAMManager::Destroy() {
++    {
++        std::lock_guard<std::mutex> lck(input_mutex_);
++        cur_image_.reset();
++    }
++    // XRSLAM::Detail::~Detail() is the upstream owner of worker stop/join.
++    detail_.reset();
++    config_.reset();
+     std::cout << "-----------------Destroy XRSLAM v" << XRSLAM_VERSION
+               << " successfully-----------" << std::endl;
+ }

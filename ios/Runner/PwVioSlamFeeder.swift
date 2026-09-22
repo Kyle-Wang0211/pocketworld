@@ -1,83 +1,468 @@
 // PwVioSlamFeeder.swift — 把 ARKit 帧与 CoreMotion 样本喂给 XRSLAM。
 //
 // 为什么在原生侧喂:ARFrame 本来就在原生。从 Dart 喂意味着每帧把像素缓冲跨
-// FFI 边界拷一次 —— 1920×1440 灰度 = 2.7 MB/帧,30fps 就是 83 MB/s 的纯拷贝。
-// 原生侧直接喂是**零拷贝**:XRSLAMImage.data 直接指向 CVPixelBuffer 的亮度平面。
-// Dart 侧只读位姿和健康状态,那是几十字节。
+// FFI 边界拷一次 —— 1920×1440 灰度 = 2.7 MB/帧,30fps 就是 83 MB/s 的桥接拷贝。
+// 原生侧保留 CVPixelBuffer,在 worker 上直接读亮度平面并只写一次降采样 scratch;
+// Dart 侧只传配置、读位姿和健康状态,避免把整帧像素穿过平台通道。
 //
-// 三条来自今天实测的硬约束:
-//   ① **按时间戳配对,不按到达顺序** —— 实测 ARFrame 与 CoreMotion 的投递延迟
-//      差 34.76 ms(相机链比 IMU 链慢一个数量级)。按到达顺序配会错一整帧,
-//      100°/s 下就是 3.5° 姿态误差。所幸两路时间戳同域(都贴 CLOCK_UPTIME_RAW,
-//      实测累计休眠 61.69h 下判据信噪比充足),所以直接用时间戳即可。
-//   ② **视觉更新降频** —— ARCore 工程师原话:他们的 VIO 只跑约 10Hz,
-//      "running 60FPS ... introduces problems with increased device heating"。
-//      我们按 30Hz 跑完整 VIO 是在跟一个只做 1/3 工作量的对手比发热。
-//   ③ **不丢帧** —— 降的是 RunOneFrame 的节奏,不是丢 PushImage。
-//      被跳过的帧仍然进了核内队列,只是不立刻触发求解。
+// 跨端边界:
+//   ① Swift 只抄录平台原始时间戳/跟踪枚举,不判时基、可用性或质量；
+//   ② 每个成功 Push 的图像固定 RunOneFrame 一次,不在 Swift 写频率策略；
+//   ③ 回调只做短暂串行入队；算法压力不能丢图像或 IMU，也不能反向控制拍照。
+//      若最终发现积压，整场实验标无效，但 XRSLAM 仍收到完整、有序输入。
 
 import ARKit
 import CoreMotion
+import Darwin
 import Foundation
+import simd
 
 @available(iOS 11.0, *)
 public final class PwVioSlamFeeder {
   public static let shared = PwVioSlamFeeder()
   private init() {}
 
+  private enum ShadowState: String {
+    case stopped, starting, running, stopping
+  }
+
+  private struct PendingFrame {
+    let pixelBuffer: CVPixelBuffer
+    let timestamp: Double
+    let arkitWorldFromCamera: simd_float4x4
+    // Raw ARKit enum facts only. Dart owns the cross-platform usable/rejected
+    // decision and all quality policy.
+    let referenceTrackingState: String
+    let referenceTrackingReason: String
+    let enqueuedAt: CFTimeInterval
+  }
+
+  private struct PendingAcceleration {
+    let timestamp: Double
+    let x: Double
+    let y: Double
+    let z: Double
+  }
+
+  private struct PendingGyroscope {
+    let timestamp: Double
+    let x: Double
+    let y: Double
+    let z: Double
+  }
+
+  private enum SensorStream {
+    case image, acceleration, gyroscope
+  }
+
+  private enum PendingWork {
+    case image(PendingFrame, epoch: Int)
+    case acceleration(PendingAcceleration, epoch: Int)
+    case gyroscope(PendingGyroscope, epoch: Int)
+
+    var epoch: Int {
+      switch self {
+      case .image(_, let epoch),
+           .acceleration(_, let epoch),
+           .gyroscope(_, let epoch): return epoch
+      }
+    }
+
+    var stream: SensorStream {
+      switch self {
+      case .image: return .image
+      case .acceleration: return .acceleration
+      case .gyroscope: return .gyroscope
+      }
+    }
+
+    var isImage: Bool {
+      if case .image = stream { return true }
+      return false
+    }
+  }
+
+  private static let maxStateTransitions = 16
+  // Transport-only bound. Every processed image offers one raw pose/health
+  // observation; Dart owns polling cadence and every semantic classification.
+
   private let lock = NSLock()
+  private let coreQueue = DispatchQueue(
+    label: "com.pocketworld.vio.shadow.core",
+    qos: .utility
+  )
+  private var pendingWork: [PendingWork] = []
+  private var pendingHead = 0
+  private var pendingCount = 0
+  private var pendingImageCount = 0
+  private var inFlightImageCount = 0
+  private var maxRetainedImageCount = 0
+  private var drainScheduled = false
+  private var inFlightCount = 0
+  private var queueAccepted = 0
+  private var queueProcessedSuccess = 0
+  private var droppedOnStop = 0
+  private var terminalRejected = 0
+  private var maxQueueBacklog = 0
+  private var state = ShadowState.stopped
+  private var stateTransitions: [String] = []
+  private var sessionGeneration = 0
+  private struct StartRequest {
+    let slamConfigPath: String
+    let deviceConfigPath: String
+    let sessionId: String
+    let sessionEpoch: Int
+    let effectiveConfigSha256: String
+    let inputIdentitySha256: String
+    let downsampleFactor: Int
+    let downsampleFormula: String
+    let accelerationScale: Double
+    let requestedAccelerometerHz: Double
+    let requestedGyroscopeHz: Double
+
+    func matches(_ other: StartRequest) -> Bool {
+      slamConfigPath == other.slamConfigPath &&
+        deviceConfigPath == other.deviceConfigPath &&
+        sessionId == other.sessionId &&
+        sessionEpoch == other.sessionEpoch &&
+        effectiveConfigSha256 == other.effectiveConfigSha256 &&
+        inputIdentitySha256 == other.inputIdentitySha256 &&
+        downsampleFactor == other.downsampleFactor &&
+        downsampleFormula == other.downsampleFormula &&
+        accelerationScale == other.accelerationScale &&
+        requestedAccelerometerHz == other.requestedAccelerometerHz &&
+        requestedGyroscopeHz == other.requestedGyroscopeHz
+    }
+  }
+  private var startCompletions: [(Int32, Int) -> Void] = []
+  private var canceledStartCompletions: [(Int32, Int) -> Void] = []
+  private var pendingRestart: StartRequest?
+  private var pendingRestartCompletions: [(Int32, Int) -> Void] = []
+  private var stopCompletions: [([String: Any]) -> Void] = []
+  private var created = false
+  private var shutdownDrops = 0
+
+  // Generation and count share one CAS word. A callback that captured an old
+  // generation can never increment a newly reset counter, even if reset lands
+  // between its load and compare-and-swap.
+  private final class GenerationCounter {
+    private static let countMask: UInt64 = 0xffff_ffff
+    private var packed: Int64 = 0
+
+    private static func load(_ value: inout Int64) -> UInt64 {
+      UInt64(bitPattern: OSAtomicAdd64Barrier(0, &value))
+    }
+
+    private static func replace(_ value: inout Int64, with bits: UInt64) {
+      while true {
+        let old = OSAtomicAdd64Barrier(0, &value)
+        if OSAtomicCompareAndSwap64Barrier(
+          old,
+          Int64(bitPattern: bits),
+          &value
+        ) { return }
+      }
+    }
+
+    func beginGeneration(_ generation: Int) {
+      let token = UInt64(UInt32(truncatingIfNeeded: generation)) << 32
+      Self.replace(&packed, with: token)
+    }
+
+    @discardableResult
+    func increment(generation: UInt32) -> Bool {
+      while true {
+        let old = Self.load(&packed)
+        guard UInt32(truncatingIfNeeded: old >> 32) == generation else {
+          return false
+        }
+        let count = old & Self.countMask
+        guard count < Self.countMask else { return false }
+        let next = (UInt64(generation) << 32) | (count + 1)
+        if OSAtomicCompareAndSwap64Barrier(
+          Int64(bitPattern: old),
+          Int64(bitPattern: next),
+          &packed
+        ) { return true }
+      }
+    }
+
+    func value(generation: Int) -> Int? {
+      let bits = Self.load(&packed)
+      guard UInt32(truncatingIfNeeded: bits >> 32) ==
+              UInt32(truncatingIfNeeded: generation) else { return nil }
+      return Int(bits & Self.countMask)
+    }
+
+    func seal(generation: Int) -> Int? {
+      let expected = UInt32(truncatingIfNeeded: generation)
+      while true {
+        let old = Self.load(&packed)
+        let token = UInt32(truncatingIfNeeded: old >> 32)
+        guard token == expected else { return nil }
+        let sealed = UInt64(expected | 0x8000_0000) << 32 |
+          (old & Self.countMask)
+        if OSAtomicCompareAndSwap64Barrier(
+          Int64(bitPattern: old),
+          Int64(bitPattern: sealed),
+          &packed
+        ) { return Int(old & Self.countMask) }
+      }
+    }
+  }
+
+  private final class AtomicCounter {
+    private var storage: Int64 = 0
+    func increment() { _ = OSAtomicIncrement64Barrier(&storage) }
+    var value: Int { Int(OSAtomicAdd64Barrier(0, &storage)) }
+  }
+
+  private final class AdmissionGate {
+    enum Phase: UInt64 { case open = 0, rejecting = 1, sealed = 2 }
+    struct Entry { let generation: UInt32; let phase: Phase }
+    private static let activeMask: UInt64 = 0x3fff_ffff
+    private static let phaseShift: UInt64 = 30
+    // Generation zero begins sealed. Before the first Dart-authorized start,
+    // ARKit/CoreMotion callbacks must not acquire a phantom generation-0 lease.
+    private var packed: Int64
+    private let sealLock = NSLock()
+    private var sealGeneration: Int?
+    private var sealCompletion: (() -> Void)?
+
+    init() {
+      packed = Int64(
+        bitPattern: Phase.sealed.rawValue << Self.phaseShift
+      )
+    }
+
+    private func load() -> UInt64 {
+      UInt64(bitPattern: OSAtomicAdd64Barrier(0, &packed))
+    }
+
+    @discardableResult
+    func begin(generation: Int) -> Bool {
+      let next = UInt64(UInt32(truncatingIfNeeded: generation)) << 32
+      while true {
+        let old = load()
+        // A new session must never erase a callback lease from the previous
+        // generation. Correct lifecycle closure seals that generation first;
+        // a violation fails the start safely instead of corrupting accounting.
+        guard old & Self.activeMask == 0 else { return false }
+        if OSAtomicCompareAndSwap64Barrier(
+          Int64(bitPattern: old), Int64(bitPattern: next), &packed
+        ) {
+          sealLock.lock()
+          sealGeneration = nil
+          sealCompletion = nil
+          sealLock.unlock()
+          return true
+        }
+      }
+    }
+
+    func enter() -> Entry? {
+      while true {
+        let old = load()
+        let phaseRaw = (old >> Self.phaseShift) & 0x3
+        guard let phase = Phase(rawValue: phaseRaw), phase != .sealed else {
+          return nil
+        }
+        let active = old & Self.activeMask
+        guard active < Self.activeMask else { return nil }
+        let next = old + 1
+        if OSAtomicCompareAndSwap64Barrier(
+          Int64(bitPattern: old), Int64(bitPattern: next), &packed
+        ) {
+          return Entry(
+            generation: UInt32(truncatingIfNeeded: old >> 32),
+            phase: phase
+          )
+        }
+      }
+    }
+
+    func leave(_ entry: Entry) {
+      while true {
+        let old = load()
+        guard UInt32(truncatingIfNeeded: old >> 32) == entry.generation,
+              old & Self.activeMask > 0 else { return }
+        let next = old - 1
+        if OSAtomicCompareAndSwap64Barrier(
+          Int64(bitPattern: old), Int64(bitPattern: next), &packed
+        ) {
+          if next & Self.activeMask == 0 { completeSealIfReady() }
+          return
+        }
+      }
+    }
+
+    func beginRejecting(generation: Int) {
+      let expected = UInt32(truncatingIfNeeded: generation)
+      while true {
+        let old = load()
+        guard UInt32(truncatingIfNeeded: old >> 32) == expected else { return }
+        let phase = (old >> Self.phaseShift) & 0x3
+        guard phase == Phase.open.rawValue else { return }
+        let next = old | (Phase.rejecting.rawValue << Self.phaseShift)
+        if OSAtomicCompareAndSwap64Barrier(
+          Int64(bitPattern: old), Int64(bitPattern: next), &packed
+        ) { return }
+      }
+    }
+
+    func seal(generation: Int) -> Bool {
+      let expected = UInt32(truncatingIfNeeded: generation)
+      while true {
+        let old = load()
+        guard UInt32(truncatingIfNeeded: old >> 32) == expected else {
+          return false
+        }
+        guard old & Self.activeMask == 0 else { return false }
+        let phase = (old >> Self.phaseShift) & 0x3
+        if phase == Phase.sealed.rawValue { return true }
+        guard phase == Phase.rejecting.rawValue else { return false }
+        let clearedPhase = old & ~(UInt64(0x3) << Self.phaseShift)
+        let next = clearedPhase | (Phase.sealed.rawValue << Self.phaseShift)
+        if OSAtomicCompareAndSwap64Barrier(
+          Int64(bitPattern: old), Int64(bitPattern: next), &packed
+        ) { return true }
+      }
+    }
+
+    /// Arms exactly one completion and fires it on the transition to zero
+    /// active callback leases. This is edge-triggered; no queue polls/spins.
+    func sealWhenQuiescent(
+      generation: Int,
+      completion: @escaping () -> Void
+    ) {
+      sealLock.lock()
+      guard sealCompletion == nil else {
+        sealLock.unlock()
+        return
+      }
+      sealGeneration = generation
+      sealCompletion = completion
+      sealLock.unlock()
+      completeSealIfReady()
+    }
+
+    private func completeSealIfReady() {
+      let bits = load()
+      guard bits & Self.activeMask == 0,
+            (bits >> Self.phaseShift) & 0x3 == Phase.rejecting.rawValue else {
+        return
+      }
+      let generation = Int(UInt32(truncatingIfNeeded: bits >> 32))
+      var completion: (() -> Void)?
+      guard sealLock.try() else { return }
+      if sealGeneration == generation,
+         sealCompletion != nil,
+         seal(generation: generation) {
+        completion = sealCompletion
+        sealCompletion = nil
+        sealGeneration = nil
+      }
+      sealLock.unlock()
+      completion?()
+    }
+  }
+
+  private let admissionGate = AdmissionGate()
+  private let imageLockContention = GenerationCounter()
+  private let accelerationLockContention = GenerationCounter()
+  private let gyroscopeLockContention = GenerationCounter()
+  private let imageStopRejections = GenerationCounter()
+  private let accelerationStopRejections = GenerationCounter()
+  private let gyroscopeStopRejections = GenerationCounter()
+  private let outOfSessionImageOffers = AtomicCounter()
+  private let outOfSessionAccelerationOffers = AtomicCounter()
+  private let outOfSessionGyroscopeOffers = AtomicCounter()
+  private var sealedImageLockContention: Int?
+  private var sealedAccelerationLockContention: Int?
+  private var sealedGyroscopeLockContention: Int?
+  private var sealedImageStopRejections: Int?
+  private var sealedAccelerationStopRejections: Int?
+  private var sealedGyroscopeStopRejections: Int?
+
+  private enum SensorRejectionReason: String, CaseIterable {
+    case notRunning = "not_running"
+    case lockContention = "lock_contention"
+    case queueFull = "queue_full"
+    case cameraFull = "camera_full"
+    case droppedOnStop = "dropped_on_stop"
+    case staleEpoch = "stale_epoch"
+    case invalidInput = "invalid_input"
+    case nativeReject = "native_reject"
+  }
+
+  private struct SensorFacts {
+    var attempted = 0
+    var accepted = 0
+    var rejected = 0
+    var reasons = Dictionary(
+      uniqueKeysWithValues: SensorRejectionReason.allCases.map { ($0, 0) }
+    )
+
+    mutating func offer() { attempted += 1 }
+    mutating func accept() { accepted += 1 }
+    mutating func reject(_ reason: SensorRejectionReason) {
+      rejected += 1
+      reasons[reason, default: 0] += 1
+    }
+
+    func wire(lockContention: Int, stopRejections: Int) ->
+      (attempted: Int, accepted: Int, rejected: Int, reasons: [String: Int]) {
+      var wireReasons = Dictionary(uniqueKeysWithValues: reasons.map {
+        ($0.key.rawValue, $0.value)
+      })
+      wireReasons[SensorRejectionReason.lockContention.rawValue, default: 0] +=
+        lockContention
+      wireReasons[SensorRejectionReason.droppedOnStop.rawValue, default: 0] +=
+        stopRejections
+      return (
+        attempted + lockContention + stopRejections,
+        accepted,
+        rejected + lockContention + stopRejections,
+        wireReasons
+      )
+    }
+  }
+
+  private var imageFacts = SensorFacts()
+  private var accFacts = SensorFacts()
+  private var gyroFacts = SensorFacts()
+  private var overflowBase = 0
+
+  private enum ProcessingOutcome {
+    case success, invalidInput, nativeReject
+  }
+  private var terminalStale = 0
+  private var terminalInvalidInput = 0
+  private var terminalNativeReject = 0
+  private var terminalInternal = 0
 
   // ── 降采样到 VIO 的工作分辨率 ──
-  //
-  // ARKit 的 capturedImage 是 1920×1440。按全分辨率喂实测直接把 App 撑崩
-  // (imagesPushed=808 / slamState 一直是 0 / 队列只进不出 / 20 秒被 iOS 杀)。
-  //
-  // 目标分辨率 640×480 = 1920×1440 ÷3。见 kVioDownsampleFactor 的完整依据。
-  //
-  // 3×3 盒式平均,整数比例无插值歧义,两端能写出逐位相同的实现 ——
-  // 不用 vImage(Apple 专有,会制造跨端不对称;同今天关掉 ACCELERATESPARSE 的理由)。
+  // Dart selects the factor as part of the effective cross-platform config.
+  // Dart also selects the versioned kernel + rounding formula. Swift only
+  // applies that exact contract beside the source buffer and rejects unknown
+  // formulas or dimensions that cannot represent it.
+  private static let downsampleFormulaBoxNxnHalfUpV1 =
+    "box-nxn-half-up-v1"
   private var scratch: UnsafeMutablePointer<UInt8>?
   private var scratchCapacity = 0
   private var vioWidth = 0, vioHeight = 0
 
-  /// 降采样倍数。1920×1440 ÷3 = **640×480**。
-  ///
-  /// 🔴 这个数字的依据经过一次彻底的反转,写清楚免得再翻烧饼:
-  ///
-  /// 我曾把它设成 2(→960×720),依据是我引的一句话:"VIO 参数按 VGA 调,
-  /// 而在 quarter resolution (960×540) 表现更好",出处标的是
-  /// Delmerico & Scaramuzza ICRA 2018。**那是误引。** 把该 PDF 全文
-  /// grep resolution|downsampl|quarter|960|540 → 零命中,那篇论文
-  /// **根本没有分辨率实验**。真实链条是 Joshi et al. ICRA 2022 转述 TUM-VI,
-  /// 而 TUM-VI 自己也没做过该对比(Table III/IV 全是 512×512)。三层转述,
-  /// 源头是空的。
-  ///
-  /// 之后做了一次全球多语言穷举调研(52 agent / 297 条声明 / 118 条死胡同):
-  ///   • **图像分辨率 vs VIO 精度的消融实验,全球不存在。**
-  ///     逐篇核查 Delmerico / UZH-FPV / KAIST-VIO / TUM-VI / Kimera /
-  ///     MSCKF-VIO / SVO2 / VIODE;VINS-Mono、VINS-Fusion、ORB-SLAM3、
-  ///     OpenVINS 四个 issue tracker 检索全部 0 命中。
-  ///     (未覆盖:中文学位论文库 CNKI/万方。)
-  ///   • 640×480 是**唯一有先例的配置**:RD-VIO 论文 §IV-D-4 的
-  ///     iPhone X 640×480 是全文唯一一处移动端分辨率陈述;上游 18 份
-  ///     iPhone 配置全部 resolution: [640, 480];全 GitHub、71 个 fork、
-  ///     64 篇引用论文里**没有任何人在 640×480 之外跑过 XRSLAM**。
-  ///
-  /// ⛔ 所以这条注释**不是**在说"640×480 够用"—— 没有人证明过。
-  ///    它是在说"这是唯一有先验的点"。要改分辨率,那是一个**必须自己做**
-  ///    的单变量 A/B,不是能查文献解决的问题。
-  ///    我们自己的 EuRoC A/B 已经证明这个耦合很暴烈:752×480 → 376×240
-  ///    参数不动,尺度误差从 0.28~0.93% 崩到 98~99.98%(s≈0.0002)。
-  private static let kVioDownsampleFactor = 3
-
-  /// 给 Dart 侧做交叉校验用。**唯一真源在上面那个常量**,这里只是暴露。
-  static var vioDownsampleFactorForDart: Int { kVioDownsampleFactor }
-
   /// N×N 盒式降采样。返回 nil 表示尺寸不是 N 的整数倍(不猜,直接拒绝)。
   private func downsampleBox(src: UnsafePointer<UInt8>, srcW: Int, srcH: Int,
-                             srcStride: Int) -> (UnsafeMutablePointer<UInt8>, Int, Int)? {
-    let n = Self.kVioDownsampleFactor
-    guard n >= 1, srcW % n == 0, srcH % n == 0 else { return nil }
+                             srcStride: Int, downsampleFactor: Int,
+                             downsampleFormula: String) ->
+    (UnsafeMutablePointer<UInt8>, Int, Int)? {
+    guard downsampleFormula == Self.downsampleFormulaBoxNxnHalfUpV1 else {
+      return nil
+    }
+    let n = downsampleFactor
+    guard n >= 1, n <= srcW, n <= srcH,
+          srcW % n == 0, srcH % n == 0 else { return nil }
     let dw = srcW / n, dh = srcH / n
     let need = dw * dh
     if scratchCapacity < need {
@@ -103,118 +488,548 @@ public final class PwVioSlamFeeder {
     return (dst, dw, dh)
   }
 
-  /// XRSLAM 是全局单例(C API 没有句柄参数),所以这里也只能有一个实例状态。
-  private var created = false
-
-  /// 视觉更新目标周期。默认 0.1s = 10Hz,依据见文件头 ②。
-  private var runPeriodSeconds: Double = 0.1
-  private var lastRunSeconds: Double = 0
-
-  // 统计 —— 全部是事实,不做解释。
-  private var imagesPushed = 0
-  private var imagesRejected = 0
-  private var accPushed = 0
-  private var gyroPushed = 0
-  /// 喂进去的加速度分量累加。用于在诊断里看**方向** ——
-  /// 符号错靠模长查不出来(模长对符号不变),只有方向能暴露。
-  /// 最后一次成功喂入的图像 / IMU 时间戳(同一时钟域,已实测)。
-  ///
-  /// 用来算「相机停了多久」。这个量以前是混在核内的
-  /// `domain_mismatch_active` 里的:相机一停,IMU 继续推,
-  /// `|t_cam - t_imu|` 就无限增长,于是「相机停了」被报成「时钟域错配」。
-  /// 2026-08-24 真机踩过,把排查方向带偏了。两者必须分开。
+  /// XRSLAM 是全局单例(C API 没有句柄参数),全部入口只允许 coreQueue 调用。
   private var lastImageT: Double = 0
   private var lastImuT: Double = 0
-
   private var accSumX: Double = 0
   private var accSumY: Double = 0
   private var accSumZ: Double = 0
+  private var accNativeAcceptedCount = 0
   private var runCalls = 0
-  private var lastPushRc: Int32 = 0
-  private var lastRunSpanMs: Double = 0
+  private var lastImageRc: Int32 = 0
+  private var lastAccRc: Int32 = 0
+  private var lastGyroRc: Int32 = 0
+  private var lastHealthRc: Int32 = 2
+  private var cachedHealth: [String: Any] = [:]
+  private var cachedSnapshot: [String: Any] = [:]
 
-  // ── VIO 跟得上吗(抄 ARCore 的**检测**模式,不是优化模式)──
-  //
-  // ARCore 自己在 CPU 饥饿时会打 "VIO frequency low"
-  // (官方文档教你 `adb logcat | grep 'VIO frequency low'`)——
-  // 它**检测并上报**,而不是盲目降频。我们复刻这个。
-  //
-  // ⚠️ 为什么不复刻它的"优化"部分:Google 的公开指导全是"少占用我们的 SDK"
-  //    (关 Instant Placement / Augmented Images),对自研核不适用。
-  //    而我们自己试的固定降频已被 EuRoC 实测推翻(难序列 ATE +52%)。
-  //    所以这里只做**可见性**,不做自动干预 —— 没有证据之前不该自动改行为。
-  private var feedWallStart: CFAbsoluteTime = 0
+  private var feedWallStartedAtUptimeSeconds: CFTimeInterval = 0
   private var solveWallSum: Double = 0
-  /// 求解占用的墙钟比例。>1 表示求解比数据来得还慢 ⇒ 一定在积压。
-  private var dutyCycle: Double = 0
-  /// 连续多少次 last_frame_ms 超过帧间隔。ARCore 那条 "VIO frequency low"
-  /// 的等价物 —— 单次超时是抖动,连续超时才是跟不上。
-  private var behindStreak = 0
-  private var behindMax = 0
-  private var lastFrameTimestamp: Double = 0
-  private var frameIntervalEma: Double = 0
+  private var previousImageTimestamp: Double = 0
+  private var workerFrameCount = 0
+  private var workerFrameMsSum = 0.0
+  private var enqueueLatencyUsSum = 0.0
+
+  private var sessionStartedAt: CFTimeInterval = 0
+
+  // Transient raw status observations. Each processed image offers one. Dart
+  // consumes and clears them, then persists aggregate classifications only.
+  private var poseObservationSequence = 0
+  private var poseObservationsOffered = 0
+  private var poseObservationsDropped = 0
+  private var poseObservations: [[String: Any]] = []
+
+  private var lastStartRequest: StartRequest?
 
   // MARK: - 生命周期
 
-  /// 用 Dart 侧生成的两份 YAML 创建。配置生成留在 Dart —— 那里有 provenance
-  /// 追踪(哪些字段是设备读来的、哪些是占位),原生侧不该再复制一份配置逻辑。
-  @discardableResult
-  public func start(slamYaml: String, deviceYaml: String,
-                    runHz: Double = 0.0) -> Int32 {   // 0 = 不降频(默认)
-    lock.lock(); defer { lock.unlock() }
-    if created { return 1 }
-    // runHz <= 0 ⇒ runPeriodSeconds = 0 ⇒ 每帧求解(默认)
-    runPeriodSeconds = runHz > 0 ? 1.0 / runHz : 0.0
-    var cfg: UnsafeMutableRawPointer? = nil
-    // ⚠️ XRSLAMCreate 是上游遗留约定:**1=成功 / 0=失败**,与其余 API 相反。
-    let rc = slamYaml.withCString { s in
-      deviceYaml.withCString { d in
-        "".withCString { lic in
-          "pocketworld".withCString { prod in
-            XRSLAMCreate(s, d, lic, prod, &cfg)
-          }
+  private func transitionLocked(to next: ShadowState) {
+    let previous = state
+    state = next
+    if stateTransitions.count == Self.maxStateTransitions {
+      stateTransitions.removeFirst()
+    }
+    stateTransitions.append("\(previous.rawValue)->\(next.rawValue)")
+  }
+
+  private func resetSessionMetricsLocked(generation: Int) {
+    pendingWork.removeAll(keepingCapacity: true)
+    pendingHead = 0
+    pendingCount = 0
+    pendingImageCount = 0
+    inFlightImageCount = 0
+    maxRetainedImageCount = 0
+    drainScheduled = false
+    inFlightCount = 0
+    queueAccepted = 0
+    queueProcessedSuccess = 0
+    droppedOnStop = 0
+    terminalRejected = 0
+    terminalStale = 0
+    terminalInvalidInput = 0
+    terminalNativeReject = 0
+    terminalInternal = 0
+    maxQueueBacklog = 0
+    stateTransitions.removeAll(keepingCapacity: true)
+    shutdownDrops = 0
+    imageFacts = SensorFacts()
+    accFacts = SensorFacts()
+    gyroFacts = SensorFacts()
+    overflowBase = 0
+    sealedImageLockContention = nil
+    sealedAccelerationLockContention = nil
+    sealedGyroscopeLockContention = nil
+    sealedImageStopRejections = nil
+    sealedAccelerationStopRejections = nil
+    sealedGyroscopeStopRejections = nil
+    imageLockContention.beginGeneration(generation)
+    accelerationLockContention.beginGeneration(generation)
+    gyroscopeLockContention.beginGeneration(generation)
+    imageStopRejections.beginGeneration(generation)
+    accelerationStopRejections.beginGeneration(generation)
+    gyroscopeStopRejections.beginGeneration(generation)
+    lastImageT = 0
+    lastImuT = 0
+    accSumX = 0
+    accSumY = 0
+    accSumZ = 0
+    accNativeAcceptedCount = 0
+    runCalls = 0
+    lastImageRc = 0
+    lastAccRc = 0
+    lastGyroRc = 0
+    lastHealthRc = 2
+    cachedHealth.removeAll(keepingCapacity: true)
+    feedWallStartedAtUptimeSeconds = 0
+    solveWallSum = 0
+    previousImageTimestamp = 0
+    workerFrameCount = 0
+    workerFrameMsSum = 0
+    enqueueLatencyUsSum = 0
+    sessionStartedAt = CACurrentMediaTime()
+    poseObservationSequence = 0
+    poseObservationsOffered = 0
+    poseObservationsDropped = 0
+    poseObservations.removeAll(keepingCapacity: true)
+    cachedSnapshot = makeCoreSnapshotLocked()
+  }
+
+  private func beginStartLocked(
+    _ request: StartRequest,
+    completions: [(Int32, Int) -> Void]
+  ) -> Int? {
+    sessionGeneration += 1
+    let epoch = sessionGeneration
+    resetSessionMetricsLocked(generation: epoch)
+    // Publish only after every generation-scoped counter has reset. `begin`
+    // refuses to overwrite any live lease from the prior generation.
+    guard admissionGate.begin(generation: epoch) else { return nil }
+    lastStartRequest = request
+    startCompletions.append(contentsOf: completions)
+    transitionLocked(to: .starting)
+    cachedSnapshot = makeCoreSnapshotLocked()
+    return epoch
+  }
+
+  /// Core-create failure uses the same sealed terminal path as an explicit
+  /// stop. Caller holds `lock`; completion is withheld until every callback
+  /// lease from `epoch` has left and AdmissionGate.seal succeeds.
+  private func closeFailedCreateGeneration(epoch: Int) -> Bool {
+    guard sessionGeneration == epoch, state == .starting else { return false }
+    created = false
+    transitionLocked(to: .stopping)
+    admissionGate.beginRejecting(generation: epoch)
+    rejectPendingOnStopLocked()
+    cachedSnapshot = makeCoreSnapshotLocked()
+    return true
+  }
+
+  private func scheduleCreate(_ request: StartRequest, epoch: Int) {
+    coreQueue.async { [weak self] in
+      guard let self else { return }
+      let rc = request.slamConfigPath.withCString { slam in
+        request.deviceConfigPath.withCString { device in
+          PWXrslamTransportCreate(slam, device)
+        }
+      }
+
+      var completed: [(Int32, Int) -> Void] = []
+      var destroyOrphan = false
+      var shouldCloseFailedCreate = false
+      self.lock.lock()
+      if self.sessionGeneration == epoch {
+        self.created = (rc == 1)
+        if self.state == .starting, self.created {
+          self.transitionLocked(to: .running)
+          completed = self.startCompletions
+          self.startCompletions.removeAll(keepingCapacity: true)
+        } else if self.state == .starting {
+          shouldCloseFailedCreate = self.closeFailedCreateGeneration(
+            epoch: epoch
+          )
+        }
+        // If stop raced Create, state is stopping. The start completions stay
+        // pending until Destroy has completed, then finish with rc=0. A stale
+        // success can therefore never restart CoreMotion after stop.
+        self.cachedSnapshot = self.makeCoreSnapshotLocked()
+      } else if rc == 1 {
+        // A newer generation cannot inherit a process-global core instance
+        // created for an obsolete request. This block still owns coreQueue, so
+        // Destroy is ordered before any newer Create.
+        destroyOrphan = true
+      }
+      self.lock.unlock()
+
+      if destroyOrphan { PWXrslamTransportDestroy() }
+      if shouldCloseFailedCreate {
+        self.finishStopOnCoreQueue()
+      }
+
+      if !completed.isEmpty {
+        DispatchQueue.main.async {
+          for completion in completed { completion(1, epoch) }
         }
       }
     }
-    created = (rc == 1)
-    if created {
-      imagesPushed = 0; imagesRejected = 0
-      accPushed = 0; gyroPushed = 0; runCalls = 0
-      lastRunSeconds = 0
-    }
-    return rc
   }
 
-  public func stop() {
-    lock.lock(); defer { lock.unlock() }
-    guard created else { return }
-    XRSLAMDestroy()
-    created = false
+  /// Create is asynchronous and serialized with every later XRSLAM call.
+  /// A start received while stopping becomes one coalesced post-Destroy
+  /// restart rather than being lost or lying with an immediate success code.
+  public func start(
+    slamConfigPath: String,
+    deviceConfigPath: String,
+    sessionId: String,
+    sessionEpoch: Int,
+    effectiveConfigSha256: String,
+    inputIdentitySha256: String,
+    downsampleFactor: Int,
+    downsampleFormula: String,
+    accelerationScale: Double,
+    requestedAccelerometerHz: Double,
+    requestedGyroscopeHz: Double,
+    completion: @escaping (Int32, Int) -> Void
+  ) {
+    guard downsampleFactor > 0,
+          downsampleFormula == Self.downsampleFormulaBoxNxnHalfUpV1,
+          accelerationScale.isFinite,
+          accelerationScale != 0,
+          requestedAccelerometerHz.isFinite,
+          requestedAccelerometerHz > 0,
+          requestedGyroscopeHz.isFinite,
+          requestedGyroscopeHz > 0 else {
+      DispatchQueue.main.async { completion(0, 0) }
+      return
+    }
+    let request = StartRequest(
+      slamConfigPath: slamConfigPath,
+      deviceConfigPath: deviceConfigPath,
+      sessionId: sessionId,
+      sessionEpoch: sessionEpoch,
+      effectiveConfigSha256: effectiveConfigSha256,
+      inputIdentitySha256: inputIdentitySha256,
+      downsampleFactor: downsampleFactor,
+      downsampleFormula: downsampleFormula,
+      accelerationScale: accelerationScale,
+      requestedAccelerometerHz: requestedAccelerometerHz,
+      requestedGyroscopeHz: requestedGyroscopeHz
+    )
+    lock.lock()
+    switch state {
+    case .running:
+      let active = lastStartRequest
+      let generation = sessionGeneration
+      // Idempotent start is truthful only for the configuration that is
+      // actually active. Callers requesting a different configuration must
+      // explicitly stop/restart rather than receiving a false success.
+      let success = created && active.map(request.matches) == true
+      lock.unlock()
+      DispatchQueue.main.async { completion(success ? 1 : 0, generation) }
+      return
+    case .starting:
+      if lastStartRequest.map(request.matches) == true {
+        startCompletions.append(completion)
+        lock.unlock()
+      } else {
+        let generation = sessionGeneration
+        lock.unlock()
+        DispatchQueue.main.async { completion(0, generation) }
+      }
+      return
+    case .stopping:
+      if let pendingRestart, !request.matches(pendingRestart) {
+        // Latest distinct restart wins; completions for a superseded request
+        // finish false after Destroy, never true for somebody else's config.
+        canceledStartCompletions.append(
+          contentsOf: pendingRestartCompletions)
+        pendingRestartCompletions.removeAll(keepingCapacity: true)
+      }
+      pendingRestart = request
+      pendingRestartCompletions.append(completion)
+      lock.unlock()
+      return
+    case .stopped:
+      guard let epoch = beginStartLocked(
+        request,
+        completions: [completion]
+      ) else {
+        let generation = sessionGeneration
+        lock.unlock()
+        DispatchQueue.main.async { completion(0, generation) }
+        return
+      }
+      // Enqueue Create before publishing the unlocked `.starting` state. A
+      // racing stop will then enqueue Destroy/drain *after* Create, never
+      // before it.
+      scheduleCreate(request, epoch: epoch)
+      lock.unlock()
+    }
+  }
+
+  private func rejectPendingOnStopLocked() {
+    while pendingCount > 0 {
+      let item = pendingWork[pendingHead]
+      pendingHead += 1
+      pendingCount -= 1
+      if item.isImage {
+        pendingImageCount -= 1
+      }
+      droppedOnStop += 1
+      shutdownDrops += 1
+      rejectSensorLocked(stream: item.stream, reason: .droppedOnStop)
+    }
+    pendingWork.removeAll(keepingCapacity: true)
+    pendingHead = 0
+  }
+
+  /// Stop closes admission immediately, accounts every pending item, and then
+  /// queues Destroy behind any in-flight native call. It never waits/syncs.
+  public func stop(
+    completion: @escaping ([String: Any]) -> Void = { _ in }
+  ) {
+    lock.lock()
+    if state == .stopped {
+      let receipt: [String: Any] = [
+        "schema": "pw.vio.shadow-terminal-unavailable/1",
+        "sessionGeneration": sessionGeneration,
+        "receiptAvailable": false,
+      ]
+      lock.unlock()
+      DispatchQueue.main.async { completion(receipt) }
+      return
+    }
+    // A later stop supersedes a resume queued during the current stop. Those
+    // start callers finish with rc=0 only after the terminal stopped state.
+    if pendingRestart != nil {
+      pendingRestart = nil
+      canceledStartCompletions.append(
+        contentsOf: pendingRestartCompletions)
+      pendingRestartCompletions.removeAll(keepingCapacity: true)
+    }
+    if state == .stopping {
+      // Join the in-progress linearized stop. No caller may observe completion
+      // before in-flight C work, Destroy, and receipt freezing have finished.
+      stopCompletions.append(completion)
+      lock.unlock()
+      return
+    }
+    stopCompletions.append(completion)
+    transitionLocked(to: .stopping)
+    admissionGate.beginRejecting(generation: sessionGeneration)
+    rejectPendingOnStopLocked()
+    let epoch = sessionGeneration
+    let shouldSchedule = !drainScheduled
+    if shouldSchedule { drainScheduled = true }
+    lock.unlock()
+    if shouldSchedule {
+      coreQueue.async { [weak self] in self?.drain(epoch: epoch) }
+    }
   }
 
   public var isRunning: Bool {
     lock.lock(); defer { lock.unlock() }
-    return created
+    return state == .running && created
+  }
+
+  /// Freezes the running facts only for the exact Create completion epoch.
+  /// Generic snapshots never establish start provenance in Dart.
+  public func directRunningReceipt(expectedGeneration: Int) -> [String: Any]? {
+    lock.lock()
+    defer { lock.unlock() }
+    guard expectedGeneration > 0,
+          sessionGeneration == expectedGeneration,
+          state == .running,
+          created else { return nil }
+    return makeWireSnapshotLocked(includeRaw: false)
+  }
+
+  private enum AdmissionRejection {
+    case notRunning, staleEpoch
+  }
+
+  private func offerSensorLocked(stream: SensorStream) {
+    switch stream {
+    case .image: imageFacts.offer()
+    case .acceleration: accFacts.offer()
+    case .gyroscope: gyroFacts.offer()
+    }
+  }
+
+  private func rejectSensorLocked(
+    stream: SensorStream,
+    reason: SensorRejectionReason
+  ) {
+    switch stream {
+    case .image: imageFacts.reject(reason)
+    case .acceleration: accFacts.reject(reason)
+    case .gyroscope: gyroFacts.reject(reason)
+    }
+  }
+
+  private func noteOutOfSessionOffer(stream: SensorStream) {
+    switch stream {
+    case .image: outOfSessionImageOffers.increment()
+    case .acceleration: outOfSessionAccelerationOffers.increment()
+    case .gyroscope: outOfSessionGyroscopeOffers.increment()
+    }
+  }
+
+  private func rejectUnadmittedLocked(
+    stream: SensorStream,
+    reason: AdmissionRejection
+  ) {
+    let sensorReason: SensorRejectionReason
+    switch reason {
+    case .notRunning:
+      sensorReason = .notRunning
+    case .staleEpoch:
+      sensorReason = .staleEpoch
+    }
+    rejectSensorLocked(stream: stream, reason: sensorReason)
+  }
+
+  /// Loss-intolerant admission. The lock covers only an append and counters;
+  /// algorithm work stays on coreQueue and can never pace production capture.
+  private func admit(
+    _ unscopedWork: PendingWork,
+    lease: AdmissionGate.Entry
+  ) -> Bool {
+    lock.lock()
+    offerSensorLocked(stream: unscopedWork.stream)
+    guard state == .running && created else {
+      rejectUnadmittedLocked(
+        stream: unscopedWork.stream,
+        reason: .notRunning
+      )
+      lock.unlock()
+      return false
+    }
+    let generation = UInt32(truncatingIfNeeded: sessionGeneration)
+    guard lease.generation == generation else {
+      rejectUnadmittedLocked(
+        stream: unscopedWork.stream,
+        reason: .staleEpoch
+      )
+      lock.unlock()
+      return false
+    }
+    let epoch = sessionGeneration
+    let work: PendingWork
+    switch unscopedWork {
+    case .image(let frame, _): work = .image(frame, epoch: epoch)
+    case .acceleration(let sample, _):
+      work = .acceleration(sample, epoch: epoch)
+    case .gyroscope(let sample, _):
+      work = .gyroscope(sample, epoch: epoch)
+    }
+    pendingWork.append(work)
+    pendingCount += 1
+    if work.isImage {
+      pendingImageCount += 1
+      maxRetainedImageCount = max(
+        maxRetainedImageCount,
+        pendingImageCount + inFlightImageCount
+      )
+    }
+    queueAccepted += 1
+    maxQueueBacklog = max(maxQueueBacklog, pendingCount)
+    let shouldSchedule = !drainScheduled
+    if shouldSchedule { drainScheduled = true }
+    lock.unlock()
+
+    if shouldSchedule {
+      coreQueue.async { [weak self] in self?.drain(epoch: epoch) }
+    }
+    return true
   }
 
   // MARK: - 喂帧
 
-  /// 喂一帧 ARKit 图像。**零拷贝**:直接指向 CVPixelBuffer 的亮度平面。
-  ///
-  /// ARKit 的 capturedImage 是 420YpCbCr8BiPlanar,**plane 0 就是 Y(亮度)平面**,
-  /// 本身就是灰度图 —— 不需要任何色彩转换。这是 ARKit 路径相对 AVCapture 的一个便宜。
-  public func feed(frame: ARFrame) {
+  /// ARKit hot path: retain at most one bounded pixel-buffer reference and
+  /// return. No downsample, native call, wait, or synchronous dispatch occurs.
+  @discardableResult
+  public func enqueue(frame: ARFrame) -> Bool {
+    guard let lease = admissionGate.enter() else {
+      outOfSessionImageOffers.increment()
+      return false
+    }
+    defer { admissionGate.leave(lease) }
+    guard lease.phase == .open else {
+      if !imageStopRejections.increment(generation: lease.generation) {
+        outOfSessionImageOffers.increment()
+      }
+      return false
+    }
+    let tracking: (state: String, reason: String)
+    switch frame.camera.trackingState {
+    case .normal:
+      tracking = ("normal", "none")
+    case .notAvailable:
+      tracking = ("notAvailable", "none")
+    case .limited(let reason):
+      let rawReason: String
+      switch reason {
+      case .initializing: rawReason = "initializing"
+      case .excessiveMotion: rawReason = "excessiveMotion"
+      case .insufficientFeatures: rawReason = "insufficientFeatures"
+      case .relocalizing: rawReason = "relocalizing"
+      @unknown default: rawReason = "unknown"
+      }
+      tracking = ("limited", rawReason)
+    @unknown default:
+      tracking = ("unknown", "unknown")
+    }
+    let pending = PendingFrame(
+      pixelBuffer: frame.capturedImage,
+      timestamp: frame.timestamp,
+      arkitWorldFromCamera: frame.camera.transform,
+      referenceTrackingState: tracking.state,
+      referenceTrackingReason: tracking.reason,
+      enqueuedAt: CACurrentMediaTime()
+    )
+    return admit(.image(pending, epoch: 0), lease: lease)
+  }
+
+  private func processFrameOnCore(
+    _ pending: PendingFrame,
+    generation: UInt32,
+    downsampleFactor: Int,
+    downsampleFormula: String
+  ) -> ProcessingOutcome {
+    let workerStartedAt = CACurrentMediaTime()
+    defer {
+      let workerMs = (CACurrentMediaTime() - workerStartedAt) * 1000.0
+      lock.lock()
+      workerFrameCount += 1
+      workerFrameMsSum += workerMs
+      lock.unlock()
+    }
+    let enqueueLatencyUs = (workerStartedAt - pending.enqueuedAt) * 1_000_000.0
     lock.lock()
-    let live = created
+    enqueueLatencyUsSum += enqueueLatencyUs
     lock.unlock()
-    guard live else { return }
 
-    let pb = frame.capturedImage
-    guard CVPixelBufferGetPlaneCount(pb) >= 1 else { return }
+    guard pending.timestamp.isFinite else {
+      lock.lock(); imageFacts.reject(.invalidInput); lock.unlock()
+      return .invalidInput
+    }
 
-    CVPixelBufferLockBaseAddress(pb, .readOnly)
+    let pb = pending.pixelBuffer
+    guard CVPixelBufferGetPlaneCount(pb) >= 1 else {
+      lock.lock(); imageFacts.reject(.invalidInput); lock.unlock()
+      return .invalidInput
+    }
+
+    let pixelLockStatus = CVPixelBufferLockBaseAddress(pb, .readOnly)
+    guard pixelLockStatus == kCVReturnSuccess else {
+      lock.lock(); imageFacts.reject(.invalidInput); lock.unlock()
+      return .invalidInput
+    }
     defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
-    guard let base = CVPixelBufferGetBaseAddressOfPlane(pb, 0) else { return }
+    guard let base = CVPixelBufferGetBaseAddressOfPlane(pb, 0) else {
+      lock.lock(); imageFacts.reject(.invalidInput); lock.unlock()
+      return .invalidInput
+    }
 
     let w = CVPixelBufferGetWidthOfPlane(pb, 0)
     let h = CVPixelBufferGetHeightOfPlane(pb, 0)
@@ -224,250 +1039,676 @@ public final class PwVioSlamFeeder {
     // 不退回全分辨率 —— 那正是撑崩 App 的那条路。
     let srcPtr = base.assumingMemoryBound(to: UInt8.self)
     guard let (small, sw, sh) =
-            downsampleBox(src: srcPtr, srcW: w, srcH: h, srcStride: stride) else {
-      lock.lock(); imagesRejected += 1; lock.unlock()
-      return
+            downsampleBox(
+              src: srcPtr,
+              srcW: w,
+              srcH: h,
+              srcStride: stride,
+              downsampleFactor: downsampleFactor,
+              downsampleFormula: downsampleFormula
+            ) else {
+      lock.lock(); imageFacts.reject(.invalidInput); lock.unlock()
+      return .invalidInput
     }
 
-    var img = XRSLAMImage()
-    img.data = small
-    img.timeStamp = frame.timestamp        // 与 CoreMotion 同域(实测)
-    img.stride = Int32(sw)          // 降采样后紧密打包
-    img.camera_id = 0
-    img.channel = 1                        // 灰度
-    // ⚠️ width/height 是我们给上游补的字段。原版只有 stride,分辨率取自 yaml,
-    //    调用方喂的图比 yaml 矮就是静默越界读(ASAN 实测越界 76800 字节)。
-    img.width = Int32(sw)
-    img.height = Int32(sh)
-    img.ext = nil
-
-    let rc = XRSLAMPushSensorDataChecked(XRSLAM_SENSOR_CAMERA, &img)
+    var rawState: Int32 = 0
+    var rawPose = PWXrslamRawPose()
+    let t0 = CACurrentMediaTime()
+    let rc = PWXrslamTransportPushCameraAndRunRaw(
+      small,
+      pending.timestamp,
+      Int32(sw),
+      0,
+      1,
+      &rawState,
+      &rawPose
+    )
+    let span = (CACurrentMediaTime() - t0) * 1000.0
     lock.lock()
-    lastPushRc = rc
-    if rc == XRSLAM_OK {
-      imagesPushed += 1
-      if img.timeStamp > lastImageT { lastImageT = img.timeStamp }
+    lastImageRc = rc
+    if rc == 0 {
+      imageFacts.accept()
     } else {
-      imagesRejected += 1
+      imageFacts.reject(.nativeReject)
     }
-    // [pw] 2026-08-23 撤销降频,默认每帧求解。
-    //   原来这里按 ~10Hz 降频,依据是 ARCore 工程师那句"我们的 VIO 只跑约 10Hz"。
-    //   **EuRoC 实测把它推翻了**:降频只在最简单的序列上受益,中等/困难序列
-    //   全部变差,而且越难越差 ——
-    //     V1_01 easy      ATE 0.0645 → 0.0456 (改善)
-    //     V1_02 medium    ATE 0.0563 → 0.0724 (+25%)
-    //     V1_03 difficult ATE 0.0919 → 0.1520 (+52%,n=3)
-    //   尺度误差同向恶化(V1_03 0.465% → 0.830%)。
-    //   手持拍摄的运动比无人机平飞乱得多,更接近"难"那一档 ⇒ 按无损铁律出局。
-    //   runHz 旋钮保留但默认不生效,便于将来在**自己的数据**上重新评估。
-    let now = frame.timestamp
-    let due = runPeriodSeconds <= 0
-        || (lastRunSeconds == 0) || (now - lastRunSeconds >= runPeriodSeconds)
-    if rc == XRSLAM_OK && due {
-      lastRunSeconds = now
-      runCalls += 1
-      lock.unlock()
-      let t0 = CFAbsoluteTimeGetCurrent()
-      XRSLAMRunOneFrame()
-      let span = (CFAbsoluteTimeGetCurrent() - t0) * 1000.0
+    previousImageTimestamp = lastImageT
+    lastImageT = pending.timestamp
+    lock.unlock()
+    guard rc == 0 else { return .nativeReject }
+    lock.lock()
+    runCalls += 1
+    solveWallSum += span / 1000.0
+    if feedWallStartedAtUptimeSeconds == 0 {
+      feedWallStartedAtUptimeSeconds = t0
+    }
+    lock.unlock()
+    updateHealthOnCore(frameMs: span, rawState: rawState)
+    observePoseAndPrepareWire(
+      frame: pending,
+      generation: generation,
+      rawState: rawState,
+      rawPose: rawPose
+    )
+    return .success
+  }
+
+  /// 运输一个原始加速度计样本。此处只拷贝 G 单位原值;
+  /// Dart 选择的单位/符号换算在 serial coreQueue 上执行。
+  @discardableResult
+  public func enqueue(acceleration sample: CMAccelerometerData) -> Bool {
+    guard let lease = admissionGate.enter() else {
+      outOfSessionAccelerationOffers.increment()
+      return false
+    }
+    defer { admissionGate.leave(lease) }
+    guard lease.phase == .open else {
+      if !accelerationStopRejections.increment(generation: lease.generation) {
+        outOfSessionAccelerationOffers.increment()
+      }
+      return false
+    }
+    let pending = PendingAcceleration(
+      timestamp: sample.timestamp,
+      x: sample.acceleration.x,
+      y: sample.acceleration.y,
+      z: sample.acceleration.z
+    )
+    return admit(.acceleration(pending, epoch: 0), lease: lease)
+  }
+
+  /// 运输一个原始陀螺仪样本,rad/s 原值不改。
+  @discardableResult
+  public func enqueue(gyroscope sample: CMGyroData) -> Bool {
+    guard let lease = admissionGate.enter() else {
+      outOfSessionGyroscopeOffers.increment()
+      return false
+    }
+    defer { admissionGate.leave(lease) }
+    guard lease.phase == .open else {
+      if !gyroscopeStopRejections.increment(generation: lease.generation) {
+        outOfSessionGyroscopeOffers.increment()
+      }
+      return false
+    }
+    let pending = PendingGyroscope(
+      timestamp: sample.timestamp,
+      x: sample.rotationRate.x,
+      y: sample.rotationRate.y,
+      z: sample.rotationRate.z
+    )
+    return admit(.gyroscope(pending, epoch: 0), lease: lease)
+  }
+
+  private func processAccelerationOnCore(
+    _ pending: PendingAcceleration,
+    accelerationScale: Double
+  ) -> ProcessingOutcome {
+    guard pending.timestamp.isFinite,
+          pending.x.isFinite, pending.y.isFinite, pending.z.isFinite,
+          accelerationScale.isFinite, accelerationScale != 0 else {
       lock.lock()
-      lastRunSpanMs = span
-      solveWallSum += span / 1000.0
-      if feedWallStart == 0 { feedWallStart = t0 }
-      let elapsed = CFAbsoluteTimeGetCurrent() - feedWallStart
-      dutyCycle = elapsed > 0 ? solveWallSum / elapsed : 0
-
-      // 帧间隔用指数滑动平均(相机帧率会随光照变,不能写死 1/30)
-      if lastFrameTimestamp > 0 {
-        let dt = now - lastFrameTimestamp
-        if dt > 0 && dt < 1.0 {
-          frameIntervalEma = frameIntervalEma == 0 ? dt
-                                                   : (frameIntervalEma * 0.9 + dt * 0.1)
-        }
-      }
-      lastFrameTimestamp = now
-
-      // ⚠️ 判据用**核内自报**的 last_frame_ms,不用我们量的 span ——
-      //    THREADING=ON 时 RunOneFrame 只是入队,span 会一直接近 0,
-      //    拿它当判据会永远显示"跟得上"。这正是今天在 Mac 上踩过的坑。
-      var h = XRSLAMHealth()
-      if XRSLAMGetHealth(&h) == XRSLAM_OK && frameIntervalEma > 0 {
-        let budgetMs = frameIntervalEma * 1000.0
-        if h.last_frame_ms > budgetMs {
-          behindStreak += 1
-          if behindStreak > behindMax { behindMax = behindStreak }
-          if behindStreak == 5 {
-            // 只在跨过阈值时打一次,不刷屏。
-            NSLog("[pw][vio] VIO 跟不上:核内单帧 %.1f ms > 帧预算 %.1f ms,"
-                  + "已连续 5 帧。duty=%.2f", h.last_frame_ms, budgetMs, dutyCycle)
-          }
-        } else {
-          behindStreak = 0
-        }
-      }
+      accFacts.reject(.invalidInput)
       lock.unlock()
+      return .invalidInput
+    }
+    let scaledX = pending.x * accelerationScale
+    let scaledY = pending.y * accelerationScale
+    let scaledZ = pending.z * accelerationScale
+    let accRc = PWXrslamTransportPushAccelerationRaw(
+      pending.timestamp,
+      scaledX,
+      scaledY,
+      scaledZ
+    )
+    lock.lock()
+    lastAccRc = accRc
+    if accRc == 0 {
+      accFacts.accept()
+      accNativeAcceptedCount += 1
     } else {
+      accFacts.reject(.nativeReject)
+    }
+    accSumX += scaledX
+    accSumY += scaledY
+    accSumZ += scaledZ
+    lastImuT = pending.timestamp
+    lock.unlock()
+    return accRc == 0 ? .success : .nativeReject
+  }
+
+  private func processGyroscopeOnCore(
+    _ pending: PendingGyroscope
+  ) -> ProcessingOutcome {
+    guard pending.timestamp.isFinite,
+          pending.x.isFinite, pending.y.isFinite, pending.z.isFinite else {
+      lock.lock()
+      gyroFacts.reject(.invalidInput)
+      lock.unlock()
+      return .invalidInput
+    }
+    let gyroRc = PWXrslamTransportPushGyroscopeRaw(
+      pending.timestamp,
+      pending.x,
+      pending.y,
+      pending.z
+    )
+    lock.lock()
+    lastGyroRc = gyroRc
+    if gyroRc == 0 {
+      gyroFacts.accept()
+    } else {
+      gyroFacts.reject(.nativeReject)
+    }
+    lastImuT = pending.timestamp
+    lock.unlock()
+    return gyroRc == 0 ? .success : .nativeReject
+  }
+
+  /// The only closure submitted for data work. Admission never discards a
+  /// running-session sample because the official algorithm is temporarily
+  /// behind; backlog is telemetry and invalidation evidence only.
+  private func drain(epoch: Int) {
+    while true {
+      lock.lock()
+      if pendingCount == 0 {
+        pendingWork.removeAll(keepingCapacity: true)
+        pendingHead = 0
+        if state == .stopping {
+          lock.unlock()
+          finishStopOnCoreQueue()
+          return
+        }
+        drainScheduled = false
+        cachedSnapshot = makeCoreSnapshotLocked()
+        lock.unlock()
+        return
+      }
+
+      var item = pendingWork[pendingHead]
+      pendingHead += 1
+      pendingCount -= 1
+      if item.isImage { pendingImageCount -= 1 }
+
+      // Count the locally retained item before releasing the lock.
+      inFlightCount = 1
+      inFlightImageCount = item.isImage ? 1 : 0
+
+      let selectedStartRequest = lastStartRequest
+      let current = item.epoch == epoch &&
+        item.epoch == sessionGeneration && state == .running && created &&
+        selectedStartRequest != nil
+      lock.unlock()
+
+      guard current,
+            let selectedStartRequest = selectedStartRequest else {
+        let staleStream = item.stream
+        // Release any CVPixelBuffer before publishing inFlightImageCount=0.
+        // The logical ceiling and the actual ARC strong-reference ceiling are
+        // therefore the same hard bound.
+        item = .gyroscope(
+          PendingGyroscope(timestamp: 0, x: 0, y: 0, z: 0),
+          epoch: item.epoch
+        )
+        lock.lock()
+        rejectSensorLocked(stream: staleStream, reason: .staleEpoch)
+        terminalRejected += 1
+        terminalStale += 1
+        inFlightCount = 0
+        inFlightImageCount = 0
+        cachedSnapshot = makeCoreSnapshotLocked()
+        lock.unlock()
+        continue
+      }
+
+      let outcome: ProcessingOutcome
+      switch item {
+      case .image(let frame, _):
+        outcome = processFrameOnCore(
+          frame,
+          generation: UInt32(truncatingIfNeeded: item.epoch),
+          downsampleFactor: selectedStartRequest.downsampleFactor,
+          downsampleFormula: selectedStartRequest.downsampleFormula
+        )
+      case .acceleration(let sample, _):
+        outcome = processAccelerationOnCore(
+          sample,
+          accelerationScale: selectedStartRequest.accelerationScale
+        )
+      case .gyroscope(let sample, _):
+        outcome = processGyroscopeOnCore(sample)
+      }
+
+      // Drop the local PendingFrame (and its CVPixelBuffer) before admission
+      // can observe an empty in-flight slot.
+      item = .gyroscope(
+        PendingGyroscope(timestamp: 0, x: 0, y: 0, z: 0),
+        epoch: item.epoch
+      )
+
+      lock.lock()
+      inFlightCount = 0
+      inFlightImageCount = 0
+      switch outcome {
+      case .success:
+        queueProcessedSuccess += 1
+      case .invalidInput:
+        terminalRejected += 1
+        terminalInvalidInput += 1
+      case .nativeReject:
+        terminalRejected += 1
+        terminalNativeReject += 1
+      }
+      // Work conservation is deliberately spelled out in native source and
+      // independently recomputed by Dart from the wire snapshot.
+      assert(
+        queueAccepted == queueProcessedSuccess + droppedOnStop +
+          terminalRejected + pendingCount + inFlightCount
+      )
+      cachedSnapshot = makeCoreSnapshotLocked()
       lock.unlock()
     }
   }
 
-  /// 喂一个 CoreMotion 样本(加速度 + 陀螺)。
-  ///
-  /// ⚠️ CMDeviceMotion 给的 userAcceleration 是**去重力**的,而 VIO 要的是
-  ///    原始比力(含重力)。所以这里用 userAcceleration + gravity 还原,
-  ///    单位从 G 转成 m/s²。搞错这一步 VIO 会以为自己一直在自由落体。
-  public func feed(motion m: CMDeviceMotion) {
+  private func finishStopOnCoreQueue() {
     lock.lock()
-    let live = created
+    let generation = sessionGeneration
     lock.unlock()
-    guard live else { return }
+    admissionGate.sealWhenQuiescent(generation: generation) { [weak self] in
+      guard let self else { return }
+      self.coreQueue.async { [weak self] in
+        self?.finishSealedStopOnCoreQueue(generation: generation)
+      }
+    }
+  }
 
-    // 🔴 **符号是负的**。这不是笔误,是逐字复刻上游:
-    //   xrslam-ios/visualizer/src/Motion.swift:3
-    //       fileprivate let GRAVITY_NOMINAL = -9.80665
-    //   同文件 :57
-    //       accelerationX: GRAVITY_NOMINAL * record.acceleration.x, ...
-    //
-    // 为什么:iOS 的加速度约定与 VIO(EuRoC)约定相反。
-    //   • iOS:手机屏幕朝上平放时 gravity = (0, 0, -1) —— 指向"下"。
-    //   • EuRoC:静止时加速度计读的是**指向"上"**的比力。
-    //     实测 V1_01_easy 前 200 个静止样本:|a| = 9.778,方向单位向量
-    //     (0.926, 0.012, -0.377) 正是传感器系里的"上"。
-    //
-    // 我原先写的是 +9.80665。后果是重力方向整个反了 ⇒ 视觉-惯性对齐永远
-    // 收敛不了。真机症状:前端完全健康(检出 118 / 跟踪 112 / 内点 118 /
-    // 零拒绝零落后),喂了 1473 帧 + 3610 个 IMU 样本,**slamState 恒 0、
-    // 一个位姿都不出**。跟外参填 identity 那次的症状**一模一样** ——
-    // 两者都是"朝向错了"这一类。
-    //
-    // ⚠️ 已知的、尚未消除的偏离:上游用**裸** startAccelerometerUpdates
-    //    (CMAccelerometerData,G 为单位),我们用 CMDeviceMotion 的
-    //    gravity + userAcceleration。Apple 文档说两者相等,但 deviceMotion
-    //    是**融合滤波的输出**,有滞后。若改完符号仍不初始化,下一步就是换裸
-    //    传感器 —— 见 progecttwo/XRSLAM_UPSTREAM_DEFECTS_2026-08-24.md。
-    //    现在不一起改,是为了保持单变量。
-    let g = -9.80665
-    var acc = XRSLAMAcceleration()
-    acc.timestamp = m.timestamp
-    acc.data.0 = (m.userAcceleration.x + m.gravity.x) * g
-    acc.data.1 = (m.userAcceleration.y + m.gravity.y) * g
-    acc.data.2 = (m.userAcceleration.z + m.gravity.z) * g
-    // 把喂进去的加速度均值报出来 —— 符号错这类 bug 靠模长查不出来(模长
-    // 对符号不变),必须看**方向**。手机竖直手持看取景框时 device +Y 朝上,
-    // gravity≈(0,-1,0) ⇒ 喂进去的应该是 (0, +9.81, 0)。
-    accSumX += acc.data.0
-    accSumY += acc.data.1
-    accSumZ += acc.data.2
-    _ = XRSLAMPushSensorDataChecked(XRSLAM_SENSOR_ACCELERATION, &acc)
+  private func finishSealedStopOnCoreQueue(generation: Int) {
+    lock.lock()
+    guard sessionGeneration == generation, state == .stopping else {
+      lock.unlock()
+      return
+    }
+    let shouldDestroy = created
+    lock.unlock()
+    if shouldDestroy { PWXrslamTransportDestroy() }
 
-    var gyro = XRSLAMGyroscope()
-    gyro.timestamp = m.timestamp
-    gyro.data.0 = m.rotationRate.x
-    gyro.data.1 = m.rotationRate.y
-    gyro.data.2 = m.rotationRate.z
-    _ = XRSLAMPushSensorDataChecked(XRSLAM_SENSOR_GYROSCOPE, &gyro)
+    var canceledStarts: [(Int32, Int) -> Void] = []
+    var completedStops: [([String: Any]) -> Void] = []
+    var restartRequest: StartRequest?
+    var restartEpoch: Int?
+    var terminalReceipt: [String: Any] = [:]
+    lock.lock()
+    sealedImageLockContention = imageLockContention.seal(
+      generation: generation
+    )
+    sealedAccelerationLockContention = accelerationLockContention.seal(
+      generation: generation
+    )
+    sealedGyroscopeLockContention = gyroscopeLockContention.seal(
+      generation: generation
+    )
+    sealedImageStopRejections = imageStopRejections.seal(
+      generation: generation
+    )
+    sealedAccelerationStopRejections = accelerationStopRejections.seal(
+      generation: generation
+    )
+    sealedGyroscopeStopRejections = gyroscopeStopRejections.seal(
+      generation: generation
+    )
+    created = false
+    inFlightCount = 0
+    inFlightImageCount = 0
+    drainScheduled = false
+    // This executes on coreQueue after every in-flight native call. No later
+    // observation from the stopped epoch can append after this terminal clear.
+    poseObservationsDropped += poseObservations.count
+    poseObservations.removeAll(keepingCapacity: true)
+    if scratchCapacity > 0 {
+      scratch?.update(repeating: 0, count: scratchCapacity)
+    }
+    scratch?.deallocate()
+    scratch = nil
+    scratchCapacity = 0
+    vioWidth = 0
+    vioHeight = 0
+    if state != .stopped { transitionLocked(to: .stopped) }
+    cachedSnapshot = makeCoreSnapshotLocked()
+    canceledStarts = startCompletions + canceledStartCompletions
+    startCompletions.removeAll(keepingCapacity: true)
+    canceledStartCompletions.removeAll(keepingCapacity: true)
+    completedStops = stopCompletions
+    stopCompletions.removeAll(keepingCapacity: true)
+    // Freeze the old generation before a queued restart resets any field.
+    terminalReceipt = makeWireSnapshotLocked(includeRaw: false)
+    if pendingRestart == nil { lastStartRequest = nil }
+    if let pendingRestart {
+      restartRequest = pendingRestart
+      let completions = pendingRestartCompletions
+      self.pendingRestart = nil
+      pendingRestartCompletions.removeAll(keepingCapacity: true)
+      let candidateEpoch = beginStartLocked(
+        pendingRestart,
+        completions: completions
+      )
+      if let candidateEpoch {
+        restartEpoch = candidateEpoch
+      } else {
+        restartRequest = nil
+        canceledStarts.append(contentsOf: completions)
+      }
+    }
+    if let restartRequest, let restartEpoch {
+      // Preserve Create -> optional racing stop/drain ordering, as in start().
+      scheduleCreate(restartRequest, epoch: restartEpoch)
+    }
+    lock.unlock()
+
+    DispatchQueue.main.async {
+      for completion in canceledStarts { completion(0, generation) }
+      for completion in completedStops { completion(terminalReceipt) }
+    }
+  }
+
+  private func updateHealthOnCore(frameMs: Double, rawState: Int32) {
+    lock.lock()
+    let frameSequence = runCalls
+    lock.unlock()
+    let wire: [String: Any] = [
+      "healthOverall": 0,
+      "slamState": Int(rawState),
+      "lastFrameMs": frameMs,
+      "coreHealthAvailable": 0,
+      "officialStateAvailable": 1,
+      "coreFrameSeq": frameSequence,
+    ]
+    lock.lock()
+    lastHealthRc = 0
+    cachedHealth = wire
+    lock.unlock()
+  }
+
+  private func finiteWireValue(_ value: Double) -> Any {
+    value.isFinite ? value : NSNull()
+  }
+
+  /// Marshal one raw status observation for every processed image. No native
+  /// availability class, initialization verdict, timestamp fallback, pacing,
+  /// coordinate conversion, alignment, threshold, or error metric lives here.
+  private func observePoseAndPrepareWire(
+    frame: PendingFrame,
+    generation: UInt32,
+    rawState: Int32,
+    rawPose: PWXrslamRawPose
+  ) {
+    lock.lock()
+    let healthRc = lastHealthRc
+    let healthWire = cachedHealth
+    let rawPreviousImageTimestamp = previousImageTimestamp
+    let rawSessionStartedAt = sessionStartedAt
+    lock.unlock()
+    let observedAt = CACurrentMediaTime()
+    var observation: [String: Any] = [
+      "rawStateCallCompleted": true,
+      "rawCameraPoseCallCompleted": true,
+      "rawPoseTimestamp": finiteWireValue(rawPose.timestamp),
+      "sensorTimestamp": finiteWireValue(frame.timestamp),
+      "xrslamPoseTimestamp": finiteWireValue(rawPose.timestamp),
+      "rawHealthRc": Int(healthRc),
+      "rawXrslamState": Int(rawState),
+      "rawCoreFrameSeq": healthRc == 0
+        ? (healthWire["coreFrameSeq"] ?? NSNull()) : NSNull(),
+      "lastFrameMs": healthRc == 0
+        ? (healthWire["lastFrameMs"] ?? NSNull()) : NSNull(),
+      "previousImageTimestamp": finiteWireValue(rawPreviousImageTimestamp),
+      "enqueuedAtUptimeSeconds": finiteWireValue(frame.enqueuedAt),
+      "observedAtUptimeSeconds": finiteWireValue(observedAt),
+      "sessionStartedAtUptimeSeconds": finiteWireValue(rawSessionStartedAt),
+    ]
+
+    let t = frame.arkitWorldFromCamera
+    observation["referenceTrackingState"] = frame.referenceTrackingState
+    observation["referenceTrackingReason"] = frame.referenceTrackingReason
+    let referenceWorldFromCamera: [Double] = [
+      Double(t.columns.0.x), Double(t.columns.0.y),
+      Double(t.columns.0.z), Double(t.columns.0.w),
+      Double(t.columns.1.x), Double(t.columns.1.y),
+      Double(t.columns.1.z), Double(t.columns.1.w),
+      Double(t.columns.2.x), Double(t.columns.2.y),
+      Double(t.columns.2.z), Double(t.columns.2.w),
+      Double(t.columns.3.x), Double(t.columns.3.y),
+      Double(t.columns.3.z), Double(t.columns.3.w),
+    ]
+    observation["referenceWorldFromCamera"] = referenceWorldFromCamera
+    let xrslamWorldFromCamera: [String: Any] = [
+      "qx": finiteWireValue(rawPose.quaternion.0),
+      "qy": finiteWireValue(rawPose.quaternion.1),
+      "qz": finiteWireValue(rawPose.quaternion.2),
+      "qw": finiteWireValue(rawPose.quaternion.3),
+      "tx": finiteWireValue(rawPose.translation.0),
+      "ty": finiteWireValue(rawPose.translation.1),
+      "tz": finiteWireValue(rawPose.translation.2),
+    ]
+    observation["xrslamWorldFromCamera"] = xrslamWorldFromCamera
 
     lock.lock()
-    accPushed += 1; gyroPushed += 1
-    if m.timestamp > lastImuT { lastImuT = m.timestamp }
+    poseObservationsOffered += 1
+    guard state == .running,
+          UInt32(truncatingIfNeeded: sessionGeneration) == generation else {
+      poseObservationsDropped += 1
+      lock.unlock()
+      return
+    }
+    poseObservationSequence += 1
+    observation["seq"] = poseObservationSequence
+    poseObservations.append(observation)
     lock.unlock()
   }
 
   // MARK: - 读出
 
-  /// 喂进去的加速度均值。静止竖持时应 ≈ (0, +9.81, 0)。
-  ///
-  /// ⚠️ **模长不能用来判符号** —— 模长对符号不变。必须看分量方向。
-  private var accMean: (x: Double, y: Double, z: Double, norm: Double) {
-    guard accPushed > 0 else { return (0, 0, 0, 0) }
-    let n = Double(accPushed)
-    let mx: Double = accSumX / n
-    let my: Double = accSumY / n
-    let mz: Double = accSumZ / n
-    let sq: Double = mx * mx + my * my + mz * mz
-    return (mx, my, mz, sq.squareRoot())
+  private func stampedInfo(_ key: String) -> String {
+    let raw = (Bundle.main.infoDictionary?[key] as? String ?? "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    return raw.isEmpty ? "UNSTAMPED" : raw
   }
 
-  /// 喂帧统计 + 最新位姿 + 健康状态。全部是事实。
+  private func selectedDownsampleFactorLocked() -> Any {
+    guard let factor = lastStartRequest?.downsampleFactor else {
+      return NSNull()
+    }
+    return factor
+  }
+
+  private func selectedDownsampleFormulaLocked() -> Any {
+    guard let formula = lastStartRequest?.downsampleFormula else {
+      return NSNull()
+    }
+    return formula
+  }
+
+  private func runIdentityLocked() -> [String: Any] {
+    let request = lastStartRequest
+    return [
+      "sessionId": request?.sessionId ?? "UNSTAMPED",
+      "sessionEpoch": request?.sessionEpoch ?? -1,
+      "epoch": sessionGeneration,
+      "queueCapacity": "loss-intolerant-dynamic",
+      "cameraCapacity": "loss-intolerant-dynamic",
+      "poseObservationCapacity": "loss-intolerant-dynamic",
+      "dropPolicy": "no-pressure-drop",
+      "appVersion": stampedInfo("CFBundleShortVersionString"),
+      "appBuild": stampedInfo("CFBundleVersion"),
+      "diagnosticBuildId": stampedInfo("PWLiveCloudDiagnosticBuildId"),
+      "productSourceManifestSha256": stampedInfo(
+        "PWProductSourceManifestSHA256"
+      ),
+      "dartAotSha256": stampedInfo("PWDartAOTSHA256"),
+      "nativeHostUuid": stampedInfo("PWNativeHostUUID"),
+      "nativeFrameworkSha256": stampedInfo("PWOfficialSfmSHA256"),
+      "xrslamSha256": stampedInfo("PWXrslamSHA256"),
+      "xrslamUpstreamRevision": stampedInfo("PWXrslamUpstreamRevision"),
+      "xrslamBuildPatchSha256": stampedInfo("PWXrslamBuildPatchSHA256"),
+      "xrslamDestroyLifecyclePatchSha256": stampedInfo(
+        "PWXrslamDestroyLifecyclePatchSHA256"
+      ),
+      "xrslamAlgorithmBranch": stampedInfo("PWXrslamAlgorithmBranch"),
+      "xrslamIosEnabled": stampedInfo("PWXrslamIosEnabled"),
+      "xrslamThreadingEnabled": stampedInfo("PWXrslamThreadingEnabled"),
+      "xrslamCompileFlags": stampedInfo("PWXrslamCompileFlags"),
+      "opencvUpstreamRevision": stampedInfo("PWOpenCVUpstreamRevision"),
+      "opencvBuildPatchSha256": stampedInfo("PWOpenCVBuildPatchSHA256"),
+      "opencvSha256": stampedInfo("PWOpenCVSHA256"),
+      "ceresUpstreamRevision": stampedInfo("PWCeresUpstreamRevision"),
+      "ceresSha256": stampedInfo("PWCeresSHA256"),
+      "spdlogCompatibilityPatchSha256": stampedInfo(
+        "PWSpdlogCompatibilityPatchSHA256"
+      ),
+      "effectiveConfigSha256": request?.effectiveConfigSha256 ?? "UNSTAMPED",
+      "inputIdentitySha256": request?.inputIdentitySha256 ?? "UNSTAMPED",
+      "downsampleFactor": selectedDownsampleFactorLocked(),
+      "downsampleFormula": selectedDownsampleFormulaLocked(),
+      "accelerationScale": request.map { $0.accelerationScale } ?? NSNull(),
+      "requestedAccelerometerHz": request.map {
+        $0.requestedAccelerometerHz
+      } ?? NSNull(),
+      "requestedGyroscopeHz": request.map {
+        $0.requestedGyroscopeHz
+      } ?? NSNull(),
+    ]
+  }
+
+  private func makeCoreSnapshotLocked() -> [String: Any] {
+    var out: [String: Any] = [
+      "schema": "pw.vio.shadow-native/6",
+      "xrslamSha256": stampedInfo("PWXrslamSHA256"),
+      "running": state == .running && created,
+      "sessionGeneration": sessionGeneration,
+      "state": state.rawValue,
+      "runCalls": runCalls,
+      "lastImageRc": Int(lastImageRc),
+      "lastAccRc": Int(lastAccRc),
+      "lastGyroRc": Int(lastGyroRc),
+      "lastImageTimestamp": lastImageT,
+      "previousImageTimestamp": previousImageTimestamp,
+      "lastImuTimestamp": lastImuT,
+      "accSumX": accSumX,
+      "accSumY": accSumY,
+      "accSumZ": accSumZ,
+      "accNativeAcceptedCount": accNativeAcceptedCount,
+      "vioDownsampleFactor": selectedDownsampleFactorLocked(),
+      "vioDownsampleFormula": selectedDownsampleFormulaLocked(),
+      "vioWidth": vioWidth,
+      "vioHeight": vioHeight,
+      "workerFrameCount": workerFrameCount,
+      "workerFrameMsSum": workerFrameMsSum,
+      "enqueueLatencyUsSum": enqueueLatencyUsSum,
+      "solveWallSecondsSum": solveWallSum,
+      "feedWallStartedAtUptimeSeconds": feedWallStartedAtUptimeSeconds,
+      "snapshotAtUptimeSeconds": CACurrentMediaTime(),
+      "healthRc": Int(lastHealthRc),
+      "poseObservationsOffered": poseObservationsOffered,
+      "poseObservationsDropped": poseObservationsDropped,
+    ]
+    for (key, value) in cachedHealth { out[key] = value }
+    return out
+  }
+
+  private func generationCount(
+    _ counter: GenerationCounter,
+    sealed: Int?
+  ) -> Int {
+    sealed ?? counter.value(generation: sessionGeneration) ?? 0
+  }
+
+  private func makeWireSnapshotLocked(includeRaw: Bool) -> [String: Any] {
+    var out = makeCoreSnapshotLocked()
+    let imageLock = generationCount(
+      imageLockContention, sealed: sealedImageLockContention
+    )
+    let accelerationLock = generationCount(
+      accelerationLockContention,
+      sealed: sealedAccelerationLockContention
+    )
+    let gyroscopeLock = generationCount(
+      gyroscopeLockContention,
+      sealed: sealedGyroscopeLockContention
+    )
+    let imageStop = generationCount(
+      imageStopRejections, sealed: sealedImageStopRejections
+    )
+    let accelerationStop = generationCount(
+      accelerationStopRejections,
+      sealed: sealedAccelerationStopRejections
+    )
+    let gyroscopeStop = generationCount(
+      gyroscopeStopRejections,
+      sealed: sealedGyroscopeStopRejections
+    )
+    let images = imageFacts.wire(
+      lockContention: imageLock,
+      stopRejections: imageStop
+    )
+    let acc = accFacts.wire(
+      lockContention: accelerationLock,
+      stopRejections: accelerationStop
+    )
+    let gyro = gyroFacts.wire(
+      lockContention: gyroscopeLock,
+      stopRejections: gyroscopeStop
+    )
+    out["identity"] = runIdentityLocked()
+    out["queueAccepted"] = queueAccepted
+    out["queueProcessedSuccess"] = queueProcessedSuccess
+    out["droppedOnStop"] = droppedOnStop
+    out["terminalRejected"] = terminalRejected
+    out["queueBacklog"] = pendingCount
+    out["queueInFlight"] = inFlightCount
+    out["retainedImageCount"] = pendingImageCount + inFlightImageCount
+    out["maxRetainedImageCount"] = maxRetainedImageCount
+    out["maxQueueBacklog"] = maxQueueBacklog
+    out["shutdownDrops"] = shutdownDrops
+    out["stateTransitions"] = stateTransitions
+    out["poseObservationsOffered"] = poseObservationsOffered
+    out["poseObservationsDropped"] = poseObservationsDropped
+    out["poseObservations"] = includeRaw ? poseObservations : []
+    out["imagesAttempted"] = images.attempted
+    out["imagesAccepted"] = images.accepted
+    out["imagesRejected"] = images.rejected
+    out["accAttempted"] = acc.attempted
+    out["accAccepted"] = acc.accepted
+    out["accRejected"] = acc.rejected
+    out["gyroAttempted"] = gyro.attempted
+    out["gyroAccepted"] = gyro.accepted
+    out["gyroRejected"] = gyro.rejected
+    out["shadowOverflowDrops"] = overflowBase + imageLock +
+      accelerationLock + gyroscopeLock
+    out["outOfSessionImageOffers"] = outOfSessionImageOffers.value
+    out["outOfSessionAccelerationOffers"] =
+      outOfSessionAccelerationOffers.value
+    out["outOfSessionGyroscopeOffers"] = outOfSessionGyroscopeOffers.value
+    out["rejectionReasons"] = [
+      "images": images.reasons,
+      "acc": acc.reasons,
+      "gyro": gyro.reasons,
+      "workTerminal": [
+        "stale_epoch": terminalStale,
+        "invalid_input": terminalInvalidInput,
+        "native_reject": terminalNativeReject,
+        "internal": terminalInternal,
+      ],
+      "workDroppedOnStop": ["dropped_on_stop": droppedOnStop],
+    ]
+    return out
+  }
+
+  /// Snapshot is cached data only. No XRSLAM API is called from Flutter/UI.
   public func snapshot() -> [String: Any] {
     lock.lock()
-    var out: [String: Any] = [
-      "running": created,
-      "imagesPushed": imagesPushed,
-      "imagesRejected": imagesRejected,
-      "accPushed": accPushed,
-      "gyroPushed": gyroPushed,
-      "runCalls": runCalls,
-      "lastPushRc": Int(lastPushRc),
-      "lastRunSpanMs": lastRunSpanMs,
-      "runHz": runPeriodSeconds > 0 ? 1.0 / runPeriodSeconds : 0,
-      // 🔑 把降采样倍数报出来,让 Dart 侧交叉校验内参缩放用的是同一个数。
-      //   两边各写一个常量 = 改了一边忘另一边 ⇒ 内参与实际喂进去的图不匹配,
-      //   整条位姿链系统性错**而且不报错**。这类静默失效必须结构性排除。
-      // 静止竖持时应≈(0, +9.81, 0)。若 y 是负的,符号又反了。
-      // 🔑 相机停了多久(秒)。这条以前被混进核内的 domain_mismatch_active,
-      //   导致「相机停了」被报成「时钟域错配」——2026-08-24 真机把排查带偏过。
-      //   -1 = 两路还没都到齐,不可用。
-      "camStallSeconds": (lastImageT > 0 && lastImuT > 0)
-        ? Swift.max(0.0, lastImuT - lastImageT) : -1.0,
-      "accMeanX": accMean.x,
-      "accMeanY": accMean.y,
-      "accMeanZ": accMean.z,
-      "accMeanNorm": accMean.norm,
-      "vioDownsampleFactor": Self.kVioDownsampleFactor,
-      "vioWidth": vioWidth, "vioHeight": vioHeight,
-      // ── 跟得上吗 ──
-      "dutyCycle": dutyCycle,          // 求解占墙钟比例,>1 必然积压
-      "behindStreak": behindStreak,    // 当前连续超时帧数
-      "behindMax": behindMax,          // 历史最长连续超时
-      "frameIntervalMs": frameIntervalEma * 1000.0,
-    ]
-    let live = created
+    let out = makeWireSnapshotLocked(includeRaw: true)
+    // Deliver-and-clear: raw absolute poses exist only in this reply. Dart
+    // consumes them in memory and persists aggregate status/residuals only.
+    poseObservations.removeAll(keepingCapacity: true)
     lock.unlock()
-    guard live else { return out }
-
-    var pose7 = [Double](repeating: 0, count: 7)
-    var ts: Double = 0
-    let prc = pose7.withUnsafeMutableBufferPointer { p in
-      XRSLAMTryGetLatestPose(p.baseAddress, &ts)
-    }
-    out["poseRc"] = Int(prc)
-    if prc == XRSLAM_OK {
-      out["pose"] = pose7
-      out["poseTimestamp"] = ts
-    }
-
-    var health = XRSLAMHealth()
-    let hrc = XRSLAMGetHealth(&health)
-    out["healthRc"] = Int(hrc)
-    if hrc == XRSLAM_OK {
-      // 字段名逐个对过 C 头,不是猜的。
-      out["healthOverall"] = Int(health.overall)
-      out["slamState"] = Int(health.slam_state)
-      out["lastFrameMs"] = health.last_frame_ms
-      // 🔑 这几个是今天专门加的诊断量 —— 静默失效全靠它们暴露
-      out["domainMismatchActive"] = Int(health.domain_mismatch_active)
-      out["inspectionCompiledOut"] = Int(health.inspection_compiled_out)
-      out["threadingEnabled"] = Int(health.threading_enabled)
-      out["imuSamplesLastFrame"] = Int(health.imu_samples_last_frame)
-      out["coreImuSamplesIntegrated"] = Int(health.core_imu_samples_integrated)
-      out["latestPoseDegenerate"] = Int(health.latest_pose_degenerate)
-      // 视觉侧
-      out["detectedKeypoints"] = Int(health.detected_keypoints)
-      out["trackedKeypoints"] = Int(health.tracked_keypoints)
-      out["inlierKeypoints"] = Int(health.inlier_keypoints)
-      out["mappedLandmarks"] = Int(health.mapped_landmarks)
-      // landmark 过滤账 —— 被丢掉的必须可见,静默丢就又是一个静默失效
-      out["landmarksPublished"] = Int(health.landmarks_published)
-      out["landmarksUsable"] = Int(health.landmarks_usable)
-      out["landmarksRejectedNonFinite"] = Int(health.landmarks_rejected_non_finite)
-      out["landmarksRejectedUntriangulated"] = Int(health.landmarks_rejected_untriangulated)
-      // 时基
-      out["lastCamImuDelta"] = health.last_cam_imu_delta
-      out["maxAbsCamImuDelta"] = health.max_abs_cam_imu_delta
-      out["baselineCamImuDelta"] = health.baseline_cam_imu_delta
-    }
-
     return out
   }
 }

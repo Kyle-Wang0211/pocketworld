@@ -1,0 +1,75 @@
+// Copyright (c), ETH Zurich and UNC Chapel Hill.
+// All rights reserved.
+//
+// SPDX-License-Identifier: BSD-3-Clause
+//
+// Mechanical Vulkan translation of COLMAP 4.1.1 a0d785f RotateNormalMap from
+// colmap/mvs/patch_match_cuda.cu.
+// patch_match_cuda.cu SHA-256:
+// 1aebd4482de0ea6f1f3aad45150c09e0479119c607a843959c8aaa381c0d4448
+
+#version 450
+
+layout(local_size_x = 16, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 1, std430) buffer NormalMap {
+  float values[];
+} normal_map;
+
+layout(push_constant) uniform PatchPC {
+  uint width;
+  uint height;
+  uint num_sources;
+  uint workspace_max_dim;
+  uint source_width;
+  uint source_height;
+  uint rotation_0_to_3;
+  uint reserved;
+
+  float ref_K_fx;
+  float ref_K_cx;
+  float ref_K_fy;
+  float ref_K_cy;
+  float ref_inv_fx;
+  float ref_inv_neg_cx_fx;
+  float ref_inv_fy;
+  float ref_inv_neg_cy_fy;
+
+  float perturbation;
+  float depth_min;
+  float depth_max;
+  int num_samples;
+  float sigma_spatial;
+  float sigma_color;
+  float ncc_sigma;
+  float min_triangulation_angle_rad;
+  float incident_angle_sigma;
+  float prev_sel_prob_weight;
+  float geom_consistency_regularizer;
+  float geom_consistency_max_cost;
+  float filter_min_ncc;
+  float filter_min_triangulation_angle_rad;
+  int filter_min_num_consistent;
+  float filter_geom_consistency_max_cost;
+} pc;
+
+uint normal_index(uint component, uint row, uint col) {
+  return component * pc.width * pc.height + row * pc.width + col;
+}
+
+void main() {
+  uint row = gl_GlobalInvocationID.y;
+  uint col = gl_GlobalInvocationID.x;
+  if (col >= pc.width || row >= pc.height) {
+    return;
+  }
+
+  vec3 normal = vec3(
+      normal_map.values[normal_index(0, row, col)],
+      normal_map.values[normal_index(1, row, col)],
+      normal_map.values[normal_index(2, row, col)]);
+  vec3 rotated_normal = vec3(normal.y, -normal.x, normal.z);
+  normal_map.values[normal_index(0, row, col)] = rotated_normal.x;
+  normal_map.values[normal_index(1, row, col)] = rotated_normal.y;
+  normal_map.values[normal_index(2, row, col)] = rotated_normal.z;
+}

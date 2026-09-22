@@ -643,6 +643,11 @@ typedef _FinalizeStatusDart = int Function(Pointer<Void> session);
 typedef _GlobalRefineC = Int32 Function(Pointer<Void> session);
 typedef _GlobalRefineDart = int Function(Pointer<Void> session);
 
+typedef _DumpModelC =
+    Int32 Function(Pointer<Void> session, Pointer<Utf8> directory);
+typedef _DumpModelDart =
+    int Function(Pointer<Void> session, Pointer<Utf8> directory);
+
 /// Outcome of an on-device SfM solve, carrying the live native session so the
 /// caller can read poses/points then must call [dispose].
 class AetherSfmSolve {
@@ -822,6 +827,8 @@ class AetherSfm {
       .lookupFunction<_GlobalRefineC, _GlobalRefineDart>(
         'pwofficial_global_refine',
       );
+  static final _DumpModelDart _dumpModel = _lib
+      .lookupFunction<_DumpModelC, _DumpModelDart>('pwofficial_dump_model');
   static final _SessionFreeDart _sessionFree = _lib
       .lookupFunction<_SessionFreeC, _SessionFreeDart>('pwofficial_free');
 
@@ -1675,6 +1682,19 @@ class AetherSfmStreamSession {
   AetherSfmFinalizeStatus finalizeStatus() {
     _checkLive();
     return aetherSfmFinalizeStatusFromCode(AetherSfm._finalizeStatus(_session));
+  }
+
+  /// Writes the authoritative finalized reconstruction as the official
+  /// COLMAP binary sparse model consumed by the dense workspace builder.
+  /// This is a synchronous native call and must stay on the SfM worker isolate.
+  AetherSfmResult dumpModel(String directory) {
+    _checkLive();
+    final directoryPtr = directory.toNativeUtf8();
+    try {
+      return _resultFromCode(AetherSfm._dumpModel(_session, directoryPtr));
+    } finally {
+      malloc.free(directoryPtr);
+    }
   }
 
   /// [L1-ARBITRATE 2026-07-12] Ghost-layer L1 CasDiffMVS 1-bit arbitration —

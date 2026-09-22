@@ -1,0 +1,75 @@
+/*
+ * Copyright (c) 2014-2026 SEACAVE
+ * Copyright (c), ETH Zurich and UNC Chapel Hill.
+ * Copyright (c) 2026, PocketWorld contributors
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * COLMAP initialization control flow + OpenMVS-PCG adaptation.
+ * reference-only, non-production: not exact CUDA/XORWOW parity and not
+ * byte-identical OpenMVS Metal native initialization (normal-first there).
+ *
+ * This is stage three: normal continues the persisted state after the one
+ * depth draw, consumes Marsaglia draw pairs including every rejected pair,
+ * applies COLMAP's camera-facing flip, and persists the final state.
+ * It models the geom_consistency == false initialization branch.
+ * COLMAP 4.1.1 a0d785f patch_match_cuda.cu SHA-256:
+ * 1aebd4482de0ea6f1f3aad45150c09e0479119c607a843959c8aaa381c0d4448
+ */
+
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "../rng/openmvs_pcg_initialization_layout.glsl"
+
+layout(local_size_x = 32, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 1, std430) writeonly buffer NormalMap {
+  float values[];
+} normal_map;
+
+uint normal_index(uint component, uint row, uint col) {
+  return component * pc.width * pc.height + row * pc.width + col;
+}
+
+void main() {
+  uint row = gl_GlobalInvocationID.y;
+  uint col = gl_GlobalInvocationID.x;
+  if (col >= pc.width || row >= pc.height) {
+    return;
+  }
+
+  ColmapXorwowState state = LoadColmapXorwowState(
+      row, col, pc.width, pc.height);
+  precise float v1 = 0.0;
+  precise float v2 = 0.0;
+  precise float s = 2.0;
+  while (s >= 1.0) {
+    precise float u1 = ColmapXorwowUniform(state);
+    precise float u2 = ColmapXorwowUniform(state);
+    v1 = 2.0 * u1 - 1.0;
+    v2 = 2.0 * u2 - 1.0;
+    precise float v1_squared = v1 * v1;
+    precise float v2_squared = v2 * v2;
+    s = v1_squared + v2_squared;
+  }
+
+  precise float s_norm = sqrt(1.0 - s);
+  precise float normal_x = 2.0 * v1 * s_norm;
+  precise float normal_y = 2.0 * v2 * s_norm;
+  precise float normal_z = 1.0 - 2.0 * s;
+  vec3 normal = vec3(normal_x, normal_y, normal_z);
+
+  precise float view_x = pc.ref_inv_fx * float(col) +
+                         pc.ref_inv_neg_cx_fx;
+  precise float view_y = pc.ref_inv_fy * float(row) +
+                         pc.ref_inv_neg_cy_fy;
+  vec3 view_ray = vec3(view_x, view_y, 1.0);
+  if (dot(normal, view_ray) > 0.0) {
+    normal = -normal;
+  }
+
+  normal_map.values[normal_index(0, row, col)] = normal.x;
+  normal_map.values[normal_index(1, row, col)] = normal.y;
+  normal_map.values[normal_index(2, row, col)] = normal.z;
+  StoreColmapXorwowState(row, col, pc.width, pc.height, state);
+}

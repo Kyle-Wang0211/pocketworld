@@ -96,6 +96,8 @@ import 'official_gallery_routes.dart';
 import 'sfm_preview_overlay.dart';
 import '../sparse_thumbnail.dart';
 import '../../util/image_sanitize.dart';
+import '../../vio/diagnostics/vio_diagnostics_recorder.dart';
+import '../../vio/diagnostics/vio_shadow_switch.dart';
 
 /// 一次快门入队的三种结果。手动与自动**共用同一条入队路径**,但对"没入队"
 /// 的反馈不同:手动到上限要弹对话框,自动模式绝不弹(每个 tick 撞一次会
@@ -187,6 +189,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   OfficialCaptureMode _captureMode = OfficialCaptureMode.auto;
 
   late final AutoCaptureController _autoCapture = AutoCaptureController(
+    onStartAnchor: _onAutoCaptureStartAnchor,
     onFire: _onAutoCaptureFire,
     paceProvider: () => _shutterPace,
     capturedCountProvider: _autoCaptureAcceptedFrameCount,
@@ -330,6 +333,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// Keeping the route mounted is what keeps the worker, queue and final
   /// snapshot alive for a later task-card tap.
   bool _showDraftsWhileReconstructing = false;
+  bool _draftRecordActionInProgress = false;
   bool _draftTerminalExitScheduled = false;
   final ReconstructionRouteReleaseGate _routeReleaseGate =
       ReconstructionRouteReleaseGate();
@@ -834,6 +838,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     if (state == AppLifecycleState.resumed &&
         _sfmPhase != null &&
         _showDraftsWhileReconstructing &&
+        !_draftRecordActionInProgress &&
         mounted) {
       setState(() => _showDraftsWhileReconstructing = false);
     }
@@ -957,7 +962,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // 返回值语义不变:saveExit / discardExit / null=回拍摄。
       // 弹窗是模态的:不先停,自动拍会在弹窗背后继续落帧。
       _stopAutoCapture();
-      final choice = await showCaptureExitDialog(context);
+      final hasAcceptedPhotos =
+          _projectPhotos.count + _shutterQueue.outstandingCount > 0;
+      final choice = hasAcceptedPhotos
+          ? await showCaptureExitDialog(context)
+          : CaptureExitChoice.discardExit;
       if (!mounted || choice == null) return;
 
       if (choice == CaptureExitChoice.saveExit) {
@@ -969,6 +978,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         await _shutterQueue.freezeAndDrain();
         if (session != null) {
           await session.stop();
+          await _stopVioShadowForCapture();
           await session.waitForPendingPhotoSaves();
         }
         final recon = _sfmRecon;
@@ -997,6 +1007,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       _shutterQueue.cancelPending();
       final session = _session;
       if (session != null) await session.stop();
+      await _stopVioShadowForCapture();
       await _shutterQueue.freezeAndDrain();
       if (session != null) {
         await session.discardCurrentCapture();
@@ -1055,6 +1066,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // Lock succeeded; proceed to recording (skip auto-retry loop).
       try {
         await session.start(autoLock: false);
+        _startVioShadowForCapture();
         if (!mounted) return;
         _previewModel.reset();
         setState(() {
@@ -1098,6 +1110,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     if (session == null || _recording || !mounted) return;
     try {
       await session.start(autoLock: true, manualCapture: true);
+      _startVioShadowForCapture();
       if (!mounted) return;
       // Fresh take → clear any anchored AR cards left from a previous session.
       try {
@@ -1169,6 +1182,27 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // ignore: avoid_print
       print('[OfficialARCapturePage] manual capture start failed: $e');
     }
+  }
+
+  void _startVioShadowForCapture() {
+    if (!kVioShadowEnabled) {
+      DeviceLog.log('VioDiag', 'PW_VIO_SHADOW=off ⇒ 本场影子 VIO 不启动（单变量对照组）');
+      return;
+    }
+    unawaited(() async {
+      try {
+        await VioDiagnosticsRecorder.instance.start();
+        DeviceLog.log('VioDiag', 'capture shadow lifecycle started');
+      } catch (e) {
+        DeviceLog.log('VioDiag', 'capture shadow start failed: $e');
+      }
+    }());
+  }
+
+  Future<void> _stopVioShadowForCapture() async {
+    if (!kVioShadowEnabled) return;
+    await VioDiagnosticsRecorder.instance.stop();
+    DeviceLog.log('VioDiag', 'capture shadow terminal receipt flushed');
   }
 
   /// Per committed shutter: frustum-mark the coverage cloud with the
@@ -2795,6 +2829,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     setState(() => _showDraftsWhileReconstructing = false);
   }
 
+  void _setDraftRecordActionInProgress(bool active) {
+    if (!mounted || _draftRecordActionInProgress == active) return;
+    setState(() => _draftRecordActionInProgress = active);
+  }
+
   void _scheduleDraftTerminalExitIfNeeded() {
     final terminal =
         _sfmPhase == SfmPreviewPhase.refined ||
@@ -2803,6 +2842,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         !shouldAutoExitReconstructionDrafts(
           showingDrafts: _showDraftsWhileReconstructing,
           reconstructionTerminal: terminal,
+          recordActionInProgress: _draftRecordActionInProgress,
         )) {
       return;
     }
@@ -2816,6 +2856,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       if (!shouldAutoExitReconstructionDrafts(
         showingDrafts: _showDraftsWhileReconstructing,
         reconstructionTerminal: stillTerminal,
+        recordActionInProgress: _draftRecordActionInProgress,
       )) {
         return;
       }
@@ -2897,6 +2938,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // 时的同一份状态,不重算。
       sharpness: _autoCapture.lastSharpness,
       segMedianSharpness: _autoCapture.lastSegmentMedianSharpness,
+      motion: _autoCapture.lastMotionMetrics,
       motionRole: _autoCapture.lastMotionRole,
       geometryParallaxDeg: _autoCapture.lastGeometryParallaxDeg,
       overlapFraction: _autoCapture.lastOverlapFraction,
@@ -2955,11 +2997,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // 收到的是同一个 pose)。本页别处用的 DateTime.now() 是另一个纪元,
     // 混进来什么都不会抛,只会把时长与节流一起静默算错。
     _autoTelemetry.recordSessionStart(seed.timestamp);
-    setState(() {
-      _lastAutoDecision = AutoCaptureDecision.skipNotMoved;
-      _autoCapture.start(seed);
-      _autoRunningLastSeen = _autoCapture.isRunning;
-    });
+    _lastAutoDecision = AutoCaptureDecision.skipNotMoved;
+    // start() 会同步尝试首张锚点入队；队列 admission 不能藏在 setState 回调里。
+    _autoCapture.start(seed);
+    _autoRunningLastSeen = _autoCapture.isRunning;
+    if (mounted) setState(() {});
   }
 
   void _stopAutoCapture() {
@@ -3000,6 +3042,17 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     setState(() => _autoStartPending = true);
   }
 
+  void _triggerShutterHaptic() {
+    unawaited(
+      HapticFeedback.heavyImpact().catchError((
+        Object error,
+        StackTrace stackTrace,
+      ) {
+        DeviceLog.log('OfficialARCapturePage', 'shutter haptic failed: $error');
+      }),
+    );
+  }
+
   /// 自动拍的触发口。**返回 true = 真的入队成功** —— controller 据此决定
   /// 要不要把基准帧推到这一帧上。报假的 true 会把基准帧钉在一个**根本没有
   /// 照片**的位置上,此后位移闸系统性欠触发,正是 T3 要防的那件事。
@@ -3011,6 +3064,22 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// **契约:绝不抛。** 异常穿出去会打断整条 pose 回调(覆盖云、预警横幅、
   /// 暖机判定都挂在上面)。入队路径里有平台通道与磁盘工作,不能假设它永远
   /// 干净,所以一律按"没入队"处理 —— 基准帧因此不动,下一 tick 自然重试。
+  bool _onAutoCaptureStartAnchor() {
+    try {
+      final enqueued = _enqueueShutterCapture();
+      _autoTelemetry.recordStartAnchorOutcome(enqueued: enqueued);
+      if (enqueued) _autoFirePulseToken++;
+      return enqueued;
+    } catch (e) {
+      _autoTelemetry.recordStartAnchorOutcome(enqueued: false);
+      DeviceLog.log(
+        'OfficialARCapturePage',
+        'auto capture start anchor enqueue failed: $e',
+      );
+      return false;
+    }
+  }
+
   bool _onAutoCaptureFire() {
     try {
       final enqueued = _enqueueShutterCapture();
@@ -3047,9 +3116,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     if (_session == null || !_sfmCaptureReady || !_shutterQueue.accepting) {
       return _ShutterAdmission.blocked;
     }
-    return _shutterQueue.enqueue(verifiedCount: _projectPhotos.count) == null
-        ? _ShutterAdmission.budgetExhausted
-        : _ShutterAdmission.admitted;
+    final ticket = _shutterQueue.enqueue(verifiedCount: _projectPhotos.count);
+    if (ticket == null) return _ShutterAdmission.budgetExhausted;
+    _triggerShutterHaptic();
+    return _ShutterAdmission.admitted;
   }
 
   /// [_admitShutterCapture] 的布尔视图,给 [AutoCaptureController.onFire]。
@@ -3349,6 +3419,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // under `<captureDir>/photos_highres/`; stop freezes curation and
       // writes the shared photo_bundle contract.
       await session.stop();
+      await _stopVioShadowForCapture();
       // T6: tear down the live sparse cloud when the take ends.
       try {
         await _arKitChannel.invokeMethod<void>(
@@ -3757,6 +3828,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
           activeReconstructionPipelineKind: CapturePipelineKind.official,
           onActiveReconstructionTap: _showReconstructionProgress,
           onActiveReconstructionDelete: _permanentlyDeleteActiveReconstruction,
+          onRecordActionActivityChanged: _setDraftRecordActionInProgress,
           officialResumeRoute: pushOfficialResumeRoute,
           officialViewerRoute: pushOfficialViewerRoute,
         ),

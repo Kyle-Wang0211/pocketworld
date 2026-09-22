@@ -1,0 +1,46 @@
+/*
+ * Copyright (c) 2014-2026 SEACAVE
+ * Copyright (c), ETH Zurich and UNC Chapel Hill.
+ * Copyright (c) 2026, PocketWorld contributors
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * COLMAP initialization control flow + OpenMVS-PCG adaptation.
+ * reference-only, non-production: not exact CUDA/XORWOW parity and not
+ * byte-identical OpenMVS Metal native initialization (normal-first there).
+ *
+ * This is stage two: depth consumes exactly one draw from each initialized
+ * per-pixel state and persists the advanced state for normal initialization.
+ * It models the geom_consistency == false initialization branch.
+ * COLMAP 4.1.1 a0d785f control source patch_match_cuda.cu SHA-256:
+ * 1aebd4482de0ea6f1f3aad45150c09e0479119c607a843959c8aaa381c0d4448
+ * Depth draw source gpu_mat.h SHA-256:
+ * c3ee6bef2b012cf1572b4789212aa52aba08bcfa3f312bb2d141ac98f240296b
+ */
+
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "../rng/openmvs_pcg_initialization_layout.glsl"
+
+layout(local_size_x = 32, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) writeonly buffer DepthMap {
+  float values[];
+} depth_map;
+
+void main() {
+  uvec2 pixel = gl_GlobalInvocationID.xy;
+  if (pixel.x >= pc.width || pixel.y >= pc.height) {
+    return;
+  }
+
+  uint pixel_index = colmap_xorwow_pixel_index(pixel);
+  ColmapXorwowState state = LoadColmapXorwowState(
+      pixel.y, pixel.x, pc.width, pc.height);
+  precise float random_value = ColmapXorwowUniform(state);
+  precise float depth_range = pc.depth_max - pc.depth_min;
+  precise float depth = random_value * depth_range + pc.depth_min;
+  depth_map.values[pixel_index] = depth;
+  StoreColmapXorwowState(
+      pixel.y, pixel.x, pc.width, pc.height, state);
+}

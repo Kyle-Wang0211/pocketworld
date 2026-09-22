@@ -1,0 +1,843 @@
+// Copyright (c), ETH Zurich and UNC Chapel Hill.
+// All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+//     * Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//
+//     * Redistributions in binary form must reproduce the above copyright
+//       notice, this list of conditions and the following disclaimer in the
+//       documentation and/or other materials provided with the distribution.
+//
+//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
+//       its contributors may be used to endorse or promote products derived
+//       from this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+
+#version 450
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_GOOGLE_include_directive : require
+
+// Complete mechanical source translation of COLMAP 4.1.1 commit
+// a0d785fba74b2664f31edc4a29026a8b27c00f67 SweepFromTopToBottom.
+// patch_match_cuda.cu SHA-256:
+// 1aebd4482de0ea6f1f3aad45150c09e0479119c607a843959c8aaa381c0d4448
+// OpenMVS-PCG expressions: commit
+// 8efd9c48e7249b4256ca3a778cb6bf062b871771, PatchMatchMetal.metal SHA-256:
+// 1e614e559d1b7ae6fb29e2525bae784023fc0b3b5f068dc46c24027cab9e6a68
+//
+// COLMAP 4.1.1 sweep/control flow + OpenMVS-PCG adaptation. The only semantic
+// substitution is one persistent uint32 OpenMVS-PCG state and a one-for-one
+// replacement of each existing curand_uniform draw. This is neither exact
+// CUDA/XORWOW nor native OpenMVS Metal.
+// REFERENCE_ONLY_NON_RUNNABLE: production RNG and sweep dispatch stay disabled.
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+const int kMaxSources = 10;
+
+layout(constant_id = 2) const bool kGeomConsistencyTerm = false;
+layout(constant_id = 3) const bool kFilterPhotoConsistency = false;
+layout(constant_id = 4) const bool kFilterGeomConsistency = false;
+const uint kFinalGeometricMask = 7u;
+// FINAL_MASK_REUSES_FINAL_SCHEDULED_SWEEP: mask 7 sets all three booleans on
+// the final already-scheduled invocation. It does not introduce sweep 21.
+
+layout(set = 0, binding = 0, std430) buffer DepthMap {
+  float values[];
+} depth_map;
+layout(set = 0, binding = 1, std430) buffer NormalMap {
+  float values[];
+} normal_map;
+layout(set = 0, binding = 2, std430) buffer CostMap {
+  float values[];
+} cost_map;
+layout(set = 0, binding = 3, std430) buffer SelectionProbability {
+  float values[];
+} selection_probability;
+layout(set = 0, binding = 4, std430) readonly buffer PreviousSelection {
+  float values[];
+} previous_selection_probability;
+layout(set = 0, binding = 5, std430) buffer ConsistencyMask {
+  uint values[];
+} consistency_mask;
+layout(set = 0, binding = 6, std430) buffer XorwowStateWords {
+  uint values[];
+} xorwow_state_words;
+layout(set = 0, binding = 7, std430) buffer ForwardAndSamplingWorkspace {
+  float values[];
+} forward_message;
+layout(set = 0, binding = 9, std430) readonly buffer FilteredReferenceBytes {
+  uint values[];
+} filtered_reference_image;
+layout(set = 0, binding = 10, std430) readonly buffer ReferenceWeightedSum {
+  float values[];
+} reference_weighted_sum;
+layout(set = 0, binding = 11, std430)
+    readonly buffer ReferenceWeightedSquaredSum {
+  float values[];
+} reference_weighted_squared_sum;
+layout(set = 0, binding = 12) uniform sampler2DArray source_depth_maps;
+layout(set = 0, binding = 13, std430) readonly buffer ActivePoseTable {
+  float values[];
+} active_pose_table;
+layout(set = 0, binding = 14) uniform sampler2DArray source_gray_images;
+
+layout(push_constant) uniform PushConstants {
+  uint width;
+  uint height;
+  uint num_sources;
+  uint workspace_max_dim;
+  uint source_width;
+  uint source_height;
+  uint rotation_0_to_3;
+  uint ncc_norm_factor_float_bits;
+  vec4 ref_k;
+  vec4 ref_inv_k;
+  float perturbation;
+  float depth_min;
+  float depth_max;
+  int num_samples;
+  float sigma_spatial;
+  float sigma_color;
+  float ncc_sigma;
+  float min_triangulation_angle_rad;
+  float incident_angle_sigma;
+  float previous_selection_probability_weight;
+  float geometric_consistency_regularizer;
+  float geometric_consistency_max_cost;
+  float filter_min_ncc;
+  float filter_min_triangulation_angle_rad;
+  int filter_min_num_consistent;
+  float filter_geometric_consistency_max_cost;
+} pc;
+
+// [BATCH-REF 2026-08-30] 批处理:一次 dispatch 覆盖 N 个独立 reference。
+// 结构抄 llama.cpp Vulkan 后端(ggml/src/ggml-vulkan/vulkan-shaders/,
+// 生产级、跨 iOS(MoltenVK)/Android/桌面):
+//   const uint batch_idx = gl_WorkGroupID.y + p.base_work_group_y;
+// 布局用「连续大 buffer + 固定 stride」而不是 descriptor array:
+//   · cuBLAS 官方为 strided-batched 放弃指针数组(指针数组要付四笔开销)
+//   · Android descriptor indexing 支持度仅 76.71%,而本产品必须跨端
+//
+// 🔴 与 llama.cpp 的**唯一**有意偏离:不引入 base_work_group_y / batch_count
+//    两个 push constant 字段。理由是硬约束,不是省事:
+//    1. PatchPC 现在正好 128 字节,而 Vulkan 规范对 maxPushConstantsSize 的
+//       强制下限就是 128(Required Limits 表)。加 8 字节会掉出保证区间,
+//       低端安卓/鸿蒙机可能直接创建不了 pipeline layout —— 与「100% 跨端」冲突。
+//       结构里那个 reserved(byte 28)也不是空的:vulkan_runtime.cc:1045 往里
+//       写 NCC 归一化位,sweep_contract.h:50 声明 sweep 会消费它。
+//    2. base_work_group_y 只在需要按 maxComputeWorkGroupCount[1] 切块时才非零,
+//       而该项的规范下限是 65535;本管线的 N 被显存卡在 ≤6(2.04GB/ref,
+//       14GB 预算)。y 永远不可能接近 65535,切块路径是死代码。
+//       主机侧 dispatch 处有运行时断言兜底(见 vulkan_runtime.cc)。
+//    3. batch_count 在 llama.cpp 里也只是声明,本 shader 从未读过。
+//    ⇒ 保持 sizeof(PatchPC) == 128、全部 offset 不动、ABI 测试零改动。
+uint RefIndex() { return gl_WorkGroupID.y; }
+uint RefPixelStride() { return pc.width * pc.height; }
+
+uint PixelIndex(uint row, uint col) {
+  return RefIndex() * RefPixelStride() + row * pc.width + col;
+}
+
+uint GpuMatIndex(uint slice, uint row, uint col) {
+  // 每个 reference 占 num_sources 个平面(cost / sel_prob / prev_sel_prob /
+  // consistency_mask)。
+  return RefIndex() * pc.num_sources * RefPixelStride() +
+      (slice * pc.height + row) * pc.width + col;
+}
+
+// 🔴 法线图只有 **3** 个平面,不是 num_sources 个。
+// 原来这 12 处也走 GpuMatIndex,ref 步长就成了 num_sources*W*H:
+// N=2 时 reference 1 的法线写会落到 10*W*H 处,越出法线缓冲(6*W*H),
+// 被 robustBufferAccess 夹回范围内 —— 正好砸在 reference 0 的数据上。
+// 症状是「跑得通、ok:true、连 reference 0 都算错」,99.95% 的深度值变化、
+// 量级却完全正常。逐字节对比是唯一能抓到它的判据。
+uint NormalIndex(uint component, uint row, uint col) {
+  return RefIndex() * 3u * RefPixelStride() +
+      (component * pc.height + row) * pc.width + col;
+}
+
+uint WorkspaceIndex(uint kind, uint col, uint source) {
+  // kind ∈ {0,1} ⇒ 每 reference 的 stride = 2 个 kind 块
+  return RefIndex() * 2u * pc.workspace_max_dim * pc.num_sources +
+      kind * pc.workspace_max_dim * pc.num_sources +
+      col * pc.num_sources + source;
+}
+
+// [BATCH-REF] 每 reference 的位姿区 = num_sources*43 + 8 个 float,
+// 尾部 8 个是 ref_k / ref_inv_k(见 patch_match_abi.h 的说明)。
+uint RefPoseStride() { return pc.num_sources * 43u + 8u; }
+
+// 逐 reference 的参考相机参数。值与 g_ref_k / g_ref_inv_k 完全相同
+// (主机侧同一份 patch 写出来的),N=1 时两条路等价 ⇒ 逐字节不变。
+// 在 main() 开头取一次,避免 12 个使用点各自去 buffer 里读 4 个 float。
+vec4 g_ref_k;
+vec4 g_ref_inv_k;
+
+void LoadReferenceParams() {
+  uint tail = RefIndex() * RefPoseStride() + pc.num_sources * 43u;
+  g_ref_k = vec4(active_pose_table.values[tail + 0u],
+                 active_pose_table.values[tail + 1u],
+                 active_pose_table.values[tail + 2u],
+                 active_pose_table.values[tail + 3u]);
+  g_ref_inv_k = vec4(active_pose_table.values[tail + 4u],
+                     active_pose_table.values[tail + 5u],
+                     active_pose_table.values[tail + 6u],
+                     active_pose_table.values[tail + 7u]);
+}
+
+uint PoseIndex(uint source, uint value_index) {
+  return RefIndex() * RefPoseStride() + source * 43u + value_index;
+}
+// sampler2DArray 的层:每个 reference 占 num_sources 层。
+// 🔴 上限约束:Vulkan 核心保底 maxImageArrayLayers 仅 256,Android 实测
+//    495 份机型就是 256 ⇒ N×num_sources ≤ 256,主机侧必须运行时校验。
+int SourceLayer(int source) {
+  return int(RefIndex() * pc.num_sources) + source;
+}
+
+void LoadPoseKRT(uint source,
+                 out float K[4],
+                 out float R[9],
+                 out float T[3]) {
+  for (uint i = 0u; i < 4u; ++i) {
+    K[i] = active_pose_table.values[PoseIndex(source, i)];
+  }
+  for (uint i = 0u; i < 9u; ++i) {
+    R[i] = active_pose_table.values[PoseIndex(source, 4u + i)];
+  }
+  for (uint i = 0u; i < 3u; ++i) {
+    T[i] = active_pose_table.values[PoseIndex(source, 13u + i)];
+  }
+}
+
+void LoadPosePInverseP(uint source,
+                       out float P[12],
+                       out float inverse_P[12]) {
+  for (uint i = 0u; i < 12u; ++i) {
+    P[i] = active_pose_table.values[PoseIndex(source, 19u + i)];
+    inverse_P[i] = active_pose_table.values[PoseIndex(source, 31u + i)];
+  }
+}
+
+float SampleReferenceImage(int row, int col) {
+  if (row < 0 || row >= int(pc.height) ||
+      col < 0 || col >= int(pc.width)) {
+    return 0.0;
+  }
+  return float(filtered_reference_image.values[
+      PixelIndex(uint(row), uint(col))]) / 255.0;
+}
+
+float SampleSourceImage(float col_plus_half,
+                        float row_plus_half,
+                        int layer) {
+  vec2 coordinate = vec2(
+      col_plus_half / float(pc.source_width),
+      row_plus_half / float(pc.source_height));
+  return textureLod(
+      source_gray_images, vec3(coordinate, float(SourceLayer(layer))), 0.0).r;
+}
+
+float SampleSourceDepth(float col_plus_half,
+                        float row_plus_half,
+                        int layer) {
+  vec2 coordinate = vec2(
+      col_plus_half / float(pc.source_width),
+      row_plus_half / float(pc.source_height));
+  return textureLod(
+      source_depth_maps, vec3(coordinate, float(SourceLayer(layer))), 0.0).r;
+}
+
+#include "../cost_ops/cost_ops.glsl"
+#define PW_XORWOW_REF_BATCHED 1
+#include "../rng/colmap_xorwow.glsl"
+
+float Dot3(vec3 left, vec3 right) {
+  return left.x * right.x + left.y * right.y + left.z * right.z;
+}
+
+float ComputeNCCProbability(float cost,
+                            float inverse_ncc_sigma_square) {
+  float ncc_norm_factor = uintBitsToFloat(pc.ncc_norm_factor_float_bits);
+  return exp(cost * cost * inverse_ncc_sigma_square) * ncc_norm_factor;
+}
+
+float ComputeMessage(float cost,
+                     float previous,
+                     bool forward,
+                     float inverse_ncc_sigma_square) {
+  const float uniform_probability = 0.5;
+  const float no_change_probability = 0.99999;
+  const float change_probability = 1.0 - no_change_probability;
+  float emission = ComputeNCCProbability(cost, inverse_ncc_sigma_square);
+  float zn0;
+  float zn1;
+  if (forward) {
+    zn0 = (previous * change_probability +
+           (1.0 - previous) * no_change_probability) * uniform_probability;
+    zn1 = (previous * no_change_probability +
+           (1.0 - previous) * change_probability) * emission;
+  } else {
+    zn0 = previous * emission * change_probability +
+          (1.0 - previous) * uniform_probability * no_change_probability;
+    zn1 = previous * emission * no_change_probability +
+          (1.0 - previous) * uniform_probability * change_probability;
+  }
+  return zn1 / (zn0 + zn1);
+}
+
+float ComputeSelectionProbability(float alpha,
+                                  float beta,
+                                  float previous) {
+  float zn0 = (1.0 - alpha) * (1.0 - beta);
+  float zn1 = alpha * beta;
+  float current = zn1 / (zn0 + zn1);
+  return pc.previous_selection_probability_weight * previous +
+      (1.0 - pc.previous_selection_probability_weight) * current;
+}
+
+float PropagateDepth(float depth,
+                     vec3 normal,
+                     float row1,
+                     float row2) {
+  float x1 = depth * (g_ref_inv_k.z * row1 + g_ref_inv_k.w);
+  float y1 = depth;
+  float x2 = x1 + normal.z;
+  float y2 = y1 - normal.y;
+  float x4 = g_ref_inv_k.z * row2 + g_ref_inv_k.w;
+  float denominator = x2 - x1 + x4 * (y1 - y2);
+  const float kEps = 1e-5;
+  if (abs(denominator) < kEps) {
+    return depth;
+  }
+  float numerator = y1 * x2 - x1 * y2;
+  return numerator / denominator;
+}
+
+float PerturbDepth(float depth, inout ColmapXorwowState random_state) {
+  float minimum_depth = (1.0 - pc.perturbation) * depth;
+  float maximum_depth = (1.0 + pc.perturbation) * depth;
+  return ColmapXorwowUniform(random_state) *
+      (maximum_depth - minimum_depth) + minimum_depth;
+}
+
+vec3 PerturbNormal(uint row,
+                   uint col,
+                   vec3 normal,
+                   inout ColmapXorwowState random_state) {
+  float perturbation = pc.perturbation * 3.14159265358979323846;
+  for (int trial = 0; trial <= 3; ++trial) {
+    float angle1 =
+        (ColmapXorwowUniform(random_state) - 0.5) * perturbation;
+    float angle2 =
+        (ColmapXorwowUniform(random_state) - 0.5) * perturbation;
+    float angle3 =
+        (ColmapXorwowUniform(random_state) - 0.5) * perturbation;
+    float sin1 = sin(angle1);
+    float sin2 = sin(angle2);
+    float sin3 = sin(angle3);
+    float cos1 = cos(angle1);
+    float cos2 = cos(angle2);
+    float cos3 = cos(angle3);
+    mat3 rotation = mat3(
+        cos2 * cos3,
+        cos1 * sin3 + cos3 * sin1 * sin2,
+        sin1 * sin3 - cos1 * cos3 * sin2,
+        -cos2 * sin3,
+        cos1 * cos3 - sin1 * sin2 * sin3,
+        cos3 * sin1 + cos1 * sin2 * sin3,
+        sin2,
+        -cos2 * sin1,
+        cos1 * cos2);
+    vec3 perturbed = rotation * normal;
+    vec3 view_ray = vec3(
+        g_ref_inv_k.x * float(col) + g_ref_inv_k.y,
+        g_ref_inv_k.z * float(row) + g_ref_inv_k.w,
+        1.0);
+    if (Dot3(perturbed, view_ray) < 0.0) {
+      return perturbed * inversesqrt(Dot3(perturbed, perturbed));
+    }
+    if (trial == 3) {
+      return normal;
+    }
+    perturbation *= 0.5;
+  }
+  return normal;
+}
+
+void ComputeViewingAngles(vec3 point,
+                          vec3 normal,
+                          uint source,
+                          out float cosine_triangulation_angle,
+                          out float cosine_incident_angle) {
+  uint base = PoseIndex(source, 16u);
+  vec3 center = vec3(
+      active_pose_table.values[base],
+      active_pose_table.values[base + 1u],
+      active_pose_table.values[base + 2u]);
+  vec3 source_ray = center - point;
+  float inverse_reference_norm = inversesqrt(Dot3(point, point));
+  float inverse_source_norm = inversesqrt(Dot3(source_ray, source_ray));
+  cosine_incident_angle = Dot3(source_ray, normal) * inverse_source_norm;
+  cosine_triangulation_angle =
+      -Dot3(source_ray, point) * inverse_reference_norm * inverse_source_norm;
+}
+
+vec2 TransformHomogeneous(float matrix_values[9], vec2 value) {
+  float inverse_z = 1.0 /
+      (matrix_values[6] * value.x +
+       matrix_values[7] * value.y + matrix_values[8]);
+  return inverse_z * vec2(
+      matrix_values[0] * value.x +
+          matrix_values[1] * value.y + matrix_values[2],
+      matrix_values[3] * value.x +
+          matrix_values[4] * value.y + matrix_values[5]);
+}
+
+float ComputeResolutionProbability(float homography[9], uint row, uint col) {
+  vec2 source1 = TransformHomogeneous(
+      homography, vec2(float(col) - 5.0, float(row) - 5.0));
+  vec2 source2 = TransformHomogeneous(
+      homography, vec2(float(col) - 5.0, float(row) + 5.0));
+  vec2 source3 = TransformHomogeneous(
+      homography, vec2(float(col) + 5.0, float(row) + 5.0));
+  vec2 source4 = TransformHomogeneous(
+      homography, vec2(float(col) + 5.0, float(row) - 5.0));
+  const float reference_area = 121.0;
+  float source_area = abs(0.5 * (
+      source1.x * source2.y - source2.x * source1.y -
+      source1.x * source4.y + source2.x * source3.y -
+      source3.x * source2.y + source4.x * source1.y +
+      source3.x * source4.y - source4.x * source3.y));
+  if (reference_area > source_area) {
+    return source_area / reference_area;
+  }
+  return reference_area / source_area;
+}
+
+float ComputeTriangulationProbability(float cosine_angle,
+                                      float minimum_cosine) {
+  if (cosine_angle > minimum_cosine) {
+    float scaled = 1.0 -
+        (1.0 - cosine_angle) / (1.0 - minimum_cosine);
+    float likelihood = 1.0 - scaled * scaled;
+    return min(1.0, max(0.0, likelihood));
+  }
+  return 1.0;
+}
+
+float ComputeIncidentProbability(float cosine_angle,
+                                 float inverse_sigma_square) {
+  float x = 1.0 - max(0.0, cosine_angle);
+  return exp(x * x * inverse_sigma_square);
+}
+
+void TransformPDFToCDF(uint base) {
+  float probability_sum = 0.0;
+  for (uint source = 0u; source < pc.num_sources; ++source) {
+    probability_sum += forward_message.values[base + source];
+  }
+  float inverse_probability_sum = 1.0 / probability_sum;
+  float cumulative_probability = 0.0;
+  for (uint source = 0u; source < pc.num_sources; ++source) {
+    float probability =
+        forward_message.values[base + source] * inverse_probability_sum;
+    cumulative_probability += probability;
+    forward_message.values[base + source] = cumulative_probability;
+  }
+}
+
+int StrictCDFSelection(uint base, float draw) {
+  for (uint source = 0u; source < pc.num_sources; ++source) {
+    if (forward_message.values[base + source] > draw) {
+      return int(source);
+    }
+  }
+  return -1;
+}
+
+int FindMinCostLastTie(float costs[5]) {
+  float minimum_cost = costs[0];
+  int minimum_cost_index = 0;
+  for (int index = 1; index < 5; ++index) {
+    if (costs[index] <= minimum_cost) {
+      minimum_cost = costs[index];
+      minimum_cost_index = index;
+    }
+  }
+  return minimum_cost_index;
+}
+
+float PhotoCandidateCost(uint row,
+                         uint col,
+                         uint source,
+                         float depth,
+                         vec3 normal,
+                         float spatial_normalization,
+                         float color_normalization) {
+  float K[4];
+  float R[9];
+  float T[3];
+  LoadPoseKRT(source, K, R, T);
+  float reference_inverse_K[4] = float[4](
+      g_ref_inv_k.x, g_ref_inv_k.y, g_ref_inv_k.z, g_ref_inv_k.w);
+  float normal_values[3] = float[3](normal.x, normal.y, normal.z);
+  float homography[9];
+  ComposeHomography(K, R, T, reference_inverse_K,
+                    int(row), int(col), depth, normal_values, homography);
+  uint pixel_index = PixelIndex(row, col);
+  return PhotoConsistencyCost(
+      homography,
+      int(source),
+      int(row),
+      int(col),
+      reference_weighted_sum.values[pixel_index],
+      reference_weighted_squared_sum.values[pixel_index],
+      spatial_normalization,
+      color_normalization);
+}
+
+float GeometricCandidateCost(uint row,
+                             uint col,
+                             uint source,
+                             float depth,
+                             float maximum_cost) {
+  float P[12];
+  float inverse_P[12];
+  LoadPosePInverseP(source, P, inverse_P);
+  float reference_K[4] = float[4](
+      g_ref_k.x, g_ref_k.y, g_ref_k.z, g_ref_k.w);
+  float reference_inverse_K[4] = float[4](
+      g_ref_inv_k.x, g_ref_inv_k.y, g_ref_inv_k.z, g_ref_inv_k.w);
+  return GeometricConsistencyCost(
+      P, inverse_P, reference_K, reference_inverse_K,
+      float(row), float(col), depth, int(source), maximum_cost);
+}
+
+float ComputeResolutionForCandidate(uint row,
+                                    uint col,
+                                    uint source,
+                                    float depth,
+                                    vec3 normal) {
+  float K[4];
+  float R[9];
+  float T[3];
+  LoadPoseKRT(source, K, R, T);
+  float reference_inverse_K[4] = float[4](
+      g_ref_inv_k.x, g_ref_inv_k.y, g_ref_inv_k.z, g_ref_inv_k.w);
+  float normal_values[3] = float[3](normal.x, normal.y, normal.z);
+  float homography[9];
+  ComposeHomography(K, R, T, reference_inverse_K,
+                    int(row), int(col), depth, normal_values, homography);
+  return ComputeResolutionProbability(homography, row, col);
+}
+
+void ComputeBackwardMessages(uint col,
+                             float inverse_ncc_sigma_square) {
+  const float uniform_probability = 0.5;
+  for (uint source = 0u; source < pc.num_sources; ++source) {
+    float beta = uniform_probability;
+    for (uint reverse_row = pc.height; reverse_row > 0u; --reverse_row) {
+      uint row = reverse_row - 1u;
+      uint cost_index = GpuMatIndex(source, row, col);
+      beta = ComputeMessage(cost_map.values[cost_index], beta, false,
+                            inverse_ncc_sigma_square);
+      selection_probability.values[cost_index] = beta;
+    }
+    forward_message.values[WorkspaceIndex(0u, col, source)] =
+        uniform_probability;
+  }
+}
+
+void main() {
+  // [BATCH-REF] 必须在任何使用 g_ref_k / g_ref_inv_k 的调用之前。
+  LoadReferenceParams();
+  uint col = gl_GlobalInvocationID.x;
+  float spatial_normalization =
+      1.0 / (2.0 * pc.sigma_spatial * pc.sigma_spatial);
+  float color_normalization =
+      1.0 / (2.0 * pc.sigma_color * pc.sigma_color);
+  float inverse_ncc_sigma_square =
+      -0.5 / (pc.ncc_sigma * pc.ncc_sigma);
+  float minimum_triangulation_cosine =
+      cos(pc.min_triangulation_angle_rad);
+  float inverse_incident_angle_sigma_square = -0.5 /
+      (pc.incident_angle_sigma * pc.incident_angle_sigma);
+
+  if (col < pc.width) {
+    ComputeBackwardMessages(col, inverse_ncc_sigma_square);
+  }
+
+  ColmapXorwowState random_state;
+  float previous_depth = 0.0;
+  vec3 previous_normal = vec3(0.0);
+  if (col < pc.width) {
+    // Binding 6 is a tightly packed state plane: one persistent uint per
+    // logical column/pixel state. Runtime rotation/reindexing stays out of this
+    // reference shader and must not be inferred from pc.height.
+    random_state = LoadColmapXorwowState(0u, col, pc.width, pc.height);
+    previous_depth = depth_map.values[PixelIndex(0u, col)];
+    previous_normal = vec3(
+        normal_map.values[NormalIndex(0u, 0u, col)],
+        normal_map.values[NormalIndex(1u, 0u, col)],
+        normal_map.values[NormalIndex(2u, 0u, col)]);
+  }
+
+  for (uint row = 0u; row < pc.height; ++row) {
+    LocalRefImageRead(int(row));
+    // Mechanical Vulkan equivalent of COLMAP 4.1.1 __syncthreads(): publish
+    // only the shared reference tile before any photo-cost read.
+    barrier(); // row-start: publish complete shared tile
+    if (col < pc.width) {
+
+    previous_depth = PropagateDepth(
+        previous_depth, previous_normal, float(row) - 1.0, float(row));
+    uint pixel_index = PixelIndex(row, col);
+    float current_depth = depth_map.values[pixel_index];
+    vec3 current_normal = vec3(
+        normal_map.values[NormalIndex(0u, row, col)],
+        normal_map.values[NormalIndex(1u, row, col)],
+        normal_map.values[NormalIndex(2u, row, col)]);
+    float random_depth = PerturbDepth(current_depth, random_state);
+    vec3 random_normal = PerturbNormal(row, col, current_normal, random_state);
+
+    vec3 point = vec3(
+        current_depth * (g_ref_inv_k.x * float(col) + g_ref_inv_k.y),
+        current_depth * (g_ref_inv_k.z * float(row) + g_ref_inv_k.w),
+        current_depth);
+    uint sampling_base = WorkspaceIndex(1u, col, 0u);
+    for (uint source = 0u; source < pc.num_sources; ++source) {
+      uint cost_index = GpuMatIndex(source, row, col);
+      uint forward_index = WorkspaceIndex(0u, col, source);
+      float alpha = ComputeMessage(
+          cost_map.values[cost_index],
+          forward_message.values[forward_index],
+          true, inverse_ncc_sigma_square);
+      float beta = selection_probability.values[cost_index];
+      float previous_probability =
+          previous_selection_probability.values[cost_index];
+      float selected = ComputeSelectionProbability(
+          alpha, beta, previous_probability);
+      float cosine_triangulation;
+      float cosine_incident;
+      ComputeViewingAngles(
+          point, current_normal, source,
+          cosine_triangulation, cosine_incident);
+      float triangulation_probability =
+          ComputeTriangulationProbability(
+              cosine_triangulation, minimum_triangulation_cosine);
+      float incident_probability =
+          ComputeIncidentProbability(
+              cosine_incident, inverse_incident_angle_sigma_square);
+      float resolution_probability = ComputeResolutionForCandidate(
+          row, col, source, current_depth, current_normal);
+      forward_message.values[sampling_base + source] =
+          selected * triangulation_probability *
+          incident_probability * resolution_probability;
+    }
+
+    TransformPDFToCDF(sampling_base);
+
+    float candidate_depths[5];
+    candidate_depths[0] = current_depth;
+    candidate_depths[1] = previous_depth;
+    candidate_depths[2] = random_depth;
+    candidate_depths[3] = current_depth;
+    candidate_depths[4] = random_depth;
+    vec3 candidate_normals[5];
+    candidate_normals[0] = current_normal;
+    candidate_normals[1] = previous_normal;
+    candidate_normals[2] = random_normal;
+    candidate_normals[3] = random_normal;
+    candidate_normals[4] = current_normal;
+    float candidate_costs[5] = float[5](0.0, 0.0, 0.0, 0.0, 0.0);
+
+    // [MEMOIZE 2026-08-30] 抽样去重记忆化 —— **纯粹消除重复劳动,不是近似**。
+    //
+    // 官方注释自己指出:"if only very few source images see the reference
+    // image pixel, the same source image is likely to be sampled many times"。
+    // 漏斗实测(真实 K/R/T + 真实深度图,4000 像素样本):15 次抽样平均只命中
+    // 7.95 个不同 source,即 **7 次是重复抽中已经算过的 source**。
+    //
+    // PhotoCandidateCost(row,col,source,depth,normal) 与
+    // GeometricCandidateCost(row,col,source,depth) 都是**纯函数**:同一像素、
+    // 同一 source、同一候选,读的是同一批纹理,必然算出同一个值。
+    // 所以缓存它 = 少做,不是少算。
+    //
+    // 🔴 无损的三个保证(缺一不可):
+    //   1. **累加顺序不变** —— 仍按 sample_index 顺序、仍按 candidate 0..4
+    //      顺序往 candidate_costs[] 累加。浮点加法不满足结合律,顺序一变
+    //      结果就变。
+    //   2. **累加的数值不变** —— 缓存里存的就是原本会算出的那个 float。
+    //   3. **抽样序列不变** —— ColmapXorwowUniform 仍每轮调用一次,
+    //      RNG 状态推进与官方逐字相同;selected_source == -1 的 continue
+    //      分支也保持在同一位置(它同样消耗一次 RNG)。
+    // ⇒ 输出必然逐字节相同,由 bench.sh 的深度图/法线图 cmp 对拍验证。
+    //
+    // 缓存布局:每个 source 一个槽,存 5 个候选的 cost。num_sources ≤ 10
+    // (selection.json 的 max_source_images=10,COLMAP 默认亦然)。
+    // 用固定尺寸数组而非动态,避免动态下标带来的 spvUnsafeArray。
+    float memo_costs[kMaxSources][5];
+    bool memo_valid[kMaxSources];
+    for (int i = 0; i < kMaxSources; ++i) {
+      memo_valid[i] = false;
+    }
+
+    for (int sample_index = 0;
+         sample_index < pc.num_samples;
+         ++sample_index) {
+      float random_probability = ColmapXorwowUniform(random_state) -
+          1.1920928955078125e-7;
+      int selected_source =
+          StrictCDFSelection(sampling_base, random_probability);
+      if (selected_source == -1) {
+        continue;
+      }
+      uint source = uint(selected_source);
+      uint cost_index = GpuMatIndex(source, row, col);
+
+      if (!memo_valid[selected_source]) {
+        // 首次抽中这个 source:按官方顺序算全部 5 个候选并缓存。
+        memo_costs[selected_source][0] = cost_map.values[cost_index];
+        if (kGeomConsistencyTerm) {
+          memo_costs[selected_source][0] +=
+              pc.geometric_consistency_regularizer *
+              GeometricCandidateCost(
+                  row, col, source, candidate_depths[0],
+                  pc.geometric_consistency_max_cost);
+        }
+        for (int candidate = 1; candidate < 5; ++candidate) {
+          float value = PhotoCandidateCost(
+              row, col, source,
+              candidate_depths[candidate], candidate_normals[candidate],
+              spatial_normalization, color_normalization);
+          if (kGeomConsistencyTerm) {
+            value += pc.geometric_consistency_regularizer *
+                GeometricCandidateCost(
+                    row, col, source, candidate_depths[candidate],
+                    pc.geometric_consistency_max_cost);
+          }
+          memo_costs[selected_source][candidate] = value;
+        }
+        memo_valid[selected_source] = true;
+      }
+
+      // 累加:顺序与数值都与官方逐字相同,只是值来自缓存。
+      for (int candidate = 0; candidate < 5; ++candidate) {
+        candidate_costs[candidate] += memo_costs[selected_source][candidate];
+      }
+    }
+
+    int best_index = FindMinCostLastTie(candidate_costs);
+    float best_depth = candidate_depths[best_index];
+    vec3 best_normal = candidate_normals[best_index];
+    depth_map.values[pixel_index] = best_depth;
+    normal_map.values[NormalIndex(0u, row, col)] = best_normal.x;
+    normal_map.values[NormalIndex(1u, row, col)] = best_normal.y;
+    normal_map.values[NormalIndex(2u, row, col)] = best_normal.z;
+
+    for (uint source = 0u; source < pc.num_sources; ++source) {
+      uint cost_index = GpuMatIndex(source, row, col);
+      float cost;
+      if (best_index == 0) {
+        cost = cost_map.values[cost_index];
+      } else {
+        cost = PhotoCandidateCost(
+            row, col, source, best_depth, best_normal,
+            spatial_normalization, color_normalization);
+        cost_map.values[cost_index] = cost;
+      }
+      uint forward_index = WorkspaceIndex(0u, col, source);
+      float alpha = ComputeMessage(
+          cost, forward_message.values[forward_index], true,
+          inverse_ncc_sigma_square);
+      float beta = selection_probability.values[cost_index];
+      float previous_probability =
+          previous_selection_probability.values[cost_index];
+      float probability = ComputeSelectionProbability(
+          alpha, beta, previous_probability);
+      forward_message.values[forward_index] = alpha;
+      selection_probability.values[cost_index] = probability;
+    }
+
+    if (kFilterPhotoConsistency || kFilterGeomConsistency) {
+      int consistent_count = 0;
+      vec3 best_point = vec3(
+          best_depth * (g_ref_inv_k.x * float(col) + g_ref_inv_k.y),
+          best_depth * (g_ref_inv_k.z * float(row) + g_ref_inv_k.w),
+          best_depth);
+      float minimum_ncc_probability =
+          ComputeNCCProbability(1.0 - pc.filter_min_ncc,
+                                inverse_ncc_sigma_square);
+      float minimum_triangulation_cosine =
+          cos(pc.filter_min_triangulation_angle_rad);
+      for (uint source = 0u; source < pc.num_sources; ++source) {
+        float cosine_triangulation;
+        float cosine_incident;
+        ComputeViewingAngles(
+            best_point, best_normal, source,
+            cosine_triangulation, cosine_incident);
+        if (cosine_triangulation > minimum_triangulation_cosine ||
+            cosine_incident <= 0.0) {
+          continue;
+        }
+        uint cost_index = GpuMatIndex(source, row, col);
+        bool accepted = false;
+        if (!kFilterGeomConsistency) {
+          accepted = selection_probability.values[cost_index] >=
+              minimum_ncc_probability;
+        } else if (!kFilterPhotoConsistency) {
+          accepted = GeometricCandidateCost(
+              row, col, source, best_depth,
+              pc.geometric_consistency_max_cost) <=
+              pc.filter_geometric_consistency_max_cost;
+        } else {
+          accepted = selection_probability.values[cost_index] >=
+              minimum_ncc_probability &&
+              GeometricCandidateCost(
+                  row, col, source, best_depth,
+                  pc.geometric_consistency_max_cost) <=
+                  pc.filter_geometric_consistency_max_cost;
+        }
+        if (accepted) {
+          consistency_mask.values[cost_index] = 1u;
+          consistent_count += 1;
+        }
+      }
+      if (consistent_count < pc.filter_min_num_consistent) {
+        depth_map.values[pixel_index] = 0.0;
+        normal_map.values[NormalIndex(0u, row, col)] = 0.0;
+        normal_map.values[NormalIndex(1u, row, col)] = 0.0;
+        normal_map.values[NormalIndex(2u, row, col)] = 0.0;
+        for (uint source = 0u; source < pc.num_sources; ++source) {
+          consistency_mask.values[GpuMatIndex(source, row, col)] = 0u;
+        }
+      }
+    }
+
+    previous_depth = best_depth;
+    previous_normal = best_normal;
+    }
+    barrier(); // row-end: all photo-cost reads complete
+  }
+
+  if (col < pc.width) {
+    StoreColmapXorwowState(
+        0u, col, pc.width, pc.height, random_state);
+  }
+}

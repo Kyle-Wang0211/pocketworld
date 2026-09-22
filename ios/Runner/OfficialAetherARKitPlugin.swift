@@ -480,6 +480,7 @@ class OfficialAetherARKitPlugin: NSObject {
   static let coverageCloudLock = NSLock()
   static var coverageCloudXyz: [Float] = []
   static var coverageCloudRgb: [UInt8] = []
+  static var coverageCloudTransform = matrix_identity_float4x4
   static var coverageCloudMetadata = LiveCloudRenderMetadataV1(
     contract: "UNSTAMPED",
     sourceReceiveSequence: 0,
@@ -492,6 +493,26 @@ class OfficialAetherARKitPlugin: NSObject {
     computeDoneEpochMs: 0
   )
   static var coverageCloudDirty = false
+
+  static func floatArray(_ matrix: simd_float4x4) -> [Float] {
+    [
+      matrix.columns.0.x, matrix.columns.0.y,
+      matrix.columns.0.z, matrix.columns.0.w,
+      matrix.columns.1.x, matrix.columns.1.y,
+      matrix.columns.1.z, matrix.columns.1.w,
+      matrix.columns.2.x, matrix.columns.2.y,
+      matrix.columns.2.z, matrix.columns.2.w,
+      matrix.columns.3.x, matrix.columns.3.y,
+      matrix.columns.3.z, matrix.columns.3.w,
+    ]
+  }
+
+  static func setCoverageCloudTransform(_ transform: simd_float4x4) {
+    coverageCloudLock.lock()
+    coverageCloudTransform = transform
+    coverageCloudDirty = true
+    coverageCloudLock.unlock()
+  }
 
   static func setCoverageCloud(
     xyz: [Float],
@@ -509,13 +530,19 @@ class OfficialAetherARKitPlugin: NSObject {
   /// Render-thread side: returns the latest buffers iff they changed since
   /// the last take (nil otherwise, so the render loop skips rebuild work).
   static func takeCoverageCloudIfDirty()
-    -> (xyz: [Float], rgb: [UInt8], metadata: LiveCloudRenderMetadataV1)?
+    -> (xyz: [Float], rgb: [UInt8], metadata: LiveCloudRenderMetadataV1,
+        transform: simd_float4x4)?
   {
     coverageCloudLock.lock()
     defer { coverageCloudLock.unlock() }
     if !coverageCloudDirty { return nil }
     coverageCloudDirty = false
-    return (coverageCloudXyz, coverageCloudRgb, coverageCloudMetadata)
+    return (
+      coverageCloudXyz,
+      coverageCloudRgb,
+      coverageCloudMetadata,
+      coverageCloudTransform
+    )
   }
 
   // ── Photo-card SfM border states (Dart-owned policy, dumb display) ──
@@ -1218,6 +1245,32 @@ class OfficialAetherARKitPlugin: NSObject {
       // 遥测 G【cardpush】:记差量条数;渲染线程应用时(>1ms)合并落行。
       OfficialPwNativeTelemetry.shared.noteCardPush(diffCount: states.count)
       result(nil)
+    case "setLogicalWorldDisplayTransform":
+      guard let args = call.arguments as? [String: Any],
+            let raw = args["platformWorldFromLogicalWorld"] as? [NSNumber],
+            raw.count == 16 else {
+        result(FlutterError(
+          code: "logical_world_transform_bad_args",
+          message: "setLogicalWorldDisplayTransform requires 16 values",
+          details: nil))
+        return
+      }
+      let values = raw.map { $0.floatValue }
+      guard values.allSatisfy({ $0.isFinite }) else {
+        result(FlutterError(
+          code: "logical_world_transform_non_finite",
+          message: "display transform values must be finite",
+          details: nil))
+        return
+      }
+      let transform = simd_float4x4(columns: (
+        simd_float4(values[0], values[1], values[2], values[3]),
+        simd_float4(values[4], values[5], values[6], values[7]),
+        simd_float4(values[8], values[9], values[10], values[11]),
+        simd_float4(values[12], values[13], values[14], values[15])
+      ))
+      OfficialAetherARKitPlugin.setCoverageCloudTransform(transform)
+      result(nil)
     case "setCoveragePointCloud":
       // Dart-owned coverage policy pushes its rendered state here (packed
       // Float32 xyz triplets + Uint8 rgb triplets). Empty arrays clear.
@@ -1558,6 +1611,9 @@ class OfficialAetherARKitPlugin: NSObject {
       OfficialAetherARKitPlugin.clearPhotoCards(in: session)
     }
     arSession = session
+    // Resume only an already-configured xrslam shadow. This is native sensor
+    // glue; pose comparison and quality decisions remain in shared Dart code.
+    PwVioTimebase.shared.resumeShadowPipeline()
     // [SPRINT-MODE 2026-07-26] Camera is live again → matcher back to
     // yield-to-camera pacing (thermal duty gaps + small hot chunks).
     aether_gpu_match_set_capture_active(1)
@@ -1582,6 +1638,7 @@ class OfficialAetherARKitPlugin: NSObject {
   }
 
   private func stopSession() {
+    PwVioTimebase.shared.suspendShadowPipeline()
     defer {
       PwARCameraLease.shared.release(
         owner: OfficialARKitIdentifiers.cameraOwner
@@ -1787,6 +1844,9 @@ class OfficialAetherARKitPlugin: NSObject {
       "originY": origin.y,
       "originZ": origin.z,
       "worldYaw": yaw,
+      "anchorTransform": Self.floatArray(
+        lockTimeAnchorTransform ?? matrix_identity_float4x4
+      ),
     ]
   }
 
@@ -2825,12 +2885,16 @@ class OfficialAetherARKitPlugin: NSObject {
       payload["worldOriginZ"] = origin.z
       payload["worldYaw"] = worldYaw
       payload["hasOrigin"] = true
+      payload["anchorTransform"] = Self.floatArray(
+        worldSubjectAnchor?.transform ?? matrix_identity_float4x4
+      )
     } else {
       payload["worldOriginX"] = Float(0)
       payload["worldOriginY"] = Float(0)
       payload["worldOriginZ"] = Float(0)
       payload["worldYaw"] = Float(0)
       payload["hasOrigin"] = false
+      payload["anchorTransform"] = [Float]()
     }
 
     poseStreamHandler.send(payload)
@@ -3398,9 +3462,9 @@ private class OfficialARSessionForwarder: NSObject, ARSessionDelegate {
     //   which the frame was captured."),且 ARKit 不交出 CMSampleBuffer,
     //   synchronizationClock 那条换算桥在这条链上用不了 ⇒ 只能纯测量。
     PwVioTimebase.shared.noteARFrame(frame)
-    // [pw][vio] 喂 XRSLAM。零拷贝:直接指向 CVPixelBuffer 的亮度平面。
-    //   feeder 未 start 时是空操作,不影响现有采集链。
-    PwVioSlamFeeder.shared.feed(frame: frame)
+    // [pw][vio] 只把 CVPixelBuffer 引用放进有界 shadow 队列;降采样和
+    //   XRSLAM 调用在 worker 上完成。feeder 未 start 时是空操作。
+    _ = PwVioSlamFeeder.shared.enqueue(frame: frame)
     if !loggedFirstFrame {
       loggedFirstFrame = true
       NSLog("[OfficialAetherARKit] first ARFrame received")
@@ -3434,6 +3498,7 @@ private class OfficialARSessionForwarder: NSObject, ARSessionDelegate {
   }
 
   func session(_ session: ARSession, didFailWithError error: Error) {
+    PwVioTimebase.shared.suspendShadowPipeline()
     NSLog("[OfficialAetherARKit] ARSession failed: \(error.localizedDescription)")
     OfficialPwNativeTelemetry.shared.log("ar_session_failed", [
       "error": error.localizedDescription,
@@ -3443,6 +3508,7 @@ private class OfficialARSessionForwarder: NSObject, ARSessionDelegate {
   }
 
   func sessionWasInterrupted(_ session: ARSession) {
+    PwVioTimebase.shared.suspendShadowPipeline()
     NSLog("[OfficialAetherARKit] ARSession interrupted")
     stallLock.lock()
     interrupted = true
@@ -3460,6 +3526,7 @@ private class OfficialARSessionForwarder: NSObject, ARSessionDelegate {
     OfficialPwNativeTelemetry.shared.log("ar_interruption_ended", [
       "thermal": ProcessInfo.processInfo.thermalState.rawValue,
     ])
+    PwVioTimebase.shared.resumeShadowPipeline()
   }
 
   deinit {
@@ -3639,6 +3706,7 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
   private var pointCloudNode: SCNNode?
   private var fullPointCloudXyz: [Float] = []
   private var fullPointCloudRgb: [UInt8] = []
+  private var pointCloudTransform = matrix_identity_float4x4
   private let pointCloudLod = CapturePointCloudLodController()
   private var renderedPointCount = 0
   private var liveCloudRenderApplySequence = 0
@@ -3653,6 +3721,7 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
       }
       renderedPointCount = 0
       if let dropped = OfficialAetherARKitPlugin.takeCoverageCloudIfDirty() {
+        pointCloudTransform = dropped.transform
         let m = dropped.metadata
         OfficialPwNativeTelemetry.shared.log("live_cloud_render_drop_v1", [
           "contract": m.contract,
@@ -3671,6 +3740,7 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
     if let cloud = OfficialAetherARKitPlugin.takeCoverageCloudIfDirty() {
       fullPointCloudXyz = cloud.xyz
       fullPointCloudRgb = cloud.rgb
+      pointCloudTransform = cloud.transform
       let totalPoints = fullPointCloudXyz.count / 3
       renderedPointCount = pointCloudLod.reset(totalPoints: totalPoints)
       rebuildPointCloud(renderCount: renderedPointCount)
@@ -3773,8 +3843,10 @@ class OfficialAetherARKitPreviewView: NSObject, FlutterPlatformView, ARSCNViewDe
     geo.materials = [mat]
     if let node = pointCloudNode {
       node.geometry = geo
+      node.simdTransform = pointCloudTransform
     } else {
       let node = SCNNode(geometry: geo)
+      node.simdTransform = pointCloudTransform
       node.renderingOrder = -10               // render under the photo cards
       arscnView.scene.rootNode.addChildNode(node)
       pointCloudNode = node

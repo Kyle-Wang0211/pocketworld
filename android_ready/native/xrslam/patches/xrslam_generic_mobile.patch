@@ -1,0 +1,131 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 6917617..9ede6b2 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -14,18 +14,34 @@ option(XRSLAM_ENABLE_THREADING "..." OFF)
+ option(XRSLAM_PC_HEADLESS_ONLY "..." OFF)
+ option(XRSLAM_IOS "..." OFF)
+ option(XRSLAM_TEST "..." OFF)
++option(XRSLAM_CROSS_PLATFORM_GENERIC
++       "Build the same upstream generic algorithm branch on every platform"
++       OFF)
+ 
+-if(IOS)
++if(IOS AND NOT XRSLAM_CROSS_PLATFORM_GENERIC)
+   set(XRSLAM_IOS ON)
+   set(XRSLAM_ENABLE_THREADING ON)
+   #set(XRSLAM_ENABLE_DEBUG_INSPECTION OFF CACHE BOOL "..." FORCE)
+ endif()
+ 
+ 
+-if(NOT IOS)
++if(NOT IOS AND NOT XRSLAM_CROSS_PLATFORM_GENERIC)
+   set(XRSLAM_PC ON)
+ endif()
+ 
++if(XRSLAM_CROSS_PLATFORM_GENERIC)
++  set(XRSLAM_IOS OFF)
++  set(XRSLAM_ENABLE_THREADING OFF)
++  set(XRSLAM_PC OFF)
++  # `-fchar8_t` keeps upstream spdlog 1.3.1/fmt 5.3 compatible with modern
++  # Apple and Android libc++ while preserving the exact pinned dependency.
++  add_compile_options(-ffp-contract=off -fno-fast-math -fchar8_t)
++  # PocketWorld's production SfM already embeds Ceres 2.2. Rename only the
++  # pinned XRSLAM Ceres 1.14 C++ namespace so the final app cannot resolve an
++  # XRSLAM call against the ABI-incompatible product solver by link order.
++  add_compile_definitions(ceres=pw_xrslam_ceres_1_14)
++endif()
++
+ add_subdirectory(xrslam)
+ add_subdirectory(xrslam-extra)
+ add_subdirectory(xrslam-interface)
+diff --git a/cmake/Modules/Platform/ios.toolchain.cmake b/cmake/Modules/Platform/ios.toolchain.cmake
+index 08c4313..2dfe124 100644
+--- a/cmake/Modules/Platform/ios.toolchain.cmake
++++ b/cmake/Modules/Platform/ios.toolchain.cmake
+@@ -415,9 +415,9 @@ set(CMAKE_C_FLAGS
+ set(CMAKE_CXX_FLAGS
+ "${XCODE_IOS_PLATFORM_VERSION_FLAGS} ${BITCODE} ${VISIBILITY} -fvisibility-inlines-hidden -fobjc-abi-version=2 ${FOBJC_ARC} ${CMAKE_CXX_FLAGS}")
+ set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS} -O0 -g ${BITCODE} ${CMAKE_CXX_FLAGS_DEBUG}")
+-set(CMAKE_CXX_FLAGS_MINSIZEREL "${CMAKE_CXX_FLAGS} -DNDEBUG -Os -ffast-math ${BITCODE} ${CMAKE_CXX_FLAGS_MINSIZEREL}")
+-set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS} -DNDEBUG -O2 -g -ffast-math ${BITCODE} ${CMAKE_CXX_FLAGS_RELWITHDEBINFO}")
+-set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS} -DNDEBUG -O3 -ffast-math ${BITCODE} ${CMAKE_CXX_FLAGS_RELEASE}")
++set(CMAKE_CXX_FLAGS_MINSIZEREL "${CMAKE_CXX_FLAGS} -DNDEBUG -Os ${BITCODE} ${CMAKE_CXX_FLAGS_MINSIZEREL}")
++set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS} -DNDEBUG -O2 -g ${BITCODE} ${CMAKE_CXX_FLAGS_RELWITHDEBINFO}")
++set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS} -DNDEBUG -O3 ${BITCODE} ${CMAKE_CXX_FLAGS_RELEASE}")
+ set(CMAKE_C_LINK_FLAGS "${XCODE_IOS_PLATFORM_VERSION_FLAGS} -Wl,-search_paths_first ${CMAKE_C_LINK_FLAGS}")
+ set(CMAKE_CXX_LINK_FLAGS "${XCODE_IOS_PLATFORM_VERSION_FLAGS}  -Wl,-search_paths_first ${CMAKE_CXX_LINK_FLAGS}")
+ 
+diff --git a/cmake/Modules/SuperBuildDepends.cmake b/cmake/Modules/SuperBuildDepends.cmake
+index 510c4e6..b916589 100644
+--- a/cmake/Modules/SuperBuildDepends.cmake
++++ b/cmake/Modules/SuperBuildDepends.cmake
+@@ -20,7 +20,10 @@ if(NOT COMMAND superbuild_extern)
+     set(platform PLATFORM)
+     cmake_parse_arguments(SUPERBUILD_EXTERN "" "${platform}" "" ${ARGN})
+     if(NOT DEFINED SUPERBUILD_EXTERN_PLATFORM OR SUPERBUILD_EXTERN_PLATFORM STREQUAL AUTO)
+-      if(IOS)
++      if(XRSLAM_CROSS_PLATFORM_GENERIC)
++        # Both mobile packages consume the same source-built OpenCVConfig.
++        set(SUPERBUILD_EXTERN_PLATFORM SYSTEM)
++      elseif(IOS)
+         set(SUPERBUILD_EXTERN_PLATFORM IOS)
+       elseif(ANDROID)
+         set(SUPERBUILD_EXTERN_PLATFORM ANDROID)
+@@ -37,4 +40,4 @@ if(NOT COMMAND superbuild_extern)
+       include("${SUPERBUILD_EXTERN_SYSTEM_MODULE}")
+     endif()
+   endfunction()
+-endif()
+\ No newline at end of file
++endif()
+diff --git a/cmake/depends/ceres-solver.cmake b/cmake/depends/ceres-solver.cmake
+index 600178e..9f5bd99 100644
+--- a/cmake/depends/ceres-solver.cmake
++++ b/cmake/depends/ceres-solver.cmake
+@@ -22,7 +22,13 @@ if(NOT TARGET depends::ceres-solver)
+   set(CXX11_THREADS ON CACHE BOOL "" FORCE)
+   set(TBB OFF CACHE BOOL "" FORCE)
+   set(OPENMP OFF CACHE BOOL "" FORCE)
+-  set(LAPACK ON CACHE BOOL "" FORCE)
++  if(XRSLAM_CROSS_PLATFORM_GENERIC)
++    # Keep the solver backend identical on Apple and Android. Accelerate is an
++    # Apple-only implementation detail, not part of the generic baseline.
++    set(LAPACK OFF CACHE BOOL "" FORCE)
++  else()
++    set(LAPACK ON CACHE BOOL "" FORCE)
++  endif()
+   set(MINIGLOG_MAX_LOG_LEVEL 0 CACHE STRING "" FORCE)
+   set(EIGEN_PREFER_EXPORTED_EIGEN_CMAKE_CONFIGURATION OFF CACHE BOOL "" FORCE)
+   set(EIGEN_INCLUDE_DIR ${depends-eigen-source-dir} CACHE PATH "" FORCE)
+diff --git a/xrslam-interface/CMakeLists.txt b/xrslam-interface/CMakeLists.txt
+index 7c3fd55..867fda8 100644
+--- a/xrslam-interface/CMakeLists.txt
++++ b/xrslam-interface/CMakeLists.txt
+@@ -7,7 +7,7 @@ include(SuperBuildDepends)
+ set(XRSLAM_INTERFACE_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
+ set(XRSLAM_INTERFACE_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/include)
+ 
+-IF (XRSLAM_IOS)
++IF (IOS)
+     message(STATUS "xrslam will build as static library")
+     add_library(xrslam STATIC
+         ${XRSLAM_INTERFACE_INCLUDE_DIR}/XRSLAM.h
+@@ -35,7 +35,7 @@ target_include_directories(xrslam
+     ${XRSLAM_INTERFACE_SOURCE_DIR}
+ )
+ 
+-if(XRSLAM_IOS)
++if(IOS)
+     # for PC static_lib merge
+     # add_custom_command(TARGET xrslam POST_BUILD
+     #                         COMMAND ar x $<TARGET_FILE:xrslam>
+@@ -57,7 +57,7 @@ endif()
+ file(COPY  "${CMAKE_SOURCE_DIR}/xrslam-interface/include/XRSLAM.h"
+      DESTINATION  "${CMAKE_SOURCE_DIR}/include")
+ SET(LIBRARY_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/lib)
+-if(XRSLAM_IOS)
++if(IOS)
+     SET(LIBRARY_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/lib/iOS)
+ else()
+     SET(LIBRARY_OUTPUT_PATH ${CMAKE_SOURCE_DIR}/lib)

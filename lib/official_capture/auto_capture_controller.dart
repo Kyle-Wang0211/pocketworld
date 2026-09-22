@@ -26,18 +26,24 @@ import 'shutter_backpressure_gate.dart' show ShutterPace;
 
 class AutoCaptureController {
   AutoCaptureController({
+    required bool Function() onStartAnchor,
     required bool Function() onFire,
     required ShutterPace Function() paceProvider,
     required int Function() capturedCountProvider,
     required int Function() thermalStateProvider,
     required double? Function(ARPose pose) liveDepthProvider,
     PortableTrackHealth? Function(ARPose pose)? trackHealthProvider,
-  }) : _onFire = onFire,
+  }) : _onStartAnchor = onStartAnchor,
+       _onFire = onFire,
        _paceProvider = paceProvider,
        _capturedCountProvider = capturedCountProvider,
        _thermalStateProvider = thermalStateProvider,
        _liveDepthProvider = liveDepthProvider,
        _trackHealthProvider = trackHealthProvider;
+
+  /// 自动模式起跑锚点。它不是四类运动角色中的任何一种；只有真实入队成功
+  /// 才能建立 capture/geometry baseline。
+  final bool Function() _onStartAnchor;
 
   /// 触发快门。**返回 true 表示入队成功** —— 只有 true 才更新基准帧。
   final bool Function() _onFire;
@@ -94,6 +100,11 @@ class AutoCaptureController {
   /// 这一个时钟就够了)。
   double _lastTickSec = 0;
 
+  /// 最近一次真实的启动锚点入队尝试。null 表示还没试过；这种情况下第一
+  /// 帧恢复正常 tracking 后必须立刻拍，250ms 地板只约束一次真实拒绝后的
+  /// 重试，不能惩罚算法尚未获得健康姿态的冷启动阶段。
+  double? _lastStartAnchorAttemptSec;
+
   /// 画质缓拍的起点(该拍但当前帧比段内中位糊的第一帧);null = 没在缓。
   /// 缓拍**不消耗**去抖时钟 —— 画面一变锐立刻开火,不用再等一整拍。
   double? _blurDeferStartSec;
@@ -139,6 +150,7 @@ class AutoCaptureController {
   double? get lastGeometryParallaxDeg => _lastMotion?.geometryParallaxDeg;
   double? get lastOverlapFraction => _lastMotion?.overlapFraction;
   double? get lastDepthScaleRatio => _lastMotion?.depthScaleRatio;
+  AutoCaptureMotionMetrics? get lastMotionMetrics => _lastMotion;
   bool get shouldPromptSlowDown => _lastMotion?.shouldPromptSlowDown ?? false;
   AutoCaptureMotionMetrics? _lastMotion;
 
@@ -158,6 +170,7 @@ class AutoCaptureController {
     _startedAtSec = pose.timestamp;
     _lastPoseSec = pose.timestamp;
     _lastTickSec = pose.timestamp;
+    _lastStartAnchorAttemptSec = null;
     // ⚠️ [_elapsedBeforeRunSec] **刻意不清** —— D8:5 分钟是整场累积的热
     // 天花板,不是每轮自动拍各发一份。清它就等于"点停再点开"能无限续杯。
     // 新一轮 = 新场景:锐度段与缓拍状态不跨轮继承。
@@ -166,12 +179,12 @@ class AutoCaptureController {
     // spec §7「tracking 丢失 / limited ⇒ 暂停触发,**且基准帧不更新**」是
     // 无条件的,起跑那一帧也算:丢跟踪时的位置估计不可信,拿它当基准会
     // 毒化整轮的位移判据。播种推迟到 onPose 里第一帧正常的位姿。
+    _captureBaseline = null;
+    _geometryBaseline = null;
+    _activeTarget = null;
     if (_trackingNormal(pose)) {
-      _seedBaselines(pose);
-    } else {
-      _captureBaseline = null;
-      _geometryBaseline = null;
-      _activeTarget = null;
+      _lastStartAnchorAttemptSec = pose.timestamp;
+      if (_onStartAnchor()) _seedBaselines(pose);
     }
   }
 
@@ -182,6 +195,7 @@ class AutoCaptureController {
     _captureBaseline = null;
     _geometryBaseline = null;
     _activeTarget = null;
+    _lastStartAnchorAttemptSec = null;
     _segmentSharpness.clear();
     _blurDeferStartSec = null;
   }
@@ -274,11 +288,20 @@ class AutoCaptureController {
       case AutoCaptureDecision.skipNotMoved:
       case AutoCaptureDecision.skipPaced:
         _blurDeferStartSec = null;
-        // 起跑帧 tracking 异常时基准是空的 —— 第一帧正常位姿补播种。
-        // 本帧只播种、不判定:相对新基准的位移必然为 0。
-        // 去抖时钟**不重置** —— 播种不是一次拍摄,不该消耗节奏预算。
+        // 起跑锚点没入队或起跑帧 tracking 异常时，基准保持为空；后续只在
+        // tracking 恢复后的第一帧立即尝试；只有真实入队被拒后，才等共同
+        // 250 ms 地板再重试。绝不能把一帧没拍下来的 pose 偷偷播成
+        // “上一张照片”。
         if (captureBase == null || geometryBase == null) {
-          _seedBaselines(pose);
+          final lastAttemptSec = _lastStartAnchorAttemptSec;
+          if (trackingOk &&
+              (lastAttemptSec == null ||
+                  pose.timestamp - lastAttemptSec >=
+                      kAutoCaptureSafetyDebounceSec)) {
+            _lastStartAnchorAttemptSec = pose.timestamp;
+            _lastTickSec = pose.timestamp;
+            if (_onStartAnchor()) _seedBaselines(pose);
+          }
           return AutoCaptureDecision.skipNotMoved;
         }
         return decision;

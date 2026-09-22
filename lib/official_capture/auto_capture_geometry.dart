@@ -125,6 +125,10 @@ class AutoCaptureMotionMetrics {
     required this.overlapFraction,
     required this.advancesGeometryBaseline,
     required this.shouldPromptSlowDown,
+    this.overlapSafetyEligible = false,
+    this.geometryEligible = false,
+    this.rotationCoverageEligible = false,
+    this.radialBridgeEligible = false,
   });
 
   final AutoCaptureMotionRole role;
@@ -139,8 +143,34 @@ class AutoCaptureMotionMetrics {
   final bool advancesGeometryBaseline;
   final bool shouldPromptSlowDown;
 
+  /// 四个原始候选判据。它们与 [role] 分开保留，供聚合遥测区分“没命中”
+  /// 和“命中但被更高优先级候选遮蔽”。只含相对几何量，不含绝对位姿。
+  final bool overlapSafetyEligible;
+  final bool geometryEligible;
+  final bool rotationCoverageEligible;
+  final bool radialBridgeEligible;
+
   bool get shouldCapture => role != AutoCaptureMotionRole.none;
   bool get isOverlapSafety => role == AutoCaptureMotionRole.overlapSafety;
+
+  bool isRoleEligible(AutoCaptureMotionRole candidate) {
+    switch (candidate) {
+      case AutoCaptureMotionRole.none:
+        return role == AutoCaptureMotionRole.none &&
+            !overlapSafetyEligible &&
+            !geometryEligible &&
+            !rotationCoverageEligible &&
+            !radialBridgeEligible;
+      case AutoCaptureMotionRole.overlapSafety:
+        return overlapSafetyEligible || role == candidate;
+      case AutoCaptureMotionRole.geometry:
+        return geometryEligible || role == candidate;
+      case AutoCaptureMotionRole.rotationCoverage:
+        return rotationCoverageEligible || role == candidate;
+      case AutoCaptureMotionRole.radialBridge:
+        return radialBridgeEligible || role == candidate;
+    }
+  }
 }
 
 Vector3 _cross(Vector3 a, Vector3 b) => Vector3(
@@ -247,17 +277,20 @@ AutoCaptureMotionMetrics classifyAutoCaptureMotion({
   final geometryReady = parallax + eps >= geometryThreshold;
   final overlapSafety =
       overlap != null && overlap <= kAutoCaptureOverlapSafetyFraction + eps;
+  final rotationCoverage =
+      turn + eps >= kAutoCaptureRotationCandidateDeg &&
+      parallax < kAutoCaptureStableParallaxFloorDeg;
+  final radialBridge = depthScale + eps >= kAutoCaptureRadialScaleStep;
 
   final AutoCaptureMotionRole role;
   if (overlapSafety) {
     role = AutoCaptureMotionRole.overlapSafety;
   } else if (geometryReady) {
     role = AutoCaptureMotionRole.geometry;
-  } else if (depthScale + eps >= kAutoCaptureRadialScaleStep) {
-    role = AutoCaptureMotionRole.radialBridge;
-  } else if (turn + eps >= kAutoCaptureRotationCandidateDeg &&
-      parallax < kAutoCaptureStableParallaxFloorDeg) {
+  } else if (rotationCoverage) {
     role = AutoCaptureMotionRole.rotationCoverage;
+  } else if (radialBridge) {
+    role = AutoCaptureMotionRole.radialBridge;
   } else {
     role = AutoCaptureMotionRole.none;
   }
@@ -274,6 +307,10 @@ AutoCaptureMotionMetrics classifyAutoCaptureMotion({
     overlapFraction: overlap,
     advancesGeometryBaseline: geometryReady,
     shouldPromptSlowDown: overlapSafety,
+    overlapSafetyEligible: overlapSafety,
+    geometryEligible: geometryReady,
+    rotationCoverageEligible: rotationCoverage,
+    radialBridgeEligible: radialBridge,
   );
 }
 

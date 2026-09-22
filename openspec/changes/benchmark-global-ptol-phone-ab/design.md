@@ -10,6 +10,16 @@ but is neither the same input nor a replicate and is excluded from the PTOL
 metric. Raw gate output, `official_finalize_segments.json`, native telemetry,
 and the environment receipt are pulled immediately after every arm.
 
+The environment file is only the requested-input receipt. After constructing
+the native solver options and before the first solve in an arm, the native
+boundary emits an effective-options receipt containing the run and arm IDs,
+stamped application/source/Dart/native identities, and the effective global
+and local `parameter_tolerance` values. The control receipt must read
+`global=0, local=0`; the candidate receipt must read
+`global=1e-8, local=0`. No local tolerance environment key or code path is an
+experimental variable. A missing identity, `UNSTAMPED` sentinel, value
+mismatch, late receipt, or receipt/telemetry disagreement invalidates the arm.
+
 The direction-screen order is ABAB. A follow-up BA pair is permitted only when
 the first four runs are inconclusive. All records are persisted before the next
 arm begins. The screen writes only isolated gate files and the shared

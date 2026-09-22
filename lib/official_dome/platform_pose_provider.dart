@@ -23,6 +23,7 @@ import 'package:flutter/services.dart';
 import 'package:vector_math/vector_math_64.dart';
 
 import '../official_capture/capture_format.dart';
+import '../official_capture/logical_world_frame.dart';
 import '../official_quality/quality_compute.dart';
 import 'ar_pose.dart';
 
@@ -36,6 +37,9 @@ class PlatformARPoseProvider implements ARPoseProvider {
   StreamSubscription<dynamic>? _nativeSub;
   final _controller = StreamController<ARPose>.broadcast();
   ARPose? _lastPose;
+  LogicalWorldFrame? _logicalWorldFrame;
+  LogicalWorldUpdate? _logicalWorldUpdate;
+  List<double>? _lastDisplayTransform;
 
   @override
   ARPose? get lastPose => _lastPose;
@@ -73,24 +77,60 @@ class PlatformARPoseProvider implements ARPoseProvider {
 
   void _onNativePose(dynamic event) {
     final map = (event as Map).cast<String, Object?>();
-    final position = Vector3(
+    var position = Vector3(
       (map['tx'] as num?)?.toDouble() ?? 0,
       (map['ty'] as num?)?.toDouble() ?? 0,
       (map['tz'] as num?)?.toDouble() ?? 0,
     );
-    final orientation = Quaternion(
+    var orientation = Quaternion(
       (map['qx'] as num?)?.toDouble() ?? 0,
       (map['qy'] as num?)?.toDouble() ?? 0,
       (map['qz'] as num?)?.toDouble() ?? 0,
       (map['qw'] as num?)?.toDouble() ?? 1,
     );
     final hasOrigin = (map['hasOrigin'] as bool?) ?? false;
-    final worldOrigin = Vector3(
+    var worldOrigin = Vector3(
       (map['worldOriginX'] as num?)?.toDouble() ?? 0,
       (map['worldOriginY'] as num?)?.toDouble() ?? 0,
       (map['worldOriginZ'] as num?)?.toDouble() ?? 0,
     );
     final worldYaw = (map['worldYaw'] as num?)?.toDouble() ?? 0;
+
+    var extrinsic = _decodeFloatList(map['extrinsic']);
+    final currentAnchor = _decodeFloatList(map['anchorTransform']);
+    var previewPoints = _decodePreviewPoints(map);
+    final logicalFrame = _logicalWorldFrame;
+    if (hasOrigin && logicalFrame != null && currentAnchor.length == 16) {
+      try {
+        final LogicalWorldUpdate update = logicalFrame.update(currentAnchor);
+        _logicalWorldUpdate = update;
+        if (extrinsic.length == 16) {
+          final Matrix4 logicalCamera = update.toLogicalWorld(extrinsic);
+          extrinsic = List<double>.unmodifiable(logicalCamera.storage);
+          position = logicalCamera.getTranslation();
+          orientation = Quaternion.fromRotation(logicalCamera.getRotation())
+            ..normalize();
+        } else {
+          position = update.pointToLogicalWorld(position);
+        }
+        worldOrigin = update.pointToLogicalWorld(worldOrigin);
+        previewPoints = List<ARPreviewPoint>.unmodifiable(
+          previewPoints.map(
+            (ARPreviewPoint point) => ARPreviewPoint(
+              position: update.pointToLogicalWorld(point.position),
+              r: point.r,
+              g: point.g,
+              b: point.b,
+              confidence: point.confidence,
+            ),
+          ),
+        );
+        _pushDisplayTransform(update.platformWorldFromLogicalWorld.storage);
+      } on FormatException {
+        // Fail closed: keep the raw platform pose and wait for the next valid
+        // anchor receipt. Dart never invents a replacement transform.
+      }
+    }
 
     // Position-based azimuth / elevation per
     // ObjectModeV2ARDomeCoordinator.handleFrame:
@@ -107,9 +147,7 @@ class PlatformARPoseProvider implements ARPoseProvider {
       elevation = math.atan2(relY, horizDist < 0.001 ? 0.001 : horizDist);
     }
 
-    final extrinsic = _decodeFloatList(map['extrinsic']);
     final intrinsic = _decodeFloatList(map['intrinsicFxFyCxCy']);
-    final previewPoints = _decodePreviewPoints(map);
 
     // Optional quality block. Native ships a 128×128 grayscale Y-plane
     // thumbnail on the throttled (6 Hz) frames; we derive sharpness +
@@ -191,6 +229,48 @@ class PlatformARPoseProvider implements ARPoseProvider {
       return raw.map((v) => (v as num).toDouble()).toList(growable: false);
     }
     return const <double>[];
+  }
+
+  List<double> _logicalCameraTransform(List<double> platformTransform) {
+    final LogicalWorldUpdate? update = _logicalWorldUpdate;
+    if (update == null || platformTransform.length != 16) {
+      return platformTransform;
+    }
+    try {
+      return List<double>.unmodifiable(
+        update.toLogicalWorld(platformTransform).storage,
+      );
+    } on FormatException {
+      return const <double>[];
+    }
+  }
+
+  void _pushDisplayTransform(List<double> values) {
+    final List<double> next = List<double>.unmodifiable(values);
+    final List<double>? prior = _lastDisplayTransform;
+    if (prior != null && _sameMatrix(prior, next)) return;
+    _lastDisplayTransform = next;
+    unawaited(() async {
+      try {
+        await _method.invokeMethod<void>(
+          'setLogicalWorldDisplayTransform',
+          <String, Object?>{'platformWorldFromLogicalWorld': next},
+        );
+      } on PlatformException {
+        // The pose stream remains fail-closed; a missing display executor is
+        // visible as an uncompensated cloud, never as fabricated geometry.
+      } on MissingPluginException {
+        // Same contract as the other optional display-only method calls.
+      }
+    }());
+  }
+
+  static bool _sameMatrix(List<double> a, List<double> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 
   static List<ARPreviewPoint> _decodePreviewPoints(Map<String, Object?> map) {
@@ -284,7 +364,7 @@ class PlatformARPoseProvider implements ARPoseProvider {
   /// Parses the optional streaming-SfM feed off the `saveCurrentFrameAsJpeg`
   /// reply. Best-effort: any missing/malformed field → null (JPEG save is
   /// authoritative; SfM feeding is an enhancement, never a failure source).
-  static SfmFrameFeed? _sfmFrameFromSaveReply(dynamic reply) {
+  SfmFrameFeed? _sfmFrameFromSaveReply(dynamic reply) {
     if (reply is! Map) return null;
     final grayRaw = reply['sfm_gray'];
     final Uint8List? gray = grayRaw is Uint8List
@@ -318,7 +398,7 @@ class PlatformARPoseProvider implements ARPoseProvider {
       imageW: imageW,
       imageH: imageH,
       intrinsicFxFyCxCy: intrinsics,
-      extrinsic4x4: extrinsic.length == 16 ? extrinsic : const <double>[],
+      extrinsic4x4: _logicalCameraTransform(extrinsic),
       timestamp: (reply['t'] as num?)?.toDouble() ?? 0.0,
     );
   }
@@ -383,7 +463,9 @@ class PlatformARPoseProvider implements ARPoseProvider {
             (result['timestampDelta'] as num?)?.toDouble() ?? double.infinity,
         imageWidth: (result['imageWidth'] as num?)?.toInt() ?? 0,
         imageHeight: (result['imageHeight'] as num?)?.toInt() ?? 0,
-        cameraTransform: _decodeFloatList(result['cameraTransform']),
+        cameraTransform: _logicalCameraTransform(
+          _decodeFloatList(result['cameraTransform']),
+        ),
         intrinsics: _decodeFloatList(result['intrinsics']),
         gray128: gray,
         gray1024: gray1024,
@@ -418,6 +500,19 @@ class PlatformARPoseProvider implements ARPoseProvider {
         <String, dynamic>{'distanceMeters': distanceMeters},
       );
       if (result == null) return null;
+      final List<double> anchorTransform = _decodeFloatList(
+        result['anchorTransform'],
+      );
+      if (anchorTransform.length != 16) return null;
+      final LogicalWorldFrame logicalWorldFrame = LogicalWorldFrame.lock(
+        anchorTransform,
+      );
+      final LogicalWorldUpdate update = logicalWorldFrame.update(
+        anchorTransform,
+      );
+      _logicalWorldFrame = logicalWorldFrame;
+      _logicalWorldUpdate = update;
+      _pushDisplayTransform(update.platformWorldFromLogicalWorld.storage);
       return ARLockResult(
         worldOrigin: Vector3(
           (result['originX'] as num?)?.toDouble() ?? 0,
@@ -442,5 +537,8 @@ class PlatformARPoseProvider implements ARPoseProvider {
     } catch (_) {
       /* best effort */
     }
+    _logicalWorldFrame = null;
+    _logicalWorldUpdate = null;
+    _lastDisplayTransform = null;
   }
 }

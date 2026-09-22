@@ -12,9 +12,9 @@
 		0F1C1A100000000000000012 /* OfficialReconUmbrella.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A100000000000000002 /* OfficialReconUmbrella.swift */; };
 		0F1C1A100000000000000013 /* PwARCameraLease.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A100000000000000003 /* PwARCameraLease.swift */; };
 		0F1C1A10000000000000A010 /* PwVioTimebase.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A10000000000000A000 /* PwVioTimebase.swift */; };
-		0F1C1A10000000000000A013 /* PwVioSlamFeeder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A10000000000000A003 /* PwVioSlamFeeder.swift */; };
 		0F1C1A10000000000000A011 /* PwVioCapability.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A10000000000000A001 /* PwVioCapability.swift */; };
 		0F1C1A10000000000000A012 /* PwVioThermal.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A10000000000000A002 /* PwVioThermal.swift */; };
+		0F1C1A10000000000000A013 /* PwVioSlamFeeder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A10000000000000A003 /* PwVioSlamFeeder.swift */; };
 		0F1C1A200000000000000014 /* OfficialArchiveBackgroundTask.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A200000000000000004 /* OfficialArchiveBackgroundTask.swift */; };
 		0F1C1A300000000000000015 /* PWJSONSafety.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F1C1A300000000000000005 /* PWJSONSafety.swift */; };
 		1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */ = {isa = PBXBuildFile; fileRef = 1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */; };
@@ -41,6 +41,7 @@
 		D90000040000000000000004 /* Rust-Standard-Library-COPYRIGHT.html in Resources */ = {isa = PBXBuildFile; fileRef = D90000150000000000000005 /* Rust-Standard-Library-COPYRIGHT.html */; };
 		D90000060000000000000006 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = D90000050000000000000005 /* PrivacyInfo.xcprivacy */; };
 		E0388DB63DBD4CF9745E00CE /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7779D977CD585B8DC1D4A1F9 /* SceneDelegate.swift */; };
+		E10000010000000000000001 /* PwXrslamTransportCore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = E10000110000000000000001 /* PwXrslamTransportCore.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -72,9 +73,9 @@
 		0F1C1A100000000000000002 /* OfficialReconUmbrella.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OfficialReconUmbrella.swift; sourceTree = "<group>"; };
 		0F1C1A100000000000000003 /* PwARCameraLease.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PwARCameraLease.swift; sourceTree = "<group>"; };
 		0F1C1A10000000000000A000 /* PwVioTimebase.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PwVioTimebase.swift; sourceTree = "<group>"; };
-		0F1C1A10000000000000A003 /* PwVioSlamFeeder.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PwVioSlamFeeder.swift; sourceTree = "<group>"; };
 		0F1C1A10000000000000A001 /* PwVioCapability.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PwVioCapability.swift; sourceTree = "<group>"; };
 		0F1C1A10000000000000A002 /* PwVioThermal.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PwVioThermal.swift; sourceTree = "<group>"; };
+		0F1C1A10000000000000A003 /* PwVioSlamFeeder.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PwVioSlamFeeder.swift; sourceTree = "<group>"; };
 		0F1C1A200000000000000004 /* OfficialArchiveBackgroundTask.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OfficialArchiveBackgroundTask.swift; sourceTree = "<group>"; };
 		0F1C1A300000000000000005 /* PWJSONSafety.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PWJSONSafety.swift; sourceTree = "<group>"; };
 		1498D2321E8E86230040F4C2 /* GeneratedPluginRegistrant.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GeneratedPluginRegistrant.h; sourceTree = "<group>"; };
@@ -118,6 +119,7 @@
 		D90000140000000000000004 /* Rust-Crate-THIRD-PARTY-NOTICES.txt */ = {isa = PBXFileReference; lastKnownFileType = text; name = "Rust-Crate-THIRD-PARTY-NOTICES.txt"; path = "../vendor/lepton_jpeg/licenses/Rust-Crate-THIRD-PARTY-NOTICES.txt"; sourceTree = SOURCE_ROOT; };
 		D90000150000000000000005 /* Rust-Standard-Library-COPYRIGHT.html */ = {isa = PBXFileReference; lastKnownFileType = text.html; name = "Rust-Standard-Library-COPYRIGHT.html"; path = "../vendor/lepton_jpeg/licenses/Rust-Standard-Library-COPYRIGHT.html"; sourceTree = SOURCE_ROOT; };
 		DE1FF6E0A83B14479D1F4710 /* Pods-RunnerTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.debug.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.debug.xcconfig"; sourceTree = "<group>"; };
+		E10000110000000000000001 /* PwXrslamTransportCore.cpp */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.cpp.cpp; name = PwXrslamTransportCore.cpp; path = ../../vendor/xrslam/transport/PwXrslamTransportCore.cpp; sourceTree = "<group>"; };
 		F5D156F1D2C2B5133C43EC38 /* Pods-Runner.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.debug.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -203,6 +205,7 @@
 				0F1C1A100000000000000003 /* PwARCameraLease.swift */,
 				0F1C1A10000000000000A000 /* PwVioTimebase.swift */,
 				0F1C1A10000000000000A003 /* PwVioSlamFeeder.swift */,
+				E10000110000000000000001 /* PwXrslamTransportCore.cpp */,
 				0F1C1A10000000000000A001 /* PwVioCapability.swift */,
 				0F1C1A10000000000000A002 /* PwVioThermal.swift */,
 				0F1C1A200000000000000004 /* OfficialArchiveBackgroundTask.swift */,
@@ -285,6 +288,7 @@
 				A64F000000000000000064E1 /* Clean CodeSign Attributes */,
 				7D2B1D3F9A5F68BEECE32F8C /* [CP] Embed Pods Frameworks */,
 				5F053E0B766F2644C9B312C2 /* [CP] Copy Pods Resources */,
+				A64F000000000000000064E2 /* Stamp Runtime Identity */,
 			);
 			buildRules = (
 			);
@@ -383,7 +387,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "export COPYFILE_DISABLE=1\n\nclean_codesign_xattrs() {\n  path=\"$1\"\n  if [ ! -e \"$path\" ]; then\n    return 0\n  fi\n  /usr/bin/xattr -cr \"$path\" || true\n  /usr/bin/find \"$path\" -exec /usr/bin/xattr -d com.apple.FinderInfo {} \\; 2>/dev/null || true\n  /usr/bin/find \"$path\" -exec /usr/bin/xattr -d 'com.apple.fileprovider.fpfs#P' {} \\; 2>/dev/null || true\n}\n\n/bin/sh \"$FLUTTER_ROOT/packages/flutter_tools/bin/xcode_backend.sh\" embed_and_thin\n\n# Xcode 26 / Flutter 3.41 local device deploy: xcode_backend embeds\n# Flutter.framework on iOS without re-signing it, leaving the upstream\n# Developer ID signature in place. iPhoneOS rejects that at install time\n# (0xe8008018). Native-asset frameworks such as thermion_dart.framework\n# are worse: flutter_tools drops them into the bundle ad-hoc signed and\n# outside the Embed Frameworks phase, so Xcode never touches them at all\n# (install fails with 0xe8008014). Re-sign *every* embedded framework\n# with the Runner development identity whenever device code signing is\n# active -- an explicit list silently rots the moment a dependency adds\n# one, and the failure only shows up at install time.\nif [ \"$PLATFORM_NAME\" = \"iphoneos\" ] && [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ] && [ \"$CODE_SIGNING_REQUIRED\" != \"NO\" ]; then\n  for framework in \"$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH\"/*.framework; do\n    if [ -d \"$framework\" ]; then\n      clean_codesign_xattrs \"$framework\"\n      /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" --timestamp=none \"$framework\"\n    fi\n  done\n\n  # Clear bundle-level extended attributes before Xcode's final app CodeSign.\n  clean_codesign_xattrs \"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\nfi";
+			shellScript = "export COPYFILE_DISABLE=1\n\nclean_codesign_xattrs() {\n  path=\"$1\"\n  if [ ! -e \"$path\" ]; then\n    return 0\n  fi\n  /usr/bin/xattr -cr \"$path\" || true\n  /usr/bin/find \"$path\" -exec /usr/bin/xattr -d com.apple.FinderInfo {} \\; 2>/dev/null || true\n  /usr/bin/find \"$path\" -exec /usr/bin/xattr -d 'com.apple.fileprovider.fpfs#P' {} \\; 2>/dev/null || true\n}\n\n/bin/sh \"$FLUTTER_ROOT/packages/flutter_tools/bin/xcode_backend.sh\" embed_and_thin\n\n# Xcode 26 / Flutter 3.41 local device deploy: xcode_backend embeds\n# Flutter.framework on iOS without re-signing it, leaving the upstream\n# Developer ID signature in place. iPhoneOS rejects that at install time\n# (0xe8008018). Native-asset frameworks such as thermion_dart.framework\n# are worse: flutter_tools drops them into the bundle ad-hoc signed and\n# outside the Embed Frameworks phase, so Xcode never touches them at all\n# (install fails with 0xe8008014). Re-sign *every* embedded framework\n# with the Runner development identity whenever device code signing is\n# active -- an explicit list silently rots the moment a dependency adds\n# one, and the failure only shows up at install time.\nif [ \"$PLATFORM_NAME\" = \"iphoneos\" ] && [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ] && [ \"$CODE_SIGNING_REQUIRED\" != \"NO\" ]; then\n  for framework in \"$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH\"/*.framework; do\n    if [ -d \"$framework\" ]; then\n      clean_codesign_xattrs \"$framework\"\n      /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" --timestamp=none \"$framework\"\n    fi\n  done\n\n  # Clear bundle-level extended attributes before Xcode's final app CodeSign.\n  clean_codesign_xattrs \"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\nfi\n";
 		};
 		5F053E0B766F2644C9B312C2 /* [CP] Copy Pods Resources */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -448,6 +452,29 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "bundle=\"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\nif [ -d \"$bundle\" ]; then\n  /usr/bin/xattr -cr \"$bundle\" || true\n  /usr/bin/find \"$bundle\" -exec /usr/bin/xattr -d com.apple.FinderInfo {} \\; 2>/dev/null || true\n  /usr/bin/find \"$bundle\" -exec /usr/bin/xattr -d 'com.apple.fileprovider.fpfs#P' {} \\; 2>/dev/null || true\nfi\n";
+			showEnvVarsInLog = 0;
+		};
+		A64F000000000000000064E2 /* Stamp Runtime Identity */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}",
+				"${TARGET_BUILD_DIR}/${EXECUTABLE_PATH}",
+				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/App.framework/App",
+				"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/PWOfficialSfm.framework/PWOfficialSfm",
+				"${SRCROOT}/../vendor/xrslam/libs/ios-arm64/libxrslam_generic_4beb1a9.a",
+				"${SRCROOT}/../vendor/xrslam/libs/ios-arm64/libceres_official_1_14.a",
+				"${SRCROOT}/../vendor/xrslam/libs/ios-arm64/libopencv_generic_4_0_1.a",
+			);
+			name = "Stamp Runtime Identity";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/bin/sh \"$SRCROOT/scripts/stamp_runtime_identity.sh\"";
 			showEnvVarsInLog = 0;
 		};
 		B0DF3266088E0F59537CE0D4 /* [CP] Check Pods Manifest.lock */ = {
@@ -528,6 +555,7 @@
 				0F1C1A300000000000000015 /* PWJSONSafety.swift in Sources */,
 				03D62ABCFE668FE66D5CD107 /* MetalRenderer.swift in Sources */,
 				E0388DB63DBD4CF9745E00CE /* SceneDelegate.swift in Sources */,
+				E10000010000000000000001 /* PwXrslamTransportCore.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

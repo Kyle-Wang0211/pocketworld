@@ -1,0 +1,117 @@
+// Copyright (c), ETH Zurich and UNC Chapel Hill.
+// All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+//     * Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//
+//     * Redistributions in binary form must reproduce the above copyright
+//       notice, this list of conditions and the following disclaimer in the
+//       documentation and/or other materials provided with the distribution.
+//
+//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
+//       its contributors may be used to endorse or promote products derived
+//       from this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+
+#version 450
+
+// Mechanical Vulkan translation of COLMAP 4.1.1 a0d785f FilterKernel.
+// gpu_mat_ref_image.cu sha256 01bf74693da801cce20411a447a673b7b2577f028590130264fa1659bc2d8142
+// Input is one uint per source uint8 texel. The low-level host contract must
+// upload each byte without rescaling; sample_image performs CUDA's
+// cudaReadModeNormalizedFloat conversion.
+
+layout(local_size_x = 16, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer InputImage {
+  uint values[];
+} image_in;
+
+layout(set = 0, binding = 1, std430) writeonly buffer OutputImage {
+  uint values[];
+} image_out;
+
+layout(set = 0, binding = 2, std430) writeonly buffer SumImage {
+  float values[];
+} sum_image;
+
+layout(set = 0, binding = 3, std430) writeonly buffer SquaredSumImage {
+  float values[];
+} squared_sum_image;
+
+layout(push_constant) uniform FilterPushConstants {
+  uint width;
+  uint height;
+  int window_radius;
+  int window_step;
+  float sigma_spatial;
+  float sigma_color;
+} pc;
+
+float sample_image(int row, int col) {
+  if (row < 0 || row >= int(pc.height) || col < 0 || col >= int(pc.width)) {
+    return 0.0; // cudaAddressModeBorder
+  }
+  uint index = uint(row) * pc.width + uint(col);
+  return float(image_in.values[index]) / 255.0;
+}
+
+void main() {
+  int row = int(gl_GlobalInvocationID.y);
+  int col = int(gl_GlobalInvocationID.x);
+  if (row >= int(pc.height) || col >= int(pc.width)) {
+    return;
+  }
+
+  float spatial_normalization =
+      1.0 / (2.0 * pc.sigma_spatial * pc.sigma_spatial);
+  float color_normalization =
+      1.0 / (2.0 * pc.sigma_color * pc.sigma_color);
+
+  float center_color = sample_image(row, col);
+
+  float color_sum = 0.0;
+  float color_squared_sum = 0.0;
+  float bilateral_weight_sum = 0.0;
+
+  for (int window_row = -pc.window_radius;
+       window_row <= pc.window_radius;
+       window_row += pc.window_step) {
+    for (int window_col = -pc.window_radius;
+         window_col <= pc.window_radius;
+         window_col += pc.window_step) {
+      float color = sample_image(row + window_row, col + window_col);
+      float spatial_dist_squared =
+          float(window_row * window_row + window_col * window_col);
+      float color_dist = center_color - color;
+      float bilateral_weight =
+          exp(-spatial_dist_squared * spatial_normalization -
+              color_dist * color_dist * color_normalization);
+      color_sum += bilateral_weight * color;
+      color_squared_sum += bilateral_weight * color * color;
+      bilateral_weight_sum += bilateral_weight;
+    }
+  }
+
+  color_sum /= bilateral_weight_sum;
+  color_squared_sum /= bilateral_weight_sum;
+
+  uint index = uint(row) * pc.width + uint(col);
+  image_out.values[index] = uint(255.0 * center_color);
+  sum_image.values[index] = color_sum;
+  squared_sum_image.values[index] = color_squared_sum;
+}

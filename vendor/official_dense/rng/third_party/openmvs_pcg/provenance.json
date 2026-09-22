@@ -1,0 +1,26 @@
+{
+  "schema": "pocketworld.openmvs_pcg_provenance.v1",
+  "upstream_repository": "https://github.com/cdcseacave/openMVS",
+  "upstream_branch": "develop",
+  "upstream_commit": "8efd9c48e7249b4256ca3a778cb6bf062b871771",
+  "source_path": "libs/MVS/PatchMatchMetal.metal",
+  "source_sha256": "1e614e559d1b7ae6fb29e2525bae784023fc0b3b5f068dc46c24027cab9e6a68",
+  "derived_source_lines": [
+    "99-107",
+    "447"
+  ],
+  "source_license": "AGPL-3.0-or-later",
+  "license_file_path": "LICENSE",
+  "license_file_version": "AGPL-3.0",
+  "license_sha256": "0f072d4a0ef59e7f6864bb45629c37417ccef63025b58f4073109d1c830bc55f",
+  "attribution": {
+    "copyright": "Copyright (c) 2014-2026 SEACAVE",
+    "author": "cDc <cdc.seacave@gmail.com>",
+    "backend_contributor": "leNeo"
+  },
+  "local_translations": [
+    "../../openmvs_pcg_reference.h",
+    "../../openmvs_pcg.glsl",
+    "../../init_openmvs_pcg.comp"
+  ]
+}

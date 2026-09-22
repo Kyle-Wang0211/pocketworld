@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "upstream": "https://github.com/colmap/colmap",
+  "release": "4.1.1",
+  "commit": "a0d785fba74b2664f31edc4a29026a8b27c00f67",
+  "tree": "8e1e5240ea77d4271c7453f8b679952e78ee379e",
+  "require_git_identity": true,
+  "scopes": {
+    "mvs_direct_sources": [
+      {"path":"src/colmap/mvs/consistency_graph.cc","git_blob":"c2b62120267ebbc173a195ec78619b3cf48949c5","sha256":"b67ad49c3ad51b5a16756a206b2ad3874dd81fcf313f539cd5f2f036eded20e2"},
+      {"path":"src/colmap/mvs/consistency_graph.h","git_blob":"b6d8254981bd5ef1c59ad5f41603635bf76a7126","sha256":"4d81f0215faa59207cdc11427b083d150fc7526d761200d0665eda8322503e5c"},
+      {"path":"src/colmap/mvs/depth_map.cc","git_blob":"fa9c6cd79ef977c1904e826c07218800c03254fc","sha256":"2ec42ec2d583b6f67ea6293a9ab8e8c8c6717f3d65f4a1d384755927bc2d119a"},
+      {"path":"src/colmap/mvs/depth_map.h","git_blob":"87aa92a19e3a1c2ebdfb7a789c3b8d90e94327d5","sha256":"536e81409a713b40ff63cd6355343893bca240e10390eb3ed5e268d1651ee7b9"},
+      {"path":"src/colmap/mvs/fusion.cc","git_blob":"11401ac981dd4053d94b671ba54545b5269a0558","sha256":"6ea35a3534e095b10fb831d711606a0a017f3439d3e9117d4a9e75a8dca6b4b7"},
+      {"path":"src/colmap/mvs/fusion.h","git_blob":"f427f49e37befffc3a8e0d685876abf7ab99baf1","sha256":"838e5a0693931fe314af9f9fd4ff1eca8cf1a05d570c577feecadc79e6637834"},
+      {"path":"src/colmap/mvs/image.cc","git_blob":"5c4adb427479de858d2a27f2a6286eb575ed8bdf","sha256":"5ab892a0979cdfb7fb703a2a54d788c747b822f97883fc9f90ca533d159709f1"},
+      {"path":"src/colmap/mvs/image.h","git_blob":"57b59d955c3ddbba1b240162b82553b42273c427","sha256":"5e38c07b2d1c508ebe72c3c845c37b675704f2c367fca3a5cb61ec5591c41136"},
+      {"path":"src/colmap/mvs/mat.cc","git_blob":"7b87e3607a030abe81773700a17dff590cc2fe7a","sha256":"d3dc645e039336fc971883e8a18110cd1bd5307fe885ae72cafd2903a05dc33c"},
+      {"path":"src/colmap/mvs/mat.h","git_blob":"acd4b6db299c1e097bdd060dde0901ac8fae2bc3","sha256":"214931a020c1dc5e350c957a0b509b6eedae897bd6b3d3c5cfa81cb5453b3f5f"},
+      {"path":"src/colmap/mvs/model.cc","git_blob":"d3ba51d244c26819ea009185b88c682d463259fb","sha256":"288ae9b01a68d55eb20935e78a7d0fbfd0a6733d1fbc9c347eac0ec9584952dc"},
+      {"path":"src/colmap/mvs/model.h","git_blob":"97faa1c12ef9b7ece260c79f3c34c3ef968e7afb","sha256":"6dafbdc1e926425df153b11309ad995eb9986c3dfdf9c1aed9f6f0d0b2174980"},
+      {"path":"src/colmap/mvs/normal_map.cc","git_blob":"5014db549e062bb00c5d98dd1a9d7574d1b78efd","sha256":"f07fda7dc22e67795b822cad318aca84247de6eccf1f515d279e5f42693e9d67"},
+      {"path":"src/colmap/mvs/normal_map.h","git_blob":"53be6bc80ff2ad34f8233ec8ab0a5c77d4e40498","sha256":"46f731322423b9818ea5235588d634b752f13c34f6623e94d6af5fe26f37f731"},
+      {"path":"src/colmap/mvs/patch_match.cc","git_blob":"1ea8c97e92b7e188a47aab50b558513d5a42c758","sha256":"d37ba99a7866d5284b8228eb0b65cc55921c5ae9482e46c09d087aae365ede95"},
+      {"path":"src/colmap/mvs/patch_match.h","git_blob":"cd6ec21c021663eb4f941744c46c19e8a7d2e126","sha256":"d5f0cdc77034060f146dd7d84f7d53e3d8817e74b1e73e9f8f4066ee83f6a51a"},
+      {"path":"src/colmap/mvs/patch_match_options.cc","git_blob":"79110e82b9dfc7c9cc6cf24f89141a48912bf68b","sha256":"a99f647a2188ad305079586eefc2291310faf5643d7fabb7b4ddc107665c34dc"},
+      {"path":"src/colmap/mvs/patch_match_options.h","git_blob":"bc6c1f295ec236818aa9dc94f4c5e4865086ec43","sha256":"1199a8ce27b0926840fceccc803ae8681744a51330f120ae48aa7ed9119af81a"},
+      {"path":"src/colmap/mvs/workspace.cc","git_blob":"08ca7176bd8947151e08adee5487df18d60124e5","sha256":"1ef50566ad22a777b0d40a5e358bb8160461ddd73733aa3e965e8fc7f630d82b"},
+      {"path":"src/colmap/mvs/workspace.h","git_blob":"2d018a8b0d6211a8b80680dad8dad3f671ce7b6d","sha256":"99800e8fade248dbb907ee45bca7757a19b3e9cc1ebdc909abc380838bc05192"}
+    ],
+    "known_local_differences": [
+      {"path":"src/colmap/controllers/undistorters.cc","git_blob":"9ef20aa161fb0439705b9624d660119d39e5eadb","sha256":"2905753bfee51f8d832eb6a8547a695a324b0741970960ffe5c2d32515dc87bf"},
+      {"path":"src/colmap/image/undistortion.cc","git_blob":"b54aaa1e26098b7e2c79901b4573f259c1573712","sha256":"e4ad9cc637795f9f6be398a593e7e3e0a4abf9fba2f8c0b0cdeea4fd5376117b"},
+      {"path":"src/colmap/util/logging.h","git_blob":"2fc1a6d462ed6ecfbe0701234aa2fba6c937c915","sha256":"afbe978c16c5f1e2311f750de07713dda61d9231f8858199f6571f22d4288fd0"}
+    ],
+    "cuda_reference_only": [
+      {"path":"src/colmap/mvs/cuda_flip.h","git_blob":"e734a02ae6c6fe6fe4da208598ede6eb77bd7428","sha256":"08148312195042696f923cb01182290c57e3174233d84c113dbc4d4cbd788cea"},
+      {"path":"src/colmap/mvs/cuda_rotate.h","git_blob":"10df056ddd1a277f067bd039d0273e0d91177bd6","sha256":"265e01e836da889530289f424f91a8cb92bd29978bde168724ab23889a39405a"},
+      {"path":"src/colmap/mvs/cuda_texture.h","git_blob":"57e877c718a2bac0e0ae84d5558d24e2effa7ed6","sha256":"cc05fde8ddbb2543264a8a0ea4a0d8acfc7a22a2020fb61dde3622b577a477f5"},
+      {"path":"src/colmap/mvs/cuda_transpose.h","git_blob":"bca3561740fd1ab4bd5e3f1e7bd24012922af73e","sha256":"1ebe5bbdea901e5f227042c77fdbdbc4a590a557008ea8201093d4cfbe503100"},
+      {"path":"src/colmap/mvs/gpu_mat.h","git_blob":"6e42070ecc4790d16963072d9395744517e912c5","sha256":"c3ee6bef2b012cf1572b4789212aa52aba08bcfa3f312bb2d141ac98f240296b"},
+      {"path":"src/colmap/mvs/gpu_mat_prng.cu","git_blob":"d33076f06049304fe5a1571d0479374fe9101dc6","sha256":"aac48adcc68e558b3634141d327a352895ea90d351c254bce3e7d289f5ffe15f"},
+      {"path":"src/colmap/mvs/gpu_mat_ref_image.cu","git_blob":"3e19e1fb05483a3514b30dba50d333378acaf0f1","sha256":"01bf74693da801cce20411a447a673b7b2577f028590130264fa1659bc2d8142"},
+      {"path":"src/colmap/mvs/patch_match_cuda.cu","git_blob":"d585f16e9fad45012f8d17832d2b53fc82984c55","sha256":"1aebd4482de0ea6f1f3aad45150c09e0479119c607a843959c8aaa381c0d4448"},
+      {"path":"src/colmap/mvs/patch_match_cuda.h","git_blob":"46665c07bffa4242773a19149942cc32709cceab","sha256":"3d86f1c6c3dd49e54e6e65f2389c2c0937e7af376647bd351138248bcce4a555"}
+    ]
+  },
+  "licenses": [
+    {"path":"COPYING.txt","git_blob":"868e5accaf67f8fa58e7728b46634b0be7be16e9","sha256":"ab30dabb4f0a6731f980108f57aa160cc8f5cebae6984e01a5d109df99669233"},
+    {"path":"src/thirdparty/VLFeat/LICENSE","git_blob":"1a1fb2ec2ccf3c57b8d4b6e7412346c8347cd00b","sha256":"33b9f7703327199088d74f884b19997a0084180f984724720095a7cb412c4d89"}
+  ],
+  "excluded_build_components": ["SiftGPU", "LSD", "Qt", "CUDA"]
+}

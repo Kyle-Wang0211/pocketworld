@@ -1044,17 +1044,15 @@ void main() {
     expect(tester.getRect(ruler).height, panelHeightBefore);
   });
 
-  testWidgets('编辑态不显示右上角 reframe 按钮(浏览态保留)', (tester) async {
+  testWidgets('浏览态和编辑态都不显示右上角 reframe 图标', (tester) async {
     final (dir, ply) = await fixture(tester);
     addTearDown(() => dir.delete(recursive: true));
     await openViewer(tester, ply);
 
-    // [2026-08-07 用户实机指认] 编辑页右上角那个 filter_center_focus 图标"好像没
-    // 有任何作用" —— 它和"⋯"菜单的"回到初始点云大小"是同一个功能,而且 top:10
-    // 压在状态栏边缘、被"完成"按钮挤着,基本点不到。编辑态删掉,浏览态保留
-    // (那里没有 ⋯ 菜单,它是唯一入口)。
+    // [2026-08-26 用户实机签决] 右上角 filter_center_focus 与系统电量区域重叠，
+    // 浏览态和编辑态都不再显示。恢复默认取景能力由编辑工具菜单继续提供。
     final reframeBtn = find.byIcon(Icons.filter_center_focus);
-    expect(reframeBtn, findsOneWidget, reason: '浏览态的 reframe 入口不该被删');
+    expect(reframeBtn, findsNothing, reason: '浏览态仍显示右上角 reframe 图标');
 
     await tester.tap(find.byKey(const ValueKey('viewer-enter-editing')));
     await _pumpUntilRealAsyncSettles(
@@ -1064,14 +1062,14 @@ void main() {
     await tester.pumpAndSettle();
     expect(reframeBtn, findsNothing, reason: '编辑态还留着那个点不到的图标');
 
-    // 回浏览态 ⇒ 重新出现。
+    // 回浏览态也不能重新出现。
     await tester.tap(find.byKey(kSelectionCancelKey));
     await _pumpUntilRealAsyncSettles(
       tester,
       () => find.byType(SelectionToolsLayer).evaluate().isEmpty,
     );
     await tester.pumpAndSettle();
-    expect(reframeBtn, findsOneWidget, reason: '退出编辑后浏览态的入口没回来');
+    expect(reframeBtn, findsNothing, reason: '退出编辑后 reframe 图标又出现了');
   });
 
   testWidgets('退出编辑的视角:取消 ⇒ 回斜上 45°,完成 ⇒ 保留当前视角', (tester) async {

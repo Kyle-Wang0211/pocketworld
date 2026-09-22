@@ -1,0 +1,107 @@
+// Copyright (c), ETH Zurich and UNC Chapel Hill.
+// All rights reserved.
+//
+// SPDX-License-Identifier: BSD-3-Clause
+//
+// Mechanical Vulkan translation of COLMAP 4.1.1 a0d785f InitNormalMap and
+// GenerateRandomNormal from colmap/mvs/patch_match_cuda.cu.
+// patch_match_cuda.cu SHA-256:
+// 1aebd4482de0ea6f1f3aad45150c09e0479119c607a843959c8aaa381c0d4448
+//
+// This stage deliberately has no substitute PRNG. The binding must provide
+// colmap_curand_uniform(row, col), consume the frozen per-pixel XORWOW state in
+// program order, return a float in (0, 1], and persist the advanced state.
+
+#version 450
+
+#ifndef COLMAP_XORWOW_UNIFORM_BOUND
+#error COLMAP_XORWOW_UNIFORM_REQUIRED
+#endif
+
+layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
+
+layout(set = 0, binding = 1, std430) writeonly buffer NormalMap {
+  float values[];
+} normal_map;
+
+layout(push_constant) uniform PatchPC {
+  uint width;
+  uint height;
+  uint num_sources;
+  uint workspace_max_dim;
+  uint source_width;
+  uint source_height;
+  uint rotation_0_to_3;
+  uint reserved;
+
+  float ref_K_fx;
+  float ref_K_cx;
+  float ref_K_fy;
+  float ref_K_cy;
+  float ref_inv_fx;
+  float ref_inv_neg_cx_fx;
+  float ref_inv_fy;
+  float ref_inv_neg_cy_fy;
+
+  float perturbation;
+  float depth_min;
+  float depth_max;
+  int num_samples;
+  float sigma_spatial;
+  float sigma_color;
+  float ncc_sigma;
+  float min_triangulation_angle_rad;
+  float incident_angle_sigma;
+  float prev_sel_prob_weight;
+  float geom_consistency_regularizer;
+  float geom_consistency_max_cost;
+  float filter_min_ncc;
+  float filter_min_triangulation_angle_rad;
+  int filter_min_num_consistent;
+  float filter_geom_consistency_max_cost;
+} pc;
+
+// This function is intentionally undefined in this file. The exact XORWOW
+// implementation must be injected only after CUDA golden parity is proven.
+// Every invocation owns a unique (row, col) state, so each call advances that
+// state exactly once and Marsaglia rejection preserves CUDA draw ordering.
+float colmap_curand_uniform(uint row, uint col);
+
+uint normal_index(uint component, uint row, uint col) {
+  return component * pc.width * pc.height + row * pc.width + col;
+}
+
+void main() {
+  uint row = gl_GlobalInvocationID.y;
+  uint col = gl_GlobalInvocationID.x;
+  if (col >= pc.width || row >= pc.height) {
+    return;
+  }
+
+  float v1 = 0.0;
+  float v2 = 0.0;
+  float s = 2.0;
+  while (s >= 1.0) {
+    v1 = 2.0 * colmap_curand_uniform(row, col) - 1.0;
+    v2 = 2.0 * colmap_curand_uniform(row, col) - 1.0;
+    s = v1 * v1 + v2 * v2;
+  }
+
+  float s_norm = sqrt(1.0 - s);
+  vec3 normal = vec3(
+      2.0 * v1 * s_norm,
+      2.0 * v2 * s_norm,
+      1.0 - 2.0 * s);
+
+  vec3 view_ray = vec3(
+      pc.ref_inv_fx * float(col) + pc.ref_inv_neg_cx_fx,
+      pc.ref_inv_fy * float(row) + pc.ref_inv_neg_cy_fy,
+      1.0);
+  if (dot(normal, view_ray) > 0.0) {
+    normal = -normal;
+  }
+
+  normal_map.values[normal_index(0, row, col)] = normal.x;
+  normal_map.values[normal_index(1, row, col)] = normal.y;
+  normal_map.values[normal_index(2, row, col)] = normal.z;
+}

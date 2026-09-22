@@ -1,0 +1,132 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// Copyright (c), ETH Zurich and UNC Chapel Hill.
+// All rights reserved.
+// See cost_ops.glsl for the complete retained COLMAP BSD license notice.
+//
+// Standalone compilation and descriptor contract for cost_ops.glsl. This is a
+// conformance kernel, not the final PatchMatch sweep dispatcher.
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer ReferenceImage {
+  uint values[];
+} reference_image;
+
+layout(set = 0, binding = 1, std430) readonly buffer ReferenceSum {
+  float values[];
+} reference_sum;
+
+layout(set = 0, binding = 2, std430) readonly buffer ReferenceSquaredSum {
+  float values[];
+} reference_squared_sum;
+
+layout(set = 0, binding = 3) uniform sampler2DArray source_images;
+layout(set = 0, binding = 4) uniform sampler2DArray source_depth_maps;
+
+// Values: K[4], R[9], T[3], P[12], inv_P[12], ref_K[4], ref_inv_K[4],
+// normal[3]. Arrays preserve COLMAP's row-major scalar ordering.
+layout(set = 0, binding = 5, std430) readonly buffer CostParameters {
+  float values[];
+} parameters;
+
+layout(set = 0, binding = 6, std430) writeonly buffer OutputCosts {
+  vec2 values[];
+} output_costs;
+
+layout(push_constant) uniform CostPushConstants {
+  uint ref_width;
+  uint ref_height;
+  uint source_width;
+  uint source_height;
+  int row;
+  int source_image_idx;
+  float depth;
+  float max_geometry_cost;
+  float sigma_spatial;
+  float sigma_color;
+} pc;
+
+float SampleReferenceImage(int row, int col) {
+  if (row < 0 || row >= int(pc.ref_height) ||
+      col < 0 || col >= int(pc.ref_width)) {
+    return 0.0;
+  }
+  uint index = uint(row) * pc.ref_width + uint(col);
+  return float(reference_image.values[index]) / 255.0;
+}
+
+float SampleSourceImage(float col_plus_half,
+                        float row_plus_half,
+                        int layer) {
+  vec2 coordinate = vec2(
+      col_plus_half / float(pc.source_width),
+      row_plus_half / float(pc.source_height));
+  return textureLod(source_images, vec3(coordinate, float(layer)), 0.0).r;
+}
+
+float SampleSourceDepth(float col_plus_half,
+                        float row_plus_half,
+                        int layer) {
+  vec2 coordinate = vec2(
+      col_plus_half / float(pc.source_width),
+      row_plus_half / float(pc.source_height));
+  return textureLod(source_depth_maps, vec3(coordinate, float(layer)), 0.0).r;
+}
+
+#include "cost_ops.glsl"
+
+void main() {
+  for (int sweep_row = 0; sweep_row <= pc.row; ++sweep_row) {
+    LocalRefImageRead(sweep_row);
+    barrier();
+  }
+
+  int col = int(gl_GlobalInvocationID.x);
+  if (col >= int(pc.ref_width)) {
+    return;
+  }
+
+  float K[4];
+  float R[9];
+  float T[3];
+  float P[12];
+  float inv_P[12];
+  float ref_K[4];
+  float ref_inv_K[4];
+  float normal[3];
+  for (int i = 0; i < 4; ++i) K[i] = parameters.values[i];
+  for (int i = 0; i < 9; ++i) R[i] = parameters.values[4 + i];
+  for (int i = 0; i < 3; ++i) T[i] = parameters.values[13 + i];
+  for (int i = 0; i < 12; ++i) P[i] = parameters.values[16 + i];
+  for (int i = 0; i < 12; ++i) inv_P[i] = parameters.values[28 + i];
+  for (int i = 0; i < 4; ++i) ref_K[i] = parameters.values[40 + i];
+  for (int i = 0; i < 4; ++i) ref_inv_K[i] = parameters.values[44 + i];
+  for (int i = 0; i < 3; ++i) normal[i] = parameters.values[48 + i];
+
+  float tform[9];
+  ComposeHomography(K, R, T, ref_inv_K,
+                    pc.row, col, pc.depth, normal, tform);
+  uint index = uint(pc.row) * pc.ref_width + uint(col);
+  float photo_cost = PhotoConsistencyCost(
+      tform,
+      pc.source_image_idx,
+      pc.row,
+      col,
+      reference_sum.values[index],
+      reference_squared_sum.values[index],
+      1.0 / (2.0 * pc.sigma_spatial * pc.sigma_spatial),
+      1.0 / (2.0 * pc.sigma_color * pc.sigma_color));
+  float geometry_cost = GeometricConsistencyCost(
+      P,
+      inv_P,
+      ref_K,
+      ref_inv_K,
+      float(pc.row),
+      float(col),
+      pc.depth,
+      pc.source_image_idx,
+      pc.max_geometry_cost);
+  output_costs.values[index] = vec2(photo_cost, geometry_cost);
+}

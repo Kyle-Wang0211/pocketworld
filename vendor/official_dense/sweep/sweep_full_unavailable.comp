@@ -1,0 +1,753 @@
+// Copyright (c), ETH Zurich and UNC Chapel Hill.
+// All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+//     * Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//
+//     * Redistributions in binary form must reproduce the above copyright
+//       notice, this list of conditions and the following disclaimer in the
+//       documentation and/or other materials provided with the distribution.
+//
+//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
+//       its contributors may be used to endorse or promote products derived
+//       from this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// Complete mechanical source translation of COLMAP 4.1.1 a0d785f
+// SweepFromTopToBottom. patch_match_cuda.cu SHA-256:
+// 1aebd4482de0ea6f1f3aad45150c09e0479119c607a843959c8aaa381c0d4448
+//
+// CONTRACT_TEST_ONLY_NOT_RUNNABLE: the syntax-test branch consumes a supplied
+// draw stream and records only its cursor. It is not an RNG implementation and
+// must never enter a runtime shader bundle. Normal compilation fails closed.
+
+#ifndef COLMAP_SWEEP_CONTRACT_TEST_ONLY
+#error COLMAP_XORWOW_UNIFORM_REQUIRED
+#endif
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+layout(constant_id = 2) const bool kGeomConsistencyTerm = false;
+layout(constant_id = 3) const bool kFilterPhotoConsistency = false;
+layout(constant_id = 4) const bool kFilterGeomConsistency = false;
+const uint kFinalGeometricMask = 7u;
+// FINAL_MASK_REUSES_FINAL_SCHEDULED_SWEEP: mask 7 sets all three booleans on
+// the final already-scheduled invocation. It does not introduce sweep 21.
+
+layout(set = 0, binding = 0, std430) buffer DepthMap {
+  float values[];
+} depth_map;
+layout(set = 0, binding = 1, std430) buffer NormalMap {
+  float values[];
+} normal_map;
+layout(set = 0, binding = 2, std430) buffer CostMap {
+  float values[];
+} cost_map;
+layout(set = 0, binding = 3, std430) buffer SelectionProbability {
+  float values[];
+} selection_probability;
+layout(set = 0, binding = 4, std430) readonly buffer PreviousSelection {
+  float values[];
+} previous_selection_probability;
+layout(set = 0, binding = 5, std430) buffer ConsistencyMask {
+  uint values[];
+} consistency_mask;
+layout(set = 0, binding = 6, std430) buffer XorwowStateWords {
+  uint values[];
+} xorwow_state_words;
+layout(set = 0, binding = 7, std430) buffer ForwardAndSamplingWorkspace {
+  float values[];
+} forward_message;
+layout(set = 0, binding = 9, std430) readonly buffer FilteredReferenceBytes {
+  uint values[];
+} filtered_reference_image;
+layout(set = 0, binding = 10, std430) readonly buffer ReferenceWeightedSum {
+  float values[];
+} reference_weighted_sum;
+layout(set = 0, binding = 11, std430)
+    readonly buffer ReferenceWeightedSquaredSum {
+  float values[];
+} reference_weighted_squared_sum;
+layout(set = 0, binding = 12) uniform sampler2DArray source_depth_maps;
+layout(set = 0, binding = 13, std430) readonly buffer ActivePoseTable {
+  float values[];
+} active_pose_table;
+layout(set = 0, binding = 14) uniform sampler2DArray source_gray_images;
+
+#ifdef COLMAP_SWEEP_CONTRACT_TEST_ONLY
+layout(set = 1, binding = 0, std430) readonly buffer ContractUniformDraws {
+  float values[];
+} contract_uniform_draws;
+layout(set = 1, binding = 1, std430) writeonly buffer ContractCursorOutput {
+  uint values[];
+} contract_cursor_output;
+#endif
+
+layout(push_constant) uniform PushConstants {
+  uint width;
+  uint height;
+  uint num_sources;
+  uint workspace_max_dim;
+  uint source_width;
+  uint source_height;
+  uint rotation_0_to_3;
+  uint ncc_norm_factor_float_bits;
+  vec4 ref_k;
+  vec4 ref_inv_k;
+  float perturbation;
+  float depth_min;
+  float depth_max;
+  int num_samples;
+  float sigma_spatial;
+  float sigma_color;
+  float ncc_sigma;
+  float min_triangulation_angle_rad;
+  float incident_angle_sigma;
+  float previous_selection_probability_weight;
+  float geometric_consistency_regularizer;
+  float geometric_consistency_max_cost;
+  float filter_min_ncc;
+  float filter_min_triangulation_angle_rad;
+  int filter_min_num_consistent;
+  float filter_geometric_consistency_max_cost;
+} pc;
+
+uint PixelIndex(uint row, uint col) {
+  return row * pc.width + col;
+}
+
+uint GpuMatIndex(uint slice, uint row, uint col) {
+  return (slice * pc.height + row) * pc.width + col;
+}
+
+uint WorkspaceIndex(uint kind, uint col, uint source) {
+  return kind * pc.workspace_max_dim * pc.num_sources +
+      col * pc.num_sources + source;
+}
+
+uint PoseIndex(uint source, uint value_index) {
+  return source * 43u + value_index;
+}
+
+void LoadPose(uint source,
+              out float K[4],
+              out float R[9],
+              out float T[3],
+              out float C[3],
+              out float P[12],
+              out float inverse_P[12]) {
+  for (uint i = 0u; i < 4u; ++i) {
+    K[i] = active_pose_table.values[PoseIndex(source, i)];
+  }
+  for (uint i = 0u; i < 9u; ++i) {
+    R[i] = active_pose_table.values[PoseIndex(source, 4u + i)];
+  }
+  for (uint i = 0u; i < 3u; ++i) {
+    T[i] = active_pose_table.values[PoseIndex(source, 13u + i)];
+    C[i] = active_pose_table.values[PoseIndex(source, 16u + i)];
+  }
+  for (uint i = 0u; i < 12u; ++i) {
+    P[i] = active_pose_table.values[PoseIndex(source, 19u + i)];
+    inverse_P[i] = active_pose_table.values[PoseIndex(source, 31u + i)];
+  }
+}
+
+float SampleReferenceImage(int row, int col) {
+  if (row < 0 || row >= int(pc.height) ||
+      col < 0 || col >= int(pc.width)) {
+    return 0.0;
+  }
+  return float(filtered_reference_image.values[
+      PixelIndex(uint(row), uint(col))]) / 255.0;
+}
+
+float SampleSourceImage(float col_plus_half,
+                        float row_plus_half,
+                        int layer) {
+  vec2 coordinate = vec2(
+      col_plus_half / float(pc.source_width),
+      row_plus_half / float(pc.source_height));
+  return textureLod(
+      source_gray_images, vec3(coordinate, float(layer)), 0.0).r;
+}
+
+float SampleSourceDepth(float col_plus_half,
+                        float row_plus_half,
+                        int layer) {
+  vec2 coordinate = vec2(
+      col_plus_half / float(pc.source_width),
+      row_plus_half / float(pc.source_height));
+  return textureLod(
+      source_depth_maps, vec3(coordinate, float(layer)), 0.0).r;
+}
+
+#include "../cost_ops/cost_ops.glsl"
+
+struct ColmapXorwowState {
+  uint col;
+  uint draw_index;
+  uint opaque_word_zero;
+};
+
+ColmapXorwowState LoadXorwowState(uint row, uint col) {
+  ColmapXorwowState state;
+  state.col = col;
+  state.draw_index = 0u;
+  state.opaque_word_zero =
+      xorwow_state_words.values[GpuMatIndex(0u, row, col)];
+  return state;
+}
+
+float ColmapXorwowUniform(inout ColmapXorwowState state) {
+#ifdef COLMAP_SWEEP_CONTRACT_TEST_ONLY
+  float result = contract_uniform_draws.values[
+      state.draw_index * pc.width + state.col];
+  state.draw_index += 1u;
+  return result;
+#else
+  return 0.0;
+#endif
+}
+
+void StoreXorwowState(uint row,
+                      uint col,
+                      ColmapXorwowState state) {
+#ifdef COLMAP_SWEEP_CONTRACT_TEST_ONLY
+  // The syntax fixture proves final-row ordering without pretending to advance
+  // the opaque CUDA state. Production compilation is rejected above.
+  xorwow_state_words.values[GpuMatIndex(0u, row, col)] =
+      state.opaque_word_zero;
+  contract_cursor_output.values[col] = state.draw_index;
+#endif
+}
+
+float Dot3(vec3 left, vec3 right) {
+  return left.x * right.x + left.y * right.y + left.z * right.z;
+}
+
+float ComputeNCCProbability(float cost) {
+  float inverse_ncc_sigma_square =
+      -0.5 / (pc.ncc_sigma * pc.ncc_sigma);
+  float ncc_norm_factor = uintBitsToFloat(pc.ncc_norm_factor_float_bits);
+  return exp(cost * cost * inverse_ncc_sigma_square) * ncc_norm_factor;
+}
+
+float ComputeMessage(float cost, float previous, bool forward) {
+  const float uniform_probability = 0.5;
+  const float no_change_probability = 0.99999;
+  const float change_probability = 1.0 - no_change_probability;
+  float emission = ComputeNCCProbability(cost);
+  float zn0;
+  float zn1;
+  if (forward) {
+    zn0 = (previous * change_probability +
+           (1.0 - previous) * no_change_probability) * uniform_probability;
+    zn1 = (previous * no_change_probability +
+           (1.0 - previous) * change_probability) * emission;
+  } else {
+    zn0 = previous * emission * change_probability +
+          (1.0 - previous) * uniform_probability * no_change_probability;
+    zn1 = previous * emission * no_change_probability +
+          (1.0 - previous) * uniform_probability * change_probability;
+  }
+  return zn1 / (zn0 + zn1);
+}
+
+float ComputeSelectionProbability(float alpha,
+                                  float beta,
+                                  float previous) {
+  float zn0 = (1.0 - alpha) * (1.0 - beta);
+  float zn1 = alpha * beta;
+  float current = zn1 / (zn0 + zn1);
+  return pc.previous_selection_probability_weight * previous +
+      (1.0 - pc.previous_selection_probability_weight) * current;
+}
+
+float PropagateDepth(float depth,
+                     vec3 normal,
+                     float row1,
+                     float row2) {
+  float x1 = depth * (pc.ref_inv_k.z * row1 + pc.ref_inv_k.w);
+  float y1 = depth;
+  float x2 = x1 + normal.z;
+  float y2 = y1 - normal.y;
+  float x4 = pc.ref_inv_k.z * row2 + pc.ref_inv_k.w;
+  float denominator = x2 - x1 + x4 * (y1 - y2);
+  const float kEps = 1e-5;
+  if (abs(denominator) < kEps) {
+    return depth;
+  }
+  float numerator = y1 * x2 - x1 * y2;
+  return numerator / denominator;
+}
+
+float PerturbDepth(float depth, inout ColmapXorwowState random_state) {
+  float minimum_depth = (1.0 - pc.perturbation) * depth;
+  float maximum_depth = (1.0 + pc.perturbation) * depth;
+  return ColmapXorwowUniform(random_state) *
+      (maximum_depth - minimum_depth) + minimum_depth;
+}
+
+vec3 PerturbNormal(uint row,
+                   uint col,
+                   vec3 normal,
+                   inout ColmapXorwowState random_state) {
+  float perturbation = pc.perturbation * 3.14159265358979323846;
+  for (int trial = 0; trial <= 3; ++trial) {
+    float angle1 =
+        (ColmapXorwowUniform(random_state) - 0.5) * perturbation;
+    float angle2 =
+        (ColmapXorwowUniform(random_state) - 0.5) * perturbation;
+    float angle3 =
+        (ColmapXorwowUniform(random_state) - 0.5) * perturbation;
+    float sin1 = sin(angle1);
+    float sin2 = sin(angle2);
+    float sin3 = sin(angle3);
+    float cos1 = cos(angle1);
+    float cos2 = cos(angle2);
+    float cos3 = cos(angle3);
+    mat3 rotation = mat3(
+        cos2 * cos3,
+        cos1 * sin3 + cos3 * sin1 * sin2,
+        sin1 * sin3 - cos1 * cos3 * sin2,
+        -cos2 * sin3,
+        cos1 * cos3 - sin1 * sin2 * sin3,
+        cos3 * sin1 + cos1 * sin2 * sin3,
+        sin2,
+        -cos2 * sin1,
+        cos1 * cos2);
+    vec3 perturbed = rotation * normal;
+    vec3 view_ray = vec3(
+        pc.ref_inv_k.x * float(col) + pc.ref_inv_k.y,
+        pc.ref_inv_k.z * float(row) + pc.ref_inv_k.w,
+        1.0);
+    if (Dot3(perturbed, view_ray) < 0.0) {
+      return perturbed * inversesqrt(Dot3(perturbed, perturbed));
+    }
+    if (trial == 3) {
+      return normal;
+    }
+    perturbation *= 0.5;
+  }
+  return normal;
+}
+
+void ComputeViewingAngles(vec3 point,
+                          vec3 normal,
+                          uint source,
+                          out float cosine_triangulation_angle,
+                          out float cosine_incident_angle) {
+  uint base = PoseIndex(source, 16u);
+  vec3 center = vec3(
+      active_pose_table.values[base],
+      active_pose_table.values[base + 1u],
+      active_pose_table.values[base + 2u]);
+  vec3 source_ray = center - point;
+  float inverse_reference_norm = inversesqrt(Dot3(point, point));
+  float inverse_source_norm = inversesqrt(Dot3(source_ray, source_ray));
+  cosine_incident_angle = Dot3(source_ray, normal) * inverse_source_norm;
+  cosine_triangulation_angle =
+      -Dot3(source_ray, point) * inverse_reference_norm * inverse_source_norm;
+}
+
+vec2 TransformHomogeneous(float matrix_values[9], vec2 value) {
+  float inverse_z = 1.0 /
+      (matrix_values[6] * value.x +
+       matrix_values[7] * value.y + matrix_values[8]);
+  return inverse_z * vec2(
+      matrix_values[0] * value.x +
+          matrix_values[1] * value.y + matrix_values[2],
+      matrix_values[3] * value.x +
+          matrix_values[4] * value.y + matrix_values[5]);
+}
+
+float ComputeResolutionProbability(float homography[9], uint row, uint col) {
+  vec2 source1 = TransformHomogeneous(
+      homography, vec2(float(col) - 5.0, float(row) - 5.0));
+  vec2 source2 = TransformHomogeneous(
+      homography, vec2(float(col) - 5.0, float(row) + 5.0));
+  vec2 source3 = TransformHomogeneous(
+      homography, vec2(float(col) + 5.0, float(row) + 5.0));
+  vec2 source4 = TransformHomogeneous(
+      homography, vec2(float(col) + 5.0, float(row) - 5.0));
+  const float reference_area = 121.0;
+  float source_area = abs(0.5 * (
+      source1.x * source2.y - source2.x * source1.y -
+      source1.x * source4.y + source2.x * source3.y -
+      source3.x * source2.y + source4.x * source1.y +
+      source3.x * source4.y - source4.x * source3.y));
+  if (reference_area > source_area) {
+    return source_area / reference_area;
+  }
+  return reference_area / source_area;
+}
+
+float ComputeTriangulationProbability(float cosine_angle) {
+  float minimum_cosine = cos(pc.min_triangulation_angle_rad);
+  if (cosine_angle > minimum_cosine) {
+    float scaled = 1.0 -
+        (1.0 - cosine_angle) / (1.0 - minimum_cosine);
+    float likelihood = 1.0 - scaled * scaled;
+    return min(1.0, max(0.0, likelihood));
+  }
+  return 1.0;
+}
+
+float ComputeIncidentProbability(float cosine_angle) {
+  float x = 1.0 - max(0.0, cosine_angle);
+  float inverse_sigma_square = -0.5 /
+      (pc.incident_angle_sigma * pc.incident_angle_sigma);
+  return exp(x * x * inverse_sigma_square);
+}
+
+void TransformPDFToCDF(uint base) {
+  float probability_sum = 0.0;
+  for (uint source = 0u; source < pc.num_sources; ++source) {
+    probability_sum += forward_message.values[base + source];
+  }
+  float inverse_probability_sum = 1.0 / probability_sum;
+  float cumulative_probability = 0.0;
+  for (uint source = 0u; source < pc.num_sources; ++source) {
+    float probability =
+        forward_message.values[base + source] * inverse_probability_sum;
+    cumulative_probability += probability;
+    forward_message.values[base + source] = cumulative_probability;
+  }
+}
+
+int StrictCDFSelection(uint base, float draw) {
+  for (uint source = 0u; source < pc.num_sources; ++source) {
+    if (forward_message.values[base + source] > draw) {
+      return int(source);
+    }
+  }
+  return -1;
+}
+
+int FindMinCostLastTie(float costs[5]) {
+  float minimum_cost = costs[0];
+  int minimum_cost_index = 0;
+  for (int index = 1; index < 5; ++index) {
+    if (costs[index] <= minimum_cost) {
+      minimum_cost = costs[index];
+      minimum_cost_index = index;
+    }
+  }
+  return minimum_cost_index;
+}
+
+float PhotoCandidateCost(uint row,
+                         uint col,
+                         uint source,
+                         float depth,
+                         vec3 normal) {
+  float K[4];
+  float R[9];
+  float T[3];
+  float C[3];
+  float P[12];
+  float inverse_P[12];
+  LoadPose(source, K, R, T, C, P, inverse_P);
+  float reference_inverse_K[4] = float[4](
+      pc.ref_inv_k.x, pc.ref_inv_k.y, pc.ref_inv_k.z, pc.ref_inv_k.w);
+  float normal_values[3] = float[3](normal.x, normal.y, normal.z);
+  float homography[9];
+  ComposeHomography(K, R, T, reference_inverse_K,
+                    int(row), int(col), depth, normal_values, homography);
+  uint pixel_index = PixelIndex(row, col);
+  return PhotoConsistencyCost(
+      homography,
+      int(source),
+      int(row),
+      int(col),
+      reference_weighted_sum.values[pixel_index],
+      reference_weighted_squared_sum.values[pixel_index],
+      pc.sigma_spatial,
+      pc.sigma_color);
+}
+
+float GeometricCandidateCost(uint row,
+                             uint col,
+                             uint source,
+                             float depth,
+                             float maximum_cost) {
+  float K[4];
+  float R[9];
+  float T[3];
+  float C[3];
+  float P[12];
+  float inverse_P[12];
+  LoadPose(source, K, R, T, C, P, inverse_P);
+  float reference_K[4] = float[4](
+      pc.ref_k.x, pc.ref_k.y, pc.ref_k.z, pc.ref_k.w);
+  float reference_inverse_K[4] = float[4](
+      pc.ref_inv_k.x, pc.ref_inv_k.y, pc.ref_inv_k.z, pc.ref_inv_k.w);
+  return GeometricConsistencyCost(
+      P, inverse_P, reference_K, reference_inverse_K,
+      float(row), float(col), depth, int(source), maximum_cost);
+}
+
+float ComputeResolutionForCandidate(uint row,
+                                    uint col,
+                                    uint source,
+                                    float depth,
+                                    vec3 normal) {
+  float K[4];
+  float R[9];
+  float T[3];
+  float C[3];
+  float P[12];
+  float inverse_P[12];
+  LoadPose(source, K, R, T, C, P, inverse_P);
+  float reference_inverse_K[4] = float[4](
+      pc.ref_inv_k.x, pc.ref_inv_k.y, pc.ref_inv_k.z, pc.ref_inv_k.w);
+  float normal_values[3] = float[3](normal.x, normal.y, normal.z);
+  float homography[9];
+  ComposeHomography(K, R, T, reference_inverse_K,
+                    int(row), int(col), depth, normal_values, homography);
+  return ComputeResolutionProbability(homography, row, col);
+}
+
+void ComputeBackwardMessages(uint col) {
+  const float uniform_probability = 0.5;
+  for (uint source = 0u; source < pc.num_sources; ++source) {
+    float beta = uniform_probability;
+    for (uint reverse_row = pc.height; reverse_row > 0u; --reverse_row) {
+      uint row = reverse_row - 1u;
+      uint cost_index = GpuMatIndex(source, row, col);
+      beta = ComputeMessage(cost_map.values[cost_index], beta, false);
+      selection_probability.values[cost_index] = beta;
+    }
+    forward_message.values[WorkspaceIndex(0u, col, source)] =
+        uniform_probability;
+  }
+}
+
+void main() {
+  uint col = gl_GlobalInvocationID.x;
+
+  if (col < pc.width) {
+    ComputeBackwardMessages(col);
+  }
+
+  ColmapXorwowState random_state;
+  float previous_depth = 0.0;
+  vec3 previous_normal = vec3(0.0);
+  if (col < pc.width) {
+    random_state = LoadXorwowState(0u, col);
+    previous_depth = depth_map.values[PixelIndex(0u, col)];
+    previous_normal = vec3(
+        normal_map.values[GpuMatIndex(0u, 0u, col)],
+        normal_map.values[GpuMatIndex(1u, 0u, col)],
+        normal_map.values[GpuMatIndex(2u, 0u, col)]);
+  }
+
+  for (uint row = 0u; row < pc.height; ++row) {
+    LocalRefImageRead(int(row));
+    barrier(); // row-start: publish complete shared tile
+    if (col < pc.width) {
+
+    previous_depth = PropagateDepth(
+        previous_depth, previous_normal, float(row) - 1.0, float(row));
+    uint pixel_index = PixelIndex(row, col);
+    float current_depth = depth_map.values[pixel_index];
+    vec3 current_normal = vec3(
+        normal_map.values[GpuMatIndex(0u, row, col)],
+        normal_map.values[GpuMatIndex(1u, row, col)],
+        normal_map.values[GpuMatIndex(2u, row, col)]);
+    float random_depth = PerturbDepth(current_depth, random_state);
+    vec3 random_normal = PerturbNormal(row, col, current_normal, random_state);
+
+    vec3 point = vec3(
+        current_depth * (pc.ref_inv_k.x * float(col) + pc.ref_inv_k.y),
+        current_depth * (pc.ref_inv_k.z * float(row) + pc.ref_inv_k.w),
+        current_depth);
+    uint sampling_base = WorkspaceIndex(1u, col, 0u);
+    for (uint source = 0u; source < pc.num_sources; ++source) {
+      uint cost_index = GpuMatIndex(source, row, col);
+      uint forward_index = WorkspaceIndex(0u, col, source);
+      float alpha = ComputeMessage(
+          cost_map.values[cost_index],
+          forward_message.values[forward_index],
+          true);
+      float beta = selection_probability.values[cost_index];
+      float previous_probability =
+          previous_selection_probability.values[cost_index];
+      float selected = ComputeSelectionProbability(
+          alpha, beta, previous_probability);
+      float cosine_triangulation;
+      float cosine_incident;
+      ComputeViewingAngles(
+          point, current_normal, source,
+          cosine_triangulation, cosine_incident);
+      float triangulation_probability =
+          ComputeTriangulationProbability(cosine_triangulation);
+      float incident_probability =
+          ComputeIncidentProbability(cosine_incident);
+      float resolution_probability = ComputeResolutionForCandidate(
+          row, col, source, current_depth, current_normal);
+      forward_message.values[sampling_base + source] =
+          selected * triangulation_probability *
+          incident_probability * resolution_probability;
+    }
+
+    TransformPDFToCDF(sampling_base);
+
+    float candidate_depths[5];
+    candidate_depths[0] = current_depth;
+    candidate_depths[1] = previous_depth;
+    candidate_depths[2] = random_depth;
+    candidate_depths[3] = current_depth;
+    candidate_depths[4] = random_depth;
+    vec3 candidate_normals[5];
+    candidate_normals[0] = current_normal;
+    candidate_normals[1] = previous_normal;
+    candidate_normals[2] = random_normal;
+    candidate_normals[3] = random_normal;
+    candidate_normals[4] = current_normal;
+    float candidate_costs[5] = float[5](0.0, 0.0, 0.0, 0.0, 0.0);
+
+    for (int sample_index = 0;
+         sample_index < pc.num_samples;
+         ++sample_index) {
+      float random_probability = ColmapXorwowUniform(random_state) -
+          1.1920928955078125e-7;
+      int selected_source =
+          StrictCDFSelection(sampling_base, random_probability);
+      if (selected_source == -1) {
+        continue;
+      }
+      uint source = uint(selected_source);
+      uint cost_index = GpuMatIndex(source, row, col);
+      candidate_costs[0] += cost_map.values[cost_index];
+      if (kGeomConsistencyTerm) {
+        candidate_costs[0] += pc.geometric_consistency_regularizer *
+            GeometricCandidateCost(
+                row, col, source, candidate_depths[0],
+                pc.geometric_consistency_max_cost);
+      }
+      for (int candidate = 1; candidate < 5; ++candidate) {
+        candidate_costs[candidate] += PhotoCandidateCost(
+            row, col, source,
+            candidate_depths[candidate], candidate_normals[candidate]);
+        if (kGeomConsistencyTerm) {
+          candidate_costs[candidate] +=
+              pc.geometric_consistency_regularizer *
+              GeometricCandidateCost(
+                  row, col, source, candidate_depths[candidate],
+                  pc.geometric_consistency_max_cost);
+        }
+      }
+    }
+
+    int best_index = FindMinCostLastTie(candidate_costs);
+    float best_depth = candidate_depths[best_index];
+    vec3 best_normal = candidate_normals[best_index];
+    depth_map.values[pixel_index] = best_depth;
+    normal_map.values[GpuMatIndex(0u, row, col)] = best_normal.x;
+    normal_map.values[GpuMatIndex(1u, row, col)] = best_normal.y;
+    normal_map.values[GpuMatIndex(2u, row, col)] = best_normal.z;
+
+    for (uint source = 0u; source < pc.num_sources; ++source) {
+      uint cost_index = GpuMatIndex(source, row, col);
+      float cost;
+      if (best_index == 0) {
+        cost = cost_map.values[cost_index];
+      } else {
+        cost = PhotoCandidateCost(
+            row, col, source, best_depth, best_normal);
+        cost_map.values[cost_index] = cost;
+      }
+      uint forward_index = WorkspaceIndex(0u, col, source);
+      float alpha = ComputeMessage(
+          cost, forward_message.values[forward_index], true);
+      float beta = selection_probability.values[cost_index];
+      float previous_probability =
+          previous_selection_probability.values[cost_index];
+      float probability = ComputeSelectionProbability(
+          alpha, beta, previous_probability);
+      forward_message.values[forward_index] = alpha;
+      selection_probability.values[cost_index] = probability;
+    }
+
+    if (kFilterPhotoConsistency || kFilterGeomConsistency) {
+      int consistent_count = 0;
+      vec3 best_point = vec3(
+          best_depth * (pc.ref_inv_k.x * float(col) + pc.ref_inv_k.y),
+          best_depth * (pc.ref_inv_k.z * float(row) + pc.ref_inv_k.w),
+          best_depth);
+      float minimum_ncc_probability =
+          ComputeNCCProbability(1.0 - pc.filter_min_ncc);
+      float minimum_triangulation_cosine =
+          cos(pc.filter_min_triangulation_angle_rad);
+      for (uint source = 0u; source < pc.num_sources; ++source) {
+        float cosine_triangulation;
+        float cosine_incident;
+        ComputeViewingAngles(
+            best_point, best_normal, source,
+            cosine_triangulation, cosine_incident);
+        if (cosine_triangulation > minimum_triangulation_cosine ||
+            cosine_incident <= 0.0) {
+          continue;
+        }
+        uint cost_index = GpuMatIndex(source, row, col);
+        bool accepted = false;
+        if (!kFilterGeomConsistency) {
+          accepted = selection_probability.values[cost_index] >=
+              minimum_ncc_probability;
+        } else if (!kFilterPhotoConsistency) {
+          accepted = GeometricCandidateCost(
+              row, col, source, best_depth,
+              pc.geometric_consistency_max_cost) <=
+              pc.filter_geometric_consistency_max_cost;
+        } else {
+          accepted = selection_probability.values[cost_index] >=
+              minimum_ncc_probability &&
+              GeometricCandidateCost(
+                  row, col, source, best_depth,
+                  pc.geometric_consistency_max_cost) <=
+                  pc.filter_geometric_consistency_max_cost;
+        }
+        if (accepted) {
+          consistency_mask.values[cost_index] = 1u;
+          consistent_count += 1;
+        }
+      }
+      if (consistent_count < pc.filter_min_num_consistent) {
+        depth_map.values[pixel_index] = 0.0;
+        normal_map.values[GpuMatIndex(0u, row, col)] = 0.0;
+        normal_map.values[GpuMatIndex(1u, row, col)] = 0.0;
+        normal_map.values[GpuMatIndex(2u, row, col)] = 0.0;
+        for (uint source = 0u; source < pc.num_sources; ++source) {
+          consistency_mask.values[GpuMatIndex(source, row, col)] = 0u;
+        }
+      }
+    }
+
+    previous_depth = best_depth;
+    previous_normal = best_normal;
+    }
+    barrier(); // row-end: all photo-cost reads complete
+  }
+
+  if (col < pc.width) {
+    StoreXorwowState(0u, col, random_state);
+  }
+}

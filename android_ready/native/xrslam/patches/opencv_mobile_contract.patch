@@ -1,0 +1,36 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 663d7e0..be51613 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -332,6 +332,9 @@ OCV_OPTION(WITH_OPENMP "Include OpenMP support" OFF
+ OCV_OPTION(WITH_PTHREADS_PF "Use pthreads-based parallel_for" ON
+   VISIBLE_IF NOT WIN32 OR MINGW
+   VERIFY HAVE_PTHREADS_PF)
++OCV_OPTION(PW_CROSS_PLATFORM_SINGLE_THREADED
++  "Disable platform-specific OpenCV parallel backends for the shared mobile contract"
++  OFF)
+ OCV_OPTION(WITH_TIFF "Include TIFF support" ON
+   VISIBLE_IF NOT IOS
+   VERIFY HAVE_TIFF)
+diff --git a/cmake/OpenCVFindFrameworks.cmake b/cmake/OpenCVFindFrameworks.cmake
+index 9d673f2..71ddb18 100644
+--- a/cmake/OpenCVFindFrameworks.cmake
++++ b/cmake/OpenCVFindFrameworks.cmake
+@@ -10,7 +10,7 @@ if(WITH_HPX)
+ endif(WITH_HPX)
+ 
+ # --- GCD ---
+-if(APPLE AND NOT HAVE_TBB)
++if(APPLE AND NOT HAVE_TBB AND NOT PW_CROSS_PLATFORM_SINGLE_THREADED)
+   set(HAVE_GCD 1)
+ else()
+   set(HAVE_GCD 0)
+@@ -37,7 +37,7 @@ if(WITH_OPENMP)
+ endif()
+ 
+ ocv_clear_vars(HAVE_PTHREADS_PF)
+-if(WITH_PTHREADS_PF AND HAVE_PTHREAD)
++if(WITH_PTHREADS_PF AND HAVE_PTHREAD AND NOT PW_CROSS_PLATFORM_SINGLE_THREADED)
+   set(HAVE_PTHREADS_PF 1)
+ else()
+   set(HAVE_PTHREADS_PF 0)

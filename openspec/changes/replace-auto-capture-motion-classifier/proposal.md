@@ -13,6 +13,12 @@ different reconstruction value of orbit, radial, and rotation-only motion.
 - Derive lateral/vertical parallax from pose plus an active target and derive
   overlap from runtime intrinsics instead of a fixed distance multiplier.
 - Keep rotation-only captures out of the formal geometry-baseline update.
+- Aggregate candidate, selected, blocked, and fired outcomes under exactly four
+  role keys. Record decisions with no candidate in a separate `no_candidate`
+  counter; `none` is not a fifth role.
+- Resolve a frame that satisfies both rotation coverage and radial bridge as
+  rotation coverage; radial travel must not hide a deliberate turn-in-place
+  coverage frame.
 - Keep only the existing 250 ms duplicate debounce in normal operation;
   selection remains motion-driven, while overlap safety may bypass a stretched
   soft/hard backpressure interval.

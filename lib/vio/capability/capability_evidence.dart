@@ -55,7 +55,8 @@ enum TimebaseRelation {
   /// 同一时钟基,直接可比。
   /// Android: CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE == REALTIME
   ///          (SensorEvent.timestamp 本来就是 BOOTTIME)。该 key「available on all devices」。
-  /// iOS:     CMSampleBuffer PTS 与 CMDeviceMotion.timestamp 同为 mach_absolute_time 基。
+  /// iOS:     相机 PTS 与独立原始 accel/gyro 时间戳的关系未由 Apple 保证;
+  ///          必须由 Dart 消费三明治时钟实测证据，不能写死为同域。
   unified,
 
   /// 不同基,但偏移已被当场测出(见 android_ready 的 ClockOffset:Cristian 最小往返法)。
@@ -68,14 +69,11 @@ enum TimebaseRelation {
 
 /// 时间基事实。
 class TimebaseFacts {
-  const TimebaseFacts({
-    required this.relation,
-    this.offsetUncertaintyNs,
-  });
+  const TimebaseFacts({required this.relation, this.offsetUncertaintyNs});
 
   const TimebaseFacts.unified()
-      : relation = TimebaseRelation.unified,
-        offsetUncertaintyNs = 0;
+    : relation = TimebaseRelation.unified,
+      offsetUncertaintyNs = 0;
 
   final TimebaseRelation relation;
 
@@ -148,14 +146,14 @@ class IntrinsicsFacts {
   });
 
   const IntrinsicsFacts.absent()
-      : source = IntrinsicsSource.none,
-        fx = 0,
-        fy = 0,
-        cx = 0,
-        cy = 0,
-        referenceWidth = 0,
-        referenceHeight = 0,
-        skew = 0;
+    : source = IntrinsicsSource.none,
+      fx = 0,
+      fy = 0,
+      cx = 0,
+      cy = 0,
+      referenceWidth = 0,
+      referenceHeight = 0,
+      skew = 0;
 
   /// 从水平视场角反推。**最后一档**:主点只能假设在正中,是假设不是测量。
   ///
@@ -217,7 +215,10 @@ class IntrinsicsFacts {
     required int outWidth,
     required int outHeight,
   }) {
-    if (!isPresent || !cropInReference.isPositive || outWidth <= 0 || outHeight <= 0) {
+    if (!isPresent ||
+        !cropInReference.isPositive ||
+        outWidth <= 0 ||
+        outHeight <= 0) {
       return const IntrinsicsFacts.absent();
     }
     final double sx = outWidth / cropInReference.width;
@@ -240,11 +241,13 @@ class IntrinsicsFacts {
 
   /// 水平视场角(度)。用于与 videoFieldOfView 交叉校验 —— 两条独立来源对不上,
   /// 就说明其中一条的参考分辨率错了。
-  double get horizontalFovDegrees =>
-      fx > 0 ? 2.0 * math.atan((referenceWidth / 2.0) / fx) * 180.0 / math.pi : 0.0;
+  double get horizontalFovDegrees => fx > 0
+      ? 2.0 * math.atan((referenceWidth / 2.0) / fx) * 180.0 / math.pi
+      : 0.0;
 
   @override
-  String toString() => 'Intrinsics(${source.name}, f=(${fx.toStringAsFixed(1)},'
+  String toString() =>
+      'Intrinsics(${source.name}, f=(${fx.toStringAsFixed(1)},'
       '${fy.toStringAsFixed(1)}), c=(${cx.toStringAsFixed(1)},${cy.toStringAsFixed(1)}), '
       'ref=${referenceWidth}x$referenceHeight)';
 }
@@ -295,10 +298,10 @@ class StabilizationFacts {
   });
 
   const StabilizationFacts.allUnknown()
-      : electronic = StabilizationState.unknown,
-        optical = StabilizationState.unknown,
-        electronicControllable = false,
-        opticalControllable = false;
+    : electronic = StabilizationState.unknown,
+      optical = StabilizationState.unknown,
+      electronicControllable = false,
+      opticalControllable = false;
 
   /// EIS / 数字防抖的**实际**状态。
   final StabilizationState electronic;
@@ -322,7 +325,8 @@ class StabilizationFacts {
 
   /// 有一路状态不可知。不是 off,也不是 on。
   bool get anyUnknown =>
-      electronic == StabilizationState.unknown || optical == StabilizationState.unknown;
+      electronic == StabilizationState.unknown ||
+      optical == StabilizationState.unknown;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -338,9 +342,9 @@ class FrameTimingFacts {
   });
 
   const FrameTimingFacts.unmeasured()
-      : frameCount = 0,
-        medianIntervalNs = null,
-        p95IntervalNs = null;
+    : frameCount = 0,
+      medianIntervalNs = null,
+      p95IntervalNs = null;
 
   final int frameCount;
   final int? medianIntervalNs;
@@ -353,8 +357,9 @@ class FrameTimingFacts {
 
   /// p95/中位 —— 抖动比。1.0 = 完全等间隔。掉帧/热降频会把它顶上去。
   /// 用比值而不是绝对值,才能跨 30fps / 60fps 用同一个阈值。
-  double? get intervalRatio =>
-      (isMeasured && p95IntervalNs != null) ? p95IntervalNs! / medianIntervalNs! : null;
+  double? get intervalRatio => (isMeasured && p95IntervalNs != null)
+      ? p95IntervalNs! / medianIntervalNs!
+      : null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════

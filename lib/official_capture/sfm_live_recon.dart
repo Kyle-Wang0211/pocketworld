@@ -39,6 +39,7 @@ import 'dart:typed_data';
 import 'package:vector_math/vector_math_64.dart' as vm;
 
 import '../official_aether_sfm_ffi.dart';
+import '../official_dense/dense_transaction_manifest.dart';
 import '../official_util/device_log.dart';
 import '../reconstruction_lease.dart';
 import 'gravity_align.dart';
@@ -577,7 +578,10 @@ class SfmLiveRecon {
           _sfmWorkerMain,
           // _arEveryFrameEnabled 在此(主 isolate)读——env 在主 isolate 才有效。
           _SfmWorkerBootstrap(
-              fromWorker.sendPort, dbPath, _arEveryFrameEnabled),
+            fromWorker.sendPort,
+            dbPath,
+            _arEveryFrameEnabled,
+          ),
           debugName: 'official_sfm_live_recon',
           errorsAreFatal: true,
         );
@@ -892,8 +896,9 @@ class SfmLiveRecon {
         // 避免挂起期间新帧 append 使尾部索引漂移。
         // 回滚 = 本处与下方出队两处改回 `_spool.first` / `_spool.removeAt(0)`
         // 的旧形态(严格 FIFO)。
-        final entry =
-            _finalizeRequested ? _spool.removeAt(0) : _spool.removeLast();
+        final entry = _finalizeRequested
+            ? _spool.removeAt(0)
+            : _spool.removeLast();
         try {
           if (!await File(entry.path).exists()) {
             throw FileSystemException('canonical JPEG missing', entry.path);
@@ -1028,7 +1033,7 @@ class SfmLiveRecon {
     DeviceLog.log(
       'SfmLive',
       'extract-debt repay: refeeding ${debts.length} frame(s) '
-      'with CPU fallback temporarily enabled',
+          'with CPU fallback temporarily enabled',
     );
     TelemetryWriter.instance.event('extract_debt_repay', {'n': debts.length});
     unawaited(_pump());
@@ -1239,8 +1244,8 @@ class SfmLiveRecon {
             DeviceLog.log(
               'SfmLive',
               'extract-debt REPAY FAILED (CPU fallback also failed): '
-              '${meta.jpegPath.split('/').last} — frame missing from '
-              'delivery, ESCALATE',
+                  '${meta.jpegPath.split('/').last} — frame missing from '
+                  'delivery, ESCALATE',
             );
             TelemetryWriter.instance.event('extract_debt_repay_failed', {
               'jpeg': meta.jpegPath.split('/').last,
@@ -1250,7 +1255,7 @@ class SfmLiveRecon {
             DeviceLog.log(
               'SfmLive',
               'extract-debt recorded (#${_extractDebts.length}): '
-              '${meta.jpegPath.split('/').last} — repay before finalize',
+                  '${meta.jpegPath.split('/').last} — repay before finalize',
             );
             TelemetryWriter.instance.event('extract_debt_recorded', {
               'jpeg': meta.jpegPath.split('/').last,
@@ -1722,6 +1727,7 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
     final fn = captureActiveFn;
     return fn == null || fn() != 0;
   }
+
   // True session high-water footprint — the public TASK_VM_INFO layout has no
   // historical peak field, so we take a running max of the instantaneous
   // sample taken right after each heavy native call.
@@ -2260,7 +2266,9 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
           try {
             final prc = session!.prefetchJpegFrame(msg['path'] as String);
             if (prc == 0) {
-              wlog('prefetch queued: ${(msg['path'] as String).split('/').last}');
+              wlog(
+                'prefetch queued: ${(msg['path'] as String).split('/').last}',
+              );
             }
           } catch (_) {} // 旧 framework 无符号 → 静默跳过
         }
@@ -2280,9 +2288,7 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
         var repaid = 0;
         if (!finishPending && session != null) {
           try {
-            repaid = session!.liveRepay(
-              maxPairs: (msg['budget'] as int?) ?? 2,
-            );
+            repaid = session!.liveRepay(maxPairs: (msg['budget'] as int?) ?? 2);
           } catch (e) {
             wlog('quad-prepay failed (non-fatal): $e');
           }
@@ -2562,6 +2568,170 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
                 });
               } catch (e) {
                 wlog('repair_stats telemetry failed (non-fatal): $e');
+              }
+              // Dense MVS needs the registered COLMAP reconstruction, not the
+              // live sqlite database or the already flattened sparse PLY. The
+              // native session owns that reconstruction, so export it here,
+              // after FINALIZE_REFINED and before the session can be disposed.
+              // A dense failure never withholds the valid sparse result; the
+              // dense launcher remains fail-closed unless this hand-off is ok.
+              try {
+                final denseRoot = Directory(
+                  '${File(boot.dbPath).parent.path}/official_dense',
+                );
+                final denseSparseDir = Directory('${denseRoot.path}/sparse');
+                final denseRootType = FileSystemEntity.typeSync(
+                  denseRoot.path,
+                  followLinks: false,
+                );
+                if (denseRootType != FileSystemEntityType.notFound &&
+                    denseRootType != FileSystemEntityType.directory) {
+                  throw StateError(
+                    'official_dense must be a real directory, not a link',
+                  );
+                }
+                denseRoot.createSync(recursive: true);
+
+                final publishToken =
+                    '${pid}_${DateTime.now().microsecondsSinceEpoch}';
+                final stagedSparseDir = Directory(
+                  '${denseRoot.path}/.sparse.$publishToken.tmp',
+                );
+                final backupSparseDir = Directory(
+                  '${denseRoot.path}/.sparse.$publishToken.backup',
+                );
+                stagedSparseDir.createSync();
+
+                void removeOwnedSparseDirectory(Directory directory) {
+                  if (FileSystemEntity.typeSync(
+                        directory.path,
+                        followLinks: false,
+                      ) !=
+                      FileSystemEntityType.directory) {
+                    return;
+                  }
+                  for (final name in const <String>[
+                    'cameras.bin',
+                    'images.bin',
+                    'points3D.bin',
+                    'handoff.ready',
+                  ]) {
+                    final path = '${directory.path}/$name';
+                    final type = FileSystemEntity.typeSync(
+                      path,
+                      followLinks: false,
+                    );
+                    if (type == FileSystemEntityType.file) {
+                      File(path).deleteSync();
+                    } else if (type == FileSystemEntityType.link) {
+                      Link(path).deleteSync();
+                    }
+                  }
+                  if (directory.listSync(followLinks: false).isEmpty) {
+                    directory.deleteSync();
+                  }
+                }
+
+                final dumpResult = s.dumpModel(stagedSparseDir.path);
+                if (dumpResult != AetherSfmResult.ok) {
+                  throw StateError(
+                    'pwofficial_dump_model failed: ${dumpResult.name}',
+                  );
+                }
+                for (final name in const <String>[
+                  'cameras.bin',
+                  'images.bin',
+                  'points3D.bin',
+                ]) {
+                  final modelFile = File('${stagedSparseDir.path}/$name');
+                  if (!modelFile.existsSync() || modelFile.lengthSync() == 0) {
+                    throw StateError('dumped COLMAP model is missing $name');
+                  }
+                }
+                DenseTransactionManifest.writeSync(
+                  stagedModelDirectory: stagedSparseDir.path,
+                  fedFramesManifestPath:
+                      '${denseRoot.parent.path}/official_sfm_fed_frames.jsonl',
+                  generation: publishToken,
+                );
+
+                final existingSparseType = FileSystemEntity.typeSync(
+                  denseSparseDir.path,
+                  followLinks: false,
+                );
+                if (existingSparseType != FileSystemEntityType.notFound &&
+                    existingSparseType != FileSystemEntityType.directory) {
+                  throw StateError(
+                    'official_dense/sparse must be a real directory',
+                  );
+                }
+                var movedPrevious = false;
+                if (existingSparseType == FileSystemEntityType.directory) {
+                  denseSparseDir.renameSync(backupSparseDir.path);
+                  movedPrevious = true;
+                }
+                try {
+                  stagedSparseDir.renameSync(denseSparseDir.path);
+                } catch (_) {
+                  if (movedPrevious &&
+                      FileSystemEntity.typeSync(
+                            denseSparseDir.path,
+                            followLinks: false,
+                          ) ==
+                          FileSystemEntityType.notFound) {
+                    backupSparseDir.renameSync(denseSparseDir.path);
+                  }
+                  rethrow;
+                }
+                if (movedPrevious) {
+                  removeOwnedSparseDirectory(backupSparseDir);
+                }
+                summary['official_dense_handoff_status'] = 'ready';
+                summary['official_dense_model_dir'] = denseSparseDir.path;
+                summary['official_dense_fed_frames'] =
+                    '${denseRoot.parent.path}/official_sfm_fed_frames.jsonl';
+                wlog('dense hand-off ready: ${denseSparseDir.path}');
+              } catch (e) {
+                // Only task-owned staging directories are eligible for
+                // cleanup. The published sparse model and capture inputs are
+                // never recursively removed here.
+                final denseRoot = Directory(
+                  '${File(boot.dbPath).parent.path}/official_dense',
+                );
+                if (FileSystemEntity.typeSync(
+                      denseRoot.path,
+                      followLinks: false,
+                    ) ==
+                    FileSystemEntityType.directory) {
+                  for (final entry in denseRoot.listSync(followLinks: false)) {
+                    final name = entry.path
+                        .split(Platform.pathSeparator)
+                        .where((segment) => segment.isNotEmpty)
+                        .lastOrNull;
+                    if (entry is Directory &&
+                        name != null &&
+                        name.startsWith('.sparse.') &&
+                        name.endsWith('.tmp')) {
+                      for (final child in entry.listSync(followLinks: false)) {
+                        final childType = FileSystemEntity.typeSync(
+                          child.path,
+                          followLinks: false,
+                        );
+                        if (childType == FileSystemEntityType.file) {
+                          File(child.path).deleteSync();
+                        } else if (childType == FileSystemEntityType.link) {
+                          Link(child.path).deleteSync();
+                        }
+                      }
+                      if (entry.listSync(followLinks: false).isEmpty) {
+                        entry.deleteSync();
+                      }
+                    }
+                  }
+                }
+                summary['official_dense_handoff_status'] = 'failed';
+                summary['official_dense_handoff_error'] = '$e';
+                wlog('dense hand-off failed (sparse result preserved): $e');
               }
               sendSnapshot('refined', summary, ms);
               // 遥测【geom】几何自检:点级三角化角分布(worker 后台线程,

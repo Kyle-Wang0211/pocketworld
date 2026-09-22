@@ -13,12 +13,14 @@
 //     "跑起来什么都不报错、只是数据静默为空/为错"的路径。
 
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/official_capture/auto_capture_geometry.dart';
 import 'package:pocketworld_flutter/official_capture/auto_capture_governor.dart';
 import 'package:pocketworld_flutter/official_capture/auto_capture_telemetry.dart';
 import 'package:pocketworld_flutter/official_capture/shutter_backpressure_gate.dart';
+import 'package:vector_math/vector_math_64.dart';
 
 String _pageSource() =>
     File('lib/ui/official_capture/ar_capture_page.dart').readAsStringSync();
@@ -55,16 +57,37 @@ Map<String, int> _counts(AutoCaptureTelemetry t) =>
 Map<String, double> _paceSec(AutoCaptureTelemetry t) =>
     t.snapshot()['pace_sec']! as Map<String, double>;
 
+Map<String, Map<String, int>> _nestedCounts(
+  Map<String, Object> snap,
+  String key,
+) => (snap[key]! as Map<String, Object>).map(
+  (name, value) => MapEntry(name, value as Map<String, int>),
+);
+
 double _num(Map<String, Object> snap, String key) =>
     (snap[key]! as num).toDouble();
 
 int _int(AutoCaptureTelemetry t, String key) => t.snapshot()[key]! as int;
 
+const _fireRoles = <AutoCaptureMotionRole>[
+  AutoCaptureMotionRole.overlapSafety,
+  AutoCaptureMotionRole.geometry,
+  AutoCaptureMotionRole.rotationCoverage,
+  AutoCaptureMotionRole.radialBridge,
+];
+
 /// 开一轮、喂 [n] 个 [d] 判定(1 秒一个,normal 档),不关。
 AutoCaptureTelemetry _openWith(AutoCaptureDecision d, int n) {
   final t = AutoCaptureTelemetry()..recordSessionStart(0);
   for (var i = 1; i <= n; i++) {
-    t.recordDecision(d, tSec: i.toDouble(), pace: ShutterPace.normal);
+    t.recordDecision(
+      d,
+      tSec: i.toDouble(),
+      pace: ShutterPace.normal,
+      motionRole: d == AutoCaptureDecision.fire
+          ? AutoCaptureMotionRole.geometry
+          : null,
+    );
   }
   return t;
 }
@@ -96,6 +119,269 @@ void main() {
     },
   );
 
+  group('role and predicate roll-up', () {
+    const intrinsics = AutoCaptureIntrinsics(
+      fx: 1000,
+      fy: 1000,
+      cx: 500,
+      cy: 500,
+      imageWidth: 1000,
+      imageHeight: 1000,
+    );
+    final target = Vector3(0, 0, -1);
+
+    AutoCaptureGeometryFrame frame(
+      Vector3 camera, {
+      Quaternion? orientation,
+      AutoCaptureIntrinsics k = intrinsics,
+    }) => AutoCaptureGeometryFrame(
+      camera: camera,
+      orientation: orientation ?? Quaternion.identity(),
+      intrinsics: k,
+    );
+
+    test('eligible, selected, masked, fired, and blockers conserve counts', () {
+      final base = frame(Vector3.zero());
+      final both = classifyAutoCaptureMotion(
+        geometryBaseline: base,
+        captureBaseline: base,
+        current: frame(
+          Vector3(0, 0, -0.2),
+          orientation: Quaternion.axisAngle(
+            Vector3(0, 1, 0),
+            12 * math.pi / 180,
+          ),
+        ),
+        target: target,
+      );
+      final geometry = classifyAutoCaptureMotion(
+        geometryBaseline: base,
+        captureBaseline: base,
+        current: frame(Vector3(0.22, 0, 0)),
+        target: target,
+      );
+      final none = classifyAutoCaptureMotion(
+        geometryBaseline: base,
+        captureBaseline: base,
+        current: base,
+        target: target,
+      );
+      final t = AutoCaptureTelemetry()..recordSessionStart(0);
+      t.recordDecision(
+        AutoCaptureDecision.skipPaced,
+        tSec: 0.1,
+        pace: ShutterPace.normal,
+        motion: both,
+      );
+      t.recordDecision(
+        AutoCaptureDecision.skipBlurry,
+        tSec: 0.2,
+        pace: ShutterPace.normal,
+        motion: geometry,
+      );
+      t.recordDecision(
+        AutoCaptureDecision.fire,
+        tSec: 0.3,
+        pace: ShutterPace.normal,
+        motion: geometry,
+      );
+      t.recordDecision(
+        AutoCaptureDecision.skipTracking,
+        tSec: 0.4,
+        pace: ShutterPace.normal,
+        motion: geometry,
+      );
+      t.recordDecision(
+        AutoCaptureDecision.skipCapped,
+        tSec: 0.5,
+        pace: ShutterPace.normal,
+        motion: geometry,
+      );
+      t.recordDecision(
+        AutoCaptureDecision.skipTimeLimit,
+        tSec: 0.6,
+        pace: ShutterPace.normal,
+        motion: geometry,
+      );
+      t.recordDecision(
+        AutoCaptureDecision.skipNotMoved,
+        tSec: 0.7,
+        pace: ShutterPace.normal,
+        motion: none,
+      );
+
+      final snap = t.snapshot();
+      final roles = _nestedCounts(snap, 'role_counts');
+      expect(roles.keys.toSet(), {for (final role in _fireRoles) role.name});
+      expect(roles['rotationCoverage'], containsPair('eligible', 1));
+      expect(roles['rotationCoverage'], containsPair('selected', 1));
+      expect(roles['rotationCoverage'], containsPair('blocked_pace', 1));
+      expect(roles['radialBridge'], containsPair('eligible', 1));
+      expect(roles['radialBridge'], containsPair('masked_by_priority', 1));
+      expect(roles['geometry'], containsPair('selected', 5));
+      expect(roles['geometry'], containsPair('blocked_blur', 1));
+      expect(roles['geometry'], containsPair('blocked_tracking', 1));
+      expect(roles['geometry'], containsPair('blocked_cap', 1));
+      expect(roles['geometry'], containsPair('blocked_time_limit', 1));
+      expect(roles['geometry'], containsPair('fired', 1));
+      expect(snap['no_candidate'], 1);
+      expect(snap['selected_none'], 1);
+      expect(snap['selected_none'], snap['no_candidate']);
+
+      final predicates = _nestedCounts(snap, 'predicate_counts');
+      expect(predicates.keys.toSet(), {
+        for (final role in _fireRoles) role.name,
+      });
+      for (final role in _fireRoles) {
+        final row = roles[role.name]!;
+        expect(row['evaluated'], snap['decisions']);
+        expect(
+          predicates[role.name]!['true']! + predicates[role.name]!['false']!,
+          row['evaluated'],
+          reason: '${role.name} predicate conservation',
+        );
+        expect(
+          row['eligible'],
+          row['selected']! + row['masked_by_priority']!,
+          reason: '${role.name} eligibility conservation',
+        );
+        expect(
+          row['selected'],
+          row['fired']! +
+              row['blocked_blur']! +
+              row['blocked_pace']! +
+              row['blocked_tracking']! +
+              row['blocked_cap']! +
+              row['blocked_time_limit']! +
+              row['blocked_not_moved']!,
+          reason: '${role.name} decision-outcome conservation',
+        );
+      }
+      expect(
+        roles.values.fold<int>(0, (sum, row) => sum + row['selected']!) +
+            (snap['no_candidate']! as int),
+        snap['decisions'],
+      );
+      expect(
+        roles.values.fold<int>(0, (sum, row) => sum + row['fired']!),
+        (snap['decision_counts']! as Map<String, int>)['fire'],
+      );
+      expect(snap['fire_role_counts'], {
+        for (final role in _fireRoles) role.name: roles[role.name]!['fired'],
+      });
+
+      final matrix = _nestedCounts(snap, 'winner_decision_counts');
+      expect(matrix.keys.toSet(), {for (final role in _fireRoles) role.name});
+      for (final role in _fireRoles) {
+        final roleCounts = roles[role.name]!;
+        final matrixRow = matrix[role.name]!;
+        expect(
+          matrixRow.values.fold<int>(0, (sum, n) => sum + n),
+          roleCounts['selected'],
+          reason: '${role.name} matrix row conservation',
+        );
+        expect(roleCounts['fired'], matrixRow['fire']);
+        expect(roleCounts['blocked_blur'], matrixRow['skipBlurry']);
+        expect(roleCounts['blocked_pace'], matrixRow['skipPaced']);
+        expect(roleCounts['blocked_tracking'], matrixRow['skipTracking']);
+        expect(roleCounts['blocked_cap'], matrixRow['skipCapped']);
+        expect(roleCounts['blocked_time_limit'], matrixRow['skipTimeLimit']);
+        expect(roleCounts['blocked_not_moved'], matrixRow['skipNotMoved']);
+      }
+      final noneMatrix =
+          snap['selected_none_decision_counts']! as Map<String, int>;
+      expect(noneMatrix['skipNotMoved'], 1);
+      expect(
+        noneMatrix.values.fold<int>(0, (sum, n) => sum + n),
+        snap['selected_none'],
+      );
+      for (final decision in AutoCaptureDecision.values) {
+        expect(
+          matrix.values.fold<int>(0, (sum, row) => sum + row[decision.name]!) +
+              noneMatrix[decision.name]!,
+          (snap['decision_counts']! as Map<String, int>)[decision.name],
+          reason: '${decision.name} matrix column conservation',
+        );
+      }
+    });
+
+    test(
+      'a fire without one of the four fire roles is rejected atomically',
+      () {
+        final t = AutoCaptureTelemetry()..recordSessionStart(0);
+        expect(
+          () => t.recordDecision(
+            AutoCaptureDecision.fire,
+            tSec: 0.25,
+            pace: ShutterPace.normal,
+          ),
+          throwsArgumentError,
+        );
+        expect(_int(t, 'decisions'), 0);
+        expect(
+          (t.snapshot()['fire_role_counts']! as Map<String, int>).keys.toSet(),
+          {for (final role in _fireRoles) role.name},
+        );
+      },
+    );
+
+    test('unknown overlap stays unknown and thresholds are counted', () {
+      final unusable = frame(
+        Vector3.zero(),
+        k: const AutoCaptureIntrinsics(
+          fx: 0,
+          fy: 1000,
+          cx: 500,
+          cy: 500,
+          imageWidth: 1000,
+          imageHeight: 1000,
+        ),
+      );
+      final unknown = classifyAutoCaptureMotion(
+        geometryBaseline: unusable,
+        captureBaseline: unusable,
+        current: unusable,
+        target: target,
+      );
+      final known = classifyAutoCaptureMotion(
+        geometryBaseline: frame(Vector3.zero()),
+        captureBaseline: frame(Vector3.zero()),
+        current: frame(Vector3.zero()),
+        target: target,
+        trackHealth: const PortableTrackHealth(
+          retentionRatio: 0.95,
+          distributionHealthy: true,
+        ),
+      );
+      expect(unknown.overlapFraction, isNull);
+
+      final t = AutoCaptureTelemetry()..recordSessionStart(0);
+      t.recordDecision(
+        AutoCaptureDecision.skipNotMoved,
+        tSec: 1,
+        pace: ShutterPace.normal,
+        motion: unknown,
+        // 完整 metrics 的 unknown 必须压过任何遗留标量；否则旧接线把
+        // unknown 填成 0 时会被误记成“已知 0% 重叠”。
+        overlapFraction: 0,
+      );
+      t.recordDecision(
+        AutoCaptureDecision.skipNotMoved,
+        tSec: 2,
+        pace: ShutterPace.normal,
+        motion: known,
+      );
+      final snap = t.snapshot();
+      expect(snap['overlap_counts'], {'known': 1, 'unknown': 1});
+      expect(snap['threshold_counts'], {
+        'geometry_weak_10_deg': 0,
+        'geometry_normal_12_deg': 1,
+        'geometry_strong_15_deg': 1,
+        'geometry_other': 0,
+      });
+    });
+  });
+
   group('decision counts (spec §11「视差下限触发率」)', () {
     test('counts each kind and leaves untouched kinds at zero', () {
       final t = AutoCaptureTelemetry()..recordSessionStart(0);
@@ -103,11 +389,13 @@ void main() {
         AutoCaptureDecision.fire,
         tSec: 1,
         pace: ShutterPace.normal,
+        motionRole: AutoCaptureMotionRole.geometry,
       );
       t.recordDecision(
         AutoCaptureDecision.fire,
         tSec: 2,
         pace: ShutterPace.normal,
+        motionRole: AutoCaptureMotionRole.geometry,
       );
       t.recordDecision(
         AutoCaptureDecision.skipNotMoved,
@@ -129,14 +417,21 @@ void main() {
       });
     });
 
-    test('decisions total equals the sum of the six counts', () {
-      // `decisions` 是占比的分母。它与六个分档分开算,算错了整张表的
+    test('decisions total equals the sum of all decision buckets', () {
+      // `decisions` 是占比的分母。它与各分档分开算,算错了整张表的
       // 比例全错,而每一个单独的数看上去都对。
       final t = AutoCaptureTelemetry()..recordSessionStart(0);
       var tick = 0.0;
       void feed(AutoCaptureDecision d, int n) {
         for (var i = 0; i < n; i++) {
-          t.recordDecision(d, tSec: tick += 0.03, pace: ShutterPace.normal);
+          t.recordDecision(
+            d,
+            tSec: tick += 0.03,
+            pace: ShutterPace.normal,
+            motionRole: d == AutoCaptureDecision.fire
+                ? AutoCaptureMotionRole.geometry
+                : null,
+          );
         }
       }
 
@@ -160,6 +455,7 @@ void main() {
         AutoCaptureDecision.fire,
         tSec: 1,
         pace: ShutterPace.normal,
+        motionRole: AutoCaptureMotionRole.geometry,
       );
       expect(_counts(t)['fire'], 0);
       expect(_int(t, 'decisions'), 0);
@@ -173,6 +469,7 @@ void main() {
         AutoCaptureDecision.fire,
         tSec: 1,
         pace: ShutterPace.normal,
+        motionRole: AutoCaptureMotionRole.geometry,
       );
       t.recordSessionEnd();
       t.recordDecision(
@@ -192,6 +489,7 @@ void main() {
         AutoCaptureDecision.fire,
         tSec: 40.0,
         pace: ShutterPace.normal,
+        motionRole: AutoCaptureMotionRole.geometry,
       );
       t.recordDecision(
         AutoCaptureDecision.skipPaced,
@@ -243,6 +541,7 @@ void main() {
         AutoCaptureDecision.fire,
         tSec: 100.1,
         pace: ShutterPace.normal,
+        motionRole: AutoCaptureMotionRole.geometry,
       );
       expect(_int(t, 'fire_before_tick'), 1);
     });
@@ -287,13 +586,25 @@ void main() {
           AutoCaptureDecision.fire,
           tSec: i.toDouble(),
           pace: ShutterPace.normal,
+          motionRole: AutoCaptureMotionRole.geometry,
         );
       }
+      final terminal = t.recordSessionEnd()!;
+      final decisionCounts = terminal['decision_counts']! as Map<String, int>;
+      final fireRoleCounts = terminal['fire_role_counts']! as Map<String, int>;
       expect(
-        _int(t, 'fire_enqueued') + _int(t, 'fire_enqueue_failed'),
-        _counts(t)['fire'],
+        (terminal['fire_enqueued']! as int) +
+            (terminal['fire_enqueue_failed']! as int),
+        decisionCounts['fire'],
       );
-      expect(_int(t, 'fire_enqueue_failed'), 1);
+      expect(
+        fireRoleCounts.values.fold<int>(0, (sum, n) => sum + n),
+        decisionCounts['fire'],
+      );
+      expect(fireRoleCounts.keys.toSet(), {
+        for (final role in _fireRoles) role.name,
+      });
+      expect(terminal['fire_enqueue_failed'], 1);
     });
 
     test('fire outcomes outside a session are dropped', () {
@@ -317,7 +628,12 @@ void main() {
       ShutterPace pace = ShutterPace.normal,
     }) {
       final tel = AutoCaptureTelemetry()..recordSessionStart(0);
-      tel.recordDecision(AutoCaptureDecision.fire, tSec: t, pace: pace);
+      tel.recordDecision(
+        AutoCaptureDecision.fire,
+        tSec: t,
+        pace: pace,
+        motionRole: AutoCaptureMotionRole.geometry,
+      );
       return tel;
     }
 
@@ -341,6 +657,7 @@ void main() {
         AutoCaptureDecision.fire,
         tSec: 100.1,
         pace: ShutterPace.normal,
+        motionRole: AutoCaptureMotionRole.geometry,
       );
       expect(_int(t, 'fire_before_tick'), 1);
     });
@@ -352,6 +669,7 @@ void main() {
         AutoCaptureDecision.fire,
         tSec: 1.5,
         pace: ShutterPace.normal,
+        motionRole: AutoCaptureMotionRole.geometry,
       );
       // 1.6s:距**上一发**只有 0.1s ⇒ 早。若参照点错记成起跑(1.6s ≥ 0.25s),
       // 这一发会被漏掉。
@@ -359,6 +677,7 @@ void main() {
         AutoCaptureDecision.fire,
         tSec: 1.6,
         pace: ShutterPace.normal,
+        motionRole: AutoCaptureMotionRole.geometry,
       );
       expect(_int(t, 'fire_before_tick'), 1);
       expect(_counts(t)['fire'], 2);
@@ -376,6 +695,7 @@ void main() {
         AutoCaptureDecision.fire,
         tSec: 1.5,
         pace: ShutterPace.normal,
+        motionRole: AutoCaptureMotionRole.geometry,
       );
       expect(_int(t, 'fire_before_tick'), 0);
     });
@@ -536,6 +856,23 @@ void main() {
   });
 
   group('snapshot shape', () {
+    test('the startup anchor is accounted separately from four-role fires', () {
+      final t = AutoCaptureTelemetry()..recordSessionStart(0);
+      t.recordStartAnchorOutcome(enqueued: true);
+      final snap = t.snapshot();
+      expect(snap['start_anchor_attempted'], 1);
+      expect(snap['start_anchor_enqueued'], 1);
+      expect(snap['start_anchor_failed'], 0);
+      expect(snap['fire_enqueued'], 0);
+      expect(
+        (snap['fire_role_counts']! as Map<String, int>).values.fold<int>(
+          0,
+          (sum, count) => sum + count,
+        ),
+        0,
+      );
+    });
+
     test('base snapshot includes the documented role counts', () {
       // 「少而准」是本任务的显式要求。多一个字段就多一份要维护的口径,
       // 而 JSONL 的读者只会读文档里写了的那几个。
@@ -545,10 +882,21 @@ void main() {
         'session_duration_sec',
         'decisions',
         'decision_counts',
+        'start_anchor_attempted',
+        'start_anchor_enqueued',
+        'start_anchor_failed',
         'fire_enqueued',
         'fire_enqueue_failed',
         'fire_before_tick',
         'fire_role_counts',
+        'role_counts',
+        'predicate_counts',
+        'winner_decision_counts',
+        'overlap_counts',
+        'threshold_counts',
+        'no_candidate',
+        'selected_none',
+        'selected_none_decision_counts',
         'pace_sec',
       });
     });
@@ -563,6 +911,7 @@ void main() {
           AutoCaptureDecision.fire,
           tSec: i.toDouble(),
           pace: ShutterPace.normal,
+          motionRole: AutoCaptureMotionRole.geometry,
           movedM: 0.10 * i,
           fireDistM: 0.10,
           turnDeg: 2.0 * i,
@@ -584,6 +933,7 @@ void main() {
         AutoCaptureDecision.fire,
         tSec: 1,
         pace: ShutterPace.normal,
+        motionRole: AutoCaptureMotionRole.geometry,
         sharpness: 120,
         segMedianSharpness: 100,
       );
@@ -664,6 +1014,7 @@ void main() {
       expect(drive, contains('pace: _shutterPace'));
       expect(_codeOnly(drive), isNot(contains('DateTime.now()')));
       expect(page, contains('paceProvider: () => _shutterPace'));
+      expect(drive, contains('motion: _autoCapture.lastMotionMetrics'));
     });
 
     test('the self-stop path closes the session', () {
@@ -758,6 +1109,41 @@ void main() {
       );
       expect(start, contains('recordSessionStart(seed.timestamp)'));
       expect(_codeOnly(start), isNot(contains('DateTime.now()')));
+    });
+
+    test('the first tracked pose is captured as a real startup anchor', () {
+      final page = _pageSource();
+      final drive = _section(
+        page,
+        'void _driveAutoCapture(ARPose pose)',
+        'void _emitAutoTelemetry(',
+      );
+      final start = _section(
+        page,
+        'void _startAutoCapture(ARPose seed)',
+        'void _stopAutoCapture()',
+      );
+      final anchor = _section(
+        page,
+        'bool _onAutoCaptureStartAnchor()',
+        'bool _onAutoCaptureFire()',
+      );
+      expect(page, contains('onStartAnchor: _onAutoCaptureStartAnchor'));
+      expect(start, contains('_autoCapture.start(seed)'));
+      expect(start, contains('if (mounted) setState(() {});'));
+      expect(
+        start.indexOf('_autoCapture.start(seed)'),
+        lessThan(start.indexOf('if (mounted) setState(() {});')),
+        reason: 'queue admission must not run inside the setState callback',
+      );
+      expect(anchor, contains('_enqueueShutterCapture()'));
+      expect(anchor, contains('recordStartAnchorOutcome(enqueued: enqueued)'));
+      expect(anchor, contains('if (enqueued) _autoFirePulseToken++'));
+      expect(
+        anchor,
+        isNot(contains('recordFireOutcome(')),
+        reason: 'the anchor is not one of the four motion-role fires',
+      );
     });
 
     test('both enqueue outcomes are recorded at the fire hook', () {

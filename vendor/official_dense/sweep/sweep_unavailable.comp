@@ -1,0 +1,239 @@
+// Copyright (c), ETH Zurich and UNC Chapel Hill.
+// All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+//     * Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//
+//     * Redistributions in binary form must reproduce the above copyright
+//       notice, this list of conditions and the following disclaimer in the
+//       documentation and/or other materials provided with the distribution.
+//
+//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
+//       its contributors may be used to endorse or promote products derived
+//       from this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+
+#version 450
+
+// ABI_ONLY_DO_NOT_DISPATCH
+// Structural, read-only translation contract for COLMAP 4.1.1 a0d785f
+// SweepFromTopToBottom. patch_match_cuda.cu sha256:
+// 1aebd4482de0ea6f1f3aad45150c09e0479119c607a843959c8aaa381c0d4448
+//
+// It deliberately cannot produce a depth map. The exact photo-consistency
+// computer and official CUDA XORWOW sequence are not present yet. Replacing
+// either with a substitute would change the algorithm, so all resources are
+// read-only and sweep_contract.h rejects dispatch.
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer DepthInput {
+  float values[];
+} depth_input;
+layout(set = 0, binding = 1, std430) readonly buffer NormalInput {
+  float values[];
+} normal_input;
+layout(set = 0, binding = 2, std430) readonly buffer CostInput {
+  float values[];
+} cost_input;
+layout(set = 0, binding = 3, std430) readonly buffer SelectionInput {
+  float values[];
+} selection_input;
+layout(set = 0, binding = 4, std430) readonly buffer PreviousSelectionInput {
+  float values[];
+} previous_selection_input;
+layout(set = 0, binding = 6, std430) readonly buffer XorwowStateInput {
+  uint values[];
+} xorwow_state_input;
+layout(set = 0, binding = 7, std430) readonly buffer WorkspaceInput {
+  float values[];
+} workspace_input;
+
+layout(push_constant) uniform PushConstants {
+  uint width;
+  uint height;
+  uint num_sources;
+  uint workspace_max_dim;
+  uint source_width;
+  uint source_height;
+  uint rotation_0_to_3;
+  uint reserved;
+  vec4 ref_k;
+  vec4 ref_inv_k;
+  float perturbation;
+  float depth_min;
+  float depth_max;
+  int num_samples;
+  float sigma_spatial;
+  float sigma_color;
+  float ncc_sigma;
+  float min_triangulation_angle_rad;
+  float incident_angle_sigma;
+  float previous_selection_probability_weight;
+  float geometric_consistency_regularizer;
+  float geometric_consistency_max_cost;
+  float filter_min_ncc;
+  float filter_min_triangulation_angle_rad;
+  int filter_min_num_consistent;
+  float filter_geometric_consistency_max_cost;
+} pc;
+
+uint gpu_mat_index(uint slice, uint row, uint col) {
+  return (slice * pc.height + row) * pc.width + col;
+}
+
+uint normal_index(uint component, uint row, uint col) {
+  return gpu_mat_index(component, row, col);
+}
+
+uint workspace_index(uint kind, uint col, uint source) {
+  return kind * pc.workspace_max_dim * pc.num_sources +
+      col * pc.num_sources + source;
+}
+
+float propagate_depth(
+    float depth,
+    vec3 normal,
+    float row1,
+    float row2) {
+  float x1 = depth * (pc.ref_inv_k.z * row1 + pc.ref_inv_k.w);
+  float y1 = depth;
+  float x2 = x1 + normal.z;
+  float y2 = y1 - normal.y;
+  float x4 = pc.ref_inv_k.z * row2 + pc.ref_inv_k.w;
+  float denominator = x2 - x1 + x4 * (y1 - y2);
+  const float kEps = 1e-5;
+  if (abs(denominator) < kEps) {
+    return depth;
+  }
+  float numerator = y1 * x2 - x1 * y2;
+  return numerator / denominator;
+}
+
+float perturb_depth_without_bounds(float depth, float uniform_draw) {
+  float minimum_depth = (1.0 - pc.perturbation) * depth;
+  float maximum_depth = (1.0 + pc.perturbation) * depth;
+  return uniform_draw * (maximum_depth - minimum_depth) + minimum_depth;
+}
+
+int find_min_cost_last_tie(float costs[5]) {
+  float min_cost = costs[0];
+  int min_cost_index = 0;
+  for (int index = 1; index < 5; ++index) {
+    if (costs[index] <= min_cost) {
+      min_cost = costs[index];
+      min_cost_index = index;
+    }
+  }
+  return min_cost_index;
+}
+
+float cdf_value(uint base, uint requested_index, uint count) {
+  float probability_sum = 0.0;
+  for (uint index = 0u; index < count; ++index) {
+    probability_sum += workspace_input.values[base + index];
+  }
+  float inverse_probability_sum = 1.0 / probability_sum;
+  float cumulative_probability = 0.0;
+  for (uint index = 0u; index <= requested_index; ++index) {
+    float probability =
+        workspace_input.values[base + index] * inverse_probability_sum;
+    cumulative_probability += probability;
+  }
+  return cumulative_probability;
+}
+
+int strict_cdf_selection(uint base, uint count, float draw) {
+  for (uint index = 0u; index < count; ++index) {
+    float cdf = cdf_value(base, index, count);
+    if (cdf > draw) {
+      return int(index);
+    }
+  }
+  return -1;
+}
+
+void main() {
+  uint col = gl_GlobalInvocationID.x;
+  float structural_sink = 0.0;
+
+  // Frozen stage order: all backward messages precede parameter estimation.
+  if (col < pc.width) {
+    for (uint source = 0u; source < pc.num_sources; ++source) {
+      float beta = 0.5;
+      for (uint reverse_row = pc.height; reverse_row > 0u; --reverse_row) {
+        uint row = reverse_row - 1u;
+        structural_sink += cost_input.values[gpu_mat_index(source, row, col)];
+        structural_sink += beta;
+        // Exact likelihood update is part of the missing photo-cost closure.
+      }
+    }
+  }
+
+  vec3 previous_normal = vec3(0.0);
+  float previous_depth = 0.0;
+  if (col < pc.width && pc.height > 0u) {
+    previous_depth = depth_input.values[gpu_mat_index(0u, 0u, col)];
+    previous_normal = vec3(
+        normal_input.values[normal_index(0u, 0u, col)],
+        normal_input.values[normal_index(1u, 0u, col)],
+        normal_input.values[normal_index(2u, 0u, col)]);
+  }
+
+  // Read(row) in the CUDA implementation is collective. No lane may return
+  // early: even padded columns execute this loop and the same barrier count.
+  for (uint row = 0u; row < pc.height; ++row) {
+    barrier(); // every lane, exactly once per row
+    if (col >= pc.width) {
+      continue;
+    }
+
+    previous_depth = propagate_depth(
+        previous_depth, previous_normal, float(row) - 1.0, float(row));
+    float current_depth =
+        depth_input.values[gpu_mat_index(0u, row, col)];
+    vec3 current_normal = vec3(
+        normal_input.values[normal_index(0u, row, col)],
+        normal_input.values[normal_index(1u, row, col)],
+        normal_input.values[normal_index(2u, row, col)]);
+
+    // Fixed CUDA order: current/current, previous/previous, random/random,
+    // current/random, random/current. No cost can be evaluated until the exact
+    // RNG stream and photo-consistency computer are supplied.
+    float candidate_depths[5] = float[5](
+        current_depth,
+        previous_depth,
+        current_depth,
+        current_depth,
+        current_depth);
+    float structural_costs[5] = float[5](0.0, 0.0, 0.0, 0.0, 0.0);
+    int last_tie = find_min_cost_last_tie(structural_costs);
+    structural_sink += candidate_depths[last_tie] + current_normal.x;
+
+    if (pc.num_sources > 0u) {
+      uint cdf_base = workspace_index(1u, col, 0u);
+      structural_sink += float(strict_cdf_selection(cdf_base, pc.num_sources, 0.5));
+    }
+  }
+
+  // Official CUDA writes the advanced RNG state back to logical row 0 only
+  // after the complete H-row loop. This structural shader is read-only, so the
+  // required final write is intentionally absent and dispatch stays disabled.
+  if (structural_sink == uintBitsToFloat(xorwow_state_input.values[0])) {
+    // Preserve references for ABI validation without creating an output path.
+  }
+}

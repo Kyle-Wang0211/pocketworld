@@ -4,6 +4,7 @@
 bool shouldAutoExitReconstructionDrafts({
   required bool showingDrafts,
   required bool reconstructionTerminal,
+  required bool recordActionInProgress,
 }) {
-  return showingDrafts && reconstructionTerminal;
+  return showingDrafts && reconstructionTerminal && !recordActionInProgress;
 }

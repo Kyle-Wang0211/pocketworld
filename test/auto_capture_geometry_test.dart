@@ -441,6 +441,36 @@ void main() {
       expect(result.geometryParallaxDeg, closeTo(1.49, 1e-9));
       expect(result.role, AutoCaptureMotionRole.rotationCoverage);
     });
+
+    test(
+      'rotation coverage wins when turn and radial predicates are both true',
+      () {
+        final base = frame(Vector3.zero());
+        final result = classifyAutoCaptureMotion(
+          geometryBaseline: base,
+          captureBaseline: base,
+          current: frame(
+            Vector3(0, 0, -0.2),
+            orientation: Quaternion.axisAngle(
+              Vector3(0, 1, 0),
+              12 * math.pi / 180,
+            ),
+          ),
+          target: target,
+        );
+
+        expect(result.viewTurnDeg, closeTo(12, 1e-9));
+        expect(
+          result.geometryParallaxDeg,
+          lessThan(kAutoCaptureStableParallaxFloorDeg),
+        );
+        expect(
+          result.depthScaleRatio,
+          greaterThanOrEqualTo(kAutoCaptureRadialScaleStep),
+        );
+        expect(result.role, AutoCaptureMotionRole.rotationCoverage);
+      },
+    );
   });
 
   // ————————————————————————————————————————————————————————————————

@@ -113,6 +113,7 @@ class _WiredHost {
   int fireAttempts = 0;
 
   late final AutoCaptureController controller = AutoCaptureController(
+    onStartAnchor: () => true,
     onFire: () {
       fireAttempts++;
       final ticket = queue.enqueue(verifiedCount: verified);
@@ -538,6 +539,7 @@ void main() {
           tSec: p.timestamp,
           pace: ShutterPace.normal,
           thermalState: 0,
+          motion: h.controller.lastMotionMetrics,
         );
         if (d == AutoCaptureDecision.fire) fireTimes.add(p.timestamp);
       }
@@ -879,9 +881,16 @@ void main() {
           'bool _onAutoCaptureFire()',
           'void _onShutterTap()',
         );
-        // 脉冲与 fire_enqueued 在同一处记账,只有一处 ++。
+        // 四角色开火与起跑锚点各有一处真实入队脉冲；两者都只在 admitted
+        // 后自增，不能回到 decision 驱动。
         expect(fire, contains('if (enqueued) _autoFirePulseToken++;'));
-        expect(RegExp(r'_autoFirePulseToken\+\+').allMatches(page).length, 1);
+        final anchor = _section(
+          page,
+          'bool _onAutoCaptureStartAnchor()',
+          'bool _onAutoCaptureFire()',
+        );
+        expect(anchor, contains('if (enqueued) _autoFirePulseToken++;'));
+        expect(RegExp(r'_autoFirePulseToken\+\+').allMatches(page).length, 2);
         final drive = _section(
           page,
           'void _driveAutoCapture(ARPose pose)',

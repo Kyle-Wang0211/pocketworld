@@ -7,13 +7,24 @@ void main() {
       shouldAutoExitReconstructionDrafts(
         showingDrafts: true,
         reconstructionTerminal: true,
+        recordActionInProgress: false,
       ),
       isTrue,
     );
     expect(
       shouldAutoExitReconstructionDrafts(
         showingDrafts: true,
+        reconstructionTerminal: true,
+        recordActionInProgress: true,
+      ),
+      isFalse,
+      reason: 'a rename/delete sheet must keep its owning Drafts tree mounted',
+    );
+    expect(
+      shouldAutoExitReconstructionDrafts(
+        showingDrafts: true,
         reconstructionTerminal: false,
+        recordActionInProgress: false,
       ),
       isFalse,
     );
@@ -21,6 +32,7 @@ void main() {
       shouldAutoExitReconstructionDrafts(
         showingDrafts: false,
         reconstructionTerminal: true,
+        recordActionInProgress: false,
       ),
       isFalse,
     );
@@ -28,6 +40,7 @@ void main() {
       shouldAutoExitReconstructionDrafts(
         showingDrafts: false,
         reconstructionTerminal: false,
+        recordActionInProgress: false,
       ),
       isFalse,
     );

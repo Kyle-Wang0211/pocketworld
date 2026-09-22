@@ -151,6 +151,7 @@ class MePage extends StatefulWidget {
     this.activeReconstructionPipelineKind = CapturePipelineKind.self,
     this.onActiveReconstructionTap,
     this.onActiveReconstructionDelete,
+    this.onRecordActionActivityChanged,
     this.officialResumeRoute,
     this.officialViewerRoute,
   });
@@ -164,6 +165,12 @@ class MePage extends StatefulWidget {
   final CapturePipelineKind activeReconstructionPipelineKind;
   final VoidCallback? onActiveReconstructionTap;
   final ActiveReconstructionDelete? onActiveReconstructionDelete;
+
+  /// Keeps a temporary Drafts owner mounted while its long-press sheet and
+  /// any follow-up rename/delete dialog are active. Without this handshake a
+  /// reconstruction that becomes terminal behind the sheet can replace this
+  /// widget, leaving a visually live but functionally orphaned modal route.
+  final ValueChanged<bool>? onRecordActionActivityChanged;
 
   /// Injection point for the physically separate official resume page.
   /// Until that page is installed, official records never fall back to the
@@ -306,6 +313,8 @@ class _MePageState extends State<MePage> {
                   onActiveReconstructionTap: widget.onActiveReconstructionTap,
                   onActiveReconstructionDelete:
                       widget.onActiveReconstructionDelete,
+                  onRecordActionActivityChanged:
+                      widget.onRecordActionActivityChanged,
                   officialResumeRoute: widget.officialResumeRoute,
                   officialViewerRoute: widget.officialViewerRoute,
                 ),
@@ -324,6 +333,7 @@ class _MyWorksSection extends StatefulWidget {
   final CapturePipelineKind activeReconstructionPipelineKind;
   final VoidCallback? onActiveReconstructionTap;
   final ActiveReconstructionDelete? onActiveReconstructionDelete;
+  final ValueChanged<bool>? onRecordActionActivityChanged;
   final OfficialScanResumeRoute? officialResumeRoute;
   final OfficialScanViewerRoute? officialViewerRoute;
 
@@ -332,6 +342,7 @@ class _MyWorksSection extends StatefulWidget {
     this.activeReconstructionPipelineKind = CapturePipelineKind.self,
     this.onActiveReconstructionTap,
     this.onActiveReconstructionDelete,
+    this.onRecordActionActivityChanged,
     this.officialResumeRoute,
     this.officialViewerRoute,
   });
@@ -638,76 +649,81 @@ class _MyWorksSectionState extends State<_MyWorksSection>
   /// Drafts can explicitly enter the cloud worker queue from here; upload
   /// acknowledgement alone is just "raw safely reached cloud".
   Future<void> _showRecordActions(ScanRecord record) async {
-    final l = AppL10n.of(context);
-    // 拍摄期落盘的稀疏点云(sfm_sparse.ply)存在时,提供 in-app 查看入口。
-    final captureDir = record.captureDir;
-    final sparsePlyPath = captureDir == null
-        ? null
-        : '$captureDir/${sparsePlyFileNameForPipeline(record.pipelineKind)}';
-    final canViewSparse =
-        sparsePlyPath != null && File(sparsePlyPath).existsSync();
-    // 断点数据仍在(sfm_live.db 按契约保留)且当前没有别的重建在跑时,
-    // 提供"重新重建点云"入口 —— 覆盖 PLY 已存在的场景(点击卡片只会打开
-    // 查看器,永远到不了 offerResume 分支):恢复幂等,完成后覆盖旧 PLY。
-    // 有活跃重建时不提供(双原生 SfM 会话会把内存/热推过真机上限,与
-    // draft_card_action 的续跑门同一规矩)。
-    final rebuildDir =
-        widget.activeReconstructionCaptureDir == null && captureDir != null
-        ? await _resolveRecoverableCaptureDir(record)
-        : null;
-    if (!mounted) return;
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: AetherColors.bgCanvas,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (canViewSparse)
-              ListTile(
-                leading: const Icon(Icons.grain_rounded),
-                title: const Text('查看点云'),
-                onTap: () => Navigator.of(ctx).pop('view_sparse'),
-              ),
-            if (rebuildDir != null)
-              ListTile(
-                leading: const Icon(Icons.restart_alt_rounded),
-                title: Text(canViewSparse ? '重新重建点云' : '继续重建点云'),
-                onTap: () => Navigator.of(ctx).pop('rebuild_sparse'),
-              ),
-            ListTile(
-              leading: const Icon(Icons.edit_outlined),
-              title: Text(l.meActionRename),
-              onTap: () => Navigator.of(ctx).pop('rename'),
-            ),
-            ListTile(
-              leading: const Icon(
-                Icons.delete_outline,
-                color: AetherColors.danger,
-              ),
-              title: Text(
-                l.meActionDelete,
-                style: const TextStyle(color: AetherColors.danger),
-              ),
-              onTap: () => Navigator.of(ctx).pop('delete'),
-            ),
-            const SizedBox(height: 4),
-          ],
+    widget.onRecordActionActivityChanged?.call(true);
+    try {
+      final l = AppL10n.of(context);
+      // 拍摄期落盘的稀疏点云(sfm_sparse.ply)存在时,提供 in-app 查看入口。
+      final captureDir = record.captureDir;
+      final sparsePlyPath = captureDir == null
+          ? null
+          : '$captureDir/${sparsePlyFileNameForPipeline(record.pipelineKind)}';
+      final canViewSparse =
+          sparsePlyPath != null && File(sparsePlyPath).existsSync();
+      // 断点数据仍在(sfm_live.db 按契约保留)且当前没有别的重建在跑时,
+      // 提供"重新重建点云"入口 —— 覆盖 PLY 已存在的场景(点击卡片只会打开
+      // 查看器,永远到不了 offerResume 分支):恢复幂等,完成后覆盖旧 PLY。
+      // 有活跃重建时不提供(双原生 SfM 会话会把内存/热推过真机上限,与
+      // draft_card_action 的续跑门同一规矩)。
+      final rebuildDir =
+          widget.activeReconstructionCaptureDir == null && captureDir != null
+          ? await _resolveRecoverableCaptureDir(record)
+          : null;
+      if (!mounted) return;
+      final action = await showModalBottomSheet<String>(
+        context: context,
+        backgroundColor: AetherColors.bgCanvas,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
         ),
-      ),
-    );
-    if (!mounted) return;
-    if (action == 'view_sparse' && sparsePlyPath != null) {
-      await _openSparseCloud(record, sparsePlyPath);
-    } else if (action == 'rebuild_sparse' && rebuildDir != null) {
-      await _offerResume(record, rebuildDir, regenerate: canViewSparse);
-    } else if (action == 'rename') {
-      await _renameRecord(record);
-    } else if (action == 'delete') {
-      await _confirmAndDelete(record);
+        builder: (ctx) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (canViewSparse)
+                ListTile(
+                  leading: const Icon(Icons.grain_rounded),
+                  title: const Text('查看点云'),
+                  onTap: () => Navigator.of(ctx).pop('view_sparse'),
+                ),
+              if (rebuildDir != null)
+                ListTile(
+                  leading: const Icon(Icons.restart_alt_rounded),
+                  title: Text(canViewSparse ? '重新重建点云' : '继续重建点云'),
+                  onTap: () => Navigator.of(ctx).pop('rebuild_sparse'),
+                ),
+              ListTile(
+                leading: const Icon(Icons.edit_outlined),
+                title: Text(l.meActionRename),
+                onTap: () => Navigator.of(ctx).pop('rename'),
+              ),
+              ListTile(
+                leading: const Icon(
+                  Icons.delete_outline,
+                  color: AetherColors.danger,
+                ),
+                title: Text(
+                  l.meActionDelete,
+                  style: const TextStyle(color: AetherColors.danger),
+                ),
+                onTap: () => Navigator.of(ctx).pop('delete'),
+              ),
+              const SizedBox(height: 4),
+            ],
+          ),
+        ),
+      );
+      if (!mounted) return;
+      if (action == 'view_sparse' && sparsePlyPath != null) {
+        await _openSparseCloud(record, sparsePlyPath);
+      } else if (action == 'rebuild_sparse' && rebuildDir != null) {
+        await _offerResume(record, rebuildDir, regenerate: canViewSparse);
+      } else if (action == 'rename') {
+        await _renameRecord(record);
+      } else if (action == 'delete') {
+        await _confirmAndDelete(record);
+      }
+    } finally {
+      widget.onRecordActionActivityChanged?.call(false);
     }
   }
 

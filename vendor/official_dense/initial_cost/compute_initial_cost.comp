@@ -1,0 +1,466 @@
+// Copyright (c), ETH Zurich and UNC Chapel Hill.
+// All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+//     * Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//     * Redistributions in binary form must reproduce the above copyright
+//       notice, this list of conditions and the following disclaimer in the
+//       documentation and/or other materials provided with the distribution.
+//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
+//       its contributors may be used to endorse or promote products derived
+//       from this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+
+#version 450
+
+// Mechanical Vulkan translation of COLMAP 4.1.1 a0d785f ComputeInitialCost.
+// patch_match_cuda.cu sha256 1aebd4482de0ea6f1f3aad45150c09e0479119c607a843959c8aaa381c0d4448
+//
+// Fixed specialization: official default kWindowSize=11, kWindowStep=1.
+// Dispatch contract: ceil(width / 32) workgroups, exactly 32x1 invocations.
+// One invocation owns one column and serially visits every row and source.
+// No invocation may exit before the shared-memory barrier.
+//
+// Storage contract (set 0) follows patch_match_abi.h:
+//   0 depth float [H][W]
+//   1 normal float [3][H][W], slice-major
+//   2 cost float [num_sources][H][W], slice-major
+//   9 filtered reference image, one uint containing each original uint8 byte
+//  10 reference bilateral weighted sum float [H][W]
+//  11 reference bilateral weighted squared sum float [H][W]
+//  13 active pose table float [num_sources][43]
+//  14 source gray sampler2DArray, shared with every sweep
+// The host must not dispatch this shader unless every resource and the full
+// 128-byte PatchPC block have been bound. There is no partial/stub execution.
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer DepthMap {
+  float values[];
+} depth_map;
+
+layout(set = 0, binding = 1, std430) readonly buffer NormalMap {
+  float values[];
+} normal_map;
+
+layout(set = 0, binding = 2, std430) writeonly buffer CostMap {
+  float values[];
+} cost_map;
+
+layout(set = 0, binding = 9, std430) readonly buffer FilteredReferenceImage {
+  uint values[];
+} ref_image;
+
+layout(set = 0, binding = 10, std430) readonly buffer ReferenceWeightedSum {
+  float values[];
+} ref_sum_image;
+
+layout(set = 0, binding = 11, std430) readonly buffer ReferenceWeightedSquaredSum {
+  float values[];
+} ref_squared_sum_image;
+
+layout(set = 0, binding = 13, std430) readonly buffer ActivePoseTable {
+  float values[];
+} poses;
+
+layout(set = 0, binding = 14) uniform sampler2DArray source_gray_images;
+
+layout(push_constant) uniform PatchPC {
+  uint width;
+  uint height;
+  uint num_sources;
+  uint workspace_max_dim;
+  uint source_width;
+  uint source_height;
+  uint rotation_0_to_3;
+  uint reserved;
+
+  float ref_K_fx;
+  float ref_K_cx;
+  float ref_K_fy;
+  float ref_K_cy;
+  float ref_inv_fx;
+  float ref_inv_neg_cx_fx;
+  float ref_inv_fy;
+  float ref_inv_neg_cy_fy;
+
+  float perturbation;
+  float depth_min;
+  float depth_max;
+  int num_samples;
+  float sigma_spatial;
+  float sigma_color;
+  float ncc_sigma;
+  float min_triangulation_angle_rad;
+  float incident_angle_sigma;
+  float prev_sel_prob_weight;
+  float geom_consistency_regularizer;
+  float geom_consistency_max_cost;
+  float filter_min_ncc;
+  float filter_min_triangulation_angle_rad;
+  int filter_min_num_consistent;
+  float filter_geom_consistency_max_cost;
+} pc;
+
+const int k_window_size = 11;
+const int k_window_radius = 5;
+const int k_window_step = 1;
+const int k_threads_per_block = 32;
+const int k_thread_block_size = 3;
+const int k_local_num_columns = k_thread_block_size * k_threads_per_block;
+shared float local_ref_image_data[1056];
+
+// [BATCH-REF 2026-08-30] 一次 dispatch 覆盖 N 个 reference,序号取
+// gl_WorkGroupID.y(官方这里的 grid.y = 1,借用它与原语义零冲突)。
+// 本 kernel 绑了 sampler2DArray,没法像纯 buffer 的 kernel 那样按偏移
+// 切子区间,所以只能在 shader 里寻址。
+// 与 sweep 用的是同一套 stride 约定:
+//   平面量  → ref * W*H
+//   分量量  → ref * 3*W*H
+//   每源量  → ref * num_sources*W*H
+//   位姿    → ref * (num_sources*43 + 8)   ← 尾部 8 个是 ref_k/ref_inv_k
+//   纹理层  → ref * num_sources + source
+uint RefIndex() { return gl_WorkGroupID.y; }
+
+uint image_index(uint row, uint col) {
+  return RefIndex() * pc.width * pc.height + row * pc.width + col;
+}
+
+uint normal_index(uint component, uint row, uint col) {
+  return RefIndex() * 3u * pc.width * pc.height +
+         component * pc.width * pc.height + row * pc.width + col;
+}
+
+uint pose_index(uint image_idx, uint element) {
+  return RefIndex() * (pc.num_sources * 43u + 8u) + image_idx * 43u + element;
+}
+
+uint SourceLayer(uint image_idx) {
+  return RefIndex() * pc.num_sources + image_idx;
+}
+
+// [BATCH-REF] 逐 reference 的参考相机参数。本 kernel 是**在 shader 内**
+// 批处理的(y = N),一次 dispatch 只有一份 push constant,而实测 132 帧的
+// 内参逐帧都不同 ⇒ 必须按 RefIndex() 从位姿表尾部取,不能用 pc.ref_inv_*。
+// 尾部布局见 patch_match_abi.h:[0..3]=ref_k, [4..7]=ref_inv_k。
+vec4 g_ref_inv_k;
+
+void LoadReferenceParams() {
+  uint tail = RefIndex() * (pc.num_sources * 43u + 8u) + pc.num_sources * 43u;
+  g_ref_inv_k = vec4(poses.values[tail + 4u], poses.values[tail + 5u],
+                     poses.values[tail + 6u], poses.values[tail + 7u]);
+}
+
+float sample_ref_point_border(int row, int col) {
+  if (row < 0 || row >= int(pc.height) || col < 0 || col >= int(pc.width)) {
+    return 0.0;
+  }
+  return float(ref_image.values[image_index(uint(row), uint(col))]) / 255.0;
+}
+
+float sample_source_image(float col_plus_half,
+                          float row_plus_half,
+                          uint image_idx) {
+  vec2 coordinate = vec2(
+      col_plus_half / float(pc.source_width),
+      row_plus_half / float(pc.source_height));
+  return textureLod(
+      source_gray_images, vec3(coordinate, float(SourceLayer(image_idx))),
+      0.0).r;
+}
+
+void read_local_ref_image(int row, int first_row) {
+  int thread_id = int(gl_LocalInvocationID.x);
+  int thread_block_first_id = int(gl_WorkGroupID.x) * k_threads_per_block;
+  int local_col_start = thread_id;
+  int global_col_start = thread_block_first_id - k_threads_per_block + thread_id;
+
+  if (row == first_row) {
+    int global_row = row - k_window_radius;
+    for (int local_row = 0;
+         local_row < k_window_size;
+         ++local_row, ++global_row) {
+      int local_col = local_col_start;
+      int global_col = global_col_start;
+      for (int block = 0; block < k_thread_block_size; ++block) {
+        local_ref_image_data[local_row * k_local_num_columns + local_col] =
+            sample_ref_point_border(global_row, global_col);
+        local_col += k_threads_per_block;
+        global_col += k_threads_per_block;
+      }
+    }
+  } else {
+    for (int local_row = 1; local_row < k_window_size; ++local_row) {
+      int local_col = local_col_start;
+      for (int block = 0; block < k_thread_block_size; ++block) {
+        local_ref_image_data[(local_row - 1) * k_local_num_columns + local_col] =
+            local_ref_image_data[local_row * k_local_num_columns + local_col];
+        local_col += k_threads_per_block;
+      }
+    }
+
+    int local_row = k_window_size - 1;
+    int global_row = row + k_window_radius;
+    int local_col = local_col_start;
+    int global_col = global_col_start;
+    for (int block = 0; block < k_thread_block_size; ++block) {
+      local_ref_image_data[local_row * k_local_num_columns + local_col] =
+          sample_ref_point_border(global_row, global_col);
+      local_col += k_threads_per_block;
+      global_col += k_threads_per_block;
+    }
+  }
+}
+
+void compose_homography(uint image_idx,
+                        int row,
+                        uint col,
+                        float depth,
+                        vec3 normal,
+                        out float H[9]) {
+  float K[4];
+  for (uint i = 0u; i < 4u; ++i) {
+    K[i] = poses.values[pose_index(image_idx, i)];
+  }
+
+  float R[9];
+  for (uint i = 0u; i < 9u; ++i) {
+    R[i] = poses.values[pose_index(image_idx, i + 4u)];
+  }
+
+  float T[3];
+  for (uint i = 0u; i < 3u; ++i) {
+    T[i] = poses.values[pose_index(image_idx, i + 13u)];
+  }
+
+  float dist =
+      depth * (normal.x * (g_ref_inv_k.x * float(col) +
+                           g_ref_inv_k.y) +
+               normal.y * (g_ref_inv_k.z * float(row) +
+                           g_ref_inv_k.w) +
+               normal.z);
+  float inv_dist = 1.0 / dist;
+  float inv_dist_N0 = inv_dist * normal.x;
+  float inv_dist_N1 = inv_dist * normal.y;
+  float inv_dist_N2 = inv_dist * normal.z;
+
+  H[0] = g_ref_inv_k.x *
+         (K[0] * (R[0] + inv_dist_N0 * T[0]) +
+          K[1] * (R[6] + inv_dist_N0 * T[2]));
+  H[1] = g_ref_inv_k.z *
+         (K[0] * (R[1] + inv_dist_N1 * T[0]) +
+          K[1] * (R[7] + inv_dist_N1 * T[2]));
+  H[2] = K[0] * (R[2] + inv_dist_N2 * T[0]) +
+         K[1] * (R[8] + inv_dist_N2 * T[2]) +
+         g_ref_inv_k.y *
+             (K[0] * (R[0] + inv_dist_N0 * T[0]) +
+              K[1] * (R[6] + inv_dist_N0 * T[2])) +
+         g_ref_inv_k.w *
+             (K[0] * (R[1] + inv_dist_N1 * T[0]) +
+              K[1] * (R[7] + inv_dist_N1 * T[2]));
+  H[3] = g_ref_inv_k.x *
+         (K[2] * (R[3] + inv_dist_N0 * T[1]) +
+          K[3] * (R[6] + inv_dist_N0 * T[2]));
+  H[4] = g_ref_inv_k.z *
+         (K[2] * (R[4] + inv_dist_N1 * T[1]) +
+          K[3] * (R[7] + inv_dist_N1 * T[2]));
+  H[5] = K[2] * (R[5] + inv_dist_N2 * T[1]) +
+         K[3] * (R[8] + inv_dist_N2 * T[2]) +
+         g_ref_inv_k.y *
+             (K[2] * (R[3] + inv_dist_N0 * T[1]) +
+              K[3] * (R[6] + inv_dist_N0 * T[2])) +
+         g_ref_inv_k.w *
+             (K[2] * (R[4] + inv_dist_N1 * T[1]) +
+              K[3] * (R[7] + inv_dist_N1 * T[2]));
+  H[6] = g_ref_inv_k.x * (R[6] + inv_dist_N0 * T[2]);
+  H[7] = g_ref_inv_k.z * (R[7] + inv_dist_N1 * T[2]);
+  H[8] = R[8] +
+         g_ref_inv_k.y * (R[6] + inv_dist_N0 * T[2]) +
+         g_ref_inv_k.w * (R[7] + inv_dist_N1 * T[2]) +
+         inv_dist_N2 * T[2];
+}
+
+float bilateral_weight(int row_diff,
+                       int col_diff,
+                       float color1,
+                       float color2) {
+  float spatial_normalization =
+      1.0 / (2.0 * pc.sigma_spatial * pc.sigma_spatial);
+  float color_normalization =
+      1.0 / (2.0 * pc.sigma_color * pc.sigma_color);
+  float spatial_dist_squared =
+      float(row_diff * row_diff + col_diff * col_diff);
+  float color_dist = color1 - color2;
+  return exp(-spatial_dist_squared * spatial_normalization -
+             color_dist * color_dist * color_normalization);
+}
+
+float compute_photo_cost(uint image_idx,
+                         int row,
+                         uint col,
+                         float depth,
+                         vec3 normal,
+                         float local_ref_sum,
+                         float local_ref_squared_sum) {
+  float tform[9];
+  compose_homography(image_idx, row, col, depth, normal, tform);
+
+  float tform_step[8];
+  for (int i = 0; i < 8; ++i) {
+    tform_step[i] = float(k_window_step) * tform[i];
+  }
+
+  int thread_id = int(gl_LocalInvocationID.x);
+  int row_start = row - k_window_radius;
+  int col_start = int(col) - k_window_radius;
+
+  float col_src = tform[0] * float(col_start) +
+                  tform[1] * float(row_start) + tform[2];
+  float row_src = tform[3] * float(col_start) +
+                  tform[4] * float(row_start) + tform[5];
+  float z = tform[6] * float(col_start) +
+            tform[7] * float(row_start) + tform[8];
+  float base_col_src = col_src;
+  float base_row_src = row_src;
+  float base_z = z;
+
+  int ref_image_idx = k_threads_per_block - k_window_radius + thread_id;
+  int ref_image_base_idx = ref_image_idx;
+
+  float ref_center_color =
+      local_ref_image_data[ref_image_idx +
+                           k_window_radius * 3 * k_threads_per_block +
+                           k_window_radius];
+  float ref_color_sum = local_ref_sum;
+  float ref_color_squared_sum = local_ref_squared_sum;
+  float src_color_sum = 0.0;
+  float src_color_squared_sum = 0.0;
+  float src_ref_color_sum = 0.0;
+  float bilateral_weight_sum = 0.0;
+
+  for (int window_row = -k_window_radius;
+       window_row <= k_window_radius;
+       window_row += k_window_step) {
+    for (int window_col = -k_window_radius;
+         window_col <= k_window_radius;
+         window_col += k_window_step) {
+      float inv_z = 1.0 / z;
+      float norm_col_src = inv_z * col_src + 0.5;
+      float norm_row_src = inv_z * row_src + 0.5;
+      float ref_color = local_ref_image_data[ref_image_idx];
+      float src_color = sample_source_image(
+          norm_col_src, norm_row_src, image_idx);
+
+      float weight = bilateral_weight(
+          window_row, window_col, ref_center_color, ref_color);
+      float bilateral_weight_src = weight * src_color;
+
+      src_color_sum += bilateral_weight_src;
+      src_color_squared_sum += bilateral_weight_src * src_color;
+      src_ref_color_sum += bilateral_weight_src * ref_color;
+      bilateral_weight_sum += weight;
+
+      ref_image_idx += k_window_step;
+      col_src += tform_step[0];
+      row_src += tform_step[3];
+      z += tform_step[6];
+    }
+
+    ref_image_base_idx += k_window_step * 3 * k_threads_per_block;
+    ref_image_idx = ref_image_base_idx;
+
+    base_col_src += tform_step[1];
+    base_row_src += tform_step[4];
+    base_z += tform_step[7];
+
+    col_src = base_col_src;
+    row_src = base_row_src;
+    z = base_z;
+  }
+
+  float inv_bilateral_weight_sum = 1.0 / bilateral_weight_sum;
+  src_color_sum *= inv_bilateral_weight_sum;
+  src_color_squared_sum *= inv_bilateral_weight_sum;
+  src_ref_color_sum *= inv_bilateral_weight_sum;
+
+  float ref_color_var =
+      ref_color_squared_sum - ref_color_sum * ref_color_sum;
+  float src_color_var =
+      src_color_squared_sum - src_color_sum * src_color_sum;
+
+  const float k_min_var = 1e-5;
+  if (ref_color_var < k_min_var || src_color_var < k_min_var) {
+    return 2.0;
+  }
+
+  float src_ref_color_covar =
+      src_ref_color_sum - ref_color_sum * src_color_sum;
+  float src_ref_color_var = sqrt(ref_color_var * src_color_var);
+  return max(0.0, min(2.0,
+      1.0 - src_ref_color_covar / src_ref_color_var));
+}
+
+void main() {
+  // [BATCH-REF] 必须在任何使用 g_ref_inv_k 的调用之前。
+  LoadReferenceParams();
+  uint col = gl_WorkGroupID.x * 32u + gl_LocalInvocationID.x;
+  uint row_begin = pc.rotation_0_to_3 & 0xffffu;
+  uint row_end = (pc.rotation_0_to_3 >> 16u) & 0x7fffu;
+  if (row_end <= row_begin || row_end > pc.height) {
+    row_begin = 0u;
+    row_end = pc.height;
+  }
+
+  for (int row = int(row_begin); row < int(row_end); ++row) {
+    // Every invocation participates, including columns outside the image,
+    // because its three shared columns feed neighboring valid patches.
+    read_local_ref_image(row, int(row_begin));
+    memoryBarrierShared();
+    barrier();
+
+    if (col < pc.width) {
+      uint pixel_index = image_index(uint(row), col);
+      float depth = depth_map.values[pixel_index];
+      vec3 normal = vec3(
+          normal_map.values[normal_index(0u, uint(row), col)],
+          normal_map.values[normal_index(1u, uint(row), col)],
+          normal_map.values[normal_index(2u, uint(row), col)]);
+      float local_ref_sum = ref_sum_image.values[pixel_index];
+      float local_ref_squared_sum = ref_squared_sum_image.values[pixel_index];
+
+      for (uint image_idx = 0u; image_idx < pc.num_sources; ++image_idx) {
+        uint output_index =
+            RefIndex() * pc.num_sources * pc.width * pc.height +
+            image_idx * pc.width * pc.height + uint(row) * pc.width + col;
+        cost_map.values[output_index] = compute_photo_cost(
+            image_idx,
+            row,
+            col,
+            depth,
+            normal,
+            local_ref_sum,
+            local_ref_squared_sum);
+      }
+    }
+
+    // CUDA relies on one-warp lockstep before the next row shifts the shared
+    // tile. Vulkan has no portable 32-lane warp guarantee, so this workgroup
+    // barrier is the exact synchronization replacement for that dependency.
+    memoryBarrierShared();
+    barrier();
+  }
+}

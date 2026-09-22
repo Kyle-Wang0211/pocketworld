@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "upstream": {
+    "name": "COLMAP",
+    "version": "4.1.1",
+    "commit": "a0d785fba74b2664f31edc4a29026a8b27c00f67"
+  },
+  "cuda_baseline": {
+    "ptx_arch": "compute_90",
+    "ptx_jit_required": true,
+    "forbidden_sass_arches": [
+      "sm_100",
+      "sm_120"
+    ]
+  },
+  "required_repeat_baselines": 2,
+  "default_num_iterations": 5,
+  "sweeps_per_iteration": 4,
+  "per_reference_artifacts": [
+    "ref_filter",
+    "initial_cost",
+    "sweep_depth",
+    "sweep_normal",
+    "sweep_cost",
+    "sweep_sel",
+    "sweep_mask",
+    "final_consistency_graph"
+  ],
+  "per_sweep_artifacts": [
+    "sweep_depth",
+    "sweep_normal",
+    "sweep_cost",
+    "sweep_sel",
+    "sweep_mask"
+  ],
+  "global_artifacts": [
+    "fused_ply"
+  ]
+}

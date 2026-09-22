@@ -17,8 +17,11 @@ about speed or quality.
 - If the direction is promising, run a complete ABAB quality comparison in
   separate bundle `com.kyle.PocketWorld.PtolBench`, linked to the same native
   framework and using the same production reconstruction classes.
-- Preserve raw reports, BA-round telemetry, effective environment receipts,
+- Preserve raw reports, BA-round telemetry, requested-value environment receipts,
   input and binary identities, thermal evidence, and invalid runs.
+- Record a native effective-options receipt for every arm after the solver
+  options are constructed and before reconstruction starts. Environment input
+  alone is not evidence of the value the native solver actually used.
 - Restore the shared environment file to its exact pre-run state.
 
 ## Non-goals
@@ -33,7 +36,10 @@ about speed or quality.
 ## Acceptance
 
 - Both arms use the same installed build and hash-verified capture.
-- An environment receipt proves the effective PTOL value before native work.
+- An environment receipt records the requested PTOL value before native work.
+- A stamped native receipt proves control `global=0, local=0` and candidate
+  `global=1e-8, local=0`; a missing, contradictory, or `UNSTAMPED` identity
+  invalidates the arm.
 - Every arm produces a complete `rebuild_full` report and matching BA telemetry.
 - Registered-image count is unchanged and numeric quality stays inside the A/A
   noise floor.

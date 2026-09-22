@@ -1,0 +1,30 @@
+// Copyright (c) 2026, PocketWorld contributors.
+//
+// SPDX-License-Identifier: BSD-3-Clause
+//
+// ABI_ONLY_DO_NOT_DISPATCH
+// Structural Vulkan shader for COLMAP 4.1.1 GpuMatPRNG resource and launch
+// validation only. It intentionally contains no generator and cannot mutate
+// RNG state. Runtime dispatch is forbidden by rng_contract.h.
+
+#version 450
+
+layout(local_size_x = 32, local_size_y = 16, local_size_z = 1) in;
+
+// Binding 6 matches Binding::kRngState in patch_match_abi.h. The opaque state
+// transport is represented as uint planes in [state_word][row][col] order.
+layout(set = 0, binding = 6, std430) readonly buffer XorwowStateWords {
+  uint values[];
+} state_words;
+
+layout(push_constant) uniform PushConstants {
+  uint width;
+  uint height;
+  uint grid_size_x;
+  uint state_word_count;
+} pc;
+
+void main() {
+  // Intentionally empty. An empty entry point is compilable for descriptor ABI
+  // checks but performs no initialization and consumes no random numbers.
+}

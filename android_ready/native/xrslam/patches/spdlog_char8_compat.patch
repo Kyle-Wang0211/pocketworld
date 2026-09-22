@@ -1,0 +1,33 @@
+diff --git a/include/spdlog/fmt/bundled/core.h b/include/spdlog/fmt/bundled/core.h
+index 50b79351..f86f48f7 100644
+--- a/include/spdlog/fmt/bundled/core.h
++++ b/include/spdlog/fmt/bundled/core.h
+@@ -171,12 +171,13 @@
+ #endif
+ 
+ // libc++ supports string_view in pre-c++17.
+-#if (FMT_HAS_INCLUDE(<string_view>) && \
++#if !defined(__cpp_char8_t) && ((FMT_HAS_INCLUDE(<string_view>) && \
+       (__cplusplus > 201402L || defined(_LIBCPP_VERSION))) || \
+-    (defined(_MSVC_LANG) && _MSVC_LANG > 201402L && _MSC_VER >= 1910)
++    (defined(_MSVC_LANG) && _MSVC_LANG > 201402L && _MSC_VER >= 1910))
+ # include <string_view>
+ # define FMT_STRING_VIEW std::basic_string_view
+-#elif FMT_HAS_INCLUDE(<experimental/string_view>) && __cplusplus >= 201402L
++#elif !defined(__cpp_char8_t) && FMT_HAS_INCLUDE(<experimental/string_view>) && \
++    __cplusplus >= 201402L
+ # include <experimental/string_view>
+ # define FMT_STRING_VIEW std::experimental::basic_string_view
+ #endif
+@@ -368,8 +369,9 @@ class basic_string_view {
+     the size with ``std::char_traits<Char>::length``.
+     \endrst
+    */
+-  basic_string_view(const Char *s)
+-    : data_(s), size_(std::char_traits<Char>::length(s)) {}
++  basic_string_view(const Char *s) : data_(s), size_(0) {
++    while (s[size_] != Char()) ++size_;
++  }
+ 
+   /** Constructs a string reference from a ``std::basic_string`` object. */
+   template <typename Alloc>

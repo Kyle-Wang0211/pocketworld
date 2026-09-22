@@ -1,0 +1,29 @@
+/*
+ * Copyright (c) 2014-2026 SEACAVE
+ * Copyright (c) 2026, PocketWorld contributors
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ *
+ * Mechanical Vulkan translation of COLMAP's curandState XORWOW initialization.
+ * COLMAP 4.1.1 a0d785f state-init control source gpu_mat_prng.cu SHA-256:
+ * aac48adcc68e558b3634141d327a352895ea90d351c254bce3e7d289f5ffe15f
+ */
+
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "openmvs_pcg_initialization_layout.glsl"
+
+layout(local_size_x = 32, local_size_y = 16, local_size_z = 1) in;
+
+void main() {
+  uvec2 pixel = gl_GlobalInvocationID.xy;
+  if (pixel.x >= pc.width || pixel.y >= pc.height) {
+    return;
+  }
+  uint unique_block_index =
+      gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x;
+  uint seed_low = unique_block_index * 512u +
+      gl_LocalInvocationID.y * 32u + gl_LocalInvocationID.x;
+  ColmapXorwowState state = ColmapXorwowInitialize(seed_low, 0u);
+  StoreColmapXorwowState(pixel.y, pixel.x, pc.width, pc.height, state);
+}

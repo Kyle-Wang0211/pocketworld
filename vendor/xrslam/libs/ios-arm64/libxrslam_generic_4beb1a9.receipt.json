@@ -1,0 +1,36 @@
+{
+  "artifact": "libxrslam_generic_4beb1a9.a",
+  "artifact_sha256": "8ad848f6616a11c12559fddef2a0d405bfe87912b3672f91286c59e0f0d071ed",
+  "base_artifact_sha256": "6b7ee542941aa1a6dc853a042cfcbdaf74b6d115c10dfb383bc832bafdcbd777",
+  "upstream_repository": "https://github.com/openxrlab/xrslam",
+  "upstream_revision": "4beb1a942f33da9afbfae2d70e2c641cfc2bb675",
+  "platform": "ios-arm64",
+  "minimum_ios": "14.0",
+  "xrslam_ios": false,
+  "threading": false,
+  "lifecycle_patch": "../../patches/xrslam_destroy_lifecycle.patch",
+  "lifecycle_patch_sha256": "13592cb486f159217fa5ecf9ef2f9863be78cf599d42fb1757e34bd7d4bbb220",
+  "opencv_headers_revision": "c9ad5779f2803dcc91a9938142209128d30b22d1",
+  "changed_object": "XRSLAMManager.o",
+  "algorithm_change": false,
+  "compile_flags": [
+    "-O3",
+    "-DNDEBUG",
+    "-std=gnu++17",
+    "-arch arm64",
+    "-miphoneos-version-min=14.0",
+    "-fvisibility=hidden",
+    "-fvisibility-inlines-hidden",
+    "-ffp-contract=off",
+    "-fno-fast-math",
+    "-fchar8_t",
+    "-Dceres=pw_xrslam_ceres_1_14"
+  ],
+  "exported_abi": [
+    "XRSLAMCreate",
+    "XRSLAMDestroy",
+    "XRSLAMGetResult",
+    "XRSLAMPushSensorData",
+    "XRSLAMRunOneFrame"
+  ]
+}

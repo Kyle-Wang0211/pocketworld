@@ -1,0 +1,72 @@
+{
+  "schema": "pw.vio.diagnostics/1",
+  "startedAtMillis": 1787460720987,
+  "generatedAtMillis": 1787460721026,
+  "running": true,
+  "poll": {
+    "intervalMs": 2000,
+    "ok": 1,
+    "fail": 0
+  },
+  "ring": {
+    "capacity": 900,
+    "timebaseKept": 1,
+    "timebaseDropped": 0,
+    "thermalKept": 1,
+    "thermalDropped": 0
+  },
+  "xrslamSmoke": {
+    "ok": true,
+    "symbolFound": true,
+    "probeRc": 0,
+    "probeRcName": "OK",
+    "neededChars": 13,
+    "fetchRc": 0,
+    "fetchRcName": "OK",
+    "version": "xrslam v0.5.0",
+    "error": null,
+    "createRc": 1,
+    "createOk": true,
+    "destroyed": true,
+    "configProvenance": {
+      "cam0.intrinsics": "PLACEHOLDER",
+      "cam0.resolution": "PLACEHOLDER",
+      "cam0.extrinsic": "PLACEHOLDER",
+      "cam0.time_offset": "PLACEHOLDER",
+      "imu.noise": "shared-default"
+    }
+  },
+  "errors": [
+    "xrslam smoke: XRSLAM FFI OK — version=\"xrslam v0.5.0\" (needed=13 chars)"
+  ],
+  "timebase": [
+    {
+      "wallMillis": 1787460721025,
+      "uptimeRawSeconds": 706351.068920291,
+      "monotonicSeconds": 928397.1488130001,
+      "accumulatedSleepSeconds": 222046.07989270904,
+      "sessionSleepDeltaSeconds": 0.0,
+      "clockPairReadCostSeconds": 2.50060111284256e-7,
+      "baseDiscriminable": true,
+      "verdicts": {},
+      "offsets": {}
+    }
+  ],
+  "thermal": [
+    {
+      "wallMillis": 1787460721026,
+      "timestampUs": 706351069035,
+      "tier": "fair",
+      "rawStatus": 1,
+      "statusReadable": true,
+      "headroom": null,
+      "lowPowerMode": false,
+      "cameraStream": "unknown",
+      "cameraCutBySystemPressure": false,
+      "interruptionReason": null,
+      "systemPressureLevel": null,
+      "activeProcessorCount": 6,
+      "cpuCurFreqKhz": []
+    }
+  ]
+}

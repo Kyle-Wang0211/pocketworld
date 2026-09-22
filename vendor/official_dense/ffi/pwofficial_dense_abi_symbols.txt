@@ -1,0 +1,6 @@
+pwofficial_dense_version
+pwofficial_dense_last_error
+pwofficial_dense_default_options
+pwofficial_dense_is_available
+pwofficial_dense_run
+pwofficial_dense_cancel

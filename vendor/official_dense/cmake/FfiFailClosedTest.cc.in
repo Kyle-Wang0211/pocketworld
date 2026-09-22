@@ -1,0 +1,26 @@
+#include "pwofficial_dense_c.h"
+
+#include <filesystem>
+#include <string>
+
+int main(int argc, char** argv) {
+  if (argc != 2) return 1;
+  const std::filesystem::path output(argv[1]);
+  if (std::filesystem::exists(output)) return 2;
+
+  if (pwofficial_dense_version() != PW_OFFICIAL_DENSE_ABI_VERSION) return 3;
+  pwofficial_dense_options_t options{};
+  if (pwofficial_dense_default_options(&options) != PW_OFFICIAL_DENSE_OK) {
+    return 4;
+  }
+  if (pwofficial_dense_is_available() != 0) return 5;
+  if (pwofficial_dense_last_error()[0] == '\0') return 6;
+  if (pwofficial_dense_run("workspace", argv[1], &options) !=
+      PW_OFFICIAL_DENSE_UNAVAILABLE) {
+    return 7;
+  }
+  if (pwofficial_dense_last_error()[0] == '\0') return 8;
+  if (std::filesystem::exists(output)) return 9;
+  if (pwofficial_dense_cancel() != PW_OFFICIAL_DENSE_OK) return 10;
+  return std::filesystem::exists(output) ? 11 : 0;
+}

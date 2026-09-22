@@ -4,7 +4,7 @@
 //  ─────────────────────────────────────────────────────────────────────────
 //  这个文件不查机型。没有 device model 字符串,没有查找表,没有 yaml。
 //  它只做三件事,全部是**当场读真值**:
-//    1. 关掉防抖,并把**实际生效**的状态读回来(请求不等于生效)。
+//    1. 机械执行 Dart 传入的原始防抖 mode,并读回原始请求/活动值。
 //    2. 按四层优先级把内参读出来,并原样带上它所参照的分辨率。
 //    3. 量 IMU 的实际速率/交付节奏,量实际帧耗时。
 //  然后把这些事实原样交给 Dart 侧的 CapabilityProbe 去判档
@@ -49,7 +49,8 @@
 //    所以 0 必须当作"没有",不能当作 0 度。
 //
 //  ─────────────────────────────────────────────────────────────────────────
-//  铁律:本文件只观察与配置,**从不丢数据**。IMU 采样一律 append,不做任何抽稀。
+//  铁律:本文件只观察与配置,不做统计判定。高频事实只写固定容量环形缓冲;
+//  一旦覆盖,attempted/retained/overwritten/capacity 四账必须精确闭合。
 
 import AVFoundation
 import CoreMedia
@@ -83,18 +84,12 @@ public func pwVioCapabilityHostUptimeSeconds() -> Double {
 // 这些字符串必须与 lib/vio/capability/capability_evidence.dart 的 enum name 一致。
 // 用常量而不是散落的字面量,是为了让改名时编译器至少能帮上一点忙。
 public enum PwVioWire {
-    public enum StabilizationState: String {
-        case off, on, unknown, absent
-    }
     public enum IntrinsicsSource: String {
         case none
         case fieldOfViewFallback
         case staticCharacteristics
         case platformTracker
         case perFrameAttachment
-    }
-    public enum TimebaseRelation: String {
-        case unified, offsetMeasured, unrelatedUnmeasured
     }
 }
 
@@ -198,133 +193,107 @@ public enum PwVioIntrinsicsReader {
     }
     #endif
 
-    /// 第四层:只有视场角。**主点只能假设在正中 —— 这是假设不是测量**,
-    /// 所以单独一档,Dart 侧的可信度序把它排在静态标定表之下。
-    ///
-    ///     fx = (W/2) / tan(hfov/2)
-    ///
-    /// GDC(几何畸变校正)开着的时候视场角会变,所以这里优先读
-    /// geometricDistortionCorrectedVideoFieldOfView(iOS 13+),它在设备不支持 GDC 时
-    /// 「matches the videoFieldOfView property」,可以无条件优先用。
-    public static func fromFieldOfView(device: AVCaptureDevice,
+    /// 第四层只搬运平台原始 FOV 与参考尺寸。选择 corrected/raw、判断 0 是否
+    /// 可用、主点假设和 f=(W/2)/tan(hfov/2) 全由 Dart 的
+    /// IntrinsicsFacts.fromHorizontalFov 统一处理。
+    public static func fieldOfViewWire(device: AVCaptureDevice,
                                        width: Int,
-                                       height: Int) -> PwVioIntrinsics {
+                                       height: Int) -> [String: Any] {
         let format = device.activeFormat
-        var fov = format.videoFieldOfView
+        var corrected: Any = NSNull()
         if #available(iOS 13.0, *) {
-            let corrected = format.geometricDistortionCorrectedVideoFieldOfView
-            if corrected > 0 { fov = corrected }
+            corrected = Double(
+                format.geometricDistortionCorrectedVideoFieldOfView)
         }
-        // 头文件:未知时返回 0。0 必须当作"没有",不能当 0 度算。
-        guard fov > 0, width > 0, height > 0 else { return .absent }
-        let half = Double(fov) * Double.pi / 360.0
-        let f = (Double(width) / 2.0) / tan(half)
-        return PwVioIntrinsics(source: .fieldOfViewFallback,
-                               fx: f, fy: f,
-                               cx: Double(width) / 2.0,
-                               cy: Double(height) / 2.0,
-                               skew: 0,
-                               referenceWidth: width,
-                               referenceHeight: height)
+        return [
+            "videoFieldOfViewDegrees": Double(format.videoFieldOfView),
+            "geometricDistortionCorrectedVideoFieldOfViewDegrees": corrected,
+            "referenceWidth": width,
+            "referenceHeight": height,
+        ]
     }
 }
 
 // MARK: - 防抖
 
-public struct PwVioStabilizationReport {
-    public let electronic: PwVioWire.StabilizationState
-    public let optical: PwVioWire.StabilizationState
-    public let electronicControllable: Bool
-    public let opticalControllable: Bool
-    public let geometricDistortionCorrectionEnabled: Bool?
+public struct PwVioStabilizationRawReport {
+    public let videoStabilizationSupported: Bool
+    public let requestedPreferredModeRawValue: Int
+    public let requestedPreferredModeRecognized: Bool
+    public let preferredModeAssignmentPerformed: Bool
+    public let activeVideoStabilizationModeRawValue: Int
+    public let geometricDistortionCorrectionSupported: Bool
+    public let geometricDistortionCorrectionEnabled: Bool
+    public let opticalImageStabilizationPublicApiAvailable: Bool
 
     public var wire: [String: Any] {
-        var d: [String: Any] = [
-            "electronic": electronic.rawValue,
-            "optical": optical.rawValue,
-            "electronicControllable": electronicControllable,
-            "opticalControllable": opticalControllable,
+        return [
+            "schema": "pw.vio.ios.stabilization-raw/1",
+            "videoStabilizationSupported": videoStabilizationSupported,
+            "requestedPreferredModeRawValue": requestedPreferredModeRawValue,
+            "requestedPreferredModeRecognized": requestedPreferredModeRecognized,
+            "preferredModeAssignmentPerformed": preferredModeAssignmentPerformed,
+            "activeVideoStabilizationModeRawValue": activeVideoStabilizationModeRawValue,
+            "geometricDistortionCorrectionSupported": geometricDistortionCorrectionSupported,
+            "geometricDistortionCorrectionEnabled": geometricDistortionCorrectionEnabled,
+            "opticalImageStabilizationPublicApiAvailable": opticalImageStabilizationPublicApiAvailable,
         ]
-        if let g = geometricDistortionCorrectionEnabled {
-            d["geometricDistortionCorrectionEnabled"] = g
-        }
-        return d
     }
 }
 
 public enum PwVioStabilization {
 
-    /// 显式关掉 EIS,然后把**实际生效**的模式读回来。
-    ///
-    /// 请求与生效是两件事:头文件写明「If the preferred stabilization mode isn't
-    /// available, the activeVideoStabilizationMode will be set to
-    /// AVCaptureVideoStabilizationModeOff」,而且 active 永远不会返回 .auto。
-    /// 所以判据取 active,不取 preferred。
-    ///
-    /// 🔴 OIS 在 iOS 上没有任何公开 API(见文件头的 grep 阳性对照),
-    ///    所以这里**如实报 unknown**,绝不假装关掉了。
+    /// 原生层不选 mode,不解释 mode,也不产出可控性结论。
+    /// [requestedPreferredModeRawValue] 必须由跨端 Dart 策略显式传入;
+    /// 本方法只在平台声称支持且 raw value 能构造成 SDK enum 时机械赋值,
+    /// 然后返回赋值事实和 active raw value,供 Dart 判定。
     @discardableResult
-    public static func disableAndVerify(connection: AVCaptureConnection,
-                                        device: AVCaptureDevice) -> PwVioStabilizationReport {
-        var eisControllable = false
-        if connection.isVideoStabilizationSupported {
-            eisControllable = true
-            connection.preferredVideoStabilizationMode = .off
-        }
-        // 读回真实状态。
-        let active = connection.activeVideoStabilizationMode
-        let eis: PwVioWire.StabilizationState
-        if !connection.isVideoStabilizationSupported {
-            // 该 connection 上根本没有 EIS 这条路。
-            eis = .absent
-        } else {
-            eis = (active == .off) ? .off : .on
+    public static func configureAndReadRaw(
+        connection: AVCaptureConnection,
+        device: AVCaptureDevice,
+        requestedPreferredModeRawValue: Int
+    ) -> PwVioStabilizationRawReport {
+        let supported = connection.isVideoStabilizationSupported
+        let requestedMode = AVCaptureVideoStabilizationMode(
+            rawValue: requestedPreferredModeRawValue)
+        let recognized = requestedMode != nil
+        let assignmentPerformed = supported && recognized
+        if assignmentPerformed, let mode = requestedMode {
+            connection.preferredVideoStabilizationMode = mode
         }
 
-        var gdc: Bool? = nil
+        var gdcSupported = false
+        var gdcEnabled = false
         if #available(iOS 13.0, *) {
-            if device.isGeometricDistortionCorrectionSupported {
-                // 只读不改:GDC 会改变有效视场角与内参口径,开关它是产品决策,
-                // 不该由探测器偷偷做。这里如实上报,让 Dart 侧与标定口径对齐。
-                gdc = device.isGeometricDistortionCorrectionEnabled
-            }
+            gdcSupported = device.isGeometricDistortionCorrectionSupported
+            gdcEnabled = device.isGeometricDistortionCorrectionEnabled
         }
 
-        return PwVioStabilizationReport(
-            electronic: eis,
-            optical: .unknown,          // iOS 上结构性不可知
-            electronicControllable: eisControllable,
-            opticalControllable: false, // iOS 上结构性不可控
-            geometricDistortionCorrectionEnabled: gdc)
-    }
-}
-
-// MARK: - 统计小工具(中位 / p95)
-
-enum PwVioStats {
-    static func median(_ xs: [Int64]) -> Int64? {
-        guard !xs.isEmpty else { return nil }
-        let s = xs.sorted()
-        let m = s.count / 2
-        return s.count % 2 == 1 ? s[m] : (s[m - 1] + s[m]) / 2
-    }
-
-    /// 最近秩法(nearest-rank)p95:第 ceil(0.95·n) 个元素。
-    /// 不做插值 —— 插值出来的值在原数据里根本不存在,用来判"有没有掉帧"会失真。
-    static func p95(_ xs: [Int64]) -> Int64? {
-        guard !xs.isEmpty else { return nil }
-        let s = xs.sorted()
-        let rank = Int((0.95 * Double(s.count)).rounded(.up))
-        return s[min(max(rank - 1, 0), s.count - 1)]
+        return PwVioStabilizationRawReport(
+            videoStabilizationSupported: supported,
+            requestedPreferredModeRawValue: requestedPreferredModeRawValue,
+            requestedPreferredModeRecognized: recognized,
+            preferredModeAssignmentPerformed: assignmentPerformed,
+            activeVideoStabilizationModeRawValue:
+                connection.activeVideoStabilizationMode.rawValue,
+            geometricDistortionCorrectionSupported: gdcSupported,
+            geometricDistortionCorrectionEnabled: gdcEnabled,
+            opticalImageStabilizationPublicApiAvailable: false)
     }
 }
 
 // MARK: - IMU 时序探测
 
-/// 采集 (采样戳, 交付戳) 二元组。**纯观察者:只 append,永不丢弃。**
+private struct PwVioImuArrival {
+    let sampleTsNs: Int64
+    let deliveryTsNs: Int64
+}
+
+/// 采集 (采样戳, 交付戳) 二元组。原生侧只保留固定容量的最近窗口,
+/// 不算速率、抖动或成簇;发生覆盖时在 wire 里精确记账。
 ///
 /// 两个时钟:
-///   CMDeviceMotion.timestamp        —— CMLogItem 的 "Time at which the item is
+///   CMGyroData.timestamp            —— CMLogItem 的 "Time at which the item is
 ///                                      valid"。它贴 CLOCK_UPTIME_RAW 还是
 ///                                      CLOCK_MONOTONIC **Apple 从未文档化**,由
 ///                                      PwVioTimebase 明早在真机上测定。
@@ -332,11 +301,17 @@ enum PwVioStats {
 /// 采样率看前者,成簇看后者 —— 硬件 batching 不会改变采样戳的间隔。
 public final class PwVioImuProbe {
 
+    private static let capacity = 4096
     private let motion = CMMotionManager()
     private let queue: OperationQueue
     private let lock = NSLock()
-    private var sampleTsNs: [Int64] = []
-    private var deliveryTsNs: [Int64] = []
+    private var imuArrivalRing = [PwVioImuArrival?](
+        repeating: nil,
+        count: PwVioImuProbe.capacity)
+    private var writeIndex = 0
+    private var retainedCount = 0
+    private var attemptedCount = 0
+    private var overwrittenCount = 0
 
     public init() {
         queue = OperationQueue()
@@ -345,50 +320,86 @@ public final class PwVioImuProbe {
         queue.qualityOfService = .userInitiated
     }
 
-    public var isAvailable: Bool { return motion.isDeviceMotionAvailable }
+    public var isAvailable: Bool { return motion.isGyroAvailable }
 
-    /// requestedHz 只是**请求**。iOS 同样不保证达成,所以我们照量不误。
-    public func start(requestedHz: Double = 200.0) {
-        guard motion.isDeviceMotionAvailable, !motion.isDeviceMotionActive else { return }
-        motion.deviceMotionUpdateInterval = 1.0 / max(requestedHz, 1.0)
-        motion.startDeviceMotionUpdates(
-            using: .xArbitraryZVertical,
-            to: queue
-        ) { [weak self] motionSample, _ in
-            guard let self = self, let m = motionSample else { return }
+    /// requestedHz 只是**请求**。它必须由跨端 Dart 配置显式传入;原生侧不设默认、
+    /// 不夹紧。iOS 不保证达成,所以实际速率仍由 Dart 从原始时间戳测量。
+    @discardableResult
+    public func start(requestedHz: Double) -> Bool {
+        guard requestedHz.isFinite, requestedHz > 0 else { return false }
+        let requestedInterval = 1.0 / requestedHz
+        guard requestedInterval.isFinite, requestedInterval > 0 else { return false }
+        guard motion.isGyroAvailable, !motion.isGyroActive else {
+            return false
+        }
+        motion.gyroUpdateInterval = requestedInterval
+        motion.startGyroUpdates(to: queue) { [weak self] gyroSample, _ in
+            guard let self = self, let sample = gyroSample else { return }
             // [pw][vio] 时基测量:必须在 handler 最前面,理由同 ARFrame ——
             //   CMLogItem.timestamp 的域 Apple 只说 "since the device booted",
             //   而 Darwin 上有两个 "since boot" 的钟(CLOCK_UPTIME_RAW 睡眠时停走、
             //   CLOCK_MONOTONIC 不停),差值就是累计休眠。这条只能实测,不能假设。
-            PwVioTimebase.shared.noteCoreMotion(timestamp: m.timestamp)
+            PwVioTimebase.shared.noteCoreMotionGyroscope(
+                timestamp: sample.timestamp)
             let delivery = pwVioCapabilityHostUptimeSeconds()
+            let arrival = PwVioImuArrival(
+                sampleTsNs: Int64((sample.timestamp * 1_000_000_000.0).rounded()),
+                deliveryTsNs: Int64((delivery * 1_000_000_000.0).rounded()))
             self.lock.lock()
-            self.sampleTsNs.append(Int64((m.timestamp * 1_000_000_000.0).rounded()))
-            self.deliveryTsNs.append(Int64((delivery * 1_000_000_000.0).rounded()))
+            self.attemptedCount += 1
+            self.imuArrivalRing[self.writeIndex] = arrival
+            self.writeIndex = (self.writeIndex + 1) % Self.capacity
+            if self.retainedCount < Self.capacity {
+                self.retainedCount += 1
+            } else {
+                self.overwrittenCount += 1
+            }
             self.lock.unlock()
         }
+        return motion.isGyroActive
     }
 
     public func stop() {
-        if motion.isDeviceMotionActive { motion.stopDeviceMotionUpdates() }
+        if motion.isGyroActive { motion.stopGyroUpdates() }
     }
 
     /// 把原始二元组交给 Dart —— **判定在 Dart 侧的 ImuTimingProbe**,
     /// 这样 Otsu 那套算法只有一份实现,两端共用,也只需要一套单测。
     public func drainWire() -> [String: Any] {
         lock.lock()
-        let s = sampleTsNs
-        let d = deliveryTsNs
+        let n = retainedCount
+        let attempted = attemptedCount
+        let overwritten = overwrittenCount
+        let oldest = n == Self.capacity ? writeIndex : 0
+        var arrivals = [PwVioImuArrival]()
+        arrivals.reserveCapacity(n)
+        if n > 0 {
+            for offset in 0..<n {
+                let index = (oldest + offset) % Self.capacity
+                if let arrival = imuArrivalRing[index] { arrivals.append(arrival) }
+            }
+        }
         lock.unlock()
         return [
-            "available": motion.isDeviceMotionAvailable,
-            "sampleTsNs": s.map { NSNumber(value: $0) },
-            "deliveryTsNs": d.map { NSNumber(value: $0) },
+            "schema": "pw.vio.imu-arrivals.raw.v1",
+            "available": motion.isGyroAvailable,
+            "sampleTsNs": arrivals.map { NSNumber(value: $0.sampleTsNs) },
+            "deliveryTsNs": arrivals.map { NSNumber(value: $0.deliveryTsNs) },
+            "attemptedCount": NSNumber(value: attempted),
+            "retainedCount": n,
+            "overwrittenCount": NSNumber(value: overwritten),
+            "capacity": Self.capacity,
         ]
     }
 
     public func reset() {
-        lock.lock(); sampleTsNs.removeAll(); deliveryTsNs.removeAll(); lock.unlock()
+        lock.lock()
+        imuArrivalRing = [PwVioImuArrival?](repeating: nil, count: Self.capacity)
+        writeIndex = 0
+        retainedCount = 0
+        attemptedCount = 0
+        overwrittenCount = 0
+        lock.unlock()
     }
 }
 
@@ -398,10 +409,15 @@ public final class PwVioImuProbe {
 /// 理由:PTS 是传感器曝光时刻,它对"我们这条链路有没有跟上"是失明的 ——
 /// 热降频/过载表现为帧到手变慢,而 PTS 仍然规整。要量的是后者。
 public final class PwVioFrameTimingProbe {
+    private static let capacity = 512
     private let lock = NSLock()
-    private var lastNs: Int64?
-    private var intervalsNs: [Int64] = []
-    private var count: Int = 0
+    private var arrivalHostTsNs = [Int64](
+        repeating: 0,
+        count: PwVioFrameTimingProbe.capacity)
+    private var writeIndex = 0
+    private var retainedCount = 0
+    private var attemptedCount = 0
+    private var overwrittenCount = 0
 
     public init() {}
 
@@ -409,61 +425,48 @@ public final class PwVioFrameTimingProbe {
     public func mark(hostUptimeSeconds: TimeInterval = pwVioCapabilityHostUptimeSeconds()) {
         let ns = Int64((hostUptimeSeconds * 1_000_000_000.0).rounded())
         lock.lock()
-        count += 1
-        if let last = lastNs, ns > last { intervalsNs.append(ns - last) }
-        lastNs = ns
+        attemptedCount += 1
+        arrivalHostTsNs[writeIndex] = ns
+        writeIndex = (writeIndex + 1) % Self.capacity
+        if retainedCount < Self.capacity {
+            retainedCount += 1
+        } else {
+            overwrittenCount += 1
+        }
         lock.unlock()
     }
 
     public func wire() -> [String: Any] {
         lock.lock()
-        let iv = intervalsNs
-        let n = count
+        let n = retainedCount
+        let attempted = attemptedCount
+        let overwritten = overwrittenCount
+        let oldest = n == Self.capacity ? writeIndex : 0
+        var arrivals = [Int64]()
+        arrivals.reserveCapacity(n)
+        if n > 0 {
+            for offset in 0..<n {
+                arrivals.append(arrivalHostTsNs[(oldest + offset) % Self.capacity])
+            }
+        }
         lock.unlock()
-        var d: [String: Any] = ["frameCount": n]
-        if let m = PwVioStats.median(iv) { d["medianIntervalNs"] = NSNumber(value: m) }
-        if let p = PwVioStats.p95(iv) { d["p95IntervalNs"] = NSNumber(value: p) }
-        return d
+        return [
+            "schema": "pw.vio.frame-arrivals.raw.v1",
+            "arrivalHostTsNs": arrivals.map { NSNumber(value: $0) },
+            "attemptedCount": NSNumber(value: attempted),
+            "retainedCount": n,
+            "overwrittenCount": NSNumber(value: overwritten),
+            "capacity": Self.capacity,
+        ]
     }
 
     public func reset() {
-        lock.lock(); lastNs = nil; intervalsNs.removeAll(); count = 0; lock.unlock()
-    }
-}
-
-// MARK: - 汇总
-
-public enum PwVioCapability {
-
-    /// 把一次会话的全部事实打包成 Dart 侧 CapabilityEvidence 能直接吃的字典。
-    ///
-    /// 🔴 timebase **不在这里硬编码**。业界普遍默认「CoreMotion == mach_absolute_time」,
-    /// 但 Apple 从没这么写过;若 CMDeviceMotion.timestamp 实际贴的是 CLOCK_MONOTONIC
-    /// 而相机 PTS 贴的是 CLOCK_UPTIME_RAW,iPhone 上就会出现与 Android 一样的域错配,
-    /// 且随待机时长增长。该结论由 PwVioTimebase 在真机上测定后传进来。
-    /// 探测器不替它下结论 —— 这正是把判定留在 Dart 侧的原因。
-    public static func evidenceWire(
-        timebaseRelation: PwVioWire.TimebaseRelation,
-        timebaseUncertaintyNs: Int64?,
-        stabilization: PwVioStabilizationReport,
-        intrinsics: PwVioIntrinsics,
-        imu: [String: Any],
-        frameTiming: [String: Any],
-        platformPoseAvailable: Bool
-    ) -> [String: Any] {
-        return [
-            "timebase": [
-                "relation": timebaseRelation.rawValue,
-                "offsetUncertaintyNs": timebaseUncertaintyNs.map { NSNumber(value: $0) }
-                    ?? NSNull(),
-            ],
-            "stabilization": stabilization.wire,
-            "intrinsics": intrinsics.wire,
-            "imu": imu,
-            "frameTiming": frameTiming,
-            // iOS 没有 SENSOR_ROLLING_SHUTTER_SKEW 的对应物 —— 如实缺省。
-            "rollingShutter": ["readoutNs": NSNull()],
-            "platformPoseAvailable": platformPoseAvailable,
-        ]
+        lock.lock()
+        arrivalHostTsNs = [Int64](repeating: 0, count: Self.capacity)
+        writeIndex = 0
+        retainedCount = 0
+        attemptedCount = 0
+        overwrittenCount = 0
+        lock.unlock()
     }
 }

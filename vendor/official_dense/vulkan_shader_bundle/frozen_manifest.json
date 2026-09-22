@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "target_environment": "vulkan1.1",
+  "compiler": {
+    "name": "glslangValidator",
+    "resolved_path": "/opt/homebrew/Cellar/glslang/16.5.0/bin/glslang",
+    "executable_sha256": "153dcbc8a8ead14bbae8efbf9bfe2dd51222ce05ea7941d8ee95fe8abdc492c7",
+    "version_output_sha256": "25ff1fbaccec93a5c72999a856b6eba6e7d891349c753f157219df8b0ed5fde6",
+    "version": "Glslang Version: 11:16.5.0"
+  },
+  "validator": {
+    "name": "spirv-val",
+    "resolved_path": "/opt/homebrew/Cellar/spirv-tools/1.4.357.0/bin/spirv-val",
+    "executable_sha256": "5c30eb3bbc1fa941ef8ae3ec7a751ab4c3c6e58cf95595d6b05e3133dafd6728",
+    "version_output_sha256": "1b0954f4431b038019d756b0b1336c79d40af69af06b2f25b113a4fdf356c17b",
+    "version": "SPIRV-Tools v2026.3 unknown hash, 2026-07-22T20:34:54+00:00"
+  },
+  "shaders": [
+    {
+      "kind": "kReferenceFilter",
+      "source_path": "ref_filter/filter_u8.comp",
+      "asset_path": "assets/ref_filter_filter_u8.comp.spv",
+      "source_sha256": "1c4509178d96df841d64b0c0263b2ebee6915a40f46448be5ba3336aa4d317c7",
+      "spirv_sha256": "76fc218d29b687c8aeec4bf5e16321343b93fd01f8e0c58c0774f8f03606108b",
+      "word_count": 1649
+    },
+    {
+      "kind": "kOpenMvsPcgInitialize",
+      "source_path": "rng/init_openmvs_pcg.comp",
+      "asset_path": "assets/rng_init_openmvs_pcg.comp.spv",
+      "source_sha256": "5eb75c051603b345022f34023be5162e0c49c025b4c477d21e860094f0eaa03a",
+      "spirv_sha256": "302ebac4f548cf82d8a5bf9a802ffd075ea7815d2063a217ce43d6a7d5f30bd5",
+      "word_count": 2167
+    },
+    {
+      "kind": "kNormalInitialize",
+      "source_path": "normal_ops/init_normal_openmvs_pcg.comp",
+      "asset_path": "assets/normal_ops_init_normal_openmvs_pcg.comp.spv",
+      "source_sha256": "9618000ea831ff3bfa320ee1d7229a11995eccb3111fb8cae3ef1889cc727d2c",
+      "spirv_sha256": "0c22b933e6b97e535d313ed4915adcba27ef9de6dd6232a974a7feacf55c79e2",
+      "word_count": 3803
+    },
+    {
+      "kind": "kInitialCost",
+      "source_path": "initial_cost/compute_initial_cost.comp",
+      "asset_path": "assets/initial_cost_compute_initial_cost.comp.spv",
+      "source_sha256": "46b10170e6458567f35e765f4ff0fa1360dd450e2713e7d7e85e20627a73c031",
+      "spirv_sha256": "dbc5ae3c6eef1b4eea88142dac320ccf408cf8987ff873d8e151262320e5923b",
+      "word_count": 8238
+    },
+    {
+      "kind": "kFullSweep",
+      "source_path": "sweep/sweep_full_openmvs_pcg.comp",
+      "asset_path": "assets/sweep_sweep_full_openmvs_pcg.comp.spv",
+      "source_sha256": "08dfb3bbdb01815b268c9df499a8e7a1550b5f5750a790d127d549d39710fccd",
+      "spirv_sha256": "08c91449b3db423d12e2f93cb47554196b8c8f096d137ad922797d0d0ba2ccfb",
+      "word_count": 23908
+    },
+    {
+      "kind": "kRotateF32",
+      "source_path": "mat_ops/rotate_f32.comp",
+      "asset_path": "assets/mat_ops_rotate_f32.comp.spv",
+      "source_sha256": "c43fcf5352d3d19b62941552c71ca2b859dd88b295acc5dd10d1d5321e536875",
+      "spirv_sha256": "79d470e058b178fee1fc562e27c9f92a3d720f2423d28064979077fae5fea693",
+      "word_count": 1149
+    },
+    {
+      "kind": "kTransposeF32",
+      "source_path": "mat_ops/transpose_f32.comp",
+      "asset_path": "assets/mat_ops_transpose_f32.comp.spv",
+      "source_sha256": "2a077c8a0181f1d8f28b3de6402e9245448d37523167c1686a981113af419dd7",
+      "spirv_sha256": "5dfae3d47e84f9d99a1d9ea8855cd5b8b524911b2f37d75a6162ae8966f0c64f",
+      "word_count": 1347
+    },
+    {
+      "kind": "kFlipHorizontalF32",
+      "source_path": "mat_ops/flip_horizontal_f32.comp",
+      "asset_path": "assets/mat_ops_flip_horizontal_f32.comp.spv",
+      "source_sha256": "536cd7273d9c322d005600549d0e6e0f0138e8cff03681ffc14d1d193d629550",
+      "spirv_sha256": "64e37d36d8ea3df31f230c25dfcaa9d25449071a4be7b97e9f37114f689c06b8",
+      "word_count": 1336
+    },
+    {
+      "kind": "kRotateNormalF32",
+      "source_path": "normal_ops/rotate_normal_f32.comp",
+      "asset_path": "assets/normal_ops_rotate_normal_f32.comp.spv",
+      "source_sha256": "79a8f655932415a14f0dbf52e1b35839b23a0a85f09f34b9b75e1e0848e1b5bd",
+      "spirv_sha256": "9cd47fc696e92f1564309ad7dba395f5b2b126258736c2c47c8a8d1d463401a4",
+      "word_count": 1307
+    },
+    {
+      "kind": "kOpenMvsPcgDepthInitialize",
+      "source_path": "depth_ops/init_depth_openmvs_pcg.comp",
+      "asset_path": "assets/depth_ops_init_depth_openmvs_pcg.comp.spv",
+      "source_sha256": "6b1016d9dfe2d669d73a8746efe0e83f94886e55febea2fe58f6591c018f5182",
+      "spirv_sha256": "b546f066db24189b6e3ab1afb0d4a8230add1d74a0d4df210f6b8b75799add86",
+      "word_count": 3130
+    },
+    {
+      "kind": "kRotateU32",
+      "source_path": "mat_ops/rotate_u32.comp",
+      "asset_path": "assets/mat_ops_rotate_u32.comp.spv",
+      "source_sha256": "aed3b6a644898a3255828b58e5a7d0a1a16aad6fa2324dd6396a2623fc003d16",
+      "spirv_sha256": "c9cd296fbfd321fdd3cb67fcb007624fd9692451a1ce93d3e023ccca994a472a",
+      "word_count": 1146
+    }
+  ]
+}

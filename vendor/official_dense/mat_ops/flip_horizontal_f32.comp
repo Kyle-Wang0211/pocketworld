@@ -1,0 +1,96 @@
+// Copyright (c), ETH Zurich and UNC Chapel Hill.
+// All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+//     * Redistributions of source code must retain the above copyright
+//       notice, this list of conditions and the following disclaimer.
+//
+//     * Redistributions in binary form must reproduce the above copyright
+//       notice, this list of conditions and the following disclaimer in the
+//       documentation and/or other materials provided with the distribution.
+//
+//     * Neither the name of ETH Zurich and UNC Chapel Hill nor the names of
+//       its contributors may be used to endorse or promote products derived
+//       from this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+//
+// Vulkan compute translation of COLMAP 4.1.1 a0d785f
+// colmap/mvs/cuda_flip.h
+// SHA-256: 08148312195042696f923cb01182290c57e3174233d84c113dbc4d4cbd788cea
+// The 32x33 tile, indexing, clamped loads, byte pitches, and write condition
+// are kept identical to CudaFlipHorizontalKernel<float>. Two 16-wide column
+// passes preserve the 32-wide CUDA tile while keeping the Vulkan workgroup at
+// 128 invocations for mobile portability.
+
+#version 450
+
+layout(local_size_x = 16, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer InputBuffer {
+  float values[];
+} input_data;
+
+layout(set = 0, binding = 1, std430) writeonly buffer OutputBuffer {
+  float values[];
+} output_data;
+
+layout(push_constant) uniform PushConstants {
+  int width;
+  int height;
+  int input_pitch_bytes;
+  int output_pitch_bytes;
+} pc;
+
+shared float tile[32][33];
+
+void main() {
+  const int block_x = int(gl_WorkGroupID.x);
+  const int block_y = int(gl_WorkGroupID.y);
+  const int thread_x = int(gl_LocalInvocationID.x);
+  const int thread_y = int(gl_LocalInvocationID.y);
+
+  const int y_index = block_y * 32 + thread_y;
+  const int tile_y = min(thread_y, pc.height - 1 - block_y * 32);
+
+  for (int column_pass = 0; column_pass < 2; ++column_pass) {
+    const int tile_column = thread_x + column_pass * 16;
+    const int x_index = block_x * 32 + tile_column;
+    const int tile_x = min(tile_column, pc.width - 1 - block_x * 32);
+    for (int i = 0; i < 32; i += 8) {
+      const int x = min(x_index, pc.width - 1);
+      const int y = min(y_index, pc.height - i - 1);
+      const int input_index = (((y + i) * pc.input_pitch_bytes) >> 2) + x;
+      tile[tile_y + i][tile_x] = input_data.values[input_index];
+    }
+  }
+
+  memoryBarrierShared();
+  barrier();
+
+  for (int column_pass = 0; column_pass < 2; ++column_pass) {
+    const int tile_column = thread_x + column_pass * 16;
+    const int x_index = pc.width - 1 - (block_x * 32 + tile_column);
+    if (x_index < pc.width) {
+      for (int i = 0; i < 32; i += 8) {
+        if (y_index + i < pc.height) {
+          const int output_index =
+              (((y_index + i) * pc.output_pitch_bytes) >> 2) + x_index;
+          output_data.values[output_index] = tile[thread_y + i][tile_column];
+        }
+      }
+    }
+  }
+}

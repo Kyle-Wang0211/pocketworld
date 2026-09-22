@@ -29,12 +29,67 @@
 // 设计见 docs/superpowers/specs/2026-08-19-auto-capture-design.md §7 / §9 / §11。
 
 import 'auto_capture_governor.dart';
-import 'auto_capture_geometry.dart' show AutoCaptureMotionRole;
+import 'auto_capture_geometry.dart'
+    show
+        AutoCaptureMotionMetrics,
+        AutoCaptureMotionRole,
+        kAutoCaptureGeometryNormalDeg,
+        kAutoCaptureGeometryStrongDeg,
+        kAutoCaptureGeometryWeakDeg;
 import 'shutter_backpressure_gate.dart' show ShutterPace;
 
 /// 累计快照的落盘节流(秒)。与采集页既有的 5 秒诊断轮次同一个量级:
 /// 一轮采集上限 5 分钟 ⇒ 至多 ~60 行,可忽略;而丢失窗口至多 5 秒。
 const double kAutoCaptureTelemetryFlushSec = 5.0;
+
+const List<AutoCaptureMotionRole> _fireRoles = <AutoCaptureMotionRole>[
+  AutoCaptureMotionRole.overlapSafety,
+  AutoCaptureMotionRole.geometry,
+  AutoCaptureMotionRole.rotationCoverage,
+  AutoCaptureMotionRole.radialBridge,
+];
+
+class _RoleCounts {
+  int evaluated = 0;
+  int eligible = 0;
+  int selected = 0;
+  int fired = 0;
+  int maskedByPriority = 0;
+  int blockedBlur = 0;
+  int blockedPace = 0;
+  int blockedTracking = 0;
+  int blockedCap = 0;
+  int blockedTimeLimit = 0;
+  int blockedNotMoved = 0;
+
+  void clear() {
+    evaluated = 0;
+    eligible = 0;
+    selected = 0;
+    fired = 0;
+    maskedByPriority = 0;
+    blockedBlur = 0;
+    blockedPace = 0;
+    blockedTracking = 0;
+    blockedCap = 0;
+    blockedTimeLimit = 0;
+    blockedNotMoved = 0;
+  }
+
+  Map<String, int> snapshot() => <String, int>{
+    'evaluated': evaluated,
+    'eligible': eligible,
+    'selected': selected,
+    'fired': fired,
+    'masked_by_priority': maskedByPriority,
+    'blocked_blur': blockedBlur,
+    'blocked_pace': blockedPace,
+    'blocked_tracking': blockedTracking,
+    'blocked_cap': blockedCap,
+    'blocked_time_limit': blockedTimeLimit,
+    'blocked_not_moved': blockedNotMoved,
+  };
+}
 
 /// 一轮自动采集的判定/开火/档位聚合。**只做加法**,不做任何判定 ——
 /// "要不要拍"全在 auto_capture_governor.dart。
@@ -50,9 +105,37 @@ class AutoCaptureTelemetry {
   };
 
   final Map<AutoCaptureMotionRole, int> _fireRoleCounts =
-      <AutoCaptureMotionRole, int>{
-        for (final role in AutoCaptureMotionRole.values) role: 0,
+      <AutoCaptureMotionRole, int>{for (final role in _fireRoles) role: 0};
+
+  /// 固定 4×常数个整数；与 pose 数、会话时长、拍照张数无关。`none`
+  /// 不是拍摄角色，单列在 [_noCandidate]/[_selectedNone]，绝不混入本表。
+  final Map<AutoCaptureMotionRole, _RoleCounts> _roleCounts =
+      <AutoCaptureMotionRole, _RoleCounts>{
+        for (final role in _fireRoles) role: _RoleCounts(),
       };
+
+  final Map<AutoCaptureMotionRole, Map<AutoCaptureDecision, int>>
+  _winnerDecisionCounts =
+      <AutoCaptureMotionRole, Map<AutoCaptureDecision, int>>{
+        for (final role in _fireRoles)
+          role: <AutoCaptureDecision, int>{
+            for (final decision in AutoCaptureDecision.values) decision: 0,
+          },
+      };
+
+  final Map<AutoCaptureDecision, int> _selectedNoneDecisionCounts =
+      <AutoCaptureDecision, int>{
+        for (final decision in AutoCaptureDecision.values) decision: 0,
+      };
+  int _noCandidate = 0;
+  int _selectedNone = 0;
+
+  int _overlapKnown = 0;
+  int _overlapUnknown = 0;
+  int _geometryWeakThreshold = 0;
+  int _geometryNormalThreshold = 0;
+  int _geometryStrongThreshold = 0;
+  int _geometryOtherThreshold = 0;
 
   /// 会话是否开着。关掉之后到达的判定一律丢弃 —— 那一行早就写出去了,
   /// 事后再改它的比例只会让两行互相矛盾。
@@ -72,6 +155,9 @@ class AutoCaptureTelemetry {
   int _fireEnqueued = 0;
   int _fireEnqueueFailed = 0;
   int _fireBeforeTick = 0;
+  int _startAnchorAttempted = 0;
+  int _startAnchorEnqueued = 0;
+  int _startAnchorFailed = 0;
 
   /// 开一轮。[tSec] 必须是起跑那一帧的 `ARPose.timestamp`(与
   /// `AutoCaptureController.start()` 收到的是同一个 pose)。
@@ -90,6 +176,9 @@ class AutoCaptureTelemetry {
     _fireEnqueued = 0;
     _fireEnqueueFailed = 0;
     _fireBeforeTick = 0;
+    _startAnchorAttempted = 0;
+    _startAnchorEnqueued = 0;
+    _startAnchorFailed = 0;
     _fireMovedM.clear();
     _fireDistM.clear();
     _fireTurnDeg.clear();
@@ -105,9 +194,26 @@ class AutoCaptureTelemetry {
     for (final p in ShutterPace.values) {
       _paceSec[p] = 0.0;
     }
-    for (final role in AutoCaptureMotionRole.values) {
+    for (final role in _fireRoles) {
+      _roleCounts[role]!.clear();
+      for (final decision in AutoCaptureDecision.values) {
+        _winnerDecisionCounts[role]![decision] = 0;
+      }
+    }
+    for (final role in _fireRoles) {
       _fireRoleCounts[role] = 0;
     }
+    for (final decision in AutoCaptureDecision.values) {
+      _selectedNoneDecisionCounts[decision] = 0;
+    }
+    _noCandidate = 0;
+    _selectedNone = 0;
+    _overlapKnown = 0;
+    _overlapUnknown = 0;
+    _geometryWeakThreshold = 0;
+    _geometryNormalThreshold = 0;
+    _geometryStrongThreshold = 0;
+    _geometryOtherThreshold = 0;
   }
 
   /// 记一次判定。**每个 pose 都要记**,不是只记 fire —— `skipNotMoved` 的
@@ -139,13 +245,89 @@ class AutoCaptureTelemetry {
     double? liveDepthM,
     double? sharpness,
     double? segMedianSharpness,
+    AutoCaptureMotionMetrics? motion,
     AutoCaptureMotionRole? motionRole,
     double? geometryParallaxDeg,
     double? overlapFraction,
     double? depthScaleRatio,
   }) {
     if (!_open) return;
+    // 生产调用总是传 [motion]。保留旧的 [motionRole] 接缝是为了兼容已有
+    // 纯聚合测试；无完整 metrics 时只把显式赢家视为命中，不虚构其它候选。
+    final winner = motion?.role ?? motionRole ?? AutoCaptureMotionRole.none;
+    if (d == AutoCaptureDecision.fire && !_fireRoles.contains(winner)) {
+      throw ArgumentError.value(
+        winner,
+        'motionRole',
+        'fire requires exactly one of the four capture roles',
+      );
+    }
     _counts[d] = (_counts[d] ?? 0) + 1;
+    for (final role in _fireRoles) {
+      final row = _roleCounts[role]!;
+      final eligible = motion?.isRoleEligible(role) ?? role == winner;
+      row.evaluated++;
+      if (eligible) {
+        row.eligible++;
+        if (role != winner) row.maskedByPriority++;
+      }
+    }
+
+    final winnerRow = _roleCounts[winner];
+    if (winnerRow == null) {
+      _noCandidate++;
+      _selectedNone++;
+      _selectedNoneDecisionCounts[d] =
+          (_selectedNoneDecisionCounts[d] ?? 0) + 1;
+    } else {
+      winnerRow.selected++;
+      _winnerDecisionCounts[winner]![d] =
+          (_winnerDecisionCounts[winner]![d] ?? 0) + 1;
+      switch (d) {
+        case AutoCaptureDecision.fire:
+          winnerRow.fired++;
+          break;
+        case AutoCaptureDecision.skipBlurry:
+          winnerRow.blockedBlur++;
+          break;
+        case AutoCaptureDecision.skipPaced:
+          winnerRow.blockedPace++;
+          break;
+        case AutoCaptureDecision.skipTracking:
+          winnerRow.blockedTracking++;
+          break;
+        case AutoCaptureDecision.skipCapped:
+          winnerRow.blockedCap++;
+          break;
+        case AutoCaptureDecision.skipTimeLimit:
+          winnerRow.blockedTimeLimit++;
+          break;
+        case AutoCaptureDecision.skipNotMoved:
+          winnerRow.blockedNotMoved++;
+          break;
+      }
+    }
+
+    // 一旦有完整分类结果，它就是权威来源；特别是 null 表示投影未知，绝不
+    // 允许遗留标量把它回填成 0（0 会被读成已知的零重叠）。
+    final observedOverlap = motion == null
+        ? overlapFraction
+        : motion.overlapFraction;
+    if (observedOverlap == null) {
+      _overlapUnknown++;
+    } else {
+      _overlapKnown++;
+    }
+    final geometryThreshold = motion?.geometryThresholdDeg;
+    if (geometryThreshold == kAutoCaptureGeometryWeakDeg) {
+      _geometryWeakThreshold++;
+    } else if (geometryThreshold == kAutoCaptureGeometryNormalDeg) {
+      _geometryNormalThreshold++;
+    } else if (geometryThreshold == kAutoCaptureGeometryStrongDeg) {
+      _geometryStrongThreshold++;
+    } else {
+      _geometryOtherThreshold++;
+    }
 
     // [pw] 2026-08-24 触发层换血后的开火快照:位移 / 生效阈值 / 转角 /
     // 活体 SfM 深度。首/中/末三点(见 _triple)——上一版靠 fire_depth_m
@@ -165,12 +347,13 @@ class AutoCaptureTelemetry {
       // 锐度缓拍门的疗效对:开火帧锐度 vs 当时的段中位。
       keep(_fireSharpness, sharpness);
       keep(_fireSegMedian, segMedianSharpness);
-      keep(_fireGeometryParallaxDeg, geometryParallaxDeg);
-      keep(_fireOverlapFraction, overlapFraction);
-      keep(_fireDepthScaleRatio, depthScaleRatio);
-      if (motionRole != null) {
-        _fireRoleCounts[motionRole] = (_fireRoleCounts[motionRole] ?? 0) + 1;
-      }
+      keep(
+        _fireGeometryParallaxDeg,
+        motion?.geometryParallaxDeg ?? geometryParallaxDeg,
+      );
+      keep(_fireOverlapFraction, observedOverlap);
+      keep(_fireDepthScaleRatio, motion?.depthScaleRatio ?? depthScaleRatio);
+      _fireRoleCounts[winner] = _fireRoleCounts[winner]! + 1;
     }
 
     final prevSec = _lastDecisionSec;
@@ -214,6 +397,17 @@ class AutoCaptureTelemetry {
     }
   }
 
+  /// 自动模式起跑锚点不是运动分类结果，单列记账，避免污染固定四角色守恒式。
+  void recordStartAnchorOutcome({required bool enqueued}) {
+    if (!_open) return;
+    _startAnchorAttempted++;
+    if (enqueued) {
+      _startAnchorEnqueued++;
+    } else {
+      _startAnchorFailed++;
+    }
+  }
+
   /// 关一轮,返回**终态**快照(`closed=true`)供调用方落盘。
   ///
   /// **幂等**:没有开着的会话(从没开过、或已经关过)时返回 null。
@@ -250,12 +444,15 @@ class AutoCaptureTelemetry {
       'closed': start != null && !_open,
       // spec §11:采集时长 vs 5 分钟上限。
       'session_duration_sec': _round3(duration),
-      // 六档之和,占比的分母(读者不用自己加六个数)。
+      // 所有 decision 档之和,占比的分母(读者不用自己逐项相加)。
       'decisions': _counts.values.fold<int>(0, (a, b) => a + b),
       // spec §11:视差下限触发率 = decision_counts.skipNotMoved / decisions。
       'decision_counts': <String, int>{
         for (final e in _counts.entries) e.key.name: e.value,
       },
+      'start_anchor_attempted': _startAnchorAttempted,
+      'start_anchor_enqueued': _startAnchorEnqueued,
+      'start_anchor_failed': _startAnchorFailed,
       // spec §7:开火 ≠ 拍成。两者分开记。
       'fire_enqueued': _fireEnqueued,
       'fire_enqueue_failed': _fireEnqueueFailed,
@@ -263,6 +460,39 @@ class AutoCaptureTelemetry {
       'fire_before_tick': _fireBeforeTick,
       'fire_role_counts': <String, int>{
         for (final e in _fireRoleCounts.entries) e.key.name: e.value,
+      },
+      'role_counts': <String, Object>{
+        for (final e in _roleCounts.entries) e.key.name: e.value.snapshot(),
+      },
+      'predicate_counts': <String, Object>{
+        for (final e in _roleCounts.entries)
+          e.key.name: <String, int>{
+            'true': e.value.eligible,
+            'false': e.value.evaluated - e.value.eligible,
+          },
+      },
+      'winner_decision_counts': <String, Object>{
+        for (final e in _winnerDecisionCounts.entries)
+          e.key.name: <String, int>{
+            for (final decision in AutoCaptureDecision.values)
+              decision.name: e.value[decision] ?? 0,
+          },
+      },
+      'no_candidate': _noCandidate,
+      'selected_none': _selectedNone,
+      'selected_none_decision_counts': <String, int>{
+        for (final decision in AutoCaptureDecision.values)
+          decision.name: _selectedNoneDecisionCounts[decision] ?? 0,
+      },
+      'overlap_counts': <String, int>{
+        'known': _overlapKnown,
+        'unknown': _overlapUnknown,
+      },
+      'threshold_counts': <String, int>{
+        'geometry_weak_10_deg': _geometryWeakThreshold,
+        'geometry_normal_12_deg': _geometryNormalThreshold,
+        'geometry_strong_15_deg': _geometryStrongThreshold,
+        'geometry_other': _geometryOtherThreshold,
       },
       // 开火时刻的位移/阈值/转角/活体深度。**首/中/末三点**而不是均值 ——
       // 要抓的是趋势(上一版就是靠这个形状抓到深度整场撒谎的)。

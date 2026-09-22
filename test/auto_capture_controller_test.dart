@@ -116,6 +116,7 @@ class _Harness {
   ARPose? _nextFirePose;
 
   late final AutoCaptureController controller = AutoCaptureController(
+    onStartAnchor: () => true,
     onFire: () {
       fireAttempts++;
       if (!enqueueSucceeds) return false;
