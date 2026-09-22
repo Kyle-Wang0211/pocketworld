@@ -22,7 +22,10 @@
 
 import 'dart:ffi';
 
+import '../ffi/pw_camera_photo_ffi.dart';
 import 'camera_projection.dart';
+
+export '../ffi/pw_camera_photo_ffi.dart' show PwCapturedPhoto;
 
 typedef _StartNative = Int32 Function(Int32, Int32, Double, Double);
 typedef _StartDart = int Function(int, int, double, double);
@@ -219,6 +222,28 @@ abstract final class PwCameraSlot {
   static final int Function(Pointer<Double>) _exposure = _lib.lookupFunction<
       Int32 Function(Pointer<Double>),
       int Function(Pointer<Double>)>('pw_camera_slot_exposure');
+
+  // ── 高清拍照 ──────────────────────────────────────────────────────────
+  //
+  // 实现在 `lib/vio/ffi/pw_camera_photo_ffi.dart`(与其余 FFI 绑定同处);
+  // 这里只留两个转发,是因为**调用方按 `PwCameraSlot.capturePhoto` /
+  // `PwCameraSlot.photoResult` 这个名字写的**,而且拍照与取帧本来就是同一个
+  // `AVCaptureSession` 上的两条出口,分成两个门面会让调用方误以为要各起各的。
+
+  /// 触发一次高清拍照。**只受理,不等待**;结果用 [photoResult] 轮询。
+  ///
+  /// 🔴 前提是 [start] 已经起来了 —— 照片输出挂在同一个会话上。
+  /// 返回 0 已受理;负数见 `PwCameraPhoto.capture`;符号不在返回 `null`。
+  static int? capturePhoto(int requestId) => PwCameraPhoto.capture(requestId);
+
+  /// 取走**最早一个**已完成的拍照结果;`null` = 还没有 / 符号不在。
+  ///
+  /// 🔴 语义是 FIFO 逐个取走,不是"读最近一次" ⇒ 要拿全就循环到 `null`
+  /// (或直接用 `PwCameraPhoto.drain()`)。
+  static PwCapturedPhoto? photoResult() => PwCameraPhoto.result();
+
+  /// 拍照这条路的两个原生符号是否都在。
+  static bool get photoAvailable => PwCameraPhoto.available;
 
   static CameraSlotStats stats() {
     final Pointer<Int64> buf = calloc5();
