@@ -91,7 +91,7 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
        _source = poseSource ?? VioPoseSource(),
        _intrinsicsReader = intrinsicsReader,
        _runtime = runtime,
-       _photoApi = photoApi ?? NativeZeroArkitPhotoApi();
+       _photoApi = photoApi ?? const NativeZeroArkitPhotoApi();
 
   final EnginePosePoller _poller;
   final VioPoseSource _source;
@@ -390,10 +390,10 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
 
   // ── 照片路径:走 `ZeroArkitPhotoApi` ───────────────────────────────────
   //
-  // 🔴 **实现不在这里。** 原生侧的 `AVCapturePhotoOutput` 由另一位 agent 在
-  //    另一条分支上落地;本文件只按约定好的签名调
-  //    (`pw_camera_slot_capture_photo` / `pw_camera_slot_photo_result`)。
-  //    符号不在(对方分支还没合 / 模拟器)⇒ [ZeroArkitPhotoApi] 自己永久降级,
+  // 🔴 **实现不在这里。** 原生侧的 `AVCapturePhotoOutput` 由另一位 agent 落地,
+  //    已 cherry-pick 进本分支(`405eca6`);本文件经 [ZeroArkitPhotoApi]
+  //    转调他们的门面 `lib/vio/ffi/pw_camera_photo_ffi.dart`。
+  //    符号不在(模拟器 / Release 没导出)⇒ 门面自己降级返回 null,
   //    这里如实返回 `unsupported`,**不假装落盘成功** ——
   //    假装成功会让 `CaptureSession` 以为有图而实际没有。
   //

@@ -1,33 +1,25 @@
 // zero_arkit_photo_api.dart —— 零 ARKit 臂的**照片出口**(只调不实现)。
 //
 // ══ 🔴 实现不在这里 ════════════════════════════════════════════════════════
-// 照片这条路由**另一位 agent**在另一条分支上落地(原生 `PwCameraSlot.swift`
-// 的 `AVCapturePhotoOutput` + Dart 侧 `PwCameraSlot.capturePhoto` /
-// `PwCameraSlot.photoResult`)。本文件**只按约定好的签名调用**,一行都不实现
-// 拍照逻辑,也**不改** `lib/vio/pose/camera_slot_ffi.dart`(那是对方的文件)。
+// 拍照通路由**另一位 agent**落地(原生 `PwCameraSlot.swift` 的
+// `AVCapturePhotoOutput` + Dart 门面 `lib/vio/ffi/pw_camera_photo_ffi.dart`),
+// 已 cherry-pick 进本分支(`405eca6` + `28ff7de`)。
+// 本文件只剩**一个薄适配器**:把他们的 `PwCameraPhoto` / `PwCapturedPhoto`
+// 适配成本臂的 [ZeroArkitPhotoApi] 接口,好让单测能注入替身。
+// 拍照逻辑一行都不在这里,`camera_slot_ffi.dart` / `PwCameraSlot.swift`
+// 一个字节没动。
 //
-// ══ 为什么不直接写 `PwCameraSlot.capturePhoto(...)` ═════════════════════════
-// 那两个 Dart 方法今天还不存在 ⇒ 直接写会让本分支编不过,而两条分支是
-// **独立的**、不互相依赖。所以这里走**同一套 C ABI**(那才是两边真正的约定面):
-//
-//     int64_t pw_camera_slot_capture_photo(int64_t request_id);
-//     int32_t pw_camera_slot_photo_result(char* out_path, int32_t cap,
-//                                         double out9[9]);
-//
-// 对方的 `PwCameraSlot.capturePhoto` / `photoResult` 绑的是同两个符号,
-// 所以两条路在真机上落到**同一个实现**;合分支时把本文件的默认实现换成
-// 直接调他们的 Dart 方法即可,调用点([ZeroArkitPhotoApi] 这个接口)不用动。
-//
-// ══ `out9` 的九个槽 ════════════════════════════════════════════════════════
-//     [0] requestId   [1] fx  [2] fy  [3] cx  [4] cy
-//     [5] width       [6] height      [7] t(秒,与位姿同一时基)
-//     [8] exposureSeconds
-// 🔴 `requestId` 走 double 槽 ⇒ 精度只到 2^53。它是个单调计数器,够用;
-//    但**不要**往里塞时间戳纳秒那种量级的值。
+// ══ 早先那版 stub 的下场 ═══════════════════════════════════════════════════
+// 两条分支并行时我先按约定好的 C ABI 自己绑了一遍符号
+// (`pw_camera_slot_capture_photo` / `pw_camera_slot_photo_result`)。
+// 对方分支落地后**换成直接调他们的门面** —— 同一套符号绑两遍迟早会漂,
+// 而且他们的 `PwCapturedPhoto.parse` 还多做了两件本臂需要的事:
+// 数目/尺寸不对时返回 null(不交半条记录),以及 sidecar 路径推导。
 
-import 'dart:ffi';
+import '../ffi/pw_camera_photo_ffi.dart';
 
-/// 一次成片的结果。字段与 `out9` + `out_path` 一一对应。
+/// 一次成片的结果。**就是** `PwCapturedPhoto` 的别名级包装 —— 字段一一对应,
+/// 存在的唯一理由是让 [ZeroArkitPhotoApi] 的单测替身不必依赖 FFI 类型。
 class ZeroArkitPhotoResult {
   const ZeroArkitPhotoResult({
     required this.requestId,
@@ -42,8 +34,26 @@ class ZeroArkitPhotoResult {
     required this.exposureSeconds,
   });
 
+  /// 从对方的 `PwCapturedPhoto` 转过来。**逐字段直抄,不做任何换算** ——
+  /// 特别是**不**替调用方把曝光中点加上去(见 [exposureSeconds])。
+  factory ZeroArkitPhotoResult.fromNative(PwCapturedPhoto p) =>
+      ZeroArkitPhotoResult(
+        requestId: p.requestId,
+        path: p.path,
+        fx: p.fx,
+        fy: p.fy,
+        cx: p.cx,
+        cy: p.cy,
+        width: p.width,
+        height: p.height,
+        timestampSeconds: p.timestampSeconds,
+        exposureSeconds: p.exposureSeconds,
+      );
+
   final int requestId;
   final String path;
+
+  /// 逐张内参,**已经缩到这张照片自己的像素尺寸**(对方门面的契约)。
   final double fx;
   final double fy;
   final double cx;
@@ -51,10 +61,10 @@ class ZeroArkitPhotoResult {
   final int width;
   final int height;
 
-  /// 与位姿同一时基(`PwMonotonicClock`)。配位姿靠它,不靠到达顺序。
+  /// 拍照时刻,秒。host clock,与视频流 PTS 同域 ⇒ 可以直接和位姿对齐。
   final double timestampSeconds;
 
-  /// 实际曝光时长。🔴 时间戳配对要用**曝光中点**
+  /// 这张照片自己的曝光时长。🔴 时间戳配对要用**曝光中点**
   /// (09-22 定案:`t + exposure/2`),这里交出的是原始 t 与 exposure 两项,
   /// **不替调用方做那个加法** —— 做了就没人知道加过没加过。
   final double exposureSeconds;
@@ -74,100 +84,23 @@ abstract interface class ZeroArkitPhotoApi {
   ZeroArkitPhotoResult? photoResult();
 }
 
-/// 走 C ABI 的生产实现。
+/// 生产实现:**转调对方的门面**,不自己绑符号。
 ///
-/// 🔴 符号不在(对方分支还没合 / 模拟器 / 单测)⇒ **永久**降级成
-/// 「接口不可用」,不每帧付一次异常的钱。与 `EnginePosePoller` 的粘性闸同款。
+/// 🔴 `PwCameraPhoto` 自己在符号不在时全部降级返回 null 且不抛
+/// (模拟器 / 没链进去 / Release 没导出),所以这里不需要第二道粘性闸 ——
+/// 加一道只会变成两份互相不知道的状态。
 class NativeZeroArkitPhotoApi implements ZeroArkitPhotoApi {
-  NativeZeroArkitPhotoApi();
+  const NativeZeroArkitPhotoApi();
 
-  static const int _pathCapacity = 1024;
-
-  bool _gaveUp = false;
-
-  /// 为什么不可用(诊断用)。`null` = 正常或还没试过。
-  Object? get unavailableReason => _reason;
-  Object? _reason;
+  /// 原生拍照通路在不在(诊断 / 报告用)。
+  bool get available => PwCameraPhoto.available;
 
   @override
-  int? capturePhoto(int requestId) {
-    if (_gaveUp) return null;
-    try {
-      final int rc = _capture(requestId);
-      // 约定:>=0 是接受(原样回 requestId),负数是拒绝。
-      return rc >= 0 ? rc : null;
-    } catch (e) {
-      _gaveUp = true;
-      _reason = e;
-      return null;
-    }
-  }
+  int? capturePhoto(int requestId) => PwCameraPhoto.capture(requestId);
 
   @override
   ZeroArkitPhotoResult? photoResult() {
-    if (_gaveUp) return null;
-    try {
-      final Pointer<Void> pathBuf = _malloc(_pathCapacity);
-      final Pointer<Void> numBuf = _malloc(8 * 9);
-      try {
-        final int rc = _result(
-          pathBuf.cast<Uint8>(),
-          _pathCapacity,
-          numBuf.cast<Double>(),
-        );
-        if (rc != 0) return null; // 0 = 有新结果;其余一律当「没有」
-        final Pointer<Double> n = numBuf.cast<Double>();
-        return ZeroArkitPhotoResult(
-          requestId: n[0].toInt(),
-          path: _readCString(pathBuf.cast<Uint8>(), _pathCapacity),
-          fx: n[1],
-          fy: n[2],
-          cx: n[3],
-          cy: n[4],
-          width: n[5].toInt(),
-          height: n[6].toInt(),
-          timestampSeconds: n[7],
-          exposureSeconds: n[8],
-        );
-      } finally {
-        _free(pathBuf);
-        _free(numBuf);
-      }
-    } catch (e) {
-      _gaveUp = true;
-      _reason = e;
-      return null;
-    }
+    final PwCapturedPhoto? p = PwCameraPhoto.result();
+    return p == null ? null : ZeroArkitPhotoResult.fromNative(p);
   }
-
-  static String _readCString(Pointer<Uint8> p, int cap) {
-    final List<int> bytes = <int>[];
-    for (int i = 0; i < cap; i++) {
-      final int b = p[i];
-      if (b == 0) break;
-      bytes.add(b);
-    }
-    return String.fromCharCodes(bytes);
-  }
-
-  static final DynamicLibrary _lib = DynamicLibrary.process();
-
-  static final int Function(int) _capture = _lib.lookupFunction<
-      Int64 Function(Int64),
-      int Function(int)>('pw_camera_slot_capture_photo');
-
-  static final int Function(Pointer<Uint8>, int, Pointer<Double>) _result =
-      _lib.lookupFunction<
-          Int32 Function(Pointer<Uint8>, Int32, Pointer<Double>),
-          int Function(Pointer<Uint8>, int, Pointer<Double>)>(
-        'pw_camera_slot_photo_result',
-      );
-
-  static final Pointer<Void> Function(int) _malloc = _lib.lookupFunction<
-      Pointer<Void> Function(IntPtr),
-      Pointer<Void> Function(int)>('malloc');
-
-  static final void Function(Pointer<Void>) _free = _lib.lookupFunction<
-      Void Function(Pointer<Void>),
-      void Function(Pointer<Void>)>('free');
 }
