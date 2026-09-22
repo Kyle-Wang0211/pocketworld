@@ -450,6 +450,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// instead of the sparse cloud; dense is then "done" for this project).
   SfmLiveSnapshot? _denseReviewSnapshot;
 
+  /// 中央转圈下面那一行;null = 用默认的"正在生成最终点云…"。
+  /// 再进入(review)时它是"正在载入点云…" —— 见 initState 的那段说明。
+  String? _sfmCenterLabel;
+
   /// [LIVE-WAIT] Wait countdown of the sparse job (lib/eta: Ninja prediction +
   /// commit-once coarse label). Planned when the wait page goes up, finished
   /// after the PLY is persisted; the prior log lives in the app documents dir.
@@ -843,7 +847,12 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     final review = widget.reviewCaptureDir;
     if (review != null) {
       _initializing = false;
+      // 🔴 [2026-09-22 用户指认「改掉那个骗人的文案」] 这一相只是**遮住读盘**,
+      // 不是真的在生成 —— 点云早就在盘上了。未命名(12) 的稠密 692 万点 / 99 MB,
+      // 读+八叉树排序要几十秒,用户整段时间盯着"正在生成最终点云…"。
+      // 相不改(改相会牵动整条等待页的状态机),只把那一行字说成真话。
       _sfmPhase = SfmPreviewPhase.generating; // cover page while the PLY loads
+      _sfmCenterLabel = '正在载入点云…';
       unawaited(_enterReviewMode(review));
       return;
     }
@@ -2291,6 +2300,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     final c = cloud;
     final d = dense;
     setState(() {
+      _sfmCenterLabel = null; // 载入结束;之后若真的在生成,用回默认文案
       if (d != null && d.count > 0) {
         _denseReviewSnapshot = SfmLiveSnapshot(
           xyz: d.xyz,
@@ -5390,6 +5400,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                   _sfmSnapshot ??
                   _sfmLiveSnapshot,
               errorText: _sfmErrorText,
+              generatingLabel: _sfmCenterLabel,
               denseRunning: _denseRunningHere,
               waitLabel: _denseRunningHere
                   ? _denseWaitLabel(context)
