@@ -56,8 +56,9 @@
 //
 // ══ 🔴 已知窗口:第一次建会话可能查表还没回来 ═══════════════════════════════
 // `deviceMachine()` 是 **MethodChannel(异步)**,而 `ZeroArkitCaptureRuntime.start()`
-// 是同步的(`ARPoseProvider.start()` 的签名是同步的,`CaptureSession.attach()`
-// 在调它之前一个 await 都没有)。⇒ 进程内**第一次**建会话时缓存可能还没热,
+// 在被调用那一刻(第一个 await 之前)就读 c(`ARPoseProvider.start()` 的签名是
+// 同步的,`CaptureSession.attach()` 在调它之前一个 await 都没有)。
+// ⇒ 进程内**第一次**建会话时缓存可能还没热,
 // 那一次会如实打 `provenance=PLACEHOLDER(机型未知)` 并用 c=0。
 // 这是**已知缺口,不假装解决了**;要消掉它只有两条路,都超出本刀范围:
 //   (a) 给 `PwZeroArkitGate.swift` 加一个同步 C ABI 读 `hw.machine`

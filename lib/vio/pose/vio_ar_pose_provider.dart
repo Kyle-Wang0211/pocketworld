@@ -100,8 +100,8 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
     ZeroArkitCaptureRuntime? runtime,
     ZeroArkitPhotoApi? photoApi,
     this.pollInterval = const Duration(milliseconds: 16),
-    this.feedWidth = 640,
-    this.feedHeight = 480,
+    this.feedWidth = 1920,
+    this.feedHeight = 1440,
   }) : _poller = poller ?? EnginePosePoller(),
        _source = poseSource ?? VioPoseSource(),
        _intrinsicsReader = intrinsicsReader,
@@ -125,8 +125,20 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
   ZeroArkitScaleState _scale = ZeroArkitScaleState.unanchored;
   ZeroArkitScaleState get scaleState => _scale;
 
-  /// 相机/会话起没起来(`null` = 本适配器不负责起)。
+  /// 相机/会话起没起来。
+  ///
+  /// * `null` = 本适配器不负责起(台架那样由调用方自己起),**或者**
+  ///   [start] 之后运行时还在等第一帧内参(`ZeroArkitCaptureRuntime.start`
+  ///   是异步的,见其文件头「时序」段;[runtimeStarting] 为 true);
+  /// * 非 null = 那一次起动的回执,成功或失败都在里面(`ok` / `error` /
+  ///   `intrinsicsWaitMs`)。
+  ///
+  /// 内参已经在手时(台架页先自己轮询再调 [start])整条路同步完成,
+  /// [start] 返回时它就已经是本次回执。
   ZeroArkitStartResult? get runtimeStart => _runtime?.lastStart;
+
+  /// 运行时是否正在等第一帧内参(已起相机、还没建会话)。
+  bool get runtimeStarting => _runtime?.starting ?? false;
 
   /// 尺度锚定的**唯一入口**:用户量了一段已知距离。
   ///
@@ -165,7 +177,11 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
   /// 会硬 abort,`listener` 拿不到同步结果 ⇒ 正确形状就是 Dart 侧按需 poll。
   final Duration pollInterval;
 
-  /// 喂给引擎的图像尺寸。只用来向 `PwCameraSlot` 要内参 —— 本文件不采帧。
+  /// 喂给引擎的图像尺寸。只用来向 `PwCameraSlot` 要内参(进 `ARPose` 的
+  /// `intrinsicFxFyCxCy` / `imageWidth` / `imageHeight`)—— 本文件不采帧。
+  /// 🔴 [pw 2026-09-22 改口] 默认 1920×1440 = 采集尺寸,与
+  ///    `ZeroArkitCaptureRuntime` 的默认喂料尺寸同步(用户铁律「最低 1920×1440」,
+  ///    理由在那个文件头「改口」段)。以前默认 640×480。
   final int feedWidth;
   final int feedHeight;
 
@@ -242,16 +258,29 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
     if (_timer != null) return _controller.stream;
     _stopped = false;
     if (!_clock.isRunning) _clock.start();
-    // 🔴 相机 + 会话先起,再开始轮询。起不来**不抛** —— 位姿流照样交出
-    //    `isTracking=false` 的帧,`CaptureSession` 的既有闸把它们挡在落盘外。
-    //    抛了会把整个采集页打成 `_initError`,而这条臂本来就是研究臂。
-    final ZeroArkitStartResult? r = _runtime?.start();
-    if (r != null && !r.ok) {
+    // 🔴 相机 + 会话在这里起,**不等它起完**就开始轮询:`ARPoseProvider.start()`
+    //    的签名是同步的(接口如此,`CaptureSession.attach()` 也不 await 它),
+    //    而运行时起相机之后要等第一帧内参(异步,见
+    //    `zero_arkit_capture_runtime.dart` 文件头「时序」段)。
+    //    ⇒ `unawaited(...)`(仓里现成写法:`lib/main.dart` 的
+    //    `unawaited(DeviceLog.init())`),定时器照起;会话建成之前每一 tick
+    //    交出的位姿**如实**是 none / `isTracking=false`,`CaptureSession` 的
+    //    既有闸把它们挡在落盘外。起不来**不抛**,打印一次 —— 抛了会把整个
+    //    采集页打成 `_initError`,而这条臂本来就是研究臂。
+    unawaited(_startRuntime());
+    _timer = Timer.periodic(pollInterval, (_) => tick());
+    return _controller.stream;
+  }
+
+  Future<void> _startRuntime() async {
+    final ZeroArkitCaptureRuntime? rt = _runtime;
+    if (rt == null) return;
+    final ZeroArkitStartResult r = await rt.start();
+    // 被自己的 [stop] 叫停不算「起不来」,不打这一行。
+    if (!r.ok && !_stopped) {
       // ignore: avoid_print
       print('[zero-arkit] 运行时起不来:$r');
     }
-    _timer = Timer.periodic(pollInterval, (_) => tick());
-    return _controller.stream;
   }
 
   /// 拉一帧并投递。生产由 [start] 的 Timer 驱动;单测直接调它,
@@ -526,15 +555,21 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
     required Duration pollEvery,
   }) async {
     final int id = ++_photoRequestSeq;
+    // 🔴 [pw 2026-09-22 真机] 原生 `pw_camera_slot_capture_photo` **成功返回 0**
+    //    (门面 `pw_camera_photo_ffi.dart`:「返回 0 已受理;负数是原生失败码」),
+    //    **不是** requestId。以前这里拿受理码去比 `r.requestId`,永远不等 ⇒
+    //    13 次快门全部 3 s 超时报 `unsupported`,而原生每张都写好了
+    //    (4032×3024 JPEG + sidecar,request_id 正确)。
+    //    受理码只判「受没受理」;配对用**我们自己发出去的** [id]。
     final int? accepted = _photoApi.capturePhoto(id);
-    if (accepted == null) return null;
+    if (accepted == null || accepted < 0) return null;
 
     final Stopwatch sw = Stopwatch()..start();
     while (sw.elapsed < timeout) {
       final ZeroArkitPhotoResult? r = _photoApi.photoResult();
       // 🔴 按 requestId 配对,**不按到达顺序** —— 上一张迟到的结果会被
       //    当成这一张,而且不会报任何错。
-      if (r != null && r.requestId == accepted) return r;
+      if (r != null && r.requestId == id) return r;
       await Future<void>.delayed(pollEvery);
     }
     return null;

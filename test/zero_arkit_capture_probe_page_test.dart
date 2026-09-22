@@ -241,13 +241,14 @@ void main() {
       expect(p.cameraOwnedBySelfVio(), isFalse);
     });
 
-    test('runtime 用它起:相机失败 ⇒ 不建会话、如实 error', () {
+    test('runtime 用它起:相机失败 ⇒ 不建会话、如实 error', () async {
       final BenchZeroArkitPlatform p = BenchZeroArkitPlatform();
       final ZeroArkitCaptureRuntime rt = ZeroArkitCaptureRuntime(
         platform: p,
         machineIdentifier: 'iPhone15,2',
       );
-      final ZeroArkitStartResult r = rt.start();
+      // 相机没起来这条路上没有 await(不等内参),`start()` 返回时就已完成。
+      final ZeroArkitStartResult r = await rt.start();
       expect(r.ok, isFalse);
       expect(r.sessionStarted, isFalse);
       expect(r.cameraRc, kZeroArkitCameraSymbolMissing);

@@ -77,7 +77,11 @@ class ZeroArkitPhotoResult {
 
 /// 照片出口的契约。生产用 [NativeZeroArkitPhotoApi];测试注入替身。
 abstract interface class ZeroArkitPhotoApi {
-  /// 请求拍一张。返回原生接受的 requestId(`null` = 拒绝 / 接口不可用)。
+  /// 请求拍一张。返回**原生受理码**,与 `PwCameraPhoto.capture` 同口径:
+  /// **0 = 已受理**,负数 = 原生失败码,`null` = 接口不可用。
+  /// 🔴 返回的**不是** requestId —— 09-22 真机上 provider 曾拿它去比
+  ///    `photoResult().requestId`,13 次快门全部超时。配对要用调用方自己的
+  ///    [requestId]。
   int? capturePhoto(int requestId);
 
   /// 取最近一次完成的成片。`null` = 还没有新结果。
