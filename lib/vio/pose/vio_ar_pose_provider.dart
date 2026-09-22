@@ -27,6 +27,19 @@
 // 3. **相机与会话由本文件负责起**(经 `ZeroArkitCaptureRuntime`)——
 //    开关 ON 时页面不再起 ARSession,相机归我们。
 //
+// ══ 🔴 [pw 2026-09-22 换轴统一] 本文件是生产路径**唯一**的换轴点 ═════════
+// 以前零 ARKit 臂里并存两条 z-up → y-up:本文件的 `xrslam_world_axis.dart`
+// (给 dome / `gravity_align` / 落盘 extrinsic),和渲染那条
+// `WorldToRenderer.zUpToYUp`(给 Filament 相机矩阵)。两者都把引擎的上送到
+// y-up 的上,但**差一个 Ry(+90°) 的偏航**(算式在 world_to_renderer.dart
+// 文件头)。偏航在 VIO 里不可观 ⇒ 没有"哪个对",但两条不一致,以后把按
+// `ARPose` 摆的东西(照片卡片、点云)画进预览就会整体歪 90°。
+// ⇒ 定案:**生产以本文件的换轴为准**(消费者最多;而且 `lockOrigin` 本来
+//   就按会话重锚 `_worldYaw`,固化的偏航只是约定不是真值)。
+//   新出口 [VioArPoseProvider.lastRendererPose] 交已换好的 y-up 位姿,
+//   渲染器带 `PoseFrame.rendererYUp` 收,**一份位姿只换一次**。
+//   `WorldToRenderer.zUpToYUp` 退成台架/探针口径。
+//
 // ══ 🔴 仍然**不**做的两件事 ════════════════════════════════════════════════
 // * **不做显示时刻预测。** 引擎的位姿补到**图像时刻**,不是显示时刻。
 //   补显示延迟要 Monado 的 `m_predict_relation`,那是另一刀。
@@ -196,14 +209,31 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
 
   /// 最近一次引擎位姿,**引擎系**(XRSLAM z-up),**未换轴**。
   ///
-  /// 给渲染器用:`WorldToRenderer` 自己做 z-up → y-up
-  /// (world_to_renderer.dart 文件头,实测判死的换轴)。**不是** [lastPose]
-  /// 那条 ARKit 口径 —— 那条已按 `xrslam_world_axis.dart` 换成 y-up 给
-  /// dome / 落盘用。两条都 y-up,但差一个绕竖轴的偏航(VIO 里不可观);
-  /// 画虚拟内容之前必须统一成一条,见 zero_arkit_camera_preview.dart 文件头。
-  /// 本刀只画相机背景,位姿不影响背景像素。
+  /// 🔴 [pw 2026-09-22 换轴统一] **渲染器不再用它**。
+  ///    以前预览把这条喂给 `ArRenderLoop`,由 `WorldToRenderer.zUpToYUp`
+  ///    自己换轴 —— 那是第二条换轴,与 [lastPose] 走的
+  ///    `xrslam_world_axis.dart` 差一个 Ry(+90°) 的偏航。现在渲染器改吃
+  ///    [lastRendererPose],本 getter **只剩诊断用途**(想看引擎原样交出
+  ///    什么,以及 `test/zero_arkit_camera_preview_test.dart` 的 (D) 组
+  ///    仍据它钉住"两条不能混")。
   TrackedPose? get lastTrackedPose => _lastTracked;
   TrackedPose? _lastTracked;
+
+  /// 最近一次位姿,**已经是 y 向上**(ARKit / 渲染器口径)。
+  ///
+  /// ══ 这是渲染器唯一该读的那条 ═══════════════════════════════════════════
+  /// 它与 [lastPose] 的 `position` / `orientation` / `extrinsic4x4` 来自
+  /// **同一次** `_toArPose` 的换算(`xrslam_world_axis.dart`),不是再算一遍
+  /// —— 再算一遍就给了两份结果各自漂移的机会。
+  ///
+  /// ARKit 世界系与 OpenXR/Filament 的渲染器世界系是同一套约定(右手、
+  /// y 上、相机看 −z),所以喂给 `ArRenderLoop.step` 时要带
+  /// `poseFrame: PoseFrame.rendererYUp`,让它**一次都不要再换**。
+  ///
+  /// 四个 OpenXR 标志位(VALID/TRACKED × 朝向/位置)与 [lastTrackedPose]
+  /// **逐位相同** —— 换轴只动数值,不动"这个字段能不能读"。
+  TrackedPose? get lastRendererPose => _lastRenderer;
+  TrackedPose? _lastRenderer;
 
   @override
   Stream<ARPose> start() {
@@ -274,6 +304,14 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
         xrslamOrientationToArkit(orientationEngine);
     final Vector3 position = xrslamPositionToArkit(positionEngine);
 
+    // 🔴 渲染器那条出口就在这里派生,**复用上面这一次换算**,不再算第二遍。
+    //    见 [lastRendererPose]。
+    _lastRenderer = _toRendererPose(
+      tracked,
+      orientation: q == null ? null : orientation,
+      position: p == null ? null : position,
+    );
+
     double azimuth = 0, elevation = 0;
     if (_hasOrigin && p != null) {
       final double relX = position.x - _worldOrigin.x;
@@ -328,6 +366,48 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
       trackingStateName: _trackingStateName(tracked),
       quality: null,
       previewPoints: const <ARPreviewPoint>[],
+    );
+  }
+
+  /// 把换过轴的数值包回一个 `TrackedPose`,**四个标志位逐位照搬**。
+  ///
+  /// 🔴 不用 `TrackedPose.tracked` 一档打天下:那会把 3DOF(位置不可观)
+  ///    和跟丢之后的 lastKnown 一起谎报成"正在跟踪",而 `TrackedPose` 的
+  ///    整个存在理由就是不让人误读不该读的字段(tracked_pose.dart 规范
+  ///    语义 (1)(2)(3))。所以逐档还原:
+  ///      · 朝向都没有        ⇒ none
+  ///      · 只有朝向          ⇒ orientationOnly
+  ///      · 六自由度且在跟踪  ⇒ tracked
+  ///      · 其余(VALID 不 TRACKED)⇒ lastKnown
+  TrackedPose _toRendererPose(
+    TrackedPose source, {
+    required Quaternion? orientation,
+    required Vector3? position,
+  }) {
+    final double t = source.timestampSeconds;
+    if (orientation == null) return TrackedPose.none(timestampSeconds: t);
+    final PoseQuaternion q = PoseQuaternion(
+      orientation.x,
+      orientation.y,
+      orientation.z,
+      orientation.w,
+    );
+    if (position == null) {
+      return TrackedPose.orientationOnly(orientation: q, timestampSeconds: t);
+    }
+    final PosePosition p = PosePosition(position.x, position.y, position.z);
+    if (source.isSixDegreeOfFreedom) {
+      return TrackedPose.tracked(
+        orientation: q,
+        position: p,
+        timestampSeconds: t,
+      );
+    }
+    return TrackedPose.lastKnown(
+      orientation: q,
+      position: p,
+      timestampSeconds: t,
+      orientationStillTracked: source.orientationTracked,
     );
   }
 
@@ -388,7 +468,9 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
     _timer = null;
     _clock.stop();
     // 相机与会话一停,位姿就是陈旧的 —— 渲染器不该再拿到它。
+    // 两条出口一起清:留一条不清等于留一条陈旧位姿的后门。
     _lastTracked = null;
+    _lastRenderer = null;
     // 🔴 相机与会话必须跟着停,否则离开采集页后相机还开着(而且租约还在
     //    我们名下 ⇒ 再进页面时 ARKit 那条臂也起不来)。`stop` 是幂等的。
     _runtime?.stop();

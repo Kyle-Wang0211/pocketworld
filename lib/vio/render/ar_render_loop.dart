@@ -414,6 +414,16 @@ class ArRenderLoop {
   ///
   /// [pose] 为 `null` 或未跟踪时,相机模型矩阵**保持上一次的值**。
   ///
+  /// [poseFrame] 说明 [pose] **已经在哪个世界系里**。默认
+  /// [PoseFrame.engineZUp] —— 台架页与探针页喂的是引擎系 `TrackedPose`,
+  /// 零改动。生产预览(`zero_arkit_camera_preview.dart`)喂的是
+  /// **已按 `xrslam_world_axis.dart` 换过轴**的 y-up 位姿,传
+  /// [PoseFrame.rendererYUp],本回路就一次都不再换。
+  /// 🔴 传错这一位**不会抛、不会崩、跟踪看起来也正常**,只是内容整体绕竖轴
+  ///    歪 90°(两条老换轴之间恰好差 Ry(+90°),算式见
+  ///    `world_to_renderer.dart` 文件头)。阴性对照钉在
+  ///    `test/zero_arkit_axis_unify_test.dart`。
+  ///
   /// [onFrameAddress] 在**喂纹理的那次 acquire 内**被调用一次,拿到的是该帧的
   /// CVPixelBuffer 地址。给"同一帧还要喂给 VIO 引擎"的场合用 —— 见下方注释,
   /// 这是抄上游的一次-lock-两用途,不是两次 acquire。
@@ -422,6 +432,7 @@ class ArRenderLoop {
     required int viewportHeight,
     required ScreenRotation displayRotation,
     TrackedPose? pose,
+    PoseFrame poseFrame = PoseFrame.engineZUp,
     void Function(int pixelBufferAddress)? onFrameAddress,
   }) async {
     if (_disposed) {
@@ -531,8 +542,11 @@ class ArRenderLoop {
 
     bool hadPose = false;
     if (pose != null) {
+      // 🔴 **这是全链唯一一次可能换轴的地方**。poseFrame 决定换不换:
+      //    engineZUp ⇒ 走 WorldToRenderer.zUpToYUp(台架口径);
+      //    rendererYUp ⇒ 一次都不换(位姿已由 xrslam_world_axis 换过)。
       final List<double>? model =
-          WorldToRenderer.modelMatrixColumnMajor(pose);
+          WorldToRenderer.modelMatrixColumnMajor(pose, frame: poseFrame);
       if (model != null) {
         final Camera camera = await _viewer.getActiveCamera();
         // 🔴 位姿也必须绕光轴滚过去,和投影矩阵那一半配对。

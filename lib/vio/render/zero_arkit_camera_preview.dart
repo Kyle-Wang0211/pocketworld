@@ -51,14 +51,24 @@
 // ⚠️ 台架页 `ArMinimalLoopPage` 走的仍是 `loop.dispose()`,它是根页面从不
 //    被 pop,所以那条双重释放从没被踩到;本文件不改它。
 //
-// ══ 位姿 ══════════════════════════════════════════════════════════════════
-// [ZeroArkitCameraPreview.poseReader] 交**引擎系**的 `TrackedPose`
-// (`VioArPoseProvider.lastTrackedPose`),`WorldToRenderer` 自己做
-// z-up → y-up。本刀场景里没有虚拟内容,位姿只影响相机矩阵、不影响背景;
-// 接上它是为了日志里 `pose=true` 这一位有据可查。
-// ⚠️ 与 `xrslam_world_axis.dart`(ARPose 那条,给 dome/落盘用)差一个绕竖轴
-//    的偏航 —— 两者都 y-up,偏航在 VIO 里不可观(world_to_renderer.dart
-//    文件头)。画虚拟内容之前必须把两条统一成一条;本刀不画,所以不在这里定。
+// ══ 位姿:**已经是 y-up**,本 widget 一次都不换轴 ═════════════════════════
+// [ZeroArkitCameraPreview.poseReader] 交的是 **渲染器/ARKit 口径(y 向上)**
+// 的 `TrackedPose` —— 生产上是 `VioArPoseProvider.lastRendererPose`,它由
+// `xrslam_world_axis.dart` 换过一次轴,与同一帧 `ARPose` 的
+// `position/orientation/extrinsic4x4` 出自**同一次换算**。
+// 所以这里给 `ArRenderLoop.step` 带 `PoseFrame.rendererYUp`:回路里
+// `WorldToRenderer.zUpToYUp` 那一步被显式跳过,**一份位姿只换一次**。
+//
+// 🔴 [pw 2026-09-22 换轴统一] 以前这里交的是 `lastTrackedPose`(引擎系
+//    z-up),由 `WorldToRenderer` 自己换 —— 那是仓里第二条换轴,与上面那条
+//    差一个 **Ry(+90°) 的偏航**(算式在 world_to_renderer.dart 文件头)。
+//    偏航在 VIO 里不可观,所以"哪个对"没有物理答案;但两条不一致,一旦把
+//    按 `ARPose` 摆的东西(照片卡片、点云)画进本预览,内容会整体绕竖轴转
+//    90°,看起来像标定错。定案是**生产以 `xrslam_world_axis.dart` 为唯一
+//    换轴**(消费者最多),`WorldToRenderer.zUpToYUp` 退成台架/探针口径。
+//    本刀场景里仍没有虚拟内容(位姿只影响相机矩阵、不影响背景像素),
+//    接上它是为了日志里 `pose=true` 这一位有据可查 —— 但口径现在是对的,
+//    以后加虚拟内容不必再改这条线。
 //
 // ══ 屏幕旋转 ══════════════════════════════════════════════════════════════
 // 默认 `ScreenRotation.degrees0`(竖屏)。`CapturePreviewRect` 本身就是按
@@ -74,6 +84,7 @@ import 'package:thermion_flutter/thermion_flutter.dart' hide VoidCallback;
 import '../pose/camera_slot_ffi.dart';
 import '../pose/display_transform.dart';
 import '../pose/tracked_pose.dart';
+import '../pose/world_to_renderer.dart' show PoseFrame;
 import 'ar_render_loop.dart';
 
 /// 材质资产路径。与台架页同一个文件(pubspec `assets/materials/`)。
@@ -89,7 +100,12 @@ const int kZeroArkitPreviewLogEveryTicks = 60;
 /// 日志前缀。grep 这个词就能把预览这条路的现场证据全拉出来。
 const String kZeroArkitPreviewLogTag = '[zero-arkit-preview]';
 
-/// 引擎系位姿的读法。`null` = 还没有位姿(引擎初始化中)。
+/// **y-up(渲染器/ARKit 口径)** 位姿的读法。`null` = 还没有位姿
+/// (引擎初始化中)。
+///
+/// 🔴 交进来的位姿必须**已经换过轴**(生产上是
+/// `VioArPoseProvider.lastRendererPose`)。交引擎系 z-up 的
+/// `lastTrackedPose` 会被当成 y-up 直接用 —— 不抛不崩,只是内容整体歪。
 typedef ZeroArkitPoseReader = TrackedPose? Function();
 
 /// 零 ARKit 臂的相机预览。
@@ -109,7 +125,7 @@ class ZeroArkitCameraPreview extends StatefulWidget {
   final int imageWidth;
   final int imageHeight;
 
-  /// 引擎系位姿。见文件头「位姿」。
+  /// **已换轴的 y-up** 位姿。见文件头「位姿」。
   final ZeroArkitPoseReader? poseReader;
 
   /// 见文件头「屏幕旋转」。
@@ -258,6 +274,9 @@ class _ZeroArkitCameraPreviewState extends State<ZeroArkitCameraPreview> {
         viewportHeight: (size.height * dpr).round(),
         displayRotation: widget.displayRotation,
         pose: widget.poseReader?.call(),
+        // 🔴 位姿进来时**已经是 y-up**(见文件头「位姿」)⇒ 明确告诉回路
+        //    别再换一次。这一位写错不会抛,只会让内容绕竖轴歪 90°。
+        poseFrame: PoseFrame.rendererYUp,
       );
       _ticks++;
 
