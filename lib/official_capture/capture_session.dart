@@ -367,6 +367,124 @@ class CaptureSession {
     }
   }
 
+  /// Must a persisted frame / sidecar from [source] carry ARKit's sparse
+  /// depth anchors (`scaleAlignAnchorCount` / `anchors_world` /
+  /// `scale_align_premetrics.anchor_depth_count >= 8`) before it may be
+  /// promoted?
+  ///
+  /// 🔴 [pw 2026-09-22 零 ARKit 成片提升] Same exhaustive-switch shape as
+  /// [_poseSourceCarriesCameraGeometry]. Before this, the per-frame gate and
+  /// [_isCompleteArFrameSidecar] both demanded `>= 8` anchors from **every**
+  /// source. The XRSLAM arm truthfully reports 0 (the shipped engine's
+  /// `XRSLAMGetResult(RESULT_FEATURES)` is an empty implementation, measured
+  /// 2026-09-19; `VioArPoseProvider._toArPose` refuses to invent a count), so
+  /// every VIO frame was skipped with `skip persist: incomplete AR metric
+  /// metadata … anchors=0` and no VIO photo could ever be promoted.
+  static bool _poseSourceRequiresScaleAlignAnchors(String source) {
+    switch (source) {
+      // ARKit: the anchors are the SCALE-ANCHOR input (`gravity_align.dart`
+      // `scaleAnchorFactor`). Unchanged behaviour — still required.
+      case 'arkit':
+        return true;
+      // XRSLAM: there is no ARKit to anchor against; metric scale on this arm
+      // comes later from a user-measured distance (`metric_rescale.dart`, see
+      // `lib/vio/capture/zero_arkit_scale_provenance.dart`). The sidecar
+      // truthfully carries `anchors_world: []` / `anchor_depth_count: 0` plus
+      // a `scale_provenance` block, so nothing downstream can mistake it for
+      // an anchored ARKit frame.
+      case 'xrslam':
+        return false;
+      // IMU dead-reckoning never carries camera geometry
+      // ([_poseSourceCarriesCameraGeometry] returns false), so the anchor
+      // question never arises; decide it explicitly anyway, consistent with
+      // "no geometry, no anchors".
+      case 'imu':
+        return false;
+      default:
+        throw StateError(
+          'Unhandled pose source "$source" in '
+          '_poseSourceRequiresScaleAlignAnchors. Every source must be decided '
+          'explicitly — an unknown source must not silently inherit either '
+          'the ARKit anchor requirement or the VIO exemption.',
+        );
+    }
+  }
+
+  /// Which `captureKind` / `poseSyncQuality` a still promoted from a JPEG +
+  /// frame sidecar ([_fallbackStillFromMetadata]) carries, by the sidecar's
+  /// `poseSource`.
+  ///
+  /// 🔴 The ARKit strings are an on-disk / upload contract and are not
+  /// changed by one character. The XRSLAM strings are distinct precisely so
+  /// curation and upload cannot read a VIO still as ARKit truth.
+  static ({String captureKind, String poseSyncQuality})
+  _fallbackStillKindForPoseSource(String source) {
+    switch (source) {
+      case 'arkit':
+        return (
+          captureKind: 'arkit_frame_fallback_jpeg',
+          poseSyncQuality: 'nearest_ar_frame_snapshot',
+        );
+      case 'xrslam':
+        // The pose is the VIO pose at shutter-trigger time, paired with a
+        // photo the AVFoundation slot exposed afterwards; see the
+        // `pose_pairing` block `VioArPoseProvider.saveCurrentFrame` writes.
+        return (
+          captureKind: 'xrslam_frame_fallback_jpeg',
+          poseSyncQuality: 'vio_pose_at_trigger',
+        );
+      case 'imu':
+        throw StateError(
+          'A frame sidecar claims poseSource "imu", but IMU frames carry no '
+          'camera geometry and are never persisted '
+          '(_poseSourceCarriesCameraGeometry). This sidecar was not written '
+          'by CaptureSession or its providers.',
+        );
+      default:
+        throw StateError(
+          'Unhandled pose source "$source" in '
+          '_fallbackStillKindForPoseSource. Every source must be decided '
+          'explicitly — an unknown source must not be labelled as ARKit.',
+        );
+    }
+  }
+
+  /// When the platform high-resolution still returns `null`, may the manual
+  /// shutter path promote the photo from `saveCurrentFrame(spec)` + the frame
+  /// sidecar instead ([_promoteStillViaFrameSidecar])?
+  ///
+  /// 🔴 [pw 2026-09-22 零 ARKit 成片提升] The production capture page only
+  /// ever starts the session with `manualCapture: true`
+  /// (`ar_capture_page.dart` `_startManualCapture`, both entry points), so a
+  /// shutter tap goes through [captureSinglePhoto] →
+  /// [_captureOfficialHighResInput], **not** the `_onPoseTick` auto path
+  /// that already had a sidecar fallback. On that manual path a `null` still
+  /// was a terminal `captureFailed`. `VioArPoseProvider` returns `null` by
+  /// contract (it cannot produce the ARKit-only fields of
+  /// `HighResolutionStillCapture`), so without this switch the VIO arm could
+  /// never promote a photo.
+  static bool _poseSourcePromotesStillViaFrameSidecar(String source) {
+    switch (source) {
+      // ARKit: a null still from `captureHighResolutionFrame` stays a
+      // terminal failure. Unchanged behaviour.
+      case 'arkit':
+        return false;
+      // XRSLAM: the AVFoundation slot's photo + the sidecar written by
+      // `VioArPoseProvider.saveCurrentFrame` are the only evidence there is.
+      case 'xrslam':
+        return true;
+      // IMU: no camera geometry, nothing to promote.
+      case 'imu':
+        return false;
+      default:
+        throw StateError(
+          'Unhandled pose source "$source" in '
+          '_poseSourcePromotesStillViaFrameSidecar. Every source must be '
+          'decided explicitly.',
+        );
+    }
+  }
+
   /// When true (RealityScan-style manual capture), [_onPoseTick] skips the
   /// motion/dome auto-ingest + auto-save path; photos are taken only via
   /// [captureSinglePhoto]. Set per-session by [start].
@@ -816,6 +934,27 @@ class CaptureSession {
   @visibleForTesting
   static bool debugPoseSourceCarriesCameraGeometry(String source) =>
       _poseSourceCarriesCameraGeometry(source);
+
+  /// Test-only window onto the pose-source-aware anchor requirement.
+  @visibleForTesting
+  static bool debugPoseSourceRequiresScaleAlignAnchors(String source) =>
+      _poseSourceRequiresScaleAlignAnchors(source);
+
+  /// Test-only window onto the manual-path sidecar-promotion switch.
+  @visibleForTesting
+  static bool debugPoseSourcePromotesStillViaFrameSidecar(String source) =>
+      _poseSourcePromotesStillViaFrameSidecar(source);
+
+  /// Test-only window onto the sealed frame-sidecar completeness gate.
+  @visibleForTesting
+  static bool debugIsCompleteArFrameSidecar(Map<dynamic, dynamic> decoded) =>
+      _isCompleteArFrameSidecar(decoded);
+
+  /// Test-only window onto the fallback still labelling by pose source.
+  @visibleForTesting
+  static ({String captureKind, String poseSyncQuality})
+  debugFallbackStillKindForPoseSource(String source) =>
+      _fallbackStillKindForPoseSource(source);
 
   bool get isRunning => _started;
   bool get isAttached => _attached;
@@ -1703,6 +1842,13 @@ class CaptureSession {
         carriesCameraGeometry && pose.intrinsicFxFyCxCy.isNotEmpty
         ? pose.intrinsicFxFyCxCy
         : null;
+    // 🔴 [pw 2026-09-22 零 ARKit 成片提升] The anchor-count term is now
+    // pose-source aware. For 'arkit' `requiresAnchors` is true and the
+    // expression below is bit-for-bit the old `count >= 8`; for 'xrslam' the
+    // term is skipped because that arm truthfully reports 0 anchors.
+    final requiresAnchors = _poseSourceRequiresScaleAlignAnchors(
+      _lastPoseSource,
+    );
     final arMetadataReady =
         carriesCameraGeometry &&
         pose.trackingStateName == 'normal' &&
@@ -1710,7 +1856,9 @@ class CaptureSession {
         extrinsic.length == 16 &&
         intrinsic != null &&
         intrinsic.length >= 4 &&
-        pose.scaleAlignAnchorCount >= _minScaleAlignAnchorsForPersistedFrame;
+        (!requiresAnchors ||
+            pose.scaleAlignAnchorCount >=
+                _minScaleAlignAnchorsForPersistedFrame);
     if (!arMetadataReady) {
       if (_frameSeq == 1 || _frameSeq % 6 == 0) {
         // ignore: avoid_print
@@ -2168,7 +2316,7 @@ class CaptureSession {
           // One admitted shutter owns one native request and one set of unique
           // artifact paths. There is no retry that can race a late terminal
           // callback for ownership of the same canonical JPEG.
-          final still = await awaitOfficialHighResTerminal(
+          HighResolutionStillCapture? still = await awaitOfficialHighResTerminal(
             poseProvider.captureHighResolutionStill(
               highresPath: evidenceSaveSpec.jpegPath,
               previewPath: previewPath,
@@ -2196,6 +2344,22 @@ class CaptureSession {
               });
             },
           );
+          // 🔴 [pw 2026-09-22 零 ARKit 成片提升] Pose-source-gated fallback.
+          // For 'arkit' the switch is false and this block is dead: a null
+          // still stays `captureFailed` exactly as before. For 'xrslam' the
+          // provider returns null by contract and the photo is promoted from
+          // `saveCurrentFrame(spec)` + its sealed frame sidecar — the same
+          // JPEG-plus-sidecar promotion `_onPoseTick` already used when the
+          // ARKit high-res still failed.
+          if (still == null &&
+              _photoTransactions.isOpen(transaction) &&
+              _poseSourcePromotesStillViaFrameSidecar(sample.poseSource)) {
+            still = await _promoteStillViaFrameSidecar(
+              saveSpec: evidenceSaveSpec,
+              previewPath: previewPath,
+              sample: sample,
+            );
+          }
           if (!_photoTransactions.isOpen(transaction)) {
             failure = OfficialHighResInputFailure.captureFailed;
           } else if (still == null) {
@@ -2905,6 +3069,15 @@ class CaptureSession {
     }
   }
 
+  /// The sidecar's pose source. The native ARKit executors
+  /// (`OfficialAetherARKitPlugin.swift`, per-photo `.json` schema) never
+  /// write this key, so a missing key means `'arkit'` — every sidecar written
+  /// before 2026-09-22 keeps its meaning. Only `VioArPoseProvider` writes it
+  /// (`poseSource: 'xrslam'`), using the same key name as the canonical
+  /// sample record (`_sampleToCanonicalJson` → `'poseSource'`).
+  static String _sidecarPoseSource(Map<dynamic, dynamic> decoded) =>
+      _jsonString(decoded['poseSource']) ?? 'arkit';
+
   static bool _isCompleteArFrameSidecar(Map<dynamic, dynamic> decoded) {
     final trackingState = _jsonString(
       decoded['trackingStateName'] ?? decoded['tracking_state'],
@@ -2914,6 +3087,14 @@ class CaptureSession {
         ? _jsonInt(premetrics['anchor_depth_count'])
         : 0;
     final anchors = decoded['anchors_world'];
+    // 🔴 [pw 2026-09-22 零 ARKit 成片提升] Anchor terms are pose-source
+    // aware (see _poseSourceRequiresScaleAlignAnchors). For 'arkit' (and for
+    // every sidecar without a `poseSource` key) the expression is bit-for-bit
+    // the old one. An unknown `poseSource` throws; `_hasCompleteArFrameSidecar`
+    // turns that into "not complete".
+    final requiresAnchors = _poseSourceRequiresScaleAlignAnchors(
+      _sidecarPoseSource(decoded),
+    );
     return _jsonDouble(decoded['t'], double.nan).isFinite &&
         _jsonInt(decoded['image_w']) > 0 &&
         _jsonInt(decoded['image_h']) > 0 &&
@@ -2921,9 +3102,49 @@ class CaptureSession {
         _jsonDoubleList(decoded['intrinsics_fxfycxcy']).length >= 4 &&
         trackingState == 'normal' &&
         decoded['is_tracking'] == true &&
-        anchors is List &&
-        anchors.isNotEmpty &&
-        anchorDepthCount >= _minScaleAlignAnchorsForPersistedFrame;
+        (!requiresAnchors ||
+            (anchors is List &&
+                anchors.isNotEmpty &&
+                anchorDepthCount >= _minScaleAlignAnchorsForPersistedFrame));
+  }
+
+  /// Manual-shutter promotion for pose sources whose provider cannot return a
+  /// `HighResolutionStillCapture` (see [_poseSourcePromotesStillViaFrameSidecar]).
+  ///
+  /// Asks the provider to write the JPEG + sealed frame sidecar at the spec's
+  /// two paths, requires the sidecar to pass [_isCompleteArFrameSidecar], and
+  /// then builds the still from disk with [_fallbackStillFromMetadata] — the
+  /// same promotion the `_onPoseTick` auto path performs when the ARKit
+  /// high-res still fails. Returns `null` (and logs why) when any step is not
+  /// satisfied; the caller then reports `captureFailed` as before.
+  Future<HighResolutionStillCapture?> _promoteStillViaFrameSidecar({
+    required ARFrameSaveSpec saveSpec,
+    required String previewPath,
+    required CapturedFrameSample sample,
+  }) async {
+    final saveResult = await poseProvider.saveCurrentFrame(saveSpec);
+    if (!saveResult.saved) {
+      // ignore: avoid_print
+      print(
+        '[CaptureSession] photo not promoted ${saveResult.status}: '
+        '${saveSpec.jpegPath} ${saveResult.message ?? ''}',
+      );
+      return null;
+    }
+    if (!await _hasCompleteArFrameSidecar(saveSpec.metadataPath)) {
+      // ignore: avoid_print
+      print(
+        '[CaptureSession] photo not promoted: frame sidecar incomplete '
+        'src=${sample.poseSource} ${saveSpec.metadataPath}',
+      );
+      return null;
+    }
+    return _fallbackStillFromMetadata(
+      metadataPath: saveSpec.metadataPath,
+      highresPath: saveSpec.jpegPath,
+      previewPath: previewPath,
+      sample: sample,
+    );
   }
 
   Future<HighResolutionStillCapture?> _fallbackStillFromMetadata({
@@ -2941,6 +3162,10 @@ class CaptureSession {
         highresPath: highresPath,
         previewPath: previewPath,
       );
+      // 🔴 [pw 2026-09-22 零 ARKit 成片提升] Labels follow the sidecar's
+      // pose source. ARKit sidecars (no `poseSource` key) get the exact
+      // strings they always got; an XRSLAM sidecar gets its own.
+      final kind = _fallbackStillKindForPoseSource(_sidecarPoseSource(decoded));
       return HighResolutionStillCapture(
         highresPath: highresPath,
         previewPath: previewPath,
@@ -2951,8 +3176,8 @@ class CaptureSession {
         imageHeight: _jsonInt(decoded['image_h']),
         cameraTransform: _jsonDoubleList(decoded['extrinsic']),
         intrinsics: _jsonDoubleList(decoded['intrinsics_fxfycxcy']),
-        captureKind: 'arkit_frame_fallback_jpeg',
-        poseSyncQuality: 'nearest_ar_frame_snapshot',
+        captureKind: kind.captureKind,
+        poseSyncQuality: kind.poseSyncQuality,
         trackingStateName: _jsonString(
           decoded['trackingStateName'] ?? decoded['tracking_state'],
         ),

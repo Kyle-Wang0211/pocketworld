@@ -59,6 +59,8 @@
 // 只有单测级证据。
 
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
@@ -504,6 +506,24 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
   Future<ZeroArkitPhotoResult?> requestPhoto({
     Duration timeout = const Duration(seconds: 3),
     Duration pollEvery = const Duration(milliseconds: 20),
+  }) {
+    // 🔴 [pw 2026-09-22 零 ARKit 成片提升] **串行化。** 原生只有一个结果槽
+    //    (`pw_camera_slot_photo_result` 交最近一张),两条请求并发时,先完成
+    //    的那张会被后完成的覆盖,而它的轮询方只会按 requestId 等到超时。
+    //    采集页的手动快门正是两条并发调用者(证据 spec + 预览 spec),所以把
+    //    请求排成一条 Future 链 —— 标准 dart:async 做法,不是新机制。
+    final Future<ZeroArkitPhotoResult?> next = _photoChain
+        .catchError((_) => null)
+        .then((_) => _requestPhotoNow(timeout: timeout, pollEvery: pollEvery));
+    _photoChain = next;
+    return next;
+  }
+
+  Future<ZeroArkitPhotoResult?> _photoChain = Future<ZeroArkitPhotoResult?>.value();
+
+  Future<ZeroArkitPhotoResult?> _requestPhotoNow({
+    required Duration timeout,
+    required Duration pollEvery,
   }) async {
     final int id = ++_photoRequestSeq;
     final int? accepted = _photoApi.capturePhoto(id);
@@ -528,14 +548,44 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
     double maxTimestampDelta = 0.18,
     double quality = 0.9,
   }) async {
-    // 🔴 本臂的成片是原生自己选路径写的,**改不了落到调用方指定的两个路径**
-    //    (那要动对方的接口)。所以这条老入口如实返回 false,让既有失败路径
-    //    生效;新代码走 `saveCurrentFrame` / `requestPhoto`。
+    // 旧入口。`CaptureSession` 的生产路径已全部走密封的 [saveCurrentFrame];
+    // 这里如实 false,不再另开一条半套的实现。
     return false;
   }
 
+  // ══ [pw 2026-09-22 零 ARKit 成片提升] saveCurrentFrame 真正落到 spec ═════
+  //
+  // 之前这里拍了一张、报 `saved_elsewhere`,`CaptureSession` 看到非 saved 就打
+  // `photo not promoted` —— 一张都进不了库,而且与 [captureHighResolutionStill]
+  // 各拍一张 ⇒ 一次快门两次曝光。现在:
+  //   · 一次调用只拍**一张**([requestPhoto],按 requestId 配对);
+  //   · 原生写好的 JPEG **搬到** `spec.jpegPath`(`File.rename`,跨卷失败
+  //     退成 copy + delete —— dart:io 标准做法);
+  //   · 在 `spec.metadataPath` 写 sidecar,**键名逐个照抄原生 ARKit 帧 sidecar
+  //     的密封契约**(`ios/Runner/OfficialAetherARKitPlugin.swift:2763-2790`,
+  //     `saveCurrentFrame` 那条 "Per-photo metadata JSON"),值用真实的 VIO
+  //     数据;VIO 没有的东西写空/0 并标 provenance,**不编**;
+  //   · 两个文件都落地才报 `saved`;任何一步失败如实非 saved + message。
+  //
+  // 🔴 触发时刻位姿的口径:进入本方法时同步取 [_last]。`CaptureSession` 传的
+  //    `spec.targetTimestamp` 就是它自己 `lastPose.timestamp`,而 `lastPose`
+  //    正是 [_last] —— 两者是同一条位姿,所以不必再按时间戳去找"最近者"。
+  //    照片的曝光发生在这之后(AVFoundation 回执的 `t`),配对差写进
+  //    `save_dt` / `pose_pairing`,由下游自己判断。
+
   @override
   Future<ARFrameSaveResult> saveCurrentFrame(ARFrameSaveSpec spec) async {
+    // 先取位姿再拍:没有位姿的成片进不了库,拍了只是白曝光一次。
+    final ARPose? pose = _last;
+    if (pose == null) {
+      return ARFrameSaveResult(
+        spec: spec,
+        status: 'no_pose',
+        message: '零 ARKit 臂尚无任何位姿(未 tick),不拍',
+      );
+    }
+    final ZeroArkitScaleState scaleAtTrigger = _scale;
+
     final ZeroArkitPhotoResult? r = await requestPhoto();
     if (r == null) {
       return ARFrameSaveResult(
@@ -545,15 +595,180 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
             '或超时未返回',
       );
     }
-    // 🔴 状态不是 'saved':原生写的是**它自己选的路径**,不是 spec 里那两个。
-    //    报 'saved' 会让 `CaptureSession` 去 spec.jpegPath 找一个不存在的文件。
-    //    如实报一个非 saved 的状态 + 真实路径,由调用方决定怎么接。
-    return ARFrameSaveResult(
-      spec: spec,
-      status: 'saved_elsewhere',
-      message: '成片已写到 ${r.path}(零 ARKit 臂由原生相机槽选路径,'
-          '不是 spec.jpegPath)',
+
+    // 🔴 原生在支持 HEVC 的机型上按 AVCam 默认写 **HEIC**
+    //    (`PwCameraSlot.swift` 拍照 settings:`availablePhotoCodecTypes.contains(.hevc)`
+    //    ⇒ `.heic`)。把 HEIC 改名成 `.jpg` 是把一张不是 JPEG 的文件塞给整条
+    //    只认 JPEG 的下游。如实拒绝,文件留在原生写的位置。
+    final String lower = r.path.toLowerCase();
+    if (!(lower.endsWith('.jpg') || lower.endsWith('.jpeg'))) {
+      return ARFrameSaveResult(
+        spec: spec,
+        status: 'native_format_not_jpeg',
+        message: '原生成片是 ${r.path.split('.').last},不是 JPEG;'
+            '未搬到 ${spec.jpegPath}(不改名伪装)',
+      );
+    }
+    final File source = File(r.path);
+    if (!await source.exists()) {
+      return ARFrameSaveResult(
+        spec: spec,
+        status: 'jpeg_missing',
+        message: '原生回执指向 ${r.path},但文件不存在',
+      );
+    }
+
+    // 原生自己的 sidecar(同名 .json,`PwCameraSlot.swift` 写的)——
+    // 读进来整体嵌到我们的 sidecar 里(保留 intrinsics/exposure provenance),
+    // 然后删掉孤儿。读不到就不嵌,不算失败。
+    final Map<String, Object?>? nativeSidecar = await _readNativeSidecar(
+      r.path,
     );
+
+    try {
+      await _moveFile(source, spec.jpegPath);
+    } catch (e) {
+      return ARFrameSaveResult(
+        spec: spec,
+        status: 'jpeg_move_failed',
+        message: '${r.path} → ${spec.jpegPath}: $e',
+      );
+    }
+
+    final Map<String, Object?> sidecar = buildFrameSidecar(
+      spec: spec,
+      pose: pose,
+      photo: r,
+      scale: scaleAtTrigger,
+      nativeSidecar: nativeSidecar,
+    );
+    try {
+      final File meta = File(spec.metadataPath);
+      await meta.parent.create(recursive: true);
+      await meta.writeAsString(jsonEncode(sidecar), flush: true);
+    } catch (e) {
+      return ARFrameSaveResult(
+        spec: spec,
+        status: 'metadata_write_failed',
+        message: '${spec.metadataPath}: $e(JPEG 已在 ${spec.jpegPath})',
+      );
+    }
+    return ARFrameSaveResult(spec: spec, status: 'saved');
+  }
+
+  /// 帧 sidecar。**键名逐个照抄** `ios/Runner/OfficialAetherARKitPlugin.swift`
+  /// `saveCurrentFrame` 执行器写的那份(2763-2790 行):
+  ///
+  ///   version / native_role / t / image_w / image_h / extrinsic /
+  ///   intrinsics_fxfycxcy / trackingStateName / tracking_state / is_tracking /
+  ///   anchors_world / anchor_ids /
+  ///   scale_align_premetrics{anchor_depth_count, anchor_depth_min_m,
+  ///     anchor_depth_max_m, anchor_depth_span_m, reliability_prior} /
+  ///   save_dt / dart_save_contract / save_target_t
+  ///
+  /// 额外键**只加不改**:`poseSource`(与 `CaptureSession._sampleToCanonicalJson`
+  /// 同名)、`source` / `exposure_s`(与 `PwCameraSlot.swift` 的 sidecar 同名)、
+  /// `scale_provenance`、`pose_pairing`、`photo_request_id`、`native_photo_sidecar`。
+  ///
+  /// 公开是为了单测能逐键核对;生产只经 [saveCurrentFrame] 调。
+  static Map<String, Object?> buildFrameSidecar({
+    required ARFrameSaveSpec spec,
+    required ARPose pose,
+    required ZeroArkitPhotoResult photo,
+    required ZeroArkitScaleState scale,
+    Map<String, Object?>? nativeSidecar,
+  }) {
+    final double? target = spec.targetTimestamp;
+    final String trackingState = pose.trackingStateName ?? 'not_available';
+    return <String, Object?>{
+      // ── 原生契约的键,顺序照抄 ──
+      'version': spec.metadataSchemaVersion,
+      'native_role': 'pw_camera_slot_photo_output',
+      't': photo.timestampSeconds,
+      'image_w': photo.width,
+      'image_h': photo.height,
+      // 触发时刻 ARPose 的 camera→world,列主序 16 个,**已是 y-up**
+      // (`xrslam_world_axis.dart`,本文件 `_toArPose` 唯一换轴点)。
+      // 非 6DOF 时是空表 —— 如实,`CaptureSession` 的闸会拒。
+      'extrinsic': List<double>.of(pose.extrinsic4x4),
+      // 成片回执里的**全分辨率**内参(对方门面契约:已缩到照片像素尺寸)。
+      'intrinsics_fxfycxcy': <double>[photo.fx, photo.fy, photo.cx, photo.cy],
+      'trackingStateName': trackingState,
+      'tracking_state': trackingState,
+      'is_tracking': pose.isTracking,
+      // 🔴 VIO 没有 ARKit 深度锚点:出货引擎 `RESULT_FEATURES` 是空实现。
+      //    写空/0,不编。尺度来源见下方 `scale_provenance`。
+      'anchors_world': const <List<double>>[],
+      'anchor_ids': const <int>[],
+      'scale_align_premetrics': <String, Object?>{
+        'anchor_depth_count': 0,
+        'anchor_depth_min_m': 0.0,
+        'anchor_depth_max_m': 0.0,
+        'anchor_depth_span_m': 0.0,
+        'reliability_prior': 0.0,
+      },
+      // 原生:`abs(timestamp - targetTimestamp)`,无 target 时 0.0。
+      'save_dt': target == null ? 0.0 : (photo.timestampSeconds - target).abs(),
+      'dart_save_contract': spec.toJson(),
+      'save_target_t': ?target,
+      // ── 额外键(只加不改)──
+      'poseSource': PwVioPoseSourceSwitch.labelOf(PwVioPoseSource.xrslam),
+      'source': 'avfoundation_photo_output',
+      'exposure_s': photo.exposureSeconds,
+      'photo_request_id': photo.requestId,
+      'scale_provenance': scale.toJson(),
+      'pose_pairing': <String, Object?>{
+        'policy': 'vio_pose_at_trigger',
+        'pose_t': pose.timestamp,
+        'photo_t': photo.timestampSeconds,
+        'photo_exposure_s': photo.exposureSeconds,
+        'note': 'extrinsic 是快门触发时刻的 VIO 位姿(= CaptureSession 的 '
+            'lastPose);照片曝光发生在其后,t 是 AVCapturePhoto.timestamp。'
+            '未做曝光中点补偿,两项原样交出。',
+      },
+      'native_photo_sidecar': ?nativeSidecar,
+    };
+  }
+
+  /// `File.rename` 优先;跨卷(`FileSystemException`,EXDEV)退成 copy + delete。
+  static Future<void> _moveFile(File source, String destPath) async {
+    final File dest = File(destPath);
+    await dest.parent.create(recursive: true);
+    try {
+      await source.rename(destPath);
+    } on FileSystemException {
+      await source.copy(destPath);
+      await source.delete();
+    }
+  }
+
+  /// 读原生同名 `.json`(`PwCapturedPhoto.sidecarPath` 同一条推导),
+  /// 读到就删掉原文件(它的内容已嵌进我们的 sidecar)。任何失败 ⇒ null。
+  static Future<Map<String, Object?>?> _readNativeSidecar(
+    String photoPath,
+  ) async {
+    final int dot = photoPath.lastIndexOf('.');
+    final int slash = photoPath.lastIndexOf('/');
+    final String sidecarPath = dot <= slash
+        ? '$photoPath.json'
+        : '${photoPath.substring(0, dot)}.json';
+    try {
+      final File f = File(sidecarPath);
+      if (!await f.exists()) return null;
+      final Object? decoded = jsonDecode(await f.readAsString());
+      if (decoded is! Map) return null;
+      final Map<String, Object?> out = decoded.map(
+        (Object? k, Object? v) => MapEntry<String, Object?>('$k', v),
+      );
+      try {
+        await f.delete();
+      } catch (_) {
+        // 孤儿删不掉不算失败。
+      }
+      return out;
+    } catch (_) {
+      return null;
+    }
   }
 
   @override
@@ -573,8 +788,13 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
     // 🔴 `HighResolutionStillCapture` 的契约里有一串 ARKit 专有字段
     //    (photo-card 反馈、SfM 灰度喂料、缩略图),零 ARKit 臂一个都产不出。
     //    半真半假地填一个回来,比返回 null 更危险 —— 下游会按「有」处理。
-    //    ⇒ 如实 null。成片本身照样拍了(下面这行),只是走不通这条契约。
-    await requestPhoto();
+    //    ⇒ 如实 null,**而且不拍**。[pw 2026-09-22 零 ARKit 成片提升] 之前这里
+    //    还 `await requestPhoto()` 拍了一张再返回 null,而 `CaptureSession`
+    //    收到 null 之后接着调 [saveCurrentFrame] 又拍一张 ⇒ 一次快门两次曝光。
+    //    现在这条把活整个让给 [saveCurrentFrame]:`CaptureSession` 走它的
+    //    fallback 提升路径(`_promoteStillViaFrameSidecar` /
+    //    `_fallbackStillFromMetadata`),从 JPEG + sidecar 造出
+    //    `HighResolutionStillCapture`,一次快门一次曝光。
     return null;
   }
 }

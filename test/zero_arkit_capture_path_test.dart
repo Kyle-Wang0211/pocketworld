@@ -550,6 +550,9 @@ void main() {
         photoApi: _FakePhotoApi(available: false),
         pollInterval: const Duration(hours: 1),
       );
+      // [pw 2026-09-22 成片提升] 先要有一条位姿(哪怕不在跟踪),否则
+      // saveCurrentFrame 在拍之前就以 no_pose 退出,测不到接口那一层。
+      provider.tick();
       final res = await provider.saveCurrentFrame(
         const ARFrameSaveSpec(
           frameID: 'f1',
@@ -564,9 +567,14 @@ void main() {
       await provider.dispose();
     });
 
-    test('🔴 拍成了也**不报 saved** —— 路径是原生选的,不是 spec 里那个', () async {
+    test('🔴 没有位姿 ⇒ 不拍(capturePhoto 0 次)、如实 no_pose', () async {
+      // [pw 2026-09-22 成片提升] 之前这里拍了一张再报 saved_elsewhere;
+      // 现在 saveCurrentFrame 真正落到 spec 的两个路径(见
+      // test/zero_arkit_photo_promotion_test.dart),而没有位姿的成片进不了库,
+      // 拍了只是白曝光一次。
+      final photo = _FakePhotoApi();
       final provider = VioArPoseProvider(
-        photoApi: _FakePhotoApi(),
+        photoApi: photo,
         pollInterval: const Duration(hours: 1),
       );
       final res = await provider.saveCurrentFrame(
@@ -578,7 +586,30 @@ void main() {
           metadataPath: '/tmp/spec_path.json',
         ),
       );
-      expect(res.status, 'saved_elsewhere');
+      expect(res.status, 'no_pose');
+      expect(res.saved, isFalse);
+      expect(photo.requests, isEmpty);
+      await provider.dispose();
+    });
+
+    test('🔴 有位姿但原生回执指向不存在的文件 ⇒ jpeg_missing,不报 saved', () async {
+      final photo = _FakePhotoApi();
+      final provider = VioArPoseProvider(
+        photoApi: photo,
+        pollInterval: const Duration(hours: 1),
+      );
+      provider.tick();
+      final res = await provider.saveCurrentFrame(
+        const ARFrameSaveSpec(
+          frameID: 'f1',
+          cellIndex: 0,
+          slotIndex: 0,
+          jpegPath: '/tmp/spec_path.jpg',
+          metadataPath: '/tmp/spec_path.json',
+        ),
+      );
+      expect(photo.requests, hasLength(1));
+      expect(res.status, 'jpeg_missing');
       expect(res.saved, isFalse);
       expect(res.message, contains('/tmp/zero_arkit_'));
       await provider.dispose();

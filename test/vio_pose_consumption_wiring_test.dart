@@ -311,11 +311,14 @@ void main() {
       expect(provider.confidence.mayReportAbsoluteDimensions, isFalse);
     });
 
-    test('🔴 XRSLAM 臂没有取帧出口 ⇒ 帧保存如实返回 unsupported,不假装成功', () async {
+    test('🔴 XRSLAM 臂成片接口不可用(单测无原生符号)⇒ 帧保存如实返回 unsupported,不假装成功', () async {
       final provider = _providerWithScriptedEngine(<EngineSnapshot>[
         _tracking(1.0),
       ]);
       addTearDown(provider.dispose);
+      // [pw 2026-09-22 成片提升] saveCurrentFrame 先要位姿再拍(没位姿是
+      // no_pose,不进接口那一层);tick 一次给它一条 6DOF 位姿。
+      provider.tick();
       final result = await provider.saveCurrentFrame(
         const ARFrameSaveSpec(
           frameID: 'cap-1',
