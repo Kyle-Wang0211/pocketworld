@@ -720,11 +720,19 @@ extension PwCameraSlotImpl {
 
         guard let dir = Self.photosDirectory() else { return -4 }
 
-        // ── settings 构造:抄 AVCam `capturePhoto(_:)`。
+        // ── settings 构造:抄 AVCam `capturePhoto(_:)`,**编码改成 JPEG**。
+        // 偏离 (c) [pw 2026-09-22]:AVCam 在支持 HEVC 的机型上选 `.hevc`
+        // (写出 .heic)。我们的成片契约是 JPEG:`CaptureSession` 的 sidecar 提升
+        // 路径(`vio_ar_pose_provider.dart` `saveCurrentFrame`)收到非 JPEG 会
+        // 如实报 `native_format_not_jpeg` 并把文件留在原地 —— 在 14 Pro 上
+        // 那就是每一张。ARKit 臂写的也是 JPEG。所以这里只在
+        // `availablePhotoCodecTypes` 含 `.jpeg` 时显式要 JPEG(AVCam 同一句式,
+        // 只换了 codec),否则退回默认设置并由 `ext` 那行如实按
+        // processedFileType 命名,不改名伪装。
         var photoSettings = AVCapturePhotoSettings()
-        if out.availablePhotoCodecTypes.contains(.hevc) {
+        if out.availablePhotoCodecTypes.contains(.jpeg) {
             photoSettings = AVCapturePhotoSettings(
-                format: [AVVideoCodecKey: AVVideoCodecType.hevc])
+                format: [AVVideoCodecKey: AVVideoCodecType.jpeg])
         }
         // 偏离 (b):AVCam 是 `.auto`。见文件上方说明。
         photoSettings.flashMode = .off
