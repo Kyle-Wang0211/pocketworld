@@ -107,12 +107,14 @@ void main() {
       page.indexOf("final densePly = '\$dir/official_dense.ply';", r),
       greaterThan(r),
     );
+    final flat = page.replaceAll(RegExp(r'\s+'), '');
     expect(
-      page.indexOf(
-        "compute(loadReviewCloud, densePly, debugLabel: 'review_load_dense')",
-        r,
+      flat.indexOf(
+        "compute(loadReviewCloudCached,"
+        "ReviewCloudRequest(plyPath:densePly,cacheDir:cacheDir),"
+        "debugLabel:'review_load_dense',)",
       ),
-      greaterThan(r),
+      greaterThan(0),
     );
   });
 

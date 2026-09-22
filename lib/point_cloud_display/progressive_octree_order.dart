@@ -17,7 +17,10 @@ import 'dart:typed_data';
 /// 6.9 M points froze build 161's viewer) it draws the first [kPointBudget]
 /// points of the progressive octree order — a spatially uniform prefix, the
 /// same Potree budget model this file is adapted from. The PLY itself is never
-/// touched (delivery stays full); see `loadReviewCloud` in the viewer page.
+/// touched (delivery stays full); see `loadReviewCloudWithBudget` in the viewer
+/// page, and `loadReviewCloudCached` (review_cloud_cache.dart) which caches its
+/// output on disk — bump `ReviewCloudCache.kFormatVersion` if this order ever
+/// changes, or stale caches will hand the old order back.
 abstract final class ReviewPointCloudPolicy {
   /// Potree's default: src/Potree.js (v1.8.2) `export let pointBudget = 1 * 1000 * 1000;`
   static const int kPointBudget = 1 * 1000 * 1000;

@@ -110,7 +110,9 @@ import 'dense_wait_eta.dart';
 import 'capture_exit_dialog.dart';
 import 'official_gallery_routes.dart';
 import 'sfm_preview_overlay.dart';
-import 'sparse_cloud_viewer_page.dart' show SparseCloudData, loadReviewCloud;
+import 'sparse_cloud_viewer_page.dart' show SparseCloudData;
+import 'review_cloud_cache.dart'
+    show ReviewCloudCache, ReviewCloudRequest, loadReviewCloudCached;
 import '../sparse_thumbnail.dart';
 import '../../util/image_sanitize.dart';
 import '../../vio/diagnostics/vio_diagnostics_recorder.dart';
@@ -2279,9 +2281,19 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// wait-page state. Missing/empty PLY ⇒ the error state (material kept).
   Future<void> _enterReviewMode(String dir) async {
     final ply = '$dir/official_sfm_sparse.ply';
+    // [REVIEW-CACHE 2026-09-22] 复看点云的磁盘缓存。目录必须在**主 isolate**
+    // 上解析(后台 isolate 没有插件通道,拿不到 Documents),解析不出来就传
+    // null ⇒ 不缓存、逐字退回改动前的解 PLY + 排序。缓存落
+    // `<Documents>/review_cache/`,**绝不**进 captures_official/<cap_id>(装机
+    // 闸 B 会把多出来的文件判成「备份不完整」)。
+    final cacheDir = await ReviewCloudCache.resolveDir();
     SparseCloudData? cloud;
     try {
-      cloud = await compute(loadReviewCloud, ply, debugLabel: 'review_load_sparse');
+      cloud = await compute(
+        loadReviewCloudCached,
+        ReviewCloudRequest(plyPath: ply, cacheDir: cacheDir),
+        debugLabel: 'review_load_sparse',
+      );
     } catch (e) {
       DeviceLog.log('OfficialARCapturePage', 'review load failed: $e');
     }
@@ -2291,7 +2303,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     final densePly = '$dir/official_dense.ply';
     if (File(densePly).existsSync()) {
       try {
-        dense = await compute(loadReviewCloud, densePly, debugLabel: 'review_load_dense');
+        dense = await compute(
+          loadReviewCloudCached,
+          ReviewCloudRequest(plyPath: densePly, cacheDir: cacheDir),
+          debugLabel: 'review_load_dense',
+        );
       } catch (e) {
         DeviceLog.log('OfficialARCapturePage', 'review dense load failed: $e');
       }
