@@ -9,6 +9,9 @@
 //       `UiKitView` 原样只此一处;
 //   (D) `VioArPoseProvider.lastTrackedPose` 是**引擎系、未换轴**的位姿,
 //       与 `lastPose`(ARKit 口径)的位置按 `(−y,+z,−x)` 相差 —— 两条不能混。
+//       🔴 [pw 2026-09-22 换轴统一] `lastTrackedPose` 本身语义未变(仍是引擎
+//       原样),但它**不再是渲染输入** —— 渲染改吃 `lastRendererPose`。
+//       本组继续留着,正是为了钉住「引擎系那条仍然存在且仍然不同」。
 //
 // 🔴 不 pump `ZeroArkitCameraPreview`:它内部是 `ViewerWidget`,单测环境没有
 //    Filament(`ThermionFlutterPlugin.createViewer` 走平台通道)。能在这里
@@ -181,7 +184,12 @@ void main() {
       final String after = page.substring(at, at + 300);
       expect(after, contains('imageWidth: rt.captureWidth'));
       expect(after, contains('imageHeight: rt.captureHeight'));
-      expect(after, contains('lastTrackedPose'));
+      // 🔴 [pw 2026-09-22 换轴统一] 这里从 `lastTrackedPose` 改成
+      //    `lastRendererPose`:渲染输入现在是**已按 xrslam_world_axis 换过轴
+      //    的 y-up 位姿**,不再由 `WorldToRenderer` 自己换第二次。
+      //    断言的**语义没变** —— 仍然是「页面把 provider 的位姿接给了预览」,
+      //    只是接的那条出口换了。见 test/zero_arkit_axis_unify_test.dart。
+      expect(after, contains('lastRendererPose'));
     });
 
     test('🔴 OFF 分支的 ARKit UiKitView 原样、只此一处', () {

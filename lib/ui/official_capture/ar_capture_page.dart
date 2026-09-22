@@ -5107,7 +5107,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                 : ZeroArkitCameraPreview(
                     imageWidth: rt.captureWidth,
                     imageHeight: rt.captureHeight,
-                    poseReader: () => _vioPoseProvider?.lastTrackedPose,
+                    poseReader: () => _vioPoseProvider?.lastRendererPose,
                   ),
           ),
         );

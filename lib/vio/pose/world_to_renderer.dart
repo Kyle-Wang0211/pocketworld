@@ -41,6 +41,39 @@
 // ⇒ 本文件只做**重力对齐的那两个自由度**。任何偏航对齐必须是显式的、
 //   按会话的、单独一步,不属于这里。
 //
+// ══ 🔴 [pw 2026-09-22 换轴统一] 本文件的 `zUpToYUp` 改口径:台架/探针专用 ══
+//
+// 仓里长期并存两条**互相独立**的「引擎系 z-up → y-up」换轴:
+//
+//   (1) `xrslam_world_axis.dart`  `x_A=−y_X, y_A=+z_X, z_A=−x_X`
+//       —— 09-16 共享录制对 ARKit 做 SE(3) 拟合的实测置换;
+//   (2) 本文件 `zUpToYUp`         绕 X 轴 −90°,`(x,y,z)→(x,z,−y)`
+//       —— 上面那段实测重力轴判死的最小旋转。
+//
+// 两者都把引擎的上 `(0,0,1)` 送到 y-up 的上 `(0,1,0)`,差的**只是一个绕竖轴
+// 的偏航**,而且这个偏航是**算得出来的**,不是"大概差一点":
+//
+//     D = M₁ · M₂ᵀ = | 0 0  1 |
+//                    | 0 1  0 |   = Ry(+90°)
+//                    |−1 0  0 |
+//
+// (逐元素算式与断言见 `test/zero_arkit_axis_unify_test.dart`。验算:引擎的
+//  `+x` 经 (2) 落到 renderer 的 `+x`,经 (1) 落到 ARKit 的 `−z`;
+//  Ry(+90°) 把 `+x` 送到 `−z` ✓。)
+//
+// 偏航在 VIO 里不可观(上一段 GVINS),所以"哪个偏航对"**没有物理答案**;
+// 但两条必须一致,否则把按 `ARPose` 摆的东西(照片卡片、点云)画进 Filament
+// 预览时,会整体绕竖轴转 90°,看起来像标定错。
+//
+// ⇒ **定案:生产路径以 `xrslam_world_axis.dart` 为唯一换轴**(它的消费者
+//   最多:dome 的 az/el、`gravity_align`、落盘的 `arkit_extrinsic_4x4`;而且
+//   `VioArPoseProvider.lockOrigin` 本来就会按会话重锚偏航 `_worldYaw`,
+//   固化在它里面的那个偏航只是"约定",不是"真值")。
+// ⇒ 本文件的 `zUpToYUp` **保留给台架页 / 探针页**:它们喂的是**引擎系**的
+//   `TrackedPose`,手上根本没有 `ARPose`,这条路仍然需要一个自洽的换轴。
+//   **生产预览不再走它** —— 见 [PoseFrame] 与 `ArRenderLoop.step` 的
+//   `poseFrame` 参数。
+//
 // ══ 渲染器约定(三家一致,所以这一份能跨端)═════════════════════════════
 // OpenXR 规范(fundamentals.adoc:1240-1252):"This API uses a Cartesian
 // right-handed coordinate system",VIEW 空间 "+Y up, +X to the right, and
@@ -48,6 +81,30 @@
 // 的手性翻转,不在本文件内(需要时另写,别混进来)。
 
 import 'tracked_pose.dart';
+
+/// 一个 [TrackedPose] **已经在哪个世界系里**。
+///
+/// 🔴 它存在的唯一理由是:**同一份位姿绝不能被换两次轴**。换两次不会抛、
+/// 不会崩、跟踪看起来也完全正常,只是内容整体歪掉 —— 与上游 PR #70
+/// 「外参被应用了两次」同一类故障。把"这份位姿在哪个系"做成显式参数,
+/// 双换就变成一个能在单测里检出的事实(阴性对照见
+/// `test/zero_arkit_axis_unify_test.dart`)。
+enum PoseFrame {
+  /// 引擎世界系(XRSLAM,z 向上),**未换轴**。
+  ///
+  /// 台架页 `ar_minimal_loop_page.dart` 与探针页喂的就是这一档 ——
+  /// 它们直接读 `VioPoseSource` 的输出,手上没有 `ARPose`。
+  /// 这一档会在本文件里走 [WorldToRenderer.zUpToYUp]。
+  engineZUp,
+
+  /// **已经是 y 向上的渲染器世界系**,不要再换。
+  ///
+  /// 生产路径喂这一档:`VioArPoseProvider` 已按 `xrslam_world_axis.dart`
+  /// 换过一次(同一次换算同时供给 `ARPose.position/orientation/extrinsic4x4`),
+  /// 渲染器直接用那份结果。ARKit 世界系与 OpenXR/Filament 的渲染器世界系
+  /// 是同一套约定(右手、y 上、相机看 −z),所以这一档不需要任何再换算。
+  rendererYUp,
+}
 
 /// 引擎世界系 ↔ 渲染器世界系。
 abstract final class WorldToRenderer {
@@ -108,13 +165,22 @@ abstract final class WorldToRenderer {
   /// 的是 ARKit 的 `frame.camera.transform`,即 world-from-camera。
   ///
   /// 返回 `null` 的条件与 [viewMatrixColumnMajor] 相同,理由也相同。
-  static List<double>? modelMatrixColumnMajor(TrackedPose pose) {
+  ///
+  /// [frame] 说明传进来的 [pose] **已经在哪个系里**:默认
+  /// [PoseFrame.engineZUp](台架/探针的既有口径,零改动);
+  /// 传 [PoseFrame.rendererYUp] 时本函数**一次换轴都不做**,只把四元数
+  /// 归一化后铺成矩阵 —— 生产路径的换轴已经在 `xrslam_world_axis.dart`
+  /// 里做过了,再做一次就是双换。
+  static List<double>? modelMatrixColumnMajor(
+    TrackedPose pose, {
+    PoseFrame frame = PoseFrame.engineZUp,
+  }) {
     final PoseQuaternion? q = pose.orientation;
     final PosePosition? p = pose.position;
     if (q == null || p == null) return null;
 
-    final PoseQuaternion r = convertRotation(q).normalized();
-    final List<double> t = convertVector(<double>[p.x, p.y, p.z]);
+    final PoseQuaternion r = _toRenderer(q, frame);
+    final List<double> t = _toRendererVector(<double>[p.x, p.y, p.z], frame);
 
     final double x = r.x, y = r.y, z = r.z, w = r.w;
     return <double>[
@@ -211,13 +277,19 @@ abstract final class WorldToRenderer {
   /// 是单位量,那一步必须显式加在调用方,不能藏在这里 —— 上游 PR #70
   /// 「虚拟物体反向滑走」的根因正是**外参被应用了两次**,而当时跟踪看起来
   /// 完全正常。
-  static List<double>? viewMatrixColumnMajor(TrackedPose pose) {
+  ///
+  /// [frame] 与 [modelMatrixColumnMajor] 同义,默认同样是
+  /// [PoseFrame.engineZUp]。
+  static List<double>? viewMatrixColumnMajor(
+    TrackedPose pose, {
+    PoseFrame frame = PoseFrame.engineZUp,
+  }) {
     final PoseQuaternion? q = pose.orientation;
     final PosePosition? p = pose.position;
     if (q == null || p == null) return null;
 
-    final PoseQuaternion r = convertRotation(q).normalized();
-    final List<double> t = convertVector(<double>[p.x, p.y, p.z]);
+    final PoseQuaternion r = _toRenderer(q, frame);
+    final List<double> t = _toRendererVector(<double>[p.x, p.y, p.z], frame);
 
     // world_from_camera 的旋转矩阵。
     final double x = r.x, y = r.y, z = r.z, w = r.w;
@@ -244,4 +316,24 @@ abstract final class WorldToRenderer {
       negRt[0], negRt[1], negRt[2], 1, //
     ];
   }
+
+  // ── 换不换轴,只在这两个私有出口上分叉 ──────────────────────────────────
+  // 🔴 故意只写一处分叉:两个矩阵出口各自写一遍 `if (frame == ...)`,迟早
+  //    有人只改一边,而改漏了**不会抛** —— 位置换了轴、姿态没换,是最难
+  //    看出来的那种错(物体位置对、朝向歪)。
+
+  /// [PoseFrame.rendererYUp] 时**原样归一化**;[PoseFrame.engineZUp] 时走
+  /// [convertRotation]。
+  static PoseQuaternion _toRenderer(PoseQuaternion q, PoseFrame frame) =>
+      switch (frame) {
+        PoseFrame.engineZUp => convertRotation(q).normalized(),
+        PoseFrame.rendererYUp => q.normalized(),
+      };
+
+  /// 同上,位置那一半。
+  static List<double> _toRendererVector(List<double> v, PoseFrame frame) =>
+      switch (frame) {
+        PoseFrame.engineZUp => convertVector(v),
+        PoseFrame.rendererYUp => <double>[v[0], v[1], v[2]],
+      };
 }
