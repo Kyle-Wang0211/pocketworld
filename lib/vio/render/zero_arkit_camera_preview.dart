@@ -217,8 +217,13 @@ class _ZeroArkitCameraPreviewState extends State<ZeroArkitCameraPreview> {
   }
 
   /// 在 `viewer.dispose()` 内部被调(destroyAssets 之后)。
+  ///
+  /// 🔴 开头结尾各打一行:「拆没拆、拆完没崩」要在日志里**直接可读**,而不是
+  ///    靠 ArFrame 行的间隔去推(09-22 三个抓日志窗口都靠推,读起来太绕)。
   Future<void> _teardownGpu(ArRenderLoop loop) async {
     _tornDown = true;
+    debugPrint('$kZeroArkitPreviewLogTag 拆卸开始:viewer.onDispose 已到,'
+        'ticks=$_ticks stepping=$_stepping');
     final Future Function()? hook = _frameHook;
     _frameHook = null;
     if (hook != null) await _unregister(hook);
@@ -232,6 +237,8 @@ class _ZeroArkitCameraPreviewState extends State<ZeroArkitCameraPreview> {
       debugPrint('$kZeroArkitPreviewLogTag 在途 step 1 s 未收尾,强行拆');
     }
     await loop.disposeForViewerTeardown();
+    debugPrint('$kZeroArkitPreviewLogTag 拆卸完成:纹理/采样器/材质已还,'
+        'asset 归 viewer(等了 ${spins * 5} ms)');
   }
 
   /// 每帧渲染**之前**跑。由 FilamentApp.requestFrame 按序 await。
