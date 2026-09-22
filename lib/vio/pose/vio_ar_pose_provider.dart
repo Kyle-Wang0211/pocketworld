@@ -14,38 +14,44 @@
 //
 // 接成一条,并且顺手把 `lib/vio/quality/` 的可信度结论一起带出去。
 //
-// ══ 🔴 它**不**做的四件事(照抄下游契约,不自研)═══════════════════════════
-// 1. **不换轴。** `vio_pose_source.dart` 文件头写死了这条:世界系约定我们有
-//    **两个互相矛盾**的记录(实测 SE(3) 拟合 `x_A=−y_X, y_A=+z_X, z_A=−x_X`
-//    vs 上游 SceneKit 硬编码 `(x,y,z)→(−y,−x,−z)`),在从我们自己的 build 打
-//    一个真实位姿判死之前,任何换轴都是猜。所以本文件交出的位姿在
-//    **引擎自己的世界系**里,并且**不假装**它是 ARKit 的系
-//    (ARKit y 向上、XRSLAM z 向上,两者差一个带符号置换)。
-//    ⇒ 这就是为什么 `poseSource` 标签必须是 `'xrslam'` 而不是 `'arkit'`:
-//      下游看到这个标签才知道这份外参不是 ARKit 口径。
-// 2. **不做显示时刻预测。** 引擎的位姿补到**图像时刻**,不是显示时刻。
-//    补显示延迟要 Monado 的 `m_predict_relation`,那是另一刀。
-// 3. **不做杠杆臂换算。** `EnginePosePoller` 取的是 **CAMERA_POSE**(与上游
-//    一致),不是 body pose;body↔camera 差 33.75mm 的 `p_bc`,换算属于比对层。
-// 4. **不碰相机。** 本文件一帧都不采 —— 喂料由 `PwCameraSlot` → `PwXrslamLive`
-//    在原生侧完成。见下面「已知缺口」。
+// ══ [pw 2026-09-22 零 ARKit 那一刀] 本文件改了三处 ═════════════════════════
+// 1. **换轴了。** 见 `xrslam_world_axis.dart`。交出的位姿从此是 **ARKit 口径
+//    (y 向上)**,而不再是引擎自己的 z-up 世界系。真值是 09-16 共享录制的
+//    SE(3) 实测拟合 `x_A=−y_X, y_A=+z_X, z_A=−x_X`;上游 SceneKit 那个
+//    `(x,y,z)→(−y,−x,−z)` 行列式是 −1(镜像,不是旋转),**不是**世界系换算,
+//    两者的区别写在那个文件的头上。
+//    ⇒ `poseSource` 标签仍是 `'xrslam'` —— 换了系不等于变成了 ARKit;
+//      下游要知道这条位姿是谁算的。
+// 2. **照片有出口了。** 走 `ZeroArkitPhotoApi`(另一位 agent 实现原生侧,
+//    本文件**只按签名调**)。之前是硬 `unsupported`。
+// 3. **相机与会话由本文件负责起**(经 `ZeroArkitCaptureRuntime`)——
+//    开关 ON 时页面不再起 ARSession,相机归我们。
 //
-// ══ 🔴 已知缺口:开关 ON 时真机上拿不到 6DOF ═══════════════════════════════
-// `PwCameraSlot` 自己建 `AVCaptureSession`;而 ARKit 在会话运行期间**独占**
-// 后置相机(`ar_capture_page.dart:737-747` 的注释是实证:并行开相机会
-// `FigCaptureSourceRemote err=-17281`)。生产采集页今天由 ARKit 开着相机,
-// 所以本适配器在真机上会一直拿到 `TRACKING_SUCCESS` 之前的状态 ——
-// **契约通了,喂料没通。** 这不是本文件能修的:要么采集页改成不开 ARKit,
-// 要么原生侧把 `ARFrame.capturedImage` 转喂给 `PwXrslamLive`。两条都没做,
-// 也**不该**在「默认关闭的开关」这一刀里做。
-// ⇒ 降级是**优雅**的:拿不到位姿时交出 `isTracking=false` 的 ARPose,
-//   `tier=none`,`CaptureSession` 的既有闸照常把它挡在落盘之外。
+// ══ 🔴 仍然**不**做的两件事 ════════════════════════════════════════════════
+// * **不做显示时刻预测。** 引擎的位姿补到**图像时刻**,不是显示时刻。
+//   补显示延迟要 Monado 的 `m_predict_relation`,那是另一刀。
+// * **不做杠杆臂换算 —— 而且这次是查过的,不是省略。**
+//   `EnginePosePoller._readFromEngine` 取的是 **CAMERA_POSE**
+//   (`PwXrslamTransportCore.cpp:229` 的 `PW_XRSLAM_T_WORLD_CAMERA`),
+//   ARKit 的 `camera.transform` 也是相机位姿 ⇒ **两边同口径**。
+//   33.75 mm 的 `p_bc` 只在一边是 body 位姿时才要补(09-16 我们正是因为
+//   没补它而带着 3.38 cm 的偏差比了很久)。这里补它反而会引入 3.38 cm。
+//
+// ══ 🔴 仍然缺的:喂料只在「页面没起 ARKit」时才通 ═════════════════════════
+// `PwCameraSlot` 自建 `AVCaptureSession`,ARKit 在跑时独占后置相机
+// (`ar_capture_page.dart:737-747` 实证:并行开 ⇒ `err=-17281`,两条都废)。
+// 本刀把采集页的 ON 分支改成**不起 ARSession**,并在原生侧加了租约闸
+// (`pw_zero_arkit_camera_start`)⇒ 抢不到就明确失败,不静默两败俱伤。
+// 但这条路**没有在真机上跑过**(本任务禁止开摄像头/碰 iPhone),
+// 只有单测级证据。
 
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:vector_math/vector_math_64.dart';
 
+import '../../official_capture/metric_rescale.dart' show MetricRescaleResult;
 import '../../official_dome/ar_pose.dart';
 import '../ffi/xrslam_session.dart';
 import '../quality/initialization_window.dart';
@@ -54,8 +60,13 @@ import 'camera_projection.dart';
 import 'camera_slot_ffi.dart';
 import 'engine_pose_poller.dart';
 import 'tracked_pose.dart';
+import '../capture/zero_arkit_capture_runtime.dart';
+import '../capture/zero_arkit_photo_api.dart';
+import '../capture/zero_arkit_scale_provenance.dart';
 import 'vio_pose_source.dart';
 import 'vio_pose_source_switch.dart';
+import 'xrslam_tracking_state.dart';
+import 'xrslam_world_axis.dart';
 
 /// 从 `PwCameraSlot` 读内参。真机以外(单测、模拟器、没链引擎的构建)符号
 /// 不存在 ⇒ 抛 `ArgumentError`。**一次失败就永久放弃**,与
@@ -71,16 +82,68 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
     EnginePosePoller? poller,
     VioPoseSource? poseSource,
     VioIntrinsicsReader? intrinsicsReader,
+    ZeroArkitCaptureRuntime? runtime,
+    ZeroArkitPhotoApi? photoApi,
     this.pollInterval = const Duration(milliseconds: 16),
     this.feedWidth = 640,
     this.feedHeight = 480,
   }) : _poller = poller ?? EnginePosePoller(),
        _source = poseSource ?? VioPoseSource(),
-       _intrinsicsReader = intrinsicsReader;
+       _intrinsicsReader = intrinsicsReader,
+       _runtime = runtime,
+       _photoApi = photoApi ?? NativeZeroArkitPhotoApi();
 
   final EnginePosePoller _poller;
   final VioPoseSource _source;
   final VioIntrinsicsReader? _intrinsicsReader;
+
+  /// 相机 + XRSLAM 会话。`null` = 由调用方自己起(台架那样),
+  /// 本适配器就只读结果。生产采集页会传一个进来。
+  final ZeroArkitCaptureRuntime? _runtime;
+
+  /// 成片出口。另一位 agent 实现原生侧;本文件只按签名调。
+  final ZeroArkitPhotoApi _photoApi;
+
+  /// 尺度状态。🔴 **每条零 ARKit 采集都从「未锚定」开始** ——
+  /// 没有 ARKit 可锚(SCALE-ANCHOR 是相对 ARKit 重锚的),
+  /// 用户没量过距离之前 `mayReportAbsoluteDimensions` 恒 false。
+  ZeroArkitScaleState _scale = ZeroArkitScaleState.unanchored;
+  ZeroArkitScaleState get scaleState => _scale;
+
+  /// 相机/会话起没起来(`null` = 本适配器不负责起)。
+  ZeroArkitStartResult? get runtimeStart => _runtime?.lastStart;
+
+  /// 尺度锚定的**唯一入口**:用户量了一段已知距离。
+  ///
+  /// 🔴 **不做 UI**(选点与输距离的交互由产品负责人定)。这里只把
+  ///    `metric_rescale.dart` 的机制接上,并把 [scaleState] 从
+  ///    「未锚定」推进到「用户距离」。
+  /// 🔴 抛 `MetricRescaleException` 时 [scaleState] **不变** —— 仍是未锚定,
+  ///    `mayReportAbsoluteDimensions` 仍是 false。调用方不要在 catch 里
+  ///    把它打开。
+  MetricRescaleResult anchorScaleWithUserDistance({
+    required Float32List xyz,
+    required List<double> pointA,
+    required List<double> pointB,
+    required double realDistanceMeters,
+    Float64List? posesPacked,
+    List<double>? center,
+    DateTime? timestampUtc,
+  }) {
+    final r = anchorScaleByUserDistance(
+      xyz: xyz,
+      pointA: pointA,
+      pointB: pointB,
+      realDistanceMeters: realDistanceMeters,
+      posesPacked: posesPacked,
+      center: center,
+      timestampUtc: timestampUtc,
+    );
+    _scale = r.state;
+    return r.result;
+  }
+
+  int _photoRequestSeq = 0;
 
   /// 轮询周期。**拉取而非回调**的理由抄 `xrslam_bindings.dart` 的原注释:
   /// dart:ffi 是同步同线程的,`NativeCallable.isolateLocal` 从非创建线程调用
@@ -136,6 +199,14 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
     if (_timer != null) return _controller.stream;
     _stopped = false;
     if (!_clock.isRunning) _clock.start();
+    // 🔴 相机 + 会话先起,再开始轮询。起不来**不抛** —— 位姿流照样交出
+    //    `isTracking=false` 的帧,`CaptureSession` 的既有闸把它们挡在落盘外。
+    //    抛了会把整个采集页打成 `_initError`,而这条臂本来就是研究臂。
+    final ZeroArkitStartResult? r = _runtime?.start();
+    if (r != null && !r.ok) {
+      // ignore: avoid_print
+      print('[zero-arkit] 运行时起不来:$r');
+    }
     _timer = Timer.periodic(pollInterval, (_) => tick());
     return _controller.stream;
   }
@@ -175,12 +246,21 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
     final PoseQuaternion? q = tracked.orientation;
     final PosePosition? p = tracked.position;
 
-    final Quaternion orientation = q == null
+    // 🔴 **换轴在这里发生,而且只发生一次。**
+    //    引擎交出的是 XRSLAM 的 z-up 世界系;下游(az/el 数学、dome、
+    //    gravity_align、落盘的 extrinsic)全部按 ARKit 的 y-up 写。
+    //    不换就是把 z-up 塞进 y-up 的消费者 —— 不抛异常,只是安静地全错。
+    //    真值与「为什么只左乘」见 `xrslam_world_axis.dart`。
+    final Quaternion orientationEngine = q == null
         ? Quaternion.identity()
         : Quaternion(q.x, q.y, q.z, q.w);
-    final Vector3 position = p == null
+    final Vector3 positionEngine = p == null
         ? Vector3.zero()
         : Vector3(p.x, p.y, p.z);
+
+    final Quaternion orientation =
+        xrslamOrientationToArkit(orientationEngine);
+    final Vector3 position = xrslamPositionToArkit(positionEngine);
 
     double azimuth = 0, elevation = 0;
     if (_hasOrigin && p != null) {
@@ -213,8 +293,13 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
       // 引擎自己世界系下的 camera→world。列主序 16 个 double,与
       // `arkit_extrinsic_4x4` 同形状但**不同系** —— 靠 poseSource='xrslam'
       // 区分,见文件头第 1 条。
+      // 已换系的 camera→world。与 `arkit_extrinsic_4x4` **同形状且同系**,
+      // 但仍靠 poseSource='xrslam' 标明是谁算的(换了系 ≠ 变成了 ARKit)。
       extrinsic4x4: (q != null && p != null)
-          ? _cameraToWorldColumnMajor(orientation, position)
+          ? xrslamCameraToWorldArkitColumnMajor(
+              orientationEngine,
+              positionEngine,
+            )
           : const <double>[],
       intrinsicFxFyCxCy: k == null
           ? const <double>[]
@@ -234,21 +319,21 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
     );
   }
 
-  /// 把 XRSLAM 的档位翻成 `ARPose.trackingStateName` 的既有词表。
-  /// 🔴 词表是 `ar_pose.dart:76-88` 定死的那七个字符串,**不新增取值** ——
-  /// `PoseDriftTracker` 按字符串聚合,多一个词它就归不了类。
+  /// 把 XRSLAM 的引擎状态翻成 `ARPose.trackingStateName` 的既有词表。
+  ///
+  /// 🔴 [pw 2026-09-22] 映射表搬到 `xrslam_tracking_state.dart`,并且**改了
+  ///    一处**:原来 `lastKnown` 档报 `'limited_relocalizing'` —— 那是**错的**,
+  ///    出货 XRSLAM 构建**没有重定位**(loop closure 结果通道 09-19 实证是
+  ///    空实现)。报一个不存在的能力会让 `PoseDriftTracker` 的分桶读起来
+  ///    像「它在重定位,再等等」,而实际上它永远不会回来。
+  ///    现在 `lastKnown`(引擎不再报 TRACKING_SUCCESS)走引擎状态表 ⇒
+  ///    `limited_unknown`,并在表里显式标成 confidence=unknown。
   String _trackingStateName(TrackedPose tracked) {
     if (tracked.isSixDegreeOfFreedom) return 'normal';
-    if (_source.stage == VioPoseStage.lastKnown) return 'limited_relocalizing';
-    if (tracked.orientationValid) return 'limited_initializing';
-    return XrslamSession.current == null
-        ? 'not_available'
-        : 'limited_initializing';
-  }
-
-  static List<double> _cameraToWorldColumnMajor(Quaternion q, Vector3 t) {
-    final Matrix4 m = Matrix4.compose(t, q, Vector3(1, 1, 1));
-    return List<double>.generate(16, (i) => m.storage[i], growable: false);
+    return xrslamTrackingStateName(
+      engineState: _poller.lastState,
+      sessionAlive: XrslamSession.current != null,
+    );
   }
 
   bool _intrinsicsGaveUp = false;
@@ -290,6 +375,9 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
     _timer?.cancel();
     _timer = null;
     _clock.stop();
+    // 🔴 相机与会话必须跟着停,否则离开采集页后相机还开着(而且租约还在
+    //    我们名下 ⇒ 再进页面时 ARKit 那条臂也起不来)。`stop` 是幂等的。
+    _runtime?.stop();
   }
 
   Future<void> dispose() async {
@@ -300,12 +388,41 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
     await _confCtrl.close();
   }
 
-  // ── 🔴 照片路径:**本臂没有**,如实返回 unsupported ────────────────────
-  // 生产的成片来自 `ARFrame.capturedImage`(native 的 `saveCurrentFrame` /
-  // `captureHighResolutionStill`)。XRSLAM 臂只有位姿,没有任何取帧出口 ——
-  // 出货引擎导出的 5 个符号里一个都不是取图像的。
-  // 假装成功会让 `CaptureSession` 以为落盘了而实际没有;所以这里返回
-  // `unsupported`,让既有的失败路径原样生效。
+  // ── 照片路径:走 `ZeroArkitPhotoApi` ───────────────────────────────────
+  //
+  // 🔴 **实现不在这里。** 原生侧的 `AVCapturePhotoOutput` 由另一位 agent 在
+  //    另一条分支上落地;本文件只按约定好的签名调
+  //    (`pw_camera_slot_capture_photo` / `pw_camera_slot_photo_result`)。
+  //    符号不在(对方分支还没合 / 模拟器)⇒ [ZeroArkitPhotoApi] 自己永久降级,
+  //    这里如实返回 `unsupported`,**不假装落盘成功** ——
+  //    假装成功会让 `CaptureSession` 以为有图而实际没有。
+  //
+  // 🔴 成片是从**我们自己的相机流**出来的,不是 `ARFrame.capturedImage`。
+  //    所以内参/曝光也跟着成片一起回来(`ZeroArkitPhotoResult`),
+  //    不用再去猜「这张图是用哪组内参拍的」。
+
+  /// 请求一张成片并等它回来。超时/失败返回 `null`。
+  ///
+  /// 🔴 有界轮询,**不等真实墙钟的 `Future.delayed` 链** —— 09-22 栽过一次:
+  ///    让测试去等墙钟只会把「异常」伪装成「很慢」。
+  Future<ZeroArkitPhotoResult?> requestPhoto({
+    Duration timeout = const Duration(seconds: 3),
+    Duration pollEvery = const Duration(milliseconds: 20),
+  }) async {
+    final int id = ++_photoRequestSeq;
+    final int? accepted = _photoApi.capturePhoto(id);
+    if (accepted == null) return null;
+
+    final Stopwatch sw = Stopwatch()..start();
+    while (sw.elapsed < timeout) {
+      final ZeroArkitPhotoResult? r = _photoApi.photoResult();
+      // 🔴 按 requestId 配对,**不按到达顺序** —— 上一张迟到的结果会被
+      //    当成这一张,而且不会报任何错。
+      if (r != null && r.requestId == accepted) return r;
+      await Future<void>.delayed(pollEvery);
+    }
+    return null;
+  }
 
   @override
   Future<bool> saveCurrentFrameAsJpeg({
@@ -314,15 +431,34 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
     double? targetTimestamp,
     double maxTimestampDelta = 0.18,
     double quality = 0.9,
-  }) async => false;
+  }) async {
+    // 🔴 本臂的成片是原生自己选路径写的,**改不了落到调用方指定的两个路径**
+    //    (那要动对方的接口)。所以这条老入口如实返回 false,让既有失败路径
+    //    生效;新代码走 `saveCurrentFrame` / `requestPhoto`。
+    return false;
+  }
 
   @override
-  Future<ARFrameSaveResult> saveCurrentFrame(ARFrameSaveSpec spec) async =>
-      ARFrameSaveResult(
+  Future<ARFrameSaveResult> saveCurrentFrame(ARFrameSaveSpec spec) async {
+    final ZeroArkitPhotoResult? r = await requestPhoto();
+    if (r == null) {
+      return ARFrameSaveResult(
         spec: spec,
         status: 'unsupported',
-        message: 'XRSLAM 臂只产位姿,没有帧保存出口(出货引擎 5 个符号里没有取图)',
+        message: '成片接口不可用(pw_camera_slot_capture_photo 未链入)'
+            '或超时未返回',
       );
+    }
+    // 🔴 状态不是 'saved':原生写的是**它自己选的路径**,不是 spec 里那两个。
+    //    报 'saved' 会让 `CaptureSession` 去 spec.jpegPath 找一个不存在的文件。
+    //    如实报一个非 saved 的状态 + 真实路径,由调用方决定怎么接。
+    return ARFrameSaveResult(
+      spec: spec,
+      status: 'saved_elsewhere',
+      message: '成片已写到 ${r.path}(零 ARKit 臂由原生相机槽选路径,'
+          '不是 spec.jpegPath)',
+    );
+  }
 
   @override
   Future<HighResolutionStillCapture?> captureHighResolutionStill({
@@ -337,5 +473,12 @@ class VioArPoseProvider implements ARPoseProvider, ARPoseSourceLabel {
     String? transactionId,
     String? cardTexturePath,
     double? maxTimestampDelta,
-  }) async => null;
+  }) async {
+    // 🔴 `HighResolutionStillCapture` 的契约里有一串 ARKit 专有字段
+    //    (photo-card 反馈、SfM 灰度喂料、缩略图),零 ARKit 臂一个都产不出。
+    //    半真半假地填一个回来,比返回 null 更危险 —— 下游会按「有」处理。
+    //    ⇒ 如实 null。成片本身照样拍了(下面这行),只是走不通这条契约。
+    await requestPhoto();
+    return null;
+  }
 }

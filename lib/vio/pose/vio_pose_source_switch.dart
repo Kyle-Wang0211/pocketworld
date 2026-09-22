@@ -16,9 +16,17 @@
 // 「`--dart-define` 不到这个工程的 iOS xcconfig 链」,所以后端地址才被改成
 // 运行期解析。同一条结论对本开关成立 ——
 // **出货 iOS 包里这个常量永远是默认值**,也就是永远 ARKit。
-// 这不是缺陷,对「默认关闭」这条要求反而是**更强**的保证;但它也意味着:
-// 想在真机上跑 ON 这条臂,`--dart-define` 是不够的,必须另配一条运行期开关
-// (与 `EndpointConfigResolver` 同款)。那条路**本次没做**,见报告「缺什么」。
+//
+// [pw 2026-09-22] ⇒ 因此加了**第二来源**:
+// `vio_pose_source_runtime_flag.dart` 读原生启动参数 `-PWVioPoseSource`
+// (`ios/Runner/PwZeroArkitGate.swift`)。两条来源**取或**:
+//
+//     current = (dart-define 说 xrslam) OR (启动参数说 xrslam) ? xrslam : arkit
+//
+// 🔴 取或**不会**把默认值变松:两条来源都不设时结果仍是 arkit,而且第二来源
+//    的符号在模拟器/单测/安卓上根本不存在 ⇒ 返回 null ⇒ 当作没设。
+//    出货包里没人传那个参数,所以出货行为与之前逐位相同。
+// 🔴 第二来源**只读不写**:app 不会把自己持久化到研究臂上。
 //
 // ══ 抄的是仓里已有的形状,不是新发明 ═══════════════════════════════════════
 // `lib/vio/diagnostics/vio_shadow_switch.dart`(`PW_VIO_SHADOW`)、
@@ -26,6 +34,8 @@
 // `lib/capture/capture_format.dart:10`(`PW_VIDEO_FORMAT`)是同一种写法。
 
 import 'package:flutter/foundation.dart' show debugPrint;
+
+import 'vio_pose_source_runtime_flag.dart';
 
 /// 生产采集页实际使用的位姿源。
 enum PwVioPoseSource {
@@ -49,7 +59,35 @@ abstract final class PwVioPoseSourceSwitch {
   static PwVioPoseSource? debugOverride;
 
   /// 当前生效的位姿源。
-  static PwVioPoseSource get current => debugOverride ?? _fromRaw(kPwVioPoseSourceRaw);
+  ///
+  /// 两条来源取或(见文件头):编译期 `--dart-define`,与运行期启动参数
+  /// `-PWVioPoseSource`。**任一条说 xrslam 就是 xrslam;都不说就是 arkit。**
+  static PwVioPoseSource get current {
+    final PwVioPoseSource? override = debugOverride;
+    if (override != null) return override;
+    if (_fromRaw(kPwVioPoseSourceRaw) == PwVioPoseSource.xrslam) {
+      return PwVioPoseSource.xrslam;
+    }
+    final String? runtimeRaw = PwVioPoseSourceRuntimeFlag.raw;
+    if (runtimeRaw != null &&
+        _fromRaw(runtimeRaw) == PwVioPoseSource.xrslam) {
+      return PwVioPoseSource.xrslam;
+    }
+    return PwVioPoseSource.arkit;
+  }
+
+  /// 当前值是**哪条来源**决定的。诊断/报告用,不参与判定。
+  static String get currentProvenance {
+    if (debugOverride != null) return 'debug_override';
+    if (_fromRaw(kPwVioPoseSourceRaw) == PwVioPoseSource.xrslam) {
+      return 'dart_define';
+    }
+    final String? runtimeRaw = PwVioPoseSourceRuntimeFlag.raw;
+    if (runtimeRaw != null && _fromRaw(runtimeRaw) == PwVioPoseSource.xrslam) {
+      return 'launch_argument';
+    }
+    return 'default_arkit';
+  }
 
   /// 是否走自研臂。生产出货包恒为 false。
   static bool get isSelfVio => current == PwVioPoseSource.xrslam;

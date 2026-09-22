@@ -42,6 +42,7 @@ import 'package:image/image.dart' as img;
 import 'package:vector_math/vector_math_64.dart'
     show Matrix4, Quaternion, Vector3;
 
+import '../../vio/capture/zero_arkit_capture_runtime.dart';
 import '../../vio/pose/vio_ar_pose_provider.dart';
 import '../../vio/pose/vio_pose_source_switch.dart';
 import '../../vio/quality/pose_confidence.dart';
@@ -764,21 +765,36 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // baseline pose instead of whatever angle ARKit happens to have
     // mid-warm-up while the user is still moving the phone.
     try {
-      // [pw 2026-09-22] VIO 消费层接线点。
+      // [pw 2026-09-22] VIO 消费层接线点 + 零 ARKit 分叉。
       //
       // 🔴 `PwVioPoseSourceSwitch.current` 默认是 `arkit` ⇒ `poseProvider`
-      //    传 `null` ⇒ `CaptureSession` 内部照旧 `PlatformARPoseProvider()`。
-      //    也就是说**出货包里这一行与之前逐位等价**(而且 iOS 的
-      //    `--dart-define` 到不了 xcconfig 链,见
-      //    `lib/vio/pose/vio_pose_source_switch.dart` 文件头 ——
-      //    这个开关在出货 iOS 上物理上就打不开)。
+      //    传 `null` ⇒ `CaptureSession` 内部照旧 `PlatformARPoseProvider()`,
+      //    而 `CaptureSession.attach()` 只对 `PlatformARPoseProvider` 调
+      //    `ensureStarted()`(= 原生 `startSession` = 起 ARSession)。
+      //    **出货包里这一行与之前逐位等价。**
       //
-      // 🔴 铁律:「没全面持平/超越 ARKit 之前绝不上生产」。这里接的是
-      //    **契约与管线**,不是换生产位姿源。ON 这条臂目前连喂料都不通
-      //    (ARKit 独占相机),见 `vio_ar_pose_provider.dart` 的「已知缺口」。
+      // 🔴 铁律:「没全面持平/超越 ARKit 之前绝不上生产」。ON 这条臂是研究臂。
+      //
+      // ══ ON 这条分支做了什么 ═══════════════════════════════════════════
+      // `VioArPoseProvider` **不是** `PlatformARPoseProvider` ⇒ attach 里那句
+      // `ensureStarted()` 不会被调 ⇒ **`startSession` 一次都不发** ⇒
+      // 原生 `OfficialAetherARKitPlugin` 的 `ARSession` 根本不会被建出来。
+      // 相机改由 `ZeroArkitCaptureRuntime` 起(`PwCameraSlot` + 租约闸),
+      // 位姿由 XRSLAM 出,内参/曝光从我们自己的相机流读。
+      //
+      // 🔴 这一条有单测钉死(`test/zero_arkit_capture_path_test.dart`):
+      //    ON 时 `pocketworld_official_arkit` 这条 MethodChannel 上
+      //    **一条 `startSession` 都没有**。
       final vioProvider = PwVioPoseSourceSwitch.isSelfVio
-          ? VioArPoseProvider()
+          ? VioArPoseProvider(runtime: ZeroArkitCaptureRuntime())
           : null;
+      if (vioProvider != null) {
+        DeviceLog.log(
+          'OfficialARCapturePage',
+          'zero-arkit: 位姿源=xrslam(来源 ${PwVioPoseSourceSwitch.currentProvenance}),'
+          '不启动 ARSession,相机归 PwCameraSlot',
+        );
+      }
       _vioPoseProvider = vioProvider;
       // 可信度与位姿一起带出来。ARKit 路径下 vioProvider == null ⇒ 不订阅。
       _vioConfidenceSub = vioProvider?.confidenceStream.listen((c) {
@@ -5061,6 +5077,22 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // strategy. Other platforms fall back to a dark backdrop until a
     // platform-specific preview is wired (Android ARCore / HarmonyOS).
     if (defaultTargetPlatform == TargetPlatform.iOS) {
+      // [pw 2026-09-22] 零 ARKit 臂:这个 UiKitView 内部是
+      // `ARSCNView`,它 `attachSessionIfReady()` 轮询的正是
+      // `OfficialAetherARKitPlugin` 那个 **ARSession** —— 开关 ON 时
+      // 我们根本不建它,于是它会**永远轮询下去**(0.05s 一次的 Timer,
+      // 永不 invalidate),而且画面恒黑。
+      // ⇒ ON 时不挂这个 view。**布局与尺寸一字未改**(同一个
+      //   `CapturePreviewRect` + 同一个黑底),换掉的只是里面那块画面来源。
+      // 🔴 预览画面本身**本刀没做** —— 用我们自己的相机流渲染背景是
+      //   「共享 AR 渲染器」那条分支的事(`ar_minimal_loop_page` 已验过
+      //   Filament 这条路)。这里先留一块黑,如实少一档,不假装有预览。
+      if (PwVioPoseSourceSwitch.isSelfVio) {
+        return const ColoredBox(
+          color: Color(0xFF000000),
+          child: CapturePreviewRect(child: SizedBox.expand()),
+        );
+      }
       // [WYSIWYG 2026-07-19] 预览 letterbox 成照片画幅(photo43=3:4),黑边
       // 顶底,显示完整 4:3 画面 —— 所见即所得。native 卡片几何按同一 3:4
       // 视口算(AetherARKitPlugin videoFormatMode==hires43 分支),两者对齐。

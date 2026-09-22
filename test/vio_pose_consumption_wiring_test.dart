@@ -248,10 +248,15 @@ void main() {
       expect(last.imageWidth, 640);
       expect(last.imageHeight, 480);
       expect(last.trackingStateName, 'normal');
-      // 位置逐位等于引擎给的三元组 —— 🔴 证明**没有偷偷换轴**。
-      expect(last.position.x, closeTo(0.1 * 3.0, 1e-12));
-      expect(last.position.y, closeTo(0.2 * 3.0, 1e-12));
-      expect(last.position.z, closeTo(0.3 * 3.0, 1e-12));
+      // 🔴 [pw 2026-09-22 零 ARKit 那一刀改了这三行] 原断言是「位置逐位等于
+      //    引擎给的三元组,证明没有偷偷换轴」。现在**故意换轴了** ——
+      //    见 `xrslam_world_axis.dart`:x_A=−y_X / y_A=+z_X / z_A=−x_X。
+      //    这里改成按那张表逐位断言,所以它仍然是「没有第二个隐藏变换」的
+      //    判据,只是真值换成了那张表。
+      final double ex = 0.1 * 3.0, ey = 0.2 * 3.0, ez = 0.3 * 3.0;
+      expect(last.position.x, closeTo(-ey, 1e-12));
+      expect(last.position.y, closeTo(ez, 1e-12));
+      expect(last.position.z, closeTo(-ex, 1e-12));
 
       // 落盘标签走的是新分支。
       expect(session.debugLastPoseSource, 'xrslam');
