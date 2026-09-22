@@ -42,6 +42,7 @@ import 'package:image/image.dart' as img;
 import 'package:vector_math/vector_math_64.dart'
     show Matrix4, Quaternion, Vector3;
 
+import '../../vio/capture/camera_time_offset.dart' show PwDeviceMachine;
 import '../../vio/capture/zero_arkit_capture_runtime.dart';
 import '../../vio/pose/vio_ar_pose_provider.dart';
 import '../../vio/pose/vio_pose_source_switch.dart';
@@ -871,6 +872,19 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         // 什么都不会抛,只会把 tick 与时间上限的时钟静默算错。
         _driveAutoCapture(p);
       });
+      // [pw 2026-09-22 c] ON 臂:先把机型标识等回来,再起会话。
+      // `ZeroArkitCaptureRuntime.start()` 是同步的,在里面按 `hw.machine`
+      // 查每机常量 c;而机型走异步 MethodChannel(`IosTimebaseChannel.
+      // deviceMachine()`),进程内第一次建会话时可能还没回来 ⇒ 那一次会如实
+      // 落 PLACEHOLDER 用 c=0。这里等一下就没有这个窗口。
+      // 🔴 只在 ON 臂等:OFF 臂不多一次 await,时序逐位不变。
+      if (vioProvider != null) {
+        final String? machine = await PwDeviceMachine.prime();
+        DeviceLog.log(
+          'OfficialARCapturePage',
+          'zero-arkit: 机型=${machine ?? "未知"}(c 查表前已就绪)',
+        );
+      }
       await session.attach();
       // [ADAPTIVE-FPS] 策略时钟(5s 轮询,页面生命周期内)。
       _adaptiveFpsTimer ??= Timer.periodic(
