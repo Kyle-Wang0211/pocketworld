@@ -41,6 +41,7 @@ class SfmPreviewOverlay extends StatelessWidget {
     this.errorText,
     this.progressText,
     this.waitLabel,
+    this.generatingLabel,
     this.denseRunning = false,
     this.onCameraChanged,
     this.editing = false,
@@ -75,6 +76,15 @@ class SfmPreviewOverlay extends StatelessWidget {
   /// 底部等待胶囊的文案(仅 `phase == generating` 时显示)。null = 倒计时估计
   /// 还不存在,胶囊改显 `AppL10n.of(context).etaCalculating`。
   final String? waitLabel;
+
+  /// 中央转圈下面那一行。默认是"正在生成最终点云…"。
+  ///
+  /// 🔴 [2026-09-22 用户指认「改掉那个骗人的文案」] 再进入相册项目时,页面
+  /// 也会套上 generating 这一相,但那时**什么都没在生成** —— 点云早就在盘上,
+  /// 只是在读(ar_capture_page 里那行注释自己都写着 `cover page while the PLY
+  /// loads`)。未命名(12) 的稠密是 692 万点 / 99 MB,读+排序要几十秒,用户
+  /// 整整盯着一句假话。所以这一行必须由调用方说清楚是"生成"还是"载入"。
+  final String? generatingLabel;
 
   /// [DENSE-SAME-PAGE 2026-09-15] The dense stage is running for this project:
   /// the wait pill shows its countdown ([waitLabel]) and the bottom action
@@ -221,9 +231,12 @@ class SfmPreviewOverlay extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 16),
-                    const Text(
-                      '正在生成最终点云…',
-                      style: TextStyle(color: Colors.white70, fontSize: 14),
+                    Text(
+                      generatingLabel ?? '正在生成最终点云…',
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 14,
+                      ),
                     ),
                     if (progressText != null) ...[
                       const SizedBox(height: 8),
