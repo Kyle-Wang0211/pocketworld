@@ -398,3 +398,44 @@ f = 6.82 mm(由 Apple 公布的 2.44 µm 像元 + 24 mm 等效反推,与 DPRevie
 ## A.5 仍未核实
 
 Apple AF 执行器类型(从未公布;「Cirrus Logic 驱动 + Hall 闭环」只在二手转载);闭环驱动 datasheet(onsemi/AKM/Dongwoon 官网不公开 PDF,AK7375 数值仅来自内核驱动常量);Kehtarnavaz & Oh 2003 的步数(付费墙);VCM 迟滞 µm 值(无发表数据);iPhone 传感器尺寸与真实焦距(DPReview 二手 + EXIF,已用 Apple 公布像元交叉验证到 <1%);Samsung Dual Pixel「毫秒级」(新闻稿里没有时间数字)。
+
+---
+
+# 附录 B(2026-09-23 补):两条会改变 iOS 路线的一手证据
+
+## B.1 业界没有一家跑纯 CDAF —— 全是 PDAF 粗定位 + CDAF 精修
+
+Abuolaim, Punnappurath & Brown, *Revisiting Autofocus for Smartphone Cameras*, **ECCV 2018**(York University,[PDF](https://www.ecva.net/papers/eccv_2018/papers_ECCV/papers/Abdullah_Abuolaim_Revisiting_Autofocus_for_ECCV_2018_paper.pdf))原文:
+
+> "Compared with CDAF, PDAF methods are able to approximate the optimal lens position in a **single processing step**; however, PDAF alone is generally not sufficient to give an accurate focusing lens position."
+> "Because CDAF works on a single image, the camera lens needs to be moved back and forth until the image sharpness measure is maximized."
+> "Most of the recent smartphone cameras use so-called **hybrid AF** … performs PDAF first to move the lens to a position close to the optimal focusing position and then performs CDAF to accurately fine-tune."
+
+三方独立互证同一架构:这篇学术综述 + libcamera `af.cpp` 的生产代码(PDAF 闭环优先、失效 `dropout_frames` 帧后退回 CDAF)+ Sony IMX318 新闻稿("Hybrid AF, which merges image plane phase detection AF with contrast detection AF")。
+
+⇒ **「纯软件 CDAF 取代厂商 AF」与全行业做法相反**,这不是复刻得好不好的问题,是架构选择本身。尤其在 10 cm 处景深仅 ±0.9 mm(附录 A.3)、每步要付 150 ms(附录 A.2)的条件下。
+
+## B.2 iOS 不暴露相位数据,但暴露了我们要的两个旋钮(本机 SDK 头文件逐行核)
+
+来源:`iPhoneOS26.2.sdk/.../AVFoundation.framework/Headers/AVCaptureDevice.h`(一手,本机)。
+
+| 能力 | 结论 |
+|---|---|
+| **相位/PDAF 原始数据** | 🔴 **不暴露**。全头文件只有枚举 `AVCaptureAutoFocusSystemPhaseDetection`(只是告诉你这台机用的是相位系统),没有任何取相位差的 API ⇒ **我们不可能在 iOS 上自己实现 PDAF**,苹果主摄的 "100% Focus Pixels" 只有走苹果自己的 AF 才吃得到 |
+| `focusPointOfInterest` | ✅ 归一化点,(0,0)=左上、(1,1)=右下,默认 (0.5,0.5)。⚠️ 原文:"**setting focusPointOfInterest alone does not initiate a focus operation**. After setting focusPointOfInterest, call -setFocusMode:" |
+| **`focusRectOfInterest`** | ✅ **矩形**对焦区域,`focusRectOfInterestSupported` 把关,**iOS 26.0+**(本机设备 iOS 26.6.1 ✅;🔴 工程 `IPHONEOS_DEPLOYMENT_TARGET = 15.0` ⇒ 要 `@available` 分支) |
+| **`AVCaptureAutoFocusRangeRestrictionNear`** | ✅ 把自动对焦**限制在近端** —— 正是我们要的 macro-first,苹果已内置 |
+| `focusMode` | `.locked` / `.autoFocus`(对一次然后自动转 locked)/ `.continuousAutoFocus` |
+| `isAdjustingFocus`、`lensPosition` | KVO 可观测(非逐帧) |
+
+🔴 **我们现在一个都没用**:`PwCameraSlot.swift:230-238` 全文只调了 `setFocusModeLocked(lensPosition: 0.835)`。也就是说「一直无法对焦」**不是苹果 AF 不好,是我们从来没让它工作过**,而且锁在了最远端。
+
+## B.3 由此产生的三臂对照(取代原 §5.3 表 A 的单臂量法)
+
+| 臂 | 做法 | 吃不吃得到相位硬件 | 跨端 |
+|---|---|---|---|
+| **A(对照)** | 现状 `setFocusModeLocked(0.835)` | 否 | — |
+| **B(最省力)** | `focusRectOfInterest`(或 `focusPointOfInterest`)框住被扫物体 + `autoFocusRangeRestriction = .near` + `.continuousAutoFocus` | ✅ 全阵列相位,单步到位 | ❌ iOS 专有(但 Android/鸿蒙各有对应的 AF 区域接口) |
+| **C(本调研主线)** | 我们自己的 CDAF 状态机驱动 `setFocusModeLocked(lensPosition:)` | 否 | ✅ 四端同一份 |
+
+判据不变(成片在物体上的锐度为主、时间为次),但**必须三臂同场比**。B 臂是几行代码,**应当先量 B**:如果 B 就解决了「对不上焦」,那么 C 的价值就从「解决对焦」退回到「跨端一致性与 Android/鸿蒙/Web 的兜底」,优先级要重排。C 的移植不作废 —— 那三端未必有可用的厂商 AF,而且 C 也是 B 的验证尺子。
