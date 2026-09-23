@@ -20,12 +20,14 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/vio/capture/camera_time_offset.dart';
+import 'package:pocketworld_flutter/vio/capture/focus_self_heal.dart';
 import 'package:pocketworld_flutter/vio/capture/zero_arkit_capture_runtime.dart';
 import 'package:pocketworld_flutter/vio/ffi/pw_focus_ffi.dart';
 import 'package:pocketworld_flutter/vio/ffi/xrslam_config.dart';
 import 'package:pocketworld_flutter/vio/pose/camera_projection.dart';
 import 'package:pocketworld_flutter/vio/pose/zero_arkit_camera_gate.dart';
 import 'package:pocketworld_flutter/vio/render/zero_arkit_capture_probe_page.dart';
+import 'package:vector_math/vector_math_64.dart';
 
 void main() {
   group('(A) hw.machine 直读', () {
@@ -138,6 +140,7 @@ void main() {
         focusStateAtFinish: null,
         focusNativeReportJson: null,
         focusSeries: const <PwFocusSample>[],
+        focusSelfHeal: null,
       );
 
       for (final String key in <String>[
@@ -225,6 +228,7 @@ void main() {
         focusStateAtFinish: null,
         focusNativeReportJson: null,
         focusSeries: const <PwFocusSample>[],
+        focusSelfHeal: null,
       );
       expect(m['camera_time_offset'], isNull);
       expect(m['session'], isNull);
@@ -315,6 +319,100 @@ void main() {
       expect(PwFocusArm.a.rawValue, 0);
       expect(PwFocusArm.b.rawValue, 1);
       expect(PwFocusArm.c.rawValue, 2);
+    });
+
+    test('🔴 换默认臂:Swift 的默认初值是 .b,A 臂降为阴性对照', () {
+      // 这条测试守的是**用户拍板的那件事**(2026-09-23「换掉锁定,照生产那套
+      // 来」)。Dart 侧查不到原生的默认值,所以直接读 Swift 源码那一行 ——
+      // 它要是被谁改回 `.a`,这条当场红。
+      final String swift =
+          File('${Directory.current.path}/ios/Runner/PwFocusArms.swift')
+              .readAsStringSync();
+      expect(swift, contains('private(set) var arm: PwFocusArm = .b'));
+      expect(swift, isNot(contains('private(set) var arm: PwFocusArm = .a')));
+      // 生产那两句必须在(逐句对照 OfficialAetherARKitPlugin.swift:2653-2661)。
+      expect(swift, contains('device.isSmoothAutoFocusEnabled = true'));
+      expect(swift, contains('device.focusMode = .continuousAutoFocus'));
+      // 🔴 生产 :2189-2191 的警告原文必须留在代码里。
+      expect(swift,
+          contains('do not later flip'));
+      expect(swift, contains('stuck at a near lens distance'));
+      // A 臂那三行锁焦**没被删**(它是阴性对照)。
+      final String slot =
+          File('${Directory.current.path}/ios/Runner/PwCameraSlot.swift')
+              .readAsStringSync();
+      expect(slot, contains('device.setFocusModeLocked('));
+      expect(slot, contains('focusArm == .a'));
+    });
+
+    test('标签跟着换了:b 不再叫 apple_af,叫 production_af', () {
+      expect(PwFocusArm.b.label, 'b_production_af');
+      expect(PwFocusArm.a.label, 'a_locked_baseline');
+      expect(PwFocusArm.c.label, 'c_pw_af_cdaf');
+    });
+
+    test('manifest 里有自愈环那一块,且 nudge 事件按序记全', () {
+      final FocusSelfHeal heal =
+          FocusSelfHeal(nudger: const NoopFocusNudger('单测'));
+      int t = 100000;
+      void feed(double fm, int n) {
+        for (int i = 0; i < n; i++) {
+          heal.onSample(
+            nowMs: t,
+            focusMeasure: fm,
+            isAdjustingFocus: false,
+            position: Vector3.zero(),
+            orientation: Quaternion.identity(),
+          );
+          t += 33;
+        }
+      }
+
+      feed(1000, 10);
+      feed(500, 60); // 够 1.8 s ⇒ 一脚
+      feed(1400, 70); // 观察窗关闭
+
+      final Map<String, Object?> m = buildZeroArkitProbeManifest(
+        runDir: '/x',
+        hwMachine: null,
+        primedMachine: null,
+        runtimeStart: null,
+        cameraRc: 0,
+        cameraOwnedBySelfVio: true,
+        cameraSymbolFailure: null,
+        intrinsicsWaitMs: null,
+        capturedIntrinsics: null,
+        shots: const <ZeroArkitProbeShot>[],
+        trackingStateCounts: const <String, int>{},
+        trackingFrames: 0,
+        notTrackingFrames: 0,
+        confidenceTierCounts: const <String, int>{},
+        poseFrames: 0,
+        pageDuration: Duration.zero,
+        startedAtUtc: DateTime.utc(2026),
+        finishedAtUtc: DateTime.utc(2026),
+        engineUnavailableReason: null,
+        focusAvailable: true,
+        focusStateAtFinish: null,
+        focusNativeReportJson: null,
+        focusSeries: const <PwFocusSample>[],
+        focusSelfHeal: heal,
+      );
+      final Map<String, Object?> focus = m['focus']! as Map<String, Object?>;
+      final Map<String, Object?> sh =
+          focus['self_heal']! as Map<String, Object?>;
+      expect(sh['nudges'], 1);
+      expect(sh['nudges_dispatched'], 0); // noop 执行器
+      final Map<String, Object?> ev0 =
+          (sh['events']! as List<Object?>).first! as Map<String, Object?>;
+      expect(ev0['index'], 1);
+      expect(ev0['measure_at_trigger'], 500);
+      expect(ev0['reference_at_trigger'], 1000);
+      expect(ev0['measure_peak_after'], 1400);
+      expect(ev0['measure_after_ms'], greaterThanOrEqualTo(2000));
+      // 换默认臂那句话也要出现在 manifest 里(回放时不用去翻 git log)。
+      expect(focus['arm_launch_argument'], contains('默认 b'));
+      expect(focus['default_arm_change_note'], contains('2653-2661'));
     });
 
     test('prepare 状态:只有 running 不是终态', () {
@@ -420,6 +518,7 @@ void main() {
         focusStateAtFinish: null,
         focusNativeReportJson: '{"arm":2,"arm_label":"c_pw_af_cdaf"}',
         focusSeries: series,
+        focusSelfHeal: null,
       );
 
       final Map<String, Object?> focus = m['focus']! as Map<String, Object?>;
@@ -456,6 +555,7 @@ void main() {
       // 表 A 里不许混进整场的时间序列。
       expect(tableA.containsKey('samples'), isFalse);
       expect(tableB['series_ref'], 'focus.video_stream_series');
+      expect(tableB['self_heal_ref'], contains('focus.self_heal'));
 
       // 每张照片自己那条记录里也带着同样六项(拉回来对账用)。
       final Map<String, Object?> p0 =
@@ -489,6 +589,7 @@ void main() {
         focusStateAtFinish: null,
         focusNativeReportJson: null,
         focusSeries: const <PwFocusSample>[],
+        focusSelfHeal: null,
       );
       final Map<String, Object?> focus = m['focus']! as Map<String, Object?>;
       expect(focus['available'], isFalse);
@@ -526,6 +627,7 @@ void main() {
         focusStateAtFinish: null,
         focusNativeReportJson: '{不是 JSON',
         focusSeries: const <PwFocusSample>[],
+        focusSelfHeal: null,
       );
       final Map<String, Object?> nr =
           (m['focus']! as Map<String, Object?>)['native_report']!
