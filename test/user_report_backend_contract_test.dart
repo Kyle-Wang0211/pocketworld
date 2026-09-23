@@ -6,6 +6,7 @@ void main() {
   late String migration;
   late String uploadFunction;
   late String submitFunction;
+  late String historyFunction;
   late String adminFunction;
   late String deleteAccountFunction;
   late String deleteWorkFunction;
@@ -18,7 +19,10 @@ void main() {
       'supabase/functions/report-evidence-upload/index.ts',
     ).readAsStringSync();
     submitFunction = File(
-      'supabase/functions/submit-user-report/index.ts',
+      'supabase/functions/submit-report/index.ts',
+    ).readAsStringSync();
+    historyFunction = File(
+      'supabase/functions/my-reports/index.ts',
     ).readAsStringSync();
     adminFunction = File(
       'supabase/functions/admin-reports/index.ts',
@@ -142,6 +146,8 @@ void main() {
     expect(uploadFunction, contains('"minor_safety"'));
     expect(uploadFunction, contains('"sexual_content"'));
     expect(uploadFunction, contains('evidence_not_allowed'));
+    expect(uploadFunction, contains('evidence_kind'));
+    expect(uploadFunction, contains('invalid_evidence_kind'));
     expect(uploadFunction, contains('crypto.randomUUID()'));
     expect(uploadFunction, isNot(contains('original_filename')));
   });
@@ -150,6 +156,11 @@ void main() {
     'user report endpoint validates source ownership and preserves sensitive content',
     () {
       expect(submitFunction, contains('admin.auth.getUser'));
+      expect(submitFunction, contains('validateReportInput'));
+      expect(submitFunction, contains('kind,'));
+      expect(submitFunction, contains('duplicate'));
+      expect(submitFunction, contains('moderationProviderFromName'));
+      expect(submitFunction, contains('moderation_route'));
       expect(submitFunction, contains('.eq("user_id", targetUserId)'));
       expect(submitFunction, contains('source_work_mismatch'));
       expect(submitFunction, contains('report-source-evidence'));
@@ -167,5 +178,12 @@ void main() {
     expect(adminFunction, contains('source_work_id'));
     expect(adminFunction, contains('report_source_assets'));
     expect(adminFunction, contains('createSignedUrls'));
+  });
+
+  test('report history endpoint exposes only the safe RPC projection', () {
+    expect(historyFunction, contains('admin.auth.getUser'));
+    expect(historyFunction, contains('get_my_reports'));
+    expect(historyFunction, contains('SUPABASE_ANON_KEY'));
+    expect(historyFunction, isNot(contains('admin_notes')));
   });
 }

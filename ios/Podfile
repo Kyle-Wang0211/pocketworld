@@ -220,16 +220,27 @@ post_install do |installer|
   # threading both off. iOS/Android share Ceres 1.14 and OpenCV 4.0.1.
   # official calls but must not add or replace algorithm entry points.
   xrslam_dir = '$(PODS_ROOT)/../../vendor/xrslam/libs/ios-arm64'
-  xrslam_marker = 'libxrslam_generic_4beb1a9.a'
-  xrslam_syms = %w[
+  # [bench 2026-09-02] 线程化实验臂切换。PW_XRSLAM_BENCH_ARM 未设时走下面第一支,
+  # 与本段加入前逐字节等价 —— 出货构建不受影响。两个 bench 臂仅供本机上机对照,
+  # 绝不可进出货流程:它们的 threading 是 true,与生产档 pocketworld_hardened_generic
+  # 的 threading:false 不是同一个执行架构。receipt 见同目录 *.receipt.json。
+  xrslam_bench_arm = ENV['PW_XRSLAM_BENCH_ARM'].to_s
+  xrslam_lib = case xrslam_bench_arm
+               when '' then 'libxrslam_generic_4beb1a9.a'
+               when 'thrnogate' then 'libxrslam_thrnogate_4beb1a9.a'
+               when 'thrbp' then 'libxrslam_thrbp_4beb1a9.a'
+               else raise "unknown PW_XRSLAM_BENCH_ARM=#{xrslam_bench_arm}"
+               end
+  xrslam_sym_names = %w[
     XRSLAMCreate XRSLAMDestroy XRSLAMRunOneFrame
     XRSLAMPushSensorData XRSLAMGetResult
-  ].map { |n| "-Wl,-u,_#{n}" }.join(' ')
-  xrslam_exports = %w[
-    XRSLAMCreate XRSLAMDestroy XRSLAMRunOneFrame
-    XRSLAMPushSensorData XRSLAMGetResult
-  ].map { |n| "-Wl,-exported_symbol,_#{n}" }.join(' ')
-  xrslam_flags = "-force_load \"#{xrslam_dir}/libxrslam_generic_4beb1a9.a\" " \
+  ]
+  # bench 臂多导出一个排队深度遥测符号(生产 exported_abi 五符号之外),默认档不加。
+  xrslam_sym_names += %w[XRSLAMGetPendingWorkerFrames] unless xrslam_bench_arm.empty?
+  xrslam_marker = xrslam_lib
+  xrslam_syms = xrslam_sym_names.map { |n| "-Wl,-u,_#{n}" }.join(' ')
+  xrslam_exports = xrslam_sym_names.map { |n| "-Wl,-exported_symbol,_#{n}" }.join(' ')
+  xrslam_flags = "-force_load \"#{xrslam_dir}/#{xrslam_lib}\" " \
                  "\"#{xrslam_dir}/libceres_official_1_14.a\" " \
                  "\"#{xrslam_dir}/libopencv_generic_4_0_1.a\" " \
                  "#{xrslam_syms} #{xrslam_exports}"

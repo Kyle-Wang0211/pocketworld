@@ -19,16 +19,31 @@
 // 听起来更好,但下架会动文件、可能部分失败,把它和结案绑在一个事务里
 // 只会产生"结案了但文件没搬走"这种没人能发现的中间态。
 //
-// Auth: service_role only(与另外两个管理端同款)。因此部署必须带
-//   supabase functions deploy admin-reports --no-verify-jwt --project-ref <REF>
+// Auth: ordinary Supabase Auth JWT + a private moderator_accounts role. A
+// service secret remains server-side break-glass only and is never entered in
+// the browser console.
 
 import { createClient } from "jsr:@supabase/supabase-js@2.112.3";
 import { corsHeaders, jsonResponse } from "../_shared/cors.ts";
-import { isAdminRequest } from "../_shared/admin_auth.ts";
+import {
+  authenticateModerator,
+  canModerate,
+} from "../_shared/moderator_auth.ts";
 
 /// 20260429020005 的 check 约束就是这四个值,写死以便早拒。
-const RESOLVABLE = ["actioned", "dismissed"] as const;
-const LISTABLE = ["pending", "in_review", "actioned", "dismissed"] as const;
+const TRANSITIONABLE = [
+  "in_review",
+  "needs_info",
+  "actioned",
+  "dismissed",
+] as const;
+const LISTABLE = [
+  "pending",
+  "in_review",
+  "needs_info",
+  "actioned",
+  "dismissed",
+] as const;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -43,13 +58,12 @@ Deno.serve(async (req) => {
   if (!supabaseUrl || !serviceKey) {
     return jsonResponse({ error: "server_misconfigured" }, 500);
   }
-  if (!isAdminRequest(req)) {
-    return jsonResponse({ error: "forbidden" }, 403);
-  }
-
   const admin = createClient(supabaseUrl, serviceKey, {
     auth: { persistSession: false },
   });
+  const auth = await authenticateModerator(req, admin);
+  if (!auth.ok) return jsonResponse({ error: auth.error }, auth.status);
+  const moderator = auth.moderator;
 
   let body: Record<string, unknown>;
   try {
@@ -58,6 +72,20 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: "invalid_json" }, 400);
   }
   const action = typeof body.action === "string" ? body.action : "list";
+  const requestedStatus = typeof body.status === "string"
+    ? body.status.trim()
+    : undefined;
+  if (!canModerate(moderator.role, action, requestedStatus)) {
+    return jsonResponse({ error: "insufficient_moderator_role" }, 403);
+  }
+
+  if (action === "whoami") {
+    return jsonResponse({
+      ok: true,
+      role: moderator.role,
+      user_id: moderator.userId,
+    }, 200);
+  }
 
   // ── list ────────────────────────────────────────────────────────────
   // 默认只列 pending。按 created_at **正序** = 先来先办,与待审队列同一条
@@ -72,9 +100,12 @@ Deno.serve(async (req) => {
       .select(
         "id, reporter_id, target_type, target_id, source_work_id, " +
           "source_work_snapshot, preservation_state, preservation_attempts, reason, detail, " +
-          "status, admin_notes, resolved_at, created_at",
+          "kind, priority, due_at, status, reporter_feedback, admin_notes, " +
+          "claimed_by, claimed_at, resolved_at, created_at",
       )
       .eq("status", status)
+      .order("priority", { ascending: false })
+      .order("due_at", { ascending: true })
       .order("created_at", { ascending: true })
       .limit(200);
     if (error) {
@@ -95,25 +126,132 @@ Deno.serve(async (req) => {
     }
   }
 
-  // ── resolve ─────────────────────────────────────────────────────────
-  if (action !== "resolve") {
-    return jsonResponse({
-      error: "unknown_action",
-      allowed: ["list", "resolve"],
-    }, 400);
-  }
-
+  // ── claim ───────────────────────────────────────────────────────────
   const reportId = Number(body.report_id);
   if (!Number.isInteger(reportId) || reportId <= 0) {
     return jsonResponse({ error: "invalid_report_id" }, 400);
   }
-  const status = typeof body.status === "string" ? body.status.trim() : "";
-  if (!(RESOLVABLE as readonly string[]).includes(status)) {
-    return jsonResponse({ error: "invalid_status", allowed: RESOLVABLE }, 400);
+  if (action === "claim") {
+    if (moderator.userId === null) {
+      return jsonResponse({ error: "breakglass_cannot_claim" }, 400);
+    }
+    const { data: before, error: beforeError } = await admin.from("reports")
+      .select("id, status, claimed_by, claimed_at").eq("id", reportId)
+      .maybeSingle();
+    if (beforeError) {
+      return jsonResponse({ error: "report_lookup_failed" }, 500);
+    }
+    if (!before) return jsonResponse({ error: "report_not_found" }, 404);
+    if (before.claimed_by === moderator.userId) {
+      return jsonResponse({ ok: true, already: true, report: before }, 200);
+    }
+    if (before.claimed_by !== null) {
+      return jsonResponse({ error: "already_claimed" }, 409);
+    }
+    if (!["pending", "needs_info"].includes(before.status)) {
+      return jsonResponse({ error: "report_not_claimable" }, 409);
+    }
+    const now = new Date().toISOString();
+    const { data: claimed, error: claimError } = await admin.from("reports")
+      .update({
+        claimed_by: moderator.userId,
+        claimed_at: now,
+        status: "in_review",
+      })
+      .eq("id", reportId)
+      .is("claimed_by", null)
+      .eq("status", before.status)
+      .select("id, status, claimed_by, claimed_at")
+      .maybeSingle();
+    if (claimError) return jsonResponse({ error: "claim_failed" }, 500);
+    if (!claimed) {
+      const { data: current } = await admin.from("reports")
+        .select("id, status, claimed_by, claimed_at").eq("id", reportId)
+        .maybeSingle();
+      if (!current) return jsonResponse({ error: "report_not_found" }, 404);
+      if (current.claimed_by !== moderator.userId) {
+        return jsonResponse({ error: "already_claimed" }, 409);
+      }
+      return jsonResponse({ ok: true, already: true, report: current }, 200);
+    }
+    await recordEvent(
+      admin,
+      reportId,
+      moderator.userId,
+      before.status,
+      "in_review",
+      null,
+      null,
+    );
+    return jsonResponse({ ok: true, report: claimed }, 200);
+  }
+
+  // ── transition ──────────────────────────────────────────────────────
+  if (action !== "transition") {
+    return jsonResponse({
+      error: "unknown_action",
+      allowed: ["whoami", "list", "claim", "transition"],
+    }, 400);
+  }
+  const status = requestedStatus ?? "";
+  if (!(TRANSITIONABLE as readonly string[]).includes(status)) {
+    return jsonResponse(
+      { error: "invalid_status", allowed: TRANSITIONABLE },
+      400,
+    );
   }
   const notes = typeof body.admin_notes === "string"
     ? body.admin_notes.trim().slice(0, 2000) || null
     : null;
+  const feedback = typeof body.reporter_feedback === "string"
+    ? body.reporter_feedback.trim().slice(0, 1000) || null
+    : null;
+  if (["needs_info", "dismissed", "actioned"].includes(status) && !feedback) {
+    return jsonResponse({ error: "reporter_feedback_required" }, 400);
+  }
+
+  const { data: current, error: currentError } = await admin.from("reports")
+    .select(
+      "id, status, claimed_by, target_type, target_id, source_work_id, reason",
+    )
+    .eq("id", reportId).maybeSingle();
+  if (currentError) return jsonResponse({ error: "report_lookup_failed" }, 500);
+  if (!current) return jsonResponse({ error: "report_not_found" }, 404);
+  if (!moderator.breakglass && current.claimed_by !== moderator.userId) {
+    return jsonResponse({ error: "report_not_claimed_by_you" }, 409);
+  }
+  if (["actioned", "dismissed"].includes(current.status)) {
+    return jsonResponse({ ok: true, already: true, current }, 200);
+  }
+
+  // A confirmed work-level action must quarantine the work before the report
+  // is closed. The service key stays inside the Edge runtime.
+  if (status === "actioned") {
+    const workId = current.target_type === "work"
+      ? current.target_id
+      : current.source_work_id;
+    if (workId) {
+      const removal = await fetch(
+        `${supabaseUrl}/functions/v1/admin-moderate-work`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${serviceKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            work_id: workId,
+            status: "removed",
+            reason: notes ?? feedback,
+            operator: moderator.userId ?? "breakglass",
+          }),
+        },
+      );
+      if (!removal.ok) {
+        return jsonResponse({ error: "work_takedown_failed" }, 502);
+      }
+    }
+  }
 
   // 🔑 幂等 + 防覆盖:WHERE 里带 `status in ('pending','in_review')`。
   //    已结案的举报再调一次匹配不到行 ⇒ **不会重写 resolved_at**,
@@ -128,10 +266,17 @@ Deno.serve(async (req) => {
     .update({
       status,
       admin_notes: notes,
-      resolved_at: new Date().toISOString(),
+      reporter_feedback: feedback,
+      resolved_by: ["actioned", "dismissed"].includes(status)
+        ? moderator.userId
+        : null,
+      resolved_at: ["actioned", "dismissed"].includes(status)
+        ? new Date().toISOString()
+        : null,
     })
     .eq("id", reportId)
-    .in("status", ["pending", "in_review"])
+    .eq("status", current.status)
+    .in("status", ["pending", "in_review", "needs_info"])
     .select("id, status, target_type, target_id, reason, resolved_at")
     .maybeSingle();
 
@@ -142,28 +287,23 @@ Deno.serve(async (req) => {
     );
   }
   if (!updated) {
-    const { data: cur } = await admin
-      .from("reports")
-      .select("id, status, resolved_at")
-      .eq("id", reportId)
-      .maybeSingle();
-    if (!cur) return jsonResponse({ error: "report_not_found" }, 404);
-    return jsonResponse({
-      ok: true,
-      already: true,
-      message: "该举报已结案,未做任何改动。",
-      current: cur,
-    });
+    return jsonResponse({ error: "report_state_conflict" }, 409);
   }
 
   // 审计。⚠️ 读取并记录 error 而不是丢弃 —— supabase-js 的 insert 失败返回
   // error 而不抛异常,丢掉返回值等于让证据链挂在一条静默路径上。
   // 举报处置结果是第九条"受理"义务的证据,必须留痕。
-  const operator = typeof body.operator === "string"
-    ? body.operator.trim().slice(0, 120) || null
-    : null;
+  await recordEvent(
+    admin,
+    reportId,
+    moderator.userId,
+    current.status,
+    status,
+    feedback,
+    notes,
+  );
   const { error: auditErr } = await admin.from("audit_logs").insert({
-    actor_id: null, // service_role 调用,没有对应的 auth 用户
+    actor_id: moderator.userId,
     action: `admin.report_${status}`,
     target_type: "report",
     target_id: null, // reports.id 是 bigserial,而这一列是 uuid
@@ -175,7 +315,7 @@ Deno.serve(async (req) => {
       reported_target_type: updated.target_type,
       reported_target_id: updated.target_id,
       admin_notes: notes,
-      operator,
+      moderator_role: moderator.role,
     },
   });
   if (auditErr) {
@@ -189,6 +329,29 @@ Deno.serve(async (req) => {
     resolved_at: updated.resolved_at,
   });
 });
+
+async function recordEvent(
+  // deno-lint-ignore no-explicit-any
+  admin: any,
+  reportId: number,
+  moderatorId: string | null,
+  fromStatus: string,
+  toStatus: string,
+  reporterFeedback: string | null,
+  internalNotes: string | null,
+): Promise<void> {
+  const { error } = await admin.from("report_moderation_events").insert({
+    report_id: reportId,
+    moderator_id: moderatorId,
+    from_status: fromStatus,
+    to_status: toStatus,
+    reporter_feedback: reporterFeedback,
+    internal_notes: internalNotes,
+  });
+  if (error) {
+    console.error("[admin-reports] event insert failed:", error.message);
+  }
+}
 
 /// 给每条举报补上"被举报的到底是什么"。
 ///
@@ -269,7 +432,7 @@ async function attachTargets(
     .from("report_evidence")
     .select(
       "id, report_id, ordinal, storage_path, content_type, byte_size, " +
-        "width, height, sha256, created_at",
+        "evidence_kind, width, height, sha256, created_at",
     )
     .in("report_id", reportIds)
     .order("ordinal");
@@ -310,6 +473,7 @@ async function attachTargets(
     requestPath("thumbnails", targetWork?.thumbnail_storage_path);
     requestPath("works", targetWork?.model_storage_path);
     requestPath("thumbnails", sourceWork?.thumbnail_storage_path);
+    requestPath("works", sourceWork?.model_storage_path);
   }
 
   const signed = new Map<string, string>();
@@ -376,6 +540,7 @@ async function attachTargets(
         ? {
           ...sourceWork,
           thumb_url: signedUrl("thumbnails", sourceWork.thumbnail_storage_path),
+          model_url: signedUrl("works", sourceWork.model_storage_path),
         }
         : null,
       source_work: r.source_work_snapshot ?? sourceWork ?? null,

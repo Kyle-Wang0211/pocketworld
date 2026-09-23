@@ -151,4 +151,6 @@ class _FakeRepository implements SocialProfileRepository {
   @override
   Future<UserReportResult> reportUser(UserReportDraft draft) =>
       throw UnimplementedError();
+  @override
+  Future<List<ReportHistoryItem>> fetchMyReports() async => const [];
 }

@@ -2,499 +2,72 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>方寸间 · 审核台</title>
+<title>PocketWorld · 举报审核台</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<!--
-  方寸间审核台 —— 只在你自己机器上跑的本地页面。
-  ===================================================================
-  用法:双击本文件用浏览器打开(file:// 即可,不需要起服务器 ——
-        Edge Function 的 CORS 是 Allow-Origin: *)。
-
-  🔴 为什么这不是 App 里的一个页面
-     admin-approve-work / admin-moderate-work / admin-reports 三个端都用
-     **service secret** 鉴权,那把钥匙绕过所有 RLS,能读写整个数据库。
-     把它放进 Flutter 客户端 = 把数据库钥匙发给每一个用户 —— 哪怕藏在
-     隐藏入口后面,App 二进制里的字符串是能被 dump 出来的。
-     所以审核台必须留在你自己的机器上。
-
-  🔴 secret 存 sessionStorage,不是 localStorage
-     关掉标签页就没了。localStorage 会一直留在磁盘上,而这台机器上还跑着
-     浏览器扩展、别的标签页。**永远不要把 secret 写进这个文件再提交。**
-
-  🔴 全部用 textContent / createElement 渲染,一处 innerHTML 都没有
-     这不是洁癖:审核台渲染的正是**敌意用户提交的文本**(标题、描述、
-     举报详情),而这个页面手里握着 service secret。一次 innerHTML 就是
-     "把数据库钥匙交给被举报的那个人"。审核台是全项目最不能用 innerHTML
-     的地方。
--->
+<!-- 本地审核工具。只使用普通 Supabase Auth 账号；绝不接收 service-role 密钥。
+     所有用户内容都用 textContent/createElement 渲染，禁止 innerHTML。 -->
 <style>
-  :root {
-    --bg:#f6f6f7; --card:#fff; --fg:#1a1a1c; --dim:#6b6b70; --line:#e3e3e6;
-    --accent:#2563eb; --ok:#15803d; --danger:#b91c1c; --warn:#a16207;
-    --chip:#f0f0f2;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg:#151517; --card:#1e1e21; --fg:#eaeaec; --dim:#9b9ba1; --line:#313136;
-      --accent:#60a5fa; --ok:#4ade80; --danger:#f87171; --warn:#fbbf24;
-      --chip:#2a2a2f;
-    }
-  }
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--fg);
-    font:14px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",sans-serif}
-  header{position:sticky;top:0;z-index:10;background:var(--card);
-    border-bottom:1px solid var(--line);padding:12px 20px}
-  h1{margin:0 0 8px;font-size:16px;font-weight:700}
-  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-  input,button,textarea{font:inherit;color:var(--fg);background:var(--card);
-    border:1px solid var(--line);border-radius:8px;padding:7px 11px}
-  input{min-width:240px}
-  input:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
-  button{cursor:pointer;background:var(--chip);border-color:transparent;font-weight:600}
-  button:hover:not(:disabled){filter:brightness(1.08)}
-  button:disabled{opacity:.45;cursor:not-allowed}
-  button.primary{background:var(--accent);color:#fff}
-  button.ok{background:var(--ok);color:#fff}
-  button.danger{background:var(--danger);color:#fff}
-  .tabs{display:flex;gap:4px;margin-top:10px}
-  .tabs button{border-radius:8px 8px 0 0;background:transparent;
-    border-bottom:2px solid transparent;padding:7px 14px}
-  .tabs button[aria-selected=true]{border-bottom-color:var(--accent);color:var(--accent)}
-  main{padding:20px;max-width:1100px;margin:0 auto}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;
-    padding:14px;margin-bottom:14px;display:flex;gap:14px}
-  .thumb{width:132px;height:132px;flex:0 0 132px;border-radius:8px;
-    background:var(--chip);object-fit:cover;display:block}
-  .thumb.empty{display:flex;align-items:center;justify-content:center;
-    color:var(--dim);font-size:12px;text-align:center;padding:8px}
-  .body{flex:1;min-width:0}
-  .title{font-size:15px;font-weight:700;margin:0 0 3px;word-break:break-word}
-  .desc{color:var(--dim);margin:6px 0;white-space:pre-wrap;word-break:break-word}
-  .meta{color:var(--dim);font-size:12px;display:flex;gap:6px;flex-wrap:wrap;
-    margin:6px 0}
-  .chip{background:var(--chip);border-radius:5px;padding:1px 7px;
-    font-variant-numeric:tabular-nums}
-  .acts{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center}
-  .acts textarea{flex:1;min-width:200px;min-height:34px;height:34px;resize:vertical}
-  .evidence{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
-  .evidence a{display:block;border-radius:8px;overflow:hidden;border:1px solid var(--line)}
-  .evidence img{width:132px;height:132px;object-fit:cover;display:block;background:var(--chip)}
-  .empty-state,.msg{color:var(--dim);padding:28px;text-align:center}
-  .msg.err{color:var(--danger)}
-  .banner{background:var(--chip);border-left:3px solid var(--warn);
-    border-radius:0 8px 8px 0;padding:10px 14px;margin-bottom:16px;
-    color:var(--dim);font-size:13px}
-  a{color:var(--accent)}
-  code{background:var(--chip);border-radius:4px;padding:1px 5px;font-size:12px}
+:root{--bg:#f5f6f8;--card:#fff;--fg:#16181d;--dim:#68707c;--line:#dde1e7;--accent:#215be8;--danger:#b42318;--ok:#067647;--chip:#eef1f5}
+@media(prefers-color-scheme:dark){:root{--bg:#121418;--card:#1c2026;--fg:#edf0f5;--dim:#9ca5b2;--line:#343a44;--accent:#75a0ff;--danger:#ff8277;--ok:#5cd6a1;--chip:#292f38}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}
+header{position:sticky;top:0;z-index:10;padding:14px 20px;background:var(--card);border-bottom:1px solid var(--line)}h1{font-size:17px;margin:0 0 10px}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+input,select,textarea,button{font:inherit;color:var(--fg);background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 10px}input{min-width:205px}button{cursor:pointer;background:var(--chip);font-weight:650}button:disabled{opacity:.45;cursor:not-allowed}.primary{background:var(--accent);color:#fff}.danger{background:var(--danger);color:#fff}.ok{background:var(--ok);color:#fff}
+main{max-width:1080px;margin:auto;padding:20px}.banner{border-left:3px solid var(--accent);background:var(--card);padding:10px 14px;margin-bottom:16px;color:var(--dim)}.card{display:flex;gap:14px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:14px}.thumb{width:130px;height:130px;flex:0 0 130px;border-radius:8px;object-fit:cover;background:var(--chip)}.thumb.empty{display:flex;align-items:center;justify-content:center;color:var(--dim)}.body{flex:1;min-width:0}.title{font-size:15px;margin:0 0 5px}.desc{white-space:pre-wrap;word-break:break-word;color:var(--dim);margin:7px 0}.meta,.acts,.gallery{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin:8px 0}.chip{padding:2px 7px;background:var(--chip);border-radius:5px;font-size:12px}.acts textarea{flex:1;min-width:210px;min-height:42px;resize:vertical}.gallery img{width:126px;height:126px;object-fit:cover;border-radius:7px;background:var(--chip)}.msg{padding:30px;text-align:center;color:var(--dim)}.err{color:var(--danger)}a{color:var(--accent)}
 </style>
 </head>
 <body>
 <header>
-  <h1>方寸间 · 审核台 <span style="font-weight:400;color:var(--dim);font-size:13px">本地工具，切勿部署</span></h1>
+  <h1>PocketWorld · 举报审核台</h1>
   <div class="row">
-    <input id="url" placeholder="https://<ref>.supabase.co" autocomplete="off">
-    <input id="secret" type="password" placeholder="service secret（sb_secret_…）" autocomplete="off">
-    <button class="primary" id="load">载入</button>
-    <button id="forget">忘掉密钥</button>
-    <span id="status" style="color:var(--dim);font-size:12px"></span>
+    <input id="url" aria-label="Supabase URL" placeholder="Supabase URL">
+    <input id="anon" type="password" aria-label="Publishable key" placeholder="publishable / anon key">
+    <input id="email" type="email" autocomplete="username" placeholder="审核员邮箱">
+    <input id="password" type="password" autocomplete="current-password" placeholder="密码">
+    <button id="login" class="primary">登录</button><button id="logout">退出</button>
   </div>
-  <div class="tabs" role="tablist">
-    <button role="tab" id="tab-pending" aria-selected="true">待审队列</button>
-    <button role="tab" id="tab-reports" aria-selected="false">举报队列</button>
+  <div class="row" style="margin-top:9px">
+    <select id="queue" aria-label="举报状态">
+      <option value="pending">待领取</option><option value="in_review">审核中</option>
+      <option value="needs_info">待补充</option><option value="actioned">已处置</option>
+      <option value="dismissed">已驳回</option>
+    </select>
+    <button id="reload">刷新队列</button><span id="status"></span>
   </div>
 </header>
 <main>
-  <div class="banner">
-    密钥只存在这个标签页的 sessionStorage 里，关掉就没了。
-    在 Dashboard → Project Settings → API Keys → Secret keys 复制 <code>default</code>。
-    <b>不要把它写进这个文件</b>——这个文件是进 git 的。
-  </div>
+  <div class="banner">使用普通审核员账号登录。页面只保存本标签页的短期访问令牌，不保存密码，也不接受数据库 service-role 密钥。reviewer 可分流、要求补充和驳回；只有 lead 可确认违规处置。</div>
   <div id="list"></div>
 </main>
 <script>
 'use strict';
-
-const DEFAULT_URL = 'https://tzvwkqmgaourwqrmxbyb.supabase.co';
-const $ = (id) => document.getElementById(id);
-const state = { tab: 'pending', busy: false };
-
-// ── 密钥:只进 sessionStorage ────────────────────────────────────────
-const SS = window.sessionStorage;
-$('url').value = SS.getItem('pw_url') || DEFAULT_URL;
-$('secret').value = SS.getItem('pw_secret') || '';
-
-function creds() {
-  const url = $('url').value.trim().replace(/\/+$/, '');
-  const secret = $('secret').value.trim();
-  if (url) SS.setItem('pw_url', url);
-  if (secret) SS.setItem('pw_secret', secret);
-  return { url, secret };
-}
-
-$('forget').onclick = () => {
-  SS.removeItem('pw_secret');
-  $('secret').value = '';
-  setStatus('密钥已清除');
-};
-
-function setStatus(text, isErr) {
-  const el = $('status');
-  el.textContent = text;                        // textContent,不是 innerHTML
-  el.style.color = isErr ? 'var(--danger)' : 'var(--dim)';
-}
-
-/// 调管理端。所有三个端都是 POST + Bearer <secret> + JSON body。
-async function call(fn, payload) {
-  const { url, secret } = creds();
-  if (!url || !secret) throw new Error('先填 URL 和 secret');
-  const res = await fetch(`${url}/functions/v1/${fn}`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${secret}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  let json = null;
-  try { json = await res.json(); } catch { /* 非 JSON 响应,下面按状态码报错 */ }
-  if (!res.ok) {
-    // 403 几乎总是同一个原因,直接把答案写出来,别让人去猜。
-    const hint = res.status === 403
-      ? '(403 = secret 不对。CLI 的 service_role JWT 不是这个值，'
-        + '要去 Dashboard → API Keys → Secret keys 复制 default)'
-      : '';
-    throw new Error(`${fn} ${res.status} ${json?.error || ''} ${hint}`.trim());
-  }
-  return json;
-}
-
-// ── 渲染助手 ────────────────────────────────────────────────────────
-// 🔴 el() 只接受 textContent。整个文件没有一处 innerHTML —— 见文件头注释:
-//    这个页面渲染敌意文本,同时握着 service secret。
-function el(tag, cls, text) {
-  const n = document.createElement(tag);
-  if (cls) n.className = cls;
-  if (text != null) n.textContent = String(text);
-  return n;
-}
-function chips(parent, pairs) {
-  const m = el('div', 'meta');
-  for (const [k, v] of pairs) {
-    if (v == null || v === '') continue;
-    m.appendChild(el('span', 'chip', `${k} ${v}`));
-  }
-  parent.appendChild(m);
-  return m;
-}
-function thumb(url, alt) {
-  if (!url) return el('div', 'thumb empty', '无缩略图');
-  const img = document.createElement('img');
-  img.className = 'thumb';
-  img.src = url;                 // 签名 URL,由服务端生成
-  img.alt = alt || '';
-  img.loading = 'lazy';
-  img.onerror = () => img.replaceWith(el('div', 'thumb empty', '缩略图加载失败'));
-  return img;
-}
-function mb(bytes) {
-  const n = Number(bytes);
-  return Number.isFinite(n) && n > 0 ? `${(n / 1e6).toFixed(1)} MB` : null;
-}
-function when(iso) {
-  if (!iso) return null;
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? null : d.toLocaleString('zh-CN');
-}
-function modelLink(url) {
-  if (!url) return null;
-  const a = el('a', null, '下载模型文件');
-  a.href = url;
-  a.target = '_blank';
-  a.rel = 'noopener noreferrer';
-  a.style.fontSize = '12px';
-  return a;
-}
-
-function render(nodes) {
-  const list = $('list');
-  list.textContent = '';
-  if (nodes.length === 0) {
-    list.appendChild(el('div', 'empty-state', '队列是空的。'));
-    return;
-  }
-  for (const n of nodes) list.appendChild(n);
-}
-function showMsg(text, isErr) {
-  const list = $('list');
-  list.textContent = '';
-  list.appendChild(el('div', isErr ? 'msg err' : 'msg', text));
-}
-
-// ── 待审队列 ────────────────────────────────────────────────────────
-async function loadPending() {
-  showMsg('载入中…');
-  const r = await call('admin-approve-work', { action: 'list' });
-  setStatus(`待审 ${r.count} 件`);
-  render((r.pending || []).map(pendingCard));
-}
-
-function pendingCard(w) {
-  const card = el('div', 'card');
-  card.appendChild(thumb(w.thumb_url, w.title));
-
-  const body = el('div', 'body');
-  body.appendChild(el('h2', 'title', w.title || '(无标题)'));
-  if (w.description) body.appendChild(el('div', 'desc', w.description));
-
-  chips(body, [
-    ['作者', w.author_handle ? '@' + w.author_handle : (w.author_display_name || w.user_id)],
-    ['属地', w.publish_region],
-    ['格式', w.format],
-    ['大小', mb(w.file_size_bytes)],
-    ['可见性', w.visibility],
-    ['提交于', when(w.created_at)],
-  ]);
-
-  const acts = el('div', 'acts');
-  const reason = el('textarea');
-  reason.placeholder = '驳回理由（通过时忽略）';
-
-  const pass = el('button', 'ok', '通过');
-  const reject = el('button', 'danger', '驳回并下架');
-
-  pass.onclick = () => act(card, [pass, reject], async () => {
-    const r = await call('admin-approve-work', { action: 'approve', work_id: w.id });
-    return r.already ? '已是非待审状态，未改动' : '已通过，作品已进入 feed';
-  });
-
-  reject.onclick = () => act(card, [pass, reject], async () => {
-    const why = reason.value.trim();
-    if (!why) throw new Error('驳回必须写理由 —— 它会进审计记录，也是申诉时的依据');
-    // 驳回走 admin-moderate-work:它会把文件搬进 quarantine 桶。
-    // admin-approve-work 只翻 DB,不动文件,用它驳回会留下能下载的文件。
-    await call('admin-moderate-work', {
-      work_id: w.id, status: 'removed', reason: why, operator: 'console',
-    });
-    return '已驳回，文件已搬入 quarantine';
-  });
-
-  acts.append(pass, reject, reason);
-  const link = modelLink(w.model_url);
-  if (link) acts.appendChild(link);
-  body.appendChild(acts);
-  card.appendChild(body);
-  return card;
-}
-
-// ── 举报队列 ────────────────────────────────────────────────────────
-const REASON_ZH = {
-  impersonation: '冒充他人或账号资料虚假',
-  harassment_threat: '骚扰、网络暴力或人身威胁',
-  spam_fraud: '诈骗、广告骚扰或异常账号行为',
-  minor_safety: '涉及未成年人安全',
-  sexual_content: '色情低俗',
-  violence_illegal: '暴力、自伤、仇恨、极端或其他违法有害信息',
-  misinformation: '虚假不实或误导性信息',
-  privacy_ip: '隐私、人肉搜索、肖像或知识产权',
-  other: '其他 / 不确定',
-};
-
-async function loadReports() {
-  showMsg('载入中…');
-  const r = await call('admin-reports', { action: 'list', status: 'pending' });
-  setStatus(`待办举报 ${r.count} 条`);
-  render((r.reports || []).map(reportCard));
-}
-
-function reportCard(rep) {
-  const t = rep.target;
-  const isUser = rep.target_type === 'user';
-  const card = el('div', 'card');
-  card.appendChild(thumb(t && t.thumb_url, t && (t.title || t.display_name)));
-
-  const body = el('div', 'body');
-  body.appendChild(el('h2', 'title',
-    `${REASON_ZH[rep.reason] || rep.reason} · ${t
-      ? (isUser
-        ? (t.display_name || (t.handle ? '@' + t.handle : rep.target_id))
-        : (t.title || '(无标题)'))
-      : rep.target_type}`));
-  if (rep.detail) body.appendChild(el('div', 'desc', rep.detail));
-
-  chips(body, [
-    ['举报人', rep.reporter_handle ? '@' + rep.reporter_handle
-      : (rep.reporter_display_name || rep.reporter_id)],
-    ['举报于', when(rep.created_at)],
-    ['被举报', rep.target_type],
-  ]);
-
-  if (t) {
-    if (isUser) {
-      chips(body, [
-        ['被举报账号', t.handle ? '@' + t.handle : (t.display_name || rep.target_id)],
-        ['属地', t.last_region],
-        ['作品', t.works_count],
-        ['粉丝', t.followers_count],
-      ]);
-      if (t.bio) body.appendChild(el('div', 'desc', `账号简介：${t.bio}`));
-    } else {
-      chips(body, [
-        ['作者', t.author_handle ? '@' + t.author_handle : (t.author_display_name || t.user_id)],
-        ['当前状态', t.moderation_status],
-        ['属地', t.publish_region],
-        ['已删除', t.deleted_at ? '是' : null],
-      ]);
-    }
-  } else if (rep.target_type === 'work') {
-    // 作品行已经不在了(作者自己删了)。这不是错误,但结案时要知道
-    // "下架"已经无从谈起,只能 dismissed 或 actioned + 备注。
-    body.appendChild(el('div', 'desc', '⚠️ 被举报的作品已不存在（作者已删除）。'));
-  }
-
-  if (rep.source_work) {
-    chips(body, [['举报时关联作品', rep.source_work.title || rep.source_work.id]]);
-    if (rep.source_work.description) {
-      body.appendChild(el('div', 'desc', `举报时作品说明：${rep.source_work.description}`));
-    }
-  }
-  if (rep.source_work_live) {
-    chips(body, [
-      ['当前作品状态', rep.source_work_live.moderation_status],
-      ['当前标题', rep.source_work_live.title],
-    ]);
-  }
-
-  if (rep.preservation_state && rep.preservation_state !== 'not_required') {
-    chips(body, [['平台保全', rep.preservation_state]]);
-  }
-
-  if (Array.isArray(rep.source_assets) && rep.source_assets.length > 0) {
-    body.appendChild(el('div', 'desc', `平台保全件（${rep.source_assets.length} 个，链接 5 分钟失效）`));
-    const preserved = el('div', 'evidence');
-    for (const asset of rep.source_assets) {
-      if (!asset.signed_url) continue;
-      const link = document.createElement('a');
-      link.href = asset.signed_url;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
-      if ((asset.content_type || '').startsWith('image/')) {
-        const image = document.createElement('img');
-        image.src = asset.signed_url;
-        image.alt = `平台保全件 ${Number(asset.ordinal) + 1}`;
-        image.loading = 'lazy';
-        link.appendChild(image);
-      } else {
-        link.appendChild(el('span', null, `打开保全件 ${Number(asset.ordinal) + 1}`));
-      }
-      preserved.appendChild(link);
-    }
-    body.appendChild(preserved);
-  }
-
-  if (Array.isArray(rep.evidence) && rep.evidence.length > 0) {
-    body.appendChild(el('div', 'desc', `用户补充证据（${rep.evidence.length} 张，链接 5 分钟失效）`));
-    const gallery = el('div', 'evidence');
-    for (const evidence of rep.evidence) {
-      if (!evidence.signed_url) continue;
-      const link = document.createElement('a');
-      link.href = evidence.signed_url;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
-      const image = document.createElement('img');
-      image.src = evidence.signed_url;
-      image.alt = `举报证据 ${Number(evidence.ordinal) + 1}`;
-      image.loading = 'lazy';
-      link.appendChild(image);
-      gallery.appendChild(link);
-    }
-    body.appendChild(gallery);
-  }
-
-  const acts = el('div', 'acts');
-  const notes = el('textarea');
-  notes.placeholder = '处置备注（进审计记录）';
-
-  const takedown = el('button', 'danger', isUser ? '确认违规并结案' : '下架并结案');
-  const dismiss = el('button', null, '驳回举报');
-
-  // 🔑 两次调用,不合成一个原子操作。下架会搬文件、可能部分失败;
-  //    把它和结案绑死只会产生"结案了但文件没搬走"这种没人发现的中间态。
-  //    所以顺序是:先下架(会动文件的那一步),成功了再结案。
-  takedown.onclick = () => act(card, [takedown, dismiss], async () => {
-    const why = notes.value.trim() || `举报处置：${REASON_ZH[rep.reason] || rep.reason}`;
-    if (!isUser) {
-      if (!t) throw new Error('作品已不存在，无法下架 —— 请用「驳回举报」并写明。');
-      await call('admin-moderate-work', {
-        work_id: t.id, status: 'removed', reason: why, operator: 'console',
-      });
-    }
-    await call('admin-reports', {
-      action: 'resolve', report_id: rep.id, status: 'actioned',
-      admin_notes: why, operator: 'console',
-    });
-    return isUser ? '已确认账号举报并结案（未自动封号）' : '已下架并结案';
-  });
-
-  dismiss.onclick = () => act(card, [takedown, dismiss], async () => {
-    const why = notes.value.trim();
-    if (!why) throw new Error('驳回举报必须写理由 —— 第九条要求的是「受理」，要留痕');
-    const r = await call('admin-reports', {
-      action: 'resolve', report_id: rep.id, status: 'dismissed',
-      admin_notes: why, operator: 'console',
-    });
-    return r.already ? '该举报已结案，未改动' : '已驳回举报';
-  });
-
-  acts.append(takedown, dismiss, notes);
-  const link = t && modelLink(t.model_url);
-  if (link) acts.appendChild(link);
-  body.appendChild(acts);
-  card.appendChild(body);
-  return card;
-}
-
-// ── 单条卡片的操作:禁用按钮 → 执行 → 就地报结果 ─────────────────────
-async function act(card, buttons, fn) {
-  buttons.forEach((b) => b.disabled = true);
-  const out = el('div', 'meta');
-  card.querySelector('.body').appendChild(out);
-  try {
-    const msg = await fn();
-    out.appendChild(el('span', 'chip', '✓ ' + msg));
-    card.style.opacity = '.5';
-  } catch (e) {
-    out.appendChild(el('span', 'chip', '✗ ' + e.message));
-    out.style.color = 'var(--danger)';
-    buttons.forEach((b) => b.disabled = false);
-  }
-}
-
-// ── 载入 ────────────────────────────────────────────────────────────
-async function reload() {
-  if (state.busy) return;
-  state.busy = true;
-  try {
-    await (state.tab === 'pending' ? loadPending() : loadReports());
-  } catch (e) {
-    setStatus('失败', true);
-    showMsg(e.message, true);
-  } finally {
-    state.busy = false;
-  }
-}
-
-function selectTab(tab) {
-  state.tab = tab;
-  $('tab-pending').setAttribute('aria-selected', String(tab === 'pending'));
-  $('tab-reports').setAttribute('aria-selected', String(tab === 'reports'));
-  reload();
-}
-
-$('load').onclick = reload;
-$('tab-pending').onclick = () => selectTab('pending');
-$('tab-reports').onclick = () => selectTab('reports');
-$('secret').addEventListener('keydown', (e) => { if (e.key === 'Enter') reload(); });
-
-if (SS.getItem('pw_secret')) reload();
-else showMsg('填入 service secret 后点「载入」。');
+const DEFAULT_URL='https://tzvwkqmgaourwqrmxbyb.supabase.co';
+const DEFAULT_ANON='sb_publishable_ur4tTV2iXSV4NsL3YYttyw_SIjFAMST';
+const $=id=>document.getElementById(id),SS=sessionStorage;
+const state={token:SS.getItem('pw_moderator_token')||'',role:'',userId:'',busy:false};
+$('url').value=SS.getItem('pw_url')||DEFAULT_URL;$('anon').value=SS.getItem('pw_anon')||DEFAULT_ANON;$('email').value=SS.getItem('pw_moderator_email')||'';
+const REASONS={impersonation:'冒充他人',harassment_threat:'骚扰、网暴或威胁',spam_fraud:'诈骗或广告骚扰',minor_safety:'未成年人安全',sexual_content:'色情低俗',violence_illegal:'暴力、自伤或违法信息',misinformation:'虚假误导',privacy_ip:'隐私、肖像或知识产权',other:'其他'};
+function config(){const url=$('url').value.trim().replace(/\/+$/,''),anon=$('anon').value.trim();if(url)SS.setItem('pw_url',url);if(anon)SS.setItem('pw_anon',anon);return{url,anon}}
+function el(tag,cls,text){const n=document.createElement(tag);if(cls)n.className=cls;if(text!=null)n.textContent=String(text);return n}
+function setStatus(text,bad=false){$('status').textContent=text;$('status').style.color=bad?'var(--danger)':'var(--dim)'}
+function show(text,bad=false){$('list').textContent='';$('list').appendChild(el('div',bad?'msg err':'msg',text))}
+function when(v){if(!v)return null;const d=new Date(v);return Number.isNaN(d.getTime())?null:d.toLocaleString('zh-CN')}
+function chips(parent,pairs){const row=el('div','meta');for(const[k,v]of pairs){if(v!==null&&v!==undefined&&v!=='')row.appendChild(el('span','chip',`${k} ${v}`))}parent.appendChild(row)}
+function thumb(url,alt){if(!url)return el('div','thumb empty','无缩略图');const i=document.createElement('img');i.className='thumb';i.src=url;i.alt=alt||'';i.loading='lazy';i.onerror=()=>i.replaceWith(el('div','thumb empty','图片加载失败'));return i}
+async function call(payload){const{url,anon}=config();if(!state.token)throw new Error('请先登录审核员账号');const res=await fetch(`${url}/functions/v1/admin-reports`,{method:'POST',headers:{apikey:anon,Authorization:`Bearer ${state.token}`,'Content-Type':'application/json'},body:JSON.stringify(payload)});let body={};try{body=await res.json()}catch{}if(!res.ok){if(res.status===401){state.token='';SS.removeItem('pw_moderator_token')}throw new Error(body.error||`HTTP ${res.status}`)}return body}
+async function login(){const{url,anon}=config(),email=$('email').value.trim(),password=$('password').value;if(!url||!anon||!email||!password)throw new Error('请填写 URL、publishable key、邮箱和密码');const res=await fetch(`${url}/auth/v1/token?grant_type=password`,{method:'POST',headers:{apikey:anon,'Content-Type':'application/json'},body:JSON.stringify({email,password})});const body=await res.json();$('password').value='';if(!res.ok||!body.access_token)throw new Error(body.error_description||body.msg||'登录失败');state.token=body.access_token;SS.setItem('pw_moderator_token',state.token);SS.setItem('pw_moderator_email',email);const me=await call({action:'whoami'});state.role=me.role;state.userId=me.user_id||body.user?.id||'';await reload()}
+function logout(){state.token='';state.role='';state.userId='';SS.removeItem('pw_moderator_token');$('password').value='';setStatus('已退出');show('请登录审核员账号。')}
+async function reload(){if(state.busy)return;state.busy=true;show('载入中…');try{if(!state.role){const me=await call({action:'whoami'});state.role=me.role;state.userId=me.user_id||''}const status=$('queue').value,r=await call({action:'list',status});setStatus(`${state.role} · ${r.count} 条`);$('list').textContent='';if(!r.reports?.length){show('当前队列为空。');return}for(const rep of r.reports)$('list').appendChild(reportCard(rep))}catch(e){setStatus('失败',true);show(e.message,true)}finally{state.busy=false}}
+function reportCard(rep){const t=rep.target,isUser=rep.target_type==='user',card=el('article','card');card.appendChild(thumb(t?.thumb_url,t?.title||t?.display_name));const body=el('div','body');body.appendChild(el('h2','title',`${REASONS[rep.reason]||rep.reason} · ${t?(t.title||t.display_name||t.handle||rep.target_id):rep.target_id}`));if(rep.detail)body.appendChild(el('div','desc',rep.detail));chips(body,[['层级',rep.kind==='rights'?'复杂投诉':'普通举报'],['优先级',rep.priority],['期限',when(rep.due_at)],['状态',rep.status],['举报于',when(rep.created_at)],['领取人',rep.claimed_by]]);if(rep.source_work)chips(body,[['关联作品',rep.source_work.title||rep.source_work.id],['当前状态',rep.source_work_live?.moderation_status]]);const modelUrl=rep.source_work_live?.model_url||(!isUser&&t?.model_url);if(modelUrl){const a=el('a',null,'打开关联 3D 文件');a.href=modelUrl;a.target='_blank';a.rel='noopener noreferrer';body.appendChild(a)}if(rep.preservation_state!=='not_required')chips(body,[['平台保全',rep.preservation_state]]);appendGallery(body,rep.source_assets,'平台保全件');appendGallery(body,rep.evidence,'用户证据');
+  const acts=el('div','acts');
+  if((rep.status==='pending'||rep.status==='needs_info')&&!rep.claimed_by){const claim=el('button','primary','领取');claim.onclick=()=>act(card,[claim],async()=>{await call({action:'claim',report_id:rep.id});return'已领取，切换到“审核中”继续处理'});acts.appendChild(claim)}
+  const mine=rep.claimed_by&&rep.claimed_by===state.userId;
+  if(rep.status==='in_review'&&mine){const feedback=el('textarea');feedback.placeholder='给举报人的公开反馈（必填）';const notes=el('textarea');notes.placeholder='内部审核备注（不会展示给举报人）';const more=el('button',null,'要求补充');const dismiss=el('button',null,'驳回');const actioned=el('button','danger','确认违规并处置');actioned.disabled=state.role!=='lead';const go=status=>async()=>{const publicText=feedback.value.trim();if(!publicText)throw new Error('公开反馈必填');await call({action:'transition',report_id:rep.id,status,reporter_feedback:publicText,admin_notes:notes.value.trim()});return status==='needs_info'?'已要求补充':status==='dismissed'?'已驳回':'已确认并处置'};more.onclick=()=>act(card,[more,dismiss,actioned],go('needs_info'));dismiss.onclick=()=>act(card,[more,dismiss,actioned],go('dismissed'));actioned.onclick=()=>act(card,[more,dismiss,actioned],go('actioned'));acts.append(more,dismiss,actioned,feedback,notes)}
+  if(rep.claimed_by&&!mine&&rep.status==='in_review')acts.appendChild(el('span','chip','已由其他审核员领取'));
+  body.appendChild(acts);card.appendChild(body);return card}
+function appendGallery(parent,items,label){if(!Array.isArray(items)||!items.length)return;parent.appendChild(el('div','desc',`${label}（链接 5 分钟失效）`));const g=el('div','gallery');for(const item of items){if(!item.signed_url)continue;const a=document.createElement('a');a.href=item.signed_url;a.target='_blank';a.rel='noopener noreferrer';if((item.content_type||'').startsWith('image/')){const i=document.createElement('img');i.src=item.signed_url;i.alt=`${label} ${Number(item.ordinal)+1}`;i.loading='lazy';a.appendChild(i)}else a.appendChild(el('span','chip','打开文件'));g.appendChild(a)}parent.appendChild(g)}
+async function act(card,buttons,fn){buttons.forEach(b=>b.disabled=true);const out=el('div','meta');card.querySelector('.body').appendChild(out);try{out.appendChild(el('span','chip','✓ '+await fn()));card.style.opacity='.55'}catch(e){out.appendChild(el('span','chip','✗ '+e.message));out.style.color='var(--danger)';buttons.forEach(b=>b.disabled=false)}}
+$('login').onclick=()=>login().catch(e=>{setStatus('登录失败',true);show(e.message,true)});$('logout').onclick=logout;$('reload').onclick=reload;$('queue').onchange=reload;$('password').onkeydown=e=>{if(e.key==='Enter')$('login').click()};
+if(state.token)reload();else show('请使用已授权的 reviewer 或 lead 账号登录。');
 </script>
 </body>
 </html>

@@ -12,6 +12,7 @@ abstract interface class SocialProfileRepository {
   Future<void> unblock(String userId);
   Future<List<SocialProfile>> fetchBlockedUsers();
   Future<UserReportResult> reportUser(UserReportDraft draft);
+  Future<List<ReportHistoryItem>> fetchMyReports();
 }
 
 class SupabaseSocialProfileRepository implements SocialProfileRepository {
@@ -128,9 +129,10 @@ class SupabaseSocialProfileRepository implements SocialProfileRepository {
       );
     }
     final response = await _client.functions.invoke(
-      'submit-user-report',
+      'submit-report',
       body: {
         'target_user_id': draft.targetUserId,
+        'kind': draft.kind.code,
         'reason': draft.reason.code,
         if (draft.detail != null) 'detail': draft.detail,
         if (draft.sourceWorkId != null) 'source_work_id': draft.sourceWorkId,
@@ -167,6 +169,26 @@ class SupabaseSocialProfileRepository implements SocialProfileRepository {
       uploadedEvidenceCount: uploadedEvidenceCount,
       failedEvidenceCount: failedEvidenceCount,
     );
+  }
+
+  @override
+  Future<List<ReportHistoryItem>> fetchMyReports() async {
+    _requireViewer('fetch reports');
+    final response = await _client.functions.invoke('my-reports');
+    if (response.status < 200 || response.status >= 300) {
+      throw StateError('Report history is unavailable.');
+    }
+    final data = response.data;
+    final rows = data is Map ? data['reports'] : null;
+    if (rows is! List) {
+      throw StateError('Expected a report list from Supabase.');
+    }
+    return rows
+        .map(
+          (row) =>
+              ReportHistoryItem.fromMap(Map<String, dynamic>.from(row as Map)),
+        )
+        .toList(growable: false);
   }
 
   String _requireViewer(String action) {

@@ -88,6 +88,21 @@ native_host="$TARGET_BUILD_DIR/$EXECUTABLE_PATH"
 dart_aot="$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH/App.framework/App"
 official_sfm="$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH/PWOfficialSfm.framework/PWOfficialSfm"
 xrslam_archive="$SRCROOT/../vendor/xrslam/libs/ios-arm64/libxrslam_generic_4beb1a9.a"
+xrslam_algorithm_branch="generic"
+xrslam_threading_enabled="false"
+xrslam_backpressure_gate="none"
+# [bench 2026-09-02] 与 ios/Podfile 同一个开关。未设 = 出货档,以上三行即为真值。
+case "${PW_XRSLAM_BENCH_ARM:-}" in
+  "") ;;
+  thrnogate)
+    xrslam_archive="${xrslam_archive%/*}/libxrslam_thrnogate_4beb1a9.a"
+    xrslam_threading_enabled="true" ;;
+  thrbp)
+    xrslam_archive="${xrslam_archive%/*}/libxrslam_thrbp_4beb1a9.a"
+    xrslam_threading_enabled="true"
+    xrslam_backpressure_gate="producer_block" ;;
+  *) echo "error: unknown PW_XRSLAM_BENCH_ARM=$PW_XRSLAM_BENCH_ARM" >&2; exit 66 ;;
+esac
 xrslam_ceres="$SRCROOT/../vendor/xrslam/libs/ios-arm64/libceres_official_1_14.a"
 xrslam_opencv="$SRCROOT/../vendor/xrslam/libs/ios-arm64/libopencv_generic_4_0_1.a"
 xrslam_upstream_revision="4beb1a942f33da9afbfae2d70e2c641cfc2bb675"
@@ -132,9 +147,10 @@ set_plist_string "PWXrslamUpstreamRevision" "$xrslam_upstream_revision"
 set_plist_string "PWXrslamBuildPatchSHA256" "$xrslam_build_patch_sha256"
 set_plist_string "PWXrslamDestroyLifecyclePatchSHA256" "$xrslam_destroy_lifecycle_patch_sha256"
 set_plist_string "PWXrslamZeroInlierMaskPatchSHA256" "$xrslam_zero_inlier_mask_patch_sha256"
-set_plist_string "PWXrslamAlgorithmBranch" "generic"
+set_plist_string "PWXrslamAlgorithmBranch" "$xrslam_algorithm_branch"
 set_plist_string "PWXrslamIosEnabled" "false"
-set_plist_string "PWXrslamThreadingEnabled" "false"
+set_plist_string "PWXrslamThreadingEnabled" "$xrslam_threading_enabled"
+set_plist_string "PWXrslamBackpressureGate" "$xrslam_backpressure_gate"
 set_plist_string "PWXrslamCompileFlags" "-ffp-contract=off,-fno-fast-math,-fchar8_t,-Dceres=pw_xrslam_ceres_1_14"
 set_plist_string "PWOpenCVUpstreamRevision" "$opencv_upstream_revision"
 set_plist_string "PWOpenCVBuildPatchSHA256" "$opencv_build_patch_sha256"
@@ -146,4 +162,4 @@ set_plist_string "PWNativeHostUUID" "$native_host_uuid"
 set_plist_string "PWLiveCloudDiagnosticBuildId" "$diagnostic_build_id"
 set_plist_string "PWVioShadowMode" "$vio_shadow_mode"
 
-echo "PW_RUNTIME_IDENTITY product=$product_source_manifest dart=$dart_aot_sha256 sfm=$official_sfm_sha256 xrslam=$xrslam_sha256 opencv=$xrslam_opencv_sha256 ceres=$xrslam_ceres_sha256 branch=generic xrslam_ios=false threading=false vio_shadow=$vio_shadow_mode host_uuid=$native_host_uuid build=$diagnostic_build_id"
+echo "PW_RUNTIME_IDENTITY product=$product_source_manifest dart=$dart_aot_sha256 sfm=$official_sfm_sha256 xrslam=$xrslam_sha256 opencv=$xrslam_opencv_sha256 ceres=$xrslam_ceres_sha256 branch=$xrslam_algorithm_branch xrslam_ios=false threading=$xrslam_threading_enabled backpressure_gate=$xrslam_backpressure_gate vio_shadow=$vio_shadow_mode host_uuid=$native_host_uuid build=$diagnostic_build_id"

@@ -16,8 +16,8 @@ understand why something is the way it is — start here.
 2. [Auth flow](#auth-flow)
 3. [RLS philosophy](#rls-philosophy)
 4. [Schema overview (26 tables)](#schema-overview)
-5. [Storage buckets (4)](#storage-buckets)
-6. [Edge Functions (14)](#edge-functions)
+5. [Storage buckets](#storage-buckets)
+6. [Edge Functions (18)](#edge-functions)
 7. [pg_cron jobs](#pg_cron-jobs)
 8. [Deployment](#deployment)
 9. [Migrating off Supabase](#migrating-off-supabase)
@@ -38,11 +38,11 @@ understand why something is the way it is — start here.
                               │        no auth for our Edge Fns)
                               ▼
 ┌────────────────────────────────────────────────────────────────┐
-│            Supabase project (Pro tier, US East)                 │
+│          Supabase project (West US / Oregon)                    │
 │   • Postgres 15            (8 GB cap on Pro)                    │
 │   • GoTrue Auth            (issues JWT sessions)                │
-│   • Storage                (4 buckets, 100 GB Pro cap)          │
-│   • Edge Functions (Deno)  (4 functions, 2M invocations/mo)     │
+│   • Storage                (product + private evidence)         │
+│   • Edge Functions (Deno)  (18 deployed functions)             │
 │   • pg_cron                (cleanup expired pending rows)       │
 └────────────────────────────────────────────────────────────────┘
 ```
@@ -320,6 +320,19 @@ already in trouble.
 | delete-account      | user JWT, or service_role + `target_user_id` | Real account deletion (Guideline 5.1.1(v)) — enumerates every storage object *before* the `auth.users` cascade, since the cascade destroys the paths |
 | delete-work         | user JWT                | Author removes their own published work, files included. Refuses while the work is under moderation |
 | admin-moderate-work | service_role **only**   | Takedown/restore. Moves assets into the private `quarantine` bucket — deleting the DB row is not enough because a public bucket bypasses RLS, and storage objects cannot be deleted from SQL |
+| submit-report       | user JWT                | Unified 50-character standard report / 500-character rights complaint; validates target/source, suppresses 24-hour duplicates and freezes sensitive source assets |
+| report-evidence-upload | user JWT             | Uploads at most three sanitized JPEG/PNG evidence objects to a private bucket and validates evidence type |
+| my-reports          | user JWT                | Returns the reporter-safe history projection; never exposes internal notes, paths or moderator identity |
+| admin-reports       | moderator JWT (`reviewer`/`lead`) or server-only break-glass | Priority queue, claim, needs-info, dismissal and lead-only confirmed action with public feedback and event audit |
+
+`submit-user-report` remains deployed temporarily for installed client
+compatibility. New clients use `submit-report`; do not delete the legacy function
+until the rollout telemetry shows no old callers.
+
+The default moderation provider is `manual`. The provider boundary lives in
+`functions/_shared/moderation_provider.ts`; vendor names fail closed until a
+reviewed Tencent/Alibaba/NetEase adapter, credentials, retention policy and
+callback verification are supplied.
 
 `admin-moderate-work` **must** be deployed with `--no-verify-jwt` so the
 service_role key arrives as a plain bearer token instead of being
@@ -384,7 +397,7 @@ supabase link --project-ref <YOUR_PROJECT_REF>
 cd pocketworld_flutter
 supabase db push
 
-# 4. Deploy Edge Functions — ALL FOURTEEN.
+# 4. Deploy Edge Functions — ALL EIGHTEEN.
 #    An earlier version of this list had only the four auth functions, which
 #    silently produced a project whose thumbnail upload path 404s.
 #
@@ -419,10 +432,17 @@ supabase functions deploy admin-moderate-work   --no-verify-jwt --project-ref <R
 # 与 admin-moderate-work 同样按 service secret 鉴权,所以同样需要 --no-verify-jwt。
 supabase functions deploy admin-approve-work    --no-verify-jwt --project-ref <REF>
 
-# admin-reports 是举报的**受理端**(第九条)。在它之前 reports 表有行、App 里
-# 有举报入口,但**没有任何路径读它** —— 举报等于扔进黑洞。
-# 同样按 service secret 鉴权,同样需要 --no-verify-jwt。
+# admin-reports 是举报的受理端。审核员用普通 Supabase Auth JWT，函数再查
+# moderator_accounts；service secret 只保留为服务器内 break-glass，不进审核台。
 supabase functions deploy admin-reports         --no-verify-jwt --project-ref <REF>
+
+# Unified reporting functions inspect the raw bearer and perform their own
+# user/moderator checks, so deploy all four with --no-verify-jwt.
+supabase functions deploy submit-report          --no-verify-jwt --project-ref <REF>
+supabase functions deploy my-reports             --no-verify-jwt --project-ref <REF>
+supabase functions deploy report-evidence-upload --no-verify-jwt --project-ref <REF>
+# Keep submit-user-report active while installed clients still call it.
+supabase functions deploy submit-user-report     --no-verify-jwt --project-ref <REF>
 
 # report-region 写 profiles.last_region(第十二条 IP 属地)。普通用户 JWT 鉴权,
 # 不需要 --no-verify-jwt。
@@ -435,7 +455,8 @@ supabase functions deploy report-region         --project-ref <REF>
 #      并配 4 个 secret(见下面「阿里云短信」一节)。不配 = 手机号登录发不出短信。
 supabase functions deploy send-sms-hook         --no-verify-jwt --project-ref <REF>
 
-# 4b. 调用管理端(admin-*)需要 **service secret**,不是 CLI 给的 service_role JWT。
+# 4b. 只有 service-only 的作品管理端需要 **service secret**；admin-reports
+#     的人工审核调用使用 moderator JWT，service secret 仅用于服务器内 break-glass。
 #     2026-08-23 实测:本项目 Edge Function env 里的 SUPABASE_SERVICE_ROLE_KEY
 #     已经是 41 字符的新格式 secret(sb_secret_*),而
 #     `supabase projects api-keys` 返回的 service_role 是 219 字符的 legacy JWT
@@ -449,7 +470,7 @@ supabase functions deploy send-sms-hook         --no-verify-jwt --project-ref <R
 
 # 6. Verify
 supabase db push --dry-run     # should print "Remote database is up to date"
-supabase functions list        # should show 11 ACTIVE
+supabase functions list        # should show 18 ACTIVE
 supabase db advisors --type security --linked   # triage before going live
 
 # 7. Supply chain. CI does run this now (.github/workflows/security.yml,
@@ -463,12 +484,11 @@ zsh ../tool/verify_supply_chain.sh
 
 1. Write a new SQL file in `supabase/migrations/<UTC_TIMESTAMP>_<name>.sql`
 2. `supabase db push` — applies only the new file
-3. If the migration adds a new Edge Function, deploy it **without**
-   `--no-verify-jwt`. That flag is not the default it once looked like: it
-   lets a request with no `Authorization` header at all reach your code.
-   Only add it when the function authenticates by inspecting the raw bearer
-   token itself — today that is `admin-moderate-work` alone, which compares
-   the token against the service_role key.
+3. If the migration adds a new Edge Function, use `--no-verify-jwt` only when
+   the function deliberately authenticates the raw bearer itself. Current
+   examples are the four reporting functions, the service-only moderation
+   functions and the signed SMS hook. The function must fail closed on missing
+   or invalid authorization; never use the flag as a way around authentication.
 
    ```bash
    supabase functions deploy <name> --project-ref <REF>
@@ -546,7 +566,6 @@ These are intentional v1 trade-offs flagged for future iterations:
 | Account switching (multiple sessions)         | v1 keeps single-session; multi-session is a P2 feature                 |
 | `analytics_events` table                      | Skipped for v1 — add when product analytics is needed (separate from audit_logs) |
 | LCC2 / `.spz` Gaussian Splat support in app   | Schema accepts these formats in `works.format`, but app upload pipeline needs work |
-| Reports admin tooling                         | Reports table exists but no admin UI; review via SQL Editor for now    |
 
 ---
 
@@ -669,44 +688,21 @@ node tool/import_ip2region.mjs
 
 ## 审核台(tool/moderation_console.html)
 
-先审后发的**人这一端**。双击那个 html 用浏览器打开即可,`file://` 就行 ——
-Edge Function 的 CORS 是 `Allow-Origin: *`,不需要起服务器。
+双击本地 HTML 即可。审核员输入项目 URL、公开 publishable key、自己的邮箱和
+密码；Supabase Auth 返回的短期 access token 只保存在当前标签页的
+`sessionStorage`，密码不会保存。审核台不再接收、显示或存储 service-role
+密钥。
 
-### 🔴 为什么它不是 App 里的一个页面
+账号必须先写入私有表 `moderator_accounts`：
 
-`admin-approve-work` / `admin-moderate-work` / `admin-reports` 三个端都用
-**service secret** 鉴权,那把钥匙绕过所有 RLS,能读写整个数据库。
-放进 Flutter 客户端 = 把数据库钥匙发给每一个用户 —— 哪怕藏在隐藏入口后面,
-App 二进制里的字符串是能被 dump 出来的。审核台必须留在你自己的机器上。
+- `reviewer`：查看、领取、进入审核、要求补充、驳回；
+- `lead`：包含 reviewer 权限，并可确认违规和触发关联作品下架；
+- 每次状态变化写入 `report_moderation_events`，公开反馈与内部备注分列保存；
+- 举报数量永远不会自动封号或自动处罚。
 
-### 🔴 密钥从哪来 —— CLI 给不了
-
-`supabase projects api-keys` 返回的 `sb_secret_*` 是**打过码的**:
-2026-08-24 实测,它是 `sb_secret_hk1s-` 后面跟 26 个 U+00B7 中点(共 41 字符、
-67 字节)。`masked` 字段现在**不出现**在 JSON 里,所以按字段判断会以为它没打码
-—— 要看值本身。CLI 的 219 字符 legacy service_role JWT 能通过平台网关、
-但过不了 `isAdminRequest`(本项目环境里的 `SUPABASE_SERVICE_ROLE_KEY`
-已经是新格式 secret),实测返回 `{"error":"forbidden"}`。
-
-⇒ 真正的密钥只能从 Dashboard 拿:
-**Project Settings → API Keys → Secret keys → 复制 `default`**
-
-密钥只存这个标签页的 `sessionStorage`,关掉就没了。
-**不要把它写进那个 html —— 那个文件是进 git 的。**
-
-### 两个队列
-
-| Tab | 数据源 | 动作 |
-|-----|--------|------|
-| 待审队列 | `admin-approve-work` `{action:'list'}` | 通过 → `approve`;驳回 → `admin-moderate-work` `status:'removed'` |
-| 举报队列 | `admin-reports` `{action:'list'}` | 下架并结案(两次调用);驳回举报 → `resolve` `status:'dismissed'` |
-
-驳回和驳回举报都**强制要求写理由** —— 它进 `audit_logs`,是第九条"受理"义务的
-证据,也是作者申诉时的依据。
-
-「下架并结案」刻意是**两次调用**而不是一个原子操作:下架会搬文件、可能部分
-失败,和结案绑在一个事务里只会产生"结案了但文件没搬走"这种没人发现的中间态。
-顺序是先下架(会动文件的那一步),成功了再结案。
+本次生产初始化已把项目中唯一的现有 Auth 用户设为 active `lead`。未来给外包
+开账号时，只授予 `reviewer`，离场时把 `active` 设为 `false`；不要共享 owner
+账号或 service-role 密钥。
 
 ### ⚠️ 已知局限
 
@@ -714,15 +710,9 @@ App 二进制里的字符串是能被 dump 出来的。审核台必须留在你�
 不足以判断整个点云里有什么 —— 拿不准的必须下载下来用查看器打开。
 在浏览器里内联渲染 PLY 是下一步的事,不要因为"有缩略图了"就当成看过了。
 
-### 验证状态
-
-已验证:三个端都能部署;错 secret → 403;legacy JWT → 403(证明鉴权确实在拦);
-`decorate()` / `attachTargets()` 里的每一条查询都用探针数据在生产库跑通
-(列名、`profiles` 的 `in` 查询、两个桶的签名 URL 各自成功,探针已删干净)。
-
-⚠️ **未验证**:带正确 secret 的完整端到端调用 —— 那个 secret 只在 Dashboard 里,
-我拿不到。你第一次打开审核台粘贴密钥的那一刻就是这个测试。
-如果 403,先看上面「密钥从哪来」那一节,别去改代码。
+2026-09-06 已验证 migration、函数 ACTIVE 状态、数据库 lint、未登录 401、角色表
+与最小权限。没有使用 owner 的日常账号制造测试举报，因此“普通 JWT 登录 → 领取
+→ 结案”的生产写入冒烟测试留给真实首单或专用测试账号执行。
 
 
 ---

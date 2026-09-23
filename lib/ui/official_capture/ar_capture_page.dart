@@ -85,6 +85,7 @@ import '../../official_dome/ar_pose.dart';
 import '../../l10n/app_localizations.dart';
 import '../../me/scan_record_store.dart';
 import '../../official_util/device_log.dart';
+import '../../vio/diagnostics/vio_queue_depth_probe.dart';
 import '../draft_capture_shell.dart';
 import '../me_page.dart';
 import '../reconstruction_draft_route_state.dart';
@@ -1206,6 +1207,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     unawaited(() async {
       try {
         await VioDiagnosticsRecorder.instance.start();
+        // [bench 2026-09-02] 排队深度探针:出货档符号不存在时自行降级并留痕。
+        VioQueueDepthProbe.instance.start();
         DeviceLog.log('VioDiag', 'capture shadow lifecycle started');
       } catch (e) {
         DeviceLog.log('VioDiag', 'capture shadow start failed: $e');
@@ -1215,6 +1218,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
 
   Future<void> _stopVioShadowForCapture() async {
     if (!kVioShadowEnabled) return;
+    VioQueueDepthProbe.instance.stop();
     await VioDiagnosticsRecorder.instance.stop();
     DeviceLog.log('VioDiag', 'capture shadow terminal receipt flushed');
   }

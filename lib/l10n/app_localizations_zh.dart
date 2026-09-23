@@ -827,6 +827,86 @@ class AppL10nZh extends AppL10n {
   String get reportUserTitle => '举报该用户';
 
   @override
+  String get reportTierTitle => '选择举报类型';
+
+  @override
+  String get reportReasonTitle => '选择原因';
+
+  @override
+  String get reportStandardTitle => '普通举报';
+
+  @override
+  String get reportStandardSubtitle => '骚扰、诈骗、违法有害或其他社区问题';
+
+  @override
+  String get reportRightsTitle => '权益投诉';
+
+  @override
+  String get reportRightsEntry => '侵犯权益';
+
+  @override
+  String get reportRightsSubtitle => '冒充、隐私、肖像或知识产权问题';
+
+  @override
+  String get reportStandardDetailHint => '请说明问题位于作品正面、背面、顶部或哪个画面';
+
+  @override
+  String get reportRightsDetailHint => '请说明权利归属、侵权位置和处理请求';
+
+  @override
+  String get reportEvidenceType => '证明材料类型';
+
+  @override
+  String get reportEvidenceContext => '问题截图';
+
+  @override
+  String get reportEvidenceIdentity => '身份证明';
+
+  @override
+  String get reportEvidenceOwnership => '权属证明';
+
+  @override
+  String get reportEvidenceAuthorization => '授权证明';
+
+  @override
+  String get reportEvidenceOther => '其他证明';
+
+  @override
+  String get reportEvidenceOptional => '补充截图（选填）';
+
+  @override
+  String get reportEvidenceLimitHint => '最多 3 张，仅支持 JPG 或 PNG；图片会在上传前移除定位等元数据。';
+
+  @override
+  String get reportHistoryTitle => '我的举报';
+
+  @override
+  String get reportHistoryEmpty => '还没有提交过举报';
+
+  @override
+  String get reportHistoryLoadFailed => '暂时无法加载举报记录';
+
+  @override
+  String reportHistorySource(String title) {
+    return '关联作品：$title';
+  }
+
+  @override
+  String get reportStatusPending => '待处理';
+
+  @override
+  String get reportStatusInReview => '审核中';
+
+  @override
+  String get reportStatusNeedsInfo => '需要补充材料';
+
+  @override
+  String get reportStatusActioned => '已处理';
+
+  @override
+  String get reportStatusDismissed => '未发现违规';
+
+  @override
   String get reportAdditionalInfoTitle => '补充信息';
 
   @override

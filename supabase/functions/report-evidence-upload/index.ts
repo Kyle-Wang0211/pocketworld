@@ -60,7 +60,7 @@ Deno.serve(async (req) => {
   // A caller cannot spend image-validation work against someone else's row.
   const { data: report, error: reportError } = await admin
     .from("reports")
-    .select("id, reason")
+    .select("id, reason, kind")
     .eq("id", reportId)
     .eq("reporter_id", user.id)
     .eq("target_type", "user")
@@ -72,6 +72,15 @@ Deno.serve(async (req) => {
   if (!report) return jsonResponse({ error: "report_not_found" }, 404);
   if (["minor_safety", "sexual_content"].includes(report.reason)) {
     return jsonResponse({ error: "evidence_not_allowed" }, 403);
+  }
+  const evidenceKind = typeof body.evidence_kind === "string"
+    ? body.evidence_kind.trim()
+    : "";
+  const allowedKinds = report.kind === "rights"
+    ? ["identity", "ownership", "authorization", "other"]
+    : ["context"];
+  if (!allowedKinds.includes(evidenceKind)) {
+    return jsonResponse({ error: "invalid_evidence_kind" }, 400);
   }
 
   const { data: existing, error: evidenceError } = await admin
@@ -136,6 +145,7 @@ Deno.serve(async (req) => {
       report_id: reportId,
       reporter_id: user.id,
       ordinal,
+      evidence_kind: evidenceKind,
       storage_path: path,
       content_type: contentType,
       byte_size: bytes.length,

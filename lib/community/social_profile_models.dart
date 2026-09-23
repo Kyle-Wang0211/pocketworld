@@ -74,23 +74,45 @@ class SocialProfile {
   }
 }
 
+enum ReportKind {
+  standard('standard', 50),
+  rights('rights', 500);
+
+  final String code;
+  final int maxDetailGraphemes;
+
+  const ReportKind(this.code, this.maxDetailGraphemes);
+
+  static ReportKind? fromCode(String? code) {
+    for (final kind in values) {
+      if (kind.code == code) return kind;
+    }
+    return null;
+  }
+}
+
 /// Stable moderation codes. Enum names are UI-facing Dart identifiers; [code]
 /// is the only value persisted or sent to the server.
 enum UserReportReason {
-  impersonation('impersonation'),
+  impersonation('impersonation', kind: ReportKind.rights),
   harassmentThreat('harassment_threat'),
   spamFraud('spam_fraud'),
   minorSafety('minor_safety', allowsEvidenceUpload: false),
   sexualContent('sexual_content', allowsEvidenceUpload: false),
   violenceIllegal('violence_illegal'),
   misinformation('misinformation'),
-  privacyIp('privacy_ip'),
+  privacyIp('privacy_ip', kind: ReportKind.rights),
   other('other');
 
   final String code;
+  final ReportKind kind;
   final bool allowsEvidenceUpload;
 
-  const UserReportReason(this.code, {this.allowsEvidenceUpload = true});
+  const UserReportReason(
+    this.code, {
+    this.kind = ReportKind.standard,
+    this.allowsEvidenceUpload = true,
+  });
 
   /// Returns null for an unknown value so callers never silently downgrade a
   /// new or malformed server code to a different report reason.
@@ -103,6 +125,17 @@ enum UserReportReason {
   }
 }
 
+enum ReportEvidenceKind {
+  context('context'),
+  identity('identity'),
+  ownership('ownership'),
+  authorization('authorization'),
+  other('other');
+
+  final String code;
+  const ReportEvidenceKind(this.code);
+}
+
 /// Sanitized, re-encoded bytes prepared for private report evidence upload.
 ///
 /// Deliberately has no original-filename field. The server owns storage paths,
@@ -113,6 +146,7 @@ class ReportEvidenceUpload {
   final Uint8List _bytes;
   final String contentType;
   final String extension;
+  final ReportEvidenceKind kind;
 
   /// Returns a defensive copy so callers can pass a [Uint8List] to image and
   /// upload APIs without gaining mutation access to this value object.
@@ -122,6 +156,7 @@ class ReportEvidenceUpload {
     required Uint8List bytes,
     required String contentType,
     required String extension,
+    this.kind = ReportEvidenceKind.context,
   }) : _bytes = Uint8List.fromList(bytes),
        contentType = _normalizeContentType(contentType),
        extension = _normalizeExtension(extension) {
@@ -149,6 +184,7 @@ class ReportEvidenceUpload {
     'bytes': base64Encode(_bytes),
     'content_type': contentType,
     'extension': extension,
+    'evidence_kind': kind.code,
   };
 }
 
@@ -156,6 +192,7 @@ class ReportEvidenceUpload {
 class UserReportDraft {
   final String targetUserId;
   final UserReportReason reason;
+  ReportKind get kind => reason.kind;
   final String? detail;
   final String? sourceWorkId;
   final List<ReportEvidenceUpload> evidence;
@@ -174,11 +211,12 @@ class UserReportDraft {
     final normalizedDetail = _optionalString(detail);
     final normalizedSourceWorkId = _optionalString(sourceWorkId);
 
-    if ((normalizedDetail?.characters.length ?? 0) > 500) {
+    if ((normalizedDetail?.characters.length ?? 0) >
+        reason.kind.maxDetailGraphemes) {
       throw ArgumentError.value(
         detail,
         'detail',
-        'must be at most 500 characters after trimming',
+        'must be at most ${reason.kind.maxDetailGraphemes} characters after trimming',
       );
     }
     if (evidence.length > 3) {
@@ -212,6 +250,72 @@ class UserReportDraft {
     required this.sourceWorkId,
     required this.evidence,
   });
+}
+
+enum ReportStatus {
+  pending('pending'),
+  inReview('in_review'),
+  needsInfo('needs_info'),
+  actioned('actioned'),
+  dismissed('dismissed');
+
+  final String code;
+  const ReportStatus(this.code);
+
+  static ReportStatus? fromCode(String? code) {
+    for (final status in values) {
+      if (status.code == code) return status;
+    }
+    return null;
+  }
+}
+
+class ReportHistoryItem {
+  final String id;
+  final ReportKind kind;
+  final UserReportReason reason;
+  final ReportStatus status;
+  final String? reporterFeedback;
+  final String? sourceWorkTitle;
+  final DateTime createdAt;
+  final DateTime? dueAt;
+  final DateTime? resolvedAt;
+  final bool isOverdue;
+
+  const ReportHistoryItem({
+    required this.id,
+    required this.kind,
+    required this.reason,
+    required this.status,
+    required this.reporterFeedback,
+    required this.sourceWorkTitle,
+    required this.createdAt,
+    required this.dueAt,
+    required this.resolvedAt,
+    required this.isOverdue,
+  });
+
+  factory ReportHistoryItem.fromMap(Map<String, dynamic> map) {
+    final kind = ReportKind.fromCode(_optionalString(map['kind']));
+    final reason = UserReportReason.fromCode(_optionalString(map['reason']));
+    final status = ReportStatus.fromCode(_optionalString(map['status']));
+    final createdAt = DateTime.tryParse('${map['created_at'] ?? ''}');
+    if (kind == null || reason == null || status == null || createdAt == null) {
+      throw const FormatException('Invalid report history row.');
+    }
+    return ReportHistoryItem(
+      id: _requiredString(map['id'], 'id'),
+      kind: kind,
+      reason: reason,
+      status: status,
+      reporterFeedback: _optionalString(map['reporter_feedback']),
+      sourceWorkTitle: _optionalString(map['source_work_title']),
+      createdAt: createdAt,
+      dueAt: DateTime.tryParse('${map['due_at'] ?? ''}'),
+      resolvedAt: DateTime.tryParse('${map['resolved_at'] ?? ''}'),
+      isOverdue: _boolValue(map['is_overdue']),
+    );
+  }
 }
 
 /// Durable report identity plus best-effort evidence upload accounting.

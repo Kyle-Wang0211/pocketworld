@@ -1609,6 +1609,162 @@ abstract class AppL10n {
   /// **'Report this user'**
   String get reportUserTitle;
 
+  /// No description provided for @reportTierTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose report type'**
+  String get reportTierTitle;
+
+  /// No description provided for @reportReasonTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose a reason'**
+  String get reportReasonTitle;
+
+  /// No description provided for @reportStandardTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Standard report'**
+  String get reportStandardTitle;
+
+  /// No description provided for @reportStandardSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Harassment, fraud, harmful content, or another community issue'**
+  String get reportStandardSubtitle;
+
+  /// No description provided for @reportRightsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Rights complaint'**
+  String get reportRightsTitle;
+
+  /// No description provided for @reportRightsEntry.
+  ///
+  /// In en, this message translates to:
+  /// **'Infringes rights'**
+  String get reportRightsEntry;
+
+  /// No description provided for @reportRightsSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Impersonation, privacy, portrait, or intellectual-property concerns'**
+  String get reportRightsSubtitle;
+
+  /// No description provided for @reportStandardDetailHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Describe whether the issue appears on the front, back, top, or another view'**
+  String get reportStandardDetailHint;
+
+  /// No description provided for @reportRightsDetailHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Describe ownership, where the infringement appears, and the requested action'**
+  String get reportRightsDetailHint;
+
+  /// No description provided for @reportEvidenceType.
+  ///
+  /// In en, this message translates to:
+  /// **'Evidence type'**
+  String get reportEvidenceType;
+
+  /// No description provided for @reportEvidenceContext.
+  ///
+  /// In en, this message translates to:
+  /// **'Issue screenshot'**
+  String get reportEvidenceContext;
+
+  /// No description provided for @reportEvidenceIdentity.
+  ///
+  /// In en, this message translates to:
+  /// **'Identity evidence'**
+  String get reportEvidenceIdentity;
+
+  /// No description provided for @reportEvidenceOwnership.
+  ///
+  /// In en, this message translates to:
+  /// **'Ownership evidence'**
+  String get reportEvidenceOwnership;
+
+  /// No description provided for @reportEvidenceAuthorization.
+  ///
+  /// In en, this message translates to:
+  /// **'Authorization evidence'**
+  String get reportEvidenceAuthorization;
+
+  /// No description provided for @reportEvidenceOther.
+  ///
+  /// In en, this message translates to:
+  /// **'Other evidence'**
+  String get reportEvidenceOther;
+
+  /// No description provided for @reportEvidenceOptional.
+  ///
+  /// In en, this message translates to:
+  /// **'Supporting screenshots (optional)'**
+  String get reportEvidenceOptional;
+
+  /// No description provided for @reportEvidenceLimitHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Up to 3 JPG or PNG images. Location and other metadata are removed before upload.'**
+  String get reportEvidenceLimitHint;
+
+  /// No description provided for @reportHistoryTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'My reports'**
+  String get reportHistoryTitle;
+
+  /// No description provided for @reportHistoryEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'You haven\'t submitted any reports'**
+  String get reportHistoryEmpty;
+
+  /// No description provided for @reportHistoryLoadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Couldn\'t load report history'**
+  String get reportHistoryLoadFailed;
+
+  /// No description provided for @reportHistorySource.
+  ///
+  /// In en, this message translates to:
+  /// **'Related work: {title}'**
+  String reportHistorySource(String title);
+
+  /// No description provided for @reportStatusPending.
+  ///
+  /// In en, this message translates to:
+  /// **'Pending'**
+  String get reportStatusPending;
+
+  /// No description provided for @reportStatusInReview.
+  ///
+  /// In en, this message translates to:
+  /// **'In review'**
+  String get reportStatusInReview;
+
+  /// No description provided for @reportStatusNeedsInfo.
+  ///
+  /// In en, this message translates to:
+  /// **'More information needed'**
+  String get reportStatusNeedsInfo;
+
+  /// No description provided for @reportStatusActioned.
+  ///
+  /// In en, this message translates to:
+  /// **'Action taken'**
+  String get reportStatusActioned;
+
+  /// No description provided for @reportStatusDismissed.
+  ///
+  /// In en, this message translates to:
+  /// **'No violation found'**
+  String get reportStatusDismissed;
+
   /// No description provided for @reportAdditionalInfoTitle.
   ///
   /// In en, this message translates to:
