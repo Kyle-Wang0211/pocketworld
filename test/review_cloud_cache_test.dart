@@ -66,8 +66,10 @@ void main() {
 
   setUp(() {
     root = Directory.systemTemp.createTempSync('review_cloud_cache_test');
-    // 刻意照抄线上布局:会话目录 captures_official/<cap_id>/,缓存目录是
-    // Documents 下的旁路目录,两者是**兄弟**,不是父子。
+    // 会话目录 captures_official/<cap_id>/ 与缓存目录是**兄弟**,不是父子。
+    // (线上缓存目录在系统缓存目录 Library/Caches/review_cache,根本不在
+    // Documents 下 —— 那条由 review_cloud_cache_hardening_test.dart 的
+    // D 组用真解析出来的路径钉;这里只需要「不在会话目录里」。)
     captureDir = Directory('${root.path}/captures_official/cap_1')
       ..createSync(recursive: true);
     cacheDir = Directory('${root.path}/${ReviewCloudCache.kDirName}')

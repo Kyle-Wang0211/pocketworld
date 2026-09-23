@@ -14,8 +14,21 @@
 // 硬约束(改这个文件前先读):
 //   * 缓存文件**绝不**写进 `captures_official/<cap_id>/` —— 装机闸 B 逐场比对
 //     「设备条目数 vs 备份条目数」,往会话目录里加文件会让每一场都被判成
-//     「备份不完整」。缓存一律落在 `<Documents>/review_cache/`,和闸 B 自己的
-//     `<Documents>/pw_b1_gate/` 同级(见 official_capture/b1_gate_runner.dart)。
+//     「备份不完整」。
+//   * 缓存一律落在**系统缓存目录**下的 `review_cache/`:path_provider 的
+//     `getApplicationCacheDirectory()`(iOS = 容器的 `Library/Caches`,
+//     Android = `Context.getCacheDir()`)。[2026-09-23 用户拍板,原先放在
+//     `<Documents>/review_cache/`,那一版只出过包、从未装机。] 理由:
+//       - 它是纯派生数据(PLY + 预算 + 排序算法就能原样重建),不该进 iCloud /
+//         整机备份,也不该算进用户的「文稿与数据」;两端的系统规范都要求可重建
+//         数据放缓存目录(iOS 文件系统编程指南 / Android 存储指南)。
+//       - 系统在存储吃紧时**可能随时清掉**这个目录 ⇒ 下一次打开读不到缓存,
+//         退回慢路径重算并重写,不出错(review_cloud_cache_test.dart 的
+//         「缓存文件不存在」「目录不存在」各条就是这条路)。
+//   * 同一个系统缓存目录里还有别人的子目录(`pocketworld_dense_cache/`、
+//     `pocketworld_photo_archive/`、`glb_cache/`;iOS 上 getTemporaryDirectory
+//     也指向这里)。本文件只读写、只清理 `review_cache/` 里自己的 `.rcc` /
+//     `.rcc.tmp`,绝不动同级目录。
 //   * ProgressiveOctreeOrder 是 Potree 口径的复刻,本文件只缓存它的**输出**,
 //     一行算法都不碰。**算法一旦改动就必须把 [ReviewCloudCache.kFormatVersion]
 //     加一**,否则旧缓存会把旧顺序喂回给用户。
@@ -85,7 +98,8 @@ abstract final class ReviewCloudCache {
   static const String kFileSuffix = '.rcc';
   static const String _tmpSuffix = '.rcc.tmp';
 
-  /// 缓存目录名(挂在 Documents 下,**不在** captures_official 里面)。
+  /// 缓存目录名(挂在系统缓存目录下,**不在** Documents、更不在
+  /// captures_official 里面)。
   static const String kDirName = 'review_cache';
 
   /// 目录里最多留几份 / 最多占多少字节;超了按 mtime 从旧到新删。
@@ -96,11 +110,12 @@ abstract final class ReviewCloudCache {
   /// 多旧的 `.rcc.tmp` 才算「写了一半被杀掉的残骸」而不是「正在写」。
   static const Duration kTmpStaleAfter = Duration(hours: 1);
 
-  /// 主 isolate 专用:`<Documents>/review_cache/`,失败返回 null(⇒ 不缓存)。
+  /// 主 isolate 专用:`<系统缓存目录>/review_cache/`(iOS `Library/Caches`),
+  /// 失败返回 null(⇒ 不缓存,逐字退回慢路径)。
   static Future<String?> resolveDir() async {
     try {
-      final docs = await getApplicationDocumentsDirectory();
-      final dir = Directory('${docs.path}/$kDirName');
+      final caches = await getApplicationCacheDirectory();
+      final dir = Directory('${caches.path}/$kDirName');
       if (!await dir.exists()) await dir.create(recursive: true);
       return dir.path;
     } catch (_) {

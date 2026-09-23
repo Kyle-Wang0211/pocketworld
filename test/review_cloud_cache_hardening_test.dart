@@ -13,6 +13,15 @@
 //      过去」的事故),原测试全是同步直调;这里走真 isolate 验 未命中 / 命中 /
 //      坏缓存 三条路。
 //
+//   D. [2026-09-23 用户拍板] 缓存目录从 Documents 挪到系统缓存目录
+//      (`getApplicationCacheDirectory()`,iOS = `Library/Caches`)。A–C 全部
+//      改成在「照抄 iOS 容器布局」的假目录上跑:Documents/captures_official/
+//      放会话,缓存目录由 **ReviewCloudCache.resolveDir() 真解析**出来(path_provider
+//      平台接口换成假的,只把两个根指到临时目录),每条测试结束都核一遍
+//      Documents 里除了 captures_official 什么都没多。D 组单独钉:解析到的是
+//      缓存根不是 Documents、平台给不出缓存目录 ⇒ 不缓存照样出点云、系统把
+//      缓存目录整个清掉 ⇒ 退回重算并重建。
+//
 // 判据纪律:每条阴性对照之前都有阳性对照 —— 先把一份「一眼认得出」的哨兵
 // 数据(xyz[0] = -999)种进缓存,证明读到的就是哨兵(= 缓存真的被读了),
 // 再弄坏它,证明退回之后拿到的是正确点云、而且不是哨兵。一个恒返回 null 的
@@ -23,11 +32,27 @@ import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show compute, listEquals;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:pocketworld_flutter/ui/official_capture/review_cloud_cache.dart';
 import 'package:pocketworld_flutter/ui/official_capture/sparse_cloud_viewer_page.dart'
     show SparseCloudData, loadReviewCloudWithBudget;
 
 const double _kSentinel = -999.0;
+
+/// 照抄 iOS 容器:Documents 与 Library/Caches 是两个不同的根。[caches] 为 null
+/// 模拟「平台给不出缓存目录」。iOS 上 getTemporaryDirectory 也落在 Caches,
+/// 照抄。
+class _ContainerPathProvider extends PathProviderPlatform {
+  _ContainerPathProvider({required this.docs, required this.caches});
+  final String docs;
+  final String? caches;
+  @override
+  Future<String?> getApplicationDocumentsPath() async => docs;
+  @override
+  Future<String?> getApplicationCachePath() async => caches;
+  @override
+  Future<String?> getTemporaryPath() async => caches;
+}
 
 /// 与 sparse_ply.dart 同格式的二进制 PLY(xyz float32 LE + rgb uchar)。
 /// 同一 [count] 下不同 [seed] 的文件**字节数相同、内容不同**。
@@ -73,9 +98,12 @@ bool _sameCloud(SparseCloudData a, SparseCloudData b) =>
 
 void main() {
   late Directory root;
+  late Directory docsDir;
+  late Directory cachesRoot;
   late Directory captureDir;
   late Directory cacheDir;
   late File ply;
+  late PathProviderPlatform savedPlatform;
   const budget = 50; // < pointCount ⇒ 八叉树截断真的在跑
   const pointCount = 400;
 
@@ -87,17 +115,47 @@ void main() {
   const checksumAt = header + xyzBytes + rgbPadded; // 816
   const fullLength = checksumAt + 4; // 820
 
-  setUp(() {
+  /// Documents 顶层只许有 captures_official(缓存一个字节都不许落进来)。
+  void expectDocumentsUntouched() {
+    final top = docsDir
+        .listSync()
+        .map((e) => e.uri.pathSegments.where((x) => x.isNotEmpty).last)
+        .toList();
+    expect(top, <String>['captures_official']);
+    expect(
+      docsDir
+          .listSync(recursive: true)
+          .where((e) => e.path.contains(ReviewCloudCache.kDirName)),
+      isEmpty,
+    );
+  }
+
+  setUp(() async {
     root = Directory.systemTemp.createTempSync('review_cloud_cache_hardening');
-    captureDir = Directory('${root.path}/captures_official/cap_1')
+    docsDir = Directory('${root.path}/Documents')..createSync(recursive: true);
+    cachesRoot = Directory('${root.path}/Library/Caches')
       ..createSync(recursive: true);
-    cacheDir = Directory('${root.path}/${ReviewCloudCache.kDirName}')
+    savedPlatform = PathProviderPlatform.instance;
+    PathProviderPlatform.instance = _ContainerPathProvider(
+      docs: docsDir.path,
+      caches: cachesRoot.path,
+    );
+    captureDir = Directory('${docsDir.path}/captures_official/cap_1')
       ..createSync(recursive: true);
+    // 缓存目录不是测试自己拼的,是生产代码真解析出来的。
+    final resolved = await ReviewCloudCache.resolveDir();
+    expect(resolved, '${cachesRoot.path}/${ReviewCloudCache.kDirName}');
+    cacheDir = Directory(resolved!);
     ply = _writePly(captureDir, 'official_dense.ply', pointCount);
   });
 
   tearDown(() {
-    if (root.existsSync()) root.deleteSync(recursive: true);
+    try {
+      if (docsDir.existsSync()) expectDocumentsUntouched();
+    } finally {
+      PathProviderPlatform.instance = savedPlatform;
+      if (root.existsSync()) root.deleteSync(recursive: true);
+    }
   });
 
   ReviewCloudRequest req([File? source]) => ReviewCloudRequest(
@@ -342,6 +400,53 @@ void main() {
       );
       _expectSameCloud(expected, got!);
       expect(cacheDir.listSync(), isEmpty);
+    });
+  });
+
+  group('D. 缓存落在系统缓存目录(Library/Caches),不在 Documents', () {
+    test('resolveDir 解析到 <Caches>/review_cache,并建好;Documents 一个字节没多', () async {
+      // 阳性对照的前提:两个根确实是两个目录。
+      expect(cachesRoot.path, isNot(docsDir.path));
+      expect(cacheDir.existsSync(), isTrue);
+      expect(cacheDir.parent.path, cachesRoot.path);
+      expect(cacheDir.path.startsWith(docsDir.path), isFalse);
+      loadReviewCloudCached(req());
+      expect(cacheFile().existsSync(), isTrue);
+      expect(cacheFile().path.startsWith(cachesRoot.path), isTrue);
+      expectDocumentsUntouched();
+    });
+
+    test('平台给不出缓存目录 ⇒ resolveDir 为 null ⇒ 不缓存,照样出正确点云', () async {
+      PathProviderPlatform.instance = _ContainerPathProvider(
+        docs: docsDir.path,
+        caches: null,
+      );
+      expect(await ReviewCloudCache.resolveDir(), isNull);
+      final expected = loadReviewCloudWithBudget(ply.path, budget)!;
+      final got = await compute(
+        loadReviewCloudCached,
+        ReviewCloudRequest(plyPath: ply.path, cacheDir: null, budget: budget),
+      );
+      _expectSameCloud(expected, got!);
+      expect(cacheDir.listSync(), isEmpty); // 一个缓存文件都没写
+      expectDocumentsUntouched();
+    });
+
+    test('系统把缓存目录整个清掉 ⇒ 下次打开重建目录、退回重算、拿到正确点云', () async {
+      final expected = loadReviewCloudWithBudget(ply.path, budget)!;
+      plantSentinel();
+      expect(loadReviewCloudCached(req())!.xyz[0], _kSentinel); // 阳性对照:命中
+      // 模拟 iOS 存储吃紧时清 Library/Caches:整个缓存根连目录一起没了。
+      cachesRoot.deleteSync(recursive: true);
+      expect(cachesRoot.existsSync(), isFalse);
+      final again = await ReviewCloudCache.resolveDir();
+      expect(again, cacheDir.path);
+      expect(cacheDir.existsSync(), isTrue);
+      final got = await compute(loadReviewCloudCached, req());
+      expect(got!.xyz[0], isNot(_kSentinel));
+      _expectSameCloud(expected, got);
+      expect(cacheFile().lengthSync(), fullLength); // 缓存被重建
+      expectDocumentsUntouched();
     });
   });
 }

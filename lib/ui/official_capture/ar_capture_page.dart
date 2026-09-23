@@ -2282,10 +2282,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   Future<void> _enterReviewMode(String dir) async {
     final ply = '$dir/official_sfm_sparse.ply';
     // [REVIEW-CACHE 2026-09-22] 复看点云的磁盘缓存。目录必须在**主 isolate**
-    // 上解析(后台 isolate 没有插件通道,拿不到 Documents),解析不出来就传
-    // null ⇒ 不缓存、逐字退回改动前的解 PLY + 排序。缓存落
-    // `<Documents>/review_cache/`,**绝不**进 captures_official/<cap_id>(装机
-    // 闸 B 会把多出来的文件判成「备份不完整」)。
+    // 上解析(后台 isolate 没有插件通道,拿不到系统目录),解析不出来就传
+    // null ⇒ 不缓存、逐字退回改动前的解 PLY + 排序。缓存落系统缓存目录的
+    // `review_cache/`(iOS `Library/Caches`,不进备份,可被系统清掉 ⇒ 退回重算;
+    // 2026-09-23 从 Documents 挪过来),**绝不**进 captures_official/<cap_id>
+    // (装机闸 B 会把多出来的文件判成「备份不完整」)。
     final cacheDir = await ReviewCloudCache.resolveDir();
     SparseCloudData? cloud;
     try {
