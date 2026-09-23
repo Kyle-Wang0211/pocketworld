@@ -823,3 +823,112 @@ ICE-BA 的做法不是「改完尺度/重力后去修先验」,而是**先验一
     involved in this linear marginal **become fixed**" ⇒ 用 `IncrementalFixedLagSmoother` 会把问题原样带回来。
 11. 🟡 Basalt 的 sqrt marginalization(ICCV 2021)**解的不是本题**(治数值条件),§3.2.2 仍明写
     "the linearization point x0κ of the κ-variables **may not be changed**"。
+
+---
+
+# 附录二:我们自己这份 XRSLAM 的边缘化先验长什么样(2026-09-23 第三轮 · 源码穷举 · 零实测)
+
+前面 §A.4 查的是**别人**的实现怎么处理「改了 s 之后先验失效」。本附录拆的是**我们自己仓里这一份**。
+读的是 `/Users/kaidongwang/Developer/xrslam` 分支 `pw/vio`,全部逐行实读,下面每条都给行号。
+
+## B.0 判决(一句话)
+
+**周期性尺度精化与这份先验的当前写法是结构性不兼容的,而且不兼容的原因不是「先验太强」,
+是「先验用绝对量表达」** —— 这正是 ICE-BA 相对化要解决的那一条,与 §A.4 的调研独立吻合。
+另有一条**数值条件**上的怀疑(B.4),它还没被证实,需要 5 行只读插桩才能定论。
+
+## B.1 状态里没有尺度、没有重力 —— 这是穷举不是抽样
+
+全仓参数块声明只有 6 个互不重复的形状,全部列在下面(`grep AddParameterBlock|push_back(3)|push_back(4)` 全量命中 19 条,
+去掉 `cost_function_validator.h:36` 那个转发壳与 marginalization 的两处重复声明后即下表):
+
+| 变量 | 维度 | 声明处 |
+| --- | --- | --- |
+| `frame->pose.q` | 4 | `estimation/solver.cpp:91` |
+| `frame->pose.p` | 3 | `estimation/solver.cpp:94` |
+| `frame->motion.v` | 3 | `estimation/solver.cpp:101` |
+| `frame->motion.bg` | 3 | `estimation/solver.cpp:102` |
+| `frame->motion.ba` | 3 | `estimation/solver.cpp:103` |
+| `track->landmark.inv_depth` | 1 | `estimation/solver.cpp:115` |
+
+`grep -i "scale\|gravity"` 在这 19 条参数块声明上 **零命中**。
+误差状态的布局由 `estimation/state.h:12-19` 钉死:
+
+```
+enum ErrorStateLocation { ES_Q = 0, ES_P = 3, ES_V = 6, ES_BG = 9, ES_BA = 12, ES_SIZE = 15 };
+```
+
+⇒ **ES_SIZE = 15,没有第 16 维**。尺度与重力方向不是「被固定的变量」,是**根本不存在的变量**。
+这与 `preintegrator.cpp:129` 的 `static const vector<3> gravity` 是同一件事的两面。
+
+## B.2 先验用的是绝对量,不是相对量 —— 这是不兼容的真正原因
+
+`ceres/marginalization_factor.h:40-44`,先验残差逐字:
+
+```cpp
+rq  = logmap(pose_linearization_point[i].q.conjugate() * q);
+rp  = p  - pose_linearization_point[i].p;
+rv  = v  - motion_linearization_point[i].v;
+rbg = bg - motion_linearization_point[i].bg;
+rba = ba - motion_linearization_point[i].ba;
+```
+
+而线性化点就是**帧的绝对位姿本身**(`marginalization_factor.h:19-21` 基类构造、`ceres/…:466-467` 每次边缘化后重设):
+
+```cpp
+pose_linearization_point[i]   = frame->pose;      // 绝对
+motion_linearization_point[i] = frame->motion;    // 绝对
+```
+
+⇒ 对全图施加任意全局相似变换(乘尺度 s、或绕水平轴转一个重力修正角),
+**`rp` 与 `rv` 会整体跳变 (s−1)·‖p‖ 量级,`rq` 会整体跳变那个修正角**,
+而这些残差上挂着的信息矩阵是过去几十帧累积下来的。先验不是「变松了」,是**直接指向错误的地方**。
+
+这就是 §A.4 里 ICE-BA 用 `g_k0 = R_k0 · g` 把先验存成**相对参考关键帧**的形式所绕开的那一条。
+两条证据链(读别人的论文 / 读我们自己的源码)独立得到同一个结论。
+
+## B.3 零空间不用移植 Basalt 的探针 —— 这份代码每次边缘化都已经在算了
+
+`ceres/marginalization_factor.h:441-454`:
+
+```cpp
+Eigen::SelfAdjointEigenSolver<matrix<>> saesolver(pose_motion_infomat);
+vector<> lambdas     = (saesolver.eigenvalues().array() > 1.0e-8).select(saesolver.eigenvalues(), 0);
+vector<> lambdas_inv = (saesolver.eigenvalues().array() > 1.0e-8).select(saesolver.eigenvalues().cwiseInverse(), 0);
+sqrt_inv_cov = lambdas.cwiseSqrt().asDiagonal() * saesolver.eigenvectors().transpose();
+```
+
+即:**信息矩阵每次都做完整特征分解,小于 `1e-8` 的特征值被置零**(标准 VINS-Mono 式零空间截断)。
+⇒ 原计划的「移植 Basalt `checkNullspace`」是多余的。**要拿到零空间维数,只需要把
+`saesolver.eigenvalues()` 打出来数一下有多少个落在阈值下**,这是只读插桩,不改任何行为。
+
+## B.4 🟡 未证实的怀疑:那个 `1e-8` 阈值可能是失效的
+
+基类构造 `marginalization_factor.h:29-31` 给**第 0 帧**的 P 与 Q 各压了一个 `1.0e15` 的规范固定:
+
+```cpp
+sqrt_inv_cov.block<3, 3>(ES_P, ES_P) = 1.0e15 * matrix<3>::Identity();
+sqrt_inv_cov.block<3, 3>(ES_Q, ES_Q) = 1.0e15 * matrix<3>::Identity();
+```
+
+(偏移量是裸 `ES_P`/`ES_Q` 没乘帧号 ⇒ 确实只作用于第 0 帧。)
+它经由 `ceres/…:132` 的 `Evaluate(...)` 进入第一次边缘化,以 `Jᵀ J` 的形式落进信息矩阵 ⇒ 量级 **1e30**。
+
+**怀疑**:信息矩阵特征值跨度 1e30 ↔ O(1),动态范围 1e30;double 的相对精度约 1e-16
+⇒ 小特征值的绝对误差约 1e30 × 1e-16 = **1e14**,远大于 1e-8 的阈值。
+若成立,则 `1e-8` 这道闸**分不出任何东西**,零空间截断实际上没在工作。
+
+🔴 **这一条目前只是推理,没有测。** 判据:打印 `saesolver.eigenvalues()` 的完整谱,
+看最大/最小特征值之比,以及有没有特征值真的落在 1e-8 以下。同一次插桩同时回答 B.3 和 B.4。
+在测到之前不得引用本节作为结论。
+
+⚠️ 另注:`1e15` 压的是第 0 帧的**完整 3 自由度姿态**,不只是 yaw。
+而重力在世界系里是常量(B.1)⇒ 初始化时第 0 帧姿态里的重力误差被这道规范固定一起焊死。
+这条与 §A.2「roll/pitch 可观所以不用估」并不矛盾(可观 ≠ 有变量去承载修正),但方向相反,值得在插桩里一并看。
+
+## B.5 本附录没做什么
+
+- 没有跑任何录制、没有产生任何新实验数据(遵 §A 同一口径)。
+- 没有改动 `/Users/kaidongwang/Developer/xrslam` 的任何一行。
+- B.4 的插桩**没有写**,因为它属于「动手」,而周期性尺度精化仍卡在专利核查上。
+  但 B.1/B.2/B.3 是纯事实,不依赖专利结论,可以现在就定。
