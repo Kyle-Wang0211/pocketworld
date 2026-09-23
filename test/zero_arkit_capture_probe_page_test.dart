@@ -165,9 +165,12 @@ void main() {
         'photos',
         'focus',
         'focus_acceptance_tables',
+        'per_frame_intrinsics',
       ]) {
         expect(m.containsKey(key), isTrue, reason: '缺键 $key');
       }
+      // [pw 2026-09-23] 不传逐帧内参账 ⇒ 如实 null(不猜是哪一臂)。
+      expect(m['per_frame_intrinsics'], isNull);
       expect(m['schema'], kZeroArkitProbeManifestSchema);
       expect(m['bundle'], 'com.kyle.arloopbench');
       expect(m['photos_requested'], 2);
@@ -201,6 +204,49 @@ void main() {
       expect((photos[0]! as Map<String, Object?>)['status'], 'saved');
       expect((photos[1]! as Map<String, Object?>)['message'], '接口不可用');
       expect((photos[1]! as Map<String, Object?>)['is_tracking_at_trigger'], isFalse);
+
+      // [pw 2026-09-23] 传了就原样落盘(台架 A/B 的臂名靠它)。
+      final Map<String, Object?> withK = buildZeroArkitProbeManifest(
+        runDir: '/x',
+        hwMachine: 'iPhone15,2',
+        primedMachine: null,
+        runtimeStart: start,
+        cameraRc: 0,
+        cameraOwnedBySelfVio: true,
+        cameraSymbolFailure: null,
+        intrinsicsWaitMs: 312,
+        capturedIntrinsics: const PinholeIntrinsics(
+          fx: 1359.37,
+          fy: 1359.37,
+          cx: 960,
+          cy: 720,
+          imageWidth: 1920,
+          imageHeight: 1440,
+        ),
+        shots: shots,
+        trackingStateCounts: <String, int>{'normal': 100, 'limited_initializing': 20},
+        trackingFrames: 100,
+        notTrackingFrames: 20,
+        confidenceTierCounts: <String, int>{'poseOnly': 100, 'none': 20},
+        poseFrames: 120,
+        pageDuration: const Duration(seconds: 42),
+        startedAtUtc: DateTime.utc(2026, 9, 22, 10),
+        finishedAtUtc: DateTime.utc(2026, 9, 22, 10, 0, 42),
+        engineUnavailableReason: null,
+        focusAvailable: false,
+        focusStateAtFinish: null,
+        focusNativeReportJson: null,
+        focusSeries: const <PwFocusSample>[],
+        focusSelfHeal: null,
+        perFrameIntrinsics: const <String, Object?>{
+          'arm': 'per_frame_k_off',
+          'transport_attached': 0,
+        },
+      );
+      final Map<String, Object?> pfk =
+          withK['per_frame_intrinsics']! as Map<String, Object?>;
+      expect(pfk['arm'], 'per_frame_k_off');
+      expect(pfk['transport_attached'], 0);
     });
 
     test('runtimeStart 为 null(相机没起成)时 c / session 如实 null', () {

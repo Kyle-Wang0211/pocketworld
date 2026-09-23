@@ -127,6 +127,151 @@ class XrslamLiveStats {
       '未运行=$rejectedNotRunning lockFail=$cameraLockFailures run=$running';
 }
 
+/// [pw 2026-09-23] 逐帧内参这一场的账(`PwXrslamLive.intrinsicsReport`,
+/// 原生 `pw_xrslam_live_intrinsics` 写 25 个 double)。
+///
+/// 带「C 账本」字样的数来自传输层 `PWXrslamTransportGetIntrinsicsTrace`,
+/// 不在 Swift / Dart 里合成。判读:
+///   · [switchEnabled] = 启动参数 `-PWPerFrameIntrinsics` 的结果(默认 on);
+///     台架 A/B 用它区分两臂,必须随结果一起落盘。
+///   · [engineConsumed] == [attached] ⇒ 链的核吃到了每一帧的 K;
+///     [engineConsumed] == 0 而 [attached] > 0 ⇒ 链的不是认这条扩展的核
+///     (例如 generic / b9b14814),引擎**实际仍在用 yaml 常量**。
+///   · [traceSequenceMismatch] 应恒 0。
+class XrslamLiveIntrinsics {
+  const XrslamLiveIntrinsics({
+    required this.switchEnabled,
+    required this.switchSource,
+    required this.frames,
+    required this.attached,
+    required this.engineConsumed,
+    required this.notAttached,
+    required this.hostSwitchOff,
+    required this.hostNoAttachment,
+    required this.hostReferenceMismatch,
+    required this.hostActiveFormatMismatch,
+    required this.transportRejectedInvalid,
+    required this.lastSource,
+    required this.lastAttachedFxFyCxCy,
+    required this.lastEngineFxFyCxCy,
+    required this.fxMin,
+    required this.fxMax,
+    required this.pushedWidth,
+    required this.pushedHeight,
+    required this.traceSequenceMismatch,
+  });
+
+  /// 原生写出的 double 个数。
+  static const int wireLength = 25;
+
+  /// 按 `PwXrslamLive.intrinsicsReport` 的下标解析。长度不对返回 `null`。
+  static XrslamLiveIntrinsics? fromWire(List<double> v) {
+    if (v.length != wireLength) return null;
+    return XrslamLiveIntrinsics(
+      switchEnabled: v[0] != 0,
+      switchSource: v[1].toInt(),
+      frames: v[2].toInt(),
+      attached: v[3].toInt(),
+      engineConsumed: v[4].toInt(),
+      notAttached: v[5].toInt(),
+      hostSwitchOff: v[6].toInt(),
+      hostNoAttachment: v[7].toInt(),
+      hostReferenceMismatch: v[8].toInt(),
+      hostActiveFormatMismatch: v[9].toInt(),
+      transportRejectedInvalid: v[10].toInt(),
+      lastSource: v[11].toInt(),
+      lastAttachedFxFyCxCy: List<double>.unmodifiable(v.sublist(12, 16)),
+      lastEngineFxFyCxCy: List<double>.unmodifiable(v.sublist(16, 20)),
+      fxMin: v[20],
+      fxMax: v[21],
+      pushedWidth: v[22].toInt(),
+      pushedHeight: v[23].toInt(),
+      traceSequenceMismatch: v[24].toInt(),
+    );
+  }
+
+  final bool switchEnabled;
+
+  /// 0 默认值 / 1 启动参数 / 2 传了但解析不了(留在默认)。
+  final int switchSource;
+  final int frames;
+
+  /// C 账本:带逐帧 K 推下去的帧数。
+  final int attached;
+
+  /// C 账本:推下去之后引擎回读(`XRSLAM_INFO_INTRINSICS`)逐位一致的帧数。
+  final int engineConsumed;
+
+  /// C 账本:没带逐帧 K 的帧数(= yaml 常量)。
+  final int notAttached;
+  final int hostSwitchOff;
+  final int hostNoAttachment;
+  final int hostReferenceMismatch;
+  final int hostActiveFormatMismatch;
+
+  /// C 账本:给了但不可附加(非有限 / fx,fy ≤ 0)。
+  final int transportRejectedInvalid;
+
+  /// 最近一帧:0 无 / 1 常量 / 2 逐帧且引擎一致 / 3 逐帧但引擎不一致。
+  final int lastSource;
+  final List<double> lastAttachedFxFyCxCy;
+  final List<double> lastEngineFxFyCxCy;
+  final double fxMin;
+  final double fxMax;
+  final int pushedWidth;
+  final int pushedHeight;
+  final int traceSequenceMismatch;
+
+  /// 台架 A/B 的臂名。
+  String get armLabel => switchEnabled ? 'per_frame_k_on' : 'per_frame_k_off';
+
+  static const List<String> _lastSourceLabels = <String>[
+    'none',
+    'config',
+    'per_frame',
+    'per_frame_not_consumed',
+  ];
+
+  String get lastSourceLabel =>
+      lastSource >= 0 && lastSource < _lastSourceLabels.length
+          ? _lastSourceLabels[lastSource]
+          : 'unknown($lastSource)';
+
+  Map<String, Object?> toJson() => <String, Object?>{
+        'schema': 'pw.vio.per-frame-intrinsics/1',
+        'arm': armLabel,
+        'switch_enabled': switchEnabled,
+        'switch_source': switchSource,
+        'switch_launch_argument': '-PWPerFrameIntrinsics',
+        'frames': frames,
+        'transport_attached': attached,
+        'transport_engine_report_matched': engineConsumed,
+        'transport_not_attached': notAttached,
+        'transport_rejected_invalid': transportRejectedInvalid,
+        'host_switch_off': hostSwitchOff,
+        'host_no_attachment': hostNoAttachment,
+        'host_reference_dims_mismatch': hostReferenceMismatch,
+        'host_active_format_mismatch': hostActiveFormatMismatch,
+        'last_source': lastSourceLabel,
+        'last_attached_fxfycxcy': lastAttachedFxFyCxCy,
+        'last_engine_fxfycxcy': lastEngineFxFyCxCy,
+        'fx_min': fxMin,
+        'fx_max': fxMax,
+        'pushed_width': pushedWidth,
+        'pushed_height': pushedHeight,
+        'trace_sequence_mismatch': traceSequenceMismatch,
+      };
+
+  @override
+  String toString() => '臂=$armLabel(来源 $switchSource) 帧=$frames '
+      '逐帧推=$attached 引擎吃到=$engineConsumed 常量=$notAttached '
+      '[开关off=$hostSwitchOff 无附件=$hostNoAttachment 参照≠推送=$hostReferenceMismatch '
+      'activeFormat≠推送=$hostActiveFormatMismatch 传输层拒=$transportRejectedInvalid] '
+      '最近=$lastSourceLabel fx[min/max]=${fxMin.toStringAsFixed(2)}/'
+      '${fxMax.toStringAsFixed(2)} 推送=${pushedWidth}x$pushedHeight '
+      '序号错=$traceSequenceMismatch';
+}
+
 /// 原生活体通路的 Dart 门面。符号查不到时所有调用**降级**返回失败,不抛。
 abstract final class XrslamLive {
   static ffi.DynamicLibrary get _lib => ffi.DynamicLibrary.process();
@@ -312,6 +457,34 @@ abstract final class XrslamLive {
       effectiveMinusPtsSeconds: _timebaseOut[10],
       traceReads: _timebaseOut[11].toInt(),
     );
+  }
+
+  static int Function(ffi.Pointer<ffi.Double>, int)? _intrinsics;
+  static bool _intrinsicsLooked = false;
+  static final ffi.Pointer<ffi.Double> _intrinsicsOut =
+      calloc<ffi.Double>(XrslamLiveIntrinsics.wireLength);
+
+  /// [pw 2026-09-23] 逐帧内参这一场的账。`null` = 符号不在(旧包)或还没推过帧。
+  static XrslamLiveIntrinsics? intrinsics() {
+    if (!_intrinsicsLooked) {
+      _intrinsicsLooked = true;
+      try {
+        _intrinsics = _lib.lookupFunction<
+            ffi.Int32 Function(ffi.Pointer<ffi.Double>, ffi.Int32),
+            int Function(ffi.Pointer<ffi.Double>, int)>(
+          'pw_xrslam_live_intrinsics',
+        );
+      } catch (_) {
+        _intrinsics = null;
+      }
+    }
+    final int Function(ffi.Pointer<ffi.Double>, int)? f = _intrinsics;
+    if (f == null) return null;
+    if (f(_intrinsicsOut, XrslamLiveIntrinsics.wireLength) != 0) return null;
+    return XrslamLiveIntrinsics.fromWire(<double>[
+      for (int i = 0; i < XrslamLiveIntrinsics.wireLength; i++)
+        _intrinsicsOut[i],
+    ]);
   }
 
   static ffi.Pointer<ffi.Char>? _trailBuf;

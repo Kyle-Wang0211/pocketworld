@@ -86,6 +86,7 @@ import '../capture/focus_self_heal.dart';
 import '../capture/zero_arkit_capture_runtime.dart';
 import '../ffi/pw_focus_ffi.dart';
 import '../ffi/xrslam_config.dart' show CameraIntrinsics, FieldProvenanceLabel;
+import '../ffi/xrslam_live_ffi.dart' show XrslamLive;
 import '../ffi/xrslam_session.dart';
 import '../pose/camera_projection.dart' show PinholeIntrinsics;
 import '../pose/camera_slot_ffi.dart' show CameraExposure, PwCameraSlot;
@@ -400,6 +401,9 @@ Map<String, Object?> buildZeroArkitProbeManifest({
   required String? focusNativeReportJson,
   required List<PwFocusSample> focusSeries,
   required FocusSelfHeal? focusSelfHeal,
+  // [pw 2026-09-23] 逐帧内参这一场的账(`XrslamLive.intrinsics()?.toJson()`)。
+  // 可选:旧调用方/旧原生包不给 ⇒ 如实写 null,不猜是哪一臂。
+  Map<String, Object?>? perFrameIntrinsics,
 }) {
   final CameraTimeOffset? c = runtimeStart?.cameraTimeOffset;
   final CameraIntrinsics? feedK = runtimeStart?.intrinsics;
@@ -466,6 +470,10 @@ Map<String, Object?> buildZeroArkitProbeManifest({
                   },
           },
     'engine_unavailable_reason': engineUnavailableReason?.toString(),
+    // 🔴 台架 A/B(`-PWPerFrameIntrinsics on|off`)的归因靠这一块:哪一臂、
+    //    推了多少帧逐帧 K、链的核吃没吃到(引擎回读一致的帧数)。null = 原生
+    //    没有 `pw_xrslam_live_intrinsics` 符号或整场没推过帧。
+    'per_frame_intrinsics': perFrameIntrinsics,
     'pose_frames': poseFrames,
     'tracking_frames': trackingFrames,
     'not_tracking_frames': notTrackingFrames,
@@ -613,6 +621,9 @@ class _ZeroArkitCaptureProbePageState extends State<ZeroArkitCaptureProbePage> {
   bool _finished = false;
   bool _disposing = false;
   String? _manifestPath;
+
+  /// [pw 2026-09-23] 停会话**之前**读的逐帧内参账(manifest 的 `per_frame_intrinsics`)。
+  Map<String, Object?>? _perFrameIntrinsicsAtStop;
 
   // ── 对焦 ────────────────────────────────────────────────────────────────
   /// 整场的逐帧对焦流水(验收表 B)。每秒从原生取空一次,写 manifest 时再降采样。
@@ -923,6 +934,9 @@ class _ZeroArkitCaptureProbePageState extends State<ZeroArkitCaptureProbePage> {
     _poseSub = null;
     _focusDrainTimer?.cancel();
     _focusDrainTimer = null;
+    // [pw 2026-09-23] 逐帧内参账在停会话之前取一次(原生账本到下次 create 才清)。
+    _perFrameIntrinsicsAtStop = XrslamLive.intrinsics()?.toJson();
+    _log('逐帧内参:${_perFrameIntrinsicsAtStop ?? 'null(无符号或没推过帧)'}');
     // 会话销毁 + 相机关。provider 没建起来时直接停相机。
     if (_provider != null) {
       await _provider!.stop();
@@ -974,6 +988,7 @@ class _ZeroArkitCaptureProbePageState extends State<ZeroArkitCaptureProbePage> {
         focusNativeReportJson: focusReport,
         focusSeries: _focusSeries,
         focusSelfHeal: _selfHeal,
+        perFrameIntrinsics: _perFrameIntrinsicsAtStop,
       );
       try {
         await runDir.create(recursive: true);
