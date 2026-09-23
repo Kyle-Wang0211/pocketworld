@@ -1075,24 +1075,63 @@ class _ZeroArkitCaptureProbePageState extends State<ZeroArkitCaptureProbePage> {
       if (_manifestPath != null) 'manifest:$_manifestPath',
     ];
 
+    // 🔴 [2026-09-23 用户实测「自动对焦了,但是看不见拍摄按钮了」]
+    //    状态条从 9 行涨到 13 行(加了自愈两行)后,Column 的三段
+    //    (状态 + 3:4 预览 + 按钮)在 14 Pro 上竖直方向装不下,按钮被挤出屏幕。
+    //    修法两条,都不动预览的 3:4 口径(那是与生产同比的承重项):
+    //      ① 按钮移到 `bottomNavigationBar` —— Scaffold 保证它永远在底部可见,
+    //         不参与 body 的高度竞争;
+    //      ② 状态条自己可滚动并限高,行数再涨也只挤自己。
     return Scaffold(
       backgroundColor: Colors.black,
+      bottomNavigationBar: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: <Widget>[
+              Expanded(
+                child: FilledButton(
+                  onPressed: (_running && !_shutterBusy && !_finished)
+                      ? _shutter
+                      : null,
+                  child: Text(_shutterBusy ? '拍摄中…' : '拍一张'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton(
+                  onPressed: _finished ? null : _finish,
+                  child: const Text('完成(关相机 + 写 manifest)'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
       body: SafeArea(
+        bottom: false,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-              child: DefaultTextStyle(
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 11,
-                  fontFamily: 'Menlo',
-                  height: 1.35,
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: lines.map((String s) => Text(s)).toList(),
+            // 限高 + 可滚动:状态行数再涨也只挤自己,不再挤走预览与按钮。
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 260),
+              child: SingleChildScrollView(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+                  child: DefaultTextStyle(
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 11,
+                      fontFamily: 'Menlo',
+                      height: 1.35,
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: lines.map((String s) => Text(s)).toList(),
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -1114,28 +1153,6 @@ class _ZeroArkitCaptureProbePageState extends State<ZeroArkitCaptureProbePage> {
                         ),
                       ),
                     ),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(12),
-              child: Row(
-                children: <Widget>[
-                  Expanded(
-                    child: FilledButton(
-                      onPressed: (_running && !_shutterBusy && !_finished)
-                          ? _shutter
-                          : null,
-                      child: Text(_shutterBusy ? '拍摄中…' : '拍一张'),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: FilledButton(
-                      onPressed: _finished ? null : _finish,
-                      child: const Text('完成(关相机 + 写 manifest)'),
-                    ),
-                  ),
-                ],
-              ),
             ),
           ],
         ),
