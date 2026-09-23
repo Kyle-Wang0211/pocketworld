@@ -37,6 +37,15 @@ tests or a build.
   the default `generic` arm: BUILD SUCCEEDED, `_pw_xrslam_live_intrinsics`
   exported. Nothing installed. The Release symbol count (45) is inferred from
   the previous 44 plus this one symbol, not measured.
+- [x] Review follow-ups: an equal `XRSLAM_INFO_INTRINSICS` read-back is no
+  longer counted as consumption (only the Release build identity decides;
+  a differing read-back proves "not taken"); the ON arm attaches K only when
+  the pushed size equals the YAML `cam0.resolution`; an unparseable
+  `-PWPerFrameIntrinsics` is recorded in the diagnostics; the ARKit shadow YAML
+  K uses the per-frame expression (principal point moves by −1/3 px on both
+  axes); Android pushes the frame and counts `rejected_invalid` on a wrong-length
+  K. Re-checked: transport ctest 2/2, fixture 120 and 1702 rows max diff 0,
+  generic-device Profile `xcodebuild` of `gpufenothread_pfk` BUILD SUCCEEDED.
 - [ ] Android camera2 source of K mapped to pushed-buffer pixels and verified on
   a device.
 - [ ] Rebuild `android_ready/native/xrslam/libs/arm64-v8a/libpw_xrslam_transport.so`
