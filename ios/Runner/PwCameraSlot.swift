@@ -82,6 +82,11 @@ private final class PwCameraSlotImpl: NSObject,
     fileprivate var latestFrameWidth: Int = 0
     fileprivate var latestFrameHeight: Int = 0
 
+    /// [pw 2026-09-23 逐帧内参] start() 里选定的 activeFormat 的尺寸。随每帧 K 一起
+    /// 交给 `PwXrslamLive`,由它核对「K 的参照尺寸 == 推给引擎的像素尺寸」。
+    fileprivate var activeFormatWidth: Int = 0
+    fileprivate var activeFormatHeight: Int = 0
+
     fileprivate var photoOutput: AVCapturePhotoOutput?
     /// 照片输出没装上时,原因原样记下来写进 sidecar,而不是静默降级。
     fileprivate var photoOutputNote: String = "not_installed"
@@ -225,6 +230,9 @@ private final class PwCameraSlotImpl: NSObject,
             guard let f = cands.first(where: { !$0.isVideoBinned }) ?? cands.first
             else { return -7 }
             device.activeFormat = f
+            let activeDims = CMVideoFormatDescriptionGetDimensions(f.formatDescription)
+            self.activeFormatWidth = Int(activeDims.width)
+            self.activeFormatHeight = Int(activeDims.height)
 
             // 🔴🔴 [pw 2026-09-23 用户拍板「换掉锁定,照生产那套来」]
             //    **下面这段锁焦不再是默认路径**。默认臂已从 A 换成 B
@@ -383,17 +391,35 @@ private final class PwCameraSlotImpl: NSObject,
         }
 
         // 内参:每帧都读,因为自动对焦全程在动。
+        // [pw 2026-09-23 逐帧内参] 读法对齐 `PwVioCapability.swift`
+        //   `fromSampleBuffer`:按整个 `matrix_float3x3`(48 字节,simd 列 16 字节对齐)
+        //   判长度并 `loadUnaligned`(旧写法按 9×Float=36 字节判长度再 `load` 48 字节)。
+        //   列主序:fx = columns.0.x、fy = columns.1.y、cx/cy = columns.2.x/.y
+        //   (CMSampleBuffer.h:1852-1857)。参照尺寸 = 这个 sample buffer 的格式描述
+        //   ("applied to the current sample buffer",同上)。这一帧的 K 随这一帧进引擎。
+        var frameIntrinsics: PwFrameIntrinsics? = nil
         if let raw = CMGetAttachment(
             sampleBuffer,
             key: kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix,
             attachmentModeOut: nil) as? Data,
-            raw.count >= MemoryLayout<Float>.size * 9
+            raw.count >= MemoryLayout<matrix_float3x3>.size
         {
-            let m = raw.withUnsafeBytes { $0.load(as: matrix_float3x3.self) }
+            let m = raw.withUnsafeBytes { $0.loadUnaligned(as: matrix_float3x3.self) }
+            let kfx = Double(m.columns.0.x), kfy = Double(m.columns.1.y)
+            let kcx = Double(m.columns.2.x), kcy = Double(m.columns.2.y)
             lock.lock()
-            fx = Double(m.columns.0.x); fy = Double(m.columns.1.y)
-            cx = Double(m.columns.2.x); cy = Double(m.columns.2.y)
+            fx = kfx; fy = kfy
+            cx = kcx; cy = kcy
             lock.unlock()
+            if let fd = CMSampleBufferGetFormatDescription(sampleBuffer) {
+                let refDims = CMVideoFormatDescriptionGetDimensions(fd)
+                frameIntrinsics = PwFrameIntrinsics(
+                    fx: kfx, fy: kfy, cx: kcx, cy: kcy,
+                    referenceWidth: Int(refDims.width),
+                    referenceHeight: Int(refDims.height),
+                    activeFormatWidth: activeFormatWidth,
+                    activeFormatHeight: activeFormatHeight)
+            }
         }
 
         // 🔴 **在这个回调里当场喂引擎**,与上游 `XRSLAMer.cameraDidOutput →
@@ -402,7 +428,8 @@ private final class PwCameraSlotImpl: NSObject,
         //    位姿结果由 `PwXrslamLive` 存住,Dart 只读,不进热路径。
         PwXrslamLive.shared.onCameraFrame(
             pb, ptsSeconds: latestFramePTSSeconds,
-            exposureSeconds: latestExposureSeconds)
+            exposureSeconds: latestExposureSeconds,
+            intrinsics: frameIntrinsics)
 
         // [pw 2026-09-23 对焦三臂] **三臂都在这里算同一个度量**(A/B 臂不驱动
         // 镜头,但没有度量就没得比);C 臂在里面顺带把状态机推一步并下发镜头。

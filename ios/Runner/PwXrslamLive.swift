@@ -93,6 +93,90 @@ import CoreMedia
 import CoreMotion
 import Foundation
 
+// ══ [pw 2026-09-23] 逐帧内参(per-frame K)════════════════════════════════════
+// 引擎侧早已接通(fork `Kyle-Wang0211/xrslam` @ 04c0e83:`XRSLAMImage.ext_size`
+// + 72 字节 `XRSLAMImageExtension`,`detail.cpp:105-110` 有当帧 K 就用当帧 K,
+// 否则用 yaml 常量)。这里只做宿主那一半:把**这一帧**自己的 K 跟着这一帧
+// 推进传输层(`PWXrslamTransportPushCameraAndRunRawWithIntrinsics`)。
+//
+// K 的来源与参照尺寸 —— 苹果官方头文件原文(iPhoneOS26.2.sdk):
+//   · CMSampleBuffer.h:1849-1857 `kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix`:
+//       "Indicates the 3x3 camera intrinsic matrix applied to the current sample
+//        buffer. ... fx and fy are the focal length in pixels. ... ox and oy are
+//        the coordinates of the principal point. The origin is the upper left of
+//        the frame."
+//   · AVCaptureSession.h:1292 `cameraIntrinsicMatrixDeliveryEnabled`:
+//       "the receiver's output will add the kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix
+//        sample buffer attachment to all vended sample buffers."
+//   · 官方在线文档(2026-09-23 核对,与上面两段头文件同义):
+//       https://developer.apple.com/documentation/coremedia/kcmsamplebufferattachmentkey_cameraintrinsicmatrix
+//         —— 摘要:矩阵 "to apply to the current sample buffer"
+//       https://developer.apple.com/documentation/avfoundation/avcaptureconnection/iscameraintrinsicmatrixdeliveryenabled
+//         —— 开启后 AVCaptureVideoDataOutput 给它交付的每个 sample buffer 带这条附件
+//   ⇒ 矩阵参照的就是**被交付的那个 sample buffer 本身**;我们推给引擎的正是
+//     它的 image buffer(整帧 BGRA,不降采样)⇒ **不需要换算**,原值直推。
+//   官方文档没有写「输出被 videoSettings 缩放时矩阵是否跟着缩放」这一种情况。
+//   `PwCameraSlot.start` 里 videoSettings 的宽高 == activeFormat 的宽高(同一个
+//   width/height 过滤出来的格式),所以两种读法在我们的路径上重合。运行期仍逐帧
+//   核对三组尺寸 —— 推给引擎的像素 / sample buffer 格式描述 / activeFormat ——
+//   任何一组不等就**不推逐帧 K**、退回 yaml 常量并按原因计数,不猜换算。
+//
+// 开关:启动参数 `-PWPerFrameIntrinsics off|on`(键名与读法抄 `PwFocusArms.swift:214-235`
+// 的 `-PWFocusArm`:先读 NSArgumentDomain,再自己扫一遍 argv)。本研究分支**默认 on**;
+// off = 一字不差地走旧的 `PWXrslamTransportPushCameraAndRunRaw`(A 臂)。
+// 两条原生通路(本文件 = 零 ARKit ON 臂;`PwVioSlamFeeder.swift` = ARKit 影子)共用它。
+enum PwPerFrameIntrinsicsSwitch {
+    static let kLaunchArgumentKey = "PWPerFrameIntrinsics"
+
+    /// 0 = 默认值(没传参数);1 = 启动参数;2 = 传了但解析不了(留在默认)。
+    enum Source: Int { case defaultValue = 0, launchArgument = 1, unparseable = 2 }
+
+    struct Resolved {
+        let enabled: Bool
+        let source: Source
+        let raw: String
+    }
+
+    /// 进程内解析一次(Swift 的 static let 惰性且线程安全)。
+    static let resolved: Resolved = {
+        var raw = ""
+        if let v = UserDefaults.standard.string(forKey: kLaunchArgumentKey) {
+            raw = v
+        }
+        if raw.isEmpty {
+            let args = ProcessInfo.processInfo.arguments
+            if let i = args.firstIndex(of: "-\(kLaunchArgumentKey)"), i + 1 < args.count {
+                raw = args[i + 1]
+            }
+        }
+        let v = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if v.isEmpty { return Resolved(enabled: true, source: .defaultValue, raw: raw) }
+        if ["on", "1", "true", "yes"].contains(v) {
+            return Resolved(enabled: true, source: .launchArgument, raw: raw)
+        }
+        if ["off", "0", "false", "no"].contains(v) {
+            return Resolved(enabled: false, source: .launchArgument, raw: raw)
+        }
+        NSLog("[PwPerFrameIntrinsics] -%@ 值无法解析:「%@」⇒ 留在默认 on", kLaunchArgumentKey, raw)
+        return Resolved(enabled: true, source: .unparseable, raw: raw)
+    }()
+}
+
+/// 一帧自带的针孔内参 + 它所参照的尺寸(见上面那段官方原文)。
+struct PwFrameIntrinsics {
+    let fx: Double
+    let fy: Double
+    let cx: Double
+    let cy: Double
+    /// `CMVideoFormatDescriptionGetDimensions(CMSampleBufferGetFormatDescription(sb))`
+    /// —— 与 `PwVioCapability.swift` `fromSampleBuffer` 取参照尺寸的口径相同。
+    let referenceWidth: Int
+    let referenceHeight: Int
+    /// 采集设备 activeFormat 的尺寸(`PwCameraSlot.start` 里选定的那个)。
+    let activeFormatWidth: Int
+    let activeFormatHeight: Int
+}
+
 final class PwXrslamLive {
     static let shared = PwXrslamLive()
 
@@ -180,6 +264,26 @@ final class PwXrslamLive {
     /// |(effective − raw) − applied_offset| 峰值。**必须恒 0**。
     private var tbMaxAbsOffsetResidual: Double = 0
 
+    // ── [pw 2026-09-23] 逐帧内参账本(见文件头「逐帧内参」段)──────────────
+    /// 走过决策、推成功的相机帧数。
+    private var ikFrames: UInt64 = 0
+    /// 宿主侧**没推** K 的原因计数(传输层自己拒的在 C 账本里,不在这里)。
+    private var ikSwitchOff: UInt64 = 0
+    private var ikNoAttachment: UInt64 = 0
+    private var ikReferenceMismatch: UInt64 = 0
+    private var ikActiveFormatMismatch: UInt64 = 0
+    /// 最近一帧的实际来源:0 还没有 / 1 yaml 常量 / 2 逐帧且引擎回读一致 /
+    /// 3 推了逐帧但引擎回读不一致(链的核不认这条扩展 ⇒ 实际仍是常量)。
+    private var ikLastSource: Int = 0
+    private var ikFxMin: Double = .infinity
+    private var ikFxMax: Double = 0
+    private var ikLastPushedWidth: Int = 0
+    private var ikLastPushedHeight: Int = 0
+    /// 以下来自 C 账本 `PWXrslamTransportGetIntrinsicsTrace`,不在 Swift 合成。
+    private var ikTrace = PWXrslamIntrinsicsTrace()
+    /// trace 描述的那一帧 != 本帧(camera submitted_sequence 对不上)的次数。**应恒 0**。
+    private var ikTraceSequenceMismatch: UInt64 = 0
+
     // MARK: 生命周期
 
     /// 由 `PwCameraSlot.start()` 调用,登记相机的串行队列。
@@ -203,6 +307,11 @@ final class PwXrslamLive {
         tbHalfAppliedSum = 0; lastCanonicalPts = 0
         tbTraceReads = 0; tbLastAppliedOffset = 0; tbLastEffectiveMinusPts = 0
         tbMaxAbsRawResidual = 0; tbMaxAbsOffsetResidual = 0
+        ikFrames = 0; ikSwitchOff = 0; ikNoAttachment = 0
+        ikReferenceMismatch = 0; ikActiveFormatMismatch = 0
+        ikLastSource = 0; ikFxMin = .infinity; ikFxMax = 0
+        ikLastPushedWidth = 0; ikLastPushedHeight = 0
+        ikTrace = PWXrslamIntrinsicsTrace(); ikTraceSequenceMismatch = 0
 
         // 🔴 GPU 前端的运行期开关。只有链了 `gpufenothread` 那条臂时才有东西读它
         //    (`gpu_image.cpp:28`);链 generic 时这个变量没有任何读者,置位无害。
@@ -346,8 +455,11 @@ final class PwXrslamLive {
     ///    返回 —— 让相机继续按自己的节奏交付,而不是被算法拖成 12 fps。
     /// [ptsSeconds] 是**原始** presentationTimeStamp(曝光起点);[exposureSeconds]
     /// 是当帧曝光时长(0 = 未知)。这里换算到曝光中点再推(文件头偏离 (d))。
+    /// [intrinsics] = 这一帧 sample buffer 自带的 K(`nil` = 这一帧没有附件)。
+    ///   跟着这一帧进 worker,**不**从共享状态里再读 —— 否则算的是 A 帧、用的是 B 帧的 K。
     func onCameraFrame(_ pixelBuffer: CVPixelBuffer, ptsSeconds: Double,
-                       exposureSeconds: Double) {
+                       exposureSeconds: Double,
+                       intrinsics: PwFrameIntrinsics? = nil) {
         // 曝光中点换算。exposure 非法/未知按 0:等价于"没换算",并计数暴露出来。
         let exposure = (exposureSeconds.isFinite && exposureSeconds >= 0)
             ? exposureSeconds : 0
@@ -386,14 +498,15 @@ final class PwXrslamLive {
         // `CVPixelBuffer` 是 CF 桥接类型,捕获进闭包即 retain、闭包销毁即
         // release —— 池里的这一格在 worker 用完之前不会被覆盖。
         workQueue.async { [weak self] in
-            self?.runOneFrame(pixelBuffer, canonical: canonical, rawPts: ptsSeconds)
+            self?.runOneFrame(pixelBuffer, canonical: canonical, rawPts: ptsSeconds,
+                              intrinsics: intrinsics)
         }
     }
 
     /// 在 worker 上跑。与上游 `trackCamera`(`XRSLAM_iOS.mm:152-188`)同形:
     /// push → RunOneFrame → GetResult 由传输层一次原子做完。
     private func runOneFrame(_ pixelBuffer: CVPixelBuffer, canonical: Double,
-                             rawPts: Double) {
+                             rawPts: Double, intrinsics: PwFrameIntrinsics?) {
         defer {
             lock.lock(); pendingFrames -= 1; lock.unlock()
         }
@@ -406,13 +519,46 @@ final class PwXrslamLive {
         guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else { return }
         let stride = CVPixelBufferGetBytesPerRow(pixelBuffer)
 
+        let pushedWidth = CVPixelBufferGetWidth(pixelBuffer)
+        let pushedHeight = CVPixelBufferGetHeight(pixelBuffer)
+
+        // [pw 2026-09-23] 这一帧推不推自己的 K(文件头「逐帧内参」段)。
+        //   整帧直推、不降采样 ⇒ K 原值即推送像素上的 K,不做任何算术。
+        //   参照尺寸对不上就退回 yaml 常量并计数 —— 不猜换算。
+        var frameK: [Double]? = nil
+        var hostReason = 0 // 0 推;1 开关 off;2 无附件;3 参照≠推送;4 activeFormat≠推送
+        if !PwPerFrameIntrinsicsSwitch.resolved.enabled {
+            hostReason = 1
+        } else if let k = intrinsics {
+            if k.referenceWidth != pushedWidth || k.referenceHeight != pushedHeight {
+                hostReason = 3
+            } else if k.activeFormatWidth != pushedWidth
+                        || k.activeFormatHeight != pushedHeight {
+                hostReason = 4
+            } else {
+                frameK = [k.fx, k.fy, k.cx, k.cy]
+            }
+        } else {
+            hostReason = 2
+        }
+
         var state: Int32 = 0
         var pose = PWXrslamRawPose()
         // channel = 4:BGRA 直推,引擎内部转灰度(见文件头偏离 (b))。
-        let rc = PWXrslamTransportPushCameraAndRunRaw(
-            base.assumingMemoryBound(to: UInt8.self),
-            canonical, Int32(stride), /*camera_id=*/0, /*channel=*/4,
-            &state, &pose)
+        let rc: Int32
+        if let k = frameK {
+            rc = k.withUnsafeBufferPointer { kp in
+                PWXrslamTransportPushCameraAndRunRawWithIntrinsics(
+                    base.assumingMemoryBound(to: UInt8.self),
+                    canonical, Int32(stride), /*camera_id=*/0, /*channel=*/4,
+                    kp.baseAddress, &state, &pose)
+            }
+        } else {
+            rc = PWXrslamTransportPushCameraAndRunRaw(
+                base.assumingMemoryBound(to: UInt8.self),
+                canonical, Int32(stride), /*camera_id=*/0, /*channel=*/4,
+                &state, &pose)
+        }
 
         // [pw 2026-09-22] 时基自证(文件头偏离 (d)):刚推完就读 C 账本里相机流的
         //   最近一条 trace。workQueue 是串行的、只有这里推相机 ⇒ 读到的必是本帧。
@@ -420,6 +566,40 @@ final class PwXrslamLive {
         var tr = PWXrslamTimestampTrace()
         let trc = PWXrslamTransportGetLastTimestampTrace(
             Int32(PW_XRSLAM_STREAM_CAMERA.rawValue), &tr)
+        // [pw 2026-09-23] 逐帧内参的 C 账本:同一条串行 worker、只有这里推相机
+        //   ⇒ 读到的是本帧;仍用 camera submitted_sequence 对一次账。
+        if rc == PW_XRSLAM_OK.rawValue {
+            var ik = PWXrslamIntrinsicsTrace()
+            let ikrc = PWXrslamTransportGetIntrinsicsTrace(&ik)
+            lock.lock()
+            ikFrames &+= 1
+            ikLastPushedWidth = pushedWidth
+            ikLastPushedHeight = pushedHeight
+            switch hostReason {
+            case 1: ikSwitchOff &+= 1
+            case 2: ikNoAttachment &+= 1
+            case 3: ikReferenceMismatch &+= 1
+            case 4: ikActiveFormatMismatch &+= 1
+            default: break
+            }
+            if ikrc == PW_XRSLAM_OK.rawValue {
+                ikTrace = ik
+                if trc == PW_XRSLAM_OK.rawValue,
+                   ik.camera_submitted_sequence != tr.submitted_sequence {
+                    ikTraceSequenceMismatch &+= 1
+                }
+                if ik.last_per_frame_attached == 1 {
+                    ikLastSource = ik.last_engine_report_matches == 1 ? 2 : 3
+                    let fx = ik.last_attached_fxfycxcy.0
+                    if fx < ikFxMin { ikFxMin = fx }
+                    if fx > ikFxMax { ikFxMax = fx }
+                } else {
+                    ikLastSource = 1
+                }
+            }
+            lock.unlock()
+        }
+
         if trc == PW_XRSLAM_OK.rawValue,
            tr.stream == Int32(PW_XRSLAM_STREAM_CAMERA.rawValue) {
             let rRaw = abs(tr.raw_timestamp - canonical)
@@ -503,6 +683,52 @@ final class PwXrslamLive {
         out[7] = lastPose.translation.1
         out[8] = lastPose.translation.2
         return haveResult ? 0 : -1
+    }
+
+    /// [pw 2026-09-23] 写 25 个 double —— 逐帧内参这一场的账(文件头「逐帧内参」段):
+    ///   0 开关(1 on / 0 off)   1 开关来源(0 默认 / 1 启动参数 / 2 解析不了→默认)
+    ///   2 走过决策并推成功的相机帧数
+    ///   3 其中带逐帧 K 推下去的帧数        ← C 账本 attached
+    ///   4 其中引擎回读 == 推下去的 K       ← C 账本 engine_report_matched
+    ///   5 没带逐帧 K 的帧数(= yaml 常量) ← C 账本 not_attached
+    ///   6 原因:开关 off   7 原因:该帧无附件   8 原因:参照尺寸≠推送尺寸
+    ///   9 原因:activeFormat 尺寸≠推送尺寸   10 原因:传输层拒收(非有限/fx,fy≤0)← C 账本
+    ///  11 最近一帧来源(0 无 / 1 常量 / 2 逐帧且引擎一致 / 3 逐帧但引擎不一致)
+    ///  12-15 最近一次推下去的 fx fy cx cy   16-19 最近一次引擎回读的 fx fy cx cy
+    ///  20 推下去的 fx 最小  21 最大(没推过写 0)  22/23 最近一帧推送宽/高(像素)
+    ///  24 trace 与本帧序号对不上的次数(**应恒 0**)
+    /// 返回 0 = 已有帧;-1 = 还没推过帧。
+    static let intrinsicsReportCount = 25
+    func intrinsicsReport(into out: UnsafeMutablePointer<Double>) -> Int32 {
+        let sw = PwPerFrameIntrinsicsSwitch.resolved
+        lock.lock(); defer { lock.unlock() }
+        let t = ikTrace
+        out[0] = sw.enabled ? 1 : 0
+        out[1] = Double(sw.source.rawValue)
+        out[2] = Double(ikFrames)
+        out[3] = Double(t.attached)
+        out[4] = Double(t.engine_report_matched)
+        out[5] = Double(t.not_attached)
+        out[6] = Double(ikSwitchOff)
+        out[7] = Double(ikNoAttachment)
+        out[8] = Double(ikReferenceMismatch)
+        out[9] = Double(ikActiveFormatMismatch)
+        out[10] = Double(t.rejected_invalid)
+        out[11] = Double(ikLastSource)
+        out[12] = t.last_attached_fxfycxcy.0
+        out[13] = t.last_attached_fxfycxcy.1
+        out[14] = t.last_attached_fxfycxcy.2
+        out[15] = t.last_attached_fxfycxcy.3
+        out[16] = t.last_engine_fxfycxcy.0
+        out[17] = t.last_engine_fxfycxcy.1
+        out[18] = t.last_engine_fxfycxcy.2
+        out[19] = t.last_engine_fxfycxcy.3
+        out[20] = ikFxMin.isFinite ? ikFxMin : 0
+        out[21] = ikFxMax
+        out[22] = Double(ikLastPushedWidth)
+        out[23] = Double(ikLastPushedHeight)
+        out[24] = Double(ikTraceSequenceMismatch)
+        return ikFrames > 0 ? 0 : -1
     }
 
     /// 写 14 个 int64。前 8 个**直接来自 C++ 账本**,不在 Swift 里合成
@@ -591,6 +817,17 @@ public func pw_xrslam_live_timing(_ out: UnsafeMutablePointer<Double>) -> Int32 
 @_cdecl("pw_xrslam_live_timebase")
 public func pw_xrslam_live_timebase(_ out: UnsafeMutablePointer<Double>) -> Int32 {
     return PwXrslamLive.shared.timebase(into: out)
+}
+
+/// [pw 2026-09-23] 写 25 个 double,见 `PwXrslamLive.intrinsicsReport`。
+/// `cap` = 调用方分配的 double 个数;不够 25 返回 -2 且不写(不截断)。
+/// 0 有帧 / -1 还没推过帧。
+@_cdecl("pw_xrslam_live_intrinsics")
+public func pw_xrslam_live_intrinsics(
+    _ out: UnsafeMutablePointer<Double>, _ cap: Int32
+) -> Int32 {
+    guard Int(cap) >= PwXrslamLive.intrinsicsReportCount else { return -2 }
+    return PwXrslamLive.shared.intrinsicsReport(into: out)
 }
 
 /// 写 14 个 int64,见 `PwXrslamLive.stats`。
