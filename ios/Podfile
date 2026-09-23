@@ -227,6 +227,12 @@ post_install do |installer|
   #   'gpufenothread'   ⇒ 研究臂 libxrslam_gpufenothread_b9b14814.a
   #                       (GPU 前端 ON + 线程化 OFF;唯一在 1920×1440
   #                        直播撑得住 30 fps 的臂,回放 31.4→39.6-44.1 fps)
+  #   'gpufenothread_pfk' ⇒ 研究臂 libxrslam_gpufenothread_pfk_6f6aa21c.a
+  #                       (上一档 + fork 04c0e83 的逐帧内参消费;与 b9b14814
+  #                        的唯一源码差是那一个提交,见同名 receipt 的
+  #                        attribution_control)。宿主侧逐帧 K 只有链这一档
+  #                        时才被引擎吃到;链别的档,传输层回读
+  #                        XRSLAM_INFO_INTRINSICS 会如实报「没被消费」。
   #
   # 🔴 研究臂的 receipt 自标 research_only / product_selected=false。
   #   「没全面持平/超越 ARKit 之前绝不上生产」——它只能用来上机对照。
@@ -246,6 +252,12 @@ post_install do |installer|
       '/private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/' \
       '4437f552-36d8-4d91-9d8d-ae4aaadf54b6/scratchpad/build-run1/_deps/' \
       'depends-opencv-build/opencv2.framework/Headers/core/mat.inl.hpp',
+    ],
+    'gpufenothread_pfk' => [
+      'libxrslam_gpufenothread_pfk_6f6aa21c.a', '6f6aa21cad6e534c',
+      '/private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/' \
+      '4437f552-36d8-4d91-9d8d-ae4aaadf54b6/scratchpad/pfk-host/build-pfk-04c0e83/' \
+      '_deps/depends-opencv-build/opencv2.framework/Headers/core/mat.inl.hpp',
     ],
   }
   unless xrslam_engine_table.key?(xrslam_engine)
@@ -273,7 +285,7 @@ post_install do |installer|
   #   代价:harness 的实现取自 aether3d_ffi 的版本而不是编这个前端库时的那份
   #   (同一棵 aether_cpp/tools 源码树,但不是同一次编译)。研究臂可接受,已记进 receipt。
   xrslam_engine_extra =
-    if xrslam_engine == 'gpufenothread'
+    if %w[gpufenothread gpufenothread_pfk].include?(xrslam_engine)
       " \"#{xrslam_dir}/libpw_gpu_frontend_ios_ad0a4abe.a\"" \
       " -framework Metal -framework IOSurface -framework QuartzCore"
     else

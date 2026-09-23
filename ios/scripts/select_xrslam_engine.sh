@@ -18,11 +18,12 @@ set -eu
 
 engine="${1:-}"
 case "$engine" in
-  generic|gpufenothread) ;;
+  generic|gpufenothread|gpufenothread_pfk) ;;
   *)
-    echo "用法: $0 <generic|gpufenothread> [-- 命令...]" >&2
-    echo "  generic       出货档 libxrslam_generic_4beb1a9.a(默认)" >&2
-    echo "  gpufenothread 研究臂 libxrslam_gpufenothread_b9b14814.a(GPU 前端 ON + 线程化 OFF)" >&2
+    echo "用法: $0 <generic|gpufenothread|gpufenothread_pfk> [-- 命令...]" >&2
+    echo "  generic           出货档 libxrslam_generic_4beb1a9.a(默认)" >&2
+    echo "  gpufenothread     研究臂 libxrslam_gpufenothread_b9b14814.a(GPU 前端 ON + 线程化 OFF)" >&2
+    echo "  gpufenothread_pfk 研究臂 libxrslam_gpufenothread_pfk_6f6aa21c.a(上一档 + 逐帧内参,fork 04c0e83)" >&2
     exit 64
     ;;
 esac

@@ -114,12 +114,23 @@ case "$pw_xrslam_engine_linked" in
     xrslam_gpu_frontend="false"
     xrslam_pedigree="shipping"
     xrslam_other_fingerprint="/private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/4437f552-36d8-4d91-9d8d-ae4aaadf54b6/scratchpad/build-run1/_deps/depends-opencv-build/opencv2.framework/Headers/core/mat.inl.hpp"
+    xrslam_other_fingerprint_2="/private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/4437f552-36d8-4d91-9d8d-ae4aaadf54b6/scratchpad/pfk-host/build-pfk-04c0e83/_deps/depends-opencv-build/opencv2.framework/Headers/core/mat.inl.hpp"
     ;;
   gpufenothread)
     xrslam_algorithm_branch="gpufe_nothread"
     xrslam_gpu_frontend="true"
     xrslam_pedigree="research_only"
     xrslam_other_fingerprint="/private/tmp/opencv-official-c9ad577-b49/modules/core/include/opencv2/core/mat.inl.hpp"
+    xrslam_other_fingerprint_2="/private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/4437f552-36d8-4d91-9d8d-ae4aaadf54b6/scratchpad/pfk-host/build-pfk-04c0e83/_deps/depends-opencv-build/opencv2.framework/Headers/core/mat.inl.hpp"
+    ;;
+  gpufenothread_pfk)
+    # [pw 2026-09-23] gpufenothread + fork 04c0e83 逐帧内参;receipt 见
+    # vendor/xrslam/libs/ios-arm64/libxrslam_gpufenothread_pfk_6f6aa21c.receipt.json
+    xrslam_algorithm_branch="gpufe_nothread_pfk"
+    xrslam_gpu_frontend="true"
+    xrslam_pedigree="research_only"
+    xrslam_other_fingerprint="/private/tmp/opencv-official-c9ad577-b49/modules/core/include/opencv2/core/mat.inl.hpp"
+    xrslam_other_fingerprint_2="/private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/4437f552-36d8-4d91-9d8d-ae4aaadf54b6/scratchpad/build-run1/_deps/depends-opencv-build/opencv2.framework/Headers/core/mat.inl.hpp"
     ;;
   *)
     echo "error: unknown PW_XRSLAM_LINKED_ENGINE: $pw_xrslam_engine_linked" >&2
@@ -175,6 +186,11 @@ if [ -n "$xrslam_engine_fingerprint" ]; then
     exit 71
   fi
   if /usr/bin/strings -a "$native_host" | /usr/bin/grep -qF "$xrslam_other_fingerprint"; then
+    echo "error: 链接产物里同时出现了另一条臂的指纹 —— 两条臂被一起链进去了" >&2
+    exit 71
+  fi
+  # 第三条臂(gpufenothread_pfk)加入后,「另一条」变成两条,两条都不许在场。
+  if /usr/bin/strings -a "$native_host" | /usr/bin/grep -qF "$xrslam_other_fingerprint_2"; then
     echo "error: 链接产物里同时出现了另一条臂的指纹 —— 两条臂被一起链进去了" >&2
     exit 71
   fi
