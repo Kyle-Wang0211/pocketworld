@@ -506,7 +506,7 @@ ISMAR 2021,Danpeng Chen / Nan Wang / Runsen Xu / Weijian Xie / Hujun Bao / **Guo
 | **VINS-Mono** | 2018 T-RO,单目 | `parameters.cpp:11` `Eigen::Vector3d G{0.0,0.0,9.8}`(`:74` 只从 yaml 读 `g_norm` 改**模**);`factor/integration_base.h:180,182` 残差用的就是这个全局 `G`;`estimator.cpp:369` 初始化解 `g`,`:424-427` `R0=g2R(g); g=R0*g` 只用来**转世界系** | **初始化解一次,之后固定** | GPL-3.0 ⚰️(🔴 文件名是 **`LICENCE`** 英式拼写,见 A.6) |
 | **VINS-Fusion** | 2019,单/双目 | `estimator/parameters.cpp:20` 同一行常量;`factor/integration_base.h:189,191` 同一残差 | **固定** | GPL-3.0 ⚰️ |
 | **OpenVINS** | 2020 ICRA,MSCKF | `ov_msckf/src/state/Propagator.h:57` `_gravity << 0.0, 0.0, gravity_mag;`(成员 `:442`);`state/State.h` 状态清单里**零重力变量**;`ov_init/.../DynamicInitializer.cpp:227` 初始化状态序 `[features, velocity, gravity]`,`:551-557` `gram_schmidt(gravity_inI0, R_GtoI0)` 之后改用常量 | **初始化估,之后固定** | GPL-3.0 ⚰️ |
-| **ORB-SLAM3** | 2021 T-RO,单目惯性 | `Optimizer.cc:3434-3440` `VertexGDir(Rwg)->setFixed(false)` + `VertexScale->setFixed(false)`(ScaleRefinement 用的那支,同时 `:3414-3429` 把 VP/VV/VG/VA 全 `setFixed(true)`);`:3117-3123`(InitializeIMU 那支);`:3291-3297` 第三支 `VGDir->setFixed(true)` 注释「scale is obtained from already well initialized map」;🔑 **`LocalInertialBA`(:2383)/`FullInertialBA`(:392)/`PoseInertialOptimization*`(:4491,:4875) 里 `VertexGDir` 零出现** | **有限时窗内重估,窗口关闭后固定**(`LocalMapping.cc:1477-1478` `ApplyScaledRotation` 把重力烘进世界系) | GPL-3.0 ⚰️ |
+| **ORB-SLAM3** | 2021 T-RO,单目惯性 | `G2oTypes.h:274` `class VertexGDir : public g2o::BaseVertex<**2**,GDirection>`(类型层面就是 2 自由度);`Optimizer.cc:3434-3440` `VertexGDir(Rwg)->setFixed(false)` + `VertexScale->setFixed(false)`(ScaleRefinement 用的那支,同时 `:3414-3429` 把 VP/VV/VG/VA 全 `setFixed(true)`);`:3117-3123`(InitializeIMU 那支);`:3291-3297` 第三支 `VGDir->setFixed(true)` 注释「scale is obtained from already well initialized map」;🔑 **`LocalInertialBA`(:2383)/`FullInertialBA`(:392)/`PoseInertialOptimization*`(:4491,:4875) 里 `VertexGDir` 零出现** | **有限时窗内重估,窗口关闭后固定**(`LocalMapping.cc:1477-1478` `ApplyScaledRotation` 把重力烘进世界系) | GPL-3.0 ⚰️ |
 | **Basalt** | 2020 RA-L,双目惯性 | `include/basalt/utils/imu_types.h:62` `static const Eigen::Vector3d g(0, 0, -9.81);`;`vi_estimator/sqrt_keypoint_vio.h:225` `const Vec3 g;`(`sqrt_keypoint_vio.cpp:65` 构造时赋值,**`const` 成员**) | **编译期常量,固定** | BSD-3(文件头) ✅ |
 | **granite** | 2021 IROS,basalt 派生 | `include/granite/vi_estimator/keypoint_vio.h:210` `const Eigen::Vector3d g;` | **固定**;且 `doc/VioMapping.md:55-56` 明文「Monocular-inertial setups can not be handled」 | MIT(文件头)+ 原 BSD-3 ✅ |
 | **OKVIS2** | 2024,双目惯性 | `okvis_ceres/src/ImuError.cpp:746 / 885 / 1065` `const Eigen::Vector3d g_W = imuParams.g * Eigen::Vector3d(0,0,6371009).normalized();`(每次求残差现算的常量);config 里只有**模** `g: 9.81007` | **固定**(只有模可配,方向硬编码世界 z) | BSD-3(文件头) ✅ |
@@ -518,6 +518,14 @@ ISMAR 2021,Danpeng Chen / Nan Wang / Runsen Xu / Weijian Xie / Hujun Bao / **Guo
 
 **计票(主表 12 行):固定 10 · 持续估 1(ICE-BA,紧耦合)· 有限时窗内重估 1(ORB-SLAM3)。
 表外旁证:ssf / msf 持续估,但架构是松耦合。⇒ 固定是压倒性主流。**
+
+**全树复核(补做)**:VINS-Mono / VINS-Fusion / OpenVINS / ORB-SLAM3 这四个仓上面只读了选定文件,
+事后拿到完整克隆又做了一次**全树 grep**,结论不变,并且收紧了两处:
+- **ORB-SLAM3 全树 `VertexGDir` 只有 3 个实例化点**(`Optimizer.cc:3117 / 3291 / 3434`),
+  全在三支 `InertialOptimization` 里 ⇒ `LocalInertialBA` / `FullInertialBA` / `PoseInertialOptimization*`
+  确实一个重力顶点都没有,**「窗口关闭后固定」是全树结论不是抽样结论**。
+- **OpenVINS 全树 `gravity` 的每一处**都落在 ①config 的模 ②文档 ③`ov_init/`(初始化)三类里,
+  估计器状态里没有任何重力变量。
 
 ---
 
@@ -533,6 +541,11 @@ ISMAR 2021,Danpeng Chen / Nan Wang / Runsen Xu / Weijian Xie / Hujun Bao / **Guo
   > unobservable degrees of freedom."
   这不是论文里的一句话,而是**每帧都跑的运行时自检**:VIO 的零空间 = 3 个全局平移 + yaw,
   **roll/pitch(= 重力方向)被排除在外 ⇒ 可观**。(VO 才额外含 roll/pitch。)
+- 🔑 **第二条源码级证据,且正好在 FEJ 文档里**:OpenVINS `docs/fej.dox:177`(作者是 Huang 组,即写
+  可观测性文献的那批人)逐字:
+  > "where 𝒩 should be **4dof** corresponding to **global rotation about the gravity (yaw) and global
+  > translation** of our visual-inertial systems."
+  与 Basalt 那条互为独立来源,而且它说的正是**先验零空间**——即 A.4 那道坎的同一个对象。
 - **论文侧最早取到全文的一手**:Hesch, Kottas, Bowman, Roumeliotis, *Towards Consistent Vision-aided
   Inertial Navigation*, WAFR 2012(Springer STAR 86:559-574,[doi:10.1007/978-3-642-36279-8_34](https://doi.org/10.1007/978-3-642-36279-8_34))§2:
   > "the VINS model has four unobservable degrees of freedom, corresponding to three-d.o.f. global
