@@ -81,8 +81,10 @@ class PwXrslamTransport {
      * [intrinsicsFxFyCxCy] `null` = byte-for-byte the legacy push. Otherwise
      * exactly four values fx, fy, cx, cy **in pixels of [data] as pushed**,
      * pixel-center-at-integer convention (the convention of the engine and of
-     * ARKit's `ARCamera.intrinsics`); a length other than 4 is rejected before
-     * any core call.
+     * ARKit's `ARCamera.intrinsics`). An array whose length is not 4 is not
+     * attached: the frame is still pushed without per-frame K (legacy push)
+     * and counted as `rejected_invalid` in [intrinsicsTrace], the same outcome
+     * as a non-finite or non-positive K on iOS.
      *
      * TODO(per-frame-K, Android source): not wired to camera2 yet — there is no
      * Android frame path calling this, and the mapping below cannot be verified

@@ -1,5 +1,7 @@
 #include <jni.h>
 
+#include <limits>
+
 #include "PwXrslamTransportCore.h"
 
 namespace {
@@ -79,7 +81,14 @@ Java_com_pocketworld_capture_PwXrslamTransport_nativePushGyroscope(
 // (PWXrslamTransportPushCameraAndRunRawWithIntrinsics with k == NULL);
 // otherwise exactly four doubles fx, fy, cx, cy in pixels of the buffer being
 // pushed (the Kotlin caller owns any coordinate conversion; see the TODO in
-// PwXrslamTransport.kt). A wrong length is rejected before any ABI call.
+// PwXrslamTransport.kt).
+// A wrong length is handled the way the iOS hosts see an unusable K: the frame
+// is still pushed, without per-frame K (legacy push), and counted in the
+// shared ledger's rejected_invalid. It is routed through the transport with a
+// non-finite K, which the transport's own acceptance rule rejects
+// (IsAttachableIntrinsics: all four finite) — so the push, the call sequence
+// and the counter are exactly those of any other unattachable K, and there is
+// no second counting path in JNI.
 extern "C" JNIEXPORT jdoubleArray JNICALL
 Java_com_pocketworld_capture_PwXrslamTransport_nativePushCameraAndRunRawWithIntrinsics(
     JNIEnv* env, jobject, jobject buffer, jdouble timestamp, jint stride,
@@ -92,10 +101,14 @@ Java_com_pocketworld_capture_PwXrslamTransport_nativePushCameraAndRunRawWithIntr
     transport_rc = PWXrslamTransportPushCameraAndRunRawWithIntrinsics(
         data, timestamp, stride, camera_id, channel, nullptr, &raw_state,
         &raw_pose);
-  } else if (env->GetArrayLength(intrinsics) == 4) {
-    jdouble k[4] = {0.0, 0.0, 0.0, 0.0};
-    env->GetDoubleArrayRegion(intrinsics, 0, 4, k);
-    const double k_fxfycxcy[4] = {k[0], k[1], k[2], k[3]};
+  } else {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    double k_fxfycxcy[4] = {nan, nan, nan, nan};  // wrong length => rejected
+    if (env->GetArrayLength(intrinsics) == 4) {
+      jdouble k[4] = {0.0, 0.0, 0.0, 0.0};
+      env->GetDoubleArrayRegion(intrinsics, 0, 4, k);
+      for (int i = 0; i < 4; ++i) k_fxfycxcy[i] = k[i];
+    }
     transport_rc = PWXrslamTransportPushCameraAndRunRawWithIntrinsics(
         data, timestamp, stride, camera_id, channel, k_fxfycxcy, &raw_state,
         &raw_pose);
