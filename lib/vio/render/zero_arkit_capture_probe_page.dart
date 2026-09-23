@@ -539,9 +539,12 @@ Map<String, Object?> _focusBlock({
     'default_arm_change_note':
         '用户拍板「换掉锁定,照生产那套来」。新默认臂 = 生产 '
         'OfficialAetherARKitPlugin.swift:2653-2661 那两句(isSmoothAutoFocusEnabled '
-        '+ .continuousAutoFocus)+ 生产没用的两个旋钮(autoFocusRangeRestriction '
-        '= .near、对焦区域 = 被扫物体框)。生产 :2189-2191 的警告原文已抄进 '
-        'PwFocusArms.swift / PwCameraSlot.swift 的注释里。',
+        '+ .continuousAutoFocus)+ 生产没用的一个旋钮(对焦区域 = 被扫物体框)。'
+        '生产 :2189-2191 的警告原文已抄进 PwFocusArms.swift / PwCameraSlot.swift '
+        '的注释里。🔴 2026-09-23 按用户判词删掉了 autoFocusRangeRestriction = .near:'
+        '产品是通用扫描,用户拍远近各种目标,不能把对焦硬限制在近端;台架数据也反对它'
+        '(镜位落在最近端 [0.00,0.15) 的样本占一半,而那一档清晰度中位只有 297,'
+        '是 [0.35,0.50) 的 1/8)。',
     'state_at_finish': stateAtFinish?.toJson(),
     'minimum_focus_distance_mm': stateAtFinish?.minimumFocusDistanceMm,
     'minimum_focus_distance_note':

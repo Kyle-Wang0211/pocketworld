@@ -22,9 +22,10 @@
 //               生产那三句:`isSmoothAutoFocusSupported ⇒ isSmoothAutoFocusEnabled
 //               = true` + `focusMode = .continuousAutoFocus`(逐句对照
 //               `OfficialAetherARKitPlugin.swift:2653-2661`),
-//               **加**生产没用的两个:`autoFocusRangeRestriction = .near`
-//               与「对焦区域 = 被扫物体框」(`focusRectOfInterest` iOS 26+,
-//               回落 `focusPointOfInterest`)。
+//               **加**生产没用的一个:「对焦区域 = 被扫物体框」
+//               (`focusRectOfInterest` iOS 26+,回落 `focusPointOfInterest`)。
+//               🔴 曾经还加过 `autoFocusRangeRestriction = .near`,2026-09-23
+//               按用户判词删除(通用扫描不能限制对焦距离),理由见下方 (1)。
 //               它是唯一吃得到主摄「100% Focus Pixels」全阵列相位硬件的一臂
 //               (iOS 不暴露相位数据,B.2)。
 //   C(我们的 CDAF)= `vendor/pw_af/` 的状态机驱动 `setFocusModeLocked(lensPosition:)`,
@@ -371,22 +372,21 @@ final class PwFocusArms {
             appendNote("🔴 B:isSmoothAutoFocusSupported = false ⇒ 没开平滑对焦")
         }
 
-        // (1) 近端限制。`AVCaptureDevice.h:1215` 原文:
-        //     "This property only has an effect when the focusMode property is
-        //      set to AVCaptureFocusModeAutoFocus or
-        //      AVCaptureFocusModeContinuousAutoFocus. Note that setting
-        //      autoFocusRangeRestriction alone does not initiate a focus
-        //      operation. After setting autoFocusRangeRestriction, call
-        //      -setFocusMode: to apply the new restriction."
-        //     ⇒ 先设限制,最后统一 setFocusMode。
-        //     `:1207` 原文:"The receiver's autoFocusRangeRestriction property
-        //      can only be set if this property returns YES." ⇒ 先查 supported。
-        if device.isAutoFocusRangeRestrictionSupported {
-            device.autoFocusRangeRestriction = .near
-            appendNote("B:autoFocusRangeRestriction = .near")
-        } else {
-            appendNote("🔴 B:isAutoFocusRangeRestrictionSupported = false ⇒ 没设近端限制")
-        }
+        // (1) 🔴 [2026-09-23 用户判词,已删]「近端限制」`autoFocusRangeRestriction = .near`
+        //     删除理由(用户原话:「近端限制?为什么要有这个限制?c 端用户肯定拍什么的
+        //     都有呀」):
+        //       · 它是我加的,**生产没有用**(`OfficialAetherARKitPlugin.swift` 全文无此
+        //         属性);加它的依据是我对「主打小物体」的假设,不是证据;
+        //       · 产品是通用 3D 扫描,用户会拍房间/家具/墙面,把 AF 硬限制在近端
+        //         ⇒ 远处目标永远对不上;
+        //       · 09-23 台架实测反而指向它有害:800 个稳定样本里 411 个镜位落在
+        //         [0.00,0.15),而那一档清晰度中位仅 297,是 [0.35,0.50) 的 2465 的
+        //         1/8;快门 #1/#10 都在 lens=0.0000 触发,成片锐度 119.8/89.2 明显
+        //         低于最好的 249.1(lens=0.2902)。
+        //     ⇒ 现在这一臂 = **生产同款配置 + 对焦区域框住被扫物体**,不含任何距离限制。
+        //     「对焦区域」保留:它不是限制,是告诉相机对哪儿;生产本来就用中心点
+        //     `focusPointOfInterest(0.5,0.5)`,我们只是把点换成矩形。
+        appendNote("B:不设 autoFocusRangeRestriction(通用扫描,用户会拍远近各种目标)")
 
         // (2) 对焦区域 = 三臂共用的那个矩形。
         applyFocusRegion(device: device)
