@@ -380,6 +380,31 @@ class AppL10nEn extends AppL10n {
   String get mePlatformRules => 'Platform Rules';
 
   @override
+  String get legalOpenSourceLicenses => 'Open Source Licenses';
+
+  @override
+  String get legalOpenSourceIntro =>
+      'This app uses the open source software listed below. The full license texts ship with the app and are readable offline.';
+
+  @override
+  String get legalOpenSourceFlutterPackages => 'Flutter and Dart packages';
+
+  @override
+  String get legalOpenSourceFlutterPackagesHint =>
+      'Collected automatically by Flutter';
+
+  @override
+  String get legalOpenSourceLicenseTexts => 'License texts';
+
+  @override
+  String legalOpenSourceLicenseTextsCount(int count) {
+    return '$count shipped with the app';
+  }
+
+  @override
+  String get legalOpenSourceNativeComponents => 'Native components';
+
+  @override
   String get meIpRegion => 'IP location';
 
   @override

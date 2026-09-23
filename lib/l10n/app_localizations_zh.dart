@@ -373,6 +373,29 @@ class AppL10nZh extends AppL10n {
   String get mePlatformRules => '平台公约';
 
   @override
+  String get legalOpenSourceLicenses => '开源许可';
+
+  @override
+  String get legalOpenSourceIntro => '本产品使用了下列开源软件。许可正文随包发布,离线也能查看。';
+
+  @override
+  String get legalOpenSourceFlutterPackages => 'Flutter / Dart 组件';
+
+  @override
+  String get legalOpenSourceFlutterPackagesHint => '由 Flutter 自动收集';
+
+  @override
+  String get legalOpenSourceLicenseTexts => '许可正文';
+
+  @override
+  String legalOpenSourceLicenseTextsCount(int count) {
+    return '$count 份随包发布';
+  }
+
+  @override
+  String get legalOpenSourceNativeComponents => '原生组件声明';
+
+  @override
   String get meIpRegion => 'IP 属地';
 
   @override

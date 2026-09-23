@@ -15,6 +15,7 @@ import 'design_system.dart';
 import 'me_stats_view_model.dart';
 import 'legal/platform_rules_page.dart';
 import 'legal/legal_doc_page.dart';
+import 'legal/open_source_licenses_page.dart';
 import '../analytics/pw_analytics.dart';
 import '../community/social_profile_repository.dart';
 import 'community/blocked_users_page.dart';
@@ -205,6 +206,16 @@ class _SettingsSection extends StatelessWidget {
         title: l.legalPrivacyPolicy,
         trailing: '',
         onTap: () => PrivacyPolicyPage.open(context),
+      ),
+      // [OSS-NOTICE 2026-09-23] 开源许可。放在设置里而**不是**注册页那条
+      // "注册即表示你同意:" 链接行里 —— 那一行是同意书,开源许可不是用户
+      // 要同意的东西,是我们要公开的东西。义务方向相反,混在一起会让那行
+      // 的"已同意"表述失真。详见 legal/open_source_licenses_page.dart 头注。
+      _SettingsRowSpec(
+        icon: Icons.code_rounded,
+        title: l.legalOpenSourceLicenses,
+        trailing: '',
+        onTap: () => OpenSourceLicensesPage.open(context),
       ),
       _SettingsRowSpec(
         icon: Icons.info_outline_rounded,

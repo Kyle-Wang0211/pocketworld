@@ -175,6 +175,70 @@ void main() {
     }
   });
 
+  test('the notices index itself is an asset, not just a repo file', () {
+    // 这条是"第 4 条结构建议"的闸。在 2026-09-23 之前,THIRD_PARTY_NOTICES
+    // 只是仓里的工程留档 —— 许可正文进了包,但"哪份正文属于哪个组件"这层
+    // 映射在设备上根本不存在。
+    expect(
+      declaredAssets,
+      contains('THIRD_PARTY_NOTICES'),
+      reason: 'the notices index must ship, or the license texts that do ship '
+          'have nothing that says what they belong to',
+    );
+  });
+
+  test('the in-app licenses page is reachable from settings', () {
+    final page =
+        File('lib/ui/legal/open_source_licenses_page.dart').readAsStringSync();
+    final settings = File('lib/ui/me_settings_page.dart').readAsStringSync();
+
+    // 入口必须真的挂上,否则页面写了等于没写。
+    expect(settings, contains('open_source_licenses_page.dart'));
+    expect(settings, contains('OpenSourceLicensesPage.open(context)'));
+
+    // 页面必须同时接上两条链:资产里的原生声明,和 Flutter 自动聚合的
+    // pub 包声明(thermion 只在后者里)。
+    expect(page, contains("const String kThirdPartyNoticesAsset = "
+        "'THIRD_PARTY_NOTICES';"));
+    expect(
+      page,
+      contains('showLicensePage'),
+      reason: 'thermion and every other pub package are only ever recorded in '
+          "Flutter's generated NOTICES blob; without showLicensePage nobody "
+          'can read it',
+    );
+
+    // 页面列许可正文用的前缀,必须每条都真的是已声明的资产目录。
+    // 注意取的是**常量声明**那一段:`kLicenseTextPrefixes` 这个名字在文件里
+    // 出现两次(声明 + load() 里的使用),按名字 split 再取 .last 会落到
+    // 后者上,拿到空清单 —— 这条是第一次跑就当场撞上的。
+    final block = RegExp(
+      r'kLicenseTextPrefixes = <String>\[(.*?)\];',
+      dotAll: true,
+    ).firstMatch(page);
+    expect(block, isNotNull,
+        reason: 'the page no longer declares kLicenseTextPrefixes');
+    final prefixes = RegExp(r"'([^']+/)'")
+        .allMatches(block!.group(1)!)
+        .map((m) => m.group(1)!)
+        .toList();
+    expect(prefixes, isNotEmpty);
+    for (final prefix in prefixes) {
+      // 前缀只要能对上**某个**已声明的资产条目就算数:pubspec 里有的是整个
+      // 目录(ios/Vendor/JXL/licenses/),有的是单个文件
+      // (ios/Vendor/Zpaq/Zpaq-LICENSE.txt),两种都合法。要求前缀逐字等于
+      // 目录条目会把后者误判成缺口 —— 这条是第一次跑就当场撞上的。
+      expect(
+        declaredAssets.any(
+          (asset) => asset == prefix || asset.startsWith(prefix),
+        ),
+        isTrue,
+        reason: 'the licenses page lists "$prefix" but pubspec ships nothing '
+            'under it',
+      );
+    }
+  });
+
   test('locally modified thermion files carry an Apache-2.0 4(b) notice', () {
     // 被改的文件不在版本控制里(副本在 ~/Developer/thermion_dart_pw),
     // 但让它可复现的 patch 在,所以闸挂在 patch 上:patch 里出现的每个

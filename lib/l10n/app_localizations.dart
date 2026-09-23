@@ -769,6 +769,48 @@ abstract class AppL10n {
   /// **'Platform Rules'**
   String get mePlatformRules;
 
+  /// No description provided for @legalOpenSourceLicenses.
+  ///
+  /// In en, this message translates to:
+  /// **'Open Source Licenses'**
+  String get legalOpenSourceLicenses;
+
+  /// No description provided for @legalOpenSourceIntro.
+  ///
+  /// In en, this message translates to:
+  /// **'This app uses the open source software listed below. The full license texts ship with the app and are readable offline.'**
+  String get legalOpenSourceIntro;
+
+  /// No description provided for @legalOpenSourceFlutterPackages.
+  ///
+  /// In en, this message translates to:
+  /// **'Flutter and Dart packages'**
+  String get legalOpenSourceFlutterPackages;
+
+  /// No description provided for @legalOpenSourceFlutterPackagesHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Collected automatically by Flutter'**
+  String get legalOpenSourceFlutterPackagesHint;
+
+  /// No description provided for @legalOpenSourceLicenseTexts.
+  ///
+  /// In en, this message translates to:
+  /// **'License texts'**
+  String get legalOpenSourceLicenseTexts;
+
+  /// No description provided for @legalOpenSourceLicenseTextsCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} shipped with the app'**
+  String legalOpenSourceLicenseTextsCount(int count);
+
+  /// No description provided for @legalOpenSourceNativeComponents.
+  ///
+  /// In en, this message translates to:
+  /// **'Native components'**
+  String get legalOpenSourceNativeComponents;
+
   /// No description provided for @meIpRegion.
   ///
   /// In en, this message translates to:

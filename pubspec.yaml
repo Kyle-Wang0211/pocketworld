@@ -260,6 +260,10 @@ flutter:
     # 目录都绑在各自 vendored 树上,这几个组件没有对应的 in-repo 树,
     # 所以统一放这里。THIRD_PARTY_NOTICES 逐条指向本目录下的文件名。
     - assets/licenses/
+    # 声明索引**本身**。此前它只是仓里的工程留档,从不进包 —— 于是
+    # "哪个组件、什么许可、哪份正文"这层映射在设备上根本不存在,用户拿到的
+    # 只有一堆无主的许可全文。OpenSourceLicensesPage 从 rootBundle 读它。
+    - THIRD_PARTY_NOTICES
     - assets/models/Duck.glb
     - assets/models/Lantern.glb
     # Neutral image-based light for the community viewer.
