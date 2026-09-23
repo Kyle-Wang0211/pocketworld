@@ -10,6 +10,22 @@
 //   ② 每个成功 Push 的图像固定 RunOneFrame 一次,不在 Swift 写频率策略；
 //   ③ 回调只尝试有界入队，绝不等算法；压力不能反向控制拍照。
 //      任何溢出都显式计数并使整场影子运行失效，不伪造完整输入。
+//
+// [pw 2026-09-23] 逐帧内参:每帧把 `ARFrame.camera.intrinsics` 换算到**真正推给
+// 引擎的 640×480 灰度**上再随帧推(`PWXrslamTransportPushCameraAndRunRawWithIntrinsics`)。
+// 🔴 ARKit 的 K 参照 `ARCamera.imageResolution`(1920×1440),而这里喂的是 box-d
+// 降采样后的图 ⇒ 原值直推焦距就错 d 倍。换算只走传输层那一个 C 函数
+// `PWXrslamTransportScaleIntrinsicsForBoxNxN`(fx/d、fy/d、(c+0.5)/d−0.5),与离线
+// 回放证据用的转换器 `pwvi_to_euroc.py:224-226` 逐位一致(传输层单测用真录制钉死;
+// 转换器 = arloopbench tools/pwvi_to_euroc.py,sha256 3c96ab11…)。
+// 像素中心约定出处:ARCamera.h:54-63(iPhoneOS26.2.sdk)"The origin is at the
+// center of the upper-left pixel."。官方在线文档:
+//   https://developer.apple.com/documentation/arkit/arcamera/intrinsics(单位是像素)
+//   https://developer.apple.com/documentation/arkit/arcamera/imageresolution
+//     (K 所参照的「captured camera image」宽高,像素)
+// 在线页对主点原点只写到「图像左上角」,没有细到像素中心还是像素角;这里按 SDK
+// 头文件那句更具体的说法走,也就是转换器用的那套约定。开关与 ON 臂共用 `PwPerFrameIntrinsicsSwitch`
+// (`-PWPerFrameIntrinsics off|on`,定义在 PwXrslamLive.swift)。
 
 import ARKit
 import CoreMotion
@@ -31,6 +47,9 @@ public final class PwVioSlamFeeder {
     public let timestamp: TimeInterval
     fileprivate let pixelBuffer: CVPixelBuffer
     fileprivate let cameraTransform: simd_float4x4
+    /// [pw 2026-09-23] 这一帧的 `ARCamera.intrinsics` 与它参照的 `imageResolution`。
+    fileprivate let cameraIntrinsics: simd_float3x3
+    fileprivate let cameraImageResolution: CGSize
     fileprivate let referenceTrackingState: String
     fileprivate let referenceTrackingReason: String
     fileprivate let graySlot: Int
@@ -48,6 +67,8 @@ public final class PwVioSlamFeeder {
       timestamp: TimeInterval,
       pixelBuffer: CVPixelBuffer,
       cameraTransform: simd_float4x4,
+      cameraIntrinsics: simd_float3x3,
+      cameraImageResolution: CGSize,
       referenceTrackingState: String,
       referenceTrackingReason: String,
       graySlot: Int,
@@ -62,6 +83,8 @@ public final class PwVioSlamFeeder {
       self.timestamp = timestamp
       self.pixelBuffer = pixelBuffer
       self.cameraTransform = cameraTransform
+      self.cameraIntrinsics = cameraIntrinsics
+      self.cameraImageResolution = cameraImageResolution
       self.referenceTrackingState = referenceTrackingState
       self.referenceTrackingReason = referenceTrackingReason
       self.graySlot = graySlot
@@ -106,6 +129,19 @@ public final class PwVioSlamFeeder {
     let referenceTrackingState: String
     let referenceTrackingReason: String
     let enqueuedAt: CFTimeInterval
+    /// [pw 2026-09-23] 已换算到本帧灰度像素上的 fx fy cx cy;`nil` = 本帧不推逐帧 K。
+    let grayIntrinsics: [Double]?
+    /// 不推的原因(`IntrinsicsHostReason`);推的时候是 `.attach`。
+    let intrinsicsHostReason: IntrinsicsHostReason
+  }
+
+  /// [pw 2026-09-23] 宿主侧决定本帧推不推逐帧 K 的原因。传输层自己拒收的
+  /// 另记在它的 C 账本(`PWXrslamIntrinsicsTrace.rejected_invalid`)里。
+  private enum IntrinsicsHostReason: String {
+    case attach = "attach"
+    case switchOff = "switch_off"
+    case resolutionMismatch = "image_resolution_mismatch"
+    case scaleRejected = "scale_rejected"
   }
 
   /// Fixed 30-slot gray carrier. A slot is reserved with lock-free CAS before
@@ -777,6 +813,11 @@ public final class PwVioSlamFeeder {
   private var accNativeSubmittedCount = 0
   private var runCalls = 0
   private var lastImageRc: Int32 = 0
+  // [pw 2026-09-23] 逐帧内参:宿主侧原因计数 + 最近一次 C 账本快照(计数在 C 里)。
+  private var intrinsicsSwitchOffFrames = 0
+  private var intrinsicsResolutionMismatchFrames = 0
+  private var intrinsicsScaleRejectedFrames = 0
+  private var lastIntrinsicsTrace = PWXrslamIntrinsicsTrace()
   private var lastAccRc: Int32 = 0
   private var lastGyroRc: Int32 = 0
   private var lastHealthRc: Int32 = 2
@@ -882,6 +923,10 @@ public final class PwVioSlamFeeder {
     accNativeSubmittedCount = 0
     runCalls = 0
     lastImageRc = 0
+    intrinsicsSwitchOffFrames = 0
+    intrinsicsResolutionMismatchFrames = 0
+    intrinsicsScaleRejectedFrames = 0
+    lastIntrinsicsTrace = PWXrslamIntrinsicsTrace()
     lastAccRc = 0
     lastGyroRc = 0
     lastHealthRc = 2
@@ -1419,6 +1464,8 @@ public final class PwVioSlamFeeder {
     }
     let pixelBuffer = frame.capturedImage
     let cameraTransform = frame.camera.transform
+    let cameraIntrinsics = frame.camera.intrinsics
+    let cameraImageResolution = frame.camera.imageResolution
     let tracking: (state: String, reason: String)
     switch frame.camera.trackingState {
     case .normal:
@@ -1450,6 +1497,8 @@ public final class PwVioSlamFeeder {
       timestamp: frame.timestamp,
       pixelBuffer: pixelBuffer,
       cameraTransform: cameraTransform,
+      cameraIntrinsics: cameraIntrinsics,
+      cameraImageResolution: cameraImageResolution,
       referenceTrackingState: tracking.state,
       referenceTrackingReason: tracking.reason,
       graySlot: grayReservation.slot,
@@ -1547,6 +1596,35 @@ public final class PwVioSlamFeeder {
       rejectPreparedImage(reason: .invalidInput)
       return false
     }
+    // [pw 2026-09-23] 逐帧内参(文件头)。ARKit 的 K 参照 imageResolution;只有
+    //   它恰好等于被降采样的亮度平面尺寸时换算才成立,否则不推、按原因计数。
+    //   换算不在 Swift 里写算术,只调传输层那一个 C 函数。
+    var grayIntrinsics: [Double]? = nil
+    var intrinsicsHostReason = IntrinsicsHostReason.attach
+    if !PwPerFrameIntrinsicsSwitch.resolved.enabled {
+      intrinsicsHostReason = .switchOff
+    } else if permit.cameraImageResolution.width != CGFloat(sourceWidth) ||
+                permit.cameraImageResolution.height != CGFloat(sourceHeight) {
+      intrinsicsHostReason = .resolutionMismatch
+    } else {
+      let k = permit.cameraIntrinsics
+      let source: [Double] = [
+        Double(k.columns.0.x), Double(k.columns.1.y),
+        Double(k.columns.2.x), Double(k.columns.2.y),
+      ]
+      var scaled = [Double](repeating: 0, count: 4)
+      let scaleRc = source.withUnsafeBufferPointer { src in
+        scaled.withUnsafeMutableBufferPointer { dst in
+          PWXrslamTransportScaleIntrinsicsForBoxNxN(
+            src.baseAddress, Int32(factor), dst.baseAddress)
+        }
+      }
+      if scaleRc == 0 {
+        grayIntrinsics = scaled
+      } else {
+        intrinsicsHostReason = .scaleRejected
+      }
+    }
     let pending = PendingFrame(
       graySlot: permit.graySlot,
       grayBuffer: permit.grayBuffer,
@@ -1558,7 +1636,9 @@ public final class PwVioSlamFeeder {
       arkitWorldFromCamera: permit.cameraTransform,
       referenceTrackingState: permit.referenceTrackingState,
       referenceTrackingReason: permit.referenceTrackingReason,
-      enqueuedAt: CACurrentMediaTime()
+      enqueuedAt: CACurrentMediaTime(),
+      grayIntrinsics: grayIntrinsics,
+      intrinsicsHostReason: intrinsicsHostReason
     )
     let admitted = admit(
       .image(pending, epoch: 0),
@@ -1612,15 +1692,31 @@ public final class PwVioSlamFeeder {
     var rawState: Int32 = 0
     var rawPose = PWXrslamRawPose()
     let t0 = CACurrentMediaTime()
-    let rc = PWXrslamTransportPushCameraAndRunRaw(
-      pending.grayBuffer,
-      pending.timestamp,
-      Int32(pending.grayStride),
-      0,
-      1,
-      &rawState,
-      &rawPose
-    )
+    let rc: Int32
+    if let k = pending.grayIntrinsics {
+      rc = k.withUnsafeBufferPointer { kp in
+        PWXrslamTransportPushCameraAndRunRawWithIntrinsics(
+          pending.grayBuffer,
+          pending.timestamp,
+          Int32(pending.grayStride),
+          0,
+          1,
+          kp.baseAddress,
+          &rawState,
+          &rawPose
+        )
+      }
+    } else {
+      rc = PWXrslamTransportPushCameraAndRunRaw(
+        pending.grayBuffer,
+        pending.timestamp,
+        Int32(pending.grayStride),
+        0,
+        1,
+        &rawState,
+        &rawPose
+      )
+    }
     let span = (CACurrentMediaTime() - t0) * 1000.0
     lock.lock()
     lastImageRc = rc
@@ -1638,7 +1734,17 @@ public final class PwVioSlamFeeder {
       return .nonMonotonic
     }
     guard rc == 0 else { return .nativeReject }
+    // [pw 2026-09-23] 逐帧内参的 C 账本(本帧;coreQueue 串行、只有这里推相机)。
+    var intrinsicsTrace = PWXrslamIntrinsicsTrace()
+    let intrinsicsTraceRc = PWXrslamTransportGetIntrinsicsTrace(&intrinsicsTrace)
     lock.lock()
+    switch pending.intrinsicsHostReason {
+    case .attach: break
+    case .switchOff: intrinsicsSwitchOffFrames += 1
+    case .resolutionMismatch: intrinsicsResolutionMismatchFrames += 1
+    case .scaleRejected: intrinsicsScaleRejectedFrames += 1
+    }
+    if intrinsicsTraceRc == 0 { lastIntrinsicsTrace = intrinsicsTrace }
     runCalls += 1
     solveWallSum += span / 1000.0
     if feedWallStartedAtUptimeSeconds == 0 {
@@ -1650,7 +1756,8 @@ public final class PwVioSlamFeeder {
       frame: pending,
       generation: generation,
       rawState: rawState,
-      rawPose: rawPose
+      rawPose: rawPose,
+      intrinsicsTrace: intrinsicsTraceRc == 0 ? intrinsicsTrace : nil
     )
     return .success
   }
@@ -2180,7 +2287,8 @@ public final class PwVioSlamFeeder {
     frame: PendingFrame,
     generation: UInt32,
     rawState: Int32,
-    rawPose: PWXrslamRawPose
+    rawPose: PWXrslamRawPose,
+    intrinsicsTrace: PWXrslamIntrinsicsTrace?
   ) {
     lock.lock()
     let healthRc = lastHealthRc
@@ -2234,6 +2342,25 @@ public final class PwVioSlamFeeder {
     ]
     observation["xrslamPoseCoordinateConvention"] = "official_scene_kit_ios"
     observation["xrslamWorldFromCamera"] = xrslamWorldFromCamera
+    // [pw 2026-09-23] 本帧用的是哪份 K(逐帧 / yaml 常量),原始事实照抄 C 账本。
+    //   per_frame               = 推了逐帧 K 且引擎回读(XRSLAM_INFO_INTRINSICS)逐位一致
+    //   per_frame_not_consumed  = 推了但引擎回读不一致(链的核不认这条扩展 ⇒ 实际是常量)
+    //   config                  = 没推(原因见 intrinsicsHostReason / 传输层拒收)
+    if let t = intrinsicsTrace {
+      let attached = t.last_per_frame_attached == 1
+      observation["intrinsicsSource"] = attached
+        ? (t.last_engine_report_matches == 1 ? "per_frame" : "per_frame_not_consumed")
+        : "config"
+      observation["intrinsicsHostReason"] = frame.intrinsicsHostReason.rawValue
+      observation["intrinsicsGrayFxFyCxCy"] = attached ? [
+        t.last_attached_fxfycxcy.0, t.last_attached_fxfycxcy.1,
+        t.last_attached_fxfycxcy.2, t.last_attached_fxfycxcy.3,
+      ] : NSNull()
+    } else {
+      observation["intrinsicsSource"] = NSNull()
+      observation["intrinsicsHostReason"] = frame.intrinsicsHostReason.rawValue
+      observation["intrinsicsGrayFxFyCxCy"] = NSNull()
+    }
 
     lock.lock()
     poseObservationsOffered += 1
@@ -2336,6 +2463,27 @@ public final class PwVioSlamFeeder {
     ]
   }
 
+  /// [pw 2026-09-23] 逐帧内参这一场的账。带 C 账本字样的四个数来自
+  /// `PWXrslamTransportGetIntrinsicsTrace`,不在 Swift 合成。
+  private func perFrameIntrinsicsWireLocked() -> [String: Any] {
+    let sw = PwPerFrameIntrinsicsSwitch.resolved
+    let t = lastIntrinsicsTrace
+    return [
+      "schema": "pw.vio.per-frame-intrinsics/1",
+      "switchEnabled": sw.enabled,
+      "switchSource": sw.source.rawValue,
+      "switchLaunchArgument": "-\(PwPerFrameIntrinsicsSwitch.kLaunchArgumentKey)",
+      "rescale": "PWXrslamTransportScaleIntrinsicsForBoxNxN",
+      "transportAttached": t.attached,
+      "transportNotAttached": t.not_attached,
+      "transportRejectedInvalid": t.rejected_invalid,
+      "transportEngineReportMatched": t.engine_report_matched,
+      "hostSwitchOff": intrinsicsSwitchOffFrames,
+      "hostImageResolutionMismatch": intrinsicsResolutionMismatchFrames,
+      "hostScaleRejected": intrinsicsScaleRejectedFrames,
+    ]
+  }
+
   private func makeCoreSnapshotLocked() -> [String: Any] {
     var out: [String: Any] = [
       "schema": "pw.vio.shadow-native/6",
@@ -2371,6 +2519,7 @@ public final class PwVioSlamFeeder {
       "healthRc": Int(lastHealthRc),
       "poseObservationsOffered": poseObservationsOffered,
       "poseObservationsDropped": poseObservationsDropped,
+      "perFrameIntrinsics": perFrameIntrinsicsWireLocked(),
     ]
     for (key, value) in cachedHealth { out[key] = value }
     return out

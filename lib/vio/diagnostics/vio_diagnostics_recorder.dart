@@ -83,6 +83,7 @@ class _SlamTick {
     required this.mappedLandmarks,
     required this.trackedKeypoints,
     required this.degenerate,
+    this.perFrameIntrinsics,
   });
 
   final int wallMillis;
@@ -96,6 +97,12 @@ class _SlamTick {
   final int trackedKeypoints;
   final int degenerate;
 
+  /// [pw 2026-09-23] 原生快照里 `perFrameIntrinsics` 那一块原样照抄
+  /// (`PwVioSlamFeeder.perFrameIntrinsicsWireLocked`):开关、C 账本里逐帧 K
+  /// 推了/没推/引擎回读一致的帧数、宿主侧不推的原因计数。累计值,相邻两条 tick
+  /// 相减就是这段时间里每一帧用的是哪份 K。`null` = 原生没给(旧包)。
+  final Map<String, Object?>? perFrameIntrinsics;
+
   Map<String, Object?> toJson() => <String, Object?>{
     'wallMillis': wallMillis,
     'slamState': slamState,
@@ -107,6 +114,7 @@ class _SlamTick {
     'mappedLandmarks': mappedLandmarks,
     'trackedKeypoints': trackedKeypoints,
     'degenerate': degenerate,
+    'perFrameIntrinsics': perFrameIntrinsics,
   };
 }
 
@@ -1147,8 +1155,19 @@ class VioDiagnosticsRecorder {
                 RawXrslamPoseClassification.degenerate
             ? 1
             : 0,
+        perFrameIntrinsics: _perFrameIntrinsicsWire(sm['perFrameIntrinsics']),
       ),
     );
+  }
+
+  /// 只收 JSON 可编码的标量(原生来的是 bool / num / String),别的一律丢掉。
+  static Map<String, Object?>? _perFrameIntrinsicsWire(Object? raw) {
+    if (raw is! Map) return null;
+    final Map<String, Object?> out = <String, Object?>{};
+    raw.forEach((Object? k, Object? v) {
+      if (k is String && (v is bool || v is num || v is String)) out[k] = v;
+    });
+    return out;
   }
 
   void _clearTransientShadowAccumulators() {
