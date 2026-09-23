@@ -227,6 +227,36 @@ class CameraIntrinsics {
       provenance: provenance,
     );
   }
+
+  /// [pw 2026-09-23] 整数因子 n 的 **box n×n 降采样**(每个输出像素 = 从 (0,0)
+  /// 起一块 n×n 的均值,原生 `PWXrslamTransportPrepareGrayBoxNxN`)之后的内参。
+  ///
+  /// 与 [scaledTo] 的区别只在主点:这里按「像素中心在整数坐标」的约定换算 ——
+  /// ARKit 的 K 就是这个约定(`ARCamera.h:54-63`,iPhoneOS26.2.sdk:"The origin
+  /// is at the center of the upper-left pixel.")。源像素 i·n … i·n+n−1 的中心
+  /// 平均落在输出像素 i 的中心,于是
+  ///   fx' = fx / n,  fy' = fy / n,  cx' = (cx + 0.5) / n − 0.5,  cy' = (cy + 0.5) / n − 0.5
+  /// 逐运算与离线转换器 arloopbench `tools/pwvi_to_euroc.py:224-226`
+  /// (`--downscale d`,sha256 3c96ab11…)和传输层
+  /// `PWXrslamTransportScaleIntrinsicsForBoxNxN` 相同 —— ARKit 影子通路的逐帧 K
+  /// 走后者,yaml 常量 K 走这里,两臂只差「逐帧 vs 常量」这一个变量。
+  /// [scaledTo] 的 `cx·sx` 在 n = 3 时比这里大 (1 − 1/n)/2 = 1/3 像素。
+  CameraIntrinsics boxDownsampledBy(int n) {
+    if (n <= 0 || resolutionWidth % n != 0 || resolutionHeight % n != 0) {
+      throw ArgumentError(
+        'box 降采样因子 $n 不整除 ${resolutionWidth}x$resolutionHeight',
+      );
+    }
+    return CameraIntrinsics(
+      fx: fx / n,
+      fy: fy / n,
+      cx: (cx + 0.5) / n - 0.5,
+      cy: (cy + 0.5) / n - 0.5,
+      resolutionWidth: resolutionWidth ~/ n,
+      resolutionHeight: resolutionHeight ~/ n,
+      provenance: provenance,
+    );
+  }
 }
 
 /// 相机-IMU 外参。iOS 上**没有任何 API 提供它**。

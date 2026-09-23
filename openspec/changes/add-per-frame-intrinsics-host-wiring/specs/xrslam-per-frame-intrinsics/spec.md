@@ -28,6 +28,8 @@ host SHALL push without per-frame K and count the reason.
 - **THEN** the pushed K is `fx/d, fy/d, (cx+0.5)/d-0.5, (cy+0.5)/d-0.5`,
   computed by `PWXrslamTransportScaleIntrinsicsForBoxNxN`, bit-identical to
   `pwvi_to_euroc.py --downscale d`
+- **AND** the session's YAML K for that path uses the same expression, so the
+  on and off arms differ only in per-frame vs constant K
 
 ### Requirement: The legacy push is unchanged
 

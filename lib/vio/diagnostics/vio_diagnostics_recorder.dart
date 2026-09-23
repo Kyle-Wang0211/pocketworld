@@ -834,10 +834,12 @@ class VioDiagnosticsRecorder {
               await _flushJoined();
               return;
             }
-            final CameraIntrinsics kVio = k.scaledTo(
-              k.resolutionWidth ~/ n,
-              k.resolutionHeight ~/ n,
-            );
+            // [pw 2026-09-23] box n×n 降采样 + ARKit 的像素中心约定
+            //   (ARCamera.h:54-63):cx' = (cx+0.5)/n − 0.5,与逐帧 K 走的
+            //   PWXrslamTransportScaleIntrinsicsForBoxNxN、离线转换器
+            //   pwvi_to_euroc.py:224-226 同一表达式。此前 scaledTo 的 cx·(1/n)
+            //   在 n=3 时主点偏 +1/3 像素(两轴)。
+            final CameraIntrinsics kVio = k.boxDownsampledBy(n);
             _note(
               'VIO 内参(降采样后): fx=${kVio.fx.toStringAsFixed(2)} '
               'cx=${kVio.cx.toStringAsFixed(2)} '
