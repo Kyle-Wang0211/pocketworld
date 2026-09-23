@@ -282,6 +282,52 @@ struct PwFrameIntrinsics {
     let activeFormatHeight: Int
 }
 
+// ══ [pw 2026-09-23] 台架回放用的三样东西 ═════════════════════════════════════
+// arloopbench 的回放页(`lib/vio/render/bench_replay_page.dart` → `PwBenchReplay.swift`)
+// 要把录制好的帧与 IMU 喂进**本文件这条 ON 臂通路**,而不是另写一套:
+//   ① `beginReplay` —— 与 `begin` 同一个「允许推送」开关,只是不起 CoreMotion;
+//   ② `pushReplayImu` —— 录制里的一行 IMU 走与 onGyro/onAccel 同一个 `enqueueImu`;
+//   ③ 逐帧观察者 —— `runOneFrame` 推完一帧,把本帧已有的局部量与 C 账本交出去,
+//      台架据此写 TUM / 逐帧计时 / 逐帧 K 账。
+// 🔴 直播与生产路径上观察者恒为 nil:不计时、不构造下面这个结构体,
+//    唯一多出来的是在**已有的**锁里多读一个指针。相机帧像素格式为 32BGRA 时
+//    channel 仍是 4(见 runOneFrame),与改动前逐字相同。
+/// `runOneFrame` 推完一帧后交给观察者的事实。字段全部来自本帧的局部量或 C 账本,
+/// 不另算任何东西。
+struct PwXrslamFrameObservation {
+    let rc: Int32
+    /// `XRSLAMState` 原值(rc != OK 时为 0)。
+    let state: Int32
+    /// 传输层交出的 CAMERA_POSE(`PwXrslamTransportCore.cpp` 读的就是它)。
+    let pose: PWXrslamRawPose
+    /// onCameraFrame 收到的原始时间戳与换算后的曝光中点(文件头偏离 (d))。
+    let rawPts: Double
+    let canonical: Double
+    /// C 账本 `PWXrslamTimestampTrace`(本帧)。`traceOk == false` 时后两项无意义。
+    let traceOk: Bool
+    let submittedSequence: UInt64
+    let effectiveTimestamp: Double
+    let channel: Int32
+    let pushedWidth: Int
+    let pushedHeight: Int
+    let stride: Int
+    /// 0 = 推了逐帧 K;1..6 = 宿主没推的原因(与 runOneFrame 里 hostReason 同码)。
+    let hostReason: Int
+    /// `PwPerFrameIntrinsicsSource.rawValue`(rc != OK 时为 0)。
+    let intrinsicsSource: Int
+    /// C 账本 `PWXrslamIntrinsicsTrace`(本帧)。`intrinsicsTraceOk == false` 时无意义。
+    let intrinsicsTraceOk: Bool
+    let intrinsicsTrace: PWXrslamIntrinsicsTrace
+    /// 传输层那**一次**调用(push → RunOneFrame → GetResult,threading OFF 时整条
+    /// 流水线都同步跑在里面)的墙钟与本线程 CPU 时间,毫秒。
+    /// 计时形状抄 `PwVioSlamFeeder.swift:1694-1720`(调用前后各取一次时钟)。
+    let solveWallMs: Double
+    let solveCpuMs: Double
+    /// onCameraFrame 入队 → runOneFrame 开始,毫秒
+    /// (同 `PwVioSlamFeeder.swift:1674` 的 enqueueLatency)。
+    let queueWaitMs: Double
+}
+
 final class PwXrslamLive {
     static let shared = PwXrslamLive()
 
@@ -393,6 +439,9 @@ final class PwXrslamLive {
     private var ikTrace = PWXrslamIntrinsicsTrace()
     /// trace 描述的那一帧 != 本帧(camera submitted_sequence 对不上)的次数。**应恒 0**。
     private var ikTraceSequenceMismatch: UInt64 = 0
+
+    /// [pw 2026-09-23 台架回放] 逐帧观察者。只有台架回放装;直播/生产恒为 nil。
+    private var frameObserver: ((PwXrslamFrameObservation) -> Void)?
 
     // MARK: 生命周期
 
@@ -522,6 +571,53 @@ final class PwXrslamLive {
         if wasCreated { PWXrslamTransportDestroy() }
     }
 
+    // MARK: [pw 2026-09-23] 台架回放入口(见 PwXrslamFrameObservation 上方那段)
+
+    /// 与 [begin] 同一个「允许推送」开关,但**不起 CoreMotion**:IMU 由回放器经
+    /// [pushReplayImu] 按录制顺序喂进来。也不要求相机串行队列已登记 —— 回放器是
+    /// **单线程**按事件时间顺序入队到同一条 workQueue,文件头偏离 (a) 要的性质
+    /// 「三条流共享同一个串行上下文、入队顺序 = 到达顺序」由它直接满足。
+    /// 0 成功;-3 还没 create(与 [begin] 同码)。
+    func beginReplay() -> Int32 {
+        lock.lock(); defer { lock.unlock() }
+        guard created else { return -3 }
+        running = true
+        return 0
+    }
+
+    /// 录制里的一行 IMU = 一次陀螺推送 + 一次加速度推送,**先陀螺后加速度**
+    /// (与 [begin] 里 start 的顺序、`PwVioTimebase.swift:747` 的注释、上游
+    /// EuRoC reader 同时间戳的插入顺序一致)。两次推送各走一次 [enqueueImu] ——
+    /// 与直播 onGyro / onAccel 同一道有界闸、同一条 worker、同两个传输层入口。
+    /// 加速度**原样透传**:录制里存的已经是 m/s²,换算正是 [onAccel] 里那个
+    /// `× −9.80665`(录制器 BasaltVIOBench `ARKitReferenceSession.swift:437-441`)。
+    func pushReplayImu(timestamp t: Double,
+                       gyro g: (Double, Double, Double),
+                       accelerationMps2 a: (Double, Double, Double)) {
+        lock.lock(); lastImuTs = t; lock.unlock()
+        enqueueImu { _ = PWXrslamTransportPushGyroscopeRaw(t, g.0, g.1, g.2) }
+        enqueueImu { _ = PWXrslamTransportPushAccelerationRaw(t, a.0, a.1, a.2) }
+    }
+
+    /// 回放器的背压读数:在途帧 / 在途 IMU / 已走完 runOneFrame 的帧数。
+    /// 回放器在两道闸**满之前**自己等(抄 BasaltVIOBench
+    /// `BenchmarkCoordinator.swift:1457-1508` waitForReplayCapacity),
+    /// 所以 [framesDropped] / [imuDropped] 在 paced / max 两档应恒 0。
+    func pendingWork() -> (frames: Int, imu: Int, cameraCallbacks: UInt64) {
+        lock.lock(); defer { lock.unlock() }
+        return (pendingFrames, pendingImu, cameraCallbacks)
+    }
+
+    /// 两道有界闸的容量(= [maxPendingFrames] / [maxPendingImu],原样交出)。
+    static var replayCapacity: (frames: Int, imu: Int) {
+        (maxPendingFrames, maxPendingImu)
+    }
+
+    /// 装 / 卸逐帧观察者。必须在推第一帧之前装、在 destroy 之前卸。
+    func setFrameObserver(_ observer: ((PwXrslamFrameObservation) -> Void)?) {
+        lock.lock(); frameObserver = observer; lock.unlock()
+    }
+
     // MARK: 三条喂料 —— 回调里当场推,不缓冲、不配对、不轮询
 
     /// IMU 入队的公共部分:闸 → async → 在 worker 上推。
@@ -609,23 +705,28 @@ final class PwXrslamLive {
         if pendingFrames > maxObservedPendingFrames {
             maxObservedPendingFrames = pendingFrames
         }
+        // [pw 2026-09-23 台架回放] 只有装了观察者才取入队时刻(直播恒 nil ⇒ 不取)。
+        let observed = frameObserver != nil
         lock.unlock()
+        let enqueuedAtNs: UInt64 = observed ? DispatchTime.now().uptimeNanoseconds : 0
 
         // `CVPixelBuffer` 是 CF 桥接类型,捕获进闭包即 retain、闭包销毁即
         // release —— 池里的这一格在 worker 用完之前不会被覆盖。
         workQueue.async { [weak self] in
             self?.runOneFrame(pixelBuffer, canonical: canonical, rawPts: ptsSeconds,
-                              intrinsics: intrinsics)
+                              intrinsics: intrinsics, enqueuedAtNs: enqueuedAtNs)
         }
     }
 
     /// 在 worker 上跑。与上游 `trackCamera`(`XRSLAM_iOS.mm:152-188`)同形:
     /// push → RunOneFrame → GetResult 由传输层一次原子做完。
     private func runOneFrame(_ pixelBuffer: CVPixelBuffer, canonical: Double,
-                             rawPts: Double, intrinsics: PwFrameIntrinsics?) {
+                             rawPts: Double, intrinsics: PwFrameIntrinsics?,
+                             enqueuedAtNs: UInt64 = 0) {
         defer {
             lock.lock(); pendingFrames -= 1; lock.unlock()
         }
+        let startedAtNs: UInt64 = enqueuedAtNs != 0 ? DispatchTime.now().uptimeNanoseconds : 0
         guard CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly) == kCVReturnSuccess
         else {
             lock.lock(); cameraLockFailures &+= 1; lock.unlock()
@@ -647,6 +748,7 @@ final class PwXrslamLive {
         //   上面两组尺寸都取自同一个 sample buffer,本来就相等;真正要核的是这一组。
         lock.lock()
         let configResolution = ikConfigResolution
+        let observer = frameObserver   // [pw 2026-09-23 台架回放] 直播恒 nil
         lock.unlock()
         var frameK: [Double]? = nil
         // 0 推;1 开关 off;2 无附件;3 参照≠推送;4 activeFormat≠推送;
@@ -675,20 +777,33 @@ final class PwXrslamLive {
         var state: Int32 = 0
         var pose = PWXrslamRawPose()
         // channel = 4:BGRA 直推,引擎内部转灰度(见文件头偏离 (b))。
+        // [pw 2026-09-23 台架回放] 通道数跟着像素格式走:台架回放推的是录制里的
+        //   luma 平面(OneComponent8 ⇒ 1,与 `PwVioSlamFeeder.swift:1701` 推灰度用的
+        //   同一个值;引擎 channel==1 分支原样 clone,fork XRSLAMManager.cpp:167-169)。
+        //   直播相机槽恒为 32BGRA ⇒ 仍是 4,与改动前逐字相同。
+        let channel: Int32 =
+            CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_OneComponent8
+            ? 1 : 4
+        // [pw 2026-09-23 台架回放] 只有装了观察者才计时(直播恒 nil ⇒ 不取时钟)。
+        let timed = observer != nil
+        let wall0: UInt64 = timed ? DispatchTime.now().uptimeNanoseconds : 0
+        let cpu0: UInt64 = timed ? clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) : 0
         let rc: Int32
         if let k = frameK {
             rc = k.withUnsafeBufferPointer { kp in
                 PWXrslamTransportPushCameraAndRunRawWithIntrinsics(
                     base.assumingMemoryBound(to: UInt8.self),
-                    canonical, Int32(stride), /*camera_id=*/0, /*channel=*/4,
+                    canonical, Int32(stride), /*camera_id=*/0, channel,
                     kp.baseAddress, &state, &pose)
             }
         } else {
             rc = PWXrslamTransportPushCameraAndRunRaw(
                 base.assumingMemoryBound(to: UInt8.self),
-                canonical, Int32(stride), /*camera_id=*/0, /*channel=*/4,
+                canonical, Int32(stride), /*camera_id=*/0, channel,
                 &state, &pose)
         }
+        let wall1: UInt64 = timed ? DispatchTime.now().uptimeNanoseconds : 0
+        let cpu1: UInt64 = timed ? clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) : 0
 
         // [pw 2026-09-22] 时基自证(文件头偏离 (d)):刚推完就读 C 账本里相机流的
         //   最近一条 trace。workQueue 是串行的、只有这里推相机 ⇒ 读到的必是本帧。
@@ -698,9 +813,13 @@ final class PwXrslamLive {
             Int32(PW_XRSLAM_STREAM_CAMERA.rawValue), &tr)
         // [pw 2026-09-23] 逐帧内参的 C 账本:同一条串行 worker、只有这里推相机
         //   ⇒ 读到的是本帧;仍用 camera submitted_sequence 对一次账。
+        var observedIk = PWXrslamIntrinsicsTrace()   // [台架回放] 交给观察者的本帧账
+        var observedIkOk = false
+        var observedSource = 0
         if rc == PW_XRSLAM_OK.rawValue {
             var ik = PWXrslamIntrinsicsTrace()
             let ikrc = PWXrslamTransportGetIntrinsicsTrace(&ik)
+            if ikrc == PW_XRSLAM_OK.rawValue { observedIk = ik; observedIkOk = true }
             lock.lock()
             ikFrames &+= 1
             ikLastPushedWidth = pushedWidth
@@ -724,6 +843,7 @@ final class PwXrslamLive {
                 ikLastSource = PwPerFrameIntrinsicsSource.classify(
                     attached: ik.last_per_frame_attached == 1,
                     engineReportDiffers: ik.last_engine_report_differs == 1).rawValue
+                observedSource = ikLastSource
                 if ik.last_per_frame_attached == 1 {
                     let fx = ik.last_attached_fxfycxcy.0
                     if fx < ikFxMin { ikFxMin = fx }
@@ -759,6 +879,33 @@ final class PwXrslamLive {
             }
         }
         lock.unlock()
+
+        // [pw 2026-09-23 台架回放] 逐帧观察者(直播恒 nil)。在 worker 上、本帧的
+        //   pendingFrames 递减之前调用 ⇒ 回放器看到「在途 = 0」时,所有帧的记录都已交出。
+        if let observer {
+            observer(PwXrslamFrameObservation(
+                rc: rc,
+                state: rc == PW_XRSLAM_OK.rawValue ? state : 0,
+                pose: pose,
+                rawPts: rawPts,
+                canonical: canonical,
+                traceOk: trc == PW_XRSLAM_OK.rawValue
+                    && tr.stream == Int32(PW_XRSLAM_STREAM_CAMERA.rawValue),
+                submittedSequence: tr.submitted_sequence,
+                effectiveTimestamp: tr.effective_timestamp,
+                channel: channel,
+                pushedWidth: pushedWidth,
+                pushedHeight: pushedHeight,
+                stride: stride,
+                hostReason: hostReason,
+                intrinsicsSource: observedSource,
+                intrinsicsTraceOk: observedIkOk,
+                intrinsicsTrace: observedIk,
+                solveWallMs: Double(wall1 &- wall0) / 1_000_000.0,
+                solveCpuMs: Double(cpu1 &- cpu0) / 1_000_000.0,
+                queueWaitMs: startedAtNs > enqueuedAtNs
+                    ? Double(startedAtNs - enqueuedAtNs) / 1_000_000.0 : 0))
+        }
     }
 
     // MARK: 读出
