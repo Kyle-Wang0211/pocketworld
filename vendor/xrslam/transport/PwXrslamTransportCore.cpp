@@ -6,6 +6,34 @@
 
 #include "XRSLAM.h"
 
+// Layout of the per-frame intrinsics extension, copied from fork commit
+// 04c0e83 xrslam-interface/src/XRSLAMImageExt.h:25-44 (the engine side of the
+// same contract). If the mirror header drifts from the engine, this fails to
+// compile instead of silently handing the engine a mis-laid-out struct.
+static_assert(sizeof(void *) == 8,
+              "ext_size sits in the existing padding only under LP64");
+static_assert(sizeof(XRSLAMImage) == 40, "XRSLAMImage must stay 40 bytes");
+static_assert(offsetof(XRSLAMImage, data) == 0 &&
+                  offsetof(XRSLAMImage, timeStamp) == 8 &&
+                  offsetof(XRSLAMImage, stride) == 16 &&
+                  offsetof(XRSLAMImage, camera_id) == 20 &&
+                  offsetof(XRSLAMImage, channel) == 24 &&
+                  offsetof(XRSLAMImage, ext) == 32,
+              "upstream XRSLAMImage member offsets moved");
+static_assert(offsetof(XRSLAMImage, ext_size) == 28 &&
+                  sizeof(XRSLAMImage::ext_size) == 4,
+              "ext_size must occupy the 4-byte padding between channel and ext");
+static_assert(offsetof(XRSLAMImageExtension, exposure_time) == 0 &&
+                  offsetof(XRSLAMImageExtension, default_focus_distance) == 8 &&
+                  offsetof(XRSLAMImageExtension, focal_length) == 16 &&
+                  offsetof(XRSLAMImageExtension, focus_distance) == 24,
+              "upstream XRSLAMImageExtension prefix moved");
+static_assert(offsetof(XRSLAMImageExtension, intrinsics_fxfycxcy) ==
+                  XRSLAM_IMAGE_EXTENSION_LEGACY_SIZE,
+              "intrinsics must follow the upstream 32-byte prefix");
+static_assert(sizeof(XRSLAMImageExtension) == 72,
+              "XRSLAMImageExtension v2 is 72 bytes (fork 04c0e83)");
+
 namespace {
 
 std::mutex g_core_mutex;
@@ -31,6 +59,19 @@ double g_camera_time_offset_seconds = 0.0;
 uint64_t g_lifecycle_generation = 0;
 StreamState g_streams[3];
 SessionCounters g_counters;
+PWXrslamIntrinsicsTrace g_intrinsics_trace{};
+
+// The same acceptance rule the fork engine applies before it uses a per-frame
+// K (fork 04c0e83 xrslam-interface/src/XRSLAMImageExt.h:57-62): all four
+// finite, fx > 0, fy > 0. Anything else would be ignored by the engine, so the
+// transport does not attach it and counts it instead.
+bool IsAttachableIntrinsics(const double *k) {
+  for (int i = 0; i < 4; ++i) {
+    if (!std::isfinite(k[i]))
+      return false;
+  }
+  return k[0] > 0.0 && k[1] > 0.0;
+}
 
 bool IsFinite3(double x, double y, double z) {
   return std::isfinite(x) && std::isfinite(y) && std::isfinite(z);
@@ -45,6 +86,7 @@ void ResetSessionState() {
   for (StreamState &stream : g_streams)
     stream = {};
   g_counters = {};
+  g_intrinsics_trace = {};
 }
 
 void FillDestroyReceipt(bool acknowledged, PWXrslamDestroyReceipt *receipt) {
@@ -195,6 +237,15 @@ PWXrslamTransportDestroyWithReceipt(PWXrslamDestroyReceipt *receipt) {
 extern "C" int32_t PWXrslamTransportPushCameraAndRunRaw(
     uint8_t *data, double timestamp, int32_t stride, int32_t camera_id,
     int32_t channel, int32_t *raw_state, PWXrslamRawPose *raw_pose) {
+  return PWXrslamTransportPushCameraAndRunRawWithIntrinsics(
+      data, timestamp, stride, camera_id, channel, nullptr, raw_state,
+      raw_pose);
+}
+
+extern "C" int32_t PWXrslamTransportPushCameraAndRunRawWithIntrinsics(
+    uint8_t *data, double timestamp, int32_t stride, int32_t camera_id,
+    int32_t channel, const double *k_fxfycxcy, int32_t *raw_state,
+    PWXrslamRawPose *raw_pose) {
   std::lock_guard<std::mutex> lock(g_core_mutex);
   if (data == nullptr || stride <= 0 || channel <= 0 || raw_state == nullptr ||
       raw_pose == nullptr) {
@@ -216,6 +267,23 @@ extern "C" int32_t PWXrslamTransportPushCameraAndRunRaw(
   image.channel = channel;
   image.ext = nullptr;
 
+  // Per-frame K, fork 04c0e83 contract: the engine reads the appended fields
+  // only when ext_size == sizeof(XRSLAMImageExtension) and has_intrinsics == 1
+  // (XRSLAMImageExt.h:49-66). The upstream 32-byte prefix stays zero, the same
+  // as upstream callers that pass no extension at all.
+  // k_fxfycxcy == NULL leaves `image` exactly as the legacy push built it.
+  XRSLAMImageExtension extension{};
+  const bool attach =
+      k_fxfycxcy != nullptr && IsAttachableIntrinsics(k_fxfycxcy);
+  if (attach) {
+    for (int i = 0; i < 4; ++i)
+      extension.intrinsics_fxfycxcy[i] = k_fxfycxcy[i];
+    extension.has_intrinsics = 1;
+    extension.reserved_pad = 0;
+    image.ext_size = static_cast<unsigned int>(sizeof(XRSLAMImageExtension));
+    image.ext = &extension;
+  }
+
   XRSLAMPushSensorData(XRSLAM_SENSOR_CAMERA, &image);
   MarkSubmittedLocked(PW_XRSLAM_STREAM_CAMERA, timestamp,
                       g_camera_time_offset_seconds, effective_timestamp);
@@ -229,6 +297,71 @@ extern "C" int32_t PWXrslamTransportPushCameraAndRunRaw(
   XRSLAMGetResult(XRSLAM_RESULT_CAMERA_POSE, &pose);
   *raw_state = static_cast<int32_t>(state);
   CopyRawPose(pose, raw_pose);
+
+  PWXrslamIntrinsicsTrace &trace = g_intrinsics_trace;
+  trace.camera_submitted_sequence =
+      g_streams[PW_XRSLAM_STREAM_CAMERA].trace.submitted_sequence;
+  trace.last_per_frame_attached = attach ? 1 : 0;
+  trace.last_engine_report_read = 0;
+  trace.last_engine_report_matches = 0;
+  for (int i = 0; i < 4; ++i) {
+    trace.last_attached_fxfycxcy[i] = attach ? k_fxfycxcy[i] : 0.0;
+    trace.last_engine_fxfycxcy[i] = 0.0;
+  }
+  if (attach) {
+    ++trace.attached;
+    // Read-only query that both the upstream core (config K) and the fork
+    // core (latest per-frame K, fork XRSLAMManager.cpp:348-362) answer.
+    // Only issued when a K was attached, so the legacy call sequence is
+    // unchanged.
+    XRSLAMIntrinsics reported{};
+    XRSLAMGetResult(XRSLAM_INFO_INTRINSICS, &reported);
+    trace.last_engine_report_read = 1;
+    trace.last_engine_fxfycxcy[0] = reported.fx;
+    trace.last_engine_fxfycxcy[1] = reported.fy;
+    trace.last_engine_fxfycxcy[2] = reported.cx;
+    trace.last_engine_fxfycxcy[3] = reported.cy;
+    const bool matches = reported.fx == k_fxfycxcy[0] &&
+                         reported.fy == k_fxfycxcy[1] &&
+                         reported.cx == k_fxfycxcy[2] &&
+                         reported.cy == k_fxfycxcy[3];
+    trace.last_engine_report_matches = matches ? 1 : 0;
+    if (matches)
+      ++trace.engine_report_matched;
+  } else {
+    ++trace.not_attached;
+    if (k_fxfycxcy != nullptr)
+      ++trace.rejected_invalid;
+  }
+  return PW_XRSLAM_OK;
+}
+
+extern "C" int32_t
+PWXrslamTransportGetIntrinsicsTrace(PWXrslamIntrinsicsTrace *trace) {
+  if (trace == nullptr)
+    return PW_XRSLAM_ERR_INVALID_ARGUMENT;
+  std::lock_guard<std::mutex> lock(g_core_mutex);
+  *trace = g_intrinsics_trace;
+  return PW_XRSLAM_OK;
+}
+
+extern "C" int32_t PWXrslamTransportScaleIntrinsicsForBoxNxN(
+    const double source[4], int32_t factor, double destination[4]) {
+  if (source == nullptr || destination == nullptr || factor <= 0)
+    return PW_XRSLAM_ERR_INVALID_ARGUMENT;
+  for (int i = 0; i < 4; ++i) {
+    if (!std::isfinite(source[i]))
+      return PW_XRSLAM_ERR_INVALID_ARGUMENT;
+  }
+  // arloopbench tools/pwvi_to_euroc.py:224-226, same operations in the same
+  // order (IEEE double; no multiply-add to contract):
+  //   fx, fy, cx, cy = (K[0] / d, K[1] / d, (K[2] + 0.5) / d - 0.5,
+  //                     (K[3] + 0.5) / d - 0.5)
+  const double d = static_cast<double>(factor);
+  destination[0] = source[0] / d;
+  destination[1] = source[1] / d;
+  destination[2] = (source[2] + 0.5) / d - 0.5;
+  destination[3] = (source[3] + 0.5) / d - 0.5;
   return PW_XRSLAM_OK;
 }
 

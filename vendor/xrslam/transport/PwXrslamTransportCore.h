@@ -98,11 +98,54 @@ int32_t PWXrslamTransportDestroyWithReceipt(PWXrslamDestroyReceipt *receipt);
 
 // Cross-platform fixed mechanism: one raw camera push advances the official
 // generic core exactly once and returns only unclassified state/pose facts.
+// Legacy entry point: identical to the WithIntrinsics variant below with
+// k_fxfycxcy == NULL (no image extension is attached).
 int32_t PWXrslamTransportPushCameraAndRunRaw(uint8_t *data, double timestamp,
                                              int32_t stride, int32_t camera_id,
                                              int32_t channel,
                                              int32_t *raw_state,
                                              PWXrslamRawPose *raw_pose);
+
+// Same transaction, optionally carrying this frame's pinhole intrinsics.
+//
+// k_fxfycxcy == NULL: byte-for-byte the legacy push (XRSLAMImage zeroed,
+//   ext == NULL, ext_size == 0; no extra core call).
+// k_fxfycxcy != NULL: four doubles fx, fy, cx, cy, in pixels of exactly the
+//   buffer passed as `data` (the caller rescales for any downsample before
+//   calling). They are attached as the 72-byte XRSLAMImageExtension with
+//   has_intrinsics = 1 and ext_size = sizeof(XRSLAMImageExtension), the
+//   contract of fork commit 04c0e83 (xrslam-interface/src/XRSLAMImageExt.h).
+//   Values the engine would reject (non-finite, fx <= 0, fy <= 0) are not
+//   attached: the frame is pushed the legacy way and counted in
+//   PWXrslamIntrinsicsTrace.rejected_invalid.
+//   After RunOneFrame the transport reads XRSLAM_INFO_INTRINSICS once and
+//   records it in the intrinsics trace, so the host can prove whether the
+//   linked core consumed the per-frame K (a core without the fork change
+//   keeps reporting its config K).
+int32_t PWXrslamTransportPushCameraAndRunRawWithIntrinsics(
+    uint8_t *data, double timestamp, int32_t stride, int32_t camera_id,
+    int32_t channel, const double *k_fxfycxcy, int32_t *raw_state,
+    PWXrslamRawPose *raw_pose);
+
+// Ledger for the per-frame intrinsics channel of the current session. The
+// `last_*` fields describe the most recent successful camera push; the counts
+// are session totals (reset by Create). Hosts read these; they must not
+// synthesize them.
+typedef struct PWXrslamIntrinsicsTrace {
+  uint64_t camera_submitted_sequence; // camera submitted_sequence of the push described below
+  int32_t last_per_frame_attached;    // 1 = the 72-byte ext with has_intrinsics = 1 was attached
+  int32_t last_engine_report_read;    // 1 = XRSLAM_INFO_INTRINSICS was read after that push
+  int32_t last_engine_report_matches; // 1 = the engine report equals the attached K bit-for-bit
+  int32_t reserved;
+  double last_attached_fxfycxcy[4];
+  double last_engine_fxfycxcy[4];
+  uint64_t attached;                  // camera pushes that carried per-frame K
+  uint64_t not_attached;              // camera pushes without per-frame K (legacy or rejected)
+  uint64_t rejected_invalid;          // subset of not_attached: K given but not attachable
+  uint64_t engine_report_matched;     // subset of attached: engine report == attached K
+} PWXrslamIntrinsicsTrace;
+
+int32_t PWXrslamTransportGetIntrinsicsTrace(PWXrslamIntrinsicsTrace *trace);
 
 int32_t PWXrslamTransportPushAccelerationRaw(double timestamp, double x,
                                              double y, double z);
@@ -123,6 +166,19 @@ int32_t PWXrslamTransportPrepareGrayBoxNxN(
     int32_t source_stride, int32_t factor, uint8_t *destination,
     int32_t destination_capacity, int32_t *destination_width,
     int32_t *destination_height);
+
+// Intrinsics of the output of PWXrslamTransportPrepareGrayBoxNxN, given the
+// intrinsics of its source buffer (both in the pixel-center-at-integer
+// convention of ARKit ARCamera.intrinsics / OpenCV):
+//   fx' = fx / f, fy' = fy / f, cx' = (cx + 0.5) / f - 0.5, cy' = (cy + 0.5) / f - 0.5
+// This is the exact expression of the offline converter that produced the
+// replay A/C evidence (arloopbench tools/pwvi_to_euroc.py:224-226,
+// sha256 3c96ab11cee1401f9fd9ab2159f2c97ca0959d6533243176402ae10f10643938).
+// Returns PW_XRSLAM_ERR_INVALID_ARGUMENT for factor <= 0, NULL pointers or
+// non-finite input; never writes `destination` in that case.
+int32_t PWXrslamTransportScaleIntrinsicsForBoxNxN(
+    const double source_fxfycxcy[4], int32_t factor,
+    double destination_fxfycxcy[4]);
 
 // Converts the frozen upstream camera result (T_world_camera, quaternion xyzw)
 // to a row-major 4x4 homogeneous matrix. The quaternion is normalized after
