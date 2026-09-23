@@ -303,17 +303,19 @@ extern "C" int32_t PWXrslamTransportPushCameraAndRunRawWithIntrinsics(
       g_streams[PW_XRSLAM_STREAM_CAMERA].trace.submitted_sequence;
   trace.last_per_frame_attached = attach ? 1 : 0;
   trace.last_engine_report_read = 0;
-  trace.last_engine_report_matches = 0;
+  trace.last_engine_report_differs = 0;
   for (int i = 0; i < 4; ++i) {
     trace.last_attached_fxfycxcy[i] = attach ? k_fxfycxcy[i] : 0.0;
     trace.last_engine_fxfycxcy[i] = 0.0;
   }
   if (attach) {
     ++trace.attached;
-    // Read-only query that both the upstream core (config K) and the fork
-    // core (latest per-frame K, fork XRSLAMManager.cpp:348-362) answer.
-    // Only issued when a K was attached, so the legacy call sequence is
-    // unchanged.
+    // Read-only query that both the upstream core (config K, 4beb1a9
+    // XRSLAMManager.cpp:183-188) and the fork core (latest per-frame K, fork
+    // XRSLAMManager.cpp:348-362) answer. Only issued when a K was attached, so
+    // the legacy call sequence is unchanged. Only a difference is conclusive
+    // (header comment of PWXrslamTransportPushCameraAndRunRawWithIntrinsics);
+    // equality is recorded as equality, never as "consumed".
     XRSLAMIntrinsics reported{};
     XRSLAMGetResult(XRSLAM_INFO_INTRINSICS, &reported);
     trace.last_engine_report_read = 1;
@@ -321,13 +323,15 @@ extern "C" int32_t PWXrslamTransportPushCameraAndRunRawWithIntrinsics(
     trace.last_engine_fxfycxcy[1] = reported.fy;
     trace.last_engine_fxfycxcy[2] = reported.cx;
     trace.last_engine_fxfycxcy[3] = reported.cy;
-    const bool matches = reported.fx == k_fxfycxcy[0] &&
-                         reported.fy == k_fxfycxcy[1] &&
-                         reported.cx == k_fxfycxcy[2] &&
-                         reported.cy == k_fxfycxcy[3];
-    trace.last_engine_report_matches = matches ? 1 : 0;
-    if (matches)
-      ++trace.engine_report_matched;
+    const bool equal = reported.fx == k_fxfycxcy[0] &&
+                       reported.fy == k_fxfycxcy[1] &&
+                       reported.cx == k_fxfycxcy[2] &&
+                       reported.cy == k_fxfycxcy[3];
+    trace.last_engine_report_differs = equal ? 0 : 1;
+    if (equal)
+      ++trace.engine_report_equal;
+    else
+      ++trace.engine_report_differs;
   } else {
     ++trace.not_attached;
     if (k_fxfycxcy != nullptr)

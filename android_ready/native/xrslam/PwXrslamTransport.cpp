@@ -119,9 +119,12 @@ Java_com_pocketworld_capture_PwXrslamTransport_nativePushCameraAndRunRawWithIntr
 
 // Raw copy of PWXrslamIntrinsicsTrace (the shared C++ ledger). Order:
 // [rc, camera_submitted_sequence, last_per_frame_attached,
-//  last_engine_report_read, last_engine_report_matches,
+//  last_engine_report_read, last_engine_report_differs,
 //  last_attached fx fy cx cy, last_engine fx fy cx cy,
-//  attached, not_attached, rejected_invalid, engine_report_matched]
+//  attached, not_attached, rejected_invalid, engine_report_differs,
+//  engine_report_equal]
+// engine_report_equal is NOT evidence that the core consumed the K (see
+// PwXrslamTransportCore.h); only engine_report_differs is conclusive (not taken).
 extern "C" JNIEXPORT jdoubleArray JNICALL
 Java_com_pocketworld_capture_PwXrslamTransport_nativeIntrinsicsTrace(
     JNIEnv* env, jobject) {
@@ -132,7 +135,7 @@ Java_com_pocketworld_capture_PwXrslamTransport_nativeIntrinsicsTrace(
       static_cast<jdouble>(t.camera_submitted_sequence),
       static_cast<jdouble>(t.last_per_frame_attached),
       static_cast<jdouble>(t.last_engine_report_read),
-      static_cast<jdouble>(t.last_engine_report_matches),
+      static_cast<jdouble>(t.last_engine_report_differs),
       t.last_attached_fxfycxcy[0],
       t.last_attached_fxfycxcy[1],
       t.last_attached_fxfycxcy[2],
@@ -144,7 +147,8 @@ Java_com_pocketworld_capture_PwXrslamTransport_nativeIntrinsicsTrace(
       static_cast<jdouble>(t.attached),
       static_cast<jdouble>(t.not_attached),
       static_cast<jdouble>(t.rejected_invalid),
-      static_cast<jdouble>(t.engine_report_matched),
+      static_cast<jdouble>(t.engine_report_differs),
+      static_cast<jdouble>(t.engine_report_equal),
   };
   constexpr jsize kCount = static_cast<jsize>(sizeof(values) / sizeof(values[0]));
   jdoubleArray result = env->NewDoubleArray(kCount);

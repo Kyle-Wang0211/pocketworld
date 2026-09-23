@@ -2342,15 +2342,21 @@ public final class PwVioSlamFeeder {
     ]
     observation["xrslamPoseCoordinateConvention"] = "official_scene_kit_ios"
     observation["xrslamWorldFromCamera"] = xrslamWorldFromCamera
-    // [pw 2026-09-23] 本帧用的是哪份 K(逐帧 / yaml 常量),原始事实照抄 C 账本。
-    //   per_frame               = 推了逐帧 K 且引擎回读(XRSLAM_INFO_INTRINSICS)逐位一致
-    //   per_frame_not_consumed  = 推了但引擎回读不一致(链的核不认这条扩展 ⇒ 实际是常量)
-    //   config                  = 没推(原因见 intrinsicsHostReason / 传输层拒收)
+    // [pw 2026-09-23;复核修正] 本帧用的是哪份 K。标签由 `PwPerFrameIntrinsicsSource`
+    //   (PwXrslamLive.swift)统一给:回读相等**不算**引擎收下(不认扩展的核报 yaml K,
+    //   第一帧就可能与推的值相等);「收下了」只来自构建身份,回读不等才是「没收下」的证据。
+    //   原始事实(推了没有、回读等不等)另列,照抄 C 账本。
     if let t = intrinsicsTrace {
       let attached = t.last_per_frame_attached == 1
-      observation["intrinsicsSource"] = attached
-        ? (t.last_engine_report_matches == 1 ? "per_frame" : "per_frame_not_consumed")
-        : "config"
+      observation["intrinsicsSource"] = PwPerFrameIntrinsicsSource.classify(
+        attached: attached,
+        engineReportDiffers: t.last_engine_report_differs == 1).label
+      observation["intrinsicsAttached"] = attached
+      if attached {
+        observation["intrinsicsEngineReportDiffers"] = t.last_engine_report_differs == 1
+      } else {
+        observation["intrinsicsEngineReportDiffers"] = NSNull()
+      }
       observation["intrinsicsHostReason"] = frame.intrinsicsHostReason.rawValue
       observation["intrinsicsGrayFxFyCxCy"] = attached ? [
         t.last_attached_fxfycxcy.0, t.last_attached_fxfycxcy.1,
@@ -2463,7 +2469,7 @@ public final class PwVioSlamFeeder {
     ]
   }
 
-  /// [pw 2026-09-23] 逐帧内参这一场的账。带 C 账本字样的四个数来自
+  /// [pw 2026-09-23] 逐帧内参这一场的账。`transport*` 五个数来自
   /// `PWXrslamTransportGetIntrinsicsTrace`,不在 Swift 合成。
   private func perFrameIntrinsicsWireLocked() -> [String: Any] {
     let sw = PwPerFrameIntrinsicsSwitch.resolved
@@ -2472,12 +2478,20 @@ public final class PwVioSlamFeeder {
       "schema": "pw.vio.per-frame-intrinsics/1",
       "switchEnabled": sw.enabled,
       "switchSource": sw.source.rawValue,
+      // 传了但解析不了 ⇒ 仍按默认 on 跑,但这一条和原文必须落进诊断。
+      "switchParseFailed": PwPerFrameIntrinsicsSwitch.parseFailed,
+      "switchRaw": sw.raw,
       "switchLaunchArgument": "-\(PwPerFrameIntrinsicsSwitch.kLaunchArgumentKey)",
       "rescale": "PWXrslamTransportScaleIntrinsicsForBoxNxN",
+      // 「引擎认不认逐帧 K」只从构建身份来(PwXrslamEngineIdentity):1 / 0 / -1 无法核实。
+      "engineArmStamp": PwXrslamEngineIdentity.stampedArm ?? "UNSTAMPED",
+      "engineConsumesPerFrameK": PwXrslamEngineIdentity.consumesPerFrameK,
       "transportAttached": t.attached,
       "transportNotAttached": t.not_attached,
       "transportRejectedInvalid": t.rejected_invalid,
-      "transportEngineReportMatched": t.engine_report_matched,
+      // 回读 ≠ 推的值 ⇒ 证明没收下;回读 == 推的值 ⇒ 不是证据。
+      "transportEngineReportDiffers": t.engine_report_differs,
+      "transportEngineReportEqualNotEvidence": t.engine_report_equal,
       "hostSwitchOff": intrinsicsSwitchOffFrames,
       "hostImageResolutionMismatch": intrinsicsResolutionMismatchFrames,
       "hostScaleRejected": intrinsicsScaleRejectedFrames,

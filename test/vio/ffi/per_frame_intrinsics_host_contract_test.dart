@@ -11,6 +11,7 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pocketworld_flutter/vio/ffi/xrslam_config.dart';
 import 'package:pocketworld_flutter/vio/ffi/xrslam_live_ffi.dart';
 
 String _read(String path) => File(path).readAsStringSync();
@@ -189,30 +190,134 @@ void main() {
     );
   });
 
-  test('XrslamLiveIntrinsics parses the 25-double native report', () {
+  test('XrslamLiveIntrinsics parses the 31-double native report', () {
     final List<double> wire = <double>[
-      1, 0, 120, 118, 118, 2, 0, 2, 0, 0, 0, 2, //
+      1, 0, 120, // switch on, default, frames
+      118, 2, 0, // attached, not attached, rejected
+      0, 118, // report differs, report equal (not evidence)
+      -1, // no build identity stamp
+      0, 2, 0, 0, 0, 0, // host reasons
+      4, // last source: per_frame_attached_unverified
       1286.1873779296875, 1286.1873779296875, 957.7037963867188, 719.0327758789062,
       1286.1873779296875, 1286.1873779296875, 957.7037963867188, 719.0327758789062,
-      1280.49, 1347.79, 1920, 1440, 0,
+      1280.49, 1347.79, 1920, 1440, 1920, 1440, 0,
     ];
     final XrslamLiveIntrinsics? r = XrslamLiveIntrinsics.fromWire(wire);
     expect(r, isNotNull);
     expect(r!.switchEnabled, isTrue);
+    expect(r.switchParseFailed, isFalse);
     expect(r.armLabel, 'per_frame_k_on');
     expect(r.attached, 118);
-    expect(r.engineConsumed, 118);
+    expect(r.engineReportEqualNotEvidence, 118);
+    expect(r.engineReportDiffers, 0);
     expect(r.notAttached, 2);
     expect(r.hostNoAttachment, 2);
-    expect(r.lastSourceLabel, 'per_frame');
+    // Equal read-back without a build identity is NOT reported as consumed.
+    expect(r.lastSourceLabel, 'per_frame_attached_unverified');
+    expect(r.engineConsumesLabel, 'unverifiable_no_build_identity');
     expect(r.pushedWidth, 1920);
-    expect(r.pushedHeight, 1440);
+    expect(r.configWidth, 1920);
+    expect(r.configHeight, 1440);
     final Map<String, Object?> json = r.toJson();
     expect(json['arm'], 'per_frame_k_on');
     expect(json['switch_launch_argument'], '-PWPerFrameIntrinsics');
     expect(json['last_attached_fxfycxcy'], hasLength(4));
-    expect(XrslamLiveIntrinsics.fromWire(wire.sublist(0, 24)), isNull);
+    expect(json.keys.where((String k) => k.contains('matched')), isEmpty);
+    expect(json['transport_engine_report_equal_not_evidence'], 118);
+    expect(XrslamLiveIntrinsics.fromWire(wire.sublist(0, 30)), isNull);
     final List<double> off = List<double>.of(wire)..[0] = 0;
     expect(XrslamLiveIntrinsics.fromWire(off)!.armLabel, 'per_frame_k_off');
+    // Unparseable launch argument: still on, but the failure is in the record.
+    final List<double> bad = List<double>.of(wire)..[1] = 2;
+    final XrslamLiveIntrinsics b = XrslamLiveIntrinsics.fromWire(bad)!;
+    expect(b.armLabel, 'per_frame_k_on');
+    expect(b.toJson()['switch_parse_failed'], isTrue);
+    expect(b.toJson()['switch_source'], 'unparseable_fell_back_to_default_on');
+    // Build identity says the linked core is the per-frame-K arm.
+    final List<double> pfk = List<double>.of(wire)
+      ..[8] = 1
+      ..[15] = 2;
+    final XrslamLiveIntrinsics p = XrslamLiveIntrinsics.fromWire(pfk)!;
+    expect(p.lastSourceLabel, 'per_frame');
+    expect(p.engineConsumesLabel, 'build_identity_per_frame_k_arm');
+  });
+
+  test('consumption is never inferred from an equal engine read-back', () {
+    final String h = _read('vendor/xrslam/transport/PwXrslamTransportCore.h');
+    final String cpp =
+        _read('vendor/xrslam/transport/PwXrslamTransportCore.cpp');
+    final String live = _read('ios/Runner/PwXrslamLive.swift');
+    final String feeder = _read('ios/Runner/PwVioSlamFeeder.swift');
+    for (final String src in <String>[h, cpp, live, feeder]) {
+      expect(src, isNot(contains('engine_report_matched')));
+      expect(src, isNot(contains('last_engine_report_matches')));
+    }
+    expect(h, contains('uint64_t engine_report_differs;'));
+    expect(h, contains('uint64_t engine_report_equal;'));
+    expect(cpp, contains('++trace.engine_report_equal;'));
+    // The one place that turns facts into a label.
+    final String classify = _body(
+      live,
+      RegExp(r'static func classify\([\s\S]*?\n    \}'),
+    );
+    expect(classify, contains('if engineReportDiffers { return .perFrameNotConsumed }'));
+    expect(classify, contains('PwXrslamEngineIdentity.consumesPerFrameK'));
+    expect(classify, contains('default: return .perFrameAttachedUnverified'));
+    expect(live, contains('PwPerFrameIntrinsicsSource.classify('));
+    expect(feeder, contains('PwPerFrameIntrinsicsSource.classify('));
+    // Build identity = the Info.plist key the Release stamp writes after its
+    // fingerprint check.
+    expect(live, contains('static let kInfoPlistKey = "PWXrslamEngineArm"'));
+    expect(live, contains('static let kPerFrameKArm = "gpufenothread_pfk"'));
+    final String stamp = _read('ios/scripts/stamp_runtime_identity.sh');
+    expect(stamp, contains(r'set_plist_string "PWXrslamEngineArm" "$pw_xrslam_engine_linked"'));
+    expect(stamp, contains('gpufenothread_pfk)'));
+  });
+
+  test('ON arm attaches K only when the pushed size equals the yaml cam0.resolution', () {
+    final String live = _read('ios/Runner/PwXrslamLive.swift');
+    expect(live, contains('PwXrslamDeviceYaml.cam0Resolution(atPath: deviceConfigPath)'));
+    expect(live, contains('cfg.width != pushedWidth || cfg.height != pushedHeight'));
+    expect(live, contains('hostReason = 5'));
+    expect(live, contains('hostReason = 6'));
+    // The Swift reader expects exactly what the Dart builder writes: a
+    // top-level `cam0:` block with a two-space-indented `resolution: [ W, H ]`.
+    expect(live, contains('line.hasPrefix("  resolution:")'));
+    expect(live, contains('== "cam0:"'));
+    const CameraIntrinsics k = CameraIntrinsics(
+      fx: 1347.79,
+      fy: 1347.79,
+      cx: 957.47,
+      cy: 718.96,
+      resolutionWidth: 1920,
+      resolutionHeight: 1440,
+      provenance: FieldProvenance.deviceApi,
+    );
+    final List<String> lines =
+        const XrslamConfigBuilder(intrinsics: k).buildDeviceConfigYaml().split('\n');
+    final int cam0 = lines.indexOf('cam0:');
+    expect(cam0, greaterThanOrEqualTo(0));
+    final List<String> hits = <String>[
+      for (final String l in lines)
+        if (l.startsWith('  resolution:')) l,
+    ];
+    expect(hits, <String>['  resolution: [ 1920, 1440 ]']);
+    final int at = lines.indexOf('  resolution: [ 1920, 1440 ]');
+    expect(at, greaterThan(cam0));
+    // No other top-level key between `cam0:` and the resolution line.
+    for (int i = cam0 + 1; i < at; i++) {
+      final String l = lines[i];
+      expect(l.isEmpty || l.startsWith(' ') || l.startsWith('#'), isTrue,
+          reason: 'line $i "$l" leaves the cam0 block');
+    }
+  });
+
+  test('unparseable -PWPerFrameIntrinsics is recorded in diagnostics, not only NSLog', () {
+    final String live = _read('ios/Runner/PwXrslamLive.swift');
+    final String feeder = _read('ios/Runner/PwVioSlamFeeder.swift');
+    expect(live, contains('return Resolved(enabled: true, source: .unparseable, raw: raw)'));
+    expect(live, contains('out[1] = Double(sw.source.rawValue)'));
+    expect(feeder, contains('"switchParseFailed": PwPerFrameIntrinsicsSwitch.parseFailed'));
+    expect(feeder, contains('"switchRaw": sw.raw'));
   });
 }

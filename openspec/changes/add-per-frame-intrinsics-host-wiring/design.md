@@ -15,6 +15,13 @@ output scales the buffer (`videoSettings` size != active format size).
 two readings coincide; at run time each frame is checked (pushed buffer ==
 sample-buffer format description == active format dimensions) and any mismatch
 falls back to the YAML K with a counted reason instead of guessing a rescale.
+The first two sizes come from the same sample buffer and are always equal; the
+check that carries weight is pushed buffer == the engine's `cam0.resolution`,
+read at session create from the same device YAML the engine parses (the engine
+wraps the pushed pointer in a `cv::Mat` of that size, fork 04c0e83
+`XRSLAMManager.cpp:143-144`, key `cam0.resolution` at `yaml_config.cpp:177`).
+A mismatch (for example an explicit smaller `feedWidth`) or an unreadable size
+means no per-frame K for that frame, counted by reason.
 
 The ARKit shadow rescale uses the pixel-center-at-integer convention that
 ARCamera.h states. It is implemented once, in C++, and pinned by a fixture
@@ -45,9 +52,21 @@ device, so the Kotlin entry takes K in pushed-buffer pixels and callers pass
   rule (finite, fx > 0, fy > 0), so the transport never attaches something the
   engine would silently ignore.
 - After a K push the transport reads `XRSLAM_INFO_INTRINSICS` once. The fork
-  reports the latest per-frame K; an unmodified core reports its YAML K. The
-  ledger counts `engine_report_matched`, so a run on the wrong archive is
-  visible as "attached but not consumed".
+  reports the latest per-frame K it accepted (fork `XRSLAMManager.cpp:348-362`);
+  an unmodified core reports its YAML K (4beb1a9 `XRSLAMManager.cpp:183-188`).
+  This read-back is one-sided: `engine_report_differs` proves the core did not
+  take that frame's K; `engine_report_equal` proves nothing, because the YAML
+  K can equal the pushed K (for example when both come from the first frame).
+  The ledger therefore records "attached" (what the host pushed) and the two
+  read-back outcomes, and never a "consumed" count.
+- Whether the linked core consumes per-frame K at all is taken from the build
+  identity: a Release build's `stamp_runtime_identity.sh` checks the linked
+  binary for the arm's fingerprint and the absence of the other two arms'
+  fingerprints, then writes `PWXrslamEngineArm` into Info.plist. The hosts
+  label a frame `per_frame` only when that stamp is `gpufenothread_pfk` and the
+  read-back does not differ; `per_frame_not_consumed` when the read-back
+  differs or the stamp names another arm; `per_frame_attached_unverified` when
+  there is no stamp (Debug/Profile builds).
 
 ## Engine archive
 
@@ -63,10 +82,12 @@ byte-identical.
 
 - Arms: `-PWPerFrameIntrinsics on` vs `off`, same engine archive
   (`gpufenothread_pfk`), same capture copy, same device.
-- Required record per run: arm label, switch source, `transport_attached`,
-  `transport_engine_report_matched` (must equal attached in the on arm),
-  `transport_not_attached` with host reasons, fx min/max, pushed resolution.
-- A run whose on arm has `engine_report_matched < attached` is invalid (wrong
-  archive linked).
+- Required record per run: arm label, switch source and parse failure,
+  `engine_consumes_per_frame_k` (build identity), `transport_attached`,
+  `transport_engine_report_differs`, `transport_not_attached` with host
+  reasons, fx min/max, pushed and YAML resolution.
+- Only Release builds carry the build identity; the bench must use one.
+  A run whose on arm is not `build_identity_per_frame_k_arm`, or has
+  `transport_engine_report_differs > 0`, is invalid (wrong archive linked).
 - Per `AGENTS.md`, only the physical-phone production pipeline can select a
   production default; host replays stay diagnostic.

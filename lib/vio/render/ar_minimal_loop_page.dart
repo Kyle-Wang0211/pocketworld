@@ -440,8 +440,8 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
               'trace读=${tb.traceReads}');
         }
         // [pw 2026-09-23] 逐帧内参:这一场是 on 臂还是 off 臂、引擎到底吃没吃到。
-        //    判读:`引擎吃到` == `逐帧推` ⇒ 链的核认这条扩展;前者 0 而后者 > 0 ⇒
-        //    链的不是 gpufenothread_pfk 档,引擎实际仍用 yaml 常量。`序号错` 必须 0。
+        //    判读:`宿主推逐帧` 只说明推了;引擎收没收下看 `引擎身份`(构建盖章),
+        //    `回读不等` > 0 的那些帧证明没收下,`回读相等` 不算证据。`序号错` 必须 0。
         final XrslamLiveIntrinsics? ik = XrslamLive.intrinsics();
         if (ik != null) debugPrint('[arloop] 内参 $ik');
         // [pw 2026-09-19] 曝光实测 —— 回答"为什么比系统相机暗"。只读,不改设置。

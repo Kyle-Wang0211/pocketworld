@@ -471,7 +471,7 @@ Map<String, Object?> buildZeroArkitProbeManifest({
           },
     'engine_unavailable_reason': engineUnavailableReason?.toString(),
     // 🔴 台架 A/B(`-PWPerFrameIntrinsics on|off`)的归因靠这一块:哪一臂、
-    //    推了多少帧逐帧 K、链的核吃没吃到(引擎回读一致的帧数)。null = 原生
+    //    推了多少帧逐帧 K、构建身份说引擎认不认(回读相等不算证据)。null = 原生
     //    没有 `pw_xrslam_live_intrinsics` 符号或整场没推过帧。
     'per_frame_intrinsics': perFrameIntrinsics,
     'pose_frames': poseFrames,

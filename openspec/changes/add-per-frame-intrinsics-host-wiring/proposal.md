@@ -26,8 +26,9 @@ and does not change the shipping engine archive or the default link.
   `PWXrslamTransportScaleIntrinsicsForBoxNxN` (K of the box-NxN gray output,
   the exact expression of the offline converter `pwvi_to_euroc.py:224-226`) and
   `PWXrslamTransportGetIntrinsicsTrace` (per-session ledger, including an
-  `XRSLAM_INFO_INTRINSICS` read-back that shows whether the linked core
-  consumed the K).
+  `XRSLAM_INFO_INTRINSICS` read-back; a differing report proves the linked core
+  did not take the K, an equal report proves nothing — whether the core
+  consumes per-frame K comes from the Release build identity stamp).
 - Mirror header `vendor/xrslam/include/XRSLAM.h` follows the fork 04c0e83
   layout (struct sizes pinned by static_asserts in the transport).
 - iOS zero-ARKit ON arm (`PwCameraSlot.swift` -> `PwXrslamLive.swift`): push the

@@ -120,6 +120,9 @@ import Foundation
 //   width/height 过滤出来的格式),所以两种读法在我们的路径上重合。运行期仍逐帧
 //   核对三组尺寸 —— 推给引擎的像素 / sample buffer 格式描述 / activeFormat ——
 //   任何一组不等就**不推逐帧 K**、退回 yaml 常量并按原因计数,不猜换算。
+//   [复核修正] 前两组取自同一个 sample buffer,恒等;承重的是第四组:推送像素
+//   == 引擎 yaml 的 `cam0.resolution`(引擎按它包 cv::Mat,见 `PwXrslamDeviceYaml`)。
+//   「引擎收下了没有」只由构建身份判定(`PwXrslamEngineIdentity`),回读相等不算。
 //
 // 开关:启动参数 `-PWPerFrameIntrinsics off|on`(键名与读法抄 `PwFocusArms.swift:214-235`
 // 的 `-PWFocusArm`:先读 NSArgumentDomain,再自己扫一遍 argv)。本研究分支**默认 on**;
@@ -160,6 +163,108 @@ enum PwPerFrameIntrinsicsSwitch {
         NSLog("[PwPerFrameIntrinsics] -%@ 值无法解析:「%@」⇒ 留在默认 on", kLaunchArgumentKey, raw)
         return Resolved(enabled: true, source: .unparseable, raw: raw)
     }()
+
+    /// 传了参数但解析不了(仍按默认 on 跑)。这一条**必须进 VIO 诊断**,不能只在
+    /// NSLog 里:ON 臂报告里是 source == 2(Dart 侧写成 `switch_parse_failed`),
+    /// 影子快照里是 `switchParseFailed` + 原文 `switchRaw`。
+    static var parseFailed: Bool { resolved.source == .unparseable }
+}
+
+/// [pw 2026-09-23 复核修正] 链进来的引擎核**认不认**逐帧 K,是**构建**的属性,
+/// 不是运行期数值能证明的:传输层回读 `XRSLAM_INFO_INTRINSICS` 只有「不等 ⇒ 这一帧
+/// 没被收下」这一侧是结论;相等时,不认扩展的核报的是 yaml K(上游 4beb1a9
+/// XRSLAMManager.cpp:183-188),而 yaml K 可能正是从同一来源写的(例如第一帧的 K),
+/// 数值相等却什么都没吃(`PwXrslamTransportCore.h` WithIntrinsics 那段注释)。
+///
+/// 所以「引擎收下了」只从构建身份来:Release 构建时 `ios/scripts/stamp_runtime_identity.sh`
+/// 先在链接产物里核本臂指纹在场、另两条臂指纹不在场(:183-196),再把臂名写进
+/// Info.plist 的 `PWXrslamEngineArm`(:208)。Debug/Profile 不盖章(:24 非 Release
+/// 直接退出)⇒ 这里就是「无法核实」,不猜。
+enum PwXrslamEngineIdentity {
+    static let kInfoPlistKey = "PWXrslamEngineArm"
+    /// 认逐帧 K 的那条臂(fork 04c0e83 编出的 `libxrslam_gpufenothread_pfk_6f6aa21c.a`)。
+    static let kPerFrameKArm = "gpufenothread_pfk"
+
+    /// Info.plist 里盖的臂名;`nil` = 没盖章。
+    static let stampedArm: String? = {
+        guard let v = Bundle.main.object(forInfoDictionaryKey: kInfoPlistKey) as? String,
+              !v.isEmpty else { return nil }
+        return v
+    }()
+
+    /// 1 = 盖章为认逐帧 K 的臂;0 = 盖章为别的臂(核不读扩展);-1 = 没盖章,无法核实。
+    static let consumesPerFrameK: Int = {
+        guard let arm = stampedArm else { return -1 }
+        return arm == kPerFrameKArm ? 1 : 0
+    }()
+}
+
+/// [pw 2026-09-23 复核修正] 一帧「用的是哪份 K」的标签。两条原生通路共用,
+/// 与 Dart `XrslamLiveIntrinsics.lastSourceLabel` 一一对应。
+///   config                         没推逐帧 K ⇒ yaml 常量
+///   per_frame                      推了,且构建身份 = 认逐帧 K 的臂,且回读没有反证
+///   per_frame_not_consumed         推了,但回读 ≠ 推的值(核没收下),或构建身份 = 不认的臂
+///   per_frame_attached_unverified  推了,回读相等,但没有构建身份可核(相等不算证据)
+enum PwPerFrameIntrinsicsSource: Int {
+    case none = 0, config = 1, perFrame = 2, perFrameNotConsumed = 3,
+         perFrameAttachedUnverified = 4
+
+    var label: String {
+        switch self {
+        case .none: return "none"
+        case .config: return "config"
+        case .perFrame: return "per_frame"
+        case .perFrameNotConsumed: return "per_frame_not_consumed"
+        case .perFrameAttachedUnverified: return "per_frame_attached_unverified"
+        }
+    }
+
+    static func classify(attached: Bool, engineReportDiffers: Bool) -> PwPerFrameIntrinsicsSource {
+        guard attached else { return .config }
+        if engineReportDiffers { return .perFrameNotConsumed }
+        switch PwXrslamEngineIdentity.consumesPerFrameK {
+        case 1: return .perFrame
+        case 0: return .perFrameNotConsumed
+        default: return .perFrameAttachedUnverified
+        }
+    }
+}
+
+/// [pw 2026-09-23 复核修正] 引擎按 yaml 的 `cam0.resolution` 包 cv::Mat
+/// (fork 04c0e83 `XRSLAMManager.cpp:143-144` `config_->camera_resolution()`,
+/// 键名 `yaml_config.cpp:177` `cam0.resolution`)。推的缓冲不是这个尺寸时,
+/// 引擎看到的不是整帧,逐帧 K 的参照就对不上 ⇒ 不推逐帧 K。
+/// 读的是**引擎自己要读的那个文件**;格式是 Dart `XrslamConfigBuilder.buildDeviceConfigYaml`
+/// (`lib/vio/ffi/xrslam_config.dart` 的 `  resolution: [ W, H ]`,`cam0:` 下两格缩进)写的,
+/// 这条格式由 `test/vio/ffi/per_frame_intrinsics_host_contract_test.dart` 钉住。
+/// 解析不出来 ⇒ `nil`(不推逐帧 K,按原因计数,不猜)。
+enum PwXrslamDeviceYaml {
+    static func cam0Resolution(atPath path: String) -> (width: Int, height: Int)? {
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+        var inCam0 = false
+        var found: (Int, Int)? = nil
+        for rawLine in text.components(separatedBy: .newlines) {
+            let line = rawLine.replacingOccurrences(of: "\r", with: "")
+            if let first = line.first, first != " ", first != "#", first != "%" {
+                inCam0 = (line.trimmingCharacters(in: .whitespaces) == "cam0:")
+                continue
+            }
+            guard inCam0, line.hasPrefix("  resolution:") else { continue }
+            let body = line.dropFirst("  resolution:".count)
+                .trimmingCharacters(in: .whitespaces)
+            guard body.hasPrefix("["), let close = body.firstIndex(of: "]") else { return nil }
+            let inner = body[body.index(after: body.startIndex)..<close]
+            let parts = inner.split(separator: ",").map {
+                $0.trimmingCharacters(in: .whitespaces)
+            }
+            guard parts.count == 2, let w = Int(parts[0]), let h = Int(parts[1]),
+                  w > 0, h > 0 else { return nil }
+            if found != nil { return nil }  // 出现两次 ⇒ 不猜是哪一个
+            found = (w, h)
+        }
+        guard let f = found else { return nil }
+        return (width: f.0, height: f.1)
+    }
 }
 
 /// 一帧自带的针孔内参 + 它所参照的尺寸(见上面那段官方原文)。
@@ -272,8 +377,13 @@ final class PwXrslamLive {
     private var ikNoAttachment: UInt64 = 0
     private var ikReferenceMismatch: UInt64 = 0
     private var ikActiveFormatMismatch: UInt64 = 0
-    /// 最近一帧的实际来源:0 还没有 / 1 yaml 常量 / 2 逐帧且引擎回读一致 /
-    /// 3 推了逐帧但引擎回读不一致(链的核不认这条扩展 ⇒ 实际仍是常量)。
+    /// [复核修正] 推送尺寸 ≠ 引擎 yaml 的 `cam0.resolution`;yaml 里读不出尺寸。
+    private var ikConfigResolutionMismatch: UInt64 = 0
+    private var ikConfigResolutionUnknown: UInt64 = 0
+    /// create 时从 device yaml 读到的 `cam0.resolution`;`nil` = 读不出来。
+    private var ikConfigResolution: (width: Int, height: Int)? = nil
+    /// 最近一帧的来源,`PwPerFrameIntrinsicsSource.rawValue`(0 none / 1 config /
+    /// 2 per_frame / 3 per_frame_not_consumed / 4 per_frame_attached_unverified)。
     private var ikLastSource: Int = 0
     private var ikFxMin: Double = .infinity
     private var ikFxMax: Double = 0
@@ -309,6 +419,12 @@ final class PwXrslamLive {
         tbMaxAbsRawResidual = 0; tbMaxAbsOffsetResidual = 0
         ikFrames = 0; ikSwitchOff = 0; ikNoAttachment = 0
         ikReferenceMismatch = 0; ikActiveFormatMismatch = 0
+        ikConfigResolutionMismatch = 0; ikConfigResolutionUnknown = 0
+        ikConfigResolution = PwXrslamDeviceYaml.cam0Resolution(atPath: deviceConfigPath)
+        if ikConfigResolution == nil {
+            NSLog("[PwPerFrameIntrinsics] device yaml 里读不出 cam0.resolution(%@)⇒ 本场不推逐帧 K",
+                  deviceConfigPath)
+        }
         ikLastSource = 0; ikFxMin = .infinity; ikFxMax = 0
         ikLastPushedWidth = 0; ikLastPushedHeight = 0
         ikTrace = PWXrslamIntrinsicsTrace(); ikTraceSequenceMismatch = 0
@@ -525,10 +641,24 @@ final class PwXrslamLive {
         // [pw 2026-09-23] 这一帧推不推自己的 K(文件头「逐帧内参」段)。
         //   整帧直推、不降采样 ⇒ K 原值即推送像素上的 K,不做任何算术。
         //   参照尺寸对不上就退回 yaml 常量并计数 —— 不猜换算。
+        //   [复核修正] 还要核「推送尺寸 == 引擎 yaml 的 cam0.resolution」:引擎按 yaml
+        //   尺寸包 cv::Mat(fork XRSLAMManager.cpp:143-144),不等时它看到的不是这整帧
+        //   (例如显式传了更小的 feedWidth,`zero_arkit_capture_runtime.dart` 构造参数)。
+        //   上面两组尺寸都取自同一个 sample buffer,本来就相等;真正要核的是这一组。
+        lock.lock()
+        let configResolution = ikConfigResolution
+        lock.unlock()
         var frameK: [Double]? = nil
-        var hostReason = 0 // 0 推;1 开关 off;2 无附件;3 参照≠推送;4 activeFormat≠推送
+        // 0 推;1 开关 off;2 无附件;3 参照≠推送;4 activeFormat≠推送;
+        // 5 yaml cam0.resolution≠推送;6 yaml 里读不出 cam0.resolution
+        var hostReason = 0
         if !PwPerFrameIntrinsicsSwitch.resolved.enabled {
             hostReason = 1
+        } else if configResolution == nil {
+            hostReason = 6
+        } else if let cfg = configResolution,
+                  cfg.width != pushedWidth || cfg.height != pushedHeight {
+            hostReason = 5
         } else if let k = intrinsics {
             if k.referenceWidth != pushedWidth || k.referenceHeight != pushedHeight {
                 hostReason = 3
@@ -580,6 +710,8 @@ final class PwXrslamLive {
             case 2: ikNoAttachment &+= 1
             case 3: ikReferenceMismatch &+= 1
             case 4: ikActiveFormatMismatch &+= 1
+            case 5: ikConfigResolutionMismatch &+= 1
+            case 6: ikConfigResolutionUnknown &+= 1
             default: break
             }
             if ikrc == PW_XRSLAM_OK.rawValue {
@@ -588,13 +720,14 @@ final class PwXrslamLive {
                    ik.camera_submitted_sequence != tr.submitted_sequence {
                     ikTraceSequenceMismatch &+= 1
                 }
+                // [复核修正] 回读相等**不算**「引擎吃到」;见 PwPerFrameIntrinsicsSource。
+                ikLastSource = PwPerFrameIntrinsicsSource.classify(
+                    attached: ik.last_per_frame_attached == 1,
+                    engineReportDiffers: ik.last_engine_report_differs == 1).rawValue
                 if ik.last_per_frame_attached == 1 {
-                    ikLastSource = ik.last_engine_report_matches == 1 ? 2 : 3
                     let fx = ik.last_attached_fxfycxcy.0
                     if fx < ikFxMin { ikFxMin = fx }
                     if fx > ikFxMax { ikFxMax = fx }
-                } else {
-                    ikLastSource = 1
                 }
             }
             lock.unlock()
@@ -685,20 +818,27 @@ final class PwXrslamLive {
         return haveResult ? 0 : -1
     }
 
-    /// [pw 2026-09-23] 写 25 个 double —— 逐帧内参这一场的账(文件头「逐帧内参」段):
-    ///   0 开关(1 on / 0 off)   1 开关来源(0 默认 / 1 启动参数 / 2 解析不了→默认)
+    /// [pw 2026-09-23;复核修正后] 写 31 个 double —— 逐帧内参这一场的账:
+    ///   0 开关(1 on / 0 off)
+    ///   1 开关来源(0 默认 / 1 启动参数 / 2 传了但解析不了 ⇒ 按默认 on 跑)
     ///   2 走过决策并推成功的相机帧数
-    ///   3 其中带逐帧 K 推下去的帧数        ← C 账本 attached
-    ///   4 其中引擎回读 == 推下去的 K       ← C 账本 engine_report_matched
-    ///   5 没带逐帧 K 的帧数(= yaml 常量) ← C 账本 not_attached
-    ///   6 原因:开关 off   7 原因:该帧无附件   8 原因:参照尺寸≠推送尺寸
-    ///   9 原因:activeFormat 尺寸≠推送尺寸   10 原因:传输层拒收(非有限/fx,fy≤0)← C 账本
-    ///  11 最近一帧来源(0 无 / 1 常量 / 2 逐帧且引擎一致 / 3 逐帧但引擎不一致)
-    ///  12-15 最近一次推下去的 fx fy cx cy   16-19 最近一次引擎回读的 fx fy cx cy
-    ///  20 推下去的 fx 最小  21 最大(没推过写 0)  22/23 最近一帧推送宽/高(像素)
-    ///  24 trace 与本帧序号对不上的次数(**应恒 0**)
+    ///   ── C 账本(`PWXrslamTransportGetIntrinsicsTrace`,不在 Swift 合成)──
+    ///   3 带逐帧 K 推下去的帧数(= 宿主推了什么,**不是**引擎收下了什么)
+    ///   4 没带逐帧 K 的帧数(= yaml 常量)   5 其中给了 K 但传输层拒收(非有限/fx,fy≤0)
+    ///   6 推了、回读 ≠ 推的值的帧数 ⇒ **证明**核没收下
+    ///   7 推了、回读 == 推的值的帧数 ⇒ **不是**证据(不认扩展的核报 yaml K,也可能相等)
+    ///   ── 构建身份 ──
+    ///   8 链的核认不认逐帧 K:1 盖章为 gpufenothread_pfk / 0 盖章为别的臂 / -1 没盖章(无法核实)
+    ///   ── 宿主侧不推的原因 ──
+    ///   9 开关 off  10 该帧无附件  11 参照尺寸≠推送  12 activeFormat≠推送
+    ///  13 yaml cam0.resolution≠推送  14 yaml 里读不出 cam0.resolution
+    ///  15 最近一帧来源 `PwPerFrameIntrinsicsSource.rawValue`
+    ///  16-19 最近一次推下去的 fx fy cx cy   20-23 最近一次回读的 fx fy cx cy
+    ///  24/25 推下去的 fx 最小/最大(没推过写 0)  26/27 最近一帧推送宽/高
+    ///  28/29 yaml cam0.resolution 宽/高(读不出写 0)
+    ///  30 trace 与本帧序号对不上的次数(**应恒 0**)
     /// 返回 0 = 已有帧;-1 = 还没推过帧。
-    static let intrinsicsReportCount = 25
+    static let intrinsicsReportCount = 31
     func intrinsicsReport(into out: UnsafeMutablePointer<Double>) -> Int32 {
         let sw = PwPerFrameIntrinsicsSwitch.resolved
         lock.lock(); defer { lock.unlock() }
@@ -707,27 +847,33 @@ final class PwXrslamLive {
         out[1] = Double(sw.source.rawValue)
         out[2] = Double(ikFrames)
         out[3] = Double(t.attached)
-        out[4] = Double(t.engine_report_matched)
-        out[5] = Double(t.not_attached)
-        out[6] = Double(ikSwitchOff)
-        out[7] = Double(ikNoAttachment)
-        out[8] = Double(ikReferenceMismatch)
-        out[9] = Double(ikActiveFormatMismatch)
-        out[10] = Double(t.rejected_invalid)
-        out[11] = Double(ikLastSource)
-        out[12] = t.last_attached_fxfycxcy.0
-        out[13] = t.last_attached_fxfycxcy.1
-        out[14] = t.last_attached_fxfycxcy.2
-        out[15] = t.last_attached_fxfycxcy.3
-        out[16] = t.last_engine_fxfycxcy.0
-        out[17] = t.last_engine_fxfycxcy.1
-        out[18] = t.last_engine_fxfycxcy.2
-        out[19] = t.last_engine_fxfycxcy.3
-        out[20] = ikFxMin.isFinite ? ikFxMin : 0
-        out[21] = ikFxMax
-        out[22] = Double(ikLastPushedWidth)
-        out[23] = Double(ikLastPushedHeight)
-        out[24] = Double(ikTraceSequenceMismatch)
+        out[4] = Double(t.not_attached)
+        out[5] = Double(t.rejected_invalid)
+        out[6] = Double(t.engine_report_differs)
+        out[7] = Double(t.engine_report_equal)
+        out[8] = Double(PwXrslamEngineIdentity.consumesPerFrameK)
+        out[9] = Double(ikSwitchOff)
+        out[10] = Double(ikNoAttachment)
+        out[11] = Double(ikReferenceMismatch)
+        out[12] = Double(ikActiveFormatMismatch)
+        out[13] = Double(ikConfigResolutionMismatch)
+        out[14] = Double(ikConfigResolutionUnknown)
+        out[15] = Double(ikLastSource)
+        out[16] = t.last_attached_fxfycxcy.0
+        out[17] = t.last_attached_fxfycxcy.1
+        out[18] = t.last_attached_fxfycxcy.2
+        out[19] = t.last_attached_fxfycxcy.3
+        out[20] = t.last_engine_fxfycxcy.0
+        out[21] = t.last_engine_fxfycxcy.1
+        out[22] = t.last_engine_fxfycxcy.2
+        out[23] = t.last_engine_fxfycxcy.3
+        out[24] = ikFxMin.isFinite ? ikFxMin : 0
+        out[25] = ikFxMax
+        out[26] = Double(ikLastPushedWidth)
+        out[27] = Double(ikLastPushedHeight)
+        out[28] = Double(ikConfigResolution?.width ?? 0)
+        out[29] = Double(ikConfigResolution?.height ?? 0)
+        out[30] = Double(ikTraceSequenceMismatch)
         return ikFrames > 0 ? 0 : -1
     }
 
@@ -819,8 +965,8 @@ public func pw_xrslam_live_timebase(_ out: UnsafeMutablePointer<Double>) -> Int3
     return PwXrslamLive.shared.timebase(into: out)
 }
 
-/// [pw 2026-09-23] 写 25 个 double,见 `PwXrslamLive.intrinsicsReport`。
-/// `cap` = 调用方分配的 double 个数;不够 25 返回 -2 且不写(不截断)。
+/// [pw 2026-09-23] 写 31 个 double,见 `PwXrslamLive.intrinsicsReport`。
+/// `cap` = 调用方分配的 double 个数;不够 31 返回 -2 且不写(不截断)。
 /// 0 有帧 / -1 还没推过帧。
 @_cdecl("pw_xrslam_live_intrinsics")
 public func pw_xrslam_live_intrinsics(

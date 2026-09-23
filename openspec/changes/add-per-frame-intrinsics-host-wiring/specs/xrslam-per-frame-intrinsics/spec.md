@@ -13,11 +13,13 @@ host SHALL push without per-frame K and count the reason.
 
 - **WHEN** the sample buffer carries `kCMSampleBufferAttachmentKey_CameraIntrinsicMatrix`
   and its format-description, active-format and image-buffer dimensions are equal
+  and the image-buffer dimensions equal the engine's configured `cam0.resolution`
 - **THEN** the matrix values fx, fy, cx, cy are pushed unchanged with that buffer
 
 #### Scenario: dimensions disagree
 
-- **WHEN** any of those three dimension pairs differ
+- **WHEN** any of those dimension pairs differ, or `cam0.resolution` cannot be
+  read from the device configuration
 - **THEN** the frame is pushed through the legacy entry point and the mismatch
   reason is counted
 
@@ -43,17 +45,39 @@ transport before this change.
 - **THEN** both iOS paths call `PWXrslamTransportPushCameraAndRunRaw`
 - **AND** no `XRSLAM_INFO_INTRINSICS` query is issued
 
-### Requirement: Engine consumption is observable
+### Requirement: Engine consumption is not inferred from values
 
 After every push that attached a per-frame K the transport SHALL read
-`XRSLAM_INFO_INTRINSICS` and record whether the report equals the attached K.
-Diagnostics SHALL expose attached, not-attached, rejected, and engine-matched
-counts from that ledger, and the switch state and source.
+`XRSLAM_INFO_INTRINSICS` and record whether the report differs from or equals
+the attached K. An equal report SHALL NOT be counted or labelled as
+consumption. Whether the linked core consumes per-frame K SHALL come only from
+the build identity (`PWXrslamEngineArm` stamped by a Release build after its
+fingerprint check). Diagnostics SHALL expose attached, not-attached, rejected,
+report-differs and report-equal counts from that ledger, the build identity,
+and the switch state, source and parse failure.
 
-#### Scenario: archive without the fork change is linked
+#### Scenario: report differs
 
-- **WHEN** the per-frame K is attached but the linked core reports its YAML K
-- **THEN** the frame is labelled `per_frame_not_consumed`, not `per_frame`
+- **WHEN** the per-frame K is attached and the linked core reports other values
+- **THEN** the frame is labelled `per_frame_not_consumed`
+
+#### Scenario: report equal, no build identity
+
+- **WHEN** the report equals the attached K and the build carries no
+  `PWXrslamEngineArm` stamp
+- **THEN** the frame is labelled `per_frame_attached_unverified`, not `per_frame`
+
+#### Scenario: report equal, build identity is another arm
+
+- **WHEN** the report equals the attached K and the stamp names an arm other
+  than `gpufenothread_pfk`
+- **THEN** the frame is labelled `per_frame_not_consumed`
+
+#### Scenario: unparseable switch value
+
+- **WHEN** `-PWPerFrameIntrinsics` has a value that is neither on nor off
+- **THEN** per-frame K stays on (the default) and the diagnostics record the
+  parse failure
 
 ### Requirement: Research archive is receipt-bound and not the default
 

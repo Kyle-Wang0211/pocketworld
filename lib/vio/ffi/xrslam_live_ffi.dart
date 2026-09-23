@@ -127,16 +127,25 @@ class XrslamLiveStats {
       '未运行=$rejectedNotRunning lockFail=$cameraLockFailures run=$running';
 }
 
-/// [pw 2026-09-23] 逐帧内参这一场的账(`PwXrslamLive.intrinsicsReport`,
-/// 原生 `pw_xrslam_live_intrinsics` 写 25 个 double)。
+/// [pw 2026-09-23;复核修正后] 逐帧内参这一场的账(`PwXrslamLive.intrinsicsReport`,
+/// 原生 `pw_xrslam_live_intrinsics` 写 31 个 double)。
 ///
 /// 带「C 账本」字样的数来自传输层 `PWXrslamTransportGetIntrinsicsTrace`,
 /// 不在 Swift / Dart 里合成。判读:
 ///   · [switchEnabled] = 启动参数 `-PWPerFrameIntrinsics` 的结果(默认 on);
-///     台架 A/B 用它区分两臂,必须随结果一起落盘。
-///   · [engineConsumed] == [attached] ⇒ 链的核吃到了每一帧的 K;
-///     [engineConsumed] == 0 而 [attached] > 0 ⇒ 链的不是认这条扩展的核
-///     (例如 generic / b9b14814),引擎**实际仍在用 yaml 常量**。
+///     台架 A/B 用它区分两臂,必须随结果一起落盘。[switchParseFailed] = 传了但
+///     解析不了、按默认 on 跑 —— 这种场次的臂名不是操作者想要的,要单独看。
+///   · [attached] 只说明**宿主推了**逐帧 K,不说明引擎收下了。
+///   · 引擎收下没有,只由**构建身份**判定([engineConsumesPerFrameK]:Release 构建
+///     时 `stamp_runtime_identity.sh` 核过指纹后盖进 Info.plist 的臂名):
+///     1 = 链的是认逐帧 K 的 gpufenothread_pfk;0 = 链的是别的臂(核不读这条扩展,
+///     引擎**实际仍用 yaml 常量**);-1 = 没盖章(Debug/Profile),**无法核实**。
+///   · 传输层回读(`XRSLAM_INFO_INTRINSICS`)只有一侧是结论:
+///     [engineReportDiffers] > 0 ⇒ 那些帧**证明**没被收下;
+///     [engineReportEqualNotEvidence] 不是「收下了」的证据 —— 不认扩展的核报的是
+///     yaml K,而 yaml K 可能就是从同一来源(比如第一帧)写的,数值相等。
+///   · [configResolutionMismatch] > 0 ⇒ 推送尺寸 ≠ 引擎 yaml 的 cam0.resolution,
+///     那些帧没推逐帧 K。
 ///   · [traceSequenceMismatch] 应恒 0。
 class XrslamLiveIntrinsics {
   const XrslamLiveIntrinsics({
@@ -144,13 +153,17 @@ class XrslamLiveIntrinsics {
     required this.switchSource,
     required this.frames,
     required this.attached,
-    required this.engineConsumed,
     required this.notAttached,
+    required this.transportRejectedInvalid,
+    required this.engineReportDiffers,
+    required this.engineReportEqualNotEvidence,
+    required this.engineConsumesPerFrameK,
     required this.hostSwitchOff,
     required this.hostNoAttachment,
     required this.hostReferenceMismatch,
     required this.hostActiveFormatMismatch,
-    required this.transportRejectedInvalid,
+    required this.hostConfigResolutionMismatch,
+    required this.hostConfigResolutionUnknown,
     required this.lastSource,
     required this.lastAttachedFxFyCxCy,
     required this.lastEngineFxFyCxCy,
@@ -158,11 +171,13 @@ class XrslamLiveIntrinsics {
     required this.fxMax,
     required this.pushedWidth,
     required this.pushedHeight,
+    required this.configWidth,
+    required this.configHeight,
     required this.traceSequenceMismatch,
   });
 
   /// 原生写出的 double 个数。
-  static const int wireLength = 25;
+  static const int wireLength = 31;
 
   /// 按 `PwXrslamLive.intrinsicsReport` 的下标解析。长度不对返回 `null`。
   static XrslamLiveIntrinsics? fromWire(List<double> v) {
@@ -172,47 +187,66 @@ class XrslamLiveIntrinsics {
       switchSource: v[1].toInt(),
       frames: v[2].toInt(),
       attached: v[3].toInt(),
-      engineConsumed: v[4].toInt(),
-      notAttached: v[5].toInt(),
-      hostSwitchOff: v[6].toInt(),
-      hostNoAttachment: v[7].toInt(),
-      hostReferenceMismatch: v[8].toInt(),
-      hostActiveFormatMismatch: v[9].toInt(),
-      transportRejectedInvalid: v[10].toInt(),
-      lastSource: v[11].toInt(),
-      lastAttachedFxFyCxCy: List<double>.unmodifiable(v.sublist(12, 16)),
-      lastEngineFxFyCxCy: List<double>.unmodifiable(v.sublist(16, 20)),
-      fxMin: v[20],
-      fxMax: v[21],
-      pushedWidth: v[22].toInt(),
-      pushedHeight: v[23].toInt(),
-      traceSequenceMismatch: v[24].toInt(),
+      notAttached: v[4].toInt(),
+      transportRejectedInvalid: v[5].toInt(),
+      engineReportDiffers: v[6].toInt(),
+      engineReportEqualNotEvidence: v[7].toInt(),
+      engineConsumesPerFrameK: v[8].toInt(),
+      hostSwitchOff: v[9].toInt(),
+      hostNoAttachment: v[10].toInt(),
+      hostReferenceMismatch: v[11].toInt(),
+      hostActiveFormatMismatch: v[12].toInt(),
+      hostConfigResolutionMismatch: v[13].toInt(),
+      hostConfigResolutionUnknown: v[14].toInt(),
+      lastSource: v[15].toInt(),
+      lastAttachedFxFyCxCy: List<double>.unmodifiable(v.sublist(16, 20)),
+      lastEngineFxFyCxCy: List<double>.unmodifiable(v.sublist(20, 24)),
+      fxMin: v[24],
+      fxMax: v[25],
+      pushedWidth: v[26].toInt(),
+      pushedHeight: v[27].toInt(),
+      configWidth: v[28].toInt(),
+      configHeight: v[29].toInt(),
+      traceSequenceMismatch: v[30].toInt(),
     );
   }
 
   final bool switchEnabled;
 
-  /// 0 默认值 / 1 启动参数 / 2 传了但解析不了(留在默认)。
+  /// 0 默认值 / 1 启动参数 / 2 传了但解析不了(按默认 on 跑)。
   final int switchSource;
   final int frames;
 
-  /// C 账本:带逐帧 K 推下去的帧数。
+  /// C 账本:带逐帧 K 推下去的帧数(宿主推了什么,不是引擎收下了什么)。
   final int attached;
-
-  /// C 账本:推下去之后引擎回读(`XRSLAM_INFO_INTRINSICS`)逐位一致的帧数。
-  final int engineConsumed;
 
   /// C 账本:没带逐帧 K 的帧数(= yaml 常量)。
   final int notAttached;
+
+  /// C 账本:给了但不可附加(非有限 / fx,fy ≤ 0)。
+  final int transportRejectedInvalid;
+
+  /// C 账本:推了、回读 ≠ 推的值 ⇒ 证明没被收下。
+  final int engineReportDiffers;
+
+  /// C 账本:推了、回读 == 推的值。**不是**收下的证据。
+  final int engineReportEqualNotEvidence;
+
+  /// 构建身份:1 链的核认逐帧 K / 0 不认 / -1 没盖章、无法核实。
+  final int engineConsumesPerFrameK;
   final int hostSwitchOff;
   final int hostNoAttachment;
   final int hostReferenceMismatch;
   final int hostActiveFormatMismatch;
 
-  /// C 账本:给了但不可附加(非有限 / fx,fy ≤ 0)。
-  final int transportRejectedInvalid;
+  /// 推送尺寸 ≠ 引擎 yaml 的 `cam0.resolution`。
+  final int hostConfigResolutionMismatch;
 
-  /// 最近一帧:0 无 / 1 常量 / 2 逐帧且引擎一致 / 3 逐帧但引擎不一致。
+  /// yaml 里读不出 `cam0.resolution`。
+  final int hostConfigResolutionUnknown;
+
+  /// 最近一帧:0 none / 1 config / 2 per_frame / 3 per_frame_not_consumed /
+  /// 4 per_frame_attached_unverified(`PwPerFrameIntrinsicsSource`)。
   final int lastSource;
   final List<double> lastAttachedFxFyCxCy;
   final List<double> lastEngineFxFyCxCy;
@@ -220,16 +254,34 @@ class XrslamLiveIntrinsics {
   final double fxMax;
   final int pushedWidth;
   final int pushedHeight;
+
+  /// 引擎 yaml 的 `cam0.resolution`;0 = 读不出来。
+  final int configWidth;
+  final int configHeight;
   final int traceSequenceMismatch;
+
+  bool get switchParseFailed => switchSource == 2;
 
   /// 台架 A/B 的臂名。
   String get armLabel => switchEnabled ? 'per_frame_k_on' : 'per_frame_k_off';
+
+  static const List<String> _switchSourceLabels = <String>[
+    'default',
+    'launch_argument',
+    'unparseable_fell_back_to_default_on',
+  ];
+
+  String get switchSourceLabel =>
+      switchSource >= 0 && switchSource < _switchSourceLabels.length
+          ? _switchSourceLabels[switchSource]
+          : 'unknown($switchSource)';
 
   static const List<String> _lastSourceLabels = <String>[
     'none',
     'config',
     'per_frame',
     'per_frame_not_consumed',
+    'per_frame_attached_unverified',
   ];
 
   String get lastSourceLabel =>
@@ -237,21 +289,33 @@ class XrslamLiveIntrinsics {
           ? _lastSourceLabels[lastSource]
           : 'unknown($lastSource)';
 
+  String get engineConsumesLabel => switch (engineConsumesPerFrameK) {
+        1 => 'build_identity_per_frame_k_arm',
+        0 => 'build_identity_other_arm_ignores_per_frame_k',
+        _ => 'unverifiable_no_build_identity',
+      };
+
   Map<String, Object?> toJson() => <String, Object?>{
-        'schema': 'pw.vio.per-frame-intrinsics/1',
+        'schema': 'pw.vio.per-frame-intrinsics/2',
         'arm': armLabel,
         'switch_enabled': switchEnabled,
-        'switch_source': switchSource,
+        'switch_source': switchSourceLabel,
+        'switch_parse_failed': switchParseFailed,
         'switch_launch_argument': '-PWPerFrameIntrinsics',
         'frames': frames,
         'transport_attached': attached,
-        'transport_engine_report_matched': engineConsumed,
         'transport_not_attached': notAttached,
         'transport_rejected_invalid': transportRejectedInvalid,
+        'transport_engine_report_differs': engineReportDiffers,
+        'transport_engine_report_equal_not_evidence':
+            engineReportEqualNotEvidence,
+        'engine_consumes_per_frame_k': engineConsumesLabel,
         'host_switch_off': hostSwitchOff,
         'host_no_attachment': hostNoAttachment,
         'host_reference_dims_mismatch': hostReferenceMismatch,
         'host_active_format_mismatch': hostActiveFormatMismatch,
+        'host_config_resolution_mismatch': hostConfigResolutionMismatch,
+        'host_config_resolution_unknown': hostConfigResolutionUnknown,
         'last_source': lastSourceLabel,
         'last_attached_fxfycxcy': lastAttachedFxFyCxCy,
         'last_engine_fxfycxcy': lastEngineFxFyCxCy,
@@ -259,17 +323,21 @@ class XrslamLiveIntrinsics {
         'fx_max': fxMax,
         'pushed_width': pushedWidth,
         'pushed_height': pushedHeight,
+        'config_width': configWidth,
+        'config_height': configHeight,
         'trace_sequence_mismatch': traceSequenceMismatch,
       };
 
   @override
-  String toString() => '臂=$armLabel(来源 $switchSource) 帧=$frames '
-      '逐帧推=$attached 引擎吃到=$engineConsumed 常量=$notAttached '
+  String toString() => '臂=$armLabel(开关来源 $switchSourceLabel) 帧=$frames '
+      '宿主推逐帧=$attached 常量=$notAttached 回读不等(证明没收下)=$engineReportDiffers '
+      '回读相等(不算证据)=$engineReportEqualNotEvidence 引擎身份=$engineConsumesLabel '
       '[开关off=$hostSwitchOff 无附件=$hostNoAttachment 参照≠推送=$hostReferenceMismatch '
-      'activeFormat≠推送=$hostActiveFormatMismatch 传输层拒=$transportRejectedInvalid] '
+      'activeFormat≠推送=$hostActiveFormatMismatch yaml尺寸≠推送=$hostConfigResolutionMismatch '
+      'yaml尺寸读不出=$hostConfigResolutionUnknown 传输层拒=$transportRejectedInvalid] '
       '最近=$lastSourceLabel fx[min/max]=${fxMin.toStringAsFixed(2)}/'
       '${fxMax.toStringAsFixed(2)} 推送=${pushedWidth}x$pushedHeight '
-      '序号错=$traceSequenceMismatch';
+      'yaml=${configWidth}x$configHeight 序号错=$traceSequenceMismatch';
 }
 
 /// 原生活体通路的 Dart 门面。符号查不到时所有调用**降级**返回失败,不抛。

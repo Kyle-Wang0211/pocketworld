@@ -119,9 +119,19 @@ int32_t PWXrslamTransportPushCameraAndRunRaw(uint8_t *data, double timestamp,
 //   attached: the frame is pushed the legacy way and counted in
 //   PWXrslamIntrinsicsTrace.rejected_invalid.
 //   After RunOneFrame the transport reads XRSLAM_INFO_INTRINSICS once and
-//   records it in the intrinsics trace, so the host can prove whether the
-//   linked core consumed the per-frame K (a core without the fork change
-//   keeps reporting its config K).
+//   records the reported values in the intrinsics trace. That read-back is
+//   one-sided evidence only:
+//     - report != attached K => the linked core did NOT take this K. The fork
+//       reports the latest per-frame K it accepted (fork 04c0e83
+//       XRSLAMManager.cpp:348-362), so after accepting this K it reports
+//       exactly these values.
+//     - report == attached K => undecidable from values. An unmodified core
+//       reports its config K (upstream 4beb1a9 XRSLAMManager.cpp:183-188),
+//       and when the host wrote the config K from the same source (e.g. the
+//       first frame's K) the values are equal although nothing was consumed.
+//   Whether the linked core consumes per-frame K at all is a property of the
+//   build (which engine archive is linked), not of this ledger; hosts take
+//   that from their build identity stamp.
 int32_t PWXrslamTransportPushCameraAndRunRawWithIntrinsics(
     uint8_t *data, double timestamp, int32_t stride, int32_t camera_id,
     int32_t channel, const double *k_fxfycxcy, int32_t *raw_state,
@@ -135,14 +145,16 @@ typedef struct PWXrslamIntrinsicsTrace {
   uint64_t camera_submitted_sequence; // camera submitted_sequence of the push described below
   int32_t last_per_frame_attached;    // 1 = the 72-byte ext with has_intrinsics = 1 was attached
   int32_t last_engine_report_read;    // 1 = XRSLAM_INFO_INTRINSICS was read after that push
-  int32_t last_engine_report_matches; // 1 = the engine report equals the attached K bit-for-bit
+  int32_t last_engine_report_differs; // 1 = report != attached K: the linked core did not take it
   int32_t reserved;
   double last_attached_fxfycxcy[4];
   double last_engine_fxfycxcy[4];
-  uint64_t attached;                  // camera pushes that carried per-frame K
+  uint64_t attached;                  // camera pushes that carried per-frame K (what the host pushed)
   uint64_t not_attached;              // camera pushes without per-frame K (legacy or rejected)
   uint64_t rejected_invalid;          // subset of not_attached: K given but not attachable
-  uint64_t engine_report_matched;     // subset of attached: engine report == attached K
+  uint64_t engine_report_differs;     // subset of attached: report != attached K (proven not taken)
+  uint64_t engine_report_equal;       // subset of attached: report == attached K. NOT evidence of
+                                      // consumption (see the WithIntrinsics comment above)
 } PWXrslamIntrinsicsTrace;
 
 int32_t PWXrslamTransportGetIntrinsicsTrace(PWXrslamIntrinsicsTrace *trace);

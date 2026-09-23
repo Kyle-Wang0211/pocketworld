@@ -388,13 +388,13 @@ void TestPerFrameIntrinsicsAttachExact72ByteExtension() {
   CHECK(trace.camera_submitted_sequence == 1);
   CHECK(trace.last_per_frame_attached == 1);
   CHECK(trace.last_engine_report_read == 1);
-  CHECK(trace.last_engine_report_matches == 1);
+  CHECK(trace.last_engine_report_differs == 0);
   for (int i = 0; i < 4; ++i) {
     CHECK(trace.last_attached_fxfycxcy[i] == k[i]);
     CHECK(trace.last_engine_fxfycxcy[i] == k[i]);
   }
   CHECK(trace.attached == 1 && trace.not_attached == 0);
-  CHECK(trace.engine_report_matched == 1);
+  CHECK(trace.engine_report_equal == 1 && trace.engine_report_differs == 0);
 
   // A legacy push in the same session: no extension, trace says so.
   g_fake_calls.sequence.clear();
@@ -434,9 +434,41 @@ void TestUpstreamCoreReportIsVisibleAsNotConsumed() {
   CHECK(PWXrslamTransportGetIntrinsicsTrace(&trace) == PW_XRSLAM_OK);
   CHECK(trace.last_per_frame_attached == 1);
   CHECK(trace.last_engine_report_read == 1);
-  CHECK(trace.last_engine_report_matches == 0);
+  CHECK(trace.last_engine_report_differs == 1);
   CHECK(trace.last_engine_fxfycxcy[0] == 1000.0);
-  CHECK(trace.engine_report_matched == 0);
+  CHECK(trace.engine_report_differs == 1 && trace.engine_report_equal == 0);
+  CHECK(PWXrslamTransportDestroyWithReceipt(nullptr) == PW_XRSLAM_OK);
+}
+
+void TestEqualReportFromUpstreamCoreIsNotClaimedAsConsumed() {
+  // The false positive the ledger must not produce: an unmodified core
+  // reports its config K, and the host wrote that config K from the same
+  // source as the per-frame K (e.g. the first frame's K). The values are equal
+  // although the core ignores the extension. The ledger records "equal", which
+  // is not a consumption claim; nothing in the trace says "consumed".
+  FakeXrslamReset();
+  g_fake_intrinsics_mode = kFakeIntrinsicsConfigOnly;
+  const double k[4] = {1347.7943115234375, 1347.7943115234375,
+                       957.4692993164062, 718.9641723632812};
+  g_fake_config_intrinsics = {k[0], k[1], k[2], k[3]};
+  CHECK(PWXrslamTransportCreate("slam", "device") == 1);
+  std::array<uint8_t, 64> pixels{};
+  int32_t state = -1;
+  PWXrslamRawPose pose{};
+  CHECK(PWXrslamTransportPushCameraAndRunRawWithIntrinsics(
+            pixels.data(), 1.0, 8, 0, 4, k, &state, &pose) == PW_XRSLAM_OK);
+  // A later frame whose K moved (autofocus): the upstream core still reports
+  // the config K, so this one is provably not taken.
+  const double k2[4] = {1286.1873779296875, 1286.1873779296875,
+                        957.7037963867188, 719.0327758789062};
+  CHECK(PWXrslamTransportPushCameraAndRunRawWithIntrinsics(
+            pixels.data(), 2.0, 8, 0, 4, k2, &state, &pose) == PW_XRSLAM_OK);
+  PWXrslamIntrinsicsTrace trace{};
+  CHECK(PWXrslamTransportGetIntrinsicsTrace(&trace) == PW_XRSLAM_OK);
+  CHECK(trace.attached == 2);
+  CHECK(trace.engine_report_equal == 1);   // frame 1: equal, undecidable
+  CHECK(trace.engine_report_differs == 1); // frame 2: proven not taken
+  CHECK(trace.last_engine_report_differs == 1);
   CHECK(PWXrslamTransportDestroyWithReceipt(nullptr) == PW_XRSLAM_OK);
 }
 
@@ -567,6 +599,7 @@ int main(int argc, char **argv) {
   TestNullIntrinsicsIsTheLegacyPushByteForByte();
   TestPerFrameIntrinsicsAttachExact72ByteExtension();
   TestUpstreamCoreReportIsVisibleAsNotConsumed();
+  TestEqualReportFromUpstreamCoreIsNotClaimedAsConsumed();
   TestUnattachableIntrinsicsFallBackToLegacyPush();
   TestScaleIntrinsicsForBoxNxN();
   if (argc > 1)
