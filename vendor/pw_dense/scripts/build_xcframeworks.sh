@@ -18,7 +18,7 @@ BUILD=$ROOT/build; OUT=$ROOT/Frameworks; rm -rf "$BUILD" "$OUT"; mkdir -p "$BUIL
 DEVICE_SDK=$(xcrun --sdk iphoneos --show-sdk-path); SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
 CLANGXX=$(xcrun --find clang++); CLANG=$(xcrun --find clang)
 MINOS=26.2   # the shipped OpenCV archive carries minos 26.2
-printf '_pwdense_abi_version\n_pwdense_available\n_pwdense_options_default\n_pwdense_default_model_path\n_pwdense_run\n_pwdense_run2\n' > "$BUILD/exports.txt"
+printf '_pwdense_abi_version\n_pwdense_available\n_pwdense_options_default\n_pwdense_default_model_path\n_pwdense_run\n_pwdense_run2\n_pwdense_run3\n' > "$BUILD/exports.txt"
 
 # ---- PWOnnxRuntime.framework (device only; simulator gets no ORT — the sim slice of PWDense does not link it)
 ORTFW=$BUILD/device/PWOnnxRuntime.framework; mkdir -p "$ORTFW"
@@ -41,11 +41,23 @@ PLIST
 # ---- PWDense.framework device slice
 FW=$BUILD/device/PWDense.framework; OBJ=$BUILD/device/objs; mkdir -p "$FW/Headers" "$OBJ"
 CXX=(-target arm64-apple-ios$MINOS -isysroot "$DEVICE_SDK" -miphoneos-version-min=$MINOS -fPIC -fvisibility=hidden -O2 -std=c++20
-     -ffp-contract=off -fno-fast-math -I"$SRC" -I"$ORT_INC" -I"$JPEG_INC" -I"$JPEG_CFG" -I"$OCVB" -I"$OCVS/include" -I"$OCVS/modules/core/include" -I"$OCVS/modules/imgproc/include")
+     -ffp-contract=off -fno-fast-math -I"$SRC" -I"$ORT_INC" -I"$JPEG_INC" -I"$JPEG_CFG" -I"$OCVB" -I"$OCVS/include" -I"$OCVS/modules/core/include" -I"$OCVS/modules/imgproc/include"
+     -I"$AC/third_party/libyuv/include")
 OBJS=()
 for f in dense_session dense_inputs dense_images dense_fuse dense_fuse_pack dense_runner dense_pipeline pwdense_c; do
   "$CLANGXX" "${CXX[@]}" -c "$SRC/$f.cc" -o "$OBJ/$f.o"; OBJS+=("$OBJ/$f.o")
 done
+# [2026-09-16 dense-lossless-speedup-v1] libyuv (BSD-3, aether_cpp/third_party/libyuv, pinned in PW_VENDORED.md): the
+# minimal arm64 closure for NV12->RGB (NV21ToRGB24Matrix), measured with -Wl,-why_load. The NEON64/SVE files carry the
+# per-file -march the upstream CMakeLists uses; which row kernel runs is decided at runtime by TestCpuFlag.
+LY=$AC/third_party/libyuv/source
+for f in convert_argb cpu_id planar_functions row_any row_common scale_any scale_common; do
+  "$CLANGXX" -target arm64-apple-ios$MINOS -isysroot "$DEVICE_SDK" -miphoneos-version-min=$MINOS -fPIC -fvisibility=hidden -O2 -ffp-contract=off -fno-fast-math -I"$AC/third_party/libyuv/include" -c "$LY/$f.cc" -o "$OBJ/yuv_$f.o"; OBJS+=("$OBJ/yuv_$f.o")
+done
+for f in row_neon64 scale_neon64; do
+  "$CLANGXX" -target arm64-apple-ios$MINOS -isysroot "$DEVICE_SDK" -miphoneos-version-min=$MINOS -fPIC -fvisibility=hidden -O2 -ffp-contract=off -fno-fast-math -march=armv8.2-a+dotprod+i8mm -I"$AC/third_party/libyuv/include" -c "$LY/$f.cc" -o "$OBJ/yuv_$f.o"; OBJS+=("$OBJ/yuv_$f.o")
+done
+"$CLANGXX" -target arm64-apple-ios$MINOS -isysroot "$DEVICE_SDK" -miphoneos-version-min=$MINOS -fPIC -fvisibility=hidden -O2 -ffp-contract=off -fno-fast-math -march=armv8.5-a+i8mm+sve2 -I"$AC/third_party/libyuv/include" -c "$LY/row_sve.cc" -o "$OBJ/yuv_row_sve.o"; OBJS+=("$OBJ/yuv_row_sve.o")
 "$CLANGXX" -target arm64-apple-ios$MINOS -isysroot "$DEVICE_SDK" -miphoneos-version-min=$MINOS -dynamiclib -fPIC \
   -Wl,-dead_strip -Wl,-no_adhoc_codesign \
   -Wl,-install_name,@rpath/PWDense.framework/PWDense \
@@ -55,6 +67,11 @@ done
   -o "$FW/PWDense" 2>&1 | grep -vE "was built for newer 'iOS'" || true
 [ -f "$FW/PWDense" ] || { echo "DEVICE LINK FAIL"; exit 1; }
 cp "$SRC/pwdense_c.h" "$FW/Headers/pwdense_c.h"; cp "$MODEL_SRC" "$FW/casdiffmvs.onnx"
+# [dense-lossless-speedup-v1, feature reuse] the split models (onnx.utils.extract_model of the SAME fused model, see
+# pocketworld_research_benchmarks/.../tools/featreuse_split.py) ship next to the fused one; the runner uses them when both
+# are present and falls back to the fused graph otherwise.
+SPLIT_DIR=${PW_DENSE_SPLIT_DIR:-$(dirname "$MODEL_SRC")}
+for f in casdiffmvs_feat.onnx casdiffmvs_rest.onnx; do [ -f "$SPLIT_DIR/$f" ] && cp "$SPLIT_DIR/$f" "$FW/$f"; done
 cat > "$FW/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

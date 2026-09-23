@@ -11,10 +11,16 @@ import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 
 /// ABI versions this binding can drive. v2 (2026-09-15) added `pwdense_run2` — the same job plus a per-reference-
-/// frame chunk callback. On a v1 framework that symbol does not exist; the lookup fails, [PwDenseFfi.hasChunkApi]
-/// is false and the job falls back to `pwdense_run` (no chunks), so the app works with either framework.
+/// frame chunk callback. v3 (2026-09-16) added `pwdense_run3` over `pwdense_frame_v3_t`, which carries an optional
+/// raw NV12 source per frame. Both are looked up optionally: on an older framework the symbol does not exist, the
+/// lookup fails, [PwDenseFfi.hasChunkApi] / [PwDenseFfi.hasRun3] are false and the job falls back to
+/// `pwdense_run2` / `pwdense_run`, so the app works with any of the three frameworks.
 const int pwDenseAbiVersionMin = 1;
-const int pwDenseAbiVersionMax = 2;
+const int pwDenseAbiVersionMax = 3;
+
+/// `pwdense_frame_v3_t.nv12_matrix` for the PWVA/HEVC decoder's output — pinned by the host probe
+/// (openspec dense-lossless-speedup-v1 task 2.1); 0 = BT.601 full range, 1 = BT.709 full range.
+const int kPwvaNv12Matrix = 1; // BT.709 full range: host probe 2026-09-16 (nv12_matrix_probe: m1 vs Apple decode mean<=0.03/max 1; Apple tags ITU_R_709_2)
 
 final class PwDenseFrame {
   const PwDenseFrame({
@@ -28,12 +34,25 @@ final class PwDenseFrame {
     required this.qWxyz,
     required this.t,
     required this.jpegPath,
+    this.nv12Path,
+    this.nv12Width,
+    this.nv12Height,
   });
   final int frameId;
   final double fx, fy, cx, cy, imageW, imageH;
   final List<double> qWxyz; // 4
   final List<double> t; // 3
+
+  /// Materialised JPEG. May be empty when [nv12Path] is set — the C side then gets NULL here.
   final String jpegPath;
+
+  /// [v3] Raw full-range 4:2:0 bi-planar file (Y plane then interleaved CbCr, tightly packed) exactly as the
+  /// PWVA/HEVC decoder hands it out. null = this frame is a JPEG source (the v1/v2 behaviour).
+  final String? nv12Path;
+  final int? nv12Width, nv12Height;
+
+  /// True when this frame must go through `pwdense_run3`; a v1/v2 framework cannot consume it.
+  bool get hasNv12 => nv12Path != null && nv12Path!.isNotEmpty;
 }
 
 /// The viewer's SelectionBox handed to C unchanged: centre, FULL side lengths, row-major local->world rotation.
@@ -94,6 +113,40 @@ final class _FrameRaw extends Struct {
   @Array(3)
   external Array<Double> t;
   external Pointer<Utf8> jpegPath;
+}
+
+/// [v3] pwdense_frame_v3_t — the 11 v2 members in the same order, then the NV12 tail. sizeOf == 144 on every
+/// 64-bit ABI we ship (int32 + 4 pad, six doubles 8..55, q[4] 56, t[3] 88, jpeg_path 112, nv12_path 120,
+/// nv12_width 128, nv12_height 132, nv12_matrix 136, reserved0 140). Pinned by test/dense/pw_dense_frame_v3_test.
+final class _FrameRawV3 extends Struct {
+  @Int32()
+  external int frameId;
+  @Double()
+  external double fx;
+  @Double()
+  external double fy;
+  @Double()
+  external double cx;
+  @Double()
+  external double cy;
+  @Double()
+  external double imageW;
+  @Double()
+  external double imageH;
+  @Array(4)
+  external Array<Double> qWxyz;
+  @Array(3)
+  external Array<Double> t;
+  external Pointer<Utf8> jpegPath;
+  external Pointer<Utf8> nv12Path;
+  @Int32()
+  external int nv12Width;
+  @Int32()
+  external int nv12Height;
+  @Int32()
+  external int nv12Matrix;
+  @Int32()
+  external int reserved0;
 }
 
 final class _OptionsRaw extends Struct {
@@ -175,6 +228,13 @@ typedef _Run2C = Int32 Function(Pointer<_FrameRaw>, Int32, Pointer<Float>, Int32
 typedef _Run2D = int Function(Pointer<_FrameRaw>, int, Pointer<Float>, int, Pointer<_OptionsRaw>,
     Pointer<NativeFunction<_ProgressFnNative>>, Pointer<NativeFunction<_ChunkFnNative>>, Pointer<Void>,
     Pointer<_StatsRaw>);
+// [v3] exactly run2's signature over pwdense_frame_v3_t frames.
+typedef _Run3C = Int32 Function(Pointer<_FrameRawV3>, Int32, Pointer<Float>, Int32, Pointer<_OptionsRaw>,
+    Pointer<NativeFunction<_ProgressFnNative>>, Pointer<NativeFunction<_ChunkFnNative>>, Pointer<Void>,
+    Pointer<_StatsRaw>);
+typedef _Run3D = int Function(Pointer<_FrameRawV3>, int, Pointer<Float>, int, Pointer<_OptionsRaw>,
+    Pointer<NativeFunction<_ProgressFnNative>>, Pointer<NativeFunction<_ChunkFnNative>>, Pointer<Void>,
+    Pointer<_StatsRaw>);
 
 class PwDenseFfi {
   PwDenseFfi._(DynamicLibrary lib)
@@ -183,12 +243,22 @@ class PwDenseFfi {
         _optionsDefault = lib.lookupFunction<_OptionsDefaultC, _OptionsDefaultD>('pwdense_options_default'),
         _defaultModelPath = lib.lookupFunction<_DefaultModelPathC, _DefaultModelPathD>('pwdense_default_model_path'),
         _run = lib.lookupFunction<_RunC, _RunD>('pwdense_run'),
-        _run2 = _tryLookupRun2(lib);
+        _run2 = _tryLookupRun2(lib),
+        _run3 = _tryLookupRun3(lib);
 
   /// `pwdense_run2` only exists on the v2 framework; on v1 the lookup throws ArgumentError and we keep null.
   static _Run2D? _tryLookupRun2(DynamicLibrary lib) {
     try {
       return lib.lookupFunction<_Run2C, _Run2D>('pwdense_run2');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// `pwdense_run3` only exists on the v3 framework; same optional lookup as run2.
+  static _Run3D? _tryLookupRun3(DynamicLibrary lib) {
+    try {
+      return lib.lookupFunction<_Run3C, _Run3D>('pwdense_run3');
     } catch (_) {
       return null;
     }
@@ -200,11 +270,15 @@ class PwDenseFfi {
   final _DefaultModelPathD _defaultModelPath;
   final _RunD _run;
   final _Run2D? _run2;
+  final _Run3D? _run3;
 
   int abiVersion() => _abiVersion();
 
   /// True when the framework exports `pwdense_run2`, i.e. progressive chunks can be delivered.
-  bool get hasChunkApi => _run2 != null;
+  bool get hasChunkApi => _run2 != null || _run3 != null;
+
+  /// True when the framework exports `pwdense_run3`, i.e. a frame may be fed as raw NV12 instead of a JPEG.
+  bool get hasRun3 => _run3 != null;
   int available() => _available();
   String defaultModelPath() {
     final p = _defaultModelPath();
@@ -347,27 +421,27 @@ PwDenseResult _runInIsolate(_JobArgs a) {
     return PwDenseResult(-1, _emptyStats(PwDenseFfi.lastError ?? 'PWDense unavailable'));
   }
   final n = a.frames.length;
-  final framesPtr = calloc<_FrameRaw>(n);
+  // v3 framework -> pwdense_frame_v3_t for every frame (a JPEG frame is just one with nv12_path == NULL);
+  // v1/v2 framework -> the unchanged pwdense_frame_t. An NV12 frame cannot be expressed there, and the launcher
+  // never builds one without run3 — if it ever does, fail loudly rather than silently feeding a wrong struct.
+  final run3 = ffi._run3;
+  if (run3 == null) {
+    for (final f in a.frames) {
+      if (f.hasNv12) {
+        throw StateError('frame ${f.frameId} 是 NV12 源,但 PWDense 框架没有 pwdense_run3(ABI < 3)');
+      }
+    }
+  }
   final strings = <Pointer<Utf8>>[];
+  final framesPtr = run3 == null ? calloc<_FrameRaw>(n) : nullptr;
+  final framesV3Ptr = run3 == null ? nullptr : calloc<_FrameRawV3>(n);
   for (var i = 0; i < n; i++) {
     final f = a.frames[i];
-    final r = framesPtr[i];
-    r.frameId = f.frameId;
-    r.fx = f.fx;
-    r.fy = f.fy;
-    r.cx = f.cx;
-    r.cy = f.cy;
-    r.imageW = f.imageW;
-    r.imageH = f.imageH;
-    for (var k = 0; k < 4; k++) {
-      r.qWxyz[k] = f.qWxyz[k];
+    if (run3 == null) {
+      _fillFrameV2(framesPtr[i], f, strings);
+    } else {
+      _fillFrameV3(framesV3Ptr[i], f, strings);
     }
-    for (var k = 0; k < 3; k++) {
-      r.t[k] = f.t[k];
-    }
-    final s = f.jpegPath.toNativeUtf8();
-    strings.add(s);
-    r.jpegPath = s;
   }
   final np = a.pointsXyz.length ~/ 3;
   final ptsPtr = calloc<Float>(np * 3);
@@ -413,7 +487,7 @@ PwDenseResult _runInIsolate(_JobArgs a) {
   // exports pwdense_run2 — on a v1 framework we run pwdense_run and no chunk ever arrives.
   final run2 = ffi._run2;
   NativeCallable<_ChunkFnNative>? chunkCb;
-  if (port != null && a.wantChunks && run2 != null) {
+  if (port != null && a.wantChunks && (run2 != null || run3 != null)) {
     chunkCb = NativeCallable<_ChunkFnNative>.isolateLocal(
       (int frameIndex, Pointer<Float> xyz, Pointer<Uint8> rgb, int nPoints, Pointer<Void> user) {
         final cnt = nPoints > 0 && xyz != nullptr && rgb != nullptr ? nPoints : 0;
@@ -432,9 +506,14 @@ PwDenseResult _runInIsolate(_JobArgs a) {
   }
   int code;
   try {
-    code = chunkCb != null
-        ? run2!(framesPtr, n, ptsPtr, np, opts, cbPtr, chunkCb.nativeFunction, nullptr, stats)
-        : ffi._run(framesPtr, n, ptsPtr, np, opts, cbPtr, nullptr, stats);
+    if (run3 != null) {
+      code = run3(framesV3Ptr, n, ptsPtr, np, opts, cbPtr,
+          chunkCb == null ? nullptr : chunkCb.nativeFunction, nullptr, stats);
+    } else if (chunkCb != null) {
+      code = run2!(framesPtr, n, ptsPtr, np, opts, cbPtr, chunkCb.nativeFunction, nullptr, stats);
+    } else {
+      code = ffi._run(framesPtr, n, ptsPtr, np, opts, cbPtr, nullptr, stats);
+    }
   } finally {
     cb?.close();
     chunkCb?.close();
@@ -443,13 +522,101 @@ PwDenseResult _runInIsolate(_JobArgs a) {
   for (final s in strings) {
     calloc.free(s);
   }
-  calloc.free(framesPtr);
+  if (framesPtr != nullptr) calloc.free(framesPtr);
+  if (framesV3Ptr != nullptr) calloc.free(framesV3Ptr);
   calloc.free(ptsPtr);
   calloc.free(workDirC);
   calloc.free(outPlyC);
   calloc.free(opts);
   calloc.free(stats);
   return PwDenseResult(code, st);
+}
+
+/// pwdense_frame_t (v1/v2). jpeg_path is always written, exactly as before.
+void _fillFrameV2(_FrameRaw r, PwDenseFrame f, List<Pointer<Utf8>> strings) {
+  r.frameId = f.frameId;
+  r.fx = f.fx;
+  r.fy = f.fy;
+  r.cx = f.cx;
+  r.cy = f.cy;
+  r.imageW = f.imageW;
+  r.imageH = f.imageH;
+  for (var k = 0; k < 4; k++) {
+    r.qWxyz[k] = f.qWxyz[k];
+  }
+  for (var k = 0; k < 3; k++) {
+    r.t[k] = f.t[k];
+  }
+  final s = f.jpegPath.toNativeUtf8();
+  strings.add(s);
+  r.jpegPath = s;
+}
+
+/// pwdense_frame_v3_t. The first 11 members are filled exactly like v2; an empty [PwDenseFrame.jpegPath] becomes
+/// NULL (allowed only because nv12_path is then set), and nv12_matrix is [kPwvaNv12Matrix] whenever there is an
+/// NV12 source. reserved0 is always 0 (the header says it must be).
+void _fillFrameV3(_FrameRawV3 r, PwDenseFrame f, List<Pointer<Utf8>> strings) {
+  r.frameId = f.frameId;
+  r.fx = f.fx;
+  r.fy = f.fy;
+  r.cx = f.cx;
+  r.cy = f.cy;
+  r.imageW = f.imageW;
+  r.imageH = f.imageH;
+  for (var k = 0; k < 4; k++) {
+    r.qWxyz[k] = f.qWxyz[k];
+  }
+  for (var k = 0; k < 3; k++) {
+    r.t[k] = f.t[k];
+  }
+  if (f.jpegPath.isEmpty) {
+    r.jpegPath = nullptr;
+  } else {
+    final s = f.jpegPath.toNativeUtf8();
+    strings.add(s);
+    r.jpegPath = s;
+  }
+  final nv = f.nv12Path;
+  if (nv == null || nv.isEmpty) {
+    r.nv12Path = nullptr;
+    r.nv12Width = 0;
+    r.nv12Height = 0;
+    r.nv12Matrix = 0;
+  } else {
+    final s = nv.toNativeUtf8();
+    strings.add(s);
+    r.nv12Path = s;
+    r.nv12Width = f.nv12Width ?? 0;
+    r.nv12Height = f.nv12Height ?? 0;
+    r.nv12Matrix = kPwvaNv12Matrix;
+  }
+  r.reserved0 = 0;
+}
+
+/// Test hook (test/dense/pw_dense_frame_v3_test.dart): marshals one frame into native memory exactly as the job
+/// does, copies the raw struct bytes out, reads back what the two `char*` members point at (NULL -> null), then
+/// frees everything. The test decodes [bytes] at the offsets pwdense_c.h dictates — that is the layout gate.
+({int structSize, Uint8List bytes, String? jpegPath, String? nv12Path}) debugMarshalPwDenseFrameV3(PwDenseFrame f) {
+  final p = calloc<_FrameRawV3>();
+  final strings = <Pointer<Utf8>>[];
+  try {
+    _fillFrameV3(p.ref, f, strings);
+    final size = sizeOf<_FrameRawV3>();
+    final bytes = Uint8List.fromList(p.cast<Uint8>().asTypedList(size));
+    final jp = p.ref.jpegPath;
+    final np = p.ref.nv12Path;
+    return (
+      structSize: size,
+      bytes: bytes,
+      jpegPath: jp == nullptr ? null : jp.toDartString(),
+      nv12Path: np == nullptr ? null : np.toDartString(),
+    );
+  } finally {
+    for (final s in strings) {
+      calloc.free(s);
+    }
+    calloc.free(p);
+  }
 }
 
 PwDenseStats _emptyStats(String error) => PwDenseStats(

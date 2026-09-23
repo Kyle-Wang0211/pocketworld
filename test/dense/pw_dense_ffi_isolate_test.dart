@@ -43,6 +43,36 @@ void main() {
     expect(chunks, isEmpty); // no framework on the host
   });
 
+  // [v3] an NV12 frame carries three more fields across the boundary. On the host there is no framework at all,
+  // so the worker still reports "unavailable" — what this pins is that the frame itself is sendable and that the
+  // v3 marshalling path is reached without blowing up on the way in.
+  test('an NV12 frame (v3) crosses the isolate boundary too', () async {
+    final r = await runPwDenseJob(
+      frames: const [
+        PwDenseFrame(
+          frameId: 0,
+          fx: 1,
+          fy: 1,
+          cx: 1,
+          cy: 1,
+          imageW: 4,
+          imageH: 3,
+          qWxyz: [1, 0, 0, 0],
+          t: [0, 0, 0],
+          jpegPath: '',
+          nv12Path: '/nonexistent.nv12',
+          nv12Width: 4,
+          nv12Height: 2,
+        ),
+      ],
+      pointsXyz: const [0.0, 0.0, 1.0],
+      workDir: '/tmp/pw_dense_isolate_test',
+      outPly: '/tmp/pw_dense_isolate_test.ply',
+    );
+    expect(r.code, -1); // no framework on the host
+    expect(r.stats.error, isNotEmpty);
+  });
+
   test('onChunk alone (no onProgress) also crosses the boundary', () async {
     final chunks = <PwDenseChunk>[];
     final r = await runPwDenseJob(

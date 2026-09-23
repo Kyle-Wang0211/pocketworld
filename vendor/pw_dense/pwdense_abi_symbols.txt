@@ -3,3 +3,5 @@ pwdense_available
 pwdense_options_default
 pwdense_default_model_path
 pwdense_run
+pwdense_run2
+pwdense_run3
