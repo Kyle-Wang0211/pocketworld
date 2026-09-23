@@ -88,6 +88,33 @@ Filament 会接管」——那**只对那个样例成立**(它的 buffer 是 `AR
 
 ---
 
+## D. 许可声明 —— Apache-2.0 §4(b) 的"已修改"头注(2026-09-23 加)
+
+thermion 是 Apache-2.0(`LICENSE`,Copyright 2024 Nick Fisher)。§4(b) 原文要求
+分发被修改的文件时,这些文件要 "carry prominent notices stating that You changed
+the files"。A/B 两节的改动此前只记在本文件里,**被改的文件本身没有任何标记**。
+
+现在 A/B 涉及的**全部 17 个文件**头部各加了一段 6 行 `//` 注释(内容一致,
+以 `NOTICE OF MODIFICATION` 开头),指回本文件。纯注释,零功能影响。
+
+17 个文件 = 同目录 `thermion_dart_0.3.4+1_pw.patch` 里 `diff -ruN` 的全部条目;
+该 patch 已在加完头注后重新生成(585 → 768 行),重放保证复验过:打到干净的
+pub 副本上,`diff -rq` 与现用副本逐字节一致。
+
+回归闸:`test/third_party_notice_coverage_test.dart` 会数 patch 里
+`NOTICE OF MODIFICATION` 的出现次数,必须等于 patch 触及的文件数 ——
+改了文件忘了加头注、或加了头注忘了重新生成 patch,都会当场红。
+
+🔴 **按"升级代价"那节动手时**:A 节整段删掉之后,那些文件就不再是"被修改的
+文件",对应的头注也要一并删掉,否则声明与事实不符。B 节的文件在上游 PR #355
+合入前仍需保留头注。
+
+上游 Filament 本身的署名义务(它经 thermion 静态链进出货包,而上游预编译 zip
+零许可文件)记在本仓 `THIRD_PARTY_NOTICES` 的 "Thermion and Google Filament"
+一节,许可正文在 `assets/licenses/`。
+
+---
+
 ## 升级代价(2026-09-18 实测,不是估计)
 
 升级目标有两个,**不是一个**:

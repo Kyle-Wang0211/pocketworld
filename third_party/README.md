@@ -8,7 +8,7 @@
 
 | 文件 | 是什么 |
 |------|--------|
-| `thermion_dart_0.3.4+1_pw.patch` | 相对 pub 原版的完整 diff(17 文件 / 585 行) |
+| `thermion_dart_0.3.4+1_pw.patch` | 相对 pub 原版的完整 diff(17 文件 / 768 行) |
 | `thermion_dart_0.3.4+1_pw.md` | 每处改动是什么、为什么、上线前怎么消 |
 
 ### 重放

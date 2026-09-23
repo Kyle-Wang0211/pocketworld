@@ -253,6 +253,13 @@ flutter:
     # these are the texts THIRD_PARTY_NOTICES points at.
     - ios/Vendor/NativeCore/licenses/
     - vendor/lepton_jpeg/licenses/
+    # [2026-09-23 声明载体普查] 这些组件确实链进/装进出货包,但它们的
+    # 许可正文此前一份都没进包(Filament 经 thermion 静态链入;XRSLAM /
+    # OpenCV 4.0.1 / Ceres 1.14 / ONNX Runtime 经 Pods-Runner 的
+    # OTHER_LDFLAGS force_load;MobileSAM 是 assets 里的权重)。上面三个
+    # 目录都绑在各自 vendored 树上,这几个组件没有对应的 in-repo 树,
+    # 所以统一放这里。THIRD_PARTY_NOTICES 逐条指向本目录下的文件名。
+    - assets/licenses/
     - assets/models/Duck.glb
     - assets/models/Lantern.glb
     # Neutral image-based light for the community viewer.
@@ -265,7 +272,10 @@ flutter:
     # the original baseColorMap, so true KHR_materials_unlit override
     # while preserving textures isn't expressible via its public API).
     - assets/ibl/default_env_ibl.ktx
-    # MobileSAM (Apache-2.0) — on-device subject masking during capture.
+    # MobileSAM — on-device subject masking during capture.
+    # 许可两层(2026-09-23 核实,见 THIRD_PARTY_NOTICES):权重血统
+    # MobileSAM / Segment Anything 都是 Apache-2.0;我们取的这份 ONNX
+    # 再导出 Acly/MobileSAM 自己在 HF model card 里声明 `license: mit`。
     # Two ONNX sessions: encoder (28.2 MB, runs once per frame) +
     # decoder (16.5 MB, runs once per prompt point at center).
     # Mask is RLE-packed into curated.json's per-frame `subject_mask`
