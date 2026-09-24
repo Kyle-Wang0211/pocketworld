@@ -1,0 +1,10 @@
+# vendor/aether_lod/include -- frozen C headers, copied byte-for-byte. DO NOT EDIT.
+# A needed change goes back to the coordinator, who changes it for engine and shells at once.
+#
+# pwlod_viewer.h  source: ~/Developer/pw_lod_data/contract/pwlod_viewer.h (frozen 2026-09-24,
+#                 plan LOD_ARLOOPBENCH_PLAN_20260924.md, user choices A1 + B1 + orthographic)
+# pw_lod_bench.h  source: pw_splat_ab_bench Sources/lod/pw_lod_bench.h
+#                 @ fbfdb545f3522723f9cc9673290c03d930c836b9 (clean at HEAD b792d574)
+# Check (inside this directory): grep -v '^#' SHA256SUMS | shasum -a 256 -c -
+a1e1bcffce58b313165f1b049d15ed9732bbec052a9c126ed701dc04338c3c2d  pwlod_viewer.h
+d5a349a2dfd0721a19a5fb345515ddcd8b85b1143d8b19a95e753edebfaf780e  pw_lod_bench.h
