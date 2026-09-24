@@ -80,9 +80,17 @@ if [ -n "$REPLAY" ]; then
     --domain-type appDataContainer --domain-identifier "$BUNDLE" \
     --source "Documents/bench_replay_runs/$REPLAY" --destination "$DEST_ROOT/$REPLAY"
   RD="$DEST_ROOT/$REPLAY"; [ -d "$RD/$REPLAY" ] && RD="$RD/$REPLAY"
-  # 回放目录的 device_config.yaml(bench_replay_controller.dart 写的)里有 cam0.extrinsic.q_bc / p_bc。
-  ARGS+=(--xrslam "xr=$RD/poses_body.tum" --xrslam-ledger "xr=$RD/intrinsics_ledger.csv"
-         --xrslam-yaml "$RD/device_config.yaml")
+  # 2026-09-24 真机首跑补:回放没跑完(如「有损录制照源规矩拒」phase=failed)时目录里只有
+  # receipt.json + 两份 yaml,没有 poses_body.tum ⇒ 原先会把不存在的路径喂给尺子、Python 回溯退出,
+  # ARKit 那条也不出。现在:回执 phase ≠ done 或没有位姿 ⇒ 报出回执里的 error,只量 ARKit。
+  PHASE="$(/usr/bin/python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); print(r.get("phase"), "|", r.get("error") or "")' "$RD/receipt.json" 2>/dev/null || echo "no_receipt |")"
+  if [ "${PHASE%% *}" != "done" ] || [ ! -f "$RD/poses_body.tum" ]; then
+    echo "🔴 回放 $REPLAY 没有可用的 XRSLAM 位姿(phase/error: $PHASE)⇒ 本次只量 ARKit" >&2
+  else
+    # 回放目录的 device_config.yaml(bench_replay_controller.dart 写的)里有 cam0.extrinsic.q_bc / p_bc。
+    ARGS+=(--xrslam "xr=$RD/poses_body.tum" --xrslam-ledger "xr=$RD/intrinsics_ledger.csv"
+           --xrslam-yaml "$RD/device_config.yaml")
+  fi
 fi
 echo "== 离线尺子 =="
 /usr/bin/python3 "$HERE/lidar_ruler/lidar_ruler.py" "${ARGS[@]}"

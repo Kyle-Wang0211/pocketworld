@@ -332,8 +332,16 @@ class Scene:
                 cand.append((a, b))
         if not cand:
             return []
-        step = max(1, len(cand) // self.args.pairs)
-        return [(usable[a], usable[b]) for a, b in cand[::step][:self.args.pairs]]
+        # 🔴 2026-09-24 修:depth_ruler.run() 原式 `cand[::step][:pairs]`(step = len//pairs)在
+        #    pairs < len(cand) < 2·pairs 时 step=1 ⇒ 只取前 pairs 个候选 ⇒ 录制**后半段整段不测**
+        #    (run-fb5d3a8f:79 个候选取前 40 ⇒ 帧对只落在 1.9–13 s,30 s 录制的后 17 s 没进 k、分段 k 也是假的)。
+        #    改成在全部候选上等距取 pairs 个(覆盖整段);len(cand) ≤ pairs 时全取,与原式相同。
+        if len(cand) <= self.args.pairs:
+            sel = cand
+        else:
+            idx = np.unique(np.round(np.linspace(0, len(cand) - 1, self.args.pairs)).astype(int))
+            sel = [cand[i] for i in idx]
+        return [(usable[a], usable[b]) for a, b in sel]
 
     def matches(self, fa, fb):
         pa, da = self.features(fa)
