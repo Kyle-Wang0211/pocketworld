@@ -59,7 +59,7 @@
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>方寸间仅在你主动选择时读取照片，用于提交举报或权益投诉的证明材料。</string>
 	<key>PWBuildExperimentMarker</key>
-	<string>future-jxl-lossless-archive-v1+transient-ar-previews-v1+future-official-zpaq-db-archive-v1+official-archive-bgprocessing-v1+official-fast-safe-rollback-v1+highres-metadata-json-safety-v1+production-archive-hard-stop-v1+portable-sfm-speed-arms-v1-default-off+sqlite-dual-candidate-archive-v2+future-official-lepton-photo-archive-v2</string>
+	<string>future-jxl-lossless-archive-v1+transient-ar-previews-v1+future-official-zpaq-db-archive-v1+official-archive-bgprocessing-v1+official-fast-safe-rollback-v1+highres-metadata-json-safety-v1+production-archive-hard-stop-v1+portable-sfm-speed-arms-v1-default-off+sqlite-dual-candidate-archive-v2+future-official-lepton-photo-archive-v2+lod-one-viewer-v3</string>
 	<key>PWBuildMarker</key>
 	<string>permanent-project-delete-20260725</string>
 	<key>PWSocialProfileSafetyBuildId</key>

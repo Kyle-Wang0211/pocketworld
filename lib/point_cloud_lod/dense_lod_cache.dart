@@ -37,7 +37,7 @@ import 'lod_bridge.dart';
 
 /// The engine archive this build links (`vendor/aether_lod/libs/ios-arm64/libpw_lod_<sha8>.a`); a
 /// test pins it to the vendored receipt. Part of every stamp: a different engine ⇒ rebuild.
-const String kLodEngineSha8 = 'ee942e08';
+const String kLodEngineSha8 = '72ee817f';
 const int kLodEngineAbi = 3;
 
 enum DenseLodPhase { building, ready, failed }

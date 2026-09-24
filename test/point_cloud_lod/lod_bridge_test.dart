@@ -666,7 +666,7 @@ void main() {
         case 'create':
           return {
             'textureId': 42,
-            'version': 'ee942e08 abi=3',
+            'version': '72ee817f abi=3',
             'backend': 5,
             'viewport_width_px': 1170,
             'viewport_height_px': 2532,
@@ -677,7 +677,7 @@ void main() {
     final bridge = LodBridge();
     final info = await bridge.create(widthPx: 1170, heightPx: 2532);
     expect(info.textureId, 42);
-    expect(info.version, 'ee942e08 abi=3');
+    expect(info.version, '72ee817f abi=3');
     expect(calls.last.arguments, {
       'viewport_width_px': 1170,
       'viewport_height_px': 2532,

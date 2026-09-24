@@ -52,7 +52,7 @@ class FakeLodPlatform {
         if (createFails) throw PlatformException(code: 'PWLOD_ERR_GPU', message: 'no device');
         return {
           'textureId': _nextId++,
-          'version': 'ee942e08 abi=3',
+          'version': '72ee817f abi=3',
           'backend': 5,
           'viewport_width_px': a['viewport_width_px'],
           'viewport_height_px': a['viewport_height_px'],

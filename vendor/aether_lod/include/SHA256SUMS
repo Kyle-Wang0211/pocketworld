@@ -9,7 +9,7 @@
 #                 Potree's exact definition; layout/ABI unchanged. Previous v2 was fb6459d6...
 #                 v3 (2026-09-24, coordinator): one viewer for every stage (set_points + pwlod_style,
 #                 camera = CloudProjection focal_px/orbit_distance/ortho_mix, stats.source), ABI 3.
-#                 Taken from the engine artifact stage (engine ee942e08) = the contract file.
+#                 Taken from the engine artifact stage (engine ee942e08; unchanged in 72ee817f) = the contract file.
 #                 Previous v2 was 4b047f1f...
 # pw_lod_bench.h  source: pw_splat_ab_bench Sources/lod/pw_lod_bench.h
 #                 @ fbfdb545f3522723f9cc9673290c03d930c836b9 (clean at HEAD b792d574)

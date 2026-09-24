@@ -727,7 +727,7 @@
 					"-force_load",
 					"$(PW_LOD_ARCHIVE)",
 				);
-				PW_LOD_ARCHIVE = "$(PROJECT_DIR)/../vendor/aether_lod/libs/ios-arm64/libpw_lod_ee942e08.a";
+				PW_LOD_ARCHIVE = "$(PROJECT_DIR)/../vendor/aether_lod/libs/ios-arm64/libpw_lod_72ee817f.a";
 				PRODUCT_BUNDLE_IDENTIFIER = com.kyle.PocketWorld;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
@@ -965,7 +965,7 @@
 					"-force_load",
 					"$(PW_LOD_ARCHIVE)",
 				);
-				PW_LOD_ARCHIVE = "$(PROJECT_DIR)/../vendor/aether_lod/libs/ios-arm64/libpw_lod_ee942e08.a";
+				PW_LOD_ARCHIVE = "$(PROJECT_DIR)/../vendor/aether_lod/libs/ios-arm64/libpw_lod_72ee817f.a";
 				PRODUCT_BUNDLE_IDENTIFIER = com.kyle.PocketWorld;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
@@ -1043,7 +1043,7 @@
 					"-force_load",
 					"$(PW_LOD_ARCHIVE)",
 				);
-				PW_LOD_ARCHIVE = "$(PROJECT_DIR)/../vendor/aether_lod/libs/ios-arm64/libpw_lod_ee942e08.a";
+				PW_LOD_ARCHIVE = "$(PROJECT_DIR)/../vendor/aether_lod/libs/ios-arm64/libpw_lod_72ee817f.a";
 				PRODUCT_BUNDLE_IDENTIFIER = com.kyle.PocketWorld;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";

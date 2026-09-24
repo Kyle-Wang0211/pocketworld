@@ -52,7 +52,7 @@ void main() {
     final stamp = jsonDecode(File('${s.octreeDir}/pw_lod_source.json').readAsStringSync()) as Map;
     expect(stamp['pass'], true);
     expect(stamp['ply_points'], 5000);
-    expect(stamp['engine'], 'ee942e08 abi=3');
+    expect(stamp['engine'], '72ee817f abi=3');
     expect((stamp['checks'] as List).every((c) => (c as Map)['pass'] == true), isTrue);
     // gate B: nothing added under captures_official/<cap_id>/
     expect(captureDirListing(), before);
@@ -183,7 +183,8 @@ void main() {
     expect(File('vendor/aether_lod/include/pwlod_viewer.h').readAsStringSync(), contains('#define PWLOD_ABI_VERSION $kLodEngineAbi'));
     final pbx = File('ios/Runner.xcodeproj/project.pbxproj').readAsStringSync();
     expect(pbx, contains('libpw_lod_$kLodEngineSha8.a'));
-    // NEGATIVE: the superseded v2 archive name is not what the project links
+    // NEGATIVE: the superseded archives (v2 afb521e6, v3 ee942e08 before R18) are not what the project links
     expect(pbx.contains('libpw_lod_afb521e6.a'), isFalse);
+    expect(pbx.contains('libpw_lod_ee942e08.a'), isFalse);
   });
 }

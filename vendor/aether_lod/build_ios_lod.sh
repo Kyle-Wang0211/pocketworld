@@ -37,19 +37,19 @@
 set -eu
 
 engine_repository="https://github.com/Kyle-Wang0211/Aether3D"
-engine_revision="ee942e08f52b9f198dcd3012519ae515669e94fd"
+engine_revision="72ee817f8cbcc7ee4bfc6b271279fcc9b4d296e3"
 engine_branch="feat/pointcloud-lod-viewer"
-sha8="ee942e08"
+sha8="72ee817f"
 abi_version="3"   # PWLOD_ABI_VERSION of the frozen header; pwlod_version() = "<sha8> abi=<this>"
 minimum_ios="15.0"
 source_date_epoch="1700000000"
 expected_clang_version="Apple clang version 17.0.0 (clang-1700.6.3.2)"
 expected_sdk_version="26.2"
 
-# 出货件(2026-09-24 从引擎 ee942e08 = ABI v3 构建;两个暂存目录各编一次逐字节相同)
-expected_artifact_sha256="c1be4789e85ffb4426d794a98d98f7956ca78c0d312255b1b092fba3ca0c38c9"
-expected_member_manifest_sha256="7d9bce8cf917a274ad1a7e6d87a66d2a8b9b068f9a9483c99415d03a679d9fb7"
-expected_syms_sha256="907580063862142e80544d3ad26efe15ae9e50cbe02c8855cde7c56e19acaeec"
+# 出货件(2026-09-24 从引擎 72ee817f = ABI v3 + R18 画家精灵构建;两个暂存目录各编一次逐字节相同)
+expected_artifact_sha256="39832a04a922b36ff0329fd11a41d11a5acc0dff4e2d148eb01aed84eea544e0"
+expected_member_manifest_sha256="60e86b70c0c32ff4965997c84a8356d23b95cabcae7d15128cc497959e2652a0"
+expected_syms_sha256="9438bcbf78214365314c070dde8fec71a90754c840c3b1e1b2e07fb471aab403"
 expected_members="octree.o select.o stream.o build.o chunker_countsort.o indexer.o writer.o ply_source.o lod_render.o viewer_look.o pwlod_viewer.o pwlod_build.o pw_lod_bench.o"
 expected_member_count="13"
 
