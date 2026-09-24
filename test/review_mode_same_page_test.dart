@@ -52,7 +52,14 @@ void main() {
     ); // the review branch returns before _initCamera()
     expect(
       page.contains(
-        "cloud = await compute(loadReviewCloud, ply, debugLabel: 'review_load_sparse');",
+        // [172] same isolate loader, behind the page's test seam (default = compute(loadReviewCloud, …))
+        "cloud = await OfficialARCapturePage.debugReviewCloudLoader(ply, 'review_load_sparse');",
+      ),
+      isTrue,
+    );
+    expect(
+      page.contains(
+        '(path, label) => compute(loadReviewCloud, path, debugLabel: label);',
       ),
       isTrue,
     );
