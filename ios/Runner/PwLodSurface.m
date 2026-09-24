@@ -13,7 +13,7 @@
 //     ffi's source revision): IOSurface descriptor chained on the memory descriptor,
 //     allowStorageBinding = false, GetProperties, size + format checks, texture descriptor from
 //     the properties (usage = props.usage, 2D, 1 mip, 1 sample).
-//     Added check (contract, pwlod_viewer.h:123): usage must include RenderAttachment|CopySrc.
+//     Added check (contract, pwlod_viewer.h:126): usage must include RenderAttachment|CopySrc.
 #import "PwLodSurface.h"
 
 #import <Foundation/Foundation.h>

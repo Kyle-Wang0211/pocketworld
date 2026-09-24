@@ -758,7 +758,7 @@ void main() {
       },
     );
 
-    test('stats lowest_spacing <= 0 (none drawn) is Potree\'s Infinity', () {
+    test('stats lowest_spacing <= 0 (empty queue) is Potree\'s Infinity', () {
       expect(potreeLowestSpacingFromStats(0.0), double.infinity);
       expect(potreeLowestSpacingFromStats(-1.0), double.infinity);
       expect(potreeLowestSpacingFromStats(double.nan), double.infinity);

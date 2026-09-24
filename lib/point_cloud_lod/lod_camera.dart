@@ -23,11 +23,11 @@
 //     (rows s, u, −f; translation −s·eye, −u·eye, f·eye), row-major.
 //   Projection — three.js src/math/Matrix4.js @6101189ee28b (the revision the LOD
 //     library pins for its frustum, DEVIATIONS.md:21), WebGPU branch because the
-//     engine's clip space is WebGPU's (z in [0,1]; pwlod_viewer.h:82):
+//     engine's clip space is WebGPU's (z in [0,1]; pwlod_viewer.h:83):
 //       makeOrthographic :1200-1242 (WebGPU c = −1/(far−near), d = −near/(far−near))
 //       makePerspective  :1140-1183 (WebGPU c = −far/(far−near), d = −far·near/(far−near))
 //     three.js stores column-major (`te[0], te[4], te[8], te[12]` is row 0); we write
-//     the same numbers row-major (pwlod_viewer.h:82).
+//     the same numbers row-major (pwlod_viewer.h:83).
 //
 // Why the old viewer's pixels come out unchanged (checked by
 // test/point_cloud_lod/lod_camera_test.dart against CloudProjection.project):
@@ -59,7 +59,7 @@ import 'dart:ui' show Size;
 
 import '../ui/official_capture/cloud_camera.dart';
 
-/// pwlod_projection (pwlod_viewer.h:71-74). Values are the C enum values.
+/// pwlod_projection (pwlod_viewer.h:72-75). Values are the C enum values.
 enum LodProjection {
   perspective(0),
   orthographic(1);
@@ -72,6 +72,15 @@ enum LodProjection {
 /// keeps whatever near/far the camera has while no node spacing is known (viewer.js:1766-1768).
 const double kPotreeInitialNear = 0.1;
 const double kPotreeInitialFar = 1000 * 1000;
+
+/// pwlod_frame_stats.lowest_spacing (ABI v2, pwlod_viewer.h:116-121: Potree's lowestSpacing
+/// over every node popped from the queue this frame, "<= 0 if the queue was empty") →
+/// Potree's `result.lowestSpacing`, which stays at its initial Infinity when no node was
+/// popped (Potree_update_visibility.js:114). Non-finite is treated the same way.
+double potreeLowestSpacingFromStats(double statsLowestSpacing) =>
+    statsLowestSpacing > 0 && statsLowestSpacing.isFinite
+    ? statsLowestSpacing
+    : double.infinity;
 
 /// Potree Viewer.update's near/far, src/viewer/viewer.js:1749-1771 @5636cd4, verbatim:
 ///
@@ -94,14 +103,6 @@ const double kPotreeInitialFar = 1000 * 1000;
 /// `getBoundingBox().applyMatrix4(matrixWorldInverse)` = the scene box's 8 corners in view
 /// space, axis-aligned again (three.js r124 Box3.applyMatrix4, three.module.js:4296-4316);
 /// [viewRowMajor] is world→view (= camera.matrixWorldInverse).
-/// pwlod_frame_stats.lowest_spacing (ABI v2, pwlod_viewer.h:115-118: "<= 0 if none drawn") →
-/// Potree's `result.lowestSpacing`, which stays at its initial Infinity when no node was
-/// visited (Potree_update_visibility.js:114). Non-finite is treated the same way.
-double potreeLowestSpacingFromStats(double statsLowestSpacing) =>
-    statsLowestSpacing > 0 && statsLowestSpacing.isFinite
-    ? statsLowestSpacing
-    : double.infinity;
-
 ({double near, double far}) potreeNearFar({
   required double lowestSpacing,
   required List<double> viewRowMajor,
@@ -144,7 +145,7 @@ double potreeLowestSpacingFromStats(double statsLowestSpacing) =>
   return (near: near, far: far);
 }
 
-/// One pwlod_camera (pwlod_viewer.h:81-90), in Dart. Field names follow the C struct.
+/// One pwlod_camera (pwlod_viewer.h:82-91), in Dart. Field names follow the C struct.
 class LodCameraFrame {
   LodCameraFrame({
     required this.viewProjRowMajor,
@@ -172,7 +173,7 @@ class LodCameraFrame {
   final double orthoWidthWorld;
   final double orthoHeightWorld;
 
-  /// Must equal the render targets' size (pwlod_viewer.h:88).
+  /// Must equal the render targets' size (pwlod_viewer.h:89).
   final int viewportWidthPx;
   final int viewportHeightPx;
 

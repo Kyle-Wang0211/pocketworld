@@ -325,7 +325,7 @@ void main() {
       () async {
         await LodBridge().setParams(textureId: 3, params: const LodParams());
         final d = calls.last.arguments as Map;
-        expect(d['point_budget'], 3630000); // pwlod_viewer.h:93 default
+        expect(d['point_budget'], 3630000); // pwlod_viewer.h:94 default
         expect(d['cache_bytes'], 163350000);
         expectBenchCache(d);
         await LodBridge().setParams(

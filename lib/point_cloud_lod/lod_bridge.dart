@@ -28,7 +28,7 @@ import 'lod_camera.dart';
 
 const String kPwLodChannel = 'pw_lod_texture';
 
-/// pwlod_status (pwlod_viewer.h:37-45); index = C value.
+/// pwlod_status (pwlod_viewer.h:38-46); index = C value.
 const List<String> kPwLodStatusNames = <String>[
   'PWLOD_OK',
   'PWLOD_ERR_ARG',
@@ -40,7 +40,7 @@ const List<String> kPwLodStatusNames = <String>[
 ];
 
 /// octree.bin bytes per point: int32 xyz (12) + uint16 rgb (6)
-/// (pwlod_viewer.h:194 "C1: must equal 18 * tree_points").
+/// (pwlod_viewer.h:197 "C1: must equal 18 * tree_points").
 const int kPwLodBytesPerPoint = 18;
 
 int _int(Map<Object?, Object?> m, String k) {
@@ -61,11 +61,11 @@ Map<Object?, Object?> _map(Object? raw, String what) {
   throw FormatException('pw_lod_texture: $what returned ${raw.runtimeType}');
 }
 
-/// pwlod_viewer.h:93 default point budget (= pw_splat_ab_bench Sources/lod/pw_lod_bench.cpp:60
+/// pwlod_viewer.h:94 default point budget (= pw_splat_ab_bench Sources/lod/pw_lod_bench.cpp:60
 /// @2f83c6b5 `Args.budget`, "(33.3 - 0.20) / 9.12 ms per M on A16").
 const int kLodDefaultPointBudget = 3630000;
 
-/// pwlod_viewer.h:97: node cache "default and minimum 15 * point_budget" (bytes per budget point).
+/// pwlod_viewer.h:98: node cache "default and minimum 15 * point_budget" (bytes per budget point).
 const int kLodNodeCacheBytesPerBudgetPoint = 15;
 
 /// pw_splat_ab_bench Sources/lod/pw_lod_bench.cpp:61 @2f83c6b5
@@ -77,7 +77,7 @@ const int kLodBenchCacheMult = 3;
 int lodBenchCacheBytes(int pointBudget) =>
     kLodBenchCacheMult * kLodNodeCacheBytesPerBudgetPoint * pointBudget;
 
-/// pwlod_params (pwlod_viewer.h:92-102). The shell starts from pwlod_params_default() and
+/// pwlod_params (pwlod_viewer.h:93-103). The shell starts from pwlod_params_default() and
 /// overrides the keys present. point_budget and cache_bytes are ALWAYS present:
 /// point_budget = [pointBudget] ?? kLodDefaultPointBudget and cache_bytes = [cacheBytes] ??
 /// lodBenchCacheBytes(point_budget), so the engine never falls back to the 15× header default
@@ -127,7 +127,7 @@ class LodParams {
   }
 }
 
-/// pwlod_frame_stats (pwlod_viewer.h:104-119, ABI v2).
+/// pwlod_frame_stats (pwlod_viewer.h:105-122, ABI v2).
 class LodFrameStats {
   const LodFrameStats({
     required this.frameNumber,
@@ -157,8 +157,9 @@ class LodFrameStats {
   /// -1 if not yet known.
   final double gpuMs;
 
-  /// v2: Potree's per-frame lowestSpacing (smallest spacing among the nodes drawn this
-  /// frame); <= 0 if none were drawn (pwlod_viewer.h:115-118). Feeds potreeNearFar.
+  /// v2: Potree's per-frame lowestSpacing — min spacing over every node popped from the
+  /// priority queue this frame, before the budget break and the visibility test; <= 0 if the
+  /// queue was empty (pwlod_viewer.h:116-121). Feeds potreeNearFar.
   final double lowestSpacing;
 
   /// Shell-side counters, not part of pwlod_frame_stats (iOS: copy_calls, copy_empty,
@@ -203,7 +204,7 @@ class LodTextureInfo {
   final int heightPx;
 }
 
-/// pwlod_build_report (pwlod_viewer.h:191-197) + the shell's own measurements.
+/// pwlod_build_report (pwlod_viewer.h:194-200) + the shell's own measurements.
 class LodBuildReport {
   const LodBuildReport({
     required this.status,
@@ -230,7 +231,7 @@ class LodBuildReport {
   final double elapsedMs;
 
   /// Shell-side: wall clock around the blocking call, phys_footprint peak / before
-  /// (the header leaves peak memory to the shell, pwlod_viewer.h:201-202), how many
+  /// (the header leaves peak memory to the shell, pwlod_viewer.h:204-205), how many
   /// footprint samples the peak is over, whether the scratch chunk_dir was deleted.
   final double shellWallMs;
   final double peakFootprintMb;
@@ -269,7 +270,7 @@ class LodBuildReport {
   };
 }
 
-/// pwlod_verify_report (pwlod_viewer.h:217-225) + the call's status.
+/// pwlod_verify_report (pwlod_viewer.h:220-228) + the call's status.
 class LodVerifyReport {
   const LodVerifyReport({
     required this.status,
