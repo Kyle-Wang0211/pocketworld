@@ -1,0 +1,286 @@
+# Uncomment this line to define a global platform for your project
+# [2026-09-24 完整重建链 168] 照抄生产 ios/Podfile:2(生产这一行是打开的;生产 pod 的 deployment target 都是 15.0)。
+platform :ios, '15.0'
+
+# CocoaPods analytics sends network stats synchronously affecting flutter build latency.
+ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
+project 'Runner', {
+  'Debug' => :debug,
+  'Profile' => :release,
+  'Release' => :release,
+}
+
+def flutter_root
+  generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
+  unless File.exist?(generated_xcode_build_settings_path)
+    raise "#{generated_xcode_build_settings_path} must exist. If you're running pod install manually, make sure flutter pub get is executed first"
+  end
+
+  File.foreach(generated_xcode_build_settings_path) do |line|
+    matches = line.match(/FLUTTER_ROOT\=(.*)/)
+    return matches[1].strip if matches
+  end
+  raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}. Try deleting Generated.xcconfig, then run flutter pub get"
+end
+
+require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
+
+flutter_ios_podfile_setup
+
+target 'Runner' do
+  # [2026-09-24 完整重建链 168] 链接形态改成生产的(生产 ios/Podfile:31-54):不开 use_frameworks!(插件
+  #   全是静态库),开 use_modular_headers!。原因:生产的 aether3d_ffi.podspec 按静态库写 ——
+  #   pod 目标自己带 `OTHER_LDFLAGS => -laether3d_ffi`,Runner 再 -force_load 同一份 libaether3d_ffi.a。
+  #   用 use_frameworks! 时 aether3d_ffi 会变成动态库、把 libaether3d_ffi.a(内含整份 Dawn,276 个 wgpu*)
+  #   再链一遍 ⇒ 包里两份强定义 wgpuCreateInstance。pw_hevc 也按「iOS 静态链接进 App 二进制」写
+  #   (packages/pw_hevc/lib/pwva_apple.dart:55 用 DynamicLibrary.process())。
+  #   台架原来的三个插件(path_provider_foundation / sensors_plus / thermion_flutter)生产也是这样静态链的。
+  # use_frameworks!   ← 台架原来这一行(2026-09-24 前)
+  use_modular_headers!
+  flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+  target 'RunnerTests' do
+    inherit! :search_paths
+  end
+
+  # [2026-09-24 完整重建链 168] 生产的三个本地 pod,原样照抄生产 ios/Podfile:56-70。
+  #   ../vendor/{aether_ffi,official_sfm,pw_dense} 是同步脚本完整链段维护的符号链接 → 真源工作树。
+  #   生产的 `pod 'xrslam'`(纯头文件 pod)不加:台架 XRSLAM 走下面的臂表 + pbxproj 的
+  #   HEADER_SEARCH_PATHS($(PROJECT_DIR)/../vendor/xrslam/include),加了反而与臂表重复。
+  pod 'aether3d_ffi', :path => '../vendor/aether_ffi'
+  pod 'official_sfm', :path => '../vendor/official_sfm'
+  pod 'pw_dense', :path => '../vendor/pw_dense'
+end
+
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    flutter_additional_ios_build_settings(target)
+
+    # [2026-09-24 完整重建链 168] 照抄生产 ios/Podfile:76-88(deployment target 为 nil 或 <15 的 pod 补到 15.0)。
+    target.build_configurations.each do |config|
+      current = config.build_settings['IPHONEOS_DEPLOYMENT_TARGET']
+      if current.nil? || current.to_f < 15.0
+        config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+      end
+    end
+  end
+
+  # ── [2026-09-24 完整重建链 168] 生产 post_install 的两段,原样照抄生产 ios/Podfile:91-181 ─────────
+  # (1) Thermion 0.3.4 podspec 的 '"-fvisibility=default" "$(inherited)"' 引号问题(生产 :91-110)。
+  #     静态 + use_modular_headers! 之后 -fmodule-map-file 链会被那对引号整个吞成一个参数,生产靠这段去掉。
+  bad = '"-fvisibility=default" "$(inherited)"'
+  good = '-fvisibility=default'
+  Dir[File.join(installer.config.installation_root, 'Pods/Target Support Files/Pods-*/*.xcconfig')].each do |xcconfig|
+    contents = File.read(xcconfig)
+    if contents.include?(bad)
+      File.write(xcconfig, contents.gsub(bad, good))
+    end
+  end
+  # (2) onnxruntime-c force_load(生产 :118-181):onnxruntime 插件是生产 pubspec 的依赖(MobileSAM),
+  #     生产的 Dart 已不 import 它,但插件照样注册进包;生产靠这段避免 -l"onnxruntime-objc" /
+  #     -framework "onnxruntime" 与 force_load 重复定义。
+  device_force_load = '-force_load "$(PODS_ROOT)/onnxruntime-c/onnxruntime.xcframework/ios-arm64/onnxruntime.framework/onnxruntime"'
+  sim_force_load = '-force_load "$(PODS_ROOT)/onnxruntime-c/onnxruntime.xcframework/ios-arm64_x86_64-simulator/onnxruntime.framework/onnxruntime"'
+  marker = 'onnxruntime.xcframework'
+  Dir[File.join(installer.config.installation_root, 'Pods/Target Support Files/Pods-Runner/*.xcconfig')].each do |xcconfig|
+    contents = File.read(xcconfig)
+    appended = contents.dup
+    appended = appended.gsub(/ -l"onnxruntime-objc"/, '')
+    appended = appended.gsub(/ -framework "onnxruntime"/, '')
+    unless contents.include?(marker)
+      [
+        [/^OTHER_LDFLAGS\[sdk=iphoneos\*\] = (.*)$/, device_force_load],
+        [/^OTHER_LDFLAGS\[sdk=iphonesimulator\*\] = (.*)$/, sim_force_load],
+      ].each do |pattern, flag|
+        if appended.match?(pattern)
+          appended = appended.sub(pattern) { |m| "#{m} #{flag}" }
+        else
+          sdk = flag.include?('simulator') ? 'iphonesimulator*' : 'iphoneos*'
+          appended += "\nOTHER_LDFLAGS[sdk=#{sdk}] = $(inherited) #{flag}\n"
+        end
+      end
+    end
+    File.write(xcconfig, appended) if appended != contents
+  end
+
+  # ── XRSLAM official RD-VIO core ──────────────────────────────────────
+  # [bench 2026-09-19] 原样抄生产 ios/Podfile 的同名段(那边 :206-260)。
+  #
+  # 为什么台架必须链它:台架之前**根本没链 XRSLAM**,于是 Dart 侧
+  # `DynamicLibrary.process().lookup('XRSLAMTryGetLatestPose')` 取不到符号,
+  # 第一次 poll 就抛异常;而那次 poll 在 requestFrame 的 hook 里,
+  # 异常把**整条渲染回路**打断 —— 页面停在"运行中",一帧不跑、日志无异常。
+  #
+  # Dart 侧用 DynamicLibrary.process().lookup 取符号,静态链接器看不到任何
+  # 引用就会把它们 dead-strip 掉,运行时 lookup 返回 NULL ⇒ 必须 -force_load
+  # 加 -Wl,-u 显式保活。
+  #
+  # ⚠️ 不写在 xrslam.podspec 的 user_target_xcconfig 里:两个 pod 同时设
+  #   OTHER_LDFLAGS[sdk=iphoneos*] 时 CocoaPods 视其为单值设置,冲突就**整槽丢弃**,
+  #   不报错、只静默丢符号。生产那边的注释记着这次实测。
+  xrslam_dir = '$(PODS_ROOT)/../../vendor/xrslam/libs/ios-arm64'
+  # [2026-09-20] 实验臂开关。**不设 = 出货档 generic**,与加入这段之前逐字节等价。
+  # 为什么要 GPU 前端臂:generic 在 1920×1440 直播下引擎只吃得下 24.5 fps
+  #   (传输层账本:6.98 s 内相机交付 412 帧 / 进引擎 171 帧)。回放对照里
+  #   GPU 前端把 1920×1440 从 31.4 提到 39.6–44.1 fps。
+  # 🔴 除 generic 外全是**研究臂**(receipt 自标 research_only),不是出货血统,
+  #   在它们上面测出来的数**不能直接代表生产**。
+  #
+  # [2026-09-23 台架回放] 改成一张臂表(照抄产品 pocketworld ios/Podfile 的
+  #   `xrslam_engine_table`:名字 => 归档 / sha16 / 二进制指纹),再加台架自己的两列。
+  #   **加一条臂 = 在下面加一行**;身份章脚本(ios/scripts/stamp_bench_engine_identity.sh,
+  #   镜像自 pocketworld)从这张表写进 xcconfig 的设置里读,不用改。
+  #   各臂(PW_XRSLAM_ARM 的值 → 产品臂名):
+  #     ''            → generic            出货档 libxrslam_generic_4beb1a9.a
+  #     gpufenothread → gpufenothread      GPU 前端 ON + 线程化 OFF。🔴 归档从
+  #                     libxrslam_gpufenothread_4beb1a9.a 换成 libxrslam_gpufenothread_b9b14814.a:
+  #                     vendor/xrslam 现在指向 pocketworld feat/bench-replay(同步脚本改了),
+  #                     那棵树里 gpufenothread 臂就是 b9b14814(产品 Podfile 同一行),
+  #                     旧的 4beb1a9 归档不在那棵树里。b9b14814 也是 pfk 臂的父臂。
+  #     pfk           → gpufenothread_pfk  上一档 + fork 04c0e83 逐帧内参消费
+  #                     (libxrslam_gpufenothread_pfk_6f6aa21c.a;与 b9b14814 的唯一源码差
+  #                      是那一个提交,见同名 receipt 的 attribution_control)。
+  #                     宿主侧逐帧 K 只有链这一档时才被引擎吃到。
+  #   GPU 前端各臂还要两个库:
+  #     · libpw_gpu_frontend_ios_ad0a4abe.a —— CLAHE/金字塔/GFTT/LK 的 Dawn/WGSL 实现。
+  #       仓里 vendored 的那份与此前台架用的 ~/Developer/viobench-build/gpufe/
+  #       libpw_gpu_frontend_ios.a **sha256 相同**(ad0a4abe…,2026-09-23 核过),
+  #       改用仓里那份 ⇒ 身份钉在仓里。
+  #     · libwebgpu_dawn.a(**Release**,20 MB)—— 前端库的 wgpu* 外部符号。
+  #       🔴 别链 Debug 那个(680 MB,实测慢约 10%)。台架没有 aether3d_ffi,
+  #       所以这里自己链(产品靠 aether3d_ffi 那份 Debug Dawn,pfk receipt 的 dawn_zh 记着差别)。
+  #   Dawn 在仓外的本机路径上,所以 GPU 前端各臂只能本机构建,不进任何交付流程。
+  xrslam_arm = ENV['PW_XRSLAM_ARM'].to_s.strip
+  xrslam_arm_table = {
+    # PW_XRSLAM_ARM => 产品臂名 / 归档 / sha16 / 指纹(OpenCV mat.inl.hpp 构建路径) / 血统 / GPU 前端
+    '' => {
+      engine: 'generic', lib: 'libxrslam_generic_4beb1a9.a', sha16: 'fdc75c99358014d9',
+      fingerprint: '/private/tmp/opencv-official-c9ad577-b49/modules/core/include/opencv2/core/mat.inl.hpp',
+      pedigree: 'shipping', gpufe: false,
+    },
+    'gpufenothread' => {
+      engine: 'gpufenothread', lib: 'libxrslam_gpufenothread_b9b14814.a', sha16: 'b9b14814349eb945',
+      fingerprint: '/private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/' \
+                   '4437f552-36d8-4d91-9d8d-ae4aaadf54b6/scratchpad/build-run1/_deps/' \
+                   'depends-opencv-build/opencv2.framework/Headers/core/mat.inl.hpp',
+      pedigree: 'research_only', gpufe: true,
+    },
+    'pfk' => {
+      engine: 'gpufenothread_pfk', lib: 'libxrslam_gpufenothread_pfk_6f6aa21c.a', sha16: '6f6aa21cad6e534c',
+      fingerprint: '/private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/' \
+                   '4437f552-36d8-4d91-9d8d-ae4aaadf54b6/scratchpad/pfk-host/build-pfk-04c0e83/' \
+                   '_deps/depends-opencv-build/opencv2.framework/Headers/core/mat.inl.hpp',
+      pedigree: 'research_only', gpufe: true,
+    },
+  }
+  unless xrslam_arm_table.key?(xrslam_arm)
+    raise "unknown PW_XRSLAM_ARM=#{xrslam_arm}(可选:'' / #{xrslam_arm_table.keys.reject(&:empty?).join(' / ')})"
+  end
+  xrslam_arm_row = xrslam_arm_table[xrslam_arm]
+  xrslam_lib = xrslam_arm_row[:lib]
+  gpufe_extra = if xrslam_arm_row[:gpufe]
+    dawn = File.expand_path('~/Developer/Aether3D-cross/aether_cpp/build-ios-device-dawn/' \
+                            'third_party/dawn/src/dawn/native/Release-iphoneos/libwebgpu_dawn.a')
+    fe   = File.expand_path(File.join(File.dirname(File.realpath(__FILE__)), '..', 'vendor',
+                                      'xrslam', 'libs', 'ios-arm64',
+                                      'libpw_gpu_frontend_ios_ad0a4abe.a'))
+    [dawn, fe].each { |f| raise "缺 #{f}" unless File.exist?(f) }
+    " -force_load \"#{fe}\" \"#{dawn}\" -framework Metal -framework IOSurface -framework QuartzCore"
+  else
+    ''
+  end
+  # 「链的是哪条臂」写成 xcconfig 设置,给身份章脚本对账(设置名与产品 Podfile 相同,
+  # 多出的四个是台架的:BENCH_ARM / PEDIGREE / GPU_FRONTEND / OTHER_ENGINE_FINGERPRINTS)。
+  xrslam_other_fingerprints = xrslam_arm_table.values
+    .reject { |r| r[:engine] == xrslam_arm_row[:engine] }
+    .map { |r| r[:fingerprint] }.join('|')
+  xrslam_identity_settings =
+    "PW_XRSLAM_LINKED_ENGINE = #{xrslam_arm_row[:engine]}\n" \
+    "PW_XRSLAM_LINKED_BENCH_ARM = #{xrslam_arm}\n" \
+    "PW_XRSLAM_LINKED_ENGINE_SHA16 = #{xrslam_arm_row[:sha16]}\n" \
+    "PW_XRSLAM_LINKED_ENGINE_LIB = #{xrslam_lib}\n" \
+    "PW_XRSLAM_LINKED_ENGINE_FINGERPRINT = #{xrslam_arm_row[:fingerprint]}\n" \
+    "PW_XRSLAM_LINKED_ENGINE_PEDIGREE = #{xrslam_arm_row[:pedigree]}\n" \
+    "PW_XRSLAM_LINKED_ENGINE_GPU_FRONTEND = #{xrslam_arm_row[:gpufe]}\n" \
+    "PW_XRSLAM_OTHER_ENGINE_FINGERPRINTS = #{xrslam_other_fingerprints}\n"
+  xrslam_sym_names = %w[
+    XRSLAMCreate XRSLAMDestroy XRSLAMRunOneFrame
+    XRSLAMPushSensorData XRSLAMGetResult
+  ]
+  # 🔴 2026-09-19 实测:出货 libxrslam_generic_4beb1a9.a **只导出这五个符号**
+  #   (nm 逐个核过,与 receipt 的 exported_abi 一致)。
+  #   `XRSLAMTryGetLatestPose` / `XRSLAMGetBodyPose` 等虽然在 xrslam_bindings.dart
+  #   里有完整绑定和文档,但**不在出货归档里** —— 绑定存在 ≠ 符号存在。
+  #   我一开始把它加进 -Wl,-u 列表,链接期直接 "Undefined symbol"。
+  #   取位姿只能走 XRSLAMGetResult(XRSLAM_RESULT_BODY_POSE, ...)。
+  xrslam_syms = xrslam_sym_names.map { |n| "-Wl,-u,_#{n}" }.join(' ')
+  # 🔴 **不要** -Wl,-exported_symbol。2026-09-19 真机实测:它的语义是
+  #   「只导出列出的符号,其余全部隐藏」——于是整个 Runner 二进制只导出这 5 个,
+  #   Flutter 的 debug dylib 入口点被藏掉,启动即 abort:
+  #       abort_could_not_find_entry_point___debug_dylib
+  #       getDebugDylibEntryPoint / __debug_blank_executor_main / dyld start
+  #   生产用得没事是因为**出货是 release 构建,不走 debug dylib 那条路**;
+  #   台架是 debug,正好踩中。防 dead-strip 靠 -force_load + -Wl,-u 就够了。
+  xrslam_flags = "-force_load \"#{xrslam_dir}/#{xrslam_lib}\" " \
+                 "\"#{xrslam_dir}/libceres_official_1_14.a\" " \
+                 "\"#{xrslam_dir}/libopencv_generic_4_0_1.a\" " \
+                 "#{xrslam_syms} -lz -lc++" + gpufe_extra
+
+  # ── LOD 点云查看器(2026-09-24)──────────────────────────────────────────
+  # 方案 ~/Developer/pw_lod_data/LOD_ARLOOPBENCH_PLAN_20260924.md §2 L8 + §3a 选项 A1(用户已批)。
+  # 独立的一段,上面 XRSLAM 臂表与各臂一个字不动;只在下面那行 OTHER_LDFLAGS 末尾接上 lod_flags。
+  # · libpw_lod_<sha8>.a:由同步脚本 LOD 段从 pocketworld feat/lod-viewer 镜像进 ../vendor/aether_lod/
+  #   (逐字节 cmp 钉住;回执 / 符号表同目录,`build_ios_lod.sh --verify-only` 可复核)。
+  #   -force_load 照上面 GPU 前端臂的写法:pwlod_run(M1)等入口整份在,不靠 Swift 碰巧引用到。
+  # · Release libwebgpu_dawn.a:**无条件**以普通归档链入(此前只有 GPU 前端臂才链)。
+  #   小库里已定义的 wgpu* = 0,70 个未定义 wgpu* 由这份 Dawn 绑定(它定义 276 个,覆盖全部)。
+  #   🔴 不能 -force_load:会把 276 个强定义 wgpu* 整份拉进来,与任何另一份 Dawn 重复定义(方案 §3a)。
+  #   GPU 前端臂时这份归档会在命令行上出现两次:普通归档第二次只是再搜一遍,不会重复定义。
+  #   与 GPU 前端臂同一个本机文件 ⇒ 同样只能本机构建,不进任何交付流程。
+  # · 头文件不从这里给:台架 pbxproj 的 HEADER_SEARCH_PATHS 指向镜像进来的
+  #   ../vendor/aether_lod/include(内含 dawn/webgpu.h sha256 6d632738…,与小库编译时同一份)。
+  # · Metal / IOSurface / QuartzCore / CoreVideo:Dawn Metal 后端 + 外壳 PwLodSurface.m 的
+  #   IOSurface / CVPixelBuffer;-lc++:小库是 C++。与上面重复的 -framework / -l 链接器会忽略。
+  lod_lib = File.expand_path(File.join(File.dirname(File.realpath(__FILE__)), '..', 'vendor',
+                                       'aether_lod', 'libs', 'ios-arm64', 'libpw_lod_afb521e6.a'))
+  lod_dawn = File.expand_path('~/Developer/Aether3D-cross/aether_cpp/build-ios-device-dawn/' \
+                              'third_party/dawn/src/dawn/native/Release-iphoneos/libwebgpu_dawn.a')
+  [lod_lib, lod_dawn].each { |f| raise "缺 #{f}(LOD 段;小库先跑 ../.sync_from_integration.sh 镜像)" unless File.exist?(f) }
+  lod_flags = " -force_load \"#{lod_lib}\" \"#{lod_dawn}\"" \
+              ' -framework Metal -framework IOSurface -framework QuartzCore -framework CoreVideo -lc++'
+
+  # 🔴 [2026-09-20] 原来的幂等判据是 `next if contents.include?(xrslam_lib)`,
+  #   换臂时会出事:`flutter run` 只在 Podfile 变了才跑 pod install,不跑时旧
+  #   xcconfig 原样留着 —— 我据此做的"归因轮"实际上还在跑上一条臂,整轮数据作废。
+  #   改成**先删掉我们自己那一行,再重建**,谁也不用记得清缓存。
+  #   注意只删带 `libxrslam_` 的 `OTHER_LDFLAGS[sdk=iphoneos*]` 行:那一行整行
+  #   都是我们写的(CocoaPods 自己写的是不带 [sdk=] 限定的 OTHER_LDFLAGS)。
+  Dir[File.join(installer.config.installation_root, 'Pods/Target Support Files/Pods-Runner/*.xcconfig')].each do |xcconfig|
+    contents = File.read(xcconfig)
+    stripped = contents.lines.reject { |l|
+      (l.start_with?('OTHER_LDFLAGS[sdk=iphoneos*]') && l.include?('libxrslam_')) ||
+        l.match?(/^PW_XRSLAM_(LINKED|OTHER)_[A-Z_]* = /)   # [2026-09-23] 同理:先删自己写的再重建
+    }.join
+    rebuilt = stripped + "\nOTHER_LDFLAGS[sdk=iphoneos*] = $(inherited) #{xrslam_flags}#{lod_flags}\n" +
+              xrslam_identity_settings
+    File.write(xcconfig, rebuilt) if rebuilt != contents
+  end
+
+  # ── [2026-09-24 完整重建链 168] Lepton 链接行 ───────────────────────────────────────────────
+  # 生产把它写在 ios/Flutter/{Debug,Release}.xcconfig 末尾(`OTHER_LDFLAGS[sdk=iphoneos*] = $(inherited) …`);
+  # 台架那两个文件不在这次可改范围内,所以同一行原样挪到这里、写进 Pods-Runner 的 xcconfig(二者都是
+  # Runner 目标的 xcconfig 层,$(inherited) 链起来效果相同;$(PROJECT_DIR) = ios/)。
+  # 幂等同上面 XRSLAM 段:先删自己写的那一行(带 libpw_lepton_jpeg_ffi.a),再接到末尾。
+  lepton_flags = '"$(PROJECT_DIR)/../vendor/lepton_jpeg/libs/ios-arm64/libpw_lepton_jpeg_ffi.a"' \
+                 ' -Wl,-u,_pw_lepton_version -Wl,-u,_pw_lepton_revision -Wl,-u,_pw_lepton_error_message' \
+                 ' -Wl,-u,_pw_lepton_cancellation_generation -Wl,-u,_pw_lepton_request_cancel' \
+                 ' -Wl,-u,_pw_lepton_encode_jpeg_file_cancellable -Wl,-u,_pw_lepton_reconstruct_jpeg_file_cancellable'
+  Dir[File.join(installer.config.installation_root, 'Pods/Target Support Files/Pods-Runner/*.xcconfig')].each do |xcconfig|
+    contents = File.read(xcconfig)
+    stripped = contents.lines.reject { |l|
+      l.start_with?('OTHER_LDFLAGS[sdk=iphoneos*]') && l.include?('libpw_lepton_jpeg_ffi.a')
+    }.join
+    rebuilt = stripped + "\nOTHER_LDFLAGS[sdk=iphoneos*] = $(inherited) #{lepton_flags}\n"
+    File.write(xcconfig, rebuilt) if rebuilt != contents
+  end
+end

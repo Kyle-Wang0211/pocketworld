@@ -1,0 +1,110 @@
+# unified arloopbench package — verification (2026-09-24 20:34:28)
+# source: pocketworld bench/unified @ 6f124c9; build: flutter build ios --profile --no-pub (x2), Flutter 3.47.1, Xcode 26.2
+# Runner.app sha256 of main binaries:
+#   f731fdf65c72de799d767d7f71c54ff8d8e5797d0ae1dab1d71046815e4c42b2  Runner
+#   d96ca6cd047f5a5af8d272971f40a85f0bd5a968d07011d77c46f80491d7415c  Frameworks/App.framework/App
+#   686bb6eacffd3c9b74ee3dd125fe6d6c6394ce4ea14584453ba105eda087c9c5  Frameworks/PWOfficialSfm.framework/PWOfficialSfm
+#   ffc7f14552d526e9931d61985d0aee92a7708f5ae7a9dc2f7cefeee16582d557  Frameworks/PWVIOBenchKit.framework/PWVIOBenchKit
+== Info.plist
+  CFBundleIdentifier           com.kyle.arloopbench
+  CFBundleShortVersionString   1.0.0
+  CFBundleVersion              1
+  PWFullChainBench             false
+== Dart AOT (App.framework/App): every menu page + production app (count of name strings; 0 = tree-shaken)
+  ArLoopBenchApp                     1
+  BenchHomePage                      3
+  BenchLidarRecordPage               4
+  BenchReplayPage                    4
+  BenchFullChainPage                 3
+  BenchCoreSwitchesPage              4
+  ArMinimalLoopPage                  4
+  ZeroArkitCaptureProbePage          4
+  ZeroArkitPreviewProbePage          3
+  ImuCalibCapturePage                4
+  ZuptProbePage                      4
+  PoseChainProbePage                 4
+  LodDebugPage                       4
+  SplatAbPage                        4
+  BenchUnifiedNative                 1
+  PocketWorldApp                     1
+  AetherAppShell                     4
+  _AuthGate                          4
+  OfficialARCapturePage              6
+  NativeDenseStageLauncher           2
+  SfmLiveRecon                       4
+  PwDenseFfi                         2
+  MePage                             4
+  pwofficial_add_jpeg_frame_v2       1
+  devicePoseTrustHonored             1
+  official_device_sessions.jsonl     1
+  moved_to_core_device_align_v1      1
+  official_env.json                  2
+  missing: 0
+  (must be 0, removed by C-dart) OFFICIAL_AETHER_SCALE_ANCHOR 0
+  (must be 0, removed by C-dart) feature_disabled             0
+== Runner defined symbols
+  _wgpuCreateInstance$     1
+  _pwsplat_ab_run$         1
+  _pwpoints_run$           1
+  _pwcloud_run$            1
+  _pwlod_run$              1
+  _pwlod_                  17
+  _pw_bench_replay_        5
+  _pw_bench_lidar_         4
+  _PWXrslamTransport       10
+  _pw_camera_slot_         17
+  _pw_jxl_                 12
+  _pw_zpaq_                8
+  _pw_lepton_              7
+  _pw_sqlite_              10
+  _OrtGetApiBase$          1
+  _pw_vt_                  10
+  _wgpuCreateInstance definitions incl. local: 1
+== Runner strings
+  pw_bench_unified                         1
+  PWVIOBenchHost                           1
+  PWVIOBenchKit.framework                  2
+  full-chain 168 plugins registered        1
+  pocketworld_official_arkit               3
+  OfficialAetherARKitPlugin                7
+  PwVioSlamFeeder                          5
+  pw_lod_texture                           0
+  PWSPLATAB                                2
+== 168 fingerprint strings present in this Runner
+  168: 104 strings, missing here: 3
+    missing: [AppDelegate] archive background registrar unavailable
+    missing: [OfficialArchiveBackgroundTask] registration rejected
+    missing: pocketworld_official_archive_background
+== Embedded frameworks (unsigned __text sha)
+  PWOfficialSfm  unified=c71529ad797ddd6c fixes-pkg=c71529ad797ddd6c SAME
+  PWDense        unified=8bcbf79d5a063553 fixes-pkg=8bcbf79d5a063553 SAME
+  PWOnnxRuntime  unified=aee4ff6abe49ccb8 fixes-pkg=aee4ff6abe49ccb8 SAME
+  thermion_dart  unified=e3b0c44298fc1c14 fixes-pkg=e3b0c44298fc1c14 SAME
+  Flutter        unified=b194de65825025e5 fixes-pkg=b194de65825025e5 SAME
+  casdiffmvs.onnx SAME as 168
+  casdiffmvs_feat.onnx SAME as 168
+  casdiffmvs_rest.onnx SAME as 168
+  PWVIOBenchKit  __text embedded=682658465a4dd96c dist=682658465a4dd96c SAME
+  PWXRSLAMEngine __text embedded=dcc9798c02335198 dist=dcc9798c02335198 SAME
+  PWBasaltEngine __text embedded=62b409d6126818af dist=62b409d6126818af SAME
+  PWOfficialSfm exports v2: add_jpeg_frame_v2=1 reg_evidence_stats=1
+  core string OFFICIAL_AETHER_DEVICE_ALIGN_V1        1
+  core string OFFICIAL_AETHER_REG_EVIDENCE           1
+  core string OFFICIAL_AETHER_FINALIZE_VIA_RESUME    1
+  core string OFFICIAL_AETHER_GSS_FUSED              1
+  Frameworks: App.framework Flutter.framework PWBasaltEngine.framework PWDense.framework PWOfficialSfm.framework PWOnnxRuntime.framework PWVIOBenchKit.framework PWXRSLAMEngine.framework thermion_dart.framework 
+  Objective-C classes in PWXRSLAMEngine / PWBasaltEngine: 0 / 0
+== Signature
+/Users/kaidongwang/Developer/arloopbench_builds/unified_20260924/Runner.app: valid on disk
+/Users/kaidongwang/Developer/arloopbench_builds/unified_20260924/Runner.app: satisfies its Designated Requirement
+Identifier=com.kyle.arloopbench
+TeamIdentifier=26AH7V448L
+  PWVIOBenchKit  valid
+  PWXRSLAMEngine valid
+  PWBasaltEngine valid
+  PWOfficialSfm  valid
+== Link map: Dawn
+  objects: 3381  from libaether3d_ffi.a: 706  from any libwebgpu_dawn.a: 0
+  _wgpuCreateInstance defined by 1 object(s):
+    [699] /Users/kaidongwang/Developer/arloopbench/ios/Pods/../../../dist/libs/ios-arm64/libaether3d_ffi.a(webgpu_dawn_native_proc.o)
+  splat objects: 3
