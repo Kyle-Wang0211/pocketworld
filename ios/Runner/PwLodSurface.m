@@ -107,6 +107,17 @@ static int PwLodSurfaceImport(WGPUDevice device,
     wgpuSharedTextureMemoryRelease(mem);
     return 0;
   }
+  // Dawn hands back an *error object*, not NULL, when the import is rejected (feature not
+  // granted, IOSurface refused); its properties read back as 0x0. Host run against real Dawn
+  // (Metal) with SharedTextureMemoryIOSurface withheld: exactly this. Name it instead of
+  // reporting a size mismatch.
+  if (props.size.width == 0 || props.size.height == 0) {
+    PwLodSurfaceError(err, err_len,
+                      "ImportSharedTextureMemory returned an error object (0x0): feature not "
+                      "granted or IOSurface rejected -- see Dawn's uncaptured-error log");
+    wgpuSharedTextureMemoryRelease(mem);
+    return 0;
+  }
   if (props.size.width != width || props.size.height != height) {
     PwLodSurfaceError(err, err_len, "size mismatch sharedMemory=(%u,%u) requested=(%u,%u)",
                       props.size.width, props.size.height, width, height);
