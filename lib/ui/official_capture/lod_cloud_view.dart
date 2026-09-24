@@ -12,6 +12,9 @@
 //   * Gestures — sparse_cloud_view.dart:722-757 @875fe67 verbatim in effect: two fingers pan
 //     (focalPointDelta) and pinch-zoom (×(1 + (scale − 1)·0.08), clamp 0.15…20); one finger
 //     yaw −= dx·0.008, pitch += dy·0.006 clamped to ±(π/2 − 0.02) (:294 _kPitchLimit).
+//   * Camera distance / orthographic frustum — the old viewer's CloudCamera (camDist = 8·R,
+//     f = half·6.5·zoom), NOT Potree's zoomTo distance / view.radius frustum: the user decided
+//     「与现有查看器一致、保持正交」. Sources and numbers in lod_camera.dart's header.
 //   * Projection — orthographic by default like the old viewer (sparse_cloud_view.dart:199
 //     kCloudOrthographic); the matrix is lib/point_cloud_lod/lod_camera.dart (CloudCamera →
 //     row-major WebGPU world→clip), a perspective switch is kept in the toolbar.

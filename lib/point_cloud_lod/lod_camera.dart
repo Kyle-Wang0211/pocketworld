@@ -40,6 +40,19 @@
 //
 // Pivot / radius: Potree fitToScreen's bounding sphere of the octree box
 // (lod_scene_fit.dart, every step pinned there).
+//
+// Camera distance and orthographic frustum: the OLD VIEWER's CloudCamera, not Potree's.
+//   Kept: cloud_camera.dart:48-58 @875fe67 projectionFor — camDist = radius · kCamDistK (8),
+//   f = (shortest side / 2) · kFitFillK (6.5) · zoom, constants :283-284 (user decision
+//   2026-07-28, cloud_camera.dart:275-282) ⇒ the fit sphere spans 6.5/8 ≈ 81% of the half
+//   shortest side at zoom 1.
+//   Why: the user decided the LOD page stays 「与现有查看器一致、保持正交」 (plan
+//   LOD_ARLOOPBENCH_PLAN_20260924 user choices; coordinator ruling 2026-09-24).
+//   Not used, deliberately: Potree's zoomTo distance R / sin(fovr / 2) · factor with fovr scaled
+//   by the aspect when aspect < 1 (Potree @5636cd4 src/extensions/PerspectiveCamera.js:28-38,
+//   fov 60 at src/viewer/viewer.js:130) and its orthographic half-width = view.radius
+//   (viewer.js:2097-2101). On a 390×844 portrait screen that is 4.17 R, i.e. the sphere would
+//   shrink to ≈24% of the half-width.
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' show Size;
