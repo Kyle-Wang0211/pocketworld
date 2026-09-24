@@ -4,12 +4,16 @@
 // perspective. Negative controls: the first camera is not the dragged one; a disposed page
 // disposes its texture.
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/point_cloud_lod/lod_bridge.dart';
+import 'package:pocketworld_flutter/point_cloud_lod/lod_camera.dart';
+import 'package:pocketworld_flutter/point_cloud_lod/lod_scene_fit.dart';
+import 'package:pocketworld_flutter/ui/official_capture/cloud_camera.dart';
 import 'package:pocketworld_flutter/ui/official_capture/lod_cloud_view.dart';
 import 'package:pocketworld_flutter/ui/official_capture/sparse_cloud_view.dart'
     show kCloudOrthographic;
@@ -42,15 +46,18 @@ void main() {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
   final calls = <MethodCall>[];
   late Directory oct;
+  Map<String, Object>? statsReply;
 
   setUp(() {
     calls.clear();
+    statsReply = null;
     oct = Directory.systemTemp.createTempSync('lod_view_oct');
     File('${oct.path}/metadata.json').writeAsStringSync(
       '{"points":1000,"boundingBox":{"min":[-1,-2,-3],"max":[3,2,1]}}',
     );
     messenger.setMockMethodCallHandler(channel, (call) async {
       calls.add(call);
+      if (call.method == 'stats') return statsReply;
       if (call.method == 'create') {
         final a = call.arguments as Map;
         return {
@@ -174,6 +181,121 @@ void main() {
       await tester.pumpWidget(const SizedBox());
       expect(calls.last.method, 'dispose');
       expect((calls.last.arguments as Map)['textureId'], 5);
+    },
+  );
+
+  /// Mounts the page at 390×844 logical (1170×2532 px), lets create/load/camera settle, then
+  /// lets the real 250 ms stats timer fire once with [ls] as lowest_spacing.
+  Future<({Float64List before, Float64List after})> runWithStats(
+    WidgetTester tester,
+    double ls,
+  ) async {
+    tester.view.physicalSize = const Size(1170, 2532);
+    tester.view.devicePixelRatio = 3.0;
+    addTearDown(tester.view.reset);
+    await tester.runAsync(() async {
+      await tester.pumpWidget(
+        MaterialApp(home: LodCloudView(octreeDir: oct.path, showStats: false)),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    });
+    await tester.pump();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    await tester.pump();
+    Float64List lastCam() => Float64List.fromList(
+      (calls.where((c) => c.method == 'setCamera').last.arguments
+              as Map)['view_proj_row_major']
+          as Float64List,
+    );
+    final before = lastCam();
+    statsReply = {
+      'frame_number': 7,
+      'completed_frame_number': 6,
+      'points_drawn': 1000,
+      'nodes_drawn': 3,
+      'nodes_loading': 0,
+      'uploads_this_frame': 0,
+      'dropped_for_cache': 0,
+      'min_node_pixel_size': 150.0,
+      'cpu_ms': 1.0,
+      'gpu_ms': 2.0,
+      'lowest_spacing': ls,
+    };
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 400)),
+    );
+    await tester.pump();
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    await tester.pump();
+    expect(calls.where((c) => c.method == 'stats'), isNotEmpty);
+    final after = lastCam();
+    await tester.pumpWidget(const SizedBox());
+    return (before: before, after: after);
+  }
+
+  /// What the page must send for its default pose with a given lowestSpacing.
+  Float64List expected(double ls) {
+    final fit = LodSceneFit.fromMetadataJson(
+      File('${oct.path}/metadata.json').readAsStringSync(),
+    );
+    return lodCameraFrame(
+      camera: CloudCamera(
+        yaw: kLodDefaultYaw,
+        pitch: kLodDefaultPitch,
+        zoom: 1,
+        panX: 0,
+        panY: 0,
+        pivotX: fit.pivot[0],
+        pivotY: fit.pivot[1],
+        pivotZ: fit.pivot[2],
+        radius: fit.radius,
+        orthographic: true,
+      ),
+      logicalSize: const Size(390, 844),
+      viewportWidthPx: 1170,
+      viewportHeightPx: 2532,
+      sceneBoxMin: fit.boxMin,
+      sceneBoxMax: fit.boxMax,
+      lowestSpacing: ls,
+    ).viewProjRowMajor;
+  }
+
+  double maxDiff(List<double> a, List<double> b) {
+    var d = 0.0;
+    for (var i = 0; i < 16; i++) {
+      d = math.max(d, (a[i] - b[i]).abs());
+    }
+    return d;
+  }
+
+  testWidgets(
+    'stats lowest_spacing > 0 ⇒ Potree known branch (viewer.js:1749-1765)',
+    (tester) async {
+      final r = await runWithStats(tester, 0.002);
+      final unknown = expected(double.infinity), known = expected(0.002);
+      expect(
+        maxDiff(r.before, unknown),
+        lessThan(1e-12),
+      ); // before any stats: unknown branch
+      expect(
+        maxDiff(r.after, known),
+        lessThan(1e-12),
+      ); // after the poll: known branch
+      // NEGATIVE: the two branches are distinguishable, so the checks above can fail
+      expect(maxDiff(known, unknown), greaterThan(1e-9));
+    },
+  );
+
+  testWidgets(
+    'NEGATIVE: stats lowest_spacing <= 0 stays in the unknown branch',
+    (tester) async {
+      final r = await runWithStats(tester, 0.0);
+      expect(maxDiff(r.after, expected(double.infinity)), lessThan(1e-12));
+      expect(maxDiff(r.after, expected(0.002)), greaterThan(1e-9));
     },
   );
 }

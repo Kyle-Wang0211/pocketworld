@@ -96,16 +96,28 @@ class _LodCloudViewState extends State<LodCloudView> {
   bool _cameraDirty = false;
   bool _disposed = false;
 
+  /// Potree's result.lowestSpacing from the latest stats (potreeLowestSpacingFromStats);
+  /// Infinity until a frame with drawn nodes has been published.
+  double _lowestSpacing = double.infinity;
+
+  /// Potree keeps two camera objects, cameraP and cameraO (Scene.js:21-22 @5636cd4, both
+  /// starting at near 0.1 / far 1000*1000), and Viewer.update sets near/far on the active one
+  /// (Scene.js:339-350 getActiveCamera); its "don't change" branch keeps THAT camera's last
+  /// values. Keyed by orthographic.
+  final Map<bool, ({double near, double far})> _lastNearFar = {
+    true: (near: kPotreeInitialNear, far: kPotreeInitialFar),
+    false: (near: kPotreeInitialNear, far: kPotreeInitialFar),
+  };
+
   @override
   void initState() {
     super.initState();
     _loadFit();
-    if (widget.showStats) {
-      _statsTimer = Timer.periodic(
-        const Duration(milliseconds: 250),
-        (_) => _pollStats(),
-      );
-    }
+    // Always polled: near/far need the frame's lowest_spacing even when the panel is hidden.
+    _statsTimer = Timer.periodic(
+      const Duration(milliseconds: 250),
+      (_) => _pollStats(),
+    );
   }
 
   @override
@@ -208,11 +220,13 @@ class _LodCloudViewState extends State<LodCloudView> {
       viewportHeightPx: tex.heightPx,
       sceneBoxMin: fit.boxMin,
       sceneBoxMax: fit.boxMax,
-      // Potree's near/far wants the selection's lowestSpacing; the frozen pwlod_frame_stats
-      // does not carry it, so this is Potree's "not known yet" branch (viewer.js:1766-1768:
-      // keep Scene.js:21-22's near 0.1 / far 1e6; orthographic near = −far).
-      lowestSpacing: double.infinity,
+      // Potree Viewer.update (viewer.js:1749-1771): known lowestSpacing ⇒ recompute near/far;
+      // unknown (stats lowest_spacing <= 0, or no frame yet) ⇒ keep this camera's last values.
+      lowestSpacing: _lowestSpacing,
+      previousNear: _lastNearFar[_ortho]!.near,
+      previousFar: _lastNearFar[_ortho]!.far,
     );
+    _lastNearFar[_ortho] = (near: frame.near, far: frame.far);
     _bridge
         .setCamera(textureId: tex.textureId, camera: frame)
         .catchError((Object e) {
@@ -232,7 +246,15 @@ class _LodCloudViewState extends State<LodCloudView> {
     if (tex == null || _disposed) return;
     try {
       final s = await _bridge.stats(textureId: tex.textureId);
-      if (!_disposed && s != null) setState(() => _stats = s);
+      if (_disposed || s == null) return;
+      setState(() => _stats = s);
+      // Potree recomputes near/far every frame from that frame's lowestSpacing; here a new
+      // value re-sends the camera (a moved camera re-sends anyway).
+      final ls = potreeLowestSpacingFromStats(s.lowestSpacing);
+      if (ls != _lowestSpacing) {
+        _lowestSpacing = ls;
+        _pushCamera();
+      }
     } catch (_) {
       // stats are diagnostics; a failed poll is not an error state
     }

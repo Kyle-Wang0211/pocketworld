@@ -758,6 +758,79 @@ void main() {
       },
     );
 
+    test('stats lowest_spacing <= 0 (none drawn) is Potree\'s Infinity', () {
+      expect(potreeLowestSpacingFromStats(0.0), double.infinity);
+      expect(potreeLowestSpacingFromStats(-1.0), double.infinity);
+      expect(potreeLowestSpacingFromStats(double.nan), double.infinity);
+      expect(potreeLowestSpacingFromStats(0.002), 0.002);
+    });
+
+    test(
+      'unknown branch keeps the camera\'s previous near/far (viewer.js:1766-1768)',
+      () {
+        ({double near, double far}) prev(bool ortho) => potreeNearFar(
+          lowestSpacing: double.infinity,
+          viewRowMajor: view,
+          boxMin: bmin,
+          boxMax: bmax,
+          orthographic: ortho,
+          previousNear: 5,
+          previousFar: 20000,
+        );
+        expect(prev(false), (near: 5.0, far: 20000.0));
+        expect(prev(true), (near: -20000.0, far: 20000.0));
+        // NEGATIVE: the known branch ignores the previous values
+        final known = potreeNearFar(
+          lowestSpacing: 2,
+          viewRowMajor: view,
+          boxMin: bmin,
+          boxMax: bmax,
+          orthographic: false,
+          previousNear: 5,
+          previousFar: 20000,
+        );
+        expect(known, (near: 20.0, far: 10020.0));
+      },
+    );
+
+    test(
+      'lodCameraFrame: known spacing changes the planes, unknown keeps previous',
+      () {
+        final c = _cases(orthographic: true, n: 1, seed: 3).single;
+        LodCameraFrame frame(
+          double ls, {
+          double pn = kPotreeInitialNear,
+          double pf = kPotreeInitialFar,
+        }) => lodCameraFrame(
+          camera: c.cam,
+          logicalSize: c.size,
+          viewportWidthPx: 3,
+          viewportHeightPx: 3,
+          sceneBoxMin: c.boxMin,
+          sceneBoxMax: c.boxMax,
+          lowestSpacing: ls,
+          previousNear: pn,
+          previousFar: pf,
+        );
+        final unknown = frame(double.infinity);
+        expect(
+          (unknown.near, unknown.far),
+          (-kPotreeInitialFar, kPotreeInitialFar),
+        );
+        final known = frame(0.002);
+        // c.radius < 40 ⇒ 1.5·(farthest corner) < 10000 ⇒ far = max(10000, 0.02 + 10000)
+        expect((known.near, known.far), (-10000.02, 10000.02));
+        final kept = frame(double.infinity, pn: known.near, pf: known.far);
+        expect((kept.near, kept.far), (known.near, known.far));
+        expect(kept.viewProjRowMajor, known.viewProjRowMajor);
+        // NEGATIVE: the two branches give different matrices (a test that mixed them up fails)
+        expect(
+          _maxAbsDiff(unknown.viewProjRowMajor, known.viewProjRowMajor),
+          greaterThan(0),
+        );
+      },
+    );
+
     test('NEGATIVE: a far plane in front of the farthest corner is reported', () {
       // Same camera, ortho frustum [-2,2]^2, far 10.5 < 11 (the corner at view z −11).
       final good = mulRowMajor(

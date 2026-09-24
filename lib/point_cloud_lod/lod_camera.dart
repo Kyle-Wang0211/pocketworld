@@ -81,6 +81,14 @@ const double kPotreeInitialFar = 1000 * 1000;
 /// `getBoundingBox().applyMatrix4(matrixWorldInverse)` = the scene box's 8 corners in view
 /// space, axis-aligned again (three.js r124 Box3.applyMatrix4, three.module.js:4296-4316);
 /// [viewRowMajor] is world→view (= camera.matrixWorldInverse).
+/// pwlod_frame_stats.lowest_spacing (ABI v2, pwlod_viewer.h:115-118: "<= 0 if none drawn") →
+/// Potree's `result.lowestSpacing`, which stays at its initial Infinity when no node was
+/// visited (Potree_update_visibility.js:114). Non-finite is treated the same way.
+double potreeLowestSpacingFromStats(double statsLowestSpacing) =>
+    statsLowestSpacing > 0 && statsLowestSpacing.isFinite
+    ? statsLowestSpacing
+    : double.infinity;
+
 ({double near, double far}) potreeNearFar({
   required double lowestSpacing,
   required List<double> viewRowMajor,
@@ -265,7 +273,8 @@ Float64List mulRowMajor(List<double> a, List<double> b) {
 /// logical pixels (what CloudCamera.projectionFor takes); [viewportWidthPx] /
 /// [viewportHeightPx] are the render targets' physical size. NDC is resolution
 /// independent, so the matrix is the same for any devicePixelRatio.
-/// [sceneBoxMin]/[sceneBoxMax] and [lowestSpacing] feed potreeNearFar.
+/// [sceneBoxMin]/[sceneBoxMax], [lowestSpacing] and [previousNear]/[previousFar] (the
+/// active camera's last near/far, kept by Potree's "don't change" branch) feed potreeNearFar.
 LodCameraFrame lodCameraFrame({
   required CloudCamera camera,
   required Size logicalSize,
@@ -274,6 +283,8 @@ LodCameraFrame lodCameraFrame({
   required List<double> sceneBoxMin,
   required List<double> sceneBoxMax,
   double lowestSpacing = double.infinity,
+  double previousNear = kPotreeInitialNear,
+  double previousFar = kPotreeInitialFar,
 }) {
   final p = camera.projectionFor(logicalSize);
   final w = logicalSize.width, h = logicalSize.height;
@@ -307,6 +318,8 @@ LodCameraFrame lodCameraFrame({
     boxMin: sceneBoxMin,
     boxMax: sceneBoxMax,
     orthographic: p.orthographic,
+    previousNear: previousNear,
+    previousFar: previousFar,
   );
   final near = nf.near, far = nf.far;
 
