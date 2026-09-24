@@ -120,6 +120,7 @@ class LodFrameStats {
     required this.minNodePixelSize,
     required this.cpuMs,
     required this.gpuMs,
+    this.shell = const <String, Object?>{},
   });
 
   final int frameNumber;
@@ -135,6 +136,10 @@ class LodFrameStats {
   /// -1 if not yet known.
   final double gpuMs;
 
+  /// Shell-side counters, not part of pwlod_frame_stats (iOS: copy_calls, copy_empty,
+  /// last_acquired_frame_number, copy_max_us, frames_ready, running) — for the plan 3b judges.
+  final Map<String, Object?> shell;
+
   static LodFrameStats fromWire(Map<Object?, Object?> m) => LodFrameStats(
     frameNumber: _int(m, 'frame_number'),
     completedFrameNumber: _int(m, 'completed_frame_number'),
@@ -146,6 +151,9 @@ class LodFrameStats {
     minNodePixelSize: _double(m, 'min_node_pixel_size'),
     cpuMs: _double(m, 'cpu_ms'),
     gpuMs: _double(m, 'gpu_ms'),
+    shell: m['shell'] is Map
+        ? Map<String, Object?>.from(m['shell'] as Map)
+        : const <String, Object?>{},
   );
 }
 
