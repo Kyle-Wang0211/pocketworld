@@ -1,30 +1,41 @@
-// dense_lod_cache.dart — the finished dense cloud's octree, built on the phone and kept in the
-// system cache directory.
+// dense_lod_cache.dart — the finished dense cloud's octree, built on the phone and kept IN THE WORK
+// DIRECTORY next to its PLYs (build 174; user 2026-09-24:「那为什么稠密不能是直接按『作品目录/…』去读
+// 呢???有就直接打开，没有就显示稀疏呗」):
 //
-//   <cache>/lod/<作品标识>/            metadata.json, hierarchy.bin, octree.bin (Potree 2.0, built by
-//                                      pwlod_build_from_ply) + pw_lod_source.json (this file's stamp)
-//   <cache>/lod/<作品标识>.building/   the tree while it is being built (renamed into place)
-//   <cache>/lod/<作品标识>.chunks/     pwlod_build_from_ply's scratch (the shell deletes it)
-// <cache> = path_provider getApplicationCacheDirectory() (iOS Library/Caches), the directory the
-// user chose for review caches on 2026-09-23 (feat/review-cloud-cache-on-dense-stage-168 aeb024b):
-// derived data, rebuildable, never in captures_official/<cap_id>/ (install gate B counts that
-// directory's entries), may be purged by the system at any time ⇒ rebuilt next time.
+//   <work>/official_dense.ply        the dense stage's output (unchanged)
+//   <work>/lod/                      metadata.json, hierarchy.bin, octree.bin (Potree 2.0, built by
+//                                    pwlod_build_from_ply) + pw_lod_source.json (a small record:
+//                                    engine, points, build time, checks — never used to decide)
+//   <work>/lod.building/             the tree while it is built; renamed to lod/ after its self-check
+//   <cache>/lod_chunks/<作品标识>/     pwlod_build_from_ply's scratch (system cache dir; deleted after;
+//                                    <work>/lod.building.chunks/ if there is no cache dir)
 //
-// Staleness = the review cache's rule, copied (902c509 review_cloud_cache.dart
-// ReviewCloudCache.decode + 87b33dc 「内容换了拿新云」): a tree is used only if its stamp records
-// the same format version, the same source path (hash), the same source byte length and the same
-// source mtime (ms) as the PLY on disk now; anything else ⇒ rebuild. Added for trees: the engine
-// identity (a new engine artifact may write a different tree) and the on-disk C1 re-check
-// (octree.bin == 18 · tree_points, tree_points == the PLY header's vertex count).
-// Pruning = the review cache's too (ReviewCloudCache.prune): at most [kMaxEntries] trees, oldest
-// stamp first; `.building` / `.chunks` leftovers older than [kTmpStaleAfter] are removed; nothing
-// outside <cache>/lod/ is ever touched.
+// A tree is found by its place relative to the work directory — no absolute path, no path hash
+// (171–173 kept trees in Library/Caches keyed by the absolute path, and every app update moved the
+// container and orphaned them). VALID ⇔ lod/metadata.json, lod/hierarchy.bin, lod/octree.bin all
+// exist, octree.bin is exactly 18 B × the tree's points (metadata.json `points`), and those points
+// equal the vertex count of a COMPLETE official_dense.ply (densePlyPoints: header count fills the
+// file; C1 on disk, header + length reads only). `lod.building/`, `lod.deleting.*` or anything else
+// is never a tree.
 //
-// Gate before a tree is shown (coordinator 2026-09-24): pwlod_build_from_ply, then
-// pwlod_verify_octree; C1 judged against the PLY's vertex count read HERE from the header
-// (tree_points == ply points && octree_bin_bytes == 18·tree_points), C2 (no byte gap/overlap) and
-// S2 (every leaf selectable) from the verify report, and build == verify. Any failure ⇒ no tree,
-// the view keeps drawing the flat 1 M sample, the reason goes to the device log.
+// [174] User 2026-09-24 「永远不会重新训练稠密。如果有那就是 bug」: a complete official_dense.ply
+// means the dense stage is DONE — this cache only ever turns that PLY into a tree (build, verify,
+// rename), it never asks for training, and a failed build leaves the flat display (logged).
+//
+// Build gate (unchanged from 171): pwlod_build_from_ply → C1 (tree_points == the PLY header count read
+// here, octree_bin_bytes == 18·tree_points) → pwlod_verify_octree → C2 (no byte gap/overlap), S2 (every
+// leaf selectable), build == verify; only then lod.building/ becomes lod/. Any failure ⇒ no tree, the
+// view keeps the flat display, the reason goes to the device log.
+// A dense run (allowed only while the work has no complete dense PLY: the first one, or one whose
+// PLY was cut short) deletes <work>/lod/ first (rename to lod.deleting.<ms>, then delete), so a
+// tree can never outlive the PLY it was built from.
+// Migration (one-off): 171–173 trees in <cache>/lod/<作品标识>/ whose points match this work's dense
+// PLY are RENAMED into <work>/lod/ (same container, same volume: instant), never rebuilt; logged.
+//
+// ⚠️ Note for the install runbook: the tree now lives under Documents/captures_official/<cap_id>/,
+// so it is part of every container backup (install gate B counts that directory's entries — the
+// backup taken right before an install includes it) and of iOS device backups (7 M points ≈ 126 MB).
+// The user chose this place over the cache directory on 2026-09-24.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -36,8 +47,8 @@ import 'package:path_provider/path_provider.dart';
 import '../official_util/device_log.dart';
 import 'lod_bridge.dart';
 
-/// The engine archive this build links (`vendor/aether_lod/libs/ios-arm64/libpw_lod_<sha8>.a`); a
-/// test pins it to the vendored receipt. Part of every stamp: a different engine ⇒ rebuild.
+/// The engine archive this build links (`vendor/aether_lod/libs/ios-arm64/libpw_lod_<sha8>.a`),
+/// recorded in each tree's pw_lod_source.json (information only; a test pins it to the receipt).
 const String kLodEngineSha8 = '72ee817f';
 const int kLodEngineAbi = 3;
 
@@ -60,18 +71,28 @@ class DenseLodState {
   String toString() => 'DenseLodState($phase${octreeDir != null ? ' $octreeDir' : ''}${message != null ? ' $message' : ''})';
 }
 
-/// `element vertex N` of a binary PLY header (first 4 KB), null if unreadable. The native builder
-/// validates the rest of the format (build.h openPly).
-int? plyVertexCount(String path) {
+/// [174] User 2026-09-24: 「永远不会重新训练稠密。如果有那就是 bug」. A work's dense stage is DONE iff
+/// its official_dense.ply is COMPLETE: the vertex count declared in the header fills the file
+/// exactly — header bytes + 15 B per point (float x,y,z + uchar red,green,blue, the header template
+/// in PWDense.framework). Returns that count, or null when the file is missing, unreadable, shorter
+/// (a run killed mid-write) or longer than its header says: such a work counts as never done and
+/// 下一步 may train it. Reads the first 4 KB and the file length only.
+int? densePlyPoints(String path) {
   try {
-    final raf = File(path).openSync();
+    final f = File(path);
+    if (!f.existsSync()) return null;
+    final raf = f.openSync();
     try {
       final head = raf.readSync(4096);
       final text = latin1.decode(head, allowInvalid: true);
-      final end = text.indexOf('end_header');
+      const marker = 'end_header\n';
+      final end = text.indexOf(marker);
       if (!text.startsWith('ply') || end < 0) return null;
       final m = RegExp(r'element vertex (\d+)').firstMatch(text.substring(0, end));
-      return m == null ? null : int.parse(m.group(1)!);
+      if (m == null) return null;
+      final n = int.parse(m.group(1)!);
+      if (n <= 0) return null;
+      return raf.lengthSync() == end + marker.length + kDensePlyBytesPerPoint * n ? n : null;
     } finally {
       raf.closeSync();
     }
@@ -79,6 +100,12 @@ int? plyVertexCount(String path) {
     return null;
   }
 }
+
+/// See [densePlyPoints].
+bool densePlyComplete(String path) => densePlyPoints(path) != null;
+
+/// official_dense.ply's record: 3 × float32 + 3 × uint8.
+const int kDensePlyBytesPerPoint = 15;
 
 class DenseLodCache {
   DenseLodCache({
@@ -91,31 +118,31 @@ class DenseLodCache {
 
   static DenseLodCache _instance = DenseLodCache();
 
-  /// The app's cache (the capture page and the viewer page share it, so they share one build).
+  /// The app's cache (the capture page, the viewer page and the dense launcher share it).
   static DenseLodCache get instance => _instance;
 
   /// Tests swap in a cache with a temp root and a mocked bridge.
   @visibleForTesting
   static set instanceForTesting(DenseLodCache c) => _instance = c;
 
-  static const String kDirName = 'lod';
+  static const String kTreeDirName = 'lod';
+  static const String kBuildingDirName = 'lod.building';
   static const String kStampName = 'pw_lod_source.json';
 
-  /// Bump when the stamp's meaning or the build call changes.
-  static const int kFormatVersion = 1;
-
-  /// ReviewCloudCache.kMaxEntries / kTmpStaleAfter (902c509).
-  static const int kMaxEntries = 8;
-  static const Duration kTmpStaleAfter = Duration(hours: 1);
+  /// 171–173 kept trees under `<cache>/lod/<作品标识>/`; the migration looks there.
+  static const String kLegacyCacheDirName = 'lod';
+  static const String kChunksDirName = 'lod_chunks';
 
   final LodBridge _bridge;
+
+  /// The system cache directory (path_provider getApplicationCacheDirectory; tests pass a temp dir).
   final Future<Directory?> Function() _cacheRoot;
   final DateTime Function() _clock;
 
   final Map<String, ValueNotifier<DenseLodState>> _states = {};
 
   /// PLY identity a build already failed for: not retried until the PLY changes (a tree that
-  /// cannot pass its self-check would otherwise be rebuilt on every visit).
+  /// cannot pass its self-check would otherwise be rebuilt on every visit). In memory only.
   final Map<String, String> _failedFor = {};
   Future<void>? _queue; // one build at a time (null = nothing ever queued)
 
@@ -127,76 +154,134 @@ class DenseLodCache {
 
   static Future<Directory?> _defaultRoot() async {
     try {
-      final c = await getApplicationCacheDirectory();
-      return Directory('${c.path}/$kDirName');
+      return await getApplicationCacheDirectory();
     } catch (_) {
       return null;
     }
   }
 
-  /// `<作品标识>` = the capture directory's name (e.g. cap_1788832166373381); anything unusual falls
-  /// back to the review cache's 64-bit FNV-1a of the path (ReviewCloudCache.keyFor).
-  static String keyFor(String plyPath) {
-    final parent = File(plyPath).parent.path.split(Platform.pathSeparator).last;
-    if (RegExp(r'^[A-Za-z0-9_.-]{1,96}$').hasMatch(parent) && parent != '.' && parent != '..') {
-      return parent;
+  /// The work directory of a dense PLY (`<work>/official_dense.ply`).
+  static String workDirOf(String densePlyPath) => File(densePlyPath).parent.path;
+
+  /// `<work>/lod`.
+  static String treeDirOf(String densePlyPath) => '${workDirOf(densePlyPath)}/$kTreeDirName';
+
+  /// `<作品标识>` = the work directory's name (`cap_<id>`): the key 171–173 used under
+  /// `<cache>/lod/`, and the chunk scratch name.
+  static String keyFor(String plyPath) => File(plyPath).parent.path.split(Platform.pathSeparator).last;
+
+  /// Points of a Potree 2.0 tree = metadata.json `points`; null if unreadable.
+  static int? treePointsOf(Directory tree) {
+    try {
+      final j = jsonDecode(File('${tree.path}/metadata.json').readAsStringSync());
+      final p = j is Map ? j['points'] : null;
+      return p is int ? p : (p is num && p == p.roundToDouble() ? p.toInt() : null);
+    } catch (_) {
+      return null;
     }
-    var hash = 0xcbf29ce484222325;
-    for (final unit in plyPath.codeUnits) {
-      hash ^= unit & 0xFF;
-      hash *= 0x100000001b3;
-      if (unit > 0xFF) {
-        hash ^= (unit >> 8) & 0xFF;
-        hash *= 0x100000001b3;
+  }
+
+  /// The validity rule (see the file header): three files, octree.bin = 18 B × points, points =
+  /// [plyPoints] (the dense PLY header's vertex count). Reads metadata.json and file sizes only.
+  static bool isValidTree(Directory tree, int plyPoints) {
+    try {
+      for (final f in ['metadata.json', 'hierarchy.bin', 'octree.bin']) {
+        if (!File('${tree.path}/$f').existsSync()) return false;
       }
+      final points = treePointsOf(tree);
+      if (points == null || points <= 0 || points != plyPoints) return false;
+      return File('${tree.path}/octree.bin').lengthSync() == kPwLodBytesPerPoint * points;
+    } catch (_) {
+      return false;
     }
-    final hi = (hash >> 32) & 0xFFFFFFFF, lo = hash & 0xFFFFFFFF;
-    return 'p${hi.toRadixString(16).padLeft(8, '0')}${lo.toRadixString(16).padLeft(8, '0')}';
   }
 
-  static int _pathHash32(String path) {
-    var hash = 0x811c9dc5;
-    for (final unit in path.codeUnits) {
-      hash = ((hash ^ (unit & 0xFF)) * 0x01000193) & 0xFFFFFFFF;
-      if (unit > 0xFF) hash = ((hash ^ ((unit >> 8) & 0xFF)) * 0x01000193) & 0xFFFFFFFF;
-    }
-    return hash;
-  }
-
-  /// [build 172, user 2026-09-24 「有树秒开，没树就停在稀疏点云的展示页面」] Re-opening a work:
-  /// the valid tree for [densePlyPath] if there is one, else null. NEVER builds (a work without a
-  /// valid tree stays on its sparse page until the user runs the dense stage again) and never reads
-  /// the PLY body (header only). Same validity rule as [watch].
+  /// [build 172+] Re-opening a work: `<work>/lod` if it is a valid tree for this work's COMPLETE
+  /// dense PLY ([densePlyPoints]), else null. NEVER builds and never reads the PLY body (header and
+  /// length only). With no `<work>/lod` at all, a valid 171–173 tree left in
+  /// `<cache>/lod/<作品标识>/` is migrated into `<work>/lod` first (rename, once).
   Future<String?> findValid(String densePlyPath) async {
     try {
-      final root = await _cacheRoot();
-      if (root == null) return null;
-      final src = File(densePlyPath);
-      if (!src.existsSync()) return null;
-      final stat = src.statSync();
-      final points = plyVertexCount(densePlyPath);
-      if (points == null || points <= 0) return null;
-      final tree = Directory('${root.path}/${keyFor(densePlyPath)}');
-      final ok = isValidTree(tree, (
-        path: densePlyPath,
-        bytes: stat.size,
-        mtimeMs: stat.modified.millisecondsSinceEpoch,
-        points: points,
-      ));
-      if (!ok) return null;
-      _touch(tree);
-      return tree.path;
+      final points = densePlyPoints(densePlyPath);
+      if (points == null) return null;
+      final tree = Directory(treeDirOf(densePlyPath));
+      if (isValidTree(tree, points)) return tree.path;
+      if (!tree.existsSync()) {
+        final migrated = await _migrateLegacy(densePlyPath, points);
+        if (migrated != null) return migrated;
+      }
+      return null;
     } catch (_) {
       return null;
     }
   }
 
-  /// The tree state for [densePlyPath]; starts (or reuses) the check/build. The same notifier is
-  /// returned for the same path, so the capture page and the viewer page share one build.
+  /// 171–173 → 174: `<cache>/lod/<作品标识>/` → `<work>/lod/` when it is a valid tree for this
+  /// work (same rule, same point count). Rename only; returns the new path or null.
+  Future<String?> _migrateLegacy(String densePlyPath, int plyPoints) async {
+    final root = await _cacheRoot();
+    if (root == null) return null;
+    final legacy = Directory('${root.path}/$kLegacyCacheDirName/${keyFor(densePlyPath)}');
+    if (!legacy.existsSync()) return null;
+    final target = treeDirOf(densePlyPath);
+    if (!isValidTree(legacy, plyPoints)) {
+      DeviceLog.log(
+        'DenseLodCache',
+        'legacy tree not migrated (points ${treePointsOf(legacy)} vs PLY $plyPoints or incomplete): ${legacy.path}',
+      );
+      return null;
+    }
+    try {
+      legacy.renameSync(target);
+      DeviceLog.log('DenseLodCache', 'migrated legacy tree ${legacy.path} → $target ($plyPoints pts, rename, no rebuild)');
+      return target;
+    } catch (e) {
+      DeviceLog.log('DenseLodCache', 'legacy tree migration failed (left in place): $e');
+      return null;
+    }
+  }
+
+  /// Re-training the dense stage: remove `<work>/lod/` first (rename to `lod.deleting.<ms>`, then
+  /// delete — a crash in between leaves a name that is never read as a tree), plus any
+  /// `lod.building/` leftover. Called by the dense launcher when a job really starts.
+  void discardTree(String workDir) {
+    final w = Directory(workDir);
+    if (!w.existsSync()) return;
+    final tree = Directory('$workDir/$kTreeDirName');
+    if (tree.existsSync()) {
+      final gone = '$workDir/$kTreeDirName.deleting.${_clock().millisecondsSinceEpoch}';
+      try {
+        tree.renameSync(gone);
+        DeviceLog.log('DenseLodCache', 'dense re-run: old tree removed from $workDir');
+      } catch (e) {
+        DeviceLog.log('DenseLodCache', 'dense re-run: could not move the old tree aside: $e');
+      }
+    }
+    _removeLeftovers(workDir);
+    // the next check must not reuse an answer about the old tree
+    _states.remove('$workDir/official_dense.ply');
+    _failedFor.remove('$workDir/official_dense.ply');
+  }
+
+  /// Deletes `lod.building*` / `lod.deleting.*` siblings of the tree (never `lod` itself).
+  static void _removeLeftovers(String workDir) {
+    try {
+      for (final e in Directory(workDir).listSync(followLinks: false)) {
+        if (e is! Directory) continue;
+        final name = e.path.split(Platform.pathSeparator).last;
+        if (name.startsWith(kBuildingDirName) || name.startsWith('$kTreeDirName.deleting.')) {
+          e.deleteSync(recursive: true);
+        }
+      }
+    } catch (_) {}
+  }
+
+  /// The tree state for a COMPLETE dense PLY: uses a valid tree (or migrates one), otherwise builds
+  /// one from the PLY already on disk — never trains anything. The same notifier is returned for the
+  /// same path, so pages share one build.
   ValueListenable<DenseLodState> watch(String densePlyPath) {
     final existing = _states[densePlyPath];
     if (existing != null) {
-      // A finished tree may have gone stale (dense re-run); a failure is retried only for a new PLY.
       if (existing.value.phase != DenseLodPhase.building) unawaited(_ensure(densePlyPath, existing));
       return existing;
     }
@@ -220,37 +305,29 @@ class DenseLodCache {
   }
 
   Future<DenseLodState> _ensureNow(String ply, ValueNotifier<DenseLodState> out) async {
-    final root = await _cacheRoot();
-    if (root == null) return _failed(ply, 'no cache directory');
     final src = File(ply);
     if (!src.existsSync()) return _failed(ply, 'PLY missing');
     final stat = src.statSync();
-    final plyPoints = plyVertexCount(ply);
-    if (plyPoints == null || plyPoints <= 0) return _failed(ply, 'PLY header unreadable');
+    // [174] never from a truncated PLY (a dense run killed mid-write is "not done", not a source)
+    final plyPoints = densePlyPoints(ply);
+    if (plyPoints == null) return _failed(ply, 'dense PLY incomplete or unreadable (header count does not fill the file)');
+    final workDir = workDirOf(ply);
     final key = keyFor(ply);
     final identity = '${stat.size}|${stat.modified.millisecondsSinceEpoch}|$plyPoints';
-    final tree = Directory('${root.path}/$key');
-    final _SourceId source = (
-      path: ply,
-      bytes: stat.size,
-      mtimeMs: stat.modified.millisecondsSinceEpoch,
-      points: plyPoints,
-    );
-    if (isValidTree(tree, source)) {
-      _touch(tree);
-      return DenseLodState.ready(tree.path);
-    }
+    final found = await findValid(ply);
+    if (found != null) return DenseLodState.ready(found);
     if (_failedFor[ply] == identity) {
       return DenseLodState.failed('previous build of this PLY failed (not retried)');
     }
     out.value = const DenseLodState.building();
-    root.createSync(recursive: true);
-    _prune(root, keep: key);
-    final tmp = Directory('${root.path}/$key.building');
-    final chunks = Directory('${root.path}/$key.chunks');
-    for (final d in [tmp, chunks]) {
-      if (d.existsSync()) d.deleteSync(recursive: true);
-    }
+    _removeLeftovers(workDir);
+    final tree = Directory('$workDir/$kTreeDirName');
+    final tmp = Directory('$workDir/$kBuildingDirName');
+    final root = await _cacheRoot();
+    final chunks = Directory(
+      root != null ? '${root.path}/$kChunksDirName/$key' : '$workDir/$kBuildingDirName.chunks',
+    );
+    if (chunks.existsSync()) chunks.deleteSync(recursive: true);
     final started = _clock();
     final lifecycle = _LifecycleTally.start();
     DeviceLog.log(
@@ -273,7 +350,7 @@ class DenseLodCache {
       verify = await _bridge.verifyOctree(octreeDir: tmp.path);
       checks.addAll(judgeVerify(verify, build: build));
     }
-    final pass = verify != null && checks.every((c) => c.pass);
+    final pass = verify != null && checks.every((c) => c.pass) && isValidTree(tmp, plyPoints);
     final finished = _clock();
     final bg = lifecycle.stop();
     // [172] the numbers a phone measurement rests on: wall clock start/end, peak memory (shell),
@@ -297,30 +374,28 @@ class DenseLodCache {
     }
     File('${tmp.path}/$kStampName').writeAsStringSync(
       const JsonEncoder.withIndent('  ').convert(<String, Object?>{
-        'schema': 'pw_lod_source/1',
-        'format_version': kFormatVersion,
+        'schema': 'pw_lod_source/2',
         'engine': '$kLodEngineSha8 abi=$kLodEngineAbi',
-        'ply_path': ply,
-        'ply_path_hash32': _pathHash32(ply),
-        'ply_bytes': source.bytes,
-        'ply_mtime_ms': source.mtimeMs,
-        'ply_points': plyPoints,
+        'points': plyPoints,
         'started': started.toIso8601String(),
         'finished': finished.toIso8601String(),
         'background_during_build': bg.toJson(),
         'build': build.toJson(),
         'verify': verify.toJson(),
         'checks': [for (final c in checks) c.toJson()],
-        'pass': true,
       }),
       flush: true,
     );
-    if (tree.existsSync()) tree.deleteSync(recursive: true);
+    if (tree.existsSync()) {
+      final gone = Directory('$workDir/$kTreeDirName.deleting.${finished.millisecondsSinceEpoch}');
+      tree.renameSync(gone.path);
+      gone.deleteSync(recursive: true);
+    }
     tmp.renameSync(tree.path);
     DeviceLog.log(
       'DenseLodCache',
       'build ok $key: ${build.treePoints} pts, ${build.nodes} nodes, ${build.elapsedMs.toStringAsFixed(0)} ms, '
-          'peak ${build.peakFootprintMb.toStringAsFixed(0)} MB, leaves ${verify.leavesSelected}/${verify.leaves}',
+          'peak ${build.peakFootprintMb.toStringAsFixed(0)} MB, leaves ${verify.leavesSelected}/${verify.leaves} → ${tree.path}',
     );
     return DenseLodState.ready(tree.path);
   }
@@ -329,79 +404,6 @@ class DenseLodCache {
     DeviceLog.log('DenseLodCache', 'no tree for $ply (flat display stays): $why');
     return DenseLodState.failed(why);
   }
-
-  /// The stamp matches [source] (ReviewCloudCache.decode's rule: version, path hash, byte length,
-  /// mtime) + engine identity + the three tree files + on-disk C1.
-  @visibleForTesting
-  static bool isValidTree(Directory tree, ({String path, int bytes, int mtimeMs, int points}) source) {
-    try {
-      final stamp = File('${tree.path}/$kStampName');
-      if (!stamp.existsSync()) return false;
-      final j = jsonDecode(stamp.readAsStringSync());
-      if (j is! Map) return false;
-      if (j['format_version'] != kFormatVersion) return false;
-      if (j['engine'] != '$kLodEngineSha8 abi=$kLodEngineAbi') return false;
-      if (j['pass'] != true) return false;
-      if (j['ply_path_hash32'] != _pathHash32(source.path)) return false;
-      if (j['ply_bytes'] != source.bytes) return false;
-      if (j['ply_mtime_ms'] != source.mtimeMs) return false;
-      if (j['ply_points'] != source.points) return false;
-      for (final f in ['metadata.json', 'hierarchy.bin', 'octree.bin']) {
-        if (!File('${tree.path}/$f').existsSync()) return false;
-      }
-      final build = j['build'];
-      if (build is! Map) return false;
-      final treePoints = build['tree_points'];
-      if (treePoints is! int || treePoints != source.points) return false;
-      return File('${tree.path}/octree.bin').lengthSync() == kPwLodBytesPerPoint * treePoints;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  static void _touch(Directory tree) {
-    try {
-      File('${tree.path}/$kStampName').setLastModifiedSync(DateTime.now());
-    } catch (_) {}
-  }
-
-  /// ReviewCloudCache.prune's policy on directories: newest [kMaxEntries] trees kept (by stamp
-  /// mtime), stale `.building` / `.chunks` removed; [keep] (the tree being built) is never removed.
-  void _prune(Directory root, {required String keep}) {
-    try {
-      final staleBefore = _clock().subtract(kTmpStaleAfter);
-      final trees = <({Directory dir, DateTime at})>[];
-      for (final e in root.listSync(followLinks: false)) {
-        if (e is! Directory) continue;
-        final name = e.path.split(Platform.pathSeparator).last;
-        if (name.endsWith('.building') || name.endsWith('.chunks')) {
-          if (name.startsWith('$keep.')) continue;
-          if (e.statSync().modified.isBefore(staleBefore)) e.deleteSync(recursive: true);
-          continue;
-        }
-        if (name == keep) continue;
-        final stamp = File('${e.path}/$kStampName');
-        trees.add((dir: e, at: stamp.existsSync() ? stamp.statSync().modified : e.statSync().modified));
-      }
-      trees.sort((a, b) => b.at.compareTo(a.at));
-      for (var i = kMaxEntries - 1; i < trees.length; i++) {
-        trees[i].dir.deleteSync(recursive: true);
-      }
-    } catch (_) {}
-  }
-}
-
-typedef _SourceId = ({String path, int bytes, int mtimeMs, int points});
-
-/// Test helper: the source identity of a PLY as the cache sees it.
-@visibleForTesting
-({String path, int bytes, int mtimeMs, int points})? denseLodSourceOf(String ply) {
-  final f = File(ply);
-  if (!f.existsSync()) return null;
-  final st = f.statSync();
-  final n = plyVertexCount(ply);
-  if (n == null) return null;
-  return (path: ply, bytes: st.size, mtimeMs: st.modified.millisecondsSinceEpoch, points: n);
 }
 
 /// Counts how often / how long the app was in the background while a build ran (Flutter lifecycle

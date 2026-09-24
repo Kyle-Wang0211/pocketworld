@@ -103,10 +103,11 @@ void main() {
     );
   });
 
-  // [172] user 2026-09-24 「有树秒开，没树就停在稀疏点云的展示页面。用户点击下一步再正常训练稠密」:
-  // this used to pin 「查看模式:盘上有 official_dense.ply 就装它」(decode the dense PLY on re-entry,
-  // which never finished on the phone in build 171). Now: only a valid tree counts.
-  test('查看模式:只认有效八叉树,不解码稠密 PLY、不建树', () {
+  // [172] user 2026-09-24 「有树秒开，没树就停在稀疏点云的展示页面」: this used to pin 「查看模式:盘上有
+  // official_dense.ply 就装它」(decode the dense PLY on re-entry, which never finished on the phone in
+  // build 171). [174] user 2026-09-24 「永远不会重新训练稠密。如果有那就是 bug」: a complete dense PLY
+  // is "done" — re-entry looks for a valid tree, else builds one from that PLY; it never trains.
+  test('查看模式:只认有效八叉树或用现成稠密 PLY 建树,不解码稠密 PLY、不训练', () {
     final r = page.indexOf('Future<void> _enterReviewMode(String dir) async {');
     final end = page.indexOf("static const String _kEtaPriorLogName", r);
     final body = page.substring(r, end);
@@ -119,8 +120,11 @@ void main() {
     );
     expect(body.indexOf('if (OfficialARCapturePage.debugLegacyDenseReviewLoad'), greaterThan(0));
     expect(body.contains("compute(loadReviewCloud, densePly"), isFalse);
-    // no build on re-entry (a build only follows a dense run of this session)
-    expect(body.contains('DenseLodCache.instance.watch('), isFalse);
+    // [174] the tree is built (through the shared cache) only from a COMPLETE dense PLY; never a run
+    expect(body.contains('final denseComplete = densePlyComplete(densePly);'), isTrue);
+    expect(body.contains('_watchDenseLod(doneThisSession ? p.outPly! : densePly);'), isTrue);
+    expect(body.contains('denseStageLauncher.start('), isFalse);
+    expect(body.contains('_startDenseStage('), isFalse);
     // NEGATIVE: the checker sees the sparse load it should see
     expect(body.contains("debugReviewCloudLoader(ply, 'review_load_sparse')"), isTrue);
   });

@@ -1,17 +1,23 @@
-// Page-level judges for build 172 「重新打开作品」 (user 2026-09-24: 「有树秒开，没树就停在稀疏点云
-// 的展示页面。用户点击下一步再正常训练稠密」), on the REAL OfficialARCapturePage in review mode
-// (no camera in that mode) over the fake iOS shell. Every judge has a negative control.
+// Page-level judges for 「重新打开作品」, on the REAL OfficialARCapturePage in review mode (no camera
+// in that mode) over the fake iOS shell. Every judge has a negative control.
+//   build 172 (user 2026-09-24): 「有树秒开，没树就停在稀疏点云的展示页面」.
+//   build 174 (user 2026-09-24): the tree lives in <作品目录>/lod/ (found by its place, migrated once
+//   from the 171–173 cache place), and 「永远不会重新训练稠密。如果有那就是 bug」 — a complete
+//   official_dense. py on disk = dense done: no 下一步, the tree is built from that PLY in the
+//   background; only a work without a (complete) dense PLY offers 下一步 (the first training).
 //
 // Background: build 171 decoded the whole dense PLY (未命名(12): 6,922,990 points / 99 MB) through
 // loadReviewCloud on re-entry; on the phone that never finished while the tree was long ready,
 // and the page showed 「正在生成最终点云…」 the whole time.
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/dense/dense_live_cloud.dart';
 import 'package:pocketworld_flutter/dense/dense_stage_progress.dart';
+import 'package:pocketworld_flutter/dense/native_dense_stage_launcher.dart';
 import 'package:pocketworld_flutter/l10n/app_localizations.dart';
 import 'package:pocketworld_flutter/official_capture/dense_stage.dart';
 import 'package:pocketworld_flutter/point_cloud_lod/dense_lod_cache.dart';
@@ -54,7 +60,7 @@ void main() {
     sparsePly = writeDensePly('$dir/official_sfm_sparse.ply', 400, seed: 3).path;
     densePly = '$dir/official_dense.ply';
     fake = FakeLodPlatform()..install();
-    cache = DenseLodCache(cacheRoot: () async => Directory('${tmp.path}/Library/Caches/lod'));
+    cache = DenseLodCache(cacheRoot: () async => Directory('${tmp.path}/Library/Caches'));
     DenseLodCache.instanceForTesting = cache;
     launcher = _FakeDenseLauncher();
     denseStageLauncher = launcher;
@@ -65,10 +71,12 @@ void main() {
       return defaultLoader(path, label);
     };
     OfficialARCapturePage.debugLegacyDenseReviewLoad = false;
+    OfficialARCapturePage.debug172DenseDoneRule = false;
   });
   tearDown(() {
     OfficialARCapturePage.debugReviewCloudLoader = defaultLoader;
     OfficialARCapturePage.debugLegacyDenseReviewLoad = false;
+    OfficialARCapturePage.debug172DenseDoneRule = false;
     denseStageLauncher = const UnavailableDenseStageLauncher();
     denseStageProgress.value = null;
     FakeLodPlatform.uninstall();
@@ -81,6 +89,19 @@ void main() {
     await cache.whenIdle();
     expect(await cache.findValid(densePly), isNotNull);
     fake.calls.clear();
+  }
+
+  /// Lets the page's background work (tree check / build in the real zone) run and repaints.
+  Future<void> settle(WidgetTester tester) async {
+    await tester.runAsync(() async {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await DenseLodCache.instance.whenIdle();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    });
+    for (var i = 0; i < 4; i++) {
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
+      await tester.pump(const Duration(milliseconds: 300));
+    }
   }
 
   Future<void> open(WidgetTester tester) async {
@@ -112,7 +133,7 @@ void main() {
     await open(tester);
     expect(loads, [sparsePly], reason: 'only the sparse PLY may be decoded on re-entry');
     expect(fake.methods, contains('loadOctree'));
-    expect((fake.of('loadOctree').single.arguments as Map)['octree_dir'], endsWith('/lod/cap_1789381704918369'));
+    expect((fake.of('loadOctree').single.arguments as Map)['octree_dir'], '$dir/lod');
     expect(fake.methods, isNot(contains('buildFromPly')));
     expect(fake.source, 2);
     expect(find.byType(Texture), findsOneWidget);
@@ -120,6 +141,76 @@ void main() {
     expect(next, findsNothing);
     expect(editEntry, findsNothing);
     expect(find.textContaining('生成'), findsNothing);
+  });
+
+  testWidgets('[174] container number change (iOS app update): the tree in <作品目录>/lod still opens at once', (tester) async {
+    // build in the OLD container, then move the whole container like an iOS update does
+    final old = Directory('${tmp.path}/Application/AAAAAAAA-OLD')..createSync(recursive: true);
+    final neu = Directory('${tmp.path}/Application/BBBBBBBB-NEW');
+    final oldDir = '${old.path}/Documents/captures_official/cap_1789381704918369';
+    writeDensePly('$oldDir/official_sfm_sparse.ply', 400, seed: 3);
+    final oldPly = writeDensePly('$oldDir/official_dense.ply', 3000, seed: 5).path;
+    await tester.runAsync(() async {
+      final c = DenseLodCache(cacheRoot: () async => Directory('${old.path}/Library/Caches'));
+      c.watch(oldPly);
+      await c.whenIdle();
+      old.renameSync(neu.path);
+    });
+    fake.calls.clear();
+    dir = '${neu.path}/Documents/captures_official/cap_1789381704918369';
+    sparsePly = '$dir/official_sfm_sparse.ply';
+    final newPly = '$dir/official_dense.ply';
+    DenseLodCache.instanceForTesting = DenseLodCache(cacheRoot: () async => Directory('${neu.path}/Library/Caches'));
+    await open(tester);
+    expect(loads, [sparsePly]);
+    expect(fake.methods, contains('loadOctree'), reason: 'the tree must survive the container move');
+    expect((fake.of('loadOctree').single.arguments as Map)['octree_dir'], '$dir/lod');
+    expect(fake.methods, isNot(contains('buildFromPly')));
+    expect(next, findsNothing);
+    expect(launcher.starts, isEmpty);
+    // NEGATIVE: an absolute-path judgment (171–173 recorded the PLY's absolute path) fails here
+    expect(newPly == oldPly, isFalse);
+  });
+
+  testWidgets('[174] a 171/172 tree in Library/Caches/lod/<作品标识>/ is migrated (rename) and opens at once', (tester) async {
+    writeDensePly(densePly, 3000, seed: 5);
+    final legacy = Directory('${tmp.path}/Library/Caches/lod/cap_1789381704918369');
+    await tester.runAsync(() async {
+      // the tree exactly where 171/172 put it (built by the same fake engine, then moved there)
+      final c = DenseLodCache(cacheRoot: () async => Directory('${tmp.path}/Library/Caches'));
+      c.watch(densePly);
+      await c.whenIdle();
+      legacy.parent.createSync(recursive: true);
+      Directory('$dir/lod').renameSync(legacy.path);
+    });
+    fake.calls.clear();
+    await open(tester);
+    expect(loads, [sparsePly]);
+    expect((fake.of('loadOctree').single.arguments as Map)['octree_dir'], '$dir/lod');
+    expect(fake.methods, isNot(contains('buildFromPly')), reason: 'migration is a rename, never a rebuild');
+    expect(legacy.existsSync(), isFalse);
+    expect(next, findsNothing);
+    expect(launcher.starts, isEmpty);
+  });
+
+  testWidgets('[174] NEGATIVE migration: point mismatch ⇒ not migrated, the sparse cloud shows first', (tester) async {
+    writeDensePly(densePly, 3000, seed: 5);
+    final legacy = Directory('${tmp.path}/Library/Caches/lod/cap_1789381704918369')..createSync(recursive: true);
+    File('${legacy.path}/metadata.json').writeAsStringSync(jsonEncode({'points': 2999}));
+    File('${legacy.path}/hierarchy.bin').writeAsBytesSync(List.filled(22, 0));
+    File('${legacy.path}/octree.bin').writeAsBytesSync(List.filled(18 * 2999, 0));
+    final gate = Completer<void>();
+    fake.buildGate = gate.future; // hold the background build to look at the page meanwhile
+    await open(tester);
+    expect(legacy.existsSync(), isTrue, reason: 'a tree for another point count is not this work\'s tree');
+    expect(fake.methods, isNot(contains('loadOctree')));
+    expect(fake.source, 1, reason: 'sparse flat set on screen');
+    expect(fake.methods, contains('buildFromPly'), reason: 'complete dense PLY ⇒ its tree is built from it');
+    expect(next, findsNothing);
+    await tester.runAsync(() async => gate.complete());
+    await settle(tester);
+    expect((fake.of('loadOctree').single.arguments as Map)['octree_dir'], '$dir/lod');
+    expect(launcher.starts, isEmpty);
   });
 
   testWidgets('NEGATIVE: the old 171 path (decode the dense PLY) is caught by the same judge', (tester) async {
@@ -130,7 +221,7 @@ void main() {
     expect(() => expect(loads, [sparsePly]), throwsA(isA<TestFailure>()));
   });
 
-  testWidgets('没树：stays on the sparse page — no dense read, no build, 下一步 runs the dense stage', (tester) async {
+  testWidgets('no dense PLY: the sparse page — no build, 下一步 runs the FIRST dense training (the only one allowed)', (tester) async {
     await open(tester);
     expect(loads, [sparsePly]);
     expect(fake.methods, isNot(contains('buildFromPly')));
@@ -143,33 +234,111 @@ void main() {
     expect(launcher.starts.single.captureDir, dir);
   });
 
-  testWidgets('old project with a dense PLY but no tree behaves exactly like 没树 (PLY untouched)', (tester) async {
+  testWidgets('[174] complete dense PLY, no tree: dense is done — no 下一步, no training; the tree is built from that PLY', (tester) async {
     writeDensePly(densePly, 3000, seed: 5);
     final before = File(densePly).readAsBytesSync();
+    final gate = Completer<void>();
+    fake.buildGate = gate.future; // hold the build: first the page must show the sparse cloud
     await open(tester);
-    expect(loads, [sparsePly], reason: 'the old dense PLY must not be read');
-    expect(fake.methods, isNot(contains('buildFromPly')), reason: 're-entry must not build a tree');
+    expect(loads, [sparsePly], reason: 'the dense PLY must not be decoded in Dart');
+    expect(fake.source, 1, reason: 'sparse on screen while the tree is built');
+    expect(fake.methods, isNot(contains('loadOctree')));
+    expect((fake.of('buildFromPly').single.arguments as Map)['ply_path'], densePly);
+    expect((fake.of('buildFromPly').single.arguments as Map)['out_dir'], '$dir/lod.building');
+    expect(next, findsNothing, reason: '「永远不会重新训练稠密」');
+    expect(editEntry, findsNothing);
+    await tester.runAsync(() async => gate.complete());
+    await settle(tester);
+    // same viewer switches to the tree
+    expect(fake.methods, containsAllInOrder(['buildFromPly', 'verifyOctree', 'loadOctree']));
+    expect((fake.of('loadOctree').single.arguments as Map)['octree_dir'], '$dir/lod');
+    expect(fake.source, 2);
+    expect(find.byType(Texture), findsOneWidget);
+    expect(next, findsNothing);
+    expect(launcher.starts, isEmpty);
+    expect(File(densePly).readAsBytesSync(), before);
+  });
+
+  testWidgets('[174] tree build fails: stays sparse, logged, and still never trains', (tester) async {
+    writeDensePly(densePly, 3000, seed: 5);
+    fake.buildLosesPoints = 1; // C1 rejects the tree
+    await open(tester);
+    await settle(tester);
+    expect(fake.methods, contains('buildFromPly'));
+    expect(fake.methods, isNot(contains('loadOctree')));
+    expect(fake.source, 1);
+    expect(next, findsNothing);
+    expect(editEntry, findsNothing);
+    expect(launcher.starts, isEmpty);
+    expect(Directory('$dir/lod').existsSync(), isFalse);
+  });
+
+  testWidgets('[174] NEGATIVE: build 172\'s rule put back (下一步 over a complete dense PLY) is caught', (tester) async {
+    writeDensePly(densePly, 3000, seed: 5);
+    OfficialARCapturePage.debug172DenseDoneRule = true;
+    await open(tester);
+    await settle(tester);
+    // the judges of the test above fail under 172's rule:
+    expect(() => expect(next, findsNothing), throwsA(isA<TestFailure>()));
+    expect(() => expect(fake.methods, contains('buildFromPly')), throwsA(isA<TestFailure>()));
+    await tester.tap(next);
+    await tester.pump();
+    expect(launcher.starts.length, 1, reason: '172 trained the dense stage again');
+    expect(() => expect(launcher.starts, isEmpty), throwsA(isA<TestFailure>()));
+  });
+
+  testWidgets('[174] a dense PLY cut short (run killed mid-write) is NOT done: 下一步 trains, no tree built', (tester) async {
+    final full = writeDensePly(densePly, 3000, seed: 5).readAsBytesSync();
+    File(densePly).writeAsBytesSync(full.sublist(0, full.length - 15 * 700));
+    await open(tester);
+    await settle(tester);
+    expect(fake.methods, isNot(contains('buildFromPly')));
     expect(fake.methods, isNot(contains('loadOctree')));
     expect(next, findsOneWidget);
     expect(editEntry, findsOneWidget);
     await tester.tap(next);
     await tester.pump();
-    expect(launcher.starts.length, 1, reason: '下一步 re-runs the dense stage even though a dense PLY exists');
-    expect(File(densePly).readAsBytesSync(), before);
-    // NEGATIVE control of 「不建树」: the same cache DOES build when the dense stage finishes (171 flow).
-    // (Set inside runAsync so the page's listener starts the build in the real zone.)
-    await tester.runAsync(() async {
-      denseStageProgress.value = denseStageProgress.value!.copyWith(state: DenseStageState.done, outPly: densePly);
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-      await cache.whenIdle();
-      await Future<void>.delayed(const Duration(milliseconds: 50));
-    });
-    for (var i = 0; i < 4; i++) {
-      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
-      await tester.pump(const Duration(milliseconds: 300));
-    }
-    expect(fake.methods, containsAllInOrder(['buildFromPly', 'verifyOctree', 'loadOctree']));
+    expect(launcher.starts.single.captureDir, dir);
+  });
+
+  testWidgets('[174] NEGATIVE of the cut-short case: the same PLY complete ⇒ no 下一步', (tester) async {
+    writeDensePly(densePly, 3000, seed: 5);
+    fake.buildGate = Completer<void>().future; // never finishes here; only the buttons matter
+    await open(tester);
     expect(next, findsNothing);
+  });
+
+  test('[174] the launcher refuses a work with a complete dense PLY (every entry goes through it)', () async {
+    writeDensePly(densePly, 3000, seed: 5);
+    expect(denseDenyReason(dir), contains('complete official_dense.ply'));
+    final r = await NativeDenseStageLauncher().start(
+      DenseStageRequest(captureDir: dir, sparsePlyPath: sparsePly, pointCount: 400),
+    );
+    expect(r.status, DenseStageStatus.failed);
+    expect(r.message, '稠密点云已经生成过,不会重新训练');
+    // NEGATIVE: no PLY / a cut-short PLY ⇒ not refused (on this host the framework is then simply absent)
+    final bytes = File(densePly).readAsBytesSync();
+    File(densePly).writeAsBytesSync(bytes.sublist(0, bytes.length - 15));
+    expect(denseDenyReason(dir), isNull);
+    final r2 = await NativeDenseStageLauncher().start(
+      DenseStageRequest(captureDir: dir, sparsePlyPath: sparsePly, pointCount: 400),
+    );
+    expect(r2.status, DenseStageStatus.unavailable);
+    File(densePly).deleteSync();
+    expect(denseDenyReason(dir), isNull);
+  });
+
+  test('[174] launcher wiring: the refusal comes first; a real start discards <作品目录>/lod before the job', () {
+    final src = File('lib/dense/native_dense_stage_launcher.dart').readAsStringSync();
+    final start = src.indexOf('Future<DenseStageResult> start(DenseStageRequest request)');
+    final deny = src.indexOf('denseDenyReason(request.captureDir)', start);
+    final ffi = src.indexOf('if (_ffi == null)', start);
+    final running = src.indexOf('_running = true;', start);
+    final discard = src.indexOf('DenseLodCache.instance.discardTree(request.captureDir)', start);
+    final job = src.indexOf('unawaited(_runJob(', start);
+    expect([start, deny, ffi, running, discard, job].every((i) => i > 0), isTrue);
+    expect(deny < ffi, isTrue);
+    expect(running < discard && discard < job, isTrue);
   });
 
   testWidgets('the loading cover says 正在载入点云… (never 生成) while the sparse PLY loads', (tester) async {
@@ -218,7 +387,7 @@ void main() {
 
   test('build log carries start / end / peak and whether the app went to the background', () async {
     final logged = <String>[];
-    final c = DenseLodCache(cacheRoot: () async => Directory('${tmp.path}/Library/Caches/lod2'));
+    final c = DenseLodCache(cacheRoot: () async => Directory('${tmp.path}/Library/Caches'));
     writeDensePly(densePly, 1000);
     await runZoned(
       () async {
@@ -234,14 +403,15 @@ void main() {
     expect(timing, contains('background during build: no'));
     // NEGATIVE: a lifecycle pause during the build flips the line to YES
     fake.calls.clear();
-    final c2 = DenseLodCache(cacheRoot: () async => Directory('${tmp.path}/Library/Caches/lod3'));
+    final c2 = DenseLodCache(cacheRoot: () async => Directory('${tmp.path}/Library/Caches'));
+    final densePly2 = writeDensePly('${tmp.path}/Documents/captures_official/cap_2/official_dense.ply', 1000).path;
     final logged2 = <String>[];
     final binding = TestWidgetsFlutterBinding.instance;
     final gate = Completer<void>();
     fake.buildGate = gate.future;
     await runZoned(
       () async {
-        c2.watch(densePly);
+        c2.watch(densePly2);
         for (var i = 0; i < 100 && !fake.methods.contains('buildFromPly'); i++) {
           await Future<void>.delayed(const Duration(milliseconds: 5));
         }

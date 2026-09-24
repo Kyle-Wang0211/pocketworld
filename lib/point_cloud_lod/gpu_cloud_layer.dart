@@ -190,8 +190,11 @@ class GpuCloudLayer extends ChangeNotifier {
   }
 
   void _pumpStyle() {
-    final tex = _tex, s = _wantStyle;
-    if (tex == null || s == null || s == _sentStyle || _failed) return;
+    final tex = _tex, want = _wantStyle;
+    if (tex == null || want == null || _failed) return;
+    // [173] A13: the engine's style is in target (physical) pixels.
+    final s = want.inTargetPixels(_dpr);
+    if (s == _sentStyle) return;
     _sentStyle = s;
     _bridge.setStyle(textureId: tex.textureId, style: s).catchError((Object e) => _fail('setStyle', e));
   }
@@ -271,7 +274,7 @@ class GpuCloudLayer extends ChangeNotifier {
       lowestSpacing: _lowestSpacing,
       previousNear: _lastNearFar[ortho]!.near,
       previousFar: _lastNearFar[ortho]!.far,
-    );
+    ).inTargetPixels(_dpr); // [173] A13: focal_px in target (physical) pixels
     final key = Float64List.fromList([
       ...frame.viewProjRowMajor,
       frame.focalPx,

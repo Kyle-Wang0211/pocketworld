@@ -3,6 +3,7 @@
 // (SparseCloudViewerPage) over a fake iOS shell (fake_lod_platform.dart). Every judge has a
 // negative control through the same finder / comparison. Lesson from the ledger (09-15): byte
 // self-checks do not prove a page draws, so these pump the real widgets.
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -271,30 +272,45 @@ void main() {
     expect(fake.of('setPoints').length, flatSends); // nothing re-sent, the flat set never left
   });
 
-  group('full-screen viewer page (「稠密点云」, SparseCloudViewerPage), build 172 rules', () {
-    late String ply, capDir;
+  group('full-screen viewer page (「稠密点云」, SparseCloudViewerPage), build 174 rules', () {
+    late String ply, sparse, capDir;
     late Directory cacheRoot;
 
     setUp(() {
       capDir = '${tmp.path}/Documents/captures_official/cap_77';
       ply = writeDensePly('$capDir/official_dense.ply', 3000).path;
-      writeDensePly('$capDir/official_sfm_sparse.ply', 300, seed: 9);
-      cacheRoot = Directory('${tmp.path}/Library/Caches/lod');
+      sparse = writeDensePly('$capDir/official_sfm_sparse.ply', 300, seed: 9).path;
+      cacheRoot = Directory('${tmp.path}/Library/Caches');
       denseStageProgress.value = null;
+      SparseCloudViewerPage.debug172DenseDoneRule = false;
     });
-    tearDown(() => denseStageProgress.value = null);
+    tearDown(() {
+      denseStageProgress.value = null;
+      SparseCloudViewerPage.debug172DenseDoneRule = false;
+    });
 
-    Future<void> openPage(WidgetTester tester) async {
+    /// [idle] false when a test holds the build (fake.buildGate): waiting for the cache would hang.
+    Future<void> openPage(WidgetTester tester, {String? path, bool idle = true}) async {
       phone(tester);
       await tester.runAsync(() async {
         await tester.pumpWidget(
           MaterialApp(
             localizationsDelegates: AppL10n.localizationsDelegates,
             supportedLocales: AppL10n.supportedLocales,
-            home: SparseCloudViewerPage(plyPath: ply, title: '稠密点云'),
+            locale: const Locale('zh'),
+            home: SparseCloudViewerPage(plyPath: path ?? ply, title: '稠密点云'),
           ),
         );
         await Future<void>.delayed(const Duration(milliseconds: 400));
+        if (idle) await DenseLodCache.instance.whenIdle();
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      });
+      await settle(tester, 6);
+    }
+
+    Future<void> release(WidgetTester tester) async {
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
         await DenseLodCache.instance.whenIdle();
         await Future<void>.delayed(const Duration(milliseconds: 50));
       });
@@ -307,33 +323,56 @@ void main() {
       outPly: ply,
     );
 
-    testWidgets('no tree, no dense run this session ⇒ nothing built, sparse points shown', (tester) async {
+    final next = find.text('下一步');
+    final bottomButton = find.byType(SfmBottomActionButton);
+
+    testWidgets('complete dense PLY, no tree: sparse first, the tree is built from that PLY, same view switches; no 下一步', (tester) async {
       DenseLodCache.instanceForTesting = DenseLodCache(cacheRoot: () async => cacheRoot);
-      await openPage(tester);
-      expect(fake.methods, isNot(contains('buildFromPly')));
-      expect(fake.methods, isNot(contains('loadOctree')));
+      final gate = Completer<void>();
+      fake.buildGate = gate.future;
+      await openPage(tester, idle: false);
       expect((fake.of('setPoints').last.arguments as Map)['count'], 300); // the sparse sibling, not the dense PLY
+      expect(fake.methods, isNot(contains('loadOctree')));
+      final build = fake.of('buildFromPly').single.arguments as Map;
+      expect(build['ply_path'], ply);
+      expect(build['out_dir'], '$capDir/lod.building');
+      expect(next, findsNothing, reason: '「永远不会重新训练稠密」');
+      expect(bottomButton, findsNothing, reason: 'the dense page is already the dense view');
+      await tester.runAsync(() async => gate.complete());
+      await release(tester);
+      expect(fake.methods, containsAllInOrder(['buildFromPly', 'verifyOctree', 'loadOctree']));
+      expect((fake.of('loadOctree').single.arguments as Map)['octree_dir'], '$capDir/lod');
+      expect(fake.source, 2);
       expect(_texture, findsOneWidget);
     });
 
-    testWidgets('dense ran this session, tree fails its self-check ⇒ flat display stays', (tester) async {
+    testWidgets('NEGATIVE: build 172\'s rule put back is caught (no build, 下一步 over a complete dense PLY)', (tester) async {
+      DenseLodCache.instanceForTesting = DenseLodCache(cacheRoot: () async => cacheRoot);
+      SparseCloudViewerPage.debug172DenseDoneRule = true;
+      await openPage(tester);
+      expect(() => expect(fake.methods, contains('buildFromPly')), throwsA(isA<TestFailure>()));
+      expect(() => expect(next, findsNothing), throwsA(isA<TestFailure>()));
+    });
+
+    testWidgets('tree fails its self-check ⇒ flat display stays, still no 下一步', (tester) async {
       DenseLodCache.instanceForTesting = DenseLodCache(cacheRoot: () async => cacheRoot);
       fake.buildLosesPoints = 1;
-      denseRanThisSession();
       await openPage(tester);
       expect(fake.methods, contains('buildFromPly'));
       expect(fake.methods, isNot(contains('loadOctree')));
       expect(fake.source, 1);
       expect(_texture, findsOneWidget);
+      expect(next, findsNothing);
     });
 
-    testWidgets('NEGATIVE of the above: a good tree is loaded into the same view', (tester) async {
+    testWidgets('dense ran this session ⇒ the same shared build; a good tree is loaded into the same view', (tester) async {
       DenseLodCache.instanceForTesting = DenseLodCache(cacheRoot: () async => cacheRoot);
       denseRanThisSession();
       await openPage(tester);
+      expect(fake.of('buildFromPly').length, 1, reason: 'one build, shared');
       expect(fake.methods, containsAllInOrder(['buildFromPly', 'verifyOctree', 'loadOctree']));
       expect(fake.source, 2);
-      expect((fake.of('loadOctree').single.arguments as Map)['octree_dir'], '${cacheRoot.path}/cap_77');
+      expect((fake.of('loadOctree').single.arguments as Map)['octree_dir'], '$capDir/lod');
     });
 
     testWidgets('re-entry: a valid tree is used at once, nothing rebuilt', (tester) async {
@@ -344,8 +383,25 @@ void main() {
       DenseLodCache.instanceForTesting = DenseLodCache(cacheRoot: () async => cacheRoot); // new session
       await openPage(tester);
       expect(fake.methods, isNot(contains('buildFromPly')));
-      expect(fake.methods, contains('loadOctree'));
+      expect((fake.of('loadOctree').single.arguments as Map)['octree_dir'], '$capDir/lod');
       expect(fake.source, 2);
+    });
+
+    testWidgets('the sparse page of a work with a complete dense PLY offers 查看稠密点云, never 下一步', (tester) async {
+      DenseLodCache.instanceForTesting = DenseLodCache(cacheRoot: () async => cacheRoot);
+      await openPage(tester, path: sparse);
+      expect(next, findsNothing);
+      expect(find.text('查看稠密点云'), findsOneWidget);
+      expect(fake.methods, isNot(contains('buildFromPly')), reason: 'the sparse page builds nothing');
+    });
+
+    testWidgets('NEGATIVE: the same sparse page with the dense PLY cut short offers 下一步', (tester) async {
+      DenseLodCache.instanceForTesting = DenseLodCache(cacheRoot: () async => cacheRoot);
+      final bytes = File(ply).readAsBytesSync();
+      File(ply).writeAsBytesSync(bytes.sublist(0, bytes.length - 15 * 10));
+      await openPage(tester, path: sparse);
+      expect(next, findsOneWidget);
+      expect(find.text('查看稠密点云'), findsNothing);
     });
   });
 
@@ -359,8 +415,10 @@ void main() {
     final getter = page.indexOf('String? get _lodOctreeDirOnScreen {');
     expect(page.indexOf('if (_denseRunningHere || !_denseDoneHere) return null;', getter), greaterThan(getter));
     final review = page.indexOf('Future<void> _enterReviewMode(String dir) async {');
-    // [172] re-entry only LOOKS for a valid tree (never builds, never decodes the dense PLY)
+    // [172] re-entry LOOKS for a valid tree first (never decodes the dense PLY); [174] without one
+    // it builds from the complete dense PLY on disk (_watchDenseLod) — never a dense run
     expect(page.indexOf('DenseLodCache.instance.findValid(densePly)', review), greaterThan(review));
+    expect(page.indexOf('_watchDenseLod(doneThisSession ? p.outPly! : densePly);', review), greaterThan(review));
     final overlay = code('lib/ui/official_capture/sfm_preview_overlay.dart');
     expect(overlay, contains('gpu: true,'));
     expect(overlay, contains('octreeDir: lodOctreeDir,'));

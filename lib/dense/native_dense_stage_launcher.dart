@@ -16,6 +16,7 @@ import '../official_capture/photo_archive_resolver.dart';
 import '../official_capture/photo_archive_runtime.dart' show photoArchiveCodec, photoArchiveCodecsByName;
 import '../official_capture/sfm_resume.dart' show loadFedFrameMeta;
 import '../official_util/device_log.dart' as official_device_log;
+import '../point_cloud_lod/dense_lod_cache.dart' show DenseLodCache, densePlyPoints;
 import '../ui/official_capture/sparse_cloud_viewer_page.dart' show loadSparsePly;
 import 'dense_live_cloud.dart';
 import 'dense_stage_progress.dart';
@@ -88,6 +89,13 @@ Future<List<T>> mapBoundedConcurrent<S, T>(
   return List<T>.from(out);
 }
 
+/// [174] Why a dense run of [captureDir] must not start, or null when it may: its
+/// official_dense.ply is complete ([densePlyPoints]). A missing or cut-short PLY ⇒ null (train).
+String? denseDenyReason(String captureDir) {
+  final n = densePlyPoints('$captureDir/$kDensePlyFileName');
+  return n == null ? null : 'complete $kDensePlyFileName on disk ($n pts): dense is done, never re-trained';
+}
+
 class NativeDenseStageLauncher implements DenseStageLauncher {
   NativeDenseStageLauncher() : _ffi = PwDenseFfi.tryResolve();
 
@@ -99,6 +107,14 @@ class NativeDenseStageLauncher implements DenseStageLauncher {
 
   @override
   Future<DenseStageResult> start(DenseStageRequest request) async {
+    // [174] User 2026-09-24 「永远不会重新训练稠密。如果有那就是 bug」: a work whose
+    // official_dense.ply is complete (header count fills the file) is done — no entry may train it
+    // again. Checked here, the one door every 下一步 goes through, before anything else.
+    final existing = denseDenyReason(request.captureDir);
+    if (existing != null) {
+      official_device_log.DeviceLog.log('DenseStage', 'refused: $existing (${request.captureDir})');
+      return DenseStageResult(DenseStageStatus.failed, message: '稠密点云已经生成过,不会重新训练');
+    }
     if (_ffi == null) {
       return DenseStageResult(DenseStageStatus.unavailable, message: PwDenseFfi.lastError);
     }
@@ -113,6 +129,9 @@ class NativeDenseStageLauncher implements DenseStageLauncher {
       return DenseStageResult(DenseStageStatus.failed, message: '稠密输入不完整: $e');
     }
     _running = true;
+    // [174] the first dense run of this work (or a re-run over a PLY that was cut short): a tree left
+    // in <work>/lod belongs to no PLY any more — remove it before the new PLY is written.
+    DenseLodCache.instance.discardTree(request.captureDir);
     // The display copy of the progressive chunks. Its stride comes from the number of reference frames the job
     // is about to run, which is exactly what _gather just assembled.
     final live = DenseLiveCloud(framesPlanned: inputs.frames.length);

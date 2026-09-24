@@ -238,6 +238,28 @@ class LodStyle {
   /// 0xAARRGGBB as the painter writes it (kSelectionOutColor = 0xFFE05252).
   final int selectionOutArgb;
 
+  /// [173] Engine A13 (Aether3D 72ee817f DEVIATIONS.md:269-275): pwlod_style is in TARGET pixels,
+  /// so a shell drawing at device pixel ratio [d] passes point_size × d and max_sprite_scale × d
+  /// (the painter keeps logical values and scales its canvas instead). sprite_px (16) and
+  /// disc_radius_px_at_scale1 (7) stay: they describe the painter's sprite, and the engine uses its
+  /// own copy of that sprite only when they are exactly 16 / 7 (viewer_look.cpp:184
+  /// UsesPainterSprite, R18). 172 sent the logical values ⇒ every point 1/3 of its radius.
+  LodStyle inTargetPixels(double d) => LodStyle(
+    pointSize: pointSize * d,
+    spritePx: spritePx,
+    discRadiusPxAtScale1: discRadiusPxAtScale1,
+    maxSpriteScale: maxSpriteScale * d,
+    tone: tone,
+    exposure: exposure,
+    uncoloredMinY: uncoloredMinY,
+    uncoloredInvYSpan: uncoloredInvYSpan,
+    selectionMode: selectionMode,
+    selectionCenter: selectionCenter,
+    selectionSize: selectionSize,
+    selectionRotRowMajor: selectionRotRowMajor,
+    selectionOutArgb: selectionOutArgb,
+  );
+
   /// Wire form under the C field names (a test parses the header and compares).
   Map<String, Object> toWire() {
     if (selectionCenter.length != 3 ||

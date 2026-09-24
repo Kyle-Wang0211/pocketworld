@@ -122,6 +122,12 @@ class SparseCloudViewerPage extends StatefulWidget {
   final String plyPath;
   final String? title;
 
+  /// [174] NEGATIVE-CONTROL switch for the tests only: build 172's rules on this page (a dense PLY
+  /// on disk counted for nothing: 下一步 trained the dense stage again, the dense page built no tree
+  /// unless a run of this session had finished). The user ruled that a bug on 2026-09-24.
+  @visibleForTesting
+  static bool debug172DenseDoneRule = false;
+
   @override
   State<SparseCloudViewerPage> createState() => _SparseCloudViewerPageState();
 }
@@ -178,19 +184,35 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
   /// [172] Valid tree found when the dense page opened (DenseLodCache.findValid, never builds).
   String? _denseTreeDir;
 
+  /// [174] User 2026-09-24 「永远不会重新训练稠密。如果有那就是 bug」: this work has a COMPLETE
+  /// official_dense.ply (header count fills the file) ⇒ its dense stage is done: no 下一步 here,
+  /// ever. A 4 KB header read + the file length; asked when the page opens and when the bottom
+  /// button rebuilds (on dense progress changes).
+  bool _denseCompleteNow() =>
+      !SparseCloudViewerPage.debug172DenseDoneRule && densePlyComplete('$_captureDir/$kDensePlyFileName');
+
   @override
   void initState() {
     super.initState();
     if (_isDensePly) {
       // [172] user 2026-09-24 「有树秒开，没树就停在稀疏点云的展示页面」: the dense PLY is never
-      // decoded; the tree is used if valid, and built only after a dense run of THIS session.
+      // decoded; a valid tree (<work>/lod, migrated if needed) opens at once. [174] Without one, the
+      // tree is built in the background from this complete PLY and the same viewer switches to it
+      // (172 built one only after a dense run of THIS session). Never a dense run.
+      final p = denseStageProgress.value;
+      final doneThisSession = p != null && p.captureDir == _captureDir && p.state == DenseStageState.done;
+      final complete = _denseCompleteNow();
       unawaited(
         DenseLodCache.instance.findValid(widget.plyPath).then((dir) {
-          if (mounted && dir != null) setState(() => _denseTreeDir = dir);
+          if (!mounted) return;
+          if (dir != null) {
+            setState(() => _denseTreeDir = dir);
+          } else if (complete && _denseLod == null) {
+            _denseLod = DenseLodCache.instance.watch(widget.plyPath)..addListener(_onDenseLod);
+          }
         }),
       );
-      final p = denseStageProgress.value;
-      if (p != null && p.captureDir == _captureDir && p.state == DenseStageState.done) {
+      if (doneThisSession) {
         _denseLod = DenseLodCache.instance.watch(widget.plyPath)..addListener(_onDenseLod);
       }
     }
@@ -776,6 +798,16 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                                 label: '查看稠密点云',
                                 onTap: () => _openDense(mine.outPly!),
                               );
+                            }
+                            // [174] complete dense PLY on disk ⇒ done: never 下一步 (training).
+                            // The sparse page offers the dense page; the dense page is already it.
+                            if (_denseCompleteNow()) {
+                              return _isDensePly
+                                  ? const SizedBox.shrink()
+                                  : SfmBottomActionButton(
+                                      label: '查看稠密点云',
+                                      onTap: () => _openDense('$_captureDir/$kDensePlyFileName'),
+                                    );
                             }
                             return SfmBottomActionButton(
                               label: mine != null && mine.state == DenseStageState.failed

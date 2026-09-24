@@ -5,10 +5,10 @@
 // a non-positioned placeholder collapses the whole page to 0×0 (build 159 black page).
 // `test/dense/dense_stage_panel_test.dart` pins it.
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import '../point_cloud_lod/dense_lod_cache.dart' show densePlyComplete;
 import 'dense_stage_progress.dart';
 
 /// Status block placed above the bottom action pill.
@@ -17,7 +17,8 @@ class DenseStagePanel extends StatefulWidget {
 
   final String captureDir;
 
-  /// `<captureDir>/official_dense.ply` — shown as "查看" when it already exists and nothing is running.
+  /// `<captureDir>/official_dense.ply` — shown as "查看" when it is complete on disk ([174]: header
+  /// count fills the file; a cut-short PLY is "not done") and nothing is running.
   final String densePlyPath;
   final void Function(String plyPath) onView;
 
@@ -44,13 +45,7 @@ class _DenseStagePanelState extends State<DenseStagePanel> {
     super.dispose();
   }
 
-  bool _plyExists() {
-    try {
-      return File(widget.densePlyPath).existsSync();
-    } catch (_) {
-      return false;
-    }
-  }
+  bool _plyExists() => densePlyComplete(widget.densePlyPath);
 
   void _onProgress() {
     if (!mounted) return;

@@ -152,6 +152,24 @@ class LodCameraFrame {
   final double near;
   final double far;
   final Float64List viewRowMajor;
+
+  /// [173] Engine A13 (Aether3D 72ee817f aether_cpp/src/pointcloud_lod_render/DEVIATIONS.md:269-275):
+  /// pwlod_camera is in TARGET pixels, so a shell drawing at device pixel ratio [d] passes
+  /// focal_px × d (the view origin lives inside view_proj, whose NDC is resolution-independent and
+  /// needs no change). This frame is built from the view's LOGICAL projection; 172 sent focal_px
+  /// unscaled (node selection 3× too coarse on a 3× phone).
+  LodCameraFrame inTargetPixels(double d) => LodCameraFrame(
+    viewProjRowMajor: viewProjRowMajor,
+    eyeWorld: eyeWorld,
+    focalPx: focalPx * d,
+    orbitDistance: orbitDistance,
+    orthoMix: orthoMix,
+    viewportWidthPx: viewportWidthPx,
+    viewportHeightPx: viewportHeightPx,
+    near: near,
+    far: far,
+    viewRowMajor: viewRowMajor,
+  );
 }
 
 /// Row-major 4×4 product a·b (Aether3D tests/pointcloud_lod/test_select.cpp:34-41 @d251451 `mul`).
