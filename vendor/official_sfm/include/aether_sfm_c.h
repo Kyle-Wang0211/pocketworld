@@ -105,6 +105,48 @@ aether_sfm_result_t aether_sfm_add_frame(aether_sfm_session_t* s,
                                          const double pose_t[3],
                                          int* out_frame_id);
 
+// [DEVICE-POSE-TRUST-V1 2026-09-24] aether_sfm_add_frame with the per-frame
+// device-pose trust bit (contract with the Dart capture layer; the pocketworld
+// JPEG entry pwofficial_add_jpeg_frame_v2 decodes and calls this). Parameters
+// are aether_sfm_add_frame's in the same order plus `device_pose_trusted`
+// right after pose_t. aether_sfm_add_frame == this with device_pose_trusted=1,
+// so existing callers keep today's behaviour.
+//   device_pose_trusted != 0 : today's route — the frame is placed at its
+//       device pose (subject to the registration-evidence gate when
+//       AETHER_REG_EVIDENCE=1), is a Sim3 alignment pair, carries its
+//       gravity attitude anchor, drives spatial candidate selection.
+//   device_pose_trusted == 0 : the device pose is NEVER used for placement,
+//       as a Sim3 alignment pair, as a gravity/pose prior, or for spatial
+//       candidate / pose-guided matching. The frame is registered from image
+//       evidence exactly as upstream COLMAP registers an image without a
+//       prior (IncrementalMapper::RegisterNextImage: P3P RANSAC + refinement,
+//       retried by the upstream registration loop during capture, at
+//       finalize and on resume), or stays unregistered (get_poses
+//       registered=0) when the evidence is insufficient. The pose values are
+//       still persisted, with the untrusted bit, in the pose store (bit 0 of
+//       the former reserved word) so resume applies the same rule.
+aether_sfm_result_t aether_sfm_add_frame_v2(aether_sfm_session_t* s,
+                                            const uint8_t* gray,
+                                            int width, int height,
+                                            float fx, float fy,
+                                            float cx, float cy,
+                                            const double pose_qwxyz[4],
+                                            const double pose_t[3],
+                                            int32_t device_pose_trusted,
+                                            int* out_frame_id);
+
+// [DEVICE-POSE-TRUST-V1 / REG-EVIDENCE-V1 2026-09-24] Counters (nullable
+// out-params): frames fed untrusted, untrusted frames registered from image
+// evidence, trusted frames whose placement went through the evidence gate,
+// gate failures (frame left pending), pending frames registered later (live
+// retry / finalize / resume), and frames still unregistered in the delivered
+// model. Per-frame records: "reg_evidence_v1" lines in sfm_match_fail.jsonl.
+void aether_sfm_registration_evidence_stats_v1(
+    aether_sfm_session_t* s, int64_t* untrusted_fed,
+    int64_t* untrusted_registered, int64_t* evidence_checked,
+    int64_t* evidence_failed, int64_t* late_registered,
+    int64_t* unregistered_delivered);
+
 // Feature-injection sibling of aether_sfm_add_frame: skips extraction and
 // feeds precomputed keypoints (xy pairs, extractor's +0.5 half-pixel
 // convention) + n_keypoints×128 UBC RootSIFT u8 descriptors into the same

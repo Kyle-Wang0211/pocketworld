@@ -60,6 +60,26 @@ PWOFFICIAL_EXPORT aether_sfm_result_t pwofficial_add_frame(aether_sfm_session_t*
                               pose_qwxyz, pose_t, out_frame_id);
 }
 
+/* [DEVICE-POSE-TRUST-V1 2026-09-24] pure forwarders (see aether_sfm_c.h). */
+PWOFFICIAL_EXPORT aether_sfm_result_t pwofficial_add_frame_v2(
+    aether_sfm_session_t* s, const uint8_t* gray, int width, int height,
+    float fx, float fy, float cx, float cy, const double pose_qwxyz[4],
+    const double pose_t[3], int32_t device_pose_trusted, int* out_frame_id) {
+  return aether_sfm_add_frame_v2(s, gray, width, height, fx, fy, cx, cy,
+                                 pose_qwxyz, pose_t, device_pose_trusted,
+                                 out_frame_id);
+}
+
+PWOFFICIAL_EXPORT void pwofficial_registration_evidence_stats_v1(
+    aether_sfm_session_t* s, int64_t* untrusted_fed,
+    int64_t* untrusted_registered, int64_t* evidence_checked,
+    int64_t* evidence_failed, int64_t* late_registered,
+    int64_t* unregistered_delivered) {
+  aether_sfm_registration_evidence_stats_v1(
+      s, untrusted_fed, untrusted_registered, evidence_checked,
+      evidence_failed, late_registered, unregistered_delivered);
+}
+
 /* [EXTRACT-PREFETCH 2026-08-09] 提取∥匹配帧级流水的对外入口。转发到
    aether_sfm_prefetch_frame:非阻塞,拷 gray 交给会话的专属提取线程后立即
    返回;下一次 add_frame 图像内容匹配(FNV 抽样摘要)即字节等同地领取成品,

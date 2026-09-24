@@ -1,3 +1,5 @@
 pwofficial_match_set_capture_active
 pwofficial_match_set_preview_fps30
 pwofficial_prefetch_frame
+pwofficial_add_frame_v2
+pwofficial_registration_evidence_stats_v1

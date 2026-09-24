@@ -24,6 +24,25 @@ aether_sfm_result_t pwofficial_add_jpeg_frame(
     const double pose_t[3],
     int* out_frame_id);
 
+// [DEVICE-POSE-TRUST-V1 2026-09-24] pwofficial_add_jpeg_frame with the
+// per-frame device-pose trust bit: identical arguments in the same order plus
+// `device_pose_trusted` right after pose_t (1 = trusted, 0 = untrusted).
+// Decodes with the SAME helper as pwofficial_add_jpeg_frame, then calls
+// pwofficial_add_frame_v2 (official_sfm_c.h) — a decode failure returns before
+// the core is touched. v1 == this with device_pose_trusted = 1.
+aether_sfm_result_t pwofficial_add_jpeg_frame_v2(
+    aether_sfm_session_t* session,
+    const char* jpeg_path,
+    double capture_timestamp,
+    float fx,
+    float fy,
+    float cx,
+    float cy,
+    const double pose_qwxyz[4],
+    const double pose_t[3],
+    int32_t device_pose_trusted,
+    int* out_frame_id);
+
 // [EXTRACT-PREFETCH 2026-08-09] JPEG-path prefetch: decode with the SAME
 // helper as pwofficial_add_jpeg_frame, then hand the luma plane to the
 // session's dedicated extraction thread (non-blocking). The next add whose

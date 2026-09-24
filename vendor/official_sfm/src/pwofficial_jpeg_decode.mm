@@ -180,6 +180,51 @@ pwofficial_add_jpeg_frame(
       out_frame_id);
 }
 
+// [DEVICE-POSE-TRUST-V1 2026-09-24] v1 + device_pose_trusted (see
+// official_sfm_io_c.h). Same validation and decode as v1; forwards to the
+// trust-carrying core entry.
+extern "C" PWOFFICIAL_IO_EXPORT aether_sfm_result_t
+pwofficial_add_jpeg_frame_v2(
+    aether_sfm_session_t* session,
+    const char* jpeg_path,
+    double capture_timestamp,
+    float fx,
+    float fy,
+    float cx,
+    float cy,
+    const double pose_qwxyz[4],
+    const double pose_t[3],
+    int32_t device_pose_trusted,
+    int* out_frame_id) {
+  if (session == nullptr ||
+      jpeg_path == nullptr ||
+      jpeg_path[0] == '\0' ||
+      !std::isfinite(capture_timestamp) ||
+      capture_timestamp < 0.0) {
+    return AETHER_SFM_ERR_INVALID_ARG;
+  }
+  std::vector<uint8_t> gray;
+  int width = 0;
+  int height = 0;
+  const aether_sfm_result_t decode =
+      DecodeOfficialJpegGray(jpeg_path, &gray, &width, &height);
+  if (decode != AETHER_SFM_OK) return decode;
+
+  return pwofficial_add_frame_v2(
+      session,
+      gray.data(),
+      width,
+      height,
+      fx,
+      fy,
+      cx,
+      cy,
+      pose_qwxyz,
+      pose_t,
+      device_pose_trusted,
+      out_frame_id);
+}
+
 extern "C" PWOFFICIAL_IO_EXPORT uint32_t
 pwofficial_phase_b_replay_create_v1(
     const char* ordered_manifest_sha256, const int64_t* ordered_frame_ids,

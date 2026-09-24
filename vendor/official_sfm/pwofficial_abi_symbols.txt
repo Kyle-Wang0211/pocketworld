@@ -28,3 +28,5 @@ pwofficial_stream_stats
 pwofficial_thermal_throttle_stats
 pwofficial_track_obs_free
 pwofficial_telemetry
+pwofficial_add_frame_v2
+pwofficial_registration_evidence_stats_v1
