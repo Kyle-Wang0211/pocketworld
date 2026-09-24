@@ -1,0 +1,14 @@
+# vendor/aether_lod/include -- frozen C headers, copied byte-for-byte. DO NOT EDIT.
+# A needed change goes back to the coordinator, who changes it for engine and shells at once.
+#
+# pwlod_viewer.h  source: ~/Developer/pw_lod_data/contract/pwlod_viewer.h (frozen 2026-09-24,
+#                 plan LOD_ARLOOPBENCH_PLAN_20260924.md, user choices A1 + B1 + orthographic)
+#                 v2 (2026-09-24, coordinator): PWLOD_ABI_VERSION 2 +
+#                 pwlod_frame_stats.lowest_spacing (last field). v1 was a1e1bcff...
+#                 v2 comment fix (2026-09-24, coordinator): lowest_spacing's comment now states
+#                 Potree's exact definition; layout/ABI unchanged. Previous v2 was fb6459d6...
+# pw_lod_bench.h  source: pw_splat_ab_bench Sources/lod/pw_lod_bench.h
+#                 @ fbfdb545f3522723f9cc9673290c03d930c836b9 (clean at HEAD b792d574)
+# Check (inside this directory): grep -v '^#' SHA256SUMS | shasum -a 256 -c -
+4b047f1fb56ae1575fc5fae5777ef9ea8acdff536ff93a89265550595e51837c  pwlod_viewer.h
+d5a349a2dfd0721a19a5fb345515ddcd8b85b1143d8b19a95e753edebfaf780e  pw_lod_bench.h
