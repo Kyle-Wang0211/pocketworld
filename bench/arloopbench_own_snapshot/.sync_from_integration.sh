@@ -11,7 +11,11 @@ set -euo pipefail
 # 2026-09-24(合一):P / F / R 三段的默认真源都改成同一棵树 bench-unified-20260924(分支 bench/unified =
 #   bench/full-chain-168-fixes + git merge bench/lidar-ruler(含 feat/bench-replay))。旧树(bench-replay-20260923 /
 #   bench-full-chain-168-fixes / bench-lidar-ruler-20260924)原样保留,可用各段的 PW_BENCH_*_SOURCE 临时改回。
-P="${PW_BENCH_SYNC_SOURCE:-/Users/kaidongwang/.config/superpowers/worktrees/pocketworld/bench-unified-20260924}"; B=/Users/kaidongwang/Developer/arloopbench
+# 2026-09-24(rec30):VIO(P)与 LiDAR(R)两段默认真源改成 bench-rec30-ruler-exact-20260924(分支
+#   bench/rec30-ruler-exact = bench/official-xrslam 2ca5172 之上:录制器按 XRSLAM 30 Hz 闸落盘、写法可选、
+#   子集只挑引擎会收的帧、回放按录制帧键控 CAMERA 位姿)。之前官方 XRSLAM 那次是用 PW_BENCH_SYNC_SOURCE
+#   临时指 bench-official-xrslam-20260924 同步的,默认值没改 —— 现在改成默认,不传环境变量也不会退回旧树。
+P="${PW_BENCH_SYNC_SOURCE:-/Users/kaidongwang/.config/superpowers/worktrees/pocketworld/bench-rec30-ruler-exact-20260924}"; B=/Users/kaidongwang/Developer/arloopbench
 # 2026-09-18: 加上 ffi/ —— engine_pose_poller.dart 要 XrslamBindings 与 xrslamOk,
 # 缺了这一层台架直接 6 个 undefined。镜像范围要跟着依赖走,不能只镜像"我改过的目录"。
 mkdir -p "$B/lib/vio/ffi"
@@ -267,7 +271,7 @@ fi
 #   Mac 侧工具(tool/bench/lidar_ruler/、tool/bench/lidar_swift_tests/、tool/bench/pull_lidar_recording.sh)留在 pocketworld。
 #   🔴 pbxproj(两份 Swift 进 Runner Sources + 三个配置各 4 条 -Wl,-u,_pw_bench_lidar_*)/ main.dart(const PW_LIDAR_RULER_BENCH
 #      分支)是台架自己的文件,不在镜像范围。
-R="${PW_BENCH_LIDAR_SOURCE:-/Users/kaidongwang/.config/superpowers/worktrees/pocketworld/bench-unified-20260924}"
+R="${PW_BENCH_LIDAR_SOURCE:-/Users/kaidongwang/.config/superpowers/worktrees/pocketworld/bench-rec30-ruler-exact-20260924}"
 if [ ! -d "$R" ]; then echo "LiDAR 尺子源不在,跳过"; else
 lidar_scope="$(
   cd "$R"

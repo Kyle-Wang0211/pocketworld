@@ -77,8 +77,8 @@ List<BenchEntry> _entries() => <BenchEntry>[
         id: 'lidar',
         group: '采集 / 回放',
         title: 'LiDAR 米尺录制',
-        subtitle: '会开摄像头:ARKit 1920×1440@60 + CoreMotion + sceneDepth,落 replay_recordings/run-…'
-            '(🔴 bench-only ruler,LiDAR 永不进产品)',
+        subtitle: '会开摄像头:ARKit 1920×1440@60,按 XRSLAM 30 Hz 准入闸落盘整幅 1920×1440 + CoreMotion + '
+            'sceneDepth,落 replay_recordings/run-…(🔴 bench-only ruler,LiDAR 永不进产品)',
         icon: Icons.straighten,
         page: () => const BenchLidarRecordPage(),
       ),

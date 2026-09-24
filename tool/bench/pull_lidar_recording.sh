@@ -4,7 +4,7 @@
 #
 # 用法:
 #   tool/bench/pull_lidar_recording.sh                          # 列出手机上的 replay_recordings/
-#   tool/bench/pull_lidar_recording.sh <run-…> [replay_…] [dest]
+#   tool/bench/pull_lidar_recording.sh <run-…> [replay_…|latest] [dest]
 #       run-…    = Documents/replay_recordings/<run-uuid>(录制页写的;只拉它的 ruler_subset/,约 400 MB/30 s,
 #                  **不拉** 5 GB 的整份 frames.bin —— Mac 盘放不下,尺子也用不着)
 #       replay_… = Documents/bench_replay_runs/<replay_…>(回放页在手机上跑出的 XRSLAM 位姿,几百 KB)
@@ -40,7 +40,7 @@ if [ $# -lt 1 ]; then
   echo "== 手机 $UDID 上 $BUNDLE 的 Documents/replay_recordings/ =="
   list Documents/replay_recordings
   echo
-  echo "用法:$0 <run-…> [replay_…] [dest]"
+  echo "用法:$0 <run-…> [replay_…|latest] [dest]"
   exit 0
 fi
 
@@ -48,9 +48,33 @@ RUN="$1"
 REPLAY=""
 DEST_ROOT="$HOME/Developer/arloopbench/pulls"
 if [ $# -ge 2 ]; then
-  case "$2" in replay_*) REPLAY="$2"; DEST_ROOT="${3:-$DEST_ROOT}" ;; *) DEST_ROOT="$2" ;; esac
+  case "$2" in replay_*|latest) REPLAY="$2"; DEST_ROOT="${3:-$DEST_ROOT}" ;; *) DEST_ROOT="$2" ;; esac
 fi
 case "$RUN" in run-*) ;; *) echo "🔴 录制名应以 run- 开头:$RUN" >&2; exit 2 ;; esac
+# rec30:第二个参数写 latest ⇒ 取手机上这份录制最新的一场回放
+#   (回放目录名 replay_<录制 id 前 8 位>_…,按修改时间取最新)。
+if [ "$REPLAY" = latest ]; then
+  RID="${RUN#run-}"; RID="${RID:0:8}"
+  TMPD="$(mktemp -d -t pwreplays)"; TMPJ="$TMPD/list.json"
+  xcrun devicectl device info files --device "$UDID" --domain-type appDataContainer \
+    --domain-identifier "$BUNDLE" --subdirectory Documents/bench_replay_runs --no-recurse \
+    --json-output "$TMPJ" >/dev/null 2>&1 || true
+  REPLAY="$(/usr/bin/python3 - "$TMPJ" "$RID" <<'PY2'
+import json, sys
+try:
+    fs = json.load(open(sys.argv[1]))['result']['files']
+except Exception:
+    fs = []
+c = [f for f in fs if f['relativePath'].split('/')[-1].startswith('replay_' + sys.argv[2])
+     and f.get('resources', {}).get('isDirectory')]
+c.sort(key=lambda f: f['metadata'].get('lastModDate', ''))
+print(c[-1]['relativePath'].split('/')[-1] if c else '')
+PY2
+)"
+  rm -rf "$TMPD"
+  [ -n "$REPLAY" ] || { echo "🔴 手机上没有 $RUN 的回放(replay_${RID}_…):先在台架「回放」页回放这份录制" >&2; exit 2; }
+  echo "== 最新回放:$REPLAY =="
+fi
 
 SUBNAME="${PW_BENCH_SUBSET:-ruler_subset}"
 case "$SUBNAME" in ruler_subset*) ;; *) echo "🔴 子集目录名应以 ruler_subset 开头:$SUBNAME" >&2; exit 2 ;; esac

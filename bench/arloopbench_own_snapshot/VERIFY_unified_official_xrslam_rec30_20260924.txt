@@ -1,0 +1,156 @@
+# arloopbench unified + official XRSLAM + rec30 recorder / exact-keyed ruler — verification (2026-09-24 22:37:00)
+# source: pocketworld local branch bench/rec30-ruler-exact (from bench/official-xrslam 2ca5172) @ worktree /Users/kaidongwang/.config/superpowers/worktrees/pocketworld/bench-rec30-ruler-exact-20260924
+#   commits: e1b1c94 bench(rec30): 录制器按 XRSLAM 30 Hz 闸落盘 + 写法可选/逐秒时间线 + 子集只挑引擎会收的帧 + 回放按录制帧键控 CAMERA 位姿(仅台架,bench-only ruler);18c90f0 bench(lidar-ruler): 尺子帧对等距覆盖整段 + 拉取脚本在回放未完成时只量 ARKit(仅台架,bench-only ruler);  (+ snapshot/VERIFY commit after this file)
+# sync: ~/Developer/arloopbench/.sync_from_integration.sh with P(VIO)=R(LiDAR)=that worktree (defaults updated), F/U = bench-unified-20260924 b3c7b6b, LOD verify-only (source absent, skipped)
+# build: flutter build ios --profile --no-pub, twice (93.8 s, then 8.8 s), FLUTTER_XCODE_DEBUG_INFORMATION_FORMAT=dwarf, LD map on; PW_XRSLAM_ARM unset (= official_rules)
+# backup of bench files before sync: /Users/kaidongwang/Developer/arloopbench_backups/rec30_20260924_220235
+
+== main binaries
+f2629535c345d04dd99403ed195da3760c86b02743d93bb8884ac66ccfb15ab0  Runner
+688b2b8432b7fe6643fcdf30a9f87085ffb1773a364f10f164aed67fdba48d82  Frameworks/App.framework/App
+== Info.plist identity
+  CFBundleIdentifier           com.kyle.arloopbench
+  CFBundleVersion              1
+  PWXrslamBuildEngine          official_rules
+  PWXrslamEngineArm            official_rules
+  PWXrslamBuildLib             libxrslam_official_rules_89042cd5.a
+  PWXrslamSHA256               89042cd5d5be844801a40b914cd8742119f8a9b4c3f6e3a9deef115bd4e7942f
+  PWXrslamThreadingEnabled     true
+  PWXrslamBuildRules           official
+  PWXrslamGpuFrontendLinked    false
+  PWXrslamEnginePedigree       research_only
+== linked engine fingerprint in Runner (official_rules must be 1, others 0)
+  official_rules   1
+  generic          0
+  gpufenothread    0
+  pfk              0
+== rec30 code in Runner
+  PWXrslamCameraHz                         1
+  poses_camera_by_recording_frame.csv      1
+  barrier_nocache                          1
+  fsync_each                               1
+  PWBenchLidarSoakArms                     1
+  ruler_subset_xr30                        1
+  xrslam_admission                         1
+  every_subset_frame_admitted              1
+  pw.bench.lidar-recorder-timing/2         1
+  PwXrslamOfficialFeed.admits              3
+== Dart AOT: 13 menu pages (0 = tree-shaken) + rec30 page strings
+  BenchHomePage                3
+  BenchLidarRecordPage         4
+  BenchReplayPage              4
+  BenchFullChainPage           3
+  BenchCoreSwitchesPage        4
+  ArMinimalLoopPage            4
+  ZeroArkitCaptureProbePage    4
+  ZeroArkitPreviewProbePage    3
+  ImuCalibCapturePage          4
+  ZuptProbePage                4
+  PoseChainProbePage           4
+  LodDebugPage                 4
+  SplatAbPage                  4
+  pages missing: 0
+  PocketWorldApp               1
+  viobench (BenchUnifiedNative) 1
+  30:fsync_each,30:barrier,30:barrier,30:fsync_each  1
+  pw_bench_lidar_reexport_subset                     1
+  record_hz                                          1
+  write_sync                                         1
+== Dawn: _wgpuCreateInstance definitions in Runner: 1
+== Runner defined symbol families
+    12 _PWXrslamTransport
+     5 _pw_bench_lidar_
+     5 _pw_bench_replay_
+    17 _pw_camera_slot_
+    10 _pw_xrslam_live_
+     1 _pwlod_run$
+     1 _pwsplat_ab_run$
+    00000001016d8c04 T _pw_bench_lidar_capability
+    00000001016d8f74 T _pw_bench_lidar_reexport_subset
+    00000001016d8cec T _pw_bench_lidar_start
+    00000001016d8e7c T _pw_bench_lidar_status
+    00000001016d8dcc T _pw_bench_lidar_stop
+== engine entry points in Runner (t = linked via -force_load)
+  00000001015e042c t _XRSLAMCreate
+  00000001015e0728 t _XRSLAMDestroy
+  00000001015e0618 t _XRSLAMGetResult
+  00000001015e0598 t _XRSLAMPushSensorData
+  00000001015e0604 t _XRSLAMRunOneFrame
+== embedded frameworks __text vs unified_official_xrslam_20260924 (the installed bench)
+  PWOfficialSfm    unsigned sha 651d047ab1d7d39a SAME
+  PWDense          unsigned sha e5f9a92a20ca0a9f SAME
+  PWOnnxRuntime    unsigned sha b2ded38332478ae1 SAME
+  PWVIOBenchKit    unsigned sha 10440823fe3c2d35 SAME
+  PWXRSLAMEngine   unsigned sha c95f6a6c0d3e3011 SAME
+  PWBasaltEngine   unsigned sha eaebd74b16325a96 SAME
+  thermion_dart    unsigned sha 8f99ceba99e242c6 SAME
+  Flutter          unsigned sha d7035728e895faf1 SAME
+  Frameworks: App.framework Flutter.framework PWBasaltEngine.framework PWDense.framework PWOfficialSfm.framework PWOnnxRuntime.framework PWVIOBenchKit.framework PWXRSLAMEngine.framework thermion_dart.framework 
+== signature
+/Users/kaidongwang/Developer/arloopbench/build/ios/iphoneos/Runner.app: valid on disk
+/Users/kaidongwang/Developer/arloopbench/build/ios/iphoneos/Runner.app: satisfies its Designated Requirement
+Identifier=com.kyle.arloopbench
+TeamIdentifier=26AH7V448L
+== Link map: Dawn
+  _wgpuCreateInstance defined by 1 object(s):
+    [699] /Users/kaidongwang/Developer/arloopbench/ios/Pods/../../../dist/libs/ios-arm64/libaether3d_ffi.a(webgpu_dawn_native_proc.o)
+
+== install
+  xcrun devicectl device install app --device 00008120-00146C4A1AEBC01E /Users/kaidongwang/Developer/arloopbench_builds/unified_official_xrslam_rec30_20260924/Runner.app  → rc 0, bundleID com.kyle.arloopbench (production com.kyle.PocketWorld not touched)
+  Documents before install 168 entries; after install 168, missing 0, changed 0; run-fb5d3a8f frames.bin 4,008,960,000 B intact
+  after on-phone tests: 371 entries = 168 originals (all present, unchanged) + lidar_selftest/ (3 soak dirs, streams deleted) + run-fb5d3a8f/ruler_subset_xr30 + 1 replay dir
+
+== on-phone write-throughput soak (1920x1440 luma + depth, phone static, streams deleted after sealing; free ~13.6 GB of 512 GB)
+-- soak1
+order 30:fsync_each,30:barrier,60:fsync_each,60:barrier,30:barrier,30:fsync_each seconds/arm 60.0
+free_bytes 13653001416 thermal@start nominal device iPhone15,2
+arm0 30Hz fsync_each      frames 1795 loss 0 peak 31/64 (at s59) write p50 5.4 p99 70.5 max 1595 ms | MB/s interior min 0 max 86 | first loss sNone | arkit missed 12 | thermal nominal->fair | gated 1794 admitted 1795 depth 597 barrier_fb 0 err None
+      worst seconds: [(61, 1595, 0), (63, 1262, 0), (58, 107, 10)]
+arm1 30Hz barrier         frames 1801 loss 0 peak 3/64 (at s32) write p50 6.9 p99 17.8 max 67 ms | MB/s interior min 80 max 86 | first loss sNone | arkit missed 0 | thermal fair->fair | gated 1800 admitted 1801 depth 599 barrier_fb 0 err None
+      worst seconds: [(37, 67, 3), (32, 67, 3), (26, 63, 2)]
+arm2 60Hz fsync_each      frames 2568 loss 140 peak 64/64 (at s52) write p50 5.2 p99 114.2 max 1547 ms | MB/s interior min 0 max 169 | first loss s52 | arkit missed 893 | thermal fair->serious | gated 0 admitted 2708 depth 899 barrier_fb 0 err None
+      worst seconds: [(53, 1547, 64), (50, 699, 32), (59, 173, 64)]
+arm3 60Hz barrier         frames 1801 loss 0 peak 4/64 (at s26) write p50 8.7 p99 18.8 max 117 ms | MB/s interior min 80 max 86 | first loss sNone | arkit missed 1800 | thermal serious->serious | gated 0 admitted 1801 depth 599 barrier_fb 0 err None
+      worst seconds: [(26, 117, 4), (3, 78, 3), (31, 77, 3)]
+arm4 30Hz barrier         frames 1801 loss 0 peak 3/64 (at s26) write p50 8.2 p99 17.5 max 80 ms | MB/s interior min 77 max 88 | first loss sNone | arkit missed 1800 | thermal serious->serious | gated 0 admitted 1801 depth 600 barrier_fb 0 err None
+      worst seconds: [(26, 80, 3), (31, 76, 3), (36, 71, 3)]
+arm5 30Hz fsync_each      frames 1801 loss 0 peak 2/64 (at s1) write p50 7.2 p99 24.1 max 53 ms | MB/s interior min 80 max 86 | first loss sNone | arkit missed 1800 | thermal serious->serious | gated 0 admitted 1801 depth 600 barrier_fb 0 err None
+      worst seconds: [(1, 53, 2), (3, 42, 2), (2, 42, 2)]
+-- soak2
+order 30:barrier,30:barrier seconds/arm 120.0
+free_bytes 13796813421 thermal@start serious device iPhone15,2
+arm0 30Hz barrier         frames 3425 loss 176 peak 64/64 (at s26) write p50 10.4 p99 121.9 max 454 ms | MB/s interior min 14 max 196 | first loss s26 | arkit missed 3600 | thermal serious->serious | gated 0 admitted 3601 depth 1201 barrier_fb 0 err None
+      worst seconds: [(101, 454, 64), (102, 268, 64), (24, 216, 37)]
+arm1 30Hz barrier         frames 3546 loss 55 peak 64/64 (at s5) write p50 10.9 p99 197.6 max 552 ms | MB/s interior min 6 max 174 | first loss s5 | arkit missed 3600 | thermal serious->serious | gated 0 admitted 3601 depth 1200 barrier_fb 0 err None
+      worst seconds: [(119, 552, 64), (120, 457, 64), (126, 386, 0)]
+-- soak3
+order 30:none,30:barrier,30:barrier,30:none seconds/arm 90.0
+free_bytes 13812508851 thermal@start serious device iPhone15,2
+arm0 30Hz none            frames 2668 loss 33 peak 64/64 (at s88) write p50 8.6 p99 145.1 max 461 ms | MB/s interior min 14 max 88 | first loss s88 | arkit missed 2700 | thermal serious->serious | gated 0 admitted 2701 depth 901 barrier_fb 0 err None
+      worst seconds: [(89, 461, 64), (86, 455, 26), (88, 354, 64)]
+arm1 30Hz barrier         frames 1106 loss 0 peak 34/64 (at s4) write p50 9.4 p99 34.9 max 1130 ms | MB/s interior min 17 max 127 | first loss sNone | arkit missed 1105 | thermal serious->serious | gated 0 admitted 1106 depth 368 barrier_fb 0 err ARSession failed: Required sensor failed.
+      worst seconds: [(4, 1130, 34), (2, 641, 20), (5, 234, 16)]
+arm2 30Hz barrier         frames 2701 loss 0 peak 62/64 (at s60) write p50 9.2 p99 63.9 max 130 ms | MB/s interior min 30 max 177 | first loss sNone | arkit missed 2700 | thermal serious->serious | gated 0 admitted 2701 depth 900 barrier_fb 0 err None
+      worst seconds: [(60, 130, 62), (55, 123, 19), (58, 94, 48)]
+arm3 30Hz none            frames 2701 loss 0 peak 3/64 (at s3) write p50 8.3 p99 30.2 max 97 ms | MB/s interior min 80 max 86 | first loss sNone | arkit missed 2700 | thermal serious->serious | gated 0 admitted 2701 depth 900 barrier_fb 0 err None
+      worst seconds: [(3, 97, 3), (27, 80, 3), (83, 79, 3)]
+
+== ruler / replay verification (offline + on-phone)
+  Swift (Mac host, tool/bench/lidar_swift_tests/run.sh): 9/9 pass, incl.
+    testGateCopyEqualsPhoneReplayLedger: Mac copy of the 30 Hz gate on run-fb5d3a8f camera_index + imu start,
+      limit 1060 → admitted set == phone replay ledger (529/529), leading dropped 4, rate_sampled_out 527
+    testGatedRecordingIsFullyAdmittedOnReplay: gated 60 Hz stream (one ARKit drop) re-gated from start 0/1/2/5 → 0 rejected;
+      ungated 60 Hz stream started one frame later → admitted sets disjoint (the first-session failure mechanism)
+    testSubsetExportPicksOnlyXrslamAdmittedFrames / testWriteSyncModesWriteIdenticalBytes (4 modes, byte-identical files)
+  Synthetic (test_lidar_ruler_synth.py + Swift subset exporter): all pass
+    T12 exact-keyed XRSLAM camera CSV: k 0.88219 (truth 0.88), G1-G4 pass, x1.05 ratio 1.05000, shuffled depth rejected,
+        noise-floor PC 1.0507; 5 not-tracking frames counted, not interpolated; T12b == BODY+ledger k (<=0.1%)
+    T13 poses only on depth-less frames → ruler refuses (exit 1); T11b subset + exact CSV: XRSLAM valid, k 0.88015
+  Real data run-fb5d3a8f (old 60 Hz recording):
+    old ruler_subset: 90 frames, 87 never admitted by XRSLAM, 3 admitted but engine not yet tracking → 0 usable (refuses, no interpolation)
+    in the lossless first 1060 rows, only 8 of 174 depth frames coincide with admitted frames (all in the first second,
+      before XRSLAM initialised at recording frame 101) → the old recording cannot give an XRSLAM ruler value at all
+    on-phone re-export (ruler_subset_xr30, gate = PwXrslamOfficialFeed.admits): 3 frames, all admitted (every_subset_frame_admitted true)
+    on-phone replay replay_fb5d3a8f_pfk-on_paced_20260924_221026_first17s_rec30: invariants passed; new
+      poses_camera_by_recording_frame.csv 480 rows == valid rows of poses_camera.tum, recording_frame→t_ns 0 mismatches,
+      engine_t − t_ns ∈ [−2.9e−11, 0] s
