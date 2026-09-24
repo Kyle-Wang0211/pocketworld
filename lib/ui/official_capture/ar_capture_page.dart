@@ -136,6 +136,17 @@ class OfficialARCapturePage extends StatefulWidget {
          '补拍、「只重建」、「查看」是三种进入方式,不能同时给',
        );
 
+  /// [172] Test seam for the review-mode loads (default: the isolate loader the page always used);
+  /// the widget tests record which PLYs the page asks for.
+  @visibleForTesting
+  static Future<SparseCloudData?> Function(String plyPath, String debugLabel) debugReviewCloudLoader =
+      (path, label) => compute(loadReviewCloud, path, debugLabel: label);
+
+  /// [172] NEGATIVE-CONTROL switch for the tests only: re-enter the way build 171 did (decode the
+  /// dense PLY through loadReviewCloud). Never set in the product.
+  @visibleForTesting
+  static bool debugLegacyDenseReviewLoad = false;
+
   /// [2026-09-08 追加拍摄] 非空 = 往这个已有项目里补拍:复用它的 capture 目录、
   /// 照片编号接着排、目录绝不删。留空 = 原来的"新建一次拍摄",行为一字未动。
   ///
@@ -447,9 +458,15 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   SfmLiveSnapshot? _denseDisplay;
   Float32List? _denseDisplayKey;
 
-  /// Dense PLY already on disk when the page is entered in review mode (shown
-  /// instead of the sparse cloud; dense is then "done" for this project).
-  SfmLiveSnapshot? _denseReviewSnapshot;
+  /// [build 172, user 2026-09-24 「有树秒开，没树就停在稀疏点云的展示页面。用户点击下一步再正常
+  /// 训练稠密」] Re-entry (review mode) with a VALID dense tree (DenseLodCache.findValid): the
+  /// tree directory, shown at once by the GPU viewer (load_octree) over the sparse cloud's
+  /// framing; dense is then "done" for this project. Without a valid tree this stays null — even
+  /// when an old official_dense.ply is on disk — and the page is the sparse page (editing, 下一步
+  /// runs the dense stage again). The dense PLY is never decoded in Dart on re-entry (171 read all
+  /// 99 MB of 未命名(12) through loadReviewCloud and never finished; the tree was ready long before).
+  /// Replaces 171's `_denseReviewSnapshot` (the 1 M sample of the dense PLY).
+  String? _reviewTreeDir;
 
   /// [LOD v3 2026-09-24] The finished dense cloud's octree (built on the phone by
   /// DenseLodCache into Library/Caches/lod/<作品标识>/ after official_dense.ply lands, or
@@ -472,11 +489,14 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     if (mounted) setState(() {});
   }
 
-  /// The octree to hand the view: only while the finished dense cloud is what is on screen.
+  /// The octree to hand the view: only while the finished dense cloud is what is on screen —
+  /// the valid tree found on re-entry, or the one built after this session's dense run.
   String? get _lodOctreeDirOnScreen {
+    if (_denseRunningHere || !_denseDoneHere) return null;
+    final r = _reviewTreeDir;
+    if (r != null) return r;
     final s = _denseLod?.value;
     if (s == null || s.phase != DenseLodPhase.ready) return null;
-    if (_denseRunningHere || !_denseDoneHere) return null;
     return s.octreeDir;
   }
 
@@ -2309,42 +2329,34 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// wait-page state. Missing/empty PLY ⇒ the error state (material kept).
   Future<void> _enterReviewMode(String dir) async {
     final ply = '$dir/official_sfm_sparse.ply';
+    final densePly = '$dir/official_dense.ply';
+    // [172] Sparse (small, the state machine needs it) and the dense TREE check (stat + stamp, no
+    // PLY body) run side by side; the dense PLY itself is not read and no tree is built here.
+    final treeFuture = File(densePly).existsSync()
+        ? DenseLodCache.instance.findValid(densePly)
+        : Future<String?>.value(null);
     SparseCloudData? cloud;
     try {
-      cloud = await compute(loadReviewCloud, ply, debugLabel: 'review_load_sparse');
+      cloud = await OfficialARCapturePage.debugReviewCloudLoader(ply, 'review_load_sparse');
     } catch (e) {
       DeviceLog.log('OfficialARCapturePage', 'review load failed: $e');
     }
-    // dense already produced for this project ⇒ show it (dev convenience; the
-    // user's deliverable is the mesh, see 2026-09-15 decision on the budget).
-    SparseCloudData? dense;
-    final densePly = '$dir/official_dense.ply';
-    if (File(densePly).existsSync()) {
-      // [LOD v3] a valid tree is used at once; otherwise the 1 M copy shows while it is built.
-      _watchDenseLod(densePly);
-      try {
-        dense = await compute(loadReviewCloud, densePly, debugLabel: 'review_load_dense');
-      } catch (e) {
-        DeviceLog.log('OfficialARCapturePage', 'review dense load failed: $e');
-      }
+    final tree = await treeFuture;
+    if (OfficialARCapturePage.debugLegacyDenseReviewLoad && File(densePly).existsSync()) {
+      // Negative control only (see the field): build 171's slow path.
+      await OfficialARCapturePage.debugReviewCloudLoader(densePly, 'review_load_dense');
+    }
+    // A dense run of THIS project finished earlier in this app session (the page was left and
+    // re-opened): follow its tree build (the shared cache joins the running build, never a second).
+    final p = denseStageProgress.value;
+    if (tree == null && p != null && p.captureDir == dir && p.state == DenseStageState.done && p.outPly != null) {
+      _watchDenseLod(p.outPly!);
     }
     if (!mounted) return;
     final c = cloud;
-    final d = dense;
     setState(() {
       _sfmCenterLabel = null; // 载入结束;之后若真的在生成,用回默认文案
-      if (d != null && d.count > 0) {
-        _denseReviewSnapshot = SfmLiveSnapshot(
-          xyz: d.xyz,
-          rgb: d.rgb,
-          posesPacked: Float64List(0),
-          summary: const <String, dynamic>{'source': 'dense_review'},
-          refined: true,
-          obsOffsets: Int32List(0),
-          obsFrameIds: Int32List(0),
-          obsXY: Float32List(0),
-        );
-      }
+      _reviewTreeDir = tree;
       if (c == null || c.count == 0) {
         _sfmPhase = SfmPreviewPhase.error;
         _sfmErrorText = '未找到点云';
@@ -2366,7 +2378,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     });
     DeviceLog.log(
       'OfficialARCapturePage',
-      'review mode: $dir → ${c == null ? "no cloud" : "${c.count} pts (file ${c.sourceCount})"}',
+      'review mode: $dir → ${c == null ? "no cloud" : "${c.count} pts (file ${c.sourceCount})"}; '
+          'dense tree: ${tree ?? (File(densePly).existsSync() ? "none (dense PLY on disk, not read; 下一步 re-runs dense)" : "none")}',
     );
   }
 
@@ -2520,7 +2533,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   }
 
   bool get _denseDoneHere {
-    if (_denseReviewSnapshot != null) return true;
+    // [172] re-entry counts as dense-done only with a VALID tree (not merely a dense PLY on disk).
+    if (_reviewTreeDir != null) return true;
     final p = denseStageProgress.value;
     return p != null &&
         p.captureDir == _pageCaptureDir &&
@@ -5431,7 +5445,6 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               phase: _sfmPhase!,
               snapshot:
                   _denseSnapshotFor(denseStageProgress.value) ??
-                  _denseReviewSnapshot ??
                   _sfmSnapshot ??
                   _sfmLiveSnapshot,
               errorText: _sfmErrorText,

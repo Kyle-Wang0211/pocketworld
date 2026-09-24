@@ -30,6 +30,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart' show AppLifecycleState, WidgetsBinding, WidgetsBindingObserver;
 import 'package:path_provider/path_provider.dart';
 
 import '../official_util/device_log.dart';
@@ -116,11 +117,13 @@ class DenseLodCache {
   /// PLY identity a build already failed for: not retried until the PLY changes (a tree that
   /// cannot pass its self-check would otherwise be rebuilt on every visit).
   final Map<String, String> _failedFor = {};
-  Future<void> _queue = Future<void>.value(); // one build at a time
+  Future<void>? _queue; // one build at a time (null = nothing ever queued)
 
-  /// Completes when every queued check/build has finished (tests).
+  /// Completes when every queued check/build has finished (tests). With nothing queued the future
+  /// is made in the caller's zone (a completed future made elsewhere would deliver into that
+  /// zone — under flutter_test's fake async that never happens inside runAsync).
   @visibleForTesting
-  Future<void> whenIdle() => _queue;
+  Future<void> whenIdle() => _queue ?? Future<void>.value();
 
   static Future<Directory?> _defaultRoot() async {
     try {
@@ -160,6 +163,34 @@ class DenseLodCache {
     return hash;
   }
 
+  /// [build 172, user 2026-09-24 「有树秒开，没树就停在稀疏点云的展示页面」] Re-opening a work:
+  /// the valid tree for [densePlyPath] if there is one, else null. NEVER builds (a work without a
+  /// valid tree stays on its sparse page until the user runs the dense stage again) and never reads
+  /// the PLY body (header only). Same validity rule as [watch].
+  Future<String?> findValid(String densePlyPath) async {
+    try {
+      final root = await _cacheRoot();
+      if (root == null) return null;
+      final src = File(densePlyPath);
+      if (!src.existsSync()) return null;
+      final stat = src.statSync();
+      final points = plyVertexCount(densePlyPath);
+      if (points == null || points <= 0) return null;
+      final tree = Directory('${root.path}/${keyFor(densePlyPath)}');
+      final ok = isValidTree(tree, (
+        path: densePlyPath,
+        bytes: stat.size,
+        mtimeMs: stat.modified.millisecondsSinceEpoch,
+        points: points,
+      ));
+      if (!ok) return null;
+      _touch(tree);
+      return tree.path;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// The tree state for [densePlyPath]; starts (or reuses) the check/build. The same notifier is
   /// returned for the same path, so the capture page and the viewer page share one build.
   ValueListenable<DenseLodState> watch(String densePlyPath) {
@@ -176,7 +207,7 @@ class DenseLodCache {
   }
 
   Future<void> _ensure(String ply, ValueNotifier<DenseLodState> out) {
-    final run = _queue.then((_) async {
+    final run = (_queue ?? Future<void>.value()).then((_) async {
       try {
         out.value = await _ensureNow(ply, out);
       } catch (e) {
@@ -221,7 +252,12 @@ class DenseLodCache {
       if (d.existsSync()) d.deleteSync(recursive: true);
     }
     final started = _clock();
-    DeviceLog.log('DenseLodCache', 'build start $key: $plyPoints pts, ${stat.size} B');
+    final lifecycle = _LifecycleTally.start();
+    DeviceLog.log(
+      'DenseLodCache',
+      'build start $key at ${started.toIso8601String()}: $plyPoints pts, ${stat.size} B, '
+          'app ${lifecycle.stateAtStart}',
+    );
     final build = await _bridge.buildFromPly(plyPath: ply, outDir: tmp.path, chunkDir: chunks.path);
     try {
       if (chunks.existsSync()) chunks.deleteSync(recursive: true);
@@ -238,6 +274,19 @@ class DenseLodCache {
       checks.addAll(judgeVerify(verify, build: build));
     }
     final pass = verify != null && checks.every((c) => c.pass);
+    final finished = _clock();
+    final bg = lifecycle.stop();
+    // [172] the numbers a phone measurement rests on: wall clock start/end, peak memory (shell),
+    // and whether the app was sent to the background meanwhile (iOS suspends it ⇒ the wall time
+    // then includes the time it was not running; build 171's first on-device build did this).
+    DeviceLog.log(
+      'DenseLodCache',
+      'build timing $key: start ${started.toIso8601String()} end ${finished.toIso8601String()} '
+          'wall ${finished.difference(started).inMilliseconds} ms, engine ${build.elapsedMs.toStringAsFixed(0)} ms, '
+          'peak ${build.peakFootprintMb.toStringAsFixed(0)} MB (baseline ${build.baselineFootprintMb.toStringAsFixed(0)} MB), '
+          'background during build: ${bg.wentToBackground ? 'YES' : 'no'} '
+          '(${bg.backgroundEntries}×, ${bg.backgroundMs} ms${bg.observed ? '' : ', lifecycle not observable'})',
+    );
     final detail = checks.where((c) => !c.pass).map((c) => '${c.name}: ${c.detail}').join('; ');
     if (!pass) {
       try {
@@ -257,7 +306,8 @@ class DenseLodCache {
         'ply_mtime_ms': source.mtimeMs,
         'ply_points': plyPoints,
         'started': started.toIso8601String(),
-        'finished': _clock().toIso8601String(),
+        'finished': finished.toIso8601String(),
+        'background_during_build': bg.toJson(),
         'build': build.toJson(),
         'verify': verify.toJson(),
         'checks': [for (final c in checks) c.toJson()],
@@ -352,4 +402,72 @@ typedef _SourceId = ({String path, int bytes, int mtimeMs, int points});
   final n = plyVertexCount(ply);
   if (n == null) return null;
   return (path: ply, bytes: st.size, mtimeMs: st.modified.millisecondsSinceEpoch, points: n);
+}
+
+/// Counts how often / how long the app was in the background while a build ran (Flutter lifecycle
+/// events; iOS suspends a backgrounded app, so such a build's wall time is not the build's cost).
+class _LifecycleTally with WidgetsBindingObserver {
+  _LifecycleTally._(this.observed, this.stateAtStart);
+
+  factory _LifecycleTally.start() {
+    try {
+      final b = WidgetsBinding.instance;
+      final t = _LifecycleTally._(true, b.lifecycleState?.name ?? 'unknown');
+      if (b.lifecycleState == AppLifecycleState.paused || b.lifecycleState == AppLifecycleState.hidden) {
+        t._enter();
+      }
+      b.addObserver(t);
+      return t;
+    } catch (_) {
+      return _LifecycleTally._(false, 'unknown');
+    }
+  }
+
+  final bool observed;
+  final String stateAtStart;
+  int backgroundEntries = 0;
+  int backgroundMs = 0;
+  DateTime? _since;
+
+  bool get wentToBackground => backgroundEntries > 0;
+
+  void _enter() {
+    if (_since != null) return;
+    backgroundEntries++;
+    _since = DateTime.now();
+  }
+
+  void _leave() {
+    final t = _since;
+    if (t == null) return;
+    backgroundMs += DateTime.now().difference(t).inMilliseconds;
+    _since = null;
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden) {
+      _enter();
+    } else if (state == AppLifecycleState.resumed) {
+      _leave();
+    }
+  }
+
+  _LifecycleTally stop() {
+    _leave();
+    if (observed) {
+      try {
+        WidgetsBinding.instance.removeObserver(this);
+      } catch (_) {}
+    }
+    return this;
+  }
+
+  Map<String, Object> toJson() => <String, Object>{
+    'observed': observed,
+    'state_at_start': stateAtStart,
+    'went_to_background': wentToBackground,
+    'background_entries': backgroundEntries,
+    'background_ms': backgroundMs,
+  };
 }

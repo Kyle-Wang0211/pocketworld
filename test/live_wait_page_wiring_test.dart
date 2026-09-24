@@ -73,7 +73,8 @@ void main() {
     final flat = src.replaceAll(RegExp(r'\s+'), ' ');
     expect(
       flat.contains(
-        '_denseReviewSnapshot ?? _sfmSnapshot ?? _sfmLiveSnapshot,',
+        // [172] was `_denseReviewSnapshot ?? …` (dense PLY decoded on re-entry, removed)
+        '_denseSnapshotFor(denseStageProgress.value) ?? _sfmSnapshot ?? _sfmLiveSnapshot,',
       ),
       isTrue,
     );

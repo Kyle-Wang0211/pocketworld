@@ -49,7 +49,9 @@ void main() {
   test('显示优先级:稠密实时云 > 盘上稠密 > 稀疏 > 拍摄末版白云;失败时稠密云让位', () {
     expect(
       page.contains(
-        '_denseSnapshotFor(denseStageProgress.value) ??\n                  _denseReviewSnapshot ??\n                  _sfmSnapshot ??\n                  _sfmLiveSnapshot,',
+        // [172] `_denseReviewSnapshot` (the dense PLY decoded on re-entry) is gone: re-entry with a
+        // valid tree shows the tree over the sparse snapshot (see reopen_work_page_test.dart).
+        '_denseSnapshotFor(denseStageProgress.value) ??\n                  _sfmSnapshot ??\n                  _sfmLiveSnapshot,',
       ),
       isTrue,
     );
@@ -101,19 +103,26 @@ void main() {
     );
   });
 
-  test('查看模式:盘上有 official_dense.ply 就装它', () {
+  // [172] user 2026-09-24 「有树秒开，没树就停在稀疏点云的展示页面。用户点击下一步再正常训练稠密」:
+  // this used to pin 「查看模式:盘上有 official_dense.ply 就装它」(decode the dense PLY on re-entry,
+  // which never finished on the phone in build 171). Now: only a valid tree counts.
+  test('查看模式:只认有效八叉树,不解码稠密 PLY、不建树', () {
     final r = page.indexOf('Future<void> _enterReviewMode(String dir) async {');
+    final end = page.indexOf("static const String _kEtaPriorLogName", r);
+    final body = page.substring(r, end);
+    expect(body.contains("DenseLodCache.instance.findValid(densePly)"), isTrue);
+    expect(body.contains('_reviewTreeDir = tree;'), isTrue);
+    // the only dense decode left is the tests' negative-control switch
     expect(
-      page.indexOf("final densePly = '\$dir/official_dense.ply';", r),
-      greaterThan(r),
+      RegExp(r"debugReviewCloudLoader\(densePly").allMatches(body).length,
+      1,
     );
-    expect(
-      page.indexOf(
-        "compute(loadReviewCloud, densePly, debugLabel: 'review_load_dense')",
-        r,
-      ),
-      greaterThan(r),
-    );
+    expect(body.indexOf('if (OfficialARCapturePage.debugLegacyDenseReviewLoad'), greaterThan(0));
+    expect(body.contains("compute(loadReviewCloud, densePly"), isFalse);
+    // no build on re-entry (a build only follows a dense run of this session)
+    expect(body.contains('DenseLodCache.instance.watch('), isFalse);
+    // NEGATIVE: the checker sees the sparse load it should see
+    expect(body.contains("debugReviewCloudLoader(ply, 'review_load_sparse')"), isTrue);
   });
 
   test('稠密倒计时观察器:阶段单元数按 phase 总数校正,结束记尺子,只在成功时存先验', () {

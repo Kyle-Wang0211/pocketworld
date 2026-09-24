@@ -233,7 +233,9 @@ class GpuCloudLayer extends ChangeNotifier {
 
   Future<void> _loadOctree(LodTextureInfo tex, String dir) async {
     try {
-      final fit = LodSceneFit.fromMetadataJson(await File('$dir/metadata.json').readAsString());
+      // metadata.json is a few KB (Potree 2.0 header); read synchronously so the tree swap never
+      // waits behind the async IO queue (a stalled isolate group must not hold it back either).
+      final fit = LodSceneFit.fromMetadataJson(File('$dir/metadata.json').readAsStringSync());
       await _bridge.loadOctree(textureId: tex.textureId, octreeDir: dir);
       if (!identical(_tex, tex)) return;
       _octreeBoxMin = fit.boxMin;

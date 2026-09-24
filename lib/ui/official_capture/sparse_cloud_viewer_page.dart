@@ -43,8 +43,18 @@ class SparseCloudData {
 /// point budget, otherwise the first [ReviewPointCloudPolicy.kPointBudget]
 /// points of the progressive octree order (uniform over the whole extent).
 /// The file is left as is.
-SparseCloudData? loadReviewCloud(String path) =>
-    loadReviewCloudWithBudget(path, ReviewPointCloudPolicy.kPointBudget);
+SparseCloudData? loadReviewCloud(String path) {
+  // [build 172] Never decode the dense PLY here. Build 171 did (re-entry of 未命名(12): 6,922,990
+  // points / 99 MB, in a compute isolate while the phone built the octree natively at 798 MB peak)
+  // and that call never returned on the phone; the dense cloud is shown from its octree
+  // (DenseLodCache / GpuCloudLayer) instead. A caller that still asks gets null, not a hang.
+  if (File(path).uri.pathSegments.last == kDensePlyFileName) {
+    // ignore: avoid_print
+    print('[loadReviewCloud] refused: dense PLY is shown from its octree, never decoded ($path)');
+    return null;
+  }
+  return loadReviewCloudWithBudget(path, ReviewPointCloudPolicy.kPointBudget);
+}
 
 SparseCloudData? loadReviewCloudWithBudget(String path, int budget) {
   final full = loadSparsePly(path);
@@ -165,11 +175,24 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
   bool get _isDensePly =>
       File(widget.plyPath).uri.pathSegments.last == kDensePlyFileName;
 
+  /// [172] Valid tree found when the dense page opened (DenseLodCache.findValid, never builds).
+  String? _denseTreeDir;
+
   @override
   void initState() {
     super.initState();
     if (_isDensePly) {
-      _denseLod = DenseLodCache.instance.watch(widget.plyPath)..addListener(_onDenseLod);
+      // [172] user 2026-09-24 「有树秒开，没树就停在稀疏点云的展示页面」: the dense PLY is never
+      // decoded; the tree is used if valid, and built only after a dense run of THIS session.
+      unawaited(
+        DenseLodCache.instance.findValid(widget.plyPath).then((dir) {
+          if (mounted && dir != null) setState(() => _denseTreeDir = dir);
+        }),
+      );
+      final p = denseStageProgress.value;
+      if (p != null && p.captureDir == _captureDir && p.state == DenseStageState.done) {
+        _denseLod = DenseLodCache.instance.watch(widget.plyPath)..addListener(_onDenseLod);
+      }
     }
     _load();
   }
@@ -179,9 +202,14 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
   }
 
   String? get _lodOctreeDir {
+    if (_denseTreeDir != null) return _denseTreeDir;
     final s = _denseLod?.value;
     return s != null && s.phase == DenseLodPhase.ready ? s.octreeDir : null;
   }
+
+  /// The PLY this page decodes for its own points (framing, picking, CPU fallback): the sparse
+  /// sibling when the page shows the dense cloud (whose points come from the tree).
+  String get _pointsPly => _isDensePly ? '$_captureDir/official_sfm_sparse.ply' : widget.plyPath;
 
   @override
   void dispose() {
@@ -521,7 +549,7 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
   Future<void> _load() async {
     final cloud = await compute(
       loadReviewCloud,
-      widget.plyPath,
+      _pointsPly,
       debugLabel: 'sparse_ply_load',
     );
     // [E25-D 2026-07-20] L2 渲染门已删除 —— 草稿查看页渲染全量交付点云。

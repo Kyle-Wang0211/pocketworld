@@ -27,6 +27,9 @@ class FakeLodPlatform {
   bool loadOctreeFails = false;
   bool createFails = false;
 
+  /// When set, buildFromPly waits for it (to put lifecycle events INSIDE a build).
+  Future<void>? buildGate;
+
   List<String> get methods => [for (final c in calls) c.method];
   Iterable<MethodCall> of(String m) => calls.where((c) => c.method == m);
 
@@ -82,6 +85,7 @@ class FakeLodPlatform {
           'source': source,
         };
       case 'buildFromPly':
+        if (buildGate != null) await buildGate;
         return _build(a['ply_path'] as String, a['out_dir'] as String, a['chunk_dir'] as String);
       case 'verifyOctree':
         return _verify(a['octree_dir'] as String);
