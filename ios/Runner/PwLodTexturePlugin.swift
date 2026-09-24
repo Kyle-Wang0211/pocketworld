@@ -238,9 +238,9 @@ final class PwLodTexturePlugin: NSObject, FlutterPlugin {
       do { try fm.removeItem(atPath: chunk) } catch { removed = !fm.fileExists(atPath: chunk) }
       m["status"] = pwLodStatusName(s)
       m["error"] = String(cString: err)
-      m["ply_points"] = NSNumber(value: report.ply_points)
-      m["tree_points"] = NSNumber(value: report.tree_points)
-      m["octree_bin_bytes"] = NSNumber(value: report.octree_bin_bytes)
+      m["ply_points"] = pwLodWireInt(report.ply_points)
+      m["tree_points"] = pwLodWireInt(report.tree_points)
+      m["octree_bin_bytes"] = pwLodWireInt(report.octree_bin_bytes)
       m["nodes"] = NSNumber(value: report.nodes)
       m["elapsed_ms"] = report.elapsed_ms
       m["shell_wall_ms"] = wallMs
@@ -262,8 +262,8 @@ final class PwLodTexturePlugin: NSObject, FlutterPlugin {
       let s = pwlod_verify_octree(dir, &r)
       PwLodTexturePlugin.reply(result, [
         "status": pwLodStatusName(s),
-        "tree_points": NSNumber(value: r.tree_points),
-        "octree_bin_bytes": NSNumber(value: r.octree_bin_bytes),
+        "tree_points": pwLodWireInt(r.tree_points),
+        "octree_bin_bytes": pwLodWireInt(r.octree_bin_bytes),
         "nodes": NSNumber(value: r.nodes),
         "leaves": NSNumber(value: r.leaves),
         "leaves_selected": NSNumber(value: r.leaves_selected),

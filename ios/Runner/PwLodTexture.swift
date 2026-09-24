@@ -97,6 +97,12 @@ func pwLodStatusName(_ s: pwlod_status) -> String {
   }
 }
 
+/// Unsigned 64-bit counters go over the channel as a signed Int64 NSNumber (Dart int);
+/// clamping keeps the standard codec on its plain int64 path.
+func pwLodWireInt(_ v: UInt64) -> NSNumber {
+  NSNumber(value: Int64(clamping: v))
+}
+
 struct PwLodError: Error {
   let code: String
   let message: String
@@ -369,17 +375,17 @@ final class PwLodTexture: NSObject, FlutterTexture {
     var shell: [String: Any] = [:]
     pixelBufferSynchronizationQueue.sync {
       shell = [
-        "copy_calls": NSNumber(value: copyCalls),
-        "copy_empty": NSNumber(value: copyEmpty),
-        "last_acquired_frame_number": NSNumber(value: lastAcquiredFrame),
+        "copy_calls": pwLodWireInt(copyCalls),
+        "copy_empty": pwLodWireInt(copyEmpty),
+        "last_acquired_frame_number": pwLodWireInt(lastAcquiredFrame),
         "copy_max_us": Double(copyMaxNs) / 1000.0,
       ]
     }
-    shell["frames_ready"] = NSNumber(value: sink?.takeUnretainedValue().framesReady ?? 0)
+    shell["frames_ready"] = pwLodWireInt(sink?.takeUnretainedValue().framesReady ?? 0)
     shell["running"] = running
     return [
-      "frame_number": NSNumber(value: st.frame_number),
-      "completed_frame_number": NSNumber(value: st.completed_frame_number),
+      "frame_number": pwLodWireInt(st.frame_number),
+      "completed_frame_number": pwLodWireInt(st.completed_frame_number),
       "points_drawn": NSNumber(value: st.points_drawn),
       "nodes_drawn": NSNumber(value: st.nodes_drawn),
       "nodes_loading": NSNumber(value: st.nodes_loading),
