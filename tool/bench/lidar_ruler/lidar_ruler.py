@@ -15,6 +15,13 @@ LiDAR 只作研发期量尺。永不进产品代码、产品管线、产品提�
   ② 帧时间:XRSLAM 位姿时间 = 帧时间 + td(+ exposure/2)。手机回放有逐帧账 intrinsics_ledger.csv
      (t_effective ↔ 录制帧 t_ns)⇒ 精确反查;Mac 宿主回放没有账 ⇒ 用 scale_eval.remap_to_frames
      (td + 逐帧 exposure_s/2,容差 0.5 ms)。
+     🔴 [2026-09-24 rec30] **首选** `--xrslam-camera`:手机回放直接写的
+     poses_camera_by_recording_frame.csv(引擎交回的 CAMERA 位姿,按录制帧号 + 整数纳秒 t_ns 键控)⇒
+     按 t_ns **整数相等**取,零容差、不插值、不经外参换算。子集帧没有引擎位姿(XRSLAM 没收那一帧,
+     或收了但没在跟踪)就不用那一帧,并在 provenance 里点数。首跑 run-fb5d3a8f 的教训:60 Hz 录制按
+     AR 帧号每 18 帧取子集,XRSLAM 只收 30 Hz、相位还中途翻了一次 ⇒ 前 17 s 的 59 个子集帧只有 3 个被收,
+     位姿只能插值,XRSLAM 的 G4 对齐闸不过(帧对间 IQR 0.113 vs ARKit 0.019)。现在录制器按引擎同一道闸
+     30 Hz 落盘、子集导出只挑引擎会收的帧(PwBenchLidarRecordingWriter W12),这里就只剩整数相等。
   ③ 丢掉 ARKit 没在跟踪的行:平移恰为 0 的行(scale_eval.valid_ref_mask);录制里有 arkit_tracking 键
      (本台架录制器 W6 写的)时,再丢掉一切 ≠ normal 的帧。
   ④ 不确定度用**循环平移噪声底**(noise_floor.py 的做法),不用 bootstrap —— 见下「噪声底」。
@@ -74,9 +81,12 @@ vendored/(只读取用的原件拷贝,sha256 为**原件**的;本目录只做过
 用法:
   /usr/bin/python3 lidar_ruler.py --recording <run-…|run-…/ruler_subset> \
       --arkit                                  # 录制里的 arkit_poses.tum
+      --xrslam-camera xr=<replay_…>/poses_camera_by_recording_frame.csv \   # rec30 起的首选(精确键控)
+      [--xrslam-ledger xr=<replay_…>/intrinsics_ledger.csv]   # 可选:把缺位姿的帧分成「没收 / 收了没跟踪」
+      --out <dir>
+  老回放(没有 poses_camera_by_recording_frame.csv)仍可走 BODY:
       --xrslam xr=<replay_…>/poses_body.tum --xrslam-ledger xr=<replay_…>/intrinsics_ledger.csv \
       --xrslam-yaml <replay_…>/<on 臂 yaml>    # 取 cam0.extrinsic.q_bc / p_bc
-      --out <dir>
   (要能 import cv2 + numpy 的解释器;本机 /usr/bin/python3 = cv2 4.13.0 + numpy 2.0.2。)
 """
 
@@ -264,6 +274,41 @@ def xrslam_body_poses(path, frame_ts, R_bc, p_bc, ledger=None, shift_s=None, tol
         by_t[eff_to_frame[keys[best]]] = (R_wb @ R_bc, p_wb + R_wb @ p_bc)
     stats['unmapped_rows'] = unmapped
     return _snap_to_frames(by_t, frame_ts, 1), stats
+
+
+def xrslam_camera_by_frame(path, frame_ts, ledger=None):
+    """[rec30] 手机回放的 poses_camera_by_recording_frame.csv → {录制帧 t_ns: (R_wc, C)}。
+
+    键 = 整数纳秒 t_ns,与子集 camera_index.csv 的 t_ns **整数相等**才算配上(零容差、不插值)。
+    位姿本来就是引擎交回的 CAMERA 位姿(world_from_camera、OpenCV 相机轴;与 BODY·T_bc 逐帧相等,
+    run-fb5d3a8f 回放实测中心差 ≤ 1.5e-7 m、旋转 ≤ 1.5e-5°)⇒ 不经外参换算。
+    ledger(可选,intrinsics_ledger.csv):引擎**收下**的录制帧 t_ns 集合,用来把缺位姿的子集帧分成
+    「XRSLAM 没收」与「收了但不是 TRACKING_SUCCESS」。
+    """
+    import csv
+    by_t, dup, offs = {}, 0, []
+    with open(path) as f:
+        for r in csv.DictReader(f):
+            t = int(r['t_ns'])
+            if t in by_t:
+                dup += 1
+            q = [float(r[k]) for k in ('qx', 'qy', 'qz', 'qw')]
+            by_t[t] = (quat_to_rmat(*q), np.array([float(r['tx']), float(r['ty']), float(r['tz'])]))
+            if r.get('engine_t'):
+                offs.append(float(r['engine_t']) - t * 1e-9)
+    matched = {t: by_t[t] for t in frame_ts if t in by_t}
+    missing = [t for t in frame_ts if t not in by_t]
+    stats = {'rows': len(by_t), 'mapping': 'exact_recording_t_ns (integer equality, no interpolation)',
+             'duplicate_t_ns': dup, 'recording_frames': len(frame_ts),
+             'recording_frames_with_pose': len(matched), 'recording_frames_without_pose': len(missing),
+             'engine_t_minus_t_ns_s': [min(offs), max(offs)] if offs else None}
+    if ledger:
+        with open(ledger) as f:
+            admitted = {int(r['t_ns']) for r in csv.DictReader(f) if r.get('t_ns') and int(r['t_ns']) >= 0}
+        stats['missing_not_admitted_by_xrslam'] = sum(1 for t in missing if t not in admitted)
+        stats['missing_admitted_but_not_tracking'] = sum(1 for t in missing if t in admitted)
+        stats['ledger'] = os.path.abspath(ledger)
+    return matched, stats
 
 
 # ═════════════════════════════════════════════════════════════════════════════════════════
@@ -629,6 +674,9 @@ def main():
     ap.add_argument('--recording', required=True, help='run-* 录制目录或其 ruler_subset/')
     ap.add_argument('--arkit', nargs='?', const='', default=None,
                     help='ARKit 位姿 TUM(省略路径 = 录制里的 arkit_poses.tum)')
+    ap.add_argument('--xrslam-camera', action='append', default=[],
+                    help='名字=poses_camera_by_recording_frame.csv(手机回放 rec30 起:CAMERA 位姿按录制帧 t_ns '
+                         '精确键控;零容差、不插值)。可配同名 --xrslam-ledger 给缺位姿的帧分类')
     ap.add_argument('--xrslam', action='append', default=[], help='名字=poses_body.tum(XRSLAM BODY 位姿)')
     ap.add_argument('--xrslam-ledger', action='append', default=[],
                     help='名字=intrinsics_ledger.csv(手机回放逐帧账,精确反查帧时间)')
@@ -665,6 +713,10 @@ def main():
         trajs['arkit'], provenance['arkit'] = arkit_poses(a.recording, p, frame_ts)
         provenance['arkit']['path'] = os.path.abspath(p)
     ledgers = dict(s.split('=', 1) for s in a.xrslam_ledger)
+    for spec in a.xrslam_camera:
+        name, path = spec.split('=', 1)
+        trajs[name], provenance[name] = xrslam_camera_by_frame(path, frame_ts, ledgers.get(name))
+        provenance[name]['path'] = os.path.abspath(path)
     if a.xrslam:
         if a.xrslam_yaml:
             R_bc, p_bc = parse_extrinsic_yaml(a.xrslam_yaml)
@@ -672,7 +724,7 @@ def main():
         else:
             R_bc, p_bc, ext_src = R_BC_DEFAULT, P_BC_DEFAULT, 'scale_eval.py P_BC / R_BC(cfg/dev_r6e2d.yaml)'
         expo = {}
-        if len(ledgers) < len(a.xrslam):
+        if len([n for n in (s.split('=', 1)[0] for s in a.xrslam) if n not in ledgers]) > 0:
             for ln in open(os.path.join(a.recording, 'intrinsics.jsonl')):
                 if ln.strip():
                     d = json.loads(ln)
@@ -699,9 +751,17 @@ def main():
         trajs[name], provenance[name] = camera_poses_opencv(path, frame_ts)
         provenance[name]['path'] = os.path.abspath(path)
     if not trajs:
-        raise SystemExit('🔴 至少给一条轨迹(--arkit / --xrslam / --camera)')
+        raise SystemExit('🔴 至少给一条轨迹(--arkit / --xrslam-camera / --xrslam / --camera)')
     for n, tj in trajs.items():
         print(f'  轨迹 {n}: {len(tj)} 帧配上  {json.dumps(provenance[n], ensure_ascii=False)}')
+        pv = provenance[n]
+        if pv.get('mapping', '').startswith('exact_recording_t_ns'):
+            extra = ''
+            if 'missing_not_admitted_by_xrslam' in pv:
+                extra = (f'(XRSLAM 没收 {pv["missing_not_admitted_by_xrslam"]} / '
+                         f'收了没在跟踪 {pv["missing_admitted_but_not_tracking"]})')
+            print(f'  XRSLAM 精确键控 {n}:子集帧 {pv["recording_frames"]},有引擎位姿 '
+                  f'{pv["recording_frames_with_pose"]},缺 {pv["recording_frames_without_pose"]}{extra};不插值')
 
     reports, n_pairs = run_all(scene, trajs, a)
 

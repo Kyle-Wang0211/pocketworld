@@ -265,6 +265,20 @@ enum PwXrslamOfficialFeed {
         let mid = ["on", "1", "true", "yes"].contains(e)
         return Resolved(cameraHz: hz, exposureMid: mid, rawHz: rh, rawExposure: re)
     }()
+
+    /// [bench 2026-09-24 rec30] 准入闸 ① 的**唯一**实现,`onCameraFrame` 与台架录制器
+    /// (PwBenchLidarSession,🔴 bench-only ruler)都调它 ⇒ 录制时挑的 30 Hz 帧与回放时引擎收的帧
+    /// 是同一条式子、同一组 Double 运算挑出来的。`ptsSeconds` 必须是回放推给引擎的那个值:
+    /// `Double(t_ns) * 1e-9`(PwBenchReplay.swift 投递处),录制器按同一式子从整数纳秒换回。
+    /// 返回 true = 收;调用方收下后把 `ptsSeconds` 记成新的 lastAdmitted。
+    /// 幂等:一串已经过闸的时间戳(相邻 ≥ 0.8/R)再过一次闸,全收 —— 录制按 30 Hz 落盘后,
+    /// 回放时的同一道闸不会再挡掉任何一帧,与从哪一帧开始喂无关。
+    @inline(__always)
+    static func admits(ptsSeconds: Double, lastAdmittedPts: Double, haveAdmitted: Bool,
+                       cameraHz: Double) -> Bool {
+        guard cameraHz > 0 else { return true }
+        return !(haveAdmitted && ptsSeconds - lastAdmittedPts < 0.8 / cameraHz)
+    }
 }
 
 /// [pw 2026-09-23 复核修正] 一帧「用的是哪份 K」的标签。两条原生通路共用,
@@ -772,7 +786,8 @@ final class PwXrslamLive {
         guard running else { lock.unlock(); return }
         // [bench 2026-09-24] 30 Hz 准入(生产 PwVioSlamFeeder 的形状,门限 0.8/R,见 PwXrslamOfficialFeed)。
         if feed.cameraHz > 0 {
-            if feedHaveAdmitted, ptsSeconds - feedLastAdmittedPts < 0.8 / feed.cameraHz {
+            if !PwXrslamOfficialFeed.admits(ptsSeconds: ptsSeconds, lastAdmittedPts: feedLastAdmittedPts,
+                                            haveAdmitted: feedHaveAdmitted, cameraHz: feed.cameraHz) {
                 feedRateSampledOut &+= 1
                 lock.unlock()
                 return

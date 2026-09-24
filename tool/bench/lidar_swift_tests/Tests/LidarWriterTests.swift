@@ -7,6 +7,11 @@
 //   · 深度缓冲带行填充(bytesPerRow > 宽×4)时仍紧致写出、值不串行;
 //   · 像素格式不对 ⇒ 记 depth_dropped、不写文件、录制照样可装载;
 //   · 子集导出:帧号保留、字节逐帧相同、深度硬链接、子集**不可回放**(装载器拒)。
+//   [2026-09-24 rec30]
+//   · XRSLAM 准入闸的 Mac 拷贝与**手机回放真账**逐帧相等(run-fb5d3a8f 前 1060 行,529/529);
+//   · 按闸落盘的录制再过一次闸全收(幂等),与回放从哪一帧开始喂无关;
+//   · 60 Hz 老录制导子集只挑引擎会收的帧(深度落在不被收的帧上的那几张被跳过、计数);
+//   · 四种写法(W10)写出的流 / 索引 / 深度逐字节相同。
 
 import CoreVideo
 import CryptoKit
@@ -209,6 +214,149 @@ final class LidarWriterTests: XCTestCase {
         XCTAssertEqual(stride6 - luma, 300 * 245_760)
         // 步长 6 时深度占总写入量:300×245760 / (1800×2764800) ≈ 1.48%
         XCTAssertLessThan(Double(stride6 - luma) / Double(luma), 0.015)
+    }
+
+    // MARK: rec30
+
+    /// 与会话层同一个闸(`PwXrslamOfficialFeed.admits` 的拷贝)挑 60 Hz 源:返回过闸的帧序号。
+    private func gate60(_ n: Int, hz: Double = 30, start: Int = 0) -> [Int] {
+        var have = false, last = 0.0, out: [Int] = []
+        for i in start..<n {
+            let t = t0 + Int64(i) * 16_666_667
+            let pts = Double(t) * 1e-9
+            if PwBenchLidarRecordingWriter.xrslamGateCopy(pts, last, have, hz) {
+                have = true; last = pts; out.append(i)
+            }
+        }
+        return out
+    }
+
+    /// 手机回放真账:run-fb5d3a8f 的 camera_index.csv + imu.csv 第一行 + 回放 intrinsics_ledger.csv
+    /// (limit_frames 1060、闸 30 Hz、引擎 official_rules)。机器上没有这份数据就跳过(不算过)。
+    func testGateCopyEqualsPhoneReplayLedger() throws {
+        let rec = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Developer/viobench-recordings/run-fb5d3a8f-6e31-463e-989d-bd73bb3a2def")
+        let ledgerURL = rec.appendingPathComponent(
+            "replay_fb5d3a8f_pfk-on_paced_20260924_213022_first17s/intrinsics_ledger.csv")
+        guard FileManager.default.fileExists(atPath: ledgerURL.path) else {
+            throw XCTSkip("本机没有 run-fb5d3a8f 的手机回放账")
+        }
+        var rows: [(t: Int64, frame: Int)] = []
+        for (n, line) in try String(contentsOf: rec.appendingPathComponent("camera_index.csv"), encoding: .utf8)
+            .split(separator: "\n").enumerated() where n > 0 {
+            let p = line.split(separator: ",")
+            rows.append((Int64(p[0])!, Int(p[1])!))
+        }
+        let imu0 = PwBenchLidarRecordingWriter.firstImuNanoseconds(
+            recording: rec.appendingPathComponent("ruler_subset"))
+        XCTAssertNotNil(imu0)
+        let r = PwBenchLidarRecordingWriter.xrslamAdmittedFrames(
+            cameraRows: rows, firstImuNanoseconds: imu0, limitFrames: 1060, cameraHz: 30)
+        var ledger: [Int] = []
+        let lines = try String(contentsOf: ledgerURL, encoding: .utf8).split(separator: "\n")
+        for line in lines.dropFirst() { ledger.append(Int(line.split(separator: ",")[1])!) }
+        XCTAssertEqual(ledger.count, 529)
+        XCTAssertEqual(r.admitted, Set(ledger), "Mac 闸拷贝必须逐帧等于手机引擎实际收下的帧")
+        XCTAssertEqual(r.leadingDropped, 4)            // 回执 leading_camera_frames_without_imu_dropped
+        XCTAssertEqual(r.fed - r.admitted.count, 527)   // 回执 rate_sampled_out
+    }
+
+    /// 录制器按闸落盘 ⇒ 回放时同一道闸对每一帧都放行,不管从哪一帧开始喂(闸幂等)。
+    func testGatedRecordingIsFullyAdmittedOnReplay() {
+        // 60 Hz 源、ARKit 中途少发一帧(第 37 帧缺),录制器过闸。
+        var src = Array(0..<300); src.remove(at: 37)
+        var have = false, last = 0.0
+        var recorded: [(t: Int64, frame: Int)] = []
+        for i in src {
+            let t = t0 + Int64(i) * 16_666_667
+            let pts = Double(t) * 1e-9
+            if PwBenchLidarRecordingWriter.xrslamGateCopy(pts, last, have, 30) {
+                have = true; last = pts; recorded.append((t, recorded.count))
+            }
+        }
+        XCTAssertEqual(recorded.count, 150, "60 Hz 源 300 帧(缺 1)过 30 Hz 闸")
+        for skip in [0, 1, 2, 5] {
+            let imu0 = recorded[skip].t
+            let r = PwBenchLidarRecordingWriter.xrslamAdmittedFrames(
+                cameraRows: recorded, firstImuNanoseconds: imu0, cameraHz: 30)
+            XCTAssertEqual(r.gatedOut, 0, "从第 \(skip) 帧开始喂也一帧不挡")
+            XCTAssertEqual(r.admitted.count, recorded.count - skip)
+        }
+        // 反例(闸有牙齿):不过闸的 60 Hz 流,换一帧开始喂,收的帧就换一半。
+        let raw = (0..<300).map { (t: t0 + Int64($0) * 16_666_667, frame: $0) }
+        let a = PwBenchLidarRecordingWriter.xrslamAdmittedFrames(
+            cameraRows: raw, firstImuNanoseconds: raw[0].t, cameraHz: 30)
+        let b = PwBenchLidarRecordingWriter.xrslamAdmittedFrames(
+            cameraRows: raw, firstImuNanoseconds: raw[1].t, cameraHz: 30)
+        XCTAssertEqual(a.admitted.count, 150)
+        XCTAssertTrue(a.admitted.isDisjoint(with: b.admitted), "60 Hz 流的相位取决于起点 —— 首跑失配的机理")
+    }
+
+    /// 60 Hz 老录制:深度每 3 帧一张(0,3,6,…),引擎只收偶数帧 ⇒ 子集只挑 0,6,12,…,奇数的深度帧跳过并计数。
+    func testSubsetExportPicksOnlyXrslamAdmittedFrames() throws {
+        let w = try PwBenchLidarRecordingWriter(directory: dir, recordingID: "t60", format: format, depthStride: 3)
+        for i in 0..<40 {
+            w.appendIMU(timestampNanoseconds: t0 - 50_000_000 + Int64(i) * 10_000_000,
+                        gyroscope: (0, 0, 0), acceleration: (0, 9.8, 0))
+        }
+        let K = PwBenchLidarIntrinsics(fx: 50, fy: 50, cx: 32, cy: 24)
+        for i in 0..<60 {
+            let t = t0 + Int64(i) * 16_666_667
+            try w.recordIntrinsics(K, timestampSeconds: Double(t) / 1e9)
+            let cam = w.appendLuma(luma(i), timestampNanoseconds: t)
+            if i % 3 == 0 {
+                w.appendDepth(depthMap: depthBuffer(frame: i), confidenceMap: confidenceBuffer(),
+                              timestampNanoseconds: t, cameraFrameIndex: cam, arFrameIndex: i, imageIntrinsics: K)
+            }
+        }
+        try w.finish()
+        let s = try PwBenchLidarRecordingWriter.exportRulerSubset(recording: dir, minSpacingSeconds: 0.09)
+        let admitted = Set(gate60(60))
+        let idx = try String(contentsOf: dir.appendingPathComponent("ruler_subset/frames.pwvi"), encoding: .utf8)
+            .split(separator: "\n").map { (try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any])["frame"] as! Int }
+        XCTAssertEqual(idx, [0, 6, 12, 18, 24, 30, 36, 42, 48, 54])
+        XCTAssertTrue(idx.allSatisfy { admitted.contains($0) })
+        let xa = s["xrslam_admission"] as! [String: Any]
+        XCTAssertEqual(xa["depth_rows_not_admitted"] as? Int, 10)
+        XCTAssertEqual(xa["every_subset_frame_admitted"] as? Bool, true)
+        XCTAssertEqual(xa["admitted"] as? Int, 30)
+    }
+
+    /// W10:四种写法写出的字节逐位相同(差别只在计时)。
+    func testWriteSyncModesWriteIdenticalBytes() throws {
+        var shas: [PwBenchLidarWriteSync: [String: String]] = [:]
+        for mode in PwBenchLidarWriteSync.allCases {
+            let d = dir.appendingPathComponent(mode.rawValue)
+            let w = try PwBenchLidarRecordingWriter(directory: d, recordingID: "sync", format: format,
+                                                    depthStride: 3, writeSync: mode)
+            XCTAssertEqual(w.writeSync, mode)
+            for i in 0..<10 {
+                w.appendIMU(timestampNanoseconds: t0 - 50_000_000 + Int64(i) * 10_000_000,
+                            gyroscope: (0, 0, 0), acceleration: (0, 9.8, 0))
+            }
+            let K = PwBenchLidarIntrinsics(fx: 50, fy: 50, cx: 32, cy: 24)
+            for i in 0..<24 {
+                let t = t0 + Int64(i) * 33_333_333
+                try w.recordIntrinsics(K, timestampSeconds: Double(t) / 1e9)
+                let cam = w.appendLuma(luma(i), timestampNanoseconds: t)
+                if i % 3 == 0 {
+                    w.appendDepth(depthMap: depthBuffer(frame: i), confidenceMap: confidenceBuffer(),
+                                  timestampNanoseconds: t, cameraFrameIndex: cam, arFrameIndex: 2 * i,
+                                  imageIntrinsics: K, admittedFrameIndex: i)
+                }
+            }
+            let m = try w.finish()
+            XCTAssertEqual(m.lossCount, 0)
+            XCTAssertEqual(w.timingSnapshot().barrierFallbacks, 0, "\(mode.rawValue) 屏障不该失败")
+            XCTAssertFalse(w.perSecondTimeline().isEmpty)
+            shas[mode] = Dictionary(uniqueKeysWithValues: m.files.map { ($0.relativePath, $0.sha256) })
+            _ = try DeviceRecordingLoader().load(manifestURL: d.appendingPathComponent(DeviceRecordingManifest.fileName))
+        }
+        let ref = shas[.fsyncEach]!
+        XCTAssertEqual(ref.count, 9)
+        for mode in PwBenchLidarWriteSync.allCases { XCTAssertEqual(shas[mode]!, ref, mode.rawValue) }
+        let row = try String(contentsOf: dir.appendingPathComponent("barrier/depth.pwvi"), encoding: .utf8)
+        XCTAssertTrue(row.contains("\"admitted_frame\":3"))
     }
 
     /// W9:子集导出 —— 帧号保留、字节逐帧相同、深度硬链接、子集不可回放。

@@ -7,15 +7,23 @@
 // (main.dart 的 const 分支;不带 define 的包里整页被树摇掉,装机前用 strings 核类名)。
 //
 // ══ 它做什么 ══════════════════════════════════════════════════════════════════════
-// 一次录制 = 与 viobench-recordings/run-* 同格式的 pwvi 录制(1920×1440 luma @60 fps + IMU 100 Hz +
-// ARKit 位姿 + 逐帧内参/曝光/跟踪状态),外加 ARFrame.sceneDepth 深度 + 置信度(默认每 6 帧一张 =
-// 10 Hz,同一 ARFrame 同一时间戳)。落在 `Documents/replay_recordings/run-<uuid>/`,就是回放页
+// 一次录制 = 与 viobench-recordings/run-* 同格式的 pwvi 录制(整幅 1920×1440 luma + IMU 100 Hz +
+// ARKit 位姿 + 逐帧内参/曝光/跟踪状态),外加 ARFrame.sceneDepth 深度 + 置信度(同一 ARFrame 同一时间戳)。
+// [2026-09-24 rec30] ARKit 仍跑 1920×1440@60,录制器按 XRSLAM 的 30 Hz 准入闸(与引擎同一个函数
+// PwXrslamOfficialFeed.admits)落盘 ⇒ 录下的每一帧回放时都被 XRSLAM 收下;深度每 3 个录下的帧一张
+// (10 Hz)。分辨率不降。首跑 60 Hz 整场 166 MB/s、17.8 s 起丢 19% 帧,30 Hz 带宽减半。落在 `Documents/replay_recordings/run-<uuid>/`,就是回放页
 // (PW_BENCH_REPLAY / -PWBenchReplayRecording)读的目录 ⇒ 录完直接在手机上回放出 XRSLAM 位姿。
 // 录完自动导出 `ruler_subset/`(只含带深度、间隔 ≥0.25 s 的帧,~400 MB/30 s),Mac 上只拉这个。
 //
 // 「扰动自测」按钮:手机**静置**,自动录 4×10 s(深度 关 / 开 / 开 / 关),每段封口后删掉帧流只留
 // manifest 与 recorder_timing.json,比较两臂的 ARKit 少发帧、回调时延、写入背压与丢帧 ——
 // 「开深度不扰动 VIO 流」由台架自己量,不要用户拍东西。结果写 `Documents/lidar_selftest/<时间>/`。
+// 「写入吞吐自测」按钮(rec30):手机静置,每臂 60 s 整幅 1920×1440 + 深度,臂 = 录制频率 × 写法
+// (writer W10:fsync_each = 源 / barrier / barrier_nocache / none),ABBA 次序,封口后删流;逐秒时间线
+// 看哪一秒开始掉速。结果写 `Documents/lidar_selftest/<时间>_soak/soak_summary.json`。
+// 自动化:`-PWBenchPage lidar -PWBenchLidarAuto soak [-PWBenchLidarSoakArms 30:barrier,…]
+// [-PWBenchLidarSoakSeconds 60]`;`-PWBenchLidarAuto reexport -PWBenchLidarReexport run-…
+// [-PWBenchLidarReexportLimitFrames N]` 给已有录制重导只含 XRSLAM 会收的帧的子集(ruler_subset_xr30/)。
 //
 // 录法(给用户的协议)见交付报告;Mac 侧:tool/bench/pull_lidar_recording.sh + tool/bench/lidar_ruler/。
 //
@@ -48,6 +56,10 @@ class _BenchLidarRecordPageState extends State<BenchLidarRecordPage> {
   double _seconds = 30;
   bool _depth = true;
   bool _selfTestRunning = false;
+  /// rec30 默认:由原生 capability.record_defaults 给(录制频率 / 写法),页面不另写一份常量。
+  double _recordHz = 30;
+  String _writeSync = 'barrier';
+  static const String kDefaultSoakArms = '30:fsync_each,30:barrier,30:barrier,30:fsync_each';
   Timer? _poll;
   final List<String> _log = <String>[];
 
@@ -85,16 +97,36 @@ class _BenchLidarRecordPageState extends State<BenchLidarRecordPage> {
       _note('🔴 这台机器不支持 sceneDepth(没有 LiDAR)⇒ 录出来没有深度,尺子用不了');
     }
     if (!mounted) return;
+    final Map<String, Object?> defs =
+        (cap['record_defaults'] as Map?)?.cast<String, Object?>() ?? const <String, Object?>{};
     setState(() {
       _native = n;
       _docs = docs;
       _cap = cap;
+      _recordHz = ((defs['record_hz'] as num?) ?? _recordHz).toDouble();
+      _writeSync = (defs['write_sync'] as String?) ?? _writeSync;
     });
     _poll = Timer.periodic(const Duration(milliseconds: 250), (_) {
       final BenchLidarNative? nn = _native;
       if (nn == null || !mounted) return;
       setState(() => _status = nn.status());
     });
+    // 自动化(启动参数,见文件头)。
+    final Map<String, Object?> launch =
+        (cap['launch'] as Map?)?.cast<String, Object?>() ?? const <String, Object?>{};
+    final String auto = (launch['PWBenchLidarAuto'] as String?) ?? '';
+    if (auto == 'soak') {
+      unawaited(_soak(
+          armsSpec: (launch['PWBenchLidarSoakArms'] as String?) ?? kDefaultSoakArms,
+          seconds: double.tryParse((launch['PWBenchLidarSoakSeconds'] as String?) ?? '') ?? 60));
+    } else if (auto == 'reexport') {
+      unawaited(_reexport(
+          (launch['PWBenchLidarReexport'] as String?) ?? '',
+          limitFrames: int.tryParse((launch['PWBenchLidarReexportLimitFrames'] as String?) ?? '') ?? 0,
+          outName: (launch['PWBenchLidarReexportOutName'] as String?) ?? 'ruler_subset_xr30'));
+    } else if (auto.isNotEmpty) {
+      _note('🔴 不认识的 -PWBenchLidarAuto $auto(只认 soak / reexport)');
+    }
   }
 
   String get _phase => (_status['phase'] as String?) ?? 'idle';
@@ -108,24 +140,29 @@ class _BenchLidarRecordPageState extends State<BenchLidarRecordPage> {
     required String outRoot,
     required bool discardStreams,
     required String tag,
+    double? recordHz,
+    String? writeSync,
   }) async {
     final BenchLidarNative n = _native!;
     final int rc = n.start(<String, Object?>{
       'seconds': seconds,
       'depth': depth,
-      'depth_stride': 6,
+      'depth_stride': 3,
       'subset_spacing_s': 0.25,
       'export_subset': !discardStreams,
       'discard_streams': discardStreams,
       'out_root': outRoot,
       'tag': tag,
+      'record_hz': recordHz ?? _recordHz,
+      'write_sync': writeSync ?? _writeSync,
     });
     if (rc != 0) {
       final Map<String, Object?> st = n.status();
       _note('🔴 start rc=$rc ${st['error'] ?? ''}');
       return <String, Object?>{'rc': rc, 'error': st['error']};
     }
-    _note('开录 $tag:${seconds.toStringAsFixed(0)} s,深度 ${depth ? '开' : '关'}');
+    _note('开录 $tag:${seconds.toStringAsFixed(0)} s,深度 ${depth ? '开' : '关'},'
+        '${(recordHz ?? _recordHz).toStringAsFixed(0)} Hz,写法 ${writeSync ?? _writeSync}');
     while (true) {
       await Future<void>.delayed(const Duration(milliseconds: 300));
       final Map<String, Object?> st = n.status();
@@ -176,6 +213,110 @@ class _BenchLidarRecordPageState extends State<BenchLidarRecordPage> {
         .writeAsString(const JsonEncoder.withIndent(' ').convert(summary));
     _note('扰动自测结束:${jsonEncode(summary['verdict'])}');
     if (mounted) setState(() => _selfTestRunning = false);
+  }
+
+  /// 写入吞吐自测(rec30):静置,每臂 [seconds] 秒整幅 1920×1440 + 深度,臂按 [armsSpec]
+  /// (「频率:写法」逗号分隔,照写的次序跑 —— 默认 ABBA),封口后删流。只报数,不替用户下结论。
+  Future<void> _soak({required String armsSpec, required double seconds}) async {
+    final Directory? docs = _docs;
+    if (_native == null || docs == null || _busy) return;
+    final List<(double, String)> arms = <(double, String)>[];
+    for (final String a in armsSpec.split(',')) {
+      final List<String> p = a.trim().split(':');
+      final double? hz = double.tryParse(p.first);
+      if (p.length != 2 || hz == null) {
+        _note('🔴 写入吞吐自测:臂写法不对「$a」(应为 频率:写法)');
+        return;
+      }
+      arms.add((hz, p[1]));
+    }
+    setState(() => _selfTestRunning = true);
+    final String stamp = DateTime.now()
+        .toIso8601String()
+        .replaceAll(RegExp(r'[^0-9T]'), '')
+        .substring(0, 15);
+    final String root = '${docs.path}/lidar_selftest/${stamp}_soak';
+    await Directory(root).create(recursive: true);
+    _note('写入吞吐自测开始:手机放稳别动,${arms.length} 臂 × ${seconds.toStringAsFixed(0)} s。结果 → $root');
+    final List<Map<String, Object?>> out = <Map<String, Object?>>[];
+    int i = 0;
+    for (final (double hz, String mode) in arms) {
+      final Map<String, Object?> st = await _recordOnce(
+          seconds: seconds,
+          depth: true,
+          outRoot: root,
+          discardStreams: true,
+          tag: 'soak_${i++}_${hz.toStringAsFixed(0)}hz_$mode',
+          recordHz: hz,
+          writeSync: mode);
+      final Object? tm = (st['result'] as Map?)?['timing'];
+      out.add(<String, Object?>{
+        'record_hz': hz,
+        'write_sync': mode,
+        'loss_count': _dig(st, <String>['result', 'manifest', 'loss_count']),
+        'frame_count': _dig(st, <String>['result', 'manifest', 'frame_count']),
+        'depth_frames': _dig(st, <String>['result', 'manifest', 'depth_frame_count']),
+        'peak_in_flight': _dig(tm, <String>['writer', 'peak_in_flight']),
+        'frame_write_ms_p50': _dig(tm, <String>['frame_write_ms', 'p50']),
+        'frame_write_ms_p99': _dig(tm, <String>['frame_write_ms', 'p99']),
+        'frame_write_ms_max': _dig(tm, <String>['frame_write_ms', 'max']),
+        'arkit_frames_missed_estimate': _dig(tm, <String>['arkit_frames_missed_estimate']),
+        'callback_latency_ms_p99': _dig(tm, <String>['callback_latency_ms', 'p99']),
+        'written_mb_per_s_interior_min_max': (tm is Map) ? tm['written_mb_per_s_interior_min_max'] : null,
+        'thermal_start': (tm is Map) ? tm['thermal_start'] : null,
+        'thermal_end': (tm is Map) ? tm['thermal_end'] : null,
+        'error': st['error'],
+        'status': st,
+      });
+      _note('臂 ${i - 1}(${hz.toStringAsFixed(0)} Hz / $mode):丢 ${out.last['loss_count']} / '
+          '${out.last['frame_count']},背压峰 ${out.last['peak_in_flight']},'
+          '写 p99 ${(out.last['frame_write_ms_p99'] as num?)?.toStringAsFixed(1)} ms');
+      await Future<void>.delayed(const Duration(seconds: 10));
+    }
+    final Map<String, Object?> summary = <String, Object?>{
+      'schema': 'pw.bench.lidar-write-soak/1',
+      'bench_only_notice': '🔴 bench-only ruler:LiDAR 深度只用于研发期标定台架',
+      'order': armsSpec,
+      'seconds_per_arm': seconds,
+      'phone_static': true,
+      'capability': _cap,
+      'arms': out,
+    };
+    await File('$root/soak_summary.json')
+        .writeAsString(const JsonEncoder.withIndent(' ').convert(summary));
+    _note('写入吞吐自测结束 → $root/soak_summary.json');
+    if (mounted) setState(() => _selfTestRunning = false);
+  }
+
+  /// 给已有录制重导尺子子集(rec30 / writer W12):只挑 XRSLAM 回放会收的帧。录制本身一个字节不动。
+  Future<void> _reexport(String name, {required int limitFrames, required String outName}) async {
+    final Directory? docs = _docs;
+    final BenchLidarNative? n = _native;
+    if (n == null || docs == null || _busy || name.isEmpty) return;
+    final Directory recs = Directory('${docs.path}/replay_recordings');
+    String? path;
+    if (await Directory('${recs.path}/$name').exists()) {
+      path = '${recs.path}/$name';
+    } else if (await recs.exists()) {
+      final List<String> hits = recs
+          .listSync()
+          .whereType<Directory>()
+          .map((Directory d) => d.path)
+          .where((String p) => p.split('/').last.startsWith(name))
+          .toList();
+      if (hits.length == 1) path = hits.single;
+    }
+    if (path == null) {
+      _note('🔴 重导子集:找不到录制「$name」(或前缀不唯一)');
+      return;
+    }
+    final int rc = n.reexportSubset(<String, Object?>{
+      'recording_dir': path,
+      'out_name': outName,
+      'subset_spacing_s': 0.25,
+      'limit_frames': limitFrames,
+    });
+    _note('重导子集 ${path.split('/').last} → $outName(limit_frames $limitFrames):rc=$rc');
   }
 
   static num? _dig(Object? o, List<String> path) {
@@ -274,8 +415,11 @@ class _BenchLidarRecordPageState extends State<BenchLidarRecordPage> {
                   ),
                 ),
             ]),
+            Text('录制:整幅 1920×1440 luma,按 XRSLAM 准入闸 ${_recordHz.toStringAsFixed(0)} Hz 落盘'
+                '(ARKit 60 Hz 隔帧取)· 写法 $_writeSync',
+                style: const TextStyle(fontSize: 12)),
             SwitchListTile(
-              title: const Text('录 LiDAR 深度(每 6 帧一张 = 10 Hz)'),
+              title: const Text('录 LiDAR 深度(每 3 个录下的帧一张 = 10 Hz)'),
               value: _depth,
               onChanged: _busy ? null : (bool v) => setState(() => _depth = v),
             ),
@@ -292,12 +436,20 @@ class _BenchLidarRecordPageState extends State<BenchLidarRecordPage> {
                   onPressed: _busy || _native == null ? null : _selfTest,
                   child: const Text('扰动自测(静置)')),
             ]),
+            Row(children: <Widget>[
+              OutlinedButton(
+                  onPressed: _busy || _native == null
+                      ? null
+                      : () => _soak(armsSpec: kDefaultSoakArms, seconds: 60),
+                  child: const Text('写入吞吐自测(静置,约 5 分钟)')),
+            ]),
             const Divider(),
             Text('状态 $_phase · ${((_status['elapsed_s'] as num?) ?? 0).toStringAsFixed(1)} s'
                 ' / ${((_status['seconds'] as num?) ?? 0).toStringAsFixed(0)} s'),
             Text('帧 ${_status['frames_accepted'] ?? '-'} · 深度 ${_status['depth_frames_written'] ?? '-'}'
                 ' · 丢帧 ${_status['loss_count'] ?? '-'} · 深度丢 ${_status['depth_dropped'] ?? '-'}'
-                ' · 背压峰 ${_status['peak_in_flight'] ?? '-'}/64'),
+                ' · 背压峰 ${_status['peak_in_flight'] ?? '-'}/64'
+                ' · 闸外 ${_status['gated_out_frames'] ?? '-'}'),
             Text('跟踪 ${tc.entries.map((MapEntry<String, Object?> e) => '${e.key}:${e.value}').join(' ')}'),
             if (_status['error'] != null) Text('🔴 ${_status['error']}'),
             if (_status['run_dir'] != null)

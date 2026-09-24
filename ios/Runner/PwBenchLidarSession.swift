@@ -30,6 +30,16 @@
 //    录完在手机上直接回放出 XRSLAM 位姿,不必把 5 GB 的帧流搬来搬去。input_manifest.json 写
 //    `device_model`(hw.machine),回放页按它查相机时间偏置表(PwBenchReplayRecording.swift
 //    DeviceRecordingSidecars.deviceModel)。
+// S7 [2026-09-24 rec30] **按 XRSLAM 的 30 Hz 准入闸落盘**(`record_hz`,默认 30;0 = 每个 ARFrame 都录)。
+//    真机首跑 run-fb5d3a8f 按 60 Hz 录 1920×1440(166 MB/s),17.8 s 起写队列满、丢 19% 帧,整场被回放
+//    判有损;而 XRSLAM 本来就只收 30 Hz(PwXrslamLive.swift `PwXrslamOfficialFeed`,门限 0.8/R),
+//    尺子子集的帧又必须是录下的帧。⇒ ARKit 仍跑 1920×1440@60 hires 格式(生产 hires43 选法不动,
+//    ARKit 参照轨迹的节拍不变),录制器对**每个** ARFrame 调 `PwXrslamOfficialFeed.admits`(与引擎
+//    同一个函数、同一个 pts = Double(t_ns)·1e-9),过闸的帧才落 luma / 内参行 / ARKit 位姿 / 深度。
+//    闸幂等 ⇒ 回放时引擎那道闸对录下的每一帧都放行,录下的帧 = 引擎收的帧,与从哪一帧开始喂无关。
+//    🔴 分辨率不降:仍是整幅 1920×1440 luma(用户:分辨率越高越好)。带宽减半 166 → 83 MB/s。
+//    深度步长改按**过闸帧**数(默认每 3 帧一张 = 10 Hz,频率与原来 60 fps 每 6 帧相同)。
+// S8 [2026-09-24 rec30] 写法(`write_sync`)与逐秒时间线见 writer W10 / W11;每秒热状态也记。
 
 #if os(iOS)
 import ARKit
@@ -51,6 +61,11 @@ final class PwBenchLidarSession: NSObject, ARSessionDelegate, @unchecked Sendabl
         var discardStreams: Bool = false
         var outRoot: String = ""
         var tag: String = ""
+        /// S7:过闸频率(0 = 每个 ARFrame 都录)。默认 30 = XRSLAM 官方喂料的准入频率。
+        var recordHz: Double = 30
+        /// S8 / writer W10。
+        var writeSync: PwBenchLidarWriteSync = PwBenchLidarRecordingWriter.defaultWriteSync
+        var writeSyncValid = true
 
         init(json: [String: Any]) {
             if let v = json["seconds"] as? NSNumber { seconds = v.doubleValue }
@@ -61,6 +76,10 @@ final class PwBenchLidarSession: NSObject, ARSessionDelegate, @unchecked Sendabl
             if let v = json["discard_streams"] as? Bool { discardStreams = v }
             if let v = json["out_root"] as? String { outRoot = v }
             if let v = json["tag"] as? String { tag = v }
+            if let v = json["record_hz"] as? NSNumber { recordHz = v.doubleValue }
+            if let v = json["write_sync"] as? String {
+                if let m = PwBenchLidarWriteSync(rawValue: v) { writeSync = m } else { writeSyncValid = false }
+            }
         }
     }
 
@@ -98,6 +117,14 @@ final class PwBenchLidarSession: NSObject, ARSessionDelegate, @unchecked Sendabl
     private var depthOffered = 0
     private var depthMissingOnFrame = 0
     private var result: [String: Any] = [:]
+    // S7 准入闸状态
+    private var gateHave = false
+    private var gateLastPts = 0.0
+    private var admittedCount = 0
+    private var gatedOut = 0
+    private var arkitVideoFPS = 0
+    // S8 每秒热状态(下标 = 录制第几秒)
+    private var thermalPerSecond: [String] = []
 
     // MARK: 能力(不开会话)
 
@@ -117,7 +144,83 @@ final class PwBenchLidarSession: NSObject, ARSessionDelegate, @unchecked Sendabl
            let free = v.volumeAvailableCapacityForImportantUsage {
             o["free_bytes"] = free
         }
+        o["launch"] = Self.launchArgs()
+        o["record_defaults"] = [
+            "record_hz": Config(json: [:]).recordHz,
+            "write_sync": PwBenchLidarRecordingWriter.defaultWriteSync.rawValue,
+            "write_sync_choices": PwBenchLidarWriteSync.allCases.map(\.rawValue),
+            "depth_stride": PwBenchLidarRecordingWriter.defaultDepthStride,
+            "writer_queue_depth": PwBenchLidarRecordingWriter.queueDepth,
+            "xrslam_camera_hz_gate": PwXrslamOfficialFeed.resolved.cameraHz,
+        ] as [String: Any]
         return Self.json(o)
+    }
+
+    /// 自动化用的启动参数(读法同 PwBenchReplayLaunch:先 UserDefaults 的 NSArgumentDomain,再扫 argv)。
+    ///   -PWBenchLidarAuto soak|reexport          进页即跑写入吞吐自测 / 给已有录制重导子集
+    ///   -PWBenchLidarSoakArms "30:barrier,60:fsync_each,…"   每臂 = 录制频率:写法(默认见 Dart)
+    ///   -PWBenchLidarSoakSeconds <秒>             每臂时长(默认 60)
+    ///   -PWBenchLidarReexport <run-… 目录名或前缀>   配 Auto=reexport
+    ///   -PWBenchLidarReexportLimitFrames <N>      同回放的 -PWBenchReplayLimitFrames(0 = 全部)
+    ///   -PWBenchLidarReexportOutName <目录名>      默认 ruler_subset_xr30(不覆盖原来的 ruler_subset)
+    static let launchKeys = ["PWBenchLidarAuto", "PWBenchLidarSoakArms", "PWBenchLidarSoakSeconds",
+                             "PWBenchLidarReexport", "PWBenchLidarReexportLimitFrames",
+                             "PWBenchLidarReexportOutName"]
+
+    static func launchArgs() -> [String: String] {
+        var out: [String: String] = [:]
+        let args = ProcessInfo.processInfo.arguments
+        for k in launchKeys {
+            var raw = UserDefaults.standard.string(forKey: k) ?? ""
+            if raw.isEmpty, let i = args.firstIndex(of: "-\(k)"), i + 1 < args.count { raw = args[i + 1] }
+            if !raw.isEmpty { out[k] = raw }
+        }
+        return out
+    }
+
+    // MARK: 给已有录制重导尺子子集(W12;录制本身一个字节不动)
+
+    /// 0 已开跑;-1 正忙;-2 配置不对。进度 / 结果走 status()(phase exporting → done / failed)。
+    func reexportSubset(configJSON: String) -> Int32 {
+        guard let data = configJSON.data(using: .utf8),
+              let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let recPath = o["recording_dir"] as? String, !recPath.isEmpty else { return -2 }
+        let outName = (o["out_name"] as? String) ?? "ruler_subset_xr30"
+        let spacing = (o["subset_spacing_s"] as? NSNumber)?.doubleValue ?? 0.25
+        let hz = (o["camera_hz"] as? NSNumber)?.doubleValue ?? PwXrslamOfficialFeed.resolved.cameraHz
+        let limit = (o["limit_frames"] as? NSNumber)?.intValue ?? 0
+        guard outName != PwBenchLidarRecordingWriter.rulerSubsetDirectory || o["allow_overwrite"] as? Bool == true
+        else { return -2 }
+        lock.lock()
+        if ["starting", "recording", "stopping", "exporting"].contains(phase) { lock.unlock(); return -1 }
+        phase = "exporting"
+        errorText = nil
+        result = [:]
+        let dir = URL(fileURLWithPath: recPath, isDirectory: true)
+        runDir = dir
+        recordingID = dir.lastPathComponent
+        lock.unlock()
+        controlQueue.async { [weak self] in
+            guard let self else { return }
+            do {
+                let s = try PwBenchLidarRecordingWriter.exportRulerSubset(
+                    recording: dir, minSpacingSeconds: spacing, outName: outName, xrslamCameraHz: hz,
+                    limitFrames: limit, gate: PwXrslamOfficialFeed.admits,
+                    gateSource: "PwXrslamOfficialFeed.admits")
+                NSLog("[bench-lidar] reexport %@/%@ frames=%@", dir.lastPathComponent, outName,
+                      "\(s["frames"] ?? "?")")
+                self.lock.lock()
+                self.result = ["reexport": true, "subset": s, "run_dir": dir.path]
+                self.phase = "done"
+                self.lock.unlock()
+            } catch {
+                self.lock.lock()
+                self.errorText = "reexport: \(error.localizedDescription)"
+                self.phase = "failed"
+                self.lock.unlock()
+            }
+        }
+        return 0
     }
 
     // MARK: 开始
@@ -127,7 +230,8 @@ final class PwBenchLidarSession: NSObject, ARSessionDelegate, @unchecked Sendabl
         guard let data = configJSON.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return -2 }
         let cfg = Config(json: obj)
-        guard !cfg.outRoot.isEmpty, cfg.seconds > 0, cfg.seconds <= 600 else { return -2 }
+        guard !cfg.outRoot.isEmpty, cfg.seconds > 0, cfg.seconds <= 600,
+              cfg.recordHz >= 0, cfg.recordHz.isFinite, cfg.writeSyncValid else { return -2 }
         lock.lock()
         if ["starting", "recording", "stopping", "exporting"].contains(phase) {
             lock.unlock(); return -1
@@ -143,6 +247,8 @@ final class PwBenchLidarSession: NSObject, ARSessionDelegate, @unchecked Sendabl
         stopRequested = false
         frameIntervals = []; callbackLatencyMs = []; handlerMs = []; lumaCopyMs = []; depthCopyMs = []
         depthOffered = 0; depthMissingOnFrame = 0
+        gateHave = false; gateLastPts = 0; admittedCount = 0; gatedOut = 0
+        thermalPerSecond = []
         lock.unlock()
 
         guard ARWorldTrackingConfiguration.isSupported else { return fail(-3, "ARWorldTrackingConfiguration unsupported") }
@@ -185,9 +291,11 @@ final class PwBenchLidarSession: NSObject, ARSessionDelegate, @unchecked Sendabl
             requested = true
         }
         let fps = Double(hires.framesPerSecond)
+        // S7:录下的帧流的名义频率 = 过闸频率(闸 0.8/R ⇒ 60 fps 源隔帧取 = 30;R ≥ 源 ⇒ 源频率)。
+        let recordedFPS = Self.gatedRate(sourceFPS: fps, hz: cfg.recordHz)
         let format = DeviceRecordingCameraFormat(
             width: Int(hires.imageResolution.width), height: Int(hires.imageResolution.height),
-            pixelFormat: "luma8_from_420f_full_range", nominalFPS: fps)
+            pixelFormat: "luma8_from_420f_full_range", nominalFPS: recordedFPS)
 
         // ── 目录、预检、写器 ──────────────────────────────────────────────────────
         let id = UUID().uuidString.lowercased()
@@ -206,13 +314,14 @@ final class PwBenchLidarSession: NSObject, ARSessionDelegate, @unchecked Sendabl
         let w: PwBenchLidarRecordingWriter
         do {
             w = try PwBenchLidarRecordingWriter(directory: dir, recordingID: id, format: format,
-                                                depthStride: cfg.depthStride)
+                                                depthStride: cfg.depthStride, writeSync: cfg.writeSync)
         } catch {
             return fail(-4, "writer: \(error.localizedDescription)")
         }
         let formatInfo: [String: Any] = [
             "width": format.width, "height": format.height, "fps": hires.framesPerSecond,
             "recommended_for_high_resolution_capture": hires.isRecommendedForHighResolutionFrameCapturing,
+            "recorded_fps_nominal": recordedFPS,
         ]
         writeSidecarsAtStart(dir: dir, id: id, cfg: cfg, supported: supported, requested: requested,
                              format: formatInfo)
@@ -223,12 +332,13 @@ final class PwBenchLidarSession: NSObject, ARSessionDelegate, @unchecked Sendabl
         sceneDepthSupported = supported
         sceneDepthRequested = requested
         selectedFormat = formatInfo
+        arkitVideoFPS = hires.framesPerSecond
         thermalAtStart = Self.thermalLabel()
         startedWall = Date()
         lock.unlock()
-        NSLog("[bench-lidar] 🔴 bench-only ruler · start run-%@ depth=%@ supported=%@ stride=%d %dx%d@%d",
+        NSLog("[bench-lidar] 🔴 bench-only ruler · start run-%@ depth=%@ supported=%@ stride=%d %dx%d@%d record_hz=%.1f write=%@",
               id, requested ? "on" : "off", supported ? "YES" : "NO", cfg.depthStride,
-              format.width, format.height, hires.framesPerSecond)
+              format.width, format.height, hires.framesPerSecond, cfg.recordHz, cfg.writeSync.rawValue)
 
         let s = ARSession()
         s.delegateQueue = delegateQueue
@@ -238,6 +348,15 @@ final class PwBenchLidarSession: NSObject, ARSessionDelegate, @unchecked Sendabl
             s.run(configuration, options: [.resetTracking, .removeExistingAnchors])
         }
         return 0
+    }
+
+    /// S7:匀速 `sourceFPS` 的源过 0.8/R 闸后的稳态频率 = sourceFPS / k,k = 满足 k/sourceFPS ≥ 0.8/R 的
+    /// 最小整数(60 fps、R = 30 ⇒ k = 2 ⇒ 30)。R = 0 ⇒ 不设闸 = 源频率。只用于 manifest 的名义频率与空间预估。
+    static func gatedRate(sourceFPS: Double, hz: Double) -> Double {
+        guard hz > 0, sourceFPS > 0 else { return sourceFPS }
+        var k = 1.0
+        while k / sourceFPS < 0.8 / hz { k += 1 }
+        return sourceFPS / k
     }
 
     private func fail(_ code: Int32, _ why: String) -> Int32 {
@@ -250,6 +369,9 @@ final class PwBenchLidarSession: NSObject, ARSessionDelegate, @unchecked Sendabl
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
         let handlerStart = CACurrentMediaTime()
+        let timestampNS = Int64((frame.timestamp * 1_000_000_000).rounded())
+        // S7:回放推给引擎的就是这个值(PwBenchReplay.swift:`Double(f.timestampNanoseconds) * 1e-9`)。
+        let pts = Double(timestampNS) * 1e-9
         lock.lock()
         guard let writer, phase == "recording" else { lock.unlock(); return }
         let arIndex = arFrames
@@ -261,13 +383,32 @@ final class PwBenchLidarSession: NSObject, ARSessionDelegate, @unchecked Sendabl
         callbackLatencyMs.append((handlerStart - frame.timestamp) * 1000)
         let tracking = Self.trackingLabel(frame.camera.trackingState)
         trackingCounts[tracking, default: 0] += 1
+        if Int(elapsed) >= thermalPerSecond.count { thermalPerSecond.append(Self.thermalLabel()) }
         let cfg = config
-        let wantDepth = sceneDepthRequested && arIndex % max(1, cfg.depthStride) == 0
+        // S7:与引擎同一个函数、同一个 pts。
+        let admitted = PwXrslamOfficialFeed.admits(ptsSeconds: pts, lastAdmittedPts: gateLastPts,
+                                                   haveAdmitted: gateHave, cameraHz: cfg.recordHz)
+        var admittedIndex = -1
+        if admitted {
+            gateHave = true
+            gateLastPts = pts
+            admittedIndex = admittedCount
+            admittedCount += 1
+        } else {
+            gatedOut += 1
+        }
+        let wantDepth = admitted && sceneDepthRequested && admittedIndex % max(1, cfg.depthStride) == 0
         lock.unlock()
+
+        guard admitted else {
+            // 没过闸的帧什么都不落(luma / 内参 / 位姿 / 深度都跟着过闸帧走),只计入上面的 ARKit 统计。
+            startMotionRecordingIfNeeded()
+            if elapsed >= cfg.seconds { requestStop(reason: "duration") }
+            return
+        }
 
         let transform = frame.camera.transform
         let q = simd_quatf(transform)
-        let timestampNS = Int64((frame.timestamp * 1_000_000_000).rounded())
         let K = PwBenchLidarIntrinsics(
             fx: Double(frame.camera.intrinsics.columns.0.x),
             fy: Double(frame.camera.intrinsics.columns.1.y),
@@ -298,7 +439,8 @@ final class PwBenchLidarSession: NSObject, ARSessionDelegate, @unchecked Sendabl
                 let depthStart = CACurrentMediaTime()
                 writer.appendDepth(depthMap: depth.depthMap, confidenceMap: depth.confidenceMap,
                                    timestampNanoseconds: timestampNS, cameraFrameIndex: cameraIndex,
-                                   arFrameIndex: arIndex, imageIntrinsics: K)
+                                   arFrameIndex: arIndex, imageIntrinsics: K,
+                                   admittedFrameIndex: admittedIndex)
                 depthMs = (CACurrentMediaTime() - depthStart) * 1000
             }
         }
@@ -413,8 +555,11 @@ final class PwBenchLidarSession: NSObject, ARSessionDelegate, @unchecked Sendabl
         if cfg.exportSubset, depthWasRequested, !cfg.discardStreams {
             lock.lock(); phase = "exporting"; lock.unlock()
             do {
+                // W12:子集只挑本 App 回放时引擎会收的帧 —— 闸函数就是引擎那一个。
                 out["subset"] = try PwBenchLidarRecordingWriter.exportRulerSubset(
-                    recording: dir, minSpacingSeconds: cfg.subsetSpacingSeconds)
+                    recording: dir, minSpacingSeconds: cfg.subsetSpacingSeconds,
+                    xrslamCameraHz: PwXrslamOfficialFeed.resolved.cameraHz,
+                    gate: PwXrslamOfficialFeed.admits, gateSource: "PwXrslamOfficialFeed.admits")
             } catch {
                 out["subset_error"] = error.localizedDescription
             }
@@ -462,6 +607,15 @@ final class PwBenchLidarSession: NSObject, ARSessionDelegate, @unchecked Sendabl
             "scene_depth_role": "bench_only_metric_ruler_not_a_product_input",
             "smoothed_scene_depth": false,
             "depth_stride": cfg.depthStride,
+            "depth_stride_unit": "admitted (recorded) frames",
+            "record_hz": cfg.recordHz,
+            "record_gate": cfg.recordHz > 0
+                ? "PwXrslamOfficialFeed.admits: record an ARFrame iff it is the first, or "
+                    + "Double(t_ns)*1e-9 - last_recorded_pts >= 0.8/record_hz (same function the "
+                    + "XRSLAM replay gate calls ⇒ every recorded frame is admitted on replay)"
+                : "off (every ARFrame recorded)",
+            "write_sync": cfg.writeSync.rawValue,
+            "writer_queue_depth": PwBenchLidarRecordingWriter.queueDepth,
             "tag": cfg.tag,
         ], to: dir.appendingPathComponent("config.json"))
         Self.writeJSON([
@@ -516,16 +670,30 @@ final class PwBenchLidarSession: NSObject, ARSessionDelegate, @unchecked Sendabl
 
     private func timingJSON(writer w: PwBenchLidarRecordingWriter) -> [String: Any] {
         let snap = w.timingSnapshot()
+        let timeline = w.perSecondTimeline()
         lock.lock(); defer { lock.unlock() }
         let fps = (selectedFormat["fps"] as? Int).map(Double.init) ?? 60
         let nominal = 1.0 / fps
         let gaps = frameIntervals.filter { $0 > 1.5 * nominal }
         let missed = frameIntervals.reduce(0) { $0 + max(0, Int(($1 / nominal).rounded()) - 1) }
+        // 首尾两秒是半秒桶,不进持续写入速率的最小/最大。
+        let sustained = timeline.dropFirst().dropLast().map { ($0["written_mb"] as? Double) ?? 0 }
         return [
-            "schema": "pw.bench.lidar-recorder-timing/1",
+            "schema": "pw.bench.lidar-recorder-timing/2",
             "depth_requested": sceneDepthRequested,
             "depth_stride": config.depthStride,
+            "depth_stride_unit": "admitted (recorded) frames",
             "nominal_fps": fps,
+            "arkit_video_fps": arkitVideoFPS,
+            "record_hz": config.recordHz,
+            "admitted_frames": admittedCount,
+            "gated_out_frames": gatedOut,
+            "write_sync": snap.writeSync,
+            "barrier_fallbacks": snap.barrierFallbacks,
+            "nocache_set_failed": snap.noCacheSetFailed,
+            "written_mb_per_s_interior_min_max": sustained.isEmpty ? [] : [sustained.min()!, sustained.max()!],
+            "per_second": timeline,
+            "thermal_per_second": thermalPerSecond,
             "ar_frames": arFrames,
             "duration_s": (lastFrameTimestamp ?? 0) - (firstFrameTimestamp ?? 0),
             // ARKit 侧:到达间隔 > 1.5× 名义 ⇒ ARKit 少发了帧(在写器之前)。
@@ -571,6 +739,10 @@ final class PwBenchLidarSession: NSObject, ARSessionDelegate, @unchecked Sendabl
             "tracking_counts": trackingCounts,
             "recording_id": recordingID,
             "tag": config.tag,
+            "record_hz": config.recordHz,
+            "write_sync": config.writeSync.rawValue,
+            "admitted_frames": admittedCount,
+            "gated_out_frames": gatedOut,
         ]
         if let e = errorText { o["error"] = e }
         if let d = runDir { o["run_dir"] = d.path }
@@ -698,5 +870,11 @@ public func pw_bench_lidar_stop() {
 @_cdecl("pw_bench_lidar_status")
 public func pw_bench_lidar_status(_ out: UnsafeMutablePointer<CChar>, _ cap: Int32) -> Int32 {
     pwBenchLidarWrite(PwBenchLidarSession.shared.statusJSON(), out, cap)
+}
+
+/// [2026-09-24 rec30] 给已有录制重导尺子子集(只挑 XRSLAM 回放会收的帧)。0 已开跑;-1 正忙;-2 配置不对。
+@_cdecl("pw_bench_lidar_reexport_subset")
+public func pw_bench_lidar_reexport_subset(_ config: UnsafePointer<CChar>) -> Int32 {
+    PwBenchLidarSession.shared.reexportSubset(configJSON: String(cString: config))
 }
 #endif

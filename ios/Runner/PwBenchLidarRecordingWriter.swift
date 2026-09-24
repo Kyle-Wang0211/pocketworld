@@ -61,6 +61,28 @@
 // W9 录完的**尺子子集导出**(`exportRulerSubset`,录制封口之后跑,不在采集路径上):只把带深度、
 //    间隔 ≥ spacing 的那些帧的 luma 拷成一份小 frames.bin,深度三件套硬链接过去。
 //    理由:30 s 录制 frames.bin ≈ 5 GB,Mac 盘常年只剩 2–4 GiB,拉不回来;尺子只要几十帧。
+// W10 [2026-09-24 rec30] 每帧落盘的同步方式可选(`PwBenchLidarWriteSync`),默认见 `defaultWriteSync`。
+//    源(= `fsync_each`)每帧对流、索引各 `synchronize()`(fsync)一次。真机首跑 run-fb5d3a8f
+//    (1920×1440 @60,166 MB/s)从 17.8 s 起队列 64 格打满、丢 341/1791 帧,写入最慢 548 ms、p99 94 ms。
+//    Apple「Reducing disk writes」(developer.apple.com/documentation/xcode/reducing-disk-writes)原话:
+//    「Writing data on iOS adds the data to a unified buffer cache that the system then writes to file
+//    storage. Forcing iOS to flush pending filesystem changes from the unified buffer can result in
+//    unnecessary writes to the disk, degrading performance … When possible, avoid calling fsync(_:) …
+//    Some apps require a write barrier to ensure data persistence before subsequent operations can
+//    proceed. Most apps can use the fcntl(_:_:) F_BARRIERFSYNC for this.」
+//    ⇒ `barrier`:流写完发 F_BARRIERFSYNC(流先于索引这条次序仍由屏障保证,即源「索引永不指向没提交
+//       的字节」),索引行不再 fsync;`none`:每帧都不同步,封口时各 fsync 一次;
+//       `barrier_nocache`:`barrier` + 流句柄 F_NOCACHE(Apple File System Programming Guide
+//       「Performance Tips」:只读一次的大文件别进文件缓存 ——「you can quickly fill up the disk cache
+//       with data you won't use again」;那句是讲读的,用到写上是外推,单列一臂量)。
+//    四种写法落盘字节逐位相同(Mac 单测核);差别只在计时。用哪种由台架「写入吞吐自测」在真机上量。
+// W11 [2026-09-24 rec30] 逐秒时间线(`perSecondTimeline`):每秒交来 / 收下 / 丢的帧、写入耗时分位、
+//    在途峰值、写入 MB —— 「从第几秒开始掉速」要能看出来,不能只有全场分位。
+// W12 [2026-09-24 rec30] 尺子子集只挑 **XRSLAM 回放会收的帧**(`xrslamAdmittedFrames`):回放装载器
+//    丢掉第一条 IMU 之前的相机帧、按 limitFrames 取前缀,再过 PwXrslamLive 的 30 Hz 准入闸
+//    (`PwXrslamOfficialFeed.admits`,台架 App 里导出时直接传它进来;Mac 宿主用本文件的逐式拷贝
+//    `xrslamGateCopy`,并用手机回放真账 intrinsics_ledger.csv 逐帧核过)。录制器按同一道闸 30 Hz
+//    落盘时所有录下的帧都会被收(闸幂等);老的 60 Hz 录制靠这条仍能导出「每帧都有引擎位姿」的子集。
 //
 // ══ Android(不在本次范围,只记映射)═══════════════════════════════════════════════
 // ARCore Depth API:Frame.acquireDepthImage16Bits()(DEPTH16,毫米)/ acquireRawDepthImage16Bits()
@@ -100,6 +122,18 @@ enum PwBenchLidarIntrinsicsCrossCheck {
         }
         return nil
     }
+}
+
+/// W10:每帧落盘的同步方式。四种写出的字节逐位相同,只差在什么时候、怎样把数据推到存储上。
+enum PwBenchLidarWriteSync: String, CaseIterable, Sendable {
+    /// 源 @76b8d47:流 fsync → 索引行 → 索引 fsync(每帧两次 fsync)。
+    case fsyncEach = "fsync_each"
+    /// Apple「Reducing disk writes」:流 → F_BARRIERFSYNC(次序屏障)→ 索引行(不 fsync)。
+    case barrier = "barrier"
+    /// `barrier` + 流句柄 F_NOCACHE。
+    case barrierNoCache = "barrier_nocache"
+    /// Apple「avoid calling fsync」:每帧都不同步;封口时各 fsync 一次。
+    case none = "none"
 }
 
 /// 录制器自己的错误(装载器那份 DeviceRecordingError 只收读侧的分支)。
@@ -151,8 +185,10 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
     static let depthQueueDepth = 120
     /// [port] :154-158 —— float32 米 + uint8 置信度。
     static let depthBytesPerFrame = expectedDepthWidth * expectedDepthHeight * 5
-    /// W3:默认每 6 个 ARFrame 录一张深度(60 fps ⇒ 10 Hz)。
-    static let defaultDepthStride = 6
+    /// W3:默认每 3 个**录下的**帧一张深度(rec30:30 Hz 录制 ⇒ 10 Hz,与原来 60 fps 每 6 帧同一频率)。
+    static let defaultDepthStride = 3
+    /// W10:默认写法(真机「写入吞吐自测」量出来之后定;见交付报告)。
+    static let defaultWriteSync: PwBenchLidarWriteSync = .barrier
     /// W4:Apple 文档给的运行时格式。
     static let depthPixelFormat: OSType = kCVPixelFormatType_DepthFloat32
     static let confidencePixelFormat: OSType = kCVPixelFormatType_OneComponent8
@@ -197,6 +233,19 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
 
     private var intrinsics: DeviceRecordingIntrinsics?
 
+    // W10 / W11
+    let writeSync: PwBenchLidarWriteSync
+    /// F_BARRIERFSYNC / F_NOCACHE 返回 −1 的次数(屏障失败时退回 fsync,仍保次序)。
+    private var barrierFallbacks = 0
+    private var noCacheSetFailed = false
+    /// 逐帧事件(CACurrentMediaTime 秒):交来(收下或丢)、写完 + 耗时、交来时的在途数。
+    private var offeredAt: [Double] = []
+    private var offeredAccepted: [Bool] = []
+    private var offeredInFlight: [Int] = []
+    private var writeDoneAt: [Double] = []
+    private var writeDoneMs: [Double] = []
+    private var writeDoneBytes: [Int] = []
+
     // MARK: - Depth(🔴 bench-only ruler)[port] :108-143
 
     /// 🔴 **bench-only ruler,永远不是产品输入。** 同一 ARFrame 上 ARKit 交回的 LiDAR 深度,
@@ -231,12 +280,14 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
         directory: URL,
         recordingID: String,
         format: DeviceRecordingCameraFormat,
-        depthStride: Int = PwBenchLidarRecordingWriter.defaultDepthStride
+        depthStride: Int = PwBenchLidarRecordingWriter.defaultDepthStride,
+        writeSync: PwBenchLidarWriteSync = PwBenchLidarRecordingWriter.defaultWriteSync
     ) throws {
         self.directory = directory
         self.format = format
         self.recordingID = recordingID
         self.depthStride = max(1, depthStride)
+        self.writeSync = writeSync
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let streamURL = directory.appendingPathComponent(DeviceRecordingManifest.framesStreamPath)
         let indexURL = directory.appendingPathComponent(DeviceRecordingManifest.framesIndexPath)
@@ -244,6 +295,30 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
         FileManager.default.createFile(atPath: indexURL.path, contents: nil)
         self.framesStream = try FileHandle(forWritingTo: streamURL)
         self.framesIndex = try FileHandle(forWritingTo: indexURL)
+        if writeSync == .barrierNoCache {
+            noCacheSetFailed = fcntl(framesStream.fileDescriptor, F_NOCACHE, 1) == -1
+        }
+    }
+
+    /// W10:流写完之后、它的索引行写之前。`fsync_each` = 源的 synchronize();`barrier*` = F_BARRIERFSYNC
+    /// (失败退回 fsync 并计数);`none` = 不做。只在各自的串行写队列上调用。
+    private func syncStreamBeforeIndex(_ handle: FileHandle) throws {
+        switch writeSync {
+        case .fsyncEach:
+            try handle.synchronize()
+        case .barrier, .barrierNoCache:
+            if fcntl(handle.fileDescriptor, F_BARRIERFSYNC) == -1 {
+                stateLock.lock(); barrierFallbacks += 1; stateLock.unlock()
+                try handle.synchronize()
+            }
+        case .none:
+            break
+        }
+    }
+
+    /// W10:索引行写完之后。只有源的写法每帧再 fsync 索引。
+    private func syncIndexAfterRow(_ handle: FileHandle) throws {
+        if writeSync == .fsyncEach { try handle.synchronize() }
     }
 
     // MARK: - Preflight [port] :204-251
@@ -368,10 +443,12 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
             stateLock.unlock()
             return nil
         }
+        let now = CACurrentMediaTime()
         guard inFlight < Self.queueDepth else {
             // 背压即丢失,丢失即作废;不靠加深队列、不跳帧吸收。
             lossCount += 1
             lossWriteQueueFull += 1
+            offeredAt.append(now); offeredAccepted.append(false); offeredInFlight.append(inFlight)
             stateLock.unlock()
             return nil
         }
@@ -380,6 +457,7 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
         inFlight += 1
         peakInFlight = max(peakInFlight, inFlight)
         cameraIndexRows.append("\(timestampNanoseconds),\(index)")
+        offeredAt.append(now); offeredAccepted.append(true); offeredInFlight.append(inFlight)
         stateLock.unlock()
 
         writeQueue.async { [weak self] in
@@ -387,18 +465,22 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
             let writeStart = CACurrentMediaTime()
             do {
                 // 流先、索引后(pwva.dart 的次序):任何时刻被打断,索引都不会指向没提交的字节。
+                // W10:「流已提交」由 syncStreamBeforeIndex 保证(fsync 或 F_BARRIERFSYNC;none 臂不保)。
                 let offset = self.streamOffset
                 try self.framesStream.write(contentsOf: luma)
-                try self.framesStream.synchronize()
+                try self.syncStreamBeforeIndex(self.framesStream)
                 let row = "{\"frame\":\(index),\"offset\":\(offset)," +
                     "\"len\":\(luma.count),\"keyframe\":true,\"gop\":\(index)}\n"
                 try self.framesIndex.write(contentsOf: Data(row.utf8))
-                try self.framesIndex.synchronize()
-                let elapsed = (CACurrentMediaTime() - writeStart) * 1000
+                try self.syncIndexAfterRow(self.framesIndex)
+                let done = CACurrentMediaTime()
+                let elapsed = (done - writeStart) * 1000
                 self.stateLock.lock()
                 self.streamOffset = offset + luma.count
                 self.slowestWriteMilliseconds = max(self.slowestWriteMilliseconds, elapsed)
                 self.writeMillisecondsSamples.append(elapsed)
+                self.writeDoneAt.append(done); self.writeDoneMs.append(elapsed)
+                self.writeDoneBytes.append(luma.count)
                 self.framesHandleDigest.update(data: luma)
                 self.framesTotalBytes += Int64(luma.count)
                 self.inFlight -= 1
@@ -438,8 +520,11 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
         cameraFrameIndex: Int?,
         arFrameIndex: Int,
         imageIntrinsics: PwBenchLidarIntrinsics?,
+        admittedFrameIndex: Int? = nil,
         source: String = "ARFrame.sceneDepth"
     ) {
+        // rec30:这一帧在「过了 30 Hz 准入闸的帧」里的序号(深度步长按它数)。
+        let admittedField = admittedFrameIndex.map { ",\"admitted_frame\":\($0)" } ?? ""
         let width = CVPixelBufferGetWidth(depthMap)
         let height = CVPixelBufferGetHeight(depthMap)
         // W4:像素格式核实再拷。
@@ -521,14 +606,14 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
                 // 流 → 置信度 → 索引行,与 frames.bin / frames.pwvi 同一次序。
                 let offset = self.depthStreamOffset
                 try stream.write(contentsOf: depth)
-                try stream.synchronize()
+                try self.syncStreamBeforeIndex(stream)
                 var confidenceOffset = -1
                 var confidenceLength = 0
                 if let confidence, let confidenceStream = self.depthConfidenceStream {
                     confidenceOffset = self.depthConfidenceOffset
                     confidenceLength = confidence.count
                     try confidenceStream.write(contentsOf: confidence)
-                    try confidenceStream.synchronize()
+                    try self.syncStreamBeforeIndex(confidenceStream)
                 }
                 let row = "{\"frame\":\(index),\"offset\":\(offset),"
                     + "\"len\":\(depth.count),\"t_ns\":\(timestampNanoseconds),"
@@ -536,9 +621,9 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
                     + "\"conf_offset\":\(confidenceOffset),"
                     + "\"conf_len\":\(confidenceLength),"
                     + "\"camera_frame\":\(cameraFrame),\"ar_frame\":\(arFrameIndex)"
-                    + kFields + "}\n"
+                    + admittedField + kFields + "}\n"
                 try indexHandle.write(contentsOf: Data(row.utf8))
-                try indexHandle.synchronize()
+                try self.syncIndexAfterRow(indexHandle)
                 let elapsed = (CACurrentMediaTime() - writeStart) * 1000
                 self.stateLock.lock()
                 self.depthStreamOffset = offset + depth.count
@@ -607,6 +692,9 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
         var depthFormatMismatch: Int
         var frameCount: Int
         var depthFramesWritten: Int
+        var writeSync: String
+        var barrierFallbacks: Int
+        var noCacheSetFailed: Bool
     }
 
     func timingSnapshot() -> TimingSnapshot {
@@ -622,7 +710,48 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
             depthDropped: depthDropped,
             depthFormatMismatch: depthFormatMismatch,
             frameCount: frameCount,
-            depthFramesWritten: depthFramesWritten)
+            depthFramesWritten: depthFramesWritten,
+            writeSync: writeSync.rawValue,
+            barrierFallbacks: barrierFallbacks,
+            noCacheSetFailed: noCacheSetFailed)
+    }
+
+    /// W11:逐秒时间线,秒号 = ⌊(事件时刻 − 第一次交帧时刻)⌋。每秒:交来 / 收下 / 丢(队列满)的帧数、
+    /// 交来时的在途峰值、这一秒写完的帧的写入耗时 p50 / max、写完字节(MB)。
+    /// 「写入 MB/s」是按**写完时刻**分桶的;队列在排、丢帧在涨的那几秒就是存储跟不上的那几秒。
+    func perSecondTimeline() -> [[String: Any]] {
+        stateLock.lock()
+        let oa = offeredAt, ok = offeredAccepted, oi = offeredInFlight
+        let wa = writeDoneAt, wm = writeDoneMs, wb = writeDoneBytes
+        stateLock.unlock()
+        guard let origin = oa.first else { return [] }
+        let last = max(oa.last ?? origin, wa.last ?? origin)
+        let n = Int(last - origin) + 1
+        var offered = [Int](repeating: 0, count: n), accepted = offered, lost = offered, peak = offered
+        var ms = [[Double]](repeating: [], count: n)
+        var bytes = [Int](repeating: 0, count: n)
+        for i in oa.indices {
+            let s = min(n - 1, max(0, Int(oa[i] - origin)))
+            offered[s] += 1
+            if ok[i] { accepted[s] += 1 } else { lost[s] += 1 }
+            peak[s] = max(peak[s], oi[i])
+        }
+        for i in wa.indices {
+            let s = min(n - 1, max(0, Int(wa[i] - origin)))
+            ms[s].append(wm[i]); bytes[s] += wb[i]
+        }
+        return (0..<n).map { s in
+            let sorted = ms[s].sorted()
+            var row: [String: Any] = ["s": s, "offered": offered[s], "accepted": accepted[s],
+                                      "lost_queue_full": lost[s], "peak_in_flight": peak[s],
+                                      "written": sorted.count,
+                                      "written_mb": Double(bytes[s]) / 1_000_000]
+            if !sorted.isEmpty {
+                row["write_ms_p50"] = sorted[sorted.count / 2]
+                row["write_ms_max"] = sorted.last!
+            }
+            return row
+        }
     }
 
     // MARK: - Finish [port] :693-871
@@ -683,6 +812,11 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
                 role: role, relativePath: path, byteCount: Int64(data.count),
                 sha256: Self.hex(SHA256.hash(data: data))))
         }
+        // W10:不逐帧 fsync 的写法在封口时各 fsync 一次(源的写法每帧都 fsync 过,这里是空操作)。
+        if writeSync != .fsyncEach {
+            try framesStream.synchronize()
+            try framesIndex.synchronize()
+        }
         try framesStream.close()
         try framesIndex.close()
         files.append(DeviceRecordingFile(
@@ -698,6 +832,11 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
         // 深度失败不能 —— 否则一把 bench-only 的尺子能毁掉一场拍不回来的录制。[port] :790-830
         var depthDeclared = false
         if depthFrames > 0, depthStream != nil {
+            if writeSync != .fsyncEach {
+                try? depthStream?.synchronize()
+                try? depthConfidenceStream?.synchronize()
+                try? depthIndex?.synchronize()
+            }
             try? depthStream?.close()
             try? depthConfidenceStream?.close()
             try? depthIndex?.close()
@@ -807,16 +946,85 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
 
     static let rulerSubsetDirectory = "ruler_subset"
 
-    /// 从一份**已封口**的录制里挑出带深度、相邻间隔 ≥ `minSpacingSeconds` 的相机帧,把它们的 luma
-    /// 拷进 `<rec>/ruler_subset/frames.bin`(帧号保留、偏移重排),写对应的 frames.pwvi /
+    // MARK: - W12 XRSLAM 回放会收哪些帧
+
+    /// (ptsSeconds, lastAdmittedPts, haveAdmitted, cameraHz) → 收不收。
+    typealias XrslamGate = (Double, Double, Bool, Double) -> Bool
+
+    /// `PwXrslamOfficialFeed.admits`(PwXrslamLive.swift)的**逐式拷贝**,只给 Mac 宿主(那边编不进
+    /// PwXrslamLive.swift)。台架 App 里导出时传的是 `PwXrslamOfficialFeed.admits` 本身。
+    /// 这份拷贝与引擎的实际取舍逐帧相等,由 LidarWriterTests 用手机回放真账核(run-fb5d3a8f)。
+    static let xrslamGateCopy: XrslamGate = { pts, last, have, hz in
+        guard hz > 0 else { return true }
+        return !(have && pts - last < 0.8 / hz)
+    }
+
+    /// 手机回放(PwBenchReplay → PwXrslamLive.onCameraFrame)会**收**的录制帧号。逐步照抄回放:
+    ///   ① 装载器按 camera_index.csv 行序取前 `limitFrames` 行(0 = 全部;DeviceRecordingLoader D8);
+    ///   ② 按时间戳投递,丢掉早于第一条 IMU 的相机帧(装载器 [port] :312-332);
+    ///   ③ 30 Hz 准入闸,pts = Double(t_ns)·1e-9(PwBenchReplay.swift 投递处的同一换算)。
+    /// `cameraHz` ≤ 0 ⇒ 闸关着,②之后全收。
+    static func xrslamAdmittedFrames(
+        cameraRows: [(t: Int64, frame: Int)],
+        firstImuNanoseconds: Int64?,
+        limitFrames: Int = 0,
+        cameraHz: Double,
+        gate: XrslamGate = xrslamGateCopy
+    ) -> (admitted: Set<Int>, fed: Int, leadingDropped: Int, gatedOut: Int) {
+        var rows = cameraRows
+        if limitFrames > 0 && rows.count > limitFrames { rows = Array(rows.prefix(limitFrames)) }
+        rows.sort { $0.t < $1.t }
+        var admitted = Set<Int>()
+        var have = false
+        var last = 0.0
+        var fed = 0, leading = 0, gatedOut = 0
+        for r in rows {
+            if let imu0 = firstImuNanoseconds, r.t < imu0 { leading += 1; continue }
+            fed += 1
+            let pts = Double(r.t) * 1e-9
+            guard gate(pts, last, have, cameraHz) else { gatedOut += 1; continue }
+            have = true
+            last = pts
+            admitted.insert(r.frame)
+        }
+        return (admitted, fed, leading, gatedOut)
+    }
+
+    /// imu.csv 第一条数据行的时间戳(没有 IMU ⇒ nil,装载器此时也不丢任何相机帧)。
+    static func firstImuNanoseconds(recording: URL) -> Int64? {
+        guard let h = try? FileHandle(forReadingFrom: recording.appendingPathComponent("imu.csv")) else {
+            return nil
+        }
+        defer { try? h.close() }
+        guard let head = try? h.read(upToCount: 4096),
+              let text = String(data: head, encoding: .utf8) else { return nil }
+        let lines = text.split(separator: "\n")
+        guard lines.count >= 2, let f = lines[1].split(separator: ",").first else { return nil }
+        return Int64(f)
+    }
+
+    /// 从一份**已封口**的录制里挑出带深度、相邻间隔 ≥ `minSpacingSeconds`、**且 XRSLAM 回放会收**
+    /// (W12)的相机帧,把它们的 luma
+    /// 拷进 `<rec>/<outName>/frames.bin`(帧号保留、偏移重排),写对应的 frames.pwvi /
     /// camera_index.csv;深度三件套与小文件硬链接(同卷,不占空间),硬链接失败才拷贝。
     /// 离线尺子(tool/bench/lidar_ruler)对这个目录与对整份录制走同一条读取路径。
     /// 🔴 子集**不可回放**:拷过去的 recording_manifest.json 仍描述整份录制,回放装载器核
     /// frames.pwvi 哈希时会拒 —— 这是故意的,子集只给尺子。
     @discardableResult
-    static func exportRulerSubset(recording: URL, minSpacingSeconds: Double) throws -> [String: Any] {
+    static func exportRulerSubset(
+        recording: URL,
+        minSpacingSeconds: Double,
+        outName: String = rulerSubsetDirectory,
+        xrslamCameraHz: Double = 30,
+        limitFrames: Int = 0,
+        gate: XrslamGate = xrslamGateCopy,
+        gateSource: String = "PwBenchLidarRecordingWriter.xrslamGateCopy"
+    ) throws -> [String: Any] {
         let fm = FileManager.default
-        let out = recording.appendingPathComponent(rulerSubsetDirectory)
+        guard !outName.isEmpty, !outName.contains("/"), outName != "." , outName != ".." else {
+            throw PwBenchLidarRecorderError.subsetExport("子集目录名不合法:\(outName)")
+        }
+        let out = recording.appendingPathComponent(outName)
         if fm.fileExists(atPath: out.path) { try fm.removeItem(at: out) }
         try fm.createDirectory(at: out, withIntermediateDirectories: true)
 
@@ -843,6 +1051,7 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
         }
         // camera_index.csv:时间戳 → 帧号。
         var frameByTimestamp: [Int64: Int] = [:]
+        var cameraRows: [(t: Int64, frame: Int)] = []
         let cameraText = try String(contentsOf: recording.appendingPathComponent("camera_index.csv"),
                                     encoding: .utf8)
         for (n, line) in cameraText.split(separator: "\n").enumerated() where n > 0 && !line.isEmpty {
@@ -851,7 +1060,12 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
                 throw PwBenchLidarRecorderError.subsetExport("camera_index.csv 第 \(n + 1) 行无法解析")
             }
             frameByTimestamp[t] = f
+            cameraRows.append((t, f))
         }
+        // W12:XRSLAM 回放会收的帧。
+        let imu0 = firstImuNanoseconds(recording: recording)
+        let adm = xrslamAdmittedFrames(cameraRows: cameraRows, firstImuNanoseconds: imu0,
+                                       limitFrames: limitFrames, cameraHz: xrslamCameraHz, gate: gate)
         // depth.pwvi 的时间戳(与相机帧同一个 ARFrame.timestamp ⇒ 精确相等)。
         let depthURL = recording.appendingPathComponent(depthIndexPath)
         guard fm.fileExists(atPath: depthURL.path) else {
@@ -868,15 +1082,20 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
         depthStamps.sort()
         var picked: [(t: Int64, frame: Int)] = []
         var lastPicked: Int64 = .min
+        var depthWithLuma = 0, depthNotAdmitted = 0
         let spacingNs = Int64((max(0, minSpacingSeconds) * 1e9).rounded())
         for t in depthStamps {
             guard let f = frameByTimestamp[t], offsetByFrame[f] != nil else { continue }
+            depthWithLuma += 1
+            // W12:XRSLAM 回放不收的帧没有引擎位姿 ⇒ 不进子集(尺子不插值)。
+            guard adm.admitted.contains(f) else { depthNotAdmitted += 1; continue }
             if lastPicked != .min && t - lastPicked < spacingNs { continue }
             picked.append((t, f))
             lastPicked = t
         }
         guard !picked.isEmpty else {
-            throw PwBenchLidarRecorderError.subsetExport("没有一帧同时有 luma 与深度")
+            throw PwBenchLidarRecorderError.subsetExport(
+                "没有一帧同时有 luma、深度且被 XRSLAM 回放收下(带深度帧 \(depthWithLuma),其中不被收 \(depthNotAdmitted))")
         }
 
         let source = try FileHandle(forReadingFrom: recording.appendingPathComponent(
@@ -939,6 +1158,23 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
             "linked": linked,
             "copied": copied,
             "not_replayable_reason": "recording_manifest.json 描述的是整份录制;子集只给离线尺子",
+            "out_name": outName,
+            "xrslam_admission": [
+                "rule": "phone replay: camera_index rows (limit_frames prefix) → drop t < first IMU → "
+                    + "PwXrslamOfficialFeed.admits(pts=Double(t_ns)*1e-9): reject if pts - last_admitted < 0.8/R",
+                "gate_source": gateSource,
+                "camera_hz": xrslamCameraHz,
+                "limit_frames": limitFrames,
+                "first_imu_ns": imu0.map { NSNumber(value: $0) } ?? NSNull(),
+                "camera_rows": cameraRows.count,
+                "fed": adm.fed,
+                "leading_without_imu_dropped": adm.leadingDropped,
+                "gated_out": adm.gatedOut,
+                "admitted": adm.admitted.count,
+                "depth_rows_with_luma": depthWithLuma,
+                "depth_rows_not_admitted": depthNotAdmitted,
+                "every_subset_frame_admitted": picked.allSatisfy { adm.admitted.contains($0.frame) },
+            ] as [String: Any],
         ]
         let data = try JSONSerialization.data(withJSONObject: summary, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: out.appendingPathComponent("ruler_subset_manifest.json"), options: .atomic)

@@ -1,5 +1,5 @@
 // bench_lidar_native.dart —— 台架「LiDAR 米尺录制」页的 dart:ffi 绑定
-// (`ios/Runner/PwBenchLidarSession.swift` 的四个 `@_cdecl`)。
+// (`ios/Runner/PwBenchLidarSession.swift` 的五个 `@_cdecl`;第五个 reexport 是 2026-09-24 rec30 加的、可缺)。
 //
 // 🔴 bench-only ruler:LiDAR 深度只在台架里当研发期米尺,永不进产品代码、产品管线、产品提案。
 // 本目录(lib/bench_lidar/)只由 arloopbench 的 main.dart 在
@@ -30,12 +30,23 @@ class BenchLidarNative {
             lib.lookupFunction<_StartNative, _StartDart>('pw_bench_lidar_start'),
         _stop = lib.lookupFunction<_VoidNative, _VoidDart>('pw_bench_lidar_stop'),
         _status = lib.lookupFunction<_OutJsonNative, _OutJsonDart>(
-            'pw_bench_lidar_status');
+            'pw_bench_lidar_status'),
+        _reexport = _tryLookupStart(lib, 'pw_bench_lidar_reexport_subset');
 
   final _OutJsonDart _capability;
   final _StartDart _start;
   final _VoidDart _stop;
   final _OutJsonDart _status;
+  // [2026-09-24 rec30] 可选:老包没有这个符号 ⇒ null,整页照常可用。
+  final _StartDart? _reexport;
+
+  static _StartDart? _tryLookupStart(ffi.DynamicLibrary lib, String name) {
+    try {
+      return lib.lookupFunction<_StartNative, _StartDart>(name);
+    } catch (_) {
+      return null;
+    }
+  }
 
   static BenchLidarNative? tryOpen(ffi.DynamicLibrary lib) {
     try {
@@ -81,6 +92,19 @@ class BenchLidarNative {
   }
 
   void stop() => _stop();
+
+  /// [2026-09-24 rec30] 给已有录制重导尺子子集(只挑 XRSLAM 回放会收的帧,录制本身不动)。
+  /// 0 已开跑;-1 正忙;-2 配置不对;-9 这个包没有该符号。进度 / 结果走 [status]。
+  int reexportSubset(Map<String, Object?> config) {
+    final _StartDart? f = _reexport;
+    if (f == null) return -9;
+    final ffi.Pointer<Utf8> s = jsonEncode(config).toNativeUtf8();
+    try {
+      return f(s.cast());
+    } finally {
+      calloc.free(s);
+    }
+  }
 
   /// `phase`:idle / starting / recording / stopping / exporting / done / failed。
   /// done 时带 `result`(manifest 摘要 + timing + 子集导出摘要)。

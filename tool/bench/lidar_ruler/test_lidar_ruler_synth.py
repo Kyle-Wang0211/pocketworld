@@ -26,6 +26,13 @@ vendored/synth_depth_verify.py 的解析深度(射线-平面求交)。本文件�
   T9 LiDAR 整体偏 ×1.02 ⇒ ARKit 的 k 恰为 1/1.02(±0.5%)—— 这是**局限的自证**:LiDAR 的系统偏差原样进 k
   T10 没有深度的老录制(run-6e2d4b99)⇒ 干净拒绝
   T11(可选,有 --subset-exporter 时)Swift 子集导出器导出 ruler_subset/ ⇒ 在子集上跑出的 k 与整份差 ≤ 0.5%
+  [2026-09-24 rec30] 手机回放新写的 poses_camera_by_recording_frame.csv(引擎 CAMERA 位姿按录制帧 t_ns 键控):
+  T12 --xrslam-camera 精确键控 ⇒ |k/0.88 − 1| ≤ 1%,verdict valid,G1–G4 全过,×1.05 恢复,深度洗牌被拒,
+      噪声底 PC 恢复;缺位姿的 5 帧(没在跟踪)被点数为「收了没跟踪」、不插值
+  T12b 与 BODY + 逐帧账那条路的 k 差 ≤ 0.1%(同一组帧,只差在位姿从哪来)
+  T13 反例:引擎位姿只落在没有深度的帧上(= 首跑 run-fb5d3a8f 的失配)⇒ 尺子**拒绝**(exit≠0),不插值凑数
+  T11b(有 --subset-exporter 时)子集上 --xrslam-camera(--min-pairs 4,见该段注释)⇒ 子集帧除没在跟踪的
+       都有引擎位姿、k ±1%、ARKit 与 XRSLAM 都 verdict valid(G1–G4、×1.05、洗牌)
 
 跑法:/usr/bin/python3 test_lidar_ruler_synth.py [--work DIR --keep] [--subset-exporter <swift 可执行>]
 """
@@ -166,9 +173,14 @@ def build(work, seed):
          open(os.path.join(rec, 'intrinsics.jsonl'), 'w') as fi, \
          open(os.path.join(rec, 'arkit_poses.tum'), 'w') as fa, \
          open(os.path.join(work, 'xr_body.tum'), 'w') as fx, \
+         open(os.path.join(work, 'xr_camera_by_frame.csv'), 'w') as fk, \
+         open(os.path.join(work, 'xr_camera_nodepth_only.csv'), 'w') as fn, \
          open(os.path.join(work, 'xr_ledger.csv'), 'w') as fl:
         fc.write('timestamp_ns,relative_path\n')
         fl.write('frame,recording_frame,t_ns,t_canonical,t_effective,exposure_used_s\n')
+        hdr = 'recording_frame,t_ns,tx,ty,tz,qx,qy,qz,qw,engine_t\n'
+        fk.write(hdr)
+        fn.write(hdr)
         for k, ((C, R_bc_board), t_ns) in enumerate(zip(poses, ts)):
             img, _rvec, _tvec, _M = SV.render(board_img, (bw, bh), C, R_bc_board, dist,
                                               SV.SUPERSAMPLE, 2.0, rng)
@@ -192,6 +204,14 @@ def build(work, seed):
             t_eff = t_ns + int(round((TD + expo[k] / 2) * 1e9))
             fx.write(tum_line(t_eff, p_wb, SV.rmat_to_quat(R_wb), '%.7f') + '\n')
             fl.write(f'{k},{k},{t_ns},{t_ns / 1e9:.9f},{t_eff / 1e9:.9f},{expo[k]}\n')
+            # rec30:手机回放 poses_camera_by_recording_frame.csv 的形状 —— 引擎 CAMERA 位姿(OpenCV 轴,
+            # XRSLAM 世界系、尺度 K_XR),按录制帧 t_ns 键控;前 5 帧「没在跟踪」不写(引擎只写 TRACKING_SUCCESS)。
+            row = (f'{k},{t_ns},' + ','.join('%.9f' % v for v in C_x) + ','
+                   + ','.join('%.9f' % v for v in SV.rmat_to_quat(R_wc_x)) + f',{t_ns / 1e9:.9f}\n')
+            if k >= 5:
+                fk.write(row)
+                if k % DEPTH_STRIDE != 0:
+                    fn.write(row)          # T13 反例:只落在没有深度的帧上
             if k % DEPTH_STRIDE == 0:
                 depth_frames.append((k, t_ns, K))
                 depths.append(SDV.analytic_depth(C, R_bc_board, (bw, bh)))
@@ -306,6 +326,37 @@ def main():
     kxb = k_of(repb, 'xr') if repb else float('nan')
     gate(repb and abs(kxb / kx - 1) <= 0.001, f'T3 逐帧账映射 k={kxb:.5f} vs td 映射 {kx:.5f}')
 
+    print('\n══ G(rec30):XRSLAM CAMERA 位姿按录制帧 t_ns 精确键控(--xrslam-camera)══')
+    xr_cam = ['--xrslam-camera', f'xr={os.path.join(work, "xr_camera_by_frame.csv")}',
+              '--xrslam-ledger', f'xr={os.path.join(work, "xr_ledger.csv")}']
+    r, repg = ruler(rec, work, 'G', ['--arkit'] + xr_cam)
+    results['G'] = repg
+    if repg:
+        tg = repg['trajectories']['xr']
+        kg = tg['estimate']['k']
+        gates_g = tg['estimate']['gates']
+        pv = repg['provenance']['xr']
+        nfg = tg.get('noise_floor') or {}
+        gate(abs(kg / K_XR - 1) <= 0.01 and tg['verdict'] == 'valid' and all(gates_g.values())
+             and tg.get('control_pc_x1_05', {}).get('recovered')
+             and tg['control_nc_shuffled_depth']['rejected_as_required'] and nfg.get('pc_recovered'),
+             f'T12 精确键控 k={kg:.5f}(期望 {K_XR},±1%),verdict {tg["verdict"]},闸 {gates_g},'
+             f'×1.05 {tg.get("control_pc_x1_05", {}).get("ratio", float("nan")):.5f},'
+             f'洗牌被拒 {tg["control_nc_shuffled_depth"]["rejected_as_required"]},噪声底 PC {nfg.get("pc_mean")}')
+        gate(pv['mapping'].startswith('exact_recording_t_ns') and pv['recording_frames_without_pose'] == 5
+             and pv.get('missing_admitted_but_not_tracking') == 5 and pv.get('missing_not_admitted_by_xrslam') == 0,
+             f'T12 缺位姿点数:缺 {pv["recording_frames_without_pose"]}(收了没跟踪 '
+             f'{pv.get("missing_admitted_but_not_tracking")} / 没收 {pv.get("missing_not_admitted_by_xrslam")}),期望 5/5/0')
+        kxb_ = k_of(repb, 'xr') if repb else float('nan')
+        gate(abs(kg / kxb_ - 1) <= 0.001, f'T12b 精确键控 k={kg:.5f} vs BODY+逐帧账 k={kxb_:.5f}(≤0.1%)')
+    else:
+        gate(False, 'T12 没出报告:' + r.stdout[-800:] + r.stderr[-800:])
+    r = subprocess.run([sys.executable, RULER, '--recording', rec, '--arkit', '--xrslam-camera',
+                        f'xr={os.path.join(work, "xr_camera_nodepth_only.csv")}'],
+                       capture_output=True, text=True)
+    gate(r.returncode != 0 and '可用帧' in (r.stdout + r.stderr),
+         f'T13 反例:引擎位姿全落在无深度帧上 ⇒ 尺子拒绝(exit {r.returncode}),不插值')
+
     print('\n══ C:LiDAR 逐像素 1% 噪声 + 5% 野值 ══')
     recc = variant(work, rec, 'run-noisy', dframes, depths, noise=0.01, outliers=0.05, seed=5)
     r, repc = ruler(recc, work, 'C', ['--arkit'] + xr_shift)
@@ -351,6 +402,23 @@ def main():
                  f'{json.load(open(os.path.join(sub, "ruler_subset_manifest.json")))["frames"]}')
         else:
             gate(False, 'T11 子集上没出报告:' + r.stdout[-800:] + r.stderr[-800:])
+        # 合成场景只有 80 帧(2.7 s)⇒ 子集 9 帧、帧对 6 < 默认 --min-pairs 8 ⇒ G1 对 ARKit 与 XRSLAM 同样不过
+        # (T11 只核 k 就是这个原因)。这里把 --min-pairs 降到 4(G1 仍要 ≥ 50% 帧对有效),让 G1–G4 都真判。
+        r, repf2 = ruler(sub, work, 'F2', ['--arkit'] + xr_cam + ['--pair-dt', '0.5', '--min-pairs', '4'])
+        results['F2'] = repf2
+        if repf2:
+            pv = repf2['provenance']['xr']
+            tf2 = repf2['trajectories']['xr']
+            n_sub = json.load(open(os.path.join(sub, 'ruler_subset_manifest.json')))['frames']
+            # 子集帧里没在跟踪的只可能是前 5 帧(帧 0、3);其余都必须有引擎位姿。
+            gate(abs(tf2['estimate']['k'] / K_XR - 1) <= 0.01 and tf2['verdict'] == 'valid'
+                 and repf2['trajectories']['arkit']['verdict'] == 'valid'
+                 and pv['recording_frames_with_pose'] + pv.get('missing_admitted_but_not_tracking', 0) == n_sub
+                 and pv.get('missing_not_admitted_by_xrslam') == 0,
+                 f'T11b 子集 {n_sub} 帧:有引擎位姿 {pv["recording_frames_with_pose"]},没收 '
+                 f'{pv.get("missing_not_admitted_by_xrslam")};k={tf2["estimate"]["k"]:.5f},verdict {tf2["verdict"]}')
+        else:
+            gate(False, 'T11b 子集上没出报告:' + r.stdout[-800:] + r.stderr[-800:])
 
     summary = {k: {n: {'k': t['estimate']['k'], 'verdict': t['verdict'],
                        'noise_floor_k95': (t.get('noise_floor') or {}).get('k_95_noise_floor'),

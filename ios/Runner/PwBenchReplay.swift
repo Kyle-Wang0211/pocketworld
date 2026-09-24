@@ -648,6 +648,16 @@ final class PwBenchReplayRunner {
         var lastBodyT = -1.0
         var lastCamT = -Double.infinity
         var bodyRows = 0, cameraRows = 0
+        // [2026-09-24 rec30] CAMERA 位姿按**录制帧**精确键控(🔴 bench-only ruler 用它量 XRSLAM 的米制尺度):
+        //   recording_frame / t_ns = 这一帧在录制里的帧号与整数纳秒时间戳(观察者按 raw pts 位模式配回投递记录,
+        //   不经任何时间容差);位姿 = 引擎交回的 CAMERA 位姿(与 poses_camera.tum 同一个 o.pose,
+        //   world_from_camera、相机轴同 cam0.extrinsic 的相机系);engine_t = 引擎给位姿的时间戳
+        //   (= t_ns·1e-9 + camera_time_offset,可自证)。闸同 poses_camera.tum(rc == 0、TRACKING_SUCCESS、
+        //   时间严格前进)再加四元数模 ≥ 0.5(与 BODY 闸同式;初始化那一帧引擎交回全零四元数)。
+        //   尺子(tool/bench/lidar_ruler/lidar_ruler.py --xrslam-camera)按 t_ns 整数相等取,不插值。
+        var cameraByFrame = "recording_frame,t_ns,tx,ty,tz,qx,qy,qz,qw,engine_t\n"
+        var cameraByFrameRows = 0
+        var lastKeyedT = -Double.infinity
         for (i, r) in recs.enumerated() {
             let o = r.observation
             // BODY:runner 的闸 —— 四元数模 ≥ 0.5 且时间戳严格前进(euroc_runner.cpp:207-213)。
@@ -664,6 +674,19 @@ final class PwBenchReplayRunner {
                 lastCamT = o.pose.timestamp
                 camera += Self.tumRow(o.pose)
                 cameraRows += 1
+            }
+            let cq = o.pose.quaternion
+            let cqn = (cq.0 * cq.0 + cq.1 * cq.1 + cq.2 * cq.2 + cq.3 * cq.3).squareRoot()
+            if o.rc == 0, o.state == 1, cqn >= 0.5, o.pose.timestamp > lastKeyedT,
+               let off = r.offered, off.recordingFrameIndex >= 0 {
+                lastKeyedT = o.pose.timestamp
+                let p = o.pose
+                cameraByFrame += String(
+                    format: "%ld,%lld,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f\n",
+                    off.recordingFrameIndex, off.timestampNanoseconds,
+                    p.translation.0, p.translation.1, p.translation.2,
+                    p.quaternion.0, p.quaternion.1, p.quaternion.2, p.quaternion.3, p.timestamp)
+                cameraByFrameRows += 1
             }
             let d = r.telemetryDelta
             func f4(_ v: Double) -> String { String(format: "%.4f", v) }
@@ -722,6 +745,8 @@ final class PwBenchReplayRunner {
         var outputs: [String: Any] = [:]
         for (name, text, rows) in [("poses_body.tum", body, bodyRows),
                                    ("poses_camera.tum", camera, cameraRows),
+                                   ("poses_camera_by_recording_frame.csv", cameraByFrame,
+                                    cameraByFrameRows),
                                    ("frame_timing.csv", timing, recs.count),
                                    ("intrinsics_ledger.csv", ledger, recs.count)] {
             let data = text.data(using: .utf8)!
