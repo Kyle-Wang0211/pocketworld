@@ -226,12 +226,13 @@ void main() {
     );
   });
 
-  test('the final record retains scale rejection evidence', () {
+  test('the final record reports the retired Dart scale arm explicitly', () {
     final src = File(
       'lib/official_capture/sfm_live_recon.dart',
     ).readAsStringSync();
-    expect(src, contains('delivering UNSCALED (raw BA gauge)'));
-    expect(src, contains('rejected_s='));
+    // [SCALE-ANCHOR RETIRED 2026-09-24] 交付尺度改由 C++ 核 DEVICE-ALIGN-V1。
+    expect(src, isNot(contains('delivering UNSCALED (raw BA gauge)')));
+    expect(src, contains("'moved_to_core_device_align_v1'"));
     expect(src, contains("'scale_rejected_factor':"));
   });
 }

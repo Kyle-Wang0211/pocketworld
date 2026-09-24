@@ -398,11 +398,13 @@ abstract final class PlatformPoseGate {
 
 // ── 与既有管线的对接(零改动扩展)──────────────────────────────────────
 //
-// 既有交付链已经是"COLMAP 自己解位姿,事后用 ARKit 修重力与尺度" —— 方向
-// 与条目 14 一致。下面两个适配器把 [PlatformPoseSource] 直接变成既有两个
-// 纯函数已经接受的回调签名,**不改既有函数一个字**:
+// 既有交付链已经是"COLMAP 自己解位姿,事后用平台位姿修重力" —— 方向
+// 与条目 14 一致。下面的适配器把 [PlatformPoseSource] 直接变成既有纯函数
+// 已经接受的回调签名,**不改既有函数一个字**:
 //   • gravityAlignQuatWxyz(arkitQuatWxyzOf: ...)
-//   • scaleAnchorFactor(arkitCenterWorldOf: ...)
+// [SCALE-ANCHOR RETIRED 2026-09-24] 原尺度适配器 scaleCenterLookupOf(喂
+// Dart 侧 scaleAnchorFactor)已删除:交付尺度改由 C++ 核 finalize 末尾的
+// DEVICE-ALIGN-V1 对齐到喂入的设备位姿,Dart 侧再缩放会叠乘。
 
 /// 适配 `gravityAlignQuatWxyz` 的 `arkitQuatWxyzOf` 回调。
 ///
@@ -423,28 +425,5 @@ List<double>? Function(int frameId) gravityQuatLookupOf(
       return null;
     }
     return s!.quatWxyz;
-  };
-}
-
-/// 适配 `scaleAnchorFactor` 的 `arkitCenterWorldOf` 回调。
-///
-/// 过 [PlatformPoseRole.scalePrior] 闸,并把 CamFromWorld 换算成相机中心。
-/// 不过闸返回 null ⇒ 既有实现少一个配对,配对 <3 时它自己会放弃缩放
-/// (fail-open,保持现状交付)。
-List<double>? Function(int frameId) scaleCenterLookupOf(
-  PlatformPoseSource source, {
-  void Function(int frameId, String reason)? onReject,
-}) {
-  return (int frameId) {
-    final s = source.sampleForFrame(frameId);
-    final reason = PlatformPoseGate.rejectionReason(
-      s,
-      PlatformPoseRole.scalePrior,
-    );
-    if (reason != null) {
-      onReject?.call(frameId, reason);
-      return null;
-    }
-    return s!.cameraCenterWorld();
   };
 }

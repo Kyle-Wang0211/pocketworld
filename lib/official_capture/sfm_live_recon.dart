@@ -140,9 +140,11 @@ class SfmLiveSnapshot {
   /// must be carried, not recomputed. Null when no alignment was applied.
   final Float64List? posesPackedRawColmap;
 
-  /// [SCALE-ANCHOR 2026-07-28] 应用到本快照的米制尺度锚定因子(x'=s·x,
-  /// t'=s·t;详见 gravity_align.dart scaleAnchorFactor)。null = 臂关闭或
-  /// 估计失败(未缩放)。posesPackedRawColmap 不含此缩放(raw 真值)。
+  /// [SCALE-ANCHOR 2026-07-28 → RETIRED 2026-09-24] 曾是 Dart 侧米制尺度锚定
+  /// 因子。Dart 臂已拆除(它读 Platform.environment,看不到插件 setenv,真机
+  /// 遥测 final_alignment_result 全部 feature_disabled);交付尺度改由 C++ 核
+  /// finalize 末尾的 DEVICE-ALIGN-V1(COLMAP pose-prior 对齐步)负责。字段保留
+  /// 以免 meta schema 变动,**恒为 null**。
   final double? scaleAnchorFactor;
 
   /// {solve_ms, n_registered, n_points3d, reproj_px, rc, result} from the
@@ -1629,7 +1631,6 @@ class SfmLiveRecon {
       required String? scaleReason,
       required double? scaleFactor,
       required GravityAlignDiagV1 gravityDiag,
-      ScaleAnchorDiagV1? scaleDiag,
     }) {
       TelemetryWriter.instance.event('final_alignment_result', {
         'schema_version': 1,
@@ -1643,11 +1644,12 @@ class SfmLiveRecon {
         'scale_status': scaleStatus,
         'scale_reason': scaleReason,
         'scale_factor': scaleFactor,
-        'scale_registered_frames': scaleDiag?.registeredFrames,
-        'scale_pairs_with_arkit_center': scaleDiag?.pairsWithArkitCenter,
-        'scale_usable_ratios': scaleDiag?.usableRatios,
-        'scale_required_pairs': scaleDiag?.requiredPairs,
-        'scale_rejected_factor': scaleDiag?.rejectedFactor,
+        // [SCALE-ANCHOR RETIRED 2026-09-24] 键保留(遥测 schema 不变),恒 null。
+        'scale_registered_frames': null,
+        'scale_pairs_with_arkit_center': null,
+        'scale_usable_ratios': null,
+        'scale_required_pairs': null,
+        'scale_rejected_factor': null,
         'fed_meta_size': _fedMeta.length,
         'n_points': snap.pointCount,
       });
@@ -1682,8 +1684,8 @@ class SfmLiveRecon {
         gravityStatus: 'skipped',
         gravityReason: reason,
         gravityQuatWxyz: null,
-        scaleStatus: 'skipped',
-        scaleReason: 'gravity_not_applied',
+        scaleStatus: 'disabled',
+        scaleReason: 'moved_to_core_device_align_v1',
         scaleFactor: null,
         gravityDiag: diag,
       );
@@ -1697,61 +1699,26 @@ class SfmLiveRecon {
       );
       return snap;
     }
-    // [SCALE-ANCHOR 2026-07-28] 实验臂,默认关(env OFFICIAL_AETHER_SCALE_
-    // ANCHOR=1 开):把交付模型的 gauge 尺度锚回 ARKit 米制(±4% 系统性
-    // 滑移,裁决见 gravity_align.dart 的 scaleAnchorFactor 注释)。相似
-    // 变换保持全部重投影残差 —— 质量零扰动,只改坐标刻度。fail-open:
-    // 估计失败即不缩放。
-    // [SCALE-DIAG 2026-07-30] 同 GRAV-DIAG 的动机,但这一条更要紧:SCALE-ANCHOR
-    // 是**生产开启**的臂,它的五个 fail-open 分支此前全部静默 —— 交付物的尺度
-    // 可能压根没锚回米制,而没有任何信号。其中 scale_out_of_band 不是"数据不够"
-    // 而是"量到了却拒绝施加",所以被拒的 s 必须一起上报。
-    final scaleDiag = _scaleAnchorEnabled ? ScaleAnchorDiagV1() : null;
-    final double? s = _scaleAnchorEnabled
-        ? scaleAnchorFactor(
-            posesPacked: snap.posesPacked,
-            // [DEVICE-SESSION](B)不可信帧(追踪没就绪 / 非参考会话)不给尺度锚
-            // 提供设备相机中心(契约:不得当位姿先验)。
-            arkitCenterWorldOf: (frameId) {
-              final m = _fedMeta[frameId];
-              return m != null && m.devicePoseTrusted
-                  ? m.arkitCameraCenterWorld
-                  : null;
-            },
-            diag: scaleDiag,
-          )
-        : null;
-    if (scaleDiag != null && s == null) {
-      DeviceLog.log(
-        'SfmLive',
-        'scale anchor SKIPPED (reason=${scaleDiag.skipReason} '
-            'registered=${scaleDiag.registeredFrames} '
-            'pairs=${scaleDiag.pairsWithArkitCenter}/${scaleDiag.requiredPairs} '
-            'ratios=${scaleDiag.usableRatios} '
-            'rejected_s=${scaleDiag.rejectedFactor?.toStringAsFixed(4) ?? '-'}) '
-            '→ delivering UNSCALED (raw BA gauge)',
-      );
-    }
+    // [SCALE-ANCHOR RETIRED 2026-09-24] Dart 侧尺度锚定已拆除,Dart 永不缩放。
+    // 原因:① 它读 Platform.environment,而那是进程启动快照,看不到插件
+    //   setenv(本文件顶部 ROOT-CAUSE FIX 注释同一机制)⇒ 真机遥测
+    //   final_alignment_result 在 08-21..09-14 全部 scale_status=disabled /
+    //   feature_disabled,从未生效;② 交付尺度改由 C++ 核 finalize 末尾的
+    //   DEVICE-ALIGN-V1 负责(COLMAP 3.14 pose-prior 对齐步:LO-RANSAC Sim3 到
+    //   喂入的设备相机中心 + Reconstruction::Transform,四端同一份,结果与闸在
+    //   sfm_match_fail.jsonl 的 device_alignment_v1 行)。两处同时缩放会叠乘,
+    //   所以 Dart 这条路整条删除,而不是留开关。重力旋转对齐不依赖该开关,原样保留。
     emitFinalAlignmentResult(
       gravityStatus: 'applied',
       gravityReason: null,
       gravityQuatWxyz: q,
-      scaleStatus: !_scaleAnchorEnabled
-          ? 'disabled'
-          : (s != null ? 'applied' : 'skipped'),
-      scaleReason: !_scaleAnchorEnabled
-          ? 'feature_disabled'
-          : (s == null ? (scaleDiag?.skipReason ?? 'unknown') : null),
-      scaleFactor: s,
+      scaleStatus: 'disabled',
+      scaleReason: 'moved_to_core_device_align_v1',
+      scaleFactor: null,
       gravityDiag: diag,
-      scaleDiag: scaleDiag,
     );
-    var xyz = rotatePointsByQuatWxyz(snap.xyz, q);
-    var poses = gravityAlignedPosesPacked(snap.posesPacked, q);
-    if (s != null) {
-      xyz = scaleAnchoredPoints(xyz, s);
-      poses = scaleAnchoredPosesPacked(poses, s);
-    }
+    final xyz = rotatePointsByQuatWxyz(snap.xyz, q);
+    final poses = gravityAlignedPosesPacked(snap.posesPacked, q);
     return SfmLiveSnapshot(
       xyz: xyz,
       rgb: snap.rgb,
@@ -1763,14 +1730,8 @@ class SfmLiveRecon {
       obsXY: snap.obsXY,
       gravityAlignQuatWxyz: q,
       posesPackedRawColmap: snap.posesPacked,
-      scaleAnchorFactor: s,
     );
   }
-
-  /// [SCALE-ANCHOR] 默认关;插件 setenv 后进程内可见。static final:
-  /// 每次采集会话读一次即可(env 在进程生命周期内不变)。
-  static final bool _scaleAnchorEnabled =
-      Platform.environment['OFFICIAL_AETHER_SCALE_ANCHOR'] == '1';
 
   static SfmLiveSnapshot _snapshotFromMsg(Map msg, {required bool refined}) {
     return SfmLiveSnapshot(

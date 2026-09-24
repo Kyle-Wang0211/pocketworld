@@ -209,16 +209,20 @@ void scaleAnchorTests() {
     );
   });
 
-  test('persist writes scale_anchor_factor and the arm is env-gated', () {
+  test('Dart never rescales the delivered model (arm retired → core DEVICE-ALIGN-V1)', () {
     final ply = File('lib/official_capture/sparse_ply.dart').readAsStringSync();
     expect(ply, contains("'scale_anchor_factor': snapshot.scaleAnchorFactor"));
     final live = File(
       'lib/official_capture/sfm_live_recon.dart',
     ).readAsStringSync();
-    expect(
-      live,
-      contains("Platform.environment['OFFICIAL_AETHER_SCALE_ANCHOR'] == '1'"),
-    );
+    // 双重缩放防线:Dart 侧不得再有尺度开关或缩放调用。
+    expect(live, isNot(contains('OFFICIAL_AETHER_SCALE_ANCHOR')));
+    expect(live, isNot(contains('scaleAnchoredPoints(')));
+    expect(live, isNot(contains('scaleAnchoredPosesPacked(')));
+    final plugin = File(
+      'ios/Runner/OfficialAetherARKitPlugin.swift',
+    ).readAsStringSync();
+    expect(plugin, isNot(contains('setenv("OFFICIAL_AETHER_SCALE_ANCHOR"')));
     // raw 真值不含缩放:posesPackedRawColmap 存的是缩放前的 snap.posesPacked。
     expect(live, contains('posesPackedRawColmap: snap.posesPacked'));
   });

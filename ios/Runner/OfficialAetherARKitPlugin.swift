@@ -338,16 +338,11 @@ class OfficialAetherARKitPlugin: NSObject {
     setenv("OFFICIAL_AETHER_OFFICIAL_TRIANGULATE", "1", 0)
     setenv("OFFICIAL_AETHER_SELFDEV_TRIANGULATE", "0", 0)
     setenv("OFFICIAL_AETHER_TRI_IGNORE_2VIEW", "0", 0)
-    // [SCALE-ANCHOR 2026-07-28 用户签决"四端通用,上生产"] 交付模型米制
-    // 尺度锚定:BA 后全局 scale 是无锚 gauge 漂移(单目对 scale 严格不可
-    // 观测;35 run 实测每采集 ±4~10.6% 系统性偏移),锚回平台 VIO
-    // (IMU 米制,四端皆有:ARKit/ARCore/AREngine;LiDAR 仅 iPhone Pro
-    // 加分项非依赖)。相似变换严格保重投影残差——质量零扰动,只把"一米"
-    // 变回真一米。Dart 侧实现(sfm_live_recon._gravityAlign 链),
-    // fail-open:估计失败/|s−1|>15% 即不缩放。裁决档
-    // _host_fixtures/pose_drift_audit/SCALE_VERDICT.md;并排对比
-    // _host_fixtures/scale_anchor_compare/(用户肉眼批准)。
-    setenv("OFFICIAL_AETHER_SCALE_ANCHOR", "1", 0)
+    // [SCALE-ANCHOR RETIRED 2026-09-24] 原 OFFICIAL_AETHER_SCALE_ANCHOR=1 的
+    // setenv 已删除:Dart 读的是 Platform.environment 启动快照,看不到这里的 setenv,
+    // 真机上从未生效;交付尺度改由 C++ 核 finalize 末尾的 DEVICE-ALIGN-V1
+    // 负责(四端同一份,核内 getenv 开关 OFFICIAL_AETHER_DEVICE_ALIGN_V1,
+    // 默认开)。不要在这里恢复 Dart 侧缩放,否则会与核内对齐叠乘。
     // [AR-EVERY-FRAME 2026-08-05 设备实验臂] 开启后:拍摄期每个被接受的帧
     // 都把当前 previewTracked(实时局部BA点云)推给 AR,让点云每帧可见生长,
     // 而不是只在稀疏的全局BA检查点(~8次)才刷新。Dart 侧默认关(读此 env);

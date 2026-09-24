@@ -13,7 +13,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/capture/true_parallax.dart'
     show cameraCenterFromCamFromWorld;
 import 'package:pocketworld_flutter/official_capture/gravity_align.dart'
-    show scaleAnchorFactor, gravityAlignQuatWxyz;
+    show gravityAlignQuatWxyz;
 
 import 'package:pocketworld_flutter/vio/platform_pose/extrinsics_contract.dart';
 import 'package:pocketworld_flutter/vio/platform_pose/platform_pose_source.dart';
@@ -341,50 +341,8 @@ void main() {
       poses[o + 8] = -cb[2];
     }
 
-    test('scaleCenterLookupOf 喂进既有 scaleAnchorFactor,尺度被找回', () {
-      final src = _FakeSource({
-        for (var i = 0; i < n; i++)
-          i: _sample(
-            i,
-            quat: [1, 0, 0, 0],
-            trans: arkCenters[i]!.map((v) => -v).toList(),
-          ),
-      });
-      final s = scaleAnchorFactor(
-        posesPacked: poses,
-        arkitCenterWorldOf: scaleCenterLookupOf(src),
-      );
-      expect(s, isNotNull);
-      expect(s!, closeTo(sTrue, 1e-9));
-    });
-
-    test('tracking 受限的帧被闸掉后,可用配对不足 ⇒ 既有实现 fail-open 返回 null', () {
-      final rejects = <int, String>{};
-      final src = _FakeSource({
-        for (var i = 0; i < n; i++)
-          i: _sample(
-            i,
-            quat: [1, 0, 0, 0],
-            trans: arkCenters[i]!.map((v) => -v).toList(),
-            // 只留 2 帧 normal,低于既有实现的 <3 门。
-            tracking: i < 2
-                ? PlatformTrackingState.normal
-                : PlatformTrackingState.limited,
-          ),
-      });
-      final s = scaleAnchorFactor(
-        posesPacked: poses,
-        arkitCenterWorldOf: scaleCenterLookupOf(
-          src,
-          onReject: (f, r) => rejects[f] = r,
-        ),
-      );
-      expect(s, isNull, reason: 'fail-open:不缩放,保持现状交付');
-      expect(rejects.length, n - 2);
-      expect(rejects.values.toSet(), {
-        PlatformPoseGate.reasonTrackingNotNormal,
-      });
-    });
+    // [SCALE-ANCHOR RETIRED 2026-09-24] scaleCenterLookupOf 的两条用例随适配器
+    // 一起删除(交付尺度改由 C++ 核 DEVICE-ALIGN-V1 负责)。
 
     test('gravityQuatLookupOf 喂进既有 gravityAlignQuatWxyz 能出解', () {
       final src = _FakeSource({
@@ -404,9 +362,6 @@ void main() {
       });
       final lookup = gravityQuatLookupOf(src);
       expect(lookup(0), isNotNull);
-      // 同一批样本走尺度适配器则应当全拒(没有平移)。
-      final scaleLookup = scaleCenterLookupOf(src);
-      expect(scaleLookup(0), isNull);
     });
   });
 
