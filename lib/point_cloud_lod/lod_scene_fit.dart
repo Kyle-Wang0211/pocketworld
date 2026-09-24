@@ -1,36 +1,47 @@
-// lod_scene_fit.dart — orbit pivot and framing radius for the LOD page, from the
-// octree's metadata.json (Potree 2.0, written by PR #100 buildFromPly on the phone).
+// lod_scene_fit.dart — the LOD page's framing box/sphere, taken the way Potree takes it.
 //
-// product_adapter A2 (see lod_camera.dart): the old viewer fits on the points
-// themselves — pivot = centre of the P0.5–P99.5 range (sparse_cloud_view.dart:155-158
-// orbitPivotOf @875fe67), radius = SparseCloudPainter.fitOf (:1158, median + 8·MAD). The LOD
-// page never holds all points in Dart, so it uses what the octree states about itself:
-//   * pivot  = centre of the `position` attribute's min/max (the real point extent;
-//              Potree 2.0 metadata.json, PotreeConverter writes it per attribute),
-//              falling back to `boundingBox` (the cubic root box) if absent;
-//   * radius = half the diagonal of that box ⇒ every point is within `radius` of the
-//              pivot (what lod_camera.dart's far plane relies on).
-// Consequence: a cloud with long outlier tails frames smaller than in the old viewer.
-// Zoom is the user's remedy; the old viewer's robust fit is not reproducible here.
+// Potree @5636cd471d9eb464969e758be45c44d7613d3859 (BSD-2-Clause), the revision the rest of
+// the LOD path is pinned to:
+//   * src/modules/loader/2.0/OctreeLoader.js:408-420 — the octree's boundingBox is
+//     metadata.json `boundingBox` (min/max); tightBoundingBox is a clone of it (:418). The line
+//     that would have used the `position` attribute's min/max is commented out upstream
+//     (:405-406), so the position extent is deliberately NOT used here either.
+//     The box is stored relative to offset = boundingBox.min (:412-414) and the point cloud is
+//     placed at that offset (src/PointCloudOctree.js:115 `this.position.copy(geometry.offset)`),
+//     so in world space it is exactly metadata `boundingBox` again.
+//   * src/viewer/Scene.js:106-121 getBoundingBox — the scene box is the (union of the) point
+//     clouds' tightBoundingBox in world space. One cloud here ⇒ that box.
+//   * src/viewer/viewer.js:890-898 fitToScreen(factor = 1) → zoomTo(node{boundingBox}, 1)
+//     (:790-809) → the node's bounding sphere = boundingBox.getBoundingSphere(), whose centre
+//     becomes the orbit target (`endTarget = bs.center`, :815).
+//   * three.js r124 as bundled by that Potree (libs/three.js/build/three.module.js:4258-4272,
+//     Box3.getBoundingSphere): centre = box centre, radius = |size| · 0.5.
+//
+// pivot = that centre, radius = that radius; both feed the old viewer's CloudCamera
+// (lod_camera.dart). The box itself is also kept: Potree's far plane is computed from it
+// (lod_camera.dart potreeNearFar).
 import 'dart:convert';
 import 'dart:math' as math;
 
 class LodSceneFit {
   const LodSceneFit({
+    required this.boxMin,
+    required this.boxMax,
     required this.pivot,
     required this.radius,
     required this.points,
-    required this.source,
   });
 
+  /// Scene box in world space (Scene.getBoundingBox).
+  final List<double> boxMin;
+  final List<double> boxMax;
+
+  /// Box3.getBoundingSphere of that box.
   final List<double> pivot;
   final double radius;
 
   /// metadata.json `points` (the tree's own count), -1 if absent.
   final int points;
-
-  /// 'position.min/max' or 'boundingBox' — which box the fit came from.
-  final String source;
 
   /// Throws [FormatException] on anything that is not a usable Potree 2.0 metadata.
   static LodSceneFit fromMetadataJson(String text) {
@@ -51,49 +62,35 @@ class LodSceneFit {
       return out;
     }
 
-    List<double>? mn, mx;
-    var source = '';
-    final attrs = root['attributes'];
-    if (attrs is List) {
-      for (final a in attrs) {
-        if (a is Map && a['name'] == 'position') {
-          mn = vec3(a['min']);
-          mx = vec3(a['max']);
-          source = 'position.min/max';
-        }
-      }
-    }
+    // OctreeLoader.js:408-409
+    final bb = root['boundingBox'];
+    final mn = bb is Map ? vec3(bb['min']) : null;
+    final mx = bb is Map ? vec3(bb['max']) : null;
     if (mn == null || mx == null) {
-      final bb = root['boundingBox'];
-      if (bb is Map) {
-        mn = vec3(bb['min']);
-        mx = vec3(bb['max']);
-        source = 'boundingBox';
-      }
-    }
-    if (mn == null || mx == null) {
-      throw const FormatException(
-        'metadata.json: no position min/max nor boundingBox',
-      );
+      throw const FormatException('metadata.json: no boundingBox min/max');
     }
     for (var i = 0; i < 3; i++) {
       if (mx[i] < mn[i]) {
         throw const FormatException('metadata.json: max < min');
       }
     }
-    final hx = (mx[0] - mn[0]) / 2,
-        hy = (mx[1] - mn[1]) / 2,
-        hz = (mx[2] - mn[2]) / 2;
-    final radius = math.sqrt(hx * hx + hy * hy + hz * hz);
+    // three.js r124 Box3.getCenter / getSize / getBoundingSphere (three.module.js:4258-4272)
+    final sx = mx[0] - mn[0], sy = mx[1] - mn[1], sz = mx[2] - mn[2];
+    final radius = math.sqrt(sx * sx + sy * sy + sz * sz) * 0.5;
     if (!(radius > 0)) {
-      throw const FormatException('metadata.json: empty extent');
+      throw const FormatException('metadata.json: empty boundingBox');
     }
     final pts = root['points'];
     return LodSceneFit(
-      pivot: <double>[mn[0] + hx, mn[1] + hy, mn[2] + hz],
+      boxMin: mn,
+      boxMax: mx,
+      pivot: <double>[
+        (mn[0] + mx[0]) * 0.5,
+        (mn[1] + mx[1]) * 0.5,
+        (mn[2] + mx[2]) * 0.5,
+      ],
       radius: radius,
       points: pts is num ? pts.toInt() : -1,
-      source: source,
     );
   }
 }

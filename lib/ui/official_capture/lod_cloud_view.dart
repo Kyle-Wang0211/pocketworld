@@ -17,8 +17,8 @@
 //     row-major WebGPU world→clip), a perspective switch is kept in the toolbar.
 //   * Black canvas — sparse_cloud_view.dart:769 (user decision 2026-08-07 "纯黑").
 // Not carried over (they need the points in Dart, which LOD by design does not have):
-// double-tap focus/pick, selection box, point-size/tone controls. Pivot/radius come from
-// metadata.json (lod_scene_fit.dart, product_adapter A2).
+// double-tap focus/pick, selection box, point-size/tone controls. Pivot/radius = Potree
+// fitToScreen's bounding sphere of the octree box (lod_scene_fit.dart).
 //
 // Threads: gestures only compute the matrix and send it (pwlod_viewer_set_camera copies it
 // under a lock); rendering happens on the engine's own thread (plan 3b / B1).

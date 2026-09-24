@@ -42,8 +42,8 @@
 //       far = camDist + kLodFarRadiusK·radius. With radius = half the content AABB
 //       diagonal (lod_scene_fit.dart) every point is within `radius` of the pivot, so
 //       nothing the old viewer would draw is clipped.
-//   A2  pivot / radius come from the octree's metadata.json, not from the points (the
-//       whole point of LOD is that Dart never holds all points) — see lod_scene_fit.dart.
+// Pivot / radius: Potree fitToScreen's bounding sphere of the octree box
+// (lod_scene_fit.dart, every step pinned there).
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' show Size;

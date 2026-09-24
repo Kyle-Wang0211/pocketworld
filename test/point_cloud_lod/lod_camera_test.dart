@@ -529,55 +529,91 @@ void main() {
     );
   });
 
-  group('LodSceneFit (metadata.json)', () {
+  group('LodSceneFit = Potree fitToScreen sphere of metadata boundingBox', () {
     // Trimmed from ~/Developer/pw_lod_data/oct_prod/metadata.json (PotreeConverter 2.0).
-    const meta = '''
+    const bbMin = [-7.6491875648498535, -11.163127899169922, -4.17525053024292];
+    const bbMax = [11.090600490570068, 7.57666015625, 14.564537525177002];
+    String meta({
+      List<double> posMin = const [
+        -7.64918756027688,
+        -11.163127899169922,
+        -4.175250532160115,
+      ],
+      List<double> posMax = const [
+        5.2376065208481695,
+        7.57666015625,
+        12.987323762903523,
+      ],
+      List<double> min = bbMin,
+      List<double> max = bbMax,
+    }) =>
+        '''
 {"version":"2.0","points":36232793,
- "boundingBox":{"min":[-7.6491875648498535,-11.163127899169922,-4.17525053024292],
-                "max":[11.090600490570068,7.57666015625,14.564537525177002]},
+ "boundingBox":{"min":$min,"max":$max},
  "attributes":[{"name":"position","size":12,"numElements":3,"elementSize":4,"type":"int32",
-   "min":[-7.64918756027688,-11.163127899169922,-4.175250532160115],
-   "max":[5.2376065208481695,7.57666015625,12.987323762903523]},
+   "min":$posMin,"max":$posMax},
   {"name":"rgb","size":6,"numElements":3,"elementSize":2,"type":"uint16",
    "min":[0,0,0],"max":[65535,65535,65535]}]}''';
 
     test(
-      'pivot/radius from the position extent, every corner within radius',
+      'box = metadata boundingBox; sphere = three.js r124 getBoundingSphere',
       () {
-        final fit = LodSceneFit.fromMetadataJson(meta);
-        expect(fit.source, 'position.min/max');
+        final fit = LodSceneFit.fromMetadataJson(meta());
         expect(fit.points, 36232793);
+        expect(fit.boxMin, bbMin);
+        expect(fit.boxMax, bbMax);
+        for (var i = 0; i < 3; i++) {
+          expect(fit.pivot[i], (bbMin[i] + bbMax[i]) * 0.5);
+        }
+        final s = [for (var i = 0; i < 3; i++) bbMax[i] - bbMin[i]];
         expect(
-          fit.pivot[0],
-          closeTo((-7.64918756027688 + 5.2376065208481695) / 2, 1e-12),
+          fit.radius,
+          math.sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]) * 0.5,
         );
-        final mn = [-7.64918756027688, -11.163127899169922, -4.175250532160115];
-        final mx = [5.2376065208481695, 7.57666015625, 12.987323762903523];
-        for (var i = 0; i < 8; i++) {
-          final c = [
-            (i & 1) == 0 ? mn[0] : mx[0],
-            (i & 2) == 0 ? mn[1] : mx[1],
-            (i & 4) == 0 ? mn[2] : mx[2],
+        // every box corner sits exactly on the sphere
+        for (var c = 0; c < 8; c++) {
+          final p = [
+            for (var i = 0; i < 3; i++) (c >> i) & 1 == 0 ? bbMin[i] : bbMax[i],
           ];
           final d = math.sqrt(
-            math.pow(c[0] - fit.pivot[0], 2) +
-                math.pow(c[1] - fit.pivot[1], 2) +
-                math.pow(c[2] - fit.pivot[2], 2),
+            [
+              for (var i = 0; i < 3; i++)
+                math.pow(p[i] - fit.pivot[i], 2).toDouble(),
+            ].reduce((a, b) => a + b),
           );
-          expect(d, lessThanOrEqualTo(fit.radius * (1 + 1e-12)));
+          expect((d - fit.radius).abs(), lessThan(1e-12));
         }
       },
     );
 
-    test('falls back to boundingBox; rejects garbage', () {
-      final fit = LodSceneFit.fromMetadataJson(
-        '{"boundingBox":{"min":[0,0,0],"max":[2,2,2]}}',
-      );
-      expect(fit.source, 'boundingBox');
-      expect(fit.radius, closeTo(math.sqrt(3), 1e-12));
+    test(
+      'NEGATIVE: the position attribute extent is ignored (OctreeLoader.js:405-406)',
+      () {
+        final a = LodSceneFit.fromMetadataJson(meta());
+        final b = LodSceneFit.fromMetadataJson(
+          meta(posMin: const [0, 0, 0], posMax: const [1, 1, 1]),
+        );
+        expect(b.pivot, a.pivot);
+        expect(b.radius, a.radius);
+        // ...while the boundingBox is not: move it and the fit moves.
+        final c = LodSceneFit.fromMetadataJson(
+          meta(min: const [0.0, 0.0, 0.0], max: const [2.0, 2.0, 2.0]),
+        );
+        expect(c.pivot, [1.0, 1.0, 1.0]);
+        expect(c.radius, closeTo(math.sqrt(3), 1e-15));
+      },
+    );
+
+    test('rejects metadata without a usable boundingBox', () {
       expect(() => LodSceneFit.fromMetadataJson('[]'), throwsFormatException);
       expect(
         () => LodSceneFit.fromMetadataJson('{"points":1}'),
+        throwsFormatException,
+      );
+      expect(
+        () => LodSceneFit.fromMetadataJson(
+          '{"attributes":[{"name":"position","min":[0,0,0],"max":[1,1,1]}]}',
+        ),
         throwsFormatException,
       );
       expect(
