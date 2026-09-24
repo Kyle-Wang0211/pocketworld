@@ -48,13 +48,13 @@
 //   capture queue produces a CVPixelBuffer  -> the ENGINE's render thread renders into one of
 //                                              PWLOD_TARGET_COUNT IOSurface-backed targets and
 //                                              publishes it only after its GPU work completed
-//                                              (pwlod_viewer.h:13-17, :124-130)
+//                                              (pwlod_viewer.h:14-18, :129-135)
 //   onFrameAvailable -> main -> textureFrameAvailable
 //                                           -> pwlod_frame_ready_fn: PwLodFrameSink.frameReady
 //                                              posts textureFrameAvailable to the main queue,
-//                                              nothing else (pwlod_viewer.h:124-127)
+//                                              nothing else (pwlod_viewer.h:129-132)
 //   latestPixelBuffer under a sync queue    -> pwlod_viewer_acquire_latest (engine mutex, never
-//                                              waits on the GPU, pwlod_viewer.h:159-165); our
+//                                              waits on the GPU, pwlod_viewer.h:164-170); our
 //                                              sync queue only guards the viewer handle against
 //                                              close()
 //   copyPixelBuffer passRetained            -> the CVPixelBuffer of the acquired target
@@ -62,7 +62,7 @@
 //
 // Teardown order (the engine may write a target until pwlod_viewer_stop returns):
 // viewer (stops + joins the render thread) -> frame sink -> ring (textures, memories, surfaces)
-// -> GPU (pwlod_viewer.h:64 "after every viewer on it is destroyed").
+// -> GPU (pwlod_viewer.h:65 "after every viewer on it is destroyed").
 import CoreVideo
 import Flutter
 import Foundation
@@ -83,7 +83,7 @@ func pwLodEnsureToRunOnMainQueue(_ block: @escaping () -> Void) {
   }
 }
 
-/// pwlod_status name (pwlod_viewer.h:36-44), used as the FlutterError code.
+/// pwlod_status name (pwlod_viewer.h:37-45), used as the FlutterError code.
 func pwLodStatusName(_ s: pwlod_status) -> String {
   switch s {
   case PWLOD_OK: return "PWLOD_OK"
@@ -301,7 +301,7 @@ final class PwLodTexture: NSObject, FlutterTexture {
       v = viewer
       viewer = nil
     }
-    if let v = v { pwlod_viewer_destroy(v) }  // stops first (pwlod_viewer.h:182)
+    if let v = v { pwlod_viewer_destroy(v) }  // stops first (pwlod_viewer.h:187)
     running = false
     sink?.release()
     sink = nil
@@ -329,7 +329,7 @@ final class PwLodTexture: NSObject, FlutterTexture {
     guard let viewer = viewer else { return PWLOD_ERR_STATE }
     guard vp.count == 16, eye.count == 3 else { return PWLOD_ERR_ARG }
     var cam = pwlod_camera()
-    // Row-major, element [r*4+c], copied in order (pwlod_viewer.h:81).
+    // Row-major, element [r*4+c], copied in order (pwlod_viewer.h:82).
     withUnsafeMutableBytes(of: &cam.view_proj_row_major) { dst in
       vp.withUnsafeBytes { dst.copyMemory(from: $0) }
     }

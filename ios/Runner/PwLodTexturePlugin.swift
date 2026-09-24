@@ -20,7 +20,7 @@
 // ios/Runner/AetherTexturePlugin.swift:78-96, :107-112 @875fe67. Threads:
 //   main       create's registration, setCamera, setParams, stats, dispose, pause/resume
 //   per-texture ioQueue   loadOctree and the texture's teardown (never overlap)
-//   buildQueue            pwlod_build_from_ply / pwlod_verify_octree (BLOCKING, header :195)
+//   buildQueue            pwlod_build_from_ply / pwlod_verify_octree (BLOCKING, header :200)
 //   benchQueue            pwlod_run (plan M1)
 // Results always go back to Flutter on the main thread.
 import Flutter
@@ -233,7 +233,7 @@ final class PwLodTexturePlugin: NSObject, FlutterPlugin {
       let s = pwlod_build_from_ply(ply, out, chunk, budget, threads, &report, &err, UInt32(err.count))
       let wallMs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
       var m = peak.stop()
-      // chunk_dir is caller-owned scratch the caller deletes afterwards (pwlod_viewer.h:196).
+      // chunk_dir is caller-owned scratch the caller deletes afterwards (pwlod_viewer.h:201).
       var removed = true
       do { try fm.removeItem(atPath: chunk) } catch { removed = !fm.fileExists(atPath: chunk) }
       m["status"] = pwLodStatusName(s)

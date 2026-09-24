@@ -298,14 +298,66 @@ void main() {
     });
 
     test(
-      'partial params send only the set keys (native merges over defaults)',
+      'partial params: set keys + point_budget + cache_bytes (always sent)',
       () async {
         await LodBridge().setParams(
           textureId: 3,
-          params: const LodParams(pointBudget: 5),
+          params: const LodParams(targetFrameMs: 16.7),
         );
         final a = calls.single.arguments as Map;
-        expect(a.keys.toSet(), {'textureId', 'point_budget'});
+        expect(a.keys.toSet(), {
+          'textureId',
+          'target_frame_ms',
+          'point_budget',
+          'cache_bytes',
+        });
+      },
+    );
+
+    /// pw_splat_ab_bench Sources/lod/pw_lod_bench.cpp:61 @2f83c6b5: cache_mult = 3 × the
+    /// header's 15 B per budget point. Literal numbers on purpose (not the lib constants).
+    void expectBenchCache(Map<Object?, Object?> a) {
+      expect(a['cache_bytes'], 3 * 15 * (a['point_budget'] as int));
+    }
+
+    test(
+      'cache_bytes = 3 × 15 × point_budget, default budget and a custom one',
+      () async {
+        await LodBridge().setParams(textureId: 3, params: const LodParams());
+        final d = calls.last.arguments as Map;
+        expect(d['point_budget'], 3630000); // pwlod_viewer.h:93 default
+        expect(d['cache_bytes'], 163350000);
+        expectBenchCache(d);
+        await LodBridge().setParams(
+          textureId: 3,
+          params: const LodParams(pointBudget: 1000000),
+        );
+        final c = calls.last.arguments as Map;
+        expect(c['cache_bytes'], 45000000);
+        expectBenchCache(c);
+        // the header states the 15-per-point minimum this multiplies
+        expect(header, contains('default and minimum 15 * point_budget'));
+        expect(header, contains('default 3630000'));
+      },
+    );
+
+    test(
+      'NEGATIVE: the header default 15 × budget is caught by the same checker',
+      () {
+        expect(
+          () => expectBenchCache({
+            'point_budget': 3630000,
+            'cache_bytes': 15 * 3630000,
+          }),
+          throwsA(isA<TestFailure>()),
+        );
+        expect(
+          () => expectBenchCache({
+            'point_budget': 1000000,
+            'cache_bytes': 15 * 1000000,
+          }),
+          throwsA(isA<TestFailure>()),
+        );
       },
     );
 

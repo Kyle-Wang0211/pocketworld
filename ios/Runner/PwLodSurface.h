@@ -35,7 +35,7 @@ extern "C" {
 ///       wgpuSharedTextureMemoryEndAccess without it
 ///       (dawn @12ee391c src/dawn/native/metal/SharedTextureMemoryMTL.mm:228-230; BeginAccess
 ///       only checks it when fences are passed, :210-214), and the engine brackets every use
-///       of a target with BeginAccess / EndAccess (pwlod_viewer.h:116-118).
+///       of a target with BeginAccess / EndAccess (pwlod_viewer.h:121-123).
 /// Same pair the production renderer requests (Aether3D aether_cpp/src/render/
 /// dawn_gpu_device.cpp:474-478 @849c4d6b01, the ffi's source revision).
 pwlod_status PwLodSurfaceCreateGpu(pwlod_gpu *out_gpu);

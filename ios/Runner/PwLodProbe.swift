@@ -7,7 +7,7 @@
 // did.
 //
 // PwLodFootprintPeak is the shell-side peak-memory measurement pwlod_build_from_ply leaves to
-// the shell (pwlod_viewer.h:196-197 "Peak memory is the shell's to measure"). Two readings:
+// the shell (pwlod_viewer.h:201-202 "Peak memory is the shell's to measure"). Two readings:
 //   * sampled: max phys_footprint over a DispatchSourceTimer (default 10 ms) — can miss a
 //     spike shorter than the interval;
 //   * ledger: task_vm_info.ledger_phys_footprint_peak (iPhoneOS SDK mach/task_info.h:376),

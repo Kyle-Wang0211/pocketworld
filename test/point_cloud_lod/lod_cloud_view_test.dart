@@ -138,6 +138,15 @@ void main() {
         calls.map((c) => c.method),
         containsAll(['create', 'setParams', 'loadOctree']),
       );
+      // pw_lod_bench.cpp:61 cache_mult 3 × 15 B × budget, sent explicitly by the page
+      final params =
+          calls.firstWhere((c) => c.method == 'setParams').arguments as Map;
+      expect(params['point_budget'], 3630000);
+      expect(params['cache_bytes'], 3 * 15 * 3630000);
+      expect(
+        params['cache_bytes'],
+        isNot(15 * 3630000),
+      ); // NEGATIVE: not the header's minimum
       expect(
         (calls.firstWhere((c) => c.method == 'loadOctree').arguments
             as Map)['octree_dir'],

@@ -23,11 +23,11 @@
 //     (rows s, u, −f; translation −s·eye, −u·eye, f·eye), row-major.
 //   Projection — three.js src/math/Matrix4.js @6101189ee28b (the revision the LOD
 //     library pins for its frustum, DEVIATIONS.md:21), WebGPU branch because the
-//     engine's clip space is WebGPU's (z in [0,1]; pwlod_viewer.h:81):
+//     engine's clip space is WebGPU's (z in [0,1]; pwlod_viewer.h:82):
 //       makeOrthographic :1200-1242 (WebGPU c = −1/(far−near), d = −near/(far−near))
 //       makePerspective  :1140-1183 (WebGPU c = −far/(far−near), d = −far·near/(far−near))
 //     three.js stores column-major (`te[0], te[4], te[8], te[12]` is row 0); we write
-//     the same numbers row-major (pwlod_viewer.h:81).
+//     the same numbers row-major (pwlod_viewer.h:82).
 //
 // Why the old viewer's pixels come out unchanged (checked by
 // test/point_cloud_lod/lod_camera_test.dart against CloudProjection.project):
@@ -46,7 +46,7 @@ import 'dart:ui' show Size;
 
 import '../ui/official_capture/cloud_camera.dart';
 
-/// pwlod_projection (pwlod_viewer.h:70-73). Values are the C enum values.
+/// pwlod_projection (pwlod_viewer.h:71-74). Values are the C enum values.
 enum LodProjection {
   perspective(0),
   orthographic(1);
@@ -131,7 +131,7 @@ double potreeLowestSpacingFromStats(double statsLowestSpacing) =>
   return (near: near, far: far);
 }
 
-/// One pwlod_camera (pwlod_viewer.h:80-89), in Dart. Field names follow the C struct.
+/// One pwlod_camera (pwlod_viewer.h:81-90), in Dart. Field names follow the C struct.
 class LodCameraFrame {
   LodCameraFrame({
     required this.viewProjRowMajor,
@@ -159,7 +159,7 @@ class LodCameraFrame {
   final double orthoWidthWorld;
   final double orthoHeightWorld;
 
-  /// Must equal the render targets' size (pwlod_viewer.h:87).
+  /// Must equal the render targets' size (pwlod_viewer.h:88).
   final int viewportWidthPx;
   final int viewportHeightPx;
 

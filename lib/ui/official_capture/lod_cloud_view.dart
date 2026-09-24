@@ -149,7 +149,7 @@ class _LodCloudViewState extends State<LodCloudView> {
   }
 
   /// (Re)creates the texture at the widget's physical size; the targets' size must equal the
-  /// camera viewport (pwlod_viewer.h:87), so a size change = new texture.
+  /// camera viewport (pwlod_viewer.h:88), so a size change = new texture.
   Future<void> _ensureTexture() async {
     if (_creating || _logical.isEmpty || _disposed) return;
     final w = (_logical.width * _dpr).round(),

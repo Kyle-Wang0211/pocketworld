@@ -28,7 +28,7 @@ import 'lod_camera.dart';
 
 const String kPwLodChannel = 'pw_lod_texture';
 
-/// pwlod_status (pwlod_viewer.h:36-44); index = C value.
+/// pwlod_status (pwlod_viewer.h:37-45); index = C value.
 const List<String> kPwLodStatusNames = <String>[
   'PWLOD_OK',
   'PWLOD_ERR_ARG',
@@ -40,7 +40,7 @@ const List<String> kPwLodStatusNames = <String>[
 ];
 
 /// octree.bin bytes per point: int32 xyz (12) + uint16 rgb (6)
-/// (pwlod_viewer.h:189 "C1: must equal 18 * tree_points").
+/// (pwlod_viewer.h:194 "C1: must equal 18 * tree_points").
 const int kPwLodBytesPerPoint = 18;
 
 int _int(Map<Object?, Object?> m, String k) {
@@ -61,8 +61,27 @@ Map<Object?, Object?> _map(Object? raw, String what) {
   throw FormatException('pw_lod_texture: $what returned ${raw.runtimeType}');
 }
 
-/// pwlod_params (pwlod_viewer.h:91-101). Every field optional: the shell starts from
-/// pwlod_params_default() and overrides only the keys present.
+/// pwlod_viewer.h:93 default point budget (= pw_splat_ab_bench Sources/lod/pw_lod_bench.cpp:60
+/// @2f83c6b5 `Args.budget`, "(33.3 - 0.20) / 9.12 ms per M on A16").
+const int kLodDefaultPointBudget = 3630000;
+
+/// pwlod_viewer.h:97: node cache "default and minimum 15 * point_budget" (bytes per budget point).
+const int kLodNodeCacheBytesPerBudgetPoint = 15;
+
+/// pw_splat_ab_bench Sources/lod/pw_lod_bench.cpp:61 @2f83c6b5
+/// `double cache_mult = 3.0;  // NodeCache = cache_mult * 15 B * budget` — the multiplier every
+/// Mac bench measurement ran with, i.e. 45 B per budget point, not the header's 15 B minimum.
+const int kLodBenchCacheMult = 3;
+
+/// cache_bytes the shell sends with every setParams: 3 × 15 × point_budget.
+int lodBenchCacheBytes(int pointBudget) =>
+    kLodBenchCacheMult * kLodNodeCacheBytesPerBudgetPoint * pointBudget;
+
+/// pwlod_params (pwlod_viewer.h:92-102). The shell starts from pwlod_params_default() and
+/// overrides the keys present. point_budget and cache_bytes are ALWAYS present:
+/// point_budget = [pointBudget] ?? kLodDefaultPointBudget and cache_bytes = [cacheBytes] ??
+/// lodBenchCacheBytes(point_budget), so the engine never falls back to the 15× header default
+/// (coordinator decision 2026-09-24: run what the Mac bench measured).
 class LodParams {
   const LodParams({
     this.pointBudget,
@@ -93,12 +112,13 @@ class LodParams {
     if (bg != null && bg.length != 4) {
       throw ArgumentError.value(bg, 'backgroundRgba', 'needs 4 components');
     }
+    final budget = pointBudget ?? kLodDefaultPointBudget;
     return <String, Object>{
-      'point_budget': ?pointBudget,
+      'point_budget': budget,
       'target_frame_ms': ?targetFrameMs,
       'point_size_mode': ?pointSizeMode,
       if (asyncLoading != null) 'async_loading': asyncLoading! ? 1 : 0,
-      'cache_bytes': ?cacheBytes,
+      'cache_bytes': cacheBytes ?? lodBenchCacheBytes(budget),
       if (bg != null) 'background_rgba': Float64List.fromList(bg),
       'debug_render_sleep_ms': ?debugRenderSleepMs,
       if (debugPublishBeforeDone != null)
@@ -183,7 +203,7 @@ class LodTextureInfo {
   final int heightPx;
 }
 
-/// pwlod_build_report (pwlod_viewer.h:186-192) + the shell's own measurements.
+/// pwlod_build_report (pwlod_viewer.h:191-197) + the shell's own measurements.
 class LodBuildReport {
   const LodBuildReport({
     required this.status,
@@ -210,7 +230,7 @@ class LodBuildReport {
   final double elapsedMs;
 
   /// Shell-side: wall clock around the blocking call, phys_footprint peak / before
-  /// (the header leaves peak memory to the shell, pwlod_viewer.h:196-197), how many
+  /// (the header leaves peak memory to the shell, pwlod_viewer.h:201-202), how many
   /// footprint samples the peak is over, whether the scratch chunk_dir was deleted.
   final double shellWallMs;
   final double peakFootprintMb;
@@ -249,7 +269,7 @@ class LodBuildReport {
   };
 }
 
-/// pwlod_verify_report (pwlod_viewer.h:212-220) + the call's status.
+/// pwlod_verify_report (pwlod_viewer.h:217-225) + the call's status.
 class LodVerifyReport {
   const LodVerifyReport({
     required this.status,
