@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pocketworld.invalid/schemas/basalt-vio-artifact-manifest-v1.json",
+  "title": "Basalt VIO iPhone benchmark artifact manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run_id", "generated_at_utc", "artifacts"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "run_id": {"type": "string", "format": "uuid"},
+    "generated_at_utc": {"type": "string", "format": "date-time"},
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "role", "byte_count", "sha256"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "role": {"enum": ["input_manifest", "poses", "receipt", "heartbeat", "telemetry", "diagnostics", "checksums", "power_profiler", "ground_truth", "other"]},
+          "byte_count": {"type": "integer", "minimum": 0},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    }
+  }
+}

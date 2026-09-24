@@ -1,0 +1,50 @@
+%YAML:1.0
+imu:
+  gyroscope_noise_density: 4.e-8
+  gyroscope_random_walk: 1.0e-10
+  accelerometer_noise_density: 4.e-6
+  accelerometer_random_walk: 1.0e-8
+  accelerometer_bias: [0.0, 0.0, 0.0]
+  gyroscope_bias: [0.0, 0.0, 0.0]
+  extrinsic:
+    q_bi: [ 0.0, 0.0, 0.0, 1.0 ]
+    p_bi: [ 0.0, 0.0, 0.0 ]
+  noise:
+    cov_g: [
+      2.8791302399999997e-08, 0.0, 0.0,
+      0.0, 2.8791302399999997e-08, 0.0,
+      0.0, 0.0, 2.8791302399999997e-08]
+    cov_a: [
+      4.0e-6, 0.0, 0.0,
+      0.0, 4.0e-6, 0.0,
+      0.0, 0.0, 4.0e-6]
+    cov_bg: [
+      3.7608844899999997e-10, 0.0, 0.0,
+      0.0, 3.7608844899999997e-10, 0.0,
+      0.0, 0.0, 3.7608844899999997e-10]
+    cov_ba: [
+      9.0e-6, 0.0, 0.0,
+      0.0, 9.0e-6, 0.0,
+      0.0, 0.0, 9.0e-6]
+cam0:
+  T_BS:
+    cols: 4
+    rows: 4
+    data: [0.0, -1.0, 0.0, 0.03290364,
+           -1.0, 0.0, 0.0, -0.00696553,
+           0.0, 0.0, -1.0,-0.00286231,
+           0.0, 0.0, 0.0, 1.0]
+  resolution: [640, 480]
+  camera_model: pinhole
+  distortion_model: radtan
+  intrinsics: [448.96781816245402, 449.14399528627763, 321.34605334072404, 240.71641804985396]
+  camera_distortion_flag: 0
+  distortion: [0.0, 0.0, 0.0, 0.0]
+  camera_readout_time: 0.0
+  time_offset: 0.0
+  extrinsic:
+    q_bc: [-0.7071068, 0.7071068, 0, 0]
+    p_bc: [0.03290364, -0.00696553, -0.00286231]
+  noise: [
+    0.5, 0.0,
+    0.0, 0.5]

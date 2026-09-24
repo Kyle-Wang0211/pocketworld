@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pocketworld.invalid/schemas/basalt-vio-metric-definitions-v1.json",
+  "title": "Basalt VIO iPhone benchmark metric definitions",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "catalog_id", "metrics"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "catalog_id": {"const": "vio-replacement-three-arm-metrics-v1"},
+    "metrics": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["unit", "aggregation", "definition", "applicable_channels"],
+        "properties": {
+          "unit": {"type": "string", "minLength": 1},
+          "aggregation": {"type": "string", "minLength": 1},
+          "definition": {"type": "string", "minLength": 1},
+          "availability": {"type": "string", "minLength": 1},
+          "applicable_channels": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"enum": ["live_soak", "replay_paced", "replay_max"]}
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}

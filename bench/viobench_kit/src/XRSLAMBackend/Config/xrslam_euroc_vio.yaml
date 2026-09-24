@@ -1,0 +1,47 @@
+%YAML:1.0
+output:
+  q_bo: [ 0.0, 0.0, 0.0, 1.0 ]
+  p_bo: [ 0.0, 0.0, 0.0 ]
+
+sliding_window:
+  size: 10
+  subframe_size: 3
+  force_keyframe_landmarks: 35
+
+  # [bench 2026-09-17] TT_VALID reprojection gate, in real pixels, plus the focal length
+  # the number belongs to. 0 keeps the bare threshold (upstream). See pw_rpe_threshold().
+  rpe_threshold_px: 3.0
+  rpe_reference_focal: 0.0
+feature_tracker:
+  min_keypoint_distance: 20.0
+  max_keypoint_detection: 200
+  max_init_frames: 60
+  max_frames: 20
+  predict_keypoints: true
+  clahe_clip_limit: 6.0
+  clahe_width: 8
+  clahe_height: 8
+
+initializer:
+  keyframe_num: 8
+  keyframe_gap: 5
+  min_matches: 50
+  min_parallax: 10.0
+  min_triangulation: 20
+  min_landmarks: 30
+  refine_imu: true
+
+solver:
+  iteration_limit: 30
+  time_limit: 1.0e6
+
+rotation:
+  misalignment_threshold: 0.02
+  ransac_threshold: 10
+
+parsac:
+  parsac_flag: false
+  dynamic_probability: 0.15
+  threshold: 1.0
+  norm_scale: 1.0
+  keyframe_check_size: 1

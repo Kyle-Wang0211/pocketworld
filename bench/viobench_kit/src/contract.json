@@ -1,0 +1,384 @@
+{
+  "schema_version": 2,
+  "experiment_id": "vio-iphone-three-arm-v2-20260830",
+  "scope": "same_device_same_os_single_shared_1920x1440_capture_recorded_once_and_replayed_to_every_candidate_arm_plus_identical_euroc_replay_manifest",
+  "global_default_eligible": false,
+  "input_equivalence": {
+    "live": "one app, one process-wide run lease, and exactly one active arm per physical run; Basalt and XRSLAM share the frozen 640x480 raw sensor contract while ARKit owns its private production-equivalent sensor chain; trajectories are not identical",
+    "replay": "Basalt and XRSLAM in the same app consume the exact same content-addressed EuRoC cam0+IMU manifest; ARKit replay is forbidden",
+    "winner_selection": "Basalt/XRSLAM accuracy uses replay; live soak compares feasibility, latency proxies, memory, thermal, battery proxy, transport loss, and tracking health; ARKit is a system reference arm and never ground truth"
+  },
+  "sources": {
+    "basalt": {
+      "upstream_commit": "0f3b2b52c807f70ff4e2973ce253c73329eea7bc",
+      "headers_commit": "aa441ba3e51050c47ba1902537792a2e4db7e43d",
+      "vcpkg_commit": "1e199d32ad53aab1defda61ce41c380302e3f95c",
+      "vcpkg_registry_baseline": "05442024c3fda64320bd25d2251cc9807b84fb6f",
+      "config_path": "data/euroc_config.json",
+      "config_blob": "0cf10f2a60cafeeb63501bae090050d7aee9d0ab",
+      "live_calibration_sha256": "33745b02c58a8845651d69d6e40ac6e6496575033385dce359584c482fb6aaff",
+      "live_calibration_provenance_sha256": "8c47debe5d8ab0851ba4332c1737aa38faa7bf5c149d2d416253dd75be447678",
+      "replay_config_sha256": "82937bd6493e592ef89572d31260c10f7437b4fb3ff1fda179375713966e34fa",
+      "replay_calibration_sha256": "f1f9b0b63726df8d7b56bb315f21b8beaca5493a7e0de95d0f25a5b500d247cd",
+      "opencv_version": "4.12.0"
+    },
+    "xrslam": {
+      "upstream_commit": "4beb1a942f33da9afbfae2d70e2c641cfc2bb675",
+      "archive_sha256": "8ad848f6616a11c12559fddef2a0d405bfe87912b3672f91286c59e0f0d071ed",
+      "receipt_sha256": "c38e4962903ecdba7f57f19d909e84fc03cba63062ed7ded14f85d5333d077d3",
+      "abi_header_sha256": "505556e153861d07b820bb50293186fcfb5546f57385cd070320d119a31e62e7",
+      "opencv_version": "4.0.1",
+      "opencv_archive_sha256": "2dac46bd0a07a80fa8f8e6edc736b3fb0b679e91c120b2a1aab789b801dce56d",
+      "ceres_version": "1.14",
+      "ceres_archive_sha256": "0e3769d937df9610042636960c56411c3a6aa37c00b42d0eae8aa279503e4bb6",
+      "xrslam_ios": false,
+      "threading": false,
+      "lifecycle_patch_sha256": "13592cb486f159217fa5ecf9ef2f9863be78cf599d42fb1757e34bd7d4bbb220",
+      "algorithm_change": false,
+      "live_slam_config_sha256": "76d63d9f2d7ef44506f02db1d59eb4aa8f39fcc1c27a15d4e519cbbb7efbd212",
+      "live_device_config_sha256": "0d8fafcdafd7ab4f49e8b555dbd8b74a4fbb07324224a38afb8087003373c157",
+      "replay_slam_config_sha256": "6fe7057b8dd71a93eb7843f5d305039f7a59ebdd69dd60fa841ec4bbd80d7fca",
+      "replay_device_config_sha256": "6ddfda8e53f6dd3c98a43b28e7b7b945133c651b298a4fc150acdaa635d69748",
+      "artifact_platform_limit": "object build versions are mixed; the highest observed iOS minimum is 26.2 despite the receipt declaring 14.0. The test device runs iOS 26.6. Both values are receipted; neither substitutes for the other."
+    },
+    "arkit_reference": {
+      "system_framework": "ARKit",
+      "sdk_identity": "apple_arkit_ios26_sdk",
+      "production_source": "/Users/kaidongwang/Developer/pocketworld/ios/Runner/OfficialAetherARKitPlugin.swift:startSession",
+      "configuration": "ARWorldTrackingConfiguration; autofocus=true; worldAlignment=gravity; lightEstimation=false; planeDetection=horizontal; locked 1920x1440 high-resolution-capable format; main delegate queue; resetTracking+removeExistingAnchors",
+      "accuracy_role": "live system reference only; no external ground truth and no EuRoC replay"
+    }
+  },
+  "apps": {
+    "unified_bench": {
+      "bundle_id": "com.kyle.viobench",
+      "runtime_selection": "immutable for one run",
+      "process_run_lease": "exactly one of basalt,xrslam,arkit_reference",
+      "lease_handoff": "selected native handle must be destroyed and process-global engine ownership cleared before another arm may acquire the lease",
+      "embedded_private_frameworks": [
+        "PWBasaltEngine.framework",
+        "PWXRSLAMEngine.framework"
+      ],
+      "framework_symbol_policy": "only the selected C bridge API is exported; OpenCV symbols are private to each two-level dylib"
+    },
+    "basalt": {
+      "algorithm_mode": "basalt_vio_only_float",
+      "thread_policy": "upstream_default_no_global_control",
+      "global_control_created": false,
+      "requested_max_allowed_parallelism": null
+    },
+    "xrslam": {
+      "algorithm_mode": "xrslam_generic_vio_only",
+      "thread_policy": "frozen_generic_core_threading_disabled"
+    },
+    "arkit_reference": {
+      "algorithm_mode": "arkit_world_tracking_reference",
+      "arsession_active": true,
+      "avfoundation_transport_active": false
+    },
+    "production_bundle_forbidden": "com.kyle.PocketWorld",
+    "backend_policy": "cpu for Basalt/XRSLAM; apple_arkit for ARKit reference",
+    "uses_arkit_semantics": "true only when an ARSession is constructed for the selected arm; framework linkage alone is not sensor use"
+  },
+  "live_soak": {
+    "warmup_seconds": 0,
+    "measurement_seconds": 300,
+    "camera_target_hz": "30 for Basalt/XRSLAM; selected production ARVideoFormat FPS for ARKit",
+    "imu_target_hz": 100,
+    "camera_format": "all three arms score at 1920x1440; ARKit via its production ARVideoFormat, Basalt/XRSLAM by replaying the luma plane of that same ARFrame.capturedImage stream",
+    "camera_session_preset": "ARWorldTrackingConfiguration.videoFormat locked 1920x1440 for the recording/ARKit arm; candidate arms consume the recording and open no capture session",
+    "camera_output_pixel_format": "420f_full_range_nv12_luma_plane",
+    "camera_rotation_degrees": 0,
+    "video_stabilization": "off",
+    "xrslam_official_pixel_preprocess_deviation": "official iOS sample requests 32BGRA then OpenCV BGRA2GRAY; the shared Basalt/XRSLAM live contract deliberately uses the same full-range NV12 luma plane for both candidates and records this deviation",
+    "camera_imu_time_offset_ns": 0,
+    "camera_imu_time_offset_status": "unverified_upstream_nominal",
+    "xrslam_live_transport": {
+      "callback_execution": "camera_accelerometer_gyroscope_same_serial_dispatch_queue",
+      "handoff_capacity": 264,
+      "native_imu_delivery": "synchronous_direct",
+      "native_image_slots": 1,
+      "native_result_capacity": 16
+    },
+    "preview_enabled": true,
+    "validity": {
+      "foreground_entire_run": true,
+      "capture_interruptions": 0,
+      "timestamp_regressions": 0,
+      "crashes": 0,
+      "nan_poses": 0,
+      "all_app_and_native_transport_losses": 0,
+      "loss_scope": "cumulative from live sensor start across the full measurement and final drain; any loss makes the run invalid"
+    },
+    "metric_scope": "the live clock, CPU accounting, and system sampling start before selected estimator/session initialization; the complete 300-second product session is scored with no excluded warm-up, and cumulative validity also covers final drain",
+    "feasibility_gates": {
+      "first_usable_pose_latency_ms_max": 1800,
+      "processed_fps_min": "27 for a 30 FPS arm; otherwise 90 percent of the frozen selected format FPS",
+      "p95_pipeline_latency_ms_max": 66.7,
+      "app_drop_rate_max": 0.0,
+      "thermal_critical_seconds_max": 0,
+      "thermal_serious_seconds_max": 0,
+      "peak_phys_footprint_mb_max": 750,
+      "finite_pose_ratio_min": 0.995
+    },
+    "power": {
+      "power_w": null,
+      "power_w_status": "unavailable_public_api",
+      "battery_and_thermal_are_proxies": true
+    },
+    "replacement_policy": {
+      "candidate_absolute_gates": "every live feasibility gate and every EuRoC accuracy gate must pass",
+      "same_device_dominance": "candidate first usable pose delivery, p95 pipeline latency, transport loss, thermal dwell, peak footprint, CPU and battery proxy must not be worse than the ARKit reference arm on the same device, OS and shared capture; accuracy must be strictly better",
+      "live_accuracy_claim": "blocked without external ground truth; ARKit live poses are a system reference, not ground truth",
+      "production_replacement_status": "blocked until absolute gates, same-device dominance, external-ground-truth live accuracy, and later PocketWorld product-shadow gates all pass",
+      "accuracy_bar": "strictly_better_than_arkit",
+      "accuracy_bar_source": "user decision 2026-08-30, superseding schema_version 1 not_worse_than",
+      "accuracy_evidence_required": [
+        "on the shared device recording: loop-closure error, static-segment drift and coarse scale error each strictly lower than ARKit on the identical frames",
+        "on EuRoC: every absolute accuracy gate passed"
+      ],
+      "resource_bar": "not_worse_than_arkit",
+      "resource_bar_rationale": "running cooler is not a product goal; not regressing is the requirement",
+      "realtime_bar": "1920x1440 at 30 fps, p95 <= 66.7 ms, zero loss"
+    },
+    "scoring_resolution": [
+      1920,
+      1440
+    ],
+    "diagnostic_resolution": {
+      "resolution": [
+        640,
+        480
+      ],
+      "scoring": false,
+      "derivation": "deterministic downscale of the 1920x1440 recording; hash frozen alongside the master",
+      "purpose": "failure triage only: when a candidate fails at 1920x1440, rerun at the upstream-native scale to separate 'the algorithm cannot carry 9x the pixels' from 'we ported its pixel-unit parameters wrong'",
+      "verdict_participation": "forbidden"
+    },
+    "preview_contract": {
+      "arkit_arm": "the ARSession's own camera background; no second capture session",
+      "replay_arms": "display the frame currently being replayed; no second camera session",
+      "must_not_change": [
+        "algorithm pixel format",
+        "resolution",
+        "frame rate",
+        "timestamps",
+        "queue admission",
+        "accepted/dropped counts",
+        "config or calibration hashes"
+      ],
+      "ownership": "UI displays only; the coordinator state machine remains the sole camera lifecycle owner",
+      "receipted": [
+        "preview_enabled",
+        "preview_implementation_mode",
+        "preview_lifecycle_anomalies"
+      ],
+      "shows": "the luma plane of frames the arm has already accepted, which for Basalt and XRSLAM is exactly the algorithm input. For ARKit it is a subset: ARKit also receives chroma. The preview is therefore faithful for the candidates and understates ARKit.",
+      "rate_hz": 10,
+      "decimation": 4,
+      "bytes_per_preview_frame": 172800
+    },
+    "resource_measurement": {
+      "arkit": "measured live during the recording capture",
+      "candidates": "measured during replay-paced 300 s with the device stationary",
+      "decomposition": "candidate live cost = replay-paced compute cost + camera-capture cost, where the camera term is measured once by a null run (capture on, no VIO, 300 s) and is identical for both candidates",
+      "recorder_overhead": "the recording capture pays disk-write cost that the replays do not; it is instrumented inside the recorder and reported, not silently absorbed into ARKit's numbers",
+      "declared_as": "decomposition_not_direct_measurement",
+      "rationale": "thermal load comes from compute, not from the operator's arm; replay is repeatable"
+    }
+  },
+  "replay": {
+    "eligible_arms": [
+      "basalt",
+      "xrslam"
+    ],
+    "arkit_replay": "forbidden",
+    "dataset": "EuRoC_MH_01_easy",
+    "camera_subset": "cam0_mono",
+    "input_camera_count": 1,
+    "official_source": {
+      "doi": "10.3929/ethz-b-000690084",
+      "aggregate_filename": "machine_hall.zip",
+      "aggregate_byte_count": 12683729426,
+      "aggregate_md5": "363f5c2502b469cdd97ef85997714806",
+      "official_sha256_published": false,
+      "nested_member": "machine_hall/MH_01_easy/MH_01_easy.zip",
+      "nested_member_uncompressed_byte_count": 1571292346,
+      "nested_member_crc32": "a1c54dd7"
+    },
+    "modes": [
+      "paced",
+      "max"
+    ],
+    "alignment": "SE3_scale_fixed_1",
+    "trajectory_frame": "body_imu_frame for Basalt, XRSLAM BODY_POSE, and EuRoC p_RS_R/q_RS; camera pose is forbidden for accuracy scoring",
+    "association": "monotonic_one_to_one_nearest_neighbor",
+    "association_tolerance_ns": 5000000,
+    "association_tie_policy": "earlier_ground_truth_timestamp",
+    "rpe_horizon_seconds": 1.0,
+    "rpe_horizon_tolerance_ns": 20000000,
+    "required_artifacts": [
+      "input_manifest.json",
+      "poses.tum",
+      "receipt.json",
+      "SHA256SUMS"
+    ],
+    "accuracy_gates": {
+      "ate_rmse_m_max": 0.1,
+      "rpe_translation_rmse_m_max": 0.05,
+      "rpe_rotation_rmse_deg_max": 5.0,
+      "ground_truth_coverage_min": 0.99
+    },
+    "channels": {
+      "device_recording": {
+        "arms": [
+          "basalt",
+          "xrslam"
+        ],
+        "reference_overlay": "arkit_recorded_poses",
+        "resolution": [
+          1920,
+          1440
+        ],
+        "answers": [
+          "cross-arm trajectory agreement and divergence",
+          "loop-closure error",
+          "static-segment drift",
+          "coarse scale error",
+          "throughput, latency and loss at production resolution"
+        ],
+        "does_not_answer": [
+          "absolute accuracy: this channel has no ground truth"
+        ]
+      },
+      "euroc": {
+        "arms": [
+          "basalt",
+          "xrslam"
+        ],
+        "resolution": "upstream EuRoC native",
+        "answers": [
+          "absolute ATE and RPE against real ground truth",
+          "whether our integration reproduces upstream behaviour"
+        ],
+        "does_not_answer": [
+          "anything about ARKit: ARKit cannot be fed EuRoC"
+        ]
+      }
+    }
+  },
+  "stop_conditions": [
+    "thermal_state_critical",
+    "unbounded_queue_growth",
+    "timestamp_regression",
+    "non_finite_pose",
+    "app_backgrounded",
+    "capture_interruption",
+    "user_abort"
+  ],
+  "revision_history": [
+    {
+      "schema_version": 1,
+      "date": "2026-08-29",
+      "summary": "three arms run separate live soaks; Basalt/XRSLAM at 640x480, ARKit at 1920x1440"
+    },
+    {
+      "schema_version": 2,
+      "date": "2026-08-30",
+      "user_decision": true,
+      "summary": "scoring resolution unified at 1920x1440 for all three arms; one device recording sourced from ARFrame.capturedImage replaces per-arm live soaks as the shared trajectory input; 640x480 demoted to a non-scoring diagnostic; replacement bar raised from not-worse-than to strictly-better-than ARKit on accuracy; single monotonic clock domain pinned; live camera preview required",
+      "rationale": "Production already runs ARKit at 1920x1440 on this device, so 1920x1440 is the requirement, not a cost to be negotiated. Scoring a 640x480 candidate against a 1920x1440 ARKit would be a false comparison. Three separate handheld soaks can never share speed, angle, lighting or time, so they were never an A/B."
+    }
+  ],
+  "clock_domain": {
+    "canonical": "mach_absolute_time_nanoseconds",
+    "swift_camera": "CMClockGetHostTimeClock mapped by MonotonicClockMapper",
+    "swift_run_and_metrics": "DispatchTime.now().uptimeNanoseconds",
+    "native_publication": "mach_absolute_time() with mach_timebase_info applied",
+    "forbidden": [
+      "std::chrono::steady_clock",
+      "clock_gettime(CLOCK_MONOTONIC)",
+      "mach_continuous_time",
+      "CACurrentMediaTime mixed with native stamps",
+      "wall clock"
+    ],
+    "forbidden_rationale": "On Darwin std::chrono::steady_clock is CLOCK_MONOTONIC == mach_continuous_time and includes device sleep; mach_absolute_time excludes it. Measured 2026-08-30, timebase 125/3: steady_clock 43147376131416 ns (11.985 h) vs mach_absolute_time 42087301077208 ns (11.691 h).",
+    "defect_of_record": "2026-08-29 device run: 97 s soak reported p95 81219463.2 ms and first pose 81219577 ms; the 113.8 ms difference was the real first-pose latency",
+    "invariant": "any latency exceeding run elapsed plus 250 ms scheduling slack invalidates the run",
+    "invariant_policy": "mark_invalid_never_clamp",
+    "timebase_conversion_required": true
+  },
+  "device_recording": {
+    "purpose": "share one physical capture across every arm so speed, angle, lighting and time are not resampled per arm. Basalt and XRSLAM additionally receive byte-identical input, because both consume only the luma plane that is stored.",
+    "captures_required": 1,
+    "source": "ARFrame.capturedImage luma plane, 1920x1440, 420f full range",
+    "source_rationale": "iOS grants the rear camera to exactly one session, so ARSession and AVCaptureSession cannot coexist. Recording from ARKit's own frames routes around that: the ARKit arm runs live while the identical frames are persisted for the candidates.",
+    "imu": "CoreMotion recorded in parallel; independent of the camera session",
+    "arkit_poses_recorded": true,
+    "arkit_pose_role": "same-input system reference; still not ground truth",
+    "compression": "none",
+    "compression_policy": "lossy encoding forbidden; the recording is algorithm input, not a preview",
+    "bytes_per_frame": 2764800,
+    "estimated_bytes_300s": 24883200000,
+    "reuse": "frozen by SHA-256 and replayed for every future iteration at zero further capture cost",
+    "known_gap": "candidates are scored on ARKit-conditioned imagery: ARKit owns autofocus and exposure during the capture. A production replacement would drive its own AVCaptureSession. This must be cross-checked with one AVFoundation recording before any production shadow, and must never be described as already verified.",
+    "ground_truth": false,
+    "crude_metric_protocol": [
+      "start and end on the same physical marker so loop-closure error bounds accumulated drift",
+      "hold stationary on a desk for 10 s at the start and at the end to measure static drift",
+      "include a known-length baseline in the scene for a coarse metric scale check"
+    ],
+    "crude_metric_status": "sanity_check_only_not_ground_truth",
+    "chroma_asymmetry": "ARKit consumes the full 420f biplanar buffer (luma and chroma) live during the capture; the recording stores the luma plane only, because that is the entire frozen input contract for Basalt and XRSLAM. So the three arms share one capture, not one byte stream. 'Byte-identical' is true between the two candidates and must never be claimed for ARKit.",
+    "candidate_input_is_luma_only": true
+  },
+  "upstream_scale_adaptation": {
+    "problem": "Basalt's official euroc_config.json is tuned for 752x480 and XRSLAM's iPhone config for 640x480. Patch size, pyramid depth, detection grid and feature caps are all in pixel units, so feeding 1920x1440 through an unchanged config measures our port, not the algorithm.",
+    "policy": "proportional_scale_from_the_official_value_only",
+    "forbidden": [
+      "tuning until it runs",
+      "any value without a recorded derivation",
+      "silently reusing an upstream default at a scale it was never defined for"
+    ],
+    "required_provenance_fields": [
+      "parameter",
+      "upstream_file",
+      "upstream_commit",
+      "original_value",
+      "new_value",
+      "scale_factor",
+      "derivation"
+    ],
+    "status": "not_started",
+    "blocks": [
+      "any 1920x1440 accuracy or throughput verdict"
+    ]
+  },
+  "calibration": {
+    "scoring_resolution": [
+      1920,
+      1440
+    ],
+    "intrinsics_source": "ARFrame.camera.intrinsics recorded during the capture",
+    "intrinsics_rationale": "intrinsics are a hardware property, not an ARKit algorithm output, and the recorded frames are exactly the frames those intrinsics describe, so no extrapolation is needed",
+    "intrinsics_cross_check": "the frozen 640x480 upstream intrinsics scaled by 3 must agree; disagreement means the formats differ by more than a scale and must halt the run",
+    "cross_check_expected": {
+      "fx": 1346.903,
+      "fy": 1347.432,
+      "cx": 964.038,
+      "cy": 722.149
+    },
+    "cross_check_source": "xrslam 4beb1a9 xrslam-ios/visualizer/configs/iPhone 14 Pro.yaml x3",
+    "extrinsics_source": "xrslam 4beb1a9 T_imu_cam, unchanged",
+    "extrinsics_rationale": "a rigid IMU-to-camera transform is resolution independent",
+    "distortion": "zero, inherited from upstream",
+    "distortion_known_limitation": "upstream supplies zero distortion coefficients. The same physical distortion acts over three times the pixel radius at 1920x1440, so this approximation is worse here than at 640x480. Declared, not hidden.",
+    "uses_arkit": "intrinsics only; no ARKit pose, tracking state or algorithm output feeds a candidate arm"
+  },
+  "device": {
+    "model": "iPhone 14 Pro (iPhone15,2)",
+    "udid": "1B290474-D354-5B4C-AAB0-0805AC5DC832",
+    "os_version": "26.6",
+    "internal_storage_bytes": 512000000000
+  }
+}

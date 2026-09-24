@@ -1,0 +1,62 @@
+%YAML:1.0
+output:
+  q_bo: [ 0, 0, 0, 1 ] # x y z w
+  p_bo: [ 0, 0, 0 ] # x y z [m]
+
+feature_tracker:
+  min_keypoint_distance: 25.0
+  max_keypoint_detection: 200   # 原 300
+  max_init_frames: 60
+  max_frames: 20                # 原 100
+  predict_keypoints: true
+
+initializer:
+  keyframe_num: 8
+  keyframe_gap: 5
+  min_matches: 50
+  min_parallax: 10.0
+  min_triangulation: 20
+  min_landmarks: 30
+  refine_imu: true
+
+rotation:
+  misalignment_threshold: 0.02
+  ransac_threshold: 10
+
+solver:
+  # 2026-08-31 实验:恢复上游 iphone_slam.yaml 的值。原为 time_limit 0.1 /
+  # iteration_limit 10,是端上实时预算,但本通道是离线回放测质量,把每次求解
+  # 硬截断在 100 ms 会让迭代式的重力精化停在未收敛处。
+  time_limit: 1.0e6      # 原 0.1
+  iteration_limit: 30    # 原 10
+
+sliding_window:
+  size: 10               # 原 5,上游与代码默认均为 10
+  # [bench 2026-09-17] Upstream's on-device profile
+  # (xrslam-ios/visualizer/configs/slam_params.yaml) sets this to 3; this file
+  # omitted it and got config.cpp's default. Writing the effective value in
+  # makes the knob sweepable with -PWYamlOverride, which requires the key to
+  # already exist. Semantically a no-op -- the engine printed
+  # `Config::sliding_window_tracker_frequent: 1` before this line existed.
+  tracker_frequent: 1
+  subframe_size: 3
+  force_keyframe_landmarks: 35
+
+# The pinned iOS sample enables a private-network visual-localization service.
+# This benchmark is VIO-only, so the service is explicitly disabled and the
+# deviation is frozen in the experiment contract and diagnostics.
+  # [bench 2026-09-17] TT_VALID reprojection gate, in real pixels, plus the focal length
+  # the number belongs to. 0 keeps the bare threshold (upstream). See pw_rpe_threshold().
+  rpe_threshold_px: 3.0
+  rpe_reference_focal: 0.0
+visual_localization:
+  enable: false
+  ip: "10.156.16.69"
+  port: 12345
+
+parsac:
+  parsac_flag: false
+  dynamic_probability: 0.15
+  threshold: 1.0
+  norm_scale: 1.0
+  keyframe_check_size: 1

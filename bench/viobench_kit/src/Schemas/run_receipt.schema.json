@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pocketworld.invalid/schemas/vio-replacement-run-receipt-v1.json",
+  "title": "VIO replacement three-arm iPhone benchmark run receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run_id", "experiment_id", "state", "channel", "input_camera_count", "started_at_utc", "scope", "global_default_eligible", "app", "device", "identities", "power", "accuracy", "metrics"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "run_id": {"type": "string", "format": "uuid"},
+    "experiment_id": {"const": "vio-iphone-three-arm-v1-20260829"},
+    "state": {"enum": ["started", "valid_pass", "valid_fail", "invalid", "aborted"]},
+    "channel": {"enum": ["live_soak", "replay_paced", "replay_max"]},
+    "input_camera_count": {"type": "integer", "enum": [1, 2]},
+    "started_at_utc": {"type": "string", "format": "date-time"},
+    "ended_at_utc": {"type": "string", "format": "date-time"},
+    "scope": {"const": "same_device_same_os_shared_capture_contract_and_identical_replay_manifest"},
+    "global_default_eligible": {"const": false},
+    "app": {"$ref": "#/$defs/app"},
+    "device": {"$ref": "#/$defs/device"},
+    "identities": {"$ref": "#/$defs/identities"},
+    "power": {"$ref": "#/$defs/power"},
+    "accuracy": {"$ref": "#/$defs/accuracy"},
+    "metrics": {"type": "object", "additionalProperties": {"type": "number"}},
+    "termination": {"$ref": "#/$defs/termination"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bundle_id", "uses_arkit", "backend", "algorithm_mode", "engine_id", "upstream_revision", "opencv_version"],
+      "properties": {
+        "bundle_id": {"const": "com.kyle.viobench"},
+        "uses_arkit": {"type": "boolean"},
+        "backend": {"enum": ["cpu", "apple_arkit"]},
+        "algorithm_mode": {"enum": ["basalt_vio_only_float", "xrslam_generic_vio_only", "arkit_world_tracking_reference"]},
+        "engine_id": {"enum": ["basalt", "xrslam", "arkit_reference"]},
+        "upstream_revision": {"type": "string", "minLength": 1},
+        "opencv_version": {"enum": ["4.12.0", "4.0.1", "not_applicable"]}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"engine_id": {"const": "basalt"}}},
+          "then": {"properties": {
+            "uses_arkit": {"const": false},
+            "backend": {"const": "cpu"},
+            "algorithm_mode": {"const": "basalt_vio_only_float"},
+            "upstream_revision": {"const": "0f3b2b52c807f70ff4e2973ce253c73329eea7bc"},
+            "opencv_version": {"const": "4.12.0"}
+          }}
+        },
+        {
+          "if": {"properties": {"engine_id": {"const": "xrslam"}}},
+          "then": {"properties": {
+            "uses_arkit": {"const": false},
+            "backend": {"const": "cpu"},
+            "algorithm_mode": {"const": "xrslam_generic_vio_only"},
+            "upstream_revision": {"const": "4beb1a942f33da9afbfae2d70e2c641cfc2bb675"},
+            "opencv_version": {"const": "4.0.1"}
+          }}
+        },
+        {
+          "if": {"properties": {"engine_id": {"const": "arkit_reference"}}},
+          "then": {"properties": {
+            "uses_arkit": {"const": true},
+            "backend": {"const": "apple_arkit"},
+            "algorithm_mode": {"const": "arkit_world_tracking_reference"},
+            "upstream_revision": {"const": "apple_arkit_ios26_sdk"},
+            "opencv_version": {"const": "not_applicable"}
+          }}
+        }
+      ]
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model_identifier", "operating_system_version"],
+      "properties": {
+        "model_identifier": {"type": "string", "minLength": 1},
+        "operating_system_version": {"type": "string", "minLength": 1}
+      }
+    },
+    "identities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract_sha256", "app_binary_sha256", "engine_artifact_sha256", "config_sha256", "input_definition_sha256", "metric_definitions_sha256"],
+      "properties": {
+        "contract_sha256": {"$ref": "#/$defs/sha256"},
+        "app_binary_sha256": {"$ref": "#/$defs/sha256"},
+        "engine_artifact_sha256": {"$ref": "#/$defs/sha256"},
+        "config_sha256": {"$ref": "#/$defs/sha256"},
+        "input_definition_sha256": {"$ref": "#/$defs/sha256"},
+        "metric_definitions_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "power": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["power_w", "power_w_status", "battery_and_thermal_are_proxies"],
+      "properties": {
+        "power_w": {"type": "null"},
+        "power_w_status": {"const": "unavailable_public_api"},
+        "battery_and_thermal_are_proxies": {"const": true}
+      }
+    },
+    "accuracy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "ground_truth"],
+      "properties": {
+        "status": {"enum": ["not_evaluable", "evaluable"]},
+        "ground_truth": {"enum": ["none", "euroc"]}
+      }
+    },
+    "termination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason_code", "recovered_from_interruption"],
+      "properties": {
+        "reason_code": {"type": "string", "minLength": 1},
+        "detail": {"type": "string"},
+        "recovered_from_interruption": {"type": "boolean"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"state": {"const": "started"}}},
+      "then": {"not": {"anyOf": [{"required": ["ended_at_utc"]}, {"required": ["termination"]}]}},
+      "else": {"required": ["ended_at_utc", "termination"]}
+    },
+    {
+      "if": {"properties": {"channel": {"const": "live_soak"}}},
+      "then": {"properties": {"input_camera_count": {"const": 1}, "accuracy": {"properties": {"status": {"const": "not_evaluable"}, "ground_truth": {"const": "none"}}}}},
+      "else": {"properties": {"accuracy": {"properties": {"status": {"const": "evaluable"}, "ground_truth": {"const": "euroc"}}}}}
+    },
+    {
+      "if": {"properties": {"app": {"properties": {"engine_id": {"const": "arkit_reference"}}}}},
+      "then": {"properties": {"channel": {"const": "live_soak"}}}
+    }
+  ]
+}

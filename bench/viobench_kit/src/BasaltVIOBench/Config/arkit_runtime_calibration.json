@@ -1,0 +1,6 @@
+{
+  "calibration_owner": "apple_arkit_runtime",
+  "intrinsics_source": "ARFrame.camera.intrinsics",
+  "pose_frame": "world_from_camera",
+  "status": "runtime_selected_not_a_cross_engine_calibration"
+}

@@ -1,0 +1,187 @@
+{
+  "schema_version": 1,
+  "catalog_id": "vio-replacement-three-arm-metrics-v1",
+  "metrics": {
+    "first_usable_pose_latency_ms": {
+      "unit": "milliseconds",
+      "aggregation": "first_usable_pose_delivery_minus_live_run_start",
+      "definition": "Cold-start latency from the live run request, before selected estimator/session initialization, until the first usable pose is delivered to the app. ARKit uses callback delivery of its first normal-tracking pose; Basalt/XRSLAM use publication of the first finite pose emitted after estimator initialization. Gated relative to the ARKit reference measured on the same device and recording: a candidate fails only if its latency exceeds the reference's. Production's 1800 ms (ar_capture_page.dart _warmupFallbackDuration) is a UI warm-up fallback that opens the page regardless of tracking state, not a tracking requirement, and ARKit itself measures about 2.9 s to normal tracking here; an absolute 1800 ms gate therefore failed the reference it was meant to compare against and was removed on 2026-09-03.",
+      "applicable_channels": ["live_soak"]
+    },
+    "measurement_duration_seconds": {
+      "unit": "seconds",
+      "aggregation": "measurement_end_minus_measurement_start",
+      "definition": "Actual scored wall duration from the live run request before selected estimator/session initialization; normally the full 300-second product session with no excluded warm-up, and shorter only for an explicitly receipted safety stop.",
+      "applicable_channels": ["live_soak"]
+    },
+    "processed_fps": {
+      "unit": "frames_per_second",
+      "aggregation": "accepted_frames / measurement_wall_seconds",
+      "definition": "Finite pose outputs for the selected arm divided by the declared measurement interval.",
+      "applicable_channels": ["live_soak", "replay_paced", "replay_max"]
+    },
+    "p95_pipeline_latency_ms": {
+      "unit": "milliseconds",
+      "aggregation": "nearest_rank_p95",
+      "definition": "For Basalt/XRSLAM, nearest-rank P95 from capture timestamp to finite pose publication. For ARKit, ARFrame.timestamp to delegate-entry delta under the documented same-clock assumption; the latter is a proxy, not hardware latency ground truth.",
+      "applicable_channels": ["live_soak", "replay_paced"]
+    },
+    "app_drop_rate": {
+      "unit": "ratio",
+      "aggregation": "app_dropped_inputs / app_received_inputs",
+      "definition": "For Basalt/XRSLAM, bounded-application camera drops divided by offered camera inputs. For ARKit, timestamp-gap-estimated missing frames divided by observed plus estimated frames; ARKit does not expose platform drop ground truth.",
+      "applicable_channels": ["live_soak", "replay_paced", "replay_max"]
+    },
+    "thermal_critical_seconds": {
+      "unit": "seconds",
+      "aggregation": "dwell_time",
+      "definition": "Measurement-interval wall time while ProcessInfo thermalState was critical.",
+      "applicable_channels": ["live_soak", "replay_paced", "replay_max"]
+    },
+    "thermal_serious_seconds": {
+      "unit": "seconds",
+      "aggregation": "dwell_time",
+      "definition": "Measurement-interval wall time while ProcessInfo thermalState was serious.",
+      "applicable_channels": ["live_soak", "replay_paced", "replay_max"]
+    },
+    "peak_phys_footprint_mb": {
+      "unit": "mebibytes",
+      "aggregation": "maximum",
+      "definition": "Maximum task physical footprint sampled during the measurement interval, divided by 1048576.",
+      "applicable_channels": ["live_soak", "replay_paced", "replay_max"]
+    },
+    "finite_pose_ratio": {
+      "unit": "ratio",
+      "aggregation": "finite_poses / emitted_poses",
+      "definition": "Finite SE(3) pose outputs divided by all pose outputs emitted during measurement.",
+      "applicable_channels": ["live_soak", "replay_paced", "replay_max"]
+    },
+    "battery_level_delta": {
+      "unit": "fraction_of_full_charge",
+      "aggregation": "ending_level - starting_level",
+      "definition": "UIDevice battery-level change over measurement; a coarse proxy that is not converted to watts.",
+      "applicable_channels": ["live_soak", "replay_paced", "replay_max"]
+    },
+    "cpu_seconds": {
+      "unit": "seconds",
+      "aggregation": "user_cpu_delta + system_cpu_delta",
+      "definition": "Process user plus system CPU-time delta over the declared measurement interval.",
+      "applicable_channels": ["live_soak", "replay_paced", "replay_max"]
+    },
+    "ate_rmse_m": {
+      "unit": "meters",
+      "aggregation": "rmse_after_single_se3_alignment_scale_fixed_1",
+      "definition": "Translational absolute trajectory error RMSE after one SE(3) alignment with scale fixed to one.",
+      "applicable_channels": ["replay_paced", "replay_max"]
+    },
+    "rpe_translation_rmse_m": {
+      "unit": "meters",
+      "aggregation": "one_second_relative_pose_rmse",
+      "definition": "Translation RMSE of relative pose error at a one-second horizon after the declared SE(3) alignment.",
+      "applicable_channels": ["replay_paced", "replay_max"]
+    },
+    "rpe_rotation_rmse_deg": {
+      "unit": "degrees",
+      "aggregation": "one_second_relative_pose_rmse",
+      "definition": "Rotation-angle RMSE of relative pose error at a one-second horizon after the declared SE(3) alignment.",
+      "applicable_channels": ["replay_paced", "replay_max"]
+    },
+    "ground_truth_coverage": {
+      "unit": "ratio",
+      "aggregation": "matched_estimates / eligible_estimates",
+      "definition": "Fraction of eligible estimated poses matched to EuRoC ground truth by the frozen monotonic one-to-one nearest-neighbor association within 5 ms; equal-distance ties choose the earlier ground-truth timestamp.",
+      "applicable_channels": ["replay_paced", "replay_max"]
+    },
+    "tracking_normal_ratio": {
+      "unit": "ratio",
+      "aggregation": "normal_frames / arkit_frames",
+      "definition": "ARKit frames reporting camera tracking state normal divided by all ARKit frames in measurement.",
+      "applicable_channels": ["live_soak"]
+    },
+    "estimated_missed_frames": {
+      "unit": "frames",
+      "aggregation": "sum_of_timestamp_gap_estimates",
+      "definition": "ARKit-only estimate from ARFrame timestamp gaps and the selected nominal video format rate; not an exact platform drop count.",
+      "applicable_channels": ["live_soak"]
+    },
+    "first_normal_latency_ms": {
+      "unit": "milliseconds",
+      "aggregation": "first_event_minus_run_start",
+      "definition": "ARKit-only elapsed time from reference-session construction to the first normal tracking frame; -1 means unobserved.",
+      "applicable_channels": ["live_soak"]
+    },
+    "first_mapped_latency_ms": {
+      "unit": "milliseconds",
+      "aggregation": "first_event_minus_run_start",
+      "definition": "ARKit-only elapsed time to the first mapped worldMappingStatus; -1 means unobserved and is not an accuracy metric.",
+      "applicable_channels": ["live_soak"]
+    },
+    "p95_callback_handler_duration_ms": {
+      "unit": "milliseconds",
+      "aggregation": "nearest_rank_p95",
+      "definition": "ARKit-only delegate-entry to delegate-return handler duration.",
+      "applicable_channels": ["live_soak"]
+    },
+    "p95_frame_interval_ms": {
+      "unit": "milliseconds",
+      "aggregation": "nearest_rank_p95",
+      "definition": "ARKit-only P95 of positive consecutive ARFrame timestamp intervals.",
+      "applicable_channels": ["live_soak"]
+    },
+    "max_frame_interval_ms": {
+      "unit": "milliseconds",
+      "aggregation": "maximum",
+      "definition": "ARKit-only maximum positive consecutive ARFrame timestamp interval.",
+      "applicable_channels": ["live_soak"]
+    },
+    "stall_events_over_one_second": {
+      "unit": "events",
+      "aggregation": "count",
+      "definition": "ARKit-only count of consecutive ARFrame timestamp gaps greater than one second.",
+      "applicable_channels": ["live_soak"]
+    },
+    "stall_duration_ms": {
+      "unit": "milliseconds",
+      "aggregation": "sum",
+      "definition": "ARKit-only sum of full frame-gap durations for gaps greater than one second.",
+      "applicable_channels": ["live_soak"]
+    },
+    "longest_non_normal_seconds": {
+      "unit": "seconds",
+      "aggregation": "maximum_contiguous_interval",
+      "definition": "ARKit-only longest observed contiguous interval outside normal tracking.",
+      "applicable_channels": ["live_soak"]
+    },
+    "relocalization_attempts": {
+      "unit": "events",
+      "aggregation": "count",
+      "definition": "ARKit-only entries into limited/relocalizing; no custom relocalization policy is added.",
+      "applicable_channels": ["live_soak"]
+    },
+    "relocalization_recoveries": {
+      "unit": "events",
+      "aggregation": "count",
+      "definition": "ARKit-only transitions from limited/relocalizing directly back to normal.",
+      "applicable_channels": ["live_soak"]
+    },
+    "p95_consecutive_translation_m": {
+      "unit": "meters",
+      "aggregation": "nearest_rank_p95",
+      "definition": "ARKit-only P95 translation change between consecutive finite world-from-camera poses; motion-dependent and not an accuracy error.",
+      "applicable_channels": ["live_soak"]
+    },
+    "p95_consecutive_rotation_deg": {
+      "unit": "degrees",
+      "aggregation": "nearest_rank_p95",
+      "definition": "ARKit-only P95 rotation change between consecutive finite world-from-camera poses; motion-dependent and not an accuracy error.",
+      "applicable_channels": ["live_soak"]
+    },
+    "power_w": {
+      "unit": "watts",
+      "aggregation": "unavailable",
+      "definition": "Calibrated electrical power. Public iOS APIs do not provide this measurement, so benchmark receipts must record null.",
+      "availability": "must_be_null_without_external_calibrated_analyzer",
+      "applicable_channels": ["live_soak", "replay_paced", "replay_max"]
+    }
+  }
+}

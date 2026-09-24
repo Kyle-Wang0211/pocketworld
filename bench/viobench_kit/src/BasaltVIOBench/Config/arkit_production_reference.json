@@ -1,0 +1,11 @@
+{
+  "algorithm": "ARWorldTrackingConfiguration",
+  "autofocus": true,
+  "delegate_queue": "main",
+  "light_estimation": false,
+  "plane_detection": ["horizontal"],
+  "production_source": "OfficialAetherARKitPlugin.startSession",
+  "run_options": ["resetTracking", "removeExistingAnchors"],
+  "video_format_policy": "locked_1920x1440_high_resolution_recommended_highest_fps_then_optional_matching_30fps_override",
+  "world_alignment": "gravity"
+}

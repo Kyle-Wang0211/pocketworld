@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "device": "iPhone 14 Pro",
+  "resolution": [640, 480],
+  "intrinsics_extrinsics_source": {
+    "project": "openxrlab/xrslam",
+    "revision": "4beb1a942f33da9afbfae2d70e2c641cfc2bb675",
+    "path": "xrslam-ios/visualizer/configs/iPhone 14 Pro.yaml"
+  },
+  "conversion": {
+    "T_BS_to_T_imu_cam": "direct; both transform camera coordinates into IMU/body coordinates",
+    "distortion": "upstream XRSLAM configuration disables distortion and supplies zero coefficients",
+    "gyroscope_transport": "XRSLAM 4beb1a9 xrslam-ios/visualizer/src/Motion.swift forwards CoreMotion rotationRate xyz unchanged",
+    "accelerometer_transport": "XRSLAM 4beb1a9 xrslam-ios/visualizer/src/Motion.swift forwards CoreMotion acceleration xyz multiplied by -9.80665, matching openxrlab/xrslam issue 18 maintainer guidance",
+    "imu_pairing": "Basalt 0f3b2b52 src/device/rs_t265.cpp uses gyroscope timestamps and linearly interpolates adjacent accelerometer samples; the bench reproduces that pairing before the native boundary",
+    "basalt_noise_values": "Basalt Calibration defaults; live precision is not evaluated without independent ground truth",
+    "camera_imu_time_offset_ns": "0",
+    "camera_imu_time_offset_source": "openxrlab/xrslam 4beb1a9 iPhone 14 Pro.yaml",
+    "temporal_calibration_status": "unverified_upstream_nominal",
+    "basalt_realtime_offset_application": "pinned Basalt realtime VIO path does not apply the stored cam_time_offset_ns; live accuracy remains not_evaluable",
+    "thread_policy": "upstream_default_no_global_control; observed tbb active max_allowed_parallelism is receipted at runtime"
+  },
+  "live_accuracy_evaluable": false,
+  "uses_arkit": false
+}
