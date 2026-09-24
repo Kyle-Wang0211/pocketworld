@@ -1,0 +1,188 @@
+{
+  "schema": "pw.aether_lod.ios-arm64/1",
+  "artifact": "libpw_lod_afb521e6.a",
+  "artifact_sha256": "55f72ada62617a0f27751155f6f6be1b4fd31f613f2681c71cb0ffd0a28fbc1e",
+  "archive_member_count": 12,
+  "archive_member_manifest_sha256": "f9f7f9a60253e6b951ff09f2694bbd895ef077a175503337d9a174ca6f019568",
+  "archive_member_manifest_format": "archive-order: sha256-two-spaces-member-newline",
+  "archive_members": [
+    {
+      "member": "octree.o",
+      "sha256": "04d7d6c1be8a6625c1e668044331a26096bd92af92a8427ae87b195b83cb66fa"
+    },
+    {
+      "member": "select.o",
+      "sha256": "1467fea802db9af93da618565e4447b17c4d611228dfee5441f5a22e975d9c52"
+    },
+    {
+      "member": "stream.o",
+      "sha256": "11fb4d00b63407e4f04a9f8af2bafd6ed1166a69354e56f281eb9bef2369d7ed"
+    },
+    {
+      "member": "build.o",
+      "sha256": "2cc9b69bebe85a538fa50fbd05aaced56216146e958f4e77cd751946eb3f50b3"
+    },
+    {
+      "member": "chunker_countsort.o",
+      "sha256": "3f960a95b8ddbcb3c4a8c56e5617b09a34fbf8fcc052729377dbe959d3c83a86"
+    },
+    {
+      "member": "indexer.o",
+      "sha256": "27bfcd45b3cf8bd16e56fad7ba4fa909f570c069f27f4b3d96f72603592ab9b0"
+    },
+    {
+      "member": "writer.o",
+      "sha256": "d664a6cce91724d2e91b7be0335262e107e96fd2fd84691c0f20ac885082b96a"
+    },
+    {
+      "member": "ply_source.o",
+      "sha256": "5d2d6305dfe831160f40f608de137b6fb571ff35f98a7812db6880d72425a832"
+    },
+    {
+      "member": "lod_render.o",
+      "sha256": "de70b61fae70662bed886f568e68206f77f779152c3737521c6636b7fb7a7bcd"
+    },
+    {
+      "member": "pwlod_viewer.o",
+      "sha256": "2656370f5014a2867fe65f650eaabedc988559de9f41e1d2bbc02b758983e9ae"
+    },
+    {
+      "member": "pwlod_build.o",
+      "sha256": "8e8f26932c688fdbce67a5962789c198c535348715102105481b6d659dee8613"
+    },
+    {
+      "member": "pw_lod_bench.o",
+      "sha256": "0f258e342a0141f47c6d74ec97afdd8d62dcd217b722192a20200d90b10c269f"
+    }
+  ],
+  "syms_file": "libpw_lod_afb521e6.a.syms.txt",
+  "syms_sha256": "6d248a6520da46ea56e2de00e58b0e88744baee3a51f50c51b360440f0d0eafb",
+  "syms_format": "nm -g --defined-only, archive-member headers normalised to 'member.o:'",
+  "build_mode": "full_target_from_pinned_engine_commit",
+  "engine_repository": "https://github.com/Kyle-Wang0211/Aether3D",
+  "engine_revision": "afb521e6730e8f3539235fb9c4ba215b685c5623",
+  "engine_branch": "feat/pointcloud-lod-viewer",
+  "engine_branch_pushed": false,
+  "source_tree_clean": true,
+  "source_tree_clean_how": "git archive of the pinned commit (no working tree involved)",
+  "declared_patches": [],
+  "sources": [
+    "src/pointcloud_lod/octree.cpp",
+    "src/pointcloud_lod/select.cpp",
+    "src/pointcloud_lod/stream.cpp",
+    "src/pointcloud_lod_build/build.cpp",
+    "src/pointcloud_lod_build/chunker_countsort.cpp",
+    "src/pointcloud_lod_build/indexer.cpp",
+    "src/pointcloud_lod_build/writer.cpp",
+    "src/pointcloud_lod_build/ply_source.cpp",
+    "src/pointcloud_lod_render/lod_render.cpp",
+    "src/pointcloud_lod_render/pwlod_viewer.cpp",
+    "src/pointcloud_lod_render/pwlod_build.cpp",
+    "src/pointcloud_lod_render/m1_bench/pw_lod_bench.cpp"
+  ],
+  "upstreams_inside": {
+    "potree": "5636cd471d9eb464969e758be45c44d7613d3859 (BSD-2-Clause; selection, adaptive point size WGSL)",
+    "PotreeConverter": "8bfad98d2a6b2111cdcb3840cb508b59408d0721 (BSD-2-Clause; on-device builder port)",
+    "CesiumJS": "113c068e9af33dba22e5cc54f5a762b593ca3829 (Apache-2.0; controller, orthographic node size)",
+    "three.js": "6101189ee28be14fe3a433a16712f9dd614972c6 (MIT; frustum)",
+    "nlohmann/json": "v3.11.3 (MIT)",
+    "pw_lod_bench": "pw_splat_ab_bench b792d57, pw_lod_bench.cpp sha256 50af752c1372aa881ff4dcc2b92e5fb0579daa36afc71567859938d21867b6c9 (byte-identical)"
+  },
+  "frozen_abi_header": {
+    "file": "include/pwlod_viewer.h",
+    "sha256": "4b047f1fb56ae1575fc5fae5777ef9ea8acdff536ff93a89265550595e51837c",
+    "abi_version": 2
+  },
+  "webgpu_header": {
+    "file": "include/dawn/webgpu.h",
+    "sha256": "6d632738597019d062a5a24b30cecb8f83811dd72bc204c321081d46843b0257",
+    "shell": "include/webgpu/webgpu.h",
+    "shell_sha256": "5316d9fd241e604b3260fa8d4398a458a3dc88ee69c540ac959260b444bdfae3",
+    "dawn_revision": "12ee391c7411285895f4289a3d889a182c093014",
+    "license": "include/dawn/LICENSE",
+    "license_sha256": "e2908f7576fb12be5bdb8480cddb0be62badb498cadb821d043aeaf01b0b0899"
+  },
+  "contains_dawn": false,
+  "defined_wgpu_symbols": 0,
+  "undefined_wgpu_symbols": 70,
+  "exported_abi": [
+    "pwlod_gpu_create",
+    "pwlod_gpu_destroy",
+    "pwlod_params_default",
+    "pwlod_viewer_create",
+    "pwlod_viewer_load_octree",
+    "pwlod_viewer_set_params",
+    "pwlod_viewer_set_camera",
+    "pwlod_viewer_set_targets",
+    "pwlod_viewer_start",
+    "pwlod_viewer_acquire_latest",
+    "pwlod_viewer_stop",
+    "pwlod_viewer_get_stats",
+    "pwlod_viewer_render_once",
+    "pwlod_viewer_destroy",
+    "pwlod_build_from_ply",
+    "pwlod_verify_octree",
+    "pwlod_version",
+    "pwlod_run"
+  ],
+  "pwlod_version": "afb521e6 abi=2",
+  "platform": "ios-arm64",
+  "minimum_ios": "15.0",
+  "compiler": "Apple clang version 17.0.0 (clang-1700.6.3.2)",
+  "iphoneos_sdk": "26.2",
+  "compile_flags": [
+    "-arch arm64",
+    "-miphoneos-version-min=15.0",
+    "-std=c++20",
+    "-O3",
+    "-DNDEBUG",
+    "-ffp-contract=off",
+    "-fno-fast-math",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "-fno-exceptions",
+    "-fno-rtti",
+    "-DPWLOD_ENGINE_SHA8=\"afb521e6\"",
+    "-ffile-prefix-map=<work>/aether_cpp=aether_cpp"
+  ],
+  "forbidden_compile_flags": [
+    "-ffast-math"
+  ],
+  "archiver": "xcrun libtool -static -D, ZERO_AR_DATE=1",
+  "source_date_epoch": 1700000000,
+  "build_script": "build_ios_lod.sh",
+  "build_script_sha256": "8c0e00383488195f47f5a8d00847a3810b0c1854d559d8759c91da6ce094f30e",
+  "link_notes_zh": "不含 Dawn:链接方必须再链一份 Dawn(台架 Release Dawn 普通归档;产品 ffi 自带的那份),三份同源 12ee391c、276 个 wgpu* 导出同名。入口靠 -force_load 或 -Wl,-u,_pwlod_viewer_create 等保住;不要用 -exported_symbol(台架 Podfile:155-161 记录会让 debug 包启动即崩)。",
+  "build_script_note": "sha256 of this build_ios_lod.sh after its three expected_* constants were filled from this receipt (the build ran the same script with those constants UNSET)",
+  "reproducibility": {
+    "rebuilds": 2,
+    "work_roots": [
+      "/private/tmp/pw-lod-ios-a",
+      "/private/tmp/pw-lod-ios-b"
+    ],
+    "artifact_byte_identical": true,
+    "syms_byte_identical": true
+  },
+  "supersedes": [
+    {
+      "artifact": "libpw_lod_740c1ddd.a",
+      "artifact_sha256": "a9f37a2933f139735f477c222c54abbce749b83b686aa0b2b22a75befc45d3b5",
+      "abi_version": 2,
+      "header_sha256": "fb6459d66058c9a9da583f33480c984f3ab9f8b49bf1f410428bb725b7b4d6a7",
+      "moved_to": "superseded/740c1ddd/",
+      "why": "lowest_spacing now Potree_update_visibility.js:276-280 (every popped node, before the budget break and the visibility test); header comment fixed (4b047f1f...)"
+    },
+    {
+      "artifact": "libpw_lod_9496aa39.a",
+      "artifact_sha256": "d172aba99c141c47bf46b35165bbeb30e8107e1e60c188525f5508af7f4cb1e5",
+      "abi_version": 1,
+      "moved_to": "superseded/9496aa39/",
+      "why": "ABI v1"
+    }
+  ],
+  "lowest_spacing_definition_zh": "Potree_update_visibility.js @5636cd4 :114, :276-280, :413 —— 每个出队节点(预算 break :282 与 !visible :286 之前)取最小 spacing;空队列才为 0",
+  "link_smoke_zh": "iOS arm64 链接冒烟(不运行):main 调 pwlod_gpu_create/viewer_create/destroy/pwlod_run,-force_load 本库 + 台架 Release Dawn(build-ios-device-dawn/.../Release-iphoneos/libwebgpu_dawn.a,sha256 23c7437d…)普通归档 + Metal/IOSurface/QuartzCore/Foundation/CoreFoundation/CoreGraphics/IOKit 链接通过,可执行文件里 276 个 wgpu* 已定义",
+  "vendored_at_utc": "2026-09-24",
+  "vendored_by_zh": "引擎 agent(Aether3D-lodviewer 工作树);只写暂存目录 ~/Developer/pw_lod_data/artifact_stage/vendor/aether_lod/,集成时由协调会话拷进产品 vendor/aether_lod/(不要带 superseded/)"
+}
