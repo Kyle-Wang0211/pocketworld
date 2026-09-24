@@ -35,14 +35,17 @@ class LodSceneFit {
   /// Throws [FormatException] on anything that is not a usable Potree 2.0 metadata.
   static LodSceneFit fromMetadataJson(String text) {
     final Object? root = jsonDecode(text);
-    if (root is! Map)
+    if (root is! Map) {
       throw const FormatException('metadata.json: not an object');
+    }
 
     List<double>? vec3(Object? v) {
       if (v is! List || v.length != 3) return null;
       final out = <double>[];
       for (final e in v) {
-        if (e is! num || !e.isFinite) return null;
+        if (e is! num || !e.isFinite) {
+          return null;
+        }
         out.add(e.toDouble());
       }
       return out;
@@ -74,15 +77,17 @@ class LodSceneFit {
       );
     }
     for (var i = 0; i < 3; i++) {
-      if (mx[i] < mn[i])
+      if (mx[i] < mn[i]) {
         throw const FormatException('metadata.json: max < min');
+      }
     }
     final hx = (mx[0] - mn[0]) / 2,
         hy = (mx[1] - mn[1]) / 2,
         hz = (mx[2] - mn[2]) / 2;
     final radius = math.sqrt(hx * hx + hy * hy + hz * hz);
-    if (!(radius > 0))
+    if (!(radius > 0)) {
       throw const FormatException('metadata.json: empty extent');
+    }
     final pts = root['points'];
     return LodSceneFit(
       pivot: <double>[mn[0] + hx, mn[1] + hy, mn[2] + hz],
