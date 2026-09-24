@@ -1289,6 +1289,16 @@ class SparseCloudPainter extends CustomPainter {
     return (cx: _cx, cy: _cy, cz: _cz, radius: _radius);
   }
 
+  /// The height-ramp domain the painter uses for an uncoloured cloud (`_minY` / `_invYSpan`
+  /// from the same [_ensureFit]), exposed read-only so the GPU viewer's style
+  /// (pwlod_style.uncolored_min_y / uncolored_inv_y_span) and the parity fixture take the
+  /// painter's own numbers instead of re-deriving them. Behaviour unchanged.
+  @visibleForTesting
+  static ({double minY, double invYSpan}) heightRampOf(Float32List xyz) {
+    _ensureFit(xyz);
+    return (minY: _minY, invYSpan: _invYSpan);
+  }
+
   /// 点云**全量**轴对齐包围盒(逐点 min/max,一个点都不排除)。
   ///
   /// [2026-08-09 用户签决] "框选点云的初始范围必须包含全部点云" —— 初始框
