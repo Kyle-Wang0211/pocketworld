@@ -8,7 +8,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:flutter/foundation.dart' show compute;
+import 'package:flutter/foundation.dart' show ValueListenable, compute;
 import 'package:flutter/material.dart';
 
 import '../../l10n/app_localizations.dart';
@@ -22,6 +22,7 @@ import 'ruler_scrubber.dart';
 import 'selection_tools_layer.dart';
 import 'sfm_preview_overlay.dart' show SfmBottomActionButton;
 import '../../point_cloud_display/progressive_octree_order.dart';
+import '../../point_cloud_lod/dense_lod_cache.dart';
 import 'sparse_cloud_view.dart';
 
 /// Parsed cloud (full set — delivery never downsamples). [sourceCount] is the
@@ -156,14 +157,35 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
   final ValueNotifier<CloudViewCamera?> _camera = ValueNotifier(null);
   final CloudViewController _cloudController = CloudViewController();
 
+  /// [LOD v3 2026-09-24] For the dense PLY (「稠密点云」, _openDense): its octree from
+  /// DenseLodCache — the same path the capture page uses, so both show the same viewer. The
+  /// sparse PLY never gets one (sparse stays a flat set, with its editing).
+  ValueListenable<DenseLodState>? _denseLod;
+
+  bool get _isDensePly =>
+      File(widget.plyPath).uri.pathSegments.last == kDensePlyFileName;
+
   @override
   void initState() {
     super.initState();
+    if (_isDensePly) {
+      _denseLod = DenseLodCache.instance.watch(widget.plyPath)..addListener(_onDenseLod);
+    }
     _load();
+  }
+
+  void _onDenseLod() {
+    if (mounted) setState(() {});
+  }
+
+  String? get _lodOctreeDir {
+    final s = _denseLod?.value;
+    return s != null && s.phase == DenseLodPhase.ready ? s.octreeDir : null;
   }
 
   @override
   void dispose() {
+    _denseLod?.removeListener(_onDenseLod);
     _cloudController.dispose();
     _camera.dispose();
     super.dispose();
@@ -573,6 +595,9 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                   child: SparseCloudView(
                     xyz: cloud.xyz,
                     rgb: cloud.rgb,
+                    // [LOD v3] same GPU viewer as the capture page; the dense PLY's octree when ready.
+                    gpu: true,
+                    octreeDir: _lodOctreeDir,
                     controller: _cloudController,
                     onCameraChanged: (c) => _camera.value = c,
                     // 编辑态必须传框(画手柄 + 框外染红);浏览态只在用户

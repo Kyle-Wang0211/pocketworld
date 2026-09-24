@@ -30,7 +30,7 @@ import 'dart:math' as math;
 import 'dart:typed_data' show Int32List, Float32List, Float64List, Uint8List;
 
 import 'package:flutter/foundation.dart'
-    show compute, defaultTargetPlatform, TargetPlatform;
+    show compute, defaultTargetPlatform, TargetPlatform, ValueListenable;
 
 import '../../official_capture/dense_stage.dart';
 
@@ -77,6 +77,7 @@ import '../../eta/eta_prior_log.dart';
 import '../../eta/pipeline_eta.dart';
 import '../../dense/dense_live_cloud.dart';
 import '../../dense/dense_stage_progress.dart';
+import '../../point_cloud_lod/dense_lod_cache.dart';
 import '../../official_capture/transient_preview_cleanup.dart';
 import '../../official_capture/dome/dome_target_points.dart';
 import '../../official_capture/realtime_capture_preview.dart';
@@ -449,6 +450,35 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// Dense PLY already on disk when the page is entered in review mode (shown
   /// instead of the sparse cloud; dense is then "done" for this project).
   SfmLiveSnapshot? _denseReviewSnapshot;
+
+  /// [LOD v3 2026-09-24] The finished dense cloud's octree (built on the phone by
+  /// DenseLodCache into Library/Caches/lod/<作品标识>/ after official_dense.ply lands, or
+  /// found valid on re-entry). While it is not ready — building, failed, or not asked for —
+  /// the same view keeps drawing the flat 1 M display copy.
+  ValueListenable<DenseLodState>? _denseLod;
+  String? _denseLodPly;
+
+  void _watchDenseLod(String densePly) {
+    if (_denseLodPly == densePly && _denseLod != null) return;
+    _denseLod?.removeListener(_onDenseLod);
+    _denseLodPly = densePly;
+    _denseLod = DenseLodCache.instance.watch(densePly)..addListener(_onDenseLod);
+    DeviceLog.log('OfficialARCapturePage', 'dense LOD: ${_denseLod!.value}');
+  }
+
+  void _onDenseLod() {
+    final s = _denseLod?.value;
+    if (s != null) DeviceLog.log('OfficialARCapturePage', 'dense LOD: $s');
+    if (mounted) setState(() {});
+  }
+
+  /// The octree to hand the view: only while the finished dense cloud is what is on screen.
+  String? get _lodOctreeDirOnScreen {
+    final s = _denseLod?.value;
+    if (s == null || s.phase != DenseLodPhase.ready) return null;
+    if (_denseRunningHere || !_denseDoneHere) return null;
+    return s.octreeDir;
+  }
 
   /// [LIVE-WAIT] Wait countdown of the sparse job (lib/eta: Ninja prediction +
   /// commit-once coarse label). Planned when the wait page goes up, finished
@@ -2281,6 +2311,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     SparseCloudData? dense;
     final densePly = '$dir/official_dense.ply';
     if (File(densePly).existsSync()) {
+      // [LOD v3] a valid tree is used at once; otherwise the 1 M copy shows while it is built.
+      _watchDenseLod(densePly);
       try {
         dense = await compute(loadReviewCloud, densePly, debugLabel: 'review_load_dense');
       } catch (e) {
@@ -2465,6 +2497,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   void _onDenseProgress() {
     final p = denseStageProgress.value;
     if (p == null || p.captureDir != _pageCaptureDir) return;
+    // [LOD v3] official_dense.ply has landed ⇒ build/verify its octree in the background.
+    if (p.state == DenseStageState.done && p.outPly != null) _watchDenseLod(p.outPly!);
     if (mounted && _sfmPhase != null) setState(() {});
   }
 
@@ -4943,6 +4977,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       ..clearLiveImages();
     denseStageProgress.removeListener(_onDenseProgress);
     DenseWaitEta.instance.label.removeListener(_onDenseProgress);
+    _denseLod?.removeListener(_onDenseLod);
     super.dispose();
   }
 
@@ -5395,6 +5430,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                   ? _denseWaitLabel(context)
                   : _sparseWaitLabel(context),
               initialPerspective: _sfmPerspectiveStart,
+              lodOctreeDir: _lodOctreeDirOnScreen,
               // [2026-08-09 用户签决] 进度口径=用户视角:"已完成 x/N 帧",
               // N=本场实拍照片数。补算/重喂是内部机制,不暴露 —— 欠账帧
               // 补算完成时 fed 自然爬到 N,用户只看到计数在涨。

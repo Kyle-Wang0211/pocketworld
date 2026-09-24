@@ -49,6 +49,7 @@ class SfmPreviewOverlay extends StatelessWidget {
     this.cloudController,
     this.initialPerspective,
     this.toolsOverlay,
+    this.lodOctreeDir,
   });
 
   final SfmPreviewPhase phase;
@@ -98,6 +99,11 @@ class SfmPreviewOverlay extends StatelessWidget {
   final PerspectiveStart? initialPerspective;
   final Widget? toolsOverlay;
 
+  /// [LOD v3 2026-09-24] The finished dense cloud's octree while the dense cloud is on screen
+  /// (DenseLodCache); null = the GPU viewer draws [snapshot]'s points. The view is the same
+  /// SparseCloudView instance throughout (user: 「查看器要全程一致」).
+  final String? lodOctreeDir;
+
   @override
   Widget build(BuildContext context) {
     final snap = snapshot;
@@ -122,6 +128,9 @@ class SfmPreviewOverlay extends StatelessWidget {
                     key: const ValueKey('capture_preview_cloud'),
                     xyz: snap.xyz,
                     rgb: snap.rgb,
+                    // [LOD v3] one GPU viewer draws every stage of this page.
+                    gpu: true,
+                    octreeDir: lodOctreeDir,
                     onCameraChanged: onCameraChanged,
                     controller: cloudController,
                     initialPerspective: initialPerspective,

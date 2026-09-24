@@ -19,6 +19,8 @@ import 'package:flutter/material.dart';
 
 import '../../official_capture/selection_box.dart';
 import '../../point_cloud_display/progressive_octree_order.dart';
+import '../../point_cloud_lod/gpu_cloud_layer.dart';
+import '../../point_cloud_lod/lod_bridge.dart';
 import '../sparse_thumbnail.dart' show kSparseThumbPitch, kSparseThumbYaw;
 import 'cloud_camera.dart';
 import 'selection_rect_handles.dart';
@@ -252,7 +254,29 @@ class SparseCloudView extends StatefulWidget {
     this.bottomGestureExclusion = 0,
     this.bottomFade = 0,
     this.bottomFadeArcRadius = 0,
+    this.gpu = false,
+    this.octreeDir,
+    this.lodBridge,
   });
+
+  /// [LOD v3 2026-09-24, build 171] Draw the points with the GPU viewer (pwlod_viewer.h v3,
+  /// lib/point_cloud_lod/gpu_cloud_layer.dart) instead of [SparseCloudPainter]: same camera
+  /// (this view's CloudProjection, incl. the LIVE-WAIT morph), same look (pwlod_style from this
+  /// view's _pointSize/_exposure/_tone and the painter's height ramp), same selection semantics
+  /// (editing ⇒ tint outside, browsing ⇒ cull outside). Gestures, picking, selection editing and
+  /// every overlay stay in Dart exactly as before. The CPU painter keeps drawing until the GPU
+  /// has published a frame, and again for good if the GPU path fails. User 2026-09-24:
+  /// 「查看器我觉得要全程一致」— the capture page and the full-screen viewer pass true; the
+  /// gallery card (auto_rotating_cloud_view.dart) keeps false.
+  final bool gpu;
+
+  /// With [gpu]: the finished dense cloud's octree (DenseLodCache, Library/Caches/lod/…). When
+  /// set, the engine draws the tree (zoom in ⇒ every point) instead of the flat [xyz] sample;
+  /// [xyz]/[rgb] still drive the fit, picking and the CPU fallback, so the camera does not move.
+  final String? octreeDir;
+
+  /// Test hook for the GPU channel (null = the real `pw_lod_texture` channel).
+  final LodBridge? lodBridge;
 
   /// 底部这么高的区域不接受相机手势 —— 编辑态工具面板压在全屏点云视图
   /// 之上(视图保持全屏才不会在切换时跳),而手势竞技场拦不住:实测拨
@@ -390,6 +414,10 @@ class _SparseCloudViewState extends State<SparseCloudView>
   Size _viewSize = Size.zero;
   double _fitRadius = 1;
 
+  /// [LOD v3] The GPU half (null unless widget.gpu). See SparseCloudView.gpu.
+  GpuCloudLayer? _gpu;
+  GpuCloudSource? _gpuSource;
+
   @override
   void initState() {
     super.initState();
@@ -417,9 +445,90 @@ class _SparseCloudViewState extends State<SparseCloudView>
       vsync: this,
       duration: const Duration(milliseconds: 280),
     )..addListener(_onMorph);
+    if (widget.gpu) _attachGpu();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _emitCamera();
     });
+  }
+
+  void _attachGpu() {
+    _gpu = GpuCloudLayer(bridge: widget.lodBridge)..addListener(_onGpuChanged);
+  }
+
+  void _detachGpu() {
+    _gpu?..removeListener(_onGpuChanged)..dispose();
+    _gpu = null;
+    _gpuSource = null;
+  }
+
+  void _onGpuChanged() {
+    if (mounted) setState(() {});
+  }
+
+  /// The GPU layer's texture while it is the one drawing (null ⇒ the CPU painter draws).
+  @visibleForTesting
+  int? get debugGpuTextureId => _gpu?.textureId;
+
+  @visibleForTesting
+  GpuCloudLayer? get debugGpuLayer => _gpu;
+
+  /// The projection this view paints with at its current size (the GPU camera's source).
+  @visibleForTesting
+  CloudProjection debugProjection() => _projectionFor(_viewSize);
+
+  /// pwlod_style of this view: its own look fields + the painter's height ramp + the selection
+  /// mode the painter would use (editing ⇒ tint outside the box, browsing ⇒ cull outside;
+  /// drawSelectionWireframe is always false here, as in build()).
+  LodStyle _gpuStyle() {
+    final ramp = SparseCloudPainter.heightRampOf(widget.xyz);
+    final box = widget.selectionBox;
+    return LodStyle(
+      pointSize: _pointSize,
+      spritePx: 16, // SparseCloudPainter sprite edge (_buildSprite: 16×16)
+      discRadiusPxAtScale1: 7, // _buildSprite: drawCircle(Offset(8, 8), 7)
+      maxSpriteScale: kMaxPointSpriteScale,
+      tone: LodTone.values[_tone],
+      exposure: _exposure,
+      uncoloredMinY: ramp.minY,
+      uncoloredInvYSpan: ramp.invYSpan,
+      selectionMode: box == null
+          ? LodSelectionMode.none
+          : (widget.editing ? LodSelectionMode.tintOutside : LodSelectionMode.cullOutside),
+      selectionCenter: box == null ? const [0, 0, 0] : [box.cx, box.cy, box.cz],
+      selectionSize: box == null ? const [0, 0, 0] : [box.sx, box.sy, box.sz],
+      selectionRotRowMajor: box == null ? kIdentityRot : box.rot,
+      selectionOutArgb: kSelectionOutColor,
+    );
+  }
+
+  /// Mirrors this frame's state into the GPU layer (cheap when nothing changed).
+  void _syncGpu(Size size, double dpr) {
+    final g = _gpu;
+    if (g == null || size.isEmpty) return;
+    g.setViewport(size, dpr);
+    var src = _gpuSource;
+    final vis = widget.visibility;
+    final n = widget.xyz.length ~/ 3;
+    final visOk = vis != null && vis.length == n ? vis : null;
+    if (src == null ||
+        !identical(src.xyz, widget.xyz) ||
+        !identical(src.rgb, widget.rgb) ||
+        !identical(src.visibility, visOk) ||
+        src.octreeDir != widget.octreeDir) {
+      final a = SparseCloudPainter.fullAabbOf(widget.xyz);
+      src = _gpuSource = GpuCloudSource(
+        xyz: widget.xyz,
+        rgb: widget.rgb,
+        colored: SparseCloudPainter.hasColorOf(widget.rgb),
+        visibility: visOk,
+        boxMin: [a.cx - a.hx, a.cy - a.hy, a.cz - a.hz],
+        boxMax: [a.cx + a.hx, a.cy + a.hy, a.cz + a.hz],
+        octreeDir: widget.octreeDir,
+      );
+    }
+    g.setStyle(_gpuStyle());
+    g.setCamera(_projectionFor(size), size);
+    g.setSource(src);
   }
 
   /// 当前俯仰 —— 守门断言"编辑态绝不出现 45°"。
@@ -447,6 +556,10 @@ class _SparseCloudViewState extends State<SparseCloudView>
   @override
   void didUpdateWidget(SparseCloudView old) {
     super.didUpdateWidget(old);
+    if (widget.gpu != old.gpu) {
+      _detachGpu();
+      if (widget.gpu) _attachGpu();
+    }
     // [LIVE-WAIT] the cloud is swapped under a live view (white → refined →
     // dense): the fit radius (reframe zoom, handle minimum, near clip) must
     // follow the cloud on screen. The pivot and the user's camera do not move.
@@ -486,6 +599,7 @@ class _SparseCloudViewState extends State<SparseCloudView>
     widget.controller?.removeListener(_onControllerTarget);
     _tween.dispose();
     _morph.dispose();
+    _detachGpu();
     super.dispose();
   }
 
@@ -836,6 +950,8 @@ class _SparseCloudViewState extends State<SparseCloudView>
             builder: (context, constraints) {
               _viewSize = constraints.biggest;
               _applyPendingPerspective(_viewSize);
+              _syncGpu(_viewSize, MediaQuery.devicePixelRatioOf(context));
+              final gpuTexture = _gpu?.textureId;
               return GestureDetector(
                 onScaleStart: _onScaleStart,
                 onScaleUpdate: (d) {
@@ -888,6 +1004,23 @@ class _SparseCloudViewState extends State<SparseCloudView>
                     color: Colors.black,
                     child: Stack(
                       children: [
+                        if (gpuTexture != null) ...[
+                          // [LOD v3] the GPU viewer draws the points (same camera/look).
+                          Positioned.fill(child: Texture(textureId: gpuTexture)),
+                          // Bottom fade above the scrubber, drawn over the texture with the
+                          // painter's geometry (see CloudBottomFadeMask).
+                          if (widget.bottomFade > 0)
+                            Positioned.fill(
+                              child: IgnorePointer(
+                                child: CustomPaint(
+                                  painter: CloudBottomFadeMask(
+                                    bottomFade: widget.bottomFade,
+                                    arcRadius: widget.bottomFadeArcRadius,
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ] else
                         Positioned.fill(
                           child: CustomPaint(
                             painter: SparseCloudPainter(
@@ -954,6 +1087,52 @@ class _SparseCloudViewState extends State<SparseCloudView>
       ],
     );
   }
+}
+
+/// [LOD v3 2026-09-24] The painter's bottom fade (SparseCloudPainter.bottomFade /
+/// bottomFadeArcRadius) for the GPU path, drawn OVER the texture as a black mask. Same geometry:
+/// crest = height − bottomFade − kCloudBottomFadeGap; with an arc of radius R the boundary circle is
+/// centred at (width/2, crest + R) and a point `above` = |p − centre| − R px above it is drawn with
+/// alpha × clamp(above / kCloudBottomFadeBand, 0, 1) (nothing at or below the arc); without an arc
+/// the boundary is the line y = crest. On the view's black background, «point alpha × fade» equals
+/// «black mask of alpha 1 − fade over the point», so the mask is black with alpha 1 − fade:
+/// RadialGradient black → black at R → transparent at R + band (linear in the radius, like
+/// `above`), or the same as a LinearGradient in y.
+class CloudBottomFadeMask extends CustomPainter {
+  const CloudBottomFadeMask({required this.bottomFade, required this.arcRadius});
+
+  final double bottomFade;
+  final double arcRadius;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (bottomFade <= 0 || size.isEmpty) return;
+    final crest = size.height - bottomFade - kCloudBottomFadeGap;
+    const band = kCloudBottomFadeBand;
+    const black = Color(0xFF000000), clear = Color(0x00000000);
+    final paint = Paint();
+    if (arcRadius > 0) {
+      final center = Offset(size.width / 2, crest + arcRadius);
+      final outer = arcRadius + band;
+      paint.shader = ui.Gradient.radial(
+        center,
+        outer,
+        const [black, black, clear],
+        [0, arcRadius / outer, 1],
+      );
+    } else {
+      paint.shader = ui.Gradient.linear(
+        Offset(0, crest - band),
+        Offset(0, crest),
+        const [clear, black],
+      );
+    }
+    canvas.drawRect(Offset.zero & size, paint);
+  }
+
+  @override
+  bool shouldRepaint(CloudBottomFadeMask old) =>
+      old.bottomFade != bottomFade || old.arcRadius != arcRadius;
 }
 
 // ─── painter ─────────────────────────────────────────────────────────
@@ -1289,6 +1468,18 @@ class SparseCloudPainter extends CustomPainter {
     return (cx: _cx, cy: _cy, cz: _cz, radius: _radius);
   }
 
+  /// The painter's hasColor rule (was inline in [paint], moved here unchanged so the GPU viewer's
+  /// set_points `colored` flag is the same decision): any non-black rgb triplet among the drawn
+  /// points ⇒ coloured; an all-zero rgb ⇒ the height ramp.
+  static bool hasColorOf(Uint8List rgb, {int stride = 1}) {
+    for (var i = 0; i < rgb.length; i += 3 * math.max(1, stride)) {
+      if (rgb[i] != 0 || rgb[i + 1] != 0 || rgb[i + 2] != 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /// The height-ramp domain the painter uses for an uncoloured cloud (`_minY` / `_invYSpan`
   /// from the same [_ensureFit]), exposed read-only so the GPU viewer's style
   /// (pwlod_style.uncolored_min_y / uncolored_inv_y_span) and the parity fixture take the
@@ -1582,13 +1773,7 @@ class SparseCloudPainter extends CustomPainter {
     final cosR = proj.cosR, sinR = proj.sinR;
     final hasRoll = !(sinR == 0.0 && cosR == 1.0);
 
-    var hasColor = false;
-    for (var i = 0; i < rgb.length; i += 3 * math.max(1, stride)) {
-      if (rgb[i] != 0 || rgb[i + 1] != 0 || rgb[i + 2] != 0) {
-        hasColor = true;
-        break;
-      }
-    }
+    final hasColor = hasColorOf(rgb, stride: stride);
     final displayColors = _displayColors(hasColor);
 
     // drawRawAtlas: ONE call renders every point with its EXACT tone-mapped
