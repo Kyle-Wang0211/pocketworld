@@ -55,6 +55,7 @@ import '../../official_capture/capture_coverage_cloud.dart';
 import '../../official_capture/capture_session.dart';
 import '../../official_capture/colorize_pipeline.dart';
 import '../../official_capture/database_archive_policy.dart';
+import '../../official_capture/device_pose_session.dart';
 import '../../official_capture/sqlite_db_health.dart';
 import '../../official_capture/live_sfm_publish_policy.dart';
 import '../../official_capture/live_cloud_diagnostics.dart';
@@ -396,6 +397,11 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   // feeds in and snapshots out. Null on the simulator (feature hidden).
   SfmLiveRecon? _sfmRecon;
   StreamSubscription<OfficialHighResReconstructionInput>? _sfmFeedSub;
+
+  /// [DEVICE-SESSION 2026-09-24] 本采集页的设备跟踪会话边界(ARKit run /
+  /// 切后台后的重启)。每张喂给重建的照片按它盖 deviceSessionId / 信任位,
+  /// 并逐张记进 capture 目录的 official_device_sessions.jsonl(跨补拍累积)。
+  DevicePoseSessionTracker? _deviceSessions;
   StreamSubscription<SfmLiveEvent>? _sfmEventSub;
   StreamSubscription<OfficialHighResCaptureFailureEvent>? _highResFailureSub;
 
@@ -954,6 +960,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         // 遥测【tracking】:ARKit tracking state 变化事件(既有 pose 流顺手
         // 记,只在字符串变化时写一行 —— 正常拍摄整场 <10 行)。
         final tsName = p.trackingStateName;
+        _deviceSessions?.observe(
+          deviceTrackingPhaseFromArkitName(tsName),
+          p.timestamp,
+        );
         if (tsName != null && tsName != _telemLastTrackingState) {
           TelemetryWriter.instance.event('tracking', {
             'state': tsName,
@@ -1097,6 +1107,10 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     // retained photos untouched so resume continues the same capture.
     final session = _session;
     session?.suspendManualCaptureTransactions();
+    // [DEVICE-SESSION] 回前台后 ARKit 不一定接回原世界系(不实现
+    // sessionShouldAttemptRelocalization 时"spends a few seconds trying to
+    // relocalize before restarting your session")—— 由跟踪器看相位判定。
+    _deviceSessions?.suspend();
     try {
       await _arKitChannel.invokeMethod<void>('stopSession');
     } catch (_) {
@@ -1975,6 +1989,9 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     for (final r in plan.rejections) {
       DeviceLog.log('OfficialARCapturePage', 'refeed reject: $r');
     }
+    for (final note in plan.deviceTrust?.notes ?? const <String>[]) {
+      DeviceLog.log('OfficialARCapturePage', 'refeed device-session: $note');
+    }
 
     SfmLiveRecon? refeed;
     if (plan.ordered.isNotEmpty) {
@@ -2106,7 +2123,17 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
         return;
       }
       _sfmRecon = recon;
-      _sfmFeedSub = session.sfmFrameStream.listen(recon.offerFrame);
+      final tracker = DevicePoseSessionTracker(
+        idPrefix: 'arkit-${DateTime.now().millisecondsSinceEpoch}',
+      )..beginRun(
+          reason: widget.extendCaptureDir != null
+              ? 'extend_capture_run'
+              : 'capture_run',
+        );
+      _deviceSessions = tracker;
+      _sfmFeedSub = session.sfmFrameStream.listen(
+        (frame) => _offerLiveFrame(recon, tracker, captureDir, frame),
+      );
       _sfmEventSub = recon.events.listen(_onSfmEvent);
       _highResFailureSub ??= session.highResFailureStream.listen(
         _onHighResCaptureFailure,
@@ -2119,6 +2146,39 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       DeviceLog.log('OfficialARCapturePage', 'sfm: start FAILED: $e\n$st');
       _markSfmStartFailure('重建服务启动异常');
     }
+  }
+
+  /// [DEVICE-SESSION 2026-09-24] 实时喂帧:按拍摄时间戳查它属于哪个设备跟踪
+  /// 会话,只有本场第一个会话的帧可信(device_pose_session.dart 文件头);
+  /// 逐张落账,供收尾/日后的整项目重喂重新定参考。
+  void _offerLiveFrame(
+    SfmLiveRecon recon,
+    DevicePoseSessionTracker tracker,
+    String captureDir,
+    OfficialHighResReconstructionInput frame,
+  ) {
+    final sessionId = tracker.sessionAt(frame.captureTimestamp);
+    try {
+      File('$captureDir/$kDeviceSessionLedgerFileName').writeAsStringSync(
+        encodeDeviceSessionLedgerLine(
+          photoName: frame.jpegPath.split('/').last,
+          deviceSessionId: sessionId,
+          captureTimestamp: frame.captureTimestamp,
+          source: 'arkit',
+        ),
+        mode: FileMode.append,
+        flush: true,
+      );
+    } catch (e) {
+      // 没落账 ⇒ 日后重喂时这张按"旧照片"走证据分组,只会更保守。
+      DeviceLog.log('OfficialARCapturePage', 'device-session ledger: $e');
+    }
+    recon.offerFrame(
+      frame.withDevicePoseSession(
+        deviceSessionId: sessionId,
+        devicePoseTrusted: tracker.isTrustedAt(frame.captureTimestamp),
+      ),
+    );
   }
 
   void _onHighResCaptureFailure(OfficialHighResCaptureFailureEvent event) {
@@ -4555,8 +4615,15 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
       // 代价说清楚:新照片的特征会被提取两次(直播一次、重喂一次)。没有省掉
       // 它的干净办法 —— 直播会话的帧号从 0 重数,和老照片在同一个 db 里必然
       // 撞 `images.name`(所以开场才要 sideline)。正确性优先于这一次提取。
+      //
+      // [DEVICE-SESSION 2026-09-24] 本场中途出现了第二个设备跟踪会话(切后台后
+      // ARKit 没接回原世界系 / 跟踪重启)时同样走整项目重喂:实时那一路只能信
+      // 本场第一个会话,重喂才按"照片最多的会话"重新定参考
+      // (device_pose_session.dart 文件头)。
+      final multiDeviceSessionTake = (_deviceSessions?.sessionCount ?? 1) > 1;
       final extendingProject =
-          widget.extendCaptureDir != null && captureDirForSfm != null;
+          (widget.extendCaptureDir != null || multiDeviceSessionTake) &&
+          captureDirForSfm != null;
       DeviceLog.log(
         'OfficialARCapturePage',
         'finish: sfm fed=${recon?.fedCount ?? -1} '

@@ -100,6 +100,12 @@ class DevicePoseTrust {
       trackerState.isNotEmpty &&
       trackerState != kTrackerStateNormal;
 
+  /// [DEVICE-SESSION 2026-09-24](B)位姿来自**非参考**设备跟踪会话 ⇒ 不可信
+  /// (device_pose_session.dart)。只会收紧:追踪器已判不可信的保留原因。
+  DevicePoseTrust notInReferenceSession() => trusted
+      ? DevicePoseTrust._(false, trackerState, 'device_session_not_reference')
+      : this;
+
   Map<String, Object?> toJson() => <String, Object?>{
     'devicePoseTrusted': trusted,
     'deviceTrackingState': trackerState,

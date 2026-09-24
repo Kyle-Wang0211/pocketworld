@@ -106,6 +106,11 @@ ArchivedPhotoParse parseArchivedPhoto({
     return ArchivedPhotoParse.rejected(jpegPath, '缺时间戳 t / save_target_t');
   }
 
+  // [DEVICE-SESSION 2026-09-24] 这张照片**自己那一帧**的追踪状态(原生 sidecar
+  // 同一 ARFrame 写下的 `trackingStateName` / `tracking_state`)。不传的话
+  // validate 按缺失 fail-closed ⇒ 整项目重喂的每一帧都不可信、一对 Sim3 都
+  // 没有(A 的判据,device_pose_trust.dart)。
+  final tracking = j['trackingStateName'] ?? j['tracking_state'];
   final v = OfficialHighResReconstructionInput.validate(
     jpegPath: jpegPath,
     imageWidth: w,
@@ -114,6 +119,7 @@ ArchivedPhotoParse parseArchivedPhoto({
     captureTimestamp: captureT.toDouble(),
     cameraTransform: transform,
     intrinsics: intrinsics,
+    trackingStateName: tracking is String ? tracking : null,
   );
   final input = v.input;
   if (input == null) {
@@ -184,6 +190,7 @@ class ProjectCoverage {
     required this.fedDistinct,
     required this.duplicateFrameIds,
     required this.neverFed,
+    this.ledgerMayMixDeviceSessions = false,
   });
 
   final int photosOnDisk;
@@ -197,8 +204,16 @@ class ProjectCoverage {
   /// 盘上有、账本里却没有的照片名(排序后)。
   final List<String> neverFed;
 
+  /// [DEVICE-SESSION 2026-09-24] 第三条腿:这个 db 是改前写的(账本没有信任位)
+  /// 且有多会话痕迹 —— 照 db 续跑会把混进来的旧世界位姿原样再用一遍
+  /// (device_pose_session.dart legacyLedgerMayMixDeviceSessions)。
+  final bool ledgerMayMixDeviceSessions;
+
   /// 覆盖齐 ⇒ 可以照 db 续跑;否则必须全量重喂。
-  bool get covered => neverFed.isEmpty && duplicateFrameIds == 0;
+  bool get covered =>
+      neverFed.isEmpty &&
+      duplicateFrameIds == 0 &&
+      !ledgerMayMixDeviceSessions;
 
   /// 不齐的原因(人话);覆盖齐时为 null。
   String? get reason {
@@ -207,6 +222,9 @@ class ProjectCoverage {
     if (neverFed.isNotEmpty) parts.add('盘上有 ${neverFed.length} 张没喂过');
     if (duplicateFrameIds > 0) {
       parts.add('账本 frameId 重复 $duplicateFrameIds 次(跨了多个会话)');
+    }
+    if (ledgerMayMixDeviceSessions) {
+      parts.add('db 可能混了多个设备跟踪会话且没记信任位');
     }
     return parts.join(' | ');
   }
@@ -230,6 +248,7 @@ class ProjectCoverage {
 ProjectCoverage projectCoverageFrom({
   required Iterable<String> jpegNamesOnDisk,
   required String fedFramesJsonl,
+  bool ledgerMayMixDeviceSessions = false,
 }) {
   final fedNames = <String>{};
   final frameIdCounts = <int, int>{};
@@ -260,5 +279,6 @@ ProjectCoverage projectCoverageFrom({
     fedDistinct: fedNames.length,
     duplicateFrameIds: dup,
     neverFed: never,
+    ledgerMayMixDeviceSessions: ledgerMayMixDeviceSessions,
   );
 }

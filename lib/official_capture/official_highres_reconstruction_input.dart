@@ -33,6 +33,7 @@ class OfficialHighResReconstructionInput {
     required this.cameraTransform,
     required this.intrinsics,
     required this.devicePoseTrust,
+    this.deviceSessionId,
   });
 
   static const int requiredWidth = 4032;
@@ -52,6 +53,29 @@ class OfficialHighResReconstructionInput {
   final DevicePoseTrust devicePoseTrust;
 
   bool get devicePoseTrusted => devicePoseTrust.trusted;
+
+  /// [DEVICE-SESSION 2026-09-24](B)这张照片的设备位姿来自哪个跟踪会话
+  /// (ARKit run / XRSLAM create;见 device_pose_session.dart)。null = 没有记录。
+  final String? deviceSessionId;
+
+  /// 同一张照片、盖上会话归属;不在参考会话里 ⇒ 信任位收紧为 false
+  /// ([DevicePoseTrust.notInReferenceSession])。只收紧,不放宽。
+  OfficialHighResReconstructionInput withDevicePoseSession({
+    required String? deviceSessionId,
+    required bool devicePoseTrusted,
+  }) => OfficialHighResReconstructionInput._(
+    jpegPath: jpegPath,
+    imageWidth: imageWidth,
+    imageHeight: imageHeight,
+    triggerTimestamp: triggerTimestamp,
+    captureTimestamp: captureTimestamp,
+    cameraTransform: cameraTransform,
+    intrinsics: intrinsics,
+    devicePoseTrust: devicePoseTrusted
+        ? devicePoseTrust
+        : devicePoseTrust.notInReferenceSession(),
+    deviceSessionId: deviceSessionId,
+  );
 
   double get timestampDeltaSeconds =>
       (captureTimestamp - triggerTimestamp).abs();

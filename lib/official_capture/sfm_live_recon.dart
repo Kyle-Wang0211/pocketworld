@@ -397,6 +397,7 @@ class SfmFedFrameMeta {
     this.devicePoseTrusted = true,
     this.deviceTrackingState,
     this.devicePoseTrustReason,
+    this.deviceSessionId,
   });
   final String jpegPath;
   final int imageW;
@@ -435,6 +436,10 @@ class SfmFedFrameMeta {
 
   /// DevicePoseTrust.reason,审计用。
   final String? devicePoseTrustReason;
+
+  /// [DEVICE-SESSION 2026-09-24](B)位姿所属的设备跟踪会话
+  /// (device_pose_session.dart);null = 没有记录。
+  final String? deviceSessionId;
 }
 
 /// [DEVICE-POSE-TRUST 2026-09-24] 一行 `official_sfm_fed_frames.jsonl` 记录。
@@ -457,6 +462,9 @@ Map<String, Object?> sfmFedFrameRecord(
     'deviceTrackingState': m.deviceTrackingState,
     if (m.devicePoseTrustReason != null)
       'devicePoseTrustReason': m.devicePoseTrustReason,
+    // [DEVICE-SESSION](B)有这个键 = 新账本(续跑/覆盖度判据据此认出改前的
+    // 可能混了会话的 db,device_pose_session.dart legacyLedgerMayMixDeviceSessions)。
+    'deviceSessionId': m.deviceSessionId,
     // null = 调用方不知道(非拍摄期喂帧路径)。
     'coreHonorsDevicePoseTrust': coreHonorsDevicePoseTrust,
   };
@@ -788,6 +796,7 @@ class SfmLiveRecon {
       devicePoseTrusted: feed.devicePoseTrusted,
       deviceTrackingState: feed.devicePoseTrust.trackerState,
       devicePoseTrustReason: feed.devicePoseTrust.reason,
+      deviceSessionId: feed.deviceSessionId,
     );
     if (!feed.devicePoseTrusted) {
       DeviceLog.log(
@@ -1701,8 +1710,14 @@ class SfmLiveRecon {
     final double? s = _scaleAnchorEnabled
         ? scaleAnchorFactor(
             posesPacked: snap.posesPacked,
-            arkitCenterWorldOf: (frameId) =>
-                _fedMeta[frameId]?.arkitCameraCenterWorld,
+            // [DEVICE-SESSION](B)不可信帧(追踪没就绪 / 非参考会话)不给尺度锚
+            // 提供设备相机中心(契约:不得当位姿先验)。
+            arkitCenterWorldOf: (frameId) {
+              final m = _fedMeta[frameId];
+              return m != null && m.devicePoseTrusted
+                  ? m.arkitCameraCenterWorld
+                  : null;
+            },
             diag: scaleDiag,
           )
         : null;

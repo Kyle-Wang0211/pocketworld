@@ -30,9 +30,11 @@ import '../official_util/device_log.dart';
 import 'archived_photo_rebuild.dart';
 import 'colorize_pipeline.dart';
 import 'database_archive_resolver.dart';
+import 'device_pose_session.dart';
 import 'photo_archive_coordinator.dart';
 import 'photo_archive_resolver.dart';
 import 'photo_archive_runtime.dart';
+import 'photo_slot_naming.dart';
 import 'pwva_master.dart';
 import 'representative_color.dart';
 import 'sfm_live_recon.dart';
@@ -567,6 +569,15 @@ Future<Map<int, SfmFedFrameMeta>> loadFedFrameMeta(String captureDir) async {
           arkitQuatWxyz: doubles(m['arkitCamFromWorldQwxyz']),
           arkitTransTxyz: doubles(m['arkitCamFromWorldTxyz']),
           arkitCameraCenterWorld: doubles(m['arkitCameraCenterWorld']),
+          // [DEVICE-SESSION 2026-09-24] 续跑必须把喂帧时的信任位原样读回 ——
+          // 与核在 pose store 里存的是同一个值(同一次 add_jpeg_frame_v2 的
+          // 入参),两边不许分叉。改前的行没有这个键 ⇒ 当时一律按可信喂的,
+          // 也按可信读回(与核里改前的 reserved=0 一致;改前可能混会话的 db
+          // 由 projectCoverage 第三条腿拦去全量重喂,不走这里)。
+          devicePoseTrusted: m['devicePoseTrusted'] as bool? ?? true,
+          deviceTrackingState: m['deviceTrackingState'] as String?,
+          devicePoseTrustReason: m['devicePoseTrustReason'] as String?,
+          deviceSessionId: m['deviceSessionId'] as String?,
         );
       }
     } catch (_) {}
@@ -669,6 +680,12 @@ Future<Map<int, SfmFedFrameMeta>> _materializeArchivedJpegs(
           arkitQuatWxyz: meta.arkitQuatWxyz,
           arkitTransTxyz: meta.arkitTransTxyz,
           arkitCameraCenterWorld: meta.arkitCameraCenterWorld,
+          // [DEVICE-SESSION 2026-09-24] 换了 jpeg 路径也不许丢信任位:丢了就
+          // 默认 true,取色/重力对齐会把不可信帧的设备位姿又用回来。
+          devicePoseTrusted: meta.devicePoseTrusted,
+          deviceTrackingState: meta.deviceTrackingState,
+          devicePoseTrustReason: meta.devicePoseTrustReason,
+          deviceSessionId: meta.deviceSessionId,
         ),
       );
     });
@@ -821,7 +838,129 @@ ProjectCoverage projectCoverage(String captureDir) {
   } catch (_) {
     jsonl = '';
   }
-  return projectCoverageFrom(jpegNamesOnDisk: names, fedFramesJsonl: jsonl);
+  return projectCoverageFrom(
+    jpegNamesOnDisk: names,
+    fedFramesJsonl: jsonl,
+    ledgerMayMixDeviceSessions:
+        legacyLedgerMayMixDeviceSessions(
+          jsonl,
+          deadLedgersPresent: _deadFedLedgers(captureDir).isNotEmpty,
+          frameSeqOf: frameSeqInName,
+        ) ||
+        ledgerNeedsDeviceSessionReplan(jsonl),
+  );
+}
+
+/// `official_sfm_fed_frames.jsonl.dead-*`(补拍开场 / 整项目重喂挪开的旧账本)。
+List<File> _deadFedLedgers(String captureDir) {
+  try {
+    return Directory(captureDir)
+        .listSync()
+        .whereType<File>()
+        .where(
+          (f) => f.path
+              .split('/')
+              .last
+              .startsWith('official_sfm_fed_frames.jsonl.dead-'),
+        )
+        .toList();
+  } catch (_) {
+    return const <File>[];
+  }
+}
+
+/// [DEVICE-SESSION 2026-09-24] 整项目重喂的信任计划:读逐张会话记录
+/// ([kDeviceSessionLedgerFileName])+ 所有 fed-frames 账本(当前 + .dead-*)+
+/// 孤儿恢复标记,交给纯函数 [planDevicePoseTrust] 分组、选参考。
+/// 读不出的文件一律按"没有证据"处理 —— 只会让更多照片不可信,不会反过来。
+Future<DevicePoseTrustPlan> planDevicePoseTrustForProject(
+  String captureDir,
+  List<ArchivedPhotoParse> ordered,
+) async {
+  Map<String, String?> recorded = const <String, String?>{};
+  try {
+    final f = File('$captureDir/$kDeviceSessionLedgerFileName');
+    if (f.existsSync()) {
+      recorded = parseDeviceSessionLedger(await f.readAsString());
+    }
+  } catch (_) {}
+
+  final ledgerSets = <Set<String>>[];
+  var currentDup = false;
+  var currentNames = <String>{};
+  final ledgers = <File>[
+    File('$captureDir/official_sfm_fed_frames.jsonl'),
+    ..._deadFedLedgers(captureDir),
+  ];
+  for (var li = 0; li < ledgers.length; li++) {
+    final f = ledgers[li];
+    try {
+      if (!f.existsSync()) continue;
+      final names = <String>{};
+      final fids = <int>{};
+      var dup = false;
+      // 按 frameId 回落切段:frameId 每个实拍会话从 0 重数
+      // (official_aether_sfm_c.cc `frame_id = s->frames.size()`),改前的补拍会
+      // 往同一份账本里接着写 ⇒ 回落处就是两次实拍的分界,每段各是一份证据。
+      var segment = <String>{};
+      int? lastFid;
+      for (final line in await f.readAsLines()) {
+        if (line.trim().isEmpty) continue;
+        try {
+          final m = jsonDecode(line);
+          if (m is! Map<String, dynamic>) continue;
+          final fid = m['frameId'];
+          if (fid is int) {
+            if (!fids.add(fid)) dup = true;
+            if (lastFid != null && fid <= lastFid && segment.isNotEmpty) {
+              ledgerSets.add(segment);
+              segment = <String>{};
+            }
+            lastFid = fid;
+          }
+          final p = m['jpegPath'];
+          if (p is String && p.isNotEmpty) {
+            names.add(p.split('/').last);
+            segment.add(p.split('/').last);
+          }
+        } catch (_) {}
+      }
+      if (segment.isNotEmpty) ledgerSets.add(segment);
+      if (li == 0) {
+        currentDup = dup;
+        currentNames = names;
+      }
+    } catch (_) {}
+  }
+
+  var orphan = false;
+  try {
+    final m = File('$captureDir/official_capture_manifest.json');
+    if (m.existsSync()) {
+      final j = jsonDecode(await m.readAsString());
+      orphan = j is Map && j['recovered_from_orphan_capture'] == true;
+    }
+  } catch (_) {}
+
+  final names = [for (final p in ordered) p.jpegPath.split('/').last];
+  final trace =
+      _deadFedLedgers(captureDir).isNotEmpty ||
+      orphan ||
+      currentDup ||
+      names.any((n) => !currentNames.contains(n));
+  return planDevicePoseTrust(
+    shotsInOrder: [
+      for (final p in ordered)
+        DevicePoseSessionEvidence(
+          photoName: p.jpegPath.split('/').last,
+          captureTimestamp: p.input!.captureTimestamp,
+          hasRecord: recorded.containsKey(p.jpegPath.split('/').last),
+          recordedSessionId: recorded[p.jpegPath.split('/').last],
+        ),
+    ],
+    ledgerPhotoSets: ledgerSets,
+    legacyMultiSessionTrace: trace,
+  );
 }
 
 /// 把当前的 db 及其随从**改名**挪开(**绝不删**),让新会话能在原路径重新建库。
@@ -874,7 +1013,12 @@ class ArchivedRefeedPlan {
     required this.photosFound,
     required this.ordered,
     required this.rejections,
+    this.deviceTrust,
   });
+
+  /// [DEVICE-SESSION 2026-09-24] 设备会话分组与参考会话;[ordered] 里每张的
+  /// `input.devicePoseTrusted / deviceSessionId` 已按它盖好。
+  final DevicePoseTrustPlan? deviceTrust;
 
   /// photos_highres 下的 .jpg 张数。
   final int photosFound;
@@ -925,10 +1069,25 @@ Future<ArchivedRefeedPlan> planArchivedRefeed(String captureDir) async {
       rejections.add('${jpeg.split('/').last}: ${p.failure}');
     }
   }
+  final ordered = orderForRefeed(parses);
+  // [DEVICE-SESSION 2026-09-24] 一次重建只信一个设备跟踪会话的位姿:补拍 /
+  // 重启 / 切后台重开的照片各带各自世界系的外参,原样一起喂就是
+  // cap_1789119308200005 的 34° 混会话。
+  final trust = await planDevicePoseTrustForProject(captureDir, ordered);
   return ArchivedRefeedPlan(
     photosFound: jpegs.length,
-    ordered: orderForRefeed(parses),
+    ordered: [
+      for (final p in ordered)
+        ArchivedPhotoParse.accepted(
+          p.jpegPath,
+          p.input!.withDevicePoseSession(
+            deviceSessionId: trust.sessionOf[p.jpegPath.split('/').last],
+            devicePoseTrusted: trust.isTrusted(p.jpegPath),
+          ),
+        ),
+    ],
     rejections: rejections,
+    deviceTrust: trust,
   );
 }
 
@@ -981,6 +1140,9 @@ Future<ArchivedRebuildResult> _rebuildFromArchivedPhotosOnce(
     'rebuild $captureDir: jpg=${plan.photosFound} accepted=${ordered.length} '
         'rejected=${rejections.length}',
   );
+  for (final note in plan.deviceTrust?.notes ?? const <String>[]) {
+    DeviceLog.log('SfmResume', 'device-session: $note');
+  }
   if (ordered.isEmpty) {
     return ArchivedRebuildResult(
       photosFound: plan.photosFound,
