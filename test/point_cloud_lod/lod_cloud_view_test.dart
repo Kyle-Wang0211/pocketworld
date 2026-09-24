@@ -11,6 +11,29 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/point_cloud_lod/lod_bridge.dart';
 import 'package:pocketworld_flutter/ui/official_capture/lod_cloud_view.dart';
+import 'package:pocketworld_flutter/ui/official_capture/sparse_cloud_view.dart'
+    show kCloudOrthographic;
+import 'package:pocketworld_flutter/ui/sparse_thumbnail.dart'
+    show kSparseThumbPitch, kSparseThumbYaw;
+
+/// Snippets the LOD page copies from the old viewer (sparse_cloud_view.dart:294, :722-757).
+/// Each must appear verbatim in BOTH files.
+const List<String> kCopiedGestureSnippets = [
+  'math.pi / 2 - 0.02',
+  '_panX += d.focalPointDelta.dx;',
+  '_panY += d.focalPointDelta.dy;',
+  '(_zoom * (1 + (d.scale - 1) * 0.08)).clamp(',
+  '0.15,',
+  '20.0,',
+  '_yaw -= d.focalPointDelta.dx * 0.008;',
+  '(_pitch + d.focalPointDelta.dy * 0.006).clamp(',
+  'if (d.pointerCount >= 2) {',
+];
+
+/// Whitespace-insensitive "contains".
+bool containsCode(String haystack, String needle) => haystack
+    .replaceAll(RegExp(r'\s+'), '')
+    .contains(needle.replaceAll(RegExp(r'\s+'), ''));
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -44,6 +67,39 @@ void main() {
   tearDown(() {
     messenger.setMockMethodCallHandler(channel, null);
     oct.deleteSync(recursive: true);
+  });
+
+  test('pinned defaults equal the old viewer\'s constants', () {
+    expect(kLodDefaultOrthographic, kCloudOrthographic);
+    expect(kLodDefaultYaw, kSparseThumbYaw);
+    expect(kLodDefaultPitch, kSparseThumbPitch);
+  });
+
+  test('gesture constants are the old viewer\'s, verbatim in both sources', () {
+    final old = File(
+      'lib/ui/official_capture/sparse_cloud_view.dart',
+    ).readAsStringSync();
+    final mine = File(
+      'lib/ui/official_capture/lod_cloud_view.dart',
+    ).readAsStringSync();
+    for (final snippet in kCopiedGestureSnippets) {
+      expect(
+        containsCode(old, snippet),
+        isTrue,
+        reason: 'old viewer lost "$snippet"',
+      );
+      expect(
+        containsCode(mine, snippet),
+        isTrue,
+        reason: 'LOD page lost "$snippet"',
+      );
+    }
+    // NEGATIVE: the checker is not vacuous — a drifted coefficient is not found.
+    expect(containsCode(old, '_yaw -= d.focalPointDelta.dx * 0.009;'), isFalse);
+    expect(
+      containsCode(mine, '(_zoom * (1 + (d.scale - 1) * 0.1)).clamp('),
+      isFalse,
+    );
   });
 
   testWidgets(

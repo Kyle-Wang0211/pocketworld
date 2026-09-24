@@ -31,9 +31,20 @@ import 'package:flutter/material.dart';
 import '../../point_cloud_lod/lod_bridge.dart';
 import '../../point_cloud_lod/lod_camera.dart';
 import '../../point_cloud_lod/lod_scene_fit.dart';
-import '../sparse_thumbnail.dart' show kSparseThumbPitch, kSparseThumbYaw;
 import 'cloud_camera.dart';
-import 'sparse_cloud_view.dart' show kCloudOrthographic;
+
+// The old viewer's defaults, pinned here instead of imported: importing sparse_cloud_view.dart
+// for three constants would drag its selection / octree-order / thumbnail imports into every
+// app that mirrors this page (the bench has no lib/ui/). cloud_camera.dart is self-contained
+// (dart:math + dart:ui) and IS imported. test/point_cloud_lod/lod_cloud_view_test.dart fails if
+// any of these drifts from the old viewer's source.
+
+/// sparse_cloud_view.dart:199 `kCloudOrthographic`.
+const bool kLodDefaultOrthographic = true;
+
+/// sparse_cloud_view.dart:282-283 = sparse_thumbnail.dart:34-35 `kSparseThumbYaw`/`Pitch`.
+const double kLodDefaultYaw = math.pi;
+const double kLodDefaultPitch = -math.pi / 4;
 
 /// sparse_cloud_view.dart:294 `_kPitchLimit` (private there).
 const double kLodPitchLimit = math.pi / 2 - 0.02;
@@ -44,7 +55,7 @@ class LodCloudView extends StatefulWidget {
     required this.octreeDir,
     this.bridge,
     this.params = const LodParams(),
-    this.initialOrthographic = kCloudOrthographic,
+    this.initialOrthographic = kLodDefaultOrthographic,
     this.showStats = true,
   });
 
@@ -63,8 +74,8 @@ class _LodCloudViewState extends State<LodCloudView> {
   late final LodBridge _bridge = widget.bridge ?? LodBridge();
 
   // sparse_cloud_view.dart:300-305 @875fe67
-  double _yaw = kSparseThumbYaw;
-  double _pitch = kSparseThumbPitch;
+  double _yaw = kLodDefaultYaw;
+  double _pitch = kLodDefaultPitch;
   final double _roll = 0;
   double _zoom = 1.0;
   double _panX = 0;
@@ -222,8 +233,8 @@ class _LodCloudViewState extends State<LodCloudView> {
 
   void _reset() {
     setState(() {
-      _yaw = kSparseThumbYaw;
-      _pitch = kSparseThumbPitch;
+      _yaw = kLodDefaultYaw;
+      _pitch = kLodDefaultPitch;
       _zoom = 1.0;
       _panX = 0;
       _panY = 0;
