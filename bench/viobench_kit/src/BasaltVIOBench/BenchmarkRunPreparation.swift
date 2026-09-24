@@ -552,7 +552,9 @@ enum BenchmarkRunPreparation {
     }
 
     private static func resource(_ name: String, extension fileExtension: String) throws -> URL {
-        if let url = Bundle.main.url(forResource: name, withExtension: fileExtension) {
+        // [arloopbench D2] resources live in PWVIOBenchKit.framework, see host/PWVIOBenchHost.swift.
+        if let url = PWVIOBenchResources.bundle.url(forResource: name, withExtension: fileExtension)
+            ?? Bundle.main.url(forResource: name, withExtension: fileExtension) {
             return url
         }
         throw BenchmarkRunPreparationError.missingResource("\(name).\(fileExtension)")

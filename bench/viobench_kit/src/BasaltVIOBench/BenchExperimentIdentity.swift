@@ -33,7 +33,9 @@ enum BenchExperimentIdentity {
     }
 
     private static let header: ContractHeader? = {
-        guard let url = Bundle.main.url(forResource: "contract", withExtension: "json"),
+        // [arloopbench D2] resources live in PWVIOBenchKit.framework, see host/PWVIOBenchHost.swift.
+        guard let url = PWVIOBenchResources.bundle.url(forResource: "contract", withExtension: "json")
+                ?? Bundle.main.url(forResource: "contract", withExtension: "json"),
               let data = try? Data(contentsOf: url) else {
             return nil
         }

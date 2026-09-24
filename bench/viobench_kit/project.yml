@@ -1,0 +1,71 @@
+# PWVIOBenchKit — the old "VIO Replacement Bench" harness (com.kyle.viobench) as a framework that
+# arloopbench embeds and loads on demand (bench-only, never production).
+# Settings copied from the research repo's tools/ios_basalt_vio_bench/project.yml @ fbe3056
+# (target VIOReplacementBench); the differences are the product type (framework, not app), the
+# bridging header passed as -import-objc-header (framework targets reject
+# SWIFT_OBJC_BRIDGING_HEADER), and the prebuilt engines linked instead of built (see host/PWVIOBenchHost.swift D3).
+# Build: ./build_kit.sh (writes dist/, which is not committed).
+name: PWVIOBenchKit
+options:
+  bundleIdPrefix: com.kyle
+  deploymentTarget:
+    iOS: "26.2"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CLANG_CXX_LANGUAGE_STANDARD: "c++17"
+    CLANG_CXX_LIBRARY: "libc++"
+    IPHONEOS_DEPLOYMENT_TARGET: "26.2"
+    CLANG_COVERAGE_MAPPING: NO
+    CLANG_ENABLE_CODE_COVERAGE: NO
+    ENABLE_CODE_COVERAGE: NO
+    GCC_GENERATE_TEST_COVERAGE_FILES: NO
+    GCC_INSTRUMENT_PROGRAM_FLOW_ARCS: NO
+targets:
+  PWVIOBenchKit:
+    type: framework
+    platform: iOS
+    sources:
+      - path: src/BasaltVIOBench
+        excludes:
+          - Native
+          - Config
+          - BasaltVIOBench-Bridging-Header.h
+          - UnifiedVIOBench-Bridging-Header.h
+          - BasaltVIOBenchApp.swift
+      - path: src/BasaltVIOBench/Config
+        buildPhase: resources
+      - path: src/XRSLAMBackend/Config
+        buildPhase: resources
+      - path: src/Replay
+      - path: src/Evaluation
+      - path: src/Schemas
+        buildPhase: resources
+      - path: src/contract.json
+        buildPhase: resources
+      - path: host
+    dependencies:
+      - framework: engines/PWBasaltEngine.framework
+        embed: false
+      - framework: engines/PWXRSLAMEngine.framework
+        embed: false
+      - sdk: ARKit.framework
+      - sdk: VideoToolbox.framework
+      - sdk: CoreMedia.framework
+      - sdk: CoreVideo.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kyle.arloopbench.viobenchkit
+        PRODUCT_NAME: PWVIOBenchKit
+        DEFINES_MODULE: NO
+        GCC_SYMBOLS_PRIVATE_EXTERN: YES
+        GENERATE_INFOPLIST_FILE: YES
+        SKIP_INSTALL: YES
+        TARGETED_DEVICE_FAMILY: "1"
+        LD_RUNPATH_SEARCH_PATHS: "@executable_path/Frameworks @loader_path/Frameworks"
+        OTHER_SWIFT_FLAGS: "-import-objc-header $(KIT_ROOT)/src/BasaltVIOBench/UnifiedVIOBench-Bridging-Header.h"
+        FRAMEWORK_SEARCH_PATHS:
+          - "$(KIT_ROOT)/engines"
+        HEADER_SEARCH_PATHS:
+          - "$(KIT_ROOT)/src/BasaltVIOBench/Native"
+          - "$(KIT_ROOT)/src/XRSLAMBackend/Native"
