@@ -11,6 +11,8 @@
 // 2026-08-26:选帧只消费后端统一后的位姿、相机内参与可选特征健康度。
 // 横/纵有效视差、前后尺度、原地旋转和重叠保底分开分类；不读取 ARKit
 // trackingStateName、centerRayDepthM 或其它苹果私有质量/选帧算法。
+// (唯一例外是 tracking 硬闸 [_trackingNormal]:它经 device_pose_trust.dart
+// 读跨端词表里"追踪器是否 normal"这一位,不参与选帧,只管停/不停。)
 //
 // 设计见 docs/superpowers/specs/2026-08-19-auto-capture-design.md。
 // 几何在 auto_capture_geometry.dart,决策谓词在 auto_capture_governor.dart;
@@ -31,6 +33,7 @@ import 'place_recognition_bayes.dart';
 import 'visual_word_dictionary.dart';
 import 'alicevision_motion_segment.dart';
 import 'continuous_feature_tracks.dart';
+import 'device_pose_trust.dart';
 import 'photo_card_state.dart' show medianOf;
 import 'shutter_backpressure_gate.dart' show ShutterPace;
 
@@ -833,7 +836,18 @@ class AutoCaptureController {
 
   /// 只消费后端统一后的 tracking 布尔值。ARKit 专属的 limited_* 字符串只
   /// 留给诊断；xrslam/ARCore/其它端不需要伪造苹果枚举才能获得同一行为。
-  static bool _trackingNormal(ARPose p) => p.isTracking;
+  ///
+  /// [DEVICE-POSE-TRUST 2026-09-24] 但页面喂进来的是 CaptureSession 的
+  /// **hybrid** 位姿:ARKit limited 时 `_resolveHybridPose` 用 IMU 航位推算
+  /// 替换 az/el 并强行把 isTracking 置 true(给穹顶 UI 用),于是本闸在
+  /// limited 期间永远放行(cap_1787733401226757:924 次判定 skipTracking=0,
+  /// 3 张拍在 limited_initializing 窗口里)。hybrid 位姿的 copyWith 刻意保留
+  /// 原生 trackingStateName,所以这里再看一眼跨端词表:追踪器**明确**报了
+  /// 非 normal ⇒ 不是正常追踪。未报(null,mock/测试)⇒ 维持原 isTracking。
+  /// spec §7「tracking 丢失 / limited ⇒ 暂停触发,且基准帧不更新」。
+  static bool _trackingNormal(ARPose p) =>
+      p.isTracking &&
+      !DevicePoseTrust.trackerReportsDegraded(p.trackingStateName);
 
   static Vector3 _forwardOf(ARPose pose) =>
       cameraForwardInWorld(pose.orientation);

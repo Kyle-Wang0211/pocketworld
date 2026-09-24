@@ -1744,6 +1744,11 @@ class CaptureSession {
               captureTimestamp: still.timestamp,
               cameraTransform: still.cameraTransform,
               intrinsics: still.intrinsics,
+              // [DEVICE-POSE-TRUST 2026-09-24] 这张 12MP 照片**自己那一帧**的
+              // 追踪状态(原生随同一 ARFrame 回传)。不是按快门时预览帧的
+              // _lastPoseSource / hybrid isTracking —— 那两个在 limited 时被
+              // IMU 航位推算改写过。判定见 device_pose_trust.dart。
+              trackingStateName: still.trackingStateName,
             );
             if (!validation.isAccepted ||
                 !await File(still.highresPath).exists()) {

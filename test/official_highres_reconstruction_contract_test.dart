@@ -131,6 +131,67 @@ void main() {
     );
   });
 
+  // [DEVICE-POSE-TRUST 2026-09-24] cap_1787733401226757: frames whose own
+  // ARFrame reported limited_initializing were fed as trusted poses.
+  group('device pose trust from the still\'s own tracking state', () {
+    OfficialHighResInputValidation validateWith(String? state) =>
+        OfficialHighResReconstructionInput.validate(
+          jpegPath: '/capture/photos_highres/official_tap-7.jpg',
+          imageWidth: 4032,
+          imageHeight: 3024,
+          triggerTimestamp: 50,
+          captureTimestamp: 50.2,
+          cameraTransform: transform,
+          intrinsics: intrinsics,
+          trackingStateName: state,
+        );
+
+    test('negative control: limited_initializing is kept but untrusted', () {
+      final result = validateWith('limited_initializing');
+      // The photo is a valid input (never drop the user's shot) ...
+      expect(result.isAccepted, isTrue);
+      // ... but its device pose must not be used as a pose.
+      expect(result.input!.devicePoseTrusted, isFalse);
+      expect(
+        result.input!.devicePoseTrust.trackerState,
+        'limited_initializing',
+      );
+    });
+
+    test('positive control: normal is trusted', () {
+      final result = validateWith('normal');
+      expect(result.isAccepted, isTrue);
+      expect(result.input!.devicePoseTrusted, isTrue);
+    });
+
+    test('missing tracking state fails closed (untrusted)', () {
+      expect(validateWith(null).input!.devicePoseTrusted, isFalse);
+    });
+
+    test('capture session passes the still\'s own tracking state', () {
+      final source = File(
+        'lib/official_capture/capture_session.dart',
+      ).readAsStringSync();
+      expect(source, contains('trackingStateName: still.trackingStateName,'));
+    });
+
+    test('live recon forwards the flag to the core and the fed record', () {
+      final live = File(
+        'lib/official_capture/sfm_live_recon.dart',
+      ).readAsStringSync();
+      final ffi = File('lib/official_aether_sfm_ffi.dart').readAsStringSync();
+      expect(
+        live,
+        contains("devicePoseTrusted: msg['devicePoseTrusted'] == true"),
+      );
+      expect(live, contains("'devicePoseTrusted': devicePoseTrusted"));
+      expect(live, contains('devicePoseTrusted: feed.devicePoseTrusted'));
+      expect(live, contains("'devicePoseTrusted': m.devicePoseTrusted"));
+      expect(ffi, contains('pwofficial_add_jpeg_frame_v2'));
+      expect(ffi, contains('devicePoseTrusted ? 1 : 0'));
+    });
+  });
+
   test('official pipeline consumes a JPEG path at the native SfM boundary', () {
     final ffi = File('lib/official_aether_sfm_ffi.dart').readAsStringSync();
     final live = File(

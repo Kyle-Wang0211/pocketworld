@@ -394,6 +394,9 @@ class SfmFedFrameMeta {
     this.arkitQuatWxyz,
     this.arkitTransTxyz,
     this.arkitCameraCenterWorld,
+    this.devicePoseTrusted = true,
+    this.deviceTrackingState,
+    this.devicePoseTrustReason,
   });
   final String jpegPath;
   final int imageW;
@@ -418,6 +421,63 @@ class SfmFedFrameMeta {
 
   /// ARKit camera center in the gravity-aligned world frame, meters.
   final List<double>? arkitCameraCenterWorld;
+
+  /// [DEVICE-POSE-TRUST 2026-09-24] 共享契约位(agent A/B/C):false ⇒ 核不得
+  /// 把该帧摆在设备位姿上、不得拿它做 Sim3 对齐对/位姿先验;Dart 侧也不拿它
+  /// 的 ARKit 旋转做重力对齐。拍摄期喂帧路径一律显式赋值
+  /// (OfficialHighResReconstructionInput.devicePoseTrust);缺省 true 只为
+  /// 兼容本字段出现之前落盘的 fed 记录(当时一律按可信喂)—— 续跑读旧记录
+  /// 时是否改判由 resume 侧决定。
+  final bool devicePoseTrusted;
+
+  /// 追踪器对该帧报告的原始状态(跨端词表),审计用;null = 未报告。
+  final String? deviceTrackingState;
+
+  /// DevicePoseTrust.reason,审计用。
+  final String? devicePoseTrustReason;
+}
+
+/// [DEVICE-POSE-TRUST 2026-09-24] 一行 `official_sfm_fed_frames.jsonl` 记录。
+/// 纯函数(便于单测);[SfmLiveRecon._persistFedMeta] 原样落盘。
+/// `devicePoseTrusted` 恒写出;[coreHonorsDevicePoseTrust] = 这一帧是不是经
+/// 带信任位的核 ABI 喂进去的(false = 旧核回退路径:核仍按旧行为把它摆在
+/// 设备位姿上,分析时不能把 devicePoseTrusted=false 当成"核没用它")。
+Map<String, Object?> sfmFedFrameRecord(
+  int frameId,
+  SfmFedFrameMeta m, {
+  bool? coreHonorsDevicePoseTrust,
+}) {
+  final meta = <String, Object?>{
+    'frameId': frameId,
+    'jpegPath': m.jpegPath,
+    'grayW': m.grayW,
+    'grayH': m.grayH,
+    if (m.captureTimestamp != null) 'captureTimestamp': m.captureTimestamp,
+    'devicePoseTrusted': m.devicePoseTrusted,
+    'deviceTrackingState': m.deviceTrackingState,
+    if (m.devicePoseTrustReason != null)
+      'devicePoseTrustReason': m.devicePoseTrustReason,
+    // null = 调用方不知道(非拍摄期喂帧路径)。
+    'coreHonorsDevicePoseTrust': coreHonorsDevicePoseTrust,
+  };
+  if (m.arkitQuatWxyz != null &&
+      m.arkitTransTxyz != null &&
+      m.arkitCameraCenterWorld != null) {
+    meta.addAll(<String, Object?>{
+      // [07-28 勘误] 旧标签让外部分析误以为已做 COLMAP 相机系翻转;
+      // 实际存的是 ARKit 相机轴约定的 CamFromWorld(C=diag(1,-1,-1)
+      // **未**应用——gravity align 公式 R_w=R_ark^T·C·R_col 自带 C,
+      // 吃的就是 raw)。标签改为显式声明,数据一字未动。
+      'arkitPoseConvention':
+          'worldAlignment.gravity; CamFromWorld inverted from ARKit '
+          'cameraToWorld, in ARKit CAMERA AXES (COLMAP C=diag(1,-1,-1) '
+          'flip NOT applied); plus camera center in world',
+      'arkitCamFromWorldQwxyz': m.arkitQuatWxyz,
+      'arkitCamFromWorldTxyz': m.arkitTransTxyz,
+      'arkitCameraCenterWorld': m.arkitCameraCenterWorld,
+    });
+  }
+  return meta;
 }
 
 /// One canonical JPEG waiting while the worker is busy. CaptureSession owns
@@ -435,6 +495,7 @@ class _SpooledFrame {
     required this.cy,
     required this.quatWxyz,
     required this.trans,
+    required this.devicePoseTrusted,
   });
   final int seq;
   final String path;
@@ -447,6 +508,7 @@ class _SpooledFrame {
   final double cy;
   final Float64List? quatWxyz;
   final Float64List? trans;
+  final bool devicePoseTrusted;
 }
 
 /// Identifies the coordinate-space contract of a snapshot before alignment.
@@ -721,7 +783,19 @@ class SfmLiveRecon {
       arkitQuatWxyz: quatWxyz?.toList(), // ARKit CamFromWorld (gravity frame)
       arkitTransTxyz: trans?.toList(),
       arkitCameraCenterWorld: cameraCenterWorld,
+      // [DEVICE-POSE-TRUST] 追踪器对这张照片自己那一帧的判决。位姿照样随帧
+      // 记下(审计/续跑),但核与 Dart 重力对齐都不得把它当设备位姿用。
+      devicePoseTrusted: feed.devicePoseTrusted,
+      deviceTrackingState: feed.devicePoseTrust.trackerState,
+      devicePoseTrustReason: feed.devicePoseTrust.reason,
     );
+    if (!feed.devicePoseTrusted) {
+      DeviceLog.log(
+        'SfmLive',
+        'frame#$seq device pose UNTRUSTED (${feed.devicePoseTrust.reason}) '
+            '— fed for image-evidence registration only',
+      );
+    }
 
     // [THERMAL-DOWNSHIFT 2026-08-07] 直发路径同样过热闸(短路求值:要 spool
     // 时不消耗奇偶);被闸下的帧走 spool,排空期回填,交付数据零损失。
@@ -739,6 +813,7 @@ class SfmLiveRecon {
         cy,
         quatWxyz,
         trans,
+        feed.devicePoseTrusted,
       );
     } else {
       _spool.add(
@@ -754,6 +829,7 @@ class SfmLiveRecon {
           cy: cy,
           quatWxyz: quatWxyz,
           trans: trans,
+          devicePoseTrusted: feed.devicePoseTrusted,
         ),
       );
       _events.add(SfmLiveFrameQueued(seq, _spool.length));
@@ -841,6 +917,7 @@ class SfmLiveRecon {
     double cy,
     Float64List? q,
     Float64List? t,
+    bool devicePoseTrusted,
   ) {
     _inFlight++;
     _seqSentMs[seq] = DateTime.now().millisecondsSinceEpoch; // 遥测【frame】
@@ -857,6 +934,7 @@ class SfmLiveRecon {
       'cy': cy,
       'q': q,
       't': t,
+      'devicePoseTrusted': devicePoseTrusted,
     });
   }
 
@@ -953,6 +1031,7 @@ class SfmLiveRecon {
             entry.cy,
             entry.quatWxyz,
             entry.trans,
+            entry.devicePoseTrusted,
           );
         } catch (e) {
           // Unreadable spill — skip this frame rather than stall the queue.
@@ -1049,6 +1128,7 @@ class SfmLiveRecon {
           trans: m.arkitTransTxyz != null
               ? Float64List.fromList(m.arkitTransTxyz!)
               : null,
+          devicePoseTrusted: m.devicePoseTrusted,
         ),
       );
     }
@@ -1137,33 +1217,18 @@ class SfmLiveRecon {
   /// exact same track-observation sampling the live colorizer does — instead of
   /// having to guess the mapping from disk. One tiny append per registered
   /// frame; best-effort (colorize has a timestamp-order fallback if absent).
-  void _persistFedMeta(int frameId, SfmFedFrameMeta m) {
+  void _persistFedMeta(
+    int frameId,
+    SfmFedFrameMeta m, {
+    bool? coreHonorsDevicePoseTrust,
+  }) {
     try {
       final dir = File(_dbPath).parent.path;
-      final meta = <String, Object?>{
-        'frameId': frameId,
-        'jpegPath': m.jpegPath,
-        'grayW': m.grayW,
-        'grayH': m.grayH,
-        if (m.captureTimestamp != null) 'captureTimestamp': m.captureTimestamp,
-      };
-      if (m.arkitQuatWxyz != null &&
-          m.arkitTransTxyz != null &&
-          m.arkitCameraCenterWorld != null) {
-        meta.addAll(<String, Object?>{
-          // [07-28 勘误] 旧标签让外部分析误以为已做 COLMAP 相机系翻转;
-          // 实际存的是 ARKit 相机轴约定的 CamFromWorld(C=diag(1,-1,-1)
-          // **未**应用——gravity align 公式 R_w=R_ark^T·C·R_col 自带 C,
-          // 吃的就是 raw)。标签改为显式声明,数据一字未动。
-          'arkitPoseConvention':
-              'worldAlignment.gravity; CamFromWorld inverted from ARKit '
-              'cameraToWorld, in ARKit CAMERA AXES (COLMAP C=diag(1,-1,-1) '
-              'flip NOT applied); plus camera center in world',
-          'arkitCamFromWorldQwxyz': m.arkitQuatWxyz,
-          'arkitCamFromWorldTxyz': m.arkitTransTxyz,
-          'arkitCameraCenterWorld': m.arkitCameraCenterWorld,
-        });
-      }
+      final meta = sfmFedFrameRecord(
+        frameId,
+        m,
+        coreHonorsDevicePoseTrust: coreHonorsDevicePoseTrust,
+      );
       final line = '${jsonEncode(meta)}\n';
       File(
         '$dir/official_sfm_fed_frames.jsonl',
@@ -1256,7 +1321,11 @@ class SfmLiveRecon {
           }
         } else if (ok && meta != null && frameId >= 0) {
           _fedMeta[frameId] = meta;
-          _persistFedMeta(frameId, meta);
+          _persistFedMeta(
+            frameId,
+            meta,
+            coreHonorsDevicePoseTrust: msg['trustAbi'] as bool?,
+          );
         }
         // [EXTRACT-DEBT REPAY] 提取失败的帧记欠账(照片在盘上、pose 在 meta
         // 里,什么都不缺,只是晚算)。正被删除的帧(removeAfterAck)不欠;
@@ -1587,7 +1656,11 @@ class SfmLiveRecon {
     final diag = GravityAlignDiagV1();
     final q = gravityAlignQuatWxyz(
       posesPacked: snap.posesPacked,
-      arkitQuatWxyzOf: (frameId) => _fedMeta[frameId]?.arkitQuatWxyz,
+      // [DEVICE-POSE-TRUST] 追踪器不承认的帧不贡献设备旋转。
+      arkitQuatWxyzOf: (frameId) {
+        final m = _fedMeta[frameId];
+        return m != null && m.devicePoseTrusted ? m.arkitQuatWxyz : null;
+      },
       diag: diag,
     );
     if (q == null || snap.xyz.isEmpty) {
@@ -1994,6 +2067,8 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
             cy: msg['cy'] as double,
             quatWxyz: (msg['q'] as Float64List?)?.toList(),
             translation: (msg['t'] as Float64List?)?.toList(),
+            // [DEVICE-POSE-TRUST] 缺字段按不可信(fail-closed)。
+            devicePoseTrusted: msg['devicePoseTrusted'] == true,
           );
           sw.stop();
           // Sample telemetry HERE — right after add_frame, at the per-frame
@@ -2052,6 +2127,7 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
             if (tvgPairs >= 0) 'tvgPairs': tvgPairs,
             if (rawPairs >= 0) 'rawPairs': rawPairs,
             if (throttledCum >= 0) 'throttledCum': throttledCum,
+            'trustAbi': r.devicePoseTrustHonored,
           });
           // AR 照片卡片边框连通性(黑/白/红的数据源):喂入成功后节流发
           // 一份合成 poses。自带 try/catch —— 绝不允许它把异常抛进外层
@@ -2064,7 +2140,8 @@ void _sfmWorkerMain(_SfmWorkerBootstrap boot) {
             {
               final q = msg['q'] as Float64List?;
               final t = msg['t'] as Float64List?;
-              if (q != null && t != null) {
+              // [DEVICE-POSE-TRUST] 不可信帧不提供设备相机中心。
+              if (q != null && t != null && msg['devicePoseTrusted'] == true) {
                 final c = cameraCenterFromCamFromWorld(q, t);
                 if (c != null) frameCenters[r.frameId] = c;
               }

@@ -177,6 +177,62 @@ _Harness _started() {
 }
 
 void main() {
+  // ─── [DEVICE-POSE-TRUST 2026-09-24] tracking 硬闸看追踪器,不看 hybrid ──────
+  // CaptureSession._resolveHybridPose 在 ARKit limited 时产出的就是
+  // `raw.copyWith(isTracking: true)`(az/el 换成 IMU 推算,trackingStateName
+  // 原样保留)。cap_1787733401226757:924 次判定 skipTracking=0,3 张拍在
+  // limited_initializing 窗口里。spec §7:limited ⇒ 零触发且基准帧不动。
+  group('tracking 硬闸 × hybrid 位姿', () {
+    ARPose hybridOf(ARPose raw) => raw.copyWith(isTracking: true);
+
+    test('阳性对照:normal 帧、同一几何 ⇒ 开火', () {
+      final h = _started();
+      expect(
+        h.feed(_pose(t: 0.2, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40)),
+        AutoCaptureDecision.fire,
+      );
+      expect(h.fires, 1);
+    });
+
+    test(
+      '🔴 hybrid(limited_initializing,isTracking 被强置 true)⇒ skipTracking',
+      () {
+        final h = _started();
+        final raw = _pose(
+          t: 0.2,
+          pos: Vector3(40 / 128, 0, 0),
+          grayShiftX: 40,
+          tracking: 'limited_initializing',
+        );
+        final p = hybridOf(raw);
+        expect(p.isTracking, isTrue, reason: '这就是 hybrid 骗过旧闸的那一位');
+        expect(p.trackingStateName, 'limited_initializing');
+        expect(h.feed(p), AutoCaptureDecision.skipTracking);
+        expect(h.fires, 0);
+        // 恢复 normal 后同一几何照常开火(闸只停,不永久卡死)。
+        expect(
+          h.feed(_pose(t: 0.3, pos: Vector3(40 / 128, 0, 0), grayShiftX: 40)),
+          AutoCaptureDecision.fire,
+        );
+      },
+    );
+
+    test('provider 没给状态(null,mock 约定)⇒ 维持原 isTracking 语义', () {
+      final h = _started();
+      final p = hybridOf(
+        _pose(
+          t: 0.2,
+          pos: Vector3(40 / 128, 0, 0),
+          grayShiftX: 40,
+          tracking: null,
+        ),
+      );
+      expect(p.isTracking, isTrue);
+      expect(p.trackingStateName, isNull);
+      expect(h.feed(p), AutoCaptureDecision.fire);
+    });
+  });
+
   // ─── 地图口径接线(2026-09-11 A 路)────────────────────────────────
   // 判据本身一个字节没改;换的是喂给它的三个量。顺序照抄上游
   // tracking_module.cc:145-148:先判跟踪成没成功,没成功就根本不问判据。

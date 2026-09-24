@@ -1,3 +1,5 @@
+import 'device_pose_trust.dart';
+
 enum OfficialHighResInputFailure {
   captureFailed,
   unexpectedDimensions,
@@ -30,6 +32,7 @@ class OfficialHighResReconstructionInput {
     required this.captureTimestamp,
     required this.cameraTransform,
     required this.intrinsics,
+    required this.devicePoseTrust,
   });
 
   static const int requiredWidth = 4032;
@@ -43,6 +46,13 @@ class OfficialHighResReconstructionInput {
   final List<double> cameraTransform;
   final List<double> intrinsics;
 
+  /// [DEVICE-POSE-TRUST 2026-09-24] 追踪器是否承认 [cameraTransform] 所属那一帧
+  /// 的位姿(见 device_pose_trust.dart)。**不参与接受/拒绝**:不可信的照片
+  /// 照样是合法输入、照样喂 SfM,只是核不得把它摆在这个位姿上。
+  final DevicePoseTrust devicePoseTrust;
+
+  bool get devicePoseTrusted => devicePoseTrust.trusted;
+
   double get timestampDeltaSeconds =>
       (captureTimestamp - triggerTimestamp).abs();
 
@@ -54,6 +64,9 @@ class OfficialHighResReconstructionInput {
     required double captureTimestamp,
     required List<double> cameraTransform,
     required List<double> intrinsics,
+    // 原生高清帧自己那一帧的追踪状态(HighResolutionStillCapture
+    // .trackingStateName)。缺省 null ⇒ 不可信(fail-closed)。
+    String? trackingStateName,
   }) {
     if (jpegPath.isEmpty ||
         !(jpegPath.toLowerCase().endsWith('.jpg') ||
@@ -99,6 +112,7 @@ class OfficialHighResReconstructionInput {
         captureTimestamp: captureTimestamp,
         cameraTransform: List<double>.unmodifiable(cameraTransform),
         intrinsics: List<double>.unmodifiable(intrinsics.take(4)),
+        devicePoseTrust: DevicePoseTrust.fromTrackerState(trackingStateName),
       ),
     );
   }
