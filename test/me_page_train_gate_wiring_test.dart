@@ -52,8 +52,9 @@ void main() {
     // 但点卡片开查看器那条路**必须还在**(draft_card_action 的 openSparseCloud)。
     expect(code, contains('DraftCardAction.openSparseCloud'));
     expect(code, contains('_openSparseCloud('));
-    // 开始训练/补拍只挂在"未完成"分支上。
-    expect(code, contains('if (!canViewSparse) ...['));
+    // 开始训练/补拍只挂在"未完成"分支上。[174] 且作品从没点过「下一步」(dense_work_state.dart,
+    // 用户 2026-09-24「当用户点击下一步的时候，数据采集阶段就正式结束了」)。
+    expect(code, contains('if (showRecaptureEntries(\n                canViewSparse: canViewSparse,'));
   });
 
   test('张数闸真的接上了,而且是同源调用不是复制阈值', () {

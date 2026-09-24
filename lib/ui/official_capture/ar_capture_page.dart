@@ -77,7 +77,7 @@ import '../../eta/eta_prior_log.dart';
 import '../../eta/pipeline_eta.dart';
 import '../../dense/dense_live_cloud.dart';
 import '../../dense/dense_stage_progress.dart';
-import '../../dense/native_dense_stage_launcher.dart' show kDensePlyFileName;
+import '../../dense/dense_work_state.dart';
 import '../../point_cloud_lod/dense_lod_cache.dart';
 import '../../official_capture/transient_preview_cleanup.dart';
 import '../../official_capture/dome/dome_target_points.dart';
@@ -481,17 +481,33 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   /// 4 KB header read + the file length); only a dense run could change it, and a dense run is
   /// only allowed while it is false (this session's run then reports done via denseStageProgress).
   String? _denseCheckedDir;
-  bool _denseCompleteOnDisk = false;
+  DenseWorkState _denseOnDisk = DenseWorkState.notStarted;
 
-  bool get _denseCompleteOnDiskHere {
+  /// [174] This work's dense state read from its directory (dense_work_state.dart), once per
+  /// directory and again after every dense state change of this work.
+  DenseWorkState get _denseOnDiskHere {
     final dir = _pageCaptureDir;
-    if (dir == null) return false;
+    if (dir == null) return DenseWorkState.notStarted;
     if (_denseCheckedDir != dir) {
       _denseCheckedDir = dir;
-      _denseCompleteOnDisk = densePlyComplete('$dir/$kDensePlyFileName');
+      _denseOnDisk = denseWorkStateOf(dir);
     }
-    return _denseCompleteOnDisk;
+    return _denseOnDisk;
   }
+
+  bool get _denseCompleteOnDiskHere => _denseOnDiskHere == DenseWorkState.done;
+
+  /// [174] User 2026-09-24 「当用户点击下一步的时候，数据采集阶段就正式结束了」: 下一步 has been
+  /// tapped for this work (a dense run began — now, earlier, or before a restart). Then no sparse
+  /// editing any more; what is left is at most 「完成稠密」.
+  bool get _denseEnteredHere {
+    if (OfficialARCapturePage.debug172DenseDoneRule) return false;
+    if (_denseOnDiskHere != DenseWorkState.notStarted) return true;
+    final p = denseStageProgress.value;
+    return p != null && p.captureDir == _pageCaptureDir;
+  }
+
+  DenseStageState? _lastDenseStateSeen;
 
   /// [LOD v3 2026-09-24] The finished dense cloud's octree (built on the phone by
   /// DenseLodCache into `<work>/lod/` after official_dense.ply lands, or — [174] — on re-entry
@@ -2552,9 +2568,12 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   void _onDenseProgress() {
     final p = denseStageProgress.value;
     if (p == null || p.captureDir != _pageCaptureDir) return;
-    // [174] a run of this work finished: its PLY is on disk now — ask the disk again next time
-    // (so the page stays "done" even after denseStageProgress moves on to another work).
-    if (p.state == DenseStageState.done) _denseCheckedDir = null;
+    // [174] this work's dense state changed (started / finished / failed): ask its directory again
+    // next time (so the page stays right even after denseStageProgress moves on to another work).
+    if (p.state != _lastDenseStateSeen) {
+      _lastDenseStateSeen = p.state;
+      _denseCheckedDir = null;
+    }
     // [LOD v3] official_dense.ply has landed ⇒ build/verify its octree in the background.
     if (p.state == DenseStageState.done && p.outPly != null) _watchDenseLod(p.outPly!);
     if (mounted && _sfmPhase != null) setState(() {});
@@ -3454,12 +3473,17 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     final dir = _pageCaptureDir;
     final snap = _sfmSnapshot;
     if (dir == null || snap == null) return;
+    // [174] 「完成稠密」 finishes the run that began: same selection as that run (its marker).
+    final selection = _denseEnteredHere
+        ? await denseResumeSelection(dir)
+        : (_sfmSelectionApplied ? _sfmBox : null);
+    if (!mounted) return;
     final r = await denseStageLauncher.start(
       DenseStageRequest(
         captureDir: dir,
         sparsePlyPath: '$dir/official_sfm_sparse.ply',
         pointCount: snap.pointCount,
-        selection: _sfmSelectionApplied ? _sfmBox : null,
+        selection: selection,
       ),
     );
     if (!mounted || r.status == DenseStageStatus.started) return;
@@ -5537,6 +5561,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                       denseStageLauncher.isAvailable
                   ? () => unawaited(_startDenseStage())
                   : null,
+              // [174] a dense run began and never completed ⇒ the one thing left is to finish it
+              nextLabel: _denseEnteredHere && !_denseDoneHere ? '完成稠密' : null,
               // [SEL-ENTRY 2026-07-30] 右上角"选区编辑":选区是可选动作,不点
               // 就直接保存草稿。与底部"下一步"共用同一个进入函数,所以两个
               // 入口不会产生两种状态。编辑态的出口("保存"/"返回")归
@@ -5544,6 +5570,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
               onEnterEditing:
                   !_denseRunningHere &&
                       !_denseDoneHere &&
+                      !_denseEnteredHere &&
                       _sfmSnapshot != null &&
                       _sfmSnapshot!.pointCount > 0
                   ? _enterSfmEditing

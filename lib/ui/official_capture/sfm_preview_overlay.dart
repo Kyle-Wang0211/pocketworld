@@ -37,6 +37,7 @@ class SfmPreviewOverlay extends StatelessWidget {
     required this.onBack,
     required this.onDone,
     this.onNext,
+    this.nextLabel,
     this.onEnterEditing,
     this.errorText,
     this.progressText,
@@ -64,6 +65,10 @@ class SfmPreviewOverlay extends StatelessWidget {
   /// [选区 2026-07-27] refined 且非 null 时渲染"保存草稿|下一步"双按钮
   /// (下一步进选区页);error 或调用方未接选区入口时保持单"完成"。
   final VoidCallback? onNext;
+
+  /// [174] Label of [onNext]'s button; null = 「下一步」. The capture page passes 「完成稠密」 for a
+  /// work whose dense run began and never completed (the only thing left to do there).
+  final String? nextLabel;
 
   /// [SEL-ENTRY 2026-07-30] 右上角开关的两个方向。选区是**可选**的:不点就
   /// 直接保存草稿。编辑态该位置变成返回,进出同一个按钮。
@@ -333,7 +338,7 @@ class SfmPreviewOverlay extends StatelessWidget {
                               const SizedBox(width: 14),
                               Expanded(
                                 child: SfmBottomActionButton(
-                                  label: AppL10n.of(context).sfmNext,
+                                  label: nextLabel ?? AppL10n.of(context).sfmNext,
                                   onTap: onNext!,
                                 ),
                               ),

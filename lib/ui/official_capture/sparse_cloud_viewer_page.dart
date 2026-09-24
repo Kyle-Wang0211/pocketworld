@@ -16,7 +16,7 @@ import '../../l10n/app_localizations.dart';
 import '../../official_capture/dense_stage.dart';
 import '../../dense/dense_stage_progress.dart';
 import '../../dense/dense_stage_panel.dart';
-import '../../dense/native_dense_stage_launcher.dart' show kDensePlyFileName;
+import '../../dense/dense_work_state.dart';
 import '../../official_capture/selection_box.dart';
 import 'ruler_scrubber.dart';
 import 'selection_tools_layer.dart';
@@ -191,6 +191,16 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
   bool _denseCompleteNow() =>
       !SparseCloudViewerPage.debug172DenseDoneRule && densePlyComplete('$_captureDir/$kDensePlyFileName');
 
+  /// [174] User 2026-09-24 「当用户点击下一步的时候，数据采集阶段就正式结束了」: a dense run of this
+  /// work began (now, earlier, or before a restart — dense_work_state.dart) ⇒ no 选区编辑 here, and
+  /// the bottom button can at most finish that run (「完成稠密」).
+  bool _denseEnteredNow() {
+    if (SparseCloudViewerPage.debug172DenseDoneRule) return false;
+    final p = denseStageProgress.value;
+    if (p != null && p.captureDir == _captureDir) return true;
+    return denseStageEntered(_captureDir);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -301,12 +311,17 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
   /// 选区只在用户**真的**选过时才带上 —— 没选区就传 null 表示"处理整朵云",
   /// 而不是把按 AABB 算出来的兜底框当成用户的意图(它留了边距,会悄悄切边)。
   Future<void> _startDenseStage(SparseCloudData cloud) async {
+    // [174] 「完成稠密」 finishes the run that began: same selection as that run (its marker).
+    final selection = _denseEnteredNow()
+        ? await denseResumeSelection(_captureDir)
+        : (_selectionApplied ? _box : null);
+    if (!mounted) return;
     final r = await denseStageLauncher.start(
       DenseStageRequest(
         captureDir: _captureDir,
-        sparsePlyPath: widget.plyPath,
+        sparsePlyPath: _pointsPly,
         pointCount: cloud.count,
-        selection: _selectionApplied ? _box : null,
+        selection: selection,
       ),
     );
     if (!mounted || r.status == DenseStageStatus.started) return;
@@ -743,31 +758,37 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                             // 右上角可选入口(原先这里只是个 48pt 占位),用
                             // **文字**不用图标。编辑态里 SelectionToolsLayer
                             // 在同一位置写"完成" ⇒ 同一个开关在切换。
-                            Align(
-                              alignment: Alignment.centerRight,
-                              // [PILL-BTN 2026-08-06 用户签决] 白色胶囊底+黑字
-                              // (与编辑态的"取消/完成"同款)。
-                              child: TextButton(
-                                key: const ValueKey('viewer-enter-editing'),
-                                onPressed: _enterEditing,
-                                style: TextButton.styleFrom(
-                                  backgroundColor: Colors.white,
-                                  foregroundColor: Colors.black,
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 16,
+                            // [174] no 选区编辑 once the dense stage was entered (下一步 tapped)
+                            ValueListenableBuilder<DenseStageProgress?>(
+                              valueListenable: denseStageProgress,
+                              builder: (context, _, _) => _denseEnteredNow()
+                                  ? const SizedBox.shrink()
+                                  : Align(
+                                  alignment: Alignment.centerRight,
+                                  // [PILL-BTN 2026-08-06 用户签决] 白色胶囊底+黑字
+                                  // (与编辑态的"取消/完成"同款)。
+                                  child: TextButton(
+                                    key: const ValueKey('viewer-enter-editing'),
+                                    onPressed: _enterEditing,
+                                    style: TextButton.styleFrom(
+                                      backgroundColor: Colors.white,
+                                      foregroundColor: Colors.black,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 16,
+                                      ),
+                                      minimumSize: const Size(0, 38),
+                                      shape: const StadiumBorder(),
+                                    ),
+                                    child: Text(
+                                      AppL10n.of(context).sfmEditSelection,
+                                      style: const TextStyle(
+                                        color: Colors.black,
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
                                   ),
-                                  minimumSize: const Size(0, 38),
-                                  shape: const StadiumBorder(),
                                 ),
-                                child: Text(
-                                  AppL10n.of(context).sfmEditSelection,
-                                  style: const TextStyle(
-                                    color: Colors.black,
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ),
                             ),
                           ],
                         ),
@@ -812,6 +833,8 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                             return SfmBottomActionButton(
                               label: mine != null && mine.state == DenseStageState.failed
                                   ? '重试稠密处理'
+                                  : _denseEnteredNow()
+                                  ? '完成稠密'
                                   : AppL10n.of(context).sfmNext,
                               onTap: denseStageLauncher.isAvailable
                                   ? () => unawaited(_startDenseStage(cloud))

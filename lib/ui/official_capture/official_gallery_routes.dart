@@ -1,10 +1,22 @@
 import 'package:flutter/material.dart';
 
+import '../../dense/dense_work_state.dart';
 import '../../l10n/app_localizations.dart';
 import '../../official_capture/sfm_resume.dart' as official_resume;
+import '../../official_util/device_log.dart';
 import '../scan_record.dart';
 import 'ar_capture_page.dart';
 import 'sparse_cloud_viewer_page.dart';
+
+/// [174] User 2026-09-24 「当用户点击下一步的时候，数据采集阶段就正式结束了」: once a work entered
+/// the dense stage (dense_work_state.dart), no route back to capture or sparse reconstruction opens —
+/// the gallery hides the entries; this is the backstop for any caller that still asks.
+bool _refuseRecapture(String what, String captureDir) {
+  final why = recaptureBlockedReason(captureDir);
+  if (why == null) return false;
+  DeviceLog.log('OfficialGalleryRoutes', '$what refused for $captureDir: $why');
+  return true;
+}
 
 /// Opens the physically separate official resume route.
 ///
@@ -18,6 +30,7 @@ Future<void> pushOfficialResumeRoute(
   String captureDir, {
   required bool regenerate,
 }) async {
+  if (_refuseRecapture('resume/regenerate', captureDir)) return;
   if (!official_resume.isResumeInFlight(captureDir)) {
     final name = record.name.isEmpty ? '这次拍摄' : '「${record.name}」';
     final confirmed = await showDialog<bool>(
@@ -75,6 +88,7 @@ Future<void> pushOfficialRebuildFromPhotosRoute(
   String captureDir, {
   required int photoCount,
 }) async {
+  if (_refuseRecapture('rebuild-from-photos', captureDir)) return;
   if (!official_resume.isResumeInFlight(captureDir)) {
     final name = record.name.isEmpty ? '这次拍摄' : '「${record.name}」';
     final confirmed = await showDialog<bool>(
@@ -147,6 +161,7 @@ Future<bool> pushOfficialExtendRoute(
   ScanRecord record,
   String captureDir,
 ) async {
+  if (_refuseRecapture('extend (补拍)', captureDir)) return false;
   final added = await Navigator.of(context).push<bool>(
     MaterialPageRoute<bool>(
       builder: (_) => OfficialARCapturePage(extendCaptureDir: captureDir),

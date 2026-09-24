@@ -17,9 +17,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pocketworld_flutter/dense/dense_live_cloud.dart';
 import 'package:pocketworld_flutter/dense/dense_stage_progress.dart';
+import 'package:pocketworld_flutter/dense/dense_work_state.dart';
 import 'package:pocketworld_flutter/dense/native_dense_stage_launcher.dart';
 import 'package:pocketworld_flutter/l10n/app_localizations.dart';
 import 'package:pocketworld_flutter/official_capture/dense_stage.dart';
+import 'package:pocketworld_flutter/official_capture/selection_box.dart';
 import 'package:pocketworld_flutter/point_cloud_lod/dense_lod_cache.dart';
 import 'package:pocketworld_flutter/ui/official_capture/ar_capture_page.dart';
 import 'package:pocketworld_flutter/ui/official_capture/sparse_cloud_viewer_page.dart';
@@ -287,18 +289,68 @@ void main() {
     expect(() => expect(launcher.starts, isEmpty), throwsA(isA<TestFailure>()));
   });
 
-  testWidgets('[174] a dense PLY cut short (run killed mid-write) is NOT done: 下一步 trains, no tree built', (tester) async {
+  final finish = find.text('完成稠密');
+  const box = SelectionBox(cx: 0.1, cy: 0.2, cz: 0.3, sx: 0.5, sy: 0.6, sz: 0.7);
+
+  testWidgets('[174] killed mid-training (下一步 tapped, PLY cut short): only 「完成稠密」, same selection; no 选区编辑, no tree', (tester) async {
     final full = writeDensePly(densePly, 3000, seed: 5).readAsBytesSync();
     File(densePly).writeAsBytesSync(full.sublist(0, full.length - 15 * 700));
+    writeDenseStartedMarker(dir, selection: box, sparsePoints: 400);
     await open(tester);
     await settle(tester);
-    expect(fake.methods, isNot(contains('buildFromPly')));
+    expect(fake.methods, isNot(contains('buildFromPly')), reason: 'a cut-short PLY is never a source');
     expect(fake.methods, isNot(contains('loadOctree')));
+    expect(finish, findsOneWidget);
+    expect(next, findsNothing);
+    expect(editEntry, findsNothing, reason: '「当用户点击下一步的时候，数据采集阶段就正式结束了」');
+    await tester.runAsync(() async {
+      await tester.tap(finish);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    });
+    await tester.pump();
+    final req = launcher.starts.single;
+    expect(req.captureDir, dir);
+    expect(req.selection?.toJson(), box.toJson(), reason: 'finish the run that began, on its selection');
+  });
+
+  testWidgets('[174] killed by a build without the marker (dense_work/ left behind): same, selection from the saved box', (tester) async {
+    Directory('$dir/$kDenseWorkDirName').createSync();
+    await tester.runAsync(() => box.saveTo(dir));
+    await open(tester);
+    await settle(tester);
+    expect(finish, findsOneWidget);
+    expect(editEntry, findsNothing);
+    await tester.runAsync(() async {
+      await tester.tap(finish);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    });
+    await tester.pump();
+    expect(launcher.starts.single.selection?.toJson(), box.toJson());
+  });
+
+  testWidgets('[174] NEGATIVE: a work that never tapped 下一步 keeps 选区编辑 and 下一步 (no 「完成稠密」)', (tester) async {
+    await tester.runAsync(() => box.saveTo(dir)); // a saved selection alone is not a dense run
+    await open(tester);
+    await settle(tester);
+    expect(editEntry, findsOneWidget);
     expect(next, findsOneWidget);
+    expect(finish, findsNothing);
+  });
+
+  testWidgets('[174] 下一步 tapped in this session ⇒ 选区编辑 gone at once (the capture stage is over)', (tester) async {
+    await open(tester);
     expect(editEntry, findsOneWidget);
     await tester.tap(next);
     await tester.pump();
-    expect(launcher.starts.single.captureDir, dir);
+    expect(launcher.starts.length, 1);
+    // the run fails (e.g. killed): 选区编辑 stays gone, the button finishes the run
+    await tester.runAsync(() async {
+      denseStageProgress.value = denseStageProgress.value!.copyWith(state: DenseStageState.failed);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    });
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(editEntry, findsNothing);
+    expect(finish, findsOneWidget);
   });
 
   testWidgets('[174] NEGATIVE of the cut-short case: the same PLY complete ⇒ no 下一步', (tester) async {

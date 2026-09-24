@@ -395,13 +395,35 @@ void main() {
       expect(fake.methods, isNot(contains('buildFromPly')), reason: 'the sparse page builds nothing');
     });
 
-    testWidgets('NEGATIVE: the same sparse page with the dense PLY cut short offers 下一步', (tester) async {
+    final editButton = find.byKey(const ValueKey('viewer-enter-editing'));
+    final finish = find.text('完成稠密');
+
+    testWidgets('[174] a work that entered the dense stage has no 选区编辑 on either page', (tester) async {
+      DenseLodCache.instanceForTesting = DenseLodCache(cacheRoot: () async => cacheRoot);
+      await openPage(tester, path: sparse); // complete dense PLY (setUp)
+      expect(editButton, findsNothing);
+      await openPage(tester); // the dense page
+      expect(editButton, findsNothing);
+    });
+
+    testWidgets('[174] dense PLY cut short (killed mid-training): the sparse page only finishes it — 「完成稠密」, no 选区编辑', (tester) async {
       DenseLodCache.instanceForTesting = DenseLodCache(cacheRoot: () async => cacheRoot);
       final bytes = File(ply).readAsBytesSync();
       File(ply).writeAsBytesSync(bytes.sublist(0, bytes.length - 15 * 10));
       await openPage(tester, path: sparse);
-      expect(next, findsOneWidget);
+      expect(finish, findsOneWidget);
+      expect(next, findsNothing);
       expect(find.text('查看稠密点云'), findsNothing);
+      expect(editButton, findsNothing);
+    });
+
+    testWidgets('[174] NEGATIVE: a work that never tapped 下一步 keeps 选区编辑 and 下一步', (tester) async {
+      DenseLodCache.instanceForTesting = DenseLodCache(cacheRoot: () async => cacheRoot);
+      File(ply).deleteSync();
+      await openPage(tester, path: sparse);
+      expect(editButton, findsOneWidget);
+      expect(next, findsOneWidget);
+      expect(finish, findsNothing);
     });
   });
 

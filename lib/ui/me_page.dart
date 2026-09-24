@@ -35,6 +35,7 @@ import '../l10n/app_localizations.dart';
 import '../me/draft_card_action.dart';
 import '../me/scan_record_store.dart';
 import '../me/train_gate.dart';
+import '../dense/dense_work_state.dart';
 import '../official_capture/database_archive_policy.dart';
 import '../official_capture/live_sfm_publish_policy.dart';
 import '../official_capture/sfm_resume.dart' as official_sfm_resume;
@@ -824,6 +825,13 @@ class _MyWorksSectionState extends State<_MyWorksSection>
       case DraftCardAction.openSparseCloud:
         await _openSparseCloud(record, sparsePlyPath!);
       case DraftCardAction.offerResume:
+        // [174] 点过「下一步」的作品(稠密开跑过)不再回到稀疏重建 —— 用户:「当用户点击下一步的
+        // 时候，数据采集阶段就正式结束了」。正常情况下这种作品必有稀疏点云、走不到这里。
+        if (captureDir != null && denseStageEntered(captureDir)) {
+          DeviceLog.log('MePage', 'resume not offered for ${record.id}: ${recaptureBlockedReason(captureDir)}');
+          _showCenterToast('这个作品已进入稠密阶段，\n不能再重建。');
+          break;
+        }
         await _offerResume(record, recoverableDir!);
       case DraftCardAction.none:
         // 修3:原"正在生成 3D 模型,完成后会自动打开"底部弹窗已按用户
@@ -926,6 +934,8 @@ class _MyWorksSectionState extends State<_MyWorksSection>
           : '$captureDir/${sparsePlyFileNameForPipeline(record.pipelineKind)}';
       final canViewSparse =
           sparsePlyPath != null && File(sparsePlyPath).existsSync();
+      // [174] 点过「下一步」(稠密开跑过,不论跑完没有)⇒ 采集阶段已结束:不给「开始训练 / 拍摄更多照片」。
+      final denseEntered = captureDir != null && denseStageEntered(captureDir);
       // 断点数据仍在(sfm_live.db 按契约保留)且当前没有别的重建在跑时,
       // 提供"重新重建点云"入口 —— 覆盖 PLY 已存在的场景(点击卡片只会打开
       // 查看器,永远到不了 offerResume 分支):恢复幂等,完成后覆盖旧 PLY。
@@ -1003,7 +1013,10 @@ class _MyWorksSectionState extends State<_MyWorksSection>
               //   ·「查看点云」删 —— 点卡片本来就直接开点云查看器
               //     (draft_card_action 的 openSparseCloud),菜单里再放一个是重复;
               //   · 补拍也不给 —— 只有"未完成"的项目才需要补拍。
-              if (!canViewSparse) ...[
+              if (showRecaptureEntries(
+                canViewSparse: canViewSparse,
+                denseEntered: denseEntered,
+              )) ...[
                 // 置灰的项**仍然可点** —— 点击是唯一能问出"为什么点不动"的
                 // 动作,所以它必须有回答(居中 3 秒提示),而不是吞掉。
                 ListTile(

@@ -19,11 +19,11 @@ import '../official_util/device_log.dart' as official_device_log;
 import '../point_cloud_lod/dense_lod_cache.dart' show DenseLodCache, densePlyPoints;
 import '../ui/official_capture/sparse_cloud_viewer_page.dart' show loadSparsePly;
 import 'dense_live_cloud.dart';
+import 'dense_work_state.dart';
 import 'dense_stage_progress.dart';
 import 'pw_dense_ffi.dart';
 
-const String kDensePlyFileName = 'official_dense.ply';
-const String kDenseWorkDirName = 'dense_work';
+export 'dense_work_state.dart' show kDensePlyFileName, kDenseWorkDirName;
 
 /// How many archived frames are materialised at once in [_gather]. Each one owns its own PwvaReader and, on
 /// Apple, its own VideoToolbox session inside its own worker isolate, so they are independent; 3 keeps the
@@ -129,6 +129,10 @@ class NativeDenseStageLauncher implements DenseStageLauncher {
       return DenseStageResult(DenseStageStatus.failed, message: '稠密输入不完整: $e');
     }
     _running = true;
+    // [174] 下一步 has started the dense stage: from now on the capture stage of this work is over
+    // (no 补拍 / 重建 / sparse editing, even after a restart or if this run is killed) — see
+    // dense_work_state.dart. Written before the job touches anything.
+    writeDenseStartedMarker(request.captureDir, selection: request.selection, sparsePoints: request.pointCount);
     // [174] the first dense run of this work (or a re-run over a PLY that was cut short): a tree left
     // in <work>/lod belongs to no PLY any more — remove it before the new PLY is written.
     DenseLodCache.instance.discardTree(request.captureDir);
