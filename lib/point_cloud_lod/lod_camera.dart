@@ -14,8 +14,9 @@
 //         row3 = (−sinY·cosP, sinP, cosY·cosP)).
 //       * screen x = ox − x1·f/d, y = oy − y2·f/d, d = camDist (ortho) or depth
 //         (cloud_camera.dart:106-108); roll about (ox,oy) :109-113.
-//       * near clip: the painter drops `depth <= _radius * 0.02`
-//         (sparse_cloud_view.dart:1479 @875fe67) in BOTH projection modes.
+//   Near / far planes — Potree @5636cd471d9eb464969e758be45c44d7613d3859 Viewer.update,
+//     src/viewer/viewer.js:1749-1771 (see potreeNearFar below), on the scene box of
+//     lod_scene_fit.dart; initial values src/viewer/Scene.js:21-22.
 //   View matrix — the LOD library's own test helper, so the engine's selectVisible()
 //     sees the convention its host tests use:
 //     Aether3D tests/pointcloud_lod/test_select.cpp:51-61 @d251451 `lookAt`
@@ -37,11 +38,6 @@
 //   pan (ox = W/2 + panX) is an off-centre frustum, not a camera move, which is exactly
 //   what makeOrthographic / makePerspective's left/right/top/bottom express.
 //
-// product_adapter (no upstream counterpart; listed so nobody calls this "faithful"):
-//   A1  far plane. The old viewer has none (a CPU painter); WebGPU clip needs one.
-//       far = camDist + kLodFarRadiusK·radius. With radius = half the content AABB
-//       diagonal (lod_scene_fit.dart) every point is within `radius` of the pivot, so
-//       nothing the old viewer would draw is clipped.
 // Pivot / radius: Potree fitToScreen's bounding sphere of the octree box
 // (lod_scene_fit.dart, every step pinned there).
 import 'dart:math' as math;
@@ -59,12 +55,73 @@ enum LodProjection {
   final int wireValue;
 }
 
-/// See product_adapter A1 in the file header.
-const double kLodFarRadiusK = 2.0;
+/// Potree Scene.js:21-22 @5636cd4: the cameras start with near 0.1, far 1000*1000; Viewer.update
+/// keeps whatever near/far the camera has while no node spacing is known (viewer.js:1766-1768).
+const double kPotreeInitialNear = 0.1;
+const double kPotreeInitialFar = 1000 * 1000;
 
-/// The old painter's near cull `depth <= _radius * 0.02`
-/// (sparse_cloud_view.dart:1479 @875fe67).
-const double kLodNearRadiusK = 0.02;
+/// Potree Viewer.update's near/far, src/viewer/viewer.js:1749-1771 @5636cd4, verbatim:
+///
+///     if(result.lowestSpacing !== Infinity){
+///         let near = result.lowestSpacing * 10.0;
+///         let far = -this.getBoundingBox().applyMatrix4(camera.matrixWorldInverse).min.z;
+///         far = Math.max(far * 1.5, 10000);
+///         near = Math.min(100.0, Math.max(0.01, near));
+///         near = Math.min(near, closestImage);
+///         far = Math.max(far, near + 10000);
+///         if(near === Infinity){ near = 0.1; }
+///         camera.near = near;  camera.far = far;
+///     }else{ // don't change near and far in this case }
+///     if(this.scene.cameraMode == CameraMode.ORTHOGRAPHIC) { camera.near = -camera.far; }
+///
+/// [lowestSpacing] = Potree_update_visibility.js:114, :276-280 (smallest spacing among the
+/// nodes the selection walked); Infinity = not known ⇒ the "don't change" branch keeps
+/// [previousNear]/[previousFar] (initially Scene.js:21-22). [closestImage] is Potree's nearest
+/// oriented image; this viewer has none ⇒ Infinity (the loop at :1739-1746 over no images).
+/// `getBoundingBox().applyMatrix4(matrixWorldInverse)` = the scene box's 8 corners in view
+/// space, axis-aligned again (three.js r124 Box3.applyMatrix4, three.module.js:4296-4316);
+/// [viewRowMajor] is world→view (= camera.matrixWorldInverse).
+({double near, double far}) potreeNearFar({
+  required double lowestSpacing,
+  required List<double> viewRowMajor,
+  required List<double> boxMin,
+  required List<double> boxMax,
+  required bool orthographic,
+  double closestImage = double.infinity,
+  double previousNear = kPotreeInitialNear,
+  double previousFar = kPotreeInitialFar,
+}) {
+  var near = previousNear, far = previousFar;
+  if (lowestSpacing != double.infinity) {
+    var minZ = double.infinity;
+    for (var i = 0; i < 8; i++) {
+      final x = (i & 4) == 0 ? boxMin[0] : boxMax[0];
+      final y = (i & 2) == 0 ? boxMin[1] : boxMax[1];
+      final z = (i & 1) == 0 ? boxMin[2] : boxMax[2];
+      final vz =
+          viewRowMajor[8] * x +
+          viewRowMajor[9] * y +
+          viewRowMajor[10] * z +
+          viewRowMajor[11];
+      if (vz < minZ) minZ = vz;
+    }
+    var n = lowestSpacing * 10.0;
+    var f = -minZ;
+    f = math.max(f * 1.5, 10000);
+    n = math.min(100.0, math.max(0.01, n));
+    n = math.min(n, closestImage);
+    f = math.max(f, n + 10000);
+    if (n == double.infinity) {
+      n = 0.1;
+    }
+    near = n;
+    far = f;
+  }
+  if (orthographic) {
+    near = -far;
+  }
+  return (near: near, far: far);
+}
 
 /// One pwlod_camera (pwlod_viewer.h:80-89), in Dart. Field names follow the C struct.
 class LodCameraFrame {
@@ -98,7 +155,8 @@ class LodCameraFrame {
   final int viewportWidthPx;
   final int viewportHeightPx;
 
-  /// Diagnostics only (not in pwlod_camera): the planes baked into the matrix.
+  /// Diagnostics only (not in pwlod_camera): the planes baked into the matrix
+  /// (potreeNearFar; orthographic near is −far, as in Potree).
   final double near;
   final double far;
 }
@@ -207,11 +265,15 @@ Float64List mulRowMajor(List<double> a, List<double> b) {
 /// logical pixels (what CloudCamera.projectionFor takes); [viewportWidthPx] /
 /// [viewportHeightPx] are the render targets' physical size. NDC is resolution
 /// independent, so the matrix is the same for any devicePixelRatio.
+/// [sceneBoxMin]/[sceneBoxMax] and [lowestSpacing] feed potreeNearFar.
 LodCameraFrame lodCameraFrame({
   required CloudCamera camera,
   required Size logicalSize,
   required int viewportWidthPx,
   required int viewportHeightPx,
+  required List<double> sceneBoxMin,
+  required List<double> sceneBoxMax,
+  double lowestSpacing = double.infinity,
 }) {
   final p = camera.projectionFor(logicalSize);
   final w = logicalSize.width, h = logicalSize.height;
@@ -239,8 +301,14 @@ LodCameraFrame lodCameraFrame({
   ];
   final view = lookAtRowMajor(eye, pivot, up);
 
-  final near = camera.radius * kLodNearRadiusK;
-  final far = p.camDist + camera.radius * kLodFarRadiusK;
+  final nf = potreeNearFar(
+    lowestSpacing: lowestSpacing,
+    viewRowMajor: view,
+    boxMin: sceneBoxMin,
+    boxMax: sceneBoxMax,
+    orthographic: p.orthographic,
+  );
+  final near = nf.near, far = nf.far;
 
   final Float64List proj;
   final double fovY, orthoW, orthoH;

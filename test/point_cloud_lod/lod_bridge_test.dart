@@ -132,6 +132,8 @@ void main() {
       logicalSize: size,
       viewportWidthPx: 1170,
       viewportHeightPx: 2532,
+      sceneBoxMin: const [-1.0, -6.0, 4.0],
+      sceneBoxMax: const [4.0, -0.5, 12.0],
     );
     final old = cam.projectionFor(size);
     const probe = [2.0, -1.0, 9.5];
@@ -230,6 +232,8 @@ void main() {
           logicalSize: size,
           viewportWidthPx: 1170,
           viewportHeightPx: 2532,
+          sceneBoxMin: const [-1.0, -6.0, 4.0],
+          sceneBoxMax: const [4.0, -0.5, 12.0],
         );
         await LodBridge().setCamera(textureId: 7, camera: persp);
         final a = calls.single.arguments as Map;

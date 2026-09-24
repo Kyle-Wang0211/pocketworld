@@ -18,7 +18,8 @@
 //   * Black canvas — sparse_cloud_view.dart:769 (user decision 2026-08-07 "纯黑").
 // Not carried over (they need the points in Dart, which LOD by design does not have):
 // double-tap focus/pick, selection box, point-size/tone controls. Pivot/radius = Potree
-// fitToScreen's bounding sphere of the octree box (lod_scene_fit.dart).
+// fitToScreen's bounding sphere of the octree box; near/far = Potree Viewer.update
+// (lod_scene_fit.dart, lod_camera.dart).
 //
 // Threads: gestures only compute the matrix and send it (pwlod_viewer_set_camera copies it
 // under a lock); rendering happens on the engine's own thread (plan 3b / B1).
@@ -205,6 +206,12 @@ class _LodCloudViewState extends State<LodCloudView> {
       logicalSize: _logical,
       viewportWidthPx: tex.widthPx,
       viewportHeightPx: tex.heightPx,
+      sceneBoxMin: fit.boxMin,
+      sceneBoxMax: fit.boxMax,
+      // Potree's near/far wants the selection's lowestSpacing; the frozen pwlod_frame_stats
+      // does not carry it, so this is Potree's "not known yet" branch (viewer.js:1766-1768:
+      // keep Scene.js:21-22's near 0.1 / far 1e6; orthographic near = −far).
+      lowestSpacing: double.infinity,
     );
     _bridge
         .setCamera(textureId: tex.textureId, camera: frame)

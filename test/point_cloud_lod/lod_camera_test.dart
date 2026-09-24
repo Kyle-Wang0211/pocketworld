@@ -14,6 +14,18 @@ class _Case {
   final CloudCamera cam;
   final Size size;
   final List<List<double>> points; // inside the fit sphere
+
+  /// A cube whose three.js bounding sphere is exactly the fit sphere (half-diagonal = radius).
+  List<double> get boxMin => [
+    cam.pivotX - cam.radius / math.sqrt(3),
+    cam.pivotY - cam.radius / math.sqrt(3),
+    cam.pivotZ - cam.radius / math.sqrt(3),
+  ];
+  List<double> get boxMax => [
+    cam.pivotX + cam.radius / math.sqrt(3),
+    cam.pivotY + cam.radius / math.sqrt(3),
+    cam.pivotZ + cam.radius / math.sqrt(3),
+  ];
 }
 
 List<_Case> _cases({
@@ -181,6 +193,8 @@ void main() {
           logicalSize: c.size,
           viewportWidthPx: 3,
           viewportHeightPx: 3,
+          sceneBoxMin: c.boxMin,
+          sceneBoxMax: c.boxMax,
         );
         final e = _maxPixelError(
           f.viewProjRowMajor,
@@ -216,6 +230,8 @@ void main() {
             logicalSize: c.size,
             viewportWidthPx: 3,
             viewportHeightPx: 3,
+            sceneBoxMin: c.boxMin,
+            sceneBoxMax: c.boxMax,
           );
           worst = math.max(
             worst,
@@ -242,6 +258,8 @@ void main() {
             logicalSize: c.size,
             viewportWidthPx: 3,
             viewportHeightPx: 3,
+            sceneBoxMin: c.boxMin,
+            sceneBoxMax: c.boxMax,
           );
           worst = math.max(
             worst,
@@ -264,6 +282,8 @@ void main() {
           logicalSize: c.size,
           viewportWidthPx: 3,
           viewportHeightPx: 3,
+          sceneBoxMin: c.boxMin,
+          sceneBoxMax: c.boxMax,
         );
         final ref = _closedFormOrtho(c.cam, c.size, f.near, f.far);
         worstRel = math.max(
@@ -294,6 +314,8 @@ void main() {
         logicalSize: c.size,
         viewportWidthPx: 3,
         viewportHeightPx: 3,
+        sceneBoxMin: c.boxMin,
+        sceneBoxMax: c.boxMax,
       );
       final ref = _closedFormOrtho(c.cam, c.size, f.near, f.far);
       expect(
@@ -310,6 +332,8 @@ void main() {
           logicalSize: c.size,
           viewportWidthPx: 3,
           viewportHeightPx: 3,
+          sceneBoxMin: c.boxMin,
+          sceneBoxMax: c.boxMax,
         );
         final old = c.cam.projectionFor(c.size);
         for (final p in c.points) {
@@ -338,6 +362,8 @@ void main() {
             logicalSize: c.size,
             viewportWidthPx: 1179,
             viewportHeightPx: 2556,
+            sceneBoxMin: c.boxMin,
+            sceneBoxMax: c.boxMax,
           );
           final old = c.cam.projectionFor(c.size);
           expect(f.projection, LodProjection.orthographic);
@@ -384,6 +410,8 @@ void main() {
             logicalSize: c.size,
             viewportWidthPx: 3,
             viewportHeightPx: 3,
+            sceneBoxMin: c.boxMin,
+            sceneBoxMax: c.boxMax,
           );
           final old = c.cam.projectionFor(c.size);
           for (var i = 0; i < 400; i++) {
@@ -431,6 +459,8 @@ void main() {
             logicalSize: c.size,
             viewportWidthPx: 3,
             viewportHeightPx: 3,
+            sceneBoxMin: c.boxMin,
+            sceneBoxMax: c.boxMax,
           );
           final t = _transpose(f.viewProjRowMajor);
           final old = c.cam.projectionFor(c.size);
@@ -465,6 +495,8 @@ void main() {
             logicalSize: c.size,
             viewportWidthPx: 3,
             viewportHeightPx: 3,
+            sceneBoxMin: c.boxMin,
+            sceneBoxMax: c.boxMax,
           );
           worst = math.max(
             worst,
@@ -514,6 +546,8 @@ void main() {
             logicalSize: c.size,
             viewportWidthPx: 3,
             viewportHeightPx: 3,
+            sceneBoxMin: c.boxMin,
+            sceneBoxMax: c.boxMax,
           );
           worst = math.max(
             worst,
@@ -622,6 +656,125 @@ void main() {
         ),
         throwsFormatException,
       );
+    });
+  });
+
+  group('near/far = Potree Viewer.update (viewer.js:1749-1771 @5636cd4)', () {
+    // Camera at (0,0,10) looking at the origin; box [-1,1]^3 ⇒ farthest corner at view z −11.
+    final view = lookAtRowMajor(const [0, 0, 10], const [0, 0, 0], const [
+      0,
+      1,
+      0,
+    ]);
+    const bmin = [-1.0, -1.0, -1.0], bmax = [1.0, 1.0, 1.0];
+    ({double near, double far}) nf(
+      double ls, {
+      bool ortho = false,
+      List<double>? mn,
+      List<double>? mx,
+    }) => potreeNearFar(
+      lowestSpacing: ls,
+      viewRowMajor: view,
+      boxMin: mn ?? bmin,
+      boxMax: mx ?? bmax,
+      orthographic: ortho,
+    );
+
+    test('hand-evaluated Potree lines', () {
+      // lowestSpacing unknown ⇒ keep Scene.js:21-22's 0.1 / 1000*1000
+      expect(nf(double.infinity), (near: 0.1, far: 1000000.0));
+      // near = min(100, max(0.01, 0.0005*10)) = 0.01; far = max(11*1.5, 10000) = 10000;
+      // far = max(far, near + 10000) = 10000.01
+      expect(nf(0.0005), (near: 0.01, far: 10000.01));
+      expect(nf(2), (near: 20.0, far: 10020.0));
+      expect(nf(50), (near: 100.0, far: 10100.0)); // near clamped at 100
+      // box [-5000,5000]^3 seen from z = 10: far corner view z = −5010 ⇒ max(7515, 10000) ⇒ 10010
+      expect(
+        nf(1, mn: const [-5000, -5000, -5000], mx: const [5000, 5000, 5000]),
+        (near: 10.0, far: 10010.0),
+      );
+      final far = nf(
+        1,
+        mn: const [-50000, -50000, -50000],
+        mx: const [50000, 50000, 50000],
+      );
+      expect(far.far, 50010 * 1.5);
+      // orthographic: near = −far after either branch (:1769-1771)
+      expect(nf(double.infinity, ortho: true), (
+        near: -1000000.0,
+        far: 1000000.0,
+      ));
+      expect(nf(2, ortho: true), (near: -10020.0, far: 10020.0));
+    });
+
+    /// The requested judge: no corner of the scene box may fall behind the far plane (clip
+    /// z/w > 1); in orthographic mode none may fall in front of near either (z/w < 0).
+    List<String> clippedCorners(
+      List<double> m,
+      List<double> mn,
+      List<double> mx,
+      bool ortho,
+    ) {
+      final bad = <String>[];
+      for (var c = 0; c < 8; c++) {
+        final p = [
+          for (var i = 0; i < 3; i++) (c >> i) & 1 == 0 ? mn[i] : mx[i],
+        ];
+        double row(int r) =>
+            m[r * 4] * p[0] +
+            m[r * 4 + 1] * p[1] +
+            m[r * 4 + 2] * p[2] +
+            m[r * 4 + 3];
+        final z = row(2) / row(3);
+        if (z > 1 + 1e-12 || (ortho && z < -1e-12)) bad.add('corner $c z=$z');
+      }
+      return bad;
+    }
+
+    test(
+      'real frames: no box corner is cut by far (both branches, both projections)',
+      () {
+        final rng = math.Random(5);
+        for (final ortho in [true, false]) {
+          for (final c in _cases(orthographic: ortho, seed: 77)) {
+            for (final ls in [double.infinity, 1e-4 + rng.nextDouble()]) {
+              final f = lodCameraFrame(
+                camera: c.cam,
+                logicalSize: c.size,
+                viewportWidthPx: 3,
+                viewportHeightPx: 3,
+                sceneBoxMin: c.boxMin,
+                sceneBoxMax: c.boxMax,
+                lowestSpacing: ls,
+              );
+              expect(
+                clippedCorners(f.viewProjRowMajor, c.boxMin, c.boxMax, ortho),
+                isEmpty,
+              );
+              if (ortho) expect(f.near, -f.far);
+            }
+          }
+        }
+      },
+    );
+
+    test('NEGATIVE: a far plane in front of the farthest corner is reported', () {
+      // Same camera, ortho frustum [-2,2]^2, far 10.5 < 11 (the corner at view z −11).
+      final good = mulRowMajor(
+        orthographicWebGpuRowMajor(-2, 2, 2, -2, -10020, 10020),
+        view,
+      );
+      expect(clippedCorners(good, bmin, bmax, true), isEmpty);
+      final shortFar = mulRowMajor(
+        orthographicWebGpuRowMajor(-2, 2, 2, -2, -10.5, 10.5),
+        view,
+      );
+      expect(clippedCorners(shortFar, bmin, bmax, true), isNotEmpty);
+      final shortPersp = mulRowMajor(
+        perspectiveWebGpuRowMajor(-1, 1, 1, -1, 1, 10.5),
+        view,
+      );
+      expect(clippedCorners(shortPersp, bmin, bmax, false), isNotEmpty);
     });
   });
 }
