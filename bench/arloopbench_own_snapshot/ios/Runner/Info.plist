@@ -66,5 +66,17 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>PWXrslamBuildEngine</key>
+	<string>$(PW_XRSLAM_LINKED_ENGINE)</string>
+	<key>PWXrslamBuildBenchArm</key>
+	<string>$(PW_XRSLAM_LINKED_BENCH_ARM)</string>
+	<key>PWXrslamBuildLib</key>
+	<string>$(PW_XRSLAM_LINKED_ENGINE_LIB)</string>
+	<key>PWXrslamBuildSha16</key>
+	<string>$(PW_XRSLAM_LINKED_ENGINE_SHA16)</string>
+	<key>PWXrslamBuildThreading</key>
+	<string>$(PW_XRSLAM_LINKED_ENGINE_THREADING)</string>
+	<key>PWXrslamBuildRules</key>
+	<string>$(PW_XRSLAM_LINKED_ENGINE_RULES)</string>
 </dict>
 </plist>

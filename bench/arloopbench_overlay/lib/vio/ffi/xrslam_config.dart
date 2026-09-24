@@ -348,9 +348,12 @@ class XrslamConfigBuilder {
     this.cameraTimeOffsetSeconds = 0.0,
     this.cameraTimeOffsetProvenance = FieldProvenance.placeholder,
     this.pixelNoiseVariance = 0.5,
-    // 🔴 上游 `iphone_slam.yaml` 是 **10**(引擎代码默认也是 10)。
-    // 我们曾默认 5 —— 09-16 同录制对照里 sw5/freq3 那一臂精度更差,已判死。
-    this.slidingWindowSize = 10,
+    // [bench 2026-09-24] 官方 iOS 配置:`xrslam-ios/visualizer/configs/slam_params.yaml`
+    //   @4beb1a9 `sliding_window.size: 5`。(09-16 判死 sw5/freq3 的那组对照是**关着**官方
+    //   关键帧规则、**没开**线程化、1920 喂料跑的;官方全配置 = 规则 ON + 线程化 ON + 30 Hz +
+    //   640 + 本 yaml,Mac 回放三段录制尺度都在 ±3%,见 xrofficial 报告。)
+    //   旧口径(上游 PC `iphone_slam.yaml`,window 10)原样留在 [buildPcIphoneSlamConfigYaml]。
+    this.slidingWindowSize = 5,
     this.solverTimeLimitSeconds = 0.1,
     this.solverIterationLimit = 10,
   });
@@ -479,7 +482,8 @@ cam0:
   ///      代码默认也是 false;我们显式写是因为开启后会把图像**明文**发到
   ///      硬编码内网地址 —— 这种东西不能依赖默认值。
   /// 任何第三处偏离都要先拿出实测依据,并加进上面这张表。
-  String buildSlamConfigYaml() =>
+  /// 上一版默认(上游 PC `configs/iphone_slam.yaml` 逐字段 + 两处偏离),保留作对照,不再是默认。
+  String buildPcIphoneSlamConfigYaml() =>
       '''
 %YAML:1.0
 # GENERATED at runtime by XrslamConfigBuilder。
@@ -537,5 +541,43 @@ visual_localization:
   # 🔴 偏离②:显式关死。开启会把图像明文外发到硬编码内网地址。
   enable: false
   port: 12345
+''';
+
+  /// ══ [bench 2026-09-24] 官方 iOS 配置 = 台架默认 ══════════════════════════════
+  /// 逐键复刻 `xrslam-ios/visualizer/configs/slam_params.yaml` @4beb1a9(与生产 168
+  /// `lib/vio/ffi/xrslam_config.dart` 的 buildSlamConfigYaml 同键同值):
+  ///   window 5 / tracker_frequent 3 / 300 关键点 / max_frames 100 / min_keypoint_distance 25 /
+  ///   solver 0.1 s × 10 次 / parsac 那组;其余键不写 ⇒ 引擎代码默认
+  ///   (rotation.misalignment_threshold 0.1、initializer.min_triangulation 50、min_parallax 10)。
+  /// 唯一偏离:`visual_localization.enable: false`(官方 yaml 写 true,但它只在全局定位开关
+  /// 打开后才生效;我们显式关死 —— 开启会把图像明文外发到硬编码内网地址)。
+  /// 官方关键帧/跟踪规则在引擎里(XRSLAM_LOWLATENCY_POSE),不在 yaml 里。
+  String buildSlamConfigYaml() =>
+      '''
+%YAML:1.0
+# GENERATED at runtime by XrslamConfigBuilder(台架默认 = 官方 iOS slam_params.yaml @4beb1a9)。
+output:
+  q_bo: [ 0, 0, 0, 1 ]
+  p_bo: [ 0, 0, 0 ]
+feature_tracker:
+  min_keypoint_distance: 25.0
+  max_keypoint_detection: 300
+  max_frames: 100
+solver:
+  time_limit: $solverTimeLimitSeconds
+  iteration_limit: $solverIterationLimit
+sliding_window:
+  size: $slidingWindowSize
+  tracker_frequent: 3
+visual_localization:
+  # 官方 yaml 是 true(需再开全局定位开关才生效);这里显式关死:开启会把图像明文外发。
+  enable: false
+  port: 12345
+parsac:
+  parsac_flag: false
+  dynamic_probability: 0.15
+  threshold: 1.0
+  norm_scale: 1.0
+  keyframe_check_size: 1
 ''';
 }

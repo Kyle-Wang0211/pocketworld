@@ -28,6 +28,7 @@ import 'dart:io';
 
 import '../capture/camera_time_offset.dart';
 import '../ffi/xrslam_config.dart';
+import '../ffi/xrslam_official_feed.dart';
 import '../ffi/xrslam_live_ffi.dart' show XrslamLiveIntrinsics;
 import 'bench_replay_native.dart';
 
@@ -383,14 +384,24 @@ class BenchReplayController {
       resolutionHeight: r.height,
       provenance: FieldProvenance.deviceApi,
     );
+    // [bench 2026-09-24] 官方配置口径:device yaml 写 640×480 + box/3 换算的内参(原生照 yaml 做
+    //   同一个 box,见 xrslam_official_feed.dart);c 默认 0(官方每机 yaml `time_offset: 0.0`),
+    //   -PWBenchReplayCameraTimeOffsetMs 仍可覆盖。
     final XrslamConfigBuilder builder = XrslamConfigBuilder(
-      intrinsics: intrinsics,
+      intrinsics: xrslamOfficialFeedIntrinsics(intrinsics),
       extrinsic: CameraImuExtrinsic.forIosMachine(r.deviceModel),
     );
-    final CameraTimeOffset c = resolveCameraTimeOffset(
-      machine: r.deviceModel,
-      overrideMillisRaw: a.cameraTimeOffsetMsRaw,
-    );
+    final CameraTimeOffset c = a.cameraTimeOffsetMsRaw == null
+        ? CameraTimeOffset(
+            seconds: 0.0,
+            provenance: FieldProvenance.sharedDefault,
+            machine: r.deviceModel,
+            note: '官方 iOS 配置 time_offset: 0.0(slam_params + 每机 yaml),原始 PTS',
+          )
+        : resolveCameraTimeOffset(
+            machine: r.deviceModel,
+            overrideMillisRaw: a.cameraTimeOffsetMsRaw,
+          );
     final Directory runDir =
         Directory('${runsRoot.path}/${runDirName(r, a, now)}')
           ..createSync(recursive: true);

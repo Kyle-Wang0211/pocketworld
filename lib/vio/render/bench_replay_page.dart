@@ -40,6 +40,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../replay/bench_replay_controller.dart';
 import '../replay/bench_replay_native.dart';
+import '../ffi/xrslam_live_ffi.dart' show XrslamLive;
 
 /// 日志前缀。
 const String kBenchReplayLogTag = '[bench-replay]';
@@ -155,6 +156,7 @@ class _BenchReplayPageState extends State<BenchReplayPage> {
       _note('结束 ok=${res.ok} phase=${res.receipt['phase']} '
           'invariants=${inv['passed']} ${inv['failed']} error=${res.error ?? "-"}');
       _note('回执 ${res.receiptPath}');
+      _note('引擎 ${XrslamLive.buildStamp()}');
       final Object? outs = res.receipt['outputs'];
       if (outs is Map<String, Object?>) {
         outs.forEach((String k, Object? v) {
@@ -181,6 +183,8 @@ class _BenchReplayPageState extends State<BenchReplayPage> {
           children: <Widget>[
             if (_problem != null)
               Text('🔴 $_problem', style: const TextStyle(color: Colors.red)),
+            // [bench 2026-09-24] 运行期构建戳:链的哪条 XRSLAM 臂 + 喂料口径(官方配置 = 640@30Hz)。
+            Text('引擎:${XrslamLive.buildStamp()}', style: mono),
             Text('逐帧 K:${_args.perFrameArmLabel}'
                 '(-PWPerFrameIntrinsics,来源 ${_args.perFrameIntrinsicsSource};'
                 '进程级开关,换臂要带参数重启)'),

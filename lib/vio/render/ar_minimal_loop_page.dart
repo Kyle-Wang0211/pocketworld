@@ -688,6 +688,10 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
                         ],
                       ),
                       Text(_status),
+                      // [bench 2026-09-24] 运行期构建戳:链的哪条 XRSLAM 臂 + 喂料口径。
+                      if (_session != null)
+                        Text('引擎:${XrslamLive.buildStamp()}',
+                            style: const TextStyle(fontSize: 10)),
                       if (_last != null) Text('$_last'),
                       if (_stats != null) Text('$_stats'),
                       if (_stats != null && _stats!.outstanding > 1)

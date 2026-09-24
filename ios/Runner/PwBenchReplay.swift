@@ -409,6 +409,8 @@ final class PwBenchReplayRunner {
             defer { tb.deallocate() }
             let tbRc = live.timebase(into: tb)
             let trail = live.gpuFrontEndTrail()
+            // [bench 2026-09-24] 官方喂料口径(30 Hz 准入 / box n / 原始 PTS)与构建戳,destroy 之前读。
+            let feedReport = live.feedReport()
             live.setFrameObserver(nil)
             live.destroy()
             created = false
@@ -452,6 +454,7 @@ final class PwBenchReplayRunner {
             sum["timebase_rc"] = Int(tbRc)
             sum["timebase"] = (0..<12).map { tb[$0] }
             sum["gpu_frontend_trail"] = trail
+            sum["xrslam_feed"] = feedReport
             sum["telemetry_symbols_found"] = Int(PWBenchReplayTelemetrySymbolCount())
             sum["feeding"] = [
                 "camera_offered": cameraOrdinal,

@@ -1,0 +1,80 @@
+# arloopbench unified + official-config XRSLAM — verification (2026-09-24 21:12:20)
+# source: pocketworld bench/official-xrslam (local, from bench/unified b3c7b6b) @ worktree ~/.config/superpowers/worktrees/pocketworld/bench-official-xrslam-20260924 (uncommitted at build time; see git diff)
+# engine: xrslam feat/official-ios-rules @ add2ee3 -> libxrslam_official_rules_89042cd5.a (sha256 89042cd5d5be844801a40b914cd8742119f8a9b4c3f6e3a9deef115bd4e7942f)
+# build: flutter build ios --profile --no-pub (x2 after last change; 4 builds total), Xcode 26.2, PW_XRSLAM_ARM unset (= default arm official_rules)
+# main binaries:
+#   7fb9d4f53b2a50606fd5ca3e38754e6efbccbf43fc4f796f2a81b40c77f19dae  Runner.app/Runner
+#   84f1e467f5de3a6d7dd9880a23e92f8010cafc90a8ae58df188b71a16b98c113  Runner.app/Frameworks/App.framework/App
+== Info.plist XRSLAM identity
+  PWXrslamBuildRules = official
+  PWXrslamEngineArm = official_rules
+  PWXrslamEngineFingerprint = /private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/2359d42b-b338-4098-99ad-6a4c217067ad/scratchpad/xrofficial/build-ios/_deps/depends-opencv-build/opencv2.framework/Headers/core/mat.inl.hpp
+  CFBundleIdentifier = com.kyle.arloopbench
+  PWXrslamGpuFrontendLinked = false
+  PWXrslamBenchArm = default
+  PWXrslamEngineLib = libxrslam_official_rules_89042cd5.a
+  PWXrslamBuildBenchArm = 
+  PWXrslamSHA256 = 89042cd5d5be844801a40b914cd8742119f8a9b4c3f6e3a9deef115bd4e7942f
+  PWXrslamBuildSha16 = 89042cd5d5be8448
+  PWXrslamEnginePedigree = research_only
+  PWXrslamEngineSHA16 = 89042cd5d5be8448
+  PWXrslamBuildEngine = official_rules
+  PWXrslamBuildLib = libxrslam_official_rules_89042cd5.a
+  PWXrslamThreadingEnabled = true
+  PWXrslamBuildThreading = true
+  PWNativeHostUUID = E03747F1-F5F4-3506-9170-767D28B9A5F3
+== linked engine fingerprint in Runner (this arm must be 1, others 0)
+  official_rules 1
+  generic        0
+  gpufenothread  0
+  pfk            0
+== official feed code in Runner
+  PWXrslamCameraHz 1
+  PWXrslamExposureMid 1
+  rate_sampled_out 2
+  pw_xrslam_live_build_stamp 0
+== Dart AOT menu pages (0 = tree-shaken)
+  BenchHomePage                3
+  BenchLidarRecordPage         4
+  BenchReplayPage              4
+  BenchFullChainPage           3
+  BenchCoreSwitchesPage        4
+  ArMinimalLoopPage            4
+  ZeroArkitCaptureProbePage    4
+  ZeroArkitPreviewProbePage    3
+  ImuCalibCapturePage          4
+  ZuptProbePage                4
+  PoseChainProbePage           4
+  LodDebugPage                 4
+  SplatAbPage                  4
+  PocketWorldApp               1
+  (viobench entry = native action BenchUnifiedNative.openVioKit: 1)
+  slam yaml strings (utf16) new: tracker_frequent: 3=2 tracker_frequent: 1=0 misalignment_threshold: 0.02=0 官方 iOS 配置 time_offset=1
+  slam yaml strings (utf16) unified_20260924: tracker_frequent: 3=1 tracker_frequent: 1=1 misalignment_threshold: 0.02=1 官方 iOS 配置 time_offset=0
+== Dawn: _wgpuCreateInstance definitions in Runner: 1
+== Runner defined symbol families
+    12 _PWXrslamTransport
+     4 _pw_bench_lidar_
+     5 _pw_bench_replay_
+    17 _pw_camera_slot_
+    10 _pw_xrslam_live_
+     1 _pwlod_run
+     1 _pwsplat_ab_run
+== embedded frameworks __text vs unified_20260924
+  PWOfficialSfm    4a2e69b14088e9d3 SAME
+  PWDense          97473b09a9ae2bdc SAME
+  PWOnnxRuntime    3f12860a1e745ef0 SAME
+  PWVIOBenchKit    8853200e19b3111c SAME
+  PWXRSLAMEngine   6aaa4be4ebcc2aea SAME
+  PWBasaltEngine   eeadd9821cd9c944 SAME
+  thermion_dart    ed38067a8ccd69be SAME
+  Flutter          09a5ae834bf9cb46 SAME
+== signature
+  valid (deep, strict)
+== engine entry points in Runner (local t = linked via -force_load, visibility hidden)
+  00000001015e042c t _XRSLAMCreate
+  00000001015e0728 t _XRSLAMDestroy
+  00000001015e0618 t _XRSLAMGetResult
+  00000001015e0598 t _XRSLAMPushSensorData
+  00000001015e0604 t _XRSLAMRunOneFrame
+  0000000101697120 T _pw_xrslam_live_build_stamp

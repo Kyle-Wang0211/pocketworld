@@ -580,6 +580,27 @@ abstract final class XrslamLive {
     }
   }
 
+  static ffi.Pointer<ffi.Char>? _stampBuf;
+
+  /// [bench 2026-09-24] 构建戳 + 当前喂料口径(`PwXrslamLive.buildStampLine`):
+  /// 链的是哪条引擎臂 / 归档 / sha16 / 线程化 / 官方规则,以及 yaml 喂料尺寸、30 Hz 准入、
+  /// 源尺寸与 box 因子、被准入挡掉的帧数。找不到符号 ⇒ 空串。
+  static String buildStamp() {
+    _lookup();
+    try {
+      final f = _lib.lookupFunction<
+          ffi.Int32 Function(ffi.Pointer<ffi.Char>, ffi.Int32),
+          int Function(ffi.Pointer<ffi.Char>,
+              int)>('pw_xrslam_live_build_stamp');
+      _stampBuf ??= calloc<ffi.Char>(1024);
+      final int n = f(_stampBuf!, 1024);
+      if (n <= 0) return '';
+      return _stampBuf!.cast<Utf8>().toDartString();
+    } catch (_) {
+      return '';
+    }
+  }
+
   static XrslamLiveStats? stats() {
     _lookup();
     final _OutInt64Dart? f = _stats;

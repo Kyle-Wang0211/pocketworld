@@ -88,6 +88,7 @@
 //    上调的,在 1920×1440 上焦距大 3 倍,同样的像素数对应 1/3 的角度。
 //    **上游没有 1920×1440 的配置档可抄**,所以这几个值我一个都没动。
 
+import Accelerate
 import AVFoundation
 import CoreMedia
 import CoreMotion
@@ -182,20 +183,87 @@ enum PwPerFrameIntrinsicsSwitch {
 /// 直接退出)⇒ 这里就是「无法核实」,不猜。
 enum PwXrslamEngineIdentity {
     static let kInfoPlistKey = "PWXrslamEngineArm"
-    /// 认逐帧 K 的那条臂(fork 04c0e83 编出的 `libxrslam_gpufenothread_pfk_6f6aa21c.a`)。
+    /// [bench 2026-09-24 官方配置臂] 构建设置盖章:Info.plist 里写 `$(PW_XRSLAM_LINKED_ENGINE)`,
+    /// Xcode 在**任何**配置下都展开(`PWXrslamEngineArm` 只由 Release/Profile 的盖章脚本写)。
+    static let kBuildSettingPlistKey = "PWXrslamBuildEngine"
+    /// 认逐帧 K 的臂:fork 04c0e83 编出的 `libxrslam_gpufenothread_pfk_6f6aa21c.a`,
+    /// 以及同一血统 + 官方规则的 `libxrslam_official_rules_*.a`(feat/official-ios-rules)。
     static let kPerFrameKArm = "gpufenothread_pfk"
+    static let kPerFrameKArms: Set<String> = [kPerFrameKArm, "official_rules"]
 
-    /// Info.plist 里盖的臂名;`nil` = 没盖章。
+    /// Info.plist 里盖的臂名;`nil` = 没盖章。先认盖章脚本写的,再认构建设置展开的。
     static let stampedArm: String? = {
-        guard let v = Bundle.main.object(forInfoDictionaryKey: kInfoPlistKey) as? String,
-              !v.isEmpty else { return nil }
-        return v
+        for key in [kInfoPlistKey, kBuildSettingPlistKey] {
+            if let v = Bundle.main.object(forInfoDictionaryKey: key) as? String,
+               !v.isEmpty, !v.hasPrefix("$(") {
+                return v
+            }
+        }
+        return nil
     }()
 
     /// 1 = 盖章为认逐帧 K 的臂;0 = 盖章为别的臂(核不读扩展);-1 = 没盖章,无法核实。
     static let consumesPerFrameK: Int = {
         guard let arm = stampedArm else { return -1 }
-        return arm == kPerFrameKArm ? 1 : 0
+        return kPerFrameKArms.contains(arm) ? 1 : 0
+    }()
+
+    /// 页面上显示的构建戳:链的是哪条臂 / 哪个归档 / sha16(构建设置展开,Debug 也有)。
+    static let buildStamp: String = {
+        func v(_ k: String) -> String {
+            guard let s = Bundle.main.object(forInfoDictionaryKey: k) as? String,
+                  !s.isEmpty, !s.hasPrefix("$(") else { return "?" }
+            return s
+        }
+        let arm = v("PWXrslamBuildBenchArm")
+        return "engine=\(v("PWXrslamBuildEngine")) bench_arm=\(arm == "?" ? "default" : arm)"
+            + " lib=\(v("PWXrslamBuildLib")) sha16=\(v("PWXrslamBuildSha16"))"
+            + " threading=\(v("PWXrslamBuildThreading")) rules=\(v("PWXrslamBuildRules"))"
+    }()
+}
+
+// ══ [bench 2026-09-24] 官方配置的喂料口径(台架默认)══════════════════════════════
+// 官方 iOS demo:AVCapture `.vga640x480` @30 fps,`presentationTimeStamp` 原样推,yaml
+// `time_offset: 0.0`。台架照这个口径喂同一个引擎(官方规则 + 线程化的那条臂):
+//   ① 相机准入 30 Hz —— 形状抄生产 `PwVioSlamFeeder.enqueue(frame:)`:
+//      `t − t_上一次准入 < 门限` 就不收(对原始时间戳判,在有界闸之前)。
+//      门限 = 0.8/R,不是生产的 1/R:直播相机本身就定在 30 fps(上游 setFps(30)),
+//      帧间隔 33.33 ms ± 抖动,1/R 会把一半「略短于 33.333 ms」的帧挡掉、实际只剩 ~20 Hz。
+//      0.8/R 对 60 Hz 源(ARKit 录制)照样隔帧取(16.7 挡、33.3 收),对 30 Hz 源全收,
+//      对 120 Hz 源取每 4 帧一帧。三段 ARKit 录制上与生产 1/R 规则只差 1 帧/段,
+//      Mac 回放已用同一门限重跑(xrofficial 报告)。
+//      启动参数 `-PWXrslamCameraHz <R>`,默认 30;0 = 不设准入(旧行为)。
+//   ② 分辨率跟 device yaml 走:源帧宽高恰是 yaml `cam0.resolution` 的整数 n 倍(n>1)
+//      ⇒ 先转灰度(BGRA 用与 OpenCV `COLOR_BGRA2GRAY` 逐位相同的定点系数),再
+//      `PWXrslamTransportPrepareGrayBoxNxN` 做 box n×n,推 channel 1;逐帧 K 走
+//      `PWXrslamTransportScaleIntrinsicsForBoxNxN`。n 由 Dart 写 yaml 决定,原生只照做。
+//      相等 ⇒ 原样推(旧行为)。
+//   ③ 时间戳:默认推原始 PTS(官方口径,不加 exposure/2)。
+//      启动参数 `-PWXrslamExposureMid on` 恢复文件头偏离 (d) 的曝光中点换算。
+enum PwXrslamOfficialFeed {
+    struct Resolved {
+        let cameraHz: Double
+        let exposureMid: Bool
+        let rawHz: String
+        let rawExposure: String
+    }
+
+    private static func launchValue(_ key: String) -> String {
+        if let v = UserDefaults.standard.string(forKey: key), !v.isEmpty { return v }
+        let args = ProcessInfo.processInfo.arguments
+        if let i = args.firstIndex(of: "-\(key)"), i + 1 < args.count { return args[i + 1] }
+        return ""
+    }
+
+    static let resolved: Resolved = {
+        let rh = launchValue("PWXrslamCameraHz")
+        let re = launchValue("PWXrslamExposureMid")
+        var hz = 30.0
+        let t = rh.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if t == "off" { hz = 0 } else if let v = Double(t), v.isFinite, v >= 0 { hz = v }
+        let e = re.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let mid = ["on", "1", "true", "yes"].contains(e)
+        return Resolved(cameraHz: hz, exposureMid: mid, rawHz: rh, rawExposure: re)
     }()
 }
 
@@ -443,6 +511,23 @@ final class PwXrslamLive {
     /// [pw 2026-09-23 台架回放] 逐帧观察者。只有台架回放装;直播/生产恒为 nil。
     private var frameObserver: ((PwXrslamFrameObservation) -> Void)?
 
+    // ── [bench 2026-09-24] 官方喂料账本(见 `PwXrslamOfficialFeed`)───────────────
+    private var feedHaveAdmitted = false
+    private var feedLastAdmittedPts: Double = 0
+    /// 被 30 Hz 准入挡掉的帧数(不计入 framesOffered,与 framesDropped 分开)。
+    private var feedRateSampledOut: UInt64 = 0
+    /// 最近一帧的源尺寸 / box 因子 / 推送尺寸;box 失败次数(失败就不推这一帧)。
+    private var feedLastSourceWidth = 0
+    private var feedLastSourceHeight = 0
+    private var feedLastFactor = 0
+    private var feedBoxFailures: UInt64 = 0
+    private var feedBoxedFrames: UInt64 = 0
+    /// 只在 workQueue 上碰:灰度全幅与 box 输出两块 scratch,按需扩容、会话间复用。
+    private var feedGrayScratch: UnsafeMutablePointer<UInt8>? = nil
+    private var feedGrayCapacity = 0
+    private var feedBoxScratch: UnsafeMutablePointer<UInt8>? = nil
+    private var feedBoxCapacity = 0
+
     // MARK: 生命周期
 
     /// 由 `PwCameraSlot.start()` 调用,登记相机的串行队列。
@@ -477,6 +562,9 @@ final class PwXrslamLive {
         ikLastSource = 0; ikFxMin = .infinity; ikFxMax = 0
         ikLastPushedWidth = 0; ikLastPushedHeight = 0
         ikTrace = PWXrslamIntrinsicsTrace(); ikTraceSequenceMismatch = 0
+        feedHaveAdmitted = false; feedLastAdmittedPts = 0; feedRateSampledOut = 0
+        feedLastSourceWidth = 0; feedLastSourceHeight = 0; feedLastFactor = 0
+        feedBoxFailures = 0; feedBoxedFrames = 0
 
         // 🔴 GPU 前端的运行期开关。只有链了 `gpufenothread` 那条臂时才有东西读它
         //    (`gpu_image.cpp:28`);链 generic 时这个变量没有任何读者,置位无害。
@@ -675,11 +763,23 @@ final class PwXrslamLive {
         // 曝光中点换算。exposure 非法/未知按 0:等价于"没换算",并计数暴露出来。
         let exposure = (exposureSeconds.isFinite && exposureSeconds >= 0)
             ? exposureSeconds : 0
-        let half = 0.5 * exposure
+        // [bench 2026-09-24] 官方口径默认推原始 PTS;-PWXrslamExposureMid on 恢复 (d)。
+        let feed = PwXrslamOfficialFeed.resolved
+        let half = feed.exposureMid ? 0.5 * exposure : 0
         let canonical = ptsSeconds + half
 
         lock.lock()
         guard running else { lock.unlock(); return }
+        // [bench 2026-09-24] 30 Hz 准入(生产 PwVioSlamFeeder 的形状,门限 0.8/R,见 PwXrslamOfficialFeed)。
+        if feed.cameraHz > 0 {
+            if feedHaveAdmitted, ptsSeconds - feedLastAdmittedPts < 0.8 / feed.cameraHz {
+                feedRateSampledOut &+= 1
+                lock.unlock()
+                return
+            }
+            feedHaveAdmitted = true
+            feedLastAdmittedPts = ptsSeconds
+        }
         framesOffered &+= 1
         lastCameraPts = ptsSeconds   // 保持原始 PTS:timing() 比的是时钟域,不是换算
         lastCanonicalPts = canonical
@@ -733,11 +833,82 @@ final class PwXrslamLive {
             return
         }
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
-        guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else { return }
-        let stride = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        guard let srcBase = CVPixelBufferGetBaseAddress(pixelBuffer) else { return }
+        let srcStride = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        let sourceWidth = CVPixelBufferGetWidth(pixelBuffer)
+        let sourceHeight = CVPixelBufferGetHeight(pixelBuffer)
+        let isGray =
+            CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_OneComponent8
 
-        let pushedWidth = CVPixelBufferGetWidth(pixelBuffer)
-        let pushedHeight = CVPixelBufferGetHeight(pixelBuffer)
+        // [bench 2026-09-24] 官方喂料 ②:源尺寸恰是 yaml cam0.resolution 的 n 倍(n>1)⇒ box n。
+        lock.lock()
+        let cfgRes = ikConfigResolution
+        lock.unlock()
+        var factor = 1
+        if let c = cfgRes, c.width > 0, c.height > 0,
+           sourceWidth % c.width == 0, sourceHeight % c.height == 0,
+           sourceWidth / c.width == sourceHeight / c.height, sourceWidth / c.width > 1 {
+            factor = sourceWidth / c.width
+        }
+        var base = UnsafeMutableRawPointer(srcBase)
+        var stride = srcStride
+        var pushedWidth = sourceWidth
+        var pushedHeight = sourceHeight
+        var boxed = false
+        if factor > 1 {
+            // 灰度源:ARKit/录制的 Y 平面原样;BGRA:与 OpenCV COLOR_BGRA2GRAY 同一组定点系数
+            // (B 1868 / G 9617 / R 4899,>>14,+8192 取整),逐位等于引擎自己那次 cvtColor。
+            var grayPtr: UnsafePointer<UInt8>? = nil
+            var grayStride = 0
+            if isGray {
+                grayPtr = UnsafePointer(srcBase.assumingMemoryBound(to: UInt8.self))
+                grayStride = srcStride
+            } else if CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA {
+                let need = sourceWidth * sourceHeight
+                if feedGrayCapacity < need {
+                    feedGrayScratch?.deallocate()
+                    feedGrayScratch = UnsafeMutablePointer<UInt8>.allocate(capacity: need)
+                    feedGrayCapacity = need
+                }
+                var src = vImage_Buffer(data: srcBase, height: vImagePixelCount(sourceHeight),
+                                        width: vImagePixelCount(sourceWidth), rowBytes: srcStride)
+                var dst = vImage_Buffer(data: UnsafeMutableRawPointer(feedGrayScratch), height: vImagePixelCount(sourceHeight),
+                                        width: vImagePixelCount(sourceWidth), rowBytes: sourceWidth)
+                let m: [Int16] = [1868, 9617, 4899, 0]   // 内存序 B G R A
+                let e = vImageMatrixMultiply_ARGB8888ToPlanar8(
+                    &src, &dst, m, 16384, nil, 8192, vImage_Flags(kvImageNoFlags))
+                if e == kvImageNoError {
+                    grayPtr = UnsafePointer(feedGrayScratch!)
+                    grayStride = sourceWidth
+                }
+            }
+            let outW = sourceWidth / factor, outH = sourceHeight / factor
+            if feedBoxCapacity < outW * outH {
+                feedBoxScratch?.deallocate()
+                feedBoxScratch = UnsafeMutablePointer<UInt8>.allocate(capacity: outW * outH)
+                feedBoxCapacity = outW * outH
+            }
+            var w: Int32 = 0, h: Int32 = 0
+            let brc: Int32 = grayPtr.map {
+                PWXrslamTransportPrepareGrayBoxNxN(
+                    $0, Int32(sourceWidth), Int32(sourceHeight), Int32(grayStride),
+                    Int32(factor), feedBoxScratch, Int32(feedBoxCapacity), &w, &h)
+            } ?? -1
+            guard brc == PW_XRSLAM_OK.rawValue, Int(w) == outW, Int(h) == outH else {
+                lock.lock(); feedBoxFailures &+= 1; lock.unlock()
+                return
+            }
+            base = UnsafeMutableRawPointer(feedBoxScratch!)
+            stride = outW
+            pushedWidth = outW
+            pushedHeight = outH
+            boxed = true
+        }
+        lock.lock()
+        feedLastSourceWidth = sourceWidth; feedLastSourceHeight = sourceHeight
+        feedLastFactor = factor
+        if boxed { feedBoxedFrames &+= 1 }
+        lock.unlock()
 
         // [pw 2026-09-23] 这一帧推不推自己的 K(文件头「逐帧内参」段)。
         //   整帧直推、不降采样 ⇒ K 原值即推送像素上的 K,不做任何算术。
@@ -762,11 +933,17 @@ final class PwXrslamLive {
                   cfg.width != pushedWidth || cfg.height != pushedHeight {
             hostReason = 5
         } else if let k = intrinsics {
-            if k.referenceWidth != pushedWidth || k.referenceHeight != pushedHeight {
+            // [bench 2026-09-24] 参照尺寸对的是**源帧**;box 之后 K 用传输层同一公式换算。
+            if k.referenceWidth != sourceWidth || k.referenceHeight != sourceHeight {
                 hostReason = 3
-            } else if k.activeFormatWidth != pushedWidth
-                        || k.activeFormatHeight != pushedHeight {
+            } else if k.activeFormatWidth != sourceWidth
+                        || k.activeFormatHeight != sourceHeight {
                 hostReason = 4
+            } else if factor > 1 {
+                var src = [k.fx, k.fy, k.cx, k.cy]
+                var dst = [Double](repeating: 0, count: 4)
+                let krc = PWXrslamTransportScaleIntrinsicsForBoxNxN(&src, Int32(factor), &dst)
+                if krc == PW_XRSLAM_OK.rawValue { frameK = dst } else { hostReason = 3 }
             } else {
                 frameK = [k.fx, k.fy, k.cx, k.cy]
             }
@@ -781,9 +958,7 @@ final class PwXrslamLive {
         //   luma 平面(OneComponent8 ⇒ 1,与 `PwVioSlamFeeder.swift:1701` 推灰度用的
         //   同一个值;引擎 channel==1 分支原样 clone,fork XRSLAMManager.cpp:167-169)。
         //   直播相机槽恒为 32BGRA ⇒ 仍是 4,与改动前逐字相同。
-        let channel: Int32 =
-            CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_OneComponent8
-            ? 1 : 4
+        let channel: Int32 = (boxed || isGray) ? 1 : 4
         // [pw 2026-09-23 台架回放] 只有装了观察者才计时(直播恒 nil ⇒ 不取时钟)。
         let timed = observer != nil
         let wall0: UInt64 = timed ? DispatchTime.now().uptimeNanoseconds : 0
@@ -1024,6 +1199,44 @@ final class PwXrslamLive {
         return ikFrames > 0 ? 0 : -1
     }
 
+    /// [bench 2026-09-24] 官方喂料口径与账本,给回放回执与页面构建戳。
+    func feedReport() -> [String: Any] {
+        let f = PwXrslamOfficialFeed.resolved
+        lock.lock(); defer { lock.unlock() }
+        return [
+            "camera_hz_gate": f.cameraHz,
+            "camera_hz_arg": f.rawHz,
+            "exposure_mid": f.exposureMid,
+            "exposure_mid_arg": f.rawExposure,
+            "config_resolution": ikConfigResolution.map { [$0.width, $0.height] } ?? [],
+            "last_source_wh": [feedLastSourceWidth, feedLastSourceHeight],
+            "last_box_factor": feedLastFactor,
+            "last_pushed_wh": [ikLastPushedWidth, ikLastPushedHeight],
+            "boxed_frames": feedBoxedFrames,
+            "box_failures": feedBoxFailures,
+            "rate_sampled_out": feedRateSampledOut,
+            "frames_offered": framesOffered,
+            "frames_dropped": framesDropped,
+            "build_stamp": PwXrslamEngineIdentity.buildStamp,
+        ]
+    }
+
+    /// 一行人读的构建戳 + 当前喂料(页面显示用)。
+    func buildStampLine() -> String {
+        let f = PwXrslamOfficialFeed.resolved
+        lock.lock()
+        let res = ikConfigResolution
+        let src = (feedLastSourceWidth, feedLastSourceHeight)
+        let n = feedLastFactor
+        let so = feedRateSampledOut
+        lock.unlock()
+        let feedRes = res.map { "\($0.width)x\($0.height)" } ?? "?"
+        let hz = f.cameraHz > 0 ? String(format: "%.0fHz", f.cameraHz) : "no-gate"
+        return PwXrslamEngineIdentity.buildStamp
+            + " | feed=\(feedRes)@\(hz) src=\(src.0)x\(src.1) box=\(n)"
+            + " exposure_mid=\(f.exposureMid ? "on" : "off") rate_sampled_out=\(so)"
+    }
+
     /// 写 14 个 int64。前 8 个**直接来自 C++ 账本**,不在 Swift 里合成
     /// (`PwXrslamTransportCore.h` 原话 "Swift must not synthesize them");
     /// 后 6 个是本文件自己的入队闸计数。
@@ -1121,6 +1334,24 @@ public func pw_xrslam_live_intrinsics(
 ) -> Int32 {
     guard Int(cap) >= PwXrslamLive.intrinsicsReportCount else { return -2 }
     return PwXrslamLive.shared.intrinsicsReport(into: out)
+}
+
+/// [bench 2026-09-24] 构建戳 + 当前喂料口径(UTF-8,最多 cap 字节含结尾 0),返回写入字节数。
+@_cdecl("pw_xrslam_live_build_stamp")
+public func pw_xrslam_live_build_stamp(
+    _ out: UnsafeMutablePointer<CChar>, _ cap: Int32
+) -> Int32 {
+    let bytes = Array(PwXrslamLive.shared.buildStampLine().utf8)
+    let n = max(0, min(bytes.count, Int(cap) - 1))
+    if n > 0 {
+        bytes.withUnsafeBufferPointer { src in
+            out.withMemoryRebound(to: UInt8.self, capacity: n) { dst in
+                dst.update(from: src.baseAddress!, count: n)
+            }
+        }
+    }
+    if cap > 0 { out[n] = 0 }
+    return Int32(n)
 }
 
 /// 写 14 个 int64,见 `PwXrslamLive.stats`。

@@ -131,7 +131,14 @@ post_install do |installer|
   #   **加一条臂 = 在下面加一行**;身份章脚本(ios/scripts/stamp_bench_engine_identity.sh,
   #   镜像自 pocketworld)从这张表写进 xcconfig 的设置里读,不用改。
   #   各臂(PW_XRSLAM_ARM 的值 → 产品臂名):
-  #     ''            → generic            出货档 libxrslam_generic_4beb1a9.a
+  #     ''            → official_rules     🔴 [2026-09-24 起台架默认] 官方 iOS 配置:fork
+  #                     feat/official-ios-rules@add2ee3(= 04c0e83 逐帧内参 + 上游四处 XRSLAM_IOS
+  #                     关键帧/跟踪规则改挂平台中立宏 XRSLAM_LOWLATENCY_POSE)+ 线程化 ON +
+  #                     CPU/OpenCV 前端 + 队列上界 0(上游无界)。libxrslam_official_rules_89042cd5.a,
+  #                     收据同名 .receipt.json。用户「不用申请,直接换官方配置上台架」。
+  #                     喂料 640×480 @30 Hz 由宿主做(PwXrslamLive PwXrslamOfficialFeed +
+  #                     lib/vio/ffi/xrslam_official_feed.dart),slam yaml = 官方 slam_params。
+  #     generic       → generic            出货档 libxrslam_generic_4beb1a9.a(09-24 之前的台架默认)
   #     gpufenothread → gpufenothread      GPU 前端 ON + 线程化 OFF。🔴 归档从
   #                     libxrslam_gpufenothread_4beb1a9.a 换成 libxrslam_gpufenothread_b9b14814.a:
   #                     vendor/xrslam 现在指向 pocketworld feat/bench-replay(同步脚本改了),
@@ -154,6 +161,12 @@ post_install do |installer|
   xrslam_arm_table = {
     # PW_XRSLAM_ARM => 产品臂名 / 归档 / sha16 / 指纹(OpenCV mat.inl.hpp 构建路径) / 血统 / GPU 前端
     '' => {
+      engine: 'official_rules', lib: 'libxrslam_official_rules_89042cd5.a', sha16: '89042cd5d5be8448',
+      fingerprint: '/private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/2359d42b-b338-4098-99ad-6a4c217067ad/scratchpad/xrofficial/' \
+                   'build-ios/_deps/depends-opencv-build/opencv2.framework/Headers/core/mat.inl.hpp',
+      pedigree: 'research_only', gpufe: false, threading: true, rules: true,
+    },
+    'generic' => {
       engine: 'generic', lib: 'libxrslam_generic_4beb1a9.a', sha16: 'fdc75c99358014d9',
       fingerprint: '/private/tmp/opencv-official-c9ad577-b49/modules/core/include/opencv2/core/mat.inl.hpp',
       pedigree: 'shipping', gpufe: false,
@@ -202,7 +215,9 @@ post_install do |installer|
     "PW_XRSLAM_LINKED_ENGINE_FINGERPRINT = #{xrslam_arm_row[:fingerprint]}\n" \
     "PW_XRSLAM_LINKED_ENGINE_PEDIGREE = #{xrslam_arm_row[:pedigree]}\n" \
     "PW_XRSLAM_LINKED_ENGINE_GPU_FRONTEND = #{xrslam_arm_row[:gpufe]}\n" \
-    "PW_XRSLAM_OTHER_ENGINE_FINGERPRINTS = #{xrslam_other_fingerprints}\n"
+    "PW_XRSLAM_OTHER_ENGINE_FINGERPRINTS = #{xrslam_other_fingerprints}\n" \
+    "PW_XRSLAM_LINKED_ENGINE_THREADING = #{xrslam_arm_row[:threading] ? 'true' : 'false'}\n" \
+    "PW_XRSLAM_LINKED_ENGINE_RULES = #{xrslam_arm_row[:rules] ? 'official' : 'off'}\n"
   xrslam_sym_names = %w[
     XRSLAMCreate XRSLAMDestroy XRSLAMRunOneFrame
     XRSLAMPushSensorData XRSLAMGetResult

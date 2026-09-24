@@ -70,6 +70,7 @@ import 'dart:io' as io;
 
 import 'xrslam_live_ffi.dart';
 import 'xrslam_config.dart';
+import 'xrslam_official_feed.dart';
 
 /// 会话建立的结果。失败时 [error] 一定非空 —— 不静默返回一个"看起来能用"的实例。
 class XrslamSessionStart {
@@ -122,7 +123,10 @@ class XrslamSession {
           resolutionHeight: 720,
           provenance: FieldProvenance.placeholder,
         );
-    final XrslamConfigBuilder builder = XrslamConfigBuilder(intrinsics: k);
+    // [bench 2026-09-24] 官方喂料口径:yaml 写 640×480 + box 换算后的内参;原生照 yaml 做同一个 box
+    //   (xrslam_official_feed.dart / PwXrslamLive.swift PwXrslamOfficialFeed)。
+    final XrslamConfigBuilder builder =
+        XrslamConfigBuilder(intrinsics: xrslamOfficialFeedIntrinsics(k));
 
     if (!XrslamLive.available) {
       // 整个 app 没链 XRSLAM,或符号被 dead-strip。这是**降级**不是崩溃 ——

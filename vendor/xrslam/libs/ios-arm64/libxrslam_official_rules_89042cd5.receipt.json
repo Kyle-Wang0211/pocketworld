@@ -1,0 +1,113 @@
+{
+ "schema": "pw.xrslam.ios-archive-receipt/3",
+ "artifact": "libxrslam_official_rules_89042cd5.a",
+ "artifact_path_in_repo": "vendor/xrslam/libs/ios-arm64/libxrslam_official_rules_89042cd5.a",
+ "artifact_sha256": "89042cd5d5be844801a40b914cd8742119f8a9b4c3f6e3a9deef115bd4e7942f",
+ "artifact_sha16": "89042cd5d5be8448",
+ "arm": "official_rules (官方 iOS 配置:关键帧/跟踪规则 ON + 线程化 ON + CPU/OpenCV 前端 + 逐帧内参 ext 消费)",
+ "bench_arm": "'' (台架默认臂) / 'official'",
+ "research_only": true,
+ "product_selected": false,
+ "ship_gate_zh": "只进台架(com.kyle.arloopbench)。生产 App 不链它。",
+ "source": {
+  "tree": "/private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/2359d42b-b338-4098-99ad-6a4c217067ad/scratchpad/xrofficial/xrslam-wt",
+  "tree_kind": "git -C ~/Developer/xrslam worktree add -b feat/official-ios-rules <tree> 04c0e83",
+  "branch": "feat/official-ios-rules (本地,未推送;xrslam fork 是公开仓)",
+  "commit": "add2ee3",
+  "parent_commit": "04c0e83e9c4889612880529dd49dd8063819a776 (feat/per-frame-intrinsics = pfk 臂的源码)",
+  "diff_vs_parent_zh": "只把上游四处 #if defined(XRSLAM_IOS) 算法门(feature_tracker.cpp 每帧 keymap PnP→latest_state、frontend_worker.cpp synchronize_keymap ×2、sliding_window_tracker.cpp 有平移即关键帧)改挂平台中立宏 XRSLAM_LOWLATENCY_POSE;CMake option 默认 OFF,XRSLAM_IOS=ON 仍隐含它;version.h.in 加 #cmakedefine。yaml_config.cpp 的 XRSLAM_IOS(传路径/传正文的接口契约)与 interface 打包不动。",
+  "upstream_repository": "https://github.com/openxrlab/xrslam",
+  "upstream_revision": "4beb1a942f33da9afbfae2d70e2c641cfc2bb675"
+ },
+ "build_script": "/private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/2359d42b-b338-4098-99ad-6a4c217067ad/scratchpad/xrofficial/tools/build_ios.sh",
+ "build_recipe_origin_zh": "~/Developer/viobench-build/gpufe/build_gpufe_nothread.sh(pfk 臂的构建脚本,同一源码血统)逐项抄,只改:GPU 前端 ON→不传(OFF);线程化 OFF→ON;加 XRSLAM_LOWLATENCY_POSE=ON;队列上界 2/4→0(= 上游无界)。",
+ "cmake_options": {
+  "CMAKE_BUILD_TYPE": "Release",
+  "CMAKE_TOOLCHAIN_FILE": "cmake/Modules/Platform/ios.toolchain.cmake",
+  "IOS_PLATFORM": "OS64",
+  "IOS_ARCH": "arm64",
+  "IOS_DEPLOYMENT_TARGET": "14.0",
+  "ENABLE_BITCODE": "0",
+  "ENABLE_ARC": "1",
+  "ENABLE_VISIBILITY": "0",
+  "CMAKE_POLICY_VERSION_MINIMUM": "3.5",
+  "XRSLAM_IOS_OVERRIDE": "1",
+  "XRSLAM_IOS": "OFF (默认)",
+  "XRSLAM_THREADING_OVERRIDE": "1",
+  "XRSLAM_ENABLE_THREADING": "ON",
+  "XRSLAM_LOWLATENCY_POSE": "ON",
+  "CMAKE_CXX_FLAGS": "-ffp-contract=off -fno-fast-math -fchar8_t -Dceres=pw_xrslam_ceres_1_14 -DXRSLAM_FEATURE_TRACKER_QUEUE_CAPACITY=0 -DXRSLAM_FRONTEND_QUEUE_CAPACITY=0",
+  "FETCHCONTENT_SOURCE_DIR_DEPENDS-EIGEN": "~/Developer/xrslam-deps-tarballs/eigen-3.3.7",
+  "FETCHCONTENT_SOURCE_DIR_DEPENDS-OPENCV": "~/Developer/xrslam-deps-tarballs/opencv-4.0.1-ios-framework/opencv2.framework"
+ },
+ "version_h": {
+  "XRSLAM_ENABLE_THREADING": "defined",
+  "XRSLAM_IOS": "undef",
+  "XRSLAM_LOWLATENCY_POSE": "defined"
+ },
+ "toolchain": {
+  "cmake": "4.2.3",
+  "clang": "Apple clang version 17.0.0 (clang-1700.6.3.2)",
+  "xcode": "26.2 (17C52)",
+  "iphoneos_sdk": "26.2"
+ },
+ "deps": {
+  "eigen": "3.3.7",
+  "opencv": "4.0.1 (ios framework, 预编译;归档外,app 侧链 libopencv_generic_4_0_1.a)",
+  "ceres": "e809cf0c / 1.14.0,命名空间 pw_xrslam_ceres_1_14(归档外,app 侧链 libceres_official_1_14.a)",
+  "yaml-cpp": "superbuild"
+ },
+ "archive_member_count": 56,
+ "reproducibility_zh": "同一构建目录两次构建(中间夹一次 OFF 对照构建)sha256 逐位相同。",
+ "attribution_control": {
+  "what_zh": "同一源码树、同一构建目录,只把 XRSLAM_LOWLATENCY_POSE 改成 OFF 再编一次;两份归档逐成员比较。",
+  "control_artifact_sha256": "dd9952d7c37775b0c47021712a6a46fdf127f079bba9596c29eac1a18311b03f",
+  "members_differing": [
+   "feature_tracker.cpp.o",
+   "frontend_worker.cpp.o",
+   "sliding_window_tracker.cpp.o",
+   "__.SYMDEF"
+  ],
+  "members_identical_count": 53,
+  "disassembly_evidence_zh": [
+   "frontend_worker.cpp.o:到 FeatureTracker::synchronize_keymap 的调用重定位 ON=2 / OFF=0",
+   "feature_tracker.cpp.o:ON 多出 Solver::create 与 Solver::create_reprojection_prior_factor 各 1 处调用(solve_pnp 内联进 work)、Map::erase_frame +1、Map::attach_frame +1",
+   "sliding_window_tracker.cpp.o:SlidingWindowTracker::manage_keyframe 多出 and/ccmp/b.ne 标志位测试(!tag(FT_NO_TRANSLATION))"
+  ]
+ },
+ "fingerprint": {
+  "kind": "OpenCV mat.inl.hpp 的构建目录绝对路径(CV_Assert 的 __FILE__ 烤进 __TEXT,__cstring)",
+  "string": "/private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/2359d42b-b338-4098-99ad-6a4c217067ad/scratchpad/xrofficial/build-ios/_deps/depends-opencv-build/opencv2.framework/Headers/core/mat.inl.hpp",
+  "uniqueness_check_zh": "本归档含本指纹 3 处;generic / gpufenothread_b9b14814 / pfk_6f6aa21c 三份归档都不含;本归档不含另三条臂的指纹。"
+ },
+ "gpu_frontend": {
+  "enabled": false,
+  "note_zh": "官方是 CPU/OpenCV 前端;本归档无 pw::gpufe / wgpu 符号,不需要 libpw_gpu_frontend_ios / Dawn。"
+ },
+ "exported_abi_xrslam": [
+  "XRGlobalLocalizerCreate",
+  "XRGlobalLocalizerEnable",
+  "XRGlobalLocalizerIsInitialized",
+  "XRGlobalLocalizerQueryFrame",
+  "XRGlobalLocalizerQueryLocalization",
+  "XRGlobalLocalizerTransformPose",
+  "XRSLAMCreate",
+  "XRSLAMDestroy",
+  "XRSLAMGetBodyPoseRelation",
+  "XRSLAMGetInitCounters",
+  "XRSLAMGetPendingWorkerFrames",
+  "XRSLAMGetPropagatedPose",
+  "XRSLAMGetPropagatedPoseRelation",
+  "XRSLAMGetResult",
+  "XRSLAMGetSolverCounters",
+  "XRSLAMPushSensorData",
+  "XRSLAMRunOneFrame"
+ ],
+ "exported_abi_same_as": "libxrslam_gpufenothread_pfk_6f6aa21c.a(XRSLAM*/XRGlobal* 列表逐项相同)",
+ "mac_gate_zh": "同一提交、同一宏在 macOS 上编 dylib,frames.bin 直读 box/3→640、生产 30 Hz 准入规则、1× 实时节拍回放三段 iPhone 14 Pro 录制;官方固定 K 臂 k=1.0685/1.0246/0.9778(与 S2 官方臂 1.0685/1.0246–1.0252/0.9784–0.9791 一致;6e2d 按跨场基线 ÷1.0974 → −2.6%)。详见 xrofficial/runs/results.jsonl。",
+ "kept_deviations_zh": [
+  "逐帧内参(自动对焦保持开;官方锁焦 0.835 + 固定 K)",
+  "图像源 = ARKit 1920 Y 平面 box/3 → 640×480(官方 AVCapture vga640x480 BGRA,引擎内 cvtColor)",
+  "-fno-fast-math -ffp-contract=off(生产跨端确定性规则;官方 iOS 工具链是 -O3 -ffast-math)"
+ ]
+}

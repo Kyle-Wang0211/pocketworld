@@ -112,8 +112,10 @@ set_plist_string "PWXrslamEngineSHA16" "$xrslam_engine_sha16"
 set_plist_string "PWXrslamEngineFingerprint" "$xrslam_engine_fingerprint"
 set_plist_string "PWXrslamEnginePedigree" "$xrslam_pedigree"
 set_plist_string "PWXrslamGpuFrontendLinked" "$xrslam_gpu_frontend"
-set_plist_string "PWXrslamThreadingEnabled" "false"
-set_plist_string "PWXrslamBenchArm" "${pw_bench_arm_linked:-generic}"
+# [bench 2026-09-24] 线程化跟臂表走(官方配置臂 = true);旧臂表没有这一列 ⇒ false(与原先写死的值相同)。
+set_plist_string "PWXrslamThreadingEnabled" "${PW_XRSLAM_LINKED_ENGINE_THREADING:-false}"
+# [bench 2026-09-24] 空臂名 = 台架默认臂(09-24 起是 official_rules,不再是 generic)⇒ 写 default,不写臂名。
+set_plist_string "PWXrslamBenchArm" "${pw_bench_arm_linked:-default}"
 [ -n "$native_host_uuid" ] && set_plist_string "PWNativeHostUUID" "$native_host_uuid"
 
-echo "PW_BENCH_ENGINE_IDENTITY engine=$pw_xrslam_engine_linked bench_arm=${pw_bench_arm_linked:-generic} lib=$xrslam_lib_name sha16=$xrslam_engine_sha16 pedigree=$xrslam_pedigree gpu_frontend=$xrslam_gpu_frontend host_uuid=$native_host_uuid"
+echo "PW_BENCH_ENGINE_IDENTITY engine=$pw_xrslam_engine_linked bench_arm=${pw_bench_arm_linked:-default} lib=$xrslam_lib_name sha16=$xrslam_engine_sha16 pedigree=$xrslam_pedigree gpu_frontend=$xrslam_gpu_frontend host_uuid=$native_host_uuid"
