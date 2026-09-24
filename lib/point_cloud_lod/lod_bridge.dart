@@ -107,7 +107,7 @@ class LodParams {
   }
 }
 
-/// pwlod_frame_stats (pwlod_viewer.h:103-114).
+/// pwlod_frame_stats (pwlod_viewer.h:104-119, ABI v2).
 class LodFrameStats {
   const LodFrameStats({
     required this.frameNumber,
@@ -120,6 +120,7 @@ class LodFrameStats {
     required this.minNodePixelSize,
     required this.cpuMs,
     required this.gpuMs,
+    required this.lowestSpacing,
     this.shell = const <String, Object?>{},
   });
 
@@ -136,6 +137,10 @@ class LodFrameStats {
   /// -1 if not yet known.
   final double gpuMs;
 
+  /// v2: Potree's per-frame lowestSpacing (smallest spacing among the nodes drawn this
+  /// frame); <= 0 if none were drawn (pwlod_viewer.h:115-118). Feeds potreeNearFar.
+  final double lowestSpacing;
+
   /// Shell-side counters, not part of pwlod_frame_stats (iOS: copy_calls, copy_empty,
   /// last_acquired_frame_number, copy_max_us, frames_ready, running) — for the plan 3b judges.
   final Map<String, Object?> shell;
@@ -151,6 +156,7 @@ class LodFrameStats {
     minNodePixelSize: _double(m, 'min_node_pixel_size'),
     cpuMs: _double(m, 'cpu_ms'),
     gpuMs: _double(m, 'gpu_ms'),
+    lowestSpacing: _double(m, 'lowest_spacing'),
     shell: m['shell'] is Map
         ? Map<String, Object?>.from(m['shell'] as Map)
         : const <String, Object?>{},

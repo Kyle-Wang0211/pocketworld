@@ -89,7 +89,8 @@ void main() {
   tearDown(() => messenger.setMockMethodCallHandler(channel, null));
 
   test('the frozen header is the one this test was written against', () {
-    expect(header, contains('#define PWLOD_ABI_VERSION 1'));
+    expect(header, contains('#define PWLOD_ABI_VERSION 2'));
+    expect(headerFields(header, 'pwlod_frame_stats').last, 'lowest_spacing');
     expect(headerFields(header, 'pwlod_camera'), [
       'view_proj_row_major',
       'eye_world',
@@ -332,7 +333,12 @@ void main() {
       () async {
         final w = wireFor(
           'pwlod_frame_stats',
-          doubles: {'min_node_pixel_size', 'cpu_ms', 'gpu_ms'},
+          doubles: {
+            'min_node_pixel_size',
+            'cpu_ms',
+            'gpu_ms',
+            'lowest_spacing',
+          },
         );
         reply = (c) => c.method == 'stats' ? w : null;
         final s = (await LodBridge().stats(textureId: 1))!;
@@ -348,6 +354,7 @@ void main() {
             s.minNodePixelSize,
             s.cpuMs,
             s.gpuMs,
+            s.lowestSpacing,
           ],
           [for (final f in headerFields(header, 'pwlod_frame_stats')) w[f]],
         );

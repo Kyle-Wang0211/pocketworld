@@ -394,6 +394,7 @@ final class PwLodTexture: NSObject, FlutterTexture {
       "min_node_pixel_size": st.min_node_pixel_size,
       "cpu_ms": st.cpu_ms,
       "gpu_ms": st.gpu_ms,
+      "lowest_spacing": st.lowest_spacing,  // ABI v2 (pwlod_viewer.h:115-118)
       "shell": shell,
     ]
   }
