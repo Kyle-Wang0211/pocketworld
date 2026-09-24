@@ -29,6 +29,10 @@
 		9B1673374931C4F76F9B36EF /* libPods-RunnerTests.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 2536F507406F4BEF525FFBA0 /* libPods-RunnerTests.a */; };
 		A1B2C3D4E5F60000DEAD0007 /* test_scene.jpg in Resources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60000DEAD0008 /* test_scene.jpg */; };
 		B70000010000000000000001 /* pw_jxl_bridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = B70000110000000000000001 /* pw_jxl_bridge.mm */; };
+		F1D000010000000000000001 /* PwLodSurface.m in Sources */ = {isa = PBXBuildFile; fileRef = F1D000110000000000000001 /* PwLodSurface.m */; };
+		F1D000010000000000000003 /* PwLodTexture.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1D000110000000000000003 /* PwLodTexture.swift */; };
+		F1D000010000000000000004 /* PwLodTexturePlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1D000110000000000000004 /* PwLodTexturePlugin.swift */; };
+		F1D000010000000000000005 /* PwLodProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1D000110000000000000005 /* PwLodProbe.swift */; };
 		B70000020000000000000002 /* PWJXLBridgeTests.mm in Sources */ = {isa = PBXBuildFile; fileRef = B70000130000000000000003 /* PWJXLBridgeTests.mm */; };
 		BEA29390F7446D1CF364C5CF /* libPods-Runner.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 9E80450483A882E2B20514AC /* libPods-Runner.a */; };
 		C80000010000000000000001 /* pw_zpaq_bridge.cpp in Sources */ = {isa = PBXBuildFile; fileRef = C80000110000000000000001 /* pw_zpaq_bridge.cpp */; settings = {COMPILER_FLAGS = "-DNOJIT -Dunix"; }; };
@@ -104,6 +108,11 @@
 		9E80450483A882E2B20514AC /* libPods-Runner.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-Runner.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		A1B2C3D4E5F60000DEAD0008 /* test_scene.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; name = test_scene.jpg; path = TestFixtures/test_scene.jpg; sourceTree = "<group>"; };
 		B70000110000000000000001 /* pw_jxl_bridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = pw_jxl_bridge.mm; sourceTree = "<group>"; };
+		F1D000110000000000000001 /* PwLodSurface.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = PwLodSurface.m; sourceTree = "<group>"; };
+		F1D000110000000000000003 /* PwLodTexture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PwLodTexture.swift; sourceTree = "<group>"; };
+		F1D000110000000000000004 /* PwLodTexturePlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PwLodTexturePlugin.swift; sourceTree = "<group>"; };
+		F1D000110000000000000005 /* PwLodProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PwLodProbe.swift; sourceTree = "<group>"; };
+		F1D000110000000000000002 /* PwLodSurface.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PwLodSurface.h; sourceTree = "<group>"; };
 		B70000120000000000000002 /* pw_jxl_bridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = pw_jxl_bridge.h; sourceTree = "<group>"; };
 		B70000130000000000000003 /* PWJXLBridgeTests.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PWJXLBridgeTests.mm; sourceTree = "<group>"; };
 		C80000110000000000000001 /* pw_zpaq_bridge.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = pw_zpaq_bridge.cpp; sourceTree = "<group>"; };
@@ -208,6 +217,11 @@
 				E10000110000000000000001 /* PwXrslamTransportCore.cpp */,
 				0F1C1A10000000000000A001 /* PwVioCapability.swift */,
 				0F1C1A10000000000000A002 /* PwVioThermal.swift */,
+				F1D000110000000000000002 /* PwLodSurface.h */,
+				F1D000110000000000000001 /* PwLodSurface.m */,
+				F1D000110000000000000003 /* PwLodTexture.swift */,
+				F1D000110000000000000004 /* PwLodTexturePlugin.swift */,
+				F1D000110000000000000005 /* PwLodProbe.swift */,
 				0F1C1A200000000000000004 /* OfficialArchiveBackgroundTask.swift */,
 				0F1C1A300000000000000005 /* PWJSONSafety.swift */,
 				16019E67BE3B581AE0E2152F /* MetalRenderer.swift */,
@@ -551,6 +565,10 @@
 				0F1C1A10000000000000A013 /* PwVioSlamFeeder.swift in Sources */,
 				0F1C1A10000000000000A011 /* PwVioCapability.swift in Sources */,
 				0F1C1A10000000000000A012 /* PwVioThermal.swift in Sources */,
+				F1D000010000000000000001 /* PwLodSurface.m in Sources */,
+				F1D000010000000000000003 /* PwLodTexture.swift in Sources */,
+				F1D000010000000000000004 /* PwLodTexturePlugin.swift in Sources */,
+				F1D000010000000000000005 /* PwLodProbe.swift in Sources */,
 				0F1C1A200000000000000014 /* OfficialArchiveBackgroundTask.swift in Sources */,
 				0F1C1A300000000000000015 /* PWJSONSafety.swift in Sources */,
 				03D62ABCFE668FE66D5CD107 /* MetalRenderer.swift in Sources */,
@@ -663,6 +681,7 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/Vendor/JXL/include",
 					"$(PROJECT_DIR)/Vendor/Zpaq/include",
+					"$(PROJECT_DIR)/../vendor/aether_lod/include",
 				);
 				INFOPLIST_FILE = Runner/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -705,7 +724,10 @@
 					"-Wl,-u,_pw_zpaq_decompress_file",
 					"-Wl,-u,_pw_zpaq_cancellation_generation",
 					"-Wl,-u,_pw_zpaq_request_cancel",
+					"-force_load",
+					"$(PW_LOD_ARCHIVE)",
 				);
+				PW_LOD_ARCHIVE = "$(PROJECT_DIR)/../vendor/aether_lod/libs/ios-arm64/libpw_lod_ee942e08.a";
 				PRODUCT_BUNDLE_IDENTIFIER = com.kyle.PocketWorld;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
@@ -897,6 +919,7 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/Vendor/JXL/include",
 					"$(PROJECT_DIR)/Vendor/Zpaq/include",
+					"$(PROJECT_DIR)/../vendor/aether_lod/include",
 				);
 				INFOPLIST_FILE = Runner/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -939,7 +962,10 @@
 					"-Wl,-u,_pw_zpaq_decompress_file",
 					"-Wl,-u,_pw_zpaq_cancellation_generation",
 					"-Wl,-u,_pw_zpaq_request_cancel",
+					"-force_load",
+					"$(PW_LOD_ARCHIVE)",
 				);
+				PW_LOD_ARCHIVE = "$(PROJECT_DIR)/../vendor/aether_lod/libs/ios-arm64/libpw_lod_ee942e08.a";
 				PRODUCT_BUNDLE_IDENTIFIER = com.kyle.PocketWorld;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
@@ -971,6 +997,7 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/Vendor/JXL/include",
 					"$(PROJECT_DIR)/Vendor/Zpaq/include",
+					"$(PROJECT_DIR)/../vendor/aether_lod/include",
 				);
 				INFOPLIST_FILE = Runner/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1013,7 +1040,10 @@
 					"-Wl,-u,_pw_zpaq_decompress_file",
 					"-Wl,-u,_pw_zpaq_cancellation_generation",
 					"-Wl,-u,_pw_zpaq_request_cancel",
+					"-force_load",
+					"$(PW_LOD_ARCHIVE)",
 				);
+				PW_LOD_ARCHIVE = "$(PROJECT_DIR)/../vendor/aether_lod/libs/ios-arm64/libpw_lod_ee942e08.a";
 				PRODUCT_BUNDLE_IDENTIFIER = com.kyle.PocketWorld;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";

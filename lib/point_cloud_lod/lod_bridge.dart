@@ -20,6 +20,11 @@
 //     (e.g. 'PWLOD_ERR_GPU'), or a shell code for shell-side failures.
 //
 // No platform type appears here; the file is shared by every shell.
+//
+// [v3 2026-09-24, production 171] pwlod_viewer.h v3: pwlod_camera carries CloudProjection's
+// focal_px / orbit_distance / ortho_mix (no projection enum), new setStyle (pwlod_style) and
+// setPoints (flat point set), stats.source. The M1 bench calls (runBench / launchArgs) of
+// feat/lod-viewer are not carried into production.
 import 'dart:typed_data';
 
 import 'package:flutter/services.dart';
@@ -141,6 +146,7 @@ class LodFrameStats {
     required this.cpuMs,
     required this.gpuMs,
     required this.lowestSpacing,
+    required this.source,
     this.shell = const <String, Object?>{},
   });
 
@@ -162,6 +168,9 @@ class LodFrameStats {
   /// queue was empty (pwlod_viewer.h:116-121). Feeds potreeNearFar.
   final double lowestSpacing;
 
+  /// v3: 0 nothing loaded, 1 flat point set, 2 octree (pwlod_frame_stats.source).
+  final int source;
+
   /// Shell-side counters, not part of pwlod_frame_stats (iOS: copy_calls, copy_empty,
   /// last_acquired_frame_number, copy_max_us, frames_ready, running) — for the plan 3b judges.
   final Map<String, Object?> shell;
@@ -178,10 +187,111 @@ class LodFrameStats {
     cpuMs: _double(m, 'cpu_ms'),
     gpuMs: _double(m, 'gpu_ms'),
     lowestSpacing: _double(m, 'lowest_spacing'),
+    source: _int(m, 'source'),
     shell: m['shell'] is Map
         ? Map<String, Object?>.from(m['shell'] as Map)
         : const <String, Object?>{},
   );
+}
+
+/// pwlod_tone (pwlod_viewer.h v3); index = C value.
+enum LodTone { agx, aces, pbrNeutral, none }
+
+/// pwlod_selection_mode (pwlod_viewer.h v3); index = C value.
+enum LodSelectionMode { none, tintOutside, cullOutside }
+
+/// pwlod_style (pwlod_viewer.h v3): the look of SparseCloudView. The values are the caller's —
+/// SparseCloudView passes its own state fields (sparse_cloud_view.dart _pointSize/_exposure/_tone,
+/// the painter's 16 px sprite with a 7 px disc, kMaxPointSpriteScale, SparseCloudPainter
+/// heightRampOf, kSelectionOutColor); nothing is defaulted here except where the header's
+/// pwlod_style_default equals the painter by definition.
+class LodStyle {
+  const LodStyle({
+    required this.pointSize,
+    required this.spritePx,
+    required this.discRadiusPxAtScale1,
+    required this.maxSpriteScale,
+    required this.tone,
+    required this.exposure,
+    required this.uncoloredMinY,
+    required this.uncoloredInvYSpan,
+    this.selectionMode = LodSelectionMode.none,
+    this.selectionCenter = const <double>[0, 0, 0],
+    this.selectionSize = const <double>[0, 0, 0],
+    this.selectionRotRowMajor = const <double>[1, 0, 0, 0, 1, 0, 0, 0, 1],
+    required this.selectionOutArgb,
+  });
+
+  final double pointSize;
+  final double spritePx;
+  final double discRadiusPxAtScale1;
+  final double maxSpriteScale;
+  final LodTone tone;
+  final double exposure;
+  final double uncoloredMinY;
+  final double uncoloredInvYSpan;
+  final LodSelectionMode selectionMode;
+  final List<double> selectionCenter;
+  final List<double> selectionSize;
+  final List<double> selectionRotRowMajor;
+
+  /// 0xAARRGGBB as the painter writes it (kSelectionOutColor = 0xFFE05252).
+  final int selectionOutArgb;
+
+  /// Wire form under the C field names (a test parses the header and compares).
+  Map<String, Object> toWire() {
+    if (selectionCenter.length != 3 ||
+        selectionSize.length != 3 ||
+        selectionRotRowMajor.length != 9) {
+      throw ArgumentError('selection centre/size need 3, rot needs 9 values');
+    }
+    return <String, Object>{
+      'point_size': pointSize,
+      'sprite_px': spritePx,
+      'disc_radius_px_at_scale1': discRadiusPxAtScale1,
+      'max_sprite_scale': maxSpriteScale,
+      'tone': tone.index,
+      'exposure': exposure,
+      'uncolored_min_y': uncoloredMinY,
+      'uncolored_inv_y_span': uncoloredInvYSpan,
+      'selection_mode': selectionMode.index,
+      'selection_center': Float64List.fromList(selectionCenter),
+      'selection_size': Float64List.fromList(selectionSize),
+      'selection_rot_row_major': Float64List.fromList(selectionRotRowMajor),
+      'selection_out_argb': selectionOutArgb & 0xFFFFFFFF,
+    };
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is LodStyle && _listEq(_flat(), other._flat());
+
+  @override
+  int get hashCode => Object.hashAll(_flat());
+
+  List<Object> _flat() => <Object>[
+    pointSize,
+    spritePx,
+    discRadiusPxAtScale1,
+    maxSpriteScale,
+    tone.index,
+    exposure,
+    uncoloredMinY,
+    uncoloredInvYSpan,
+    selectionMode.index,
+    ...selectionCenter,
+    ...selectionSize,
+    ...selectionRotRowMajor,
+    selectionOutArgb,
+  ];
+
+  static bool _listEq(List<Object> a, List<Object> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
 }
 
 /// What `create` returns.
@@ -195,7 +305,7 @@ class LodTextureInfo {
   });
   final int textureId;
 
-  /// pwlod_version(): `"<engine git sha8> abi=1"`.
+  /// pwlod_version(): `"<engine git sha8> abi=3"`.
   final String version;
 
   /// WGPUBackendType the engine's device got.
@@ -383,39 +493,6 @@ List<LodCheck> judgeVerify(LodVerifyReport v, {LodBuildReport? build}) {
   return out;
 }
 
-/// What `runBench` (plan M1, pwlod_run) returns.
-class LodBenchResult {
-  const LodBenchResult({
-    required this.result,
-    required this.resultIsFile,
-    required this.wallMs,
-    required this.probeStart,
-    required this.probeEnd,
-    required this.version,
-  });
-
-  /// pwlod_run's return: the result JSON path, or a diagnostic string on failure.
-  final String result;
-  final bool resultIsFile;
-  final double wallMs;
-
-  /// PwLodProbeSample before / after, as {thermal_state, footprint_mb, avail_mb}.
-  final Map<String, Object?> probeStart;
-  final Map<String, Object?> probeEnd;
-  final String version;
-
-  static LodBenchResult fromWire(Map<Object?, Object?> m) => LodBenchResult(
-    result: (m['result'] as String?) ?? '',
-    resultIsFile: m['result_is_file'] == true,
-    wallMs: _double(m, 'wall_ms'),
-    probeStart: Map<String, Object?>.from(
-      _map(m['probe_start'], 'probe_start'),
-    ),
-    probeEnd: Map<String, Object?>.from(_map(m['probe_end'], 'probe_end')),
-    version: (m['version'] as String?) ?? '',
-  );
-}
-
 class LodBridge {
   LodBridge({MethodChannel? channel})
     : _channel = channel ?? const MethodChannel(kPwLodChannel);
@@ -465,10 +542,9 @@ class LodBridge {
       // Row-major world -> clip, element [r*4+c]; copied, never reordered.
       'view_proj_row_major': Float64List.fromList(f.viewProjRowMajor),
       'eye_world': Float64List.fromList(f.eyeWorld),
-      'projection': f.projection.wireValue,
-      'fov_y_degrees': f.fovYDegrees,
-      'ortho_width_world': f.orthoWidthWorld,
-      'ortho_height_world': f.orthoHeightWorld,
+      'focal_px': f.focalPx,
+      'orbit_distance': f.orbitDistance,
+      'ortho_mix': f.orthoMix,
       'viewport_width_px': f.viewportWidthPx,
       'viewport_height_px': f.viewportHeightPx,
     };
@@ -480,6 +556,37 @@ class LodBridge {
     required LodCameraFrame camera,
   }) =>
       _channel.invokeMethod<void>('setCamera', cameraToWire(textureId, camera));
+
+  /// v3 pwlod_viewer_set_style.
+  Future<void> setStyle({required int textureId, required LodStyle style}) =>
+      _channel.invokeMethod<void>('setStyle', <String, Object>{
+        'textureId': textureId,
+        ...style.toWire(),
+      });
+
+  /// v3 pwlod_viewer_set_points: a flat point set becomes the current source. [xyz] holds 3·n
+  /// floats, [rgb] at least 3·n bytes; [visibility] is sent only when it has exactly n bytes (the
+  /// painter ignores a mask of any other length, and the C call takes no mask length).
+  Future<void> setPoints({
+    required int textureId,
+    required Float32List xyz,
+    required Uint8List rgb,
+    required bool colored,
+    Uint8List? visibility,
+  }) {
+    final n = xyz.length ~/ 3;
+    if (xyz.length != n * 3 || rgb.length < n * 3) {
+      throw ArgumentError('xyz must be 3·n floats and rgb at least 3·n bytes');
+    }
+    return _channel.invokeMethod<void>('setPoints', <String, Object>{
+      'textureId': textureId,
+      'xyz': xyz,
+      'rgb': rgb,
+      'count': n,
+      'colored': colored,
+      if (visibility != null && visibility.length == n) 'visibility': visibility,
+    });
+  }
 
   Future<void> setParams({required int textureId, required LodParams params}) =>
       _channel.invokeMethod<void>('setParams', <String, Object>{
@@ -524,37 +631,8 @@ class LodBridge {
     return LodVerifyReport.fromWire(_map(raw, 'verifyOctree'));
   }
 
-  /// Plan M1: pwlod_run(octree_dir, out_dir, args, probe, NULL) on a background queue.
-  Future<LodBenchResult> runBench({
-    required String octreeDir,
-    required String outDir,
-    required String args,
-  }) async {
-    final raw = await _channel.invokeMethod<Object?>(
-      'runBench',
-      <String, Object>{
-        'octree_dir': octreeDir,
-        'out_dir': outDir,
-        'args': args,
-      },
-    );
-    return LodBenchResult.fromWire(_map(raw, 'runBench'));
-  }
-
   Future<void> dispose({required int textureId}) => _channel.invokeMethod<void>(
     'dispose',
     <String, Object>{'textureId': textureId},
   );
-
-  /// `-PWLod*` process launch arguments (detached `devicectl ... launch -- -PWLodX v`),
-  /// keys without the leading dash. Empty map when none.
-  Future<Map<String, String>> launchArgs() async {
-    final raw = await _channel.invokeMethod<Object?>('launchArgs');
-    if (raw is! Map) return <String, String>{};
-    return <String, String>{
-      for (final e in raw.entries)
-        if (e.key is String && e.value is String)
-          e.key as String: e.value as String,
-    };
-  }
 }

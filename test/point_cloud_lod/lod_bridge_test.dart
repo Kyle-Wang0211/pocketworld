@@ -1,6 +1,8 @@
 // Judges for lib/point_cloud_lod/lod_bridge.dart over a mocked `pw_lod_texture` channel.
 // Field names are read from the frozen C header, so a key that drifts from the ABI
 // fails here. Every checker has a negative control run through the same checker.
+// [v3 2026-09-24] Adapted from feat/lod-viewer@56f3bb9 to pwlod_viewer.h v3 (camera = CloudProjection
+// scalars, setStyle / setPoints, stats.source); the M1 bench calls are gone from production.
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -89,18 +91,39 @@ void main() {
   tearDown(() => messenger.setMockMethodCallHandler(channel, null));
 
   test('the frozen header is the one this test was written against', () {
-    expect(header, contains('#define PWLOD_ABI_VERSION 2'));
-    expect(headerFields(header, 'pwlod_frame_stats').last, 'lowest_spacing');
+    expect(header, contains('#define PWLOD_ABI_VERSION 3'));
+    expect(headerFields(header, 'pwlod_frame_stats').last, 'source');
     expect(headerFields(header, 'pwlod_camera'), [
       'view_proj_row_major',
       'eye_world',
-      'projection',
-      'fov_y_degrees',
-      'ortho_width_world',
-      'ortho_height_world',
+      'focal_px',
+      'orbit_distance',
+      'ortho_mix',
       'viewport_width_px',
       'viewport_height_px',
     ]);
+    // pwlod_tone / pwlod_selection_mode order = the Dart enums' order
+    List<String> enumNames(String name) => RegExp(r'(PWLOD_[A-Z_]+)\s*=\s*(\d+)')
+        .allMatches(
+          RegExp('typedef enum $name \\{(.*?)\\}', dotAll: true)
+              .firstMatch(header)!
+              .group(1)!,
+        )
+        .map((m) => m.group(1)!)
+        .toList();
+    expect(enumNames('pwlod_tone'), [
+      'PWLOD_TONE_AGX',
+      'PWLOD_TONE_ACES',
+      'PWLOD_TONE_PBR_NEUTRAL',
+      'PWLOD_TONE_NONE',
+    ]);
+    expect(LodTone.values.map((t) => t.name), ['agx', 'aces', 'pbrNeutral', 'none']);
+    expect(enumNames('pwlod_selection_mode'), [
+      'PWLOD_SEL_NONE',
+      'PWLOD_SEL_TINT_OUTSIDE',
+      'PWLOD_SEL_CULL_OUTSIDE',
+    ]);
+    expect(LodSelectionMode.values.map((t) => t.name), ['none', 'tintOutside', 'cullOutside']);
     // pwlod_status order = kPwLodStatusNames order
     final statusBody = RegExp(
       r'typedef enum pwlod_status \{(.*?)\}',
@@ -129,7 +152,7 @@ void main() {
     );
     const size = Size(390, 844);
     final frame = lodCameraFrame(
-      camera: cam,
+      projection: cam.projectionFor(size),
       logicalSize: size,
       viewportWidthPx: 1170,
       viewportHeightPx: 2532,
@@ -140,7 +163,7 @@ void main() {
     const probe = [2.0, -1.0, 9.5];
 
     test(
-      'keys are exactly pwlod_camera + textureId; row-major 16 doubles; ortho fields',
+      'keys are exactly pwlod_camera + textureId; row-major 16 doubles; CloudProjection scalars',
       () async {
         await LodBridge().setCamera(textureId: 7, camera: frame);
         expect(calls.single.method, 'setCamera');
@@ -157,16 +180,10 @@ void main() {
           size,
           probe,
         );
-        expect(a['projection'], 1); // PWLOD_PROJ_ORTHOGRAPHIC
-        expect(a['fov_y_degrees'], 0.0);
-        expect(a['ortho_width_world'], frame.orthoWidthWorld);
-        expect(a['ortho_height_world'], frame.orthoHeightWorld);
-        expect(a['ortho_width_world'] as double, greaterThan(0));
-        expect(
-          (a['ortho_width_world'] as double) /
-              (a['ortho_height_world'] as double),
-          closeTo(size.width / size.height, 1e-12),
-        );
+        expect(a['focal_px'], old.f);
+        expect(a['orbit_distance'], old.camDist);
+        expect(a['ortho_mix'], 1.0); // orthographic
+        expect(a['focal_px'] as double, greaterThan(0));
         expect(a['viewport_width_px'], 1170);
         expect(a['viewport_height_px'], 2532);
         final eye = a['eye_world'] as Float64List;
@@ -216,10 +233,10 @@ void main() {
     });
 
     test(
-      'perspective switch travels as PWLOD_PROJ_PERSPECTIVE with fov, no ortho size',
+      'perspective travels as ortho_mix 0 (a different matrix)',
       () async {
         final persp = lodCameraFrame(
-          camera: CloudCamera(
+          projection: CloudCamera(
             yaw: 2.1,
             pitch: -0.7,
             zoom: 1.7,
@@ -229,7 +246,7 @@ void main() {
             pivotY: -3.25,
             pivotZ: 8,
             radius: 4.5,
-          ),
+          ).projectionFor(size),
           logicalSize: size,
           viewportWidthPx: 1170,
           viewportHeightPx: 2532,
@@ -238,9 +255,7 @@ void main() {
         );
         await LodBridge().setCamera(textureId: 7, camera: persp);
         final a = calls.single.arguments as Map;
-        expect(a['projection'], 0);
-        expect(a['fov_y_degrees'] as double, greaterThan(0));
-        expect(a['ortho_width_world'], 0.0);
+        expect(a['ortho_mix'], 0.0);
         // and the matrix really is a different one
         expect(
           () => expectRowMajorViewProj(
@@ -259,14 +274,14 @@ void main() {
       final bad = LodCameraFrame(
         viewProjRowMajor: Float64List(16)..[5] = double.nan,
         eyeWorld: Float64List(3),
-        projection: LodProjection.orthographic,
-        fovYDegrees: 0,
-        orthoWidthWorld: 1,
-        orthoHeightWorld: 1,
+        focalPx: 1,
+        orbitDistance: 1,
+        orthoMix: 1,
         viewportWidthPx: 1,
         viewportHeightPx: 1,
         near: 0.1,
         far: 1,
+        viewRowMajor: Float64List(16),
       );
       expect(() => LodBridge.cameraToWire(1, bad), throwsArgumentError);
     });
@@ -394,6 +409,7 @@ void main() {
         );
         reply = (c) => c.method == 'stats' ? w : null;
         final s = (await LodBridge().stats(textureId: 1))!;
+        expect(headerFields(header, 'pwlod_frame_stats').length, 12);
         expect(
           [
             s.frameNumber,
@@ -407,6 +423,7 @@ void main() {
             s.cpuMs,
             s.gpuMs,
             s.lowestSpacing,
+            s.source,
           ],
           [for (final f in headerFields(header, 'pwlod_frame_stats')) w[f]],
         );
@@ -564,56 +581,109 @@ void main() {
     });
   });
 
-  test('create / dispose / runBench / launchArgs marshal and decode', () async {
+  group('v3 setStyle / setPoints', () {
+    const style = LodStyle(
+      pointSize: 3,
+      spritePx: 16,
+      discRadiusPxAtScale1: 7,
+      maxSpriteScale: 50 / 16,
+      tone: LodTone.pbrNeutral,
+      exposure: 1,
+      uncoloredMinY: -0.25,
+      uncoloredInvYSpan: 1.5,
+      selectionMode: LodSelectionMode.tintOutside,
+      selectionCenter: [0.1, 0.2, 0.3],
+      selectionSize: [1, 2, 3],
+      selectionRotRowMajor: [0, -1, 0, 1, 0, 0, 0, 0, 1],
+      selectionOutArgb: 0xFFE05252,
+    );
+
+    test('setStyle keys are exactly pwlod_style + textureId; enum values = C values', () async {
+      await LodBridge().setStyle(textureId: 9, style: style);
+      final a = calls.single.arguments as Map;
+      expect(calls.single.method, 'setStyle');
+      expect(a.keys.toSet(), {'textureId', ...headerFields(header, 'pwlod_style')});
+      expect(a['tone'], 2); // PWLOD_TONE_PBR_NEUTRAL
+      expect(a['selection_mode'], 1); // PWLOD_SEL_TINT_OUTSIDE
+      expect(a['selection_out_argb'], 0xFFE05252);
+      expect((a['selection_rot_row_major'] as Float64List).toList(), [0, -1, 0, 1, 0, 0, 0, 0, 1]);
+      expect((a['selection_size'] as Float64List).toList(), [1, 2, 3]);
+      // NEGATIVE: a misspelt / missing field would not match the header's set
+      expect(headerFields(header, 'pwlod_style').contains('selection_rot'), isFalse);
+      expect(() => const LodStyle(
+            pointSize: 3,
+            spritePx: 16,
+            discRadiusPxAtScale1: 7,
+            maxSpriteScale: 1,
+            tone: LodTone.none,
+            exposure: 1,
+            uncoloredMinY: 0,
+            uncoloredInvYSpan: 1,
+            selectionRotRowMajor: [1, 0, 0],
+            selectionOutArgb: 0,
+          ).toWire(), throwsArgumentError);
+    });
+
+    test('setPoints sends typed data; mask only when it has exactly n bytes', () async {
+      final xyz = Float32List.fromList([1, 2, 3, 4, 5, 6]);
+      final rgb = Uint8List.fromList([9, 8, 7, 6, 5, 4]);
+      await LodBridge().setPoints(
+        textureId: 4,
+        xyz: xyz,
+        rgb: rgb,
+        colored: true,
+        visibility: Uint8List.fromList([1, 0]),
+      );
+      final a = calls.last.arguments as Map;
+      expect(calls.last.method, 'setPoints');
+      expect(a['count'], 2);
+      expect(a['colored'], true);
+      expect(a['xyz'], isA<Float32List>());
+      expect((a['xyz'] as Float32List).toList(), [1, 2, 3, 4, 5, 6]);
+      expect((a['rgb'] as Uint8List).toList(), [9, 8, 7, 6, 5, 4]);
+      expect((a['visibility'] as Uint8List).toList(), [1, 0]);
+      // NEGATIVE: a wrong-length mask is dropped (the painter ignores it; the C call has no length)
+      await LodBridge().setPoints(
+        textureId: 4,
+        xyz: xyz,
+        rgb: rgb,
+        colored: false,
+        visibility: Uint8List(3),
+      );
+      final b = calls.last.arguments as Map;
+      expect(b.containsKey('visibility'), isFalse);
+      expect(b['colored'], false);
+      expect(
+        () => LodBridge().setPoints(textureId: 4, xyz: xyz, rgb: Uint8List(5), colored: true),
+        throwsArgumentError,
+      );
+    });
+  });
+
+  test('create / loadOctree / dispose marshal and decode', () async {
     reply = (c) {
       switch (c.method) {
         case 'create':
           return {
             'textureId': 42,
-            'version': 'deadbeef abi=1',
+            'version': 'ee942e08 abi=3',
             'backend': 5,
             'viewport_width_px': 1170,
             'viewport_height_px': 2532,
           };
-        case 'runBench':
-          return {
-            'result': '/docs/lod_bench/x/lod.json',
-            'result_is_file': true,
-            'wall_ms': 12.5,
-            'probe_start': {
-              'thermal_state': 0,
-              'footprint_mb': 100.0,
-              'avail_mb': 2000.0,
-            },
-            'probe_end': {
-              'thermal_state': 1,
-              'footprint_mb': 300.0,
-              'avail_mb': 1800.0,
-            },
-            'version': 'deadbeef abi=1',
-          };
-        case 'launchArgs':
-          return {'PWLodCapture': 'scan1', 'bogus': 3};
       }
       return null;
     };
     final bridge = LodBridge();
     final info = await bridge.create(widthPx: 1170, heightPx: 2532);
     expect(info.textureId, 42);
+    expect(info.version, 'ee942e08 abi=3');
     expect(calls.last.arguments, {
       'viewport_width_px': 1170,
       'viewport_height_px': 2532,
     });
     await bridge.loadOctree(textureId: 42, octreeDir: '/o');
     expect(calls.last.arguments, {'textureId': 42, 'octree_dir': '/o'});
-    final r = await bridge.runBench(
-      octreeDir: '/o',
-      outDir: '/r',
-      args: 'mode=perf',
-    );
-    expect(r.resultIsFile, isTrue);
-    expect(r.probeEnd['thermal_state'], 1);
-    expect(await bridge.launchArgs(), {'PWLodCapture': 'scan1'});
     await bridge.dispose(textureId: 42);
     expect(calls.last.method, 'dispose');
     expect(() => bridge.create(widthPx: 0, heightPx: 1), throwsArgumentError);

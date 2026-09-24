@@ -41,7 +41,11 @@
 //
 // ── PocketWorld: PwLodTexture.swift ───────────────────────────────────────────────────────
 // One LOD viewer shown as a Flutter texture (plan LOD_ARLOOPBENCH_PLAN_20260924 §3b, user
-// choice B1 = the camera plugin's shape). Bench (arloopbench) and feat/lod-viewer only.
+// choice B1 = the camera plugin's shape).
+// [v3 2026-09-24, production 171] One GPU viewer draws every stage of the capture page with the
+// look of SparseCloudView (pwlod_viewer.h v3): set_points (flat sets), set_style, the camera as
+// CloudProjection (focal_px / orbit_distance / ortho_mix). The GPU device is created ONCE per
+// app by PwLodTexturePlugin and shared; each texture owns only its viewer + ring.
 //
 // Where the camera plugin's pieces went:
 //   camera plugin                              here
@@ -155,6 +159,7 @@ final class PwLodTexture: NSObject, FlutterTexture {
   /// never overlaps a load.
   let ioQueue: DispatchQueue
 
+  /// The app-wide device (PwLodTexturePlugin owns it; never destroyed here).
   private let gpu: UnsafeMutablePointer<pwlod_gpu>
   private var viewer: OpaquePointer?
   private var ring: OpaquePointer?
@@ -191,28 +196,19 @@ final class PwLodTexture: NSObject, FlutterTexture {
     super.init()
   }
 
-  /// GPU -> viewer -> ring -> set_targets. Any failure unwinds what was created. Call off the
-  /// main thread (device creation is not instant).
-  static func make(widthPx: UInt32, heightPx: UInt32) throws -> PwLodTexture {
-    let gpu = UnsafeMutablePointer<pwlod_gpu>.allocate(capacity: 1)
-    gpu.initialize(to: pwlod_gpu())
-    var s = PwLodSurfaceCreateGpu(gpu)
-    guard s == PWLOD_OK else {
-      gpu.deallocate()
-      throw PwLodError(code: pwLodStatusName(s), message: "pwlod_gpu_create (IOSurface features)")
-    }
+  /// viewer -> ring -> set_targets on the app-wide [gpu]. Any failure unwinds what was created
+  /// (never the shared device). Call off the main thread.
+  static func make(
+    widthPx: UInt32, heightPx: UInt32, gpu: UnsafeMutablePointer<pwlod_gpu>
+  ) throws -> PwLodTexture {
     var viewer: OpaquePointer?
-    s = pwlod_viewer_create(gpu, &viewer)
+    var s = pwlod_viewer_create(gpu, &viewer)
     guard s == PWLOD_OK, let viewer = viewer else {
-      pwlod_gpu_destroy(gpu)
-      gpu.deallocate()
       throw PwLodError(code: pwLodStatusName(s), message: "pwlod_viewer_create")
     }
     var err = [CChar](repeating: 0, count: 256)
     guard let ring = PwLodSurfaceRingCreate(gpu.pointee.device, widthPx, heightPx, &err, UInt32(err.count)) else {
       pwlod_viewer_destroy(viewer)
-      pwlod_gpu_destroy(gpu)
-      gpu.deallocate()
       throw PwLodError(code: "PWLOD_SHELL_SURFACE", message: String(cString: err))
     }
     let count = Int(PWLOD_TARGET_COUNT)
@@ -225,8 +221,6 @@ final class PwLodTexture: NSObject, FlutterTexture {
     guard s == PWLOD_OK, buffers.count == count else {
       pwlod_viewer_destroy(viewer)
       PwLodSurfaceRingDestroy(ring)
-      pwlod_gpu_destroy(gpu)
-      gpu.deallocate()
       throw PwLodError(code: pwLodStatusName(s), message: "pwlod_viewer_set_targets")
     }
     return PwLodTexture(
@@ -236,7 +230,6 @@ final class PwLodTexture: NSObject, FlutterTexture {
 
   deinit {
     close()
-    gpu.deallocate()
   }
 
   // MARK: - FlutterTexture
@@ -307,10 +300,7 @@ final class PwLodTexture: NSObject, FlutterTexture {
     sink = nil
     if let r = ring { PwLodSurfaceRingDestroy(r) }
     ring = nil
-    if gpu.pointee.device != nil || gpu.pointee.instance != nil {
-      pwlod_gpu_destroy(gpu)
-      gpu.pointee = pwlod_gpu()
-    }
+    // The device is app-wide (PwLodTexturePlugin); this texture never destroys it.
   }
 
   // MARK: - engine calls
@@ -322,8 +312,8 @@ final class PwLodTexture: NSObject, FlutterTexture {
   }
 
   func setCamera(
-    viewProjRowMajor vp: [Double], eyeWorld eye: [Double], projection: UInt32,
-    fovYDegrees: Double, orthoWidthWorld: Double, orthoHeightWorld: Double,
+    viewProjRowMajor vp: [Double], eyeWorld eye: [Double], focalPx: Double,
+    orbitDistance: Double, orthoMix: Double,
     viewportWidthPx: UInt32, viewportHeightPx: UInt32
   ) -> pwlod_status {
     guard let viewer = viewer else { return PWLOD_ERR_STATE }
@@ -336,10 +326,10 @@ final class PwLodTexture: NSObject, FlutterTexture {
     withUnsafeMutableBytes(of: &cam.eye_world) { dst in
       eye.withUnsafeBytes { dst.copyMemory(from: $0) }
     }
-    cam.projection = pwlod_projection(rawValue: projection)
-    cam.fov_y_degrees = fovYDegrees
-    cam.ortho_width_world = orthoWidthWorld
-    cam.ortho_height_world = orthoHeightWorld
+    // v3: CloudProjection's own scalars (pwlod_viewer.h:82-104).
+    cam.focal_px = focalPx
+    cam.orbit_distance = orbitDistance
+    cam.ortho_mix = orthoMix
     cam.viewport_width_px = viewportWidthPx
     cam.viewport_height_px = viewportHeightPx
     return pwlod_viewer_set_camera(viewer, &cam)
@@ -364,6 +354,58 @@ final class PwLodTexture: NSObject, FlutterTexture {
       params.debug_publish_before_done = v.int32Value
     }
     return pwlod_viewer_set_params(viewer, &params)
+  }
+
+  /// v3 pwlod_style (pwlod_viewer.h:154-205): starts from pwlod_style_default and overrides the
+  /// keys present; key = C field name.
+  func setStyle(_ a: [String: Any]) -> pwlod_status {
+    guard let viewer = viewer else { return PWLOD_ERR_STATE }
+    var st = pwlod_style()
+    pwlod_style_default(&st)
+    if let v = a["point_size"] as? NSNumber { st.point_size = v.floatValue }
+    if let v = a["sprite_px"] as? NSNumber { st.sprite_px = v.floatValue }
+    if let v = a["disc_radius_px_at_scale1"] as? NSNumber { st.disc_radius_px_at_scale1 = v.floatValue }
+    if let v = a["max_sprite_scale"] as? NSNumber { st.max_sprite_scale = v.floatValue }
+    if let v = a["tone"] as? NSNumber { st.tone = pwlod_tone(rawValue: v.uint32Value) }
+    if let v = a["exposure"] as? NSNumber { st.exposure = v.floatValue }
+    if let v = a["uncolored_min_y"] as? NSNumber { st.uncolored_min_y = v.floatValue }
+    if let v = a["uncolored_inv_y_span"] as? NSNumber { st.uncolored_inv_y_span = v.floatValue }
+    if let v = a["selection_mode"] as? NSNumber {
+      st.selection_mode = pwlod_selection_mode(rawValue: v.uint32Value)
+    }
+    if let c = PwLodArgs.float64s(a, "selection_center", count: 3) {
+      st.selection_center = (c[0], c[1], c[2])
+    }
+    if let z = PwLodArgs.float64s(a, "selection_size", count: 3) {
+      st.selection_size = (z[0], z[1], z[2])
+    }
+    if let r = PwLodArgs.float64s(a, "selection_rot_row_major", count: 9) {
+      st.selection_rot_row_major = (r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8])
+    }
+    if let v = a["selection_out_argb"] as? NSNumber { st.selection_out_argb = v.uint32Value }
+    return pwlod_viewer_set_style(viewer, &st)
+  }
+
+  /// v3 pwlod_viewer_set_points (pwlod_viewer.h:212-224): the arrays are copied by the engine
+  /// before it returns. [visibility] must be nil or exactly [count] bytes (the caller drops a
+  /// wrong-length mask, as the painter ignores one). ioQueue.
+  func setPoints(xyz: Data, rgb: Data, count: UInt64, colored: Bool, visibility: Data?) -> pwlod_status {
+    guard let viewer = viewer else { return PWLOD_ERR_STATE }
+    guard xyz.count == Int(count) * 12, rgb.count >= Int(count) * 3 else { return PWLOD_ERR_ARG }
+    if let v = visibility, v.count != Int(count) { return PWLOD_ERR_ARG }
+    return xyz.withUnsafeBytes { xp in
+      rgb.withUnsafeBytes { rp in
+        let x = xp.bindMemory(to: Float.self).baseAddress
+        let r = rp.bindMemory(to: UInt8.self).baseAddress
+        if let vis = visibility {
+          return vis.withUnsafeBytes { vp in
+            pwlod_viewer_set_points(
+              viewer, x, r, count, colored ? 1 : 0, vp.bindMemory(to: UInt8.self).baseAddress)
+          }
+        }
+        return pwlod_viewer_set_points(viewer, x, r, count, colored ? 1 : 0, nil)
+      }
+    }
   }
 
   /// pwlod_frame_stats under its C field names, plus the shell counters; nil before the first
@@ -395,6 +437,7 @@ final class PwLodTexture: NSObject, FlutterTexture {
       "cpu_ms": st.cpu_ms,
       "gpu_ms": st.gpu_ms,
       "lowest_spacing": st.lowest_spacing,  // ABI v2 (pwlod_viewer.h:116-121)
+      "source": NSNumber(value: st.source),  // ABI v3: 0 nothing, 1 flat point set, 2 octree
       "shell": shell,
     ]
   }
@@ -408,6 +451,15 @@ enum PwLodArgs {
       Int(td.elementCount) == count
     else { return nil }
     return td.data.withUnsafeBytes { Array($0.bindMemory(to: Double.self)) }
+  }
+
+  /// Raw bytes of a typed-data argument of exactly [type] (Dart Float32List -> .float32,
+  /// Uint8List -> .uInt8); nil if absent or of another type.
+  static func typedData(
+    _ a: [String: Any], _ key: String, _ type: FlutterStandardDataType
+  ) -> Data? {
+    guard let td = a[key] as? FlutterStandardTypedData, td.type == type else { return nil }
+    return td.data
   }
 
   static func string(_ a: [String: Any], _ key: String) -> String? {

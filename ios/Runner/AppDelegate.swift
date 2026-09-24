@@ -39,6 +39,14 @@ import UIKit
     } else {
       NSLog("[AppDelegate] registrar(forPlugin: PwVioThermalPlugin) nil — VIO thermal telemetry unavailable")
     }
+    // [pw][lod] 2026-09-24 build 171: GPU point-cloud viewer channel 'pw_lod_texture'
+    //   (ios/Runner/PwLodTexturePlugin.swift). Same form as the plugins above; the bench's
+    //   FlutterImplicitEngineBridge form (feat/lod-viewer 9e2bb09) does not apply here.
+    if let registrar = self.registrar(forPlugin: "PwLodTexturePlugin") {
+      PwLodTexturePlugin.register(with: registrar)
+    } else {
+      NSLog("[AppDelegate] registrar(forPlugin: PwLodTexturePlugin) nil — cloud views fall back to the CPU painter")
+    }
     if #available(iOS 11.0, *) {
       if let registrar = self.registrar(
         forPlugin: "OfficialAetherARKitPlugin"

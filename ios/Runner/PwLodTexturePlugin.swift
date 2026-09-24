@@ -11,17 +11,21 @@
 // BSD-3-Clause; full license text in PwLodTexture.swift's header.
 //
 // ── PocketWorld: PwLodTexturePlugin.swift ─────────────────────────────────────────────────
-// MethodChannel 'pw_lod_texture' for the LOD point-cloud viewer (plan L4/L6/M1). Dart side:
+// MethodChannel 'pw_lod_texture' for the LOD point-cloud viewer (plan L4/L6). Dart side:
 // lib/point_cloud_lod/lod_bridge.dart — map keys are the C field names of the frozen
-// vendor/aether_lod/include/pwlod_viewer.h. Bench (arloopbench) and feat/lod-viewer only; not
-// registered by the production AppDelegate.
+// vendor/aether_lod/include/pwlod_viewer.h (v3).
+// [v3 2026-09-24, production 171] Registered by the production AppDelegate. Changes against
+// feat/lod-viewer@56f3bb9: ONE pwlod_gpu for the whole app (created on the first `create`,
+// never destroyed; coordinator: 「GPU 设备整个 App 只建一个,每个视图各建一个 viewer」);
+// `setStyle` / `setPoints` (ABI v3); the M1 bench entry (`runBench`, `launchArgs`) is NOT carried
+// into production (「M1 入口不接进生产」), so pwlod_run is unreferenced here.
 //
 // Plugin shape (register / NotificationCenter lifecycle hooks) follows the in-house
 // ios/Runner/AetherTexturePlugin.swift:78-96, :107-112 @875fe67. Threads:
 //   main       create's registration, setCamera, setParams, stats, dispose, pause/resume
 //   per-texture ioQueue   loadOctree and the texture's teardown (never overlap)
 //   buildQueue            pwlod_build_from_ply / pwlod_verify_octree (BLOCKING, header :203)
-//   benchQueue            pwlod_run (plan M1)
+//   createQueue           the app-wide GPU (first use) and each texture's viewer + ring
 // Results always go back to Flutter on the main thread.
 import Flutter
 import Foundation
@@ -34,7 +38,8 @@ final class PwLodTexturePlugin: NSObject, FlutterPlugin {
   private var registered: [Int64: PwLodTexture] = [:]
   private let createQueue = DispatchQueue(label: "io.pocketworld.lod.create", qos: .userInitiated)
   private let buildQueue = DispatchQueue(label: "io.pocketworld.lod.build", qos: .userInitiated)
-  private let benchQueue = DispatchQueue(label: "io.pocketworld.lod.bench", qos: .userInitiated)
+  /// The app-wide device; only touched on createQueue. Created once, kept for the process.
+  private var sharedGpu: UnsafeMutablePointer<pwlod_gpu>?
 
   static func register(with registrar: FlutterPluginRegistrar) {
     let channel = FlutterMethodChannel(name: channelName, binaryMessenger: registrar.messenger())
@@ -96,11 +101,14 @@ final class PwLodTexturePlugin: NSObject, FlutterPlugin {
     case "stats":
       guard let t = texture(a, result) else { return }
       result(t.stats())
+    case "setStyle":
+      guard let t = texture(a, result) else { return }
+      let s = t.setStyle(a)
+      s == PWLOD_OK ? result(nil) : result(FlutterError(code: pwLodStatusName(s), message: "set_style", details: nil))
+    case "setPoints": setPoints(a, result)
     case "buildFromPly": buildFromPly(a, result)
     case "verifyOctree": verifyOctree(a, result)
-    case "runBench": runBench(a, result)
     case "dispose": dispose(a, result)
-    case "launchArgs": result(PwLodTexturePlugin.launchArgs())
     default: result(FlutterMethodNotImplemented)
     }
   }
@@ -118,7 +126,11 @@ final class PwLodTexturePlugin: NSObject, FlutterPlugin {
     createQueue.async { [weak self] in
       let made: PwLodTexture
       do {
-        made = try PwLodTexture.make(widthPx: UInt32(w), heightPx: UInt32(h))
+        guard let gpu = try self?.gpuOnCreateQueue() else {
+          PwLodTexturePlugin.fail(result, "PWLOD_SHELL_GONE", "plugin released")
+          return
+        }
+        made = try PwLodTexture.make(widthPx: UInt32(w), heightPx: UInt32(h), gpu: gpu)
       } catch let e as PwLodError {
         PwLodTexturePlugin.fail(result, e.code, e.message)
         return
@@ -156,6 +168,43 @@ final class PwLodTexturePlugin: NSObject, FlutterPlugin {
     }
   }
 
+  /// createQueue only. PwLodSurfaceCreateGpu = pwlod_gpu_create + the two IOSurface features
+  /// (PwLodSurface.h). A failure is retried on the next `create`; a success is kept for the app's
+  /// lifetime (pwlod_gpu_destroy must follow every viewer on it, and viewers come and go).
+  private func gpuOnCreateQueue() throws -> UnsafeMutablePointer<pwlod_gpu> {
+    if let g = sharedGpu { return g }
+    let g = UnsafeMutablePointer<pwlod_gpu>.allocate(capacity: 1)
+    g.initialize(to: pwlod_gpu())
+    let s = PwLodSurfaceCreateGpu(g)
+    guard s == PWLOD_OK else {
+      g.deallocate()
+      throw PwLodError(code: pwLodStatusName(s), message: "pwlod_gpu_create (IOSurface features)")
+    }
+    sharedGpu = g
+    return g
+  }
+
+  /// v3 set_points on the texture's ioQueue (a 1 M-point set is ~15 MB to copy; keep it off the
+  /// main thread). xyz Float32List (3·n), rgb Uint8List (≥ 3·n), optional visibility Uint8List (n).
+  private func setPoints(_ a: [String: Any], _ result: @escaping FlutterResult) {
+    guard let t = texture(a, result) else { return }
+    guard let xyz = PwLodArgs.typedData(a, "xyz", .float32),
+      let rgb = PwLodArgs.typedData(a, "rgb", .uInt8),
+      let count = PwLodArgs.int(a, "count"), count >= 0
+    else {
+      result(FlutterError(code: "PWLOD_ERR_ARG", message: "setPoints xyz/rgb/count", details: nil))
+      return
+    }
+    let colored = (a["colored"] as? NSNumber)?.boolValue ?? true
+    let vis = PwLodArgs.typedData(a, "visibility", .uInt8)
+    t.ioQueue.async {
+      let s = t.setPoints(xyz: xyz, rgb: rgb, count: UInt64(count), colored: colored, visibility: vis)
+      s == PWLOD_OK
+        ? PwLodTexturePlugin.reply(result, nil)
+        : PwLodTexturePlugin.fail(result, pwLodStatusName(s), "set_points n=\(count)")
+    }
+  }
+
   private func loadOctree(_ a: [String: Any], _ result: @escaping FlutterResult) {
     guard let t = texture(a, result) else { return }
     guard let dir = PwLodArgs.string(a, "octree_dir") else {
@@ -174,21 +223,19 @@ final class PwLodTexturePlugin: NSObject, FlutterPlugin {
     guard let t = texture(a, result) else { return }
     guard let vp = PwLodArgs.float64s(a, "view_proj_row_major", count: 16),
       let eye = PwLodArgs.float64s(a, "eye_world", count: 3),
-      let proj = PwLodArgs.int(a, "projection"),
-      let fov = PwLodArgs.double(a, "fov_y_degrees"),
-      let ow = PwLodArgs.double(a, "ortho_width_world"),
-      let oh = PwLodArgs.double(a, "ortho_height_world"),
+      let focal = PwLodArgs.double(a, "focal_px"),
+      let orbit = PwLodArgs.double(a, "orbit_distance"),
+      let mix = PwLodArgs.double(a, "ortho_mix"),
       let vw = PwLodArgs.int(a, "viewport_width_px"),
       let vh = PwLodArgs.int(a, "viewport_height_px"),
-      proj >= 0, vw > 0, vh > 0
+      vw > 0, vh > 0
     else {
       result(FlutterError(code: "PWLOD_ERR_ARG", message: "setCamera arguments", details: nil))
       return
     }
     let s = t.setCamera(
-      viewProjRowMajor: vp, eyeWorld: eye, projection: UInt32(proj), fovYDegrees: fov,
-      orthoWidthWorld: ow, orthoHeightWorld: oh, viewportWidthPx: UInt32(vw),
-      viewportHeightPx: UInt32(vh))
+      viewProjRowMajor: vp, eyeWorld: eye, focalPx: focal, orbitDistance: orbit,
+      orthoMix: mix, viewportWidthPx: UInt32(vw), viewportHeightPx: UInt32(vh))
     s == PWLOD_OK ? result(nil) : result(FlutterError(code: pwLodStatusName(s), message: "set_camera", details: nil))
   }
 
@@ -272,66 +319,5 @@ final class PwLodTexturePlugin: NSObject, FlutterPlugin {
         "shell_wall_ms": Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6,
       ])
     }
-  }
-
-  // MARK: - plan M1: pwlod_run
-
-  /// pw_splat_ab_bench Sources/App.swift:76, :88, :101-106 @00b020db: create out_dir, keep the
-  /// screen awake for the run (auto-lock handed the compositor away mid-run there), call
-  /// pwlod_run(dir, out, args, probe, NULL) off the main thread.
-  private func runBench(_ a: [String: Any], _ result: @escaping FlutterResult) {
-    guard let dir = PwLodArgs.string(a, "octree_dir"), let out = PwLodArgs.string(a, "out_dir")
-    else {
-      result(FlutterError(code: "PWLOD_ERR_ARG", message: "octree_dir/out_dir", details: nil))
-      return
-    }
-    let args = (a["args"] as? String) ?? ""
-    UIApplication.shared.isIdleTimerDisabled = true
-    benchQueue.async {
-      try? FileManager.default.createDirectory(atPath: out, withIntermediateDirectories: true)
-      let before = PwLodProbe.sample()
-      let t0 = DispatchTime.now().uptimeNanoseconds
-      let p = pwlod_run(dir, out, args, pwLodProbe, nil)
-      let wallMs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
-      let after = PwLodProbe.sample()
-      let s = p.map { String(cString: $0) } ?? "(null)"
-      var isDir: ObjCBool = false
-      let isFile = FileManager.default.fileExists(atPath: s, isDirectory: &isDir) && !isDir.boolValue
-      pwLodEnsureToRunOnMainQueue {
-        UIApplication.shared.isIdleTimerDisabled = false
-        result([
-          "result": s,
-          "result_is_file": isFile,
-          "wall_ms": wallMs,
-          "probe_start": PwLodProbe.toMap(before),
-          "probe_end": PwLodProbe.toMap(after),
-          "version": pwlod_version().map { String(cString: $0) } ?? "",
-        ])
-      }
-    }
-  }
-
-  // MARK: - launch arguments
-
-  /// Every `-PWLod<Key> <value>` pair of the process launch (detached
-  /// `xcrun devicectl device process launch ... -- -PWLodX v`), keys without the dash.
-  /// Read the way PwBenchReplayLaunch.value does (PwBenchReplay.swift:84-92 @875fe67): the
-  /// NSArgumentDomain via UserDefaults first, then argv.
-  static func launchArgs() -> [String: String] {
-    var out: [String: String] = [:]
-    let argv = ProcessInfo.processInfo.arguments
-    var i = 0
-    while i < argv.count {
-      let k = argv[i]
-      if k.hasPrefix("-PWLod"), i + 1 < argv.count {
-        let key = String(k.dropFirst())
-        let v = UserDefaults.standard.string(forKey: key) ?? argv[i + 1]
-        if !v.isEmpty { out[key] = v }
-        i += 2
-      } else {
-        i += 1
-      }
-    }
-    return out
   }
 }

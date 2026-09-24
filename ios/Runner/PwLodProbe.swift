@@ -1,5 +1,6 @@
 // PwLodProbe.swift — the LOD shell's OS probe: the only numbers the engine cannot know
-// (thermal state, process memory). Bench (arloopbench) and feat/lod-viewer only.
+// (thermal state, process memory). [production 171] Only PwLodFootprintPeak is used (the build's
+// peak memory); `pwLodProbe` / PwLodProbe serve pwlod_run (M1), which production does not call.
 //
 // `pwLodProbe` is pw_splat_ab_bench Sources/App.swift:29-43 @00b020db (`lodProbe`) verbatim
 // apart from the name: it fills the PwLodProbeSample that pwlod_run (pw_lod_bench.h) asks for,

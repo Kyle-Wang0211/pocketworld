@@ -2,9 +2,9 @@
 // structs (chained descriptors are safer in C than in Swift). Everything else in the shell is
 // Swift (PwLodTexture.swift / PwLodTexturePlugin.swift / PwLodProbe.swift).
 //
-// Scope: bench (arloopbench, com.kyle.arloopbench) and the feat/lod-viewer branch only; never
-// production. The production Runner.xcodeproj does not compile this file and the production
-// bridging header does not import it.
+// Scope: [v3 2026-09-24] production 171 (feat/lod-on-dense-168): compiled into the Runner target
+// and imported by the production bridging header (the bench/feat-lod-viewer-only note of 56f3bb9
+// no longer applies). ABI v3 header (pwlod_viewer.h 4e867aa3…).
 //
 // Swift sees the engine through this header: it includes the two frozen C headers
 // (vendor/aether_lod/include/, byte-identical to the coordinator's contract; see SHA256SUMS
