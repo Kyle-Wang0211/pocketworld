@@ -1,0 +1,8 @@
+// Mac 等价核对专用:遮住 macOS SDK 里的 CoreMotion(CMMotionManager 在 macOS 上
+// API_UNAVAILABLE(macos)),让 ios/Runner/PwXrslamLive.swift **原封不动**在 Mac 上编过。
+// 回放路径从不调 CMMotionManager(只有直播的 begin() 调),所以这里只声明、全是空实现。
+// 只用于 tool/bench/replay_mac/build_mac_harness.sh;不进任何 App。
+module CoreMotion {
+  header "CoreMotionStub.h"
+  export *
+}

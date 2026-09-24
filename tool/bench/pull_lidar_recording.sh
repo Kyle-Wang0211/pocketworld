@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# pull_lidar_recording.sh —— 把台架(com.kyle.arloopbench)里一份 LiDAR 米尺录制的**尺子子集**拉回 Mac,
+# 可选再拉一场手机回放(XRSLAM 位姿),然后直接跑离线尺子。🔴 bench-only ruler:LiDAR 永不进产品。
+#
+# 用法:
+#   tool/bench/pull_lidar_recording.sh                          # 列出手机上的 replay_recordings/
+#   tool/bench/pull_lidar_recording.sh <run-…> [replay_…] [dest]
+#       run-…    = Documents/replay_recordings/<run-uuid>(录制页写的;只拉它的 ruler_subset/,约 400 MB/30 s,
+#                  **不拉** 5 GB 的整份 frames.bin —— Mac 盘放不下,尺子也用不着)
+#       replay_… = Documents/bench_replay_runs/<replay_…>(回放页在手机上跑出的 XRSLAM 位姿,几百 KB)
+#       dest     = 本地根目录,默认 ~/Developer/arloopbench/pulls
+#   环境变量:PW_BENCH_UDID / PW_BENCH_BUNDLE 覆盖设备与 bundle。
+#
+# 形状抄 tool/bench/pull_bench_replay_run.sh(同一个 devicectl 用法、同一道 bundle 闸)。
+# 🔴 只拉台架 com.kyle.arloopbench,生产 com.kyle.PocketWorld 不碰。
+# 🔴 2026-09-24 只写了;devicectl 那段没在真机上跑过(本次不碰手机)。
+set -euo pipefail
+
+UDID="${PW_BENCH_UDID:-1B290474-D354-5B4C-AAB0-0805AC5DC832}"
+BUNDLE="${PW_BENCH_BUNDLE:-com.kyle.arloopbench}"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [ "$BUNDLE" != "com.kyle.arloopbench" ]; then
+  echo "🔴 只允许拉台架容器(com.kyle.arloopbench),拒绝:$BUNDLE" >&2
+  exit 2
+fi
+
+list() {
+  xcrun devicectl device info files --device "$UDID" \
+    --domain-type appDataContainer --domain-identifier "$BUNDLE" \
+    --subdirectory "$1" --no-recurse
+}
+
+if [ $# -lt 1 ]; then
+  echo "== 手机 $UDID 上 $BUNDLE 的 Documents/replay_recordings/ =="
+  list Documents/replay_recordings
+  echo
+  echo "用法:$0 <run-…> [replay_…] [dest]"
+  exit 0
+fi
+
+RUN="$1"
+REPLAY=""
+DEST_ROOT="$HOME/Developer/arloopbench/pulls"
+if [ $# -ge 2 ]; then
+  case "$2" in replay_*) REPLAY="$2"; DEST_ROOT="${3:-$DEST_ROOT}" ;; *) DEST_ROOT="$2" ;; esac
+fi
+case "$RUN" in run-*) ;; *) echo "🔴 录制名应以 run- 开头:$RUN" >&2; exit 2 ;; esac
+
+mkdir -p "$DEST_ROOT/$RUN"
+echo "== 拉取 Documents/replay_recordings/$RUN/ruler_subset → $DEST_ROOT/$RUN/ruler_subset =="
+xcrun devicectl device copy from --device "$UDID" \
+  --domain-type appDataContainer --domain-identifier "$BUNDLE" \
+  --source "Documents/replay_recordings/$RUN/ruler_subset" \
+  --destination "$DEST_ROOT/$RUN/ruler_subset"
+SUB="$DEST_ROOT/$RUN/ruler_subset"
+[ -d "$SUB/ruler_subset" ] && SUB="$SUB/ruler_subset"   # devicectl 两种落法都认
+
+# 自检:子集 frames.bin 与子集清单的 sha256 / 字节数一致;深度三件套在。
+/usr/bin/python3 - "$SUB" <<'PY'
+import hashlib, json, os, sys
+d = sys.argv[1]
+m = json.load(open(os.path.join(d, 'ruler_subset_manifest.json')))
+p = os.path.join(d, 'frames.bin')
+h = hashlib.sha256(open(p, 'rb').read()).hexdigest()
+ok = h == m['frames_bin_sha256'] and os.path.getsize(p) == m['frames_bin_bytes']
+for f in ('depth.bin', 'depth_conf.bin', 'depth.pwvi', 'intrinsics.jsonl', 'arkit_poses.tum'):
+    ok = ok and os.path.exists(os.path.join(d, f))
+t = json.load(open(os.path.join(d, 'recorder_timing.json'))) if os.path.exists(os.path.join(d, 'recorder_timing.json')) else {}
+print(f"子集帧 {m['frames']} / 录制帧 {m['source_frame_count']};深度行 {m['depth_rows']};"
+      f"frames.bin sha {'✅' if ok else '🔴'};ARKit 少发帧估计 {t.get('arkit_frames_missed_estimate')};"
+      f"写器丢帧 {t.get('writer', {}).get('loss_count')};跟踪 {t.get('tracking_counts')}")
+sys.exit(0 if ok else 1)
+PY
+
+ARGS=(--recording "$SUB" --arkit --out "$DEST_ROOT/$RUN/lidar_ruler")
+if [ -n "$REPLAY" ]; then
+  echo "== 拉取 Documents/bench_replay_runs/$REPLAY → $DEST_ROOT/$REPLAY =="
+  xcrun devicectl device copy from --device "$UDID" \
+    --domain-type appDataContainer --domain-identifier "$BUNDLE" \
+    --source "Documents/bench_replay_runs/$REPLAY" --destination "$DEST_ROOT/$REPLAY"
+  RD="$DEST_ROOT/$REPLAY"; [ -d "$RD/$REPLAY" ] && RD="$RD/$REPLAY"
+  # 回放目录的 device_config.yaml(bench_replay_controller.dart 写的)里有 cam0.extrinsic.q_bc / p_bc。
+  ARGS+=(--xrslam "xr=$RD/poses_body.tum" --xrslam-ledger "xr=$RD/intrinsics_ledger.csv"
+         --xrslam-yaml "$RD/device_config.yaml")
+fi
+echo "== 离线尺子 =="
+/usr/bin/python3 "$HERE/lidar_ruler/lidar_ruler.py" "${ARGS[@]}"

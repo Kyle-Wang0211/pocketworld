@@ -1,0 +1,143 @@
+{
+ "schema": "pw.xrslam.ios-archive-receipt/3",
+ "artifact": "libxrslam_gpufenothread_b9b14814.a",
+ "artifact_path_in_repo": "vendor/xrslam/libs/ios-arm64/libxrslam_gpufenothread_b9b14814.a",
+ "artifact_sha256": "b9b14814349eb945287b06ac6f5732e9c0a939e572ed46a073e597d59ea54cd2",
+ "artifact_sha16": "b9b14814349eb945",
+ "arm": "gpufe_nothread (GPU 前端 ON + 线程化 OFF)",
+ "engine_switch": {
+  "env": "PW_XRSLAM_ENGINE",
+  "value_to_select_this_arm": "gpufenothread",
+  "default_when_unset": "generic (出货档 libxrslam_generic_4beb1a9.a)",
+  "podfile": "ios/Podfile(post_install 段)",
+  "runtime_identity": "ios/scripts/stamp_runtime_identity.sh —— 把 PWXrslamEngineArm / PWXrslamEngineSHA16 / PWXrslamEngineFingerprint 写进 Info.plist,并在构建期对二进制做指纹在场/互斥校验"
+ },
+ "research_only": true,
+ "product_selected": false,
+ "ship_gate_zh": "🔴 血统 research_only:不是出货血统,默认构建**不选它**。「没全面持平/超越 ARKit 之前绝不上生产」的铁律不因可复现而松动。",
+ "source": {
+  "tree": "/Users/kaidongwang/Developer/xrslam-4beb1a9-thr",
+  "branch": "build/gpufe-nothread-20260922",
+  "commit": "8a1cc1213af541dc6a1f4e1b89e0ff3629205c91",
+  "tracked_dirty_files": 0,
+  "upstream_repository": "https://github.com/openxrlab/xrslam",
+  "upstream_revision": "4beb1a942f33da9afbfae2d70e2c641cfc2bb675",
+  "fork_repository": "https://github.com/Kyle-Wang0211/xrslam",
+  "fork_branch": "build/gpufe-nothread-20260922",
+  "fork_pushed_commit": "8a1cc1213af541dc6a1f4e1b89e0ff3629205c91",
+  "fork_push_verified_zh": "git ls-remote mine → refs/heads/build/gpufe-nothread-20260922 = 8a1cc1213af541dc6a1f4e1b89e0ff3629205c91(2026-09-22 核过)"
+ },
+ "build_script": "/Users/kaidongwang/Developer/viobench-build/gpufe/build_gpufe_nothread.sh",
+ "build_script_sha256": "f0e5ae35ae6b09a29d511b4f0b447d6fa96e7819ad36276b9422cb4463a67d83",
+ "build_dir_used": "/private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/4437f552-36d8-4d91-9d8d-ae4aaadf54b6/scratchpad/build-run1",
+ "cmake_options": {
+  "CMAKE_BUILD_TYPE": "Release",
+  "CMAKE_TOOLCHAIN_FILE": "cmake/Modules/Platform/ios.toolchain.cmake",
+  "IOS_PLATFORM": "OS64",
+  "IOS_ARCH": "arm64",
+  "IOS_DEPLOYMENT_TARGET": "14.0",
+  "ENABLE_BITCODE": "0",
+  "ENABLE_ARC": "1",
+  "ENABLE_VISIBILITY": "0",
+  "CMAKE_POLICY_VERSION_MINIMUM": "3.5",
+  "XRSLAM_IOS_OVERRIDE": "1",
+  "XRSLAM_IOS": "OFF",
+  "XRSLAM_THREADING_OVERRIDE": "1",
+  "XRSLAM_ENABLE_THREADING": "OFF",
+  "XRSLAM_GPU_FRONTEND": "ON",
+  "PW_GPU_FRONTEND_INCLUDE_DIR": "/Users/kaidongwang/Developer/Aether3D-cross/aether_cpp/tools",
+  "CMAKE_CXX_FLAGS": "-ffp-contract=off -fno-fast-math -fchar8_t -Dceres=pw_xrslam_ceres_1_14",
+  "FETCHCONTENT_SOURCE_DIR_DEPENDS-EIGEN": "/Users/kaidongwang/Developer/xrslam-deps-tarballs/eigen-3.3.7",
+  "FETCHCONTENT_SOURCE_DIR_DEPENDS-OPENCV": "/Users/kaidongwang/Developer/xrslam-deps-tarballs/opencv-4.0.1-ios-framework/opencv2.framework",
+  "FETCHCONTENT_FULLY_DISCONNECTED": "OFF"
+ },
+ "upstream_ios_defaults_we_override_zh": "上游 CMakeLists.txt:21-27 在 if(IOS) 下强制 XRSLAM_IOS=ON + XRSLAM_ENABLE_THREADING=ON;本臂用 XRSLAM_IOS_OVERRIDE / XRSLAM_THREADING_OVERRIDE 把两个都翻成 OFF。XRSLAM_LOWLATENCY_POSE / XRSLAM_CONFIG_FROM_STRING 仍在 if(IOS OR ANDROID) 下强开。",
+ "toolchain": {
+  "cmake": "cmake version 4.2.3",
+  "ninja": "1.13.2",
+  "clang": "Apple clang version 17.0.0 (clang-1700.6.3.2)",
+  "xcode": "Xcode 26.2 Build version 17C52 ",
+  "iphoneos_sdk": "26.2"
+ },
+ "deps": {
+  "eigen": "3.3.7",
+  "opencv": "4.0.1 (ios framework, 预编译)",
+  "ceres": "pinned e809cf0c / CERES_VERSION 1.14.0, 命名空间 pw_xrslam_ceres_1_14",
+  "yaml-cpp": "superbuild tarball"
+ },
+ "archive_contents_zh": "xrslam-core + xrslam-extra-opencv-image + xrslam-extra-yaml-config + yaml-cpp + xrslam-interface/xrslam-localization 的散装 .o。ceres 与 OpenCV **不在归档内**,由 app 侧单独链。",
+ "archive_member_count": 57,
+ "reproducibility_zh": "同一命令、同一 --build-dir 路径、两次 --clean 全量构建 ⇒ 产物 sha256 逐位相同(b9b14814…)。归档头 mtime/uid/gid 已归一化。",
+ "determinism_note_zh": "归档头已归一化(mtime/uid/gid 清零)。实测:同一 --build-dir 路径下两次 --clean 全量构建,58 个成员逐字节相同,整档 sha256 相同。🔴 唯一的路径敏感点:OpenCV 头 mat.inl.hpp 的绝对路径被 CV_Assert 的 __FILE__ 烤进 4 个 .o 的 __TEXT,__cstring(XRSLAMManager / XRGlobalLocalizerManager / gpu_image / localizer),换 --build-dir 路径这 4 个成员就变 ⇒ 要复现某个历史 sha,必须用它原来的构建目录路径。",
+ "fingerprint": {
+  "kind": "OpenCV mat.inl.hpp 的构建目录绝对路径(CV_Assert 的 __FILE__ 烤进 __TEXT,__cstring)",
+  "string": "/private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/4437f552-36d8-4d91-9d8d-ae4aaadf54b6/scratchpad/build-run1/_deps/depends-opencv-build/opencv2.framework/Headers/core/mat.inl.hpp",
+  "generic_counterpart": "/private/tmp/opencv-official-c9ad577-b49/modules/core/include/opencv2/core/mat.inl.hpp",
+  "why_zh": "这条字符串只有本归档才有,出货 generic 里是另一条 ⇒ 用 `strings Runner | grep` 就能在**二进制层面**证明链进去的是哪条臂,不靠 xcconfig 自述。",
+  "secondary_zh": "另一条独立判据:`nm Runner | grep GpuImage`,generic 为 0、本臂 >0。"
+ },
+ "gpu_frontend": {
+  "enabled": true,
+  "mandatory_zh": "🔴 本归档有**真外部符号** pw::gpufe::FrontEnd::create ⇒ 必须同时链 libpw_gpu_frontend_ios.a,否则链接期 Undefined symbol。",
+  "companion_lib_in_repo": "vendor/xrslam/libs/ios-arm64/libpw_gpu_frontend_ios_ad0a4abe.a",
+  "companion_lib_sha256": "ad0a4abe0e7ea7678780ec4a450ec91d6dc404ab1b33a44a265638437caf253d",
+  "companion_lib_origin": "/Users/kaidongwang/Developer/viobench-build/gpufe/libpw_gpu_frontend_ios.a(与出货 gpufenothread 归档用的是同一个文件)",
+  "runtime_switch": "PW_XRSLAM_GPU_FRONTEND=1(gpu_image.cpp 只读一次);ios/Runner/PwXrslamLive.swift:222 已 setenv",
+  "dawn_zh": "libpw_gpu_frontend_ios.a 有 75 个未定义 wgpu* 符号。pocketworld 的 aether3d_ffi.podspec 已经把 libwebgpu_dawn.a(Debug-iphoneos)链进 Runner,本臂直接复用,**不再另链 Release Dawn**(另链会与已在场的那份撞符号)。🔴 与 arloopbench 台架口径不同:台架链的是 Release Dawn,实测比 Debug 快约 10%。"
+ },
+ "exported_abi_xrslam": [
+  "XRGlobalLocalizerCreate",
+  "XRGlobalLocalizerEnable",
+  "XRGlobalLocalizerIsInitialized",
+  "XRGlobalLocalizerQueryFrame",
+  "XRGlobalLocalizerQueryLocalization",
+  "XRGlobalLocalizerTransformPose",
+  "XRSLAMCreate",
+  "XRSLAMDestroy",
+  "XRSLAMGetBodyPoseRelation",
+  "XRSLAMGetInitCounters",
+  "XRSLAMGetPendingWorkerFrames",
+  "XRSLAMGetPropagatedPose",
+  "XRSLAMGetPropagatedPoseRelation",
+  "XRSLAMGetResult",
+  "XRSLAMGetSolverCounters",
+  "XRSLAMPushSensorData",
+  "XRSLAMRunOneFrame"
+ ],
+ "exported_abi_defined_global_total": 3782,
+ "abi_gate": [
+  "XRSLAMCreate",
+  "XRSLAMDestroy",
+  "XRSLAMGetResult",
+  "XRSLAMPushSensorData",
+  "XRSLAMRunOneFrame"
+ ],
+ "abi_gate_zh": "闸是生产传输层实际消费的五个符号;研究臂导出更多但生产不依赖。",
+ "abi_vs_shipping_generic_zh": "出货 libxrslam_generic_4beb1a9.a 只导出 5 个 C 符号;本归档 17 个,是它的**严格超集,一个不缺**。Release 下多出的 12 个研究符号无人引用会被 dead-strip,要从 Dart 侧 lookup 须自行补 -Wl,-u。",
+ "selfcheck_not_rerun_zh": "🔴 GPU 前端的数值自检(sqrt 4804/16384、未保护乘加 4655/16384 与 CPU 差最后一位)**本次没有复跑** —— 它要真机跑 gpu_image.cpp 的 init 痕迹。伴随库与出货 gpufenothread 用的是同一个文件(sha 相同),所以结论可沿用,但没有重新验证。",
+ "verification_pending_zh": [
+  "真机直播吞吐(1920×1440 30 fps 留存)未复测",
+  "EuRoC / 回放 ATE 落带未复测",
+  "GPU 前端数值 selfcheck 未复跑"
+ ],
+ "vendored_at_utc": "2026-09-22T09:05:27.310910+00:00",
+ "vendored_by_zh": "构建层接线(feat/engine-arm-switch):只加新文件,出货 .a 一个字节没动。",
+ "link_notes_zh": {
+  "force_load_engine": "引擎归档走 -force_load(与出货 generic 同口径)。",
+  "gpu_frontend_not_force_loaded": "🔴 伴随库 libpw_gpu_frontend_ios_ad0a4abe.a **故意不 -force_load**:它有两个成员,dawn_kernel_harness.o 里的 aether::tools::DawnKernelHarness 与 aether3d_ffi(已 -force_load)同名,force_load 实测 `ld: 24 duplicate symbols`(24 个全是 DawnKernelHarness 的方法)。按普通归档挂着,链接器只为引擎那个未定义符号拉 pw_gpu_frontend.o ⇒ harness 共用 aether 那一份。代价:harness 实现取自 aether3d_ffi 的编译版本,不是编这个前端库时的那一份(同一棵 aether_cpp/tools 源码树,不同次编译)。",
+  "dawn": "不另链 Dawn:aether3d_ffi.podspec 已把 libwebgpu_dawn.a(**Debug**-iphoneos)链进 Runner,本臂复用。arloopbench 台架用的是 Release Dawn(实测快约 10%)⇒ **本臂在 pocketworld 里的吞吐不等于台架上测出来的数**。",
+  "frameworks": "-framework Metal -framework IOSurface -framework QuartzCore",
+  "symbol_visibility_zh": "🔴 最终 Runner 里五个生产符号在 generic 臂是 `T`(全局),在本臂是 `t`(本地)—— 本归档 cmake 用 ENABLE_VISIBILITY=0(-fvisibility=hidden),`-Wl,-exported_symbol` 不会把隐藏符号提升成导出。生产的原生 transport(vendor/xrslam/transport/PwXrslamTransportCore.cpp)是静态直调,**不受影响**;但 Dart 侧 `DynamicLibrary.process().lookup('XRSLAMCreate')`(lib/vio/ffi/xrslam_bindings.dart)在本臂下会拿不到符号。那条路今天零生产调用者,要用得先解决可见性。"
+ },
+ "ldflags_segment_zh": {
+  "generic": "-force_load \"$(PODS_ROOT)/../../vendor/xrslam/libs/ios-arm64/libxrslam_generic_4beb1a9.a\" \"$(PODS_ROOT)/../../vendor/xrslam/libs/ios-arm64/libceres_official_1_14.a\" \"$(PODS_ROOT)/../../vendor/xrslam/libs/ios-arm64/libopencv_generic_4_0_1.a\" -Wl,-u,_XRSLAMCreate -Wl,-u,_XRSLAMDestroy -Wl,-u,_XRSLAMRunOneFrame -Wl,-u,_XRSLAMPushSensorData -Wl,-u,_XRSLAMGetResult -Wl,-exported_symbol,_XRSLAMCreate -Wl,-exported_symbol,_XRSLAMDestroy -Wl,-exported_symbol,_XRSLAMRunOneFrame -Wl,-exported_symbol,_XRSLAMPushSensorData -Wl,-exported_symbol,_XRSLAMGetResult",
+  "gpufenothread": "-force_load \"$(PODS_ROOT)/../../vendor/xrslam/libs/ios-arm64/libxrslam_gpufenothread_b9b14814.a\" \"$(PODS_ROOT)/../../vendor/xrslam/libs/ios-arm64/libceres_official_1_14.a\" \"$(PODS_ROOT)/../../vendor/xrslam/libs/ios-arm64/libopencv_generic_4_0_1.a\" -Wl,-u,_XRSLAMCreate -Wl,-u,_XRSLAMDestroy -Wl,-u,_XRSLAMRunOneFrame -Wl,-u,_XRSLAMPushSensorData -Wl,-u,_XRSLAMGetResult -Wl,-exported_symbol,_XRSLAMCreate -Wl,-exported_symbol,_XRSLAMDestroy -Wl,-exported_symbol,_XRSLAMRunOneFrame -Wl,-exported_symbol,_XRSLAMPushSensorData -Wl,-exported_symbol,_XRSLAMGetResult \"$(PODS_ROOT)/../../vendor/xrslam/libs/ios-arm64/libpw_gpu_frontend_ios_ad0a4abe.a\" -framework Metal -framework IOSurface -framework QuartzCore"
+ },
+ "build_evidence_20260922_zh": {
+  "baseline_default_runner_sha256": "d28e3e46328097a68c98b6b8112f0ef6e3b71c824f13cc540c8e2902f4de0456",
+  "after_change_default_runner_sha256": "d28e3e46328097a68c98b6b8112f0ef6e3b71c824f13cc540c8e2902f4de0456",
+  "gpufenothread_runner_sha256": "92830ff1020f458b5dd8dbf027261896a9c61f85ab130efc3426425b4cdec06b",
+  "switch_back_runner_sha256": "d28e3e46328097a68c98b6b8112f0ef6e3b71c824f13cc540c8e2902f4de0456",
+  "zh": "换臂再换回来后与改动前**逐字节相同**(整个 Runner 二进制 sha256 相同),且那一次链接步骤一定真跑了(上一次链的是另一条臂)。"
+ }
+}

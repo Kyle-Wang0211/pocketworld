@@ -1,0 +1,140 @@
+{
+ "schema": "pw.xrslam.ios-archive-receipt/1",
+ "artifact": "libxrslam_gpufenothread_4beb1a9.a",
+ "artifact_sha256": "2c2bc34691ff432a10b00ad77da22359409274a7adac337b0f6f2783f33c7005",
+ "archive_member_count": 57,
+ "research_only": true,
+ "product_selected": false,
+ "note_zh": "gpufe_nothread:GPU 前端 ON + 线程化 OFF。相对现有 libxrslam_gpufe_4beb1a9.a **只翻了一个开关**(XRSLAM_ENABLE_THREADING ON→OFF),其余逐项照 ~/Developer/viobench-build/gpufe/configure_engine.sh(那份是从 gpufe 回执还原的)。翻这个开关的理由:EuRoC 三档过关的是 gpufe_nothread 臂;现有 gpufe 归档自报 threading:true「是本次实验的变量本身」;生产出货档 generic 也是 threading:false⇒ OFF 才构成对 generic 的单变量对照(唯一变量 = GPU 前端)。",
+ "build_mode": "Release",
+ "upstream_repository": "https://github.com/openxrlab/xrslam",
+ "upstream_revision": "4beb1a942f33da9afbfae2d70e2c641cfc2bb675",
+ "bench_worktree": "~/Developer/xrslam-4beb1a9-thr",
+ "bench_branch": "pw/threading-backpressure-20260902",
+ "bench_commit": "2c88935+gpufe-uncommitted",
+ "source_tree_dirty_zh": "🔴 构建树带 629 行未提交改动。2026-09-20 逐文件核过,全部是**只读遥测**或**默认关闭的环境变量开关**:initializer.cpp(8 个计数器 + PW_INIT_FAST_REJECT,默认关);sliding_window_tracker.cpp(11 个计数器 + 只记录不决策的 helper);feature_tracker.cpp(只加 { } 作用域);frontend_worker.cpp(PwScope 计时器,synchronized 块原样保留);config.cpp(新增 sliding_window_rpe_threshold_px=3.0 / rpe_reference_focal=0.0,ref=0 时与上游写死的 3.0px 逐位等价)。",
+ "platform": "ios-arm64",
+ "minimum_ios": "14.0",
+ "xrslam_ios": false,
+ "threading": false,
+ "gpu_frontend": true,
+ "gpu_frontend_lib": "/Users/kaidongwang/Developer/viobench-build/gpufe/libpw_gpu_frontend_ios.a",
+ "gpu_frontend_lib_sha256": "ad0a4abe0e7ea7678780ec4a450ec91d6dc404ab1b33a44a265638437caf253d",
+ "gpu_frontend_runtime_switch": "PW_XRSLAM_GPU_FRONTEND=1(gpu_image.cpp:28 读一次);未置位时走 CPU 路径",
+ "gpu_frontend_needs_dawn_zh": "libpw_gpu_frontend_ios.a 有 147 个真外部符号(含 wgpu*),必须同时链 Dawn:~/Developer/Aether3D-cross/aether_cpp/build-ios-device-dawn/third_party/dawn/src/dawn/native/Release-iphoneos/libwebgpu_dawn.a(20 MB)。Debug Dawn 会慢约 10%,别链错。",
+ "ceres_namespace": "pw_xrslam_ceres_1_14",
+ "opencv_version": "4.0.1",
+ "compile_flags": [
+  "-O3",
+  "-DNDEBUG",
+  "-std=gnu++17",
+  "-arch arm64",
+  "-miphoneos-version-min=14.0",
+  "-fvisibility=hidden",
+  "-fvisibility-inlines-hidden",
+  "-ffp-contract=off",
+  "-fno-fast-math",
+  "-fchar8_t",
+  "-Dceres=pw_xrslam_ceres_1_14",
+  "-DXRSLAM_GPU_FRONTEND=1"
+ ],
+ "exported_abi": [
+  "XRSLAMCreate",
+  "XRSLAMDestroy",
+  "XRSLAMGetResult",
+  "XRSLAMPushSensorData",
+  "XRSLAMRunOneFrame"
+ ],
+ "abi_gate_zh": "闸是**生产那五个符号**,不是 gpufe 研究臂的七个 —— 我们的传输层只用五个。",
+ "build_script": "scratchpad/build_gpufe_nothread.sh(逐行照 configure_engine.sh,只翻 threading)",
+ "built_at_utc": "2026-09-19T16:55:13.874619+00:00",
+ "verification_pending_zh": "🔴 尚未做:①真机直播吞吐对照 generic ②EuRoC/回放 ATE 是否落在基线带内。在这两项出来之前不得据此下任何精度结论。",
+ "gpu_frontend_selfcheck_20260920": {
+  "source": "gpu_image.cpp 的 init 痕迹($HOME/Documents/xrslam_gpufe_init.log),真机 iPhone 14 Pro",
+  "raw": {
+   "n": 16384,
+   "strict": true,
+   "shader_warnings": "",
+   "div": 0,
+   "sqrt": 4804,
+   "sqrt_ex": "1.18074131 vs 1.18074143",
+   "i2f": 0,
+   "fma0_guard": 0,
+   "round": 0,
+   "mul": 0,
+   "add": 0,
+   "lk_delta": 0,
+   "floor": 0,
+   "flt_scale": 0,
+   "i2f_neg": 0,
+   "unguarded_contract": 4655,
+   "unguarded_contract_ex": "2.07184029 vs 2.07184052",
+   "sqrt_rn": 0,
+   "div_rn": 0
+  },
+  "verdict_zh": "🔴 **不是逐位复刻**,现有 gpufe 回执的「OpenCV 4.0.1 逐字复刻」这个说法要限定:加/减/乘/除、LK、floor、round 全是 0 个不一致(**这些确实逐位**);但 `sqrt` 16384 中有 **4804** 个、未加保护的乘加有 **4655** 个与 CPU 不同,差在 float32 最后一位(相对约 1e-7,例:1.18074131 vs 1.18074143)。⇒ 精度必须**单独验**,不能因为直播表现好就当它与 generic 等价。"
+ },
+ "live_20260920_zh": "真机直播 1920×1440 + 相机 30fps:引擎留住 94.3%(交付 349 / 进引擎 329,丢 20 且多在启动);初始化 3.012 s;静置 |t| 稳在 0.07 m 连续 12 个采样点不涨(generic 同期是无界发散)。🔴 但该轮**同时改了两个变量**(相机 60→30、generic→本臂),归因未完成。",
+ "euroc_verdict_20260920": {
+  "protocol": "pw_run_arm.sh <label> replay-paced -PWDatasetPath euroc_v101_bmp|euroc_v102|euroc_v103 [-PWXrslamGpuFrontend],场间 ≥95s(照 09-15 判决书的「复现」节)",
+  "ate_rmse_m": {
+   "V1_01": {
+    "generic": 0.048964931,
+    "gpufenothread": 0.048964931,
+    "delta_pct": 0.0
+   },
+   "V1_02": {
+    "generic": 0.097604704,
+    "gpufenothread": 0.104049109,
+    "delta_pct": 6.6
+   },
+   "V1_03": {
+    "generic": 0.123155982,
+    "gpufenothread": 0.106235155,
+    "delta_pct": -13.7
+   },
+   "mean": {
+    "generic": 0.089908539,
+    "gpufenothread": 0.086416405,
+    "delta_pct": -3.9
+   }
+  },
+  "backend_self_proof": {
+   "generic": "cpu",
+   "gpufenothread": "gpu_frontend"
+  },
+  "cross_build_reproducibility_zh": "🔑 整张表与 09-15 判决书**逐位相同**,而那轮的 gpufe_nothread 引擎是sha16 `363bedb5b473402c`、本轮是 `6953592824d0a428`,Dawn 也从 Debug 换成 Release。⇒ GPU 前端改变的特征集是**确定性的**,selfcheck 里那 4804 个 sqrt 最后一位的差异**不引入随机性**,只是把算法推向一个不同但同样确定的解。generic 三档也逐位复现,说明整条重建链的口径是稳的,任何差异只能归给引擎归档。",
+  "verdict_zh": "**精度等价**:均值好 3.9%,但方向一场一个样(打平 / 差 6.6% / 好 13.7%)—— 不是更准,是在同一档噪声里换了个位置。没有系统性代价,也没有系统性收益。🔴 `state=valid_fail` 不作判据:那道 ate>0.10 / rpe_t>0.05 的门没有可追溯出处,现役 generic 在 V1_02/V1_03 同样 gates_not_met。",
+  "scope_limit_zh": "🔴 EuRoC 是 **752×480**,与我们 1920×1440 的实际场景不是一回事。这六格只能证明「换归档没有系统性精度代价」,**不能**外推到全分辨率。1920×1440 共享录制那两格另算(台架对该档不打分,只能对 arkit_poses.tum 比,而那是「差多少」不是「错多少」)。"
+ },
+ "shared_recording_verdict_20260920": {
+  "recording": "run-6e2d4b99-896b-4372-ae47-ac0b4679cf18(1920×1440,1702 帧)",
+  "protocol": "pw_run_arm.sh <label> replay-device-recording -PWFeederGateOff -PWDatasetPath VIOBenchRuns/run-6e2d4b99-... -PWLiveFullResolution [-PWXrslamGpuFrontend]",
+  "🔴必须显式指名录制": "BenchViewModel.swift:146-165 把设备上的录制按修改时间排序取 recordings.first。设备上那份原生 640×480 的 run-eb74a545 更新 ⇒ 会被挑走 ⇒ failure.json: 'recording is 640x480; only 1920x1440 may be scored'。我为此栽了三次。",
+  "vs_arkit": {
+   "generic": {
+    "配对": 1646,
+    "Sim3_ATE_cm": 2.11,
+    "SE3_ATE_cm": 2.6,
+    "尺度偏差_pct": 4.13,
+    "backend": "cpu"
+   },
+   "gpufenothread": {
+    "配对": 1646,
+    "Sim3_ATE_cm": 2.11,
+    "SE3_ATE_cm": 2.6,
+    "尺度偏差_pct": 4.13,
+    "backend": "gpu_frontend"
+   }
+  },
+  "两臂轨迹逐点比对": {
+   "共同位姿": 1646,
+   "位置差最大_µm": 0.002,
+   "位置差RMS_µm": 0.0,
+   "四元数差最大": 1.5e-11,
+   "位置逐位相同的点": "1506/1646"
+  },
+  "verdict_zh": "**在 1920×1440 上,GPU 前端与 CPU 前端产出的轨迹数值上不可区分**(位置最大差 2 纳米级)。这比 EuRoC 那三格更贴近我们的实际场景:EuRoC 是 752×480,V1_02/V1_03 上两臂差 ±6~14%,而到了 1920×1440 特征多、约束足,selfcheck 里那 4804 个 sqrt 最后一位的差异被完全吸收。",
+  "🔴指标含义": "2.60 cm 是**与 ARKit 差多少**,不是**错多少** —— arkit_poses.tum 不是真值。台架对这一档 state=invalid、自己不打分,这两个数来自 pw_ate.sh。它在这里的作用是**两臂对比**,而对比结论(不可区分)是可靠的。"
+ }
+}

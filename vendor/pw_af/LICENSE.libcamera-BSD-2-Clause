@@ -1,0 +1,57 @@
+pw_af 的状态机(af_scan.{h,cpp})与分段线性映射(lens_scale.{h,cpp} 的 PwAfPwl)
+逐段复刻自 raspberrypi/libcamera 的树莓派 IPA 自动对焦模块。被复刻的上游文件:
+
+  src/ipa/rpi/controller/rpi/af.cpp      SPDX-License-Identifier: BSD-2-Clause
+  src/ipa/rpi/controller/rpi/af.h        SPDX-License-Identifier: BSD-2-Clause
+  src/ipa/rpi/controller/af_algorithm.h  SPDX-License-Identifier: BSD-2-Clause
+  src/ipa/rpi/controller/af_status.h     SPDX-License-Identifier: BSD-2-Clause
+  src/ipa/libipa/pwl.h / pwl.cpp         SPDX-License-Identifier: BSD-2-Clause
+  Copyright (C) 2019, 2022-2023, Raspberry Pi Ltd
+
+调参数值(ranges / speeds / map)取自:
+  src/ipa/rpi/pisp/data/imx708.json      (同仓,rpi.af 段)
+
+许可依据 —— 仓根 COPYING.rst:31-34 原文:
+
+  "The IPA modules, located in src/ipa/, are covered by free software licenses
+   chosen by the module authors. The LGPL-2.1-or-later license is recommended.
+   Those modules are compiled as separate binaries and dynamically loaded by
+   the libcamera core at runtime."
+
+⇒ 上列文件的文件头 SPDX 明写 BSD-2-Clause,与 libcamera 核心(src/libcamera/,
+   LGPL-2.1-or-later)分属不同许可。pw_af 不包含、不链接 libcamera 核心的任何代码。
+
+🔴 不要抄错目录:src/ipa/ipu3/algorithms/af.cpp 的文件头是 LGPL-2.1-or-later
+   (Copyright 2021 Red Hat),不在本许可覆盖范围内,pw_af 没有引用它的任何一行。
+
+快照:2026-09-23 取自 raspberrypi/libcamera 的 main 分支;af.cpp 共 970 行,
+pw_af 源码注释中的所有 "af.cpp:NNN" 行号均指该快照。上游 libcamera-org 做过
+std::span 重构,行号可能偏移,对照时请按函数名对齐。
+
+焦点度量(focus_measure.{h,cpp})不含上游代码,见该文件头的出处说明。
+
+--------------------------------------------------------------------------------
+BSD 2-Clause License
+
+Copyright (c) 2019, 2022-2023, Raspberry Pi Ltd. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice,
+this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+this list of conditions and the following disclaimer in the documentation
+and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
+USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

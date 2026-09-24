@@ -1,0 +1,33 @@
+// pw_solid.mat —— 纯色无光照材质,只用于**标记**(位姿链探针的红块)。
+//
+// 为什么不用 thermion 的 ubershader:它要求顶点属性 0x1d
+// (POSITION|COLOR|UV0|UV1),而 thermion 自己的几何构建器只声明 0xd
+// (GeometrySceneAssetBuilder.cpp:168-170 写死 POSITION/UV0/COLOR),
+// 真机实测直接报
+//   [entity=3, primitive @ 0] missing required attributes (0x1d), declared=0xd
+// 两者在 0.3.4 上对不上。自带一个只要 POSITION 的材质,把这层耦合摘掉。
+//
+// 形状与 Filament 官方样例里的最小 unlit 材质一致:shadingModel unlit,
+// 不写 `requires`(⇒ 只要 POSITION),fragment 里 prepareMaterial 之后直接
+// 写 baseColor。
+//
+// 🔴 unlit 是承重的:标记必须不受光照影响,像素值才可预期 —— 判据要按
+// "纯红"去找它。
+
+material {
+    name : pw_solid,
+    shadingModel : unlit,
+    parameters : [
+        {
+            type : float4,
+            name : color
+        }
+    ]
+}
+
+fragment {
+    void material(inout MaterialInputs material) {
+        prepareMaterial(material);
+        material.baseColor = materialParams.color;
+    }
+}
