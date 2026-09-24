@@ -65,9 +65,19 @@ PWOFFICIAL_EXPORT aether_sfm_result_t pwofficial_add_frame_v2(
     aether_sfm_session_t* s, const uint8_t* gray, int width, int height,
     float fx, float fy, float cx, float cy, const double pose_qwxyz[4],
     const double pose_t[3], int32_t device_pose_trusted, int* out_frame_id) {
+#if TARGET_OS_SIMULATOR
+  /* [bench 168-fixes] simulator link only, same pattern as the forwarders
+     below (the sim backend has no core); device slice unchanged. */
+  (void)s; (void)gray; (void)width; (void)height; (void)fx; (void)fy;
+  (void)cx; (void)cy; (void)pose_qwxyz; (void)pose_t;
+  (void)device_pose_trusted;
+  if (out_frame_id) *out_frame_id = -1;
+  return AETHER_SFM_ERR_UNSUPPORTED;
+#else
   return aether_sfm_add_frame_v2(s, gray, width, height, fx, fy, cx, cy,
                                  pose_qwxyz, pose_t, device_pose_trusted,
                                  out_frame_id);
+#endif
 }
 
 PWOFFICIAL_EXPORT void pwofficial_registration_evidence_stats_v1(
@@ -75,9 +85,19 @@ PWOFFICIAL_EXPORT void pwofficial_registration_evidence_stats_v1(
     int64_t* untrusted_registered, int64_t* evidence_checked,
     int64_t* evidence_failed, int64_t* late_registered,
     int64_t* unregistered_delivered) {
+#if TARGET_OS_SIMULATOR
+  (void)s;
+  if (untrusted_fed) *untrusted_fed = 0;
+  if (untrusted_registered) *untrusted_registered = 0;
+  if (evidence_checked) *evidence_checked = 0;
+  if (evidence_failed) *evidence_failed = 0;
+  if (late_registered) *late_registered = 0;
+  if (unregistered_delivered) *unregistered_delivered = 0;
+#else
   aether_sfm_registration_evidence_stats_v1(
       s, untrusted_fed, untrusted_registered, evidence_checked,
       evidence_failed, late_registered, unregistered_delivered);
+#endif
 }
 
 /* [EXTRACT-PREFETCH 2026-08-09] 提取∥匹配帧级流水的对外入口。转发到
