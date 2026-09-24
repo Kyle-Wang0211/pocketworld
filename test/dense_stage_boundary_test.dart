@@ -114,11 +114,17 @@ void main() {
     });
 
     test('两条路都只在真选过区时带 selection', () {
-      expect(viewer, contains('selection: _selectionApplied ? _box : null'));
-      expect(
-        capture,
-        contains('selection: _sfmSelectionApplied ? _sfmBox : null'),
-      );
+      // [174] 第一次「下一步」:只在真选过区时带框;「完成稠密」(开跑过没完成):用那次运行记下的框
+      // (dense_work_state.dart denseResumeSelection),不是当前编辑态的框。
+      expect(viewer, contains(': (_selectionApplied ? _box : null);'));
+      expect(viewer, contains('? await denseResumeSelection(_captureDir)'));
+      expect(capture, contains(': (_sfmSelectionApplied ? _sfmBox : null);'));
+      expect(capture, contains('? await denseResumeSelection(dir)'));
+      expect(viewer, contains('selection: selection,'));
+      expect(capture, contains('selection: selection,'));
+      // NEGATIVE: 兜底框(AABB 算的 fallback)从来不直接进请求
+      expect(viewer.contains('selection: _box,'), isFalse);
+      expect(capture.contains('selection: _sfmBox,'), isFalse);
     });
 
     test('未接入时按钮禁用,而不是点下去弹一句"敬请期待"', () {
