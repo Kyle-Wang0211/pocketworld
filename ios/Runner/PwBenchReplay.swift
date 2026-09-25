@@ -223,6 +223,15 @@ final class PwBenchReplayRunner {
     private var records: [PwBenchReplayFrameRecord] = []
     private var offeredByPts: [UInt64: PwBenchReplayOffered] = [:]
     private var lastTelemetry = PWBenchReplayTelemetry()
+    // [bench 2026-09-25 后端位姿] 引擎后端出口(PwBenchReplayEngineProbe.h ③)取走的记录,与
+    //   「推给引擎的帧时间(位模式)→ 投递记录」对照表。传输层把 XRSLAMImage.timeStamp 设成
+    //   effective_timestamp(PwXrslamTransportCore.cpp),观察者的 effectiveTimestamp 就是同一个 double,
+    //   引擎后端记录的 timestamp 又是 frame->image->t = 同一个 double ⇒ 按位模式整数相等配回录制帧,零容差。
+    private var backendEvents: [XRSLAMBackendPose] = []
+    private var backendWindowAtEnd: [XRSLAMBackendPose] = []
+    private var backendDropped: UInt64 = 0
+    private var backendExitAvailable = true
+    private var offeredByEffective: [UInt64: PwBenchReplayOffered] = [:]
 
     private var bufferPool: CVPixelBufferPool?
 
@@ -248,7 +257,9 @@ final class PwBenchReplayRunner {
         observations = 0; summary = nil
         startedAtNs = DispatchTime.now().uptimeNanoseconds
         lock.unlock()
-        recordLock.lock(); records = []; offeredByPts = [:]; recordLock.unlock()
+        recordLock.lock(); records = []; offeredByPts = [:]
+        backendEvents = []; backendWindowAtEnd = []; backendDropped = 0; backendExitAvailable = true
+        offeredByEffective = [:]; recordLock.unlock()
 
         let t = Thread { [weak self] in self?.run(config) }
         t.name = "com.pocketworld.bench.replay"
@@ -407,6 +418,26 @@ final class PwBenchReplayRunner {
             setPhase("draining")
             try drain(live)
             let feedEndNs = DispatchTime.now().uptimeNanoseconds
+            // [bench 2026-09-25 后端位姿] 宿主队列排空后,引擎内部(前端/后端 worker)可能还在处理最后几帧。
+            //   等它们空闲(至多 4 s;符号不在 ⇒ -1 ⇒ 不等),再留 0.5 s 让最后一次 track() 写完出口,
+            //   然后取走剩下的事件、读收尾整窗快照。这里已经没有新输入,等多久都不改变任何已算出的值;
+            //   与 Mac 回放器 bkpose/tools/pwvi_runner.cpp 收尾同一个做法。
+            var enginePendingWaitMs = 0
+            while PWBenchReplayEnginePendingFrames() > 0 && enginePendingWaitMs < 4000 {
+                Thread.sleep(forTimeInterval: 0.01); enginePendingWaitMs += 10
+            }
+            Thread.sleep(forTimeInterval: 0.5)
+            drainBackendPoses()
+            let windowCount = PWBenchReplayBackendWindowPoses(nil, 0)
+            if windowCount > 0 {
+                var wbuf = [XRSLAMBackendPose](repeating: XRSLAMBackendPose(), count: Int(windowCount))
+                let got = wbuf.withUnsafeMutableBufferPointer {
+                    PWBenchReplayBackendWindowPoses($0.baseAddress, windowCount)
+                }
+                recordLock.lock()
+                backendWindowAtEnd = Array(wbuf[0..<Int(min(got, windowCount))])
+                recordLock.unlock()
+            }
             let thermalEnd = ProcessInfo.processInfo.thermalState.rawValue
 
             // ── 读账(都在 destroy 之前)
@@ -467,6 +498,14 @@ final class PwBenchReplayRunner {
             sum["gpu_frontend_trail"] = trail
             sum["xrslam_feed"] = feedReport
             sum["telemetry_symbols_found"] = Int(PWBenchReplayTelemetrySymbolCount())
+            sum["backend_pose_exit"] = [
+                "available": backendExitAvailable,
+                "events": backendEvents.count,
+                "window_at_end": backendWindowAtEnd.count,
+                "dropped_by_engine_queue": backendDropped,
+                "engine_pending_wait_ms": enginePendingWaitMs,
+                "window_count_rc": Int(windowCount),
+            ] as [String: Any]
             sum["feeding"] = [
                 "camera_offered": cameraOrdinal,
                 "imu_rows_pushed": imuRowsPushed,
@@ -612,8 +651,39 @@ final class PwBenchReplayRunner {
         let offered = offeredByPts.removeValue(forKey: obs.rawPts.bitPattern)
         records.append(PwBenchReplayFrameRecord(observation: obs, offered: offered,
                                                 bodyPose: body, telemetryDelta: delta))
+        if obs.traceOk, let offered {
+            offeredByEffective[obs.effectiveTimestamp.bitPattern] = offered
+        }
         recordLock.unlock()
+        drainBackendPoses()
         lock.lock(); observations += 1; lock.unlock()
+    }
+
+    /// [bench 2026-09-25 后端位姿] 把引擎后端出口里已有的 First / Final 事件取走(只读;
+    /// 引擎没有这个出口 ⇒ -1,记一次就不再调)。worker 线程每帧调一次,收尾再调一次。
+    private func drainBackendPoses() {
+        recordLock.lock()
+        let available = backendExitAvailable
+        recordLock.unlock()
+        guard available else { return }
+        let cap: Int32 = 256
+        var buf = [XRSLAMBackendPose](repeating: XRSLAMBackendPose(), count: Int(cap))
+        while true {
+            var dropped: UInt64 = 0
+            let n = buf.withUnsafeMutableBufferPointer {
+                PWBenchReplayDrainBackendPoses($0.baseAddress, cap, &dropped)
+            }
+            recordLock.lock()
+            if n < 0 {
+                backendExitAvailable = false
+                recordLock.unlock()
+                return
+            }
+            backendDropped &+= dropped
+            if n > 0 { backendEvents.append(contentsOf: buf[0..<Int(n)]) }
+            recordLock.unlock()
+            if n < cap { return }
+        }
     }
 
     private static func telemetryDelta(_ e: PWBenchReplayTelemetry,
@@ -754,8 +824,78 @@ final class PwBenchReplayRunner {
             lf.append(String(o.stride))
             ledger += lf.joined(separator: ",") + "\n"
         }
+        // [bench 2026-09-25 后端位姿] 后端(滑动窗口 BA)已优化帧位姿,按录制帧精确键控(🔴 bench-only ruler 也吃它)。
+        //   只有进过后端的帧才有行(初始化后约每 3 个准入帧 1 个);不插值、不平滑、不外推。
+        //   first_* = 这一帧自己那次后端 track() 刚结束时的值(首次后端估计);
+        //   final_* = 离开后端窗口前的最后值(final_source = marginalized);收尾时仍在窗口里的帧取收尾整窗快照
+        //             (final_source = window_at_end);两者都没有则留空。
+        //   位姿口径与 poses_camera_by_recording_frame.csv 相同(引擎 body→camera 与 GetResultCameraPose 同式)。
+        //   键控:引擎记录的 timestamp 与观察者的 effectiveTimestamp 位模式整数相等 ⇒ 投递记录的 recording_frame / t_ns。
+        //   另写 poses_backend_{first,final}_by_recording_frame.csv:列与 poses_camera_by_recording_frame.csv 逐列相同,
+        //   lidar_ruler.py --xrslam-camera 直接吃。
+        recordLock.lock()
+        let bkEvents = backendEvents
+        let bkWindow = backendWindowAtEnd
+        let byEff = offeredByEffective
+        recordLock.unlock()
+        var bkFirst: [UInt64: XRSLAMBackendPose] = [:]
+        var bkFinal: [UInt64: (XRSLAMBackendPose, String)] = [:]
+        for e in bkEvents {
+            let key = e.timestamp.bitPattern
+            if e.kind == Int32(XRSLAM_BACKEND_POSE_FIRST) {
+                if bkFirst[key] == nil { bkFirst[key] = e }
+            } else if e.kind == Int32(XRSLAM_BACKEND_POSE_FINAL) {
+                bkFinal[key] = (e, "marginalized")
+            }
+        }
+        for w in bkWindow where bkFinal[w.timestamp.bitPattern] == nil {
+            bkFinal[w.timestamp.bitPattern] = (w, "window_at_end")
+        }
+        func poseCols(_ p: XRSLAMBackendPose) -> String {
+            String(format: "%.9f,%.9f,%.9f,%.9f,%.9f,%.9f,%.9f",
+                   p.translation.0, p.translation.1, p.translation.2,
+                   p.quaternion.0, p.quaternion.1, p.quaternion.2, p.quaternion.3)
+        }
+        var backend = "recording_frame,t_ns,engine_t,frame_id,first_is_keyframe,"
+            + "first_tx,first_ty,first_tz,first_qx,first_qy,first_qz,first_qw,final_source,"
+            + "final_tx,final_ty,final_tz,final_qx,final_qy,final_qz,final_qw\n"
+        var backendFirstKeyed = "recording_frame,t_ns,tx,ty,tz,qx,qy,qz,qw,engine_t\n"
+        var backendFinalKeyed = "recording_frame,t_ns,tx,ty,tz,qx,qy,qz,qw,engine_t\n"
+        var backendRows = 0, backendFirstRows = 0, backendFinalRows = 0, backendUnmapped = 0
+        for f in bkFirst.values.sorted(by: { $0.timestamp < $1.timestamp }) {
+            let key = f.timestamp.bitPattern
+            let off = byEff[key]
+            let recFrame = off?.recordingFrameIndex ?? -1
+            let tns = off?.timestampNanoseconds ?? -1
+            if off == nil { backendUnmapped += 1 }
+            var row = String(format: "%ld,%lld,%.9f,%llu,%d,", recFrame, tns, f.timestamp,
+                             f.frame_id, f.is_keyframe) + poseCols(f) + ","
+            if let fs = bkFinal[key] {
+                row += fs.1 + "," + poseCols(fs.0)
+            } else {
+                row += ",,,,,,,"
+            }
+            backend += row + "\n"
+            backendRows += 1
+            if recFrame >= 0 {
+                backendFirstKeyed += String(format: "%ld,%lld,", recFrame, tns) + poseCols(f)
+                    + String(format: ",%.9f\n", f.timestamp)
+                backendFirstRows += 1
+                if let fs = bkFinal[key] {
+                    backendFinalKeyed += String(format: "%ld,%lld,", recFrame, tns) + poseCols(fs.0)
+                        + String(format: ",%.9f\n", fs.0.timestamp)
+                    backendFinalRows += 1
+                }
+            }
+        }
         var outputs: [String: Any] = [:]
-        for (name, text, rows) in [("poses_body.tum", body, bodyRows),
+        outputs["backend_pose_unmapped_rows"] = backendUnmapped
+        for (name, text, rows) in [("poses_backend_by_recording_frame.csv", backend, backendRows),
+                                   ("poses_backend_first_by_recording_frame.csv", backendFirstKeyed,
+                                    backendFirstRows),
+                                   ("poses_backend_final_by_recording_frame.csv", backendFinalKeyed,
+                                    backendFinalRows),
+                                   ("poses_body.tum", body, bodyRows),
                                    ("poses_camera.tum", camera, cameraRows),
                                    ("poses_camera_by_recording_frame.csv", cameraByFrame,
                                     cameraByFrameRows),

@@ -58,6 +58,22 @@ void PWBenchReplayTelemetryTake(PWBenchReplayTelemetry *out);
 // 链进来的引擎里有几个遥测符号(0..11;哨兵 = 不在)。
 int32_t PWBenchReplayTelemetrySymbolCount(void);
 
+// ③ [bench 2026-09-25] 后端(滑动窗口 BA)已优化帧位姿 —— xrslam fork feat/backend-pose-output@8ebac9a
+//    新增的只读出口 XRSLAMDrainBackendPoses / XRSLAMGetBackendWindowPoses(声明与布局见
+//    vendor/xrslam/include/XRSLAMBackendPose.h,与引擎提交里那份逐字节相同)。
+//    同 ② 的做法:.c 里给两个引擎函数各一个**弱定义**,返回 -1;链进来的引擎归档有强定义就用引擎的,
+//    没有(generic / gpufenothread / pfk / official_rules_89042cd5 臂)就如实得到 -1 =「这个引擎没有后端出口」。
+//    只读:取走的是引擎已经算好、放在出口里的记录,不碰任何参与计算的状态。
+#include "../../vendor/xrslam/include/XRSLAMBackendPose.h"
+
+// 取走 First / Final 事件;返回条数,-1 = 链进来的引擎没有这个出口。*dropped 同引擎语义。
+int32_t PWBenchReplayDrainBackendPoses(XRSLAMBackendPose *out, int32_t capacity,
+                                       uint64_t *dropped);
+// 最近一次后端 track() 结束时的整窗快照;返回快照总条数,-1 = 没有这个出口。
+int32_t PWBenchReplayBackendWindowPoses(XRSLAMBackendPose *out, int32_t capacity);
+// 引擎内部 worker 队列里还没处理的帧数(XRSLAMGetPendingWorkerFrames);-1 = 符号不在。
+int32_t PWBenchReplayEnginePendingFrames(void);
+
 #ifdef __cplusplus
 }
 #endif

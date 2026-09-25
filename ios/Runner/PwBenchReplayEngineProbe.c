@@ -84,3 +84,34 @@ int32_t PWBenchReplayTelemetrySymbolCount(void) {
   n += t.bk_track_n >= 0;
   return n;
 }
+
+// ── ③ [bench 2026-09-25] 后端位姿出口(弱定义 + 哨兵,见 .h ③)─────────────────────────
+__attribute__((weak)) int XRSLAMDrainBackendPoses(XRSLAMBackendPose *out, int capacity,
+                                                  unsigned long long *dropped) {
+  (void)out; (void)capacity;
+  if (dropped) *dropped = 0;
+  return -1;
+}
+
+__attribute__((weak)) int XRSLAMGetBackendWindowPoses(XRSLAMBackendPose *out, int capacity) {
+  (void)out; (void)capacity;
+  return -1;
+}
+
+__attribute__((weak)) int XRSLAMGetPendingWorkerFrames(void) { return -1; }
+
+_Static_assert(sizeof(XRSLAMBackendPose) == 136, "XRSLAMBackendPose 布局须与引擎 static_assert 一致");
+
+int32_t PWBenchReplayDrainBackendPoses(XRSLAMBackendPose *out, int32_t capacity,
+                                       uint64_t *dropped) {
+  unsigned long long d = 0;
+  const int n = XRSLAMDrainBackendPoses(out, capacity, &d);
+  if (dropped) *dropped = (uint64_t)d;
+  return (int32_t)n;
+}
+
+int32_t PWBenchReplayBackendWindowPoses(XRSLAMBackendPose *out, int32_t capacity) {
+  return (int32_t)XRSLAMGetBackendWindowPoses(out, capacity);
+}
+
+int32_t PWBenchReplayEnginePendingFrames(void) { return (int32_t)XRSLAMGetPendingWorkerFrames(); }
