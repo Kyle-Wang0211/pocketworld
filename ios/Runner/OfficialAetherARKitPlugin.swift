@@ -2371,7 +2371,8 @@ class OfficialAetherARKitPlugin: NSObject {
   /// (48MP 全像素、24MP 多帧融合)只能经 iOS 16 起的 maxPhotoDimensions 主动请求。
   @available(iOS, deprecated: 16.0)
   private static func highResLegacyStillDims() -> CMVideoDimensions? {
-    guard let device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera
+    guard #available(iOS 16.0, *),
+          let device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera
     else { return nil }
     return device.activeFormat.highResolutionStillImageDimensions
   }
