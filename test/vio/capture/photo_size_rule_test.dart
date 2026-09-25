@@ -62,43 +62,91 @@ void main() {
     }
   });
 
-  group('拍照端:取最大 4:3', () {
-    test('iPhone 48MP 格式:两档都是 4:3 ⇒ 取 48MP(不设上限)', () {
+  // [ANY43-DEFAULT 2026-09-25] 用户改判:「取平台默认模式下的最大 4:3」。
+  group('拍照端:默认模式下的最大 4:3', () {
+    // iOS 宿主三元组 (w, h, flags):bit0 = 需主动请求的高分辨率档,bit1 = Apple 字面默认(列表最小项)。
+    test('模拟 48MP iPhone(4032x3024 格式):默认 12MP,48MP 与 24MP 融合是主动请求档 ⇒ 12MP', () {
+      final c = photoSizeCandidatesFromTriples(const [
+        [4032, 3024, kPhotoCandidateFlagLiteralDefault],
+        [5712, 4284, kPhotoCandidateFlagOptIn], // 24MP 多帧融合(只经 deferred delivery)
+        [8064, 6048, kPhotoCandidateFlagOptIn], // 48MP 全像素
+      ]);
+      expect(pickLargestFourByThreeInDefaultMode(c), const PhotoDimensions(4032, 3024));
+    });
+
+    test('本测试机零 ARKit(1920x1440 格式):12MP 不是主动请求档 ⇒ 4032x3024', () {
+      // 1920x1440 是 Apple 字面默认(列表最小项);4032x3024 = 该格式 highResolutionStillImageDimensions,
+      // 不高于它 ⇒ 不标 bit0。
+      final c = photoSizeCandidatesFromTriples(const [
+        [1920, 1440, kPhotoCandidateFlagLiteralDefault],
+        [4032, 3024, 0],
+      ]);
+      expect(pickLargestFourByThreeInDefaultMode(c), const PhotoDimensions(4032, 3024));
+    });
+
+    test('iOS 宿主读不到 legacy 尺寸时退回 Apple 字面默认(除最小项外全标主动请求)', () {
+      final c = photoSizeCandidatesFromTriples(const [
+        [1920, 1440, kPhotoCandidateFlagLiteralDefault],
+        [4032, 3024, kPhotoCandidateFlagOptIn],
+      ]);
+      expect(pickLargestFourByThreeInDefaultMode(c), const PhotoDimensions(1920, 1440));
+    });
+
+    test('Pixel(Camera2 默认映射 4080x3072)⇒ 4080x3072', () {
+      final c = photoSizeCandidatesFromCamera2(const {
+        'jpegOutputSizes': [
+          [4080, 3072],
+          [4080, 2296],
+          [4000, 3000],
+          [3840, 2160],
+          [1920, 1440],
+          [1920, 1080],
+        ],
+        'jpegHighResolutionOutputSizes': [],
+      });
+      expect(pickLargestFourByThreeInDefaultMode(c), const PhotoDimensions(4080, 3072));
+    });
+
+    test('50MP 四拜耳(默认约 12.5MP,全像素只在高分辨率 / MAXIMUM_RESOLUTION 表)⇒ 4080x3072', () {
+      final c = photoSizeCandidatesFromCamera2(const {
+        'jpegOutputSizes': [
+          [4080, 3072],
+          [4080, 2296],
+          [3264, 2448],
+          [1920, 1440],
+        ],
+        'jpegHighResolutionOutputSizes': [
+          [8160, 6144],
+        ],
+        'jpegMaximumResolutionOutputSizes': [
+          [8160, 6144],
+          [8160, 4592],
+        ],
+      });
+      expect(pickLargestFourByThreeInDefaultMode(c), const PhotoDimensions(4080, 3072));
       expect(
-        pickLargestFourByThree(const [
-          PhotoDimensions(4032, 3024),
-          PhotoDimensions(8064, 6048),
-        ]),
-        const PhotoDimensions(8064, 6048),
+        c.where((x) => x.requiresHighResolutionOptIn).map((x) => x.dimensions).toSet(),
+        {const PhotoDimensions(8160, 6144), const PhotoDimensions(8160, 4592)},
       );
     });
-    test('只有 12MP ⇒ 12MP(本机 1920x1440 格式的实测情形)', () {
-      expect(pickLargestFourByThree(const [PhotoDimensions(4032, 3024)]),
-          const PhotoDimensions(4032, 3024));
+
+    test('默认映射里更大的 16:9 不选,取 4:3', () {
+      final c = photoSizeCandidatesFromCamera2(const {
+        'jpegOutputSizes': [
+          [4080, 2296],
+          [4000, 3000],
+        ],
+      });
+      expect(pickLargestFourByThreeInDefaultMode(c), const PhotoDimensions(4000, 3000));
     });
-    test('安卓 JPEG 尺寸表:16:9 更大也不选,取 4:3 里最大的', () {
-      expect(
-        pickLargestFourByThree(const [
-          PhotoDimensions(8160, 4590), // 16:9,面积更大
-          PhotoDimensions(8160, 6144), // 50MP 4:3(mod16)
-          PhotoDimensions(4080, 3072),
-          PhotoDimensions(1920, 1080),
-        ]),
-        const PhotoDimensions(8160, 6144),
-      );
-    });
-    test('没有合格尺寸 ⇒ null(不硬凑)', () {
-      expect(
-        pickLargestFourByThree(const [
-          PhotoDimensions(1920, 1080),
-          PhotoDimensions(1440, 1080),
-          PhotoDimensions(3024, 4032),
-        ]),
-        isNull,
-      );
-    });
-    test('空表 ⇒ null', () {
-      expect(pickLargestFourByThree(const []), isNull);
+
+    test('没有合格的默认模式尺寸 ⇒ null(不退到主动请求档)', () {
+      final c = photoSizeCandidatesFromTriples(const [
+        [1920, 1080, kPhotoCandidateFlagLiteralDefault],
+        [8064, 6048, kPhotoCandidateFlagOptIn],
+      ]);
+      expect(pickLargestFourByThreeInDefaultMode(c), isNull);
+      expect(pickLargestFourByThreeInDefaultMode(const []), isNull);
     });
   });
 }

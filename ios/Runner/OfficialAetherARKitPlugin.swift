@@ -2367,16 +2367,43 @@ class OfficialAetherARKitPlugin: NSObject {
     return device.activeFormat.supportedMaxPhotoDimensions
   }
 
-  /// [ENTRY-ANY-4X3 2026-09-25] 给 Dart 的候选表。键:
-  ///   supported             [[w,h],...] 候选(空 = 查不到)
+  /// [ANY43-DEFAULT 2026-09-25] iOS 16 之前的「高分辨率静照」尺寸(已弃用、仍可读):高于它的档
+  /// (48MP 全像素、24MP 多帧融合)只能经 iOS 16 起的 maxPhotoDimensions 主动请求。
+  @available(iOS, deprecated: 16.0)
+  private static func highResLegacyStillDims() -> CMVideoDimensions? {
+    guard let device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera
+    else { return nil }
+    return device.activeFormat.highResolutionStillImageDimensions
+  }
+
+  /// [ENTRY-ANY-4X3 / ANY43-DEFAULT 2026-09-25] 给 Dart 的候选表(只报不判)。键:
+  ///   supported             [[w,h,flags],...];flags 与零 ARKit 宿主、Dart kPhotoCandidateFlag* 同值:
+  ///                         bit0 需主动请求的高分辨率档(高于 legacyHighResStill;读不到时除最小项外全标),
+  ///                         bit1 Apple 字面默认(列表最小项)
+  ///   legacyHighResStill    [w,h] 该格式 highResolutionStillImageDimensions
   ///   default               [w,h] ARKit defaultPhotoSettings 的尺寸(iOS 26+,否则缺省)
   ///   photoSettingsCapture  是否能用 captureHighResolutionFrameUsingPhotoSettings(iOS 26+)
   private static func highResPhotoDimensionsReport(session: ARSession?) -> [String: Any] {
-    let supported = highResSupportedPhotoDims().map { [Int($0.width), Int($0.height)] }
+    let dims = highResSupportedPhotoDims()
+    let legacy = highResLegacyStillDims()
+    let smallest = dims.min { Int64($0.width) * Int64($0.height)
+      < Int64($1.width) * Int64($1.height) }
+    let supported: [[Int]] = dims.map { d in
+      var flags = 0
+      let isSmallest = smallest.map { $0.width == d.width && $0.height == d.height } ?? false
+      if let l = legacy, l.width > 0, l.height > 0 {
+        if d.width > l.width || d.height > l.height { flags |= 1 }
+      } else if !isSmallest {
+        flags |= 1
+      }
+      if isSmallest { flags |= 2 }
+      return [Int(d.width), Int(d.height), flags]
+    }
     var out: [String: Any] = [
       "supported": supported,
       "photoSettingsCapture": false,
     ]
+    if let l = legacy { out["legacyHighResStill"] = [Int(l.width), Int(l.height)] }
     if #available(iOS 26.0, *) {
       out["photoSettingsCapture"] = true
       if let f = session?.configuration?.videoFormat {

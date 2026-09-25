@@ -19,6 +19,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter/services.dart';
 import 'package:vector_math/vector_math_64.dart';
 
@@ -421,37 +422,40 @@ class PlatformARPoseProvider implements ARPoseProvider {
   /// 最近一次查询的原始回执(诊断用)。
   Map<String, dynamic>? lastHighResPhotoDimsReport;
 
-  /// 用户规则「不同手机就用 4:3 能做到的最大尺寸」:宿主报候选(官方 API
-  /// supportedMaxPhotoDimensions),规则在 Dart([pickLargestFourByThree])。
-  /// 只有「选中 ≠ ARKit 默认」且宿主能带照片设置取图(iOS 26+)时才返回尺寸;
-  /// 否则 null ⇒ 不传参,原生调用与改动前逐字节相同。
+  /// [ANY43-DEFAULT 2026-09-25] 用户规则「平台默认模式下的最大 4:3」:宿主报候选(官方 API
+  /// supportedMaxPhotoDimensions,并标出 48MP / 24MP 等需主动请求的高分辨率档),规则在 Dart
+  /// ([pickLargestFourByThreeInDefaultMode])。见 [highResRequestFromReport]。
   Future<PhotoDimensions?> _resolveHighResPhotoTarget() async {
     try {
       final report = await _method.invokeMapMethod<String, dynamic>(
         'highResPhotoDimensions',
       );
       lastHighResPhotoDimsReport = report;
-      if (report == null || report['photoSettingsCapture'] != true) return null;
-      final supported = <PhotoDimensions>[
-        for (final e in (report['supported'] as List? ?? const []))
-          if (e is List && e.length == 2)
-            PhotoDimensions((e[0] as num).toInt(), (e[1] as num).toInt()),
-      ];
-      final chosen = pickLargestFourByThree(supported);
-      if (chosen == null) return null;
-      final d = report['default'];
-      if (d is List &&
-          d.length == 2 &&
-          (d[0] as num).toInt() == chosen.width &&
-          (d[1] as num).toInt() == chosen.height) {
-        return null; // 默认就是最大 4:3 ⇒ 不改
-      }
-      return chosen;
+      return highResRequestFromReport(report);
     } on PlatformException {
       return null;
     } on MissingPluginException {
       return null;
     }
+  }
+
+  /// 纯函数(可单测):宿主回报 → 要请求的照片尺寸。只有「选中 ≠ ARKit 默认」且宿主能带照片设置
+  /// 取图(iOS 26+)时才返回尺寸;否则 null ⇒ 不传参,原生调用与改动前逐字节相同。
+  @visibleForTesting
+  static PhotoDimensions? highResRequestFromReport(Map<String, dynamic>? report) {
+    if (report == null || report['photoSettingsCapture'] != true) return null;
+    final chosen = pickLargestFourByThreeInDefaultMode(
+      photoSizeCandidatesFromTriples((report['supported'] as List?) ?? const []),
+    );
+    if (chosen == null) return null;
+    final d = report['default'];
+    if (d is List &&
+        d.length == 2 &&
+        (d[0] as num).toInt() == chosen.width &&
+        (d[1] as num).toInt() == chosen.height) {
+      return null; // ARKit 默认就是默认模式下的最大 4:3 ⇒ 不改
+    }
+    return chosen;
   }
 
   @override

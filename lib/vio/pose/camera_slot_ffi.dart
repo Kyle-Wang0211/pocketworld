@@ -42,9 +42,9 @@ typedef _OutDoubleNative = Int32 Function(Pointer<Double>);
 typedef _OutDoubleDart = int Function(Pointer<Double>);
 typedef _OutInt64Native = Void Function(Pointer<Int64>);
 typedef _OutInt64Dart = void Function(Pointer<Int64>);
-typedef _PhotoDimsForFormatNative = Int32 Function(
+typedef _PhotoSizeCandidatesNative = Int32 Function(
     Int32, Int32, Pointer<Int32>, Int32);
-typedef _PhotoDimsForFormatDart = int Function(int, int, Pointer<Int32>, int);
+typedef _PhotoSizeCandidatesDart = int Function(int, int, Pointer<Int32>, int);
 typedef _RequestPhotoDimsNative = Int32 Function(Int32, Int32);
 typedef _RequestPhotoDimsDart = int Function(int, int);
 
@@ -62,9 +62,9 @@ class PhotoDimsChoice {
   final int videoWidth;
   final int videoHeight;
 
-  /// `pw_camera_slot_photo_dims_for_format` 的返回值(>=0 候选数;负数见 Swift)。
+  /// `pw_camera_slot_photo_size_candidates` 的返回值(>=0 候选数;负数见 Swift)。
   final int queryResult;
-  final List<PhotoDimensions> candidates;
+  final List<PhotoSizeCandidate> candidates;
 
   /// 共享规则选中的尺寸;null = 一个都不合格(宿主退回旧行为,入口闸照样会拦)。
   final PhotoDimensions? chosen;
@@ -146,8 +146,8 @@ abstract final class PwCameraSlot {
   /// 不规则比低帧率更伤跟踪。供需比 59:24 → 30:24。
   /// `<=0` = 不设(由系统选)。
   ///
-  /// [ENTRY-ANY-4X3 2026-09-25] 起相机前先 [requestLargestFourByThreePhoto]:照片取本格式
-  /// 支持的最大 4:3 尺寸(用户规则),不再是「面积最大」。
+  /// [ENTRY-ANY-4X3 / ANY43-DEFAULT 2026-09-25] 起相机前先 [requestLargestFourByThreePhoto]:
+  /// 照片取本格式**默认模式下**的最大 4:3(用户规则;48MP / 24MP 等需主动请求的档不选)。
   static int start({
     int width = 640,
     int height = 480,
@@ -158,16 +158,16 @@ abstract final class PwCameraSlot {
     return _start(width, height, fps, lensPosition);
   }
 
-  static _PhotoDimsForFormatDart? _photoDimsForFormat;
+  static _PhotoSizeCandidatesDart? _photoSizeCandidates;
   static _RequestPhotoDimsDart? _requestPhotoDims;
   static bool _photoDimsSymbolsResolved = false;
 
   /// 最近一次选尺寸的记录;符号不在时为 null。
   static PhotoDimsChoice? lastPhotoDimsChoice;
 
-  /// [ENTRY-ANY-4X3 2026-09-25] 规则在 Dart(lib/vio/capture/photo_size_rule.dart),
-  /// 宿主只查:原生报出「视频 [width]x[height] 那个 activeFormat 的
-  /// supportedMaxPhotoDimensions」,这里用 [pickLargestFourByThree] 选,再把结果预设给原生,
+  /// [ENTRY-ANY-4X3 / ANY43-DEFAULT 2026-09-25] 规则在 Dart(lib/vio/capture/photo_size_rule.dart),
+  /// 宿主只查:原生报出「视频 [width]x[height] 那个 activeFormat 的 supportedMaxPhotoDimensions」
+  /// 并逐项标出需主动请求的高分辨率档,这里用 [pickLargestFourByThreeInDefaultMode] 选,再预设给原生,
   /// 下一次 start() 配置照片输出时生效。必须在 start **之前**调(相机在跑时原生拒绝,-11)。
   /// 符号不存在(旧二进制 / 模拟器 / 单测)⇒ 什么都不做,返回 null,原生保持旧行为。
   static PhotoDimsChoice? requestLargestFourByThreePhoto({
@@ -177,27 +177,29 @@ abstract final class PwCameraSlot {
     if (!_photoDimsSymbolsResolved) {
       _photoDimsSymbolsResolved = true;
       try {
-        _photoDimsForFormat = _lib.lookupFunction<_PhotoDimsForFormatNative,
-            _PhotoDimsForFormatDart>('pw_camera_slot_photo_dims_for_format');
+        _photoSizeCandidates = _lib.lookupFunction<_PhotoSizeCandidatesNative,
+            _PhotoSizeCandidatesDart>('pw_camera_slot_photo_size_candidates');
         _requestPhotoDims = _lib.lookupFunction<_RequestPhotoDimsNative,
             _RequestPhotoDimsDart>('pw_camera_slot_request_photo_dims');
       } catch (_) {
-        _photoDimsForFormat = null;
+        _photoSizeCandidates = null;
         _requestPhotoDims = null;
       }
     }
-    final query = _photoDimsForFormat;
+    final query = _photoSizeCandidates;
     final request = _requestPhotoDims;
     if (query == null || request == null) return null;
     const int cap = 32;
-    final Pointer<Int32> buf = calloc<Int32>(2 * cap);
+    final Pointer<Int32> buf = calloc<Int32>(3 * cap);
     try {
       final int n = query(width, height, buf, cap);
-      final List<PhotoDimensions> candidates = <PhotoDimensions>[
+      // 原生按 (w, h, flags) 三元组写;flags 位义见 photo_size_rule.dart kPhotoCandidateFlag*。
+      final List<PhotoSizeCandidate> candidates = photoSizeCandidatesFromTriples([
         for (int i = 0; i < (n < cap ? n : cap); i++)
-          PhotoDimensions(buf[2 * i], buf[2 * i + 1]),
-      ];
-      final PhotoDimensions? chosen = pickLargestFourByThree(candidates);
+          [buf[3 * i], buf[3 * i + 1], buf[3 * i + 2]],
+      ]);
+      final PhotoDimensions? chosen =
+          pickLargestFourByThreeInDefaultMode(candidates);
       // 选不出合格尺寸时显式清零(0x0 = 旧行为),免得原生沿用上一次会话残留的请求。
       final int rc = chosen == null
           ? request(0, 0)
@@ -206,7 +208,7 @@ abstract final class PwCameraSlot {
         videoWidth: width,
         videoHeight: height,
         queryResult: n,
-        candidates: List<PhotoDimensions>.unmodifiable(candidates),
+        candidates: List<PhotoSizeCandidate>.unmodifiable(candidates),
         chosen: chosen,
         requestResult: rc,
       );

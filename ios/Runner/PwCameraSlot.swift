@@ -91,8 +91,8 @@ private final class PwCameraSlotImpl: NSObject,
     /// 照片输出没装上时,原因原样记下来写进 sidecar,而不是静默降级。
     fileprivate var photoOutputNote: String = "not_installed"
 
-    /// [ENTRY-ANY-4X3 2026-09-25] Dart 按共享规则(lib/vio/capture/photo_size_rule.dart
-    /// `pickLargestFourByThree`)从 [pw_camera_slot_photo_dims_for_format] 报的候选里选定的
+    /// [ENTRY-ANY-4X3 / ANY43-DEFAULT 2026-09-25] Dart 按共享规则(lib/vio/capture/photo_size_rule.dart
+    /// `pickLargestFourByThreeInDefaultMode`)从 [pw_camera_slot_photo_size_candidates] 报的候选里选定的
     /// 照片尺寸,由 [pw_camera_slot_request_photo_dims] 在 start() **之前**写入;start() 配置
     /// 照片输出时读取。0x0 = 没有请求 ⇒ 旧行为(activeFormat 支持的面积最大值)。
     /// 宿主只查、不判:判据只在 Dart(与核外壳 pwofficial_photo_size_status_v1 同一份)。
@@ -326,7 +326,7 @@ private final class PwCameraSlotImpl: NSObject,
         //    🔴 **取 activeFormat 支持的最大值,不换 activeFormat**。换格式就
         //      会降视频流 —— 而视频流 ≥1920×1440 是铁律。所以照片分辨率的上限
         //      由"视频流要的那个格式"决定,这是刻意的取舍,不是遗漏。
-        //    [ENTRY-ANY-4X3 2026-09-25] 用户规则「不同手机就用 4:3 能做到的最大尺寸」:
+        //    [ENTRY-ANY-4X3 / ANY43-DEFAULT 2026-09-25] 用户规则「平台默认模式下的最大 4:3」:
         //      Dart 已按共享规则从本 activeFormat 的 supportedMaxPhotoDimensions 里挑好
         //      (requestedPhoto*),这里只做「必须是该格式支持的一项」这道官方约束。
         //      此前是「面积最大」,不看宽高比 —— 16:9 更大时会拍出入口不收的图。
@@ -337,7 +337,7 @@ private final class PwCameraSlotImpl: NSObject,
                 if reqW > 0 && reqH > 0 {
                     if let m = supported.first(where: { $0.width == reqW && $0.height == reqH }) {
                         photo.maxPhotoDimensions = m
-                        photoDimsSource = "dart_rule_largest_4x3"
+                        photoDimsSource = "dart_rule_largest_4x3_default_mode"
                     } else {
                         // 不静默换成别的尺寸:照片将按 AVFoundation 默认(最小一档)出,
                         // 入口闸会给出明确原因。来源写进 sidecar。
@@ -533,28 +533,39 @@ public func pw_camera_slot_start(_ width: Int32, _ height: Int32,
         width: width, height: height, fps: fps, lensPosition: lensPosition)
 }
 
-/// [ENTRY-ANY-4X3 2026-09-25] 查询:start(width,height) 将选中的那个 activeFormat 支持的
-/// 照片最大尺寸(官方 API `AVCaptureDevice.Format.supportedMaxPhotoDimensions`,iOS 16+)。
-/// `outWH` 依次写 w,h,最多 `cap` 对;返回候选总数(可能 > cap)。
+/// [ENTRY-ANY-4X3 / ANY43-DEFAULT 2026-09-25] 查询:start(width,height) 将选中的那个 activeFormat
+/// 支持的照片最大尺寸(官方 API `AVCaptureDevice.Format.supportedMaxPhotoDimensions`,iOS 16+),
+/// 每项按 (w, h, flags) 三元组写进 `outWHF`,最多 `cap` 项;返回候选总数(可能 > cap)。
+/// 只报不判 —— 选择规则在 Dart(lib/vio/capture/photo_size_rule.dart
+/// pickLargestFourByThreeInDefaultMode,用户 09-25 改判「平台默认模式下的最大 4:3」)。
+/// flags(与 Dart kPhotoCandidateFlag* 同值):
+///   bit0 = 需主动请求的高分辨率档:高于该格式 `highResolutionStillImageDimensions`
+///          (AVCaptureDevice.h:3356「the highest resolution still image that can be produced by this
+///          format」,iOS 16 之前的高分辨率静照口径)。48MP 全像素与 24MP 多帧融合都只能经 iOS 16 起的
+///          maxPhotoDimensions 请求(AVCapturePhotoOutput.h:545 24MP 还须 deferred delivery),
+///          因此都落在 bit0 ⇒ Dart 永不选。该属性读不到(0x0)时退回 Apple 字面默认:除最小项外全标 bit0。
+///   bit1 = Apple 字面默认:AVCapturePhotoSettings.maxPhotoDimensions「defaults to the smallest
+///          dimensions returned by supportedMaxPhotoDimensions」(AVCapturePhotoOutput.h:1454)。只作审计。
 /// 负数:-1 无后置广角,-7 没有匹配的格式,-10 系统 < iOS 16(没有这个 API)。只读,不开相机。
-@_cdecl("pw_camera_slot_photo_dims_for_format")
-public func pw_camera_slot_photo_dims_for_format(
+@_cdecl("pw_camera_slot_photo_size_candidates")
+public func pw_camera_slot_photo_size_candidates(
     _ width: Int32, _ height: Int32,
-    _ outWH: UnsafeMutablePointer<Int32>?, _ cap: Int32
+    _ outWHF: UnsafeMutablePointer<Int32>?, _ cap: Int32
 ) -> Int32 {
     guard let device = AVCaptureDevice.default(
         .builtInWideAngleCamera, for: .video, position: .back) else { return -1 }
     guard let f = PwCameraSlotImpl.pickVideoFormat(
         device: device, width: width, height: height) else { return -7 }
     guard #available(iOS 16.0, *) else { return -10 }
-    let dims = f.supportedMaxPhotoDimensions
-    if let outWH {
-        for (i, d) in dims.prefix(Int(max(0, cap))).enumerated() {
-            outWH[2 * i] = d.width
-            outWH[2 * i + 1] = d.height
+    let flagged = PwCameraSlotImpl.photoSizeCandidateFlags(f)
+    if let outWHF {
+        for (i, c) in flagged.prefix(Int(max(0, cap))).enumerated() {
+            outWHF[3 * i] = c.dims.width
+            outWHF[3 * i + 1] = c.dims.height
+            outWHF[3 * i + 2] = c.flags
         }
     }
-    return Int32(dims.count)
+    return Int32(flagged.count)
 }
 
 /// [ENTRY-ANY-4X3 2026-09-25] 预设下一次 start() 的照片最大尺寸(Dart 按共享规则选定)。
@@ -779,7 +790,7 @@ fileprivate struct PwPhotoResult {
 extension PwCameraSlotImpl {
     /// 把"视频流现在是什么档"原样拍成一个可 JSON 化的字典。
     /// 只读,不改任何设置。
-    /// start() 选 activeFormat 的规则(原样抽出,供 [pw_camera_slot_photo_dims_for_format]
+    /// start() 选 activeFormat 的规则(原样抽出,供 [pw_camera_slot_photo_size_candidates]
     /// 复用 —— 查询与启动必须落在同一个格式上):宽高相等、420f 全幅,优先非 binned。
     fileprivate static func pickVideoFormat(
         device: AVCaptureDevice, width: Int32, height: Int32
@@ -791,6 +802,35 @@ extension PwCameraSlotImpl {
                 && sub == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
         }
         return cands.first(where: { !$0.isVideoBinned }) ?? cands.first
+    }
+
+    /// [ANY43-DEFAULT 2026-09-25] 本格式的照片候选及标志(见 pw_camera_slot_photo_size_candidates)。
+    @available(iOS 16.0, *)
+    fileprivate static func photoSizeCandidateFlags(
+        _ f: AVCaptureDevice.Format
+    ) -> [(dims: CMVideoDimensions, flags: Int32)] {
+        let dims = f.supportedMaxPhotoDimensions
+        let legacy = legacyHighResStill(f)
+        let smallest = dims.min { Int64($0.width) * Int64($0.height)
+            < Int64($1.width) * Int64($1.height) }
+        return dims.map { d in
+            var flags: Int32 = 0
+            let isSmallest = smallest.map { $0.width == d.width && $0.height == d.height } ?? false
+            if legacy.width > 0 && legacy.height > 0 {
+                if d.width > legacy.width || d.height > legacy.height { flags |= 1 }
+            } else if !isSmallest {
+                flags |= 1
+            }
+            if isSmallest { flags |= 2 }
+            return (d, flags)
+        }
+    }
+
+    /// iOS 16 之前的「高分辨率静照」尺寸(已弃用、仍可读)。只在这一处读,作为「不需要 iOS 16 新接口
+    /// 主动请求的最大档」的官方来源。
+    @available(iOS, deprecated: 16.0)
+    fileprivate static func legacyHighResStill(_ f: AVCaptureDevice.Format) -> CMVideoDimensions {
+        return f.highResolutionStillImageDimensions
     }
 
     fileprivate static func videoProofDict(
@@ -827,10 +867,15 @@ extension PwCameraSlotImpl {
         if let p = photoOutput, #available(iOS 16.0, *) {
             dict["photo_max_w"] = Int(p.maxPhotoDimensions.width)
             dict["photo_max_h"] = Int(p.maxPhotoDimensions.height)
-            // [ENTRY-ANY-4X3 2026-09-25] 本格式的全部候选,供事后核对「选的是最大 4:3」。
-            dict["photo_supported_dims"] = f.supportedMaxPhotoDimensions.map {
-                "\($0.width)x\($0.height)"
+            // [ENTRY-ANY-4X3 / ANY43-DEFAULT 2026-09-25] 本格式的全部候选与标志(optin = 需主动请求的
+            // 高分辨率档,Dart 不选;default = Apple 字面默认),供事后核对「选的是默认模式下的最大 4:3」。
+            dict["photo_supported_dims"] = Self.photoSizeCandidateFlags(f).map {
+                "\($0.dims.width)x\($0.dims.height)"
+                    + ($0.flags & 1 != 0 ? ":optin" : "")
+                    + ($0.flags & 2 != 0 ? ":default" : "")
             }
+            let legacy = Self.legacyHighResStill(f)
+            dict["photo_legacy_high_res_still"] = "\(legacy.width)x\(legacy.height)"
         }
         return dict
     }
