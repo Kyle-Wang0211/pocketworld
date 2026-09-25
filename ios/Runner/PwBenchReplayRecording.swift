@@ -43,6 +43,15 @@
 //    上游 EuRoC reader 先插相机再 stable_sort(xrslam-pc/player/src/IO/
 //    euroc_dataset_reader.cpp:13-33)⇒ 并列时相机在前。这个数为 0 时两者无差别。
 // (D10 不是偏离:源 :312-332 丢掉第一条 IMU 之前的相机帧,原样保留,并计数带出。)
+// D11 [xr-recon-chain 2026-09-25] 新 IMU 录制格式 imu_events.csv(录制器修复,见 PwBenchLidarRecordingWriter
+//    W13):每行 `timestamp_ns,sensor,x,y,z`,sensor ∈ {gyro, accel},陀螺与加计**各自**一行、各带自己的
+//    CoreMotion 时间戳(照抄 XRSLAM 官方 iOS 示例 Motion.swift @4beb1a9 两路各自 handler 的做法),
+//    行序 = 回调顺序;单位与旧 imu.csv 相同(陀螺 rad/s 原值;加计 g × −9.80665 = m/s²)。
+//    manifest 有 `imu_events` 角色就按新格式读(两路各自严格递增),回放时陀螺 / 加计分别按各自时刻推;
+//    否则照旧读 `imu_index`(imu.csv 配对行),**旧格式走原来那条代码路径,事件序列逐位不变**。
+//    并列规则:同一时刻 IMU 先于相机(源 :302-310,不变);新格式同一时刻陀螺先于加计
+//    (与旧格式一行内「先陀螺后加速度」、上游 EuRoC reader 同时刻插入顺序一致)。
+//    首条 IMU 时刻(D10)= 两路里最早的那个时间戳(旧格式 = 第一行,不变)。
 
 import CryptoKit
 import Foundation
@@ -63,6 +72,13 @@ struct EuRoCIMUSample: Equatable, Sendable {
     let accelerationMetersPerSecondSquared: Vector3
 }
 
+/// D11:imu_events.csv 的一行 —— 陀螺或加计**一路**的一条样本,带它自己的时间戳。
+struct PwBenchImuStreamSample: Equatable, Sendable {
+    let timestampNanoseconds: Int64
+    /// 陀螺:rad/s 原值;加计:m/s²(录制器已乘 −9.80665,与旧 imu.csv 同单位)。
+    let value: Vector3
+}
+
 /// 录制里的一帧相机(D1:流内字节区间;D7:配上的逐帧 K 与曝光)。
 struct DeviceRecordingCameraFrame: Equatable, Sendable {
     let timestampNanoseconds: Int64
@@ -81,16 +97,23 @@ struct DeviceRecordingCameraFrame: Equatable, Sendable {
 enum ReplayEvent: Equatable, Sendable {
     case imu(EuRoCIMUSample)
     case camera(DeviceRecordingCameraFrame)
+    /// D11:新格式的陀螺 / 加计,各自一个事件。
+    case gyro(PwBenchImuStreamSample)
+    case accel(PwBenchImuStreamSample)
 
     enum Kind: Int, Equatable, Sendable {
         case imu = 0
         case camera = 1
+        case gyro = 2
+        case accel = 3
     }
 
     var timestampNanoseconds: Int64 {
         switch self {
         case .imu(let sample): sample.timestampNanoseconds
         case .camera(let frame): frame.timestampNanoseconds
+        case .gyro(let sample): sample.timestampNanoseconds
+        case .accel(let sample): sample.timestampNanoseconds
         }
     }
 
@@ -98,6 +121,26 @@ enum ReplayEvent: Equatable, Sendable {
         switch self {
         case .imu: .imu
         case .camera: .camera
+        case .gyro: .gyro
+        case .accel: .accel
+        }
+    }
+
+    /// 同一时刻的先后(D9 / D11):IMU(配对行 / 陀螺)0 < 加计 1 < 相机 2。
+    /// 旧格式只有 imu 与 camera 两种,相对次序与原来的 `kind.rawValue`(0 < 1)相同。
+    var tieRank: Int {
+        switch self {
+        case .imu, .gyro: 0
+        case .accel: 1
+        case .camera: 2
+        }
+    }
+
+    /// 是不是惯性事件(配对行或新格式任一路)。
+    var isInertial: Bool {
+        switch self {
+        case .camera: false
+        case .imu, .gyro, .accel: true
         }
     }
 }
@@ -111,6 +154,8 @@ enum DeviceRecordingFileRole: String, Codable, CaseIterable, Sendable {
     case framesStream = "frames_stream"
     case framesIndex = "frames_index"
     case imuIndex = "imu_index"
+    /// D11:imu_events.csv(两路各自时间戳)。
+    case imuEvents = "imu_events"
     case arkitPoses = "arkit_poses"
     case depthStream = "depth_stream"
     case depthConfidenceStream = "depth_confidence_stream"
@@ -189,6 +234,10 @@ struct DeviceRecordingManifest: Codable, Equatable, Sendable {
     var depthSource: String?
     var depthConfidencePresent: Bool?
     var depthDropped: Int?
+    /// D11:`split_events_v1` = imu_events.csv;缺省(nil)= 旧的配对 imu.csv。
+    var imuFormat: String?
+    var imuGyroSampleCount: Int?
+    var imuAccelSampleCount: Int?
     var files: [DeviceRecordingFile]
 
     enum CodingKeys: String, CodingKey {
@@ -215,9 +264,16 @@ struct DeviceRecordingManifest: Codable, Equatable, Sendable {
         case depthSource = "depth_source"
         case depthConfidencePresent = "depth_confidence_present"
         case depthDropped = "depth_dropped"
+        case imuFormat = "imu_format"
+        case imuGyroSampleCount = "imu_gyro_sample_count"
+        case imuAccelSampleCount = "imu_accel_sample_count"
     }
 
     static let supportedSchemaVersion = 1
+    /// D11
+    static let imuEventsPath = "imu_events.csv"
+    static let imuEventsHeader = "timestamp_ns,sensor,x,y,z"
+    static let imuFormatSplitEvents = "split_events_v1"
     static let fileName = "recording_manifest.json"
     static let framesStreamPath = "frames.bin"
     static let framesIndexPath = "frames.pwvi"
@@ -246,6 +302,10 @@ struct DeviceRecordingLoadReport: Equatable, Sendable {
     var cameraRowsTotal = 0
     var cameraRowsAfterLimit = 0
     var imuSamples = 0
+    /// D11:`paired_v1`(imu.csv)/ `split_events_v1`(imu_events.csv);两路各自条数(旧格式为 0)。
+    var imuFormat = "paired_v1"
+    var imuGyroSamples = 0
+    var imuAccelSamples = 0
     var intrinsicsIndexPresent = false
     var intrinsicsRows = 0
     var intrinsicsPaired = 0
@@ -270,8 +330,9 @@ struct DeviceRecordingDataset: Sendable {
     var cameraFrameCount: Int {
         events.reduce(0) { if case .camera = $1 { return $0 + 1 } else { return $0 } }
     }
+    /// 惯性事件条数(旧格式 = 配对行数;新格式 = 陀螺 + 加计)。
     var imuEventCount: Int {
-        events.reduce(0) { if case .imu = $1 { return $0 + 1 } else { return $0 } }
+        events.reduce(0) { $0 + ($1.isInertial ? 1 : 0) }
     }
 }
 
@@ -455,7 +516,9 @@ struct DeviceRecordingLoader {
         report.indexFilesVerified = try verifyIndexFiles(manifest.files, root: root)
 
         let cameraRecord = try required(.cameraIndex, in: manifest.files)
-        let imuRecord = try required(.imuIndex, in: manifest.files)
+        // D11:有 imu_events 角色 = 新格式;否则旧格式的 imu_index 仍是必需角色(与原来同一个检查)。
+        let imuEventsRecord = manifest.files.first(where: { $0.role == .imuEvents })
+        let imuRecord = imuEventsRecord == nil ? try required(.imuIndex, in: manifest.files) : nil
         _ = try required(.arkitPoses, in: manifest.files)   // D6:只核在不在 + 哈希
 
         let streamRecord = try required(.framesStream, in: manifest.files)
@@ -487,9 +550,21 @@ struct DeviceRecordingLoader {
             )
         }
         report.cameraRowsTotal = frames.count
-        let imu = try parseIMU(record: imuRecord, root: root)
-        report.imuSamples = imu.count
-        guard !frames.isEmpty || !imu.isEmpty else {
+        var imu: [EuRoCIMUSample] = []
+        var gyro: [PwBenchImuStreamSample] = []
+        var accel: [PwBenchImuStreamSample] = []
+        if let imuRecord {
+            imu = try parseIMU(record: imuRecord, root: root)
+            report.imuSamples = imu.count
+        } else if let imuEventsRecord {
+            try rejectUnsafePath(imuEventsRecord.relativePath)
+            (gyro, accel) = try parseIMUEvents(record: imuEventsRecord, root: root)
+            report.imuFormat = DeviceRecordingManifest.imuFormatSplitEvents
+            report.imuGyroSamples = gyro.count
+            report.imuAccelSamples = accel.count
+            report.imuSamples = gyro.count + accel.count
+        }
+        guard !frames.isEmpty || report.imuSamples > 0 else {
             throw DeviceRecordingError.emptyRecording
         }
 
@@ -526,16 +601,19 @@ struct DeviceRecordingLoader {
 
         // D9
         let imuStamps = Set(imu.map(\.timestampNanoseconds))
+            .union(gyro.map(\.timestampNanoseconds)).union(accel.map(\.timestampNanoseconds))
         report.cameraImuTimestampTies = frames.reduce(0) {
             $0 + (imuStamps.contains($1.timestampNanoseconds) ? 1 : 0)
         }
 
         // [port] :302-310 —— IMU first at an equal timestamp: the estimator must
         // have integrated motion up to the shutter before the image arrives.
-        var events: [ReplayEvent] = imu.map { .imu($0) } + frames.map { .camera($0) }
+        // D11:新格式两路各自成事件;tieRank 让同一时刻 陀螺 < 加计 < 相机(旧格式 imu < camera,不变)。
+        var events: [ReplayEvent] = imu.map { .imu($0) } + gyro.map { .gyro($0) } + accel.map { .accel($0) }
+            + frames.map { .camera($0) }
         events.sort {
             $0.timestampNanoseconds == $1.timestampNanoseconds
-                ? $0.kind.rawValue < $1.kind.rawValue
+                ? $0.tieRank < $1.tieRank
                 : $0.timestampNanoseconds < $1.timestampNanoseconds
         }
 
@@ -544,7 +622,10 @@ struct DeviceRecordingLoader {
         // behind them. xrslam took a SIGBUS inside push_sensor_data on the first one
         // in the source bench; they are dropped here rather than left for the engine
         // to survive or not.
-        if let firstIMU = imu.first?.timestampNanoseconds {
+        // D11:新格式取两路里最早的时间戳(每路已核严格递增,首条即该路最早)。
+        let firstIMU = imu.first?.timestampNanoseconds
+            ?? [gyro.first?.timestampNanoseconds, accel.first?.timestampNanoseconds].compactMap { $0 }.min()
+        if let firstIMU {
             let before = events.count
             events.removeAll {
                 if case .camera(let frame) = $0 {
@@ -765,6 +846,54 @@ struct DeviceRecordingLoader {
             ))
         }
         return samples
+    }
+
+    /// D11:imu_events.csv。表头必须逐字等于 `timestamp_ns,sensor,x,y,z`;sensor 只认 gyro / accel;
+    /// 每一路各自严格递增(两路之间按回调顺序交错,不要求整体递增);数值须有限。
+    private func parseIMUEvents(
+        record: DeviceRecordingFile,
+        root: URL
+    ) throws -> (gyro: [PwBenchImuStreamSample], accel: [PwBenchImuStreamSample]) {
+        let text = try String(contentsOf: root.appendingPathComponent(record.relativePath), encoding: .utf8)
+        let header = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).first
+            .map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+        guard header == DeviceRecordingManifest.imuEventsHeader else {
+            throw DeviceRecordingError.malformedCSV(path: record.relativePath, line: 1, reason: "header \(header)")
+        }
+        var gyro: [PwBenchImuStreamSample] = []
+        var accel: [PwBenchImuStreamSample] = []
+        try forEachRow(record: record, root: root, expectedColumns: 5) { line, fields in
+            guard let timestamp = Int64(fields[0]) else {
+                throw DeviceRecordingError.malformedCSV(path: record.relativePath, line: line, reason: "timestamp_ns")
+            }
+            let values = try fields[2...4].map { field -> Double in
+                guard let value = Double(field), value.isFinite else {
+                    throw DeviceRecordingError.malformedCSV(
+                        path: record.relativePath, line: line, reason: "non-finite \(field)")
+                }
+                return value
+            }
+            let sample = PwBenchImuStreamSample(
+                timestampNanoseconds: timestamp, value: Vector3(x: values[0], y: values[1], z: values[2]))
+            switch fields[1] {
+            case "gyro":
+                if let previous = gyro.last?.timestampNanoseconds, timestamp <= previous {
+                    throw DeviceRecordingError.timestampRegression(
+                        path: record.relativePath + "#gyro", previous: previous, current: timestamp)
+                }
+                gyro.append(sample)
+            case "accel":
+                if let previous = accel.last?.timestampNanoseconds, timestamp <= previous {
+                    throw DeviceRecordingError.timestampRegression(
+                        path: record.relativePath + "#accel", previous: previous, current: timestamp)
+                }
+                accel.append(sample)
+            default:
+                throw DeviceRecordingError.malformedCSV(
+                    path: record.relativePath, line: line, reason: "sensor \(fields[1])")
+            }
+        }
+        return (gyro, accel)
     }
 
     /// [port] :561-584

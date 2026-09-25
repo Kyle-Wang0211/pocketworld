@@ -49,6 +49,8 @@ let package = Package(
 )
 PKG
 cd "$SCRATCH"
+# [xr-recon-chain 2026-09-25] ImuSplitRecorderTests 的会话源码契约测试读这份(ARKit 那半编不进 Mac)。
+export PW_LIDAR_SESSION_SOURCE="$REPO/ios/Runner/PwBenchLidarSession.swift"
 swift test 2>&1 | tail -n 40
 swift build -c release --product lidar_subset_export 2>&1 | tail -n 3
 swift build -c release --product lidar_writer_ab 2>&1 | tail -n 3

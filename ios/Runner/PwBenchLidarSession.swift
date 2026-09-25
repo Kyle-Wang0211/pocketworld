@@ -10,8 +10,8 @@
 //   tools/ios_basalt_vio_bench/BasaltVIOBench/ARKitReference/ARKitReferenceSession.swift(502 行)
 // 的「record 臂」那一半:同一套 ARWorldTrackingConfiguration(生产 hires43 选法逐字、自动对焦开、
 // gravity、关光照估计、水平面检测)、同一段 `.sceneDepth` 先查 supportsFrameSemantics 再插、
-// 同一套 didUpdate 次序(内参 → luma → ARKit 位姿 → 深度)、同一个 CoreMotion 陀螺驱动 IMU 采集
-// (100 Hz,加速度 ×−9.80665,不用 deviceMotion)、同一个 TUM 行格式。
+// 同一套 didUpdate 次序(内参 → luma → ARKit 位姿 → 深度)、100 Hz CoreMotion 原始 IMU(加速度 ×−9.80665,
+// 不用 deviceMotion)、同一个 TUM 行格式。🔴 IMU 的**采集写法**已不再照源(见 S8)。
 // 方法地图:exact_upstream = 上述几条;product_adapter = 下列 S1–S6;not_implemented = 源的
 // ARKitReferenceAccounting / PreviewFrameTap / 生命周期回执(台架这页不评 ARKit 的实时表现)。
 //
@@ -38,6 +38,14 @@
 //    同一个函数、同一个 pts = Double(t_ns)·1e-9),过闸的帧才落 luma / 内参行 / ARKit 位姿 / 深度。
 //    闸幂等 ⇒ 回放时引擎那道闸对录下的每一帧都放行,录下的帧 = 引擎收的帧,与从哪一帧开始喂无关。
 //    🔴 分辨率不降:仍是整幅 1920×1440 luma(用户:分辨率越高越好)。带宽减半 166 → 83 MB/s。
+// S8 [xr-recon-chain 2026-09-25] **IMU 采集修复**。源([port] :412-452)以陀螺回调驱动,在陀螺回调里读
+//    `motion.accelerometerData`(`startAccelerometerUpdates()` 无 handler = 拉取模式,读到的是「最新一条」)
+//    再配上**陀螺的**时间戳写成一行 ⇒ 加计自己的采样时刻丢了,两路 100 Hz 互相采样,错位 0–10 ms 且随拍频游走。
+//    改成照抄 XRSLAM 官方 iOS 示例 xrslam-ios/visualizer/src/Motion.swift @4beb1a9(Apache-2.0)
+//    :31-49:同一条队列上 `startGyroUpdates(to:q){…}` 与 `startAccelerometerUpdates(to:q){…}` **各带 handler**,
+//    各用各的 `record.timestamp`;加计 × GRAVITY_NOMINAL(= −9.80665,Motion.swift:3,57);`error != nil`
+//    的回调丢弃(Motion.swift:37,46)。写器分别调 appendGyro / appendAccel(writer W13,imu_events.csv)。
+//    同一个开关语义(第一次 ARFrame 回调时起、停止时两路都停)与 100 Hz 不变。
 //    深度步长改按**过闸帧**数(默认每 3 帧一张 = 10 Hz,频率与原来 60 fps 每 6 帧相同)。
 // S8 [2026-09-24 rec30] 写法(`write_sync`)与逐秒时间线见 writer W10 / W11;每秒热状态也记。
 
@@ -467,25 +475,41 @@ final class PwBenchLidarSession: NSObject, ARSessionDelegate, @unchecked Sendabl
         requestStop(reason: "interrupted")
     }
 
-    // MARK: IMU [port] :412-452(逐字:陀螺驱动、100 Hz、×−9.80665、不用 deviceMotion)
+    // MARK: IMU —— S8:照抄 XRSLAM 官方 Motion.swift @4beb1a9 :31-49(两路各自 handler、各自时间戳)
+
+    /// Motion.swift:3 `fileprivate let GRAVITY_NOMINAL = -9.80665`
+    private static let gravityNominal = -9.80665
+
+    /// CoreMotion 秒(开机以来,与 ARFrame.timestamp 同基)→ 纳秒整数。与源 / 旧写法同一个换算。
+    static func imuNanoseconds(_ seconds: TimeInterval) -> Int64 {
+        Int64((seconds * 1_000_000_000).rounded())
+    }
 
     private func startMotionRecordingIfNeeded() {
         guard !motion.isGyroActive else { return }
         motionQueue.maxConcurrentOperationCount = 1
+        // Motion.swift:28-29(updateInterval 0.01 = 100 Hz)
         motion.gyroUpdateInterval = 1.0 / 100.0
         motion.accelerometerUpdateInterval = 1.0 / 100.0
-        motion.startAccelerometerUpdates()
-        motion.startGyroUpdates(to: motionQueue) { [weak self] data, _ in
-            guard let self, let data else { return }
+        // Motion.swift:36-42:陀螺各自 handler、各自 record.timestamp,rotationRate 原值。
+        motion.startGyroUpdates(to: motionQueue) { [weak self] data, error in
+            guard let self, let record = data, error == nil else { return }
             self.lock.lock(); let w = self.phase == "recording" ? self.writer : nil; self.lock.unlock()
-            guard let w, let accel = self.motion.accelerometerData else { return }
-            let timestampNS = Int64((data.timestamp * 1_000_000_000).rounded())
-            w.appendIMU(
-                timestampNanoseconds: timestampNS,
-                gyroscope: (data.rotationRate.x, data.rotationRate.y, data.rotationRate.z),
-                acceleration: (accel.acceleration.x * -9.80665,
-                               accel.acceleration.y * -9.80665,
-                               accel.acceleration.z * -9.80665))
+            guard let w else { return }
+            w.appendGyro(
+                timestampNanoseconds: Self.imuNanoseconds(record.timestamp),
+                rotationRate: (record.rotationRate.x, record.rotationRate.y, record.rotationRate.z))
+        }
+        // Motion.swift:45-51:加计各自 handler、各自 record.timestamp,× GRAVITY_NOMINAL。
+        motion.startAccelerometerUpdates(to: motionQueue) { [weak self] data, error in
+            guard let self, let record = data, error == nil else { return }
+            self.lock.lock(); let w = self.phase == "recording" ? self.writer : nil; self.lock.unlock()
+            guard let w else { return }
+            w.appendAccel(
+                timestampNanoseconds: Self.imuNanoseconds(record.timestamp),
+                acceleration: (Self.gravityNominal * record.acceleration.x,
+                               Self.gravityNominal * record.acceleration.y,
+                               Self.gravityNominal * record.acceleration.z))
         }
     }
 
@@ -531,6 +555,10 @@ final class PwBenchLidarSession: NSObject, ARSessionDelegate, @unchecked Sendabl
                 "recording_id": manifest.recordingID,
                 "frame_count": manifest.frameCount,
                 "imu_sample_count": manifest.imuSampleCount,
+                // S8:新 IMU 格式与两路条数(录制页状态里就能看到陀螺 / 加计各自有没有、各多少)。
+                "imu_format": manifest.imuFormat ?? "paired_v1",
+                "imu_gyro_sample_count": manifest.imuGyroSampleCount ?? 0,
+                "imu_accel_sample_count": manifest.imuAccelSampleCount ?? 0,
                 "loss_count": manifest.lossCount,
                 "loss_write_queue_full": manifest.lossWriteQueueFull ?? 0,
                 "peak_in_flight": manifest.peakInFlight ?? 0,

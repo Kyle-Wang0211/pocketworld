@@ -732,6 +732,18 @@ final class PwXrslamLive {
         enqueueImu { _ = PWXrslamTransportPushAccelerationRaw(t, a.0, a.1, a.2) }
     }
 
+    /// [xr-recon-chain 2026-09-25] 新 IMU 录制格式(PwBenchReplayRecording D11)的两路:陀螺 / 加计
+    /// 各自一个事件、各带自己的时间戳,各走一次 [enqueueImu](与直播 [onGyro] / [onAccel] 同一道闸、
+    /// 同两个传输层入口)。加计原样透传(录制里已是 m/s²)。旧格式仍走 [pushReplayImu],一字未动。
+    func pushReplayGyro(timestamp t: Double, gyro g: (Double, Double, Double)) {
+        lock.lock(); lastImuTs = t; lock.unlock()
+        enqueueImu { _ = PWXrslamTransportPushGyroscopeRaw(t, g.0, g.1, g.2) }
+    }
+
+    func pushReplayAccel(timestamp t: Double, accelerationMps2 a: (Double, Double, Double)) {
+        enqueueImu { _ = PWXrslamTransportPushAccelerationRaw(t, a.0, a.1, a.2) }
+    }
+
     /// 回放器的背压读数:在途帧 / 在途 IMU / 已走完 runOneFrame 的帧数。
     /// 回放器在两道闸**满之前**自己等(抄 BasaltVIOBench
     /// `BenchmarkCoordinator.swift:1457-1508` waitForReplayCapacity),

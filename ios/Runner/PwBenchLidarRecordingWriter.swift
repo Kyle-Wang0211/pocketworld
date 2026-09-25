@@ -83,6 +83,14 @@
 //    (`PwXrslamOfficialFeed.admits`,台架 App 里导出时直接传它进来;Mac 宿主用本文件的逐式拷贝
 //    `xrslamGateCopy`,并用手机回放真账 intrinsics_ledger.csv 逐帧核过)。录制器按同一道闸 30 Hz
 //    落盘时所有录下的帧都会被收(闸幂等);老的 60 Hz 录制靠这条仍能导出「每帧都有引擎位姿」的子集。
+// W13 [xr-recon-chain 2026-09-25] **录制器 IMU 修复**。源(= 本文件 W1–W12 期间的写法)在 PwBenchLidarSession
+//    里以陀螺回调驱动、拉取 `motion.accelerometerData`(拉取模式下的「最新一条」)、配上**陀螺的**时间戳写一行
+//    imu.csv ⇒ 加计自己的采样时刻丢了(两路 100 Hz 互相采样,错位最多一个周期)。改成照抄 XRSLAM 官方 iOS
+//    示例 `xrslam-ios/visualizer/src/Motion.swift`(4beb1a9,Apache-2.0):陀螺与加计**各自**带 handler 的
+//    update、各用各的 `record.timestamp`,本文件用 [appendGyro] / [appendAccel] 各写一行到 imu_events.csv
+//    (`timestamp_ns,sensor,x,y,z`,行序 = 回调顺序,单位同旧 imu.csv),manifest 声明 `imu_events` 角色 +
+//    `imu_format: split_events_v1` + 两路条数。读法见 PwBenchReplayRecording.swift D11(旧格式照旧能读)。
+//    [appendIMU](配对行)保留给旧调用方与单测;一场录制里两种都写时两份都落盘、都进 manifest。
 //
 // ══ Android(不在本次范围,只记映射)═══════════════════════════════════════════════
 // ARCore Depth API:Frame.acquireDepthImage16Bits()(DEPTH16,毫米)/ acquireRawDepthImage16Bits()
@@ -217,6 +225,10 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
     private var focalMinimum = Double.greatestFiniteMagnitude
     private var focalMaximum = 0.0
     private var imuRows: [String] = []
+    // W13:两路各自一行(回调顺序)。
+    private var imuEventRows: [String] = []
+    private var imuGyroCount = 0
+    private var imuAccelCount = 0
     private var arkitPoseRows: [String] = []
 
     private var frameCount = 0
@@ -673,6 +685,18 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
         stateLock.lock(); imuRows.append(row); stateLock.unlock()
     }
 
+    /// W13:陀螺一条样本,带**它自己的**时间戳(照抄 Motion.swift:36-42 的 `record.timestamp` / `rotationRate`)。
+    func appendGyro(timestampNanoseconds: Int64, rotationRate: (x: Double, y: Double, z: Double)) {
+        let row = "\(timestampNanoseconds),gyro,\(rotationRate.x),\(rotationRate.y),\(rotationRate.z)"
+        stateLock.lock(); imuEventRows.append(row); imuGyroCount += 1; stateLock.unlock()
+    }
+
+    /// W13:加计一条样本,带**它自己的**时间戳;调用方已按 Motion.swift:3,57 乘 GRAVITY_NOMINAL(−9.80665)。
+    func appendAccel(timestampNanoseconds: Int64, acceleration: (x: Double, y: Double, z: Double)) {
+        let row = "\(timestampNanoseconds),accel,\(acceleration.x),\(acceleration.y),\(acceleration.z)"
+        stateLock.lock(); imuEventRows.append(row); imuAccelCount += 1; stateLock.unlock()
+    }
+
     /// [port] :657-661
     func appendARKitPose(timestampNanoseconds: Int64, tumRow: String) {
         stateLock.lock(); arkitPoseRows.append(tumRow); stateLock.unlock()
@@ -779,12 +803,18 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
         let lateSeal = lateAfterSeal
         let cameraCSV = (["timestamp_ns,relative_path"] + cameraIndexRows).joined(separator: "\n") + "\n"
         let imuCSV = (["timestamp_ns,wx,wy,wz,ax,ay,az"] + imuRows).joined(separator: "\n") + "\n"
+        // W13
+        let imuEventsCSV = ([DeviceRecordingManifest.imuEventsHeader] + imuEventRows).joined(separator: "\n") + "\n"
+        let hasImuEvents = !imuEventRows.isEmpty
+        let hasPairedImu = !imuRows.isEmpty || imuEventRows.isEmpty
+        let gyroCount = imuGyroCount
+        let accelCount = imuAccelCount
         let poseTUM = arkitPoseRows.joined(separator: "\n") + "\n"
         let intrinsicsJSONL = intrinsicsRows.joined(separator: "\n") + "\n"
         let focalLow = focalMinimum == .greatestFiniteMagnitude ? 0 : focalMinimum
         let focalHigh = focalMaximum
         let capturedIntrinsics = intrinsics
-        let imuCount = imuRows.count
+        let imuCount = imuRows.count + imuEventRows.count
         let depthFrames = depthFramesWritten
         let depthW = depthWidth
         let depthH = depthHeight
@@ -800,12 +830,17 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
         guard let capturedIntrinsics else { throw PwBenchLidarRecorderError.noFramesCaptured }
 
         var files: [DeviceRecordingFile] = []
-        for (role, path, contents) in [
+        // W13:新格式只写 imu_events.csv;没有新格式行时照旧写 imu.csv(旧调用方 / 单测)。
+        var indexFiles: [(DeviceRecordingFileRole, String, String)] = [
             (DeviceRecordingFileRole.cameraIndex, "camera_index.csv", cameraCSV),
             (DeviceRecordingFileRole.intrinsicsIndex, "intrinsics.jsonl", intrinsicsJSONL),
-            (DeviceRecordingFileRole.imuIndex, "imu.csv", imuCSV),
-            (DeviceRecordingFileRole.arkitPoses, "arkit_poses.tum", poseTUM),
-        ] {
+        ]
+        if hasPairedImu { indexFiles.append((DeviceRecordingFileRole.imuIndex, "imu.csv", imuCSV)) }
+        if hasImuEvents {
+            indexFiles.append((DeviceRecordingFileRole.imuEvents, DeviceRecordingManifest.imuEventsPath, imuEventsCSV))
+        }
+        indexFiles.append((DeviceRecordingFileRole.arkitPoses, "arkit_poses.tum", poseTUM))
+        for (role, path, contents) in indexFiles {
             let data = Data(contents.utf8)
             try data.write(to: directory.appendingPathComponent(path), options: .atomic)
             files.append(DeviceRecordingFile(
@@ -884,6 +919,9 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
             depthSource: depthDeclared ? depthSourceName : nil,
             depthConfidencePresent: depthDeclared ? depthHadConfidence : nil,
             depthDropped: depthDrops + (depthDeclared ? 0 : depthFrames),
+            imuFormat: hasImuEvents ? DeviceRecordingManifest.imuFormatSplitEvents : nil,
+            imuGyroSampleCount: hasImuEvents ? gyroCount : nil,
+            imuAccelSampleCount: hasImuEvents ? accelCount : nil,
             files: files)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -990,8 +1028,18 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
         return (admitted, fed, leading, gatedOut)
     }
 
-    /// imu.csv 第一条数据行的时间戳(没有 IMU ⇒ nil,装载器此时也不丢任何相机帧)。
+    /// 首条 IMU 的时间戳(没有 IMU ⇒ nil,装载器此时也不丢任何相机帧)。
+    /// W13:有 imu_events.csv 时 = 两路里最早的时间戳(装载器 D11 同一规则);否则 = imu.csv 第一条数据行(不变)。
     static func firstImuNanoseconds(recording: URL) -> Int64? {
+        let events = recording.appendingPathComponent(DeviceRecordingManifest.imuEventsPath)
+        if FileManager.default.fileExists(atPath: events.path) {
+            guard let text = try? String(contentsOf: events, encoding: .utf8) else { return nil }
+            var first: Int64?
+            for (n, line) in text.split(separator: "\n").enumerated() where n > 0 && !line.isEmpty {
+                if let f = line.split(separator: ",").first, let t = Int64(f) { first = min(first ?? t, t) }
+            }
+            return first
+        }
         guard let h = try? FileHandle(forReadingFrom: recording.appendingPathComponent("imu.csv")) else {
             return nil
         }
@@ -1130,7 +1178,7 @@ final class PwBenchLidarRecordingWriter: @unchecked Sendable {
         var linked: [String] = []
         var copied: [String] = []
         for name in [DeviceRecordingManifest.fileName, "intrinsics.jsonl", "arkit_poses.tum",
-                     "imu.csv", depthStreamPath, depthConfidencePath, depthIndexPath,
+                     "imu.csv", DeviceRecordingManifest.imuEventsPath, depthStreamPath, depthConfidencePath, depthIndexPath,
                      "depth_meta.json", "recorder_timing.json", "config.json",
                      "input_manifest.json", "calibration.json", "intrinsics_observed.json"] {
             let src = recording.appendingPathComponent(name)

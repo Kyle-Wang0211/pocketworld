@@ -380,6 +380,18 @@ final class PwBenchReplayRunner {
                                                s.accelerationMetersPerSecondSquared.y,
                                                s.accelerationMetersPerSecondSquared.z))
                         imuRowsPushed += 1
+                    // [xr-recon-chain 2026-09-25] 新 IMU 格式(装载器 D11):陀螺 / 加计各按自己的时刻推,
+                    // 与直播 onGyro / onAccel 同一道闸、同两个传输层入口。
+                    case .gyro(let s):
+                        if try waitForCapacity(live, camera: false) { capacityWaitsImu += 1 }
+                        live.pushReplayGyro(timestamp: Double(s.timestampNanoseconds) * 1e-9,
+                                            gyro: (s.value.x, s.value.y, s.value.z))
+                        imuRowsPushed += 1
+                    case .accel(let s):
+                        if try waitForCapacity(live, camera: false) { capacityWaitsImu += 1 }
+                        live.pushReplayAccel(timestamp: Double(s.timestampNanoseconds) * 1e-9,
+                                             accelerationMps2: (s.value.x, s.value.y, s.value.z))
+                        imuRowsPushed += 1
                     case .camera(let f):
                         if waitForCamera, try waitForCapacity(live, camera: true) {
                             capacityWaitsCamera += 1
@@ -970,6 +982,10 @@ final class PwBenchReplayRunner {
                 "camera_rows_total": r.cameraRowsTotal,
                 "camera_rows_after_limit": r.cameraRowsAfterLimit,
                 "imu_samples": r.imuSamples,
+                // [xr-recon-chain 2026-09-25] 装载器 D11:录制的 IMU 格式与两路条数(旧格式 paired_v1 / 0 / 0)。
+                "imu_format": r.imuFormat,
+                "imu_gyro_samples": r.imuGyroSamples,
+                "imu_accel_samples": r.imuAccelSamples,
                 "intrinsics_index_present": r.intrinsicsIndexPresent,
                 "intrinsics_rows": r.intrinsicsRows,
                 "intrinsics_paired": r.intrinsicsPaired,
