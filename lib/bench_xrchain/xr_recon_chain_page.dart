@@ -124,7 +124,9 @@ class _XrReconChainPageState extends State<XrReconChainPage> {
 
   final List<_Shot> _shots = <_Shot>[];
   final Map<int, _Shot> _byId = <int, _Shot>{};
-  int _nextId = 1;
+  /// 照片请求号。PwCameraSlot 按请求号落 Documents/pw_photos/{id}.jpg,每场从 1 起会覆盖上一场的照片 ⇒
+  /// 基数取本页启动时的 epoch 秒 × 1000(每场唯一;≈1.8e12,在 double 精确整数范围内,链路结果摊平成 double 不丢位)。
+  int _nextId = (DateTime.now().millisecondsSinceEpoch ~/ 1000) * 1000 + 1;
   int _poseFrames = 0;
   ARPose? _lastPose;
   PwFocusArm? _focusArm;
