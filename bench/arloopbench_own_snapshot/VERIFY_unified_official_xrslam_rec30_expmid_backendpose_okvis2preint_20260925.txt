@@ -1,0 +1,133 @@
+# arloopbench unified + official XRSLAM + rec30 + expmid + backend pose + OKVIS2 预积分臂 —— 构建核验(2026-09-25 13:40:50)
+# 源:pocketworld 本地分支 bench/okvis2-preint(从 bench/backend-pose-recon 81f52bb 拉出)@14fc9ef,工作树 ~/.config/superpowers/worktrees/pocketworld/bench-okvis2-preint-20260925
+#     引擎 xrslam fork 本地分支 feat/okvis2-preint(从 feat/backend-pose-output 8ebac9a 拉出)@bdf9080 → libxrslam_official_rules_okvis2preint_4b6f7bf8.a
+# 同步:PW_BENCH_SYNC_SOURCE=PW_BENCH_LIDAR_SOURCE=上述工作树 ./.sync_from_integration.sh(完整链/合一段 = bench-unified-20260924 b3c7b6b,LOD 源不在已跳过)→ 全部逐字节一致
+#       台架自有 ios/Podfile 换成本分支快照(臂表多一行 okvis2preint);PW_XRSLAM_ARM=okvis2preint pod install(LANG=en_US.UTF-8)
+# 构建:PW_XRSLAM_ARM=okvis2preint FLUTTER_XCODE_DEBUG_INFORMATION_FORMAT=dwarf FLUTTER_XCODE_LD_GENERATE_MAP_FILE=YES flutter build ios --profile --no-pub(一次,Xcode 46.0 s);无 dart-define
+# 同步前备份:/Users/kaidongwang/Developer/arloopbench_backups/okvis2preint_20260925_133736(493 个文件 + 24 条符号链接);构建后已按备份还原:493/493 逐字节一致、24/24 链接一致、新增 0 个
+# 注意:台架目录 build/ios/iphoneos/Runner.app(构建缓存,照惯例不还原)现在是本臂的包,不是默认臂。
+# 🔴 未装机、未上手机、未碰生产 App;装机与手机回放待用户解锁手机后由协调方安排。
+
+== 主二进制
+b0fb74f3728084a4dc3d2ff1e007971cbf66274147aae02ccad40dbd135ffcd8  Runner
+d9864f8de00db20d3b5b1b6cbd54203ab0bf3d134931b9b8903dcaf9d7b99899  Frameworks/App.framework/App
+== Info.plist 身份
+  CFBundleIdentifier           com.kyle.arloopbench
+  CFBundleVersion              1
+  PWXrslamBuildEngine          official_rules
+  PWXrslamEngineArm            official_rules
+  PWXrslamBenchArm             okvis2preint
+  PWXrslamBuildLib             libxrslam_official_rules_okvis2preint_4b6f7bf8.a
+  PWXrslamSHA256               4b6f7bf8739f8418c2b14a41f82807bb5b7d9846ced36cf159e6134d16b3faa6
+  PWXrslamThreadingEnabled     true
+  PWXrslamBuildRules           official
+  PWXrslamGpuFrontendLinked    false
+  PWXrslamEnginePedigree       research_only
+== Runner 里的引擎指纹(本臂必须 1,其它 0)
+  okvis2preint(本臂)         1
+  official_rules 89042cd5      0
+  bkpose 4853976d              0
+  generic                      0
+  gpufenothread                0
+  pfk                          0
+== 本臂代码与后端位姿出口链入
+  okvis2-preint 日志串 1
+  00000001015e62fc t _XRSLAMDrainBackendPoses
+  00000001015e6338 t _XRSLAMGetBackendWindowPoses
+  00000001014ffbd8 t __ZN12xrslam_0_5_013PreIntegrator11append_dataERNSt3__16vectorINS_7ImuDataENS1_9allocatorIS3_EEEERKS6_
+  00000001014ff59c t __ZN12xrslam_0_5_013PreIntegrator12prepend_dataERNSt3__16vectorINS_7ImuDataENS1_9allocatorIS3_EEEERKS6_
+== 台架回放输出(1c1a2e4 的后端位姿 CSV)与曝光中点代码在 Runner
+  poses_backend_by_recording_frame.csv         1
+  poses_backend_first_by_recording_frame.csv   1
+  backend_pose_exit                            1
+  poses_camera_by_recording_frame.csv          1
+  exposure_mid_default                         1
+== 内嵌框架对上一版台架包 unified_official_xrslam_rec30_expmid_20260925(去签名后)
+  PWOfficialSfm/PWDense/PWOnnxRuntime/PWXRSLAMEngine/PWBasaltEngine/thermion_dart/Flutter 逐字节 SAME;Dart AOT App 与上一版同 sha(d9864f8d…)
+  PWVIOBenchKit 去签名后字节不同(viobench_kit/dist 已重编),__TEXT,__text 与 dist、上一版三者同(8853200e19b3111c)
+== 签名
+  valid on disk / deep strict OK
+  Identifier=com.kyle.arloopbench
+  TeamIdentifier=26AH7V448L
+
+== Mac 回放结论(手机同款喂法;单线程两次逐位相同;数据与工具在 mac_verify/)
+## 任务一:改前(8ebac9a 左端零阶保持)vs 改后(OKVIS2 离散),Mac 单线程回放(逐位可复现)
+场 | 位姿 | 版本 | 陀螺偏移 s(相对引擎时间戳) | 幅度比 g | 每增量旋转抖动 RMS | 对 ARKit 尺度 | 链式对 LiDAR | ATE | 5 s 分段 min…max(sd) | 2 s 窗尺度 sd(max) 
+13f5 | 前端 | 改前 | +0.00 ms | 0.9104 | 0.2239° | +0.26% | -1.96% | 1.76 cm | -3.9…+3.8% (2.7) | 4.4% (10.6) 
+13f5 | 前端 | 改后 | -4.50 ms | 0.9944 | 0.1374° | +1.62% | -0.64% | 2.27 cm | -8.4…+1.8% (3.1) | 4.6% (10.1) 
+13f5 | 后端首次 | 改前 | -5.00 ms | 0.9989 | 0.0503° | +0.17% | -2.06% | 1.72 cm | -3.8…+3.7% (2.6) | 4.5% (11.3) 
+13f5 | 后端首次 | 改后 | +0.00 ms | 0.9971 | 0.0582° | +1.49% | -0.77% | 2.24 cm | -8.0…+2.0% (3.1) | 4.7% (11.1) 
+13f5 | 后端定稿 | 改前 | -5.00 ms | 0.9990 | 0.0563° | -0.05% | -2.27% | 1.61 cm | -3.7…+2.5% (2.3) | 4.0% (7.6) 
+13f5 | 后端定稿 | 改后 | -0.50 ms | 0.9995 | 0.0637° | +1.24% | -1.01% | 2.19 cm | -7.8…+2.0% (3.1) | 4.2% (11.7) 
+6d18 | 前端 | 改前 | +0.00 ms | 0.8989 | 0.2840° | +1.88% | -2.13% | 2.97 cm | -1.2…+2.4% (1.2) | 2.8% (6.1) 
+6d18 | 前端 | 改后 | -5.00 ms | 0.9937 | 0.1649° | +0.83% | -3.14% | 2.87 cm | -1.6…+2.7% (1.5) | 3.9% (7.0) 
+6d18 | 后端首次 | 改前 | -5.00 ms | 0.9992 | 0.0611° | +1.83% | -2.18% | 2.88 cm | -1.2…+2.0% (1.1) | 2.4% (5.3) 
+6d18 | 后端首次 | 改后 | +0.00 ms | 0.9978 | 0.0755° | +0.80% | -3.17% | 2.77 cm | -1.3…+2.7% (1.4) | 3.4% (6.1) 
+6d18 | 后端定稿 | 改前 | -5.00 ms | 0.9996 | 0.0568° | +1.63% | -2.38% | 2.85 cm | -0.8…+1.8% (0.9) | 2.3% (6.2) 
+6d18 | 后端定稿 | 改后 | -1.00 ms | 0.9995 | 0.0716° | +0.71% | -3.26% | 2.60 cm | -1.1…+1.7% (1.1) | 3.2% (6.3) 
+7353 | 前端 | 改前 | -0.50 ms | 0.9067 | 0.3324° | +2.79% | +2.16% | 3.34 cm | -5.4…+1.4% (2.3) | 4.1% (10.3) 
+7353 | 前端 | 改后 | -5.00 ms | 0.9972 | 0.2059° | +5.87% | +5.22% | 6.11 cm | -9.8…+2.8% (4.0) | 6.2% (13.1) 
+7353 | 后端首次 | 改前 | -5.00 ms | 1.0006 | 0.0681° | +2.72% | +2.08% | 3.28 cm | -5.3…+1.3% (2.4) | 3.3% (6.2) 
+7353 | 后端首次 | 改后 | +0.00 ms | 0.9988 | 0.0835° | +5.71% | +5.06% | 6.03 cm | -8.7…+2.5% (3.7) | 6.2% (12.8) 
+7353 | 后端定稿 | 改前 | -5.00 ms | 1.0013 | 0.0714° | +2.56% | +1.92% | 3.16 cm | -5.4…+1.1% (2.4) | 2.8% (6.2) 
+7353 | 后端定稿 | 改后 | -0.50 ms | 1.0012 | 0.0848° | +5.40% | +4.75% | 5.74 cm | -7.7…+2.0% (3.5) | 4.3% (8.8) 
+
+## 线程化(手机同配置)核对:改后 vs 改前
+13f5 前端 | 改前 s +0.00 ms 抖动 0.2239° k_LiDAR -1.96% ATE 1.76 cm | 改后 s -4.50 ms 抖动 0.1375° k_LiDAR -0.57% ATE 2.23 cm
+13f5 后端首次 | 改前 s -5.00 ms 抖动 0.0503° k_LiDAR -2.06% ATE 1.72 cm | 改后 s +0.00 ms 抖动 0.0577° k_LiDAR -0.73% ATE 2.20 cm
+13f5 后端定稿 | 改前 s -5.00 ms 抖动 0.0563° k_LiDAR -2.27% ATE 1.61 cm | 改后 s -0.50 ms 抖动 0.0672° k_LiDAR -0.98% ATE 2.14 cm
+6d18 前端 | 改前 s +0.00 ms 抖动 0.2843° k_LiDAR -2.18% ATE 2.95 cm | 改后 s -5.00 ms 抖动 0.1651° k_LiDAR -3.11% ATE 2.96 cm
+6d18 后端首次 | 改前 s -5.00 ms 抖动 0.0611° k_LiDAR -2.24% ATE 2.85 cm | 改后 s +0.00 ms 抖动 0.0773° k_LiDAR -3.14% ATE 2.87 cm
+6d18 后端定稿 | 改前 s -5.00 ms 抖动 0.0562° k_LiDAR -2.42% ATE 2.82 cm | 改后 s -1.00 ms 抖动 0.0715° k_LiDAR -3.23% ATE 2.69 cm
+7353 前端 | 改前 s -0.50 ms 抖动 0.3327° k_LiDAR +2.12% ATE 3.36 cm | 改后 s -5.00 ms 抖动 0.2057° k_LiDAR +5.06% ATE 6.05 cm
+7353 后端首次 | 改前 s -5.00 ms 抖动 0.0679° k_LiDAR +2.04% ATE 3.30 cm | 改后 s +0.00 ms 抖动 0.0824° k_LiDAR +4.87% ATE 5.99 cm
+7353 后端定稿 | 改前 s -5.00 ms 抖动 0.0676° k_LiDAR +1.88% ATE 3.19 cm | 改后 s -0.50 ms 抖动 0.0840° k_LiDAR +4.58% ATE 5.73 cm
+
+## 任务二 第 0 步:同口径(都只取后端帧、100 ms 增量)
+场 | ARKit 全帧 33 ms RMS(旧口径) | ARKit@后端帧 RMS / 中位 | 后端定稿 改前 RMS / 中位 | 倍数(RMS / 中位) | 后端定稿 改后 RMS / 中位 | 倍数(RMS / 中位)
+13f5 | 0.0222° | 0.0372° / 0.0222° | 0.0563° / 0.0338° | 1.51× / 1.53× | 0.0637° / 0.0398° | 1.71× / 1.80×
+13f5 旧口径倍数(后端定稿 100 ms RMS ÷ ARKit 33 ms RMS):改前 2.54×,改后 2.87×
+6d18 | 0.0350° | 0.0616° / 0.0266° | 0.0568° / 0.0420° | 0.92× / 1.58× | 0.0716° / 0.0559° | 1.16× / 2.10×
+6d18 旧口径倍数(后端定稿 100 ms RMS ÷ ARKit 33 ms RMS):改前 1.62×,改后 2.05×
+7353 | 0.0408° | 0.0798° / 0.0306° | 0.0714° / 0.0412° | 0.89× / 1.35× | 0.0848° / 0.0532° | 1.06× / 1.74×
+7353 旧口径倍数(后端定稿 100 ms RMS ÷ ARKit 33 ms RMS):改前 1.75×,改后 2.08×
+
+## 任务二 第 1 步:改后引擎上逐项对照(后端定稿,单线程)
+13f5 | 改后引擎(参照)           | RMS 0.0637° (+0.0%) 中位 0.0398° (+0.0%) | 残差≈0.0419°+0.0131°/(rad/s)·ω r=0.07 | s -0.50 ms | k_LiDAR -1.01% ATE 2.19 cm 5s sd 3.1%
+13f5 | 外参换 ARKit 隐含值      | RMS 0.0616° (-3.2%) 中位 0.0392° (-1.5%) | 残差≈0.0396°+0.0175°/(rad/s)·ω r=0.10 | s -0.50 ms | k_LiDAR -0.77% ATE 2.29 cm 5s sd 3.2%
+13f5 | 滑窗 5→10            | RMS 0.0632° (-0.7%) 中位 0.0331° (-16.7%) | 残差≈0.0400°+-0.0013°/(rad/s)·ω r=-0.01 | s -0.50 ms | k_LiDAR -2.03% ATE 2.05 cm 5s sd 2.5%
+13f5 | td −2.5 ms(诊断)     | RMS 0.0595° (-6.6%) 中位 0.0356° (-10.6%) | 残差≈0.0324°+0.0269°/(rad/s)·ω r=0.15 | s -0.50 ms | k_LiDAR -1.19% ATE 1.92 cm 5s sd 2.6%
+13f5 | td −5 ms(诊断)       | RMS 0.0571° (-10.3%) 中位 0.0351° (-11.7%) | 残差≈0.0317°+0.0251°/(rad/s)·ω r=0.15 | s +0.00 ms | k_LiDAR -1.94% ATE 1.93 cm 5s sd 2.5%
+6d18 | 改后引擎(参照)           | RMS 0.0716° (+0.0%) 中位 0.0559° (+0.0%) | 残差≈0.0502°+0.0266°/(rad/s)·ω r=0.20 | s -1.00 ms | k_LiDAR -3.26% ATE 2.60 cm 5s sd 1.1%
+6d18 | 外参换 ARKit 隐含值      | RMS 0.0727° (+1.5%) 中位 0.0590° (+5.4%) | 残差≈0.0507°+0.0279°/(rad/s)·ω r=0.20 | s -1.00 ms | k_LiDAR -3.67% ATE 2.94 cm 5s sd 1.0%
+6d18 | 滑窗 5→10            | RMS 0.0545° (-23.8%) 中位 0.0410° (-26.8%) | 残差≈0.0323°+0.0309°/(rad/s)·ω r=0.28 | s -1.00 ms | k_LiDAR -3.23% ATE 1.47 cm 5s sd 0.8%
+6d18 | td −2.5 ms(诊断)     | RMS 0.0616° (-13.9%) 中位 0.0473° (-15.5%) | 残差≈0.0409°+0.0260°/(rad/s)·ω r=0.21 | s -0.50 ms | k_LiDAR -2.82% ATE 2.93 cm 5s sd 0.9%
+6d18 | td −5 ms(诊断)       | RMS 0.0588° (-17.8%) 中位 0.0432° (-22.8%) | 残差≈0.0371°+0.0257°/(rad/s)·ω r=0.20 | s +0.00 ms | k_LiDAR -2.38% ATE 3.16 cm 5s sd 0.9%
+7353 | 改后引擎(参照)           | RMS 0.0848° (+0.0%) 中位 0.0532° (+0.0%) | 残差≈0.0394°+0.0525°/(rad/s)·ω r=0.35 | s -0.50 ms | k_LiDAR +4.75% ATE 5.74 cm 5s sd 3.5%
+7353 | 外参换 ARKit 隐含值      | RMS 0.0842° (-0.7%) 中位 0.0544° (+2.3%) | 残差≈0.0417°+0.0467°/(rad/s)·ω r=0.31 | s -0.50 ms | k_LiDAR +4.01% ATE 4.60 cm 5s sd 3.3%
+7353 | 滑窗 5→10            | RMS 0.0716° (-15.6%) 中位 0.0433° (-18.6%) | 残差≈0.0318°+0.0410°/(rad/s)·ω r=0.30 | s -0.50 ms | k_LiDAR +4.14% ATE 4.86 cm 5s sd 2.1%
+7353 | td −2.5 ms(诊断)     | RMS 0.0753° (-11.2%) 中位 0.0464° (-12.7%) | 残差≈0.0291°+0.0560°/(rad/s)·ω r=0.41 | s -0.50 ms | k_LiDAR +3.06% ATE 4.59 cm 5s sd 3.4%
+7353 | td −5 ms(诊断)       | RMS 0.0680° (-19.8%) 中位 0.0430° (-19.1%) | 残差≈0.0244°+0.0537°/(rad/s)·ω r=0.44 | s +0.00 ms | k_LiDAR +2.25% ATE 3.51 cm 5s sd 2.8%
+三场平均(RMS / 中位)相对参照:
+  改后引擎(参照)           RMS 0.0733° (+0.0%)  中位 0.0496° (+0.0%)
+  外参换 ARKit 隐含值      RMS 0.0728° (-0.7%)  中位 0.0509° (+2.5%)
+  滑窗 5→10            RMS 0.0631° (-14.0%)  中位 0.0391° (-21.2%)
+  td −2.5 ms(诊断)     RMS 0.0655° (-10.7%)  中位 0.0431° (-13.2%)
+  td −5 ms(诊断)       RMS 0.0613° (-16.4%)  中位 0.0404° (-18.5%)
+
+## 卷帘快门:后端定稿逐增量残差按角速度分箱(改后引擎)vs 同批帧 ARKit
+13f5 backend_final  斜率 0.0131°/(rad/s) 截距 0.0419° r=0.07 | [0.0,0.3) n124 0.075°  [0.3,0.6) n126 0.050°  [0.6,1.0) n33 0.064°  [1.0,1.5) n10 0.059°  [1.5,2.5) n0 —  [2.5,10.0) n0 —
+13f5 arkit@backend  斜率 0.0134°/(rad/s) 截距 0.0233° r=0.13 | [0.0,0.3) n119 0.043°  [0.3,0.6) n125 0.026°  [0.6,1.0) n33 0.037°  [1.0,1.5) n10 0.069°  [1.5,2.5) n0 —  [2.5,10.0) n0 —
+6d18 backend_final  斜率 0.0266°/(rad/s) 截距 0.0502° r=0.20 | [0.0,0.3) n82 0.064°  [0.3,0.6) n139 0.074°  [0.6,1.0) n65 0.072°  [1.0,1.5) n4 0.086°  [1.5,2.5) n3 0.104°  [2.5,10.0) n0 —
+6d18 arkit@backend  斜率 0.0153°/(rad/s) 截距 0.0288° r=0.08 | [0.0,0.3) n72 0.042°  [0.3,0.6) n140 0.077°  [0.6,1.0) n67 0.038°  [1.0,1.5) n5 0.069°  [1.5,2.5) n3 0.084°  [2.5,10.0) n0 —
+7353 backend_final  斜率 0.0525°/(rad/s) 截距 0.0394° r=0.35 | [0.0,0.3) n73 0.078°  [0.3,0.6) n107 0.071°  [0.6,1.0) n85 0.082°  [1.0,1.5) n24 0.110°  [1.5,2.5) n5 0.234°  [2.5,10.0) n0 —
+7353 arkit@backend  斜率 0.0439°/(rad/s) 截距 0.0186° r=0.22 | [0.0,0.3) n68 0.129°  [0.3,0.6) n113 0.036°  [0.6,1.0) n82 0.046°  [1.0,1.5) n20 0.075°  [1.5,2.5) n6 0.214°  [2.5,10.0) n0 —
+== 解读(装机前必须看)
+1. 目标达成:后端首次/定稿位姿对陀螺的偏移从 −5.00 ms(三场一致)回到 0.00 / −0.5…−1.0 ms;线程化与单线程一致。
+   前端幅度比 0.90 → 0.994、前端抖动降 38–42%。前端在 Mac 回放里变成 −4.5…−5 ms:Mac(和手机回放)按时间戳顺序投递,
+   相机帧推入时它之后的 IMU 还没到,OKVIS2 离散只积到最新样本、不外插;上游右端保持恰好抵消了这 5 ms。真机直播相机帧晚到,IMU 已覆盖时新版精确积到帧时刻。
+2. 🔴 沿用现行 td 规则(曝光中点 + c = 3 ms)时精度回退:后端抖动 +13…+26%;7353 对 LiDAR 尺度 +1.9% → +4.8%、ATE 3.2 → 5.7 cm;
+   13f5 尺度更近(−2.3% → −1.0%)但 ATE 1.6 → 2.2 cm;6d18 尺度 −2.4% → −3.3%。
+3. 诊断(不改 td 规则,只在 Mac 上把相机时间戳再挪 −5 ms):三场后端抖动、尺度基本回到改前水平
+   (7353 +2.25%/3.5 cm,13f5 −1.94%/1.9 cm,6d18 −2.38%/3.2 cm;抖动三场均值 −16%)⇒ 回退不是移植错误,
+   是现行 td 规则(c = 3 ms 查表及其验证)定在带 −5 ms 滞后的旧积分器上,两者配套。是否重定 td 由用户决定。
