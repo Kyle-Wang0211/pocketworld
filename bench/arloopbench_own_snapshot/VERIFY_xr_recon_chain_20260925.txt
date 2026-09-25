@@ -1,0 +1,124 @@
+# arloopbench xr-recon-chain —— XRSLAM → SfM 重建链 + 录制器 IMU 修复 核验记录(2026-09-25)
+# 用户拍板「定 12MP + 后端定稿外推,搭台架链并合进录制器修复」。只进台架,生产 App 未碰、未装机;本地提交,不推送。
+
+== 提交
+  引擎 xrslam fork 本地分支 feat/xr-recon-chain(从 feat/okvis2-preint@4e8dda2 拉出),工作树 scratchpad/xrchain/xrslam-wt
+    cd3469c  后端帧状态沿引擎缓存 IMU 外推的最小 C 接口 XRSLAMPropagateBackendState(只调 propagate_state_okvis2)
+  台架 pocketworld 本地分支 bench/xr-recon-chain(从 bench/okvis2-preint@3acfa75 拉出),工作树
+    ~/.config/superpowers/worktrees/pocketworld/bench-xr-recon-chain-20260925
+    5add827  合入 bench/entry-any-4x3@36b6b33(平台默认模式下的最大 4:3)
+    d1b21da  录制器 IMU 修复 + 新格式 imu_events.csv + 读录制工具兼容新旧格式
+    ffcb4b3  XRSLAM → SfM 重建链(链路核心 / Swift 胶水 / Dart 页 / iOS 引擎归档 a6b41c92 / 自有文件快照 / Mac 工具)
+    3f1d6ac  链路核心头文件注释改正
+    371e2ad  照片请求号每场唯一 + 拉取脚本 pull_xrchain_run.sh
+    (本文件所在提交 = VERIFY)
+
+== 台架包
+  ~/Developer/arloopbench_builds/xr_recon_chain_20260925/Runner.app(源 371e2ad;PW_XRSLAM_ARM=xrchain;flutter build ios --profile --no-pub,Xcode 78.3 s)
+  同步:四段真源(P / F / R / U)临时指向本 worktree,LOD 只核;逐字节自证全过。台架自有文件换成本分支快照里改过的 5 份
+    (.sync_from_integration.sh / ios/Podfile / project.pbxproj / Runner-Bridging-Header.h / lib/main.dart;其余自有文件快照
+    与台架现行版逐字节相同,已核);PW_XRSLAM_ARM=xrchain pod install。旧 VIO 台架框架 dist 从 bench-entry-any-4x3 工作树
+    原样拷贝(源码与 b3c7b6b 无差异;SHA256SUMS 自核通过;不入库)。
+  还原:备份 ~/Developer/arloopbench_backups/xrchain_20260925_193053;1031 个文件哈希、文件清单、332 个符号链接全部一致,
+    pw_full_chain 指回 bench-unified-20260924;同步带入的 5 个文件与 lib/bench_xrchain 目录已删。
+    注意:台架目录 build/ios/iphoneos/Runner.app(构建缓存,照惯例不还原)现在是本臂的包。
+  核验(对现 any43default 台架包):
+    Info.plist PWXrslamBenchArm=xrchain,PWXrslamBuildLib=libxrslam_official_rules_xrchain_a6b41c92.a,SHA a6b41c92…;
+    Runner 引擎指纹 xrchain 1、okvis2preint / 89042cd5 / bkpose / generic / gpufe 均 0;
+    XRSLAMPropagateBackendState / DrainBackendStates / GetBackendWindowStates 在 Runner 里相邻,间距与归档 XRSLAMInternal.o
+    内偏移一致 ⇒ 链入的是引擎强定义,不是本包的弱兜底;pw_xrchain_* 10 个符号在;录制器新格式字符串在;
+    Dart AOT 里 XrReconChainPage / xrchain_run_ / limited_xrchain_ / PWXrslamTdExtraMs 等在,原有菜单页仍在;
+    PWOfficialSfm / PWDense / PWOnnxRuntime / PWVIOBenchKit / PWXRSLAMEngine / PWBasaltEngine / thermion_dart / Flutter
+    对 any43default 包去签名逐字节相同;签名 valid,Team 26AH7V448L。
+  🔴 未装机、未上手机、未碰生产 App。
+
+== Mac 验证(单线程引擎,手机同款喂法:box/3、30 Hz 闸 0.8/R、首个 IMU 前相机帧丢弃、逐帧 K、曝光中点 + c 3 ms + 台架 Δ −5 ms;
+   三场 13f5 / 6d18 / 7353,各 22 张模拟照片:1.45 s 节奏 + 初始化前 / 末帧前 / 末帧后三张边界)
+  外推接口 vs 参照 xr_propagate2(源码逐字节拷贝,#include 4e8dda2 detail.cpp,读录制 imu.csv):66/66 逐字段(%.17g)相同,
+    含 IMU 未覆盖目标时刻的部分外推 3 例(返回 1,两边同)。
+  引擎改动零影响:13f5 前端 CAMERA/BODY/STATE 十六进制逐帧轨迹、后端 CSV(除墙钟两列)、按帧键控 CSV,
+    新引擎 + 新回放器 vs 4e8dda2 + 原回放器逐位相同。
+  链路回放(与手机同一份核心源码,now = 数据时间):22×3 张位姿与自检逐位相同;两次回放前端十六进制轨迹逐位相同。
+    每场 FINAL 20(可信 19 + 初始化前那张不可信:外推 ~129 ms 且拍照时刻 INITIALIZING)、收尾窗口 2(末帧前可信;末帧后
+    外推 330–360 ms 且 IMU 未覆盖 ⇒ 不可信)。常规照片等定稿(数据时间,拍照时刻 → 定稿可用)中位 476 ms、p95 523、
+    最大 573 ms(n 57);初始化前那张 1254–1571 ms;常规照片外推中位 43–61 ms、最大 99.4 ms。
+  录制器:写器 / 新格式单测 16/16(新增 7);回放装载器单测 24/24;旧格式推送序列 sha256 改前 / 改后相同(三场),
+    新格式同刻两路副本 = 旧格式;Mac 回放器旧格式逐位不变、新格式同刻两路副本逐位相同;pwvi_to_euroc.py 新格式
+    同刻两路 3009/3009 数值相同、加计错开 3.7 ms 插值与引擎公式 3008/3008 逐位相同。
+  跨端:引擎 cd3469c 新增行与链路核心 vendor/xrslam/chain/* 里 __APPLE__ / TARGET_OS / __ANDROID__ / OHOS / 厂商 API 0 处;
+    平台代码只在 ios/Runner/PwXrReconChain.swift。Swift 胶水 + 核心在 Mac 上按回放装具方式编译链接通过。
+  Dart:flutter test 全量(371e2ad)对合并后基线(5add827,与 bench/entry-any-4x3 36b6b33 全量逐条一致):共同 2183 条
+    0 条变化;新增 2 条(位姿口径换算 / 可信词表)全过。基线自带的 12 条失败与 12 条加载错误两边相同。
+
+== 包核验原文(verify_build.txt,与包同目录)
+  == Info.plist 身份
+    CFBundleIdentifier           base=com.kyle.arloopbench new=com.kyle.arloopbench
+    CFBundleVersion              base=1 new=1
+    PWXrslamBuildEngine          base=official_rules new=official_rules
+    PWXrslamEngineArm            base=official_rules new=official_rules
+    PWXrslamBenchArm             base=default new=xrchain
+    PWXrslamBuildLib             base=libxrslam_official_rules_89042cd5.a new=libxrslam_official_rules_xrchain_a6b41c92.a
+    PWXrslamSHA256               base=89042cd5d5be844801a40b914cd8742119f8a9b4c3f6e3a9deef115bd4e7942f new=a6b41c92013a0d8e812d9e0104691157ad98dfd960084a27dc1c8baf603e9a8f
+    PWXrslamThreadingEnabled     base=true new=true
+    PWXrslamBuildRules           base=official new=official
+    PWXrslamGpuFrontendLinked    base=false new=false
+    PWXrslamEnginePedigree       base=research_only new=research_only
+  == Runner 里的引擎指纹(本臂 xrchain 必须 ≥1,其它臂 0)
+    xrchain                    1
+    okvis2preint               0
+    official_rules 89042cd5    0
+    bkpose 4853976d            0
+    generic                    0
+    gpufe/pfk                  0
+  == Runner 符号(nm -m:引擎外推接口须是强定义,不是本包的弱兜底)
+    00000001015e6a60 (__TEXT,__text) non-external (was a private external) _XRSLAMDrainBackendStates
+    00000001015e6a9c (__TEXT,__text) non-external (was a private external) _XRSLAMGetBackendWindowStates
+    00000001015e6ac8 (__TEXT,__text) non-external (was a private external) _XRSLAMPropagateBackendState
+    _pw_xrchain_begin                        base=0 new=1
+    _pw_xrchain_end                          base=0 new=1
+    _pw_xrchain_submit_photo_host            base=0 new=1
+    _pw_xrchain_take_result_host             base=0 new=1
+    _pw_xrchain_drain_state                  base=0 new=1
+    _pw_xrchain_close_host                   base=0 new=1
+    _pw_xrchain_stats_host                   base=0 new=1
+    _pw_xrchain_reset                        base=0 new=1
+    _pw_xrchain_poll                         base=0 new=1
+    _pw_xrchain_close                        base=0 new=1
+    _pw_camera_slot_capture_photo            base=1 new=1
+    _pw_camera_slot_photo_result             base=1 new=1
+    _pw_camera_slot_photo_size_candidates    base=1 new=1
+    _pw_bench_lidar_start                    base=1 new=1
+    string imu_events.csv               base=0 new=1
+    string split_events_v1              base=0 new=1
+    string imu_gyro_sample_count        base=0 new=1
+    string timestamp_ns,sensor,x,y,z    base=0 new=1
+  == Dart AOT(App.framework/App)
+    XrReconChainPage                 base=0 new=4
+    xrchain_run_                     base=0 new=1
+    limited_xrchain_                 base=0 new=1
+    pw_xrchain_begin                 base=0 new=1
+    pw_xrchain_submit_photo_host     base=0 new=1
+    PWXrslamTdExtraMs                base=0 new=1
+    PWXrchainFinalTimeoutMs          base=0 new=1
+    pw.bench.xr_recon_chain/1        base=0 new=1
+    BenchHomePage                    base=3 new=3
+    ZeroArkitCaptureProbePage        base=4 new=4
+    BenchLidarRecordPage             base=4 new=4
+  == 其它嵌入二进制(对基线包去签名逐字节)
+    PWOfficialSfm  SAME
+    PWDense        SAME
+    PWOnnxRuntime  SAME
+    PWVIOBenchKit  SAME
+    PWXRSLAMEngine SAME
+    PWBasaltEngine SAME
+    thermion_dart  SAME
+    Flutter        SAME
+  == Frameworks 目录
+    同一集合
+  == 签名
+    valid
+  Identifier=com.kyle.arloopbench
+  TeamIdentifier=26AH7V448L
+  == 主二进制 sha256
+  c6a99114b028473c36482903ae2b3c36a26fd5767b317023dfda6046743bffe2  Runner
+  2547c2895a278f2bcf0f7fc5b8d1335693e0dd214cfd37e20c5adc49e53db82c  App
