@@ -8,7 +8,7 @@
 //   喂 SfM = pwofficial_add_jpeg_frame_v2(..., device_pose_trusted),不可信的走核里上游 RegisterNextImage
 //              证据门;交付尺度沿用核内 Sim3 对齐。核不改。
 //
-// ══ 本文件的规则(逐条,全部在 .cpp 的 Resolve* 里,Mac 回放与手机跑同一份源码)══════════════
+// ══ 本文件的规则(逐条,全部在 .cpp 的 AdvanceLocked / Finish 里,Mac 回放与手机跑同一份源码)══════════════
 //   R1 后端帧 = 出过 FIRST 事件的帧(XRSLAMDrainBackendStates kind 1)。
 //   R2 「t_photo 之前最近的后端帧」b = FIRST 时刻 ≤ t_photo 的最大者;只有在见到一条 FIRST 时刻 > t_photo
 //      之后(后端已经处理过拍照之后的帧 ⇒ ≤ t_photo 的后端帧都已出过 FIRST)才认定 b,收尾时直接认定。
@@ -24,8 +24,8 @@
 //
 // ══ 时间 ═══════════════════════════════════════════════════════════════════════════
 //   t_photo / 帧时刻 / 后端记录时刻 = 引擎时域(宿主推给引擎的相机时间戳,含曝光中点、c 与 Δ)。
-//   now = 宿主单调时钟,与相机 PTS / CoreMotion 时间戳同域(手机:CACurrentMediaTime;Mac 回放:
-//   最近推进引擎的数据时刻)。超时只比 now − t_photo,毫秒级的 c/Δ 差对秒级超时无影响。
+//   now = 宿主单调时钟,与相机 PTS / IMU 时间戳同域(由宿主给:iOS 宿主取 host time clock,见
+//   ios/Runner/PwXrReconChain.swift;Mac 回放取最近推进引擎的数据时刻)。超时只比 now − t_photo,毫秒级的 c/Δ 差对秒级超时无影响。
 //
 // ══ 平台 ═══════════════════════════════════════════════════════════════════════════
 //   本文件与 .cpp 只用标准库与 XRSLAM C 接口;没有任何平台宏、平台 API。平台代码(相机 / 快门 /
@@ -42,7 +42,7 @@ extern "C" {
 
 /** 照片位姿来源。数值固定,只加不改。 */
 enum {
-  PW_XRCHAIN_SOURCE_PENDING = 0,          /*!< 还在等(只出现在 pw_xrchain_pending_snapshot)。 */
+  PW_XRCHAIN_SOURCE_PENDING = 0,          /*!< 保留值(还在等);给出的结果里不会出现。 */
   PW_XRCHAIN_SOURCE_FINAL = 1,            /*!< b 的 FINAL 定稿状态 + 官方外推。 */
   PW_XRCHAIN_SOURCE_WINDOW_AT_CLOSE = 2,  /*!< 收尾时 b 仍在后端窗口:收尾窗口快照 + 官方外推。 */
   PW_XRCHAIN_SOURCE_TIMEOUT = 3,          /*!< 等定稿超时(不可信);位姿取 b 的 FIRST + 官方外推(若有)。 */
