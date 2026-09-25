@@ -1,0 +1,142 @@
+# arloopbench unified + official XRSLAM + rec30 + exposure-midpoint default — verification (2026-09-25 10:15:24)
+# source: pocketworld local branch bench/expmid-default (from bench/rec30-ruler-exact f36fc19) @ 90b6177, worktree ~/.config/superpowers/worktrees/pocketworld/bench-rec30-ruler-exact-20260924
+# sync: .sync_from_integration.sh (P=R=that worktree, F/U=bench-unified-20260924 b3c7b6b, LOD verify-only/skipped) -> all byte-identical
+# build: flutter build ios --profile --no-pub, twice (81 s incl. 74.1 s Xcode, then 47.7 s Xcode), FLUTTER_XCODE_DEBUG_INFORMATION_FORMAT=dwarf, LD map on; PW_XRSLAM_ARM unset (= official_rules); no dart-defines
+# backup of bench files before sync: /Users/kaidongwang/Developer/arloopbench_backups/expmid_20260925_100803
+
+== main binaries
+1e6634ff54d53e25598c240033570f96b321f5a08abcfc629e3ea6d3c2ca7a98  Runner
+d9864f8de00db20d3b5b1b6cbd54203ab0bf3d134931b9b8903dcaf9d7b99899  Frameworks/App.framework/App
+== Info.plist identity
+  CFBundleIdentifier           com.kyle.arloopbench
+  CFBundleVersion              1
+  PWXrslamBuildEngine          official_rules
+  PWXrslamEngineArm            official_rules
+  PWXrslamBuildLib             libxrslam_official_rules_89042cd5.a
+  PWXrslamSHA256               89042cd5d5be844801a40b914cd8742119f8a9b4c3f6e3a9deef115bd4e7942f
+  PWXrslamThreadingEnabled     true
+  PWXrslamBuildRules           official
+  PWXrslamGpuFrontendLinked    false
+  PWXrslamEnginePedigree       research_only
+== linked engine fingerprint in Runner (official_rules must be 1, others 0)
+  official_rules   1
+  generic          0
+  gpufenothread    0
+  pfk              0
+== rec30 code in Runner
+  PWXrslamCameraHz                         1
+  poses_camera_by_recording_frame.csv      1
+  barrier_nocache                          1
+  fsync_each                               1
+  PWBenchLidarSoakArms                     1
+  ruler_subset_xr30                        1
+  xrslam_admission                         1
+  every_subset_frame_admitted              1
+  pw.bench.lidar-recorder-timing/2         1
+  PwXrslamOfficialFeed.admits              3
+== expmid (2026-09-25): exposure-midpoint default
+  exposure_mid_source                      1
+  exposure_mid_default                     1
+  exposure_mid_rule                        1
+  mean_half_exposure_applied_s             1
+  t_feed = pts + exposure/2 + c            1
+  PWXrslamExposureMid                      3
+  launch_argument                          2
+  unparseable                              1
+  T _pw_xrslam_live_exposure_mid (Runner)  1
+== Dart AOT: 13 menu pages (0 = tree-shaken) + rec30 page strings
+  BenchHomePage                3
+  BenchLidarRecordPage         4
+  BenchReplayPage              4
+  BenchFullChainPage           3
+  BenchCoreSwitchesPage        4
+  ArMinimalLoopPage            4
+  ZeroArkitCaptureProbePage    4
+  ZeroArkitPreviewProbePage    3
+  ImuCalibCapturePage          4
+  ZuptProbePage                4
+  PoseChainProbePage           4
+  LodDebugPage                 4
+  SplatAbPage                  4
+  pages missing: 0
+  PocketWorldApp               1
+  viobench (BenchUnifiedNative) 1
+  30:fsync_each,30:barrier,30:barrier,30:fsync_each  1
+  pw_bench_lidar_reexport_subset                     1
+  record_hz                                          1
+  write_sync                                         1
+  AOT pw_xrslam_live_exposure_mid                    1
+  AOT PWXrslamExposureMid                            1
+  AOT exposure_mid                                   3
+  AOT bench_default                                  1
+  AOT exposureMidEnabled                             1
+== Dawn: _wgpuCreateInstance definitions in Runner: 1
+== Runner defined symbol families
+    12 _PWXrslamTransport
+     5 _pw_bench_lidar_
+     5 _pw_bench_replay_
+    17 _pw_camera_slot_
+    11 _pw_xrslam_live_
+     1 _pwlod_run$
+     1 _pwsplat_ab_run$
+    00000001016d90c4 T _pw_bench_lidar_capability
+    00000001016d9434 T _pw_bench_lidar_reexport_subset
+    00000001016d91ac T _pw_bench_lidar_start
+    00000001016d933c T _pw_bench_lidar_status
+    00000001016d928c T _pw_bench_lidar_stop
+== engine entry points in Runner (t = linked via -force_load)
+  00000001015e042c t _XRSLAMCreate
+  00000001015e0728 t _XRSLAMDestroy
+  00000001015e0618 t _XRSLAMGetResult
+  00000001015e0598 t _XRSLAMPushSensorData
+  00000001015e0604 t _XRSLAMRunOneFrame
+== embedded frameworks __text vs unified_official_xrslam_rec30_20260924 (the installed bench)
+  PWOfficialSfm    unsigned sha 651d047ab1d7d39a SAME
+  PWDense          unsigned sha e5f9a92a20ca0a9f SAME
+  PWOnnxRuntime    unsigned sha b2ded38332478ae1 SAME
+  PWVIOBenchKit    unsigned sha 10440823fe3c2d35 SAME
+  PWXRSLAMEngine   unsigned sha c95f6a6c0d3e3011 SAME
+  PWBasaltEngine   unsigned sha eaebd74b16325a96 SAME
+  thermion_dart    unsigned sha 8f99ceba99e242c6 SAME
+  Flutter          unsigned sha d7035728e895faf1 SAME
+  Frameworks: App.framework Flutter.framework PWBasaltEngine.framework PWDense.framework PWOfficialSfm.framework PWOnnxRuntime.framework PWVIOBenchKit.framework PWXRSLAMEngine.framework thermion_dart.framework 
+== signature
+/Users/kaidongwang/Developer/arloopbench/build/ios/iphoneos/Runner.app: valid on disk
+/Users/kaidongwang/Developer/arloopbench/build/ios/iphoneos/Runner.app: satisfies its Designated Requirement
+Identifier=com.kyle.arloopbench
+TeamIdentifier=26AH7V448L
+== Link map: Dawn
+  _wgpuCreateInstance defined by 1 object(s):
+    [699] /Users/kaidongwang/Developer/arloopbench/ios/Pods/../../../dist/libs/ios-arm64/libaether3d_ffi.a(webgpu_dawn_native_proc.o)
+
+== install (10:15:48)
+  xcrun devicectl device install app --device 00008120-00146C4A1AEBC01E /Users/kaidongwang/Developer/arloopbench_builds/unified_official_xrslam_rec30_expmid_20260925/Runner.app -> rc 0, bundleID com.kyle.arloopbench only (com.kyle.PocketWorld not touched)
+  Documents entries before/after: 436 / 436, added 0, removed 0, changed 0
+  replay_recordings/run-13f53d2f (35 files) and run-fb5d3a8f (53 files) byte-size/mtime identical
+
+== on-device replay, no timing args: launch_bench_replay.sh 13f53d2f on paced -PWBenchReplayTag expmid_default
+  run: replay_13f53d2f_pfk-on_paced_20260925_101612_expmid_default (pulled to ~/Developer/viobench-recordings, pull self-check passed, invariants passed)
+  xrslam_feed.exposure_mid=true source=default; camera_time_offset_s=0.003 (measured, iPhone15,2); timebase eff-pts=8.00 ms (mean exp/2 5.00 + c 3.00), residuals raw 0 / offset 3e-12
+  frames offered/dropped 895/0, transport rejects 0
+
+== score vs ARKit (scaleS1/scale_eval.evaluate(poses_camera.tum, ruler_subset/arkit_poses.tum, cam=False))
+本次(默认,无时间参数) replay_13f53d2f_pfk-on_paced_20260925_101612_expmid_default
+   {"n": 858, "k_sim3_fwd": 1.0030798045477198, "k_sim3_rev": 1.001959503165855, "k_sim3_sym": 1.0025194973666778, "k_pair_med": 1.0072254224091528, "n_pairs": 194057, "ate_sim3_cm": 1.759428533072371, "ate_se3_cm": 1.7668755973880395, "ref_extent_m": 2.052013213496748, "ref_rms_spread_m": 0.5264679507725064, "duration_s": 28.569328290992416, "k_sim3_fwd_ci95": [0.9946127845066871, 1.0116631471319109], "k_sim3_fwd_bsd": 0.004435959932785181}
+   seg_k [np.float64(0.9769910130865813), np.float64(0.9844598514015195), np.float64(1.0170056350197318), np.float64(1.0008949973986436)]
+今早 on + c=2.65 replay_13f53d2f_pfk-on_paced_20260925_095720_expmid
+   {"n": 858, "k_sim3_fwd": 1.0022327834189704, "k_sim3_rev": 1.0009009728718459, "k_sim3_sym": 1.0015666567773238, "k_pair_med": 1.0066443606921507, "n_pairs": 194057, "ate_sim3_cm": 1.9191497373680446, "ate_se3_cm": 1.9227415568984718, "ref_extent_m": 2.052013213496748, "ref_rms_spread_m": 0.5264679507725064, "duration_s": 28.569328290992416, "k_sim3_fwd_ci95": [0.9930562458594429, 1.0116841380913435], "k_sim3_fwd_bsd": 0.004971880445056949}
+   seg_k [np.float64(0.9766149256757788), np.float64(0.9818991968003864), np.float64(1.0161866942366715), np.float64(1.0072803768416672)]
+昨夜 原始PTS + c=0 replay_13f53d2f_pfk-on_paced_20260925_000035
+   {"n": 858, "k_sim3_fwd": 0.9630988208973119, "k_sim3_rev": 0.952815060700224, "k_sim3_sym": 0.9579431410546173, "k_pair_med": 0.9705784188188732, "n_pairs": 194057, "ate_sim3_cm": 5.440170149678936, "ate_se3_cm": 5.773157408708018, "ref_extent_m": 2.052013213496748, "ref_rms_spread_m": 0.5264679507725064, "duration_s": 28.569328290992416, "k_sim3_fwd_ci95": [0.938728256805901, 0.9942122053695729], "k_sim3_fwd_bsd": 0.014261392861456328}
+   seg_k [np.float64(0.9903217562013428), np.float64(0.8923792735180839), np.float64(0.9877180740277868), np.float64(1.0532517550382456)]
+
+== poses_camera_by_recording_frame.csv exact keying
+ruler_subset 帧数 99 不在整份录制里的 0
+本次默认: exposure_mid=True c=3.00ms 行数=858 帧号→t_ns 不等=0 账本缺=0 |engine_t−(t_ns+exp/2+c)|峰值=2.91e-11s 尺子子集按 t_ns 命中 95/99
+今早 on+2.65: exposure_mid=True c=2.65ms 行数=857 帧号→t_ns 不等=0 账本缺=0 |engine_t−(t_ns+exp/2+c)|峰值=5.82e-11s 尺子子集按 t_ns 命中 95/99
+昨夜 原始PTS: exposure_mid=False c=0.00ms 行数=857 帧号→t_ns 不等=0 账本缺=0 |engine_t−(t_ns+c)|峰值=2.91e-11s 尺子子集按 t_ns 命中 95/99
+本次 vs 今早:共有 857 只本次 [254668078357500] 只今早 []
+本次 vs 昨夜:共有 857 只本次 [254668078357500] 只昨夜 []
+本次默认 TUM 首行 t= 254668.086357500 q= ['-0.1585574', '0.8433431', '0.0776196', '0.5075502']
+今早 on+2.65 TUM 首行 t= 254668.086007500 q= ['0.0000000', '0.0000000', '0.0000000', '0.0000000']
+昨夜 原始PTS TUM 首行 t= 254668.078357500 q= ['0.0000000', '0.0000000', '0.0000000', '0.0000000']
