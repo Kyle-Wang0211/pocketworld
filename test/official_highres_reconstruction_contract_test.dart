@@ -32,19 +32,42 @@ void main() {
     },
   );
 
-  test('rejects preview resolution instead of silently feeding it', () {
-    final result = OfficialHighResReconstructionInput.validate(
-      jpegPath: '/capture/previews/tap-1.jpg',
-      imageWidth: 1920,
-      imageHeight: 1440,
-      triggerTimestamp: 10,
-      captureTimestamp: 10.02,
-      cameraTransform: transform,
-      intrinsics: intrinsics,
-    );
+  // [ENTRY-ANY-4X3 2026-09-25] 用户改判「只要是 4:3 都行」:原用例「拒收 1920x1440 预览分辨率」
+  // 的用意(防误喂)改由长边 >= 1920 接住。1920x1440 本身现在是合法输入;下面逐一钉住
+  // 三种拒收的具体失败码。
+  test('accepts any 4:3 raw grid with long side >= 1920 (ENTRY-ANY-4X3)', () {
+    for (final (w, h) in const [(1920, 1440), (3264, 2448), (8064, 6048), (4080, 3072)]) {
+      final result = OfficialHighResReconstructionInput.validate(
+        jpegPath: '/capture/photos/tap-1.jpg',
+        imageWidth: w,
+        imageHeight: h,
+        triggerTimestamp: 10,
+        captureTimestamp: 10.02,
+        cameraTransform: transform,
+        intrinsics: intrinsics,
+      );
+      expect(result.isAccepted, isTrue, reason: '${w}x$h');
+      expect(result.input!.imageWidth, w);
+      expect(result.input!.imageHeight, h);
+    }
+  });
 
-    expect(result.isAccepted, isFalse);
-    expect(result.failure, OfficialHighResInputFailure.unexpectedDimensions);
+  test('rejects non-4:3, too-small and portrait grids with specific codes', () {
+    OfficialHighResInputFailure? failureOf(int w, int h) =>
+        OfficialHighResReconstructionInput.validate(
+          jpegPath: '/capture/previews/tap-1.jpg',
+          imageWidth: w,
+          imageHeight: h,
+          triggerTimestamp: 10,
+          captureTimestamp: 10.02,
+          cameraTransform: transform,
+          intrinsics: intrinsics,
+        ).failure;
+
+    expect(failureOf(1920, 1080), OfficialHighResInputFailure.photoNotFourByThree);
+    expect(failureOf(1440, 1080), OfficialHighResInputFailure.photoLongSideBelowMin);
+    expect(failureOf(3024, 4032), OfficialHighResInputFailure.photoNotSensorOrientation);
+    expect(failureOf(0, 0), OfficialHighResInputFailure.unexpectedDimensions);
   });
 
   test('accepts the single native completion even after sensor latency', () {
@@ -207,7 +230,10 @@ void main() {
     expect(live, contains("'cmd': 'jpeg_frame'"));
     expect(live, contains('session!.addJpegFrame('));
     expect(jpegInput, contains('pwofficial_add_jpeg_frame'));
-    expect(jpegInput, contains('width != 4032 || height != 3024'));
+    // [ENTRY-ANY-4X3 2026-09-25] 原断言 contains('width != 4032 || height != 3024');
+    // 入口判据换成外壳共享规则(pwofficial_photo_size_rule.h)。
+    expect(jpegInput, contains('pwofficial_photo_size_status_rule('));
+    expect(jpegInput, contains('PWOFFICIAL_PHOTO_SIZE_RULE_OK'));
     expect(jpegInput, isNot(contains('CGContextTranslateCTM')));
     expect(jpegInput, isNot(contains('CGContextScaleCTM')));
     expect(jpegInput, isNot(contains('CGAffineTransformScale')));
@@ -514,7 +540,10 @@ void main() {
       source,
       isNot(contains('requestToCaptureDelta <= maxTimestampDelta')),
     );
-    expect(source, contains('imageWidth == 4032, imageHeight == 3024'));
+    // [ENTRY-ANY-4X3 2026-09-25] 原断言 contains('imageWidth == 4032, imageHeight == 3024');
+    // 宿主守卫改调核外壳导出的同一份判据。
+    expect(source, contains('"pwofficial_photo_size_status_v1"'));
+    expect(source, contains('guard sizeStatus == 0 else'));
     expect(source, contains('removePhotoCard'));
     expect(source, contains('log("highres_capture"'));
     expect(source, contains('error.localizedDescription'));

@@ -1,8 +1,18 @@
+import '../vio/capture/photo_size_rule.dart';
 import 'device_pose_trust.dart';
 
 enum OfficialHighResInputFailure {
   captureFailed,
+  /// 宽或高 <= 0(读不出尺寸)。
   unexpectedDimensions,
+  /// [ENTRY-ANY-4X3 2026-09-25] 下面三个取代原来「不是 4032×3024」这一个码,
+  /// 与核外壳 pwofficial_photo_size_status_v1 的 2 / 3 / 4 一一对应。
+  /// 原始像素网格不是 4:3(例:16:9)。
+  photoNotFourByThree,
+  /// 是 4:3,但长边 < 1920(最上游输入必须清晰)。
+  photoLongSideBelowMin,
+  /// 像素被转成了竖向(3:4)存放:与同帧内参、稠密模型分辨率对不上。
+  photoNotSensorOrientation,
   outOfSync,
   missingPose,
   missingIntrinsics,
@@ -36,8 +46,23 @@ class OfficialHighResReconstructionInput {
     this.deviceSessionId,
   });
 
-  static const int requiredWidth = 4032;
-  static const int requiredHeight = 3024;
+  // [ENTRY-ANY-4X3 2026-09-25] 原来是 `requiredWidth = 4032` / `requiredHeight = 3024`
+  // (7410bb9「same-frame 12 MP ARKit inputs」:只收原生高清事务的产物,防误喂 1920x1440
+  // 预览帧)。用户改判「只要是 4:3 都行,取各机 4:3 最大尺寸」;防误喂的用意由长边 >= 1920
+  // 接住,判据一处定义在 lib/vio/capture/photo_size_rule.dart(与核外壳同一份)。
+
+  /// 判据结果 → 失败码;通过返回 null。
+  static OfficialHighResInputFailure? dimensionFailure(int width, int height) =>
+      switch (photoSizeVerdict(width, height)) {
+        PhotoSizeVerdict.ok => null,
+        PhotoSizeVerdict.invalid => OfficialHighResInputFailure.unexpectedDimensions,
+        PhotoSizeVerdict.notFourByThree =>
+          OfficialHighResInputFailure.photoNotFourByThree,
+        PhotoSizeVerdict.longSideBelowMin =>
+          OfficialHighResInputFailure.photoLongSideBelowMin,
+        PhotoSizeVerdict.notSensorOrientation =>
+          OfficialHighResInputFailure.photoNotSensorOrientation,
+      };
 
   final String jpegPath;
   final int imageWidth;
@@ -99,10 +124,9 @@ class OfficialHighResReconstructionInput {
         OfficialHighResInputFailure.missingJpeg,
       );
     }
-    if (imageWidth != requiredWidth || imageHeight != requiredHeight) {
-      return const OfficialHighResInputValidation.rejected(
-        OfficialHighResInputFailure.unexpectedDimensions,
-      );
+    final dimensionFailure_ = dimensionFailure(imageWidth, imageHeight);
+    if (dimensionFailure_ != null) {
+      return OfficialHighResInputValidation.rejected(dimensionFailure_);
     }
     // `captureHighResolutionFrame` completes the exact native request that
     // created this input, and image/pose/intrinsics/timestamp all come from

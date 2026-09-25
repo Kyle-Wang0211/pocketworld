@@ -219,7 +219,9 @@ Future<Map<String, Object?>> _rebuild(String dbPath) async {
       }
     });
     try {
-      recon.resumeFromDb(imageWidth: 4032, imageHeight: 3024);
+      // [ENTRY-ANY-4X3 2026-09-25] 原为 resumeFromDb(imageWidth: 4032, imageHeight: 3024);
+      // 名义值(核不读),改由 resumeFromDb 从已灌入的喂帧元数据取实际尺寸。
+      recon.resumeFromDb();
       final out = await done.future.timeout(
         const Duration(minutes: 25),
         onTimeout: () => {'ok': false, 'error': 'timeout'},

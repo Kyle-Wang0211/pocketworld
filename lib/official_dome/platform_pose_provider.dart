@@ -25,6 +25,7 @@ import 'package:vector_math/vector_math_64.dart';
 import '../official_capture/capture_format.dart';
 import '../official_capture/logical_world_frame.dart';
 import '../official_quality/quality_compute.dart';
+import '../vio/capture/photo_size_rule.dart';
 import 'ar_pose.dart';
 
 class PlatformARPoseProvider implements ARPoseProvider {
@@ -65,6 +66,8 @@ class PlatformARPoseProvider implements ARPoseProvider {
     await _method.invokeMethod('startSession', <String, dynamic>{
       'videoFormatMode': pwVideoFormat,
     });
+    // [ENTRY-ANY-4X3 2026-09-25] 新会话 ⇒ 格式可能变,照片尺寸重新查。
+    _highResPhotoTarget = null;
     _nativeSub = _poseEvents.receiveBroadcastStream().listen(
       (event) => _onNativePose(event),
       onError: (Object error, StackTrace stackTrace) {
@@ -411,6 +414,46 @@ class PlatformARPoseProvider implements ARPoseProvider {
     );
   }
 
+  /// [ENTRY-ANY-4X3 2026-09-25] 本会话高清照片要请求的尺寸(一次查询,缓存到下个会话)。
+  /// null 未查;`(null)` 记录 = 查过、沿用 ARKit 默认。
+  Future<PhotoDimensions?>? _highResPhotoTarget;
+
+  /// 最近一次查询的原始回执(诊断用)。
+  Map<String, dynamic>? lastHighResPhotoDimsReport;
+
+  /// 用户规则「不同手机就用 4:3 能做到的最大尺寸」:宿主报候选(官方 API
+  /// supportedMaxPhotoDimensions),规则在 Dart([pickLargestFourByThree])。
+  /// 只有「选中 ≠ ARKit 默认」且宿主能带照片设置取图(iOS 26+)时才返回尺寸;
+  /// 否则 null ⇒ 不传参,原生调用与改动前逐字节相同。
+  Future<PhotoDimensions?> _resolveHighResPhotoTarget() async {
+    try {
+      final report = await _method.invokeMapMethod<String, dynamic>(
+        'highResPhotoDimensions',
+      );
+      lastHighResPhotoDimsReport = report;
+      if (report == null || report['photoSettingsCapture'] != true) return null;
+      final supported = <PhotoDimensions>[
+        for (final e in (report['supported'] as List? ?? const []))
+          if (e is List && e.length == 2)
+            PhotoDimensions((e[0] as num).toInt(), (e[1] as num).toInt()),
+      ];
+      final chosen = pickLargestFourByThree(supported);
+      if (chosen == null) return null;
+      final d = report['default'];
+      if (d is List &&
+          d.length == 2 &&
+          (d[0] as num).toInt() == chosen.width &&
+          (d[1] as num).toInt() == chosen.height) {
+        return null; // 默认就是最大 4:3 ⇒ 不改
+      }
+      return chosen;
+    } on PlatformException {
+      return null;
+    } on MissingPluginException {
+      return null;
+    }
+  }
+
   @override
   Future<HighResolutionStillCapture?> captureHighResolutionStill({
     required String highresPath,
@@ -430,6 +473,12 @@ class PlatformARPoseProvider implements ARPoseProvider {
         'feedSfm': feedSfm,
         'deriveAuxiliary': deriveAuxiliary,
       };
+      final photoTarget =
+          await (_highResPhotoTarget ??= _resolveHighResPhotoTarget());
+      if (photoTarget != null) {
+        args['photoMaxWidth'] = photoTarget.width;
+        args['photoMaxHeight'] = photoTarget.height;
+      }
       if (triggerTimestamp != null) {
         args['triggerTimestamp'] = triggerTimestamp;
       }

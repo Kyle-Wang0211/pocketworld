@@ -22,6 +22,9 @@
 
 import 'dart:ffi';
 
+import 'package:ffi/ffi.dart' show calloc;
+
+import '../capture/photo_size_rule.dart';
 import '../ffi/pw_camera_photo_ffi.dart';
 import 'camera_projection.dart';
 
@@ -39,6 +42,41 @@ typedef _OutDoubleNative = Int32 Function(Pointer<Double>);
 typedef _OutDoubleDart = int Function(Pointer<Double>);
 typedef _OutInt64Native = Void Function(Pointer<Int64>);
 typedef _OutInt64Dart = void Function(Pointer<Int64>);
+typedef _PhotoDimsForFormatNative = Int32 Function(
+    Int32, Int32, Pointer<Int32>, Int32);
+typedef _PhotoDimsForFormatDart = int Function(int, int, Pointer<Int32>, int);
+typedef _RequestPhotoDimsNative = Int32 Function(Int32, Int32);
+typedef _RequestPhotoDimsDart = int Function(int, int);
+
+/// [ENTRY-ANY-4X3 2026-09-25] 一次「取最大 4:3 照片尺寸」的记录(诊断用)。
+class PhotoDimsChoice {
+  const PhotoDimsChoice({
+    required this.videoWidth,
+    required this.videoHeight,
+    required this.queryResult,
+    required this.candidates,
+    required this.chosen,
+    required this.requestResult,
+  });
+
+  final int videoWidth;
+  final int videoHeight;
+
+  /// `pw_camera_slot_photo_dims_for_format` 的返回值(>=0 候选数;负数见 Swift)。
+  final int queryResult;
+  final List<PhotoDimensions> candidates;
+
+  /// 共享规则选中的尺寸;null = 一个都不合格(宿主退回旧行为,入口闸照样会拦)。
+  final PhotoDimensions? chosen;
+
+  /// `pw_camera_slot_request_photo_dims` 的返回值;null = 没调用。
+  final int? requestResult;
+
+  @override
+  String toString() => 'PhotoDimsChoice(video ${videoWidth}x$videoHeight '
+      'query=$queryResult candidates=$candidates chosen=$chosen '
+      'request=$requestResult)';
+}
 
 /// 槽的计账。`acquired - released` 是当前未归还数,**应当恒为 0 或 1**。
 class CameraSlotStats {
@@ -107,13 +145,72 @@ abstract final class PwCameraSlot {
   /// 412 帧、进引擎 171 帧),喂它 59 fps 等于 **58% 的帧被不规则丢掉**。
   /// 不规则比低帧率更伤跟踪。供需比 59:24 → 30:24。
   /// `<=0` = 不设(由系统选)。
+  ///
+  /// [ENTRY-ANY-4X3 2026-09-25] 起相机前先 [requestLargestFourByThreePhoto]:照片取本格式
+  /// 支持的最大 4:3 尺寸(用户规则),不再是「面积最大」。
   static int start({
     int width = 640,
     int height = 480,
     double fps = 30,
     double lensPosition = 0.835,
-  }) =>
-      _start(width, height, fps, lensPosition);
+  }) {
+    requestLargestFourByThreePhoto(width: width, height: height);
+    return _start(width, height, fps, lensPosition);
+  }
+
+  static _PhotoDimsForFormatDart? _photoDimsForFormat;
+  static _RequestPhotoDimsDart? _requestPhotoDims;
+  static bool _photoDimsSymbolsResolved = false;
+
+  /// 最近一次选尺寸的记录;符号不在时为 null。
+  static PhotoDimsChoice? lastPhotoDimsChoice;
+
+  /// [ENTRY-ANY-4X3 2026-09-25] 规则在 Dart(lib/vio/capture/photo_size_rule.dart),
+  /// 宿主只查:原生报出「视频 [width]x[height] 那个 activeFormat 的
+  /// supportedMaxPhotoDimensions」,这里用 [pickLargestFourByThree] 选,再把结果预设给原生,
+  /// 下一次 start() 配置照片输出时生效。必须在 start **之前**调(相机在跑时原生拒绝,-11)。
+  /// 符号不存在(旧二进制 / 模拟器 / 单测)⇒ 什么都不做,返回 null,原生保持旧行为。
+  static PhotoDimsChoice? requestLargestFourByThreePhoto({
+    required int width,
+    required int height,
+  }) {
+    if (!_photoDimsSymbolsResolved) {
+      _photoDimsSymbolsResolved = true;
+      try {
+        _photoDimsForFormat = _lib.lookupFunction<_PhotoDimsForFormatNative,
+            _PhotoDimsForFormatDart>('pw_camera_slot_photo_dims_for_format');
+        _requestPhotoDims = _lib.lookupFunction<_RequestPhotoDimsNative,
+            _RequestPhotoDimsDart>('pw_camera_slot_request_photo_dims');
+      } catch (_) {
+        _photoDimsForFormat = null;
+        _requestPhotoDims = null;
+      }
+    }
+    final query = _photoDimsForFormat;
+    final request = _requestPhotoDims;
+    if (query == null || request == null) return null;
+    const int cap = 32;
+    final Pointer<Int32> buf = calloc<Int32>(2 * cap);
+    try {
+      final int n = query(width, height, buf, cap);
+      final List<PhotoDimensions> candidates = <PhotoDimensions>[
+        for (int i = 0; i < (n < cap ? n : cap); i++)
+          PhotoDimensions(buf[2 * i], buf[2 * i + 1]),
+      ];
+      final PhotoDimensions? chosen = pickLargestFourByThree(candidates);
+      final int? rc = chosen == null ? null : request(chosen.width, chosen.height);
+      return lastPhotoDimsChoice = PhotoDimsChoice(
+        videoWidth: width,
+        videoHeight: height,
+        queryResult: n,
+        candidates: List<PhotoDimensions>.unmodifiable(candidates),
+        chosen: chosen,
+        requestResult: rc,
+      );
+    } finally {
+      calloc.free(buf);
+    }
+  }
 
   static void stop() => _stop();
 

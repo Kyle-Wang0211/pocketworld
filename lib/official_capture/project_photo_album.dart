@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import '../vio/capture/photo_size_rule.dart';
 import 'photo_card_state.dart';
 
 class OfficialProjectPhoto {
@@ -27,7 +28,8 @@ class OfficialProjectPhoto {
 ///
 /// Ring-buffer coverage, SfM queue depth, and upload curation are internal
 /// implementation details. They must never change this count. An entry can be
-/// committed only after the canonical 4032×3024 JPEG exists and its same-frame
+/// committed only after the verified JPEG (any 4:3 raw grid with long side >= 1920,
+/// [photoSizeVerdict]) exists and its same-frame
 /// AR data has already passed [OfficialHighResReconstructionInput.validate].
 class OfficialProjectPhotoAlbum extends ChangeNotifier {
   final List<OfficialProjectPhoto> _photos = <OfficialProjectPhoto>[];
@@ -67,10 +69,10 @@ class OfficialProjectPhotoAlbum extends ChangeNotifier {
     required int imageWidth,
     required int imageHeight,
   }) {
+    // [ENTRY-ANY-4X3 2026-09-25] 原来写死 4032x3024;改为与重建入口同一份判据。
     if (jpegPath.isEmpty ||
         !captureTimestamp.isFinite ||
-        imageWidth != 4032 ||
-        imageHeight != 3024 ||
+        !photoSizeVerdict(imageWidth, imageHeight).accepted ||
         _paths.contains(jpegPath)) {
       return false;
     }
@@ -96,7 +98,7 @@ class OfficialProjectPhotoAlbum extends ChangeNotifier {
   /// 项目在补拍时会显示 20/300,用户以为还得再拍满 20 张(实测如此)。
   ///
   /// 与 [commitVerified] 的区别:这些照片是**上一次**经同一条验证落盘的,
-  /// 4032×3024 的尺寸校验在当时就做过了,这里不再重复(也无法重复 —— 读尺寸
+  /// 尺寸校验([photoSizeVerdict])在当时就做过了,这里不再重复(也无法重复 —— 读尺寸
   /// 要解码)。这里只确认文件还在、非空、不重复。
   ///
   /// 分析态一律 [PhotoCardSfmState.pending]:本次会话的 SfM 确实还没处理过

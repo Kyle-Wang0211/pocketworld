@@ -6,6 +6,7 @@ import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
+import android.graphics.ImageFormat
 import android.os.Build
 
 /**
@@ -92,6 +93,25 @@ object PwCameraProbe {
             c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION)?.toList()
         out["hardwareLevel"] = c.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL)
         out["capabilities"] = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)?.toList()
+
+        // [ENTRY-ANY-4X3 2026-09-25] 照片尺寸候选 —— 只查不判。用户规则「不同手机就用 4:3 能做到的
+        // 最大尺寸」的判定在 Dart(pocketworld lib/vio/capture/photo_size_rule.dart
+        // pickLargestFourByThree,与 iOS 同一份);这里原样报出官方 API 的两张表:
+        //   StreamConfigurationMap.getOutputSizes(ImageFormat.JPEG)                (API 21)
+        //   StreamConfigurationMap.getHighResolutionOutputSizes(ImageFormat.JPEG)  (API 23,
+        //     BURST_CAPTURE 设备上可能更大但更慢)
+        // SENSOR_ORIENTATION 一并报出:入口判据按**传感器方向的原始像素网格**判 4:3,拍照请求
+        // 应保持 JPEG_ORIENTATION = 0(像素不转、朝向只写 EXIF),否则部分设备会把像素转成竖向,
+        // 入口会以 NOT_SENSOR_ORIENTATION(4)拒收。
+        // ⚠️ 本目录 Kotlin 从未编译过(见 README);这段同样只对照了官方参考文档。
+        val map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        out["jpegOutputSizes"] =
+            map?.getOutputSizes(ImageFormat.JPEG)?.map { listOf(it.width, it.height) }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            out["jpegHighResolutionOutputSizes"] =
+                map?.getHighResolutionOutputSizes(ImageFormat.JPEG)?.map { listOf(it.width, it.height) }
+        }
+        out["sensorOrientation"] = c.get(CameraCharacteristics.SENSOR_ORIENTATION)
         return out
     }
 

@@ -349,7 +349,9 @@ Future<_GlobalPtolArmResult> _runArm({
         }
       },
     );
-    recon.resumeFromDb(imageWidth: 4032, imageHeight: 3024);
+    // [ENTRY-ANY-4X3 2026-09-25] 原为 resumeFromDb(imageWidth: 4032, imageHeight: 3024);
+    // 名义值(核不读),改由 resumeFromDb 从已灌入的喂帧元数据取实际尺寸。
+    recon.resumeFromDb();
     final event = await refined.future.timeout(const Duration(minutes: 25));
     stopwatch.stop();
 
