@@ -67,7 +67,11 @@ import Foundation
 ///   -PWBenchReplayAllowLossy on|off                   默认 off(有损录制照源规矩拒)
 ///   -PWBenchReplayIgnoreExposure on|off               默认 off(用录制的 exposure_s)
 ///   -PWBenchReplayLimitFrames <N>                     默认 0 = 全部
-///   -PWBenchReplayCameraTimeOffsetMs <毫秒>           默认按录制机型查表(camera_time_offset.dart)
+///   -PWBenchReplayCameraTimeOffsetMs <毫秒>           默认:曝光中点 on(台架默认,2026-09-25 起)⇒ 按录制机型
+///                                                     查表(camera_time_offset.dart,iPhone15,2 = 3.00 ms);
+///                                                     -PWXrslamExposureMid off ⇒ 官方 0
+///   -PWXrslamExposureMid on|off                       默认 on(PwXrslamLive.swift PwXrslamOfficialFeed ③);
+///                                                     解析结果随 snapshot 交给 Dart 定 c 的默认值
 ///   -PWBenchReplayVerifyDigest on|off                 默认 off(整条 frames.bin 重哈希)
 ///   -PWPerFrameIntrinsics on|off                      已有开关,原样生效(PwXrslamLive.swift)
 ///   -PWYamlOverride <section>.<key>=<value>           可重复;规则见 Dart
@@ -117,6 +121,13 @@ enum PwBenchReplayLaunch {
             "enabled": sw.enabled,
             "source": sw.source.rawValue,
             "raw": sw.raw,
+        ] as [String: Any]
+        // [bench 2026-09-25] 曝光中点开关的原生解析结果(唯一一处解析),Dart 用它定 c 的默认值。
+        let feed = PwXrslamOfficialFeed.resolved
+        out["PWXrslamExposureMid"] = [
+            "enabled": feed.exposureMid,
+            "source": feed.exposureMidSource,
+            "raw": feed.rawExposure,
         ] as [String: Any]
         return out
     }
@@ -652,7 +663,8 @@ final class PwBenchReplayRunner {
         //   recording_frame / t_ns = 这一帧在录制里的帧号与整数纳秒时间戳(观察者按 raw pts 位模式配回投递记录,
         //   不经任何时间容差);位姿 = 引擎交回的 CAMERA 位姿(与 poses_camera.tum 同一个 o.pose,
         //   world_from_camera、相机轴同 cam0.extrinsic 的相机系);engine_t = 引擎给位姿的时间戳
-        //   (= t_ns·1e-9 + camera_time_offset,可自证)。闸同 poses_camera.tum(rc == 0、TRACKING_SUCCESS、
+        //   (曝光中点 on:= t_ns·1e-9 + exposure/2 + camera_time_offset;off:= t_ns·1e-9 + camera_time_offset,可自证)。
+        //   🔴 键控只用 t_ns(录制整数纳秒)与 raw pts 位模式,与曝光中点开关无关。闸同 poses_camera.tum(rc == 0、TRACKING_SUCCESS、
         //   时间严格前进)再加四元数模 ≥ 0.5(与 BODY 闸同式;初始化那一帧引擎交回全零四元数)。
         //   尺子(tool/bench/lidar_ruler/lidar_ruler.py --xrslam-camera)按 t_ns 整数相等取,不插值。
         var cameraByFrame = "recording_frame,t_ns,tx,ty,tz,qx,qy,qz,qw,engine_t\n"

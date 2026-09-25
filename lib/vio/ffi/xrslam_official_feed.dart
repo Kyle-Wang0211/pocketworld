@@ -16,9 +16,13 @@
 // 保留的偏离(有意):逐帧内参(自动对焦开着;官方锁焦 0.835 + 固定 K);图像源是
 // 1920×1440 box/3(ARKit Y 平面 / AVCapture BGRA 先按 OpenCV 系数转灰),不是 AVCapture
 // vga640x480 BGRA。
+// [2026-09-25] 时间戳偏离官方:台架默认**曝光中点** `t_feed = PTS + exposure/2 + c`
+// (c 每机查表,iPhone15,2 = 3.00 ms;Huai arXiv 2001.00470 §IV.B,09-22 定案;真机回放
+// run-13f53d2f 尺度 0.963 → 1.0022、ATE 5.4 → 1.79 cm)。退回官方原始 PTS + c=0:
+// 原生 `-PWXrslamExposureMid off`(见 PwXrslamLive.swift `PwXrslamOfficialFeed` ③)。
 //
 // 回退到旧口径(整幅 1920 直推):`--dart-define=PW_XRSLAM_FULLRES_FEED=true`,
-// 同时原生 `-PWXrslamCameraHz 0 -PWXrslamExposureMid on`。
+// 同时原生 `-PWXrslamCameraHz 0`(曝光中点现在本来就默认 on)。
 import 'xrslam_config.dart';
 
 /// 官方喂料宽高(上游 18/18 份 iPhone 标定都是 640×480)。

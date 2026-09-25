@@ -158,6 +158,43 @@ void main() {
       expect(cfg['pace'], 'paced');
     });
 
+    test('[2026-09-25] 曝光中点默认 on ⇒ c 查表;off ⇒ 官方 0;-PWBenchReplayCameraTimeOffsetMs 两种都能覆盖', () {
+      // 旧原生没有这个键 ⇒ 按台架默认 on。
+      expect(BenchReplayArgs.fromLaunchJson(<String, Object?>{}).exposureMidEnabled, isTrue);
+      final BenchReplayArgs on = BenchReplayArgs.fromLaunchJson(<String, Object?>{
+        'PWXrslamExposureMid': <String, Object?>{'enabled': true, 'source': 'default', 'raw': ''},
+      });
+      expect(on.exposureMidEnabled, isTrue);
+      expect(on.exposureMidSource, 'default');
+      final BenchReplayPlan pOn = BenchReplayController.planReplay(
+        runsRoot: tmp, recording: _rec(), args: on, now: DateTime(2026, 9, 25, 1));
+      expect(pOn.cameraTimeOffset.seconds, 0.003);
+      expect(pOn.cameraTimeOffset.provenance, FieldProvenance.measured);
+      expect(pOn.nativeConfig()['camera_time_offset_s'], 0.003);
+
+      final BenchReplayArgs off = BenchReplayArgs.fromLaunchJson(<String, Object?>{
+        'PWXrslamExposureMid': <String, Object?>{
+          'enabled': false, 'source': 'launch_argument', 'raw': 'off'},
+      });
+      expect(off.exposureMidEnabled, isFalse);
+      final BenchReplayPlan pOff = BenchReplayController.planReplay(
+        runsRoot: tmp, recording: _rec(), args: off, now: DateTime(2026, 9, 25, 2));
+      expect(pOff.cameraTimeOffset.seconds, 0.0);
+      expect(pOff.cameraTimeOffset.provenance, FieldProvenance.sharedDefault);
+
+      final BenchReplayArgs offOvr = BenchReplayArgs.fromLaunchJson(<String, Object?>{
+        'PWXrslamExposureMid': <String, Object?>{
+          'enabled': false, 'source': 'launch_argument', 'raw': 'off'},
+        'PWBenchReplayCameraTimeOffsetMs': '2.65',
+      });
+      final BenchReplayPlan pOffOvr = BenchReplayController.planReplay(
+        runsRoot: tmp, recording: _rec(), args: offOvr, now: DateTime(2026, 9, 25, 3));
+      expect(pOffOvr.cameraTimeOffset.seconds, closeTo(0.00265, 1e-12));
+      expect(pOffOvr.cameraTimeOffset.provenance, FieldProvenance.devOverride);
+      // copyWith 不丢开关。
+      expect(off.copyWith(pace: 'max').exposureMidEnabled, isFalse);
+    });
+
     test('c 覆盖 "0" ⇒ devOverride 0;未知机型 ⇒ 外参中位数回退 + c=0 placeholder', () {
       final BenchReplayPlan a = BenchReplayController.planReplay(
         runsRoot: tmp,

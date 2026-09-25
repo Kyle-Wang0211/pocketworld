@@ -601,6 +601,20 @@ abstract final class XrslamLive {
     }
   }
 
+  /// [bench 2026-09-25] 原生曝光中点开关的解析结果(`PwXrslamOfficialFeed.resolved.exposureMid`,
+  /// 台架默认 on;`-PWXrslamExposureMid off` 退回原始 PTS)。true = on,false = off,
+  /// null = 找不到符号(旧原生)。Dart 只用它定 c 的默认值,不在 Dart 里再解析启动参数。
+  static bool? exposureMidEnabled() {
+    _lookup();
+    try {
+      final f = _lib.lookupFunction<ffi.Int32 Function(), int Function()>(
+          'pw_xrslam_live_exposure_mid');
+      return f() != 0;
+    } catch (_) {
+      return null;
+    }
+  }
+
   static XrslamLiveStats? stats() {
     _lookup();
     final _OutInt64Dart? f = _stats;

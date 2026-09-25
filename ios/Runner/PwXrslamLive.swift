@@ -80,6 +80,12 @@
 //     🔴 自证:`runOneFrame` 推完当帧立刻从 C 账本读 `PWXrslamTimestampTrace`
 //     (同一条串行 worker ⇒ 一定是本帧):raw 必须 == 我们推的 canonical,
 //     effective − raw 必须 == applied_offset。`timebase(into:)` 把它们报出去。
+//     [bench 2026-09-25] 台架默认**重新打开** (d)(09-24 官方配置那次改成了默认原始 PTS,
+//     见 `PwXrslamOfficialFeed` ③):完整规则 `t_feed = PTS + exposure/2 + c`,c ≈ readout/2
+//     (+管线固定延迟),c 取每机查表(`camera_time_offset.dart`,iPhone15,2 = 3.00 ms 实测)。
+//     今天的真机证据(回放 run-13f53d2f,`-PWXrslamExposureMid on -PWBenchReplayCameraTimeOffsetMs 2.65`):
+//     XRSLAM/ARKit 尺度 0.963 → 1.0022、ATE 5.4 → 1.79 cm;run-fb5d3a8f 前 17.8 s 1.0089 / 0.71 cm。
+//     退回原始 PTS:`-PWXrslamExposureMid off`。
 //
 // ⚠️ **本文件不解决"引擎在 1920×1440 上跑不到 60fps"** —— 它只保证相机不被
 //    堵住、丢帧被如实计数归因。真正吃不下的帧数会出现在 `framesDropped` 上。
@@ -238,14 +244,28 @@ enum PwXrslamEngineIdentity {
 //      `PWXrslamTransportPrepareGrayBoxNxN` 做 box n×n,推 channel 1;逐帧 K 走
 //      `PWXrslamTransportScaleIntrinsicsForBoxNxN`。n 由 Dart 写 yaml 决定,原生只照做。
 //      相等 ⇒ 原样推(旧行为)。
-//   ③ 时间戳:默认推原始 PTS(官方口径,不加 exposure/2)。
-//      启动参数 `-PWXrslamExposureMid on` 恢复文件头偏离 (d) 的曝光中点换算。
+//   ③ 时间戳:[bench 2026-09-25 起] **默认曝光中点**(文件头偏离 (d)),不再是官方的原始 PTS。
+//      规则 `t_feed = PTS + exposure/2 + c`,c ≈ readout/2(Huai arXiv 2001.00470 §IV.B,09-22 定案):
+//      帧时间戳是曝光**起点**,而画面内容对应曝光**中点**;exposure/2 在这里逐帧加,
+//      c 由调用方按每机查表传进 create(`camera_time_offset.dart`,iPhone15,2 = 3.00 ms,
+//      直播页 / 回放页在本开关为 on 时查表,为 off 时用官方 0)。
+//      证据(真机回放 run-13f53d2f,on + c=2.65 ms):XRSLAM/ARKit 0.963 → 1.0022,ATE 5.4 → 1.79 cm;
+//      run-fb5d3a8f 前 17.8 s:1.0089 / 0.71 cm。3.00 与 2.65 之差 0.35 ms 落在实测最优平台
+//      (总偏移 +8…+12 ms)之内。
+//      退回官方原始 PTS:启动参数 `-PWXrslamExposureMid off`(Dart 侧同时把 c 默认回 0)。
+//      🔴 30 Hz 准入 ① 与台架 LiDAR 录制器(bench-only ruler)都只看**原始** PTS,不受本开关影响;
+//         回放按录制帧键控也用原始 PTS 的位模式(PwBenchReplay.observe)。
 enum PwXrslamOfficialFeed {
+    /// 曝光中点开关的台架默认值(2026-09-25 起为 on)。
+    static let kExposureMidDefault = true
+
     struct Resolved {
         let cameraHz: Double
         let exposureMid: Bool
         let rawHz: String
         let rawExposure: String
+        /// "default"(没传参数)/ "launch_argument" / "unparseable"(传了但解析不了 ⇒ 留在默认)。
+        let exposureMidSource: String
     }
 
     private static func launchValue(_ key: String) -> String {
@@ -262,8 +282,19 @@ enum PwXrslamOfficialFeed {
         let t = rh.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if t == "off" { hz = 0 } else if let v = Double(t), v.isFinite, v >= 0 { hz = v }
         let e = re.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let mid = ["on", "1", "true", "yes"].contains(e)
-        return Resolved(cameraHz: hz, exposureMid: mid, rawHz: rh, rawExposure: re)
+        var mid = kExposureMidDefault
+        var src = "default"
+        if ["on", "1", "true", "yes"].contains(e) {
+            mid = true; src = "launch_argument"
+        } else if ["off", "0", "false", "no"].contains(e) {
+            mid = false; src = "launch_argument"
+        } else if !e.isEmpty {
+            src = "unparseable"
+            NSLog("[PwXrslamOfficialFeed] -PWXrslamExposureMid \"%@\" 解析不了 ⇒ 按默认 %@",
+                  re, kExposureMidDefault ? "on" : "off")
+        }
+        return Resolved(cameraHz: hz, exposureMid: mid, rawHz: rh, rawExposure: re,
+                        exposureMidSource: src)
     }()
 
     /// [bench 2026-09-24 rec30] 准入闸 ① 的**唯一**实现,`onCameraFrame` 与台架录制器
@@ -777,7 +808,8 @@ final class PwXrslamLive {
         // 曝光中点换算。exposure 非法/未知按 0:等价于"没换算",并计数暴露出来。
         let exposure = (exposureSeconds.isFinite && exposureSeconds >= 0)
             ? exposureSeconds : 0
-        // [bench 2026-09-24] 官方口径默认推原始 PTS;-PWXrslamExposureMid on 恢复 (d)。
+        // [bench 2026-09-25] 默认曝光中点 (d):t_feed = PTS + exposure/2 + c(c 由传输层加);
+        //   -PWXrslamExposureMid off 退回官方原始 PTS。准入闸与回放键控仍用原始 ptsSeconds。
         let feed = PwXrslamOfficialFeed.resolved
         let half = feed.exposureMid ? 0.5 * exposure : 0
         let canonical = ptsSeconds + half
@@ -1215,6 +1247,7 @@ final class PwXrslamLive {
     }
 
     /// [bench 2026-09-24] 官方喂料口径与账本,给回放回执与页面构建戳。
+    /// [bench 2026-09-25] 加曝光中点的来源 / 台架默认值 / 规则,以及本场 create 时传入的 c。
     func feedReport() -> [String: Any] {
         let f = PwXrslamOfficialFeed.resolved
         lock.lock(); defer { lock.unlock() }
@@ -1223,6 +1256,13 @@ final class PwXrslamLive {
             "camera_hz_arg": f.rawHz,
             "exposure_mid": f.exposureMid,
             "exposure_mid_arg": f.rawExposure,
+            "exposure_mid_source": f.exposureMidSource,
+            "exposure_mid_default": PwXrslamOfficialFeed.kExposureMidDefault,
+            "exposure_mid_rule": f.exposureMid
+                ? "t_feed = pts + exposure/2 + c (Huai arXiv 2001.00470 IV.B; bench default since 2026-09-25)"
+                : "t_feed = pts + c (raw PTS, official iOS demo; -PWXrslamExposureMid off)",
+            "camera_time_offset_s": cameraTimeOffsetSeconds,
+            "mean_half_exposure_applied_s": tbFrames > 0 ? tbHalfAppliedSum / Double(tbFrames) : 0,
             "config_resolution": ikConfigResolution.map { [$0.width, $0.height] } ?? [],
             "last_source_wh": [feedLastSourceWidth, feedLastSourceHeight],
             "last_box_factor": feedLastFactor,
@@ -1367,6 +1407,14 @@ public func pw_xrslam_live_build_stamp(
     }
     if cap > 0 { out[n] = 0 }
     return Int32(n)
+}
+
+/// [bench 2026-09-25] 曝光中点开关的**解析结果**(`PwXrslamOfficialFeed.resolved`):
+/// 1 = on(t_feed = PTS + exposure/2 + c),0 = off(原始 PTS)。
+/// Dart 据此决定 c 的默认值(on ⇒ 每机查表,off ⇒ 官方 0),与原生只有一处解析,不在 Dart 里再解析一遍启动参数。
+@_cdecl("pw_xrslam_live_exposure_mid")
+public func pw_xrslam_live_exposure_mid() -> Int32 {
+    return PwXrslamOfficialFeed.resolved.exposureMid ? 1 : 0
 }
 
 /// 写 14 个 int64,见 `PwXrslamLive.stats`。

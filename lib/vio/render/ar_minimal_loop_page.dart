@@ -27,6 +27,8 @@ import 'dart:async';
 
 import 'package:sensors_plus/sensors_plus.dart';
 
+import '../capture/camera_time_offset.dart'
+    show CameraTimeOffset, kCameraTimeOffsetOverrideRaw, resolveCameraTimeOffset;
 import '../ffi/xrslam_config.dart';
 import '../ffi/xrslam_live_ffi.dart';
 import '../ffi/xrslam_session.dart';
@@ -40,6 +42,8 @@ import '../pose/static_initializer.dart';
 import '../pose/stationarity_gate.dart';
 import '../pose/tracked_pose.dart';
 import 'ar_render_loop.dart';
+// [bench 2026-09-25] 本机 hw.machine(台架没有 timebase 通道,PwDeviceMachine 在台架上恒 null)。
+import 'zero_arkit_capture_probe_page.dart' show benchReadHwMachine;
 
 /// 采集尺寸 —— **显示口径**,不是 VIO 口径。
 ///
@@ -490,14 +494,31 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
   /// 全程在动(该文件的文档实测单场 120 s 内 fx 漂 **10.90%**)。出货引擎导出的
   /// 五个符号里**没有**任何"更新内参"的入口,所以这里只能取**建会话那一刻**的
   /// 快照。这与台架既有的"冻第 0 帧焦距"是同一个已知缺陷,不是本次引入的。
-  /// [pw 2026-09-22] 每机常量 c,`--dart-define=PW_CAM_TD_MS=<毫秒>`,默认 0。
+  /// [pw 2026-09-22] 每机常量 c。
   /// 传给 `PWXrslamTransportCreateWithCameraTimeOffset`,只加在相机时间戳上。
   /// 它**不是**曝光/2 —— 那一项在 `PwCameraSlot`→`PwXrslamLive` 里逐帧算;
   /// c 是剩下的(卷帘读出/2 + 管线固定延迟),用回放扫描定一次。
-  static const String _camTdMsRaw =
-      String.fromEnvironment('PW_CAM_TD_MS', defaultValue: '0');
-  static final double _camTdSeconds =
-      (double.tryParse(_camTdMsRaw) ?? 0.0) / 1000.0;
+  ///
+  /// [bench 2026-09-25] c 跟着原生的曝光中点开关走(与回放页同一条规则;台架默认 on,
+  /// 完整规则 `t_feed = PTS + exposure/2 + c`,Huai arXiv 2001.00470 §IV.B,09-22 定案):
+  ///   · `--dart-define=PW_CAM_TD_MS=<毫秒>` 非空 ⇒ 覆盖(devOverride),与开关无关;
+  ///   · 否则开关 on ⇒ 按本机 `hw.machine` 查表(`camera_time_offset.dart`,iPhone15,2 = 3.00 ms 实测);
+  ///   · 开关 off(`-PWXrslamExposureMid off`)⇒ 官方 0(原始 PTS)。
+  ///   原生没有 `pw_xrslam_live_exposure_mid`(旧包,默认原始 PTS)⇒ 按 off。
+  /// 此前这里默认恒 0(`defaultValue: '0'`),与曝光中点开关无关。
+  static CameraTimeOffset _resolveCamTd() {
+    final bool mid = XrslamLive.exposureMidEnabled() ?? false;
+    final String? machine = benchReadHwMachine();
+    if (kCameraTimeOffsetOverrideRaw.trim().isNotEmpty || mid) {
+      return resolveCameraTimeOffset(machine: machine);
+    }
+    return CameraTimeOffset(
+      seconds: 0.0,
+      provenance: FieldProvenance.sharedDefault,
+      machine: machine,
+      note: '-PWXrslamExposureMid off ⇒ 官方 iOS 配置 time_offset: 0.0,原始 PTS',
+    );
+  }
 
   void _ensureSession() {
     if (_sessionAttempted || XrslamSession.current != null) return;
@@ -507,8 +528,11 @@ class _ArMinimalLoopPageState extends State<ArMinimalLoopPage> {
     );
     if (k == null) return; // 还没有交付过帧,下一帧再试
     _sessionAttempted = true;
+    final CameraTimeOffset camTd = _resolveCamTd();
+    debugPrint('[arloop] ${camTd.describe} '
+        'exposure_mid=${XrslamLive.exposureMidEnabled()} note=${camTd.note}');
     _session = XrslamSession.start(
-      cameraTimeOffsetSeconds: _camTdSeconds,
+      cameraTimeOffsetSeconds: camTd.seconds,
       intrinsics: CameraIntrinsics(
         fx: k.fx,
         fy: k.fy,

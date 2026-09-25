@@ -62,6 +62,9 @@ class BenchReplayArgs {
     this.perFrameIntrinsicsEnabled = true,
     this.perFrameIntrinsicsSource = 0,
     this.perFrameIntrinsicsRaw = '',
+    this.exposureMidEnabled = true,
+    this.exposureMidSource = 'default',
+    this.exposureMidRaw = '',
     this.yamlOverrides = const <String>[],
     this.problems = const <String>[],
   });
@@ -80,6 +83,14 @@ class BenchReplayArgs {
   final bool perFrameIntrinsicsEnabled;
   final int perFrameIntrinsicsSource;
   final String perFrameIntrinsicsRaw;
+
+  /// [bench 2026-09-25] 原生 `PwXrslamOfficialFeed.resolved` 的曝光中点开关(台架默认 on;
+  /// `-PWXrslamExposureMid off` 退回原始 PTS)。只在原生解析一处,这里原样取。
+  /// on ⇒ c 默认按录制机型查表;off ⇒ c 默认官方 0。`-PWBenchReplayCameraTimeOffsetMs` 两种情况下都能覆盖。
+  /// 缺这个键(旧原生)⇒ 按台架默认 on。
+  final bool exposureMidEnabled;
+  final String exposureMidSource;
+  final String exposureMidRaw;
 
   /// `-PWYamlOverride <section>.<key>=<value>`(可重复,按 argv 顺序)。见 [applyYamlOverrides]。
   final List<String> yamlOverrides;
@@ -134,6 +145,9 @@ class BenchReplayArgs {
     final Object? sw = j['PWPerFrameIntrinsics'];
     final Map<String, Object?> swm =
         sw is Map<String, Object?> ? sw : const <String, Object?>{};
+    final Object? em = j['PWXrslamExposureMid'];
+    final Map<String, Object?> emm =
+        em is Map<String, Object?> ? em : const <String, Object?>{};
     return BenchReplayArgs(
       recording: recording,
       autoStart: boolArg('PWBenchReplayAutoStart', recording != null),
@@ -147,6 +161,9 @@ class BenchReplayArgs {
       perFrameIntrinsicsEnabled: swm['enabled'] != false,
       perFrameIntrinsicsSource: (swm['source'] as num?)?.toInt() ?? 0,
       perFrameIntrinsicsRaw: (swm['raw'] as String?) ?? '',
+      exposureMidEnabled: emm['enabled'] != false,
+      exposureMidSource: (emm['source'] as String?) ?? 'default',
+      exposureMidRaw: (emm['raw'] as String?) ?? '',
       yamlOverrides: List<String>.unmodifiable(overrides),
       problems: List<String>.unmodifiable(problems),
     );
@@ -171,6 +188,9 @@ class BenchReplayArgs {
         perFrameIntrinsicsEnabled: perFrameIntrinsicsEnabled,
         perFrameIntrinsicsSource: perFrameIntrinsicsSource,
         perFrameIntrinsicsRaw: perFrameIntrinsicsRaw,
+        exposureMidEnabled: exposureMidEnabled,
+        exposureMidSource: exposureMidSource,
+        exposureMidRaw: exposureMidRaw,
         yamlOverrides: yamlOverrides,
         problems: problems,
       );
@@ -385,23 +405,31 @@ class BenchReplayController {
       provenance: FieldProvenance.deviceApi,
     );
     // [bench 2026-09-24] 官方配置口径:device yaml 写 640×480 + box/3 换算的内参(原生照 yaml 做
-    //   同一个 box,见 xrslam_official_feed.dart);c 默认 0(官方每机 yaml `time_offset: 0.0`),
-    //   -PWBenchReplayCameraTimeOffsetMs 仍可覆盖。
+    //   同一个 box,见 xrslam_official_feed.dart)。
+    // [bench 2026-09-25] c 跟着曝光中点开关走(台架默认 on,规则 t_feed = PTS + exposure/2 + c,
+    //   c ≈ readout/2,Huai arXiv 2001.00470 §IV.B,09-22 定案):
+    //   on  ⇒ 按录制机型查表(camera_time_offset.dart,iPhone15,2 = 3.00 ms 实测);
+    //   off ⇒ 官方 0(每机 yaml `time_offset: 0.0`,原始 PTS)。
+    //   -PWBenchReplayCameraTimeOffsetMs 两种情况下都能覆盖。
+    //   证据(真机回放 run-13f53d2f,on + 2.65 ms):XRSLAM/ARKit 0.963 → 1.0022,ATE 5.4 → 1.79 cm。
     final XrslamConfigBuilder builder = XrslamConfigBuilder(
       intrinsics: xrslamOfficialFeedIntrinsics(intrinsics),
       extrinsic: CameraImuExtrinsic.forIosMachine(r.deviceModel),
     );
-    final CameraTimeOffset c = a.cameraTimeOffsetMsRaw == null
-        ? CameraTimeOffset(
-            seconds: 0.0,
-            provenance: FieldProvenance.sharedDefault,
-            machine: r.deviceModel,
-            note: '官方 iOS 配置 time_offset: 0.0(slam_params + 每机 yaml),原始 PTS',
-          )
-        : resolveCameraTimeOffset(
+    final CameraTimeOffset c = a.cameraTimeOffsetMsRaw != null
+        ? resolveCameraTimeOffset(
             machine: r.deviceModel,
             overrideMillisRaw: a.cameraTimeOffsetMsRaw,
-          );
+          )
+        : a.exposureMidEnabled
+            ? resolveCameraTimeOffset(machine: r.deviceModel)
+            : CameraTimeOffset(
+                seconds: 0.0,
+                provenance: FieldProvenance.sharedDefault,
+                machine: r.deviceModel,
+                note: '-PWXrslamExposureMid off ⇒ 官方 iOS 配置 time_offset: 0.0'
+                    '(slam_params + 每机 yaml),原始 PTS',
+              );
     final Directory runDir =
         Directory('${runsRoot.path}/${runDirName(r, a, now)}')
           ..createSync(recursive: true);
@@ -573,6 +601,17 @@ class BenchReplayController {
           'machine': p.cameraTimeOffset.machine,
           'note': p.cameraTimeOffset.note,
           'applied_by': 'PWXrslamTransportCreateWithCameraTimeOffset(与 ON 臂同)',
+        },
+        // [bench 2026-09-25] 曝光中点开关(台架默认 on)。原生回执 xrslam_feed 里有同一份解析结果
+        //   与本场实际加上的 exposure/2 均值。
+        'exposure_mid': <String, Object?>{
+          'enabled': p.args.exposureMidEnabled,
+          'source': p.args.exposureMidSource,
+          'raw': p.args.exposureMidRaw,
+          'bench_default': true,
+          'rule': p.args.exposureMidEnabled
+              ? 't_feed = pts + exposure/2 + c(Huai arXiv 2001.00470 §IV.B,09-22 定案)'
+              : 't_feed = pts + c(原始 PTS,-PWXrslamExposureMid off)',
         },
       },
       'engine': <String, Object?>{
