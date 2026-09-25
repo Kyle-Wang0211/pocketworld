@@ -34,6 +34,17 @@ vendored/synth_depth_verify.py 的解析深度(射线-平面求交)。本文件�
   T11b(有 --subset-exporter 时)子集上 --xrslam-camera(--min-pairs 4,见该段注释)⇒ 子集帧除没在跟踪的
        都有引擎位姿、k ±1%、ARKit 与 XRSLAM 都 verdict valid(G1–G4、×1.05、洗牌)
 
+  [2026-09-25 v2] 审计七项 + 焦距:
+  T14 帧对档去重:--pair-dts 0.3,0.3,0.6 ⇒ 第二档标「与前面某档相同」、新帧对 0,不重复计数
+  T15 ×1.03 与 ×1.05(无噪声)两档都恢复(±0.5%);T15b 噪声底 ×1.03、×1.05 都线性恢复
+  T16 同一批点:ARKit 与 XRSLAM 有效帧对数相同;同点比值 xr/arkit = 0.88(±1%)
+  T17a 深度与图像同时刻 ⇒ G4 估出的时间偏移 |δ| ≤ 5 ms、闸过
+  T17b 深度取自下一帧(+33.3 ms)⇒ G4 估出 δ = +33.3 ms(±8 ms),95% 区间下界 > 5 ms
+  T18 --depth-dir:灰度与深度分放两个目录 ⇒ k 与合放时逐位相同
+  T19 焦距敏感度 dk/dα 有限且 |·| ≤ 1.2(纯横移 ≈ 1,纯前后移 ≈ 0;合成轨迹以绕板为主 ⇒ 接近 0)
+  T20 总 95% 区间(块 bootstrap ∪ 方法范围 ∪ 噪声底)盖住真值(ARKit 1.0、XRSLAM 0.88)
+  T21 汇总脚本:同一份报告给两次 ⇒ 只计一次
+
 跑法:/usr/bin/python3 test_lidar_ruler_synth.py [--work DIR --keep] [--subset-exporter <swift 可执行>]
 """
 
@@ -388,6 +399,79 @@ def main():
     else:
         print('  (跳过 T10:本机没有 run-6e2d4b99)')
 
+    print('\n══ H(v2):帧对档去重 / ×1.03 / 同点 / 噪声底 / 总区间 / 焦距 ══')
+    r, reph = ruler(rec, work, 'H', ['--arkit'] + xr_shift + ['--pair-dts', '0.3,0.3,0.6'])
+    results['H'] = reph
+    if reph:
+        grp = reph['meta']['pair_groups']
+        gate(len(grp) == 3 and grp[1]['identical_to_earlier_group'] and grp[1]['new_pairs'] == 0
+             and grp[0]['new_pairs'] > 0 and grp[2]['new_pairs'] > 0,
+             f'T14 帧对档 {[(g["nominal_s"], g["new_pairs"], g["identical_to_earlier_group"]) for g in grp]}')
+        tah, txh = reph['trajectories']['arkit'], reph['trajectories']['xr']
+        for n, t in (('arkit', tah), ('xr', txh)):
+            gate(t.get('control_pc_x1_03', {}).get('recovered') and t.get('control_pc_x1_05', {}).get('recovered'),
+                 f'T15 {n}:×1.03 比值 {t.get("control_pc_x1_03", {}).get("ratio", float("nan")):.5f}、'
+                 f'×1.05 比值 {t.get("control_pc_x1_05", {}).get("ratio", float("nan")):.5f}')
+        nfh = txh.get('noise_floor') or {}
+        gate(nfh.get('pc_x1_03', {}).get('linear_recovered') and nfh.get('pc_x1_05', {}).get('linear_recovered'),
+             f'T15b 噪声底 ×1.03 → {nfh.get("pc_x1_03", {}).get("mean")}、×1.05 → {nfh.get("pc_x1_05", {}).get("mean")}'
+             f'(NC 均值 {nfh.get("nc_mean")})')
+        rr = [x for x in reph['meta']['same_point_ratios'] if x['a'] == 'xr' and x['b'] == 'arkit']
+        gate(tah['estimate']['pairs_with_scale'] == txh['estimate']['pairs_with_scale'] and rr
+             and abs(rr[0]['k_a_over_k_b'] / K_XR - 1) <= 0.01,
+             f'T16 同一批点:有效帧对 {tah["estimate"]["pairs_with_scale"]} / {txh["estimate"]["pairs_with_scale"]},'
+             f'同点比值 xr/arkit = {rr[0]["k_a_over_k_b"] if rr else float("nan"):.5f}')
+        g4h = reph['meta']['g4_depth_time_offset']
+        gate(g4h.get('evaluable') and g4h.get('passed') and abs(g4h['delta_ms']) <= 5,
+             f'T17a 同时刻深度:G4 δ = {g4h.get("delta_ms", float("nan")):+.2f} ms '
+             f'{g4h.get("delta_ci95_ms")},校正后 Δk {g4h.get("dk_ref_pct", float("nan")):+.3f}%')
+        fs = tah.get('focal_sensitivity') or {}
+        gate(fs and np.isfinite(fs['dk_over_dalpha']) and abs(fs['dk_over_dalpha']) <= 1.2,
+             f'T19 焦距敏感度 dk/dα = {fs.get("dk_over_dalpha")}(有限、|·| ≤ 1.2;纯横移 ≈ 1,纯前后移 ≈ 0)')
+        ca, cx = tah['ci95_total'], txh['ci95_total']
+        gate(ca[0] <= 1.0 <= ca[1] and cx[0] <= K_XR <= cx[1],
+             f'T20 总 95% 区间 ARKit [{ca[0]:.4f}, {ca[1]:.4f}] ∋ 1,XRSLAM [{cx[0]:.4f}, {cx[1]:.4f}] ∋ {K_XR}')
+        summ = os.path.join(HERE, 'lidar_ruler_summary.py')
+        rp = os.path.join(work, 'out_H', 'lidar_ruler_report.json')
+        e = subprocess.run([sys.executable, summ, rp, rp, '--json', os.path.join(work, 'summary_H.json')],
+                           capture_output=True, text=True)
+        sj = json.load(open(os.path.join(work, 'summary_H.json'))) if e.returncode == 0 else {}
+        gate(e.returncode == 0 and len(sj.get('unique_reports', [])) == 1 and len(sj.get('duplicates', [])) == 1,
+             f'T21 汇总去重:唯一 {len(sj.get("unique_reports", []))} 份、重复 {len(sj.get("duplicates", []))} 份')
+    else:
+        gate(False, 'H 没出报告:' + r.stdout[-1500:] + r.stderr[-1500:])
+
+    print('\n══ I(v2):深度取自下一帧(晚 33.3 ms)⇒ G4 应估出 δ ≈ +33 ms ══')
+    poses_all = SV.make_trajectory()
+    bw_, bh_ = SV.SQX * SV.SQUARE_M, SV.SQY * SV.SQUARE_M
+    depths_next = [SDV.analytic_depth(*poses_all[min(k + 1, len(poses_all) - 1)], (bw_, bh_))
+                   for (k, _t, _K) in dframes]
+    reci = variant(work, rec, 'run-depth-late', dframes, depths_next)
+    r, repi = ruler(reci, work, 'I', ['--arkit'])
+    results['I'] = repi
+    g4i = (repi or {}).get('meta', {}).get('g4_depth_time_offset', {})
+    gate(g4i.get('evaluable') and abs(g4i['delta_ms'] - 1000.0 / SV.FPS) <= 8 and g4i['delta_ci95_ms'][0] > 5,
+         f'T17b 深度晚一帧:G4 δ = {g4i.get("delta_ms", float("nan")):+.2f} ms {g4i.get("delta_ci95_ms")}'
+         f'(期望 +{1000.0 / SV.FPS:.1f})')
+
+    print('\n══ J(v2):--depth-dir(灰度与深度分放两个目录)══')
+    recj = os.path.join(work, 'run-split')
+    dd = os.path.join(recj, 'depth_only')
+    if os.path.isdir(recj):
+        shutil.rmtree(recj)
+    os.makedirs(dd)
+    for f in os.listdir(rec):
+        src = os.path.join(rec, f)
+        if not os.path.isfile(src):
+            continue
+        os.link(src, os.path.join(dd if f.startswith('depth') else recj, f))
+    r, repj = ruler(recj, work, 'J', ['--arkit', '--depth-dir', dd])
+    ra = results.get('H')
+    r2, repj0 = ruler(rec, work, 'J0', ['--arkit'])
+    gate(repj and repj0 and k_of(repj, 'arkit') == k_of(repj0, 'arkit'),
+         f'T18 --depth-dir k={k_of(repj, "arkit") if repj else float("nan"):.6f} vs 合放 '
+         f'{k_of(repj0, "arkit") if repj0 else float("nan"):.6f}(逐位)')
+
     if a.subset_exporter:
         print('\n══ F:Swift 子集导出器 → 在 ruler_subset/ 上跑 ══')
         e = subprocess.run([a.subset_exporter, rec, '0.25'], capture_output=True, text=True)
@@ -426,7 +510,8 @@ def main():
                        'between_iqr': t['estimate'].get('between_pair_rel_iqr'),
                        'within_iqr': t['estimate'].get('within_pair_rel_iqr_median'),
                        'pairs': [t['estimate']['pairs_with_scale'], t['estimate']['pairs_attempted']],
-                       'alignment_curve': t['alignment_curve_between_rel_iqr_by_depth_row_offset']}
+                       'ci95_total': t.get('ci95_total'),
+                       'g4': (rep_.get('meta') or {}).get('g4_depth_time_offset', {}).get('delta_ms')}
                    for n, t in rep_['trajectories'].items()}
                for k, rep_ in results.items() if rep_}
     json.dump(summary, open(os.path.join(work, 'synth_summary.json'), 'w'), indent=1, default=float)
