@@ -1,0 +1,116 @@
+{
+ "schema": "pw.xrslam.ios-archive-receipt/3",
+ "artifact": "libxrslam_official_rules_okvis2preint_4b6f7bf8.a",
+ "artifact_path_in_repo": "vendor/xrslam/libs/ios-arm64/libxrslam_official_rules_okvis2preint_4b6f7bf8.a",
+ "artifact_sha256": "4b6f7bf8739f8418c2b14a41f82807bb5b7d9846ced36cf159e6134d16b3faa6",
+ "artifact_sha16": "4b6f7bf8739f8418",
+ "arm": "official_rules_okvis2preint(= official_rules 同一配方 + 后端位姿只读出口 8ebac9a + IMU 预积分改成 OKVIS2 离散)",
+ "bench_arm": "'okvis2preint'",
+ "podfile_engine_name": "official_rules(宿主行为与默认臂逐项相同:逐帧 K / 30 Hz 准入 / 曝光中点;只换归档)",
+ "research_only": true,
+ "product_selected": false,
+ "ship_gate_zh": "只进台架(com.kyle.arloopbench)。生产 App 不链它。未装机。",
+ "source": {
+  "tree": "/private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/2359d42b-b338-4098-99ad-6a4c217067ad/scratchpad/preint/xrslam-wt",
+  "tree_kind": "git -C ~/Developer/xrslam worktree add <tree> feat/okvis2-preint(分支从 feat/backend-pose-output@8ebac9a 拉出)",
+  "branch": "feat/okvis2-preint(本地,未推送;xrslam fork 是公开仓)",
+  "commit": "bdf9080",
+  "parent_commit": "8ebac9a (feat/backend-pose-output = 4853976d 的源码)",
+  "diff_vs_parent_zh": "只改 IMU 积分方式:estimation/okvis2_imu_integration.h(新,照抄 OKVIS2 ImuError::redoPreintegration/propagation,BSD-3 声明原样保留)、estimation/LICENSE.okvis2-BSD-3-Clause(新)、preintegrator.{h,cpp}、core/detail.cpp、core/feature_tracker.cpp、core/sliding_window_tracker.cpp、core/initializer.cpp。td 规则 / yaml / 噪声值 / XRSLAM.h / 全部 C 接口不动。",
+  "copied_from": "OKVIS2 https://github.com/ethz-mrl/okvis2 @a2ea00688cd10988aae7bd52ab7935ce9a657ec0(BSD-3-Clause)",
+  "upstream_repository": "https://github.com/openxrlab/xrslam",
+  "upstream_revision": "4beb1a942f33da9afbfae2d70e2c641cfc2bb675"
+ },
+ "build_script": "/private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/2359d42b-b338-4098-99ad-6a4c217067ad/scratchpad/preint/tools/build_ios.sh",
+ "build_recipe_origin_zh": "scratchpad/bkpose/tools/build_ios.sh(= xrofficial 89042cd5 的配方)逐字照抄,只把工作目录 W 换成 preint。",
+ "cmake_options": {
+  "CMAKE_BUILD_TYPE": "Release",
+  "CMAKE_TOOLCHAIN_FILE": "cmake/Modules/Platform/ios.toolchain.cmake",
+  "IOS_PLATFORM": "OS64",
+  "IOS_ARCH": "arm64",
+  "IOS_DEPLOYMENT_TARGET": "14.0",
+  "ENABLE_BITCODE": "0",
+  "ENABLE_ARC": "1",
+  "ENABLE_VISIBILITY": "0",
+  "CMAKE_POLICY_VERSION_MINIMUM": "3.5",
+  "XRSLAM_IOS_OVERRIDE": "1",
+  "XRSLAM_IOS": "OFF (默认)",
+  "XRSLAM_THREADING_OVERRIDE": "1",
+  "XRSLAM_ENABLE_THREADING": "ON",
+  "XRSLAM_LOWLATENCY_POSE": "ON",
+  "CMAKE_CXX_FLAGS": "-ffp-contract=off -fno-fast-math -fchar8_t -Dceres=pw_xrslam_ceres_1_14 -DXRSLAM_FEATURE_TRACKER_QUEUE_CAPACITY=0 -DXRSLAM_FRONTEND_QUEUE_CAPACITY=0",
+  "FETCHCONTENT_SOURCE_DIR_DEPENDS-EIGEN": "~/Developer/xrslam-deps-tarballs/eigen-3.3.7",
+  "FETCHCONTENT_SOURCE_DIR_DEPENDS-OPENCV": "~/Developer/xrslam-deps-tarballs/opencv-4.0.1-ios-framework/opencv2.framework"
+ },
+ "version_h": {
+  "XRSLAM_ENABLE_THREADING": "defined",
+  "XRSLAM_IOS": "undef",
+  "XRSLAM_LOWLATENCY_POSE": "defined"
+ },
+ "deps": {
+  "eigen": "3.3.7",
+  "opencv": "4.0.1 (ios framework, 预编译;归档外,app 侧链 libopencv_generic_4_0_1.a)",
+  "ceres": "e809cf0c / 1.14.0,命名空间 pw_xrslam_ceres_1_14(归档外,app 侧链 libceres_official_1_14.a)",
+  "yaml-cpp": "superbuild"
+ },
+ "archive_member_count": 56,
+ "attribution_control": {
+  "what_zh": "同一源码树、同一构建目录,先 git checkout --detach 8ebac9a 编一次(对照),再 checkout bdf9080 编本归档;两份归档逐成员比较。",
+  "control_artifact_sha256": "2f5b939d7508ed71400cb70b2913516db35f5ad73e8970bd6ad381f6730b9eb3",
+  "members_differing": [
+   "detail.cpp.o",
+   "feature_tracker.cpp.o",
+   "initializer.cpp.o",
+   "preintegrator.cpp.o",
+   "sliding_window_tracker.cpp.o",
+   "__.SYMDEF"
+  ],
+  "members_identical_count": 51,
+  "new_exported_symbols": [],
+  "exported_xrslam_symbols_same_as_control": true
+ },
+ "fingerprint": {
+  "kind": "OpenCV mat.inl.hpp 的构建目录绝对路径(CV_Assert 的 __FILE__ 烤进 __TEXT,__cstring)",
+  "string": "/private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/2359d42b-b338-4098-99ad-6a4c217067ad/scratchpad/preint/build-ios/_deps/depends-opencv-build/opencv2.framework/Headers/core/mat.inl.hpp",
+  "uniqueness_check_zh": "本归档含本指纹 3 处;不含 bkpose(4853976d)与 xrofficial(89042cd5)的指纹。"
+ },
+ "gpu_frontend": {
+  "enabled": false,
+  "note_zh": "官方是 CPU/OpenCV 前端;本归档无 pw::gpufe / wgpu 符号,不需要 libpw_gpu_frontend_ios / Dawn。"
+ },
+ "exported_abi_xrslam": [
+  "XRGlobalLocalizerCreate",
+  "XRGlobalLocalizerEnable",
+  "XRGlobalLocalizerIsInitialized",
+  "XRGlobalLocalizerQueryFrame",
+  "XRGlobalLocalizerQueryLocalization",
+  "XRGlobalLocalizerTransformPose",
+  "XRSLAMCreate",
+  "XRSLAMDestroy",
+  "XRSLAMDrainBackendPoses",
+  "XRSLAMGetBackendWindowPoses",
+  "XRSLAMGetBodyPoseRelation",
+  "XRSLAMGetInitCounters",
+  "XRSLAMGetPendingWorkerFrames",
+  "XRSLAMGetPropagatedPose",
+  "XRSLAMGetPropagatedPoseRelation",
+  "XRSLAMGetResult",
+  "XRSLAMGetSolverCounters",
+  "XRSLAMPushSensorData",
+  "XRSLAMRunOneFrame"
+ ],
+ "exported_abi_same_as": "libxrslam_official_rules_bkpose_4853976d.a",
+ "mac_gate_zh": "同一提交同一宏编 macOS dylib,pwvi_runner 手机同款喂法回放 13f5/6d18/7353:单线程两次逐位相同;后端首次/定稿对陀螺偏移 −5.00 ms → 0.00 / −0.5…−1.0 ms;沿用现行 td 规则时后端抖动与 7353 尺度变差(见 VERIFY 与 xrslam 提交说明),诊断:相机时间戳再挪 −5 ms 即回到改前水平。",
+ "license_zh": "含 OKVIS2 派生代码(BSD-3-Clause):二进制分发须随附其版权声明与许可条款(源码旁 LICENSE.okvis2-BSD-3-Clause)。",
+ "kept_deviations_zh": [
+  "逐帧内参(自动对焦保持开;官方锁焦 0.835 + 固定 K)",
+  "图像源 = ARKit 1920 Y 平面 box/3 → 640×480(官方 AVCapture vga640x480 BGRA,引擎内 cvtColor)",
+  "-fno-fast-math -ffp-contract=off(生产跨端确定性规则;官方 iOS 工具链是 -O3 -ffast-math)"
+ ],
+ "toolchain": {
+  "cmake": "4.2.3",
+  "clang": "Apple clang version 17.0.0 (clang-1700.6.3.2)",
+  "xcode": "Xcode 26.2 Build version 17C52",
+  "iphoneos_sdk": "26.2"
+ }
+}

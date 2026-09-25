@@ -148,6 +148,10 @@ post_install do |installer|
   #                     (libxrslam_gpufenothread_pfk_6f6aa21c.a;与 b9b14814 的唯一源码差
   #                      是那一个提交,见同名 receipt 的 attribution_control)。
   #                     宿主侧逐帧 K 只有链这一档时才被引擎吃到。
+  #     okvis2preint  → official_rules     [2026-09-25 研究臂] 官方配置臂同一配方 + 后端位姿只读出口(8ebac9a)
+  #                     + IMU 预积分改成 OKVIS2 离散(端点插值 + 梯形,fork feat/okvis2-preint@bdf9080)。
+  #                     引擎名仍记 official_rules:宿主行为(逐帧 K、30 Hz 准入、曝光中点)与默认臂逐项相同,
+  #                     只换归档;用 PWXrslamBenchArm = okvis2preint 与归档名区分。收据同名 .receipt.json。
   #   GPU 前端各臂还要两个库:
   #     · libpw_gpu_frontend_ios_ad0a4abe.a —— CLAHE/金字塔/GFTT/LK 的 Dawn/WGSL 实现。
   #       仓里 vendored 的那份与此前台架用的 ~/Developer/viobench-build/gpufe/
@@ -185,6 +189,12 @@ post_install do |installer|
                    '_deps/depends-opencv-build/opencv2.framework/Headers/core/mat.inl.hpp',
       pedigree: 'research_only', gpufe: true,
     },
+    'okvis2preint' => {
+      engine: 'official_rules', lib: 'libxrslam_official_rules_okvis2preint_4b6f7bf8.a', sha16: '4b6f7bf8739f8418',
+      fingerprint: '/private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/2359d42b-b338-4098-99ad-6a4c217067ad/scratchpad/preint/' \
+                   'build-ios/_deps/depends-opencv-build/opencv2.framework/Headers/core/mat.inl.hpp',
+      pedigree: 'research_only', gpufe: false, threading: true, rules: true,
+    },
   }
   unless xrslam_arm_table.key?(xrslam_arm)
     raise "unknown PW_XRSLAM_ARM=#{xrslam_arm}(可选:'' / #{xrslam_arm_table.keys.reject(&:empty?).join(' / ')})"
@@ -205,7 +215,7 @@ post_install do |installer|
   # 「链的是哪条臂」写成 xcconfig 设置,给身份章脚本对账(设置名与产品 Podfile 相同,
   # 多出的四个是台架的:BENCH_ARM / PEDIGREE / GPU_FRONTEND / OTHER_ENGINE_FINGERPRINTS)。
   xrslam_other_fingerprints = xrslam_arm_table.values
-    .reject { |r| r[:engine] == xrslam_arm_row[:engine] }
+    .reject { |r| r[:lib] == xrslam_arm_row[:lib] }   # [2026-09-25] 按归档排除自身:两行可同记 official_rules
     .map { |r| r[:fingerprint] }.join('|')
   xrslam_identity_settings =
     "PW_XRSLAM_LINKED_ENGINE = #{xrslam_arm_row[:engine]}\n" \
