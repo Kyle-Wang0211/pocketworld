@@ -1038,6 +1038,10 @@ class OfficialAetherARKitPlugin: NSObject {
           result(payload)
         }
       }
+    case "highResPhotoDimensions":
+      // [ENTRY-ANY-4X3 2026-09-25] 宿主只查不判:报出 ARKit 高清取图可用的照片尺寸,
+      // 由 Dart(lib/vio/capture/photo_size_rule.dart)选最大 4:3。
+      result(Self.highResPhotoDimensionsReport(session: arSession))
     case "captureHighResolutionStill":
       guard let args = call.arguments as? [String: Any],
             let highresPath = args["highresPath"] as? String,
@@ -1059,6 +1063,10 @@ class OfficialAetherARKitPlugin: NSObject {
       let feedSfm = (args["feedSfm"] as? NSNumber)?.boolValue ?? false
       let deriveAuxiliary =
         (args["deriveAuxiliary"] as? NSNumber)?.boolValue ?? true
+      // [ENTRY-ANY-4X3 2026-09-25] Dart 按共享规则选定的照片尺寸(见 highResPhotoDimensions)。
+      // 不传 = ARKit 默认,行为与改动前逐字节相同。
+      let photoMaxWidth = (args["photoMaxWidth"] as? NSNumber)?.intValue
+      let photoMaxHeight = (args["photoMaxHeight"] as? NSNumber)?.intValue
       captureHighResolutionStill(
         highresPath: highresPath,
         previewPath: previewPath,
@@ -1068,7 +1076,9 @@ class OfficialAetherARKitPlugin: NSObject {
         metadataSchemaVersion: metadataSchemaVersion,
         dartSaveContract: dartSaveContract,
         feedSfm: feedSfm,
-        deriveAuxiliary: deriveAuxiliary
+        deriveAuxiliary: deriveAuxiliary,
+        photoMaxWidth: photoMaxWidth,
+        photoMaxHeight: photoMaxHeight
       ) { payload, error in
         if let error = error {
           let nsError = error as NSError
@@ -2292,10 +2302,29 @@ class OfficialAetherARKitPlugin: NSObject {
   /// `defaultPhotoSettings` 的 getter 每次返回新实例,正合用。
   @available(iOS 26.0, *)
   private static func resolveHighResPhotoSettings(
-    session: ARSession
+    session: ARSession,
+    requestedPhotoDims: (width: Int, height: Int)? = nil
   ) -> AVCapturePhotoSettings? {
     guard let format = session.configuration?.videoFormat else { return nil }
     let settings = format.defaultPhotoSettings
+    // [ENTRY-ANY-4X3 2026-09-25] 用户规则「取 4:3 能做到的最大尺寸」:Dart 从
+    // highResPhotoDimensions 的候选里选好;这里只在「与 ARKit 默认不同、且确在候选里」时改,
+    // 否则一字不动(= 改动前的调用)。ARSession.h:224-229:自定义照片设置要从
+    // defaultPhotoSettings 取出再改。
+    let defaultDims = settings.maxPhotoDimensions
+    var dimsSource = "arkit_default"
+    if let req = requestedPhotoDims,
+       !(Int(defaultDims.width) == req.width && Int(defaultDims.height) == req.height) {
+      let supported = Self.highResSupportedPhotoDims()
+      if let m = supported.first(where: {
+        Int($0.width) == req.width && Int($0.height) == req.height
+      }) {
+        settings.maxPhotoDimensions = m
+        dimsSource = "dart_rule_largest_4x3"
+      } else {
+        dimsSource = "dart_rule_request_unsupported_\(req.width)x\(req.height)"
+      }
+    }
     // env 用 getenv 直读:Swift 的 ProcessInfo.environment 是进程启动快照,
     // 读不到 official_env.json 经 setenv 写进来的值(08-05 实测踩过同一个坑)。
     var arm = "default"
@@ -2321,9 +2350,82 @@ class OfficialAetherARKitPlugin: NSObject {
       "quality_prioritization": settings.photoQualityPrioritization.rawValue,
       "max_photo_w": Int(dims.width),
       "max_photo_h": Int(dims.height),
+      "default_photo_w": Int(defaultDims.width),
+      "default_photo_h": Int(defaultDims.height),
+      "photo_dims_source": dimsSource,
     ])
     return settings
   }
+
+  /// [ENTRY-ANY-4X3 2026-09-25] ARKit 当前主摄 activeFormat 支持的照片最大尺寸
+  /// (官方 API:ARConfiguration.configurableCaptureDeviceForPrimaryCamera,iOS 16+;
+  /// AVCaptureDevice.Format.supportedMaxPhotoDimensions,iOS 16+)。
+  private static func highResSupportedPhotoDims() -> [CMVideoDimensions] {
+    guard #available(iOS 16.0, *),
+          let device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera
+    else { return [] }
+    return device.activeFormat.supportedMaxPhotoDimensions
+  }
+
+  /// [ANY43-DEFAULT 2026-09-25] iOS 16 之前的「高分辨率静照」尺寸(已弃用、仍可读):高于它的档
+  /// (48MP 全像素、24MP 多帧融合)只能经 iOS 16 起的 maxPhotoDimensions 主动请求。
+  @available(iOS, deprecated: 16.0)
+  private static func highResLegacyStillDims() -> CMVideoDimensions? {
+    guard #available(iOS 16.0, *),
+          let device = ARWorldTrackingConfiguration.configurableCaptureDeviceForPrimaryCamera
+    else { return nil }
+    return device.activeFormat.highResolutionStillImageDimensions
+  }
+
+  /// [ENTRY-ANY-4X3 / ANY43-DEFAULT 2026-09-25] 给 Dart 的候选表(只报不判)。键:
+  ///   supported             [[w,h,flags],...];flags 与零 ARKit 宿主、Dart kPhotoCandidateFlag* 同值:
+  ///                         bit0 需主动请求的高分辨率档(高于 legacyHighResStill;读不到时除最小项外全标),
+  ///                         bit1 Apple 字面默认(列表最小项)
+  ///   legacyHighResStill    [w,h] 该格式 highResolutionStillImageDimensions
+  ///   default               [w,h] ARKit defaultPhotoSettings 的尺寸(iOS 26+,否则缺省)
+  ///   photoSettingsCapture  是否能用 captureHighResolutionFrameUsingPhotoSettings(iOS 26+)
+  private static func highResPhotoDimensionsReport(session: ARSession?) -> [String: Any] {
+    let dims = highResSupportedPhotoDims()
+    let legacy = highResLegacyStillDims()
+    let smallest = dims.min { Int64($0.width) * Int64($0.height)
+      < Int64($1.width) * Int64($1.height) }
+    let supported: [[Int]] = dims.map { d in
+      var flags = 0
+      let isSmallest = smallest.map { $0.width == d.width && $0.height == d.height } ?? false
+      if let l = legacy, l.width > 0, l.height > 0 {
+        if d.width > l.width || d.height > l.height { flags |= 1 }
+      } else if !isSmallest {
+        flags |= 1
+      }
+      if isSmallest { flags |= 2 }
+      return [Int(d.width), Int(d.height), flags]
+    }
+    var out: [String: Any] = [
+      "supported": supported,
+      "photoSettingsCapture": false,
+    ]
+    if let l = legacy { out["legacyHighResStill"] = [Int(l.width), Int(l.height)] }
+    if #available(iOS 26.0, *) {
+      out["photoSettingsCapture"] = true
+      if let f = session?.configuration?.videoFormat {
+        let d = f.defaultPhotoSettings.maxPhotoDimensions
+        out["default"] = [Int(d.width), Int(d.height)]
+      }
+    }
+    OfficialPwNativeTelemetry.shared.log("hires_photo_dims_query", out)
+    return out
+  }
+
+  /// [ENTRY-ANY-4X3 2026-09-25] 入口判据:核外壳 PWOfficialSfm 导出的
+  /// pwofficial_photo_size_status_v1(src/pwofficial_photo_size_rule.h,与 Dart 同一份)。
+  /// 用 dlsym 找(与 Dart 的 DynamicLibrary.process() 同一种查法),不改桥接头。
+  /// 找不到 ⇒ nil,调用方按拒收处理(fail-closed)。
+  private static let photoSizeStatusFn: (@convention(c) (Int32, Int32) -> Int32)? = {
+    // RTLD_DEFAULT = (void *)-2(<dlfcn.h>),Swift 不导入这个宏。
+    guard let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2),
+                          "pwofficial_photo_size_status_v1") else { return nil }
+    return unsafeBitCast(sym, to: (@convention(c) (Int32, Int32) -> Int32).self)
+  }()
 
   private func captureHighResolutionStill(
     highresPath: String,
@@ -2335,8 +2437,14 @@ class OfficialAetherARKitPlugin: NSObject {
     dartSaveContract: [String: Any]? = nil,
     feedSfm: Bool = false,
     deriveAuxiliary: Bool = true,
+    photoMaxWidth: Int? = nil,
+    photoMaxHeight: Int? = nil,
     completion: @escaping ([String: Any]?, Error?) -> Void
   ) {
+    let requestedPhotoDims: (width: Int, height: Int)? = {
+      guard let w = photoMaxWidth, let h = photoMaxHeight, w > 0, h > 0 else { return nil }
+      return (w, h)
+    }()
     guard let session = arSession else {
       completion(nil, NSError(
         domain: "OfficialAetherARKit", code: 210,
@@ -2363,11 +2471,19 @@ class OfficialAetherARKitPlugin: NSObject {
     // 减尖峰 900 ⇒ 实际触发 footprint>3100,把 4GB 余量吃满且不越线。
     // 正常 footprint 600-1500MB,这道刹车基本碰不到,纯最后保险。
     // 跳过=只保主图(即时帧),Dart 收 nil 自然降级,不影响拍照与相册。
+    //
+    // [ENTRY-ANY-4X3 2026-09-25] 900MB 是 12MP(4032x3024)实测;照片尺寸不再固定,
+    // 尖峰按请求像素数等比推导(没请求 = ARKit 默认 = 原来的 12MP 口径,系数 1)。
+    // 这是从实际尺寸推导,不是新加的上限;是否线性待真机量。
     let kMemCeilingMB = 4000.0
-    let kStillSpikeMB = 900.0
+    let kStillSpikeMB12MP = 900.0
+    let spikeScale: Double = requestedPhotoDims.map {
+      Double($0.width) * Double($0.height) / (4032.0 * 3024.0)
+    } ?? 1.0
+    let kStillSpikeMB = kStillSpikeMB12MP * spikeScale
     let footprintNow = Self.physFootprintMB()
     if footprintNow + kStillSpikeMB > kMemCeilingMB {
-      NSLog("[OfficialAetherARKit] [内存刹车] footprint=%.0fMB +900 尖峰将过 4000MB 天花板, 跳过本帧12MP", footprintNow)
+      NSLog("[OfficialAetherARKit] [内存刹车] footprint=%.0fMB +%.0f 尖峰将过 4000MB 天花板, 跳过本帧高清照片", footprintNow, kStillSpikeMB)
       completion(nil, NSError(
         domain: "OfficialAetherARKit", code: 213,
         userInfo: [NSLocalizedDescriptionKey:
@@ -2495,11 +2611,18 @@ class OfficialAetherARKitPlugin: NSObject {
         // valid 12 MP frames whose target-device latency is 0.25-1.23 seconds.
         let imageWidth = CVPixelBufferGetWidth(pixelBuffer)
         let imageHeight = CVPixelBufferGetHeight(pixelBuffer)
-        guard imageWidth == 4032, imageHeight == 3024 else {
+        // [ENTRY-ANY-4X3 2026-09-25] 原来是 `imageWidth == 4032, imageHeight == 3024`
+        // (7410bb9:只收原生高清事务的产物,防误喂 1920x1440 预览帧)。现在:原始像素网格
+        // 4:3 且长边 >= 1920,判据由核外壳导出(与 Dart、核入口同一份);状态码 2/3/4 =
+        // 非 4:3 / 长边不足 / 竖向网格,-1 = 判据符号不在(fail-closed)。
+        let sizeStatus = Self.photoSizeStatusFn.map {
+          $0(Int32(clamping: imageWidth), Int32(clamping: imageHeight))
+        } ?? -1
+        guard sizeStatus == 0 else {
           completion(nil, NSError(
             domain: "OfficialAetherARKit", code: 216,
             userInfo: [NSLocalizedDescriptionKey:
-              "captureHighResolutionStill: expected 4032x3024, got \(imageWidth)x\(imageHeight)"]
+              "captureHighResolutionStill: photo \(imageWidth)x\(imageHeight) rejected by entry rule (status \(sizeStatus): need 4:3 raw grid, long side >= 1920)"]
           ))
           return
         }
@@ -2751,7 +2874,8 @@ class OfficialAetherARKitPlugin: NSObject {
       // 同时把 ARKit 的默认档打进日志 —— 我们从来不知道它默认是哪一档,
       // 这是第一手观测,不是猜。
       if #available(iOS 26.0, *),
-         let settings = Self.resolveHighResPhotoSettings(session: session) {
+         let settings = Self.resolveHighResPhotoSettings(
+           session: session, requestedPhotoDims: requestedPhotoDims) {
         session.captureHighResolutionFrame(using: settings,
                                            completion: onHighResFrame)
       } else {

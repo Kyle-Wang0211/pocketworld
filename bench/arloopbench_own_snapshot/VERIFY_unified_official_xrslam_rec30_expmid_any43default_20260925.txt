@@ -1,0 +1,65 @@
+# arloopbench any43default —— 拍照端改为「平台默认模式下的最大 4:3」核验记录(2026-09-25)
+# 用户看完 48/50MP 调研后拍板「取平台默认模式下的最大 4:3」。只进台架,生产 App 未碰、未装机;本地提交,不推送。
+# 前一轮(入口任意 4:3、核重编复现、Mac 真实入口回归)见同目录 VERIFY_unified_official_xrslam_rec30_expmid_any43_20260925.txt。
+
+== 提交(分支 bench/entry-any-4x3,接在 9932d6c 之后)
+  d7ff7a9  规则改为默认模式下的最大 4:3(Dart 共享层 + iOS 两宿主 + android_ready + 测试)
+  3b3f30b  ARKit legacy 查询补 iOS 16 可用性判断(第一次台架构建报错后修正)
+  (本文件所在提交 = VERIFY)
+  入口判据、核、外壳、框架二进制都没动(新包里 PWOfficialSfm 与 any43 包去签名逐字节相同)。
+
+== 规则(lib/vio/capture/photo_size_rule.dart,宿主只报不判)
+  pickLargestFourByThreeInDefaultMode:排除「需主动请求的高分辨率档」,取过入口判据(4:3 CameraX 判法、长边 ≥1920)的面积最大者。
+  iOS(两宿主同一标法,三元组 w,h,flags):
+    bit0 需主动请求 = 高于该格式 highResolutionStillImageDimensions(AVCaptureDevice.h:3356,iOS 16 之前「高分辨率静照」口径)。
+         48MP 全像素、24MP 多帧融合(AVCapturePhotoOutput.h:545 只经 deferred delivery)都高于它 ⇒ 永不请求。
+         读不到 legacy(0x0 / iOS < 16)⇒ 退回 Apple 字面默认:除最小项外全标。
+    bit1 Apple 字面默认 = supportedMaxPhotoDimensions 最小项(AVCapturePhotoOutput.h:1454),只审计。
+  Android:SENSOR_PIXEL_MODE_DEFAULT 的 SCALER_STREAM_CONFIGURATION_MAP.getOutputSizes(JPEG) = 默认模式;
+    getHighResolutionOutputSizes 与 SCALER_STREAM_CONFIGURATION_MAP_MAXIMUM_RESOLUTION 标需主动请求。
+    = CameraX 默认 ResolutionSelector.PREFER_CAPTURE_RATE_OVER_HIGHER_RESOLUTION(androidx a12036836c464b39
+      ResolutionSelector.java:92-122,sha256 c66588a0989292d29307b35b3048d758c411c19f9c2fca40c81d99be07caaa26:
+      默认只用 getOutputSizes;高分辨率表要 PREFER_HIGHER_RESOLUTION_OVER_CAPTURE_RATE;MAXIMUM_RESOLUTION 两种模式都不用)。
+  鸿蒙:photoProfiles 全按默认模式;官方文档未说明是合并还是全像素输出;本仓无鸿蒙宿主。
+
+== 与协调口径的一处出入(如实记录)
+  Apple 字面默认(settings 默认取列表最小项;highResolutionPhotoEnabled 文档「By default … same dimensions as its source
+  AVCaptureDevice's activeFormat.formatDescription」)用在零 ARKit 的 1920x1440 视频格式上,若该格式列表含 1920x1440,
+  字面默认就是 1920x1440(2.8MP),不是 12MP。本实现按「只排除需 iOS 16 新接口主动请求的档(48MP / 24MP)」判,
+  本机预计仍取 4032x3024(= 该格式 legacy 高分辨率静照 = 改动前实拍尺寸)。要改成字面默认,只需把 bit1 当选择依据,一行。
+  真机核对:零 ARKit 照片 sidecar 的 photo_supported_dims(带 :optin / :default)与 photo_legacy_high_res_still;
+  ARKit 遥测 hires_photo_dims_query / hires_settings。
+
+== 测试
+  Dart 规则 + ARKit 路线纯函数 43 条全过:模拟 48MP iPhone(默认 12MP,48MP / 24MP 主动请求档)⇒ 4032x3024;
+  本测试机零 ARKit 1920x1440 格式 ⇒ 4032x3024;ARKit 本机(默认 4032x3024)⇒ 不传参;Pixel 4080x3072 ⇒ 4080x3072;
+  50MP 四拜耳(默认约 12.5MP,8160x6144 在高分辨率 / MAXIMUM_RESOLUTION 表)⇒ 4080x3072;legacy 读不到 ⇒ 1920x1440;
+  无合格尺寸 ⇒ null。阴性对照(不排除主动请求档)多条变红。
+  flutter test 全量(d7ff7a9)对基线 c5a9dc7:共同 2134 条 0 条变化;新增 49 条全过。
+
+== 核遇到超长图时怎么失败(只报告,未改核、未加上限;Mac 实测,新框架真实入口)
+  1) 单帧层面:GPU 提取在 CreateBuffer 就被 Dawn 拒(申请上限 1 GiB,dawn_kernel_harness.cpp:849-852;
+     8064x6048 需要 1,598,041,892 B)。dsp_sift_gpu_c.cc:247-266 同帧先遗弃实例重建重试一次,再败走 fallback;
+     面积 > 4MP 默认禁止 CPU 兜底(:196-226「宁丢一帧不死全场」)⇒ 返回 2 ⇒ add_jpeg_frame_v2 返回 AETHER_SFM_ERR_EXTRACT,
+     会话继续。
+  2) 连累后续:每次失败遗弃一个 GPU 实例(故意不释放,:89-106),重建计数是**进程级静态量**,累计 > 6 次即
+     g_gpu_harness_init_failed = true,之后本进程所有 GPU 提取直接失败。实测(真实 4032 场 20 帧,替换 N 张为 8064x6048):
+       N=1 → 只丢那 1 帧,19/19 注册;N=4 → 只丢 4 帧,16/16 注册,进程峰值 739 MB(无超大帧时约 503 MB,被遗弃实例不释放);
+       N=8(第 3–10 帧)→ 第 10 帧起**全部** ERR_EXTRACT,连后面 9 张正常 4032x3024 也丢(>4MP 不许 CPU 兜底),只交付 3 帧。
+       全是 8064 / 8160 的场:20/20 帧 ERR_EXTRACT,finalize ERR_NOT_REGISTERED,整场无结果。
+     该状态直到 App 重启都不恢复(同一次启动里的下一场也受影响)。
+  3) 上层可见性:C ABI 逐帧返回 ERR_EXTRACT;核在 sfm_match_fail.jsonl 写 extract_fail(含 Dawn 原因串);
+     Dart sfm_live_recon 记「提取欠账」(DeviceLog + 遥测 extract_debt_recorded),拍完后 setenv 放开 CPU 兜底重喂一次,
+     再败记 extract_debt_repay_failed;界面把 errExtract 当覆盖问题涂红卡(_markPhotoDisconnected),提示补拍 —— 把尺寸 / GPU
+     故障显示成了拍摄问题。欠账重喂的 CPU 路径:8160x6120 在 Mac 上每帧 92–106 s、进程峰值 5 GB,手机上大概率被系统杀。
+  4) 现规则下 48/50MP 不会被拍照端请求;但入口仍收任何 4:3 ≥1920(含 48MP 外部照片 / 旧项目重喂),上面的连锁仍可能被触发。
+
+== 台架包
+  ~/Developer/arloopbench_builds/unified_official_xrslam_rec30_expmid_any43default_20260925/Runner.app(未装机),源 3b3f30b。
+  同步:四段真源临时指向本 worktree(LOD 只核),逐字节自证全过;构建 flutter build ios --profile --no-pub(Xcode 53.9 s)。
+  核验(对现装 expmid 包):Runner 新增 _pw_camera_slot_photo_size_candidates / _request_photo_dims,旧 _photo_dims_for_format 不在;
+    「expected 4032x3024」1→0;Dart AOT 新符号在,13 个菜单页齐;Dawn 单定义;签名 valid,Team 26AH7V448L;
+    对 any43 包:PWOfficialSfm / PWDense / PWOnnxRuntime / PWVIOBenchKit / PWXRSLAMEngine / PWBasaltEngine / thermion_dart / Flutter
+    去签名逐字节相同。
+  还原:备份 ~/Developer/arloopbench_backups/any43default_20260925_183517;1030 文件哈希、清单、332 个符号链接全部一致;
+    pw_full_chain 指回 bench-unified-20260924。另有一次失败的构建(183227,Swift 可用性错误),同样已按备份还原并核对一致。

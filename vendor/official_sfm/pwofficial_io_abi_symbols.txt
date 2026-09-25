@@ -5,3 +5,4 @@ pwofficial_phase_b_replay_add_jpeg_v1
 pwofficial_phase_b_replay_seal_v1
 pwofficial_phase_b_replay_destroy_v1
 pwofficial_add_jpeg_frame_v2
+pwofficial_photo_size_status_v1

@@ -134,7 +134,8 @@ class CaptureSession {
   /// behind or ARKit reports excessive motion.
   Stream<CaptureMotionSnapshot> get motionStream => _motionCtrl.stream;
 
-  /// Strictly validated 4032×3024 JPEG inputs for the official recon worker.
+  /// Strictly validated JPEG inputs (any 4:3 raw grid, long side >= 1920 —
+  /// `photoSizeVerdict`, ENTRY-ANY-4X3 2026-09-25) for the official recon worker.
   Stream<OfficialHighResReconstructionInput> get sfmFrameStream =>
       _sfmFrameCtrl.stream;
 
@@ -455,7 +456,7 @@ class CaptureSession {
   /// Writes the official route's authoritative manifest from the user's photo
   /// album, not from internal coverage curation or current SfM registration.
   ///
-  /// Every path here has already passed the same-frame 4032×3024 JPEG + ARKit
+  /// Every path here has already passed the same-frame 4:3 JPEG (ENTRY-ANY-4X3) + ARKit
   /// metadata contract. Pending/disconnected/low-parallax states deliberately
   /// do not affect membership. A path disappears only after the user explicitly
   /// removes it from the project album.
@@ -1570,7 +1571,7 @@ class CaptureSession {
   /// frame/pose — the RealityScan-style per-tap shutter. Bypasses the
   /// motion/dome auto-admit gates via [DomeTargetPoints.forceAdmit] so the
   /// user, not a gate, decides when to shoot. Returns the immediate 1920×1440
-  /// card texture path plus the canonical 4032×3024 evidence path. High-res
+  /// card texture path plus the verified 4:3 evidence path (ENTRY-ANY-4X3). High-res
   /// success/failure is reported asynchronously and never falls back.
   ///
   /// Only meaningful when the session was started with `manualCapture: true`.
@@ -1705,7 +1706,7 @@ class CaptureSession {
     if (_highResCaptureInFlight) {
       _hiresStillDropped++;
       throw StateError(
-        'A verified 12MP shutter transaction is already in flight',
+        'A verified high-res shutter transaction is already in flight',
       );
     }
     _highResCaptureInFlight = true;
@@ -1941,9 +1942,9 @@ class CaptureSession {
       );
       throw StateError(
         _started && !_disposed
-            ? '12MP shutter transaction failed after '
+            ? 'High-res shutter transaction failed after '
                   '$_manualHighResMaxAttempts attempts'
-            : '12MP shutter transaction cancelled before success',
+            : 'High-res shutter transaction cancelled before success',
       );
     } finally {
       _highResCaptureInFlight = false;

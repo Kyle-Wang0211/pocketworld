@@ -1,0 +1,131 @@
+# arloopbench unified + official XRSLAM + rec30 + expmid + 入口任意 4:3 —— 核验记录(2026-09-25)
+# 用户令:「只要是4:3,都行,不同手机就用4:3能做到的最大尺寸(自适应)」。只进台架(com.kyle.arloopbench),
+# 生产 App 未碰、未装机。本地分支 bench/entry-any-4x3(从 bench/expmid-default c5a9dc7 拉出),不推送。
+
+== 分支与提交(pocketworld)
+  380bfc8  入口判据改为「任意 4:3 且长边 ≥1920」,拍照端取各机最大 4:3(源码 + 测试)
+  a6d2a0c  ios-arm64 PWOfficialSfm = 3f28853 同一核 + 新外壳重新链接(去签名)
+  9932d6c  零 ARKit 选不出合格尺寸时显式清零预设
+  (本文件所在提交 = VERIFY)
+  worktree ~/.config/superpowers/worktrees/pocketworld/bench-entry-any-4x3-20260925
+
+== 盘点:全链写死 4032x3024 / 12MP 的地方(行号 = c5a9dc7)
+  运行代码(已改):
+  1 vendor/official_sfm/src/pwofficial_jpeg_decode.mm:76  DecodeOfficialJpegGray `width != 4032 || height != 3024`
+      来历 7410bb9(07-23「same-frame 12 MP ARKit inputs」):只收原生高清事务产物、防误喂 1920x1440 预览帧。
+      四个 JPEG 入口(add_jpeg_frame / _v2 / prefetch / phase-B replay)都经它 —— 这就是「_v2 拒收非 4032」的那道闸,
+      在 pocketworld 外壳,不在 Aether3D 核。改:共享判据 src/pwofficial_photo_size_rule.h。4032x3024 结果不受影响(照收,同一像素网格)。
+  2 ios/Runner/OfficialAetherARKitPlugin.swift:2498  高清帧 guard imageWidth == 4032 … 错误 216。同上来历。改:dlsym 调外壳导出的同一判据。
+  3 lib/official_capture/official_highres_reconstruction_input.dart:39-40,102  requiredWidth/Height。同上。改:photoSizeVerdict + 三个新失败码。
+  4 lib/official_capture/project_photo_album.dart:72-73  commitVerified(eaf8706 07-24 harden)。改:同一判据。
+  5 lib/official_capture/sfm_live_recon.dart:752-753  offerFrame。改:同一判据。
+  6 lib/official_capture/b1_gate_runner.dart:222、lib/global_ptol_benchmark_main.dart:352  resumeFromDb(4032,3024)
+      (15f63b1 / 35c3046)。会话宽高是名义值:核只在 aether_sfm_options_default 里赋 0、从不读取(每帧相机按该帧宽高建)
+      ⇒ 对结果零影响。改:resumeFromDb 取 显式 > 已灌入喂帧元数据的实际尺寸 > 旧名义 3840x2160。
+  7 lib/ui/official_capture/ar_capture_page.dart:2188  文案「不是 4032×3024」。改:按新码分开。
+  8 ios/Runner/OfficialAetherARKitPlugin.swift:2361-2370  内存刹车 kStillSpikeMB=900(12MP 实测,7410bb9)。
+      改:按请求像素数 / (4032·3024) 等比推导;不请求 = 系数 1(与改动前相同)。线性是否成立待真机量。
+  9 ios/Runner/PwCameraSlot.swift:325-337  零 ARKit 照片取 activeFormat「面积最大」(72046c9),不看宽高比。
+      改:Dart 规则取最大 4:3,宿主只查(pw_camera_slot_photo_dims_for_format)+ 预设(pw_camera_slot_request_photo_dims)。
+  10 ARKit 路线:captureHighResolutionFrame 取 ARKit 默认尺寸。改:highResPhotoDimensions 报候选,Dart 选最大 4:3;
+      只有选中 ≠ 默认且 iOS 26(captureHighResolutionFrameUsingPhotoSettings)时才改 maxPhotoDimensions。
+  11 lib/official_capture/capture_session.dart:1709,1945,1947  异常/日志文案「12MP shutter transaction」→「High-res」。
+  已是按实际尺寸推导、未改:
+  12 zero_arkit_capture_runtime.dart:547 scaleIntrinsicsForFeed(视频 K → 喂料尺寸,sx/sy 各自);
+     PwCameraSlot.swift 照片内参按实际文件尺寸缩放(sx/sy 各自,aspect_mismatch 记录)。
+  13 ARKit 高清帧内参直接取该 ARFrame 的 camera.intrinsics(已是高清网格),无视频→照片换算。
+  14 稠密 pw_dense:sidecar image_w/h + 同分辨率内参,按 x、y 各自比例缩到模型 768x576(Aether3D dense_session.cc:68)。
+  15 上色 colorize_pipeline.dart kColorizeDecodeMaxPx=8192(既有防御上限):48MP 8064、50MP 8160 < 8192 不降采样;
+     更大才降,关键点坐标按 JPEG/gray 比例换算。只改注释。
+  16 sfmFeedMaxSide=4224(OfficialAetherARKitPlugin.swift:3458,用于 :2259/:2645 的 sfm_gray):旧自研路线
+     (lib/dome、lib/capture)的灰度喂料,等比降采样到长边 4224、从不放大;官方路线只传 JPEG 路径、不读 sfm_gray。未改。
+  17 Aether3D 核:无尺寸常量(a313ede0 official_pipeline / tools/sift_* / glomap bench 只在两个台架工具注释里有 4032)。
+  文档/实验/历史注释(docs/、experiments/、openspec/、lib/capture 旧路线注释、packages/*/example、integration_test 用 4032 当输入)未改。
+
+== 判据
+  原始像素网格(= 传感器方向;ImageIO CGImageSourceCreateImageAtIndex 不应用 EXIF 朝向,ARKit JPEG 是像素缓冲原样编码
+  + EXIF 朝向,备份实拍 4032x3024「orientation=upper-right」)是 4:3,且长边 ≥1920。
+  4:3 = AndroidX CameraX AspectRatioUtil.hasMatchingAspectRatio(Apache-2.0,androidx a12036836c464b39,
+  文件 sha256 f5ad9b375c29d48b577c7683c55fbc0307a8cd5cec0d556630045e30900a768d):严格等比或面积 ≥VGA 时容许 16 对齐偏差。
+  方法地图:hasMatchingAspectRatio 三个函数 semantic_port;判据/选尺寸 product_adapter。
+  上游单测 AspectRatioUtilTest.kt(sha256 8d5c8112f5e41560017edd9c6023a9c4990d29e59b673061d8759e605e23f187)
+  11 条向量 + 产品 21 条,C(C 与 C++ -Werror -fno-exceptions -fno-rtti)与 Dart 两侧同一张表全过。
+  状态码 0 通过 / 1 宽高非法 / 2 非 4:3 / 3 长边 <1920 / 4 竖向网格。
+  阴性对照(变红):去掉 mod16 分支、下限改 1900、竖向码并入 2、载体闸全放行。
+
+== 核:未改源码,只重编(为了重新链接外壳)
+  Aether3D a313ede0 + 研究仓 A3_patched_vs_a313ede0.diff(补丁 B + fixC 核 + fixD),全新 scratch 克隆(alternates 借
+  ~/Developer/Aether3D.git 对象,不碰 ~/Developer/Aether3D-cross);7 个补丁后 blob 与 diff index 行逐个相同;本地提交 9fd3ce3d(不推送)。
+  源码根经 39 字符符号链接 /private/tmp/claude-501/pwfx_aether_cpp;Stage-B 闭包 1a8f4063…112c(取自出货二进制)。
+  依赖只读复制:Dawn Release 23c7437d… / Ceres ac61cdcf… / glog dc35639b…(sha 与钉子相同)+ eigen/glog/ceres 头文件(diff -rq 相同)。
+  复现闸:原样外壳 + 重编核/载体 → 与 3f28853 同尺寸 20,831,216 B,__TEXT,__text c71529ad…,24/25 节逐字节相同,
+  __cstring 只差 __DATE__/__TIME__ 两个串。
+  新框架(a6d2a0c):20,831,360 B,sha256 aedd00ea…20d8,__text c7812951…890d,导出 40(+pwofficial_photo_size_status_v1);
+  逐函数长度:只有 jpeg_decode 单元变(DecodeOfficialJpegGray 768→704 B + 判据 + 导出),其余整体平移。
+
+== Mac 验证:走真实入口 pwofficial_add_jpeg_frame_v2(框架只改平台标签 iOS→macOS,25 个节逐字节不变)
+  驱动 = 离线对照 agent 的 offline_pose_arm_driver.cc,只把「去掉 4032 检查的复刻解码」换成调框架导出的真实入口;
+  选项 = 产品研究档(13312 特征、K12、ratio 0.8、GPU 匹配/提取)。与其它 agent 共用 .xrslam_run.lock。
+  核在 Mac 上本身不逐位确定:出货框架同输入重复 3 次,交付位姿哈希 3 次各不相同 ⇒ 回归按跑间范围判。
+  回归(备份里的真实 4032x3024 拍摄,位姿/内参 = 当时喂核的值;出货 3f28853 vs 新框架,各 3 次交错):
+    cap_1789045251403847(20 张) 注册 20/20 vs 20/20;点数 7244±25 vs 7209±40;重投影 0.905 vs 0.905 px;
+      ATE 0.47 vs 0.43 cm;核 Sim3 尺度 −0.83±0.11% vs −0.63±0.23%;交付 k 对喂入设备位姿 0.000% vs 0.000%。
+    cap_1789106491854116(50 张) 注册 50/50 vs 50/50;点数 40114±221 vs 40425±454;重投影 1.092 vs 1.087;
+      ATE 0.58 vs 0.59 cm;Sim3 尺度 +0.82±0.12% vs +0.71±0.43%;k 0.000% vs 0.000%。
+    结论:两臂差都在 1–2 个跑间标准差内、符号随场景变,未见系统偏移。
+  新尺寸(13f5 录制 20 帧 1920x1440 灰度;上采样只测入口与流程,不代表画质):
+    1920x1440 新框架真实入口 9 次:18/18 注册,点数 2726±7,重投影 0.785;
+      对照 = 出货框架 + 复刻入口,同时段交错 6 次 + 离线 agent 5 次:18/18,2731±4 / 2723,0.789。
+      设备位姿闸 aligned_gate_tripped:新 1/9、复刻 1/6(离线 agent 早先 0/5)⇒ 跑间现象,不是新外壳引入。
+      出货框架走真实入口:20/20 帧 ERR_INVALID_ARG(阴性对照,旧闸确实拦 1920)。
+    3264x2448 ×2:19/19 注册,点数 3267/3323,重投影 0.850。
+    6528x4896(32MP)×1:18/18 注册,RSS 268 MB。
+  拒收(混在 20 帧里替换第 5/10/15 帧):1920x1080→status 2、1440x1080→3、1440x1920(像素转竖)→4,
+    三帧 ERR_INVALID_ARG、未碰核;其余 17 帧照常 17/17 注册、交付正常。
+
+== 超大尺寸(不加上限;以下是现状)
+  拍照端:按规则取各机最大 4:3,48/50MP 机型会选 48/50MP。
+  核现有机制:JPEG 入口全分辨率解码、不降采样;GPU 特征提取的打包金字塔约 32 B/像素,而 dawn_kernel_harness.cpp
+  向设备申请的 maxBufferSize 写死 1 GiB(Mac 适配器实际 4 GiB)⇒ 超过约 33.5MP 就建不出缓冲:
+    8064x6048(iPhone 48MP)与 8160x6120(50MP)各 20 帧全部 ERR_EXTRACT,整场无法重建
+    (Dawn:Buffer size 1598041892 exceeds the max buffer size limit 1073741824)。
+    核现成的 CPU 提取(use_gpu_extract=0,非产品默认)能跑:8160x6120 每帧约 92–106 s,进程峰值 5000 MB(Mac)。
+  sfmFeedMaxSide 4224 只在旧路线,等比降采样,不在官方链上。
+  内存:解码 4 B/像素瞬时 + 灰度 1 B/像素;12MP 金字塔约 390 MB,48MP 约 1.56 GB。ARKit 刹车按像素等比:48MP 预测尖峰 3600 MB
+    ⇒ footprint > 400 MB 即跳过(实际上几乎每张都跳)。
+  耗时(Mac,GPU 路径,每帧提取中位):1920 约 30 ms、3264 约 40 ms、4032 约 80 ms、6528 约 86 ms(不代表手机)。
+  文件:实拍 12MP JPEG 平均 2.9–3.1 MB;按像素等比 48/50MP 约 12 MB/张,300 张项目约 3.6 GB(估算,未实测)。
+
+== 台架包
+  ~/Developer/arloopbench_builds/unified_official_xrslam_rec30_expmid_any43_20260925/Runner.app(未装机)
+  源 = 9932d6c;同步:.sync_from_integration.sh,PW_BENCH_SYNC_SOURCE / PW_BENCH_FULL_CHAIN_SOURCE / PW_BENCH_LIDAR_SOURCE /
+  PW_BENCH_UNIFIED_SOURCE 全部临时指向本 worktree,PW_BENCH_LOD_VERIFY_ONLY=1(LOD 源不在,跳过);四段逐字节自证全过;
+  相对备份只改 4 个文件 + 新增 lib/vio/capture/photo_size_rule.dart,符号链接临时改指向本 worktree。
+  构建:flutter build ios --profile --no-pub,FLUTTER_XCODE_DEBUG_INFORMATION_FORMAT=dwarf,LD map on,无 dart-define(Xcode 79.7 s)。
+  核验(对现装 unified_official_xrslam_rec30_expmid_20260925):bundle id / 引擎 official_rules / XRSLAM sha 相同;
+    PWOfficialSfm __text c71529ad → c7812951(= a6d2a0c),导出 39→40;Runner _pw_camera_slot_ 17→19,
+    「expected 4032x3024」1→0,新字符串在;Dart AOT 新符号在,13 个菜单页齐;
+    PWDense / PWOnnxRuntime / PWVIOBenchKit / PWXRSLAMEngine / PWBasaltEngine / thermion_dart / Flutter 去签名 __text 全 SAME;
+    Dawn _wgpuCreateInstance 定义 1;签名 valid,Team 26AH7V448L。
+  还原:备份 ~/Developer/arloopbench_backups/any43_20260925_151525(1030 文件 + 332 链接);还原后文件哈希、清单、
+    链接全部一致,pw_full_chain 指回 bench-unified-20260924(该 worktree 未动,干净,b3c7b6b)。build/ 里留的是本包(沿用惯例)。
+
+== Dart 测试(flutter test 全量,--reporter json,新 9932d6c vs 基线 c5a9dc7,同一 worktree 先后跑)
+  基线 2111 过 / 12 失败 / 12 错误 / 2 跳过;新 2151 过 / 12 失败 / 12 错误 / 2 跳过。
+  共同 2134 条逐条结果 0 条变化(基线原有的失败/错误是本分支编不过的 VIO 测试与逐帧内参契约,与本改动无关)。
+  只在基线的 3 条 = 被改名改写的旧语义用例(1920x1440 曾被拒);只在新的 43 条(6 条新语义用例 + 37 条规则单测)全过。
+  外壳:scripts/test_photo_size_rule.sh(C 与 C++ 严格旗标)PASS 11/11 + 21/21;scripts/test_jpeg_boundary.sh PASS
+  (7 个尺寸 × v1 / v2 / phase-B replay;基线版本本身链接失败,已补桩)。
+
+== 跨端自证
+  核(Aether3D):零改动。外壳 C/C++ 新增代码的平台宏(__APPLE__ / TARGET_OS / __ANDROID__ / __OHOS__)0 处;
+  判据头只含 <stdint.h>。Dart 共享层新增代码的平台分支 0 处(命中的只在注释里点名三端官方 API)。
+  平台相关只在宿主:Swift(PwCameraSlot / OfficialAetherARKitPlugin)、Kotlin(android_ready PwCameraProbe,从未编译)。
+
+== 遗留
+  · 48/50MP:按规则会选,但出货 GPU 提取器 1 GiB 缓冲上限 ⇒ 整场失败;是否放宽申请上限 / 走分块 / 降采样,需用户拍板(未自改)。
+  · ARKit 路线 iOS 26 带照片设置取图未上真机;本机 1920x1440 格式候选推测只有 12MP(零 ARKit 同格式实测 4032x3024),真机看
+    telemetry hires_photo_dims_query / hires_settings 与照片 sidecar photo_supported_dims 确认。
+  · 内存刹车线性外推未实测。
+  · Android(Kotlin 从未编译)/ 鸿蒙(无宿主)只有规则与候选上报,取图请求本身未接;安卓需 JPEG_ORIENTATION=0 保持传感器方向网格。
+  · 模拟器片未重编(无新导出),与 3f28853 惯例一致。

@@ -6,6 +6,7 @@ import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
+import android.graphics.ImageFormat
 import android.os.Build
 
 /**
@@ -92,6 +93,36 @@ object PwCameraProbe {
             c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION)?.toList()
         out["hardwareLevel"] = c.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL)
         out["capabilities"] = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)?.toList()
+
+        // [ENTRY-ANY-4X3 / ANY43-DEFAULT 2026-09-25] 照片尺寸候选 —— 只查不判。用户规则「平台默认模式下的
+        // 最大 4:3」的判定在 Dart(pocketworld lib/vio/capture/photo_size_rule.dart
+        // photoSizeCandidatesFromCamera2 + pickLargestFourByThreeInDefaultMode,与 iOS 同一份);这里原样报出:
+        //   jpegOutputSizes                   SENSOR_PIXEL_MODE_DEFAULT 的
+        //                                     SCALER_STREAM_CONFIGURATION_MAP.getOutputSizes(ImageFormat.JPEG)
+        //                                     —— 默认模式,CameraX 默认 PREFER_CAPTURE_RATE_OVER_HIGHER_RESOLUTION
+        //                                     只用这张表(androidx ResolutionSelector.java:92-101)
+        //   jpegHighResolutionOutputSizes     同一映射的 getHighResolutionOutputSizes(JPEG)(API 23)
+        //                                     —— CameraX 要显式 PREFER_HIGHER_RESOLUTION_OVER_CAPTURE_RATE,Dart 不选
+        //   jpegMaximumResolutionOutputSizes  SCALER_STREAM_CONFIGURATION_MAP_MAXIMUM_RESOLUTION(API 31,
+        //                                     SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION 的全像素档)—— CameraX 两种模式都不用,
+        //                                     Dart 不选;只为审计上报
+        // SENSOR_ORIENTATION 一并报出:入口判据按**传感器方向的原始像素网格**判 4:3,拍照请求
+        // 应保持 JPEG_ORIENTATION = 0(像素不转、朝向只写 EXIF),否则部分设备会把像素转成竖向,
+        // 入口会以 NOT_SENSOR_ORIENTATION(4)拒收。
+        // ⚠️ 本目录 Kotlin 从未编译过(见 README);这段同样只对照了官方参考文档。
+        val map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+        out["jpegOutputSizes"] =
+            map?.getOutputSizes(ImageFormat.JPEG)?.map { listOf(it.width, it.height) }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            out["jpegHighResolutionOutputSizes"] =
+                map?.getHighResolutionOutputSizes(ImageFormat.JPEG)?.map { listOf(it.width, it.height) }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val maxMap = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP_MAXIMUM_RESOLUTION)
+            out["jpegMaximumResolutionOutputSizes"] =
+                maxMap?.getOutputSizes(ImageFormat.JPEG)?.map { listOf(it.width, it.height) }
+        }
+        out["sensorOrientation"] = c.get(CameraCharacteristics.SENSOR_ORIENTATION)
         return out
     }
 

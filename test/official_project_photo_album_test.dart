@@ -90,7 +90,9 @@ void main() {
     expect(album.latestPath, isNull);
   });
 
-  test('never commits a missing or non-12MP file', () {
+  // [ENTRY-ANY-4X3 2026-09-25] 原名「non-12MP」:判据改为任意 4:3、长边 >= 1920;
+  // 1920x1440 现在合法,改用 16:9 / 长边不足 / 竖向三种不合判据的尺寸。
+  test('never commits a missing or rule-violating file', () {
     final album = OfficialProjectPhotoAlbum();
     final preview = File('${tempDir.path}/preview.jpg')
       ..writeAsBytesSync(<int>[1]);
@@ -104,16 +106,38 @@ void main() {
       ),
       isFalse,
     );
-    expect(
-      album.commitVerified(
-        jpegPath: preview.path,
-        captureTimestamp: 10,
-        imageWidth: 1920,
-        imageHeight: 1440,
-      ),
-      isFalse,
-    );
+    for (final (w, h) in const [(1920, 1080), (1440, 1080), (3024, 4032)]) {
+      expect(
+        album.commitVerified(
+          jpegPath: preview.path,
+          captureTimestamp: 10,
+          imageWidth: w,
+          imageHeight: h,
+        ),
+        isFalse,
+        reason: '${w}x$h',
+      );
+    }
     expect(album.count, 0);
+  });
+
+  test('commits any 4:3 photo with long side >= 1920 (ENTRY-ANY-4X3)', () {
+    final album = OfficialProjectPhotoAlbum();
+    var i = 0;
+    for (final (w, h) in const [(1920, 1440), (3264, 2448), (8064, 6048)]) {
+      final f = File('${tempDir.path}/p${i++}.jpg')..writeAsBytesSync(<int>[1]);
+      expect(
+        album.commitVerified(
+          jpegPath: f.path,
+          captureTimestamp: 10.0 + i,
+          imageWidth: w,
+          imageHeight: h,
+        ),
+        isTrue,
+        reason: '${w}x$h',
+      );
+    }
+    expect(album.count, 3);
   });
 
   test('background lifecycle does not alter the project count', () {

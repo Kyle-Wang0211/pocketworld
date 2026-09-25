@@ -9,7 +9,7 @@
 //
 // Dataflow:
 //   ARCapturePage shutter → CaptureSession.captureSinglePhoto →
-//   OfficialHighResReconstructionInput (4032×3024 JPEG path + same-frame
+//   OfficialHighResReconstructionInput (4:3 JPEG path, long side >= 1920 + same-frame
 //   intrinsics/extrinsic) → [this facade: CamFromWorld conversion + queue]
 //   → worker isolate → pwofficial_add_jpeg_frame
 //   finish → finalize() → worker runs aether_sfm_finalize_async (phase 1
@@ -744,13 +744,18 @@ class SfmLiveRecon {
     }
   }
 
-  /// Offers one validated 12MP JPEG to the official reconstruction. Only the
+  /// Offers one validated JPEG (any accepted 4:3 size) to the official reconstruction. Only the
   /// path and same-frame calibration cross Dart; decoded pixels do not.
   bool offerFrame(OfficialHighResReconstructionInput feed) {
     if (_disposed || _finalizeRequested) return false;
+    // [ENTRY-ANY-4X3 2026-09-25] 原来比的是 requiredWidth/requiredHeight(4032x3024);
+    // 现在与 validate() 同一份判据(任意 4:3、长边 >= 1920)。
     if (feed.intrinsics.length < 4 ||
-        feed.imageWidth != OfficialHighResReconstructionInput.requiredWidth ||
-        feed.imageHeight != OfficialHighResReconstructionInput.requiredHeight ||
+        OfficialHighResReconstructionInput.dimensionFailure(
+              feed.imageWidth,
+              feed.imageHeight,
+            ) !=
+            null ||
         !File(feed.jpegPath).existsSync()) {
       return false;
     }
@@ -1202,14 +1207,22 @@ class SfmLiveRecon {
   /// REFINED / ERROR arrive via [events] exactly like a normal finalize.
   /// [imageWidth]/[imageHeight] seed the session options only; the reconstruction
   /// reads its geometry from the db, so a nominal capture resolution is fine.
-  void resumeFromDb({int imageWidth = 3840, int imageHeight = 2160}) {
+  ///
+  /// [ENTRY-ANY-4X3 2026-09-25] 核(Aether3D a313ede0 official_aether_sfm_c.cc)只在
+  /// aether_sfm_options_default 里给 image_width/height 赋 0,此后从不读取 —— 每帧相机
+  /// 按那一帧自己的宽高建。所以这里仍是名义值,但不再让调用方写死 4032x3024:
+  /// 显式传入 > 已 [seedFedMeta] 的第一帧实际灰度尺寸 > 旧的名义默认 3840x2160。
+  void resumeFromDb({int? imageWidth, int? imageHeight}) {
     if (_disposed || _finalizeRequested) return;
     _finalizeRequested = true;
     _finalizeSent = true;
+    final SfmFedFrameMeta? seeded = _fedMeta.isEmpty
+        ? null
+        : _fedMeta[(_fedMeta.keys.toList()..sort()).first];
     _toWorker.send(<String, Object?>{
       'cmd': 'resume',
-      'w': imageWidth,
-      'h': imageHeight,
+      'w': imageWidth ?? seeded?.grayW ?? 3840,
+      'h': imageHeight ?? seeded?.grayH ?? 2160,
     });
   }
 

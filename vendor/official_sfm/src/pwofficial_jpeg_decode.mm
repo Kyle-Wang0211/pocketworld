@@ -1,4 +1,5 @@
 #include "../include/official_sfm_io_c.h"
+#include "pwofficial_photo_size_rule.h"
 
 #include <CoreGraphics/CoreGraphics.h>
 #include <CoreFoundation/CoreFoundation.h>
@@ -7,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <cmath>
 #include <vector>
@@ -73,7 +75,17 @@ aether_sfm_result_t DecodeOfficialJpegGray(
 
   const size_t width = CGImageGetWidth(image);
   const size_t height = CGImageGetHeight(image);
-  if (width != 4032 || height != 3024) {
+  // [ENTRY-ANY-4X3 2026-09-25] 原来是写死的 `width != 4032 || height != 3024`
+  // (7410bb9「same-frame 12 MP ARKit inputs」:只收原生高清事务的产物,防止混进
+  // 1920x1440 预览帧)。用户改判「只要是 4:3 都行,取各机 4:3 最大尺寸」,防误喂的
+  // 用意由长边 >= 1920 这条接住。判的是 ImageIO 交出来的原始网格 = 传感器方向。
+  const int32_t size_status = pwofficial_photo_size_status_rule(
+      static_cast<int64_t>(width), static_cast<int64_t>(height));
+  if (size_status != PWOFFICIAL_PHOTO_SIZE_RULE_OK) {
+    std::fprintf(stderr,
+                 "[pwofficial][ENTRY-ANY-4X3] jpeg rejected %zux%zu "
+                 "status=%d\n",
+                 width, height, static_cast<int>(size_status));
     CGImageRelease(image);
     return AETHER_SFM_ERR_INVALID_ARG;
   }
@@ -114,10 +126,16 @@ aether_sfm_result_t DecodeOfficialJpegGray(
 
 }  // namespace
 
+// [ENTRY-ANY-4X3 2026-09-25] 入口判据的对外查询口(见 official_sfm_io_c.h)。
+extern "C" PWOFFICIAL_IO_EXPORT int32_t
+pwofficial_photo_size_status_v1(int32_t width, int32_t height) {
+  return pwofficial_photo_size_status_rule(width, height);
+}
+
 /* [EXTRACT-PREFETCH 2026-08-09] JPEG 版预取:与 add_jpeg 同一 decode helper
    (同像素网格、零 crop/resize/flip),解码后把 gray 转手给核内专属提取线程。
    把"下一帧"的解码+提取都搬出关键路径 —— 堵车(spool 非空)时由 facade 在
-   派发当前帧之前调用。env 关时先廉价早退,不白解码 12MP。
+   派发当前帧之前调用。env 关时先廉价早退,不白解码整张照片。
    返回:0=已入队 1=关闭/无效/解码失败 2=busy(深度1队列还占着,跳过即可)。 */
 extern "C" PWOFFICIAL_IO_EXPORT int
 pwofficial_prefetch_jpeg_frame(aether_sfm_session_t* session,

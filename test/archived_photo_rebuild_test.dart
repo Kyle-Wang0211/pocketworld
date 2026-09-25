@@ -86,13 +86,25 @@ void main() {
     expect(nan.isAccepted, isFalse, reason: 'fx=0 必须被 validate 拒');
   });
 
-  test('尺寸不是 4032x3024 一律拒绝(复用拍摄期同一 validate)', () {
+  // [ENTRY-ANY-4X3 2026-09-25] 原用例「尺寸不是 4032x3024 一律拒绝」:判据改为任意 4:3、
+  // 长边 >= 1920(与拍摄期同一 validate)。
+  test('尺寸不合判据一律拒绝(复用拍摄期同一 validate)', () {
+    for (final (w, h) in const [(1920, 1080), (1440, 1080), (3024, 4032)]) {
+      final p = parseArchivedPhoto(
+        jpegPath: '/x/a.jpg',
+        sidecarJson: sidecar(imageW: w, imageH: h),
+      );
+      expect(p.isAccepted, isFalse, reason: '${w}x$h');
+      expect(p.failure, contains('validate'));
+    }
+  });
+
+  test('任意 4:3 且长边 >= 1920 都收(ENTRY-ANY-4X3)', () {
     final p = parseArchivedPhoto(
       jpegPath: '/x/a.jpg',
       sidecarJson: sidecar(imageW: 1920, imageH: 1440),
     );
-    expect(p.isAccepted, isFalse);
-    expect(p.failure, contains('validate'));
+    expect(p.isAccepted, isTrue);
   });
 
   test('喂帧顺序按帧序号 N,不是字符串序', () {

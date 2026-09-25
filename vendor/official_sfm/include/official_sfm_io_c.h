@@ -12,6 +12,23 @@ extern "C" {
 // plane to the frozen COLMAP-backed streaming core. No crop, resize, histogram
 // normalization, or Dart/Flutter image transfer is performed. ImageIO replaces
 // COLMAP's OpenImageIO reader, which is unavailable in the arm64 mobile build.
+//
+// [ENTRY-ANY-4X3 2026-09-25] 入口尺寸判据(取代写死的 4032x3024):解码出的**原始像素
+// 网格**(传感器方向,不应用 EXIF 朝向)必须是 4:3(AndroidX CameraX
+// AspectRatioUtil.hasMatchingAspectRatio 的定义)且长边 >= 1920。不满足时所有 JPEG
+// 入口(add_jpeg_frame / _v2 / prefetch / phase-B replay)在碰核之前拒收,
+// add_jpeg_frame 系返回 AETHER_SFM_ERR_INVALID_ARG;拒收原因用
+// pwofficial_photo_size_status_v1 查(同一份判据,src/pwofficial_photo_size_rule.h)。
+#define PWOFFICIAL_PHOTO_SIZE_OK 0
+#define PWOFFICIAL_PHOTO_SIZE_INVALID 1                 // width/height <= 0
+#define PWOFFICIAL_PHOTO_SIZE_NOT_4_3 2                 // 例:16:9、1:1
+#define PWOFFICIAL_PHOTO_SIZE_LONG_SIDE_BELOW_MIN 3     // 4:3 但长边 < 1920
+#define PWOFFICIAL_PHOTO_SIZE_NOT_SENSOR_ORIENTATION 4  // 3:4:像素被转成竖向存放
+#define PWOFFICIAL_PHOTO_MIN_LONG_SIDE 1920
+
+// 纯算术,不解码、不碰会话。宿主(Swift / Kotlin / ArkTS)在写 JPEG 之前用它做同一道闸。
+int32_t pwofficial_photo_size_status_v1(int32_t width, int32_t height);
+
 aether_sfm_result_t pwofficial_add_jpeg_frame(
     aether_sfm_session_t* session,
     const char* jpeg_path,

@@ -16,7 +16,7 @@
 //      `captureSinglePhoto` → `_captureOfficialHighResInput`,那条路上 null still
 //      是终态 `captureFailed`,**没有** fallback
 //      → (G) 端到端:VioArPoseProvider + CaptureSession 手动快门 ⇒ 入库;
-//        ARKit 标签的 null still 仍抛(阴性对照);1920×1440 被 4032×3024 硬闸拒。
+//        ARKit 标签的 null still 仍抛(阴性对照);非 4:3 成片被入口硬闸拒(ENTRY-ANY-4X3)。
 //
 // 🔴 全程不等真实定时器(pollInterval 1h,手工 tick),不开相机、不碰真机。
 
@@ -699,8 +699,12 @@ void main() {
       await session.dispose();
     });
 
-    test('🔴 xrslam 成片不是 4032×3024 ⇒ unexpectedDimensions(硬闸不放宽)', () async {
-      final photo = _FilePhotoApi(tmp, width: 1920, height: 1440);
+    // [ENTRY-ANY-4X3 2026-09-25] 原用例「成片不是 4032×3024 ⇒ unexpectedDimensions」:
+    // 判据改为任意 4:3、长边 >= 1920,1920x1440 现在合法;硬闸仍在,改用 16:9 成片钉住。
+    // (本文件在 bench/expmid-default 基线上本来就编不过 —— 引用了本分支没有的
+    //  CaptureSession.debug* / captureDirectoryFactory 等,与本次改动无关。)
+    test('🔴 xrslam 成片不是 4:3 ⇒ photoNotFourByThree(硬闸不放宽)', () async {
+      final photo = _FilePhotoApi(tmp, width: 1920, height: 1080);
       final provider = _trackingProvider(photo);
       final session = CaptureSession(
         poseProvider: provider,
@@ -718,7 +722,7 @@ void main() {
           isA<OfficialHighResCaptureException>().having(
             (e) => e.failure,
             'failure',
-            OfficialHighResInputFailure.unexpectedDimensions,
+            OfficialHighResInputFailure.photoNotFourByThree,
           ),
         ),
       );

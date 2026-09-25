@@ -2185,7 +2185,14 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     if (!mounted) return;
     final message = switch (event.failure) {
       OfficialHighResInputFailure.unexpectedDimensions =>
-        '高分辨率照片不是 4032×3024，本张未进入重建，请重拍',
+        '高分辨率照片读不出尺寸，本张未进入重建，请重拍',
+      // [ENTRY-ANY-4X3 2026-09-25] 原文案「不是 4032×3024」;现在只要 4:3 且长边 ≥1920 就收。
+      OfficialHighResInputFailure.photoNotFourByThree =>
+        '高分辨率照片不是 4:3，本张未进入重建，请重拍',
+      OfficialHighResInputFailure.photoLongSideBelowMin =>
+        '高分辨率照片长边不足 1920，本张未进入重建，请重拍',
+      OfficialHighResInputFailure.photoNotSensorOrientation =>
+        '高分辨率照片被转成了竖向存放，本张未进入重建，请重拍',
       OfficialHighResInputFailure.outOfSync => '高分辨率照片与点击时刻不同步，本张未进入重建，请重拍',
       OfficialHighResInputFailure.missingPose ||
       OfficialHighResInputFailure.missingIntrinsics =>
@@ -4185,7 +4192,7 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
   }
 
   /// Serial executor for one admitted shutter ticket. This preserves the
-  /// production native transaction and canonical 4032x3024 on-disk JPEG.
+  /// production native transaction and verified 4:3 on-disk JPEG (ENTRY-ANY-4X3).
   Future<void> _executeShutterTicket(ManualCaptureTicket ticket) async {
     final session = _session;
     if (session == null) {

@@ -14,6 +14,8 @@
 
 import 'dart:ffi';
 
+import 'camera_slot_ffi.dart';
+
 /// `pw_zero_arkit_camera_start` 在**相机被别人占着**时的返回码。
 /// 与 `PwZeroArkitGate.swift` 里的 `-100` 一一对应。
 const int kZeroArkitCameraBusy = -100;
@@ -52,6 +54,9 @@ abstract final class ZeroArkitCameraGate {
     final injected = debugStart;
     if (injected != null) return injected(width, height, fps, lensPosition);
     if (_gaveUp) return kZeroArkitCameraSymbolMissing;
+    // [ENTRY-ANY-4X3 2026-09-25] 照片取本格式支持的最大 4:3(规则在 Dart,宿主只查)。
+    // 必须在起相机之前预设;符号不在时内部静默跳过,不影响起相机。
+    PwCameraSlot.requestLargestFourByThreePhoto(width: width, height: height);
     try {
       return _start(width, height, fps, lensPosition);
     } catch (e) {

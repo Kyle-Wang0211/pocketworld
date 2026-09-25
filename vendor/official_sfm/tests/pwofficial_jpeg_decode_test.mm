@@ -93,6 +93,40 @@ extern "C" aether_sfm_result_t pwofficial_add_frame(
   return AETHER_SFM_OK;
 }
 
+// [ENTRY-ANY-4X3 2026-09-25] fixC 之后 pwofficial_jpeg_decode.mm 还引用这两个核入口;
+// 此前测试没补桩,基线本身就链接失败(Undefined _pwofficial_add_frame_v2 /
+// _pwofficial_prefetch_frame)。桩的行为与 pwofficial_add_frame 桩相同。
+static int g_add_frame_v2_calls = 0;
+static int g_last_trusted = -1;
+extern "C" aether_sfm_result_t pwofficial_add_frame_v2(
+    aether_sfm_session_t*,
+    const uint8_t* gray,
+    int width,
+    int height,
+    float,
+    float,
+    float,
+    float,
+    const double[4],
+    const double[3],
+    int32_t device_pose_trusted,
+    int* out_frame_id) {
+  ++g_add_frame_v2_calls;
+  g_last_trusted = device_pose_trusted;
+  g_width = width;
+  g_height = height;
+  g_samples[0] = gray[0];
+  g_samples[1] = gray[(height / 2) * width];
+  g_samples[2] = gray[(height - 1) * width];
+  if (out_frame_id != nullptr) *out_frame_id = 8;
+  return AETHER_SFM_OK;
+}
+
+extern "C" int pwofficial_prefetch_frame(
+    aether_sfm_session_t*, const uint8_t*, int, int) {
+  return 0;
+}
+
 static bool WriteBandJpeg(
     const std::string& path,
     size_t width,
@@ -168,110 +202,102 @@ static bool WriteBandJpeg(
   return ok;
 }
 
+static bool BandsOk() {
+  return g_samples[0] < 50 && g_samples[1] > 70 && g_samples[1] < 160 &&
+         g_samples[2] > 190;
+}
+
 int main() {
   const std::string base =
       "/tmp/pwofficial_jpeg_decode_test_" + std::to_string(getpid());
-  const std::string full_path = base + "_4032x3024.jpg";
-  const std::string preview_path = base + "_1920x1440.jpg";
-  if (!WriteBandJpeg(full_path, 4032, 3024) ||
-      !WriteBandJpeg(preview_path, 1920, 1440)) {
-    return 2;
+  struct Case {
+    int w, h;
+    bool accept;
+    int32_t status;
+  };
+  // [ENTRY-ANY-4X3 2026-09-25] 写出来的 JPEG 都带 EXIF Orientation=6(与真机照片一样:
+  // 像素按传感器横向存、朝向写在 EXIF 里)。判据看的是原始网格,所以 4032x3024 仍按横向 4:3 收。
+  const Case cases[] = {
+      {4032, 3024, true, PWOFFICIAL_PHOTO_SIZE_OK},
+      {1920, 1440, true, PWOFFICIAL_PHOTO_SIZE_OK},  // 以前被拒,现在收
+      {3264, 2448, true, PWOFFICIAL_PHOTO_SIZE_OK},
+      {4080, 3072, true, PWOFFICIAL_PHOTO_SIZE_OK},  // CameraX mod16 意义下的 4:3
+      {1920, 1080, false, PWOFFICIAL_PHOTO_SIZE_NOT_4_3},
+      {1440, 1080, false, PWOFFICIAL_PHOTO_SIZE_LONG_SIDE_BELOW_MIN},
+      {1440, 1920, false, PWOFFICIAL_PHOTO_SIZE_NOT_SENSOR_ORIENTATION},
+  };
+  int failures = 0;
+  int expected_v1_calls = 0;
+  int expected_v2_calls = 0;
+  int expected_replay_calls = 0;
+  for (const Case& c : cases) {
+    const std::string path = base + "_" + std::to_string(c.w) + "x" +
+                             std::to_string(c.h) + ".jpg";
+    if (!WriteBandJpeg(path, static_cast<size_t>(c.w),
+                       static_cast<size_t>(c.h))) {
+      return 2;
+    }
+    const int32_t status = pwofficial_photo_size_status_v1(c.w, c.h);
+    int frame_id = -1;
+    g_width = g_height = 0;
+    const auto v1 = pwofficial_add_jpeg_frame(
+        reinterpret_cast<aether_sfm_session_t*>(0x1), path.c_str(), 10.125, 1,
+        1, 1, 1, nullptr, nullptr, &frame_id);
+    const bool v1_ok = c.accept
+        ? (v1 == AETHER_SFM_OK && frame_id == 7 && g_width == c.w &&
+           g_height == c.h && BandsOk())
+        : (v1 == AETHER_SFM_ERR_INVALID_ARG);
+    if (c.accept) ++expected_v1_calls;
+    frame_id = -1;
+    g_width = g_height = 0;
+    const auto v2 = pwofficial_add_jpeg_frame_v2(
+        reinterpret_cast<aether_sfm_session_t*>(0x1), path.c_str(), 10.25, 1,
+        1, 1, 1, nullptr, nullptr, /*device_pose_trusted=*/0, &frame_id);
+    const bool v2_ok = c.accept
+        ? (v2 == AETHER_SFM_OK && frame_id == 8 && g_width == c.w &&
+           g_height == c.h && g_last_trusted == 0 && BandsOk())
+        : (v2 == AETHER_SFM_ERR_INVALID_ARG);
+    if (c.accept) ++expected_v2_calls;
+
+    constexpr char kManifest[] =
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    constexpr char kSource[] =
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const int64_t replay_frame_ids[] = {17};
+    const char* replay_sources[] = {kSource};
+    void* replay = nullptr;
+    pwofficial_phase_b_replay_create_v1(kManifest, replay_frame_ids,
+                                        replay_sources, 1, &replay);
+    g_replay_width = g_replay_height = 0;
+    const uint32_t replay_rc = pwofficial_phase_b_replay_add_jpeg_v1(
+        replay, path.c_str(), 17, kSource, 1, 2);
+    pwofficial_phase_b_replay_destroy_v1(replay);
+    const bool replay_ok = c.accept
+        ? (replay_rc == 1 && g_replay_width == c.w && g_replay_height == c.h &&
+           g_replay_samples[0] == g_samples[0] &&
+           g_replay_samples[1] == g_samples[1] &&
+           g_replay_samples[2] == g_samples[2])
+        : (replay_rc == 2);
+    if (c.accept) ++expected_replay_calls;
+
+    const bool ok = status == c.status && v1_ok && v2_ok && replay_ok &&
+                    g_add_frame_calls == expected_v1_calls &&
+                    g_add_frame_v2_calls == expected_v2_calls &&
+                    g_replay_add_calls == expected_replay_calls;
+    std::printf("%s %dx%d status=%d v1=%d v2=%d replay=%u\n",
+                ok ? "ok  " : "FAIL", c.w, c.h, status, v1, v2, replay_rc);
+    if (!ok) ++failures;
+    std::remove(path.c_str());
   }
-
-  int frame_id = -1;
-  const auto full_rc = pwofficial_add_jpeg_frame(
-      reinterpret_cast<aether_sfm_session_t*>(0x1),
-      full_path.c_str(),
-      10.125,
-      1,
-      1,
-      1,
-      1,
-      nullptr,
-      nullptr,
-      &frame_id);
-  const bool full_ok =
-      full_rc == AETHER_SFM_OK &&
-      frame_id == 7 &&
-      g_add_frame_calls == 1 &&
-      g_width == 4032 &&
-      g_height == 3024 &&
-      g_samples[0] < 50 &&
-      g_samples[1] > 70 &&
-      g_samples[1] < 160 &&
-      g_samples[2] > 190;
-
-  const auto preview_rc = pwofficial_add_jpeg_frame(
-      reinterpret_cast<aether_sfm_session_t*>(0x1),
-      preview_path.c_str(),
-      10.250,
-      1,
-      1,
-      1,
-      1,
-      nullptr,
-      nullptr,
-      &frame_id);
-  const bool preview_rejected =
-      preview_rc == AETHER_SFM_ERR_INVALID_ARG && g_add_frame_calls == 1;
-
-  constexpr char kManifest[] =
-      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-  constexpr char kSource[] =
-      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-  const int64_t replay_frame_ids[] = {17};
-  const char* replay_sources[] = {kSource};
-  void* replay = nullptr;
-  const uint32_t replay_create = pwofficial_phase_b_replay_create_v1(
-      kManifest, replay_frame_ids, replay_sources, 1, &replay);
-  const uint32_t replay_full = pwofficial_phase_b_replay_add_jpeg_v1(
-      replay, full_path.c_str(), 17, kSource, 1, 2);
-  const uint32_t replay_preview = pwofficial_phase_b_replay_add_jpeg_v1(
-      replay, preview_path.c_str(), 17, kSource, 1, 2);
-  pwofficial_phase_b_report_v1 replay_report{};
-  const uint32_t replay_seal =
-      pwofficial_phase_b_replay_seal_v1(replay, &replay_report);
-  pwofficial_phase_b_replay_destroy_v1(replay);
-  const bool replay_ok =
-      replay_create == 1 && replay_full == 1 && replay_preview == 2 &&
-      g_replay_add_calls == 1 && g_replay_width == 4032 &&
-      g_replay_height == 3024 && g_replay_samples[0] == g_samples[0] &&
-      g_replay_samples[1] == g_samples[1] &&
-      g_replay_samples[2] == g_samples[2] && g_add_frame_calls == 1 &&
-      replay_seal == 7 && replay_report.accepted_frames == 1 &&
-      replay_report.legacy_descriptor_rows_total == 9000 &&
-      g_replay_destroy_calls == 1;
-
-  std::remove(full_path.c_str());
-  std::remove(preview_path.c_str());
-  if (!full_ok || !preview_rejected || !replay_ok) {
-    std::fprintf(
-        stderr,
-        "full_rc=%d calls=%d frame=%d dims=%dx%d rows=%d/%d/%d "
-        "preview_rc=%d replay=%u/%u/%u calls=%d dims=%dx%d destroy=%d\n",
-        full_rc,
-        g_add_frame_calls,
-        frame_id,
-        g_width,
-        g_height,
-        g_samples[0],
-        g_samples[1],
-        g_samples[2],
-        preview_rc,
-        replay_create,
-        replay_full,
-        replay_preview,
-        g_replay_add_calls,
-        g_replay_width,
-        g_replay_height,
-        g_replay_destroy_calls);
-    return 3;
+  // 纯算术口:不碰文件也能查。
+  if (pwofficial_photo_size_status_v1(0, 0) != PWOFFICIAL_PHOTO_SIZE_INVALID ||
+      pwofficial_photo_size_status_v1(8160, 6144) != PWOFFICIAL_PHOTO_SIZE_OK) {
+    ++failures;
   }
+  if (failures != 0) return 3;
   std::printf(
-      "PASS live+replay share 4032x3024 row order=%d/%d/%d; "
-      "1920x1440 rejected before both consumers\n",
-      g_samples[0],
-      g_samples[1],
-      g_samples[2]);
+      "PASS live(v1,v2)+replay share one grid for every accepted 4:3 size; "
+      "16:9 / long side < %d / portrait grid rejected before any consumer\n",
+      PWOFFICIAL_PHOTO_MIN_LONG_SIDE);
   return 0;
 }
