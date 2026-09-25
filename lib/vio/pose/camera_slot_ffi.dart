@@ -69,8 +69,8 @@ class PhotoDimsChoice {
   /// 共享规则选中的尺寸;null = 一个都不合格(宿主退回旧行为,入口闸照样会拦)。
   final PhotoDimensions? chosen;
 
-  /// `pw_camera_slot_request_photo_dims` 的返回值;null = 没调用。
-  final int? requestResult;
+  /// `pw_camera_slot_request_photo_dims` 的返回值(chosen 为 null 时是清零请求的返回值)。
+  final int requestResult;
 
   @override
   String toString() => 'PhotoDimsChoice(video ${videoWidth}x$videoHeight '
@@ -198,7 +198,10 @@ abstract final class PwCameraSlot {
           PhotoDimensions(buf[2 * i], buf[2 * i + 1]),
       ];
       final PhotoDimensions? chosen = pickLargestFourByThree(candidates);
-      final int? rc = chosen == null ? null : request(chosen.width, chosen.height);
+      // 选不出合格尺寸时显式清零(0x0 = 旧行为),免得原生沿用上一次会话残留的请求。
+      final int rc = chosen == null
+          ? request(0, 0)
+          : request(chosen.width, chosen.height);
       return lastPhotoDimsChoice = PhotoDimsChoice(
         videoWidth: width,
         videoHeight: height,
