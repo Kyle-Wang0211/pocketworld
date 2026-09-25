@@ -44,6 +44,8 @@
 		B3E9A1C00000000000000011 /* PwBenchReplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3E9A1C00000000000000001 /* PwBenchReplay.swift */; };
 		C4D1A2B00000000000000011 /* PwBenchLidarRecordingWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4D1A2B00000000000000001 /* PwBenchLidarRecordingWriter.swift */; };
 		C4D1A2B00000000000000012 /* PwBenchLidarSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4D1A2B00000000000000002 /* PwBenchLidarSession.swift */; };
+		7C4A1E50000000000000A011 /* PwXrReconChain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C4A1E50000000000000A001 /* PwXrReconChain.swift */; };
+		7C4A1E50000000000000A012 /* PwXrReconChainCore.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 7C4A1E50000000000000A002 /* PwXrReconChainCore.cpp */; settings = {COMPILER_FLAGS = "-DPW_XRCHAIN_ENGINE_WEAK_FALLBACK"; }; };
 		B3E9A1C00000000000000012 /* PwBenchReplayRecording.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3E9A1C00000000000000002 /* PwBenchReplayRecording.swift */; };
 		B3E9A1C00000000000000013 /* PwBenchReplayScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = B3E9A1C00000000000000003 /* PwBenchReplayScheduler.swift */; };
 		B3E9A1C00000000000000014 /* PwBenchReplayEngineProbe.c in Sources */ = {isa = PBXBuildFile; fileRef = B3E9A1C00000000000000004 /* PwBenchReplayEngineProbe.c */; };
@@ -150,6 +152,8 @@
 		B3E9A1C00000000000000001 /* PwBenchReplay.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PwBenchReplay.swift; sourceTree = "<group>"; };
 		C4D1A2B00000000000000001 /* PwBenchLidarRecordingWriter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PwBenchLidarRecordingWriter.swift; sourceTree = "<group>"; };
 		C4D1A2B00000000000000002 /* PwBenchLidarSession.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PwBenchLidarSession.swift; sourceTree = "<group>"; };
+		7C4A1E50000000000000A001 /* PwXrReconChain.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PwXrReconChain.swift; sourceTree = "<group>"; };
+		7C4A1E50000000000000A002 /* PwXrReconChainCore.cpp */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.cpp.cpp; name = PwXrReconChainCore.cpp; path = ../../vendor/xrslam/chain/PwXrReconChainCore.cpp; sourceTree = "<group>"; };
 		B3E9A1C00000000000000002 /* PwBenchReplayRecording.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PwBenchReplayRecording.swift; sourceTree = "<group>"; };
 		B3E9A1C00000000000000003 /* PwBenchReplayScheduler.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PwBenchReplayScheduler.swift; sourceTree = "<group>"; };
 		B3E9A1C00000000000000004 /* PwBenchReplayEngineProbe.c */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.c; path = PwBenchReplayEngineProbe.c; sourceTree = "<group>"; };
@@ -292,6 +296,8 @@
 				B3E9A1C00000000000000005 /* PwBenchReplayEngineProbe.h */,
 				C4D1A2B00000000000000001 /* PwBenchLidarRecordingWriter.swift */,
 				C4D1A2B00000000000000002 /* PwBenchLidarSession.swift */,
+				7C4A1E50000000000000A001 /* PwXrReconChain.swift */,
+				7C4A1E50000000000000A002 /* PwXrReconChainCore.cpp */,
 				AF0C0A520000000000000001 /* PwFocusArms.swift */,
 				AF0C0A520000000000000003 /* pw_af_c.h */,
 				AF0C0A520000000000000004 /* pw_af_c.cpp */,
@@ -641,6 +647,8 @@
 				B3E9A1C00000000000000014 /* PwBenchReplayEngineProbe.c in Sources */,
 				C4D1A2B00000000000000011 /* PwBenchLidarRecordingWriter.swift in Sources */,
 				C4D1A2B00000000000000012 /* PwBenchLidarSession.swift in Sources */,
+				7C4A1E50000000000000A011 /* PwXrReconChain.swift in Sources */,
+				7C4A1E50000000000000A012 /* PwXrReconChainCore.cpp in Sources */,
 				AF0C0A520000000000000002 /* PwFocusArms.swift in Sources */,
 				AF0C0A520000000000000005 /* pw_af_c.cpp in Sources */,
 				AF0C0A520000000000000007 /* af_scan.cpp in Sources */,

@@ -152,6 +152,9 @@ post_install do |installer|
   #                     + IMU 预积分改成 OKVIS2 离散(端点插值 + 梯形,fork feat/okvis2-preint@bdf9080)。
   #                     引擎名仍记 official_rules:宿主行为(逐帧 K、30 Hz 准入、曝光中点)与默认臂逐项相同,
   #                     只换归档;用 PWXrslamBenchArm = okvis2preint 与归档名区分。收据同名 .receipt.json。
+  #     xrchain       → official_rules     [2026-09-25 研究臂] okvis2preint 同一配方 + 后端状态出口带 v/bg/ba(4e8dda2)
+  #                     + 后端帧状态沿引擎缓存 IMU 外推的 C 接口 XRSLAMPropagateBackendState(fork
+  #                     feat/xr-recon-chain@cd3469c)。XRSLAM → SfM 重建链页(PwXrReconChain)要它;宿主行为同默认臂。
   #   GPU 前端各臂还要两个库:
   #     · libpw_gpu_frontend_ios_ad0a4abe.a —— CLAHE/金字塔/GFTT/LK 的 Dawn/WGSL 实现。
   #       仓里 vendored 的那份与此前台架用的 ~/Developer/viobench-build/gpufe/
@@ -192,6 +195,12 @@ post_install do |installer|
     'okvis2preint' => {
       engine: 'official_rules', lib: 'libxrslam_official_rules_okvis2preint_4b6f7bf8.a', sha16: '4b6f7bf8739f8418',
       fingerprint: '/private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/2359d42b-b338-4098-99ad-6a4c217067ad/scratchpad/preint/' \
+                   'build-ios/_deps/depends-opencv-build/opencv2.framework/Headers/core/mat.inl.hpp',
+      pedigree: 'research_only', gpufe: false, threading: true, rules: true,
+    },
+    'xrchain' => {
+      engine: 'official_rules', lib: 'libxrslam_official_rules_xrchain_a6b41c92.a', sha16: 'a6b41c92013a0d8e',
+      fingerprint: '/private/tmp/claude-501/-Users-kaidongwang-Documents-progecttwo/2359d42b-b338-4098-99ad-6a4c217067ad/scratchpad/xrchain/' \
                    'build-ios/_deps/depends-opencv-build/opencv2.framework/Headers/core/mat.inl.hpp',
       pedigree: 'research_only', gpufe: false, threading: true, rules: true,
     },

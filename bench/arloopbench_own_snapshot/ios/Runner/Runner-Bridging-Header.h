@@ -14,6 +14,11 @@
 // 逐字节一致。生产桥接头不 import 它。
 #import "PwBenchReplayEngineProbe.h"
 
+// [pw][xr-recon-chain 2026-09-25] 台架 XRSLAM → SfM 重建链的跨端 C++ 核心(照片位姿规则 R1–R6)。
+// 真源在 pocketworld bench/xr-recon-chain vendor/xrslam/chain/,经 vendor/xrslam 符号链接进来(同传输层);
+// Swift 宿主胶水 ios/Runner/PwXrReconChain.swift 调它。生产桥接头不 import 它。
+#import "../../vendor/xrslam/chain/PwXrReconChainCore.h"
+
 // [pw][lod 2026-09-24] LOD 点云查看器 iOS 外壳的 C 半边(IOSurface → Dawn SharedTextureMemory)。
 // 它再 include 两份冻结头 vendor/aether_lod/include/{pw_lod_bench.h, pwlod_viewer.h},
 // Swift(PwLodTexture / PwLodTexturePlugin / PwLodProbe)经此按编译器排布使用 pwlod_* 结构体。

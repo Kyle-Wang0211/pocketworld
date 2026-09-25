@@ -402,7 +402,7 @@ struct PwFrameIntrinsics {
 //   ② `pushReplayImu` —— 录制里的一行 IMU 走与 onGyro/onAccel 同一个 `enqueueImu`;
 //   ③ 逐帧观察者 —— `runOneFrame` 推完一帧,把本帧已有的局部量与 C 账本交出去,
 //      台架据此写 TUM / 逐帧计时 / 逐帧 K 账。
-// 🔴 直播与生产路径上观察者恒为 nil:不计时、不构造下面这个结构体,
+// 🔴 直播与生产路径上观察者恒为 nil(唯一例外:台架重建链页,见 frameObserver 注释):不计时、不构造下面这个结构体,
 //    唯一多出来的是在**已有的**锁里多读一个指针。相机帧像素格式为 32BGRA 时
 //    channel 仍是 4(见 runOneFrame),与改动前逐字相同。
 /// `runOneFrame` 推完一帧后交给观察者的事实。字段全部来自本帧的局部量或 C 账本,
@@ -553,7 +553,8 @@ final class PwXrslamLive {
     /// trace 描述的那一帧 != 本帧(camera submitted_sequence 对不上)的次数。**应恒 0**。
     private var ikTraceSequenceMismatch: UInt64 = 0
 
-    /// [pw 2026-09-23 台架回放] 逐帧观察者。只有台架回放装;直播/生产恒为 nil。
+    /// [pw 2026-09-23 台架回放] 逐帧观察者。台架回放装;[xr-recon-chain 2026-09-25] 台架重建链页
+    /// (PwXrReconChain.swift)直播时也装一个,只把本帧引擎时刻与状态报给链路核心。其余直播 / 生产恒为 nil。
     private var frameObserver: ((PwXrslamFrameObservation) -> Void)?
 
     // ── [bench 2026-09-24] 官方喂料账本(见 `PwXrslamOfficialFeed`)───────────────
@@ -643,6 +644,13 @@ final class PwXrslamLive {
             slamConfigPath, deviceConfigPath, self.cameraTimeOffsetSeconds)
         if rc == 1 { created = true }
         return rc
+    }
+
+    /// [xr-recon-chain 2026-09-25] 本会话交给传输层的相机时间偏移(秒)= create 时的 c(台架重建链页里是
+    /// c + Δ)。重建链按它把照片 PTS 换到引擎时域,与视频帧同一个数、同一个加法。
+    var appliedCameraTimeOffsetSeconds: Double {
+        lock.lock(); defer { lock.unlock() }
+        return cameraTimeOffsetSeconds
     }
 
     /// GPU 前端初始化痕迹。读 `gpu_image.cpp` 写的那个文件,**原样返回**,

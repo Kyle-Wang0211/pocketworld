@@ -32,6 +32,7 @@ import 'bench_unified/bench_core_switches_page.dart';
 import 'bench_unified/bench_full_chain_page.dart';
 import 'bench_unified/bench_home_page.dart';
 import 'bench_unified/bench_unified_native.dart';
+import 'bench_xrchain/xr_recon_chain_page.dart';
 import 'point_cloud_lod/lod_debug_page.dart';
 import 'vio/calib/imu_calib_capture_page.dart';
 import 'vio/render/ar_minimal_loop_page.dart';
@@ -97,6 +98,15 @@ List<BenchEntry> _entries() => <BenchEntry>[
         subtitle: '生产 168 流程 + 修复核;进去后由生产接管,回台架要杀掉 App 重开',
         icon: Icons.view_in_ar,
         page: () => const BenchFullChainPage(),
+      ),
+      BenchEntry(
+        id: 'xrchain',
+        group: '重建',
+        title: 'XRSLAM → SfM 重建链(台架)',
+        subtitle: '会开摄像头:零 ARKit 相机 + XRSLAM 预览;快门拍 4:3 静态照,位姿 = 拍照前最近后端帧定稿 + 官方外推,'
+            '按可信位喂修复核;完成后 finalize,落 xrchain_run_…(Δ 默认 −5 ms,仅台架)',
+        icon: Icons.photo_camera_back,
+        page: () => const XrReconChainPage(),
       ),
       BenchEntry(
         id: 'core-switches',

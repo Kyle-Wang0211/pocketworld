@@ -81,9 +81,12 @@ cp "$P"/lib/official_capture/metric_rescale.dart  "$B/lib/official_capture/"
 mkdir -p "$B/lib/vio/replay" "$B/ios/scripts"
 cp "$P"/lib/vio/replay/*.dart "$B/lib/vio/replay/"
 cp "$P"/ios/scripts/stamp_bench_engine_identity.sh "$B/ios/scripts/"
+# 2026-09-25(xr-recon-chain):PwXrReconChain.swift(重建链宿主胶水)跟着 VIO 段走;它调的 C++ 核心在
+#   vendor/xrslam/chain/,经 vendor/xrslam 符号链接进来,与传输层同一做法。真源树没有这个文件时跳过(旧树)。
 for f in PwCameraSlot.swift PwMonotonicClock.swift PwImuSource.swift PwXrslamLive.swift PWJSONSafety.swift PwFocusArms.swift \
          PwBenchReplay.swift PwBenchReplayRecording.swift PwBenchReplayScheduler.swift \
          PwBenchReplayEngineProbe.h PwBenchReplayEngineProbe.c; do cp "$P/ios/Runner/$f" "$B/ios/Runner/"; done
+if [ -f "$P/ios/Runner/PwXrReconChain.swift" ]; then cp "$P/ios/Runner/PwXrReconChain.swift" "$B/ios/Runner/"; fi
 # 2026-09-23:`$B/vendor/xrslam` 这个符号链接**跟着 P 走**。此前它一直指向 ~/Developer/pocketworld
 #   (主检出),而 P 是另一个工作树 —— 下面那道传输层 cmp 之所以一直过,只是因为两边碰巧同版本。
 #   逐帧内参之后传输层多了 PushCameraAndRunRawWithIntrinsics,pfk 归档也只在 P 这条线上,
@@ -114,6 +117,12 @@ done
 for f in PwCameraSlot.swift PwMonotonicClock.swift PwImuSource.swift PwXrslamLive.swift PWJSONSafety.swift PwFocusArms.swift \
          PwBenchReplay.swift PwBenchReplayRecording.swift PwBenchReplayScheduler.swift \
          PwBenchReplayEngineProbe.h PwBenchReplayEngineProbe.c; do cmp -s "$B/ios/Runner/$f" "$P/ios/Runner/$f" || { echo "🔴 不一致: $f"; bad=1; }; done
+if [ -f "$P/ios/Runner/PwXrReconChain.swift" ]; then
+  cmp -s "$B/ios/Runner/PwXrReconChain.swift" "$P/ios/Runner/PwXrReconChain.swift" || { echo "🔴 不一致: PwXrReconChain.swift"; bad=1; }
+  for f in PwXrReconChainCore.h PwXrReconChainCore.cpp; do
+    cmp -s "$B/vendor/xrslam/chain/$f" "$P/vendor/xrslam/chain/$f" || { echo "🔴 不一致: vendor/xrslam/chain/$f"; bad=1; }
+  done
+fi
 cmp -s "$B/ios/scripts/stamp_bench_engine_identity.sh" "$P/ios/scripts/stamp_bench_engine_identity.sh" \
   || { echo "🔴 不一致: ios/scripts/stamp_bench_engine_identity.sh"; bad=1; }
 [ "$(readlink "$B/vendor/xrslam")" = "$P/vendor/xrslam" ] \
@@ -250,6 +259,7 @@ while IFS= read -r rel; do
     #   PwZeroArkitGate.swift 是台架线文件但有意不镜像(台架没有 ARKit 租约可争,见 VIO 段注释)。
     PwCameraSlot.swift|PwMonotonicClock.swift|PwImuSource.swift|PwXrslamLive.swift|PwFocusArms.swift|PwBenchReplay.swift|PwBenchReplayRecording.swift|PwBenchReplayScheduler.swift|PwBenchReplayEngineProbe.h|PwBenchReplayEngineProbe.c) continue;;
     PwBenchLidarRecordingWriter.swift|PwBenchLidarSession.swift|PwBenchUnifiedPlugin.swift|PwSplatABRunner.swift|PwSplatAB/*|PwZeroArkitGate.swift) continue;;
+    PwXrReconChain.swift) continue;;   # 2026-09-25 xr-recon-chain:归 VIO(P)段管
   esac
   printf '%s\n' $fc_runner_files | grep -Fxq -- "$rel" || { echo "🔴 真源 ios/Runner 多出完整链清单外的文件: $rel"; fbad=1; }
 done <<< "$(cd "$F/ios/Runner" && find . -type f ! -path './Assets.xcassets/*' ! -path './Base.lproj/*' | sed 's|^\./||' | LC_ALL=C sort)"
@@ -321,6 +331,8 @@ if [ ! -d "$U/lib/bench_unified" ]; then echo "合一段真源不在($U),跳过"
 unified_scope="$(
   cd "$U"
   ls lib/bench_unified/*.dart lib/bench_splat/*.dart
+  # 2026-09-25(xr-recon-chain):重建链页 lib/bench_xrchain/*.dart(真源树没有这个目录时不列)
+  if [ -d lib/bench_xrchain ]; then ls lib/bench_xrchain/*.dart; fi
   echo ios/Runner/PwBenchUnifiedPlugin.swift
   echo ios/Runner/PwSplatABRunner.swift
   find ios/Runner/PwSplatAB -type f | LC_ALL=C sort
@@ -341,7 +353,7 @@ done <<< "$unified_scope"
 while IFS= read -r rel; do
   [ -n "$rel" ] || continue
   grep -Fxq -- "$rel" <<< "$unified_scope" || { echo "🔴 台架多出合一段镜像范围外的文件: $rel"; ubad=1; }
-done <<< "$(cd "$B" && { find lib/bench_unified lib/bench_splat ios/Runner/PwSplatAB -type f 2>/dev/null
+done <<< "$(cd "$B" && { find lib/bench_unified lib/bench_splat lib/bench_xrchain ios/Runner/PwSplatAB -type f 2>/dev/null
                          find ios/Runner -maxdepth 1 \( -name 'PwBenchUnified*' -o -name 'PwSplatAB*' \) -type f; } | LC_ALL=C sort)"
 [ "$(readlink "$B/vendor/pw_viobench_kit")" = "$U/bench/viobench_kit/dist" ] \
   || { echo "🔴 vendor/pw_viobench_kit 没指向 $U/bench/viobench_kit/dist:$(readlink "$B/vendor/pw_viobench_kit")"; ubad=1; }
