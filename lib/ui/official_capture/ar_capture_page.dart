@@ -542,6 +542,27 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
     return s.octreeDir;
   }
 
+  /// [175] User 2026-09-26 「只要是有稠密点云的项目，打开就直接是稠密点云」: this work's dense cloud
+  /// exists, yet the flat set on screen would be the SPARSE cloud (re-entry: the tree is being
+  /// loaded, or built from the complete dense PLY) ⇒ the view never shows it; the overlay keeps its
+  /// spinner until the dense tree is drawn. False while the growing/finished dense display copy of
+  /// a run here is on screen (that is dense), and when no tree can be had (build failed) — then the
+  /// sparse cloud is the fallback, as before.
+  bool get _sparseIsStandInForDense {
+    if (_denseRunningHere || !_denseDoneHere) return false;
+    if (_denseSnapshotFor(denseStageProgress.value) != null) return false;
+    if (_reviewTreeDir != null) return true;
+    final s = _denseLod?.value;
+    return s != null && s.phase != DenseLodPhase.failed;
+  }
+
+  /// [175] The line under that spinner: loading a tree that exists, or building one first (the
+  /// only measured on-phone build: 6,922,990 pts in 472,793 ms, 2026-09-24, background included).
+  String get _denseWaitCenterLabel {
+    if (_lodOctreeDirOnScreen != null) return '正在载入点云…';
+    return '正在准备稠密点云…';
+  }
+
   /// 中央转圈下面那一行;null = 用默认的"正在生成最终点云…"。
   /// 再进入(review)时它是"正在载入点云…" —— 见 initState 的那段说明。
   String? _sfmCenterLabel;
@@ -5519,6 +5540,8 @@ class _OfficialARCapturePageState extends State<OfficialARCapturePage>
                   : _sparseWaitLabel(context),
               initialPerspective: _sfmPerspectiveStart,
               lodOctreeDir: _lodOctreeDirOnScreen,
+              sparseIsStandIn: _sparseIsStandInForDense,
+              denseWaitLabel: _denseWaitCenterLabel,
               // [2026-08-09 用户签决] 进度口径=用户视角:"已完成 x/N 帧",
               // N=本场实拍照片数。补算/重喂是内部机制,不暴露 —— 欠账帧
               // 补算完成时 fed 自然爬到 N,用户只看到计数在涨。

@@ -30,6 +30,12 @@ class FakeLodPlatform {
   /// When set, buildFromPly waits for it (to put lifecycle events INSIDE a build).
   Future<void>? buildGate;
 
+  /// [175] When set, loadOctree waits for it (to look at the screen before the tree is drawn).
+  Future<void>? loadOctreeGate;
+
+  /// [175] points_drawn of an octree frame (flat frames always report 1000).
+  int octreePointsDrawn = 1000;
+
   List<String> get methods => [for (final c in calls) c.method];
   Iterable<MethodCall> of(String m) => calls.where((c) => c.method == m);
 
@@ -64,6 +70,7 @@ class FakeLodPlatform {
         source = 1;
         return null;
       case 'loadOctree':
+        if (loadOctreeGate != null) await loadOctreeGate;
         if (loadOctreeFails) throw PlatformException(code: 'PWLOD_ERR_FORMAT', message: 'bad tree');
         source = 2;
         return null;
@@ -73,7 +80,7 @@ class FakeLodPlatform {
         return {
           'frame_number': frame,
           'completed_frame_number': frame,
-          'points_drawn': 1000,
+          'points_drawn': source == 2 ? octreePointsDrawn : 1000,
           'nodes_drawn': source == 2 ? 12 : 0,
           'nodes_loading': 0,
           'uploads_this_frame': 0,

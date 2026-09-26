@@ -175,6 +175,18 @@ class CloudViewController extends ChangeNotifier {
     _browsePose = false;
     return r;
   }
+
+  /// [175] True while a view with `flatIsStandIn` shows nothing because its dense cloud is not
+  /// on screen yet; the page draws its wait label from this (in the same place as its loading
+  /// label, so the hand-over does not jump). Starts true: the page's first frame with the view
+  /// already waits, before the view could report. Meaningless while `flatIsStandIn` is false.
+  final ValueNotifier<bool> waitingForDense = ValueNotifier<bool>(true);
+
+  @override
+  void dispose() {
+    waitingForDense.dispose();
+    super.dispose();
+  }
 }
 
 /// 环绕 pivot:点云**范围中心**(P0.5–P99.5 中点,与初始 3D 框同源
@@ -256,6 +268,7 @@ class SparseCloudView extends StatefulWidget {
     this.bottomFadeArcRadius = 0,
     this.gpu = false,
     this.octreeDir,
+    this.flatIsStandIn = false,
     this.lodBridge,
   });
 
@@ -274,6 +287,16 @@ class SparseCloudView extends StatefulWidget {
   /// set, the engine draws the tree (zoom in ⇒ every point) instead of the flat [xyz] sample;
   /// [xyz]/[rgb] still drive the fit, picking and the CPU fallback, so the camera does not move.
   final String? octreeDir;
+
+  /// [175] With [gpu]: [xyz]/[rgb] are only a stand-in (the sparse cloud) for this work's dense
+  /// cloud, which is its octree — [octreeDir], or one still being found or built (then null).
+  /// User 2026-09-26 「只要是有稠密点云的项目，打开就直接是稠密点云」: the stand-in is never shown
+  /// (neither by the CPU painter nor as a published flat frame); the view stays black until the
+  /// engine draws the octree ([GpuCloudLayer.octreeOnScreen]) and reports the wait through
+  /// [CloudViewController.waitingForDense]. The stand-in still drives the fit, picking and the
+  /// camera, and it IS shown when the dense cloud cannot be had: the GPU path failed or the tree
+  /// did not load (「建树失败…保持平铺显示」); a page whose tree build failed passes false.
+  final bool flatIsStandIn;
 
   /// Test hook for the GPU channel (null = the real `pw_lod_texture` channel).
   final LodBridge? lodBridge;
@@ -463,6 +486,22 @@ class _SparseCloudViewState extends State<SparseCloudView>
 
   void _onGpuChanged() {
     if (mounted) setState(() {});
+  }
+
+  bool _waitingToReport = true;
+  bool _waitReportScheduled = false;
+
+  /// [175] Mirrors the dense wait into [CloudViewController.waitingForDense] after the frame
+  /// (a notifier must not fire during build); the newest value wins.
+  void _reportWaitingForDense(bool waiting) {
+    final c = widget.controller;
+    _waitingToReport = waiting;
+    if (c == null || _waitReportScheduled || c.waitingForDense.value == waiting) return;
+    _waitReportScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _waitReportScheduled = false;
+      if (mounted) widget.controller?.waitingForDense.value = _waitingToReport;
+    });
   }
 
   /// The GPU layer's texture while it is the one drawing (null ⇒ the CPU painter draws).
@@ -951,7 +990,17 @@ class _SparseCloudViewState extends State<SparseCloudView>
               _viewSize = constraints.biggest;
               _applyPendingPerspective(_viewSize);
               _syncGpu(_viewSize, MediaQuery.devicePixelRatioOf(context));
-              final gpuTexture = _gpu?.textureId;
+              final g = _gpu;
+              final gpuTexture = g?.textureId;
+              // [175] A stand-in flat set is never shown while its dense cloud can still come:
+              // black (the page shows its wait label) until the engine draws the octree.
+              final waitDense = widget.flatIsStandIn &&
+                  g != null &&
+                  !g.failed &&
+                  !g.octreeFailed &&
+                  !g.octreeOnScreen;
+              _reportWaitingForDense(widget.flatIsStandIn ? waitDense : true);
+              final showTexture = gpuTexture != null && !waitDense;
               return GestureDetector(
                 onScaleStart: _onScaleStart,
                 onScaleUpdate: (d) {
@@ -1004,7 +1053,7 @@ class _SparseCloudViewState extends State<SparseCloudView>
                     color: Colors.black,
                     child: Stack(
                       children: [
-                        if (gpuTexture != null) ...[
+                        if (showTexture) ...[
                           // [LOD v3] the GPU viewer draws the points (same camera/look).
                           Positioned.fill(child: Texture(textureId: gpuTexture)),
                           // Bottom fade above the scrubber, drawn over the texture with the
@@ -1020,7 +1069,7 @@ class _SparseCloudViewState extends State<SparseCloudView>
                                 ),
                               ),
                             ),
-                        ] else
+                        ] else if (!waitDense)
                         Positioned.fill(
                           child: CustomPaint(
                             painter: SparseCloudPainter(

@@ -326,12 +326,19 @@ void main() {
     final next = find.text('下一步');
     final bottomButton = find.byType(SfmBottomActionButton);
 
-    testWidgets('complete dense PLY, no tree: sparse first, the tree is built from that PLY, same view switches; no 下一步', (tester) async {
+    final sparsePainter = find.byWidgetPredicate((w) => w is CustomPaint && w.painter is SparseCloudPainter);
+
+    testWidgets('complete dense PLY, no tree: the tree is built from that PLY, same view switches; no 下一步; [175] sparse never shown', (tester) async {
       DenseLodCache.instanceForTesting = DenseLodCache(cacheRoot: () async => cacheRoot);
       final gate = Completer<void>();
       fake.buildGate = gate.future;
       await openPage(tester, idle: false);
       expect((fake.of('setPoints').last.arguments as Map)['count'], 300); // the sparse sibling, not the dense PLY
+      // [175] 「只要是有稠密点云的项目，打开就直接是稠密点云」: the sparse stand-in is held back
+      expect(_texture, findsNothing);
+      expect(sparsePainter, findsNothing);
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+      expect(find.text('正在准备稠密点云…'), findsOneWidget);
       expect(fake.methods, isNot(contains('loadOctree')));
       final build = fake.of('buildFromPly').single.arguments as Map;
       expect(build['ply_path'], ply);
@@ -344,6 +351,31 @@ void main() {
       expect((fake.of('loadOctree').single.arguments as Map)['octree_dir'], '$capDir/lod');
       expect(fake.source, 2);
       expect(_texture, findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsNothing);
+      expect(find.text('正在准备稠密点云…'), findsNothing);
+    });
+
+    testWidgets('[175] valid tree: while it loads only the spinner (same place as the loading one), never the sparse cloud', (tester) async {
+      final first = DenseLodCache(cacheRoot: () async => cacheRoot);
+      first.watch(ply);
+      await tester.runAsync(() => first.whenIdle());
+      fake.calls.clear();
+      DenseLodCache.instanceForTesting = DenseLodCache(cacheRoot: () async => cacheRoot);
+      final gate = Completer<void>();
+      fake.loadOctreeGate = gate.future;
+      await openPage(tester);
+      expect(fake.methods, contains('loadOctree'));
+      expect(_texture, findsNothing);
+      expect(sparsePainter, findsNothing);
+      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+      expect(tester.getCenter(find.byType(CircularProgressIndicator)), tester.getCenter(find.byType(Scaffold)),
+          reason: 'the wait spinner sits where the loading spinner sat');
+      expect(find.text('正在准备稠密点云…'), findsNothing, reason: 'the tree exists: nothing is being prepared');
+      await tester.runAsync(() async => gate.complete());
+      await release(tester);
+      expect(fake.source, 2);
+      expect(_texture, findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsNothing);
     });
 
     testWidgets('NEGATIVE: build 172\'s rule put back is caught (no build, 下一步 over a complete dense PLY)', (tester) async {
@@ -362,6 +394,7 @@ void main() {
       expect(fake.methods, isNot(contains('loadOctree')));
       expect(fake.source, 1);
       expect(_texture, findsOneWidget);
+      expect(find.byType(CircularProgressIndicator), findsNothing, reason: '[175] the fallback shows at once, no spinner left up');
       expect(next, findsNothing);
     });
 

@@ -212,6 +212,7 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
       final p = denseStageProgress.value;
       final doneThisSession = p != null && p.captureDir == _captureDir && p.state == DenseStageState.done;
       final complete = _denseCompleteNow();
+      _denseComplete = complete;
       unawaited(
         DenseLodCache.instance.findValid(widget.plyPath).then((dir) {
           if (!mounted) return;
@@ -237,6 +238,18 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
     if (_denseTreeDir != null) return _denseTreeDir;
     final s = _denseLod?.value;
     return s != null && s.phase == DenseLodPhase.ready ? s.octreeDir : null;
+  }
+
+  /// [175] User 2026-09-26 「只要是有稠密点云的项目，打开就直接是稠密点云」: this page shows a
+  /// COMPLETE dense PLY, whose points come from its tree — so the sparse points this page decodes
+  /// (framing, picking) are only a stand-in and never shown: not while the tree is looked up, not
+  /// while it is built. Only a failed build brings them on screen (the fallback, as before).
+  bool _denseComplete = false;
+
+  bool get _sparseIsStandIn {
+    if (!_isDensePly || !_denseComplete) return false;
+    if (_denseTreeDir != null) return true;
+    return _denseLod?.value.phase != DenseLodPhase.failed;
   }
 
   /// The PLY this page decodes for its own points (framing, picking, CPU fallback): the sparse
@@ -663,6 +676,7 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                     // [LOD v3] same GPU viewer as the capture page; the dense PLY's octree when ready.
                     gpu: true,
                     octreeDir: _lodOctreeDir,
+                    flatIsStandIn: _sparseIsStandIn,
                     controller: _cloudController,
                     onCameraChanged: (c) => _camera.value = c,
                     // 编辑态必须传框(画手柄 + 框外染红);浏览态只在用户
@@ -705,6 +719,40 @@ class _SparseCloudViewerPageState extends State<SparseCloudViewerPage> {
                         : rulerArcRadius(MediaQuery.of(context).size.width),
                   ),
                 ),
+                // [175] the dense cloud is on its way: the loading spinner stays where it was.
+                if (_sparseIsStandIn)
+                  ValueListenableBuilder<bool>(
+                    valueListenable: _cloudController.waitingForDense,
+                    builder: (context, waiting, _) => !waiting
+                        ? const SizedBox.shrink()
+                        : IgnorePointer(
+                            child: Stack(
+                              children: [
+                                const Center(
+                                  child: SizedBox(
+                                    width: 28,
+                                    height: 28,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2.4,
+                                      color: Colors.white70,
+                                    ),
+                                  ),
+                                ),
+                                if (_lodOctreeDir == null && _denseLod != null)
+                                  const Center(
+                                    child: Padding(
+                                      // below the spinner, without moving it
+                                      padding: EdgeInsets.only(top: 80),
+                                      child: Text(
+                                        '正在准备稠密点云…',
+                                        style: TextStyle(color: Colors.white70, fontSize: 14),
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                  ),
                 if (!_editing) ...[
                   Positioned(
                     top: 0,

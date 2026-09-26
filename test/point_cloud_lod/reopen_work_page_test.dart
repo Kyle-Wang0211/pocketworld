@@ -12,6 +12,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -23,8 +24,10 @@ import 'package:pocketworld_flutter/l10n/app_localizations.dart';
 import 'package:pocketworld_flutter/official_capture/dense_stage.dart';
 import 'package:pocketworld_flutter/official_capture/selection_box.dart';
 import 'package:pocketworld_flutter/point_cloud_lod/dense_lod_cache.dart';
+import 'package:pocketworld_flutter/point_cloud_lod/gpu_cloud_layer.dart';
 import 'package:pocketworld_flutter/ui/official_capture/ar_capture_page.dart';
 import 'package:pocketworld_flutter/ui/official_capture/sparse_cloud_viewer_page.dart';
+import 'package:pocketworld_flutter/ui/official_capture/sparse_cloud_view.dart' show SparseCloudPainter, SparseCloudView;
 
 import 'fake_lod_platform.dart';
 
@@ -76,6 +79,7 @@ void main() {
     OfficialARCapturePage.debug172DenseDoneRule = false;
   });
   tearDown(() {
+    GpuCloudLayer.debugOctreeEmptyGrace = const Duration(seconds: 2);
     OfficialARCapturePage.debugReviewCloudLoader = defaultLoader;
     OfficialARCapturePage.debugLegacyDenseReviewLoad = false;
     OfficialARCapturePage.debug172DenseDoneRule = false;
@@ -145,6 +149,106 @@ void main() {
     expect(find.textContaining('生成'), findsNothing);
   });
 
+  // ── [175] user 2026-09-26 「只要是有稠密点云的项目，打开就直接是稠密点云」: the sparse cloud is
+  // never on screen for a work whose dense cloud exists — not for the moment the tree takes to
+  // load (174 showed it by the CPU painter until the engine's first frame), not while the tree is
+  // built. The page's loading spinner stays in place meanwhile.
+  final sparsePainter = find.byWidgetPredicate((w) => w is CustomPaint && w.painter is SparseCloudPainter);
+  final texture = find.byType(Texture);
+
+  testWidgets('[175] 有树: before the tree is drawn nothing is shown but the spinner — no sparse flash', (tester) async {
+    await tester.runAsync(buildValidTree);
+    final gate = Completer<void>();
+    fake.loadOctreeGate = gate.future; // hold the tree load: look at the screen in between
+    await open(tester);
+    expect(fake.methods, contains('loadOctree'));
+    expect(sparsePainter, findsNothing, reason: 'the sparse cloud must not be painted while the tree loads');
+    expect(texture, findsNothing, reason: 'nothing published yet');
+    expect(find.text('正在载入点云…'), findsOneWidget, reason: 'the loading spinner stays up until the dense cloud is drawn');
+    expect(fake.methods, isNot(contains('setPoints')), reason: 'the tree goes first; the sparse set is not even sent');
+    await tester.runAsync(() async => gate.complete());
+    await settle(tester);
+    expect(fake.source, 2);
+    expect(texture, findsOneWidget);
+    expect(sparsePainter, findsNothing);
+    expect(find.text('正在载入点云…'), findsNothing);
+  });
+
+  testWidgets('[175] NEGATIVE: 174\'s wiring (stand-in not marked) paints the sparse cloud while the tree loads — caught', (tester) async {
+    await tester.runAsync(buildValidTree);
+    final gate = Completer<void>();
+    fake.loadOctreeGate = gate.future;
+    final xyz = Float32List.fromList([for (var i = 0; i < 300; i++) ...[i * 0.01, (i % 7) * 0.02, (i % 5) * 0.03]]);
+    final rgb = Uint8List(300 * 3);
+    Future<void> show(bool standIn) async {
+      await tester.runAsync(() async {
+        await tester.pumpWidget(MaterialApp(
+          home: Scaffold(
+            body: SparseCloudView(key: ValueKey(standIn), xyz: xyz, rgb: rgb, gpu: true, octreeDir: '$dir/lod', flatIsStandIn: standIn),
+          ),
+        ));
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+      });
+      for (var i = 0; i < 3; i++) {
+        await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
+        await tester.pump(const Duration(milliseconds: 300));
+      }
+    }
+
+    await show(false); // what 174 passed
+    expect(() => expect(sparsePainter, findsNothing), throwsA(isA<TestFailure>()),
+        reason: 'the judge must see 174\'s sparse flash');
+    await show(true); // 175
+    expect(sparsePainter, findsNothing);
+    expect(texture, findsNothing);
+    await tester.runAsync(() async => gate.complete());
+    await settle(tester);
+    expect(texture, findsOneWidget);
+  });
+
+  testWidgets('[175] the tree frame must have points: an empty first octree frame keeps the spinner', (tester) async {
+    await tester.runAsync(buildValidTree);
+    GpuCloudLayer.debugOctreeEmptyGrace = const Duration(hours: 1); // no grace inside this test
+    fake.octreePointsDrawn = 0;
+    await open(tester);
+    expect(fake.source, 2);
+    expect(texture, findsNothing, reason: 'an octree frame with no points yet is not「the dense cloud on screen」');
+    expect(find.text('正在载入点云…'), findsOneWidget);
+    fake.octreePointsDrawn = 5000;
+    await settle(tester);
+    expect(texture, findsOneWidget);
+    expect(find.text('正在载入点云…'), findsNothing);
+  });
+
+  testWidgets('[175] …but an octree that stays empty (camera/selection shows nothing) does not hold the spinner forever', (tester) async {
+    await tester.runAsync(buildValidTree);
+    GpuCloudLayer.debugOctreeEmptyGrace = Duration.zero;
+    fake.octreePointsDrawn = 0;
+    await open(tester);
+    expect(fake.source, 2);
+    expect(texture, findsOneWidget);
+    expect(find.text('正在载入点云…'), findsNothing);
+  });
+
+  testWidgets('[175] the tree fails to load ⇒ the sparse cloud is the fallback, no spinner left up', (tester) async {
+    await tester.runAsync(buildValidTree);
+    fake.loadOctreeFails = true;
+    await open(tester);
+    await settle(tester);
+    expect(fake.source, 1, reason: 'the flat set is sent after the failed load');
+    expect(texture, findsOneWidget, reason: '「建树失败…保持平铺显示」');
+    expect(find.text('正在载入点云…'), findsNothing);
+    expect(find.text('正在准备稠密点云…'), findsNothing);
+  });
+
+  testWidgets('[175] no dense PLY: the sparse cloud IS the cloud of this work — shown as always, no wait', (tester) async {
+    await open(tester);
+    expect(fake.source, 1);
+    expect(texture, findsOneWidget);
+    expect(find.text('正在载入点云…'), findsNothing);
+    expect(find.text('正在准备稠密点云…'), findsNothing);
+  });
+
   testWidgets('[174] container number change (iOS app update): the tree in <作品目录>/lod still opens at once', (tester) async {
     // build in the OLD container, then move the whole container like an iOS update does
     final old = Directory('${tmp.path}/Application/AAAAAAAA-OLD')..createSync(recursive: true);
@@ -195,7 +299,7 @@ void main() {
     expect(launcher.starts, isEmpty);
   });
 
-  testWidgets('[174] NEGATIVE migration: point mismatch ⇒ not migrated, the sparse cloud shows first', (tester) async {
+  testWidgets('[174] NEGATIVE migration: point mismatch ⇒ not migrated, the tree is built first ([175]: sparse held back)', (tester) async {
     writeDensePly(densePly, 3000, seed: 5);
     final legacy = Directory('${tmp.path}/Library/Caches/lod/cap_1789381704918369')..createSync(recursive: true);
     File('${legacy.path}/metadata.json').writeAsStringSync(jsonEncode({'points': 2999}));
@@ -206,7 +310,8 @@ void main() {
     await open(tester);
     expect(legacy.existsSync(), isTrue, reason: 'a tree for another point count is not this work\'s tree');
     expect(fake.methods, isNot(contains('loadOctree')));
-    expect(fake.source, 1, reason: 'sparse flat set on screen');
+    expect(fake.source, 1, reason: 'the engine holds the sparse flat set (not shown: [175])');
+    expect(texture, findsNothing);
     expect(fake.methods, contains('buildFromPly'), reason: 'complete dense PLY ⇒ its tree is built from it');
     expect(next, findsNothing);
     await tester.runAsync(() async => gate.complete());
@@ -240,10 +345,14 @@ void main() {
     writeDensePly(densePly, 3000, seed: 5);
     final before = File(densePly).readAsBytesSync();
     final gate = Completer<void>();
-    fake.buildGate = gate.future; // hold the build: first the page must show the sparse cloud
+    fake.buildGate = gate.future; // hold the build: look at the page while the tree is built
     await open(tester);
     expect(loads, [sparsePly], reason: 'the dense PLY must not be decoded in Dart');
-    expect(fake.source, 1, reason: 'sparse on screen while the tree is built');
+    expect(fake.source, 1, reason: 'the engine holds the sparse flat set (for fit/fallback) …');
+    // [175] … but it is not shown: 「只要是有稠密点云的项目，打开就直接是稠密点云」
+    expect(texture, findsNothing, reason: '[175] the sparse cloud is not on screen while the tree is built');
+    expect(sparsePainter, findsNothing);
+    expect(find.text('正在准备稠密点云…'), findsOneWidget);
     expect(fake.methods, isNot(contains('loadOctree')));
     expect((fake.of('buildFromPly').single.arguments as Map)['ply_path'], densePly);
     expect((fake.of('buildFromPly').single.arguments as Map)['out_dir'], '$dir/lod.building');
@@ -256,6 +365,7 @@ void main() {
     expect((fake.of('loadOctree').single.arguments as Map)['octree_dir'], '$dir/lod');
     expect(fake.source, 2);
     expect(find.byType(Texture), findsOneWidget);
+    expect(find.text('正在准备稠密点云…'), findsNothing);
     expect(next, findsNothing);
     expect(launcher.starts, isEmpty);
     expect(File(densePly).readAsBytesSync(), before);
@@ -269,6 +379,8 @@ void main() {
     expect(fake.methods, contains('buildFromPly'));
     expect(fake.methods, isNot(contains('loadOctree')));
     expect(fake.source, 1);
+    expect(texture, findsOneWidget, reason: '[175] no tree can be had ⇒ the sparse cloud is the fallback');
+    expect(find.text('正在准备稠密点云…'), findsNothing);
     expect(next, findsNothing);
     expect(editEntry, findsNothing);
     expect(launcher.starts, isEmpty);

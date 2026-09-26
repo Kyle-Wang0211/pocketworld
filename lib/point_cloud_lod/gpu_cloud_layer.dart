@@ -18,6 +18,9 @@
 // PUBLISHED a frame with a source loaded (stats.source != 0), so there is no black frame between
 // the two. After that the texture stays; source changes (points re-sent, octree loaded) happen at
 // an engine frame boundary with camera and style untouched (pwlod_viewer.h set_points comment).
+// [175] Exception: when the view's flat set is only a stand-in for a dense cloud (the sparse cloud
+// of a work whose tree is loading or being built), neither painter nor texture shows it — the view
+// stays black until [GpuCloudLayer.octreeOnScreen] (user 2026-09-26「有稠密就直接显示稠密」).
 import 'dart:async';
 import 'dart:io';
 
@@ -62,18 +65,32 @@ class GpuCloudSource {
 }
 
 class GpuCloudLayer extends ChangeNotifier {
-  GpuCloudLayer({LodBridge? bridge, this.params = const LodParams(), this.statsPeriod = const Duration(milliseconds: 250)})
-    : _bridge = bridge ?? LodBridge();
+  GpuCloudLayer({
+    LodBridge? bridge,
+    this.params = const LodParams(),
+    this.statsPeriod = const Duration(milliseconds: 250),
+    Duration? octreeEmptyGrace,
+  }) : _bridge = bridge ?? LodBridge(),
+       octreeEmptyGrace = octreeEmptyGrace ?? debugOctreeEmptyGrace;
 
   final LodBridge _bridge;
   final LodParams params;
   final Duration statsPeriod;
+
+  /// See [octreeOnScreen].
+  final Duration octreeEmptyGrace;
+
+  /// Default of [octreeEmptyGrace] (tests pin it; the product keeps 2 s).
+  @visibleForTesting
+  static Duration debugOctreeEmptyGrace = const Duration(seconds: 2);
 
   LodTextureInfo? _tex;
   bool _creating = false;
   bool _disposed = false;
   bool _failed = false;
   bool _published = false;
+  bool _octreeOnScreen = false;
+  Stopwatch? _octreeShownFor; // runs while the latest published frames draw the octree
 
   Size _logical = Size.zero;
   double _dpr = 1;
@@ -109,6 +126,19 @@ class GpuCloudLayer extends ChangeNotifier {
 
   /// 0 nothing, 1 flat set, 2 octree — from the latest published frame.
   int get publishedSource => _stats?.source ?? 0;
+
+  /// [175] The latest published frame draws the octree AND has points in it — or has drawn the
+  /// octree for [octreeEmptyGrace] (a camera or selection that leaves nothing in view must not
+  /// hold a wait label forever). A view whose flat set is only a stand-in for a dense cloud waits
+  /// for this before it shows the texture (user 2026-09-26 「只要是有稠密点云的项目，打开就直接是
+  /// 稠密点云」). Listeners are notified when it changes.
+  bool get octreeOnScreen => _octreeOnScreen;
+
+  /// [175] The octree the view asked for could not be loaded — the flat set is the fallback.
+  bool get octreeFailed {
+    final dir = _wantSource?.octreeDir;
+    return dir != null && dir == _octreeFailedFor;
+  }
 
   @visibleForTesting
   LodFrameStats? get debugStats => _stats;
@@ -158,6 +188,8 @@ class GpuCloudLayer extends ChangeNotifier {
       if (old != null) {
         _tex = null;
         _published = false;
+        _octreeOnScreen = false;
+        _octreeShownFor = null;
         if (!_disposed) notifyListeners();
         await _bridge.dispose(textureId: old.textureId);
       }
@@ -252,6 +284,8 @@ class GpuCloudLayer extends ChangeNotifier {
       // 「建树失败或自检不过时，保持平铺显示」: the flat set stays (or is re-sent).
       _octreeFailedFor = dir;
       DeviceLog.log('GpuCloudLayer', 'octree load failed, staying on the flat set: $dir: $e');
+      // [175] a view holding its stand-in flat set back for this tree shows it now.
+      if (!_disposed) notifyListeners();
     } finally {
       _sourceInFlight = false;
       if (!_disposed) _pumpSource();
@@ -316,6 +350,20 @@ class GpuCloudLayer extends ChangeNotifier {
         DeviceLog.log('GpuCloudLayer', 'first frame published (source ${s.source}, ${tex.widthPx}x${tex.heightPx}, ${tex.version})');
         notifyListeners();
       }
+      // [175] octreeOnScreen: the octree is drawn with points (or long enough, see the getter).
+      if (s.source == 2 && s.frameNumber > 0) {
+        _octreeShownFor ??= Stopwatch()..start();
+      } else {
+        _octreeShownFor = null;
+      }
+      final shown = _published &&
+          _octreeShownFor != null &&
+          (s.pointsDrawn > 0 || _octreeShownFor!.elapsed >= octreeEmptyGrace);
+      if (shown != _octreeOnScreen) {
+        _octreeOnScreen = shown;
+        DeviceLog.log('GpuCloudLayer', 'octree on screen: $shown (${s.pointsDrawn} pts drawn, frame ${s.frameNumber})');
+        notifyListeners();
+      }
       final ls = potreeLowestSpacingFromStats(s.lowestSpacing);
       if (ls != _lowestSpacing) {
         _lowestSpacing = ls;
@@ -337,6 +385,8 @@ class GpuCloudLayer extends ChangeNotifier {
     final tex = _tex;
     _tex = null;
     _published = false;
+    _octreeOnScreen = false;
+    _octreeShownFor = null;
     if (tex != null) unawaited(_bridge.dispose(textureId: tex.textureId).catchError((Object _) {}));
     notifyListeners();
   }

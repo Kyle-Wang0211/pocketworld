@@ -52,6 +52,8 @@ class SfmPreviewOverlay extends StatelessWidget {
     this.initialPerspective,
     this.toolsOverlay,
     this.lodOctreeDir,
+    this.sparseIsStandIn = false,
+    this.denseWaitLabel,
   });
 
   final SfmPreviewPhase phase;
@@ -119,6 +121,12 @@ class SfmPreviewOverlay extends StatelessWidget {
   /// SparseCloudView instance throughout (user: 「查看器要全程一致」).
   final String? lodOctreeDir;
 
+  /// [175] [snapshot] is the sparse cloud of a work whose dense cloud exists (its tree is being
+  /// loaded or built): the view never shows it, and this overlay keeps its loading spinner up,
+  /// with [denseWaitLabel], until the view draws the dense cloud (SparseCloudView.flatIsStandIn).
+  final bool sparseIsStandIn;
+  final String? denseWaitLabel;
+
   @override
   Widget build(BuildContext context) {
     final snap = snapshot;
@@ -146,6 +154,7 @@ class SfmPreviewOverlay extends StatelessWidget {
                     // [LOD v3] one GPU viewer draws every stage of this page.
                     gpu: true,
                     octreeDir: lodOctreeDir,
+                    flatIsStandIn: sparseIsStandIn,
                     onCameraChanged: onCameraChanged,
                     controller: cloudController,
                     initialPerspective: initialPerspective,
@@ -230,28 +239,25 @@ class SfmPreviewOverlay extends StatelessWidget {
                   ),
                 ),
               ),
+            // [175] the dense cloud is on its way: the same spinner, same place, until it is drawn.
+            if (hasCloud && sparseIsStandIn && cloudController != null)
+              ValueListenableBuilder<bool>(
+                valueListenable: cloudController!.waitingForDense,
+                builder: (context, waiting, _) => waiting
+                    ? IgnorePointer(
+                        child: Center(
+                          child: _CenterSpinner(label: denseWaitLabel ?? '正在载入点云…'),
+                        ),
+                      )
+                    : const SizedBox.shrink(),
+              ),
             // ── generating spinner (center, before any snapshot exists)
             if (phase == SfmPreviewPhase.generating && !hasCloud)
               Center(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const SizedBox(
-                      width: 30,
-                      height: 30,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2.4,
-                        color: Colors.white70,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      generatingLabel ?? '正在生成最终点云…',
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 14,
-                      ),
-                    ),
+                    _CenterSpinner(label: generatingLabel ?? '正在生成最终点云…'),
                     if (progressText != null) ...[
                       const SizedBox(height: 8),
                       Text(
@@ -417,6 +423,39 @@ class SfmBottomActionButton extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// The center spinner with one line under it: the generating label and — [175] — the dense wait
+/// label use this same widget in the same place, so the hand-over from one to the other is still.
+class _CenterSpinner extends StatelessWidget {
+  const _CenterSpinner({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const SizedBox(
+          width: 30,
+          height: 30,
+          child: CircularProgressIndicator(
+            strokeWidth: 2.4,
+            color: Colors.white70,
+          ),
+        ),
+        const SizedBox(height: 16),
+        Text(
+          label,
+          style: const TextStyle(
+            color: Colors.white70,
+            fontSize: 14,
+          ),
+        ),
+      ],
     );
   }
 }
